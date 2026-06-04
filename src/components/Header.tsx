@@ -1,5 +1,6 @@
 import type { ConnectionStatus } from '../types/earthquake'
 import { ConnectionStatus as ConnectionStatusIndicator } from './ConnectionStatus'
+import { LastUpdateBadge } from './LastUpdateBadge'
 
 interface Props {
   connectionStatus: ConnectionStatus
@@ -26,11 +27,7 @@ export function Header({ connectionStatus, lastUpdate }: Props) {
         </h1>
       </div>
       <div className="flex items-center gap-3">
-        {lastUpdate && (
-          <span className="hidden sm:block text-xs text-secondary">
-            {lastUpdate.toLocaleTimeString('ja-JP')}
-          </span>
-        )}
+        <LastUpdateBadge lastUpdate={lastUpdate} connectionStatus={connectionStatus} />
         <ConnectionStatusIndicator status={connectionStatus} />
       </div>
     </header>
