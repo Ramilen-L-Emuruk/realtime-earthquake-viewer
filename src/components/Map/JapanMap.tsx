@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from 'react-leaflet'
 import type { JMAQuake } from '../../types/earthquake'
-import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
+import { getIntensityColor, getIntensityLabel } from '../../utils/intensity'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
 
 const JAPAN_CENTER: [number, number] = [36.5, 137.5]
@@ -41,8 +41,14 @@ export function JapanMap({ quake }: Props) {
     quake.earthquake.hypocenter.latitude > -200 &&
     quake.earthquake.hypocenter.longitude > -200
 
-  const sortedPoints = quake
-    ? [...quake.points].sort((a, b) => a.scale - b.scale)
+  // Build intensity summary by prefecture for the popup legend
+  const prefIntensities = quake
+    ? Object.entries(
+        quake.points.reduce<Record<string, number>>((acc, p) => {
+          if (!acc[p.pref] || p.scale > acc[p.pref]) acc[p.pref] = p.scale
+          return acc
+        }, {}),
+      ).sort((a, b) => b[1] - a[1])
     : []
 
   return (
@@ -61,37 +67,14 @@ export function JapanMap({ quake }: Props) {
         />
       )}
 
-      {/* Intensity observation points */}
-      {sortedPoints.map((point, i) => (
-        <CircleMarker
-          key={`${point.pref}-${point.addr}-${i}`}
-          center={[0, 0]}
-          radius={getScaleRadius(point.scale)}
-          pathOptions={{
-            color: getIntensityColor(point.scale),
-            fillColor: getIntensityColor(point.scale),
-            fillOpacity: 0.8,
-            weight: 1,
-          }}
-        >
-          <Popup>
-            <div className="text-sm">
-              <div className="font-bold">{point.addr}</div>
-              <div className="text-gray-600">{point.pref}</div>
-              <div>震度 {getIntensityLabel(point.scale)}</div>
-            </div>
-          </Popup>
-        </CircleMarker>
-      ))}
-
-      {/* Epicenter marker */}
+      {/* Epicenter marker with intensity summary popup */}
       {hasEpicenter && quake && (
         <CircleMarker
           center={[
             quake.earthquake.hypocenter.latitude,
             quake.earthquake.hypocenter.longitude,
           ]}
-          radius={10}
+          radius={12}
           pathOptions={{
             color: '#ff4444',
             fillColor: '#ff0000',
@@ -100,10 +83,27 @@ export function JapanMap({ quake }: Props) {
           }}
         >
           <Popup>
-            <div className="text-sm">
-              <div className="font-bold">{quake.earthquake.hypocenter.name}</div>
-              <div>{formatMagnitude(quake.earthquake.hypocenter.magnitude)}</div>
-              <div>深さ {formatDepth(quake.earthquake.hypocenter.depth)}</div>
+            <div className="text-sm min-w-[160px]">
+              <div className="font-bold mb-1">{quake.earthquake.hypocenter.name}</div>
+              <div className="text-gray-600 text-xs">
+                {formatMagnitude(quake.earthquake.hypocenter.magnitude)} /
+                深さ {formatDepth(quake.earthquake.hypocenter.depth)}
+              </div>
+              {prefIntensities.length > 0 && (
+                <div className="mt-2 space-y-0.5">
+                  {prefIntensities.slice(0, 6).map(([pref, scale]) => (
+                    <div key={pref} className="flex items-center gap-2 text-xs">
+                      <span
+                        className="inline-block w-5 text-center font-bold rounded text-white text-[10px]"
+                        style={{ backgroundColor: getIntensityColor(scale) }}
+                      >
+                        {getIntensityLabel(scale)}
+                      </span>
+                      <span className="text-gray-700">{pref}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </Popup>
         </CircleMarker>
