@@ -1,4 +1,4 @@
-export type TabId = 'earthquake' | 'realtime' | 'tsunami'
+export type TabId = 'earthquake' | 'realtime' | 'tsunami' | 'settings'
 
 interface Tab {
   id: TabId
@@ -10,6 +10,7 @@ const TABS: Tab[] = [
   { id: 'earthquake', label: '地震情報', icon: '🌏' },
   { id: 'realtime', label: 'リアルタイム', icon: '📡' },
   { id: 'tsunami', label: '津波情報', icon: '🌊' },
+  { id: 'settings', label: '設定', icon: '⚙️' },
 ]
 
 interface Props {
