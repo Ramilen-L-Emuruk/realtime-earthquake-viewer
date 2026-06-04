@@ -1,7 +1,37 @@
+# Dependencies
 node_modules
+
+# Build output
 dist
 dist-ssr
-*.local
+
+# Environment variables
 .env
 .env.*
 !.env.example
+
+# Local config
+*.local
+
+# TypeScript build cache
+*.tsbuildinfo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Test / verification artifacts
+.playwright-mcp/
+coverage/
+verify-*.png
+verify-*.jpg
+
+# Editor directories
+.vscode/*
+!.vscode/extensions.json
+.idea/
