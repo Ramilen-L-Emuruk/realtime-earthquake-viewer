@@ -6,9 +6,6 @@ interface Props {
   connectionStatus: ConnectionStatus
 }
 
-const STALE_WARN_SEC = 5 * 60   // 5分: 黄色
-const STALE_ERROR_SEC = 15 * 60 // 15分: 赤（接続中なのにデータ停止）
-
 function formatElapsed(seconds: number): string {
   if (seconds < 60) return `${seconds}秒前`
   const minutes = Math.floor(seconds / 60)
@@ -26,20 +23,10 @@ function formatDatetime(date: Date): string {
   return `${y}/${M}/${d} ${h}:${m}:${s}`
 }
 
-type Severity = 'normal' | 'warn' | 'error'
-
-function getSeverity(connectionStatus: ConnectionStatus, elapsedSec: number): Severity {
-  if (connectionStatus === 'disconnected') return 'error'
-  if (connectionStatus === 'connecting') return 'warn'
-  if (elapsedSec >= STALE_ERROR_SEC) return 'error'
-  if (elapsedSec >= STALE_WARN_SEC) return 'warn'
-  return 'normal'
-}
-
-const SEVERITY_STYLES: Record<Severity, { text: string; label: string; pulse: boolean }> = {
-  normal: { text: 'text-secondary',  label: '',      pulse: false },
-  warn:   { text: 'text-yellow-400', label: '遅延',   pulse: false },
-  error:  { text: 'text-red-400',    label: '停止中', pulse: true  },
+const CONNECTION_STYLES: Record<ConnectionStatus, { text: string; pulse: boolean }> = {
+  connected:    { text: 'text-secondary',  pulse: false },
+  connecting:   { text: 'text-yellow-400', pulse: false },
+  disconnected: { text: 'text-red-400',    pulse: true  },
 }
 
 export function LastUpdateBadge({ lastUpdate, connectionStatus }: Props) {
@@ -50,18 +37,18 @@ export function LastUpdateBadge({ lastUpdate, connectionStatus }: Props) {
     return () => clearInterval(id)
   }, [])
 
-  const elapsedSec = lastUpdate ? Math.floor((nowMs - lastUpdate.getTime()) / 1000) : Infinity
-  const severity = getSeverity(connectionStatus, elapsedSec)
-  const { text, label, pulse } = SEVERITY_STYLES[severity]
+  const { text, pulse } = CONNECTION_STYLES[connectionStatus]
 
   if (!lastUpdate) {
     return (
-      <div className="flex flex-col items-end text-xs text-secondary">
+      <div className={`flex flex-col items-end text-xs ${text}`}>
         <span className="hidden sm:block">最終更新</span>
         <span>受信待機中…</span>
       </div>
     )
   }
+
+  const elapsedSec = Math.floor((nowMs - lastUpdate.getTime()) / 1000)
 
   return (
     <div className={`flex flex-col items-end text-xs ${text} ${pulse ? 'animate-pulse' : ''}`}>
@@ -73,10 +60,7 @@ export function LastUpdateBadge({ lastUpdate, connectionStatus }: Props) {
       <span className="sm:hidden font-mono">
         {lastUpdate.toLocaleTimeString('ja-JP')}
       </span>
-      <span className="flex items-center gap-1">
-        <span>{formatElapsed(elapsedSec)}</span>
-        {label && <span className="font-bold">({label})</span>}
-      </span>
+      <span>{formatElapsed(elapsedSec)}</span>
     </div>
   )
 }
