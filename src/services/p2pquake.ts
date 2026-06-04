@@ -7,8 +7,10 @@ export async function fetchHistory(
   codes: number[] = [551, 552, 556],
   limit = 20,
 ): Promise<P2PQuakeEvent[]> {
-  const codesParam = codes.join(',')
-  const res = await fetch(`${API_BASE}/history?codes=${codesParam}&limit=${limit}`)
+  const params = new URLSearchParams()
+  codes.forEach(c => params.append('codes', String(c)))
+  params.set('limit', String(limit))
+  const res = await fetch(`${API_BASE}/history?${params.toString()}`)
   if (!res.ok) throw new Error(`P2PQuake API error: ${res.status}`)
   return res.json() as Promise<P2PQuakeEvent[]>
 }
