@@ -1,8 +1,20 @@
 import { useEffect, useRef } from 'react'
-import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from 'react-leaflet'
+import L from 'leaflet'
+import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet'
 import type { JMAQuake } from '../../types/earthquake'
 import { getIntensityColor, getIntensityLabel } from '../../utils/intensity'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
+
+const epicenterIcon = L.divIcon({
+  className: '',
+  html: `<svg viewBox="0 0 32 32" width="32" height="32" xmlns="http://www.w3.org/2000/svg">
+    <line x1="4" y1="4" x2="28" y2="28" stroke="#ff2222" stroke-width="4" stroke-linecap="round"/>
+    <line x1="28" y1="4" x2="4"  y2="28" stroke="#ff2222" stroke-width="4" stroke-linecap="round"/>
+  </svg>`,
+  iconSize: [32, 32],
+  iconAnchor: [16, 16],
+  popupAnchor: [0, -18],
+})
 
 const JAPAN_CENTER: [number, number] = [36.5, 137.5]
 const JAPAN_ZOOM = 5
@@ -69,18 +81,12 @@ export function JapanMap({ quake }: Props) {
 
       {/* Epicenter marker with intensity summary popup */}
       {hasEpicenter && quake && (
-        <CircleMarker
-          center={[
+        <Marker
+          position={[
             quake.earthquake.hypocenter.latitude,
             quake.earthquake.hypocenter.longitude,
           ]}
-          radius={12}
-          pathOptions={{
-            color: '#ff4444',
-            fillColor: '#ff0000',
-            fillOpacity: 0.9,
-            weight: 2,
-          }}
+          icon={epicenterIcon}
         >
           <Popup>
             <div className="text-sm min-w-[160px]">
@@ -106,7 +112,7 @@ export function JapanMap({ quake }: Props) {
               )}
             </div>
           </Popup>
-        </CircleMarker>
+        </Marker>
       )}
     </MapContainer>
   )
