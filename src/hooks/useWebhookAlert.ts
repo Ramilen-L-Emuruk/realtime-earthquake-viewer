@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 
-const WEBHOOK_SERVER = 'http://localhost:3001'
+const DEFAULT_SERVER = 'http://localhost:3001'
 const AUTO_DISMISS_MS = 5 * 60 * 1000
 
 export interface WebhookAlertState {
@@ -10,7 +10,7 @@ export interface WebhookAlertState {
   dismiss: () => void
 }
 
-export function useWebhookAlert(): WebhookAlertState {
+export function useWebhookAlert(serverUrl = DEFAULT_SERVER): WebhookAlertState {
   const [isActive, setIsActive] = useState(false)
   const [triggeredAt, setTriggeredAt] = useState<Date | null>(null)
   const [message, setMessage] = useState<string | null>(null)
@@ -44,7 +44,7 @@ export function useWebhookAlert(): WebhookAlertState {
 
     const connect = () => {
       try {
-        const es = new EventSource(`${WEBHOOK_SERVER}/sse`)
+        const es = new EventSource(`${serverUrl}/sse`)
         eventSourceRef.current = es
 
         es.addEventListener('earthquake-alert', (e: Event) => {
@@ -81,7 +81,7 @@ export function useWebhookAlert(): WebhookAlertState {
       eventSourceRef.current?.close()
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [serverUrl])
 
   return { isActive, triggeredAt, message, dismiss }
 }
