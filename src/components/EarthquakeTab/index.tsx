@@ -41,7 +41,7 @@ export function EarthquakeTab({ earthquakes, isLoading, error }: Props) {
       </div>
 
       {/* Earthquake list - fixed narrow width on desktop */}
-      <div className="lg:w-72 flex-shrink-0 overflow-y-auto border-t lg:border-t-0 lg:border-l border-border">
+      <div className="lg:w-96 flex-shrink-0 overflow-y-auto border-t lg:border-t-0 lg:border-l border-border">
         {earthquakes.length === 0 ? (
           <div className="flex items-center justify-center h-full">
             <p className="text-secondary text-sm">地震情報はありません</p>

@@ -59,7 +59,7 @@ export function EarthquakeCard({ quake, isLatest }: Props) {
             )}
           </div>
 
-          <div className="flex items-center gap-3 text-xs text-secondary flex-wrap">
+          <div className="flex items-center gap-3 text-xs text-secondary flex-nowrap whitespace-nowrap">
             {hasLocation && (
               <>
                 <span className="font-medium text-white">
