@@ -80,7 +80,7 @@ export interface EarthquakeState {
   error: string | null
 }
 
-export function useEarthquakes() {
+export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
   const [state, setState] = useState<EarthquakeState>({
     earthquakes: [],
     tsunamis: [],
@@ -92,8 +92,13 @@ export function useEarthquakes() {
   })
 
   const wsRef = useRef<P2PQuakeWebSocket | null>(null)
+  // 最新のコールバックを ref で保持し、handleEvent を安定させる
+  const onLiveEventRef = useRef(onLiveEvent)
+  onLiveEventRef.current = onLiveEvent
 
   const handleEvent = useCallback((event: P2PQuakeEvent) => {
+    // ライブ受信／テスト送信のイベントを通知（初回の履歴読み込みでは呼ばれない）
+    onLiveEventRef.current?.(event)
     setState(prev => {
       const now = new Date()
       switch (event.code) {

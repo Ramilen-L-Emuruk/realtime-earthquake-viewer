@@ -9,6 +9,8 @@
 
 ## 機能
 
+**地図を常時表示し、右パネルの内容をタブで切り替える**構成です。地図の表示内容もタブに応じて変化します。
+
 - **地震情報タブ**
   - 過去の地震をカード表示（最大震度・震源地・M値・深さ・津波の有無・発表種別）
   - 日本地図に **各観測点の震度を震度別の色付きマーカー＋震度ラベルで表示**（震源は×印）
@@ -18,17 +20,25 @@
   - P2PQuake WebSocket によるリアルタイム自動更新
 
 - **リアルタイムタブ**
-  - 防災科研・強震モニタ画像を毎秒更新表示（読み込み中はローディング表示）
-  - 震度カラースケール凡例
+  - 防災科研・強震モニタ画像を地図エリアに毎秒更新表示（読み込み中はローディング表示）
+  - 右パネルに震度カラースケール凡例・注記
 
 - **津波情報タブ**
   - 大津波警報 / 津波警報 / 津波注意報をリアルタイム表示
+  - **警報・注意報の海域を地図の海岸線に等級色で描画**（大津波警報＝紫／警報＝赤／注意報＝橙）し、対象区域へ自動ズーム
   - 到達予想時刻・予想高さを表示
 
 - **設定タブ**
-  - 最低表示震度・通知最低震度・リスト表示件数の設定
+  - 通知音・ブラウザ通知のオン/オフ、最低表示震度・通知最低震度・リスト表示件数の設定
   - ブラウザ通知の許可・各種テスト送信
   - Home Assistant Webhook サーバー URL の設定（任意）
+
+- **通知音**
+  - 地震情報・緊急地震速報・津波情報の受信時に、種別ごとの音を再生（Web Audio API で生成）
+  - 設定でオン/オフ可能（既定オン）。ブラウザの自動再生制限により初回操作後に有効化
+
+- **自動タブ切替**
+  - 地震情報・津波情報の受信時に、該当タブを自動的に表示
 
 - **緊急地震速報 (EEW)**
   - 警報 / 予報をヘッダー下にアニメーションバナーで表示
@@ -90,8 +100,9 @@ npm run preview
 | `npm run preview` | 本番ビルドのプレビュー |
 | `npm run server` | Home Assistant Webhook サーバー起動（任意機能） |
 
-> 地図に表示する観測点座標テーブル（`public/data/station-coords.json`）は
-> `node scripts/build-station-coords.mjs` で再生成できます（通常は更新不要）。
+> 地図表示用のデータテーブルは以下のスクリプトで再生成できます（通常は更新不要）。
+> - 観測点座標（`public/data/station-coords.json`）: `node scripts/build-station-coords.mjs`
+> - 津波予報区の海岸線（`public/data/tsunami-zones.json`）: `node scripts/build-tsunami-zones.mjs`
 
 ---
 
@@ -209,6 +220,7 @@ PORT=3002 npm run server
 | 緊急地震速報 | P2PQuake API v2 (code: 556) | リアルタイム WebSocket |
 | リアルタイム震度 | [防災科研 強震モニタ](https://www.kmoni.bosai.go.jp/) | 1秒更新の観測画像 |
 | 観測点座標 | 気象庁 震度観測点一覧（[iku55 氏による JSON 化](https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1)） | 地図に各地点をプロットするための座標テーブル |
+| 津波予報区の海岸線 | 気象庁 予報区等 GIS データ（[Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)） | 津波の海域を海岸線として描画するためのライン座標 |
 | 地図タイル | [CARTO Dark Matter](https://carto.com/attributions) | © OpenStreetMap contributors |
 
 ### P2PQuake イベントコード
@@ -248,36 +260,42 @@ realtime-earthquake-viewer/
 ├── public/
 │   ├── icons/                      # アプリアイコン
 │   └── data/
-│       └── station-coords.json     # 震度観測点・細分区域の座標テーブル（生成物）
+│       ├── station-coords.json     # 震度観測点・細分区域の座標テーブル（生成物）
+│       └── tsunami-zones.json      # 津波予報区の海岸線座標（生成物）
 ├── scripts/
-│   └── build-station-coords.mjs    # 座標テーブル生成スクリプト
+│   ├── build-station-coords.mjs    # 観測点座標テーブル生成スクリプト
+│   └── build-tsunami-zones.mjs     # 津波予報区 海岸線データ生成スクリプト
 ├── server/
 │   └── webhook.js                  # HA Webhook サーバー（標準ライブラリのみ）
 ├── src/
+│   ├── App.tsx                     # 地図常時表示 + タブ別パネル + 通知音/自動タブ切替
 │   ├── components/
 │   │   ├── ConnectionStatus.tsx    # WebSocket 接続状態インジケーター
 │   │   ├── EEWBanner.tsx           # 緊急地震速報バナー
 │   │   ├── Header.tsx              # アプリヘッダー
 │   │   ├── LastUpdateBadge.tsx     # 最終更新時刻バッジ
 │   │   ├── TabBar.tsx              # タブナビゲーション
-│   │   ├── EarthquakeTab/          # 地震情報タブ（カード一覧・選択）
+│   │   ├── EarthquakeTab/          # 地震情報パネル（カード一覧・選択）
 │   │   ├── Map/
-│   │   │   └── JapanMap.tsx        # Leaflet 日本地図（震度マーカー・自動ズーム）
-│   │   ├── RealtimeTab/            # 強震モニタ表示タブ
-│   │   ├── SettingsTab/            # 設定タブ
-│   │   └── TsunamiTab/             # 津波情報タブ
+│   │   │   └── JapanMap.tsx        # Leaflet 日本地図（震度マーカー / 津波海岸線・自動ズーム）
+│   │   ├── RealtimeTab/            # 凡例・注記パネル + KmoniMonitor（強震モニタ画像）
+│   │   ├── SettingsTab/            # 設定パネル
+│   │   └── TsunamiTab/             # 津波情報パネル
 │   ├── hooks/
 │   │   ├── useEarthquakes.ts       # P2PQuake WS + REST 状態管理
 │   │   ├── useSettings.ts          # アプリ設定（localStorage 永続化）
 │   │   ├── useStationCoords.ts     # 観測点座標テーブルの読み込み
+│   │   ├── useTsunamiZones.ts      # 津波予報区 海岸線データの読み込み
 │   │   └── useWebhookAlert.ts      # HA アラート状態管理
 │   ├── services/
 │   │   └── p2pquake.ts             # P2PQuake API クライアント（自動再接続）
 │   ├── types/
 │   │   └── earthquake.ts           # P2PQuake API 型定義
 │   └── utils/
+│       ├── alertSound.ts           # 通知音生成（Web Audio API）
 │       ├── intensity.ts            # 震度スケール色・ラベル
 │       ├── stationCoords.ts        # 地点名→座標の引き当て
+│       ├── tsunamiZones.ts         # 津波予報区 海岸線データの引き当て
 │       └── formatters.ts           # 日時・数値フォーマッター
 ├── index.html
 ├── package.json
