@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef } from 'react'
 import L from 'leaflet'
-import { MapContainer, TileLayer, Marker, Polyline, Circle, CircleMarker, Popup, Tooltip, useMap } from 'react-leaflet'
+import { MapContainer, Marker, Polyline, Circle, CircleMarker, Popup, Tooltip, useMap } from 'react-leaflet'
 import type { JMAQuake, JMATsunami, TsunamiGrade, EEWAlert } from '../../types/earthquake'
 import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
@@ -8,6 +8,7 @@ import { eewMaxScale } from '../../utils/eew'
 import { useStationCoords } from '../../hooks/useStationCoords'
 import { lookupPointCoords, type LatLng } from '../../utils/stationCoords'
 import { useTsunamiZones } from '../../hooks/useTsunamiZones'
+import { BaseMap } from './BaseMap'
 import { KyoshinPoints } from './KyoshinPoints'
 import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
 import type { DetectedPoint } from '../../hooks/useKyoshinDetection'
@@ -90,10 +91,6 @@ const JAPAN_ZOOM = 5
 // 自動ズームの上限（地方単位が収まる程度）
 const MAX_ZOOM = 9
 
-const CARTO_DARK_URL =
-  'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
-const CARTO_ATTRIBUTION =
-  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
 
 // 与えられた座標群に地図をフィットさせる。signature が変わったときのみ実行する。
 function FitToBounds({ signature, positions }: { signature: string; positions: LatLng[] }) {
@@ -306,8 +303,11 @@ export function JapanMap({
       zoom={JAPAN_ZOOM}
       className="h-full w-full"
       zoomControl={false}
+      preferCanvas
     >
-      <TileLayer url={CARTO_DARK_URL} attribution={CARTO_ATTRIBUTION} />
+      {/* 行政区域ベースマップ（タイル不使用・自前描画）。
+          リアルタイム表示は観測点ドットで埋もれるため引きの地方ラベルは出さない。 */}
+      <BaseMap suppressRegionLabels={mode === 'kyoshin'} />
 
       {/* 強震モニタ: Yahoo リアルタイム震度の観測点を描画 */}
       {mode === 'kyoshin' && (

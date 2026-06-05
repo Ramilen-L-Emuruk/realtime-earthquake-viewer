@@ -290,7 +290,11 @@ export function SettingsTab({ settings, onUpdate, onTest }: Props) {
             防災科研 強震モニタ
           </a>
         </Row>
-        <Row label="地図"><span className="text-xs text-secondary">© OpenStreetMap / CARTO</span></Row>
+        <Row label="地図">
+          <span className="text-xs text-secondary text-right">
+            国土数値情報（行政区域）国土交通省 / Natural Earth
+          </span>
+        </Row>
       </Section>
 
       <Section title="震度スケール">
