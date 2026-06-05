@@ -172,28 +172,6 @@ export function SettingsTab({ settings, onUpdate, onTest }: Props) {
   return (
     <div className="flex-1 overflow-y-auto p-3">
 
-      {/* テスト機能 */}
-      <Section title="テスト機能">
-        <div className="px-4 py-2 bg-yellow-900/30 border-b border-yellow-700/40">
-          <p className="text-yellow-400 text-xs">⚠️ 動作確認用です。実際のデータは変更されません。</p>
-        </div>
-        <Row label="地震情報" description="東京都 M5.5 震度4 をリストと地図に追加">
-          <TestButton color="red" onClick={onTest.earthquake}>地震テスト</TestButton>
-        </Row>
-        <Row label="緊急地震速報" description="EEW バナーを10秒間表示">
-          <TestButton color="orange" onClick={onTest.eew}>EEW テスト</TestButton>
-        </Row>
-        <Row label="津波警報" description="津波注意報（相模湾）を15秒間表示">
-          <TestButton color="purple" onClick={onTest.tsunami}>津波テスト</TestButton>
-        </Row>
-        <Row label="HA アラート" description="Home Assistant 連携バナーを表示">
-          <TestButton color="blue" onClick={onTest.haAlert}>HA テスト</TestButton>
-        </Row>
-        <Row label="ブラウザ通知" description="テスト通知を即時送信（要通知許可）">
-          <TestButton color="green" onClick={onTest.notification}>通知テスト</TestButton>
-        </Row>
-      </Section>
-
       <Section title="表示設定">
         <Row label="最低表示震度" description="これ未満の地震はリストに表示しません">
           <div className="flex items-center gap-2">
@@ -261,6 +239,27 @@ export function SettingsTab({ settings, onUpdate, onTest }: Props) {
         </Row>
         <Row label="URL パラメータ起動" description="ブラウザでこの URL を開くとアラートを表示">
           <code className="text-xs text-secondary bg-panel px-2 py-1 rounded">?ha_alert=1</code>
+        </Row>
+      </Section>
+
+      <Section title="テスト機能">
+        <div className="px-4 py-2 bg-yellow-900/30 border-b border-yellow-700/40">
+          <p className="text-yellow-400 text-xs">⚠️ 動作確認用です。実際のデータは変更されません。</p>
+        </div>
+        <Row label="地震情報" description="東京都 M5.5 震度4 をリストと地図に追加">
+          <TestButton color="red" onClick={onTest.earthquake}>地震テスト</TestButton>
+        </Row>
+        <Row label="緊急地震速報" description="EEW バナーを10秒間表示">
+          <TestButton color="orange" onClick={onTest.eew}>EEW テスト</TestButton>
+        </Row>
+        <Row label="津波警報" description="津波注意報（相模湾）を15秒間表示">
+          <TestButton color="purple" onClick={onTest.tsunami}>津波テスト</TestButton>
+        </Row>
+        <Row label="HA アラート" description="Home Assistant 連携バナーを表示">
+          <TestButton color="blue" onClick={onTest.haAlert}>HA テスト</TestButton>
+        </Row>
+        <Row label="ブラウザ通知" description="テスト通知を即時送信（要通知許可）">
+          <TestButton color="green" onClick={onTest.notification}>通知テスト</TestButton>
         </Row>
       </Section>
 
