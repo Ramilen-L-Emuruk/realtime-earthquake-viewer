@@ -10,6 +10,7 @@ import { useEarthquakes } from './hooks/useEarthquakes'
 import { useWebhookAlert } from './hooks/useWebhookAlert'
 import { useSettings } from './hooks/useSettings'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
+import { useKyoshinDetection } from './hooks/useKyoshinDetection'
 import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude } from './utils/formatters'
 import { playAlertSound, unlockAudio, type AlertSoundType } from './utils/alertSound'
@@ -117,6 +118,7 @@ export function App() {
 
   // 強震モニタ（地図がリアルタイム表示のときのみ Yahoo データをポーリング）
   const kyoshin = useKyoshinRealtime(mapTab === 'realtime')
+  const kyoshinDetection = useKyoshinDetection(kyoshin.sites, kyoshin.indices)
 
   // 常時表示する地図の内容は mapTab（設定タブ中は直前のタブ）に応じて切り替える
   const mapMode: MapMode =
@@ -182,7 +184,7 @@ export function App() {
           {activeTab === 'realtime' && (
             <RealtimeTab
               eew={activeEEW}
-              kyoshinIndices={kyoshin.indices}
+              kyoshinDetection={kyoshinDetection}
             />
           )}
           {activeTab === 'tsunami' && <TsunamiTab tsunamis={tsunamis} />}

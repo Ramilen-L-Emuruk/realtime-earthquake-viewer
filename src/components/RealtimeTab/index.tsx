@@ -1,6 +1,7 @@
 // リアルタイムタブの右パネル。地図エリアは JapanMap が強震モニタ（観測点）と
 // 予報円を描画し、ここでは EEW 情報カード・説明・震度スケール凡例・注記を表示する。
 import type { EEWAlert } from '../../types/earthquake'
+import type { KyoshinDetection } from '../../hooks/useKyoshinDetection'
 import { formatDateTime } from '../../utils/formatters'
 import { getIntensityLabel } from '../../utils/intensity'
 import { eewAreas, eewMaxScale, eewSerial } from '../../utils/eew'
@@ -19,7 +20,6 @@ const SCALE_LEGEND = [
 ]
 
 // 強震モニタインデックス(0〜20, 計測震度 = index * 0.5 - 3.0)から震度ラベルへ変換。
-// 震度1以上に相当するインデックス7未満は null を返す。
 function kyoshinIndexToLabel(index: number): string | null {
   if (index >= 19) return '7'
   if (index >= 18) return '6強'
@@ -35,7 +35,7 @@ function kyoshinIndexToLabel(index: number): string | null {
 
 interface Props {
   eew: EEWAlert | null
-  kyoshinIndices: number[]
+  kyoshinDetection: KyoshinDetection
 }
 
 function EEWCard({ eew }: { eew: EEWAlert }) {
@@ -78,17 +78,11 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
   )
 }
 
-// 震度1相当(index 7)以上の観測点が2点以上あれば揺れとみなす
-const DETECT_THRESHOLD = 7
-const DETECT_MIN_COUNT = 2
-
-function KyoshinDetectionCard({ indices }: { indices: number[] }) {
-  const detected = indices.filter(i => i >= DETECT_THRESHOLD)
-  if (detected.length < DETECT_MIN_COUNT) return null
-  const maxIndex = Math.max(...detected)
-  const label = kyoshinIndexToLabel(maxIndex)
+function KyoshinDetectionCard({ detection }: { detection: KyoshinDetection }) {
+  if (!detection.detected) return null
+  const label = kyoshinIndexToLabel(detection.maxIndex)
   if (!label) return null
-  const color = kyoshinColor(maxIndex)
+  const color = kyoshinColor(detection.maxIndex)
   return (
     <div className="rounded-lg p-3 border border-border bg-card">
       <div className="flex items-center gap-2 mb-1">
@@ -107,11 +101,11 @@ function KyoshinDetectionCard({ indices }: { indices: number[] }) {
   )
 }
 
-export function RealtimeTab({ eew, kyoshinIndices }: Props) {
+export function RealtimeTab({ eew, kyoshinDetection }: Props) {
   return (
     <div className="p-3 space-y-3">
       {eew && <EEWCard eew={eew} />}
-      <KyoshinDetectionCard indices={kyoshinIndices} />
+      <KyoshinDetectionCard detection={kyoshinDetection} />
 
       <div>
         <h2 className="text-white font-bold text-sm mb-1">リアルタイム震度モニタ</h2>
