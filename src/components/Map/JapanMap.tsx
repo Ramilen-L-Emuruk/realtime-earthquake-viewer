@@ -101,6 +101,10 @@ const MAX_ZOOM = 8
 // 都道府県ごとの最大震度（県中心＋県塗りつぶし）に集約表示する。
 const PREF_AGGREGATE_MAX_ZOOM = 8
 
+// 震度マーカーの重なり順。Leaflet は「画面 y 座標 + zIndexOffset」で z を決めるため、
+// 緯度差(数百〜数千px)を上回る係数を掛け、最大震度が高いほど確実に前面へ出す。
+const INTENSITY_Z = 1000
+
 // 現在のズームレベルを親へ伝えるだけのコンポーネント。
 function ZoomWatcher({ onZoom }: { onZoom: (zoom: number) => void }) {
   const map = useMap()
@@ -486,7 +490,7 @@ export function JapanMap({
             key={`pref-mark-${p.name}`}
             position={p.label}
             icon={getIntensityIcon(p.scale, iconScale)}
-            zIndexOffset={p.scale}
+            zIndexOffset={p.scale * INTENSITY_Z}
           >
             <Popup>
               <div className="text-sm">
@@ -506,7 +510,7 @@ export function JapanMap({
             key={m.key}
             position={m.position}
             icon={getIntensityIcon(m.scale, iconScale)}
-            zIndexOffset={m.scale}
+            zIndexOffset={m.scale * INTENSITY_Z}
           >
             <Popup>
               <div className="text-sm">
