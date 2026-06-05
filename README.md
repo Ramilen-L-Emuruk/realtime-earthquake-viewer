@@ -3,22 +3,32 @@
 気象庁の地震情報・緊急地震速報・津波情報をリアルタイムに表示する PWA アプリです。  
 [kotoho7/scratch-realtime-earthquake-viewer-page](https://github.com/kotoho7/scratch-realtime-earthquake-viewer-page) を参考に React + TypeScript で構築しています。
 
+🌐 **公開ページ**: https://ramilen-l-emuruk.github.io/realtime-earthquake-viewer/
+
 ---
 
 ## 機能
 
 - **地震情報タブ**
-  - 過去30件の地震をカード表示（震度・震源地・M値・深さ・津波の有無）
-  - 日本地図に最新の震源地マーカーを表示（クリックで都道府県別震度サマリー）
+  - 過去の地震をカード表示（最大震度・震源地・M値・深さ・津波の有無・発表種別）
+  - 日本地図に **各観測点の震度を震度別の色付きマーカー＋震度ラベルで表示**（震源は×印）
+  - **カードをクリックすると、その地震の情報を地図に表示**（選択中のカードを強調）
+  - 地図は **震源＋全観測点が収まるよう自動ズーム**
+  - マーカー／震源クリックで地点名・震度などの詳細ポップアップを表示
   - P2PQuake WebSocket によるリアルタイム自動更新
 
 - **リアルタイムタブ**
-  - 防災科研・強震モニタ画像を毎秒更新表示
+  - 防災科研・強震モニタ画像を毎秒更新表示（読み込み中はローディング表示）
   - 震度カラースケール凡例
 
 - **津波情報タブ**
   - 大津波警報 / 津波警報 / 津波注意報をリアルタイム表示
   - 到達予想時刻・予想高さを表示
+
+- **設定タブ**
+  - 最低表示震度・通知最低震度・リスト表示件数の設定
+  - ブラウザ通知の許可・各種テスト送信
+  - Home Assistant Webhook サーバー URL の設定（任意）
 
 - **緊急地震速報 (EEW)**
   - 警報 / 予報をヘッダー下にアニメーションバナーで表示
@@ -28,7 +38,7 @@
   - ホーム画面へのインストール（Android / iOS / デスクトップ）
   - Service Worker によるオフラインキャッシュ
 
-- **Home Assistant 連携**
+- **Home Assistant 連携**（任意）
   - Webhook サーバー経由のプッシュ通知（SSE）
   - URL パラメータによるアラート起動（キオスクモード対応）
 
@@ -45,6 +55,7 @@
 | PWA | vite-plugin-pwa + Workbox |
 | データ | [P2PQuake API v2](https://api.p2pquake.net/v2/docs/) |
 | リアルタイム監視 | [防災科研 強震モニタ](https://www.kmoni.bosai.go.jp/) |
+| デプロイ | GitHub Pages + GitHub Actions |
 
 ---
 
@@ -70,11 +81,47 @@ npm run build
 npm run preview
 ```
 
+### npm スクリプト
+
+| スクリプト | 説明 |
+|---|---|
+| `npm run dev` | 開発サーバー起動 |
+| `npm run build` | 型チェック + 本番ビルド（`dist/`） |
+| `npm run preview` | 本番ビルドのプレビュー |
+| `npm run server` | Home Assistant Webhook サーバー起動（任意機能） |
+
+> 地図に表示する観測点座標テーブル（`public/data/station-coords.json`）は
+> `node scripts/build-station-coords.mjs` で再生成できます（通常は更新不要）。
+
 ---
 
-## Home Assistant 連携
+## GitHub Pages へのデプロイ
 
-地震発生時に Home Assistant から通知を受け取り、ビューアーを自動表示に切り替える機能です。
+`main` ブランチへの push で GitHub Actions が自動的にビルドして GitHub Pages に公開します（`.github/workflows/deploy.yml`）。
+
+### 初回のみ必要な設定
+
+1. GitHub リポジトリの **Settings → Pages → Build and deployment → Source** を **「GitHub Actions」** に設定する
+2. `main` に push すると自動でビルド & デプロイされる
+
+### ベースパスについて
+
+GitHub Pages のプロジェクトサイトはサブパス配信（`/<リポジトリ名>/`）になるため、`vite.config.ts` の `base` をリポジトリ名に合わせています。
+
+```ts
+// vite.config.ts
+const base = '/realtime-earthquake-viewer/'
+```
+
+- リポジトリ名を変更する場合は、この `base` も合わせて変更してください。
+- 独自ドメイン等でルート配信する場合は `base` を `'/'` にしてください。
+
+---
+
+## Home Assistant 連携（任意）
+
+地震発生時に Home Assistant から通知を受け取り、ビューアーを自動表示に切り替える機能です。  
+**既定では無効**で、設定タブで Webhook サーバー URL を指定した場合のみ有効になります（静的ホスティング時にローカルサーバーへ無駄に接続しないため）。
 
 ### 方法1: Webhook サーバー（リアルタイムプッシュ）
 
@@ -84,6 +131,8 @@ npm run preview
 npm run server
 # → http://localhost:3001 で待機
 ```
+
+その後、アプリの **設定タブ** で「Webhook サーバー URL」に `http://localhost:3001` を設定します。
 
 **Home Assistant 設定例**
 
@@ -148,6 +197,8 @@ http://localhost:5173/?ha_alert=1&message=地震発生
 PORT=3002 npm run server
 ```
 
+> ⚠️ Webhook サーバーは別途起動が必要な Node サーバーのため、GitHub Pages 等の静的ホスティングでは方法1は利用できません（方法2の URL パラメータは利用可）。
+
 ---
 
 ## データソース
@@ -157,6 +208,7 @@ PORT=3002 npm run server
 | 地震情報・津波情報 | [P2PQuake API v2](https://api.p2pquake.net/v2/docs/) | 無料・認証不要。WebSocket + REST |
 | 緊急地震速報 | P2PQuake API v2 (code: 556) | リアルタイム WebSocket |
 | リアルタイム震度 | [防災科研 強震モニタ](https://www.kmoni.bosai.go.jp/) | 1秒更新の観測画像 |
+| 観測点座標 | 気象庁 震度観測点一覧（[iku55 氏による JSON 化](https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1)） | 地図に各地点をプロットするための座標テーブル |
 | 地図タイル | [CARTO Dark Matter](https://carto.com/attributions) | © OpenStreetMap contributors |
 
 ### P2PQuake イベントコード
@@ -181,41 +233,55 @@ PORT=3002 npm run server
 | 60 | 6強 |
 | 70 | 7 |
 
+> P2PQuake の観測点データには座標が含まれないため、`pref`（都道府県）+ `addr`（観測点名／細分区域名）を
+> キーに座標テーブルを引き当てて地図にプロットしています。
+
 ---
 
 ## プロジェクト構成
 
 ```
 realtime-earthquake-viewer/
+├── .github/
+│   └── workflows/
+│       └── deploy.yml              # GitHub Pages 自動デプロイ
 ├── public/
-│   └── icons/
-│       └── icon.svg            # アプリアイコン
+│   ├── icons/                      # アプリアイコン
+│   └── data/
+│       └── station-coords.json     # 震度観測点・細分区域の座標テーブル（生成物）
+├── scripts/
+│   └── build-station-coords.mjs    # 座標テーブル生成スクリプト
 ├── server/
-│   └── webhook.js              # HA Webhook サーバー（標準ライブラリのみ）
+│   └── webhook.js                  # HA Webhook サーバー（標準ライブラリのみ）
 ├── src/
 │   ├── components/
-│   │   ├── ConnectionStatus.tsx # WebSocket 接続状態インジケーター
-│   │   ├── EEWBanner.tsx        # 緊急地震速報バナー
-│   │   ├── Header.tsx           # アプリヘッダー
-│   │   ├── TabBar.tsx           # タブナビゲーション
-│   │   ├── EarthquakeTab/       # 地震情報タブ
+│   │   ├── ConnectionStatus.tsx    # WebSocket 接続状態インジケーター
+│   │   ├── EEWBanner.tsx           # 緊急地震速報バナー
+│   │   ├── Header.tsx              # アプリヘッダー
+│   │   ├── LastUpdateBadge.tsx     # 最終更新時刻バッジ
+│   │   ├── TabBar.tsx              # タブナビゲーション
+│   │   ├── EarthquakeTab/          # 地震情報タブ（カード一覧・選択）
 │   │   ├── Map/
-│   │   │   └── JapanMap.tsx     # Leaflet 日本地図
-│   │   ├── RealtimeTab/         # 強震モニタ表示タブ
-│   │   └── TsunamiTab/          # 津波情報タブ
+│   │   │   └── JapanMap.tsx        # Leaflet 日本地図（震度マーカー・自動ズーム）
+│   │   ├── RealtimeTab/            # 強震モニタ表示タブ
+│   │   ├── SettingsTab/            # 設定タブ
+│   │   └── TsunamiTab/             # 津波情報タブ
 │   ├── hooks/
-│   │   ├── useEarthquakes.ts    # P2PQuake WS + REST 状態管理
-│   │   └── useWebhookAlert.ts   # HA アラート状態管理
+│   │   ├── useEarthquakes.ts       # P2PQuake WS + REST 状態管理
+│   │   ├── useSettings.ts          # アプリ設定（localStorage 永続化）
+│   │   ├── useStationCoords.ts     # 観測点座標テーブルの読み込み
+│   │   └── useWebhookAlert.ts      # HA アラート状態管理
 │   ├── services/
-│   │   └── p2pquake.ts          # P2PQuake API クライアント（自動再接続）
+│   │   └── p2pquake.ts             # P2PQuake API クライアント（自動再接続）
 │   ├── types/
-│   │   └── earthquake.ts        # P2PQuake API 型定義
+│   │   └── earthquake.ts           # P2PQuake API 型定義
 │   └── utils/
-│       ├── intensity.ts         # 震度スケール色・ラベル
-│       └── formatters.ts        # 日時・数値フォーマッター
+│       ├── intensity.ts            # 震度スケール色・ラベル
+│       ├── stationCoords.ts        # 地点名→座標の引き当て
+│       └── formatters.ts           # 日時・数値フォーマッター
 ├── index.html
 ├── package.json
-├── vite.config.ts               # Vite + PWA 設定
+├── vite.config.ts                  # Vite + PWA 設定（base 設定含む）
 └── tailwind.config.js
 ```
 
