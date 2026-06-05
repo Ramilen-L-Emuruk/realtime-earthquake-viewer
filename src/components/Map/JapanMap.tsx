@@ -150,6 +150,18 @@ function FitToEEW({ eew, psWave }: { eew: EEWAlert | null; psWave: PsWaveCircle[
   return null
 }
 
+// リアルタイムタブを開いた時点で EEW が無ければ日本全体を表示する。
+// （地図は全タブ共通のため、他タブで寄った表示をリセットする）
+function FitJapanOnEnter({ hasEew }: { hasEew: boolean }) {
+  const map = useMap()
+  useEffect(() => {
+    if (!hasEew) map.setView(JAPAN_CENTER, JAPAN_ZOOM)
+    // マウント時（タブ入室時）のみ実行
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  return null
+}
+
 export type MapMode = 'quake' | 'tsunami' | 'kyoshin'
 
 interface Props {
@@ -266,6 +278,9 @@ export function JapanMap({
       {mode === 'kyoshin' && (
         <KyoshinPoints sites={kyoshinSites} indices={kyoshinIndices} uiScale={uiScale} />
       )}
+
+      {/* リアルタイムタブ入室時: EEW が無ければ日本全体を表示 */}
+      {mode === 'kyoshin' && <FitJapanOnEnter hasEew={!!eew} />}
 
       {/* EEW 発報時: 震源中心→予報円に合わせてズームアウト */}
       {mode === 'kyoshin' && <FitToEEW eew={eew} psWave={kyoshinPsWave} />}
