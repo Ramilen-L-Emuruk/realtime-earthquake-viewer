@@ -16,10 +16,13 @@ import { formatMagnitude } from './utils/formatters'
 import { playAlertSound, unlockAudio, type AlertSoundType } from './utils/alertSound'
 import type { P2PQuakeEvent } from './types/earthquake'
 
+// 情報更新・操作がこの時間ないと、デフォルトタブへ自動的に戻す
+const IDLE_REVERT_MS = 3 * 60 * 1000
+
 export function App() {
-  const [activeTab, setActiveTab] = useState<TabId>('earthquake')
-  const [selectedQuakeId, setSelectedQuakeId] = useState<string | null>(null)
   const { settings, updateSetting } = useSettings()
+  const [activeTab, setActiveTab] = useState<TabId>(settings.defaultTab)
+  const [selectedQuakeId, setSelectedQuakeId] = useState<string | null>(null)
 
   // 受信イベントの種別ごとに通知音を鳴らす（同種の連続発火はバースト抑制）
   const lastSoundAtRef = useRef<Record<AlertSoundType, number>>({
@@ -110,11 +113,38 @@ export function App() {
   }
 
   // 設定タブ表示中は、地図には直前に表示していたタブの内容をそのまま残す。
-  const [lastContentTab, setLastContentTab] = useState<TabId>('earthquake')
+  const [lastContentTab, setLastContentTab] = useState<TabId>(settings.defaultTab)
   useEffect(() => {
     if (activeTab !== 'settings') setLastContentTab(activeTab)
   }, [activeTab])
   const mapTab = activeTab === 'settings' ? lastContentTab : activeTab
+
+  // 津波発表中フラグ（解除済みでない津波情報があるか）
+  const tsunamiActive = tsunamis.some(t => !t.cancelled)
+
+  // アイドル復帰で戻すデフォルトタブ。津波優先トグル ON かつ津波発表中なら
+  // 津波情報、それ以外は設定のデフォルトタブ。タイマー発火時に最新値を参照する
+  // ため ref に保持する。
+  const defaultTabRef = useRef<TabId>(settings.defaultTab)
+  defaultTabRef.current =
+    settings.tsunamiPriorityDefault && tsunamiActive ? 'tsunami' : settings.defaultTab
+
+  // 一定時間 情報更新（activeTab の自動切替・P2P 更新）もユーザー操作もなければ
+  // デフォルトタブへ戻す。activeTab / lastUpdate の変化、および操作のたびにリセット。
+  useEffect(() => {
+    let timer = window.setTimeout(() => setActiveTab(defaultTabRef.current), IDLE_REVERT_MS)
+    const reset = () => {
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => setActiveTab(defaultTabRef.current), IDLE_REVERT_MS)
+    }
+    window.addEventListener('pointerdown', reset)
+    window.addEventListener('keydown', reset)
+    return () => {
+      window.clearTimeout(timer)
+      window.removeEventListener('pointerdown', reset)
+      window.removeEventListener('keydown', reset)
+    }
+  }, [activeTab, lastUpdate])
 
   // 強震モニタ（常時ポーリング: タブ非表示中も揺れ検知を継続する）
   const kyoshin = useKyoshinRealtime(true)
@@ -227,7 +257,7 @@ export function App() {
         <IconNav
           activeTab={activeTab}
           onTabChange={handleTabChange}
-          tsunamiActive={tsunamis.some(t => !t.cancelled)}
+          tsunamiActive={tsunamiActive}
         />
       </div>
     </div>

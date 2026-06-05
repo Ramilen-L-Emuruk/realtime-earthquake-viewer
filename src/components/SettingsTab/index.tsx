@@ -204,6 +204,25 @@ export function SettingsTab({ settings, onUpdate, onTest }: Props) {
         </Row>
       </Section>
 
+      <Section title="デフォルト表示">
+        <Row label="デフォルトタブ" description="操作や情報更新が一定時間ないとこのタブに戻ります">
+          <select
+            value={settings.defaultTab}
+            onChange={e => onUpdate('defaultTab', e.target.value as AppSettings['defaultTab'])}
+            className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+          >
+            <option value="earthquake">地震情報</option>
+            <option value="realtime">リアルタイム</option>
+          </select>
+        </Row>
+        <Row label="津波発表中は津波情報を優先" description="津波情報の発表中はデフォルトタブを津波情報にします">
+          <Toggle
+            checked={settings.tsunamiPriorityDefault}
+            onChange={v => onUpdate('tsunamiPriorityDefault', v)}
+          />
+        </Row>
+      </Section>
+
       <Section title="通知設定">
         <Row label="通知音" description="地震・緊急地震速報・津波の受信時に音を鳴らします">
           <Toggle
