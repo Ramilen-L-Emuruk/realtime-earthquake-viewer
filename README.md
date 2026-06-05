@@ -35,7 +35,6 @@
   - 通知音・ブラウザ通知のオン/オフ、最低表示震度・通知最低震度・リスト表示件数・**UI 倍率**の設定
   - **デフォルトタブ**（地震情報／リアルタイム）・**津波発表中の津波情報優先**・**自動復帰までの時間**の設定
   - ブラウザ通知の許可・各種テスト送信
-  - Home Assistant Webhook サーバー URL の設定（任意）
 
 - **通知音**
   - 地震情報・緊急地震速報・津波情報の受信時に、種別ごとの音を再生（Web Audio API で生成）
@@ -54,9 +53,10 @@
   - ホーム画面へのインストール（Android / iOS / デスクトップ）
   - Service Worker によるオフラインキャッシュ
 
-- **Home Assistant 連携**（任意）
-  - Webhook サーバー経由のプッシュ通知（SSE）
-  - URL パラメータによるアラート起動（キオスクモード対応）
+- **ウィンドウタイトル連携**
+  - 情報更新時（地震・緊急地震速報・津波の受信、揺れ検知）にウィンドウタイトルを変更
+  - デフォルトタブへ復帰するタイミングで平常時タイトルに戻る
+  - AutoHotKey 等の外部ツールがウィンドウタイトルを監視してイベントを発火する用途に利用可能
 
 ---
 
@@ -104,7 +104,6 @@ npm run preview
 | `npm run dev` | 開発サーバー起動 |
 | `npm run build` | 型チェック + 本番ビルド（`dist/`） |
 | `npm run preview` | 本番ビルドのプレビュー |
-| `npm run server` | Home Assistant Webhook サーバー起動（任意機能） |
 
 > 地図表示用のデータテーブルは以下のスクリプトで再生成できます（通常は更新不要）。
 > - 観測点座標（`public/data/station-coords.json`）: `node scripts/build-station-coords.mjs`
@@ -135,86 +134,36 @@ const base = '/realtime-earthquake-viewer/'
 
 ---
 
-## Home Assistant 連携（任意）
+## ウィンドウタイトル連携（AutoHotKey 等）
 
-地震発生時に Home Assistant から通知を受け取り、ビューアーを自動表示に切り替える機能です。  
-**既定では無効**で、設定タブで Webhook サーバー URL を指定した場合のみ有効になります（静的ホスティング時にローカルサーバーへ無駄に接続しないため）。
+情報更新があるとウィンドウ（ブラウザ）のタイトルが変化するため、AutoHotKey などの外部ツールからタイトルを監視してイベントを発火できます。
 
-### 方法1: Webhook サーバー（リアルタイムプッシュ）
-
-**サーバー起動**
-
-```bash
-npm run server
-# → http://localhost:3001 で待機
-```
-
-その後、アプリの **設定タブ** で「Webhook サーバー URL」に `http://localhost:3001` を設定します。
-
-**Home Assistant 設定例**
-
-`configuration.yaml` に以下を追加し、HA を再起動します。
-
-```yaml
-rest_command:
-  earthquake_alert:
-    url: "http://<このPCのIPアドレス>:3001/webhook"
-    method: POST
-    content_type: application/json
-    payload: '{"type": "earthquake_alert", "message": "地震が発生しました"}'
-```
-
-**オートメーション例**
-
-```yaml
-automation:
-  - alias: "地震アラートをビューアーに通知"
-    trigger:
-      - platform: state
-        entity_id: sensor.earthquake_alert  # HA の地震センサー
-        to: "on"
-    action:
-      - service: rest_command.earthquake_alert
-```
-
-**アラートを解除する場合**
-
-```bash
-curl -X POST http://localhost:3001/webhook \
-  -H "Content-Type: application/json" \
-  -d '{"type": "dismiss"}'
-```
-
-### 方法2: URL パラメータ（Kiosk モード）
-
-Fully Kiosk Browser や HA ダッシュボードの「URL を開く」アクションで使用できます。
-
-```
-http://localhost:5173/?ha_alert=1&message=地震発生
-```
-
-| パラメータ | 説明 |
+| 状態 | ウィンドウタイトル |
 |---|---|
-| `ha_alert=1` | アラートバナーを表示 |
-| `message=テキスト` | バナーに表示するメッセージ（任意） |
+| 平常時 | `リアルタイム地震ビューアー` |
+| 地震情報の受信 | `🔴 地震情報 <震源> 最大震度<N>` |
+| 緊急地震速報の発報 | `🚨 緊急地震速報 <震源> 最大震度<N>予想` |
+| 津波情報の発表 | `🌊 津波情報 発表中` |
+| 揺れ検知 | `📈 揺れ検知` |
 
-アラートは **5分後に自動消去** されます。
+- タイトルは**デフォルトタブへ復帰するタイミング**（情報更新・操作が一定時間ない＝設定の「自動復帰までの時間」経過時）で平常時に戻ります。
+- 「自動復帰までの時間」を「無効」にしている場合は、次の情報更新まで変化後のタイトルが維持されます。
 
-### Webhook サーバーのエンドポイント
+**AutoHotKey の例**（緊急地震速報の検知）
 
-| エンドポイント | メソッド | 説明 |
-|---|---|---|
-| `/webhook` | POST | HA からアラートを受信 |
-| `/sse` | GET | PWA が SSE で接続するエンドポイント |
-| `/status` | GET | サーバーステータス確認 |
+```autohotkey
+SetTimer, CheckTitle, 1000
+return
 
-**ポート変更**
-
-```bash
-PORT=3002 npm run server
+CheckTitle:
+    if WinExist("🚨 緊急地震速報")
+    {
+        ; ここに発火したい処理を書く
+    }
+return
 ```
 
-> ⚠️ Webhook サーバーは別途起動が必要な Node サーバーのため、GitHub Pages 等の静的ホスティングでは方法1は利用できません（方法2の URL パラメータは利用可）。
+> ブラウザのタブタイトルがウィンドウタイトルに反映されるよう、対象タブを開いた状態（またはキオスク／アプリモード）で使用してください。
 
 ---
 
@@ -271,10 +220,8 @@ realtime-earthquake-viewer/
 ├── scripts/
 │   ├── build-station-coords.mjs    # 観測点座標テーブル生成スクリプト
 │   └── build-tsunami-zones.mjs     # 津波予報区 海岸線データ生成スクリプト
-├── server/
-│   └── webhook.js                  # HA Webhook サーバー（標準ライブラリのみ）
 ├── src/
-│   ├── App.tsx                     # 地図常時表示 + タブ別パネル + 通知音/自動タブ切替
+│   ├── App.tsx                     # 地図常時表示 + タブ別パネル + 通知音/自動タブ切替/ウィンドウタイトル連携
 │   ├── components/
 │   │   ├── IconNav.tsx             # アイコンボタンによるナビゲーション
 │   │   ├── MapUpdateTime.tsx       # 地図左上の更新時刻オーバーレイ
@@ -290,8 +237,7 @@ realtime-earthquake-viewer/
 │   │   ├── useKyoshinRealtime.ts   # Yahoo リアルタイム震度のポーリング
 │   │   ├── useSettings.ts          # アプリ設定（localStorage 永続化）
 │   │   ├── useStationCoords.ts     # 観測点座標テーブルの読み込み
-│   │   ├── useTsunamiZones.ts      # 津波予報区 海岸線データの読み込み
-│   │   └── useWebhookAlert.ts      # HA アラート状態管理
+│   │   └── useTsunamiZones.ts      # 津波予報区 海岸線データの読み込み
 │   ├── services/
 │   │   ├── kyoshin.ts              # Yahoo リアルタイム震度の取得・デコード
 │   │   └── p2pquake.ts             # P2PQuake API クライアント（自動再接続）
