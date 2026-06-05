@@ -37,4 +37,5 @@ verify-*.jpg
 .idea/
 
 # Claude directories
+Claude.md
 .claude/
