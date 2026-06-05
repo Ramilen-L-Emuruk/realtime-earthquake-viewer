@@ -5,12 +5,12 @@ import { EEWBanner } from './components/EEWBanner'
 import { JapanMap, type MapMode } from './components/Map/JapanMap'
 import { EarthquakeTab } from './components/EarthquakeTab'
 import { RealtimeTab } from './components/RealtimeTab'
-import { KmoniMonitor } from './components/RealtimeTab/KmoniMonitor'
 import { TsunamiTab } from './components/TsunamiTab'
 import { SettingsTab } from './components/SettingsTab'
 import { useEarthquakes } from './hooks/useEarthquakes'
 import { useWebhookAlert } from './hooks/useWebhookAlert'
 import { useSettings } from './hooks/useSettings'
+import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
 import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude } from './utils/formatters'
 import { playAlertSound, unlockAudio, type AlertSoundType } from './utils/alertSound'
@@ -106,8 +106,12 @@ export function App() {
     if (tab === 'earthquake' && haAlertActive) dismissHaAlert()
   }
 
+  // 強震モニタ（リアルタイムタブ表示中のみ Yahoo データをポーリング）
+  const kyoshin = useKyoshinRealtime(activeTab === 'realtime')
+
   // 常時表示する地図の内容はタブに応じて切り替える
-  const mapMode: MapMode = activeTab === 'tsunami' ? 'tsunami' : 'quake'
+  const mapMode: MapMode =
+    activeTab === 'tsunami' ? 'tsunami' : activeTab === 'realtime' ? 'kyoshin' : 'quake'
   const mapQuake = activeTab === 'earthquake' ? selectedQuake : latest
 
   return (
@@ -137,13 +141,14 @@ export function App() {
       <div className="flex-1 overflow-hidden flex flex-col lg:flex-row">
         {/* 常時表示の地図エリア（タブに応じて内容を切替）。モバイルでは高さ可変。 */}
         <div className="relative flex-1 min-h-0">
-          <JapanMap mode={mapMode} quake={mapQuake} tsunamis={tsunamis} uiScale={settings.uiScale} />
-          {/* リアルタイムタブでは強震モニタ画像を地図に重ねて表示 */}
-          {activeTab === 'realtime' && (
-            <div className="absolute inset-0 z-[1000]">
-              <KmoniMonitor />
-            </div>
-          )}
+          <JapanMap
+            mode={mapMode}
+            quake={mapQuake}
+            tsunamis={tsunamis}
+            uiScale={settings.uiScale}
+            kyoshinSites={kyoshin.sites}
+            kyoshinIndices={kyoshin.indices}
+          />
         </div>
 
         {/* 右パネル（タブに応じて内容を切替） */}
