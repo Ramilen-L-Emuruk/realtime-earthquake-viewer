@@ -157,19 +157,22 @@ export function App() {
       timer = window.setTimeout(revert, ms)
     }
     // 操作（クリック・キー入力・ホイール/タッチ/スクロール）のたびにリセット。
-    // scroll はバブリングしないため capture で拾う（地図ズーム・カード一覧のスクロール対応）。
-    const opts = { passive: true } as const
+    // すべて capture 段階で購読する。Leaflet は地図のホイールズーム時に
+    // stopPropagation でイベントを止めるため、バブリングでは window まで届かない。
+    // capture なら Leaflet が止める前に window で先に拾える。scroll は非バブリングのため
+    // もともと capture が必要。
+    const opts = { passive: true, capture: true } as const
     window.addEventListener('pointerdown', reset, opts)
     window.addEventListener('keydown', reset, opts)
     window.addEventListener('wheel', reset, opts)
     window.addEventListener('touchmove', reset, opts)
-    window.addEventListener('scroll', reset, true)
+    window.addEventListener('scroll', reset, opts)
     return () => {
       window.clearTimeout(timer)
-      window.removeEventListener('pointerdown', reset)
-      window.removeEventListener('keydown', reset)
-      window.removeEventListener('wheel', reset)
-      window.removeEventListener('touchmove', reset)
+      window.removeEventListener('pointerdown', reset, true)
+      window.removeEventListener('keydown', reset, true)
+      window.removeEventListener('wheel', reset, true)
+      window.removeEventListener('touchmove', reset, true)
       window.removeEventListener('scroll', reset, true)
     }
   }, [activeTab, lastUpdate, settings.idleRevertSec])
