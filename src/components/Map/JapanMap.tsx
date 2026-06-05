@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useMemo, useRef } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import L from 'leaflet'
-import { MapContainer, Marker, Polyline, Circle, CircleMarker, Popup, Tooltip, useMap } from 'react-leaflet'
+import { MapContainer, Marker, Polyline, Polygon, Circle, CircleMarker, Popup, Tooltip, Pane, useMap, useMapEvents } from 'react-leaflet'
 import type { JMAQuake, JMATsunami, TsunamiGrade, EEWAlert } from '../../types/earthquake'
 import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
@@ -8,6 +8,7 @@ import { eewMaxScale } from '../../utils/eew'
 import { useStationCoords } from '../../hooks/useStationCoords'
 import { lookupPointCoords, type LatLng } from '../../utils/stationCoords'
 import { useTsunamiZones } from '../../hooks/useTsunamiZones'
+import { usePrefectures } from '../../hooks/usePrefectures'
 import { BaseMap } from './BaseMap'
 import { KyoshinPoints } from './KyoshinPoints'
 import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
@@ -90,7 +91,19 @@ const JAPAN_CENTER: [number, number] = [36.5, 137.5]
 const JAPAN_ZOOM = 5
 // 自動ズームの上限（地方単位が収まる程度）
 const MAX_ZOOM = 9
+// このズーム未満（中間より引き）では、地震モードで観測点ごとではなく
+// 都道府県ごとの最大震度（県中心＋県塗りつぶし）に集約表示する。
+const PREF_AGGREGATE_MAX_ZOOM = 8
 
+// 現在のズームレベルを親へ伝えるだけのコンポーネント。
+function ZoomWatcher({ onZoom }: { onZoom: (zoom: number) => void }) {
+  const map = useMap()
+  useEffect(() => {
+    onZoom(map.getZoom())
+  }, [map, onZoom])
+  useMapEvents({ zoomend: () => onZoom(map.getZoom()) })
+  return null
+}
 
 // 与えられた座標群に地図をフィットさせる。signature が変わったときのみ実行する。
 function FitToBounds({ signature, positions }: { signature: string; positions: LatLng[] }) {
@@ -219,6 +232,8 @@ export function JapanMap({
 }: Props) {
   const stationCoords = useStationCoords()
   const tsunamiZones = useTsunamiZones()
+  const prefectures = usePrefectures()
+  const [zoom, setZoom] = useState(JAPAN_ZOOM)
 
   const hasEpicenter =
     quake &&
@@ -252,6 +267,21 @@ export function JapanMap({
     })
     return markers.sort((a, b) => a.scale - b.scale)
   }, [mode, quake, stationCoords])
+
+  // 中間より引きのときは観測点ごとではなく都道府県ごとの最大震度に集約する。
+  const aggregateByPref = mode === 'quake' && !!quake && zoom < PREF_AGGREGATE_MAX_ZOOM
+
+  // 都道府県ごとの最大震度を境界形状（塗りつぶし）＋県中心マーカーとして引き当てる。
+  const prefAggregates = useMemo(() => {
+    if (!aggregateByPref || !prefectures) return []
+    const list: { name: string; scale: number; rings: LatLng[][]; label: LatLng }[] = []
+    for (const [name, scale] of prefIntensities) {
+      const shape = prefectures[name]
+      if (shape) list.push({ name, scale, rings: shape.rings, label: shape.label })
+    }
+    // 弱い震度を先に描画し、強い震度を前面に重ねる
+    return list.sort((a, b) => a.scale - b.scale)
+  }, [aggregateByPref, prefectures, prefIntensities])
 
   // 津波: 進行中の警報・注意報を区域名→最大等級にまとめ、海岸線を引き当てる
   const tsunamiLines = useMemo<TsunamiLine[]>(() => {
@@ -305,6 +335,8 @@ export function JapanMap({
       zoomControl={false}
       preferCanvas
     >
+      <ZoomWatcher onZoom={setZoom} />
+
       {/* 行政区域ベースマップ（タイル不使用・自前描画）。
           リアルタイム表示は観測点ドットで埋もれるため引きの地方ラベルは出さない。 */}
       <BaseMap suppressRegionLabels={mode === 'kyoshin'} />
@@ -411,8 +443,47 @@ export function JapanMap({
           )),
         )}
 
-      {/* 各地点の震度マーカー（震度ごとに色分け・震度を表記） */}
-      {mode === 'quake' &&
+      {/* 中間より引き: 都道府県ごとの最大震度を県塗りつぶし＋県中心マーカーで表示。
+          塗りはラベル(basemap-labels z270)より背面の専用ペイン(z260)に置く。 */}
+      {aggregateByPref && (
+        <Pane name="quake-pref-fill" style={{ zIndex: 260 }}>
+          {prefAggregates.map((p) =>
+            p.rings.map((ring, i) => (
+              <Polygon
+                key={`pref-fill-${p.name}-${i}`}
+                positions={ring}
+                pathOptions={{
+                  color: getIntensityColor(p.scale),
+                  weight: 1,
+                  fillColor: getIntensityColor(p.scale),
+                  fillOpacity: 0.5,
+                }}
+              />
+            )),
+          )}
+        </Pane>
+      )}
+      {aggregateByPref &&
+        prefAggregates.map((p) => (
+          <Marker
+            key={`pref-mark-${p.name}`}
+            position={p.label}
+            icon={getIntensityIcon(p.scale, uiScale)}
+            zIndexOffset={p.scale}
+          >
+            <Popup>
+              <div className="text-sm">
+                <div className="font-bold">{p.name}</div>
+                <div className="text-gray-600 text-xs">
+                  最大震度 {getIntensityLabel(p.scale)}
+                </div>
+              </div>
+            </Popup>
+          </Marker>
+        ))}
+
+      {/* 各地点の震度マーカー（震度ごとに色分け・震度を表記。寄りのときのみ） */}
+      {mode === 'quake' && !aggregateByPref &&
         intensityMarkers.map((m) => (
           <Marker
             key={m.key}
