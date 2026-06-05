@@ -34,10 +34,18 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
   const applyRef = useRef<() => void>()
 
   useEffect(() => {
-    // タイル(z=200)とデータ描画(overlayPane z=400)の中間に専用ペインを用意
+    // ペイン構成（いずれも overlayPane z=400 より下）:
+    //   basemap(250)        : 陸地塗り・県境
+    //   quake-pref-fill(260): 地震モードの県別震度塗り（JapanMap が使用）
+    //   basemap-labels(270) : 地方/県/都市ラベル（塗りより前面）
     if (!map.getPane('basemap')) {
       const pane = map.createPane('basemap')
       pane.style.zIndex = '250'
+      pane.style.pointerEvents = 'none'
+    }
+    if (!map.getPane('basemap-labels')) {
+      const pane = map.createPane('basemap-labels')
+      pane.style.zIndex = '270'
       pane.style.pointerEvents = 'none'
     }
     const renderer = L.canvas({ pane: 'basemap', padding: 0.5 })
@@ -49,7 +57,7 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
     // 地方ラベル（引きの画）。県境データに依存しないため先に用意する。
     for (const region of REGIONS) {
       L.marker([region.lat, region.lng], {
-        pane: 'basemap',
+        pane: 'basemap-labels',
         interactive: false,
         keyboard: false,
         icon: L.divIcon({ className: 'base-region-label', html: region.name }),
@@ -81,7 +89,7 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
             }).addTo(shapes)
           }
           L.marker(shape.label, {
-            pane: 'basemap',
+            pane: 'basemap-labels',
             interactive: false,
             keyboard: false,
             icon: L.divIcon({ className: 'base-pref-label', html: name }),
@@ -91,7 +99,7 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
         // 主要都市（県庁所在地）ラベル
         for (const city of PREFECTURE_CAPITALS) {
           L.marker([city.lat, city.lng], {
-            pane: 'basemap',
+            pane: 'basemap-labels',
             interactive: false,
             keyboard: false,
             icon: L.divIcon({ className: 'base-city-label', html: city.name }),
