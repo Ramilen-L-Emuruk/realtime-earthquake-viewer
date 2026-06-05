@@ -87,6 +87,8 @@ interface TsunamiLine {
 
 const JAPAN_CENTER: [number, number] = [36.5, 137.5]
 const JAPAN_ZOOM = 5
+// 自動ズームの上限（地方単位が収まる程度）
+const MAX_ZOOM = 9
 
 const CARTO_DARK_URL =
   'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
@@ -104,12 +106,12 @@ function FitToBounds({ signature, positions }: { signature: string; positions: L
     lastFitRef.current = signature
 
     if (positions.length === 1) {
-      map.flyTo(positions[0], 8, { duration: 1.0 })
+      map.flyTo(positions[0], MAX_ZOOM, { duration: 1.0 })
       return
     }
     map.flyToBounds(L.latLngBounds(positions), {
       padding: [48, 48],
-      maxZoom: 9,
+      maxZoom: MAX_ZOOM,
       duration: 1.0,
     })
   }, [signature, positions, map])
@@ -133,7 +135,7 @@ function FitToEEW({ eew, psWave }: { eew: EEWAlert | null; psWave: PsWaveCircle[
     if (latitude <= -200 || longitude <= -200) return
     if (lastEewIdRef.current === eew.id) return
     lastEewIdRef.current = eew.id
-    map.flyTo([latitude, longitude], 7, { duration: 0.8 })
+    map.flyTo([latitude, longitude], MAX_ZOOM, { duration: 0.8 })
   }, [eew, map])
 
   // 予報円の成長に追従してズームアウト（表示に収まらなくなった時のみ）
@@ -145,7 +147,7 @@ function FitToEEW({ eew, psWave }: { eew: EEWAlert | null; psWave: PsWaveCircle[
       bounds = bounds ? bounds.extend(b) : b
     }
     if (bounds && !map.getBounds().contains(bounds)) {
-      map.flyToBounds(bounds, { padding: [60, 60], duration: 0.8 })
+      map.flyToBounds(bounds, { padding: [60, 60], maxZoom: MAX_ZOOM, duration: 0.8 })
     }
   }, [psWave, map])
 
@@ -169,12 +171,12 @@ function FitToDetection({ points }: { points: DetectedPoint[] }) {
     fittedRef.current = true
 
     if (points.length === 1) {
-      map.flyTo([points[0].lat, points[0].lng], 8, { duration: 1.0 })
+      map.flyTo([points[0].lat, points[0].lng], MAX_ZOOM, { duration: 1.0 })
       return
     }
     map.flyToBounds(
       L.latLngBounds(points.map(p => [p.lat, p.lng] as [number, number])),
-      { padding: [60, 60], maxZoom: 9, duration: 1.0 },
+      { padding: [60, 60], maxZoom: MAX_ZOOM, duration: 1.0 },
     )
   }, [points, map])
 
