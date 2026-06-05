@@ -8,6 +8,8 @@ export type LatLng = [number, number]
 export interface PrefectureShape {
   /** 県名ラベルを置く代表点（最大リングの重心） */
   label: LatLng
+  /** ラベルのオフセット方向（県内に余白が大きい側＝はみ出し防止） */
+  dir: 'up' | 'down'
   /** 外周・離島などのリング（各リングは閉じた境界線） */
   rings: LatLng[][]
 }
