@@ -191,6 +191,17 @@ export function SettingsTab({ settings, onUpdate, onTest }: Props) {
             {[10, 20, 30, 50].map(n => <option key={n} value={n}>{n}件</option>)}
           </select>
         </Row>
+        <Row label="UI 倍率" description="画面全体の表示倍率を変更します">
+          <select
+            value={settings.uiScale}
+            onChange={e => onUpdate('uiScale', Number(e.target.value))}
+            className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+          >
+            {[0.8, 0.9, 1, 1.1, 1.25, 1.5].map(s => (
+              <option key={s} value={s}>{Math.round(s * 100)}%</option>
+            ))}
+          </select>
+        </Row>
       </Section>
 
       <Section title="通知設定">

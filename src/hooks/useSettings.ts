@@ -6,6 +6,7 @@ export interface AppSettings {
   maxEarthquakeList: number // リスト表示件数
   webhookServerUrl: string  // HA Webhook サーバー URL
   soundEnabled: boolean     // 地震・EEW・津波の受信時に音を鳴らす
+  uiScale: number           // UI 倍率 (1 = 100%)
 }
 
 const STORAGE_KEY = 'quake-viewer-settings'
@@ -18,6 +19,7 @@ const DEFAULTS: AppSettings = {
   // 静的ホスティング（GitHub Pages 等）でローカルサーバーへ無駄に接続しないため。
   webhookServerUrl: '',
   soundEnabled: true,
+  uiScale: 1,
 }
 
 function load(): AppSettings {

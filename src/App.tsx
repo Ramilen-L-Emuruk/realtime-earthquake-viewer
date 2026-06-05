@@ -55,6 +55,13 @@ export function App() {
     simulateEarthquake, simulateEEW, simulateTsunami,
   } = useEarthquakes(handleLiveEvent)
 
+  // UI 倍率: ルート要素の font-size を変えて rem ベースの UI 全体を拡大縮小する。
+  // 倍率変更で地図コンテナ幅が変わるため、Leaflet の再計算用に resize を発火する。
+  useEffect(() => {
+    document.documentElement.style.fontSize = `${16 * settings.uiScale}px`
+    window.dispatchEvent(new Event('resize'))
+  }, [settings.uiScale])
+
   // ブラウザの自動再生制限に対応: 初回のユーザー操作で音声を有効化する
   useEffect(() => {
     const unlock = () => unlockAudio()
