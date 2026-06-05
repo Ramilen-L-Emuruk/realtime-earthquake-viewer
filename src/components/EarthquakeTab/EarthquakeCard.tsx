@@ -26,10 +26,10 @@ export function EarthquakeCard({ quake, isLatest }: Props) {
         ${isLatest ? 'border-blue-500/50' : 'border-border'}
       `}
     >
-      <div className="flex items-start gap-3">
+      <div className="flex items-stretch gap-3">
         {/* Intensity badge */}
         <div
-          className="flex-shrink-0 w-14 h-14 rounded-lg flex flex-col items-center justify-center"
+          className="flex-shrink-0 w-14 rounded-lg flex flex-col items-center justify-center"
           style={{
             backgroundColor: getIntensityBgColor(maxScale),
             border: `2px solid ${getIntensityColor(maxScale)}`,
