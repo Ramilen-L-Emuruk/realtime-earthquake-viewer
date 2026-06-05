@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { JMAQuake } from '../../types/earthquake'
 import { EarthquakeCard } from './EarthquakeCard'
 import { JapanMap } from '../Map/JapanMap'
@@ -9,7 +10,11 @@ interface Props {
 }
 
 export function EarthquakeTab({ earthquakes, isLoading, error }: Props) {
+  // 選択中の地震ID。未選択(null)の場合は最新の地震を表示する。
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const latest = earthquakes[0] ?? null
+  // 選択中の地震が一覧から消えた場合は最新にフォールバック
+  const selected = earthquakes.find((q) => q.id === selectedId) ?? latest
 
   if (isLoading) {
     return (
@@ -37,7 +42,7 @@ export function EarthquakeTab({ earthquakes, isLoading, error }: Props) {
     <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
       {/* Map section - takes all remaining width on desktop */}
       <div className="h-64 lg:h-auto lg:flex-1 flex-shrink-0">
-        <JapanMap quake={latest} />
+        <JapanMap quake={selected} />
       </div>
 
       {/* Earthquake list - fixed narrow width on desktop */}
@@ -49,7 +54,13 @@ export function EarthquakeTab({ earthquakes, isLoading, error }: Props) {
         ) : (
           <div className="p-3 space-y-2">
             {earthquakes.map((quake, i) => (
-              <EarthquakeCard key={quake.id} quake={quake} isLatest={i === 0} />
+              <EarthquakeCard
+                key={quake.id}
+                quake={quake}
+                isLatest={i === 0}
+                isSelected={quake.id === selected?.id}
+                onSelect={() => setSelectedId(quake.id)}
+              />
             ))}
           </div>
         )}
