@@ -1,9 +1,11 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import L from 'leaflet'
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet'
 import type { JMAQuake } from '../../types/earthquake'
-import { getIntensityColor, getIntensityLabel } from '../../utils/intensity'
+import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
+import { useStationCoords } from '../../hooks/useStationCoords'
+import { lookupPointCoords, type LatLng } from '../../utils/stationCoords'
 
 const epicenterIcon = L.divIcon({
   className: '',
@@ -15,6 +17,35 @@ const epicenterIcon = L.divIcon({
   iconAnchor: [16, 16],
   popupAnchor: [0, -18],
 })
+
+// 震度ラベル付きの塗りつぶし円アイコン。震度ごとにキャッシュして再利用する。
+const intensityIconCache = new Map<number, L.DivIcon>()
+
+function getIntensityIcon(scale: number): L.DivIcon {
+  const cached = intensityIconCache.get(scale)
+  if (cached) return cached
+
+  const size = getScaleRadius(scale) * 2 + 8
+  const color = getIntensityColor(scale)
+  const label = getIntensityLabel(scale)
+  const fontSize = label.length > 1 ? size * 0.42 : size * 0.6
+  const icon = L.divIcon({
+    className: '',
+    html: `<div style="width:${size}px;height:${size}px;background:${color};border:1px solid rgba(255,255,255,0.7);border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:${fontSize}px;line-height:1;box-shadow:0 0 3px rgba(0,0,0,0.7)">${label}</div>`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+  })
+  intensityIconCache.set(scale, icon)
+  return icon
+}
+
+interface IntensityMarker {
+  key: string
+  position: LatLng
+  scale: number
+  pref: string
+  addr: string
+}
 
 const JAPAN_CENTER: [number, number] = [36.5, 137.5]
 const JAPAN_ZOOM = 5
@@ -48,6 +79,8 @@ interface Props {
 }
 
 export function JapanMap({ quake }: Props) {
+  const stationCoords = useStationCoords()
+
   const hasEpicenter =
     quake &&
     quake.earthquake.hypocenter.latitude > -200 &&
@@ -62,6 +95,24 @@ export function JapanMap({ quake }: Props) {
         }, {}),
       ).sort((a, b) => b[1] - a[1])
     : []
+
+  // 各地点を座標に解決し、震度の弱い順に並べる（強い震度を最前面に描画するため）
+  const intensityMarkers = useMemo<IntensityMarker[]>(() => {
+    if (!quake || !stationCoords) return []
+    const markers: IntensityMarker[] = []
+    quake.points.forEach((p, i) => {
+      const position = lookupPointCoords(stationCoords, p.pref, p.addr, p.isArea)
+      if (!position) return
+      markers.push({
+        key: `${p.pref}|${p.addr}|${i}`,
+        position,
+        scale: p.scale,
+        pref: p.pref,
+        addr: p.addr,
+      })
+    })
+    return markers.sort((a, b) => a.scale - b.scale)
+  }, [quake, stationCoords])
 
   return (
     <MapContainer
@@ -78,6 +129,28 @@ export function JapanMap({ quake }: Props) {
           lng={quake.earthquake.hypocenter.longitude}
         />
       )}
+
+      {/* 各地点の震度マーカー（震度ごとに色分け・震度を表記） */}
+      {intensityMarkers.map((m) => (
+        <Marker
+          key={m.key}
+          position={m.position}
+          icon={getIntensityIcon(m.scale)}
+          zIndexOffset={m.scale}
+        >
+          <Popup>
+            <div className="text-sm">
+              <div className="font-bold">
+                {m.pref}
+                {m.addr}
+              </div>
+              <div className="text-gray-600 text-xs">
+                震度 {getIntensityLabel(m.scale)}
+              </div>
+            </div>
+          </Popup>
+        </Marker>
+      ))}
 
       {/* Epicenter marker with intensity summary popup */}
       {hasEpicenter && quake && (
