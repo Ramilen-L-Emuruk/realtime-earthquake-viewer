@@ -6,8 +6,9 @@
 //     rings = 外周・離島などのリングの配列（各リングは閉じた境界線）
 //     label = 県名ラベルを置く代表点（最大リングの重心）
 //
-// データ出典: dataofjapan/land（Natural Earth ベース・パブリックドメイン）
-//   https://github.com/dataofjapan/land
+// データ出典: 気象庁 予報区等 GIS データ（都道府県等）を GeoJSON 化したもの
+//   https://github.com/Ichihai1415/JMA-GIS-GeoJSON （release ブランチ）
+//   一次細分区域（build-subregions.mjs）と同一ソースのため海岸線・県境が整合する。
 //
 // 更新方法: node scripts/build-prefectures.mjs
 import { writeFile, mkdir } from 'node:fs/promises'
@@ -15,15 +16,15 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const SOURCE_URL =
-  'https://raw.githubusercontent.com/dataofjapan/land/master/japan.geojson'
+  'https://raw.githubusercontent.com/Ichihai1415/JMA-GIS-GeoJSON/release/AreaInformationPrefectureEarthquake_GIS_20190125_01.geojson'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const OUT_DIR = join(__dirname, '..', 'public', 'data')
 const OUT_FILE = join(OUT_DIR, 'prefectures.json')
 
-/** [lon, lat] -> [lat, lon]、約100m精度に丸める。 */
+/** [lon, lat] -> [lat, lon]、約10m精度に丸める（拡大時の品質確保）。 */
 function toLatLng([lon, lat]) {
-  return [Math.round(lat * 1000) / 1000, Math.round(lon * 1000) / 1000]
+  return [Math.round(lat * 10000) / 10000, Math.round(lon * 10000) / 10000]
 }
 
 /** 丸めで連続重複した点を除去してリングを軽量化する。 */
@@ -48,8 +49,8 @@ function perpDist([y, x], [ay, ax], [by, bx]) {
   return Math.hypot(y - cy, x - cx)
 }
 
-// Douglas-Peucker でリングを間引く（シンプルな地図向けに形状だけ残す）。
-const EPSILON = 0.012 // 度（約1.3km相当）。小さいほど詳細。
+// Douglas-Peucker でリングを間引く。拡大時の崩れを抑えるため詳細を残す。
+const EPSILON = 0.002 // 度（約220m相当）。小さいほど詳細。
 function simplify(points) {
   if (points.length < 3) return points
   let maxD = 0
@@ -122,7 +123,7 @@ async function main() {
 
   const prefs = {}
   for (const feature of geojson.features) {
-    const name = feature.properties?.nam_ja ?? feature.properties?.name
+    const name = feature.properties?.name
     if (!name) continue
     const rings = normalizeRings(feature.geometry)
     if (rings.length === 0) continue
