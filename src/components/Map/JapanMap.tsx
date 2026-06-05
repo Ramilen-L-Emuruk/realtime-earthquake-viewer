@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import L from 'leaflet'
-import { MapContainer, Marker, Polyline, Polygon, Circle, CircleMarker, Popup, Tooltip, Pane, useMap, useMapEvents } from 'react-leaflet'
+import { MapContainer, TileLayer, Marker, Polyline, Polygon, Circle, CircleMarker, Popup, Tooltip, Pane, useMap, useMapEvents } from 'react-leaflet'
 import type { JMAQuake, JMATsunami, TsunamiGrade, EEWAlert } from '../../types/earthquake'
 import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
@@ -89,6 +89,12 @@ interface TsunamiLine {
 
 const JAPAN_CENTER: [number, number] = [36.5, 137.5]
 const JAPAN_ZOOM = 5
+
+// 背景の海底地形タイル（ESRI World Ocean Base）。CSS でダークテーマへ暗く調整する。
+const BATHYMETRY_URL =
+  'https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}'
+const BATHYMETRY_ATTRIBUTION =
+  'Esri, GEBCO, NOAA, National Geographic, and other contributors'
 // 自動ズームの上限（地方単位が収まる程度）
 const MAX_ZOOM = 9
 // このズーム未満（中間より引き）では、地震モードで観測点ごとではなく
@@ -212,6 +218,7 @@ interface Props {
   quake: JMAQuake | null
   tsunamis: JMATsunami[]
   iconScale?: number
+  showBathymetry?: boolean
   kyoshinSites?: SiteCoords
   kyoshinIndices?: number[]
   kyoshinPsWave?: PsWaveCircle[]
@@ -224,6 +231,7 @@ export function JapanMap({
   quake,
   tsunamis,
   iconScale = 1,
+  showBathymetry = true,
   kyoshinSites = [],
   kyoshinIndices = [],
   kyoshinPsWave = [],
@@ -335,6 +343,15 @@ export function JapanMap({
       zoomControl={false}
       preferCanvas
     >
+      {/* 背景: 海底地形タイル（tilePane z=200。CSS でダーク化） */}
+      {showBathymetry && (
+        <TileLayer
+          url={BATHYMETRY_URL}
+          attribution={BATHYMETRY_ATTRIBUTION}
+          maxNativeZoom={13}
+        />
+      )}
+
       <ZoomWatcher onZoom={setZoom} />
 
       {/* 行政区域ベースマップ（タイル不使用・自前描画）。

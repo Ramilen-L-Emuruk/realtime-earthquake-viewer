@@ -35,6 +35,7 @@
 - **設定タブ**
   - 通知音・ブラウザ通知のオン/オフ、最低表示震度・通知最低震度・リスト表示件数・**UI 倍率**・**地図アイコン倍率**（UI 倍率とは独立）の設定
   - **デフォルトタブ**（地震情報／リアルタイム）・**津波発表中の津波情報優先**・**自動復帰までの時間**の設定
+  - **海底地形の表示** ON/OFF
   - ブラウザ通知の許可・各種テスト送信
 
 - **通知音**
@@ -53,6 +54,7 @@
 - **ベースマップ（地図表示）**
   - 地図タイルを使わず、**都道府県の境界・陸地を自前で描画**したダークテーマの行政区域マップ（道路や注記が無いシンプルな表示）
   - ズームに応じて **地方名（引き）→ 都道府県名 → 主要都市名（寄り）** とラベルの粒度を自動で切り替え
+  - 背景に **海底地形（ESRI Ocean）** を表示可能（設定で ON/OFF・既定 ON。ダークテーマに合わせて減光）
 
 - **PWA 対応**
   - ホーム画面へのインストール（Android / iOS / デスクトップ）
@@ -183,6 +185,7 @@ return
 | 観測点座標 | 気象庁 震度観測点一覧（[iku55 氏による JSON 化](https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1)） | 地図に各地点をプロットするための座標テーブル |
 | 津波予報区の海岸線 | 気象庁 予報区等 GIS データ（[Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)） | 津波の海域を海岸線として描画するためのライン座標 |
 | 行政区域（都道府県境界） | [dataofjapan/land](https://github.com/dataofjapan/land)（Natural Earth ベース） | ベースマップの陸地・県境を自前描画（タイル不使用）。`scripts/build-prefectures.mjs` で生成 |
+| 海底地形（背景・任意） | [Esri World Ocean Base](https://www.arcgis.com/home/item.html?id=1e126e7520f9466c9ca28b8f28b5e500) | 背景に海底地形を表示（設定で ON/OFF）。Esri, GEBCO, NOAA ほか |
 
 ### P2PQuake イベントコード
 
@@ -284,3 +287,4 @@ realtime-earthquake-viewer/
 MIT License
 
 地図データ: 「国土数値情報（行政区域）」（国土交通省） / [Natural Earth](https://www.naturalearthdata.com/)（パブリックドメイン）
+海底地形: © Esri, GEBCO, NOAA, National Geographic, and other contributors
