@@ -19,7 +19,7 @@ export function RealtimeTab() {
       <div>
         <h2 className="text-white font-bold text-sm mb-1">リアルタイム震度モニタ</h2>
         <p className="text-secondary text-xs leading-relaxed">
-          防災科研の強震モニタ。1秒ごとに更新されます。
+          各観測点のリアルタイム震度を地図に表示します。1秒ごとに更新されます。
         </p>
       </div>
 
@@ -42,8 +42,8 @@ export function RealtimeTab() {
       {/* 注記 */}
       <div className="bg-card rounded-lg p-3 border border-border">
         <p className="text-secondary text-xs leading-relaxed">
-          ※ 強震モニタは防災科学技術研究所が提供するリアルタイム地震動観測システムです。
-          表示される震度は気象庁震度階に基づく推定値であり、気象庁が発表する震度とは異なる場合があります。
+          ※ データ出典: Yahoo!天気・災害 リアルタイム震度（防災科学技術研究所 強震モニタ）。
+          表示される震度はリアルタイムの推定値であり、気象庁が発表する震度とは異なる場合があります。
         </p>
       </div>
     </div>

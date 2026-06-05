@@ -7,6 +7,8 @@ import { formatMagnitude, formatDepth } from '../../utils/formatters'
 import { useStationCoords } from '../../hooks/useStationCoords'
 import { lookupPointCoords, type LatLng } from '../../utils/stationCoords'
 import { useTsunamiZones } from '../../hooks/useTsunamiZones'
+import { KyoshinPoints } from './KyoshinPoints'
+import type { SiteCoords } from '../../services/kyoshin'
 
 // 震源の×印アイコン。UI 倍率ごとにキャッシュして再利用する。
 const epicenterIconCache = new Map<number, L.DivIcon>()
@@ -112,16 +114,25 @@ function FitToBounds({ signature, positions }: { signature: string; positions: L
   return null
 }
 
-export type MapMode = 'quake' | 'tsunami'
+export type MapMode = 'quake' | 'tsunami' | 'kyoshin'
 
 interface Props {
   mode: MapMode
   quake: JMAQuake | null
   tsunamis: JMATsunami[]
   uiScale?: number
+  kyoshinSites?: SiteCoords
+  kyoshinIndices?: number[]
 }
 
-export function JapanMap({ mode, quake, tsunamis, uiScale = 1 }: Props) {
+export function JapanMap({
+  mode,
+  quake,
+  tsunamis,
+  uiScale = 1,
+  kyoshinSites = [],
+  kyoshinIndices = [],
+}: Props) {
   const stationCoords = useStationCoords()
   const tsunamiZones = useTsunamiZones()
 
@@ -210,6 +221,11 @@ export function JapanMap({ mode, quake, tsunamis, uiScale = 1 }: Props) {
       zoomControl={false}
     >
       <TileLayer url={CARTO_DARK_URL} attribution={CARTO_ATTRIBUTION} />
+
+      {/* 強震モニタ: Yahoo リアルタイム震度の観測点を描画 */}
+      {mode === 'kyoshin' && (
+        <KyoshinPoints sites={kyoshinSites} indices={kyoshinIndices} uiScale={uiScale} />
+      )}
 
       {mode === 'quake' && (
         <FitToBounds signature={quakeSignature} positions={quakeFitPositions} />

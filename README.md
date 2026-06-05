@@ -20,7 +20,7 @@
   - P2PQuake WebSocket によるリアルタイム自動更新
 
 - **リアルタイムタブ**
-  - 防災科研・強震モニタ画像を地図エリアに毎秒更新表示（読み込み中はローディング表示）
+  - 各観測点（約1725点）のリアルタイム震度を Leaflet 地図に毎秒更新で色分け表示（Yahoo リアルタイム震度の JSON データを使用・HTTPS）
   - 右パネルに震度カラースケール凡例・注記
 
 - **津波情報タブ**
@@ -64,7 +64,7 @@
 | 地図 | React-Leaflet + CARTO Dark タイル |
 | PWA | vite-plugin-pwa + Workbox |
 | データ | [P2PQuake API v2](https://api.p2pquake.net/v2/docs/) |
-| リアルタイム監視 | [防災科研 強震モニタ](https://www.kmoni.bosai.go.jp/) |
+| リアルタイム震度 | [Yahoo!天気・災害 リアルタイム震度](https://typhoon.yahoo.co.jp/weather/jp/earthquake/kyoshin/)（防災科研 強震モニタ由来） |
 | デプロイ | GitHub Pages + GitHub Actions |
 
 ---
@@ -218,7 +218,7 @@ PORT=3002 npm run server
 |---|---|---|
 | 地震情報・津波情報 | [P2PQuake API v2](https://api.p2pquake.net/v2/docs/) | 無料・認証不要。WebSocket + REST |
 | 緊急地震速報 | P2PQuake API v2 (code: 556) | リアルタイム WebSocket |
-| リアルタイム震度 | [防災科研 強震モニタ](https://www.kmoni.bosai.go.jp/) | 1秒更新の観測画像 |
+| リアルタイム震度 | [Yahoo!天気・災害 リアルタイム震度](https://typhoon.yahoo.co.jp/weather/jp/earthquake/kyoshin/) | 観測点ごとのリアルタイム震度 JSON（HTTPS・1秒更新、防災科研 強震モニタ由来） |
 | 観測点座標 | 気象庁 震度観測点一覧（[iku55 氏による JSON 化](https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1)） | 地図に各地点をプロットするための座標テーブル |
 | 津波予報区の海岸線 | 気象庁 予報区等 GIS データ（[Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)） | 津波の海域を海岸線として描画するためのライン座標 |
 | 地図タイル | [CARTO Dark Matter](https://carto.com/attributions) | © OpenStreetMap contributors |
@@ -277,23 +277,27 @@ realtime-earthquake-viewer/
 │   │   ├── TabBar.tsx              # タブナビゲーション
 │   │   ├── EarthquakeTab/          # 地震情報パネル（カード一覧・選択）
 │   │   ├── Map/
-│   │   │   └── JapanMap.tsx        # Leaflet 日本地図（震度マーカー / 津波海岸線・自動ズーム）
-│   │   ├── RealtimeTab/            # 凡例・注記パネル + KmoniMonitor（強震モニタ画像）
+│   │   │   ├── JapanMap.tsx        # Leaflet 日本地図（震度マーカー / 津波海岸線 / 強震モニタ）
+│   │   │   └── KyoshinPoints.tsx   # 強震モニタ観測点の Canvas 描画レイヤー
+│   │   ├── RealtimeTab/            # 凡例・注記パネル（地図は JapanMap が担当）
 │   │   ├── SettingsTab/            # 設定パネル
 │   │   └── TsunamiTab/             # 津波情報パネル
 │   ├── hooks/
 │   │   ├── useEarthquakes.ts       # P2PQuake WS + REST 状態管理
+│   │   ├── useKyoshinRealtime.ts   # Yahoo リアルタイム震度のポーリング
 │   │   ├── useSettings.ts          # アプリ設定（localStorage 永続化）
 │   │   ├── useStationCoords.ts     # 観測点座標テーブルの読み込み
 │   │   ├── useTsunamiZones.ts      # 津波予報区 海岸線データの読み込み
 │   │   └── useWebhookAlert.ts      # HA アラート状態管理
 │   ├── services/
+│   │   ├── kyoshin.ts              # Yahoo リアルタイム震度の取得・デコード
 │   │   └── p2pquake.ts             # P2PQuake API クライアント（自動再接続）
 │   ├── types/
 │   │   └── earthquake.ts           # P2PQuake API 型定義
 │   └── utils/
 │       ├── alertSound.ts           # 通知音生成（Web Audio API）
 │       ├── intensity.ts            # 震度スケール色・ラベル
+│       ├── kyoshinColor.ts         # リアルタイム震度のカラースケール
 │       ├── stationCoords.ts        # 地点名→座標の引き当て
 │       ├── tsunamiZones.ts         # 津波予報区 海岸線データの引き当て
 │       └── formatters.ts           # 日時・数値フォーマッター
