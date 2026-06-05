@@ -8,6 +8,7 @@ export interface WebhookAlertState {
   triggeredAt: Date | null
   message: string | null
   dismiss: () => void
+  testAlert: () => void
 }
 
 export function useWebhookAlert(serverUrl = DEFAULT_SERVER): WebhookAlertState {
@@ -83,5 +84,7 @@ export function useWebhookAlert(serverUrl = DEFAULT_SERVER): WebhookAlertState {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverUrl])
 
-  return { isActive, triggeredAt, message, dismiss }
+  const testAlert = () => activate('これはテストアラートです（Home Assistant 連携の動作確認）')
+
+  return { isActive, triggeredAt, message, dismiss, testAlert }
 }

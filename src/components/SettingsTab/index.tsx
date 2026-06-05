@@ -2,9 +2,18 @@ import { useState, useCallback } from 'react'
 import type { AppSettings } from '../../hooks/useSettings'
 import { getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
 
+export interface TestFunctions {
+  earthquake: () => void
+  eew: () => void
+  tsunami: () => void
+  haAlert: () => void
+  notification: () => void
+}
+
 interface Props {
   settings: AppSettings
   onUpdate: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void
+  onTest: TestFunctions
 }
 
 // ---- Reusable UI parts ----
@@ -90,6 +99,41 @@ function IntensityBadge({ scale }: { scale: number }) {
   )
 }
 
+type ButtonColor = 'red' | 'orange' | 'purple' | 'blue' | 'green'
+
+const BUTTON_CLASSES: Record<ButtonColor, string> = {
+  red:    'bg-red-700 hover:bg-red-600',
+  orange: 'bg-orange-700 hover:bg-orange-600',
+  purple: 'bg-purple-700 hover:bg-purple-600',
+  blue:   'bg-blue-700 hover:bg-blue-600',
+  green:  'bg-green-700 hover:bg-green-600',
+}
+
+function TestButton({ color, onClick, children }: {
+  color: ButtonColor
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  const [fired, setFired] = useState(false)
+
+  const handle = () => {
+    onClick()
+    setFired(true)
+    setTimeout(() => setFired(false), 2000)
+  }
+
+  return (
+    <button
+      onClick={handle}
+      className={`text-xs text-white px-3 py-1.5 rounded transition-colors ${
+        fired ? 'bg-gray-600' : BUTTON_CLASSES[color]
+      }`}
+    >
+      {fired ? '送信済み ✓' : children}
+    </button>
+  )
+}
+
 function NotificationPermissionButton() {
   const [perm, setPerm] = useState<NotificationPermission>(
     typeof Notification !== 'undefined' ? Notification.permission : 'denied',
@@ -115,7 +159,7 @@ function NotificationPermissionButton() {
 
 // ---- Main component ----
 
-export function SettingsTab({ settings, onUpdate }: Props) {
+export function SettingsTab({ settings, onUpdate, onTest }: Props) {
   const [webhookInput, setWebhookInput] = useState(settings.webhookServerUrl)
   const [webhookSaved, setWebhookSaved] = useState(false)
 
@@ -127,6 +171,28 @@ export function SettingsTab({ settings, onUpdate }: Props) {
 
   return (
     <div className="flex-1 overflow-y-auto p-3">
+
+      {/* テスト機能 */}
+      <Section title="テスト機能">
+        <div className="px-4 py-2 bg-yellow-900/30 border-b border-yellow-700/40">
+          <p className="text-yellow-400 text-xs">⚠️ 動作確認用です。実際のデータは変更されません。</p>
+        </div>
+        <Row label="地震情報" description="東京都 M5.5 震度4 をリストと地図に追加">
+          <TestButton color="red" onClick={onTest.earthquake}>地震テスト</TestButton>
+        </Row>
+        <Row label="緊急地震速報" description="EEW バナーを10秒間表示">
+          <TestButton color="orange" onClick={onTest.eew}>EEW テスト</TestButton>
+        </Row>
+        <Row label="津波警報" description="津波注意報（相模湾）を15秒間表示">
+          <TestButton color="purple" onClick={onTest.tsunami}>津波テスト</TestButton>
+        </Row>
+        <Row label="HA アラート" description="Home Assistant 連携バナーを表示">
+          <TestButton color="blue" onClick={onTest.haAlert}>HA テスト</TestButton>
+        </Row>
+        <Row label="ブラウザ通知" description="テスト通知を即時送信（要通知許可）">
+          <TestButton color="green" onClick={onTest.notification}>通知テスト</TestButton>
+        </Row>
+      </Section>
 
       <Section title="表示設定">
         <Row label="最低表示震度" description="これ未満の地震はリストに表示しません">
