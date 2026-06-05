@@ -5,6 +5,7 @@ export interface AppSettings {
   notifyMinScale: number    // 通知最低震度 (-1 = 通知しない)
   maxEarthquakeList: number // リスト表示件数
   webhookServerUrl: string  // HA Webhook サーバー URL
+  soundEnabled: boolean     // 地震・EEW・津波の受信時に音を鳴らす
 }
 
 const STORAGE_KEY = 'quake-viewer-settings'
@@ -16,6 +17,7 @@ const DEFAULTS: AppSettings = {
   // 既定では未設定（空）。Home Assistant 連携を使う場合のみ設定画面で URL を指定する。
   // 静的ホスティング（GitHub Pages 等）でローカルサーバーへ無駄に接続しないため。
   webhookServerUrl: '',
+  soundEnabled: true,
 }
 
 function load(): AppSettings {

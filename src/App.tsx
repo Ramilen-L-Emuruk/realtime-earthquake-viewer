@@ -13,15 +13,58 @@ import { useWebhookAlert } from './hooks/useWebhookAlert'
 import { useSettings } from './hooks/useSettings'
 import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude } from './utils/formatters'
+import { playAlertSound, unlockAudio, type AlertSoundType } from './utils/alertSound'
+import type { P2PQuakeEvent } from './types/earthquake'
 
 export function App() {
   const [activeTab, setActiveTab] = useState<TabId>('earthquake')
   const [selectedQuakeId, setSelectedQuakeId] = useState<string | null>(null)
   const { settings, updateSetting } = useSettings()
+
+  // 受信イベントの種別ごとに通知音を鳴らす（同種の連続発火はバースト抑制）
+  const lastSoundAtRef = useRef<Record<AlertSoundType, number>>({
+    earthquake: 0, eew: 0, tsunami: 0,
+  })
+  const handleLiveEvent = (event: P2PQuakeEvent) => {
+    // 受信時に該当タブを自動表示（地震情報・津波情報）
+    if (event.code === 551) {
+      setActiveTab('earthquake')
+    } else if (event.code === 552 && !event.cancelled) {
+      setActiveTab('tsunami')
+    }
+
+    // 通知音
+    if (!settings.soundEnabled) return
+    let type: AlertSoundType | null = null
+    if (event.code === 556) {
+      if (!event.cancelled && !event.test) type = 'eew'
+    } else if (event.code === 552) {
+      if (!event.cancelled) type = 'tsunami'
+    } else if (event.code === 551) {
+      type = 'earthquake'
+    }
+    if (!type) return
+    const now = Date.now()
+    if (now - lastSoundAtRef.current[type] < 1500) return
+    lastSoundAtRef.current[type] = now
+    playAlertSound(type)
+  }
+
   const {
     earthquakes, tsunamis, activeEEW, connectionStatus, lastUpdate, isLoading, error,
     simulateEarthquake, simulateEEW, simulateTsunami,
-  } = useEarthquakes()
+  } = useEarthquakes(handleLiveEvent)
+
+  // ブラウザの自動再生制限に対応: 初回のユーザー操作で音声を有効化する
+  useEffect(() => {
+    const unlock = () => unlockAudio()
+    window.addEventListener('pointerdown', unlock, { once: true })
+    window.addEventListener('keydown', unlock, { once: true })
+    return () => {
+      window.removeEventListener('pointerdown', unlock)
+      window.removeEventListener('keydown', unlock)
+    }
+  }, [])
   const { isActive: haAlertActive, dismiss: dismissHaAlert, testAlert } =
     useWebhookAlert(settings.webhookServerUrl)
 

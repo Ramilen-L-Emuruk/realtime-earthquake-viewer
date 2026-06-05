@@ -194,6 +194,12 @@ export function SettingsTab({ settings, onUpdate, onTest }: Props) {
       </Section>
 
       <Section title="通知設定">
+        <Row label="通知音" description="地震・緊急地震速報・津波の受信時に音を鳴らします">
+          <Toggle
+            checked={settings.soundEnabled}
+            onChange={v => onUpdate('soundEnabled', v)}
+          />
+        </Row>
         <Row label="ブラウザ通知" description="地震発生時にブラウザ通知を表示します">
           <Toggle
             checked={settings.notifyMinScale >= 0}
