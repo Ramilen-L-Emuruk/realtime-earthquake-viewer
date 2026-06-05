@@ -76,16 +76,16 @@ export function EarthquakeCard({ quake, isLatest }: Props) {
             </span>
           </div>
 
-          <div className="flex items-center justify-between gap-2 mt-1.5">
-            <span className="text-xs text-secondary truncate min-w-0">
+          <div className="mt-1.5 space-y-0.5">
+            <div className="text-xs text-secondary">
               {formatDateTime(earthquake.time)}
-            </span>
-            <span
-              className="text-xs font-medium whitespace-nowrap flex-shrink-0"
+            </div>
+            <div
+              className="text-xs font-medium"
               style={{ color: tsunamiInfo.color }}
             >
               {tsunamiInfo.text}
-            </span>
+            </div>
           </div>
         </div>
       </div>
