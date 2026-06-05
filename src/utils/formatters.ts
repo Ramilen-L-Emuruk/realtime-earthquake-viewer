@@ -63,14 +63,3 @@ export function formatTsunamiGrade(grade: TsunamiGrade): { text: string; color: 
   }
   return map[grade] ?? { text: grade, color: '#ffffff', bg: '#666666' }
 }
-
-export function formatKmoniDatetime(date: Date): string {
-  const delay = new Date(date.getTime() - 2000)
-  const y = delay.getFullYear()
-  const M = String(delay.getMonth() + 1).padStart(2, '0')
-  const d = String(delay.getDate()).padStart(2, '0')
-  const h = String(delay.getHours()).padStart(2, '0')
-  const m = String(delay.getMinutes()).padStart(2, '0')
-  const s = String(delay.getSeconds()).padStart(2, '0')
-  return `${y}${M}${d}${h}${m}${s}`
-}
