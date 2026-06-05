@@ -45,7 +45,8 @@ function createTestEEW(): EEWAlert {
     },
     severity: 'Warning',
     cancelled: false,
-    regions: [
+    // 実データに合わせ areas を使用（参照は utils/eew.ts の eewAreas() で吸収）
+    areas: [
       { pref: '東京都', name: '東京都区部', scaleFrom: 40, scaleTo: 40, kindCode: '10', arrivalTime: null },
       { pref: '神奈川県', name: '神奈川県東部', scaleFrom: 30, scaleTo: 40, kindCode: '10', arrivalTime: null },
       { pref: '埼玉県', name: '埼玉県南部', scaleFrom: 30, scaleTo: 30, kindCode: '10', arrivalTime: null },

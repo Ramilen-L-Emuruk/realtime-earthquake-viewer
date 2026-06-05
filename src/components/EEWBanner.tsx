@@ -1,6 +1,7 @@
 import type { EEWAlert } from '../types/earthquake'
 import { formatDateTime } from '../utils/formatters'
 import { getIntensityLabel } from '../utils/intensity'
+import { eewAreas, eewMaxScale } from '../utils/eew'
 
 interface Props {
   eew: EEWAlert | null
@@ -10,7 +11,8 @@ export function EEWBanner({ eew }: Props) {
   if (!eew) return null
 
   const isWarning = eew.severity === 'Warning'
-  const maxScale = eew.regions.reduce((max, r) => Math.max(max, r.scaleTo), 0)
+  const areas = eewAreas(eew)
+  const maxScale = eewMaxScale(eew)
 
   return (
     <div
@@ -49,10 +51,10 @@ export function EEWBanner({ eew }: Props) {
           <div className="text-xs text-white opacity-75 mt-0.5">
             {formatDateTime(eew.earthquake.originTime)}
           </div>
-          {eew.regions.length > 0 && (
+          {areas.length > 0 && (
             <div className="text-xs text-white opacity-75 truncate mt-0.5">
-              対象: {eew.regions.slice(0, 4).map(r => r.pref).join(' / ')}
-              {eew.regions.length > 4 && ' ...'}
+              対象: {areas.slice(0, 4).map(r => r.pref).join(' / ')}
+              {areas.length > 4 && ' ...'}
             </div>
           )}
         </div>

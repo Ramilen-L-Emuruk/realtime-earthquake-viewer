@@ -1,9 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
-import { fetchSiteList, fetchRealtimeIntensity, type SiteCoords } from '../services/kyoshin'
+import {
+  fetchSiteList,
+  fetchRealtimeIntensity,
+  type SiteCoords,
+  type PsWaveCircle,
+} from '../services/kyoshin'
 
 export interface KyoshinRealtime {
   sites: SiteCoords
   indices: number[]
+  psWave: PsWaveCircle[]
   dataTime: string
 }
 
@@ -14,6 +20,7 @@ export interface KyoshinRealtime {
 export function useKyoshinRealtime(enabled: boolean): KyoshinRealtime {
   const [sites, setSites] = useState<SiteCoords>([])
   const [indices, setIndices] = useState<number[]>([])
+  const [psWave, setPsWave] = useState<PsWaveCircle[]>([])
   const [dataTime, setDataTime] = useState('')
   const sitesLoadedRef = useRef(false)
 
@@ -45,6 +52,7 @@ export function useKyoshinRealtime(enabled: boolean): KyoshinRealtime {
         const rt = await fetchRealtimeIntensity(new Date())
         if (!active) return
         setIndices(rt.indices)
+        setPsWave(rt.psWave)
         setDataTime(rt.dataTime)
       } catch {
         // 一時的な取得失敗は次のtickで回復
@@ -59,5 +67,5 @@ export function useKyoshinRealtime(enabled: boolean): KyoshinRealtime {
     }
   }, [enabled])
 
-  return { sites, indices, dataTime }
+  return { sites, indices, psWave, dataTime }
 }

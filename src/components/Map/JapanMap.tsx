@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { Fragment, useEffect, useMemo, useRef } from 'react'
 import L from 'leaflet'
-import { MapContainer, TileLayer, Marker, Polyline, Popup, useMap } from 'react-leaflet'
+import { MapContainer, TileLayer, Marker, Polyline, Circle, Popup, useMap } from 'react-leaflet'
 import type { JMAQuake, JMATsunami, TsunamiGrade } from '../../types/earthquake'
 import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
@@ -8,7 +8,7 @@ import { useStationCoords } from '../../hooks/useStationCoords'
 import { lookupPointCoords, type LatLng } from '../../utils/stationCoords'
 import { useTsunamiZones } from '../../hooks/useTsunamiZones'
 import { KyoshinPoints } from './KyoshinPoints'
-import type { SiteCoords } from '../../services/kyoshin'
+import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
 
 // 震源の×印アイコン。UI 倍率ごとにキャッシュして再利用する。
 const epicenterIconCache = new Map<number, L.DivIcon>()
@@ -123,6 +123,7 @@ interface Props {
   uiScale?: number
   kyoshinSites?: SiteCoords
   kyoshinIndices?: number[]
+  kyoshinPsWave?: PsWaveCircle[]
 }
 
 export function JapanMap({
@@ -132,6 +133,7 @@ export function JapanMap({
   uiScale = 1,
   kyoshinSites = [],
   kyoshinIndices = [],
+  kyoshinPsWave = [],
 }: Props) {
   const stationCoords = useStationCoords()
   const tsunamiZones = useTsunamiZones()
@@ -226,6 +228,24 @@ export function JapanMap({
       {mode === 'kyoshin' && (
         <KyoshinPoints sites={kyoshinSites} indices={kyoshinIndices} uiScale={uiScale} />
       )}
+
+      {/* 緊急地震速報の予報円（S波=塗りつぶし / P波=外周）と震源 */}
+      {mode === 'kyoshin' &&
+        kyoshinPsWave.map((c, i) => (
+          <Fragment key={`ps-${i}`}>
+            <Circle
+              center={[c.lat, c.lng]}
+              radius={c.sRadius * 1000}
+              pathOptions={{ color: '#ff3c00', weight: 2, fillColor: '#ff3c00', fillOpacity: 0.12 }}
+            />
+            <Circle
+              center={[c.lat, c.lng]}
+              radius={c.pRadius * 1000}
+              pathOptions={{ color: '#38bdf8', weight: 2, fill: false, dashArray: '4 4' }}
+            />
+            <Marker position={[c.lat, c.lng]} icon={getEpicenterIcon(uiScale)} />
+          </Fragment>
+        ))}
 
       {mode === 'quake' && (
         <FitToBounds signature={quakeSignature} positions={quakeFitPositions} />
