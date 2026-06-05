@@ -81,15 +81,36 @@ function normalizeRings(geometry) {
     .filter((r) => r.length >= 3)
 }
 
-/** 最大リング（点数最多）の頂点平均を県名ラベルの代表点とする。 */
-function labelPoint(rings) {
+/** 最大リング（点数最多）を返す。 */
+function largestRing(rings) {
   let largest = rings[0]
   for (const r of rings) if (r.length > largest.length) largest = r
-  const sum = largest.reduce((a, [lat, lon]) => [a[0] + lat, a[1] + lon], [0, 0])
+  return largest
+}
+
+/** リング頂点平均を県名ラベルの代表点とする。 */
+function centroid(ring) {
+  const sum = ring.reduce((a, [lat, lon]) => [a[0] + lat, a[1] + lon], [0, 0])
   return [
-    Math.round((sum[0] / largest.length) * 1000) / 1000,
-    Math.round((sum[1] / largest.length) * 1000) / 1000,
+    Math.round((sum[0] / ring.length) * 1000) / 1000,
+    Math.round((sum[1] / ring.length) * 1000) / 1000,
   ]
+}
+
+/**
+ * ラベルのオフセット方向。代表点から見て県内に余白が大きい側（北/南）へ寄せる。
+ * （上一律にすると県外へはみ出すため、リングの上下の余白を比較して決める。）
+ */
+function labelDir(ring, label) {
+  let maxLat = -Infinity
+  let minLat = Infinity
+  for (const [lat] of ring) {
+    if (lat > maxLat) maxLat = lat
+    if (lat < minLat) minLat = lat
+  }
+  const northRoom = maxLat - label[0]
+  const southRoom = label[0] - minLat
+  return northRoom >= southRoom ? 'up' : 'down'
 }
 
 async function main() {
@@ -105,7 +126,9 @@ async function main() {
     if (!name) continue
     const rings = normalizeRings(feature.geometry)
     if (rings.length === 0) continue
-    prefs[name] = { label: labelPoint(rings), rings }
+    const main = largestRing(rings)
+    const label = centroid(main)
+    prefs[name] = { label, dir: labelDir(main, label), rings }
   }
 
   await mkdir(OUT_DIR, { recursive: true })

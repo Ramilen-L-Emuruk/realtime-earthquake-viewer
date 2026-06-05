@@ -28,30 +28,44 @@ body {
 
 .leaflet-container { background: #0a0c10; }
 
-/* 行政区域ベースマップのラベル（地方名・県名・主要都市名）。背景なしの淡色テキスト。 */
+/* 行政区域ベースマップのラベル（地方名・県名・主要都市名）。背景なしの淡色テキスト。
+   マーカー要素には Leaflet が位置決めの transform を当てるため、ラベルの中央寄せ・
+   オフセットは内側 span 側で行う（Leaflet は span を触らないので確実に効く）。 */
 .base-region-label,
 .base-pref-label,
 .base-city-label {
+  pointer-events: none;
+}
+.base-region-label > span,
+.base-pref-label > span,
+.base-city-label > span {
+  position: absolute;
+  left: 0;
+  top: 0;
   white-space: nowrap;
   font-weight: 600;
   text-shadow: 0 0 3px #0a0c10, 0 0 3px #0a0c10, 0 0 2px #0a0c10;
-  pointer-events: none;
-  width: auto !important;
-  height: auto !important;
-  margin: 0 !important;
-  /* ラベル中心を代表点に合わせる */
+  /* 代表点（マーカー位置）を中心に合わせる */
   transform: translate(-50%, -50%);
 }
-.base-region-label {
+.base-region-label > span {
   color: #dbe3ee;
   font-size: 15px;
   letter-spacing: 0.05em;
 }
-.base-pref-label {
+.base-pref-label > span {
   color: #cbd5e1;
   font-size: 12px;
 }
-.base-city-label {
+/* 県中心に置かれる最大震度バッジと重ならないようずらす。
+   県ごとに余白の大きい側へ寄せて県外へのはみ出しを防ぐ。 */
+.base-pref-label--up > span {
+  transform: translate(-50%, calc(-50% - 1.5em));
+}
+.base-pref-label--down > span {
+  transform: translate(-50%, calc(-50% + 1.5em));
+}
+.base-city-label > span {
   color: #93a3b8;
   font-size: 11px;
 }

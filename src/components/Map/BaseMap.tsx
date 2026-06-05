@@ -60,7 +60,7 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
         pane: 'basemap-labels',
         interactive: false,
         keyboard: false,
-        icon: L.divIcon({ className: 'base-region-label', html: region.name }),
+        icon: L.divIcon({ className: 'base-region-label', html: `<span>${region.name}</span>`, iconSize: [0, 0] }),
       }).addTo(regionLabels)
     }
 
@@ -92,7 +92,7 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
             pane: 'basemap-labels',
             interactive: false,
             keyboard: false,
-            icon: L.divIcon({ className: 'base-pref-label', html: name }),
+            icon: L.divIcon({ className: `base-pref-label base-pref-label--${shape.dir}`, html: `<span>${name}</span>`, iconSize: [0, 0] }),
           }).addTo(prefLabels)
         }
 
@@ -102,7 +102,7 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
             pane: 'basemap-labels',
             interactive: false,
             keyboard: false,
-            icon: L.divIcon({ className: 'base-city-label', html: city.name }),
+            icon: L.divIcon({ className: 'base-city-label', html: `<span>${city.name}</span>`, iconSize: [0, 0] }),
           }).addTo(cityLabels)
         }
 
