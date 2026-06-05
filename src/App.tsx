@@ -16,9 +16,6 @@ import { formatMagnitude } from './utils/formatters'
 import { playAlertSound, unlockAudio, type AlertSoundType } from './utils/alertSound'
 import type { P2PQuakeEvent } from './types/earthquake'
 
-// 情報更新・操作がこの時間ないと、デフォルトタブへ自動的に戻す
-const IDLE_REVERT_MS = 3 * 60 * 1000
-
 export function App() {
   const { settings, updateSetting } = useSettings()
   const [activeTab, setActiveTab] = useState<TabId>(settings.defaultTab)
@@ -129,13 +126,16 @@ export function App() {
   defaultTabRef.current =
     settings.tsunamiPriorityDefault && tsunamiActive ? 'tsunami' : settings.defaultTab
 
-  // 一定時間 情報更新（activeTab の自動切替・P2P 更新）もユーザー操作もなければ
+  // 設定秒数 情報更新（activeTab の自動切替・P2P 更新）もユーザー操作もなければ
   // デフォルトタブへ戻す。activeTab / lastUpdate の変化、および操作のたびにリセット。
+  // idleRevertSec が 0 以下なら自動復帰は無効。
   useEffect(() => {
-    let timer = window.setTimeout(() => setActiveTab(defaultTabRef.current), IDLE_REVERT_MS)
+    if (settings.idleRevertSec <= 0) return
+    const ms = settings.idleRevertSec * 1000
+    let timer = window.setTimeout(() => setActiveTab(defaultTabRef.current), ms)
     const reset = () => {
       window.clearTimeout(timer)
-      timer = window.setTimeout(() => setActiveTab(defaultTabRef.current), IDLE_REVERT_MS)
+      timer = window.setTimeout(() => setActiveTab(defaultTabRef.current), ms)
     }
     window.addEventListener('pointerdown', reset)
     window.addEventListener('keydown', reset)
@@ -144,7 +144,7 @@ export function App() {
       window.removeEventListener('pointerdown', reset)
       window.removeEventListener('keydown', reset)
     }
-  }, [activeTab, lastUpdate])
+  }, [activeTab, lastUpdate, settings.idleRevertSec])
 
   // 強震モニタ（常時ポーリング: タブ非表示中も揺れ検知を継続する）
   const kyoshin = useKyoshinRealtime(true)

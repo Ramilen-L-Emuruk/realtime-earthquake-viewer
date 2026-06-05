@@ -221,6 +221,21 @@ export function SettingsTab({ settings, onUpdate, onTest }: Props) {
             onChange={v => onUpdate('tsunamiPriorityDefault', v)}
           />
         </Row>
+        <Row label="自動復帰までの時間" description="操作・情報更新がこの時間ないとデフォルトタブに戻ります">
+          <select
+            value={settings.idleRevertSec}
+            onChange={e => onUpdate('idleRevertSec', Number(e.target.value))}
+            className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+          >
+            <option value={0}>無効</option>
+            <option value={15}>15秒</option>
+            <option value={30}>30秒</option>
+            <option value={60}>1分</option>
+            <option value={120}>2分</option>
+            <option value={180}>3分</option>
+            <option value={300}>5分</option>
+          </select>
+        </Row>
       </Section>
 
       <Section title="通知設定">
