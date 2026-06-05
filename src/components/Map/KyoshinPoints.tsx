@@ -14,6 +14,11 @@ interface Props {
   detailMinZoom?: number
 }
 
+// 計測震度 0.0（= index 6, value = -3.0 + 6*0.5）未満＝「震度0未満」の点は表示しない。
+const MIN_VISIBLE_INDEX = 6
+// 震度0（計測震度 0.0〜0.4 = index 6）は強震モニタ配色ではなく灰色で表示する。
+const SHINDO0_COLOR = '#9ca3af'
+
 function intensityBadgeIcon(index: number, label: string, scale: number, iconScale: number): L.DivIcon {
   const size = (getScaleRadius(scale) * 2 + 8) * iconScale
   const fontSize = label.length > 1 ? size * 0.42 : size * 0.6
@@ -63,12 +68,19 @@ export function KyoshinPoints({ sites, indices, iconScale, detailMinZoom = 8 }: 
     // sites は初回取得後は不変。map も不変。
   }, [sites, map])
 
-  // 震度インデックスの更新時に各マーカーの色を更新
+  // 震度インデックスの更新時に各マーカーの色を更新。
+  //   震度0未満（計測震度0.0未満）= 非表示（透明）
+  //   震度0（計測震度0.0〜0.4）   = 灰色
+  //   震度1以上                   = 強震モニタ配色
   useEffect(() => {
     const markers = markersRef.current
     if (markers.length === 0) return
     for (let i = 0; i < markers.length; i++) {
-      markers[i].setStyle({ fillColor: kyoshinColor(indices[i]) })
+      const idx = indices[i]
+      const visible = idx != null && !Number.isNaN(idx) && idx >= MIN_VISIBLE_INDEX
+      // kyoshinIndexToJma が null = 震度0以下（震度1未満）→ 灰色
+      const fillColor = idx != null && kyoshinIndexToJma(idx) ? kyoshinColor(idx) : SHINDO0_COLOR
+      markers[i].setStyle({ fillColor, fillOpacity: visible ? 0.85 : 0 })
     }
   }, [indices])
 
