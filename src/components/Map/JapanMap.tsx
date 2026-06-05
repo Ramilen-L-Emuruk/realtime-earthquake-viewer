@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef } from 'react'
 import L from 'leaflet'
-import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet'
-import type { JMAQuake } from '../../types/earthquake'
+import { MapContainer, TileLayer, Marker, Polyline, Popup, useMap } from 'react-leaflet'
+import type { JMAQuake, JMATsunami, TsunamiGrade } from '../../types/earthquake'
 import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
 import { useStationCoords } from '../../hooks/useStationCoords'
 import { lookupPointCoords, type LatLng } from '../../utils/stationCoords'
+import { useTsunamiZones } from '../../hooks/useTsunamiZones'
 
 const epicenterIcon = L.divIcon({
   className: '',
@@ -47,6 +48,26 @@ interface IntensityMarker {
   addr: string
 }
 
+// 津波等級ごとの海岸線スタイルと優先度（同一区域に複数等級が来た場合は高い方を採用）
+const TSUNAMI_STYLE: Record<TsunamiGrade, { color: string; weight: number; label: string }> = {
+  MajorWarning: { color: '#c026d3', weight: 6, label: '大津波警報' },
+  Warning: { color: '#ef4444', weight: 5, label: '津波警報' },
+  Watch: { color: '#f59e0b', weight: 4, label: '津波注意報' },
+  Unknown: { color: '#9ca3af', weight: 3, label: '津波予報' },
+}
+const TSUNAMI_RANK: Record<TsunamiGrade, number> = {
+  MajorWarning: 3,
+  Warning: 2,
+  Watch: 1,
+  Unknown: 0,
+}
+
+interface TsunamiLine {
+  name: string
+  grade: TsunamiGrade
+  segments: LatLng[][]
+}
+
 const JAPAN_CENTER: [number, number] = [36.5, 137.5]
 const JAPAN_ZOOM = 5
 
@@ -55,21 +76,13 @@ const CARTO_DARK_URL =
 const CARTO_ATTRIBUTION =
   '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
 
-interface FitToQuakeProps {
-  quakeId: string | null
-  positions: LatLng[]
-}
-
-// 震源と各観測点が画面に収まるよう地図をフィットさせる。
-// 座標データは非同期で読み込まれるため、地点が出揃った時点で再フィットする。
-function FitToQuake({ quakeId, positions }: FitToQuakeProps) {
+// 与えられた座標群に地図をフィットさせる。signature が変わったときのみ実行する。
+function FitToBounds({ signature, positions }: { signature: string; positions: LatLng[] }) {
   const map = useMap()
   const lastFitRef = useRef<string>('')
 
   useEffect(() => {
-    if (!quakeId || positions.length === 0) return
-    // quakeId と地点数で署名し、地震の切替時／地点の出揃い時にのみ再フィットする
-    const signature = `${quakeId}:${positions.length}`
+    if (!signature || positions.length === 0) return
     if (lastFitRef.current === signature) return
     lastFitRef.current = signature
 
@@ -82,24 +95,29 @@ function FitToQuake({ quakeId, positions }: FitToQuakeProps) {
       maxZoom: 9,
       duration: 1.0,
     })
-  }, [quakeId, positions, map])
+  }, [signature, positions, map])
 
   return null
 }
 
+export type MapMode = 'quake' | 'tsunami'
+
 interface Props {
+  mode: MapMode
   quake: JMAQuake | null
+  tsunamis: JMATsunami[]
 }
 
-export function JapanMap({ quake }: Props) {
+export function JapanMap({ mode, quake, tsunamis }: Props) {
   const stationCoords = useStationCoords()
+  const tsunamiZones = useTsunamiZones()
 
   const hasEpicenter =
     quake &&
     quake.earthquake.hypocenter.latitude > -200 &&
     quake.earthquake.hypocenter.longitude > -200
 
-  // Build intensity summary by prefecture for the popup legend
+  // 震源ポップアップ用の都道府県別最大震度サマリー
   const prefIntensities = quake
     ? Object.entries(
         quake.points.reduce<Record<string, number>>((acc, p) => {
@@ -111,7 +129,7 @@ export function JapanMap({ quake }: Props) {
 
   // 各地点を座標に解決し、震度の弱い順に並べる（強い震度を最前面に描画するため）
   const intensityMarkers = useMemo<IntensityMarker[]>(() => {
-    if (!quake || !stationCoords) return []
+    if (mode !== 'quake' || !quake || !stationCoords) return []
     const markers: IntensityMarker[] = []
     quake.points.forEach((p, i) => {
       const position = lookupPointCoords(stationCoords, p.pref, p.addr, p.isArea)
@@ -125,10 +143,33 @@ export function JapanMap({ quake }: Props) {
       })
     })
     return markers.sort((a, b) => a.scale - b.scale)
-  }, [quake, stationCoords])
+  }, [mode, quake, stationCoords])
 
-  // フィット対象の座標（各観測点 + 震源）
-  const fitPositions = useMemo<LatLng[]>(() => {
+  // 津波: 進行中の警報・注意報を区域名→最大等級にまとめ、海岸線を引き当てる
+  const tsunamiLines = useMemo<TsunamiLine[]>(() => {
+    if (mode !== 'tsunami' || !tsunamiZones) return []
+    const grades = new Map<string, TsunamiGrade>()
+    tsunamis
+      .filter((t) => !t.cancelled)
+      .forEach((t) => {
+        t.areas.forEach((a) => {
+          const current = grades.get(a.name)
+          if (!current || TSUNAMI_RANK[a.grade] > TSUNAMI_RANK[current]) {
+            grades.set(a.name, a.grade)
+          }
+        })
+      })
+    const lines: TsunamiLine[] = []
+    grades.forEach((grade, name) => {
+      const segments = tsunamiZones[name]
+      if (segments) lines.push({ name, grade, segments })
+    })
+    // 弱い等級を先に描画し、強い等級を前面に重ねる
+    return lines.sort((a, b) => TSUNAMI_RANK[a.grade] - TSUNAMI_RANK[b.grade])
+  }, [mode, tsunamis, tsunamiZones])
+
+  // 地震モードのフィット対象（各観測点 + 震源）
+  const quakeFitPositions = useMemo<LatLng[]>(() => {
     const positions = intensityMarkers.map((m) => m.position)
     if (hasEpicenter && quake) {
       positions.push([
@@ -139,6 +180,15 @@ export function JapanMap({ quake }: Props) {
     return positions
   }, [intensityMarkers, hasEpicenter, quake])
 
+  // 津波モードのフィット対象（描画する海岸線の全座標）
+  const tsunamiFitPositions = useMemo<LatLng[]>(
+    () => tsunamiLines.flatMap((l) => l.segments.flat()),
+    [tsunamiLines],
+  )
+
+  const quakeSignature = `${quake?.id ?? ''}:${quakeFitPositions.length}`
+  const tsunamiSignature = tsunamiLines.map((l) => `${l.name}:${l.grade}`).join(',')
+
   return (
     <MapContainer
       center={JAPAN_CENTER}
@@ -148,33 +198,63 @@ export function JapanMap({ quake }: Props) {
     >
       <TileLayer url={CARTO_DARK_URL} attribution={CARTO_ATTRIBUTION} />
 
-      <FitToQuake quakeId={quake?.id ?? null} positions={fitPositions} />
+      {mode === 'quake' && (
+        <FitToBounds signature={quakeSignature} positions={quakeFitPositions} />
+      )}
+      {mode === 'tsunami' && (
+        <FitToBounds signature={tsunamiSignature} positions={tsunamiFitPositions} />
+      )}
 
+      {/* 津波予報区の海岸線（等級ごとに色分け） */}
+      {mode === 'tsunami' &&
+        tsunamiLines.map((line) =>
+          line.segments.map((segment, i) => (
+            <Polyline
+              key={`${line.name}-${i}`}
+              positions={segment}
+              pathOptions={{
+                color: TSUNAMI_STYLE[line.grade].color,
+                weight: TSUNAMI_STYLE[line.grade].weight,
+                opacity: 0.9,
+              }}
+            >
+              <Popup>
+                <div className="text-sm">
+                  <div className="font-bold">{line.name}</div>
+                  <div className="text-gray-600 text-xs">
+                    {TSUNAMI_STYLE[line.grade].label}
+                  </div>
+                </div>
+              </Popup>
+            </Polyline>
+          )),
+        )}
 
       {/* 各地点の震度マーカー（震度ごとに色分け・震度を表記） */}
-      {intensityMarkers.map((m) => (
-        <Marker
-          key={m.key}
-          position={m.position}
-          icon={getIntensityIcon(m.scale)}
-          zIndexOffset={m.scale}
-        >
-          <Popup>
-            <div className="text-sm">
-              <div className="font-bold">
-                {m.pref}
-                {m.addr}
+      {mode === 'quake' &&
+        intensityMarkers.map((m) => (
+          <Marker
+            key={m.key}
+            position={m.position}
+            icon={getIntensityIcon(m.scale)}
+            zIndexOffset={m.scale}
+          >
+            <Popup>
+              <div className="text-sm">
+                <div className="font-bold">
+                  {m.pref}
+                  {m.addr}
+                </div>
+                <div className="text-gray-600 text-xs">
+                  震度 {getIntensityLabel(m.scale)}
+                </div>
               </div>
-              <div className="text-gray-600 text-xs">
-                震度 {getIntensityLabel(m.scale)}
-              </div>
-            </div>
-          </Popup>
-        </Marker>
-      ))}
+            </Popup>
+          </Marker>
+        ))}
 
-      {/* Epicenter marker with intensity summary popup */}
-      {hasEpicenter && quake && (
+      {/* 震源マーカー（震度サマリーのポップアップ付き） */}
+      {mode === 'quake' && hasEpicenter && quake && (
         <Marker
           position={[
             quake.earthquake.hypocenter.latitude,
