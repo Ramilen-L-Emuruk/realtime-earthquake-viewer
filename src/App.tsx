@@ -53,7 +53,7 @@ export function App() {
   }
 
   const {
-    earthquakes, tsunamis, activeEEW, lastUpdate, isLoading, error,
+    earthquakes, tsunamis, activeEEW, connectionStatus, lastUpdate, isLoading, error,
     simulateEarthquake, simulateEEW, simulateTsunami,
   } = useEarthquakes(handleLiveEvent)
 
@@ -124,6 +124,9 @@ export function App() {
         ? new Date(kyoshin.dataTime)
         : null
       : lastUpdate
+  // 更新がエラーで停止しているか（リアルタイム=取得連続失敗 / それ以外=WS切断）
+  const overlayError =
+    activeTab === 'realtime' ? kyoshin.error : connectionStatus === 'disconnected'
 
   return (
     <div className="flex flex-col h-screen bg-app text-white overflow-hidden">
@@ -160,7 +163,7 @@ export function App() {
             kyoshinPsWave={kyoshin.psWave}
             eew={activeEEW}
           />
-          <MapUpdateTime lastUpdate={overlayUpdateTime} />
+          <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
         </div>
 
         {/* 右パネル（タブに応じて内容を切替） */}

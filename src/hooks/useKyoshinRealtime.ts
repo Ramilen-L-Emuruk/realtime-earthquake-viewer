@@ -11,7 +11,12 @@ export interface KyoshinRealtime {
   indices: number[]
   psWave: PsWaveCircle[]
   dataTime: string
+  /** 連続して取得に失敗し、更新が停止している場合 true */
+  error: boolean
 }
+
+// この回数連続で取得に失敗したら「更新停止（エラー）」とみなす
+const ERROR_THRESHOLD = 5
 
 /**
  * Yahoo 強震モニタのリアルタイム震度を取得するフック。
@@ -22,7 +27,9 @@ export function useKyoshinRealtime(enabled: boolean): KyoshinRealtime {
   const [indices, setIndices] = useState<number[]>([])
   const [psWave, setPsWave] = useState<PsWaveCircle[]>([])
   const [dataTime, setDataTime] = useState('')
+  const [error, setError] = useState(false)
   const sitesLoadedRef = useRef(false)
+  const failCountRef = useRef(0)
 
   // 観測点リストは初回有効化時に一度だけ取得
   useEffect(() => {
@@ -46,16 +53,22 @@ export function useKyoshinRealtime(enabled: boolean): KyoshinRealtime {
   useEffect(() => {
     if (!enabled) return
     let active = true
+    failCountRef.current = 0
+    setError(false)
 
     const tick = async () => {
       try {
         const rt = await fetchRealtimeIntensity(new Date())
         if (!active) return
+        failCountRef.current = 0
+        setError(false)
         setIndices(rt.indices)
         setPsWave(rt.psWave)
         setDataTime(rt.dataTime)
       } catch {
-        // 一時的な取得失敗は次のtickで回復
+        // 連続失敗が閾値を超えたら更新停止（エラー）とみなす
+        failCountRef.current += 1
+        if (active && failCountRef.current >= ERROR_THRESHOLD) setError(true)
       }
     }
 
@@ -67,5 +80,5 @@ export function useKyoshinRealtime(enabled: boolean): KyoshinRealtime {
     }
   }, [enabled])
 
-  return { sites, indices, psWave, dataTime }
+  return { sites, indices, psWave, dataTime, error }
 }
