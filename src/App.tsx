@@ -156,13 +156,18 @@ export function App() {
       window.clearTimeout(timer)
       timer = window.setTimeout(revert, ms)
     }
-    // 操作（クリック・キー入力・ホイール/タッチ/スクロール）のたびにリセット。
-    // すべて capture 段階で購読する。Leaflet は地図のホイールズーム時に
+    // ドラッグ中のパン操作: ボタン押下中の移動のみリセット（ホバーだけでは反応させない）。
+    const resetOnDrag = (e: PointerEvent) => {
+      if (e.buttons) reset()
+    }
+    // 操作（クリック・キー入力・ホイール/タッチ/スクロール/ドラッグ）のたびにリセット。
+    // すべて capture 段階で購読する。Leaflet は地図のホイールズームやドラッグ時に
     // stopPropagation でイベントを止めるため、バブリングでは window まで届かない。
     // capture なら Leaflet が止める前に window で先に拾える。scroll は非バブリングのため
     // もともと capture が必要。
     const opts = { passive: true, capture: true } as const
     window.addEventListener('pointerdown', reset, opts)
+    window.addEventListener('pointermove', resetOnDrag, opts)
     window.addEventListener('keydown', reset, opts)
     window.addEventListener('wheel', reset, opts)
     window.addEventListener('touchmove', reset, opts)
@@ -170,6 +175,7 @@ export function App() {
     return () => {
       window.clearTimeout(timer)
       window.removeEventListener('pointerdown', reset, true)
+      window.removeEventListener('pointermove', resetOnDrag, true)
       window.removeEventListener('keydown', reset, true)
       window.removeEventListener('wheel', reset, true)
       window.removeEventListener('touchmove', reset, true)
