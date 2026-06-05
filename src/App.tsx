@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Header } from './components/Header'
 import { TabBar, type TabId } from './components/TabBar'
-import { EEWBanner } from './components/EEWBanner'
 import { JapanMap, type MapMode } from './components/Map/JapanMap'
 import { EarthquakeTab } from './components/EarthquakeTab'
 import { RealtimeTab } from './components/RealtimeTab'
@@ -133,7 +132,6 @@ export function App() {
         </div>
       )}
 
-      <EEWBanner eew={activeEEW} />
       <Header connectionStatus={connectionStatus} lastUpdate={lastUpdate} />
       <TabBar
         activeTab={activeTab}
