@@ -2,6 +2,70 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import type { JMAQuake, JMATsunami, EEWAlert, P2PQuakeEvent, ConnectionStatus } from '../types/earthquake'
 import { fetchHistory, P2PQuakeWebSocket } from '../services/p2pquake'
 
+// ---- Test data generators ----
+
+function createTestEarthquake(): JMAQuake {
+  const now = new Date().toISOString()
+  return {
+    code: 551,
+    id: `test-eq-${Date.now()}`,
+    time: now,
+    issue: { source: 'テスト', time: now, type: 'ScaleAndDestination', correct: 'None' },
+    earthquake: {
+      time: now,
+      hypocenter: { name: '東京都内陸部（テスト）', latitude: 35.68, longitude: 139.69, depth: 20, magnitude: 5.5 },
+      maxScale: 40,
+      domesticTsunami: 'None',
+      foreignTsunami: 'None',
+    },
+    points: [
+      { pref: '東京都', addr: '千代田区', isArea: false, scale: 40 },
+      { pref: '東京都', addr: '新宿区', isArea: false, scale: 30 },
+      { pref: '神奈川県', addr: '横浜市中区', isArea: false, scale: 30 },
+      { pref: '埼玉県', addr: 'さいたま市大宮区', isArea: false, scale: 20 },
+      { pref: '千葉県', addr: '千葉市中央区', isArea: false, scale: 20 },
+    ],
+  }
+}
+
+function createTestEEW(): EEWAlert {
+  const now = new Date()
+  return {
+    code: 556,
+    id: `test-eew-${Date.now()}`,
+    time: now.toISOString(),
+    test: false,
+    earthquake: {
+      originTime: now.toISOString(),
+      arrivalTime: new Date(now.getTime() + 20000).toISOString(),
+      condition: '以上',
+      hypocenter: { name: '東京都内陸部（テスト）', latitude: 35.68, longitude: 139.69, depth: 20, magnitude: 5.5 },
+    },
+    severity: 'Warning',
+    cancelled: false,
+    regions: [
+      { pref: '東京都', name: '東京都区部', scaleFrom: 40, scaleTo: 40, kindCode: '10', arrivalTime: null },
+      { pref: '神奈川県', name: '神奈川県東部', scaleFrom: 30, scaleTo: 40, kindCode: '10', arrivalTime: null },
+      { pref: '埼玉県', name: '埼玉県南部', scaleFrom: 30, scaleTo: 30, kindCode: '10', arrivalTime: null },
+    ],
+  }
+}
+
+function createTestTsunami(): JMATsunami {
+  const now = new Date().toISOString()
+  return {
+    code: 552,
+    id: `test-tsunami-${Date.now()}`,
+    time: now,
+    cancelled: false,
+    issue: { source: 'テスト', time: now, type: 'Focus' },
+    areas: [
+      { grade: 'Watch', immediate: false, name: '相模湾（テスト）', maxHeight: { description: '1m', value: 1.0 } },
+      { grade: 'Watch', immediate: false, name: '伊豆諸島（テスト）', maxHeight: { description: '0.5m', value: 0.5 } },
+    ],
+  }
+}
+
 export interface EarthquakeState {
   earthquakes: JMAQuake[]
   tsunamis: JMATsunami[]
@@ -100,5 +164,21 @@ export function useEarthquakes() {
     }
   }, [handleEvent])
 
-  return state
+  const simulateEarthquake = useCallback(() => {
+    handleEvent(createTestEarthquake())
+  }, [handleEvent])
+
+  const simulateEEW = useCallback(() => {
+    const eew = createTestEEW()
+    handleEvent(eew)
+    setTimeout(() => handleEvent({ ...eew, cancelled: true }), 10000)
+  }, [handleEvent])
+
+  const simulateTsunami = useCallback(() => {
+    const tsunami = createTestTsunami()
+    handleEvent(tsunami)
+    setTimeout(() => handleEvent({ ...tsunami, cancelled: true }), 15000)
+  }, [handleEvent])
+
+  return { ...state, simulateEarthquake, simulateEEW, simulateTsunami }
 }

@@ -15,9 +15,11 @@ import { formatMagnitude } from './utils/formatters'
 export function App() {
   const [activeTab, setActiveTab] = useState<TabId>('earthquake')
   const { settings, updateSetting } = useSettings()
-  const { earthquakes, tsunamis, activeEEW, connectionStatus, lastUpdate, isLoading, error } =
-    useEarthquakes()
-  const { isActive: haAlertActive, dismiss: dismissHaAlert } =
+  const {
+    earthquakes, tsunamis, activeEEW, connectionStatus, lastUpdate, isLoading, error,
+    simulateEarthquake, simulateEEW, simulateTsunami,
+  } = useEarthquakes()
+  const { isActive: haAlertActive, dismiss: dismissHaAlert, testAlert } =
     useWebhookAlert(settings.webhookServerUrl)
 
   // ブラウザ通知: 新しい地震が設定震度以上なら通知
@@ -78,7 +80,27 @@ export function App() {
         {activeTab === 'realtime' && <RealtimeTab />}
         {activeTab === 'tsunami' && <TsunamiTab tsunamis={tsunamis} />}
         {activeTab === 'settings' && (
-          <SettingsTab settings={settings} onUpdate={updateSetting} />
+          <SettingsTab
+            settings={settings}
+            onUpdate={updateSetting}
+            onTest={{
+              earthquake: simulateEarthquake,
+              eew: simulateEEW,
+              tsunami: simulateTsunami,
+              haAlert: testAlert,
+              notification: () => {
+                if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
+                  alert('先に「通知を許可する」ボタンをクリックしてください。')
+                  return
+                }
+                new Notification('地震情報テスト', {
+                  body: '東京都内陸部（テスト） 最大震度4 M5.5',
+                  icon: '/icons/icon.svg',
+                  tag: 'test-notification',
+                })
+              },
+            }}
+          />
         )}
       </div>
     </div>
