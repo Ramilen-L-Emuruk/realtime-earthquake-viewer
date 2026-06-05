@@ -108,25 +108,32 @@ export function App() {
     if (tab === 'earthquake' && haAlertActive) dismissHaAlert()
   }
 
-  // 強震モニタ（リアルタイムタブ表示中のみ Yahoo データをポーリング）
-  const kyoshin = useKyoshinRealtime(activeTab === 'realtime')
+  // 設定タブ表示中は、地図には直前に表示していたタブの内容をそのまま残す。
+  const [lastContentTab, setLastContentTab] = useState<TabId>('earthquake')
+  useEffect(() => {
+    if (activeTab !== 'settings') setLastContentTab(activeTab)
+  }, [activeTab])
+  const mapTab = activeTab === 'settings' ? lastContentTab : activeTab
 
-  // 常時表示する地図の内容はタブに応じて切り替える
+  // 強震モニタ（地図がリアルタイム表示のときのみ Yahoo データをポーリング）
+  const kyoshin = useKyoshinRealtime(mapTab === 'realtime')
+
+  // 常時表示する地図の内容は mapTab（設定タブ中は直前のタブ）に応じて切り替える
   const mapMode: MapMode =
-    activeTab === 'tsunami' ? 'tsunami' : activeTab === 'realtime' ? 'kyoshin' : 'quake'
-  const mapQuake = activeTab === 'earthquake' ? selectedQuake : latest
+    mapTab === 'tsunami' ? 'tsunami' : mapTab === 'realtime' ? 'kyoshin' : 'quake'
+  const mapQuake = mapTab === 'earthquake' ? selectedQuake : latest
 
-  // 地図左上の更新時刻: リアルタイムタブはリアルタイム震度(kyoshin)の更新時刻、
+  // 地図左上の更新時刻: リアルタイム表示はリアルタイム震度(kyoshin)の更新時刻、
   // それ以外は P2P データの最終更新時刻を表示する。
   const overlayUpdateTime =
-    activeTab === 'realtime'
+    mapTab === 'realtime'
       ? kyoshin.dataTime
         ? new Date(kyoshin.dataTime)
         : null
       : lastUpdate
   // 更新がエラーで停止しているか（リアルタイム=取得連続失敗 / それ以外=WS切断）
   const overlayError =
-    activeTab === 'realtime' ? kyoshin.error : connectionStatus === 'disconnected'
+    mapTab === 'realtime' ? kyoshin.error : connectionStatus === 'disconnected'
 
   return (
     <div className="flex flex-col h-screen bg-app text-white overflow-hidden">
