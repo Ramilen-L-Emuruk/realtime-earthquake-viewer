@@ -11,19 +11,31 @@ import { getIntensityLabel, getIntensityColor, getIntensityBgColor } from '../..
 interface Props {
   quake: JMAQuake
   isLatest?: boolean
+  isSelected?: boolean
+  onSelect?: () => void
 }
 
-export function EarthquakeCard({ quake, isLatest }: Props) {
+export function EarthquakeCard({ quake, isLatest, isSelected, onSelect }: Props) {
   const { earthquake, issue } = quake
   const { hypocenter, maxScale, domesticTsunami } = earthquake
   const tsunamiInfo = formatDomesticTsunami(domesticTsunami)
   const hasLocation = hypocenter.latitude > -200 && hypocenter.longitude > -200
 
+  const borderClass = isSelected
+    ? 'border-blue-500 ring-1 ring-blue-500/60'
+    : isLatest
+      ? 'border-blue-500/50'
+      : 'border-border'
+
   return (
-    <div
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-pressed={isSelected}
       className={`
-        bg-card rounded-lg p-3 border transition-colors
-        ${isLatest ? 'border-blue-500/50' : 'border-border'}
+        w-full text-left bg-card rounded-lg p-3 border transition-colors cursor-pointer
+        hover:border-blue-400/60
+        ${borderClass}
       `}
     >
       <div className="flex items-stretch gap-3">
@@ -86,6 +98,6 @@ export function EarthquakeCard({ quake, isLatest }: Props) {
           </div>
         </div>
       </div>
-    </div>
+    </button>
   )
 }
