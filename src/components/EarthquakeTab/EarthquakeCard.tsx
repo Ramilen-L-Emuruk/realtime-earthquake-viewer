@@ -1,6 +1,6 @@
 import type { JMAQuake } from '../../types/earthquake'
 import {
-  formatDateTime,
+  formatQuakeTime,
   formatDepth,
   formatMagnitude,
   formatDomesticTsunami,
@@ -87,7 +87,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect }: Props)
 
           <div className="mt-1.5 space-y-0.5">
             <div className="text-xs text-secondary">
-              {formatDateTime(earthquake.time)}
+              {formatQuakeTime(earthquake.time)}
             </div>
             <div
               className="text-xs font-medium"
