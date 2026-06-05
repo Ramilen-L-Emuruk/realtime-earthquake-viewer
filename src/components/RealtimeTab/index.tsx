@@ -7,6 +7,9 @@ export function RealtimeTab() {
   const [imgSrc, setImgSrc] = useState('')
   const [currentTime, setCurrentTime] = useState(new Date())
   const [imgError, setImgError] = useState(false)
+  // 最初の画像が読み込まれるまでは画像を隠してローディング表示にする
+  // （src 未設定・読み込み中の壊れた画像アイコン + alt テキストの一瞬の表示を防ぐ）
+  const [imgLoaded, setImgLoaded] = useState(false)
 
   useEffect(() => {
     const tick = () => {
@@ -33,19 +36,30 @@ export function RealtimeTab() {
 
       <div className="flex-1 flex flex-col items-center justify-start px-4 pb-4 overflow-y-auto">
         {/* Kmoni image */}
-        <div className="w-full max-w-2xl bg-black rounded-lg overflow-hidden border border-border">
-          {!imgError ? (
-            <img
-              src={imgSrc}
-              alt="強震モニタ リアルタイム震度"
-              className="w-full"
-              onError={() => setImgError(true)}
-            />
-          ) : (
+        <div className="relative w-full max-w-2xl bg-black rounded-lg overflow-hidden border border-border">
+          {imgError ? (
             <div className="h-48 flex flex-col items-center justify-center gap-2">
               <p className="text-secondary text-sm">画像を読み込めませんでした</p>
               <p className="text-secondary text-xs">強震モニタへの接続を確認中...</p>
             </div>
+          ) : (
+            <>
+              {!imgLoaded && (
+                <div className="h-48 flex flex-col items-center justify-center gap-2">
+                  <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                  <p className="text-secondary text-xs">強震モニタを読み込み中...</p>
+                </div>
+              )}
+              {imgSrc && (
+                <img
+                  src={imgSrc}
+                  alt="強震モニタ リアルタイム震度"
+                  className={`w-full ${imgLoaded ? 'block' : 'hidden'}`}
+                  onLoad={() => setImgLoaded(true)}
+                  onError={() => setImgError(true)}
+                />
+              )}
+            </>
           )}
         </div>
 
