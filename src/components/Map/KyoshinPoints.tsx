@@ -23,8 +23,9 @@ function intensityBadgeIcon(color: string, label: string, scale: number, iconSca
 }
 
 // 強震モニタの観測点（約1725点）を Canvas で描画するレイヤー。
-// ドットは観測点リスト取得時に一度だけ生成し、毎秒の更新は色の変更のみ行う。
-// さらに、震度0以上の各点には震度階級ラベル（震度0は「0」）を常時重ねて表示する。
+// ドットは観測点リスト取得時に一度だけ生成し、毎秒の更新は色の変更のみ行う
+// （震度0未満=非表示 / 震度0=灰色の点 / 震度1以上=気象庁配色の点）。
+// さらに、震度1以上の各点には震度階級の数字バッジを常時重ねて表示する。
 export function KyoshinPoints({ sites, indices, iconScale }: Props) {
   const map = useMap()
   const markersRef = useRef<L.CircleMarker[]>([])
@@ -76,7 +77,7 @@ export function KyoshinPoints({ sites, indices, iconScale }: Props) {
     markersRef.current.forEach((m) => m.setRadius(2.5 * iconScale))
   }, [iconScale])
 
-  // 震度0以上の各点に震度階級ラベルを常時表示（ズームに依らない）。
+  // 震度1以上の各点に震度階級の数字バッジを常時表示（ズームに依らない）。
   // 毎秒の indices 更新で対象集合・震度が変わるため作り直す。
   useEffect(() => {
     const group = labelGroupRef.current
@@ -84,7 +85,8 @@ export function KyoshinPoints({ sites, indices, iconScale }: Props) {
     group.clearLayers()
     for (let i = 0; i < sites.length; i++) {
       const jma = kyoshinIndexToJma(indices[i])
-      if (!jma) continue // 震度0未満は表示しない
+      // 震度0未満は非表示、震度0は灰色の点のみ（数字バッジは出さない）。震度1以上にバッジ。
+      if (!jma || jma.label === '0') continue
       const color = kyoshinIntensityColor(indices[i]) ?? SHINDO0_COLOR
       const [lat, lng] = sites[i]
       L.marker([lat, lng], {
