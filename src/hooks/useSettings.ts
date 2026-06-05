@@ -1,5 +1,8 @@
 import { useState } from 'react'
 
+// アイドル復帰時に戻すデフォルトタブの選択肢（津波情報・設定は対象外）
+export type DefaultTabSetting = 'earthquake' | 'realtime'
+
 export interface AppSettings {
   minDisplayScale: number   // 最低表示震度 (-1 = すべて)
   notifyMinScale: number    // 通知最低震度 (-1 = 通知しない)
@@ -7,6 +10,8 @@ export interface AppSettings {
   webhookServerUrl: string  // HA Webhook サーバー URL
   soundEnabled: boolean     // 地震・EEW・津波の受信時に音を鳴らす
   uiScale: number           // UI 倍率 (1 = 100%)
+  defaultTab: DefaultTabSetting    // 起動時・アイドル復帰時に表示するタブ
+  tsunamiPriorityDefault: boolean  // 津波発表中はデフォルトタブを津波情報にする
 }
 
 const STORAGE_KEY = 'quake-viewer-settings'
@@ -20,6 +25,8 @@ const DEFAULTS: AppSettings = {
   webhookServerUrl: '',
   soundEnabled: true,
   uiScale: 1,
+  defaultTab: 'earthquake',
+  tsunamiPriorityDefault: true,
 }
 
 function load(): AppSettings {
