@@ -116,8 +116,8 @@ export function App() {
   }, [activeTab])
   const mapTab = activeTab === 'settings' ? lastContentTab : activeTab
 
-  // 強震モニタ（地図がリアルタイム表示のときのみ Yahoo データをポーリング）
-  const kyoshin = useKyoshinRealtime(mapTab === 'realtime')
+  // 強震モニタ（常時ポーリング: タブ非表示中も揺れ検知を継続する）
+  const kyoshin = useKyoshinRealtime(true)
   const kyoshinDetection = useKyoshinDetection(kyoshin.sites, kyoshin.indices)
 
   // 揺れ検知時にリアルタイムタブを自動表示（false → true への遷移時のみ）
