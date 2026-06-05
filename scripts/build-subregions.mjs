@@ -19,9 +19,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const OUT_DIR = join(__dirname, '..', 'public', 'data')
 const OUT_FILE = join(OUT_DIR, 'subregions.json')
 
-/** [lon, lat] -> [lat, lon]、約100m精度に丸める。 */
+/** [lon, lat] -> [lat, lon]、約10m精度に丸める（拡大時の品質確保）。 */
 function toLatLng([lon, lat]) {
-  return [Math.round(lat * 1000) / 1000, Math.round(lon * 1000) / 1000]
+  return [Math.round(lat * 10000) / 10000, Math.round(lon * 10000) / 10000]
 }
 
 function dedupe(ring) {
@@ -44,8 +44,8 @@ function perpDist([y, x], [ay, ax], [by, bx]) {
   return Math.hypot(y - cy, x - cx)
 }
 
-// Douglas-Peucker（形状だけ残す簡略化）。
-const EPSILON = 0.01 // 度（約1.1km相当）
+// Douglas-Peucker（拡大時の崩れを抑えるため詳細を残す）。
+const EPSILON = 0.002 // 度（約220m相当）
 function simplify(points) {
   if (points.length < 3) return points
   let maxD = 0

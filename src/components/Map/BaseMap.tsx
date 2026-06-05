@@ -66,7 +66,7 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
     }
 
     map.attributionControl?.addAttribution(
-      '「国土数値情報（行政区域）」国土交通省 / 「気象庁 予報区等GISデータ（地震情報／細分区域）」 / Natural Earth',
+      '「気象庁 予報区等GISデータ（都道府県・地震情報／細分区域）」',
     )
 
     let cancelled = false
