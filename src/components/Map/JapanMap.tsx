@@ -364,7 +364,7 @@ export function JapanMap({
 
       {/* 強震モニタ: Yahoo リアルタイム震度の観測点を描画 */}
       {mode === 'kyoshin' && (
-        <KyoshinPoints sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
+        <KyoshinPoints sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} detailMinZoom={PREF_AGGREGATE_MAX_ZOOM} />
       )}
 
       {/* リアルタイムタブ入室時: EEW が無ければ日本全体を表示 */}
