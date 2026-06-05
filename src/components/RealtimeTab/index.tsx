@@ -1,5 +1,9 @@
-// リアルタイムタブの右パネル。強震モニタ画像は地図エリアの KmoniMonitor が担当し、
-// ここでは説明・震度スケール凡例・注記を表示する。
+// リアルタイムタブの右パネル。地図エリアは JapanMap が強震モニタ（観測点）と
+// 予報円を描画し、ここでは EEW 情報カード・説明・震度スケール凡例・注記を表示する。
+import type { EEWAlert } from '../../types/earthquake'
+import { formatDateTime } from '../../utils/formatters'
+import { getIntensityLabel } from '../../utils/intensity'
+import { eewAreas, eewMaxScale } from '../../utils/eew'
 
 const SCALE_LEGEND = [
   { label: '1', color: '#7bb4c8' },
@@ -13,13 +17,58 @@ const SCALE_LEGEND = [
   { label: '7', color: '#9d0099' },
 ]
 
-export function RealtimeTab() {
+interface Props {
+  eew: EEWAlert | null
+}
+
+function EEWCard({ eew }: { eew: EEWAlert }) {
+  const isWarning = eew.severity === 'Warning'
+  const maxScale = eewMaxScale(eew)
+  const areas = eewAreas(eew)
+  const { hypocenter } = eew.earthquake
+
+  return (
+    <div
+      className={`rounded-lg p-3 border ${
+        isWarning ? 'bg-red-900/40 border-red-600' : 'bg-orange-900/40 border-orange-600'
+      }`}
+    >
+      <div className="flex items-center gap-2 mb-1">
+        <span className="text-xs text-secondary">緊急地震速報</span>
+        <span className={`text-sm font-black ${isWarning ? 'text-red-300' : 'text-orange-300'}`}>
+          {isWarning ? '警報' : '予報'}
+        </span>
+      </div>
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="text-white font-bold text-base">{hypocenter.name}</span>
+        <span className="text-white text-sm">M{hypocenter.magnitude.toFixed(1)}</span>
+        {maxScale > 0 && (
+          <span className="text-white text-sm font-bold">最大震度{getIntensityLabel(maxScale)}予想</span>
+        )}
+      </div>
+      <div className="text-xs text-secondary mt-1">
+        深さ {hypocenter.depth}km / {formatDateTime(eew.earthquake.originTime)}
+      </div>
+      {areas.length > 0 && (
+        <div className="text-xs text-secondary mt-1 leading-relaxed">
+          対象: {areas.slice(0, 6).map(a => a.pref).join(' / ')}
+          {areas.length > 6 && ' ...'}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function RealtimeTab({ eew }: Props) {
   return (
     <div className="p-3 space-y-3">
+      {eew && <EEWCard eew={eew} />}
+
       <div>
         <h2 className="text-white font-bold text-sm mb-1">リアルタイム震度モニタ</h2>
         <p className="text-secondary text-xs leading-relaxed">
           各観測点のリアルタイム震度を地図に表示します。1秒ごとに更新されます。
+          緊急地震速報の発報時は予報円（青=P波 / 赤=S波）も表示します。
         </p>
       </div>
 

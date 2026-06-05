@@ -117,7 +117,10 @@ export interface EEWAlert {
   }
   severity: 'Unknown' | 'Forecast' | 'Warning'
   cancelled: boolean
-  regions: EEWRegion[]
+  // P2PQuake v2 の実データは `areas`、テスト/旧データは `regions` を使う。
+  // 参照時は utils/eew.ts の eewAreas() で吸収する。
+  areas?: EEWRegion[]
+  regions?: EEWRegion[]
 }
 
 export type P2PQuakeEvent = JMAQuake | JMATsunami | EarthquakeDetection | EEWAlert

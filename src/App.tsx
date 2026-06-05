@@ -26,11 +26,14 @@ export function App() {
     earthquake: 0, eew: 0, tsunami: 0,
   })
   const handleLiveEvent = (event: P2PQuakeEvent) => {
-    // 受信時に該当タブを自動表示（地震情報・津波情報）
+    // 受信時に該当タブを自動表示（地震情報・津波情報・緊急地震速報）
     if (event.code === 551) {
       setActiveTab('earthquake')
     } else if (event.code === 552 && !event.cancelled) {
       setActiveTab('tsunami')
+    } else if (event.code === 556 && !event.cancelled && !event.test) {
+      // 緊急地震速報の発報時はリアルタイムタブ（強震モニタ＋予報円）を開く
+      setActiveTab('realtime')
     }
 
     // 通知音
@@ -148,6 +151,7 @@ export function App() {
             uiScale={settings.uiScale}
             kyoshinSites={kyoshin.sites}
             kyoshinIndices={kyoshin.indices}
+            kyoshinPsWave={kyoshin.psWave}
           />
         </div>
 
@@ -163,7 +167,7 @@ export function App() {
               error={error}
             />
           )}
-          {activeTab === 'realtime' && <RealtimeTab />}
+          {activeTab === 'realtime' && <RealtimeTab eew={activeEEW} />}
           {activeTab === 'tsunami' && <TsunamiTab tsunamis={tsunamis} />}
           {activeTab === 'settings' && (
             <SettingsTab

@@ -40,10 +40,26 @@ function jstParts(date: Date): { dateStr: string; ts: string } {
   return { dateStr, ts: `${dateStr}${hour}${get('minute')}${get('second')}` }
 }
 
+/** 緊急地震速報の予報円（P波/S波）。半径は km。 */
+export interface PsWaveCircle {
+  lat: number
+  lng: number
+  pRadius: number
+  sRadius: number
+}
+
 export interface RealtimeIntensity {
   dataTime: string
   /** 観測点ごとの震度インデックス(0〜20)。sitelist と同順。 */
   indices: number[]
+  /** 予報円（EEW 発報中のみ要素を持つ）。 */
+  psWave: PsWaveCircle[]
+}
+
+/** "35.5N" / "139.5E" 形式の座標文字列を数値に変換する。 */
+function parseCoord(value: string | undefined): number {
+  if (!value) return NaN
+  return parseFloat(value.replace(/[NESW]/i, ''))
 }
 
 /**
@@ -62,10 +78,21 @@ export async function fetchRealtimeIntensity(now: Date): Promise<RealtimeIntensi
       }
       const json = (await res.json()) as {
         realTimeData?: { dataTime?: string; intensity?: string }
+        psWave?: {
+          items?: { latitude?: string; longitude?: string; pRadius?: number; sRadius?: number }[]
+        }
       }
       const intensity = json.realTimeData?.intensity ?? ''
       const indices = Array.from(intensity, (c) => c.charCodeAt(0) - 100)
-      return { dataTime: json.realTimeData?.dataTime ?? '', indices }
+      const psWave: PsWaveCircle[] = (json.psWave?.items ?? [])
+        .map((it) => ({
+          lat: parseCoord(it.latitude),
+          lng: parseCoord(it.longitude),
+          pRadius: Number(it.pRadius) || 0,
+          sRadius: Number(it.sRadius) || 0,
+        }))
+        .filter((c) => Number.isFinite(c.lat) && Number.isFinite(c.lng))
+      return { dataTime: json.realTimeData?.dataTime ?? '', indices, psWave }
     } catch (err) {
       lastErr = err
     }
