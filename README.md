@@ -273,9 +273,7 @@ realtime-earthquake-viewer/
 ├── src/
 │   ├── App.tsx                     # 地図常時表示 + タブ別パネル + 通知音/自動タブ切替
 │   ├── components/
-│   │   ├── ConnectionStatus.tsx    # WebSocket 接続状態インジケーター
-│   │   ├── Header.tsx              # アプリヘッダー
-│   │   ├── LastUpdateBadge.tsx     # 最終更新時刻バッジ
+│   │   ├── MapUpdateTime.tsx       # 地図左上の更新時刻オーバーレイ
 │   │   ├── TabBar.tsx              # タブナビゲーション
 │   │   ├── EarthquakeTab/          # 地震情報パネル（カード一覧・選択）
 │   │   ├── Map/

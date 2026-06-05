@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
-import { Header } from './components/Header'
 import { TabBar, type TabId } from './components/TabBar'
 import { JapanMap, type MapMode } from './components/Map/JapanMap'
+import { MapUpdateTime } from './components/MapUpdateTime'
 import { EarthquakeTab } from './components/EarthquakeTab'
 import { RealtimeTab } from './components/RealtimeTab'
 import { TsunamiTab } from './components/TsunamiTab'
@@ -53,7 +53,7 @@ export function App() {
   }
 
   const {
-    earthquakes, tsunamis, activeEEW, connectionStatus, lastUpdate, isLoading, error,
+    earthquakes, tsunamis, activeEEW, lastUpdate, isLoading, error,
     simulateEarthquake, simulateEEW, simulateTsunami,
   } = useEarthquakes(handleLiveEvent)
 
@@ -116,6 +116,15 @@ export function App() {
     activeTab === 'tsunami' ? 'tsunami' : activeTab === 'realtime' ? 'kyoshin' : 'quake'
   const mapQuake = activeTab === 'earthquake' ? selectedQuake : latest
 
+  // 地図左上の更新時刻: リアルタイムタブはリアルタイム震度(kyoshin)の更新時刻、
+  // それ以外は P2P データの最終更新時刻を表示する。
+  const overlayUpdateTime =
+    activeTab === 'realtime'
+      ? kyoshin.dataTime
+        ? new Date(kyoshin.dataTime)
+        : null
+      : lastUpdate
+
   return (
     <div className="flex flex-col h-screen bg-app text-white overflow-hidden">
       {haAlertActive && (
@@ -132,7 +141,6 @@ export function App() {
         </div>
       )}
 
-      <Header connectionStatus={connectionStatus} lastUpdate={lastUpdate} />
       <TabBar
         activeTab={activeTab}
         onTabChange={handleTabChange}
@@ -152,6 +160,7 @@ export function App() {
             kyoshinPsWave={kyoshin.psWave}
             eew={activeEEW}
           />
+          <MapUpdateTime lastUpdate={overlayUpdateTime} />
         </div>
 
         {/* 右パネル（タブに応じて内容を切替） */}
