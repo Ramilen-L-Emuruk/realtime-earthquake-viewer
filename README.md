@@ -49,6 +49,10 @@
   - 発報直後は震源を中心に表示し、予報円の拡大に合わせて自動的にズームアウト
   - 情報番号（#N）・対象地域・最大震度予想を表示
 
+- **ベースマップ（地図表示）**
+  - 地図タイルを使わず、**都道府県の境界・陸地を自前で描画**したダークテーマの行政区域マップ（道路や注記が無いシンプルな表示）
+  - ズームに応じて **地方名（引き）→ 都道府県名 → 主要都市名（寄り）** とラベルの粒度を自動で切り替え
+
 - **PWA 対応**
   - ホーム画面へのインストール（Android / iOS / デスクトップ）
   - Service Worker によるオフラインキャッシュ
@@ -67,7 +71,7 @@
 | フレームワーク | React 18 + TypeScript |
 | ビルドツール | Vite 6 |
 | スタイル | Tailwind CSS（ダークテーマ） |
-| 地図 | React-Leaflet + CARTO Dark タイル |
+| 地図 | React-Leaflet + 自前の行政区域ベースマップ（タイル不使用・ダーク／地方・県・都市ラベル） |
 | PWA | vite-plugin-pwa + Workbox |
 | データ | [P2PQuake API v2](https://api.p2pquake.net/v2/docs/) |
 | リアルタイム震度 | [Yahoo!天気・災害 リアルタイム震度](https://typhoon.yahoo.co.jp/weather/jp/earthquake/kyoshin/)（防災科研 強震モニタ由来） |
@@ -108,6 +112,7 @@ npm run preview
 > 地図表示用のデータテーブルは以下のスクリプトで再生成できます（通常は更新不要）。
 > - 観測点座標（`public/data/station-coords.json`）: `node scripts/build-station-coords.mjs`
 > - 津波予報区の海岸線（`public/data/tsunami-zones.json`）: `node scripts/build-tsunami-zones.mjs`
+> - 都道府県境界（`public/data/prefectures.json`）: `node scripts/build-prefectures.mjs`
 
 ---
 
@@ -176,7 +181,7 @@ return
 | リアルタイム震度 | [Yahoo!天気・災害 リアルタイム震度](https://typhoon.yahoo.co.jp/weather/jp/earthquake/kyoshin/) | 観測点ごとのリアルタイム震度 JSON（HTTPS・1秒更新、防災科研 強震モニタ由来） |
 | 観測点座標 | 気象庁 震度観測点一覧（[iku55 氏による JSON 化](https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1)） | 地図に各地点をプロットするための座標テーブル |
 | 津波予報区の海岸線 | 気象庁 予報区等 GIS データ（[Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)） | 津波の海域を海岸線として描画するためのライン座標 |
-| 地図タイル | [CARTO Dark Matter](https://carto.com/attributions) | © OpenStreetMap contributors |
+| 行政区域（都道府県境界） | [dataofjapan/land](https://github.com/dataofjapan/land)（Natural Earth ベース） | ベースマップの陸地・県境を自前描画（タイル不使用）。`scripts/build-prefectures.mjs` で生成 |
 
 ### P2PQuake イベントコード
 
@@ -216,10 +221,12 @@ realtime-earthquake-viewer/
 │   ├── icons/                      # アプリアイコン
 │   └── data/
 │       ├── station-coords.json     # 震度観測点・細分区域の座標テーブル（生成物）
-│       └── tsunami-zones.json      # 津波予報区の海岸線座標（生成物）
+│       ├── tsunami-zones.json      # 津波予報区の海岸線座標（生成物）
+│       └── prefectures.json        # 都道府県の境界ポリゴン（ベースマップ用・生成物）
 ├── scripts/
 │   ├── build-station-coords.mjs    # 観測点座標テーブル生成スクリプト
-│   └── build-tsunami-zones.mjs     # 津波予報区 海岸線データ生成スクリプト
+│   ├── build-tsunami-zones.mjs     # 津波予報区 海岸線データ生成スクリプト
+│   └── build-prefectures.mjs       # 都道府県境界データ生成スクリプト
 ├── src/
 │   ├── App.tsx                     # 地図常時表示 + タブ別パネル + 通知音/自動タブ切替/ウィンドウタイトル連携
 │   ├── components/
@@ -228,6 +235,7 @@ realtime-earthquake-viewer/
 │   │   ├── EarthquakeTab/          # 地震情報パネル（カード一覧・選択）
 │   │   ├── Map/
 │   │   │   ├── JapanMap.tsx        # Leaflet 日本地図（震度マーカー / 津波海岸線 / 強震モニタ）
+│   │   │   ├── BaseMap.tsx         # 行政区域ベースマップ（県境・陸地・地方/県/都市ラベル）
 │   │   │   └── KyoshinPoints.tsx   # 強震モニタ観測点の Canvas 描画レイヤー
 │   │   ├── RealtimeTab/            # 凡例・注記パネル（地図は JapanMap が担当）
 │   │   ├── SettingsTab/            # 設定パネル
@@ -249,6 +257,9 @@ realtime-earthquake-viewer/
 │       ├── kyoshinColor.ts         # リアルタイム震度のカラースケール
 │       ├── stationCoords.ts        # 地点名→座標の引き当て
 │       ├── tsunamiZones.ts         # 津波予報区 海岸線データの引き当て
+│       ├── prefectures.ts          # 都道府県境界データの読み込み
+│       ├── prefectureCapitals.ts   # 主要都市（県庁所在地）ラベル一覧
+│       ├── regions.ts              # 地方区分ラベル一覧
 │       └── formatters.ts           # 日時・数値フォーマッター
 ├── index.html
 ├── package.json
@@ -271,4 +282,4 @@ realtime-earthquake-viewer/
 
 MIT License
 
-地図データ: © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, © [CARTO](https://carto.com/attributions)
+地図データ: 「国土数値情報（行政区域）」（国土交通省） / [Natural Earth](https://www.naturalearthdata.com/)（パブリックドメイン）

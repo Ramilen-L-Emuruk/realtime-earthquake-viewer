@@ -28,6 +28,34 @@ body {
 
 .leaflet-container { background: #0a0c10; }
 
+/* 行政区域ベースマップのラベル（地方名・県名・主要都市名）。背景なしの淡色テキスト。 */
+.base-region-label,
+.base-pref-label,
+.base-city-label {
+  white-space: nowrap;
+  font-weight: 600;
+  text-shadow: 0 0 3px #0a0c10, 0 0 3px #0a0c10, 0 0 2px #0a0c10;
+  pointer-events: none;
+  width: auto !important;
+  height: auto !important;
+  margin: 0 !important;
+  /* ラベル中心を代表点に合わせる */
+  transform: translate(-50%, -50%);
+}
+.base-region-label {
+  color: #dbe3ee;
+  font-size: 15px;
+  letter-spacing: 0.05em;
+}
+.base-pref-label {
+  color: #cbd5e1;
+  font-size: 12px;
+}
+.base-city-label {
+  color: #93a3b8;
+  font-size: 11px;
+}
+
 .leaflet-control-attribution {
   background: rgba(10, 12, 16, 0.8) !important;
   color: #64748b !important;
