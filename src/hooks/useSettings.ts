@@ -9,6 +9,7 @@ export interface AppSettings {
   maxEarthquakeList: number // リスト表示件数
   soundEnabled: boolean     // 地震・EEW・津波の受信時に音を鳴らす
   uiScale: number           // UI 倍率 (1 = 100%)
+  mapIconScale: number      // 地図アイコンの倍率 (1 = 100%、UI 倍率とは独立)
   defaultTab: DefaultTabSetting    // 起動時・アイドル復帰時に表示するタブ
   tsunamiPriorityDefault: boolean  // 津波発表中はデフォルトタブを津波情報にする
   idleRevertSec: number            // 操作なしでデフォルトタブへ戻るまでの秒数 (0 = 無効)
@@ -22,6 +23,7 @@ const DEFAULTS: AppSettings = {
   maxEarthquakeList: 20,
   soundEnabled: true,
   uiScale: 1,
+  mapIconScale: 1,
   defaultTab: 'earthquake',
   tsunamiPriorityDefault: true,
   idleRevertSec: 30,

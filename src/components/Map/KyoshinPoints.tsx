@@ -7,13 +7,13 @@ import { kyoshinColor } from '../../utils/kyoshinColor'
 interface Props {
   sites: SiteCoords
   indices: number[]
-  uiScale: number
+  iconScale: number
 }
 
 // 強震モニタの観測点（約1725点）を Canvas で描画するレイヤー。
 // マーカーは観測点リスト取得時に一度だけ生成し、毎秒の更新は色（と半径）の
 // 変更のみ行うことで、React の再レンダリングコストを避ける。
-export function KyoshinPoints({ sites, indices, uiScale }: Props) {
+export function KyoshinPoints({ sites, indices, iconScale }: Props) {
   const map = useMap()
   const markersRef = useRef<L.CircleMarker[]>([])
 
@@ -25,7 +25,7 @@ export function KyoshinPoints({ sites, indices, uiScale }: Props) {
     const markers = sites.map(([lat, lng]) =>
       L.circleMarker([lat, lng], {
         renderer,
-        radius: 2.5 * uiScale,
+        radius: 2.5 * iconScale,
         stroke: false,
         fillOpacity: 0.85,
         fillColor: kyoshinColor(undefined),
@@ -52,8 +52,8 @@ export function KyoshinPoints({ sites, indices, uiScale }: Props) {
 
   // UI 倍率の変更時に各マーカーの半径を更新
   useEffect(() => {
-    markersRef.current.forEach((m) => m.setRadius(2.5 * uiScale))
-  }, [uiScale])
+    markersRef.current.forEach((m) => m.setRadius(2.5 * iconScale))
+  }, [iconScale])
 
   return null
 }
