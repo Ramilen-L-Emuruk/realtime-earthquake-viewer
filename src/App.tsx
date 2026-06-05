@@ -7,33 +7,49 @@ import { RealtimeTab } from './components/RealtimeTab'
 import { TsunamiTab } from './components/TsunamiTab'
 import { SettingsTab } from './components/SettingsTab'
 import { useEarthquakes } from './hooks/useEarthquakes'
-import { useWebhookAlert } from './hooks/useWebhookAlert'
 import { useSettings } from './hooks/useSettings'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
 import { useKyoshinDetection } from './hooks/useKyoshinDetection'
 import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude } from './utils/formatters'
+import { eewMaxScale } from './utils/eew'
 import { playAlertSound, unlockAudio, type AlertSoundType } from './utils/alertSound'
 import type { P2PQuakeEvent } from './types/earthquake'
+
+// 平常時のウィンドウタイトル（index.html の <title> と一致させる）。
+// AutoHotKey 等が、情報更新時のタイトル変化を検知してイベントを発火できるようにする。
+const DEFAULT_TITLE = 'リアルタイム地震ビューアー'
 
 export function App() {
   const { settings, updateSetting } = useSettings()
   const [activeTab, setActiveTab] = useState<TabId>(settings.defaultTab)
   const [selectedQuakeId, setSelectedQuakeId] = useState<string | null>(null)
+  // 情報更新時にウィンドウタイトルへ表示する文言（null = 平常時タイトル）。
+  // デフォルトタブへ戻るタイミングで null に戻す。
+  const [alertTitle, setAlertTitle] = useState<string | null>(null)
 
   // 受信イベントの種別ごとに通知音を鳴らす（同種の連続発火はバースト抑制）
   const lastSoundAtRef = useRef<Record<AlertSoundType, number>>({
     earthquake: 0, eew: 0, tsunami: 0,
   })
   const handleLiveEvent = (event: P2PQuakeEvent) => {
-    // 受信時に該当タブを自動表示（地震情報・津波情報・緊急地震速報）
+    // 受信時に該当タブを自動表示し、ウィンドウタイトルを更新する
+    // （地震情報・津波情報・緊急地震速報）。
     if (event.code === 551) {
       setActiveTab('earthquake')
+      const { hypocenter, maxScale } = event.earthquake
+      setAlertTitle(`🔴 地震情報 ${hypocenter.name} 最大震度${getIntensityLabel(maxScale)}`)
     } else if (event.code === 552 && !event.cancelled) {
       setActiveTab('tsunami')
+      setAlertTitle('🌊 津波情報 発表中')
     } else if (event.code === 556 && !event.cancelled && !event.test) {
       // 緊急地震速報の発報時はリアルタイムタブ（強震モニタ＋予報円）を開く
       setActiveTab('realtime')
+      const scale = eewMaxScale(event)
+      setAlertTitle(
+        `🚨 緊急地震速報 ${event.earthquake.hypocenter.name}` +
+        (scale > 0 ? ` 最大震度${getIntensityLabel(scale)}予想` : ''),
+      )
     }
 
     // 通知音
@@ -75,8 +91,6 @@ export function App() {
       window.removeEventListener('keydown', unlock)
     }
   }, [])
-  const { isActive: haAlertActive, dismiss: dismissHaAlert, testAlert } =
-    useWebhookAlert(settings.webhookServerUrl)
 
   const filteredEarthquakes = earthquakes
     .filter(q => settings.minDisplayScale < 0 || q.earthquake.maxScale >= settings.minDisplayScale)
@@ -104,10 +118,10 @@ export function App() {
     })
   }, [earthquakes, settings.notifyMinScale])
 
-  const handleTabChange = (tab: TabId) => {
-    setActiveTab(tab)
-    if (tab === 'earthquake' && haAlertActive) dismissHaAlert()
-  }
+  // 情報更新時にウィンドウタイトルを変更し、平常時は既定タイトルに戻す。
+  useEffect(() => {
+    document.title = alertTitle ?? DEFAULT_TITLE
+  }, [alertTitle])
 
   // 設定タブ表示中は、地図には直前に表示していたタブの内容をそのまま残す。
   const [lastContentTab, setLastContentTab] = useState<TabId>(settings.defaultTab)
@@ -132,10 +146,15 @@ export function App() {
   useEffect(() => {
     if (settings.idleRevertSec <= 0) return
     const ms = settings.idleRevertSec * 1000
-    let timer = window.setTimeout(() => setActiveTab(defaultTabRef.current), ms)
+    // デフォルトタブへ戻すと同時にウィンドウタイトルも平常時へ戻す。
+    const revert = () => {
+      setActiveTab(defaultTabRef.current)
+      setAlertTitle(null)
+    }
+    let timer = window.setTimeout(revert, ms)
     const reset = () => {
       window.clearTimeout(timer)
-      timer = window.setTimeout(() => setActiveTab(defaultTabRef.current), ms)
+      timer = window.setTimeout(revert, ms)
     }
     window.addEventListener('pointerdown', reset)
     window.addEventListener('keydown', reset)
@@ -150,11 +169,13 @@ export function App() {
   const kyoshin = useKyoshinRealtime(true)
   const kyoshinDetection = useKyoshinDetection(kyoshin.sites, kyoshin.indices)
 
-  // 揺れ検知時にリアルタイムタブを自動表示（false → true への遷移時のみ）
+  // 揺れ検知時にリアルタイムタブを自動表示＋ウィンドウタイトル更新
+  // （false → true への遷移時のみ）
   const prevDetectedRef = useRef(false)
   useEffect(() => {
     if (kyoshinDetection.detected && !prevDetectedRef.current) {
       setActiveTab('realtime')
+      setAlertTitle('📈 揺れ検知')
     }
     prevDetectedRef.current = kyoshinDetection.detected
   }, [kyoshinDetection.detected])
@@ -178,20 +199,6 @@ export function App() {
 
   return (
     <div className="flex flex-col h-screen bg-app text-white overflow-hidden">
-      {haAlertActive && (
-        <div className="flex-shrink-0 bg-blue-900 border-b-2 border-blue-500 px-4 py-2 flex items-center justify-between animate-slide-down">
-          <span className="text-blue-200 text-sm font-medium">
-            🏠 Home Assistant から地震アラートを受信しました
-          </span>
-          <button
-            onClick={dismissHaAlert}
-            className="text-blue-400 hover:text-white text-xs px-2 py-1 rounded"
-          >
-            閉じる
-          </button>
-        </div>
-      )}
-
       {/* 地図(左) | パネル | アイコンナビ(右端)。モバイルは縦積み(地図上・パネル・ナビ下)。 */}
       <div className="flex-1 overflow-hidden flex flex-col lg:flex-row">
         {/* 常時表示の地図エリア（タブに応じて内容を切替） */}
@@ -236,7 +243,6 @@ export function App() {
                 earthquake: simulateEarthquake,
                 eew: simulateEEW,
                 tsunami: simulateTsunami,
-                haAlert: testAlert,
                 notification: () => {
                   if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
                     alert('先に「通知を許可する」ボタンをクリックしてください。')
@@ -256,7 +262,7 @@ export function App() {
         {/* アイコンナビ（一番外側＝右端 / モバイルは最下部） */}
         <IconNav
           activeTab={activeTab}
-          onTabChange={handleTabChange}
+          onTabChange={setActiveTab}
           tsunamiActive={tsunamiActive}
         />
       </div>
