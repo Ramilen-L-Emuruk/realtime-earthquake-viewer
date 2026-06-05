@@ -203,6 +203,12 @@ export function SettingsTab({ settings, onUpdate, onTest }: Props) {
             ))}
           </select>
         </Row>
+        <Row label="海底地形を表示" description="背景の海域に海底地形（陰影）を表示します">
+          <Toggle
+            checked={settings.showBathymetry}
+            onChange={v => onUpdate('showBathymetry', v)}
+          />
+        </Row>
       </Section>
 
       <Section title="デフォルト表示">

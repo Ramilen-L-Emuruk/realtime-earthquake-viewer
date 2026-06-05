@@ -28,6 +28,12 @@ body {
 
 .leaflet-container { background: #0a0c10; }
 
+/* 背景の海底地形タイル（ESRI Ocean）をダークテーマへ暗く調整。
+   タイルレイヤーのみに適用し、陸地・県境・ラベル・マーカー（別ペイン）には影響させない。 */
+.leaflet-tile-pane {
+  filter: brightness(0.42) saturate(1.15) contrast(1.05);
+}
+
 /* 行政区域ベースマップのラベル（地方名・県名・主要都市名）。背景なしの淡色テキスト。
    マーカー要素には Leaflet が位置決めの transform を当てるため、ラベルの中央寄せ・
    オフセットは内側 span 側で行う（Leaflet は span を触らないので確実に効く）。 */
