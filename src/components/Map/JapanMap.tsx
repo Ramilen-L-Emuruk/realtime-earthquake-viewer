@@ -96,7 +96,7 @@ const BATHYMETRY_URL =
 const BATHYMETRY_ATTRIBUTION =
   'Esri, GEBCO, NOAA, National Geographic, and other contributors'
 // 自動ズームの上限（地方単位が収まる程度）
-const MAX_ZOOM = 9
+const MAX_ZOOM = 8
 // このズーム未満（中間より引き）では、地震モードで観測点ごとではなく
 // 都道府県ごとの最大震度（県中心＋県塗りつぶし）に集約表示する。
 const PREF_AGGREGATE_MAX_ZOOM = 8
