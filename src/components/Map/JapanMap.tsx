@@ -8,25 +8,37 @@ import { useStationCoords } from '../../hooks/useStationCoords'
 import { lookupPointCoords, type LatLng } from '../../utils/stationCoords'
 import { useTsunamiZones } from '../../hooks/useTsunamiZones'
 
-const epicenterIcon = L.divIcon({
-  className: '',
-  html: `<svg viewBox="0 0 32 32" width="32" height="32" xmlns="http://www.w3.org/2000/svg">
+// 震源の×印アイコン。UI 倍率ごとにキャッシュして再利用する。
+const epicenterIconCache = new Map<number, L.DivIcon>()
+
+function getEpicenterIcon(uiScale: number): L.DivIcon {
+  const cached = epicenterIconCache.get(uiScale)
+  if (cached) return cached
+
+  const s = Math.round(32 * uiScale)
+  const icon = L.divIcon({
+    className: '',
+    html: `<svg viewBox="0 0 32 32" width="${s}" height="${s}" xmlns="http://www.w3.org/2000/svg">
     <line x1="4" y1="4" x2="28" y2="28" stroke="#ff2222" stroke-width="4" stroke-linecap="round"/>
     <line x1="28" y1="4" x2="4"  y2="28" stroke="#ff2222" stroke-width="4" stroke-linecap="round"/>
   </svg>`,
-  iconSize: [32, 32],
-  iconAnchor: [16, 16],
-  popupAnchor: [0, -18],
-})
+    iconSize: [s, s],
+    iconAnchor: [s / 2, s / 2],
+    popupAnchor: [0, -s * 0.56],
+  })
+  epicenterIconCache.set(uiScale, icon)
+  return icon
+}
 
-// 震度ラベル付きの塗りつぶし円アイコン。震度ごとにキャッシュして再利用する。
-const intensityIconCache = new Map<number, L.DivIcon>()
+// 震度ラベル付きの塗りつぶし円アイコン。震度 × UI 倍率ごとにキャッシュして再利用する。
+const intensityIconCache = new Map<string, L.DivIcon>()
 
-function getIntensityIcon(scale: number): L.DivIcon {
-  const cached = intensityIconCache.get(scale)
+function getIntensityIcon(scale: number, uiScale: number): L.DivIcon {
+  const key = `${scale}:${uiScale}`
+  const cached = intensityIconCache.get(key)
   if (cached) return cached
 
-  const size = getScaleRadius(scale) * 2 + 8
+  const size = (getScaleRadius(scale) * 2 + 8) * uiScale
   const color = getIntensityColor(scale)
   const label = getIntensityLabel(scale)
   const fontSize = label.length > 1 ? size * 0.42 : size * 0.6
@@ -36,7 +48,7 @@ function getIntensityIcon(scale: number): L.DivIcon {
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2],
   })
-  intensityIconCache.set(scale, icon)
+  intensityIconCache.set(key, icon)
   return icon
 }
 
@@ -106,9 +118,10 @@ interface Props {
   mode: MapMode
   quake: JMAQuake | null
   tsunamis: JMATsunami[]
+  uiScale?: number
 }
 
-export function JapanMap({ mode, quake, tsunamis }: Props) {
+export function JapanMap({ mode, quake, tsunamis, uiScale = 1 }: Props) {
   const stationCoords = useStationCoords()
   const tsunamiZones = useTsunamiZones()
 
@@ -214,7 +227,7 @@ export function JapanMap({ mode, quake, tsunamis }: Props) {
               positions={segment}
               pathOptions={{
                 color: TSUNAMI_STYLE[line.grade].color,
-                weight: TSUNAMI_STYLE[line.grade].weight,
+                weight: TSUNAMI_STYLE[line.grade].weight * uiScale,
                 opacity: 0.9,
               }}
             >
@@ -236,7 +249,7 @@ export function JapanMap({ mode, quake, tsunamis }: Props) {
           <Marker
             key={m.key}
             position={m.position}
-            icon={getIntensityIcon(m.scale)}
+            icon={getIntensityIcon(m.scale, uiScale)}
             zIndexOffset={m.scale}
           >
             <Popup>
@@ -260,7 +273,7 @@ export function JapanMap({ mode, quake, tsunamis }: Props) {
             quake.earthquake.hypocenter.latitude,
             quake.earthquake.hypocenter.longitude,
           ]}
-          icon={epicenterIcon}
+          icon={getEpicenterIcon(uiScale)}
         >
           <Popup>
             <div className="text-sm min-w-[160px]">

@@ -137,7 +137,7 @@ export function App() {
       <div className="flex-1 overflow-hidden flex flex-col lg:flex-row">
         {/* 常時表示の地図エリア（タブに応じて内容を切替）。モバイルでは高さ可変。 */}
         <div className="relative flex-1 min-h-0">
-          <JapanMap mode={mapMode} quake={mapQuake} tsunamis={tsunamis} />
+          <JapanMap mode={mapMode} quake={mapQuake} tsunamis={tsunamis} uiScale={settings.uiScale} />
           {/* リアルタイムタブでは強震モニタ画像を地図に重ねて表示 */}
           {activeTab === 'realtime' && (
             <div className="absolute inset-0 z-[1000]">
