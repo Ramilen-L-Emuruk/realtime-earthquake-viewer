@@ -120,6 +120,15 @@ export function App() {
   const kyoshin = useKyoshinRealtime(mapTab === 'realtime')
   const kyoshinDetection = useKyoshinDetection(kyoshin.sites, kyoshin.indices)
 
+  // 揺れ検知時にリアルタイムタブを自動表示（false → true への遷移時のみ）
+  const prevDetectedRef = useRef(false)
+  useEffect(() => {
+    if (kyoshinDetection.detected && !prevDetectedRef.current) {
+      setActiveTab('realtime')
+    }
+    prevDetectedRef.current = kyoshinDetection.detected
+  }, [kyoshinDetection.detected])
+
   // 常時表示する地図の内容は mapTab（設定タブ中は直前のタブ）に応じて切り替える
   const mapMode: MapMode =
     mapTab === 'tsunami' ? 'tsunami' : mapTab === 'realtime' ? 'kyoshin' : 'quake'
@@ -166,6 +175,7 @@ export function App() {
             kyoshinIndices={kyoshin.indices}
             kyoshinPsWave={kyoshin.psWave}
             eew={activeEEW}
+            detectedPoints={kyoshinDetection.points}
           />
           <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
         </div>

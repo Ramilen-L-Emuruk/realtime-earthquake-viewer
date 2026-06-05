@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef } from 'react'
 import L from 'leaflet'
-import { MapContainer, TileLayer, Marker, Polyline, Circle, Popup, Tooltip, useMap } from 'react-leaflet'
+import { MapContainer, TileLayer, Marker, Polyline, Circle, CircleMarker, Popup, Tooltip, useMap } from 'react-leaflet'
 import type { JMAQuake, JMATsunami, TsunamiGrade, EEWAlert } from '../../types/earthquake'
 import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
@@ -10,6 +10,8 @@ import { lookupPointCoords, type LatLng } from '../../utils/stationCoords'
 import { useTsunamiZones } from '../../hooks/useTsunamiZones'
 import { KyoshinPoints } from './KyoshinPoints'
 import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
+import type { DetectedPoint } from '../../hooks/useKyoshinDetection'
+import { kyoshinColor } from '../../utils/kyoshinColor'
 
 // 震源の×印アイコン。UI 倍率ごとにキャッシュして再利用する。
 const epicenterIconCache = new Map<number, L.DivIcon>()
@@ -150,6 +152,32 @@ function FitToEEW({ eew, psWave }: { eew: EEWAlert | null; psWave: PsWaveCircle[
   return null
 }
 
+// 揺れ検知時に検知点群が収まるようにフィットする。detected が false に戻ったらリセット。
+function FitToDetection({ points }: { points: DetectedPoint[] }) {
+  const map = useMap()
+  const fittedRef = useRef(false)
+
+  useEffect(() => {
+    if (points.length === 0) {
+      fittedRef.current = false
+      return
+    }
+    if (fittedRef.current) return
+    fittedRef.current = true
+
+    if (points.length === 1) {
+      map.flyTo([points[0].lat, points[0].lng], 8, { duration: 1.0 })
+      return
+    }
+    map.flyToBounds(
+      L.latLngBounds(points.map(p => [p.lat, p.lng] as [number, number])),
+      { padding: [60, 60], maxZoom: 9, duration: 1.0 },
+    )
+  }, [points, map])
+
+  return null
+}
+
 // リアルタイムタブを開いた時点で EEW が無ければ日本全体を表示する。
 // （地図は全タブ共通のため、他タブで寄った表示をリセットする）
 function FitJapanOnEnter({ hasEew }: { hasEew: boolean }) {
@@ -173,6 +201,7 @@ interface Props {
   kyoshinIndices?: number[]
   kyoshinPsWave?: PsWaveCircle[]
   eew?: EEWAlert | null
+  detectedPoints?: DetectedPoint[]
 }
 
 export function JapanMap({
@@ -184,6 +213,7 @@ export function JapanMap({
   kyoshinIndices = [],
   kyoshinPsWave = [],
   eew = null,
+  detectedPoints = [],
 }: Props) {
   const stationCoords = useStationCoords()
   const tsunamiZones = useTsunamiZones()
@@ -281,6 +311,26 @@ export function JapanMap({
 
       {/* リアルタイムタブ入室時: EEW が無ければ日本全体を表示 */}
       {mode === 'kyoshin' && <FitJapanOnEnter hasEew={!!eew} />}
+
+      {/* 揺れ検知点: 通常の観測点より大きい輪で強調表示 */}
+      {mode === 'kyoshin' && detectedPoints.length > 0 && (
+        <>
+          <FitToDetection points={detectedPoints} />
+          {detectedPoints.map((p, i) => (
+            <CircleMarker
+              key={`det-${i}`}
+              center={[p.lat, p.lng]}
+              radius={10 * uiScale}
+              pathOptions={{
+                color: '#ffffff',
+                weight: 1.5,
+                fillColor: kyoshinColor(p.index),
+                fillOpacity: 0.85,
+              }}
+            />
+          ))}
+        </>
+      )}
 
       {/* EEW 発報時: 震源中心→予報円に合わせてズームアウト */}
       {mode === 'kyoshin' && <FitToEEW eew={eew} psWave={kyoshinPsWave} />}
