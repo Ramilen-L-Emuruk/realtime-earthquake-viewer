@@ -4,11 +4,12 @@ import { MapContainer, TileLayer, Marker, Polyline, Polygon, Circle, CircleMarke
 import type { JMAQuake, JMATsunami, TsunamiGrade, EEWAlert } from '../../types/earthquake'
 import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
-import { eewMaxScale } from '../../utils/eew'
+import { eewAreas, eewMaxScale } from '../../utils/eew'
 import { useStationCoords } from '../../hooks/useStationCoords'
 import { lookupPointCoords, type LatLng } from '../../utils/stationCoords'
 import { useTsunamiZones } from '../../hooks/useTsunamiZones'
 import { useSubRegions } from '../../hooks/useSubRegions'
+import type { SubRegion } from '../../utils/subregions'
 import { pointInRings } from '../../utils/geo'
 import { BaseMap } from './BaseMap'
 import { KyoshinPoints } from './KyoshinPoints'
@@ -324,6 +325,25 @@ export function JapanMap({
     return list.sort((a, b) => a.scale - b.scale)
   }, [aggregateByRegion, subregionIndex, intensityMarkers])
 
+  // 一次細分区域名 -> 形状（EEW の予想震度塗り用に名前で引く）
+  const subregionByName = useMemo(() => {
+    const m = new Map<string, SubRegion>()
+    if (subregions) for (const sr of subregions) m.set(sr.name, sr)
+    return m
+  }, [subregions])
+
+  // EEW 受信時: 対象地域（一次細分区域）を予想最大震度(scaleTo)の色で塗りつぶす。
+  const eewAreaFills = useMemo(() => {
+    if (mode !== 'kyoshin' || !eew) return []
+    const list: { name: string; scale: number; rings: LatLng[][] }[] = []
+    for (const a of eewAreas(eew)) {
+      const sr = subregionByName.get(a.name)
+      if (sr && a.scaleTo > 0) list.push({ name: a.name, scale: a.scaleTo, rings: sr.rings })
+    }
+    // 弱い予想震度を先に描画し、強い予想震度を前面に重ねる
+    return list.sort((a, b) => a.scale - b.scale)
+  }, [mode, eew, subregionByName])
+
   // 津波: 進行中の警報・注意報を区域名→最大等級にまとめ、海岸線を引き当てる
   const tsunamiLines = useMemo<TsunamiLine[]>(() => {
     if (mode !== 'tsunami' || !tsunamiZones) return []
@@ -390,6 +410,26 @@ export function JapanMap({
       {/* 行政区域ベースマップ（タイル不使用・自前描画）。
           リアルタイム表示は観測点ドットで埋もれるため引きの地方ラベルは出さない。 */}
       <BaseMap suppressRegionLabels={mode === 'kyoshin'} />
+
+      {/* EEW 受信時: 対象地域を予想震度で色塗り（ラベル z270 より背面・観測点ドットの下） */}
+      {mode === 'kyoshin' && eewAreaFills.length > 0 && (
+        <Pane name="eew-region-fill" style={{ zIndex: 260 }}>
+          {eewAreaFills.map((a) =>
+            a.rings.map((ring, i) => (
+              <Polygon
+                key={`eew-fill-${a.name}-${i}`}
+                positions={ring}
+                pathOptions={{
+                  color: getIntensityColor(a.scale),
+                  weight: 1,
+                  fillColor: getIntensityColor(a.scale),
+                  fillOpacity: 0.45,
+                }}
+              />
+            )),
+          )}
+        </Pane>
+      )}
 
       {/* 強震モニタ: Yahoo リアルタイム震度の観測点を描画 */}
       {mode === 'kyoshin' && (
