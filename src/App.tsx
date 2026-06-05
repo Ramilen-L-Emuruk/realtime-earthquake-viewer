@@ -156,12 +156,21 @@ export function App() {
       window.clearTimeout(timer)
       timer = window.setTimeout(revert, ms)
     }
-    window.addEventListener('pointerdown', reset)
-    window.addEventListener('keydown', reset)
+    // 操作（クリック・キー入力・ホイール/タッチ/スクロール）のたびにリセット。
+    // scroll はバブリングしないため capture で拾う（地図ズーム・カード一覧のスクロール対応）。
+    const opts = { passive: true } as const
+    window.addEventListener('pointerdown', reset, opts)
+    window.addEventListener('keydown', reset, opts)
+    window.addEventListener('wheel', reset, opts)
+    window.addEventListener('touchmove', reset, opts)
+    window.addEventListener('scroll', reset, true)
     return () => {
       window.clearTimeout(timer)
       window.removeEventListener('pointerdown', reset)
       window.removeEventListener('keydown', reset)
+      window.removeEventListener('wheel', reset)
+      window.removeEventListener('touchmove', reset)
+      window.removeEventListener('scroll', reset, true)
     }
   }, [activeTab, lastUpdate, settings.idleRevertSec])
 
