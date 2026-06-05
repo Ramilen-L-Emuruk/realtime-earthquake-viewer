@@ -207,7 +207,7 @@ export function App() {
             mode={mapMode}
             quake={mapQuake}
             tsunamis={tsunamis}
-            uiScale={settings.uiScale}
+            iconScale={settings.mapIconScale}
             kyoshinSites={kyoshin.sites}
             kyoshinIndices={kyoshin.indices}
             kyoshinPsWave={kyoshin.psWave}

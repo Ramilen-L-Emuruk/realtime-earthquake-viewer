@@ -192,6 +192,17 @@ export function SettingsTab({ settings, onUpdate, onTest }: Props) {
             ))}
           </select>
         </Row>
+        <Row label="地図アイコンの倍率" description="地図上の震度マーカー等の大きさを変更します（UI 倍率とは独立）">
+          <select
+            value={settings.mapIconScale}
+            onChange={e => onUpdate('mapIconScale', Number(e.target.value))}
+            className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+          >
+            {[0.5, 0.6, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.25, 2.5].map(s => (
+              <option key={s} value={s}>{Math.round(s * 100)}%</option>
+            ))}
+          </select>
+        </Row>
       </Section>
 
       <Section title="デフォルト表示">

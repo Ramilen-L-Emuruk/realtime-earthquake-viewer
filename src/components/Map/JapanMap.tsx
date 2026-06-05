@@ -18,11 +18,11 @@ import { kyoshinColor } from '../../utils/kyoshinColor'
 // 震源の×印アイコン。UI 倍率ごとにキャッシュして再利用する。
 const epicenterIconCache = new Map<number, L.DivIcon>()
 
-function getEpicenterIcon(uiScale: number): L.DivIcon {
-  const cached = epicenterIconCache.get(uiScale)
+function getEpicenterIcon(iconScale: number): L.DivIcon {
+  const cached = epicenterIconCache.get(iconScale)
   if (cached) return cached
 
-  const s = Math.round(32 * uiScale)
+  const s = Math.round(32 * iconScale)
   const icon = L.divIcon({
     className: '',
     html: `<svg viewBox="0 0 32 32" width="${s}" height="${s}" xmlns="http://www.w3.org/2000/svg">
@@ -33,19 +33,19 @@ function getEpicenterIcon(uiScale: number): L.DivIcon {
     iconAnchor: [s / 2, s / 2],
     popupAnchor: [0, -s * 0.56],
   })
-  epicenterIconCache.set(uiScale, icon)
+  epicenterIconCache.set(iconScale, icon)
   return icon
 }
 
 // 震度ラベル付きの塗りつぶし円アイコン。震度 × UI 倍率ごとにキャッシュして再利用する。
 const intensityIconCache = new Map<string, L.DivIcon>()
 
-function getIntensityIcon(scale: number, uiScale: number): L.DivIcon {
-  const key = `${scale}:${uiScale}`
+function getIntensityIcon(scale: number, iconScale: number): L.DivIcon {
+  const key = `${scale}:${iconScale}`
   const cached = intensityIconCache.get(key)
   if (cached) return cached
 
-  const size = (getScaleRadius(scale) * 2 + 8) * uiScale
+  const size = (getScaleRadius(scale) * 2 + 8) * iconScale
   const color = getIntensityColor(scale)
   const label = getIntensityLabel(scale)
   const fontSize = label.length > 1 ? size * 0.42 : size * 0.6
@@ -211,7 +211,7 @@ interface Props {
   mode: MapMode
   quake: JMAQuake | null
   tsunamis: JMATsunami[]
-  uiScale?: number
+  iconScale?: number
   kyoshinSites?: SiteCoords
   kyoshinIndices?: number[]
   kyoshinPsWave?: PsWaveCircle[]
@@ -223,7 +223,7 @@ export function JapanMap({
   mode,
   quake,
   tsunamis,
-  uiScale = 1,
+  iconScale = 1,
   kyoshinSites = [],
   kyoshinIndices = [],
   kyoshinPsWave = [],
@@ -343,7 +343,7 @@ export function JapanMap({
 
       {/* 強震モニタ: Yahoo リアルタイム震度の観測点を描画 */}
       {mode === 'kyoshin' && (
-        <KyoshinPoints sites={kyoshinSites} indices={kyoshinIndices} uiScale={uiScale} />
+        <KyoshinPoints sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
       )}
 
       {/* リアルタイムタブ入室時: EEW が無ければ日本全体を表示 */}
@@ -357,7 +357,7 @@ export function JapanMap({
             <CircleMarker
               key={`det-${i}`}
               center={[p.lat, p.lng]}
-              radius={10 * uiScale}
+              radius={10 * iconScale}
               pathOptions={{
                 color: '#ffffff',
                 weight: 1.5,
@@ -399,7 +399,7 @@ export function JapanMap({
               eew.earthquake.hypocenter.latitude,
               eew.earthquake.hypocenter.longitude,
             ]}
-            icon={getEpicenterIcon(uiScale)}
+            icon={getEpicenterIcon(iconScale)}
             zIndexOffset={1000}
           >
             <Tooltip permanent direction="top" offset={[0, -10]}>
@@ -427,7 +427,7 @@ export function JapanMap({
               positions={segment}
               pathOptions={{
                 color: TSUNAMI_STYLE[line.grade].color,
-                weight: TSUNAMI_STYLE[line.grade].weight * uiScale,
+                weight: TSUNAMI_STYLE[line.grade].weight * iconScale,
                 opacity: 0.9,
               }}
             >
@@ -468,7 +468,7 @@ export function JapanMap({
           <Marker
             key={`pref-mark-${p.name}`}
             position={p.label}
-            icon={getIntensityIcon(p.scale, uiScale)}
+            icon={getIntensityIcon(p.scale, iconScale)}
             zIndexOffset={p.scale}
           >
             <Popup>
@@ -488,7 +488,7 @@ export function JapanMap({
           <Marker
             key={m.key}
             position={m.position}
-            icon={getIntensityIcon(m.scale, uiScale)}
+            icon={getIntensityIcon(m.scale, iconScale)}
             zIndexOffset={m.scale}
           >
             <Popup>
@@ -512,7 +512,7 @@ export function JapanMap({
             quake.earthquake.hypocenter.latitude,
             quake.earthquake.hypocenter.longitude,
           ]}
-          icon={getEpicenterIcon(uiScale)}
+          icon={getEpicenterIcon(iconScale)}
         >
           <Popup>
             <div className="text-sm min-w-[160px]">
