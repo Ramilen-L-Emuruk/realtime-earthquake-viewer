@@ -4,6 +4,7 @@ import type { EEWAlert } from '../../types/earthquake'
 import { formatDateTime } from '../../utils/formatters'
 import { getIntensityLabel } from '../../utils/intensity'
 import { eewAreas, eewMaxScale, eewSerial } from '../../utils/eew'
+import { kyoshinColor } from '../../utils/kyoshinColor'
 
 const SCALE_LEGEND = [
   { label: '1', color: '#7bb4c8' },
@@ -17,8 +18,24 @@ const SCALE_LEGEND = [
   { label: '7', color: '#9d0099' },
 ]
 
+// 強震モニタインデックス(0〜20, 計測震度 = index * 0.5 - 3.0)から震度ラベルへ変換。
+// 震度1以上に相当するインデックス7未満は null を返す。
+function kyoshinIndexToLabel(index: number): string | null {
+  if (index >= 19) return '7'
+  if (index >= 18) return '6強'
+  if (index >= 17) return '6弱'
+  if (index >= 16) return '5強'
+  if (index >= 15) return '5弱'
+  if (index >= 13) return '4'
+  if (index >= 11) return '3'
+  if (index >= 9) return '2'
+  if (index >= 7) return '1'
+  return null
+}
+
 interface Props {
   eew: EEWAlert | null
+  maxKyoshinIndex: number
 }
 
 function EEWCard({ eew }: { eew: EEWAlert }) {
@@ -61,10 +78,33 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
   )
 }
 
-export function RealtimeTab({ eew }: Props) {
+function KyoshinDetectionCard({ maxIndex }: { maxIndex: number }) {
+  const label = kyoshinIndexToLabel(maxIndex)
+  if (!label) return null
+  const color = kyoshinColor(maxIndex)
+  return (
+    <div className="rounded-lg p-3 border border-border bg-card">
+      <div className="flex items-center gap-2 mb-1">
+        <span
+          className="inline-block w-2 h-2 rounded-full animate-pulse flex-shrink-0"
+          style={{ backgroundColor: color }}
+        />
+        <span className="text-xs text-secondary">揺れを検知中（強震モニタ）</span>
+      </div>
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="text-white text-sm">推定最大震度</span>
+        <span className="font-black text-xl" style={{ color }}>{label}</span>
+        <span className="text-xs text-secondary">※推定値。気象庁発表とは異なる場合があります</span>
+      </div>
+    </div>
+  )
+}
+
+export function RealtimeTab({ eew, maxKyoshinIndex }: Props) {
   return (
     <div className="p-3 space-y-3">
       {eew && <EEWCard eew={eew} />}
+      <KyoshinDetectionCard maxIndex={maxKyoshinIndex} />
 
       <div>
         <h2 className="text-white font-bold text-sm mb-1">リアルタイム震度モニタ</h2>
