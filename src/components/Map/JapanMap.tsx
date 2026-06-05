@@ -15,7 +15,7 @@ import { BaseMap } from './BaseMap'
 import { KyoshinPoints } from './KyoshinPoints'
 import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
 import type { DetectedPoint } from '../../hooks/useKyoshinDetection'
-import { kyoshinColor } from '../../utils/kyoshinColor'
+import { kyoshinIntensityColor } from '../../utils/kyoshinIntensity'
 
 // 震源の×印アイコン。UI 倍率ごとにキャッシュして再利用する。
 const epicenterIconCache = new Map<number, L.DivIcon>()
@@ -451,7 +451,7 @@ export function JapanMap({
               pathOptions={{
                 color: '#ffffff',
                 weight: 1.5,
-                fillColor: kyoshinColor(p.index),
+                fillColor: kyoshinIntensityColor(p.index) ?? '#ffffff',
                 fillOpacity: 0.85,
               }}
             />
