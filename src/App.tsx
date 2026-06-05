@@ -179,7 +179,12 @@ export function App() {
               error={error}
             />
           )}
-          {activeTab === 'realtime' && <RealtimeTab eew={activeEEW} />}
+          {activeTab === 'realtime' && (
+            <RealtimeTab
+              eew={activeEEW}
+              maxKyoshinIndex={kyoshin.indices.length > 0 ? Math.max(...kyoshin.indices) : -1}
+            />
+          )}
           {activeTab === 'tsunami' && <TsunamiTab tsunamis={tsunamis} />}
           {activeTab === 'settings' && (
             <SettingsTab
