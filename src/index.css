@@ -44,7 +44,7 @@ body {
 }
 .base-region-label > span,
 .base-pref-label > span,
-.base-city-label > span {
+.base-subregion-label > span {
   position: absolute;
   left: 0;
   top: 0;
@@ -71,7 +71,7 @@ body {
 .base-pref-label--down > span {
   transform: translate(-50%, calc(-50% + 1.5em));
 }
-.base-city-label > span {
+.base-subregion-label > span {
   color: #93a3b8;
   font-size: 11px;
 }
