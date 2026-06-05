@@ -29,23 +29,20 @@ export function EarthquakeCard({ quake, isLatest }: Props) {
       <div className="flex items-stretch gap-3">
         {/* Intensity badge */}
         <div
-          className="flex-shrink-0 w-14 rounded-lg flex flex-col items-center justify-center"
+          className="flex-shrink-0 w-20 rounded-lg flex flex-col items-center justify-center px-1"
           style={{
             backgroundColor: getIntensityBgColor(maxScale),
             border: `2px solid ${getIntensityColor(maxScale)}`,
           }}
         >
           <span className="text-xs font-medium" style={{ color: getIntensityColor(maxScale) }}>
-            最大
+            最大震度
           </span>
           <span
-            className="text-xl font-black leading-tight"
+            className="text-4xl font-black leading-tight"
             style={{ color: getIntensityColor(maxScale) }}
           >
             {maxScale === -1 ? '?' : getIntensityLabel(maxScale)}
-          </span>
-          <span className="text-xs" style={{ color: getIntensityColor(maxScale) }}>
-            震度
           </span>
         </div>
 
