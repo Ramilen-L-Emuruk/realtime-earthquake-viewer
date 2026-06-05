@@ -27,6 +27,8 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
 
 // 1秒で index が 2 以上増加した観測点を「変化あり」とみなす（約1.0 計測震度相当の上昇）
 const DELTA_THRESHOLD = 2
+// 検知対象とする最低インデックス（震度2相当: 計測震度 1.5 以上 = index 9）
+const MIN_DETECTION_INDEX = 9
 // 近接判定の距離 (km)
 const PROXIMITY_KM = 80
 // 検知後の表示維持時間 (ms)
@@ -53,10 +55,10 @@ export function useKyoshinDetection(
 
     if (sites.length === 0 || indices.length === 0 || prev.length !== indices.length) return
 
-    // 急上昇した観測点を収集
+    // 急上昇かつ震度2以上に達した観測点を収集
     const changed: Array<{ siteIdx: number; index: number }> = []
     for (let i = 0; i < indices.length; i++) {
-      if (indices[i] - (prev[i] ?? 0) >= DELTA_THRESHOLD) {
+      if (indices[i] >= MIN_DETECTION_INDEX && indices[i] - (prev[i] ?? 0) >= DELTA_THRESHOLD) {
         changed.push({ siteIdx: i, index: indices[i] })
       }
     }
