@@ -55,21 +55,34 @@ const CARTO_DARK_URL =
 const CARTO_ATTRIBUTION =
   '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
 
-interface FlyToProps {
-  lat: number
-  lng: number
+interface FitToQuakeProps {
+  quakeId: string | null
+  positions: LatLng[]
 }
 
-function FlyTo({ lat, lng }: FlyToProps) {
+// 震源と各観測点が画面に収まるよう地図をフィットさせる。
+// 座標データは非同期で読み込まれるため、地点が出揃った時点で再フィットする。
+function FitToQuake({ quakeId, positions }: FitToQuakeProps) {
   const map = useMap()
-  const prevRef = useRef<{ lat: number; lng: number } | null>(null)
+  const lastFitRef = useRef<string>('')
 
   useEffect(() => {
-    if (prevRef.current?.lat === lat && prevRef.current?.lng === lng) return
-    prevRef.current = { lat, lng }
-    const zoom = Math.max(map.getZoom(), 6)
-    map.flyTo([lat, lng], zoom, { duration: 1.2 })
-  }, [lat, lng, map])
+    if (!quakeId || positions.length === 0) return
+    // quakeId と地点数で署名し、地震の切替時／地点の出揃い時にのみ再フィットする
+    const signature = `${quakeId}:${positions.length}`
+    if (lastFitRef.current === signature) return
+    lastFitRef.current = signature
+
+    if (positions.length === 1) {
+      map.flyTo(positions[0], 8, { duration: 1.0 })
+      return
+    }
+    map.flyToBounds(L.latLngBounds(positions), {
+      padding: [48, 48],
+      maxZoom: 9,
+      duration: 1.0,
+    })
+  }, [quakeId, positions, map])
 
   return null
 }
@@ -114,6 +127,18 @@ export function JapanMap({ quake }: Props) {
     return markers.sort((a, b) => a.scale - b.scale)
   }, [quake, stationCoords])
 
+  // フィット対象の座標（各観測点 + 震源）
+  const fitPositions = useMemo<LatLng[]>(() => {
+    const positions = intensityMarkers.map((m) => m.position)
+    if (hasEpicenter && quake) {
+      positions.push([
+        quake.earthquake.hypocenter.latitude,
+        quake.earthquake.hypocenter.longitude,
+      ])
+    }
+    return positions
+  }, [intensityMarkers, hasEpicenter, quake])
+
   return (
     <MapContainer
       center={JAPAN_CENTER}
@@ -123,12 +148,8 @@ export function JapanMap({ quake }: Props) {
     >
       <TileLayer url={CARTO_DARK_URL} attribution={CARTO_ATTRIBUTION} />
 
-      {hasEpicenter && (
-        <FlyTo
-          lat={quake.earthquake.hypocenter.latitude}
-          lng={quake.earthquake.hypocenter.longitude}
-        />
-      )}
+      <FitToQuake quakeId={quake?.id ?? null} positions={fitPositions} />
+
 
       {/* 各地点の震度マーカー（震度ごとに色分け・震度を表記） */}
       {intensityMarkers.map((m) => (
