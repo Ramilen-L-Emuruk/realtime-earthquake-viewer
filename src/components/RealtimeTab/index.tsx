@@ -7,16 +7,18 @@ import { getIntensityLabel } from '../../utils/intensity'
 import { eewAreas, eewMaxScale, eewSerial } from '../../utils/eew'
 import { kyoshinColor } from '../../utils/kyoshinColor'
 
-const SCALE_LEGEND = [
-  { label: '1', color: '#7bb4c8' },
-  { label: '2', color: '#0070c8' },
-  { label: '3', color: '#00b050' },
-  { label: '4', color: '#f5e600' },
-  { label: '5弱', color: '#ffa000' },
-  { label: '5強', color: '#ff6600' },
-  { label: '6弱', color: '#f00000' },
-  { label: '6強', color: '#a50021' },
-  { label: '7', color: '#9d0099' },
+// 凡例は地図のドット／バッジと同じ強震モニタ配色（kyoshinColor）を使う。
+// index は各震度階級の下限（震度1=計測震度0.5=index7 …）。
+const SCALE_LEGEND: { label: string; index: number }[] = [
+  { label: '1', index: 7 },
+  { label: '2', index: 9 },
+  { label: '3', index: 11 },
+  { label: '4', index: 13 },
+  { label: '5弱', index: 15 },
+  { label: '5強', index: 16 },
+  { label: '6弱', index: 17 },
+  { label: '6強', index: 18 },
+  { label: '7', index: 19 },
 ]
 
 // 強震モニタインデックス(0〜20, 計測震度 = index * 0.5 - 3.0)から震度ラベルへ変換。
@@ -151,7 +153,7 @@ export function RealtimeTab({ eew, kyoshinDetection }: Props) {
             <div key={item.label} className="flex items-center gap-1">
               <div
                 className="w-4 h-4 rounded-sm flex-shrink-0"
-                style={{ backgroundColor: item.color }}
+                style={{ backgroundColor: kyoshinColor(item.index) }}
               />
               <span className="text-xs text-secondary">{item.label}</span>
             </div>
