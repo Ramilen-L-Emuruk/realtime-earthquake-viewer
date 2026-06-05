@@ -4,6 +4,11 @@
 // 地図のラベルバッジ（KyoshinPoints）と右パネルの検知カード（RealtimeTab）で
 // 共通利用し、変換ロジックの二重管理を避ける。
 
+import { getIntensityColor } from './intensity'
+
+// 震度0（計測震度 0.0〜0.4）の表示色。気象庁配色に震度0の色は無いため灰色とする。
+export const SHINDO0_COLOR = '#9ca3af'
+
 export interface KyoshinJma {
   /** 震度階級ラベル（0〜7・5弱/5強 等） */
   label: string
@@ -30,4 +35,17 @@ export function kyoshinIndexToJma(index: number | undefined): KyoshinJma | null 
 /** 震度階級ラベルのみが必要なときの簡易版。 */
 export function kyoshinIndexToLabel(index: number | undefined): string | null {
   return kyoshinIndexToJma(index)?.label ?? null
+}
+
+/**
+ * リアルタイム震度インデックスの表示色（気象庁の震度配色に統一）。
+ *   震度0未満 → null（表示しない）
+ *   震度0     → 灰色（SHINDO0_COLOR）
+ *   震度1以上 → 気象庁の震度配色（getIntensityColor）
+ */
+export function kyoshinIntensityColor(index: number | undefined): string | null {
+  const jma = kyoshinIndexToJma(index)
+  if (!jma) return null
+  if (jma.label === '0') return SHINDO0_COLOR
+  return getIntensityColor(jma.scale)
 }

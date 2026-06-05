@@ -2,8 +2,7 @@ import { useEffect, useRef } from 'react'
 import L from 'leaflet'
 import { useMap } from 'react-leaflet'
 import type { SiteCoords } from '../../services/kyoshin'
-import { kyoshinColor } from '../../utils/kyoshinColor'
-import { kyoshinIndexToJma } from '../../utils/kyoshinIntensity'
+import { kyoshinIndexToJma, kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
 import { getScaleRadius } from '../../utils/intensity'
 
 interface Props {
@@ -11,9 +10,6 @@ interface Props {
   indices: number[]
   iconScale: number
 }
-
-// 震度0（計測震度 0.0〜0.4）は強震モニタ配色ではなく灰色で表示する。
-const SHINDO0_COLOR = '#9ca3af'
 
 function intensityBadgeIcon(color: string, label: string, scale: number, iconScale: number): L.DivIcon {
   const size = (getScaleRadius(scale) * 2 + 8) * iconScale
@@ -24,13 +20,6 @@ function intensityBadgeIcon(color: string, label: string, scale: number, iconSca
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2],
   })
-}
-
-// 観測点の表示色: 震度0未満=なし(null) / 震度0=灰色 / 震度1以上=強震モニタ配色。
-function pointColor(index: number | undefined): string | null {
-  const jma = kyoshinIndexToJma(index)
-  if (!jma) return null // 震度0未満は非表示
-  return jma.label === '0' ? SHINDO0_COLOR : kyoshinColor(index)
 }
 
 // 強震モニタの観測点（約1725点）を Canvas で描画するレイヤー。
@@ -51,8 +40,8 @@ export function KyoshinPoints({ sites, indices, iconScale }: Props) {
         renderer,
         radius: 2.5 * iconScale,
         stroke: false,
-        fillOpacity: 0.85,
-        fillColor: kyoshinColor(undefined),
+        fillOpacity: 0,
+        fillColor: SHINDO0_COLOR,
       }),
     )
     markers.forEach((m) => m.addTo(group))
@@ -74,7 +63,7 @@ export function KyoshinPoints({ sites, indices, iconScale }: Props) {
     const markers = markersRef.current
     if (markers.length === 0) return
     for (let i = 0; i < markers.length; i++) {
-      const color = pointColor(indices[i])
+      const color = kyoshinIntensityColor(indices[i])
       markers[i].setStyle({
         fillColor: color ?? SHINDO0_COLOR,
         fillOpacity: color ? 0.85 : 0,
@@ -96,7 +85,7 @@ export function KyoshinPoints({ sites, indices, iconScale }: Props) {
     for (let i = 0; i < sites.length; i++) {
       const jma = kyoshinIndexToJma(indices[i])
       if (!jma) continue // 震度0未満は表示しない
-      const color = jma.label === '0' ? SHINDO0_COLOR : kyoshinColor(indices[i])
+      const color = kyoshinIntensityColor(indices[i]) ?? SHINDO0_COLOR
       const [lat, lng] = sites[i]
       L.marker([lat, lng], {
         icon: intensityBadgeIcon(color, jma.label, jma.scale, iconScale),

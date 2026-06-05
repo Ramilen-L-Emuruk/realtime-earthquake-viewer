@@ -3,23 +3,21 @@
 import type { EEWAlert } from '../../types/earthquake'
 import type { KyoshinDetection } from '../../hooks/useKyoshinDetection'
 import { formatDateTime } from '../../utils/formatters'
-import { getIntensityLabel } from '../../utils/intensity'
+import { getIntensityColor, getIntensityLabel } from '../../utils/intensity'
 import { eewAreas, eewMaxScale, eewSerial } from '../../utils/eew'
-import { kyoshinColor } from '../../utils/kyoshinColor'
-import { kyoshinIndexToLabel } from '../../utils/kyoshinIntensity'
+import { kyoshinIndexToLabel, kyoshinIntensityColor } from '../../utils/kyoshinIntensity'
 
-// 凡例は地図のドット／バッジと同じ強震モニタ配色（kyoshinColor）を使う。
-// index は各震度階級の下限（震度1=計測震度0.5=index7 …）。
-const SCALE_LEGEND: { label: string; index: number }[] = [
-  { label: '1', index: 7 },
-  { label: '2', index: 9 },
-  { label: '3', index: 11 },
-  { label: '4', index: 13 },
-  { label: '5弱', index: 15 },
-  { label: '5強', index: 16 },
-  { label: '6弱', index: 17 },
-  { label: '6強', index: 18 },
-  { label: '7', index: 19 },
+// 凡例は地図と同じ気象庁の震度配色（getIntensityColor）を使う。
+const SCALE_LEGEND: { label: string; scale: number }[] = [
+  { label: '1', scale: 10 },
+  { label: '2', scale: 20 },
+  { label: '3', scale: 30 },
+  { label: '4', scale: 40 },
+  { label: '5弱', scale: 45 },
+  { label: '5強', scale: 50 },
+  { label: '6弱', scale: 55 },
+  { label: '6強', scale: 60 },
+  { label: '7', scale: 70 },
 ]
 
 interface Props {
@@ -75,14 +73,14 @@ function KyoshinDetectionCard({ detection }: { detection: KyoshinDetection }) {
 
   const maxLabel = kyoshinIndexToLabel(detection.maxIndex)
   if (!maxLabel) return null
-  const maxColor = kyoshinColor(detection.maxIndex)
+  const maxColor = kyoshinIntensityColor(detection.maxIndex) ?? '#9ca3af'
 
   // 検知点を震度ラベルごとに集計
   const counts = new Map<string, { color: string; count: number }>()
   for (const p of detection.points) {
     const label = kyoshinIndexToLabel(p.index)
     if (!label) continue
-    if (!counts.has(label)) counts.set(label, { color: kyoshinColor(p.index), count: 0 })
+    if (!counts.has(label)) counts.set(label, { color: kyoshinIntensityColor(p.index) ?? '#9ca3af', count: 0 })
     counts.get(label)!.count++
   }
   const groups = LABEL_ORDER.filter(l => counts.has(l)).map(l => ({ label: l, ...counts.get(l)! }))
@@ -140,7 +138,7 @@ export function RealtimeTab({ eew, kyoshinDetection }: Props) {
             <div key={item.label} className="flex items-center gap-1">
               <div
                 className="w-4 h-4 rounded-sm flex-shrink-0"
-                style={{ backgroundColor: kyoshinColor(item.index) }}
+                style={{ backgroundColor: getIntensityColor(item.scale) }}
               />
               <span className="text-xs text-secondary">{item.label}</span>
             </div>
