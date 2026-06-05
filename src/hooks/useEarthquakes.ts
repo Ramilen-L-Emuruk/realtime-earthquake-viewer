@@ -45,6 +45,7 @@ function createTestEEW(): EEWAlert {
     },
     severity: 'Warning',
     cancelled: false,
+    issue: { eventId: `test-${Date.now()}`, serial: '1', time: now.toISOString() },
     // 実データに合わせ areas を使用（参照は utils/eew.ts の eewAreas() で吸収）
     areas: [
       { pref: '東京都', name: '東京都区部', scaleFrom: 40, scaleTo: 40, kindCode: '10', arrivalTime: null },

@@ -3,7 +3,7 @@
 import type { EEWAlert } from '../../types/earthquake'
 import { formatDateTime } from '../../utils/formatters'
 import { getIntensityLabel } from '../../utils/intensity'
-import { eewAreas, eewMaxScale } from '../../utils/eew'
+import { eewAreas, eewMaxScale, eewSerial } from '../../utils/eew'
 
 const SCALE_LEGEND = [
   { label: '1', color: '#7bb4c8' },
@@ -25,6 +25,7 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
   const isWarning = eew.severity === 'Warning'
   const maxScale = eewMaxScale(eew)
   const areas = eewAreas(eew)
+  const serial = eewSerial(eew)
   const { hypocenter } = eew.earthquake
 
   return (
@@ -38,6 +39,7 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
         <span className={`text-sm font-black ${isWarning ? 'text-red-300' : 'text-orange-300'}`}>
           {isWarning ? '警報' : '予報'}
         </span>
+        {serial != null && <span className="text-xs text-secondary">#{serial}</span>}
       </div>
       <div className="flex items-baseline gap-2 flex-wrap">
         <span className="text-white font-bold text-base">{hypocenter.name}</span>

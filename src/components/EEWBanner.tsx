@@ -1,7 +1,7 @@
 import type { EEWAlert } from '../types/earthquake'
 import { formatDateTime } from '../utils/formatters'
 import { getIntensityLabel } from '../utils/intensity'
-import { eewAreas, eewMaxScale } from '../utils/eew'
+import { eewAreas, eewMaxScale, eewSerial } from '../utils/eew'
 
 interface Props {
   eew: EEWAlert | null
@@ -13,6 +13,7 @@ export function EEWBanner({ eew }: Props) {
   const isWarning = eew.severity === 'Warning'
   const areas = eewAreas(eew)
   const maxScale = eewMaxScale(eew)
+  const serial = eewSerial(eew)
 
   return (
     <div
@@ -26,7 +27,9 @@ export function EEWBanner({ eew }: Props) {
     >
       <div className="flex items-center gap-3 px-4 py-3">
         <div className="flex-shrink-0 text-center">
-          <div className="text-xs font-bold text-white opacity-75">緊急地震速報</div>
+          <div className="text-xs font-bold text-white opacity-75">
+            緊急地震速報{serial != null && ` #${serial}`}
+          </div>
           <div
             className={`text-2xl font-black ${isWarning ? 'text-red-300 animate-pulse' : 'text-orange-300'}`}
           >
