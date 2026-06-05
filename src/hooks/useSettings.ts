@@ -13,7 +13,9 @@ const DEFAULTS: AppSettings = {
   minDisplayScale: -1,
   notifyMinScale: -1,
   maxEarthquakeList: 20,
-  webhookServerUrl: 'http://localhost:3001',
+  // 既定では未設定（空）。Home Assistant 連携を使う場合のみ設定画面で URL を指定する。
+  // 静的ホスティング（GitHub Pages 等）でローカルサーバーへ無駄に接続しないため。
+  webhookServerUrl: '',
 }
 
 function load(): AppSettings {

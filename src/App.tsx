@@ -35,7 +35,7 @@ export function App() {
     const scale = getIntensityLabel(latest.earthquake.maxScale)
     new Notification('地震情報', {
       body: `${latest.earthquake.hypocenter.name} 最大震度${scale} ${formatMagnitude(latest.earthquake.hypocenter.magnitude)}`,
-      icon: '/icons/icon.svg',
+      icon: `${import.meta.env.BASE_URL}icons/icon.svg`,
       tag: latest.id,
     })
   }, [earthquakes, settings.notifyMinScale])
@@ -95,7 +95,7 @@ export function App() {
                 }
                 new Notification('地震情報テスト', {
                   body: '東京都内陸部（テスト） 最大震度4 M5.5',
-                  icon: '/icons/icon.svg',
+                  icon: `${import.meta.env.BASE_URL}icons/icon.svg`,
                   tag: 'test-notification',
                 })
               },

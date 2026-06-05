@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
 
-const DEFAULT_SERVER = 'http://localhost:3001'
 const AUTO_DISMISS_MS = 5 * 60 * 1000
 
 export interface WebhookAlertState {
@@ -11,7 +10,7 @@ export interface WebhookAlertState {
   testAlert: () => void
 }
 
-export function useWebhookAlert(serverUrl = DEFAULT_SERVER): WebhookAlertState {
+export function useWebhookAlert(serverUrl = ''): WebhookAlertState {
   const [isActive, setIsActive] = useState(false)
   const [triggeredAt, setTriggeredAt] = useState<Date | null>(null)
   const [message, setMessage] = useState<string | null>(null)
@@ -40,6 +39,9 @@ export function useWebhookAlert(serverUrl = DEFAULT_SERVER): WebhookAlertState {
   }, [])
 
   useEffect(() => {
+    // URL 未設定時は接続しない（Home Assistant 連携は任意機能）
+    if (!serverUrl) return
+
     let retryTimer: ReturnType<typeof setTimeout> | null = null
     let retryDelay = 5000
 
