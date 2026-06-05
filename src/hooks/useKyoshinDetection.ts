@@ -1,9 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
 import type { SiteCoords } from '../services/kyoshin'
 
+export interface DetectedPoint {
+  lat: number
+  lng: number
+  index: number
+}
+
 export interface KyoshinDetection {
   detected: boolean
   maxIndex: number
+  /** 急上昇した観測点（震度インデックス降順、最大50点） */
+  points: DetectedPoint[]
 }
 
 function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -24,10 +32,12 @@ const PROXIMITY_KM = 80
 // 検知後の表示維持時間 (ms)
 const DETECTION_DURATION_MS = 60_000
 
+const EMPTY: KyoshinDetection = { detected: false, maxIndex: 0, points: [] }
+
 /**
  * 直前と比べてインデックスが急上昇した観測点が、近接 PROXIMITY_KM km 以内に
  * 2点以上存在すれば地震の揺れとして検知する。
- * 誤検知を防ぐため、単独の観測点スパイクは無視する。
+ * 単独の観測点スパイク（誤検知）は無視する。
  */
 export function useKyoshinDetection(
   sites: SiteCoords,
@@ -35,7 +45,7 @@ export function useKyoshinDetection(
 ): KyoshinDetection {
   const prevRef = useRef<number[]>([])
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [detection, setDetection] = useState<KyoshinDetection>({ detected: false, maxIndex: 0 })
+  const [detection, setDetection] = useState<KyoshinDetection>(EMPTY)
 
   useEffect(() => {
     const prev = prevRef.current
@@ -68,13 +78,21 @@ export function useKyoshinDetection(
     }
     if (!foundCluster) return
 
-    // 検知：急上昇した観測点の最大インデックスを報告し、タイマーで自動解除
-    const maxIndex = Math.max(...changed.map(c => c.index))
-    setDetection({ detected: true, maxIndex })
+    // 検知：座標付きの点を震度降順で収集（上位50点）
+    const points: DetectedPoint[] = changed
+      .map(c => {
+        const site = sites[c.siteIdx]
+        if (!site) return null
+        return { lat: site[0], lng: site[1], index: c.index }
+      })
+      .filter((p): p is DetectedPoint => p !== null)
+      .sort((a, b) => b.index - a.index)
+      .slice(0, 50)
+
+    const maxIndex = points[0]?.index ?? 0
+    setDetection({ detected: true, maxIndex, points })
     if (timerRef.current) clearTimeout(timerRef.current)
-    timerRef.current = setTimeout(() => {
-      setDetection({ detected: false, maxIndex: 0 })
-    }, DETECTION_DURATION_MS)
+    timerRef.current = setTimeout(() => setDetection(EMPTY), DETECTION_DURATION_MS)
   }, [sites, indices])
 
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
