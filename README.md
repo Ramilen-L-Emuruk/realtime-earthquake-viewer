@@ -14,7 +14,7 @@
 - **地震情報タブ**
   - 過去の地震をカード表示（最大震度・震源地・M値・深さ・津波の有無・発表種別）
   - 日本地図に **各観測点の震度を震度別の色付きマーカー＋震度ラベルで表示**（震源は×印）
-  - **引き〜中間ズームでは都道府県ごとの最大震度に集約**（県の中心に最大震度を表示し、該当県を同じ震度色で塗りつぶし）。寄ると観測点ごとの表示に切り替わる
+  - **引き〜中間ズームでは一次細分区域ごとの最大震度に集約**（観測点を含む区域を判定し、区域の中心に最大震度を表示・同じ震度色で塗りつぶし）。寄ると観測点ごとの表示に切り替わる
   - **カードをクリックすると、その地震の情報を地図に表示**（選択中のカードを強調）
   - 地図は **震源＋全観測点が収まるよう自動ズーム**
   - マーカー／震源クリックで地点名・震度などの詳細ポップアップを表示
@@ -54,7 +54,8 @@
 
 - **ベースマップ（地図表示）**
   - 地図タイルを使わず、**都道府県の境界・陸地を自前で描画**したダークテーマの行政区域マップ（道路や注記が無いシンプルな表示）
-  - ズームに応じて **地方名（引き）→ 都道府県名 → 主要都市名（寄り）** とラベルの粒度を自動で切り替え
+  - 都道府県境に加えて**一次細分区域**（地震情報・EEW の「地域」区分）の細い境界線を描画
+  - ズームに応じて **地方名（引き）→ 都道府県名 → 一次細分区域名（寄り）** とラベルの粒度を自動で切り替え
   - 背景に **海底地形（ESRI Ocean）** を表示可能（設定で ON/OFF・既定 ON。ダークテーマに合わせて減光）
 
 - **PWA 対応**
@@ -117,6 +118,7 @@ npm run preview
 > - 観測点座標（`public/data/station-coords.json`）: `node scripts/build-station-coords.mjs`
 > - 津波予報区の海岸線（`public/data/tsunami-zones.json`）: `node scripts/build-tsunami-zones.mjs`
 > - 都道府県境界（`public/data/prefectures.json`）: `node scripts/build-prefectures.mjs`
+> - 一次細分区域境界（`public/data/subregions.json`）: `node scripts/build-subregions.mjs`
 
 ---
 
@@ -186,6 +188,7 @@ return
 | 観測点座標 | 気象庁 震度観測点一覧（[iku55 氏による JSON 化](https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1)） | 地図に各地点をプロットするための座標テーブル |
 | 津波予報区の海岸線 | 気象庁 予報区等 GIS データ（[Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)） | 津波の海域を海岸線として描画するためのライン座標 |
 | 行政区域（都道府県境界） | [dataofjapan/land](https://github.com/dataofjapan/land)（Natural Earth ベース） | ベースマップの陸地・県境を自前描画（タイル不使用）。`scripts/build-prefectures.mjs` で生成 |
+| 一次細分区域（地震情報の地域） | 気象庁 予報区等 GIS データ（[Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)） | 区域境界・区域名ラベル・地震の区域別震度集約に使用。`scripts/build-subregions.mjs` で生成 |
 | 海底地形（背景・任意） | [Esri World Ocean Base](https://www.arcgis.com/home/item.html?id=1e126e7520f9466c9ca28b8f28b5e500) | 背景に海底地形を表示（設定で ON/OFF）。Esri, GEBCO, NOAA ほか |
 
 ### P2PQuake イベントコード
@@ -227,11 +230,13 @@ realtime-earthquake-viewer/
 │   └── data/
 │       ├── station-coords.json     # 震度観測点・細分区域の座標テーブル（生成物）
 │       ├── tsunami-zones.json      # 津波予報区の海岸線座標（生成物）
-│       └── prefectures.json        # 都道府県の境界ポリゴン（ベースマップ用・生成物）
+│       ├── prefectures.json        # 都道府県の境界ポリゴン（ベースマップ用・生成物）
+│       └── subregions.json         # 一次細分区域の境界ポリゴン（生成物）
 ├── scripts/
 │   ├── build-station-coords.mjs    # 観測点座標テーブル生成スクリプト
 │   ├── build-tsunami-zones.mjs     # 津波予報区 海岸線データ生成スクリプト
-│   └── build-prefectures.mjs       # 都道府県境界データ生成スクリプト
+│   ├── build-prefectures.mjs       # 都道府県境界データ生成スクリプト
+│   └── build-subregions.mjs        # 一次細分区域境界データ生成スクリプト
 ├── src/
 │   ├── App.tsx                     # 地図常時表示 + タブ別パネル + 通知音/自動タブ切替/ウィンドウタイトル連携
 │   ├── components/
@@ -240,7 +245,7 @@ realtime-earthquake-viewer/
 │   │   ├── EarthquakeTab/          # 地震情報パネル（カード一覧・選択）
 │   │   ├── Map/
 │   │   │   ├── JapanMap.tsx        # Leaflet 日本地図（震度マーカー / 津波海岸線 / 強震モニタ）
-│   │   │   ├── BaseMap.tsx         # 行政区域ベースマップ（県境・陸地・地方/県/都市ラベル）
+│   │   │   ├── BaseMap.tsx         # 行政区域ベースマップ（県境・一次細分区域境界・陸地・地方/県/区域名ラベル）
 │   │   │   └── KyoshinPoints.tsx   # 強震モニタ観測点の Canvas 描画レイヤー
 │   │   ├── RealtimeTab/            # 凡例・注記パネル（地図は JapanMap が担当）
 │   │   ├── SettingsTab/            # 設定パネル
@@ -250,7 +255,8 @@ realtime-earthquake-viewer/
 │   │   ├── useKyoshinRealtime.ts   # Yahoo リアルタイム震度のポーリング
 │   │   ├── useSettings.ts          # アプリ設定（localStorage 永続化）
 │   │   ├── useStationCoords.ts     # 観測点座標テーブルの読み込み
-│   │   └── useTsunamiZones.ts      # 津波予報区 海岸線データの読み込み
+│   │   ├── useTsunamiZones.ts      # 津波予報区 海岸線データの読み込み
+│   │   └── useSubRegions.ts        # 一次細分区域境界データの読み込み
 │   ├── services/
 │   │   ├── kyoshin.ts              # Yahoo リアルタイム震度の取得・デコード
 │   │   └── p2pquake.ts             # P2PQuake API クライアント（自動再接続）
@@ -263,8 +269,9 @@ realtime-earthquake-viewer/
 │       ├── stationCoords.ts        # 地点名→座標の引き当て
 │       ├── tsunamiZones.ts         # 津波予報区 海岸線データの引き当て
 │       ├── prefectures.ts          # 都道府県境界データの読み込み
-│       ├── prefectureCapitals.ts   # 主要都市（県庁所在地）ラベル一覧
+│       ├── subregions.ts           # 一次細分区域境界データの読み込み
 │       ├── regions.ts              # 地方区分ラベル一覧
+│       ├── geo.ts                  # 点の多角形内包判定（区域別集約用）
 │       └── formatters.ts           # 日時・数値フォーマッター
 ├── index.html
 ├── package.json

@@ -8,7 +8,8 @@ import { eewMaxScale } from '../../utils/eew'
 import { useStationCoords } from '../../hooks/useStationCoords'
 import { lookupPointCoords, type LatLng } from '../../utils/stationCoords'
 import { useTsunamiZones } from '../../hooks/useTsunamiZones'
-import { usePrefectures } from '../../hooks/usePrefectures'
+import { useSubRegions } from '../../hooks/useSubRegions'
+import { pointInRings } from '../../utils/geo'
 import { BaseMap } from './BaseMap'
 import { KyoshinPoints } from './KyoshinPoints'
 import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
@@ -244,7 +245,7 @@ export function JapanMap({
 }: Props) {
   const stationCoords = useStationCoords()
   const tsunamiZones = useTsunamiZones()
-  const prefectures = usePrefectures()
+  const subregions = useSubRegions()
   const [zoom, setZoom] = useState(JAPAN_ZOOM)
 
   const hasEpicenter =
@@ -280,20 +281,48 @@ export function JapanMap({
     return markers.sort((a, b) => a.scale - b.scale)
   }, [mode, quake, stationCoords])
 
-  // 中間より引きのときは観測点ごとではなく都道府県ごとの最大震度に集約する。
-  const aggregateByPref = mode === 'quake' && !!quake && zoom < PREF_AGGREGATE_MAX_ZOOM
+  // 中間より引きのときは観測点ごとではなく一次細分区域ごとの最大震度に集約する。
+  const aggregateByRegion = mode === 'quake' && !!quake && zoom < PREF_AGGREGATE_MAX_ZOOM
 
-  // 都道府県ごとの最大震度を境界形状（塗りつぶし）＋県中心マーカーとして引き当てる。
-  const prefAggregates = useMemo(() => {
-    if (!aggregateByPref || !prefectures) return []
+  // 一次細分区域に bbox を付与（点内包判定の前段フィルタ用）
+  const subregionIndex = useMemo(() => {
+    if (!subregions) return []
+    return subregions.map((sr) => {
+      let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity
+      for (const ring of sr.rings) for (const [la, ln] of ring) {
+        if (la < minLat) minLat = la
+        if (la > maxLat) maxLat = la
+        if (ln < minLng) minLng = ln
+        if (ln > maxLng) maxLng = ln
+      }
+      return { sr, minLat, maxLat, minLng, maxLng }
+    })
+  }, [subregions])
+
+  // 各観測点がどの一次細分区域に含まれるか判定し、区域ごとの最大震度を集約する。
+  // 区域形状（塗りつぶし）＋区域中心マーカーとして引き当てる。
+  const regionAggregates = useMemo(() => {
+    if (!aggregateByRegion || subregionIndex.length === 0) return []
+    const maxByName = new Map<string, number>()
+    for (const m of intensityMarkers) {
+      const [lat, lng] = m.position
+      for (const e of subregionIndex) {
+        if (lat < e.minLat || lat > e.maxLat || lng < e.minLng || lng > e.maxLng) continue
+        if (pointInRings(lat, lng, e.sr.rings)) {
+          const cur = maxByName.get(e.sr.name)
+          if (cur == null || m.scale > cur) maxByName.set(e.sr.name, m.scale)
+          break
+        }
+      }
+    }
     const list: { name: string; scale: number; rings: LatLng[][]; label: LatLng }[] = []
-    for (const [name, scale] of prefIntensities) {
-      const shape = prefectures[name]
-      if (shape) list.push({ name, scale, rings: shape.rings, label: shape.label })
+    for (const e of subregionIndex) {
+      const scale = maxByName.get(e.sr.name)
+      if (scale != null) list.push({ name: e.sr.name, scale, rings: e.sr.rings, label: e.sr.label })
     }
     // 弱い震度を先に描画し、強い震度を前面に重ねる
     return list.sort((a, b) => a.scale - b.scale)
-  }, [aggregateByPref, prefectures, prefIntensities])
+  }, [aggregateByRegion, subregionIndex, intensityMarkers])
 
   // 津波: 進行中の警報・注意報を区域名→最大等級にまとめ、海岸線を引き当てる
   const tsunamiLines = useMemo<TsunamiLine[]>(() => {
@@ -464,14 +493,14 @@ export function JapanMap({
           )),
         )}
 
-      {/* 中間より引き: 都道府県ごとの最大震度を県塗りつぶし＋県中心マーカーで表示。
+      {/* 中間より引き: 一次細分区域ごとの最大震度を区域塗りつぶし＋区域中心マーカーで表示。
           塗りはラベル(basemap-labels z270)より背面の専用ペイン(z260)に置く。 */}
-      {aggregateByPref && (
-        <Pane name="quake-pref-fill" style={{ zIndex: 260 }}>
-          {prefAggregates.map((p) =>
+      {aggregateByRegion && (
+        <Pane name="quake-region-fill" style={{ zIndex: 260 }}>
+          {regionAggregates.map((p) =>
             p.rings.map((ring, i) => (
               <Polygon
-                key={`pref-fill-${p.name}-${i}`}
+                key={`region-fill-${p.name}-${i}`}
                 positions={ring}
                 pathOptions={{
                   color: getIntensityColor(p.scale),
@@ -484,10 +513,10 @@ export function JapanMap({
           )}
         </Pane>
       )}
-      {aggregateByPref &&
-        prefAggregates.map((p) => (
+      {aggregateByRegion &&
+        regionAggregates.map((p) => (
           <Marker
-            key={`pref-mark-${p.name}`}
+            key={`region-mark-${p.name}`}
             position={p.label}
             icon={getIntensityIcon(p.scale, iconScale)}
             zIndexOffset={p.scale * INTENSITY_Z}
@@ -504,7 +533,7 @@ export function JapanMap({
         ))}
 
       {/* 各地点の震度マーカー（震度ごとに色分け・震度を表記。寄りのときのみ） */}
-      {mode === 'quake' && !aggregateByPref &&
+      {mode === 'quake' && !aggregateByRegion &&
         intensityMarkers.map((m) => (
           <Marker
             key={m.key}

@@ -2,13 +2,13 @@ import { useEffect, useRef } from 'react'
 import L from 'leaflet'
 import { useMap } from 'react-leaflet'
 import { loadPrefectures } from '../../utils/prefectures'
-import { PREFECTURE_CAPITALS } from '../../utils/prefectureCapitals'
+import { loadSubRegions } from '../../utils/subregions'
 import { REGIONS } from '../../utils/regions'
 
 // ラベルの粒度を切り替えるズーム境界。
 //   zoom < REGION_MAX        : 地方ラベル（引きの画）
 //   REGION_MAX <= zoom < CITY: 県名ラベル
-//   zoom >= CITY             : 主要都市名ラベル
+//   zoom >= CITY             : 一次細分区域名ラベル（寄り）
 const REGION_MAX_ZOOM = 7
 const CITY_LABEL_MIN_ZOOM = 9
 
@@ -18,13 +18,14 @@ interface Props {
 }
 
 // ダークテーマ用の配色
-const LAND_FILL = '#161b24'   // 陸地の塗り（海＝コンテナ背景 #0a0c10 より少し明るい）
-const PREF_BORDER = '#56607a' // 都道府県境界
+const LAND_FILL = '#161b24'       // 陸地の塗り（海＝コンテナ背景 #0a0c10 より少し明るい）
+const PREF_BORDER = '#56607a'     // 都道府県境界（強調）
+const SUBREGION_BORDER = '#39414f' // 一次細分区域の境界（細く控えめ）
 
 /**
- * 行政区域ベースマップ（タイル不使用）。ダーク背景の上に、
- * 都道府県の陸地塗り＋県境＋県名/都市名ラベルを描画する。
- * 点数が多いため canvas に命令的描画し、専用ペイン（タイルとデータ描画の中間 z）へ載せる。
+ * 行政区域ベースマップ（タイル不使用）。ダーク背景の上に、陸地塗り＋一次細分区域の
+ * 細線＋県境＋ラベル（地方/県/区域名）を描画する。点数が多いため canvas に命令的描画し、
+ * 専用ペイン（タイルとデータ描画の中間 z）へ載せる。
  */
 export function BaseMap({ suppressRegionLabels = false }: Props) {
   const map = useMap()
@@ -35,9 +36,9 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
 
   useEffect(() => {
     // ペイン構成（いずれも overlayPane z=400 より下）:
-    //   basemap(250)        : 陸地塗り・県境
+    //   basemap(250)        : 陸地塗り・区域境界・県境
     //   quake-pref-fill(260): 地震モードの県別震度塗り（JapanMap が使用）
-    //   basemap-labels(270) : 地方/県/都市ラベル（塗りより前面）
+    //   basemap-labels(270) : 地方/県/区域名ラベル（塗りより前面）
     if (!map.getPane('basemap')) {
       const pane = map.createPane('basemap')
       pane.style.zIndex = '250'
@@ -52,9 +53,9 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
     const shapes = L.layerGroup().addTo(map)
     const regionLabels = L.layerGroup()
     const prefLabels = L.layerGroup()
-    const cityLabels = L.layerGroup()
+    const subregionLabels = L.layerGroup()
 
-    // 地方ラベル（引きの画）。県境データに依存しないため先に用意する。
+    // 地方ラベル（引きの画）。境界データに依存しないため先に用意する。
     for (const region of REGIONS) {
       L.marker([region.lat, region.lng], {
         pane: 'basemap-labels',
@@ -65,63 +66,73 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
     }
 
     map.attributionControl?.addAttribution(
-      '「国土数値情報（行政区域）」国土交通省 / Natural Earth',
+      '「国土数値情報（行政区域）」国土交通省 / 「気象庁 予報区等GISデータ（地震情報／細分区域）」 / Natural Earth',
     )
 
     let cancelled = false
 
-    loadPrefectures()
-      .then((prefs) => {
-        if (cancelled) return
+    Promise.allSettled([loadPrefectures(), loadSubRegions()]).then(([prefRes, subRes]) => {
+      if (cancelled) return
+      const prefs = prefRes.status === 'fulfilled' ? prefRes.value : null
+      const subs = subRes.status === 'fulfilled' ? subRes.value : null
 
-        // 都道府県: 陸地塗り＋県境＋県名ラベル
+      // 1) 陸地塗り（都道府県ポリゴン・塗りのみ）
+      if (prefs) {
+        for (const shape of Object.values(prefs)) {
+          for (const ring of shape.rings) {
+            L.polygon(ring, {
+              renderer, pane: 'basemap', interactive: false,
+              fill: true, fillColor: LAND_FILL, fillOpacity: 1, stroke: false,
+            }).addTo(shapes)
+          }
+        }
+      }
+
+      // 2) 一次細分区域の細い境界線（塗りなし）
+      if (subs) {
+        for (const sr of subs) {
+          for (const ring of sr.rings) {
+            L.polygon(ring, {
+              renderer, pane: 'basemap', interactive: false,
+              fill: false, color: SUBREGION_BORDER, weight: 0.5,
+            }).addTo(shapes)
+          }
+          L.marker(sr.label, {
+            pane: 'basemap-labels', interactive: false, keyboard: false,
+            icon: L.divIcon({ className: 'base-subregion-label', html: `<span>${sr.name}</span>`, iconSize: [0, 0] }),
+          }).addTo(subregionLabels)
+        }
+      }
+
+      // 3) 県境（強調・塗りなし）を細線より前面に重ねる＋県名ラベル
+      if (prefs) {
         for (const [name, shape] of Object.entries(prefs)) {
           for (const ring of shape.rings) {
             L.polygon(ring, {
-              renderer,
-              pane: 'basemap',
-              interactive: false,
-              fill: true,
-              fillColor: LAND_FILL,
-              fillOpacity: 1,
-              color: PREF_BORDER,
-              weight: 1,
+              renderer, pane: 'basemap', interactive: false,
+              fill: false, color: PREF_BORDER, weight: 1,
             }).addTo(shapes)
           }
           L.marker(shape.label, {
-            pane: 'basemap-labels',
-            interactive: false,
-            keyboard: false,
+            pane: 'basemap-labels', interactive: false, keyboard: false,
             icon: L.divIcon({ className: `base-pref-label base-pref-label--${shape.dir}`, html: `<span>${name}</span>`, iconSize: [0, 0] }),
           }).addTo(prefLabels)
         }
+      }
 
-        // 主要都市（県庁所在地）ラベル
-        for (const city of PREFECTURE_CAPITALS) {
-          L.marker([city.lat, city.lng], {
-            pane: 'basemap-labels',
-            interactive: false,
-            keyboard: false,
-            icon: L.divIcon({ className: 'base-city-label', html: `<span>${city.name}</span>`, iconSize: [0, 0] }),
-          }).addTo(cityLabels)
-        }
+      applyLabelVisibility()
+    })
 
-        applyLabelVisibility()
-      })
-      .catch(() => {
-        // ベースマップが取得できなくても地図自体（データ描画）は動作する
-      })
-
-    // ズームに応じて 地方 → 県名 → 主要都市名 とラベルの粒度を切り替える。
+    // ズームに応じて 地方 → 県名 → 区域名 とラベルの粒度を切り替える。
     // リアルタイム表示など抑制時は、地方ラベルの帯ではラベルを出さない。
     function applyLabelVisibility() {
       const zoom = map.getZoom()
       let active: L.LayerGroup | null =
         zoom < REGION_MAX_ZOOM ? regionLabels
         : zoom < CITY_LABEL_MIN_ZOOM ? prefLabels
-        : cityLabels
+        : subregionLabels
       if (active === regionLabels && suppressRegionRef.current) active = null
-      for (const group of [regionLabels, prefLabels, cityLabels]) {
+      for (const group of [regionLabels, prefLabels, subregionLabels]) {
         if (group === active) {
           if (!map.hasLayer(group)) group.addTo(map)
         } else if (map.hasLayer(group)) {
@@ -132,7 +143,7 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
     applyRef.current = applyLabelVisibility
 
     map.on('zoomend', applyLabelVisibility)
-    applyLabelVisibility() // 初期表示（地方ラベルは県データ取得を待たずに出す）
+    applyLabelVisibility() // 初期表示（地方ラベルは境界データ取得を待たずに出す）
 
     return () => {
       cancelled = true
@@ -141,7 +152,7 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
       map.removeLayer(shapes)
       map.removeLayer(regionLabels)
       map.removeLayer(prefLabels)
-      map.removeLayer(cityLabels)
+      map.removeLayer(subregionLabels)
     }
   }, [map])
 
