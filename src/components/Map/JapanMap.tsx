@@ -115,6 +115,41 @@ function FitToBounds({ signature, positions }: { signature: string; positions: L
   return null
 }
 
+// 緊急地震速報の発報時: まず震源を中心に表示し、予報円(S波)が現在の表示に
+// 収まらなくなったらその大きさに合わせてズームアウトする。
+function FitToEEW({ eew, psWave }: { eew: EEWAlert | null; psWave: PsWaveCircle[] }) {
+  const map = useMap()
+  const lastEewIdRef = useRef<string | null>(null)
+
+  // 新しい EEW を受信したら震源を中心に表示
+  useEffect(() => {
+    if (!eew) {
+      lastEewIdRef.current = null
+      return
+    }
+    const { latitude, longitude } = eew.earthquake.hypocenter
+    if (latitude <= -200 || longitude <= -200) return
+    if (lastEewIdRef.current === eew.id) return
+    lastEewIdRef.current = eew.id
+    map.flyTo([latitude, longitude], 7, { duration: 0.8 })
+  }, [eew, map])
+
+  // 予報円の成長に追従してズームアウト（表示に収まらなくなった時のみ）
+  useEffect(() => {
+    if (psWave.length === 0) return
+    let bounds: L.LatLngBounds | null = null
+    for (const c of psWave) {
+      const b = L.latLng(c.lat, c.lng).toBounds(c.sRadius * 2 * 1000)
+      bounds = bounds ? bounds.extend(b) : b
+    }
+    if (bounds && !map.getBounds().contains(bounds)) {
+      map.flyToBounds(bounds, { padding: [60, 60], duration: 0.8 })
+    }
+  }, [psWave, map])
+
+  return null
+}
+
 export type MapMode = 'quake' | 'tsunami' | 'kyoshin'
 
 interface Props {
@@ -231,6 +266,9 @@ export function JapanMap({
       {mode === 'kyoshin' && (
         <KyoshinPoints sites={kyoshinSites} indices={kyoshinIndices} uiScale={uiScale} />
       )}
+
+      {/* EEW 発報時: 震源中心→予報円に合わせてズームアウト */}
+      {mode === 'kyoshin' && <FitToEEW eew={eew} psWave={kyoshinPsWave} />}
 
       {/* 緊急地震速報の予報円（S波=塗りつぶし / P波=外周） */}
       {mode === 'kyoshin' &&
