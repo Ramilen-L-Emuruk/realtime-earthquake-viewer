@@ -86,7 +86,7 @@ export function TsunamiTab({ tsunamis }: Props) {
 
   if (active.length === 0) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center gap-3 p-4">
+      <div className="h-full flex flex-col items-center justify-center gap-3 p-4">
         <div className="w-16 h-16 rounded-full bg-green-900 flex items-center justify-center">
           <span className="text-3xl">🌊</span>
         </div>
@@ -99,7 +99,7 @@ export function TsunamiTab({ tsunamis }: Props) {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-3">
+    <div className="p-3">
       <div className="mb-3 p-3 bg-red-900/50 rounded-lg border border-red-700">
         <p className="text-red-300 font-bold text-sm">
           ⚠️ 津波情報発令中

@@ -61,9 +61,11 @@ function createTestTsunami(): JMATsunami {
     time: now,
     cancelled: false,
     issue: { source: 'テスト', time: now, type: 'Focus' },
+    // name は地図の海岸線表示用に、津波予報区データ（tsunami-zones.json）に実在する区域名を使用する
     areas: [
-      { grade: 'Watch', immediate: false, name: '相模湾（テスト）', maxHeight: { description: '1m', value: 1.0 } },
-      { grade: 'Watch', immediate: false, name: '伊豆諸島（テスト）', maxHeight: { description: '0.5m', value: 0.5 } },
+      { grade: 'Warning', immediate: false, name: '千葉県九十九里・外房', maxHeight: { description: '3m', value: 3.0 } },
+      { grade: 'Watch', immediate: false, name: '相模湾・三浦半島', maxHeight: { description: '1m', value: 1.0 } },
+      { grade: 'Watch', immediate: false, name: '伊豆諸島', maxHeight: { description: '0.5m', value: 0.5 } },
     ],
   }
 }

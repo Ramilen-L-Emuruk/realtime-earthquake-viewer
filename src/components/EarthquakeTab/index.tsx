@@ -1,24 +1,20 @@
-import { useState } from 'react'
 import type { JMAQuake } from '../../types/earthquake'
 import { EarthquakeCard } from './EarthquakeCard'
-import { JapanMap } from '../Map/JapanMap'
 
 interface Props {
   earthquakes: JMAQuake[]
+  selectedId: string | null
+  onSelect: (id: string) => void
   isLoading: boolean
   error: string | null
 }
 
-export function EarthquakeTab({ earthquakes, isLoading, error }: Props) {
-  // 選択中の地震ID。未選択(null)の場合は最新の地震を表示する。
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const latest = earthquakes[0] ?? null
-  // 選択中の地震が一覧から消えた場合は最新にフォールバック
-  const selected = earthquakes.find((q) => q.id === selectedId) ?? latest
-
+// 地震情報タブの右パネル。地震カードの一覧を表示し、クリックで地図表示対象を選択する。
+// 地図そのものは App が常時表示する。
+export function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, error }: Props) {
   if (isLoading) {
     return (
-      <div className="flex-1 flex items-center justify-center">
+      <div className="flex items-center justify-center h-full">
         <div className="text-center">
           <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
           <p className="text-secondary text-sm">データを取得中...</p>
@@ -29,7 +25,7 @@ export function EarthquakeTab({ earthquakes, isLoading, error }: Props) {
 
   if (error) {
     return (
-      <div className="flex-1 flex items-center justify-center p-4">
+      <div className="flex items-center justify-center h-full p-4">
         <div className="text-center">
           <p className="text-red-400 text-sm mb-2">データの取得に失敗しました</p>
           <p className="text-secondary text-xs">{error}</p>
@@ -38,33 +34,25 @@ export function EarthquakeTab({ earthquakes, isLoading, error }: Props) {
     )
   }
 
-  return (
-    <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
-      {/* Map section - takes all remaining width on desktop */}
-      <div className="h-64 lg:h-auto lg:flex-1 flex-shrink-0">
-        <JapanMap quake={selected} />
+  if (earthquakes.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <p className="text-secondary text-sm">地震情報はありません</p>
       </div>
+    )
+  }
 
-      {/* Earthquake list - fixed narrow width on desktop */}
-      <div className="lg:w-96 flex-shrink-0 overflow-y-auto border-t lg:border-t-0 lg:border-l border-border">
-        {earthquakes.length === 0 ? (
-          <div className="flex items-center justify-center h-full">
-            <p className="text-secondary text-sm">地震情報はありません</p>
-          </div>
-        ) : (
-          <div className="p-3 space-y-2">
-            {earthquakes.map((quake, i) => (
-              <EarthquakeCard
-                key={quake.id}
-                quake={quake}
-                isLatest={i === 0}
-                isSelected={quake.id === selected?.id}
-                onSelect={() => setSelectedId(quake.id)}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+  return (
+    <div className="p-3 space-y-2">
+      {earthquakes.map((quake, i) => (
+        <EarthquakeCard
+          key={quake.id}
+          quake={quake}
+          isLatest={i === 0}
+          isSelected={quake.id === selectedId}
+          onSelect={() => onSelect(quake.id)}
+        />
+      ))}
     </div>
   )
 }
