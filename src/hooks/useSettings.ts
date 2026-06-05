@@ -12,6 +12,7 @@ export interface AppSettings {
   uiScale: number           // UI 倍率 (1 = 100%)
   defaultTab: DefaultTabSetting    // 起動時・アイドル復帰時に表示するタブ
   tsunamiPriorityDefault: boolean  // 津波発表中はデフォルトタブを津波情報にする
+  idleRevertSec: number            // 操作なしでデフォルトタブへ戻るまでの秒数 (0 = 無効)
 }
 
 const STORAGE_KEY = 'quake-viewer-settings'
@@ -27,6 +28,7 @@ const DEFAULTS: AppSettings = {
   uiScale: 1,
   defaultTab: 'earthquake',
   tsunamiPriorityDefault: true,
+  idleRevertSec: 30,
 }
 
 function load(): AppSettings {
