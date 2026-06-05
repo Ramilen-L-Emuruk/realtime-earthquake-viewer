@@ -18,12 +18,14 @@ function createTestEarthquake(): JMAQuake {
       domesticTsunami: 'None',
       foreignTsunami: 'None',
     },
+    // addr は地図の震度マーカー表示用に、座標テーブル（public/data/station-coords.json）に
+    // 実在する観測点名を使用する。市区町村名のままだと座標が引けずマーカーが出ない。
     points: [
-      { pref: '東京都', addr: '千代田区', isArea: false, scale: 40 },
-      { pref: '東京都', addr: '新宿区', isArea: false, scale: 30 },
-      { pref: '神奈川県', addr: '横浜市中区', isArea: false, scale: 30 },
-      { pref: '埼玉県', addr: 'さいたま市大宮区', isArea: false, scale: 20 },
-      { pref: '千葉県', addr: '千葉市中央区', isArea: false, scale: 20 },
+      { pref: '東京都', addr: '東京千代田区大手町', isArea: false, scale: 40 },
+      { pref: '東京都', addr: '東京新宿区西新宿', isArea: false, scale: 30 },
+      { pref: '神奈川県', addr: '横浜鶴見区鶴見', isArea: false, scale: 30 },
+      { pref: '埼玉県', addr: '熊谷市桜町', isArea: false, scale: 20 },
+      { pref: '千葉県', addr: '銚子市川口町', isArea: false, scale: 20 },
     ],
   }
 }
