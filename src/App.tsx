@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { TabBar, type TabId } from './components/TabBar'
+import { IconNav, type TabId } from './components/IconNav'
 import { JapanMap, type MapMode } from './components/Map/JapanMap'
 import { MapUpdateTime } from './components/MapUpdateTime'
 import { EarthquakeTab } from './components/EarthquakeTab'
@@ -144,14 +144,9 @@ export function App() {
         </div>
       )}
 
-      <TabBar
-        activeTab={activeTab}
-        onTabChange={handleTabChange}
-        tsunamiActive={tsunamis.some(t => !t.cancelled)}
-      />
-
+      {/* 地図(左) | パネル | アイコンナビ(右端)。モバイルは縦積み(地図上・パネル・ナビ下)。 */}
       <div className="flex-1 overflow-hidden flex flex-col lg:flex-row">
-        {/* 常時表示の地図エリア（タブに応じて内容を切替）。モバイルでは高さ可変。 */}
+        {/* 常時表示の地図エリア（タブに応じて内容を切替） */}
         <div className="relative flex-1 min-h-0">
           <JapanMap
             mode={mapMode}
@@ -166,8 +161,7 @@ export function App() {
           <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
         </div>
 
-        {/* 右パネル（タブに応じて内容を切替） */}
-        {/* モバイル(縦積み)では固定高さ + overflow-y-auto でスクロール。地図側を可変にする。 */}
+        {/* パネル（タブに応じて内容を切替）。モバイルは下部固定高さ + スクロール。 */}
         <div className="h-64 flex-shrink-0 overflow-y-auto lg:h-auto lg:flex-none lg:w-96 border-t lg:border-t-0 lg:border-l border-border">
           {activeTab === 'earthquake' && (
             <EarthquakeTab
@@ -204,6 +198,13 @@ export function App() {
             />
           )}
         </div>
+
+        {/* アイコンナビ（一番外側＝右端 / モバイルは最下部） */}
+        <IconNav
+          activeTab={activeTab}
+          onTabChange={handleTabChange}
+          tsunamiActive={tsunamis.some(t => !t.cancelled)}
+        />
       </div>
     </div>
   )
