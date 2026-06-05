@@ -117,6 +117,12 @@ export interface EEWAlert {
   }
   severity: 'Unknown' | 'Forecast' | 'Warning'
   cancelled: boolean
+  // issue.serial = 情報番号（第N報）。最終報フラグは P2PQuake v2 には無い。
+  issue?: {
+    eventId?: string
+    serial?: string
+    time?: string
+  }
   // P2PQuake v2 の実データは `areas`、テスト/旧データは `regions` を使う。
   // 参照時は utils/eew.ts の eewAreas() で吸収する。
   areas?: EEWRegion[]

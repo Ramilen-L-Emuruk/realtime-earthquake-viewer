@@ -11,3 +11,9 @@ export function eewAreas(eew: EEWAlert): EEWRegion[] {
 export function eewMaxScale(eew: EEWAlert): number {
   return eewAreas(eew).reduce((max, r) => Math.max(max, r.scaleTo), 0)
 }
+
+/** 情報番号（第N報）。取得できなければ null。 */
+export function eewSerial(eew: EEWAlert): number | null {
+  const n = Number(eew.issue?.serial)
+  return Number.isInteger(n) && n > 0 ? n : null
+}
