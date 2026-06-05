@@ -128,8 +128,8 @@ export function App() {
       />
 
       <div className="flex-1 overflow-hidden flex flex-col lg:flex-row">
-        {/* 常時表示の地図エリア（タブに応じて内容を切替） */}
-        <div className="relative h-64 lg:h-auto lg:flex-1 flex-shrink-0">
+        {/* 常時表示の地図エリア（タブに応じて内容を切替）。モバイルでは高さ可変。 */}
+        <div className="relative flex-1 min-h-0">
           <JapanMap mode={mapMode} quake={mapQuake} tsunamis={tsunamis} />
           {/* リアルタイムタブでは強震モニタ画像を地図に重ねて表示 */}
           {activeTab === 'realtime' && (
@@ -140,7 +140,8 @@ export function App() {
         </div>
 
         {/* 右パネル（タブに応じて内容を切替） */}
-        <div className="lg:w-96 flex-shrink-0 overflow-y-auto border-t lg:border-t-0 lg:border-l border-border">
+        {/* モバイル(縦積み)では固定高さ + overflow-y-auto でスクロール。地図側を可変にする。 */}
+        <div className="h-64 flex-shrink-0 overflow-y-auto lg:h-auto lg:flex-none lg:w-96 border-t lg:border-t-0 lg:border-l border-border">
           {activeTab === 'earthquake' && (
             <EarthquakeTab
               earthquakes={filteredEarthquakes}
