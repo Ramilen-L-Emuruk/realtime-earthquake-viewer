@@ -35,7 +35,7 @@ function kyoshinIndexToLabel(index: number): string | null {
 
 interface Props {
   eew: EEWAlert | null
-  maxKyoshinIndex: number
+  kyoshinIndices: number[]
 }
 
 function EEWCard({ eew }: { eew: EEWAlert }) {
@@ -78,7 +78,14 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
   )
 }
 
-function KyoshinDetectionCard({ maxIndex }: { maxIndex: number }) {
+// 震度1相当(index 7)以上の観測点が2点以上あれば揺れとみなす
+const DETECT_THRESHOLD = 7
+const DETECT_MIN_COUNT = 2
+
+function KyoshinDetectionCard({ indices }: { indices: number[] }) {
+  const detected = indices.filter(i => i >= DETECT_THRESHOLD)
+  if (detected.length < DETECT_MIN_COUNT) return null
+  const maxIndex = Math.max(...detected)
   const label = kyoshinIndexToLabel(maxIndex)
   if (!label) return null
   const color = kyoshinColor(maxIndex)
@@ -100,11 +107,11 @@ function KyoshinDetectionCard({ maxIndex }: { maxIndex: number }) {
   )
 }
 
-export function RealtimeTab({ eew, maxKyoshinIndex }: Props) {
+export function RealtimeTab({ eew, kyoshinIndices }: Props) {
   return (
     <div className="p-3 space-y-3">
       {eew && <EEWCard eew={eew} />}
-      <KyoshinDetectionCard maxIndex={maxKyoshinIndex} />
+      <KyoshinDetectionCard indices={kyoshinIndices} />
 
       <div>
         <h2 className="text-white font-bold text-sm mb-1">リアルタイム震度モニタ</h2>

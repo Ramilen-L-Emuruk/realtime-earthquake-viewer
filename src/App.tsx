@@ -182,7 +182,7 @@ export function App() {
           {activeTab === 'realtime' && (
             <RealtimeTab
               eew={activeEEW}
-              maxKyoshinIndex={kyoshin.indices.length > 0 ? Math.max(...kyoshin.indices) : -1}
+              kyoshinIndices={kyoshin.indices}
             />
           )}
           {activeTab === 'tsunami' && <TsunamiTab tsunamis={tsunamis} />}
