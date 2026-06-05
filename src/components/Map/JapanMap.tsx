@@ -1,9 +1,10 @@
 import { Fragment, useEffect, useMemo, useRef } from 'react'
 import L from 'leaflet'
-import { MapContainer, TileLayer, Marker, Polyline, Circle, Popup, useMap } from 'react-leaflet'
-import type { JMAQuake, JMATsunami, TsunamiGrade } from '../../types/earthquake'
+import { MapContainer, TileLayer, Marker, Polyline, Circle, Popup, Tooltip, useMap } from 'react-leaflet'
+import type { JMAQuake, JMATsunami, TsunamiGrade, EEWAlert } from '../../types/earthquake'
 import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
+import { eewMaxScale } from '../../utils/eew'
 import { useStationCoords } from '../../hooks/useStationCoords'
 import { lookupPointCoords, type LatLng } from '../../utils/stationCoords'
 import { useTsunamiZones } from '../../hooks/useTsunamiZones'
@@ -124,6 +125,7 @@ interface Props {
   kyoshinSites?: SiteCoords
   kyoshinIndices?: number[]
   kyoshinPsWave?: PsWaveCircle[]
+  eew?: EEWAlert | null
 }
 
 export function JapanMap({
@@ -134,6 +136,7 @@ export function JapanMap({
   kyoshinSites = [],
   kyoshinIndices = [],
   kyoshinPsWave = [],
+  eew = null,
 }: Props) {
   const stationCoords = useStationCoords()
   const tsunamiZones = useTsunamiZones()
@@ -229,7 +232,7 @@ export function JapanMap({
         <KyoshinPoints sites={kyoshinSites} indices={kyoshinIndices} uiScale={uiScale} />
       )}
 
-      {/* 緊急地震速報の予報円（S波=塗りつぶし / P波=外周）と震源 */}
+      {/* 緊急地震速報の予報円（S波=塗りつぶし / P波=外周） */}
       {mode === 'kyoshin' &&
         kyoshinPsWave.map((c, i) => (
           <Fragment key={`ps-${i}`}>
@@ -243,9 +246,30 @@ export function JapanMap({
               radius={c.pRadius * 1000}
               pathOptions={{ color: '#38bdf8', weight: 2, fill: false, dashArray: '4 4' }}
             />
-            <Marker position={[c.lat, c.lng]} icon={getEpicenterIcon(uiScale)} />
           </Fragment>
         ))}
+
+      {/* 緊急地震速報の震源（震源地名ラベル付き） */}
+      {mode === 'kyoshin' &&
+        eew &&
+        eew.earthquake.hypocenter.latitude > -200 &&
+        eew.earthquake.hypocenter.longitude > -200 && (
+          <Marker
+            position={[
+              eew.earthquake.hypocenter.latitude,
+              eew.earthquake.hypocenter.longitude,
+            ]}
+            icon={getEpicenterIcon(uiScale)}
+            zIndexOffset={1000}
+          >
+            <Tooltip permanent direction="top" offset={[0, -10]}>
+              <span className="font-bold">{eew.earthquake.hypocenter.name}</span>
+              {' '}
+              M{eew.earthquake.hypocenter.magnitude.toFixed(1)}
+              {eewMaxScale(eew) > 0 && ` 最大震度${getIntensityLabel(eewMaxScale(eew))}予想`}
+            </Tooltip>
+          </Marker>
+        )}
 
       {mode === 'quake' && (
         <FitToBounds signature={quakeSignature} positions={quakeFitPositions} />

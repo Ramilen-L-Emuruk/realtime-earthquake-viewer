@@ -152,6 +152,7 @@ export function App() {
             kyoshinSites={kyoshin.sites}
             kyoshinIndices={kyoshin.indices}
             kyoshinPsWave={kyoshin.psWave}
+            eew={activeEEW}
           />
         </div>
 
