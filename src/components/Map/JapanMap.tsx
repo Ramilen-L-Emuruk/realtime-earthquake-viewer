@@ -152,14 +152,17 @@ function FitToEEW({ eew, psWave }: { eew: EEWAlert | null; psWave: PsWaveCircle[
   return null
 }
 
-// 揺れ検知時に検知点群が収まるようにフィットする。detected が false に戻ったらリセット。
+// 揺れ検知時に検知点群が収まるようにフィットし、検知終了時は日本全体に戻す。
 function FitToDetection({ points }: { points: DetectedPoint[] }) {
   const map = useMap()
   const fittedRef = useRef(false)
 
   useEffect(() => {
     if (points.length === 0) {
-      fittedRef.current = false
+      if (fittedRef.current) {
+        fittedRef.current = false
+        map.flyTo(JAPAN_CENTER, JAPAN_ZOOM, { duration: 1.0 })
+      }
       return
     }
     if (fittedRef.current) return
@@ -312,8 +315,8 @@ export function JapanMap({
       {/* リアルタイムタブ入室時: EEW が無ければ日本全体を表示 */}
       {mode === 'kyoshin' && <FitJapanOnEnter hasEew={!!eew} />}
 
-      {/* 揺れ検知点: 通常の観測点より大きい輪で強調表示 */}
-      {mode === 'kyoshin' && detectedPoints.length > 0 && (
+      {/* 揺れ検知点: FitToDetection は常時レンダリングして検知終了時の日本全体戻しを担う */}
+      {mode === 'kyoshin' && (
         <>
           <FitToDetection points={detectedPoints} />
           {detectedPoints.map((p, i) => (
