@@ -3,6 +3,7 @@ import L from 'leaflet'
 import { useMap } from 'react-leaflet'
 import type { SiteCoords } from '../../services/kyoshin'
 import { kyoshinColor } from '../../utils/kyoshinColor'
+import { kyoshinIndexToJma } from '../../utils/kyoshinIntensity'
 import { getScaleRadius } from '../../utils/intensity'
 
 interface Props {
@@ -11,23 +12,6 @@ interface Props {
   iconScale: number
   /** このズーム以上で各点に震度階級ラベルを表示（地震タブの詳細表示と同じ閾値）。 */
   detailMinZoom?: number
-}
-
-// リアルタイム震度インデックス（0〜20 = 計測震度 -3.0〜7.0）→ JMA 震度階級。
-// 計測震度 0.5 未満（揺れなし・震度0以下）は null（ラベルを出さない）。
-function jmaFromKyoshinIndex(index: number | undefined): { label: string; scale: number } | null {
-  if (index == null || Number.isNaN(index)) return null
-  const value = -3.0 + index * 0.5
-  if (value < 0.5) return null
-  if (value < 1.5) return { label: '1', scale: 10 }
-  if (value < 2.5) return { label: '2', scale: 20 }
-  if (value < 3.5) return { label: '3', scale: 30 }
-  if (value < 4.5) return { label: '4', scale: 40 }
-  if (value < 5.0) return { label: '5弱', scale: 45 }
-  if (value < 5.5) return { label: '5強', scale: 50 }
-  if (value < 6.0) return { label: '6弱', scale: 55 }
-  if (value < 6.5) return { label: '6強', scale: 60 }
-  return { label: '7', scale: 70 }
 }
 
 function intensityBadgeIcon(index: number, label: string, scale: number, iconScale: number): L.DivIcon {
@@ -110,7 +94,7 @@ export function KyoshinPoints({ sites, indices, iconScale, detailMinZoom = 8 }: 
     group.clearLayers()
     if (zoom < detailMinZoom) return
     for (let i = 0; i < sites.length; i++) {
-      const info = jmaFromKyoshinIndex(indices[i])
+      const info = kyoshinIndexToJma(indices[i])
       if (!info) continue
       const [lat, lng] = sites[i]
       L.marker([lat, lng], {

@@ -6,6 +6,7 @@ import { formatDateTime } from '../../utils/formatters'
 import { getIntensityLabel } from '../../utils/intensity'
 import { eewAreas, eewMaxScale, eewSerial } from '../../utils/eew'
 import { kyoshinColor } from '../../utils/kyoshinColor'
+import { kyoshinIndexToLabel } from '../../utils/kyoshinIntensity'
 
 // 凡例は地図のドット／バッジと同じ強震モニタ配色（kyoshinColor）を使う。
 // index は各震度階級の下限（震度1=計測震度0.5=index7 …）。
@@ -20,20 +21,6 @@ const SCALE_LEGEND: { label: string; index: number }[] = [
   { label: '6強', index: 18 },
   { label: '7', index: 19 },
 ]
-
-// 強震モニタインデックス(0〜20, 計測震度 = index * 0.5 - 3.0)から震度ラベルへ変換。
-function kyoshinIndexToLabel(index: number): string | null {
-  if (index >= 19) return '7'
-  if (index >= 18) return '6強'
-  if (index >= 17) return '6弱'
-  if (index >= 16) return '5強'
-  if (index >= 15) return '5弱'
-  if (index >= 13) return '4'
-  if (index >= 11) return '3'
-  if (index >= 9) return '2'
-  if (index >= 7) return '1'
-  return null
-}
 
 interface Props {
   eew: EEWAlert | null
