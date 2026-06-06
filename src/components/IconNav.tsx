@@ -60,7 +60,10 @@ interface Props {
 // 縦並び（モバイルは横並び）のアイコンボタンによるナビゲーション。
 export function IconNav({ activeTab, onTabChange, tsunamiActive }: Props) {
   return (
-    <nav className="flex flex-row lg:flex-col items-center justify-center lg:justify-start gap-1 p-1.5 bg-panel border-t lg:border-t-0 lg:border-l border-border flex-shrink-0">
+    <nav
+      className="flex flex-row lg:flex-col items-center justify-center lg:justify-start gap-1 p-1.5 bg-panel border-t lg:border-t-0 lg:border-l border-border flex-shrink-0"
+      style={{ paddingBottom: 'max(0.375rem, env(safe-area-inset-bottom, 0px))' }}
+    >
       {ITEMS.map((item) => (
         <button
           key={item.id}

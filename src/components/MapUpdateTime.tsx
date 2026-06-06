@@ -18,9 +18,13 @@ export function MapUpdateTime({ lastUpdate, error = false }: Props) {
   const valid = lastUpdate && !Number.isNaN(lastUpdate.getTime())
   return (
     <div
-      className={`absolute top-2 left-2 z-[1000] bg-black/80 text-xl font-mono px-2.5 py-1 rounded pointer-events-none ${
+      className={`absolute z-[1000] bg-black/80 text-xl font-mono px-2.5 py-1 rounded pointer-events-none ${
         error ? 'text-red-400' : 'text-white'
       }`}
+      style={{
+        top: 'max(0.5rem, env(safe-area-inset-top, 0px))',
+        left: 'max(0.5rem, env(safe-area-inset-left, 0px))',
+      }}
     >
       更新 {valid ? formatDatetime(lastUpdate) : '受信待機中…'}
     </div>
