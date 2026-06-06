@@ -269,7 +269,7 @@ export function App() {
     mapTab === 'realtime' ? kyoshin.error : connectionStatus === 'disconnected'
 
   return (
-    <div className="flex flex-col h-screen bg-app text-white overflow-hidden">
+    <div className="flex flex-col h-dvh bg-app text-white overflow-hidden">
       {/* 地図(左) | パネル | アイコンナビ(右端)。モバイルは縦積み(地図上・パネル・ナビ下)。 */}
       <div className="flex-1 overflow-hidden flex flex-col lg:flex-row">
         {/* 常時表示の地図エリア（タブに応じて内容を切替） */}
