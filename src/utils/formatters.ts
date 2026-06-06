@@ -1,4 +1,4 @@
-import type { DomesticTsunami, IssueType, TsunamiGrade } from '../types/earthquake'
+import type { CorrectType, DomesticTsunami, IssueType, TsunamiGrade } from '../types/earthquake'
 
 export function formatDateTime(isoString: string): string {
   const date = new Date(isoString)
@@ -65,6 +65,17 @@ export function formatIssueType(type: IssueType): string {
     Other: 'その他',
   }
   return map[type] ?? type
+}
+
+export function formatCorrectType(type: CorrectType): string {
+  const map: Record<CorrectType, string> = {
+    None: '',
+    Unknown: '訂正（内容不明）',
+    ScaleOnly: '震度を訂正',
+    DestinationOnly: '震源を訂正',
+    ScaleAndDestination: '震度・震源を訂正',
+  }
+  return map[type] ?? ''
 }
 
 export function formatTsunamiGrade(grade: TsunamiGrade): { text: string; color: string; bg: string } {
