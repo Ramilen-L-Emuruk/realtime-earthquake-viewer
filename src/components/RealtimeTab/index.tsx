@@ -5,10 +5,11 @@ import type { KyoshinDetection } from '../../hooks/useKyoshinDetection'
 import { formatDateTime } from '../../utils/formatters'
 import { getIntensityColor, getIntensityLabel } from '../../utils/intensity'
 import { eewAreas, eewMaxScale, eewSerial } from '../../utils/eew'
-import { kyoshinIndexToLabel, kyoshinIntensityColor } from '../../utils/kyoshinIntensity'
+import { kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
 
-// 凡例は地図と同じ気象庁の震度配色（getIntensityColor）を使う。
+// 凡例は地図と同じ気象庁の震度配色（getIntensityColor）を使う。scale=0 は震度0（灰色）。
 const SCALE_LEGEND: { label: string; scale: number }[] = [
+  { label: '0', scale: 0 },
   { label: '1', scale: 10 },
   { label: '2', scale: 20 },
   { label: '3', scale: 30 },
@@ -138,7 +139,7 @@ export function RealtimeTab({ eew, kyoshinDetection }: Props) {
             <div key={item.label} className="flex items-center gap-1">
               <div
                 className="w-4 h-4 rounded-sm flex-shrink-0"
-                style={{ backgroundColor: getIntensityColor(item.scale) }}
+                style={{ backgroundColor: item.scale === 0 ? SHINDO0_COLOR : getIntensityColor(item.scale) }}
               />
               <span className="text-xs text-secondary">{item.label}</span>
             </div>
