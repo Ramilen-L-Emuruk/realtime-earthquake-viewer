@@ -36,10 +36,9 @@ export function App() {
     tsunami: 0, tsunamiMajor: 0, tsunamiWatch: 0,
     kyoshin: 0,
   })
-  // EEW の eventId を追跡し、新規発報か続報かを判定する
-  const activeEEWEventIdRef = useRef<string | null>(null)
-  // EEW の現在レベルを追跡（0=低震度予報 / 1=警報or震度3以上 / 2=特別警報）
-  const activeEEWLevelRef = useRef<0 | 1 | 2>(0)
+  // EEW の eventId ごとにレベルを追跡（複数EEW対応）
+  // key = issue.eventId ?? id、value = 0=低震度予報 / 1=警報or震度3以上 / 2=特別警報
+  const activeEEWLevelsRef = useRef<Map<string, 0 | 1 | 2>>(new Map())
 
   const handleLiveEvent = (event: P2PQuakeEvent) => {
     // 受信時に該当タブを自動表示し、ウィンドウタイトルを更新する
@@ -54,45 +53,45 @@ export function App() {
     } else if (event.code === 556) {
       if (event.test) return
 
+      const key = event.issue?.eventId ?? event.id
+
       if (event.cancelled) {
-        // EEW キャンセル: 発報中の EEW があれば解除音を鳴らす
-        if (activeEEWEventIdRef.current !== null && settings.soundEnabled) {
+        // EEW キャンセル: 対象イベントをレベル追跡から除去し、解除のたびに音を鳴らす
+        activeEEWLevelsRef.current.delete(key)
+        if (settings.soundEnabled) {
           const now = Date.now()
           if (now - lastSoundAtRef.current.eewCancel >= 1500) {
             lastSoundAtRef.current.eewCancel = now
             playAlertSound('eewCancel')
           }
         }
-        activeEEWEventIdRef.current = null
-        activeEEWLevelRef.current = 0
-        setAlertTitle(null)
-        setActiveTab(defaultTabRef.current)
+        // 全EEW解除時のみタブ・タイトルをデフォルトに戻す
+        if (activeEEWLevelsRef.current.size === 0) {
+          setAlertTitle(null)
+          setActiveTab(defaultTabRef.current)
+        }
         return
       }
 
       // 緊急地震速報の発報時はリアルタイムタブ（強震モニタ＋予報円）を開く
       setActiveTab('realtime')
-      const scale = eewMaxScale(event)
-      setAlertTitle(
-        `🚨 緊急地震速報 ${event.earthquake.hypocenter.name}` +
-        (scale > 0 ? ` 最大震度${getIntensityLabel(scale)}予想` : ''),
-      )
 
       // EEW レベル算出: 0=低震度予報 / 1=警報or震度3以上 / 2=特別警報（震度6弱以上）
       // scaleTo:99 は P2PQuake の「震度算出不能」コードなので通常の震度比較から除外する
+      const scale = eewMaxScale(event)
       const intensityKnown = scale < 99
       const currentLevel: 0 | 1 | 2 =
         (intensityKnown && scale >= 55) ? 2 :
         (event.severity === 'Warning' || (intensityKnown && scale >= 30)) ? 1 : 0
 
       // 新規発報か続報かを判定し、レベル引き上げを検出する
-      const eventId = event.issue?.eventId ?? null
-      const isNew = activeEEWEventIdRef.current === null || activeEEWEventIdRef.current !== eventId
-      const prevLevel = activeEEWLevelRef.current
+      const isNew = !activeEEWLevelsRef.current.has(key)
+      const prevLevel = activeEEWLevelsRef.current.get(key) ?? 0
       const levelUpgraded = !isNew && currentLevel > prevLevel
-
-      activeEEWEventIdRef.current = eventId
-      activeEEWLevelRef.current = (isNew ? currentLevel : Math.max(prevLevel, currentLevel)) as 0 | 1 | 2
+      activeEEWLevelsRef.current.set(
+        key,
+        (isNew ? currentLevel : Math.max(prevLevel, currentLevel)) as 0 | 1 | 2,
+      )
 
       if (settings.soundEnabled) {
         let eewSoundType: AlertSoundType
@@ -131,7 +130,7 @@ export function App() {
   }
 
   const {
-    earthquakes, tsunamis, activeEEW, connectionStatus, lastUpdate, isLoading, error,
+    earthquakes, tsunamis, activeEEWs, connectionStatus, lastUpdate, isLoading, error,
     simulateEarthquake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast,
     simulateTsunami, simulateTsunamiWatch,
@@ -181,6 +180,19 @@ export function App() {
     })
   }, [earthquakes, settings.notifyMinScale])
 
+  // EEW 発報中はタイトルを最大震度の高い EEW に基づいて更新する
+  useEffect(() => {
+    if (activeEEWs.size === 0) return
+    const primary = Array.from(activeEEWs.values())
+      .sort((a, b) => eewMaxScale(b) - eewMaxScale(a))[0]
+    const scale = eewMaxScale(primary)
+    setAlertTitle(
+      `🚨 緊急地震速報 ${primary.earthquake.hypocenter.name}` +
+      (scale > 0 ? ` 最大震度${getIntensityLabel(scale)}予想` : '') +
+      (activeEEWs.size > 1 ? ` 他${activeEEWs.size - 1}件` : ''),
+    )
+  }, [activeEEWs])
+
   // 情報更新時にウィンドウタイトルを変更し、平常時は既定タイトルに戻す。
   useEffect(() => {
     document.title = alertTitle ?? DEFAULT_TITLE
@@ -201,10 +213,10 @@ export function App() {
   // ため ref に保持する。
   const defaultTabRef = useRef<TabId>(settings.defaultTab)
   // EEW 発報中かどうかをタイマーコールバック内で参照するための ref
-  const activeEEWRef = useRef(activeEEW)
+  const activeEEWsRef = useRef(activeEEWs)
   defaultTabRef.current =
     settings.tsunamiPriorityDefault && tsunamiActive ? 'tsunami' : settings.defaultTab
-  activeEEWRef.current = activeEEW
+  activeEEWsRef.current = activeEEWs
 
   // 設定秒数 情報更新（activeTab の自動切替・P2P 更新）もユーザー操作もなければ
   // デフォルトタブへ戻す。activeTab / lastUpdate の変化、および操作のたびにリセット。
@@ -214,7 +226,7 @@ export function App() {
     const ms = settings.idleRevertSec * 1000
     // EEW 発報中はリアルタイムタブを維持する。それ以外はデフォルトタブへ戻す。
     const revert = () => {
-      if (activeEEWRef.current !== null) {
+      if (activeEEWsRef.current.size > 0) {
         setActiveTab('realtime')
       } else {
         setActiveTab(defaultTabRef.current)
@@ -323,7 +335,7 @@ export function App() {
             kyoshinSites={kyoshin.sites}
             kyoshinIndices={kyoshin.indices}
             kyoshinPsWave={kyoshin.psWave}
-            eew={activeEEW}
+            eews={Array.from(activeEEWs.values())}
             detectedPoints={kyoshinDetection.points}
           />
           <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
@@ -342,7 +354,7 @@ export function App() {
           )}
           {activeTab === 'realtime' && (
             <RealtimeTab
-              eew={activeEEW}
+              eews={Array.from(activeEEWs.values())}
               kyoshinDetection={kyoshinDetection}
             />
           )}
