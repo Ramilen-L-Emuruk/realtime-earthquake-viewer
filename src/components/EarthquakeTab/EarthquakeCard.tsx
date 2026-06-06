@@ -58,7 +58,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect }: Props)
         <div className="flex flex-col gap-2">
           {/* 最大震度バッジ（横幅いっぱい） */}
           <div
-            className="w-full rounded-lg py-3 px-4 flex items-center justify-between"
+            className="w-full rounded-lg py-3 px-4 flex items-center justify-center gap-6"
             style={{
               backgroundColor: getIntensityBgColor(maxScale),
               border: `2px solid ${getIntensityColor(maxScale)}`,
