@@ -65,6 +65,8 @@ export function App() {
         }
         activeEEWEventIdRef.current = null
         activeEEWLevelRef.current = 0
+        setAlertTitle(null)
+        setActiveTab(defaultTabRef.current)
         return
       }
 
@@ -77,9 +79,11 @@ export function App() {
       )
 
       // EEW レベル算出: 0=低震度予報 / 1=警報or震度3以上 / 2=特別警報（震度6弱以上）
+      // scaleTo:99 は P2PQuake の「震度算出不能」コードなので通常の震度比較から除外する
+      const intensityKnown = scale < 99
       const currentLevel: 0 | 1 | 2 =
-        scale >= 55 ? 2 :
-        (event.severity === 'Warning' || scale >= 30) ? 1 : 0
+        (intensityKnown && scale >= 55) ? 2 :
+        (event.severity === 'Warning' || (intensityKnown && scale >= 30)) ? 1 : 0
 
       // 新規発報か続報かを判定し、レベル引き上げを検出する
       const eventId = event.issue?.eventId ?? null
@@ -196,8 +200,11 @@ export function App() {
   // 津波情報、それ以外は設定のデフォルトタブ。タイマー発火時に最新値を参照する
   // ため ref に保持する。
   const defaultTabRef = useRef<TabId>(settings.defaultTab)
+  // EEW 発報中かどうかをタイマーコールバック内で参照するための ref
+  const activeEEWRef = useRef(activeEEW)
   defaultTabRef.current =
     settings.tsunamiPriorityDefault && tsunamiActive ? 'tsunami' : settings.defaultTab
+  activeEEWRef.current = activeEEW
 
   // 設定秒数 情報更新（activeTab の自動切替・P2P 更新）もユーザー操作もなければ
   // デフォルトタブへ戻す。activeTab / lastUpdate の変化、および操作のたびにリセット。
@@ -205,10 +212,14 @@ export function App() {
   useEffect(() => {
     if (settings.idleRevertSec <= 0) return
     const ms = settings.idleRevertSec * 1000
-    // デフォルトタブへ戻すと同時にウィンドウタイトルも平常時へ戻す。
+    // EEW 発報中はリアルタイムタブを維持する。それ以外はデフォルトタブへ戻す。
     const revert = () => {
-      setActiveTab(defaultTabRef.current)
-      setAlertTitle(null)
+      if (activeEEWRef.current !== null) {
+        setActiveTab('realtime')
+      } else {
+        setActiveTab(defaultTabRef.current)
+        setAlertTitle(null)
+      }
     }
     let timer = window.setTimeout(revert, ms)
     const reset = () => {
