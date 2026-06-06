@@ -2,6 +2,15 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import type { JMAQuake, JMATsunami, EEWAlert, P2PQuakeEvent, ConnectionStatus } from '../types/earthquake'
 import { fetchHistory, P2PQuakeWebSocket } from '../services/p2pquake'
 
+const ISSUE_PRIORITY: Record<string, number> = {
+  DetailScale: 4,
+  ScaleAndDestination: 3,
+  Destination: 2,
+  ScalePrompt: 1,
+  Foreign: 0,
+  Other: 0,
+}
+
 // ---- Test data generators ----
 
 function createTestEarthquake(): JMAQuake {
@@ -106,12 +115,14 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
       switch (event.code) {
         case 551: {
           const quake = event as JMAQuake
-          const key = `${quake.earthquake.time}|${quake.earthquake.hypocenter.name}`
+          const key = quake.earthquake.time
+          const existing = prev.earthquakes.find(e => e.earthquake.time === key)
+          if (existing && (ISSUE_PRIORITY[existing.issue.type] ?? 0) > (ISSUE_PRIORITY[quake.issue.type] ?? 0)) {
+            return prev
+          }
           const earthquakes = [
             quake,
-            ...prev.earthquakes.filter(
-              e => `${e.earthquake.time}|${e.earthquake.hypocenter.name}` !== key,
-            ),
+            ...prev.earthquakes.filter(e => e.earthquake.time !== key),
           ].slice(0, 30)
           return { ...prev, earthquakes, lastUpdate: now }
         }
@@ -146,15 +157,15 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
     fetchHistory([551, 552], 20)
       .then(events => {
         if (cancelled) return
-        const seen = new Set<string>()
-        const earthquakes = (events.filter(e => e.code === 551) as JMAQuake[])
-          .filter(q => {
-            const key = `${q.earthquake.time}|${q.earthquake.hypocenter.name}`
-            if (seen.has(key)) return false
-            seen.add(key)
-            return true
-          })
-          .slice(0, 30)
+        const seenQuakes = new Map<string, JMAQuake>()
+        for (const q of events.filter(e => e.code === 551) as JMAQuake[]) {
+          const key = q.earthquake.time
+          const existing = seenQuakes.get(key)
+          if (!existing || (ISSUE_PRIORITY[q.issue.type] ?? 0) > (ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
+            seenQuakes.set(key, q)
+          }
+        }
+        const earthquakes = Array.from(seenQuakes.values()).slice(0, 30)
         const tsunamis = (events.filter(e => e.code === 552) as JMATsunami[]).filter(
           t => !t.cancelled,
         )
