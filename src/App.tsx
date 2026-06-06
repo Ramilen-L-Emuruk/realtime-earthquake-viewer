@@ -13,6 +13,7 @@ import { useKyoshinDetection } from './hooks/useKyoshinDetection'
 import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude } from './utils/formatters'
 import { eewMaxScale } from './utils/eew'
+import { tsunamiMaxGrade } from './utils/tsunami'
 import { playAlertSound, playKyoshinUpdateSound, unlockAudio, type AlertSoundType } from './utils/alertSound'
 import type { P2PQuakeEvent } from './types/earthquake'
 
@@ -30,10 +31,15 @@ export function App() {
 
   // 受信イベントの種別ごとに通知音を鳴らす（同種の連続発火はバースト抑制）
   const lastSoundAtRef = useRef<Record<AlertSoundType, number>>({
-    earthquake: 0, eew: 0, tsunami: 0, kyoshin: 0, eewUpdate: 0, eewCancel: 0,
+    earthquake: 0,
+    eew: 0, eewUpdate: 0, eewCancel: 0, eewSpecial: 0, eewForecast: 0,
+    tsunami: 0, tsunamiMajor: 0, tsunamiWatch: 0,
+    kyoshin: 0,
   })
   // EEW の eventId を追跡し、新規発報か続報かを判定する
   const activeEEWEventIdRef = useRef<string | null>(null)
+  // EEW の現在レベルを追跡（0=低震度予報 / 1=警報or震度3以上 / 2=特別警報）
+  const activeEEWLevelRef = useRef<0 | 1 | 2>(0)
 
   const handleLiveEvent = (event: P2PQuakeEvent) => {
     // 受信時に該当タブを自動表示し、ウィンドウタイトルを更新する
@@ -58,6 +64,7 @@ export function App() {
           }
         }
         activeEEWEventIdRef.current = null
+        activeEEWLevelRef.current = 0
         return
       }
 
@@ -69,16 +76,31 @@ export function App() {
         (scale > 0 ? ` 最大震度${getIntensityLabel(scale)}予想` : ''),
       )
 
-      // 新規発報（eventId が変わった or 初回）か続報かを判定して音を鳴らす
+      // EEW レベル算出: 0=低震度予報 / 1=警報or震度3以上 / 2=特別警報（震度6弱以上）
+      const currentLevel: 0 | 1 | 2 =
+        scale >= 55 ? 2 :
+        (event.severity === 'Warning' || scale >= 30) ? 1 : 0
+
+      // 新規発報か続報かを判定し、レベル引き上げを検出する
       const eventId = event.issue?.eventId ?? null
       const isNew = activeEEWEventIdRef.current === null || activeEEWEventIdRef.current !== eventId
+      const prevLevel = activeEEWLevelRef.current
+      const levelUpgraded = !isNew && currentLevel > prevLevel
+
       activeEEWEventIdRef.current = eventId
+      activeEEWLevelRef.current = (isNew ? currentLevel : Math.max(prevLevel, currentLevel)) as 0 | 1 | 2
+
       if (settings.soundEnabled) {
-        const type: AlertSoundType = isNew ? 'eew' : 'eewUpdate'
+        let eewSoundType: AlertSoundType
+        if (isNew || levelUpgraded) {
+          eewSoundType = currentLevel === 2 ? 'eewSpecial' : currentLevel === 1 ? 'eew' : 'eewForecast'
+        } else {
+          eewSoundType = 'eewUpdate'
+        }
         const now = Date.now()
-        if (now - lastSoundAtRef.current[type] >= 1500) {
-          lastSoundAtRef.current[type] = now
-          playAlertSound(type)
+        if (now - lastSoundAtRef.current[eewSoundType] >= 1500) {
+          lastSoundAtRef.current[eewSoundType] = now
+          playAlertSound(eewSoundType)
         }
       }
       return
@@ -88,7 +110,12 @@ export function App() {
     if (!settings.soundEnabled) return
     let type: AlertSoundType | null = null
     if (event.code === 552) {
-      if (!event.cancelled) type = 'tsunami'
+      if (!event.cancelled) {
+        const grade = tsunamiMaxGrade(event)
+        if      (grade === 'MajorWarning') type = 'tsunamiMajor'
+        else if (grade === 'Warning')      type = 'tsunami'
+        else                               type = 'tsunamiWatch'
+      }
     } else if (event.code === 551) {
       type = 'earthquake'
     }
@@ -101,7 +128,9 @@ export function App() {
 
   const {
     earthquakes, tsunamis, activeEEW, connectionStatus, lastUpdate, isLoading, error,
-    simulateEarthquake, simulateEEW, simulateTsunami,
+    simulateEarthquake,
+    simulateEEW, simulateEEWWarning, simulateEEWForecast,
+    simulateTsunami, simulateTsunamiWatch,
   } = useEarthquakes(handleLiveEvent)
 
   // UI 倍率: ルート要素の font-size を変えて rem ベースの UI 全体を拡大縮小する。
@@ -312,9 +341,12 @@ export function App() {
               settings={settings}
               onUpdate={updateSetting}
               onTest={{
-                earthquake: simulateEarthquake,
-                eew: simulateEEW,
-                tsunami: simulateTsunami,
+                earthquake:   simulateEarthquake,
+                eew:          simulateEEW,
+                eewWarning:   simulateEEWWarning,
+                eewForecast:  simulateEEWForecast,
+                tsunami:      simulateTsunami,
+                tsunamiWatch: simulateTsunamiWatch,
                 notification: () => {
                   if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
                     alert('先に「通知を許可する」ボタンをクリックしてください。')

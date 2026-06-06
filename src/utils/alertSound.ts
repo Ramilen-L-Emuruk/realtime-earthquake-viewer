@@ -4,7 +4,11 @@
 // 注意: ブラウザの自動再生制限により、ユーザー操作（クリック等）が一度行われるまで
 // 音は鳴らない。初回操作時に unlockAudio() を呼んで AudioContext を有効化する。
 
-export type AlertSoundType = 'earthquake' | 'eew' | 'tsunami' | 'kyoshin' | 'eewUpdate' | 'eewCancel'
+export type AlertSoundType =
+  'earthquake'
+  | 'eew' | 'eewUpdate' | 'eewCancel' | 'eewSpecial' | 'eewForecast'
+  | 'tsunami' | 'tsunamiMajor' | 'tsunamiWatch'
+  | 'kyoshin'
 
 let audioCtx: AudioContext | null = null
 
@@ -95,6 +99,36 @@ const PATTERNS: Record<AlertSoundType, Tone[]> = {
   eewCancel: [
     { freq: 440, start: 0, duration: 0.18 },
     { freq: 330, start: 0.22, duration: 0.28 },
+  ],
+  // EEW特別警報: 高音高速8連（震度6弱以上）
+  eewSpecial: [
+    { freq: 1000, start: 0.00, duration: 0.12, type: 'square', gain: 0.18 },
+    { freq: 800,  start: 0.14, duration: 0.12, type: 'square', gain: 0.18 },
+    { freq: 1000, start: 0.28, duration: 0.12, type: 'square', gain: 0.18 },
+    { freq: 800,  start: 0.42, duration: 0.12, type: 'square', gain: 0.18 },
+    { freq: 1000, start: 0.56, duration: 0.12, type: 'square', gain: 0.18 },
+    { freq: 800,  start: 0.70, duration: 0.12, type: 'square', gain: 0.18 },
+    { freq: 1000, start: 0.84, duration: 0.12, type: 'square', gain: 0.18 },
+    { freq: 800,  start: 0.98, duration: 0.22, type: 'square', gain: 0.18 },
+  ],
+  // EEW低震度予報: 3音サイン波（緩やか）
+  eewForecast: [
+    { freq: 660, start: 0.0,  duration: 0.12, gain: 0.12 },
+    { freq: 660, start: 0.16, duration: 0.12, gain: 0.12 },
+    { freq: 550, start: 0.32, duration: 0.22, gain: 0.12 },
+  ],
+  // 大津波警報: 低音5連（tsunamiより強い）
+  tsunamiMajor: [
+    { freq: 420, start: 0.00, duration: 0.35, type: 'triangle', gain: 0.25 },
+    { freq: 420, start: 0.45, duration: 0.35, type: 'triangle', gain: 0.25 },
+    { freq: 420, start: 0.90, duration: 0.35, type: 'triangle', gain: 0.25 },
+    { freq: 420, start: 1.35, duration: 0.35, type: 'triangle', gain: 0.25 },
+    { freq: 420, start: 1.80, duration: 0.5,  type: 'triangle', gain: 0.25 },
+  ],
+  // 津波注意報: 中音2連（tsunamiより軽い）
+  tsunamiWatch: [
+    { freq: 600, start: 0.00, duration: 0.25, type: 'triangle', gain: 0.18 },
+    { freq: 600, start: 0.35, duration: 0.35, type: 'triangle', gain: 0.18 },
   ],
 }
 
