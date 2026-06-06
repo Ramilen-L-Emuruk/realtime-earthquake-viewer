@@ -106,9 +106,12 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
       switch (event.code) {
         case 551: {
           const quake = event as JMAQuake
+          const key = `${quake.earthquake.time}|${quake.earthquake.hypocenter.name}`
           const earthquakes = [
             quake,
-            ...prev.earthquakes.filter(e => e.id !== quake.id),
+            ...prev.earthquakes.filter(
+              e => `${e.earthquake.time}|${e.earthquake.hypocenter.name}` !== key,
+            ),
           ].slice(0, 30)
           return { ...prev, earthquakes, lastUpdate: now }
         }
@@ -143,7 +146,15 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
     fetchHistory([551, 552], 20)
       .then(events => {
         if (cancelled) return
-        const earthquakes = (events.filter(e => e.code === 551) as JMAQuake[]).slice(0, 30)
+        const seen = new Set<string>()
+        const earthquakes = (events.filter(e => e.code === 551) as JMAQuake[])
+          .filter(q => {
+            const key = `${q.earthquake.time}|${q.earthquake.hypocenter.name}`
+            if (seen.has(key)) return false
+            seen.add(key)
+            return true
+          })
+          .slice(0, 30)
         const tsunamis = (events.filter(e => e.code === 552) as JMATsunami[]).filter(
           t => !t.cancelled,
         )
