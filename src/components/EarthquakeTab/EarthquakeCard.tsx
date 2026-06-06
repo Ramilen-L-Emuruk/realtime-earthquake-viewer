@@ -61,8 +61,8 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect }: Props)
         {/* Earthquake details */}
         <div className="flex-1 min-w-0">
           {/* 地域名 + 最新バッジ */}
-          <div className="flex items-center gap-2 flex-wrap mb-0.5">
-            <span className="text-white font-bold text-base leading-tight truncate">
+          <div className="flex items-center gap-2 flex-wrap mb-1">
+            <span className="text-white font-bold text-lg leading-tight truncate">
               {hasLocation ? hypocenter.name : '震源調査中'}
             </span>
             {isLatest && (
@@ -73,8 +73,8 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect }: Props)
           </div>
 
           {/* 日時 + 発表種別 */}
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-xs text-secondary">
+          <div className="flex items-center gap-2 mb-1.5">
+            <span className="text-base text-secondary">
               {formatQuakeTime(earthquake.time)}
             </span>
             <span className="text-xs bg-panel px-1.5 py-0.5 rounded text-secondary flex-shrink-0">
@@ -83,7 +83,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect }: Props)
           </div>
 
           {/* 深さ・マグニチュード・津波情報 */}
-          <div className="flex items-center gap-2 text-xs flex-wrap">
+          <div className="flex items-center gap-2 text-base flex-wrap">
             {hasLocation && (
               <span className="flex items-center gap-1 text-secondary">
                 <span>深さ</span>
