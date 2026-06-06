@@ -12,6 +12,14 @@ export type AlertSoundType =
 
 let audioCtx: AudioContext | null = null
 
+// グローバル音量 (0.0 〜 1.0)。setSoundVolume() で外部から変更できる。
+let globalVolume = 1.0
+
+/** 通知音の全体音量を設定する（0.0 = 無音、1.0 = 最大）。 */
+export function setSoundVolume(v: number): void {
+  globalVolume = Math.min(1, Math.max(0, v))
+}
+
 function getCtx(): AudioContext | null {
   if (typeof window === 'undefined') return null
   if (!audioCtx) {
@@ -52,7 +60,7 @@ function playTones(tones: Tone[]): void {
     osc.connect(gainNode)
     gainNode.connect(ctx.destination)
 
-    const peak = t.gain ?? 0.2
+    const peak = (t.gain ?? 0.2) * globalVolume
     const startAt = base + t.start
     const endAt = startAt + t.duration
     // クリックノイズ防止のため立ち上がり・立ち下がりをなだらかにする
