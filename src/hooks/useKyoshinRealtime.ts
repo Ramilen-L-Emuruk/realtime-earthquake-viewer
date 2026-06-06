@@ -17,6 +17,8 @@ export interface KyoshinRealtime {
 
 // この回数連続で取得に失敗したら「更新停止（エラー）」とみなす
 const ERROR_THRESHOLD = 5
+// 観測点リスト取得失敗時のリトライ間隔 (ms)
+const SITELIST_RETRY_MS = 10_000
 
 /**
  * Yahoo 強震モニタのリアルタイム震度を取得するフック。
@@ -31,21 +33,29 @@ export function useKyoshinRealtime(enabled: boolean): KyoshinRealtime {
   const sitesLoadedRef = useRef(false)
   const failCountRef = useRef(0)
 
-  // 観測点リストは初回有効化時に一度だけ取得
+  // 観測点リストを取得し、失敗したら SITELIST_RETRY_MS 後にリトライする
   useEffect(() => {
     if (!enabled || sitesLoadedRef.current) return
     let active = true
-    fetchSiteList()
-      .then((s) => {
-        if (!active) return
-        sitesLoadedRef.current = true
-        setSites(s)
-      })
-      .catch(() => {
-        // 取得失敗時は次回有効化で再試行
-      })
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+
+    const load = () => {
+      fetchSiteList()
+        .then((s) => {
+          if (!active) return
+          sitesLoadedRef.current = true
+          setSites(s)
+        })
+        .catch(() => {
+          if (!active) return
+          retryTimer = setTimeout(load, SITELIST_RETRY_MS)
+        })
+    }
+    load()
+
     return () => {
       active = false
+      if (retryTimer !== null) clearTimeout(retryTimer)
     }
   }, [enabled])
 
