@@ -56,16 +56,17 @@ export function App() {
       const key = event.issue?.eventId ?? event.id
 
       if (event.cancelled) {
-        // EEW キャンセル: 対象イベントをレベル追跡から除去し、全解除時のみ音・タブを戻す
+        // EEW キャンセル: 対象イベントをレベル追跡から除去し、解除のたびに音を鳴らす
         activeEEWLevelsRef.current.delete(key)
-        if (activeEEWLevelsRef.current.size === 0) {
-          if (settings.soundEnabled) {
-            const now = Date.now()
-            if (now - lastSoundAtRef.current.eewCancel >= 1500) {
-              lastSoundAtRef.current.eewCancel = now
-              playAlertSound('eewCancel')
-            }
+        if (settings.soundEnabled) {
+          const now = Date.now()
+          if (now - lastSoundAtRef.current.eewCancel >= 1500) {
+            lastSoundAtRef.current.eewCancel = now
+            playAlertSound('eewCancel')
           }
+        }
+        // 全EEW解除時のみタブ・タイトルをデフォルトに戻す
+        if (activeEEWLevelsRef.current.size === 0) {
           setAlertTitle(null)
           setActiveTab(defaultTabRef.current)
         }
