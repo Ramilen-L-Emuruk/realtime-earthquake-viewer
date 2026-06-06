@@ -305,8 +305,14 @@ export function SettingsTab({ settings, onUpdate, onTest }: Props) {
         <div className="px-4 py-2 bg-blue-900/30 border-b border-blue-700/40">
           <p className="text-blue-300 text-xs">クリックで各通知音を試聴できます（設定の通知音 ON/OFF に関わらず鳴ります）</p>
         </div>
-        <Row label="地震情報" description="2音チャイム">
+        <Row label="地震情報（震源・震度 / 各地の震度）" description="2音チャイム">
           <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('earthquake') }}>▶ 試聴</TestButton>
+        </Row>
+        <Row label="地震情報（震度速報）" description="速報感のある3連音">
+          <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('earthquakePrompt') }}>▶ 試聴</TestButton>
+        </Row>
+        <Row label="地震情報（震源情報・遠地地震）" description="控えめな単音">
+          <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('earthquakeInfo') }}>▶ 試聴</TestButton>
         </Row>
         <Row label="EEW 特別警報" description="高速緊急音 × 8（震度6弱以上）">
           <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('eewSpecial') }}>▶ 試聴</TestButton>
