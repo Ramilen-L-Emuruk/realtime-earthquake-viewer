@@ -13,7 +13,7 @@ import { useKyoshinDetection } from './hooks/useKyoshinDetection'
 import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude } from './utils/formatters'
 import { eewMaxScale } from './utils/eew'
-import { playAlertSound, unlockAudio, type AlertSoundType } from './utils/alertSound'
+import { playAlertSound, playKyoshinUpdateSound, unlockAudio, type AlertSoundType } from './utils/alertSound'
 import type { P2PQuakeEvent } from './types/earthquake'
 
 // 平常時のウィンドウタイトル（index.html の <title> と一致させる）。
@@ -30,8 +30,11 @@ export function App() {
 
   // 受信イベントの種別ごとに通知音を鳴らす（同種の連続発火はバースト抑制）
   const lastSoundAtRef = useRef<Record<AlertSoundType, number>>({
-    earthquake: 0, eew: 0, tsunami: 0,
+    earthquake: 0, eew: 0, tsunami: 0, kyoshin: 0, eewUpdate: 0, eewCancel: 0,
   })
+  // EEW の eventId を追跡し、新規発報か続報かを判定する
+  const activeEEWEventIdRef = useRef<string | null>(null)
+
   const handleLiveEvent = (event: P2PQuakeEvent) => {
     // 受信時に該当タブを自動表示し、ウィンドウタイトルを更新する
     // （地震情報・津波情報・緊急地震速報）。
@@ -42,7 +45,22 @@ export function App() {
     } else if (event.code === 552 && !event.cancelled) {
       setActiveTab('tsunami')
       setAlertTitle('🌊 津波情報 発表中')
-    } else if (event.code === 556 && !event.cancelled && !event.test) {
+    } else if (event.code === 556) {
+      if (event.test) return
+
+      if (event.cancelled) {
+        // EEW キャンセル: 発報中の EEW があれば解除音を鳴らす
+        if (activeEEWEventIdRef.current !== null && settings.soundEnabled) {
+          const now = Date.now()
+          if (now - lastSoundAtRef.current.eewCancel >= 1500) {
+            lastSoundAtRef.current.eewCancel = now
+            playAlertSound('eewCancel')
+          }
+        }
+        activeEEWEventIdRef.current = null
+        return
+      }
+
       // 緊急地震速報の発報時はリアルタイムタブ（強震モニタ＋予報円）を開く
       setActiveTab('realtime')
       const scale = eewMaxScale(event)
@@ -50,14 +68,26 @@ export function App() {
         `🚨 緊急地震速報 ${event.earthquake.hypocenter.name}` +
         (scale > 0 ? ` 最大震度${getIntensityLabel(scale)}予想` : ''),
       )
+
+      // 新規発報（eventId が変わった or 初回）か続報かを判定して音を鳴らす
+      const eventId = event.issue?.eventId ?? null
+      const isNew = activeEEWEventIdRef.current === null || activeEEWEventIdRef.current !== eventId
+      activeEEWEventIdRef.current = eventId
+      if (settings.soundEnabled) {
+        const type: AlertSoundType = isNew ? 'eew' : 'eewUpdate'
+        const now = Date.now()
+        if (now - lastSoundAtRef.current[type] >= 1500) {
+          lastSoundAtRef.current[type] = now
+          playAlertSound(type)
+        }
+      }
+      return
     }
 
-    // 通知音
+    // 通知音（地震情報・津波情報）
     if (!settings.soundEnabled) return
     let type: AlertSoundType | null = null
-    if (event.code === 556) {
-      if (!event.cancelled && !event.test) type = 'eew'
-    } else if (event.code === 552) {
+    if (event.code === 552) {
       if (!event.cancelled) type = 'tsunami'
     } else if (event.code === 551) {
       type = 'earthquake'
@@ -187,16 +217,39 @@ export function App() {
   const kyoshin = useKyoshinRealtime(true)
   const kyoshinDetection = useKyoshinDetection(kyoshin.sites, kyoshin.indices)
 
-  // 揺れ検知時にリアルタイムタブを自動表示＋ウィンドウタイトル更新
+  // 揺れ検知時にリアルタイムタブを自動表示＋ウィンドウタイトル更新＋通知音
   // （false → true への遷移時のみ）
   const prevDetectedRef = useRef(false)
   useEffect(() => {
     if (kyoshinDetection.detected && !prevDetectedRef.current) {
       setActiveTab('realtime')
       setAlertTitle('📈 揺れ検知')
+      if (settings.soundEnabled) {
+        const now = Date.now()
+        if (now - lastSoundAtRef.current.kyoshin >= 1500) {
+          lastSoundAtRef.current.kyoshin = now
+          playAlertSound('kyoshin')
+        }
+      }
     }
     prevDetectedRef.current = kyoshinDetection.detected
-  }, [kyoshinDetection.detected])
+  }, [kyoshinDetection.detected, settings.soundEnabled])
+
+  // 揺れ検知中に最大震度インデックスが上昇するたびに震度に応じた音を鳴らす
+  const prevMaxIndexRef = useRef(0)
+  useEffect(() => {
+    if (!kyoshinDetection.detected) {
+      prevMaxIndexRef.current = 0
+      return
+    }
+    const curr = kyoshinDetection.maxIndex
+    const prev = prevMaxIndexRef.current
+    prevMaxIndexRef.current = curr
+    // 初回検知（prev === 0）は kyoshin 音が鳴るのでスキップ、上昇時のみ鳴らす
+    if (curr > prev && prev > 0 && settings.soundEnabled) {
+      playKyoshinUpdateSound(curr)
+    }
+  }, [kyoshinDetection.maxIndex, kyoshinDetection.detected, settings.soundEnabled])
 
   // 常時表示する地図の内容は mapTab（設定タブ中は直前のタブ）に応じて切り替える
   const mapMode: MapMode =
