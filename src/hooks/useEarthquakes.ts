@@ -44,6 +44,55 @@ function createTestEarthquake(): JMAQuake {
   }
 }
 
+function createTestEEWWarning(eventId?: string, serial = 1): EEWAlert {
+  const now = new Date()
+  const eid = eventId ?? `test-warn-${Date.now()}`
+  return {
+    code: 556,
+    id: `test-eew-warn-${Date.now()}`,
+    time: now.toISOString(),
+    test: false,
+    earthquake: {
+      originTime: now.toISOString(),
+      arrivalTime: new Date(now.getTime() + 20000).toISOString(),
+      condition: '以上',
+      hypocenter: { name: '茨城県沖', latitude: 36.1, longitude: 141.3, depth: 40, magnitude: 6.5 },
+    },
+    severity: 'Warning',
+    cancelled: false,
+    issue: { eventId: eid, serial: String(serial), time: now.toISOString() },
+    areas: [
+      { pref: '茨城県', name: '茨城県北部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null },
+      { pref: '茨城県', name: '茨城県南部', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: null },
+      { pref: '栃木県', name: '栃木県南部', scaleFrom: 35, scaleTo: 40, kindCode: '10', arrivalTime: null },
+    ],
+  }
+}
+
+function createTestEEWForecast(eventId?: string, serial = 1): EEWAlert {
+  const now = new Date()
+  const eid = eventId ?? `test-forecast-${Date.now()}`
+  return {
+    code: 556,
+    id: `test-eew-forecast-${Date.now()}`,
+    time: now.toISOString(),
+    test: false,
+    earthquake: {
+      originTime: now.toISOString(),
+      arrivalTime: new Date(now.getTime() + 20000).toISOString(),
+      condition: '以上',
+      hypocenter: { name: '宮城県沖', latitude: 38.3, longitude: 141.8, depth: 60, magnitude: 4.5 },
+    },
+    severity: 'Forecast',
+    cancelled: false,
+    issue: { eventId: eid, serial: String(serial), time: now.toISOString() },
+    areas: [
+      { pref: '宮城県', name: '宮城県北部', scaleFrom: 20, scaleTo: 25, kindCode: '10', arrivalTime: null },
+      { pref: '宮城県', name: '宮城県中部', scaleFrom: 15, scaleTo: 20, kindCode: '10', arrivalTime: null },
+    ],
+  }
+}
+
 function createTestEEW(eventId?: string, serial = 1): EEWAlert {
   const now = new Date()
   const eid = eventId ?? `test-${Date.now()}`
@@ -69,6 +118,21 @@ function createTestEEW(eventId?: string, serial = 1): EEWAlert {
       { pref: '岩手県', name: '岩手県沿岸南部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null },
       { pref: '福島県', name: '福島県浜通り', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null },
       { pref: '茨城県', name: '茨城県北部', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: null },
+    ],
+  }
+}
+
+function createTestTsunamiWatch(): JMATsunami {
+  const now = new Date().toISOString()
+  return {
+    code: 552,
+    id: `test-tsunami-watch-${Date.now()}`,
+    time: now,
+    cancelled: false,
+    issue: { source: 'テスト', time: now, type: 'Focus' },
+    areas: [
+      { grade: 'Watch', immediate: false, name: '北海道太平洋沿岸東部', maxHeight: { description: '1m', value: 1.0 } },
+      { grade: 'Watch', immediate: false, name: '北海道太平洋沿岸中部', maxHeight: { description: '1m', value: 1.0 } },
     ],
   }
 }
@@ -119,8 +183,11 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
   // 最新のコールバックを ref で保持し、handleEvent を安定させる
   const onLiveEventRef = useRef(onLiveEvent)
   onLiveEventRef.current = onLiveEvent
-  // テスト EEW の発報状態を追跡（続報判定用）
-  const testEEWRef = useRef<{ eventId: string; serial: number; cancelTimer: number } | null>(null)
+  // テスト EEW の発報状態を追跡（続報判定用・種別ごとに独立管理）
+  const testEEWRef = useRef<{
+    eventId: string; serial: number; cancelTimer: number
+    type: 'special' | 'warning' | 'forecast'
+  } | null>(null)
 
   const handleEvent = useCallback((event: P2PQuakeEvent) => {
     // ライブ受信／テスト送信のイベントを通知（初回の履歴読み込みでは呼ばれない）
@@ -217,10 +284,10 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
   }, [handleEvent])
 
   const simulateEEW = useCallback(() => {
-    // 発報中なら続報、発報中でなければ新規発報
     const prev = testEEWRef.current
-    const eventId = prev ? prev.eventId : `test-${Date.now()}`
-    const serial = prev ? prev.serial + 1 : 1
+    const isContinuation = prev?.type === 'special'
+    const eventId = isContinuation ? prev!.eventId : `test-${Date.now()}`
+    const serial = isContinuation ? prev!.serial + 1 : 1
     if (prev) window.clearTimeout(prev.cancelTimer)
 
     const eew = createTestEEW(eventId, serial)
@@ -230,7 +297,41 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
       handleEvent({ ...eew, cancelled: true })
       testEEWRef.current = null
     }, 10000)
-    testEEWRef.current = { eventId, serial, cancelTimer }
+    testEEWRef.current = { eventId, serial, cancelTimer, type: 'special' }
+  }, [handleEvent])
+
+  const simulateEEWWarning = useCallback(() => {
+    const prev = testEEWRef.current
+    const isContinuation = prev?.type === 'warning'
+    const eventId = isContinuation ? prev!.eventId : `test-warn-${Date.now()}`
+    const serial = isContinuation ? prev!.serial + 1 : 1
+    if (prev) window.clearTimeout(prev.cancelTimer)
+
+    const eew = createTestEEWWarning(eventId, serial)
+    handleEvent(eew)
+
+    const cancelTimer = window.setTimeout(() => {
+      handleEvent({ ...eew, cancelled: true })
+      testEEWRef.current = null
+    }, 10000)
+    testEEWRef.current = { eventId, serial, cancelTimer, type: 'warning' }
+  }, [handleEvent])
+
+  const simulateEEWForecast = useCallback(() => {
+    const prev = testEEWRef.current
+    const isContinuation = prev?.type === 'forecast'
+    const eventId = isContinuation ? prev!.eventId : `test-forecast-${Date.now()}`
+    const serial = isContinuation ? prev!.serial + 1 : 1
+    if (prev) window.clearTimeout(prev.cancelTimer)
+
+    const eew = createTestEEWForecast(eventId, serial)
+    handleEvent(eew)
+
+    const cancelTimer = window.setTimeout(() => {
+      handleEvent({ ...eew, cancelled: true })
+      testEEWRef.current = null
+    }, 10000)
+    testEEWRef.current = { eventId, serial, cancelTimer, type: 'forecast' }
   }, [handleEvent])
 
   const simulateTsunami = useCallback(() => {
@@ -239,5 +340,16 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
     setTimeout(() => handleEvent({ ...tsunami, cancelled: true }), 15000)
   }, [handleEvent])
 
-  return { ...state, simulateEarthquake, simulateEEW, simulateTsunami }
+  const simulateTsunamiWatch = useCallback(() => {
+    const tsunami = createTestTsunamiWatch()
+    handleEvent(tsunami)
+    setTimeout(() => handleEvent({ ...tsunami, cancelled: true }), 10000)
+  }, [handleEvent])
+
+  return {
+    ...state,
+    simulateEarthquake,
+    simulateEEW, simulateEEWWarning, simulateEEWForecast,
+    simulateTsunami, simulateTsunamiWatch,
+  }
 }
