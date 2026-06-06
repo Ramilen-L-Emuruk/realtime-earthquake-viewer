@@ -336,13 +336,13 @@ export function SettingsTab({ settings, onUpdate, onTest }: Props) {
         <div className="px-4 py-2 bg-yellow-900/30 border-b border-yellow-700/40">
           <p className="text-yellow-400 text-xs">⚠️ 動作確認用です。実際のデータは変更されません。</p>
         </div>
-        <Row label="地震情報" description="東京都 M5.5 震度4 をリストと地図に追加">
+        <Row label="地震情報" description="三陸沖 M9.0 最大震度7 をリストと地図に追加">
           <TestButton color="red" onClick={onTest.earthquake}>地震テスト</TestButton>
         </Row>
         <Row label="緊急地震速報" description="EEW バナーを10秒間表示">
           <TestButton color="orange" onClick={onTest.eew}>EEW テスト</TestButton>
         </Row>
-        <Row label="津波警報" description="津波注意報（相模湾）を15秒間表示">
+        <Row label="津波警報" description="大津波警報（岩手・宮城・福島等）を15秒間表示">
           <TestButton color="purple" onClick={onTest.tsunami}>津波テスト</TestButton>
         </Row>
         <Row label="ブラウザ通知" description="テスト通知を即時送信（要通知許可）">
