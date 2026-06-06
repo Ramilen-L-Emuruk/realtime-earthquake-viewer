@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-export type TabId = 'earthquake' | 'realtime' | 'tsunami' | 'settings'
+export type TabId = 'earthquake' | 'realtime' | 'tsunami' | 'replay' | 'settings'
 
 const ICON_PROPS = {
   viewBox: '0 0 24 24',
@@ -35,6 +35,13 @@ const ICONS: Record<TabId, ReactNode> = {
       <path d="M2 15c1.8 0 1.8 2 3.5 2S7.3 15 9 15s1.8 2 3.5 2 1.8-2 3.5-2 1.8 2 3.5 2 1.2-2 2-2" />
     </svg>
   ),
+  // 再生: 再生ボタン
+  replay: (
+    <svg {...ICON_PROPS}>
+      <circle cx="12" cy="12" r="9" />
+      <polygon points="10 8 16 12 10 16 10 8" fill="currentColor" stroke="none" />
+    </svg>
+  ),
   // 設定: 歯車
   settings: (
     <svg {...ICON_PROPS}>
@@ -48,6 +55,7 @@ const ITEMS: { id: TabId; label: string }[] = [
   { id: 'earthquake', label: '地震情報' },
   { id: 'realtime', label: 'リアルタイム' },
   { id: 'tsunami', label: '津波情報' },
+  { id: 'replay', label: 'イベント再生' },
   { id: 'settings', label: '設定' },
 ]
 

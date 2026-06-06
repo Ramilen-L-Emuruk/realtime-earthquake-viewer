@@ -6,7 +6,9 @@ import { EarthquakeTab } from './components/EarthquakeTab'
 import { RealtimeTab } from './components/RealtimeTab'
 import { TsunamiTab } from './components/TsunamiTab'
 import { SettingsTab } from './components/SettingsTab'
+import { ReplayTab } from './components/ReplayTab'
 import { useEarthquakes } from './hooks/useEarthquakes'
+import { useReplay } from './hooks/useReplay'
 import { useSettings } from './hooks/useSettings'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
 import { useKyoshinDetection } from './hooks/useKyoshinDetection'
@@ -33,6 +35,9 @@ export function App() {
     earthquake: 0, eew: 0, tsunami: 0,
   })
   const handleLiveEvent = (event: P2PQuakeEvent) => {
+    // 再生中はライブイベントによる自動タブ切替を抑制する（ref で即時判定）
+    if (replay.isPlayerRef.current) return
+
     // 受信時に該当タブを自動表示し、ウィンドウタイトルを更新する
     // （地震情報・津波情報・緊急地震速報）。
     if (event.code === 551) {
@@ -148,6 +153,7 @@ export function App() {
     const ms = settings.idleRevertSec * 1000
     // デフォルトタブへ戻すと同時にウィンドウタイトルも平常時へ戻す。
     const revert = () => {
+      if (replay.isPlayerRef.current) return
       setActiveTab(defaultTabRef.current)
       setAlertTitle(null)
     }
@@ -183,6 +189,8 @@ export function App() {
     }
   }, [activeTab, lastUpdate, settings.idleRevertSec])
 
+  const replay = useReplay()
+
   // 強震モニタ（常時ポーリング: タブ非表示中も揺れ検知を継続する）
   const kyoshin = useKyoshinRealtime(true)
   const kyoshinDetection = useKyoshinDetection(kyoshin.sites, kyoshin.indices)
@@ -191,17 +199,24 @@ export function App() {
   // （false → true への遷移時のみ）
   const prevDetectedRef = useRef(false)
   useEffect(() => {
-    if (kyoshinDetection.detected && !prevDetectedRef.current) {
+    if (kyoshinDetection.detected && !prevDetectedRef.current && !replay.isPlayerRef.current) {
       setActiveTab('realtime')
       setAlertTitle('📈 揺れ検知')
     }
     prevDetectedRef.current = kyoshinDetection.detected
-  }, [kyoshinDetection.detected])
+  }, [kyoshinDetection.detected, replay.isPlayerRef])
 
   // 常時表示する地図の内容は mapTab（設定タブ中は直前のタブ）に応じて切り替える
+  const isReplaying = mapTab === 'replay'
   const mapMode: MapMode =
-    mapTab === 'tsunami' ? 'tsunami' : mapTab === 'realtime' ? 'kyoshin' : 'quake'
-  const mapQuake = mapTab === 'earthquake' ? selectedQuake : latest
+    mapTab === 'tsunami' ? 'tsunami' :
+    mapTab === 'realtime' ? 'kyoshin' :
+    isReplaying ? 'quake' : 'quake'
+  const mapQuake = isReplaying
+    ? (replay.activeQuake ?? null)
+    : mapTab === 'earthquake' ? selectedQuake : latest
+  const mapEEW = isReplaying ? replay.activeEEW : activeEEW
+  const mapTsunamis = isReplaying ? replay.activeTsunamis : tsunamis
 
   // 地図左上の更新時刻: リアルタイム表示はリアルタイム震度(kyoshin)の更新時刻、
   // それ以外は P2P データの最終更新時刻を表示する。
@@ -224,13 +239,13 @@ export function App() {
           <JapanMap
             mode={mapMode}
             quake={mapQuake}
-            tsunamis={tsunamis}
+            tsunamis={mapTsunamis}
             iconScale={settings.mapIconScale}
             showBathymetry={settings.showBathymetry}
             kyoshinSites={kyoshin.sites}
             kyoshinIndices={kyoshin.indices}
             kyoshinPsWave={kyoshin.psWave}
-            eew={activeEEW}
+            eew={mapEEW}
             detectedPoints={kyoshinDetection.points}
           />
           <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
@@ -254,6 +269,9 @@ export function App() {
             />
           )}
           {activeTab === 'tsunami' && <TsunamiTab tsunamis={tsunamis} />}
+          {activeTab === 'replay' && (
+            <ReplayTab replay={replay} />
+          )}
           {activeTab === 'settings' && (
             <SettingsTab
               settings={settings}
