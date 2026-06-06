@@ -183,11 +183,9 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
   // 最新のコールバックを ref で保持し、handleEvent を安定させる
   const onLiveEventRef = useRef(onLiveEvent)
   onLiveEventRef.current = onLiveEvent
-  // テスト EEW の発報状態を追跡（続報判定用・種別ごとに独立管理）
-  const testEEWRef = useRef<{
-    eventId: string; serial: number; cancelTimer: number
-    type: 'special' | 'warning' | 'forecast'
-  } | null>(null)
+  // テスト EEW の発報状態を種別ごとに独立管理（複数EEW同時テスト対応）
+  type TestEEWEntry = { eventId: string; serial: number; cancelTimer: number }
+  const testEEWTimersRef = useRef<Map<'special' | 'warning' | 'forecast', TestEEWEntry>>(new Map())
 
   const handleEvent = useCallback((event: P2PQuakeEvent) => {
     // ライブ受信／テスト送信のイベントを通知（初回の履歴読み込みでは呼ばれない）
@@ -291,10 +289,10 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
   }, [handleEvent])
 
   const simulateEEW = useCallback(() => {
-    const prev = testEEWRef.current
-    const isContinuation = prev?.type === 'special'
-    const eventId = isContinuation ? prev!.eventId : `test-${Date.now()}`
-    const serial = isContinuation ? prev!.serial + 1 : 1
+    const prev = testEEWTimersRef.current.get('special')
+    const isContinuation = prev !== undefined
+    const eventId = isContinuation ? prev.eventId : `test-${Date.now()}`
+    const serial = isContinuation ? prev.serial + 1 : 1
     if (prev) window.clearTimeout(prev.cancelTimer)
 
     const eew = createTestEEW(eventId, serial)
@@ -302,16 +300,16 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
 
     const cancelTimer = window.setTimeout(() => {
       handleEvent({ ...eew, cancelled: true })
-      testEEWRef.current = null
-    }, 10000)
-    testEEWRef.current = { eventId, serial, cancelTimer, type: 'special' }
+      testEEWTimersRef.current.delete('special')
+    }, 30000)
+    testEEWTimersRef.current.set('special', { eventId, serial, cancelTimer })
   }, [handleEvent])
 
   const simulateEEWWarning = useCallback(() => {
-    const prev = testEEWRef.current
-    const isContinuation = prev?.type === 'warning'
-    const eventId = isContinuation ? prev!.eventId : `test-warn-${Date.now()}`
-    const serial = isContinuation ? prev!.serial + 1 : 1
+    const prev = testEEWTimersRef.current.get('warning')
+    const isContinuation = prev !== undefined
+    const eventId = isContinuation ? prev.eventId : `test-warn-${Date.now()}`
+    const serial = isContinuation ? prev.serial + 1 : 1
     if (prev) window.clearTimeout(prev.cancelTimer)
 
     const eew = createTestEEWWarning(eventId, serial)
@@ -319,16 +317,16 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
 
     const cancelTimer = window.setTimeout(() => {
       handleEvent({ ...eew, cancelled: true })
-      testEEWRef.current = null
-    }, 10000)
-    testEEWRef.current = { eventId, serial, cancelTimer, type: 'warning' }
+      testEEWTimersRef.current.delete('warning')
+    }, 30000)
+    testEEWTimersRef.current.set('warning', { eventId, serial, cancelTimer })
   }, [handleEvent])
 
   const simulateEEWForecast = useCallback(() => {
-    const prev = testEEWRef.current
-    const isContinuation = prev?.type === 'forecast'
-    const eventId = isContinuation ? prev!.eventId : `test-forecast-${Date.now()}`
-    const serial = isContinuation ? prev!.serial + 1 : 1
+    const prev = testEEWTimersRef.current.get('forecast')
+    const isContinuation = prev !== undefined
+    const eventId = isContinuation ? prev.eventId : `test-forecast-${Date.now()}`
+    const serial = isContinuation ? prev.serial + 1 : 1
     if (prev) window.clearTimeout(prev.cancelTimer)
 
     const eew = createTestEEWForecast(eventId, serial)
@@ -336,9 +334,9 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
 
     const cancelTimer = window.setTimeout(() => {
       handleEvent({ ...eew, cancelled: true })
-      testEEWRef.current = null
-    }, 10000)
-    testEEWRef.current = { eventId, serial, cancelTimer, type: 'forecast' }
+      testEEWTimersRef.current.delete('forecast')
+    }, 30000)
+    testEEWTimersRef.current.set('forecast', { eventId, serial, cancelTimer })
   }, [handleEvent])
 
   const simulateTsunami = useCallback(() => {
