@@ -290,7 +290,7 @@ export function App() {
         </div>
 
         {/* パネル（タブに応じて内容を切替）。モバイルは下部固定高さ + スクロール。 */}
-        <div className="h-64 flex-shrink-0 overflow-y-auto lg:h-auto lg:flex-none lg:w-96 border-t lg:border-t-0 lg:border-l border-border">
+        <div className="h-80 flex-shrink-0 overflow-y-auto lg:h-auto lg:flex-none lg:w-96 border-t lg:border-t-0 lg:border-l border-border">
           {activeTab === 'earthquake' && (
             <EarthquakeTab
               earthquakes={filteredEarthquakes}
