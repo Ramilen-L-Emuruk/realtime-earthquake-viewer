@@ -161,7 +161,7 @@ function createTestTsunami(): JMATsunami {
 export interface EarthquakeState {
   earthquakes: JMAQuake[]
   tsunamis: JMATsunami[]
-  activeEEW: EEWAlert | null
+  activeEEWs: ReadonlyMap<string, EEWAlert>
   connectionStatus: ConnectionStatus
   lastUpdate: Date | null
   isLoading: boolean
@@ -172,7 +172,7 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
   const [state, setState] = useState<EarthquakeState>({
     earthquakes: [],
     tsunamis: [],
-    activeEEW: null,
+    activeEEWs: new Map(),
     connectionStatus: 'connecting',
     lastUpdate: null,
     isLoading: true,
@@ -222,10 +222,17 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
         }
         case 556: {
           const eew = event as EEWAlert
+          const key = eew.issue?.eventId ?? eew.id
           if (eew.cancelled || eew.test) {
-            return { ...prev, activeEEW: null, lastUpdate: now }
+            const next = new Map(prev.activeEEWs)
+            next.delete(key)
+            return { ...prev, activeEEWs: next, lastUpdate: now }
           }
-          return { ...prev, activeEEW: eew, lastUpdate: now }
+          return {
+            ...prev,
+            activeEEWs: new Map(prev.activeEEWs).set(key, eew),
+            lastUpdate: now,
+          }
         }
         default:
           return { ...prev, lastUpdate: now }
