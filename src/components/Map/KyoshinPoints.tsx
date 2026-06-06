@@ -47,7 +47,8 @@ export function KyoshinPoints({ sites, indices, iconScale }: Props) {
   }, [sites, map])
 
   // 震度インデックス・UI倍率の更新時に各ドットの色と半径を更新。
-  //   震度0未満 = 透明（非表示） / 震度0 = 小さい灰色 / 震度1以上 = 気象庁配色・震度で大きさ
+  //   index 0〜5（計測震度 < 0.0）= index/6 の比率で薄い灰色（index=0 は完全透明）
+  //   震度0（index=6〜） = 小さい灰色 / 震度1以上 = 気象庁配色・震度で大きさ
   useEffect(() => {
     const markers = markersRef.current
     if (markers.length === 0) return
@@ -59,8 +60,11 @@ export function KyoshinPoints({ sites, indices, iconScale }: Props) {
         jma && jma.label !== '0'
           ? (getScaleRadius(jma.scale) + 2) * iconScale
           : BASE_RADIUS * iconScale
+      // index 0〜5: 計測震度0未満。index=0 を完全透明として index/6 の比率で不透明度を上げる
+      const fillOpacity =
+        idx != null && idx < 6 ? (idx / 6) * 0.85 : color ? 0.85 : 0
       markers[i].setRadius(radius)
-      markers[i].setStyle({ fillColor: color ?? SHINDO0_COLOR, fillOpacity: color ? 0.85 : 0 })
+      markers[i].setStyle({ fillColor: color ?? SHINDO0_COLOR, fillOpacity })
     }
   }, [indices, iconScale])
 
