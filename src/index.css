@@ -93,9 +93,6 @@ body {
 .leaflet-popup-tip { background: #1a1d26; }
 .leaflet-popup-close-button { color: #94a3b8 !important; }
 
-@supports (padding: env(safe-area-inset-bottom)) {
-  body { padding-bottom: env(safe-area-inset-bottom); }
-}
 
 @keyframes tsunami-blink {
   0%  { opacity: 1; }
