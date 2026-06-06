@@ -13,16 +13,15 @@ export function formatDateTime(isoString: string): string {
 
 /**
  * 地震の発生時刻。元データに秒が含まれないため、秒を出さず「ごろ」を付ける。
- * 例: 2026/06/04 08:50 ごろ
+ * 例: 6月6日 8:47ごろ
  */
 export function formatQuakeTime(isoString: string): string {
   const date = new Date(isoString)
-  const y = date.getFullYear()
-  const M = String(date.getMonth() + 1).padStart(2, '0')
-  const d = String(date.getDate()).padStart(2, '0')
-  const h = String(date.getHours()).padStart(2, '0')
+  const M = date.getMonth() + 1
+  const d = date.getDate()
+  const h = date.getHours()
   const m = String(date.getMinutes()).padStart(2, '0')
-  return `${y}/${M}/${d} ${h}:${m} ごろ`
+  return `${M}月${d}日 ${h}:${m}ごろ`
 }
 
 export function formatTime(isoString: string): string {

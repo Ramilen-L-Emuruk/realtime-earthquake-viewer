@@ -6,7 +6,7 @@ import {
   formatDomesticTsunami,
   formatIssueType,
 } from '../../utils/formatters'
-import { getIntensityLabel, getIntensityColor, getIntensityBgColor } from '../../utils/intensity'
+import { getIntensityLabel, getIntensityColor, getIntensityBgColor, getDepthColor, getMagnitudeColor } from '../../utils/intensity'
 
 interface Props {
   quake: JMAQuake
@@ -60,41 +60,50 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect }: Props)
 
         {/* Earthquake details */}
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap mb-1">
-            <span className="text-white font-bold text-sm truncate">
+          {/* 地域名 + 最新バッジ */}
+          <div className="flex items-center gap-2 flex-wrap mb-0.5">
+            <span className="text-white font-bold text-base leading-tight truncate">
               {hasLocation ? hypocenter.name : '震源調査中'}
             </span>
             {isLatest && (
-              <span className="text-xs bg-blue-900 text-blue-300 px-1.5 py-0.5 rounded font-medium">
+              <span className="text-xs bg-blue-900 text-blue-300 px-1.5 py-0.5 rounded font-medium flex-shrink-0">
                 最新
               </span>
             )}
           </div>
 
-          <div className="flex items-center gap-3 text-xs text-secondary flex-nowrap whitespace-nowrap">
-            {hasLocation && (
-              <>
-                <span className="font-medium text-white">
-                  {formatMagnitude(hypocenter.magnitude)}
-                </span>
-                <span>{formatDepth(hypocenter.depth)}</span>
-              </>
-            )}
-            <span className="bg-panel px-1.5 py-0.5 rounded text-secondary">
+          {/* 日時 + 発表種別 */}
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs text-secondary">
+              {formatQuakeTime(earthquake.time)}
+            </span>
+            <span className="text-xs bg-panel px-1.5 py-0.5 rounded text-secondary flex-shrink-0">
               {formatIssueType(issue.type)}
             </span>
           </div>
 
-          <div className="mt-1.5 space-y-0.5">
-            <div className="text-xs text-secondary">
-              {formatQuakeTime(earthquake.time)}
-            </div>
-            <div
-              className="text-xs font-medium"
-              style={{ color: tsunamiInfo.color }}
-            >
-              {tsunamiInfo.text}
-            </div>
+          {/* 深さ・マグニチュード・津波情報 */}
+          <div className="flex items-center gap-2 text-xs flex-wrap">
+            {hasLocation && (
+              <span className="flex items-center gap-1 text-secondary">
+                <span>深さ</span>
+                <span className="text-white font-medium">{formatDepth(hypocenter.depth)}</span>
+                <span
+                  className="inline-block w-1.5 h-3.5 rounded-sm flex-shrink-0"
+                  style={{ backgroundColor: getDepthColor(hypocenter.depth) }}
+                />
+                <span className="text-white font-medium">{formatMagnitude(hypocenter.magnitude)}</span>
+                <span
+                  className="inline-block w-1.5 h-3.5 rounded-sm flex-shrink-0"
+                  style={{ backgroundColor: getMagnitudeColor(hypocenter.magnitude) }}
+                />
+              </span>
+            )}
+            {tsunamiInfo.text !== '津波の心配なし' && (
+              <span className="font-medium" style={{ color: tsunamiInfo.color }}>
+                {tsunamiInfo.text}
+              </span>
+            )}
           </div>
         </div>
       </div>
