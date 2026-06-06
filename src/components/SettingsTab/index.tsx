@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import type { AppSettings } from '../../hooks/useSettings'
 import { getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
+import { playAlertSound, playKyoshinUpdateSound, unlockAudio } from '../../utils/alertSound'
 
 export interface TestFunctions {
   earthquake: () => void
@@ -129,6 +130,27 @@ function TestButton({ color, onClick, children }: {
       }`}
     >
       {fired ? '送信済み ✓' : children}
+    </button>
+  )
+}
+
+// 震度別の色付き小ボタン（通知音テスト用）
+function IntensityPlayButton({ scale, kyoshinIndex }: { scale: number; kyoshinIndex: number }) {
+  const [active, setActive] = useState(false)
+  const handle = () => {
+    unlockAudio()
+    playKyoshinUpdateSound(kyoshinIndex)
+    setActive(true)
+    setTimeout(() => setActive(false), 600)
+  }
+  return (
+    <button
+      onClick={handle}
+      title={`震度${getIntensityLabel(scale)} の更新音を試聴`}
+      className={`text-xs font-bold text-white px-2 py-1 rounded transition-opacity ${active ? 'opacity-40' : 'hover:opacity-75'}`}
+      style={{ backgroundColor: getIntensityColor(scale) }}
+    >
+      {getIntensityLabel(scale)}
     </button>
   )
 }
@@ -272,6 +294,41 @@ export function SettingsTab({ settings, onUpdate, onTest }: Props) {
         )}
         <Row label="通知許可" description="ブラウザの通知権限を確認・許可します">
           <NotificationPermissionButton />
+        </Row>
+      </Section>
+
+      <Section title="通知音テスト">
+        <div className="px-4 py-2 bg-blue-900/30 border-b border-blue-700/40">
+          <p className="text-blue-300 text-xs">クリックで各通知音を試聴できます（設定の通知音 ON/OFF に関わらず鳴ります）</p>
+        </div>
+        <Row label="地震情報" description="2音チャイム">
+          <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('earthquake') }}>▶ 試聴</TestButton>
+        </Row>
+        <Row label="EEW 初報" description="緊急音 × 5">
+          <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('eew') }}>▶ 試聴</TestButton>
+        </Row>
+        <Row label="EEW 続報" description="短い2音">
+          <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('eewUpdate') }}>▶ 試聴</TestButton>
+        </Row>
+        <Row label="EEW キャンセル" description="下降する解除音">
+          <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('eewCancel') }}>▶ 試聴</TestButton>
+        </Row>
+        <Row label="津波情報" description="低音 × 3">
+          <TestButton color="purple" onClick={() => { unlockAudio(); playAlertSound('tsunami') }}>▶ 試聴</TestButton>
+        </Row>
+        <Row label="揺れ検知（初回）" description="単音">
+          <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('kyoshin') }}>▶ 試聴</TestButton>
+        </Row>
+        <Row label="揺れ検知・震度更新" description="震度をタップして試聴">
+          <div className="flex flex-wrap gap-1.5 justify-end">
+            <IntensityPlayButton scale={20} kyoshinIndex={11} />
+            <IntensityPlayButton scale={30} kyoshinIndex={16} />
+            <IntensityPlayButton scale={40} kyoshinIndex={22} />
+            <IntensityPlayButton scale={45} kyoshinIndex={29} />
+            <IntensityPlayButton scale={50} kyoshinIndex={36} />
+            <IntensityPlayButton scale={55} kyoshinIndex={45} />
+            <IntensityPlayButton scale={70} kyoshinIndex={52} />
+          </div>
         </Row>
       </Section>
 
