@@ -22,7 +22,7 @@ const SCALE_LEGEND: { label: string; scale: number }[] = [
 ]
 
 interface Props {
-  eew: EEWAlert | null
+  eews: EEWAlert[]
   kyoshinDetection: KyoshinDetection
 }
 
@@ -117,10 +117,13 @@ function KyoshinDetectionCard({ detection }: { detection: KyoshinDetection }) {
   )
 }
 
-export function RealtimeTab({ eew, kyoshinDetection }: Props) {
+export function RealtimeTab({ eews, kyoshinDetection }: Props) {
   return (
     <div className="p-3 space-y-3">
-      {eew && <EEWCard eew={eew} />}
+      {[...eews]
+        .sort((a, b) => eewMaxScale(b) - eewMaxScale(a))
+        .map(eew => <EEWCard key={eew.id} eew={eew} />)
+      }
       <KyoshinDetectionCard detection={kyoshinDetection} />
 
       <div>
