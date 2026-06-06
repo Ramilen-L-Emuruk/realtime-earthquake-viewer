@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import type { JMAQuake } from '../../types/earthquake'
+import type { JMAQuake, IssueType } from '../../types/earthquake'
 import {
   formatQuakeTime,
   formatDepth,
@@ -9,6 +9,17 @@ import {
   formatCorrectType,
 } from '../../utils/formatters'
 import { getIntensityLabel, getIntensityColor, getIntensityBgColor, getDepthColor, getMagnitudeColor } from '../../utils/intensity'
+
+/** issue.type に応じたバッジの Tailwind クラスを返す。 */
+function issueTypeBadgeClass(type: IssueType): string {
+  switch (type) {
+    case 'ScalePrompt':          return 'bg-amber-900 text-amber-300'
+    case 'ScaleAndDestination':
+    case 'DetailScale':          return 'bg-blue-900/60 text-blue-300'
+    case 'Foreign':              return 'bg-purple-900/60 text-purple-300'
+    default:                     return 'bg-panel text-secondary'
+  }
+}
 
 interface Props {
   quake: JMAQuake
@@ -75,7 +86,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect }: Props)
           {/* 日時 + 発表種別 + 最新バッジ + 訂正情報 */}
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-base text-secondary">{formatQuakeTime(earthquake.time)}</span>
-            <span className="text-xs bg-panel px-1.5 py-0.5 rounded text-secondary flex-shrink-0">
+            <span className={`text-xs px-1.5 py-0.5 rounded flex-shrink-0 ${issueTypeBadgeClass(issue.type)}`}>
               {formatIssueType(issue.type)}
             </span>
             {isLatest && (
@@ -201,7 +212,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect }: Props)
             {/* 日時 + 発表種別 */}
             <div className="flex items-center gap-2 mb-1.5 flex-wrap">
               <span className="text-base text-secondary">{formatQuakeTime(earthquake.time)}</span>
-              <span className="text-xs bg-panel px-1.5 py-0.5 rounded text-secondary flex-shrink-0">
+              <span className={`text-xs px-1.5 py-0.5 rounded flex-shrink-0 ${issueTypeBadgeClass(issue.type)}`}>
                 {formatIssueType(issue.type)}
               </span>
               {issue.correct !== 'None' && (
