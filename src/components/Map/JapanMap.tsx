@@ -106,6 +106,8 @@ const PREF_AGGREGATE_MAX_ZOOM = 8
 // 震度マーカーの重なり順。Leaflet は「画面 y 座標 + zIndexOffset」で z を決めるため、
 // 緯度差(数百〜数千px)を上回る係数を掛け、最大震度が高いほど確実に前面へ出す。
 const INTENSITY_Z = 1000
+// 震源（×印）は全ての震度マーカー（最大 70×INTENSITY_Z）より確実に前面へ。
+const EPICENTER_Z = 1_000_000
 
 // 現在のズームレベルを親へ伝えるだけのコンポーネント。
 function ZoomWatcher({ onZoom }: { onZoom: (zoom: number) => void }) {
@@ -490,7 +492,7 @@ export function JapanMap({
               eew.earthquake.hypocenter.longitude,
             ]}
             icon={getEpicenterIcon(iconScale)}
-            zIndexOffset={1000}
+            zIndexOffset={EPICENTER_Z}
           >
             <Tooltip permanent direction="top" offset={[0, -10]}>
               <span className="font-bold">{eew.earthquake.hypocenter.name}</span>
@@ -603,6 +605,7 @@ export function JapanMap({
             quake.earthquake.hypocenter.longitude,
           ]}
           icon={getEpicenterIcon(iconScale)}
+          zIndexOffset={EPICENTER_Z}
         >
           <Popup>
             <div className="text-sm min-w-[160px]">
