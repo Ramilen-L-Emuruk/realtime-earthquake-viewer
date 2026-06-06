@@ -18,17 +18,18 @@ import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
 import type { DetectedPoint } from '../../hooks/useKyoshinDetection'
 import { kyoshinIntensityColor } from '../../utils/kyoshinIntensity'
 
-// 震源の×印アイコン。UI 倍率ごとにキャッシュして再利用する。
-const epicenterIconCache = new Map<number, L.DivIcon>()
+// 震源の×印アイコン。UI 倍率・点滅フラグごとにキャッシュして再利用する。
+const epicenterIconCache = new Map<string, L.DivIcon>()
 
-function getEpicenterIcon(iconScale: number): L.DivIcon {
-  const cached = epicenterIconCache.get(iconScale)
+function getEpicenterIcon(iconScale: number, blink = false): L.DivIcon {
+  const key = `${iconScale}:${blink}`
+  const cached = epicenterIconCache.get(key)
   if (cached) return cached
 
   const s = Math.round(32 * iconScale)
   const icon = L.divIcon({
     className: '',
-    html: `<svg viewBox="0 0 32 32" width="${s}" height="${s}" xmlns="http://www.w3.org/2000/svg">
+    html: `<svg viewBox="0 0 32 32" width="${s}" height="${s}" xmlns="http://www.w3.org/2000/svg"${blink ? ' class="eew-blink"' : ''}>
     <line x1="4" y1="4" x2="28" y2="28" stroke="#ff2222" stroke-width="4" stroke-linecap="round"/>
     <line x1="28" y1="4" x2="4"  y2="28" stroke="#ff2222" stroke-width="4" stroke-linecap="round"/>
   </svg>`,
@@ -36,7 +37,7 @@ function getEpicenterIcon(iconScale: number): L.DivIcon {
     iconAnchor: [s / 2, s / 2],
     popupAnchor: [0, -s * 0.56],
   })
-  epicenterIconCache.set(iconScale, icon)
+  epicenterIconCache.set(key, icon)
   return icon
 }
 
@@ -493,7 +494,7 @@ export function JapanMap({
               eew.earthquake.hypocenter.latitude,
               eew.earthquake.hypocenter.longitude,
             ]}
-            icon={getEpicenterIcon(iconScale)}
+            icon={getEpicenterIcon(iconScale, true)}
             zIndexOffset={EPICENTER_Z}
           >
             <Tooltip permanent direction="top" offset={[0, -10]}>

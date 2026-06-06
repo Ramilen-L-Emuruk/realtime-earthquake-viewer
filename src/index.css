@@ -96,3 +96,11 @@ body {
 @supports (padding: env(safe-area-inset-bottom)) {
   body { padding-bottom: env(safe-area-inset-bottom); }
 }
+
+@keyframes eew-blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.1; }
+}
+.eew-blink {
+  animation: eew-blink 1.2s step-end infinite;
+}
