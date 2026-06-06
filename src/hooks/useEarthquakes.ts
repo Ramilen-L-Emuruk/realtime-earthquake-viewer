@@ -39,8 +39,9 @@ function createTestEarthquake(): JMAQuake {
   }
 }
 
-function createTestEEW(): EEWAlert {
+function createTestEEW(eventId?: string, serial = 1): EEWAlert {
   const now = new Date()
+  const eid = eventId ?? `test-${Date.now()}`
   return {
     code: 556,
     id: `test-eew-${Date.now()}`,
@@ -54,7 +55,7 @@ function createTestEEW(): EEWAlert {
     },
     severity: 'Warning',
     cancelled: false,
-    issue: { eventId: `test-${Date.now()}`, serial: '1', time: now.toISOString() },
+    issue: { eventId: eid, serial: String(serial), time: now.toISOString() },
     // 実データに合わせ areas を使用（参照は utils/eew.ts の eewAreas() で吸収）
     areas: [
       { pref: '東京都', name: '東京都区部', scaleFrom: 40, scaleTo: 40, kindCode: '10', arrivalTime: null },
@@ -106,6 +107,8 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
   // 最新のコールバックを ref で保持し、handleEvent を安定させる
   const onLiveEventRef = useRef(onLiveEvent)
   onLiveEventRef.current = onLiveEvent
+  // テスト EEW の発報状態を追跡（続報判定用）
+  const testEEWRef = useRef<{ eventId: string; serial: number; cancelTimer: number } | null>(null)
 
   const handleEvent = useCallback((event: P2PQuakeEvent) => {
     // ライブ受信／テスト送信のイベントを通知（初回の履歴読み込みでは呼ばれない）
@@ -202,9 +205,20 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
   }, [handleEvent])
 
   const simulateEEW = useCallback(() => {
-    const eew = createTestEEW()
+    // 発報中なら続報、発報中でなければ新規発報
+    const prev = testEEWRef.current
+    const eventId = prev ? prev.eventId : `test-${Date.now()}`
+    const serial = prev ? prev.serial + 1 : 1
+    if (prev) window.clearTimeout(prev.cancelTimer)
+
+    const eew = createTestEEW(eventId, serial)
     handleEvent(eew)
-    setTimeout(() => handleEvent({ ...eew, cancelled: true }), 10000)
+
+    const cancelTimer = window.setTimeout(() => {
+      handleEvent({ ...eew, cancelled: true })
+      testEEWRef.current = null
+    }, 10000)
+    testEEWRef.current = { eventId, serial, cancelTimer }
   }, [handleEvent])
 
   const simulateTsunami = useCallback(() => {
