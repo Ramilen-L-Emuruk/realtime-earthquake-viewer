@@ -22,19 +22,24 @@ function createTestEarthquake(): JMAQuake {
     issue: { source: 'テスト', time: now, type: 'ScaleAndDestination', correct: 'None' },
     earthquake: {
       time: now,
-      hypocenter: { name: '東京都内陸部（テスト）', latitude: 35.68, longitude: 139.69, depth: 20, magnitude: 5.5 },
-      maxScale: 40,
-      domesticTsunami: 'None',
+      // 2011年東北地方太平洋沖地震を参考にしたパラメータ
+      hypocenter: { name: '三陸沖', latitude: 38.1, longitude: 142.9, depth: 24, magnitude: 9.0 },
+      maxScale: 70,
+      domesticTsunami: 'Warning',
       foreignTsunami: 'None',
     },
     // addr は地図の震度マーカー表示用に、座標テーブル（public/data/station-coords.json）に
     // 実在する観測点名を使用する。市区町村名のままだと座標が引けずマーカーが出ない。
     points: [
-      { pref: '東京都', addr: '東京千代田区大手町', isArea: false, scale: 40 },
-      { pref: '東京都', addr: '東京新宿区西新宿', isArea: false, scale: 30 },
-      { pref: '神奈川県', addr: '横浜鶴見区鶴見', isArea: false, scale: 30 },
-      { pref: '埼玉県', addr: '熊谷市桜町', isArea: false, scale: 20 },
-      { pref: '千葉県', addr: '銚子市川口町', isArea: false, scale: 20 },
+      { pref: '宮城県', addr: '栗原市築館',         isArea: false, scale: 70 },
+      { pref: '宮城県', addr: '気仙沼市赤岩',        isArea: false, scale: 60 },
+      { pref: '宮城県', addr: '仙台青葉区大倉',      isArea: false, scale: 60 },
+      { pref: '岩手県', addr: '大船渡市大船渡町',    isArea: false, scale: 55 },
+      { pref: '岩手県', addr: '宮古市鍬ヶ崎',       isArea: false, scale: 55 },
+      { pref: '福島県', addr: '福島市花園町',        isArea: false, scale: 55 },
+      { pref: '茨城県', addr: '水戸市金町',          isArea: false, scale: 50 },
+      { pref: '栃木県', addr: '日光市瀬川',          isArea: false, scale: 45 },
+      { pref: '埼玉県', addr: '熊谷市桜町',          isArea: false, scale: 30 },
     ],
   }
 }
@@ -51,16 +56,19 @@ function createTestEEW(eventId?: string, serial = 1): EEWAlert {
       originTime: now.toISOString(),
       arrivalTime: new Date(now.getTime() + 20000).toISOString(),
       condition: '以上',
-      hypocenter: { name: '東京都内陸部（テスト）', latitude: 35.68, longitude: 139.69, depth: 20, magnitude: 5.5 },
+      // 2011年東北地方太平洋沖地震を参考にしたパラメータ（EEW初報はM7.2前後だった）
+      hypocenter: { name: '三陸沖', latitude: 38.1, longitude: 142.9, depth: 24, magnitude: 7.2 },
     },
     severity: 'Warning',
     cancelled: false,
     issue: { eventId: eid, serial: String(serial), time: now.toISOString() },
     // 実データに合わせ areas を使用（参照は utils/eew.ts の eewAreas() で吸収）
     areas: [
-      { pref: '東京都', name: '東京都区部', scaleFrom: 40, scaleTo: 40, kindCode: '10', arrivalTime: null },
-      { pref: '神奈川県', name: '神奈川県東部', scaleFrom: 30, scaleTo: 40, kindCode: '10', arrivalTime: null },
-      { pref: '埼玉県', name: '埼玉県南部', scaleFrom: 30, scaleTo: 30, kindCode: '10', arrivalTime: null },
+      { pref: '宮城県', name: '宮城県北部', scaleFrom: 55, scaleTo: 60, kindCode: '10', arrivalTime: null },
+      { pref: '宮城県', name: '宮城県中部', scaleFrom: 50, scaleTo: 55, kindCode: '10', arrivalTime: null },
+      { pref: '岩手県', name: '岩手県沿岸南部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null },
+      { pref: '福島県', name: '福島県浜通り', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null },
+      { pref: '茨城県', name: '茨城県北部', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: null },
     ],
   }
 }
@@ -74,10 +82,14 @@ function createTestTsunami(): JMATsunami {
     cancelled: false,
     issue: { source: 'テスト', time: now, type: 'Focus' },
     // name は地図の海岸線表示用に、津波予報区データ（tsunami-zones.json）に実在する区域名を使用する
+    // 2011年東北地方太平洋沖地震を参考にした発令内容
     areas: [
-      { grade: 'Warning', immediate: false, name: '千葉県九十九里・外房', maxHeight: { description: '3m', value: 3.0 } },
-      { grade: 'Watch', immediate: false, name: '相模湾・三浦半島', maxHeight: { description: '1m', value: 1.0 } },
-      { grade: 'Watch', immediate: false, name: '伊豆諸島', maxHeight: { description: '0.5m', value: 0.5 } },
+      { grade: 'MajorWarning', immediate: true,  name: '岩手県',           maxHeight: { description: '10m以上', value: 10.0 } },
+      { grade: 'MajorWarning', immediate: true,  name: '宮城県',           maxHeight: { description: '10m以上', value: 10.0 } },
+      { grade: 'MajorWarning', immediate: true,  name: '福島県',           maxHeight: { description: '6m',     value: 6.0  } },
+      { grade: 'Warning',      immediate: false, name: '青森県太平洋沿岸', maxHeight: { description: '3m',     value: 3.0  } },
+      { grade: 'Warning',      immediate: false, name: '茨城県',           maxHeight: { description: '3m',     value: 3.0  } },
+      { grade: 'Watch',        immediate: false, name: '北海道太平洋沿岸東部', maxHeight: { description: '1m', value: 1.0  } },
     ],
   }
 }
