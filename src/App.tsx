@@ -14,7 +14,7 @@ import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude } from './utils/formatters'
 import { eewMaxScale } from './utils/eew'
 import { tsunamiMaxGrade } from './utils/tsunami'
-import { playAlertSound, playKyoshinUpdateSound, unlockAudio, type AlertSoundType } from './utils/alertSound'
+import { playAlertSound, playKyoshinUpdateSound, unlockAudio, setSoundVolume, type AlertSoundType } from './utils/alertSound'
 import type { P2PQuakeEvent } from './types/earthquake'
 
 // 平常時のウィンドウタイトル（index.html の <title> と一致させる）。
@@ -145,6 +145,11 @@ export function App() {
     document.documentElement.style.fontSize = `${16 * settings.uiScale}px`
     window.dispatchEvent(new Event('resize'))
   }, [settings.uiScale])
+
+  // 音量設定の変化を alertSound モジュールに反映する
+  useEffect(() => {
+    setSoundVolume(settings.soundVolume)
+  }, [settings.soundVolume])
 
   // ブラウザの自動再生制限に対応: 初回のユーザー操作で音声を有効化する
   useEffect(() => {

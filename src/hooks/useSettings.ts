@@ -8,6 +8,7 @@ export interface AppSettings {
   notifyMinScale: number    // 通知最低震度 (-1 = 通知しない)
   maxEarthquakeList: number // リスト表示件数
   soundEnabled: boolean     // 地震・EEW・津波の受信時に音を鳴らす
+  soundVolume: number       // 通知音の全体音量 (0.0 〜 1.0)
   uiScale: number           // UI 倍率 (1 = 100%)
   mapIconScale: number      // 地図アイコンの倍率 (1 = 100%、UI 倍率とは独立)
   showBathymetry: boolean   // 背景に海底地形（ESRI Ocean）を表示する
@@ -23,6 +24,7 @@ const DEFAULTS: AppSettings = {
   notifyMinScale: -1,
   maxEarthquakeList: 20,
   soundEnabled: true,
+  soundVolume: 1.0,
   uiScale: 1,
   mapIconScale: 1,
   showBathymetry: true,

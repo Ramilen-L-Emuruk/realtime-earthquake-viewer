@@ -278,6 +278,24 @@ export function SettingsTab({ settings, onUpdate, onTest }: Props) {
             onChange={v => onUpdate('soundEnabled', v)}
           />
         </Row>
+        {settings.soundEnabled && (
+          <Row label="音量" description="通知音の音量を調整します">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-secondary w-8 text-right">
+                {Math.round(settings.soundVolume * 100)}%
+              </span>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={settings.soundVolume}
+                onChange={e => onUpdate('soundVolume', Number(e.target.value))}
+                className="w-24 accent-blue-500"
+              />
+            </div>
+          </Row>
+        )}
         <Row label="ブラウザ通知" description="地震発生時にブラウザ通知を表示します">
           <Toggle
             checked={settings.notifyMinScale >= 0}
@@ -305,39 +323,7 @@ export function SettingsTab({ settings, onUpdate, onTest }: Props) {
         <div className="px-4 py-2 bg-blue-900/30 border-b border-blue-700/40">
           <p className="text-blue-300 text-xs">クリックで各通知音を試聴できます（設定の通知音 ON/OFF に関わらず鳴ります）</p>
         </div>
-        <Row label="地震情報（震源・震度 / 各地の震度）" description="2音チャイム">
-          <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('earthquake') }}>▶ 試聴</TestButton>
-        </Row>
-        <Row label="地震情報（震度速報）" description="速報感のある3連音">
-          <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('earthquakePrompt') }}>▶ 試聴</TestButton>
-        </Row>
-        <Row label="地震情報（震源情報・遠地地震）" description="控えめな単音">
-          <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('earthquakeInfo') }}>▶ 試聴</TestButton>
-        </Row>
-        <Row label="EEW 特別警報" description="高速緊急音 × 8（震度6弱以上）">
-          <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('eewSpecial') }}>▶ 試聴</TestButton>
-        </Row>
-        <Row label="EEW 初報（警報）" description="緊急音 × 5">
-          <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('eew') }}>▶ 試聴</TestButton>
-        </Row>
-        <Row label="EEW 続報" description="短い2音">
-          <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('eewUpdate') }}>▶ 試聴</TestButton>
-        </Row>
-        <Row label="EEW キャンセル" description="下降する解除音">
-          <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('eewCancel') }}>▶ 試聴</TestButton>
-        </Row>
-        <Row label="EEW 予報（低震度）" description="緩やかな3音（震度2以下）">
-          <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('eewForecast') }}>▶ 試聴</TestButton>
-        </Row>
-        <Row label="大津波警報" description="低音 × 5">
-          <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('tsunamiMajor') }}>▶ 試聴</TestButton>
-        </Row>
-        <Row label="津波警報" description="低音 × 3">
-          <TestButton color="purple" onClick={() => { unlockAudio(); playAlertSound('tsunami') }}>▶ 試聴</TestButton>
-        </Row>
-        <Row label="津波注意報" description="中音 × 2">
-          <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('tsunamiWatch') }}>▶ 試聴</TestButton>
-        </Row>
+        {/* ── 揺れ検知 ── */}
         <Row label="揺れ検知（初回）" description="単音">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('kyoshin') }}>▶ 試聴</TestButton>
         </Row>
@@ -351,6 +337,42 @@ export function SettingsTab({ settings, onUpdate, onTest }: Props) {
             <IntensityPlayButton scale={55} kyoshinIndex={45} />
             <IntensityPlayButton scale={70} kyoshinIndex={52} />
           </div>
+        </Row>
+        {/* ── 緊急地震速報（EEW） ── */}
+        <Row label="EEW 予報（低震度）" description="緩やかな3音（震度2以下）">
+          <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('eewForecast') }}>▶ 試聴</TestButton>
+        </Row>
+        <Row label="EEW 初報（警報）" description="緊急音 × 5">
+          <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('eew') }}>▶ 試聴</TestButton>
+        </Row>
+        <Row label="EEW 特別警報" description="高速緊急音 × 8（震度6弱以上）">
+          <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('eewSpecial') }}>▶ 試聴</TestButton>
+        </Row>
+        <Row label="EEW 続報" description="短い2音">
+          <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('eewUpdate') }}>▶ 試聴</TestButton>
+        </Row>
+        <Row label="EEW キャンセル" description="下降する解除音">
+          <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('eewCancel') }}>▶ 試聴</TestButton>
+        </Row>
+        {/* ── 地震情報 ── */}
+        <Row label="地震情報（震度速報）" description="速報感のある3連音">
+          <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('earthquakePrompt') }}>▶ 試聴</TestButton>
+        </Row>
+        <Row label="地震情報（震源・震度 / 各地の震度）" description="2音チャイム">
+          <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('earthquake') }}>▶ 試聴</TestButton>
+        </Row>
+        <Row label="地震情報（震源情報・遠地地震）" description="控えめな単音">
+          <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('earthquakeInfo') }}>▶ 試聴</TestButton>
+        </Row>
+        {/* ── 津波情報 ── */}
+        <Row label="津波注意報" description="中音 × 2">
+          <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('tsunamiWatch') }}>▶ 試聴</TestButton>
+        </Row>
+        <Row label="津波警報" description="低音 × 3">
+          <TestButton color="purple" onClick={() => { unlockAudio(); playAlertSound('tsunami') }}>▶ 試聴</TestButton>
+        </Row>
+        <Row label="大津波警報" description="低音 × 5">
+          <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('tsunamiMajor') }}>▶ 試聴</TestButton>
         </Row>
       </Section>
 
@@ -382,7 +404,7 @@ export function SettingsTab({ settings, onUpdate, onTest }: Props) {
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">1.3.0</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">1.3.1</span></Row>
         <Row label="地震・津波データ">
           <a href="https://www.p2pquake.net/" target="_blank" rel="noopener noreferrer"
             className="text-xs text-blue-400 hover:text-blue-300">
