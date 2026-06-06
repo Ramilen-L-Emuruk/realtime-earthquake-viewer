@@ -44,7 +44,11 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
         <span className={`text-sm font-black ${isWarning ? 'text-red-300' : 'text-orange-300'}`}>
           {isWarning ? '警報' : '予報'}
         </span>
-        {serial != null && <span className="text-xs text-secondary">#{serial}</span>}
+        {serial != null && (
+          <span className={`text-xs ${eew.isFinal ? 'font-bold text-green-400' : 'text-secondary'}`}>
+            #{serial}{eew.isFinal ? ' 最終報' : ''}
+          </span>
+        )}
       </div>
       <div className="flex items-baseline gap-2 flex-wrap">
         <span className="text-white font-bold text-base">{hypocenter.name}</span>
@@ -56,10 +60,10 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
       <div className="text-xs text-secondary mt-1">
         深さ {hypocenter.depth}km / {formatDateTime(eew.earthquake.originTime)}
       </div>
-      {areas.length > 0 && (
+      {areas.some(a => a.pref) && (
         <div className="text-xs text-secondary mt-1 leading-relaxed">
-          対象: {areas.slice(0, 6).map(a => a.pref).join(' / ')}
-          {areas.length > 6 && ' ...'}
+          対象: {areas.filter(a => a.pref).slice(0, 6).map(a => a.pref).join(' / ')}
+          {areas.filter(a => a.pref).length > 6 && ' ...'}
         </div>
       )}
     </div>
