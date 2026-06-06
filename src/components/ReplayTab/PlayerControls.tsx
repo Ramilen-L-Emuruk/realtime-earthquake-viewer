@@ -18,7 +18,7 @@ function fmt(date: Date): string {
 }
 
 function fmtDate(date: Date): string {
-  return date.toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric' })
+  return date.toLocaleDateString('ja-JP', { year: 'numeric', month: 'numeric', day: 'numeric' })
 }
 
 export function PlayerControls({
