@@ -147,22 +147,28 @@ function FitToBounds({ signature, positions }: { signature: string; positions: L
 
 // 緊急地震速報の発報時: まず震源を中心に表示し、予報円(S波)が現在の表示に
 // 収まらなくなったらその大きさに合わせてズームアウトする。
-function FitToEEW({ eew, psWave }: { eew: EEWAlert | null; psWave: PsWaveCircle[] }) {
+// 複数EEWがある場合は originTime が最新のものを追従対象とする。
+function FitToEEW({ eews, psWave }: { eews: EEWAlert[]; psWave: PsWaveCircle[] }) {
   const map = useMap()
   const lastEewIdRef = useRef<string | null>(null)
 
+  // 最新 EEW（originTime 降順）を追従対象とする
+  const latest = eews.length > 0
+    ? [...eews].sort((a, b) => b.earthquake.originTime.localeCompare(a.earthquake.originTime))[0]
+    : null
+
   // 新しい EEW を受信したら震源を中心に表示
   useEffect(() => {
-    if (!eew) {
+    if (!latest) {
       lastEewIdRef.current = null
       return
     }
-    const { latitude, longitude } = eew.earthquake.hypocenter
+    const { latitude, longitude } = latest.earthquake.hypocenter
     if (latitude <= -200 || longitude <= -200) return
-    if (lastEewIdRef.current === eew.id) return
-    lastEewIdRef.current = eew.id
+    if (lastEewIdRef.current === latest.id) return
+    lastEewIdRef.current = latest.id
     map.flyTo([latitude, longitude], MAX_ZOOM, { duration: 0.8 })
-  }, [eew, map])
+  }, [latest, map])
 
   // 予報円の成長に追従してズームアウト（表示に収まらなくなった時のみ）
   useEffect(() => {
@@ -232,7 +238,7 @@ interface Props {
   kyoshinSites?: SiteCoords
   kyoshinIndices?: number[]
   kyoshinPsWave?: PsWaveCircle[]
-  eew?: EEWAlert | null
+  eews?: EEWAlert[]
   detectedPoints?: DetectedPoint[]
 }
 
@@ -245,7 +251,7 @@ export function JapanMap({
   kyoshinSites = [],
   kyoshinIndices = [],
   kyoshinPsWave = [],
-  eew = null,
+  eews = [],
   detectedPoints = [],
 }: Props) {
   const stationCoords = useStationCoords()
@@ -337,16 +343,23 @@ export function JapanMap({
   }, [subregions])
 
   // EEW 受信時: 対象地域（一次細分区域）を予想最大震度(scaleTo)の色で塗りつぶす。
+  // 複数EEWがある場合は地域ごとの最大予想震度を採用する。
   const eewAreaFills = useMemo(() => {
-    if (mode !== 'kyoshin' || !eew) return []
+    if (mode !== 'kyoshin' || eews.length === 0) return []
+    const maxByName = new Map<string, number>()
+    for (const eew of eews) {
+      for (const a of eewAreas(eew)) {
+        maxByName.set(a.name, Math.max(maxByName.get(a.name) ?? 0, a.scaleTo))
+      }
+    }
     const list: { name: string; scale: number; rings: LatLng[][] }[] = []
-    for (const a of eewAreas(eew)) {
-      const sr = subregionByName.get(a.name)
-      if (sr && a.scaleTo > 0) list.push({ name: a.name, scale: a.scaleTo, rings: sr.rings })
+    for (const [name, scale] of maxByName) {
+      const sr = subregionByName.get(name)
+      if (sr && scale > 0) list.push({ name, scale, rings: sr.rings })
     }
     // 弱い予想震度を先に描画し、強い予想震度を前面に重ねる
     return list.sort((a, b) => a.scale - b.scale)
-  }, [mode, eew, subregionByName])
+  }, [mode, eews, subregionByName])
 
   // 津波: 進行中の警報・注意報を区域名→最大等級にまとめ、海岸線を引き当てる
   // 発報中は全モードで描画するため mode を問わず常時計算する
@@ -442,7 +455,7 @@ export function JapanMap({
       )}
 
       {/* リアルタイムタブ入室時: EEW が無ければ日本全体を表示 */}
-      {mode === 'kyoshin' && <FitJapanOnEnter hasEew={!!eew} />}
+      {mode === 'kyoshin' && <FitJapanOnEnter hasEew={eews.length > 0} />}
 
       {/* 揺れ検知点: FitToDetection は常時レンダリングして検知終了時の日本全体戻しを担う */}
       {mode === 'kyoshin' && (
@@ -465,7 +478,7 @@ export function JapanMap({
       )}
 
       {/* EEW 発報時: 震源中心→予報円に合わせてズームアウト */}
-      {mode === 'kyoshin' && <FitToEEW eew={eew} psWave={kyoshinPsWave} />}
+      {mode === 'kyoshin' && <FitToEEW eews={eews} psWave={kyoshinPsWave} />}
 
       {/* 緊急地震速報の予報円（S波=塗りつぶし / P波=外周） */}
       {mode === 'kyoshin' &&
@@ -484,26 +497,31 @@ export function JapanMap({
           </Fragment>
         ))}
 
-      {/* 緊急地震速報の震源（震源地名ラベル付き） */}
+      {/* 緊急地震速報の震源（震源地名ラベル付き）。複数EEW時は全震源を表示する。 */}
       {mode === 'kyoshin' &&
-        eew &&
-        eew.earthquake.hypocenter.latitude > -200 &&
-        eew.earthquake.hypocenter.longitude > -200 && (
-          <Marker
-            position={[
-              eew.earthquake.hypocenter.latitude,
-              eew.earthquake.hypocenter.longitude,
-            ]}
-            icon={getEpicenterIcon(iconScale, true)}
-            zIndexOffset={EPICENTER_Z}
-          >
-            <Tooltip permanent direction="top" offset={[0, -10]}>
-              <span className="font-bold">{eew.earthquake.hypocenter.name}</span>
-              {' '}
-              M{eew.earthquake.hypocenter.magnitude.toFixed(1)}
-              {eewMaxScale(eew) > 0 && ` 最大震度${getIntensityLabel(eewMaxScale(eew))}予想`}
-            </Tooltip>
-          </Marker>
+        eews.map((eew, idx) =>
+          eew.earthquake.hypocenter.latitude > -200 &&
+          eew.earthquake.hypocenter.longitude > -200
+            ? (
+              <Marker
+                key={`eew-epicenter-${eew.id}`}
+                position={[
+                  eew.earthquake.hypocenter.latitude,
+                  eew.earthquake.hypocenter.longitude,
+                ]}
+                icon={getEpicenterIcon(iconScale, true)}
+                zIndexOffset={EPICENTER_Z}
+              >
+                <Tooltip permanent direction="top" offset={[0, -10]}>
+                  {eews.length > 1 && <span className="text-xs">#{idx + 1} </span>}
+                  <span className="font-bold">{eew.earthquake.hypocenter.name}</span>
+                  {' '}
+                  M{eew.earthquake.hypocenter.magnitude.toFixed(1)}
+                  {eewMaxScale(eew) > 0 && ` 最大震度${getIntensityLabel(eewMaxScale(eew))}予想`}
+                </Tooltip>
+              </Marker>
+            )
+            : null
         )}
 
       {mode === 'quake' && (
