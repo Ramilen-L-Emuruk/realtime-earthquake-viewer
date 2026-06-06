@@ -513,30 +513,34 @@ export function JapanMap({
         <FitToBounds signature={tsunamiSignature} positions={tsunamiFitPositions} />
       )}
 
-      {/* 津波予報区の海岸線（等級ごとに色分け）。津波発報中は全モードで表示する。 */}
-      {tsunamiLines.length > 0 &&
-        tsunamiLines.map((line) =>
-          line.segments.map((segment, i) => (
-            <Polyline
-              key={`${line.name}-${i}`}
-              positions={segment}
-              pathOptions={{
-                color: TSUNAMI_STYLE[line.grade].color,
-                weight: TSUNAMI_STYLE[line.grade].weight * iconScale,
-                opacity: 0.9,
-              }}
-            >
-              <Popup>
-                <div className="text-sm">
-                  <div className="font-bold">{line.name}</div>
-                  <div className="text-gray-600 text-xs">
-                    {TSUNAMI_STYLE[line.grade].label}
+      {/* 津波予報区の海岸線（等級ごとに色分け）。津波発報中は全モードで表示・点滅する。
+          preferCanvas 環境では Polyline への className が効かないため Pane 全体に適用する。 */}
+      {tsunamiLines.length > 0 && (
+        <Pane name="tsunami-lines" style={{ zIndex: 450 }} className="tsunami-blink">
+          {tsunamiLines.map((line) =>
+            line.segments.map((segment, i) => (
+              <Polyline
+                key={`${line.name}-${i}`}
+                positions={segment}
+                pathOptions={{
+                  color: TSUNAMI_STYLE[line.grade].color,
+                  weight: TSUNAMI_STYLE[line.grade].weight * iconScale,
+                  opacity: 0.9,
+                }}
+              >
+                <Popup>
+                  <div className="text-sm">
+                    <div className="font-bold">{line.name}</div>
+                    <div className="text-gray-600 text-xs">
+                      {TSUNAMI_STYLE[line.grade].label}
+                    </div>
                   </div>
-                </div>
-              </Popup>
-            </Polyline>
-          )),
-        )}
+                </Popup>
+              </Polyline>
+            )),
+          )}
+        </Pane>
+      )}
 
       {/* 中間より引き: 一次細分区域ごとの最大震度を区域塗りつぶし＋区域中心マーカーで表示。
           塗りはラベル(basemap-labels z270)より背面の専用ペイン(z260)に置く。 */}
