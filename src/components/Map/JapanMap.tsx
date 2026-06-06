@@ -12,6 +12,7 @@ import { useSubRegions } from '../../hooks/useSubRegions'
 import type { SubRegion } from '../../utils/subregions'
 import { pointInRings } from '../../utils/geo'
 import { BaseMap } from './BaseMap'
+import { IntensityPoints } from './IntensityPoints'
 import { KyoshinPoints } from './KyoshinPoints'
 import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
 import type { DetectedPoint } from '../../hooks/useKyoshinDetection'
@@ -574,28 +575,10 @@ export function JapanMap({
           </Marker>
         ))}
 
-      {/* 各地点の震度マーカー（震度ごとに色分け・震度を表記。寄りのときのみ） */}
-      {mode === 'quake' && !aggregateByRegion &&
-        intensityMarkers.map((m) => (
-          <Marker
-            key={m.key}
-            position={m.position}
-            icon={getIntensityIcon(m.scale, iconScale)}
-            zIndexOffset={m.scale * INTENSITY_Z}
-          >
-            <Popup>
-              <div className="text-sm">
-                <div className="font-bold">
-                  {m.pref}
-                  {m.addr}
-                </div>
-                <div className="text-gray-600 text-xs">
-                  震度 {getIntensityLabel(m.scale)}
-                </div>
-              </div>
-            </Popup>
-          </Marker>
-        ))}
+      {/* 各地点の震度（寄りのとき）。多数になるため Canvas の色付きドットで軽量描画。 */}
+      {mode === 'quake' && !aggregateByRegion && (
+        <IntensityPoints markers={intensityMarkers} iconScale={iconScale} />
+      )}
 
       {/* 震源マーカー（震度サマリーのポップアップ付き） */}
       {mode === 'quake' && hasEpicenter && quake && (
