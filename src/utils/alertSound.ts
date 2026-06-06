@@ -5,7 +5,7 @@
 // 音は鳴らない。初回操作時に unlockAudio() を呼んで AudioContext を有効化する。
 
 export type AlertSoundType =
-  'earthquake'
+  'earthquake' | 'earthquakePrompt' | 'earthquakeInfo'
   | 'eew' | 'eewUpdate' | 'eewCancel' | 'eewSpecial' | 'eewForecast'
   | 'tsunami' | 'tsunamiMajor' | 'tsunamiWatch'
   | 'kyoshin'
@@ -67,10 +67,20 @@ function playTones(tones: Tone[]): void {
 }
 
 const PATTERNS: Record<AlertSoundType, Tone[]> = {
-  // 地震情報: 2音のチャイム（ピンポン）
+  // 地震情報（震源・震度情報 / 各地の震度情報）: 2音のチャイム（ピンポン）
   earthquake: [
     { freq: 880, start: 0, duration: 0.16 },
     { freq: 660, start: 0.18, duration: 0.28 },
+  ],
+  // 震度速報: 速報感のある3連音（震源未定だが有感情報）
+  earthquakePrompt: [
+    { freq: 880, start: 0.0, duration: 0.12 },
+    { freq: 880, start: 0.16, duration: 0.12 },
+    { freq: 660, start: 0.32, duration: 0.28 },
+  ],
+  // 震源情報 / 遠地地震 / その他: 控えめな単音
+  earthquakeInfo: [
+    { freq: 660, start: 0, duration: 0.3, gain: 0.15 },
   ],
   // 緊急地震速報: 緊急性のある2音の繰り返し
   eew: [

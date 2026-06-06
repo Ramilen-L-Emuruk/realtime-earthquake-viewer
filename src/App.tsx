@@ -31,7 +31,7 @@ export function App() {
 
   // 受信イベントの種別ごとに通知音を鳴らす（同種の連続発火はバースト抑制）
   const lastSoundAtRef = useRef<Record<AlertSoundType, number>>({
-    earthquake: 0,
+    earthquake: 0, earthquakePrompt: 0, earthquakeInfo: 0,
     eew: 0, eewUpdate: 0, eewCancel: 0, eewSpecial: 0, eewForecast: 0,
     tsunami: 0, tsunamiMajor: 0, tsunamiWatch: 0,
     kyoshin: 0,
@@ -120,7 +120,10 @@ export function App() {
         else                               type = 'tsunamiWatch'
       }
     } else if (event.code === 551) {
-      type = 'earthquake'
+      const it = event.issue.type
+      type = it === 'ScalePrompt'                                        ? 'earthquakePrompt'
+           : (it === 'Destination' || it === 'Foreign' || it === 'Other') ? 'earthquakeInfo'
+           : 'earthquake'  // ScaleAndDestination / DetailScale
     }
     if (!type) return
     const now = Date.now()
