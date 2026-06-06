@@ -370,7 +370,7 @@ export function JapanMap({
     })
     // 弱い等級を先に描画し、強い等級を前面に重ねる
     return lines.sort((a, b) => TSUNAMI_RANK[a.grade] - TSUNAMI_RANK[b.grade])
-  }, [mode, tsunamis, tsunamiZones])
+  }, [tsunamis, tsunamiZones])
 
   // 地震モードのフィット対象（各観測点 + 震源）
   const quakeFitPositions = useMemo<LatLng[]>(() => {
