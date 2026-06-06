@@ -348,8 +348,9 @@ export function JapanMap({
   }, [mode, eew, subregionByName])
 
   // 津波: 進行中の警報・注意報を区域名→最大等級にまとめ、海岸線を引き当てる
+  // 発報中は全モードで描画するため mode を問わず常時計算する
   const tsunamiLines = useMemo<TsunamiLine[]>(() => {
-    if (mode !== 'tsunami' || !tsunamiZones) return []
+    if (!tsunamiZones) return []
     const grades = new Map<string, TsunamiGrade>()
     tsunamis
       .filter((t) => !t.cancelled)
@@ -511,8 +512,8 @@ export function JapanMap({
         <FitToBounds signature={tsunamiSignature} positions={tsunamiFitPositions} />
       )}
 
-      {/* 津波予報区の海岸線（等級ごとに色分け） */}
-      {mode === 'tsunami' &&
+      {/* 津波予報区の海岸線（等級ごとに色分け）。津波発報中は全モードで表示する。 */}
+      {tsunamiLines.length > 0 &&
         tsunamiLines.map((line) =>
           line.segments.map((segment, i) => (
             <Polyline
