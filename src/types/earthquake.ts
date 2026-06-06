@@ -117,7 +117,8 @@ export interface EEWAlert {
   }
   severity: 'Unknown' | 'Forecast' | 'Warning'
   cancelled: boolean
-  // issue.serial = 情報番号（第N報）。最終報フラグは P2PQuake v2 には無い。
+  isFinal?: boolean
+  // issue.serial = 情報番号（第N報）
   issue?: {
     eventId?: string
     serial?: string

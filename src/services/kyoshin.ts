@@ -6,6 +6,8 @@
 //   - 震度  : https://weather-kyoshin.{west|east}.edge.storage-yahoo.jp/RealTimeData/yyyyMMdd/yyyyMMddHHmmss.json
 //   - intensity 文字列は各文字の charCode - 100 が観測点ごとの震度インデックス(0〜20)。
 
+import type { EEWAlert, IntensityScale } from '../types/earthquake'
+
 /** 観測点座標の配列（[緯度, 経度]）。インデックスが intensity 文字列の位置に対応。 */
 export type SiteCoords = [number, number][]
 
@@ -48,18 +50,89 @@ export interface PsWaveCircle {
   sRadius: number
 }
 
+/** Yahoo hypoInfo の EEW 情報（1件）。フィールドはすべて文字列。 */
+export interface YahooHypoInfoItem {
+  reportId: string
+  reportNum: string
+  reportTime: string
+  originTime: string
+  regionCode?: string
+  regionName: string
+  latitude: string
+  longitude: string
+  depth: string
+  magnitude: string
+  calcintensity: string
+  isFinal: string
+  isCancel: string
+  isTraining: string
+}
+
 export interface RealtimeIntensity {
   dataTime: string
   /** 観測点ごとの震度インデックス(0〜20)。sitelist と同順。 */
   indices: number[]
   /** 予報円（EEW 発報中のみ要素を持つ）。 */
   psWave: PsWaveCircle[]
+  /** EEW 情報（発報中のみ要素を持つ）。 */
+  hypoInfo: YahooHypoInfoItem[]
 }
 
 /** "35.5N" / "139.5E" 形式の座標文字列を数値に変換する。 */
 function parseCoord(value: string | undefined): number {
   if (!value) return NaN
   return parseFloat(value.replace(/[NESW]/i, ''))
+}
+
+/** "60km" などの深さ文字列を km 数値に変換する。不明な場合は -1。 */
+function parseDepth(value: string | undefined): number {
+  if (!value) return -1
+  const n = parseFloat(value)
+  return Number.isFinite(n) ? n : -1
+}
+
+/**
+ * Yahoo の calcintensity コードを IntensityScale に変換する。
+ * 例: "00"→-1, "01"→10, "02"→20, "04"→40, "45"→45, "70"→70
+ */
+function calcintensityToScale(s: string): IntensityScale {
+  const n = parseInt(s, 10)
+  if (n <= 0 || isNaN(n)) return -1
+  if (n <= 4) return (n * 10) as IntensityScale
+  return n as IntensityScale
+}
+
+/** Yahoo hypoInfo の1件を EEWAlert に変換する。 */
+export function hypoInfoItemToEEW(item: YahooHypoInfoItem): EEWAlert {
+  const scale = calcintensityToScale(item.calcintensity)
+  const scaleNum = scale === -1 ? 0 : scale
+  return {
+    code: 556,
+    id: `yahoo-eew-${item.reportId}`,
+    time: item.reportTime,
+    test: item.isTraining === 'true',
+    earthquake: {
+      originTime: item.originTime,
+      arrivalTime: '',
+      condition: '以上',
+      hypocenter: {
+        name: item.regionName,
+        latitude: parseCoord(item.latitude),
+        longitude: parseCoord(item.longitude),
+        depth: parseDepth(item.depth),
+        magnitude: parseFloat(item.magnitude) || 0,
+      },
+    },
+    severity: scaleNum >= 45 ? 'Warning' : 'Forecast',
+    cancelled: item.isCancel === 'true',
+    isFinal: item.isFinal === 'true',
+    issue: {
+      eventId: item.reportId,
+      serial: item.reportNum,
+      time: item.reportTime,
+    },
+    areas: [],
+  }
 }
 
 /**
@@ -81,6 +154,7 @@ export async function fetchRealtimeIntensity(now: Date): Promise<RealtimeIntensi
         psWave?: {
           items?: { latitude?: string; longitude?: string; pRadius?: number; sRadius?: number }[]
         }
+        hypoInfo?: { items?: YahooHypoInfoItem[] }
       }
       const intensity = json.realTimeData?.intensity ?? ''
       const indices = Array.from(intensity, (c) => c.charCodeAt(0) - 100)
@@ -92,7 +166,8 @@ export async function fetchRealtimeIntensity(now: Date): Promise<RealtimeIntensi
           sRadius: Number(it.sRadius) || 0,
         }))
         .filter((c) => Number.isFinite(c.lat) && Number.isFinite(c.lng))
-      return { dataTime: json.realTimeData?.dataTime ?? '', indices, psWave }
+      const hypoInfo: YahooHypoInfoItem[] = json.hypoInfo?.items ?? []
+      return { dataTime: json.realTimeData?.dataTime ?? '', indices, psWave, hypoInfo }
     } catch (err) {
       lastErr = err
     }

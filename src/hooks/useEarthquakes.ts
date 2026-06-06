@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { JMAQuake, JMATsunami, EEWAlert, P2PQuakeEvent, ConnectionStatus } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, EEWAlert, EEWRegion, P2PQuakeEvent, ConnectionStatus } from '../types/earthquake'
 import { fetchHistory, P2PQuakeWebSocket } from '../services/p2pquake'
 
 const ISSUE_PRIORITY: Record<string, number> = {
@@ -186,6 +186,19 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
   // テスト EEW の発報状態を種別ごとに独立管理（複数EEW同時テスト対応）
   type TestEEWEntry = { eventId: string; serial: number; cancelTimer: number }
   const testEEWTimersRef = useRef<Map<'special' | 'warning' | 'forecast', TestEEWEntry>>(new Map())
+  // 現在の state を WS コールバック内から参照するための ref
+  const stateRef = useRef(state)
+  stateRef.current = state
+
+  // P2PQuake の 556 受信時に既存の Yahoo EEW へ地域別予想震度を注入する（音・タブ切替なし）。
+  const enrichEEW = useCallback((eventId: string, areas: EEWRegion[]) => {
+    setState(prev => {
+      const existing = prev.activeEEWs.get(eventId)
+      if (!existing) return prev
+      const enriched = { ...existing, areas }
+      return { ...prev, activeEEWs: new Map(prev.activeEEWs).set(eventId, enriched) }
+    })
+  }, [])
 
   const handleEvent = useCallback((event: P2PQuakeEvent) => {
     // ライブ受信／テスト送信のイベントを通知（初回の履歴読み込みでは呼ばれない）
@@ -273,7 +286,23 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
 
     const ws = new P2PQuakeWebSocket()
     wsRef.current = ws
-    ws.onEvent = handleEvent
+    // P2PQuake WS の EEW (556) は areas 補完のみに使用し、音・タブ切替は発火させない。
+    // Yahoo hypoInfo で検出済みの eventId であれば areas を注入、未知なら全処理（フォールバック）。
+    ws.onEvent = (event: P2PQuakeEvent) => {
+      if (event.code === 556) {
+        if (event.test) return
+        if (event.cancelled) return  // Yahoo の hypoInfo 消滅で解除済み
+        const eew = event as EEWAlert
+        const key = eew.issue?.eventId ?? eew.id
+        if (stateRef.current.activeEEWs.has(key)) {
+          enrichEEW(key, eew.areas ?? eew.regions ?? [])
+        } else {
+          handleEvent(event)  // フォールバック: Yahoo が未検出のEEW
+        }
+        return
+      }
+      handleEvent(event)
+    }
     ws.onStatusChange = status =>
       setState(prev => ({ ...prev, connectionStatus: status }))
     ws.connect()
@@ -353,6 +382,7 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
 
   return {
     ...state,
+    injectEvent: handleEvent,
     simulateEarthquake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast,
     simulateTsunami, simulateTsunamiWatch,
