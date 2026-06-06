@@ -134,7 +134,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect }: Props)
           </div>
 
           {/* 国外津波情報（空でない場合のみ） */}
-          {earthquake.foreignTsunami && (
+          {earthquake.foreignTsunami && earthquake.foreignTsunami !== 'Unknown' && (
             <div className="text-sm text-secondary">国外: {earthquake.foreignTsunami}</div>
           )}
 
