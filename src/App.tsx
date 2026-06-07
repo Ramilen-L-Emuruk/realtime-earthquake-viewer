@@ -276,7 +276,8 @@ export function App() {
 
   // 強震モニタ（常時ポーリング: タブ非表示中も揺れ検知を継続する）
   // Yahoo hypoInfo の EEW を injectEvent で状態に注入する（音・タブ切替も発火）
-  const kyoshin = useKyoshinRealtime(true, { onEEWEvent: injectEvent })
+  const [kyoshinTimeOffset, setKyoshinTimeOffset] = useState<number | null>(null)
+  const kyoshin = useKyoshinRealtime(true, { onEEWEvent: injectEvent, timeOffset: kyoshinTimeOffset })
   const kyoshinDetection = useKyoshinDetection(kyoshin.sites, kyoshin.indices)
 
   // 揺れ検知時にリアルタイムタブを自動表示＋ウィンドウタイトル更新＋通知音
@@ -392,6 +393,8 @@ export function App() {
                   })
                 },
               }}
+              kyoshinTimeOffset={kyoshinTimeOffset}
+              onSetKyoshinTimeOffset={setKyoshinTimeOffset}
             />
           )}
         </div>

@@ -26,6 +26,8 @@ const SITELIST_RETRY_MS = 10_000
 interface UseKyoshinRealtimeOptions {
   /** EEW の新規発報・更新・解除を検知したときに呼ばれるコールバック。 */
   onEEWEvent?: (eew: EEWAlert) => void
+  /** テスト用時刻オフセット (ms)。null/undefined で現在時刻を使用。 */
+  timeOffset?: number | null
 }
 
 /**
@@ -45,9 +47,11 @@ export function useKyoshinRealtime(
   const sitesLoadedRef = useRef(false)
   const failCountRef = useRef(0)
   const prevHypoInfoRef = useRef<YahooHypoInfoItem[]>([])
-  // コールバックを ref で保持し tick クロージャから安定参照する
+  // コールバック・オプションを ref で保持し tick クロージャから安定参照する
   const onEEWEventRef = useRef(options?.onEEWEvent)
   onEEWEventRef.current = options?.onEEWEvent
+  const timeOffsetRef = useRef(options?.timeOffset ?? null)
+  timeOffsetRef.current = options?.timeOffset ?? null
 
   // 観測点リストを取得し、失敗したら SITELIST_RETRY_MS 後にリトライする
   useEffect(() => {
@@ -84,7 +88,10 @@ export function useKyoshinRealtime(
 
     const tick = async () => {
       try {
-        const rt = await fetchRealtimeIntensity(new Date())
+        const offset = timeOffsetRef.current
+        const rt = await fetchRealtimeIntensity(
+          offset != null ? new Date(Date.now() + offset) : new Date(),
+        )
         if (!active) return
         failCountRef.current = 0
         setError(false)
