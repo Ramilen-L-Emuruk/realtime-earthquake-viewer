@@ -145,8 +145,9 @@ function FitToBounds({ signature, positions }: { signature: string; positions: L
   return null
 }
 
-// 緊急地震速報の発報時: まず震源を中心に表示し、予報円(S波)が現在の表示に
+// 緊急地震速報の発報時: まず震源を中心に表示し、予報円が現在の表示に
 // 収まらなくなったらその大きさに合わせてズームアウトする。
+// P波があれば P波を、なければ S波を基準にする。
 // 複数EEWがある場合は originTime が最新のものを追従対象とする。
 function FitToEEW({ eews, psWave }: { eews: EEWAlert[]; psWave: PsWaveCircle[] }) {
   const map = useMap()
@@ -171,11 +172,13 @@ function FitToEEW({ eews, psWave }: { eews: EEWAlert[]; psWave: PsWaveCircle[] }
   }, [latest, map])
 
   // 予報円の成長に追従してズームアウト（表示に収まらなくなった時のみ）
+  // P波があれば P波円を、なければ S波円を基準にする
   useEffect(() => {
     if (psWave.length === 0) return
     let bounds: L.LatLngBounds | null = null
     for (const c of psWave) {
-      const b = L.latLng(c.lat, c.lng).toBounds(c.sRadius * 2 * 1000)
+      const radius = c.pRadius > 0 ? c.pRadius : c.sRadius
+      const b = L.latLng(c.lat, c.lng).toBounds(radius * 2 * 1000)
       bounds = bounds ? bounds.extend(b) : b
     }
     if (bounds && !map.getBounds().contains(bounds)) {
@@ -187,7 +190,8 @@ function FitToEEW({ eews, psWave }: { eews: EEWAlert[]; psWave: PsWaveCircle[] }
 }
 
 // 揺れ検知時に検知点群が収まるようにフィットし、検知終了時は日本全体に戻す。
-function FitToDetection({ points }: { points: DetectedPoint[] }) {
+// EEW 発砲中は検知終了後も日本全体には戻さない。
+function FitToDetection({ points, hasEew }: { points: DetectedPoint[]; hasEew: boolean }) {
   const map = useMap()
   const fittedRef = useRef(false)
 
@@ -195,7 +199,9 @@ function FitToDetection({ points }: { points: DetectedPoint[] }) {
     if (points.length === 0) {
       if (fittedRef.current) {
         fittedRef.current = false
-        map.flyTo(JAPAN_CENTER, JAPAN_ZOOM, { duration: 1.0 })
+        if (!hasEew) {
+          map.flyTo(JAPAN_CENTER, JAPAN_ZOOM, { duration: 1.0 })
+        }
       }
       return
     }
@@ -210,17 +216,50 @@ function FitToDetection({ points }: { points: DetectedPoint[] }) {
       L.latLngBounds(points.map(p => [p.lat, p.lng] as [number, number])),
       { padding: [60, 60], maxZoom: MAX_ZOOM, duration: 1.0 },
     )
-  }, [points, map])
+  }, [points, hasEew, map])
 
   return null
 }
 
-// リアルタイムタブを開いた時点で EEW が無ければ日本全体を表示する。
+// リアルタイムタブを開いた時点でズームをリセットする。
+// EEW が無ければ日本全体を表示。EEW 発砲中は P波/S波 境界（P波優先）にフィット。
 // （地図は全タブ共通のため、他タブで寄った表示をリセットする）
-function FitJapanOnEnter({ hasEew }: { hasEew: boolean }) {
+function FitJapanOnEnter({
+  hasEew,
+  eews,
+  psWave,
+}: {
+  hasEew: boolean
+  eews: EEWAlert[]
+  psWave: PsWaveCircle[]
+}) {
   const map = useMap()
   useEffect(() => {
-    if (!hasEew) map.setView(JAPAN_CENTER, JAPAN_ZOOM)
+    if (!hasEew) {
+      map.setView(JAPAN_CENTER, JAPAN_ZOOM)
+      return
+    }
+    if (psWave.length > 0) {
+      let bounds: L.LatLngBounds | null = null
+      for (const c of psWave) {
+        const radius = c.pRadius > 0 ? c.pRadius : c.sRadius
+        const b = L.latLng(c.lat, c.lng).toBounds(radius * 2 * 1000)
+        bounds = bounds ? bounds.extend(b) : b
+      }
+      if (bounds) {
+        map.flyToBounds(bounds, { padding: [60, 60], maxZoom: MAX_ZOOM, duration: 0.8 })
+        return
+      }
+    }
+    const latest = [...eews].sort(
+      (a, b) => b.earthquake.originTime.localeCompare(a.earthquake.originTime),
+    )[0]
+    if (latest) {
+      const { latitude, longitude } = latest.earthquake.hypocenter
+      if (latitude > -200 && longitude > -200) {
+        map.flyTo([latitude, longitude], MAX_ZOOM, { duration: 0.8 })
+      }
+    }
     // マウント時（タブ入室時）のみ実行
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -454,13 +493,15 @@ export function JapanMap({
         <KyoshinPoints sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
       )}
 
-      {/* リアルタイムタブ入室時: EEW が無ければ日本全体を表示 */}
-      {mode === 'kyoshin' && <FitJapanOnEnter hasEew={eews.length > 0} />}
+      {/* リアルタイムタブ入室時: EEW が無ければ日本全体を、EEW 中は波円にフィット */}
+      {mode === 'kyoshin' && (
+        <FitJapanOnEnter hasEew={eews.length > 0} eews={eews} psWave={kyoshinPsWave} />
+      )}
 
       {/* 揺れ検知点: FitToDetection は常時レンダリングして検知終了時の日本全体戻しを担う */}
       {mode === 'kyoshin' && (
         <>
-          <FitToDetection points={detectedPoints} />
+          <FitToDetection points={detectedPoints} hasEew={eews.length > 0} />
           {detectedPoints.map((p, i) => (
             <CircleMarker
               key={`det-${i}`}
