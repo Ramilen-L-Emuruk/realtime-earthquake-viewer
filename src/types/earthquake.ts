@@ -128,6 +128,9 @@ export interface EEWAlert {
   // 参照時は utils/eew.ts の eewAreas() で吸収する。
   areas?: EEWRegion[]
   regions?: EEWRegion[]
+  // Yahoo 強震モニタ由来の calcintensity から変換した最大予想震度。
+  // areas が空の場合のフォールバックとして eewMaxScale() が使用する。
+  forecastMaxScale?: IntensityScale
 }
 
 export type P2PQuakeEvent = JMAQuake | JMATsunami | EarthquakeDetection | EEWAlert
