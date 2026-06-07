@@ -19,6 +19,8 @@ interface Props {
   onTest: TestFunctions
   kyoshinTimeOffset: number | null
   onSetKyoshinTimeOffset: (offset: number | null) => void
+  kyoshinInputDateTime: string
+  onSetKyoshinInputDateTime: (value: string) => void
 }
 
 // ---- Reusable UI parts ----
@@ -186,12 +188,10 @@ function NotificationPermissionButton() {
 
 // ---- Main component ----
 
-export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onSetKyoshinTimeOffset }: Props) {
-  const [inputDateTime, setInputDateTime] = useState('')
-
+export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onSetKyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime }: Props) {
   const handleTimeConfirm = () => {
-    if (!inputDateTime) return
-    const specified = new Date(inputDateTime)
+    if (!kyoshinInputDateTime) return
+    const specified = new Date(kyoshinInputDateTime)
     if (isNaN(specified.getTime())) return
     onSetKyoshinTimeOffset(specified.getTime() - Date.now())
   }
@@ -426,13 +426,13 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
           <div className="flex gap-2 items-center flex-wrap justify-end">
             <input
               type="datetime-local"
-              value={inputDateTime}
-              onChange={e => setInputDateTime(e.target.value)}
+              value={kyoshinInputDateTime}
+              onChange={e => onSetKyoshinInputDateTime(e.target.value)}
               className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
             />
             <button
               onClick={handleTimeConfirm}
-              disabled={!inputDateTime}
+              disabled={!kyoshinInputDateTime}
               className="text-xs bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white px-3 py-1.5 rounded transition-colors"
             >
               確定
@@ -455,7 +455,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">2.1.3</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">2.1.4</span></Row>
         <Row label="地震・津波データ">
           <a href="https://www.p2pquake.net/" target="_blank" rel="noopener noreferrer"
             className="text-xs text-blue-400 hover:text-blue-300">
