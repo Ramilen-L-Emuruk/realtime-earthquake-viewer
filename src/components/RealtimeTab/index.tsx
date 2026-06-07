@@ -27,8 +27,9 @@ interface Props {
 }
 
 function EEWCard({ eew }: { eew: EEWAlert }) {
-  const isWarning = eew.severity === 'Warning'
   const maxScale = eewMaxScale(eew)
+  const isWarning = eew.severity === 'Warning'
+  const isSpecial = isWarning && maxScale >= 55
   const areas = eewAreas(eew)
   const serial = eewSerial(eew)
   const { hypocenter } = eew.earthquake
@@ -42,7 +43,7 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
       <div className="flex items-center gap-2 mb-1">
         <span className="text-xs text-secondary">緊急地震速報</span>
         <span className={`text-sm font-black ${isWarning ? 'text-red-300' : 'text-orange-300'}`}>
-          {isWarning ? '警報' : '予報'}
+          {isSpecial ? '特別警報' : isWarning ? '警報' : '予報'}
         </span>
         {serial != null && (
           <span className={`text-xs ${eew.isFinal ? 'font-bold text-green-400' : 'text-secondary'}`}>
