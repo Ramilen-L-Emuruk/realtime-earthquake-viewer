@@ -353,8 +353,10 @@ export function App() {
         </div>
 
         {/* パネル（タブに応じて内容を切替）。モバイルは下部固定高さ + スクロール。 */}
-        <div className="h-80 flex-shrink-0 overflow-y-auto lg:h-auto lg:flex-none lg:w-96 border-t lg:border-t-0 lg:border-l border-border">
-          {activeTab === 'earthquake' && (
+        {/* 各タブを absolute で重ねて visibility で切り替えることで、スクロール位置をタブごとに独立管理する。
+            display:none（hidden クラス）は scrollTop をリセットするため使わない。 */}
+        <div className="h-80 flex-shrink-0 lg:h-auto lg:flex-none lg:w-96 border-t lg:border-t-0 lg:border-l border-border relative">
+          <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'earthquake' ? ' invisible pointer-events-none' : ''}`}>
             <EarthquakeTab
               earthquakes={filteredEarthquakes}
               selectedId={selectedQuake?.id ?? null}
@@ -362,15 +364,17 @@ export function App() {
               isLoading={isLoading}
               error={error}
             />
-          )}
-          {activeTab === 'realtime' && (
+          </div>
+          <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'realtime' ? ' invisible pointer-events-none' : ''}`}>
             <RealtimeTab
               eews={Array.from(activeEEWs.values())}
               kyoshinDetection={kyoshinDetection}
             />
-          )}
-          {activeTab === 'tsunami' && <TsunamiTab tsunamis={tsunamis} />}
-          {activeTab === 'settings' && (
+          </div>
+          <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'tsunami' ? ' invisible pointer-events-none' : ''}`}>
+            <TsunamiTab tsunamis={tsunamis} />
+          </div>
+          <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'settings' ? ' invisible pointer-events-none' : ''}`}>
             <SettingsTab
               settings={settings}
               onUpdate={updateSetting}
@@ -396,7 +400,7 @@ export function App() {
               kyoshinTimeOffset={kyoshinTimeOffset}
               onSetKyoshinTimeOffset={setKyoshinTimeOffset}
             />
-          )}
+          </div>
         </div>
 
         {/* アイコンナビ（一番外側＝右端 / モバイルは最下部） */}
