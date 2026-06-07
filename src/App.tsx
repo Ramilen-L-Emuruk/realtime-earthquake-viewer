@@ -291,12 +291,12 @@ export function App() {
         const now = Date.now()
         if (now - lastSoundAtRef.current.kyoshin >= 1500) {
           lastSoundAtRef.current.kyoshin = now
-          playAlertSound('kyoshin')
+          playKyoshinUpdateSound(kyoshinDetection.maxIndex)
         }
       }
     }
     prevDetectedRef.current = kyoshinDetection.detected
-  }, [kyoshinDetection.detected, settings.soundEnabled])
+  }, [kyoshinDetection.detected, kyoshinDetection.maxIndex, settings.soundEnabled])
 
   // 揺れ検知中に最大震度インデックスが上昇するたびに震度に応じた音を鳴らす
   const prevMaxIndexRef = useRef(0)
