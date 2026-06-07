@@ -21,6 +21,11 @@ import type { P2PQuakeEvent } from './types/earthquake'
 // AutoHotKey 等が、情報更新時のタイトル変化を検知してイベントを発火できるようにする。
 const DEFAULT_TITLE = 'リアルタイム地震ビューアー'
 
+function formatDateTimeLocal(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
 export function App() {
   const { settings, updateSetting } = useSettings()
   const [activeTab, setActiveTab] = useState<TabId>(settings.defaultTab)
@@ -277,6 +282,7 @@ export function App() {
   // 強震モニタ（常時ポーリング: タブ非表示中も揺れ検知を継続する）
   // Yahoo hypoInfo の EEW を injectEvent で状態に注入する（音・タブ切替も発火）
   const [kyoshinTimeOffset, setKyoshinTimeOffset] = useState<number | null>(null)
+  const [kyoshinInputDateTime, setKyoshinInputDateTime] = useState(() => formatDateTimeLocal(new Date()))
   const kyoshin = useKyoshinRealtime(true, { onEEWEvent: injectEvent, timeOffset: kyoshinTimeOffset })
   const kyoshinDetection = useKyoshinDetection(kyoshin.sites, kyoshin.indices)
 
@@ -399,6 +405,8 @@ export function App() {
               }}
               kyoshinTimeOffset={kyoshinTimeOffset}
               onSetKyoshinTimeOffset={setKyoshinTimeOffset}
+              kyoshinInputDateTime={kyoshinInputDateTime}
+              onSetKyoshinInputDateTime={setKyoshinInputDateTime}
             />
           </div>
         </div>
