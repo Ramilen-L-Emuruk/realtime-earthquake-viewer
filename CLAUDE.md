@@ -33,6 +33,7 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 - **型チェック（必須）**: `npx tsc -b`（または `npm run build`）。エラー0を確認する。
 - **アプリ起動**: `npm run dev` → `http://localhost:5173/realtime-earthquake-viewer/`
   （`vite.config.ts` の `base` によりサブパス配信になる点に注意。5173 が使用中なら 5174 等にフォールバックするため、起動ログで実ポートを確認する）。
+  - **必ず `run_in_background: true` でバックグラウンドタスクとして起動する**（ユーザー指示）。フォアグラウンドで起動するとプロセスが応答を返さずハングするため。
   - **検証用に起動した dev サーバーは Claude のセッション中は停止せず起動したままにする**（ユーザー指示）。次の検証では新規起動せず、稼働中のサーバー（既定 5173）へ Playwright で接続して再利用する。セッションをまたぐ必要は無い。
 - **本番ビルド確認**（大きめの変更時）: `npm run build`。
 - **ブラウザ確認（修正時は必須）**: Playwright MCP で上記 URL を開き、スクリーンショット・`browser_evaluate` で表示やDOMを確認する。
