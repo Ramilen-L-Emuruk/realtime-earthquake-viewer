@@ -17,6 +17,8 @@ interface Props {
   settings: AppSettings
   onUpdate: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void
   onTest: TestFunctions
+  kyoshinTimeOffset: number | null
+  onSetKyoshinTimeOffset: (offset: number | null) => void
 }
 
 // ---- Reusable UI parts ----
@@ -184,7 +186,20 @@ function NotificationPermissionButton() {
 
 // ---- Main component ----
 
-export function SettingsTab({ settings, onUpdate, onTest }: Props) {
+export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onSetKyoshinTimeOffset }: Props) {
+  const [inputDateTime, setInputDateTime] = useState('')
+
+  const handleTimeConfirm = () => {
+    if (!inputDateTime) return
+    const specified = new Date(inputDateTime)
+    if (isNaN(specified.getTime())) return
+    onSetKyoshinTimeOffset(specified.getTime() - Date.now())
+  }
+
+  const replayStartLabel = kyoshinTimeOffset != null
+    ? new Date(Date.now() + kyoshinTimeOffset).toLocaleString('ja-JP')
+    : null
+
   return (
     <div className="flex-1 overflow-y-auto p-3">
 
@@ -403,8 +418,44 @@ export function SettingsTab({ settings, onUpdate, onTest }: Props) {
         </Row>
       </Section>
 
+      <Section title="テスト時刻設定（強震モニタ）">
+        <div className="px-4 py-2 bg-blue-900/30 border-b border-blue-700/40">
+          <p className="text-blue-300 text-xs">指定した時刻から強震モニタのデータを再生します。2020年以降のデータを参照できます。</p>
+        </div>
+        <Row label="開始時刻" description="確定すると指定時刻から1秒ずつ進みます">
+          <div className="flex gap-2 items-center flex-wrap justify-end">
+            <input
+              type="datetime-local"
+              value={inputDateTime}
+              onChange={e => setInputDateTime(e.target.value)}
+              className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+            />
+            <button
+              onClick={handleTimeConfirm}
+              disabled={!inputDateTime}
+              className="text-xs bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white px-3 py-1.5 rounded transition-colors"
+            >
+              確定
+            </button>
+          </div>
+        </Row>
+        {replayStartLabel != null && (
+          <Row label="再生中">
+            <div className="flex gap-2 items-center">
+              <span className="text-xs text-green-400">{replayStartLabel} から</span>
+              <button
+                onClick={() => onSetKyoshinTimeOffset(null)}
+                className="text-xs bg-gray-600 hover:bg-gray-500 text-white px-3 py-1.5 rounded transition-colors"
+              >
+                リセット
+              </button>
+            </div>
+          </Row>
+        )}
+      </Section>
+
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">2.0.0</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">2.1.0</span></Row>
         <Row label="地震・津波データ">
           <a href="https://www.p2pquake.net/" target="_blank" rel="noopener noreferrer"
             className="text-xs text-blue-400 hover:text-blue-300">
