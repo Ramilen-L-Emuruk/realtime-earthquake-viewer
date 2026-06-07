@@ -14,6 +14,7 @@ import { pointInRings } from '../../utils/geo'
 import { BaseMap } from './BaseMap'
 import { IntensityPoints } from './IntensityPoints'
 import { KyoshinPoints } from './KyoshinPoints'
+import { KyoshinSubThreshold } from './KyoshinSubThreshold'
 import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
 import type { DetectedPoint } from '../../hooks/useKyoshinDetection'
 import { kyoshinIntensityColor } from '../../utils/kyoshinIntensity'
@@ -490,7 +491,10 @@ export function JapanMap({
 
       {/* 強震モニタ: Yahoo リアルタイム震度の観測点を描画 */}
       {mode === 'kyoshin' && (
-        <KyoshinPoints sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
+        <>
+          <KyoshinPoints sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
+          <KyoshinSubThreshold sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
+        </>
       )}
 
       {/* リアルタイムタブ入室時: EEW が無ければ日本全体を、EEW 中は波円にフィット */}
