@@ -76,13 +76,13 @@ export function App() {
       // 緊急地震速報の発報時はリアルタイムタブ（強震モニタ＋予報円）を開く
       setActiveTab('realtime')
 
-      // EEW レベル算出: 0=低震度予報 / 1=警報or震度3以上 / 2=特別警報（震度6弱以上）
+      // EEW レベル算出: 0=低震度予報 / 1=警報（震度5弱以上） / 2=特別警報（震度6弱以上）
       // scaleTo:99 は P2PQuake の「震度算出不能」コードなので通常の震度比較から除外する
       const scale = eewMaxScale(event)
       const intensityKnown = scale < 99
       const currentLevel: 0 | 1 | 2 =
         (intensityKnown && scale >= 55) ? 2 :
-        (event.severity === 'Warning' || (intensityKnown && scale >= 30)) ? 1 : 0
+        (event.severity === 'Warning' || (intensityKnown && scale >= 45)) ? 1 : 0
 
       // 新規発報か続報かを判定し、レベル引き上げを検出する
       const isNew = !activeEEWLevelsRef.current.has(key)

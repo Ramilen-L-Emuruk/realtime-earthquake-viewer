@@ -93,13 +93,15 @@ function parseDepth(value: string | undefined): number {
 
 /**
  * Yahoo の calcintensity コードを IntensityScale に変換する。
- * 例: "00"→-1, "01"→10, "02"→20, "04"→40, "45"→45, "70"→70
+ * フォーマット: "01"→10, "02"→20, "03"→30, "04"→40,
+ *              "5-"→45, "5+"→50, "6-"→55, "6+"→60, "07"→70, "//"→-1(不明)
  */
 function calcintensityToScale(s: string): IntensityScale {
-  const n = parseInt(s, 10)
-  if (n <= 0 || isNaN(n)) return -1
-  if (n <= 4) return (n * 10) as IntensityScale
-  return n as IntensityScale
+  const map: Record<string, IntensityScale> = {
+    '01': 10, '02': 20, '03': 30, '04': 40,
+    '5-': 45, '5+': 50, '6-': 55, '6+': 60, '07': 70,
+  }
+  return map[s] ?? -1
 }
 
 /** Yahoo hypoInfo の1件を EEWAlert に変換する。 */
@@ -124,6 +126,7 @@ export function hypoInfoItemToEEW(item: YahooHypoInfoItem): EEWAlert {
       },
     },
     severity: scaleNum >= 45 ? 'Warning' : 'Forecast',
+    forecastMaxScale: scale >= 0 ? scale : undefined,
     cancelled: item.isCancel === 'true',
     isFinal: item.isFinal === 'true',
     issue: {
