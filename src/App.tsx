@@ -13,13 +13,27 @@ import { useKyoshinDetection } from './hooks/useKyoshinDetection'
 import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude } from './utils/formatters'
 import { eewMaxScale } from './utils/eew'
-import { tsunamiMaxGrade } from './utils/tsunami'
+import { tsunamiMaxGrade, tsunamiOverallGrade } from './utils/tsunami'
 import { playAlertSound, playKyoshinUpdateSound, unlockAudio, setSoundVolume, type AlertSoundType } from './utils/alertSound'
 import type { P2PQuakeEvent, EEWAlert } from './types/earthquake'
 
 // 平常時のウィンドウタイトル（index.html の <title> と一致させる）。
 // AutoHotKey 等が、情報更新時のタイトル変化を検知してイベントを発火できるようにする。
 const DEFAULT_TITLE = 'リアルタイム地震ビューアー'
+
+function computeEEWLevel(eews: ReadonlyMap<string, EEWAlert>): 0 | 1 | 2 | null {
+  if (eews.size === 0) return null
+  let max: 0 | 1 | 2 = 0
+  for (const eew of eews.values()) {
+    const scale = eewMaxScale(eew)
+    const intensityKnown = scale < 99
+    const level: 0 | 1 | 2 =
+      (intensityKnown && scale >= 55) ? 2 :
+      (eew.severity === 'Warning' || (intensityKnown && scale >= 45)) ? 1 : 0
+    if (level > max) max = level
+  }
+  return max
+}
 
 function computeEEWTitle(eews: ReadonlyMap<string, EEWAlert>): string {
   const primary = Array.from(eews.values()).sort((a, b) => eewMaxScale(b) - eewMaxScale(a))[0]
@@ -252,8 +266,9 @@ export function App() {
   }, [activeTab])
   const mapTab = activeTab === 'settings' ? lastContentTab : activeTab
 
-  // 津波発表中フラグ（解除済みでない津波情報があるか）
-  const tsunamiActive = tsunamis.some(t => !t.cancelled)
+  // 津波発表中フラグ（解除済みでない津波情報があるか）とバッジ用グレード
+  const tsunamiGrade = tsunamiOverallGrade(tsunamis)
+  const tsunamiActive = tsunamiGrade !== null
 
   // 初回ページロード時に REST API で取得した既存の EEW/津波状態をタイトルに反映する
   // （WebSocket 受信前に既にアクティブな情報がある場合のみ一度だけ動作）
@@ -474,7 +489,8 @@ export function App() {
         <IconNav
           activeTab={activeTab}
           onTabChange={setActiveTab}
-          tsunamiActive={tsunamiActive}
+          tsunamiGrade={tsunamiGrade}
+          eewLevel={computeEEWLevel(activeEEWs)}
         />
       </div>
     </div>
