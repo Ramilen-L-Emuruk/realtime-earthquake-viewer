@@ -14,6 +14,50 @@ export interface KyoshinDetection {
   points: DetectedPoint[]
 }
 
+// ---- 定数 ---------------------------------------------------------------
+
+/** 1秒で index が 2 以上増加した観測点を「変化あり」とみなす（約1.0 計測震度相当の上昇） */
+const DELTA_THRESHOLD = 2
+/** 検知対象とする最低インデックス（震度2相当: 計測震度 1.5 以上 = index 9） */
+const MIN_DETECTION_INDEX = 9
+/** 空間クラスタリングの距離閾値 (km) */
+const PROXIMITY_KM = 80
+/** クラスタ成立に必要な最低観測点数（2点は隣接センサー誤作動と区別不可のため3点以上） */
+const MIN_CLUSTER_SIZE = 3
+/** 変化あり観測点が全体のこの割合を超えたらデータ異常とみなし全棄却 */
+const ANOMALY_RATIO = 0.15
+/** 候補クラスタの有効期限 (ms)：この時間内に再検出されなければ廃棄 */
+const PENDING_TIMEOUT_MS = 3_000
+/** 既存候補との同一クラスタ判定距離 (km) */
+const PENDING_MATCH_KM = 120
+/** 候補どまりの誤検知をこの回数繰り返した観測点をノイズとみなす */
+const NOISE_THRESHOLD = 3
+/** ノイズ判定された観測点を除外する時間 (ms) */
+const NOISE_BLACKLIST_MS = 300_000
+/** 検知後の表示維持時間 (ms) */
+const DETECTION_DURATION_MS = 60_000
+/** 時系列バッファのサイズ（フレーム数） */
+const N_HISTORY = 3
+
+// ---- 内部型 --------------------------------------------------------------
+
+interface Cluster {
+  /** クラスタ重心 */
+  centroid: { lat: number; lng: number }
+  /** クラスタ構成観測点インデックス */
+  siteIndices: number[]
+  maxIndex: number
+}
+
+interface PendingCluster {
+  centroid: { lat: number; lng: number }
+  siteIndices: number[]
+  maxIndex: number
+  detectedAt: number
+}
+
+// ---- ユーティリティ ------------------------------------------------------
+
 function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371
   const toRad = (deg: number) => deg * (Math.PI / 180)
@@ -25,64 +69,212 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }
 
-// 1秒で index が 2 以上増加した観測点を「変化あり」とみなす（約1.0 計測震度相当の上昇）
-const DELTA_THRESHOLD = 2
-// 検知対象とする最低インデックス（震度2相当: 計測震度 1.5 以上 = index 9）
-const MIN_DETECTION_INDEX = 9
-// 近接判定の距離 (km)
-const PROXIMITY_KM = 80
-// 検知後の表示維持時間 (ms)
-const DETECTION_DURATION_MS = 60_000
+/**
+ * Union-Find を使い、PROXIMITY_KM 以内の観測点を連結してクラスタ列を返す。
+ * 重心は構成点の算術平均とする。
+ */
+function buildClusters(
+  changedItems: Array<{ siteIdx: number; index: number }>,
+  sites: SiteCoords,
+): Cluster[] {
+  const n = changedItems.length
+  const parent = Array.from({ length: n }, (_, i) => i)
+
+  function find(x: number): number {
+    while (parent[x] !== x) {
+      parent[x] = parent[parent[x]]
+      x = parent[x]
+    }
+    return x
+  }
+
+  for (let a = 0; a < n; a++) {
+    const siteA = sites[changedItems[a].siteIdx]
+    if (!siteA) continue
+    for (let b = a + 1; b < n; b++) {
+      const siteB = sites[changedItems[b].siteIdx]
+      if (!siteB) continue
+      if (haversineKm(siteA[0], siteA[1], siteB[0], siteB[1]) <= PROXIMITY_KM) {
+        const ra = find(a), rb = find(b)
+        if (ra !== rb) parent[ra] = rb
+      }
+    }
+  }
+
+  const groups = new Map<number, typeof changedItems>()
+  for (let i = 0; i < n; i++) {
+    const root = find(i)
+    const g = groups.get(root) ?? []
+    g.push(changedItems[i])
+    groups.set(root, g)
+  }
+
+  const clusters: Cluster[] = []
+  for (const members of groups.values()) {
+    if (members.length < MIN_CLUSTER_SIZE) continue
+    let latSum = 0, lngSum = 0, maxIndex = 0
+    const siteIndices: number[] = []
+    for (const m of members) {
+      const site = sites[m.siteIdx]
+      if (!site) continue
+      latSum += site[0]
+      lngSum += site[1]
+      if (m.index > maxIndex) maxIndex = m.index
+      siteIndices.push(m.siteIdx)
+    }
+    const count = siteIndices.length
+    if (count === 0) continue
+    clusters.push({
+      centroid: { lat: latSum / count, lng: lngSum / count },
+      siteIndices,
+      maxIndex,
+    })
+  }
+  return clusters
+}
+
+// ---- Hook ----------------------------------------------------------------
 
 const EMPTY: KyoshinDetection = { detected: false, maxIndex: 0, points: [] }
 
 /**
- * 直前と比べてインデックスが急上昇した観測点が、近接 PROXIMITY_KM km 以内に
- * 2点以上存在すれば地震の揺れとして検知する。
- * 単独の観測点スパイク（誤検知）は無視する。
+ * 5層フィルタによる地震検知フック。
+ *
+ * Layer 0: 直近3フレームの時系列バッファ管理
+ * Layer 1: 観測点レベルフィルタ（急上昇・トレンド・ノイズブラックリスト）
+ * Layer 2: 空間クラスタリング（Union-Find、最低3点）
+ * Layer 3: グローバルサニティ（全体の15%以上が変化 → データ異常として棄却）
+ * Layer 4: テンポラル確定（2フレーム連続検出で確定、複数クラスタ独立管理）
+ * Layer 5: 観測点ノイズトラッキング（繰り返し誤検知観測点を5分除外）
  */
 export function useKyoshinDetection(
   sites: SiteCoords,
   indices: number[],
 ): KyoshinDetection {
-  const prevRef = useRef<number[]>([])
+  // Layer 0: フレームバッファ（[oldest, ..., newest]）
+  const frameBufferRef = useRef<number[][]>([])
+  // Layer 4: 候補クラスタリスト
+  const pendingRef = useRef<PendingCluster[]>([])
+  // Layer 5: ノイズ観測点 Map<siteIdx, {count, until}>
+  const noisyRef = useRef<Map<number, { count: number; until: number }>>(new Map())
+
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [detection, setDetection] = useState<KyoshinDetection>(EMPTY)
 
   useEffect(() => {
-    const prev = prevRef.current
-    prevRef.current = indices.slice()
+    if (sites.length === 0 || indices.length === 0) return
 
-    if (sites.length === 0 || indices.length === 0 || prev.length !== indices.length) return
+    // --- Layer 0: バッファ更新 ---
+    const buf = frameBufferRef.current
+    buf.push(indices.slice())
+    if (buf.length > N_HISTORY) buf.shift()
+    if (buf.length < 2) return  // 最低2フレーム必要
 
-    // 急上昇かつ震度2以上に達した観測点を収集
+    const curr = buf[buf.length - 1]
+    const prev = buf[buf.length - 2]
+    const older = buf.length >= 3 ? buf[buf.length - 3] : null
+
+    if (prev.length !== curr.length) return
+
+    const now = Date.now()
+
+    // Layer 5: 期限切れノイズエントリを清掃
+    for (const [k, v] of noisyRef.current) {
+      if (now >= v.until) noisyRef.current.delete(k)
+    }
+
+    // --- Layer 1: 観測点フィルタ ---
     const changed: Array<{ siteIdx: number; index: number }> = []
-    for (let i = 0; i < indices.length; i++) {
-      if (indices[i] >= MIN_DETECTION_INDEX && indices[i] - (prev[i] ?? 0) >= DELTA_THRESHOLD) {
-        changed.push({ siteIdx: i, index: indices[i] })
+    for (let i = 0; i < curr.length; i++) {
+      const idx = curr[i]
+      if (idx < MIN_DETECTION_INDEX) continue
+      if (idx - (prev[i] ?? 0) < DELTA_THRESHOLD) continue
+      // t-2フレームより低下していない（単一フレーム瞬間スパイクを排除）
+      if (older !== null && idx < (older[i] ?? 0)) continue
+      if (noisyRef.current.has(i)) continue
+      changed.push({ siteIdx: i, index: idx })
+    }
+
+    // --- Layer 3: グローバルサニティ ---
+    if (changed.length / curr.length > ANOMALY_RATIO) {
+      // データ異常：全候補を廃棄してこのフレームをスキップ
+      pendingRef.current = []
+      return
+    }
+
+    // --- Layer 2: 空間クラスタリング ---
+    const clusters = changed.length > 0 ? buildClusters(changed, sites) : []
+
+    // --- Layer 4: テンポラル確定（候補との照合） ---
+    // 期限切れ候補を廃棄し、廃棄された候補の観測点をノイズカウントアップ
+    const alive: PendingCluster[] = []
+    const expired: PendingCluster[] = []
+    for (const p of pendingRef.current) {
+      if (now - p.detectedAt <= PENDING_TIMEOUT_MS) {
+        alive.push(p)
+      } else {
+        expired.push(p)
       }
     }
-    if (changed.length < 2) return
 
-    // 近接ペアが存在するか確認
-    let foundCluster = false
-    outer: for (let a = 0; a < changed.length; a++) {
-      const siteA = sites[changed[a].siteIdx]
-      if (!siteA) continue
-      for (let b = a + 1; b < changed.length; b++) {
-        const siteB = sites[changed[b].siteIdx]
-        if (!siteB) continue
-        if (haversineKm(siteA[0], siteA[1], siteB[0], siteB[1]) <= PROXIMITY_KM) {
-          foundCluster = true
-          break outer
+    // Layer 5: 廃棄候補の観測点をノイズカウント
+    for (const p of expired) {
+      for (const si of p.siteIndices) {
+        const entry = noisyRef.current.get(si) ?? { count: 0, until: 0 }
+        entry.count += 1
+        if (entry.count >= NOISE_THRESHOLD) {
+          entry.until = now + NOISE_BLACKLIST_MS
+          entry.count = 0
         }
+        noisyRef.current.set(si, entry)
       }
     }
-    if (!foundCluster) return
 
-    // 検知：座標付きの点を震度降順で収集（上位50点）
+    pendingRef.current = alive
+
+    if (clusters.length === 0) return
+
+    let confirmed = false
+    let confirmedMaxIndex = 0
+    const confirmedSiteIndices: number[] = []
+
+    for (const cluster of clusters) {
+      // 既存候補と照合
+      const matchIdx = alive.findIndex(
+        (p) => haversineKm(p.centroid.lat, p.centroid.lng, cluster.centroid.lat, cluster.centroid.lng) <= PENDING_MATCH_KM,
+      )
+
+      if (matchIdx >= 0) {
+        // 2フレーム目：確定
+        confirmed = true
+        if (cluster.maxIndex > confirmedMaxIndex) confirmedMaxIndex = cluster.maxIndex
+        confirmedSiteIndices.push(...cluster.siteIndices)
+        // 確定した候補を候補リストから除去（連続更新は不要）
+        alive.splice(matchIdx, 1)
+      } else {
+        // 新規候補として登録
+        alive.push({
+          centroid: cluster.centroid,
+          siteIndices: cluster.siteIndices,
+          maxIndex: cluster.maxIndex,
+          detectedAt: now,
+        })
+      }
+    }
+
+    pendingRef.current = alive
+
+    if (!confirmed) return
+
+    // Layer 5: 確定地震の観測点はノイズカウントをリセット
+    for (const si of confirmedSiteIndices) {
+      noisyRef.current.delete(si)
+    }
+
+    // 検知確定：changed から座標付きの点を震度降順で収集（上位50点）
     const points: DetectedPoint[] = changed
-      .map(c => {
+      .filter((c) => confirmedSiteIndices.includes(c.siteIdx))
+      .map((c) => {
         const site = sites[c.siteIdx]
         if (!site) return null
         return { lat: site[0], lng: site[1], index: c.index }
@@ -91,7 +283,7 @@ export function useKyoshinDetection(
       .sort((a, b) => b.index - a.index)
       .slice(0, 50)
 
-    const maxIndex = points[0]?.index ?? 0
+    const maxIndex = points[0]?.index ?? confirmedMaxIndex
     setDetection({ detected: true, maxIndex, points })
     if (timerRef.current) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => setDetection(EMPTY), DETECTION_DURATION_MS)

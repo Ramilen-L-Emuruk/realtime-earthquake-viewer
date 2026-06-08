@@ -229,13 +229,17 @@ function FitJapanOnEnter({
   hasEew,
   eews,
   psWave,
+  hasDetection,
 }: {
   hasEew: boolean
   eews: EEWAlert[]
   psWave: PsWaveCircle[]
+  hasDetection: boolean
 }) {
   const map = useMap()
   useEffect(() => {
+    // 揺れ検知中はFitToDetectionに任せ、日本全体へのリセットをスキップする
+    if (hasDetection) return
     if (!hasEew) {
       map.setView(JAPAN_CENTER, JAPAN_ZOOM)
       return
@@ -503,7 +507,7 @@ export function JapanMap({
 
       {/* リアルタイムタブ入室時: EEW が無ければ日本全体を、EEW 中は波円にフィット */}
       {mode === 'kyoshin' && (
-        <FitJapanOnEnter hasEew={eews.length > 0} eews={eews} psWave={kyoshinPsWave} />
+        <FitJapanOnEnter hasEew={eews.length > 0} eews={eews} psWave={kyoshinPsWave} hasDetection={detectedPoints.length > 0} />
       )}
 
       {/* 揺れ検知点: FitToDetection は常時レンダリングして検知終了時の日本全体戻しを担う */}
