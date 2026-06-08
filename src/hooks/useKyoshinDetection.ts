@@ -184,13 +184,17 @@ export function useKyoshinDetection(
     }
 
     // --- Layer 1: 観測点フィルタ ---
+    // delta は t-2 フレーム基準で計算する。
+    // これにより「7→8→9」のような1秒に1インデックスずつ緩やかに上昇する
+    // 地震波も捕捉できる（t-2基準のdelta=2となり閾値を満たす）。
+    // t-1基準では delta=1 しか得られず、こうした地震は検知できなかった。
+    // 単一フレームのスパイクは Layer 4 テンポラル確定が吸収する。
     const changed: Array<{ siteIdx: number; index: number }> = []
     for (let i = 0; i < curr.length; i++) {
       const idx = curr[i]
       if (idx < MIN_DETECTION_INDEX) continue
-      if (idx - (prev[i] ?? 0) < DELTA_THRESHOLD) continue
-      // t-2フレームより低下していない（単一フレーム瞬間スパイクを排除）
-      if (older !== null && idx < (older[i] ?? 0)) continue
+      const baseIdx = older !== null ? (older[i] ?? 0) : (prev[i] ?? 0)
+      if (idx - baseIdx < DELTA_THRESHOLD) continue
       if (noisyRef.current.has(i)) continue
       changed.push({ siteIdx: i, index: idx })
     }
