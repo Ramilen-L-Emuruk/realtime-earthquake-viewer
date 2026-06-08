@@ -155,6 +155,8 @@ export function useKyoshinDetection(
   const frameBufferRef = useRef<number[][]>([])
   // Layer 4: 候補クラスタリスト
   const pendingRef = useRef<PendingCluster[]>([])
+  // Layer 4: 確定済み観測点セット（Layer 1 の delta チェックをバイパスして毎フレーム追跡）
+  const confirmedSitesRef = useRef<Set<number>>(new Set())
   // Layer 5: ノイズ観測点 Map<siteIdx, {count, until}>
   const noisyRef = useRef<Map<number, { count: number; until: number }>>(new Map())
 
@@ -189,9 +191,25 @@ export function useKyoshinDetection(
     // 地震波も捕捉できる（t-2基準のdelta=2となり閾値を満たす）。
     // t-1基準では delta=1 しか得られず、こうした地震は検知できなかった。
     // 単一フレームのスパイクは Layer 4 テンポラル確定が吸収する。
+    //
+    // 確定済み観測点（confirmedSites）は delta チェックをスキップし、
+    // 震度が閾値以上である限り毎フレーム自動で changed に追加する。
+    // 震度が閾値を下回ったら confirmedSites から除外する。
     const changed: Array<{ siteIdx: number; index: number }> = []
     for (let i = 0; i < curr.length; i++) {
       const idx = curr[i]
+
+      // 確定済み観測点：delta チェックをスキップ
+      if (confirmedSitesRef.current.has(i)) {
+        if (idx >= MIN_DETECTION_INDEX) {
+          changed.push({ siteIdx: i, index: idx })
+        } else {
+          confirmedSitesRef.current.delete(i)  // 震度が閾値を下回ったら除外
+        }
+        continue
+      }
+
+      // 未確定観測点：通常の delta フィルタ
       if (idx < MIN_DETECTION_INDEX) continue
       const baseIdx = older !== null ? (older[i] ?? 0) : (prev[i] ?? 0)
       if (idx - baseIdx < DELTA_THRESHOLD) continue
@@ -268,32 +286,41 @@ export function useKyoshinDetection(
 
     pendingRef.current = alive
 
-    if (!confirmed) return
-
-    // Layer 5: 確定地震の観測点はノイズカウントをリセット
-    for (const si of confirmedSiteIndices) {
-      noisyRef.current.delete(si)
+    // Layer 4 確定時：新規確定観測点を confirmedSites に追加してタイマーをリセット
+    if (confirmed) {
+      for (const si of confirmedSiteIndices) {
+        confirmedSitesRef.current.add(si)
+        // Layer 5: 確定地震の観測点はノイズカウントをリセット
+        noisyRef.current.delete(si)
+      }
+      if (timerRef.current) clearTimeout(timerRef.current)
+      timerRef.current = setTimeout(() => {
+        setDetection(EMPTY)
+        confirmedSitesRef.current.clear()
+      }, DETECTION_DURATION_MS)
     }
 
-    // 検知確定：changed から座標付きの点を震度降順で収集（上位50点）
-    const points: DetectedPoint[] = changed
-      .filter((c) => confirmedSiteIndices.includes(c.siteIdx))
-      .map((c) => {
-        const site = sites[c.siteIdx]
-        if (!site) return null
-        return { lat: site[0], lng: site[1], index: c.index }
-      })
-      .filter((p): p is DetectedPoint => p !== null)
-      .sort((a, b) => b.index - a.index)
-      .slice(0, 50)
-
-    const maxIndex = points[0]?.index ?? confirmedMaxIndex
-    setDetection({ detected: true, maxIndex, points })
-    if (timerRef.current) clearTimeout(timerRef.current)
-    timerRef.current = setTimeout(() => setDetection(EMPTY), DETECTION_DURATION_MS)
+    // 確定済み観測点が存在するフレームで毎回 points を更新（リアルタイム反映）
+    if (confirmedSitesRef.current.size > 0) {
+      const points: DetectedPoint[] = changed
+        .filter((c) => confirmedSitesRef.current.has(c.siteIdx))
+        .map((c) => {
+          const site = sites[c.siteIdx]
+          if (!site) return null
+          return { lat: site[0], lng: site[1], index: c.index }
+        })
+        .filter((p): p is DetectedPoint => p !== null)
+        .sort((a, b) => b.index - a.index)
+        .slice(0, 50)
+      const maxIndex = points[0]?.index ?? confirmedMaxIndex
+      setDetection({ detected: true, maxIndex, points })
+    }
   }, [sites, indices])
 
-  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current)
+    confirmedSitesRef.current.clear()
+  }, [])
 
   return detection
 }
