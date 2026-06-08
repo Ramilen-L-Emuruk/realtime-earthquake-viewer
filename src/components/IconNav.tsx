@@ -51,14 +51,27 @@ const ITEMS: { id: TabId; label: string }[] = [
   { id: 'settings', label: '設定' },
 ]
 
+const TSUNAMI_BADGE_COLOR: Record<string, string> = {
+  MajorWarning: 'bg-purple-500',
+  Warning:      'bg-red-500',
+  Watch:        'bg-yellow-400',
+}
+
+const EEW_BADGE_COLOR: Record<number, string> = {
+  2: 'bg-purple-500',
+  1: 'bg-red-500',
+  0: 'bg-yellow-400',
+}
+
 interface Props {
   activeTab: TabId
   onTabChange: (tab: TabId) => void
-  tsunamiActive: boolean
+  tsunamiGrade: 'MajorWarning' | 'Warning' | 'Watch' | null
+  eewLevel: 0 | 1 | 2 | null
 }
 
 // 縦並び（モバイルは横並び）のアイコンボタンによるナビゲーション。
-export function IconNav({ activeTab, onTabChange, tsunamiActive }: Props) {
+export function IconNav({ activeTab, onTabChange, tsunamiGrade, eewLevel }: Props) {
   return (
     <nav
       className="flex flex-row lg:flex-col items-center justify-center lg:justify-start gap-1 p-1.5 bg-panel border-t lg:border-t-0 lg:border-l border-border flex-shrink-0"
@@ -78,8 +91,11 @@ export function IconNav({ activeTab, onTabChange, tsunamiActive }: Props) {
           }`}
         >
           {ICONS[item.id]}
-          {item.id === 'tsunami' && tsunamiActive && (
-            <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+          {item.id === 'tsunami' && tsunamiGrade !== null && (
+            <span className={`absolute top-1 right-1 w-2 h-2 rounded-full ${TSUNAMI_BADGE_COLOR[tsunamiGrade]} animate-pulse`} />
+          )}
+          {item.id === 'realtime' && eewLevel !== null && (
+            <span className={`absolute top-1 right-1 w-2 h-2 rounded-full ${EEW_BADGE_COLOR[eewLevel]} animate-pulse`} />
           )}
         </button>
       ))}

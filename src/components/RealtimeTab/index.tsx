@@ -3,7 +3,7 @@
 import type { EEWAlert } from '../../types/earthquake'
 import type { KyoshinDetection } from '../../hooks/useKyoshinDetection'
 import { formatDateTime } from '../../utils/formatters'
-import { getIntensityColor, getIntensityLabel } from '../../utils/intensity'
+import { getIntensityColor, getIntensityLabel, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
 import { eewAreas, eewMaxScale, eewSerial } from '../../utils/eew'
 import { kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
 
@@ -33,38 +33,97 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
   const areas = eewAreas(eew)
   const serial = eewSerial(eew)
   const { hypocenter } = eew.earthquake
+  const prefAreas = areas.filter(a => a.pref)
+
+  const borderColor = isWarning ? '#ef4444' : '#f97316'
+  const typeLabel = isSpecial ? '特別警報' : isWarning ? '警報' : '予報'
+  const typeLabelColor = isWarning ? 'text-red-300' : 'text-orange-300'
+  const typeBadgeBg = isWarning ? 'bg-red-900/60' : 'bg-orange-900/60'
 
   return (
     <div
-      className={`rounded-lg p-3 border ${
-        isWarning ? 'bg-red-900/40 border-red-600' : 'bg-orange-900/40 border-orange-600'
-      }`}
+      className="rounded-lg p-3 flex flex-col gap-2"
+      style={{
+        backgroundColor: isWarning ? 'rgba(127,29,29,0.3)' : 'rgba(124,45,18,0.3)',
+        border: `2px solid ${borderColor}`,
+      }}
     >
-      <div className="flex items-center gap-2 mb-1">
+      {/* 最大震度バナー */}
+      <div
+        className="w-full rounded-lg py-3 px-4 flex items-center justify-center gap-6"
+        style={{
+          backgroundColor: maxScale > 0 ? getIntensityBgColor(maxScale) : 'rgba(42,42,42,0.8)',
+          border: `2px solid ${maxScale > 0 ? getIntensityColor(maxScale) : '#4b5563'}`,
+        }}
+      >
+        <span
+          className="text-sm font-medium"
+          style={{ color: maxScale > 0 ? getIntensityColor(maxScale) : '#9ca3af' }}
+        >
+          最大震度予想
+        </span>
+        <span
+          className="text-5xl font-black"
+          style={{ color: maxScale > 0 ? getIntensityColor(maxScale) : '#9ca3af' }}
+        >
+          {maxScale > 0 ? getIntensityLabel(maxScale) : '?'}
+        </span>
+      </div>
+
+      {/* 種別バッジ行 */}
+      <div className="flex items-center gap-2 flex-wrap">
         <span className="text-xs text-secondary">緊急地震速報</span>
-        <span className={`text-sm font-black ${isWarning ? 'text-red-300' : 'text-orange-300'}`}>
-          {isSpecial ? '特別警報' : isWarning ? '警報' : '予報'}
+        <span className={`text-sm font-black px-2 py-0.5 rounded ${typeLabelColor} ${typeBadgeBg}`}>
+          {typeLabel}
         </span>
         {serial != null && (
-          <span className={`text-xs ${eew.isFinal ? 'font-bold text-green-400' : 'text-secondary'}`}>
+          <span className={`text-xs px-1.5 py-0.5 rounded ${eew.isFinal ? 'font-bold text-green-400 bg-green-900/40' : 'text-secondary'}`}>
             #{serial}{eew.isFinal ? ' 最終報' : ''}
           </span>
         )}
       </div>
-      <div className="flex items-baseline gap-2 flex-wrap">
-        <span className="text-white font-bold text-base">{hypocenter.name}</span>
-        <span className="text-white text-sm">M{hypocenter.magnitude.toFixed(1)}</span>
-        {maxScale > 0 && (
-          <span className="text-white text-sm font-bold">最大震度{getIntensityLabel(maxScale)}予想</span>
-        )}
+
+      {/* 発生時刻 */}
+      <div className="text-base text-secondary">
+        {formatDateTime(eew.earthquake.originTime)}ごろ
       </div>
-      <div className="text-xs text-secondary mt-1">
-        深さ {hypocenter.depth}km / {formatDateTime(eew.earthquake.originTime)}
+
+      {/* 震源名 */}
+      <div className="text-2xl font-bold text-white leading-tight">
+        {hypocenter.name || '震源調査中'}
       </div>
-      {areas.some(a => a.pref) && (
-        <div className="text-xs text-secondary mt-1 leading-relaxed">
-          対象: {areas.filter(a => a.pref).slice(0, 6).map(a => a.pref).join(' / ')}
-          {areas.filter(a => a.pref).length > 6 && ' ...'}
+
+      {/* マグニチュード・深さ */}
+      {hypocenter.name && (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center justify-between">
+            <span className="text-base text-secondary">マグニチュード</span>
+            <div className="flex items-center gap-2">
+              <span className="text-xl font-bold text-white">{hypocenter.magnitude.toFixed(1)}</span>
+              <span
+                className="inline-block w-2 h-5 rounded-sm flex-shrink-0"
+                style={{ backgroundColor: getMagnitudeColor(hypocenter.magnitude) }}
+              />
+            </div>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-base text-secondary">深さ</span>
+            <div className="flex items-center gap-2">
+              <span className="text-xl font-bold text-white">{hypocenter.depth}km</span>
+              <span
+                className="inline-block w-2 h-5 rounded-sm flex-shrink-0"
+                style={{ backgroundColor: getDepthColor(hypocenter.depth) }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 対象地域 */}
+      {prefAreas.length > 0 && (
+        <div className="text-xs text-secondary leading-relaxed">
+          対象: {prefAreas.slice(0, 8).map(a => a.pref).join(' / ')}
+          {prefAreas.length > 8 && ' ...'}
         </div>
       )}
     </div>

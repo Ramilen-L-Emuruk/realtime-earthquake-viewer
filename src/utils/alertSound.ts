@@ -150,26 +150,26 @@ const PATTERNS: Record<AlertSoundType, Tone[]> = {
   ],
 }
 
-// 強震モニタ index → 震度7段階のマッピング
-// index 9=震度2相当、14=震度3、19=震度4、25=震度5弱、34=震度5強、40=震度6弱/6強、50=震度7
+// 強震モニタ index → 震度7段階のマッピング（インデックスは 0〜20、計測震度 = index * 0.5 - 3.0）
+// index 9=震度2相当、11=震度3、13=震度4、15=震度5弱、16=震度5強、17=震度6弱/6強、19=震度7
 const KYOSHIN_LEVEL_PATTERNS: Tone[][] = [
-  // Lv1 (index 9-13, 震度2): 低め単音
+  // Lv1 (index 9-10, 震度2): 低め単音
   [{ freq: 440, start: 0, duration: 0.2 }],
-  // Lv2 (index 14-18, 震度3): 単音
+  // Lv2 (index 11-12, 震度3): 単音
   [{ freq: 523, start: 0, duration: 0.22 }],
-  // Lv3 (index 19-24, 震度4): 2音
+  // Lv3 (index 13-14, 震度4): 2音
   [{ freq: 659, start: 0, duration: 0.15 }, { freq: 659, start: 0.2, duration: 0.2 }],
-  // Lv4 (index 25-33, 震度5弱): 2音・やや強め
+  // Lv4 (index 15, 震度5弱): 2音・やや強め
   [{ freq: 784, start: 0, duration: 0.15, gain: 0.24 }, { freq: 784, start: 0.2, duration: 0.22, gain: 0.24 }],
-  // Lv5 (index 34-39, 震度5強): 3音
+  // Lv5 (index 16, 震度5強): 3音
   [{ freq: 880, start: 0, duration: 0.13 }, { freq: 880, start: 0.18, duration: 0.13 }, { freq: 880, start: 0.36, duration: 0.2 }],
-  // Lv6 (index 40-49, 震度6弱〜6強): square 3音・緊急感
+  // Lv6 (index 17-18, 震度6弱〜6強): square 3音・緊急感
   [
     { freq: 1047, start: 0.0, duration: 0.12, type: 'square', gain: 0.16 },
     { freq: 1047, start: 0.17, duration: 0.12, type: 'square', gain: 0.16 },
     { freq: 1047, start: 0.34, duration: 0.18, type: 'square', gain: 0.16 },
   ],
-  // Lv7 (index 50+, 震度7): 下降する緊急音×3
+  // Lv7 (index 19+, 震度7): 下降する緊急音×4
   [
     { freq: 1175, start: 0.0, duration: 0.12, type: 'square', gain: 0.18 },
     { freq: 880,  start: 0.16, duration: 0.12, type: 'square', gain: 0.18 },
@@ -178,14 +178,14 @@ const KYOSHIN_LEVEL_PATTERNS: Tone[][] = [
   ],
 ]
 
-function kyoshinLevel(index: number): number {
-  if (index >= 50) return 6
-  if (index >= 40) return 5
-  if (index >= 34) return 4
-  if (index >= 25) return 3
-  if (index >= 19) return 2
-  if (index >= 14) return 1
-  return 0
+export function kyoshinLevel(index: number): number {
+  if (index >= 19) return 6  // 震度7 (計測震度 6.5+)
+  if (index >= 17) return 5  // 震度6弱/6強 (計測震度 5.5〜6.5)
+  if (index >= 16) return 4  // 震度5強 (計測震度 5.0〜5.5)
+  if (index >= 15) return 3  // 震度5弱 (計測震度 4.5〜5.0)
+  if (index >= 13) return 2  // 震度4 (計測震度 3.5〜4.5)
+  if (index >= 11) return 1  // 震度3 (計測震度 2.5〜3.5)
+  return 0                    // 震度2以下
 }
 
 /** 指定した種別の通知音を鳴らす。 */
