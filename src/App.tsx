@@ -21,18 +21,31 @@ import type { P2PQuakeEvent, EEWAlert } from './types/earthquake'
 // AutoHotKey 等が、情報更新時のタイトル変化を検知してイベントを発火できるようにする。
 const DEFAULT_TITLE = 'リアルタイム地震ビューアー'
 
+// EEW 単発のレベル算出: 0=低震度予報 / 1=警報（震度5弱以上） / 2=特別警報（震度6弱以上）
+// scaleTo:99 は P2PQuake の「震度算出不能」コードなので通常の震度比較から除外する
+function computeSingleEEWLevel(eew: EEWAlert): 0 | 1 | 2 {
+  const scale = eewMaxScale(eew)
+  const intensityKnown = scale < 99
+  return (intensityKnown && scale >= 55) ? 2
+       : (eew.severity === 'Warning' || (intensityKnown && scale >= 45)) ? 1
+       : 0
+}
+
 function computeEEWLevel(eews: ReadonlyMap<string, EEWAlert>): 0 | 1 | 2 | null {
   if (eews.size === 0) return null
   let max: 0 | 1 | 2 = 0
   for (const eew of eews.values()) {
-    const scale = eewMaxScale(eew)
-    const intensityKnown = scale < 99
-    const level: 0 | 1 | 2 =
-      (intensityKnown && scale >= 55) ? 2 :
-      (eew.severity === 'Warning' || (intensityKnown && scale >= 45)) ? 1 : 0
+    const level = computeSingleEEWLevel(eew)
     if (level > max) max = level
   }
   return max
+}
+
+function selectEEWSoundType(isNew: boolean, levelUpgraded: boolean, currentLevel: 0 | 1 | 2): AlertSoundType {
+  if (isNew || levelUpgraded) {
+    return currentLevel === 2 ? 'eewSpecial' : currentLevel === 1 ? 'eew' : 'eewForecast'
+  }
+  return 'eewUpdate'
 }
 
 function computeEEWTitle(eews: ReadonlyMap<string, EEWAlert>): string {
@@ -130,13 +143,8 @@ export function App() {
       // 緊急地震速報の発報時はリアルタイムタブ（強震モニタ＋予報円）を開く
       setActiveTab('realtime')
 
-      // EEW レベル算出: 0=低震度予報 / 1=警報（震度5弱以上） / 2=特別警報（震度6弱以上）
-      // scaleTo:99 は P2PQuake の「震度算出不能」コードなので通常の震度比較から除外する
+      const currentLevel = computeSingleEEWLevel(event)
       const scale = eewMaxScale(event)
-      const intensityKnown = scale < 99
-      const currentLevel: 0 | 1 | 2 =
-        (intensityKnown && scale >= 55) ? 2 :
-        (event.severity === 'Warning' || (intensityKnown && scale >= 45)) ? 1 : 0
 
       // 新規発報か続報かを判定し、レベル引き上げを検出する
       const isNew = !activeEEWLevelsRef.current.has(key)
@@ -148,12 +156,7 @@ export function App() {
       )
 
       if (settings.soundEnabled) {
-        let eewSoundType: AlertSoundType
-        if (isNew || levelUpgraded) {
-          eewSoundType = currentLevel === 2 ? 'eewSpecial' : currentLevel === 1 ? 'eew' : 'eewForecast'
-        } else {
-          eewSoundType = 'eewUpdate'
-        }
+        const eewSoundType = selectEEWSoundType(isNew, levelUpgraded, currentLevel)
         const now = Date.now()
         if (now - lastSoundAtRef.current[eewSoundType] >= 1500) {
           lastSoundAtRef.current[eewSoundType] = now
