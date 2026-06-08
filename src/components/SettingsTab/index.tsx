@@ -455,7 +455,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">2.4.1</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">2.4.2</span></Row>
         <Row label="地震・津波データ">
           <a href="https://www.p2pquake.net/" target="_blank" rel="noopener noreferrer"
             className="text-xs text-blue-400 hover:text-blue-300">

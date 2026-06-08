@@ -302,6 +302,9 @@ export function JapanMap({
   const tsunamiZones = useTsunamiZones()
   const subregions = useSubRegions()
   const [zoom, setZoom] = useState(JAPAN_ZOOM)
+  // ズームに応じて強震モニタ観測点のサイズを補正する係数。
+  // ズーム8を基準（×1.0）とし、ズームアウト時は小さく・ズームイン時は大きくする。
+  const kyoshinZoomScale = Math.max(0.2, Math.min(3.5, Math.pow(2, (zoom - 8) / 2)))
 
   const hasEpicenter =
     quake &&
@@ -500,8 +503,8 @@ export function JapanMap({
       {/* 強震モニタ: Yahoo リアルタイム震度の観測点を描画 */}
       {mode === 'kyoshin' && (
         <>
-          <KyoshinPoints sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
-          <KyoshinSubThreshold sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
+          <KyoshinPoints sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale * kyoshinZoomScale} />
+          <KyoshinSubThreshold sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale * kyoshinZoomScale} />
         </>
       )}
 
@@ -514,7 +517,7 @@ export function JapanMap({
       {mode === 'kyoshin' && (
         <>
           <FitToDetection points={detectedPoints} hasEew={eews.length > 0} />
-          <KyoshinDetectedPoints points={detectedPoints} iconScale={iconScale} />
+          <KyoshinDetectedPoints points={detectedPoints} iconScale={iconScale * kyoshinZoomScale} />
         </>
       )}
 
