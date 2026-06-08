@@ -106,14 +106,9 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
         case 552: {
           const tsunami = event as JMATsunami
           if (tsunami.cancelled) {
-            return {
-              ...prev,
-              tsunamis: prev.tsunamis.filter(t => t.id !== tsunami.id),
-              lastUpdate: now,
-            }
+            return { ...prev, tsunamis: [], lastUpdate: now }
           }
-          const tsunamis = [tsunami, ...prev.tsunamis.filter(t => t.id !== tsunami.id)]
-          return { ...prev, tsunamis, lastUpdate: now }
+          return { ...prev, tsunamis: [tsunami], lastUpdate: now }
         }
         case 556: {
           const eew = event as EEWAlert
@@ -150,9 +145,10 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
           }
         }
         const earthquakes = Array.from(seenQuakes.values()).slice(0, 30)
-        const tsunamis = (events.filter(e => e.code === 552) as JMATsunami[]).filter(
-          t => !t.cancelled,
-        )
+        const allTsunami = (events.filter(e => e.code === 552) as JMATsunami[])
+          .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
+        const latestTsunami = allTsunami[0]
+        const tsunamis = latestTsunami && !latestTsunami.cancelled ? [latestTsunami] : []
         setState(prev => ({
           ...prev,
           earthquakes,
