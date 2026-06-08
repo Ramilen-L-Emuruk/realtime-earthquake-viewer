@@ -15,11 +15,31 @@ import { formatMagnitude } from './utils/formatters'
 import { eewMaxScale } from './utils/eew'
 import { tsunamiMaxGrade } from './utils/tsunami'
 import { playAlertSound, playKyoshinUpdateSound, unlockAudio, setSoundVolume, type AlertSoundType } from './utils/alertSound'
-import type { P2PQuakeEvent } from './types/earthquake'
+import type { P2PQuakeEvent, EEWAlert } from './types/earthquake'
 
 // 平常時のウィンドウタイトル（index.html の <title> と一致させる）。
 // AutoHotKey 等が、情報更新時のタイトル変化を検知してイベントを発火できるようにする。
 const DEFAULT_TITLE = 'リアルタイム地震ビューアー'
+
+function computeEEWTitle(eews: ReadonlyMap<string, EEWAlert>): string {
+  const primary = Array.from(eews.values()).sort((a, b) => eewMaxScale(b) - eewMaxScale(a))[0]
+  const scale = eewMaxScale(primary)
+  return `🚨 緊急地震速報 ${primary.earthquake.hypocenter.name}` +
+    (scale > 0 ? ` 最大震度${getIntensityLabel(scale)}予想` : '') +
+    (eews.size > 1 ? ` 他${eews.size - 1}件` : '')
+}
+
+function applyPriorityTitle(
+  eews: ReadonlyMap<string, EEWAlert>,
+  tsunami: boolean,
+  priority: boolean,
+  setState: (v: string | null) => void,
+) {
+  if (eews.size === 0 && !tsunami) { setState(null) }
+  else if (eews.size > 0 && tsunami) { setState(priority ? '🌊 津波情報 発表中' : computeEEWTitle(eews)) }
+  else if (eews.size > 0) { setState(computeEEWTitle(eews)) }
+  else { setState('🌊 津波情報 発表中') }
+}
 
 function formatDateTimeLocal(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0')
@@ -44,6 +64,10 @@ export function App() {
   // EEW の eventId ごとにレベルを追跡（複数EEW対応）
   // key = issue.eventId ?? id、value = 0=低震度予報 / 1=警報or震度3以上 / 2=特別警報
   const activeEEWLevelsRef = useRef<Map<string, 0 | 1 | 2>>(new Map())
+  // 各情報タイトルのリセットタイマー（自動復帰秒数が15秒の場合は15秒、それ以外は30秒）
+  const earthquakeTitleTimerRef = useRef<number>(0)
+  const eewTitleTimerRef = useRef<number>(0)
+  const tsunamiTitleTimerRef = useRef<number>(0)
 
   const handleLiveEvent = (event: P2PQuakeEvent) => {
     // 受信時に該当タブを自動表示し、ウィンドウタイトルを更新する
@@ -52,9 +76,19 @@ export function App() {
       setActiveTab('earthquake')
       const { hypocenter, maxScale } = event.earthquake
       setAlertTitle(`🔴 地震情報 ${hypocenter.name} 最大震度${getIntensityLabel(maxScale)}`)
+      window.clearTimeout(earthquakeTitleTimerRef.current)
+      const resetMs = settings.idleRevertSec === 15 ? 15000 : 30000
+      earthquakeTitleTimerRef.current = window.setTimeout(() => {
+        applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, setAlertTitle)
+      }, resetMs)
     } else if (event.code === 552 && !event.cancelled) {
       setActiveTab('tsunami')
       setAlertTitle('🌊 津波情報 発表中')
+      window.clearTimeout(tsunamiTitleTimerRef.current)
+      const tsunamiResetMs = settings.idleRevertSec === 15 ? 15000 : 30000
+      tsunamiTitleTimerRef.current = window.setTimeout(() => {
+        applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, setAlertTitle)
+      }, tsunamiResetMs)
     } else if (event.code === 556) {
       if (event.test) return
 
@@ -70,9 +104,9 @@ export function App() {
             playAlertSound('eewCancel')
           }
         }
-        // 全EEW解除時のみタブ・タイトルをデフォルトに戻す
         if (activeEEWLevelsRef.current.size === 0) {
-          setAlertTitle(null)
+          window.clearTimeout(eewTitleTimerRef.current)
+          applyPriorityTitle(new Map<string, EEWAlert>(), tsunamiActiveRef.current, tsunamiPriorityRef.current, setAlertTitle)
           setActiveTab(defaultTabRef.current)
         }
         return
@@ -111,6 +145,17 @@ export function App() {
           playAlertSound(eewSoundType)
         }
       }
+      // EEW タイトルをイベントデータから構築（state は未更新のため event 直接参照）
+      const newCount = activeEEWLevelsRef.current.size
+      const eewTitle = `🚨 緊急地震速報 ${event.earthquake.hypocenter.name}` +
+        (scale > 0 ? ` 最大震度${getIntensityLabel(scale)}予想` : '') +
+        (newCount > 1 ? ` 他${newCount - 1}件` : '')
+      setAlertTitle(eewTitle)
+      window.clearTimeout(eewTitleTimerRef.current)
+      const eewResetMs = settings.idleRevertSec === 15 ? 15000 : 30000
+      eewTitleTimerRef.current = window.setTimeout(() => {
+        applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, setAlertTitle)
+      }, eewResetMs)
       return
     }
 
@@ -194,19 +239,6 @@ export function App() {
     })
   }, [earthquakes, settings.notifyMinScale])
 
-  // EEW 発報中はタイトルを最大震度の高い EEW に基づいて更新する
-  useEffect(() => {
-    if (activeEEWs.size === 0) return
-    const primary = Array.from(activeEEWs.values())
-      .sort((a, b) => eewMaxScale(b) - eewMaxScale(a))[0]
-    const scale = eewMaxScale(primary)
-    setAlertTitle(
-      `🚨 緊急地震速報 ${primary.earthquake.hypocenter.name}` +
-      (scale > 0 ? ` 最大震度${getIntensityLabel(scale)}予想` : '') +
-      (activeEEWs.size > 1 ? ` 他${activeEEWs.size - 1}件` : ''),
-    )
-  }, [activeEEWs])
-
   // 情報更新時にウィンドウタイトルを変更し、平常時は既定タイトルに戻す。
   useEffect(() => {
     document.title = alertTitle ?? DEFAULT_TITLE
@@ -222,25 +254,39 @@ export function App() {
   // 津波発表中フラグ（解除済みでない津波情報があるか）
   const tsunamiActive = tsunamis.some(t => !t.cancelled)
 
-  // 津波発表中フラグの変化でタイトル更新（ページロード時・解除時も反映）
+  // 初回ページロード時に REST API で取得した既存の EEW/津波状態をタイトルに反映する
+  // （WebSocket 受信前に既にアクティブな情報がある場合のみ一度だけ動作）
+  const initialTitleAppliedRef = useRef(false)
   useEffect(() => {
-    if (activeEEWs.size > 0) return  // EEW 発報中は EEW 側で制御
-    if (tsunamiActive) {
-      setAlertTitle('🌊 津波情報 発表中')
-    } else {
-      setAlertTitle(prev => (prev === '🌊 津波情報 発表中' ? null : prev))
+    if (initialTitleAppliedRef.current) return
+    if (activeEEWs.size === 0 && !tsunamiActive) return
+    initialTitleAppliedRef.current = true
+    applyPriorityTitle(activeEEWs, tsunamiActive, settings.tsunamiPriorityDefault, setAlertTitle)
+  }, [activeEEWs, tsunamiActive, settings.tsunamiPriorityDefault])
+
+  // 津波解除検出: true→false の遷移でタイマーをキャンセルし優先度ロジックを即時適用
+  const prevTsunamiActiveRef = useRef(false)
+  useEffect(() => {
+    if (prevTsunamiActiveRef.current && !tsunamiActive) {
+      window.clearTimeout(tsunamiTitleTimerRef.current)
+      applyPriorityTitle(activeEEWsRef.current, false, tsunamiPriorityRef.current, setAlertTitle)
     }
-  }, [tsunamiActive, activeEEWs])
+    prevTsunamiActiveRef.current = tsunamiActive
+  }, [tsunamiActive])
 
   // アイドル復帰で戻すデフォルトタブ。津波優先トグル ON かつ津波発表中なら
   // 津波情報、それ以外は設定のデフォルトタブ。タイマー発火時に最新値を参照する
   // ため ref に保持する。
   const defaultTabRef = useRef<TabId>(settings.defaultTab)
-  // EEW 発報中かどうかをタイマーコールバック内で参照するための ref
+  // EEW 発報中・津波発表中・津波優先設定をタイマーコールバック内で参照するための ref
   const activeEEWsRef = useRef(activeEEWs)
+  const tsunamiActiveRef = useRef(false)
+  const tsunamiPriorityRef = useRef(false)
   defaultTabRef.current =
     settings.tsunamiPriorityDefault && tsunamiActive ? 'tsunami' : settings.defaultTab
   activeEEWsRef.current = activeEEWs
+  tsunamiActiveRef.current = tsunamiActive
+  tsunamiPriorityRef.current = settings.tsunamiPriorityDefault
 
   // 設定秒数 情報更新（activeTab の自動切替・P2P 更新）もユーザー操作もなければ
   // デフォルトタブへ戻す。activeTab / lastUpdate の変化、および操作のたびにリセット。
@@ -254,7 +300,9 @@ export function App() {
         setActiveTab('realtime')
       } else {
         setActiveTab(defaultTabRef.current)
-        setAlertTitle(null)
+        if (!tsunamiActiveRef.current) {
+          setAlertTitle(null)
+        }
       }
     }
     let timer = window.setTimeout(revert, ms)
