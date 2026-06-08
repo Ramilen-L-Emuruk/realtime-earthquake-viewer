@@ -49,10 +49,6 @@ export function KyoshinDetectedPoints({
         ctx.fillStyle = color
         ctx.globalAlpha = 0.85
         ctx.fill()
-        ctx.globalAlpha = 1
-        ctx.strokeStyle = '#ffffff'
-        ctx.lineWidth = 1.5
-        ctx.stroke()
       }
     }
 
