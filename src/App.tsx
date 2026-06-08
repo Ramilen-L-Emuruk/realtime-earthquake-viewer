@@ -74,6 +74,7 @@ export function App() {
     // （地震情報・津波情報・緊急地震速報）。
     if (event.code === 551) {
       setActiveTab('earthquake')
+      setSelectedQuakeId(null)
       const { hypocenter, maxScale } = event.earthquake
       setAlertTitle(`🔴 地震情報 ${hypocenter.name} 最大震度${getIntensityLabel(maxScale)}`)
       window.clearTimeout(earthquakeTitleTimerRef.current)
