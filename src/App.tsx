@@ -14,7 +14,7 @@ import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude } from './utils/formatters'
 import { eewMaxScale } from './utils/eew'
 import { tsunamiMaxGrade, tsunamiOverallGrade } from './utils/tsunami'
-import { playAlertSound, playKyoshinUpdateSound, unlockAudio, setSoundVolume, type AlertSoundType } from './utils/alertSound'
+import { playAlertSound, playKyoshinUpdateSound, kyoshinLevel, unlockAudio, setSoundVolume, type AlertSoundType } from './utils/alertSound'
 import type { P2PQuakeEvent, EEWAlert } from './types/earthquake'
 
 // 平常時のウィンドウタイトル（index.html の <title> と一致させる）。
@@ -378,19 +378,23 @@ export function App() {
     prevDetectedRef.current = kyoshinDetection.detected
   }, [kyoshinDetection.detected, kyoshinDetection.maxIndex, settings.soundEnabled])
 
-  // 揺れ検知中に最大震度インデックスが上昇するたびに震度に応じた音を鳴らす
-  const prevMaxIndexRef = useRef(0)
+  // 揺れ検知中に音レベル（震度帯）が過去最大を超えたときのみ音を鳴らす
+  // 生インデックスではなく音レベル（0〜6）で比較することで、フレーム間の微細な
+  // 数値変動（同一震度帯内のゆらぎ）による誤再鳴を防ぐ。
+  const maxSoundLevelRef = useRef(0)
   useEffect(() => {
     if (!kyoshinDetection.detected) {
-      prevMaxIndexRef.current = 0
+      maxSoundLevelRef.current = 0
       return
     }
-    const curr = kyoshinDetection.maxIndex
-    const prev = prevMaxIndexRef.current
-    prevMaxIndexRef.current = curr
-    // 初回検知（prev === 0）は kyoshin 音が鳴るのでスキップ、上昇時のみ鳴らす
-    if (curr > prev && prev > 0 && settings.soundEnabled) {
-      playKyoshinUpdateSound(curr)
+    const currLevel = kyoshinLevel(kyoshinDetection.maxIndex)
+    const prevMaxLevel = maxSoundLevelRef.current
+    if (currLevel > prevMaxLevel) {
+      maxSoundLevelRef.current = currLevel
+      // 初回検知（prevMaxLevel === 0）は検知音が鳴るのでスキップ
+      if (prevMaxLevel > 0 && settings.soundEnabled) {
+        playKyoshinUpdateSound(kyoshinDetection.maxIndex)
+      }
     }
   }, [kyoshinDetection.maxIndex, kyoshinDetection.detected, settings.soundEnabled])
 

@@ -178,7 +178,7 @@ const KYOSHIN_LEVEL_PATTERNS: Tone[][] = [
   ],
 ]
 
-function kyoshinLevel(index: number): number {
+export function kyoshinLevel(index: number): number {
   if (index >= 19) return 6  // 震度7 (計測震度 6.5+)
   if (index >= 17) return 5  // 震度6弱/6強 (計測震度 5.5〜6.5)
   if (index >= 16) return 4  // 震度5強 (計測震度 5.0〜5.5)
