@@ -1,10 +1,10 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import L from 'leaflet'
-import { MapContainer, TileLayer, Marker, Polyline, Polygon, Circle, Popup, Tooltip, Pane, useMap, useMapEvents } from 'react-leaflet'
+import { MapContainer, TileLayer, Marker, Polyline, Polygon, Circle, Popup, Pane, useMap, useMapEvents } from 'react-leaflet'
 import type { JMAQuake, JMATsunami, TsunamiGrade, EEWAlert } from '../../types/earthquake'
 import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
-import { eewAreas, eewMaxScale } from '../../utils/eew'
+import { eewAreas } from '../../utils/eew'
 import { useStationCoords } from '../../hooks/useStationCoords'
 import { lookupPointCoords, type LatLng } from '../../utils/stationCoords'
 import { useTsunamiZones } from '../../hooks/useTsunamiZones'
@@ -538,9 +538,9 @@ export function JapanMap({
           </Fragment>
         ))}
 
-      {/* 緊急地震速報の震源（震源地名ラベル付き）。複数EEW時は全震源を表示する。 */}
+      {/* 緊急地震速報の震源マーカー。複数EEW時は全震源を表示する。 */}
       {mode === 'kyoshin' &&
-        eews.map((eew, idx) =>
+        eews.map((eew) =>
           eew.earthquake.hypocenter.latitude > -200 &&
           eew.earthquake.hypocenter.longitude > -200
             ? (
@@ -552,15 +552,7 @@ export function JapanMap({
                 ]}
                 icon={getEpicenterIcon(iconScale, true)}
                 zIndexOffset={EPICENTER_Z}
-              >
-                <Tooltip permanent direction="top" offset={[0, -10]}>
-                  {eews.length > 1 && <span className="text-xs">#{idx + 1} </span>}
-                  <span className="font-bold">{eew.earthquake.hypocenter.name}</span>
-                  {' '}
-                  M{eew.earthquake.hypocenter.magnitude.toFixed(1)}
-                  {eewMaxScale(eew) > 0 && ` 最大震度${getIntensityLabel(eewMaxScale(eew))}予想`}
-                </Tooltip>
-              </Marker>
+              />
             )
             : null
         )}
