@@ -170,7 +170,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect }: Props)
               {prefGroups.map(({ pref, scale }) => (
                 <div key={pref} className="flex items-center gap-2 text-base">
                   <span
-                    className="font-bold w-12 text-right flex-shrink-0"
+                    className="font-bold w-16 text-right flex-shrink-0 whitespace-nowrap"
                     style={{ color: getIntensityColor(scale) }}
                   >
                     震度{getIntensityLabel(scale)}

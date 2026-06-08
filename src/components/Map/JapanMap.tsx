@@ -1,10 +1,10 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import L from 'leaflet'
-import { MapContainer, TileLayer, Marker, Polyline, Polygon, Circle, Popup, Tooltip, Pane, useMap, useMapEvents } from 'react-leaflet'
+import { MapContainer, TileLayer, Marker, Polyline, Polygon, Circle, Popup, Pane, useMap, useMapEvents } from 'react-leaflet'
 import type { JMAQuake, JMATsunami, TsunamiGrade, EEWAlert } from '../../types/earthquake'
 import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
-import { eewAreas, eewMaxScale } from '../../utils/eew'
+import { eewAreas } from '../../utils/eew'
 import { useStationCoords } from '../../hooks/useStationCoords'
 import { lookupPointCoords, type LatLng } from '../../utils/stationCoords'
 import { useTsunamiZones } from '../../hooks/useTsunamiZones'
@@ -302,6 +302,9 @@ export function JapanMap({
   const tsunamiZones = useTsunamiZones()
   const subregions = useSubRegions()
   const [zoom, setZoom] = useState(JAPAN_ZOOM)
+  // ズームに応じて強震モニタ観測点のサイズを補正する係数。
+  // ズーム8を基準（×1.0）とし、ズームアウト時は小さく・ズームイン時は大きくする。
+  const kyoshinZoomScale = Math.max(0.2, Math.min(3.5, Math.pow(2, (zoom - 8) / 2)))
 
   const hasEpicenter =
     quake &&
@@ -500,8 +503,8 @@ export function JapanMap({
       {/* 強震モニタ: Yahoo リアルタイム震度の観測点を描画 */}
       {mode === 'kyoshin' && (
         <>
-          <KyoshinPoints sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
-          <KyoshinSubThreshold sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
+          <KyoshinPoints sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale * kyoshinZoomScale} />
+          <KyoshinSubThreshold sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale * kyoshinZoomScale} />
         </>
       )}
 
@@ -514,7 +517,7 @@ export function JapanMap({
       {mode === 'kyoshin' && (
         <>
           <FitToDetection points={detectedPoints} hasEew={eews.length > 0} />
-          <KyoshinDetectedPoints points={detectedPoints} iconScale={iconScale} />
+          <KyoshinDetectedPoints points={detectedPoints} iconScale={iconScale * kyoshinZoomScale} />
         </>
       )}
 
@@ -538,9 +541,9 @@ export function JapanMap({
           </Fragment>
         ))}
 
-      {/* 緊急地震速報の震源（震源地名ラベル付き）。複数EEW時は全震源を表示する。 */}
+      {/* 緊急地震速報の震源マーカー。複数EEW時は全震源を表示する。 */}
       {mode === 'kyoshin' &&
-        eews.map((eew, idx) =>
+        eews.map((eew) =>
           eew.earthquake.hypocenter.latitude > -200 &&
           eew.earthquake.hypocenter.longitude > -200
             ? (
@@ -552,15 +555,7 @@ export function JapanMap({
                 ]}
                 icon={getEpicenterIcon(iconScale, true)}
                 zIndexOffset={EPICENTER_Z}
-              >
-                <Tooltip permanent direction="top" offset={[0, -10]}>
-                  {eews.length > 1 && <span className="text-xs">#{idx + 1} </span>}
-                  <span className="font-bold">{eew.earthquake.hypocenter.name}</span>
-                  {' '}
-                  M{eew.earthquake.hypocenter.magnitude.toFixed(1)}
-                  {eewMaxScale(eew) > 0 && ` 最大震度${getIntensityLabel(eewMaxScale(eew))}予想`}
-                </Tooltip>
-              </Marker>
+              />
             )
             : null
         )}

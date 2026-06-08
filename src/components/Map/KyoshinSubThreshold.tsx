@@ -87,13 +87,21 @@ export function KyoshinSubThreshold({ sites, indices, iconScale }: Props) {
       drawFnRef.current()
     }
 
+    const onMove = () => {
+      const topLeft = map.containerPointToLayerPoint([0, 0])
+      L.DomUtil.setPosition(canvas, topLeft)
+      drawFnRef.current()
+    }
+
     map.on('viewreset', onViewReset)
     map.on('zoomend', onViewReset)
+    map.on('move', onMove)
     onViewReset()
 
     return () => {
       map.off('viewreset', onViewReset)
       map.off('zoomend', onViewReset)
+      map.off('move', onMove)
       canvas.remove()
       canvasRef.current = null
     }

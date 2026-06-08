@@ -13,13 +13,40 @@ import { useKyoshinDetection } from './hooks/useKyoshinDetection'
 import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude } from './utils/formatters'
 import { eewMaxScale } from './utils/eew'
-import { tsunamiMaxGrade } from './utils/tsunami'
-import { playAlertSound, playKyoshinUpdateSound, unlockAudio, setSoundVolume, type AlertSoundType } from './utils/alertSound'
+import { tsunamiMaxGrade, tsunamiOverallGrade } from './utils/tsunami'
+import { playAlertSound, playKyoshinUpdateSound, kyoshinLevel, unlockAudio, setSoundVolume, type AlertSoundType } from './utils/alertSound'
 import type { P2PQuakeEvent, EEWAlert } from './types/earthquake'
 
 // 平常時のウィンドウタイトル（index.html の <title> と一致させる）。
 // AutoHotKey 等が、情報更新時のタイトル変化を検知してイベントを発火できるようにする。
 const DEFAULT_TITLE = 'リアルタイム地震ビューアー'
+
+// EEW 単発のレベル算出: 0=低震度予報 / 1=警報（震度5弱以上） / 2=特別警報（震度6弱以上）
+// scaleTo:99 は P2PQuake の「震度算出不能」コードなので通常の震度比較から除外する
+function computeSingleEEWLevel(eew: EEWAlert): 0 | 1 | 2 {
+  const scale = eewMaxScale(eew)
+  const intensityKnown = scale < 99
+  return (intensityKnown && scale >= 55) ? 2
+       : (eew.severity === 'Warning' || (intensityKnown && scale >= 45)) ? 1
+       : 0
+}
+
+function computeEEWLevel(eews: ReadonlyMap<string, EEWAlert>): 0 | 1 | 2 | null {
+  if (eews.size === 0) return null
+  let max: 0 | 1 | 2 = 0
+  for (const eew of eews.values()) {
+    const level = computeSingleEEWLevel(eew)
+    if (level > max) max = level
+  }
+  return max
+}
+
+function selectEEWSoundType(isNew: boolean, levelUpgraded: boolean, currentLevel: 0 | 1 | 2): AlertSoundType {
+  if (isNew || levelUpgraded) {
+    return currentLevel === 2 ? 'eewSpecial' : currentLevel === 1 ? 'eew' : 'eewForecast'
+  }
+  return 'eewUpdate'
+}
 
 function computeEEWTitle(eews: ReadonlyMap<string, EEWAlert>): string {
   const primary = Array.from(eews.values()).sort((a, b) => eewMaxScale(b) - eewMaxScale(a))[0]
@@ -116,13 +143,8 @@ export function App() {
       // 緊急地震速報の発報時はリアルタイムタブ（強震モニタ＋予報円）を開く
       setActiveTab('realtime')
 
-      // EEW レベル算出: 0=低震度予報 / 1=警報（震度5弱以上） / 2=特別警報（震度6弱以上）
-      // scaleTo:99 は P2PQuake の「震度算出不能」コードなので通常の震度比較から除外する
+      const currentLevel = computeSingleEEWLevel(event)
       const scale = eewMaxScale(event)
-      const intensityKnown = scale < 99
-      const currentLevel: 0 | 1 | 2 =
-        (intensityKnown && scale >= 55) ? 2 :
-        (event.severity === 'Warning' || (intensityKnown && scale >= 45)) ? 1 : 0
 
       // 新規発報か続報かを判定し、レベル引き上げを検出する
       const isNew = !activeEEWLevelsRef.current.has(key)
@@ -134,12 +156,7 @@ export function App() {
       )
 
       if (settings.soundEnabled) {
-        let eewSoundType: AlertSoundType
-        if (isNew || levelUpgraded) {
-          eewSoundType = currentLevel === 2 ? 'eewSpecial' : currentLevel === 1 ? 'eew' : 'eewForecast'
-        } else {
-          eewSoundType = 'eewUpdate'
-        }
+        const eewSoundType = selectEEWSoundType(isNew, levelUpgraded, currentLevel)
         const now = Date.now()
         if (now - lastSoundAtRef.current[eewSoundType] >= 1500) {
           lastSoundAtRef.current[eewSoundType] = now
@@ -252,8 +269,9 @@ export function App() {
   }, [activeTab])
   const mapTab = activeTab === 'settings' ? lastContentTab : activeTab
 
-  // 津波発表中フラグ（解除済みでない津波情報があるか）
-  const tsunamiActive = tsunamis.some(t => !t.cancelled)
+  // 津波発表中フラグ（解除済みでない津波情報があるか）とバッジ用グレード
+  const tsunamiGrade = tsunamiOverallGrade(tsunamis)
+  const tsunamiActive = tsunamiGrade !== null
 
   // 初回ページロード時に REST API で取得した既存の EEW/津波状態をタイトルに反映する
   // （WebSocket 受信前に既にアクティブな情報がある場合のみ一度だけ動作）
@@ -363,19 +381,23 @@ export function App() {
     prevDetectedRef.current = kyoshinDetection.detected
   }, [kyoshinDetection.detected, kyoshinDetection.maxIndex, settings.soundEnabled])
 
-  // 揺れ検知中に最大震度インデックスが上昇するたびに震度に応じた音を鳴らす
-  const prevMaxIndexRef = useRef(0)
+  // 揺れ検知中に音レベル（震度帯）が過去最大を超えたときのみ音を鳴らす
+  // 生インデックスではなく音レベル（0〜6）で比較することで、フレーム間の微細な
+  // 数値変動（同一震度帯内のゆらぎ）による誤再鳴を防ぐ。
+  const maxSoundLevelRef = useRef(0)
   useEffect(() => {
     if (!kyoshinDetection.detected) {
-      prevMaxIndexRef.current = 0
+      maxSoundLevelRef.current = 0
       return
     }
-    const curr = kyoshinDetection.maxIndex
-    const prev = prevMaxIndexRef.current
-    prevMaxIndexRef.current = curr
-    // 初回検知（prev === 0）は kyoshin 音が鳴るのでスキップ、上昇時のみ鳴らす
-    if (curr > prev && prev > 0 && settings.soundEnabled) {
-      playKyoshinUpdateSound(curr)
+    const currLevel = kyoshinLevel(kyoshinDetection.maxIndex)
+    const prevMaxLevel = maxSoundLevelRef.current
+    if (currLevel > prevMaxLevel) {
+      maxSoundLevelRef.current = currLevel
+      // 初回検知（prevMaxLevel === 0）は検知音が鳴るのでスキップ
+      if (prevMaxLevel > 0 && settings.soundEnabled) {
+        playKyoshinUpdateSound(kyoshinDetection.maxIndex)
+      }
     }
   }, [kyoshinDetection.maxIndex, kyoshinDetection.detected, settings.soundEnabled])
 
@@ -474,7 +496,8 @@ export function App() {
         <IconNav
           activeTab={activeTab}
           onTabChange={setActiveTab}
-          tsunamiActive={tsunamiActive}
+          tsunamiGrade={tsunamiGrade}
+          eewLevel={computeEEWLevel(activeEEWs)}
         />
       </div>
     </div>
