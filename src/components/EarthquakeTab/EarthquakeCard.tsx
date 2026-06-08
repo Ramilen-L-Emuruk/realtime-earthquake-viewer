@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useRef, useEffect } from 'react'
 import type { JMAQuake, IssueType } from '../../types/earthquake'
 import {
   formatQuakeTime,
@@ -34,6 +34,13 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect }: Props)
   const tsunamiInfo = formatDomesticTsunami(domesticTsunami)
   const hasLocation = hypocenter.latitude > -200 && hypocenter.longitude > -200
 
+  const cardRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (isSelected) {
+      cardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+  }, [isSelected])
+
   const prefGroups = useMemo(() => {
     if (!isSelected || !quake.points.length) return []
     const map = new Map<string, number>()
@@ -55,6 +62,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect }: Props)
 
   return (
     <button
+      ref={cardRef}
       type="button"
       onClick={onSelect}
       aria-pressed={isSelected}
