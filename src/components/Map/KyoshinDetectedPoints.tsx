@@ -39,7 +39,9 @@ export function KyoshinDetectedPoints({
       ctx.clearRect(0, 0, canvas.width, canvas.height)
 
       const radius = 10 * iconScale
-      for (const p of points) {
+      // 震度の低い点から描画し、高い点を上に重ねる
+      const sorted = [...points].sort((a, b) => a.index - b.index)
+      for (const p of sorted) {
         const pt = map.latLngToContainerPoint(L.latLng(p.lat, p.lng))
         const color = kyoshinIntensityColor(p.index) ?? '#ffffff'
         ctx.beginPath()
