@@ -222,6 +222,16 @@ export function App() {
   // 津波発表中フラグ（解除済みでない津波情報があるか）
   const tsunamiActive = tsunamis.some(t => !t.cancelled)
 
+  // 津波発表中フラグの変化でタイトル更新（ページロード時・解除時も反映）
+  useEffect(() => {
+    if (activeEEWs.size > 0) return  // EEW 発報中は EEW 側で制御
+    if (tsunamiActive) {
+      setAlertTitle('🌊 津波情報 発表中')
+    } else {
+      setAlertTitle(prev => (prev === '🌊 津波情報 発表中' ? null : prev))
+    }
+  }, [tsunamiActive, activeEEWs])
+
   // アイドル復帰で戻すデフォルトタブ。津波優先トグル ON かつ津波発表中なら
   // 津波情報、それ以外は設定のデフォルトタブ。タイマー発火時に最新値を参照する
   // ため ref に保持する。
