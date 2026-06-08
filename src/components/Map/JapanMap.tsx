@@ -434,6 +434,10 @@ export function JapanMap({
         quake.earthquake.hypocenter.longitude,
       ])
     }
+    // 遠地地震は国内観測点がなく震源のみになるため、日本中心を追加して両方を収める
+    if (quake?.issue.type === 'Foreign' && hasEpicenter) {
+      positions.push(JAPAN_CENTER)
+    }
     return positions
   }, [intensityMarkers, hasEpicenter, quake])
 
