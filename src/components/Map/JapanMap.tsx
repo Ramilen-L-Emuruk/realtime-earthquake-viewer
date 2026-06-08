@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import L from 'leaflet'
-import { MapContainer, TileLayer, Marker, Polyline, Polygon, Circle, CircleMarker, Popup, Tooltip, Pane, useMap, useMapEvents } from 'react-leaflet'
+import { MapContainer, TileLayer, Marker, Polyline, Polygon, Circle, Popup, Tooltip, Pane, useMap, useMapEvents } from 'react-leaflet'
 import type { JMAQuake, JMATsunami, TsunamiGrade, EEWAlert } from '../../types/earthquake'
 import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
@@ -15,9 +15,9 @@ import { BaseMap } from './BaseMap'
 import { IntensityPoints } from './IntensityPoints'
 import { KyoshinPoints } from './KyoshinPoints'
 import { KyoshinSubThreshold } from './KyoshinSubThreshold'
+import { KyoshinDetectedPoints } from './KyoshinDetectedPoints'
 import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
 import type { DetectedPoint } from '../../hooks/useKyoshinDetection'
-import { kyoshinIntensityColor } from '../../utils/kyoshinIntensity'
 
 // 震源の×印アイコン。UI 倍率・点滅フラグごとにキャッシュして再利用する。
 const epicenterIconCache = new Map<string, L.DivIcon>()
@@ -514,19 +514,7 @@ export function JapanMap({
       {mode === 'kyoshin' && (
         <>
           <FitToDetection points={detectedPoints} hasEew={eews.length > 0} />
-          {detectedPoints.map((p, i) => (
-            <CircleMarker
-              key={`det-${i}`}
-              center={[p.lat, p.lng]}
-              radius={10 * iconScale}
-              pathOptions={{
-                color: '#ffffff',
-                weight: 1.5,
-                fillColor: kyoshinIntensityColor(p.index) ?? '#ffffff',
-                fillOpacity: 0.85,
-              }}
-            />
-          ))}
+          <KyoshinDetectedPoints points={detectedPoints} iconScale={iconScale} />
         </>
       )}
 

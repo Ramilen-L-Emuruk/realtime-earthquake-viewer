@@ -19,13 +19,11 @@ export interface KyoshinDetection {
 /** 1秒で index が 2 以上増加した観測点を「変化あり」とみなす（約1.0 計測震度相当の上昇） */
 const DELTA_THRESHOLD = 2
 /** 検知対象とする最低インデックス（震度2相当: 計測震度 1.5 以上 = index 9） */
-const MIN_DETECTION_INDEX = 9
+const MIN_DETECTION_INDEX = 6
 /** 空間クラスタリングの距離閾値 (km) */
-const PROXIMITY_KM = 80
+const PROXIMITY_KM = 60
 /** クラスタ成立に必要な最低観測点数（2点は隣接センサー誤作動と区別不可のため3点以上） */
 const MIN_CLUSTER_SIZE = 3
-/** 変化あり観測点が全体のこの割合を超えたらデータ異常とみなし全棄却 */
-const ANOMALY_RATIO = 0.15
 /** 候補クラスタの有効期限 (ms)：この時間内に再検出されなければ廃棄 */
 const PENDING_TIMEOUT_MS = 3_000
 /** 既存候補との同一クラスタ判定距離 (km) */
@@ -35,7 +33,7 @@ const NOISE_THRESHOLD = 3
 /** ノイズ判定された観測点を除外する時間 (ms) */
 const NOISE_BLACKLIST_MS = 300_000
 /** 検知後の表示維持時間 (ms) */
-const DETECTION_DURATION_MS = 60_000
+const DETECTION_DURATION_MS = 10_000
 /** 時系列バッファのサイズ（フレーム数） */
 const N_HISTORY = 3
 
@@ -218,11 +216,11 @@ export function useKyoshinDetection(
     }
 
     // --- Layer 3: グローバルサニティ ---
-    if (changed.length / curr.length > ANOMALY_RATIO) {
-      // データ異常：全候補を廃棄してこのフレームをスキップ
-      pendingRef.current = []
-      return
-    }
+//    if (changed.length / curr.length > ANOMALY_RATIO) {
+//      // データ異常：全候補を廃棄してこのフレームをスキップ
+//      pendingRef.current = []
+//      return
+//    }
 
     // --- Layer 2: 空間クラスタリング ---
     const clusters = changed.length > 0 ? buildClusters(changed, sites) : []
@@ -311,7 +309,6 @@ export function useKyoshinDetection(
         })
         .filter((p): p is DetectedPoint => p !== null)
         .sort((a, b) => b.index - a.index)
-        .slice(0, 50)
       const maxIndex = points[0]?.index ?? confirmedMaxIndex
       setDetection({ detected: true, maxIndex, points })
     }
