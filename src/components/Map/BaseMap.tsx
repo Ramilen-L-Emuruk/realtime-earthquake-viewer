@@ -6,9 +6,11 @@ import { loadSubRegions } from '../../utils/subregions'
 import { REGIONS } from '../../utils/regions'
 
 // ラベルの粒度を切り替えるズーム境界。
-//   zoom < REGION_MAX        : 地方ラベル（引きの画）
-//   REGION_MAX <= zoom < CITY: 県名ラベル
-//   zoom >= CITY             : 一次細分区域名ラベル（寄り）
+//   zoom < LABEL_MIN              : ラベル非表示（遠地地震など大きく引いた状態）
+//   LABEL_MIN <= zoom < REGION_MAX: 地方ラベル（引きの画）
+//   REGION_MAX <= zoom < CITY     : 県名ラベル
+//   zoom >= CITY                  : 一次細分区域名ラベル（寄り）
+const LABEL_MIN_ZOOM = 6
 const REGION_MAX_ZOOM = 7
 const CITY_LABEL_MIN_ZOOM = 9
 
@@ -128,7 +130,8 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
     function applyLabelVisibility() {
       const zoom = map.getZoom()
       let active: L.LayerGroup | null =
-        zoom < REGION_MAX_ZOOM ? regionLabels
+        zoom < LABEL_MIN_ZOOM ? null
+        : zoom < REGION_MAX_ZOOM ? regionLabels
         : zoom < CITY_LABEL_MIN_ZOOM ? prefLabels
         : subregionLabels
       if (active === regionLabels && suppressRegionRef.current) active = null
