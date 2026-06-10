@@ -19,7 +19,7 @@ export interface KyoshinDetection {
 /** 1秒で index が 2 以上増加した観測点を「変化あり」とみなす（約1.0 計測震度相当の上昇） */
 const DELTA_THRESHOLD = 2
 /** 検知対象とする最低インデックス（震度2相当: 計測震度 1.5 以上 = index 9） */
-const MIN_DETECTION_INDEX = 6
+export const MIN_DETECTION_INDEX = 6
 /** 空間クラスタリングの距離閾値 (km) */
 const PROXIMITY_KM = 60
 /** クラスタ成立に必要な最低観測点数（2点は隣接センサー誤作動と区別不可のため3点以上） */
