@@ -413,7 +413,7 @@ export function App() {
         const now = Date.now()
         if (now - lastSoundAtRef.current.kyoshin >= 1500) {
           lastSoundAtRef.current.kyoshin = now
-          playKyoshinUpdateSound(effectiveKyoshinMaxIndex)
+          playAlertSound('kyoshin')
         }
       }
     }
