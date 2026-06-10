@@ -9,6 +9,7 @@ export interface TestFunctions {
   eewWarning: () => void
   eewForecast: () => void
   tsunami: () => void
+  tsunamiWarning: () => void
   tsunamiWatch: () => void
   notification: () => void
 }
@@ -344,13 +345,13 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
         </Row>
         <Row label="揺れ検知・震度更新" description="震度をタップして試聴">
           <div className="flex flex-wrap gap-1.5 justify-end">
-            <IntensityPlayButton scale={20} kyoshinIndex={11} />
-            <IntensityPlayButton scale={30} kyoshinIndex={16} />
-            <IntensityPlayButton scale={40} kyoshinIndex={22} />
-            <IntensityPlayButton scale={45} kyoshinIndex={29} />
-            <IntensityPlayButton scale={50} kyoshinIndex={36} />
-            <IntensityPlayButton scale={55} kyoshinIndex={45} />
-            <IntensityPlayButton scale={70} kyoshinIndex={52} />
+            <IntensityPlayButton scale={20} kyoshinIndex={9}  />
+            <IntensityPlayButton scale={30} kyoshinIndex={11} />
+            <IntensityPlayButton scale={40} kyoshinIndex={13} />
+            <IntensityPlayButton scale={45} kyoshinIndex={15} />
+            <IntensityPlayButton scale={50} kyoshinIndex={16} />
+            <IntensityPlayButton scale={55} kyoshinIndex={17} />
+            <IntensityPlayButton scale={70} kyoshinIndex={19} />
           </div>
         </Row>
         {/* ── 緊急地震速報（EEW） ── */}
@@ -410,6 +411,9 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
         <Row label="津波警報（大津波警報）" description="岩手・宮城・福島等 – tsunamiMajor 音 / 15秒間表示">
           <TestButton color="purple" onClick={onTest.tsunami}>大警報テスト</TestButton>
         </Row>
+        <Row label="津波警報（津波警報）" description="青森・茨城等 – tsunami 音 / 10秒間表示">
+          <TestButton color="orange" onClick={onTest.tsunamiWarning}>警報テスト</TestButton>
+        </Row>
         <Row label="津波警報（注意報）" description="北海道沿岸 – tsunamiWatch 音 / 10秒間表示">
           <TestButton color="blue" onClick={onTest.tsunamiWatch}>注意報テスト</TestButton>
         </Row>
@@ -455,7 +459,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">2.4.8</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">2.4.9</span></Row>
         <Row label="地震・津波データ">
           <a href="https://www.p2pquake.net/" target="_blank" rel="noopener noreferrer"
             className="text-xs text-blue-400 hover:text-blue-300">

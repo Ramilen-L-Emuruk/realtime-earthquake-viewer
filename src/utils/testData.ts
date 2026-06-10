@@ -124,6 +124,22 @@ export function createTestTsunamiWatch(): JMATsunami {
   }
 }
 
+export function createTestTsunamiWarning(): JMATsunami {
+  const now = new Date().toISOString()
+  return {
+    code: 552,
+    id: `test-tsunami-warning-${Date.now()}`,
+    time: now,
+    cancelled: false,
+    issue: { source: 'テスト', time: now, type: 'Focus' },
+    areas: [
+      { grade: 'Warning', immediate: true,  name: '青森県太平洋沿岸', maxHeight: { description: '3m', value: 3.0 } },
+      { grade: 'Warning', immediate: true,  name: '茨城県',           maxHeight: { description: '3m', value: 3.0 } },
+      { grade: 'Watch',   immediate: false, name: '北海道太平洋沿岸東部', maxHeight: { description: '1m', value: 1.0 } },
+    ],
+  }
+}
+
 export function createTestTsunami(): JMATsunami {
   const now = new Date().toISOString()
   return {
