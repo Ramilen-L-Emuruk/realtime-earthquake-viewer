@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { IconNav, type TabId } from './components/IconNav'
 import { JapanMap, type MapMode } from './components/Map/JapanMap'
 import { MapUpdateTime } from './components/MapUpdateTime'
@@ -9,7 +9,7 @@ import { SettingsTab } from './components/SettingsTab'
 import { useEarthquakes } from './hooks/useEarthquakes'
 import { useSettings } from './hooks/useSettings'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
-import { useKyoshinDetection } from './hooks/useKyoshinDetection'
+import { useKyoshinDetection, MIN_DETECTION_INDEX } from './hooks/useKyoshinDetection'
 import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude } from './utils/formatters'
 import { eewMaxScale } from './utils/eew'
@@ -391,6 +391,17 @@ export function App() {
   const kyoshin = useKyoshinRealtime(true, { onEEWEvent: injectEvent, timeOffset: kyoshinTimeOffset })
   const kyoshinDetection = useKyoshinDetection(kyoshin.sites, kyoshin.indices)
 
+  // EEW受信中または揺れ検知中は全観測点ベースの最大インデックスを使う（表示と音を一致させる）
+  const hasActiveEEW = activeEEWs.size > 0
+  const effectiveKyoshinMaxIndex = useMemo(() => {
+    if (!(hasActiveEEW || kyoshinDetection.detected)) return kyoshinDetection.maxIndex
+    let max = 0
+    for (const idx of kyoshin.indices) {
+      if (idx >= MIN_DETECTION_INDEX && idx > max) max = idx
+    }
+    return max > 0 ? max : kyoshinDetection.maxIndex
+  }, [hasActiveEEW, kyoshinDetection.detected, kyoshinDetection.maxIndex, kyoshin.indices])
+
   // 揺れ検知時にリアルタイムタブを自動表示＋ウィンドウタイトル更新＋通知音
   // （false → true への遷移時のみ）
   const prevDetectedRef = useRef(false)
@@ -402,12 +413,12 @@ export function App() {
         const now = Date.now()
         if (now - lastSoundAtRef.current.kyoshin >= 1500) {
           lastSoundAtRef.current.kyoshin = now
-          playKyoshinUpdateSound(kyoshinDetection.maxIndex)
+          playKyoshinUpdateSound(effectiveKyoshinMaxIndex)
         }
       }
     }
     prevDetectedRef.current = kyoshinDetection.detected
-  }, [kyoshinDetection.detected, kyoshinDetection.maxIndex, settings.soundEnabled])
+  }, [kyoshinDetection.detected, effectiveKyoshinMaxIndex, settings.soundEnabled])
 
   // 揺れ検知中に音レベル（震度帯）が過去最大を超えたときのみ音を鳴らす
   // 生インデックスではなく音レベル（0〜6）で比較することで、フレーム間の微細な
@@ -418,16 +429,16 @@ export function App() {
       maxSoundLevelRef.current = 0
       return
     }
-    const currLevel = kyoshinLevel(kyoshinDetection.maxIndex)
+    const currLevel = kyoshinLevel(effectiveKyoshinMaxIndex)
     const prevMaxLevel = maxSoundLevelRef.current
     if (currLevel > prevMaxLevel) {
       maxSoundLevelRef.current = currLevel
       // 初回検知（prevMaxLevel === 0）は検知音が鳴るのでスキップ
       if (prevMaxLevel > 0 && settings.soundEnabled) {
-        playKyoshinUpdateSound(kyoshinDetection.maxIndex)
+        playKyoshinUpdateSound(effectiveKyoshinMaxIndex)
       }
     }
-  }, [kyoshinDetection.maxIndex, kyoshinDetection.detected, settings.soundEnabled])
+  }, [effectiveKyoshinMaxIndex, kyoshinDetection.detected, settings.soundEnabled])
 
   // 常時表示する地図の内容は mapTab（設定タブ中は直前のタブ）に応じて切り替える
   const mapMode: MapMode =
@@ -484,6 +495,8 @@ export function App() {
             <RealtimeTab
               eews={Array.from(activeEEWs.values())}
               kyoshinDetection={kyoshinDetection}
+              kyoshinSites={kyoshin.sites}
+              kyoshinIndices={kyoshin.indices}
             />
           </div>
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'tsunami' ? ' invisible pointer-events-none' : ''}`}>
