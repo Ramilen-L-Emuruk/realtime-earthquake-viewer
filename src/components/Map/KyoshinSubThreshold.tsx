@@ -93,15 +93,24 @@ export function KyoshinSubThreshold({ sites, indices, iconScale }: Props) {
       drawFnRef.current()
     }
 
+    const onZoomAnim = (e: L.ZoomAnimEvent) => {
+      const scale = map.getZoomScale(e.zoom)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const offset = (map as any)._latLngBoundsToNewLayerBounds(map.getBounds(), e.zoom, e.center).min
+      L.DomUtil.setTransform(canvas, offset, scale)
+    }
+
     map.on('viewreset', onViewReset)
     map.on('zoomend', onViewReset)
     map.on('move', onMove)
+    map.on('zoomanim', onZoomAnim as L.LeafletEventHandlerFn)
     onViewReset()
 
     return () => {
       map.off('viewreset', onViewReset)
       map.off('zoomend', onViewReset)
       map.off('move', onMove)
+      map.off('zoomanim', onZoomAnim as L.LeafletEventHandlerFn)
       canvas.remove()
       canvasRef.current = null
     }
