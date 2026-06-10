@@ -35,16 +35,16 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
   const { hypocenter } = eew.earthquake
   const prefAreas = areas.filter(a => a.pref)
 
-  const borderColor = isWarning ? '#ef4444' : '#f97316'
+  const borderColor = isWarning ? '#ef4444' : '#eab308'
   const typeLabel = isSpecial ? '特別警報' : isWarning ? '警報' : '予報'
-  const typeLabelColor = isWarning ? 'text-red-300' : 'text-orange-300'
-  const typeBadgeBg = isWarning ? 'bg-red-900/60' : 'bg-orange-900/60'
+  const typeLabelColor = isWarning ? 'text-red-300' : 'text-yellow-300'
+  const typeBadgeBg = isWarning ? 'bg-red-900/60' : 'bg-yellow-900/60'
 
   return (
     <div
       className="rounded-lg p-3 flex flex-col gap-2"
       style={{
-        backgroundColor: isWarning ? 'rgba(127,29,29,0.3)' : 'rgba(124,45,18,0.3)',
+        backgroundColor: isWarning ? 'rgba(127,29,29,0.3)' : 'rgba(113,63,18,0.3)',
         border: `2px solid ${borderColor}`,
       }}
     >
