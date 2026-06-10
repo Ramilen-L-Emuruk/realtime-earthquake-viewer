@@ -52,10 +52,21 @@ export function KyoshinDetectedPoints({
       }
     }
 
+    const onZoomAnim = (e: L.ZoomAnimEvent) => {
+      const canvas = canvasRef.current
+      if (!canvas) return
+      const scale = map.getZoomScale(e.zoom)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const offset = (map as any)._latLngBoundsToNewLayerBounds(map.getBounds(), e.zoom, e.center).min
+      L.DomUtil.setTransform(canvas, offset, scale)
+    }
+
     draw()
     map.on('viewreset zoomend move', draw)
+    map.on('zoomanim', onZoomAnim as L.LeafletEventHandlerFn)
     return () => {
       map.off('viewreset zoomend move', draw)
+      map.off('zoomanim', onZoomAnim as L.LeafletEventHandlerFn)
     }
   }, [map, points, iconScale])
 
