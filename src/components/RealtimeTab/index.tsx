@@ -2,6 +2,8 @@
 // 予報円を描画し、ここでは EEW 情報カード・説明・震度スケール凡例・注記を表示する。
 import type { EEWAlert } from '../../types/earthquake'
 import type { KyoshinDetection } from '../../hooks/useKyoshinDetection'
+import { MIN_DETECTION_INDEX } from '../../hooks/useKyoshinDetection'
+import type { SiteCoords } from '../../services/kyoshin'
 import { formatDateTime } from '../../utils/formatters'
 import { getIntensityColor, getIntensityLabel, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
 import { eewAreas, eewMaxScale, eewSerial } from '../../utils/eew'
@@ -24,6 +26,8 @@ const SCALE_LEGEND: { label: string; scale: number }[] = [
 interface Props {
   eews: EEWAlert[]
   kyoshinDetection: KyoshinDetection
+  kyoshinSites: SiteCoords
+  kyoshinIndices: number[]
 }
 
 function EEWCard({ eew }: { eew: EEWAlert }) {
@@ -133,21 +137,56 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
 // 震度ラベルの降順（表示ソート用）
 const LABEL_ORDER = ['7', '6強', '6弱', '5強', '5弱', '4', '3', '2', '1']
 
-function KyoshinDetectionCard({ detection }: { detection: KyoshinDetection }) {
-  if (!detection.detected || detection.points.length === 0) return null
+function KyoshinDetectionCard({
+  detection,
+  hasEEW,
+  kyoshinSites,
+  kyoshinIndices,
+}: {
+  detection: KyoshinDetection
+  hasEEW: boolean
+  kyoshinSites: SiteCoords
+  kyoshinIndices: number[]
+}) {
+  const useAllPoints = hasEEW || detection.detected
 
-  const maxLabel = kyoshinIndexToLabel(detection.maxIndex)
-  if (!maxLabel) return null
-  const maxColor = kyoshinIntensityColor(detection.maxIndex) ?? '#9ca3af'
+  if (!useAllPoints) return null
 
-  // 検知点を震度ラベルごとに集計
+  // EEW受信中または検知中は全観測点の現在インデックスで集計、それ以外は確定点のみ
   const counts = new Map<string, { color: string; count: number }>()
-  for (const p of detection.points) {
-    const label = kyoshinIndexToLabel(p.index)
-    if (!label) continue
-    if (!counts.has(label)) counts.set(label, { color: kyoshinIntensityColor(p.index) ?? '#9ca3af', count: 0 })
-    counts.get(label)!.count++
+  let maxIndex = 0
+
+  if (hasEEW || detection.detected) {
+    for (let i = 0; i < kyoshinIndices.length; i++) {
+      const idx = kyoshinIndices[i]
+      if (idx < MIN_DETECTION_INDEX) continue
+      const site = kyoshinSites[i]
+      if (!site) continue
+      const label = kyoshinIndexToLabel(idx)
+      if (!label) continue
+      if (!counts.has(label)) counts.set(label, { color: kyoshinIntensityColor(idx) ?? '#9ca3af', count: 0 })
+      counts.get(label)!.count++
+      if (idx > maxIndex) maxIndex = idx
+    }
   }
+
+  // 全点集計が空の場合は確定点にフォールバック
+  if (counts.size === 0) {
+    for (const p of detection.points) {
+      const label = kyoshinIndexToLabel(p.index)
+      if (!label) continue
+      if (!counts.has(label)) counts.set(label, { color: kyoshinIntensityColor(p.index) ?? '#9ca3af', count: 0 })
+      counts.get(label)!.count++
+      if (p.index > maxIndex) maxIndex = p.index
+    }
+  }
+
+  if (counts.size === 0) return null
+
+  const maxLabel = kyoshinIndexToLabel(maxIndex)
+  if (!maxLabel) return null
+  const maxColor = kyoshinIntensityColor(maxIndex) ?? '#9ca3af'
+
   const groups = LABEL_ORDER.filter(l => counts.has(l)).map(l => ({ label: l, ...counts.get(l)! }))
 
   return (
@@ -181,14 +220,19 @@ function KyoshinDetectionCard({ detection }: { detection: KyoshinDetection }) {
   )
 }
 
-export function RealtimeTab({ eews, kyoshinDetection }: Props) {
+export function RealtimeTab({ eews, kyoshinDetection, kyoshinSites, kyoshinIndices }: Props) {
   return (
     <div className="p-3 space-y-3">
       {[...eews]
         .sort((a, b) => eewMaxScale(b) - eewMaxScale(a))
         .map(eew => <EEWCard key={eew.id} eew={eew} />)
       }
-      <KyoshinDetectionCard detection={kyoshinDetection} />
+      <KyoshinDetectionCard
+        detection={kyoshinDetection}
+        hasEEW={eews.length > 0}
+        kyoshinSites={kyoshinSites}
+        kyoshinIndices={kyoshinIndices}
+      />
 
       <div>
         <h2 className="text-white font-bold text-sm mb-1">リアルタイム震度モニタ</h2>
