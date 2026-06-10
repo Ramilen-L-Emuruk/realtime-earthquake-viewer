@@ -104,9 +104,10 @@ const PATTERNS: Record<AlertSoundType, Tone[]> = {
     { freq: 520, start: 0.45, duration: 0.35, type: 'triangle', gain: 0.22 },
     { freq: 520, start: 0.9, duration: 0.5, type: 'triangle', gain: 0.22 },
   ],
-  // 揺れ検知（強震モニタ first contact）: 控えめな単音
+  // 揺れ検知（強震モニタ first contact）: 上昇 2 音チャイム
   kyoshin: [
-    { freq: 440, start: 0, duration: 0.25 },
+    { freq: 660, start: 0,    duration: 0.15, gain: 0.22 },
+    { freq: 880, start: 0.18, duration: 0.28, gain: 0.22 },
   ],
   // EEW続報: 初報より短く軽めの2音
   eewUpdate: [
