@@ -7,6 +7,7 @@ import {
   createTestEEWWarning,
   createTestEEWForecast,
   createTestTsunami,
+  createTestTsunamiWarning,
   createTestTsunamiWatch,
 } from '../utils/testData'
 
@@ -218,6 +219,12 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
     setTimeout(() => handleEvent({ ...tsunami, cancelled: true }), 15000)
   }, [handleEvent])
 
+  const simulateTsunamiWarning = useCallback(() => {
+    const tsunami = createTestTsunamiWarning()
+    handleEvent(tsunami)
+    setTimeout(() => handleEvent({ ...tsunami, cancelled: true }), 10000)
+  }, [handleEvent])
+
   const simulateTsunamiWatch = useCallback(() => {
     const tsunami = createTestTsunamiWatch()
     handleEvent(tsunami)
@@ -229,6 +236,6 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
     injectEvent: handleEvent,
     simulateEarthquake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast,
-    simulateTsunami, simulateTsunamiWatch,
+    simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch,
   }
 }
