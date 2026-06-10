@@ -16,6 +16,7 @@ import { IntensityPoints } from './IntensityPoints'
 import { KyoshinPoints } from './KyoshinPoints'
 import { KyoshinSubThreshold } from './KyoshinSubThreshold'
 import { KyoshinDetectedPoints } from './KyoshinDetectedPoints'
+import { KyoshinMaxEffect } from './KyoshinMaxEffect'
 import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
 import type { DetectedPoint } from '../../hooks/useKyoshinDetection'
 
@@ -518,6 +519,7 @@ export function JapanMap({
         <>
           <FitToDetection points={detectedPoints} hasEew={eews.length > 0} />
           <KyoshinDetectedPoints points={detectedPoints} iconScale={iconScale * kyoshinZoomScale} />
+          <KyoshinMaxEffect sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale * kyoshinZoomScale} />
         </>
       )}
 
