@@ -80,6 +80,8 @@ export function App() {
   // 情報更新時にウィンドウタイトルへ表示する文言（null = 平常時タイトル）。
   // デフォルトタブへ戻るタイミングで null に戻す。
   const [alertTitle, setAlertTitle] = useState<string | null>(null)
+  // SW アップデート検知時のカウントダウン秒数（null = 待機なし、0以下でリロード）
+  const [updateCountdown, setUpdateCountdown] = useState<number | null>(null)
 
   // 受信イベントの種別ごとに通知音を鳴らす（同種の連続発火はバースト抑制）
   const lastSoundAtRef = useRef<Record<AlertSoundType, number>>({
@@ -258,9 +260,35 @@ export function App() {
   }, [earthquakes, settings.notifyMinScale])
 
   // 情報更新時にウィンドウタイトルを変更し、平常時は既定タイトルに戻す。
+  // 優先順位: 警報タイトル > アップデートカウントダウン > デフォルトタイトル
   useEffect(() => {
-    document.title = alertTitle ?? DEFAULT_TITLE
-  }, [alertTitle])
+    if (alertTitle) {
+      document.title = alertTitle
+    } else if (updateCountdown !== null) {
+      document.title = `🔄 ${updateCountdown}秒後にアップデートします — ${DEFAULT_TITLE}`
+    } else {
+      document.title = DEFAULT_TITLE
+    }
+  }, [alertTitle, updateCountdown])
+
+  // SW アップデート検知: sw-updated イベントを受け取りカウントダウンを開始する
+  useEffect(() => {
+    const onSwUpdated = () => setUpdateCountdown(prev => prev ?? 10)
+    window.addEventListener('sw-updated', onSwUpdated)
+    return () => window.removeEventListener('sw-updated', onSwUpdated)
+  }, [])
+
+  // カウントダウン進行: 警報なし（alertTitle === null）のときのみ毎秒デクリメントし、0でリロード
+  useEffect(() => {
+    if (updateCountdown === null) return
+    if (alertTitle !== null) return
+    if (updateCountdown <= 0) {
+      window.location.reload()
+      return
+    }
+    const id = setTimeout(() => setUpdateCountdown(n => (n !== null ? n - 1 : null)), 1000)
+    return () => clearTimeout(id)
+  }, [updateCountdown, alertTitle])
 
   // 設定タブ表示中は、地図には直前に表示していたタブの内容をそのまま残す。
   const [lastContentTab, setLastContentTab] = useState<TabId>(settings.defaultTab)
