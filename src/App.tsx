@@ -207,7 +207,7 @@ export function App() {
     injectEvent,
     simulateEarthquake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast,
-    simulateTsunami, simulateTsunamiWatch,
+    simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch,
   } = useEarthquakes(handleLiveEvent)
 
   // UI 倍率: ルート要素の font-size を変えて rem ベースの UI 全体を拡大縮小する。
@@ -498,8 +498,9 @@ export function App() {
                 eew:          simulateEEW,
                 eewWarning:   simulateEEWWarning,
                 eewForecast:  simulateEEWForecast,
-                tsunami:      simulateTsunami,
-                tsunamiWatch: simulateTsunamiWatch,
+                tsunami:        simulateTsunami,
+                tsunamiWarning: simulateTsunamiWarning,
+                tsunamiWatch:   simulateTsunamiWatch,
                 notification: () => {
                   if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
                     alert('先に「通知を許可する」ボタンをクリックしてください。')
