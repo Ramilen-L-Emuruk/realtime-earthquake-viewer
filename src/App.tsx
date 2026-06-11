@@ -15,11 +15,27 @@ import { formatMagnitude } from './utils/formatters'
 import { eewMaxScale } from './utils/eew'
 import { tsunamiMaxGrade, tsunamiOverallGrade } from './utils/tsunami'
 import { playAlertSound, playKyoshinUpdateSound, kyoshinLevel, unlockAudio, setSoundVolume, type AlertSoundType } from './utils/alertSound'
+import { kyoshinIndexToLabel } from './utils/kyoshinIntensity'
 import type { P2PQuakeEvent, EEWAlert } from './types/earthquake'
 
 // 平常時のウィンドウタイトル（index.html の <title> と一致させる）。
 // AutoHotKey 等が、情報更新時のタイトル変化を検知してイベントを発火できるようにする。
 const DEFAULT_TITLE = 'リアルタイム地震ビューアー'
+
+function showBrowserNotification(
+  title: string,
+  body: string,
+  tag: string,
+  requireInteraction = false,
+) {
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
+  new Notification(title, {
+    body,
+    icon: `${import.meta.env.BASE_URL}icons/icon.svg`,
+    tag,
+    requireInteraction,
+  })
+}
 
 // EEW 単発のレベル算出: 0=低震度予報 / 1=警報（震度5弱以上） / 2=特別警報（震度6弱以上）
 // scaleTo:99 は P2PQuake の「震度算出不能」コードなので通常の震度比較から除外する
@@ -165,6 +181,16 @@ export function App() {
           playAlertSound(eewSoundType)
         }
       }
+      if (settings.notifyEEW && (isNew || levelUpgraded)) {
+        const eewNotifyTitle = currentLevel === 2 ? '緊急地震速報 特別警報'
+          : currentLevel === 1 ? '緊急地震速報 警報' : '緊急地震速報 予報'
+        showBrowserNotification(
+          eewNotifyTitle,
+          `${event.earthquake.hypocenter.name}${scale > 0 ? ` 最大震度${getIntensityLabel(scale)}予想` : ''}`,
+          `eew-${key}`,
+          true,
+        )
+      }
       // EEW タイトルをイベントデータから構築（state は未更新のため event 直接参照）
       const newCount = activeEEWLevelsRef.current.size
       const eewTitle = `🚨 緊急地震速報 ${event.earthquake.hypocenter.name}` +
@@ -179,6 +205,18 @@ export function App() {
       return
     }
 
+    // ブラウザ通知（津波）— 音が無効でも送る
+    if (event.code === 552 && !event.cancelled && settings.notifyTsunami) {
+      const grade = tsunamiMaxGrade(event)
+      const tsunamiNotifyTitle = grade === 'MajorWarning' ? '大津波警報'
+        : grade === 'Warning' ? '津波警報' : '津波注意報'
+      showBrowserNotification(
+        tsunamiNotifyTitle,
+        event.areas.slice(0, 5).map(a => a.name).join('、'),
+        'tsunami',
+        true,
+      )
+    }
     // 通知音（地震情報・津波情報）
     if (!settings.soundEnabled) return
     let type: AlertSoundType | null = null
@@ -415,9 +453,13 @@ export function App() {
           playAlertSound('kyoshin')
         }
       }
+      if (settings.notifyDetection) {
+        const label = kyoshinIndexToLabel(effectiveKyoshinMaxIndex) ?? '?'
+        showBrowserNotification('揺れを検知中', `推定最大震度 ${label}（強震モニタ）`, 'kyoshin-detection')
+      }
     }
     prevDetectedRef.current = kyoshinDetection.detected
-  }, [kyoshinDetection.detected, effectiveKyoshinMaxIndex, settings.soundEnabled])
+  }, [kyoshinDetection.detected, effectiveKyoshinMaxIndex, settings.soundEnabled, settings.notifyDetection])
 
   // 揺れ検知中に音レベル（震度帯）が過去最大を超えたときのみ音を鳴らす
   // 生インデックスではなく音レベル（0〜6）で比較することで、フレーム間の微細な
