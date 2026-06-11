@@ -17,6 +17,8 @@ export interface AppSettings {
   notifyEEW: boolean               // 緊急地震速報の発報・昇格時にブラウザ通知を送る
   notifyTsunami: boolean           // 津波注意報以上が発表されたときにブラウザ通知を送る
   notifyDetection: boolean         // 強震モニタの揺れ検知時にブラウザ通知を送る
+  homeLat: number | null           // ホーム地点 緯度（null = 未設定）
+  homeLng: number | null           // ホーム地点 経度（null = 未設定）
 }
 
 const STORAGE_KEY = 'quake-viewer-settings'
@@ -35,6 +37,8 @@ const DEFAULTS: AppSettings = {
   notifyEEW: true,
   notifyTsunami: true,
   notifyDetection: false,
+  homeLat: null,
+  homeLng: null,
 }
 
 function load(): AppSettings {

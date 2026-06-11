@@ -189,6 +189,79 @@ function NotificationPermissionButton() {
 
 // ---- Main component ----
 
+function HomeLocationSection({
+  homeLat,
+  homeLng,
+  onUpdate,
+}: {
+  homeLat: number | null
+  homeLng: number | null
+  onUpdate: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void
+}) {
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const handleGetLocation = useCallback(() => {
+    if (!navigator.geolocation) {
+      setError('このブラウザは位置情報をサポートしていません')
+      return
+    }
+    setLoading(true)
+    setError(null)
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        onUpdate('homeLat', pos.coords.latitude)
+        onUpdate('homeLng', pos.coords.longitude)
+        setLoading(false)
+      },
+      (err) => {
+        setError(err.code === 1 ? '位置情報の許可が必要です' : '位置情報の取得に失敗しました')
+        setLoading(false)
+      },
+      { enableHighAccuracy: false, timeout: 10000 },
+    )
+  }, [onUpdate])
+
+  const handleClear = useCallback(() => {
+    onUpdate('homeLat', null)
+    onUpdate('homeLng', null)
+    setError(null)
+  }, [onUpdate])
+
+  const isSet = homeLat !== null && homeLng !== null
+
+  return (
+    <div className="px-4 py-3 space-y-2">
+      <p className="text-xs text-secondary">現在地をS波到達の基準点として使用します。HTTPS または localhost が必要です。</p>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <span className="text-xs text-white font-mono">
+          {isSet
+            ? `北緯${homeLat!.toFixed(4)}° 東経${homeLng!.toFixed(4)}°`
+            : '未設定'}
+        </span>
+        <div className="flex gap-2">
+          <button
+            onClick={handleGetLocation}
+            disabled={loading}
+            className="text-xs bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white px-3 py-1.5 rounded transition-colors"
+          >
+            {loading ? '取得中…' : '現在地を取得'}
+          </button>
+          {isSet && (
+            <button
+              onClick={handleClear}
+              className="text-xs bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded transition-colors"
+            >
+              クリア
+            </button>
+          )}
+        </div>
+      </div>
+      {error && <p className="text-xs text-red-400">{error}</p>}
+    </div>
+  )
+}
+
 export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onSetKyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime }: Props) {
   const handleTimeConfirm = () => {
     if (!kyoshinInputDateTime) return
@@ -458,6 +531,14 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
             </div>
           </Row>
         )}
+      </Section>
+
+      <Section title="ホーム地点">
+        <HomeLocationSection
+          homeLat={settings.homeLat}
+          homeLng={settings.homeLng}
+          onUpdate={onUpdate}
+        />
       </Section>
 
       <Section title="このアプリについて">

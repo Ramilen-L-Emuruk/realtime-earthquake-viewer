@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { SiteCoords } from '../services/kyoshin'
+import { haversineKm } from '../utils/geo'
 
 export interface DetectedPoint {
   lat: number
@@ -55,17 +56,6 @@ interface PendingCluster {
 }
 
 // ---- ユーティリティ ------------------------------------------------------
-
-function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6371
-  const toRad = (deg: number) => deg * (Math.PI / 180)
-  const dLat = toRad(lat2 - lat1)
-  const dLng = toRad(lng2 - lng1)
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-}
 
 /**
  * Union-Find を使い、PROXIMITY_KM 以内の観測点を連結してクラスタ列を返す。

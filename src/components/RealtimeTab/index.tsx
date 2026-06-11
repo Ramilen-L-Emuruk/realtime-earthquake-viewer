@@ -4,6 +4,7 @@ import type { EEWAlert } from '../../types/earthquake'
 import type { KyoshinDetection } from '../../hooks/useKyoshinDetection'
 import { MIN_DETECTION_INDEX } from '../../hooks/useKyoshinDetection'
 import type { SiteCoords } from '../../services/kyoshin'
+import type { SWaveArrival } from '../../hooks/useSWaveCountdown'
 import { formatDateTime } from '../../utils/formatters'
 import { getIntensityColor, getIntensityLabel, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
 import { eewAreas, eewMaxScale, eewSerial } from '../../utils/eew'
@@ -28,6 +29,7 @@ interface Props {
   kyoshinDetection: KyoshinDetection
   kyoshinSites: SiteCoords
   kyoshinIndices: number[]
+  swaveArrival: SWaveArrival | null
 }
 
 function EEWCard({ eew }: { eew: EEWAlert }) {
@@ -220,13 +222,43 @@ function KyoshinDetectionCard({
   )
 }
 
-export function RealtimeTab({ eews, kyoshinDetection, kyoshinSites, kyoshinIndices }: Props) {
+function SWaveArrivalCard({ arrival }: { arrival: SWaveArrival }) {
+  const borderColor = arrival.arrived ? '#ef4444' : '#f97316'
+  return (
+    <div className="bg-card rounded-lg p-3 border-2" style={{ borderColor }}>
+      <div className="flex items-center gap-2 mb-1">
+        <span
+          className="inline-block w-2 h-2 rounded-full flex-shrink-0"
+          style={{ backgroundColor: borderColor }}
+        />
+        <span className="text-xs font-bold" style={{ color: borderColor }}>
+          {arrival.arrived ? 'S波 到達済み' : 'S波 到達カウントダウン'}
+        </span>
+        <span className="text-xs text-secondary ml-auto">震源から {arrival.distanceKm.toFixed(0)} km</span>
+      </div>
+      {arrival.arrived ? (
+        <p className="text-red-400 font-bold text-sm">ご自宅付近にS波が到達しています</p>
+      ) : arrival.etaSec !== null ? (
+        <div className="flex items-baseline gap-2">
+          <span className="text-4xl font-black text-white">{arrival.etaSec}</span>
+          <span className="text-sm text-secondary">秒後に到達予想</span>
+        </div>
+      ) : (
+        <p className="text-sm text-secondary">到達時間を推定中…</p>
+      )}
+      <p className="text-xs text-secondary mt-1">※推定値。実際の到達時間は異なる場合があります</p>
+    </div>
+  )
+}
+
+export function RealtimeTab({ eews, kyoshinDetection, kyoshinSites, kyoshinIndices, swaveArrival }: Props) {
   return (
     <div className="p-3 space-y-3">
       {[...eews]
         .sort((a, b) => eewMaxScale(b) - eewMaxScale(a))
         .map(eew => <EEWCard key={eew.id} eew={eew} />)
       }
+      {swaveArrival !== null && <SWaveArrivalCard arrival={swaveArrival} />}
       <KyoshinDetectionCard
         detection={kyoshinDetection}
         hasEEW={eews.length > 0}
