@@ -203,8 +203,8 @@ export function App() {
   }
 
   const {
-    earthquakes, tsunamis, activeEEWs, connectionStatus, lastUpdate, isLoading, error,
-    injectEvent,
+    earthquakes, tsunamis, activeEEWs, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
+    injectEvent, loadMoreEarthquakes,
     simulateEarthquake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch,
@@ -235,7 +235,6 @@ export function App() {
 
   const filteredEarthquakes = earthquakes
     .filter(q => settings.minDisplayScale < 0 || q.earthquake.maxScale >= settings.minDisplayScale)
-    .slice(0, settings.maxEarthquakeList)
 
   const latest = filteredEarthquakes[0] ?? null
   // 選択中の地震（未選択／一覧から消えた場合は最新にフォールバック）
@@ -488,6 +487,9 @@ export function App() {
               selectedId={selectedQuake?.id ?? null}
               onSelect={setSelectedQuakeId}
               isLoading={isLoading}
+              isLoadingMore={isLoadingMore}
+              hasMore={hasMore}
+              onLoadMore={loadMoreEarthquakes}
               error={error}
             />
           </div>

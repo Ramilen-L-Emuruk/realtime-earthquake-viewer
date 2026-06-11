@@ -6,10 +6,12 @@ const WS_URL = 'wss://api.p2pquake.net/v2/ws'
 export async function fetchHistory(
   codes: number[] = [551, 552, 556],
   limit = 20,
+  offset = 0,
 ): Promise<P2PQuakeEvent[]> {
   const params = new URLSearchParams()
   codes.forEach(c => params.append('codes', String(c)))
   params.set('limit', String(limit))
+  if (offset > 0) params.set('offset', String(offset))
   const res = await fetch(`${API_BASE}/history?${params.toString()}`)
   if (!res.ok) throw new Error(`P2PQuake API error: ${res.status}`)
   return res.json() as Promise<P2PQuakeEvent[]>

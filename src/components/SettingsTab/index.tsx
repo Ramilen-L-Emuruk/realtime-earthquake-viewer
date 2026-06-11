@@ -214,15 +214,6 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
             />
           </div>
         </Row>
-        <Row label="リスト表示件数">
-          <select
-            value={settings.maxEarthquakeList}
-            onChange={e => onUpdate('maxEarthquakeList', Number(e.target.value))}
-            className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
-          >
-            {[10, 20, 30, 50].map(n => <option key={n} value={n}>{n}件</option>)}
-          </select>
-        </Row>
         <Row label="UI 倍率" description="画面全体の表示倍率を変更します">
           <select
             value={settings.uiScale}
@@ -459,7 +450,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">2.4.12</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">2.4.13</span></Row>
         <Row label="地震・津波データ">
           <a href="https://www.p2pquake.net/" target="_blank" rel="noopener noreferrer"
             className="text-xs text-blue-400 hover:text-blue-300">

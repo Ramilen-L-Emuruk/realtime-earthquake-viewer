@@ -11,6 +11,10 @@ import {
   createTestTsunamiWatch,
 } from '../utils/testData'
 
+const MAX_HISTORY_RETAINED = 50   // 初回取得件数（設定の最大選択値に合わせる）
+const LOAD_MORE_BATCH = 50        // 「もっと見る」1回あたりの取得件数
+const MAX_TOTAL_EARTHQUAKES = 300 // メモリ上の最大保持件数
+
 const ISSUE_PRIORITY: Record<string, number> = {
   DetailScale: 4,
   ScaleAndDestination: 3,
@@ -51,6 +55,8 @@ export interface EarthquakeState {
   connectionStatus: ConnectionStatus
   lastUpdate: Date | null
   isLoading: boolean
+  isLoadingMore: boolean
+  hasMore: boolean
   error: string | null
 }
 
@@ -62,6 +68,8 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
     connectionStatus: 'connecting',
     lastUpdate: null,
     isLoading: true,
+    isLoadingMore: false,
+    hasMore: false,
     error: null,
   })
 
@@ -101,7 +109,7 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
           const earthquakes = [
             quake,
             ...prev.earthquakes.filter(e => e.earthquake.time !== key),
-          ].slice(0, 30)
+          ].slice(0, MAX_TOTAL_EARTHQUAKES)
           return { ...prev, earthquakes, lastUpdate: now }
         }
         case 552: {
@@ -134,19 +142,23 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
   useEffect(() => {
     let cancelled = false
 
-    fetchHistory([551, 552], 20)
-      .then(events => {
+    // 551 と 552 を別々に取得して件数を正確にする
+    Promise.all([
+      fetchHistory([551], MAX_HISTORY_RETAINED),
+      fetchHistory([552], 10),
+    ])
+      .then(([quakeEvents, tsunamiEvents]) => {
         if (cancelled) return
         const seenQuakes = new Map<string, JMAQuake>()
-        for (const q of events.filter(e => e.code === 551) as JMAQuake[]) {
+        for (const q of quakeEvents as JMAQuake[]) {
           const key = q.earthquake.time
           const existing = seenQuakes.get(key)
           if (!existing || (ISSUE_PRIORITY[q.issue.type] ?? 0) > (ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
             seenQuakes.set(key, q)
           }
         }
-        const earthquakes = Array.from(seenQuakes.values()).slice(0, 30)
-        const allTsunami = (events.filter(e => e.code === 552) as JMATsunami[])
+        const earthquakes = Array.from(seenQuakes.values())
+        const allTsunami = (tsunamiEvents as JMATsunami[])
           .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
         const latestTsunami = allTsunami[0]
         const tsunamis = latestTsunami && !latestTsunami.cancelled ? [latestTsunami] : []
@@ -156,6 +168,7 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
           tsunamis,
           lastUpdate: new Date(),
           isLoading: false,
+          hasMore: quakeEvents.length === MAX_HISTORY_RETAINED,
           error: null,
         }))
       })
@@ -193,6 +206,37 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
       ws.disconnect()
     }
   }, [handleEvent])
+
+  const loadMoreEarthquakes = useCallback(async () => {
+    if (stateRef.current.isLoadingMore || !stateRef.current.hasMore) return
+    setState(prev => ({ ...prev, isLoadingMore: true }))
+    try {
+      const offset = stateRef.current.earthquakes.length
+      const events = await fetchHistory([551], LOAD_MORE_BATCH, offset)
+      setState(prev => {
+        const seenKeys = new Set(prev.earthquakes.map(e => e.earthquake.time))
+        const seenForBatch = new Map<string, JMAQuake>()
+        for (const q of events as JMAQuake[]) {
+          const key = q.earthquake.time
+          if (seenKeys.has(key)) continue
+          const existing = seenForBatch.get(key)
+          if (!existing || (ISSUE_PRIORITY[q.issue.type] ?? 0) > (ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
+            seenForBatch.set(key, q)
+          }
+        }
+        const earthquakes = [...prev.earthquakes, ...Array.from(seenForBatch.values())]
+          .slice(0, MAX_TOTAL_EARTHQUAKES)
+        return {
+          ...prev,
+          earthquakes,
+          isLoadingMore: false,
+          hasMore: events.length === LOAD_MORE_BATCH && earthquakes.length < MAX_TOTAL_EARTHQUAKES,
+        }
+      })
+    } catch {
+      setState(prev => ({ ...prev, isLoadingMore: false }))
+    }
+  }, [])
 
   const simulateEarthquake = useCallback(() => {
     handleEvent(createTestEarthquake())
@@ -234,6 +278,7 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
   return {
     ...state,
     injectEvent: handleEvent,
+    loadMoreEarthquakes,
     simulateEarthquake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch,
