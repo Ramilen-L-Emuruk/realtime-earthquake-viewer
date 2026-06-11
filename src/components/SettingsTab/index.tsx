@@ -319,16 +319,27 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
           />
         </Row>
         {settings.notifyMinScale >= 0 && (
-          <Row label="通知する最低震度" description="この震度以上で通知を送信します">
-            <div className="flex items-center gap-2">
-              <IntensityBadge scale={settings.notifyMinScale} />
-              <ScaleSelect
-                value={settings.notifyMinScale}
-                onChange={v => onUpdate('notifyMinScale', v === -1 ? 10 : v)}
-                noneLabel="震度1以上"
-              />
-            </div>
-          </Row>
+          <>
+            <Row label="通知する最低震度" description="この震度以上で通知を送信します">
+              <div className="flex items-center gap-2">
+                <IntensityBadge scale={settings.notifyMinScale} />
+                <ScaleSelect
+                  value={settings.notifyMinScale}
+                  onChange={v => onUpdate('notifyMinScale', v === -1 ? 10 : v)}
+                  noneLabel="震度1以上"
+                />
+              </div>
+            </Row>
+            <Row label="EEW 通知" description="緊急地震速報の発報・昇格時に通知（重複送信しない）">
+              <Toggle checked={settings.notifyEEW} onChange={v => onUpdate('notifyEEW', v)} />
+            </Row>
+            <Row label="津波通知" description="津波注意報以上が発表されたときに通知">
+              <Toggle checked={settings.notifyTsunami} onChange={v => onUpdate('notifyTsunami', v)} />
+            </Row>
+            <Row label="揺れ検知通知" description="強震モニタで揺れを検知したときに通知（推定値・頻度高め）">
+              <Toggle checked={settings.notifyDetection} onChange={v => onUpdate('notifyDetection', v)} />
+            </Row>
+          </>
         )}
         <Row label="通知許可" description="ブラウザの通知権限を確認・許可します">
           <NotificationPermissionButton />
@@ -459,7 +470,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">2.4.12</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">2.5.0</span></Row>
         <Row label="地震・津波データ">
           <a href="https://www.p2pquake.net/" target="_blank" rel="noopener noreferrer"
             className="text-xs text-blue-400 hover:text-blue-300">
