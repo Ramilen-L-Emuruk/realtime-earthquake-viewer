@@ -10,6 +10,7 @@ import { useEarthquakes } from './hooks/useEarthquakes'
 import { useSettings } from './hooks/useSettings'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
 import { useKyoshinDetection, MIN_DETECTION_INDEX } from './hooks/useKyoshinDetection'
+import { useSWaveCountdown } from './hooks/useSWaveCountdown'
 import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude } from './utils/formatters'
 import { eewMaxScale } from './utils/eew'
@@ -430,6 +431,15 @@ export function App() {
 
   // EEW受信中または揺れ検知中は全観測点ベースの最大インデックスを使う（表示と音を一致させる）
   const hasActiveEEW = activeEEWs.size > 0
+
+  const home = useMemo(
+    () => (settings.homeLat !== null && settings.homeLng !== null
+      ? { lat: settings.homeLat, lng: settings.homeLng }
+      : null),
+    [settings.homeLat, settings.homeLng],
+  )
+  const swaveArrival = useSWaveCountdown(kyoshin.psWave, home, hasActiveEEW)
+
   const effectiveKyoshinMaxIndex = useMemo(() => {
     if (!(hasActiveEEW || kyoshinDetection.detected)) return kyoshinDetection.maxIndex
     let max = 0
@@ -541,6 +551,7 @@ export function App() {
               kyoshinDetection={kyoshinDetection}
               kyoshinSites={kyoshin.sites}
               kyoshinIndices={kyoshin.indices}
+              swaveArrival={swaveArrival}
             />
           </div>
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'tsunami' ? ' invisible pointer-events-none' : ''}`}>
