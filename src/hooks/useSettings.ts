@@ -6,7 +6,6 @@ export type DefaultTabSetting = 'earthquake' | 'realtime'
 export interface AppSettings {
   minDisplayScale: number   // 最低表示震度 (-1 = すべて)
   notifyMinScale: number    // 通知最低震度 (-1 = 通知しない)
-  maxEarthquakeList: number // リスト表示件数
   soundEnabled: boolean     // 地震・EEW・津波の受信時に音を鳴らす
   soundVolume: number       // 通知音の全体音量 (0.0 〜 1.0)
   uiScale: number           // UI 倍率 (1 = 100%)
@@ -22,7 +21,6 @@ const STORAGE_KEY = 'quake-viewer-settings'
 const DEFAULTS: AppSettings = {
   minDisplayScale: -1,
   notifyMinScale: -1,
-  maxEarthquakeList: 20,
   soundEnabled: true,
   soundVolume: 1.0,
   uiScale: 1,
