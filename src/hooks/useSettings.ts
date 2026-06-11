@@ -15,6 +15,8 @@ export interface AppSettings {
   defaultTab: DefaultTabSetting    // 起動時・アイドル復帰時に表示するタブ
   tsunamiPriorityDefault: boolean  // 津波発表中はデフォルトタブを津波情報にする
   idleRevertSec: number            // 操作なしでデフォルトタブへ戻るまでの秒数 (0 = 無効)
+  homeLat: number | null           // ホーム地点 緯度（null = 未設定）
+  homeLng: number | null           // ホーム地点 経度（null = 未設定）
 }
 
 const STORAGE_KEY = 'quake-viewer-settings'
@@ -31,6 +33,8 @@ const DEFAULTS: AppSettings = {
   defaultTab: 'earthquake',
   tsunamiPriorityDefault: true,
   idleRevertSec: 30,
+  homeLat: null,
+  homeLng: null,
 }
 
 function load(): AppSettings {
