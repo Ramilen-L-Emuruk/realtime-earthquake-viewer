@@ -6,12 +6,15 @@ interface Props {
   selectedId: string | null
   onSelect: (id: string) => void
   isLoading: boolean
+  isLoadingMore: boolean
+  hasMore: boolean
+  onLoadMore: () => void
   error: string | null
 }
 
 // 地震情報タブの右パネル。地震カードの一覧を表示し、クリックで地図表示対象を選択する。
 // 地図そのものは App が常時表示する。
-export function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, error }: Props) {
+export function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error }: Props) {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -53,6 +56,18 @@ export function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, er
           onSelect={() => onSelect(quake.id)}
         />
       ))}
+      {hasMore && (
+        <button
+          onClick={onLoadMore}
+          disabled={isLoadingMore}
+          className="w-full py-2.5 text-sm text-secondary hover:text-white bg-card border border-border hover:border-blue-600 rounded-lg transition-colors disabled:opacity-50"
+        >
+          {isLoadingMore ? '取得中…' : 'もっと見る'}
+        </button>
+      )}
+      {!hasMore && earthquakes.length > 0 && (
+        <p className="text-center text-xs text-secondary py-2">すべての履歴を表示しています</p>
+      )}
     </div>
   )
 }
