@@ -11,6 +11,8 @@ import {
   createTestTsunamiWatch,
 } from '../utils/testData'
 
+const MAX_HISTORY_RETAINED = 50  // 設定の最大選択値(50)に合わせる
+
 const ISSUE_PRIORITY: Record<string, number> = {
   DetailScale: 4,
   ScaleAndDestination: 3,
@@ -101,7 +103,7 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
           const earthquakes = [
             quake,
             ...prev.earthquakes.filter(e => e.earthquake.time !== key),
-          ].slice(0, 30)
+          ].slice(0, MAX_HISTORY_RETAINED)
           return { ...prev, earthquakes, lastUpdate: now }
         }
         case 552: {
@@ -134,7 +136,7 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
   useEffect(() => {
     let cancelled = false
 
-    fetchHistory([551, 552], 20)
+    fetchHistory([551, 552], MAX_HISTORY_RETAINED)
       .then(events => {
         if (cancelled) return
         const seenQuakes = new Map<string, JMAQuake>()
@@ -145,7 +147,7 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
             seenQuakes.set(key, q)
           }
         }
-        const earthquakes = Array.from(seenQuakes.values()).slice(0, 30)
+        const earthquakes = Array.from(seenQuakes.values()).slice(0, MAX_HISTORY_RETAINED)
         const allTsunami = (events.filter(e => e.code === 552) as JMATsunami[])
           .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
         const latestTsunami = allTsunami[0]
