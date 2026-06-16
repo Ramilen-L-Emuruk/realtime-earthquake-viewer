@@ -200,9 +200,17 @@ function KyoshinDetectionCard({
         />
         <span className="text-xs text-secondary">揺れを検知中（強震モニタ）</span>
       </div>
-      <div className="flex items-baseline gap-2 mb-2 flex-wrap">
-        <span className="text-white text-sm">推定最大震度</span>
-        <span className="font-black text-xl" style={{ color: maxColor }}>{maxLabel}</span>
+      <div className="flex items-center gap-3 mb-2">
+        <span className="text-xs text-secondary">推定最大震度</span>
+        <span
+          className="font-black text-5xl leading-none"
+          style={{
+            color: '#ffffff',
+            textShadow: `0 0 12px ${maxColor}, 0 2px 4px rgba(0,0,0,0.8)`,
+          }}
+        >
+          {maxLabel}
+        </span>
       </div>
       <div className="space-y-1">
         {groups.map(g => (
