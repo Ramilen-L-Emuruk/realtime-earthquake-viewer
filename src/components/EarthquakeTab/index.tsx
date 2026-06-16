@@ -49,11 +49,11 @@ export function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, is
     <div className="p-3 space-y-2">
       {earthquakes.map((quake, i) => (
         <EarthquakeCard
-          key={quake.id}
+          key={quake.earthquake.time}
           quake={quake}
           isLatest={i === 0}
-          isSelected={quake.id === selectedId}
-          onSelect={() => onSelect(quake.id)}
+          isSelected={quake.earthquake.time === selectedId}
+          onSelect={() => onSelect(quake.earthquake.time)}
         />
       ))}
       {hasMore && (
