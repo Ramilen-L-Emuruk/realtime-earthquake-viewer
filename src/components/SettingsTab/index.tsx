@@ -349,6 +349,20 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
             <option value={300}>5分</option>
           </select>
         </Row>
+        <Row label="定期自動リロード" description="指定した時間ごとに画面を再起動してメモリを解放します（地震・津波・EEW 発報中は延期）">
+          <select
+            value={settings.periodicReloadHours}
+            onChange={e => onUpdate('periodicReloadHours', Number(e.target.value))}
+            className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+          >
+            <option value={0}>無効</option>
+            <option value={1}>1時間ごと</option>
+            <option value={3}>3時間ごと</option>
+            <option value={6}>6時間ごと</option>
+            <option value={12}>12時間ごと</option>
+            <option value={24}>24時間ごと</option>
+          </select>
+        </Row>
       </Section>
 
       <Section title="通知設定">
@@ -542,7 +556,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">2.5.2</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">2.5.4</span></Row>
         <Row label="地震・津波データ">
           <a href="https://www.p2pquake.net/" target="_blank" rel="noopener noreferrer"
             className="text-xs text-blue-400 hover:text-blue-300">

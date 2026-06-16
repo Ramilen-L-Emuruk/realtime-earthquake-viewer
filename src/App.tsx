@@ -285,7 +285,7 @@ export function App() {
     if (alertTitle) {
       document.title = alertTitle
     } else if (updateCountdown !== null) {
-      document.title = `🔄 ${updateCountdown}秒後にアップデートします — ${DEFAULT_TITLE}`
+      document.title = `🔄 ${updateCountdown}秒後に再起動します — ${DEFAULT_TITLE}`
     } else {
       document.title = DEFAULT_TITLE
     }
@@ -297,6 +297,16 @@ export function App() {
     window.addEventListener('sw-updated', onSwUpdated)
     return () => window.removeEventListener('sw-updated', onSwUpdated)
   }, [])
+
+  // 定期自動リロード（長時間起動によるメモリ蓄積をリセット）
+  useEffect(() => {
+    if (settings.periodicReloadHours <= 0) return
+    const ms = settings.periodicReloadHours * 60 * 60 * 1000
+    const id = setInterval(() => {
+      setUpdateCountdown(prev => prev ?? 10)
+    }, ms)
+    return () => clearInterval(id)
+  }, [settings.periodicReloadHours])
 
   // カウントダウン進行: 警報なし（alertTitle === null）のときのみ毎秒デクリメントし、0でリロード
   useEffect(() => {
