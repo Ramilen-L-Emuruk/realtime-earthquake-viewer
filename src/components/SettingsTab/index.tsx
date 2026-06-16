@@ -1,7 +1,10 @@
 import { useState, useCallback } from 'react'
 import type { AppSettings } from '../../hooks/useSettings'
+import type { ConnectionStatus } from '../../types/earthquake'
 import { getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
 import { playAlertSound, playKyoshinUpdateSound, unlockAudio } from '../../utils/alertSound'
+
+const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
 
 export interface TestFunctions {
   earthquake: () => void
@@ -22,6 +25,7 @@ interface Props {
   onSetKyoshinTimeOffset: (offset: number | null) => void
   kyoshinInputDateTime: string
   onSetKyoshinInputDateTime: (value: string) => void
+  dmdataConnectionStatus?: ConnectionStatus
 }
 
 // ---- Reusable UI parts ----
@@ -262,7 +266,7 @@ function HomeLocationSection({
   )
 }
 
-export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onSetKyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime }: Props) {
+export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onSetKyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus }: Props) {
   const handleTimeConfirm = () => {
     if (!kyoshinInputDateTime) return
     const specified = new Date(kyoshinInputDateTime)
@@ -276,6 +280,35 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
 
   return (
     <div className="flex-1 overflow-y-auto p-3">
+
+      {isDmdss && (
+        <Section title="DM-D.S.S 接続設定">
+          <div className="px-4 py-2 bg-yellow-900/30 border-b border-yellow-700/40">
+            <p className="text-yellow-400 text-xs">⚠️ APIキーはこのブラウザにのみ保存されます。第三者と共有しないでください。</p>
+          </div>
+          <Row label="接続状態">
+            {dmdataConnectionStatus === 'connected' ? (
+              <span className="text-xs text-green-400 font-medium">接続中</span>
+            ) : dmdataConnectionStatus === 'connecting' ? (
+              <span className="text-xs text-blue-400">接続試行中...</span>
+            ) : (
+              <span className="text-xs text-secondary">
+                {settings.dmdataApiKey ? '切断' : 'APIキー未設定'}
+              </span>
+            )}
+          </Row>
+          <Row label="APIキー" description="DMDATA.JP のAPIキーを入力してください">
+            <input
+              type="password"
+              value={settings.dmdataApiKey}
+              onChange={e => onUpdate('dmdataApiKey', e.target.value)}
+              placeholder="APIキーを入力"
+              autoComplete="off"
+              className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500 w-48"
+            />
+          </Row>
+        </Section>
+      )}
 
       <Section title="表示設定">
         <Row label="最低表示震度" description="これ未満の地震はリストに表示しません">
@@ -556,12 +589,19 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">2.5.6</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">3.0.0</span></Row>
         <Row label="地震・津波データ">
-          <a href="https://www.p2pquake.net/" target="_blank" rel="noopener noreferrer"
-            className="text-xs text-blue-400 hover:text-blue-300">
-            P2PQuake API v2
-          </a>
+          {isDmdss ? (
+            <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"
+              className="text-xs text-blue-400 hover:text-blue-300">
+              Project DM-D.S.S
+            </a>
+          ) : (
+            <a href="https://www.p2pquake.net/" target="_blank" rel="noopener noreferrer"
+              className="text-xs text-blue-400 hover:text-blue-300">
+              P2PQuake API v2
+            </a>
+          )}
         </Row>
         <Row label="リアルタイム震度">
           <a href="https://www.kmoni.bosai.go.jp/" target="_blank" rel="noopener noreferrer"
