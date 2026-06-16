@@ -10,7 +10,14 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 
 ## 変更時の基本フロー（必ずこの順で行う）
 
-1. **ワークツリー作成**（修正・機能追加時は必ず `EnterWorktree` でワークツリーに入ってから作業する。ワークツリーは **`claude/`** ディレクトリ以下に作成する。ワークツリー名にはコミット種別に合わせたプレフィックスを付ける: `fix/〇〇`・`feat/〇〇`・`refactor/〇〇`・`docs/〇〇`・`chore/〇〇` など）
+1. **ワークツリー作成**（修正・機能追加時はワークツリーを作成してから作業する。ブランチ名は必ず `worktree/<type>/<name>` 形式にする: `worktree/fix/〇〇`・`worktree/feat/〇〇`・`worktree/refactor/〇〇`・`worktree/docs/〇〇`・`worktree/chore/〇〇` など）
+   - **注意**: `EnterWorktree(name: ...)` はブランチ名を自動変換してしまうため使用しない。必ず以下の 2 ステップで行う:
+     ```bash
+     # Step 1: 正しいブランチ名でワークツリーを作成
+     git worktree add -b worktree/<type>/<name> .claude/worktrees/<name>
+     # Step 2: 作成したワークツリーに入る
+     EnterWorktree(path: ".claude/worktrees/<name>")
+     ```
 2. **実装**
 3. **検証**（下記「検証」を実施。型チェック必須＋**実行確認（ブラウザ確認）必須**）
 4. **README 更新**（下記「README 更新」の条件に該当する場合）
@@ -18,7 +25,7 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
    - 「メジャーバージョンを上げる」「マイナーバージョンを上げる」「パッチバージョンを上げる」「バージョンを上げない」
    - バージョンを上げる場合は `package.json` の `version` フィールドと `src/components/SettingsTab/index.tsx` のバージョン表示を合わせて更新してからコミットする
 6. **コミット**（下記「コミット」の規約に従い、確認を求めず自動で行う）
-7. **main へのマージ**（**ユーザーから明示的に指示があったときのみ**。ワークツリーの変更を main にマージする前に必ず確認する）
+7. **main へのマージ**（**ユーザーから明示的に指示があったときのみ**。ワークツリーの変更を main にマージする前に必ず確認する。必ずマージコミットを作成する（`--no-ff`））
 8. **プッシュ**（**ユーザーから明示的に指示があったときのみ**。自動では行わない）
 
 > ユーザーから「今後は必要に応じて README を更新して、コミットまで自動で行う」方針の指示済み。
@@ -73,11 +80,17 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 - **Conventional Commits**（`feat` / `fix` / `refactor` / `docs` / `chore` / `perf` / `ci`）。説明は日本語。
 - コミットメッセージ末尾に必ず付与:
   ```
-  Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+  Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
   ```
 - 検証用スクリーンショット（`*.png`）はコミットに含めない。
 - Windows 環境のため `LF will be replaced by CRLF` の警告が出るが正常（無視してよい）。
 - このリポジトリは `main` に直接コミットしている。
+
+## マージ
+
+- **ファストフォワード可能な場合でも、必ずマージコミットを作成する（`git merge --no-ff`）**。
+  - 例: `git merge --no-ff worktree/feat/〇〇`
+  - 理由: 各機能・修正の単位（ブランチ）を履歴上で明確に残すため。
 
 ## 補助コマンド
 
