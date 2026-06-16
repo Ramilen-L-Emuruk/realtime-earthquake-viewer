@@ -25,7 +25,7 @@ async function fetchTicketUrl(apiKey: string): Promise<string> {
     body: JSON.stringify({
       classifications: CLASSIFICATIONS,
       formatMode: 'json',
-      appName: 'realtime-earthquake-viewer-dmdss',
+      appName: 'quake-viewer-dmdss',
     }),
   })
   if (res.status === 401 || res.status === 403) throw new Error('auth')
