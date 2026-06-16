@@ -38,147 +38,184 @@ export function unlockAudio(): void {
   if (ctx && ctx.state === 'suspended') void ctx.resume()
 }
 
-interface Tone {
-  freq: number
-  start: number
-  duration: number
-  type?: OscillatorType
-  gain?: number
+// ─── 内部プリミティブ ─────────────────────────────────────────────
+
+// 矩形エンベロープのオシレーター（クリックノイズ防止の立上り・立下り込み）
+function beep(ctx: AudioContext, type: OscillatorType, freq: number, startAt: number, duration: number, gain: number): void {
+  const osc = ctx.createOscillator()
+  const g = ctx.createGain()
+  osc.type = type
+  osc.frequency.value = freq
+  osc.connect(g)
+  g.connect(ctx.destination)
+  const peak = gain * globalVolume
+  g.gain.setValueAtTime(0, startAt)
+  g.gain.linearRampToValueAtTime(peak, startAt + 0.012)
+  g.gain.setValueAtTime(peak, Math.max(startAt + 0.012, startAt + duration - 0.04))
+  g.gain.linearRampToValueAtTime(0, startAt + duration)
+  osc.start(startAt)
+  osc.stop(startAt + duration + 0.05)
 }
 
-function playTones(tones: Tone[]): void {
-  const ctx = getCtx()
-  if (!ctx) return
-  if (ctx.state === 'suspended') void ctx.resume()
+// FM合成ベル: carrier を modulator で変調し倍音豊かな残響音を生成する
+function bell(ctx: AudioContext, freq: number, ratio: number, depth: number, startAt: number, duration: number, gain: number): void {
+  const carrier = ctx.createOscillator()
+  const mod = ctx.createOscillator()
+  const modGain = ctx.createGain()
+  const ampGain = ctx.createGain()
+  mod.frequency.value = freq * ratio
+  carrier.frequency.value = freq
+  mod.connect(modGain)
+  modGain.connect(carrier.frequency)
+  carrier.connect(ampGain)
+  ampGain.connect(ctx.destination)
+  modGain.gain.setValueAtTime(depth, startAt)
+  modGain.gain.exponentialRampToValueAtTime(0.1, startAt + duration * 0.6)
+  const peak = gain * globalVolume
+  ampGain.gain.setValueAtTime(0, startAt)
+  ampGain.gain.linearRampToValueAtTime(peak, startAt + 0.008)
+  ampGain.gain.exponentialRampToValueAtTime(0.001, startAt + duration)
+  mod.start(startAt)
+  carrier.start(startAt)
+  mod.stop(startAt + duration + 0.1)
+  carrier.stop(startAt + duration + 0.1)
+}
 
-  const base = ctx.currentTime + 0.02
-  for (const t of tones) {
-    const osc = ctx.createOscillator()
-    const gainNode = ctx.createGain()
-    osc.type = t.type ?? 'sine'
-    osc.frequency.value = t.freq
-    osc.connect(gainNode)
-    gainNode.connect(ctx.destination)
+// 周波数スイープ: freqStart → freqEnd → freqStart の往復サイレン
+function sweep(ctx: AudioContext, type: OscillatorType, freqStart: number, freqEnd: number, startAt: number, duration: number, gain: number): void {
+  const osc = ctx.createOscillator()
+  const g = ctx.createGain()
+  osc.type = type
+  osc.frequency.setValueAtTime(freqStart, startAt)
+  osc.frequency.linearRampToValueAtTime(freqEnd, startAt + duration * 0.55)
+  osc.frequency.linearRampToValueAtTime(freqStart, startAt + duration)
+  osc.connect(g)
+  g.connect(ctx.destination)
+  const peak = gain * globalVolume
+  g.gain.setValueAtTime(0, startAt)
+  g.gain.linearRampToValueAtTime(peak, startAt + 0.015)
+  g.gain.setValueAtTime(peak, startAt + duration - 0.03)
+  g.gain.linearRampToValueAtTime(0, startAt + duration)
+  osc.start(startAt)
+  osc.stop(startAt + duration + 0.05)
+}
 
-    const peak = (t.gain ?? 0.2) * globalVolume
-    const startAt = base + t.start
-    const endAt = startAt + t.duration
-    // クリックノイズ防止のため立ち上がり・立ち下がりをなだらかにする
-    gainNode.gain.setValueAtTime(0, startAt)
-    gainNode.gain.linearRampToValueAtTime(peak, startAt + 0.012)
-    gainNode.gain.setValueAtTime(peak, Math.max(startAt + 0.012, endAt - 0.04))
-    gainNode.gain.linearRampToValueAtTime(0, endAt)
-
-    osc.start(startAt)
-    osc.stop(endAt + 0.02)
+// 指数減衰パルス: sine + 任意の square ブレンド（震度更新音用）
+function ping(ctx: AudioContext, freq: number, startAt: number, duration: number, gain: number, squareMix = 0): void {
+  const peak = gain * globalVolume
+  const so = ctx.createOscillator()
+  const sg = ctx.createGain()
+  so.type = 'sine'
+  so.frequency.value = freq
+  so.connect(sg)
+  sg.connect(ctx.destination)
+  sg.gain.setValueAtTime(0, startAt)
+  sg.gain.linearRampToValueAtTime(peak * (1 - squareMix * 0.4), startAt + 0.01)
+  sg.gain.exponentialRampToValueAtTime(0.001, startAt + duration)
+  so.start(startAt)
+  so.stop(startAt + duration + 0.05)
+  if (squareMix > 0) {
+    const qo = ctx.createOscillator()
+    const qg = ctx.createGain()
+    qo.type = 'square'
+    qo.frequency.value = freq
+    qo.connect(qg)
+    qg.connect(ctx.destination)
+    qg.gain.setValueAtTime(0, startAt)
+    qg.gain.linearRampToValueAtTime(peak * squareMix * 0.22, startAt + 0.01)
+    qg.gain.exponentialRampToValueAtTime(0.001, startAt + duration * 0.5)
+    qo.start(startAt)
+    qo.stop(startAt + duration + 0.05)
   }
 }
 
-const PATTERNS: Record<AlertSoundType, Tone[]> = {
-  // 地震情報（震源・震度情報 / 各地の震度情報）: 2音のチャイム（ピンポン）
-  earthquake: [
-    { freq: 880, start: 0, duration: 0.16 },
-    { freq: 660, start: 0.18, duration: 0.28 },
-  ],
-  // 震度速報: 速報感のある3連音（震源未定だが有感情報）
-  earthquakePrompt: [
-    { freq: 880, start: 0.0, duration: 0.12 },
-    { freq: 880, start: 0.16, duration: 0.12 },
-    { freq: 660, start: 0.32, duration: 0.28 },
-  ],
-  // 震源情報 / 遠地地震 / その他: 控えめな単音
-  earthquakeInfo: [
-    { freq: 660, start: 0, duration: 0.3, gain: 0.15 },
-  ],
-  // 緊急地震速報: 緊急性のある2音の繰り返し
-  eew: [
-    { freq: 920, start: 0.0, duration: 0.14, type: 'square', gain: 0.16 },
-    { freq: 760, start: 0.16, duration: 0.14, type: 'square', gain: 0.16 },
-    { freq: 920, start: 0.32, duration: 0.14, type: 'square', gain: 0.16 },
-    { freq: 760, start: 0.48, duration: 0.14, type: 'square', gain: 0.16 },
-    { freq: 920, start: 0.64, duration: 0.22, type: 'square', gain: 0.16 },
-  ],
-  // 津波: 低めの警報音を3回
-  tsunami: [
-    { freq: 520, start: 0.0, duration: 0.35, type: 'triangle', gain: 0.22 },
-    { freq: 520, start: 0.45, duration: 0.35, type: 'triangle', gain: 0.22 },
-    { freq: 520, start: 0.9, duration: 0.5, type: 'triangle', gain: 0.22 },
-  ],
-  // 揺れ検知（強震モニタ first contact）: 上昇 2 音チャイム
-  kyoshin: [
-    { freq: 660, start: 0,    duration: 0.15, gain: 0.22 },
-    { freq: 880, start: 0.18, duration: 0.28, gain: 0.22 },
-  ],
-  // EEW続報: 初報より短く軽めの2音
-  eewUpdate: [
-    { freq: 760, start: 0.0, duration: 0.1, type: 'square', gain: 0.10 },
-    { freq: 920, start: 0.14, duration: 0.1, type: 'square', gain: 0.10 },
-  ],
-  // EEWキャンセル: 下降する解除音
-  eewCancel: [
-    { freq: 440, start: 0, duration: 0.18 },
-    { freq: 330, start: 0.22, duration: 0.28 },
-  ],
-  // EEW特別警報: 高音高速8連（震度6弱以上）
-  eewSpecial: [
-    { freq: 1000, start: 0.00, duration: 0.12, type: 'square', gain: 0.18 },
-    { freq: 800,  start: 0.14, duration: 0.12, type: 'square', gain: 0.18 },
-    { freq: 1000, start: 0.28, duration: 0.12, type: 'square', gain: 0.18 },
-    { freq: 800,  start: 0.42, duration: 0.12, type: 'square', gain: 0.18 },
-    { freq: 1000, start: 0.56, duration: 0.12, type: 'square', gain: 0.18 },
-    { freq: 800,  start: 0.70, duration: 0.12, type: 'square', gain: 0.18 },
-    { freq: 1000, start: 0.84, duration: 0.12, type: 'square', gain: 0.18 },
-    { freq: 800,  start: 0.98, duration: 0.22, type: 'square', gain: 0.18 },
-  ],
-  // EEW低震度予報: 3音サイン波（緩やか）
-  eewForecast: [
-    { freq: 660, start: 0.0,  duration: 0.12, gain: 0.12 },
-    { freq: 660, start: 0.16, duration: 0.12, gain: 0.12 },
-    { freq: 550, start: 0.32, duration: 0.22, gain: 0.12 },
-  ],
-  // 大津波警報: 低音5連（tsunamiより強い）
-  tsunamiMajor: [
-    { freq: 420, start: 0.00, duration: 0.35, type: 'triangle', gain: 0.25 },
-    { freq: 420, start: 0.45, duration: 0.35, type: 'triangle', gain: 0.25 },
-    { freq: 420, start: 0.90, duration: 0.35, type: 'triangle', gain: 0.25 },
-    { freq: 420, start: 1.35, duration: 0.35, type: 'triangle', gain: 0.25 },
-    { freq: 420, start: 1.80, duration: 0.5,  type: 'triangle', gain: 0.25 },
-  ],
-  // 津波注意報: 中音2連（tsunamiより軽い）
-  tsunamiWatch: [
-    { freq: 600, start: 0.00, duration: 0.25, type: 'triangle', gain: 0.18 },
-    { freq: 600, start: 0.35, duration: 0.35, type: 'triangle', gain: 0.18 },
-  ],
+// ─── サウンドプレーヤー ───────────────────────────────────────────
+
+type SoundPlayer = (ctx: AudioContext, base: number) => void
+
+const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
+  // 地震情報（震源・震度情報 / 各地の震度情報）: FM ベル 2音（残響チャイム）
+  earthquake: (ctx, base) => {
+    bell(ctx, 880, 3.5, 200, base,        0.80, 0.28)
+    bell(ctx, 660, 3.5, 180, base + 0.22, 1.10, 0.28)
+  },
+
+  // 震度速報: FM ベル 3音（速報感）
+  earthquakePrompt: (ctx, base) => {
+    bell(ctx, 880, 2.0, 120, base,        0.35, 0.22)
+    bell(ctx, 880, 2.0, 120, base + 0.20, 0.35, 0.22)
+    bell(ctx, 660, 2.0, 160, base + 0.40, 0.50, 0.24)
+  },
+
+  // 遠地地震 / その他: FM ベル 単音（控えめ）
+  earthquakeInfo: (ctx, base) => {
+    bell(ctx, 660, 1.5, 80, base, 0.55, 0.18)
+  },
+
+  // EEW 予報: FM ベル 下降2音（緩やか）
+  eewForecast: (ctx, base) => {
+    bell(ctx, 784, 1.8, 90, base,        0.35, 0.20)
+    bell(ctx, 622, 1.8, 90, base + 0.22, 0.45, 0.20)
+  },
+
+  // EEW 警報: di-di-di-DAA パターン（3連ビープ + 長音）
+  eew: (ctx, base) => {
+    beep(ctx, 'square', 920, base + 0.00, 0.09, 0.18)
+    beep(ctx, 'square', 920, base + 0.13, 0.09, 0.18)
+    beep(ctx, 'square', 920, base + 0.26, 0.09, 0.18)
+    beep(ctx, 'square', 740, base + 0.41, 0.28, 0.20)
+  },
+
+  // EEW 特別警報: 上昇スイープ + 高速8連打（震度6弱以上）
+  eewSpecial: (ctx, base) => {
+    sweep(ctx, 'sawtooth', 500, 1100, base, 0.22, 0.18)
+    const freqs = [1060, 820, 1060, 820, 1060, 820, 1060, 820] as const
+    freqs.forEach((f, i) => beep(ctx, 'square', f, base + 0.26 + i * 0.11, 0.08, 0.20))
+  },
+
+  // EEW 続報: FM ベル 短2音（軽め）
+  eewUpdate: (ctx, base) => {
+    bell(ctx, 880,  4.0, 300, base,        0.18, 0.18)
+    bell(ctx, 1100, 4.0, 300, base + 0.14, 0.14, 0.15)
+  },
+
+  // EEW 解除: FM ベル 下降3和音（安堵感）
+  eewCancel: (ctx, base) => {
+    bell(ctx, 523, 1.5, 60, base,        0.90, 0.22)
+    bell(ctx, 392, 1.5, 60, base + 0.10, 1.00, 0.20)
+    bell(ctx, 330, 1.5, 60, base + 0.25, 1.10, 0.18)
+  },
+
+  // 揺れ検知（強震モニタ first contact）: FM ベル 上昇2音
+  kyoshin: (ctx, base) => {
+    bell(ctx, 660, 2.5, 140, base,        0.45, 0.24)
+    bell(ctx, 880, 2.5, 160, base + 0.20, 0.65, 0.26)
+  },
+
+  // 津波注意報: sine スイープ 300→500Hz × 2回（緩やか・低め）
+  tsunamiWatch: (ctx, base) => {
+    for (let i = 0; i < 2; i++) sweep(ctx, 'sine', 300, 500, base + i * 0.80, 0.60, 0.22)
+  },
+
+  // 津波警報: sawtooth スイープ 260→560Hz × 3回（鋸波の荒さで緊迫感）
+  tsunami: (ctx, base) => {
+    for (let i = 0; i < 3; i++) sweep(ctx, 'sawtooth', 260, 560, base + i * 0.85, 0.70, 0.26)
+  },
+
+  // 大津波警報: sawtooth 低音 + sine 高音 ダブルスイープ × 5回（重みと貫通力）
+  tsunamiMajor: (ctx, base) => {
+    for (let i = 0; i < 5; i++) {
+      sweep(ctx, 'sawtooth', 200, 500, base + i * 0.77,        0.65, 0.28)
+      sweep(ctx, 'sine',     300, 750, base + i * 0.77 + 0.05, 0.60, 0.18)
+    }
+  },
 }
+
+// ─── 震度更新音（強震モニタ）─────────────────────────────────────
+// 震度が上がるにつれ音程・回数・音量・波形の荒さが連動して増加する。
 
 // 強震モニタ index → 震度7段階のマッピング（インデックスは 0〜20、計測震度 = index * 0.5 - 3.0）
 // index 9=震度2相当、11=震度3、13=震度4、15=震度5弱、16=震度5強、17=震度6弱/6強、19=震度7
-const KYOSHIN_LEVEL_PATTERNS: Tone[][] = [
-  // Lv1 (index 9-10, 震度2): 低め単音
-  [{ freq: 440, start: 0, duration: 0.2 }],
-  // Lv2 (index 11-12, 震度3): 単音
-  [{ freq: 523, start: 0, duration: 0.22 }],
-  // Lv3 (index 13-14, 震度4): 2音
-  [{ freq: 659, start: 0, duration: 0.15 }, { freq: 659, start: 0.2, duration: 0.2 }],
-  // Lv4 (index 15, 震度5弱): 2音・やや強め
-  [{ freq: 784, start: 0, duration: 0.15, gain: 0.24 }, { freq: 784, start: 0.2, duration: 0.22, gain: 0.24 }],
-  // Lv5 (index 16, 震度5強): 3音
-  [{ freq: 880, start: 0, duration: 0.13 }, { freq: 880, start: 0.18, duration: 0.13 }, { freq: 880, start: 0.36, duration: 0.2 }],
-  // Lv6 (index 17-18, 震度6弱〜6強): square 3音・緊急感
-  [
-    { freq: 1047, start: 0.0, duration: 0.12, type: 'square', gain: 0.16 },
-    { freq: 1047, start: 0.17, duration: 0.12, type: 'square', gain: 0.16 },
-    { freq: 1047, start: 0.34, duration: 0.18, type: 'square', gain: 0.16 },
-  ],
-  // Lv7 (index 19+, 震度7): 下降する緊急音×4
-  [
-    { freq: 1175, start: 0.0, duration: 0.12, type: 'square', gain: 0.18 },
-    { freq: 880,  start: 0.16, duration: 0.12, type: 'square', gain: 0.18 },
-    { freq: 1175, start: 0.32, duration: 0.12, type: 'square', gain: 0.18 },
-    { freq: 880,  start: 0.48, duration: 0.18, type: 'square', gain: 0.18 },
-  ],
-]
-
 export function kyoshinLevel(index: number): number {
   if (index >= 19) return 6  // 震度7 (計測震度 6.5+)
   if (index >= 17) return 5  // 震度6弱/6強 (計測震度 5.5〜6.5)
@@ -189,12 +226,45 @@ export function kyoshinLevel(index: number): number {
   return 0                    // 震度2以下
 }
 
+interface PingPattern {
+  freq: number
+  count: number
+  interval: number
+  duration: number
+  gain: number
+  squareMix: number
+  altFreq?: number  // 奇数番目の音に使う別周波数（震度7の高低交互）
+}
+
+const PING_PATTERNS: PingPattern[] = [
+  { freq: 440,  count: 1, interval: 0,    duration: 0.22, gain: 0.12, squareMix: 0.00 },                        // 震度2
+  { freq: 523,  count: 1, interval: 0,    duration: 0.24, gain: 0.15, squareMix: 0.00 },                        // 震度3
+  { freq: 659,  count: 2, interval: 0.20, duration: 0.20, gain: 0.18, squareMix: 0.00 },                        // 震度4
+  { freq: 784,  count: 2, interval: 0.18, duration: 0.20, gain: 0.22, squareMix: 0.05 },                        // 震度5弱
+  { freq: 880,  count: 3, interval: 0.16, duration: 0.18, gain: 0.24, squareMix: 0.10 },                        // 震度5強
+  { freq: 1047, count: 3, interval: 0.13, duration: 0.16, gain: 0.26, squareMix: 0.35 },                        // 震度6弱〜強
+  { freq: 1175, count: 4, interval: 0.14, duration: 0.15, gain: 0.28, squareMix: 0.60, altFreq: 880 },          // 震度7
+]
+
+// ─── 公開 API ───────────────────────────────────────────────────
+
 /** 指定した種別の通知音を鳴らす。 */
 export function playAlertSound(type: AlertSoundType): void {
-  playTones(PATTERNS[type])
+  const ctx = getCtx()
+  if (!ctx) return
+  if (ctx.state === 'suspended') void ctx.resume()
+  PLAYERS[type](ctx, ctx.currentTime + 0.02)
 }
 
 /** 強震モニタの最大インデックスに応じた震度更新音を鳴らす。 */
 export function playKyoshinUpdateSound(maxIndex: number): void {
-  playTones(KYOSHIN_LEVEL_PATTERNS[kyoshinLevel(maxIndex)])
+  const ctx = getCtx()
+  if (!ctx) return
+  if (ctx.state === 'suspended') void ctx.resume()
+  const p = PING_PATTERNS[kyoshinLevel(maxIndex)]
+  const base = ctx.currentTime + 0.02
+  for (let i = 0; i < p.count; i++) {
+    const freq = (p.altFreq !== undefined && i % 2 === 1) ? p.altFreq : p.freq
+    ping(ctx, freq, base + i * p.interval, p.duration, p.gain, p.squareMix)
+  }
 }
