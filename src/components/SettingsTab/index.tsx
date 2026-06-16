@@ -415,7 +415,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
           <p className="text-blue-300 text-xs">クリックで各通知音を試聴できます（設定の通知音 ON/OFF に関わらず鳴ります）</p>
         </div>
         {/* ── 揺れ検知 ── */}
-        <Row label="揺れ検知（初回）" description="単音">
+        <Row label="揺れ検知（初回）" description="FM ベル 上昇2音">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('kyoshin') }}>▶ 試聴</TestButton>
         </Row>
         <Row label="揺れ検知・震度更新" description="震度をタップして試聴">
@@ -430,39 +430,39 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
           </div>
         </Row>
         {/* ── 緊急地震速報（EEW） ── */}
-        <Row label="EEW 予報（低震度）" description="緩やかな3音（震度2以下）">
+        <Row label="EEW 予報（低震度）" description="FM ベル 下降2音">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('eewForecast') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="EEW 初報（警報）" description="緊急音 × 5">
+        <Row label="EEW 初報（警報）" description="3連ビープ + 長音（di-di-di-DAA）">
           <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('eew') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="EEW 特別警報" description="高速緊急音 × 8（震度6弱以上）">
+        <Row label="EEW 特別警報" description="上昇スイープ + 高速8連打（震度6弱以上）">
           <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('eewSpecial') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="EEW 続報" description="短い2音">
+        <Row label="EEW 続報" description="FM ベル 短2音">
           <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('eewUpdate') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="EEW キャンセル" description="下降する解除音">
+        <Row label="EEW キャンセル" description="FM ベル 下降3和音">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('eewCancel') }}>▶ 試聴</TestButton>
         </Row>
         {/* ── 地震情報 ── */}
-        <Row label="地震情報（震度速報）" description="速報感のある3連音">
+        <Row label="地震情報（震度速報）" description="FM ベル 3音">
           <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('earthquakePrompt') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="地震情報（震源・震度 / 各地の震度）" description="2音チャイム">
+        <Row label="地震情報（震源・震度 / 各地の震度）" description="FM ベル 2音（残響チャイム）">
           <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('earthquake') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="地震情報（震源情報・遠地地震）" description="控えめな単音">
+        <Row label="地震情報（震源情報・遠地地震）" description="FM ベル 単音（控えめ）">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('earthquakeInfo') }}>▶ 試聴</TestButton>
         </Row>
         {/* ── 津波情報 ── */}
-        <Row label="津波注意報" description="中音 × 2">
+        <Row label="津波注意報" description="sine 300→500Hz スイープ × 2回">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('tsunamiWatch') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="津波警報" description="低音 × 3">
+        <Row label="津波警報" description="sawtooth 260→560Hz スイープ × 3回">
           <TestButton color="purple" onClick={() => { unlockAudio(); playAlertSound('tsunami') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="大津波警報" description="低音 × 5">
+        <Row label="大津波警報" description="sawtooth+sine ダブルスイープ × 5回">
           <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('tsunamiMajor') }}>▶ 試聴</TestButton>
         </Row>
       </Section>
@@ -542,7 +542,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">2.5.0</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">2.5.1</span></Row>
         <Row label="地震・津波データ">
           <a href="https://www.p2pquake.net/" target="_blank" rel="noopener noreferrer"
             className="text-xs text-blue-400 hover:text-blue-300">
