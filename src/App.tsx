@@ -94,6 +94,8 @@ export function App() {
   const { settings, updateSetting } = useSettings()
   const [activeTab, setActiveTab] = useState<TabId>(settings.defaultTab)
   const [selectedQuakeId, setSelectedQuakeId] = useState<string | null>(null)
+  // 直近に「新規地震」として注目を移した earthquake.time。続報（同一 time）では選択を維持する。
+  const lastNewQuakeTimeRef = useRef<string | null>(null)
   // 情報更新時にウィンドウタイトルへ表示する文言（null = 平常時タイトル）。
   // デフォルトタブへ戻るタイミングで null に戻す。
   const [alertTitle, setAlertTitle] = useState<string | null>(null)
@@ -113,7 +115,12 @@ export function App() {
     // （地震情報・津波情報・緊急地震速報）。
     if (event.code === 551) {
       setActiveTab('earthquake')
-      setSelectedQuakeId(null)
+      // 新規地震（別の earthquake.time）のときだけ最新へ注目を移す。
+      // 同一地震の続報（速報→詳細など）では現在の選択を維持する。
+      if (event.earthquake.time !== lastNewQuakeTimeRef.current) {
+        setSelectedQuakeId(null)
+        lastNewQuakeTimeRef.current = event.earthquake.time
+      }
       const { hypocenter, maxScale } = event.earthquake
       setAlertTitle(`🔴 地震情報 ${hypocenter.name} 最大震度${getIntensityLabel(maxScale)}`)
       window.clearTimeout(earthquakeTitleTimerRef.current)
@@ -259,7 +266,7 @@ export function App() {
 
   const latest = filteredEarthquakes[0] ?? null
   // 選択中の地震（未選択／一覧から消えた場合は最新にフォールバック）
-  const selectedQuake = filteredEarthquakes.find(q => q.id === selectedQuakeId) ?? latest
+  const selectedQuake = filteredEarthquakes.find(q => q.earthquake.time === selectedQuakeId) ?? latest
 
   // ブラウザ通知: 新しい地震が設定震度以上なら通知
   const lastNotifiedIdRef = useRef<string | null>(null)
@@ -267,10 +274,10 @@ export function App() {
     const latestQuake = earthquakes[0]
     if (!latestQuake) return
     if (settings.notifyMinScale < 0) return
-    if (latestQuake.id === lastNotifiedIdRef.current) return
+    if (latestQuake.earthquake.time === lastNotifiedIdRef.current) return
     if (latestQuake.earthquake.maxScale < settings.notifyMinScale) return
     if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
-    lastNotifiedIdRef.current = latestQuake.id
+    lastNotifiedIdRef.current = latestQuake.earthquake.time
     const scale = getIntensityLabel(latestQuake.earthquake.maxScale)
     new Notification('地震情報', {
       body: `${latestQuake.earthquake.hypocenter.name} 最大震度${scale} ${formatMagnitude(latestQuake.earthquake.hypocenter.magnitude)}`,
@@ -524,7 +531,7 @@ export function App() {
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'earthquake' ? ' invisible pointer-events-none' : ''}`}>
             <EarthquakeTab
               earthquakes={filteredEarthquakes}
-              selectedId={selectedQuake?.id ?? null}
+              selectedId={selectedQuake?.earthquake.time ?? null}
               onSelect={setSelectedQuakeId}
               isLoading={isLoading}
               isLoadingMore={isLoadingMore}
