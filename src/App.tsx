@@ -21,7 +21,11 @@ import type { P2PQuakeEvent, EEWAlert } from './types/earthquake'
 
 // 平常時のウィンドウタイトル（index.html の <title> と一致させる）。
 // AutoHotKey 等が、情報更新時のタイトル変化を検知してイベントを発火できるようにする。
-const DEFAULT_TITLE = 'リアルタイム地震ビューアー'
+const DEFAULT_TITLE = import.meta.env.VITE_VARIANT === 'dmdss'
+  ? 'リアルタイム地震ビューアー (DM-D.S.S)'
+  : 'リアルタイム地震ビューアー'
+
+const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
 
 function showBrowserNotification(
   title: string,
@@ -236,7 +240,7 @@ export function App() {
     simulateEarthquake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch,
-  } = useEarthquakes(handleLiveEvent)
+  } = useEarthquakes(handleLiveEvent, settings.dmdataApiKey)
 
   // UI 倍率: ルート要素の font-size を変えて rem ベースの UI 全体を拡大縮小する。
   // 倍率変更で地図コンテナ幅が変わるため、Leaflet の再計算用に resize を発火する。
@@ -425,7 +429,11 @@ export function App() {
   // Yahoo hypoInfo の EEW を injectEvent で状態に注入する（音・タブ切替も発火）
   const [kyoshinTimeOffset, setKyoshinTimeOffset] = useState<number | null>(null)
   const [kyoshinInputDateTime, setKyoshinInputDateTime] = useState(() => formatDateTimeLocal(new Date()))
-  const kyoshin = useKyoshinRealtime(true, { onEEWEvent: injectEvent, timeOffset: kyoshinTimeOffset })
+  // DMDSS版: Yahoo hypoInfo からのEEW検出は不要（DMDATAが直接配信するため）
+  const kyoshin = useKyoshinRealtime(true, {
+    onEEWEvent: isDmdss ? undefined : injectEvent,
+    timeOffset: kyoshinTimeOffset,
+  })
   const kyoshinDetection = useKyoshinDetection(kyoshin.sites, kyoshin.indices)
 
   // EEW受信中または揺れ検知中は全観測点ベースの最大インデックスを使う（表示と音を一致させる）
@@ -556,6 +564,7 @@ export function App() {
             <SettingsTab
               settings={settings}
               onUpdate={updateSetting}
+              dmdataConnectionStatus={connectionStatus}
               onTest={{
                 earthquake:   simulateEarthquake,
                 eew:          simulateEEW,
