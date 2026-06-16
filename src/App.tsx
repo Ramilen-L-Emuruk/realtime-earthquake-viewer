@@ -100,13 +100,6 @@ export function App() {
   // SW アップデート検知時のカウントダウン秒数（null = 待機なし、0以下でリロード）
   const [updateCountdown, setUpdateCountdown] = useState<number | null>(null)
 
-  // 受信イベントの種別ごとに通知音を鳴らす（同種の連続発火はバースト抑制）
-  const lastSoundAtRef = useRef<Record<AlertSoundType, number>>({
-    earthquake: 0, earthquakePrompt: 0, earthquakeInfo: 0,
-    eew: 0, eewUpdate: 0, eewCancel: 0, eewSpecial: 0, eewForecast: 0,
-    tsunami: 0, tsunamiMajor: 0, tsunamiWatch: 0,
-    kyoshin: 0,
-  })
   // EEW の eventId ごとにレベルを追跡（複数EEW対応）
   // key = issue.eventId ?? id、value = 0=低震度予報 / 1=警報or震度3以上 / 2=特別警報
   const activeEEWLevelsRef = useRef<Map<string, 0 | 1 | 2>>(new Map())
@@ -145,11 +138,7 @@ export function App() {
         // EEW キャンセル: 対象イベントをレベル追跡から除去し、解除のたびに音を鳴らす
         activeEEWLevelsRef.current.delete(key)
         if (settings.soundEnabled) {
-          const now = Date.now()
-          if (now - lastSoundAtRef.current.eewCancel >= 1500) {
-            lastSoundAtRef.current.eewCancel = now
-            playAlertSound('eewCancel')
-          }
+          playAlertSound('eewCancel')
         }
         if (activeEEWLevelsRef.current.size === 0) {
           window.clearTimeout(eewTitleTimerRef.current)
@@ -176,11 +165,7 @@ export function App() {
 
       if (settings.soundEnabled) {
         const eewSoundType = selectEEWSoundType(isNew, levelUpgraded, currentLevel)
-        const now = Date.now()
-        if (now - lastSoundAtRef.current[eewSoundType] >= 1500) {
-          lastSoundAtRef.current[eewSoundType] = now
-          playAlertSound(eewSoundType)
-        }
+        playAlertSound(eewSoundType)
       }
       if (settings.notifyEEW && (isNew || levelUpgraded)) {
         const eewNotifyTitle = currentLevel === 2 ? '緊急地震速報 特別警報'
@@ -235,9 +220,6 @@ export function App() {
            : 'earthquake'  // ScaleAndDestination / DetailScale
     }
     if (!type) return
-    const now = Date.now()
-    if (now - lastSoundAtRef.current[type] < 1500) return
-    lastSoundAtRef.current[type] = now
     playAlertSound(type)
   }
 
@@ -457,11 +439,7 @@ export function App() {
       setActiveTab('realtime')
       setAlertTitle('📈 揺れ検知')
       if (settings.soundEnabled) {
-        const now = Date.now()
-        if (now - lastSoundAtRef.current.kyoshin >= 1500) {
-          lastSoundAtRef.current.kyoshin = now
-          playAlertSound('kyoshin')
-        }
+        playAlertSound('kyoshin')
       }
       if (settings.notifyDetection) {
         const label = kyoshinIndexToLabel(effectiveKyoshinMaxIndex) ?? '?'
