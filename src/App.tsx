@@ -174,7 +174,7 @@ export function App() {
         const eewSoundType = selectEEWSoundType(isNew, levelUpgraded, currentLevel)
         playAlertSound(eewSoundType)
       }
-      if (settings.notifyEEW && (isNew || levelUpgraded)) {
+      if (settings.notifyMinScale >= 0 && settings.notifyEEW && (isNew || levelUpgraded)) {
         const eewNotifyTitle = currentLevel === 2 ? '緊急地震速報 特別警報'
           : currentLevel === 1 ? '緊急地震速報 警報' : '緊急地震速報 予報'
         showBrowserNotification(
@@ -199,7 +199,7 @@ export function App() {
     }
 
     // ブラウザ通知（津波）— 音が無効でも送る
-    if (event.code === 552 && !event.cancelled && settings.notifyTsunami) {
+    if (event.code === 552 && !event.cancelled && settings.notifyMinScale >= 0 && settings.notifyTsunami) {
       const grade = tsunamiMaxGrade(event)
       const tsunamiNotifyTitle = grade === 'MajorWarning' ? '大津波警報'
         : grade === 'Warning' ? '津波警報' : '津波注意報'
@@ -458,7 +458,7 @@ export function App() {
       if (settings.soundEnabled) {
         playAlertSound('kyoshin')
       }
-      if (settings.notifyDetection) {
+      if (settings.notifyMinScale >= 0 && settings.notifyDetection) {
         const label = kyoshinIndexToLabel(effectiveKyoshinMaxIndex) ?? '?'
         showBrowserNotification('揺れを検知中', `推定最大震度 ${label}（強震モニタ）`, 'kyoshin-detection')
       }
