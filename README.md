@@ -3,7 +3,8 @@
 気象庁の地震情報・緊急地震速報・津波情報をリアルタイムに表示する PWA アプリです。  
 [kotoho7/scratch-realtime-earthquake-viewer-page](https://github.com/kotoho7/scratch-realtime-earthquake-viewer-page) を参考に React + TypeScript で構築しています。
 
-🌐 **公開ページ**: https://ramilen-l-emuruk.github.io/realtime-earthquake-viewer/
+🌐 **通常版（P2PQuake）**: https://ramilen-l-emuruk.github.io/realtime-earthquake-viewer/  
+🌐 **DM-D.S.S 版（DMDATA.JP）**: https://ramilen-l-emuruk.github.io/realtime-earthquake-viewer/dmdss/
 
 ---
 
@@ -14,7 +15,7 @@
 - **地震情報タブ**: 過去の地震をカード表示。地図に各観測点の震度を色付きドットで表示し、震源をマーク。カードを選択するとその地震の情報に切り替わる。
 - **リアルタイムタブ**: 各観測点のリアルタイム震度を毎秒更新で地図に表示。緊急地震速報の発報時は予報円・震源を地図に重ねて表示し、右パネルに EEW 情報カードを表示。揺れ検知時は検知カードを表示。
 - **津波情報タブ**: 大津波警報・津波警報・津波注意報を表示。対象海域を地図の海岸線に等級色で描画し対象区域へ自動ズーム。
-- **設定タブ**: 通知音・ブラウザ通知・表示件数・UI 倍率・デフォルトタブ・自動復帰時間などを設定。各種テスト送信も可能。
+- **設定タブ**: 通知音・ブラウザ通知・表示件数・UI 倍率・デフォルトタブ・自動復帰時間などを設定。各種テスト送信も可能。DM-D.S.S 版では DMDATA.JP の API キー設定・接続状態確認も行える。
 - **通知音**: 地震情報・緊急地震速報・津波情報の受信時に種別ごとの音を再生。
 - **自動タブ切替**: 情報受信時に該当タブを自動表示。一定時間操作がなければデフォルトタブへ復帰。
 - **PWA 対応**: ホーム画面へのインストールとオフラインキャッシュに対応。
@@ -31,8 +32,8 @@
 | スタイル | Tailwind CSS（ダークテーマ） |
 | 地図 | React-Leaflet + 自前の行政区域ベースマップ（タイル不使用・ダーク／地方・県・都市ラベル） |
 | PWA | vite-plugin-pwa + Workbox |
-| データ | [P2PQuake API v2](https://api.p2pquake.net/v2/docs/) |
-| リアルタイム震度 | [Yahoo!天気・災害 リアルタイム震度](https://typhoon.yahoo.co.jp/weather/jp/earthquake/kyoshin/)（防災科研 強震モニタ由来） |
+| データ | 通常版: [P2PQuake API v2](https://api.p2pquake.net/v2/docs/) / DM-D.S.S 版: [DMDATA.JP API](https://dmdata.jp/) |
+| リアルタイム震度 | [Yahoo!天気・災害 リアルタイム震度](https://typhoon.yahoo.co.jp/weather/jp/earthquake/kyoshin/)（防災科研 強震モニタ由来）|
 | デプロイ | GitHub Pages + GitHub Actions |
 
 ---
@@ -63,8 +64,10 @@ npm run preview
 
 | スクリプト | 説明 |
 |---|---|
-| `npm run dev` | 開発サーバー起動 |
-| `npm run build` | 型チェック + 本番ビルド（`dist/`） |
+| `npm run dev` | 通常版 開発サーバー起動 |
+| `npm run dev:dmdss` | DM-D.S.S 版 開発サーバー起動 |
+| `npm run build` | 型チェック + 通常版 本番ビルド（`dist/`） |
+| `npm run build:dmdss` | 型チェック + DM-D.S.S 版 本番ビルド（`dist-dmdss/`） |
 | `npm run preview` | 本番ビルドのプレビュー |
 
 > 地図表示用のデータテーブルは以下のスクリプトで再生成できます（通常は更新不要）。
@@ -88,13 +91,16 @@ npm run preview
 
 GitHub Pages のプロジェクトサイトはサブパス配信（`/<リポジトリ名>/`）になるため、`vite.config.ts` の `base` をリポジトリ名に合わせています。
 
-```ts
-// vite.config.ts
-const base = '/realtime-earthquake-viewer/'
-```
+| バリアント | base パス | ビルド出力 |
+|---|---|---|
+| 通常版 | `/realtime-earthquake-viewer/` | `dist/` |
+| DM-D.S.S 版 | `/realtime-earthquake-viewer/dmdss/` | `dist-dmdss/` |
 
-- リポジトリ名を変更する場合は、この `base` も合わせて変更してください。
-- 独自ドメイン等でルート配信する場合は `base` を `'/'` にしてください。
+GitHub Actions のデプロイでは `dist-dmdss/` の内容を `dist/dmdss/` にマージしてから Pages に公開するため、両版が同一サイトに共存します。  
+各バリアントは Service Worker のスコープが異なり、独立した PWA として動作します。
+
+- リポジトリ名を変更する場合は `vite.config.ts` の `base` 変数も合わせて変更してください。
+- 独自ドメイン等でルート配信する場合は通常版の `base` を `'/'` にしてください。
 
 ---
 
@@ -133,6 +139,8 @@ return
 
 ## データソース
 
+### 通常版（P2PQuake）
+
 | データ | 提供元 | 説明 |
 |---|---|---|
 | 地震情報・津波情報 | [P2PQuake API v2](https://api.p2pquake.net/v2/docs/) | 無料・認証不要。WebSocket + REST |
@@ -144,7 +152,18 @@ return
 | 一次細分区域（地震情報の地域） | 気象庁 予報区等 GIS データ（[Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)） | 区域境界・区域名ラベル・地震の区域別震度集約に使用。`scripts/build-subregions.mjs` で生成 |
 | 海底地形（背景・任意） | [Esri World Ocean Base](https://www.arcgis.com/home/item.html?id=1e126e7520f9466c9ca28b8f28b5e500) | 背景に海底地形を表示（設定で ON/OFF）。Esri, GEBCO, NOAA ほか |
 
-### P2PQuake イベントコード
+### DM-D.S.S 版（DMDATA.JP）
+
+| データ | 提供元 | 説明 |
+|---|---|---|
+| 緊急地震速報（EEW） | [DMDATA.JP API](https://dmdata.jp/) VXSE45/47 | WebSocket。気象庁発表から1秒未満で取得。要 API キー |
+| 地震情報 | DMDATA.JP VXSE51/52/53 | WebSocket + REST 履歴 |
+| 津波情報 | DMDATA.JP VTSE41/51/52 | WebSocket + REST 履歴 |
+| リアルタイム震度 | Yahoo!天気・災害 リアルタイム震度 | 通常版と同一（DMDATA.JP はリアルタイム震度を提供しないため） |
+
+DMDATA.JP のAPIキーは設定タブから入力し、ブラウザの localStorage に保存されます。APIキーは [dmdata.jp](https://dmdata.jp/) で取得できます。
+
+### P2PQuake イベントコード（通常版）
 
 | コード | 内容 |
 |---|---|
@@ -204,7 +223,7 @@ realtime-earthquake-viewer/
 │   │   ├── SettingsTab/            # 設定パネル
 │   │   └── TsunamiTab/             # 津波情報パネル
 │   ├── hooks/
-│   │   ├── useEarthquakes.ts       # P2PQuake WS + REST 状態管理
+│   │   ├── useEarthquakes.ts       # P2PQuake / DMDATA.JP WS + REST 状態管理（VITE_VARIANT で切替）
 │   │   ├── useKyoshinRealtime.ts   # Yahoo リアルタイム震度のポーリング
 │   │   ├── useSettings.ts          # アプリ設定（localStorage 永続化）
 │   │   ├── useStationCoords.ts     # 観測点座標テーブルの読み込み
@@ -212,7 +231,9 @@ realtime-earthquake-viewer/
 │   │   └── useSubRegions.ts        # 一次細分区域境界データの読み込み
 │   ├── services/
 │   │   ├── kyoshin.ts              # Yahoo リアルタイム震度の取得・デコード
-│   │   └── p2pquake.ts             # P2PQuake API クライアント（自動再接続）
+│   │   ├── p2pquake.ts             # P2PQuake API クライアント（自動再接続）
+│   │   ├── dmdata.ts               # DMDATA.JP WebSocket クライアント（DM-D.S.S 版用）
+│   │   └── dmdataParser.ts         # DMDATA.JP JSON 電文 → 内部型変換（DM-D.S.S 版用）
 │   ├── types/
 │   │   └── earthquake.ts           # P2PQuake API 型定義
 │   └── utils/
@@ -240,6 +261,7 @@ realtime-earthquake-viewer/
 - 強震モニタの震度は推定値であり、気象庁発表の震度と異なる場合があります。
 - 緊急地震速報は予測情報のため、実際の揺れと異なる場合があります。
 - P2PQuake API は非公式サービスのため、サービス継続性は保証されません。
+- DM-D.S.S 版で使用する DMDATA.JP API キーはブラウザの localStorage に平文で保存されます。共有端末での利用には注意してください。
 
 ---
 

@@ -33,8 +33,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build
+      - name: Build standard
         run: npm run build
+
+      - name: Build DMDSS
+        run: npm run build:dmdss
+
+      - name: Merge DMDSS build into dist
+        run: |
+          mkdir -p dist/dmdss
+          cp -r dist-dmdss/. dist/dmdss/
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

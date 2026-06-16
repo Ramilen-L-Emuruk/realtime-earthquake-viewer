@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { JMAQuake, JMATsunami, EEWAlert, EEWRegion, P2PQuakeEvent, ConnectionStatus } from '../types/earthquake'
 import { fetchHistory, P2PQuakeWebSocket } from '../services/p2pquake'
+import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis } from '../services/dmdata'
+
+const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
 import {
   createTestEarthquake,
   createTestEEW,
@@ -60,14 +63,17 @@ export interface EarthquakeState {
   error: string | null
 }
 
-export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
+export function useEarthquakes(
+  onLiveEvent?: (event: P2PQuakeEvent) => void,
+  dmdataApiKey = '',
+) {
   const [state, setState] = useState<EarthquakeState>({
     earthquakes: [],
     tsunamis: [],
     activeEEWs: new Map(),
-    connectionStatus: 'connecting',
+    connectionStatus: (isDmdss && !dmdataApiKey) ? 'disconnected' : 'connecting',
     lastUpdate: null,
-    isLoading: true,
+    isLoading: !(isDmdss && !dmdataApiKey),
     isLoadingMore: false,
     hasMore: false,
     error: null,
@@ -142,7 +148,68 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
   useEffect(() => {
     let cancelled = false
 
-    // 551 と 552 を別々に取得して件数を正確にする
+    if (isDmdss) {
+      // --- DMDSS版: APIキー未設定なら接続しない ---
+      if (!dmdataApiKey) {
+        setState(prev => ({ ...prev, connectionStatus: 'disconnected', isLoading: false }))
+        return
+      }
+
+      setState(prev => ({ ...prev, isLoading: true, connectionStatus: 'connecting', error: null }))
+
+      // DMDATA REST API で履歴取得
+      Promise.all([
+        fetchDmdataEarthquakes(dmdataApiKey, MAX_HISTORY_RETAINED),
+        fetchDmdataTsunamis(dmdataApiKey, 10),
+      ])
+        .then(([quakeEvents, tsunamiEvents]) => {
+          if (cancelled) return
+          const seenQuakes = new Map<string, JMAQuake>()
+          for (const q of quakeEvents) {
+            const key = q.earthquake.time
+            const existing = seenQuakes.get(key)
+            if (!existing || (ISSUE_PRIORITY[q.issue.type] ?? 0) > (ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
+              seenQuakes.set(key, q)
+            }
+          }
+          const earthquakes = Array.from(seenQuakes.values())
+          const allTsunami = tsunamiEvents
+            .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
+          const latestTsunami = allTsunami[0]
+          const tsunamis = latestTsunami && !latestTsunami.cancelled ? [latestTsunami] : []
+          setState(prev => ({
+            ...prev,
+            earthquakes,
+            tsunamis,
+            lastUpdate: new Date(),
+            isLoading: false,
+            hasMore: false,  // DMDSS はカーソル型 API のため load more 非対応
+            error: null,
+          }))
+        })
+        .catch((err: unknown) => {
+          if (cancelled) return
+          const msg = err instanceof Error ? err.message : '取得失敗'
+          setState(prev => ({ ...prev, isLoading: false, error: msg }))
+        })
+
+      // DMDSS WebSocket 接続
+      const ws = new DmdataWebSocket(dmdataApiKey)
+      wsRef.current = null
+      ws.onEvent = (ev) => {
+        handleEvent(ev.data)
+      }
+      ws.onStatusChange = status =>
+        setState(prev => ({ ...prev, connectionStatus: status }))
+      ws.connect()
+
+      return () => {
+        cancelled = true
+        ws.disconnect()
+      }
+    }
+
+    // --- 通常版: P2PQuake ---
     Promise.all([
       fetchHistory([551], MAX_HISTORY_RETAINED),
       fetchHistory([552], 10),
@@ -205,10 +272,10 @@ export function useEarthquakes(onLiveEvent?: (event: P2PQuakeEvent) => void) {
       cancelled = true
       ws.disconnect()
     }
-  }, [handleEvent])
+  }, [handleEvent, dmdataApiKey])
 
   const loadMoreEarthquakes = useCallback(async () => {
-    if (stateRef.current.isLoadingMore || !stateRef.current.hasMore) return
+    if (isDmdss || stateRef.current.isLoadingMore || !stateRef.current.hasMore) return
     setState(prev => ({ ...prev, isLoadingMore: true }))
     try {
       const offset = stateRef.current.earthquakes.length

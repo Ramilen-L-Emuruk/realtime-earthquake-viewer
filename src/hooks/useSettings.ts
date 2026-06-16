@@ -20,9 +20,13 @@ export interface AppSettings {
   notifyDetection: boolean         // 強震モニタの揺れ検知時にブラウザ通知を送る
   homeLat: number | null           // ホーム地点 緯度（null = 未設定）
   homeLng: number | null           // ホーム地点 経度（null = 未設定）
+  dmdataApiKey: string             // DMDATA.JP APIキー（DMDSS版のみ使用、空文字 = 未設定）
 }
 
-const STORAGE_KEY = 'quake-viewer-settings'
+// 通常版とDMDSS版の設定を localStorage 上で分離する
+const STORAGE_KEY = import.meta.env.VITE_VARIANT === 'dmdss'
+  ? 'quake-viewer-settings-dmdss'
+  : 'quake-viewer-settings'
 
 const DEFAULTS: AppSettings = {
   minDisplayScale: -1,
@@ -41,6 +45,7 @@ const DEFAULTS: AppSettings = {
   notifyDetection: false,
   homeLat: null,
   homeLng: null,
+  dmdataApiKey: '',
 }
 
 function load(): AppSettings {
