@@ -105,6 +105,8 @@ export function App() {
   const [alertTitle, setAlertTitle] = useState<string | null>(null)
   // SW アップデート検知時のカウントダウン秒数（null = 待機なし、0以下でリロード）
   const [updateCountdown, setUpdateCountdown] = useState<number | null>(null)
+  // DMDSS版: WS接続中は現在時刻を毎秒更新して地図上の更新時刻をリアルタイム表示する
+  const [nowTick, setNowTick] = useState<Date | null>(null)
 
   // EEW の eventId ごとにレベルを追跡（複数EEW対応）
   // key = issue.eventId ?? id、value = 0=低震度予報 / 1=警報or震度3以上 / 2=特別警報
@@ -309,6 +311,17 @@ export function App() {
     return () => window.removeEventListener('sw-updated', onSwUpdated)
   }, [])
 
+  // DMDSS版: WS接続中は nowTick を毎秒更新、切断時は null にリセット
+  useEffect(() => {
+    if (!isDmdss || connectionStatus !== 'connected') {
+      setNowTick(null)
+      return
+    }
+    setNowTick(new Date())
+    const id = setInterval(() => setNowTick(new Date()), 1000)
+    return () => clearInterval(id)
+  }, [connectionStatus])
+
   // 定期自動リロード（長時間起動によるメモリ蓄積をリセット）
   useEffect(() => {
     if (settings.periodicReloadHours <= 0) return
@@ -500,13 +513,15 @@ export function App() {
   const mapQuake = mapTab === 'earthquake' ? selectedQuake : latest
 
   // 地図左上の更新時刻: リアルタイム表示はリアルタイム震度(kyoshin)の更新時刻、
-  // それ以外は P2P データの最終更新時刻を表示する。
+  // DMDSS版かつWS接続中は現在時刻を毎秒更新、それ以外は最終受信時刻を表示する。
   const overlayUpdateTime =
     mapTab === 'realtime'
       ? kyoshin.dataTime
         ? new Date(kyoshin.dataTime)
         : null
-      : lastUpdate
+      : (isDmdss && nowTick !== null)
+        ? nowTick
+        : lastUpdate
   // 更新がエラーで停止しているか（リアルタイム=取得連続失敗 / それ以外=WS切断）
   const overlayError =
     mapTab === 'realtime' ? kyoshin.error : connectionStatus === 'disconnected'
