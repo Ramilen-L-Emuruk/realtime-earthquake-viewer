@@ -6,7 +6,7 @@ import type { JMAQuake, JMATsunami, JMALpgm, EEWAlert, ConnectionStatus } from '
 import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml } from './dmdataParser'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
-const CLASSIFICATIONS = ['eew.forecast', 'eew.warning', 'telegram.earthquake']
+const CLASSIFICATIONS = ['eew.forecast', 'eew.warning', 'telegram.earthquake', 'telegram.tsunami']
 const RECONNECT_BASE_MS = 3000
 const RECONNECT_MAX_MS = 30000
 const RECONNECT_FACTOR = 1.5

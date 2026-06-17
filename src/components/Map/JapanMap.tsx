@@ -392,18 +392,21 @@ export function JapanMap({
 
   // EEW 受信時: 対象地域（一次細分区域）を予想最大震度(scaleTo)の色で塗りつぶす。
   // 複数EEWがある場合は地域ごとの最大予想震度を採用する。
+  // kindCode '10'/'11' は強震動警戒域（警報対象）。警報域は不透明度・枠線を強くして視覚的に区別する。
   const eewAreaFills = useMemo(() => {
     if (mode !== 'kyoshin' || eews.length === 0) return []
     const maxByName = new Map<string, number>()
+    const warningNames = new Set<string>()
     for (const eew of eews) {
       for (const a of eewAreas(eew)) {
         maxByName.set(a.name, Math.max(maxByName.get(a.name) ?? 0, a.scaleTo))
+        if (a.kindCode === '10' || a.kindCode === '11') warningNames.add(a.name)
       }
     }
-    const list: { name: string; scale: number; rings: LatLng[][] }[] = []
+    const list: { name: string; scale: number; isWarning: boolean; rings: LatLng[][] }[] = []
     for (const [name, scale] of maxByName) {
       const sr = subregionByName.get(name)
-      if (sr && scale > 0) list.push({ name, scale, rings: sr.rings })
+      if (sr && scale > 0) list.push({ name, scale, isWarning: warningNames.has(name), rings: sr.rings })
     }
     // 弱い予想震度を先に描画し、強い予想震度を前面に重ねる
     return list.sort((a, b) => a.scale - b.scale)
@@ -481,7 +484,8 @@ export function JapanMap({
           リアルタイム表示は観測点ドットで埋もれるため引きの地方ラベルは出さない。 */}
       <BaseMap suppressRegionLabels={mode === 'kyoshin'} />
 
-      {/* EEW 受信時: 対象地域を予想震度で色塗り（ラベル z270 より背面・観測点ドットの下） */}
+      {/* EEW 受信時: 対象地域を予想震度で色塗り（ラベル z270 より背面・観測点ドットの下）
+          警報域(isWarning): fillOpacity 0.55 + weight 2 で強調。予報域: 0.3 + weight 1 */}
       {mode === 'kyoshin' && eewAreaFills.length > 0 && (
         <Pane name="eew-region-fill" style={{ zIndex: 260 }}>
           {eewAreaFills.map((a) =>
@@ -491,9 +495,9 @@ export function JapanMap({
                 positions={ring}
                 pathOptions={{
                   color: getIntensityColor(a.scale),
-                  weight: 1,
+                  weight: a.isWarning ? 2 : 1,
                   fillColor: getIntensityColor(a.scale),
-                  fillOpacity: 0.45,
+                  fillOpacity: a.isWarning ? 0.55 : 0.3,
                 }}
               />
             )),
