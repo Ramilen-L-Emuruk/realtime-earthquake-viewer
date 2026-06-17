@@ -43,6 +43,23 @@ export function loadStationCoords(): Promise<StationCoordsData> {
 }
 
 /**
+ * 細分区域名 -> 都道府県名 の逆引きインデックスを構築する。
+ * areas のキー "都道府県|細分区域名" を分解して name -> pref の Map を作る（初出優先）。
+ * EEW の地域別予想震度（pref を含まない）に都道府県を補完する用途で使う。
+ */
+export function buildAreaPrefIndex(data: StationCoordsData): Map<string, string> {
+  const index = new Map<string, string>()
+  for (const key of Object.keys(data.areas)) {
+    const sep = key.indexOf('|')
+    if (sep < 0) continue
+    const pref = key.slice(0, sep)
+    const name = key.slice(sep + 1)
+    if (name && !index.has(name)) index.set(name, pref)
+  }
+  return index
+}
+
+/**
  * 地点の都道府県名・住所(観測点名 or 細分区域名)から座標を引く。
  * 見つからない場合は null を返す。
  */
