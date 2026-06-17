@@ -5,6 +5,7 @@ import type {
   JMAQuake,
   JMATsunami,
   EEWAlert,
+  EEWRegion,
   IntensityScale,
   DomesticTsunami,
   IssueType,
@@ -67,6 +68,30 @@ function parseHypocenterCoord(hypo: Record<string, unknown>): {
   return { lat, lng, depth }
 }
 
+// EEW 電文の body.intensity.regions[] を地域別予想震度（EEWRegion[]）に変換する。
+// 各要素は細分化地域コード(code)・地域名(name)・予測震度(forecastMaxInt.{from,to}) を持つ。
+// pref はこの電文に単体では含まれないため空文字とし、フック層で station-coords から補完する。
+function parseEEWRegions(intensity: Record<string, unknown>): EEWRegion[] {
+  const regions: EEWRegion[] = []
+  for (const raw of arr(intensity.regions)) {
+    const r = obj(raw)
+    const name = str(r.name)
+    if (!name) continue
+    const fm = obj(r.forecastMaxInt)
+    const scaleTo = parseIntensityStr(str(fm.to) || str(fm.from))
+    const scaleFrom = parseIntensityStr(str(fm.from))
+    regions.push({
+      pref: '',
+      name,
+      scaleFrom,
+      scaleTo,
+      kindCode: str(obj(r.kind).code),
+      arrivalTime: str(r.arrivalTime) || null,
+    })
+  }
+  return regions
+}
+
 // EEW (VXSE45: 予報, VXSE43: 警報)
 // data は WebSocket body を JSON.parse した後のオブジェクト（トップレベル電文）
 export function parseEEW(headType: string, data: Record<string, unknown>): EEWAlert | null {
@@ -85,6 +110,8 @@ export function parseEEW(headType: string, data: Record<string, unknown>): EEWAl
   const forecastMaxInt = obj(intensity.forecastMaxInt)
   // to がより厳しい上限値。取れない場合は from を使う
   const forecastScale = parseIntensityStr(str(forecastMaxInt.to) || str(forecastMaxInt.from))
+  // 各地の予想震度（地域別）。キャンセル時は空にする。
+  const areas = isCanceled ? [] : parseEEWRegions(intensity)
 
   return {
     code: 556,
@@ -108,7 +135,7 @@ export function parseEEW(headType: string, data: Record<string, unknown>): EEWAl
     isFinal: body.isLastInfo === true,
     forecastMaxScale: (!isCanceled && forecastScale >= 0) ? forecastScale as IntensityScale : undefined,
     issue: { eventId, serial, time: reportTime },
-    areas: [],
+    areas,
   }
 }
 
