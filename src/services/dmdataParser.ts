@@ -114,8 +114,8 @@ export function parseEEW(headType: string, data: Record<string, unknown>): EEWAl
 
 const VXSE_ISSUE_TYPE: Record<string, IssueType> = {
   VXSE51: 'ScalePrompt',
-  VXSE52: 'ScaleAndDestination',
-  VXSE53: 'DetailScale',
+  VXSE52: 'Destination',
+  VXSE53: 'ScaleAndDestination',
 }
 
 // 地震情報 (VXSE51/52/53)
@@ -156,6 +156,171 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
     },
     points: [],
   }
+}
+
+// XML ヘルパー: localName で最初の要素を返す
+function xmlQ(parent: Element | Document, localName: string): Element | null {
+  const els = parent.getElementsByTagName('*')
+  for (let i = 0; i < els.length; i++) {
+    if (els[i].localName === localName) return els[i]
+  }
+  return null
+}
+
+function xmlText(el: Element | null): string {
+  return el?.textContent?.trim() ?? ''
+}
+
+// JMA XML 座標文字列（例: "+36.3+140.0-70000/"）→ lat/lng/depth(km)
+function parseJmaCoord(s: string): { lat: number; lng: number; depth: number } {
+  const m = s.match(/([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)?\//)
+  if (!m) return { lat: NaN, lng: NaN, depth: -1 }
+  const lat = parseFloat(m[1])
+  const lng = parseFloat(m[2])
+  // 高さフィールドは負値・メートル単位（海面下）
+  const depth = m[3] != null ? Math.abs(parseFloat(m[3])) / 1000 : -1
+  return { lat, lng, depth }
+}
+
+// REST API 経由の JMA XML（VXSE51/52/53）を JMAQuake にパース
+export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake | null {
+  let doc: Document
+  try {
+    doc = new DOMParser().parseFromString(xml, 'application/xml')
+    if (doc.querySelector('parsererror')) return null
+  } catch { return null }
+
+  const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
+  const eventId = xmlText(xmlQ(doc, 'EventID'))
+  const infoType = xmlText(xmlQ(doc, 'InfoType'))
+  const serial = xmlText(xmlQ(doc, 'Serial')) || '1'
+
+  const earthquakeEl = xmlQ(doc, 'Earthquake')
+  if (!earthquakeEl) return null
+
+  const originTime = xmlText(xmlQ(earthquakeEl, 'OriginTime'))
+  const hypocenterEl = xmlQ(earthquakeEl, 'Hypocenter')
+  const areaEl = hypocenterEl ? xmlQ(hypocenterEl, 'Area') : null
+  const hypName = areaEl ? xmlText(xmlQ(areaEl, 'Name')) : ''
+  const coordStr = areaEl ? xmlText(xmlQ(areaEl, 'Coordinate')) : ''
+  const { lat, lng, depth } = parseJmaCoord(coordStr)
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null
+
+  const magnitudeStr = xmlText(xmlQ(earthquakeEl, 'Magnitude'))
+  const magnitude = parseFloat(magnitudeStr) || 0
+
+  // MaxInt は Intensity > Observation 直下
+  const obsEl = xmlQ(doc, 'Observation')
+  const maxIntStr = obsEl ? xmlText(xmlQ(obsEl, 'MaxInt')) : ''
+  const maxScale = parseIntensityStr(maxIntStr || null)
+
+  // 各観測点（IntensityStation）は Pref 内にある
+  const points: JMAQuake['points'] = []
+  const allEls = doc.getElementsByTagName('*')
+  const prefEls: Element[] = []
+  for (let i = 0; i < allEls.length; i++) {
+    if (allEls[i].localName === 'Pref') prefEls.push(allEls[i])
+  }
+  for (const prefEl of prefEls) {
+    const prefName = xmlText(xmlQ(prefEl, 'Name'))
+    const stEls = prefEl.getElementsByTagName('*')
+    for (let i = 0; i < stEls.length; i++) {
+      if (stEls[i].localName !== 'IntensityStation') continue
+      const stEl = stEls[i]
+      const stName = xmlText(xmlQ(stEl, 'Name'))
+      const intStr = xmlText(xmlQ(stEl, 'Int'))
+      const scale = parseIntensityStr(intStr || null)
+      if (stName && scale >= 0) {
+        points.push({ pref: prefName, addr: stName, isArea: false, scale: scale as IntensityScale })
+      }
+    }
+  }
+
+  const issueType = VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination'
+  const correct: CorrectType = infoType === '訂正' ? 'Unknown' : 'None'
+
+  return {
+    code: 551,
+    id: `dmdata-xml-quake-${eventId}-${serial}`,
+    time: reportDateTime,
+    issue: {
+      source: '気象庁',
+      time: reportDateTime,
+      type: issueType,
+      correct,
+    },
+    earthquake: {
+      time: originTime,
+      hypocenter: { name: hypName, latitude: lat, longitude: lng, depth, magnitude },
+      maxScale: maxScale >= 0 ? maxScale as IntensityScale : -1,
+      domesticTsunami: 'None',
+      foreignTsunami: 'None',
+    },
+    points,
+  }
+}
+
+// REST API 経由の JMA XML（VTSE51）を JMATsunami にパース。
+// 観測データ（Observation のみ）の場合は null を返す。
+export function parseTsunamiFromXml(xml: string): JMATsunami | null {
+  let doc: Document
+  try {
+    doc = new DOMParser().parseFromString(xml, 'application/xml')
+    if (doc.querySelector('parsererror')) return null
+  } catch { return null }
+
+  const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
+  const eventId = xmlText(xmlQ(doc, 'EventID'))
+  const serial = xmlText(xmlQ(doc, 'Serial')) || '1'
+  const infoType = xmlText(xmlQ(doc, 'InfoType'))
+
+  const id = `dmdata-xml-tsunami-${eventId}-${serial}`
+  const cancelled = infoType === '解除'
+
+  if (cancelled) {
+    return { code: 552, id, time: reportDateTime, cancelled: true, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [] }
+  }
+
+  // Forecast 要素がなければ観測データなので null
+  const forecastEl = xmlQ(doc, 'Forecast')
+  if (!forecastEl) return null
+
+  const allEls = forecastEl.getElementsByTagName('*')
+  const itemEls: Element[] = []
+  for (let i = 0; i < allEls.length; i++) {
+    if (allEls[i].localName === 'Item') itemEls.push(allEls[i])
+  }
+
+  const areas: TsunamiArea[] = []
+  for (const itemEl of itemEls) {
+    const areaName = xmlText(xmlQ(itemEl, 'Name'))
+    const kindEl = xmlQ(itemEl, 'Kind')
+    const kindName = kindEl ? xmlText(xmlQ(kindEl, 'Name')) : ''
+    const grade = parseTsunamiGrade(kindName)
+    if (grade === 'Unknown' || !areaName) continue
+
+    const fhEl = xmlQ(itemEl, 'FirstHeight')
+    const arrivalTime = fhEl ? xmlText(xmlQ(fhEl, 'ArrivalTime')) : ''
+    const condition = fhEl ? xmlText(xmlQ(fhEl, 'Condition')) : ''
+
+    const mhEl = xmlQ(itemEl, 'MaxHeight')
+    const heightEl = mhEl ? xmlQ(mhEl, 'TsunamiHeight') : null
+    const heightVal = heightEl ? parseFloat(xmlText(heightEl)) : NaN
+    const heightDesc = heightEl?.getAttribute('description') ?? ''
+
+    areas.push({
+      grade,
+      immediate: condition === 'ただちに津波来襲と予測',
+      name: areaName,
+      firstHeight: { arrivalTime: arrivalTime || undefined, condition },
+      maxHeight: !isNaN(heightVal) ? { description: heightDesc, value: heightVal } : undefined,
+    })
+  }
+
+  if (areas.length === 0) return null
+
+  return { code: 552, id, time: reportDateTime, cancelled: false, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas }
 }
 
 function parseTsunamiGrade(kindName: string): TsunamiGrade {
