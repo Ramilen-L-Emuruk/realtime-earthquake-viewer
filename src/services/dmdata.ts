@@ -3,7 +3,7 @@
 // 切断時は指数バックオフで再接続する（チケット再取得から）。
 
 import type { JMAQuake, JMATsunami, EEWAlert, ConnectionStatus } from '../types/earthquake'
-import { parseEEW, parseEarthquake, parseTsunami } from './dmdataParser'
+import { parseEEW, parseEarthquake, parseTsunami, parseEarthquakeFromXml, parseTsunamiFromXml } from './dmdataParser'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
 const CLASSIFICATIONS = ['eew.forecast', 'eew.warning', 'telegram.earthquake']
@@ -160,38 +160,43 @@ export class DmdataWebSocket {
   }
 }
 
-// REST API で電文1件を取得し、地震情報または津波情報にパースして返す
+// REST API で電文1件を取得し、地震情報または津波情報にパースして返す。
+// url は一覧レスポンスの item.url（data.api.dmdata.jp/v1/{id}）を使う。
+// /v2/telegram/{id} は CORS でブロックされるため使わない。
 async function fetchOneTelegram(
   apiKey: string,
-  id: string,
+  url: string,
   headType: string,
 ): Promise<JMAQuake | JMATsunami | null> {
-  const res = await fetch(`${API_BASE}/telegram/${id}`, {
+  const res = await fetch(url, {
     headers: { Authorization: authHeader(apiKey) },
   })
   if (!res.ok) return null
-  const json = await res.json() as { body?: Record<string, unknown> }
-  if (!json.body) return null
-  if (headType === 'VXSE52') return parseEarthquake(headType, json.body)
-  if (headType === 'VTSE51') return parseTsunami(headType, json.body)
+  const xml = await res.text()
+  if (headType === 'VXSE51' || headType === 'VXSE52' || headType === 'VXSE53') {
+    return parseEarthquakeFromXml(headType, xml)
+  }
+  if (headType === 'VTSE41' || headType === 'VTSE51') {
+    return parseTsunamiFromXml(xml)
+  }
   return null
 }
 
-// DMDATA REST API で地震履歴（VXSE52）を取得する
+// DMDATA REST API で地震履歴（VXSE53: 震源＋各地震度）を取得する
 export async function fetchDmdataEarthquakes(
   apiKey: string,
   limit: number,
 ): Promise<JMAQuake[]> {
-  const res = await fetch(`${API_BASE}/telegram?type=VXSE52&limit=${limit}`, {
+  const res = await fetch(`${API_BASE}/telegram?type=VXSE53&limit=${limit}`, {
     headers: { Authorization: authHeader(apiKey) },
   })
   if (!res.ok) throw new Error(`earthquake history: ${res.status}`)
   const json = await res.json() as {
-    items?: Array<{ id: string; head: { type: string } }>
+    items?: Array<{ id: string; url: string; head: { type: string } }>
   }
   const items = json.items ?? []
   const results = await Promise.allSettled(
-    items.map(it => fetchOneTelegram(apiKey, it.id, it.head.type)),
+    items.map(it => fetchOneTelegram(apiKey, it.url, it.head.type)),
   )
   return results
     .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | null> => r.status === 'fulfilled')
@@ -209,11 +214,11 @@ export async function fetchDmdataTsunamis(
   })
   if (!res.ok) throw new Error(`tsunami history: ${res.status}`)
   const json = await res.json() as {
-    items?: Array<{ id: string; head: { type: string } }>
+    items?: Array<{ id: string; url: string; head: { type: string } }>
   }
   const items = json.items ?? []
   const results = await Promise.allSettled(
-    items.map(it => fetchOneTelegram(apiKey, it.id, it.head.type)),
+    items.map(it => fetchOneTelegram(apiKey, it.url, it.head.type)),
   )
   return results
     .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | null> => r.status === 'fulfilled')
