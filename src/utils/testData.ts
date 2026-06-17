@@ -102,11 +102,11 @@ export function createTestEEW(eventId?: string, serial = 1): EEWAlert {
     issue: { eventId: eid, serial: String(serial), time: now.toISOString() },
     // 実データに合わせ areas を使用（参照は utils/eew.ts の eewAreas() で吸収）
     areas: [
-      { pref: '宮城県', name: '宮城県北部', scaleFrom: 55, scaleTo: 60, kindCode: '10', arrivalTime: null },
-      { pref: '宮城県', name: '宮城県中部', scaleFrom: 50, scaleTo: 55, kindCode: '10', arrivalTime: null },
-      { pref: '岩手県', name: '岩手県沿岸南部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null },
-      { pref: '福島県', name: '福島県浜通り', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null },
-      { pref: '茨城県', name: '茨城県北部', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: null },
+      { pref: '宮城県', name: '宮城県北部', scaleFrom: 55, scaleTo: 60, kindCode: '10', arrivalTime: new Date(now.getTime() + 15000).toISOString() },
+      { pref: '宮城県', name: '宮城県中部', scaleFrom: 50, scaleTo: 55, kindCode: '10', arrivalTime: new Date(now.getTime() + 18000).toISOString() },
+      { pref: '岩手県', name: '岩手県沿岸南部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: new Date(now.getTime() + 22000).toISOString() },
+      { pref: '福島県', name: '福島県浜通り', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: new Date(now.getTime() + 25000).toISOString() },
+      { pref: '茨城県', name: '茨城県北部', scaleFrom: 40, scaleTo: 45, kindCode: '11', arrivalTime: new Date(now.getTime() + 30000).toISOString() },
     ],
   }
 }

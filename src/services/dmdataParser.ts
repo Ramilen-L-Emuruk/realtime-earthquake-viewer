@@ -13,6 +13,7 @@ import type {
   CorrectType,
   TsunamiArea,
   TsunamiGrade,
+  TsunamiObservation,
 } from '../types/earthquake'
 
 // EEW: "1","2","3","4","5-","5+","6-","6+","7","不明" 等
@@ -153,6 +154,34 @@ const VXSE_ISSUE_TYPE: Record<string, IssueType> = {
   VXSE53: 'ScaleAndDestination',
 }
 
+// VXSE53 JSON 電文の body.intensity.prefectures[].cities[].areas[] から観測点データを取り出す。
+// フィールド名は DMDATA v2 仕様に従い prefectures/cities/areas を優先し、
+// 旧形式の pref/city/area にもフォールバックする。
+function parseIntensityPoints(intensity: Record<string, unknown>): JMAQuake['points'] {
+  const points: JMAQuake['points'] = []
+  const prefList = arr(intensity.prefectures).length > 0
+    ? arr(intensity.prefectures)
+    : arr(intensity.pref)
+  for (const rawPref of prefList) {
+    const p = obj(rawPref)
+    const prefName = str(p.name)
+    const cityList = arr(p.cities).length > 0 ? arr(p.cities) : arr(p.city)
+    for (const rawCity of cityList) {
+      const c = obj(rawCity)
+      const areaList = arr(c.areas).length > 0 ? arr(c.areas) : arr(c.area)
+      for (const rawArea of areaList) {
+        const a = obj(rawArea)
+        const name = str(a.name)
+        const scale = parseIntensityStr(str(a.maxInt) || null)
+        if (name && scale >= 0) {
+          points.push({ pref: prefName, addr: name, isArea: true, scale: scale as IntensityScale })
+        }
+      }
+    }
+  }
+  return points
+}
+
 // 地震情報 (VXSE51/52/53)
 export function parseEarthquake(headType: string, data: Record<string, unknown>): JMAQuake | null {
   const body = obj(data.body)
@@ -165,6 +194,12 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
   const maxIntStr = str(earthquake.maxInt) || str(body.maxInt)
   const maxScale = parseIntensityStr(maxIntStr || null)
   const domestic = str(earthquake.domesticTsunami) as DomesticTsunami || 'Unknown'
+
+  // VXSE53（震源・各地震度）のみ JSON 電文から地域別震度を取り出す。
+  // VXSE51/52 は観測データを持たないため空配列のまま。
+  const points = headType === 'VXSE53'
+    ? parseIntensityPoints(obj(body.intensity))
+    : []
 
   return {
     code: 551,
@@ -189,7 +224,7 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
       domesticTsunami: domestic,
       foreignTsunami: str(earthquake.foreignTsunami),
     },
-    points: [],
+    points,
   }
 }
 
@@ -372,7 +407,7 @@ function parseTsunamiGradeByCode(code: string): TsunamiGrade {
 }
 
 // 津波情報 (VTSE41: 大津波警報特別、VTSE51: 警報・注意報・解除、VTSE52: 沖合観測)
-export function parseTsunami(_headType: string, data: Record<string, unknown>): JMATsunami | null {
+export function parseTsunami(headType: string, data: Record<string, unknown>): JMATsunami | null {
   const cancelled = str(data.infoType) === '取消'
   const id = `dmdata-tsunami-${str(data.eventId)}-${str(data.serialNo ?? data.serial ?? '1')}`
   const time = str(data.reportDateTime ?? data.pressDateTime)
@@ -384,9 +419,41 @@ export function parseTsunami(_headType: string, data: Record<string, unknown>): 
 
   const body = obj(data.body)
   const tsunami = obj(body.tsunami)
+
+  // VTSE52（沖合観測）は forecasts を持たず observations を持つ
+  if (headType === 'VTSE52') {
+    const rawObs = arr(tsunami.observations)
+    if (rawObs.length === 0) return null
+    const observations: TsunamiObservation[] = []
+    for (const rawO of rawObs) {
+      const o = obj(rawO)
+      const name = str(o.name) || str(obj(o.station).name)
+      if (!name) continue
+      const waveList = arr(o.wave)
+      if (waveList.length === 0) {
+        observations.push({ name })
+        continue
+      }
+      // 最初の波（第1波）を使用
+      const w = obj(waveList[0])
+      const hObj = obj(w.height)
+      const heightVal = parseFloat(str(hObj.value))
+      observations.push({
+        name,
+        height: !isNaN(heightVal)
+          ? { value: heightVal, description: str(hObj.description) || str(hObj.condition) || `${heightVal}m` }
+          : undefined,
+        arrivalTime: str(w.time) || str(w.arrivalTime) || undefined,
+        initial: str(w.initial) || undefined,
+      })
+    }
+    if (observations.length === 0) return null
+    return { code: 552, id, time, cancelled: false, issue: { source, time, type: 'Focus' }, areas: [], observations }
+  }
+
   // DMDATA JSON v1.1.0: body.tsunami.forecasts が直接の配列（tsunami.forecast.items ではない）
   const rawItems = arr(tsunami.forecasts)
-  if (rawItems.length === 0) return null  // VTSE52（沖合観測）は forecasts がない
+  if (rawItems.length === 0) return null
 
   const areas: TsunamiArea[] = []
   for (const item of rawItems) {
