@@ -123,7 +123,7 @@ export class DmdataWebSocket {
         : rawBody as Record<string, unknown>
     } catch { return }
 
-    if (headType === 'VXSE45' || headType === 'VXSE47') {
+    if (headType === 'VXSE45' || headType === 'VXSE43') {
       const eew = parseEEW(headType, data)
       if (eew) this.onEvent?.({ kind: 'eew', data: eew })
     } else if (headType === 'VXSE51' || headType === 'VXSE52' || headType === 'VXSE53') {
