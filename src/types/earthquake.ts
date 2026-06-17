@@ -74,6 +74,16 @@ export interface TsunamiArea {
   }
 }
 
+export interface TsunamiObservation {
+  name: string
+  height?: {
+    value: number
+    description: string
+  }
+  arrivalTime?: string
+  initial?: string  // 引き波 | 押し波
+}
+
 export interface JMATsunami {
   code: 552
   id: string
@@ -85,6 +95,7 @@ export interface JMATsunami {
     type: 'Focus'
   }
   areas: TsunamiArea[]
+  observations?: TsunamiObservation[]
 }
 
 export interface EarthquakeDetection {

@@ -1,5 +1,5 @@
-import type { JMATsunami, TsunamiArea } from '../../types/earthquake'
-import { formatTsunamiGrade, formatDateTime } from '../../utils/formatters'
+import type { JMATsunami, TsunamiArea, TsunamiObservation } from '../../types/earthquake'
+import { formatTsunamiGrade, formatDateTime, formatTime } from '../../utils/formatters'
 
 interface Props {
   tsunamis: JMATsunami[]
@@ -39,6 +39,24 @@ function TsunamiAreaRow({ area }: { area: TsunamiArea }) {
   )
 }
 
+function TsunamiObservationRow({ obs }: { obs: TsunamiObservation }) {
+  return (
+    <div className="flex items-center gap-3 py-2 border-b border-border last:border-0">
+      <div className="flex-1 min-w-0">
+        <span className="text-white text-sm font-medium">{obs.name}</span>
+        {obs.arrivalTime && (
+          <div className="text-xs text-secondary mt-0.5">
+            到達: {formatTime(obs.arrivalTime).slice(0, 5)}{obs.initial ? `（${obs.initial}）` : ''}
+          </div>
+        )}
+      </div>
+      {obs.height && (
+        <span className="text-xs text-secondary flex-shrink-0">{obs.height.description}</span>
+      )}
+    </div>
+  )
+}
+
 function TsunamiCard({ tsunami }: { tsunami: JMATsunami }) {
   const majorWarnings = tsunami.areas.filter(a => a.grade === 'MajorWarning')
   const warnings = tsunami.areas.filter(a => a.grade === 'Warning')
@@ -73,6 +91,14 @@ function TsunamiCard({ tsunami }: { tsunami: JMATsunami }) {
             <p className="text-xs font-bold text-orange-400 mb-1">津波注意報</p>
             {watches.map((area, i) => (
               <TsunamiAreaRow key={`watch-${i}`} area={area} />
+            ))}
+          </div>
+        )}
+        {tsunami.observations && tsunami.observations.length > 0 && (
+          <div className="px-3 py-2">
+            <p className="text-xs font-bold text-blue-400 mb-1">沖合観測</p>
+            {tsunami.observations.map((obs, i) => (
+              <TsunamiObservationRow key={`obs-${i}`} obs={obs} />
             ))}
           </div>
         )}

@@ -156,9 +156,9 @@ return
 
 | データ | 提供元 | 説明 |
 |---|---|---|
-| 緊急地震速報（EEW） | [DMDATA.JP API](https://dmdata.jp/) VXSE45/47 | WebSocket。気象庁発表から1秒未満で取得。要 API キー |
-| 地震情報 | DMDATA.JP VXSE51/52/53 | WebSocket + REST 履歴 |
-| 津波情報 | DMDATA.JP VTSE41/51/52 | WebSocket + REST 履歴 |
+| 緊急地震速報（EEW） | [DMDATA.JP API](https://dmdata.jp/) VXSE45/43 | WebSocket。気象庁発表から1秒未満で取得。地域別予想震度・到達予想時刻・警報/予報区域の色分け表示。要 API キー |
+| 地震情報 | DMDATA.JP VXSE51/52/53 | WebSocket + REST 履歴。VXSE53（震源・各地震度）は地域別震度をリアルタイムに表示 |
+| 津波情報 | DMDATA.JP VTSE41/51/52 | WebSocket リアルタイム受信 + REST 履歴。VTSE52（沖合観測）は観測点名・波高・到達時刻を表示 |
 | リアルタイム震度 | Yahoo!天気・災害 リアルタイム震度 | 通常版と同一（DMDATA.JP はリアルタイム震度を提供しないため） |
 
 DMDATA.JP のAPIキーは設定タブから入力し、ブラウザの localStorage に保存されます。APIキーは [dmdata.jp](https://dmdata.jp/) で取得できます。
