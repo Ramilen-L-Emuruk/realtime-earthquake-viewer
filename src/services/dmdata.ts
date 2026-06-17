@@ -176,7 +176,7 @@ async function fetchOneTelegram(
   if (headType === 'VXSE51' || headType === 'VXSE52' || headType === 'VXSE53') {
     return parseEarthquakeFromXml(headType, xml)
   }
-  if (headType === 'VTSE41' || headType === 'VTSE51') {
+  if (headType === 'VTSE41' || headType === 'VTSE51' || headType === 'VTSE52') {
     return parseTsunamiFromXml(xml)
   }
   return null
@@ -204,19 +204,43 @@ export async function fetchDmdataEarthquakes(
     .filter((v): v is JMAQuake => v !== null && v.code === 551)
 }
 
-// DMDATA REST API で津波履歴（VTSE51）を取得する
+// DMDATA REST API で津波履歴（VTSE41: 大津波警報特別、VTSE51: 警報・注意報、VTSE52: 解除）を取得する。
+// VTSE52 も取得することで解除済みの警報を正確に判定できる。
 export async function fetchDmdataTsunamis(
   apiKey: string,
   limit: number,
 ): Promise<JMATsunami[]> {
-  const res = await fetch(`${API_BASE}/telegram?type=VTSE51&limit=${limit}`, {
-    headers: { Authorization: authHeader(apiKey) },
-  })
-  if (!res.ok) throw new Error(`tsunami history: ${res.status}`)
-  const json = await res.json() as {
+  const headers = { Authorization: authHeader(apiKey) }
+
+  const [r41, r51, r52] = await Promise.allSettled([
+    fetch(`${API_BASE}/telegram?type=VTSE41&limit=${limit}`, { headers }),
+    fetch(`${API_BASE}/telegram?type=VTSE51&limit=${limit}`, { headers }),
+    fetch(`${API_BASE}/telegram?type=VTSE52&limit=${limit}`, { headers }),
+  ])
+
+  if (r51.status === 'rejected' || !r51.value.ok) {
+    const status = r51.status === 'rejected' ? 'network error' : r51.value.status
+    throw new Error(`tsunami history: ${status}`)
+  }
+  const json51 = await r51.value.json() as {
     items?: Array<{ id: string; url: string; head: { type: string } }>
   }
-  const items = json.items ?? []
+  const items: Array<{ id: string; url: string; head: { type: string } }> = [...(json51.items ?? [])]
+
+  if (r41.status === 'fulfilled' && r41.value.ok) {
+    const json41 = await r41.value.json() as {
+      items?: Array<{ id: string; url: string; head: { type: string } }>
+    }
+    items.push(...(json41.items ?? []))
+  }
+
+  if (r52.status === 'fulfilled' && r52.value.ok) {
+    const json52 = await r52.value.json() as {
+      items?: Array<{ id: string; url: string; head: { type: string } }>
+    }
+    items.push(...(json52.items ?? []))
+  }
+
   const results = await Promise.allSettled(
     items.map(it => fetchOneTelegram(apiKey, it.url, it.head.type)),
   )
