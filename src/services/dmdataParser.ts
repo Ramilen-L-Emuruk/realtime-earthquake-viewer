@@ -347,9 +347,9 @@ export function parseTsunami(_headType: string, data: Record<string, unknown>): 
 
   const body = obj(data.body)
   const tsunami = obj(body.tsunami)
-  const forecast = obj(tsunami.forecast)
-  const rawItems = arr(forecast.items)
-  if (rawItems.length === 0) return null  // VTSE52（沖合観測）は forecast items がない
+  // DMDATA JSON v1.1.0: body.tsunami.forecasts が直接の配列（tsunami.forecast.items ではない）
+  const rawItems = arr(tsunami.forecasts)
+  if (rawItems.length === 0) return null  // VTSE52（沖合観測）は forecasts がない
 
   const areas: TsunamiArea[] = []
   for (const item of rawItems) {
@@ -359,19 +359,21 @@ export function parseTsunami(_headType: string, data: Record<string, unknown>): 
     if (grade === 'Unknown') continue  // 解除・予報区は除外
     const firstHeight = obj(it.firstHeight)
     const maxHeight = obj(it.maxHeight)
-    const maxHeightVal = obj(maxHeight.value)
+    // DMDATA JSON v1.1.0: maxHeight.height.value が m 単位（maxHeight.value ではない）
+    const heightObj = obj(maxHeight.height)
+    const heightVal = parseFloat(str(heightObj.value))
     areas.push({
       grade,
-      immediate: firstHeight.condition === '直ちに津波来襲と予測',
+      immediate: firstHeight.condition === 'ただちに津波来襲と予測',
       name: str(it.name),
       firstHeight: {
         arrivalTime: str(firstHeight.arrivalTime) || undefined,
         condition: str(firstHeight.condition),
       },
-      maxHeight: maxHeightVal.value != null
+      maxHeight: !isNaN(heightVal)
         ? {
-          description: str(maxHeightVal.text),
-          value: parseNum(maxHeightVal.value) / 100,  // cm → m
+          description: str(heightObj.condition) || str(heightObj.value) || '',
+          value: heightVal,
         }
         : undefined,
     })
