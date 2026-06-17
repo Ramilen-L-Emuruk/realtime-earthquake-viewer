@@ -204,8 +204,7 @@ export async function fetchDmdataEarthquakes(
     .filter((v): v is JMAQuake => v !== null && v.code === 551)
 }
 
-// DMDATA REST API で津波履歴（VTSE41: 大津波警報特別、VTSE51: 警報・注意報、VTSE52: 解除）を取得する。
-// VTSE52 も取得することで解除済みの警報を正確に判定できる。
+// DMDATA REST API で津波履歴（VTSE41: 大津波警報特別、VTSE51: 警報・注意報・解除、VTSE52: 沖合観測）を取得する。
 export async function fetchDmdataTsunamis(
   apiKey: string,
   limit: number,
