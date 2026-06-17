@@ -47,6 +47,7 @@ export function createTestEEWWarning(eventId?: string, serial = 1): EEWAlert {
     },
     severity: 'Warning',
     cancelled: false,
+    forecastMaxLpgmClass: 3,
     issue: { eventId: eid, serial: String(serial), time: now.toISOString() },
     areas: [
       { pref: '茨城県', name: '茨城県北部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null },
@@ -97,6 +98,7 @@ export function createTestEEW(eventId?: string, serial = 1): EEWAlert {
     },
     severity: 'Warning',
     cancelled: false,
+    forecastMaxLpgmClass: 4,
     issue: { eventId: eid, serial: String(serial), time: now.toISOString() },
     // 実データに合わせ areas を使用（参照は utils/eew.ts の eewAreas() で吸収）
     areas: [

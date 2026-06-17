@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { JMAQuake, JMATsunami, EEWAlert, EEWRegion, P2PQuakeEvent, ConnectionStatus } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, JMALpgm, EEWAlert, EEWRegion, P2PQuakeEvent, ConnectionStatus } from '../types/earthquake'
 import { fetchHistory, P2PQuakeWebSocket } from '../services/p2pquake'
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis } from '../services/dmdata'
 import { loadStationCoords, buildAreaPrefIndex } from '../utils/stationCoords'
@@ -66,6 +66,7 @@ export interface EarthquakeState {
   earthquakes: JMAQuake[]
   tsunamis: JMATsunami[]
   activeEEWs: ReadonlyMap<string, EEWAlert>
+  lpgmByOriginTime: ReadonlyMap<string, JMALpgm>
   connectionStatus: ConnectionStatus
   lastUpdate: Date | null
   isLoading: boolean
@@ -82,6 +83,7 @@ export function useEarthquakes(
     earthquakes: [],
     tsunamis: [],
     activeEEWs: new Map(),
+    lpgmByOriginTime: new Map(),
     connectionStatus: (isDmdss && !dmdataApiKey) ? 'disconnected' : 'connecting',
     lastUpdate: null,
     isLoading: !(isDmdss && !dmdataApiKey),
@@ -214,11 +216,21 @@ export function useEarthquakes(
       const ws = new DmdataWebSocket(dmdataApiKey)
       wsRef.current = null
       ws.onEvent = (ev) => {
-        const data = ev.data
-        if (data.code === 556) {
-          handleEvent(enrichEEWPref(data as EEWAlert, areaPrefIndex))
+        if (ev.kind === 'lpgm') {
+          const lpgm = ev.data
+          setState(prev => {
+            const next = new Map(prev.lpgmByOriginTime)
+            if (lpgm.cancelled) next.delete(lpgm.originTime)
+            else next.set(lpgm.originTime, lpgm)
+            return { ...prev, lpgmByOriginTime: next }
+          })
         } else {
-          handleEvent(data)
+          const data = ev.data
+          if (data.code === 556) {
+            handleEvent(enrichEEWPref(data as EEWAlert, areaPrefIndex))
+          } else {
+            handleEvent(data)
+          }
         }
       }
       ws.onStatusChange = status =>
