@@ -6,7 +6,9 @@ import type { JMAQuake, JMATsunami, JMALpgm, EEWAlert, ConnectionStatus } from '
 import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml } from './dmdataParser'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
-const CLASSIFICATIONS = ['eew.forecast', 'eew.warning', 'telegram.earthquake', 'telegram.tsunami']
+// フル購読クラスで接続を試みる。スコープ不足の 403 の場合は段階的にフォールバックする。
+const CLASSIFICATIONS_FULL    = ['eew.forecast', 'eew.warning', 'telegram.earthquake', 'telegram.tsunami']
+const CLASSIFICATIONS_NO_TSUN = ['eew.forecast', 'eew.warning', 'telegram.earthquake']
 const RECONNECT_BASE_MS = 3000
 const RECONNECT_MAX_MS = 30000
 const RECONNECT_FACTOR = 1.5
@@ -15,7 +17,7 @@ function authHeader(apiKey: string): string {
   return 'Basic ' + btoa(apiKey + ':')
 }
 
-async function fetchTicketUrl(apiKey: string): Promise<string> {
+async function tryFetchTicket(apiKey: string, classifications: string[]): Promise<{ url: string; status: number; body: unknown }> {
   const res = await fetch(`${API_BASE}/socket`, {
     method: 'POST',
     headers: {
@@ -23,15 +25,34 @@ async function fetchTicketUrl(apiKey: string): Promise<string> {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      classifications: CLASSIFICATIONS,
+      classifications,
       formatMode: 'json',
       appName: 'quake-viewer-dmdss',
     }),
   })
-  if (res.status === 401 || res.status === 403) throw new Error('auth')
-  if (!res.ok) throw new Error(`ticket: ${res.status}`)
-  const json = await res.json() as { websocket: { url: string } }
-  return json.websocket.url
+  const body = await res.json() as Record<string, unknown>
+  return { url: (body as { websocket?: { url: string } }).websocket?.url ?? '', status: res.status, body }
+}
+
+async function fetchTicketUrl(apiKey: string): Promise<string> {
+  // まずフル（EEW + 地震 + 津波）で試みる
+  const full = await tryFetchTicket(apiKey, CLASSIFICATIONS_FULL)
+  if (full.status === 200) return full.url
+  if (full.status === 401) throw new Error('auth')
+
+  // スコープ不足で津波が含まれる場合は、津波なしで再試行
+  if (full.status === 403) {
+    const errMsg = ((full.body as { error?: { message?: string } }).error?.message ?? '').toLowerCase()
+    if (errMsg.includes('tsunami') || errMsg.includes('scope')) {
+      const noTsun = await tryFetchTicket(apiKey, CLASSIFICATIONS_NO_TSUN)
+      if (noTsun.status === 200) return noTsun.url
+      if (noTsun.status === 401 || noTsun.status === 403) throw new Error('auth')
+      throw new Error(`ticket: ${noTsun.status}`)
+    }
+    throw new Error('auth')
+  }
+
+  throw new Error(`ticket: ${full.status}`)
 }
 
 export type DmdataEvent =

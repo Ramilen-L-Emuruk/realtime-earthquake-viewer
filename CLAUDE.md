@@ -8,6 +8,20 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 - データ: P2PQuake API v2（WebSocket + REST）／ Yahoo リアルタイム震度（強震モニタ・HTTPS JSON）。
 - GitHub Pages（サブパス配信 `/realtime-earthquake-viewer/`）へ GitHub Actions で自動デプロイ。
 
+## ビルドバリアントと URL（重要）
+
+このプロジェクトには **2 つのビルドバリアント** があり、**配信パスが異なる**。
+
+| バリアント | dev 起動コマンド | ビルド出力 | 配信パス（URL） |
+|---|---|---|---|
+| standard | `npm run dev` | `dist/` | `/realtime-earthquake-viewer/` |
+| DMDSS | `npm run dev:dmdss` | `dist-dmdss/` | `/realtime-earthquake-viewer/dmdss/` |
+
+- **DMDSS 版の検証時は `npm run dev:dmdss` で起動し、必ず `/dmdss/` サブパスにアクセスすること**
+  - dev URL 例: `http://localhost:5173/realtime-earthquake-viewer/dmdss/`（ポートはフォールバックで変わる）
+- `npm run dev`（standard 版）では DMDSS 設定セクションが表示されず、P2PQuake 接続になる
+- Windows で `cross-env` が動かない場合は PowerShell から `$env:VITE_VARIANT="dmdss"; npx vite` で代替起動する
+
 ## 変更時の基本フロー（必ずこの順で行う）
 
 1. **ワークツリー作成**（修正・機能追加時はワークツリーを作成してから作業する。ブランチ名は必ず `worktree/<type>/<name>` 形式にする: `worktree/fix/〇〇`・`worktree/feat/〇〇`・`worktree/refactor/〇〇`・`worktree/docs/〇〇`・`worktree/chore/〇〇` など）
