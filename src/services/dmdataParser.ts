@@ -23,7 +23,7 @@ function parseIntensityStr(s: string | undefined | null): IntensityScale {
     '5+': 50, '5強': 50,
     '6-': 55, '6弱': 55,
     '6+': 60, '6強': 60,
-    '7': 70,
+    '7': 70, 'over': 70,
   }
   return map[s] ?? -1
 }
@@ -48,7 +48,7 @@ function arr(v: unknown): unknown[] {
 }
 
 // DMDATA の震源座標から緯度・経度・深さを取得する。
-// coordinate.height.value は mm 単位の負値（海面下が負）。
+// coordinate.height.value は m 単位の負値（海面下が負）。
 // depth.value は km 単位の文字列の場合もある。
 function parseHypocenterCoord(hypo: Record<string, unknown>): {
   lat: number; lng: number; depth: number
@@ -57,17 +57,17 @@ function parseHypocenterCoord(hypo: Record<string, unknown>): {
   const lat = parseNum(obj(coord.latitude).value)
   const lng = parseNum(obj(coord.longitude).value)
   const depthKm = parseNum(obj(hypo.depth).value)
-  const heightMm = parseNum(obj(coord.height).value)
+  const heightM = parseNum(obj(coord.height).value)
   // depth.value が km の数値として取れればそれを優先
   const depth = Number.isFinite(depthKm) && depthKm >= 0
     ? depthKm
-    : Number.isFinite(heightMm)
-      ? Math.abs(heightMm) / 1000
+    : Number.isFinite(heightM)
+      ? Math.abs(heightM) / 1000
       : -1
   return { lat, lng, depth }
 }
 
-// EEW (VXSE45: 予報, VXSE47: 警報)
+// EEW (VXSE45: 予報, VXSE43: 警報)
 // data は WebSocket body を JSON.parse した後のオブジェクト（トップレベル電文）
 export function parseEEW(headType: string, data: Record<string, unknown>): EEWAlert | null {
   const body = obj(data.body)
@@ -100,10 +100,10 @@ export function parseEEW(headType: string, data: Record<string, unknown>): EEWAl
         latitude: isCanceled ? 0 : lat,
         longitude: isCanceled ? 0 : lng,
         depth,
-        magnitude: parseNum(obj(hypo.magnitude).value),
+        magnitude: parseNum(obj(earthquake.magnitude).value),
       },
     },
-    severity: (headType === 'VXSE47' || body.isWarning === true) ? 'Warning' : 'Forecast',
+    severity: (headType === 'VXSE43' || body.isWarning === true) ? 'Warning' : 'Forecast',
     cancelled: isCanceled,
     isFinal: body.isLastInfo === true,
     forecastMaxScale: (!isCanceled && forecastScale >= 0) ? forecastScale as IntensityScale : undefined,
@@ -148,7 +148,7 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
         latitude: lat,
         longitude: lng,
         depth,
-        magnitude: parseNum(obj(hypo.magnitude).value),
+        magnitude: parseNum(obj(earthquake.magnitude).value),
       },
       maxScale: maxScale >= 0 ? maxScale as IntensityScale : -1,
       domesticTsunami: domestic,
