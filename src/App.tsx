@@ -237,7 +237,7 @@ export function App() {
   }
 
   const {
-    earthquakes, tsunamis, activeEEWs, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
+    earthquakes, tsunamis, activeEEWs, lpgmByOriginTime, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
     injectEvent, loadMoreEarthquakes,
     simulateEarthquake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast,
@@ -561,6 +561,7 @@ export function App() {
               hasMore={hasMore}
               onLoadMore={loadMoreEarthquakes}
               error={error}
+              lpgmByOriginTime={lpgmByOriginTime}
             />
           </div>
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'realtime' ? ' invisible pointer-events-none' : ''}`}>
