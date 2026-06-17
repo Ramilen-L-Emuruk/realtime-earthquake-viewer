@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import type { JMAQuake, JMATsunami, EEWAlert, EEWRegion, P2PQuakeEvent, ConnectionStatus } from '../types/earthquake'
 import { fetchHistory, P2PQuakeWebSocket } from '../services/p2pquake'
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis } from '../services/dmdata'
+import { loadStationCoords, buildAreaPrefIndex } from '../utils/stationCoords'
 
 const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
 import {
@@ -25,6 +26,16 @@ const ISSUE_PRIORITY: Record<string, number> = {
   ScalePrompt: 1,
   Foreign: 0,
   Other: 0,
+}
+
+// DMDSS版 EEW の地域別予想震度には pref が含まれないため、細分区域名→都道府県の
+// 逆引きインデックスで補完する（EEWカードの対象地域表示用。地図の色塗りは name のみで動く）。
+function enrichEEWPref(eew: EEWAlert, index: Map<string, string> | null): EEWAlert {
+  if (!index || !eew.areas || eew.areas.length === 0) return eew
+  const areas = eew.areas.map(a =>
+    a.pref ? a : { ...a, pref: index.get(a.name) ?? '' },
+  )
+  return { ...eew, areas }
 }
 
 type TestEEWKind = 'special' | 'warning' | 'forecast'
@@ -193,11 +204,22 @@ export function useEarthquakes(
           setState(prev => ({ ...prev, isLoading: false, error: msg }))
         })
 
+      // EEW の pref 補完用に細分区域名→都道府県の逆引きインデックスを先読み（取得失敗は無視）
+      let areaPrefIndex: Map<string, string> | null = null
+      loadStationCoords()
+        .then(data => { areaPrefIndex = buildAreaPrefIndex(data) })
+        .catch(() => {})
+
       // DMDSS WebSocket 接続
       const ws = new DmdataWebSocket(dmdataApiKey)
       wsRef.current = null
       ws.onEvent = (ev) => {
-        handleEvent(ev.data)
+        const data = ev.data
+        if (data.code === 556) {
+          handleEvent(enrichEEWPref(data as EEWAlert, areaPrefIndex))
+        } else {
+          handleEvent(data)
+        }
       }
       ws.onStatusChange = status =>
         setState(prev => ({ ...prev, connectionStatus: status }))
