@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { JMAQuake, JMATsunami, JMALpgm, EEWAlert, EEWRegion, P2PQuakeEvent, ConnectionStatus } from '../types/earthquake'
 import { fetchHistory, P2PQuakeWebSocket } from '../services/p2pquake'
-import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis } from '../services/dmdata'
+import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms } from '../services/dmdata'
 import { loadStationCoords, buildAreaPrefIndex } from '../utils/stationCoords'
 
 const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
@@ -175,7 +175,7 @@ export function useEarthquakes(
         fetchDmdataEarthquakes(dmdataApiKey, MAX_HISTORY_RETAINED),
         fetchDmdataTsunamis(dmdataApiKey, 10),
       ])
-        .then(([quakeEvents, tsunamiEvents]) => {
+        .then(async ([quakeEvents, tsunamiEvents]) => {
           if (cancelled) return
           const seenQuakes = new Map<string, JMAQuake>()
           for (const q of quakeEvents) {
@@ -190,10 +190,30 @@ export function useEarthquakes(
             .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
           const latestTsunami = allTsunami[0]
           const tsunamis = latestTsunami && !latestTsunami.cancelled ? [latestTsunami] : []
+
+          // 表示中の最古の地震時刻まで VXSE62 をページネーションで取得
+          const oldest = earthquakes.reduce<string | null>((acc, q) => {
+            const t = q.earthquake.time
+            return acc === null || t < acc ? t : acc
+          }, null)
+          const lpgmEvents = oldest
+            ? await fetchDmdataLpgms(dmdataApiKey, oldest).catch(() => [])
+            : []
+          const lpgmByOriginTime = new Map<string, JMALpgm>()
+          for (const lpgm of lpgmEvents) {
+            if (lpgm.cancelled) continue
+            const existing = lpgmByOriginTime.get(lpgm.originTime)
+            if (!existing || lpgm.time > existing.time) {
+              lpgmByOriginTime.set(lpgm.originTime, lpgm)
+            }
+          }
+
+          if (cancelled) return
           setState(prev => ({
             ...prev,
             earthquakes,
             tsunamis,
+            lpgmByOriginTime,
             lastUpdate: new Date(),
             isLoading: false,
             hasMore: false,  // DMDSS はカーソル型 API のため load more 非対応
