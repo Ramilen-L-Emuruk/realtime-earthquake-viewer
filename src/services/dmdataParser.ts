@@ -228,7 +228,9 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     for (let i = 0; i < stEls.length; i++) {
       if (stEls[i].localName !== 'IntensityStation') continue
       const stEl = stEls[i]
-      const stName = xmlText(xmlQ(stEl, 'Name'))
+      // JMA XML では地方公共団体の観測局名末尾に '＊'(U+FF0A) が付く。
+      // station-coords.json のキーには '＊' がないため除去して引き当てる。
+      const stName = xmlText(xmlQ(stEl, 'Name')).replace(/＊$/, '')
       const intStr = xmlText(xmlQ(stEl, 'Int'))
       const scale = parseIntensityStr(intStr || null)
       if (stName && scale >= 0) {
