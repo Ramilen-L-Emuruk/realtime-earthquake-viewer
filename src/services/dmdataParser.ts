@@ -422,7 +422,37 @@ export function parseTsunami(_headType: string, data: Record<string, unknown>): 
   return { code: 552, id, time, cancelled: false, issue: { source, time, type: 'Focus' }, areas }
 }
 
-// 長周期地震動に関する観測情報 (VXSE62)
+// REST API 経由の JMA XML（VXSE62: 長周期地震動観測情報）を JMALpgm にパース
+export function parseLpgmFromXml(xml: string): JMALpgm | null {
+  let doc: Document
+  try {
+    doc = new DOMParser().parseFromString(xml, 'application/xml')
+    if (doc.querySelector('parseerror')) return null
+  } catch { return null }
+
+  const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
+  const eventId        = xmlText(xmlQ(doc, 'EventID'))
+  const serial         = xmlText(xmlQ(doc, 'Serial')) || '1'
+  const infoType       = xmlText(xmlQ(doc, 'InfoType'))
+  const id             = `dmdata-xml-lpgm-${eventId}-${serial}`
+  const cancelled      = infoType === '取消'
+
+  const earthquakeEl = xmlQ(doc, 'Earthquake')
+  const originTime   = earthquakeEl ? xmlText(xmlQ(earthquakeEl, 'OriginTime')) : ''
+
+  if (cancelled) return { id, time: reportDateTime, originTime, maxClass: 0, cancelled: true }
+  if (!originTime) return null
+
+  // VXSE62 XML: Intensity > Observation > MaxLgInt が最大長周期地震動階級
+  const obsEl       = xmlQ(doc, 'Observation')
+  const maxClassStr = obsEl ? xmlText(xmlQ(obsEl, 'MaxLgInt')) : ''
+  const maxClass    = parseInt(maxClassStr, 10)
+
+  if (!(maxClass >= 1 && maxClass <= 4)) return null
+  return { id, time: reportDateTime, originTime, maxClass, cancelled: false }
+}
+
+// WebSocket 受信の JSON 電文（VXSE62: 長周期地震動観測情報）を JMALpgm にパース
 // body.lpgmObservation.maxClass が観測最大階級（文字列 "1"〜"4"）
 export function parseLpgm(data: Record<string, unknown>): JMALpgm | null {
   const cancelled = str(data.infoType) === '取消'
