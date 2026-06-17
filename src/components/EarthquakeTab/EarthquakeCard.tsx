@@ -1,5 +1,6 @@
 import { useMemo, useRef, useEffect } from 'react'
-import type { JMAQuake, IssueType } from '../../types/earthquake'
+import type { JMAQuake, JMALpgm, IssueType } from '../../types/earthquake'
+import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
 import {
   formatQuakeTime,
   formatDepth,
@@ -26,9 +27,10 @@ interface Props {
   isLatest?: boolean
   isSelected?: boolean
   onSelect?: () => void
+  lpgm?: JMALpgm
 }
 
-export function EarthquakeCard({ quake, isLatest, isSelected, onSelect }: Props) {
+export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm }: Props) {
   const { earthquake, issue } = quake
   const { hypocenter, maxScale, domesticTsunami } = earthquake
   const tsunamiInfo = formatDomesticTsunami(domesticTsunami)
@@ -90,6 +92,24 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect }: Props)
               {maxScale === -1 ? '?' : getIntensityLabel(maxScale)}
             </span>
           </div>
+
+          {/* 長周期地震動観測情報 */}
+          {lpgm && lpgm.maxClass >= 1 && (
+            <div
+              className="w-full rounded-lg py-2 px-4 flex items-center justify-center gap-4"
+              style={{
+                backgroundColor: getLpgmClassBgColor(lpgm.maxClass),
+                border: `2px solid ${getLpgmClassColor(lpgm.maxClass)}`,
+              }}
+            >
+              <span className="text-sm font-medium" style={{ color: getLpgmClassColor(lpgm.maxClass) }}>
+                長周期地震動
+              </span>
+              <span className="text-2xl font-black" style={{ color: getLpgmClassColor(lpgm.maxClass) }}>
+                {getLpgmClassLabel(lpgm.maxClass)}
+              </span>
+            </div>
+          )}
 
           {/* 日時 + 発表種別 + 最新バッジ + 訂正情報 */}
           <div className="flex items-center gap-2 flex-wrap">

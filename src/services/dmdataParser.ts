@@ -4,6 +4,7 @@
 import type {
   JMAQuake,
   JMATsunami,
+  JMALpgm,
   EEWAlert,
   EEWRegion,
   IntensityScale,
@@ -113,6 +114,12 @@ export function parseEEW(headType: string, data: Record<string, unknown>): EEWAl
   // 各地の予想震度（地域別）。キャンセル時は空にする。
   const areas = isCanceled ? [] : parseEEWRegions(intensity)
 
+  // 推定最大長周期地震動階級（1〜4）。to 優先、なければ from
+  const forecastMaxLpgmInt = obj(intensity.forecastMaxLpgmInt)
+  const lpgmStr = str(forecastMaxLpgmInt.to) || str(forecastMaxLpgmInt.from)
+  const lpgmClass = parseInt(lpgmStr, 10)
+  const forecastMaxLpgmClass = (!isCanceled && lpgmClass >= 1 && lpgmClass <= 4) ? lpgmClass : undefined
+
   return {
     code: 556,
     id: `dmdata-eew-${eventId}-${serial}`,
@@ -134,6 +141,7 @@ export function parseEEW(headType: string, data: Record<string, unknown>): EEWAl
     cancelled: isCanceled,
     isFinal: body.isLastInfo === true,
     forecastMaxScale: (!isCanceled && forecastScale >= 0) ? forecastScale as IntensityScale : undefined,
+    forecastMaxLpgmClass,
     issue: { eventId, serial, time: reportTime },
     areas,
   }
@@ -412,4 +420,32 @@ export function parseTsunami(_headType: string, data: Record<string, unknown>): 
   if (areas.length === 0) return { code: 552, id, time, cancelled: true, issue: { source, time, type: 'Focus' }, areas: [] }
 
   return { code: 552, id, time, cancelled: false, issue: { source, time, type: 'Focus' }, areas }
+}
+
+// 長周期地震動に関する観測情報 (VXSE62)
+// body.lpgmObservation.maxClass が観測最大階級（文字列 "1"〜"4"）
+export function parseLpgm(data: Record<string, unknown>): JMALpgm | null {
+  const cancelled = str(data.infoType) === '取消'
+  const eventId = str(data.eventId)
+  const serial = str(data.serialNo ?? data.serial ?? '1')
+  const time = str(data.reportDateTime ?? data.pressDateTime)
+  const id = `dmdata-lpgm-${eventId}-${serial}`
+
+  const body = obj(data.body)
+  const earthquake = obj(body.earthquake)
+  const originTime = str(earthquake.originTime)
+
+  if (cancelled) {
+    return { id, time, originTime, maxClass: 0, cancelled: true }
+  }
+
+  if (!originTime) return null
+
+  const lpgmObservation = obj(body.lpgmObservation)
+  const maxClassStr = str(lpgmObservation.maxClass)
+  const maxClass = parseInt(maxClassStr, 10)
+
+  if (!(maxClass >= 1 && maxClass <= 4)) return null
+
+  return { id, time, originTime, maxClass, cancelled: false }
 }

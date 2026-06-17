@@ -7,6 +7,7 @@ import type { SiteCoords } from '../../services/kyoshin'
 import type { SWaveArrival } from '../../hooks/useSWaveCountdown'
 import { formatDateTime } from '../../utils/formatters'
 import { getIntensityColor, getIntensityLabel, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
+import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
 import { eewAreas, eewMaxScale, eewSerial } from '../../utils/eew'
 import { kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
 
@@ -75,6 +76,24 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
           {maxScale > 0 ? getIntensityLabel(maxScale) : '?'}
         </span>
       </div>
+
+      {/* 推定最大長周期地震動階級 */}
+      {eew.forecastMaxLpgmClass != null && eew.forecastMaxLpgmClass >= 1 && (
+        <div
+          className="w-full rounded-lg py-2 px-4 flex items-center justify-center gap-4"
+          style={{
+            backgroundColor: getLpgmClassBgColor(eew.forecastMaxLpgmClass),
+            border: `2px solid ${getLpgmClassColor(eew.forecastMaxLpgmClass)}`,
+          }}
+        >
+          <span className="text-sm font-medium" style={{ color: getLpgmClassColor(eew.forecastMaxLpgmClass) }}>
+            推定長周期地震動
+          </span>
+          <span className="text-2xl font-black" style={{ color: getLpgmClassColor(eew.forecastMaxLpgmClass) }}>
+            {getLpgmClassLabel(eew.forecastMaxLpgmClass)}
+          </span>
+        </div>
+      )}
 
       {/* 種別バッジ行 */}
       <div className="flex items-center gap-2 flex-wrap">
