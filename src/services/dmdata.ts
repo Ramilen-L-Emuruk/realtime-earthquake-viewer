@@ -3,7 +3,7 @@
 // 切断時は指数バックオフで再接続する（チケット再取得から）。
 
 import type { JMAQuake, JMATsunami, JMALpgm, EEWAlert, ConnectionStatus } from '../types/earthquake'
-import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseEarthquakeFromXml, parseTsunamiFromXml } from './dmdataParser'
+import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml } from './dmdataParser'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
 const CLASSIFICATIONS = ['eew.forecast', 'eew.warning', 'telegram.earthquake']
@@ -171,7 +171,7 @@ async function fetchOneTelegram(
   apiKey: string,
   url: string,
   headType: string,
-): Promise<JMAQuake | JMATsunami | null> {
+): Promise<JMAQuake | JMATsunami | JMALpgm | null> {
   const res = await fetch(url, {
     headers: { Authorization: authHeader(apiKey) },
   })
@@ -182,6 +182,9 @@ async function fetchOneTelegram(
   }
   if (headType === 'VTSE41' || headType === 'VTSE51' || headType === 'VTSE52') {
     return parseTsunamiFromXml(xml)
+  }
+  if (headType === 'VXSE62') {
+    return parseLpgmFromXml(xml)
   }
   return null
 }
@@ -248,7 +251,60 @@ export async function fetchDmdataTsunamis(
     items.map(it => fetchOneTelegram(apiKey, it.url, it.head.type)),
   )
   return results
-    .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | null> => r.status === 'fulfilled')
+    .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | JMALpgm | null> => r.status === 'fulfilled')
     .map(r => r.value)
-    .filter((v): v is JMATsunami => v !== null && v.code === 552)
+    .filter((v): v is JMATsunami => v !== null && 'code' in (v as object) && (v as JMATsunami).code === 552)
+}
+
+// DMDATA REST API で長周期地震動観測情報（VXSE62）を取得する。
+// oldestOriginTime より古い電文が見つかった時点でページネーションを停止する。
+// 取得失敗時は空配列を返す（補助情報なのでアプリを壊さない）。
+export async function fetchDmdataLpgms(
+  apiKey: string,
+  oldestOriginTime: string,
+): Promise<JMALpgm[]> {
+  const headers  = { Authorization: authHeader(apiKey) }
+  const collected: JMALpgm[] = []
+  let nextToken: string | undefined
+  const cutoffMs = new Date(oldestOriginTime).getTime()
+
+  for (;;) {
+    const qs  = nextToken ? `&cursorToken=${nextToken}` : ''
+    let res: Response
+    try {
+      res = await fetch(`${API_BASE}/telegram?type=VXSE62&limit=20${qs}`, { headers })
+    } catch { break }
+    if (!res.ok) break
+
+    const json = await res.json() as {
+      items?: Array<{ id: string; url: string; head: { type: string; time?: string } }>
+      nextToken?: string
+    }
+
+    const items = json.items ?? []
+    if (items.length === 0) break
+
+    // ページ内で cutoff より古い発報時刻が見つかればそこで停止
+    let reachedCutoff = false
+    const targets: typeof items = []
+    for (const item of items) {
+      const t = item.head.time ? new Date(item.head.time).getTime() : Infinity
+      if (t < cutoffMs) { reachedCutoff = true; break }
+      targets.push(item)
+    }
+
+    const pageResults = await Promise.allSettled(
+      targets.map(it => fetchOneTelegram(apiKey, it.url, it.head.type)),
+    )
+    for (const r of pageResults) {
+      if (r.status === 'fulfilled' && r.value !== null && 'maxClass' in (r.value as object)) {
+        collected.push(r.value as JMALpgm)
+      }
+    }
+
+    if (reachedCutoff || !json.nextToken) break
+    nextToken = json.nextToken
+  }
+
+  return collected
 }
