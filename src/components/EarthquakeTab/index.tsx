@@ -1,4 +1,4 @@
-import type { JMAQuake } from '../../types/earthquake'
+import type { JMAQuake, JMALpgm } from '../../types/earthquake'
 import { EarthquakeCard } from './EarthquakeCard'
 
 interface Props {
@@ -10,11 +10,12 @@ interface Props {
   hasMore: boolean
   onLoadMore: () => void
   error: string | null
+  lpgmByOriginTime: ReadonlyMap<string, JMALpgm>
 }
 
 // 地震情報タブの右パネル。地震カードの一覧を表示し、クリックで地図表示対象を選択する。
 // 地図そのものは App が常時表示する。
-export function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error }: Props) {
+export function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, lpgmByOriginTime }: Props) {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -54,6 +55,7 @@ export function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, is
           isLatest={i === 0}
           isSelected={quake.earthquake.time === selectedId}
           onSelect={() => onSelect(quake.earthquake.time)}
+          lpgm={lpgmByOriginTime.get(quake.earthquake.time)}
         />
       ))}
       {hasMore && (

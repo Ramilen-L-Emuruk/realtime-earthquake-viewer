@@ -131,6 +131,16 @@ export interface EEWAlert {
   // Yahoo 強震モニタ由来の calcintensity から変換した最大予想震度。
   // areas が空の場合のフォールバックとして eewMaxScale() が使用する。
   forecastMaxScale?: IntensityScale
+  // DMDATA EEW 電文 body.intensity.forecastMaxLpgmInt から取得した推定最大長周期地震動階級（1〜4）。
+  forecastMaxLpgmClass?: number
+}
+
+export interface JMALpgm {
+  id: string
+  time: string
+  originTime: string  // JMAQuake.earthquake.time と照合するキー
+  maxClass: number    // 1〜4
+  cancelled: boolean
 }
 
 export type P2PQuakeEvent = JMAQuake | JMATsunami | EarthquakeDetection | EEWAlert

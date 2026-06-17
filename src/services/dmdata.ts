@@ -2,8 +2,8 @@
 // POST /v2/socket → チケット取得 → WebSocket(dmdata.v2) 接続 → Ping/Pong → データ受信。
 // 切断時は指数バックオフで再接続する（チケット再取得から）。
 
-import type { JMAQuake, JMATsunami, EEWAlert, ConnectionStatus } from '../types/earthquake'
-import { parseEEW, parseEarthquake, parseTsunami, parseEarthquakeFromXml, parseTsunamiFromXml } from './dmdataParser'
+import type { JMAQuake, JMATsunami, JMALpgm, EEWAlert, ConnectionStatus } from '../types/earthquake'
+import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseEarthquakeFromXml, parseTsunamiFromXml } from './dmdataParser'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
 const CLASSIFICATIONS = ['eew.forecast', 'eew.warning', 'telegram.earthquake']
@@ -38,6 +38,7 @@ export type DmdataEvent =
   | { kind: 'eew'; data: EEWAlert }
   | { kind: 'quake'; data: JMAQuake }
   | { kind: 'tsunami'; data: JMATsunami }
+  | { kind: 'lpgm'; data: JMALpgm }
 
 export class DmdataWebSocket {
   private ws: WebSocket | null = null
@@ -132,6 +133,9 @@ export class DmdataWebSocket {
     } else if (headType === 'VTSE41' || headType === 'VTSE51' || headType === 'VTSE52') {
       const tsunami = parseTsunami(headType, data)
       if (tsunami) this.onEvent?.({ kind: 'tsunami', data: tsunami })
+    } else if (headType === 'VXSE62') {
+      const lpgm = parseLpgm(data)
+      if (lpgm) this.onEvent?.({ kind: 'lpgm', data: lpgm })
     }
   }
 
