@@ -5,7 +5,7 @@ import type { KyoshinDetection } from '../../hooks/useKyoshinDetection'
 import { MIN_DETECTION_INDEX } from '../../hooks/useKyoshinDetection'
 import type { SiteCoords } from '../../services/kyoshin'
 import type { SWaveArrival } from '../../hooks/useSWaveCountdown'
-import { formatDateTime } from '../../utils/formatters'
+import { formatDateTime, formatTime } from '../../utils/formatters'
 import { getIntensityColor, getIntensityLabel, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
 import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
 import { eewAreas, eewMaxScale, eewSerial } from '../../utils/eew'
@@ -46,6 +46,12 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
   const typeLabel = isSpecial ? '特別警報' : isWarning ? '警報' : '予報'
   const typeLabelColor = isWarning ? 'text-red-300' : 'text-yellow-300'
   const typeBadgeBg = isWarning ? 'bg-red-900/60' : 'bg-yellow-900/60'
+
+  // 到達予想時刻が設定された地域を時刻順にソート
+  const areasWithArrival = areas
+    .filter(a => a.arrivalTime)
+    .sort((a, b) => a.arrivalTime!.localeCompare(b.arrivalTime!))
+    .slice(0, 6)
 
   return (
     <div
@@ -144,11 +150,52 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
         </div>
       )}
 
-      {/* 対象地域 */}
-      {prefAreas.length > 0 && (
-        <div className="text-xs text-secondary leading-relaxed">
-          対象: {prefAreas.slice(0, 8).map(a => a.pref).join(' / ')}
-          {prefAreas.length > 8 && ' ...'}
+      {/* 対象地域（警報域と予報域を区別して表示） */}
+      {prefAreas.length > 0 && (() => {
+        const warningPrefs = [...new Set(prefAreas.filter(a => a.kindCode === '10' || a.kindCode === '11').map(a => a.pref))]
+        const forecastPrefs = [...new Set(prefAreas.filter(a => a.kindCode !== '10' && a.kindCode !== '11').map(a => a.pref))]
+        const hasKindCode = prefAreas.some(a => a.kindCode !== '')
+        if (!hasKindCode) {
+          return (
+            <div className="text-xs text-secondary leading-relaxed">
+              対象: {prefAreas.slice(0, 8).map(a => a.pref).join(' / ')}
+              {prefAreas.length > 8 && ' ...'}
+            </div>
+          )
+        }
+        return (
+          <div className="flex flex-col gap-0.5 text-xs">
+            {warningPrefs.length > 0 && (
+              <div className="flex items-start gap-1 flex-wrap">
+                <span className="text-red-300 font-bold flex-shrink-0">警報:</span>
+                <span className="text-secondary">{warningPrefs.slice(0, 6).join(' / ')}{warningPrefs.length > 6 && ' ...'}</span>
+              </div>
+            )}
+            {forecastPrefs.length > 0 && (
+              <div className="flex items-start gap-1 flex-wrap">
+                <span className="text-yellow-300 flex-shrink-0">予報:</span>
+                <span className="text-secondary">{forecastPrefs.slice(0, 6).join(' / ')}{forecastPrefs.length > 6 && ' ...'}</span>
+              </div>
+            )}
+          </div>
+        )
+      })()}
+
+      {/* 到達予想時刻 */}
+      {areasWithArrival.length > 0 && (
+        <div className="flex flex-col gap-0.5">
+          <span className="text-xs text-secondary">到達予想時刻</span>
+          {areasWithArrival.map((a, i) => (
+            <div key={i} className="flex items-center justify-between text-xs">
+              <span className="text-secondary truncate mr-2">{a.name}</span>
+              <span className="text-white font-mono flex-shrink-0">
+                {formatTime(a.arrivalTime!).slice(0, 5)}
+              </span>
+            </div>
+          ))}
+          {areas.filter(a => a.arrivalTime).length > 6 && (
+            <span className="text-xs text-secondary">他{areas.filter(a => a.arrivalTime).length - 6}地域</span>
+          )}
         </div>
       )}
     </div>
