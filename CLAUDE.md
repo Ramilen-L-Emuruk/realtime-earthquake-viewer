@@ -135,4 +135,32 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 
 - `src/App.tsx`: レイアウトの中枢。地図常時表示＋アイコンナビ（右端）でパネル内容を切替。地図内容・更新時刻・通知音・自動タブ切替・EEW 連携の制御もここ。
 - 地図のモード（`JapanMap` の `mode`）: `quake`（地震）／`tsunami`（津波海岸線）／`kyoshin`（リアルタイム震度・予報円）。
-- 生成データ（`public/data/*.json`）は座標が大きいため遅延読込（必要なタブ表示時のみ fetch）。
+- 生成データ（`public/data/*.json`）は座標が大きいため遅延読込（初回利用時に一度だけ fetch しキャッシュ）。  
+  ベースマップ用（`prefectures.json` / `subregions.json`）は地図初回表示時、地震/津波用（`station-coords.json` / `tsunami-zones.json`）は該当タブ表示時に fetch する。
+
+## コード整合性チェックポイント
+
+新機能追加・修正時にコメントと実装が乖離しやすい箇所。変更前後に必ず照合すること。
+
+### テストデータと UI 説明文
+- `SettingsTab/index.tsx` の `description` 文字列（例: 「震度5強相当」）は、`src/utils/testData.ts` の対応するテスト関数の実 `scaleTo` 値と一致させる。
+  - EEW 警報テスト（`createTestEEWWarning`）: 最大 `scaleTo: 50` = 震度5強
+  - EEW 特別警報テスト（`createTestEEW`）: 最大 `scaleTo: 60` = 震度6弱
+  - EEW 予報テスト（`createTestEEWForecast`）: 最大 `scaleTo: 25` = 震度2程度
+- 同じ説明文が `CLAUDE.md` の「テスト機能の活用」セクションにも記載されているため、変更時は両方を合わせて修正する。
+
+### 地図描画ペイン名
+- `BaseMap.tsx` のペイン一覧コメントと、`JapanMap.tsx` で実際に作成するペイン名は完全に一致させる。
+  - 実在するペイン: `basemap`（z=250）・`quake-region-fill`（z=260）・`eew-region-fill`（z=260）・`basemap-labels`（z=270）
+  - `quake-pref-fill`（旧名）・`quake-region-labels` 等は**存在しない**。コメントに書かない。
+
+### 震度集約の単位
+- ズームアウト時の集約単位は**一次細分区域**（`subregions.json` 由来）。「都道府県」という表現はコメント・ドキュメントで使わない。
+  - 定数 `PREF_AGGREGATE_MAX_ZOOM` の「PREF」は旧名の名残。動作は一次細分区域単位。
+
+### KyoshinSubThreshold の対象範囲
+- 対象は **index 1〜6**（震度0以下）。index 0 はデータ無し（`subThresholdOpacity(0) = 0`）のため非表示。「0〜6」とコメントしない。
+- `KyoshinPoints.tsx` が気象庁配色で描画するのは **index 7+**（震度1以上）。
+
+### README プロジェクト構成ツリー
+- `src/components/`・`src/hooks/`・`src/utils/` に新ファイルを追加した場合は、`README.md` の「プロジェクト構成」ツリーにも追記する（README 更新の条件に含める）。
