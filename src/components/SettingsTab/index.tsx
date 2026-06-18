@@ -521,13 +521,13 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
         <Row label="地震情報" description="三陸沖 M9.0 最大震度7 をリストと地図に追加">
           <TestButton color="red" onClick={onTest.earthquake}>地震テスト</TestButton>
         </Row>
-        <Row label="緊急地震速報（特別警報）" description="震度6弱以上 – eewSpecial 音 / 10秒間表示">
+        <Row label="緊急地震速報（特別警報）" description="震度6弱以上 – eewSpecial 音 / 30秒間表示">
           <TestButton color="red" onClick={onTest.eew}>特別警報テスト</TestButton>
         </Row>
-        <Row label="緊急地震速報（警報）" description="震度5弱相当 – eew 音 / 10秒間表示">
+        <Row label="緊急地震速報（警報）" description="震度5弱相当 – eew 音 / 30秒間表示">
           <TestButton color="orange" onClick={onTest.eewWarning}>警報テスト</TestButton>
         </Row>
-        <Row label="緊急地震速報（予報）" description="震度2程度 – eewForecast 音 / 10秒間表示">
+        <Row label="緊急地震速報（予報）" description="震度2程度 – eewForecast 音 / 30秒間表示">
           <TestButton color="yellow" onClick={onTest.eewForecast}>予報テスト</TestButton>
         </Row>
         <Row label="津波警報（大津波警報）" description="岩手・宮城・福島等 – tsunamiMajor 音 / 15秒間表示">
@@ -589,7 +589,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">3.1.2</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">3.1.3</span></Row>
         <Row label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"
