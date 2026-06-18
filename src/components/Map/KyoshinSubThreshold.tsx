@@ -10,7 +10,7 @@ interface Props {
   iconScale: number
 }
 
-// index 0〜6（震度0以下）を対象とする最大インデックス
+// index 1〜6（震度0以下）を対象とする最大インデックス（index 0 はデータ無しのため非表示）
 const MAX_SUB_IDX = 6
 // 観測点のドット半径（KyoshinPoints と共通）
 const BASE_RADIUS = 2.5

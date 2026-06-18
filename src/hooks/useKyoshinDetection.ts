@@ -11,7 +11,7 @@ export interface DetectedPoint {
 export interface KyoshinDetection {
   detected: boolean
   maxIndex: number
-  /** 急上昇した観測点（震度インデックス降順、最大50点） */
+  /** 急上昇した観測点（震度インデックス降順） */
   points: DetectedPoint[]
 }
 
@@ -126,7 +126,7 @@ function buildClusters(
 const EMPTY: KyoshinDetection = { detected: false, maxIndex: 0, points: [] }
 
 /**
- * 5層フィルタによる地震検知フック。
+ * Layer 0〜5 の6層構成による地震検知フック（Layer 3 は現在無効化中）。
  *
  * Layer 0: 直近3フレームの時系列バッファ管理
  * Layer 1: 観測点レベルフィルタ（急上昇・トレンド・ノイズブラックリスト）
