@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { JMAQuake, JMATsunami, JMALpgm, EEWAlert, EEWRegion, P2PQuakeEvent, ConnectionStatus } from '../types/earthquake'
-import { fetchHistory, P2PQuakeWebSocket } from '../services/p2pquake'
+import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms } from '../services/dmdata'
 import { loadStationCoords, buildAreaPrefIndex } from '../utils/stationCoords'
 
@@ -273,13 +273,13 @@ export function useEarthquakes(
 
     // --- 通常版: P2PQuake ---
     Promise.all([
-      fetchHistory([551], MAX_HISTORY_RETAINED),
+      fetchJmaQuake(MAX_HISTORY_RETAINED),
       fetchHistory([552], 10),
     ])
       .then(([quakeEvents, tsunamiEvents]) => {
         if (cancelled) return
         const seenQuakes = new Map<string, JMAQuake>()
-        for (const q of quakeEvents as JMAQuake[]) {
+        for (const q of quakeEvents) {
           const key = q.earthquake.time
           const existing = seenQuakes.get(key)
           if (!existing || (ISSUE_PRIORITY[q.issue.type] ?? 0) > (ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
@@ -388,12 +388,12 @@ export function useEarthquakes(
         }
       } else {
         const offset = p2pRawOffsetRef.current
-        const events = await fetchHistory([551], LOAD_MORE_BATCH, offset)
+        const events = await fetchJmaQuake(LOAD_MORE_BATCH, offset)
         p2pRawOffsetRef.current += events.length
         setState(prev => {
           const seenKeys = new Set(prev.earthquakes.map(e => e.earthquake.time))
           const seenForBatch = new Map<string, JMAQuake>()
-          for (const q of events as JMAQuake[]) {
+          for (const q of events) {
             const key = q.earthquake.time
             if (seenKeys.has(key)) continue
             const existing = seenForBatch.get(key)
