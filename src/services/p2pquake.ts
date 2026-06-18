@@ -1,4 +1,4 @@
-import type { P2PQuakeEvent } from '../types/earthquake'
+import type { P2PQuakeEvent, JMAQuake } from '../types/earthquake'
 
 const API_BASE = 'https://api.p2pquake.net/v2'
 const WS_URL = 'wss://api.p2pquake.net/v2/ws'
@@ -15,6 +15,15 @@ export async function fetchHistory(
   const res = await fetch(`${API_BASE}/history?${params.toString()}`)
   if (!res.ok) throw new Error(`P2PQuake API error: ${res.status}`)
   return res.json() as Promise<P2PQuakeEvent[]>
+}
+
+// /v2/history より大幅に深い履歴（2015年〜）を持つ地震情報専用エンドポイント
+export async function fetchJmaQuake(limit = 50, offset = 0): Promise<JMAQuake[]> {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (offset > 0) params.set('offset', String(offset))
+  const res = await fetch(`${API_BASE}/jma/quake?${params.toString()}`)
+  if (!res.ok) throw new Error(`P2PQuake jma/quake error: ${res.status}`)
+  return res.json() as Promise<JMAQuake[]>
 }
 
 export class P2PQuakeWebSocket {
