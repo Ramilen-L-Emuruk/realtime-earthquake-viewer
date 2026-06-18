@@ -19,7 +19,7 @@ export interface KyoshinDetection {
 
 /** 1秒で index が 2 以上増加した観測点を「変化あり」とみなす（約1.0 計測震度相当の上昇） */
 const DELTA_THRESHOLD = 2
-/** 検知対象とする最低インデックス（震度2相当: 計測震度 1.5 以上 = index 9） */
+/** 検知対象とする最低インデックス（震度0相当: 計測震度 0.0 以上 = index 6） */
 export const MIN_DETECTION_INDEX = 6
 /** 空間クラスタリングの距離閾値 (km) */
 const PROXIMITY_KM = 60
@@ -131,7 +131,7 @@ const EMPTY: KyoshinDetection = { detected: false, maxIndex: 0, points: [] }
  * Layer 0: 直近3フレームの時系列バッファ管理
  * Layer 1: 観測点レベルフィルタ（急上昇・トレンド・ノイズブラックリスト）
  * Layer 2: 空間クラスタリング（Union-Find、最低3点）
- * Layer 3: グローバルサニティ（全体の15%以上が変化 → データ異常として棄却）
+ * Layer 3: グローバルサニティ（全体の15%以上が変化 → データ異常として棄却）※現在無効化中
  * Layer 4: テンポラル確定（2フレーム連続検出で確定、複数クラスタ独立管理）
  * Layer 5: 観測点ノイズトラッキング（繰り返し誤検知観測点を5分除外）
  */
