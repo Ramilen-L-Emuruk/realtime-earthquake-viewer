@@ -185,7 +185,7 @@ export class DmdataWebSocket {
   }
 }
 
-// REST API で電文1件を取得し、地震情報または津波情報にパースして返す。
+// REST API で電文1件を取得し、地震情報・津波情報・長周期地震動観測情報のいずれかにパースして返す。
 // url は一覧レスポンスの item.url（data.api.dmdata.jp/v1/{id}）を使う。
 // /v2/telegram/{id} は CORS でブロックされるため使わない。
 async function fetchOneTelegram(

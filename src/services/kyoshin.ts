@@ -94,7 +94,7 @@ function parseDepth(value: string | undefined): number {
 /**
  * Yahoo の calcintensity コードを IntensityScale に変換する。
  * フォーマット: "01"→10, "02"→20, "03"→30, "04"→40,
- *              "5-"→45, "5+"→50, "6-"→55, "6+"→60, "07"→70, "//"→-1(不明)
+ *              "5-"→45, "5+"→50, "6-"→55, "6+"→60, "07"→70, その他/不明→-1（フォールバック）
  */
 function calcintensityToScale(s: string): IntensityScale {
   const map: Record<string, IntensityScale> = {
