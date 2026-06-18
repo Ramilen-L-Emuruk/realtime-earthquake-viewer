@@ -11,6 +11,7 @@ import { useSettings } from './hooks/useSettings'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
 import { useKyoshinDetection, MIN_DETECTION_INDEX } from './hooks/useKyoshinDetection'
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
+import { useDmdssWaves, VS_KM_PER_SEC } from './hooks/useDmdssWaves'
 import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude } from './utils/formatters'
 import { eewMaxScale } from './utils/eew'
@@ -449,6 +450,12 @@ export function App() {
   })
   const kyoshinDetection = useKyoshinDetection(kyoshin.sites, kyoshin.indices)
 
+  // DMDSS版: EEWデータから P波・S波半径を自前計算（100ms更新でスムーズ拡張）
+  // activeEEWs (Map) の参照が安定している限り配列を再生成しない
+  const activeEEWList = useMemo(() => Array.from(activeEEWs.values()), [activeEEWs])
+  const dmdssWaves = useDmdssWaves(activeEEWList, isDmdss)
+  const psWave = isDmdss ? dmdssWaves : kyoshin.psWave
+
   // EEW受信中または揺れ検知中は全観測点ベースの最大インデックスを使う（表示と音を一致させる）
   const hasActiveEEW = activeEEWs.size > 0
 
@@ -458,7 +465,7 @@ export function App() {
       : null),
     [settings.homeLat, settings.homeLng],
   )
-  const swaveArrival = useSWaveCountdown(kyoshin.psWave, home, hasActiveEEW)
+  const swaveArrival = useSWaveCountdown(psWave, home, hasActiveEEW, isDmdss ? VS_KM_PER_SEC : undefined)
 
   const effectiveKyoshinMaxIndex = useMemo(() => {
     if (!(hasActiveEEW || kyoshinDetection.detected)) return kyoshinDetection.maxIndex
@@ -540,7 +547,7 @@ export function App() {
             showBathymetry={settings.showBathymetry}
             kyoshinSites={kyoshin.sites}
             kyoshinIndices={kyoshin.indices}
-            kyoshinPsWave={kyoshin.psWave}
+            kyoshinPsWave={psWave}
             eews={Array.from(activeEEWs.values())}
             detectedPoints={kyoshinDetection.points}
           />
