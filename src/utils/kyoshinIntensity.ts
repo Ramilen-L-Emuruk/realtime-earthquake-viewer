@@ -6,7 +6,7 @@
 
 import { getIntensityColor } from './intensity'
 
-// 震度0（計測震度 0.0〜0.4）の表示色。気象庁配色に震度0の色は無いため灰色とする。
+// 震度0（計測震度 0.0 以上 0.5 未満）の表示色。気象庁配色に震度0の色は無いため灰色とする。
 export const SHINDO0_COLOR = '#9ca3af'
 
 export interface KyoshinJma {

@@ -7,7 +7,7 @@ export function eewAreas(eew: EEWAlert): EEWRegion[] {
   return eew.areas ?? eew.regions ?? []
 }
 
-/** 対象地域の最大予想震度（scale 値）。areas が空なら forecastMaxScale にフォールバック。 */
+/** 対象地域の最大予想震度（scale 値）。areas が空または全 scaleTo が 0 以下なら forecastMaxScale にフォールバック。 */
 export function eewMaxScale(eew: EEWAlert): number {
   const areasMax = eewAreas(eew).reduce((max, r) => Math.max(max, r.scaleTo), 0)
   return areasMax > 0 ? areasMax : (eew.forecastMaxScale ?? 0)
