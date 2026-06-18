@@ -109,7 +109,7 @@ export function App() {
   const [nowTick, setNowTick] = useState<Date | null>(null)
 
   // EEW の eventId ごとにレベルを追跡（複数EEW対応）
-  // key = issue.eventId ?? id、value = 0=低震度予報 / 1=警報or震度3以上 / 2=特別警報
+  // key = issue.eventId ?? id、value = 0=低震度予報 / 1=警報（severity=Warning または予想震度5弱以上） / 2=特別警報
   const activeEEWLevelsRef = useRef<Map<string, 0 | 1 | 2>>(new Map())
   // 各情報タイトルのリセットタイマー（自動復帰秒数が15秒の場合は15秒、それ以外は30秒）
   const earthquakeTitleTimerRef = useRef<number>(0)

@@ -192,7 +192,7 @@ function FitToEEW({ eews, psWave }: { eews: EEWAlert[]; psWave: PsWaveCircle[] }
 }
 
 // 揺れ検知時に検知点群が収まるようにフィットし、検知終了時は日本全体に戻す。
-// EEW 発砲中は検知終了後も日本全体には戻さない。
+// EEW 発報中は検知終了後も日本全体には戻さない。
 function FitToDetection({ points, hasEew }: { points: DetectedPoint[]; hasEew: boolean }) {
   const map = useMap()
   const fittedRef = useRef(false)
@@ -224,7 +224,7 @@ function FitToDetection({ points, hasEew }: { points: DetectedPoint[]; hasEew: b
 }
 
 // リアルタイムタブを開いた時点でズームをリセットする。
-// EEW が無ければ日本全体を表示。EEW 発砲中は P波/S波 境界（P波優先）にフィット。
+// EEW が無ければ日本全体を表示。EEW 発報中は P波/S波 境界（P波優先）にフィット。
 // （地図は全タブ共通のため、他タブで寄った表示をリセットする）
 function FitJapanOnEnter({
   hasEew,
