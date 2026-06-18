@@ -104,7 +104,7 @@ const BATHYMETRY_ATTRIBUTION =
 // 自動ズームの上限（地方単位が収まる程度）
 const MAX_ZOOM = 8
 // このズーム未満（中間より引き）では、地震モードで観測点ごとではなく
-// 都道府県ごとの最大震度（県中心＋県塗りつぶし）に集約表示する。
+// 一次細分区域ごとの最大震度（区域中心マーカー＋区域塗りつぶし）に集約表示する。
 const PREF_AGGREGATE_MAX_ZOOM = 8
 
 // 震度マーカーの重なり順。Leaflet は「画面 y 座標 + zIndexOffset」で z を決めるため、
