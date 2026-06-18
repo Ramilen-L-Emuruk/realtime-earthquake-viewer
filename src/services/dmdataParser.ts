@@ -494,7 +494,7 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   let doc: Document
   try {
     doc = new DOMParser().parseFromString(xml, 'application/xml')
-    if (doc.querySelector('parseerror')) return null
+    if (doc.querySelector('parsererror')) return null
   } catch { return null }
 
   const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
