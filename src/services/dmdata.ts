@@ -210,26 +210,31 @@ async function fetchOneTelegram(
   return null
 }
 
-// DMDATA REST API で地震履歴（VXSE53: 震源＋各地震度）を取得する
+// DMDATA REST API で地震履歴（VXSE53: 震源＋各地震度）を取得する。
+// cursorToken を指定するとカーソル位置以降の古い電文を取得する（「もっと見る」用）。
 export async function fetchDmdataEarthquakes(
   apiKey: string,
   limit: number,
-): Promise<JMAQuake[]> {
-  const res = await fetch(`${API_BASE}/telegram?type=VXSE53&limit=${limit}`, {
+  cursorToken?: string,
+): Promise<{ quakes: JMAQuake[]; nextToken?: string }> {
+  const qs = cursorToken ? `&cursorToken=${cursorToken}` : ''
+  const res = await fetch(`${API_BASE}/telegram?type=VXSE53&limit=${limit}${qs}`, {
     headers: { Authorization: authHeader(apiKey) },
   })
   if (!res.ok) throw new Error(`earthquake history: ${res.status}`)
   const json = await res.json() as {
     items?: Array<{ id: string; url: string; head: { type: string } }>
+    nextToken?: string
   }
   const items = json.items ?? []
   const results = await Promise.allSettled(
     items.map(it => fetchOneTelegram(apiKey, it.url, it.head.type)),
   )
-  return results
+  const quakes = results
     .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | null> => r.status === 'fulfilled')
     .map(r => r.value)
     .filter((v): v is JMAQuake => v !== null && v.code === 551)
+  return { quakes, nextToken: json.nextToken }
 }
 
 // DMDATA REST API で津波履歴（VTSE41: 大津波警報特別、VTSE51: 警報・注意報・解除、VTSE52: 沖合観測）を取得する。
