@@ -21,6 +21,9 @@ export interface KyoshinDetection {
 const DELTA_THRESHOLD = 2
 /** 検知対象とする最低インデックス（震度0相当: 計測震度 0.0 以上 = index 6） */
 export const MIN_DETECTION_INDEX = 6
+/** このインデックス以上は delta チェックをスキップする（震度3以上: 計測震度 2.5 以上 = index 11）。
+ *  急上昇がなくても震度3を2秒維持すれば確定できるようにする。 */
+const BYPASS_DELTA_INDEX = 11
 /** 空間クラスタリングの距離閾値 (km) */
 const PROXIMITY_KM = 60
 /** クラスタ成立に必要な最低観測点数（2点は隣接センサー誤作動と区別不可のため3点以上） */
@@ -129,7 +132,7 @@ const EMPTY: KyoshinDetection = { detected: false, maxIndex: 0, points: [] }
  * Layer 0〜5 の6層構成による地震検知フック（Layer 3 は現在無効化中）。
  *
  * Layer 0: 直近3フレームの時系列バッファ管理
- * Layer 1: 観測点レベルフィルタ（急上昇・トレンド・ノイズブラックリスト）
+ * Layer 1: 観測点レベルフィルタ（急上昇・震度3以上持続・ノイズブラックリスト）
  * Layer 2: 空間クラスタリング（Union-Find、最低3点）
  * Layer 3: グローバルサニティ（全体の15%以上が変化 → データ異常として棄却）※現在無効化中
  * Layer 4: テンポラル確定（2フレーム連続検出で確定、複数クラスタ独立管理）
@@ -199,8 +202,11 @@ export function useKyoshinDetection(
 
       // 未確定観測点：通常の delta フィルタ
       if (idx < MIN_DETECTION_INDEX) continue
-      const baseIdx = older !== null ? (older[i] ?? 0) : (prev[i] ?? 0)
-      if (idx - baseIdx < DELTA_THRESHOLD) continue
+      // 震度3以上（BYPASS_DELTA_INDEX）は急上昇がなくても changed に追加する
+      if (idx < BYPASS_DELTA_INDEX) {
+        const baseIdx = older !== null ? (older[i] ?? 0) : (prev[i] ?? 0)
+        if (idx - baseIdx < DELTA_THRESHOLD) continue
+      }
       if (noisyRef.current.has(i)) continue
       changed.push({ siteIdx: i, index: idx })
     }
