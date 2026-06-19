@@ -307,6 +307,12 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
               className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500 w-48"
             />
           </Row>
+          <Row label="試験報を受信（検証用）" description="試験報・訓練報を受信します。毎正時のEEW配信テスト(VXSE42)は配信経路の疎通確認のみで表示はされません。VXSE43/45(実EEW警報・予報)の試験報はカード・音・地図へ表示されます。">
+            <Toggle
+              checked={settings.dmdataTestDelivery}
+              onChange={v => onUpdate('dmdataTestDelivery', v)}
+            />
+          </Row>
         </Section>
       )}
 
@@ -589,7 +595,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">3.1.7</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">3.1.8</span></Row>
         <Row label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"
