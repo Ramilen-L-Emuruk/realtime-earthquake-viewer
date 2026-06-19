@@ -77,6 +77,7 @@ export interface EarthquakeState {
 export function useEarthquakes(
   onLiveEvent?: (event: P2PQuakeEvent) => void,
   dmdataApiKey = '',
+  dmdataTestDelivery = false,
 ) {
   const [state, setState] = useState<EarthquakeState>({
     earthquakes: [],
@@ -240,8 +241,8 @@ export function useEarthquakes(
         .then(data => { areaPrefIndex = buildAreaPrefIndex(data) })
         .catch(() => {})
 
-      // DMDSS WebSocket 接続
-      const ws = new DmdataWebSocket(dmdataApiKey)
+      // DMDSS WebSocket 接続（dmdataTestDelivery 有効時は試験報・訓練報も受信）
+      const ws = new DmdataWebSocket(dmdataApiKey, dmdataTestDelivery)
       wsRef.current = null
       ws.onEvent = (ev) => {
         if (ev.kind === 'lpgm') {
@@ -335,7 +336,7 @@ export function useEarthquakes(
       cancelled = true
       ws.disconnect()
     }
-  }, [handleEvent, dmdataApiKey])
+  }, [handleEvent, dmdataApiKey, dmdataTestDelivery])
 
   const loadMoreEarthquakes = useCallback(async () => {
     if (stateRef.current.isLoadingMore || !stateRef.current.hasMore) return
