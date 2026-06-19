@@ -1,7 +1,15 @@
-import type { P2PQuakeEvent } from '../types/earthquake'
+import type { P2PQuakeEvent, TelegramLogEntry } from '../types/earthquake'
 
 const API_BASE = 'https://api.p2pquake.net/v2'
 const WS_URL = 'wss://api.p2pquake.net/v2/ws'
+
+function codeToKind(code: number): TelegramLogEntry['kind'] {
+  if (code === 551) return 'quake'
+  if (code === 552) return 'tsunami'
+  if (code === 556) return 'eew'
+  if (code === 9611) return 'detection'
+  return undefined
+}
 
 export async function fetchHistory(
   codes: number[] = [551, 552, 556],
@@ -25,6 +33,7 @@ export class P2PQuakeWebSocket {
 
   onEvent: ((event: P2PQuakeEvent) => void) | null = null
   onStatusChange: ((status: 'connecting' | 'connected' | 'disconnected') => void) | null = null
+  onRawMessage: ((entry: TelegramLogEntry) => void) | null = null
 
   connect() {
     this.shouldReconnect = true
@@ -43,6 +52,16 @@ export class P2PQuakeWebSocket {
     this.ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data as string) as P2PQuakeEvent
+        this.onRawMessage?.({
+          id: `${Date.now()}-${Math.random()}`,
+          receivedAt: new Date(),
+          source: 'p2pquake',
+          headType: String(data.code),
+          isTest: false,
+          status: 'parsed',
+          kind: codeToKind(data.code),
+          rawBody: data,
+        })
         this.onEvent?.(data)
       } catch {
         // ignore malformed messages

@@ -6,6 +6,7 @@ import { EarthquakeTab } from './components/EarthquakeTab'
 import { RealtimeTab } from './components/RealtimeTab'
 import { TsunamiTab } from './components/TsunamiTab'
 import { SettingsTab } from './components/SettingsTab'
+import { TelegramTab } from './components/TelegramTab'
 import { useEarthquakes } from './hooks/useEarthquakes'
 import { useSettings } from './hooks/useSettings'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
@@ -238,6 +239,7 @@ export function App() {
 
   const {
     earthquakes, tsunamis, activeEEWs, lpgmByOriginTime, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
+    telegramLog, clearTelegramLog,
     injectEvent, loadMoreEarthquakes,
     simulateEarthquake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast,
@@ -344,12 +346,12 @@ export function App() {
     return () => clearTimeout(id)
   }, [updateCountdown, alertTitle])
 
-  // 設定タブ表示中は、地図には直前に表示していたタブの内容をそのまま残す。
+  // 設定・電文ログタブ表示中は、地図には直前に表示していたタブの内容をそのまま残す。
   const [lastContentTab, setLastContentTab] = useState<TabId>(settings.defaultTab)
   useEffect(() => {
-    if (activeTab !== 'settings') setLastContentTab(activeTab)
+    if (activeTab !== 'settings' && activeTab !== 'telegrams') setLastContentTab(activeTab)
   }, [activeTab])
-  const mapTab = activeTab === 'settings' ? lastContentTab : activeTab
+  const mapTab = (activeTab === 'settings' || activeTab === 'telegrams') ? lastContentTab : activeTab
 
   // 津波発表中フラグ（解除済みでない津波情報があるか）とバッジ用グレード
   const tsunamiGrade = tsunamiOverallGrade(tsunamis)
@@ -575,6 +577,9 @@ export function App() {
           </div>
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'tsunami' ? ' invisible pointer-events-none' : ''}`}>
             <TsunamiTab tsunamis={tsunamis} />
+          </div>
+          <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'telegrams' ? ' invisible pointer-events-none' : ''}`}>
+            <TelegramTab telegramLog={telegramLog} onClear={clearTelegramLog} />
           </div>
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'settings' ? ' invisible pointer-events-none' : ''}`}>
             <SettingsTab

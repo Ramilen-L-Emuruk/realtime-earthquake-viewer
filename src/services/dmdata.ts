@@ -2,7 +2,7 @@
 // POST /v2/socket → チケット取得 → WebSocket(dmdata.v2) 接続 → Ping/Pong → データ受信。
 // 切断時は指数バックオフで再接続する（チケット再取得から）。
 
-import type { JMAQuake, JMATsunami, JMALpgm, EEWAlert, ConnectionStatus } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, JMALpgm, EEWAlert, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml } from './dmdataParser'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
@@ -70,6 +70,7 @@ export class DmdataWebSocket {
 
   onEvent: ((ev: DmdataEvent) => void) | null = null
   onStatusChange: ((s: ConnectionStatus) => void) | null = null
+  onRawMessage: ((entry: TelegramLogEntry) => void) | null = null
 
   constructor(private apiKey: string) {}
 
@@ -119,6 +120,29 @@ export class DmdataWebSocket {
     }
   }
 
+  private makeLogEntry(
+    headType: string,
+    rawHead: unknown,
+    rawBody: unknown,
+    isTest: boolean,
+    status: TelegramLogEntry['status'],
+    kind?: TelegramLogEntry['kind'],
+    errorMessage?: string,
+  ): TelegramLogEntry {
+    return {
+      id: `${Date.now()}-${Math.random()}`,
+      receivedAt: new Date(),
+      source: 'dmdss',
+      headType,
+      isTest,
+      status,
+      kind,
+      rawHead,
+      rawBody,
+      errorMessage,
+    }
+  }
+
   private handleMessage(msg: Record<string, unknown>) {
     if (msg.type === 'start') {
       this.onStatusChange?.('connected')
@@ -131,10 +155,14 @@ export class DmdataWebSocket {
     if (msg.type !== 'data') return
 
     const head = msg.head as Record<string, unknown> | undefined
-    // 訓練電文はスキップ
-    if (head?.test === true) return
-    const headType = head?.type as string | undefined
-    if (!headType) return
+    const headType = (head?.type as string | undefined) ?? 'unknown'
+
+    // 訓練電文はスキップ（ログには残す）
+    if (head?.test === true) {
+      this.onRawMessage?.(this.makeLogEntry(headType, head, msg.body, true, 'filtered'))
+      return
+    }
+    if (!head?.type) return
 
     // formatMode:"json" 時は文字列、既に object の場合も許容する
     const rawBody = msg.body
@@ -143,20 +171,43 @@ export class DmdataWebSocket {
       data = typeof rawBody === 'string'
         ? JSON.parse(rawBody) as Record<string, unknown>
         : rawBody as Record<string, unknown>
-    } catch { return }
+    } catch {
+      this.onRawMessage?.(this.makeLogEntry(headType, head, rawBody, false, 'error', undefined, 'JSON parse failed'))
+      return
+    }
 
     if (headType === 'VXSE45' || headType === 'VXSE43') {
       const eew = parseEEW(headType, data)
-      if (eew) this.onEvent?.({ kind: 'eew', data: eew })
+      if (eew) {
+        this.onEvent?.({ kind: 'eew', data: eew })
+        this.onRawMessage?.(this.makeLogEntry(headType, head, data, false, 'parsed', 'eew'))
+      } else {
+        this.onRawMessage?.(this.makeLogEntry(headType, head, data, false, 'filtered'))
+      }
     } else if (headType === 'VXSE51' || headType === 'VXSE52' || headType === 'VXSE53') {
       const quake = parseEarthquake(headType, data)
-      if (quake) this.onEvent?.({ kind: 'quake', data: quake })
+      if (quake) {
+        this.onEvent?.({ kind: 'quake', data: quake })
+        this.onRawMessage?.(this.makeLogEntry(headType, head, data, false, 'parsed', 'quake'))
+      } else {
+        this.onRawMessage?.(this.makeLogEntry(headType, head, data, false, 'filtered'))
+      }
     } else if (headType === 'VTSE41' || headType === 'VTSE51' || headType === 'VTSE52') {
       const tsunami = parseTsunami(headType, data)
-      if (tsunami) this.onEvent?.({ kind: 'tsunami', data: tsunami })
+      if (tsunami) {
+        this.onEvent?.({ kind: 'tsunami', data: tsunami })
+        this.onRawMessage?.(this.makeLogEntry(headType, head, data, false, 'parsed', 'tsunami'))
+      } else {
+        this.onRawMessage?.(this.makeLogEntry(headType, head, data, false, 'filtered'))
+      }
     } else if (headType === 'VXSE62') {
       const lpgm = parseLpgm(data)
-      if (lpgm) this.onEvent?.({ kind: 'lpgm', data: lpgm })
+      if (lpgm) {
+        this.onEvent?.({ kind: 'lpgm', data: lpgm })
+        this.onRawMessage?.(this.makeLogEntry(headType, head, data, false, 'parsed', 'lpgm'))
+      } else {
+        this.onRawMessage?.(this.makeLogEntry(headType, head, data, false, 'filtered'))
+      }
     }
   }
 
