@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { JMAQuake, JMATsunami, JMALpgm, EEWAlert, EEWRegion, P2PQuakeEvent, ConnectionStatus } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, JMALpgm, EEWAlert, EEWRegion, P2PQuakeEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, P2PQuakeWebSocket } from '../services/p2pquake'
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms } from '../services/dmdata'
 import { loadStationCoords, buildAreaPrefIndex } from '../utils/stationCoords'
@@ -18,6 +18,7 @@ import {
 const MAX_HISTORY_RETAINED = 50   // 初回取得件数（設定の最大選択値に合わせる）
 const LOAD_MORE_BATCH = 50        // 「もっと見る」1回あたりの取得件数
 const MAX_TOTAL_EARTHQUAKES = 300 // メモリ上の最大保持件数
+const MAX_TELEGRAM_LOG = 200      // 電文ログの最大保持件数
 
 const ISSUE_PRIORITY: Record<string, number> = {
   DetailScale: 4,
@@ -73,6 +74,7 @@ export interface EarthquakeState {
   isLoadingMore: boolean
   hasMore: boolean
   error: string | null
+  telegramLog: TelegramLogEntry[]
 }
 
 export function useEarthquakes(
@@ -90,7 +92,21 @@ export function useEarthquakes(
     isLoadingMore: false,
     hasMore: false,
     error: null,
+    telegramLog: [],
   })
+
+  const appendTelegramLog = useCallback((entry: TelegramLogEntry) => {
+    setState(prev => ({
+      ...prev,
+      telegramLog: prev.telegramLog.length >= MAX_TELEGRAM_LOG
+        ? [entry, ...prev.telegramLog.slice(0, MAX_TELEGRAM_LOG - 1)]
+        : [entry, ...prev.telegramLog],
+    }))
+  }, [])
+
+  const clearTelegramLog = useCallback(() => {
+    setState(prev => ({ ...prev, telegramLog: [] }))
+  }, [])
 
   const wsRef = useRef<P2PQuakeWebSocket | null>(null)
   // 最新のコールバックを ref で保持し、handleEvent を安定させる
@@ -255,6 +271,7 @@ export function useEarthquakes(
       }
       ws.onStatusChange = status =>
         setState(prev => ({ ...prev, connectionStatus: status }))
+      ws.onRawMessage = appendTelegramLog
       ws.connect()
 
       return () => {
@@ -320,13 +337,14 @@ export function useEarthquakes(
     }
     ws.onStatusChange = status =>
       setState(prev => ({ ...prev, connectionStatus: status }))
+    ws.onRawMessage = appendTelegramLog
     ws.connect()
 
     return () => {
       cancelled = true
       ws.disconnect()
     }
-  }, [handleEvent, dmdataApiKey])
+  }, [handleEvent, appendTelegramLog, dmdataApiKey])
 
   const loadMoreEarthquakes = useCallback(async () => {
     if (isDmdss || stateRef.current.isLoadingMore || !stateRef.current.hasMore) return
@@ -400,6 +418,7 @@ export function useEarthquakes(
     ...state,
     injectEvent: handleEvent,
     loadMoreEarthquakes,
+    clearTelegramLog,
     simulateEarthquake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch,
