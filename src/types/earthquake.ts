@@ -157,3 +157,16 @@ export interface JMALpgm {
 export type P2PQuakeEvent = JMAQuake | JMATsunami | EarthquakeDetection | EEWAlert
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected'
+
+export interface TelegramLogEntry {
+  id: string
+  receivedAt: Date
+  source: 'dmdss' | 'p2pquake'
+  headType: string
+  isTest: boolean
+  status: 'parsed' | 'filtered' | 'error'
+  kind?: 'eew' | 'quake' | 'tsunami' | 'lpgm' | 'detection'
+  rawHead?: unknown
+  rawBody: unknown
+  errorMessage?: string
+}

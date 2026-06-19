@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-export type TabId = 'earthquake' | 'realtime' | 'tsunami' | 'settings'
+export type TabId = 'earthquake' | 'realtime' | 'tsunami' | 'settings' | 'telegrams'
 
 const ICON_PROPS = {
   viewBox: '0 0 24 24',
@@ -42,6 +42,13 @@ const ICONS: Record<TabId, ReactNode> = {
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
     </svg>
   ),
+  // 電文ログ: ターミナル
+  telegrams: (
+    <svg {...ICON_PROPS}>
+      <polyline points="4 17 10 11 4 5" />
+      <line x1="12" y1="19" x2="20" y2="19" />
+    </svg>
+  ),
 }
 
 const ITEMS: { id: TabId; label: string }[] = [
@@ -49,6 +56,7 @@ const ITEMS: { id: TabId; label: string }[] = [
   { id: 'realtime', label: 'リアルタイム' },
   { id: 'tsunami', label: '津波情報' },
   { id: 'settings', label: '設定' },
+  { id: 'telegrams', label: '電文ログ' },
 ]
 
 const TSUNAMI_BADGE_COLOR: Record<string, string> = {
