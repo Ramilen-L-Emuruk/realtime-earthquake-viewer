@@ -156,12 +156,14 @@ return
 
 | データ | 提供元 | 説明 |
 |---|---|---|
-| 緊急地震速報（EEW） | [DMDATA.JP API](https://dmdata.jp/) VXSE45/43 | WebSocket。気象庁発表から1秒未満で取得。地域別予想震度・到達予想時刻・警報/予報区域の色分け表示。要 API キー |
+| 緊急地震速報（EEW） | [DMDATA.JP API](https://dmdata.jp/) VXSE42/43/44/45 | WebSocket。気象庁発表から1秒未満で取得。地域別予想震度・到達予想時刻・警報/予報区域の色分け表示。要 API キー（VXSE45=地震動予報、VXSE43=警報、VXSE44=予報、VXSE42=配信テスト） |
 | 地震情報 | DMDATA.JP VXSE51/52/53 | WebSocket + REST 履歴。VXSE53（震源・各地震度）は地域別震度をリアルタイムに表示 |
 | 津波情報 | DMDATA.JP VTSE41/51/52 | WebSocket リアルタイム受信 + REST 履歴。VTSE52（沖合観測）は観測点名・波高・到達時刻を表示 |
 | リアルタイム震度 | Yahoo!天気・災害 リアルタイム震度 | 通常版と同一（DMDATA.JP はリアルタイム震度を提供しないため） |
 
 DMDATA.JP のAPIキーは設定タブから入力し、ブラウザの localStorage に保存されます。APIキーは [dmdata.jp](https://dmdata.jp/) で取得できます。
+
+WebSocket で受信する電文本体（`body`）は base64 + gzip で配信されるため、ブラウザネイティブの `DecompressionStream('gzip')` で復号してから解析します。また設定タブの「試験報を受信（検証用）」を有効にすると、毎正時に配信される EEW 配信テスト（VXSE42）等の試験報・訓練報を受信でき、実地震を待たずにリアルタイム受信経路を検証できます（受信した試験 EEW は通常の発報と同様にカード・音・地図へ表示）。
 
 ### P2PQuake イベントコード（通常版）
 
