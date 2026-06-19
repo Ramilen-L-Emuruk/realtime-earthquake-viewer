@@ -98,6 +98,8 @@ export function useEarthquakes(
   onLiveEventRef.current = onLiveEvent
   // テスト EEW の発報状態を種別ごとに独立管理（複数EEW同時テスト対応）
   const testEEWTimersRef = useRef<Map<TestEEWKind, TestEEWEntry>>(new Map())
+  // 通常最終報（isLastInfo: true, isCanceled: false）受信後の60秒自動解除タイマー管理
+  const finalCleanupTimersRef = useRef<Map<string, number>>(new Map())
   // 現在の state を WS コールバック内から参照するための ref
   const stateRef = useRef(state)
   stateRef.current = state
@@ -122,6 +124,28 @@ export function useEarthquakes(
   const handleEvent = useCallback((event: P2PQuakeEvent) => {
     // ライブ受信／テスト送信のイベントを通知（初回の履歴読み込みでは呼ばれない）
     onLiveEventRef.current?.(event)
+
+    // 556（EEW）のタイマー管理は setState の外で行う
+    if (event.code === 556) {
+      const eew = event as EEWAlert
+      const key = eew.issue?.eventId ?? eew.id
+      if (eew.cancelled || eew.test) {
+        // キャンセル時: 最終報タイマーが残っていればキャンセル
+        const t = finalCleanupTimersRef.current.get(key)
+        if (t !== undefined) {
+          window.clearTimeout(t)
+          finalCleanupTimersRef.current.delete(key)
+        }
+      } else if (eew.isFinal && !finalCleanupTimersRef.current.has(key)) {
+        // 通常最終報: 60秒後にキャンセルイベントとして再発火（二重登録防止）
+        const t = window.setTimeout(() => {
+          handleEvent({ ...eew, cancelled: true })
+          finalCleanupTimersRef.current.delete(key)
+        }, 60000)
+        finalCleanupTimersRef.current.set(key, t)
+      }
+    }
+
     setState(prev => {
       const now = new Date()
       switch (event.code) {
@@ -163,6 +187,16 @@ export function useEarthquakes(
           return { ...prev, lastUpdate: now }
       }
     })
+  }, [])
+
+  // アンマウント時に最終報タイマーを全てクリア
+  useEffect(() => {
+    return () => {
+      for (const t of finalCleanupTimersRef.current.values()) {
+        window.clearTimeout(t)
+      }
+      finalCleanupTimersRef.current.clear()
+    }
   }, [])
 
   useEffect(() => {
