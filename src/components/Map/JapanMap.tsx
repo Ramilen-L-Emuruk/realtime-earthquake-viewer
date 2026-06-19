@@ -104,7 +104,7 @@ const BATHYMETRY_ATTRIBUTION =
 // 自動ズームの上限（地方単位が収まる程度）
 const MAX_ZOOM = 8
 // このズーム未満（中間より引き）では、地震モードで観測点ごとではなく
-// 都道府県ごとの最大震度（県中心＋県塗りつぶし）に集約表示する。
+// 一次細分区域ごとの最大震度（区域中心マーカー＋区域塗りつぶし）に集約表示する。
 const PREF_AGGREGATE_MAX_ZOOM = 8
 
 // 震度マーカーの重なり順。Leaflet は「画面 y 座標 + zIndexOffset」で z を決めるため、
@@ -192,7 +192,7 @@ function FitToEEW({ eews, psWave }: { eews: EEWAlert[]; psWave: PsWaveCircle[] }
 }
 
 // 揺れ検知時に検知点群が収まるようにフィットし、検知終了時は日本全体に戻す。
-// EEW 発砲中は検知終了後も日本全体には戻さない。
+// EEW 発報中は検知終了後も日本全体には戻さない。
 function FitToDetection({ points, hasEew }: { points: DetectedPoint[]; hasEew: boolean }) {
   const map = useMap()
   const fittedRef = useRef(false)
@@ -224,7 +224,7 @@ function FitToDetection({ points, hasEew }: { points: DetectedPoint[]; hasEew: b
 }
 
 // リアルタイムタブを開いた時点でズームをリセットする。
-// EEW が無ければ日本全体を表示。EEW 発砲中は P波/S波 境界（P波優先）にフィット。
+// EEW が無ければ日本全体を表示。EEW 発報中は P波/S波 境界（P波優先）にフィット。
 // （地図は全タブ共通のため、他タブで寄った表示をリセットする）
 function FitJapanOnEnter({
   hasEew,

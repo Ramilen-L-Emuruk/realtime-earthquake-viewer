@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { JMAQuake, JMATsunami, JMALpgm, EEWAlert, EEWRegion, P2PQuakeEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
-import { fetchHistory, P2PQuakeWebSocket } from '../services/p2pquake'
+import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms } from '../services/dmdata'
 import { loadStationCoords, buildAreaPrefIndex } from '../utils/stationCoords'
 
@@ -17,7 +17,6 @@ import {
 
 const MAX_HISTORY_RETAINED = 50   // 初回取得件数（設定の最大選択値に合わせる）
 const LOAD_MORE_BATCH = 50        // 「もっと見る」1回あたりの取得件数
-const MAX_TOTAL_EARTHQUAKES = 300 // メモリ上の最大保持件数
 const MAX_TELEGRAM_LOG = 200      // 電文ログの最大保持件数
 
 const ISSUE_PRIORITY: Record<string, number> = {
@@ -80,6 +79,7 @@ export interface EarthquakeState {
 export function useEarthquakes(
   onLiveEvent?: (event: P2PQuakeEvent) => void,
   dmdataApiKey = '',
+  dmdataTestDelivery = false,
 ) {
   const [state, setState] = useState<EarthquakeState>({
     earthquakes: [],
@@ -114,9 +114,18 @@ export function useEarthquakes(
   onLiveEventRef.current = onLiveEvent
   // テスト EEW の発報状態を種別ごとに独立管理（複数EEW同時テスト対応）
   const testEEWTimersRef = useRef<Map<TestEEWKind, TestEEWEntry>>(new Map())
+  // 通常最終報（isLastInfo: true, isCanceled: false）受信後の60秒自動解除タイマー管理
+  const finalCleanupTimersRef = useRef<Map<string, number>>(new Map())
   // 現在の state を WS コールバック内から参照するための ref
   const stateRef = useRef(state)
   stateRef.current = state
+  // DMDSS 版「もっと見る」用カーソルと API キー（useCallback 内の stale closure 回避）
+  const dmdataCursorRef = useRef<string | undefined>(undefined)
+  const dmdataApiKeyRef = useRef(dmdataApiKey)
+  dmdataApiKeyRef.current = dmdataApiKey
+  // P2PQuake 版「もっと見る」用の生 API 取得件数（重複除去後の earthquakes.length とは別管理）
+  // offset = earthquakes.length だと重複除去ズレで古いデータが抜け落ちるため、API 呼び出し回数ベースで管理する
+  const p2pRawOffsetRef = useRef(0)
 
   // P2PQuake の 556 受信時に既存の Yahoo EEW へ地域別予想震度を注入する（音・タブ切替なし）。
   const enrichEEW = useCallback((eventId: string, areas: EEWRegion[]) => {
@@ -131,6 +140,28 @@ export function useEarthquakes(
   const handleEvent = useCallback((event: P2PQuakeEvent) => {
     // ライブ受信／テスト送信のイベントを通知（初回の履歴読み込みでは呼ばれない）
     onLiveEventRef.current?.(event)
+
+    // 556（EEW）のタイマー管理は setState の外で行う
+    if (event.code === 556) {
+      const eew = event as EEWAlert
+      const key = eew.issue?.eventId ?? eew.id
+      if (eew.cancelled || eew.test) {
+        // キャンセル時: 最終報タイマーが残っていればキャンセル
+        const t = finalCleanupTimersRef.current.get(key)
+        if (t !== undefined) {
+          window.clearTimeout(t)
+          finalCleanupTimersRef.current.delete(key)
+        }
+      } else if (eew.isFinal && !finalCleanupTimersRef.current.has(key)) {
+        // 通常最終報: 60秒後にキャンセルイベントとして再発火（二重登録防止）
+        const t = window.setTimeout(() => {
+          handleEvent({ ...eew, cancelled: true })
+          finalCleanupTimersRef.current.delete(key)
+        }, 60000)
+        finalCleanupTimersRef.current.set(key, t)
+      }
+    }
+
     setState(prev => {
       const now = new Date()
       switch (event.code) {
@@ -144,7 +175,7 @@ export function useEarthquakes(
           const earthquakes = [
             quake,
             ...prev.earthquakes.filter(e => e.earthquake.time !== key),
-          ].slice(0, MAX_TOTAL_EARTHQUAKES)
+          ]
           return { ...prev, earthquakes, lastUpdate: now }
         }
         case 552: {
@@ -174,6 +205,16 @@ export function useEarthquakes(
     })
   }, [])
 
+  // アンマウント時に最終報タイマーを全てクリア
+  useEffect(() => {
+    return () => {
+      for (const t of finalCleanupTimersRef.current.values()) {
+        window.clearTimeout(t)
+      }
+      finalCleanupTimersRef.current.clear()
+    }
+  }, [])
+
   useEffect(() => {
     let cancelled = false
 
@@ -191,8 +232,10 @@ export function useEarthquakes(
         fetchDmdataEarthquakes(dmdataApiKey, MAX_HISTORY_RETAINED),
         fetchDmdataTsunamis(dmdataApiKey, 10),
       ])
-        .then(async ([quakeEvents, tsunamiEvents]) => {
+        .then(async ([quakeResult, tsunamiEvents]) => {
           if (cancelled) return
+          const { quakes: quakeEvents, nextToken } = quakeResult
+          dmdataCursorRef.current = nextToken
           const seenQuakes = new Map<string, JMAQuake>()
           for (const q of quakeEvents) {
             const key = q.earthquake.time
@@ -232,7 +275,7 @@ export function useEarthquakes(
             lpgmByOriginTime,
             lastUpdate: new Date(),
             isLoading: false,
-            hasMore: false,  // DMDSS はカーソル型 API のため load more 非対応
+            hasMore: !!nextToken,
             error: null,
           }))
         })
@@ -248,8 +291,8 @@ export function useEarthquakes(
         .then(data => { areaPrefIndex = buildAreaPrefIndex(data) })
         .catch(() => {})
 
-      // DMDSS WebSocket 接続
-      const ws = new DmdataWebSocket(dmdataApiKey)
+      // DMDSS WebSocket 接続（dmdataTestDelivery 有効時は試験報・訓練報も受信）
+      const ws = new DmdataWebSocket(dmdataApiKey, dmdataTestDelivery)
       wsRef.current = null
       ws.onEvent = (ev) => {
         if (ev.kind === 'lpgm') {
@@ -282,13 +325,13 @@ export function useEarthquakes(
 
     // --- 通常版: P2PQuake ---
     Promise.all([
-      fetchHistory([551], MAX_HISTORY_RETAINED),
+      fetchJmaQuake(MAX_HISTORY_RETAINED),
       fetchHistory([552], 10),
     ])
       .then(([quakeEvents, tsunamiEvents]) => {
         if (cancelled) return
         const seenQuakes = new Map<string, JMAQuake>()
-        for (const q of quakeEvents as JMAQuake[]) {
+        for (const q of quakeEvents) {
           const key = q.earthquake.time
           const existing = seenQuakes.get(key)
           if (!existing || (ISSUE_PRIORITY[q.issue.type] ?? 0) > (ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
@@ -300,6 +343,7 @@ export function useEarthquakes(
           .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
         const latestTsunami = allTsunami[0]
         const tsunamis = latestTsunami && !latestTsunami.cancelled ? [latestTsunami] : []
+        p2pRawOffsetRef.current = quakeEvents.length
         setState(prev => ({
           ...prev,
           earthquakes,
@@ -344,34 +388,80 @@ export function useEarthquakes(
       cancelled = true
       ws.disconnect()
     }
-  }, [handleEvent, appendTelegramLog, dmdataApiKey])
+  }, [handleEvent, appendTelegramLog, dmdataApiKey, dmdataTestDelivery])
 
   const loadMoreEarthquakes = useCallback(async () => {
-    if (isDmdss || stateRef.current.isLoadingMore || !stateRef.current.hasMore) return
+    if (stateRef.current.isLoadingMore || !stateRef.current.hasMore) return
     setState(prev => ({ ...prev, isLoadingMore: true }))
     try {
-      const offset = stateRef.current.earthquakes.length
-      const events = await fetchHistory([551], LOAD_MORE_BATCH, offset)
-      setState(prev => {
-        const seenKeys = new Set(prev.earthquakes.map(e => e.earthquake.time))
-        const seenForBatch = new Map<string, JMAQuake>()
-        for (const q of events as JMAQuake[]) {
-          const key = q.earthquake.time
-          if (seenKeys.has(key)) continue
-          const existing = seenForBatch.get(key)
-          if (!existing || (ISSUE_PRIORITY[q.issue.type] ?? 0) > (ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
-            seenForBatch.set(key, q)
+      if (isDmdss) {
+        const apiKey = dmdataApiKeyRef.current
+        const cursor = dmdataCursorRef.current
+        const existingQuakes = stateRef.current.earthquakes
+        const { quakes: events, nextToken } = await fetchDmdataEarthquakes(apiKey, LOAD_MORE_BATCH, cursor)
+        dmdataCursorRef.current = nextToken
+        setState(prev => {
+          const seenKeys = new Set(prev.earthquakes.map(e => e.earthquake.time))
+          const seenForBatch = new Map<string, JMAQuake>()
+          for (const q of events) {
+            const key = q.earthquake.time
+            if (seenKeys.has(key)) continue
+            const existing = seenForBatch.get(key)
+            if (!existing || (ISSUE_PRIORITY[q.issue.type] ?? 0) > (ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
+              seenForBatch.set(key, q)
+            }
+          }
+          return {
+            ...prev,
+            earthquakes: [...prev.earthquakes, ...Array.from(seenForBatch.values())],
+            isLoadingMore: false,
+            hasMore: !!nextToken,
+          }
+        })
+        // 新しく読み込んだ地震に対応する LPGM を追加取得（失敗は無視）
+        const newOldest = [...existingQuakes, ...events].reduce<string | null>((acc, q) => {
+          const t = q.earthquake.time
+          return acc === null || t < acc ? t : acc
+        }, null)
+        if (newOldest) {
+          const lpgmEvents = await fetchDmdataLpgms(apiKey, newOldest).catch(() => [])
+          if (lpgmEvents.length > 0) {
+            setState(prev => {
+              const lpgmByOriginTime = new Map(prev.lpgmByOriginTime)
+              for (const lpgm of lpgmEvents) {
+                if (lpgm.cancelled) continue
+                const existing = lpgmByOriginTime.get(lpgm.originTime)
+                if (!existing || lpgm.time > existing.time) {
+                  lpgmByOriginTime.set(lpgm.originTime, lpgm)
+                }
+              }
+              return { ...prev, lpgmByOriginTime }
+            })
           }
         }
-        const earthquakes = [...prev.earthquakes, ...Array.from(seenForBatch.values())]
-          .slice(0, MAX_TOTAL_EARTHQUAKES)
-        return {
-          ...prev,
-          earthquakes,
-          isLoadingMore: false,
-          hasMore: events.length === LOAD_MORE_BATCH && earthquakes.length < MAX_TOTAL_EARTHQUAKES,
-        }
-      })
+      } else {
+        const offset = p2pRawOffsetRef.current
+        const events = await fetchJmaQuake(LOAD_MORE_BATCH, offset)
+        p2pRawOffsetRef.current += events.length
+        setState(prev => {
+          const seenKeys = new Set(prev.earthquakes.map(e => e.earthquake.time))
+          const seenForBatch = new Map<string, JMAQuake>()
+          for (const q of events) {
+            const key = q.earthquake.time
+            if (seenKeys.has(key)) continue
+            const existing = seenForBatch.get(key)
+            if (!existing || (ISSUE_PRIORITY[q.issue.type] ?? 0) > (ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
+              seenForBatch.set(key, q)
+            }
+          }
+          return {
+            ...prev,
+            earthquakes: [...prev.earthquakes, ...Array.from(seenForBatch.values())],
+            isLoadingMore: false,
+            hasMore: events.length === LOAD_MORE_BATCH,
+          }
+        })
+      }
     } catch {
       setState(prev => ({ ...prev, isLoadingMore: false }))
     }

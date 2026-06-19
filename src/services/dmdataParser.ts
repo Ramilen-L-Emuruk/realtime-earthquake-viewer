@@ -94,8 +94,8 @@ function parseEEWRegions(intensity: Record<string, unknown>): EEWRegion[] {
   return regions
 }
 
-// EEW (VXSE45: 予報, VXSE43: 警報)
-// data は WebSocket body を JSON.parse した後のオブジェクト（トップレベル電文）
+// EEW (VXSE42: 配信テスト, VXSE43: 警報, VXSE44: 予報(廃止予定), VXSE45: 地震動予報)
+// data は WebSocket body を復号・JSON.parse した後のオブジェクト（トップレベル電文）
 export function parseEEW(headType: string, data: Record<string, unknown>): EEWAlert | null {
   const body = obj(data.body)
   const earthquake = obj(body.earthquake)
@@ -494,7 +494,7 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   let doc: Document
   try {
     doc = new DOMParser().parseFromString(xml, 'application/xml')
-    if (doc.querySelector('parseerror')) return null
+    if (doc.querySelector('parsererror')) return null
   } catch { return null }
 
   const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))

@@ -2,7 +2,8 @@ import { useEffect, useRef } from 'react'
 import { useMap } from 'react-leaflet'
 import L from 'leaflet'
 import type { DetectedPoint } from '../../hooks/useKyoshinDetection'
-import { kyoshinIntensityColor } from '../../utils/kyoshinIntensity'
+import { kyoshinIndexToJma, kyoshinIntensityColor } from '../../utils/kyoshinIntensity'
+import { getScaleRadius } from '../../utils/intensity'
 
 export function KyoshinDetectedPoints({
   points,
@@ -38,16 +39,17 @@ export function KyoshinDetectedPoints({
       if (!ctx) return
       ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-      const radius = 10 * iconScale
       // 震度の低い点から描画し、高い点を上に重ねる
       const sorted = [...points].sort((a, b) => a.index - b.index)
       for (const p of sorted) {
         const pt = map.latLngToContainerPoint(L.latLng(p.lat, p.lng))
         const color = kyoshinIntensityColor(p.index) ?? '#ffffff'
+        const jma = kyoshinIndexToJma(p.index)
+        const radius = jma && jma.label !== '0' ? (getScaleRadius(jma.scale) + 2) * iconScale : 2.5 * iconScale
         ctx.beginPath()
         ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2)
         ctx.fillStyle = color
-        ctx.globalAlpha = 0.85
+        ctx.globalAlpha = 1
         ctx.fill()
       }
     }

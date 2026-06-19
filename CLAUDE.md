@@ -41,10 +41,23 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 6. **コミット**（下記「コミット」の規約に従い、確認を求めず自動で行う）
 7. **main へのマージ**（**ユーザーから明示的に指示があったときのみ**。ワークツリーの変更を main にマージする前に必ず確認する。必ずマージコミットを作成する（`--no-ff`））
 8. **プッシュ**（**ユーザーから明示的に指示があったときのみ**。自動では行わない）
+9. **リリース後のクリーンアップ**（プッシュ完了後に必ず実施する）
+   - **ワークツリーの削除**:
+     - ワークツリー内にいる場合は先に `ExitWorktree(action: "keep")` で抜けてから削除する
+     - `git worktree remove .claude/worktrees/<name>` でワークツリーディレクトリを削除
+     - `git branch -d worktree/<type>/<name>` でブランチを削除
+   - **dev サーバーの停止**: 検証用に起動した dev サーバー（Vite）を停止する
+     ```bash
+     # ポート 5173（または起動ログで確認した実ポート）を使用しているプロセスを終了
+     # Bash（Git Bash）の場合:
+     kill $(netstat -ano | grep :5173 | awk '{print $5}' | head -1) 2>/dev/null || true
+     ```
+     - MCP サーバーを巻き込まないよう `Stop-Process -Name node` は使わないこと
 
 > ユーザーから「今後は必要に応じて README を更新して、コミットまで自動で行う」方針の指示済み。
 > ユーザーから「修正後は毎回バージョン種別（メジャー/マイナー/パッチ/なし）を確認する」方針の指示済み。
 > ユーザーから「main へのマージはユーザーに確認してから行う」方針の指示済み。
+> ユーザーから「リリース後はワークツリー削除と dev サーバー停止をクリーンアップとして実施する」方針の指示済み。
 
 ## 検証
 
@@ -65,7 +78,7 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 - **テスト機能の活用**: 設定タブのテストボタンで動作確認できる。
   - 地震テスト → 地震カード追加・地図の震度マーカー・自動タブ切替
   - EEW 特別警報テスト → 震度6弱以上・特別警報（三陸沖 M7.2）→ `eewSpecial` 音・EEW カード（特別警報/赤）・震源マーカー
-  - EEW 警報テスト → 震度5弱相当・警報（茨城県沖 M6.5）→ `eew` 音・EEW カード（警報/赤）
+  - EEW 警報テスト → 震度5強相当・警報（茨城県沖 M6.5）→ `eew` 音・EEW カード（警報/赤）
   - EEW 予報テスト → 震度2程度・予報（宮城県沖 M4.5）→ `eewForecast` 音・EEW カード（予報/オレンジ）
   - 大警報テスト → 大津波警報（岩手・宮城・福島等）→ `tsunamiMajor` 音・津波タブの海岸線描画
   - 警報テスト → 津波警報（青森・茨城等）→ `tsunami` 音・津波タブの海岸線描画
@@ -122,4 +135,32 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 
 - `src/App.tsx`: レイアウトの中枢。地図常時表示＋アイコンナビ（右端）でパネル内容を切替。地図内容・更新時刻・通知音・自動タブ切替・EEW 連携の制御もここ。
 - 地図のモード（`JapanMap` の `mode`）: `quake`（地震）／`tsunami`（津波海岸線）／`kyoshin`（リアルタイム震度・予報円）。
-- 生成データ（`public/data/*.json`）は座標が大きいため遅延読込（必要なタブ表示時のみ fetch）。
+- 生成データ（`public/data/*.json`）は座標が大きいため遅延読込（初回利用時に一度だけ fetch しキャッシュ）。  
+  ベースマップ用（`prefectures.json` / `subregions.json`）は地図初回表示時、地震/津波用（`station-coords.json` / `tsunami-zones.json`）は該当タブ表示時に fetch する。
+
+## コード整合性チェックポイント
+
+新機能追加・修正時にコメントと実装が乖離しやすい箇所。変更前後に必ず照合すること。
+
+### テストデータと UI 説明文
+- `SettingsTab/index.tsx` の `description` 文字列（例: 「震度5強相当」）は、`src/utils/testData.ts` の対応するテスト関数の実 `scaleTo` 値と一致させる。
+  - EEW 警報テスト（`createTestEEWWarning`）: 最大 `scaleTo: 50` = 震度5強
+  - EEW 特別警報テスト（`createTestEEW`）: 最大 `scaleTo: 60` = 震度6弱
+  - EEW 予報テスト（`createTestEEWForecast`）: 最大 `scaleTo: 25` = 震度2程度
+- 同じ説明文が `CLAUDE.md` の「テスト機能の活用」セクションにも記載されているため、変更時は両方を合わせて修正する。
+
+### 地図描画ペイン名
+- `BaseMap.tsx` のペイン一覧コメントと、`JapanMap.tsx` で実際に作成するペイン名は完全に一致させる。
+  - 実在するペイン: `basemap`（z=250）・`quake-region-fill`（z=260）・`eew-region-fill`（z=260）・`basemap-labels`（z=270）
+  - `quake-pref-fill`（旧名）・`quake-region-labels` 等は**存在しない**。コメントに書かない。
+
+### 震度集約の単位
+- ズームアウト時の集約単位は**一次細分区域**（`subregions.json` 由来）。「都道府県」という表現はコメント・ドキュメントで使わない。
+  - 定数 `PREF_AGGREGATE_MAX_ZOOM` の「PREF」は旧名の名残。動作は一次細分区域単位。
+
+### KyoshinSubThreshold の対象範囲
+- 対象は **index 1〜6**（震度0以下）。index 0 はデータ無し（`subThresholdOpacity(0) = 0`）のため非表示。「0〜6」とコメントしない。
+- `KyoshinPoints.tsx` が気象庁配色で描画するのは **index 7+**（震度1以上）。
+
+### README プロジェクト構成ツリー
+- `src/components/`・`src/hooks/`・`src/utils/` に新ファイルを追加した場合は、`README.md` の「プロジェクト構成」ツリーにも追記する（README 更新の条件に含める）。

@@ -156,12 +156,14 @@ return
 
 | データ | 提供元 | 説明 |
 |---|---|---|
-| 緊急地震速報（EEW） | [DMDATA.JP API](https://dmdata.jp/) VXSE45/43 | WebSocket。気象庁発表から1秒未満で取得。地域別予想震度・到達予想時刻・警報/予報区域の色分け表示。要 API キー |
+| 緊急地震速報（EEW） | [DMDATA.JP API](https://dmdata.jp/) VXSE42/43/44/45 | WebSocket。気象庁発表から1秒未満で取得。地域別予想震度・到達予想時刻・警報/予報区域の色分け表示。要 API キー（VXSE45=地震動予報、VXSE43=警報、VXSE44=予報、VXSE42=配信テスト） |
 | 地震情報 | DMDATA.JP VXSE51/52/53 | WebSocket + REST 履歴。VXSE53（震源・各地震度）は地域別震度をリアルタイムに表示 |
 | 津波情報 | DMDATA.JP VTSE41/51/52 | WebSocket リアルタイム受信 + REST 履歴。VTSE52（沖合観測）は観測点名・波高・到達時刻を表示 |
 | リアルタイム震度 | Yahoo!天気・災害 リアルタイム震度 | 通常版と同一（DMDATA.JP はリアルタイム震度を提供しないため） |
 
 DMDATA.JP のAPIキーは設定タブから入力し、ブラウザの localStorage に保存されます。APIキーは [dmdata.jp](https://dmdata.jp/) で取得できます。
+
+WebSocket で受信する電文本体（`body`）は base64 + gzip で配信されるため、ブラウザネイティブの `DecompressionStream('gzip')` で復号してから解析します。また設定タブの「試験報を受信（検証用）」を有効にすると、毎正時に配信される EEW 配信テスト（VXSE42）等の試験報・訓練報を受信でき、実地震を待たずにリアルタイム受信経路を検証できます（受信した試験 EEW は通常の発報と同様にカード・音・地図へ表示）。
 
 ### P2PQuake イベントコード（通常版）
 
@@ -216,15 +218,21 @@ realtime-earthquake-viewer/
 │   │   ├── MapUpdateTime.tsx       # 地図左上の更新時刻オーバーレイ
 │   │   ├── EarthquakeTab/          # 地震情報パネル（カード一覧・選択）
 │   │   ├── Map/
-│   │   │   ├── JapanMap.tsx        # Leaflet 日本地図（震度マーカー / 津波海岸線 / 強震モニタ）
-│   │   │   ├── BaseMap.tsx         # 行政区域ベースマップ（県境・一次細分区域境界・陸地・地方/県/区域名ラベル）
-│   │   │   └── KyoshinPoints.tsx   # 強震モニタ観測点の Canvas 描画レイヤー
+│   │   │   ├── JapanMap.tsx           # Leaflet 日本地図（震度マーカー / 津波海岸線 / 強震モニタ）
+│   │   │   ├── BaseMap.tsx            # 行政区域ベースマップ（県境・一次細分区域境界・陸地・地方/県/区域名ラベル）
+│   │   │   ├── IntensityPoints.tsx    # 地震情報タブの観測点震度マーカー（Leaflet CircleMarker）
+│   │   │   ├── KyoshinPoints.tsx      # 強震モニタ観測点の Canvas 描画レイヤー（震度1以上）
+│   │   │   ├── KyoshinSubThreshold.tsx # 強震モニタの震度0以下（index 1〜6）の OffscreenCanvas 描画
+│   │   │   ├── KyoshinDetectedPoints.tsx # 揺れ検知された観測点の可変サイズ描画
+│   │   │   └── KyoshinMaxEffect.tsx   # 強震モニタの最大震度エフェクト描画
 │   │   ├── RealtimeTab/            # 凡例・注記パネル（地図は JapanMap が担当）
 │   │   ├── SettingsTab/            # 設定パネル
 │   │   └── TsunamiTab/             # 津波情報パネル
 │   ├── hooks/
 │   │   ├── useEarthquakes.ts       # P2PQuake / DMDATA.JP WS + REST 状態管理（VITE_VARIANT で切替）
 │   │   ├── useKyoshinRealtime.ts   # Yahoo リアルタイム震度のポーリング
+│   │   ├── useKyoshinDetection.ts  # 強震モニタの揺れ検知（6層フィルタ）
+│   │   ├── useSWaveCountdown.ts    # S波到達カウントダウン
 │   │   ├── useSettings.ts          # アプリ設定（localStorage 永続化）
 │   │   ├── useStationCoords.ts     # 観測点座標テーブルの読み込み
 │   │   ├── useTsunamiZones.ts      # 津波予報区 海岸線データの読み込み
@@ -238,8 +246,11 @@ realtime-earthquake-viewer/
 │   │   └── earthquake.ts           # P2PQuake API 型定義
 │   └── utils/
 │       ├── alertSound.ts           # 通知音生成（Web Audio API）
+│       ├── eew.ts                  # EEW 対象地域・最大震度・情報番号の算出
 │       ├── intensity.ts            # 震度スケール色・ラベル
 │       ├── kyoshinIntensity.ts     # リアルタイム震度インデックス→震度階級/色（気象庁配色）
+│       ├── lpgm.ts                 # 長周期地震動階級のラベル・色
+│       ├── tsunami.ts              # 津波情報の等級算出
 │       ├── stationCoords.ts        # 地点名→座標の引き当て
 │       ├── tsunamiZones.ts         # 津波予報区 海岸線データの引き当て
 │       ├── prefectures.ts          # 都道府県境界データの読み込み
