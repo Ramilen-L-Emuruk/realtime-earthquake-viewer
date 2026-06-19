@@ -17,6 +17,7 @@ export function useSWaveCountdown(
   psWave: PsWaveCircle[],
   home: { lat: number; lng: number } | null,
   hasActiveEEW: boolean,
+  velocityKmps?: number,
 ): SWaveArrival | null {
   const [arrival, setArrival] = useState<SWaveArrival | null>(null)
   const prevSRadiusRef = useRef<number | null>(null)
@@ -35,9 +36,11 @@ export function useSWaveCountdown(
     const distanceKm = haversineKm(circle.lat, circle.lng, home.lat, home.lng)
     const sRadiusKm = circle.sRadius
 
-    // S波速度を推定（フレーム差分 → 移動平均）
+    // velocityKmps が指定されていれば既知速度を直接使用、なければフレーム差分で推定
     let speed = S_WAVE_KM_PER_SEC
-    if (prevSRadiusRef.current !== null) {
+    if (velocityKmps !== undefined) {
+      speed = velocityKmps
+    } else if (prevSRadiusRef.current !== null) {
       const delta = sRadiusKm - prevSRadiusRef.current
       if (delta > 0) {
         speedHistoryRef.current.push(delta)
@@ -54,7 +57,7 @@ export function useSWaveCountdown(
     const etaSec = arrived ? 0 : Math.max(0, Math.round((distanceKm - sRadiusKm) / speed))
 
     setArrival({ distanceKm, sRadiusKm, etaSec, arrived })
-  }, [psWave, home, hasActiveEEW])
+  }, [psWave, home, hasActiveEEW, velocityKmps])
 
   return arrival
 }

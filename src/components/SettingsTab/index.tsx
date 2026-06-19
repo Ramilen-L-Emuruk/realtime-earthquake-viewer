@@ -307,6 +307,12 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
               className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500 w-48"
             />
           </Row>
+          <Row label="試験報を受信（検証用）" description="試験報・訓練報を受信します。毎正時のEEW配信テスト(VXSE42)は配信経路の疎通確認のみで表示はされません。VXSE43/45(実EEW警報・予報)の試験報はカード・音・地図へ表示されます。">
+            <Toggle
+              checked={settings.dmdataTestDelivery}
+              onChange={v => onUpdate('dmdataTestDelivery', v)}
+            />
+          </Row>
         </Section>
       )}
 
@@ -521,13 +527,13 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
         <Row label="地震情報" description="三陸沖 M9.0 最大震度7 をリストと地図に追加">
           <TestButton color="red" onClick={onTest.earthquake}>地震テスト</TestButton>
         </Row>
-        <Row label="緊急地震速報（特別警報）" description="震度6弱以上 – eewSpecial 音 / 10秒間表示">
+        <Row label="緊急地震速報（特別警報）" description="震度6弱以上 – eewSpecial 音 / 30秒間表示">
           <TestButton color="red" onClick={onTest.eew}>特別警報テスト</TestButton>
         </Row>
-        <Row label="緊急地震速報（警報）" description="震度5弱相当 – eew 音 / 10秒間表示">
+        <Row label="緊急地震速報（警報）" description="震度5強相当 – eew 音 / 30秒間表示">
           <TestButton color="orange" onClick={onTest.eewWarning}>警報テスト</TestButton>
         </Row>
-        <Row label="緊急地震速報（予報）" description="震度2程度 – eewForecast 音 / 10秒間表示">
+        <Row label="緊急地震速報（予報）" description="震度2程度 – eewForecast 音 / 30秒間表示">
           <TestButton color="yellow" onClick={onTest.eewForecast}>予報テスト</TestButton>
         </Row>
         <Row label="津波警報（大津波警報）" description="岩手・宮城・福島等 – tsunamiMajor 音 / 15秒間表示">

@@ -12,6 +12,7 @@ import { useSettings } from './hooks/useSettings'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
 import { useKyoshinDetection, MIN_DETECTION_INDEX } from './hooks/useKyoshinDetection'
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
+import { useDmdssWaves, VS_KM_PER_SEC } from './hooks/useDmdssWaves'
 import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude } from './utils/formatters'
 import { eewMaxScale } from './utils/eew'
@@ -110,7 +111,7 @@ export function App() {
   const [nowTick, setNowTick] = useState<Date | null>(null)
 
   // EEW の eventId ごとにレベルを追跡（複数EEW対応）
-  // key = issue.eventId ?? id、value = 0=低震度予報 / 1=警報or震度3以上 / 2=特別警報
+  // key = issue.eventId ?? id、value = 0=低震度予報 / 1=警報（severity=Warning または予想震度5弱以上） / 2=特別警報
   const activeEEWLevelsRef = useRef<Map<string, 0 | 1 | 2>>(new Map())
   // 各情報タイトルのリセットタイマー（自動復帰秒数が15秒の場合は15秒、それ以外は30秒）
   const earthquakeTitleTimerRef = useRef<number>(0)
@@ -244,7 +245,7 @@ export function App() {
     simulateEarthquake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch,
-  } = useEarthquakes(handleLiveEvent, settings.dmdataApiKey)
+  } = useEarthquakes(handleLiveEvent, settings.dmdataApiKey, settings.dmdataTestDelivery)
 
   // UI 倍率: ルート要素の font-size を変えて rem ベースの UI 全体を拡大縮小する。
   // 倍率変更で地図コンテナ幅が変わるため、Leaflet の再計算用に resize を発火する。
@@ -451,6 +452,12 @@ export function App() {
   })
   const kyoshinDetection = useKyoshinDetection(kyoshin.sites, kyoshin.indices)
 
+  // DMDSS版: EEWデータから P波・S波半径を自前計算（100ms更新でスムーズ拡張）
+  // activeEEWs (Map) の参照が安定している限り配列を再生成しない
+  const activeEEWList = useMemo(() => Array.from(activeEEWs.values()), [activeEEWs])
+  const dmdssWaves = useDmdssWaves(activeEEWList, isDmdss)
+  const psWave = isDmdss ? dmdssWaves : kyoshin.psWave
+
   // EEW受信中または揺れ検知中は全観測点ベースの最大インデックスを使う（表示と音を一致させる）
   const hasActiveEEW = activeEEWs.size > 0
 
@@ -460,7 +467,7 @@ export function App() {
       : null),
     [settings.homeLat, settings.homeLng],
   )
-  const swaveArrival = useSWaveCountdown(kyoshin.psWave, home, hasActiveEEW)
+  const swaveArrival = useSWaveCountdown(psWave, home, hasActiveEEW, isDmdss ? VS_KM_PER_SEC : undefined)
 
   const effectiveKyoshinMaxIndex = useMemo(() => {
     if (!(hasActiveEEW || kyoshinDetection.detected)) return kyoshinDetection.maxIndex
@@ -542,7 +549,7 @@ export function App() {
             showBathymetry={settings.showBathymetry}
             kyoshinSites={kyoshin.sites}
             kyoshinIndices={kyoshin.indices}
-            kyoshinPsWave={kyoshin.psWave}
+            kyoshinPsWave={psWave}
             eews={Array.from(activeEEWs.values())}
             detectedPoints={kyoshinDetection.points}
           />
