@@ -450,32 +450,31 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
   const body = obj(data.body)
   const tsunami = obj(body.tsunami)
 
-  // VTSE52（沖合観測）は forecasts を持たず observations を持つ
+  // VTSE52（沖合観測）は forecasts を持たず observations を持つ。
+  // v1.1.0 スキーマ: observations[].stations[] 配下に各潮位観測点データがある。
   if (headType === 'VTSE52') {
     const rawObs = arr(tsunami.observations)
     if (rawObs.length === 0) return null
     const observations: TsunamiObservation[] = []
-    for (const rawO of rawObs) {
-      const o = obj(rawO)
-      const name = str(o.name) || str(obj(o.station).name)
-      if (!name) continue
-      const waveList = arr(o.wave)
-      if (waveList.length === 0) {
-        observations.push({ name })
-        continue
+    for (const rawDistrict of rawObs) {
+      const district = obj(rawDistrict)
+      for (const rawSt of arr(district.stations)) {
+        const st = obj(rawSt)
+        const name = str(st.name)
+        if (!name) continue
+        const fh = obj(st.firstHeight)
+        const mh = obj(st.maxHeight)
+        const hObj = obj(mh.height)
+        const heightVal = parseFloat(str(hObj.value))
+        observations.push({
+          name,
+          height: !isNaN(heightVal)
+            ? { value: heightVal, description: str(hObj.condition) || `${heightVal}m` }
+            : undefined,
+          arrivalTime: str(fh.arrivalTime) || undefined,
+          initial: str(fh.initial) || undefined,
+        })
       }
-      // 最初の波（第1波）を使用
-      const w = obj(waveList[0])
-      const hObj = obj(w.height)
-      const heightVal = parseFloat(str(hObj.value))
-      observations.push({
-        name,
-        height: !isNaN(heightVal)
-          ? { value: heightVal, description: str(hObj.description) || str(hObj.condition) || `${heightVal}m` }
-          : undefined,
-        arrivalTime: str(w.time) || str(w.arrivalTime) || undefined,
-        initial: str(w.initial) || undefined,
-      })
     }
     if (observations.length === 0) return null
     return { code: 552, id, time, cancelled: false, issue: { source, time, type: 'Focus' }, areas: [], observations }
@@ -550,7 +549,7 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
 }
 
 // WebSocket 受信の JSON 電文（VXSE62: 長周期地震動観測情報）を JMALpgm にパース
-// body.lpgmObservation.maxClass が観測最大階級（文字列 "1"〜"4"）
+// v1.1.0 スキーマ: 最大長周期地震動階級は body.intensity.maxLgInt（文字列 "0"〜"4"）
 export function parseLpgm(data: Record<string, unknown>): JMALpgm | null {
   const cancelled = str(data.infoType) === '取消'
   const eventId = str(data.eventId)
@@ -568,8 +567,8 @@ export function parseLpgm(data: Record<string, unknown>): JMALpgm | null {
 
   if (!originTime) return null
 
-  const lpgmObservation = obj(body.lpgmObservation)
-  const maxClassStr = str(lpgmObservation.maxClass)
+  const intensity = obj(body.intensity)
+  const maxClassStr = str(intensity.maxLgInt)
   const maxClass = parseInt(maxClassStr, 10)
 
   if (!(maxClass >= 1 && maxClass <= 4)) return null
