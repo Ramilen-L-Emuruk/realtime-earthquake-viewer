@@ -60,6 +60,23 @@ export function buildAreaPrefIndex(data: StationCoordsData): Map<string, string>
 }
 
 /**
+ * 観測点名 -> 都道府県名 の逆引きインデックスを構築する。
+ * stations のキー "都道府県|観測点名" を分解して name -> pref の Map を作る（初出優先）。
+ * DMDATA JSON 電文の stations[] は都道府県情報を含まないため、この逆引きで pref を補完する。
+ */
+export function buildStationPrefIndex(data: StationCoordsData): Map<string, string> {
+  const index = new Map<string, string>()
+  for (const key of Object.keys(data.stations)) {
+    const sep = key.indexOf('|')
+    if (sep < 0) continue
+    const pref = key.slice(0, sep)
+    const name = key.slice(sep + 1)
+    if (name && !index.has(name)) index.set(name, pref)
+  }
+  return index
+}
+
+/**
  * 地点の都道府県名・住所(観測点名 or 細分区域名)から座標を引く。
  * 見つからない場合は null を返す。
  */
