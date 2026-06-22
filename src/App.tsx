@@ -83,9 +83,10 @@ function applyPriorityTitle(
   eews: ReadonlyMap<string, EEWAlert>,
   tsunami: boolean,
   priority: boolean,
+  kyoshinDetected: boolean,
   setState: (v: string | null) => void,
 ) {
-  if (eews.size === 0 && !tsunami) { setState(null) }
+  if (eews.size === 0 && !tsunami) { setState(kyoshinDetected ? '📈 揺れ検知' : null) }
   else if (eews.size > 0 && tsunami) { setState(priority ? '🌊 津波情報 発表中' : computeEEWTitle(eews)) }
   else if (eews.size > 0) { setState(computeEEWTitle(eews)) }
   else { setState('🌊 津波情報 発表中') }
@@ -134,7 +135,7 @@ export function App() {
       window.clearTimeout(earthquakeTitleTimerRef.current)
       const resetMs = settings.idleRevertSec === 15 ? 15000 : 30000
       earthquakeTitleTimerRef.current = window.setTimeout(() => {
-        applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, setAlertTitle)
+        applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
       }, resetMs)
     } else if (event.code === 552 && !event.cancelled) {
       setActiveTab('tsunami')
@@ -142,7 +143,7 @@ export function App() {
       window.clearTimeout(tsunamiTitleTimerRef.current)
       const tsunamiResetMs = settings.idleRevertSec === 15 ? 15000 : 30000
       tsunamiTitleTimerRef.current = window.setTimeout(() => {
-        applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, setAlertTitle)
+        applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
       }, tsunamiResetMs)
     } else if (event.code === 556) {
       if (event.test) return
@@ -157,7 +158,7 @@ export function App() {
         }
         if (activeEEWLevelsRef.current.size === 0) {
           window.clearTimeout(eewTitleTimerRef.current)
-          applyPriorityTitle(new Map<string, EEWAlert>(), tsunamiActiveRef.current, tsunamiPriorityRef.current, setAlertTitle)
+          applyPriorityTitle(new Map<string, EEWAlert>(), tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
           setActiveTab(defaultTabRef.current)
         }
         return
@@ -201,7 +202,7 @@ export function App() {
       window.clearTimeout(eewTitleTimerRef.current)
       const eewResetMs = settings.idleRevertSec === 15 ? 15000 : 30000
       eewTitleTimerRef.current = window.setTimeout(() => {
-        applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, setAlertTitle)
+        applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
       }, eewResetMs)
       return
     }
@@ -365,7 +366,7 @@ export function App() {
     if (initialTitleAppliedRef.current) return
     if (activeEEWs.size === 0 && !tsunamiActive) return
     initialTitleAppliedRef.current = true
-    applyPriorityTitle(activeEEWs, tsunamiActive, settings.tsunamiPriorityDefault, setAlertTitle)
+    applyPriorityTitle(activeEEWs, tsunamiActive, settings.tsunamiPriorityDefault, false, setAlertTitle)
   }, [activeEEWs, tsunamiActive, settings.tsunamiPriorityDefault])
 
   // 津波解除検出: true→false の遷移でタイマーをキャンセルし優先度ロジックを即時適用
@@ -373,7 +374,7 @@ export function App() {
   useEffect(() => {
     if (prevTsunamiActiveRef.current && !tsunamiActive) {
       window.clearTimeout(tsunamiTitleTimerRef.current)
-      applyPriorityTitle(activeEEWsRef.current, false, tsunamiPriorityRef.current, setAlertTitle)
+      applyPriorityTitle(activeEEWsRef.current, false, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
     }
     prevTsunamiActiveRef.current = tsunamiActive
   }, [tsunamiActive])
@@ -398,9 +399,9 @@ export function App() {
   useEffect(() => {
     if (settings.idleRevertSec <= 0) return
     const ms = settings.idleRevertSec * 1000
-    // EEW 発報中はリアルタイムタブを維持する。それ以外はデフォルトタブへ戻す。
+    // EEW 発報中または揺れ検知中はリアルタイムタブを維持する。それ以外はデフォルトタブへ戻す。
     const revert = () => {
-      if (activeEEWsRef.current.size > 0) {
+      if (activeEEWsRef.current.size > 0 || kyoshinDetectedRef.current) {
         setActiveTab('realtime')
       } else {
         setActiveTab(defaultTabRef.current)
@@ -451,6 +452,9 @@ export function App() {
     timeOffset: kyoshinTimeOffset,
   })
   const kyoshinDetection = useKyoshinDetection(kyoshin.sites, kyoshin.indices)
+  // タイマーコールバック内から最新の detected 値を参照するための ref（activeEEWsRef と同パターン）
+  const kyoshinDetectedRef = useRef(false)
+  kyoshinDetectedRef.current = kyoshinDetection.detected
 
   // DMDSS版: EEWデータから P波・S波半径を自前計算（100ms更新でスムーズ拡張）
   // activeEEWs (Map) の参照が安定している限り配列を再生成しない
@@ -479,7 +483,7 @@ export function App() {
   }, [hasActiveEEW, kyoshinDetection.detected, kyoshinDetection.maxIndex, kyoshin.indices])
 
   // 揺れ検知時にリアルタイムタブを自動表示＋ウィンドウタイトル更新＋通知音
-  // （false → true への遷移時のみ）
+  // 検知終了（true → false）時は EEW・津波の状態に合わせてタイトルを再評価する
   const prevDetectedRef = useRef(false)
   useEffect(() => {
     if (kyoshinDetection.detected && !prevDetectedRef.current) {
@@ -492,6 +496,8 @@ export function App() {
         const label = kyoshinIndexToLabel(effectiveKyoshinMaxIndex) ?? '?'
         showBrowserNotification('揺れを検知中', `推定最大震度 ${label}（強震モニタ）`, 'kyoshin-detection')
       }
+    } else if (!kyoshinDetection.detected && prevDetectedRef.current) {
+      applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, false, setAlertTitle)
     }
     prevDetectedRef.current = kyoshinDetection.detected
   }, [kyoshinDetection.detected, effectiveKyoshinMaxIndex, settings.soundEnabled, settings.notifyDetection])
