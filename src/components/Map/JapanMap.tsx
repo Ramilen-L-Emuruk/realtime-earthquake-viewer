@@ -6,7 +6,7 @@ import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../util
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
 import { eewAreas } from '../../utils/eew'
 import { useStationCoords } from '../../hooks/useStationCoords'
-import { lookupPointCoords, type LatLng } from '../../utils/stationCoords'
+import { lookupPointCoords, buildAreaPrefIndex, buildStationPrefIndex, type LatLng } from '../../utils/stationCoords'
 import { useTsunamiZones } from '../../hooks/useTsunamiZones'
 import { useSubRegions } from '../../hooks/useSubRegions'
 import type { SubRegion } from '../../utils/subregions'
@@ -324,23 +324,36 @@ export function JapanMap({
       ).sort((a, b) => b[1] - a[1])
     : []
 
+  // DMDATA JSON 電文は stations[]/regions[] に都道府県情報を含まないため、
+  // station-coords.json の逆引きインデックスで pref を補完する。
+  const areaPrefIndex = useMemo(
+    () => (stationCoords ? buildAreaPrefIndex(stationCoords) : new Map<string, string>()),
+    [stationCoords],
+  )
+  const stationPrefIndex = useMemo(
+    () => (stationCoords ? buildStationPrefIndex(stationCoords) : new Map<string, string>()),
+    [stationCoords],
+  )
+
   // 各地点を座標に解決し、震度の弱い順に並べる（強い震度を最前面に描画するため）
   const intensityMarkers = useMemo<IntensityMarker[]>(() => {
     if (mode !== 'quake' || !quake || !stationCoords) return []
     const markers: IntensityMarker[] = []
     quake.points.forEach((p, i) => {
-      const position = lookupPointCoords(stationCoords, p.pref, p.addr, p.isArea)
+      const pref = p.pref ||
+        ((p.isArea ? areaPrefIndex.get(p.addr) : stationPrefIndex.get(p.addr)) ?? '')
+      const position = lookupPointCoords(stationCoords, pref, p.addr, p.isArea)
       if (!position) return
       markers.push({
-        key: `${p.pref}|${p.addr}|${i}`,
+        key: `${pref}|${p.addr}|${i}`,
         position,
         scale: p.scale,
-        pref: p.pref,
+        pref,
         addr: p.addr,
       })
     })
     return markers.sort((a, b) => a.scale - b.scale)
-  }, [mode, quake, stationCoords])
+  }, [mode, quake, stationCoords, areaPrefIndex, stationPrefIndex])
 
   // 中間より引きのときは観測点ごとではなく一次細分区域ごとの最大震度に集約する。
   const aggregateByRegion = mode === 'quake' && !!quake && zoom < PREF_AGGREGATE_MAX_ZOOM
