@@ -227,11 +227,13 @@ realtime-earthquake-viewer/
 │   │   │   └── KyoshinMaxEffect.tsx   # 強震モニタの最大震度エフェクト描画
 │   │   ├── RealtimeTab/            # 凡例・注記パネル（地図は JapanMap が担当）
 │   │   ├── SettingsTab/            # 設定パネル
+│   │   ├── TelegramTab/            # 受信電文ログビューアー（DM-D.S.S 版）
 │   │   └── TsunamiTab/             # 津波情報パネル
 │   ├── hooks/
 │   │   ├── useEarthquakes.ts       # P2PQuake / DMDATA.JP WS + REST 状態管理（VITE_VARIANT で切替）
 │   │   ├── useKyoshinRealtime.ts   # Yahoo リアルタイム震度のポーリング
 │   │   ├── useKyoshinDetection.ts  # 強震モニタの揺れ検知（6層フィルタ）
+│   │   ├── useDmdssWaves.ts        # DM-D.S.S 版 EEW の P波・S波地表到達半径アニメーション
 │   │   ├── useSWaveCountdown.ts    # S波到達カウントダウン
 │   │   ├── useSettings.ts          # アプリ設定（localStorage 永続化）
 │   │   ├── useStationCoords.ts     # 観測点座標テーブルの読み込み
@@ -257,7 +259,8 @@ realtime-earthquake-viewer/
 │       ├── subregions.ts           # 一次細分区域境界データの読み込み
 │       ├── regions.ts              # 地方区分ラベル一覧
 │       ├── geo.ts                  # 点の多角形内包判定（区域別集約用）
-│       └── formatters.ts           # 日時・数値フォーマッター
+│       ├── formatters.ts           # 日時・数値フォーマッター
+│       └── testData.ts             # 設定タブのテストボタン用サンプルデータ生成
 ├── index.html
 ├── package.json
 ├── vite.config.ts                  # Vite + PWA 設定（base 設定含む）
