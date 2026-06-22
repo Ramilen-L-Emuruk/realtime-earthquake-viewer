@@ -95,6 +95,8 @@ interface TsunamiLine {
 
 const JAPAN_CENTER: [number, number] = [36.5, 137.5]
 const JAPAN_ZOOM = 5
+const KYOSHIN_CENTER: [number, number] = [38.25, 136.3]
+const KYOSHIN_ZOOM = 6
 
 // 背景の海底地形タイル（ESRI World Ocean Base）。CSS でダークテーマへ暗く調整する。
 const BATHYMETRY_URL =
@@ -242,7 +244,7 @@ function FitJapanOnEnter({
     // 揺れ検知中はFitToDetectionに任せ、日本全体へのリセットをスキップする
     if (hasDetection) return
     if (!hasEew) {
-      map.setView(JAPAN_CENTER, JAPAN_ZOOM)
+      map.setView(KYOSHIN_CENTER, KYOSHIN_ZOOM)
       return
     }
     if (psWave.length > 0) {
