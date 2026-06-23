@@ -94,7 +94,8 @@ interface TsunamiLine {
 }
 
 const JAPAN_CENTER: [number, number] = [38.25, 137.7]
-const JAPAN_ZOOM = 6
+// 本土四端（宗谷岬・納沙布岬・神崎鼻・佐多岬）を囲むバウンディングボックス
+const JAPAN_BOUNDS: L.LatLngBoundsExpression = [[30.99, 129.43], [45.52, 145.82]]
 
 // 背景の海底地形タイル（ESRI World Ocean Base）。CSS でダークテーマへ暗く調整する。
 const BATHYMETRY_URL =
@@ -199,7 +200,7 @@ function FitToDetection({ points, hasEew }: { points: DetectedPoint[]; hasEew: b
       if (fittedRef.current) {
         fittedRef.current = false
         if (!hasEew) {
-          map.flyTo(JAPAN_CENTER, JAPAN_ZOOM, { duration: 1.0 })
+          map.flyToBounds(JAPAN_BOUNDS, { padding: [20, 20], duration: 1.0 })
         }
       }
       return
@@ -239,7 +240,7 @@ function FitJapanOnEnter({
     // 揺れ検知中はFitToDetectionに任せ、日本全体へのリセットをスキップする
     if (hasDetection) return
     if (!hasEew) {
-      map.setView(JAPAN_CENTER, JAPAN_ZOOM)
+      map.fitBounds(JAPAN_BOUNDS, { padding: [20, 20] })
       return
     }
     if (psWave.length > 0) {
@@ -299,7 +300,7 @@ export function JapanMap({
   const stationCoords = useStationCoords()
   const tsunamiZones = useTsunamiZones()
   const subregions = useSubRegions()
-  const [zoom, setZoom] = useState(JAPAN_ZOOM)
+  const [zoom, setZoom] = useState(6)
   // ズームに応じて強震モニタ観測点のサイズを補正する係数。
   // ズーム8を基準（×1.0）とし、ズームアウト時は小さく・ズームイン時は大きくする。
   const kyoshinZoomScale = Math.max(0.2, Math.min(3.5, Math.pow(2, (zoom - 8) / 2)))
@@ -473,8 +474,8 @@ export function JapanMap({
 
   return (
     <MapContainer
-      center={JAPAN_CENTER}
-      zoom={JAPAN_ZOOM}
+      bounds={JAPAN_BOUNDS}
+      boundsOptions={{ padding: [20, 20] }}
       className="h-full w-full"
       zoomControl={false}
       preferCanvas
