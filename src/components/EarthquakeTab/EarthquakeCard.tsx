@@ -90,9 +90,8 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm }: 
         type="button"
         onClick={onSelect}
         aria-pressed={true}
-        className="w-full text-left rounded-lg border transition-colors cursor-pointer overflow-hidden hover:opacity-90"
+        className="w-full text-left bg-card rounded-lg border transition-colors cursor-pointer overflow-hidden hover:opacity-90"
         style={{
-          backgroundColor: typeStyle.cardBg,
           borderColor: typeStyle.cardBorder,
           boxShadow: `0 0 0 1px ${typeStyle.cardBorder}40`,
         }}
