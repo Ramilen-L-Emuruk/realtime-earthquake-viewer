@@ -101,11 +101,8 @@ const BATHYMETRY_URL =
   'https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}'
 const BATHYMETRY_ATTRIBUTION =
   'Esri, GEBCO, NOAA, National Geographic, and other contributors'
-// 自動ズームの上限（地方単位が収まる程度）
+// 自動ズームの上限。このズーム以下では一次細分区域ごとの最大震度に集約表示する。
 const MAX_ZOOM = 8
-// このズーム未満（中間より引き）では、地震モードで観測点ごとではなく
-// 一次細分区域ごとの最大震度（区域中心マーカー＋区域塗りつぶし）に集約表示する。
-const PREF_AGGREGATE_MAX_ZOOM = 8
 
 // 震度マーカーの重なり順。Leaflet は「画面 y 座標 + zIndexOffset」で z を決めるため、
 // 緯度差(数百〜数千px)を上回る係数を掛け、最大震度が高いほど確実に前面へ出す。
@@ -353,8 +350,8 @@ export function JapanMap({
     return markers.sort((a, b) => a.scale - b.scale)
   }, [mode, quake, stationCoords, areaPrefIndex, stationPrefIndex])
 
-  // 中間より引きのときは観測点ごとではなく一次細分区域ごとの最大震度に集約する。
-  const aggregateByRegion = mode === 'quake' && !!quake && zoom < PREF_AGGREGATE_MAX_ZOOM
+  // MAX_ZOOM 以下では観測点ごとではなく一次細分区域ごとの最大震度に集約する。
+  const aggregateByRegion = mode === 'quake' && !!quake && zoom <= MAX_ZOOM
 
   // 一次細分区域に bbox を付与（点内包判定の前段フィルタ用）
   const subregionIndex = useMemo(() => {
