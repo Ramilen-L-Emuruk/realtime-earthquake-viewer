@@ -284,24 +284,19 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm }: 
 
         {/* 地震詳細 */}
         <div className="flex-1 min-w-0">
-          {/* 地域名 + 最新バッジ */}
+          {/* 地域名 + 発表種別 */}
           <div className="flex items-center gap-2 flex-wrap mb-1">
             <span className="text-white font-bold text-lg leading-tight truncate">
               {hasLocation ? hypocenter.name : '震源調査中'}
             </span>
-            {isLatest && (
-              <span className="text-xs bg-blue-900 text-blue-300 px-1.5 py-0.5 rounded font-medium flex-shrink-0">
-                最新
-              </span>
-            )}
-          </div>
-
-          {/* 日時 + 発表種別 */}
-          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-            <span className="text-base text-secondary">{formatQuakeTime(earthquake.time)}</span>
             <span className={`text-xs px-1.5 py-0.5 rounded flex-shrink-0 ${issueTypeBadgeClass(issue.type)}`}>
               {formatIssueType(issue.type)}
             </span>
+          </div>
+
+          {/* 日時 */}
+          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+            <span className="text-base text-secondary">{formatQuakeTime(earthquake.time)}</span>
             {issue.correct !== 'None' && (
               <span className="text-xs bg-yellow-900 text-yellow-300 px-1.5 py-0.5 rounded font-medium flex-shrink-0">
                 {formatCorrectType(issue.correct)}
