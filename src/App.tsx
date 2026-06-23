@@ -326,14 +326,20 @@ export function App() {
     return () => clearInterval(id)
   }, [connectionStatus])
 
-  // 定期自動リロード（長時間起動によるメモリ蓄積をリセット）
+  // 定期自動リロード（毎日午前5時にカウントダウン開始）
   useEffect(() => {
     if (settings.periodicReloadHours <= 0) return
-    const ms = settings.periodicReloadHours * 60 * 60 * 1000
-    const id = setInterval(() => {
+    const msUntilNext5AM = () => {
+      const now = new Date()
+      const next = new Date(now)
+      next.setHours(5, 0, 0, 0)
+      if (next <= now) next.setDate(next.getDate() + 1)
+      return next.getTime() - now.getTime()
+    }
+    const id = setTimeout(() => {
       setUpdateCountdown(prev => prev ?? 10)
-    }, ms)
-    return () => clearInterval(id)
+    }, msUntilNext5AM())
+    return () => clearTimeout(id)
   }, [settings.periodicReloadHours])
 
   // カウントダウン進行: 警報なし（alertTitle === null）のときのみ毎秒デクリメントし、0でリロード

@@ -14,7 +14,7 @@ export interface AppSettings {
   defaultTab: DefaultTabSetting    // 起動時・アイドル復帰時に表示するタブ
   tsunamiPriorityDefault: boolean  // 津波発表中はデフォルトタブを津波情報にする
   idleRevertSec: number            // 操作なしでデフォルトタブへ戻るまでの秒数 (0 = 無効)
-  periodicReloadHours: number      // 定期自動リロード間隔（時間、0 = 無効）
+  periodicReloadHours: number      // 定期自動リロード（0 = 無効、1以上 = 毎日午前5時に実行）
   notifyEEW: boolean               // 緊急地震速報の発報・昇格時にブラウザ通知を送る
   notifyTsunami: boolean           // 津波注意報以上が発表されたときにブラウザ通知を送る
   notifyDetection: boolean         // 強震モニタの揺れ検知時にブラウザ通知を送る
