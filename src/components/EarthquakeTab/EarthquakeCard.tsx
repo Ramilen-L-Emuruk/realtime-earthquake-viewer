@@ -22,6 +22,29 @@ function issueTypeBadgeClass(type: IssueType): string {
   }
 }
 
+interface IssueTypeStyle {
+  headerBg: string
+  headerColor: string
+  headerBorder: string
+  cardBorder: string
+  cardBg: string
+}
+
+function getIssueTypeStyle(type: IssueType): IssueTypeStyle {
+  switch (type) {
+    case 'ScalePrompt':
+      return { headerBg: '#451a03', headerColor: '#fbbf24', headerBorder: '#b45309', cardBorder: '#b45309', cardBg: '#1c1710' }
+    case 'ScaleAndDestination':
+      return { headerBg: '#0c2044', headerColor: '#93c5fd', headerBorder: '#1d4ed8', cardBorder: '#1d4ed8', cardBg: '#111827' }
+    case 'DetailScale':
+      return { headerBg: '#042f2e', headerColor: '#67e8f9', headerBorder: '#0e7490', cardBorder: '#0e7490', cardBg: '#0a1f1f' }
+    case 'Foreign':
+      return { headerBg: '#2e1065', headerColor: '#d8b4fe', headerBorder: '#7e22ce', cardBorder: '#7e22ce', cardBg: '#1a1024' }
+    default:
+      return { headerBg: '#0c2044', headerColor: '#93c5fd', headerBorder: '#1d4ed8', cardBorder: '#1d4ed8', cardBg: '#111827' }
+  }
+}
+
 interface Props {
   quake: JMAQuake
   isLatest?: boolean
@@ -56,39 +79,51 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm }: 
       .sort((a, b) => b.scale - a.scale)
   }, [isSelected, quake.points])
 
-  const borderClass = isSelected
-    ? 'border-blue-500 ring-1 ring-blue-500/60'
-    : isLatest
-      ? 'border-blue-500/50'
-      : 'border-border'
+  if (isSelected) {
+    const typeStyle = getIssueTypeStyle(issue.type)
+    const magColor = getMagnitudeColor(hypocenter.magnitude)
+    const depthColor = getDepthColor(hypocenter.depth)
 
-  return (
-    <button
-      ref={cardRef}
-      type="button"
-      onClick={onSelect}
-      aria-pressed={isSelected}
-      className={`
-        w-full text-left bg-card rounded-lg p-3 border transition-colors cursor-pointer
-        hover:border-blue-400/60
-        ${borderClass}
-      `}
-    >
-      {isSelected ? (
-        /* 選択時：縦型詳細レイアウト */
-        <div className="flex flex-col gap-2">
-          {/* 最大震度バッジ（横幅いっぱい） */}
+    return (
+      <button
+        ref={cardRef}
+        type="button"
+        onClick={onSelect}
+        aria-pressed={true}
+        className="w-full text-left bg-card rounded-lg border transition-colors cursor-pointer overflow-hidden hover:opacity-90"
+        style={{
+          borderColor: typeStyle.cardBorder,
+          boxShadow: `0 0 0 1px ${typeStyle.cardBorder}40`,
+        }}
+      >
+        {/* 種別ヘッダー */}
+        <div
+          className="w-full py-1.5 px-4 text-center text-xs font-bold tracking-widest"
+          style={{
+            backgroundColor: typeStyle.headerBg,
+            color: typeStyle.headerColor,
+            borderBottom: `1px solid ${typeStyle.headerBorder}`,
+          }}
+        >
+          {formatIssueType(issue.type)}
+        </div>
+
+        <div className="flex flex-col gap-2 p-3">
+          {/* 最大震度（横並び） */}
           <div
-            className="w-full rounded-lg py-3 px-4 flex items-center justify-center gap-6"
+            className="w-full rounded-lg py-3 px-5 flex items-center justify-center gap-4"
             style={{
               backgroundColor: getIntensityBgColor(maxScale),
               border: `2px solid ${getIntensityColor(maxScale)}`,
             }}
           >
-            <span className="text-sm font-medium" style={{ color: getIntensityColor(maxScale) }}>
+            <span className="text-base font-medium" style={{ color: getIntensityColor(maxScale) }}>
               最大震度
             </span>
-            <span className="text-5xl font-black" style={{ color: getIntensityColor(maxScale) }}>
+            <span
+              className="font-black leading-none"
+              style={{ fontSize: '88px', color: getIntensityColor(maxScale) }}
+            >
               {maxScale === -1 ? '?' : getIntensityLabel(maxScale)}
             </span>
           </div>
@@ -111,17 +146,11 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm }: 
             </div>
           )}
 
-          {/* 日時 + 発表種別 + 最新バッジ + 訂正情報 */}
+          {/* 日時 + 訂正情報 */}
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-base text-secondary">{formatQuakeTime(earthquake.time)}</span>
-            <span className={`text-xs px-1.5 py-0.5 rounded flex-shrink-0 ${issueTypeBadgeClass(issue.type)}`}>
-              {formatIssueType(issue.type)}
+            <span className="text-secondary" style={{ fontSize: '20px' }}>
+              {formatQuakeTime(earthquake.time)}
             </span>
-            {isLatest && (
-              <span className="text-xs bg-blue-900 text-blue-300 px-1.5 py-0.5 rounded font-medium flex-shrink-0">
-                最新
-              </span>
-            )}
             {issue.correct !== 'None' && (
               <span className="text-xs bg-yellow-900 text-yellow-300 px-1.5 py-0.5 rounded font-medium flex-shrink-0">
                 {formatCorrectType(issue.correct)}
@@ -129,38 +158,46 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm }: 
             )}
           </div>
 
-          {/* 地域名 */}
-          <div className="text-2xl font-bold text-white leading-tight">
+          {/* 震源地 */}
+          <div className="font-bold text-white leading-tight" style={{ fontSize: '30px' }}>
             {hasLocation ? hypocenter.name : '震源調査中'}
           </div>
 
-          {/* マグニチュード・深さ（右揃えインジケーター付き） */}
+          {/* マグニチュード・深さ（2カラムグリッド） */}
           {hasLocation && (
-            <div className="flex flex-col gap-1">
-              <div className="flex items-center justify-between">
-                <span className="text-base text-secondary">マグニチュード</span>
-                <div className="flex items-center gap-2">
-                  <span className="text-xl font-bold text-white">{hypocenter.magnitude.toFixed(1)}</span>
-                  <span
-                    className="inline-block w-2 h-5 rounded-sm flex-shrink-0"
-                    style={{ backgroundColor: getMagnitudeColor(hypocenter.magnitude) }}
-                  />
-                </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div
+                className="flex flex-col gap-1 rounded-lg p-2.5"
+                style={{
+                  backgroundColor: `${magColor}26`,
+                  border: `2px solid ${magColor}`,
+                }}
+              >
+                <span className="text-xs font-medium tracking-wide" style={{ color: magColor }}>
+                  マグニチュード
+                </span>
+                <span className="font-black leading-none" style={{ fontSize: '28px', color: magColor }}>
+                  {hypocenter.magnitude.toFixed(1)}
+                </span>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-base text-secondary">深さ</span>
-                <div className="flex items-center gap-2">
-                  <span className="text-xl font-bold text-white">{formatDepth(hypocenter.depth)}</span>
-                  <span
-                    className="inline-block w-2 h-5 rounded-sm flex-shrink-0"
-                    style={{ backgroundColor: getDepthColor(hypocenter.depth) }}
-                  />
-                </div>
+              <div
+                className="flex flex-col gap-1 rounded-lg p-2.5"
+                style={{
+                  backgroundColor: `${depthColor}26`,
+                  border: `2px solid ${depthColor}`,
+                }}
+              >
+                <span className="text-xs font-medium tracking-wide" style={{ color: depthColor }}>
+                  深さ
+                </span>
+                <span className="font-black leading-none" style={{ fontSize: '28px', color: depthColor }}>
+                  {formatDepth(hypocenter.depth)}
+                </span>
               </div>
             </div>
           )}
 
-          {/* 国内津波情報（横幅いっぱいバナー） */}
+          {/* 国内津波情報 */}
           <div
             className="w-full rounded-lg py-2 px-3 text-center font-bold text-base"
             style={{
@@ -172,7 +209,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm }: 
             {tsunamiInfo.text}
           </div>
 
-          {/* 国外津波情報（空でない場合のみ） */}
+          {/* 国外津波情報 */}
           {earthquake.foreignTsunami && earthquake.foreignTsunami !== 'Unknown' && (
             <div className="text-sm text-secondary">国外: {earthquake.foreignTsunami}</div>
           )}
@@ -184,98 +221,113 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm }: 
             </div>
           )}
 
-          {/* 都道府県別震度（震度の高い順） */}
+          {/* 都道府県別震度 */}
           {prefGroups.length > 0 && (
-            <div className="flex flex-col gap-0.5 pt-1 border-t border-blue-500/30">
-              {prefGroups.map(({ pref, scale }) => (
-                <div key={pref} className="flex items-center gap-2 text-base">
+            <div className="flex flex-col gap-0.5 pt-1 border-t border-white/10">
+              {prefGroups.map(({ pref, scale }, idx) => (
+                <div
+                  key={pref}
+                  className="flex items-center justify-between px-2 py-1.5 rounded"
+                  style={{ backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent' }}
+                >
                   <span
-                    className="font-bold w-16 text-right flex-shrink-0 whitespace-nowrap"
-                    style={{ color: getIntensityColor(scale) }}
+                    className="font-bold flex-shrink-0 whitespace-nowrap"
+                    style={{ fontSize: '18px', color: getIntensityColor(scale) }}
                   >
                     震度{getIntensityLabel(scale)}
                   </span>
-                  <span className="text-white">{pref}</span>
+                  <span className="text-white" style={{ fontSize: '18px' }}>{pref}</span>
                 </div>
               ))}
             </div>
           )}
         </div>
-      ) : (
-        /* 非選択時：コンパクト横並びレイアウト */
-        <div className="flex items-stretch gap-3">
-          {/* Intensity badge */}
-          <div
-            className="flex-shrink-0 w-20 rounded-lg flex flex-col items-center justify-center px-1"
-            style={{
-              backgroundColor: getIntensityBgColor(maxScale),
-              border: `2px solid ${getIntensityColor(maxScale)}`,
-            }}
+      </button>
+    )
+  }
+
+  /* 非選択時：コンパクト横並びレイアウト */
+  const borderClass = isLatest ? 'border-blue-500/50' : 'border-border'
+
+  return (
+    <button
+      ref={cardRef}
+      type="button"
+      onClick={onSelect}
+      aria-pressed={false}
+      className={`
+        w-full text-left bg-card rounded-lg p-3 border transition-colors cursor-pointer
+        hover:border-blue-400/60
+        ${borderClass}
+      `}
+    >
+      <div className="flex items-stretch gap-3">
+        {/* 震度バッジ */}
+        <div
+          className="flex-shrink-0 w-20 rounded-lg flex flex-col items-center justify-center px-1"
+          style={{
+            backgroundColor: getIntensityBgColor(maxScale),
+            border: `2px solid ${getIntensityColor(maxScale)}`,
+          }}
+        >
+          <span className="text-xs font-medium" style={{ color: getIntensityColor(maxScale) }}>
+            最大震度
+          </span>
+          <span
+            className="text-4xl font-black leading-tight"
+            style={{ color: getIntensityColor(maxScale) }}
           >
-            <span className="text-xs font-medium" style={{ color: getIntensityColor(maxScale) }}>
-              最大震度
+            {maxScale === -1 ? '?' : getIntensityLabel(maxScale)}
+          </span>
+        </div>
+
+        {/* 地震詳細 */}
+        <div className="flex-1 min-w-0">
+          {/* 地域名 + 発表種別 */}
+          <div className="flex items-center gap-2 flex-wrap mb-1">
+            <span className="text-white font-bold text-lg leading-tight truncate">
+              {hasLocation ? hypocenter.name : '震源調査中'}
             </span>
-            <span
-              className="text-4xl font-black leading-tight"
-              style={{ color: getIntensityColor(maxScale) }}
-            >
-              {maxScale === -1 ? '?' : getIntensityLabel(maxScale)}
+            <span className={`text-xs px-1.5 py-0.5 rounded flex-shrink-0 ${issueTypeBadgeClass(issue.type)}`}>
+              {formatIssueType(issue.type)}
             </span>
           </div>
 
-          {/* Earthquake details */}
-          <div className="flex-1 min-w-0">
-            {/* 地域名 + 最新バッジ */}
-            <div className="flex items-center gap-2 flex-wrap mb-1">
-              <span className="text-white font-bold text-lg leading-tight truncate">
-                {hasLocation ? hypocenter.name : '震源調査中'}
+          {/* 日時 */}
+          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+            <span className="text-base text-secondary">{formatQuakeTime(earthquake.time)}</span>
+            {issue.correct !== 'None' && (
+              <span className="text-xs bg-yellow-900 text-yellow-300 px-1.5 py-0.5 rounded font-medium flex-shrink-0">
+                {formatCorrectType(issue.correct)}
               </span>
-              {isLatest && (
-                <span className="text-xs bg-blue-900 text-blue-300 px-1.5 py-0.5 rounded font-medium flex-shrink-0">
-                  最新
-                </span>
-              )}
-            </div>
+            )}
+          </div>
 
-            {/* 日時 + 発表種別 */}
-            <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-              <span className="text-base text-secondary">{formatQuakeTime(earthquake.time)}</span>
-              <span className={`text-xs px-1.5 py-0.5 rounded flex-shrink-0 ${issueTypeBadgeClass(issue.type)}`}>
-                {formatIssueType(issue.type)}
+          {/* 深さ・マグニチュード・津波情報 */}
+          <div className="flex items-center gap-2 text-base flex-wrap">
+            {hasLocation && (
+              <span className="flex items-center gap-1 text-secondary">
+                <span>深さ</span>
+                <span className="text-white font-medium">{formatDepth(hypocenter.depth)}</span>
+                <span
+                  className="inline-block w-1.5 h-3.5 rounded-sm flex-shrink-0"
+                  style={{ backgroundColor: getDepthColor(hypocenter.depth) }}
+                />
+                <span className="text-white font-medium">{formatMagnitude(hypocenter.magnitude)}</span>
+                <span
+                  className="inline-block w-1.5 h-3.5 rounded-sm flex-shrink-0"
+                  style={{ backgroundColor: getMagnitudeColor(hypocenter.magnitude) }}
+                />
               </span>
-              {issue.correct !== 'None' && (
-                <span className="text-xs bg-yellow-900 text-yellow-300 px-1.5 py-0.5 rounded font-medium flex-shrink-0">
-                  {formatCorrectType(issue.correct)}
-                </span>
-              )}
-            </div>
-
-            {/* 深さ・マグニチュード・津波情報 */}
-            <div className="flex items-center gap-2 text-base flex-wrap">
-              {hasLocation && (
-                <span className="flex items-center gap-1 text-secondary">
-                  <span>深さ</span>
-                  <span className="text-white font-medium">{formatDepth(hypocenter.depth)}</span>
-                  <span
-                    className="inline-block w-1.5 h-3.5 rounded-sm flex-shrink-0"
-                    style={{ backgroundColor: getDepthColor(hypocenter.depth) }}
-                  />
-                  <span className="text-white font-medium">{formatMagnitude(hypocenter.magnitude)}</span>
-                  <span
-                    className="inline-block w-1.5 h-3.5 rounded-sm flex-shrink-0"
-                    style={{ backgroundColor: getMagnitudeColor(hypocenter.magnitude) }}
-                  />
-                </span>
-              )}
-              {tsunamiInfo.text !== '津波の心配なし' && (
-                <span className="font-medium" style={{ color: tsunamiInfo.color }}>
-                  {tsunamiInfo.text}
-                </span>
-              )}
-            </div>
+            )}
+            {tsunamiInfo.text !== '津波の心配なし' && (
+              <span className="font-medium" style={{ color: tsunamiInfo.color }}>
+                {tsunamiInfo.text}
+              </span>
+            )}
           </div>
         </div>
-      )}
+      </div>
     </button>
   )
 }

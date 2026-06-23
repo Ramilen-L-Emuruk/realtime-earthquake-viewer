@@ -42,10 +42,14 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
   const { hypocenter } = eew.earthquake
   const prefAreas = areas.filter(a => a.pref)
 
-  const borderColor = isWarning ? '#ef4444' : '#eab308'
   const typeLabel = isSpecial ? '特別警報' : isWarning ? '警報' : '予報'
-  const typeLabelColor = isWarning ? 'text-red-300' : 'text-yellow-300'
-  const typeBadgeBg = isWarning ? 'bg-red-900/60' : 'bg-yellow-900/60'
+  const headerBg = isSpecial ? '#4c0519' : isWarning ? '#450a0a' : '#451a03'
+  const headerColor = isSpecial ? '#fca5a5' : isWarning ? '#f87171' : '#fcd34d'
+  const headerBorder = isSpecial ? '#dc2626' : isWarning ? '#ef4444' : '#d97706'
+  const cardBorder = isSpecial ? '#fca5a5' : isWarning ? '#ef4444' : '#eab308'
+
+  const magColor = getMagnitudeColor(hypocenter.magnitude)
+  const depthColor = getDepthColor(hypocenter.depth)
 
   // 到達予想時刻が設定された地域を時刻順にソート
   const areasWithArrival = areas
@@ -55,149 +59,163 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
 
   return (
     <div
-      className="rounded-lg p-3 flex flex-col gap-2"
+      className="bg-card rounded-lg overflow-hidden"
       style={{
-        backgroundColor: isWarning ? 'rgba(127,29,29,0.3)' : 'rgba(113,63,18,0.3)',
-        border: `2px solid ${borderColor}`,
+        border: `2px solid ${cardBorder}`,
+        boxShadow: `0 0 0 1px ${cardBorder}40`,
       }}
     >
-      {/* 最大震度バナー */}
+      {/* 種別ヘッダー */}
       <div
-        className="w-full rounded-lg py-3 px-4 flex items-center justify-center gap-6"
+        className="w-full py-1.5 px-4 text-center text-xs font-bold tracking-widest"
         style={{
-          backgroundColor: maxScale > 0 ? getIntensityBgColor(maxScale) : 'rgba(42,42,42,0.8)',
-          border: `2px solid ${maxScale > 0 ? getIntensityColor(maxScale) : '#4b5563'}`,
+          backgroundColor: headerBg,
+          color: headerColor,
+          borderBottom: `1px solid ${headerBorder}`,
         }}
       >
-        <span
-          className="text-sm font-medium"
-          style={{ color: maxScale > 0 ? getIntensityColor(maxScale) : '#9ca3af' }}
-        >
-          最大震度予想
-        </span>
-        <span
-          className="text-5xl font-black"
-          style={{ color: maxScale > 0 ? getIntensityColor(maxScale) : '#9ca3af' }}
-        >
-          {maxScale > 0 ? getIntensityLabel(maxScale) : '?'}
-        </span>
-      </div>
-
-      {/* 推定最大長周期地震動階級 */}
-      {eew.forecastMaxLpgmClass != null && eew.forecastMaxLpgmClass >= 1 && (
-        <div
-          className="w-full rounded-lg py-2 px-4 flex items-center justify-center gap-4"
-          style={{
-            backgroundColor: getLpgmClassBgColor(eew.forecastMaxLpgmClass),
-            border: `2px solid ${getLpgmClassColor(eew.forecastMaxLpgmClass)}`,
-          }}
-        >
-          <span className="text-sm font-medium" style={{ color: getLpgmClassColor(eew.forecastMaxLpgmClass) }}>
-            推定長周期地震動
-          </span>
-          <span className="text-2xl font-black" style={{ color: getLpgmClassColor(eew.forecastMaxLpgmClass) }}>
-            {getLpgmClassLabel(eew.forecastMaxLpgmClass)}
-          </span>
-        </div>
-      )}
-
-      {/* 種別バッジ行 */}
-      <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-xs text-secondary">緊急地震速報</span>
-        <span className={`text-sm font-black px-2 py-0.5 rounded ${typeLabelColor} ${typeBadgeBg}`}>
-          {typeLabel}
-        </span>
+        緊急地震速報（{typeLabel}）
         {serial != null && (
-          <span className={`text-xs px-1.5 py-0.5 rounded ${eew.isFinal ? 'font-bold text-green-400 bg-green-900/40' : 'text-secondary'}`}>
+          <span className="ml-2 font-normal opacity-75">
             #{serial}{eew.isFinal ? ' 最終報' : ''}
           </span>
         )}
       </div>
 
-      {/* 発生時刻 */}
-      <div className="text-base text-secondary">
-        {formatDateTime(eew.earthquake.originTime)}ごろ
-      </div>
-
-      {/* 震源名 */}
-      <div className="text-2xl font-bold text-white leading-tight">
-        {hypocenter.name || '震源調査中'}
-      </div>
-
-      {/* マグニチュード・深さ */}
-      {hypocenter.name && (
-        <div className="flex flex-col gap-1">
-          <div className="flex items-center justify-between">
-            <span className="text-base text-secondary">マグニチュード</span>
-            <div className="flex items-center gap-2">
-              <span className="text-xl font-bold text-white">{hypocenter.magnitude.toFixed(1)}</span>
-              <span
-                className="inline-block w-2 h-5 rounded-sm flex-shrink-0"
-                style={{ backgroundColor: getMagnitudeColor(hypocenter.magnitude) }}
-              />
-            </div>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-base text-secondary">深さ</span>
-            <div className="flex items-center gap-2">
-              <span className="text-xl font-bold text-white">{hypocenter.depth}km</span>
-              <span
-                className="inline-block w-2 h-5 rounded-sm flex-shrink-0"
-                style={{ backgroundColor: getDepthColor(hypocenter.depth) }}
-              />
-            </div>
-          </div>
+      <div className="flex flex-col gap-2 p-3">
+        {/* 最大震度バナー */}
+        <div
+          className="w-full rounded-lg py-3 px-4 flex items-center justify-center gap-4"
+          style={{
+            backgroundColor: maxScale > 0 ? getIntensityBgColor(maxScale) : 'rgba(42,42,42,0.8)',
+            border: `2px solid ${maxScale > 0 ? getIntensityColor(maxScale) : '#4b5563'}`,
+          }}
+        >
+          <span
+            className="text-sm font-medium"
+            style={{ color: maxScale > 0 ? getIntensityColor(maxScale) : '#9ca3af' }}
+          >
+            最大震度予想
+          </span>
+          <span
+            className="font-black leading-none"
+            style={{ fontSize: '72px', color: maxScale > 0 ? getIntensityColor(maxScale) : '#9ca3af' }}
+          >
+            {maxScale > 0 ? getIntensityLabel(maxScale) : '?'}
+          </span>
         </div>
-      )}
 
-      {/* 対象地域（警報域と予報域を区別して表示） */}
-      {prefAreas.length > 0 && (() => {
-        const warningPrefs = [...new Set(prefAreas.filter(a => a.kindCode === '10' || a.kindCode === '11').map(a => a.pref))]
-        const forecastPrefs = [...new Set(prefAreas.filter(a => a.kindCode !== '10' && a.kindCode !== '11').map(a => a.pref))]
-        const hasKindCode = prefAreas.some(a => a.kindCode !== '')
-        if (!hasKindCode) {
-          return (
-            <div className="text-xs text-secondary leading-relaxed">
-              対象: {prefAreas.slice(0, 8).map(a => a.pref).join(' / ')}
-              {prefAreas.length > 8 && ' ...'}
-            </div>
-          )
-        }
-        return (
-          <div className="flex flex-col gap-0.5 text-xs">
-            {warningPrefs.length > 0 && (
-              <div className="flex items-start gap-1 flex-wrap">
-                <span className="text-red-300 font-bold flex-shrink-0">警報:</span>
-                <span className="text-secondary">{warningPrefs.slice(0, 6).join(' / ')}{warningPrefs.length > 6 && ' ...'}</span>
-              </div>
-            )}
-            {forecastPrefs.length > 0 && (
-              <div className="flex items-start gap-1 flex-wrap">
-                <span className="text-yellow-300 flex-shrink-0">予報:</span>
-                <span className="text-secondary">{forecastPrefs.slice(0, 6).join(' / ')}{forecastPrefs.length > 6 && ' ...'}</span>
-              </div>
-            )}
+        {/* 推定最大長周期地震動階級 */}
+        {eew.forecastMaxLpgmClass != null && eew.forecastMaxLpgmClass >= 1 && (
+          <div
+            className="w-full rounded-lg py-2 px-4 flex items-center justify-center gap-4"
+            style={{
+              backgroundColor: getLpgmClassBgColor(eew.forecastMaxLpgmClass),
+              border: `2px solid ${getLpgmClassColor(eew.forecastMaxLpgmClass)}`,
+            }}
+          >
+            <span className="text-sm font-medium" style={{ color: getLpgmClassColor(eew.forecastMaxLpgmClass) }}>
+              推定長周期地震動
+            </span>
+            <span className="text-2xl font-black" style={{ color: getLpgmClassColor(eew.forecastMaxLpgmClass) }}>
+              {getLpgmClassLabel(eew.forecastMaxLpgmClass)}
+            </span>
           </div>
-        )
-      })()}
+        )}
 
-      {/* 到達予想時刻 */}
-      {areasWithArrival.length > 0 && (
-        <div className="flex flex-col gap-0.5">
-          <span className="text-xs text-secondary">到達予想時刻</span>
-          {areasWithArrival.map((a, i) => (
-            <div key={i} className="flex items-center justify-between text-xs">
-              <span className="text-secondary truncate mr-2">{a.name}</span>
-              <span className="text-white font-mono flex-shrink-0">
-                {formatTime(a.arrivalTime!).slice(0, 5)}
+        {/* 発生時刻 */}
+        <div className="text-secondary" style={{ fontSize: '18px' }}>
+          {formatDateTime(eew.earthquake.originTime)}ごろ
+        </div>
+
+        {/* 震源名 */}
+        <div className="font-bold text-white leading-tight" style={{ fontSize: '26px' }}>
+          {hypocenter.name || '震源調査中'}
+        </div>
+
+        {/* マグニチュード・深さ（2カラムグリッド） */}
+        {hypocenter.name && (
+          <div className="grid grid-cols-2 gap-2">
+            <div
+              className="flex flex-col gap-1 rounded-lg p-2.5"
+              style={{
+                backgroundColor: `${magColor}26`,
+                border: `2px solid ${magColor}`,
+              }}
+            >
+              <span className="text-xs font-medium tracking-wide" style={{ color: magColor }}>
+                マグニチュード
+              </span>
+              <span className="font-black leading-none" style={{ fontSize: '24px', color: magColor }}>
+                {hypocenter.magnitude.toFixed(1)}
               </span>
             </div>
-          ))}
-          {areas.filter(a => a.arrivalTime).length > 6 && (
-            <span className="text-xs text-secondary">他{areas.filter(a => a.arrivalTime).length - 6}地域</span>
-          )}
-        </div>
-      )}
+            <div
+              className="flex flex-col gap-1 rounded-lg p-2.5"
+              style={{
+                backgroundColor: `${depthColor}26`,
+                border: `2px solid ${depthColor}`,
+              }}
+            >
+              <span className="text-xs font-medium tracking-wide" style={{ color: depthColor }}>
+                深さ
+              </span>
+              <span className="font-black leading-none" style={{ fontSize: '24px', color: depthColor }}>
+                {hypocenter.depth}km
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* 対象地域（警報域と予報域を区別して表示） */}
+        {prefAreas.length > 0 && (() => {
+          const warningPrefs = [...new Set(prefAreas.filter(a => a.kindCode === '10' || a.kindCode === '11').map(a => a.pref))]
+          const forecastPrefs = [...new Set(prefAreas.filter(a => a.kindCode !== '10' && a.kindCode !== '11').map(a => a.pref))]
+          const hasKindCode = prefAreas.some(a => a.kindCode !== '')
+          if (!hasKindCode) {
+            return (
+              <div className="text-xs text-secondary leading-relaxed">
+                対象: {prefAreas.slice(0, 8).map(a => a.pref).join(' / ')}
+                {prefAreas.length > 8 && ' ...'}
+              </div>
+            )
+          }
+          return (
+            <div className="flex flex-col gap-0.5 text-xs">
+              {warningPrefs.length > 0 && (
+                <div className="flex items-start gap-1 flex-wrap">
+                  <span className="text-red-300 font-bold flex-shrink-0">警報:</span>
+                  <span className="text-secondary">{warningPrefs.slice(0, 6).join(' / ')}{warningPrefs.length > 6 && ' ...'}</span>
+                </div>
+              )}
+              {forecastPrefs.length > 0 && (
+                <div className="flex items-start gap-1 flex-wrap">
+                  <span className="text-yellow-300 flex-shrink-0">予報:</span>
+                  <span className="text-secondary">{forecastPrefs.slice(0, 6).join(' / ')}{forecastPrefs.length > 6 && ' ...'}</span>
+                </div>
+              )}
+            </div>
+          )
+        })()}
+
+        {/* 到達予想時刻 */}
+        {areasWithArrival.length > 0 && (
+          <div className="flex flex-col gap-0.5">
+            <span className="text-xs text-secondary">到達予想時刻</span>
+            {areasWithArrival.map((a, i) => (
+              <div key={i} className="flex items-center justify-between text-xs">
+                <span className="text-secondary truncate mr-2">{a.name}</span>
+                <span className="text-white font-mono flex-shrink-0">
+                  {formatTime(a.arrivalTime!).slice(0, 5)}
+                </span>
+              </div>
+            ))}
+            {areas.filter(a => a.arrivalTime).length > 6 && (
+              <span className="text-xs text-secondary">他{areas.filter(a => a.arrivalTime).length - 6}地域</span>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -327,7 +345,8 @@ function SWaveArrivalCard({ arrival }: { arrival: SWaveArrival }) {
 
 export function RealtimeTab({ eews, kyoshinDetection, kyoshinSites, kyoshinIndices, swaveArrival }: Props) {
   return (
-    <div className="p-3 space-y-3">
+    <div className="flex flex-col min-h-full p-3 gap-3">
+      {/* データカード */}
       {[...eews]
         .sort((a, b) => eewMaxScale(b) - eewMaxScale(a))
         .map(eew => <EEWCard key={eew.id} eew={eew} />)
@@ -340,36 +359,42 @@ export function RealtimeTab({ eews, kyoshinDetection, kyoshinSites, kyoshinIndic
         kyoshinIndices={kyoshinIndices}
       />
 
-      <div>
-        <h2 className="text-white font-bold text-sm mb-1">リアルタイム震度モニタ</h2>
-        <p className="text-secondary text-xs leading-relaxed">
-          各観測点のリアルタイム震度を地図に表示します。1秒ごとに更新されます。
-          緊急地震速報の発報時は予報円（青=P波 / 赤=S波）も表示します。
-        </p>
-      </div>
+      {/* スペーサー：データが少ないときに情報セクションを下部へ押し出す */}
+      <div className="flex-1" />
 
-      {/* 震度スケール凡例 */}
-      <div className="bg-card rounded-lg p-3 border border-border">
-        <p className="text-white text-xs font-bold mb-2">震度スケール</p>
-        <div className="flex gap-2 flex-wrap">
-          {SCALE_LEGEND.map((item) => (
-            <div key={item.label} className="flex items-center gap-1">
-              <div
-                className="w-4 h-4 rounded-sm flex-shrink-0"
-                style={{ backgroundColor: item.scale === 0 ? SHINDO0_COLOR : getIntensityColor(item.scale) }}
-              />
-              <span className="text-xs text-secondary">{item.label}</span>
-            </div>
-          ))}
+      {/* 情報セクション（説明・凡例・出典）*/}
+      <div className="flex flex-col gap-3">
+        <div>
+          <h2 className="text-white font-bold text-sm mb-1">リアルタイム震度モニタ</h2>
+          <p className="text-secondary text-xs leading-relaxed">
+            各観測点のリアルタイム震度を地図に表示します。1秒ごとに更新されます。
+            緊急地震速報の発報時は予報円（青=P波 / 赤=S波）も表示します。
+          </p>
         </div>
-      </div>
 
-      {/* 注記 */}
-      <div className="bg-card rounded-lg p-3 border border-border">
-        <p className="text-secondary text-xs leading-relaxed">
-          ※ データ出典: Yahoo!天気・災害 リアルタイム震度（防災科学技術研究所 強震モニタ）。
-          表示される震度はリアルタイムの推定値であり、気象庁が発表する震度とは異なる場合があります。
-        </p>
+        {/* 震度スケール凡例 */}
+        <div className="bg-card rounded-lg p-3 border border-border">
+          <p className="text-white text-xs font-bold mb-2">震度スケール</p>
+          <div className="flex gap-2 flex-wrap">
+            {SCALE_LEGEND.map((item) => (
+              <div key={item.label} className="flex items-center gap-1">
+                <div
+                  className="w-4 h-4 rounded-sm flex-shrink-0"
+                  style={{ backgroundColor: item.scale === 0 ? SHINDO0_COLOR : getIntensityColor(item.scale) }}
+                />
+                <span className="text-xs text-secondary">{item.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* 注記 */}
+        <div className="bg-card rounded-lg p-3 border border-border">
+          <p className="text-secondary text-xs leading-relaxed">
+            ※ データ出典: Yahoo!天気・災害 リアルタイム震度（防災科学技術研究所 強震モニタ）。
+            表示される震度はリアルタイムの推定値であり、気象庁が発表する震度とは異なる場合があります。
+          </p>
+        </div>
       </div>
     </div>
   )
