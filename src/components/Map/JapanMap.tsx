@@ -95,7 +95,7 @@ interface TsunamiLine {
 
 const JAPAN_CENTER: [number, number] = [36.5, 137.5]
 const JAPAN_ZOOM = 5
-const KYOSHIN_CENTER: [number, number] = [38.25, 136.3]
+const KYOSHIN_CENTER: [number, number] = [38.25, 137.7]
 const KYOSHIN_ZOOM = 6
 
 // 背景の海底地形タイル（ESRI World Ocean Base）。CSS でダークテーマへ暗く調整する。
