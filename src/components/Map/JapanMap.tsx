@@ -93,21 +93,17 @@ interface TsunamiLine {
   segments: LatLng[][]
 }
 
-const JAPAN_CENTER: [number, number] = [36.5, 137.5]
-const JAPAN_ZOOM = 5
-const KYOSHIN_CENTER: [number, number] = [38.25, 137.7]
-const KYOSHIN_ZOOM = 6
+const JAPAN_CENTER: [number, number] = [38.25, 137.7]
+// 本土四端（宗谷岬・納沙布岬・神崎鼻・佐多岬）を囲むバウンディングボックス
+const JAPAN_BOUNDS: L.LatLngBoundsExpression = [[30.99, 129.43], [45.52, 145.82]]
 
 // 背景の海底地形タイル（ESRI World Ocean Base）。CSS でダークテーマへ暗く調整する。
 const BATHYMETRY_URL =
   'https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}'
 const BATHYMETRY_ATTRIBUTION =
   'Esri, GEBCO, NOAA, National Geographic, and other contributors'
-// 自動ズームの上限（地方単位が収まる程度）
+// 自動ズームの上限。このズーム以下では一次細分区域ごとの最大震度に集約表示する。
 const MAX_ZOOM = 8
-// このズーム未満（中間より引き）では、地震モードで観測点ごとではなく
-// 一次細分区域ごとの最大震度（区域中心マーカー＋区域塗りつぶし）に集約表示する。
-const PREF_AGGREGATE_MAX_ZOOM = 8
 
 // 震度マーカーの重なり順。Leaflet は「画面 y 座標 + zIndexOffset」で z を決めるため、
 // 緯度差(数百〜数千px)を上回る係数を掛け、最大震度が高いほど確実に前面へ出す。
@@ -204,7 +200,7 @@ function FitToDetection({ points, hasEew }: { points: DetectedPoint[]; hasEew: b
       if (fittedRef.current) {
         fittedRef.current = false
         if (!hasEew) {
-          map.flyTo(KYOSHIN_CENTER, KYOSHIN_ZOOM, { duration: 1.0 })
+          map.flyToBounds(JAPAN_BOUNDS, { padding: [20, 20], duration: 1.0 })
         }
       }
       return
@@ -244,7 +240,7 @@ function FitJapanOnEnter({
     // 揺れ検知中はFitToDetectionに任せ、日本全体へのリセットをスキップする
     if (hasDetection) return
     if (!hasEew) {
-      map.setView(KYOSHIN_CENTER, KYOSHIN_ZOOM)
+      map.fitBounds(JAPAN_BOUNDS, { padding: [20, 20] })
       return
     }
     if (psWave.length > 0) {
@@ -304,7 +300,7 @@ export function JapanMap({
   const stationCoords = useStationCoords()
   const tsunamiZones = useTsunamiZones()
   const subregions = useSubRegions()
-  const [zoom, setZoom] = useState(JAPAN_ZOOM)
+  const [zoom, setZoom] = useState(6)
   // ズームに応じて強震モニタ観測点のサイズを補正する係数。
   // ズーム8を基準（×1.0）とし、ズームアウト時は小さく・ズームイン時は大きくする。
   const kyoshinZoomScale = Math.max(0.2, Math.min(3.5, Math.pow(2, (zoom - 8) / 2)))
@@ -355,8 +351,8 @@ export function JapanMap({
     return markers.sort((a, b) => a.scale - b.scale)
   }, [mode, quake, stationCoords, areaPrefIndex, stationPrefIndex])
 
-  // 中間より引きのときは観測点ごとではなく一次細分区域ごとの最大震度に集約する。
-  const aggregateByRegion = mode === 'quake' && !!quake && zoom < PREF_AGGREGATE_MAX_ZOOM
+  // MAX_ZOOM 以下では観測点ごとではなく一次細分区域ごとの最大震度に集約する。
+  const aggregateByRegion = mode === 'quake' && !!quake && zoom <= MAX_ZOOM
 
   // 一次細分区域に bbox を付与（点内包判定の前段フィルタ用）
   const subregionIndex = useMemo(() => {
@@ -478,11 +474,14 @@ export function JapanMap({
 
   return (
     <MapContainer
-      center={JAPAN_CENTER}
-      zoom={JAPAN_ZOOM}
+      bounds={JAPAN_BOUNDS}
+      boundsOptions={{ padding: [20, 20] }}
       className="h-full w-full"
       zoomControl={false}
       preferCanvas
+      zoomSnap={0.5}
+      zoomDelta={0.5}
+      wheelPxPerZoomLevel={100}
     >
       {/* 背景: 海底地形タイル（tilePane z=200。CSS でダーク化） */}
       {showBathymetry && (
