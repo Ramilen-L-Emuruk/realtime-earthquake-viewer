@@ -93,10 +93,8 @@ interface TsunamiLine {
   segments: LatLng[][]
 }
 
-const JAPAN_CENTER: [number, number] = [36.5, 137.5]
-const JAPAN_ZOOM = 5
-const KYOSHIN_CENTER: [number, number] = [38.25, 137.7]
-const KYOSHIN_ZOOM = 6
+const JAPAN_CENTER: [number, number] = [38.25, 137.7]
+const JAPAN_ZOOM = 6
 
 // 背景の海底地形タイル（ESRI World Ocean Base）。CSS でダークテーマへ暗く調整する。
 const BATHYMETRY_URL =
@@ -204,7 +202,7 @@ function FitToDetection({ points, hasEew }: { points: DetectedPoint[]; hasEew: b
       if (fittedRef.current) {
         fittedRef.current = false
         if (!hasEew) {
-          map.flyTo(KYOSHIN_CENTER, KYOSHIN_ZOOM, { duration: 1.0 })
+          map.flyTo(JAPAN_CENTER, JAPAN_ZOOM, { duration: 1.0 })
         }
       }
       return
@@ -244,7 +242,7 @@ function FitJapanOnEnter({
     // 揺れ検知中はFitToDetectionに任せ、日本全体へのリセットをスキップする
     if (hasDetection) return
     if (!hasEew) {
-      map.setView(KYOSHIN_CENTER, KYOSHIN_ZOOM)
+      map.setView(JAPAN_CENTER, JAPAN_ZOOM)
       return
     }
     if (psWave.length > 0) {
@@ -483,6 +481,9 @@ export function JapanMap({
       className="h-full w-full"
       zoomControl={false}
       preferCanvas
+      zoomSnap={0.5}
+      zoomDelta={0.5}
+      wheelPxPerZoomLevel={100}
     >
       {/* 背景: 海底地形タイル（tilePane z=200。CSS でダーク化） */}
       {showBathymetry && (
