@@ -345,7 +345,8 @@ function SWaveArrivalCard({ arrival }: { arrival: SWaveArrival }) {
 
 export function RealtimeTab({ eews, kyoshinDetection, kyoshinSites, kyoshinIndices, swaveArrival }: Props) {
   return (
-    <div className="p-3 space-y-3">
+    <div className="flex flex-col min-h-full p-3 gap-3">
+      {/* データカード */}
       {[...eews]
         .sort((a, b) => eewMaxScale(b) - eewMaxScale(a))
         .map(eew => <EEWCard key={eew.id} eew={eew} />)
@@ -358,36 +359,42 @@ export function RealtimeTab({ eews, kyoshinDetection, kyoshinSites, kyoshinIndic
         kyoshinIndices={kyoshinIndices}
       />
 
-      <div>
-        <h2 className="text-white font-bold text-sm mb-1">リアルタイム震度モニタ</h2>
-        <p className="text-secondary text-xs leading-relaxed">
-          各観測点のリアルタイム震度を地図に表示します。1秒ごとに更新されます。
-          緊急地震速報の発報時は予報円（青=P波 / 赤=S波）も表示します。
-        </p>
-      </div>
+      {/* スペーサー：データが少ないときに情報セクションを下部へ押し出す */}
+      <div className="flex-1" />
 
-      {/* 震度スケール凡例 */}
-      <div className="bg-card rounded-lg p-3 border border-border">
-        <p className="text-white text-xs font-bold mb-2">震度スケール</p>
-        <div className="flex gap-2 flex-wrap">
-          {SCALE_LEGEND.map((item) => (
-            <div key={item.label} className="flex items-center gap-1">
-              <div
-                className="w-4 h-4 rounded-sm flex-shrink-0"
-                style={{ backgroundColor: item.scale === 0 ? SHINDO0_COLOR : getIntensityColor(item.scale) }}
-              />
-              <span className="text-xs text-secondary">{item.label}</span>
-            </div>
-          ))}
+      {/* 情報セクション（説明・凡例・出典）*/}
+      <div className="flex flex-col gap-3">
+        <div>
+          <h2 className="text-white font-bold text-sm mb-1">リアルタイム震度モニタ</h2>
+          <p className="text-secondary text-xs leading-relaxed">
+            各観測点のリアルタイム震度を地図に表示します。1秒ごとに更新されます。
+            緊急地震速報の発報時は予報円（青=P波 / 赤=S波）も表示します。
+          </p>
         </div>
-      </div>
 
-      {/* 注記 */}
-      <div className="bg-card rounded-lg p-3 border border-border">
-        <p className="text-secondary text-xs leading-relaxed">
-          ※ データ出典: Yahoo!天気・災害 リアルタイム震度（防災科学技術研究所 強震モニタ）。
-          表示される震度はリアルタイムの推定値であり、気象庁が発表する震度とは異なる場合があります。
-        </p>
+        {/* 震度スケール凡例 */}
+        <div className="bg-card rounded-lg p-3 border border-border">
+          <p className="text-white text-xs font-bold mb-2">震度スケール</p>
+          <div className="flex gap-2 flex-wrap">
+            {SCALE_LEGEND.map((item) => (
+              <div key={item.label} className="flex items-center gap-1">
+                <div
+                  className="w-4 h-4 rounded-sm flex-shrink-0"
+                  style={{ backgroundColor: item.scale === 0 ? SHINDO0_COLOR : getIntensityColor(item.scale) }}
+                />
+                <span className="text-xs text-secondary">{item.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* 注記 */}
+        <div className="bg-card rounded-lg p-3 border border-border">
+          <p className="text-secondary text-xs leading-relaxed">
+            ※ データ出典: Yahoo!天気・災害 リアルタイム震度（防災科学技術研究所 強震モニタ）。
+            表示される震度はリアルタイムの推定値であり、気象庁が発表する震度とは異なる場合があります。
+          </p>
+        </div>
       </div>
     </div>
   )
