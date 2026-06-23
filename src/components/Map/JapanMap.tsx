@@ -204,7 +204,7 @@ function FitToDetection({ points, hasEew }: { points: DetectedPoint[]; hasEew: b
       if (fittedRef.current) {
         fittedRef.current = false
         if (!hasEew) {
-          map.flyTo(JAPAN_CENTER, JAPAN_ZOOM, { duration: 1.0 })
+          map.flyTo(KYOSHIN_CENTER, KYOSHIN_ZOOM, { duration: 1.0 })
         }
       }
       return
