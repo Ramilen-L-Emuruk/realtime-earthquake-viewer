@@ -10,8 +10,8 @@ import { REGIONS } from '../../utils/regions'
 //   LABEL_MIN <= zoom < REGION_MAX: 地方ラベル（引きの画）
 //   REGION_MAX <= zoom < CITY     : 県名ラベル
 //   zoom >= CITY                  : 一次細分区域名ラベル（寄り）
-const LABEL_MIN_ZOOM = 6
-const REGION_MAX_ZOOM = 7
+const LABEL_MIN_ZOOM = 5.5
+const REGION_MAX_ZOOM = 7.5
 const CITY_LABEL_MIN_ZOOM = 9
 
 interface Props {
