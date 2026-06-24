@@ -18,6 +18,8 @@ import { formatMagnitude } from './utils/formatters'
 import { eewMaxScale } from './utils/eew'
 import { tsunamiMaxGrade, tsunamiOverallGrade } from './utils/tsunami'
 import { playAlertSound, playKyoshinUpdateSound, kyoshinLevel, unlockAudio, setSoundVolume, type AlertSoundType } from './utils/alertSound'
+import { speakWithVoicevox } from './utils/voicevox'
+import { eewToText, earthquakeToText, tsunamiToText } from './utils/ttsText'
 import { kyoshinIndexToLabel } from './utils/kyoshinIntensity'
 import type { P2PQuakeEvent, EEWAlert } from './types/earthquake'
 
@@ -119,6 +121,12 @@ export function App() {
   const eewTitleTimerRef = useRef<number>(0)
   const tsunamiTitleTimerRef = useRef<number>(0)
 
+  // VOICEVOX EEW 読み上げデバウンス（レベルアップ確定から3秒後に読み上げ）
+  const eewTtsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const eewTtsMaxTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // テキストはタイマー発火時に生成するため、イベントオブジェクトを保持する（変化なし続報も含め常に最新で上書き）
+  const eewTtsEventRef = useRef<import('./types/earthquake').EEWAlert | null>(null)
+
   const handleLiveEvent = (event: P2PQuakeEvent) => {
     // 受信時に該当タブを自動表示し、ウィンドウタイトルを更新する
     // （地震情報・津波情報・緊急地震速報）。
@@ -156,6 +164,10 @@ export function App() {
         if (settings.soundEnabled) {
           playAlertSound('eewCancel')
         }
+        // EEW 解除時は読み上げタイマーをキャンセルする
+        if (eewTtsTimerRef.current) { clearTimeout(eewTtsTimerRef.current); eewTtsTimerRef.current = null }
+        if (eewTtsMaxTimerRef.current) { clearTimeout(eewTtsMaxTimerRef.current); eewTtsMaxTimerRef.current = null }
+        eewTtsEventRef.current = null
         if (activeEEWLevelsRef.current.size === 0) {
           window.clearTimeout(eewTitleTimerRef.current)
           applyPriorityTitle(new Map<string, EEWAlert>(), tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
@@ -204,6 +216,38 @@ export function App() {
       eewTitleTimerRef.current = window.setTimeout(() => {
         applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
       }, eewResetMs)
+
+      // VOICEVOX: 常に最新イベントを保持し、isNew/levelUpgraded 時にタイマーをセット/リセット
+      if (settings.voicevoxEnabled && settings.soundEnabled) {
+        eewTtsEventRef.current = event
+        const fireTts = () => {
+          if (eewTtsEventRef.current) {
+            speakWithVoicevox(settings.voicevoxUrl, eewToText(eewTtsEventRef.current), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+          }
+        }
+        const scheduleEewTts = () => {
+          eewTtsTimerRef.current = setTimeout(() => {
+            eewTtsTimerRef.current = null
+            fireTts()
+          }, 3000)
+        }
+        if (isNew) {
+          scheduleEewTts()
+          // 上限タイマー: 第一報から15秒後に強制発火
+          eewTtsMaxTimerRef.current = setTimeout(() => {
+            eewTtsMaxTimerRef.current = null
+            if (eewTtsTimerRef.current) {
+              clearTimeout(eewTtsTimerRef.current)
+              eewTtsTimerRef.current = null
+              fireTts()
+            }
+          }, 15000)
+        } else if (levelUpgraded) {
+          if (eewTtsTimerRef.current) { clearTimeout(eewTtsTimerRef.current); eewTtsTimerRef.current = null }
+          scheduleEewTts()
+        }
+      }
+
       return
     }
 
@@ -237,6 +281,27 @@ export function App() {
     }
     if (!type) return
     playAlertSound(type)
+
+    // VOICEVOX 読み上げ（新しい情報が来たら再生中を割り込み停止して読み直す）
+    if (settings.voicevoxEnabled) {
+      const ttsText = event.code === 551 ? earthquakeToText(event)
+        : event.code === 552 ? tsunamiToText(event)
+        : null
+      if (ttsText && type) {
+        const TTS_DELAY_MS: Partial<Record<AlertSoundType, number>> = {
+          earthquake:       1600,
+          earthquakePrompt: 1200,
+          earthquakeInfo:    900,
+          tsunamiWatch:     1700,
+          tsunami:          2800,
+          tsunamiMajor:     4200,
+        }
+        const delay = TTS_DELAY_MS[type] ?? 0
+        setTimeout(() => {
+          speakWithVoicevox(settings.voicevoxUrl, ttsText, settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+        }, delay)
+      }
+    }
   }
 
   const {
@@ -259,6 +324,14 @@ export function App() {
   useEffect(() => {
     setSoundVolume(settings.soundVolume)
   }, [settings.soundVolume])
+
+  // EEW 読み上げタイマーをアンマウント時にクリーンアップする
+  useEffect(() => {
+    return () => {
+      if (eewTtsTimerRef.current) clearTimeout(eewTtsTimerRef.current)
+      if (eewTtsMaxTimerRef.current) clearTimeout(eewTtsMaxTimerRef.current)
+    }
+  }, [])
 
   // ブラウザの自動再生制限に対応: 初回のユーザー操作で音声を有効化する
   useEffect(() => {
