@@ -154,10 +154,12 @@ const VXSE_ISSUE_TYPE: Record<string, IssueType> = {
   VXSE53: 'ScaleAndDestination',
 }
 
-// VXSE53 JSON 電文（earthquake-information v1.1.0）の body.intensity から地域別震度を取り出す。
+// VXSE51/53 JSON 電文（earthquake-information v1.1.0）の body.intensity から震度データを取り出す。
 // v1.1.0 スキーマは regions[]/stations[] のフラット配列構造を持つ。
-// regions[] → 一次細分区域（isArea:true・地図の subregion 色付けに使用）
-// stations[] → 観測点（isArea:false・末尾の全角アスタリスク除去）
+// regions[]    → 一次細分区域（isArea:true・pref:''・地図の subregion 色付けに使用）
+// stations[]   → 観測点（isArea:false・pref:''・末尾の全角アスタリスク除去）
+// prefectures[] → pref: name 付きで追加（EarthquakeCard の都道府県別表示専用）
+//   ※ 都道府県名は subregions.json に存在しないため地図描画には影響しない
 function parseIntensityPoints(intensity: Record<string, unknown>): JMAQuake['points'] {
   const points: JMAQuake['points'] = []
 
@@ -179,15 +181,15 @@ function parseIntensityPoints(intensity: Record<string, unknown>): JMAQuake['poi
     }
   }
 
-  // regions/stations が空の場合は都道府県レベルにフォールバック
-  if (points.length === 0) {
-    for (const rawPref of arr(intensity.prefectures)) {
-      const p = obj(rawPref)
-      const name = str(p.name)
-      const scale = parseIntensityStr(str(p.maxInt) || null)
-      if (name && scale >= 0) {
-        points.push({ pref: '', addr: name, isArea: true, scale: scale as IntensityScale })
-      }
+  // JSON スキーマは stations/regions に親都道府県情報を持たないため、
+  // prefectures を pref: name 付きで追加し EarthquakeCard の都道府県別表示に使う。
+  // regions が空の場合も含め常に追加する（旧フォールバックを統合）。
+  for (const rawPref of arr(intensity.prefectures)) {
+    const p = obj(rawPref)
+    const name = str(p.name)
+    const scale = parseIntensityStr(str(p.maxInt) || null)
+    if (name && scale >= 0) {
+      points.push({ pref: name, addr: name, isArea: true, scale: scale as IntensityScale })
     }
   }
 
@@ -215,7 +217,9 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
   const hypo = obj(earthquake.hypocenter)
   const { lat, lng, depth } = parseHypocenterCoord(hypo)
 
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null
+  // VXSE51（震度速報）は震源情報を持たないため座標チェックをスキップする。
+  // それ以外は有効な座標が必須。
+  if (headType !== 'VXSE51' && (!Number.isFinite(lat) || !Number.isFinite(lng))) return null
 
   const intensity = obj(body.intensity)
   // maxInt は v1.1.0 では body.intensity.maxInt に存在する（earthquake.maxInt は存在しない）
@@ -225,15 +229,19 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
   const domestic = (str(earthquake.domesticTsunami) as DomesticTsunami)
     || parseDomesticTsunamiFromComments(obj(body.comments))
 
-  // VXSE53（震源・各地震度）のみ JSON 電文から地域別震度を取り出す。
-  // VXSE51/52 は観測データを持たないため空配列のまま。
-  const points = headType === 'VXSE53'
+  // VXSE51/53 は intensity から地域別震度を取り出す。VXSE52 は観測データなし。
+  const points = (headType === 'VXSE53' || headType === 'VXSE51')
     ? parseIntensityPoints(intensity)
     : []
 
+  // VXSE51 は earthquake.originTime がないため targetDateTime（概算発生時刻）を使う。
+  // VXSE52/53 の earthquake.originTime と分単位で一致し dedup キーが揃う。
+  const eventId = str(data.eventId)
+  const originTime = str(earthquake.originTime) || (headType === 'VXSE51' ? str(data.targetDateTime) : '')
+
   return {
     code: 551,
-    id: `dmdata-quake-${str(data.eventId)}-${str(data.serialNo ?? data.serial ?? '1')}`,
+    id: `dmdata-quake-${eventId}-${str(data.serialNo ?? data.serial ?? '1')}`,
     time: str(data.reportDateTime ?? data.pressDateTime),
     issue: {
       source: str(data.editorialOffice ?? data.publishingOffice),
@@ -242,11 +250,12 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
       correct: 'None' as CorrectType,
     },
     earthquake: {
-      time: str(earthquake.originTime),
+      time: originTime,
       hypocenter: {
         name: str(hypo.name),
-        latitude: lat,
-        longitude: lng,
+        // VXSE51 は震源情報なし。-200 は「位置不明」センチネル（地図・カードで非表示判定に使用）。
+        latitude: Number.isFinite(lat) ? lat : -200,
+        longitude: Number.isFinite(lng) ? lng : -200,
         depth,
         magnitude: parseNum(obj(earthquake.magnitude).value),
       },
