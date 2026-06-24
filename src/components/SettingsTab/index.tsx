@@ -548,7 +548,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
           <p className="text-blue-300 text-xs">クリックで各通知音を試聴できます（設定の通知音 ON/OFF に関わらず鳴ります）</p>
         </div>
         {/* ── 揺れ検知 ── */}
-        <Row label="揺れ検知（初回）" description="FM ベル 上昇2音">
+        <Row label="揺れ検知（初回）" description="打撃2音 + シマー高周波">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('kyoshin') }}>▶ 試聴</TestButton>
         </Row>
         <Row label="揺れ検知・震度更新" description="震度をタップして試聴">
@@ -563,29 +563,29 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
           </div>
         </Row>
         {/* ── 緊急地震速報（EEW） ── */}
-        <Row label="EEW 予報（低震度）" description="FM ベル 下降2音">
+        <Row label="EEW 予報（低震度）" description="ダークピアノ F4→A4（緩やか）">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('eewForecast') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="EEW 初報（警報）" description="3連ビープ + 長音（di-di-di-DAA）">
+        <Row label="EEW 初報（警報）" description="ダークピアノ F4×3連打 + 警報音 Bb3">
           <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('eew') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="EEW 特別警報" description="上昇スイープ + 高速8連打（震度6弱以上）">
+        <Row label="EEW 特別警報" description="低音上昇 → スイープ → 9連打 + ドローン（震度6弱以上）">
           <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('eewSpecial') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="EEW 続報" description="FM ベル 短2音">
+        <Row label="EEW 続報" description="ダークピアノ F4 単音">
           <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('eewUpdate') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="EEW キャンセル" description="FM ベル 下降3和音">
+        <Row label="EEW キャンセル" description="ダークピアノ A4→F4→C4 降下3音">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('eewCancel') }}>▶ 試聴</TestButton>
         </Row>
         {/* ── 地震情報 ── */}
-        <Row label="地震情報（震度速報）" description="FM ベル 3音">
+        <Row label="地震情報（震度速報）" description="ピアノ上昇3音 G#4→B4→E5">
           <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('earthquakePrompt') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="地震情報（震源・震度 / 各地の震度）" description="FM ベル 2音（残響チャイム）">
+        <Row label="地震情報（震源・震度 / 各地の震度）" description="ピアノ上昇4音 E4→G#4→B4→E5">
           <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('earthquake') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="地震情報（震源情報・遠地地震）" description="FM ベル 単音（控えめ）">
+        <Row label="地震情報（震源情報・遠地地震）" description="ピアノ2音 G4→B4（控えめ）">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('earthquakeInfo') }}>▶ 試聴</TestButton>
         </Row>
         {/* ── 津波情報 ── */}
@@ -675,7 +675,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">3.3.0</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">3.3.1</span></Row>
         <Row label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"
