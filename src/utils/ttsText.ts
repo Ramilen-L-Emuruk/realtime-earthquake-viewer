@@ -47,12 +47,12 @@ export function earthquakeToText(event: JMAQuake): string {
   const time = formatTime(event.earthquake.time)
 
   if (type === 'Destination' || type === 'Foreign' || type === 'Other') {
-    return `震源情報。${time}頃、${hypocenter.name}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。深さ${hypocenter.depth}キロメートルです。`
+    return `震源情報。${time}頃、${hypocenter.name}、深さ${hypocenter.depth}キロメートルを震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
   }
 
   // ScaleAndDestination / DetailScale
   const prefs = [...new Set(event.points.filter(p => p.scale === maxScale).map(p => p.pref))]
-  let text = `地震情報。${time}頃、${hypocenter.name}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。深さ${hypocenter.depth}キロメートルです。`
+  let text = `地震情報。${time}頃、${hypocenter.name}、深さ${hypocenter.depth}キロメートルを震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
   if (prefs.length > 0) {
     text += `最大震度${intensityText(maxScale)}を${prefs.join('、')}で観測しました。`
   }
