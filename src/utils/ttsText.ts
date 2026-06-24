@@ -5,6 +5,11 @@ import { tsunamiMaxGrade } from './tsunami'
 
 const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch']
 
+function magnitudeText(mag: number): string {
+  // toFixed(1) で小数点以下1桁を明示し「きゅう」→「きゅうてんぜろ」のような誤読を防ぐ
+  return mag.toFixed(1)
+}
+
 function intensityText(scale: IntensityScale | number): string {
   if (scale <= 0) return ''
   return getIntensityLabel(scale as IntensityScale)
@@ -19,7 +24,7 @@ function formatTime(isoTime: string): string {
 export function eewToText(event: EEWAlert): string {
   const { hypocenter } = event.earthquake
   const scale = eewMaxScale(event)
-  let text = `緊急地震速報。${hypocenter.name}を震源とするマグニチュード${hypocenter.magnitude}の地震が発生しました。`
+  let text = `緊急地震速報。${hypocenter.name}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
   if (scale > 0) {
     text += `予想最大震度${intensityText(scale)}。`
   }
@@ -42,12 +47,12 @@ export function earthquakeToText(event: JMAQuake): string {
   const time = formatTime(event.earthquake.time)
 
   if (type === 'Destination' || type === 'Foreign' || type === 'Other') {
-    return `震源情報。${time}頃、${hypocenter.name}を震源とするマグニチュード${hypocenter.magnitude}の地震が発生しました。深さ${hypocenter.depth}キロメートルです。`
+    return `震源情報。${time}頃、${hypocenter.name}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。深さ${hypocenter.depth}キロメートルです。`
   }
 
   // ScaleAndDestination / DetailScale
   const prefs = [...new Set(event.points.filter(p => p.scale === maxScale).map(p => p.pref))]
-  let text = `地震情報。${time}頃、${hypocenter.name}を震源とするマグニチュード${hypocenter.magnitude}の地震が発生しました。深さ${hypocenter.depth}キロメートルです。`
+  let text = `地震情報。${time}頃、${hypocenter.name}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。深さ${hypocenter.depth}キロメートルです。`
   if (prefs.length > 0) {
     text += `最大震度${intensityText(maxScale)}を${prefs.join('、')}で観測しました。`
   }
