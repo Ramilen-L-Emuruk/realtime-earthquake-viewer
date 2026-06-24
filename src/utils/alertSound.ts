@@ -38,6 +38,11 @@ export function unlockAudio(): void {
   if (ctx && ctx.state === 'suspended') void ctx.resume()
 }
 
+/** VOICEVOX 等の外部モジュールが AudioContext を共有するための getter。 */
+export function getAudioContext(): AudioContext | null {
+  return getCtx()
+}
+
 // ─── 内部プリミティブ ─────────────────────────────────────────────
 
 // 矩形エンベロープのオシレーター（クリックノイズ防止の立上り・立下り込み）

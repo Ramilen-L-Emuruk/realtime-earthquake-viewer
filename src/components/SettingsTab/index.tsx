@@ -1,8 +1,9 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import type { AppSettings } from '../../hooks/useSettings'
 import type { ConnectionStatus } from '../../types/earthquake'
 import { getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
 import { playAlertSound, playKyoshinUpdateSound, unlockAudio } from '../../utils/alertSound'
+import { checkVoicevoxAvailable, fetchVoicevoxSpeakers, speakWithVoicevox, type VoicevoxSpeaker } from '../../utils/voicevox'
 
 const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
 
@@ -267,6 +268,29 @@ function HomeLocationSection({
 }
 
 export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onSetKyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus }: Props) {
+  const [voicevoxStatus, setVoicevoxStatus] = useState<'idle' | 'checking' | 'available' | 'unavailable'>('idle')
+  const [voicevoxSpeakers, setVoicevoxSpeakers] = useState<VoicevoxSpeaker[]>([])
+
+  useEffect(() => {
+    if (!settings.voicevoxEnabled) {
+      setVoicevoxStatus('idle')
+      setVoicevoxSpeakers([])
+      return
+    }
+    let cancelled = false
+    setVoicevoxStatus('checking')
+    checkVoicevoxAvailable(settings.voicevoxUrl).then(ok => {
+      if (cancelled) return
+      if (!ok) { setVoicevoxStatus('unavailable'); return }
+      return fetchVoicevoxSpeakers(settings.voicevoxUrl).then(spks => {
+        if (cancelled) return
+        setVoicevoxSpeakers(spks)
+        setVoicevoxStatus('available')
+      })
+    }).catch(() => { if (!cancelled) setVoicevoxStatus('unavailable') })
+    return () => { cancelled = true }
+  }, [settings.voicevoxEnabled, settings.voicevoxUrl])
+
   const handleTimeConfirm = () => {
     if (!kyoshinInputDateTime) return
     const specified = new Date(kyoshinInputDateTime)
@@ -434,6 +458,57 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
             </div>
           </Row>
         )}
+        <Row label="VOICEVOX 読み上げ" description="地震・EEW・津波情報をVOICEVOXで読み上げます（要：VOICEVOXアプリ起動）">
+          <Toggle checked={settings.voicevoxEnabled} onChange={v => onUpdate('voicevoxEnabled', v)} />
+        </Row>
+        {settings.voicevoxEnabled && (
+          <>
+            <Row label="VOICEVOX URL" description="VOICEVOXのHTTP APIのURL">
+              <input
+                type="text"
+                value={settings.voicevoxUrl}
+                onChange={e => onUpdate('voicevoxUrl', e.target.value)}
+                className="bg-input border border-border rounded px-2 py-1 text-xs text-white w-44"
+                spellCheck={false}
+              />
+            </Row>
+            <Row label="接続状態" description="">
+              <span className={`text-xs ${
+                voicevoxStatus === 'available' ? 'text-green-400'
+                : voicevoxStatus === 'unavailable' ? 'text-red-400'
+                : 'text-secondary'
+              }`}>
+                {voicevoxStatus === 'checking' ? '確認中...'
+                  : voicevoxStatus === 'available' ? '起動中'
+                  : voicevoxStatus === 'unavailable' ? '起動していません'
+                  : '—'}
+              </span>
+            </Row>
+            {voicevoxStatus === 'available' && voicevoxSpeakers.length > 0 && (
+              <>
+                <Row label="話者" description="読み上げに使う声を選択します">
+                  <select
+                    value={settings.voicevoxSpeakerId}
+                    onChange={e => onUpdate('voicevoxSpeakerId', Number(e.target.value))}
+                    className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+                  >
+                    {voicevoxSpeakers.flatMap(spk =>
+                      spk.styles.map(st => (
+                        <option key={st.id} value={st.id}>{spk.name}（{st.name}）</option>
+                      ))
+                    )}
+                  </select>
+                </Row>
+                <Row label="テスト読み上げ" description="">
+                  <TestButton color="blue" onClick={() => {
+                    unlockAudio()
+                    speakWithVoicevox(settings.voicevoxUrl, '緊急地震速報。三陸沖を震源とするマグニチュード7.2の地震が発生しました。予想最大震度6弱。', settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+                  }}>▶ 試聴</TestButton>
+                </Row>
+              </>
+            )}
+          </>
+        )}
         <Row label="ブラウザ通知" description="地震発生時にブラウザ通知を表示します">
           <Toggle
             checked={settings.notifyMinScale >= 0}
@@ -600,7 +675,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">3.2.16</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">3.3.0</span></Row>
         <Row label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"
