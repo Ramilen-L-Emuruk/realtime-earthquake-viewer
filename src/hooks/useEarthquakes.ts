@@ -80,6 +80,7 @@ export function useEarthquakes(
   onLiveEvent?: (event: P2PQuakeEvent) => void,
   dmdataApiKey = '',
   dmdataTestDelivery = false,
+  eewFinalClearSec = 180,
 ) {
   const [state, setState] = useState<EarthquakeState>({
     earthquakes: [],
@@ -114,8 +115,10 @@ export function useEarthquakes(
   onLiveEventRef.current = onLiveEvent
   // テスト EEW の発報状態を種別ごとに独立管理（複数EEW同時テスト対応）
   const testEEWTimersRef = useRef<Map<TestEEWKind, TestEEWEntry>>(new Map())
-  // 通常最終報（isLastInfo: true, isCanceled: false）受信後の60秒自動解除タイマー管理
+  // 通常最終報（isLastInfo: true, isCanceled: false）受信後の自動解除タイマー管理
   const finalCleanupTimersRef = useRef<Map<string, number>>(new Map())
+  const eewFinalClearSecRef = useRef(eewFinalClearSec)
+  eewFinalClearSecRef.current = eewFinalClearSec
   // 現在の state を WS コールバック内から参照するための ref
   const stateRef = useRef(state)
   stateRef.current = state
@@ -167,11 +170,11 @@ export function useEarthquakes(
           finalCleanupTimersRef.current.delete(key)
         }
       } else if (eew.isFinal && !finalCleanupTimersRef.current.has(key)) {
-        // 通常最終報: 60秒後にキャンセルイベントとして再発火（二重登録防止）
+        // 通常最終報: 設定秒数後にキャンセルイベントとして再発火（二重登録防止）
         const t = window.setTimeout(() => {
           handleEvent({ ...eew, cancelled: true })
           finalCleanupTimersRef.current.delete(key)
-        }, 60000)
+        }, eewFinalClearSecRef.current * 1000)
         finalCleanupTimersRef.current.set(key, t)
       }
     }

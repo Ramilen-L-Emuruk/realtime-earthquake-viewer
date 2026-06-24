@@ -22,6 +22,7 @@ export interface AppSettings {
   homeLng: number | null           // ホーム地点 経度（null = 未設定）
   dmdataApiKey: string             // DMDATA.JP APIキー（DMDSS版のみ使用、空文字 = 未設定）
   dmdataTestDelivery: boolean      // 試験報・訓練報（EEW配信テスト VXSE42 等）を受信する（DMDSS版・検証用）
+  eewFinalClearSec: number         // EEW最終報受信後に自動解除するまでの秒数（DMDSS版のみ有効）
 }
 
 // 通常版とDMDSS版の設定を localStorage 上で分離する
@@ -48,6 +49,7 @@ const DEFAULTS: AppSettings = {
   homeLng: null,
   dmdataApiKey: '',
   dmdataTestDelivery: false,
+  eewFinalClearSec: 180,
 }
 
 function load(): AppSettings {
