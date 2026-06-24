@@ -14,7 +14,8 @@ import { getIntensityLabel, getIntensityColor, getIntensityBgColor, getDepthColo
 /** issue.type に応じたバッジの Tailwind クラスを返す。 */
 function issueTypeBadgeClass(type: IssueType): string {
   switch (type) {
-    case 'ScalePrompt':          return 'bg-amber-900 text-amber-300'
+    case 'ScalePrompt':
+    case 'Destination':          return 'bg-amber-900 text-amber-300'
     case 'ScaleAndDestination':
     case 'DetailScale':          return 'bg-blue-900/60 text-blue-300'
     case 'Foreign':              return 'bg-purple-900/60 text-purple-300'
@@ -33,11 +34,11 @@ interface IssueTypeStyle {
 function getIssueTypeStyle(type: IssueType): IssueTypeStyle {
   switch (type) {
     case 'ScalePrompt':
+    case 'Destination':
       return { headerBg: '#451a03', headerColor: '#fbbf24', headerBorder: '#b45309', cardBorder: '#b45309', cardBg: '#1c1710' }
     case 'ScaleAndDestination':
-      return { headerBg: '#0c2044', headerColor: '#93c5fd', headerBorder: '#1d4ed8', cardBorder: '#1d4ed8', cardBg: '#111827' }
     case 'DetailScale':
-      return { headerBg: '#042f2e', headerColor: '#67e8f9', headerBorder: '#0e7490', cardBorder: '#0e7490', cardBg: '#0a1f1f' }
+      return { headerBg: '#0c2044', headerColor: '#93c5fd', headerBorder: '#1d4ed8', cardBorder: '#1d4ed8', cardBg: '#111827' }
     case 'Foreign':
       return { headerBg: '#2e1065', headerColor: '#d8b4fe', headerBorder: '#7e22ce', cardBorder: '#7e22ce', cardBg: '#1a1024' }
     default:
