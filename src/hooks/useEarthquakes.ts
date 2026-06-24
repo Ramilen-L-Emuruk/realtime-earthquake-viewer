@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { JMAQuake, JMATsunami, JMALpgm, EEWAlert, EEWRegion, P2PQuakeEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, JMALpgm, EEWAlert, EEWRegion, Hypocenter, IntensityScale, EarthquakePoint, P2PQuakeEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms } from '../services/dmdata'
 import { loadStationCoords, buildAreaPrefIndex } from '../utils/stationCoords'
@@ -119,6 +119,12 @@ export function useEarthquakes(
   // 現在の state を WS コールバック内から参照するための ref
   const stateRef = useRef(state)
   stateRef.current = state
+  // EEW 受信時に震源データをキャッシュし、後続の VXSE51（震度速報）に補完する。
+  // activeEEWs はクリーンアップされるが、このキャッシュはセッション中保持する。
+  const eewHypocenterCacheRef = useRef<Map<string, Hypocenter>>(new Map())
+  // VXSE51 受信時に震度データをキャッシュし、後続の VXSE52（震源情報）に補完する。
+  // VXSE52 は震源のみで震度を持たないため、VXSE51 の maxScale・points を引き継ぐ。
+  const quakeIntensityCacheRef = useRef<Map<string, { maxScale: IntensityScale; points: EarthquakePoint[] }>>(new Map())
   // DMDSS 版「もっと見る」用カーソルと API キー（useCallback 内の stale closure 回避）
   const dmdataCursorRef = useRef<string | undefined>(undefined)
   const dmdataApiKeyRef = useRef(dmdataApiKey)
@@ -145,6 +151,14 @@ export function useEarthquakes(
     if (event.code === 556) {
       const eew = event as EEWAlert
       const key = eew.issue?.eventId ?? eew.id
+      // 非キャンセル EEW の震源データを eventId でキャッシュする。
+      // VXSE51（震度速報）受信時に座標がない場合にここから補完する。
+      if (!eew.cancelled && !eew.test && key) {
+        const hypo = eew.earthquake?.hypocenter
+        if (hypo && Number.isFinite(hypo.latitude) && Number.isFinite(hypo.longitude)) {
+          eewHypocenterCacheRef.current.set(key, hypo)
+        }
+      }
       if (eew.cancelled || eew.test) {
         // キャンセル時: 最終報タイマーが残っていればキャンセル
         const t = finalCleanupTimersRef.current.get(key)
@@ -162,11 +176,54 @@ export function useEarthquakes(
       }
     }
 
+    // DMDATA 地震情報（551）の震度キャッシュ更新は setState の外で行う
+    if (event.code === 551) {
+      const quake = event as JMAQuake
+      const m = quake.id.match(/^dmdata-quake-(\d{14})-/)
+      if (m) {
+        // VXSE51 の震度データをキャッシュ（後続 VXSE52 への補完用）
+        if (quake.issue.type === 'ScalePrompt' && quake.earthquake.maxScale >= 0) {
+          quakeIntensityCacheRef.current.set(m[1], {
+            maxScale: quake.earthquake.maxScale,
+            points: quake.points,
+          })
+        }
+      }
+    }
+
     setState(prev => {
       const now = new Date()
       switch (event.code) {
         case 551: {
-          const quake = event as JMAQuake
+          let quake = event as JMAQuake
+          const eventId = quake.id.match(/^dmdata-quake-(\d{14})-/)?.[1]
+
+          // VXSE51: 座標がない場合に EEW キャッシュから震源を補完する
+          if (quake.issue.type === 'ScalePrompt' && quake.earthquake.hypocenter.latitude <= -200) {
+            const cachedHypo = eventId ? eewHypocenterCacheRef.current.get(eventId) : undefined
+            if (cachedHypo) {
+              quake = {
+                ...quake,
+                earthquake: {
+                  ...quake.earthquake,
+                  hypocenter: { ...quake.earthquake.hypocenter, ...cachedHypo },
+                },
+              }
+            }
+          }
+
+          // VXSE52/53: 震度がない場合に VXSE51 キャッシュから maxScale・points を補完する
+          if (quake.earthquake.maxScale < 0 && quake.points.length === 0) {
+            const cachedIntensity = eventId ? quakeIntensityCacheRef.current.get(eventId) : undefined
+            if (cachedIntensity) {
+              quake = {
+                ...quake,
+                earthquake: { ...quake.earthquake, maxScale: cachedIntensity.maxScale },
+                points: cachedIntensity.points,
+              }
+            }
+          }
+
           const key = quake.earthquake.time
           const existing = prev.earthquakes.find(e => e.earthquake.time === key)
           if (existing && (ISSUE_PRIORITY[existing.issue.type] ?? 0) > (ISSUE_PRIORITY[quake.issue.type] ?? 0)) {
