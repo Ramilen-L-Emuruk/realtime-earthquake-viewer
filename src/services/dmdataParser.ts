@@ -208,6 +208,15 @@ function parseDomesticTsunamiFromComments(comments: Record<string, unknown>): Do
   return 'Unknown'
 }
 
+// DMDATA eventId（形式: "YYYYMMDDHHmmSS" JST）を ISO 8601 文字列に変換する。
+// VXSE51 には earthquake.originTime がないため、eventId から発生時刻を生成して
+// 後続の VXSE53 との dedup キーを一致させる。
+function eventIdToOriginTime(eventId: string): string {
+  if (eventId.length < 14) return ''
+  return `${eventId.slice(0, 4)}-${eventId.slice(4, 6)}-${eventId.slice(6, 8)}` +
+    `T${eventId.slice(8, 10)}:${eventId.slice(10, 12)}:${eventId.slice(12, 14)}+09:00`
+}
+
 // 地震情報 (VXSE51/52/53)
 export function parseEarthquake(headType: string, data: Record<string, unknown>): JMAQuake | null {
   const body = obj(data.body)
@@ -215,7 +224,9 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
   const hypo = obj(earthquake.hypocenter)
   const { lat, lng, depth } = parseHypocenterCoord(hypo)
 
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null
+  // VXSE51（震度速報）は震源情報を持たないため座標チェックをスキップする。
+  // それ以外は有効な座標が必須。
+  if (headType !== 'VXSE51' && (!Number.isFinite(lat) || !Number.isFinite(lng))) return null
 
   const intensity = obj(body.intensity)
   // maxInt は v1.1.0 では body.intensity.maxInt に存在する（earthquake.maxInt は存在しない）
@@ -225,15 +236,19 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
   const domestic = (str(earthquake.domesticTsunami) as DomesticTsunami)
     || parseDomesticTsunamiFromComments(obj(body.comments))
 
-  // VXSE53（震源・各地震度）のみ JSON 電文から地域別震度を取り出す。
-  // VXSE51/52 は観測データを持たないため空配列のまま。
-  const points = headType === 'VXSE53'
+  // VXSE51/53 は intensity から地域別震度を取り出す。VXSE52 は観測データなし。
+  const points = (headType === 'VXSE53' || headType === 'VXSE51')
     ? parseIntensityPoints(intensity)
     : []
 
+  // VXSE51 は earthquake.originTime がないため eventId から発生時刻を生成する。
+  // 同一地震の VXSE53 と dedup キーを揃えるために eventId ベースの時刻を使う。
+  const eventId = str(data.eventId)
+  const originTime = str(earthquake.originTime) || (headType === 'VXSE51' ? eventIdToOriginTime(eventId) : '')
+
   return {
     code: 551,
-    id: `dmdata-quake-${str(data.eventId)}-${str(data.serialNo ?? data.serial ?? '1')}`,
+    id: `dmdata-quake-${eventId}-${str(data.serialNo ?? data.serial ?? '1')}`,
     time: str(data.reportDateTime ?? data.pressDateTime),
     issue: {
       source: str(data.editorialOffice ?? data.publishingOffice),
@@ -242,11 +257,12 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
       correct: 'None' as CorrectType,
     },
     earthquake: {
-      time: str(earthquake.originTime),
+      time: originTime,
       hypocenter: {
         name: str(hypo.name),
-        latitude: lat,
-        longitude: lng,
+        // VXSE51 は震源情報なし。-200 は「位置不明」センチネル（地図・カードで非表示判定に使用）。
+        latitude: Number.isFinite(lat) ? lat : -200,
+        longitude: Number.isFinite(lng) ? lng : -200,
         depth,
         magnitude: parseNum(obj(earthquake.magnitude).value),
       },
