@@ -289,9 +289,9 @@ export function App() {
         : null
       if (ttsText && type) {
         const TTS_DELAY_MS: Partial<Record<AlertSoundType, number>> = {
-          earthquake:       1600,
-          earthquakePrompt: 1200,
-          earthquakeInfo:    900,
+          earthquake:       1000,
+          earthquakePrompt:  500,
+          earthquakeInfo:    400,
           tsunamiWatch:     1700,
           tsunami:          2800,
           tsunamiMajor:     4200,

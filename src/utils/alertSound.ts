@@ -1,5 +1,5 @@
 // 地震情報・緊急地震速報・津波情報の受信時に鳴らす通知音。
-// 音声ファイルを持たず Web Audio API でビープ音を生成する（種別ごとに音が異なる）。
+// 音声ファイルを持たず Web Audio API で音を生成する（種別ごとに音が異なる）。
 //
 // 注意: ブラウザの自動再生制限により、ユーザー操作（クリック等）が一度行われるまで
 // 音は鳴らない。初回操作時に unlockAudio() を呼んで AudioContext を有効化する。
@@ -45,48 +45,185 @@ export function getAudioContext(): AudioContext | null {
 
 // ─── 内部プリミティブ ─────────────────────────────────────────────
 
-// 矩形エンベロープのオシレーター（クリックノイズ防止の立上り・立下り込み）
-function beep(ctx: AudioContext, type: OscillatorType, freq: number, startAt: number, duration: number, gain: number): void {
-  const osc = ctx.createOscillator()
-  const g = ctx.createGain()
-  osc.type = type
-  osc.frequency.value = freq
-  osc.connect(g)
-  g.connect(ctx.destination)
-  const peak = gain * globalVolume
-  g.gain.setValueAtTime(0, startAt)
-  g.gain.linearRampToValueAtTime(peak, startAt + 0.012)
-  g.gain.setValueAtTime(peak, Math.max(startAt + 0.012, startAt + duration - 0.04))
-  g.gain.linearRampToValueAtTime(0, startAt + duration)
-  osc.start(startAt)
-  osc.stop(startAt + duration + 0.05)
+let _reverb: ConvolverNode | null = null
+function getReverb(ctx: AudioContext): ConvolverNode {
+  if (_reverb) return _reverb
+  const len = Math.floor(ctx.sampleRate * 1.8)
+  const buf = ctx.createBuffer(2, len, ctx.sampleRate)
+  for (let ch = 0; ch < 2; ch++) {
+    const d = buf.getChannelData(ch)
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.2)
+  }
+  _reverb = ctx.createConvolver()
+  _reverb.buffer = buf
+  _reverb.connect(ctx.destination)
+  return _reverb
 }
 
-// FM合成ベル: carrier を modulator で変調し倍音豊かな残響音を生成する
-function bell(ctx: AudioContext, freq: number, ratio: number, depth: number, startAt: number, duration: number, gain: number): void {
-  const carrier = ctx.createOscillator()
-  const mod = ctx.createOscillator()
-  const modGain = ctx.createGain()
-  const ampGain = ctx.createGain()
-  mod.frequency.value = freq * ratio
-  carrier.frequency.value = freq
-  mod.connect(modGain)
-  modGain.connect(carrier.frequency)
-  carrier.connect(ampGain)
-  ampGain.connect(ctx.destination)
-  modGain.gain.setValueAtTime(depth, startAt)
-  modGain.gain.exponentialRampToValueAtTime(0.1, startAt + duration * 0.6)
-  const peak = gain * globalVolume
-  ampGain.gain.setValueAtTime(0, startAt)
-  ampGain.gain.linearRampToValueAtTime(peak, startAt + 0.008)
-  ampGain.gain.exponentialRampToValueAtTime(0.001, startAt + duration)
-  mod.start(startAt)
-  carrier.start(startAt)
-  mod.stop(startAt + duration + 0.1)
-  carrier.stop(startAt + duration + 0.1)
+// ピアノ風トーン: triangle 攻撃 + sine 余韻 + 第2倍音 + ノイズ鍵盤感（地震情報系に使用）
+function pianoNote(ctx: AudioContext, freq: number, t: number, dur: number, gain: number, wet = 0): void {
+  const p = gain * globalVolume
+
+  const sin = ctx.createOscillator(); const sinG = ctx.createGain()
+  sin.type = 'sine'; sin.frequency.value = freq
+  sin.connect(sinG); sinG.connect(ctx.destination)
+  sinG.gain.setValueAtTime(0, t)
+  sinG.gain.linearRampToValueAtTime(p, t + 0.005)
+  sinG.gain.exponentialRampToValueAtTime(0.001, t + dur)
+  sin.start(t); sin.stop(t + dur + 0.05)
+
+  const tri = ctx.createOscillator(); const triG = ctx.createGain()
+  tri.type = 'triangle'; tri.frequency.value = freq
+  tri.connect(triG); triG.connect(ctx.destination)
+  triG.gain.setValueAtTime(0, t)
+  triG.gain.linearRampToValueAtTime(p * 0.50, t + 0.005)
+  triG.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.18)
+  tri.start(t); tri.stop(t + dur + 0.05)
+
+  const h2 = ctx.createOscillator(); const h2G = ctx.createGain()
+  h2.type = 'sine'; h2.frequency.value = freq * 2
+  h2.connect(h2G); h2G.connect(ctx.destination)
+  h2G.gain.setValueAtTime(0, t)
+  h2G.gain.linearRampToValueAtTime(p * 0.18, t + 0.005)
+  h2G.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.25)
+  h2.start(t); h2.stop(t + dur + 0.05)
+
+  const nlen = Math.floor(ctx.sampleRate * 0.008)
+  const nbuf = ctx.createBuffer(1, nlen, ctx.sampleRate)
+  const nd = nbuf.getChannelData(0)
+  for (let i = 0; i < nlen; i++) nd[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / nlen, 1.5)
+  const ns = ctx.createBufferSource(); const ng = ctx.createGain()
+  ns.buffer = nbuf
+  ng.gain.setValueAtTime(p * 0.28, t)
+  ng.gain.exponentialRampToValueAtTime(0.001, t + 0.008)
+  ns.connect(ng); ng.connect(ctx.destination)
+  ns.start(t); ns.stop(t + 0.010)
+
+  if (wet > 0) {
+    const rev = getReverb(ctx)
+    const wo = ctx.createOscillator(); const wg = ctx.createGain()
+    wo.type = 'sine'; wo.frequency.value = freq
+    wo.connect(wg); wg.connect(rev)
+    wg.gain.setValueAtTime(0, t)
+    wg.gain.linearRampToValueAtTime(p * wet, t + 0.005)
+    wg.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.80)
+    wo.start(t); wo.stop(t + dur + 0.05)
+  }
 }
 
-// 周波数スイープ: freqStart → freqEnd → freqStart の往復サイレン
+// ダークピアノ: 純正弦波系 3倍音構成 + 微量ノイズ（EEW 系統に使用）
+function darkPiano(ctx: AudioContext, freq: number, t: number, dur: number, gain: number, wet = 0): void {
+  const p = gain * globalVolume
+
+  const s1 = ctx.createOscillator(); const g1 = ctx.createGain()
+  s1.type = 'sine'; s1.frequency.value = freq
+  s1.connect(g1); g1.connect(ctx.destination)
+  g1.gain.setValueAtTime(0, t)
+  g1.gain.linearRampToValueAtTime(p, t + 0.008)
+  g1.gain.exponentialRampToValueAtTime(0.001, t + dur)
+  s1.start(t); s1.stop(t + dur + 0.05)
+
+  const s2 = ctx.createOscillator(); const g2 = ctx.createGain()
+  s2.type = 'sine'; s2.frequency.value = freq * 2
+  s2.connect(g2); g2.connect(ctx.destination)
+  g2.gain.setValueAtTime(0, t)
+  g2.gain.linearRampToValueAtTime(p * 0.25, t + 0.008)
+  g2.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.35)
+  s2.start(t); s2.stop(t + dur + 0.05)
+
+  const s3 = ctx.createOscillator(); const g3 = ctx.createGain()
+  s3.type = 'sine'; s3.frequency.value = freq * 3
+  s3.connect(g3); g3.connect(ctx.destination)
+  g3.gain.setValueAtTime(0, t)
+  g3.gain.linearRampToValueAtTime(p * 0.08, t + 0.008)
+  g3.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.20)
+  s3.start(t); s3.stop(t + dur + 0.05)
+
+  const nlen = Math.floor(ctx.sampleRate * 0.006)
+  const nbuf = ctx.createBuffer(1, nlen, ctx.sampleRate)
+  const nd = nbuf.getChannelData(0)
+  for (let i = 0; i < nlen; i++) nd[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / nlen, 1.5)
+  const ns = ctx.createBufferSource(); const ng = ctx.createGain()
+  ns.buffer = nbuf
+  ng.gain.setValueAtTime(p * 0.14, t)
+  ng.gain.exponentialRampToValueAtTime(0.001, t + 0.006)
+  ns.connect(ng); ng.connect(ctx.destination)
+  ns.start(t); ns.stop(t + 0.008)
+
+  if (wet > 0) {
+    const rev = getReverb(ctx)
+    const wo = ctx.createOscillator(); const wg = ctx.createGain()
+    wo.type = 'sine'; wo.frequency.value = freq
+    wo.connect(wg); wg.connect(rev)
+    wg.gain.setValueAtTime(0, t)
+    wg.gain.linearRampToValueAtTime(p * wet, t + 0.008)
+    wg.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.80)
+    wo.start(t); wo.stop(t + dur + 0.05)
+  }
+}
+
+// 警報トーン: square + sine(×0.5) + triangle(×1.5) ブレンド（EEW 警報・特別警報に使用）
+function darkAlarm(ctx: AudioContext, freq: number, t: number, dur: number, gain: number): void {
+  const p = gain * globalVolume
+  const hold = Math.max(t + 0.012, t + dur - 0.04)
+
+  const sq = ctx.createOscillator(); const sqG = ctx.createGain()
+  sq.type = 'square'; sq.frequency.value = freq
+  sq.connect(sqG); sqG.connect(ctx.destination)
+  sqG.gain.setValueAtTime(0, t)
+  sqG.gain.linearRampToValueAtTime(p * 0.35, t + 0.010)
+  sqG.gain.setValueAtTime(p * 0.35, hold)
+  sqG.gain.linearRampToValueAtTime(0, t + dur)
+  sq.start(t); sq.stop(t + dur + 0.05)
+
+  const si = ctx.createOscillator(); const siG = ctx.createGain()
+  si.type = 'sine'; si.frequency.value = freq * 0.5
+  si.connect(siG); siG.connect(ctx.destination)
+  siG.gain.setValueAtTime(0, t)
+  siG.gain.linearRampToValueAtTime(p * 0.55, t + 0.010)
+  siG.gain.setValueAtTime(p * 0.55, hold)
+  siG.gain.linearRampToValueAtTime(0, t + dur)
+  si.start(t); si.stop(t + dur + 0.05)
+
+  const tr = ctx.createOscillator(); const trG = ctx.createGain()
+  tr.type = 'triangle'; tr.frequency.value = freq * 1.5
+  tr.connect(trG); trG.connect(ctx.destination)
+  trG.gain.setValueAtTime(0, t)
+  trG.gain.linearRampToValueAtTime(p * 0.18, t + 0.010)
+  trG.gain.setValueAtTime(p * 0.18, hold)
+  trG.gain.linearRampToValueAtTime(0, t + dur)
+  tr.start(t); tr.stop(t + dur + 0.05)
+}
+
+// 上昇スイープ: triangle + sine の指数周波数ランプ（EEW 特別警報に使用）
+function darkSweep(ctx: AudioContext, f1: number, f2: number, t: number, dur: number, gain: number): void {
+  const p = gain * globalVolume
+
+  const tr = ctx.createOscillator(); const trG = ctx.createGain()
+  tr.type = 'triangle'
+  tr.frequency.setValueAtTime(f1, t)
+  tr.frequency.exponentialRampToValueAtTime(f2, t + dur)
+  tr.connect(trG); trG.connect(ctx.destination)
+  trG.gain.setValueAtTime(0, t)
+  trG.gain.linearRampToValueAtTime(p * 0.60, t + 0.015)
+  trG.gain.setValueAtTime(p * 0.60, t + dur - 0.04)
+  trG.gain.linearRampToValueAtTime(0, t + dur)
+  tr.start(t); tr.stop(t + dur + 0.05)
+
+  const si = ctx.createOscillator(); const siG = ctx.createGain()
+  si.type = 'sine'
+  si.frequency.setValueAtTime(f1, t)
+  si.frequency.exponentialRampToValueAtTime(f2, t + dur)
+  si.connect(siG); siG.connect(ctx.destination)
+  siG.gain.setValueAtTime(0, t)
+  siG.gain.linearRampToValueAtTime(p * 0.40, t + 0.015)
+  siG.gain.setValueAtTime(p * 0.40, t + dur - 0.04)
+  siG.gain.linearRampToValueAtTime(0, t + dur)
+  si.start(t); si.stop(t + dur + 0.05)
+}
+
+
+// 周波数スイープ: freqStart → freqEnd → freqStart の往復サイレン（津波音に使用）
 function sweep(ctx: AudioContext, type: OscillatorType, freqStart: number, freqEnd: number, startAt: number, duration: number, gain: number): void {
   const osc = ctx.createOscillator()
   const g = ctx.createGain()
@@ -105,33 +242,79 @@ function sweep(ctx: AudioContext, type: OscillatorType, freqStart: number, freqE
   osc.stop(startAt + duration + 0.05)
 }
 
-// 指数減衰パルス: sine + 任意の square ブレンド（震度更新音用）
-function ping(ctx: AudioContext, freq: number, startAt: number, duration: number, gain: number, squareMix = 0): void {
-  const peak = gain * globalVolume
-  const so = ctx.createOscillator()
-  const sg = ctx.createGain()
-  so.type = 'sine'
-  so.frequency.value = freq
-  so.connect(sg)
-  sg.connect(ctx.destination)
-  sg.gain.setValueAtTime(0, startAt)
-  sg.gain.linearRampToValueAtTime(peak * (1 - squareMix * 0.4), startAt + 0.01)
-  sg.gain.exponentialRampToValueAtTime(0.001, startAt + duration)
-  so.start(startAt)
-  so.stop(startAt + duration + 0.05)
-  if (squareMix > 0) {
-    const qo = ctx.createOscillator()
-    const qg = ctx.createGain()
-    qo.type = 'square'
-    qo.frequency.value = freq
-    qo.connect(qg)
-    qg.connect(ctx.destination)
-    qg.gain.setValueAtTime(0, startAt)
-    qg.gain.linearRampToValueAtTime(peak * squareMix * 0.22, startAt + 0.01)
-    qg.gain.exponentialRampToValueAtTime(0.001, startAt + duration * 0.5)
-    qo.start(startAt)
-    qo.stop(startAt + duration + 0.05)
-  }
+// 打撃音: sine + triangle + sub + ノイズ（強震モニタ揺れ検知に使用）
+function impact(ctx: AudioContext, freq: number, t: number, dur: number, gain: number, noiseMix = 0.20): void {
+  const p = gain * globalVolume
+
+  const so = ctx.createOscillator(); const sg = ctx.createGain()
+  so.type = 'sine'; so.frequency.value = freq
+  so.connect(sg); sg.connect(ctx.destination)
+  sg.gain.setValueAtTime(0, t)
+  sg.gain.linearRampToValueAtTime(p, t + 0.003)
+  sg.gain.exponentialRampToValueAtTime(0.001, t + dur)
+  so.start(t); so.stop(t + dur + 0.05)
+
+  const to = ctx.createOscillator(); const tg = ctx.createGain()
+  to.type = 'triangle'; to.frequency.value = freq
+  to.connect(tg); tg.connect(ctx.destination)
+  tg.gain.setValueAtTime(0, t)
+  tg.gain.linearRampToValueAtTime(p * 0.45, t + 0.003)
+  tg.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.18)
+  to.start(t); to.stop(t + dur + 0.05)
+
+  const subO = ctx.createOscillator(); const subG = ctx.createGain()
+  subO.type = 'sine'; subO.frequency.value = freq * 0.5
+  subO.connect(subG); subG.connect(ctx.destination)
+  subG.gain.setValueAtTime(0, t)
+  subG.gain.linearRampToValueAtTime(p * 0.35, t + 0.004)
+  subG.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.45)
+  subO.start(t); subO.stop(t + dur + 0.05)
+
+  const nlen = Math.floor(ctx.sampleRate * 0.007)
+  const nbuf = ctx.createBuffer(1, nlen, ctx.sampleRate)
+  const nd = nbuf.getChannelData(0)
+  for (let i = 0; i < nlen; i++) nd[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / nlen, 1.5)
+  const ns = ctx.createBufferSource(); const ngn = ctx.createGain()
+  ns.buffer = nbuf
+  ngn.gain.setValueAtTime(p * noiseMix, t)
+  ngn.gain.exponentialRampToValueAtTime(0.001, t + 0.007)
+  ns.connect(ngn); ngn.connect(ctx.destination)
+  ns.start(t); ns.stop(t + 0.009)
+}
+
+// 純音トーン: sine + 第2倍音（強震モニタ更新音に使用）
+function ding(ctx: AudioContext, freq: number, t: number, dur: number, gain: number): void {
+  const p = gain * globalVolume
+
+  const so = ctx.createOscillator(); const sg = ctx.createGain()
+  so.type = 'sine'; so.frequency.value = freq
+  so.connect(sg); sg.connect(ctx.destination)
+  sg.gain.setValueAtTime(0, t)
+  sg.gain.linearRampToValueAtTime(p, t + 0.006)
+  sg.gain.exponentialRampToValueAtTime(0.001, t + dur)
+  so.start(t); so.stop(t + dur + 0.05)
+
+  const ho = ctx.createOscillator(); const hg = ctx.createGain()
+  ho.type = 'sine'; ho.frequency.value = freq * 2
+  ho.connect(hg); hg.connect(ctx.destination)
+  hg.gain.setValueAtTime(0, t)
+  hg.gain.linearRampToValueAtTime(p * 0.20, t + 0.006)
+  hg.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.22)
+  ho.start(t); ho.stop(t + dur + 0.05)
+}
+
+// 低音補強トーン: ding + サブオクターブ（高震度更新音に使用）
+function dingDeep(ctx: AudioContext, freq: number, t: number, dur: number, gain: number): void {
+  ding(ctx, freq, t, dur, gain)
+
+  const so = ctx.createOscillator(); const sg = ctx.createGain()
+  so.type = 'sine'; so.frequency.value = freq * 0.5
+  so.connect(sg); sg.connect(ctx.destination)
+  const p = gain * globalVolume
+  sg.gain.setValueAtTime(0, t)
+  sg.gain.linearRampToValueAtTime(p * 0.50, t + 0.008)
+  sg.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.55)
+  so.start(t); so.stop(t + dur + 0.05)
 }
 
 // ─── サウンドプレーヤー ───────────────────────────────────────────
@@ -139,62 +322,91 @@ function ping(ctx: AudioContext, freq: number, startAt: number, duration: number
 type SoundPlayer = (ctx: AudioContext, base: number) => void
 
 const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
-  // 地震情報（震源・震度情報 / 各地の震度情報）: FM ベル 2音（残響チャイム）
+  // 地震情報（震源・震度情報 / 各地の震度情報）: ピアノ上昇4音 E4→G#4→B4→E5
   earthquake: (ctx, base) => {
-    bell(ctx, 880, 3.5, 200, base,        0.80, 0.28)
-    bell(ctx, 660, 3.5, 180, base + 0.22, 1.10, 0.28)
+    const arpFreqs = [329.6, 415.3, 493.9, 659.3] as const
+    arpFreqs.forEach((f, i) => pianoNote(ctx, f, base + i * 0.16, 0.90, 0.26))
   },
 
-  // 震度速報: FM ベル 3音（速報感）
+  // 震度速報: ピアノ上昇3音 G#4→B4→E5
   earthquakePrompt: (ctx, base) => {
-    bell(ctx, 880, 2.0, 120, base,        0.35, 0.22)
-    bell(ctx, 880, 2.0, 120, base + 0.20, 0.35, 0.22)
-    bell(ctx, 660, 2.0, 160, base + 0.40, 0.50, 0.24)
+    const freqs = [415.3, 493.9, 659.3] as const
+    freqs.forEach((f, i) => pianoNote(ctx, f, base + i * 0.13, 0.60, 0.26))
   },
 
-  // 遠地地震 / その他: FM ベル 単音（控えめ）
+  // 遠地地震 / その他: ピアノ2音 G4→B4（控えめ）
   earthquakeInfo: (ctx, base) => {
-    bell(ctx, 660, 1.5, 80, base, 0.55, 0.18)
+    pianoNote(ctx, 392.0, base,        1.20, 0.18)
+    pianoNote(ctx, 493.9, base + 0.20, 1.40, 0.16)
   },
 
-  // EEW 予報: FM ベル 下降2音（緩やか）
+  // EEW 予報: ダークピアノ F4→A4（緩やか）
   eewForecast: (ctx, base) => {
-    bell(ctx, 784, 1.8, 90, base,        0.35, 0.20)
-    bell(ctx, 622, 1.8, 90, base + 0.22, 0.45, 0.20)
+    darkPiano(ctx, 349.2, base,        0.90, 0.26, 0.12)
+    darkPiano(ctx, 440.0, base + 0.22, 0.95, 0.26, 0.14)
   },
 
-  // EEW 警報: di-di-di-DAA パターン（3連ビープ + 長音）
-  eew: (ctx, base) => {
-    beep(ctx, 'square', 920, base + 0.00, 0.09, 0.18)
-    beep(ctx, 'square', 920, base + 0.13, 0.09, 0.18)
-    beep(ctx, 'square', 920, base + 0.26, 0.09, 0.18)
-    beep(ctx, 'square', 740, base + 0.41, 0.28, 0.20)
-  },
-
-  // EEW 特別警報: 上昇スイープ + 高速8連打（震度6弱以上）
-  eewSpecial: (ctx, base) => {
-    sweep(ctx, 'sawtooth', 500, 1100, base, 0.22, 0.18)
-    const freqs = [1060, 820, 1060, 820, 1060, 820, 1060, 820] as const
-    freqs.forEach((f, i) => beep(ctx, 'square', f, base + 0.26 + i * 0.11, 0.08, 0.20))
-  },
-
-  // EEW 続報: FM ベル 短2音（軽め）
+  // EEW 続報: ダークピアノ F4 単音
   eewUpdate: (ctx, base) => {
-    bell(ctx, 880,  4.0, 300, base,        0.18, 0.18)
-    bell(ctx, 1100, 4.0, 300, base + 0.14, 0.14, 0.15)
+    darkPiano(ctx, 349.2, base, 0.85, 0.26)
   },
 
-  // EEW 解除: FM ベル 下降3和音（安堵感）
+  // EEW 警報: ダークピアノ F4×3連打 + darkAlarm Bb3
+  eew: (ctx, base) => {
+    darkPiano(ctx, 349.2, base + 0 * 0.16, 0.12, 0.26)
+    darkPiano(ctx, 349.2, base + 1 * 0.16, 0.12, 0.26)
+    darkPiano(ctx, 349.2, base + 2 * 0.16, 0.12, 0.26)
+    darkAlarm(ctx, 233.1, base + 0.50, 0.46, 0.26)
+  },
+
+  // EEW 特別警報: 低音上昇 → スイープ → darkAlarm 9連打交互 → 三角波ドローン（震度6弱以上）
+  eewSpecial: (ctx, base) => {
+    const bs = ctx.createOscillator(); const bg = ctx.createGain()
+    bs.type = 'sine'
+    bs.frequency.setValueAtTime(55, base)
+    bs.frequency.exponentialRampToValueAtTime(110, base + 0.30)
+    bs.connect(bg); bg.connect(ctx.destination)
+    const bp = 0.22 * globalVolume
+    bg.gain.setValueAtTime(0, base)
+    bg.gain.linearRampToValueAtTime(bp, base + 0.02)
+    bg.gain.setValueAtTime(bp, base + 0.26)
+    bg.gain.linearRampToValueAtTime(0, base + 0.30)
+    bs.start(base); bs.stop(base + 0.35)
+
+    darkSweep(ctx, 150, 800, base + 0.30, 0.34, 0.22)
+
+    const alarmFreqs = [466.2, 349.2, 466.2, 349.2, 466.2, 349.2, 466.2, 349.2, 466.2] as const
+    alarmFreqs.forEach((f, i) => darkAlarm(ctx, f, base + 0.68 + i * 0.108, 0.095, 0.26))
+
+    const to = ctx.createOscillator(); const tg = ctx.createGain()
+    to.type = 'triangle'; to.frequency.value = 880
+    to.connect(tg); tg.connect(ctx.destination)
+    const tp = 0.032 * globalVolume
+    tg.gain.setValueAtTime(0, base + 0.65)
+    tg.gain.linearRampToValueAtTime(tp, base + 0.68)
+    tg.gain.setValueAtTime(tp, base + 1.62)
+    tg.gain.linearRampToValueAtTime(0, base + 1.66)
+    to.start(base + 0.65); to.stop(base + 1.70)
+  },
+
+  // EEW 解除: ダークピアノ A4→F4→C4 降下3音（100ms 間隔）
   eewCancel: (ctx, base) => {
-    bell(ctx, 523, 1.5, 60, base,        0.90, 0.22)
-    bell(ctx, 392, 1.5, 60, base + 0.10, 1.00, 0.20)
-    bell(ctx, 330, 1.5, 60, base + 0.25, 1.10, 0.18)
+    darkPiano(ctx, 440.0, base + 0 * 0.10, 0.90, 0.26)
+    darkPiano(ctx, 349.2, base + 1 * 0.10, 0.95, 0.25)
+    darkPiano(ctx, 261.6, base + 2 * 0.10, 1.00, 0.24)
   },
 
-  // 揺れ検知（強震モニタ first contact）: FM ベル 上昇2音
+  // 揺れ検知（強震モニタ first contact）: 打撃2音 + シマー高周波
   kyoshin: (ctx, base) => {
-    bell(ctx, 660, 2.5, 140, base,        0.45, 0.24)
-    bell(ctx, 880, 2.5, 160, base + 0.20, 0.65, 0.26)
+    impact(ctx, 1318, base + 0.00, 0.30, 0.28, 0.28)
+    const sh = ctx.createOscillator(); const shg = ctx.createGain()
+    sh.type = 'sine'; sh.frequency.value = 2637
+    sh.connect(shg); shg.connect(ctx.destination)
+    shg.gain.setValueAtTime(0, base + 0.02)
+    shg.gain.linearRampToValueAtTime(0.28 * globalVolume * 0.10, base + 0.025)
+    shg.gain.exponentialRampToValueAtTime(0.001, base + 0.18)
+    sh.start(base + 0.02); sh.stop(base + 0.20)
+    impact(ctx, 1047, base + 0.24, 0.42, 0.26, 0.18)
   },
 
   // 津波注意報: sine スイープ 300→500Hz × 2回（緩やか・低め）
@@ -217,7 +429,7 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
 }
 
 // ─── 震度更新音（強震モニタ）─────────────────────────────────────
-// 震度が上がるにつれ音程・回数・音量・波形の荒さが連動して増加する。
+// 震度が上がるにつれ音程・回数・音量が連動して増加する。
 
 // 強震モニタ index → 震度7段階のマッピング（インデックスは 0〜20、計測震度 = index * 0.5 - 3.0）
 // index 9=震度2相当、11=震度3、13=震度4、15=震度5弱、16=震度5強、17=震度6弱/6強、19=震度7
@@ -231,24 +443,22 @@ export function kyoshinLevel(index: number): number {
   return 0                    // 震度2以下
 }
 
-interface PingPattern {
-  freq: number
-  count: number
+interface DingPattern {
+  freqs: number[]
   interval: number
   duration: number
   gain: number
-  squareMix: number
-  altFreq?: number  // 奇数番目の音に使う別周波数（震度7の高低交互）
+  deep: boolean
 }
 
-const PING_PATTERNS: PingPattern[] = [
-  { freq: 440,  count: 1, interval: 0,    duration: 0.22, gain: 0.12, squareMix: 0.00 },                        // 震度2
-  { freq: 523,  count: 1, interval: 0,    duration: 0.24, gain: 0.15, squareMix: 0.00 },                        // 震度3
-  { freq: 659,  count: 2, interval: 0.20, duration: 0.20, gain: 0.18, squareMix: 0.00 },                        // 震度4
-  { freq: 784,  count: 2, interval: 0.18, duration: 0.20, gain: 0.22, squareMix: 0.05 },                        // 震度5弱
-  { freq: 880,  count: 3, interval: 0.16, duration: 0.18, gain: 0.24, squareMix: 0.10 },                        // 震度5強
-  { freq: 1047, count: 3, interval: 0.13, duration: 0.16, gain: 0.26, squareMix: 0.35 },                        // 震度6弱〜強
-  { freq: 1175, count: 4, interval: 0.14, duration: 0.15, gain: 0.28, squareMix: 0.60, altFreq: 880 },          // 震度7
+const DING_PATTERNS: DingPattern[] = [
+  { freqs: [659, 880],                              interval: 0.18, duration: 0.28, gain: 0.24, deep: false }, // 震度2以下
+  { freqs: [880, 1047, 1175],                       interval: 0.15, duration: 0.22, gain: 0.32, deep: false }, // 震度3
+  { freqs: [880, 1047, 1175, 1318],                 interval: 0.13, duration: 0.20, gain: 0.34, deep: false }, // 震度4
+  { freqs: [880, 1047, 1175, 1318],                 interval: 0.12, duration: 0.18, gain: 0.36, deep: true  }, // 震度5弱
+  { freqs: [1047, 784, 1047, 784, 1047],            interval: 0.11, duration: 0.17, gain: 0.38, deep: true  }, // 震度5強
+  { freqs: [1175, 880, 1175, 880, 1175, 880],       interval: 0.10, duration: 0.16, gain: 0.40, deep: true  }, // 震度6弱〜強
+  { freqs: [1318, 880, 1318, 880, 1318, 880, 1318], interval: 0.09, duration: 0.15, gain: 0.42, deep: true  }, // 震度7
 ]
 
 // ─── 公開 API ───────────────────────────────────────────────────
@@ -266,10 +476,8 @@ export function playKyoshinUpdateSound(maxIndex: number): void {
   const ctx = getCtx()
   if (!ctx) return
   if (ctx.state === 'suspended') void ctx.resume()
-  const p = PING_PATTERNS[kyoshinLevel(maxIndex)]
+  const p = DING_PATTERNS[kyoshinLevel(maxIndex)]
   const base = ctx.currentTime + 0.02
-  for (let i = 0; i < p.count; i++) {
-    const freq = (p.altFreq !== undefined && i % 2 === 1) ? p.altFreq : p.freq
-    ping(ctx, freq, base + i * p.interval, p.duration, p.gain, p.squareMix)
-  }
+  const fn = p.deep ? dingDeep : ding
+  p.freqs.forEach((freq, i) => fn(ctx, freq, base + i * p.interval, p.duration, p.gain))
 }
