@@ -208,15 +208,6 @@ function parseDomesticTsunamiFromComments(comments: Record<string, unknown>): Do
   return 'Unknown'
 }
 
-// DMDATA eventId（形式: "YYYYMMDDHHmmSS" JST）を ISO 8601 文字列に変換する。
-// VXSE51 には earthquake.originTime がないため、eventId から発生時刻を生成して
-// 後続の VXSE53 との dedup キーを一致させる。
-function eventIdToOriginTime(eventId: string): string {
-  if (eventId.length < 14) return ''
-  return `${eventId.slice(0, 4)}-${eventId.slice(4, 6)}-${eventId.slice(6, 8)}` +
-    `T${eventId.slice(8, 10)}:${eventId.slice(10, 12)}:${eventId.slice(12, 14)}+09:00`
-}
-
 // 地震情報 (VXSE51/52/53)
 export function parseEarthquake(headType: string, data: Record<string, unknown>): JMAQuake | null {
   const body = obj(data.body)
@@ -241,10 +232,10 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
     ? parseIntensityPoints(intensity)
     : []
 
-  // VXSE51 は earthquake.originTime がないため eventId から発生時刻を生成する。
-  // 同一地震の VXSE53 と dedup キーを揃えるために eventId ベースの時刻を使う。
+  // VXSE51 は earthquake.originTime がないため targetDateTime（概算発生時刻）を使う。
+  // VXSE52/53 の earthquake.originTime と分単位で一致し dedup キーが揃う。
   const eventId = str(data.eventId)
-  const originTime = str(earthquake.originTime) || (headType === 'VXSE51' ? eventIdToOriginTime(eventId) : '')
+  const originTime = str(earthquake.originTime) || (headType === 'VXSE51' ? str(data.targetDateTime) : '')
 
   return {
     code: 551,
