@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { JMAQuake, JMATsunami, JMALpgm, EEWAlert, EEWRegion, P2PQuakeEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, JMALpgm, EEWAlert, EEWRegion, Hypocenter, P2PQuakeEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms } from '../services/dmdata'
 import { loadStationCoords, buildAreaPrefIndex } from '../utils/stationCoords'
@@ -119,6 +119,9 @@ export function useEarthquakes(
   // 現在の state を WS コールバック内から参照するための ref
   const stateRef = useRef(state)
   stateRef.current = state
+  // EEW 受信時に震源データをキャッシュし、後続の VXSE51（震度速報）に補完する。
+  // activeEEWs はクリーンアップされるが、このキャッシュはセッション中保持する。
+  const eewHypocenterCacheRef = useRef<Map<string, Hypocenter>>(new Map())
   // DMDSS 版「もっと見る」用カーソルと API キー（useCallback 内の stale closure 回避）
   const dmdataCursorRef = useRef<string | undefined>(undefined)
   const dmdataApiKeyRef = useRef(dmdataApiKey)
@@ -145,6 +148,14 @@ export function useEarthquakes(
     if (event.code === 556) {
       const eew = event as EEWAlert
       const key = eew.issue?.eventId ?? eew.id
+      // 非キャンセル EEW の震源データを eventId でキャッシュする。
+      // VXSE51（震度速報）受信時に座標がない場合にここから補完する。
+      if (!eew.cancelled && !eew.test && key) {
+        const hypo = eew.earthquake?.hypocenter
+        if (hypo && Number.isFinite(hypo.latitude) && Number.isFinite(hypo.longitude)) {
+          eewHypocenterCacheRef.current.set(key, hypo)
+        }
+      }
       if (eew.cancelled || eew.test) {
         // キャンセル時: 最終報タイマーが残っていればキャンセル
         const t = finalCleanupTimersRef.current.get(key)
@@ -166,7 +177,22 @@ export function useEarthquakes(
       const now = new Date()
       switch (event.code) {
         case 551: {
-          const quake = event as JMAQuake
+          let quake = event as JMAQuake
+          // VXSE51（震度速報）に座標がない場合、同一 eventId の EEW キャッシュから震源を補完する。
+          // EEW の eventId は VXSE51 id の "dmdata-quake-{14桁}-{serial}" 形式から取り出す。
+          if (quake.issue.type === 'ScalePrompt' && quake.earthquake.hypocenter.latitude <= -200) {
+            const m = quake.id.match(/^dmdata-quake-(\d{14})-/)
+            const cachedHypo = m ? eewHypocenterCacheRef.current.get(m[1]) : undefined
+            if (cachedHypo) {
+              quake = {
+                ...quake,
+                earthquake: {
+                  ...quake.earthquake,
+                  hypocenter: { ...quake.earthquake.hypocenter, ...cachedHypo },
+                },
+              }
+            }
+          }
           const key = quake.earthquake.time
           const existing = prev.earthquakes.find(e => e.earthquake.time === key)
           if (existing && (ISSUE_PRIORITY[existing.issue.type] ?? 0) > (ISSUE_PRIORITY[quake.issue.type] ?? 0)) {
