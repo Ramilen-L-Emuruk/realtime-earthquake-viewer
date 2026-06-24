@@ -13,9 +13,10 @@ const API_BASE = 'https://api.dmdata.jp/v2'
 // DMDATA WebSocket 購読分類。telegram.earthquake は地震・津波両方の電文を配信する。
 // telegram.tsunami という分類は存在しないため含めない。
 const CLASSIFICATIONS = ['eew.forecast', 'eew.warning', 'telegram.earthquake']
-// EEW 電文種別: VXSE43=警報, VXSE44=予報(廃止予定), VXSE45=地震動予報。
+// EEW 電文種別: VXSE43=警報, VXSE45=地震動予報。
+// VXSE44（予報）は廃止予定のため除外。VXSE45 で同等情報＋長周期地震動が得られる。
 // VXSE42（配信テスト）は震源データを持たず EEW として表示できないため別途処理する。
-const EEW_TYPES = new Set(['VXSE43', 'VXSE44', 'VXSE45'])
+const EEW_TYPES = new Set(['VXSE43', 'VXSE45'])
 const RECONNECT_BASE_MS = 3000
 const RECONNECT_MAX_MS = 30000
 const RECONNECT_FACTOR = 1.5
