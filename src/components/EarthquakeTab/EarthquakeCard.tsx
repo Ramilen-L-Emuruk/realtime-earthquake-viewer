@@ -124,7 +124,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm }: 
             </span>
             <span
               className="font-black leading-none"
-              style={{ fontSize: '88px', color: getIntensityColor(maxScale) }}
+              style={{ fontSize: '88px', color: '#ffffff' }}
             >
               {maxScale === -1 ? '?' : getIntensityLabel(maxScale)}
             </span>
@@ -142,7 +142,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm }: 
               <span className="text-sm font-medium" style={{ color: getLpgmClassColor(lpgm.maxClass) }}>
                 長周期地震動
               </span>
-              <span className="text-2xl font-black" style={{ color: getLpgmClassColor(lpgm.maxClass) }}>
+              <span className="text-2xl font-black" style={{ color: '#ffffff' }}>
                 {getLpgmClassLabel(lpgm.maxClass)}
               </span>
             </div>
@@ -178,7 +178,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm }: 
                 <span className="text-xs font-medium tracking-wide" style={{ color: magColor }}>
                   マグニチュード
                 </span>
-                <span className="font-black leading-none" style={{ fontSize: '28px', color: magColor }}>
+                <span className="font-black leading-none" style={{ fontSize: '28px', color: '#ffffff' }}>
                   {hypocenter.magnitude.toFixed(1)}
                 </span>
               </div>
@@ -192,7 +192,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm }: 
                 <span className="text-xs font-medium tracking-wide" style={{ color: depthColor }}>
                   深さ
                 </span>
-                <span className="font-black leading-none" style={{ fontSize: '28px', color: depthColor }}>
+                <span className="font-black leading-none" style={{ fontSize: '28px', color: '#ffffff' }}>
                   {formatDepth(hypocenter.depth)}
                 </span>
               </div>
