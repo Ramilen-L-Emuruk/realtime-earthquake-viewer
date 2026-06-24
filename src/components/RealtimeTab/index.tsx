@@ -99,7 +99,7 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
           </span>
           <span
             className="font-black leading-none"
-            style={{ fontSize: '72px', color: maxScale > 0 ? getIntensityColor(maxScale) : '#9ca3af' }}
+            style={{ fontSize: '72px', color: '#ffffff' }}
           >
             {maxScale > 0 ? getIntensityLabel(maxScale) : '?'}
           </span>
@@ -117,7 +117,7 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
             <span className="text-sm font-medium" style={{ color: getLpgmClassColor(eew.forecastMaxLpgmClass) }}>
               推定長周期地震動
             </span>
-            <span className="text-2xl font-black" style={{ color: getLpgmClassColor(eew.forecastMaxLpgmClass) }}>
+            <span className="text-2xl font-black" style={{ color: '#ffffff' }}>
               {getLpgmClassLabel(eew.forecastMaxLpgmClass)}
             </span>
           </div>
@@ -146,7 +146,7 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
               <span className="text-xs font-medium tracking-wide" style={{ color: magColor }}>
                 マグニチュード
               </span>
-              <span className="font-black leading-none" style={{ fontSize: '24px', color: magColor }}>
+              <span className="font-black leading-none" style={{ fontSize: '24px', color: '#ffffff' }}>
                 {hypocenter.magnitude.toFixed(1)}
               </span>
             </div>
@@ -160,7 +160,7 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
               <span className="text-xs font-medium tracking-wide" style={{ color: depthColor }}>
                 深さ
               </span>
-              <span className="font-black leading-none" style={{ fontSize: '24px', color: depthColor }}>
+              <span className="font-black leading-none" style={{ fontSize: '24px', color: '#ffffff' }}>
                 {hypocenter.depth}km
               </span>
             </div>
