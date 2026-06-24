@@ -154,10 +154,12 @@ const VXSE_ISSUE_TYPE: Record<string, IssueType> = {
   VXSE53: 'ScaleAndDestination',
 }
 
-// VXSE53 JSON 電文（earthquake-information v1.1.0）の body.intensity から地域別震度を取り出す。
+// VXSE51/53 JSON 電文（earthquake-information v1.1.0）の body.intensity から震度データを取り出す。
 // v1.1.0 スキーマは regions[]/stations[] のフラット配列構造を持つ。
-// regions[] → 一次細分区域（isArea:true・地図の subregion 色付けに使用）
-// stations[] → 観測点（isArea:false・末尾の全角アスタリスク除去）
+// regions[]    → 一次細分区域（isArea:true・pref:''・地図の subregion 色付けに使用）
+// stations[]   → 観測点（isArea:false・pref:''・末尾の全角アスタリスク除去）
+// prefectures[] → pref: name 付きで追加（EarthquakeCard の都道府県別表示専用）
+//   ※ 都道府県名は subregions.json に存在しないため地図描画には影響しない
 function parseIntensityPoints(intensity: Record<string, unknown>): JMAQuake['points'] {
   const points: JMAQuake['points'] = []
 
@@ -179,15 +181,15 @@ function parseIntensityPoints(intensity: Record<string, unknown>): JMAQuake['poi
     }
   }
 
-  // regions/stations が空の場合は都道府県レベルにフォールバック
-  if (points.length === 0) {
-    for (const rawPref of arr(intensity.prefectures)) {
-      const p = obj(rawPref)
-      const name = str(p.name)
-      const scale = parseIntensityStr(str(p.maxInt) || null)
-      if (name && scale >= 0) {
-        points.push({ pref: '', addr: name, isArea: true, scale: scale as IntensityScale })
-      }
+  // JSON スキーマは stations/regions に親都道府県情報を持たないため、
+  // prefectures を pref: name 付きで追加し EarthquakeCard の都道府県別表示に使う。
+  // regions が空の場合も含め常に追加する（旧フォールバックを統合）。
+  for (const rawPref of arr(intensity.prefectures)) {
+    const p = obj(rawPref)
+    const name = str(p.name)
+    const scale = parseIntensityStr(str(p.maxInt) || null)
+    if (name && scale >= 0) {
+      points.push({ pref: name, addr: name, isArea: true, scale: scale as IntensityScale })
     }
   }
 

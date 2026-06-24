@@ -70,6 +70,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm }: 
     if (!isSelected || !quake.points.length) return []
     const map = new Map<string, number>()
     for (const p of quake.points) {
+      if (!p.pref) continue  // pref 未設定（JSON の regions/stations）は都道府県表示に使わない
       const cur = map.get(p.pref) ?? -1
       if (p.scale > cur) map.set(p.pref, p.scale)
     }
