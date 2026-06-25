@@ -188,7 +188,7 @@ export function useEarthquakes(
     // DMDATA 地震情報（551）の震度キャッシュ更新は setState の外で行う
     if (event.code === 551) {
       const quake = event as JMAQuake
-      const m = quake.id.match(/^dmdata-quake-(\d{14})-/)
+      const m = quake.id?.match(/^dmdata-quake-(\d{14})-/)
       if (m) {
         // VXSE51 の震度データをキャッシュ（後続 VXSE52 への補完用）
         if (quake.issue.type === 'ScalePrompt' && quake.earthquake.maxScale >= 0) {
@@ -205,7 +205,7 @@ export function useEarthquakes(
       switch (event.code) {
         case 551: {
           let quake = event as JMAQuake
-          const eventId = quake.id.match(/^dmdata-quake-(\d{14})-/)?.[1]
+          const eventId = quake.id?.match(/^dmdata-quake-(\d{14})-/)?.[1]
 
           // VXSE51: 座標がない場合に EEW キャッシュから震源を補完する
           if (quake.issue.type === 'ScalePrompt' && quake.earthquake.hypocenter.latitude <= -200) {
