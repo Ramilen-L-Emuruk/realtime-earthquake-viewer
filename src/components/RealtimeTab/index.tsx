@@ -169,8 +169,9 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
 
         {/* 対象地域（警報域と予報域を区別して表示） */}
         {prefAreas.length > 0 && (() => {
-          const warningPrefs = [...new Set(prefAreas.filter(a => a.kindCode === '10' || a.kindCode === '11').map(a => a.pref))]
-          const forecastPrefs = [...new Set(prefAreas.filter(a => a.kindCode !== '10' && a.kindCode !== '11').map(a => a.pref))]
+          const isWarning = (k: string) => k === '10' || k === '11' || k === '19'
+          const warningPrefs = [...new Set(prefAreas.filter(a => isWarning(a.kindCode)).map(a => a.pref))]
+          const forecastPrefs = [...new Set(prefAreas.filter(a => !isWarning(a.kindCode)).map(a => a.pref))]
           const hasKindCode = prefAreas.some(a => a.kindCode !== '')
           if (!hasKindCode) {
             return (
