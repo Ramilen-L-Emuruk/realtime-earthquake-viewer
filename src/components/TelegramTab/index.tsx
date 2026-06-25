@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react'
+import { zipSync } from 'fflate'
 import type { TelegramLogEntry } from '../../types/earthquake'
 
 const HEAD_TYPE_LABEL: Record<string, string> = {
@@ -129,6 +130,33 @@ export function TelegramTab({ telegramLog, onClear }: Props) {
     triggerDownload(json, `telegrams_${entries.length}件_${ts}.json`)
   }, [telegramLog, selectedIds])
 
+  const handleDownloadZip = useCallback(() => {
+    const entries = telegramLog.filter(e => selectedIds.has(e.id))
+    if (entries.length === 0) return
+    const enc = new TextEncoder()
+    const files: Record<string, Uint8Array> = {}
+    const usedNames = new Map<string, number>()
+    for (const e of entries) {
+      const json = JSON.stringify(buildDownloadPayload(e), null, 2)
+      const source = e.source === 'dmdss' ? 'DMDSS' : 'P2PQuake'
+      const ts = e.receivedAt.toISOString().replace(/[-:]/g, '').replace('T', '_').slice(0, 15)
+      const base = `${source}_${e.headType}_${ts}.json`
+      const count = usedNames.get(base) ?? 0
+      usedNames.set(base, count + 1)
+      const filename = count === 0 ? base : `${base.replace('.json', '')}_${count + 1}.json`
+      files[filename] = enc.encode(json)
+    }
+    const zipped = zipSync(files)
+    const ts = new Date().toISOString().replace(/[-:]/g, '').replace('T', '_').slice(0, 15)
+    const blob = new Blob([zipped], { type: 'application/zip' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `telegrams_${entries.length}件_${ts}.zip`
+    a.click()
+    URL.revokeObjectURL(url)
+  }, [telegramLog, selectedIds])
+
   const toggleExpand = useCallback((id: string) => {
     setExpandedId(prev => prev === id ? null : id)
   }, [])
@@ -182,7 +210,13 @@ export function TelegramTab({ telegramLog, onClear }: Props) {
               onClick={handleDownloadSelected}
               className="text-xs text-white bg-white/15 hover:bg-white/25 transition-colors px-3 py-1 rounded"
             >
-              ダウンロード
+              JSON
+            </button>
+            <button
+              onClick={handleDownloadZip}
+              className="text-xs text-white bg-white/15 hover:bg-white/25 transition-colors px-3 py-1 rounded"
+            >
+              ZIP
             </button>
             <button
               onClick={clearSelection}
