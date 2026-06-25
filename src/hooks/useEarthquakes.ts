@@ -29,6 +29,11 @@ const ISSUE_PRIORITY: Record<string, number> = {
   Other: 0,
 }
 
+const sortQuakes = (arr: JMAQuake[]): JMAQuake[] =>
+  [...arr].sort((a, b) =>
+    new Date(b.earthquake.time).getTime() - new Date(a.earthquake.time).getTime()
+  )
+
 // DMDSS版 EEW の地域別予想震度には pref が含まれないため、細分区域名→都道府県の
 // 逆引きインデックスで補完する（EEWカードの対象地域表示用。地図の色塗りは name のみで動く）。
 function enrichEEWPref(eew: EEWAlert, index: Map<string, string> | null): EEWAlert {
@@ -248,7 +253,7 @@ export function useEarthquakes(
               }
               return {
                 ...prev,
-                earthquakes: [merged, ...prev.earthquakes.filter(e => e.earthquake.time !== key)],
+                earthquakes: sortQuakes([merged, ...prev.earthquakes.filter(e => e.earthquake.time !== key)]),
                 lastUpdate: now,
               }
             }
@@ -258,10 +263,10 @@ export function useEarthquakes(
           if (existing && (ISSUE_PRIORITY[existing.issue.type] ?? 0) > (ISSUE_PRIORITY[quake.issue.type] ?? 0)) {
             return prev
           }
-          const earthquakes = [
+          const earthquakes = sortQuakes([
             quake,
             ...prev.earthquakes.filter(e => e.earthquake.time !== key),
-          ]
+          ])
           return { ...prev, earthquakes, lastUpdate: now }
         }
         case 552: {
@@ -330,7 +335,7 @@ export function useEarthquakes(
               seenQuakes.set(key, q)
             }
           }
-          const earthquakes = Array.from(seenQuakes.values())
+          const earthquakes = sortQuakes(Array.from(seenQuakes.values()))
           const allTsunami = tsunamiEvents
             .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
           const latestTsunami = allTsunami[0]
@@ -424,7 +429,7 @@ export function useEarthquakes(
             seenQuakes.set(key, q)
           }
         }
-        const earthquakes = Array.from(seenQuakes.values())
+        const earthquakes = sortQuakes(Array.from(seenQuakes.values()))
         const allTsunami = (tsunamiEvents as JMATsunami[])
           .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
         const latestTsunami = allTsunami[0]
@@ -499,7 +504,7 @@ export function useEarthquakes(
           }
           return {
             ...prev,
-            earthquakes: [...prev.earthquakes, ...Array.from(seenForBatch.values())],
+            earthquakes: sortQuakes([...prev.earthquakes, ...Array.from(seenForBatch.values())]),
             isLoadingMore: false,
             hasMore: !!nextToken,
           }
@@ -542,7 +547,7 @@ export function useEarthquakes(
           }
           return {
             ...prev,
-            earthquakes: [...prev.earthquakes, ...Array.from(seenForBatch.values())],
+            earthquakes: sortQuakes([...prev.earthquakes, ...Array.from(seenForBatch.values())]),
             isLoadingMore: false,
             hasMore: events.length === LOAD_MORE_BATCH,
           }
