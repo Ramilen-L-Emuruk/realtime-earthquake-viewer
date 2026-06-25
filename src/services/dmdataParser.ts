@@ -240,6 +240,13 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
   const eventId = str(data.eventId)
   const originTime = str(earthquake.originTime) || (headType === 'VXSE51' ? str(data.targetDateTime) : '')
 
+  // 遠地地震（body.type === '遠地地震に関する情報'）は issue.type を Foreign にする。
+  // VXSE_ISSUE_TYPE では VXSE53 が ScaleAndDestination だが、遠地地震は Foreign で統一する。
+  const bodyTypeStr = str(body.type)
+  const issueType: IssueType = bodyTypeStr === '遠地地震に関する情報'
+    ? 'Foreign'
+    : (VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination')
+
   return {
     code: 551,
     id: `dmdata-quake-${eventId}-${str(data.serialNo ?? data.serial ?? '1')}`,
@@ -247,13 +254,13 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
     issue: {
       source: str(data.editorialOffice ?? data.publishingOffice),
       time: str(data.reportDateTime ?? data.pressDateTime),
-      type: VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination',
+      type: issueType,
       correct: 'None' as CorrectType,
     },
     earthquake: {
       time: originTime,
       hypocenter: {
-        name: str(hypo.name),
+        name: str(obj(hypo.detailed).name) || str(hypo.name),
         // VXSE51 は震源情報なし。-200 は「位置不明」センチネル（地図・カードで非表示判定に使用）。
         latitude: Number.isFinite(lat) ? lat : -200,
         longitude: Number.isFinite(lng) ? lng : -200,
