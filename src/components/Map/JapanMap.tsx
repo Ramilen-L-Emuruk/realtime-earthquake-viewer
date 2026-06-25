@@ -403,7 +403,7 @@ export function JapanMap({
 
   // EEW 受信時: 対象地域（一次細分区域）を予想最大震度(scaleTo)の色で塗りつぶす。
   // 複数EEWがある場合は地域ごとの最大予想震度を採用する。
-  // kindCode '10'/'11' は強震動警戒域（警報対象）。警報域は不透明度・枠線を強くして視覚的に区別する。
+  // kindCode '10'/'11'/'19' は強震動警戒域（警報対象）。'19' は PLUM 法警報。警報域は不透明度・枠線を強くして視覚的に区別する。
   const eewAreaFills = useMemo(() => {
     if (mode !== 'kyoshin' || eews.length === 0) return []
     const maxByName = new Map<string, number>()
@@ -411,7 +411,7 @@ export function JapanMap({
     for (const eew of eews) {
       for (const a of eewAreas(eew)) {
         maxByName.set(a.name, Math.max(maxByName.get(a.name) ?? 0, a.scaleTo))
-        if (a.kindCode === '10' || a.kindCode === '11') warningNames.add(a.name)
+        if (a.kindCode === '10' || a.kindCode === '11' || a.kindCode === '19') warningNames.add(a.name)
       }
     }
     const list: { name: string; scale: number; isWarning: boolean; rings: LatLng[][] }[] = []
