@@ -1,4 +1,4 @@
-import type { EEWAlert, JMAQuake, JMATsunami, IntensityScale, TsunamiGrade } from '../types/earthquake'
+import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMAKohatsu, IntensityScale, TsunamiGrade } from '../types/earthquake'
 import { eewMaxScale } from './eew'
 import { getIntensityLabel } from './intensity'
 import { tsunamiMaxGrade } from './tsunami'
@@ -84,6 +84,23 @@ export function tsunamiToText(event: JMATsunami): string {
     : topGrade === 'Warning' ? '海岸から離れてください。' : ''
 
   return `${gradeLabel}。${areas.join('、')}に${gradeLabel}が発表されました。${action}`
+}
+
+/** 南海トラフ地震臨時情報（VYSE50/51/52）の読み上げテキストを生成する。 */
+export function nankaiToText(event: JMANankai): string {
+  if (event.kindName === '巨大地震警戒') {
+    return '南海トラフ地震臨時情報、巨大地震警戒。南海トラフ地震の想定震源域内で大規模な地震が発生しました。直ちに防災対応をとってください。'
+  }
+  if (event.kindName === '巨大地震注意') {
+    return '南海トラフ地震臨時情報、巨大地震注意。南海トラフ地震の想定震源域内で地震が発生しました。防災対応の確認をしてください。'
+  }
+  return '南海トラフ地震臨時情報。南海トラフ地震に関する臨時情報が発表されました。最新情報に注意してください。'
+}
+
+/** 北海道・三陸沖後発地震注意情報（VYSE60）の読み上げテキストを生成する。 */
+export function kohatsuToText(event: JMAKohatsu): string {
+  const headline = event.headline.replace(/北海道・三陸沖後発地震注意情報/g, '')
+  return `北海道・三陸沖後発地震注意情報。${headline ? headline + '。' : ''}今後、大規模地震の発生可能性が平常時より高まっています。防災対応の確認をしてください。`
 }
 
 export { tsunamiMaxGrade }

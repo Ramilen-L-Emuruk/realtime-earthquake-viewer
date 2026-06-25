@@ -161,6 +161,31 @@ export interface JMALpgm {
 
 export type P2PQuakeEvent = JMAQuake | JMATsunami | EarthquakeDetection | EEWAlert
 
+// 南海トラフ地震臨時情報 (VYSE50/51/52)
+export interface JMANankai {
+  id: string
+  time: string
+  eventId: string
+  kindCode: string   // '0201'=調査中 '0202'=巨大地震注意 '0203'=巨大地震警戒 '0204'=調査終了
+  kindName: string   // '調査中' | '巨大地震注意' | '巨大地震警戒' | '調査終了'
+  headline: string
+  body: string
+  cancelled: boolean // kindName === '調査終了'
+  reportDateTime: string
+}
+
+// 北海道・三陸沖後発地震注意情報 (VYSE60)
+export interface JMAKohatsu {
+  id: string
+  time: string
+  eventId: string
+  headline: string
+  body: string
+  cancelled: boolean
+  reportDateTime: string
+  expireAt: string  // reportDateTime + 7日
+}
+
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected'
 
 export interface TelegramLogEntry {
@@ -170,7 +195,7 @@ export interface TelegramLogEntry {
   headType: string
   isTest: boolean
   status: 'parsed' | 'filtered' | 'error'
-  kind?: 'eew' | 'quake' | 'tsunami' | 'lpgm' | 'detection'
+  kind?: 'eew' | 'quake' | 'tsunami' | 'lpgm' | 'detection' | 'nankai' | 'kohatsu'
   rawHead?: unknown
   rawBody: unknown
   errorMessage?: string

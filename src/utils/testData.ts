@@ -1,4 +1,4 @@
-import type { JMAQuake, JMATsunami, EEWAlert } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, EEWAlert, JMANankai, JMAKohatsu } from '../types/earthquake'
 
 export function createTestEarthquake(): JMAQuake {
   const now = new Date().toISOString()
@@ -108,6 +108,44 @@ export function createTestEEW(eventId?: string, serial = 1): EEWAlert {
       { pref: '福島県', name: '福島県浜通り', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: new Date(now.getTime() + 25000).toISOString() },
       { pref: '茨城県', name: '茨城県北部', scaleFrom: 40, scaleTo: 45, kindCode: '11', arrivalTime: new Date(now.getTime() + 30000).toISOString() },
     ],
+  }
+}
+
+export function createTestNankai(kindName: '調査中' | '巨大地震注意' | '巨大地震警戒'): JMANankai {
+  const now = new Date().toISOString()
+  const kindCodeMap: Record<string, string> = {
+    '調査中': '0201', '巨大地震注意': '0202', '巨大地震警戒': '0203',
+  }
+  const bodyMap: Record<string, string> = {
+    '調査中': '南海トラフ沿いの大規模な地震発生の可能性について、現在気象庁が調査を行っています。この情報は、調査中の段階で発表するものです。今後の情報に注意してください。',
+    '巨大地震注意': '南海トラフ地震の想定震源域内でマグニチュード7.0以上の地震が発生しました。今後、大規模地震の発生可能性が平常時より高まっています。防災対応の確認をしてください。',
+    '巨大地震警戒': '南海トラフ地震の想定震源域内でマグニチュード8.0以上の地震が発生しました。南海トラフ地震が発生するおそれがあります。直ちに防災対応をとってください。',
+  }
+  return {
+    id: `test-nankai-${Date.now()}`,
+    time: now,
+    eventId: `test-nankai-event-${Date.now()}`,
+    kindCode: kindCodeMap[kindName] ?? '0201',
+    kindName,
+    headline: `南海トラフ地震臨時情報（${kindName}）`,
+    body: bodyMap[kindName] ?? '',
+    cancelled: false,
+    reportDateTime: now,
+  }
+}
+
+export function createTestKohatsu(): JMAKohatsu {
+  const now = new Date().toISOString()
+  const expireAt = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString()
+  return {
+    id: `test-kohatsu-${Date.now()}`,
+    time: now,
+    eventId: `test-kohatsu-event-${Date.now()}`,
+    headline: '北海道・三陸沖後発地震注意情報',
+    body: '三陸沖でマグニチュード7.4の地震が発生しました。この地震は、北海道・三陸沖後発地震注意情報の発表基準を満たしています。今後、大規模地震の発生可能性が平常時より高まっています。海岸付近や川沿いにいる方は、念のため高台へ移動するなど、防災対応の確認をしてください。',
+    cancelled: false,
+    reportDateTime: now,
+    expireAt,
   }
 }
 
