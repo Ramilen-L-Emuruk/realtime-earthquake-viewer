@@ -111,6 +111,22 @@ export function createTestEEW(eventId?: string, serial = 1): EEWAlert {
   }
 }
 
+export function createTestTsunamiForecast(): JMATsunami {
+  const now = new Date().toISOString()
+  return {
+    code: 552,
+    id: `test-tsunami-forecast-${Date.now()}`,
+    time: now,
+    cancelled: false,
+    issue: { source: 'テスト', time: now, type: 'Focus' },
+    areas: [
+      { grade: 'Forecast', immediate: false, name: '北海道太平洋沿岸東部' },
+      { grade: 'Forecast', immediate: false, name: '北海道太平洋沿岸中部' },
+      { grade: 'Forecast', immediate: false, name: '北海道日本海沿岸南部' },
+    ],
+  }
+}
+
 export function createTestTsunamiWatch(): JMATsunami {
   const now = new Date().toISOString()
   return {
