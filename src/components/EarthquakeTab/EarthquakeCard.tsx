@@ -288,11 +288,11 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm }: 
         {/* 地震詳細 */}
         <div className="flex-1 min-w-0">
           {/* 地域名 + 発表種別 */}
-          <div className="flex items-center gap-2 flex-wrap mb-1">
-            <span className="text-white font-bold text-lg leading-tight truncate">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-white font-bold text-lg leading-tight flex-shrink-0">
               {hasLocation ? hypocenter.name : '震源調査中'}
             </span>
-            <span className={`text-xs px-1.5 py-0.5 rounded flex-shrink-0 ${issueTypeBadgeClass(issue.type)}`}>
+            <span className={`text-xs px-1.5 py-0.5 rounded min-w-0 truncate ${issueTypeBadgeClass(issue.type)}`}>
               {formatIssueType(issue.type)}
             </span>
           </div>
