@@ -20,7 +20,7 @@ import { eewMaxScale } from './utils/eew'
 import { tsunamiMaxGrade, tsunamiOverallGrade } from './utils/tsunami'
 import { playAlertSound, playKyoshinUpdateSound, kyoshinLevel, unlockAudio, setSoundVolume, type AlertSoundType } from './utils/alertSound'
 import { speakWithVoicevox } from './utils/voicevox'
-import { eewToText, earthquakeToText, tsunamiToText, nankaiToText, kohatsuToText } from './utils/ttsText'
+import { eewToText, eewCancelToText, earthquakeToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, nankaiToText, kohatsuToText } from './utils/ttsText'
 import { kyoshinIndexToLabel } from './utils/kyoshinIntensity'
 import type { P2PQuakeEvent, EEWAlert } from './types/earthquake'
 
@@ -122,6 +122,9 @@ export function App() {
   const eewTitleTimerRef = useRef<number>(0)
   const tsunamiTitleTimerRef = useRef<number>(0)
 
+  // 直前に読み上げた津波グレード（引き下げ検出に使用）
+  const lastTsunamiGradeRef = useRef<'MajorWarning' | 'Warning' | 'Watch' | null>(null)
+
   // VOICEVOX EEW 読み上げデバウンス（レベルアップ確定から3秒後に読み上げ）
   const eewTtsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const eewTtsMaxTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -158,6 +161,10 @@ export function App() {
       // Forecast は tsunamiOverallGrade から除外されるため「津波解除検出」effect が発火しない。タイマーごと即時リセットする。
       window.clearTimeout(tsunamiTitleTimerRef.current)
       applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
+      if (settings.voicevoxEnabled) {
+        speakWithVoicevox(settings.voicevoxUrl, tsunamiCancelToText(), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+      }
+      lastTsunamiGradeRef.current = null
     } else if (event.code === 556) {
       if (event.test) return
 
@@ -169,6 +176,9 @@ export function App() {
         activeEEWLevelsRef.current.delete(key)
         if (settings.soundEnabled && !event.expired) {
           playAlertSound('eewCancel')
+        }
+        if (settings.voicevoxEnabled && !event.expired) {
+          speakWithVoicevox(settings.voicevoxUrl, eewCancelToText(event), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
         }
         // EEW 解除時は読み上げタイマーをキャンセルする
         if (eewTtsTimerRef.current) { clearTimeout(eewTtsTimerRef.current); eewTtsTimerRef.current = null }
@@ -272,6 +282,13 @@ export function App() {
             speakWithVoicevox(settings.voicevoxUrl, ttsText, settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
           }, 1500)
         }
+      } else if (specialEvent.kind === 'nankai' && settings.voicevoxEnabled) {
+        speakWithVoicevox(
+          settings.voicevoxUrl,
+          nankaiToText(specialEvent.data as Parameters<typeof nankaiToText>[0]),
+          settings.voicevoxSpeakerId,
+          settings.soundVolume,
+        ).catch(() => {})
       }
       return
     }
@@ -312,22 +329,34 @@ export function App() {
 
     // VOICEVOX 読み上げ（新しい情報が来たら再生中を割り込み停止して読み直す）
     if (settings.voicevoxEnabled) {
-      const ttsText = event.code === 551 ? earthquakeToText(event)
-        : event.code === 552 ? tsunamiToText(event)
-        : null
-      if (ttsText && type) {
-        const TTS_DELAY_MS: Partial<Record<AlertSoundType, number>> = {
-          earthquake:       1000,
-          earthquakePrompt:  500,
-          earthquakeInfo:    400,
-          tsunamiForecast:  1900,
-          tsunamiWatch:     1700,
-          tsunami:          2800,
-          tsunamiMajor:     4200,
+      const TTS_DELAY_MS: Partial<Record<AlertSoundType, number>> = {
+        earthquake:       1000,
+        earthquakePrompt:  500,
+        earthquakeInfo:    400,
+        tsunamiForecast:  1900,
+        tsunamiWatch:     1700,
+        tsunami:          2800,
+        tsunamiMajor:     4200,
+      }
+      let ttsText: string | null = null
+      if (event.code === 551) {
+        ttsText = earthquakeToText(event)
+      } else if (event.code === 552) {
+        const GRADE_RANK = { MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0 } as const
+        type GradeKey = keyof typeof GRADE_RANK
+        const currentGrade = tsunamiMaxGrade(event)
+        const prevGrade = lastTsunamiGradeRef.current
+        const isDowngrade = prevGrade !== null && GRADE_RANK[currentGrade as GradeKey] < GRADE_RANK[prevGrade]
+        ttsText = isDowngrade ? tsunamiDowngradeToText(event) : tsunamiToText(event)
+        // 次回の引き下げ検出のため、TTS 発話後のグレードを記録する
+        if (currentGrade === 'MajorWarning' || currentGrade === 'Warning' || currentGrade === 'Watch') {
+          lastTsunamiGradeRef.current = currentGrade
         }
+      }
+      if (ttsText && type) {
         const delay = TTS_DELAY_MS[type] ?? 0
         setTimeout(() => {
-          speakWithVoicevox(settings.voicevoxUrl, ttsText, settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+          speakWithVoicevox(settings.voicevoxUrl, ttsText!, settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
         }, delay)
       }
     }
