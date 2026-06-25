@@ -10,7 +10,7 @@ import { lookupPointCoords, buildAreaPrefIndex, buildStationPrefIndex, type LatL
 import { useTsunamiZones } from '../../hooks/useTsunamiZones'
 import { useSubRegions } from '../../hooks/useSubRegions'
 import type { SubRegion } from '../../utils/subregions'
-import { pointInRings } from '../../utils/geo'
+import { pointInRings, normalizeEpicenterLng } from '../../utils/geo'
 import { BaseMap } from './BaseMap'
 import { IntensityPoints } from './IntensityPoints'
 import { KyoshinPoints } from './KyoshinPoints'
@@ -453,7 +453,7 @@ export function JapanMap({
     if (hasEpicenter && quake) {
       positions.push([
         quake.earthquake.hypocenter.latitude,
-        quake.earthquake.hypocenter.longitude,
+        normalizeEpicenterLng(quake.earthquake.hypocenter.longitude, JAPAN_CENTER[1]),
       ])
     }
     // 遠地地震は国内観測点がなく震源のみになるため、日本中心を追加して両方を収める
@@ -571,7 +571,7 @@ export function JapanMap({
                 key={`eew-epicenter-${eew.id}`}
                 position={[
                   eew.earthquake.hypocenter.latitude,
-                  eew.earthquake.hypocenter.longitude,
+                  normalizeEpicenterLng(eew.earthquake.hypocenter.longitude, JAPAN_CENTER[1]),
                 ]}
                 icon={getEpicenterIcon(iconScale, true)}
                 zIndexOffset={EPICENTER_Z}
@@ -665,7 +665,7 @@ export function JapanMap({
         <Marker
           position={[
             quake.earthquake.hypocenter.latitude,
-            quake.earthquake.hypocenter.longitude,
+            normalizeEpicenterLng(quake.earthquake.hypocenter.longitude, JAPAN_CENTER[1]),
           ]}
           icon={getEpicenterIcon(iconScale)}
           zIndexOffset={EPICENTER_Z}
