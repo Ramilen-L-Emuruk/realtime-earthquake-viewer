@@ -240,10 +240,9 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
   const eventId = str(data.eventId)
   const originTime = str(earthquake.originTime) || (headType === 'VXSE51' ? str(data.targetDateTime) : '')
 
-  // 遠地地震（body.type === '遠地地震に関する情報'）は issue.type を Foreign にする。
+  // 遠地地震は data.title === '遠地地震に関する情報' で判定する（data.body.type には存在しない）。
   // VXSE_ISSUE_TYPE では VXSE53 が ScaleAndDestination だが、遠地地震は Foreign で統一する。
-  const bodyTypeStr = str(body.type)
-  const issueType: IssueType = bodyTypeStr === '遠地地震に関する情報'
+  const issueType: IssueType = str(data.title) === '遠地地震に関する情報'
     ? 'Foreign'
     : (VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination')
 
@@ -318,7 +317,9 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   const originTime = xmlText(xmlQ(earthquakeEl, 'OriginTime'))
   const hypocenterEl = xmlQ(earthquakeEl, 'Hypocenter')
   const areaEl = hypocenterEl ? xmlQ(hypocenterEl, 'Area') : null
-  const hypName = areaEl ? xmlText(xmlQ(areaEl, 'Name')) : ''
+  // 遠地地震は Area/DetailedName に詳細震央地名（例: "ベネズエラ沿岸"）が入る。なければ Area/Name にフォールバック。
+  const hypName = (areaEl ? xmlText(xmlQ(areaEl, 'DetailedName')) : '')
+    || (areaEl ? xmlText(xmlQ(areaEl, 'Name')) : '')
   const coordStr = areaEl ? xmlText(xmlQ(areaEl, 'Coordinate')) : ''
   const { lat, lng, depth } = parseJmaCoord(coordStr)
 
@@ -356,7 +357,12 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     }
   }
 
-  const issueType = VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination'
+  // 遠地地震は Head/Title で判定する（Control/Title と区別するため Head 要素を先に取得する）
+  const headInfoEl = xmlQ(doc, 'Head')
+  const titleText = headInfoEl ? xmlText(xmlQ(headInfoEl, 'Title')) : ''
+  const issueType: IssueType = titleText === '遠地地震に関する情報'
+    ? 'Foreign'
+    : (VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination')
   const correct: CorrectType = infoType === '訂正' ? 'Unknown' : 'None'
 
   return {
