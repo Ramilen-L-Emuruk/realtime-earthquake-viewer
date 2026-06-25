@@ -374,6 +374,15 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     : (VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination')
   const correct: CorrectType = infoType === '訂正' ? 'Unknown' : 'None'
 
+  // ForecastComment > Code（スペース区切り複数コード）から domesticTsunami を導出
+  // 例: <ForecastComment><Code>0212 0241</Code></ForecastComment> → ['0212', '0241']
+  const forecastCommentEl = xmlQ(doc, 'ForecastComment')
+  const forecastCodeEl = forecastCommentEl ? xmlQ(forecastCommentEl, 'Code') : null
+  const forecastCodes = forecastCodeEl
+    ? forecastCodeEl.textContent!.trim().split(/\s+/)
+    : []
+  const domestic = parseDomesticTsunamiFromComments({ forecast: { codes: forecastCodes } })
+
   return {
     code: 551,
     id: `dmdata-xml-quake-${eventId}-${serial}`,
@@ -388,7 +397,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
       time: originTime,
       hypocenter: { name: hypName, latitude: lat, longitude: lng, depth, magnitude },
       maxScale: maxScale >= 0 ? maxScale as IntensityScale : -1,
-      domesticTsunami: 'None',
+      domesticTsunami: domestic,
       foreignTsunami: 'None',
     },
     points,
