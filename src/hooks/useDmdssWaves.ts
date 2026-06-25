@@ -2,13 +2,56 @@ import { useEffect, useState } from 'react'
 import type { EEWAlert } from '../types/earthquake'
 import type { PsWaveCircle } from '../services/kyoshin'
 
-export const VS_KM_PER_SEC = 3.5
-const VP_KM_PER_SEC = 6.0
+// 地殻速度モデル（日本の平均的な1D速度構造に基づく）
+const VP1 = 6.0   // 地殻 P波 [km/s]
+const VP2 = 7.8   // マントル P波 / Pn波 [km/s]
+const VS1 = 3.5   // 地殻 S波 [km/s]
+const VS2 = 4.5   // マントル S波 / Sn波 [km/s]
+const MOHO_KM = 33 // モホ面深度 [km]（日本平均値）
+
+// Pn/Sn の臨界角の余弦
+const COS_IC_P = Math.sqrt(1 - (VP1 / VP2) ** 2)
+const COS_IC_S = Math.sqrt(1 - (VS1 / VS2) ** 2)
+
+// S波速度（useSWaveCountdown から参照される）
+export const VS_KM_PER_SEC = VS1
+
 const UPDATE_INTERVAL_MS = 100
 
 /**
+ * 2層速度モデル（地殻＋マントル）で地表到達半径を計算する。
+ *
+ * 震源が地殻内（depth <= MOHO_KM）の場合:
+ *   - 直達波（P/S）: √((V1·t)² − depth²)
+ *   - 屈折波（Pn/Sn）: (t − t_intercept) · V2  ← モホ面沿いの高速伝播
+ *   - 両者の大きい方が実際の波面位置
+ *
+ * 震源がマントル内（depth > MOHO_KM）の場合:
+ *   - マントル速度（V2）で直達波計算
+ *
+ * これにより震源から 150km 超の P波円・160km 超の S波円の精度が向上する。
+ */
+function computeRadius(t: number, depth: number, v1: number, v2: number, cosIc: number): number {
+  if (depth <= MOHO_KM) {
+    // 直達波の地表半径
+    const directHypo = v1 * t
+    const directRadius = directHypo > depth ? Math.sqrt(directHypo ** 2 - depth ** 2) : 0
+
+    // Pn/Sn 屈折波の地表半径
+    // インターセプト時刻: 波がモホ面に達して戻ってくるまでの余分な時間
+    const interceptTime = (2 * MOHO_KM - depth) * cosIc / v1
+    const headRadius = t > interceptTime ? (t - interceptTime) * v2 : 0
+
+    return Math.max(directRadius, headRadius)
+  } else {
+    // 震源がマントル内: マントル速度で直達波
+    const hypo = v2 * t
+    return hypo > depth ? Math.sqrt(hypo ** 2 - depth ** 2) : 0
+  }
+}
+
+/**
  * DMDSS版専用: アクティブな EEW の震源・発生時刻から P波・S波の地表到達半径を計算する。
- * 速度モデル VP=6.0, VS=3.5 km/s、震源深さによる 3D→地表投影を適用。
  * 100ms ごとに更新することでスムーズな拡張アニメーションを実現する。
  */
 export function useDmdssWaves(activeEEWs: EEWAlert[], enabled: boolean): PsWaveCircle[] {
@@ -34,14 +77,12 @@ export function useDmdssWaves(activeEEWs: EEWAlert[], enabled: boolean): PsWaveC
         if (t < 0) continue
 
         const depth = Math.max(0, hypocenter.depth ?? 0)
-        const pHypo = VP_KM_PER_SEC * t
-        const sHypo = VS_KM_PER_SEC * t
 
         circles.push({
           lat: hypocenter.latitude,
           lng: hypocenter.longitude,
-          pRadius: pHypo > depth ? Math.sqrt(pHypo * pHypo - depth * depth) : 0,
-          sRadius: sHypo > depth ? Math.sqrt(sHypo * sHypo - depth * depth) : 0,
+          pRadius: computeRadius(t, depth, VP1, VP2, COS_IC_P),
+          sRadius: computeRadius(t, depth, VS1, VS2, COS_IC_S),
         })
       }
 
