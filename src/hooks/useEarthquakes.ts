@@ -13,6 +13,7 @@ import {
   createTestTsunami,
   createTestTsunamiWarning,
   createTestTsunamiWatch,
+  createTestTsunamiForecast,
 } from '../utils/testData'
 
 const MAX_HISTORY_RETAINED = 50   // 初回取得件数（設定の最大選択値に合わせる）
@@ -595,6 +596,12 @@ export function useEarthquakes(
     setTimeout(() => handleEvent({ ...tsunami, cancelled: true }), 10000)
   }, [handleEvent])
 
+  const simulateTsunamiForecast = useCallback(() => {
+    const tsunami = createTestTsunamiForecast()
+    handleEvent(tsunami)
+    setTimeout(() => handleEvent({ ...tsunami, cancelled: true }), 10000)
+  }, [handleEvent])
+
   return {
     ...state,
     injectEvent: handleEvent,
@@ -602,6 +609,6 @@ export function useEarthquakes(
     clearTelegramLog,
     simulateEarthquake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast,
-    simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch,
+    simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast,
   }
 }

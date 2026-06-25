@@ -1,7 +1,7 @@
 import type { JMATsunami, TsunamiGrade } from '../types/earthquake'
 
 const GRADE_PRIORITY: Record<TsunamiGrade, number> = {
-  MajorWarning: 3, Warning: 2, Watch: 1, Unknown: 0,
+  MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0,
 }
 
 /** 発表中エリアの最高グレードを返す。エリアが無ければ 'Unknown'。 */
@@ -19,7 +19,7 @@ export function tsunamiOverallGrade(tsunamis: JMATsunami[]): 'MajorWarning' | 'W
   for (const t of tsunamis) {
     if (t.cancelled) continue
     const g = tsunamiMaxGrade(t)
-    if (g !== 'Unknown' && (max === null || GRADE_PRIORITY[g] > GRADE_PRIORITY[max])) max = g
+    if (g !== 'Unknown' && g !== 'Forecast' && (max === null || GRADE_PRIORITY[g] > GRADE_PRIORITY[max])) max = g
   }
   return max as 'MajorWarning' | 'Warning' | 'Watch' | null
 }

@@ -460,11 +460,12 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
 
 // Kind/Code による津波グレード判定（仕様: 気象庁防災情報XML 警報等情報要素コード表）
 // 52/53: 大津波警報、51: 津波警報、62: 津波注意報
-// 50/60: 解除、71/72/73: 若干の海面変動（予報のみ）、00: 津波なし
+// 71/72/73: 津波予報（若干の海面変動）、50/60: 解除、00: 津波なし
 function parseTsunamiGradeByCode(code: string): TsunamiGrade {
   if (code === '52' || code === '53') return 'MajorWarning'
   if (code === '51') return 'Warning'
   if (code === '62') return 'Watch'
+  if (code === '71' || code === '72' || code === '73') return 'Forecast'
   return 'Unknown'
 }
 
