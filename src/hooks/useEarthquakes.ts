@@ -24,6 +24,7 @@ const ISSUE_PRIORITY: Record<string, number> = {
   ScaleAndDestination: 3,
   Destination: 2,
   ScalePrompt: 1,
+  DestinationAmended: 5,
   Foreign: 0,
   Other: 0,
 }
@@ -229,6 +230,31 @@ export function useEarthquakes(
 
           const key = quake.earthquake.time
           const existing = prev.earthquakes.find(e => e.earthquake.time === key)
+
+          // VXSE61（DestinationAmended）: points を失わないよう震源フィールドのみをマージ
+          if (quake.issue.type === 'DestinationAmended') {
+            if (existing) {
+              const merged: JMAQuake = {
+                ...existing,
+                time: quake.time,
+                issue: quake.issue,
+                earthquake: {
+                  ...existing.earthquake,
+                  hypocenter: quake.earthquake.hypocenter,
+                  domesticTsunami: quake.earthquake.domesticTsunami !== 'Unknown'
+                    ? quake.earthquake.domesticTsunami
+                    : existing.earthquake.domesticTsunami,
+                },
+              }
+              return {
+                ...prev,
+                earthquakes: [merged, ...prev.earthquakes.filter(e => e.earthquake.time !== key)],
+                lastUpdate: now,
+              }
+            }
+            // 既存カードなし: 通常追加処理へフォールスルー
+          }
+
           if (existing && (ISSUE_PRIORITY[existing.issue.type] ?? 0) > (ISSUE_PRIORITY[quake.issue.type] ?? 0)) {
             return prev
           }

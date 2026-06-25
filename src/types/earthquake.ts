@@ -20,6 +20,7 @@ export type IssueType =
   | 'Destination'
   | 'ScaleAndDestination'
   | 'DetailScale'
+  | 'DestinationAmended'
   | 'Foreign'
   | 'Other'
 

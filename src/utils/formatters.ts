@@ -61,6 +61,7 @@ export function formatIssueType(type: IssueType): string {
     Destination: '震源情報',
     ScaleAndDestination: '震源・震度情報',
     DetailScale: '各地の震度情報',
+    DestinationAmended: '顕著な地震の震源要素更新のお知らせ',
     Foreign: '遠地地震',
     Other: 'その他',
   }

@@ -7,6 +7,7 @@ const HEAD_TYPE_LABEL: Record<string, string> = {
   VXSE51: '震度速報',
   VXSE52: '震源情報',
   VXSE53: '震源・震度',
+  VXSE61: '顕著な地震の震源要素更新のお知らせ',
   VTSE41: '津波情報',
   VTSE51: '津波観測',
   VTSE52: '津波観測詳細',
