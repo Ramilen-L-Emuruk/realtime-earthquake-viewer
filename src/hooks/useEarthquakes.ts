@@ -135,6 +135,8 @@ export function useEarthquakes(
   // VXSE51 受信時に震度データをキャッシュし、後続の VXSE52（震源情報）に補完する。
   // VXSE52 は震源のみで震度を持たないため、VXSE51 の maxScale・points を引き継ぐ。
   const quakeIntensityCacheRef = useRef<Map<string, { maxScale: IntensityScale; points: EarthquakePoint[] }>>(new Map())
+  // 津波予報（若干の海面変動）の ValidDateTime 経過時の自動解除タイマー
+  const tsunamiValidTimerRef = useRef<number | undefined>(undefined)
   // DMDSS 版「もっと見る」用カーソルと API キー（useCallback 内の stale closure 回避）
   const dmdataCursorRef = useRef<string | undefined>(undefined)
   const dmdataApiKeyRef = useRef(dmdataApiKey)
@@ -197,6 +199,27 @@ export function useEarthquakes(
             maxScale: quake.earthquake.maxScale,
             points: quake.points,
           })
+        }
+      }
+    }
+
+    // 552（津波）の ValidDateTime タイマー管理は setState の外で行う
+    if (event.code === 552) {
+      const tsunami = event as JMATsunami
+      // 既存タイマーをリセット
+      if (tsunamiValidTimerRef.current !== undefined) {
+        window.clearTimeout(tsunamiValidTimerRef.current)
+        tsunamiValidTimerRef.current = undefined
+      }
+      // 非キャンセルかつ ValidDateTime あり → 期限切れ時に自動解除
+      if (!tsunami.cancelled && tsunami.validDateTime) {
+        const expireMs = new Date(tsunami.validDateTime).getTime() - Date.now()
+        if (expireMs > 0) {
+          tsunamiValidTimerRef.current = window.setTimeout(() => {
+            tsunamiValidTimerRef.current = undefined
+            // キャンセルイベントとして再発火（App.tsx の解除検出・タイトル更新もまとめて動く）
+            handleEvent({ ...tsunami, cancelled: true })
+          }, expireMs)
         }
       }
     }
@@ -275,6 +298,10 @@ export function useEarthquakes(
           if (tsunami.cancelled) {
             return { ...prev, tsunamis: [], lastUpdate: now }
           }
+          // ValidDateTime が過去 = すでに有効期限切れ（ページリロード時など）
+          if (tsunami.validDateTime && new Date(tsunami.validDateTime) <= now) {
+            return { ...prev, tsunamis: [], lastUpdate: now }
+          }
           return { ...prev, tsunamis: [tsunami], lastUpdate: now }
         }
         case 556: {
@@ -297,13 +324,16 @@ export function useEarthquakes(
     })
   }, [])
 
-  // アンマウント時に最終報タイマーを全てクリア
+  // アンマウント時に各種タイマーをクリア
   useEffect(() => {
     return () => {
       for (const t of finalCleanupTimersRef.current.values()) {
         window.clearTimeout(t)
       }
       finalCleanupTimersRef.current.clear()
+      if (tsunamiValidTimerRef.current !== undefined) {
+        window.clearTimeout(tsunamiValidTimerRef.current)
+      }
     }
   }, [])
 
@@ -340,7 +370,11 @@ export function useEarthquakes(
           const allTsunami = tsunamiEvents
             .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
           const latestTsunami = allTsunami[0]
-          const tsunamis = latestTsunami && !latestTsunami.cancelled ? [latestTsunami] : []
+          const now = new Date()
+          const tsunamis = latestTsunami
+            && !latestTsunami.cancelled
+            && !(latestTsunami.validDateTime && new Date(latestTsunami.validDateTime) <= now)
+            ? [latestTsunami] : []
 
           // 表示中の最古の地震時刻まで VXSE62 をページネーションで取得
           const oldest = earthquakes.reduce<string | null>((acc, q) => {
@@ -434,7 +468,11 @@ export function useEarthquakes(
         const allTsunami = (tsunamiEvents as JMATsunami[])
           .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
         const latestTsunami = allTsunami[0]
-        const tsunamis = latestTsunami && !latestTsunami.cancelled ? [latestTsunami] : []
+        const nowP2p = new Date()
+        const tsunamis = latestTsunami
+          && !latestTsunami.cancelled
+          && !(latestTsunami.validDateTime && new Date(latestTsunami.validDateTime) <= nowP2p)
+          ? [latestTsunami] : []
         p2pRawOffsetRef.current = quakeEvents.length
         setState(prev => ({
           ...prev,

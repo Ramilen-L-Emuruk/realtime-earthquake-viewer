@@ -408,6 +408,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   const eventId = xmlText(xmlQ(doc, 'EventID'))
   const serial = xmlText(xmlQ(doc, 'Serial')) || '1'
   const infoType = xmlText(xmlQ(doc, 'InfoType'))
+  const validDateTime = xmlText(xmlQ(doc, 'ValidDateTime')) || undefined
 
   const id = `dmdata-xml-tsunami-${eventId}-${serial}`
   const cancelled = infoType === '取消'
@@ -455,7 +456,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   // Forecast があるのに有効エリアが0件 = 全エリアが解除済み
   if (areas.length === 0) return { code: 552, id, time: reportDateTime, cancelled: true, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [] }
 
-  return { code: 552, id, time: reportDateTime, cancelled: false, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas }
+  return { code: 552, id, time: reportDateTime, cancelled: false, validDateTime, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas }
 }
 
 // Kind/Code による津波グレード判定（仕様: 気象庁防災情報XML 警報等情報要素コード表）
@@ -475,6 +476,7 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
   const id = `dmdata-tsunami-${str(data.eventId)}-${str(data.serialNo ?? data.serial ?? '1')}`
   const time = str(data.reportDateTime ?? data.pressDateTime)
   const source = str(data.editorialOffice ?? data.publishingOffice)
+  const validDateTime = str(data.validDateTime) || undefined
 
   if (cancelled) {
     return { code: 552, id, time, cancelled: true, issue: { source, time, type: 'Focus' }, areas: [] }
@@ -548,7 +550,7 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
   // 全予報区が解除済み（Kind/Code が 50/60/71/72/73/00 など）
   if (areas.length === 0) return { code: 552, id, time, cancelled: true, issue: { source, time, type: 'Focus' }, areas: [] }
 
-  return { code: 552, id, time, cancelled: false, issue: { source, time, type: 'Focus' }, areas }
+  return { code: 552, id, time, cancelled: false, validDateTime, issue: { source, time, type: 'Focus' }, areas }
 }
 
 // REST API 経由の JMA XML（VXSE62: 長周期地震動観測情報）を JMALpgm にパース
