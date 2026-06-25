@@ -307,8 +307,8 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm }: 
             )}
           </div>
 
-          {/* 深さ・マグニチュード・津波情報 */}
-          <div className="flex items-center gap-2 text-base flex-wrap">
+          {/* 深さ・マグニチュード */}
+          <div className="flex items-center gap-2 text-base mb-1">
             {hasLocation && (
               <span className="flex items-center gap-1 text-secondary">
                 <span>深さ</span>
@@ -324,11 +324,11 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm }: 
                 />
               </span>
             )}
-            {tsunamiInfo.text !== '津波の心配なし' && (
-              <span className="font-medium" style={{ color: tsunamiInfo.color }}>
-                {tsunamiInfo.text}
-              </span>
-            )}
+          </div>
+
+          {/* 津波情報（常に最終行） */}
+          <div className="text-base font-medium" style={{ color: tsunamiInfo.color }}>
+            {tsunamiInfo.text}
           </div>
         </div>
       </div>
