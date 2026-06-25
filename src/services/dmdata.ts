@@ -19,7 +19,8 @@ const CLASSIFICATIONS = ['eew.forecast', 'eew.warning', 'telegram.earthquake']
 const EEW_TYPES = new Set(['VXSE43', 'VXSE45'])
 // VYSE50/51/52=南海トラフ地震臨時情報、VYSE60=北海道・三陸沖後発地震注意情報
 // これらは XML 電文（format: "xml"）として配信されるため REST API 経由で取得する
-const VYSE_NANKAI_TYPES = new Set(['VYSE50', 'VYSE51', 'VYSE52'])
+// VYSE52（関連解説情報）は補足解説電文でステータス判定に使えないため除外する
+const VYSE_NANKAI_TYPES = new Set(['VYSE50', 'VYSE51'])
 const VYSE_KOHATSU_TYPES = new Set(['VYSE60'])
 const RECONNECT_BASE_MS = 3000
 const RECONNECT_MAX_MS = 30000
@@ -546,16 +547,20 @@ export async function fetchDmdataTsunamis(
     .filter((v): v is JMATsunami => v !== null && 'code' in (v as object) && (v as JMATsunami).code === 552)
 }
 
-// DMDATA REST API で南海トラフ地震臨時情報（VYSE50/51/52）の最新1件を取得する。
+// DMDATA REST API で南海トラフ地震臨時情報（VYSE50/51）の最新1件を取得する。
 // 取得失敗時は null を返す（補助情報なのでアプリを壊さない）。
+//
+// VYSE52（関連解説情報）は補足解説電文であり InfoKind にステータスキーワードが入らないため
+// 発令中/調査終了の判定に使えない。VYSE51（臨時情報の更新）と VYSE50（初報・調査中）のみで判定する。
 export async function fetchDmdataNankai(apiKey: string): Promise<JMANankai | null> {
   const headers = { Authorization: authHeader(apiKey) }
   try {
-    // VYSE52（最終的な解説情報）→ VYSE51（継続情報）→ VYSE50（臨時情報）の順で検索
-    for (const type of ['VYSE52', 'VYSE51', 'VYSE50']) {
+    // VYSE51 が最終状態（調査終了/巨大地震注意/巨大地震警戒）を決定する。
+    // VYSE51 がなければ VYSE50（調査中）が発令中。
+    for (const type of ['VYSE51', 'VYSE50']) {
       const res = await fetch(`${API_BASE}/telegram?type=${type}&limit=1`, { headers })
       if (!res.ok) continue
-      const json = await res.json() as { items?: Array<{ id: string; url: string; head: { type: string } }> }
+      const json = await res.json() as { items?: Array<{ id: string; url: string }> }
       const item = (json.items ?? [])[0]
       if (!item) continue
       const xmlRes = await fetch(item.url, { headers })
@@ -563,7 +568,6 @@ export async function fetchDmdataNankai(apiKey: string): Promise<JMANankai | nul
       const xml = await xmlRes.text()
       const nankai = parseVyse5xFromXml(xml)
       if (nankai && !nankai.cancelled) return nankai
-      // cancelled（調査終了）が最新なら発令中ではない
       if (nankai?.cancelled) return null
     }
   } catch { /* 取得失敗は無視 */ }
