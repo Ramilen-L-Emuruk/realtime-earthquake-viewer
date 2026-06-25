@@ -163,9 +163,10 @@ export function App() {
       const key = event.issue?.eventId ?? event.id
 
       if (event.cancelled) {
-        // EEW キャンセル: 対象イベントをレベル追跡から除去し、解除のたびに音を鳴らす
+        // EEW キャンセル（誤報取消）または解除（最終報満了）: レベル追跡から除去
+        // expired: true は最終報タイマー満了による自動解除 → 音は鳴らさない
         activeEEWLevelsRef.current.delete(key)
-        if (settings.soundEnabled) {
+        if (settings.soundEnabled && !event.expired) {
           playAlertSound('eewCancel')
         }
         // EEW 解除時は読み上げタイマーをキャンセルする

@@ -132,6 +132,7 @@ export interface EEWAlert {
   }
   severity: 'Unknown' | 'Forecast' | 'Warning'
   cancelled: boolean
+  expired?: boolean
   isFinal?: boolean
   // issue.serial = 情報番号（第N報）
   issue?: {
