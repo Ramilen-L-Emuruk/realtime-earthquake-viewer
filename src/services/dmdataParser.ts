@@ -240,6 +240,12 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
   const eventId = str(data.eventId)
   const originTime = str(earthquake.originTime) || (headType === 'VXSE51' ? str(data.targetDateTime) : '')
 
+  // 遠地地震は data.title === '遠地地震に関する情報' で判定する（data.body.type には存在しない）。
+  // VXSE_ISSUE_TYPE では VXSE53 が ScaleAndDestination だが、遠地地震は Foreign で統一する。
+  const issueType: IssueType = str(data.title) === '遠地地震に関する情報'
+    ? 'Foreign'
+    : (VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination')
+
   return {
     code: 551,
     id: `dmdata-quake-${eventId}-${str(data.serialNo ?? data.serial ?? '1')}`,
@@ -247,13 +253,13 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
     issue: {
       source: str(data.editorialOffice ?? data.publishingOffice),
       time: str(data.reportDateTime ?? data.pressDateTime),
-      type: VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination',
+      type: issueType,
       correct: 'None' as CorrectType,
     },
     earthquake: {
       time: originTime,
       hypocenter: {
-        name: str(hypo.name),
+        name: str(obj(hypo.detailed).name) || str(hypo.name),
         // VXSE51 は震源情報なし。-200 は「位置不明」センチネル（地図・カードで非表示判定に使用）。
         latitude: Number.isFinite(lat) ? lat : -200,
         longitude: Number.isFinite(lng) ? lng : -200,
@@ -311,7 +317,9 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   const originTime = xmlText(xmlQ(earthquakeEl, 'OriginTime'))
   const hypocenterEl = xmlQ(earthquakeEl, 'Hypocenter')
   const areaEl = hypocenterEl ? xmlQ(hypocenterEl, 'Area') : null
-  const hypName = areaEl ? xmlText(xmlQ(areaEl, 'Name')) : ''
+  // 遠地地震は Area/DetailedName に詳細震央地名（例: "ベネズエラ沿岸"）が入る。なければ Area/Name にフォールバック。
+  const hypName = (areaEl ? xmlText(xmlQ(areaEl, 'DetailedName')) : '')
+    || (areaEl ? xmlText(xmlQ(areaEl, 'Name')) : '')
   const coordStr = areaEl ? xmlText(xmlQ(areaEl, 'Coordinate')) : ''
   const { lat, lng, depth } = parseJmaCoord(coordStr)
 
@@ -349,7 +357,12 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     }
   }
 
-  const issueType = VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination'
+  // 遠地地震は Head/Title で判定する（Control/Title と区別するため Head 要素を先に取得する）
+  const headInfoEl = xmlQ(doc, 'Head')
+  const titleText = headInfoEl ? xmlText(xmlQ(headInfoEl, 'Title')) : ''
+  const issueType: IssueType = titleText === '遠地地震に関する情報'
+    ? 'Foreign'
+    : (VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination')
   const correct: CorrectType = infoType === '訂正' ? 'Unknown' : 'None'
 
   return {
