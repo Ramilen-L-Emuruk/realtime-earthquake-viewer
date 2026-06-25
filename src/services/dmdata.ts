@@ -309,7 +309,7 @@ export class DmdataWebSocket {
       this.onRawMessage?.(this.makeLogEntry(headType, head, data, isTest, 'parsed', 'eew'))
       // 検証用に受信した試験報 EEW はカード・音・地図へ流すため test:false で通知する。
       this.onEvent?.({ kind: 'eew', data: isTest ? { ...eew, test: false } : eew })
-    } else if (headType === 'VXSE51' || headType === 'VXSE52' || headType === 'VXSE53') {
+    } else if (headType === 'VXSE51' || headType === 'VXSE52' || headType === 'VXSE53' || headType === 'VXSE61') {
       const quake = parseEarthquake(headType, data)
       if (this.debug) dlog('地震情報', { headType, parsed: !!quake })
       if (quake) {
@@ -378,7 +378,7 @@ async function fetchOneTelegram(
   })
   if (!res.ok) return null
   const xml = await res.text()
-  if (headType === 'VXSE51' || headType === 'VXSE52' || headType === 'VXSE53') {
+  if (headType === 'VXSE51' || headType === 'VXSE52' || headType === 'VXSE53' || headType === 'VXSE61') {
     return parseEarthquakeFromXml(headType, xml)
   }
   if (headType === 'VTSE41' || headType === 'VTSE51' || headType === 'VTSE52') {
@@ -391,6 +391,7 @@ async function fetchOneTelegram(
 }
 
 // DMDATA REST API で地震履歴（VXSE53: 震源＋各地震度）を取得する。
+// VXSE61（震源要素更新）も並列取得し、earthquake.time が一致する地震の hypocenter をマージする。
 // cursorToken を指定するとカーソル位置以降の古い電文を取得する（「もっと見る」用）。
 export async function fetchDmdataEarthquakes(
   apiKey: string,
@@ -398,11 +399,19 @@ export async function fetchDmdataEarthquakes(
   cursorToken?: string,
 ): Promise<{ quakes: JMAQuake[]; nextToken?: string }> {
   const qs = cursorToken ? `&cursorToken=${cursorToken}` : ''
-  const res = await fetch(`${API_BASE}/telegram?type=VXSE53&limit=${limit}${qs}`, {
-    headers: { Authorization: authHeader(apiKey) },
-  })
-  if (!res.ok) throw new Error(`earthquake history: ${res.status}`)
-  const json = await res.json() as {
+  const headers = { Authorization: authHeader(apiKey) }
+
+  const [res53, res61] = await Promise.allSettled([
+    fetch(`${API_BASE}/telegram?type=VXSE53&limit=${limit}${qs}`, { headers }),
+    fetch(`${API_BASE}/telegram?type=VXSE61&limit=${limit}`, { headers }),
+  ])
+
+  if (res53.status === 'rejected' || !res53.value.ok) {
+    const status = res53.status === 'rejected' ? 'network error' : res53.value.status
+    throw new Error(`earthquake history: ${status}`)
+  }
+
+  const json = await res53.value.json() as {
     items?: Array<{ id: string; url: string; head: { type: string } }>
     nextToken?: string
   }
@@ -414,6 +423,36 @@ export async function fetchDmdataEarthquakes(
     .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | null> => r.status === 'fulfilled')
     .map(r => r.value)
     .filter((v): v is JMAQuake => v !== null && v.code === 551)
+
+  // VXSE61 マージ: 取得できた場合のみ適用（失敗しても VXSE53 の結果で続行）
+  if (res61.status === 'fulfilled' && res61.value.ok) {
+    const json61 = await res61.value.json() as {
+      items?: Array<{ id: string; url: string; head: { type: string } }>
+    }
+    const items61 = json61.items ?? []
+    const results61 = await Promise.allSettled(
+      items61.map(it => fetchOneTelegram(apiKey, it.url, it.head.type)),
+    )
+    for (const r of results61) {
+      if (r.status !== 'fulfilled' || !r.value) continue
+      const v = r.value
+      if (!('code' in v) || v.code !== 551) continue
+      const amended = v as JMAQuake
+      if (amended.issue.type !== 'DestinationAmended') continue
+      const idx = quakes.findIndex(q => q.earthquake.time === amended.earthquake.time)
+      if (idx < 0) continue
+      quakes[idx] = {
+        ...quakes[idx],
+        time: amended.time,
+        issue: amended.issue,
+        earthquake: {
+          ...quakes[idx].earthquake,
+          hypocenter: amended.earthquake.hypocenter,
+        },
+      }
+    }
+  }
+
   return { quakes, nextToken: json.nextToken }
 }
 

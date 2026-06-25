@@ -152,6 +152,7 @@ const VXSE_ISSUE_TYPE: Record<string, IssueType> = {
   VXSE51: 'ScalePrompt',
   VXSE52: 'Destination',
   VXSE53: 'ScaleAndDestination',
+  VXSE61: 'DestinationAmended',
 }
 
 // VXSE51/53 JSON 電文（earthquake-information v1.1.0）の body.intensity から震度データを取り出す。
