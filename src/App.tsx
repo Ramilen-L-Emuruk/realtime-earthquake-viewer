@@ -696,6 +696,7 @@ export function App() {
             kyoshinPsWave={psWave}
             eews={Array.from(activeEEWs.values())}
             detectedPoints={kyoshinDetection.points}
+            idleRevertSec={settings.idleRevertSec}
           />
           <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
           <SpecialInfoBanner nankai={nankai} kohatsu={kohatsu} />
