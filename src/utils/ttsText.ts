@@ -46,6 +46,10 @@ export function earthquakeToText(event: JMAQuake): string {
 
   const time = formatTime(event.earthquake.time)
 
+  if (type === 'DestinationAmended') {
+    return `顕著な地震の震源要素更新のお知らせ。${time}頃発生した${hypocenter.name}の地震について、震源の深さ${hypocenter.depth}キロメートル、マグニチュード${magnitudeText(hypocenter.magnitude)}に更新されました。`
+  }
+
   if (type === 'Destination' || type === 'Foreign' || type === 'Other') {
     return `震源情報。${time}頃、${hypocenter.name}、深さ${hypocenter.depth}キロメートルを震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
   }
