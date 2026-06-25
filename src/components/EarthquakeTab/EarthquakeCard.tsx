@@ -214,7 +214,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm }: 
           </div>
 
           {/* 国外津波情報 */}
-          {earthquake.foreignTsunami && earthquake.foreignTsunami !== 'Unknown' && (
+          {earthquake.foreignTsunami && earthquake.foreignTsunami !== 'Unknown' && earthquake.foreignTsunami !== 'None' && (
             <div className="text-sm text-secondary">国外: {earthquake.foreignTsunami}</div>
           )}
 
