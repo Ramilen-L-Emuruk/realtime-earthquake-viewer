@@ -90,6 +90,9 @@ export interface JMATsunami {
   id: string
   time: string
   cancelled: boolean
+  // 若干の海面変動など予報のみの場合、JMAは明示的なキャンセル電文を送らず
+  // ValidDateTime の経過でのみ有効期限が示される。
+  validDateTime?: string
   issue: {
     source: string
     time: string
