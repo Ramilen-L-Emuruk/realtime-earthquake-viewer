@@ -181,7 +181,7 @@ export function useEarthquakes(
       } else if (eew.isFinal && !finalCleanupTimersRef.current.has(key)) {
         // 通常最終報: 設定秒数後にキャンセルイベントとして再発火（二重登録防止）
         const t = window.setTimeout(() => {
-          handleEvent({ ...eew, cancelled: true })
+          handleEvent({ ...eew, cancelled: true, expired: true })
           finalCleanupTimersRef.current.delete(key)
         }, eewFinalClearSecRef.current * 1000)
         finalCleanupTimersRef.current.set(key, t)
