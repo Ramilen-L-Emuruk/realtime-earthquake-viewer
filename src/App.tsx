@@ -7,6 +7,7 @@ import { RealtimeTab } from './components/RealtimeTab'
 import { TsunamiTab } from './components/TsunamiTab'
 import { SettingsTab } from './components/SettingsTab'
 import { TelegramTab } from './components/TelegramTab'
+import { SpecialInfoBanner } from './components/SpecialInfoBanner'
 import { useEarthquakes } from './hooks/useEarthquakes'
 import { useSettings } from './hooks/useSettings'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
@@ -19,7 +20,7 @@ import { eewMaxScale } from './utils/eew'
 import { tsunamiMaxGrade, tsunamiOverallGrade } from './utils/tsunami'
 import { playAlertSound, playKyoshinUpdateSound, kyoshinLevel, unlockAudio, setSoundVolume, type AlertSoundType } from './utils/alertSound'
 import { speakWithVoicevox } from './utils/voicevox'
-import { eewToText, earthquakeToText, tsunamiToText } from './utils/ttsText'
+import { eewToText, earthquakeToText, tsunamiToText, nankaiToText, kohatsuToText } from './utils/ttsText'
 import { kyoshinIndexToLabel } from './utils/kyoshinIntensity'
 import type { P2PQuakeEvent, EEWAlert } from './types/earthquake'
 
@@ -256,6 +257,25 @@ export function App() {
       return
     }
 
+    // 南海トラフ臨時情報・後発地震注意情報（DMDSS版のみ）
+    if ((event as unknown as { kind?: string }).kind === 'nankai' || (event as unknown as { kind?: string }).kind === 'kohatsu') {
+      const specialEvent = event as unknown as { kind: string; data: { cancelled?: boolean } }
+      if (!specialEvent.data.cancelled) {
+        if (settings.soundEnabled) {
+          playAlertSound('specialInfo')
+        }
+        if (settings.voicevoxEnabled && settings.soundEnabled) {
+          const ttsText = specialEvent.kind === 'nankai'
+            ? nankaiToText(specialEvent.data as Parameters<typeof nankaiToText>[0])
+            : kohatsuToText(specialEvent.data as Parameters<typeof kohatsuToText>[0])
+          setTimeout(() => {
+            speakWithVoicevox(settings.voicevoxUrl, ttsText, settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+          }, 1500)
+        }
+      }
+      return
+    }
+
     // ブラウザ通知（津波）— 音が無効でも送る
     if (event.code === 552 && !event.cancelled && settings.notifyMinScale >= 0 && settings.notifyTsunami) {
       const grade = tsunamiMaxGrade(event)
@@ -314,12 +334,13 @@ export function App() {
   }
 
   const {
-    earthquakes, tsunamis, activeEEWs, lpgmByOriginTime, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
+    earthquakes, tsunamis, activeEEWs, lpgmByOriginTime, nankai, kohatsu, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
     telegramLog, clearTelegramLog,
     injectEvent, loadMoreEarthquakes,
     simulateEarthquake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast,
+    simulateNankai, simulateKohatsu,
   } = useEarthquakes(handleLiveEvent, settings.dmdataApiKey, settings.dmdataTestDelivery, settings.eewFinalClearSec)
 
   // UI 倍率: ルート要素の font-size を変えて rem ベースの UI 全体を拡大縮小する。
@@ -648,6 +669,7 @@ export function App() {
             detectedPoints={kyoshinDetection.points}
           />
           <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
+          <SpecialInfoBanner nankai={nankai} kohatsu={kohatsu} />
         </div>
 
         {/* パネル（タブに応じて内容を切替）。モバイルは下部固定高さ + スクロール。 */}
@@ -696,6 +718,10 @@ export function App() {
                 tsunamiWarning:   simulateTsunamiWarning,
                 tsunamiWatch:     simulateTsunamiWatch,
                 tsunamiForecast:  simulateTsunamiForecast,
+                nankaiChecking:   () => simulateNankai('調査中'),
+                nankaiWatch:      () => simulateNankai('巨大地震注意'),
+                nankaiWarning:    () => simulateNankai('巨大地震警戒'),
+                kohatsu:          simulateKohatsu,
                 notification: () => {
                   if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
                     alert('先に「通知を許可する」ボタンをクリックしてください。')

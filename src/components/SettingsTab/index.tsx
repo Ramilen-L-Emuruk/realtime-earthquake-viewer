@@ -16,6 +16,10 @@ export interface TestFunctions {
   tsunamiWarning: () => void
   tsunamiWatch: () => void
   tsunamiForecast: () => void
+  nankaiChecking?: () => void
+  nankaiWatch?: () => void
+  nankaiWarning?: () => void
+  kohatsu?: () => void
   notification: () => void
 }
 
@@ -602,6 +606,12 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
         <Row label="大津波警報" description="sawtooth+sine ダブルスイープ × 5回">
           <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('tsunamiMajor') }}>▶ 試聴</TestButton>
         </Row>
+        {/* ── 臨時情報・後発地震 ── */}
+        {isDmdss && (
+          <Row label="南海トラフ臨時情報・後発地震注意情報" description="ピアノA4×2連打 → D5">
+            <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('specialInfo') }}>▶ 試聴</TestButton>
+          </Row>
+        )}
       </Section>
 
       <Section title="テスト機能">
@@ -632,6 +642,26 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
         <Row label="津波予報（若干の海面変動）" description="北海道沿岸 – tsunamiForecast 音 / 10秒間表示">
           <TestButton color="blue" onClick={onTest.tsunamiForecast}>予報テスト</TestButton>
         </Row>
+        {isDmdss && onTest.nankaiChecking && (
+          <Row label="南海トラフ臨時情報（調査中）" description="バナー表示 + specialInfo 音（バナー消去ボタンなし・再テストで上書き）">
+            <TestButton color="yellow" onClick={onTest.nankaiChecking}>調査中テスト</TestButton>
+          </Row>
+        )}
+        {isDmdss && onTest.nankaiWatch && (
+          <Row label="南海トラフ臨時情報（巨大地震注意）" description="バナー表示 + specialInfo 音">
+            <TestButton color="orange" onClick={onTest.nankaiWatch}>注意テスト</TestButton>
+          </Row>
+        )}
+        {isDmdss && onTest.nankaiWarning && (
+          <Row label="南海トラフ臨時情報（巨大地震警戒）" description="バナー表示 + specialInfo 音">
+            <TestButton color="red" onClick={onTest.nankaiWarning}>警戒テスト</TestButton>
+          </Row>
+        )}
+        {isDmdss && onTest.kohatsu && (
+          <Row label="北海道・三陸沖後発地震注意情報" description="バナー表示 + specialInfo 音">
+            <TestButton color="blue" onClick={onTest.kohatsu}>後発地震テスト</TestButton>
+          </Row>
+        )}
         <Row label="ブラウザ通知" description="テスト通知を即時送信（要通知許可）">
           <TestButton color="green" onClick={onTest.notification}>通知テスト</TestButton>
         </Row>
@@ -682,7 +712,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">3.6.6</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">3.6.7</span></Row>
         <Row label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"

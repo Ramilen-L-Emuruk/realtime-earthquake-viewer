@@ -5,6 +5,8 @@ import type {
   JMAQuake,
   JMATsunami,
   JMALpgm,
+  JMANankai,
+  JMAKohatsu,
   EEWAlert,
   EEWRegion,
   IntensityScale,
@@ -590,6 +592,95 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
 
   if (!(maxClass >= 1 && maxClass <= 4)) return null
   return { id, time: reportDateTime, originTime, maxClass, cancelled: false }
+}
+
+// REST API 経由の JMA XML（VYSE50/51/52: 南海トラフ地震臨時情報）を JMANankai にパース
+export function parseVyse5xFromXml(xml: string): JMANankai | null {
+  let doc: Document
+  try {
+    doc = new DOMParser().parseFromString(xml, 'application/xml')
+    if (doc.querySelector('parsererror')) return null
+  } catch { return null }
+
+  const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
+  const eventId        = xmlText(xmlQ(doc, 'EventID'))
+  const serial         = xmlText(xmlQ(doc, 'Serial')) || '1'
+  const infoType       = xmlText(xmlQ(doc, 'InfoType'))
+  const id             = `dmdata-xml-nankai-${eventId}-${serial}`
+
+  // 取消の場合は調査終了相当として扱う
+  if (infoType === '取消') {
+    return {
+      id, time: reportDateTime, eventId,
+      kindCode: '0204', kindName: '調査終了',
+      headline: '南海トラフ地震臨時情報（取消）', body: '',
+      cancelled: true, reportDateTime,
+    }
+  }
+
+  // Head > Title がヘッドライン
+  const headEl  = xmlQ(doc, 'Head')
+  const headline = headEl ? xmlText(xmlQ(headEl, 'Title')) : ''
+
+  // Body > Comment > Text or Body > Text が本文
+  const bodyEl   = xmlQ(doc, 'Body')
+  const commentEl = bodyEl ? xmlQ(bodyEl, 'Comment') : null
+  const bodyText  = (commentEl ? xmlText(xmlQ(commentEl, 'Text')) : '')
+    || (bodyEl ? xmlText(xmlQ(bodyEl, 'Text')) : '')
+
+  // Head > InfoKind から kindName を判定
+  // 「南海トラフ地震臨時情報（調査中）」などのように括弧内にキーワードが入る
+  const infoKind = headEl ? xmlText(xmlQ(headEl, 'InfoKind')) : ''
+  let kindCode = '0201'
+  let kindName = '調査中'
+  if (infoKind.includes('巨大地震警戒')) {
+    kindCode = '0203'; kindName = '巨大地震警戒'
+  } else if (infoKind.includes('巨大地震注意')) {
+    kindCode = '0202'; kindName = '巨大地震注意'
+  } else if (infoKind.includes('調査終了')) {
+    kindCode = '0204'; kindName = '調査終了'
+  }
+
+  const cancelled = kindName === '調査終了'
+
+  return { id, time: reportDateTime, eventId, kindCode, kindName, headline, body: bodyText, cancelled, reportDateTime }
+}
+
+// REST API 経由の JMA XML（VYSE60: 北海道・三陸沖後発地震注意情報）を JMAKohatsu にパース
+export function parseVyse60FromXml(xml: string): JMAKohatsu | null {
+  let doc: Document
+  try {
+    doc = new DOMParser().parseFromString(xml, 'application/xml')
+    if (doc.querySelector('parsererror')) return null
+  } catch { return null }
+
+  const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
+  const eventId        = xmlText(xmlQ(doc, 'EventID'))
+  const serial         = xmlText(xmlQ(doc, 'Serial')) || '1'
+  const infoType       = xmlText(xmlQ(doc, 'InfoType'))
+  const id             = `dmdata-xml-kohatsu-${eventId}-${serial}`
+
+  if (infoType === '取消') {
+    return {
+      id, time: reportDateTime, eventId,
+      headline: '北海道・三陸沖後発地震注意情報（取消）', body: '',
+      cancelled: true, reportDateTime,
+      expireAt: reportDateTime,
+    }
+  }
+
+  const headEl   = xmlQ(doc, 'Head')
+  const headline = headEl ? xmlText(xmlQ(headEl, 'Title')) : ''
+
+  const bodyEl    = xmlQ(doc, 'Body')
+  const commentEl = bodyEl ? xmlQ(bodyEl, 'Comment') : null
+  const bodyText  = (commentEl ? xmlText(xmlQ(commentEl, 'Text')) : '')
+    || (bodyEl ? xmlText(xmlQ(bodyEl, 'Text')) : '')
+
+  // 有効期限は発表時刻 + 7日
+  const expireAt = new Date(new Date(reportDateTime).getTime() + 7 * 24 * 3600 * 1000).toISOString()
+
+  return { id, time: reportDateTime, eventId, headline, body: bodyText, cancelled: false, reportDateTime, expireAt }
 }
 
 // WebSocket 受信の JSON 電文（VXSE62: 長周期地震動観測情報）を JMALpgm にパース

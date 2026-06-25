@@ -6,8 +6,8 @@
 // （仕様: data.encoding="base64" / data.compression="gzip"）。
 // クライアント側で「base64 デコード → gunzip → JSON.parse」を行う必要がある。
 
-import type { JMAQuake, JMATsunami, JMALpgm, EEWAlert, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
-import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml } from './dmdataParser'
+import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
+import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml, parseVyse5xFromXml, parseVyse60FromXml } from './dmdataParser'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
 // DMDATA WebSocket 購読分類。telegram.earthquake は地震・津波両方の電文を配信する。
@@ -17,6 +17,10 @@ const CLASSIFICATIONS = ['eew.forecast', 'eew.warning', 'telegram.earthquake']
 // VXSE44（予報）は廃止予定のため除外。VXSE45 で同等情報＋長周期地震動が得られる。
 // VXSE42（配信テスト）は震源データを持たず EEW として表示できないため別途処理する。
 const EEW_TYPES = new Set(['VXSE43', 'VXSE45'])
+// VYSE50/51/52=南海トラフ地震臨時情報、VYSE60=北海道・三陸沖後発地震注意情報
+// これらは XML 電文（format: "xml"）として配信されるため REST API 経由で取得する
+const VYSE_NANKAI_TYPES = new Set(['VYSE50', 'VYSE51', 'VYSE52'])
+const VYSE_KOHATSU_TYPES = new Set(['VYSE60'])
 const RECONNECT_BASE_MS = 3000
 const RECONNECT_MAX_MS = 30000
 const RECONNECT_FACTOR = 1.5
@@ -142,6 +146,8 @@ export type DmdataEvent =
   | { kind: 'quake'; data: JMAQuake }
   | { kind: 'tsunami'; data: JMATsunami }
   | { kind: 'lpgm'; data: JMALpgm }
+  | { kind: 'nankai'; data: JMANankai }
+  | { kind: 'kohatsu'; data: JMAKohatsu }
 
 export class DmdataWebSocket {
   private ws: WebSocket | null = null
@@ -283,6 +289,45 @@ export class DmdataWebSocket {
       return
     }
     if (!headType) return
+
+    // VYSE50/51/52（南海トラフ）・VYSE60（後発地震）は format:"xml" で配信される。
+    // WebSocket メッセージの body.uri から XML を取得してパースする。
+    if (VYSE_NANKAI_TYPES.has(headType) || VYSE_KOHATSU_TYPES.has(headType)) {
+      const uri = (msg as { body?: { uri?: string } }).body?.uri
+      if (!uri) {
+        if (this.debug) dlog('VYSE 電文に uri がない', { headType })
+        this.onRawMessage?.(this.makeLogEntry(headType, head, msg.body, isTest, 'error', undefined, 'no uri'))
+        return
+      }
+      try {
+        const res = await fetch(uri, { headers: { Authorization: authHeader(this.apiKey) } })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const xml = await res.text()
+        if (VYSE_NANKAI_TYPES.has(headType)) {
+          const nankai = parseVyse5xFromXml(xml)
+          if (nankai) {
+            if (this.debug) dlog('南海トラフ臨時情報受信', { headType, kindName: nankai.kindName })
+            this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'nankai'))
+            this.onEvent?.({ kind: 'nankai', data: nankai })
+          } else {
+            this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
+          }
+        } else {
+          const kohatsu = parseVyse60FromXml(xml)
+          if (kohatsu) {
+            if (this.debug) dlog('後発地震注意情報受信', { headType })
+            this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'kohatsu'))
+            this.onEvent?.({ kind: 'kohatsu', data: kohatsu })
+          } else {
+            this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
+          }
+        }
+      } catch (e) {
+        if (this.debug) dlog('VYSE XML 取得失敗', { headType, error: String(e) })
+        this.onRawMessage?.(this.makeLogEntry(headType, head, msg.body, isTest, 'error', undefined, String(e)))
+      }
+      return
+    }
 
     // body は base64 + gzip。復号して JSON 化する（仕様準拠）。
     const data = await decodeTelegramBody(msg)
@@ -499,6 +544,51 @@ export async function fetchDmdataTsunamis(
     .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | JMALpgm | null> => r.status === 'fulfilled')
     .map(r => r.value)
     .filter((v): v is JMATsunami => v !== null && 'code' in (v as object) && (v as JMATsunami).code === 552)
+}
+
+// DMDATA REST API で南海トラフ地震臨時情報（VYSE50/51/52）の最新1件を取得する。
+// 取得失敗時は null を返す（補助情報なのでアプリを壊さない）。
+export async function fetchDmdataNankai(apiKey: string): Promise<JMANankai | null> {
+  const headers = { Authorization: authHeader(apiKey) }
+  try {
+    // VYSE52（最終的な解説情報）→ VYSE51（継続情報）→ VYSE50（臨時情報）の順で検索
+    for (const type of ['VYSE52', 'VYSE51', 'VYSE50']) {
+      const res = await fetch(`${API_BASE}/telegram?type=${type}&limit=1`, { headers })
+      if (!res.ok) continue
+      const json = await res.json() as { items?: Array<{ id: string; url: string; head: { type: string } }> }
+      const item = (json.items ?? [])[0]
+      if (!item) continue
+      const xmlRes = await fetch(item.url, { headers })
+      if (!xmlRes.ok) continue
+      const xml = await xmlRes.text()
+      const nankai = parseVyse5xFromXml(xml)
+      if (nankai && !nankai.cancelled) return nankai
+      // cancelled（調査終了）が最新なら発令中ではない
+      if (nankai?.cancelled) return null
+    }
+  } catch { /* 取得失敗は無視 */ }
+  return null
+}
+
+// DMDATA REST API で北海道・三陸沖後発地震注意情報（VYSE60）の最新1件を取得する。
+// 取得失敗時は null を返す。
+export async function fetchDmdataKohatsu(apiKey: string): Promise<JMAKohatsu | null> {
+  const headers = { Authorization: authHeader(apiKey) }
+  try {
+    const res = await fetch(`${API_BASE}/telegram?type=VYSE60&limit=1`, { headers })
+    if (!res.ok) return null
+    const json = await res.json() as { items?: Array<{ id: string; url: string; head: { type: string } }> }
+    const item = (json.items ?? [])[0]
+    if (!item) return null
+    const xmlRes = await fetch(item.url, { headers })
+    if (!xmlRes.ok) return null
+    const xml = await xmlRes.text()
+    const kohatsu = parseVyse60FromXml(xml)
+    if (!kohatsu || kohatsu.cancelled) return null
+    // 有効期限チェック: expireAt が過去なら null
+    if (new Date(kohatsu.expireAt) <= new Date()) return null
+    return kohatsu
+  } catch { return null }
 }
 
 // DMDATA REST API で長周期地震動観測情報（VXSE62）を取得する。

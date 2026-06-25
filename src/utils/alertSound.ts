@@ -9,6 +9,7 @@ export type AlertSoundType =
   | 'eew' | 'eewUpdate' | 'eewCancel' | 'eewSpecial' | 'eewForecast'
   | 'tsunami' | 'tsunamiMajor' | 'tsunamiWatch' | 'tsunamiForecast'
   | 'kyoshin'
+  | 'specialInfo'
 
 let audioCtx: AudioContext | null = null
 
@@ -430,6 +431,13 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
       sweep(ctx, 'sawtooth', 200, 500, base + i * 0.77,        0.65, 0.28)
       sweep(ctx, 'sine',     300, 750, base + i * 0.77 + 0.05, 0.60, 0.18)
     }
+  },
+
+  // 南海トラフ臨時情報・後発地震注意情報: ピアノA4×2連打 → D5（情報発表の穏やかな緊張感）
+  specialInfo: (ctx, base) => {
+    pianoNote(ctx, 440.0, base + 0.00, 0.15, 0.26)
+    pianoNote(ctx, 440.0, base + 0.16, 0.15, 0.26)
+    pianoNote(ctx, 587.3, base + 0.38, 1.20, 0.22)
   },
 }
 

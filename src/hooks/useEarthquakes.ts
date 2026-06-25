@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { JMAQuake, JMATsunami, JMALpgm, EEWAlert, EEWRegion, Hypocenter, IntensityScale, EarthquakePoint, P2PQuakeEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, EEWRegion, Hypocenter, IntensityScale, EarthquakePoint, P2PQuakeEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
-import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms } from '../services/dmdata'
+import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataKohatsu } from '../services/dmdata'
 import { loadStationCoords, buildAreaPrefIndex } from '../utils/stationCoords'
 
 const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
@@ -14,6 +14,8 @@ import {
   createTestTsunamiWarning,
   createTestTsunamiWatch,
   createTestTsunamiForecast,
+  createTestNankai,
+  createTestKohatsu,
 } from '../utils/testData'
 
 const MAX_HISTORY_RETAINED = 50   // 初回取得件数（設定の最大選択値に合わせる）
@@ -74,6 +76,8 @@ export interface EarthquakeState {
   tsunamis: JMATsunami[]
   activeEEWs: ReadonlyMap<string, EEWAlert>
   lpgmByOriginTime: ReadonlyMap<string, JMALpgm>
+  nankai: JMANankai | null
+  kohatsu: JMAKohatsu | null
   connectionStatus: ConnectionStatus
   lastUpdate: Date | null
   isLoading: boolean
@@ -94,6 +98,8 @@ export function useEarthquakes(
     tsunamis: [],
     activeEEWs: new Map(),
     lpgmByOriginTime: new Map(),
+    nankai: null,
+    kohatsu: null,
     connectionStatus: (isDmdss && !dmdataApiKey) ? 'disconnected' : 'connecting',
     lastUpdate: null,
     isLoading: !(isDmdss && !dmdataApiKey),
@@ -137,6 +143,8 @@ export function useEarthquakes(
   const quakeIntensityCacheRef = useRef<Map<string, { maxScale: IntensityScale; points: EarthquakePoint[] }>>(new Map())
   // 津波予報（若干の海面変動）の ValidDateTime 経過時の自動解除タイマー
   const tsunamiValidTimerRef = useRef<number | undefined>(undefined)
+  // 後発地震注意情報（VYSE60）の7日間有効期限タイマー
+  const kohatsuExpireTimerRef = useRef<number | undefined>(undefined)
   // DMDSS 版「もっと見る」用カーソルと API キー（useCallback 内の stale closure 回避）
   const dmdataCursorRef = useRef<string | undefined>(undefined)
   const dmdataApiKeyRef = useRef(dmdataApiKey)
@@ -334,6 +342,9 @@ export function useEarthquakes(
       if (tsunamiValidTimerRef.current !== undefined) {
         window.clearTimeout(tsunamiValidTimerRef.current)
       }
+      if (kohatsuExpireTimerRef.current !== undefined) {
+        window.clearTimeout(kohatsuExpireTimerRef.current)
+      }
     }
   }, [])
 
@@ -353,8 +364,10 @@ export function useEarthquakes(
       Promise.all([
         fetchDmdataEarthquakes(dmdataApiKey, MAX_HISTORY_RETAINED),
         fetchDmdataTsunamis(dmdataApiKey, 10),
+        fetchDmdataNankai(dmdataApiKey).catch(() => null),
+        fetchDmdataKohatsu(dmdataApiKey).catch(() => null),
       ])
-        .then(async ([quakeResult, tsunamiEvents]) => {
+        .then(async ([quakeResult, tsunamiEvents, nankaiData, kohatsuData]) => {
           if (cancelled) return
           const { quakes: quakeEvents, nextToken } = quakeResult
           dmdataCursorRef.current = nextToken
@@ -393,12 +406,26 @@ export function useEarthquakes(
             }
           }
 
+          // 後発地震注意情報の有効期限タイマー（初回ロード時）
+          if (kohatsuData && !kohatsuData.cancelled) {
+            const expireMs = new Date(kohatsuData.expireAt).getTime() - Date.now()
+            if (expireMs > 0) {
+              if (kohatsuExpireTimerRef.current !== undefined) window.clearTimeout(kohatsuExpireTimerRef.current)
+              kohatsuExpireTimerRef.current = window.setTimeout(() => {
+                kohatsuExpireTimerRef.current = undefined
+                setState(prev => ({ ...prev, kohatsu: null }))
+              }, expireMs)
+            }
+          }
+
           if (cancelled) return
           setState(prev => ({
             ...prev,
             earthquakes,
             tsunamis,
             lpgmByOriginTime,
+            nankai: nankaiData ?? null,
+            kohatsu: kohatsuData ?? null,
             lastUpdate: new Date(),
             isLoading: false,
             hasMore: !!nextToken,
@@ -441,6 +468,29 @@ export function useEarthquakes(
             else next.set(lpgm.originTime, lpgm)
             return { ...prev, lpgmByOriginTime: next }
           })
+        } else if (ev.kind === 'nankai') {
+          const nankai = ev.data
+          setState(prev => ({ ...prev, nankai: nankai.cancelled ? null : nankai }))
+          onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as P2PQuakeEvent)
+        } else if (ev.kind === 'kohatsu') {
+          const kohatsu = ev.data
+          if (kohatsuExpireTimerRef.current !== undefined) {
+            window.clearTimeout(kohatsuExpireTimerRef.current)
+            kohatsuExpireTimerRef.current = undefined
+          }
+          if (!kohatsu.cancelled) {
+            const expireMs = new Date(kohatsu.expireAt).getTime() - Date.now()
+            if (expireMs > 0) {
+              kohatsuExpireTimerRef.current = window.setTimeout(() => {
+                kohatsuExpireTimerRef.current = undefined
+                setState(prev => ({ ...prev, kohatsu: null }))
+              }, expireMs)
+            }
+            setState(prev => ({ ...prev, kohatsu }))
+          } else {
+            setState(prev => ({ ...prev, kohatsu: null }))
+          }
+          onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as P2PQuakeEvent)
         } else {
           const data = ev.data
           if (data.code === 556) {
@@ -664,6 +714,26 @@ export function useEarthquakes(
     setTimeout(() => handleEvent({ ...tsunami, cancelled: true }), 10000)
   }, [handleEvent])
 
+  const simulateNankai = useCallback((kindName: '調査中' | '巨大地震注意' | '巨大地震警戒') => {
+    const nankai = createTestNankai(kindName)
+    setState(prev => ({ ...prev, nankai }))
+    onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as P2PQuakeEvent)
+  }, [])
+
+  const simulateKohatsu = useCallback(() => {
+    const kohatsu = createTestKohatsu()
+    if (kohatsuExpireTimerRef.current !== undefined) window.clearTimeout(kohatsuExpireTimerRef.current)
+    const expireMs = new Date(kohatsu.expireAt).getTime() - Date.now()
+    if (expireMs > 0) {
+      kohatsuExpireTimerRef.current = window.setTimeout(() => {
+        kohatsuExpireTimerRef.current = undefined
+        setState(prev => ({ ...prev, kohatsu: null }))
+      }, expireMs)
+    }
+    setState(prev => ({ ...prev, kohatsu }))
+    onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as P2PQuakeEvent)
+  }, [])
+
   return {
     ...state,
     injectEvent: handleEvent,
@@ -672,5 +742,6 @@ export function useEarthquakes(
     simulateEarthquake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast,
+    simulateNankai, simulateKohatsu,
   }
 }
