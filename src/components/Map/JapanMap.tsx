@@ -76,15 +76,17 @@ interface IntensityMarker {
 // 津波等級ごとの海岸線スタイルと優先度（同一区域に複数等級が来た場合は高い方を採用）
 const TSUNAMI_STYLE: Record<TsunamiGrade, { color: string; weight: number; label: string }> = {
   MajorWarning: { color: '#c026d3', weight: 6, label: '大津波警報' },
-  Warning: { color: '#ef4444', weight: 5, label: '津波警報' },
-  Watch: { color: '#f59e0b', weight: 4, label: '津波注意報' },
-  Unknown: { color: '#9ca3af', weight: 3, label: '津波予報' },
+  Warning:      { color: '#ef4444', weight: 5, label: '津波警報' },
+  Watch:        { color: '#f59e0b', weight: 4, label: '津波注意報' },
+  Forecast:     { color: '#22d3ee', weight: 3, label: '津波予報' },
+  Unknown:      { color: '#9ca3af', weight: 2, label: '津波予報' },
 }
 const TSUNAMI_RANK: Record<TsunamiGrade, number> = {
-  MajorWarning: 3,
-  Warning: 2,
-  Watch: 1,
-  Unknown: 0,
+  MajorWarning: 4,
+  Warning:      3,
+  Watch:        2,
+  Forecast:     1,
+  Unknown:      0,
 }
 
 interface TsunamiLine {
@@ -403,7 +405,7 @@ export function JapanMap({
 
   // EEW 受信時: 対象地域（一次細分区域）を予想最大震度(scaleTo)の色で塗りつぶす。
   // 複数EEWがある場合は地域ごとの最大予想震度を採用する。
-  // kindCode '10'/'11' は強震動警戒域（警報対象）。警報域は不透明度・枠線を強くして視覚的に区別する。
+  // kindCode '10'/'11'/'19' は強震動警戒域（警報対象）。'19' は PLUM 法警報。警報域は不透明度・枠線を強くして視覚的に区別する。
   const eewAreaFills = useMemo(() => {
     if (mode !== 'kyoshin' || eews.length === 0) return []
     const maxByName = new Map<string, number>()
@@ -411,7 +413,7 @@ export function JapanMap({
     for (const eew of eews) {
       for (const a of eewAreas(eew)) {
         maxByName.set(a.name, Math.max(maxByName.get(a.name) ?? 0, a.scaleTo))
-        if (a.kindCode === '10' || a.kindCode === '11') warningNames.add(a.name)
+        if (a.kindCode === '10' || a.kindCode === '11' || a.kindCode === '19') warningNames.add(a.name)
       }
     }
     const list: { name: string; scale: number; isWarning: boolean; rings: LatLng[][] }[] = []

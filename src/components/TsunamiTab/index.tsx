@@ -24,6 +24,8 @@ function getGradeStyle(grade: TsunamiGrade): GradeStyle {
       return { headerBg: '#450a0a', headerColor: '#fca5a5', headerBorder: '#ef4444', cardBorder: '#ef4444', arrivalColor: '#f87171', heightColor: '#fca5a5' }
     case 'Watch':
       return { headerBg: '#431407', headerColor: '#fdba74', headerBorder: '#f97316', cardBorder: '#f97316', arrivalColor: '#f97316', heightColor: '#fdba74' }
+    case 'Forecast':
+      return { headerBg: '#0c1a26', headerColor: '#67e8f9', headerBorder: '#0891b2', cardBorder: '#0891b2', arrivalColor: '#22d3ee', heightColor: '#67e8f9' }
     default:
       return { headerBg: '#1f2937', headerColor: '#9ca3af', headerBorder: '#4b5563', cardBorder: '#4b5563', arrivalColor: '#6b7280', heightColor: '#9ca3af' }
   }
@@ -31,12 +33,13 @@ function getGradeStyle(grade: TsunamiGrade): GradeStyle {
 
 const GRADE_LABEL: Record<TsunamiGrade, string> = {
   MajorWarning: '大津波警報',
-  Warning: '津波警報',
-  Watch: '津波注意報',
-  Unknown: '不明',
+  Warning:      '津波警報',
+  Watch:        '津波注意報',
+  Forecast:     '津波予報（若干の海面変動）',
+  Unknown:      '不明',
 }
 
-const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch', 'Unknown']
+const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch', 'Forecast', 'Unknown']
 
 function TsunamiAreaRow({ area, style }: { area: TsunamiArea; style: GradeStyle }) {
   const arrivalText = area.firstHeight?.arrivalTime
@@ -153,7 +156,7 @@ export function TsunamiTab({ tsunamis }: Props) {
               {GRADE_LABEL[topGrade]} 発令中
             </div>
             <div className="mt-1" style={{ fontSize: '11px', color: topStyle.headerColor, opacity: 0.8 }}>
-              海岸・河川から直ちに離れてください
+              {topGrade === 'Forecast' ? '若干の海面変動があるかもしれません' : '海岸・河川から直ちに離れてください'}
             </div>
           </div>
           {latestTime && (

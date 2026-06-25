@@ -198,15 +198,24 @@ function parseIntensityPoints(intensity: Record<string, unknown>): JMAQuake['poi
 }
 
 // DMDATA JSON v1.1.0 では earthquake.domesticTsunami が存在しない。
-// body.comments.forecast.codes（気象庁コード）から津波情報区分を導出する。
+// body.comments.forecast.codes（気象庁防災情報XML 固定付加文コード表）から津波情報区分を導出する。
+// 0211: 津波警報等（大津波警報・津波警報あるいは津波注意報）を発表中
+// 0212: 日本の沿岸では若干の海面変動、被害の心配なし
+// 0213: 海面変動継続、海水浴や磯釣り等注意
+// 0214: 海面変動継続、磯釣り等注意
+// 0215: この地震による津波の心配はない
+// 0216: 震源が海底の場合、津波が発生するおそれあり（調査中）
+// 0217: 今後の情報に注意（調査中）
 function parseDomesticTsunamiFromComments(comments: Record<string, unknown>): DomesticTsunami {
   const codes = arr(obj(comments.forecast).codes)
   for (const code of codes) {
     if (code === '0211') return 'Warning'
-    if (code === '0212') return 'Watch'
+    if (code === '0212') return 'NonEffective'
     if (code === '0213') return 'NonEffective'
-    if (code === '0214') return 'Checking'
+    if (code === '0214') return 'NonEffective'
     if (code === '0215') return 'None'
+    if (code === '0216') return 'Checking'
+    if (code === '0217') return 'Checking'
   }
   return 'Unknown'
 }
@@ -451,11 +460,12 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
 
 // Kind/Code による津波グレード判定（仕様: 気象庁防災情報XML 警報等情報要素コード表）
 // 52/53: 大津波警報、51: 津波警報、62: 津波注意報
-// 50/60: 解除、71/72/73: 若干の海面変動（予報のみ）、00: 津波なし
+// 71/72/73: 津波予報（若干の海面変動）、50/60: 解除、00: 津波なし
 function parseTsunamiGradeByCode(code: string): TsunamiGrade {
   if (code === '52' || code === '53') return 'MajorWarning'
   if (code === '51') return 'Warning'
   if (code === '62') return 'Watch'
+  if (code === '71' || code === '72' || code === '73') return 'Forecast'
   return 'Unknown'
 }
 
