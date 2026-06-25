@@ -15,6 +15,7 @@ export interface TestFunctions {
   tsunami: () => void
   tsunamiWarning: () => void
   tsunamiWatch: () => void
+  tsunamiForecast: () => void
   notification: () => void
 }
 
@@ -589,6 +590,9 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('earthquakeInfo') }}>▶ 試聴</TestButton>
         </Row>
         {/* ── 津波情報 ── */}
+        <Row label="津波予報（若干の海面変動）" description="sine 380→460Hz スイープ × 2回">
+          <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('tsunamiForecast') }}>▶ 試聴</TestButton>
+        </Row>
         <Row label="津波注意報" description="sine 300→500Hz スイープ × 2回">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('tsunamiWatch') }}>▶ 試聴</TestButton>
         </Row>
@@ -624,6 +628,9 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
         </Row>
         <Row label="津波警報（注意報）" description="北海道沿岸 – tsunamiWatch 音 / 10秒間表示">
           <TestButton color="blue" onClick={onTest.tsunamiWatch}>注意報テスト</TestButton>
+        </Row>
+        <Row label="津波予報（若干の海面変動）" description="北海道沿岸 – tsunamiForecast 音 / 10秒間表示">
+          <TestButton color="blue" onClick={onTest.tsunamiForecast}>予報テスト</TestButton>
         </Row>
         <Row label="ブラウザ通知" description="テスト通知を即時送信（要通知許可）">
           <TestButton color="green" onClick={onTest.notification}>通知テスト</TestButton>
@@ -675,7 +682,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">3.4.6</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">3.5.0</span></Row>
         <Row label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"

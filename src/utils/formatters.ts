@@ -83,8 +83,9 @@ export function formatTsunamiGrade(grade: TsunamiGrade): { text: string; color: 
   const map: Record<TsunamiGrade, { text: string; color: string; bg: string }> = {
     MajorWarning: { text: '大津波警報', color: '#ffffff', bg: '#9d0099' },
     Warning: { text: '津波警報', color: '#ffffff', bg: '#f00000' },
-    Watch: { text: '津波注意報', color: '#000000', bg: '#ffa000' },
-    Unknown: { text: '不明', color: '#ffffff', bg: '#666666' },
+    Watch:    { text: '津波注意報',           color: '#000000', bg: '#ffa000' },
+    Forecast: { text: '津波予報（若干の海面変動）', color: '#ffffff', bg: '#0891b2' },
+    Unknown:  { text: '不明',                 color: '#ffffff', bg: '#666666' },
   }
   return map[grade] ?? { text: grade, color: '#ffffff', bg: '#666666' }
 }

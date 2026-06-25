@@ -153,6 +153,10 @@ export function App() {
       tsunamiTitleTimerRef.current = window.setTimeout(() => {
         applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
       }, tsunamiResetMs)
+    } else if (event.code === 552 && event.cancelled) {
+      // Forecast は tsunamiOverallGrade から除外されるため「津波解除検出」effect が発火しない。タイマーごと即時リセットする。
+      window.clearTimeout(tsunamiTitleTimerRef.current)
+      applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
     } else if (event.code === 556) {
       if (event.test) return
 
@@ -255,7 +259,9 @@ export function App() {
     if (event.code === 552 && !event.cancelled && settings.notifyMinScale >= 0 && settings.notifyTsunami) {
       const grade = tsunamiMaxGrade(event)
       const tsunamiNotifyTitle = grade === 'MajorWarning' ? '大津波警報'
-        : grade === 'Warning' ? '津波警報' : '津波注意報'
+        : grade === 'Warning' ? '津波警報'
+        : grade === 'Forecast' ? '津波予報（若干の海面変動）'
+        : '津波注意報'
       showBrowserNotification(
         tsunamiNotifyTitle,
         event.areas.slice(0, 5).map(a => a.name).join('、'),
@@ -271,7 +277,8 @@ export function App() {
         const grade = tsunamiMaxGrade(event)
         if      (grade === 'MajorWarning') type = 'tsunamiMajor'
         else if (grade === 'Warning')      type = 'tsunami'
-        else                               type = 'tsunamiWatch'
+        else if (grade === 'Watch')        type = 'tsunamiWatch'
+        else if (grade === 'Forecast')     type = 'tsunamiForecast'
       }
     } else if (event.code === 551) {
       const it = event.issue.type
@@ -292,6 +299,7 @@ export function App() {
           earthquake:       1000,
           earthquakePrompt:  500,
           earthquakeInfo:    400,
+          tsunamiForecast:  1900,
           tsunamiWatch:     1700,
           tsunami:          2800,
           tsunamiMajor:     4200,
@@ -310,7 +318,7 @@ export function App() {
     injectEvent, loadMoreEarthquakes,
     simulateEarthquake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast,
-    simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch,
+    simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast,
   } = useEarthquakes(handleLiveEvent, settings.dmdataApiKey, settings.dmdataTestDelivery, settings.eewFinalClearSec)
 
   // UI 倍率: ルート要素の font-size を変えて rem ベースの UI 全体を拡大縮小する。
@@ -683,9 +691,10 @@ export function App() {
                 eew:          simulateEEW,
                 eewWarning:   simulateEEWWarning,
                 eewForecast:  simulateEEWForecast,
-                tsunami:        simulateTsunami,
-                tsunamiWarning: simulateTsunamiWarning,
-                tsunamiWatch:   simulateTsunamiWatch,
+                tsunami:          simulateTsunami,
+                tsunamiWarning:   simulateTsunamiWarning,
+                tsunamiWatch:     simulateTsunamiWatch,
+                tsunamiForecast:  simulateTsunamiForecast,
                 notification: () => {
                   if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
                     alert('先に「通知を許可する」ボタンをクリックしてください。')

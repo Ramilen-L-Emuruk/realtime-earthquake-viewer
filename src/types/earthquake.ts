@@ -59,7 +59,7 @@ export interface JMAQuake {
   points: EarthquakePoint[]
 }
 
-export type TsunamiGrade = 'MajorWarning' | 'Warning' | 'Watch' | 'Unknown'
+export type TsunamiGrade = 'MajorWarning' | 'Warning' | 'Watch' | 'Forecast' | 'Unknown'
 
 export interface TsunamiArea {
   grade: TsunamiGrade
