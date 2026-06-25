@@ -20,6 +20,14 @@ function formatTime(isoTime: string): string {
   return `${d.getHours()}時${String(d.getMinutes()).padStart(2, '0')}分`
 }
 
+/** code 556 EEW キャンセル（誤報取消）の読み上げテキストを生成する。 */
+export function eewCancelToText(event: EEWAlert): string {
+  const time = event.issue?.time ? formatTime(event.issue.time) : null
+  return time
+    ? `${time}に発表された緊急地震速報はキャンセルされました。`
+    : '緊急地震速報はキャンセルされました。'
+}
+
 /** code 556 EEW の読み上げテキストを生成する。 */
 export function eewToText(event: EEWAlert): string {
   const { hypocenter } = event.earthquake
@@ -72,7 +80,7 @@ export function earthquakeToText(event: JMAQuake): string {
   return text
 }
 
-/** code 552 津波情報の読み上げテキストを生成する。 */
+/** code 552 津波情報の読み上げテキストを生成する（新規発表・引き上げ時）。 */
 export function tsunamiToText(event: JMATsunami): string {
   const topGrade = GRADE_ORDER.find(g => event.areas.some(a => a.grade === g))
   if (!topGrade) return ''
@@ -86,8 +94,28 @@ export function tsunamiToText(event: JMATsunami): string {
   return `${gradeLabel}。${areas.join('、')}に${gradeLabel}が発表されました。${action}`
 }
 
+/** code 552 津波情報 引き下げ時の読み上げテキストを生成する。 */
+export function tsunamiDowngradeToText(event: JMATsunami): string {
+  const topGrade = GRADE_ORDER.find(g => event.areas.some(a => a.grade === g))
+  if (!topGrade) return tsunamiCancelToText()
+
+  const areas = event.areas.filter(a => a.grade === topGrade).map(a => a.name)
+  const gradeLabel = topGrade === 'MajorWarning' ? 'おおつなみけいほう'
+    : topGrade === 'Warning' ? '津波警報' : '津波注意報'
+
+  return `津波情報が更新されました。現在、${areas.join('、')}に${gradeLabel}が発表されています。`
+}
+
+/** code 552 津波警報等 全解除の読み上げテキストを生成する。 */
+export function tsunamiCancelToText(): string {
+  return '津波警報等は全て解除されました。'
+}
+
 /** 南海トラフ地震臨時情報（VYSE50/51/52）の読み上げテキストを生成する。 */
 export function nankaiToText(event: JMANankai): string {
+  if (event.cancelled || event.kindName === '調査終了') {
+    return '南海トラフ地震臨時情報、調査終了。南海トラフ地震の発生可能性は通常の範囲内でした。'
+  }
   if (event.kindName === '巨大地震警戒') {
     return '南海トラフ地震臨時情報、巨大地震警戒。南海トラフ地震の想定震源域内で大規模な地震が発生しました。直ちに防災対応をとってください。'
   }
