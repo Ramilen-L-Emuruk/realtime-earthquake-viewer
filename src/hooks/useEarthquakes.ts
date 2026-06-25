@@ -404,6 +404,18 @@ export function useEarthquakes(
             hasMore: !!nextToken,
             error: null,
           }))
+          // 初回ロードで津波が有効（validDateTime未来）の場合、タイマーを仕掛ける
+          // handleEvent を経由しないため、ここで明示的に設定する
+          if (tsunamis.length > 0 && latestTsunami?.validDateTime) {
+            const expireMs = new Date(latestTsunami.validDateTime).getTime() - Date.now()
+            if (expireMs > 0) {
+              if (tsunamiValidTimerRef.current !== undefined) window.clearTimeout(tsunamiValidTimerRef.current)
+              tsunamiValidTimerRef.current = window.setTimeout(() => {
+                tsunamiValidTimerRef.current = undefined
+                handleEvent({ ...latestTsunami, cancelled: true })
+              }, expireMs)
+            }
+          }
         })
         .catch((err: unknown) => {
           if (cancelled) return
@@ -483,6 +495,18 @@ export function useEarthquakes(
           hasMore: quakeEvents.length === MAX_HISTORY_RETAINED,
           error: null,
         }))
+        // 初回ロードで津波が有効（validDateTime未来）の場合、タイマーを仕掛ける
+        // handleEvent を経由しないため、ここで明示的に設定する
+        if (tsunamis.length > 0 && latestTsunami?.validDateTime) {
+          const expireMs = new Date(latestTsunami.validDateTime).getTime() - Date.now()
+          if (expireMs > 0) {
+            if (tsunamiValidTimerRef.current !== undefined) window.clearTimeout(tsunamiValidTimerRef.current)
+            tsunamiValidTimerRef.current = window.setTimeout(() => {
+              tsunamiValidTimerRef.current = undefined
+              handleEvent({ ...latestTsunami, cancelled: true })
+            }, expireMs)
+          }
+        }
       })
       .catch((err: unknown) => {
         if (cancelled) return
