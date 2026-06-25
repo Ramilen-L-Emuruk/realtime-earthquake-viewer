@@ -151,16 +151,20 @@ function FitToBounds({ signature, positions }: { signature: string; positions: L
 // 収まらなくなったらその大きさに合わせてズームアウトする。
 // P波があれば P波を、なければ S波を基準にする。
 // 複数EEWがある場合は originTime が最新のものを追従対象とする。
-function FitToEEW({ eews, psWave }: { eews: EEWAlert[]; psWave: PsWaveCircle[] }) {
+// ユーザーが手動でズーム/パンした場合は idleRevertSec 秒間追従を停止する（0=EEW更新まで停止）。
+function FitToEEW({ eews, psWave, idleRevertSec = 30 }: { eews: EEWAlert[]; psWave: PsWaveCircle[]; idleRevertSec?: number }) {
   const map = useMap()
   const lastEewIdRef = useRef<string | null>(null)
+  const isAutoFlyingRef = useRef(false)
+  const userInteractedRef = useRef(false)
+  const resetTimerRef = useRef<number | undefined>(undefined)
 
   // 最新 EEW（originTime 降順）を追従対象とする
   const latest = eews.length > 0
     ? [...eews].sort((a, b) => b.earthquake.originTime.localeCompare(a.earthquake.originTime))[0]
     : null
 
-  // 新しい EEW を受信したら震源を中心に表示
+  // 新しい EEW を受信したら: ユーザー操作ロックをリセットし震源を中心に表示
   useEffect(() => {
     if (!latest) {
       lastEewIdRef.current = null
@@ -171,13 +175,42 @@ function FitToEEW({ eews, psWave }: { eews: EEWAlert[]; psWave: PsWaveCircle[] }
     const eewEventId = latest.issue?.eventId ?? latest.id
     if (lastEewIdRef.current === eewEventId) return
     lastEewIdRef.current = eewEventId
+    userInteractedRef.current = false
+    window.clearTimeout(resetTimerRef.current)
+    isAutoFlyingRef.current = true
     map.flyTo([latitude, longitude], MAX_ZOOM, { duration: 0.8 })
   }, [latest, map])
+
+  // ユーザーの手動ズーム/パンを検知し、idleRevertSec 秒後に追従を再開する。
+  // プログラム的な flyTo/flyToBounds 中（isAutoFlyingRef = true）は無視する。
+  useEffect(() => {
+    const onInteraction = () => {
+      if (isAutoFlyingRef.current) return
+      userInteractedRef.current = true
+      window.clearTimeout(resetTimerRef.current)
+      if (idleRevertSec > 0) {
+        resetTimerRef.current = window.setTimeout(() => {
+          userInteractedRef.current = false
+        }, idleRevertSec * 1000)
+      }
+    }
+    const onMoveEnd = () => { isAutoFlyingRef.current = false }
+    map.on('zoomstart', onInteraction)
+    map.on('dragstart', onInteraction)
+    map.on('moveend', onMoveEnd)
+    return () => {
+      map.off('zoomstart', onInteraction)
+      map.off('dragstart', onInteraction)
+      map.off('moveend', onMoveEnd)
+      window.clearTimeout(resetTimerRef.current)
+    }
+  }, [map, idleRevertSec])
 
   // 予報円の成長に追従してズームアウト（表示に収まらなくなった時のみ）
   // P波があれば P波円を、なければ S波円を基準にする
   useEffect(() => {
     if (psWave.length === 0) return
+    if (userInteractedRef.current) return
     let bounds: L.LatLngBounds | null = null
     for (const c of psWave) {
       const radius = c.pRadius > 0 ? c.pRadius : c.sRadius
@@ -185,6 +218,7 @@ function FitToEEW({ eews, psWave }: { eews: EEWAlert[]; psWave: PsWaveCircle[] }
       bounds = bounds ? bounds.extend(b) : b
     }
     if (bounds && !map.getBounds().contains(bounds)) {
+      isAutoFlyingRef.current = true
       map.flyToBounds(bounds, { padding: [60, 60], maxZoom: MAX_ZOOM, duration: 0.8 })
     }
   }, [psWave, map])
@@ -286,6 +320,7 @@ interface Props {
   kyoshinPsWave?: PsWaveCircle[]
   eews?: EEWAlert[]
   detectedPoints?: DetectedPoint[]
+  idleRevertSec?: number
 }
 
 export function JapanMap({
@@ -299,6 +334,7 @@ export function JapanMap({
   kyoshinPsWave = [],
   eews = [],
   detectedPoints = [],
+  idleRevertSec = 30,
 }: Props) {
   const stationCoords = useStationCoords()
   const tsunamiZones = useTsunamiZones()
@@ -545,7 +581,7 @@ export function JapanMap({
       )}
 
       {/* EEW 発報時: 震源中心→予報円に合わせてズームアウト */}
-      {mode === 'kyoshin' && <FitToEEW eews={eews} psWave={kyoshinPsWave} />}
+      {mode === 'kyoshin' && <FitToEEW eews={eews} psWave={kyoshinPsWave} idleRevertSec={idleRevertSec} />}
 
       {/* 緊急地震速報の予報円（S波=塗りつぶし / P波=外周） */}
       {mode === 'kyoshin' &&
