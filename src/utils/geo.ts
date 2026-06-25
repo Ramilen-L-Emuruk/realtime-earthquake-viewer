@@ -12,6 +12,17 @@ export function haversineKm(lat1: number, lng1: number, lat2: number, lng2: numb
 }
 
 /**
+ * 地図中心経度から見て最も近い側に経度を補正する。
+ * 日本中心（137.7°）からベネズエラ（-68.8°）→ 291.2° に補正するケースで使用。
+ */
+export function normalizeEpicenterLng(lng: number, mapCenterLng: number): number {
+  const candidates = [lng - 360, lng, lng + 360]
+  return candidates.reduce((best, candidate) =>
+    Math.abs(candidate - mapCenterLng) < Math.abs(best - mapCenterLng) ? candidate : best
+  )
+}
+
+/**
  * 点 [lat, lng] が、複数リングからなる領域の内側にあるか判定する（even-odd / ray casting）。
  * MultiPolygon（複数の外周）・穴あきポリゴンにも対応（全リングのエッジ交差を通算）。
  */
