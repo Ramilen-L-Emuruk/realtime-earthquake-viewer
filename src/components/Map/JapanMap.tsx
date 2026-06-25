@@ -168,8 +168,9 @@ function FitToEEW({ eews, psWave }: { eews: EEWAlert[]; psWave: PsWaveCircle[] }
     }
     const { latitude, longitude } = latest.earthquake.hypocenter
     if (latitude <= -200 || longitude <= -200) return
-    if (lastEewIdRef.current === latest.id) return
-    lastEewIdRef.current = latest.id
+    const eewEventId = latest.issue?.eventId ?? latest.id
+    if (lastEewIdRef.current === eewEventId) return
+    lastEewIdRef.current = eewEventId
     map.flyTo([latitude, longitude], MAX_ZOOM, { duration: 0.8 })
   }, [latest, map])
 
