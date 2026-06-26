@@ -136,10 +136,9 @@ export function App() {
     // （地震情報・津波情報・緊急地震速報）。
     if (event.code === 551) {
       setActiveTab('earthquake')
-      // 新規地震（別の earthquake.time）のときだけ最新へ注目を移す。
-      // 同一地震の続報（速報→詳細など）では現在の選択を維持する。
+      // 新規・続報いずれも、受信した地震カードを選択状態にする。
+      setSelectedQuakeId(event.earthquake.time)
       if (event.earthquake.time !== lastNewQuakeTimeRef.current) {
-        setSelectedQuakeId(null)
         lastNewQuakeTimeRef.current = event.earthquake.time
       }
       const { hypocenter, maxScale } = event.earthquake
