@@ -18,7 +18,7 @@ import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude } from './utils/formatters'
 import { eewMaxScale } from './utils/eew'
 import { tsunamiMaxGrade, tsunamiOverallGrade } from './utils/tsunami'
-import { playAlertSound, playKyoshinUpdateSound, kyoshinLevel, unlockAudio, setSoundVolume, type AlertSoundType } from './utils/alertSound'
+import { playAlertSound, playKyoshinUpdateSound, playCountdownBeep, kyoshinLevel, unlockAudio, setSoundVolume, type AlertSoundType } from './utils/alertSound'
 import { speakWithVoicevox } from './utils/voicevox'
 import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, nankaiToText, kohatsuToText, lpgmToText } from './utils/ttsText'
 import { kyoshinIndexToLabel } from './utils/kyoshinIntensity'
@@ -641,6 +641,21 @@ export function App() {
     [settings.homeLat, settings.homeLng],
   )
   const swaveArrival = useSWaveCountdown(psWave, home, hasActiveEEW)
+
+  const prevEtaRef = useRef<number | null>(null)
+  useEffect(() => {
+    const eta = swaveArrival?.etaSec ?? null
+    if (
+      settings.soundEnabled &&
+      eta !== null &&
+      eta >= 1 &&
+      eta <= 5 &&
+      eta !== prevEtaRef.current
+    ) {
+      playCountdownBeep(eta)
+    }
+    prevEtaRef.current = eta
+  }, [swaveArrival?.etaSec, settings.soundEnabled])
 
   const effectiveKyoshinMaxIndex = useMemo(() => {
     if (!(hasActiveEEW || kyoshinDetection.detected)) return kyoshinDetection.maxIndex
