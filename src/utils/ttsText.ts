@@ -77,7 +77,7 @@ export function earthquakeToText(event: JMAQuake): string {
   }
 
   if (domesticTsunami === 'None' || domesticTsunami === 'NonEffective') {
-    text += '津波の心配はありません。'
+    text += 'この地震による津波の心配はありません。'
   } else if (domesticTsunami === 'Watch') {
     text += 'この地震により、一部の沿岸に津波注意報が発表されています。'
   } else if (domesticTsunami === 'Warning') {
