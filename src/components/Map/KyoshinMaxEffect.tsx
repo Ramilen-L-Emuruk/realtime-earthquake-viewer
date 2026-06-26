@@ -35,6 +35,7 @@ export function KyoshinMaxEffect({
     const canvas = document.createElement('canvas')
     canvas.style.position = 'absolute'
     canvas.style.pointerEvents = 'none'
+    canvas.style.transformOrigin = '0 0'
     map.getPanes().overlayPane?.appendChild(canvas)
     canvasRef.current = canvas
     return () => {
