@@ -636,6 +636,9 @@ export function App() {
       }
     } else if (!kyoshinDetection.detected && prevDetectedRef.current) {
       applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, false, setAlertTitle)
+      if (activeEEWsRef.current.size === 0) {
+        setActiveTab(defaultTabRef.current)
+      }
     }
     prevDetectedRef.current = kyoshinDetection.detected
   }, [kyoshinDetection.detected, effectiveKyoshinMaxIndex, settings.soundEnabled, settings.notifyDetection])
