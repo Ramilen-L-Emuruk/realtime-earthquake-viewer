@@ -455,6 +455,9 @@ export function useEarthquakes(
             else next.set(lpgm.originTime, lpgm)
             return { ...prev, lpgmByOriginTime: next }
           })
+          if (!lpgm.cancelled && lpgm.maxClass >= 1) {
+            onLiveEventRef.current?.({ kind: 'lpgm', data: lpgm } as unknown as P2PQuakeEvent)
+          }
         } else if (ev.kind === 'nankai') {
           const nankai = ev.data
           setState(prev => ({ ...prev, nankai: nankai.cancelled ? null : nankai }))
