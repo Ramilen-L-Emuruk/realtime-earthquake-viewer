@@ -26,6 +26,8 @@ export interface AppSettings {
   voicevoxEnabled: boolean         // VOICEVOX 読み上げを有効にする
   voicevoxUrl: string              // VOICEVOX の HTTP API ベース URL
   voicevoxSpeakerId: number        // VOICEVOX 話者 ID
+  ttsIntensityLevels: number       // 読み上げる震度階数（最大震度から何階級分。0 = 最大震度のみ）
+  ttsMaxRegions: number            // 読み上げる最大地域数（0 = 無制限）
 }
 
 // 通常版とDMDSS版の設定を localStorage 上で分離する
@@ -56,6 +58,8 @@ const DEFAULTS: AppSettings = {
   voicevoxEnabled: false,
   voicevoxUrl: 'http://localhost:50021',
   voicevoxSpeakerId: 0,
+  ttsIntensityLevels: 2,
+  ttsMaxRegions: 10,
 }
 
 function load(): AppSettings {

@@ -377,7 +377,7 @@ export function App() {
       }
       let ttsText: string | null = null
       if (event.code === 551) {
-        ttsText = earthquakeToText(event)
+        ttsText = earthquakeToText(event, { intensityLevels: settings.ttsIntensityLevels, maxRegions: settings.ttsMaxRegions })
       } else if (event.code === 552) {
         const GRADE_RANK = { MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0 } as const
         type GradeKey = keyof typeof GRADE_RANK
