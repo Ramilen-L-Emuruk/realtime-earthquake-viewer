@@ -165,9 +165,15 @@ function FitToEEW({ eews, psWave, idleRevertSec = 30 }: { eews: EEWAlert[]; psWa
     : null
 
   // 新しい EEW を受信したら: ユーザー操作ロックをリセットし震源を中心に表示
+  // EEW が解除されたら（lastEewIdRef が非 null → latest が null）日本全体に戻す
   useEffect(() => {
     if (!latest) {
-      lastEewIdRef.current = null
+      if (lastEewIdRef.current !== null) {
+        lastEewIdRef.current = null
+        if (!userInteractedRef.current) {
+          map.fitBounds(JAPAN_BOUNDS, { padding: [20, 20] })
+        }
+      }
       return
     }
     const { latitude, longitude } = latest.earthquake.hypocenter
@@ -237,7 +243,7 @@ function FitToDetection({ points, hasEew }: { points: DetectedPoint[]; hasEew: b
       if (fittedRef.current) {
         fittedRef.current = false
         if (!hasEew) {
-          map.flyToBounds(JAPAN_BOUNDS, { padding: [20, 20], duration: 1.0 })
+          map.fitBounds(JAPAN_BOUNDS, { padding: [20, 20] })
         }
       }
       return

@@ -558,9 +558,16 @@ export function useEarthquakes(
     ws.onEvent = (event: P2PQuakeEvent) => {
       if (event.code === 556) {
         if (event.test) return
-        if (event.cancelled) return  // Yahoo の hypoInfo 消滅で解除済み
         const eew = event as EEWAlert
         const key = eew.issue?.eventId ?? eew.id
+        if (event.cancelled) {
+          // Yahoo が検出する前に誤報取消された場合は hypoInfo 消滅イベントが来ない。
+          // activeEEWs に残っていれば解除処理を通す。
+          if (stateRef.current.activeEEWs.has(key)) {
+            handleEvent(event)
+          }
+          return
+        }
         if (stateRef.current.activeEEWs.has(key)) {
           enrichEEW(key, eew.areas ?? eew.regions ?? [])
         } else {

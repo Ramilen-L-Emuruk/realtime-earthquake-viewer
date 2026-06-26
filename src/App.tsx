@@ -180,11 +180,13 @@ export function App() {
       if (event.cancelled) {
         // EEW キャンセル（誤報取消）または解除（最終報満了）: レベル追跡から除去
         // expired: true は最終報タイマー満了による自動解除 → 音は鳴らさない
+        // hadKey: P2PQuake WS と Yahoo の両方から cancel が来た場合の二重鳴り防止
+        const hadKey = activeEEWLevelsRef.current.has(key)
         activeEEWLevelsRef.current.delete(key)
-        if (settings.soundEnabled && !event.expired) {
+        if (hadKey && settings.soundEnabled && !event.expired) {
           playAlertSound('eewCancel')
         }
-        if (settings.voicevoxEnabled && !event.expired) {
+        if (hadKey && settings.voicevoxEnabled && !event.expired) {
           speakWithVoicevox(settings.voicevoxUrl, eewCancelToText(event), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
         }
         // EEW 解除時は読み上げタイマーをキャンセルする
