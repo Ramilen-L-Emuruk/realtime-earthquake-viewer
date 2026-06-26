@@ -171,7 +171,8 @@ function FitToEEW({ eews, psWave, idleRevertSec = 30 }: { eews: EEWAlert[]; psWa
       if (lastEewIdRef.current !== null) {
         lastEewIdRef.current = null
         if (!userInteractedRef.current) {
-          map.fitBounds(JAPAN_BOUNDS, { padding: [20, 20] })
+          isAutoFlyingRef.current = true
+          map.flyToBounds(JAPAN_BOUNDS, { padding: [20, 20], duration: 1.0 })
         }
       }
       return
@@ -243,7 +244,7 @@ function FitToDetection({ points, hasEew }: { points: DetectedPoint[]; hasEew: b
       if (fittedRef.current) {
         fittedRef.current = false
         if (!hasEew) {
-          map.fitBounds(JAPAN_BOUNDS, { padding: [20, 20] })
+          map.flyToBounds(JAPAN_BOUNDS, { padding: [20, 20], duration: 1.0 })
         }
       }
       return
