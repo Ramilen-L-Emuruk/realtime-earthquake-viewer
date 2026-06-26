@@ -13,7 +13,7 @@ import { useSettings } from './hooks/useSettings'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
 import { useKyoshinDetection, MIN_DETECTION_INDEX } from './hooks/useKyoshinDetection'
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
-import { useDmdssWaves, VS_KM_PER_SEC } from './hooks/useDmdssWaves'
+import { useDmdssWaves } from './hooks/useDmdssWaves'
 import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude } from './utils/formatters'
 import { eewMaxScale } from './utils/eew'
@@ -609,7 +609,7 @@ export function App() {
       : null),
     [settings.homeLat, settings.homeLng],
   )
-  const swaveArrival = useSWaveCountdown(psWave, home, hasActiveEEW, isDmdss ? VS_KM_PER_SEC : undefined)
+  const swaveArrival = useSWaveCountdown(psWave, home, hasActiveEEW)
 
   const effectiveKyoshinMaxIndex = useMemo(() => {
     if (!(hasActiveEEW || kyoshinDetection.detected)) return kyoshinDetection.maxIndex
