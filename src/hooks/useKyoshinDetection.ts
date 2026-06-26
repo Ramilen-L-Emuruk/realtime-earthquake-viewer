@@ -19,8 +19,8 @@ export interface KyoshinDetection {
 
 /** 1秒で index が 2 以上増加した観測点を「変化あり」とみなす（約1.0 計測震度相当の上昇） */
 const DELTA_THRESHOLD = 2
-/** 検知対象とする最低インデックス（震度0相当: 計測震度 0.0 以上 = index 6） */
-export const MIN_DETECTION_INDEX = 6
+/** 検知対象とする最低インデックス（震度-1相当: 計測震度 -0.5 以上 = index 5） */
+export const MIN_DETECTION_INDEX = 5
 /** このインデックス以上は delta チェックをスキップする（震度3以上: 計測震度 2.5 以上 = index 11）。
  *  急上昇がなくても震度3を2秒維持すれば確定できるようにする。 */
 const BYPASS_DELTA_INDEX = 11
