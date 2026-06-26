@@ -118,8 +118,8 @@ export function parseEEW(headType: string, data: Record<string, unknown>): EEWAl
   const areas = isCanceled ? [] : parseEEWRegions(intensity)
 
   // 推定最大長周期地震動階級（1〜4）。to 優先、なければ from
-  const forecastMaxLpgmInt = obj(intensity.forecastMaxLpgmInt)
-  const lpgmStr = str(forecastMaxLpgmInt.to) || str(forecastMaxLpgmInt.from)
+  const forecastMaxLgInt = obj(intensity.forecastMaxLgInt)
+  const lpgmStr = str(forecastMaxLgInt.to) || str(forecastMaxLgInt.from)
   const lpgmClass = parseInt(lpgmStr, 10)
   const forecastMaxLpgmClass = (!isCanceled && lpgmClass >= 1 && lpgmClass <= 4) ? lpgmClass : undefined
 
