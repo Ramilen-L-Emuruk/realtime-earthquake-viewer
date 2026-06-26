@@ -113,7 +113,7 @@ export function TelegramTab({ telegramLog, onClear }: Props) {
     const json = JSON.stringify(buildDownloadPayload(entry), null, 2)
     const ts = entry.receivedAt.toISOString().replace(/[-:]/g, '').replace('T', '_').slice(0, 15)
     const source = entry.source === 'dmdss' ? 'DMDSS' : 'P2PQuake'
-    triggerDownload(json, `${source}_${entry.headType}_${ts}.json`)
+    triggerDownload(json, `${ts}_${source}_${entry.headType}.json`)
   }, [])
 
   const handleDownloadSelected = useCallback(() => {
@@ -127,7 +127,7 @@ export function TelegramTab({ telegramLog, onClear }: Props) {
     }))
     const json = JSON.stringify(payload, null, 2)
     const ts = new Date().toISOString().replace(/[-:]/g, '').replace('T', '_').slice(0, 15)
-    triggerDownload(json, `telegrams_${entries.length}件_${ts}.json`)
+    triggerDownload(json, `${ts}_telegrams_${entries.length}件.json`)
   }, [telegramLog, selectedIds])
 
   const handleDownloadZip = useCallback(() => {
@@ -140,10 +140,10 @@ export function TelegramTab({ telegramLog, onClear }: Props) {
       const json = JSON.stringify(buildDownloadPayload(e), null, 2)
       const source = e.source === 'dmdss' ? 'DMDSS' : 'P2PQuake'
       const ts = e.receivedAt.toISOString().replace(/[-:]/g, '').replace('T', '_').slice(0, 15)
-      const base = `${source}_${e.headType}_${ts}.json`
+      const base = `${ts}_${source}_${e.headType}.json`
       const count = usedNames.get(base) ?? 0
       usedNames.set(base, count + 1)
-      const filename = count === 0 ? base : `${base.replace('.json', '')}_${count + 1}.json`
+      const filename = count === 0 ? base : `${ts}_${source}_${e.headType}_${count + 1}.json`
       files[filename] = enc.encode(json)
     }
     const zipped = zipSync(files)
@@ -152,7 +152,7 @@ export function TelegramTab({ telegramLog, onClear }: Props) {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `telegrams_${entries.length}件_${ts}.zip`
+    a.download = `${ts}_telegrams_${entries.length}件.zip`
     a.click()
     URL.revokeObjectURL(url)
   }, [telegramLog, selectedIds])
