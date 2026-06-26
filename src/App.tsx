@@ -117,6 +117,8 @@ export function App() {
   // EEW の eventId ごとにレベルを追跡（複数EEW対応）
   // key = issue.eventId ?? id、value = 0=低震度予報 / 1=警報（severity=Warning または予想震度5弱以上） / 2=特別警報
   const activeEEWLevelsRef = useRef<Map<string, 0 | 1 | 2>>(new Map())
+  // EEW の eventId ごとに予想最大震度スケールを追跡（同一レベル内の震度引き上げ検出用）
+  const activeEEWScalesRef = useRef<Map<string, number>>(new Map())
   // 各情報タイトルのリセットタイマー（自動復帰秒数が15秒の場合は15秒、それ以外は30秒）
   const earthquakeTitleTimerRef = useRef<number>(0)
   const eewTitleTimerRef = useRef<number>(0)
@@ -183,6 +185,7 @@ export function App() {
         // hadKey: P2PQuake WS と Yahoo の両方から cancel が来た場合の二重鳴り防止
         const hadKey = activeEEWLevelsRef.current.has(key)
         activeEEWLevelsRef.current.delete(key)
+        activeEEWScalesRef.current.delete(key)
         if (hadKey && settings.soundEnabled && !event.expired) {
           playAlertSound('eewCancel')
         }
@@ -207,14 +210,17 @@ export function App() {
       const currentLevel = computeSingleEEWLevel(event)
       const scale = eewMaxScale(event)
 
-      // 新規発報か続報かを判定し、レベル引き上げを検出する
+      // 新規発報か続報かを判定し、レベル・震度の引き上げを検出する
       const isNew = !activeEEWLevelsRef.current.has(key)
       const prevLevel = activeEEWLevelsRef.current.get(key) ?? 0
+      const prevScale = activeEEWScalesRef.current.get(key) ?? 0
       const levelUpgraded = !isNew && currentLevel > prevLevel
+      const scaleUpgraded = !isNew && scale > prevScale
       activeEEWLevelsRef.current.set(
         key,
         (isNew ? currentLevel : Math.max(prevLevel, currentLevel)) as 0 | 1 | 2,
       )
+      activeEEWScalesRef.current.set(key, Math.max(prevScale, scale))
 
       if (settings.soundEnabled) {
         const eewSoundType = selectEEWSoundType(isNew, levelUpgraded, currentLevel)
@@ -275,7 +281,7 @@ export function App() {
               firePhase2()
             }
           }, 15000)
-        } else if (levelUpgraded) {
+        } else if (levelUpgraded || scaleUpgraded) {
           if (eewTtsTimerRef.current) { clearTimeout(eewTtsTimerRef.current); eewTtsTimerRef.current = null }
           scheduleEewTts()
         }
