@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import L from 'leaflet'
-import { MapContainer, TileLayer, Marker, Polyline, Polygon, Circle, Popup, Pane, useMap, useMapEvents } from 'react-leaflet'
+import { MapContainer, TileLayer, Marker, Polyline, Polygon, Popup, Pane, useMap, useMapEvents } from 'react-leaflet'
 import type { JMAQuake, JMATsunami, TsunamiGrade, EEWAlert } from '../../types/earthquake'
 import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
@@ -17,6 +17,7 @@ import { KyoshinPoints } from './KyoshinPoints'
 import { KyoshinSubThreshold } from './KyoshinSubThreshold'
 import { KyoshinDetectedPoints } from './KyoshinDetectedPoints'
 import { KyoshinMaxEffect } from './KyoshinMaxEffect'
+import { PsWaveLayer } from './PsWaveLayer'
 import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
 import type { DetectedPoint } from '../../hooks/useKyoshinDetection'
 
@@ -218,6 +219,7 @@ function FitToEEW({ eews, psWave, idleRevertSec = 30 }: { eews: EEWAlert[]; psWa
   useEffect(() => {
     if (psWave.length === 0) return
     if (userInteractedRef.current) return
+    if (isAutoFlyingRef.current) return
     let bounds: L.LatLngBounds | null = null
     for (const c of psWave) {
       const radius = c.pRadius > 0 ? c.pRadius : c.sRadius
@@ -591,21 +593,7 @@ export function JapanMap({
       {mode === 'kyoshin' && <FitToEEW eews={eews} psWave={kyoshinPsWave} idleRevertSec={idleRevertSec} />}
 
       {/* 緊急地震速報の予報円（S波=塗りつぶし / P波=外周） */}
-      {mode === 'kyoshin' &&
-        kyoshinPsWave.map((c, i) => (
-          <Fragment key={`ps-${i}`}>
-            <Circle
-              center={[c.lat, c.lng]}
-              radius={c.sRadius * 1000}
-              pathOptions={{ color: '#ff3c00', weight: 2, fillColor: '#ff3c00', fillOpacity: 0.12 }}
-            />
-            <Circle
-              center={[c.lat, c.lng]}
-              radius={c.pRadius * 1000}
-              pathOptions={{ color: '#38bdf8', weight: 2, fill: false, dashArray: '4 4' }}
-            />
-          </Fragment>
-        ))}
+      {mode === 'kyoshin' && <PsWaveLayer psWave={kyoshinPsWave} />}
 
       {/* 緊急地震速報の震源マーカー。複数EEW時は全震源を表示する。 */}
       {mode === 'kyoshin' &&
