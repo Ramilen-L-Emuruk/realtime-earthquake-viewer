@@ -1,9 +1,16 @@
-import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMAKohatsu, IntensityScale, TsunamiGrade } from '../types/earthquake'
+import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMAKohatsu, IntensityScale, TsunamiGrade, EarthquakePoint } from '../types/earthquake'
 import { eewMaxScale } from './eew'
 import { getIntensityLabel } from './intensity'
 import { tsunamiMaxGrade } from './tsunami'
 
 const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch']
+
+function regionNames(points: EarthquakePoint[], maxScale: IntensityScale): string[] {
+  const maxPoints = points.filter(p => p.scale === maxScale)
+  const areas = [...new Set(maxPoints.filter(p => p.isArea).map(p => p.addr))]
+  if (areas.length > 0) return areas
+  return [...new Set(maxPoints.map(p => p.pref).filter(Boolean))]
+}
 
 function magnitudeText(mag: number): string {
   // toFixed(1) で小数点以下1桁を明示し「きゅう」→「きゅうてんぜろ」のような誤読を防ぐ
@@ -48,8 +55,8 @@ export function earthquakeToText(event: JMAQuake): string {
   const type = event.issue.type
 
   if (type === 'ScalePrompt') {
-    const prefs = [...new Set(event.points.filter(p => p.scale === maxScale).map(p => p.pref))]
-    return `震度速報。最大震度${intensityText(maxScale)}を${prefs.join('、')}で観測しました。`
+    const regions = regionNames(event.points, maxScale)
+    return `震度速報。最大震度${intensityText(maxScale)}を${regions.join('、')}で観測しました。`
   }
 
   const time = formatTime(event.earthquake.time)
@@ -63,10 +70,10 @@ export function earthquakeToText(event: JMAQuake): string {
   }
 
   // ScaleAndDestination / DetailScale
-  const prefs = [...new Set(event.points.filter(p => p.scale === maxScale).map(p => p.pref))]
+  const regions = regionNames(event.points, maxScale)
   let text = `地震情報。${time}頃、${hypocenter.name}、深さ${hypocenter.depth}キロメートルを震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
-  if (prefs.length > 0) {
-    text += `最大震度${intensityText(maxScale)}を${prefs.join('、')}で観測しました。`
+  if (regions.length > 0) {
+    text += `最大震度${intensityText(maxScale)}を${regions.join('、')}で観測しました。`
   }
 
   if (domesticTsunami === 'None' || domesticTsunami === 'NonEffective') {
