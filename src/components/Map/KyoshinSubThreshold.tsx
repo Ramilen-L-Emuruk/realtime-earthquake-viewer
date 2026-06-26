@@ -75,6 +75,7 @@ export function KyoshinSubThreshold({ sites, indices, iconScale }: Props) {
 
     const canvas = document.createElement('canvas')
     canvas.style.pointerEvents = 'none'
+    canvas.style.transformOrigin = '0 0'
     pane.appendChild(canvas)
     canvasRef.current = canvas
 
