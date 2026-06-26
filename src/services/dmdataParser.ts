@@ -246,10 +246,14 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
     ? parseIntensityPoints(intensity)
     : []
 
-  // VXSE51 は earthquake.originTime がないため targetDateTime（概算発生時刻）を使う。
-  // VXSE52/53 の earthquake.originTime と分単位で一致し dedup キーが揃う。
+  // earthquake.time にはヘッドラインと一致する到達時刻（arrivalTime）を使う。
+  // VXSE51 は earthquake フィールドがなく targetDateTime（= arrivalTime 相当）を使う。
+  // VXSE52/53/61 は arrivalTime を優先し、欠けている場合のみ originTime にフォールバックする。
+  // originTime は地震の物理的起源時刻で常に arrivalTime より1分前になるため、
+  // そのまま使うとヘッドライン・eventId の時刻とずれて同一イベントが別カード扱いになる。
   const eventId = str(data.eventId)
-  const originTime = str(earthquake.originTime) || (headType === 'VXSE51' ? str(data.targetDateTime) : '')
+  const originTime = (headType === 'VXSE51' ? str(data.targetDateTime) : str(earthquake.arrivalTime))
+    || str(earthquake.originTime)
 
   // 遠地地震は data.title === '遠地地震に関する情報' で判定する（data.body.type には存在しない）。
   // VXSE_ISSUE_TYPE では VXSE53 が ScaleAndDestination だが、遠地地震は Foreign で統一する。
