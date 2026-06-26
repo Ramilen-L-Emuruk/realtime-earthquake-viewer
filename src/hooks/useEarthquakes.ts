@@ -196,18 +196,18 @@ export function useEarthquakes(
       }
     }
 
-    // DMDATA 地震情報（551）の震度キャッシュ更新は setState の外で行う
+    // 地震情報（551）の震度キャッシュ更新は setState の外で行う
     if (event.code === 551) {
       const quake = event as JMAQuake
       const m = quake.id?.match(/^dmdata-quake-(\d{14})-/)
-      if (m) {
-        // VXSE51 の震度データをキャッシュ（後続 VXSE52 への補完用）
-        if (quake.issue.type === 'ScalePrompt' && quake.earthquake.maxScale >= 0) {
-          quakeIntensityCacheRef.current.set(m[1], {
-            maxScale: quake.earthquake.maxScale,
-            points: quake.points,
-          })
-        }
+      // DMDATA は ID 埋め込みのタイムスタンプ、P2PQuake は earthquake.time をキーに使う
+      const cacheKey = m ? m[1] : quake.earthquake.time
+      // VXSE51 の震度データをキャッシュ（後続 VXSE52 への補完用）
+      if (quake.issue.type === 'ScalePrompt' && quake.earthquake.maxScale >= 0) {
+        quakeIntensityCacheRef.current.set(cacheKey, {
+          maxScale: quake.earthquake.maxScale,
+          points: quake.points,
+        })
       }
     }
 
@@ -237,7 +237,10 @@ export function useEarthquakes(
       switch (event.code) {
         case 551: {
           let quake = event as JMAQuake
-          const eventId = quake.id?.match(/^dmdata-quake-(\d{14})-/)?.[1]
+          const m = quake.id?.match(/^dmdata-quake-(\d{14})-/)
+          const eventId = m?.[1]
+          // DMDATA は ID 埋め込みのタイムスタンプ、P2PQuake は earthquake.time をキーに使う
+          const cacheKey = eventId ?? quake.earthquake.time
 
           // VXSE51: 座標がない場合に EEW キャッシュから震源を補完する
           if (quake.issue.type === 'ScalePrompt' && quake.earthquake.hypocenter.latitude <= -200) {
@@ -255,7 +258,7 @@ export function useEarthquakes(
 
           // VXSE52/53: 震度がない場合に VXSE51 キャッシュから maxScale・points を補完する
           if (quake.earthquake.maxScale < 0 && quake.points.length === 0) {
-            const cachedIntensity = eventId ? quakeIntensityCacheRef.current.get(eventId) : undefined
+            const cachedIntensity = quakeIntensityCacheRef.current.get(cacheKey)
             if (cachedIntensity) {
               quake = {
                 ...quake,
