@@ -136,14 +136,21 @@ export function App() {
     // （地震情報・津波情報・緊急地震速報）。
     if (event.code === 551) {
       setActiveTab('earthquake')
-      // 新規地震（別の earthquake.time）のときだけ最新へ注目を移す。
-      // 同一地震の続報（速報→詳細など）では現在の選択を維持する。
-      if (event.earthquake.time !== lastNewQuakeTimeRef.current) {
+      // 新規地震のときだけ最新へ注目を移す。同一地震の続報では選択を維持する。
+      // DMDATA は VXSE51（targetDateTime）→ VXSE52/53（originTime）で earthquake.time が1分ずれるため、
+      // eventId（quake.id から抽出）で同一イベントを判定する。P2P など id がない場合は earthquake.time で比較。
+      const quakeId = (event as import('./types/earthquake').JMAQuake).id
+      const incomingKey = quakeId?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1] ?? event.earthquake.time
+      const isNewQuake = incomingKey !== lastNewQuakeTimeRef.current
+      if (isNewQuake) {
         setSelectedQuakeId(null)
-        lastNewQuakeTimeRef.current = event.earthquake.time
+        lastNewQuakeTimeRef.current = incomingKey
       }
       const { hypocenter, maxScale } = event.earthquake
-      setAlertTitle(`🔴 地震情報 ${hypocenter.name} 最大震度${getIntensityLabel(maxScale)}`)
+      // 震度なし続報（VXSE52 等）ではタイトルを更新しない（直前の VXSE51 表示を維持する）
+      if (maxScale >= 0 || isNewQuake) {
+        setAlertTitle(`🔴 地震情報 ${hypocenter.name} 最大震度${getIntensityLabel(maxScale)}`)
+      }
       window.clearTimeout(earthquakeTitleTimerRef.current)
       const resetMs = settings.idleRevertSec === 15 ? 15000 : 30000
       earthquakeTitleTimerRef.current = window.setTimeout(() => {

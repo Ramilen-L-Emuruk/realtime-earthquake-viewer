@@ -265,8 +265,17 @@ export function useEarthquakes(
             }
           }
 
-          const key = quake.earthquake.time
-          const existing = prev.earthquakes.find(e => e.earthquake.time === key)
+          // DMDATA は同一イベントで VXSE51（targetDateTime）→ VXSE52/53（originTime）の順に届くが、
+          // earthquake.time が1分程度ずれるため別カード扱いになる。eventId で同一エントリを特定する。
+          const dmdataEventId = quake.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
+          const isSameEntry = (e: JMAQuake): boolean => {
+            if (dmdataEventId) {
+              const eId = e.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
+              if (eId) return eId === dmdataEventId
+            }
+            return e.earthquake.time === quake.earthquake.time
+          }
+          const existing = prev.earthquakes.find(isSameEntry)
 
           // VXSE61（DestinationAmended）: points を失わないよう震源フィールドのみをマージ
           if (quake.issue.type === 'DestinationAmended') {
@@ -285,7 +294,7 @@ export function useEarthquakes(
               }
               return {
                 ...prev,
-                earthquakes: sortQuakes([merged, ...prev.earthquakes.filter(e => e.earthquake.time !== key)]),
+                earthquakes: sortQuakes([merged, ...prev.earthquakes.filter(e => !isSameEntry(e))]),
                 lastUpdate: now,
               }
             }
@@ -297,7 +306,7 @@ export function useEarthquakes(
           }
           const earthquakes = sortQuakes([
             quake,
-            ...prev.earthquakes.filter(e => e.earthquake.time !== key),
+            ...prev.earthquakes.filter(e => !isSameEntry(e)),
           ])
           return { ...prev, earthquakes, lastUpdate: now }
         }
