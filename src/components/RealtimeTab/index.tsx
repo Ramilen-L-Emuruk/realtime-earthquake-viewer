@@ -95,7 +95,7 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
             className="text-sm font-medium"
             style={{ color: maxScale > 0 ? getIntensityColor(maxScale) : '#9ca3af' }}
           >
-            最大震度予想
+            予想最大震度
           </span>
           <span
             className="font-black leading-none"
