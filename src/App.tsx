@@ -20,7 +20,7 @@ import { eewMaxScale } from './utils/eew'
 import { tsunamiMaxGrade, tsunamiOverallGrade } from './utils/tsunami'
 import { playAlertSound, playKyoshinUpdateSound, kyoshinLevel, unlockAudio, setSoundVolume, type AlertSoundType } from './utils/alertSound'
 import { speakWithVoicevox } from './utils/voicevox'
-import { eewToText, eewCancelToText, earthquakeToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, nankaiToText, kohatsuToText, lpgmToText } from './utils/ttsText'
+import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, nankaiToText, kohatsuToText, lpgmToText } from './utils/ttsText'
 import { kyoshinIndexToLabel } from './utils/kyoshinIntensity'
 import type { P2PQuakeEvent, EEWAlert } from './types/earthquake'
 
@@ -242,21 +242,29 @@ export function App() {
         applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
       }, eewResetMs)
 
-      // VOICEVOX: 常に最新イベントを保持し、isNew/levelUpgraded 時にタイマーをセット/リセット
+      // VOICEVOX: 2フェーズ読み上げ
+      // 第1フェーズ（isNew即時）: 「緊急地震速報、〇〇で地震。」
+      // 第2フェーズ（デバウンス後）: 「予想最大震度〇〇。」
       if (settings.voicevoxEnabled && settings.soundEnabled) {
         eewTtsEventRef.current = event
-        const fireTts = () => {
+        const firePhase2 = () => {
           if (eewTtsEventRef.current) {
-            speakWithVoicevox(settings.voicevoxUrl, eewToText(eewTtsEventRef.current), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+            const text = eewIntensityToText(eewTtsEventRef.current)
+            if (text) {
+              speakWithVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+            }
           }
         }
         const scheduleEewTts = () => {
           eewTtsTimerRef.current = setTimeout(() => {
             eewTtsTimerRef.current = null
-            fireTts()
+            firePhase2()
           }, 3000)
         }
         if (isNew) {
+          // 第1フェーズ：即時
+          speakWithVoicevox(settings.voicevoxUrl, eewAlertToText(event), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+          // 第2フェーズ：デバウンス
           scheduleEewTts()
           // 上限タイマー: 第一報から15秒後に強制発火
           eewTtsMaxTimerRef.current = setTimeout(() => {
@@ -264,7 +272,7 @@ export function App() {
             if (eewTtsTimerRef.current) {
               clearTimeout(eewTtsTimerRef.current)
               eewTtsTimerRef.current = null
-              fireTts()
+              firePhase2()
             }
           }, 15000)
         } else if (levelUpgraded) {
