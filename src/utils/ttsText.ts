@@ -1,4 +1,4 @@
-import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMAKohatsu, IntensityScale, TsunamiGrade, EarthquakePoint } from '../types/earthquake'
+import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, EarthquakePoint } from '../types/earthquake'
 import { eewMaxScale } from './eew'
 import { getIntensityLabel } from './intensity'
 import { tsunamiMaxGrade } from './tsunami'
@@ -136,6 +136,12 @@ export function nankaiToText(event: JMANankai): string {
 export function kohatsuToText(event: JMAKohatsu): string {
   const headline = event.headline.replace(/北海道・三陸沖後発地震注意情報/g, '')
   return `北海道・三陸沖後発地震注意情報。${headline ? headline + '。' : ''}今後、大規模地震の発生可能性が平常時より高まっています。防災対応の確認をしてください。`
+}
+
+/** VXSE62 長周期地震動情報の読み上げテキストを生成する。 */
+export function lpgmToText(lpgm: JMALpgm): string {
+  const time = formatTime(lpgm.originTime)
+  return `長周期地震動情報。${time}頃発生した地震で、長周期地震動階級${lpgm.maxClass}を観測しました。`
 }
 
 export { tsunamiMaxGrade }

@@ -20,7 +20,7 @@ import { eewMaxScale } from './utils/eew'
 import { tsunamiMaxGrade, tsunamiOverallGrade } from './utils/tsunami'
 import { playAlertSound, playKyoshinUpdateSound, kyoshinLevel, unlockAudio, setSoundVolume, type AlertSoundType } from './utils/alertSound'
 import { speakWithVoicevox } from './utils/voicevox'
-import { eewToText, eewCancelToText, earthquakeToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, nankaiToText, kohatsuToText } from './utils/ttsText'
+import { eewToText, eewCancelToText, earthquakeToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, nankaiToText, kohatsuToText, lpgmToText } from './utils/ttsText'
 import { kyoshinIndexToLabel } from './utils/kyoshinIntensity'
 import type { P2PQuakeEvent, EEWAlert } from './types/earthquake'
 
@@ -273,6 +273,20 @@ export function App() {
         }
       }
 
+      return
+    }
+
+    // 長周期地震動情報（DMDSS版のみ）
+    if ((event as unknown as { kind?: string }).kind === 'lpgm') {
+      if (settings.soundEnabled) {
+        playAlertSound('earthquake')
+      }
+      if (settings.voicevoxEnabled) {
+        const lpgm = (event as unknown as { kind: string; data: import('./types/earthquake').JMALpgm }).data
+        setTimeout(() => {
+          speakWithVoicevox(settings.voicevoxUrl, lpgmToText(lpgm), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+        }, 1000)
+      }
       return
     }
 
