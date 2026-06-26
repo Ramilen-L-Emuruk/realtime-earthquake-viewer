@@ -5,11 +5,41 @@ import { tsunamiMaxGrade } from './tsunami'
 
 const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch']
 
-function regionNames(points: EarthquakePoint[], maxScale: IntensityScale): string[] {
-  const maxPoints = points.filter(p => p.scale === maxScale)
-  const areas = [...new Set(maxPoints.filter(p => p.isArea && p.addr !== p.pref).map(p => p.addr))]
+// 震度スケールの降順リスト
+const SCALE_DESCENDING: IntensityScale[] = [70, 60, 55, 50, 45, 40, 30, 20, 10] as IntensityScale[]
+
+function regionNamesForScale(points: EarthquakePoint[], scale: IntensityScale): string[] {
+  const matched = points.filter(p => p.scale === scale)
+  const areas = [...new Set(matched.filter(p => p.isArea && p.addr !== p.pref).map(p => p.addr))]
   if (areas.length > 0) return areas
-  return [...new Set(maxPoints.map(p => p.pref).filter(Boolean))]
+  return [...new Set(matched.map(p => p.pref).filter(Boolean))]
+}
+
+export interface TtsRegionOptions {
+  intensityLevels: number  // 最大震度から何階級分読むか（0 = 最大のみ）
+  maxRegions: number       // 読み上げる最大地域数（0 = 無制限）
+}
+
+function buildRegionText(
+  points: EarthquakePoint[],
+  maxScale: IntensityScale,
+  opts: TtsRegionOptions,
+): string {
+  const maxIdx = SCALE_DESCENDING.indexOf(maxScale)
+  if (maxIdx < 0) return ''
+
+  const parts: string[] = []
+  for (let i = 0; i <= opts.intensityLevels; i++) {
+    const scale = SCALE_DESCENDING[maxIdx + i]
+    if (scale == null) break
+    let names = regionNamesForScale(points, scale)
+    if (names.length === 0) continue
+    if (opts.maxRegions > 0) names = names.slice(0, opts.maxRegions)
+    parts.push(`震度${intensityText(scale)}を${names.join('、')}で`)
+  }
+
+  if (parts.length === 0) return ''
+  return parts.join('、') + '観測しました。'
 }
 
 function magnitudeText(mag: number): string {
@@ -68,13 +98,13 @@ export function eewToText(event: EEWAlert): string {
 }
 
 /** code 551 地震情報の読み上げテキストを生成する。 */
-export function earthquakeToText(event: JMAQuake): string {
+export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions): string {
   const { hypocenter, maxScale, domesticTsunami } = event.earthquake
   const type = event.issue.type
 
   if (type === 'ScalePrompt') {
-    const regions = regionNames(event.points, maxScale)
-    return `震度速報。最大震度${intensityText(maxScale)}を${regions.join('、')}で観測しました。`
+    const regionText = buildRegionText(event.points, maxScale, opts)
+    return `震度速報。${regionText || `最大震度${intensityText(maxScale)}を観測しました。`}`
   }
 
   const time = formatTime(event.earthquake.time)
@@ -88,10 +118,10 @@ export function earthquakeToText(event: JMAQuake): string {
   }
 
   // ScaleAndDestination / DetailScale
-  const regions = regionNames(event.points, maxScale)
   let text = `地震情報。${time}頃、${hypocenter.name}、深さ${hypocenter.depth}キロメートルを震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
-  if (regions.length > 0) {
-    text += `最大震度${intensityText(maxScale)}を${regions.join('、')}で観測しました。`
+  const regionText = buildRegionText(event.points, maxScale, opts)
+  if (regionText) {
+    text += `最大震度${intensityText(maxScale)}。` + regionText
   }
 
   if (domesticTsunami === 'None' || domesticTsunami === 'NonEffective') {

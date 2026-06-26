@@ -514,6 +514,28 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
             )}
           </>
         )}
+        <Row label="読み上げ震度階数" description="最大震度から何階級分の地域名を読み上げるか（0 = 最大震度のみ）">
+          <select
+            value={settings.ttsIntensityLevels}
+            onChange={e => onUpdate('ttsIntensityLevels', Number(e.target.value))}
+            className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+          >
+            {[0, 1, 2, 3, 4].map(n => (
+              <option key={n} value={n}>{n === 0 ? '最大震度のみ' : `最大から${n}階級`}</option>
+            ))}
+          </select>
+        </Row>
+        <Row label="読み上げ最大地域数" description="1階級あたりに読み上げる地域名の上限（0 = 無制限）">
+          <select
+            value={settings.ttsMaxRegions}
+            onChange={e => onUpdate('ttsMaxRegions', Number(e.target.value))}
+            className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+          >
+            {[0, 3, 5, 10, 15, 20].map(n => (
+              <option key={n} value={n}>{n === 0 ? '無制限' : `${n}地域`}</option>
+            ))}
+          </select>
+        </Row>
         <Row label="ブラウザ通知" description="地震発生時にブラウザ通知を表示します">
           <Toggle
             checked={settings.notifyMinScale >= 0}
@@ -712,7 +734,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">3.7.22</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">3.7.23</span></Row>
         <Row label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"
