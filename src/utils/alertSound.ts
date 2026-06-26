@@ -484,6 +484,24 @@ export function playAlertSound(type: AlertSoundType): void {
   PLAYERS[type](ctx, ctx.currentTime + 0.02)
 }
 
+/** S波到着カウントダウン音（残り1〜5秒）を鳴らす。 */
+export function playCountdownBeep(second: number): void {
+  const ctx = getCtx()
+  if (!ctx) return
+  if (ctx.state === 'suspended') void ctx.resume()
+  const freq = second === 1 ? 660 : 880
+  const dur  = second === 1 ? 0.08 : 0.05
+  const gain = 0.15 * globalVolume
+  const osc  = ctx.createOscillator()
+  const env  = ctx.createGain()
+  osc.connect(env); env.connect(ctx.destination)
+  osc.type = 'sine'; osc.frequency.value = freq
+  const t = ctx.currentTime + 0.02
+  env.gain.setValueAtTime(gain, t)
+  env.gain.exponentialRampToValueAtTime(0.0001, t + dur)
+  osc.start(t); osc.stop(t + dur + 0.01)
+}
+
 /** 強震モニタの最大インデックスに応じた震度更新音を鳴らす。 */
 export function playKyoshinUpdateSound(maxIndex: number): void {
   const ctx = getCtx()
