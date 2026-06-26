@@ -35,6 +35,24 @@ export function eewCancelToText(event: EEWAlert): string {
     : '緊急地震速報はキャンセルされました。'
 }
 
+/** EEW 第1フェーズ（isNew 即時）: 「緊急地震速報、〇〇で地震。」 */
+export function eewAlertToText(event: EEWAlert): string {
+  return `緊急地震速報、${event.earthquake.hypocenter.name}で地震。`
+}
+
+/** EEW 第2フェーズ（デバウンス後）: 「予想最大震度〇〇。」scale なし時は空文字 */
+export function eewIntensityToText(event: EEWAlert): string {
+  const scale = eewMaxScale(event)
+  let text = ''
+  if (scale > 0) {
+    text += `予想最大震度${intensityText(scale)}。`
+  }
+  if (event.forecastMaxLpgmClass != null && event.forecastMaxLpgmClass >= 1) {
+    text += `予想最大階級${event.forecastMaxLpgmClass}。`
+  }
+  return text
+}
+
 /** code 556 EEW の読み上げテキストを生成する。 */
 export function eewToText(event: EEWAlert): string {
   const { hypocenter } = event.earthquake
