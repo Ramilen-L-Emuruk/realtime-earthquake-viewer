@@ -7,7 +7,7 @@ const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch']
 
 function regionNames(points: EarthquakePoint[], maxScale: IntensityScale): string[] {
   const maxPoints = points.filter(p => p.scale === maxScale)
-  const areas = [...new Set(maxPoints.filter(p => p.isArea).map(p => p.addr))]
+  const areas = [...new Set(maxPoints.filter(p => p.isArea && p.addr !== p.pref).map(p => p.addr))]
   if (areas.length > 0) return areas
   return [...new Set(maxPoints.map(p => p.pref).filter(Boolean))]
 }
