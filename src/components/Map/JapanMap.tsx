@@ -284,7 +284,7 @@ function FitJapanOnEnter({
     // 揺れ検知中はFitToDetectionに任せ、日本全体へのリセットをスキップする
     if (hasDetection) return
     if (!hasEew) {
-      map.fitBounds(JAPAN_BOUNDS, { padding: [20, 20] })
+      map.flyToBounds(JAPAN_BOUNDS, { padding: [20, 20], duration: 1.0 })
       return
     }
     if (psWave.length > 0) {
