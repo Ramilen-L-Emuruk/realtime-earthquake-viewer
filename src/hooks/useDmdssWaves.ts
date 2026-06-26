@@ -13,10 +13,29 @@ const MOHO_KM = 33 // モホ面深度 [km]（日本平均値）
 const COS_IC_P = Math.sqrt(1 - (VP1 / VP2) ** 2)
 const COS_IC_S = Math.sqrt(1 - (VS1 / VS2) ** 2)
 
-// S波速度（useSWaveCountdown から参照される）
-export const VS_KM_PER_SEC = VS1
-
 const UPDATE_INTERVAL_MS = 100
+
+/**
+ * 2層速度モデルで地表距離 R に S波が到達するまでの走時を返す。
+ * computeRadius の逆関数（解析的逆算）。
+ *
+ * depth <= MOHO_KM の場合:
+ *   直達波: t_direct = sqrt(R² + depth²) / VS1
+ *   屈折波: t_head   = R / VS2 + interceptTime
+ *   → 先に到達する方（min）が実際の到達時刻
+ *
+ * depth > MOHO_KM の場合:
+ *   マントル速度のみ: t = sqrt(R² + depth²) / VS2
+ */
+export function computeSWaveTravelTimeSec(surfaceDistKm: number, depth: number): number {
+  if (depth > MOHO_KM) {
+    return Math.sqrt(surfaceDistKm ** 2 + depth ** 2) / VS2
+  }
+  const tDirect = Math.sqrt(surfaceDistKm ** 2 + depth ** 2) / VS1
+  const interceptTime = (2 * MOHO_KM - depth) * COS_IC_S / VS1
+  const tHead = surfaceDistKm / VS2 + interceptTime
+  return Math.min(tDirect, tHead)
+}
 
 /**
  * 2層速度モデル（地殻＋マントル）で地表到達半径を計算する。
@@ -83,6 +102,7 @@ export function useDmdssWaves(activeEEWs: EEWAlert[], enabled: boolean): PsWaveC
           lng: hypocenter.longitude,
           pRadius: computeRadius(t, depth, VP1, VP2, COS_IC_P),
           sRadius: computeRadius(t, depth, VS1, VS2, COS_IC_S),
+          depth,
         })
       }
 
