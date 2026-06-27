@@ -190,7 +190,9 @@ export function App() {
           playAlertSound('eewCancel')
         }
         if (hadKey && settings.voicevoxEnabled && !event.expired) {
-          speakWithVoicevox(settings.voicevoxUrl, eewCancelToText(event), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+          setTimeout(() => {
+            speakWithVoicevox(settings.voicevoxUrl, eewCancelToText(event), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+          }, 1200)
         }
         // EEW 解除時は読み上げタイマーをキャンセルする
         if (eewTtsTimerRef.current) { clearTimeout(eewTtsTimerRef.current); eewTtsTimerRef.current = null }
@@ -369,7 +371,7 @@ export function App() {
       const TTS_DELAY_MS: Partial<Record<AlertSoundType, number>> = {
         earthquake:       1000,
         earthquakePrompt:  500,
-        earthquakeInfo:    400,
+        earthquakeInfo:   1700,
         tsunamiForecast:  1900,
         tsunamiWatch:     1700,
         tsunami:          2800,
