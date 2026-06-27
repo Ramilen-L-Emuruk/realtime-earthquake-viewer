@@ -222,7 +222,7 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
 }
 
 // 震度ラベルの降順（表示ソート用）
-const LABEL_ORDER = ['7', '6強', '6弱', '5強', '5弱', '4', '3', '2', '1']
+const LABEL_ORDER = ['7', '6強', '6弱', '5強', '5弱', '4', '3', '2', '1', '0']
 
 function KyoshinDetectionCard({
   detection,
@@ -297,16 +297,16 @@ function KyoshinDetectionCard({
           {maxLabel}
         </span>
       </div>
-      <div className="space-y-1">
+      <div className="space-y-1.5">
         {groups.map(g => (
-          <div key={g.label} className="flex items-center gap-2">
+          <div key={g.label} className="flex items-center gap-3">
             <span
-              className="inline-block w-6 text-center text-xs font-bold rounded py-0.5 flex-shrink-0"
+              className="inline-block w-10 text-center text-sm font-bold rounded py-1 flex-shrink-0"
               style={{ backgroundColor: g.color, color: '#fff' }}
             >
               {g.label}
             </span>
-            <span className="text-xs text-secondary">{g.count}点</span>
+            <span className="text-base font-medium text-white">{g.count}<span className="text-sm text-secondary ml-0.5">点</span></span>
           </div>
         ))}
       </div>
