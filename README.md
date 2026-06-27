@@ -224,7 +224,9 @@ realtime-earthquake-viewer/
 │   │   │   ├── KyoshinPoints.tsx      # 強震モニタ観測点の Canvas 描画レイヤー（震度1以上）
 │   │   │   ├── KyoshinSubThreshold.tsx # 強震モニタの震度0以下（index 1〜6）の OffscreenCanvas 描画
 │   │   │   ├── KyoshinDetectedPoints.tsx # 揺れ検知された観測点の可変サイズ描画
-│   │   │   └── KyoshinMaxEffect.tsx   # 強震モニタの最大震度エフェクト描画
+│   │   │   ├── KyoshinMaxEffect.tsx   # 強震モニタの最大震度エフェクト描画
+│   │   │   └── PsWaveLayer.tsx        # EEW P波・S波地表到達円の Canvas 描画レイヤー
+│   │   ├── SpecialInfoBanner/      # 南海トラフ臨時情報・国民保護情報バナー
 │   │   ├── RealtimeTab/            # 凡例・注記パネル（地図は JapanMap が担当）
 │   │   ├── SettingsTab/            # 設定パネル
 │   │   ├── TelegramTab/            # 受信電文ログビューアー（DM-D.S.S 版）
@@ -260,6 +262,8 @@ realtime-earthquake-viewer/
 │       ├── regions.ts              # 地方区分ラベル一覧
 │       ├── geo.ts                  # 点の多角形内包判定（区域別集約用）
 │       ├── formatters.ts           # 日時・数値フォーマッター
+│       ├── ttsText.ts              # 読み上げテキスト生成（地震・EEW・津波）
+│       ├── voicevox.ts             # VOICEVOX 連携（音声合成・話者一覧取得）
 │       └── testData.ts             # 設定タブのテストボタン用サンプルデータ生成
 ├── index.html
 ├── package.json
