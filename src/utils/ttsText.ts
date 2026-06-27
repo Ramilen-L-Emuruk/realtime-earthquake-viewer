@@ -47,6 +47,11 @@ function magnitudeText(mag: number): string {
   return mag.toFixed(1)
 }
 
+function depthText(depth: number): string {
+  if (depth <= 0) return 'ごく浅い'
+  return `${depth}キロメートル`
+}
+
 function intensityText(scale: IntensityScale | number): string {
   if (scale <= 0) return ''
   return getIntensityLabel(scale as IntensityScale)
@@ -110,15 +115,15 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions): strin
   const time = formatTime(event.earthquake.time)
 
   if (type === 'DestinationAmended') {
-    return `顕著な地震の震源要素更新のお知らせ。${time}頃発生した${hypocenter.name}の地震について、震源の深さ${hypocenter.depth}キロメートル、マグニチュード${magnitudeText(hypocenter.magnitude)}に更新されました。`
+    return `顕著な地震の震源要素更新のお知らせ。${time}頃発生した${hypocenter.name}の地震について、震源の深さ${depthText(hypocenter.depth)}、マグニチュード${magnitudeText(hypocenter.magnitude)}に更新されました。`
   }
 
   if (type === 'Destination' || type === 'Foreign' || type === 'Other') {
-    return `震源情報。${time}頃、${hypocenter.name}、深さ${hypocenter.depth}キロメートルを震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
+    return `震源情報。${time}頃、${hypocenter.name}、深さ${depthText(hypocenter.depth)}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
   }
 
   // ScaleAndDestination / DetailScale
-  let text = `地震情報。${time}頃、${hypocenter.name}、深さ${hypocenter.depth}キロメートルを震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
+  let text = `地震情報。${time}頃、${hypocenter.name}、深さ${depthText(hypocenter.depth)}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
   const regionText = buildRegionText(event.points, maxScale, opts)
   if (regionText) {
     text += regionText
