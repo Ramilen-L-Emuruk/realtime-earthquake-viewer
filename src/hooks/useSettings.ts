@@ -46,7 +46,7 @@ const DEFAULTS: AppSettings = {
   defaultTab: 'earthquake',
   tsunamiPriorityDefault: true,
   idleRevertSec: 30,
-  periodicReloadHours: 6,
+  periodicReloadHours: 1,
   notifyEEW: true,
   notifyTsunami: true,
   notifyDetection: false,
