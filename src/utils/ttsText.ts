@@ -35,7 +35,7 @@ function buildRegionText(
     let names = regionNamesForScale(points, scale)
     if (names.length === 0) continue
     if (opts.maxRegions > 0) names = names.slice(0, opts.maxRegions)
-    parts.push(`震度${intensityText(scale)}を${names.join('、')}で`)
+    parts.push(`${parts.length === 0 ? '最大' : ''}震度${intensityText(scale)}を${names.join('、')}で`)
   }
 
   if (parts.length === 0) return ''
@@ -121,7 +121,7 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions): strin
   let text = `地震情報。${time}頃、${hypocenter.name}、深さ${hypocenter.depth}キロメートルを震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
   const regionText = buildRegionText(event.points, maxScale, opts)
   if (regionText) {
-    text += `最大震度${intensityText(maxScale)}。` + regionText
+    text += regionText
   }
 
   if (domesticTsunami === 'None' || domesticTsunami === 'NonEffective') {
