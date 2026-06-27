@@ -50,25 +50,22 @@ function enrichEEWPref(eew: EEWAlert, index: Map<string, string> | null): EEWAle
 type TestEEWKind = 'special' | 'warning' | 'forecast'
 type TestEEWEntry = { eventId: string; serial: number; cancelTimer: number }
 
-type TestTsunamiKind = 'major' | 'warning' | 'watch' | 'forecast'
-type TestTsunamiEntry = { cancelTimer: number }
+type TestTsunamiRef = React.MutableRefObject<{ cancelTimer: number; tsunami: JMATsunami } | null>
 
 function runSimulateTsunami(
-  kind: TestTsunamiKind,
   createFn: () => JMATsunami,
   cancelMs: number,
-  timers: Map<TestTsunamiKind, TestTsunamiEntry>,
+  ref: TestTsunamiRef,
   handleEvent: (event: P2PQuakeEvent) => void,
 ) {
-  const prev = timers.get(kind)
-  if (prev) window.clearTimeout(prev.cancelTimer)
+  if (ref.current) window.clearTimeout(ref.current.cancelTimer)
   const tsunami = createFn()
   handleEvent(tsunami)
   const cancelTimer = window.setTimeout(() => {
     handleEvent({ ...tsunami, cancelled: true })
-    timers.delete(kind)
+    ref.current = null
   }, cancelMs)
-  timers.set(kind, { cancelTimer })
+  ref.current = { cancelTimer, tsunami }
 }
 
 function runSimulateEEW(
@@ -150,7 +147,7 @@ export function useEarthquakes(
   // テスト EEW の発報状態を種別ごとに独立管理（複数EEW同時テスト対応）
   const testEEWTimersRef = useRef<Map<TestEEWKind, TestEEWEntry>>(new Map())
   // テスト津波の発報状態を種別ごとに独立管理
-  const testTsunamiTimersRef = useRef<Map<TestTsunamiKind, TestTsunamiEntry>>(new Map())
+  const testTsunamiRef = useRef<{ cancelTimer: number; tsunami: JMATsunami } | null>(null)
   // 通常最終報（isLastInfo: true, isCanceled: false）受信後の自動解除タイマー管理
   const finalCleanupTimersRef = useRef<Map<string, number>>(new Map())
   const eewFinalClearSecRef = useRef(eewFinalClearSec)
@@ -711,22 +708,22 @@ export function useEarthquakes(
   )
 
   const simulateTsunami = useCallback(
-    () => runSimulateTsunami('major', createTestTsunami, 30000, testTsunamiTimersRef.current, handleEvent),
+    () => runSimulateTsunami(createTestTsunami, 30000, testTsunamiRef, handleEvent),
     [handleEvent],
   )
 
   const simulateTsunamiWarning = useCallback(
-    () => runSimulateTsunami('warning', createTestTsunamiWarning, 30000, testTsunamiTimersRef.current, handleEvent),
+    () => runSimulateTsunami(createTestTsunamiWarning, 30000, testTsunamiRef, handleEvent),
     [handleEvent],
   )
 
   const simulateTsunamiWatch = useCallback(
-    () => runSimulateTsunami('watch', createTestTsunamiWatch, 30000, testTsunamiTimersRef.current, handleEvent),
+    () => runSimulateTsunami(createTestTsunamiWatch, 30000, testTsunamiRef, handleEvent),
     [handleEvent],
   )
 
   const simulateTsunamiForecast = useCallback(
-    () => runSimulateTsunami('forecast', createTestTsunamiForecast, 30000, testTsunamiTimersRef.current, handleEvent),
+    () => runSimulateTsunami(createTestTsunamiForecast, 30000, testTsunamiRef, handleEvent),
     [handleEvent],
   )
 
