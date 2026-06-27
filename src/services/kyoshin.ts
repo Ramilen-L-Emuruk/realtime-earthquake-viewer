@@ -141,11 +141,11 @@ export function hypoInfoItemToEEW(item: YahooHypoInfoItem): EEWAlert {
 }
 
 /**
- * 指定時刻のリアルタイム震度を取得する。配信遅延を見込んで約2秒巻き戻す。
+ * 指定時刻のリアルタイム震度を取得する。
  * west エッジが失敗したら east エッジにフォールバックする。
  */
 export async function fetchRealtimeIntensity(now: Date): Promise<RealtimeIntensity> {
-  const { dateStr, ts } = jstParts(new Date(now.getTime() - 2000))
+  const { dateStr, ts } = jstParts(now)
   let lastErr: unknown = null
   for (const edge of ['west', 'east'] as const) {
     try {
