@@ -29,12 +29,14 @@ function buildRegionText(
   if (maxIdx < 0) return ''
 
   const parts: string[] = []
+  const mentioned = new Set<string>()  // 上位階で読み上げ済みの地域名
   for (let i = 0; i <= opts.intensityLevels; i++) {
     const scale = SCALE_DESCENDING[maxIdx + i]
     if (scale == null) break
-    let names = regionNamesForScale(points, scale)
+    let names = regionNamesForScale(points, scale).filter(n => !mentioned.has(n))
     if (names.length === 0) continue
     if (opts.maxRegions > 0) names = names.slice(0, opts.maxRegions)
+    names.forEach(n => mentioned.add(n))
     parts.push(`${parts.length === 0 ? '最大' : ''}震度${intensityText(scale)}を${names.join('、')}で`)
   }
 
