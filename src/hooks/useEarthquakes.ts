@@ -50,6 +50,24 @@ function enrichEEWPref(eew: EEWAlert, index: Map<string, string> | null): EEWAle
 type TestEEWKind = 'special' | 'warning' | 'forecast'
 type TestEEWEntry = { eventId: string; serial: number; cancelTimer: number }
 
+type TestTsunamiRef = React.MutableRefObject<{ cancelTimer: number; tsunami: JMATsunami } | null>
+
+function runSimulateTsunami(
+  createFn: () => JMATsunami,
+  cancelMs: number,
+  ref: TestTsunamiRef,
+  handleEvent: (event: P2PQuakeEvent) => void,
+) {
+  if (ref.current) window.clearTimeout(ref.current.cancelTimer)
+  const tsunami = createFn()
+  handleEvent(tsunami)
+  const cancelTimer = window.setTimeout(() => {
+    handleEvent({ ...tsunami, cancelled: true })
+    ref.current = null
+  }, cancelMs)
+  ref.current = { cancelTimer, tsunami }
+}
+
 function runSimulateEEW(
   kind: TestEEWKind,
   createFn: (eventId: string, serial: number) => EEWAlert,
@@ -128,6 +146,8 @@ export function useEarthquakes(
   onLiveEventRef.current = onLiveEvent
   // テスト EEW の発報状態を種別ごとに独立管理（複数EEW同時テスト対応）
   const testEEWTimersRef = useRef<Map<TestEEWKind, TestEEWEntry>>(new Map())
+  // テスト津波の発報状態を種別ごとに独立管理
+  const testTsunamiRef = useRef<{ cancelTimer: number; tsunami: JMATsunami } | null>(null)
   // 通常最終報（isLastInfo: true, isCanceled: false）受信後の自動解除タイマー管理
   const finalCleanupTimersRef = useRef<Map<string, number>>(new Map())
   const eewFinalClearSecRef = useRef(eewFinalClearSec)
@@ -687,29 +707,25 @@ export function useEarthquakes(
     [handleEvent],
   )
 
-  const simulateTsunami = useCallback(() => {
-    const tsunami = createTestTsunami()
-    handleEvent(tsunami)
-    setTimeout(() => handleEvent({ ...tsunami, cancelled: true }), 15000)
-  }, [handleEvent])
+  const simulateTsunami = useCallback(
+    () => runSimulateTsunami(createTestTsunami, 30000, testTsunamiRef, handleEvent),
+    [handleEvent],
+  )
 
-  const simulateTsunamiWarning = useCallback(() => {
-    const tsunami = createTestTsunamiWarning()
-    handleEvent(tsunami)
-    setTimeout(() => handleEvent({ ...tsunami, cancelled: true }), 10000)
-  }, [handleEvent])
+  const simulateTsunamiWarning = useCallback(
+    () => runSimulateTsunami(createTestTsunamiWarning, 30000, testTsunamiRef, handleEvent),
+    [handleEvent],
+  )
 
-  const simulateTsunamiWatch = useCallback(() => {
-    const tsunami = createTestTsunamiWatch()
-    handleEvent(tsunami)
-    setTimeout(() => handleEvent({ ...tsunami, cancelled: true }), 10000)
-  }, [handleEvent])
+  const simulateTsunamiWatch = useCallback(
+    () => runSimulateTsunami(createTestTsunamiWatch, 30000, testTsunamiRef, handleEvent),
+    [handleEvent],
+  )
 
-  const simulateTsunamiForecast = useCallback(() => {
-    const tsunami = createTestTsunamiForecast()
-    handleEvent(tsunami)
-    setTimeout(() => handleEvent({ ...tsunami, cancelled: true }), 10000)
-  }, [handleEvent])
+  const simulateTsunamiForecast = useCallback(
+    () => runSimulateTsunami(createTestTsunamiForecast, 30000, testTsunamiRef, handleEvent),
+    [handleEvent],
+  )
 
   const simulateNankai = useCallback((kindName: '調査中' | '巨大地震注意' | '巨大地震警戒') => {
     const nankai = createTestNankai(kindName)
