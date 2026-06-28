@@ -43,16 +43,16 @@ export function createTestEEWWarning(eventId?: string, serial = 1): EEWAlert {
       originTime: now.toISOString(),
       arrivalTime: new Date(now.getTime() + 20000).toISOString(),
       condition: '以上',
-      hypocenter: { name: '茨城県沖', latitude: 36.1, longitude: 141.3, depth: 40, magnitude: 6.5 },
+      hypocenter: { name: '日向灘', latitude: 32.0, longitude: 132.0, depth: 30, magnitude: 6.5 },
     },
     severity: 'Warning',
     cancelled: false,
     forecastMaxLpgmClass: 3,
     issue: { eventId: eid, serial: String(serial), time: now.toISOString() },
     areas: [
-      { pref: '茨城県', name: '茨城県北部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null },
-      { pref: '茨城県', name: '茨城県南部', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: null },
-      { pref: '栃木県', name: '栃木県南部', scaleFrom: 35, scaleTo: 40, kindCode: '10', arrivalTime: null },
+      { pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null },
+      { pref: '宮崎県', name: '宮崎県南部', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: null },
+      { pref: '大分県', name: '大分県南部', scaleFrom: 35, scaleTo: 40, kindCode: '10', arrivalTime: null },
     ],
   }
 }
