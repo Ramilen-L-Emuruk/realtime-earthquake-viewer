@@ -137,14 +137,12 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
   if (type === 'Destination' || type === 'Foreign' || type === 'Other') {
     const prefix = isNew ? '震源情報。' : '震源情報が更新されました。'
     let text = `${prefix}${time}頃、${hypocenter.name}、深さ${depthText(hypocenter.depth)}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
-    if (type === 'Destination') {
-      if (domesticTsunami === 'None' || domesticTsunami === 'NonEffective') {
-        text += 'この地震による津波の心配はありません。'
-      } else if (domesticTsunami === 'Watch') {
-        text += 'この地震により、一部の沿岸に津波注意報が発表されています。'
-      } else if (domesticTsunami === 'Warning') {
-        text += 'この地震により、一部の沿岸に津波警報等が発表されています。注意してください。'
-      }
+    if (domesticTsunami === 'None' || domesticTsunami === 'NonEffective') {
+      text += 'この地震による津波の心配はありません。'
+    } else if (domesticTsunami === 'Watch') {
+      text += 'この地震により、一部の沿岸に津波注意報が発表されています。'
+    } else if (domesticTsunami === 'Warning') {
+      text += 'この地震により、一部の沿岸に津波警報等が発表されています。注意してください。'
     }
     return text
   }
