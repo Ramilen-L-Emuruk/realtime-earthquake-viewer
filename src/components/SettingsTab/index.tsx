@@ -28,10 +28,13 @@ interface Props {
   onUpdate: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void
   onTest: TestFunctions
   kyoshinTimeOffset: number | null
-  onSetKyoshinTimeOffset: (offset: number | null) => void
+  onSetKyoshinTimeOffset: ((offset: number | null) => void) | undefined
   kyoshinInputDateTime: string
   onSetKyoshinInputDateTime: (value: string) => void
   dmdataConnectionStatus?: ConnectionStatus
+  replayIsFetching?: boolean
+  onStartReplay?: (date: Date) => void
+  onStopReplay?: () => void
 }
 
 // ---- Reusable UI parts ----
@@ -272,7 +275,7 @@ function HomeLocationSection({
   )
 }
 
-export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onSetKyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus }: Props) {
+export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onSetKyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus, replayIsFetching, onStartReplay, onStopReplay }: Props) {
   const [voicevoxStatus, setVoicevoxStatus] = useState<'idle' | 'checking' | 'available' | 'unavailable'>('idle')
   const [voicevoxSpeakers, setVoicevoxSpeakers] = useState<VoicevoxSpeaker[]>([])
 
@@ -300,7 +303,11 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
     if (!kyoshinInputDateTime) return
     const specified = new Date(kyoshinInputDateTime)
     if (isNaN(specified.getTime())) return
-    onSetKyoshinTimeOffset(specified.getTime() - Date.now())
+    if (onStartReplay) {
+      onStartReplay(specified)
+    } else {
+      onSetKyoshinTimeOffset?.(specified.getTime() - Date.now())
+    }
   }
 
   const replayStartLabel = kyoshinTimeOffset != null
@@ -703,10 +710,10 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
             />
             <button
               onClick={handleTimeConfirm}
-              disabled={!kyoshinInputDateTime}
+              disabled={!kyoshinInputDateTime || replayIsFetching}
               className="text-xs bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white px-3 py-1.5 rounded transition-colors"
             >
-              確定
+              {replayIsFetching ? '取得中...' : '確定'}
             </button>
           </div>
         </Row>
@@ -715,7 +722,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
             <div className="flex gap-2 items-center">
               <span className="text-xs text-green-400">{replayStartLabel} から</span>
               <button
-                onClick={() => onSetKyoshinTimeOffset(null)}
+                onClick={() => onStopReplay ? onStopReplay() : onSetKyoshinTimeOffset?.(null)}
                 className="text-xs bg-gray-600 hover:bg-gray-500 text-white px-3 py-1.5 rounded transition-colors"
               >
                 リセット
@@ -734,7 +741,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">3.7.41</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">3.8.0</span></Row>
         <Row label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"
