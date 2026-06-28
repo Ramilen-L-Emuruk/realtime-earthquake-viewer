@@ -141,10 +141,6 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions): strin
 
   // ScaleAndDestination / DetailScale
   let text = `地震情報。${time}頃、${hypocenter.name}、深さ${depthText(hypocenter.depth)}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
-  const regionText = buildRegionText(event.points, maxScale, opts)
-  if (regionText) {
-    text += regionText
-  }
 
   if (domesticTsunami === 'None' || domesticTsunami === 'NonEffective') {
     text += 'この地震による津波の心配はありません。'
@@ -152,6 +148,11 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions): strin
     text += 'この地震により、一部の沿岸に津波注意報が発表されています。'
   } else if (domesticTsunami === 'Warning') {
     text += 'この地震により、一部の沿岸に津波警報等が発表されています。注意してください。'
+  }
+
+  const regionText = buildRegionText(event.points, maxScale, opts)
+  if (regionText) {
+    text += regionText
   }
 
   return text
