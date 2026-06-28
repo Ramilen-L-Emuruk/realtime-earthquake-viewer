@@ -452,6 +452,11 @@ function extractQuakeEventId(q: JMAQuake): string | null {
 // VXSE61（顕著な地震震源要素更新）も並列取得し、同一イベントの hypocenter をマージする。
 // VXSE51/52 は VXSE53 未発表の地震速報をカバーするため初期表示の欠落を防ぐ。
 // cursorToken を指定するとカーソル位置以降の古い電文を取得する（「もっと見る」用）。
+//
+// 初回フェッチの時刻窓統一:
+// 各タイプは同じ limit でも発生頻度が違うため取得できる受信時刻範囲がズレる。
+// 各タイプの最古受信時刻（time）を比較し、最も新しいもの（cutoffTime）より古いアイテムは
+// 全タイプ問わず除外する。これにより不完全なカードが初期表示されることを防ぐ。
 export async function fetchDmdataEarthquakes(
   apiKey: string,
   limit: number,
@@ -475,29 +480,60 @@ export async function fetchDmdataEarthquakes(
   type ItemList = { items?: Array<{ url: string; head: { type: string } }>; nextToken?: string }
   const json53 = await res53.value.json() as ItemList
 
-  // VXSE51/52 の JSON を並列取得（失敗時は空リストで続行）
-  const [json51, json52] = await Promise.all([
+  // VXSE51/52/61 の JSON を並列取得（失敗時は空リストで続行）
+  const [json51, json52, json61] = await Promise.all([
     res51.status === 'fulfilled' && res51.value.ok
       ? res51.value.json() as Promise<ItemList>
       : Promise.resolve({ items: [] } as ItemList),
     res52.status === 'fulfilled' && res52.value.ok
       ? res52.value.json() as Promise<ItemList>
       : Promise.resolve({ items: [] } as ItemList),
+    res61.status === 'fulfilled' && res61.value.ok
+      ? res61.value.json() as Promise<ItemList>
+      : Promise.resolve({ items: [] } as ItemList),
   ])
 
-  // VXSE51/52/53 の全電文を並列取得
+  // VXSE51/52/53/61 の全電文を一括並列取得（タイプ別のインデックス境界を記録）
+  const items53 = json53.items ?? []
+  const items51 = json51.items ?? []
+  const items52 = json52.items ?? []
+  const items61 = json61.items ?? []
+  const boundary53 = items53.length
+  const boundary51 = boundary53 + items51.length
+  const boundary52 = boundary51 + items52.length
+
   const allItems = [
-    ...(json53.items ?? []).map(it => ({ url: it.url, headType: it.head.type })),
-    ...(json51.items ?? []).map(it => ({ url: it.url, headType: it.head.type })),
-    ...(json52.items ?? []).map(it => ({ url: it.url, headType: it.head.type })),
+    ...items53.map(it => ({ url: it.url, headType: it.head.type })),
+    ...items51.map(it => ({ url: it.url, headType: it.head.type })),
+    ...items52.map(it => ({ url: it.url, headType: it.head.type })),
+    ...items61.map(it => ({ url: it.url, headType: it.head.type })),
   ]
   const allResults = await Promise.allSettled(
     allItems.map(({ url, headType }) => fetchOneTelegram(apiKey, url, headType)),
   )
-  const rawQuakes = allResults
-    .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | JMALpgm | null> => r.status === 'fulfilled')
-    .map(r => r.value)
-    .filter((v): v is JMAQuake => v !== null && 'code' in v && v.code === 551)
+
+  const toQuakes = (results: typeof allResults): JMAQuake[] =>
+    results
+      .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | JMALpgm | null> => r.status === 'fulfilled')
+      .map(r => r.value)
+      .filter((v): v is JMAQuake => v !== null && 'code' in v && v.code === 551)
+
+  const parsed53 = toQuakes(allResults.slice(0, boundary53))
+  const parsed51 = toQuakes(allResults.slice(boundary53, boundary51))
+  const parsed52 = toQuakes(allResults.slice(boundary51, boundary52))
+  const parsed61 = toQuakes(allResults.slice(boundary52))
+
+  // 各タイプの最古受信時刻（time）を求め、最大値を cutoffTime とする。
+  // cutoffTime より古いアイテムは全タイプ問わず除外する。
+  const oldestOf = (qs: JMAQuake[]): string | null =>
+    qs.reduce<string | null>((acc, q) => acc === null || q.time < acc ? q.time : acc, null)
+  const allOldest = [oldestOf(parsed53), oldestOf(parsed51), oldestOf(parsed52), oldestOf(parsed61)]
+    .filter((t): t is string => t !== null)
+  const cutoffTime = allOldest.length > 0 ? allOldest.reduce((max, t) => t > max ? t : max) : null
+
+  const withinCutoff = (q: JMAQuake): boolean => !cutoffTime || q.time >= cutoffTime
+
+  const rawQuakes = [...parsed53, ...parsed51, ...parsed52].filter(withinCutoff)
 
   // 同一イベントの VXSE51/52/53 を eventId で重複排除（高優先度を保持）
   // VXSE51 は earthquake.time が targetDateTime、VXSE52/53 は originTime で異なるため
@@ -514,33 +550,22 @@ export async function fetchDmdataEarthquakes(
   }
   const quakes = [...Array.from(seenByEid.values()), ...noEidQuakes]
 
-  // VXSE61（顕著な地震震源要素更新）: 対応エントリに震源マージ、なければ単独カードとして追加
-  if (res61.status === 'fulfilled' && res61.value.ok) {
-    const json61 = await res61.value.json() as ItemList
-    const results61 = await Promise.allSettled(
-      (json61.items ?? []).map(it => fetchOneTelegram(apiKey, it.url, it.head.type)),
+  // VXSE61（顕著な地震震源要素更新）: cutoffTime 内のものを対応エントリに震源マージ、なければ単独カードとして追加
+  for (const amended of parsed61.filter(withinCutoff)) {
+    if (amended.issue.type !== 'DestinationAmended') continue
+    const amendedEid = extractQuakeEventId(amended)
+    const idx = quakes.findIndex(q =>
+      amendedEid ? extractQuakeEventId(q) === amendedEid : q.earthquake.time === amended.earthquake.time,
     )
-    for (const r of results61) {
-      if (r.status !== 'fulfilled' || !r.value) continue
-      const v = r.value
-      if (!('code' in v) || v.code !== 551) continue
-      const amended = v as JMAQuake
-      if (amended.issue.type !== 'DestinationAmended') continue
-      const amendedEid = extractQuakeEventId(amended)
-      const idx = quakes.findIndex(q =>
-        amendedEid ? extractQuakeEventId(q) === amendedEid : q.earthquake.time === amended.earthquake.time,
-      )
-      if (idx >= 0) {
-        quakes[idx] = {
-          ...quakes[idx],
-          time: amended.time,
-          issue: amended.issue,
-          earthquake: { ...quakes[idx].earthquake, hypocenter: amended.earthquake.hypocenter },
-        }
-      } else {
-        // 取得範囲外の地震への VXSE61 → 単独カードとして表示
-        quakes.push(amended)
+    if (idx >= 0) {
+      quakes[idx] = {
+        ...quakes[idx],
+        time: amended.time,
+        issue: amended.issue,
+        earthquake: { ...quakes[idx].earthquake, hypocenter: amended.earthquake.hypocenter },
       }
+    } else {
+      quakes.push(amended)
     }
   }
 
