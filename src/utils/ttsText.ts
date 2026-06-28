@@ -109,14 +109,15 @@ export function eewToText(event: EEWAlert): string {
   return text
 }
 
-/** code 551 地震情報の読み上げテキストを生成する。 */
-export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions): string {
+/** code 551 地震情報の読み上げテキストを生成する。isNew=false のとき更新報として冒頭に通知する。 */
+export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew: boolean): string {
   const { hypocenter, maxScale, domesticTsunami } = event.earthquake
   const type = event.issue.type
 
   if (type === 'ScalePrompt') {
+    const prefix = isNew ? '震度速報。' : '震度速報が更新されました。'
     const regionText = buildRegionText(event.points, maxScale, opts)
-    return `震度速報。${regionText || `最大震度${intensityText(maxScale)}を観測しました。`}`
+    return `${prefix}${regionText || `最大震度${intensityText(maxScale)}を観測しました。`}`
   }
 
   const time = formatTime(event.earthquake.time)
@@ -126,7 +127,8 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions): strin
   }
 
   if (type === 'Destination' || type === 'Foreign' || type === 'Other') {
-    let text = `震源情報。${time}頃、${hypocenter.name}、深さ${depthText(hypocenter.depth)}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
+    const prefix = isNew ? '震源情報。' : '震源情報が更新されました。'
+    let text = `${prefix}${time}頃、${hypocenter.name}、深さ${depthText(hypocenter.depth)}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
     if (type === 'Destination') {
       if (domesticTsunami === 'None' || domesticTsunami === 'NonEffective') {
         text += 'この地震による津波の心配はありません。'
@@ -140,7 +142,8 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions): strin
   }
 
   // ScaleAndDestination / DetailScale
-  let text = `地震情報。${time}頃、${hypocenter.name}、深さ${depthText(hypocenter.depth)}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
+  const prefix = isNew ? '地震情報。' : '地震情報が更新されました。'
+  let text = `${prefix}${time}頃、${hypocenter.name}、深さ${depthText(hypocenter.depth)}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
 
   if (domesticTsunami === 'None' || domesticTsunami === 'NonEffective') {
     text += 'この地震による津波の心配はありません。'
@@ -209,10 +212,11 @@ export function kohatsuToText(event: JMAKohatsu): string {
   return `北海道・三陸沖後発地震注意情報。${headline ? headline + '。' : ''}今後、大規模地震の発生可能性が平常時より高まっています。防災対応の確認をしてください。`
 }
 
-/** VXSE62 長周期地震動情報の読み上げテキストを生成する。 */
-export function lpgmToText(lpgm: JMALpgm): string {
+/** VXSE62 長周期地震動情報の読み上げテキストを生成する。isNew=false のとき更新報として冒頭に通知する。 */
+export function lpgmToText(lpgm: JMALpgm, isNew: boolean): string {
   const time = formatTime(lpgm.originTime)
-  return `長周期地震動情報。${time}頃発生した地震で、長周期地震動階級${lpgm.maxClass}を観測しました。`
+  const prefix = isNew ? '長周期地震動情報。' : '長周期地震動情報が更新されました。'
+  return `${prefix}${time}頃発生した地震で、長周期地震動階級${lpgm.maxClass}を観測しました。`
 }
 
 export { tsunamiMaxGrade }
