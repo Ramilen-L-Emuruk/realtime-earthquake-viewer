@@ -37,6 +37,17 @@ const sortQuakes = (arr: JMAQuake[]): JMAQuake[] =>
     new Date(b.earthquake.time).getTime() - new Date(a.earthquake.time).getTime()
   )
 
+interface QueueEntry {
+  eventTime: Date
+  event: P2PQuakeEvent
+}
+
+function insertSorted(queue: QueueEntry[], entry: QueueEntry): void {
+  let i = queue.length
+  while (i > 0 && queue[i - 1].eventTime > entry.eventTime) i--
+  queue.splice(i, 0, entry)
+}
+
 // DMDSS版 EEW の地域別予想震度には pref が含まれないため、細分区域名→都道府県の
 // 逆引きインデックスで補完する（EEWカードの対象地域表示用。地図の色塗りは name のみで動く）。
 function enrichEEWPref(eew: EEWAlert, index: Map<string, string> | null): EEWAlert {
@@ -148,8 +159,6 @@ export function useEarthquakes(
   const testEEWTimersRef = useRef<Map<TestEEWKind, TestEEWEntry>>(new Map())
   // テスト津波の発報状態を種別ごとに独立管理
   const testTsunamiRef = useRef<{ cancelTimer: number; tsunami: JMATsunami } | null>(null)
-  // 通常最終報（isLastInfo: true, isCanceled: false）受信後の自動解除タイマー管理
-  const finalCleanupTimersRef = useRef<Map<string, number>>(new Map())
   const eewFinalClearSecRef = useRef(eewFinalClearSec)
   eewFinalClearSecRef.current = eewFinalClearSec
   // 現在の state を WS コールバック内から参照するための ref
@@ -158,10 +167,11 @@ export function useEarthquakes(
   // VXSE51 受信時に震度データをキャッシュし、後続の VXSE52（震源情報）に補完する。
   // VXSE52 は震源のみで震度を持たないため、VXSE51 の maxScale・points を引き継ぐ。
   const quakeIntensityCacheRef = useRef<Map<string, { maxScale: IntensityScale; points: EarthquakePoint[] }>>(new Map())
-  // 津波予報（若干の海面変動）の ValidDateTime 経過時の自動解除タイマー
-  const tsunamiValidTimerRef = useRef<number | undefined>(undefined)
   // 後発地震注意情報（VYSE60）の7日間有効期限タイマー
   const kohatsuExpireTimerRef = useRef<number | undefined>(undefined)
+  // イベントキュー: eventTime 昇順でソート済み。ディスパッチャーが 100ms ごとに先頭から処理する。
+  // リプレイ時は eventTime と再生時刻を比較して発火制御する。
+  const eventQueueRef = useRef<QueueEntry[]>([])
   // DMDSS 版「もっと見る」用カーソルと API キー（useCallback 内の stale closure 回避）
   const dmdataCursorRef = useRef<string | undefined>(undefined)
   const dmdataApiKeyRef = useRef(dmdataApiKey)
@@ -180,28 +190,29 @@ export function useEarthquakes(
     })
   }, [])
 
+  // WebSocket 受信時のエントリポイント: event.time を基準にキューへ挿入する
+  // live モードでは event.time ≈ now なので次のティック（最大 100ms 後）に即時発火する
+  const enqueueEvent = useCallback((event: P2PQuakeEvent) => {
+    const t = new Date((event as { time?: string }).time ?? Date.now())
+    insertSorted(eventQueueRef.current, { eventTime: t, event })
+  }, [])
+
+  // リプレイ時は差し替えることで再生時刻基準のディスパッチに切り替える
+  const getTimeRef = useRef<() => Date>(() => new Date())
+
   const handleEvent = useCallback((event: P2PQuakeEvent) => {
     // ライブ受信／テスト送信のイベントを通知（初回の履歴読み込みでは呼ばれない）
     onLiveEventRef.current?.(event)
 
-    // 556（EEW）のタイマー管理は setState の外で行う
+    // 556（EEW）: 最終報受信時、解除時刻にキャンセルイベントをキューへ挿入する
     if (event.code === 556) {
       const eew = event as EEWAlert
-      const key = eew.issue?.eventId ?? eew.id
-      if (eew.cancelled || eew.test) {
-        // キャンセル時: 最終報タイマーが残っていればキャンセル
-        const t = finalCleanupTimersRef.current.get(key)
-        if (t !== undefined) {
-          window.clearTimeout(t)
-          finalCleanupTimersRef.current.delete(key)
-        }
-      } else if (eew.isFinal && !finalCleanupTimersRef.current.has(key)) {
-        // 通常最終報: 設定秒数後にキャンセルイベントとして再発火（二重登録防止）
-        const t = window.setTimeout(() => {
-          handleEvent({ ...eew, cancelled: true, expired: true })
-          finalCleanupTimersRef.current.delete(key)
-        }, eewFinalClearSecRef.current * 1000)
-        finalCleanupTimersRef.current.set(key, t)
+      if (!eew.cancelled && !eew.test && eew.isFinal) {
+        const cancelTime = new Date(new Date(eew.time).getTime() + eewFinalClearSecRef.current * 1000)
+        insertSorted(eventQueueRef.current, {
+          eventTime: cancelTime,
+          event: { ...eew, cancelled: true, expired: true } as P2PQuakeEvent,
+        })
       }
     }
 
@@ -220,23 +231,17 @@ export function useEarthquakes(
       }
     }
 
-    // 552（津波）の ValidDateTime タイマー管理は setState の外で行う
+    // 552（津波）: ValidDateTime あり → 期限切れ時刻にキャンセルイベントをキューへ挿入する
+    // 後続の新しい津波電文が来た場合、旧キャンセルが発火してもステート側でidチェックにより無視される
     if (event.code === 552) {
       const tsunami = event as JMATsunami
-      // 既存タイマーをリセット
-      if (tsunamiValidTimerRef.current !== undefined) {
-        window.clearTimeout(tsunamiValidTimerRef.current)
-        tsunamiValidTimerRef.current = undefined
-      }
-      // 非キャンセルかつ ValidDateTime あり → 期限切れ時に自動解除
       if (!tsunami.cancelled && tsunami.validDateTime) {
-        const expireMs = new Date(tsunami.validDateTime).getTime() - Date.now()
-        if (expireMs > 0) {
-          tsunamiValidTimerRef.current = window.setTimeout(() => {
-            tsunamiValidTimerRef.current = undefined
-            // キャンセルイベントとして再発火（App.tsx の解除検出・タイトル更新もまとめて動く）
-            handleEvent({ ...tsunami, cancelled: true })
-          }, expireMs)
+        const expireTime = new Date(tsunami.validDateTime)
+        if (expireTime > new Date()) {
+          insertSorted(eventQueueRef.current, {
+            eventTime: expireTime,
+            event: { ...tsunami, cancelled: true } as P2PQuakeEvent,
+          })
         }
       }
     }
@@ -311,6 +316,8 @@ export function useEarthquakes(
         case 552: {
           const tsunami = event as JMATsunami
           if (tsunami.cancelled) {
+            // id チェック: 古いキューエントリが後続の新しい津波情報をキャンセルしないよう防御する
+            if (prev.tsunamis.length > 0 && prev.tsunamis[0].id !== tsunami.id) return prev
             return { ...prev, tsunamis: [], lastUpdate: now }
           }
           // ValidDateTime が過去 = すでに有効期限切れ（ページリロード時など）
@@ -339,19 +346,25 @@ export function useEarthquakes(
     })
   }, [])
 
-  // アンマウント時に各種タイマーをクリア
+  // キューディスパッチャー: 100ms ごとに eventTime <= 現在時刻のエントリを handleEvent へ渡す
+  useEffect(() => {
+    const id = setInterval(() => {
+      const now = getTimeRef.current()
+      const q = eventQueueRef.current
+      while (q.length > 0 && q[0].eventTime <= now) {
+        handleEvent(q.shift()!.event)
+      }
+    }, 100)
+    return () => clearInterval(id)
+  }, [handleEvent])
+
+  // アンマウント時にタイマーとキューをクリア
   useEffect(() => {
     return () => {
-      for (const t of finalCleanupTimersRef.current.values()) {
-        window.clearTimeout(t)
-      }
-      finalCleanupTimersRef.current.clear()
-      if (tsunamiValidTimerRef.current !== undefined) {
-        window.clearTimeout(tsunamiValidTimerRef.current)
-      }
       if (kohatsuExpireTimerRef.current !== undefined) {
         window.clearTimeout(kohatsuExpireTimerRef.current)
       }
+      eventQueueRef.current = []
     }
   }, [])
 
@@ -438,16 +451,14 @@ export function useEarthquakes(
             hasMore: !!nextToken,
             error: null,
           }))
-          // 初回ロードで津波が有効（validDateTime未来）の場合、タイマーを仕掛ける
-          // handleEvent を経由しないため、ここで明示的に設定する
+          // 初回ロードで津波が有効（validDateTime未来）の場合、キューへ解除イベントを挿入する
           if (tsunamis.length > 0 && latestTsunami?.validDateTime) {
-            const expireMs = new Date(latestTsunami.validDateTime).getTime() - Date.now()
-            if (expireMs > 0) {
-              if (tsunamiValidTimerRef.current !== undefined) window.clearTimeout(tsunamiValidTimerRef.current)
-              tsunamiValidTimerRef.current = window.setTimeout(() => {
-                tsunamiValidTimerRef.current = undefined
-                handleEvent({ ...latestTsunami, cancelled: true })
-              }, expireMs)
+            const expireTime = new Date(latestTsunami.validDateTime)
+            if (expireTime > new Date()) {
+              insertSorted(eventQueueRef.current, {
+                eventTime: expireTime,
+                event: { ...latestTsunami, cancelled: true } as P2PQuakeEvent,
+              })
             }
           }
         })
@@ -503,11 +514,8 @@ export function useEarthquakes(
           onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as P2PQuakeEvent)
         } else {
           const data = ev.data
-          if (data.code === 556) {
-            handleEvent(enrichEEWPref(data as EEWAlert, areaPrefIndex))
-          } else {
-            handleEvent(data)
-          }
+          const enriched = data.code === 556 ? enrichEEWPref(data as EEWAlert, areaPrefIndex) : data
+          enqueueEvent(enriched)
         }
       }
       ws.onStatusChange = status =>
@@ -555,16 +563,14 @@ export function useEarthquakes(
           hasMore: quakeEvents.length === MAX_HISTORY_RETAINED,
           error: null,
         }))
-        // 初回ロードで津波が有効（validDateTime未来）の場合、タイマーを仕掛ける
-        // handleEvent を経由しないため、ここで明示的に設定する
+        // 初回ロードで津波が有効（validDateTime未来）の場合、キューへ解除イベントを挿入する
         if (tsunamis.length > 0 && latestTsunami?.validDateTime) {
-          const expireMs = new Date(latestTsunami.validDateTime).getTime() - Date.now()
-          if (expireMs > 0) {
-            if (tsunamiValidTimerRef.current !== undefined) window.clearTimeout(tsunamiValidTimerRef.current)
-            tsunamiValidTimerRef.current = window.setTimeout(() => {
-              tsunamiValidTimerRef.current = undefined
-              handleEvent({ ...latestTsunami, cancelled: true })
-            }, expireMs)
+          const expireTime = new Date(latestTsunami.validDateTime)
+          if (expireTime > new Date()) {
+            insertSorted(eventQueueRef.current, {
+              eventTime: expireTime,
+              event: { ...latestTsunami, cancelled: true } as P2PQuakeEvent,
+            })
           }
         }
       })
@@ -587,18 +593,18 @@ export function useEarthquakes(
           // Yahoo が検出する前に誤報取消された場合は hypoInfo 消滅イベントが来ない。
           // activeEEWs に残っていれば解除処理を通す。
           if (stateRef.current.activeEEWs.has(key)) {
-            handleEvent(event)
+            enqueueEvent(event)
           }
           return
         }
         if (stateRef.current.activeEEWs.has(key)) {
           enrichEEW(key, eew.areas ?? eew.regions ?? [])
         } else {
-          handleEvent(event)  // フォールバック: Yahoo が未検出のEEW
+          enqueueEvent(event)  // フォールバック: Yahoo が未検出のEEW
         }
         return
       }
-      handleEvent(event)
+      enqueueEvent(event)
     }
     ws.onStatusChange = status =>
       setState(prev => ({ ...prev, connectionStatus: status }))
@@ -609,7 +615,7 @@ export function useEarthquakes(
       cancelled = true
       ws.disconnect()
     }
-  }, [handleEvent, appendTelegramLog, dmdataApiKey, dmdataTestDelivery])
+  }, [handleEvent, enqueueEvent, appendTelegramLog, dmdataApiKey, dmdataTestDelivery])
 
   const loadMoreEarthquakes = useCallback(async () => {
     if (stateRef.current.isLoadingMore || !stateRef.current.hasMore) return
