@@ -436,8 +436,21 @@ async function fetchOneTelegram(
   return null
 }
 
-// DMDATA REST API で地震履歴（VXSE53: 震源＋各地震度）を取得する。
-// VXSE61（震源要素更新）も並列取得し、earthquake.time が一致する地震の hypocenter をマージする。
+// 地震情報の優先度（高いほど優先）。useEarthquakes.ts の ISSUE_PRIORITY と同じ値。
+const QUAKE_ISSUE_PRIORITY: Record<string, number> = {
+  DestinationAmended: 5, DetailScale: 4, ScaleAndDestination: 3,
+  Destination: 2, ScalePrompt: 1, Foreign: 0, Other: 0,
+}
+
+// 電文 ID から eventId（14桁タイムスタンプ）を抽出する。
+// VXSE51/52/53/61 はすべて同じ eventId を共有するため、同一地震の同定に使用できる。
+function extractQuakeEventId(q: JMAQuake): string | null {
+  return q.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1] ?? null
+}
+
+// DMDATA REST API で地震履歴（VXSE51/52/53: 震度速報・震源情報・震源＋各地震度）を取得する。
+// VXSE61（顕著な地震震源要素更新）も並列取得し、同一イベントの hypocenter をマージする。
+// VXSE51/52 は VXSE53 未発表の地震速報をカバーするため初期表示の欠落を防ぐ。
 // cursorToken を指定するとカーソル位置以降の古い電文を取得する（「もっと見る」用）。
 export async function fetchDmdataEarthquakes(
   apiKey: string,
@@ -447,7 +460,9 @@ export async function fetchDmdataEarthquakes(
   const qs = cursorToken ? `&cursorToken=${cursorToken}` : ''
   const headers = { Authorization: authHeader(apiKey) }
 
-  const [res53, res61] = await Promise.allSettled([
+  const [res51, res52, res53, res61] = await Promise.allSettled([
+    fetch(`${API_BASE}/telegram?type=VXSE51&limit=${limit}`, { headers }),
+    fetch(`${API_BASE}/telegram?type=VXSE52&limit=${limit}`, { headers }),
     fetch(`${API_BASE}/telegram?type=VXSE53&limit=${limit}${qs}`, { headers }),
     fetch(`${API_BASE}/telegram?type=VXSE61&limit=${limit}`, { headers }),
   ])
@@ -457,27 +472,53 @@ export async function fetchDmdataEarthquakes(
     throw new Error(`earthquake history: ${status}`)
   }
 
-  const json = await res53.value.json() as {
-    items?: Array<{ id: string; url: string; head: { type: string } }>
-    nextToken?: string
-  }
-  const items = json.items ?? []
-  const results = await Promise.allSettled(
-    items.map(it => fetchOneTelegram(apiKey, it.url, it.head.type)),
-  )
-  const quakes = results
-    .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | null> => r.status === 'fulfilled')
-    .map(r => r.value)
-    .filter((v): v is JMAQuake => v !== null && v.code === 551)
+  type ItemList = { items?: Array<{ url: string; head: { type: string } }>; nextToken?: string }
+  const json53 = await res53.value.json() as ItemList
 
-  // VXSE61 マージ: 取得できた場合のみ適用（失敗しても VXSE53 の結果で続行）
-  if (res61.status === 'fulfilled' && res61.value.ok) {
-    const json61 = await res61.value.json() as {
-      items?: Array<{ id: string; url: string; head: { type: string } }>
+  // VXSE51/52 の JSON を並列取得（失敗時は空リストで続行）
+  const [json51, json52] = await Promise.all([
+    res51.status === 'fulfilled' && res51.value.ok
+      ? res51.value.json() as Promise<ItemList>
+      : Promise.resolve({ items: [] } as ItemList),
+    res52.status === 'fulfilled' && res52.value.ok
+      ? res52.value.json() as Promise<ItemList>
+      : Promise.resolve({ items: [] } as ItemList),
+  ])
+
+  // VXSE51/52/53 の全電文を並列取得
+  const allItems = [
+    ...(json53.items ?? []).map(it => ({ url: it.url, headType: it.head.type })),
+    ...(json51.items ?? []).map(it => ({ url: it.url, headType: it.head.type })),
+    ...(json52.items ?? []).map(it => ({ url: it.url, headType: it.head.type })),
+  ]
+  const allResults = await Promise.allSettled(
+    allItems.map(({ url, headType }) => fetchOneTelegram(apiKey, url, headType)),
+  )
+  const rawQuakes = allResults
+    .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | JMALpgm | null> => r.status === 'fulfilled')
+    .map(r => r.value)
+    .filter((v): v is JMAQuake => v !== null && 'code' in v && v.code === 551)
+
+  // 同一イベントの VXSE51/52/53 を eventId で重複排除（高優先度を保持）
+  // VXSE51 は earthquake.time が targetDateTime、VXSE52/53 は originTime で異なるため
+  // earthquake.time ではなく eventId で同一性を判定する。
+  const seenByEid = new Map<string, JMAQuake>()
+  const noEidQuakes: JMAQuake[] = []
+  for (const q of rawQuakes) {
+    const eid = extractQuakeEventId(q)
+    if (!eid) { noEidQuakes.push(q); continue }
+    const existing = seenByEid.get(eid)
+    if (!existing || (QUAKE_ISSUE_PRIORITY[q.issue.type] ?? 0) > (QUAKE_ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
+      seenByEid.set(eid, q)
     }
-    const items61 = json61.items ?? []
+  }
+  const quakes = [...Array.from(seenByEid.values()), ...noEidQuakes]
+
+  // VXSE61（顕著な地震震源要素更新）: 対応エントリに震源マージ、なければ単独カードとして追加
+  if (res61.status === 'fulfilled' && res61.value.ok) {
+    const json61 = await res61.value.json() as ItemList
     const results61 = await Promise.allSettled(
-      items61.map(it => fetchOneTelegram(apiKey, it.url, it.head.type)),
+      (json61.items ?? []).map(it => fetchOneTelegram(apiKey, it.url, it.head.type)),
     )
     for (const r of results61) {
       if (r.status !== 'fulfilled' || !r.value) continue
@@ -485,21 +526,25 @@ export async function fetchDmdataEarthquakes(
       if (!('code' in v) || v.code !== 551) continue
       const amended = v as JMAQuake
       if (amended.issue.type !== 'DestinationAmended') continue
-      const idx = quakes.findIndex(q => q.earthquake.time === amended.earthquake.time)
-      if (idx < 0) continue
-      quakes[idx] = {
-        ...quakes[idx],
-        time: amended.time,
-        issue: amended.issue,
-        earthquake: {
-          ...quakes[idx].earthquake,
-          hypocenter: amended.earthquake.hypocenter,
-        },
+      const amendedEid = extractQuakeEventId(amended)
+      const idx = quakes.findIndex(q =>
+        amendedEid ? extractQuakeEventId(q) === amendedEid : q.earthquake.time === amended.earthquake.time,
+      )
+      if (idx >= 0) {
+        quakes[idx] = {
+          ...quakes[idx],
+          time: amended.time,
+          issue: amended.issue,
+          earthquake: { ...quakes[idx].earthquake, hypocenter: amended.earthquake.hypocenter },
+        }
+      } else {
+        // 取得範囲外の地震への VXSE61 → 単独カードとして表示
+        quakes.push(amended)
       }
     }
   }
 
-  return { quakes, nextToken: json.nextToken }
+  return { quakes, nextToken: json53.nextToken }
 }
 
 // DMDATA REST API で津波履歴（VTSE41: 大津波警報特別、VTSE51: 警報・注意報・解除、VTSE52: 沖合観測）を取得する。
