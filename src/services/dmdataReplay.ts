@@ -1,10 +1,13 @@
-import { parseEEW, parseEarthquake, parseTsunami } from './dmdataParser'
+import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseVyse5xFromXml, parseVyse60FromXml } from './dmdataParser'
 import { parseTar } from '../utils/tarParser'
-import type { P2PQuakeEvent } from '../types/earthquake'
+import type { P2PQuakeEvent, JMALpgm, JMANankai, JMAKohatsu } from '../types/earthquake'
 
 const QUAKE_TYPES = new Set(['VXSE51', 'VXSE52', 'VXSE53', 'VXSE61'])
 const TSUNAMI_TYPES = new Set(['VTSE41', 'VTSE51', 'VTSE52'])
 const EEW_TYPES = new Set(['VXSE43', 'VXSE45'])
+const LPGM_TYPES = new Set(['VXSE62'])
+const NANKAI_TYPES = new Set(['VYSE50', 'VYSE51'])
+const KOHATSU_TYPES = new Set(['VYSE60'])
 
 function authHeader(apiKey: string): string {
   return 'Basic ' + btoa(apiKey + ':')
@@ -71,8 +74,14 @@ export function clearReplayCache(): void {
   archiveCache.clear()
 }
 
+export type ReplayPayload =
+  | { kind: 'p2p'; event: P2PQuakeEvent }
+  | { kind: 'lpgm'; data: JMALpgm }
+  | { kind: 'nankai'; data: JMANankai }
+  | { kind: 'kohatsu'; data: JMAKohatsu }
+
 export interface ReplayEntry {
-  event: P2PQuakeEvent
+  payload: ReplayPayload
   replayTime: Date
 }
 
@@ -111,12 +120,36 @@ export async function fetchDmdataReplayEvents(
 
       for (const entry of manifest) {
         if (entry.head.test) continue
-        if (!entry.originalId) continue
         const entryTime = new Date(entry.head.time)
         if (entryTime < fromTime || entryTime >= toTime) continue
 
         const headType = entry.head.type
         const idPrefix = entry.id.slice(0, 7)
+
+        if (NANKAI_TYPES.has(headType) || KOHATSU_TYPES.has(headType)) {
+          // XML 形式電文（VYSE50/51/60）: originalId を持たない場合があるため別処理
+          const xmlFileName = [...files.keys()].find(
+            (n) => n.endsWith('.xml') && n.includes(idPrefix),
+          )
+          if (!xmlFileName) continue
+          const bodyBytes = files.get(xmlFileName)
+          if (!bodyBytes) continue
+          const xmlText = dec.decode(bodyBytes)
+
+          let payload: ReplayPayload | null = null
+          if (NANKAI_TYPES.has(headType)) {
+            const nankai = parseVyse5xFromXml(xmlText)
+            if (nankai) payload = { kind: 'nankai', data: nankai }
+          } else {
+            const kohatsu = parseVyse60FromXml(xmlText)
+            if (kohatsu) payload = { kind: 'kohatsu', data: kohatsu }
+          }
+          if (payload) entries.push({ payload, replayTime: entryTime })
+          continue
+        }
+
+        // JSON 形式電文（地震・津波・EEW・VXSE62）
+        if (!entry.originalId) continue
         const jsonFileName = [...files.keys()].find(
           (n) => n.endsWith('.json') && n !== 'telegrams.json' && n.includes(idPrefix),
         )
@@ -126,15 +159,26 @@ export async function fetchDmdataReplayEvents(
         if (!bodyBytes) continue
         const data = JSON.parse(dec.decode(bodyBytes)) as Record<string, unknown>
 
-        let event: P2PQuakeEvent | null = null
-        if (EEW_TYPES.has(headType)) event = parseEEW(headType, data)
-        else if (QUAKE_TYPES.has(headType)) event = parseEarthquake(headType, data)
-        else if (TSUNAMI_TYPES.has(headType)) event = parseTsunami(headType, data)
-        if (event) {
+        let payload: ReplayPayload | null = null
+        if (EEW_TYPES.has(headType)) {
+          const event = parseEEW(headType, data)
+          if (event) payload = { kind: 'p2p', event }
+        } else if (QUAKE_TYPES.has(headType)) {
+          const event = parseEarthquake(headType, data)
+          if (event) payload = { kind: 'p2p', event }
+        } else if (TSUNAMI_TYPES.has(headType)) {
+          const event = parseTsunami(headType, data)
+          if (event) payload = { kind: 'p2p', event }
+        } else if (LPGM_TYPES.has(headType)) {
+          const lpgm = parseLpgm(data)
+          if (lpgm) payload = { kind: 'lpgm', data: lpgm }
+        }
+
+        if (payload) {
           // pressDateTime（実際の発表時刻）をキュー時刻に使うことで、同一 reportDateTime を持つ
           // 複数電文（例: VXSE51 の重複送信）がライブ受信時と同じ時系列で再生されるようにする
           const pressDateTime = (data.pressDateTime as string | undefined) ?? entryTime.toISOString()
-          entries.push({ event, replayTime: new Date(pressDateTime) })
+          entries.push({ payload, replayTime: new Date(pressDateTime) })
         }
       }
     }),

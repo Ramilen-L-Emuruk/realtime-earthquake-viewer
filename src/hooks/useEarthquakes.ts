@@ -37,9 +37,15 @@ const sortQuakes = (arr: JMAQuake[]): JMAQuake[] =>
     new Date(b.earthquake.time).getTime() - new Date(a.earthquake.time).getTime()
   )
 
+type QueuePayload =
+  | { kind: 'p2p'; event: P2PQuakeEvent }
+  | { kind: 'lpgm'; data: JMALpgm }
+  | { kind: 'nankai'; data: JMANankai }
+  | { kind: 'kohatsu'; data: JMAKohatsu }
+
 interface QueueEntry {
   eventTime: Date
-  event: P2PQuakeEvent
+  payload: QueuePayload
 }
 
 function insertSorted(queue: QueueEntry[], entry: QueueEntry): void {
@@ -195,7 +201,7 @@ export function useEarthquakes(
   // live モードでは event.time ≈ now なので次のティック（最大 100ms 後）に即時発火する
   const enqueueEvent = useCallback((event: P2PQuakeEvent, overrideTime?: Date) => {
     const t = overrideTime ?? new Date((event as { time?: string }).time ?? Date.now())
-    insertSorted(eventQueueRef.current, { eventTime: t, event })
+    insertSorted(eventQueueRef.current, { eventTime: t, payload: { kind: 'p2p', event } })
   }, [])
 
   // リプレイ時は差し替えることで再生時刻基準のディスパッチに切り替える
@@ -212,7 +218,7 @@ export function useEarthquakes(
         const cancelTime = new Date(new Date(eew.time).getTime() + eewFinalClearSecRef.current * 1000)
         insertSorted(eventQueueRef.current, {
           eventTime: cancelTime,
-          event: { ...eew, cancelled: true, expired: true } as P2PQuakeEvent,
+          payload: { kind: 'p2p', event: { ...eew, cancelled: true, expired: true } as P2PQuakeEvent },
         })
       }
     }
@@ -241,7 +247,7 @@ export function useEarthquakes(
         if (expireTime > getTimeRef.current()) {
           insertSorted(eventQueueRef.current, {
             eventTime: expireTime,
-            event: { ...tsunami, cancelled: true } as P2PQuakeEvent,
+            payload: { kind: 'p2p', event: { ...tsunami, cancelled: true } as P2PQuakeEvent },
           })
         }
       }
@@ -354,13 +360,50 @@ export function useEarthquakes(
       : () => new Date()
   }, [replayTimeOffset])
 
-  // キューディスパッチャー: 100ms ごとに eventTime <= 現在時刻のエントリを handleEvent へ渡す
+  // キューディスパッチャー: 100ms ごとに eventTime <= 現在時刻のエントリを処理する
   useEffect(() => {
     const id = setInterval(() => {
       const now = getTimeRef.current()
       const q = eventQueueRef.current
       while (q.length > 0 && q[0].eventTime <= now) {
-        handleEvent(q.shift()!.event)
+        const { payload } = q.shift()!
+        if (payload.kind === 'p2p') {
+          handleEvent(payload.event)
+        } else if (payload.kind === 'lpgm') {
+          const lpgm = payload.data
+          setState(prev => {
+            const next = new Map(prev.lpgmByOriginTime)
+            if (lpgm.cancelled) next.delete(lpgm.originTime)
+            else next.set(lpgm.originTime, lpgm)
+            return { ...prev, lpgmByOriginTime: next }
+          })
+          if (!lpgm.cancelled && lpgm.maxClass >= 1) {
+            onLiveEventRef.current?.({ kind: 'lpgm', data: lpgm } as unknown as P2PQuakeEvent)
+          }
+        } else if (payload.kind === 'nankai') {
+          const nankai = payload.data
+          setState(prev => ({ ...prev, nankai: nankai.cancelled ? null : nankai }))
+          onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as P2PQuakeEvent)
+        } else if (payload.kind === 'kohatsu') {
+          const kohatsu = payload.data
+          if (kohatsuExpireTimerRef.current !== undefined) {
+            window.clearTimeout(kohatsuExpireTimerRef.current)
+            kohatsuExpireTimerRef.current = undefined
+          }
+          if (!kohatsu.cancelled) {
+            const expireMs = new Date(kohatsu.expireAt).getTime() - Date.now()
+            if (expireMs > 0) {
+              kohatsuExpireTimerRef.current = window.setTimeout(() => {
+                kohatsuExpireTimerRef.current = undefined
+                setState(prev => ({ ...prev, kohatsu: null }))
+              }, expireMs)
+            }
+            setState(prev => ({ ...prev, kohatsu }))
+          } else {
+            setState(prev => ({ ...prev, kohatsu: null }))
+          }
+          onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as P2PQuakeEvent)
+        }
       }
     }, 100)
     return () => clearInterval(id)
@@ -468,7 +511,7 @@ export function useEarthquakes(
             if (expireTime > new Date()) {
               insertSorted(eventQueueRef.current, {
                 eventTime: expireTime,
-                event: { ...latestTsunami, cancelled: true } as P2PQuakeEvent,
+                payload: { kind: 'p2p', event: { ...latestTsunami, cancelled: true } as P2PQuakeEvent },
               })
             }
           }
@@ -580,7 +623,7 @@ export function useEarthquakes(
           if (expireTime > new Date()) {
             insertSorted(eventQueueRef.current, {
               eventTime: expireTime,
-              event: { ...latestTsunami, cancelled: true } as P2PQuakeEvent,
+              payload: { kind: 'p2p', event: { ...latestTsunami, cancelled: true } as P2PQuakeEvent },
             })
           }
         }
@@ -779,8 +822,10 @@ export function useEarthquakes(
   }, [])
 
   const loadReplayEvents = useCallback((entries: import('../services/dmdataReplay').ReplayEntry[]) => {
-    for (const { event, replayTime } of entries) enqueueEvent(event, replayTime)
-  }, [enqueueEvent])
+    for (const { payload, replayTime } of entries) {
+      insertSorted(eventQueueRef.current, { eventTime: replayTime, payload })
+    }
+  }, [])
 
   return {
     ...state,
