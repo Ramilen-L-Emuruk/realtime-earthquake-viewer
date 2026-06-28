@@ -501,8 +501,14 @@ export function App() {
     return () => window.removeEventListener('sw-updated', onSwUpdated)
   }, [])
 
-  // DMDSS版: WS接続中は nowTick を毎秒更新、切断時は null にリセット
+  // DMDSS版: リプレイ中はリプレイ時刻で毎秒更新、WS接続中は実時刻で毎秒更新、それ以外は null
   useEffect(() => {
+    if (replayTimeOffset !== null) {
+      const tick = () => setNowTick(new Date(Date.now() + replayTimeOffset))
+      tick()
+      const id = setInterval(tick, 1000)
+      return () => clearInterval(id)
+    }
     if (!isDmdss || connectionStatus !== 'connected') {
       setNowTick(null)
       return
@@ -510,7 +516,7 @@ export function App() {
     setNowTick(new Date())
     const id = setInterval(() => setNowTick(new Date()), 1000)
     return () => clearInterval(id)
-  }, [connectionStatus])
+  }, [connectionStatus, replayTimeOffset])
 
   // 定期自動リロード（毎日午前5時にカウントダウン開始）
   useEffect(() => {
