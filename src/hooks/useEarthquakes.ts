@@ -121,6 +121,7 @@ export function useEarthquakes(
   dmdataApiKey = '',
   dmdataTestDelivery = false,
   eewFinalClearSec = 180,
+  replayTimeOffset: number | null = null,
 ) {
   const [state, setState] = useState<EarthquakeState>({
     earthquakes: [],
@@ -237,7 +238,7 @@ export function useEarthquakes(
       const tsunami = event as JMATsunami
       if (!tsunami.cancelled && tsunami.validDateTime) {
         const expireTime = new Date(tsunami.validDateTime)
-        if (expireTime > new Date()) {
+        if (expireTime > getTimeRef.current()) {
           insertSorted(eventQueueRef.current, {
             eventTime: expireTime,
             event: { ...tsunami, cancelled: true } as P2PQuakeEvent,
@@ -247,7 +248,7 @@ export function useEarthquakes(
     }
 
     setState(prev => {
-      const now = new Date()
+      const now = getTimeRef.current()
       switch (event.code) {
         case 551: {
           let quake = event as JMAQuake
@@ -346,6 +347,13 @@ export function useEarthquakes(
     })
   }, [])
 
+  // リプレイ時刻オフセットに応じて時刻ソースを切り替える
+  useEffect(() => {
+    getTimeRef.current = replayTimeOffset !== null
+      ? () => new Date(Date.now() + replayTimeOffset)
+      : () => new Date()
+  }, [replayTimeOffset])
+
   // キューディスパッチャー: 100ms ごとに eventTime <= 現在時刻のエントリを handleEvent へ渡す
   useEffect(() => {
     const id = setInterval(() => {
@@ -370,6 +378,9 @@ export function useEarthquakes(
 
   useEffect(() => {
     let cancelled = false
+
+    // リプレイ中は WebSocket 接続しない
+    if (replayTimeOffset !== null) return
 
     if (isDmdss) {
       // --- DMDSS版: APIキー未設定なら接続しない ---
@@ -615,7 +626,7 @@ export function useEarthquakes(
       cancelled = true
       ws.disconnect()
     }
-  }, [handleEvent, enqueueEvent, appendTelegramLog, dmdataApiKey, dmdataTestDelivery])
+  }, [handleEvent, enqueueEvent, appendTelegramLog, dmdataApiKey, dmdataTestDelivery, replayTimeOffset])
 
   const loadMoreEarthquakes = useCallback(async () => {
     if (stateRef.current.isLoadingMore || !stateRef.current.hasMore) return
@@ -753,6 +764,24 @@ export function useEarthquakes(
     onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as P2PQuakeEvent)
   }, [])
 
+  const resetState = useCallback(() => {
+    setState(prev => ({
+      ...prev,
+      earthquakes: [],
+      tsunamis: [],
+      activeEEWs: new Map(),
+      lpgmByOriginTime: new Map(),
+      nankai: null,
+      kohatsu: null,
+    }))
+    eventQueueRef.current = []
+    quakeIntensityCacheRef.current.clear()
+  }, [])
+
+  const loadReplayEvents = useCallback((events: P2PQuakeEvent[]) => {
+    for (const ev of events) enqueueEvent(ev)
+  }, [enqueueEvent])
+
   return {
     ...state,
     injectEvent: handleEvent,
@@ -762,5 +791,7 @@ export function useEarthquakes(
     simulateEEW, simulateEEWWarning, simulateEEWForecast,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast,
     simulateNankai, simulateKohatsu,
+    resetState,
+    loadReplayEvents,
   }
 }
