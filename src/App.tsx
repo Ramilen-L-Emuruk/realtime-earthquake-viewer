@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { IconNav, type TabId } from './components/IconNav'
 import { JapanMap, type MapMode } from './components/Map/JapanMap'
 import { MapUpdateTime } from './components/MapUpdateTime'
@@ -23,6 +23,7 @@ import { speakWithVoicevox } from './utils/voicevox'
 import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, nankaiToText, kohatsuToText, lpgmToText } from './utils/ttsText'
 import { kyoshinIndexToLabel } from './utils/kyoshinIntensity'
 import type { P2PQuakeEvent, EEWAlert } from './types/earthquake'
+import { fetchDmdataReplayEvents, clearReplayCache } from './services/dmdataReplay'
 
 // 平常時のウィンドウタイトル（index.html の <title> と一致させる）。
 // AutoHotKey 等が、情報更新時のタイトル変化を検知してイベントを発火できるようにする。
@@ -147,7 +148,11 @@ export function App() {
       // DMDATA は VXSE51（targetDateTime）→ VXSE52/53（originTime）で earthquake.time が1分ずれるため、
       // eventId（quake.id から抽出）で同一イベントを判定する。P2P など id がない場合は earthquake.time で比較。
       const quakeId = (event as import('./types/earthquake').JMAQuake).id
-      const incomingKey = quakeId?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1] ?? event.earthquake.time
+      const eventIdPart = quakeId?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
+      // issue.type を含めて種別ごとに独立判定（ScalePrompt/Destination/ScaleAndDestination 等が別報のため）
+      const incomingKey = eventIdPart
+        ? `${eventIdPart}:${event.issue.type}`
+        : event.earthquake.time
       isNewQuake = incomingKey !== lastNewQuakeTimeRef.current
       if (isNewQuake) {
         lastNewQuakeTimeRef.current = incomingKey
@@ -412,6 +417,8 @@ export function App() {
     }
   }
 
+  const [replayTimeOffset, setReplayTimeOffset] = useState<number | null>(null)
+
   const {
     earthquakes, tsunamis, activeEEWs, lpgmByOriginTime, nankai, kohatsu, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
     telegramLog, clearTelegramLog,
@@ -420,7 +427,8 @@ export function App() {
     simulateEEW, simulateEEWWarning, simulateEEWForecast,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast,
     simulateNankai, simulateKohatsu,
-  } = useEarthquakes(handleLiveEvent, settings.dmdataApiKey, settings.dmdataTestDelivery, settings.eewFinalClearSec)
+    resetState, loadReplayEvents,
+  } = useEarthquakes(handleLiveEvent, settings.dmdataApiKey, settings.dmdataTestDelivery, settings.eewFinalClearSec, replayTimeOffset)
 
   // UI 倍率: ルート要素の font-size を変えて rem ベースの UI 全体を拡大縮小する。
   // 倍率変更で地図コンテナ幅が変わるため、Leaflet の再計算用に resize を発火する。
@@ -497,8 +505,14 @@ export function App() {
     return () => window.removeEventListener('sw-updated', onSwUpdated)
   }, [])
 
-  // DMDSS版: WS接続中は nowTick を毎秒更新、切断時は null にリセット
+  // DMDSS版: リプレイ中はリプレイ時刻で毎秒更新、WS接続中は実時刻で毎秒更新、それ以外は null
   useEffect(() => {
+    if (replayTimeOffset !== null) {
+      const tick = () => setNowTick(new Date(Date.now() + replayTimeOffset))
+      tick()
+      const id = setInterval(tick, 1000)
+      return () => clearInterval(id)
+    }
     if (!isDmdss || connectionStatus !== 'connected') {
       setNowTick(null)
       return
@@ -506,7 +520,7 @@ export function App() {
     setNowTick(new Date())
     const id = setInterval(() => setNowTick(new Date()), 1000)
     return () => clearInterval(id)
-  }, [connectionStatus])
+  }, [connectionStatus, replayTimeOffset])
 
   // 定期自動リロード（毎日午前5時にカウントダウン開始）
   useEffect(() => {
@@ -632,12 +646,67 @@ export function App() {
 
   // 強震モニタ（常時ポーリング: タブ非表示中も揺れ検知を継続する）
   // Yahoo hypoInfo の EEW を injectEvent で状態に注入する（音・タブ切替も発火）
-  const [kyoshinTimeOffset, setKyoshinTimeOffset] = useState<number | null>(null)
   const [kyoshinInputDateTime, setKyoshinInputDateTime] = useState(() => formatDateTimeLocal(new Date()))
+  const [replayIsFetching, setReplayIsFetching] = useState(false)
+  // リプレイ開始後に次のウィンドウをプリフェッチする終端時刻
+  const prefetchEndRef = useRef<Date | null>(null)
+
+  const handleStartReplay = useCallback(async (targetDate: Date) => {
+    console.log('[replay] handleStartReplay called, targetDate:', targetDate.toISOString())
+    const offset = targetDate.getTime() - Date.now()
+    const toTime = new Date(targetDate.getTime() + 3600_000)
+    resetState()
+    lastNewQuakeTimeRef.current = null
+    activeEEWLevelsRef.current.clear()
+    lastTsunamiGradeRef.current = null
+    clearReplayCache()
+    setReplayTimeOffset(offset)
+    prefetchEndRef.current = toTime
+    setReplayIsFetching(true)
+    try {
+      const events = await fetchDmdataReplayEvents(settings.dmdataApiKey, targetDate, toTime)
+      // フェッチ中に WS 切断タイミングで ref が再セットされる競合を排除するため直前に再リセット
+      lastNewQuakeTimeRef.current = null
+      activeEEWLevelsRef.current.clear()
+      lastTsunamiGradeRef.current = null
+      loadReplayEvents(events)
+    } catch (e) {
+      console.error('replay fetch failed', e)
+    } finally {
+      setReplayIsFetching(false)
+    }
+  }, [resetState, loadReplayEvents, settings.dmdataApiKey])
+
+  const handleStopReplay = useCallback(() => {
+    setReplayTimeOffset(null)
+    prefetchEndRef.current = null
+    resetState()
+    lastNewQuakeTimeRef.current = null
+    activeEEWLevelsRef.current.clear()
+    lastTsunamiGradeRef.current = null
+    clearReplayCache()
+  }, [resetState])
+
+  // 再生時刻が prefetchEnd - 10分 に近づいたら次の1時間を先読みする
+  const replayCurrentTime = replayTimeOffset !== null ? new Date(Date.now() + replayTimeOffset) : null
+  useEffect(() => {
+    if (replayTimeOffset === null || replayIsFetching || !prefetchEndRef.current) return
+    const remaining = prefetchEndRef.current.getTime() - (Date.now() + replayTimeOffset)
+    if (remaining > 10 * 60_000) return
+    const nextFrom = prefetchEndRef.current
+    const nextTo = new Date(nextFrom.getTime() + 3600_000)
+    prefetchEndRef.current = nextTo
+    setReplayIsFetching(true)
+    fetchDmdataReplayEvents(settings.dmdataApiKey, nextFrom, nextTo)
+      .then(loadReplayEvents)
+      .catch((e) => console.error('replay prefetch failed', e))
+      .finally(() => setReplayIsFetching(false))
+  }, [replayCurrentTime, replayTimeOffset, replayIsFetching, loadReplayEvents, settings.dmdataApiKey])
+
   // DMDSS版: Yahoo hypoInfo からのEEW検出は不要（DMDATAが直接配信するため）
   const kyoshin = useKyoshinRealtime(true, {
     onEEWEvent: isDmdss ? undefined : injectEvent,
-    timeOffset: kyoshinTimeOffset,
+    timeOffset: replayTimeOffset,
   })
   const kyoshinDetection = useKyoshinDetection(kyoshin.sites, kyoshin.indices)
   // タイマーコールバック内から最新の detected 値を参照するための ref（activeEEWsRef と同パターン）
@@ -647,7 +716,7 @@ export function App() {
   // DMDSS版: EEWデータから P波・S波半径を自前計算（100ms更新でスムーズ拡張）
   // activeEEWs (Map) の参照が安定している限り配列を再生成しない
   const activeEEWList = useMemo(() => Array.from(activeEEWs.values()), [activeEEWs])
-  const dmdssWaves = useDmdssWaves(activeEEWList, isDmdss)
+  const dmdssWaves = useDmdssWaves(activeEEWList, isDmdss, replayTimeOffset)
   const psWave = isDmdss ? dmdssWaves : kyoshin.psWave
 
   // EEW受信中または揺れ検知中は全観測点ベースの最大インデックスを使う（表示と音を一致させる）
@@ -832,10 +901,13 @@ export function App() {
                   })
                 },
               }}
-              kyoshinTimeOffset={kyoshinTimeOffset}
-              onSetKyoshinTimeOffset={setKyoshinTimeOffset}
+              kyoshinTimeOffset={replayTimeOffset}
+              onSetKyoshinTimeOffset={isDmdss ? undefined : setReplayTimeOffset}
               kyoshinInputDateTime={kyoshinInputDateTime}
               onSetKyoshinInputDateTime={setKyoshinInputDateTime}
+              replayIsFetching={replayIsFetching}
+              onStartReplay={isDmdss ? handleStartReplay : undefined}
+              onStopReplay={isDmdss ? handleStopReplay : undefined}
             />
           </div>
         </div>
