@@ -652,6 +652,9 @@ export function App() {
     const offset = targetDate.getTime() - Date.now()
     const toTime = new Date(targetDate.getTime() + 3600_000)
     resetState()
+    lastNewQuakeTimeRef.current = null
+    activeEEWLevelsRef.current.clear()
+    lastTsunamiGradeRef.current = null
     clearReplayCache()
     setReplayTimeOffset(offset)
     prefetchEndRef.current = toTime
@@ -670,6 +673,9 @@ export function App() {
     setReplayTimeOffset(null)
     prefetchEndRef.current = null
     resetState()
+    lastNewQuakeTimeRef.current = null
+    activeEEWLevelsRef.current.clear()
+    lastTsunamiGradeRef.current = null
     clearReplayCache()
   }, [resetState])
 
