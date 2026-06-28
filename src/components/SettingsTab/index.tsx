@@ -652,16 +652,16 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
         <Row label="緊急地震速報（予報）" description="震度2程度 – eewForecast 音 / 30秒間表示">
           <TestButton color="yellow" onClick={onTest.eewForecast}>予報テスト</TestButton>
         </Row>
-        <Row label="津波警報（大津波警報）" description="岩手・宮城・福島等 – tsunamiMajor 音 / 15秒間表示">
+        <Row label="津波警報（大津波警報）" description="岩手・宮城・福島等 – tsunamiMajor 音 / 30秒間表示">
           <TestButton color="purple" onClick={onTest.tsunami}>大警報テスト</TestButton>
         </Row>
-        <Row label="津波警報（津波警報）" description="青森・茨城等 – tsunami 音 / 10秒間表示">
+        <Row label="津波警報（津波警報）" description="青森・茨城等 – tsunami 音 / 30秒間表示">
           <TestButton color="orange" onClick={onTest.tsunamiWarning}>警報テスト</TestButton>
         </Row>
-        <Row label="津波警報（注意報）" description="北海道沿岸 – tsunamiWatch 音 / 10秒間表示">
+        <Row label="津波警報（注意報）" description="北海道沿岸 – tsunamiWatch 音 / 30秒間表示">
           <TestButton color="blue" onClick={onTest.tsunamiWatch}>注意報テスト</TestButton>
         </Row>
-        <Row label="津波予報（若干の海面変動）" description="北海道沿岸 – tsunamiForecast 音 / 10秒間表示">
+        <Row label="津波予報（若干の海面変動）" description="北海道沿岸 – tsunamiForecast 音 / 30秒間表示">
           <TestButton color="blue" onClick={onTest.tsunamiForecast}>予報テスト</TestButton>
         </Row>
         {isDmdss && onTest.nankaiChecking && (
@@ -734,7 +734,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">3.7.38</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">3.7.39</span></Row>
         <Row label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"
