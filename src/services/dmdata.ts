@@ -538,8 +538,15 @@ export async function fetchDmdataEarthquakes(
           earthquake: { ...quakes[idx].earthquake, hypocenter: amended.earthquake.hypocenter },
         }
       } else {
-        // 取得範囲外の地震への VXSE61 → 単独カードとして表示
-        quakes.push(amended)
+        // VXSE61 は発生頻度が低く limit が同じでも取得時間範囲が大きく異なるため、
+        // VXSE53 窓内のものだけ単独カードとして追加する（窓外は震度が永遠に補完されない）
+        const oldestQuakeTime = quakes.reduce<string | null>((acc, q) => {
+          const t = q.earthquake.time
+          return acc === null || t < acc ? t : acc
+        }, null)
+        if (!oldestQuakeTime || amended.earthquake.time >= oldestQuakeTime) {
+          quakes.push(amended)
+        }
       }
     }
   }
