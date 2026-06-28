@@ -134,17 +134,21 @@ export function App() {
   const eewTtsEventRef = useRef<import('./types/earthquake').EEWAlert | null>(null)
   // Phase 1（「緊急地震速報、〇〇で地震。」）の再生完了 Promise。Phase 2 はこれを待ってから発話する
   const eewPhase1PromiseRef = useRef<Promise<void>>(Promise.resolve())
+  // 長周期地震動情報の更新検出: 受信済み originTime を追跡する
+  const seenLpgmOriginTimesRef = useRef<Set<string>>(new Set())
 
   const handleLiveEvent = (event: P2PQuakeEvent) => {
     // 受信時に該当タブを自動表示し、ウィンドウタイトルを更新する
     // （地震情報・津波情報・緊急地震速報）。
+    // isNewQuake は UI ブロックと TTS ブロックの両方で参照するためここで宣言する
+    let isNewQuake = true
     if (event.code === 551) {
       setActiveTab('earthquake')
       // DMDATA は VXSE51（targetDateTime）→ VXSE52/53（originTime）で earthquake.time が1分ずれるため、
       // eventId（quake.id から抽出）で同一イベントを判定する。P2P など id がない場合は earthquake.time で比較。
       const quakeId = (event as import('./types/earthquake').JMAQuake).id
       const incomingKey = quakeId?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1] ?? event.earthquake.time
-      const isNewQuake = incomingKey !== lastNewQuakeTimeRef.current
+      isNewQuake = incomingKey !== lastNewQuakeTimeRef.current
       if (isNewQuake) {
         lastNewQuakeTimeRef.current = incomingKey
       }
@@ -304,8 +308,10 @@ export function App() {
       }
       if (settings.voicevoxEnabled) {
         const lpgm = (event as unknown as { kind: string; data: import('./types/earthquake').JMALpgm }).data
+        const isNewLpgm = !seenLpgmOriginTimesRef.current.has(lpgm.originTime)
+        seenLpgmOriginTimesRef.current.add(lpgm.originTime)
         setTimeout(() => {
-          speakWithVoicevox(settings.voicevoxUrl, lpgmToText(lpgm), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+          speakWithVoicevox(settings.voicevoxUrl, lpgmToText(lpgm, isNewLpgm), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
         }, 1000)
       }
       return
@@ -384,7 +390,7 @@ export function App() {
       }
       let ttsText: string | null = null
       if (event.code === 551) {
-        ttsText = earthquakeToText(event, { intensityLevels: settings.ttsIntensityLevels, maxRegions: settings.ttsMaxRegions })
+        ttsText = earthquakeToText(event, { intensityLevels: settings.ttsIntensityLevels, maxRegions: settings.ttsMaxRegions }, isNewQuake)
       } else if (event.code === 552) {
         const GRADE_RANK = { MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0 } as const
         type GradeKey = keyof typeof GRADE_RANK
