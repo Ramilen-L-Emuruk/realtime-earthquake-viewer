@@ -132,6 +132,8 @@ export function App() {
   const eewTtsMaxTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // テキストはタイマー発火時に生成するため、イベントオブジェクトを保持する（変化なし続報も含め常に最新で上書き）
   const eewTtsEventRef = useRef<import('./types/earthquake').EEWAlert | null>(null)
+  // Phase 1（「緊急地震速報、〇〇で地震。」）の再生完了 Promise。Phase 2 はこれを待ってから発話する
+  const eewPhase1PromiseRef = useRef<Promise<void>>(Promise.resolve())
 
   const handleLiveEvent = (event: P2PQuakeEvent) => {
     // 受信時に該当タブを自動表示し、ウィンドウタイトルを更新する
@@ -252,14 +254,17 @@ export function App() {
 
       // VOICEVOX: 2フェーズ読み上げ
       // 第1フェーズ（isNew即時）: 「緊急地震速報、〇〇で地震。」
-      // 第2フェーズ（デバウンス後）: 「予想最大震度〇〇。」
+      // 第2フェーズ（デバウンス後、かつ第1フェーズ完了後）: 「予想最大震度〇〇。」
       if (settings.voicevoxEnabled && settings.soundEnabled) {
         eewTtsEventRef.current = event
         const firePhase2 = () => {
           if (eewTtsEventRef.current) {
             const text = eewIntensityToText(eewTtsEventRef.current)
             if (text) {
-              speakWithVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+              // Phase 1 の再生が終わってから Phase 2 を発話する
+              eewPhase1PromiseRef.current.then(() => {
+                speakWithVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+              })
             }
           }
         }
@@ -270,8 +275,8 @@ export function App() {
           }, 3000)
         }
         if (isNew) {
-          // 第1フェーズ：即時
-          speakWithVoicevox(settings.voicevoxUrl, eewAlertToText(event), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+          // 第1フェーズ：即時（完了 Promise を ref に保持）
+          eewPhase1PromiseRef.current = speakWithVoicevox(settings.voicevoxUrl, eewAlertToText(event), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
           // 第2フェーズ：デバウンス
           scheduleEewTts()
           // 上限タイマー: 第一報から15秒後に強制発火
