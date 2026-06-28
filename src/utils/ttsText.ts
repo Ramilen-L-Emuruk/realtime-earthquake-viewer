@@ -35,9 +35,14 @@ function buildRegionText(
     if (scale == null) break
     let names = regionNamesForScale(points, scale).filter(n => !mentioned.has(n))
     if (names.length === 0) continue
-    if (opts.maxRegions > 0) names = names.slice(0, opts.maxRegions)
+    let omittedCount = 0
+    if (opts.maxRegions > 0 && names.length > opts.maxRegions) {
+      omittedCount = names.length - opts.maxRegions
+      names = names.slice(0, opts.maxRegions)
+    }
     names.forEach(n => mentioned.add(n))
-    parts.push(`${parts.length === 0 ? '最大' : ''}震度${intensityText(scale)}を${names.join('、')}で`)
+    const omittedSuffix = omittedCount > 0 ? `、ほか${omittedCount}地域` : ''
+    parts.push(`${parts.length === 0 ? '最大' : ''}震度${intensityText(scale)}を${names.join('、')}${omittedSuffix}で`)
   }
 
   if (parts.length === 0) return ''
