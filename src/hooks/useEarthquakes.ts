@@ -193,8 +193,8 @@ export function useEarthquakes(
 
   // WebSocket 受信時のエントリポイント: event.time を基準にキューへ挿入する
   // live モードでは event.time ≈ now なので次のティック（最大 100ms 後）に即時発火する
-  const enqueueEvent = useCallback((event: P2PQuakeEvent) => {
-    const t = new Date((event as { time?: string }).time ?? Date.now())
+  const enqueueEvent = useCallback((event: P2PQuakeEvent, overrideTime?: Date) => {
+    const t = overrideTime ?? new Date((event as { time?: string }).time ?? Date.now())
     insertSorted(eventQueueRef.current, { eventTime: t, event })
   }, [])
 
@@ -778,8 +778,8 @@ export function useEarthquakes(
     quakeIntensityCacheRef.current.clear()
   }, [])
 
-  const loadReplayEvents = useCallback((events: P2PQuakeEvent[]) => {
-    for (const ev of events) enqueueEvent(ev)
+  const loadReplayEvents = useCallback((entries: import('../services/dmdataReplay').ReplayEntry[]) => {
+    for (const { event, replayTime } of entries) enqueueEvent(event, replayTime)
   }, [enqueueEvent])
 
   return {

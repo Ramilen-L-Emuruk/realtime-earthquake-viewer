@@ -71,11 +71,16 @@ export function clearReplayCache(): void {
   archiveCache.clear()
 }
 
+export interface ReplayEntry {
+  event: P2PQuakeEvent
+  replayTime: Date
+}
+
 export async function fetchDmdataReplayEvents(
   apiKey: string,
   fromTime: Date,
   toTime: Date,
-): Promise<P2PQuakeEvent[]> {
+): Promise<ReplayEntry[]> {
   // アーカイブは JST 日付で索引されているため、UTC 日付との差を吸収するため
   // 開始日を -1 日、終了日を +1 日して確実に対象アーカイブを含める
   const startDateObj = new Date(fromTime)
@@ -94,7 +99,7 @@ export async function fetchDmdataReplayEvents(
   if (listJson.status !== 'ok') throw new Error('Archive list error')
 
   const dec = new TextDecoder()
-  const events: P2PQuakeEvent[] = []
+  const entries: ReplayEntry[] = []
 
   await Promise.all(
     listJson.items.map(async (item) => {
@@ -125,16 +130,17 @@ export async function fetchDmdataReplayEvents(
         if (EEW_TYPES.has(headType)) event = parseEEW(headType, data)
         else if (QUAKE_TYPES.has(headType)) event = parseEarthquake(headType, data)
         else if (TSUNAMI_TYPES.has(headType)) event = parseTsunami(headType, data)
-        if (event) events.push(event)
+        if (event) {
+          // pressDateTime（実際の発表時刻）をキュー時刻に使うことで、同一 reportDateTime を持つ
+          // 複数電文（例: VXSE51 の重複送信）がライブ受信時と同じ時系列で再生されるようにする
+          const pressDateTime = (data.pressDateTime as string | undefined) ?? entryTime.toISOString()
+          entries.push({ event, replayTime: new Date(pressDateTime) })
+        }
       }
     }),
   )
 
-  events.sort((a, b) => {
-    const ta = new Date((a as { time?: string }).time ?? 0).getTime()
-    const tb = new Date((b as { time?: string }).time ?? 0).getTime()
-    return ta - tb
-  })
+  entries.sort((a, b) => a.replayTime.getTime() - b.replayTime.getTime())
 
-  return events
+  return entries
 }

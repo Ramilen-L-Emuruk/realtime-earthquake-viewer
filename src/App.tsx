@@ -148,7 +148,11 @@ export function App() {
       // DMDATA は VXSE51（targetDateTime）→ VXSE52/53（originTime）で earthquake.time が1分ずれるため、
       // eventId（quake.id から抽出）で同一イベントを判定する。P2P など id がない場合は earthquake.time で比較。
       const quakeId = (event as import('./types/earthquake').JMAQuake).id
-      const incomingKey = quakeId?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1] ?? event.earthquake.time
+      const eventIdPart = quakeId?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
+      // issue.type を含めて種別ごとに独立判定（ScalePrompt/Destination/ScaleAndDestination 等が別報のため）
+      const incomingKey = eventIdPart
+        ? `${eventIdPart}:${event.issue.type}`
+        : event.earthquake.time
       isNewQuake = incomingKey !== lastNewQuakeTimeRef.current
       if (isNewQuake) {
         lastNewQuakeTimeRef.current = incomingKey
@@ -661,6 +665,10 @@ export function App() {
     setReplayIsFetching(true)
     try {
       const events = await fetchDmdataReplayEvents(settings.dmdataApiKey, targetDate, toTime)
+      // フェッチ中に WS 切断タイミングで ref が再セットされる競合を排除するため直前に再リセット
+      lastNewQuakeTimeRef.current = null
+      activeEEWLevelsRef.current.clear()
+      lastTsunamiGradeRef.current = null
       loadReplayEvents(events)
     } catch (e) {
       console.error('replay fetch failed', e)
