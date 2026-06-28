@@ -126,6 +126,8 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
     let text = `顕著な地震の震源要素更新のお知らせ。${time}頃発生した${hypocenter.name}の地震について、震源の深さ${depthText(hypocenter.depth)}、マグニチュード${magnitudeText(hypocenter.magnitude)}に更新されました。`
     if (domesticTsunami === 'None' || domesticTsunami === 'NonEffective') {
       text += 'この地震による津波の心配はありません。'
+    } else if (domesticTsunami === 'Checking') {
+      text += 'この地震による津波の有無を調査中です。'
     } else if (domesticTsunami === 'Watch') {
       text += 'この地震により、一部の沿岸に津波注意報が発表されています。'
     } else if (domesticTsunami === 'Warning') {
@@ -139,6 +141,8 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
     let text = `${prefix}${time}頃、${hypocenter.name}、深さ${depthText(hypocenter.depth)}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
     if (domesticTsunami === 'None' || domesticTsunami === 'NonEffective') {
       text += 'この地震による津波の心配はありません。'
+    } else if (domesticTsunami === 'Checking') {
+      text += 'この地震による津波の有無を調査中です。'
     } else if (domesticTsunami === 'Watch') {
       text += 'この地震により、一部の沿岸に津波注意報が発表されています。'
     } else if (domesticTsunami === 'Warning') {
@@ -153,6 +157,8 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
 
   if (domesticTsunami === 'None' || domesticTsunami === 'NonEffective') {
     text += 'この地震による津波の心配はありません。'
+  } else if (domesticTsunami === 'Checking') {
+    text += 'この地震による津波の有無を調査中です。'
   } else if (domesticTsunami === 'Watch') {
     text += 'この地震により、一部の沿岸に津波注意報が発表されています。'
   } else if (domesticTsunami === 'Warning') {
@@ -203,6 +209,9 @@ export function nankaiToText(event: JMANankai): string {
   if (event.cancelled || event.kindName === '調査終了') {
     return '南海トラフ地震臨時情報、調査終了。南海トラフ地震の発生可能性は通常の範囲内でした。'
   }
+  if (event.kindName === '調査中') {
+    return '南海トラフ地震臨時情報、調査中。南海トラフ地震の発生可能性について調査しています。最新情報に注意してください。'
+  }
   if (event.kindName === '巨大地震警戒') {
     return '南海トラフ地震臨時情報、巨大地震警戒。南海トラフ地震の想定震源域内で大規模な地震が発生しました。直ちに防災対応をとってください。'
   }
@@ -220,6 +229,9 @@ export function kohatsuToText(event: JMAKohatsu): string {
 
 /** VXSE62 長周期地震動情報の読み上げテキストを生成する。isNew=false のとき更新報として冒頭に通知する。 */
 export function lpgmToText(lpgm: JMALpgm, isNew: boolean): string {
+  if (lpgm.cancelled) {
+    return '長周期地震動情報はキャンセルされました。'
+  }
   const time = formatTime(lpgm.originTime)
   const prefix = isNew ? '長周期地震動情報。' : '長周期地震動情報が更新されました。'
   return `${prefix}${time}頃発生した地震で、長周期地震動階級${lpgm.maxClass}を観測しました。`
