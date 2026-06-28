@@ -126,11 +126,16 @@ export async function speakWithVoicevox(
   // 次のチャンクを再生開始する予定時刻（AudioContext の時間軸）
   let scheduleAt = -1
 
+  // 全チャンクの再生完了を待つための Promise（呼び出し元が await できる）
+  let completionResolve!: () => void
+  const completionPromise = new Promise<void>(r => { completionResolve = r })
+  let lastSource: AudioBufferSourceNode | null = null
+
   for (let i = 0; i < chunks.length; i++) {
-    if (currentSessionId !== sessionId) return  // 割り込みされた
+    if (currentSessionId !== sessionId) { completionResolve(); return }  // 割り込みされた
 
     const buffer = await nextBufferPromise
-    if (currentSessionId !== sessionId) return  // await 中に割り込み
+    if (currentSessionId !== sessionId) { completionResolve(); return }  // await 中に割り込み
 
     // 次チャンクの合成を先行開始（現在のチャンクの再生と並行）
     if (i + 1 < chunks.length) {
@@ -146,6 +151,7 @@ export async function speakWithVoicevox(
       activeSources = activeSources.filter(s => s !== source)
     }
     activeSources.push(source)
+    lastSource = source
 
     if (scheduleAt < 0) {
       // 最初のチャンク: 即時再生
@@ -157,4 +163,12 @@ export async function speakWithVoicevox(
     source.start(scheduleAt)
     scheduleAt += buffer.duration
   }
+
+  // 最後のチャンクの再生終了で resolve（合成失敗等でソースが0個なら即時 resolve）
+  if (lastSource) {
+    lastSource.addEventListener('ended', () => completionResolve())
+  } else {
+    completionResolve()
+  }
+  await completionPromise
 }
