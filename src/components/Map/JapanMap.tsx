@@ -190,6 +190,19 @@ function FitToEEW({ eews, psWave, idleRevertSec = 30 }: { eews: EEWAlert[]; psWa
     userInteractedRef.current = false
     window.clearTimeout(resetTimerRef.current)
     isAutoFlyingRef.current = true
+    // P/S波円が既にある場合は波円に直接フィット（タブ切り替え時の震源→波円ギクシャク防止）
+    if (psWave.length > 0) {
+      let bounds: L.LatLngBounds | null = null
+      for (const c of psWave) {
+        const radius = c.pRadius > 0 ? c.pRadius : c.sRadius
+        const b = L.latLng(c.lat, c.lng).toBounds(radius * 2 * 1000)
+        bounds = bounds ? bounds.extend(b) : b
+      }
+      if (bounds) {
+        map.flyToBounds(bounds, { padding: [60, 60], maxZoom: MAX_ZOOM, duration: 0.8 })
+      }
+      return
+    }
     map.flyTo([latitude, longitude], MAX_ZOOM, { duration: 0.8 })
   }, [latest, map])
 
