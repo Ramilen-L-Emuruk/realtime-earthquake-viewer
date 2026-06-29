@@ -3,6 +3,7 @@ import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, EE
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataKohatsu } from '../services/dmdata'
 import { loadStationCoords, buildAreaPrefIndex } from '../utils/stationCoords'
+import { calcEEWCancelTime } from '../utils/eew'
 
 const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
 import {
@@ -127,7 +128,6 @@ export function useEarthquakes(
   onLiveEvent?: (event: P2PQuakeEvent) => void,
   dmdataApiKey = '',
   dmdataTestDelivery = false,
-  eewFinalClearSec = 180,
   replayTimeOffset: number | null = null,
 ) {
   const [state, setState] = useState<EarthquakeState>({
@@ -169,8 +169,6 @@ export function useEarthquakes(
   const testEEWTimersRef = useRef<Map<TestEEWKind, TestEEWEntry>>(new Map())
   // テスト津波の発報状態を種別ごとに独立管理
   const testTsunamiRef = useRef<{ cancelTimer: number; tsunami: JMATsunami } | null>(null)
-  const eewFinalClearSecRef = useRef(eewFinalClearSec)
-  eewFinalClearSecRef.current = eewFinalClearSec
   // 現在の state を WS コールバック内から参照するための ref
   const stateRef = useRef(state)
   stateRef.current = state
@@ -218,7 +216,7 @@ export function useEarthquakes(
     if (event.code === 556) {
       const eew = event as EEWAlert
       if (!eew.cancelled && !eew.test && eew.isFinal) {
-        const cancelTime = new Date(new Date(eew.time).getTime() + eewFinalClearSecRef.current * 1000)
+        const cancelTime = calcEEWCancelTime(eew, new Date(eew.time))
         insertSorted(eventQueueRef.current, {
           eventTime: cancelTime,
           payload: { kind: 'p2p', event: { ...eew, cancelled: true, expired: true } as P2PQuakeEvent },

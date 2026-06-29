@@ -445,7 +445,7 @@ export function App() {
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast,
     simulateNankai, simulateKohatsu,
     resetState, loadReplayEvents,
-  } = useEarthquakes(handleLiveEvent, settings.dmdataApiKey, settings.dmdataTestDelivery, settings.eewFinalClearSec, replayTimeOffset)
+  } = useEarthquakes(handleLiveEvent, settings.dmdataApiKey, settings.dmdataTestDelivery, replayTimeOffset)
 
   // UI 倍率: ルート要素の font-size を変えて rem ベースの UI 全体を拡大縮小する。
   // 倍率変更で地図コンテナ幅が変わるため、Leaflet の再計算用に resize を発火する。
@@ -689,7 +689,7 @@ export function App() {
         fetchDmdataReplayEvents(settings.dmdataApiKey, preFrom, targetDate),
       ])
       // pre-window: T時点で有効な電文を即時発火（replayTime = T-1ms）させて初期状態を再現する
-      const preFiltered = filterPreWindowEvents(preEvents, targetDate, 180)
+      const preFiltered = filterPreWindowEvents(preEvents, targetDate)
         .map(e => ({ ...e, replayTime: new Date(targetDate.getTime() - 1), silent: true }))
       // フェッチ中に WS 切断タイミングで ref が再セットされる競合を排除するため直前に再リセット
       lastNewQuakeTimeRef.current = null
