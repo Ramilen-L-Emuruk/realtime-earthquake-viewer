@@ -82,12 +82,22 @@ export function eewAlertToText(event: EEWAlert): string {
   return `緊急地震速報、${event.earthquake.hypocenter.name}で地震。`
 }
 
-/** EEW 第2フェーズ（デバウンス後）: 「予想最大震度〇〇。」scale なし時は空文字 */
+/** EEW 第2フェーズ（デバウンス後）: 「予想最大震度〇〇。」scale なし時は理由付き「予想震度なし。」 */
 export function eewIntensityToText(event: EEWAlert): string {
   const scale = eewMaxScale(event)
   let text = ''
   if (scale > 0) {
     text += `予想最大震度${intensityText(scale)}。`
+  } else {
+    const condition = event.earthquake.condition
+    const depth = event.earthquake.hypocenter.depth
+    if (condition === '仮定震源要素') {
+      text += '単独点処理のため、予想震度なし。'
+    } else if (depth > 150) {
+      text += '深発地震のため、予想震度なし。'
+    } else {
+      text += '予想震度なし。'
+    }
   }
   if (event.forecastMaxLpgmClass != null && event.forecastMaxLpgmClass >= 1) {
     text += `予想最大階級${event.forecastMaxLpgmClass}。`
