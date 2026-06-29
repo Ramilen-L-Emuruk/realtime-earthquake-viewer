@@ -672,27 +672,27 @@ export function JapanMap({
       {/* EEW 発報時: 震源中心→予報円に合わせてズームアウト */}
       {mode === 'kyoshin' && <FitToEEW eews={eews} psWave={kyoshinPsWave} idleRevertSec={idleRevertSec} />}
 
-      {/* 緊急地震速報の予報円（S波=塗りつぶし / P波=外周） */}
-      {mode === 'kyoshin' && <PsWaveLayer psWave={kyoshinPsWave} />}
+      {/* 緊急地震速報の予報円（S波=塗りつぶし / P波=外周）。全タブで表示する。 */}
+      <PsWaveLayer psWave={kyoshinPsWave} />
 
-      {/* 緊急地震速報の震源マーカー。複数EEW時は全震源を表示する。 */}
-      {mode === 'kyoshin' &&
-        eews.map((eew) =>
-          eew.earthquake.hypocenter.latitude > -200 &&
-          eew.earthquake.hypocenter.longitude > -200
-            ? (
-              <Marker
-                key={`eew-epicenter-${eew.id}`}
-                position={[
-                  eew.earthquake.hypocenter.latitude,
-                  normalizeEpicenterLng(eew.earthquake.hypocenter.longitude, JAPAN_CENTER[1]),
-                ]}
-                icon={getEpicenterIcon(iconScale, true)}
-                zIndexOffset={EPICENTER_Z}
-              />
-            )
-            : null
-        )}
+      {/* 緊急地震速報の震源マーカー。複数EEW時は全震源を表示する。リアルタイムタブ以外は半透明。 */}
+      {eews.map((eew) =>
+        eew.earthquake.hypocenter.latitude > -200 &&
+        eew.earthquake.hypocenter.longitude > -200
+          ? (
+            <Marker
+              key={`eew-epicenter-${eew.id}`}
+              position={[
+                eew.earthquake.hypocenter.latitude,
+                normalizeEpicenterLng(eew.earthquake.hypocenter.longitude, JAPAN_CENTER[1]),
+              ]}
+              icon={getEpicenterIcon(iconScale, true)}
+              zIndexOffset={EPICENTER_Z}
+              opacity={mode === 'kyoshin' ? 1 : 0.4}
+            />
+          )
+          : null
+      )}
 
       {mode === 'quake' && (
         <FitToBounds signature={quakeSignature} positions={quakeFitPositions} />
