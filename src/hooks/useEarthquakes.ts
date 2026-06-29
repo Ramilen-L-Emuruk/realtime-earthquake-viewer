@@ -363,7 +363,7 @@ export function useEarthquakes(
       : () => new Date()
   }, [replayTimeOffset])
 
-  // キューディスパッチャー: 100ms ごとに eventTime <= 現在時刻のエントリを処理する
+  // キューディスパッチャー: 10ms ごとに eventTime <= 現在時刻のエントリを処理する
   useEffect(() => {
     const id = setInterval(() => {
       const now = getTimeRef.current()
@@ -410,7 +410,7 @@ export function useEarthquakes(
         }
         isSilentRef.current = false
       }
-    }, 100)
+    }, 10)
     return () => clearInterval(id)
   }, [handleEvent])
 
