@@ -349,7 +349,7 @@ export function RealtimeTab({ eews, kyoshinDetection, kyoshinSites, kyoshinIndic
     <div className="flex flex-col min-h-full p-3 gap-3">
       {/* データカード */}
       {[...eews]
-        .sort((a, b) => eewMaxScale(b) - eewMaxScale(a))
+        .sort((a, b) => b.earthquake.originTime.localeCompare(a.earthquake.originTime))
         .map(eew => <EEWCard key={eew.id} eew={eew} />)
       }
       {swaveArrival !== null && <SWaveArrivalCard arrival={swaveArrival} />}
