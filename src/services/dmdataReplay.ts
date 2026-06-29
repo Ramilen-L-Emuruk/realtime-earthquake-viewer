@@ -83,6 +83,7 @@ export type ReplayPayload =
 export interface ReplayEntry {
   payload: ReplayPayload
   replayTime: Date
+  silent?: boolean
 }
 
 export async function fetchDmdataReplayEvents(

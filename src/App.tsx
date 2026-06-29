@@ -671,7 +671,7 @@ export function App() {
       ])
       // pre-window: T時点で有効な電文を即時発火（replayTime = T-1ms）させて初期状態を再現する
       const preFiltered = filterPreWindowEvents(preEvents, targetDate, 180)
-        .map(e => ({ ...e, replayTime: new Date(targetDate.getTime() - 1) }))
+        .map(e => ({ ...e, replayTime: new Date(targetDate.getTime() - 1), silent: true }))
       // フェッチ中に WS 切断タイミングで ref が再セットされる競合を排除するため直前に再リセット
       lastNewQuakeTimeRef.current = null
       activeEEWLevelsRef.current.clear()
