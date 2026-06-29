@@ -22,6 +22,10 @@ const DATA_URL = `${import.meta.env.BASE_URL}data/prefectures.json`
 let cache: Prefectures | null = null
 let inflight: Promise<Prefectures> | null = null
 
+export function getPrefecturesCache(): Prefectures | null {
+  return cache
+}
+
 /**
  * 都道府県の境界データを取得する。初回のみ fetch し、以降はキャッシュを返す。
  * 取得に失敗した場合は inflight を破棄して次回リトライ可能にする。

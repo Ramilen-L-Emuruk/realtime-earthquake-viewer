@@ -19,6 +19,10 @@ const DATA_URL = `${import.meta.env.BASE_URL}data/subregions.json`
 let cache: SubRegion[] | null = null
 let inflight: Promise<SubRegion[]> | null = null
 
+export function getSubRegionsCache(): SubRegion[] | null {
+  return cache
+}
+
 /**
  * 一次細分区域の境界データを取得する。初回のみ fetch し、以降はキャッシュを返す。
  * 取得に失敗した場合は inflight を破棄して次回リトライ可能にする。
