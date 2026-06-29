@@ -141,8 +141,8 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
           {hypocenter.name || '震源調査中'}
         </div>
 
-        {/* マグニチュード・深さ（2カラムグリッド） */}
-        {hypocenter.name && (
+        {/* マグニチュード・深さ（2カラムグリッド）：仮定震源要素（単独点処理）時は仮定値のため非表示 */}
+        {hypocenter.name && eew.earthquake.condition !== '仮定震源要素' && (
           <div className="grid grid-cols-2 gap-2">
             <div
               className="flex flex-col gap-1 rounded-lg p-2.5"
