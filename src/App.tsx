@@ -68,7 +68,8 @@ function computeEEWLevel(eews: ReadonlyMap<string, EEWAlert>): 0 | 1 | 2 | null 
   return max
 }
 
-function selectEEWSoundType(isNew: boolean, levelUpgraded: boolean, currentLevel: 0 | 1 | 2): AlertSoundType {
+function selectEEWSoundType(isNew: boolean, levelUpgraded: boolean, currentLevel: 0 | 1 | 2, isFinal: boolean): AlertSoundType {
+  if (isFinal && !isNew) return 'eewFinal'
   if (isNew || levelUpgraded) {
     return currentLevel === 2 ? 'eewSpecial' : currentLevel === 1 ? 'eew' : 'eewForecast'
   }
@@ -242,7 +243,7 @@ export function App() {
       activeEEWScalesRef.current.set(key, Math.max(prevScale, scale))
 
       if (settings.soundEnabled) {
-        const eewSoundType = selectEEWSoundType(isNew, levelUpgraded, currentLevel)
+        const eewSoundType = selectEEWSoundType(isNew, levelUpgraded, currentLevel, event.isFinal ?? false)
         playAlertSound(eewSoundType)
       }
       if (settings.notifyMinScale >= 0 && settings.notifyEEW && (isNew || levelUpgraded)) {
