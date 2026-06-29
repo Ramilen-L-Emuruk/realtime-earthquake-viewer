@@ -315,11 +315,21 @@ export function App() {
     // 長周期地震動情報（DMDSS版のみ）
     if ((event as unknown as { kind?: string }).kind === 'lpgm') {
       setActiveTab('earthquake')
+      const lpgmEvent = (event as unknown as { kind: string; data: import('./types/earthquake').JMALpgm }).data
+      if (!lpgmEvent.cancelled) {
+        // 紐づく地震カードを選択し、自動的に LPGM 表示をオンにする
+        const matchedQuake = earthquakes.find(q => {
+          const eventIdPart = q.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
+          return eventIdPart === lpgmEvent.eventId
+        })
+        if (matchedQuake) selectQuake(matchedQuake.earthquake.time)
+        setActiveLpgmEventId(lpgmEvent.eventId)
+      }
       if (settings.soundEnabled) {
         playAlertSound('earthquake')
       }
       if (settings.voicevoxEnabled) {
-        const lpgm = (event as unknown as { kind: string; data: import('./types/earthquake').JMALpgm }).data
+        const lpgm = lpgmEvent
         const isNewLpgm = !seenLpgmEventIdsRef.current.has(lpgm.eventId)
         seenLpgmEventIdsRef.current.add(lpgm.eventId)
         setTimeout(() => {
