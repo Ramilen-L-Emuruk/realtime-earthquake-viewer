@@ -1,6 +1,6 @@
 import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseVyse5xFromXml, parseVyse60FromXml } from './dmdataParser'
 import { parseTar } from '../utils/tarParser'
-import type { P2PQuakeEvent, JMALpgm, JMANankai, JMAKohatsu } from '../types/earthquake'
+import type { P2PQuakeEvent, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, JMATsunami } from '../types/earthquake'
 
 const QUAKE_TYPES = new Set(['VXSE51', 'VXSE52', 'VXSE53', 'VXSE61'])
 const TSUNAMI_TYPES = new Set(['VTSE41', 'VTSE51', 'VTSE52'])
@@ -187,4 +187,61 @@ export async function fetchDmdataReplayEvents(
   entries.sort((a, b) => a.replayTime.getTime() - b.replayTime.getTime())
 
   return entries
+}
+
+// T 時点でまだ有効な電文のみを残すフィルタ（pre-window 初期状態用）
+export function filterPreWindowEvents(
+  entries: ReplayEntry[],
+  targetTime: Date,
+  eewFinalClearSec: number,
+): ReplayEntry[] {
+  // EEW は同一イベント ID の複数報をグルーピングして T 時点の有効性を判定する
+  // 状態管理キーは issue.eventId（シリアル番号を含まない）に合わせる
+  const eewByEventId = new Map<string, Array<{ entry: ReplayEntry; eew: EEWAlert }>>()
+  const result: ReplayEntry[] = []
+
+  for (const entry of entries) {
+    if (entry.payload.kind !== 'p2p') { result.push(entry); continue }
+    const ev = entry.payload.event
+
+    if (ev.code === 556) {
+      const eew = ev as EEWAlert
+      const groupKey = eew.issue?.eventId ?? eew.id
+      if (!eewByEventId.has(groupKey)) eewByEventId.set(groupKey, [])
+      eewByEventId.get(groupKey)!.push({ entry, eew })
+      continue
+    }
+
+    if (ev.code === 552) {
+      const tsunami = ev as JMATsunami
+      if (tsunami.cancelled) continue
+      if (tsunami.validDateTime && new Date(tsunami.validDateTime).getTime() <= targetTime.getTime()) continue
+    }
+
+    result.push(entry)
+  }
+
+  // EEW グループごとに T 時点の有効性を判定し、有効なら最新の1件だけ注入する
+  for (const [, reports] of eewByEventId) {
+    // キャンセル済み（解除電文あり）は全報スキップ
+    if (reports.some(r => r.eew.cancelled)) continue
+
+    // 最終報を後ろから探す
+    let finalReport: { entry: ReplayEntry; eew: EEWAlert } | undefined
+    for (let i = reports.length - 1; i >= 0; i--) {
+      if (reports[i].eew.isFinal) { finalReport = reports[i]; break }
+    }
+
+    if (finalReport) {
+      // 最終報受信から eewFinalClearSec 秒が T までに経過していれば解除済み
+      const expireAt = new Date(finalReport.eew.time).getTime() + eewFinalClearSec * 1000
+      if (expireAt <= targetTime.getTime()) continue
+      result.push(finalReport.entry)
+    } else {
+      // まだ最終報がない場合は最新の非最終報を1件だけ注入
+      result.push(reports[reports.length - 1].entry)
+    }
+  }
+
+  return result
 }
