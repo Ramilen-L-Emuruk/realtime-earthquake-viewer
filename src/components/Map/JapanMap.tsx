@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import L from 'leaflet'
 import { MapContainer, TileLayer, Marker, Polyline, Polygon, Popup, Pane, useMap, useMapEvents } from 'react-leaflet'
-import type { JMAQuake, JMATsunami, TsunamiGrade, EEWAlert } from '../../types/earthquake'
+import type { JMAQuake, JMATsunami, TsunamiGrade, EEWAlert, JMALpgm } from '../../types/earthquake'
 import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
+import { getLpgmClassColor } from '../../utils/lpgm'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
 import { eewAreas } from '../../utils/eew'
 import { useStationCoords } from '../../hooks/useStationCoords'
@@ -13,6 +14,7 @@ import type { SubRegion } from '../../utils/subregions'
 import { pointInRings, normalizeEpicenterLng } from '../../utils/geo'
 import { BaseMap } from './BaseMap'
 import { IntensityPoints } from './IntensityPoints'
+import { LpgmPoints } from './LpgmPoints'
 import { KyoshinPoints } from './KyoshinPoints'
 import { KyoshinSubThreshold } from './KyoshinSubThreshold'
 import { KyoshinDetectedPoints } from './KyoshinDetectedPoints'
@@ -322,6 +324,7 @@ interface Props {
   mode: MapMode
   quake: JMAQuake | null
   tsunamis: JMATsunami[]
+  lpgm?: JMALpgm
   iconScale?: number
   showBathymetry?: boolean
   kyoshinSites?: SiteCoords
@@ -336,6 +339,7 @@ export function JapanMap({
   mode,
   quake,
   tsunamis,
+  lpgm,
   iconScale = 1,
   showBathymetry = true,
   kyoshinSites = [],
@@ -441,6 +445,29 @@ export function JapanMap({
     // 弱い震度を先に描画し、強い震度を前面に重ねる
     return list.sort((a, b) => a.scale - b.scale)
   }, [aggregateByRegion, subregionIndex, intensityMarkers])
+
+  // LPGM 観測点マーカー（zoom > MAX_ZOOM 時に個別ドット表示）
+  const lpgmMarkers = useMemo(() => {
+    if (!lpgm || lpgm.cancelled || !lpgm.points?.length || !stationCoords) return []
+    const markers: { position: LatLng; lgInt: number }[] = []
+    for (const p of lpgm.points) {
+      const pref = p.pref || stationPrefIndex.get(p.name) || ''
+      const position = lookupPointCoords(stationCoords, pref, p.name, false)
+      if (!position) continue
+      markers.push({ position, lgInt: p.lgInt })
+    }
+    return markers.sort((a, b) => a.lgInt - b.lgInt)
+  }, [lpgm, stationCoords, stationPrefIndex])
+
+  // LPGM 一次細分区域集約（zoom <= MAX_ZOOM 時に区域塗り）
+  const lpgmRegionAggregates = useMemo(() => {
+    if (!lpgm || lpgm.cancelled || !lpgm.regions?.length || !subregions) return []
+    const maxByName = new Map(lpgm.regions.map(r => [r.name, r.maxLgInt]))
+    return subregions
+      .filter(sr => (maxByName.get(sr.name) ?? 0) >= 1)
+      .map(sr => ({ ...sr, maxLgInt: maxByName.get(sr.name)! }))
+      .sort((a, b) => a.maxLgInt - b.maxLgInt)
+  }, [lpgm, subregions])
 
   // 一次細分区域名 -> 形状（EEW の予想震度塗り用に名前で引く）
   const subregionByName = useMemo(() => {
@@ -651,8 +678,9 @@ export function JapanMap({
       )}
 
       {/* 中間より引き: 一次細分区域ごとの最大震度を区域塗りつぶし＋区域中心マーカーで表示。
+          LPGM 表示中は震度と重なるため非表示にする。
           塗りはラベル(basemap-labels z270)より背面の専用ペイン(z260)に置く。 */}
-      {aggregateByRegion && (
+      {aggregateByRegion && !(lpgm && !lpgm.cancelled) && (
         <Pane name="quake-region-fill" style={{ zIndex: 260 }}>
           {regionAggregates.map((p) =>
             p.rings.map((ring, i) => (
@@ -670,7 +698,7 @@ export function JapanMap({
           )}
         </Pane>
       )}
-      {aggregateByRegion &&
+      {aggregateByRegion && !(lpgm && !lpgm.cancelled) &&
         regionAggregates.map((p) => (
           <Marker
             key={`region-mark-${p.name}`}
@@ -689,9 +717,36 @@ export function JapanMap({
           </Marker>
         ))}
 
-      {/* 各地点の震度（寄りのとき）。多数になるため Canvas の色付きドットで軽量描画。 */}
-      {mode === 'quake' && !aggregateByRegion && (
+      {/* 各地点の震度（寄りのとき）。LPGM 表示中は非表示。多数になるため Canvas の色付きドットで軽量描画。 */}
+      {mode === 'quake' && !aggregateByRegion && !(lpgm && !lpgm.cancelled) && (
         <IntensityPoints markers={intensityMarkers} iconScale={iconScale} />
+      )}
+
+      {/* LPGM overlay: ズームアウト時は一次細分区域塗り、ズームイン時は観測点ドット */}
+      {mode === 'quake' && lpgm && !lpgm.cancelled && (
+        <>
+          {aggregateByRegion && lpgmRegionAggregates.length > 0 && (
+            <Pane name="lpgm-region-fill" style={{ zIndex: 261 }}>
+              {lpgmRegionAggregates.flatMap((r, ri) =>
+                r.rings.map((ring, i) => (
+                  <Polygon
+                    key={`lpgm-${ri}-${i}`}
+                    positions={ring}
+                    pathOptions={{
+                      color: getLpgmClassColor(r.maxLgInt),
+                      weight: 1,
+                      fillColor: getLpgmClassColor(r.maxLgInt),
+                      fillOpacity: 0.5,
+                    }}
+                  />
+                ))
+              )}
+            </Pane>
+          )}
+          {!aggregateByRegion && lpgmMarkers.length > 0 && (
+            <LpgmPoints markers={lpgmMarkers} iconScale={iconScale} />
+          )}
+        </>
       )}
 
       {/* 震源マーカー（震度サマリーのポップアップ付き） */}
