@@ -78,10 +78,15 @@ export function eewAreas(eew: EEWAlert): EEWRegion[] {
   return eew.areas ?? eew.regions ?? []
 }
 
-/** 対象地域の最大予想震度（scale 値）。areas が空または全 scaleTo が 0 以下なら forecastMaxScale にフォールバック。 */
+/** 対象地域の最大予想震度（scale 値）。
+ * condition=仮定震源要素（単独点処理）かつ areas が空の場合は forecastMaxScale を使わず 0 を返す。
+ * 単独点PLUM検知では forecastMaxInt が設定されても地域別予想は発表されないため。
+ */
 export function eewMaxScale(eew: EEWAlert): number {
   const areasMax = eewAreas(eew).reduce((max, r) => Math.max(max, r.scaleTo), 0)
-  return areasMax > 0 ? areasMax : (eew.forecastMaxScale ?? 0)
+  if (areasMax > 0) return areasMax
+  if (eew.earthquake.condition === '仮定震源要素') return 0
+  return eew.forecastMaxScale ?? 0
 }
 
 /** 情報番号（第N報）。取得できなければ null。 */
