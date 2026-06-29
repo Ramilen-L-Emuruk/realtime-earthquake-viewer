@@ -11,17 +11,38 @@ import type { EEWAlert, IntensityScale } from '../types/earthquake'
 /** 観測点座標の配列（[緯度, 経度]）。インデックスが intensity 文字列の位置に対応。 */
 export type SiteCoords = [number, number][]
 
-const SITELIST_URL =
-  'https://weather-kyoshin.west.edge.storage-yahoo.jp/SiteList/sitelist.json'
+const SITELIST_BASE =
+  'https://weather-kyoshin.west.edge.storage-yahoo.jp/SiteList'
 const REALTIME_BASE = (edge: 'west' | 'east') =>
   `https://weather-kyoshin.${edge}.edge.storage-yahoo.jp/RealTimeData`
 
-/** 観測点リストを取得する。 */
-export async function fetchSiteList(): Promise<SiteCoords> {
-  const res = await fetch(SITELIST_URL)
-  if (!res.ok) throw new Error(`sitelist fetch failed: ${res.status}`)
-  const json = (await res.json()) as { items: SiteCoords }
-  return json.items
+// siteConfigId ごとにキャッシュ（同一設定版を何度も fetch しない）
+const siteListCache = new Map<string, Promise<SiteCoords>>()
+
+/**
+ * 観測点リストを取得する。
+ * siteConfigId を指定するとその版の sitelist_{id}.json を取得する。
+ * 省略時は現在の sitelist.json を取得する。
+ * 同一 siteConfigId は Promise をキャッシュして重複 fetch を防ぐ。
+ */
+export function fetchSiteList(siteConfigId?: string): Promise<SiteCoords> {
+  const cacheKey = siteConfigId ?? ''
+  const cached = siteListCache.get(cacheKey)
+  if (cached) return cached
+
+  const url = siteConfigId
+    ? `${SITELIST_BASE}/sitelist_${siteConfigId}.json`
+    : `${SITELIST_BASE}/sitelist.json`
+
+  const promise = fetch(url)
+    .then((res) => {
+      if (!res.ok) throw new Error(`sitelist fetch failed: ${res.status}`)
+      return res.json() as Promise<{ items: SiteCoords }>
+    })
+    .then((json) => json.items)
+
+  siteListCache.set(cacheKey, promise)
+  return promise
 }
 
 /** 日時を JST(UTC+9)の {yyyyMMdd, yyyyMMddHHmmss} 文字列に変換する。 */
@@ -72,6 +93,8 @@ export interface YahooHypoInfoItem {
 
 export interface RealtimeIntensity {
   dataTime: string
+  /** このデータに対応する観測点リストのバージョン識別子。 */
+  siteConfigId: string
   /** 観測点ごとの震度インデックス(0〜20)。sitelist と同順。 */
   indices: number[]
   /** 予報円（EEW 発報中のみ要素を持つ）。 */
@@ -155,7 +178,7 @@ export async function fetchRealtimeIntensity(now: Date): Promise<RealtimeIntensi
         continue
       }
       const json = (await res.json()) as {
-        realTimeData?: { dataTime?: string; intensity?: string }
+        realTimeData?: { dataTime?: string; siteConfigId?: string; intensity?: string }
         psWave?: {
           items?: { latitude?: string; longitude?: string; pRadius?: number; sRadius?: number }[]
         }
@@ -172,7 +195,8 @@ export async function fetchRealtimeIntensity(now: Date): Promise<RealtimeIntensi
         }))
         .filter((c) => Number.isFinite(c.lat) && Number.isFinite(c.lng))
       const hypoInfo: YahooHypoInfoItem[] = json.hypoInfo?.items ?? []
-      return { dataTime: json.realTimeData?.dataTime ?? '', indices, psWave, hypoInfo }
+      const siteConfigId = json.realTimeData?.siteConfigId ?? ''
+      return { dataTime: json.realTimeData?.dataTime ?? '', siteConfigId, indices, psWave, hypoInfo }
     } catch (err) {
       lastErr = err
     }
