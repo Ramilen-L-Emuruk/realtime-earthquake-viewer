@@ -804,21 +804,38 @@ export function App() {
     prevDetectedRef.current = kyoshinDetection.detected
   }, [kyoshinDetection.detected, effectiveKyoshinMaxIndex, settings.soundEnabled, settings.notifyDetection])
 
-  // 揺れ検知中に音レベル（震度帯）が過去最大を超えたときのみ音を鳴らす
+  // 揺れ検知中の音再鳴ロジック
+  // - 過去最大レベルを超えたとき（新たな最大）→ 音を鳴らす
+  // - ピーク後に一度落ちてから再上昇したとき（再エスカレーション）→ 音を鳴らす
   // 生インデックスではなく音レベル（0〜6）で比較することで、フレーム間の微細な
   // 数値変動（同一震度帯内のゆらぎ）による誤再鳴を防ぐ。
   const maxSoundLevelRef = useRef(0)
+  // ピーク到達後に観測した最小レベル（再エスカレーション検出用）
+  const postPeakMinLevelRef = useRef(0)
   useEffect(() => {
     if (!kyoshinDetection.detected) {
       maxSoundLevelRef.current = 0
+      postPeakMinLevelRef.current = 0
       return
     }
     const currLevel = kyoshinLevel(effectiveKyoshinMaxIndex)
     const prevMaxLevel = maxSoundLevelRef.current
     if (currLevel > prevMaxLevel) {
+      // 新たな最大レベルに達した
       maxSoundLevelRef.current = currLevel
+      postPeakMinLevelRef.current = currLevel
       // 初回検知（prevMaxLevel === 0）は検知音が鳴るのでスキップ
       if (prevMaxLevel > 0 && settings.soundEnabled) {
+        playKyoshinUpdateSound(effectiveKyoshinMaxIndex)
+      }
+    } else if (currLevel < postPeakMinLevelRef.current) {
+      // ピーク後に下落中 → 最小値を更新するだけ
+      postPeakMinLevelRef.current = currLevel
+    } else if (currLevel > postPeakMinLevelRef.current) {
+      // 一度落ちた後に再上昇（再エスカレーション）
+      maxSoundLevelRef.current = currLevel
+      postPeakMinLevelRef.current = currLevel
+      if (settings.soundEnabled) {
         playKyoshinUpdateSound(effectiveKyoshinMaxIndex)
       }
     }
