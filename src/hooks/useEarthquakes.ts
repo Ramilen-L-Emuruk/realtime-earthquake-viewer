@@ -46,6 +46,7 @@ type QueuePayload =
 interface QueueEntry {
   eventTime: Date
   payload: QueuePayload
+  silent?: boolean
 }
 
 function insertSorted(queue: QueueEntry[], entry: QueueEntry): void {
@@ -162,6 +163,8 @@ export function useEarthquakes(
   // 最新のコールバックを ref で保持し、handleEvent を安定させる
   const onLiveEventRef = useRef(onLiveEvent)
   onLiveEventRef.current = onLiveEvent
+  // キューディスパッチャーがサイレントエントリを処理中は true にして通知音を抑制する
+  const isSilentRef = useRef(false)
   // テスト EEW の発報状態を種別ごとに独立管理（複数EEW同時テスト対応）
   const testEEWTimersRef = useRef<Map<TestEEWKind, TestEEWEntry>>(new Map())
   // テスト津波の発報状態を種別ごとに独立管理
@@ -208,8 +211,8 @@ export function useEarthquakes(
   const getTimeRef = useRef<() => Date>(() => new Date())
 
   const handleEvent = useCallback((event: P2PQuakeEvent) => {
-    // ライブ受信／テスト送信のイベントを通知（初回の履歴読み込みでは呼ばれない）
-    onLiveEventRef.current?.(event)
+    // ライブ受信／テスト送信のイベントを通知（サイレントモード中は抑制）
+    if (!isSilentRef.current) onLiveEventRef.current?.(event)
 
     // 556（EEW）: 最終報受信時、解除時刻にキャンセルイベントをキューへ挿入する
     if (event.code === 556) {
@@ -366,7 +369,8 @@ export function useEarthquakes(
       const now = getTimeRef.current()
       const q = eventQueueRef.current
       while (q.length > 0 && q[0].eventTime <= now) {
-        const { payload } = q.shift()!
+        const { payload, silent } = q.shift()!
+        isSilentRef.current = !!silent
         if (payload.kind === 'p2p') {
           handleEvent(payload.event)
         } else if (payload.kind === 'lpgm') {
@@ -377,13 +381,13 @@ export function useEarthquakes(
             else next.set(lpgm.originTime, lpgm)
             return { ...prev, lpgmByOriginTime: next }
           })
-          if (!lpgm.cancelled && lpgm.maxClass >= 1) {
+          if (!silent && !lpgm.cancelled && lpgm.maxClass >= 1) {
             onLiveEventRef.current?.({ kind: 'lpgm', data: lpgm } as unknown as P2PQuakeEvent)
           }
         } else if (payload.kind === 'nankai') {
           const nankai = payload.data
           setState(prev => ({ ...prev, nankai: nankai.cancelled ? null : nankai }))
-          onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as P2PQuakeEvent)
+          if (!silent) onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as P2PQuakeEvent)
         } else if (payload.kind === 'kohatsu') {
           const kohatsu = payload.data
           if (kohatsuExpireTimerRef.current !== undefined) {
@@ -402,8 +406,9 @@ export function useEarthquakes(
           } else {
             setState(prev => ({ ...prev, kohatsu: null }))
           }
-          onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as P2PQuakeEvent)
+          if (!silent) onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as P2PQuakeEvent)
         }
+        isSilentRef.current = false
       }
     }, 100)
     return () => clearInterval(id)
@@ -822,8 +827,8 @@ export function useEarthquakes(
   }, [])
 
   const loadReplayEvents = useCallback((entries: import('../services/dmdataReplay').ReplayEntry[]) => {
-    for (const { payload, replayTime } of entries) {
-      insertSorted(eventQueueRef.current, { eventTime: replayTime, payload })
+    for (const { payload, replayTime, silent } of entries) {
+      insertSorted(eventQueueRef.current, { eventTime: replayTime, payload, silent })
     }
   }, [])
 
