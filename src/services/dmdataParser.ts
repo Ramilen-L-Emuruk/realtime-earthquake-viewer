@@ -555,7 +555,7 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
       },
       maxHeight: !isNaN(heightVal)
         ? {
-          description: str(heightObj.condition) || str(heightObj.value) || '',
+          description: str(heightObj.condition) || (heightVal ? `${heightVal}m` : ''),
           value: heightVal,
         }
         : undefined,
