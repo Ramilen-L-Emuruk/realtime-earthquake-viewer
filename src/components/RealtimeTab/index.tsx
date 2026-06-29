@@ -84,26 +84,34 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
 
       <div className="flex flex-col gap-2 p-3">
         {/* 最大震度バナー */}
-        <div
-          className="w-full rounded-lg py-3 px-4 flex items-center justify-center gap-4"
-          style={{
-            backgroundColor: maxScale > 0 ? getIntensityBgColor(maxScale) : 'rgba(42,42,42,0.8)',
-            border: `2px solid ${maxScale > 0 ? getIntensityColor(maxScale) : '#4b5563'}`,
-          }}
-        >
-          <span
-            className="text-sm font-medium"
-            style={{ color: maxScale > 0 ? getIntensityColor(maxScale) : '#9ca3af' }}
+        {maxScale > 0 ? (
+          <div
+            className="w-full rounded-lg py-3 px-4 flex items-center justify-center gap-4"
+            style={{
+              backgroundColor: getIntensityBgColor(maxScale),
+              border: `2px solid ${getIntensityColor(maxScale)}`,
+            }}
           >
-            予想最大震度
-          </span>
-          <span
-            className="font-black leading-none"
-            style={{ fontSize: '72px', color: '#ffffff' }}
+            <span className="text-sm font-medium" style={{ color: getIntensityColor(maxScale) }}>
+              予想最大震度
+            </span>
+            <span className="font-black leading-none" style={{ fontSize: '72px', color: '#ffffff' }}>
+              {getIntensityLabel(maxScale)}
+            </span>
+          </div>
+        ) : (
+          <div
+            className="w-full rounded-lg py-3.5 px-4 flex flex-col items-center justify-center gap-1"
+            style={{ backgroundColor: 'rgba(42,42,42,0.8)', border: '2px solid #4b5563' }}
           >
-            {maxScale > 0 ? getIntensityLabel(maxScale) : '?'}
-          </span>
-        </div>
+            {eew.earthquake.condition === '仮定震源要素' ? (
+              <span className="text-xs font-medium" style={{ color: '#9ca3af' }}>単独点処理のため</span>
+            ) : eew.earthquake.hypocenter.depth > 150 ? (
+              <span className="text-xs font-medium" style={{ color: '#9ca3af' }}>深発地震のため</span>
+            ) : null}
+            <span className="text-xl font-extrabold" style={{ color: '#e5e7eb' }}>予想震度なし</span>
+          </div>
+        )}
 
         {/* 推定最大長周期地震動階級 */}
         {eew.forecastMaxLpgmClass != null && eew.forecastMaxLpgmClass >= 1 && (
