@@ -6,7 +6,7 @@ import { computeSWaveTravelTimeSec } from '../hooks/useDmdssWaves'
 
 const FELT_RADIUS_BUFFER = 1.5   // 地盤増幅を無視した分の補正係数
 const MAX_FELT_RADIUS_KM = 2500  // 上限（M9クラスでも日本全域をカバー）
-const MIN_CANCEL_SEC = 60        // 発震時刻基準の解除時刻が近すぎる場合の最低保証（最終報受信から）
+const MIN_CANCEL_SEC = 30        // 最終報受信から最低この秒数は解除しない
 const FIXED_BUFFER_SEC = 30      // S波到達後の余裕
 
 /** Mjma → Mw 変換（宇津 1982） */
