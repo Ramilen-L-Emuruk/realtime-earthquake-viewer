@@ -4,7 +4,7 @@ import type { P2PQuakeEvent, JMAQuake, JMALpgm, JMANankai, JMAKohatsu, EEWAlert,
 
 const QUAKE_TYPES = new Set(['VXSE51', 'VXSE52', 'VXSE53', 'VXSE61'])
 const TSUNAMI_TYPES = new Set(['VTSE41', 'VTSE51', 'VTSE52'])
-const EEW_TYPES = new Set(['VXSE43', 'VXSE45'])
+const EEW_TYPES = new Set(['VXSE45'])
 const LPGM_TYPES = new Set(['VXSE62'])
 const NANKAI_TYPES = new Set(['VYSE50', 'VYSE51'])
 const KOHATSU_TYPES = new Set(['VYSE60'])
@@ -34,6 +34,18 @@ async function gunzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
 
 function toDateStr(d: Date): string {
   return d.toISOString().slice(0, 10)
+}
+
+// ファイル名に埋め込まれた17桁タイムスタンプ（YYYYMMDDHHMMSSmmm）を UTC の Date に変換する。
+// pressDateTime は秒単位で切り捨てられているため、こちらがミリ秒精度の正確な受信時刻となる。
+function parseMsFromFileName(fileName: string): Date | null {
+  const m = fileName.match(/_(\d{17})_/)
+  if (!m) return null
+  const ts = m[1]
+  return new Date(Date.UTC(
+    +ts.slice(0, 4), +ts.slice(4, 6) - 1, +ts.slice(6, 8),
+    +ts.slice(8, 10), +ts.slice(10, 12), +ts.slice(12, 14), +ts.slice(14, 17),
+  ))
 }
 
 interface ArchiveItem {
@@ -101,7 +113,7 @@ export async function fetchDmdataReplayEvents(
   const endDate = toDateStr(endDateObj)
 
   const listRes = await fetch(
-    `https://api.dmdata.jp/v2/archive?datetime=${startDate}~${endDate}&classification=telegram.earthquake,eew.forecast,eew.warning`,
+    `https://api.dmdata.jp/v2/archive?datetime=${startDate}~${endDate}&classification=telegram.earthquake,eew.forecast`,
     { headers: { Authorization: authHeader(apiKey) } },
   )
   if (!listRes.ok) throw new Error(`Archive list failed: ${listRes.status}`)
@@ -176,10 +188,10 @@ export async function fetchDmdataReplayEvents(
         }
 
         if (payload) {
-          // pressDateTime（実際の発表時刻）をキュー時刻に使うことで、同一 reportDateTime を持つ
-          // 複数電文（例: VXSE51 の重複送信）がライブ受信時と同じ時系列で再生されるようにする
-          const pressDateTime = (data.pressDateTime as string | undefined) ?? entryTime.toISOString()
-          entries.push({ payload, replayTime: new Date(pressDateTime) })
+          // ファイル名の17桁タイムスタンプ（YYYYMMDDHHMMSSmmm）はミリ秒精度の実受信時刻。
+          // pressDateTime は秒単位で切り捨てられているため、ファイル名から ms を優先的に取得する。
+          const replayTime = parseMsFromFileName(jsonFileName) ?? new Date((data.pressDateTime as string | undefined) ?? entryTime.toISOString())
+          entries.push({ payload, replayTime })
         }
       }
     }),
@@ -187,14 +199,13 @@ export async function fetchDmdataReplayEvents(
 
   entries.sort((a, b) => a.replayTime.getTime() - b.replayTime.getTime())
 
-  // 同一 replayTime のエントリを 50ms ずつずらして別ティックで発火させる。
-  // 同秒に複数の EEW が届いた場合、同一ティックで処理されると2つ目以降が「続報」として
-  // 扱われ（isNew=false）、初報アラームが鳴らないためライブ受信と異なる挙動になる。
+  // 同一 replayTime のエントリを 1ms ずつずらして別ティックで発火させる。
+  // ファイル名から ms を取得しているため衝突はほぼ起きないが、念のため保証する。
   for (let i = 1; i < entries.length; i++) {
     if (entries[i].replayTime.getTime() <= entries[i - 1].replayTime.getTime()) {
       entries[i] = {
         ...entries[i],
-        replayTime: new Date(entries[i - 1].replayTime.getTime() + 50),
+        replayTime: new Date(entries[i - 1].replayTime.getTime() + 1),
       }
     }
   }
