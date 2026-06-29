@@ -3,7 +3,7 @@ import L from 'leaflet'
 import { MapContainer, TileLayer, Marker, Polyline, Polygon, Popup, Pane, useMap, useMapEvents } from 'react-leaflet'
 import type { JMAQuake, JMATsunami, TsunamiGrade, EEWAlert, JMALpgm } from '../../types/earthquake'
 import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
-import { getLpgmClassColor } from '../../utils/lpgm'
+import { getLpgmClassColor, getLpgmClassLabel } from '../../utils/lpgm'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
 import { eewAreas } from '../../utils/eew'
 import { useStationCoords } from '../../hooks/useStationCoords'
@@ -65,6 +65,28 @@ function getIntensityIcon(scale: number, iconScale: number): L.DivIcon {
     iconAnchor: [size / 2, size / 2],
   })
   intensityIconCache.set(key, icon)
+  return icon
+}
+
+// 長周期地震動階級の四角ラベルアイコン。階級 × UI 倍率ごとにキャッシュして再利用する。
+const lpgmRegionIconCache = new Map<string, L.DivIcon>()
+
+function getLpgmRegionIcon(lgInt: number, iconScale: number): L.DivIcon {
+  const key = `${lgInt}:${iconScale}`
+  const cached = lpgmRegionIconCache.get(key)
+  if (cached) return cached
+
+  const size = 32 * iconScale
+  const color = getLpgmClassColor(lgInt)
+  const label = getLpgmClassLabel(lgInt).replace('階級', '')
+  const fontSize = size * 0.5
+  const icon = L.divIcon({
+    className: '',
+    html: `<div style="width:${size}px;height:${size}px;background:${color};border:2px solid rgba(255,255,255,0.8);border-radius:3px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:${fontSize}px;line-height:1;box-shadow:0 0 3px rgba(0,0,0,0.7)">${label}</div>`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+  })
+  lpgmRegionIconCache.set(key, icon)
   return icon
 }
 
@@ -779,22 +801,41 @@ export function JapanMap({
       {mode === 'quake' && lpgm && !lpgm.cancelled && (
         <>
           {aggregateByRegion && lpgmRegionAggregates.length > 0 && (
-            <Pane name="lpgm-region-fill" style={{ zIndex: 261 }}>
-              {lpgmRegionAggregates.flatMap((r, ri) =>
-                r.rings.map((ring, i) => (
-                  <Polygon
-                    key={`lpgm-${ri}-${i}`}
-                    positions={ring}
-                    pathOptions={{
-                      color: getLpgmClassColor(r.maxLgInt),
-                      weight: 1,
-                      fillColor: getLpgmClassColor(r.maxLgInt),
-                      fillOpacity: 0.5,
-                    }}
-                  />
-                ))
-              )}
-            </Pane>
+            <>
+              <Pane name="lpgm-region-fill" style={{ zIndex: 261 }}>
+                {lpgmRegionAggregates.flatMap((r, ri) =>
+                  r.rings.map((ring, i) => (
+                    <Polygon
+                      key={`lpgm-${ri}-${i}`}
+                      positions={ring}
+                      pathOptions={{
+                        color: getLpgmClassColor(r.maxLgInt),
+                        weight: 1,
+                        fillColor: getLpgmClassColor(r.maxLgInt),
+                        fillOpacity: 0.5,
+                      }}
+                    />
+                  ))
+                )}
+              </Pane>
+              {lpgmRegionAggregates.map((r) => (
+                <Marker
+                  key={`lpgm-region-mark-${r.name}`}
+                  position={r.label}
+                  icon={getLpgmRegionIcon(r.maxLgInt, iconScale)}
+                  zIndexOffset={r.maxLgInt * INTENSITY_Z}
+                >
+                  <Popup>
+                    <div className="text-sm">
+                      <div className="font-bold">{r.name}</div>
+                      <div className="text-gray-600 text-xs">
+                        長周期地震動 {getLpgmClassLabel(r.maxLgInt)}
+                      </div>
+                    </div>
+                  </Popup>
+                </Marker>
+              ))}
+            </>
           )}
           {!aggregateByRegion && lpgmMarkers.length > 0 && (
             <LpgmPoints markers={lpgmMarkers} iconScale={iconScale} />
