@@ -54,9 +54,11 @@ interface Props {
   isSelected?: boolean
   onSelect?: () => void
   lpgm?: JMALpgm
+  activeLpgmEventId?: string | null
+  onToggleLpgm?: (eventId: string) => void
 }
 
-export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm }: Props) {
+export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, activeLpgmEventId, onToggleLpgm }: Props) {
   const { earthquake, issue } = quake
   const { hypocenter, maxScale, domesticTsunami } = earthquake
   const tsunamiInfo = formatDomesticTsunami(domesticTsunami)
@@ -132,13 +134,19 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm }: 
             </span>
           </div>
 
-          {/* 長周期地震動観測情報 */}
+          {/* 長周期地震動観測情報（クリックで地図表示トグル） */}
           {lpgm && lpgm.maxClass >= 1 && (
-            <div
-              className="w-full rounded-lg py-2 px-4 flex items-center justify-center gap-4"
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onToggleLpgm?.(lpgm.eventId) }}
+              className="w-full rounded-lg py-2 px-4 flex items-center justify-center gap-4 hover:opacity-80 transition-opacity"
               style={{
                 backgroundColor: getLpgmClassBgColor(lpgm.maxClass),
                 border: `2px solid ${getLpgmClassColor(lpgm.maxClass)}`,
+                outline: activeLpgmEventId === lpgm.eventId
+                  ? `2px solid ${getLpgmClassColor(lpgm.maxClass)}`
+                  : undefined,
+                outlineOffset: '2px',
               }}
             >
               <span className="text-sm font-medium" style={{ color: getLpgmClassColor(lpgm.maxClass) }}>
@@ -147,7 +155,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm }: 
               <span className="text-2xl font-black" style={{ color: '#ffffff' }}>
                 {getLpgmClassLabel(lpgm.maxClass)}
               </span>
-            </div>
+            </button>
           )}
 
           {/* 日時 + 訂正情報 */}
