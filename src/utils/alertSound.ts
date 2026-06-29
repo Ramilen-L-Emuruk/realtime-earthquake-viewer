@@ -6,7 +6,7 @@
 
 export type AlertSoundType =
   'earthquake' | 'earthquakePrompt' | 'earthquakeInfo'
-  | 'eew' | 'eewUpdate' | 'eewCancel' | 'eewSpecial' | 'eewForecast'
+  | 'eew' | 'eewUpdate' | 'eewFinal' | 'eewCancel' | 'eewSpecial' | 'eewForecast'
   | 'tsunami' | 'tsunamiMajor' | 'tsunamiWatch' | 'tsunamiForecast'
   | 'kyoshin'
   | 'specialInfo'
@@ -345,6 +345,13 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
   eewForecast: (ctx, base) => {
     darkPiano(ctx, 349.2, base,        0.90, 0.26, 0.12)
     darkPiano(ctx, 440.0, base + 0.22, 0.95, 0.26, 0.14)
+  },
+
+  // EEW 最終報: ダークピアノ F4→C4 降下 + C5 跳躍（解除音と混同しにくい終止感）
+  eewFinal: (ctx, base) => {
+    darkPiano(ctx, 349.2, base,        0.70, 0.24)
+    darkPiano(ctx, 261.6, base + 0.14, 0.75, 0.23)
+    darkPiano(ctx, 523.3, base + 0.38, 1.10, 0.22, 0.20)
   },
 
   // EEW 続報: ダークピアノ F4 単音
