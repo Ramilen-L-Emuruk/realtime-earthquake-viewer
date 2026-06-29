@@ -161,6 +161,7 @@ function FitToEEW({ eews, psWave, idleRevertSec = 30 }: { eews: EEWAlert[]; psWa
   const isAutoFlyingRef = useRef(false)
   const userInteractedRef = useRef(false)
   const resetTimerRef = useRef<number | undefined>(undefined)
+  const prevEewsCountRef = useRef<number>(0)
 
   // 最新 EEW（originTime 降順）を追従対象とする
   const latest = eews.length > 0
@@ -215,6 +216,38 @@ function FitToEEW({ eews, psWave, idleRevertSec = 30 }: { eews: EEWAlert[]; psWa
       window.clearTimeout(resetTimerRef.current)
     }
   }, [map, idleRevertSec])
+
+  // EEW 数が減少（=1つ以上が解除）かつ残りがある場合: 残りの P/S波円に強制再フィット
+  // 「収まっているかどうか」を問わずフィットし直す（解除前のズームアウト状態を補正するため）
+  useEffect(() => {
+    const prevCount = prevEewsCountRef.current
+    prevEewsCountRef.current = eews.length
+    if (eews.length >= prevCount) return
+    if (eews.length === 0) return
+    if (userInteractedRef.current) return
+
+    if (psWave.length === 0) {
+      if (latest) {
+        const { latitude, longitude } = latest.earthquake.hypocenter
+        if (latitude > -200 && longitude > -200) {
+          isAutoFlyingRef.current = true
+          map.flyTo([latitude, longitude], MAX_ZOOM, { duration: 0.8 })
+        }
+      }
+      return
+    }
+
+    let bounds: L.LatLngBounds | null = null
+    for (const c of psWave) {
+      const radius = c.pRadius > 0 ? c.pRadius : c.sRadius
+      const b = L.latLng(c.lat, c.lng).toBounds(radius * 2 * 1000)
+      bounds = bounds ? bounds.extend(b) : b
+    }
+    if (bounds) {
+      isAutoFlyingRef.current = true
+      map.flyToBounds(bounds, { padding: [60, 60], maxZoom: MAX_ZOOM, duration: 0.8 })
+    }
+  }, [eews.length, psWave, latest, map])
 
   // 予報円の成長に追従してズームアウト（表示に収まらなくなった時のみ）
   // P波があれば P波円を、なければ S波円を基準にする
