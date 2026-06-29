@@ -23,7 +23,7 @@ import { speakWithVoicevox } from './utils/voicevox'
 import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, nankaiToText, kohatsuToText, lpgmToText } from './utils/ttsText'
 import { kyoshinIndexToLabel } from './utils/kyoshinIntensity'
 import type { P2PQuakeEvent, EEWAlert } from './types/earthquake'
-import { fetchDmdataReplayEvents, clearReplayCache } from './services/dmdataReplay'
+import { fetchDmdataReplayEvents, filterPreWindowEvents, clearReplayCache } from './services/dmdataReplay'
 
 // 平常時のウィンドウタイトル（index.html の <title> と一致させる）。
 // AutoHotKey 等が、情報更新時のタイトル変化を検知してイベントを発火できるようにする。
@@ -655,6 +655,7 @@ export function App() {
     console.log('[replay] handleStartReplay called, targetDate:', targetDate.toISOString())
     const offset = targetDate.getTime() - Date.now()
     const toTime = new Date(targetDate.getTime() + 3600_000)
+    const preFrom = new Date(targetDate.getTime() - 24 * 3600_000)
     resetState()
     lastNewQuakeTimeRef.current = null
     activeEEWLevelsRef.current.clear()
@@ -664,12 +665,18 @@ export function App() {
     prefetchEndRef.current = toTime
     setReplayIsFetching(true)
     try {
-      const events = await fetchDmdataReplayEvents(settings.dmdataApiKey, targetDate, toTime)
+      const [normalEvents, preEvents] = await Promise.all([
+        fetchDmdataReplayEvents(settings.dmdataApiKey, targetDate, toTime),
+        fetchDmdataReplayEvents(settings.dmdataApiKey, preFrom, targetDate),
+      ])
+      // pre-window: T時点で有効な電文を即時発火（replayTime = T-1ms）させて初期状態を再現する
+      const preFiltered = filterPreWindowEvents(preEvents, targetDate, 180)
+        .map(e => ({ ...e, replayTime: new Date(targetDate.getTime() - 1), silent: true }))
       // フェッチ中に WS 切断タイミングで ref が再セットされる競合を排除するため直前に再リセット
       lastNewQuakeTimeRef.current = null
       activeEEWLevelsRef.current.clear()
       lastTsunamiGradeRef.current = null
-      loadReplayEvents(events)
+      loadReplayEvents([...preFiltered, ...normalEvents])
     } catch (e) {
       console.error('replay fetch failed', e)
     } finally {
