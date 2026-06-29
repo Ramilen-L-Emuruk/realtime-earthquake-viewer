@@ -308,6 +308,7 @@ export function App() {
 
     // 長周期地震動情報（DMDSS版のみ）
     if ((event as unknown as { kind?: string }).kind === 'lpgm') {
+      setActiveTab('earthquake')
       if (settings.soundEnabled) {
         playAlertSound('earthquake')
       }
