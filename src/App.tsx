@@ -135,8 +135,8 @@ export function App() {
   const eewTtsEventRef = useRef<import('./types/earthquake').EEWAlert | null>(null)
   // Phase 1（「緊急地震速報、〇〇で地震。」）の再生完了 Promise。Phase 2 はこれを待ってから発話する
   const eewPhase1PromiseRef = useRef<Promise<void>>(Promise.resolve())
-  // 長周期地震動情報の更新検出: 受信済み originTime を追跡する
-  const seenLpgmOriginTimesRef = useRef<Set<string>>(new Set())
+  // 長周期地震動情報の更新検出: 受信済み eventId を追跡する
+  const seenLpgmEventIdsRef = useRef<Set<string>>(new Set())
 
   const handleLiveEvent = (event: P2PQuakeEvent) => {
     // 受信時に該当タブを自動表示し、ウィンドウタイトルを更新する
@@ -308,13 +308,14 @@ export function App() {
 
     // 長周期地震動情報（DMDSS版のみ）
     if ((event as unknown as { kind?: string }).kind === 'lpgm') {
+      setActiveTab('earthquake')
       if (settings.soundEnabled) {
         playAlertSound('earthquake')
       }
       if (settings.voicevoxEnabled) {
         const lpgm = (event as unknown as { kind: string; data: import('./types/earthquake').JMALpgm }).data
-        const isNewLpgm = !seenLpgmOriginTimesRef.current.has(lpgm.originTime)
-        seenLpgmOriginTimesRef.current.add(lpgm.originTime)
+        const isNewLpgm = !seenLpgmEventIdsRef.current.has(lpgm.eventId)
+        seenLpgmEventIdsRef.current.add(lpgm.eventId)
         setTimeout(() => {
           speakWithVoicevox(settings.voicevoxUrl, lpgmToText(lpgm, isNewLpgm), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
         }, 1000)
@@ -420,7 +421,7 @@ export function App() {
   const [replayTimeOffset, setReplayTimeOffset] = useState<number | null>(null)
 
   const {
-    earthquakes, tsunamis, activeEEWs, lpgmByOriginTime, nankai, kohatsu, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
+    earthquakes, tsunamis, activeEEWs, lpgmByEventId, nankai, kohatsu, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
     telegramLog, clearTelegramLog,
     injectEvent, loadMoreEarthquakes,
     simulateEarthquake,
@@ -860,7 +861,7 @@ export function App() {
               hasMore={hasMore}
               onLoadMore={loadMoreEarthquakes}
               error={error}
-              lpgmByOriginTime={lpgmByOriginTime}
+              lpgmByEventId={lpgmByEventId}
             />
           </div>
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'realtime' ? ' invisible pointer-events-none' : ''}`}>

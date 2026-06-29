@@ -1,6 +1,6 @@
 import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseVyse5xFromXml, parseVyse60FromXml } from './dmdataParser'
 import { parseTar } from '../utils/tarParser'
-import type { P2PQuakeEvent, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, JMATsunami } from '../types/earthquake'
+import type { P2PQuakeEvent, JMAQuake, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, JMATsunami } from '../types/earthquake'
 
 const QUAKE_TYPES = new Set(['VXSE51', 'VXSE52', 'VXSE53', 'VXSE61'])
 const TSUNAMI_TYPES = new Set(['VTSE41', 'VTSE51', 'VTSE52'])
@@ -211,11 +211,23 @@ export function filterPreWindowEvents(
   // EEW は同一イベント ID の複数報をグルーピングして T 時点の有効性を判定する
   // 状態管理キーは issue.eventId（シリアル番号を含まない）に合わせる
   const eewByEventId = new Map<string, Array<{ entry: ReplayEntry; eew: EEWAlert }>>()
+  const quakeByEventId = new Map<string, ReplayEntry>()
   const result: ReplayEntry[] = []
 
   for (const entry of entries) {
     if (entry.payload.kind !== 'p2p') { result.push(entry); continue }
     const ev = entry.payload.event
+
+    if (ev.code === 551) {
+      const quake = ev as JMAQuake
+      const eid = quake.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
+      if (!eid) { result.push(entry); continue }
+      const existing = quakeByEventId.get(eid)
+      if (!existing || entry.replayTime > existing.replayTime) {
+        quakeByEventId.set(eid, entry)
+      }
+      continue
+    }
 
     if (ev.code === 556) {
       const eew = ev as EEWAlert
@@ -233,6 +245,8 @@ export function filterPreWindowEvents(
 
     result.push(entry)
   }
+
+  for (const entry of quakeByEventId.values()) result.push(entry)
 
   // EEW グループごとに T 時点の有効性を判定し、有効なら最新の1件だけ注入する
   for (const [, reports] of eewByEventId) {
