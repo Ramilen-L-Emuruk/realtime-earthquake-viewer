@@ -484,22 +484,54 @@ export function playAlertSound(type: AlertSoundType): void {
   PLAYERS[type](ctx, ctx.currentTime + 0.02)
 }
 
-/** S波到着カウントダウン音（残り1〜5秒）を鳴らす。 */
+/** S波到着カウントダウン音（残り1〜5秒）を鳴らす。
+ *  ゲート変調パルスアラーム: カウントが進むほどゲート周波数が上がり焦燥感が増す。
+ *  残り1秒はサブ低音＋高音トーンを重ねて衝突感を演出。
+ */
 export function playCountdownBeep(second: number): void {
   const ctx = getCtx()
   if (!ctx) return
   if (ctx.state === 'suspended') void ctx.resume()
-  const freq = second === 1 ? 660 : 880
-  const dur  = second === 1 ? 0.08 : 0.05
-  const gain = 0.15 * globalVolume
-  const osc  = ctx.createOscillator()
-  const env  = ctx.createGain()
-  osc.connect(env); env.connect(ctx.destination)
-  osc.type = 'sine'; osc.frequency.value = freq
-  const t = ctx.currentTime + 0.02
-  env.gain.setValueAtTime(gain, t)
-  env.gain.exponentialRampToValueAtTime(0.0001, t + dur)
-  osc.start(t); osc.stop(t + dur + 0.01)
+
+  const t0 = ctx.currentTime + 0.02
+  const gateHzMap: Record<number, number> = { 5: 8, 4: 10, 3: 13, 2: 16, 1: 20 }
+  const gateHz   = gateHzMap[second] ?? 8
+  const totalDur = second === 1 ? 0.30 : 0.18
+  const period   = 1 / gateHz
+  const pulseW   = period * 0.45
+  const steps    = Math.floor(totalDur / period)
+
+  for (let i = 0; i < steps; i++) {
+    const pt  = t0 + i * period
+    const osc = ctx.createOscillator(); const env = ctx.createGain()
+    osc.type = 'square'; osc.frequency.value = 440
+    osc.connect(env); env.connect(ctx.destination)
+    env.gain.setValueAtTime(0, pt)
+    env.gain.linearRampToValueAtTime(0.22 * globalVolume, pt + 0.003)
+    env.gain.setValueAtTime(0.22 * globalVolume, pt + pulseW - 0.003)
+    env.gain.linearRampToValueAtTime(0, pt + pulseW)
+    osc.start(pt); osc.stop(pt + pulseW + 0.005)
+  }
+
+  if (second === 1) {
+    const sub = ctx.createOscillator(); const sg = ctx.createGain()
+    sub.type = 'sine'; sub.frequency.value = 110
+    sub.connect(sg); sg.connect(ctx.destination)
+    sg.gain.setValueAtTime(0, t0)
+    sg.gain.linearRampToValueAtTime(0.30 * globalVolume, t0 + 0.010)
+    sg.gain.setValueAtTime(0.30 * globalVolume, t0 + 0.24)
+    sg.gain.linearRampToValueAtTime(0, t0 + 0.30)
+    sub.start(t0); sub.stop(t0 + 0.32)
+
+    const hi = ctx.createOscillator(); const hg = ctx.createGain()
+    hi.type = 'sine'; hi.frequency.value = 1320
+    hi.connect(hg); hg.connect(ctx.destination)
+    hg.gain.setValueAtTime(0, t0)
+    hg.gain.linearRampToValueAtTime(0.16 * globalVolume, t0 + 0.005)
+    hg.gain.setValueAtTime(0.16 * globalVolume, t0 + 0.24)
+    hg.gain.linearRampToValueAtTime(0, t0 + 0.30)
+    hi.start(t0); hi.stop(t0 + 0.32)
+  }
 }
 
 /** 強震モニタの最大インデックスに応じた震度更新音を鳴らす。 */
