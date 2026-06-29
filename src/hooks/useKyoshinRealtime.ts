@@ -20,8 +20,6 @@ export interface KyoshinRealtime {
 
 // この回数連続で取得に失敗したら「更新停止（エラー）」とみなす
 const ERROR_THRESHOLD = 5
-// 観測点リスト取得失敗時のリトライ間隔 (ms)
-const SITELIST_RETRY_MS = 10_000
 // 同一タイムスタンプの受信失敗時リトライ間隔 (ms)
 const RETRY_MS = 200
 // 通常ポーリング間隔 (ms)
@@ -50,7 +48,7 @@ export function useKyoshinRealtime(
   const [psWave, setPsWave] = useState<PsWaveCircle[]>([])
   const [dataTime, setDataTime] = useState('')
   const [error, setError] = useState(false)
-  const sitesLoadedRef = useRef(false)
+  const currentSiteConfigIdRef = useRef<string | null>(null)
   const failCountRef = useRef(0)
   const prevHypoInfoRef = useRef<YahooHypoInfoItem[]>([])
   // コールバック・オプションを ref で保持し tick クロージャから安定参照する
@@ -59,35 +57,10 @@ export function useKyoshinRealtime(
   const timeOffsetRef = useRef(options?.timeOffset ?? null)
   timeOffsetRef.current = options?.timeOffset ?? null
 
-  // 観測点リストを取得し、失敗したら SITELIST_RETRY_MS 後にリトライする
-  useEffect(() => {
-    if (!enabled || sitesLoadedRef.current) return
-    let active = true
-    let retryTimer: ReturnType<typeof setTimeout> | null = null
-
-    const load = () => {
-      fetchSiteList()
-        .then((s) => {
-          if (!active) return
-          sitesLoadedRef.current = true
-          setSites(s)
-        })
-        .catch(() => {
-          if (!active) return
-          retryTimer = setTimeout(load, SITELIST_RETRY_MS)
-        })
-    }
-    load()
-
-    return () => {
-      active = false
-      if (retryTimer !== null) clearTimeout(retryTimer)
-    }
-  }, [enabled])
-
   // リアルタイム震度を POLL_MS ごとにポーリング（enabled の間のみ）。
   // 受信失敗時は同一タイムスタンプで RETRY_MS 後にリトライし続け、
   // 成功したら POLL_MS 後に次の tick を実行する。
+  // siteConfigId が変化したとき（リプレイ日付切替など）に対応する sitelist を自動で取得する。
   useEffect(() => {
     if (!enabled) return
     let active = true
@@ -101,6 +74,14 @@ export function useKyoshinRealtime(
       setIndices(rt.indices)
       setPsWave(rt.psWave)
       setDataTime(rt.dataTime)
+
+      // siteConfigId が変わった場合のみ対応する sitelist を取得して反映する
+      if (rt.siteConfigId && rt.siteConfigId !== currentSiteConfigIdRef.current) {
+        currentSiteConfigIdRef.current = rt.siteConfigId
+        fetchSiteList(rt.siteConfigId)
+          .then((s) => { if (active) setSites(s) })
+          .catch(() => { /* 取得失敗は無視（次 tick で再試行される） */ })
+      }
 
       const prev = prevHypoInfoRef.current
       const curr = rt.hypoInfo
