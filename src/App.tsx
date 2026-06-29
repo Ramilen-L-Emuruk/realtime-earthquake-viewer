@@ -105,6 +105,12 @@ export function App() {
   const { settings, updateSetting } = useSettings()
   const [activeTab, setActiveTab] = useState<TabId>(settings.defaultTab)
   const [selectedQuakeId, setSelectedQuakeId] = useState<string | null>(null)
+  const [activeLpgmEventId, setActiveLpgmEventId] = useState<string | null>(null)
+  // 地震カード切替時は LPGM 表示をリセットする
+  const selectQuake = (id: string | null) => {
+    setSelectedQuakeId(id)
+    setActiveLpgmEventId(null)
+  }
   // 直近に「新規地震」として注目を移した earthquake.time。続報（同一 time）では選択を維持する。
   const lastNewQuakeTimeRef = useRef<string | null>(null)
   // 情報更新時にウィンドウタイトルへ表示する文言（null = 平常時タイトル）。
@@ -158,7 +164,7 @@ export function App() {
         lastNewQuakeTimeRef.current = incomingKey
       }
       // 新規・続報いずれも、受信した地震カードを選択状態にする。
-      setSelectedQuakeId(event.earthquake.time)
+      selectQuake(event.earthquake.time)
       const { hypocenter, maxScale } = event.earthquake
       // 震度なし続報（VXSE52 等）ではタイトルを更新しない（直前の VXSE51 表示を維持する）
       if (maxScale >= 0 || isNewQuake) {
@@ -309,11 +315,21 @@ export function App() {
     // 長周期地震動情報（DMDSS版のみ）
     if ((event as unknown as { kind?: string }).kind === 'lpgm') {
       setActiveTab('earthquake')
+      const lpgmEvent = (event as unknown as { kind: string; data: import('./types/earthquake').JMALpgm }).data
+      if (!lpgmEvent.cancelled) {
+        // 紐づく地震カードを選択し、自動的に LPGM 表示をオンにする
+        const matchedQuake = earthquakes.find(q => {
+          const eventIdPart = q.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
+          return eventIdPart === lpgmEvent.eventId
+        })
+        if (matchedQuake) selectQuake(matchedQuake.earthquake.time)
+        setActiveLpgmEventId(lpgmEvent.eventId)
+      }
       if (settings.soundEnabled) {
         playAlertSound('earthquake')
       }
       if (settings.voicevoxEnabled) {
-        const lpgm = (event as unknown as { kind: string; data: import('./types/earthquake').JMALpgm }).data
+        const lpgm = lpgmEvent
         const isNewLpgm = !seenLpgmEventIdsRef.current.has(lpgm.eventId)
         seenLpgmEventIdsRef.current.add(lpgm.eventId)
         setTimeout(() => {
@@ -468,6 +484,8 @@ export function App() {
   const latest = filteredEarthquakes[0] ?? null
   // 選択中の地震（未選択／一覧から消えた場合は最新にフォールバック）
   const selectedQuake = filteredEarthquakes.find(q => q.earthquake.time === selectedQuakeId) ?? latest
+  // 地図に表示中の LPGM（バッジクリックでトグル）
+  const activeLpgm = activeLpgmEventId ? (lpgmByEventId.get(activeLpgmEventId) ?? null) : null
 
   // ブラウザ通知: 新しい地震が設定震度以上なら通知
   const lastNotifiedIdRef = useRef<string | null>(null)
@@ -834,6 +852,7 @@ export function App() {
             mode={mapMode}
             quake={mapQuake}
             tsunamis={tsunamis}
+            lpgm={activeLpgm ?? undefined}
             iconScale={settings.mapIconScale}
             showBathymetry={settings.showBathymetry}
             kyoshinSites={kyoshin.sites}
@@ -855,13 +874,15 @@ export function App() {
             <EarthquakeTab
               earthquakes={filteredEarthquakes}
               selectedId={selectedQuake?.earthquake.time ?? null}
-              onSelect={setSelectedQuakeId}
+              onSelect={selectQuake}
               isLoading={isLoading}
               isLoadingMore={isLoadingMore}
               hasMore={hasMore}
               onLoadMore={loadMoreEarthquakes}
               error={error}
               lpgmByEventId={lpgmByEventId}
+              activeLpgmEventId={activeLpgmEventId}
+              onToggleLpgm={(eventId) => setActiveLpgmEventId(prev => prev === eventId ? null : eventId)}
             />
           </div>
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'realtime' ? ' invisible pointer-events-none' : ''}`}>

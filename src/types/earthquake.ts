@@ -151,6 +151,19 @@ export interface EEWAlert {
   forecastMaxLpgmClass?: number
 }
 
+export interface LpgmPoint {
+  code: string      // 観測点コード（例: "0122401"）
+  name: string      // 観測点名（例: "新千歳空港"）
+  pref: string      // 都道府県名（XML由来は Pref/Name、JSON由来は空文字）
+  lgInt: number     // 長周期地震動階級 1〜4
+}
+
+export interface LpgmRegion {
+  code: string      // 一次細分区域コード（例: "102"）
+  name: string      // 一次細分区域名（例: "石狩地方南部"）
+  maxLgInt: number  // 区域内最大長周期地震動階級 1〜4
+}
+
 export interface JMALpgm {
   id: string
   eventId: string     // VXSE51/52/53/62 が共有する 14 桁タイムスタンプ。lpgmByEventId の Map キー
@@ -158,6 +171,8 @@ export interface JMALpgm {
   originTime: string  // TTS 読み上げテキスト用
   maxClass: number    // 1〜4
   cancelled: boolean
+  points?: LpgmPoint[]    // 観測点別階級（取消電文では undefined）
+  regions?: LpgmRegion[]  // 一次細分区域別最大階級
 }
 
 export type P2PQuakeEvent = JMAQuake | JMATsunami | EarthquakeDetection | EEWAlert
