@@ -37,11 +37,14 @@ export function PsWaveLayer({ psWave }: { psWave: PsWaveCircle[] }) {
 
       for (const c of psWave) {
         const center = map.latLngToContainerPoint(L.latLng(c.lat, c.lng))
+        // 東方向（同一緯度）で km→ピクセル変換。北方向だと Mercator のスケール係数が
+        // 緯度上昇で増加し、円が haversine 距離より大きく描かれるため。
+        const cosLat = Math.cos(c.lat * Math.PI / 180)
 
         if (c.sRadius > 0) {
-          const latOffsetS = (c.sRadius * 1000) / 111320
-          const edgeS = map.latLngToContainerPoint(L.latLng(c.lat + latOffsetS, c.lng))
-          const sPx = Math.abs(edgeS.y - center.y)
+          const lonOffsetS = (c.sRadius * 1000) / (111320 * cosLat)
+          const edgeS = map.latLngToContainerPoint(L.latLng(c.lat, c.lng + lonOffsetS))
+          const sPx = Math.abs(edgeS.x - center.x)
           ctx.setLineDash([])
           ctx.strokeStyle = '#ff3c00'
           ctx.fillStyle = 'rgba(255, 60, 0, 0.12)'
@@ -53,9 +56,9 @@ export function PsWaveLayer({ psWave }: { psWave: PsWaveCircle[] }) {
         }
 
         if (c.pRadius > 0) {
-          const latOffsetP = (c.pRadius * 1000) / 111320
-          const edgeP = map.latLngToContainerPoint(L.latLng(c.lat + latOffsetP, c.lng))
-          const pPx = Math.abs(edgeP.y - center.y)
+          const lonOffsetP = (c.pRadius * 1000) / (111320 * cosLat)
+          const edgeP = map.latLngToContainerPoint(L.latLng(c.lat, c.lng + lonOffsetP))
+          const pPx = Math.abs(edgeP.x - center.x)
           ctx.setLineDash([4, 4])
           ctx.strokeStyle = '#38bdf8'
           ctx.lineWidth = 2
