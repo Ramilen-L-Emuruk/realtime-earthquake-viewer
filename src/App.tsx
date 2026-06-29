@@ -830,8 +830,11 @@ export function App() {
       maxSoundLevelRef.current = currLevel
       postPeakMinLevelRef.current = currLevel
       // 初回検知（prevMaxLevel === 0）は検知音が鳴るのでスキップ
-      if (prevMaxLevel > 0 && settings.soundEnabled) {
-        playKyoshinUpdateSound(effectiveKyoshinMaxIndex)
+      if (prevMaxLevel > 0) {
+        setActiveTab('realtime')
+        if (settings.soundEnabled) {
+          playKyoshinUpdateSound(effectiveKyoshinMaxIndex)
+        }
       }
     } else if (currLevel < postPeakMinLevelRef.current) {
       // ピーク後に下落中 → 最小値を更新するだけ
@@ -840,6 +843,7 @@ export function App() {
       // 一度落ちた後に再上昇（再エスカレーション）
       maxSoundLevelRef.current = currLevel
       postPeakMinLevelRef.current = currLevel
+      setActiveTab('realtime')
       if (settings.soundEnabled) {
         playKyoshinUpdateSound(effectiveKyoshinMaxIndex)
       }
