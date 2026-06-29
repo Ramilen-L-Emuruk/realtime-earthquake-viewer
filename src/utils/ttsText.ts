@@ -2,6 +2,8 @@ import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMAKohatsu, JMALpgm, In
 import { eewMaxScale } from './eew'
 import { getIntensityLabel } from './intensity'
 import { tsunamiMaxGrade } from './tsunami'
+import { getSubRegionsCache } from './subregions'
+import { getPrefecturesCache } from './prefectures'
 
 const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch']
 
@@ -15,6 +17,22 @@ function regionNamesForScale(points: EarthquakePoint[], scale: IntensityScale): 
   return [...new Set(matched.map(p => p.pref).filter(Boolean))]
 }
 
+// ソート用二乗距離（緯度方向補正あり）
+function distSq(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const dlat = lat1 - lat2
+  const dlon = (lon1 - lon2) * Math.cos((lat1 + lat2) * Math.PI / 360)
+  return dlat * dlat + dlon * dlon
+}
+
+// 地域名 → 代表座標（一次細分区域 → 都道府県 の順で検索）
+function coordForName(name: string): [number, number] | null {
+  const sub = getSubRegionsCache()?.find(r => r.name === name)
+  if (sub) return sub.label
+  const prefs = getPrefecturesCache()
+  if (prefs && name in prefs) return prefs[name].label
+  return null
+}
+
 export interface TtsRegionOptions {
   intensityLevels: number  // 最大震度から何階級分読むか（0 = 最大のみ）
   maxRegions: number       // 読み上げる最大地域数（0 = 無制限）
@@ -24,9 +42,12 @@ function buildRegionText(
   points: EarthquakePoint[],
   maxScale: IntensityScale,
   opts: TtsRegionOptions,
+  hypocenter?: { latitude: number; longitude: number },
 ): string {
   const maxIdx = SCALE_DESCENDING.indexOf(maxScale)
   if (maxIdx < 0) return ''
+
+  const hasEpicenter = hypocenter != null && (hypocenter.latitude !== 0 || hypocenter.longitude !== 0)
 
   const parts: string[] = []
   const mentioned = new Set<string>()  // 上位階で読み上げ済みの地域名
@@ -35,6 +56,17 @@ function buildRegionText(
     if (scale == null) break
     let names = regionNamesForScale(points, scale).filter(n => !mentioned.has(n))
     if (names.length === 0) continue
+    if (hasEpicenter) {
+      names = [...names].sort((a, b) => {
+        const ca = coordForName(a)
+        const cb = coordForName(b)
+        if (!ca && !cb) return 0
+        if (!ca) return 1
+        if (!cb) return -1
+        return distSq(hypocenter!.latitude, hypocenter!.longitude, ca[0], ca[1])
+             - distSq(hypocenter!.latitude, hypocenter!.longitude, cb[0], cb[1])
+      })
+    }
     let omittedCount = 0
     if (opts.maxRegions > 0 && names.length > opts.maxRegions) {
       omittedCount = names.length - opts.maxRegions
@@ -133,7 +165,7 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
 
   if (type === 'ScalePrompt') {
     const prefix = isNew ? '震度速報。' : '震度速報が更新されました。'
-    const regionText = buildRegionText(event.points, maxScale, opts)
+    const regionText = buildRegionText(event.points, maxScale, opts, hypocenter)
     return `${prefix}${regionText || `最大震度${intensityText(maxScale)}を観測しました。`}`
   }
 
@@ -182,7 +214,7 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
     text += 'この地震により、一部の沿岸に津波警報等が発表されています。注意してください。'
   }
 
-  const regionText = buildRegionText(event.points, maxScale, opts)
+  const regionText = buildRegionText(event.points, maxScale, opts, hypocenter)
   if (regionText) {
     text += regionText
   }
