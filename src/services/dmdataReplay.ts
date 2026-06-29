@@ -186,5 +186,17 @@ export async function fetchDmdataReplayEvents(
 
   entries.sort((a, b) => a.replayTime.getTime() - b.replayTime.getTime())
 
+  // 同一 replayTime のエントリを 50ms ずつずらして別ティックで発火させる。
+  // 同秒に複数の EEW が届いた場合、同一ティックで処理されると2つ目以降が「続報」として
+  // 扱われ（isNew=false）、初報アラームが鳴らないためライブ受信と異なる挙動になる。
+  for (let i = 1; i < entries.length; i++) {
+    if (entries[i].replayTime.getTime() <= entries[i - 1].replayTime.getTime()) {
+      entries[i] = {
+        ...entries[i],
+        replayTime: new Date(entries[i - 1].replayTime.getTime() + 50),
+      }
+    }
+  }
+
   return entries
 }
