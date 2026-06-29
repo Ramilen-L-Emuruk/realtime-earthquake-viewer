@@ -12,7 +12,7 @@ export function PsWaveLayer({ psWave }: { psWave: PsWaveCircle[] }) {
     canvas.style.position = 'absolute'
     canvas.style.pointerEvents = 'none'
     canvas.style.transformOrigin = '0 0'
-    map.getPanes().overlayPane?.appendChild(canvas)
+    map.getPane('ps-wave')?.appendChild(canvas)
     canvasRef.current = canvas
     return () => {
       canvas.remove()
