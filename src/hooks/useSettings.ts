@@ -22,7 +22,6 @@ export interface AppSettings {
   homeLng: number | null           // ホーム地点 経度（null = 未設定）
   dmdataApiKey: string             // DMDATA.JP APIキー（DMDSS版のみ使用、空文字 = 未設定）
   dmdataTestDelivery: boolean      // 試験報・訓練報（EEW配信テスト VXSE42 等）を受信する（DMDSS版・検証用）
-  eewFinalClearSec: number         // EEW最終報受信後に自動解除するまでの秒数（DMDSS版のみ有効）
   voicevoxEnabled: boolean         // VOICEVOX 読み上げを有効にする
   voicevoxUrl: string              // VOICEVOX の HTTP API ベース URL
   voicevoxSpeakerId: number        // VOICEVOX 話者 ID
@@ -54,7 +53,6 @@ const DEFAULTS: AppSettings = {
   homeLng: null,
   dmdataApiKey: '',
   dmdataTestDelivery: false,
-  eewFinalClearSec: 180,
   voicevoxEnabled: false,
   voicevoxUrl: 'http://localhost:50021',
   voicevoxSpeakerId: 0,
