@@ -595,7 +595,42 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   const maxClass    = parseInt(maxClassStr, 10)
 
   if (!(maxClass >= 1 && maxClass <= 4)) return null
-  return { id, eventId, time: reportDateTime, originTime, maxClass, cancelled: false }
+
+  // 観測点・細分区域データを抽出
+  const points: import('../types/earthquake').LpgmPoint[] = []
+  const regions: import('../types/earthquake').LpgmRegion[] = []
+
+  const allEls = doc.getElementsByTagName('*')
+  const prefEls: Element[] = []
+  for (let i = 0; i < allEls.length; i++) {
+    if (allEls[i].localName === 'Pref') prefEls.push(allEls[i])
+  }
+  for (const prefEl of prefEls) {
+    const prefName = xmlText(xmlQ(prefEl, 'Name'))
+    const prefChildren = prefEl.getElementsByTagName('*')
+    const areaElsArr: Element[] = []
+    for (let i = 0; i < prefChildren.length; i++) {
+      if (prefChildren[i].localName === 'Area') areaElsArr.push(prefChildren[i])
+    }
+    for (const areaEl of areaElsArr) {
+      const areaName    = xmlText(xmlQ(areaEl, 'Name'))
+      const areaCode    = xmlText(xmlQ(areaEl, 'Code'))
+      const areaMaxLgInt = parseInt(xmlText(xmlQ(areaEl, 'MaxLgInt')), 10)
+      if (areaMaxLgInt >= 1) regions.push({ code: areaCode, name: areaName, maxLgInt: areaMaxLgInt })
+
+      const areaChildren = areaEl.getElementsByTagName('*')
+      for (let i = 0; i < areaChildren.length; i++) {
+        if (areaChildren[i].localName !== 'IntensityStation') continue
+        const stEl  = areaChildren[i]
+        const stName = xmlText(xmlQ(stEl, 'Name'))
+        const stCode = xmlText(xmlQ(stEl, 'Code'))
+        const lgInt  = parseInt(xmlText(xmlQ(stEl, 'LgInt')), 10)
+        if (lgInt >= 1) points.push({ code: stCode, name: stName, pref: prefName, lgInt })
+      }
+    }
+  }
+
+  return { id, eventId, time: reportDateTime, originTime, maxClass, cancelled: false, points, regions }
 }
 
 // REST API 経由の JMA XML（VYSE50/51/52: 南海トラフ地震臨時情報）を JMANankai にパース
@@ -712,5 +747,18 @@ export function parseLpgm(data: Record<string, unknown>): JMALpgm | null {
 
   if (!(maxClass >= 1 && maxClass <= 4)) return null
 
-  return { id, eventId, time, originTime, maxClass, cancelled: false }
+  // 細分区域・観測点データを抽出
+  const rawRegions = arr(intensity.regions)
+  const regions: import('../types/earthquake').LpgmRegion[] = rawRegions
+    .map(r => ({ code: str(obj(r).code), name: str(obj(r).name), maxLgInt: parseInt(str(obj(r).maxLgInt), 10) }))
+    .filter(r => r.maxLgInt >= 1)
+
+  // JSON電文の station.name は都道府県略称を含む形式（例: "茨城鹿嶋市鉢形"）
+  // pref は空文字で格納し、座標解決は JapanMap 側の stationPrefIndex に委ねる
+  const rawStations = arr(intensity.stations)
+  const points: import('../types/earthquake').LpgmPoint[] = rawStations
+    .map(s => ({ code: str(obj(s).code), name: str(obj(s).name), pref: '', lgInt: parseInt(str(obj(s).lgInt), 10) }))
+    .filter(p => p.lgInt >= 1)
+
+  return { id, eventId, time, originTime, maxClass, cancelled: false, points, regions }
 }
