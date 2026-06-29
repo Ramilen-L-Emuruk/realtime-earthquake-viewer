@@ -162,6 +162,7 @@ function FitToEEW({ eews, psWave, idleRevertSec = 30 }: { eews: EEWAlert[]; psWa
   const userInteractedRef = useRef(false)
   const resetTimerRef = useRef<number | undefined>(undefined)
   const prevEewsCountRef = useRef<number>(0)
+  const prevPsWaveCountRef = useRef<number>(0)
 
   // 最新 EEW（originTime 降順）を追従対象とする
   const latest = eews.length > 0
@@ -219,10 +220,16 @@ function FitToEEW({ eews, psWave, idleRevertSec = 30 }: { eews: EEWAlert[]; psWa
 
   // EEW 数が減少（=1つ以上が解除）かつ残りがある場合: 残りの P/S波円に強制再フィット
   // 「収まっているかどうか」を問わずフィットし直す（解除前のズームアウト状態を補正するため）
+  // psWave 数の減少にも反応する: DMDSS版では activeEEWs 変化と dmdssWaves 更新の間に
+  // 1レンダーのタイムラグがあり、EEW 解除時に古い psWave で一度フィットしてしまうため
   useEffect(() => {
     const prevCount = prevEewsCountRef.current
+    const prevPsCount = prevPsWaveCountRef.current
     prevEewsCountRef.current = eews.length
-    if (eews.length >= prevCount) return
+    prevPsWaveCountRef.current = psWave.length
+    const eewDecreased = eews.length < prevCount
+    const psWaveDecreased = psWave.length < prevPsCount
+    if (!eewDecreased && !psWaveDecreased) return
     if (eews.length === 0) return
     if (userInteractedRef.current) return
 
