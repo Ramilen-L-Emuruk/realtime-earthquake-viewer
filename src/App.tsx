@@ -240,7 +240,8 @@ export function App() {
         key,
         (isNew ? currentLevel : Math.max(prevLevel, currentLevel)) as 0 | 1 | 2,
       )
-      activeEEWScalesRef.current.set(key, Math.max(prevScale, scale))
+      // activeEEWScalesRef は「実際に読み上げた最大震度」を保持する。
+      // 受信のたびに更新すると発話前の値で上書きされるため、firePhase2 内で更新する。
 
       if (settings.soundEnabled) {
         const eewSoundType = selectEEWSoundType(isNew, levelUpgraded, currentLevel, event.isFinal ?? false)
@@ -275,7 +276,11 @@ export function App() {
         eewTtsEventRef.current = event
         const firePhase2 = () => {
           if (eewTtsEventRef.current) {
-            const text = eewIntensityToText(eewTtsEventRef.current)
+            const spokenEvent = eewTtsEventRef.current
+            const spokenKey = spokenEvent.issue?.eventId ?? spokenEvent.id
+            // 読み上げた時点の震度を「発話済み最大震度」として記録する
+            activeEEWScalesRef.current.set(spokenKey, eewMaxScale(spokenEvent))
+            const text = eewIntensityToText(spokenEvent)
             if (text) {
               // Phase 1 の再生が終わってから Phase 2 を発話する
               eewPhase1PromiseRef.current.then(() => {
