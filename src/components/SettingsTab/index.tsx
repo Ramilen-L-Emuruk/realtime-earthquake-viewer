@@ -597,7 +597,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
         <Row label="EEW 続報" description="ダークピアノ F4 単音">
           <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('eewUpdate') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="EEW 最終報" description="ダークピアノ F4→C4 降下2音">
+        <Row label="EEW 最終報" description="ダークピアノ F4→C4 降下 + C5 跳躍">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('eewFinal') }}>▶ 試聴</TestButton>
         </Row>
         <Row label="EEW キャンセル" description="ダークピアノ A4→F4→C4 降下3音">
@@ -732,7 +732,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">3.8.22</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">3.8.23</span></Row>
         <Row label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"
