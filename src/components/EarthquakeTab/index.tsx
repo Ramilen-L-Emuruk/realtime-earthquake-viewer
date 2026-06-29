@@ -11,11 +11,13 @@ interface Props {
   onLoadMore: () => void
   error: string | null
   lpgmByEventId: ReadonlyMap<string, JMALpgm>
+  activeLpgmEventId: string | null
+  onToggleLpgm: (eventId: string) => void
 }
 
 // 地震情報タブの右パネル。地震カードの一覧を表示し、クリックで地図表示対象を選択する。
 // 地図そのものは App が常時表示する。
-export function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, lpgmByEventId }: Props) {
+export function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, lpgmByEventId, activeLpgmEventId, onToggleLpgm }: Props) {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -56,6 +58,8 @@ export function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, is
           isSelected={quake.earthquake.time === selectedId}
           onSelect={() => onSelect(quake.earthquake.time)}
           lpgm={lpgmByEventId.get(quake.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1] ?? '')}
+          activeLpgmEventId={activeLpgmEventId}
+          onToggleLpgm={onToggleLpgm}
         />
       ))}
       {hasMore && (
