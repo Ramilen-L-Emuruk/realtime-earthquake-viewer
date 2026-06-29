@@ -1,6 +1,7 @@
 import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseVyse5xFromXml, parseVyse60FromXml } from './dmdataParser'
 import { parseTar } from '../utils/tarParser'
 import type { P2PQuakeEvent, JMAQuake, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, JMATsunami } from '../types/earthquake'
+import { calcEEWCancelTime } from '../utils/eew'
 
 const QUAKE_TYPES = new Set(['VXSE51', 'VXSE52', 'VXSE53', 'VXSE61'])
 const TSUNAMI_TYPES = new Set(['VTSE41', 'VTSE51', 'VTSE52'])
@@ -217,7 +218,6 @@ export async function fetchDmdataReplayEvents(
 export function filterPreWindowEvents(
   entries: ReplayEntry[],
   targetTime: Date,
-  eewFinalClearSec: number,
 ): ReplayEntry[] {
   // EEW は同一イベント ID の複数報をグルーピングして T 時点の有効性を判定する
   // 状態管理キーは issue.eventId（シリアル番号を含まない）に合わせる
@@ -271,9 +271,8 @@ export function filterPreWindowEvents(
     }
 
     if (finalReport) {
-      // 最終報受信から eewFinalClearSec 秒が T までに経過していれば解除済み
-      const expireAt = new Date(finalReport.eew.time).getTime() + eewFinalClearSec * 1000
-      if (expireAt <= targetTime.getTime()) continue
+      const expireAt = calcEEWCancelTime(finalReport.eew, new Date(finalReport.eew.time))
+      if (expireAt.getTime() <= targetTime.getTime()) continue
       result.push(finalReport.entry)
     } else {
       // まだ最終報がない場合は最新の非最終報を1件だけ注入

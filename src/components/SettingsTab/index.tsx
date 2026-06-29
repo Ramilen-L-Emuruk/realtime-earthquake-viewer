@@ -349,19 +349,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
               onChange={v => onUpdate('dmdataTestDelivery', v)}
             />
           </Row>
-          <Row label="EEW最終報の自動解除時間" description="最終報受信後、EEWカードを自動的に解除するまでの秒数">
-            <select
-              value={settings.eewFinalClearSec}
-              onChange={e => onUpdate('eewFinalClearSec', Number(e.target.value))}
-              className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
-            >
-              <option value={60}>60秒</option>
-              <option value={120}>120秒（2分）</option>
-              <option value={180}>180秒（3分）</option>
-              <option value={300}>300秒（5分）</option>
-              <option value={600}>600秒（10分）</option>
-            </select>
-          </Row>
+
         </Section>
       )}
 
@@ -741,7 +729,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">3.8.19</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">3.8.20</span></Row>
         <Row label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"
