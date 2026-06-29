@@ -233,26 +233,55 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
             </div>
           )}
 
-          {/* 都道府県別震度 */}
-          {prefGroups.length > 0 && (
-            <div className="flex flex-col gap-0.5 pt-1 border-t border-white/10">
-              {prefGroups.map(({ pref, scale }, idx) => (
-                <div
-                  key={pref}
-                  className="flex items-center justify-between px-2 py-1.5 rounded"
-                  style={{ backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent' }}
-                >
-                  <span
-                    className="font-bold flex-shrink-0 whitespace-nowrap"
-                    style={{ fontSize: '18px', color: getIntensityColor(scale) }}
-                  >
-                    震度{getIntensityLabel(scale)}
-                  </span>
-                  <span className="text-white" style={{ fontSize: '18px' }}>{pref}</span>
+          {/* 各地の震度 / 長周期地震動階級（LPGM トグルオン時は階級表示に切り替え） */}
+          {(() => {
+            const isLpgmActive = lpgm && activeLpgmEventId === lpgm.eventId
+            const lpgmRegions = lpgm?.regions?.filter(r => r.maxLgInt >= 1)
+              .slice()
+              .sort((a, b) => b.maxLgInt - a.maxLgInt)
+
+            if (isLpgmActive && lpgmRegions && lpgmRegions.length > 0) {
+              return (
+                <div className="flex flex-col gap-0.5 pt-1 border-t border-white/10">
+                  {lpgmRegions.map(({ name, maxLgInt }, idx) => (
+                    <div
+                      key={name}
+                      className="flex items-center justify-between px-2 py-1.5 rounded"
+                      style={{ backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent' }}
+                    >
+                      <span
+                        className="font-bold flex-shrink-0 whitespace-nowrap"
+                        style={{ fontSize: '18px', color: getLpgmClassColor(maxLgInt) }}
+                      >
+                        長周期 {getLpgmClassLabel(maxLgInt)}
+                      </span>
+                      <span className="text-white" style={{ fontSize: '18px' }}>{name}</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          )}
+              )
+            }
+
+            return prefGroups.length > 0 ? (
+              <div className="flex flex-col gap-0.5 pt-1 border-t border-white/10">
+                {prefGroups.map(({ pref, scale }, idx) => (
+                  <div
+                    key={pref}
+                    className="flex items-center justify-between px-2 py-1.5 rounded"
+                    style={{ backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent' }}
+                  >
+                    <span
+                      className="font-bold flex-shrink-0 whitespace-nowrap"
+                      style={{ fontSize: '18px', color: getIntensityColor(scale) }}
+                    >
+                      震度{getIntensityLabel(scale)}
+                    </span>
+                    <span className="text-white" style={{ fontSize: '18px' }}>{pref}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null
+          })()}
         </div>
       </button>
     )
