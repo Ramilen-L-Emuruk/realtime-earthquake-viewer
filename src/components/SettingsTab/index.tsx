@@ -741,7 +741,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">3.8.4</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">3.8.5</span></Row>
         <Row label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"
