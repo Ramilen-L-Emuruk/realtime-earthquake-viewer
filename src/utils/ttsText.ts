@@ -54,9 +54,16 @@ function magnitudeText(mag: number): string {
   return mag.toFixed(1)
 }
 
-function depthText(depth: number): string {
-  if (depth <= 0) return 'ごく浅い'
-  return `${depth}キロメートル`
+/** 「〇〇を震源とする」の〇〇部分を返す（Destination/ScaleAndDestination 系） */
+function depthSourcePhrase(depth: number): string {
+  if (depth <= 0) return 'ごく浅い場所'
+  return `深さ${depth}キロメートル`
+}
+
+/** 「震源の深さ〇〇」の〇〇部分を返す（DestinationAmended 系） */
+function depthAmendPhrase(depth: number): string {
+  if (depth <= 0) return '震源の深さはごく浅く'
+  return `震源の深さ${depth}キロメートル`
 }
 
 function intensityText(scale: IntensityScale | number): string {
@@ -133,7 +140,7 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
   const time = formatTime(event.earthquake.time)
 
   if (type === 'DestinationAmended') {
-    let text = `顕著な地震の震源要素更新のお知らせ。${time}頃発生した${hypocenter.name}の地震について、震源の深さ${depthText(hypocenter.depth)}、マグニチュード${magnitudeText(hypocenter.magnitude)}に更新されました。`
+    let text = `顕著な地震の震源要素更新のお知らせ。${time}頃発生した${hypocenter.name}の地震について、${depthAmendPhrase(hypocenter.depth)}、マグニチュード${magnitudeText(hypocenter.magnitude)}に更新されました。`
     if (domesticTsunami === 'None' || domesticTsunami === 'NonEffective') {
       text += 'この地震による津波の心配はありません。'
     } else if (domesticTsunami === 'Checking') {
@@ -148,7 +155,7 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
 
   if (type === 'Destination' || type === 'Foreign' || type === 'Other') {
     const prefix = isNew ? '震源情報。' : '震源情報が更新されました。'
-    let text = `${prefix}${time}頃、${hypocenter.name}、深さ${depthText(hypocenter.depth)}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
+    let text = `${prefix}${time}頃、${hypocenter.name}、${depthSourcePhrase(hypocenter.depth)}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
     if (domesticTsunami === 'None' || domesticTsunami === 'NonEffective') {
       text += 'この地震による津波の心配はありません。'
     } else if (domesticTsunami === 'Checking') {
@@ -163,7 +170,7 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
 
   // ScaleAndDestination / DetailScale
   const prefix = isNew ? '地震情報。' : '地震情報が更新されました。'
-  let text = `${prefix}${time}頃、${hypocenter.name}、深さ${depthText(hypocenter.depth)}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
+  let text = `${prefix}${time}頃、${hypocenter.name}、${depthSourcePhrase(hypocenter.depth)}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
 
   if (domesticTsunami === 'None' || domesticTsunami === 'NonEffective') {
     text += 'この地震による津波の心配はありません。'
