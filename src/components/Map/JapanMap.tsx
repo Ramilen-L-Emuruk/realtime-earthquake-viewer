@@ -651,7 +651,7 @@ export function JapanMap({
       {/* 津波予報区の海岸線（等級ごとに色分け）。津波発報中は全モードで表示・点滅する。
           preferCanvas 環境では Polyline への className が効かないため Pane 全体に適用する。 */}
       {tsunamiLines.length > 0 && (
-        <Pane name="tsunami-lines" style={{ zIndex: 450 }} className="tsunami-blink">
+        <Pane name="tsunami-lines" style={{ zIndex: 270 }} className="tsunami-blink">
           {tsunamiLines.map((line) =>
             line.segments.map((segment, i) => (
               <Polyline
