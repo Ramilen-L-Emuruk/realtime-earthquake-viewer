@@ -479,6 +479,8 @@ export function JapanMap({
   const regionAggregates = useMemo(() => {
     if (!aggregateByRegion || subregionIndex.length === 0) return []
     const maxByName = new Map<string, number>()
+
+    // パス1: isArea:false 観測点 → 点内包判定
     for (const m of intensityMarkers) {
       const [lat, lng] = m.position
       for (const e of subregionIndex) {
@@ -490,6 +492,16 @@ export function JapanMap({
         }
       }
     }
+
+    // パス2: isArea:true の地点 → 区域名で直接マッチ（観測点が海上でも確実に塗りつぶす）
+    if (quake) {
+      for (const p of quake.points) {
+        if (!p.isArea) continue
+        const cur = maxByName.get(p.addr)
+        if (cur == null || p.scale > cur) maxByName.set(p.addr, p.scale)
+      }
+    }
+
     const list: { name: string; scale: number; rings: LatLng[][]; label: LatLng }[] = []
     for (const e of subregionIndex) {
       const scale = maxByName.get(e.sr.name)
@@ -497,7 +509,7 @@ export function JapanMap({
     }
     // 弱い震度を先に描画し、強い震度を前面に重ねる
     return list.sort((a, b) => a.scale - b.scale)
-  }, [aggregateByRegion, subregionIndex, intensityMarkers])
+  }, [aggregateByRegion, subregionIndex, intensityMarkers, quake])
 
   // LPGM 観測点マーカー（zoom > MAX_ZOOM 時に個別ドット表示）
   const lpgmMarkers = useMemo(() => {
