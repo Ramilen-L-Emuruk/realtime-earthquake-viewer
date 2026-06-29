@@ -586,7 +586,7 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   const earthquakeEl = xmlQ(doc, 'Earthquake')
   const originTime   = earthquakeEl ? xmlText(xmlQ(earthquakeEl, 'OriginTime')) : ''
 
-  if (cancelled) return { id, time: reportDateTime, originTime, maxClass: 0, cancelled: true }
+  if (cancelled) return { id, eventId, time: reportDateTime, originTime, maxClass: 0, cancelled: true }
   if (!originTime) return null
 
   // VXSE62 XML: Intensity > Observation > MaxLgInt が最大長周期地震動階級
@@ -595,7 +595,7 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   const maxClass    = parseInt(maxClassStr, 10)
 
   if (!(maxClass >= 1 && maxClass <= 4)) return null
-  return { id, time: reportDateTime, originTime, maxClass, cancelled: false }
+  return { id, eventId, time: reportDateTime, originTime, maxClass, cancelled: false }
 }
 
 // REST API 経由の JMA XML（VYSE50/51/52: 南海トラフ地震臨時情報）を JMANankai にパース
@@ -701,7 +701,7 @@ export function parseLpgm(data: Record<string, unknown>): JMALpgm | null {
   const originTime = str(earthquake.originTime)
 
   if (cancelled) {
-    return { id, time, originTime, maxClass: 0, cancelled: true }
+    return { id, eventId, time, originTime, maxClass: 0, cancelled: true }
   }
 
   if (!originTime) return null
@@ -712,5 +712,5 @@ export function parseLpgm(data: Record<string, unknown>): JMALpgm | null {
 
   if (!(maxClass >= 1 && maxClass <= 4)) return null
 
-  return { id, time, originTime, maxClass, cancelled: false }
+  return { id, eventId, time, originTime, maxClass, cancelled: false }
 }

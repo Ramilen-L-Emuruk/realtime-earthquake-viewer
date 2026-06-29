@@ -111,7 +111,7 @@ export interface EarthquakeState {
   earthquakes: JMAQuake[]
   tsunamis: JMATsunami[]
   activeEEWs: ReadonlyMap<string, EEWAlert>
-  lpgmByOriginTime: ReadonlyMap<string, JMALpgm>
+  lpgmByEventId: ReadonlyMap<string, JMALpgm>
   nankai: JMANankai | null
   kohatsu: JMAKohatsu | null
   connectionStatus: ConnectionStatus
@@ -134,7 +134,7 @@ export function useEarthquakes(
     earthquakes: [],
     tsunamis: [],
     activeEEWs: new Map(),
-    lpgmByOriginTime: new Map(),
+    lpgmByEventId: new Map(),
     nankai: null,
     kohatsu: null,
     connectionStatus: (isDmdss && !dmdataApiKey) ? 'disconnected' : 'connecting',
@@ -376,10 +376,10 @@ export function useEarthquakes(
         } else if (payload.kind === 'lpgm') {
           const lpgm = payload.data
           setState(prev => {
-            const next = new Map(prev.lpgmByOriginTime)
-            if (lpgm.cancelled) next.delete(lpgm.originTime)
-            else next.set(lpgm.originTime, lpgm)
-            return { ...prev, lpgmByOriginTime: next }
+            const next = new Map(prev.lpgmByEventId)
+            if (lpgm.cancelled) next.delete(lpgm.eventId)
+            else next.set(lpgm.eventId, lpgm)
+            return { ...prev, lpgmByEventId: next }
           })
           if (!silent && !lpgm.cancelled && lpgm.maxClass >= 1) {
             onLiveEventRef.current?.({ kind: 'lpgm', data: lpgm } as unknown as P2PQuakeEvent)
@@ -452,7 +452,7 @@ export function useEarthquakes(
           dmdataCursorRef.current = nextToken
           const seenQuakes = new Map<string, JMAQuake>()
           for (const q of quakeEvents) {
-            const key = q.earthquake.time
+            const key = q.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1] ?? q.earthquake.time
             const existing = seenQuakes.get(key)
             if (!existing || (ISSUE_PRIORITY[q.issue.type] ?? 0) > (ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
               seenQuakes.set(key, q)
@@ -476,12 +476,12 @@ export function useEarthquakes(
           const lpgmEvents = oldest
             ? await fetchDmdataLpgms(dmdataApiKey, oldest).catch(() => [])
             : []
-          const lpgmByOriginTime = new Map<string, JMALpgm>()
+          const lpgmByEventId = new Map<string, JMALpgm>()
           for (const lpgm of lpgmEvents) {
             if (lpgm.cancelled) continue
-            const existing = lpgmByOriginTime.get(lpgm.originTime)
+            const existing = lpgmByEventId.get(lpgm.eventId)
             if (!existing || lpgm.time > existing.time) {
-              lpgmByOriginTime.set(lpgm.originTime, lpgm)
+              lpgmByEventId.set(lpgm.eventId, lpgm)
             }
           }
 
@@ -502,7 +502,7 @@ export function useEarthquakes(
             ...prev,
             earthquakes,
             tsunamis,
-            lpgmByOriginTime,
+            lpgmByEventId,
             nankai: nankaiData ?? null,
             kohatsu: kohatsuData ?? null,
             lastUpdate: new Date(),
@@ -540,10 +540,10 @@ export function useEarthquakes(
         if (ev.kind === 'lpgm') {
           const lpgm = ev.data
           setState(prev => {
-            const next = new Map(prev.lpgmByOriginTime)
-            if (lpgm.cancelled) next.delete(lpgm.originTime)
-            else next.set(lpgm.originTime, lpgm)
-            return { ...prev, lpgmByOriginTime: next }
+            const next = new Map(prev.lpgmByEventId)
+            if (lpgm.cancelled) next.delete(lpgm.eventId)
+            else next.set(lpgm.eventId, lpgm)
+            return { ...prev, lpgmByEventId: next }
           })
           if (!lpgm.cancelled && lpgm.maxClass >= 1) {
             onLiveEventRef.current?.({ kind: 'lpgm', data: lpgm } as unknown as P2PQuakeEvent)
@@ -687,10 +687,10 @@ export function useEarthquakes(
         const { quakes: events, nextToken } = await fetchDmdataEarthquakes(apiKey, LOAD_MORE_BATCH, cursor)
         dmdataCursorRef.current = nextToken
         setState(prev => {
-          const seenKeys = new Set(prev.earthquakes.map(e => e.earthquake.time))
+          const seenKeys = new Set(prev.earthquakes.map(e => e.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1] ?? e.earthquake.time))
           const seenForBatch = new Map<string, JMAQuake>()
           for (const q of events) {
-            const key = q.earthquake.time
+            const key = q.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1] ?? q.earthquake.time
             if (seenKeys.has(key)) continue
             const existing = seenForBatch.get(key)
             if (!existing || (ISSUE_PRIORITY[q.issue.type] ?? 0) > (ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
@@ -713,15 +713,15 @@ export function useEarthquakes(
           const lpgmEvents = await fetchDmdataLpgms(apiKey, newOldest).catch(() => [])
           if (lpgmEvents.length > 0) {
             setState(prev => {
-              const lpgmByOriginTime = new Map(prev.lpgmByOriginTime)
+              const lpgmByEventId = new Map(prev.lpgmByEventId)
               for (const lpgm of lpgmEvents) {
                 if (lpgm.cancelled) continue
-                const existing = lpgmByOriginTime.get(lpgm.originTime)
+                const existing = lpgmByEventId.get(lpgm.eventId)
                 if (!existing || lpgm.time > existing.time) {
-                  lpgmByOriginTime.set(lpgm.originTime, lpgm)
+                  lpgmByEventId.set(lpgm.eventId, lpgm)
                 }
               }
-              return { ...prev, lpgmByOriginTime }
+              return { ...prev, lpgmByEventId }
             })
           }
         }
@@ -818,7 +818,7 @@ export function useEarthquakes(
       earthquakes: [],
       tsunamis: [],
       activeEEWs: new Map(),
-      lpgmByOriginTime: new Map(),
+      lpgmByEventId: new Map(),
       nankai: null,
       kohatsu: null,
     }))

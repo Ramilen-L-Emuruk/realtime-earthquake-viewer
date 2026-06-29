@@ -153,8 +153,9 @@ export interface EEWAlert {
 
 export interface JMALpgm {
   id: string
+  eventId: string     // VXSE51/52/53/62 が共有する 14 桁タイムスタンプ。lpgmByEventId の Map キー
   time: string
-  originTime: string  // JMAQuake.earthquake.time と照合するキー
+  originTime: string  // TTS 読み上げテキスト用
   maxClass: number    // 1〜4
   cancelled: boolean
 }
