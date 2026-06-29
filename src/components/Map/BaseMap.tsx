@@ -37,19 +37,28 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
   const applyRef = useRef<() => void>()
 
   useEffect(() => {
-    // ペイン構成（いずれも overlayPane z=400 より下）:
-    //   basemap(250)        : 陸地塗り・区域境界・県境
-    //   quake-region-fill(260): 地震モードの一次細分区域別震度塗り（JapanMap が使用）
-    //   eew-region-fill(260)  : EEW 予想震度の区域塗り（JapanMap が使用）
-    //   basemap-labels(270) : 地方/県/区域名ラベル（塗りより前面）
+    // ペイン構成:
+    //   basemap(250)           : 陸地塗り・区域境界・県境
+    //   quake-region-fill(260) : 地震モードの一次細分区域別震度塗り（JapanMap が使用）
+    //   eew-region-fill(260)   : EEW 予想震度の区域塗り（JapanMap が使用）
+    //   lpgm-region-fill(261)  : 長周期地震動の区域塗り（JapanMap が使用）
+    //   tsunami-lines(270)     : 津波海岸線（JapanMap が使用）
+    //   ps-wave(280)           : P/S波円（PsWaveLayer が使用）
+    //   overlayPane(400)       : 強震モニタ閾値以下・検知点（Leaflet デフォルト）
+    //   basemap-labels(450)    : 地方/県/区域名ラベル
     if (!map.getPane('basemap')) {
       const pane = map.createPane('basemap')
       pane.style.zIndex = '250'
       pane.style.pointerEvents = 'none'
     }
+    if (!map.getPane('ps-wave')) {
+      const pane = map.createPane('ps-wave')
+      pane.style.zIndex = '280'
+      pane.style.pointerEvents = 'none'
+    }
     if (!map.getPane('basemap-labels')) {
       const pane = map.createPane('basemap-labels')
-      pane.style.zIndex = '270'
+      pane.style.zIndex = '450'
       pane.style.pointerEvents = 'none'
     }
     const renderer = L.canvas({ pane: 'basemap', padding: 0.5 })
