@@ -276,13 +276,53 @@ export function kohatsuToText(event: JMAKohatsu): string {
   return `北海道・三陸沖後発地震注意情報。${headline ? headline + '。' : ''}今後、大規模地震の発生可能性が平常時より高まっています。防災対応の確認をしてください。`
 }
 
+// 長周期地震動の観測地域テキストを生成する（buildRegionText の LPGM 版）
+function buildLpgmRegionText(lpgm: JMALpgm, opts: TtsRegionOptions): string {
+  if (!lpgm.regions || lpgm.regions.length === 0) return ''
+
+  // 階級ごとに地域名をまとめる（降順）
+  const byClass = new Map<number, string[]>()
+  for (const r of lpgm.regions) {
+    if (r.maxLgInt < 1) continue
+    const names = byClass.get(r.maxLgInt) ?? []
+    names.push(r.name)
+    byClass.set(r.maxLgInt, names)
+  }
+  const classes = [...byClass.keys()].sort((a, b) => b - a)
+  if (classes.length === 0) return ''
+
+  const parts: string[] = []
+  const mentioned = new Set<string>()
+  for (let i = 0; i <= opts.intensityLevels; i++) {
+    const cls = classes[i]
+    if (cls == null) break
+    let names = (byClass.get(cls) ?? []).filter(n => !mentioned.has(n))
+    if (names.length === 0) continue
+    let omittedCount = 0
+    if (opts.maxRegions > 0 && names.length > opts.maxRegions) {
+      omittedCount = names.length - opts.maxRegions
+      names = names.slice(0, opts.maxRegions)
+    }
+    names.forEach(n => mentioned.add(n))
+    const omittedSuffix = omittedCount > 0 ? `、ほか${omittedCount}地域` : ''
+    parts.push(`階級${cls}を${names.join('、')}${omittedSuffix}で`)
+  }
+
+  if (parts.length === 0) return ''
+  return parts.join('、') + '観測しました。'
+}
+
 /** VXSE62 長周期地震動情報の読み上げテキストを生成する。isNew=false のとき更新報として冒頭に通知する。 */
-export function lpgmToText(lpgm: JMALpgm, isNew: boolean): string {
+export function lpgmToText(lpgm: JMALpgm, opts: TtsRegionOptions, isNew: boolean): string {
   if (lpgm.cancelled) {
     return '長周期地震動情報はキャンセルされました。'
   }
   const time = formatTime(lpgm.originTime)
   const prefix = isNew ? '長周期地震動情報。' : '長周期地震動情報が更新されました。'
+  const regionText = buildLpgmRegionText(lpgm, opts)
+  if (regionText) {
+    return `${prefix}${time}頃発生した地震で、長周期地震動${regionText}`
+  }
   return `${prefix}${time}頃発生した地震で、長周期地震動階級${lpgm.maxClass}を観測しました。`
 }
 
