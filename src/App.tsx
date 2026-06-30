@@ -339,7 +339,7 @@ export function App() {
         const isNewLpgm = !seenLpgmEventIdsRef.current.has(lpgm.eventId)
         seenLpgmEventIdsRef.current.add(lpgm.eventId)
         setTimeout(() => {
-          speakWithVoicevox(settings.voicevoxUrl, lpgmToText(lpgm, isNewLpgm), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+          speakWithVoicevox(settings.voicevoxUrl, lpgmToText(lpgm, { intensityLevels: settings.ttsIntensityLevels, maxRegions: settings.ttsMaxRegions }, isNewLpgm), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
         }, 1000)
       }
       return
