@@ -1,11 +1,7 @@
 {
   "name": "realtime-earthquake-viewer",
   "private": true,
-<<<<<<< HEAD
-  "version": "3.8.36",
-=======
-  "version": "3.9.0",
->>>>>>> worktree/feat/eew-lpgm-toggle
+  "version": "3.9.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
