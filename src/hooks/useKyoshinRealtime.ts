@@ -22,8 +22,13 @@ export interface KyoshinRealtime {
 const ERROR_THRESHOLD = 5
 // 同一タイムスタンプの受信失敗時リトライ間隔 (ms)
 const RETRY_MS = 200
-// 通常ポーリング間隔 (ms)
+// 成功後に次タイムスタンプへ進むまでの待機時間 (ms)
 const POLL_MS = 1000
+// Yahoo サーバーがデータを公開するまでの遅延を考慮したオフセット (ms)。
+// 秒境界直後はデータが未公開のことが多いため、この分だけ過去を参照して初回失敗を減らす。
+const FETCH_OFFSET_MS = 500
+// target が現在時刻よりこの値以上遅れていたらリアルタイムにリセットする (ms)
+const MAX_LAG_MS = 5000
 
 interface UseKyoshinRealtimeOptions {
   /** EEW の新規発報・更新・解除を検知したときに呼ばれるコールバック。 */
@@ -57,9 +62,10 @@ export function useKyoshinRealtime(
   const timeOffsetRef = useRef(options?.timeOffset ?? null)
   timeOffsetRef.current = options?.timeOffset ?? null
 
-  // リアルタイム震度を POLL_MS ごとにポーリング（enabled の間のみ）。
-  // 受信失敗時は同一タイムスタンプで RETRY_MS 後にリトライし続け、
-  // 成功したら POLL_MS 後に次の tick を実行する。
+  // リアルタイム震度をポーリング（enabled の間のみ）。
+  // 各 tick は明示的な target タイムスタンプを取得する。
+  // 成功したら target + POLL_MS を次の target として POLL_MS 後に tick する（コマ落ち防止）。
+  // 失敗時は同一 target で RETRY_MS 後にリトライし続ける。
   // siteConfigId が変化したとき（リプレイ日付切替など）に対応する sitelist を自動で取得する。
   useEffect(() => {
     if (!enabled) return
@@ -111,21 +117,24 @@ export function useKyoshinRealtime(
       prevHypoInfoRef.current = curr
     }
 
-    // targetTime が指定されている場合はリトライ（同一タイムスタンプを再取得）
-    const tick = (targetTime?: Date) => {
-      const isRetry = targetTime !== undefined
-      const now = targetTime ?? (
-        timeOffsetRef.current != null
-          ? new Date(Date.now() + timeOffsetRef.current)
-          : new Date()
-      )
-
-      fetchRealtimeIntensity(now)
+    // target: 今回 fetch するタイムスタンプ。isRetry: 同一 target の再試行かどうか。
+    const tick = (target: Date, isRetry = false) => {
+      // 案A: fetch 開始時刻を記録し、成功後の待機時間から差し引いて遅延蓄積を防ぐ
+      const fetchStart = Date.now()
+      fetchRealtimeIntensity(target)
         .then((rt) => {
           if (!active) return
           processResult(rt)
-          // 成功したら POLL_MS 後に次の自然な tick
-          timer = setTimeout(() => tick(), POLL_MS)
+          // 案B: target が現在時刻から MAX_LAG_MS 以上遅れていたらリアルタイムにリセット
+          let nextTarget = new Date(target.getTime() + POLL_MS)
+          const lag = Date.now() - nextTarget.getTime()
+          if (lag > MAX_LAG_MS) {
+            nextTarget = new Date(Date.now() - FETCH_OFFSET_MS)
+          }
+          // 案A: fetch にかかった時間を待機時間から引いて POLL_MS ごとの一定間隔を維持する
+          const elapsed = Date.now() - fetchStart
+          const waitMs = Math.max(0, POLL_MS - elapsed)
+          timer = setTimeout(() => tick(nextTarget), waitMs)
         })
         .catch(() => {
           if (!active) return
@@ -134,12 +143,16 @@ export function useKyoshinRealtime(
             failCountRef.current += 1
             if (failCountRef.current >= ERROR_THRESHOLD) setError(true)
           }
-          // 同一タイムスタンプで RETRY_MS 後にリトライ
-          timer = setTimeout(() => tick(now), RETRY_MS)
+          // 同一 target で RETRY_MS 後にリトライ
+          timer = setTimeout(() => tick(target, true), RETRY_MS)
         })
     }
 
-    tick()
+    // 初回 target: FETCH_OFFSET_MS 分だけ過去から開始し、秒境界直後の未公開による失敗を抑制する
+    const initialTarget = timeOffsetRef.current != null
+      ? new Date(Date.now() + timeOffsetRef.current - FETCH_OFFSET_MS)
+      : new Date(Date.now() - FETCH_OFFSET_MS)
+    tick(initialTarget)
     return () => {
       active = false
       if (timer !== null) clearTimeout(timer)
