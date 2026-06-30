@@ -84,6 +84,9 @@ function parseEEWRegions(intensity: Record<string, unknown>): EEWRegion[] {
     const fm = obj(r.forecastMaxInt)
     const scaleTo = parseIntensityStr(str(fm.to) || str(fm.from))
     const scaleFrom = parseIntensityStr(str(fm.from))
+    const lgRaw = obj(r.forecastMaxLgInt)
+    const lgVal = parseInt(str(lgRaw.to) || str(lgRaw.from), 10)
+    const lgIntTo = (!isNaN(lgVal) && lgVal >= 1 && lgVal <= 4) ? lgVal : undefined
     regions.push({
       pref: '',
       name,
@@ -91,6 +94,7 @@ function parseEEWRegions(intensity: Record<string, unknown>): EEWRegion[] {
       scaleTo,
       kindCode: str(obj(r.kind).code),
       arrivalTime: str(r.arrivalTime) || null,
+      lgIntTo,
     })
   }
   return regions
