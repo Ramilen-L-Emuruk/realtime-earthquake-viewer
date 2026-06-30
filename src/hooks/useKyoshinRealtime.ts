@@ -22,6 +22,8 @@ export interface KyoshinRealtime {
 const ERROR_THRESHOLD = 5
 // 同一タイムスタンプの受信失敗時リトライ間隔 (ms)
 const RETRY_MS = 200
+// 成功後に次タイムスタンプへ進むまでの待機時間 (ms)
+const POLL_MS = 1000
 // Yahoo サーバーがデータを公開するまでの遅延を考慮したオフセット (ms)。
 // 秒境界直後はデータが未公開のことが多いため、この分だけ過去を参照して初回失敗を減らす。
 const FETCH_OFFSET_MS = 500
@@ -59,10 +61,9 @@ export function useKyoshinRealtime(
   timeOffsetRef.current = options?.timeOffset ?? null
 
   // リアルタイム震度をポーリング（enabled の間のみ）。
-  // 各 tick は「現在時刻 - FETCH_OFFSET_MS」のタイムスタンプを取得することで、
-  // 秒境界直後のデータ未公開による初回失敗を抑制する。
-  // 受信失敗時は同一タイムスタンプで RETRY_MS 後にリトライし続け、
-  // 成功したら次の秒境界 + FETCH_OFFSET_MS まで待って次の tick を実行する（案3）。
+  // 各 tick は明示的な target タイムスタンプを取得する。
+  // 成功したら target + POLL_MS を次の target として POLL_MS 後に tick する（コマ落ち防止）。
+  // 失敗時は同一 target で RETRY_MS 後にリトライし続ける。
   // siteConfigId が変化したとき（リプレイ日付切替など）に対応する sitelist を自動で取得する。
   useEffect(() => {
     if (!enabled) return
@@ -114,26 +115,15 @@ export function useKyoshinRealtime(
       prevHypoInfoRef.current = curr
     }
 
-    // targetTime が指定されている場合はリトライ（同一タイムスタンプを再取得）
-    const tick = (targetTime?: Date) => {
-      const isRetry = targetTime !== undefined
-      // 案1: FETCH_OFFSET_MS 分だけ過去を参照し、秒境界直後の未公開による失敗を抑制する
-      const now = targetTime ?? (
-        timeOffsetRef.current != null
-          ? new Date(Date.now() + timeOffsetRef.current - FETCH_OFFSET_MS)
-          : new Date(Date.now() - FETCH_OFFSET_MS)
-      )
-
-      fetchRealtimeIntensity(now)
+    // target: 今回 fetch するタイムスタンプ。isRetry: 同一 target の再試行かどうか。
+    const tick = (target: Date, isRetry = false) => {
+      fetchRealtimeIntensity(target)
         .then((rt) => {
           if (!active) return
           processResult(rt)
-          // 案3: 次の秒境界 + FETCH_OFFSET_MS まで待ってから tick することで、
-          // 遅延回復後も毎秒のコマを確実に取得できる。
-          // ((FETCH_OFFSET_MS - now%1000) + 1000) % 1000 が 0 になる場合は 1 秒待つ。
-          const msToNextTick =
-            ((FETCH_OFFSET_MS - (Date.now() % 1000)) + 1000) % 1000 || 1000
-          timer = setTimeout(() => tick(), msToNextTick)
+          // 成功タイムスタンプの POLL_MS 後を次回 target にする（コマ落ちしない連番進行）
+          const nextTarget = new Date(target.getTime() + POLL_MS)
+          timer = setTimeout(() => tick(nextTarget), POLL_MS)
         })
         .catch(() => {
           if (!active) return
@@ -142,12 +132,16 @@ export function useKyoshinRealtime(
             failCountRef.current += 1
             if (failCountRef.current >= ERROR_THRESHOLD) setError(true)
           }
-          // 同一タイムスタンプで RETRY_MS 後にリトライ
-          timer = setTimeout(() => tick(now), RETRY_MS)
+          // 同一 target で RETRY_MS 後にリトライ
+          timer = setTimeout(() => tick(target, true), RETRY_MS)
         })
     }
 
-    tick()
+    // 初回 target: FETCH_OFFSET_MS 分だけ過去から開始し、秒境界直後の未公開による失敗を抑制する
+    const initialTarget = timeOffsetRef.current != null
+      ? new Date(Date.now() + timeOffsetRef.current - FETCH_OFFSET_MS)
+      : new Date(Date.now() - FETCH_OFFSET_MS)
+    tick(initialTarget)
     return () => {
       active = false
       if (timer !== null) clearTimeout(timer)
