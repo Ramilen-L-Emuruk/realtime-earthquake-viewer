@@ -349,13 +349,13 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
 
   // EEW 最終報: ダークピアノ F4→C4 降下2音
   eewFinal: (ctx, base) => {
-    darkPiano(ctx, 349.2, base,        0.90, 0.24)
-    darkPiano(ctx, 261.6, base + 0.18, 1.00, 0.23)
+    darkPiano(ctx, 349.2, base,        0.55, 0.24)
+    darkPiano(ctx, 261.6, base + 0.18, 0.60, 0.23)
   },
 
   // EEW 続報: ダークピアノ F4 単音
   eewUpdate: (ctx, base) => {
-    darkPiano(ctx, 349.2, base, 0.85, 0.26)
+    darkPiano(ctx, 349.2, base, 0.50, 0.26)
   },
 
   // EEW 警報: ダークピアノ F4×3連打 + darkAlarm Bb3
