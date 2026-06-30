@@ -212,6 +212,23 @@ export function App() {
             speakWithVoicevox(settings.voicevoxUrl, eewCancelToText(event), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
           }, 1200)
         }
+        // 自動解除後に誤報取消電文が届いたケース: hadKey=false だが expired でもない
+        // EEW は既に画面から消えているため UI 更新は不要だが、誤報をユーザーに明示通知する
+        if (!hadKey && !event.expired) {
+          if (settings.soundEnabled) playAlertSound('eewCancel')
+          if (settings.notifyMinScale >= 0 && settings.notifyEEW) {
+            showBrowserNotification(
+              '緊急地震速報 誤報取消',
+              `${event.earthquake.hypocenter.name} の緊急地震速報は誤報でした`,
+              `eew-cancel-${key}`,
+            )
+          }
+          if (settings.voicevoxEnabled) {
+            setTimeout(() => {
+              speakWithVoicevox(settings.voicevoxUrl, eewCancelToText(event), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+            }, 1200)
+          }
+        }
         // EEW 解除時は読み上げタイマーをキャンセルする
         if (eewTtsTimerRef.current) { clearTimeout(eewTtsTimerRef.current); eewTtsTimerRef.current = null }
         if (eewTtsMaxTimerRef.current) { clearTimeout(eewTtsMaxTimerRef.current); eewTtsMaxTimerRef.current = null }
