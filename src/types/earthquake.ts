@@ -117,6 +117,7 @@ export interface EEWRegion {
   scaleTo: number
   kindCode: string
   arrivalTime: string | null
+  lgIntTo?: number  // 地域別予想長周期地震動階級（1〜4）。電文に含まれない場合は undefined
 }
 
 export interface EEWAlert {

@@ -408,6 +408,7 @@ interface Props {
   eews?: EEWAlert[]
   detectedPoints?: DetectedPoint[]
   idleRevertSec?: number
+  eewLpgmEventId?: string | null
 }
 
 export function JapanMap({
@@ -423,6 +424,7 @@ export function JapanMap({
   eews = [],
   detectedPoints = [],
   idleRevertSec = 30,
+  eewLpgmEventId = null,
 }: Props) {
   const stationCoords = useStationCoords()
   const tsunamiZones = useTsunamiZones()
@@ -556,6 +558,20 @@ export function JapanMap({
       .sort((a, b) => a.maxLgInt - b.maxLgInt)
   }, [lpgm, subregions])
 
+  // EEW LPGM 一次細分区域集約（選択された EEW の地域別予想長周期地震動階級）
+  const eewLpgmRegionAggregates = useMemo(() => {
+    if (!eewLpgmEventId || !subregions) return []
+    const eew = eews.find(e => (e.issue?.eventId ?? e.id) === eewLpgmEventId)
+    if (!eew) return []
+    const areas = eewAreas(eew).filter(a => (a.lgIntTo ?? 0) >= 1)
+    if (areas.length === 0) return []
+    const maxByName = new Map(areas.map(a => [a.name, a.lgIntTo!]))
+    return subregions
+      .filter(sr => (maxByName.get(sr.name) ?? 0) >= 1)
+      .map(sr => ({ ...sr, maxLgInt: maxByName.get(sr.name)! }))
+      .sort((a, b) => a.maxLgInt - b.maxLgInt)
+  }, [eewLpgmEventId, eews, subregions])
+
   // 一次細分区域名 -> 形状（EEW の予想震度塗り用に名前で引く）
   const subregionByName = useMemo(() => {
     const m = new Map<string, SubRegion>()
@@ -662,7 +678,7 @@ export function JapanMap({
 
       {/* EEW 受信時: 対象地域を予想震度で色塗り（ラベル z270 より背面・観測点ドットの下）
           警報域(isWarning): fillOpacity 0.55 + weight 2 で強調。予報域: 0.3 + weight 1 */}
-      {mode === 'kyoshin' && eewAreaFills.length > 0 && (
+      {mode === 'kyoshin' && eewAreaFills.length > 0 && eewLpgmRegionAggregates.length === 0 && (
         <Pane name="eew-region-fill" style={{ zIndex: 260 }}>
           {eewAreaFills.map((a) =>
             a.rings.map((ring, i) => (
@@ -677,6 +693,26 @@ export function JapanMap({
                 }}
               />
             )),
+          )}
+        </Pane>
+      )}
+
+      {/* EEW LPGM overlay: 選択された EEW の地域別予想長周期地震動階級を区域塗りで表示 */}
+      {mode === 'kyoshin' && eewLpgmRegionAggregates.length > 0 && (
+        <Pane name="eew-lpgm-region-fill" style={{ zIndex: 261 }}>
+          {eewLpgmRegionAggregates.flatMap((r, ri) =>
+            r.rings.map((ring, i) => (
+              <Polygon
+                key={`eew-lpgm-${ri}-${i}`}
+                positions={ring}
+                pathOptions={{
+                  color: getLpgmClassColor(r.maxLgInt),
+                  weight: 2,
+                  fillColor: getLpgmClassColor(r.maxLgInt),
+                  fillOpacity: 0.5,
+                }}
+              />
+            ))
           )}
         </Pane>
       )}
