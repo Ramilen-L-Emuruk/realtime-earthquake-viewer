@@ -1,4 +1,4 @@
-import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, EarthquakePoint } from '../types/earthquake'
+import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, EarthquakePoint, DomesticTsunami } from '../types/earthquake'
 import { eewMaxScale } from './eew'
 import { getIntensityLabel } from './intensity'
 import { tsunamiMaxGrade } from './tsunami'
@@ -158,6 +158,18 @@ export function eewToText(event: EEWAlert): string {
   return text
 }
 
+function domesticTsunamiText(t: DomesticTsunami): string {
+  switch (t) {
+    case 'None':        return 'この地震による津波の心配はありません。'
+    case 'NonEffective': return 'この地震による若干の海面変動が予想されますが、被害の心配はありません。'
+    case 'Checking':    return 'この地震による津波の有無を調査中です。'
+    case 'SeaFloor':    return '震源が海底のため、津波が発生するおそれがあります。'
+    case 'Watch':       return '現在津波注意報を発表中です。'
+    case 'Warning':     return '現在津波警報等を発表中です。'
+    case 'Unknown':     return '津波情報は不明です。'
+  }
+}
+
 /** code 551 地震情報の読み上げテキストを生成する。isNew=false のとき更新報として冒頭に通知する。 */
 export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew: boolean): string {
   const { hypocenter, maxScale, domesticTsunami } = event.earthquake
@@ -173,30 +185,14 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
 
   if (type === 'DestinationAmended') {
     let text = `顕著な地震の震源要素更新のお知らせ。${time}頃発生した${hypocenter.name}の地震について、${depthAmendPhrase(hypocenter.depth)}、マグニチュード${magnitudeText(hypocenter.magnitude)}に更新されました。`
-    if (domesticTsunami === 'None' || domesticTsunami === 'NonEffective') {
-      text += 'この地震による津波の心配はありません。'
-    } else if (domesticTsunami === 'Checking') {
-      text += 'この地震による津波の有無を調査中です。'
-    } else if (domesticTsunami === 'Watch') {
-      text += 'この地震により、一部の沿岸に津波注意報が発表されています。'
-    } else if (domesticTsunami === 'Warning') {
-      text += 'この地震により、一部の沿岸に津波警報等が発表されています。注意してください。'
-    }
+    text += domesticTsunamiText(domesticTsunami)
     return text
   }
 
   if (type === 'Destination' || type === 'Foreign' || type === 'Other') {
     const prefix = isNew ? '震源情報。' : '震源情報が更新されました。'
     let text = `${prefix}${time}頃、${hypocenter.name}、${depthSourcePhrase(hypocenter.depth)}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
-    if (domesticTsunami === 'None' || domesticTsunami === 'NonEffective') {
-      text += 'この地震による津波の心配はありません。'
-    } else if (domesticTsunami === 'Checking') {
-      text += 'この地震による津波の有無を調査中です。'
-    } else if (domesticTsunami === 'Watch') {
-      text += 'この地震により、一部の沿岸に津波注意報が発表されています。'
-    } else if (domesticTsunami === 'Warning') {
-      text += 'この地震により、一部の沿岸に津波警報等が発表されています。注意してください。'
-    }
+    text += domesticTsunamiText(domesticTsunami)
     return text
   }
 
@@ -204,15 +200,7 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
   const prefix = isNew ? '地震情報。' : '地震情報が更新されました。'
   let text = `${prefix}${time}頃、${hypocenter.name}、${depthSourcePhrase(hypocenter.depth)}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
 
-  if (domesticTsunami === 'None' || domesticTsunami === 'NonEffective') {
-    text += 'この地震による津波の心配はありません。'
-  } else if (domesticTsunami === 'Checking') {
-    text += 'この地震による津波の有無を調査中です。'
-  } else if (domesticTsunami === 'Watch') {
-    text += 'この地震により、一部の沿岸に津波注意報が発表されています。'
-  } else if (domesticTsunami === 'Warning') {
-    text += 'この地震により、一部の沿岸に津波警報等が発表されています。注意してください。'
-  }
+  text += domesticTsunamiText(domesticTsunami)
 
   const regionText = buildRegionText(event.points, maxScale, opts, hypocenter)
   if (regionText) {

@@ -35,6 +35,7 @@ export type DomesticTsunami =
   | 'None'
   | 'Unknown'
   | 'Checking'
+  | 'SeaFloor'
   | 'NonEffective'
   | 'Watch'
   | 'Warning'

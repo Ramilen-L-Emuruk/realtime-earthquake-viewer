@@ -216,7 +216,7 @@ function parseDomesticTsunamiFromComments(comments: Record<string, unknown>): Do
     if (code === '0213') return 'NonEffective'
     if (code === '0214') return 'NonEffective'
     if (code === '0215') return 'None'
-    if (code === '0216') return 'Checking'
+    if (code === '0216') return 'SeaFloor'
     if (code === '0217') return 'Checking'
   }
   return 'Unknown'
