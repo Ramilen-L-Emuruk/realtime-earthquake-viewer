@@ -107,10 +107,12 @@ export function App() {
   const [activeTab, setActiveTab] = useState<TabId>(settings.defaultTab)
   const [selectedQuakeId, setSelectedQuakeId] = useState<string | null>(null)
   const [activeLpgmEventId, setActiveLpgmEventId] = useState<string | null>(null)
+  const [activeLpgmSource, setActiveLpgmSource] = useState<'earthquake' | 'eew' | null>(null)
   // 地震カード切替時は LPGM 表示をリセットする
   const selectQuake = (id: string | null) => {
     setSelectedQuakeId(id)
     setActiveLpgmEventId(null)
+    setActiveLpgmSource(null)
   }
   // 直近に「新規地震」として注目を移した earthquake.time。続報（同一 time）では選択を維持する。
   const lastNewQuakeTimeRef = useRef<string | null>(null)
@@ -510,6 +512,17 @@ export function App() {
   // 地図に表示中の LPGM（バッジクリックでトグル）
   const activeLpgm = activeLpgmEventId ? (lpgmByEventId.get(activeLpgmEventId) ?? null) : null
 
+  // EEW カード経由で選択したLPGMは、次報でforecastMaxLpgmClassがなくなった場合や
+  // EEW 解除時に自動的に選択解除する
+  useEffect(() => {
+    if (!activeLpgmEventId || activeLpgmSource !== 'eew') return
+    const eew = activeEEWs.get(activeLpgmEventId)
+    if (!eew || eew.forecastMaxLpgmClass == null || eew.forecastMaxLpgmClass < 1) {
+      setActiveLpgmEventId(null)
+      setActiveLpgmSource(null)
+    }
+  }, [activeEEWs, activeLpgmEventId, activeLpgmSource])
+
   // ブラウザ通知: 新しい地震が設定震度以上なら通知
   const lastNotifiedIdRef = useRef<string | null>(null)
   useEffect(() => {
@@ -905,6 +918,7 @@ export function App() {
             eews={Array.from(activeEEWs.values())}
             detectedPoints={kyoshinDetection.points}
             idleRevertSec={settings.idleRevertSec}
+            eewLpgmEventId={activeLpgmSource === 'eew' ? activeLpgmEventId : null}
           />
           <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
           <SpecialInfoBanner nankai={nankai} kohatsu={kohatsu} />
@@ -926,7 +940,13 @@ export function App() {
               error={error}
               lpgmByEventId={lpgmByEventId}
               activeLpgmEventId={activeLpgmEventId}
-              onToggleLpgm={(eventId) => setActiveLpgmEventId(prev => prev === eventId ? null : eventId)}
+              onToggleLpgm={(eventId) => {
+                setActiveLpgmEventId(prev => {
+                  const next = prev === eventId ? null : eventId
+                  setActiveLpgmSource(next ? 'earthquake' : null)
+                  return next
+                })
+              }}
             />
           </div>
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'realtime' ? ' invisible pointer-events-none' : ''}`}>
@@ -936,6 +956,18 @@ export function App() {
               kyoshinSites={kyoshin.sites}
               kyoshinIndices={kyoshin.indices}
               swaveArrival={swaveArrival}
+              activeLpgmEventId={activeLpgmEventId}
+              onToggleLpgm={(eventId) => {
+                setActiveLpgmEventId(prev => {
+                  const next = prev === eventId ? null : eventId
+                  setActiveLpgmSource(next ? 'eew' : null)
+                  return next
+                })
+              }}
+              onDeactivateLpgm={() => {
+                setActiveLpgmEventId(null)
+                setActiveLpgmSource(null)
+              }}
             />
           </div>
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'tsunami' ? ' invisible pointer-events-none' : ''}`}>

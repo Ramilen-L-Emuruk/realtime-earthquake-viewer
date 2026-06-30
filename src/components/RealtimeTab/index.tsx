@@ -31,9 +31,17 @@ interface Props {
   kyoshinSites: SiteCoords
   kyoshinIndices: number[]
   swaveArrival: SWaveArrival | null
+  activeLpgmEventId?: string | null
+  onToggleLpgm?: (eventId: string) => void
+  onDeactivateLpgm?: () => void
 }
 
-function EEWCard({ eew }: { eew: EEWAlert }) {
+function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
+  eew: EEWAlert
+  activeLpgmEventId?: string | null
+  onToggleLpgm?: (eventId: string) => void
+  onDeactivateLpgm?: () => void
+}) {
   const maxScale = eewMaxScale(eew)
   const isWarning = eew.severity === 'Warning'
   const isSpecial = isWarning && maxScale >= 55
@@ -64,6 +72,7 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
         border: `2px solid ${cardBorder}`,
         boxShadow: `0 0 0 1px ${cardBorder}40`,
       }}
+      onClick={onDeactivateLpgm}
     >
       {/* 種別ヘッダー */}
       <div
@@ -113,13 +122,19 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
           </div>
         )}
 
-        {/* 推定最大長周期地震動階級 */}
+        {/* 推定最大長周期地震動階級（クリックで地図表示トグル） */}
         {eew.forecastMaxLpgmClass != null && eew.forecastMaxLpgmClass >= 1 && (
-          <div
-            className="w-full rounded-lg py-2 px-4 flex items-center justify-center gap-4"
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onToggleLpgm?.(eew.issue?.eventId ?? eew.id) }}
+            className="w-full rounded-lg py-2 px-4 flex items-center justify-center gap-4 hover:opacity-80 transition-opacity"
             style={{
               backgroundColor: getLpgmClassBgColor(eew.forecastMaxLpgmClass),
               border: `2px solid ${getLpgmClassColor(eew.forecastMaxLpgmClass)}`,
+              outline: activeLpgmEventId === (eew.issue?.eventId ?? eew.id)
+                ? `2px solid ${getLpgmClassColor(eew.forecastMaxLpgmClass)}`
+                : undefined,
+              outlineOffset: '2px',
             }}
           >
             <span className="text-sm font-medium" style={{ color: getLpgmClassColor(eew.forecastMaxLpgmClass) }}>
@@ -128,7 +143,7 @@ function EEWCard({ eew }: { eew: EEWAlert }) {
             <span className="text-2xl font-black" style={{ color: '#ffffff' }}>
               {getLpgmClassLabel(eew.forecastMaxLpgmClass)}
             </span>
-          </div>
+          </button>
         )}
 
         {/* 発生時刻 */}
@@ -352,13 +367,21 @@ function SWaveArrivalCard({ arrival }: { arrival: SWaveArrival }) {
   )
 }
 
-export function RealtimeTab({ eews, kyoshinDetection, kyoshinSites, kyoshinIndices, swaveArrival }: Props) {
+export function RealtimeTab({ eews, kyoshinDetection, kyoshinSites, kyoshinIndices, swaveArrival, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: Props) {
   return (
     <div className="flex flex-col min-h-full p-3 gap-3">
       {/* データカード */}
       {[...eews]
         .sort((a, b) => b.earthquake.originTime.localeCompare(a.earthquake.originTime))
-        .map(eew => <EEWCard key={eew.id} eew={eew} />)
+        .map(eew => (
+          <EEWCard
+            key={eew.id}
+            eew={eew}
+            activeLpgmEventId={activeLpgmEventId}
+            onToggleLpgm={onToggleLpgm}
+            onDeactivateLpgm={onDeactivateLpgm}
+          />
+        ))
       }
       {swaveArrival !== null && <SWaveArrivalCard arrival={swaveArrival} />}
       <KyoshinDetectionCard
