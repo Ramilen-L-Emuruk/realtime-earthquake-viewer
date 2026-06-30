@@ -46,8 +46,9 @@ export function formatMagnitude(magnitude: number): string {
 export function formatDomesticTsunami(type: DomesticTsunami): { text: string; color: string } {
   const map: Record<DomesticTsunami, { text: string; color: string }> = {
     None: { text: '津波の心配なし', color: '#22c55e' },
-    Unknown: { text: '調査中', color: '#94a3b8' },
+    Unknown: { text: '不明', color: '#94a3b8' },
     Checking: { text: '調査中', color: '#94a3b8' },
+    SeaFloor: { text: '津波発生のおそれあり', color: '#f59e0b' },
     NonEffective: { text: '若干の海面変動', color: '#f59e0b' },
     Watch: { text: '津波注意報', color: '#f97316' },
     Warning: { text: '津波警報', color: '#ef4444' },
