@@ -27,6 +27,8 @@ const POLL_MS = 1000
 // Yahoo サーバーがデータを公開するまでの遅延を考慮したオフセット (ms)。
 // 秒境界直後はデータが未公開のことが多いため、この分だけ過去を参照して初回失敗を減らす。
 const FETCH_OFFSET_MS = 500
+// target が現在時刻よりこの値以上遅れていたらリアルタイムにリセットする (ms)
+const MAX_LAG_MS = 5000
 
 interface UseKyoshinRealtimeOptions {
   /** EEW の新規発報・更新・解除を検知したときに呼ばれるコールバック。 */
@@ -117,13 +119,22 @@ export function useKyoshinRealtime(
 
     // target: 今回 fetch するタイムスタンプ。isRetry: 同一 target の再試行かどうか。
     const tick = (target: Date, isRetry = false) => {
+      // 案A: fetch 開始時刻を記録し、成功後の待機時間から差し引いて遅延蓄積を防ぐ
+      const fetchStart = Date.now()
       fetchRealtimeIntensity(target)
         .then((rt) => {
           if (!active) return
           processResult(rt)
-          // 成功タイムスタンプの POLL_MS 後を次回 target にする（コマ落ちしない連番進行）
-          const nextTarget = new Date(target.getTime() + POLL_MS)
-          timer = setTimeout(() => tick(nextTarget), POLL_MS)
+          // 案B: target が現在時刻から MAX_LAG_MS 以上遅れていたらリアルタイムにリセット
+          let nextTarget = new Date(target.getTime() + POLL_MS)
+          const lag = Date.now() - nextTarget.getTime()
+          if (lag > MAX_LAG_MS) {
+            nextTarget = new Date(Date.now() - FETCH_OFFSET_MS)
+          }
+          // 案A: fetch にかかった時間を待機時間から引いて POLL_MS ごとの一定間隔を維持する
+          const elapsed = Date.now() - fetchStart
+          const waitMs = Math.max(0, POLL_MS - elapsed)
+          timer = setTimeout(() => tick(nextTarget), waitMs)
         })
         .catch(() => {
           if (!active) return
