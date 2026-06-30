@@ -236,7 +236,7 @@ export function App() {
         if (activeEEWLevelsRef.current.size === 0) {
           window.clearTimeout(eewTitleTimerRef.current)
           applyPriorityTitle(new Map<string, EEWAlert>(), tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
-          setActiveTab(defaultTabRef.current)
+          setActiveTab(kyoshinDetectedRef.current ? 'realtime' : defaultTabRef.current)
         }
         return
       }
