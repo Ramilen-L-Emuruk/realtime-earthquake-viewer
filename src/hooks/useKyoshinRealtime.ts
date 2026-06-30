@@ -22,8 +22,9 @@ export interface KyoshinRealtime {
 const ERROR_THRESHOLD = 5
 // 同一タイムスタンプの受信失敗時リトライ間隔 (ms)
 const RETRY_MS = 200
-// 通常ポーリング間隔 (ms)
-const POLL_MS = 1000
+// Yahoo サーバーがデータを公開するまでの遅延を考慮したオフセット (ms)。
+// 秒境界直後はデータが未公開のことが多いため、この分だけ過去を参照して初回失敗を減らす。
+const FETCH_OFFSET_MS = 500
 
 interface UseKyoshinRealtimeOptions {
   /** EEW の新規発報・更新・解除を検知したときに呼ばれるコールバック。 */
@@ -57,9 +58,11 @@ export function useKyoshinRealtime(
   const timeOffsetRef = useRef(options?.timeOffset ?? null)
   timeOffsetRef.current = options?.timeOffset ?? null
 
-  // リアルタイム震度を POLL_MS ごとにポーリング（enabled の間のみ）。
+  // リアルタイム震度をポーリング（enabled の間のみ）。
+  // 各 tick は「現在時刻 - FETCH_OFFSET_MS」のタイムスタンプを取得することで、
+  // 秒境界直後のデータ未公開による初回失敗を抑制する。
   // 受信失敗時は同一タイムスタンプで RETRY_MS 後にリトライし続け、
-  // 成功したら POLL_MS 後に次の tick を実行する。
+  // 成功したら次の秒境界 + FETCH_OFFSET_MS まで待って次の tick を実行する（案3）。
   // siteConfigId が変化したとき（リプレイ日付切替など）に対応する sitelist を自動で取得する。
   useEffect(() => {
     if (!enabled) return
@@ -114,18 +117,23 @@ export function useKyoshinRealtime(
     // targetTime が指定されている場合はリトライ（同一タイムスタンプを再取得）
     const tick = (targetTime?: Date) => {
       const isRetry = targetTime !== undefined
+      // 案1: FETCH_OFFSET_MS 分だけ過去を参照し、秒境界直後の未公開による失敗を抑制する
       const now = targetTime ?? (
         timeOffsetRef.current != null
-          ? new Date(Date.now() + timeOffsetRef.current)
-          : new Date()
+          ? new Date(Date.now() + timeOffsetRef.current - FETCH_OFFSET_MS)
+          : new Date(Date.now() - FETCH_OFFSET_MS)
       )
 
       fetchRealtimeIntensity(now)
         .then((rt) => {
           if (!active) return
           processResult(rt)
-          // 成功したら POLL_MS 後に次の自然な tick
-          timer = setTimeout(() => tick(), POLL_MS)
+          // 案3: 次の秒境界 + FETCH_OFFSET_MS まで待ってから tick することで、
+          // 遅延回復後も毎秒のコマを確実に取得できる。
+          // ((FETCH_OFFSET_MS - now%1000) + 1000) % 1000 が 0 になる場合は 1 秒待つ。
+          const msToNextTick =
+            ((FETCH_OFFSET_MS - (Date.now() % 1000)) + 1000) % 1000 || 1000
+          timer = setTimeout(() => tick(), msToNextTick)
         })
         .catch(() => {
           if (!active) return
