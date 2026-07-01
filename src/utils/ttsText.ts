@@ -241,6 +241,18 @@ export function tsunamiCancelToText(): string {
   return '津波警報等は全て解除されました。'
 }
 
+/** code 552 津波観測情報 読み上げテキストを生成する（波高の大きい順に上位 maxPoints 件）。 */
+export function tsunamiObservationToText(event: JMATsunami, maxPoints = 5): string {
+  const obs = (event.observations ?? []).filter(o => o.height !== undefined)
+  if (obs.length === 0) return ''
+  const sorted = [...obs].sort((a, b) => b.height!.value - a.height!.value).slice(0, maxPoints)
+  const total = obs.length
+  const headline = event.headline ? event.headline.trim() : ''
+  const headlinePart = headline ? `${headline}` : `${total}か所で津波を観測しています。`
+  const detail = sorted.map(o => `${o.name} ${o.height!.description.replace(/m$/i, 'メートル')}`).join('。')
+  return `津波観測情報。${headlinePart}${detail}。`
+}
+
 /** 南海トラフ地震臨時情報（VYSE50/51/52）の読み上げテキストを生成する。 */
 export function nankaiToText(event: JMANankai): string {
   if (event.cancelled || event.kindName === '調査終了') {
