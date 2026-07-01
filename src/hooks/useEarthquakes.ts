@@ -324,8 +324,15 @@ export function useEarthquakes(
         case 552: {
           const tsunami = event as JMATsunami
           if (tsunami.cancelled) {
-            // id チェック: 古いキューエントリが後続の新しい津波情報をキャンセルしないよう防御する
-            if (prev.tsunamis.length > 0 && prev.tsunamis[0].id !== tsunami.id) return prev
+            // eventId が一致するものだけ解除する（serialNo が異なっても同一イベントを解除できるよう id 全体ではなく eventId で照合）
+            if (prev.tsunamis.length > 0) {
+              const current = prev.tsunamis[0]
+              const cancelEventId = tsunami.eventId
+              const currentEventId = current.eventId
+              if (cancelEventId && currentEventId && cancelEventId !== currentEventId) return prev
+              // eventId がない場合は従来通り id 全体で照合（フォールバック）
+              if ((!cancelEventId || !currentEventId) && current.id !== tsunami.id) return prev
+            }
             return { ...prev, tsunamis: [], lastUpdate: now }
           }
           // ValidDateTime が過去 = すでに有効期限切れ（ページリロード時など）

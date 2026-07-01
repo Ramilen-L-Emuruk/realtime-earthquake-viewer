@@ -62,6 +62,14 @@ export interface JMAQuake {
 
 export type TsunamiGrade = 'MajorWarning' | 'Warning' | 'Watch' | 'Forecast' | 'Unknown'
 
+export interface TsunamiStation {
+  name: string
+  code: string
+  highTideDateTime?: string
+  arrivalTime?: string
+  arrivalCondition?: string
+}
+
 export interface TsunamiArea {
   grade: TsunamiGrade
   immediate: boolean
@@ -74,6 +82,7 @@ export interface TsunamiArea {
     description: string
     value: number
   }
+  stations?: TsunamiStation[]
 }
 
 export interface TsunamiObservation {
@@ -89,8 +98,10 @@ export interface TsunamiObservation {
 export interface JMATsunami {
   code: 552
   id: string
+  eventId?: string
   time: string
   cancelled: boolean
+  headline?: string
   // 若干の海面変動など予報のみの場合、JMAは明示的なキャンセル電文を送らず
   // ValidDateTime の経過でのみ有効期限が示される。
   validDateTime?: string
