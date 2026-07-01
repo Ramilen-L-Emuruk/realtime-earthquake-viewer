@@ -417,7 +417,8 @@ export function App() {
         type GradeSoundKey = keyof typeof GRADE_RANK_SOUND
         const prevGradeForSound = lastTsunamiGradeRef.current
         const gradeUnchanged = prevGradeForSound !== null && GRADE_RANK_SOUND[grade as GradeSoundKey] === GRADE_RANK_SOUND[prevGradeForSound as GradeSoundKey]
-        if (gradeUnchanged) {
+        const isDowngradeSound = prevGradeForSound !== null && GRADE_RANK_SOUND[grade as GradeSoundKey] < GRADE_RANK_SOUND[prevGradeForSound as GradeSoundKey]
+        if (gradeUnchanged || isDowngradeSound) {
           type = 'tsunamiUpdate'
         } else if (grade === 'MajorWarning') type = 'tsunamiMajor'
         else if (grade === 'Warning')        type = 'tsunami'
@@ -471,8 +472,10 @@ export function App() {
         } else {
           const isDowngrade = prevGrade !== null && GRADE_RANK[currentGrade as GradeKey] < GRADE_RANK[prevGrade as GradeKey]
           ttsText = isDowngrade ? tsunamiDowngradeToText(event) : tsunamiToText(event)
-          // 次回の引き下げ検出のため TTS 発話後のグレードを記録する（Forecast 含む）
-          lastTsunamiGradeRef.current = currentGrade === 'Unknown' ? null : currentGrade
+          // Unknown（観測のみ電文など areas=[] のケース）はグレード追跡を維持する
+          if (currentGrade !== 'Unknown') {
+            lastTsunamiGradeRef.current = currentGrade
+          }
         }
       }
       if (ttsText && type) {
