@@ -428,19 +428,29 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   const serial = xmlText(xmlQ(doc, 'Serial')) || '1'
   const infoType = xmlText(xmlQ(doc, 'InfoType'))
   const validDateTime = xmlText(xmlQ(doc, 'ValidDateTime')) || undefined
+  const headline = xmlText(xmlQ(doc, 'Headline')) || undefined
 
   const id = `dmdata-xml-tsunami-${eventId}-${serial}`
   const cancelled = infoType === '取消'
 
   if (cancelled) {
-    return { code: 552, id, time: reportDateTime, cancelled: true, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [] }
+    return { code: 552, id, eventId, time: reportDateTime, cancelled: true, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [] }
   }
 
-  // Forecast 要素がなければ観測データなので null
   const forecastEl = xmlQ(doc, 'Forecast')
-  if (!forecastEl) return null
+  const observationEl = xmlQ(doc, 'Observation')
 
-  const allEls = forecastEl.getElementsByTagName('*')
+  // Forecast も Observation もなければパース不可
+  if (!forecastEl && !observationEl) return null
+
+  // Observation のみ（VTSE51②: 津波観測情報）
+  if (!forecastEl && observationEl) {
+    const observations = parseTsunamiObservationsFromXml(observationEl)
+    if (observations.length === 0) return null
+    return { code: 552, id, eventId, time: reportDateTime, cancelled: false, headline, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [], observations }
+  }
+
+  const allEls = forecastEl!.getElementsByTagName('*')
   const itemEls: Element[] = []
   for (let i = 0; i < allEls.length; i++) {
     if (allEls[i].localName === 'Item') itemEls.push(allEls[i])
@@ -463,19 +473,75 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
     const heightVal = heightEl ? parseFloat(xmlText(heightEl)) : NaN
     const heightDesc = heightEl?.getAttribute('description') ?? ''
 
+    // Station 要素（各潮位観測点の満潮時刻・到達予想時刻）
+    const stationEls = itemEl.getElementsByTagName('Station')
+    const stations: import('../types/earthquake').TsunamiStation[] = []
+    for (let i = 0; i < stationEls.length; i++) {
+      const st = stationEls[i]
+      const stName = xmlText(xmlQ(st, 'Name'))
+      const stCode = xmlText(xmlQ(st, 'Code'))
+      if (!stName) continue
+      const highTide = xmlText(xmlQ(st, 'HighTideDateTime')) || undefined
+      const stFhEl = xmlQ(st, 'FirstHeight')
+      const stArrival = stFhEl ? xmlText(xmlQ(stFhEl, 'ArrivalTime')) : ''
+      const stCondition = stFhEl ? xmlText(xmlQ(stFhEl, 'Condition')) : ''
+      stations.push({
+        name: stName,
+        code: stCode,
+        highTideDateTime: highTide,
+        arrivalTime: stArrival || undefined,
+        arrivalCondition: stCondition || undefined,
+      })
+    }
+
     areas.push({
       grade,
       immediate: condition === 'ただちに津波来襲と予測',
       name: areaName,
       firstHeight: { arrivalTime: arrivalTime || undefined, condition },
       maxHeight: !isNaN(heightVal) ? { description: heightDesc, value: heightVal } : undefined,
+      stations: stations.length > 0 ? stations : undefined,
     })
   }
 
   // Forecast があるのに有効エリアが0件 = 全エリアが解除済み
-  if (areas.length === 0) return { code: 552, id, time: reportDateTime, cancelled: true, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [] }
+  if (areas.length === 0) return { code: 552, id, eventId, time: reportDateTime, cancelled: true, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [] }
 
-  return { code: 552, id, time: reportDateTime, cancelled: false, validDateTime, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas }
+  // Observation も含む場合（VTSE51①: Forecast + Observation 両方あり）
+  const observations = observationEl ? parseTsunamiObservationsFromXml(observationEl) : undefined
+
+  return { code: 552, id, eventId, time: reportDateTime, cancelled: false, validDateTime, headline, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas, observations: observations && observations.length > 0 ? observations : undefined }
+}
+
+function parseTsunamiObservationsFromXml(observationEl: Element): import('../types/earthquake').TsunamiObservation[] {
+  const observations: import('../types/earthquake').TsunamiObservation[] = []
+  const allEls = observationEl.getElementsByTagName('*')
+  const itemEls: Element[] = []
+  for (let i = 0; i < allEls.length; i++) {
+    if (allEls[i].localName === 'Item') itemEls.push(allEls[i])
+  }
+  for (const itemEl of itemEls) {
+    const stationEls = itemEl.getElementsByTagName('Station')
+    for (let i = 0; i < stationEls.length; i++) {
+      const st = stationEls[i]
+      const name = xmlText(xmlQ(st, 'Name'))
+      if (!name) continue
+      const fhEl = xmlQ(st, 'FirstHeight')
+      const arrivalTime = fhEl ? xmlText(xmlQ(fhEl, 'ArrivalTime')) : ''
+      const initial = fhEl ? xmlText(xmlQ(fhEl, 'Initial')) : ''
+      const mhEl = xmlQ(st, 'MaxHeight')
+      const heightEl = mhEl ? xmlQ(mhEl, 'TsunamiHeight') : null
+      const heightVal = heightEl ? parseFloat(xmlText(heightEl)) : NaN
+      const heightDesc = heightEl?.getAttribute('description') ?? ''
+      observations.push({
+        name,
+        height: !isNaN(heightVal) ? { value: heightVal, description: heightDesc } : undefined,
+        arrivalTime: arrivalTime || undefined,
+        initial: initial || undefined,
+      })
+    }
+  }
+  return observations
 }
 
 // Kind/Code による津波グレード判定（仕様: 気象庁防災情報XML 警報等情報要素コード表）
@@ -492,13 +558,16 @@ function parseTsunamiGradeByCode(code: string): TsunamiGrade {
 // 津波情報 (VTSE41: 大津波警報特別、VTSE51: 警報・注意報・解除、VTSE52: 沖合観測)
 export function parseTsunami(headType: string, data: Record<string, unknown>): JMATsunami | null {
   const cancelled = str(data.infoType) === '取消'
-  const id = `dmdata-tsunami-${str(data.eventId)}-${str(data.serialNo ?? data.serial ?? '1')}`
+  const rawEventId = str(data.eventId)
+  const id = `dmdata-tsunami-${rawEventId}-${str(data.serialNo ?? data.serial ?? '1')}`
   const time = str(data.reportDateTime ?? data.pressDateTime)
   const source = str(data.editorialOffice ?? data.publishingOffice)
   const validDateTime = str(data.validDateTime) || undefined
+  const headline = str(data.headline) || undefined
+  const eventId = rawEventId || undefined
 
   if (cancelled) {
-    return { code: 552, id, time, cancelled: true, issue: { source, time, type: 'Focus' }, areas: [] }
+    return { code: 552, id, eventId, time, cancelled: true, issue: { source, time, type: 'Focus' }, areas: [] }
   }
 
   const body = obj(data.body)
@@ -531,12 +600,46 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
       }
     }
     if (observations.length === 0) return null
-    return { code: 552, id, time, cancelled: false, issue: { source, time, type: 'Focus' }, areas: [], observations }
+    return { code: 552, id, eventId, time, cancelled: false, headline, issue: { source, time, type: 'Focus' }, areas: [], observations }
+  }
+
+  // VTSE51（津波情報）は forecasts + observations の両方を持つ場合がある。
+  // forecasts: 予報区別の警報等・到達予想、observations: 各観測点の実測値
+  const rawObs = arr(tsunami.observations)
+  let observations: TsunamiObservation[] | undefined
+  if (headType === 'VTSE51' && rawObs.length > 0) {
+    observations = []
+    for (const rawDistrict of rawObs) {
+      const district = obj(rawDistrict)
+      for (const rawSt of arr(district.stations)) {
+        const st = obj(rawSt)
+        const name = str(st.name)
+        if (!name) continue
+        const fh = obj(st.firstHeight)
+        const mh = obj(st.maxHeight)
+        const hObj = obj(mh.height)
+        const heightVal = parseFloat(str(hObj.value))
+        observations.push({
+          name,
+          height: !isNaN(heightVal)
+            ? { value: heightVal, description: str(hObj.condition) || `${heightVal}m` }
+            : undefined,
+          arrivalTime: str(fh.arrivalTime) || undefined,
+          initial: str(fh.initial) || undefined,
+        })
+      }
+    }
+    if (observations.length === 0) observations = undefined
   }
 
   // DMDATA JSON v1.1.0: body.tsunami.forecasts が直接の配列（tsunami.forecast.items ではない）
   const rawItems = arr(tsunami.forecasts)
-  if (rawItems.length === 0) return null
+
+  // forecasts がなく observations のみ = 観測情報のみ電文（VTSE51②）
+  if (rawItems.length === 0) {
+    if (!observations || observations.length === 0) return null
+    return { code: 552, id, eventId, time, cancelled: false, headline, issue: { source, time, type: 'Focus' }, areas: [], observations }
+  }
 
   const areas: TsunamiArea[] = []
   for (const item of rawItems) {
@@ -549,6 +652,28 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
     // DMDATA JSON v1.1.0: maxHeight.height.value が m 単位（maxHeight.value ではない）
     const heightObj = obj(maxHeight.height)
     const heightVal = parseFloat(str(heightObj.value))
+
+    // VTSE51① の場合 stations（満潮時刻・到達予想時刻）がある
+    const rawStations = arr(it.stations)
+    let stations: import('../types/earthquake').TsunamiStation[] | undefined
+    if (rawStations.length > 0) {
+      stations = []
+      for (const rawSt of rawStations) {
+        const st = obj(rawSt)
+        const stName = str(st.name)
+        if (!stName) continue
+        const stFh = obj(st.firstHeight)
+        stations.push({
+          name: stName,
+          code: str(st.code),
+          highTideDateTime: str(st.highTideDateTime) || undefined,
+          arrivalTime: str(stFh.arrivalTime) || undefined,
+          arrivalCondition: str(stFh.condition) || undefined,
+        })
+      }
+      if (stations.length === 0) stations = undefined
+    }
+
     areas.push({
       grade,
       immediate: firstHeight.condition === 'ただちに津波来襲と予測',
@@ -563,13 +688,14 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
           value: heightVal,
         }
         : undefined,
+      stations,
     })
   }
 
   // 全予報区が解除済み（Kind/Code が 50/60/71/72/73/00 など）
-  if (areas.length === 0) return { code: 552, id, time, cancelled: true, issue: { source, time, type: 'Focus' }, areas: [] }
+  if (areas.length === 0) return { code: 552, id, eventId, time, cancelled: true, issue: { source, time, type: 'Focus' }, areas: [] }
 
-  return { code: 552, id, time, cancelled: false, validDateTime, issue: { source, time, type: 'Focus' }, areas }
+  return { code: 552, id, eventId, time, cancelled: false, validDateTime, headline, issue: { source, time, type: 'Focus' }, areas, observations }
 }
 
 // REST API 経由の JMA XML（VXSE62: 長周期地震動観測情報）を JMALpgm にパース
