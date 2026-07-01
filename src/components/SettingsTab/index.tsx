@@ -626,6 +626,9 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
         <Row label="大津波警報" description="sawtooth+sine ダブルスイープ × 5回">
           <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('tsunamiMajor') }}>▶ 試聴</TestButton>
         </Row>
+        <Row label="津波情報更新（グレード不変）" description="ding 低音 → 高音（穏やかな通知）">
+          <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('tsunamiUpdate') }}>▶ 試聴</TestButton>
+        </Row>
         {/* ── 臨時情報・後発地震 ── */}
         {isDmdss && (
           <Row label="南海トラフ臨時情報・後発地震注意情報" description="ピアノA4×2連打 → D5">
@@ -732,7 +735,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">3.10.1</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">3.10.2</span></Row>
         <Row label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"
