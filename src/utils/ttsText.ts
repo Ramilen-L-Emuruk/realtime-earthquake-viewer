@@ -116,6 +116,15 @@ export function eewCancelToText(event: EEWAlert): string {
     : '緊急地震速報はキャンセルされました。'
 }
 
+/** code 551 地震情報取消の読み上げテキストを生成する。 */
+export function earthquakeCancelToText(event: JMAQuake): string {
+  const time = event.issue.time ? formatTime(event.issue.time) : null
+  const name = event.earthquake.hypocenter.name
+  if (time && name) return `${time}に発表された、${name}の地震情報はキャンセルされました。`
+  if (time) return `${time}に発表された地震情報はキャンセルされました。`
+  return '地震情報はキャンセルされました。'
+}
+
 /** EEW 第1フェーズ（isNew 即時）: 「緊急地震速報、〇〇で地震。」 */
 export function eewAlertToText(event: EEWAlert): string {
   return `緊急地震速報、${event.earthquake.hypocenter.name}で地震。`
