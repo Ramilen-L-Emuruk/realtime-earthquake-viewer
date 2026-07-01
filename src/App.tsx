@@ -49,7 +49,7 @@ function showBrowserNotification(
 }
 
 // EEW 単発のレベル算出: 0=低震度予報 / 1=警報（震度5弱以上） / 2=特別警報（震度6弱以上）
-// scaleTo:99 は P2PQuake の「震度算出不能」コードなので通常の震度比較から除外する
+// scaleTo:99 は DMDATA パーサーが割り当てる「震度算出不能」コードなので通常の震度比較から除外する
 function computeSingleEEWLevel(eew: EEWAlert): 0 | 1 | 2 {
   const scale = eewMaxScale(eew)
   const intensityKnown = scale < 99
@@ -189,10 +189,10 @@ export function App() {
         }, 1200)
       }
     } else if (event.code === 551) {
-      console.debug('[tab] → earthquake (地震情報 code=551)')
+      console.debug('[tab] → earthquake (地震情報 VXSE51/52/53/61)')
       setActiveTabNonRealtime('earthquake')
       // DMDATA は VXSE51（targetDateTime）→ VXSE52/53（originTime）で earthquake.time が1分ずれるため、
-      // eventId（quake.id から抽出）で同一イベントを判定する。P2P など id がない場合は earthquake.time で比較。
+      // eventId（quake.id から抽出）で同一イベントを判定する。id がない場合は earthquake.time で比較。
       const quakeId = (event as import('./types/earthquake').JMAQuake).id
       const eventIdPart = quakeId?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
       // issue.type を含めて種別ごとに独立判定（ScalePrompt/Destination/ScaleAndDestination 等が別報のため）
@@ -216,7 +216,7 @@ export function App() {
         applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
       }, resetMs)
     } else if (event.code === 552 && !event.cancelled) {
-      console.debug('[tab] → tsunami (津波情報 code=552)')
+      console.debug('[tab] → tsunami (津波情報 VTSE41/51/52)')
       setActiveTabNonRealtime('tsunami')
       setAlertTitle('🌊 津波情報 発表中')
       window.clearTimeout(tsunamiTitleTimerRef.current)
@@ -764,7 +764,7 @@ export function App() {
   tsunamiActiveRef.current = tsunamiActive
   tsunamiPriorityRef.current = settings.tsunamiPriorityDefault
 
-  // 設定秒数 情報更新（activeTab の自動切替・P2P 更新）もユーザー操作もなければ
+  // 設定秒数 情報更新（activeTab の自動切替・DMDSS 更新）もユーザー操作もなければ
   // デフォルトタブへ戻す。activeTab / lastUpdate の変化、および操作のたびにリセット。
   // idleRevertSec が 0 以下なら自動復帰は無効。
   useEffect(() => {

@@ -191,7 +191,7 @@ export function useEarthquakes(
   // offset = earthquakes.length だと重複除去ズレで古いデータが抜け落ちるため、API 呼び出し回数ベースで管理する
   const p2pRawOffsetRef = useRef(0)
 
-  // P2PQuake の 556 受信時に既存の Yahoo EEW へ地域別予想震度を注入する（音・タブ切替なし）。
+  // P2PQuake WS の VXSE43/45 相当（556）受信時に既存の Yahoo EEW へ地域別予想震度を注入する（音・タブ切替なし）。
   const enrichEEW = useCallback((eventId: string, areas: EEWRegion[]) => {
     setState(prev => {
       const existing = prev.activeEEWs.get(eventId)
@@ -231,7 +231,7 @@ export function useEarthquakes(
     if (event.code === 551) {
       const quake = event as JMAQuake
       const m = quake.id?.match(/^dmdata-quake-(\d{14})-/)
-      // DMDATA は ID 埋め込みのタイムスタンプ、P2PQuake は earthquake.time をキーに使う
+      // DMDATA は ID 埋め込みのタイムスタンプをキーに使う（P2PQuake 版は earthquake.time）
       const cacheKey = m ? m[1] : quake.earthquake.time
       // VXSE51 の震度データをキャッシュ（後続 VXSE52 への補完用）
       if (quake.issue.type === 'ScalePrompt' && quake.earthquake.maxScale >= 0) {
@@ -290,7 +290,7 @@ export function useEarthquakes(
 
           const m = quake.id?.match(/^dmdata-quake-(\d{14})-/)
           const eventId = m?.[1]
-          // DMDATA は ID 埋め込みのタイムスタンプ、P2PQuake は earthquake.time をキーに使う
+          // DMDATA は ID 埋め込みのタイムスタンプをキーに使う（P2PQuake 版は earthquake.time）
           const cacheKey = eventId ?? quake.earthquake.time
 
           // VXSE52/53: 震度がない場合に VXSE51 キャッシュから maxScale・points を補完する
@@ -726,7 +726,7 @@ export function useEarthquakes(
 
     const ws = new P2PQuakeWebSocket()
     wsRef.current = ws
-    // P2PQuake WS の EEW (556) は areas 補完のみに使用し、音・タブ切替は発火させない。
+    // P2PQuake WS の EEW（VXSE43/45 相当・内部 code=556）は areas 補完のみに使用し、音・タブ切替は発火させない。
     // Yahoo hypoInfo で検出済みの eventId であれば areas を注入、未知なら全処理（フォールバック）。
     ws.onEvent = (event: P2PQuakeEvent) => {
       if (event.code === 556) {
