@@ -149,13 +149,30 @@ export function App() {
   // 長周期地震動情報の更新検出: 受信済み eventId を追跡する
   const seenLpgmEventIdsRef = useRef<Set<string>>(new Set())
 
+  // リアルタイムタブ以外へ移動した後 15 秒間、EEW 続報による realtime タブへの
+  // 強制移動を抑制するタイムスタンプ（0 = 抑制なし）
+  const realtimeTabSuppressedUntilRef = useRef<number>(0)
+
+  // リアルタイム以外のタブへ移動するときに呼ぶ。抑制タイマーをリセットする。
+  const setActiveTabNonRealtime = (tab: Exclude<TabId, 'realtime'>) => {
+    realtimeTabSuppressedUntilRef.current = Date.now() + 15000
+    setActiveTab(tab)
+  }
+
+  // EEW 続報（新規発報・レベルアップ以外）による realtime タブ移動。
+  // 抑制タイマー発動中はスキップする。
+  const setActiveTabRealtimeOnUpdate = () => {
+    if (Date.now() < realtimeTabSuppressedUntilRef.current) return
+    setActiveTab('realtime')
+  }
+
   const handleLiveEvent = (event: P2PQuakeEvent) => {
     // 受信時に該当タブを自動表示し、ウィンドウタイトルを更新する
     // （地震情報・津波情報・緊急地震速報）。
     // isNewQuake は UI ブロックと TTS ブロックの両方で参照するためここで宣言する
     let isNewQuake = true
     if (event.code === 551) {
-      setActiveTab('earthquake')
+      setActiveTabNonRealtime('earthquake')
       // DMDATA は VXSE51（targetDateTime）→ VXSE52/53（originTime）で earthquake.time が1分ずれるため、
       // eventId（quake.id から抽出）で同一イベントを判定する。P2P など id がない場合は earthquake.time で比較。
       const quakeId = (event as import('./types/earthquake').JMAQuake).id
@@ -181,7 +198,7 @@ export function App() {
         applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
       }, resetMs)
     } else if (event.code === 552 && !event.cancelled) {
-      setActiveTab('tsunami')
+      setActiveTabNonRealtime('tsunami')
       setAlertTitle('🌊 津波情報 発表中')
       window.clearTimeout(tsunamiTitleTimerRef.current)
       const tsunamiResetMs = settings.idleRevertSec === 15 ? 15000 : 30000
@@ -241,13 +258,14 @@ export function App() {
         if (activeEEWLevelsRef.current.size === 0) {
           window.clearTimeout(eewTitleTimerRef.current)
           applyPriorityTitle(new Map<string, EEWAlert>(), tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
-          setActiveTab(kyoshinDetectedRef.current ? 'realtime' : defaultTabRef.current)
+          if (kyoshinDetectedRef.current) {
+            setActiveTab('realtime')
+          } else {
+            setActiveTabNonRealtime(defaultTabRef.current as Exclude<TabId, 'realtime'>)
+          }
         }
         return
       }
-
-      // 緊急地震速報の発報時はリアルタイムタブ（強震モニタ＋予報円）を開く
-      setActiveTab('realtime')
 
       const currentLevel = computeSingleEEWLevel(event)
       const scale = eewMaxScale(event)
@@ -258,6 +276,13 @@ export function App() {
       const prevScale = activeEEWScalesRef.current.get(key) ?? 0
       const levelUpgraded = !isNew && currentLevel > prevLevel
       const scaleUpgraded = !isNew && scale > prevScale
+
+      // 新規発報・レベルアップは抑制なしで即時移動。続報は抑制タイマーを確認する。
+      if (isNew || levelUpgraded) {
+        setActiveTab('realtime')
+      } else {
+        setActiveTabRealtimeOnUpdate()
+      }
       activeEEWLevelsRef.current.set(
         key,
         (isNew ? currentLevel : Math.max(prevLevel, currentLevel)) as 0 | 1 | 2,
@@ -342,7 +367,7 @@ export function App() {
 
     // 長周期地震動情報（DMDSS版のみ）
     if ((event as unknown as { kind?: string }).kind === 'lpgm') {
-      setActiveTab('earthquake')
+      setActiveTabNonRealtime('earthquake')
       const lpgmEvent = (event as unknown as { kind: string; data: import('./types/earthquake').JMALpgm }).data
       if (!lpgmEvent.cancelled) {
         // 紐づく地震カードを選択し、自動的に LPGM 表示をオンにする
@@ -689,7 +714,7 @@ export function App() {
       if (activeEEWsRef.current.size > 0 || kyoshinDetectedRef.current) {
         setActiveTab('realtime')
       } else {
-        setActiveTab(defaultTabRef.current)
+        setActiveTabNonRealtime(defaultTabRef.current as Exclude<TabId, 'realtime'>)
         if (!tsunamiActiveRef.current) {
           setAlertTitle(null)
         }
@@ -864,7 +889,7 @@ export function App() {
     } else if (!kyoshinDetection.detected && prevDetectedRef.current) {
       applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, false, setAlertTitle)
       if (activeEEWsRef.current.size === 0) {
-        setActiveTab(defaultTabRef.current)
+        setActiveTabNonRealtime(defaultTabRef.current as Exclude<TabId, 'realtime'>)
       }
     }
     prevDetectedRef.current = kyoshinDetection.detected
@@ -1051,7 +1076,14 @@ export function App() {
         {/* アイコンナビ（一番外側＝右端 / モバイルは最下部） */}
         <IconNav
           activeTab={activeTab}
-          onTabChange={setActiveTab}
+          onTabChange={(tab) => {
+            if (tab === 'realtime') {
+              realtimeTabSuppressedUntilRef.current = 0
+              setActiveTab('realtime')
+            } else {
+              setActiveTabNonRealtime(tab)
+            }
+          }}
           tsunamiGrade={tsunamiGrade}
           eewLevel={computeEEWLevel(activeEEWs)}
         />
