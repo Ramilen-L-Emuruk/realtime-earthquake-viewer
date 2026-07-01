@@ -23,6 +23,7 @@ export function useSWaveCountdown(
   const [arrival, setArrival] = useState<SWaveArrival | null>(null)
   const prevSRadiusRef = useRef<number | null>(null)
   const speedHistoryRef = useRef<number[]>([])
+  const lastLoggedEEWRef = useRef<string | null>(null)
 
   useEffect(() => {
     if (home === null || psWave.length === 0 || !hasActiveEEW) {
@@ -54,14 +55,18 @@ export function useSWaveCountdown(
         const autoCancelSec = calcEEWAutoCancelSec(circle.magnitude, circle.depth)
         const travelTimeSec = computeSWaveTravelTimeSec(distanceKm, circle.depth)
         const willArriveBeforeCancel = travelTimeSec < autoCancelSec
-        console.debug('[useSWaveCountdown] S波半径計算', {
-          sRadius: `${sRadiusKm.toFixed(1)}km`,
-          distanceToHome: `${distanceKm.toFixed(1)}km`,
-          etaSec,
-          autoCancelSec: `${autoCancelSec.toFixed(1)}s`,
-          travelTimeSec: `${travelTimeSec.toFixed(1)}s`,
-          willArriveBeforeCancel,
-        })
+        const eewKey = `${circle.magnitude}-${circle.depth}`
+        if (lastLoggedEEWRef.current !== eewKey) {
+          lastLoggedEEWRef.current = eewKey
+          console.debug('[useSWaveCountdown] S波到達判定（EEW更新）', {
+            sRadius: `${sRadiusKm.toFixed(1)}km`,
+            distanceToHome: `${distanceKm.toFixed(1)}km`,
+            etaSec,
+            autoCancelSec: `${autoCancelSec.toFixed(1)}s`,
+            travelTimeSec: `${travelTimeSec.toFixed(1)}s`,
+            willArriveBeforeCancel,
+          })
+        }
         if (!willArriveBeforeCancel) {
           prevSRadiusRef.current = sRadiusKm
           setArrival(null)
