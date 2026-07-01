@@ -492,6 +492,7 @@ const DING_PATTERNS: DingPattern[] = [
 export function playAlertSound(type: AlertSoundType): void {
   const ctx = getCtx()
   if (!ctx) return
+  console.debug(`[sound] playAlertSound type=${type}`)
   if (ctx.state === 'suspended') void ctx.resume()
   PLAYERS[type](ctx, ctx.currentTime + 0.02)
 }
@@ -550,6 +551,7 @@ export function playCountdownBeep(second: number): void {
 export function playKyoshinUpdateSound(maxIndex: number): void {
   const ctx = getCtx()
   if (!ctx) return
+  console.debug(`[sound] playKyoshinUpdateSound maxIndex=${maxIndex} level=${kyoshinLevel(maxIndex)}`)
   if (ctx.state === 'suspended') void ctx.resume()
   const p = DING_PATTERNS[kyoshinLevel(maxIndex)]
   const base = ctx.currentTime + 0.02
