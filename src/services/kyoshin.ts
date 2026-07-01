@@ -71,6 +71,8 @@ export interface PsWaveCircle {
   sRadius: number
   /** 震源深度 [km]。DMDSS版のみ設定される（Yahoo版は undefined）。 */
   depth?: number
+  /** マグニチュード。DMDSS版のみ設定される（Yahoo版は undefined）。続報で更新される。 */
+  magnitude?: number
 }
 
 /** Yahoo hypoInfo の EEW 情報（1件）。フィールドはすべて文字列。 */
