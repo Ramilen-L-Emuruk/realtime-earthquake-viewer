@@ -137,7 +137,7 @@ export function App() {
   // 直前に読み上げた津波グレード（引き下げ検出・重複読み上げ抑制に使用）
   const lastTsunamiGradeRef = useRef<'MajorWarning' | 'Warning' | 'Watch' | 'Forecast' | null>(null)
   // 観測点ごとの読み上げ済み最大波高（更新があった観測点のみ TTS 発話するための比較用）
-  const lastMaxObsHeightRef = useRef<Map<string, number>>(new Map())
+  const lastMaxObsHeightRef = useRef<Map<string, { value: number; over?: boolean }>>(new Map())
 
   // VOICEVOX EEW 読み上げデバウンス（レベルアップ確定から3秒後に読み上げ）
   const eewTtsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -496,11 +496,15 @@ export function App() {
           const updatedObs = (event.observations ?? []).filter(o => {
             if (!o.height) return false
             const prev = prevMap.get(o.name)
-            return prev === undefined || o.height.value > prev
+            if (prev === undefined) return true
+            if (o.height.value > prev.value) return true
+            // 同値でも over フラグへの昇格（センサー上限超過）は読み上げ対象
+            if (o.height.over && !prev.over && o.height.value >= prev.value) return true
+            return false
           })
           if (updatedObs.length > 0) {
             for (const o of updatedObs) {
-              prevMap.set(o.name, o.height!.value)
+              prevMap.set(o.name, { value: o.height!.value, over: o.height!.over })
             }
             ttsText = tsunamiObservationUpdateToText(updatedObs)
           }
@@ -819,7 +823,7 @@ export function App() {
             const grade = tsunamiMaxGrade(tsunami)
             if (grade !== 'Unknown') lastTsunamiGradeRef.current = grade
             for (const o of tsunami.observations ?? []) {
-              if (o.height?.value != null) lastMaxObsHeightRef.current.set(o.name, o.height.value)
+              if (o.height?.value != null) lastMaxObsHeightRef.current.set(o.name, { value: o.height.value, over: o.height.over })
             }
           }
         } else if (payload.kind === 'lpgm' && !payload.data.cancelled) {

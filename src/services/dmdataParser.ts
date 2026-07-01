@@ -625,7 +625,7 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
         observations.push({
           name,
           height: !isNaN(heightVal)
-            ? { value: heightVal, description: str(hObj.condition) || (over ? `${heightVal}m以上` : `${heightVal}m`) }
+            ? { value: heightVal, description: str(hObj.condition) || (over ? `${heightVal}m以上` : `${heightVal}m`), over: over || undefined }
             : undefined,
           arrivalTime: str(fh.arrivalTime) || undefined,
           initial: str(fh.initial) || undefined,
@@ -656,7 +656,7 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
         observations.push({
           name,
           height: !isNaN(heightVal)
-            ? { value: heightVal, description: str(hObj.condition) || (over ? `${heightVal}m以上` : `${heightVal}m`) }
+            ? { value: heightVal, description: str(hObj.condition) || (over ? `${heightVal}m以上` : `${heightVal}m`), over: over || undefined }
             : undefined,
           arrivalTime: str(fh.arrivalTime) || undefined,
           initial: str(fh.initial) || undefined,
