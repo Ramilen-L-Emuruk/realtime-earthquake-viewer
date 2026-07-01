@@ -219,9 +219,24 @@ function tsunamiHeightToSpeech(description: string): string {
     .replace(/ｍ/g, 'メートル')
 }
 
-function areaWithHeight(area: import('../types/earthquake').TsunamiArea): string {
-  const height = area.maxHeight ? tsunamiHeightToSpeech(area.maxHeight.description) : ''
-  return height ? `${area.name} ${height}` : area.name
+// 同じ波高の区域をグループ化し「岩手県・宮城県で10メートル以上、福島県で6メートル」のような文を生成する
+function tsunamiHeightSentence(areas: import('../types/earthquake').TsunamiArea[]): string {
+  const withHeight = areas.filter(a => a.maxHeight)
+  if (withHeight.length === 0) return ''
+
+  // description をキーにグループ化
+  const groups = new Map<string, string[]>()
+  for (const a of withHeight) {
+    const key = a.maxHeight!.description
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(a.name)
+  }
+
+  const parts = [...groups.entries()].map(([desc, names]) =>
+    `${names.join('・')}で${tsunamiHeightToSpeech(desc)}`
+  )
+
+  return `予想最大波高は、${parts.join('、')}です。`
 }
 
 export function tsunamiToText(event: JMATsunami): string {
@@ -229,13 +244,14 @@ export function tsunamiToText(event: JMATsunami): string {
   if (!topGrade) return ''
 
   const topAreas = event.areas.filter(a => a.grade === topGrade)
-  const areaList = topAreas.map(areaWithHeight).join('、')
+  const areaNames = topAreas.map(a => a.name).join('、')
   const gradeLabel = topGrade === 'MajorWarning' ? 'おおつなみけいほう'
     : topGrade === 'Warning' ? '津波警報' : '津波注意報'
   const action = topGrade === 'MajorWarning' ? 'ただちに高台へ避難してください。'
     : topGrade === 'Warning' ? '海岸から離れてください。' : ''
+  const heightPart = tsunamiHeightSentence(topAreas)
 
-  return `${gradeLabel}。${areaList}に${gradeLabel}が発表されました。${action}`
+  return `${gradeLabel}。${areaNames}に${gradeLabel}が発表されました。${heightPart}${action}`
 }
 
 /** code 552 津波情報 引き下げ時の読み上げテキストを生成する。 */
@@ -244,11 +260,12 @@ export function tsunamiDowngradeToText(event: JMATsunami): string {
   if (!topGrade) return tsunamiCancelToText()
 
   const topAreas = event.areas.filter(a => a.grade === topGrade)
-  const areaList = topAreas.map(areaWithHeight).join('、')
+  const areaNames = topAreas.map(a => a.name).join('、')
   const gradeLabel = topGrade === 'MajorWarning' ? 'おおつなみけいほう'
     : topGrade === 'Warning' ? '津波警報' : '津波注意報'
+  const heightPart = tsunamiHeightSentence(topAreas)
 
-  return `津波情報が更新されました。現在、${areaList}に${gradeLabel}が発表されています。`
+  return `津波情報が更新されました。現在、${areaNames}に${gradeLabel}が発表されています。${heightPart}`
 }
 
 /** code 552 津波警報等 全解除の読み上げテキストを生成する。 */
