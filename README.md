@@ -232,7 +232,7 @@ realtime-earthquake-viewer/
 │   │   ├── TelegramTab/            # 受信電文ログビューアー（DM-D.S.S 版）
 │   │   └── TsunamiTab/             # 津波情報パネル
 │   ├── hooks/
-│   │   ├── useEarthquakes.ts       # P2PQuake / DMDATA.JP WS + REST 状態管理（VITE_VARIANT で切替）
+│   │   ├── useEarthquakes.ts       # DMDATA.JP / P2PQuake WS + REST 状態管理（VITE_VARIANT で切替）
 │   │   ├── useKyoshinRealtime.ts   # Yahoo リアルタイム震度のポーリング
 │   │   ├── useKyoshinDetection.ts  # 強震モニタの揺れ検知（6層フィルタ）
 │   │   ├── useDmdssWaves.ts        # DM-D.S.S 版 EEW の P波・S波地表到達半径アニメーション
@@ -247,7 +247,7 @@ realtime-earthquake-viewer/
 │   │   ├── dmdata.ts               # DMDATA.JP WebSocket クライアント（DM-D.S.S 版用）
 │   │   └── dmdataParser.ts         # DMDATA.JP JSON 電文 → 内部型変換（DM-D.S.S 版用）
 │   ├── types/
-│   │   └── earthquake.ts           # P2PQuake API 型定義
+│   │   └── earthquake.ts           # 地震情報・EEW・津波情報の型定義
 │   └── utils/
 │       ├── alertSound.ts           # 通知音生成（Web Audio API）
 │       ├── eew.ts                  # EEW 対象地域・最大震度・情報番号の算出
