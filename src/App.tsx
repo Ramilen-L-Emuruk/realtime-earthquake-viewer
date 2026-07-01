@@ -794,8 +794,39 @@ export function App() {
       // フェッチ中に WS 切断タイミングで ref が再セットされる競合を排除するため直前に再リセット
       lastNewQuakeTimeRef.current = null
       activeEEWLevelsRef.current.clear()
+      activeEEWScalesRef.current.clear()
       lastTsunamiGradeRef.current = null
       lastMaxObsHeightRef.current.clear()
+      seenLpgmEventIdsRef.current.clear()
+
+      // pre-window イベントから T 時点の追跡 ref を復元する（サイレント注入後の正確な音判定に必要）
+      for (const { payload } of preFiltered) {
+        if (payload.kind === 'p2p') {
+          const ev = payload.event
+          if (ev.code === 551) {
+            const quake = ev as import('./types/earthquake').JMAQuake
+            const eventIdPart = quake.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
+            lastNewQuakeTimeRef.current = eventIdPart
+              ? `${eventIdPart}:${quake.issue.type}`
+              : quake.earthquake.time
+          } else if (ev.code === 556) {
+            const eew = ev as import('./types/earthquake').EEWAlert
+            const key = eew.issue?.eventId ?? eew.id
+            activeEEWLevelsRef.current.set(key, computeSingleEEWLevel(eew))
+            activeEEWScalesRef.current.set(key, eewMaxScale(eew))
+          } else if (ev.code === 552) {
+            const tsunami = ev as import('./types/earthquake').JMATsunami
+            const grade = tsunamiMaxGrade(tsunami)
+            if (grade !== 'Unknown') lastTsunamiGradeRef.current = grade
+            for (const o of tsunami.observations ?? []) {
+              if (o.height?.value != null) lastMaxObsHeightRef.current.set(o.name, o.height.value)
+            }
+          }
+        } else if (payload.kind === 'lpgm' && !payload.data.cancelled) {
+          seenLpgmEventIdsRef.current.add(payload.data.eventId)
+        }
+      }
+
       loadReplayEvents([...preFiltered, ...normalEvents])
     } catch (e) {
       console.error('replay fetch failed', e)
@@ -810,8 +841,10 @@ export function App() {
     resetState()
     lastNewQuakeTimeRef.current = null
     activeEEWLevelsRef.current.clear()
+    activeEEWScalesRef.current.clear()
     lastTsunamiGradeRef.current = null
     lastMaxObsHeightRef.current.clear()
+    seenLpgmEventIdsRef.current.clear()
     clearReplayCache()
   }, [resetState])
 
