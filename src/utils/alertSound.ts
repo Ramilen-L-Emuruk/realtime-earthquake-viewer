@@ -7,7 +7,7 @@
 export type AlertSoundType =
   'earthquake' | 'earthquakePrompt' | 'earthquakeInfo'
   | 'eew' | 'eewUpdate' | 'eewFinal' | 'eewCancel' | 'eewSpecial' | 'eewForecast'
-  | 'tsunami' | 'tsunamiMajor' | 'tsunamiWatch' | 'tsunamiForecast'
+  | 'tsunami' | 'tsunamiMajor' | 'tsunamiWatch' | 'tsunamiForecast' | 'tsunamiUpdate'
   | 'kyoshin'
   | 'specialInfo'
 
@@ -437,6 +437,12 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
       sweep(ctx, 'sawtooth', 200, 500, base + i * 0.77,        0.65, 0.28)
       sweep(ctx, 'sine',     300, 750, base + i * 0.77 + 0.05, 0.60, 0.18)
     }
+  },
+
+  // 津波情報更新（グレード不変・観測値更新）: ding 低音 → 高音（穏やかな通知）
+  tsunamiUpdate: (ctx, base) => {
+    ding(ctx, 370, base + 0.00, 0.55, 0.14)
+    ding(ctx, 555, base + 0.28, 0.55, 0.11)
   },
 
   // 南海トラフ臨時情報・後発地震注意情報: ピアノA4×2連打 → D5（情報発表の穏やかな緊張感）
