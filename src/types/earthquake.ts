@@ -91,6 +91,7 @@ export interface TsunamiObservation {
   height?: {
     value: number
     description: string
+    over?: boolean
   }
   arrivalTime?: string
   initial?: string  // 引き波 | 押し波
