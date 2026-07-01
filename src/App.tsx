@@ -20,7 +20,7 @@ import { eewMaxScale } from './utils/eew'
 import { tsunamiMaxGrade, tsunamiOverallGrade } from './utils/tsunami'
 import { playAlertSound, playKyoshinUpdateSound, playCountdownBeep, kyoshinLevel, unlockAudio, setSoundVolume, type AlertSoundType } from './utils/alertSound'
 import { speakWithVoicevox } from './utils/voicevox'
-import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, nankaiToText, kohatsuToText, lpgmToText } from './utils/ttsText'
+import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, nankaiToText, kohatsuToText, lpgmToText } from './utils/ttsText'
 import { kyoshinIndexToLabel } from './utils/kyoshinIntensity'
 import type { P2PQuakeEvent, EEWAlert } from './types/earthquake'
 import { fetchDmdataReplayEvents, filterPreWindowEvents, clearReplayCache } from './services/dmdataReplay'
@@ -171,7 +171,17 @@ export function App() {
     // （地震情報・津波情報・緊急地震速報）。
     // isNewQuake は UI ブロックと TTS ブロックの両方で参照するためここで宣言する
     let isNewQuake = true
-    if (event.code === 551) {
+    if (event.code === 551 && event.cancelled) {
+      // 地震情報取消: カード削除は useEarthquakes reducer が担う。通知音・読み上げのみここで処理する。
+      if (settings.soundEnabled) playAlertSound('eewCancel')
+      window.clearTimeout(earthquakeTitleTimerRef.current)
+      applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
+      if (settings.voicevoxEnabled) {
+        setTimeout(() => {
+          speakWithVoicevox(settings.voicevoxUrl, earthquakeCancelToText(event), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+        }, 1200)
+      }
+    } else if (event.code === 551) {
       setActiveTabNonRealtime('earthquake')
       // DMDATA は VXSE51（targetDateTime）→ VXSE52/53（originTime）で earthquake.time が1分ずれるため、
       // eventId（quake.id から抽出）で同一イベントを判定する。P2P など id がない場合は earthquake.time で比較。
@@ -450,7 +460,7 @@ export function App() {
         else if (grade === 'Watch')          type = 'tsunamiWatch'
         else if (grade === 'Forecast')       type = 'tsunamiForecast'
       }
-    } else if (event.code === 551) {
+    } else if (event.code === 551 && !event.cancelled) {
       const it = event.issue.type
       type = it === 'ScalePrompt'                                        ? 'earthquakePrompt'
            : (it === 'Destination' || it === 'Foreign' || it === 'Other') ? 'earthquakeInfo'
@@ -472,7 +482,7 @@ export function App() {
         tsunamiUpdate:     800,
       }
       let ttsText: string | null = null
-      if (event.code === 551) {
+      if (event.code === 551 && !event.cancelled) {
         ttsText = earthquakeToText(event, { intensityLevels: settings.ttsIntensityLevels, maxRegions: settings.ttsMaxRegions }, isNewQuake)
       } else if (event.code === 552) {
         const GRADE_RANK = { MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0 } as const

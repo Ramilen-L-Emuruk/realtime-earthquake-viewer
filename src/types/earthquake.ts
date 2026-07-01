@@ -44,6 +44,7 @@ export interface JMAQuake {
   code: 551
   id: string
   time: string
+  cancelled?: boolean
   issue: {
     source: string
     time: string

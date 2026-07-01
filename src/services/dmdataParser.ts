@@ -229,6 +229,24 @@ function parseDomesticTsunamiFromComments(comments: Record<string, unknown>): Do
 // 地震情報 (VXSE51/52/53)
 export function parseEarthquake(headType: string, data: Record<string, unknown>): JMAQuake | null {
   const body = obj(data.body)
+
+  // 取消電文（infoType === '取消'）: 最小限の情報だけ持つ cancelled JMAQuake を返す
+  if (str(data.infoType) === '取消') {
+    const eventId = str(data.eventId)
+    const serial = str(data.serialNo ?? data.serial ?? '1')
+    const reportTime = str(data.reportDateTime ?? data.pressDateTime)
+    const issueType: IssueType = VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination'
+    return {
+      code: 551,
+      id: `dmdata-quake-${eventId}-${serial}`,
+      time: reportTime,
+      cancelled: true,
+      issue: { source: str(data.editorialOffice ?? data.publishingOffice), time: reportTime, type: issueType, correct: 'None' as CorrectType },
+      earthquake: { time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 }, maxScale: -1, domesticTsunami: 'Unknown', foreignTsunami: '' },
+      points: [],
+    }
+  }
+
   const earthquake = obj(body.earthquake)
   const hypo = obj(earthquake.hypocenter)
   const { lat, lng, depth } = parseHypocenterCoord(hypo)
@@ -329,6 +347,20 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   const eventId = xmlText(xmlQ(doc, 'EventID'))
   const infoType = xmlText(xmlQ(doc, 'InfoType'))
   const serial = xmlText(xmlQ(doc, 'Serial')) || '1'
+
+  // 取消電文（InfoType === '取消'）: Earthquake 要素が存在しないため早期リターン
+  if (infoType === '取消') {
+    const issueType: IssueType = VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination'
+    return {
+      code: 551,
+      id: `dmdata-xml-quake-${eventId}-${serial}`,
+      time: reportDateTime,
+      cancelled: true,
+      issue: { source: '気象庁', time: reportDateTime, type: issueType, correct: 'None' as CorrectType },
+      earthquake: { time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 }, maxScale: -1, domesticTsunami: 'Unknown', foreignTsunami: '' },
+      points: [],
+    }
+  }
 
   const earthquakeEl = xmlQ(doc, 'Earthquake')
   if (!earthquakeEl) return null
