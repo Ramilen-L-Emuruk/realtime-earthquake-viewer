@@ -71,8 +71,7 @@ export function calcEEWCancelTime(eew: EEWAlert, reportTime: Date): Date {
   return fromOrigin > minTime ? fromOrigin : minTime
 }
 
-// P2PQuake v2 の EEW は実データで `areas`、テスト/旧データで `regions` を使うため、
-// どちらでも対象地域を取得できるよう吸収する。
+// EEW の areas が未設定の場合 regions にフォールバックする（旧形式互換）。
 
 export function eewAreas(eew: EEWAlert): EEWRegion[] {
   return eew.areas ?? eew.regions ?? []

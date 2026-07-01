@@ -108,7 +108,7 @@ function formatTime(isoTime: string): string {
   return `${d.getHours()}時${String(d.getMinutes()).padStart(2, '0')}分`
 }
 
-/** code 556 EEW キャンセル（誤報取消）の読み上げテキストを生成する。 */
+/** VXSE43/45 EEW キャンセル（誤報取消）の読み上げテキストを生成する。 */
 export function eewCancelToText(event: EEWAlert): string {
   const time = event.issue?.time ? formatTime(event.issue.time) : null
   return time
@@ -116,7 +116,7 @@ export function eewCancelToText(event: EEWAlert): string {
     : '緊急地震速報はキャンセルされました。'
 }
 
-/** code 551 地震情報取消の読み上げテキストを生成する。 */
+/** VXSE51/52/53/61 地震情報取消の読み上げテキストを生成する。 */
 export function earthquakeCancelToText(event: JMAQuake): string {
   const time = event.issue.time ? formatTime(event.issue.time) : null
   const name = event.earthquake.hypocenter.name
@@ -153,7 +153,7 @@ export function eewIntensityToText(event: EEWAlert): string {
   return text
 }
 
-/** code 556 EEW の読み上げテキストを生成する。 */
+/** VXSE43/45 EEW の読み上げテキストを生成する。 */
 export function eewToText(event: EEWAlert): string {
   const { hypocenter } = event.earthquake
   const scale = eewMaxScale(event)
@@ -179,7 +179,7 @@ function domesticTsunamiText(t: DomesticTsunami): string {
   }
 }
 
-/** code 551 地震情報の読み上げテキストを生成する。isNew=false のとき更新報として冒頭に通知する。 */
+/** VXSE51/52/53/61 地震情報の読み上げテキストを生成する。isNew=false のとき更新報として冒頭に通知する。 */
 export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew: boolean): string {
   const { hypocenter, maxScale, domesticTsunami } = event.earthquake
   const type = event.issue.type
@@ -219,7 +219,7 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
   return text
 }
 
-/** code 552 津波情報の読み上げテキストを生成する（新規発表・引き上げ時）。 */
+/** VTSE41/51/52 津波情報の読み上げテキストを生成する（新規発表・引き上げ時）。 */
 function tsunamiHeightToSpeech(description: string): string {
   // "３ｍ" → "3メートル"、"１０ｍ以上" → "10メートル以上"、"０．５ｍ" → "0.5メートル" など
   return description
@@ -263,7 +263,7 @@ export function tsunamiToText(event: JMATsunami): string {
   return `${gradeLabel}。${areaNames}に${gradeLabel}が発表されました。${heightPart}${action}`
 }
 
-/** code 552 津波情報 引き下げ時の読み上げテキストを生成する。 */
+/** VTSE41/51/52 津波情報 引き下げ時の読み上げテキストを生成する。 */
 export function tsunamiDowngradeToText(event: JMATsunami): string {
   const topGrade = GRADE_ORDER.find(g => event.areas.some(a => a.grade === g))
   if (!topGrade) return tsunamiCancelToText()
@@ -277,12 +277,12 @@ export function tsunamiDowngradeToText(event: JMATsunami): string {
   return `津波情報が更新されました。現在、${areaNames}に${gradeLabel}が発表されています。${heightPart}`
 }
 
-/** code 552 津波警報等 全解除の読み上げテキストを生成する。 */
+/** VTSE41/51/52 津波警報等 全解除の読み上げテキストを生成する。 */
 export function tsunamiCancelToText(): string {
   return '津波警報等は全て解除されました。'
 }
 
-/** code 552 津波観測情報 読み上げテキストを生成する（波高の大きい順に上位 maxPoints 件）。 */
+/** VTSE41/51/52 津波観測情報 読み上げテキストを生成する（波高の大きい順に上位 maxPoints 件）。 */
 export function tsunamiObservationToText(event: JMATsunami, maxPoints = 5): string {
   const obs = (event.observations ?? []).filter(o => o.height !== undefined)
   if (obs.length === 0) return ''
@@ -297,7 +297,7 @@ export function tsunamiObservationToText(event: JMATsunami, maxPoints = 5): stri
 }
 
 /**
- * code 552 津波観測情報 更新点のみ読み上げテキストを生成する。
+ * VTSE41/51/52 津波観測情報 更新点のみ読み上げテキストを生成する。
  * updatedObs は最大波高が更新された観測点のみを渡す（波高降順で最大 maxPoints 件）。
  */
 export function tsunamiObservationUpdateToText(updatedObs: import('../types/earthquake').TsunamiObservation[], maxPoints = 5): string {
