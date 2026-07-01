@@ -158,6 +158,7 @@ export function useKyoshinDetection(
   const noisyRef = useRef<Map<number, { count: number; until: number }>>(new Map())
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const prevDetectedRef = useRef(false)
   const [detection, setDetection] = useState<KyoshinDetection>(EMPTY)
 
   useEffect(() => {
@@ -330,6 +331,8 @@ export function useKyoshinDetection(
       }
       if (timerRef.current) clearTimeout(timerRef.current)
       timerRef.current = setTimeout(() => {
+        console.debug(`[kyoshin] 検知タイマー満了 → 検知終了 (DETECTION_DURATION_MS=${DETECTION_DURATION_MS}ms)`)
+        prevDetectedRef.current = false
         setDetection(EMPTY)
         confirmedSitesRef.current.clear()
         nearConfirmedSitesRef.current.clear()
@@ -361,6 +364,10 @@ export function useKyoshinDetection(
         .filter((p): p is DetectedPoint => p !== null)
         .sort((a, b) => b.index - a.index)
       const maxIndex = points[0]?.index ?? confirmedMaxIndex
+      if (!prevDetectedRef.current) {
+        console.debug(`[kyoshin] 検知開始 maxIndex=${maxIndex} 観測点数=${points.length} MIN_DETECTION_INDEX=${MIN_DETECTION_INDEX}`)
+        prevDetectedRef.current = true
+      }
       setDetection({ detected: true, maxIndex, points })
     }
   }, [sites, indices])

@@ -162,7 +162,12 @@ export function App() {
   // EEW 続報（新規発報・レベルアップ以外）による realtime タブ移動。
   // 抑制タイマー発動中はスキップする。
   const setActiveTabRealtimeOnUpdate = () => {
-    if (Date.now() < realtimeTabSuppressedUntilRef.current) return
+    const remaining = realtimeTabSuppressedUntilRef.current - Date.now()
+    if (remaining > 0) {
+      console.debug(`[tab] → realtime スキップ (EEW続報・抑制中 残り${remaining}ms)`)
+      return
+    }
+    console.debug('[tab] → realtime (EEW続報)')
     setActiveTab('realtime')
   }
 
@@ -182,6 +187,7 @@ export function App() {
         }, 1200)
       }
     } else if (event.code === 551) {
+      console.debug('[tab] → earthquake (地震情報 code=551)')
       setActiveTabNonRealtime('earthquake')
       // DMDATA は VXSE51（targetDateTime）→ VXSE52/53（originTime）で earthquake.time が1分ずれるため、
       // eventId（quake.id から抽出）で同一イベントを判定する。P2P など id がない場合は earthquake.time で比較。
@@ -208,6 +214,7 @@ export function App() {
         applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
       }, resetMs)
     } else if (event.code === 552 && !event.cancelled) {
+      console.debug('[tab] → tsunami (津波情報 code=552)')
       setActiveTabNonRealtime('tsunami')
       setAlertTitle('🌊 津波情報 発表中')
       window.clearTimeout(tsunamiTitleTimerRef.current)
@@ -234,6 +241,7 @@ export function App() {
         // expired: true は最終報タイマー満了による自動解除 → 音は鳴らさない
         // hadKey: P2PQuake WS と Yahoo の両方から cancel が来た場合の二重鳴り防止
         const hadKey = activeEEWLevelsRef.current.has(key)
+        console.debug(`[eew] キャンセル受信 key=${key} expired=${event.expired ?? false} hadKey=${hadKey} 種別=${event.expired ? '自動解除(タイマー満了)' : '誤報取消'}`)
         activeEEWLevelsRef.current.delete(key)
         activeEEWScalesRef.current.delete(key)
         if (hadKey && settings.soundEnabled && !event.expired) {
@@ -269,8 +277,10 @@ export function App() {
           window.clearTimeout(eewTitleTimerRef.current)
           applyPriorityTitle(new Map<string, EEWAlert>(), tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
           if (kyoshinDetectedRef.current) {
+            console.debug('[tab] → realtime (EEW全解除・揺れ検知中)')
             setActiveTab('realtime')
           } else {
+            console.debug(`[tab] → ${defaultTabRef.current} (EEW全解除)`)
             setActiveTabNonRealtime(defaultTabRef.current as Exclude<TabId, 'realtime'>)
           }
         }
@@ -289,6 +299,7 @@ export function App() {
 
       // 新規発報・レベルアップは抑制なしで即時移動。続報は抑制タイマーを確認する。
       if (isNew || levelUpgraded) {
+        console.debug(`[tab] → realtime (EEW${isNew ? '新規発報' : 'レベルアップ'} key=${key})`)
         setActiveTab('realtime')
       } else {
         setActiveTabRealtimeOnUpdate()
@@ -384,6 +395,7 @@ export function App() {
 
     // 長周期地震動情報（DMDSS版のみ）
     if ((event as unknown as { kind?: string }).kind === 'lpgm') {
+      console.debug('[tab] → earthquake (長周期地震動)')
       setActiveTabNonRealtime('earthquake')
       const lpgmEvent = (event as unknown as { kind: string; data: import('./types/earthquake').JMALpgm }).data
       if (!lpgmEvent.cancelled) {
@@ -703,12 +715,15 @@ export function App() {
   // 津波解除検出: true→false の遷移でタイマーをキャンセルし優先度ロジックを即時適用
   const prevTsunamiActiveRef = useRef(false)
   useEffect(() => {
-    if (prevTsunamiActiveRef.current && !tsunamiActive) {
+    if (!prevTsunamiActiveRef.current && tsunamiActive) {
+      console.debug(`[tsunami] 発表検出 grade=${tsunamiGrade}`)
+    } else if (prevTsunamiActiveRef.current && !tsunamiActive) {
+      console.debug('[tsunami] 解除検出 (tsunamiActive: true→false)')
       window.clearTimeout(tsunamiTitleTimerRef.current)
       applyPriorityTitle(activeEEWsRef.current, false, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
     }
     prevTsunamiActiveRef.current = tsunamiActive
-  }, [tsunamiActive])
+  }, [tsunamiActive, tsunamiGrade])
 
   // アイドル復帰で戻すデフォルトタブ。津波優先トグル ON かつ津波発表中なら
   // 津波情報、それ以外は設定のデフォルトタブ。タイマー発火時に最新値を参照する
@@ -733,8 +748,10 @@ export function App() {
     // EEW 発報中または揺れ検知中はリアルタイムタブを維持する。それ以外はデフォルトタブへ戻す。
     const revert = () => {
       if (activeEEWsRef.current.size > 0 || kyoshinDetectedRef.current) {
+        console.debug(`[tab] → realtime (アイドル復帰・EEW中または揺れ検知中 idleRevertSec=${settings.idleRevertSec})`)
         setActiveTab('realtime')
       } else {
+        console.debug(`[tab] → ${defaultTabRef.current} (アイドル復帰 idleRevertSec=${settings.idleRevertSec})`)
         setActiveTabNonRealtime(defaultTabRef.current as Exclude<TabId, 'realtime'>)
         if (!tsunamiActiveRef.current) {
           setAlertTitle(null)
@@ -931,6 +948,7 @@ export function App() {
   const prevDetectedRef = useRef(false)
   useEffect(() => {
     if (kyoshinDetection.detected && !prevDetectedRef.current) {
+      console.debug('[tab] → realtime (揺れ検知開始)')
       setActiveTab('realtime')
       setAlertTitle('📈 揺れ検知')
       if (settings.soundEnabled) {
@@ -943,6 +961,7 @@ export function App() {
     } else if (!kyoshinDetection.detected && prevDetectedRef.current) {
       applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, false, setAlertTitle)
       if (activeEEWsRef.current.size === 0) {
+        console.debug(`[tab] → ${defaultTabRef.current} (揺れ検知終了)`)
         setActiveTabNonRealtime(defaultTabRef.current as Exclude<TabId, 'realtime'>)
       }
     }
@@ -971,6 +990,7 @@ export function App() {
       postPeakMinLevelRef.current = currLevel
       // 初回検知（prevMaxLevel === 0）は検知音が鳴るのでスキップ
       if (prevMaxLevel > 0) {
+        console.debug(`[tab] → realtime (揺れ検知レベルアップ level=${prevMaxLevel}→${currLevel})`)
         setActiveTab('realtime')
         if (settings.soundEnabled) {
           playKyoshinUpdateSound(effectiveKyoshinMaxIndex)
@@ -983,6 +1003,7 @@ export function App() {
       // 一度落ちた後に再上昇（再エスカレーション）
       maxSoundLevelRef.current = currLevel
       postPeakMinLevelRef.current = currLevel
+      console.debug(`[tab] → realtime (揺れ検知再エスカレーション level=${postPeakMinLevelRef.current}→${currLevel})`)
       setActiveTab('realtime')
       if (settings.soundEnabled) {
         playKyoshinUpdateSound(effectiveKyoshinMaxIndex)
@@ -1133,8 +1154,10 @@ export function App() {
           onTabChange={(tab) => {
             if (tab === 'realtime') {
               realtimeTabSuppressedUntilRef.current = 0
+              console.debug('[tab] → realtime (手動選択)')
               setActiveTab('realtime')
             } else {
+              console.debug(`[tab] → ${tab} (手動選択)`)
               setActiveTabNonRealtime(tab)
             }
           }}
