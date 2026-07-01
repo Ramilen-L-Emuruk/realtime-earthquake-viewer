@@ -20,7 +20,7 @@ import { eewMaxScale } from './utils/eew'
 import { tsunamiMaxGrade, tsunamiOverallGrade } from './utils/tsunami'
 import { playAlertSound, playKyoshinUpdateSound, playCountdownBeep, kyoshinLevel, unlockAudio, setSoundVolume, type AlertSoundType } from './utils/alertSound'
 import { speakWithVoicevox } from './utils/voicevox'
-import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationToText, nankaiToText, kohatsuToText, lpgmToText } from './utils/ttsText'
+import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, nankaiToText, kohatsuToText, lpgmToText } from './utils/ttsText'
 import { kyoshinIndexToLabel } from './utils/kyoshinIntensity'
 import type { P2PQuakeEvent, EEWAlert } from './types/earthquake'
 import { fetchDmdataReplayEvents, filterPreWindowEvents, clearReplayCache } from './services/dmdataReplay'
@@ -136,8 +136,8 @@ export function App() {
 
   // 直前に読み上げた津波グレード（引き下げ検出・重複読み上げ抑制に使用）
   const lastTsunamiGradeRef = useRef<'MajorWarning' | 'Warning' | 'Watch' | 'Forecast' | null>(null)
-  // 直前に読み上げた津波観測の最大波高（更新時のみ TTS 発話するための比較用）
-  const lastMaxObsHeightRef = useRef<number | null>(null)
+  // 観測点ごとの読み上げ済み最大波高（更新があった観測点のみ TTS 発話するための比較用）
+  const lastMaxObsHeightRef = useRef<Map<string, number>>(new Map())
 
   // VOICEVOX EEW 読み上げデバウンス（レベルアップ確定から3秒後に読み上げ）
   const eewTtsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -196,7 +196,7 @@ export function App() {
         speakWithVoicevox(settings.voicevoxUrl, tsunamiCancelToText(), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
       }
       lastTsunamiGradeRef.current = null
-      lastMaxObsHeightRef.current = null
+      lastMaxObsHeightRef.current.clear()
     } else if (event.code === 556) {
       if (event.test) return
 
@@ -417,7 +417,8 @@ export function App() {
         type GradeSoundKey = keyof typeof GRADE_RANK_SOUND
         const prevGradeForSound = lastTsunamiGradeRef.current
         const gradeUnchanged = prevGradeForSound !== null && GRADE_RANK_SOUND[grade as GradeSoundKey] === GRADE_RANK_SOUND[prevGradeForSound as GradeSoundKey]
-        if (gradeUnchanged) {
+        const isDowngradeSound = prevGradeForSound !== null && GRADE_RANK_SOUND[grade as GradeSoundKey] < GRADE_RANK_SOUND[prevGradeForSound as GradeSoundKey]
+        if (gradeUnchanged || isDowngradeSound) {
           type = 'tsunamiUpdate'
         } else if (grade === 'MajorWarning') type = 'tsunamiMajor'
         else if (grade === 'Warning')        type = 'tsunami'
@@ -455,18 +456,26 @@ export function App() {
         const prevGrade = lastTsunamiGradeRef.current
 
         if (prevGrade !== null && GRADE_RANK[currentGrade as GradeKey] === GRADE_RANK[prevGrade as GradeKey]) {
-          // グレード不変: 観測値が更新された場合のみ読み上げ
-          const maxObsHeight = (event.observations ?? []).reduce((m, o) => o.height ? Math.max(m, o.height.value) : m, -Infinity)
-          const prevMax = lastMaxObsHeightRef.current
-          if (isFinite(maxObsHeight) && (prevMax === null || maxObsHeight > prevMax)) {
-            ttsText = tsunamiObservationToText(event)
-            lastMaxObsHeightRef.current = maxObsHeight
+          // グレード不変: 観測点ごとに最大波高を追跡し、更新があった観測点のみ読み上げ
+          const prevMap = lastMaxObsHeightRef.current
+          const updatedObs = (event.observations ?? []).filter(o => {
+            if (!o.height) return false
+            const prev = prevMap.get(o.name)
+            return prev === undefined || o.height.value > prev
+          })
+          if (updatedObs.length > 0) {
+            for (const o of updatedObs) {
+              prevMap.set(o.name, o.height!.value)
+            }
+            ttsText = tsunamiObservationUpdateToText(updatedObs)
           }
         } else {
           const isDowngrade = prevGrade !== null && GRADE_RANK[currentGrade as GradeKey] < GRADE_RANK[prevGrade as GradeKey]
           ttsText = isDowngrade ? tsunamiDowngradeToText(event) : tsunamiToText(event)
-          // 次回の引き下げ検出のため TTS 発話後のグレードを記録する（Forecast 含む）
-          lastTsunamiGradeRef.current = currentGrade === 'Unknown' ? null : currentGrade
+          // Unknown（観測のみ電文など areas=[] のケース）はグレード追跡を維持する
+          if (currentGrade !== 'Unknown') {
+            lastTsunamiGradeRef.current = currentGrade
+          }
         }
       }
       if (ttsText && type) {
@@ -734,7 +743,7 @@ export function App() {
     lastNewQuakeTimeRef.current = null
     activeEEWLevelsRef.current.clear()
     lastTsunamiGradeRef.current = null
-    lastMaxObsHeightRef.current = null
+    lastMaxObsHeightRef.current.clear()
     clearReplayCache()
     setReplayTimeOffset(offset)
     prefetchEndRef.current = toTime
@@ -751,7 +760,7 @@ export function App() {
       lastNewQuakeTimeRef.current = null
       activeEEWLevelsRef.current.clear()
       lastTsunamiGradeRef.current = null
-      lastMaxObsHeightRef.current = null
+      lastMaxObsHeightRef.current.clear()
       loadReplayEvents([...preFiltered, ...normalEvents])
     } catch (e) {
       console.error('replay fetch failed', e)
@@ -767,7 +776,7 @@ export function App() {
     lastNewQuakeTimeRef.current = null
     activeEEWLevelsRef.current.clear()
     lastTsunamiGradeRef.current = null
-    lastMaxObsHeightRef.current = null
+    lastMaxObsHeightRef.current.clear()
     clearReplayCache()
   }, [resetState])
 

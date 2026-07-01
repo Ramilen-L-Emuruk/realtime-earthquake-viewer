@@ -589,10 +589,11 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
         const mh = obj(st.maxHeight)
         const hObj = obj(mh.height)
         const heightVal = parseFloat(str(hObj.value))
+        const over = hObj.over === true
         observations.push({
           name,
           height: !isNaN(heightVal)
-            ? { value: heightVal, description: str(hObj.condition) || `${heightVal}m` }
+            ? { value: heightVal, description: str(hObj.condition) || (over ? `${heightVal}m以上` : `${heightVal}m`) }
             : undefined,
           arrivalTime: str(fh.arrivalTime) || undefined,
           initial: str(fh.initial) || undefined,
@@ -619,10 +620,11 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
         const mh = obj(st.maxHeight)
         const hObj = obj(mh.height)
         const heightVal = parseFloat(str(hObj.value))
+        const over = hObj.over === true
         observations.push({
           name,
           height: !isNaN(heightVal)
-            ? { value: heightVal, description: str(hObj.condition) || `${heightVal}m` }
+            ? { value: heightVal, description: str(hObj.condition) || (over ? `${heightVal}m以上` : `${heightVal}m`) }
             : undefined,
           arrivalTime: str(fh.arrivalTime) || undefined,
           initial: str(fh.initial) || undefined,
