@@ -94,14 +94,20 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
       <button
         ref={cardRef}
         type="button"
-        onClick={onSelect}
+        onClick={quake.cancelledAt ? undefined : onSelect}
         aria-pressed={true}
-        className="w-full text-left bg-card rounded-lg border transition-colors cursor-pointer overflow-hidden hover:opacity-90"
+        className={`w-full text-left bg-card rounded-lg border transition-colors overflow-hidden relative ${quake.cancelledAt ? 'cursor-default' : 'cursor-pointer hover:opacity-90'}`}
         style={{
           borderColor: typeStyle.cardBorder,
           boxShadow: `0 0 0 1px ${typeStyle.cardBorder}40`,
         }}
       >
+        {quake.cancelledAt && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg">
+            <span className="font-black text-white" style={{ fontSize: '48px', lineHeight: 1.1 }}>キャンセル</span>
+            <span className="text-sm font-bold text-white/90 mt-1">この地震情報は取り消されました</span>
+          </div>
+        )}
         {/* 種別ヘッダー */}
         <div
           className="w-full py-1.5 px-4 text-center text-xs font-bold tracking-widest"
@@ -294,14 +300,20 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
     <button
       ref={cardRef}
       type="button"
-      onClick={onSelect}
+      onClick={quake.cancelledAt ? undefined : onSelect}
       aria-pressed={false}
       className={`
-        w-full text-left bg-card rounded-lg p-3 border transition-colors cursor-pointer
-        hover:border-blue-400/60
+        w-full text-left bg-card rounded-lg p-3 border transition-colors relative
+        ${quake.cancelledAt ? 'cursor-default' : 'cursor-pointer hover:border-blue-400/60'}
         ${borderClass}
       `}
     >
+      {quake.cancelledAt && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg">
+          <span className="font-black text-white" style={{ fontSize: '28px', lineHeight: 1.1 }}>キャンセル</span>
+          <span className="text-xs font-bold text-white/90 mt-1">この地震情報は取り消されました</span>
+        </div>
+      )}
       <div className="flex items-stretch gap-3">
         {/* 震度バッジ */}
         <div

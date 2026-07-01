@@ -91,7 +91,7 @@ export function useDmdssWaves(
       const circles: PsWaveCircle[] = []
 
       for (const eew of activeEEWs) {
-        if (eew.cancelled) continue
+        if (eew.cancelled || eew.cancelledAt) continue
         const { hypocenter } = eew.earthquake
         if (!Number.isFinite(hypocenter.latitude) || !Number.isFinite(hypocenter.longitude)) continue
 

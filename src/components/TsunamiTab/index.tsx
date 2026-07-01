@@ -123,7 +123,8 @@ function getTopGrade(tsunamis: JMATsunami[]): TsunamiGrade {
 }
 
 export function TsunamiTab({ tsunamis }: Props) {
-  const active = tsunamis.filter(t => !t.cancelled)
+  // cancelledAt がある = 10秒表示中なので active に含める
+  const active = tsunamis.filter(t => !t.cancelled || t.cancelledAt)
 
   if (active.length === 0) {
     return (
@@ -140,27 +141,28 @@ export function TsunamiTab({ tsunamis }: Props) {
     )
   }
 
+  const isCancelledDisplay = active.every(t => !!t.cancelledAt)
   const topGrade = getTopGrade(active)
   const topStyle = getGradeStyle(topGrade)
   const latestTime = active[0]?.time
 
   return (
     <div className="p-3 flex flex-col gap-3">
-      {/* 発令中バナー */}
+      {/* 発令中 / 解除バナー */}
       <div className="rounded-lg overflow-hidden"
-        style={{ background: topStyle.headerBg, border: `2px solid ${topStyle.cardBorder}` }}>
+        style={{ background: isCancelledDisplay ? '#1a1a1a' : topStyle.headerBg, border: `2px solid ${isCancelledDisplay ? '#4b5563' : topStyle.cardBorder}` }}>
         <div className="px-4 py-3 flex items-center gap-3"
-          style={{ background: `${topStyle.cardBorder}18` }}>
+          style={{ background: isCancelledDisplay ? 'rgba(75,85,99,0.18)' : `${topStyle.cardBorder}18` }}>
           <div className="flex-1">
-            <div className="font-bold" style={{ fontSize: '14px', color: topStyle.headerColor }}>
-              {GRADE_LABEL[topGrade]} 発令中
+            <div className="font-bold" style={{ fontSize: '14px', color: isCancelledDisplay ? '#9ca3af' : topStyle.headerColor }}>
+              {isCancelledDisplay ? '津波情報 解除' : `${GRADE_LABEL[topGrade]} 発令中`}
             </div>
-            <div className="mt-1" style={{ fontSize: '11px', color: topStyle.headerColor, opacity: 0.8 }}>
-              {topGrade === 'Forecast' ? '若干の海面変動があるかもしれません' : '海岸・河川から直ちに離れてください'}
+            <div className="mt-1" style={{ fontSize: '11px', color: isCancelledDisplay ? '#6b7280' : topStyle.headerColor, opacity: 0.8 }}>
+              {isCancelledDisplay ? 'この津波情報は解除されました' : topGrade === 'Forecast' ? '若干の海面変動があるかもしれません' : '海岸・河川から直ちに離れてください'}
             </div>
           </div>
           {latestTime && (
-            <div className="text-right flex-shrink-0" style={{ fontSize: '11px', color: topStyle.arrivalColor, opacity: 0.8 }}>
+            <div className="text-right flex-shrink-0" style={{ fontSize: '11px', color: isCancelledDisplay ? '#6b7280' : topStyle.arrivalColor, opacity: 0.8 }}>
               {formatDateTime(latestTime)}
             </div>
           )}
@@ -168,7 +170,13 @@ export function TsunamiTab({ tsunamis }: Props) {
       </div>
 
       {active.map(t => (
-        <div key={t.id} className="flex flex-col gap-3">
+        <div key={t.id} className="flex flex-col gap-3 relative">
+          {t.cancelledAt && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg" style={{ minHeight: '80px' }}>
+              <span className="font-black text-white" style={{ fontSize: '40px', lineHeight: 1.1 }}>解除</span>
+              <span className="text-sm font-bold text-white/90 mt-1">この津波情報は解除されました</span>
+            </div>
+          )}
           {GRADE_ORDER.map(grade => (
             <TsunamiGradeCard
               key={grade}
