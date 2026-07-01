@@ -62,15 +62,17 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 ## 検証
 
 > **コードを修正した場合は、型チェックだけでなく必ずアプリを起動して実行確認（ブラウザ確認）まで行う。**
-> 型チェックのみで完了とせず、`npm run dev` で起動し Playwright MCP で実際の表示・挙動を確認してからコミットする。
+> 型チェックのみで完了とせず、**特に指定がない場合は `npm run dev:dmdss`（DMDSS 版）で起動し**、Playwright MCP で実際の表示・挙動を確認してからコミットする。
 
 - **型チェック（必須）**: `npx tsc -b`（または `npm run build`）。エラー0を確認する。
-- **アプリ起動**: `npm run dev` → `http://localhost:5173/realtime-earthquake-viewer/`
-  （`vite.config.ts` の `base` によりサブパス配信になる点に注意。5173 が使用中なら 5174 等にフォールバックするため、起動ログで実ポートを確認する）。
+- **アプリ起動（デフォルト: DMDSS 版）**: **特にバリアントの指定がない場合は `npm run dev:dmdss` を使用する**。
+  - DMDSS 版 URL: `http://localhost:5173/realtime-earthquake-viewer/dmdss/`
+  - standard 版が明示的に必要な場合のみ `npm run dev` → `http://localhost:5173/realtime-earthquake-viewer/`
+  - （5173 が使用中なら 5174 等にフォールバックするため、起動ログで実ポートを確認する）
   - **必ず `run_in_background: true` でバックグラウンドタスクとして起動する**（ユーザー指示）。フォアグラウンドで起動するとプロセスが応答を返さずハングするため。
   - **検証用に起動した dev サーバーは Claude のセッション中は停止せず起動したままにする**（ユーザー指示）。次の検証では新規起動せず、稼働中のサーバー（既定 5173）へ Playwright で接続して再利用する。セッションをまたぐ必要は無い。
 - **本番ビルド確認**（大きめの変更時）: `npm run build`。
-- **ブラウザ確認（修正時は必須）**: Playwright MCP で上記 URL を開き、スクリーンショット・`browser_evaluate` で表示やDOMを確認する。
+- **ブラウザ確認（修正時は必須）**: **Playwright MCP**（`mcp__playwright__*` ツール群）で上記 URL を開き、`browser_take_screenshot`・`browser_evaluate` で表示や DOM を確認する。
   - コンソールエラーが0件であることを確認する（リロード時の P2P WebSocket 再接続 warning は良性で無視してよい）。
   - 自動解除や時間経過で発火する挙動（自動タブ切替・アイドル復帰など）は、`localStorage` の書き換え＋リロードや DOM 検査で確認する。
   - **確認後も開発サーバーは停止しない**（セッション中は起動したまま残す）。`Stop-Process -Name node` のような一括停止は MCP サーバーまで巻き込むため使わない。
