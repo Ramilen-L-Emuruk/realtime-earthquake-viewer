@@ -279,9 +279,11 @@ export function tsunamiObservationToText(event: JMATsunami, maxPoints = 5): stri
   if (obs.length === 0) return ''
   const sorted = [...obs].sort((a, b) => b.height!.value - a.height!.value).slice(0, maxPoints)
   const total = obs.length
-  const headline = event.headline ? event.headline.trim() : ''
+  // headline の全角数字・全角ｍ・全角ピリオドを半角に変換して VOICEVOX の誤読を防ぐ
+  const rawHeadline = event.headline ? event.headline.trim() : ''
+  const headline = tsunamiHeightToSpeech(rawHeadline)
   const headlinePart = headline ? `${headline}` : `${total}か所で津波を観測しています。`
-  const detail = sorted.map(o => `${o.name} ${o.height!.description.replace(/m$/i, 'メートル')}`).join('。')
+  const detail = sorted.map(o => `${o.name} ${o.height!.description.replace(/m$/i, 'メートル')}`).join('、')
   return `津波観測情報。${headlinePart}${detail}。`
 }
 
