@@ -52,7 +52,7 @@ export function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, is
     <div className="p-3 space-y-2">
       {earthquakes.map((quake, i) => (
         <EarthquakeCard
-          key={quake.earthquake.time}
+          key={quake.id}
           quake={quake}
           isLatest={i === 0}
           isSelected={quake.earthquake.time === selectedId}
