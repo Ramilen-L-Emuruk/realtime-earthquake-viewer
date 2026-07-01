@@ -159,7 +159,7 @@ export interface EEWAlert {
     serial?: string
     time?: string
   }
-  // P2PQuake v2 の実データは `areas`、テスト/旧データは `regions` を使う。
+  // DMDSS パーサーは `areas` を使う。旧形式との互換のため `regions` も保持する。
   // 参照時は utils/eew.ts の eewAreas() で吸収する。
   areas?: EEWRegion[]
   regions?: EEWRegion[]

@@ -1,5 +1,5 @@
 // 震度観測点・細分区域の座標テーブル（public/data/station-coords.json）を読み込み、
-// P2P地震情報の地点(pref, addr)から緯度経度を引くためのユーティリティ。
+// 地震情報の地点(pref, addr)から緯度経度を引くためのユーティリティ。
 //
 // 座標データは public/data/station-coords.json に置かれており、
 // scripts/build-station-coords.mjs で生成・更新する。
