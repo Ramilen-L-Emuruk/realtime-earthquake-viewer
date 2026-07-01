@@ -332,6 +332,13 @@ export function App() {
       if (settings.voicevoxEnabled && settings.soundEnabled) {
         eewTtsEventRef.current = event
         const firePhase2 = () => {
+          // Phase2 が発火した時点で15秒上限タイマーをキャンセルする。
+          // 3秒タイマー発火後も15秒タイマーが生き続けると、その間に scaleUpgraded で
+          // 新しい3秒タイマーが登録された場合に15秒タイマーが割り込んで二重読み上げになるため。
+          if (eewTtsMaxTimerRef.current) {
+            clearTimeout(eewTtsMaxTimerRef.current)
+            eewTtsMaxTimerRef.current = null
+          }
           if (eewTtsEventRef.current) {
             const spokenEvent = eewTtsEventRef.current
             const spokenKey = spokenEvent.issue?.eventId ?? spokenEvent.id
