@@ -393,7 +393,7 @@ export function useEarthquakes(
             kohatsuExpireTimerRef.current = undefined
           }
           if (!kohatsu.cancelled) {
-            const expireMs = new Date(kohatsu.expireAt).getTime() - Date.now()
+            const expireMs = new Date(kohatsu.expireAt).getTime() - getTimeRef.current().getTime()
             if (expireMs > 0) {
               kohatsuExpireTimerRef.current = window.setTimeout(() => {
                 kohatsuExpireTimerRef.current = undefined
