@@ -259,6 +259,22 @@ export function useEarthquakes(
       switch (event.code) {
         case 551: {
           let quake = event as JMAQuake
+
+          // 取消電文: 同一 eventId のカードを削除する
+          if (quake.cancelled) {
+            const cancelEventId = quake.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
+            const cancelIssueType = quake.issue.type
+            const filtered = prev.earthquakes.filter(e => {
+              const eId = e.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
+              // VXSE51（ScalePrompt）とVXSE53（ScaleAndDestination）は独立した情報単位のため、
+              // issue.type も一致するものだけ削除する
+              if (cancelEventId && eId) return eId !== cancelEventId || e.issue.type !== cancelIssueType
+              return e.id !== quake.id
+            })
+            if (filtered.length === prev.earthquakes.length) return prev
+            return { ...prev, earthquakes: filtered, lastUpdate: now }
+          }
+
           const m = quake.id?.match(/^dmdata-quake-(\d{14})-/)
           const eventId = m?.[1]
           // DMDATA は ID 埋め込みのタイムスタンプ、P2PQuake は earthquake.time をキーに使う
