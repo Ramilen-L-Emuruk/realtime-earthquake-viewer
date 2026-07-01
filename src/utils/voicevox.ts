@@ -101,6 +101,8 @@ export async function speakWithVoicevox(
   speakerId: number,
   volume: number,
 ): Promise<void> {
+  console.log(`[VoiceVox] 読み上げ: ${text}`)
+
   // 既存の再生を全て停止
   for (const src of activeSources) {
     try { src.stop() } catch { /* already stopped */ }
