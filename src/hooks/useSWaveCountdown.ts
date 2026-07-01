@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PsWaveCircle } from '../services/kyoshin'
 import { computeSWaveTravelTimeSec } from './useDmdssWaves'
+import { calcEEWAutoCancelSec } from '../utils/eew'
 import { haversineKm } from '../utils/geo'
 
 export interface SWaveArrival {
@@ -47,6 +48,26 @@ export function useSWaveCountdown(
       const tNow = computeSWaveTravelTimeSec(sRadiusKm, circle.depth)
       const tArrival = computeSWaveTravelTimeSec(distanceKm, circle.depth)
       etaSec = Math.max(0, Math.round(tArrival - tNow))
+
+      // DMDSS版のみ: EEW解除前にS波が自宅に到達しない場合は非表示
+      if (circle.magnitude !== undefined) {
+        const autoCancelSec = calcEEWAutoCancelSec(circle.magnitude, circle.depth)
+        const travelTimeSec = computeSWaveTravelTimeSec(distanceKm, circle.depth)
+        const willArriveBeforeCancel = travelTimeSec < autoCancelSec
+        console.debug('[useSWaveCountdown] S波半径計算', {
+          sRadius: `${sRadiusKm.toFixed(1)}km`,
+          distanceToHome: `${distanceKm.toFixed(1)}km`,
+          etaSec,
+          autoCancelSec: `${autoCancelSec.toFixed(1)}s`,
+          travelTimeSec: `${travelTimeSec.toFixed(1)}s`,
+          willArriveBeforeCancel,
+        })
+        if (!willArriveBeforeCancel) {
+          prevSRadiusRef.current = sRadiusKm
+          setArrival(null)
+          return
+        }
+      }
     } else {
       // Yahoo版またはS波がまだ地表に出ていない場合: フレーム差分で速度を推定
       // ※Yahoo版の更新間隔は約1秒なので delta ≈ km/s として扱える

@@ -107,6 +107,7 @@ export function useDmdssWaves(
           pRadius: computeRadius(t, depth, VP1, VP2, COS_IC_P),
           sRadius: computeRadius(t, depth, VS1, VS2, COS_IC_S),
           depth,
+          magnitude: hypocenter.magnitude,
         })
       }
 
