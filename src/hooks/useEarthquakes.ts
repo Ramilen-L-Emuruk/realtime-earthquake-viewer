@@ -43,6 +43,9 @@ type QueuePayload =
   | { kind: 'lpgm'; data: JMALpgm }
   | { kind: 'nankai'; data: JMANankai }
   | { kind: 'kohatsu'; data: JMAKohatsu }
+  | { kind: 'purge-cancelled-quake'; id: string }
+  | { kind: 'purge-cancelled-eew'; key: string }
+  | { kind: 'purge-cancelled-tsunami' }
 
 interface QueueEntry {
   eventTime: Date
@@ -248,7 +251,7 @@ export function useEarthquakes(
         if (expireTime > getTimeRef.current()) {
           insertSorted(eventQueueRef.current, {
             eventTime: expireTime,
-            payload: { kind: 'p2p', event: { ...tsunami, cancelled: true } as P2PQuakeEvent },
+            payload: { kind: 'p2p', event: { ...tsunami, cancelled: true, expired: true } as P2PQuakeEvent },
           })
         }
       }
@@ -260,19 +263,29 @@ export function useEarthquakes(
         case 551: {
           let quake = event as JMAQuake
 
-          // 取消電文: 同一 eventId のカードを削除する
+          // 取消電文: 同一 eventId のカードに cancelledAt を付け、10秒後に purge する
           if (quake.cancelled) {
             const cancelEventId = quake.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
             const cancelIssueType = quake.issue.type
-            const filtered = prev.earthquakes.filter(e => {
+            let found = false
+            const earthquakes = prev.earthquakes.map(e => {
               const eId = e.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
-              // VXSE51（ScalePrompt）とVXSE53（ScaleAndDestination）は独立した情報単位のため、
-              // issue.type も一致するものだけ削除する
-              if (cancelEventId && eId) return eId !== cancelEventId || e.issue.type !== cancelIssueType
-              return e.id !== quake.id
+              const matches = cancelEventId && eId
+                ? eId === cancelEventId && e.issue.type === cancelIssueType
+                : e.id === quake.id
+              if (matches && !e.cancelledAt) {
+                found = true
+                insertSorted(eventQueueRef.current, {
+                  eventTime: new Date(now.getTime() + 10_000),
+                  payload: { kind: 'purge-cancelled-quake', id: e.id },
+                  silent: true,
+                })
+                return { ...e, cancelledAt: now }
+              }
+              return e
             })
-            if (filtered.length === prev.earthquakes.length) return prev
-            return { ...prev, earthquakes: filtered, lastUpdate: now }
+            if (!found) return prev
+            return { ...prev, earthquakes, lastUpdate: now }
           }
 
           const m = quake.id?.match(/^dmdata-quake-(\d{14})-/)
@@ -328,7 +341,8 @@ export function useEarthquakes(
             // 既存カードなし: 通常追加処理へフォールスルー
           }
 
-          if (existing && (ISSUE_PRIORITY[existing.issue.type] ?? 0) > (ISSUE_PRIORITY[quake.issue.type] ?? 0)) {
+          // 取消表示中のカードは ISSUE_PRIORITY を無視して常に新規カードで置き換える
+          if (existing && !existing.cancelledAt && (ISSUE_PRIORITY[existing.issue.type] ?? 0) > (ISSUE_PRIORITY[quake.issue.type] ?? 0)) {
             return prev
           }
           const earthquakes = sortQuakes([
@@ -349,6 +363,18 @@ export function useEarthquakes(
               // eventId がない場合は従来通り id 全体で照合（フォールバック）
               if ((!cancelEventId || !currentEventId) && current.id !== tsunami.id) return prev
             }
+            // validDateTime 満了（expired）は即削除、明示的取消電文は 10秒表示
+            if (tsunami.expired) {
+              return { ...prev, tsunamis: [], lastUpdate: now }
+            }
+            if (prev.tsunamis.length > 0 && !prev.tsunamis[0].cancelledAt) {
+              insertSorted(eventQueueRef.current, {
+                eventTime: new Date(now.getTime() + 10_000),
+                payload: { kind: 'purge-cancelled-tsunami' },
+                silent: true,
+              })
+              return { ...prev, tsunamis: [{ ...prev.tsunamis[0], cancelledAt: now }], lastUpdate: now }
+            }
             return { ...prev, tsunamis: [], lastUpdate: now }
           }
           // ValidDateTime が過去 = すでに有効期限切れ（ページリロード時など）
@@ -360,9 +386,27 @@ export function useEarthquakes(
         case 556: {
           const eew = event as EEWAlert
           const key = eew.issue?.eventId ?? eew.id
-          if (eew.cancelled || eew.test) {
+          if (eew.test) {
             const next = new Map(prev.activeEEWs)
             next.delete(key)
+            return { ...prev, activeEEWs: next, lastUpdate: now }
+          }
+          if (eew.cancelled) {
+            // 最終報タイマー満了（expired）は即削除、誤報取消電文は 10秒表示
+            if (eew.expired) {
+              const next = new Map(prev.activeEEWs)
+              next.delete(key)
+              return { ...prev, activeEEWs: next, lastUpdate: now }
+            }
+            const existing = prev.activeEEWs.get(key)
+            if (!existing || existing.cancelledAt) return prev
+            insertSorted(eventQueueRef.current, {
+              eventTime: new Date(now.getTime() + 10_000),
+              payload: { kind: 'purge-cancelled-eew', key },
+              silent: true,
+            })
+            const next = new Map(prev.activeEEWs)
+            next.set(key, { ...existing, cancelledAt: now })
             return { ...prev, activeEEWs: next, lastUpdate: now }
           }
           return {
@@ -409,6 +453,26 @@ export function useEarthquakes(
           const nankai = payload.data
           setState(prev => ({ ...prev, nankai: nankai.cancelled ? null : nankai }))
           if (!silent) onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as P2PQuakeEvent)
+        } else if (payload.kind === 'purge-cancelled-quake') {
+          const { id } = payload
+          setState(prev => ({
+            ...prev,
+            earthquakes: prev.earthquakes.filter(e => e.id !== id || !e.cancelledAt),
+          }))
+        } else if (payload.kind === 'purge-cancelled-eew') {
+          const { key } = payload
+          setState(prev => {
+            const existing = prev.activeEEWs.get(key)
+            if (!existing?.cancelledAt) return prev
+            const next = new Map(prev.activeEEWs)
+            next.delete(key)
+            return { ...prev, activeEEWs: next }
+          })
+        } else if (payload.kind === 'purge-cancelled-tsunami') {
+          setState(prev => {
+            if (prev.tsunamis.length === 0 || !prev.tsunamis[0].cancelledAt) return prev
+            return { ...prev, tsunamis: [] }
+          })
         } else if (payload.kind === 'kohatsu') {
           const kohatsu = payload.data
           if (kohatsuExpireTimerRef.current !== undefined) {

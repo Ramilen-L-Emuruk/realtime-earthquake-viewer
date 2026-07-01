@@ -67,13 +67,19 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
 
   return (
     <div
-      className="bg-card rounded-lg overflow-hidden"
+      className="bg-card rounded-lg overflow-hidden relative"
       style={{
         border: `2px solid ${cardBorder}`,
         boxShadow: `0 0 0 1px ${cardBorder}40`,
       }}
       onClick={onDeactivateLpgm}
     >
+      {eew.cancelledAt && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg">
+          <span className="font-black text-white" style={{ fontSize: '48px', lineHeight: 1.1 }}>キャンセル</span>
+          <span className="text-sm font-bold text-white/90 mt-1">この緊急地震速報は取り消されました</span>
+        </div>
+      )}
       {/* 種別ヘッダー */}
       <div
         className="w-full py-1.5 px-4 text-center text-xs font-bold tracking-widest"

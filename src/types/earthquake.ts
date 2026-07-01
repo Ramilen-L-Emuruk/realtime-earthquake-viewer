@@ -45,6 +45,7 @@ export interface JMAQuake {
   id: string
   time: string
   cancelled?: boolean
+  cancelledAt?: Date
   issue: {
     source: string
     time: string
@@ -103,6 +104,8 @@ export interface JMATsunami {
   eventId?: string
   time: string
   cancelled: boolean
+  expired?: boolean
+  cancelledAt?: Date
   headline?: string
   // 若干の海面変動など予報のみの場合、JMAは明示的なキャンセル電文を送らず
   // ValidDateTime の経過でのみ有効期限が示される。
@@ -149,6 +152,7 @@ export interface EEWAlert {
   cancelled: boolean
   expired?: boolean
   isFinal?: boolean
+  cancelledAt?: Date
   // issue.serial = 情報番号（第N報）
   issue?: {
     eventId?: string
