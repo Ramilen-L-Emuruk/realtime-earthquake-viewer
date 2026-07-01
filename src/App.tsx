@@ -241,6 +241,7 @@ export function App() {
         // expired: true は最終報タイマー満了による自動解除 → 音は鳴らさない
         // hadKey: P2PQuake WS と Yahoo の両方から cancel が来た場合の二重鳴り防止
         const hadKey = activeEEWLevelsRef.current.has(key)
+        console.debug(`[eew] キャンセル受信 key=${key} expired=${event.expired ?? false} hadKey=${hadKey} 種別=${event.expired ? '自動解除(タイマー満了)' : '誤報取消'}`)
         activeEEWLevelsRef.current.delete(key)
         activeEEWScalesRef.current.delete(key)
         if (hadKey && settings.soundEnabled && !event.expired) {
@@ -714,12 +715,15 @@ export function App() {
   // 津波解除検出: true→false の遷移でタイマーをキャンセルし優先度ロジックを即時適用
   const prevTsunamiActiveRef = useRef(false)
   useEffect(() => {
-    if (prevTsunamiActiveRef.current && !tsunamiActive) {
+    if (!prevTsunamiActiveRef.current && tsunamiActive) {
+      console.debug(`[tsunami] 発表検出 grade=${tsunamiGrade}`)
+    } else if (prevTsunamiActiveRef.current && !tsunamiActive) {
+      console.debug('[tsunami] 解除検出 (tsunamiActive: true→false)')
       window.clearTimeout(tsunamiTitleTimerRef.current)
       applyPriorityTitle(activeEEWsRef.current, false, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
     }
     prevTsunamiActiveRef.current = tsunamiActive
-  }, [tsunamiActive])
+  }, [tsunamiActive, tsunamiGrade])
 
   // アイドル復帰で戻すデフォルトタブ。津波優先トグル ON かつ津波発表中なら
   // 津波情報、それ以外は設定のデフォルトタブ。タイマー発火時に最新値を参照する
