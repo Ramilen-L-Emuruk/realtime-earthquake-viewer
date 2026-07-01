@@ -5,7 +5,7 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 ## プロジェクト概要
 
 - React 18 + TypeScript + Vite 6 製の PWA。Leaflet 地図で地震情報・緊急地震速報・津波情報・リアルタイム震度を表示する。
-- データ: P2PQuake API v2（WebSocket + REST）／ Yahoo リアルタイム震度（強震モニタ・HTTPS JSON）。
+- データ: DMDATA.JP API（WebSocket + REST）／ Yahoo リアルタイム震度（強震モニタ・HTTPS JSON）（DMDSS 版）、P2PQuake API v2（標準版）。
 - GitHub Pages（サブパス配信 `/realtime-earthquake-viewer/`）へ GitHub Actions で自動デプロイ。
 
 ## ビルドバリアントと URL（重要）
@@ -92,7 +92,7 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 
 ### 環境による制約
 
-- 一部の外部ホストへ到達できない環境がある（例: 防災科研 kmoni の HTTPS）。Yahoo 強震モニタ（`weather-kyoshin.*.storage-yahoo.jp`）・P2PQuake API は到達可能。
+- 一部の外部ホストへ到達できない環境がある（例: 防災科研 kmoni の HTTPS）。Yahoo 強震モニタ（`weather-kyoshin.*.storage-yahoo.jp`）・DMDATA.JP API は到達可能。
 - **予報円（Yahoo `psWave`）は実 EEW 発報時のみデータが入る**ため、平常時は実地確認できない。コードのみ確認し、実発報時の確認をユーザーに委ねる。
 
 ## README 更新
