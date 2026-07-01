@@ -211,17 +211,31 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
 }
 
 /** code 552 津波情報の読み上げテキストを生成する（新規発表・引き上げ時）。 */
+function tsunamiHeightToSpeech(description: string): string {
+  // "３ｍ" → "3メートル"、"１０ｍ以上" → "10メートル以上"、"０．５ｍ" → "0.5メートル" など
+  return description
+    .replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .replace(/．/g, '.')
+    .replace(/ｍ/g, 'メートル')
+}
+
+function areaWithHeight(area: import('../types/earthquake').TsunamiArea): string {
+  const height = area.maxHeight ? tsunamiHeightToSpeech(area.maxHeight.description) : ''
+  return height ? `${area.name} ${height}` : area.name
+}
+
 export function tsunamiToText(event: JMATsunami): string {
   const topGrade = GRADE_ORDER.find(g => event.areas.some(a => a.grade === g))
   if (!topGrade) return ''
 
-  const areas = event.areas.filter(a => a.grade === topGrade).map(a => a.name)
+  const topAreas = event.areas.filter(a => a.grade === topGrade)
+  const areaList = topAreas.map(areaWithHeight).join('、')
   const gradeLabel = topGrade === 'MajorWarning' ? 'おおつなみけいほう'
     : topGrade === 'Warning' ? '津波警報' : '津波注意報'
   const action = topGrade === 'MajorWarning' ? 'ただちに高台へ避難してください。'
     : topGrade === 'Warning' ? '海岸から離れてください。' : ''
 
-  return `${gradeLabel}。${areas.join('、')}に${gradeLabel}が発表されました。${action}`
+  return `${gradeLabel}。${areaList}に${gradeLabel}が発表されました。${action}`
 }
 
 /** code 552 津波情報 引き下げ時の読み上げテキストを生成する。 */
@@ -229,11 +243,12 @@ export function tsunamiDowngradeToText(event: JMATsunami): string {
   const topGrade = GRADE_ORDER.find(g => event.areas.some(a => a.grade === g))
   if (!topGrade) return tsunamiCancelToText()
 
-  const areas = event.areas.filter(a => a.grade === topGrade).map(a => a.name)
+  const topAreas = event.areas.filter(a => a.grade === topGrade)
+  const areaList = topAreas.map(areaWithHeight).join('、')
   const gradeLabel = topGrade === 'MajorWarning' ? 'おおつなみけいほう'
     : topGrade === 'Warning' ? '津波警報' : '津波注意報'
 
-  return `津波情報が更新されました。現在、${areas.join('、')}に${gradeLabel}が発表されています。`
+  return `津波情報が更新されました。現在、${areaList}に${gradeLabel}が発表されています。`
 }
 
 /** code 552 津波警報等 全解除の読み上げテキストを生成する。 */
