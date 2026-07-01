@@ -593,16 +593,33 @@ export function App() {
     .filter(q => settings.minDisplayScale < 0 || q.earthquake.maxScale >= settings.minDisplayScale)
 
   const latest = filteredEarthquakes[0] ?? null
-  // 選択中の地震（未選択／一覧から消えた場合は最新にフォールバック）
-  const selectedQuake = filteredEarthquakes.find(q => q.earthquake.time === selectedQuakeId) ?? latest
+  // キャンセル表示中のカードは選択対象から除外する（フォールバック用）
+  const latestNonCancelled = filteredEarthquakes.find(q => !q.cancelledAt) ?? null
+  // 選択中の地震（未選択／一覧から消えた場合はキャンセル済み除外の最新にフォールバック）
+  const selectedQuake = filteredEarthquakes.find(q => q.earthquake.time === selectedQuakeId && !q.cancelledAt) ?? latestNonCancelled
   // 地図に表示中の LPGM（バッジクリックでトグル）
   const activeLpgm = activeLpgmEventId ? (lpgmByEventId.get(activeLpgmEventId) ?? null) : null
+
+  // 選択中の地震カードがキャンセル状態になったら即座に選択解除する
+  useEffect(() => {
+    if (!selectedQuakeId) return
+    const selected = filteredEarthquakes.find(q => q.earthquake.time === selectedQuakeId)
+    if (selected?.cancelledAt) {
+      setSelectedQuakeId(null)
+    }
+  }, [filteredEarthquakes, selectedQuakeId])
+
+  // cancelledAt（10秒表示中）の EEW は地図・挙動系から除外する
+  const activeEEWsNoCancelled = useMemo(
+    () => new Map([...activeEEWs].filter(([, v]) => !v.cancelledAt)),
+    [activeEEWs],
+  )
 
   // EEW カード経由で選択したLPGMは、次報でforecastMaxLpgmClassがなくなった場合や
   // EEW 解除時に自動的に選択解除する
   useEffect(() => {
     if (!activeLpgmEventId || activeLpgmSource !== 'eew') return
-    const eew = activeEEWs.get(activeLpgmEventId)
+    const eew = activeEEWsNoCancelled.get(activeLpgmEventId)
     if (!eew || eew.forecastMaxLpgmClass == null || eew.forecastMaxLpgmClass < 1) {
       setActiveLpgmEventId(null)
       setActiveLpgmSource(null)
@@ -707,10 +724,10 @@ export function App() {
   const initialTitleAppliedRef = useRef(false)
   useEffect(() => {
     if (initialTitleAppliedRef.current) return
-    if (activeEEWs.size === 0 && !tsunamiActive) return
+    if (activeEEWsNoCancelled.size === 0 && !tsunamiActive) return
     initialTitleAppliedRef.current = true
-    applyPriorityTitle(activeEEWs, tsunamiActive, settings.tsunamiPriorityDefault, false, setAlertTitle)
-  }, [activeEEWs, tsunamiActive, settings.tsunamiPriorityDefault])
+    applyPriorityTitle(activeEEWsNoCancelled, tsunamiActive, settings.tsunamiPriorityDefault, false, setAlertTitle)
+  }, [activeEEWsNoCancelled, tsunamiActive, settings.tsunamiPriorityDefault])
 
   // 津波解除検出: true→false の遷移でタイマーをキャンセルし優先度ロジックを即時適用
   const prevTsunamiActiveRef = useRef(false)
@@ -735,7 +752,7 @@ export function App() {
   const tsunamiPriorityRef = useRef(false)
   defaultTabRef.current =
     settings.tsunamiPriorityDefault && tsunamiActive ? 'tsunami' : settings.defaultTab
-  activeEEWsRef.current = activeEEWs
+  activeEEWsRef.current = activeEEWsNoCancelled
   tsunamiActiveRef.current = tsunamiActive
   tsunamiPriorityRef.current = settings.tsunamiPriorityDefault
 
@@ -904,12 +921,12 @@ export function App() {
 
   // DMDSS版: EEWデータから P波・S波半径を自前計算（100ms更新でスムーズ拡張）
   // activeEEWs (Map) の参照が安定している限り配列を再生成しない
-  const activeEEWList = useMemo(() => Array.from(activeEEWs.values()), [activeEEWs])
+  const activeEEWList = useMemo(() => Array.from(activeEEWsNoCancelled.values()), [activeEEWsNoCancelled])
   const dmdssWaves = useDmdssWaves(activeEEWList, isDmdss, replayTimeOffset)
   const psWave = isDmdss ? dmdssWaves : kyoshin.psWave
 
   // EEW受信中または揺れ検知中は全観測点ベースの最大インデックスを使う（表示と音を一致させる）
-  const hasActiveEEW = activeEEWs.size > 0
+  const hasActiveEEW = activeEEWsNoCancelled.size > 0
 
   const home = useMemo(
     () => (settings.homeLat !== null && settings.homeLng !== null
@@ -1046,7 +1063,7 @@ export function App() {
             kyoshinSites={kyoshin.sites}
             kyoshinIndices={kyoshin.indices}
             kyoshinPsWave={psWave}
-            eews={Array.from(activeEEWs.values())}
+            eews={Array.from(activeEEWsNoCancelled.values())}
             detectedPoints={kyoshinDetection.points}
             idleRevertSec={settings.idleRevertSec}
             eewLpgmEventId={activeLpgmSource === 'eew' ? activeLpgmEventId : null}
@@ -1162,7 +1179,7 @@ export function App() {
             }
           }}
           tsunamiGrade={tsunamiGrade}
-          eewLevel={computeEEWLevel(activeEEWs)}
+          eewLevel={computeEEWLevel(activeEEWsNoCancelled)}
         />
       </div>
     </div>
