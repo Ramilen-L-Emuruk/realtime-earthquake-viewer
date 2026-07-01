@@ -179,6 +179,8 @@ export function App() {
     if (event.code === 551 && event.cancelled) {
       // 地震情報取消: カード削除は useEarthquakes reducer が担う。通知音・読み上げのみここで処理する。
       if (settings.soundEnabled) playAlertSound('eewCancel')
+      console.debug('[tab] → earthquake (地震情報取消)')
+      setActiveTabNonRealtime('earthquake')
       window.clearTimeout(earthquakeTitleTimerRef.current)
       applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
       if (settings.voicevoxEnabled) {
@@ -224,6 +226,8 @@ export function App() {
       }, tsunamiResetMs)
     } else if (event.code === 552 && event.cancelled) {
       // Forecast は tsunamiOverallGrade から除外されるため「津波解除検出」effect が発火しない。タイマーごと即時リセットする。
+      console.debug('[tab] → tsunami (津波情報取消)')
+      setActiveTabNonRealtime('tsunami')
       window.clearTimeout(tsunamiTitleTimerRef.current)
       applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
       if (settings.voicevoxEnabled) {
@@ -276,7 +280,11 @@ export function App() {
         if (activeEEWLevelsRef.current.size === 0) {
           window.clearTimeout(eewTitleTimerRef.current)
           applyPriorityTitle(new Map<string, EEWAlert>(), tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
-          if (kyoshinDetectedRef.current) {
+          if (!event.expired && hadKey) {
+            // 誤報取消（10秒キャンセル表示中）: リアルタイムタブでオーバーレイを見せる
+            console.debug('[tab] → realtime (EEW誤報取消・キャンセル表示)')
+            setActiveTab('realtime')
+          } else if (kyoshinDetectedRef.current) {
             console.debug('[tab] → realtime (EEW全解除・揺れ検知中)')
             setActiveTab('realtime')
           } else {
