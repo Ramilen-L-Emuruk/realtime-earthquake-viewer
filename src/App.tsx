@@ -277,19 +277,22 @@ export function App() {
         if (eewTtsTimerRef.current) { clearTimeout(eewTtsTimerRef.current); eewTtsTimerRef.current = null }
         if (eewTtsMaxTimerRef.current) { clearTimeout(eewTtsMaxTimerRef.current); eewTtsMaxTimerRef.current = null }
         eewTtsEventRef.current = null
+        if (!event.expired && hadKey) {
+          // 誤報取消（10秒キャンセル表示中）: 他に発表中のEEWがあってもリアルタイムタブでオーバーレイを見せる
+          console.debug('[tab] → realtime (EEW誤報取消・キャンセル表示)')
+          setActiveTab('realtime')
+        }
         if (activeEEWLevelsRef.current.size === 0) {
           window.clearTimeout(eewTitleTimerRef.current)
           applyPriorityTitle(new Map<string, EEWAlert>(), tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
-          if (!event.expired && hadKey) {
-            // 誤報取消（10秒キャンセル表示中）: リアルタイムタブでオーバーレイを見せる
-            console.debug('[tab] → realtime (EEW誤報取消・キャンセル表示)')
-            setActiveTab('realtime')
-          } else if (kyoshinDetectedRef.current) {
-            console.debug('[tab] → realtime (EEW全解除・揺れ検知中)')
-            setActiveTab('realtime')
-          } else {
-            console.debug(`[tab] → ${defaultTabRef.current} (EEW全解除)`)
-            setActiveTabNonRealtime(defaultTabRef.current as Exclude<TabId, 'realtime'>)
+          if (event.expired || !hadKey) {
+            if (kyoshinDetectedRef.current) {
+              console.debug('[tab] → realtime (EEW全解除・揺れ検知中)')
+              setActiveTab('realtime')
+            } else {
+              console.debug(`[tab] → ${defaultTabRef.current} (EEW全解除)`)
+              setActiveTabNonRealtime(defaultTabRef.current as Exclude<TabId, 'realtime'>)
+            }
           }
         }
         return
