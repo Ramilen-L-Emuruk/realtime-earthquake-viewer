@@ -206,6 +206,7 @@ export function createTestTsunami(): JMATsunami {
     cancelled: false,
     issue: { source: 'テスト', time: now, type: 'Focus' },
     warningComment: 'ただちに高台へ避難してください。\n津波は繰り返し襲ってきます。警報が解除されるまで安全な場所から離れないでください。',
+    sourceEarthquake: { hypocenterName: '三陸沖', magnitude: 9.0, originTime: now },
     // name は地図の海岸線表示用に、津波予報区データ（tsunami-zones.json）に実在する区域名を使用する
     // 2011年東北地方太平洋沖地震を参考にした発令内容
     // code は津波予報区コード（テスト用の仮値）。observations の districtCode と一致させて紐づけを確認する

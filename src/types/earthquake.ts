@@ -114,6 +114,12 @@ export interface JMATsunami {
   headline?: string
   // 付加文（固定文）。避難行動の呼びかけなど JMA 公式の定型文。長文の解説（FreeFormComment）は含まない。
   warningComment?: string
+  // この津波を引き起こした地震（Earthquake 要素）。震源名・マグニチュード・発生時刻。
+  sourceEarthquake?: {
+    hypocenterName: string
+    magnitude?: number
+    originTime?: string
+  }
   // 若干の海面変動など予報のみの場合、JMAは明示的なキャンセル電文を送らず
   // ValidDateTime の経過でのみ有効期限が示される。
   validDateTime?: string

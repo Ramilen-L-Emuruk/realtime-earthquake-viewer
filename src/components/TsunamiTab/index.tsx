@@ -201,6 +201,7 @@ export function TsunamiTab({ tsunamis }: Props) {
   const topGrade = getTopGrade(active)
   const topStyle = getGradeStyle(topGrade)
   const latestTime = active[0]?.time
+  const sourceEarthquake = active[0]?.sourceEarthquake
 
   return (
     <div className="p-3 flex flex-col gap-3">
@@ -216,6 +217,13 @@ export function TsunamiTab({ tsunamis }: Props) {
             <div className="mt-1" style={{ fontSize: '11px', color: isCancelledDisplay ? '#6b7280' : topStyle.headerColor, opacity: 0.8 }}>
               {isCancelledDisplay ? 'この津波情報は解除されました' : topGrade === 'Forecast' ? '若干の海面変動があるかもしれません' : '海岸・河川から直ちに離れてください'}
             </div>
+            {!isCancelledDisplay && sourceEarthquake && (
+              <div className="mt-1.5 pt-1.5" style={{ fontSize: '11px', color: topStyle.arrivalColor, opacity: 0.9, borderTop: `1px solid ${topStyle.cardBorder}40` }}>
+                震源: {sourceEarthquake.hypocenterName}
+                {sourceEarthquake.magnitude !== undefined && `　M${sourceEarthquake.magnitude}`}
+                {sourceEarthquake.originTime && `　${formatTime(sourceEarthquake.originTime).slice(0, 5)}発生`}
+              </div>
+            )}
           </div>
           {latestTime && (
             <div className="text-right flex-shrink-0" style={{ fontSize: '11px', color: isCancelledDisplay ? '#6b7280' : topStyle.arrivalColor, opacity: 0.8 }}>
