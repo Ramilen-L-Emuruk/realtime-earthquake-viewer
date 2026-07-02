@@ -41,36 +41,81 @@ const GRADE_LABEL: Record<TsunamiGrade, string> = {
 
 const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch', 'Forecast', 'Unknown']
 
-function TsunamiAreaRow({ area, style }: { area: TsunamiArea; style: GradeStyle }) {
+// 観測情報が属する津波予報区（districtCode/districtName）を発表区域（area.code/area.name）に紐づける。
+// code が双方にあれば code を優先。無ければ name で照合する。
+function matchesArea(obs: TsunamiObservation, area: TsunamiArea): boolean {
+  if (obs.districtCode && area.code) return obs.districtCode === area.code
+  return !!obs.districtName && obs.districtName === area.name
+}
+
+// 同一階級内で、予想波高（maxHeight.description）が連続して一致する区域を1グループにまとめる。
+// 電文内の区域順序は維持し、離れた位置にある同じ波高の区域まではまとめない。
+function groupAreasByHeight(areas: TsunamiArea[]): { heightLabel: string | null; areas: TsunamiArea[] }[] {
+  const groups: { heightLabel: string | null; areas: TsunamiArea[] }[] = []
+  for (const area of areas) {
+    const label = area.maxHeight?.description || null
+    const last = groups[groups.length - 1]
+    if (label && last && last.heightLabel === label) {
+      last.areas.push(area)
+    } else {
+      groups.push({ heightLabel: label, areas: [area] })
+    }
+  }
+  return groups
+}
+
+function TsunamiHeightHeader({ label, style }: { label: string; style: GradeStyle }) {
+  return (
+    <div className="px-4 py-1 font-black leading-none"
+      style={{ fontSize: '22px', color: style.heightColor, backgroundColor: `${style.cardBorder}14`, borderBottom: `1px solid ${style.cardBorder}33` }}>
+      {label}
+    </div>
+  )
+}
+
+function TsunamiAreaRow({ area, observations, style }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle }) {
   const arrivalText = area.firstHeight?.arrivalTime
     ? `到達予想 ${formatTime(area.firstHeight.arrivalTime).slice(0, 5)}`
     : (area.firstHeight?.condition ?? null)
-  const heightText = area.maxHeight?.description ?? null
-  const isLongHeight = !!heightText && heightText.length > 3
 
   return (
-    <div className="flex items-center gap-3 px-4 py-3 border-b border-white/5 last:border-0">
-      <div className="flex-1 min-w-0">
-        <span className="text-white font-semibold block" style={{ fontSize: '20px', lineHeight: '1.2' }}>
-          {area.name}
-        </span>
-        {arrivalText && (
-          <span className="block mt-1" style={{ fontSize: '15px', color: style.arrivalColor }}>
-            {arrivalText}
+    <div className="border-b border-white/5 last:border-0">
+      <div className="flex items-center gap-3 px-4 py-3">
+        <div className="flex-1 min-w-0">
+          <span className="text-white font-semibold block" style={{ fontSize: '20px', lineHeight: '1.2' }}>
+            {area.name}
+          </span>
+          {arrivalText && (
+            <span className="block mt-1" style={{ fontSize: '15px', color: style.arrivalColor }}>
+              {arrivalText}
+            </span>
+          )}
+        </div>
+        {area.immediate && (
+          <span className="flex-shrink-0 text-xs font-bold px-2 py-1 rounded border"
+            style={{ color: '#f87171', backgroundColor: 'rgba(239,68,68,0.15)', borderColor: '#ef4444' }}>
+            到達中
           </span>
         )}
       </div>
-      {heightText && (
-        <span className="font-black flex-shrink-0 leading-none"
-          style={{ fontSize: isLongHeight ? '22px' : '36px', color: style.heightColor }}>
-          {heightText}
-        </span>
-      )}
-      {area.immediate && (
-        <span className="flex-shrink-0 text-xs font-bold px-2 py-1 rounded border"
-          style={{ color: '#f87171', backgroundColor: 'rgba(239,68,68,0.15)', borderColor: '#ef4444' }}>
-          到達中
-        </span>
+      {observations.length > 0 && (
+        <div className="pl-4 pr-4 pb-3 flex flex-col gap-1.5">
+          {observations.map((obs, i) => (
+            <div key={i} className="pl-3 flex flex-wrap items-baseline gap-x-2" style={{ borderLeft: `2px solid ${style.cardBorder}66` }}>
+              <span className="text-secondary" style={{ fontSize: '12px' }}>観測 {obs.name}</span>
+              {obs.height && (
+                <span className="font-semibold" style={{ fontSize: '16px', color: style.heightColor }}>
+                  {obs.height.description}
+                </span>
+              )}
+              {obs.arrivalTime && (
+                <span className="text-secondary" style={{ fontSize: '11px' }}>
+                  {formatTime(obs.arrivalTime).slice(0, 5)}{obs.initial ? ` ${obs.initial}波` : ''}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   )
@@ -98,9 +143,10 @@ function TsunamiObservationRow({ obs }: { obs: TsunamiObservation }) {
   )
 }
 
-function TsunamiGradeCard({ grade, areas }: { grade: TsunamiGrade; areas: TsunamiArea[] }) {
+function TsunamiGradeCard({ grade, areas, observations }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[] }) {
   if (areas.length === 0) return null
   const style = getGradeStyle(grade)
+  const groups = groupAreasByHeight(areas)
   return (
     <div className="bg-card rounded-lg overflow-hidden"
       style={{ border: `2px solid ${style.cardBorder}`, boxShadow: `0 0 0 1px ${style.cardBorder}40` }}>
@@ -108,8 +154,18 @@ function TsunamiGradeCard({ grade, areas }: { grade: TsunamiGrade; areas: Tsunam
         style={{ backgroundColor: style.headerBg, color: style.headerColor, borderBottom: `1px solid ${style.headerBorder}` }}>
         {GRADE_LABEL[grade]}
       </div>
-      {areas.map((area, i) => (
-        <TsunamiAreaRow key={i} area={area} style={style} />
+      {groups.map((group, gi) => (
+        <div key={gi}>
+          {group.heightLabel && <TsunamiHeightHeader label={group.heightLabel} style={style} />}
+          {group.areas.map((area, i) => (
+            <TsunamiAreaRow
+              key={i}
+              area={area}
+              observations={observations.filter(o => matchesArea(o, area))}
+              style={style}
+            />
+          ))}
+        </div>
       ))}
     </div>
   )
@@ -169,35 +225,40 @@ export function TsunamiTab({ tsunamis }: Props) {
         </div>
       </div>
 
-      {active.map(t => (
-        <div key={t.id} className="flex flex-col gap-3 relative">
-          {t.cancelledAt && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg" style={{ minHeight: '80px' }}>
-              <span className="font-black text-white" style={{ fontSize: '40px', lineHeight: 1.1 }}>解除</span>
-              <span className="text-sm font-bold text-white/90 mt-1">この津波情報は解除されました</span>
-            </div>
-          )}
-          {GRADE_ORDER.map(grade => (
-            <TsunamiGradeCard
-              key={grade}
-              grade={grade}
-              areas={t.areas.filter(a => a.grade === grade)}
-            />
-          ))}
-          {t.observations && t.observations.length > 0 && (
-            <div className="bg-card rounded-lg overflow-hidden"
-              style={{ border: '2px solid #1d4ed8', boxShadow: '0 0 0 1px rgba(29,78,216,0.25)' }}>
-              <div className="w-full py-1.5 px-4 text-center text-xs font-bold tracking-widest"
-                style={{ backgroundColor: '#0c1a3a', color: '#93c5fd', borderBottom: '1px solid #1d4ed8' }}>
-                沖合観測
+      {active.map(t => {
+        const observations = t.observations ?? []
+        const unmatched = observations.filter(o => !t.areas.some(a => matchesArea(o, a)))
+        return (
+          <div key={t.id} className="flex flex-col gap-3 relative">
+            {t.cancelledAt && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg" style={{ minHeight: '80px' }}>
+                <span className="font-black text-white" style={{ fontSize: '40px', lineHeight: 1.1 }}>解除</span>
+                <span className="text-sm font-bold text-white/90 mt-1">この津波情報は解除されました</span>
               </div>
-              {t.observations.map((obs, i) => (
-                <TsunamiObservationRow key={i} obs={obs} />
-              ))}
-            </div>
-          )}
-        </div>
-      ))}
+            )}
+            {GRADE_ORDER.map(grade => (
+              <TsunamiGradeCard
+                key={grade}
+                grade={grade}
+                areas={t.areas.filter(a => a.grade === grade)}
+                observations={observations}
+              />
+            ))}
+            {unmatched.length > 0 && (
+              <div className="bg-card rounded-lg overflow-hidden"
+                style={{ border: '2px solid #1d4ed8', boxShadow: '0 0 0 1px rgba(29,78,216,0.25)' }}>
+                <div className="w-full py-1.5 px-4 text-center text-xs font-bold tracking-widest"
+                  style={{ backgroundColor: '#0c1a3a', color: '#93c5fd', borderBottom: '1px solid #1d4ed8' }}>
+                  沖合観測
+                </div>
+                {unmatched.map((obs, i) => (
+                  <TsunamiObservationRow key={i} obs={obs} />
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
