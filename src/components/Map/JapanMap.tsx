@@ -32,13 +32,13 @@ function getTsunamiObsBarIcon(color: string, barPx: number): L.DivIcon {
   const cached = obsBarIconCache.get(key)
   if (cached) return cached
 
-  const W = 10
+  const W = 14
   // 影を 2px 右下にずらす。アンカーは棒の底辺中央。
   const icon = L.divIcon({
     className: '',
     html: `<div style="position:relative;width:${W + 2}px;height:${barPx + 2}px;">
-      <div style="position:absolute;top:2px;left:2px;width:${W}px;height:${barPx}px;background:rgba(0,0,0,0.3);border-radius:2px 2px 0 0;"></div>
-      <div style="position:absolute;top:0;left:0;width:${W}px;height:${barPx}px;background:${color};border:1.5px solid white;border-radius:2px 2px 0 0;box-sizing:border-box;"></div>
+      <div style="position:absolute;top:2px;left:2px;width:${W}px;height:${barPx}px;background:rgba(0,0,0,0.4);border-radius:2px 2px 0 0;"></div>
+      <div style="position:absolute;top:0;left:0;width:${W}px;height:${barPx}px;background:${color};border:2px solid white;border-radius:2px 2px 0 0;box-sizing:border-box;"></div>
     </div>`,
     iconSize: [W + 2, barPx + 2],
     iconAnchor: [(W + 2) / 2, barPx + 2],
@@ -692,8 +692,8 @@ export function JapanMap({
   const observationBars = useMemo<ObsBar[]>(() => {
     if (!tsunamiObsCoords || observations.length === 0) return []
     const OBS_MAX_M = 5.0
-    const OBS_MAX_PX = 40
-    const OBS_MIN_PX = 4
+    const OBS_MAX_PX = 100
+    const OBS_MIN_PX = 8
     const bars: ObsBar[] = []
     for (const o of observations) {
       if (!o.height) continue
