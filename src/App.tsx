@@ -107,6 +107,7 @@ export function App() {
   const { settings, updateSetting } = useSettings()
   const [activeTab, setActiveTab] = useState<TabId>(settings.defaultTab)
   const [selectedQuakeId, setSelectedQuakeId] = useState<string | null>(null)
+  const [focusedObsName, setFocusedObsName] = useState<{ name: string; ts: number } | null>(null)
   const [activeLpgmEventId, setActiveLpgmEventId] = useState<string | null>(null)
   const [activeLpgmSource, setActiveLpgmSource] = useState<'earthquake' | 'eew' | null>(null)
   // 地震カード切替時は LPGM 表示をリセットする
@@ -1098,6 +1099,7 @@ export function App() {
             detectedPoints={kyoshinDetection.points}
             idleRevertSec={settings.idleRevertSec}
             eewLpgmEventId={activeLpgmSource === 'eew' ? activeLpgmEventId : null}
+            focusObsName={focusedObsName}
           />
           <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
           <SpecialInfoBanner nankai={nankai} kohatsu={kohatsu} />
@@ -1157,6 +1159,7 @@ export function App() {
                 selectQuake(earthquakeTime)
                 setActiveTabNonRealtime('earthquake')
               }}
+              onObservationClick={(name) => setFocusedObsName({ name, ts: Date.now() })}
             />
           </div>
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'telegrams' ? ' invisible pointer-events-none' : ''}`}>
