@@ -286,6 +286,7 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
   return {
     code: 551,
     id: `dmdata-quake-${eventId}-${str(data.serialNo ?? data.serial ?? '1')}`,
+    eventId: eventId || undefined,
     time: str(data.reportDateTime ?? data.pressDateTime),
     issue: {
       source: str(data.editorialOffice ?? data.publishingOffice),
@@ -621,8 +622,8 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
   const headline = str(data.headline) || undefined
   // 付加文（固定文）。避難行動の呼びかけなど。FreeFormComment（長文の高さ区分解説）は対象外。
   const warningComment = str(obj(obj(data.comments).warning).text) || undefined
-  // この津波を引き起こした地震（先頭の1件のみ使用）
-  const rawEq = obj(arr(data.earthquakes)[0])
+  // この津波を引き起こした地震（先頭の1件のみ使用）。earthquakes は body 配下にある。
+  const rawEq = obj(arr(obj(data.body).earthquakes)[0])
   const eqHypoName = str(obj(rawEq.hypocenter).name)
   const eqMagnitude = parseFloat(str(obj(rawEq.magnitude).value))
   const sourceEarthquake = eqHypoName
