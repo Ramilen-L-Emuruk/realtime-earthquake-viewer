@@ -256,6 +256,13 @@ export function TsunamiTab({ tsunamis }: Props) {
                 ))}
               </div>
             )}
+            {t.warningComment && !t.cancelledAt && (
+              <div className="bg-card rounded-lg overflow-hidden" style={{ border: '1px solid #374151' }}>
+                <div className="text-secondary" style={{ fontSize: '12px', lineHeight: '1.7', whiteSpace: 'pre-line', padding: '12px 16px' }}>
+                  {t.warningComment}
+                </div>
+              </div>
+            )}
           </div>
         )
       })}
