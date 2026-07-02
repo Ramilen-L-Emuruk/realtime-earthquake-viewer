@@ -424,11 +424,12 @@ export function App() {
       if (settings.voicevoxEnabled) {
         const lpgm = lpgmEvent
         const isNewLpgm = !seenLpgmEventIdsRef.current.has(lpgm.eventId)
-        seenLpgmEventIdsRef.current.add(lpgm.eventId)
         setTimeout(() => {
           speakWithVoicevox(settings.voicevoxUrl, lpgmToText(lpgm, { intensityLevels: settings.ttsIntensityLevels, maxRegions: settings.ttsMaxRegions }, isNewLpgm), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
         }, 1000)
       }
+      // voicevox 有効/無効に関わらず追跡する（次回の isNewLpgm 判定に使用）
+      seenLpgmEventIdsRef.current.add(lpgmEvent.eventId)
       return
     }
 
@@ -533,9 +534,6 @@ export function App() {
             return false
           })
           if (updatedObs.length > 0) {
-            for (const o of updatedObs) {
-              prevMap.set(o.name, { value: o.height!.value, over: o.height!.over })
-            }
             ttsText = tsunamiObservationUpdateToText(updatedObs, event.headline)
           }
         } else {
@@ -550,11 +548,18 @@ export function App() {
         }, delay)
       }
     }
-    // gradeトラッキング: voicevox 有効/無効に関わらず次回電文の gradeUnchanged 判定に使用する。
+    // grade・観測波高トラッキング: voicevox 有効/無効に関わらず次回電文の判定に使用する。
     // Unknown（観測のみ電文など areas=[] のケース）はグレード追跡を維持する。
     if (event.code === 552 && !event.cancelled) {
       const grade = tsunamiMaxGrade(event)
       if (grade !== 'Unknown') lastTsunamiGradeRef.current = grade
+      for (const o of event.observations ?? []) {
+        if (!o.height) continue
+        const prev = lastMaxObsHeightRef.current.get(o.name)
+        if (prev === undefined || o.height.value > prev.value || (o.height.over && !prev.over)) {
+          lastMaxObsHeightRef.current.set(o.name, { value: o.height.value, over: o.height.over })
+        }
+      }
     }
   }
 
