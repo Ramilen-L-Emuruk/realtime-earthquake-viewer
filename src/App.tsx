@@ -576,6 +576,12 @@ export function App() {
     resetState, loadReplayEvents,
   } = useEarthquakes(handleLiveEvent, settings.dmdataApiKey, settings.dmdataTestDelivery, replayTimeOffset)
 
+  // 最新の非解除津波電文から観測データを収集（地図バー描画用）
+  const latestTsunamiObservations = useMemo(() => {
+    const latest = [...tsunamis].reverse().find((t) => !t.cancelled && (t.observations?.length ?? 0) > 0)
+    return latest?.observations ?? []
+  }, [tsunamis])
+
   // UI 倍率: ルート要素の font-size を変えて rem ベースの UI 全体を拡大縮小する。
   // 倍率変更で地図コンテナ幅が変わるため、Leaflet の再計算用に resize を発火する。
   useEffect(() => {
@@ -1075,6 +1081,7 @@ export function App() {
             mode={mapMode}
             quake={mapQuake}
             tsunamis={tsunamis}
+            observations={latestTsunamiObservations}
             lpgm={activeLpgm ?? undefined}
             iconScale={settings.mapIconScale}
             showBathymetry={settings.showBathymetry}
