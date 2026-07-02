@@ -135,6 +135,7 @@ export function App() {
   const earthquakeTitleTimerRef = useRef<number>(0)
   const eewTitleTimerRef = useRef<number>(0)
   const tsunamiTitleTimerRef = useRef<number>(0)
+  const specialInfoTitleTimerRef = useRef<number>(0)
 
   // 直前に読み上げた津波グレード（引き下げ検出・重複読み上げ抑制に使用）
   const lastTsunamiGradeRef = useRef<'MajorWarning' | 'Warning' | 'Watch' | 'Forecast' | null>(null)
@@ -437,7 +438,7 @@ export function App() {
 
     // 南海トラフ臨時情報・後発地震注意情報（DMDSS版のみ）
     if ((event as unknown as { kind?: string }).kind === 'nankai' || (event as unknown as { kind?: string }).kind === 'kohatsu') {
-      const specialEvent = event as unknown as { kind: string; data: { cancelled?: boolean } }
+      const specialEvent = event as unknown as { kind: string; data: { cancelled?: boolean; kindName?: string } }
       if (!specialEvent.data.cancelled) {
         if (settings.soundEnabled) {
           playAlertSound('specialInfo')
@@ -450,13 +451,28 @@ export function App() {
             speakWithVoicevox(settings.voicevoxUrl, ttsText, settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
           }, 1500)
         }
-      } else if (specialEvent.kind === 'nankai' && settings.voicevoxEnabled) {
-        speakWithVoicevox(
-          settings.voicevoxUrl,
-          nankaiToText(specialEvent.data as Parameters<typeof nankaiToText>[0]),
-          settings.voicevoxSpeakerId,
-          settings.soundVolume,
-        ).catch(() => {})
+        // タイトル更新
+        const specialTitle = specialEvent.kind === 'nankai'
+          ? `⚠️ 南海トラフ臨時情報（${specialEvent.data.kindName ?? '発表中'}）`
+          : '⚠️ 後発地震注意情報 発表中'
+        setAlertTitle(specialTitle)
+        window.clearTimeout(specialInfoTitleTimerRef.current)
+        const resetMs = settings.idleRevertSec === 15 ? 15000 : 30000
+        specialInfoTitleTimerRef.current = window.setTimeout(() => {
+          applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
+        }, resetMs)
+      } else {
+        // 取消・終了時はタイマーをクリアして即時リセット
+        window.clearTimeout(specialInfoTitleTimerRef.current)
+        applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
+        if (specialEvent.kind === 'nankai' && settings.voicevoxEnabled) {
+          speakWithVoicevox(
+            settings.voicevoxUrl,
+            nankaiToText(specialEvent.data as Parameters<typeof nankaiToText>[0]),
+            settings.voicevoxSpeakerId,
+            settings.soundVolume,
+          ).catch(() => {})
+        }
       }
       return
     }
