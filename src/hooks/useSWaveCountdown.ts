@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PsWaveCircle } from '../services/kyoshin'
 import { computeSWaveTravelTimeSec } from './useDmdssWaves'
-import { calcEEWAutoCancelSec } from '../utils/eew'
+import { calcEEWAutoCancelSec, S_WAVE_FALLBACK_KM_PER_SEC } from '../utils/eew'
 import { haversineKm } from '../utils/geo'
 
 export interface SWaveArrival {
@@ -11,7 +11,6 @@ export interface SWaveArrival {
   arrived: boolean
 }
 
-const S_WAVE_KM_PER_SEC = 4.0  // フォールバック速度定数（Yahoo版フレーム差分が取れない初期）
 const SPEED_SMOOTH_FRAMES = 3   // 移動平均フレーム数
 const MIN_VALID_SPEED = 0.5     // この速度(km/s)未満はフォールバック使用
 
@@ -76,7 +75,7 @@ export function useSWaveCountdown(
     } else {
       // Yahoo版またはS波がまだ地表に出ていない場合: フレーム差分で速度を推定
       // ※Yahoo版の更新間隔は約1秒なので delta ≈ km/s として扱える
-      let speed = S_WAVE_KM_PER_SEC
+      let speed = S_WAVE_FALLBACK_KM_PER_SEC
       if (prevSRadiusRef.current !== null) {
         const delta = sRadiusKm - prevSRadiusRef.current
         if (delta > 0) {
