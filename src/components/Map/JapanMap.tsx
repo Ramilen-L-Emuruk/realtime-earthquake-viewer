@@ -179,7 +179,7 @@ function FitToBounds({ signature, positions }: { signature: string; positions: L
 // P波があれば P波を、なければ S波を基準にする。
 // 複数EEWがある場合は originTime が最新のものを追従対象とする。
 // ユーザーが手動でズーム/パンした場合は idleRevertSec 秒間追従を停止する（0=EEW更新まで停止）。
-function FitToEEW({ eews, psWave, idleRevertSec = 30, hasDetection = false }: { eews: EEWAlert[]; psWave: PsWaveCircle[]; idleRevertSec?: number; hasDetection?: boolean }) {
+function FitToEEW({ eews, psWave, idleRevertSec = 30, detectedPoints = [] }: { eews: EEWAlert[]; psWave: PsWaveCircle[]; idleRevertSec?: number; detectedPoints?: DetectedPoint[] }) {
   const map = useMap()
   const lastEewIdRef = useRef<string | null>(null)
   const isAutoFlyingRef = useRef(false)
@@ -199,12 +199,19 @@ function FitToEEW({ eews, psWave, idleRevertSec = 30, hasDetection = false }: { 
     if (!latest) {
       if (lastEewIdRef.current !== null) {
         lastEewIdRef.current = null
-        if (!userInteractedRef.current && !hasDetection) {
+        if (userInteractedRef.current) {
+          console.debug(`[map] flyToBounds スキップ (EEW解除 userInteracted=${userInteractedRef.current})`)
+        } else if (detectedPoints.length > 0) {
+          console.debug(`[map] flyToBounds (EEW解除・揺れ検知中 ${detectedPoints.length}点にフィット)`)
+          isAutoFlyingRef.current = true
+          map.flyToBounds(
+            L.latLngBounds(detectedPoints.map(p => [p.lat, p.lng] as [number, number])),
+            { padding: [60, 60], maxZoom: MAX_ZOOM, duration: 1.0 },
+          )
+        } else {
           console.debug('[map] flyToBounds JAPAN_BOUNDS (EEW解除)')
           isAutoFlyingRef.current = true
           map.flyToBounds(JAPAN_BOUNDS, { padding: [20, 20], duration: 1.0 })
-        } else {
-          console.debug(`[map] flyToBounds JAPAN スキップ (EEW解除 userInteracted=${userInteractedRef.current} hasDetection=${hasDetection})`)
         }
       }
       return
@@ -768,7 +775,7 @@ export function JapanMap({
       )}
 
       {/* EEW 発報時: 震源中心→予報円に合わせてズームアウト */}
-      {mode === 'kyoshin' && <FitToEEW eews={eews} psWave={kyoshinPsWave} idleRevertSec={idleRevertSec} hasDetection={detectedPoints.length > 0} />}
+      {mode === 'kyoshin' && <FitToEEW eews={eews} psWave={kyoshinPsWave} idleRevertSec={idleRevertSec} detectedPoints={detectedPoints} />}
 
       {/* 緊急地震速報の予報円（S波=塗りつぶし / P波=外周）。全タブで表示する。 */}
       <PsWaveLayer psWave={kyoshinPsWave} />
