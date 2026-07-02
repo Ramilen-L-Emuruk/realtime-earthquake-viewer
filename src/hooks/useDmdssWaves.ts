@@ -104,6 +104,8 @@ export function useDmdssWaves(
         if (eew.cancelled || eew.cancelledAt) continue
         const { hypocenter } = eew.earthquake
         if (!Number.isFinite(hypocenter.latitude) || !Number.isFinite(hypocenter.longitude)) continue
+        // マグニチュード・深さが仮の値（震源未確定・単独点処理）の場合はカードと同様に円を生成しない
+        if (!hypocenter.name || eew.earthquake.condition === '仮定震源要素') continue
 
         const originMs = new Date(eew.earthquake.originTime).getTime()
         const t = (now - originMs) / 1000
