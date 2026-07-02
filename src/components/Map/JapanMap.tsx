@@ -722,7 +722,7 @@ export function JapanMap({
   const observationBars = useMemo<ObsBar[]>(() => {
     if (!tsunamiObsCoords || observations.length === 0) return []
     const OBS_MAX_M = 5.0
-    const OBS_MAX_PX = 100
+    const OBS_MAX_PX = 200
     const OBS_MIN_PX = 8
     const bars: ObsBar[] = []
     for (const o of observations) {
