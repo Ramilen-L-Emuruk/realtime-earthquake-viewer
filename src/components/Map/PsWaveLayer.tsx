@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react'
 import { useMap } from 'react-leaflet'
 import L from 'leaflet'
 import type { PsWaveCircle } from '../../services/kyoshin'
+import { computeSWaveRadiusAtTime, computeSWaveTravelTimeSec } from '../../hooks/useDmdssWaves'
+import { calcShakingDurationSec, S_WAVE_FALLBACK_KM_PER_SEC } from '../../utils/eew'
 
 export function PsWaveLayer({ psWave }: { psWave: PsWaveCircle[] }) {
   const map = useMap()
@@ -42,16 +44,41 @@ export function PsWaveLayer({ psWave }: { psWave: PsWaveCircle[] }) {
         const cosLat = Math.cos(c.lat * Math.PI / 180)
 
         if (c.sRadius > 0) {
+          const durationSec = calcShakingDurationSec(c.magnitude)
+          let sInnerRadiusKm = 0
+
+          if (c.depth !== undefined) {
+            // DMDSS版: 解析的走時モデルで「durationSec秒前の波面半径」を逆算
+            const tNow = computeSWaveTravelTimeSec(c.sRadius, c.depth)
+            const tTrailing = tNow - durationSec
+            sInnerRadiusKm = tTrailing > 0 ? computeSWaveRadiusAtTime(tTrailing, c.depth) : 0
+          } else {
+            // Yahoo版: depth が無いため定速フォールバックで後端半径を近似
+            sInnerRadiusKm = Math.max(0, c.sRadius - S_WAVE_FALLBACK_KM_PER_SEC * durationSec)
+          }
+
           const lonOffsetS = (c.sRadius * 1000) / (111320 * cosLat)
           const edgeS = map.latLngToContainerPoint(L.latLng(c.lat, c.lng + lonOffsetS))
           const sPx = Math.abs(edgeS.x - center.x)
+
           ctx.setLineDash([])
           ctx.strokeStyle = '#ff3c00'
           ctx.fillStyle = 'rgba(255, 60, 0, 0.12)'
           ctx.lineWidth = 2
+
           ctx.beginPath()
           ctx.arc(center.x, center.y, sPx, 0, Math.PI * 2)
-          ctx.fill()
+          if (sInnerRadiusKm > 0) {
+            const lonOffsetInner = (sInnerRadiusKm * 1000) / (111320 * cosLat)
+            const edgeInner = map.latLngToContainerPoint(L.latLng(c.lat, c.lng + lonOffsetInner))
+            const innerPx = Math.abs(edgeInner.x - center.x)
+            ctx.moveTo(center.x + innerPx, center.y)
+            ctx.arc(center.x, center.y, innerPx, 0, Math.PI * 2, true) // 逆回りにしてevenoddで穴あけ
+          }
+          ctx.fill('evenodd')
+
+          ctx.beginPath()
+          ctx.arc(center.x, center.y, sPx, 0, Math.PI * 2)
           ctx.stroke()
         }
 

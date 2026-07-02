@@ -71,6 +71,32 @@ export function calcEEWCancelTime(eew: EEWAlert, reportTime: Date): Date {
   return fromOrigin > minTime ? fromOrigin : minTime
 }
 
+/** S波フォールバック速度 [km/s]（震源深度が不明な Yahoo 版などで使用） */
+export const S_WAVE_FALLBACK_KM_PER_SEC = 4.0
+
+/**
+ * マグニチュード別の「揺れ継続時間」概算テーブル。
+ * 注意: 司・翠川(1999)等の物理式には基づかない。震源近傍でS波通過後
+ * いつまで描画上「揺れている」とみなすかを決めるための、UI表現上の
+ * 目安の固定値。しきい値はM5/6/7/8区切り、8〜60秒程度で単調増加。
+ */
+const SHAKING_DURATION_TABLE: { minMag: number; durationSec: number }[] = [
+  { minMag: 8.0, durationSec: 60 },
+  { minMag: 7.0, durationSec: 40 },
+  { minMag: 6.0, durationSec: 20 },
+  { minMag: 5.0, durationSec: 12 },
+  { minMag: -Infinity, durationSec: 8 },
+]
+
+const DEFAULT_SHAKING_DURATION_SEC = 12 // magnitude 未定義時（Yahoo版）のデフォルト
+
+/** マグニチュードから揺れ継続時間の目安[秒]を返す。magnitude 未定義時はデフォルト値。 */
+export function calcShakingDurationSec(magnitude: number | undefined): number {
+  if (magnitude === undefined) return DEFAULT_SHAKING_DURATION_SEC
+  const entry = SHAKING_DURATION_TABLE.find((e) => magnitude >= e.minMag)
+  return entry ? entry.durationSec : DEFAULT_SHAKING_DURATION_SEC
+}
+
 // EEW の areas が未設定の場合 regions にフォールバックする（旧形式互換）。
 
 export function eewAreas(eew: EEWAlert): EEWRegion[] {

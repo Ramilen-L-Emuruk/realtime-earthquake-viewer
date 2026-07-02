@@ -38,6 +38,16 @@ export function computeSWaveTravelTimeSec(surfaceDistKm: number, depth: number):
 }
 
 /**
+ * S波の走時モデルで、経過時間 t における地表到達半径を返す。
+ * computeSWaveTravelTimeSec の逆関数。PsWaveLayer で「durationSec秒前の
+ * 波面半径」（揺れ継続時間の後端）を求めるために使用する。
+ */
+export function computeSWaveRadiusAtTime(t: number, depth: number): number {
+  if (t <= 0) return 0
+  return computeRadius(t, depth, VS1, VS2, COS_IC_S)
+}
+
+/**
  * 2層速度モデル（地殻＋マントル）で地表到達半径を計算する。
  *
  * 震源が地殻内（depth <= MOHO_KM）の場合:
