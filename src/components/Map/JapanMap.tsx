@@ -785,7 +785,8 @@ export function JapanMap({
       if (!latLng) continue
       const v = o.height.value
       const barPx = Math.round(Math.max(OBS_MIN_PX, Math.min(OBS_MAX_PX, (v / OBS_MAX_M) * OBS_MAX_PX)))
-      const color = v >= 1 ? '#ef4444' : v >= 0.5 ? '#f97316' : v >= 0.2 ? '#eab308' : '#22d3ee'
+      // 気象庁津波観測階級に準拠: 3m以上=紫, 1m以上=赤, 0.2m以上=オレンジ, 0.2m未満=シアン
+      const color = v >= 3 ? '#a855f7' : v >= 1 ? '#ef4444' : v >= 0.2 ? '#f97316' : '#22d3ee'
       bars.push({ name: o.name, lat: latLng[0], lng: latLng[1], barPx, color, height: o.height })
     }
     // 北→南ソート: 後から描画するほど手前(z高め)になるため南側を最後に描く
