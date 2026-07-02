@@ -5,6 +5,7 @@ interface Props {
   tsunamis: JMATsunami[]
   earthquakes?: JMAQuake[]
   onEarthquakeLink?: (earthquakeTime: string) => void
+  onObservationClick?: (name: string) => void
 }
 
 type TsunamiGrade = TsunamiArea['grade']
@@ -75,7 +76,7 @@ function TsunamiHeightHeader({ label, style }: { label: string; style: GradeStyl
   )
 }
 
-function TsunamiAreaRow({ area, observations, style }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle }) {
+function TsunamiAreaRow({ area, observations, style, onObservationClick }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle; onObservationClick?: (name: string) => void }) {
   const arrivalText = area.firstHeight?.arrivalTime
     ? `到達予想 ${formatTime(area.firstHeight.arrivalTime).slice(0, 5)}`
     : (area.firstHeight?.condition ?? null)
@@ -110,25 +111,36 @@ function TsunamiAreaRow({ area, observations, style }: { area: TsunamiArea; obse
       {(observations.length > 0 || stations.length > 0) && (
         <div className="mx-4 mb-3 flex flex-col gap-1.5">
           {/* 実測値あり観測点 */}
-          {observations.map((obs, i) => (
-            <div key={i} className="px-3 py-2 rounded" style={{ background: `${style.cardBorder}12`, border: `1px solid ${style.cardBorder}38` }}>
-              <div className="flex items-baseline gap-2 flex-wrap">
-                <span className="font-semibold" style={{ fontSize: '13px', color: style.heightColor }}>{obs.name}</span>
-                <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: `${style.cardBorder}30`, color: style.heightColor }}>実測</span>
-                {obs.height && (
-                  <span className="font-bold" style={{ fontSize: '15px', color: style.heightColor }}>{obs.height.description}</span>
-                )}
+          {observations.map((obs, i) => {
+            const clickable = !!obs.height && !!onObservationClick
+            return (
+              <div
+                key={i}
+                className={`px-3 py-2 rounded${clickable ? ' cursor-pointer hover:brightness-125 transition-[filter]' : ''}`}
+                style={{ background: `${style.cardBorder}12`, border: `1px solid ${style.cardBorder}38` }}
+                onClick={clickable ? () => onObservationClick!(obs.name) : undefined}
+                role={clickable ? 'button' : undefined}
+                tabIndex={clickable ? 0 : undefined}
+                onKeyDown={clickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') onObservationClick!(obs.name) } : undefined}
+              >
+                <div className="flex items-baseline gap-2 flex-wrap">
+                  <span className="font-semibold" style={{ fontSize: '13px', color: style.heightColor }}>{obs.name}</span>
+                  <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: `${style.cardBorder}30`, color: style.heightColor }}>実測</span>
+                  {obs.height && (
+                    <span className="font-bold" style={{ fontSize: '15px', color: style.heightColor }}>{obs.height.description}</span>
+                  )}
+                </div>
+                <div className="mt-1" style={{ fontSize: '11px', color: '#9ca3af' }}>
+                  {obs.arrivalTime && `${formatTime(obs.arrivalTime).slice(0, 5)}${obs.initial ? ` ${obs.initial}波` : ''}`}
+                  {/* 同名 station があれば満潮時刻をここに表示 */}
+                  {(() => {
+                    const matched = stations.find(s => s.name === obs.name)
+                    return matched?.highTideDateTime ? `　満潮 ${formatTime(matched.highTideDateTime).slice(0, 5)}` : null
+                  })()}
+                </div>
               </div>
-              <div className="mt-1" style={{ fontSize: '11px', color: '#9ca3af' }}>
-                {obs.arrivalTime && `${formatTime(obs.arrivalTime).slice(0, 5)}${obs.initial ? ` ${obs.initial}波` : ''}`}
-                {/* 同名 station があれば満潮時刻をここに表示 */}
-                {(() => {
-                  const matched = stations.find(s => s.name === obs.name)
-                  return matched?.highTideDateTime ? `　満潮 ${formatTime(matched.highTideDateTime).slice(0, 5)}` : null
-                })()}
-              </div>
-            </div>
-          ))}
+            )
+          })}
           {/* 実測値なし観測点（station のみ） */}
           {stations.filter(s => !observedNames.has(s.name)).map((st, i) => (
             <div key={i} className="px-3 py-2 rounded" style={{ border: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.03)' }}>
@@ -148,9 +160,16 @@ function TsunamiAreaRow({ area, observations, style }: { area: TsunamiArea; obse
   )
 }
 
-function TsunamiObservationRow({ obs }: { obs: TsunamiObservation }) {
+function TsunamiObservationRow({ obs, onObservationClick }: { obs: TsunamiObservation; onObservationClick?: (name: string) => void }) {
+  const clickable = !!obs.height && !!onObservationClick
   return (
-    <div className="flex items-center gap-3 px-4 py-3 border-b border-white/5 last:border-0">
+    <div
+      className={`flex items-center gap-3 px-4 py-3 border-b border-white/5 last:border-0${clickable ? ' cursor-pointer hover:brightness-125 transition-[filter]' : ''}`}
+      onClick={clickable ? () => onObservationClick!(obs.name) : undefined}
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onKeyDown={clickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') onObservationClick!(obs.name) } : undefined}
+    >
       <div className="flex-1 min-w-0">
         <span className="text-white font-semibold block" style={{ fontSize: '18px' }}>
           {obs.name}
@@ -170,7 +189,7 @@ function TsunamiObservationRow({ obs }: { obs: TsunamiObservation }) {
   )
 }
 
-function TsunamiGradeCard({ grade, areas, observations }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[] }) {
+function TsunamiGradeCard({ grade, areas, observations, onObservationClick }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[]; onObservationClick?: (name: string) => void }) {
   if (areas.length === 0) return null
   const style = getGradeStyle(grade)
   const groups = groupAreasByHeight(areas)
@@ -190,6 +209,7 @@ function TsunamiGradeCard({ grade, areas, observations }: { grade: TsunamiGrade;
               area={area}
               observations={observations.filter(o => matchesArea(o, area))}
               style={style}
+              onObservationClick={onObservationClick}
             />
           ))}
         </div>
@@ -205,7 +225,7 @@ function getTopGrade(tsunamis: JMATsunami[]): TsunamiGrade {
   return 'Unknown'
 }
 
-export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink }: Props) {
+export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservationClick }: Props) {
   // cancelledAt がある = 10秒表示中なので active に含める
   const active = tsunamis.filter(t => !t.cancelled || t.cancelledAt)
 
@@ -289,6 +309,7 @@ export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink }: Props) {
                 grade={grade}
                 areas={t.areas.filter(a => a.grade === grade)}
                 observations={observations}
+                onObservationClick={onObservationClick}
               />
             ))}
             {unmatched.length > 0 && (
@@ -299,7 +320,7 @@ export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink }: Props) {
                   沖合観測
                 </div>
                 {unmatched.map((obs, i) => (
-                  <TsunamiObservationRow key={i} obs={obs} />
+                  <TsunamiObservationRow key={i} obs={obs} onObservationClick={onObservationClick} />
                 ))}
               </div>
             )}

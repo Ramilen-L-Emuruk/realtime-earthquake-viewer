@@ -199,32 +199,84 @@ function FitToBounds({ signature, positions }: { signature: string; positions: L
   return null
 }
 
-// 津波観測バー専用のフィット。mode をまたいで lastRef を保持し、
-// 「地震タブで受信 → 津波タブへ自動切替」時に再発火しないようにする。
-function ObsFitToBounds({ mode, signature, positions }: { mode: MapMode; signature: string; positions: LatLng[] }) {
+// 津波モード専用のフィット。海岸線フィットと観測点フィットを統合し、
+// 観測点更新を優先する。常時レンダリングして ref をタブ切替をまたいで保持する。
+// - observationBars が更新された: 観測点へフィット（優先）。海岸線 sig も同時に消費して競合を防ぐ。
+// - tsunamiSig が新規（obs 更新なし）: 海岸線へフィット。
+// - 他タブ中に obs が更新された場合: フラグに座標を保持し、津波タブ入室時に発火する。
+// 注: useMemo 内で前回値 ref を更新すると React StrictMode の二重実行により誤判定が起きるため、
+//     前回値の比較・更新を useEffect 内で行う。
+function TsunamiFitToBounds({
+  mode,
+  tsunamiSignature,
+  tsunamiFitPositions,
+  observationBars,
+}: {
+  mode: MapMode
+  tsunamiSignature: string
+  tsunamiFitPositions: LatLng[]
+  observationBars: { name: string; lat: number; lng: number; height: { value: number } }[]
+}) {
   const map = useMap()
-  const lastRef = useRef<string>('')
+  const lastTsunamiSigRef = useRef<string>('')
+  const prevObsMapRef = useRef<Map<string, number>>(new Map())
+  const pendingObsPositionsRef = useRef<LatLng[]>([])
 
   useEffect(() => {
-    if (!signature) { lastRef.current = ''; return }
-    if (lastRef.current === signature) return
-    const shouldFly = mode === 'tsunami'
-    lastRef.current = signature
-    if (!shouldFly || positions.length === 0) return
+    // Step 1: 前回値と比較して更新された観測バーを検出し、フラグにセット
+    const prevMap = prevObsMapRef.current
+    const updatedBars = observationBars.filter((b) => prevMap.get(b.name) !== b.height.value)
+    const newMap = new Map<string, number>()
+    for (const b of observationBars) newMap.set(b.name, b.height.value)
+    prevObsMapRef.current = newMap
 
-    if (positions.length === 1) {
-      console.debug(`[map] flyTo lat=${positions[0][0].toFixed(3)} lng=${positions[0][1].toFixed(3)} (ObsFitToBounds 1点)`)
-      map.flyTo(positions[0], MAX_ZOOM, { duration: 1.0 })
+    if (updatedBars.length > 0) {
+      pendingObsPositionsRef.current = updatedBars.map((b) => [b.lat, b.lng] as LatLng)
+      // 海岸線 sig を消費して、obs と同時更新時の競合を防ぐ
+      lastTsunamiSigRef.current = tsunamiSignature
+    }
+
+    // Step 2: 津波タブのときだけフィット実行
+    if (mode !== 'tsunami') return
+
+    if (pendingObsPositionsRef.current.length > 0) {
+      const positions = pendingObsPositionsRef.current
+      pendingObsPositionsRef.current = []
+      if (positions.length === 1) {
+        console.debug(`[map] flyTo lat=${positions[0][0].toFixed(3)} lng=${positions[0][1].toFixed(3)} (TsunamiFit 観測点 1点)`)
+        map.flyTo(positions[0], MAX_ZOOM, { duration: 1.0 })
+      } else {
+        console.debug(`[map] flyToBounds (TsunamiFit 観測点 ${positions.length}点)`)
+        map.flyToBounds(L.latLngBounds(positions), { padding: [48, 48], maxZoom: MAX_ZOOM, duration: 1.0 })
+      }
       return
     }
-    console.debug(`[map] flyToBounds (ObsFitToBounds ${positions.length}点)`)
-    map.flyToBounds(L.latLngBounds(positions), {
-      padding: [48, 48],
-      maxZoom: MAX_ZOOM,
-      duration: 1.0,
-    })
-  }, [mode, signature, positions, map])
 
+    if (tsunamiSignature && tsunamiSignature !== lastTsunamiSigRef.current && tsunamiFitPositions.length > 0) {
+      lastTsunamiSigRef.current = tsunamiSignature
+      console.debug(`[map] flyToBounds (TsunamiFit 海岸線 ${tsunamiFitPositions.length}点)`)
+      map.flyToBounds(L.latLngBounds(tsunamiFitPositions), { padding: [48, 48], maxZoom: MAX_ZOOM, duration: 1.0 })
+    }
+  }, [mode, tsunamiSignature, tsunamiFitPositions, observationBars, map])
+
+  return null
+}
+
+// 津波タブの観測行クリック時に該当観測点へ flyTo する。
+function FocusObsPoint({
+  focusObsName,
+  observationBars,
+}: {
+  focusObsName: { name: string; ts: number } | null
+  observationBars: { name: string; lat: number; lng: number }[]
+}) {
+  const map = useMap()
+  useEffect(() => {
+    if (!focusObsName) return
+    const bar = observationBars.find((b) => b.name === focusObsName.name)
+    if (!bar) return
+    map.flyTo([bar.lat, bar.lng], MAX_ZOOM, { duration: 1.0 })
+  }, [focusObsName, observationBars, map])
   return null
 }
 
@@ -499,6 +551,7 @@ interface Props {
   detectedPoints?: DetectedPoint[]
   idleRevertSec?: number
   eewLpgmEventId?: string | null
+  focusObsName?: { name: string; ts: number } | null
 }
 
 export function JapanMap({
@@ -516,6 +569,7 @@ export function JapanMap({
   detectedPoints = [],
   idleRevertSec = 30,
   eewLpgmEventId = null,
+  focusObsName = null,
 }: Props) {
   const stationCoords = useStationCoords()
   const tsunamiZones = useTsunamiZones()
@@ -738,22 +792,6 @@ export function JapanMap({
     return bars.sort((a, b) => b.lat - a.lat)
   }, [tsunamiObsCoords, observations])
 
-  // 観測バーの前回値を記憶し、新規・更新されたバーだけにフィットさせる
-  const prevObsBarsRef = useRef<Map<string, number>>(new Map())
-  const { obsFitSignature, obsFitPositions } = useMemo(() => {
-    const prevMap = prevObsBarsRef.current
-    const updatedBars = observationBars.filter((b) => prevMap.get(b.name) !== b.height.value)
-    const newMap = new Map<string, number>()
-    for (const b of observationBars) newMap.set(b.name, b.height.value)
-    prevObsBarsRef.current = newMap
-    const signature = updatedBars.length > 0
-      ? `obs:${updatedBars.map((b) => `${b.name}=${b.height.value}`).join(',')}`
-      : ''
-    return {
-      obsFitSignature: signature,
-      obsFitPositions: updatedBars.map((b) => [b.lat, b.lng] as LatLng),
-    }
-  }, [observationBars])
 
   // 地震モードのフィット対象（各観測点 + 震源）
   const quakeFitPositions = useMemo<LatLng[]>(() => {
@@ -897,10 +935,6 @@ export function JapanMap({
       {mode === 'quake' && (
         <FitToBounds signature={quakeSignature} positions={quakeFitPositions} />
       )}
-      {mode === 'tsunami' && (
-        <FitToBounds signature={tsunamiSignature} positions={tsunamiFitPositions} />
-      )}
-
       {/* 津波予報区の海岸線（等級ごとに色分け）。津波発報中は全モードで表示・点滅する。
           preferCanvas 環境では Polyline への className が効かないため Pane 全体に適用する。 */}
       {tsunamiLines.length > 0 && (
@@ -930,8 +964,15 @@ export function JapanMap({
         </Pane>
       )}
 
-      {/* 観測バー更新時のフィット。モード切替をまたいで lastRef を保持するため常時レンダリング */}
-      <ObsFitToBounds mode={mode} signature={obsFitSignature} positions={obsFitPositions} />
+      {/* 津波フィット統合コンポーネント。観測点更新を優先し、海岸線フィットとの競合を防ぐ。
+          モード切替をまたいで ref を保持するため常時レンダリング */}
+      <TsunamiFitToBounds
+        mode={mode}
+        tsunamiSignature={tsunamiSignature}
+        tsunamiFitPositions={tsunamiFitPositions}
+        observationBars={observationBars}
+      />
+      <FocusObsPoint focusObsName={focusObsName} observationBars={observationBars} />
 
       {/* 津波観測棒: 波高が判明している観測点に水位バーを描画。tsunami-lines(z270)より前面。
           緯度降順（北→南）でレンダリングし、南側ほど手前に表示される。 */}
