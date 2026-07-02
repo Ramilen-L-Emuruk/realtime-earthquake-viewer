@@ -286,6 +286,7 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
   return {
     code: 551,
     id: `dmdata-quake-${eventId}-${str(data.serialNo ?? data.serial ?? '1')}`,
+    eventId: eventId || undefined,
     time: str(data.reportDateTime ?? data.pressDateTime),
     issue: {
       source: str(data.editorialOffice ?? data.publishingOffice),

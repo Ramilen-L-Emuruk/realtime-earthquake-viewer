@@ -43,6 +43,7 @@ export type DomesticTsunami =
 export interface JMAQuake {
   code: 551
   id: string
+  eventId?: string
   time: string
   cancelled?: boolean
   cancelledAt?: Date
