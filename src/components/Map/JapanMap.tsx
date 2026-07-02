@@ -708,6 +708,23 @@ export function JapanMap({
     return bars.sort((a, b) => b.lat - a.lat)
   }, [tsunamiObsCoords, observations])
 
+  // 観測バーの前回値を記憶し、新規・更新されたバーだけにフィットさせる
+  const prevObsBarsRef = useRef<Map<string, number>>(new Map())
+  const { obsFitSignature, obsFitPositions } = useMemo(() => {
+    const prevMap = prevObsBarsRef.current
+    const updatedBars = observationBars.filter((b) => prevMap.get(b.name) !== b.height.value)
+    const newMap = new Map<string, number>()
+    for (const b of observationBars) newMap.set(b.name, b.height.value)
+    prevObsBarsRef.current = newMap
+    const signature = updatedBars.length > 0
+      ? `obs:${updatedBars.map((b) => `${b.name}=${b.height.value}`).join(',')}`
+      : ''
+    return {
+      obsFitSignature: signature,
+      obsFitPositions: updatedBars.map((b) => [b.lat, b.lng] as LatLng),
+    }
+  }, [observationBars])
+
   // 地震モードのフィット対象（各観測点 + 震源）
   const quakeFitPositions = useMemo<LatLng[]>(() => {
     const positions = intensityMarkers.map((m) => m.position)
@@ -882,6 +899,9 @@ export function JapanMap({
           )}
         </Pane>
       )}
+
+      {/* 観測バー初回出現時に全バーへフィット */}
+      <FitToBounds signature={obsFitSignature} positions={obsFitPositions} />
 
       {/* 津波観測棒: 波高が判明している観測点に水位バーを描画。tsunami-lines(z270)より前面。
           緯度降順（北→南）でレンダリングし、南側ほど手前に表示される。 */}
