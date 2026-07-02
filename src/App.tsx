@@ -536,7 +536,7 @@ export function App() {
             for (const o of updatedObs) {
               prevMap.set(o.name, { value: o.height!.value, over: o.height!.over })
             }
-            ttsText = tsunamiObservationUpdateToText(updatedObs)
+            ttsText = tsunamiObservationUpdateToText(updatedObs, event.headline)
           }
         } else {
           const isDowngrade = prevGrade !== null && GRADE_RANK[currentGrade as GradeKey] < GRADE_RANK[prevGrade as GradeKey]

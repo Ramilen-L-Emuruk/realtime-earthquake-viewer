@@ -4,6 +4,7 @@ import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pq
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataKohatsu } from '../services/dmdata'
 import { loadStationCoords, buildAreaPrefIndex } from '../utils/stationCoords'
 import { calcEEWCancelTime } from '../utils/eew'
+import { mergeTsunamiObservations } from '../utils/tsunami'
 
 const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
 import {
@@ -380,6 +381,16 @@ export function useEarthquakes(
           // ValidDateTime が過去 = すでに有効期限切れ（ページリロード時など）
           if (tsunami.validDateTime && new Date(tsunami.validDateTime) <= now) {
             return { ...prev, tsunamis: [], lastUpdate: now }
+          }
+          // 同一イベントの続報: 観測のみ電文（areas=[]）で警報カードが消えないよう前回の areas を維持し、
+          // observations は上書きではなくマージする（区域・観測点ごとに前回値を保持）。
+          const current = prev.tsunamis[0]
+          const sameEvent = current && current.eventId && tsunami.eventId
+            && current.eventId === tsunami.eventId && !current.cancelledAt
+          if (sameEvent) {
+            const areas = tsunami.areas.length > 0 ? tsunami.areas : current.areas
+            const observations = mergeTsunamiObservations(current.observations, tsunami.observations)
+            return { ...prev, tsunamis: [{ ...tsunami, areas, observations }], lastUpdate: now }
           }
           return { ...prev, tsunamis: [tsunami], lastUpdate: now }
         }
