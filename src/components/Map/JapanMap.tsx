@@ -261,6 +261,24 @@ function TsunamiFitToBounds({
   return null
 }
 
+// 津波タブの観測行クリック時に該当観測点へ flyTo する。
+function FocusObsPoint({
+  focusObsName,
+  observationBars,
+}: {
+  focusObsName: { name: string; ts: number } | null
+  observationBars: { name: string; lat: number; lng: number }[]
+}) {
+  const map = useMap()
+  useEffect(() => {
+    if (!focusObsName) return
+    const bar = observationBars.find((b) => b.name === focusObsName.name)
+    if (!bar) return
+    map.flyTo([bar.lat, bar.lng], MAX_ZOOM, { duration: 1.0 })
+  }, [focusObsName, observationBars, map])
+  return null
+}
+
 // 緊急地震速報の発報時: まず震源を中心に表示し、予報円が現在の表示に
 // 収まらなくなったらその大きさに合わせてズームアウトする。
 // P波があれば P波を、なければ S波を基準にする。
@@ -532,6 +550,7 @@ interface Props {
   detectedPoints?: DetectedPoint[]
   idleRevertSec?: number
   eewLpgmEventId?: string | null
+  focusObsName?: { name: string; ts: number } | null
 }
 
 export function JapanMap({
@@ -549,6 +568,7 @@ export function JapanMap({
   detectedPoints = [],
   idleRevertSec = 30,
   eewLpgmEventId = null,
+  focusObsName = null,
 }: Props) {
   const stationCoords = useStationCoords()
   const tsunamiZones = useTsunamiZones()
@@ -951,6 +971,7 @@ export function JapanMap({
         tsunamiFitPositions={tsunamiFitPositions}
         observationBars={observationBars}
       />
+      <FocusObsPoint focusObsName={focusObsName} observationBars={observationBars} />
 
       {/* 津波観測棒: 波高が判明している観測点に水位バーを描画。tsunami-lines(z270)より前面。
           緯度降順（北→南）でレンダリングし、南側ほど手前に表示される。 */}
