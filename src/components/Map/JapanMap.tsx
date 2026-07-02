@@ -900,12 +900,14 @@ export function JapanMap({
         </Pane>
       )}
 
-      {/* 観測バー初回出現時に全バーへフィット */}
-      <FitToBounds signature={obsFitSignature} positions={obsFitPositions} />
+      {/* 観測バー初回出現時に全バーへフィット（津波タブのみ） */}
+      {mode === 'tsunami' && (
+        <FitToBounds signature={obsFitSignature} positions={obsFitPositions} />
+      )}
 
       {/* 津波観測棒: 波高が判明している観測点に水位バーを描画。tsunami-lines(z270)より前面。
           緯度降順（北→南）でレンダリングし、南側ほど手前に表示される。 */}
-      {observationBars.length > 0 && (
+      {mode === 'tsunami' && observationBars.length > 0 && (
         <Pane name="tsunami-obs-bars" style={{ zIndex: 280 }}>
           {observationBars.map((bar) => (
             <Marker
