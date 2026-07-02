@@ -491,6 +491,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   const areas: TsunamiArea[] = []
   for (const itemEl of itemEls) {
     const areaName = xmlText(xmlQ(itemEl, 'Name'))
+    const areaCode = xmlText(xmlQ(itemEl, 'Code')) || undefined
     const kindEl = xmlQ(itemEl, 'Kind')
     const kindCode = kindEl ? xmlText(xmlQ(kindEl, 'Code')) : ''
     const grade = parseTsunamiGradeByCode(kindCode)
@@ -530,6 +531,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
       grade,
       immediate: condition === 'ただちに津波来襲と予測',
       name: areaName,
+      code: areaCode,
       firstHeight: { arrivalTime: arrivalTime || undefined, condition },
       maxHeight: !isNaN(heightVal) ? { description: heightDesc, value: heightVal } : undefined,
       stations: stations.length > 0 ? stations : undefined,
@@ -553,6 +555,10 @@ function parseTsunamiObservationsFromXml(observationEl: Element): import('../typ
     if (allEls[i].localName === 'Item') itemEls.push(allEls[i])
   }
   for (const itemEl of itemEls) {
+    // Item/Area/Name・Code は Item/Station/Code・Item/Category/Kind/Code より文書順で先に出現するため、
+    // 既存の areaName 抽出（parseTsunamiFromXml）と同じパターンで先頭マッチを取得すれば Area の値になる。
+    const districtName = xmlText(xmlQ(itemEl, 'Name')) || undefined
+    const districtCode = xmlText(xmlQ(itemEl, 'Code')) || undefined
     const stationEls = itemEl.getElementsByTagName('Station')
     for (let i = 0; i < stationEls.length; i++) {
       const st = stationEls[i]
@@ -570,6 +576,8 @@ function parseTsunamiObservationsFromXml(observationEl: Element): import('../typ
         height: !isNaN(heightVal) ? { value: heightVal, description: heightDesc } : undefined,
         arrivalTime: arrivalTime || undefined,
         initial: initial || undefined,
+        districtCode,
+        districtName,
       })
     }
   }
@@ -613,6 +621,8 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
     const observations: TsunamiObservation[] = []
     for (const rawDistrict of rawObs) {
       const district = obj(rawDistrict)
+      const districtCode = str(district.code) || undefined
+      const districtName = str(district.name) || undefined
       for (const rawSt of arr(district.stations)) {
         const st = obj(rawSt)
         const name = str(st.name)
@@ -629,6 +639,8 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
             : undefined,
           arrivalTime: str(fh.arrivalTime) || undefined,
           initial: str(fh.initial) || undefined,
+          districtCode,
+          districtName,
         })
       }
     }
@@ -644,6 +656,8 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
     observations = []
     for (const rawDistrict of rawObs) {
       const district = obj(rawDistrict)
+      const districtCode = str(district.code) || undefined
+      const districtName = str(district.name) || undefined
       for (const rawSt of arr(district.stations)) {
         const st = obj(rawSt)
         const name = str(st.name)
@@ -660,6 +674,8 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
             : undefined,
           arrivalTime: str(fh.arrivalTime) || undefined,
           initial: str(fh.initial) || undefined,
+          districtCode,
+          districtName,
         })
       }
     }
@@ -712,6 +728,7 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
       grade,
       immediate: firstHeight.condition === 'ただちに津波来襲と予測',
       name: str(it.name),
+      code: str(it.code) || undefined,
       firstHeight: {
         arrivalTime: str(firstHeight.arrivalTime) || undefined,
         condition: str(firstHeight.condition),

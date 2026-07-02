@@ -76,6 +76,7 @@ export interface TsunamiArea {
   grade: TsunamiGrade
   immediate: boolean
   name: string
+  code?: string
   firstHeight?: {
     arrivalTime?: string
     condition: string
@@ -96,6 +97,10 @@ export interface TsunamiObservation {
   }
   arrivalTime?: string
   initial?: string  // 引き波 | 押し波
+  // 観測点が属する津波予報区（districtCode）。forecasts[].code と一致させて area 行に紐づける。
+  // VTSE52（沖合観測単独電文）は区域を持たないため undefined になる。
+  districtCode?: string
+  districtName?: string
 }
 
 export interface JMATsunami {

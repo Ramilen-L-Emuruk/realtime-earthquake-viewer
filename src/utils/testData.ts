@@ -201,18 +201,26 @@ export function createTestTsunami(): JMATsunami {
   return {
     code: 552,
     id: `test-tsunami-${Date.now()}`,
+    eventId: 'test-tsunami-2011',
     time: now,
     cancelled: false,
     issue: { source: 'テスト', time: now, type: 'Focus' },
     // name は地図の海岸線表示用に、津波予報区データ（tsunami-zones.json）に実在する区域名を使用する
     // 2011年東北地方太平洋沖地震を参考にした発令内容
+    // code は津波予報区コード（テスト用の仮値）。observations の districtCode と一致させて紐づけを確認する
     areas: [
-      { grade: 'MajorWarning', immediate: true,  name: '岩手県',           maxHeight: { description: '10m以上', value: 10.0 } },
-      { grade: 'MajorWarning', immediate: true,  name: '宮城県',           maxHeight: { description: '10m以上', value: 10.0 } },
-      { grade: 'MajorWarning', immediate: true,  name: '福島県',           maxHeight: { description: '6m',     value: 6.0  } },
-      { grade: 'Warning',      immediate: false, name: '青森県太平洋沿岸', maxHeight: { description: '3m',     value: 3.0  } },
-      { grade: 'Warning',      immediate: false, name: '茨城県',           maxHeight: { description: '3m',     value: 3.0  } },
-      { grade: 'Watch',        immediate: false, name: '北海道太平洋沿岸東部', maxHeight: { description: '1m', value: 1.0  } },
+      { grade: 'MajorWarning', immediate: true,  name: '岩手県',           code: '030', maxHeight: { description: '10m以上', value: 10.0 } },
+      { grade: 'MajorWarning', immediate: true,  name: '宮城県',           code: '040', maxHeight: { description: '10m以上', value: 10.0 } },
+      { grade: 'MajorWarning', immediate: true,  name: '福島県',           code: '050', maxHeight: { description: '6m',     value: 6.0  } },
+      { grade: 'Warning',      immediate: false, name: '青森県太平洋沿岸', code: '060', maxHeight: { description: '3m',     value: 3.0  } },
+      { grade: 'Warning',      immediate: false, name: '茨城県',           code: '070', maxHeight: { description: '3m',     value: 3.0  } },
+      { grade: 'Watch',        immediate: false, name: '北海道太平洋沿岸東部', code: '080', maxHeight: { description: '1m', value: 1.0  } },
+    ],
+    observations: [
+      { name: '宮古',   districtCode: '030', districtName: '岩手県',           height: { value: 8.5, description: '8.5m以上', over: true }, arrivalTime: now, initial: '押し' },
+      { name: '石巻港', districtCode: '040', districtName: '宮城県',           height: { value: 7.2, description: '7.2m' }, arrivalTime: now, initial: '押し' },
+      { name: '八戸',   districtCode: '060', districtName: '青森県太平洋沿岸', height: { value: 1.8, description: '1.8m' }, arrivalTime: now, initial: '引き' },
+      { name: '沖合40km', height: { value: 3.0, description: '3.0m以上', over: true }, arrivalTime: now },
     ],
   }
 }
