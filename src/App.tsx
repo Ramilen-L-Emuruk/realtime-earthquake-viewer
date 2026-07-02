@@ -34,6 +34,14 @@ const DEFAULT_TITLE = import.meta.env.VITE_VARIANT === 'dmdss'
 
 const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
 
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371
+  const dLat = (lat2 - lat1) * Math.PI / 180
+  const dLng = (lng2 - lng1) * Math.PI / 180
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2
+  return R * 2 * Math.asin(Math.sqrt(a))
+}
+
 function showBrowserNotification(
   title: string,
   body: string,
@@ -149,6 +157,8 @@ export function App() {
   const eewTtsEventRef = useRef<import('./types/earthquake').EEWAlert | null>(null)
   // Phase 1（「緊急地震速報、〇〇で地震。」）の再生完了 Promise。Phase 2 はこれを待ってから発話する
   const eewPhase1PromiseRef = useRef<Promise<void>>(Promise.resolve())
+  // EEW の eventId ごとに最後に Phase 1 を発話したときの震源情報を保持する（震源地名変化+座標移動の再発話判定用）
+  const activeEEWAnnouncedHypocentersRef = useRef<Map<string, { name: string; lat: number; lng: number }>>(new Map())
   // 長周期地震動情報の更新検出: 受信済み eventId を追跡する
   const seenLpgmEventIdsRef = useRef<Set<string>>(new Set())
 
@@ -251,6 +261,7 @@ export function App() {
         console.debug(`[eew] キャンセル受信 key=${key} expired=${event.expired ?? false} hadKey=${hadKey} 種別=${event.expired ? '自動解除(タイマー満了)' : '誤報取消'}`)
         activeEEWLevelsRef.current.delete(key)
         activeEEWScalesRef.current.delete(key)
+        activeEEWAnnouncedHypocentersRef.current.delete(key)
         if (hadKey && settings.soundEnabled && !event.expired) {
           playAlertSound('eewCancel')
         }
@@ -384,20 +395,34 @@ export function App() {
             firePhase2()
           }, 3000)
         }
-        if (isNew) {
+        // 続報での震源地名変化+座標移動の検出（B-3: 名前変化かつ50km超移動で再発話）
+        const hypo = event.earthquake.hypocenter
+        const prevHypo = activeEEWAnnouncedHypocentersRef.current.get(key)
+        const hypoNameChanged = !isNew && prevHypo !== undefined && hypo.name !== prevHypo.name
+        const hypoFarMoved = hypoNameChanged && Number.isFinite(hypo.latitude) && Number.isFinite(hypo.longitude)
+          && haversineKm(hypo.latitude, hypo.longitude, prevHypo.lat, prevHypo.lng) > 50
+        const firePhase1 = isNew || hypoFarMoved
+
+        if (firePhase1) {
           // 第1フェーズ：即時（完了 Promise を ref に保持）
           eewPhase1PromiseRef.current = speakWithVoicevox(settings.voicevoxUrl, eewAlertToText(event), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
-          // 第2フェーズ：デバウンス
-          scheduleEewTts()
-          // 上限タイマー: 第一報から15秒後に強制発火
-          eewTtsMaxTimerRef.current = setTimeout(() => {
-            eewTtsMaxTimerRef.current = null
-            if (eewTtsTimerRef.current) {
-              clearTimeout(eewTtsTimerRef.current)
-              eewTtsTimerRef.current = null
-              firePhase2()
-            }
-          }, 15000)
+          // 発話した震源情報を記録する
+          if (Number.isFinite(hypo.latitude) && Number.isFinite(hypo.longitude)) {
+            activeEEWAnnouncedHypocentersRef.current.set(key, { name: hypo.name, lat: hypo.latitude, lng: hypo.longitude })
+          }
+          if (isNew) {
+            // 第2フェーズ：デバウンス
+            scheduleEewTts()
+            // 上限タイマー: 第一報から15秒後に強制発火
+            eewTtsMaxTimerRef.current = setTimeout(() => {
+              eewTtsMaxTimerRef.current = null
+              if (eewTtsTimerRef.current) {
+                clearTimeout(eewTtsTimerRef.current)
+                eewTtsTimerRef.current = null
+                firePhase2()
+              }
+            }, 15000)
+          }
         } else if (levelUpgraded || scaleUpgraded) {
           if (eewTtsTimerRef.current) { clearTimeout(eewTtsTimerRef.current); eewTtsTimerRef.current = null }
           scheduleEewTts()
@@ -869,6 +894,7 @@ export function App() {
     resetState()
     lastNewQuakeTimeRef.current = null
     activeEEWLevelsRef.current.clear()
+    activeEEWAnnouncedHypocentersRef.current.clear()
     lastTsunamiGradeRef.current = null
     lastMaxObsHeightRef.current.clear()
     clearReplayCache()
@@ -887,6 +913,7 @@ export function App() {
       lastNewQuakeTimeRef.current = null
       activeEEWLevelsRef.current.clear()
       activeEEWScalesRef.current.clear()
+      activeEEWAnnouncedHypocentersRef.current.clear()
       lastTsunamiGradeRef.current = null
       lastMaxObsHeightRef.current.clear()
       seenLpgmEventIdsRef.current.clear()
@@ -934,6 +961,7 @@ export function App() {
     lastNewQuakeTimeRef.current = null
     activeEEWLevelsRef.current.clear()
     activeEEWScalesRef.current.clear()
+    activeEEWAnnouncedHypocentersRef.current.clear()
     lastTsunamiGradeRef.current = null
     lastMaxObsHeightRef.current.clear()
     seenLpgmEventIdsRef.current.clear()
