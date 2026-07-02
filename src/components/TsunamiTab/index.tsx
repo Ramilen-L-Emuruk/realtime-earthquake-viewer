@@ -43,7 +43,7 @@ const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch', 'Foreca
 
 function TsunamiAreaRow({ area, style }: { area: TsunamiArea; style: GradeStyle }) {
   const arrivalText = area.firstHeight?.arrivalTime
-    ? `到達予想 ${area.firstHeight.arrivalTime}`
+    ? `到達予想 ${formatTime(area.firstHeight.arrivalTime).slice(0, 5)}`
     : (area.firstHeight?.condition ?? null)
   const heightText = area.maxHeight?.description ?? null
   const isLongHeight = !!heightText && heightText.length > 3
