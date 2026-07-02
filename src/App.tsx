@@ -20,6 +20,7 @@ import { eewMaxScale } from './utils/eew'
 import { tsunamiMaxGrade, tsunamiOverallGrade } from './utils/tsunami'
 import { playAlertSound, playKyoshinUpdateSound, playCountdownBeep, kyoshinLevel, unlockAudio, setSoundVolume, type AlertSoundType } from './utils/alertSound'
 import { speakWithVoicevox } from './utils/voicevox'
+import { loadTtsReadingDict } from './utils/ttsReadingDict'
 import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, nankaiToText, kohatsuToText, lpgmToText } from './utils/ttsText'
 import { kyoshinIndexToLabel } from './utils/kyoshinIntensity'
 import type { P2PQuakeEvent, EEWAlert } from './types/earthquake'
@@ -587,6 +588,11 @@ export function App() {
   useEffect(() => {
     setSoundVolume(settings.soundVolume)
   }, [settings.soundVolume])
+
+  // TTS 読み辞書をアプリ起動時に事前ロードする（VOICEVOX 有効・無効に関わらず）
+  useEffect(() => {
+    loadTtsReadingDict().catch(() => {})
+  }, [])
 
   // EEW 読み上げタイマーをアンマウント時にクリーンアップする
   useEffect(() => {
