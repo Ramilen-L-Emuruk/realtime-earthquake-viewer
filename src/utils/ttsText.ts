@@ -268,7 +268,7 @@ export function tsunamiToText(event: JMATsunami): string {
 
   const topAreas = event.areas.filter(a => a.grade === topGrade)
   const areaNames = topAreas.map(a => a.name).join('、')
-  const gradeLabel = topGrade === 'MajorWarning' ? 'おおつなみけいほう'
+  const gradeLabel = topGrade === 'MajorWarning' ? '大津波警報'
     : topGrade === 'Warning' ? '津波警報' : '津波注意報'
   const action = topGrade === 'MajorWarning' ? 'ただちに高台へ避難してください。'
     : topGrade === 'Warning' ? '海岸から離れてください。' : ''
@@ -285,7 +285,7 @@ export function tsunamiDowngradeToText(event: JMATsunami): string {
 
   const topAreas = event.areas.filter(a => a.grade === topGrade)
   const areaNames = topAreas.map(a => a.name).join('、')
-  const gradeLabel = topGrade === 'MajorWarning' ? 'おおつなみけいほう'
+  const gradeLabel = topGrade === 'MajorWarning' ? '大津波警報'
     : topGrade === 'Warning' ? '津波警報' : '津波注意報'
   const heightPart = tsunamiHeightSentence(topAreas)
   const lowerPart = lowerGradeSentence(event.areas, topGrade)
