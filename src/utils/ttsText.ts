@@ -316,12 +316,14 @@ export function tsunamiObservationToText(event: JMATsunami, maxPoints = 5): stri
  * VTSE41/51/52 津波観測情報 更新点のみ読み上げテキストを生成する。
  * updatedObs は最大波高が更新された観測点のみを渡す（波高降順で最大 maxPoints 件）。
  */
-export function tsunamiObservationUpdateToText(updatedObs: TsunamiObservation[], maxPoints = 5): string {
+export function tsunamiObservationUpdateToText(updatedObs: TsunamiObservation[], headline?: string, maxPoints = 5): string {
   const obs = updatedObs.filter(o => o.height !== undefined)
   if (obs.length === 0) return ''
   const sorted = [...obs].sort((a, b) => b.height!.value - a.height!.value).slice(0, maxPoints)
   const detail = tsunamiObservationDetailText(sorted)
-  return `津波観測情報。${detail}を観測しました。`
+  // headline の全角数字・全角ｍ・全角ピリオドを半角に変換して VOICEVOX の誤読を防ぐ
+  const headlinePart = headline?.trim() ? tsunamiHeightToSpeech(headline.trim()) : ''
+  return `津波観測情報。${headlinePart}${detail}を観測しました。`
 }
 
 /** 南海トラフ地震臨時情報（VYSE50/51/52）の読み上げテキストを生成する。 */
