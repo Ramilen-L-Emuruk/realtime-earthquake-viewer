@@ -80,6 +80,12 @@ function TsunamiAreaRow({ area, observations, style }: { area: TsunamiArea; obse
     ? `到達予想 ${formatTime(area.firstHeight.arrivalTime).slice(0, 5)}`
     : (area.firstHeight?.condition ?? null)
 
+  const stations = area.stations ?? []
+  // 実測値がある観測点名のセット（到達済み判定・到達中バッジ抑制に使用）
+  const observedNames = new Set(observations.map(o => o.name))
+  // 区域内に1件でも実測値があれば到達中バッジは不要（実測行で代替できる）
+  const showImmediateBadge = area.immediate && observations.length === 0
+
   return (
     <div className="border-b border-white/5 last:border-0">
       <div className="flex items-center gap-3 px-4 py-3">
@@ -93,28 +99,47 @@ function TsunamiAreaRow({ area, observations, style }: { area: TsunamiArea; obse
             </span>
           )}
         </div>
-        {area.immediate && (
+        {showImmediateBadge && (
           <span className="flex-shrink-0 text-xs font-bold px-2 py-1 rounded border"
             style={{ color: '#f87171', backgroundColor: 'rgba(239,68,68,0.15)', borderColor: '#ef4444' }}>
             到達中
           </span>
         )}
       </div>
-      {observations.length > 0 && (
-        <div className="pl-4 pr-4 pb-3 flex flex-col gap-1.5">
+      {/* 観測点ごとに実測・予測を統合して表示 */}
+      {(observations.length > 0 || stations.length > 0) && (
+        <div className="mx-4 mb-3 flex flex-col gap-1.5">
+          {/* 実測値あり観測点 */}
           {observations.map((obs, i) => (
-            <div key={i} className="pl-3 flex flex-wrap items-baseline gap-x-2" style={{ borderLeft: `2px solid ${style.cardBorder}66` }}>
-              <span className="text-secondary" style={{ fontSize: '12px' }}>観測 {obs.name}</span>
-              {obs.height && (
-                <span className="font-semibold" style={{ fontSize: '16px', color: style.heightColor }}>
-                  {obs.height.description}
-                </span>
-              )}
-              {obs.arrivalTime && (
-                <span className="text-secondary" style={{ fontSize: '11px' }}>
-                  {formatTime(obs.arrivalTime).slice(0, 5)}{obs.initial ? ` ${obs.initial}波` : ''}
-                </span>
-              )}
+            <div key={i} className="px-3 py-2 rounded" style={{ background: `${style.cardBorder}12`, border: `1px solid ${style.cardBorder}38` }}>
+              <div className="flex items-baseline gap-2 flex-wrap">
+                <span className="font-semibold" style={{ fontSize: '13px', color: style.heightColor }}>{obs.name}</span>
+                <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: `${style.cardBorder}30`, color: style.heightColor }}>実測</span>
+                {obs.height && (
+                  <span className="font-bold" style={{ fontSize: '15px', color: style.heightColor }}>{obs.height.description}</span>
+                )}
+              </div>
+              <div className="mt-1" style={{ fontSize: '11px', color: '#9ca3af' }}>
+                {obs.arrivalTime && `${formatTime(obs.arrivalTime).slice(0, 5)}${obs.initial ? ` ${obs.initial}波` : ''}`}
+                {/* 同名 station があれば満潮時刻をここに表示 */}
+                {(() => {
+                  const matched = stations.find(s => s.name === obs.name)
+                  return matched?.highTideDateTime ? `　満潮 ${formatTime(matched.highTideDateTime).slice(0, 5)}` : null
+                })()}
+              </div>
+            </div>
+          ))}
+          {/* 実測値なし観測点（station のみ） */}
+          {stations.filter(s => !observedNames.has(s.name)).map((st, i) => (
+            <div key={i} className="px-3 py-2 rounded" style={{ border: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.03)' }}>
+              <div className="flex items-baseline gap-2 flex-wrap">
+                <span className="font-semibold" style={{ fontSize: '13px', color: '#d1d5db' }}>{st.name}</span>
+                <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: 'rgba(255,255,255,0.08)', color: '#9ca3af' }}>予測</span>
+              </div>
+              <div className="mt-1" style={{ fontSize: '11px', color: '#9ca3af' }}>
+                {st.arrivalTime && `到達 ${formatTime(st.arrivalTime).slice(0, 5)}`}
+                {st.highTideDateTime && `　満潮 ${formatTime(st.highTideDateTime).slice(0, 5)}`}
+              </div>
             </div>
           ))}
         </div>
