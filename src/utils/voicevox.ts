@@ -1,4 +1,5 @@
 import { getAudioContext } from './alertSound'
+import { applyTtsReadings } from './ttsReadingDict'
 
 export type VoicevoxStyle = { name: string; id: number }
 export type VoicevoxSpeaker = { name: string; speaker_uuid: string; styles: VoicevoxStyle[] }
@@ -101,7 +102,9 @@ export async function speakWithVoicevox(
   speakerId: number,
   volume: number,
 ): Promise<void> {
-  console.debug(`[VoiceVox] 読み上げ: ${text}`)
+  const normalized = applyTtsReadings(text)
+  console.debug(`[VoiceVox] 読み上げ: ${normalized}`)
+  text = normalized
 
   // 既存の再生を全て停止
   for (const src of activeSources) {
