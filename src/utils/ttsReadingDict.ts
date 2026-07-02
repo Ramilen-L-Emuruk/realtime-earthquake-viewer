@@ -96,7 +96,7 @@ export function applyTtsReadings(text: string): string {
   const entries = Object.entries(cache).sort((a, b) => b[0].length - a[0].length)
   let result = text
   for (const [kanji, reading] of entries) {
-    result = result.split(kanji).join(`{${kanji}|${reading}}`)
+    result = result.split(kanji).join(reading)
   }
   return result
 }
