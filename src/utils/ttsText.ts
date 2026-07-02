@@ -248,6 +248,20 @@ function tsunamiHeightSentence(areas: import('../types/earthquake').TsunamiArea[
   return `予想最大波高は、${parts.join('、')}です。`
 }
 
+// 下位グレード区域を1文にまとめる。例:「また、〇〇に津波警報、××に津波注意報が発表されています。」
+function lowerGradeSentence(areas: import('../types/earthquake').TsunamiArea[], topGrade: string): string {
+  const parts = GRADE_ORDER
+    .filter(g => g !== topGrade)
+    .map(g => {
+      const matched = areas.filter(a => a.grade === g)
+      if (matched.length === 0) return ''
+      const label = g === 'Warning' ? '津波警報' : '津波注意報'
+      return `${matched.map(a => a.name).join('・')}に${label}`
+    })
+    .filter(Boolean)
+  return parts.length > 0 ? `また、${parts.join('、')}が発表されています。` : ''
+}
+
 export function tsunamiToText(event: JMATsunami): string {
   const topGrade = GRADE_ORDER.find(g => event.areas.some(a => a.grade === g))
   if (!topGrade) return ''
@@ -259,8 +273,9 @@ export function tsunamiToText(event: JMATsunami): string {
   const action = topGrade === 'MajorWarning' ? 'ただちに高台へ避難してください。'
     : topGrade === 'Warning' ? '海岸から離れてください。' : ''
   const heightPart = tsunamiHeightSentence(topAreas)
+  const lowerPart = lowerGradeSentence(event.areas, topGrade)
 
-  return `${gradeLabel}。${areaNames}に${gradeLabel}が発表されました。${heightPart}${action}`
+  return `${gradeLabel}。${areaNames}に${gradeLabel}が発表されました。${action}${heightPart}${lowerPart}`
 }
 
 /** VTSE41/51/52 津波情報 引き下げ時の読み上げテキストを生成する。 */
@@ -273,8 +288,9 @@ export function tsunamiDowngradeToText(event: JMATsunami): string {
   const gradeLabel = topGrade === 'MajorWarning' ? 'おおつなみけいほう'
     : topGrade === 'Warning' ? '津波警報' : '津波注意報'
   const heightPart = tsunamiHeightSentence(topAreas)
+  const lowerPart = lowerGradeSentence(event.areas, topGrade)
 
-  return `津波情報が更新されました。現在、${areaNames}に${gradeLabel}が発表されています。${heightPart}`
+  return `津波情報が更新されました。現在、${areaNames}に${gradeLabel}が発表されています。${heightPart}${lowerPart}`
 }
 
 /** VTSE41/51/52 津波警報等 全解除の読み上げテキストを生成する。 */
