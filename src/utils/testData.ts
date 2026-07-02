@@ -197,32 +197,80 @@ export function createTestTsunamiWarning(): JMATsunami {
 }
 
 export function createTestTsunami(): JMATsunami {
-  const now = new Date().toISOString()
+  const now = new Date()
+  const nowIso = now.toISOString()
+  const t = (offsetMin: number) => new Date(now.getTime() + offsetMin * 60000).toISOString()
   return {
     code: 552,
     id: `test-tsunami-${Date.now()}`,
     eventId: 'test-tsunami-2011',
-    time: now,
+    time: nowIso,
     cancelled: false,
-    issue: { source: 'テスト', time: now, type: 'Focus' },
+    issue: { source: 'テスト', time: nowIso, type: 'Focus' },
     warningComment: 'ただちに高台へ避難してください。\n津波は繰り返し襲ってきます。警報が解除されるまで安全な場所から離れないでください。',
-    sourceEarthquake: { hypocenterName: '三陸沖', magnitude: 9.0, originTime: now },
+    sourceEarthquake: { hypocenterName: '三陸沖', magnitude: 9.0, originTime: nowIso },
     // name は地図の海岸線表示用に、津波予報区データ（tsunami-zones.json）に実在する区域名を使用する
     // 2011年東北地方太平洋沖地震を参考にした発令内容
     // code は津波予報区コード（テスト用の仮値）。observations の districtCode と一致させて紐づけを確認する
     areas: [
-      { grade: 'MajorWarning', immediate: true,  name: '岩手県',           code: '030', maxHeight: { description: '10m以上', value: 10.0 } },
-      { grade: 'MajorWarning', immediate: true,  name: '宮城県',           code: '040', maxHeight: { description: '10m以上', value: 10.0 } },
-      { grade: 'MajorWarning', immediate: true,  name: '福島県',           code: '050', maxHeight: { description: '6m',     value: 6.0  } },
-      { grade: 'Warning',      immediate: false, name: '青森県太平洋沿岸', code: '060', maxHeight: { description: '3m',     value: 3.0  } },
-      { grade: 'Warning',      immediate: false, name: '茨城県',           code: '070', maxHeight: { description: '3m',     value: 3.0  } },
-      { grade: 'Watch',        immediate: false, name: '北海道太平洋沿岸東部', code: '080', maxHeight: { description: '1m', value: 1.0  } },
+      {
+        grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030',
+        maxHeight: { description: '10m以上', value: 10.0 },
+        firstHeight: { arrivalTime: t(-6), condition: 'ただちに津波来襲と予測' },
+        stations: [
+          { name: '宮古',   code: '0031', arrivalTime: t(-6), highTideDateTime: t(60) },
+          { name: '釜石',   code: '0032', arrivalTime: t(-4), highTideDateTime: t(62) },
+          { name: '大船渡', code: '0033', arrivalTime: t(-5), highTideDateTime: t(58) },
+        ],
+      },
+      {
+        grade: 'MajorWarning', immediate: true, name: '宮城県', code: '040',
+        maxHeight: { description: '10m以上', value: 10.0 },
+        firstHeight: { arrivalTime: t(-4), condition: 'ただちに津波来襲と予測' },
+        stations: [
+          { name: '石巻港', code: '0041', arrivalTime: t(-4), highTideDateTime: t(55) },
+          { name: '仙台港', code: '0042', arrivalTime: t(-3), highTideDateTime: t(57) },
+          { name: '気仙沼', code: '0043', arrivalTime: t(-5), highTideDateTime: t(56) },
+        ],
+      },
+      {
+        grade: 'MajorWarning', immediate: true, name: '福島県', code: '050',
+        maxHeight: { description: '6m', value: 6.0 },
+        firstHeight: { arrivalTime: t(-2), condition: 'ただちに津波来襲と予測' },
+        stations: [
+          { name: '小名浜', code: '0051', arrivalTime: t(-2), highTideDateTime: t(65) },
+        ],
+      },
+      {
+        grade: 'Warning', immediate: false, name: '青森県太平洋沿岸', code: '060',
+        maxHeight: { description: '3m', value: 3.0 },
+        firstHeight: { arrivalTime: t(10), condition: '' },
+        stations: [
+          { name: '八戸',       code: '0061', arrivalTime: t(10), highTideDateTime: t(70) },
+          { name: 'むつ関根浜', code: '0062', arrivalTime: t(15), highTideDateTime: t(72) },
+        ],
+      },
+      {
+        grade: 'Warning', immediate: false, name: '茨城県', code: '070',
+        maxHeight: { description: '3m', value: 3.0 },
+        firstHeight: { arrivalTime: t(20), condition: '' },
+        stations: [
+          { name: '大洗', code: '0071', arrivalTime: t(20), highTideDateTime: t(80) },
+        ],
+      },
+      {
+        grade: 'Watch', immediate: false, name: '北海道太平洋沿岸東部', code: '080',
+        maxHeight: { description: '1m', value: 1.0 },
+        stations: [
+          { name: '釧路', code: '0081', arrivalTime: t(30), highTideDateTime: t(90) },
+        ],
+      },
     ],
     observations: [
-      { name: '宮古',   districtCode: '030', districtName: '岩手県',           height: { value: 8.5, description: '8.5m以上', over: true }, arrivalTime: now, initial: '押し' },
-      { name: '石巻港', districtCode: '040', districtName: '宮城県',           height: { value: 7.2, description: '7.2m' }, arrivalTime: now, initial: '押し' },
-      { name: '八戸',   districtCode: '060', districtName: '青森県太平洋沿岸', height: { value: 1.8, description: '1.8m' }, arrivalTime: now, initial: '引き' },
-      { name: '沖合40km', height: { value: 3.0, description: '3.0m以上', over: true }, arrivalTime: now },
+      { name: '宮古',   districtCode: '030', districtName: '岩手県',           height: { value: 8.5, description: '8.5m以上', over: true }, arrivalTime: nowIso, initial: '押し' },
+      { name: '石巻港', districtCode: '040', districtName: '宮城県',           height: { value: 7.2, description: '7.2m' }, arrivalTime: nowIso, initial: '押し' },
+      { name: '八戸',   districtCode: '060', districtName: '青森県太平洋沿岸', height: { value: 1.8, description: '1.8m' }, arrivalTime: nowIso, initial: '引き' },
+      { name: '沖合40km', height: { value: 3.0, description: '3.0m以上', over: true }, arrivalTime: nowIso },
     ],
   }
 }
