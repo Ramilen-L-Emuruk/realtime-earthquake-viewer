@@ -1,8 +1,10 @@
-import type { JMATsunami, TsunamiArea, TsunamiObservation } from '../../types/earthquake'
+import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation } from '../../types/earthquake'
 import { formatDateTime, formatTime } from '../../utils/formatters'
 
 interface Props {
   tsunamis: JMATsunami[]
+  earthquakes?: JMAQuake[]
+  onEarthquakeLink?: (earthquakeTime: string) => void
 }
 
 type TsunamiGrade = TsunamiArea['grade']
@@ -178,7 +180,7 @@ function getTopGrade(tsunamis: JMATsunami[]): TsunamiGrade {
   return 'Unknown'
 }
 
-export function TsunamiTab({ tsunamis }: Props) {
+export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink }: Props) {
   // cancelledAt がある = 10秒表示中なので active に含める
   const active = tsunamis.filter(t => !t.cancelled || t.cancelledAt)
 
@@ -203,10 +205,21 @@ export function TsunamiTab({ tsunamis }: Props) {
   const latestTime = active[0]?.time
   const sourceEarthquake = active[0]?.sourceEarthquake
 
+  // 津波の原因地震に対応する地震カードを eventId で照合する
+  const tsunamiEventId = active[0]?.eventId
+  const linkedQuake = (tsunamiEventId && earthquakes)
+    ? earthquakes.find(q => q.eventId === tsunamiEventId && !q.cancelledAt)
+    : undefined
+
   return (
     <div className="p-3 flex flex-col gap-3">
-      {/* 発令中 / 解除バナー */}
-      <div className="rounded-lg overflow-hidden"
+      {/* 発令中 / 解除バナー。対応する地震カードがある場合のみクリック可能。 */}
+      <div
+        role={linkedQuake ? 'button' : undefined}
+        tabIndex={linkedQuake ? 0 : undefined}
+        onClick={linkedQuake ? () => onEarthquakeLink?.(linkedQuake.earthquake.time) : undefined}
+        onKeyDown={linkedQuake ? (e) => { if (e.key === 'Enter' || e.key === ' ') onEarthquakeLink?.(linkedQuake.earthquake.time) } : undefined}
+        className={`rounded-lg overflow-hidden${linkedQuake ? ' cursor-pointer hover:opacity-90 transition-opacity' : ''}`}
         style={{ background: isCancelledDisplay ? '#1a1a1a' : topStyle.headerBg, border: `2px solid ${isCancelledDisplay ? '#4b5563' : topStyle.cardBorder}` }}>
         <div className="px-4 py-3"
           style={{ background: isCancelledDisplay ? 'rgba(75,85,99,0.18)' : `${topStyle.cardBorder}18` }}>
@@ -228,6 +241,7 @@ export function TsunamiTab({ tsunamis }: Props) {
               震源: {sourceEarthquake.hypocenterName}
               {sourceEarthquake.magnitude !== undefined && `　M${sourceEarthquake.magnitude}`}
               {sourceEarthquake.originTime && `　${formatTime(sourceEarthquake.originTime).slice(0, 5)}発生`}
+              {linkedQuake && <span style={{ marginLeft: '6px', fontSize: '10px', opacity: 0.7 }}>▶ 地震情報</span>}
             </div>
           )}
         </div>
