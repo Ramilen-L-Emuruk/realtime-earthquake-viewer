@@ -32,16 +32,17 @@ function getTsunamiObsBarIcon(color: string, barPx: number): L.DivIcon {
   const cached = obsBarIconCache.get(key)
   if (cached) return cached
 
-  const W = 14
-  // 影を 2px 右下にずらす。アンカーは棒の底辺中央。
+  const W = 6
+  const FOOT = 3
+  // スリムバー＋底面フェードで地図に馴染む。白枠なし。アンカーは棒の底辺中央。
   const icon = L.divIcon({
     className: '',
-    html: `<div style="position:relative;width:${W + 2}px;height:${barPx + 2}px;">
-      <div style="position:absolute;top:2px;left:2px;width:${W}px;height:${barPx}px;background:rgba(0,0,0,0.4);border-radius:2px 2px 0 0;"></div>
-      <div style="position:absolute;top:0;left:0;width:${W}px;height:${barPx}px;background:${color};border:2px solid white;border-radius:2px 2px 0 0;box-sizing:border-box;"></div>
+    html: `<div style="display:flex;flex-direction:column;align-items:center;width:${W + FOOT}px;height:${barPx + FOOT}px;">
+      <div style="width:${W}px;height:${barPx}px;background:${color};border-radius:3px 3px 0 0;opacity:0.9;"></div>
+      <div style="width:${W + FOOT}px;height:${FOOT}px;background:${color};border-radius:0 0 3px 3px;opacity:0.3;"></div>
     </div>`,
-    iconSize: [W + 2, barPx + 2],
-    iconAnchor: [(W + 2) / 2, barPx + 2],
+    iconSize: [W + FOOT, barPx + FOOT],
+    iconAnchor: [(W + FOOT) / 2, barPx + FOOT],
   })
   obsBarIconCache.set(key, icon)
   return icon
