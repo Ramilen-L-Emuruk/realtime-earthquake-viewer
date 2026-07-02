@@ -1130,7 +1130,14 @@ export function App() {
             />
           </div>
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'tsunami' ? ' invisible pointer-events-none' : ''}`}>
-            <TsunamiTab tsunamis={tsunamis} />
+            <TsunamiTab
+              tsunamis={tsunamis}
+              earthquakes={filteredEarthquakes}
+              onEarthquakeLink={(earthquakeTime) => {
+                selectQuake(earthquakeTime)
+                setActiveTabNonRealtime('earthquake')
+              }}
+            />
           </div>
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'telegrams' ? ' invisible pointer-events-none' : ''}`}>
             <TelegramTab telegramLog={telegramLog} onClear={clearTelegramLog} />
