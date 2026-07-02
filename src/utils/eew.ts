@@ -81,14 +81,14 @@ export const S_WAVE_FALLBACK_KM_PER_SEC = 4.0
  * 目安の固定値。しきい値はM5/6/7/8区切り、8〜60秒程度で単調増加。
  */
 const SHAKING_DURATION_TABLE: { minMag: number; durationSec: number }[] = [
-  { minMag: 8.0, durationSec: 60 },
-  { minMag: 7.0, durationSec: 40 },
-  { minMag: 6.0, durationSec: 20 },
-  { minMag: 5.0, durationSec: 12 },
-  { minMag: -Infinity, durationSec: 8 },
+  { minMag: 8.0, durationSec: 100 },
+  { minMag: 7.0, durationSec: 70 },
+  { minMag: 6.0, durationSec: 35 },
+  { minMag: 5.0, durationSec: 20 },
+  { minMag: -Infinity, durationSec: 14 },
 ]
 
-const DEFAULT_SHAKING_DURATION_SEC = 12 // magnitude 未定義時（Yahoo版）のデフォルト
+const DEFAULT_SHAKING_DURATION_SEC = 20 // magnitude 未定義時（Yahoo版）のデフォルト
 
 /** マグニチュードから揺れ継続時間の目安[秒]を返す。magnitude 未定義時はデフォルト値。 */
 export function calcShakingDurationSec(magnitude: number | undefined): number {

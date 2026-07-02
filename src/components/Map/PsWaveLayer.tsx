@@ -63,22 +63,25 @@ export function PsWaveLayer({ psWave }: { psWave: PsWaveCircle[] }) {
 
           ctx.setLineDash([])
           ctx.strokeStyle = '#ff3c00'
-          ctx.fillStyle = 'rgba(255, 60, 0, 0.12)'
           ctx.lineWidth = 2
 
-          ctx.beginPath()
-          ctx.arc(center.x, center.y, sPx, 0, Math.PI * 2)
-          if (sInnerRadiusKm > 0) {
+          if (sInnerRadiusKm > 0 && sInnerRadiusKm < c.sRadius) {
+            // 後端（揺れ継続時間を過ぎた領域）を透明にフェードさせる
             const lonOffsetInner = (sInnerRadiusKm * 1000) / (111320 * cosLat)
             const edgeInner = map.latLngToContainerPoint(L.latLng(c.lat, c.lng + lonOffsetInner))
             const innerPx = Math.abs(edgeInner.x - center.x)
-            ctx.moveTo(center.x + innerPx, center.y)
-            ctx.arc(center.x, center.y, innerPx, 0, Math.PI * 2, true) // 逆回りにしてevenoddで穴あけ
+            const gradient = ctx.createRadialGradient(center.x, center.y, innerPx, center.x, center.y, sPx)
+            gradient.addColorStop(0, 'rgba(255, 60, 0, 0)')
+            gradient.addColorStop(0.5, 'rgba(255, 60, 0, 0.12)')
+            gradient.addColorStop(1, 'rgba(255, 60, 0, 0.12)')
+            ctx.fillStyle = gradient
+          } else {
+            ctx.fillStyle = 'rgba(255, 60, 0, 0.12)'
           }
-          ctx.fill('evenodd')
 
           ctx.beginPath()
           ctx.arc(center.x, center.y, sPx, 0, Math.PI * 2)
+          ctx.fill()
           ctx.stroke()
         }
 
