@@ -541,10 +541,6 @@ export function App() {
         } else {
           const isDowngrade = prevGrade !== null && GRADE_RANK[currentGrade as GradeKey] < GRADE_RANK[prevGrade as GradeKey]
           ttsText = isDowngrade ? tsunamiDowngradeToText(event) : tsunamiToText(event)
-          // Unknown（観測のみ電文など areas=[] のケース）はグレード追跡を維持する
-          if (currentGrade !== 'Unknown') {
-            lastTsunamiGradeRef.current = currentGrade
-          }
         }
       }
       if (ttsText && type) {
@@ -553,6 +549,12 @@ export function App() {
           speakWithVoicevox(settings.voicevoxUrl, ttsText!, settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
         }, delay)
       }
+    }
+    // gradeトラッキング: voicevox 有効/無効に関わらず次回電文の gradeUnchanged 判定に使用する。
+    // Unknown（観測のみ電文など areas=[] のケース）はグレード追跡を維持する。
+    if (event.code === 552 && !event.cancelled) {
+      const grade = tsunamiMaxGrade(event)
+      if (grade !== 'Unknown') lastTsunamiGradeRef.current = grade
     }
   }
 
