@@ -467,6 +467,15 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   const commentsEl = xmlQ(doc, 'Comments')
   const warningCommentEl = commentsEl ? xmlQ(commentsEl, 'WarningComment') : null
   const warningComment = (warningCommentEl ? xmlText(xmlQ(warningCommentEl, 'Text')) : '') || undefined
+  // この津波を引き起こした地震（Earthquake 要素）
+  const eqEl = xmlQ(doc, 'Earthquake')
+  const eqHypoEl = eqEl ? xmlQ(eqEl, 'Hypocenter') : null
+  const eqHypoName = eqHypoEl ? xmlText(xmlQ(eqHypoEl, 'Name')) : ''
+  const eqMagnitudeEl = eqEl ? xmlQ(eqEl, 'Magnitude') : null
+  const eqMagnitude = eqMagnitudeEl ? parseFloat(xmlText(eqMagnitudeEl)) : NaN
+  const sourceEarthquake = eqHypoName
+    ? { hypocenterName: eqHypoName, magnitude: !isNaN(eqMagnitude) ? eqMagnitude : undefined, originTime: (eqEl ? xmlText(xmlQ(eqEl, 'OriginTime')) : '') || undefined }
+    : undefined
 
   const id = `dmdata-xml-tsunami-${eventId}-${serial}`
   const cancelled = infoType === '取消'
@@ -485,7 +494,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   if (!forecastEl && observationEl) {
     const observations = parseTsunamiObservationsFromXml(observationEl)
     if (observations.length === 0) return null
-    return { code: 552, id, eventId, time: reportDateTime, cancelled: false, headline, warningComment, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [], observations }
+    return { code: 552, id, eventId, time: reportDateTime, cancelled: false, headline, warningComment, sourceEarthquake, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [], observations }
   }
 
   const allEls = forecastEl!.getElementsByTagName('*')
@@ -550,7 +559,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   // Observation も含む場合（VTSE51①: Forecast + Observation 両方あり）
   const observations = observationEl ? parseTsunamiObservationsFromXml(observationEl) : undefined
 
-  return { code: 552, id, eventId, time: reportDateTime, cancelled: false, validDateTime, headline, warningComment, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas, observations: observations && observations.length > 0 ? observations : undefined }
+  return { code: 552, id, eventId, time: reportDateTime, cancelled: false, validDateTime, headline, warningComment, sourceEarthquake, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas, observations: observations && observations.length > 0 ? observations : undefined }
 }
 
 function parseTsunamiObservationsFromXml(observationEl: Element): import('../types/earthquake').TsunamiObservation[] {
@@ -612,6 +621,13 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
   const headline = str(data.headline) || undefined
   // 付加文（固定文）。避難行動の呼びかけなど。FreeFormComment（長文の高さ区分解説）は対象外。
   const warningComment = str(obj(obj(data.comments).warning).text) || undefined
+  // この津波を引き起こした地震（先頭の1件のみ使用）
+  const rawEq = obj(arr(data.earthquakes)[0])
+  const eqHypoName = str(obj(rawEq.hypocenter).name)
+  const eqMagnitude = parseFloat(str(obj(rawEq.magnitude).value))
+  const sourceEarthquake = eqHypoName
+    ? { hypocenterName: eqHypoName, magnitude: !isNaN(eqMagnitude) ? eqMagnitude : undefined, originTime: str(rawEq.originTime) || undefined }
+    : undefined
   const eventId = rawEventId || undefined
 
   if (cancelled) {
@@ -653,7 +669,7 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
       }
     }
     if (observations.length === 0) return null
-    return { code: 552, id, eventId, time, cancelled: false, headline, warningComment, issue: { source, time, type: 'Focus' }, areas: [], observations }
+    return { code: 552, id, eventId, time, cancelled: false, headline, warningComment, sourceEarthquake, issue: { source, time, type: 'Focus' }, areas: [], observations }
   }
 
   // VTSE51（津波情報）は forecasts + observations の両方を持つ場合がある。
@@ -696,7 +712,7 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
   // forecasts がなく observations のみ = 観測情報のみ電文（VTSE51②）
   if (rawItems.length === 0) {
     if (!observations || observations.length === 0) return null
-    return { code: 552, id, eventId, time, cancelled: false, headline, warningComment, issue: { source, time, type: 'Focus' }, areas: [], observations }
+    return { code: 552, id, eventId, time, cancelled: false, headline, warningComment, sourceEarthquake, issue: { source, time, type: 'Focus' }, areas: [], observations }
   }
 
   const areas: TsunamiArea[] = []
@@ -754,7 +770,7 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
   // 全予報区が解除済み（Kind/Code が 50/60/71/72/73/00 など）
   if (areas.length === 0) return { code: 552, id, eventId, time, cancelled: true, issue: { source, time, type: 'Focus' }, areas: [] }
 
-  return { code: 552, id, eventId, time, cancelled: false, validDateTime, headline, warningComment, issue: { source, time, type: 'Focus' }, areas, observations }
+  return { code: 552, id, eventId, time, cancelled: false, validDateTime, headline, warningComment, sourceEarthquake, issue: { source, time, type: 'Focus' }, areas, observations }
 }
 
 // REST API 経由の JMA XML（VXSE62: 長周期地震動観測情報）を JMALpgm にパース
