@@ -309,7 +309,7 @@ function tsunamiObservationDetailText(items: TsunamiObservation[]): string {
     else groups.push({ districtName: key, items: [o] })
   }
   return groups.map(g => {
-    const stations = g.items.map(o => `${o.name}で${o.height!.description.replace(/m$/i, 'メートル')}`).join('、')
+    const stations = g.items.map(o => `${o.name}で${o.height!.description.replace(/m(?=以上|$)/i, 'メートル')}`).join('、')
     return g.districtName ? `${g.districtName}、${stations}` : stations
   }).join('、')
 }
