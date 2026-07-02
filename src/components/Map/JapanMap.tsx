@@ -198,6 +198,35 @@ function FitToBounds({ signature, positions }: { signature: string; positions: L
   return null
 }
 
+// 津波観測バー専用のフィット。mode をまたいで lastRef を保持し、
+// 「地震タブで受信 → 津波タブへ自動切替」時に再発火しないようにする。
+function ObsFitToBounds({ mode, signature, positions }: { mode: MapMode; signature: string; positions: LatLng[] }) {
+  const map = useMap()
+  const lastRef = useRef<string>('')
+
+  useEffect(() => {
+    if (!signature) { lastRef.current = ''; return }
+    if (lastRef.current === signature) return
+    const shouldFly = mode === 'tsunami'
+    lastRef.current = signature
+    if (!shouldFly || positions.length === 0) return
+
+    if (positions.length === 1) {
+      console.debug(`[map] flyTo lat=${positions[0][0].toFixed(3)} lng=${positions[0][1].toFixed(3)} (ObsFitToBounds 1点)`)
+      map.flyTo(positions[0], MAX_ZOOM, { duration: 1.0 })
+      return
+    }
+    console.debug(`[map] flyToBounds (ObsFitToBounds ${positions.length}点)`)
+    map.flyToBounds(L.latLngBounds(positions), {
+      padding: [48, 48],
+      maxZoom: MAX_ZOOM,
+      duration: 1.0,
+    })
+  }, [mode, signature, positions, map])
+
+  return null
+}
+
 // 緊急地震速報の発報時: まず震源を中心に表示し、予報円が現在の表示に
 // 収まらなくなったらその大きさに合わせてズームアウトする。
 // P波があれば P波を、なければ S波を基準にする。
@@ -900,10 +929,8 @@ export function JapanMap({
         </Pane>
       )}
 
-      {/* 観測バー初回出現時に全バーへフィット（津波タブのみ） */}
-      {mode === 'tsunami' && (
-        <FitToBounds signature={obsFitSignature} positions={obsFitPositions} />
-      )}
+      {/* 観測バー更新時のフィット。モード切替をまたいで lastRef を保持するため常時レンダリング */}
+      <ObsFitToBounds mode={mode} signature={obsFitSignature} positions={obsFitPositions} />
 
       {/* 津波観測棒: 波高が判明している観測点に水位バーを描画。tsunami-lines(z270)より前面。
           緯度降順（北→南）でレンダリングし、南側ほど手前に表示される。 */}
