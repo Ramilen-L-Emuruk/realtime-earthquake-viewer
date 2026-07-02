@@ -204,6 +204,7 @@ realtime-earthquake-viewer/
 │   └── data/
 │       ├── station-coords.json     # 震度観測点・細分区域の座標テーブル（生成物）
 │       ├── tsunami-zones.json      # 津波予報区の海岸線座標（生成物）
+│       ├── tsunami-obs-coords.json # 津波観測点（験潮所等）の座標テーブル
 │       ├── prefectures.json        # 都道府県の境界ポリゴン（ベースマップ用・生成物）
 │       └── subregions.json         # 一次細分区域の境界ポリゴン（生成物）
 ├── scripts/
@@ -240,6 +241,7 @@ realtime-earthquake-viewer/
 │   │   ├── useSettings.ts          # アプリ設定（localStorage 永続化）
 │   │   ├── useStationCoords.ts     # 観測点座標テーブルの読み込み
 │   │   ├── useTsunamiZones.ts      # 津波予報区 海岸線データの読み込み
+│   │   ├── useTsunamiObsCoords.ts  # 津波観測点座標テーブルの読み込み
 │   │   └── useSubRegions.ts        # 一次細分区域境界データの読み込み
 │   ├── services/
 │   │   ├── kyoshin.ts              # Yahoo リアルタイム震度の取得・デコード
@@ -257,6 +259,7 @@ realtime-earthquake-viewer/
 │       ├── tsunami.ts              # 津波情報の等級算出・観測情報のマージ
 │       ├── stationCoords.ts        # 地点名→座標の引き当て
 │       ├── tsunamiZones.ts         # 津波予報区 海岸線データの引き当て
+│       ├── tsunamiObsCoords.ts     # 津波観測点座標テーブルの読み込み
 │       ├── prefectures.ts          # 都道府県境界データの読み込み
 │       ├── subregions.ts           # 一次細分区域境界データの読み込み
 │       ├── regions.ts              # 地方区分ラベル一覧

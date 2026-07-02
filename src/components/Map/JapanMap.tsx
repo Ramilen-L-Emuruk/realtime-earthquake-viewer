@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import L from 'leaflet'
-import { MapContainer, TileLayer, Marker, Polyline, Polygon, Popup, Pane, useMap, useMapEvents } from 'react-leaflet'
-import type { JMAQuake, JMATsunami, TsunamiGrade, EEWAlert, JMALpgm } from '../../types/earthquake'
+import { MapContainer, TileLayer, Marker, Polyline, Polygon, Popup, Pane, Tooltip, useMap, useMapEvents } from 'react-leaflet'
+import type { JMAQuake, JMATsunami, TsunamiGrade, TsunamiObservation, EEWAlert, JMALpgm } from '../../types/earthquake'
 import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
 import { getLpgmClassColor, getLpgmClassLabel } from '../../utils/lpgm'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
@@ -9,6 +9,7 @@ import { eewAreas } from '../../utils/eew'
 import { useStationCoords } from '../../hooks/useStationCoords'
 import { lookupPointCoords, buildAreaPrefIndex, buildStationPrefIndex, type LatLng } from '../../utils/stationCoords'
 import { useTsunamiZones } from '../../hooks/useTsunamiZones'
+import { useTsunamiObsCoords } from '../../hooks/useTsunamiObsCoords'
 import { useSubRegions } from '../../hooks/useSubRegions'
 import type { SubRegion } from '../../utils/subregions'
 import { pointInRings, normalizeEpicenterLng } from '../../utils/geo'
@@ -22,6 +23,29 @@ import { KyoshinMaxEffect } from './KyoshinMaxEffect'
 import { PsWaveLayer } from './PsWaveLayer'
 import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
 import type { DetectedPoint } from '../../hooks/useKyoshinDetection'
+
+// 津波観測棒アイコン。波高・色ごとにキャッシュして再利用する。
+const obsBarIconCache = new Map<string, L.DivIcon>()
+
+function getTsunamiObsBarIcon(color: string, barPx: number): L.DivIcon {
+  const key = `${color}:${barPx}`
+  const cached = obsBarIconCache.get(key)
+  if (cached) return cached
+
+  const W = 14
+  // 影を 2px 右下にずらす。アンカーは棒の底辺中央。
+  const icon = L.divIcon({
+    className: '',
+    html: `<div style="position:relative;width:${W + 2}px;height:${barPx + 2}px;">
+      <div style="position:absolute;top:2px;left:2px;width:${W}px;height:${barPx}px;background:rgba(0,0,0,0.4);border-radius:2px 2px 0 0;"></div>
+      <div style="position:absolute;top:0;left:0;width:${W}px;height:${barPx}px;background:${color};border:2px solid white;border-radius:2px 2px 0 0;box-sizing:border-box;"></div>
+    </div>`,
+    iconSize: [W + 2, barPx + 2],
+    iconAnchor: [(W + 2) / 2, barPx + 2],
+  })
+  obsBarIconCache.set(key, icon)
+  return icon
+}
 
 // 震源の×印アイコン。UI 倍率・点滅フラグごとにキャッシュして再利用する。
 const epicenterIconCache = new Map<string, L.DivIcon>()
@@ -170,6 +194,35 @@ function FitToBounds({ signature, positions }: { signature: string; positions: L
       duration: 1.0,
     })
   }, [signature, positions, map])
+
+  return null
+}
+
+// 津波観測バー専用のフィット。mode をまたいで lastRef を保持し、
+// 「地震タブで受信 → 津波タブへ自動切替」時に再発火しないようにする。
+function ObsFitToBounds({ mode, signature, positions }: { mode: MapMode; signature: string; positions: LatLng[] }) {
+  const map = useMap()
+  const lastRef = useRef<string>('')
+
+  useEffect(() => {
+    if (!signature) { lastRef.current = ''; return }
+    if (lastRef.current === signature) return
+    const shouldFly = mode === 'tsunami'
+    lastRef.current = signature
+    if (!shouldFly || positions.length === 0) return
+
+    if (positions.length === 1) {
+      console.debug(`[map] flyTo lat=${positions[0][0].toFixed(3)} lng=${positions[0][1].toFixed(3)} (ObsFitToBounds 1点)`)
+      map.flyTo(positions[0], MAX_ZOOM, { duration: 1.0 })
+      return
+    }
+    console.debug(`[map] flyToBounds (ObsFitToBounds ${positions.length}点)`)
+    map.flyToBounds(L.latLngBounds(positions), {
+      padding: [48, 48],
+      maxZoom: MAX_ZOOM,
+      duration: 1.0,
+    })
+  }, [mode, signature, positions, map])
 
   return null
 }
@@ -434,6 +487,7 @@ interface Props {
   mode: MapMode
   quake: JMAQuake | null
   tsunamis: JMATsunami[]
+  observations?: TsunamiObservation[]
   lpgm?: JMALpgm
   iconScale?: number
   showBathymetry?: boolean
@@ -450,6 +504,7 @@ export function JapanMap({
   mode,
   quake,
   tsunamis,
+  observations = [],
   lpgm,
   iconScale = 1,
   showBathymetry = true,
@@ -463,6 +518,7 @@ export function JapanMap({
 }: Props) {
   const stationCoords = useStationCoords()
   const tsunamiZones = useTsunamiZones()
+  const tsunamiObsCoords = useTsunamiObsCoords()
   const subregions = useSubRegions()
   const [zoom, setZoom] = useState(6)
   // ズームに応じて強震モニタ観測点のサイズを補正する係数。
@@ -660,6 +716,44 @@ export function JapanMap({
     return lines.sort((a, b) => TSUNAMI_RANK[a.grade] - TSUNAMI_RANK[b.grade])
   }, [tsunamis, tsunamiZones])
 
+  // 津波観測棒: 波高が判明している観測点を座標付きで整理し、緯度降順（北→南）でソート
+  type ObsBar = { name: string; lat: number; lng: number; barPx: number; color: string; height: { value: number; description: string; over?: boolean } }
+  const observationBars = useMemo<ObsBar[]>(() => {
+    if (!tsunamiObsCoords || observations.length === 0) return []
+    const OBS_MAX_M = 5.0
+    const OBS_MAX_PX = 100
+    const OBS_MIN_PX = 8
+    const bars: ObsBar[] = []
+    for (const o of observations) {
+      if (!o.height) continue
+      const latLng = tsunamiObsCoords[o.name]
+      if (!latLng) continue
+      const v = o.height.value
+      const barPx = Math.round(Math.max(OBS_MIN_PX, Math.min(OBS_MAX_PX, (v / OBS_MAX_M) * OBS_MAX_PX)))
+      const color = v >= 1 ? '#ef4444' : v >= 0.5 ? '#f97316' : v >= 0.2 ? '#eab308' : '#22d3ee'
+      bars.push({ name: o.name, lat: latLng[0], lng: latLng[1], barPx, color, height: o.height })
+    }
+    // 北→南ソート: 後から描画するほど手前(z高め)になるため南側を最後に描く
+    return bars.sort((a, b) => b.lat - a.lat)
+  }, [tsunamiObsCoords, observations])
+
+  // 観測バーの前回値を記憶し、新規・更新されたバーだけにフィットさせる
+  const prevObsBarsRef = useRef<Map<string, number>>(new Map())
+  const { obsFitSignature, obsFitPositions } = useMemo(() => {
+    const prevMap = prevObsBarsRef.current
+    const updatedBars = observationBars.filter((b) => prevMap.get(b.name) !== b.height.value)
+    const newMap = new Map<string, number>()
+    for (const b of observationBars) newMap.set(b.name, b.height.value)
+    prevObsBarsRef.current = newMap
+    const signature = updatedBars.length > 0
+      ? `obs:${updatedBars.map((b) => `${b.name}=${b.height.value}`).join(',')}`
+      : ''
+    return {
+      obsFitSignature: signature,
+      obsFitPositions: updatedBars.map((b) => [b.lat, b.lng] as LatLng),
+    }
+  }, [observationBars])
+
   // 地震モードのフィット対象（各観測点 + 震源）
   const quakeFitPositions = useMemo<LatLng[]>(() => {
     const positions = intensityMarkers.map((m) => m.position)
@@ -832,6 +926,33 @@ export function JapanMap({
               </Polyline>
             )),
           )}
+        </Pane>
+      )}
+
+      {/* 観測バー更新時のフィット。モード切替をまたいで lastRef を保持するため常時レンダリング */}
+      <ObsFitToBounds mode={mode} signature={obsFitSignature} positions={obsFitPositions} />
+
+      {/* 津波観測棒: 波高が判明している観測点に水位バーを描画。tsunami-lines(z270)より前面。
+          緯度降順（北→南）でレンダリングし、南側ほど手前に表示される。 */}
+      {mode === 'tsunami' && observationBars.length > 0 && (
+        <Pane name="tsunami-obs-bars" style={{ zIndex: 280 }}>
+          {observationBars.map((bar) => (
+            <Marker
+              key={`obs-bar-${bar.name}`}
+              position={[bar.lat, bar.lng]}
+              icon={getTsunamiObsBarIcon(bar.color, bar.barPx)}
+              zIndexOffset={0}
+            >
+              <Tooltip direction="right" offset={[10, -bar.barPx / 2]}>
+                <div style={{ lineHeight: 1.4 }}>
+                  <div style={{ fontWeight: 500, fontSize: '13px' }}>{bar.name}</div>
+                  <div style={{ color: bar.color, fontSize: '13px' }}>
+                    {bar.height.over ? '>' : ''}{bar.height.description}
+                  </div>
+                </div>
+              </Tooltip>
+            </Marker>
+          ))}
         </Pane>
       )}
 
