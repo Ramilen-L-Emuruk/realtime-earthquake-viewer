@@ -1,4 +1,4 @@
-import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, EarthquakePoint, DomesticTsunami } from '../types/earthquake'
+import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, EarthquakePoint, DomesticTsunami, TsunamiObservation } from '../types/earthquake'
 import { eewMaxScale } from './eew'
 import { getIntensityLabel } from './intensity'
 import { tsunamiMaxGrade } from './tsunami'
@@ -282,6 +282,22 @@ export function tsunamiCancelToText(): string {
   return '津波警報等は全て解除されました。'
 }
 
+// 観測点を districtName（津波予報区）ごとにグループ化し、「区域名、地点1で〜、地点2で〜」の形にまとめる。
+// districtName が無い観測（沖合単独観測など）は区域名を付けず、単独の項目として扱う。
+function tsunamiObservationDetailText(items: TsunamiObservation[]): string {
+  const groups: { districtName: string | null; items: TsunamiObservation[] }[] = []
+  for (const o of items) {
+    const key = o.districtName ?? null
+    const existing = key !== null ? groups.find(g => g.districtName === key) : undefined
+    if (existing) existing.items.push(o)
+    else groups.push({ districtName: key, items: [o] })
+  }
+  return groups.map(g => {
+    const stations = g.items.map(o => `${o.name}で${o.height!.description.replace(/m$/i, 'メートル')}`).join('、')
+    return g.districtName ? `${g.districtName}、${stations}` : stations
+  }).join('、')
+}
+
 /** VTSE41/51/52 津波観測情報 読み上げテキストを生成する（波高の大きい順に上位 maxPoints 件）。 */
 export function tsunamiObservationToText(event: JMATsunami, maxPoints = 5): string {
   const obs = (event.observations ?? []).filter(o => o.height !== undefined)
@@ -292,7 +308,7 @@ export function tsunamiObservationToText(event: JMATsunami, maxPoints = 5): stri
   const rawHeadline = event.headline ? event.headline.trim() : ''
   const headline = tsunamiHeightToSpeech(rawHeadline)
   const headlinePart = headline ? `${headline}` : `${total}か所で津波を観測しています。`
-  const detail = sorted.map(o => `${o.name} ${o.height!.description.replace(/m$/i, 'メートル')}`).join('、')
+  const detail = tsunamiObservationDetailText(sorted)
   return `津波観測情報。${headlinePart}${detail}。`
 }
 
@@ -300,11 +316,11 @@ export function tsunamiObservationToText(event: JMATsunami, maxPoints = 5): stri
  * VTSE41/51/52 津波観測情報 更新点のみ読み上げテキストを生成する。
  * updatedObs は最大波高が更新された観測点のみを渡す（波高降順で最大 maxPoints 件）。
  */
-export function tsunamiObservationUpdateToText(updatedObs: import('../types/earthquake').TsunamiObservation[], maxPoints = 5): string {
+export function tsunamiObservationUpdateToText(updatedObs: TsunamiObservation[], maxPoints = 5): string {
   const obs = updatedObs.filter(o => o.height !== undefined)
   if (obs.length === 0) return ''
   const sorted = [...obs].sort((a, b) => b.height!.value - a.height!.value).slice(0, maxPoints)
-  const detail = sorted.map(o => `${o.name}で${o.height!.description.replace(/m$/i, 'メートル')}`).join('、')
+  const detail = tsunamiObservationDetailText(sorted)
   return `津波観測情報。${detail}を観測しました。`
 }
 
