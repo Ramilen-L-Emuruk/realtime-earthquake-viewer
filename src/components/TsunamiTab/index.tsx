@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation } from '../../types/earthquake'
-import { formatDateTime, formatTime } from '../../utils/formatters'
+import { formatDateTimeMin, formatTime } from '../../utils/formatters'
 
 export interface FocusedDistrict {
   code?: string
@@ -340,7 +340,7 @@ export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservat
             </div>
             {latestTime && (
               <div className="text-right flex-shrink-0" style={{ fontSize: '11px', color: isCancelledDisplay ? '#6b7280' : topStyle.arrivalColor, opacity: 0.8 }}>
-                {formatDateTime(latestTime)}
+                {formatDateTimeMin(latestTime)} 更新
               </div>
             )}
           </div>
