@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation } from '../../types/earthquake'
-import { formatDateTime, formatTime } from '../../utils/formatters'
+import { formatDateTimeMin, formatTime } from '../../utils/formatters'
 
 export interface FocusedDistrict {
   code?: string
@@ -335,41 +335,44 @@ export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservat
     : undefined
 
   return (
-    <div className="p-3 flex flex-col gap-3">
-      {/* 発令中 / 解除バナー。対応する地震カードがある場合のみクリック可能。 */}
-      <div
-        role={linkedQuake ? 'button' : undefined}
-        tabIndex={linkedQuake ? 0 : undefined}
-        onClick={linkedQuake ? () => onEarthquakeLink?.(linkedQuake.earthquake.time) : undefined}
-        onKeyDown={linkedQuake ? (e) => { if (e.key === 'Enter' || e.key === ' ') onEarthquakeLink?.(linkedQuake.earthquake.time) } : undefined}
-        className={`rounded-lg overflow-hidden${linkedQuake ? ' cursor-pointer hover:opacity-90 transition-opacity' : ''}`}
-        style={{ background: isCancelledDisplay ? '#1a1a1a' : topStyle.headerBg, border: `2px solid ${isCancelledDisplay ? '#4b5563' : topStyle.cardBorder}` }}>
-        <div className="px-4 py-3"
-          style={{ background: isCancelledDisplay ? 'rgba(75,85,99,0.18)' : `${topStyle.cardBorder}18` }}>
-          <div className="flex items-center justify-between gap-2">
-            <div className="font-bold" style={{ fontSize: '14px', color: isCancelledDisplay ? '#9ca3af' : topStyle.headerColor }}>
-              {isCancelledDisplay ? '津波情報 解除' : `${GRADE_LABEL[topGrade]} 発令中`}
+    <div className="h-full overflow-y-auto">
+      {/* 発令中 / 解除バナー（sticky で常時表示）。対応する地震カードがある場合のみクリック可能。 */}
+      <div className="sticky top-0 z-10 px-3 pt-3">
+        <div
+          role={linkedQuake ? 'button' : undefined}
+          tabIndex={linkedQuake ? 0 : undefined}
+          onClick={linkedQuake ? () => onEarthquakeLink?.(linkedQuake.earthquake.time) : undefined}
+          onKeyDown={linkedQuake ? (e) => { if (e.key === 'Enter' || e.key === ' ') onEarthquakeLink?.(linkedQuake.earthquake.time) } : undefined}
+          className={`rounded-lg overflow-hidden${linkedQuake ? ' cursor-pointer hover:opacity-90 transition-opacity' : ''}`}
+          style={{ background: isCancelledDisplay ? '#1a1a1a' : topStyle.headerBg, border: `2px solid ${isCancelledDisplay ? '#4b5563' : topStyle.cardBorder}` }}>
+          <div className="px-4 py-3"
+            style={{ background: isCancelledDisplay ? 'rgba(75,85,99,0.18)' : `${topStyle.cardBorder}18` }}>
+            <div className="flex items-center justify-between gap-2">
+              <div className="font-bold" style={{ fontSize: '14px', color: isCancelledDisplay ? '#9ca3af' : topStyle.headerColor }}>
+                {isCancelledDisplay ? '津波情報 解除' : `${GRADE_LABEL[topGrade]} 発令中`}
+              </div>
+              {latestTime && (
+                <div className="text-right flex-shrink-0" style={{ fontSize: '11px', color: isCancelledDisplay ? '#6b7280' : topStyle.arrivalColor, opacity: 0.8 }}>
+                  {formatDateTimeMin(latestTime)} 更新
+                </div>
+              )}
             </div>
-            {latestTime && (
-              <div className="text-right flex-shrink-0" style={{ fontSize: '11px', color: isCancelledDisplay ? '#6b7280' : topStyle.arrivalColor, opacity: 0.8 }}>
-                {formatDateTime(latestTime)}
+            <div className="mt-1" style={{ fontSize: '11px', color: isCancelledDisplay ? '#6b7280' : topStyle.headerColor, opacity: 0.8 }}>
+              {isCancelledDisplay ? 'この津波情報は解除されました' : topGrade === 'Forecast' ? '若干の海面変動があるかもしれません' : '海岸・河川から直ちに離れてください'}
+            </div>
+            {!isCancelledDisplay && sourceEarthquake && (
+              <div className="mt-1.5 pt-1.5" style={{ fontSize: '11px', color: topStyle.arrivalColor, opacity: 0.9, borderTop: `1px solid ${topStyle.cardBorder}40` }}>
+                震源: {sourceEarthquake.hypocenterName}
+                {sourceEarthquake.magnitude !== undefined && `　M${sourceEarthquake.magnitude}`}
+                {sourceEarthquake.originTime && `　${formatTime(sourceEarthquake.originTime).slice(0, 5)}発生`}
+                {linkedQuake && <span style={{ marginLeft: '6px', fontSize: '10px', opacity: 0.7 }}>▶ 地震情報</span>}
               </div>
             )}
           </div>
-          <div className="mt-1" style={{ fontSize: '11px', color: isCancelledDisplay ? '#6b7280' : topStyle.headerColor, opacity: 0.8 }}>
-            {isCancelledDisplay ? 'この津波情報は解除されました' : topGrade === 'Forecast' ? '若干の海面変動があるかもしれません' : '海岸・河川から直ちに離れてください'}
-          </div>
-          {!isCancelledDisplay && sourceEarthquake && (
-            <div className="mt-1.5 pt-1.5" style={{ fontSize: '11px', color: topStyle.arrivalColor, opacity: 0.9, borderTop: `1px solid ${topStyle.cardBorder}40` }}>
-              震源: {sourceEarthquake.hypocenterName}
-              {sourceEarthquake.magnitude !== undefined && `　M${sourceEarthquake.magnitude}`}
-              {sourceEarthquake.originTime && `　${formatTime(sourceEarthquake.originTime).slice(0, 5)}発生`}
-              {linkedQuake && <span style={{ marginLeft: '6px', fontSize: '10px', opacity: 0.7 }}>▶ 地震情報</span>}
-            </div>
-          )}
         </div>
       </div>
 
+      <div className="p-3 flex flex-col gap-3">
       {active.map(t => {
         const observations = t.observations ?? []
         const unmatched = observations.filter(o => !t.areas.some(a => matchesArea(o, a)))
@@ -414,6 +417,7 @@ export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservat
           </div>
         )
       })}
+      </div>
     </div>
   )
 }
