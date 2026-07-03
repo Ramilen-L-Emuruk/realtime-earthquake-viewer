@@ -1,4 +1,4 @@
-import type { AppEvent, JMAQuake, TelegramLogEntry } from '../types/earthquake'
+import type { AppEvent, JMAQuake, IssueType, TelegramLogEntry } from '../types/earthquake'
 
 const API_BASE = 'https://api.p2pquake.net/v2'
 const WS_URL = 'wss://api.p2pquake.net/v2/ws'
@@ -13,11 +13,29 @@ function codeToLogKind(code: number): TelegramLogEntry['kind'] {
   return undefined
 }
 
+const ISSUE_TYPE_MAP: Record<string, IssueType> = {
+  ScalePrompt: '震度速報',
+  Destination: '震源情報',
+  ScaleAndDestination: '震源・震度情報',
+  DetailScale: '各地の震度情報',
+  DestinationAmended: '顕著な地震の震源要素更新のお知らせ',
+  Foreign: '遠地地震',
+  Other: 'その他',
+}
+
 function convertEvent(raw: RawP2PEvent): AppEvent | null {
   const { code, ...rest } = raw
-  if (code === 551) return { kind: 'quake', ...rest } as JMAQuake
-  if (code === 552) return { kind: 'tsunami', ...rest } as AppEvent
-  if (code === 556) return { kind: 'eew', ...rest } as AppEvent
+  let converted = rest
+  // issue.type を日本語に変換
+  if (converted.issue && typeof (converted.issue as Record<string, unknown>).type === 'string') {
+    const mapped = ISSUE_TYPE_MAP[(converted.issue as Record<string, unknown>).type as string]
+    if (mapped) {
+      converted = { ...converted, issue: { ...(converted.issue as object), type: mapped } }
+    }
+  }
+  if (code === 551) return { kind: 'quake', ...converted } as JMAQuake
+  if (code === 552) return { kind: 'tsunami', ...converted } as AppEvent
+  if (code === 556) return { kind: 'eew', ...converted } as AppEvent
   return null
 }
 

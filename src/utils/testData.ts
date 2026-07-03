@@ -6,7 +6,7 @@ export function createTestEarthquake(): JMAQuake {
     kind: 'quake',
     id: `test-eq-${Date.now()}`,
     time: now,
-    issue: { source: 'テスト', time: now, type: 'ScaleAndDestination', correct: 'None' },
+    issue: { source: 'テスト', time: now, type: '震源・震度情報', correct: 'None' },
     earthquake: {
       time: now,
       // 2011年東北地方太平洋沖地震を参考にしたパラメータ

@@ -14,13 +14,13 @@ import { getIntensityLabel, getIntensityColor, getIntensityBgColor, getDepthColo
 /** issue.type に応じたバッジの Tailwind クラスを返す。 */
 function issueTypeBadgeClass(type: IssueType): string {
   switch (type) {
-    case 'ScalePrompt':
-    case 'Destination':          return 'bg-amber-900 text-amber-300'
-    case 'ScaleAndDestination':
-    case 'DetailScale':
-    case 'DestinationAmended':   return 'bg-blue-900/60 text-blue-300'
-    case 'Foreign':              return 'bg-purple-900/60 text-purple-300'
-    default:                     return 'bg-panel text-secondary'
+    case '震度速報':
+    case '震源情報':                         return 'bg-amber-900 text-amber-300'
+    case '震源・震度情報':
+    case '各地の震度情報':
+    case '顕著な地震の震源要素更新のお知らせ': return 'bg-blue-900/60 text-blue-300'
+    case '遠地地震':                          return 'bg-purple-900/60 text-purple-300'
+    default:                                  return 'bg-panel text-secondary'
   }
 }
 
@@ -34,14 +34,14 @@ interface IssueTypeStyle {
 
 function getIssueTypeStyle(type: IssueType): IssueTypeStyle {
   switch (type) {
-    case 'ScalePrompt':
-    case 'Destination':
+    case '震度速報':
+    case '震源情報':
       return { headerBg: '#451a03', headerColor: '#fbbf24', headerBorder: '#b45309', cardBorder: '#b45309', cardBg: '#1c1710' }
-    case 'ScaleAndDestination':
-    case 'DetailScale':
-    case 'DestinationAmended':
+    case '震源・震度情報':
+    case '各地の震度情報':
+    case '顕著な地震の震源要素更新のお知らせ':
       return { headerBg: '#0c2044', headerColor: '#93c5fd', headerBorder: '#1d4ed8', cardBorder: '#1d4ed8', cardBg: '#111827' }
-    case 'Foreign':
+    case '遠地地震':
       return { headerBg: '#2e1065', headerColor: '#d8b4fe', headerBorder: '#7e22ce', cardBorder: '#7e22ce', cardBg: '#1a1024' }
     default:
       return { headerBg: '#0c2044', headerColor: '#93c5fd', headerBorder: '#1d4ed8', cardBorder: '#1d4ed8', cardBg: '#111827' }
