@@ -242,7 +242,7 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
       time: reportTime,
       cancelled: true,
       issue: { source: str(data.editorialOffice ?? data.publishingOffice), time: reportTime, type: issueType, correct: 'None' as CorrectType },
-      earthquake: { time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 }, maxScale: -1, domesticTsunami: 'Unknown', foreignTsunami: '' },
+      earthquake: { time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 }, maxScale: -1, domesticTsunami: 'Unknown' },
       points: [],
     }
   }
@@ -306,7 +306,6 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
       },
       maxScale: maxScale >= 0 ? maxScale as IntensityScale : -1,
       domesticTsunami: domestic,
-      foreignTsunami: str(earthquake.foreignTsunami),
     },
     points,
   }
@@ -358,7 +357,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
       time: reportDateTime,
       cancelled: true,
       issue: { source: '気象庁', time: reportDateTime, type: issueType, correct: 'None' as CorrectType },
-      earthquake: { time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 }, maxScale: -1, domesticTsunami: 'Unknown', foreignTsunami: '' },
+      earthquake: { time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 }, maxScale: -1, domesticTsunami: 'Unknown' },
       points: [],
     }
   }
@@ -441,7 +440,6 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
       hypocenter: { name: hypName, latitude: lat, longitude: lng, depth, magnitude },
       maxScale: maxScale >= 0 ? maxScale as IntensityScale : -1,
       domesticTsunami: domestic,
-      foreignTsunami: 'None',
     },
     points,
   }

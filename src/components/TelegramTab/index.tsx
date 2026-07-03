@@ -16,7 +16,6 @@ const HEAD_TYPE_LABEL: Record<string, string> = {
   '551': '地震情報',
   '552': '津波情報',
   '556': 'EEW',
-  '9611': 'P検知',
 }
 
 const KIND_LABEL: Record<string, string> = {
@@ -24,7 +23,6 @@ const KIND_LABEL: Record<string, string> = {
   quake: '地震',
   tsunami: '津波',
   lpgm: '長周期',
-  detection: '検知',
 }
 
 const STATUS_BADGE: Record<TelegramLogEntry['status'], { label: string; className: string }> = {
@@ -52,7 +50,7 @@ function triggerDownload(json: string, filename: string) {
 }
 
 type SourceFilter = 'all' | 'dmdss' | 'p2pquake'
-type KindFilter = 'all' | 'eew' | 'quake' | 'tsunami' | 'lpgm' | 'detection' | 'filtered' | 'error'
+type KindFilter = 'all' | 'eew' | 'quake' | 'tsunami' | 'lpgm' | 'filtered' | 'error'
 
 interface Props {
   telegramLog: TelegramLogEntry[]
@@ -196,7 +194,6 @@ export function TelegramTab({ telegramLog, onClear }: Props) {
           <option value="quake">地震</option>
           <option value="tsunami">津波</option>
           <option value="lpgm">長周期</option>
-          <option value="detection">P検知</option>
           <option value="filtered">スキップ</option>
           <option value="error">エラー</option>
         </select>
