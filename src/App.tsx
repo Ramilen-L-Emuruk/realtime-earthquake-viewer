@@ -238,7 +238,7 @@ export function App() {
         applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
       }, tsunamiResetMs)
     } else if (event.code === 552 && event.cancelled) {
-      // Forecast は tsunamiOverallGrade から除外されるため「津波解除検出」effect が発火しない。タイマーごと即時リセットする。
+      // 「津波解除検出」effect はレンダー後の非同期発火のため、受信直後の即時反映用にここでもタイマーをリセットする。
       console.debug('[tab] → tsunami (津波情報取消)')
       setActiveTabNonRealtime('tsunami')
       window.clearTimeout(tsunamiTitleTimerRef.current)
@@ -787,9 +787,10 @@ export function App() {
   }, [activeTab])
   const mapTab = (activeTab === 'settings' || activeTab === 'telegrams') ? lastContentTab : activeTab
 
-  // 津波発表中フラグ（解除済みでない津波情報があるか）とバッジ用グレード
+  // 津波発表中フラグ（解除済みでない津波情報があるか。Forecast＝若干の海面変動も含む）とバッジ用グレード
+  // tsunamiGrade は色分け用のため MajorWarning/Warning/Watch のみ（Forecast は除外）
   const tsunamiGrade = tsunamiOverallGrade(tsunamis)
-  const tsunamiActive = tsunamiGrade !== null
+  const tsunamiActive = tsunamis.some(t => !t.cancelled)
 
   // 初回ページロード時に REST API で取得した既存の EEW/津波状態をタイトルに反映する
   // （WebSocket 受信前に既にアクティブな情報がある場合のみ一度だけ動作）
