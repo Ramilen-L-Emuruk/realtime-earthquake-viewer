@@ -13,6 +13,7 @@ export interface AppSettings {
   showBathymetry: boolean   // 背景に海底地形（ESRI Ocean）を表示する
   defaultTab: DefaultTabSetting    // 起動時・アイドル復帰時に表示するタブ
   tsunamiPriorityDefault: boolean  // 津波発表中はデフォルトタブを津波情報にする
+  tsunamiTitleTemporary: boolean   // ウィンドウタイトルの津波表示を受信後一定時間のみにする（false = 発表中ずっと表示）
   idleRevertSec: number            // 操作なしでデフォルトタブへ戻るまでの秒数 (0 = 無効)
   periodicReloadHours: number      // 定期自動リロード（0 = 無効、1以上 = 毎日午前5時に実行）
   notifyEEW: boolean               // 緊急地震速報の発報・昇格時にブラウザ通知を送る
@@ -44,6 +45,7 @@ const DEFAULTS: AppSettings = {
   showBathymetry: true,
   defaultTab: 'earthquake',
   tsunamiPriorityDefault: true,
+  tsunamiTitleTemporary: false,
   idleRevertSec: 30,
   periodicReloadHours: 1,
   notifyEEW: true,
