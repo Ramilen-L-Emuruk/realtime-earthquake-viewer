@@ -188,7 +188,7 @@ export function useEarthquakes(
   const dmdataCursorRef = useRef<string | undefined>(undefined)
   const dmdataApiKeyRef = useRef(dmdataApiKey)
   dmdataApiKeyRef.current = dmdataApiKey
-  // P2PQuake 版「もっと見る」用の生 API 取得件数（重複除去後の earthquakes.length とは別管理）
+  // 通常版「もっと見る」用の生 API 取得件数（重複除去後の earthquakes.length とは別管理）
   // offset = earthquakes.length だと重複除去ズレで古いデータが抜け落ちるため、API 呼び出し回数ベースで管理する
   const p2pRawOffsetRef = useRef(0)
 
@@ -232,7 +232,7 @@ export function useEarthquakes(
     if (event.code === 551) {
       const quake = event as JMAQuake
       const m = quake.id?.match(/^dmdata-quake-(\d{14})-/)
-      // DMDATA は ID 埋め込みのタイムスタンプをキーに使う（P2PQuake 版は earthquake.time）
+      // DMDATA は ID 埋め込みのタイムスタンプをキーに使う（通常版は earthquake.time）
       const cacheKey = m ? m[1] : quake.earthquake.time
       // VXSE51 の震度データをキャッシュ（後続 VXSE52 への補完用）
       if (quake.issue.type === 'ScalePrompt' && quake.earthquake.maxScale >= 0) {
@@ -291,7 +291,7 @@ export function useEarthquakes(
 
           const m = quake.id?.match(/^dmdata-quake-(\d{14})-/)
           const eventId = m?.[1]
-          // DMDATA は ID 埋め込みのタイムスタンプをキーに使う（P2PQuake 版は earthquake.time）
+          // DMDATA は ID 埋め込みのタイムスタンプをキーに使う（通常版は earthquake.time）
           const cacheKey = eventId ?? quake.earthquake.time
 
           // VXSE52/53: 震度がない場合に VXSE51 キャッシュから maxScale・points を補完する
