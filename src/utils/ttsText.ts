@@ -105,7 +105,9 @@ function intensityText(scale: IntensityScale | number): string {
 
 function formatTime(isoTime: string): string {
   const d = new Date(isoTime)
-  return `${d.getHours()}時${String(d.getMinutes()).padStart(2, '0')}分`
+  // 分をゼロ埋めすると VOICEVOX が「06分」を「ぜろろくふん」と桁読みしてしまうため、
+  // TTS 用テキストではゼロ埋めしない（表示用の formatters.ts の formatTime とは別）
+  return `${d.getHours()}時${d.getMinutes()}分`
 }
 
 /** VXSE43/45 EEW キャンセル（誤報取消）の読み上げテキストを生成する。 */
