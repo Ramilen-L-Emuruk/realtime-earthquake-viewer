@@ -7,7 +7,6 @@ function codeToKind(code: number): TelegramLogEntry['kind'] {
   if (code === 551) return 'quake'
   if (code === 552) return 'tsunami'
   if (code === 556) return 'eew'
-  if (code === 9611) return 'detection'
   return undefined
 }
 

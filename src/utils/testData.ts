@@ -13,7 +13,6 @@ export function createTestEarthquake(): JMAQuake {
       hypocenter: { name: '三陸沖', latitude: 38.1, longitude: 142.9, depth: 24, magnitude: 9.0 },
       maxScale: 70,
       domesticTsunami: 'Warning',
-      foreignTsunami: 'None',
     },
     // addr は地図の震度マーカー表示用に、座標テーブル（public/data/station-coords.json）に
     // 実在する観測点名を使用する。市区町村名のままだと座標が引けずマーカーが出ない。

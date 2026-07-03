@@ -227,11 +227,6 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
             {tsunamiInfo.text}
           </div>
 
-          {/* 国外津波情報 */}
-          {earthquake.foreignTsunami && earthquake.foreignTsunami !== 'Unknown' && earthquake.foreignTsunami !== 'None' && (
-            <div className="text-sm text-secondary">国外: {earthquake.foreignTsunami}</div>
-          )}
-
           {/* 震源の緯度・経度 */}
           {hasLocation && (
             <div className="text-sm text-secondary">

@@ -58,7 +58,6 @@ export interface JMAQuake {
     hypocenter: Hypocenter
     maxScale: IntensityScale
     domesticTsunami: DomesticTsunami
-    foreignTsunami: string
   }
   points: EarthquakePoint[]
 }
@@ -133,14 +132,6 @@ export interface JMATsunami {
   observations?: TsunamiObservation[]
 }
 
-export interface EarthquakeDetection {
-  code: 554
-  id: string
-  time: string
-  area: string
-  scale: number
-}
-
 export interface EEWRegion {
   pref: string
   name: string
@@ -208,7 +199,7 @@ export interface JMALpgm {
   regions?: LpgmRegion[]  // 一次細分区域別最大階級
 }
 
-export type AppEvent = JMAQuake | JMATsunami | EarthquakeDetection | EEWAlert
+export type AppEvent = JMAQuake | JMATsunami | EEWAlert
 
 // 南海トラフ地震臨時情報 (VYSE50/51/52)
 export interface JMANankai {
@@ -244,7 +235,7 @@ export interface TelegramLogEntry {
   headType: string
   isTest: boolean
   status: 'parsed' | 'filtered' | 'error'
-  kind?: 'eew' | 'quake' | 'tsunami' | 'lpgm' | 'detection' | 'nankai' | 'kohatsu'
+  kind?: 'eew' | 'quake' | 'tsunami' | 'lpgm' | 'nankai' | 'kohatsu'
   rawHead?: unknown
   rawBody: unknown
   errorMessage?: string
