@@ -195,7 +195,7 @@ export function App() {
       console.debug('[tab] → earthquake (地震情報取消)')
       setActiveTabNonRealtime('earthquake')
       window.clearTimeout(earthquakeTitleTimerRef.current)
-      applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
+      applyPriorityTitle(activeEEWsRef.current, tsunamiTitleFlag(), tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
       if (settings.voicevoxEnabled) {
         setTimeout(() => {
           speakWithVoicevox(settings.voicevoxUrl, earthquakeCancelToText(event), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
@@ -226,23 +226,19 @@ export function App() {
       window.clearTimeout(earthquakeTitleTimerRef.current)
       const resetMs = settings.idleRevertSec === 15 ? 15000 : 30000
       earthquakeTitleTimerRef.current = window.setTimeout(() => {
-        applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
+        applyPriorityTitle(activeEEWsRef.current, tsunamiTitleFlag(), tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
       }, resetMs)
     } else if (event.code === 552 && !event.cancelled) {
       console.debug('[tab] → tsunami (津波情報 VTSE41/51/52)')
       setActiveTabNonRealtime('tsunami')
-      setAlertTitle('🌊 津波情報 発表中')
-      window.clearTimeout(tsunamiTitleTimerRef.current)
-      const tsunamiResetMs = settings.idleRevertSec === 15 ? 15000 : 30000
-      tsunamiTitleTimerRef.current = window.setTimeout(() => {
-        applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
-      }, tsunamiResetMs)
+      showTsunamiTitle()
     } else if (event.code === 552 && event.cancelled) {
       // 「津波解除検出」effect はレンダー後の非同期発火のため、受信直後の即時反映用にここでもタイマーをリセットする。
       console.debug('[tab] → tsunami (津波情報取消)')
       setActiveTabNonRealtime('tsunami')
       window.clearTimeout(tsunamiTitleTimerRef.current)
-      applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
+      tsunamiTitleWindowActiveRef.current = false
+      applyPriorityTitle(activeEEWsRef.current, tsunamiTitleFlag(), tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
       if (settings.voicevoxEnabled) {
         speakWithVoicevox(settings.voicevoxUrl, tsunamiCancelToText(), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
       }
@@ -298,7 +294,7 @@ export function App() {
         }
         if (activeEEWLevelsRef.current.size === 0) {
           window.clearTimeout(eewTitleTimerRef.current)
-          applyPriorityTitle(new Map<string, EEWAlert>(), tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
+          applyPriorityTitle(new Map<string, EEWAlert>(), tsunamiTitleFlag(), tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
           if (event.expired || !hadKey) {
             if (kyoshinDetectedRef.current) {
               console.debug('[tab] → realtime (EEW全解除・揺れ検知中)')
@@ -359,7 +355,7 @@ export function App() {
       window.clearTimeout(eewTitleTimerRef.current)
       const eewResetMs = settings.idleRevertSec === 15 ? 15000 : 30000
       eewTitleTimerRef.current = window.setTimeout(() => {
-        applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
+        applyPriorityTitle(activeEEWsRef.current, tsunamiTitleFlag(), tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
       }, eewResetMs)
 
       // VOICEVOX: 2フェーズ読み上げ
@@ -484,12 +480,12 @@ export function App() {
         window.clearTimeout(specialInfoTitleTimerRef.current)
         const resetMs = settings.idleRevertSec === 15 ? 15000 : 30000
         specialInfoTitleTimerRef.current = window.setTimeout(() => {
-          applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
+          applyPriorityTitle(activeEEWsRef.current, tsunamiTitleFlag(), tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
         }, resetMs)
       } else {
         // 取消・終了時はタイマーをクリアして即時リセット
         window.clearTimeout(specialInfoTitleTimerRef.current)
-        applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
+        applyPriorityTitle(activeEEWsRef.current, tsunamiTitleFlag(), tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
         if (specialEvent.kind === 'nankai' && settings.voicevoxEnabled) {
           speakWithVoicevox(
             settings.voicevoxUrl,
@@ -799,8 +795,13 @@ export function App() {
     if (initialTitleAppliedRef.current) return
     if (activeEEWsNoCancelled.size === 0 && !tsunamiActive) return
     initialTitleAppliedRef.current = true
-    applyPriorityTitle(activeEEWsNoCancelled, tsunamiActive, settings.tsunamiPriorityDefault, false, setAlertTitle)
-  }, [activeEEWsNoCancelled, tsunamiActive, settings.tsunamiPriorityDefault])
+    // 津波のみアクティブ・一定時間表示モード ON の場合は表示ウィンドウを開始する
+    if (tsunamiActive && activeEEWsNoCancelled.size === 0 && settings.tsunamiTitleTemporary) {
+      showTsunamiTitle()
+    } else {
+      applyPriorityTitle(activeEEWsNoCancelled, tsunamiActive, settings.tsunamiPriorityDefault, false, setAlertTitle)
+    }
+  }, [activeEEWsNoCancelled, tsunamiActive, settings.tsunamiPriorityDefault, settings.tsunamiTitleTemporary])
 
   // 津波解除検出: true→false の遷移でタイマーをキャンセルし優先度ロジックを即時適用
   const prevTsunamiActiveRef = useRef(false)
@@ -810,6 +811,7 @@ export function App() {
     } else if (prevTsunamiActiveRef.current && !tsunamiActive) {
       console.debug('[tsunami] 解除検出 (tsunamiActive: true→false)')
       window.clearTimeout(tsunamiTitleTimerRef.current)
+      tsunamiTitleWindowActiveRef.current = false
       applyPriorityTitle(activeEEWsRef.current, false, tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
     }
     prevTsunamiActiveRef.current = tsunamiActive
@@ -823,11 +825,34 @@ export function App() {
   const activeEEWsRef = useRef(activeEEWs)
   const tsunamiActiveRef = useRef(false)
   const tsunamiPriorityRef = useRef(false)
+  // 「津波タイトル表示を一定時間に制限」設定の ref（タイマーコールバック内で最新値を参照するため）
+  const tsunamiTitleTemporaryRef = useRef(false)
+  // 一定時間表示モード時に「直近受信からの表示ウィンドウ内」かどうか（sticky モードでは未使用）
+  const tsunamiTitleWindowActiveRef = useRef(false)
   defaultTabRef.current =
     settings.tsunamiPriorityDefault && tsunamiActive ? 'tsunami' : settings.defaultTab
   activeEEWsRef.current = activeEEWsNoCancelled
   tsunamiActiveRef.current = tsunamiActive
   tsunamiPriorityRef.current = settings.tsunamiPriorityDefault
+  tsunamiTitleTemporaryRef.current = settings.tsunamiTitleTemporary
+
+  // 津波タイトルを「発表中」として扱うか判定する。
+  // 一定時間表示モード OFF: 実際の発表中フラグ（sticky）。ON: 直近受信からの表示ウィンドウ内かどうか。
+  const tsunamiTitleFlag = () =>
+    tsunamiTitleTemporaryRef.current ? tsunamiTitleWindowActiveRef.current : tsunamiActiveRef.current
+
+  // 津波タイトルを表示する。一定時間表示モードかどうかに関わらず自動復帰時間後に
+  // 優先度ロジックを再評価するタイマーを仕込む（モード OFF 時は津波が発表中である限り再度同じタイトルになる）。
+  const showTsunamiTitle = () => {
+    setAlertTitle('🌊 津波情報 発表中')
+    tsunamiTitleWindowActiveRef.current = true
+    window.clearTimeout(tsunamiTitleTimerRef.current)
+    const resetMs = settings.idleRevertSec === 15 ? 15000 : 30000
+    tsunamiTitleTimerRef.current = window.setTimeout(() => {
+      if (tsunamiTitleTemporaryRef.current) tsunamiTitleWindowActiveRef.current = false
+      applyPriorityTitle(activeEEWsRef.current, tsunamiTitleFlag(), tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
+    }, resetMs)
+  }
 
   // 設定秒数 情報更新（activeTab の自動切替・DMDSS 更新）もユーザー操作もなければ
   // デフォルトタブへ戻す。activeTab / lastUpdate の変化、および操作のたびにリセット。
@@ -843,7 +868,7 @@ export function App() {
       } else {
         console.debug(`[tab] → ${defaultTabRef.current} (アイドル復帰 idleRevertSec=${settings.idleRevertSec})`)
         setActiveTabNonRealtime(defaultTabRef.current as Exclude<TabId, 'realtime'>)
-        if (!tsunamiActiveRef.current) {
+        if (!tsunamiTitleFlag()) {
           setAlertTitle(null)
         }
       }
@@ -1052,7 +1077,7 @@ export function App() {
         showBrowserNotification('揺れを検知中', `推定最大震度 ${label}（強震モニタ）`, 'kyoshin-detection')
       }
     } else if (!kyoshinDetection.detected && prevDetectedRef.current) {
-      applyPriorityTitle(activeEEWsRef.current, tsunamiActiveRef.current, tsunamiPriorityRef.current, false, setAlertTitle)
+      applyPriorityTitle(activeEEWsRef.current, tsunamiTitleFlag(), tsunamiPriorityRef.current, false, setAlertTitle)
       if (activeEEWsRef.current.size === 0) {
         console.debug(`[tab] → ${defaultTabRef.current} (揺れ検知終了)`)
         setActiveTabNonRealtime(defaultTabRef.current as Exclude<TabId, 'realtime'>)

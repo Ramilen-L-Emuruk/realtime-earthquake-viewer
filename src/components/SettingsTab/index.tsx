@@ -410,6 +410,12 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
             onChange={v => onUpdate('tsunamiPriorityDefault', v)}
           />
         </Row>
+        <Row label="津波タイトル表示を一定時間に制限" description="OFFなら津波発表中はタブタイトルにずっと表示します。ONなら受信のたびに自動復帰までの時間だけ表示し、発表中でも自動的に戻ります">
+          <Toggle
+            checked={settings.tsunamiTitleTemporary}
+            onChange={v => onUpdate('tsunamiTitleTemporary', v)}
+          />
+        </Row>
         <Row label="自動復帰までの時間" description="操作・情報更新がこの時間ないとデフォルトタブに戻ります">
           <select
             value={settings.idleRevertSec}
@@ -735,7 +741,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">3.13.21</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">3.13.22</span></Row>
         <Row label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"
