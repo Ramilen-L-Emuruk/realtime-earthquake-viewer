@@ -19,14 +19,21 @@ export interface KyoshinDetection {
 
 /** 1秒で index が 2 以上増加した観測点を「変化あり」とみなす（約1.0 計測震度相当の上昇） */
 const DELTA_THRESHOLD = 2
-/** 検知対象とする最低インデックス（震度-1相当: 計測震度 -0.5 以上 = index 5） */
+/** 全観測点表示・外部UIサマリ用の最低インデックス（震度-1相当: 計測震度 -0.5 以上 = index 5）。
+ *  検知エンジン内部のクラスタ形成・アンカー判定には使わない（→ ACTIVE_MIN_INDEX）。App.tsx・RealtimeTab 参照。 */
 export const MIN_DETECTION_INDEX = 5
 /** このインデックス以上は delta チェックをスキップする（震度3以上: 計測震度 2.5 以上 = index 11）。
  *  急上昇がなくても震度3を2秒維持すれば確定できるようにする。 */
 const BYPASS_DELTA_INDEX = 11
-/** 近傍確定の対象とする最低インデックス（震度1相当: 計測震度 0.5 以上 = index 7）。
- *  確定済み観測点が PENDING_MATCH_KM 以内にある場合、全フィルタースキップで即時確定する。 */
-const NEAR_CONFIRMED_MIN_INDEX = 7
+/** 検知エンジンが「アクティブ」とみなす最低インデックス（震度1相当: 計測震度 0.5 以上 = index 7）。
+ *  新規クラスタ形成（Layer1 changed 判定・Layer2 クラスタリング・MIN_CLUSTER_SIZE カウント）と、
+ *  近傍確定（isNear）のアンカー資格は全てこの閾値で判定する。
+ *  震度0以下（index 6 以下）はアクティブ判定に一切加わらず、新規検知のトリガーにも周辺点の起爆剤にもならない。 */
+const ACTIVE_MIN_INDEX = 7
+/** 震度0のインデックス値（計測震度 0.0 以上 0.5 未満 = index 6）。
+ *  アクティブな確定点（ACTIVE_MIN_INDEX 以上）の近傍にある間だけ「表示専用の確定点」として追跡する。
+ *  クラスタ形成にもアンカーにもならず、検知タイマーも延長しない（→ shindo0DisplaySitesRef）。 */
+const SHINDO0_INDEX = 6
 /** 空間クラスタリングの距離閾値 (km) */
 const PROXIMITY_KM = 60
 /** クラスタ成立に必要な最低観測点数（2点は隣接センサー誤作動と区別不可のため3点以上） */
@@ -135,11 +142,12 @@ const EMPTY: KyoshinDetection = { detected: false, maxIndex: 0, points: [] }
  * Layer 0〜5 の6層構成による地震検知フック（Layer 3 は現在無効化中）。
  *
  * Layer 0: 直近3フレームの時系列バッファ管理
- * Layer 1: 観測点レベルフィルタ（急上昇・震度3以上持続・ノイズブラックリスト）
- * Layer 2: 空間クラスタリング（Union-Find、最低3点）
+ * Layer 1: 観測点レベルフィルタ（急上昇・震度3以上持続・ノイズブラックリスト）。震度0以下は対象外
+ * Layer 2: 空間クラスタリング（Union-Find、最低3点、震度1以上の点のみ）
  * Layer 3: グローバルサニティ（全体の15%以上が変化 → データ異常として棄却）※現在無効化中
  * Layer 4: テンポラル確定（2フレーム連続検出で確定、複数クラスタ独立管理）
  *          + 近傍確定：確定済み観測点が PENDING_MATCH_KM 以内にある場合、震度1以上の点を全フィルタースキップで即時確定
+ *          + 震度0随伴表示：近傍確定と同条件で震度0の点を「表示専用の確定点」として追跡（アンカーにはならず新規検知のトリガーにもならない）
  * Layer 5: 観測点ノイズトラッキング（繰り返し誤検知観測点を5分除外）
  */
 export function useKyoshinDetection(
@@ -152,8 +160,10 @@ export function useKyoshinDetection(
   const pendingRef = useRef<PendingCluster[]>([])
   // Layer 4: 確定済み観測点セット（Layer 1 の delta チェックをバイパスして毎フレーム追跡）
   const confirmedSitesRef = useRef<Set<number>>(new Set())
-  // Layer 4: 近傍確定で追加された観測点セット（閾値 NEAR_CONFIRMED_MIN_INDEX で管理）
+  // Layer 4: 近傍確定で追加された観測点セット（閾値 ACTIVE_MIN_INDEX で管理）
   const nearConfirmedSitesRef = useRef<Set<number>>(new Set())
+  // Layer 4: 震度0随伴表示の観測点セット（表示専用。アンカーにはならず新規検知のトリガーにもならない）
+  const shindo0DisplaySitesRef = useRef<Set<number>>(new Set())
   // Layer 5: ノイズ観測点 Map<siteIdx, {count, until}>
   const noisyRef = useRef<Map<number, { count: number; until: number }>>(new Map())
 
@@ -191,35 +201,57 @@ export function useKyoshinDetection(
     // 単一フレームのスパイクは Layer 4 テンポラル確定が吸収する。
     //
     // 確定済み観測点（confirmedSites）は delta チェックをスキップし、
-    // 震度が閾値以上である限り毎フレーム自動で changed に追加する。
-    // 震度が閾値を下回ったら confirmedSites から除外する。
-    // 近傍確定観測点（nearConfirmedSites）は NEAR_CONFIRMED_MIN_INDEX を閾値として同様に追跡する。
+    // 震度1以上（ACTIVE_MIN_INDEX）である限り毎フレーム自動で changed に追加する。
+    // 震度0まで減衰したらアンカー資格を失い、表示専用の震度0随伴点（shindo0DisplaySites）へ格下げする。
+    // 震度0未満まで下がったら完全に除外する。
+    // 近傍確定観測点（nearConfirmedSites）も ACTIVE_MIN_INDEX を閾値として同様に扱う。
+    // 震度0随伴点（shindo0DisplaySites）は changed もクラスタリングも通さず、現在値のみを追跡する
+    // （震度1以上に再上昇したらアクティブな近傍確定点へ復帰する）。
     const changed: Array<{ siteIdx: number; index: number }> = []
     for (let i = 0; i < curr.length; i++) {
       const idx = curr[i]
 
       // 確定済み観測点：delta チェックをスキップ
       if (confirmedSitesRef.current.has(i)) {
-        if (idx >= MIN_DETECTION_INDEX) {
+        if (idx >= ACTIVE_MIN_INDEX) {
           changed.push({ siteIdx: i, index: idx })
+        } else if (idx === SHINDO0_INDEX) {
+          confirmedSitesRef.current.delete(i)
+          shindo0DisplaySitesRef.current.add(i)  // 震度0まで減衰：表示専用の確定点へ格下げ
         } else {
-          confirmedSitesRef.current.delete(i)  // 震度が閾値を下回ったら除外
+          confirmedSitesRef.current.delete(i)  // 震度0未満まで下がったら除外
         }
         continue
       }
 
-      // 近傍確定観測点：delta チェックをスキップ（閾値は NEAR_CONFIRMED_MIN_INDEX）
+      // 近傍確定観測点：delta チェックをスキップ（閾値は ACTIVE_MIN_INDEX）
       if (nearConfirmedSitesRef.current.has(i)) {
-        if (idx >= NEAR_CONFIRMED_MIN_INDEX) {
+        if (idx >= ACTIVE_MIN_INDEX) {
           changed.push({ siteIdx: i, index: idx })
+        } else if (idx === SHINDO0_INDEX) {
+          nearConfirmedSitesRef.current.delete(i)
+          shindo0DisplaySitesRef.current.add(i)  // 震度0まで減衰：表示専用の確定点へ格下げ
         } else {
           nearConfirmedSitesRef.current.delete(i)  // 震度1未満になったら除外
         }
         continue
       }
 
-      // 未確定観測点：通常の delta フィルタ
-      if (idx < MIN_DETECTION_INDEX) continue
+      // 震度0随伴点：表示専用。delta チェックもクラスタリングも通さない
+      if (shindo0DisplaySitesRef.current.has(i)) {
+        if (idx >= ACTIVE_MIN_INDEX) {
+          // 震度1以上に再上昇：アクティブな近傍確定点へ復帰
+          shindo0DisplaySitesRef.current.delete(i)
+          nearConfirmedSitesRef.current.add(i)
+          changed.push({ siteIdx: i, index: idx })
+        } else if (idx !== SHINDO0_INDEX) {
+          shindo0DisplaySitesRef.current.delete(i)  // 震度0以外になったら除外
+        }
+        continue
+      }
+
+      // 未確定観測点：通常の delta フィルタ（震度0以下は新規クラスタ形成の対象外）
+      if (idx < ACTIVE_MIN_INDEX) continue
       // 震度3以上（BYPASS_DELTA_INDEX）は急上昇がなくても changed に追加する
       if (idx < BYPASS_DELTA_INDEX) {
         const baseIdx = older !== null ? (older[i] ?? 0) : (prev[i] ?? 0)
@@ -271,13 +303,19 @@ export function useKyoshinDetection(
     const confirmedSiteIndices: number[] = []
 
     // --- 近傍確定：クラスタ照合より先に実行（clusters が空でも動作する） ---
-    // 確定済み観測点が PENDING_MATCH_KM 以内にある震度1以上の点を全フィルタースキップで即時確定。
+    // 確定済み観測点（震度1以上のアクティブ点のみ。震度0随伴点は含まない）が PENDING_MATCH_KM 以内にある場合、
+    // 震度1以上の点は全フィルタースキップで即時確定（アンカーへ昇格）、震度0の点は表示専用の随伴点として追跡する
+    // （随伴点はアンカーにならず confirmed も立てないため、検知タイマーは延長しない）。
     // changed を経由せず curr 全体を走査する。
+    let shindo0Attached = false
     const allConfirmedSites = new Set([...confirmedSitesRef.current, ...nearConfirmedSitesRef.current])
     if (allConfirmedSites.size > 0) {
       for (let i = 0; i < curr.length; i++) {
-        if (curr[i] < NEAR_CONFIRMED_MIN_INDEX) continue
-        if (confirmedSitesRef.current.has(i) || nearConfirmedSitesRef.current.has(i)) continue
+        if (confirmedSitesRef.current.has(i) || nearConfirmedSitesRef.current.has(i) || shindo0DisplaySitesRef.current.has(i)) continue
+        const idx = curr[i]
+        const isActiveCandidate = idx >= ACTIVE_MIN_INDEX
+        const isShindo0Candidate = idx === SHINDO0_INDEX
+        if (!isActiveCandidate && !isShindo0Candidate) continue
         const site = sites[i]
         if (!site) continue
         const isNear = [...allConfirmedSites].some((si) => {
@@ -285,15 +323,20 @@ export function useKyoshinDetection(
           return cs !== undefined && haversineKm(cs[0], cs[1], site[0], site[1]) <= PENDING_MATCH_KM
         })
         if (!isNear) continue
-        nearConfirmedSitesRef.current.add(i)
-        if (curr[i] > confirmedMaxIndex) confirmedMaxIndex = curr[i]
-        confirmed = true
+        if (isActiveCandidate) {
+          nearConfirmedSitesRef.current.add(i)
+          if (idx > confirmedMaxIndex) confirmedMaxIndex = idx
+          confirmed = true
+        } else {
+          shindo0DisplaySitesRef.current.add(i)  // 表示専用：アンカーにならず confirmed も立てない
+          shindo0Attached = true
+        }
       }
     }
 
     if (clusters.length === 0) {
-      // クラスタなしでも近傍確定があれば後処理へ進む
-      if (!confirmed) return
+      // クラスタなしでも近傍確定・震度0随伴表示があれば後処理へ進む
+      if (!confirmed && !shindo0Attached) return
     }
 
     for (const cluster of clusters) {
@@ -336,24 +379,31 @@ export function useKyoshinDetection(
         setDetection(EMPTY)
         confirmedSitesRef.current.clear()
         nearConfirmedSitesRef.current.clear()
+        shindo0DisplaySitesRef.current.clear()
       }, DETECTION_DURATION_MS)
     }
 
     // 確定済み観測点が存在するフレームで毎回 points を更新（リアルタイム反映）
-    const allConfirmedSize = confirmedSitesRef.current.size + nearConfirmedSitesRef.current.size
+    const allConfirmedSize = confirmedSitesRef.current.size + nearConfirmedSitesRef.current.size + shindo0DisplaySitesRef.current.size
     if (allConfirmedSize > 0) {
-      const allConfirmed = new Set([...confirmedSitesRef.current, ...nearConfirmedSitesRef.current])
-      // nearConfirmedSites の点は changed を通っていないため curr から直接収集する
-      const nearPoints: Array<{ siteIdx: number; index: number }> = []
+      const allConfirmed = new Set([...confirmedSitesRef.current, ...nearConfirmedSitesRef.current, ...shindo0DisplaySitesRef.current])
+      // nearConfirmedSites・shindo0DisplaySites の点は changed を通っていないため curr から直接収集する
+      const passivePoints: Array<{ siteIdx: number; index: number }> = []
       for (const si of nearConfirmedSitesRef.current) {
         if (!changed.some((c) => c.siteIdx === si)) {
           const idx = curr[si]
-          if (idx !== undefined && idx >= NEAR_CONFIRMED_MIN_INDEX) {
-            nearPoints.push({ siteIdx: si, index: idx })
+          if (idx !== undefined && idx >= ACTIVE_MIN_INDEX) {
+            passivePoints.push({ siteIdx: si, index: idx })
           }
         }
       }
-      const allChanged = [...changed, ...nearPoints]
+      for (const si of shindo0DisplaySitesRef.current) {
+        const idx = curr[si]
+        if (idx !== undefined && idx === SHINDO0_INDEX) {
+          passivePoints.push({ siteIdx: si, index: idx })
+        }
+      }
+      const allChanged = [...changed, ...passivePoints]
       const points: DetectedPoint[] = allChanged
         .filter((c) => allConfirmed.has(c.siteIdx))
         .map((c) => {
@@ -376,6 +426,7 @@ export function useKyoshinDetection(
     if (timerRef.current) clearTimeout(timerRef.current)
     confirmedSitesRef.current.clear()
     nearConfirmedSitesRef.current.clear()
+    shindo0DisplaySitesRef.current.clear()
   }, [])
 
   return detection
