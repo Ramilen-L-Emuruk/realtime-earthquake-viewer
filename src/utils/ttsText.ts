@@ -300,7 +300,7 @@ export function tsunamiDowngradeToText(event: JMATsunami): string {
   const heightPart = tsunamiHeightSentence(topAreas)
   const lowerPart = lowerGradeSentence(event.areas, topGrade)
 
-  return `津波情報が更新されました。現在、${areaNames}に${gradeLabel}が発表されています。${heightPart}${lowerPart}`
+  return `${gradeLabel}に切り替えられました。現在、${areaNames}に${gradeLabel}が発表されています。${heightPart}${lowerPart}`
 }
 
 /** VTSE41/51/52 津波警報等 全解除の読み上げテキストを生成する。 */
