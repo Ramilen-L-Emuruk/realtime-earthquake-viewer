@@ -323,9 +323,9 @@ export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservat
     : undefined
 
   return (
-    <div className="flex flex-col h-full">
-      {/* 発令中 / 解除バナー（常時表示・スクロール固定）。対応する地震カードがある場合のみクリック可能。 */}
-      <div className="p-3 pb-0 flex-shrink-0">
+    <div className="h-full overflow-y-auto">
+      {/* 発令中 / 解除バナー（sticky で常時表示）。対応する地震カードがある場合のみクリック可能。 */}
+      <div className="sticky top-0 z-10 px-3 pt-3">
         <div
           role={linkedQuake ? 'button' : undefined}
           tabIndex={linkedQuake ? 0 : undefined}
@@ -360,7 +360,7 @@ export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservat
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-3" style={{ scrollbarGutter: 'stable' }}>
+      <div className="p-3 flex flex-col gap-3">
       {active.map(t => {
         const observations = t.observations ?? []
         const unmatched = observations.filter(o => !t.areas.some(a => matchesArea(o, a)))
