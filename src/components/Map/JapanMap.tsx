@@ -437,7 +437,10 @@ function FitToEEW({ eews, psWave, idleRevertSec = 30, detectedPoints = [] }: { e
 
   // 予報円の成長に追従してズームアウト（表示に収まらなくなった時のみ）
   // P波があれば P波円を、なければ S波円を基準にする
+  // eews.length === 0 のときは psWave を無視する: activeEEWs（eews）は解除時に即時反映されるが、
+  // psWave（dmdssWaves/kyoshin.psWave）は別 useEffect 経由のため 1 レンダー遅れて残ることがある
   useEffect(() => {
+    if (eews.length === 0) return
     if (psWave.length === 0) return
     if (userInteractedRef.current) {
       console.debug('[map] flyToBounds スキップ (EEW波円成長フォロー・ユーザー操作中)')
@@ -455,7 +458,7 @@ function FitToEEW({ eews, psWave, idleRevertSec = 30, detectedPoints = [] }: { e
       isAutoFlyingRef.current = true
       map.flyToBounds(bounds, { padding: [60, 60], maxZoom: MAX_ZOOM, duration: 0.8 })
     }
-  }, [psWave, map])
+  }, [eews.length, psWave, map])
 
   return null
 }
