@@ -106,6 +106,12 @@ function applyPriorityTitle(
   else { setState('🌊 津波情報 発表中') }
 }
 
+// 情報タイトルが平常タイトルへ戻るまでの表示時間 [ms]。
+// 自動復帰秒数が15秒設定のときのみ15秒、それ以外は30秒に揃える。
+function titleResetMs(idleRevertSec: number): number {
+  return idleRevertSec === 15 ? 15000 : 30000
+}
+
 function formatDateTimeLocal(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
@@ -236,10 +242,9 @@ export function App() {
         setAlertTitle(`🔴 地震情報 ${hypocenter.name} 最大震度${getIntensityLabel(maxScale)}`)
       }
       window.clearTimeout(earthquakeTitleTimerRef.current)
-      const resetMs = settings.idleRevertSec === 15 ? 15000 : 30000
       earthquakeTitleTimerRef.current = window.setTimeout(() => {
         applyPriorityTitle(activeEEWsRef.current, tsunamiTitleFlag(), tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
-      }, resetMs)
+      }, titleResetMs(settings.idleRevertSec))
     } else if (event.code === 552 && !event.cancelled) {
       console.debug('[tab] → tsunami (津波情報 VTSE41/51/52)')
       setActiveTabNonRealtime('tsunami')
@@ -368,10 +373,9 @@ export function App() {
         (newCount > 1 ? ` 他${newCount - 1}件` : '')
       setAlertTitle(eewTitle)
       window.clearTimeout(eewTitleTimerRef.current)
-      const eewResetMs = settings.idleRevertSec === 15 ? 15000 : 30000
       eewTitleTimerRef.current = window.setTimeout(() => {
         applyPriorityTitle(activeEEWsRef.current, tsunamiTitleFlag(), tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
-      }, eewResetMs)
+      }, titleResetMs(settings.idleRevertSec))
 
       // VOICEVOX: 2フェーズ読み上げ
       // 第1フェーズ（isNew即時）: 「緊急地震速報、〇〇で地震。」
@@ -493,10 +497,9 @@ export function App() {
           : '⚠️ 後発地震注意情報 発表中'
         setAlertTitle(specialTitle)
         window.clearTimeout(specialInfoTitleTimerRef.current)
-        const resetMs = settings.idleRevertSec === 15 ? 15000 : 30000
         specialInfoTitleTimerRef.current = window.setTimeout(() => {
           applyPriorityTitle(activeEEWsRef.current, tsunamiTitleFlag(), tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
-        }, resetMs)
+        }, titleResetMs(settings.idleRevertSec))
       } else {
         // 取消・終了時はタイマーをクリアして即時リセット
         window.clearTimeout(specialInfoTitleTimerRef.current)
@@ -862,11 +865,10 @@ export function App() {
     setAlertTitle('🌊 津波情報 発表中')
     tsunamiTitleWindowActiveRef.current = true
     window.clearTimeout(tsunamiTitleTimerRef.current)
-    const resetMs = settings.idleRevertSec === 15 ? 15000 : 30000
     tsunamiTitleTimerRef.current = window.setTimeout(() => {
       if (tsunamiTitleTemporaryRef.current) tsunamiTitleWindowActiveRef.current = false
       applyPriorityTitle(activeEEWsRef.current, tsunamiTitleFlag(), tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
-    }, resetMs)
+    }, titleResetMs(settings.idleRevertSec))
   }
 
   // 設定秒数 情報更新（activeTab の自動切替・DMDSS 更新）もユーザー操作もなければ
