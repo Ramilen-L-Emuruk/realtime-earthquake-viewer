@@ -5,7 +5,17 @@ import { tsunamiMaxGrade } from './tsunami'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
 
-const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch']
+const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch', 'Forecast']
+
+function tsunamiGradeLabel(grade: TsunamiGrade): string {
+  switch (grade) {
+    case 'MajorWarning': return '大津波警報'
+    case 'Warning':      return '津波警報'
+    case 'Watch':        return '津波注意報'
+    case 'Forecast':     return '津波予報'
+    default:              return ''
+  }
+}
 
 // 震度スケールの降順リスト
 const SCALE_DESCENDING: IntensityScale[] = [70, 60, 55, 50, 45, 40, 30, 20, 10] as IntensityScale[]
@@ -257,8 +267,7 @@ function lowerGradeSentence(areas: import('../types/earthquake').TsunamiArea[], 
     .map(g => {
       const matched = areas.filter(a => a.grade === g)
       if (matched.length === 0) return ''
-      const label = g === 'Warning' ? '津波警報' : '津波注意報'
-      return `${matched.map(a => a.name).join('・')}に${label}`
+      return `${matched.map(a => a.name).join('・')}に${tsunamiGradeLabel(g)}`
     })
     .filter(Boolean)
   return parts.length > 0 ? `また、${parts.join('、')}が発表されています。` : ''
@@ -270,10 +279,10 @@ export function tsunamiToText(event: JMATsunami): string {
 
   const topAreas = event.areas.filter(a => a.grade === topGrade)
   const areaNames = topAreas.map(a => a.name).join('、')
-  const gradeLabel = topGrade === 'MajorWarning' ? '大津波警報'
-    : topGrade === 'Warning' ? '津波警報' : '津波注意報'
+  const gradeLabel = tsunamiGradeLabel(topGrade)
   const action = topGrade === 'MajorWarning' ? 'ただちに高台へ避難してください。'
-    : topGrade === 'Warning' ? '海岸から離れてください。' : ''
+    : topGrade === 'Warning' ? '海岸から離れてください。'
+    : topGrade === 'Forecast' ? '若干の海面変動が予想されますが、被害の心配はありません。' : ''
   const heightPart = tsunamiHeightSentence(topAreas)
   const lowerPart = lowerGradeSentence(event.areas, topGrade)
 
@@ -287,12 +296,11 @@ export function tsunamiDowngradeToText(event: JMATsunami): string {
 
   const topAreas = event.areas.filter(a => a.grade === topGrade)
   const areaNames = topAreas.map(a => a.name).join('、')
-  const gradeLabel = topGrade === 'MajorWarning' ? '大津波警報'
-    : topGrade === 'Warning' ? '津波警報' : '津波注意報'
+  const gradeLabel = tsunamiGradeLabel(topGrade)
   const heightPart = tsunamiHeightSentence(topAreas)
   const lowerPart = lowerGradeSentence(event.areas, topGrade)
 
-  return `津波情報が更新されました。現在、${areaNames}に${gradeLabel}が発表されています。${heightPart}${lowerPart}`
+  return `${gradeLabel}に切り替えられました。現在、${areaNames}に${gradeLabel}が発表されています。${heightPart}${lowerPart}`
 }
 
 /** VTSE41/51/52 津波警報等 全解除の読み上げテキストを生成する。 */
