@@ -328,7 +328,7 @@ export function useEarthquakes(
                 earthquake: {
                   ...existing.earthquake,
                   hypocenter: quake.earthquake.hypocenter,
-                  domesticTsunami: quake.earthquake.domesticTsunami !== 'Unknown'
+                  domesticTsunami: quake.earthquake.domesticTsunami !== '不明'
                     ? quake.earthquake.domesticTsunami
                     : existing.earthquake.domesticTsunami,
                 },

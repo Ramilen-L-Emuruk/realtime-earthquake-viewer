@@ -25,20 +25,20 @@ export type IssueType =
   | 'その他'
 
 export type CorrectType =
-  | 'None'
-  | 'Unknown'
-  | 'ScaleOnly'
-  | 'DestinationOnly'
-  | 'ScaleAndDestination'
+  | 'なし'
+  | '訂正'
+  | '震度のみ訂正'
+  | '震源を訂正'
+  | '震度・震源を訂正'
 
 export type DomesticTsunami =
-  | 'None'
-  | 'Unknown'
-  | 'Checking'
-  | 'SeaFloor'
-  | 'NonEffective'
-  | 'Watch'
-  | 'Warning'
+  | 'なし'
+  | '不明'
+  | '調査中'
+  | '海面変動の可能性'
+  | '若干の海面変動'
+  | '注意報'
+  | '警報等'
 
 export interface JMAQuake {
   kind: 'quake'

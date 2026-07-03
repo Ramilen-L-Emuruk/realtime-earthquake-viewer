@@ -215,15 +215,15 @@ function parseIntensityPoints(intensity: Record<string, unknown>): JMAQuake['poi
 function parseDomesticTsunamiFromComments(comments: Record<string, unknown>): DomesticTsunami {
   const codes = arr(obj(comments.forecast).codes)
   for (const code of codes) {
-    if (code === '0211') return 'Warning'
-    if (code === '0212') return 'NonEffective'
-    if (code === '0213') return 'NonEffective'
-    if (code === '0214') return 'NonEffective'
-    if (code === '0215') return 'None'
-    if (code === '0216') return 'SeaFloor'
-    if (code === '0217') return 'Checking'
+    if (code === '0211') return '警報等'
+    if (code === '0212') return '若干の海面変動'
+    if (code === '0213') return '若干の海面変動'
+    if (code === '0214') return '若干の海面変動'
+    if (code === '0215') return 'なし'
+    if (code === '0216') return '海面変動の可能性'
+    if (code === '0217') return '調査中'
   }
-  return 'Unknown'
+  return '不明'
 }
 
 // 地震情報 (VXSE51/52/53)
@@ -241,8 +241,8 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
       id: `dmdata-quake-${eventId}-${serial}`,
       time: reportTime,
       cancelled: true,
-      issue: { source: str(data.editorialOffice ?? data.publishingOffice), time: reportTime, type: issueType, correct: 'None' as CorrectType },
-      earthquake: { time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 }, maxScale: -1, domesticTsunami: 'Unknown' },
+      issue: { source: str(data.editorialOffice ?? data.publishingOffice), time: reportTime, type: issueType, correct: 'なし' as CorrectType },
+      earthquake: { time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 }, maxScale: -1, domesticTsunami: '不明' },
       points: [],
     }
   }
@@ -292,7 +292,7 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
       source: str(data.editorialOffice ?? data.publishingOffice),
       time: str(data.reportDateTime ?? data.pressDateTime),
       type: issueType,
-      correct: 'None' as CorrectType,
+      correct: 'なし' as CorrectType,
     },
     earthquake: {
       time: originTime,
@@ -356,8 +356,8 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
       id: `dmdata-xml-quake-${eventId}-${serial}`,
       time: reportDateTime,
       cancelled: true,
-      issue: { source: '気象庁', time: reportDateTime, type: issueType, correct: 'None' as CorrectType },
-      earthquake: { time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 }, maxScale: -1, domesticTsunami: 'Unknown' },
+      issue: { source: '気象庁', time: reportDateTime, type: issueType, correct: 'なし' as CorrectType },
+      earthquake: { time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 }, maxScale: -1, domesticTsunami: '不明' },
       points: [],
     }
   }
@@ -414,7 +414,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   const issueType: IssueType = titleText === '遠地地震に関する情報'
     ? '遠地地震'
     : (VXSE_ISSUE_TYPE[headType] ?? '震源・震度情報')
-  const correct: CorrectType = infoType === '訂正' ? 'Unknown' : 'None'
+  const correct: CorrectType = infoType === '訂正' ? '訂正' : 'なし'
 
   // ForecastComment > Code（スペース区切り複数コード）から domesticTsunami を導出
   // 例: <ForecastComment><Code>0212 0241</Code></ForecastComment> → ['0212', '0241']
