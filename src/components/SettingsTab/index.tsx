@@ -343,7 +343,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
               className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500 w-48"
             />
           </Row>
-          <Row label="試験報を受信（検証用）" description="試験報・訓練報を受信します。毎正時のEEW配信テスト(VXSE42)は配信経路の疎通確認のみで表示はされません。VXSE43/45(実EEW警報・予報)の試験報はカード・音・地図へ表示されます。">
+          <Row label="試験報を受信（検証用）" description="試験報・訓練報を受信します（VXSE42は疎通確認のみ・VXSE43/45は表示されます）">
             <Toggle
               checked={settings.dmdataTestDelivery}
               onChange={v => onUpdate('dmdataTestDelivery', v)}
@@ -391,9 +391,23 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
             onChange={v => onUpdate('showBathymetry', v)}
           />
         </Row>
+        <Row label="定期自動リロード" description="毎日午前5時に画面を再起動してメモリを解放します（地震・津波・EEW 発報中は延期）">
+          <Toggle
+            checked={settings.periodicReloadHours > 0}
+            onChange={v => onUpdate('periodicReloadHours', v ? 1 : 0)}
+          />
+        </Row>
       </Section>
 
-      <Section title="デフォルト表示">
+      <Section title="ホーム地点">
+        <HomeLocationSection
+          homeLat={settings.homeLat}
+          homeLng={settings.homeLng}
+          onUpdate={onUpdate}
+        />
+      </Section>
+
+      <Section title="タブ自動切替設定">
         <Row label="デフォルトタブ" description="操作や情報更新が一定時間ないとこのタブに戻ります">
           <select
             value={settings.defaultTab}
@@ -410,7 +424,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
             onChange={v => onUpdate('tsunamiPriorityDefault', v)}
           />
         </Row>
-        <Row label="津波タイトル表示を一定時間に制限" description="OFFなら津波発表中はタブタイトルにずっと表示します。ONなら受信のたびに自動復帰までの時間だけ表示し、発表中でも自動的に戻ります">
+        <Row label="津波タイトル表示を一定時間に制限" description="ONで受信のたびに自動復帰までの時間だけ表示し、発表中でも自動的に戻ります">
           <Toggle
             checked={settings.tsunamiTitleTemporary}
             onChange={v => onUpdate('tsunamiTitleTemporary', v)}
@@ -430,12 +444,6 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
             <option value={180}>3分</option>
             <option value={300}>5分</option>
           </select>
-        </Row>
-        <Row label="定期自動リロード" description="毎日午前5時に画面を再起動してメモリを解放します（地震・津波・EEW 発報中は延期）">
-          <Toggle
-            checked={settings.periodicReloadHours > 0}
-            onChange={v => onUpdate('periodicReloadHours', v ? 1 : 0)}
-          />
         </Row>
       </Section>
 
@@ -513,30 +521,30 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
                 </Row>
               </>
             )}
+            <Row label="読み上げ震度階数" description="最大震度から何階級分の地域名を読み上げるか（0 = 最大震度のみ）">
+              <select
+                value={settings.ttsIntensityLevels}
+                onChange={e => onUpdate('ttsIntensityLevels', Number(e.target.value))}
+                className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+              >
+                {[0, 1, 2, 3, 4].map(n => (
+                  <option key={n} value={n}>{n === 0 ? '最大震度のみ' : `最大から${n}階級`}</option>
+                ))}
+              </select>
+            </Row>
+            <Row label="読み上げ最大地域数" description="1階級あたりに読み上げる地域名の上限（0 = 無制限）">
+              <select
+                value={settings.ttsMaxRegions}
+                onChange={e => onUpdate('ttsMaxRegions', Number(e.target.value))}
+                className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+              >
+                {[0, 3, 5, 10, 15, 20].map(n => (
+                  <option key={n} value={n}>{n === 0 ? '無制限' : `${n}地域`}</option>
+                ))}
+              </select>
+            </Row>
           </>
         )}
-        <Row label="読み上げ震度階数" description="最大震度から何階級分の地域名を読み上げるか（0 = 最大震度のみ）">
-          <select
-            value={settings.ttsIntensityLevels}
-            onChange={e => onUpdate('ttsIntensityLevels', Number(e.target.value))}
-            className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
-          >
-            {[0, 1, 2, 3, 4].map(n => (
-              <option key={n} value={n}>{n === 0 ? '最大震度のみ' : `最大から${n}階級`}</option>
-            ))}
-          </select>
-        </Row>
-        <Row label="読み上げ最大地域数" description="1階級あたりに読み上げる地域名の上限（0 = 無制限）">
-          <select
-            value={settings.ttsMaxRegions}
-            onChange={e => onUpdate('ttsMaxRegions', Number(e.target.value))}
-            className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
-          >
-            {[0, 3, 5, 10, 15, 20].map(n => (
-              <option key={n} value={n}>{n === 0 ? '無制限' : `${n}地域`}</option>
-            ))}
-          </select>
-        </Row>
         <Row label="ブラウザ通知" description="地震発生時にブラウザ通知を表示します">
           <Toggle
             checked={settings.notifyMinScale >= 0}
@@ -732,16 +740,8 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
         )}
       </Section>
 
-      <Section title="ホーム地点">
-        <HomeLocationSection
-          homeLat={settings.homeLat}
-          homeLng={settings.homeLng}
-          onUpdate={onUpdate}
-        />
-      </Section>
-
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">3.13.22</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">3.13.23</span></Row>
         <Row label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"
