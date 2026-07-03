@@ -67,6 +67,49 @@ function groupAreasByHeight(areas: TsunamiArea[]): { heightLabel: string | null;
   return groups
 }
 
+// 区域に紐づく観測点のうち、実測値（height）が最も高いものを返す。
+// value が同点の場合は over（「以上」）を優先する。実測値を持つ観測点が無ければ null。
+function maxObservedHeight(area: TsunamiArea, observations: TsunamiObservation[]): { value: number; over: boolean } | null {
+  let max: { value: number; over: boolean } | null = null
+  for (const obs of observations) {
+    if (!obs.height || !matchesArea(obs, area)) continue
+    const candidate = { value: obs.height.value, over: !!obs.height.over }
+    if (!max || candidate.value > max.value || (candidate.value === max.value && candidate.over && !max.over)) {
+      max = candidate
+    }
+  }
+  return max
+}
+
+// 波高グループ内で、観測データ（実測値）がある区域を上に、無い区域を下にまとめる。
+// 観測データがある区域同士は実測波高（最大値・同点なら「以上」優先）の降順で並べ、
+// 実測値未確定（到達時刻のみ等）の区域は観測データありの中で最下位に置く。
+// いずれも同点の場合・観測データが無い区域同士は電文順（安定ソート）を維持する。
+function sortAreasByObservation(areas: TsunamiArea[], observations: TsunamiObservation[]): TsunamiArea[] {
+  const withObservation: TsunamiArea[] = []
+  const withoutObservation: TsunamiArea[] = []
+  for (const area of areas) {
+    if (observations.some(o => matchesArea(o, area))) withObservation.push(area)
+    else withoutObservation.push(area)
+  }
+
+  const sortedWithObservation = withObservation
+    .map((area, index) => ({ area, index, height: maxObservedHeight(area, observations) }))
+    .sort((a, b) => {
+      if (a.height && b.height) {
+        if (a.height.value !== b.height.value) return b.height.value - a.height.value
+        if (a.height.over !== b.height.over) return a.height.over ? -1 : 1
+        return a.index - b.index
+      }
+      if (a.height && !b.height) return -1
+      if (!a.height && b.height) return 1
+      return a.index - b.index
+    })
+    .map(({ area }) => area)
+
+  return [...sortedWithObservation, ...withoutObservation]
+}
+
 function TsunamiHeightHeader({ label, style }: { label: string; style: GradeStyle }) {
   return (
     <div className="px-4 py-1 font-black leading-none"
@@ -192,7 +235,7 @@ function TsunamiObservationRow({ obs, onObservationClick }: { obs: TsunamiObserv
 function TsunamiGradeCard({ grade, areas, observations, onObservationClick }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[]; onObservationClick?: (name: string) => void }) {
   if (areas.length === 0) return null
   const style = getGradeStyle(grade)
-  const groups = groupAreasByHeight(areas)
+  const groups = groupAreasByHeight(areas).map(group => ({ ...group, areas: sortAreasByObservation(group.areas, observations) }))
   return (
     <div className="bg-card rounded-lg overflow-hidden"
       style={{ border: `2px solid ${style.cardBorder}`, boxShadow: `0 0 0 1px ${style.cardBorder}40` }}>
