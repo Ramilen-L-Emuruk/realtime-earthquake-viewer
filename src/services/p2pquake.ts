@@ -1,4 +1,4 @@
-import type { P2PQuakeEvent, JMAQuake, TelegramLogEntry } from '../types/earthquake'
+import type { AppEvent, JMAQuake, TelegramLogEntry } from '../types/earthquake'
 
 const API_BASE = 'https://api.p2pquake.net/v2'
 const WS_URL = 'wss://api.p2pquake.net/v2/ws'
@@ -15,14 +15,14 @@ export async function fetchHistory(
   codes: number[] = [551, 552, 556],
   limit = 20,
   offset = 0,
-): Promise<P2PQuakeEvent[]> {
+): Promise<AppEvent[]> {
   const params = new URLSearchParams()
   codes.forEach(c => params.append('codes', String(c)))
   params.set('limit', String(limit))
   if (offset > 0) params.set('offset', String(offset))
   const res = await fetch(`${API_BASE}/history?${params.toString()}`)
   if (!res.ok) throw new Error(`P2PQuake API error: ${res.status}`)
-  return res.json() as Promise<P2PQuakeEvent[]>
+  return res.json() as Promise<AppEvent[]>
 }
 
 // /v2/history より大幅に深い履歴（2015年〜）を持つ地震情報専用エンドポイント
@@ -40,7 +40,7 @@ export class P2PQuakeWebSocket {
   private reconnectDelay = 3000
   private shouldReconnect = false
 
-  onEvent: ((event: P2PQuakeEvent) => void) | null = null
+  onEvent: ((event: AppEvent) => void) | null = null
   onStatusChange: ((status: 'connecting' | 'connected' | 'disconnected') => void) | null = null
   onRawMessage: ((entry: TelegramLogEntry) => void) | null = null
 
@@ -60,7 +60,7 @@ export class P2PQuakeWebSocket {
 
     this.ws.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data as string) as P2PQuakeEvent
+        const data = JSON.parse(event.data as string) as AppEvent
         this.onRawMessage?.({
           id: `${Date.now()}-${Math.random()}`,
           receivedAt: new Date(),

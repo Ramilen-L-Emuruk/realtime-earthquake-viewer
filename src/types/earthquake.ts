@@ -208,7 +208,7 @@ export interface JMALpgm {
   regions?: LpgmRegion[]  // 一次細分区域別最大階級
 }
 
-export type P2PQuakeEvent = JMAQuake | JMATsunami | EarthquakeDetection | EEWAlert
+export type AppEvent = JMAQuake | JMATsunami | EarthquakeDetection | EEWAlert
 
 // 南海トラフ地震臨時情報 (VYSE50/51/52)
 export interface JMANankai {
