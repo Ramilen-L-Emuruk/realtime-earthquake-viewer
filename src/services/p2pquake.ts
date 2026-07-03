@@ -1,4 +1,4 @@
-import type { AppEvent, JMAQuake, IssueType, TelegramLogEntry } from '../types/earthquake'
+import type { AppEvent, JMAQuake, IssueType, CorrectType, DomesticTsunami, TelegramLogEntry } from '../types/earthquake'
 
 const API_BASE = 'https://api.p2pquake.net/v2'
 const WS_URL = 'wss://api.p2pquake.net/v2/ws'
@@ -11,6 +11,17 @@ function codeToLogKind(code: number): TelegramLogEntry['kind'] {
   if (code === 552) return 'tsunami'
   if (code === 556) return 'eew'
   return undefined
+}
+
+const CORRECT_TYPE_MAP: Record<string, CorrectType> = {
+  None: 'なし', Unknown: '訂正', ScaleOnly: '震度のみ訂正',
+  DestinationOnly: '震源を訂正', ScaleAndDestination: '震度・震源を訂正',
+}
+
+const DOMESTIC_TSUNAMI_MAP: Record<string, DomesticTsunami> = {
+  None: 'なし', Unknown: '不明', Checking: '調査中',
+  SeaFloor: '海面変動の可能性', NonEffective: '若干の海面変動',
+  Watch: '注意報', Warning: '警報等',
 }
 
 const ISSUE_TYPE_MAP: Record<string, IssueType> = {
@@ -32,6 +43,18 @@ function convertEvent(raw: RawP2PEvent): AppEvent | null {
     if (mapped) {
       converted = { ...converted, issue: { ...(converted.issue as object), type: mapped } }
     }
+  }
+  // issue.correct を日本語に変換
+  if (converted.issue && typeof (converted.issue as Record<string, unknown>).correct === 'string') {
+    const rawCorrect = (converted.issue as Record<string, unknown>).correct as string
+    const mappedCorrect = CORRECT_TYPE_MAP[rawCorrect] ?? 'なし'
+    converted = { ...converted, issue: { ...(converted.issue as object), correct: mappedCorrect } }
+  }
+  // earthquake.domesticTsunami を日本語に変換
+  if (converted.earthquake && typeof (converted.earthquake as Record<string, unknown>).domesticTsunami === 'string') {
+    const rawDt = (converted.earthquake as Record<string, unknown>).domesticTsunami as string
+    const mappedDt = DOMESTIC_TSUNAMI_MAP[rawDt] ?? '不明'
+    converted = { ...converted, earthquake: { ...(converted.earthquake as object), domesticTsunami: mappedDt } }
   }
   if (code === 551) return { kind: 'quake', ...converted } as JMAQuake
   if (code === 552) return { kind: 'tsunami', ...converted } as AppEvent

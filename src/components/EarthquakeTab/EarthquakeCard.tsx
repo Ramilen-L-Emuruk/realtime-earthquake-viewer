@@ -169,7 +169,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
             <span className="text-secondary" style={{ fontSize: '20px' }}>
               {formatQuakeTime(earthquake.time)}
             </span>
-            {issue.correct !== 'None' && (
+            {issue.correct !== 'なし' && (
               <span className="text-xs bg-yellow-900 text-yellow-300 px-1.5 py-0.5 rounded font-medium flex-shrink-0">
                 {formatCorrectType(issue.correct)}
               </span>
@@ -344,7 +344,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
           {/* 日時 */}
           <div className="flex items-center gap-2 mb-1.5 flex-wrap">
             <span className="text-base text-secondary">{formatQuakeTime(earthquake.time)}</span>
-            {issue.correct !== 'None' && (
+            {issue.correct !== 'なし' && (
               <span className="text-xs bg-yellow-900 text-yellow-300 px-1.5 py-0.5 rounded font-medium flex-shrink-0">
                 {formatCorrectType(issue.correct)}
               </span>

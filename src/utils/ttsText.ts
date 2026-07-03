@@ -181,13 +181,13 @@ export function eewToText(event: EEWAlert): string {
 
 function domesticTsunamiText(t: DomesticTsunami): string {
   switch (t) {
-    case 'None':        return 'この地震による津波の心配はありません。'
-    case 'NonEffective': return 'この地震による若干の海面変動が予想されますが、被害の心配はありません。'
-    case 'Checking':    return 'この地震による津波の有無を調査中です。'
-    case 'SeaFloor':    return '震源が海底のため、津波が発生するおそれがあります。'
-    case 'Watch':       return '現在津波注意報を発表中です。'
-    case 'Warning':     return '現在津波警報等を発表中です。'
-    case 'Unknown':     return '津波情報は不明です。'
+    case 'なし':           return 'この地震による津波の心配はありません。'
+    case '若干の海面変動':  return 'この地震による若干の海面変動が予想されますが、被害の心配はありません。'
+    case '調査中':         return 'この地震による津波の有無を調査中です。'
+    case '海面変動の可能性': return '震源が海底のため、津波が発生するおそれがあります。'
+    case '注意報':         return '現在津波注意報を発表中です。'
+    case '警報等':         return '現在津波警報等を発表中です。'
+    case '不明':           return '津波情報は不明です。'
   }
 }
 

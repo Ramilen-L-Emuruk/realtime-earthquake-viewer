@@ -6,13 +6,13 @@ export function createTestEarthquake(): JMAQuake {
     kind: 'quake',
     id: `test-eq-${Date.now()}`,
     time: now,
-    issue: { source: 'テスト', time: now, type: '震源・震度情報', correct: 'None' },
+    issue: { source: 'テスト', time: now, type: '震源・震度情報', correct: 'なし' },
     earthquake: {
       time: now,
       // 2011年東北地方太平洋沖地震を参考にしたパラメータ
       hypocenter: { name: '三陸沖', latitude: 38.1, longitude: 142.9, depth: 24, magnitude: 9.0 },
       maxScale: 70,
-      domesticTsunami: 'Warning',
+      domesticTsunami: '警報等',
     },
     // addr は地図の震度マーカー表示用に、座標テーブル（public/data/station-coords.json）に
     // 実在する観測点名を使用する。市区町村名のままだと座標が引けずマーカーが出ない。
