@@ -116,6 +116,7 @@ export function App() {
   const [activeTab, setActiveTab] = useState<TabId>(settings.defaultTab)
   const [selectedQuakeId, setSelectedQuakeId] = useState<string | null>(null)
   const [focusedObsName, setFocusedObsName] = useState<{ name: string; ts: number } | null>(null)
+  const [focusedDistrict, setFocusedDistrict] = useState<{ code?: string; name?: string; ts: number } | null>(null)
   const [activeLpgmEventId, setActiveLpgmEventId] = useState<string | null>(null)
   const [activeLpgmSource, setActiveLpgmSource] = useState<'earthquake' | 'eew' | null>(null)
   // 地震カード切替時は LPGM 表示をリセットする
@@ -575,10 +576,18 @@ export function App() {
           })
           if (updatedObs.length > 0) {
             ttsText = tsunamiObservationUpdateToText(updatedObs, event.headline)
+            const topObs = updatedObs.reduce((a, b) => (b.height!.value > a.height!.value ? b : a))
+            setFocusedDistrict({ code: topObs.districtCode, name: topObs.districtName, ts: Date.now() })
           }
         } else {
           const isDowngrade = prevGrade !== null && GRADE_RANK[currentGrade as GradeKey] < GRADE_RANK[prevGrade as GradeKey]
           ttsText = isDowngrade ? tsunamiDowngradeToText(event) : tsunamiToText(event)
+          // 初回発表・グレード変化時も観測点があればスクロール対象をセット
+          const obsWithHeight = (event.observations ?? []).filter(o => !!o.height)
+          if (obsWithHeight.length > 0) {
+            const topObs = obsWithHeight.reduce((a, b) => (b.height!.value > a.height!.value ? b : a))
+            setFocusedDistrict({ code: topObs.districtCode, name: topObs.districtName, ts: Date.now() })
+          }
         }
       }
       if (ttsText && type) {
@@ -1231,6 +1240,7 @@ export function App() {
                 setActiveTabNonRealtime('earthquake')
               }}
               onObservationClick={(name) => setFocusedObsName({ name, ts: Date.now() })}
+              focusedDistrict={focusedDistrict}
             />
           </div>
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'telegrams' ? ' invisible pointer-events-none' : ''}`}>

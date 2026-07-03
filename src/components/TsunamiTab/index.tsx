@@ -1,11 +1,19 @@
+import { useEffect, useRef } from 'react'
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation } from '../../types/earthquake'
 import { formatDateTime, formatTime } from '../../utils/formatters'
+
+export interface FocusedDistrict {
+  code?: string
+  name?: string
+  ts: number
+}
 
 interface Props {
   tsunamis: JMATsunami[]
   earthquakes?: JMAQuake[]
   onEarthquakeLink?: (earthquakeTime: string) => void
   onObservationClick?: (name: string) => void
+  focusedDistrict?: FocusedDistrict | null
 }
 
 type TsunamiGrade = TsunamiArea['grade']
@@ -119,7 +127,21 @@ function TsunamiHeightHeader({ label, style }: { label: string; style: GradeStyl
   )
 }
 
-function TsunamiAreaRow({ area, observations, style, onObservationClick }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle; onObservationClick?: (name: string) => void }) {
+function TsunamiAreaRow({ area, observations, style, onObservationClick, focusedDistrict }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle; onObservationClick?: (name: string) => void; focusedDistrict?: FocusedDistrict | null }) {
+  const rowRef = useRef<HTMLDivElement>(null)
+
+  const isFocused = focusedDistrict != null && (
+    (focusedDistrict.code && area.code) ? focusedDistrict.code === area.code : focusedDistrict.name === area.name
+  )
+
+  useEffect(() => {
+    if (isFocused && rowRef.current) {
+      rowRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+  // focusedDistrict.ts を依存にすることで同一 district の再フォーカスも発火する
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusedDistrict?.ts])
+
   const arrivalText = area.firstHeight?.arrivalTime
     ? `到達予想 ${formatTime(area.firstHeight.arrivalTime).slice(0, 5)}`
     : (area.firstHeight?.condition ?? null)
@@ -131,7 +153,7 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick }: { are
   const showImmediateBadge = area.immediate && observations.length === 0
 
   return (
-    <div className="border-b border-white/5 last:border-0">
+    <div ref={rowRef} className="border-b border-white/5 last:border-0">
       <div className="flex items-center gap-3 px-4 py-3">
         <div className="flex-1 min-w-0">
           <span className="text-white font-semibold block" style={{ fontSize: '20px', lineHeight: '1.2' }}>
@@ -232,7 +254,7 @@ function TsunamiObservationRow({ obs, onObservationClick }: { obs: TsunamiObserv
   )
 }
 
-function TsunamiGradeCard({ grade, areas, observations, onObservationClick }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[]; onObservationClick?: (name: string) => void }) {
+function TsunamiGradeCard({ grade, areas, observations, onObservationClick, focusedDistrict }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[]; onObservationClick?: (name: string) => void; focusedDistrict?: FocusedDistrict | null }) {
   if (areas.length === 0) return null
   const style = getGradeStyle(grade)
   const groups = groupAreasByHeight(areas).map(group => ({ ...group, areas: sortAreasByObservation(group.areas, observations) }))
@@ -253,6 +275,7 @@ function TsunamiGradeCard({ grade, areas, observations, onObservationClick }: { 
               observations={observations.filter(o => matchesArea(o, area))}
               style={style}
               onObservationClick={onObservationClick}
+              focusedDistrict={focusedDistrict}
             />
           ))}
         </div>
@@ -268,7 +291,7 @@ function getTopGrade(tsunamis: JMATsunami[]): TsunamiGrade {
   return 'Unknown'
 }
 
-export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservationClick }: Props) {
+export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservationClick, focusedDistrict }: Props) {
   // cancelledAt がある = 10秒表示中なので active に含める
   const active = tsunamis.filter(t => !t.cancelled || t.cancelledAt)
 
@@ -353,6 +376,7 @@ export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservat
                 areas={t.areas.filter(a => a.grade === grade)}
                 observations={observations}
                 onObservationClick={onObservationClick}
+                focusedDistrict={focusedDistrict}
               />
             ))}
             {unmatched.length > 0 && (
