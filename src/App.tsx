@@ -184,6 +184,18 @@ export function App() {
     setActiveTab('realtime')
   }
 
+  // デフォルトタブへ復帰する。デフォルトタブが realtime の場合は
+  // 抑制タイマーをセットせずそのまま移動する（realtime への強制移動を
+  // 抑制する意味がないため）。
+  const revertToDefaultTab = () => {
+    const tab = defaultTabRef.current
+    if (tab === 'realtime') {
+      setActiveTab('realtime')
+    } else {
+      setActiveTabNonRealtime(tab)
+    }
+  }
+
   const handleLiveEvent = (event: P2PQuakeEvent) => {
     // 受信時に該当タブを自動表示し、ウィンドウタイトルを更新する
     // （地震情報・津波情報・緊急地震速報）。
@@ -304,7 +316,7 @@ export function App() {
               setActiveTab('realtime')
             } else {
               console.debug(`[tab] → ${defaultTabRef.current} (EEW全解除)`)
-              setActiveTabNonRealtime(defaultTabRef.current as Exclude<TabId, 'realtime'>)
+              revertToDefaultTab()
             }
           }
         }
@@ -870,7 +882,7 @@ export function App() {
         setActiveTab('realtime')
       } else {
         console.debug(`[tab] → ${defaultTabRef.current} (アイドル復帰 idleRevertSec=${settings.idleRevertSec})`)
-        setActiveTabNonRealtime(defaultTabRef.current as Exclude<TabId, 'realtime'>)
+        revertToDefaultTab()
         if (!tsunamiTitleFlag()) {
           setAlertTitle(null)
         }
@@ -1083,7 +1095,7 @@ export function App() {
       applyPriorityTitle(activeEEWsRef.current, tsunamiTitleFlag(), tsunamiPriorityRef.current, false, setAlertTitle)
       if (activeEEWsRef.current.size === 0) {
         console.debug(`[tab] → ${defaultTabRef.current} (揺れ検知終了)`)
-        setActiveTabNonRealtime(defaultTabRef.current as Exclude<TabId, 'realtime'>)
+        revertToDefaultTab()
       }
     }
     prevDetectedRef.current = kyoshinDetection.detected
