@@ -204,6 +204,8 @@ function FitToBounds({ signature, positions }: { signature: string; positions: L
 // - observationBars が更新された: 観測点へフィット（優先）。海岸線 sig も同時に消費して競合を防ぐ。
 // - tsunamiSig が新規（obs 更新なし）: 海岸線へフィット。
 // - 他タブ中に obs が更新された場合: フラグに座標を保持し、津波タブ入室時に発火する。
+// - 津波タブ入室時に観測点更新・海岸線シグネチャ変化のどちらも無かった場合: 変化なしフォールバックとして
+//   全海岸線（無ければ日本全体）にフィットし、直前の表示位置に取り残されるのを防ぐ。
 // 注: useMemo 内で前回値 ref を更新すると React StrictMode の二重実行により誤判定が起きるため、
 //     前回値の比較・更新を useEffect 内で行う。
 function TsunamiFitToBounds({
@@ -221,8 +223,12 @@ function TsunamiFitToBounds({
   const lastTsunamiSigRef = useRef<string>('')
   const prevObsMapRef = useRef<Map<string, number>>(new Map())
   const pendingObsPositionsRef = useRef<LatLng[]>([])
+  const prevModeRef = useRef<MapMode>(mode)
 
   useEffect(() => {
+    const enteredTsunamiTab = mode === 'tsunami' && prevModeRef.current !== 'tsunami'
+    prevModeRef.current = mode
+
     // Step 1: 前回値と比較して更新された観測バーを検出し、フラグにセット
     const prevMap = prevObsMapRef.current
     const updatedBars = observationBars.filter((b) => prevMap.get(b.name) !== b.height.value)
@@ -256,6 +262,18 @@ function TsunamiFitToBounds({
       lastTsunamiSigRef.current = tsunamiSignature
       console.debug(`[map] flyToBounds (TsunamiFit 海岸線 ${tsunamiFitPositions.length}点)`)
       map.flyToBounds(L.latLngBounds(tsunamiFitPositions), { padding: [48, 48], maxZoom: MAX_ZOOM, duration: 1.0 })
+      return
+    }
+
+    // Step 3: 入室時に変化なし（観測点更新も海岸線シグネチャ変化も無し）→ フォールバックフィット
+    if (enteredTsunamiTab) {
+      if (tsunamiFitPositions.length > 0) {
+        console.debug(`[map] flyToBounds (TsunamiFit 入室・変化なし 海岸線${tsunamiFitPositions.length}点)`)
+        map.flyToBounds(L.latLngBounds(tsunamiFitPositions), { padding: [48, 48], maxZoom: MAX_ZOOM, duration: 1.0 })
+      } else {
+        console.debug('[map] flyToBounds JAPAN_BOUNDS (TsunamiFit 入室・変化なし・海岸線なし)')
+        map.flyToBounds(JAPAN_BOUNDS, { padding: [20, 20], duration: 1.0 })
+      }
     }
   }, [mode, tsunamiSignature, tsunamiFitPositions, observationBars, map])
 
