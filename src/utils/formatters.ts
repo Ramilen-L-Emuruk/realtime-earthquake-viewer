@@ -55,37 +55,37 @@ export function formatMagnitude(magnitude: number): string {
 
 export function formatDomesticTsunami(type: DomesticTsunami): { text: string; color: string } {
   const map: Record<DomesticTsunami, { text: string; color: string }> = {
-    None: { text: '津波の心配なし', color: '#22c55e' },
-    Unknown: { text: '不明', color: '#94a3b8' },
-    Checking: { text: '調査中', color: '#94a3b8' },
-    SeaFloor: { text: '津波発生のおそれあり', color: '#f59e0b' },
-    NonEffective: { text: '若干の海面変動', color: '#f59e0b' },
-    Watch: { text: '津波注意報', color: '#f97316' },
-    Warning: { text: '津波警報', color: '#ef4444' },
+    'なし': { text: '津波の心配なし', color: '#22c55e' },
+    '不明': { text: '不明', color: '#94a3b8' },
+    '調査中': { text: '調査中', color: '#94a3b8' },
+    '海面変動の可能性': { text: '津波発生のおそれあり', color: '#f59e0b' },
+    '若干の海面変動': { text: '若干の海面変動', color: '#f59e0b' },
+    '注意報': { text: '津波注意報', color: '#f97316' },
+    '警報等': { text: '津波警報', color: '#ef4444' },
   }
   return map[type] ?? { text: '不明', color: '#94a3b8' }
 }
 
 export function formatIssueType(type: IssueType): string {
   const map: Record<IssueType, string> = {
-    ScalePrompt: '震度速報',
-    Destination: '震源情報',
-    ScaleAndDestination: '震源・震度情報',
-    DetailScale: '各地の震度情報',
-    DestinationAmended: '顕著な地震の震源要素更新のお知らせ',
-    Foreign: '遠地地震',
-    Other: 'その他',
+    '震度速報': '震度速報',
+    '震源情報': '震源情報',
+    '震源・震度情報': '震源・震度情報',
+    '各地の震度情報': '各地の震度情報',
+    '顕著な地震の震源要素更新のお知らせ': '顕著な地震の震源要素更新のお知らせ',
+    '遠地地震': '遠地地震',
+    'その他': 'その他',
   }
   return map[type] ?? type
 }
 
 export function formatCorrectType(type: CorrectType): string {
   const map: Record<CorrectType, string> = {
-    None: '',
-    Unknown: '訂正（内容不明）',
-    ScaleOnly: '震度を訂正',
-    DestinationOnly: '震源を訂正',
-    ScaleAndDestination: '震度・震源を訂正',
+    'なし': '',
+    '訂正': '訂正（内容不明）',
+    '震度のみ訂正': '震度を訂正',
+    '震源を訂正': '震源を訂正',
+    '震度・震源を訂正': '震度・震源を訂正',
   }
   return map[type] ?? ''
 }

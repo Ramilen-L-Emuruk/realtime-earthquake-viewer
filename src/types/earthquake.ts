@@ -16,32 +16,32 @@ export interface EarthquakePoint {
 }
 
 export type IssueType =
-  | 'ScalePrompt'
-  | 'Destination'
-  | 'ScaleAndDestination'
-  | 'DetailScale'
-  | 'DestinationAmended'
-  | 'Foreign'
-  | 'Other'
+  | '震度速報'
+  | '震源情報'
+  | '震源・震度情報'
+  | '各地の震度情報'
+  | '顕著な地震の震源要素更新のお知らせ'
+  | '遠地地震'
+  | 'その他'
 
 export type CorrectType =
-  | 'None'
-  | 'Unknown'
-  | 'ScaleOnly'
-  | 'DestinationOnly'
-  | 'ScaleAndDestination'
+  | 'なし'
+  | '訂正'
+  | '震度のみ訂正'
+  | '震源を訂正'
+  | '震度・震源を訂正'
 
 export type DomesticTsunami =
-  | 'None'
-  | 'Unknown'
-  | 'Checking'
-  | 'SeaFloor'
-  | 'NonEffective'
-  | 'Watch'
-  | 'Warning'
+  | 'なし'
+  | '不明'
+  | '調査中'
+  | '海面変動の可能性'
+  | '若干の海面変動'
+  | '注意報'
+  | '警報等'
 
 export interface JMAQuake {
-  code: 551
+  kind: 'quake'
   id: string
   eventId?: string
   time: string
@@ -58,7 +58,6 @@ export interface JMAQuake {
     hypocenter: Hypocenter
     maxScale: IntensityScale
     domesticTsunami: DomesticTsunami
-    foreignTsunami: string
   }
   points: EarthquakePoint[]
 }
@@ -105,7 +104,7 @@ export interface TsunamiObservation {
 }
 
 export interface JMATsunami {
-  code: 552
+  kind: 'tsunami'
   id: string
   eventId?: string
   time: string
@@ -133,14 +132,6 @@ export interface JMATsunami {
   observations?: TsunamiObservation[]
 }
 
-export interface EarthquakeDetection {
-  code: 554
-  id: string
-  time: string
-  area: string
-  scale: number
-}
-
 export interface EEWRegion {
   pref: string
   name: string
@@ -152,7 +143,7 @@ export interface EEWRegion {
 }
 
 export interface EEWAlert {
-  code: 556
+  kind: 'eew'
   id: string
   time: string
   test: boolean
@@ -208,7 +199,7 @@ export interface JMALpgm {
   regions?: LpgmRegion[]  // 一次細分区域別最大階級
 }
 
-export type P2PQuakeEvent = JMAQuake | JMATsunami | EarthquakeDetection | EEWAlert
+export type AppEvent = JMAQuake | JMATsunami | EEWAlert
 
 // 南海トラフ地震臨時情報 (VYSE50/51/52)
 export interface JMANankai {
@@ -244,7 +235,7 @@ export interface TelegramLogEntry {
   headType: string
   isTest: boolean
   status: 'parsed' | 'filtered' | 'error'
-  kind?: 'eew' | 'quake' | 'tsunami' | 'lpgm' | 'detection' | 'nankai' | 'kohatsu'
+  kind?: 'eew' | 'quake' | 'tsunami' | 'lpgm' | 'nankai' | 'kohatsu'
   rawHead?: unknown
   rawBody: unknown
   errorMessage?: string
