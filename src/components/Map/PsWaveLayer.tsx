@@ -5,6 +5,11 @@ import type { PsWaveCircle } from '../../services/kyoshin'
 import { computeSWaveRadiusAtTime, computeSWaveTravelTimeSec } from '../../hooks/useDmdssWaves'
 import { calcShakingDurationSec, S_WAVE_FALLBACK_KM_PER_SEC } from '../../utils/eew'
 
+// 後端フェードの幅[km]（固定）。sPx全体に対する割合にすると、後端境界が
+// 円の中心付近にある間はフェード帯が円の大半を覆ってしまい、境界出現時に
+// 急に穴が空いたように見えるため、常に一定幅でなめらかに遷移させる。
+const TRAILING_EDGE_FADE_KM = 15
+
 export function PsWaveLayer({ psWave }: { psWave: PsWaveCircle[] }) {
   const map = useMap()
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -44,7 +49,7 @@ export function PsWaveLayer({ psWave }: { psWave: PsWaveCircle[] }) {
         const cosLat = Math.cos(c.lat * Math.PI / 180)
 
         if (c.sRadius > 0) {
-          const durationSec = calcShakingDurationSec(c.magnitude)
+          const durationSec = calcShakingDurationSec(c.magnitude, c.sRadius)
           let sInnerRadiusKm = 0
 
           if (c.depth !== undefined) {
@@ -66,13 +71,17 @@ export function PsWaveLayer({ psWave }: { psWave: PsWaveCircle[] }) {
           ctx.lineWidth = 2
 
           if (sInnerRadiusKm > 0 && sInnerRadiusKm < c.sRadius) {
-            // 後端（揺れ継続時間を過ぎた領域）を透明にフェードさせる
+            // 後端（揺れ継続時間を過ぎた領域）を透明にフェードさせる。
+            // フェード帯は innerPx から固定幅(TRAILING_EDGE_FADE_KM)分だけ外側までとし、
+            // それより外は不透明（Canvasのグラデーションはstop 1.0以降を最終色で塗る）。
             const lonOffsetInner = (sInnerRadiusKm * 1000) / (111320 * cosLat)
             const edgeInner = map.latLngToContainerPoint(L.latLng(c.lat, c.lng + lonOffsetInner))
             const innerPx = Math.abs(edgeInner.x - center.x)
-            const gradient = ctx.createRadialGradient(center.x, center.y, innerPx, center.x, center.y, sPx)
+            const lonOffsetFadeOuter = ((sInnerRadiusKm + TRAILING_EDGE_FADE_KM) * 1000) / (111320 * cosLat)
+            const edgeFadeOuter = map.latLngToContainerPoint(L.latLng(c.lat, c.lng + lonOffsetFadeOuter))
+            const fadeOuterPx = Math.min(Math.abs(edgeFadeOuter.x - center.x), sPx)
+            const gradient = ctx.createRadialGradient(center.x, center.y, innerPx, center.x, center.y, fadeOuterPx)
             gradient.addColorStop(0, 'rgba(255, 60, 0, 0)')
-            gradient.addColorStop(0.5, 'rgba(255, 60, 0, 0.12)')
             gradient.addColorStop(1, 'rgba(255, 60, 0, 0.12)')
             ctx.fillStyle = gradient
           } else {
