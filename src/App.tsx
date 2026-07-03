@@ -23,7 +23,7 @@ import { speakWithVoicevox } from './utils/voicevox'
 import { loadTtsReadingDict } from './utils/ttsReadingDict'
 import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, nankaiToText, kohatsuToText, lpgmToText } from './utils/ttsText'
 import { kyoshinIndexToLabel } from './utils/kyoshinIntensity'
-import type { P2PQuakeEvent, EEWAlert } from './types/earthquake'
+import type { AppEvent, EEWAlert } from './types/earthquake'
 import { fetchDmdataReplayEvents, filterPreWindowEvents, clearReplayCache } from './services/dmdataReplay'
 
 // 平常時のウィンドウタイトル（index.html の <title> と一致させる）。
@@ -187,7 +187,7 @@ export function App() {
     setActiveTab('realtime')
   }
 
-  const handleLiveEvent = (event: P2PQuakeEvent) => {
+  const handleLiveEvent = (event: AppEvent) => {
     // 受信時に該当タブを自動表示し、ウィンドウタイトルを更新する
     // （地震情報・津波情報・緊急地震速報）。
     // isNewQuake は UI ブロックと TTS ブロックの両方で参照するためここで宣言する
