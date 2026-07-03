@@ -937,9 +937,11 @@ export function App() {
     resetState()
     lastNewQuakeTimeRef.current = null
     activeEEWLevelsRef.current.clear()
+    activeEEWScalesRef.current.clear()
     activeEEWAnnouncedHypocentersRef.current.clear()
     lastTsunamiGradeRef.current = null
     lastMaxObsHeightRef.current.clear()
+    seenLpgmEventIdsRef.current.clear()
     clearReplayCache()
     setReplayTimeOffset(offset)
     prefetchEndRef.current = toTime
