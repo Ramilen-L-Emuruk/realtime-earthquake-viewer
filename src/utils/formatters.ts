@@ -11,6 +11,16 @@ export function formatDateTime(isoString: string): string {
   return `${y}/${M}/${d} ${h}:${m}:${s}`
 }
 
+export function formatDateTimeMin(isoString: string): string {
+  const date = new Date(isoString)
+  const y = date.getFullYear()
+  const M = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  const h = String(date.getHours()).padStart(2, '0')
+  const m = String(date.getMinutes()).padStart(2, '0')
+  return `${y}/${M}/${d} ${h}:${m}`
+}
+
 /**
  * 地震の発生時刻。元データに秒が含まれないため、秒を出さず「ごろ」を付ける。
  * 例: 6月6日 8:47ごろ
