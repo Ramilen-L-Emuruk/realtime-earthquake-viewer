@@ -117,6 +117,8 @@ export function App() {
   const [selectedQuakeId, setSelectedQuakeId] = useState<string | null>(null)
   const [focusedObsName, setFocusedObsName] = useState<{ name: string; ts: number } | null>(null)
   const [focusedDistrict, setFocusedDistrict] = useState<{ code?: string; name?: string; ts: number } | null>(null)
+  const [obsUpdateStatus, setObsUpdateStatus] = useState<Map<string, 'new' | 'updated'>>(() => new Map())
+  const obsStatusClearTimerRef = useRef<number>(0)
   const [activeLpgmEventId, setActiveLpgmEventId] = useState<string | null>(null)
   const [activeLpgmSource, setActiveLpgmSource] = useState<'earthquake' | 'eew' | null>(null)
   // 地震カード切替時は LPGM 表示をリセットする
@@ -245,6 +247,8 @@ export function App() {
       }
       lastTsunamiGradeRef.current = null
       lastMaxObsHeightRef.current.clear()
+      window.clearTimeout(obsStatusClearTimerRef.current)
+      setObsUpdateStatus(new Map())
     } else if (event.code === 556) {
       if (event.test) return
 
@@ -576,18 +580,10 @@ export function App() {
           })
           if (updatedObs.length > 0) {
             ttsText = tsunamiObservationUpdateToText(updatedObs, event.headline)
-            const topObs = updatedObs.reduce((a, b) => (b.height!.value > a.height!.value ? b : a))
-            setFocusedDistrict({ code: topObs.districtCode, name: topObs.districtName, ts: Date.now() })
           }
         } else {
           const isDowngrade = prevGrade !== null && GRADE_RANK[currentGrade as GradeKey] < GRADE_RANK[prevGrade as GradeKey]
           ttsText = isDowngrade ? tsunamiDowngradeToText(event) : tsunamiToText(event)
-          // 初回発表・グレード変化時も観測点があればスクロール対象をセット
-          const obsWithHeight = (event.observations ?? []).filter(o => !!o.height)
-          if (obsWithHeight.length > 0) {
-            const topObs = obsWithHeight.reduce((a, b) => (b.height!.value > a.height!.value ? b : a))
-            setFocusedDistrict({ code: topObs.districtCode, name: topObs.districtName, ts: Date.now() })
-          }
         }
       }
       if (ttsText && type) {
@@ -597,11 +593,52 @@ export function App() {
         }, delay)
       }
     }
-    // grade・観測波高トラッキング: voicevox 有効/無効に関わらず次回電文の判定に使用する。
+    // grade・観測波高トラッキング・UI更新: voicevox 有効/無効に関わらず実行する。
     // Unknown（観測のみ電文など areas=[] のケース）はグレード追跡を維持する。
     if (event.code === 552 && !event.cancelled) {
       const grade = tsunamiMaxGrade(event)
+      const prevGrade552 = lastTsunamiGradeRef.current
       if (grade !== 'Unknown') lastTsunamiGradeRef.current = grade
+
+      // obsUpdateStatus・focusedDistrict の更新（lastMaxObsHeightRef 更新前に判定する）
+      const GRADE_RANK_552 = { MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0 } as const
+      type GradeKey552 = keyof typeof GRADE_RANK_552
+      const prevMap552 = lastMaxObsHeightRef.current
+      const newStatusEntries: [string, 'new' | 'updated'][] = []
+
+      if (prevGrade552 !== null && GRADE_RANK_552[grade as GradeKey552] === GRADE_RANK_552[prevGrade552 as GradeKey552]) {
+        const updatedObs552 = (event.observations ?? []).filter(o => {
+          if (!o.height) return false
+          const prev = prevMap552.get(o.name)
+          if (prev === undefined) return true
+          if (o.height.value > prev.value) return true
+          if (o.height.over && !prev.over && o.height.value >= prev.value) return true
+          return false
+        })
+        if (updatedObs552.length > 0) {
+          const topObs = updatedObs552.reduce((a, b) => (b.height!.value > a.height!.value ? b : a))
+          setFocusedDistrict({ code: topObs.districtCode, name: topObs.districtName, ts: Date.now() })
+          for (const o of updatedObs552) newStatusEntries.push([o.name, prevMap552.has(o.name) ? 'updated' : 'new'])
+        }
+      } else {
+        const obsWithHeight552 = (event.observations ?? []).filter(o => !!o.height)
+        if (obsWithHeight552.length > 0) {
+          const topObs = obsWithHeight552.reduce((a, b) => (b.height!.value > a.height!.value ? b : a))
+          setFocusedDistrict({ code: topObs.districtCode, name: topObs.districtName, ts: Date.now() })
+          for (const o of obsWithHeight552) newStatusEntries.push([o.name, 'new'])
+        }
+      }
+
+      if (newStatusEntries.length > 0) {
+        setObsUpdateStatus(prev => {
+          const next = new Map(prev)
+          for (const [name, status] of newStatusEntries) next.set(name, status)
+          return next
+        })
+        window.clearTimeout(obsStatusClearTimerRef.current)
+        obsStatusClearTimerRef.current = window.setTimeout(() => setObsUpdateStatus(new Map()), 60000)
+      }
+
       for (const o of event.observations ?? []) {
         if (!o.height) continue
         const prev = lastMaxObsHeightRef.current.get(o.name)
@@ -1241,6 +1278,7 @@ export function App() {
               }}
               onObservationClick={(name) => setFocusedObsName({ name, ts: Date.now() })}
               focusedDistrict={focusedDistrict}
+              obsUpdateStatus={obsUpdateStatus}
             />
           </div>
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'telegrams' ? ' invisible pointer-events-none' : ''}`}>
