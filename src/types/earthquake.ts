@@ -16,13 +16,13 @@ export interface EarthquakePoint {
 }
 
 export type IssueType =
-  | 'ScalePrompt'
-  | 'Destination'
-  | 'ScaleAndDestination'
-  | 'DetailScale'
-  | 'DestinationAmended'
-  | 'Foreign'
-  | 'Other'
+  | '震度速報'
+  | '震源情報'
+  | '震源・震度情報'
+  | '各地の震度情報'
+  | '顕著な地震の震源要素更新のお知らせ'
+  | '遠地地震'
+  | 'その他'
 
 export type CorrectType =
   | 'None'

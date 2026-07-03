@@ -155,10 +155,10 @@ export function parseEEW(headType: string, data: Record<string, unknown>): EEWAl
 }
 
 const VXSE_ISSUE_TYPE: Record<string, IssueType> = {
-  VXSE51: 'ScalePrompt',
-  VXSE52: 'Destination',
-  VXSE53: 'ScaleAndDestination',
-  VXSE61: 'DestinationAmended',
+  VXSE51: '震度速報',
+  VXSE52: '震源情報',
+  VXSE53: '震源・震度情報',
+  VXSE61: '顕著な地震の震源要素更新のお知らせ',
 }
 
 // VXSE51/53 JSON 電文（earthquake-information v1.1.0）の body.intensity から震度データを取り出す。
@@ -235,7 +235,7 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
     const eventId = str(data.eventId)
     const serial = str(data.serialNo ?? data.serial ?? '1')
     const reportTime = str(data.reportDateTime ?? data.pressDateTime)
-    const issueType: IssueType = VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination'
+    const issueType: IssueType = VXSE_ISSUE_TYPE[headType] ?? '震源・震度情報'
     return {
       kind: 'quake',
       id: `dmdata-quake-${eventId}-${serial}`,
@@ -280,8 +280,8 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
   // 遠地地震は data.title === '遠地地震に関する情報' で判定する（data.body.type には存在しない）。
   // VXSE_ISSUE_TYPE では VXSE53 が ScaleAndDestination だが、遠地地震は Foreign で統一する。
   const issueType: IssueType = str(data.title) === '遠地地震に関する情報'
-    ? 'Foreign'
-    : (VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination')
+    ? '遠地地震'
+    : (VXSE_ISSUE_TYPE[headType] ?? '震源・震度情報')
 
   return {
     kind: 'quake',
@@ -350,7 +350,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
 
   // 取消電文（InfoType === '取消'）: Earthquake 要素が存在しないため早期リターン
   if (infoType === '取消') {
-    const issueType: IssueType = VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination'
+    const issueType: IssueType = VXSE_ISSUE_TYPE[headType] ?? '震源・震度情報'
     return {
       kind: 'quake',
       id: `dmdata-xml-quake-${eventId}-${serial}`,
@@ -412,8 +412,8 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   const headInfoEl = xmlQ(doc, 'Head')
   const titleText = headInfoEl ? xmlText(xmlQ(headInfoEl, 'Title')) : ''
   const issueType: IssueType = titleText === '遠地地震に関する情報'
-    ? 'Foreign'
-    : (VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination')
+    ? '遠地地震'
+    : (VXSE_ISSUE_TYPE[headType] ?? '震源・震度情報')
   const correct: CorrectType = infoType === '訂正' ? 'Unknown' : 'None'
 
   // ForecastComment > Code（スペース区切り複数コード）から domesticTsunami を導出

@@ -211,7 +211,7 @@ export function App() {
       // eventId（quake.id から抽出）で同一イベントを判定する。id がない場合は earthquake.time で比較。
       const quakeId = (event as import('./types/earthquake').JMAQuake).id
       const eventIdPart = quakeId?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
-      // issue.type を含めて種別ごとに独立判定（ScalePrompt/Destination/ScaleAndDestination 等が別報のため）
+      // issue.type を含めて種別ごとに独立判定（震度速報/震源情報/震源・震度情報 等が別報のため）
       const incomingKey = eventIdPart
         ? `${eventIdPart}:${event.issue.type}`
         : event.earthquake.time
@@ -538,9 +538,9 @@ export function App() {
       }
     } else if (event.kind === 'quake' && !event.cancelled) {
       const it = event.issue.type
-      type = it === 'ScalePrompt'                                        ? 'earthquakePrompt'
-           : (it === 'Destination' || it === 'Foreign' || it === 'Other') ? 'earthquakeInfo'
-           : 'earthquake'  // ScaleAndDestination / DetailScale
+      type = it === '震度速報'                                                          ? 'earthquakePrompt'
+           : (it === '震源情報' || it === '遠地地震' || it === 'その他') ? 'earthquakeInfo'
+           : 'earthquake'  // 震源・震度情報 / 各地の震度情報
     }
     if (!type) return
     playAlertSound(type)

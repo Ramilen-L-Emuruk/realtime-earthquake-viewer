@@ -25,13 +25,13 @@ const LOAD_MORE_BATCH = 50        // 「もっと見る」1回あたりの取得
 const MAX_TELEGRAM_LOG = 200      // 電文ログの最大保持件数
 
 const ISSUE_PRIORITY: Record<string, number> = {
-  DetailScale: 4,
-  ScaleAndDestination: 3,
-  Destination: 2,
-  ScalePrompt: 1,
-  DestinationAmended: 5,
-  Foreign: 0,
-  Other: 0,
+  '各地の震度情報': 4,
+  '震源・震度情報': 3,
+  '震源情報': 2,
+  '震度速報': 1,
+  '顕著な地震の震源要素更新のお知らせ': 5,
+  '遠地地震': 0,
+  'その他': 0,
 }
 
 const sortQuakes = (arr: JMAQuake[]): JMAQuake[] =>
@@ -235,7 +235,7 @@ export function useEarthquakes(
       // DMDATA は ID 埋め込みのタイムスタンプをキーに使う（通常版は earthquake.time）
       const cacheKey = m ? m[1] : quake.earthquake.time
       // VXSE51 の震度データをキャッシュ（後続 VXSE52 への補完用）
-      if (quake.issue.type === 'ScalePrompt' && quake.earthquake.maxScale >= 0) {
+      if (quake.issue.type === '震度速報' && quake.earthquake.maxScale >= 0) {
         quakeIntensityCacheRef.current.set(cacheKey, {
           maxScale: quake.earthquake.maxScale,
           points: quake.points,
@@ -318,8 +318,8 @@ export function useEarthquakes(
           }
           const existing = prev.earthquakes.find(isSameEntry)
 
-          // VXSE61（DestinationAmended）: points を失わないよう震源フィールドのみをマージ
-          if (quake.issue.type === 'DestinationAmended') {
+          // VXSE61（顕著な地震の震源要素更新のお知らせ）: points を失わないよう震源フィールドのみをマージ
+          if (quake.issue.type === '顕著な地震の震源要素更新のお知らせ') {
             if (existing) {
               const merged: JMAQuake = {
                 ...existing,
