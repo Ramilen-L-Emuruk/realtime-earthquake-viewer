@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, EEWRegion, IntensityScale, EarthquakePoint, P2PQuakeEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, EEWRegion, IntensityScale, EarthquakePoint, AppEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataKohatsu } from '../services/dmdata'
 import { loadStationCoords, buildAreaPrefIndex } from '../utils/stationCoords'
@@ -25,13 +25,13 @@ const LOAD_MORE_BATCH = 50        // 「もっと見る」1回あたりの取得
 const MAX_TELEGRAM_LOG = 200      // 電文ログの最大保持件数
 
 const ISSUE_PRIORITY: Record<string, number> = {
-  DetailScale: 4,
-  ScaleAndDestination: 3,
-  Destination: 2,
-  ScalePrompt: 1,
-  DestinationAmended: 5,
-  Foreign: 0,
-  Other: 0,
+  '各地の震度情報': 4,
+  '震源・震度情報': 3,
+  '震源情報': 2,
+  '震度速報': 1,
+  '顕著な地震の震源要素更新のお知らせ': 5,
+  '遠地地震': 0,
+  'その他': 0,
 }
 
 const sortQuakes = (arr: JMAQuake[]): JMAQuake[] =>
@@ -40,7 +40,7 @@ const sortQuakes = (arr: JMAQuake[]): JMAQuake[] =>
   )
 
 type QueuePayload =
-  | { kind: 'p2p'; event: P2PQuakeEvent }
+  | { kind: 'event'; event: AppEvent }
   | { kind: 'lpgm'; data: JMALpgm }
   | { kind: 'nankai'; data: JMANankai }
   | { kind: 'kohatsu'; data: JMAKohatsu }
@@ -79,7 +79,7 @@ function runSimulateTsunami(
   createFn: () => JMATsunami,
   cancelMs: number,
   ref: TestTsunamiRef,
-  handleEvent: (event: P2PQuakeEvent) => void,
+  handleEvent: (event: AppEvent) => void,
 ) {
   if (ref.current) window.clearTimeout(ref.current.cancelTimer)
   const tsunami = createFn()
@@ -96,7 +96,7 @@ function runSimulateEEW(
   createFn: (eventId: string, serial: number) => EEWAlert,
   cancelMs: number,
   timers: Map<TestEEWKind, TestEEWEntry>,
-  handleEvent: (event: P2PQuakeEvent) => void,
+  handleEvent: (event: AppEvent) => void,
 ) {
   const prev = timers.get(kind)
   const isContinuation = prev !== undefined
@@ -129,7 +129,7 @@ export interface EarthquakeState {
 }
 
 export function useEarthquakes(
-  onLiveEvent?: (event: P2PQuakeEvent) => void,
+  onLiveEvent?: (event: AppEvent) => void,
   dmdataApiKey = '',
   dmdataTestDelivery = false,
   replayTimeOffset: number | null = null,
@@ -188,7 +188,7 @@ export function useEarthquakes(
   const dmdataCursorRef = useRef<string | undefined>(undefined)
   const dmdataApiKeyRef = useRef(dmdataApiKey)
   dmdataApiKeyRef.current = dmdataApiKey
-  // P2PQuake 版「もっと見る」用の生 API 取得件数（重複除去後の earthquakes.length とは別管理）
+  // 通常版「もっと見る」用の生 API 取得件数（重複除去後の earthquakes.length とは別管理）
   // offset = earthquakes.length だと重複除去ズレで古いデータが抜け落ちるため、API 呼び出し回数ベースで管理する
   const p2pRawOffsetRef = useRef(0)
 
@@ -204,38 +204,38 @@ export function useEarthquakes(
 
   // WebSocket 受信時のエントリポイント: event.time を基準にキューへ挿入する
   // live モードでは event.time ≈ now なので次のティック（最大 100ms 後）に即時発火する
-  const enqueueEvent = useCallback((event: P2PQuakeEvent, overrideTime?: Date) => {
+  const enqueueEvent = useCallback((event: AppEvent, overrideTime?: Date) => {
     const t = overrideTime ?? new Date((event as { time?: string }).time ?? Date.now())
-    insertSorted(eventQueueRef.current, { eventTime: t, payload: { kind: 'p2p', event } })
+    insertSorted(eventQueueRef.current, { eventTime: t, payload: { kind: 'event', event } })
   }, [])
 
   // リプレイ時は差し替えることで再生時刻基準のディスパッチに切り替える
   const getTimeRef = useRef<() => Date>(() => new Date())
 
-  const handleEvent = useCallback((event: P2PQuakeEvent) => {
+  const handleEvent = useCallback((event: AppEvent) => {
     // ライブ受信／テスト送信のイベントを通知（サイレントモード中は抑制）
     if (!isSilentRef.current) onLiveEventRef.current?.(event)
 
     // 556（EEW）: 最終報受信時、解除時刻にキャンセルイベントをキューへ挿入する
-    if (event.code === 556) {
+    if (event.kind === 'eew') {
       const eew = event as EEWAlert
       if (!eew.cancelled && !eew.test && eew.isFinal) {
         const cancelTime = calcEEWCancelTime(eew, new Date(eew.time))
         insertSorted(eventQueueRef.current, {
           eventTime: cancelTime,
-          payload: { kind: 'p2p', event: { ...eew, cancelled: true, expired: true } as P2PQuakeEvent },
+          payload: { kind: 'event', event: { ...eew, cancelled: true, expired: true } as AppEvent },
         })
       }
     }
 
     // 地震情報（551）の震度キャッシュ更新は setState の外で行う
-    if (event.code === 551) {
+    if (event.kind === 'quake') {
       const quake = event as JMAQuake
       const m = quake.id?.match(/^dmdata-quake-(\d{14})-/)
-      // DMDATA は ID 埋め込みのタイムスタンプをキーに使う（P2PQuake 版は earthquake.time）
+      // DMDATA は ID 埋め込みのタイムスタンプをキーに使う（通常版は earthquake.time）
       const cacheKey = m ? m[1] : quake.earthquake.time
       // VXSE51 の震度データをキャッシュ（後続 VXSE52 への補完用）
-      if (quake.issue.type === 'ScalePrompt' && quake.earthquake.maxScale >= 0) {
+      if (quake.issue.type === '震度速報' && quake.earthquake.maxScale >= 0) {
         quakeIntensityCacheRef.current.set(cacheKey, {
           maxScale: quake.earthquake.maxScale,
           points: quake.points,
@@ -245,14 +245,14 @@ export function useEarthquakes(
 
     // 552（津波）: ValidDateTime あり → 期限切れ時刻にキャンセルイベントをキューへ挿入する
     // 後続の新しい津波電文が来た場合、旧キャンセルが発火してもステート側でidチェックにより無視される
-    if (event.code === 552) {
+    if (event.kind === 'tsunami') {
       const tsunami = event as JMATsunami
       if (!tsunami.cancelled && tsunami.validDateTime) {
         const expireTime = new Date(tsunami.validDateTime)
         if (expireTime > getTimeRef.current()) {
           insertSorted(eventQueueRef.current, {
             eventTime: expireTime,
-            payload: { kind: 'p2p', event: { ...tsunami, cancelled: true, expired: true } as P2PQuakeEvent },
+            payload: { kind: 'event', event: { ...tsunami, cancelled: true, expired: true } as AppEvent },
           })
         }
       }
@@ -260,8 +260,8 @@ export function useEarthquakes(
 
     setState(prev => {
       const now = getTimeRef.current()
-      switch (event.code) {
-        case 551: {
+      switch (event.kind) {
+        case 'quake': {
           let quake = event as JMAQuake
 
           // 取消電文: 同一 eventId のカードに cancelledAt を付け、10秒後に purge する
@@ -291,7 +291,7 @@ export function useEarthquakes(
 
           const m = quake.id?.match(/^dmdata-quake-(\d{14})-/)
           const eventId = m?.[1]
-          // DMDATA は ID 埋め込みのタイムスタンプをキーに使う（P2PQuake 版は earthquake.time）
+          // DMDATA は ID 埋め込みのタイムスタンプをキーに使う（通常版は earthquake.time）
           const cacheKey = eventId ?? quake.earthquake.time
 
           // VXSE52/53: 震度がない場合に VXSE51 キャッシュから maxScale・points を補完する
@@ -318,8 +318,8 @@ export function useEarthquakes(
           }
           const existing = prev.earthquakes.find(isSameEntry)
 
-          // VXSE61（DestinationAmended）: points を失わないよう震源フィールドのみをマージ
-          if (quake.issue.type === 'DestinationAmended') {
+          // VXSE61（顕著な地震の震源要素更新のお知らせ）: points を失わないよう震源フィールドのみをマージ
+          if (quake.issue.type === '顕著な地震の震源要素更新のお知らせ') {
             if (existing) {
               const merged: JMAQuake = {
                 ...existing,
@@ -328,7 +328,7 @@ export function useEarthquakes(
                 earthquake: {
                   ...existing.earthquake,
                   hypocenter: quake.earthquake.hypocenter,
-                  domesticTsunami: quake.earthquake.domesticTsunami !== 'Unknown'
+                  domesticTsunami: quake.earthquake.domesticTsunami !== '不明'
                     ? quake.earthquake.domesticTsunami
                     : existing.earthquake.domesticTsunami,
                 },
@@ -352,7 +352,7 @@ export function useEarthquakes(
           ])
           return { ...prev, earthquakes, lastUpdate: now }
         }
-        case 552: {
+        case 'tsunami': {
           const tsunami = event as JMATsunami
           if (tsunami.cancelled) {
             // eventId が一致するものだけ解除する（serialNo が異なっても同一イベントを解除できるよう id 全体ではなく eventId で照合）
@@ -394,7 +394,7 @@ export function useEarthquakes(
           }
           return { ...prev, tsunamis: [tsunami], lastUpdate: now }
         }
-        case 556: {
+        case 'eew': {
           const eew = event as EEWAlert
           const key = eew.issue?.eventId ?? eew.id
           if (eew.test) {
@@ -447,7 +447,7 @@ export function useEarthquakes(
       while (q.length > 0 && q[0].eventTime <= now) {
         const { payload, silent } = q.shift()!
         isSilentRef.current = !!silent
-        if (payload.kind === 'p2p') {
+        if (payload.kind === 'event') {
           handleEvent(payload.event)
         } else if (payload.kind === 'lpgm') {
           const lpgm = payload.data
@@ -458,12 +458,12 @@ export function useEarthquakes(
             return { ...prev, lpgmByEventId: next }
           })
           if (!silent && !lpgm.cancelled && lpgm.maxClass >= 1) {
-            onLiveEventRef.current?.({ kind: 'lpgm', data: lpgm } as unknown as P2PQuakeEvent)
+            onLiveEventRef.current?.({ kind: 'lpgm', data: lpgm } as unknown as AppEvent)
           }
         } else if (payload.kind === 'nankai') {
           const nankai = payload.data
           setState(prev => ({ ...prev, nankai: nankai.cancelled ? null : nankai }))
-          if (!silent) onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as P2PQuakeEvent)
+          if (!silent) onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as AppEvent)
         } else if (payload.kind === 'purge-cancelled-quake') {
           const { id } = payload
           setState(prev => ({
@@ -502,7 +502,7 @@ export function useEarthquakes(
           } else {
             setState(prev => ({ ...prev, kohatsu: null }))
           }
-          if (!silent) onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as P2PQuakeEvent)
+          if (!silent) onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as AppEvent)
         }
         isSilentRef.current = false
       }
@@ -612,7 +612,7 @@ export function useEarthquakes(
             if (expireTime > new Date()) {
               insertSorted(eventQueueRef.current, {
                 eventTime: expireTime,
-                payload: { kind: 'p2p', event: { ...latestTsunami, cancelled: true } as P2PQuakeEvent },
+                payload: { kind: 'event', event: { ...latestTsunami, cancelled: true } as AppEvent },
               })
             }
           }
@@ -642,12 +642,12 @@ export function useEarthquakes(
             return { ...prev, lpgmByEventId: next }
           })
           if (!lpgm.cancelled && lpgm.maxClass >= 1) {
-            onLiveEventRef.current?.({ kind: 'lpgm', data: lpgm } as unknown as P2PQuakeEvent)
+            onLiveEventRef.current?.({ kind: 'lpgm', data: lpgm } as unknown as AppEvent)
           }
         } else if (ev.kind === 'nankai') {
           const nankai = ev.data
           setState(prev => ({ ...prev, nankai: nankai.cancelled ? null : nankai }))
-          onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as P2PQuakeEvent)
+          onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as AppEvent)
         } else if (ev.kind === 'kohatsu') {
           const kohatsu = ev.data
           if (kohatsuExpireTimerRef.current !== undefined) {
@@ -666,10 +666,10 @@ export function useEarthquakes(
           } else {
             setState(prev => ({ ...prev, kohatsu: null }))
           }
-          onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as P2PQuakeEvent)
+          onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as AppEvent)
         } else {
           const data = ev.data
-          const enriched = data.code === 556 ? enrichEEWPref(data as EEWAlert, areaPrefIndex) : data
+          const enriched = data.kind === 'eew' ? enrichEEWPref(data as EEWAlert, areaPrefIndex) : data
           enqueueEvent(enriched)
         }
       }
@@ -724,7 +724,7 @@ export function useEarthquakes(
           if (expireTime > new Date()) {
             insertSorted(eventQueueRef.current, {
               eventTime: expireTime,
-              payload: { kind: 'p2p', event: { ...latestTsunami, cancelled: true } as P2PQuakeEvent },
+              payload: { kind: 'event', event: { ...latestTsunami, cancelled: true } as AppEvent },
             })
           }
         }
@@ -739,8 +739,8 @@ export function useEarthquakes(
     wsRef.current = ws
     // P2PQuake WS の EEW（VXSE43/45 相当・内部 code=556）は areas 補完のみに使用し、音・タブ切替は発火させない。
     // Yahoo hypoInfo で検出済みの eventId であれば areas を注入、未知なら全処理（フォールバック）。
-    ws.onEvent = (event: P2PQuakeEvent) => {
-      if (event.code === 556) {
+    ws.onEvent = (event: AppEvent) => {
+      if (event.kind === 'eew') {
         if (event.test) return
         const eew = event as EEWAlert
         const key = eew.issue?.eventId ?? eew.id
@@ -891,7 +891,7 @@ export function useEarthquakes(
   const simulateNankai = useCallback((kindName: '調査中' | '巨大地震注意' | '巨大地震警戒') => {
     const nankai = createTestNankai(kindName)
     setState(prev => ({ ...prev, nankai }))
-    onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as P2PQuakeEvent)
+    onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as AppEvent)
   }, [])
 
   const simulateKohatsu = useCallback(() => {
@@ -905,7 +905,7 @@ export function useEarthquakes(
       }, expireMs)
     }
     setState(prev => ({ ...prev, kohatsu }))
-    onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as P2PQuakeEvent)
+    onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as AppEvent)
   }, [])
 
   const resetState = useCallback(() => {

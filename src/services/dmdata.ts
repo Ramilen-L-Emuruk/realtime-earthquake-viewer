@@ -438,8 +438,8 @@ async function fetchOneTelegram(
 
 // 地震情報の優先度（高いほど優先）。useEarthquakes.ts の ISSUE_PRIORITY と同じ値。
 const QUAKE_ISSUE_PRIORITY: Record<string, number> = {
-  DestinationAmended: 5, DetailScale: 4, ScaleAndDestination: 3,
-  Destination: 2, ScalePrompt: 1, Foreign: 0, Other: 0,
+  '顕著な地震の震源要素更新のお知らせ': 5, '各地の震度情報': 4, '震源・震度情報': 3,
+  '震源情報': 2, '震度速報': 1, '遠地地震': 0, 'その他': 0,
 }
 
 // 電文 ID から eventId（14桁タイムスタンプ）を抽出する。
@@ -516,7 +516,7 @@ export async function fetchDmdataEarthquakes(
     results
       .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | JMALpgm | null> => r.status === 'fulfilled')
       .map(r => r.value)
-      .filter((v): v is JMAQuake => v !== null && 'code' in v && v.code === 551)
+      .filter((v): v is JMAQuake => v !== null && 'kind' in v && v.kind === 'quake')
 
   const parsed53 = toQuakes(allResults.slice(0, boundary53))
   const parsed51 = toQuakes(allResults.slice(boundary53, boundary51))
@@ -552,7 +552,7 @@ export async function fetchDmdataEarthquakes(
 
   // VXSE61（顕著な地震震源要素更新）: cutoffTime 内のものを対応エントリに震源マージ、なければ単独カードとして追加
   for (const amended of parsed61.filter(withinCutoff)) {
-    if (amended.issue.type !== 'DestinationAmended') continue
+    if (amended.issue.type !== '顕著な地震の震源要素更新のお知らせ') continue
     const amendedEid = extractQuakeEventId(amended)
     const idx = quakes.findIndex(q =>
       amendedEid ? extractQuakeEventId(q) === amendedEid : q.earthquake.time === amended.earthquake.time,
@@ -614,7 +614,7 @@ export async function fetchDmdataTsunamis(
   return results
     .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | JMALpgm | null> => r.status === 'fulfilled')
     .map(r => r.value)
-    .filter((v): v is JMATsunami => v !== null && 'code' in (v as object) && (v as JMATsunami).code === 552)
+    .filter((v): v is JMATsunami => v !== null && 'kind' in (v as object) && (v as JMATsunami).kind === 'tsunami')
 }
 
 // DMDATA REST API で南海トラフ地震臨時情報（VYSE50/51）の最新1件を取得する。

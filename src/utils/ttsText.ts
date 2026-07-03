@@ -102,7 +102,7 @@ function depthSourcePhrase(depth: number): string {
   return `深さ${depth}キロメートル`
 }
 
-/** 「震源の深さ〇〇」の〇〇部分を返す（DestinationAmended 系） */
+/** 「震源の深さ〇〇」の〇〇部分を返す（顕著な地震の震源要素更新のお知らせ 系） */
 function depthAmendPhrase(depth: number): string {
   if (depth <= 0) return '震源の深さはごく浅く'
   return `震源の深さ${depth}キロメートル`
@@ -181,13 +181,13 @@ export function eewToText(event: EEWAlert): string {
 
 function domesticTsunamiText(t: DomesticTsunami): string {
   switch (t) {
-    case 'None':        return 'この地震による津波の心配はありません。'
-    case 'NonEffective': return 'この地震による若干の海面変動が予想されますが、被害の心配はありません。'
-    case 'Checking':    return 'この地震による津波の有無を調査中です。'
-    case 'SeaFloor':    return '震源が海底のため、津波が発生するおそれがあります。'
-    case 'Watch':       return '現在津波注意報を発表中です。'
-    case 'Warning':     return '現在津波警報等を発表中です。'
-    case 'Unknown':     return '津波情報は不明です。'
+    case 'なし':           return 'この地震による津波の心配はありません。'
+    case '若干の海面変動':  return 'この地震による若干の海面変動が予想されますが、被害の心配はありません。'
+    case '調査中':         return 'この地震による津波の有無を調査中です。'
+    case '海面変動の可能性': return '震源が海底のため、津波が発生するおそれがあります。'
+    case '注意報':         return '現在津波注意報を発表中です。'
+    case '警報等':         return '現在津波警報等を発表中です。'
+    case '不明':           return '津波情報は不明です。'
   }
 }
 
@@ -196,7 +196,7 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
   const { hypocenter, maxScale, domesticTsunami } = event.earthquake
   const type = event.issue.type
 
-  if (type === 'ScalePrompt') {
+  if (type === '震度速報') {
     const prefix = isNew ? '震度速報。' : '震度速報が更新されました。'
     const regionText = buildRegionText(event.points, maxScale, opts, hypocenter)
     return `${prefix}${regionText || `最大震度${intensityText(maxScale)}を観測しました。`}`
@@ -204,13 +204,13 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
 
   const time = formatTime(event.earthquake.time)
 
-  if (type === 'DestinationAmended') {
+  if (type === '顕著な地震の震源要素更新のお知らせ') {
     let text = `顕著な地震の震源要素更新のお知らせ。${time}頃発生した${hypocenter.name}の地震について、${depthAmendPhrase(hypocenter.depth)}、マグニチュード${magnitudeText(hypocenter.magnitude)}に更新されました。`
     text += domesticTsunamiText(domesticTsunami)
     return text
   }
 
-  if (type === 'Destination' || type === 'Foreign' || type === 'Other') {
+  if (type === '震源情報' || type === '遠地地震' || type === 'その他') {
     const prefix = isNew ? '震源情報。' : '震源情報が更新されました。'
     let text = `${prefix}${time}頃、${hypocenter.name}、${depthSourcePhrase(hypocenter.depth)}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
     text += domesticTsunamiText(domesticTsunami)

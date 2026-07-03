@@ -128,7 +128,7 @@ export function parseEEW(headType: string, data: Record<string, unknown>): EEWAl
   const forecastMaxLpgmClass = (!isCanceled && lpgmClass >= 1 && lpgmClass <= 4) ? lpgmClass : undefined
 
   return {
-    code: 556,
+    kind: 'eew',
     id: `dmdata-eew-${eventId}-${serial}`,
     time: reportTime,
     test: false,
@@ -155,10 +155,10 @@ export function parseEEW(headType: string, data: Record<string, unknown>): EEWAl
 }
 
 const VXSE_ISSUE_TYPE: Record<string, IssueType> = {
-  VXSE51: 'ScalePrompt',
-  VXSE52: 'Destination',
-  VXSE53: 'ScaleAndDestination',
-  VXSE61: 'DestinationAmended',
+  VXSE51: '震度速報',
+  VXSE52: '震源情報',
+  VXSE53: '震源・震度情報',
+  VXSE61: '顕著な地震の震源要素更新のお知らせ',
 }
 
 // VXSE51/53 JSON 電文（earthquake-information v1.1.0）の body.intensity から震度データを取り出す。
@@ -215,15 +215,15 @@ function parseIntensityPoints(intensity: Record<string, unknown>): JMAQuake['poi
 function parseDomesticTsunamiFromComments(comments: Record<string, unknown>): DomesticTsunami {
   const codes = arr(obj(comments.forecast).codes)
   for (const code of codes) {
-    if (code === '0211') return 'Warning'
-    if (code === '0212') return 'NonEffective'
-    if (code === '0213') return 'NonEffective'
-    if (code === '0214') return 'NonEffective'
-    if (code === '0215') return 'None'
-    if (code === '0216') return 'SeaFloor'
-    if (code === '0217') return 'Checking'
+    if (code === '0211') return '警報等'
+    if (code === '0212') return '若干の海面変動'
+    if (code === '0213') return '若干の海面変動'
+    if (code === '0214') return '若干の海面変動'
+    if (code === '0215') return 'なし'
+    if (code === '0216') return '海面変動の可能性'
+    if (code === '0217') return '調査中'
   }
-  return 'Unknown'
+  return '不明'
 }
 
 // 地震情報 (VXSE51/52/53)
@@ -235,14 +235,14 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
     const eventId = str(data.eventId)
     const serial = str(data.serialNo ?? data.serial ?? '1')
     const reportTime = str(data.reportDateTime ?? data.pressDateTime)
-    const issueType: IssueType = VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination'
+    const issueType: IssueType = VXSE_ISSUE_TYPE[headType] ?? '震源・震度情報'
     return {
-      code: 551,
+      kind: 'quake',
       id: `dmdata-quake-${eventId}-${serial}`,
       time: reportTime,
       cancelled: true,
-      issue: { source: str(data.editorialOffice ?? data.publishingOffice), time: reportTime, type: issueType, correct: 'None' as CorrectType },
-      earthquake: { time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 }, maxScale: -1, domesticTsunami: 'Unknown', foreignTsunami: '' },
+      issue: { source: str(data.editorialOffice ?? data.publishingOffice), time: reportTime, type: issueType, correct: 'なし' as CorrectType },
+      earthquake: { time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 }, maxScale: -1, domesticTsunami: '不明' },
       points: [],
     }
   }
@@ -280,11 +280,11 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
   // 遠地地震は data.title === '遠地地震に関する情報' で判定する（data.body.type には存在しない）。
   // VXSE_ISSUE_TYPE では VXSE53 が ScaleAndDestination だが、遠地地震は Foreign で統一する。
   const issueType: IssueType = str(data.title) === '遠地地震に関する情報'
-    ? 'Foreign'
-    : (VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination')
+    ? '遠地地震'
+    : (VXSE_ISSUE_TYPE[headType] ?? '震源・震度情報')
 
   return {
-    code: 551,
+    kind: 'quake',
     id: `dmdata-quake-${eventId}-${str(data.serialNo ?? data.serial ?? '1')}`,
     eventId: eventId || undefined,
     time: str(data.reportDateTime ?? data.pressDateTime),
@@ -292,7 +292,7 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
       source: str(data.editorialOffice ?? data.publishingOffice),
       time: str(data.reportDateTime ?? data.pressDateTime),
       type: issueType,
-      correct: 'None' as CorrectType,
+      correct: 'なし' as CorrectType,
     },
     earthquake: {
       time: originTime,
@@ -306,7 +306,6 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
       },
       maxScale: maxScale >= 0 ? maxScale as IntensityScale : -1,
       domesticTsunami: domestic,
-      foreignTsunami: str(earthquake.foreignTsunami),
     },
     points,
   }
@@ -351,14 +350,14 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
 
   // 取消電文（InfoType === '取消'）: Earthquake 要素が存在しないため早期リターン
   if (infoType === '取消') {
-    const issueType: IssueType = VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination'
+    const issueType: IssueType = VXSE_ISSUE_TYPE[headType] ?? '震源・震度情報'
     return {
-      code: 551,
+      kind: 'quake',
       id: `dmdata-xml-quake-${eventId}-${serial}`,
       time: reportDateTime,
       cancelled: true,
-      issue: { source: '気象庁', time: reportDateTime, type: issueType, correct: 'None' as CorrectType },
-      earthquake: { time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 }, maxScale: -1, domesticTsunami: 'Unknown', foreignTsunami: '' },
+      issue: { source: '気象庁', time: reportDateTime, type: issueType, correct: 'なし' as CorrectType },
+      earthquake: { time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 }, maxScale: -1, domesticTsunami: '不明' },
       points: [],
     }
   }
@@ -413,9 +412,9 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   const headInfoEl = xmlQ(doc, 'Head')
   const titleText = headInfoEl ? xmlText(xmlQ(headInfoEl, 'Title')) : ''
   const issueType: IssueType = titleText === '遠地地震に関する情報'
-    ? 'Foreign'
-    : (VXSE_ISSUE_TYPE[headType] ?? 'ScaleAndDestination')
-  const correct: CorrectType = infoType === '訂正' ? 'Unknown' : 'None'
+    ? '遠地地震'
+    : (VXSE_ISSUE_TYPE[headType] ?? '震源・震度情報')
+  const correct: CorrectType = infoType === '訂正' ? '訂正' : 'なし'
 
   // ForecastComment > Code（スペース区切り複数コード）から domesticTsunami を導出
   // 例: <ForecastComment><Code>0212 0241</Code></ForecastComment> → ['0212', '0241']
@@ -427,7 +426,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   const domestic = parseDomesticTsunamiFromComments({ forecast: { codes: forecastCodes } })
 
   return {
-    code: 551,
+    kind: 'quake',
     id: `dmdata-xml-quake-${eventId}-${serial}`,
     time: reportDateTime,
     issue: {
@@ -441,7 +440,6 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
       hypocenter: { name: hypName, latitude: lat, longitude: lng, depth, magnitude },
       maxScale: maxScale >= 0 ? maxScale as IntensityScale : -1,
       domesticTsunami: domestic,
-      foreignTsunami: 'None',
     },
     points,
   }
@@ -482,7 +480,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   const cancelled = infoType === '取消'
 
   if (cancelled) {
-    return { code: 552, id, eventId, time: reportDateTime, cancelled: true, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [] }
+    return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: true, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [] }
   }
 
   const forecastEl = xmlQ(doc, 'Forecast')
@@ -495,7 +493,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   if (!forecastEl && observationEl) {
     const observations = parseTsunamiObservationsFromXml(observationEl)
     if (observations.length === 0) return null
-    return { code: 552, id, eventId, time: reportDateTime, cancelled: false, headline, warningComment, sourceEarthquake, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [], observations }
+    return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: false, headline, warningComment, sourceEarthquake, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [], observations }
   }
 
   const allEls = forecastEl!.getElementsByTagName('*')
@@ -555,12 +553,12 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   }
 
   // Forecast があるのに有効エリアが0件 = 全エリアが解除済み
-  if (areas.length === 0) return { code: 552, id, eventId, time: reportDateTime, cancelled: true, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [] }
+  if (areas.length === 0) return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: true, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [] }
 
   // Observation も含む場合（VTSE51①: Forecast + Observation 両方あり）
   const observations = observationEl ? parseTsunamiObservationsFromXml(observationEl) : undefined
 
-  return { code: 552, id, eventId, time: reportDateTime, cancelled: false, validDateTime, headline, warningComment, sourceEarthquake, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas, observations: observations && observations.length > 0 ? observations : undefined }
+  return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: false, validDateTime, headline, warningComment, sourceEarthquake, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas, observations: observations && observations.length > 0 ? observations : undefined }
 }
 
 function parseTsunamiObservationsFromXml(observationEl: Element): import('../types/earthquake').TsunamiObservation[] {
@@ -632,7 +630,7 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
   const eventId = rawEventId || undefined
 
   if (cancelled) {
-    return { code: 552, id, eventId, time, cancelled: true, issue: { source, time, type: 'Focus' }, areas: [] }
+    return { kind: 'tsunami', id, eventId, time, cancelled: true, issue: { source, time, type: 'Focus' }, areas: [] }
   }
 
   const body = obj(data.body)
@@ -670,7 +668,7 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
       }
     }
     if (observations.length === 0) return null
-    return { code: 552, id, eventId, time, cancelled: false, headline, warningComment, sourceEarthquake, issue: { source, time, type: 'Focus' }, areas: [], observations }
+    return { kind: 'tsunami', id, eventId, time, cancelled: false, headline, warningComment, sourceEarthquake, issue: { source, time, type: 'Focus' }, areas: [], observations }
   }
 
   // VTSE51（津波情報）は forecasts + observations の両方を持つ場合がある。
@@ -713,7 +711,7 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
   // forecasts がなく observations のみ = 観測情報のみ電文（VTSE51②）
   if (rawItems.length === 0) {
     if (!observations || observations.length === 0) return null
-    return { code: 552, id, eventId, time, cancelled: false, headline, warningComment, sourceEarthquake, issue: { source, time, type: 'Focus' }, areas: [], observations }
+    return { kind: 'tsunami', id, eventId, time, cancelled: false, headline, warningComment, sourceEarthquake, issue: { source, time, type: 'Focus' }, areas: [], observations }
   }
 
   const areas: TsunamiArea[] = []
@@ -769,9 +767,9 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
   }
 
   // 全予報区が解除済み（Kind/Code が 50/60/71/72/73/00 など）
-  if (areas.length === 0) return { code: 552, id, eventId, time, cancelled: true, issue: { source, time, type: 'Focus' }, areas: [] }
+  if (areas.length === 0) return { kind: 'tsunami', id, eventId, time, cancelled: true, issue: { source, time, type: 'Focus' }, areas: [] }
 
-  return { code: 552, id, eventId, time, cancelled: false, validDateTime, headline, warningComment, sourceEarthquake, issue: { source, time, type: 'Focus' }, areas, observations }
+  return { kind: 'tsunami', id, eventId, time, cancelled: false, validDateTime, headline, warningComment, sourceEarthquake, issue: { source, time, type: 'Focus' }, areas, observations }
 }
 
 // REST API 経由の JMA XML（VXSE62: 長周期地震動観測情報）を JMALpgm にパース
