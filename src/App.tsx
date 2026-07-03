@@ -192,7 +192,7 @@ export function App() {
     // （地震情報・津波情報・緊急地震速報）。
     // isNewQuake は UI ブロックと TTS ブロックの両方で参照するためここで宣言する
     let isNewQuake = true
-    if (event.code === 551 && event.cancelled) {
+    if (event.kind === 'quake' && event.cancelled) {
       // 地震情報取消: カード削除は useEarthquakes reducer が担う。通知音・読み上げのみここで処理する。
       if (settings.soundEnabled) playAlertSound('eewCancel')
       console.debug('[tab] → earthquake (地震情報取消)')
@@ -204,7 +204,7 @@ export function App() {
           speakWithVoicevox(settings.voicevoxUrl, earthquakeCancelToText(event), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
         }, 1200)
       }
-    } else if (event.code === 551) {
+    } else if (event.kind === 'quake') {
       console.debug('[tab] → earthquake (地震情報 VXSE51/52/53/61)')
       setActiveTabNonRealtime('earthquake')
       // DMDATA は VXSE51（targetDateTime）→ VXSE52/53（originTime）で earthquake.time が1分ずれるため、
@@ -231,11 +231,11 @@ export function App() {
       earthquakeTitleTimerRef.current = window.setTimeout(() => {
         applyPriorityTitle(activeEEWsRef.current, tsunamiTitleFlag(), tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
       }, resetMs)
-    } else if (event.code === 552 && !event.cancelled) {
+    } else if (event.kind === 'tsunami' && !event.cancelled) {
       console.debug('[tab] → tsunami (津波情報 VTSE41/51/52)')
       setActiveTabNonRealtime('tsunami')
       showTsunamiTitle()
-    } else if (event.code === 552 && event.cancelled) {
+    } else if (event.kind === 'tsunami' && event.cancelled) {
       // 「津波解除検出」effect はレンダー後の非同期発火のため、受信直後の即時反映用にここでもタイマーをリセットする。
       console.debug('[tab] → tsunami (津波情報取消)')
       setActiveTabNonRealtime('tsunami')
@@ -249,7 +249,7 @@ export function App() {
       lastMaxObsHeightRef.current.clear()
       window.clearTimeout(obsStatusClearTimerRef.current)
       setObsUpdateStatus(new Map())
-    } else if (event.code === 556) {
+    } else if (event.kind === 'eew') {
       if (event.test) return
 
       const key = event.issue?.eventId ?? event.id
@@ -505,7 +505,7 @@ export function App() {
     }
 
     // ブラウザ通知（津波）— 音が無効でも送る
-    if (event.code === 552 && !event.cancelled && settings.notifyMinScale >= 0 && settings.notifyTsunami) {
+    if (event.kind === 'tsunami' && !event.cancelled && settings.notifyMinScale >= 0 && settings.notifyTsunami) {
       const grade = tsunamiMaxGrade(event)
       const tsunamiNotifyTitle = grade === 'MajorWarning' ? '大津波警報'
         : grade === 'Warning' ? '津波警報'
@@ -521,7 +521,7 @@ export function App() {
     // 通知音（地震情報・津波情報）
     if (!settings.soundEnabled) return
     let type: AlertSoundType | null = null
-    if (event.code === 552) {
+    if (event.kind === 'tsunami') {
       if (!event.cancelled) {
         const grade = tsunamiMaxGrade(event)
         const GRADE_RANK_SOUND = { MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0 } as const
@@ -536,7 +536,7 @@ export function App() {
         else if (grade === 'Watch')          type = 'tsunamiWatch'
         else if (grade === 'Forecast')       type = 'tsunamiForecast'
       }
-    } else if (event.code === 551 && !event.cancelled) {
+    } else if (event.kind === 'quake' && !event.cancelled) {
       const it = event.issue.type
       type = it === 'ScalePrompt'                                        ? 'earthquakePrompt'
            : (it === 'Destination' || it === 'Foreign' || it === 'Other') ? 'earthquakeInfo'
@@ -558,9 +558,9 @@ export function App() {
         tsunamiUpdate:     800,
       }
       let ttsText: string | null = null
-      if (event.code === 551 && !event.cancelled) {
+      if (event.kind === 'quake' && !event.cancelled) {
         ttsText = earthquakeToText(event, { intensityLevels: settings.ttsIntensityLevels, maxRegions: settings.ttsMaxRegions }, isNewQuake)
-      } else if (event.code === 552) {
+      } else if (event.kind === 'tsunami') {
         const GRADE_RANK = { MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0 } as const
         type GradeKey = keyof typeof GRADE_RANK
         const currentGrade = tsunamiMaxGrade(event)
@@ -595,7 +595,7 @@ export function App() {
     }
     // grade・観測波高トラッキング・UI更新: voicevox 有効/無効に関わらず実行する。
     // Unknown（観測のみ電文など areas=[] のケース）はグレード追跡を維持する。
-    if (event.code === 552 && !event.cancelled) {
+    if (event.kind === 'tsunami' && !event.cancelled) {
       const grade = tsunamiMaxGrade(event)
       const prevGrade552 = lastTsunamiGradeRef.current
       if (grade !== 'Unknown') lastTsunamiGradeRef.current = grade
@@ -993,20 +993,20 @@ export function App() {
 
       // pre-window イベントから T 時点の追跡 ref を復元する（サイレント注入後の正確な音判定に必要）
       for (const { payload } of preFiltered) {
-        if (payload.kind === 'p2p') {
+        if (payload.kind === 'event') {
           const ev = payload.event
-          if (ev.code === 551) {
+          if (ev.kind === 'quake') {
             const quake = ev as import('./types/earthquake').JMAQuake
             const eventIdPart = quake.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
             lastNewQuakeTimeRef.current = eventIdPart
               ? `${eventIdPart}:${quake.issue.type}`
               : quake.earthquake.time
-          } else if (ev.code === 556) {
+          } else if (ev.kind === 'eew') {
             const eew = ev as import('./types/earthquake').EEWAlert
             const key = eew.issue?.eventId ?? eew.id
             activeEEWLevelsRef.current.set(key, computeSingleEEWLevel(eew))
             activeEEWScalesRef.current.set(key, eewMaxScale(eew))
-          } else if (ev.code === 552) {
+          } else if (ev.kind === 'tsunami') {
             const tsunami = ev as import('./types/earthquake').JMATsunami
             const grade = tsunamiMaxGrade(tsunami)
             if (grade !== 'Unknown') lastTsunamiGradeRef.current = grade

@@ -41,7 +41,7 @@ export type DomesticTsunami =
   | 'Warning'
 
 export interface JMAQuake {
-  code: 551
+  kind: 'quake'
   id: string
   eventId?: string
   time: string
@@ -104,7 +104,7 @@ export interface TsunamiObservation {
 }
 
 export interface JMATsunami {
-  code: 552
+  kind: 'tsunami'
   id: string
   eventId?: string
   time: string
@@ -143,7 +143,7 @@ export interface EEWRegion {
 }
 
 export interface EEWAlert {
-  code: 556
+  kind: 'eew'
   id: string
   time: string
   test: boolean

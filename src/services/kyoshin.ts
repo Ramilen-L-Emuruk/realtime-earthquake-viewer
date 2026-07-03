@@ -136,7 +136,7 @@ export function hypoInfoItemToEEW(item: YahooHypoInfoItem): EEWAlert {
   const scale = calcintensityToScale(item.calcintensity)
   const scaleNum = scale === -1 ? 0 : scale
   return {
-    code: 556,
+    kind: 'eew',
     id: `yahoo-eew-${item.reportId}`,
     time: item.reportTime,
     test: item.isTraining === 'true',
