@@ -88,7 +88,7 @@ export function clearReplayCache(): void {
 }
 
 export type ReplayPayload =
-  | { kind: 'p2p'; event: AppEvent }
+  | { kind: 'event'; event: AppEvent }
   | { kind: 'lpgm'; data: JMALpgm }
   | { kind: 'nankai'; data: JMANankai }
   | { kind: 'kohatsu'; data: JMAKohatsu }
@@ -176,13 +176,13 @@ export async function fetchDmdataReplayEvents(
         let payload: ReplayPayload | null = null
         if (EEW_TYPES.has(headType)) {
           const event = parseEEW(headType, data)
-          if (event) payload = { kind: 'p2p', event }
+          if (event) payload = { kind: 'event', event }
         } else if (QUAKE_TYPES.has(headType)) {
           const event = parseEarthquake(headType, data)
-          if (event) payload = { kind: 'p2p', event }
+          if (event) payload = { kind: 'event', event }
         } else if (TSUNAMI_TYPES.has(headType)) {
           const event = parseTsunami(headType, data)
-          if (event) payload = { kind: 'p2p', event }
+          if (event) payload = { kind: 'event', event }
         } else if (LPGM_TYPES.has(headType)) {
           const lpgm = parseLpgm(data)
           if (lpgm) payload = { kind: 'lpgm', data: lpgm }
@@ -226,10 +226,10 @@ export function filterPreWindowEvents(
   const result: ReplayEntry[] = []
 
   for (const entry of entries) {
-    if (entry.payload.kind !== 'p2p') { result.push(entry); continue }
+    if (entry.payload.kind !== 'event') { result.push(entry); continue }
     const ev = entry.payload.event
 
-    if (ev.code === 551) {
+    if (ev.kind === 'quake') {
       const quake = ev as JMAQuake
       const eid = quake.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
       if (!eid) { result.push(entry); continue }
@@ -240,7 +240,7 @@ export function filterPreWindowEvents(
       continue
     }
 
-    if (ev.code === 556) {
+    if (ev.kind === 'eew') {
       const eew = ev as EEWAlert
       const groupKey = eew.issue?.eventId ?? eew.id
       if (!eewByEventId.has(groupKey)) eewByEventId.set(groupKey, [])
@@ -248,7 +248,7 @@ export function filterPreWindowEvents(
       continue
     }
 
-    if (ev.code === 552) {
+    if (ev.kind === 'tsunami') {
       const tsunami = ev as JMATsunami
       if (tsunami.cancelled) continue
       if (tsunami.validDateTime && new Date(tsunami.validDateTime).getTime() <= targetTime.getTime()) continue

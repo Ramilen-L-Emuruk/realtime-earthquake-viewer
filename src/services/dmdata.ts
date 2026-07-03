@@ -516,7 +516,7 @@ export async function fetchDmdataEarthquakes(
     results
       .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | JMALpgm | null> => r.status === 'fulfilled')
       .map(r => r.value)
-      .filter((v): v is JMAQuake => v !== null && 'code' in v && v.code === 551)
+      .filter((v): v is JMAQuake => v !== null && 'kind' in v && v.kind === 'quake')
 
   const parsed53 = toQuakes(allResults.slice(0, boundary53))
   const parsed51 = toQuakes(allResults.slice(boundary53, boundary51))
@@ -614,7 +614,7 @@ export async function fetchDmdataTsunamis(
   return results
     .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | JMALpgm | null> => r.status === 'fulfilled')
     .map(r => r.value)
-    .filter((v): v is JMATsunami => v !== null && 'code' in (v as object) && (v as JMATsunami).code === 552)
+    .filter((v): v is JMATsunami => v !== null && 'kind' in (v as object) && (v as JMATsunami).kind === 'tsunami')
 }
 
 // DMDATA REST API で南海トラフ地震臨時情報（VYSE50/51）の最新1件を取得する。
