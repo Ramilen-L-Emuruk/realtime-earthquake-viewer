@@ -57,14 +57,14 @@ function showBrowserNotification(
   })
 }
 
-// EEW 単発のレベル算出: 0=低震度予報 / 1=警報（震度5弱以上） / 2=特別警報（震度6弱以上）
+// EEW 単発のレベル算出: 0=低震度予報 / 1=警報（severity=Warning） / 2=特別警報（severity=Warning かつ 震度6弱以上）
 // scaleTo:99 は DMDATA パーサーが割り当てる「震度算出不能」コードなので通常の震度比較から除外する
+// レベル1・2ともに severity（isWarning）必須。予報級電文（severity=Forecast）は震度だけ高くても常にレベル0とする。
 function computeSingleEEWLevel(eew: EEWAlert): 0 | 1 | 2 {
+  if (eew.severity !== 'Warning') return 0
   const scale = eewMaxScale(eew)
   const intensityKnown = scale < 99
-  return (intensityKnown && scale >= 55) ? 2
-       : (eew.severity === 'Warning' || (intensityKnown && scale >= 45)) ? 1
-       : 0
+  return (intensityKnown && scale >= 55) ? 2 : 1
 }
 
 function computeEEWLevel(eews: ReadonlyMap<string, EEWAlert>): 0 | 1 | 2 | null {
