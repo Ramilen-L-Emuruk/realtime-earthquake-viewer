@@ -930,7 +930,7 @@ export function App() {
   const prefetchEndRef = useRef<Date | null>(null)
 
   const handleStartReplay = useCallback(async (targetDate: Date) => {
-    console.log('[replay] handleStartReplay called, targetDate:', targetDate.toISOString())
+    console.debug('[replay] handleStartReplay called, targetDate:', targetDate.toISOString())
     const offset = targetDate.getTime() - Date.now()
     const toTime = new Date(targetDate.getTime() + 3600_000)
     const preFrom = new Date(targetDate.getTime() - 24 * 3600_000)
