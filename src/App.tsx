@@ -1122,9 +1122,10 @@ export function App() {
       postPeakMinLevelRef.current = currLevel
     } else if (currLevel > postPeakMinLevelRef.current) {
       // 一度落ちた後に再上昇（再エスカレーション）
+      const prevMinLevel = postPeakMinLevelRef.current
       maxSoundLevelRef.current = currLevel
       postPeakMinLevelRef.current = currLevel
-      console.debug(`[tab] → realtime (揺れ検知再エスカレーション level=${postPeakMinLevelRef.current}→${currLevel})`)
+      console.debug(`[tab] → realtime (揺れ検知再エスカレーション level=${prevMinLevel}→${currLevel})`)
       setActiveTab('realtime')
       if (settings.soundEnabled) {
         playKyoshinUpdateSound(effectiveKyoshinMaxIndex)
