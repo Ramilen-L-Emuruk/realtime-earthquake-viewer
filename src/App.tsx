@@ -295,7 +295,8 @@ export function App() {
         if (activeEEWLevelsRef.current.size === 0) {
           window.clearTimeout(eewTitleTimerRef.current)
           applyPriorityTitle(new Map<string, EEWAlert>(), tsunamiTitleFlag(), tsunamiPriorityRef.current, kyoshinDetectedRef.current, setAlertTitle)
-          if (event.expired || !hadKey) {
+          // 自動解除（expired）はタブを動かさない。誤報取消の遅延到達（!hadKey）のみ対象。
+          if (!hadKey) {
             if (kyoshinDetectedRef.current) {
               console.debug('[tab] → realtime (EEW全解除・揺れ検知中)')
               setActiveTab('realtime')
