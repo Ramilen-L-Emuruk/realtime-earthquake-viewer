@@ -22,6 +22,8 @@ export interface KyoshinRealtime {
 const ERROR_THRESHOLD = 5
 // 同一タイムスタンプの受信失敗時リトライ間隔 (ms)
 const RETRY_MS = 200
+// リプレイ時: 同一 target への最大リトライ回数（超過したら諦めて次 target へ進む）
+const REPLAY_MAX_RETRY_COUNT = 5
 // 成功後に次タイムスタンプへ進むまでの待機時間 (ms)
 const POLL_MS = 1000
 // Yahoo サーバーがデータを公開するまでの遅延を考慮したオフセット (ms)。
@@ -40,8 +42,9 @@ interface UseKyoshinRealtimeOptions {
 /**
  * Yahoo 強震モニタのリアルタイム震度を取得するフック。
  * enabled が true の間のみ観測点リストを取得し、1秒ごとに震度を更新する。
- * 受信失敗時は同一タイムスタンプで RETRY_MS 間隔でリトライし続け、
- * 受信できたらその遅延で結果を反映する。
+ * 受信失敗時は同一タイムスタンプで RETRY_MS 間隔でリトライし、受信できたらその遅延で結果を反映する。
+ * リプレイ時（timeOffset 指定時）はリトライで消費した実時間を累積して次の待機時間から差し引き、
+ * かつ REPLAY_MAX_RETRY_COUNT 回を超えたら諦めて次 target へ進める（再生時刻からの遅れが蓄積しないようにする）。
  * hypoInfo の差分検出により EEW 発報・更新・解除を onEEWEvent で通知する。
  */
 export function useKyoshinRealtime(
@@ -65,7 +68,7 @@ export function useKyoshinRealtime(
   // リアルタイム震度をポーリング（enabled の間のみ）。
   // 各 tick は明示的な target タイムスタンプを取得する。
   // 成功したら target + POLL_MS を次の target として POLL_MS 後に tick する（コマ落ち防止）。
-  // 失敗時は同一 target で RETRY_MS 後にリトライし続ける。
+  // 失敗時は同一 target で RETRY_MS 後にリトライする（リプレイ時は REPLAY_MAX_RETRY_COUNT 回で打ち切り）。
   // siteConfigId が変化したとき（リプレイ日付切替など）に対応する sitelist を自動で取得する。
   useEffect(() => {
     if (!enabled) return
@@ -119,8 +122,10 @@ export function useKyoshinRealtime(
 
     const isReplay = timeOffset != null
 
-    // target: 今回 fetch するタイムスタンプ。isRetry: 同一 target の再試行かどうか。
-    const tick = (target: Date, isRetry = false) => {
+    // target: 今回 fetch するタイムスタンプ。
+    // retryCount: 同一 target への再試行回数。accumulatedElapsed: リプレイ時、同一 target への
+    //   リトライで消費した実時間の累積（次の waitMs 計算に反映し遅れの蓄積を防ぐ）。
+    const tick = (target: Date, retryCount = 0, accumulatedElapsed = 0) => {
       // fetch 開始時刻を記録し、成功後の待機時間から差し引いて遅延蓄積を防ぐ
       const fetchStart = Date.now()
       fetchRealtimeIntensity(target)
@@ -136,23 +141,36 @@ export function useKyoshinRealtime(
               timer = setTimeout(() => tick(new Date(Date.now() - FETCH_OFFSET_MS)), Math.max(0, POLL_MS - elapsed))
               return
             }
+            // fetch にかかった時間を待機時間から引いて POLL_MS ごとの一定間隔を維持する
+            const elapsed = Date.now() - fetchStart
+            timer = setTimeout(() => tick(nextTarget), Math.max(0, POLL_MS - elapsed))
+            return
           }
-          // fetch にかかった時間を待機時間から引いて POLL_MS ごとの一定間隔を維持する
-          const elapsed = Date.now() - fetchStart
-          const waitMs = Math.max(0, POLL_MS - elapsed)
-          timer = setTimeout(() => tick(nextTarget), waitMs)
+          // リプレイ時: このtargetのリトライで消費した累積時間も差し引く
+          const elapsed = accumulatedElapsed + (Date.now() - fetchStart)
+          timer = setTimeout(() => tick(nextTarget), Math.max(0, POLL_MS - elapsed))
         })
         .catch(() => {
           if (!active) return
           if (!isReplay) {
             // リアルタイム時のみ: 連続失敗カウントを更新しエラー状態を通知する
-            if (!isRetry) {
+            if (retryCount === 0) {
               failCountRef.current += 1
               if (failCountRef.current >= ERROR_THRESHOLD) setError(true)
             }
+            // 同一 target で RETRY_MS 後にリトライ
+            timer = setTimeout(() => tick(target, retryCount + 1), RETRY_MS)
+            return
           }
-          // 同一 target で RETRY_MS 後にリトライ
-          timer = setTimeout(() => tick(target, true), RETRY_MS)
+          // リプレイ時: 累積時間を更新し、上限回数を超えたら諦めて次 target へ進める
+          // （アーカイブ側の恒久的な欠損による無限リトライを防ぐ）
+          const totalElapsed = accumulatedElapsed + (Date.now() - fetchStart) + RETRY_MS
+          if (retryCount + 1 >= REPLAY_MAX_RETRY_COUNT) {
+            const nextTarget = new Date(target.getTime() + POLL_MS)
+            timer = setTimeout(() => tick(nextTarget), Math.max(0, POLL_MS - totalElapsed))
+            return
+          }
+          timer = setTimeout(() => tick(target, retryCount + 1, totalElapsed), RETRY_MS)
         })
     }
 
