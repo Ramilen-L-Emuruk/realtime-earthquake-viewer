@@ -90,11 +90,24 @@ const SHAKING_DURATION_TABLE: { minMag: number; durationSec: number }[] = [
 
 const DEFAULT_SHAKING_DURATION_SEC = 20 // magnitude 未定義時（Yahoo版）のデフォルト
 
-/** マグニチュードから揺れ継続時間の目安[秒]を返す。magnitude 未定義時はデフォルト値。 */
-export function calcShakingDurationSec(magnitude: number | undefined): number {
-  if (magnitude === undefined) return DEFAULT_SHAKING_DURATION_SEC
-  const entry = SHAKING_DURATION_TABLE.find((e) => magnitude >= e.minMag)
-  return entry ? entry.durationSec : DEFAULT_SHAKING_DURATION_SEC
+// 震源距離による継続時間の伸び分 [秒/km]。P-S時間差の拡大・表面波の分離・
+// コーダ波の伸長など、遠方ほど揺れが長引く傾向を表す目安の係数（経験式ではない）。
+const PATH_DURATION_COEF_SEC_PER_KM = 0.05
+// 距離による伸び分の上限[秒]（1600km地点で頭打ち。M8〜M9クラスの広域伝播でも際限なく伸びないように）
+const PATH_DURATION_CAP_SEC = 80
+
+/**
+ * マグニチュードと震源距離から揺れ継続時間の目安[秒]を返す。
+ * マグニチュード別テーブルの基準値に、距離による伸び分（distanceKm * 係数、上限あり）を加算する。
+ * magnitude 未定義時はデフォルト値を基準にする。
+ */
+export function calcShakingDurationSec(magnitude: number | undefined, distanceKm: number): number {
+  const entry = magnitude === undefined
+    ? undefined
+    : SHAKING_DURATION_TABLE.find((e) => magnitude >= e.minMag)
+  const baseDurationSec = entry ? entry.durationSec : DEFAULT_SHAKING_DURATION_SEC
+  const pathDurationSec = Math.min(PATH_DURATION_COEF_SEC_PER_KM * distanceKm, PATH_DURATION_CAP_SEC)
+  return baseDurationSec + pathDurationSec
 }
 
 // EEW の areas が未設定の場合 regions にフォールバックする（旧形式互換）。
