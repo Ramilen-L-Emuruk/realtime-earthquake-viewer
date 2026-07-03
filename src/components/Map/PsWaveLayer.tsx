@@ -5,10 +5,13 @@ import type { PsWaveCircle } from '../../services/kyoshin'
 import { computeSWaveRadiusAtTime, computeSWaveTravelTimeSec } from '../../hooks/useDmdssWaves'
 import { calcShakingDurationSec, S_WAVE_FALLBACK_KM_PER_SEC } from '../../utils/eew'
 
-// 後端フェードの幅[km]（固定）。sPx全体に対する割合にすると、後端境界が
-// 円の中心付近にある間はフェード帯が円の大半を覆ってしまい、境界出現時に
-// 急に穴が空いたように見えるため、常に一定幅でなめらかに遷移させる。
-const TRAILING_EDGE_FADE_KM = 15
+// 後端フェードの幅は現在のS波半径に対する割合とし、円が広がるほど
+// フェード帯も自然に広くなるようにする。ただし割合を「後端境界から円の外周
+// まで全部」にすると、後端境界が中心付近にある間はフェード帯が円の大半を覆い、
+// 境界出現時に急に穴が空いたように見えるため、現在のS波半径基準の割合に
+// 下限幅を設けて過度に薄い/広いフェードにならないようにする。
+const TRAILING_EDGE_FADE_RATIO = 0.2
+const TRAILING_EDGE_FADE_MIN_KM = 15
 
 export function PsWaveLayer({ psWave }: { psWave: PsWaveCircle[] }) {
   const map = useMap()
@@ -72,12 +75,14 @@ export function PsWaveLayer({ psWave }: { psWave: PsWaveCircle[] }) {
 
           if (sInnerRadiusKm > 0 && sInnerRadiusKm < c.sRadius) {
             // 後端（揺れ継続時間を過ぎた領域）を透明にフェードさせる。
-            // フェード帯は innerPx から固定幅(TRAILING_EDGE_FADE_KM)分だけ外側までとし、
-            // それより外は不透明（Canvasのグラデーションはstop 1.0以降を最終色で塗る）。
+            // フェード帯は innerPx から、現在のS波半径に対する割合幅（下限あり）分
+            // だけ外側までとし、それより外は不透明（Canvasのグラデーションはstop 1.0
+            // 以降を最終色で塗る）。
             const lonOffsetInner = (sInnerRadiusKm * 1000) / (111320 * cosLat)
             const edgeInner = map.latLngToContainerPoint(L.latLng(c.lat, c.lng + lonOffsetInner))
             const innerPx = Math.abs(edgeInner.x - center.x)
-            const lonOffsetFadeOuter = ((sInnerRadiusKm + TRAILING_EDGE_FADE_KM) * 1000) / (111320 * cosLat)
+            const fadeWidthKm = Math.max(TRAILING_EDGE_FADE_MIN_KM, c.sRadius * TRAILING_EDGE_FADE_RATIO)
+            const lonOffsetFadeOuter = ((sInnerRadiusKm + fadeWidthKm) * 1000) / (111320 * cosLat)
             const edgeFadeOuter = map.latLngToContainerPoint(L.latLng(c.lat, c.lng + lonOffsetFadeOuter))
             const fadeOuterPx = Math.min(Math.abs(edgeFadeOuter.x - center.x), sPx)
             const gradient = ctx.createRadialGradient(center.x, center.y, innerPx, center.x, center.y, fadeOuterPx)
