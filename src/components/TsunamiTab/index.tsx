@@ -3,10 +3,10 @@ import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation } from '../.
 import { formatDateTimeMin, formatTime } from '../../utils/formatters'
 
 export interface FocusedDistrict {
-  // 今回の受信で変更（新規/更新）があった区域すべて
+  // 今回の受信で変更（新規/更新）があった区域すべて。対象区域が特定できない受信では空配列
   districts: { code?: string; name?: string }[]
-  // その中で波高が最大の区域（画面に収まらない場合はこれを一番上に配置する）
-  top: { code?: string; name?: string }
+  // その中で波高が最大の区域（画面に収まらない場合はこれを一番上に配置する）。districts が空のときは null（一番上へ戻す）
+  top: { code?: string; name?: string } | null
   ts: number
 }
 
@@ -295,7 +295,7 @@ function TsunamiGradeCard({ grade, areas, observations, onObservationClick, focu
               style={style}
               onObservationClick={onObservationClick}
               isChanged={focusedDistrict?.districts.some(d => districtMatchesArea(d, area)) ?? false}
-              isTop={focusedDistrict != null && districtMatchesArea(focusedDistrict.top, area)}
+              isTop={focusedDistrict?.top != null && districtMatchesArea(focusedDistrict.top, area)}
               registerRow={registerRow}
               obsUpdateStatus={obsUpdateStatus}
             />
@@ -354,8 +354,14 @@ export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservat
   useEffect(() => {
     if (!focusedDistrict) return
     const container = containerRef.current
+    if (!container) return
+    // 対象区域が特定できない受信（区域のみの発表・実質変化なしの続報・解除）は一番上へ戻す
+    if (focusedDistrict.districts.length === 0) {
+      container.scrollTo({ top: 0, behavior: 'smooth' })
+      return
+    }
     const changedEls = Array.from(changedRowElsRef.current.values())
-    if (!container || changedEls.length === 0) return
+    if (changedEls.length === 0) return
 
     const containerRect = container.getBoundingClientRect()
     const viewTop = containerRect.top + bannerHeight
