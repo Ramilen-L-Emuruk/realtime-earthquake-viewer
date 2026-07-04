@@ -10,7 +10,10 @@ import { App } from './App'
 if ('serviceWorker' in navigator) {
   const wasControlled = Boolean(navigator.serviceWorker.controller)
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (wasControlled) window.dispatchEvent(new CustomEvent('sw-updated'))
+    if (wasControlled) {
+      console.debug('[sw] 新バージョン検知 → sw-updated 発火')
+      window.dispatchEvent(new CustomEvent('sw-updated'))
+    }
   })
 }
 

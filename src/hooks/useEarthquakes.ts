@@ -731,6 +731,7 @@ export function useEarthquakes(
       })
       .catch((err: unknown) => {
         if (cancelled) return
+        console.error('[fetch] 初回データ取得失敗', err)
         const msg = err instanceof Error ? err.message : '取得失敗'
         setState(prev => ({ ...prev, isLoading: false, error: msg }))
       })

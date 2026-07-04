@@ -150,13 +150,16 @@ export function useKyoshinRealtime(
           const elapsed = accumulatedElapsed + (Date.now() - fetchStart)
           timer = setTimeout(() => tick(nextTarget), Math.max(0, POLL_MS - elapsed))
         })
-        .catch(() => {
+        .catch((err) => {
           if (!active) return
           if (!isReplay) {
             // リアルタイム時のみ: 連続失敗カウントを更新しエラー状態を通知する
             if (retryCount === 0) {
               failCountRef.current += 1
-              if (failCountRef.current >= ERROR_THRESHOLD) setError(true)
+              if (failCountRef.current >= ERROR_THRESHOLD) {
+                console.warn(`[kyoshin] 連続取得失敗 (${failCountRef.current}回) → エラー表示`, err)
+                setError(true)
+              }
             }
             // 同一 target で RETRY_MS 後にリトライ
             timer = setTimeout(() => tick(target, retryCount + 1), RETRY_MS)
