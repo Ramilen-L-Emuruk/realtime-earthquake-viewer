@@ -43,6 +43,34 @@ export function loadStationCoords(): Promise<StationCoordsData> {
 }
 
 /**
+ * 読み込み済みの座標テーブルキャッシュを返す（未読み込みなら null）。
+ * TTS 読み上げ文生成など、fetch を待たず「取れていれば使う」用途向け。
+ */
+export function getStationCoordsCache(): StationCoordsData | null {
+  return cache
+}
+
+/**
+ * 都道府県名 -> その県が持つ一次細分区域名の全集合、を構築する。
+ * areas のキー "都道府県|細分区域名" を pref でグルーピングして作る。
+ * TTS で「観測区域が県内全区域と一致するので〇〇県と読み上げる」判定に使う。
+ */
+export function buildPrefAreaNamesIndex(data: StationCoordsData): Map<string, Set<string>> {
+  const index = new Map<string, Set<string>>()
+  for (const key of Object.keys(data.areas)) {
+    const sep = key.indexOf('|')
+    if (sep < 0) continue
+    const pref = key.slice(0, sep)
+    const name = key.slice(sep + 1)
+    if (!name) continue
+    const set = index.get(pref) ?? new Set<string>()
+    set.add(name)
+    index.set(pref, set)
+  }
+  return index
+}
+
+/**
  * 細分区域名 -> 都道府県名 の逆引きインデックスを構築する。
  * areas のキー "都道府県|細分区域名" を分解して name -> pref の Map を作る（初出優先）。
  * EEW の地域別予想震度（pref を含まない）に都道府県を補完する用途で使う。

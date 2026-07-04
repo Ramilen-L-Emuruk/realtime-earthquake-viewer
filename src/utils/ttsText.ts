@@ -4,6 +4,7 @@ import { getIntensityLabel } from './intensity'
 import { tsunamiMaxGrade } from './tsunami'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
+import { getStationCoordsCache, buildAreaPrefIndex, buildPrefAreaNamesIndex } from './stationCoords'
 
 const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch', 'Forecast']
 
@@ -20,10 +21,37 @@ function tsunamiGradeLabel(grade: TsunamiGrade): string {
 // 震度スケールの降順リスト
 const SCALE_DESCENDING: IntensityScale[] = [70, 60, 55, 50, 45, 40, 30, 20, 10] as IntensityScale[]
 
-function regionNamesForScale(points: EarthquakePoint[], scale: IntensityScale): string[] {
+// 県内の一次細分区域が全部同じ階級で揃っている場合、区域名の列挙を「〇〇県」1件にまとめる。
+// prefAreaNames が引けない（未読み込み）場合はまとめず区域名をそのまま返す。
+function aggregateAreaNamesByPref(
+  areaNames: { pref: string; addr: string }[],
+  prefAreaNames: Map<string, Set<string>> | null,
+): string[] {
+  const byPref = new Map<string, Set<string>>()
+  for (const { pref, addr } of areaNames) {
+    const set = byPref.get(pref) ?? new Set<string>()
+    set.add(addr)
+    byPref.set(pref, set)
+  }
+  const result: string[] = []
+  for (const [pref, names] of byPref) {
+    const fullSet = prefAreaNames?.get(pref)
+    const isWholePref = fullSet != null && fullSet.size > 0
+      && names.size === fullSet.size && [...names].every(n => fullSet.has(n))
+    if (isWholePref) result.push(pref)
+    else result.push(...names)
+  }
+  return result
+}
+
+function regionNamesForScale(
+  points: EarthquakePoint[],
+  scale: IntensityScale,
+  prefAreaNames: Map<string, Set<string>> | null,
+): string[] {
   const matched = points.filter(p => p.scale === scale)
-  const areas = [...new Set(matched.filter(p => p.isArea && p.addr !== p.pref).map(p => p.addr))]
-  if (areas.length > 0) return areas
+  const areaPoints = matched.filter(p => p.isArea && p.addr !== p.pref)
+  if (areaPoints.length > 0) return aggregateAreaNamesByPref(areaPoints, prefAreaNames)
   return [...new Set(matched.map(p => p.pref).filter(Boolean))]
 }
 
@@ -58,13 +86,15 @@ function buildRegionText(
   if (maxIdx < 0) return ''
 
   const hasEpicenter = hypocenter != null && (hypocenter.latitude !== 0 || hypocenter.longitude !== 0)
+  const stationData = getStationCoordsCache()
+  const prefAreaNames = stationData ? buildPrefAreaNamesIndex(stationData) : null
 
   const parts: string[] = []
   const mentioned = new Set<string>()  // 上位階で読み上げ済みの地域名
   for (let i = 0; i <= opts.intensityLevels; i++) {
     const scale = SCALE_DESCENDING[maxIdx + i]
     if (scale == null) break
-    let names = regionNamesForScale(points, scale).filter(n => !mentioned.has(n))
+    let names = regionNamesForScale(points, scale, prefAreaNames).filter(n => !mentioned.has(n))
     if (names.length === 0) continue
     if (hasEpicenter) {
       names = [...names].sort((a, b) => {
@@ -375,6 +405,34 @@ export function kohatsuToText(event: JMAKohatsu): string {
   return `北海道・三陸沖後発地震注意情報。${headline ? headline + '。' : ''}今後、大規模地震の発生可能性が平常時より高まっています。防災対応の確認をしてください。`
 }
 
+// 一次細分区域名のリストのうち、県内全区域が同じ階級で揃っているものを「〇〇県」1件にまとめる。
+// areaPrefIndex / prefAreaNames が引けない（未読み込み）場合はまとめず区域名をそのまま返す。
+function aggregateLpgmNamesByPref(
+  names: string[],
+  areaPrefIndex: Map<string, string> | null,
+  prefAreaNames: Map<string, Set<string>> | null,
+): string[] {
+  if (!areaPrefIndex) return names
+  const byPref = new Map<string, Set<string>>()
+  const noPref: string[] = []
+  for (const name of names) {
+    const pref = areaPrefIndex.get(name)
+    if (!pref) { noPref.push(name); continue }
+    const set = byPref.get(pref) ?? new Set<string>()
+    set.add(name)
+    byPref.set(pref, set)
+  }
+  const result: string[] = [...noPref]
+  for (const [pref, regionNames] of byPref) {
+    const fullSet = prefAreaNames?.get(pref)
+    const isWholePref = fullSet != null && fullSet.size > 0
+      && regionNames.size === fullSet.size && [...regionNames].every(n => fullSet.has(n))
+    if (isWholePref) result.push(pref)
+    else result.push(...regionNames)
+  }
+  return result
+}
+
 // 長周期地震動の観測地域テキストを生成する（buildRegionText の LPGM 版）
 function buildLpgmRegionText(lpgm: JMALpgm, opts: TtsRegionOptions): string {
   if (!lpgm.regions || lpgm.regions.length === 0) return ''
@@ -390,12 +448,17 @@ function buildLpgmRegionText(lpgm: JMALpgm, opts: TtsRegionOptions): string {
   const classes = [...byClass.keys()].sort((a, b) => b - a)
   if (classes.length === 0) return ''
 
+  const stationData = getStationCoordsCache()
+  const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
+  const prefAreaNames = stationData ? buildPrefAreaNamesIndex(stationData) : null
+
   const parts: string[] = []
   const mentioned = new Set<string>()
   for (let i = 0; i <= opts.intensityLevels; i++) {
     const cls = classes[i]
     if (cls == null) break
-    let names = (byClass.get(cls) ?? []).filter(n => !mentioned.has(n))
+    let names = aggregateLpgmNamesByPref((byClass.get(cls) ?? []), areaPrefIndex, prefAreaNames)
+      .filter(n => !mentioned.has(n))
     if (names.length === 0) continue
     let omittedCount = 0
     if (opts.maxRegions > 0 && names.length > opts.maxRegions) {
