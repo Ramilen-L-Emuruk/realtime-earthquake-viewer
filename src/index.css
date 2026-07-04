@@ -102,6 +102,14 @@ body {
   animation: tsunami-blink 2.5s step-end infinite;
 }
 
+@keyframes tsunami-obs-blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.1; }
+}
+.tsunami-obs-blink {
+  animation: tsunami-obs-blink 1.2s step-end infinite;
+}
+
 @keyframes eew-blink {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.1; }

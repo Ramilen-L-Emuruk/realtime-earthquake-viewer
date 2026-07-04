@@ -597,15 +597,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         for (const o of newlyArrivedObs552b) newStatusEntries.push([o.name, 'new'])
       }
 
-      if (newStatusEntries.length > 0) {
-        setObsUpdateStatus(prev => {
-          const next = new Map(prev)
-          for (const [name, status] of newStatusEntries) next.set(name, status)
-          return next
-        })
-        window.clearTimeout(obsStatusClearTimerRef.current)
-        obsStatusClearTimerRef.current = window.setTimeout(() => setObsUpdateStatus(new Map()), 60000)
-      }
+      // 津波情報を受信するたびに obsUpdateStatus を今回分だけの Map に置き換える（前回分は破棄）。
+      // 60秒以内に次の情報が来なければ obsStatusClearTimerRef が空 Map にする。
+      setObsUpdateStatus(new Map(newStatusEntries))
+      window.clearTimeout(obsStatusClearTimerRef.current)
+      obsStatusClearTimerRef.current = window.setTimeout(() => setObsUpdateStatus(new Map()), 60000)
 
       for (const o of event.observations ?? []) {
         seenObsNamesRef.current.add(o.name)
