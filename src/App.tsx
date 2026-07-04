@@ -12,18 +12,17 @@ import { useEarthquakes } from './hooks/useEarthquakes'
 import { useSettings } from './hooks/useSettings'
 import { useAlertTitle } from './hooks/useAlertTitle'
 import { useLiveEventHandler } from './hooks/useLiveEventHandler'
+import { useKyoshinAlerts } from './hooks/useKyoshinAlerts'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
-import { useKyoshinDetection, MIN_DETECTION_INDEX } from './hooks/useKyoshinDetection'
+import { useKyoshinDetection } from './hooks/useKyoshinDetection'
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
 import { useDmdssWaves } from './hooks/useDmdssWaves'
 import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude, formatDateTimeLocal } from './utils/formatters'
 import { computeEEWLevel } from './utils/eew'
-import { showBrowserNotification } from './utils/notifications'
 import { tsunamiOverallGrade } from './utils/tsunami'
-import { playAlertSound, playKyoshinUpdateSound, playCountdownBeep, kyoshinLevel, unlockAudio, setSoundVolume } from './utils/alertSound'
+import { playCountdownBeep, unlockAudio, setSoundVolume } from './utils/alertSound'
 import { loadTtsReadingDict } from './utils/ttsReadingDict'
-import { kyoshinIndexToLabel } from './utils/kyoshinIntensity'
 import type { EEWAlert, JMAQuake } from './types/earthquake'
 import { fetchDmdataReplayEvents, filterPreWindowEvents, clearReplayCache } from './services/dmdataReplay'
 
@@ -485,83 +484,18 @@ export function App() {
     prevEtaRef.current = eta
   }, [swaveArrival?.etaSec, settings.soundEnabled])
 
-  const effectiveKyoshinMaxIndex = useMemo(() => {
-    if (!(hasActiveEEW || kyoshinDetection.detected)) return kyoshinDetection.maxIndex
-    let max = 0
-    for (const idx of kyoshin.indices) {
-      if (idx >= MIN_DETECTION_INDEX && idx > max) max = idx
-    }
-    return max > 0 ? max : kyoshinDetection.maxIndex
-  }, [hasActiveEEW, kyoshinDetection.detected, kyoshinDetection.maxIndex, kyoshin.indices])
-
-  // 揺れ検知時にリアルタイムタブを自動表示＋ウィンドウタイトル更新＋通知音
-  // 検知終了（true → false）時は EEW・津波の状態に合わせてタイトルを再評価する
-  const prevDetectedRef = useRef(false)
-  useEffect(() => {
-    if (kyoshinDetection.detected && !prevDetectedRef.current) {
-      console.debug('[tab] → realtime (揺れ検知開始)')
-      setActiveTab('realtime')
-      title.setTitle('📈 揺れ検知')
-      if (settings.soundEnabled) {
-        playAlertSound('kyoshin')
-      }
-      if (settings.notifyMinScale >= 0 && settings.notifyDetection) {
-        const label = kyoshinIndexToLabel(effectiveKyoshinMaxIndex) ?? '?'
-        showBrowserNotification('揺れを検知中', `推定最大震度 ${label}（強震モニタ）`, 'kyoshin-detection')
-      }
-    } else if (!kyoshinDetection.detected && prevDetectedRef.current) {
-      title.applyPriority({ kyoshinDetected: false })
-      if (activeEEWsRef.current.size === 0) {
-        console.debug(`[tab] → ${defaultTabRef.current} (揺れ検知終了)`)
-        revertToDefaultTab()
-      }
-    }
-    prevDetectedRef.current = kyoshinDetection.detected
-  }, [kyoshinDetection.detected, effectiveKyoshinMaxIndex, settings.soundEnabled, settings.notifyDetection])
-
-  // 揺れ検知中の音再鳴ロジック
-  // - 過去最大レベルを超えたとき（新たな最大）→ 音を鳴らす
-  // - ピーク後に一度落ちてから再上昇したとき（再エスカレーション）→ 音を鳴らす
-  // 生インデックスではなく音レベル（0〜6）で比較することで、フレーム間の微細な
-  // 数値変動（同一震度帯内のゆらぎ）による誤再鳴を防ぐ。
-  const maxSoundLevelRef = useRef(0)
-  // ピーク到達後に観測した最小レベル（再エスカレーション検出用）
-  const postPeakMinLevelRef = useRef(0)
-  useEffect(() => {
-    if (!kyoshinDetection.detected) {
-      maxSoundLevelRef.current = 0
-      postPeakMinLevelRef.current = 0
-      return
-    }
-    const currLevel = kyoshinLevel(effectiveKyoshinMaxIndex)
-    const prevMaxLevel = maxSoundLevelRef.current
-    if (currLevel > prevMaxLevel) {
-      // 新たな最大レベルに達した
-      maxSoundLevelRef.current = currLevel
-      postPeakMinLevelRef.current = currLevel
-      // 初回検知（prevMaxLevel === 0）は検知音が鳴るのでスキップ
-      if (prevMaxLevel > 0) {
-        console.debug(`[tab] → realtime (揺れ検知レベルアップ level=${prevMaxLevel}→${currLevel})`)
-        setActiveTab('realtime')
-        if (settings.soundEnabled) {
-          playKyoshinUpdateSound(effectiveKyoshinMaxIndex)
-        }
-      }
-    } else if (currLevel < postPeakMinLevelRef.current) {
-      // ピーク後に下落中 → 最小値を更新するだけ
-      postPeakMinLevelRef.current = currLevel
-    } else if (currLevel > postPeakMinLevelRef.current) {
-      // 一度落ちた後に再上昇（再エスカレーション）
-      const prevMinLevel = postPeakMinLevelRef.current
-      maxSoundLevelRef.current = currLevel
-      postPeakMinLevelRef.current = currLevel
-      console.debug(`[tab] → realtime (揺れ検知再エスカレーション level=${prevMinLevel}→${currLevel})`)
-      setActiveTab('realtime')
-      if (settings.soundEnabled) {
-        playKyoshinUpdateSound(effectiveKyoshinMaxIndex)
-      }
-    }
-  }, [effectiveKyoshinMaxIndex, kyoshinDetection.detected, settings.soundEnabled])
+  // 揺れ検知の開始/終了・レベル変化に応じたタブ切替・タイトル・通知音・ブラウザ通知
+  useKyoshinAlerts({
+    kyoshinDetection,
+    kyoshinIndices: kyoshin.indices,
+    hasActiveEEW,
+    settings,
+    title,
+    activeEEWsRef,
+    defaultTabRef,
+    setActiveTab,
+    revertToDefaultTab,
+  })
 
   // 常時表示する地図の内容は mapTab（設定タブ中は直前のタブ）に応じて切り替える
   const mapMode: MapMode =
