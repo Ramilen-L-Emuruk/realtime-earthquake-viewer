@@ -296,7 +296,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
 
         if (firePhase1) {
           // 第1フェーズ：即時（完了 Promise を eventId 別に保持）
-          const phase1Promise = speakWithVoicevox(settings.voicevoxUrl, eewAlertToText(event), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+          const phase1Promise = speakWithVoicevox(settings.voicevoxUrl, eewAlertToText(event, hypoFarMoved), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
           eewPhase1PromisesRef.current.set(key, phase1Promise)
           // 発話した震源情報を記録する
           if (Number.isFinite(hypo.latitude) && Number.isFinite(hypo.longitude)) {

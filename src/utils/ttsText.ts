@@ -167,9 +167,13 @@ export function earthquakeCancelToText(event: JMAQuake): string {
   return '地震情報はキャンセルされました。'
 }
 
-/** EEW 第1フェーズ（isNew 即時）: 「緊急地震速報、〇〇で地震。」 */
-export function eewAlertToText(event: EEWAlert): string {
-  return `緊急地震速報、${event.earthquake.hypocenter.name}で地震。`
+/**
+ * EEW 第1フェーズ（isNew 即時、または続報での震源更新時）の読み上げテキストを生成する。
+ * isHypocenterUpdate=true のとき「震源を更新、〇〇で地震。」（続報で震源名が大きく変わったケース向け）。
+ */
+export function eewAlertToText(event: EEWAlert, isHypocenterUpdate = false): string {
+  const prefix = isHypocenterUpdate ? '震源を更新、' : '緊急地震速報、'
+  return `${prefix}${event.earthquake.hypocenter.name}で地震。`
 }
 
 /** EEW 第2フェーズ（デバウンス後）: 「予想最大震度〇〇。」scale なし時は理由付き「予想震度なし。」 */
