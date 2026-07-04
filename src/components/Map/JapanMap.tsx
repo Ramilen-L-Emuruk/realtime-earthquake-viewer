@@ -27,8 +27,8 @@ import type { DetectedPoint } from '../../hooks/useKyoshinDetection'
 // 津波観測棒アイコン。波高・色ごとにキャッシュして再利用する。
 const obsBarIconCache = new Map<string, L.DivIcon>()
 
-function getTsunamiObsBarIcon(color: string, barPx: number): L.DivIcon {
-  const key = `${color}:${barPx}`
+function getTsunamiObsBarIcon(color: string, barPx: number, blinking = false): L.DivIcon {
+  const key = `${color}:${barPx}:${blinking}`
   const cached = obsBarIconCache.get(key)
   if (cached) return cached
 
@@ -37,7 +37,7 @@ function getTsunamiObsBarIcon(color: string, barPx: number): L.DivIcon {
   // スリムバー＋底面フェードで地図に馴染む。白枠なし。アンカーは棒の底辺中央。
   const icon = L.divIcon({
     className: '',
-    html: `<div style="display:flex;flex-direction:column;align-items:center;width:${W + FOOT}px;height:${barPx + FOOT}px;">
+    html: `<div style="display:flex;flex-direction:column;align-items:center;width:${W + FOOT}px;height:${barPx + FOOT}px;"${blinking ? ' class="tsunami-obs-blink"' : ''}>
       <div style="width:${W}px;height:${barPx}px;background:${color};border-radius:3px 3px 0 0;opacity:0.9;"></div>
       <div style="width:${W + FOOT}px;height:${FOOT}px;background:${color};border-radius:0 0 3px 3px;opacity:0.3;"></div>
     </div>`,
@@ -573,6 +573,7 @@ interface Props {
   idleRevertSec?: number
   eewLpgmEventId?: string | null
   focusObsName?: { name: string; ts: number } | null
+  obsUpdateStatus?: Map<string, 'new' | 'updated'>
 }
 
 export function JapanMap({
@@ -591,6 +592,7 @@ export function JapanMap({
   idleRevertSec = 30,
   eewLpgmEventId = null,
   focusObsName = null,
+  obsUpdateStatus,
 }: Props) {
   const stationCoords = useStationCoords()
   const tsunamiZones = useTsunamiZones()
@@ -793,7 +795,7 @@ export function JapanMap({
   }, [tsunamis, tsunamiZones])
 
   // 津波観測棒: 波高が判明している観測点を座標付きで整理し、緯度降順（北→南）でソート
-  type ObsBar = { name: string; lat: number; lng: number; barPx: number; color: string; height: { value: number; description: string; over?: boolean } }
+  type ObsBar = { name: string; lat: number; lng: number; barPx: number; color: string; height: { value: number; description: string; over?: boolean }; blinking: boolean }
   const observationBars = useMemo<ObsBar[]>(() => {
     if (!tsunamiObsCoords || observations.length === 0) return []
     const OBS_MAX_M = 5.0
@@ -808,11 +810,12 @@ export function JapanMap({
       const barPx = Math.round(Math.max(OBS_MIN_PX, Math.min(OBS_MAX_PX, (v / OBS_MAX_M) * OBS_MAX_PX)))
       // 気象庁津波観測階級に準拠: 3m以上=紫, 1m以上=赤, 0.2m以上=オレンジ, 0.2m未満=シアン
       const color = v >= 3 ? '#a855f7' : v >= 1 ? '#ef4444' : v >= 0.2 ? '#f97316' : '#22d3ee'
-      bars.push({ name: o.name, lat: latLng[0], lng: latLng[1], barPx, color, height: o.height })
+      const blinking = obsUpdateStatus?.has(o.name) ?? false
+      bars.push({ name: o.name, lat: latLng[0], lng: latLng[1], barPx, color, height: o.height, blinking })
     }
     // 北→南ソート: 後から描画するほど手前(z高め)になるため南側を最後に描く
     return bars.sort((a, b) => b.lat - a.lat)
-  }, [tsunamiObsCoords, observations])
+  }, [tsunamiObsCoords, observations, obsUpdateStatus])
 
 
   // 地震モードのフィット対象（各観測点 + 震源）
@@ -1004,7 +1007,7 @@ export function JapanMap({
             <Marker
               key={`obs-bar-${bar.name}`}
               position={[bar.lat, bar.lng]}
-              icon={getTsunamiObsBarIcon(bar.color, bar.barPx)}
+              icon={getTsunamiObsBarIcon(bar.color, bar.barPx, bar.blinking)}
               zIndexOffset={0}
             >
               <Tooltip direction="right" offset={[10, -bar.barPx / 2]}>
