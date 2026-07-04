@@ -252,8 +252,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       title.scheduleTitleRevert('eew')
 
       // VOICEVOX: 2フェーズ読み上げ
-      // 第1フェーズ（isNew即時）: 「緊急地震速報、〇〇で地震。」
-      // 第2フェーズ（デバウンス後、かつ第1フェーズ完了後）: 「予想最大震度〇〇。」
+      // 第1フェーズ（isNew即時、または続報での震源更新時）: 「緊急地震速報、〇〇で地震。」/「震源を更新、〇〇で地震。」
+      // 第2フェーズ（デバウンス後、かつ第1フェーズ完了後）: 「予想最大震度〇〇。」（震源更新時は新しい震源に基づき読み直す）
       if (settings.voicevoxEnabled && settings.soundEnabled) {
         eewTtsEventsRef.current.set(key, event)
         const firePhase2 = () => {
@@ -316,6 +316,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               }
             }, 15000)
             eewTtsMaxTimersRef.current.set(key, maxTimer)
+          } else if (hypoFarMoved) {
+            // 震源更新時も新しい震源に基づく最大震度を読み直す
+            const pendingTimer = eewTtsTimersRef.current.get(key)
+            if (pendingTimer) { clearTimeout(pendingTimer); eewTtsTimersRef.current.delete(key) }
+            scheduleEewTts()
           }
         } else if (levelUpgraded || scaleUpgraded) {
           const pendingTimer = eewTtsTimersRef.current.get(key)
