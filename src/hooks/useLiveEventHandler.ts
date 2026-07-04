@@ -105,8 +105,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // 津波観測点の新規/更新バッジ表示状態と自動クリアタイマー
   const [obsUpdateStatus, setObsUpdateStatus] = useState<Map<string, 'new' | 'updated'>>(() => new Map())
   const obsStatusClearTimerRef = useRef<number>(0)
-  // 津波観測データ受信時にスクロールでフォーカスする予報区（今回の受信で変更があった区域全部＋その中の最高波高区域）
-  const [focusedDistrict, setFocusedDistrict] = useState<{ districts: { code?: string; name?: string }[]; top: { code?: string; name?: string }; ts: number } | null>(null)
+  // 津波イベント受信時にスクロールでフォーカスする予報区（今回の受信で変更があった区域全部＋その中の最高波高区域）。
+  // 対象区域が特定できない受信（区域のみの発表・実質変化なしの続報・解除）は top: null（一番上へ戻す）で表す。
+  const [focusedDistrict, setFocusedDistrict] = useState<{ districts: { code?: string; name?: string }[]; top: { code?: string; name?: string } | null; ts: number } | null>(null)
 
   const handleLiveEvent = (event: AppEvent) => {
     // 受信時に該当タブを自動表示し、ウィンドウタイトルを更新する
@@ -171,6 +172,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       lastMaxObsHeightRef.current.clear()
       window.clearTimeout(obsStatusClearTimerRef.current)
       setObsUpdateStatus(new Map())
+      setFocusedDistrict({ districts: [], top: null, ts: Date.now() })
     } else if (event.kind === 'eew') {
       if (event.test) return
 
@@ -568,6 +570,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               : pickTopFromCardOrder(newlyArrivedObs552, event.areas, event.observations ?? []),
             ts: Date.now(),
           })
+        } else {
+          // スクロール先となる変化が無い電文（再送・実質変化なし）は一番上へ戻す
+          setFocusedDistrict({ districts: [], top: null, ts: Date.now() })
         }
         for (const o of updatedObs552) newStatusEntries.push([o.name, prevMap552.has(o.name) ? 'updated' : 'new'])
         for (const o of newlyArrivedObs552) newStatusEntries.push([o.name, 'new'])
@@ -584,6 +589,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               : pickTopFromCardOrder(newlyArrivedObs552b, event.areas, event.observations ?? []),
             ts: Date.now(),
           })
+        } else {
+          // 観測データが無い発表（区域・グレードのみの電文）は一番上へ戻す
+          setFocusedDistrict({ districts: [], top: null, ts: Date.now() })
         }
         for (const o of obsWithHeight552) newStatusEntries.push([o.name, 'new'])
         for (const o of newlyArrivedObs552b) newStatusEntries.push([o.name, 'new'])
