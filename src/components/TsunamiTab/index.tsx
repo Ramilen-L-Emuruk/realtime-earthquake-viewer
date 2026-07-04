@@ -203,7 +203,9 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, isChang
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-semibold" style={{ fontSize: '13px', color: style.heightColor }}>{obs.name}</span>
-                      <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: `${style.cardBorder}30`, color: style.heightColor }}>実測</span>
+                      <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: `${style.cardBorder}30`, color: style.heightColor }}>
+                        {obs.height ? '実測' : '到達確認'}
+                      </span>
                     </div>
                     <div className="mt-1" style={{ fontSize: '11px', color: '#9ca3af' }}>
                       {obs.arrivalTime && `${formatTime(obs.arrivalTime).slice(0, 5)}${obs.initial ? ` ${obs.initial}波` : ''}`}
@@ -214,8 +216,10 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, isChang
                       })()}
                     </div>
                   </div>
-                  {obs.height && (
+                  {obs.height ? (
                     <span className="font-bold flex-shrink-0" style={{ fontSize: '20px', color: style.heightColor }}>{obs.height.description}</span>
+                  ) : (
+                    <span className="flex-shrink-0" style={{ fontSize: '13px', color: '#9ca3af' }}>観測中</span>
                   )}
                 </div>
               </div>
