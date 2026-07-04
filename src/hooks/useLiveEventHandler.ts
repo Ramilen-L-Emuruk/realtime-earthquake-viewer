@@ -11,7 +11,7 @@ import { showBrowserNotification } from '../utils/notifications'
 import { tsunamiMaxGrade } from '../utils/tsunami'
 import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox } from '../utils/voicevox'
-import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, nankaiToText, kohatsuToText, lpgmToText } from '../utils/ttsText'
+import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, tsunamiArrivalToText, nankaiToText, kohatsuToText, lpgmToText } from '../utils/ttsText'
 
 // 観測点リストから、属する予報区（districtCode/districtName）を重複なく列挙する
 function uniqueDistricts(observations: { districtCode?: string; districtName?: string }[]): { code?: string; name?: string }[] {
@@ -70,6 +70,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const lastTsunamiGradeRef = useRef<'MajorWarning' | 'Warning' | 'Watch' | 'Forecast' | null>(null)
   // 観測点ごとの読み上げ済み最大波高（更新があった観測点のみ TTS 発話するための比較用）
   const lastMaxObsHeightRef = useRef<Map<string, { value: number; over?: boolean }>>(new Map())
+  // これまでに一度でも登場した観測点名（波高未確定＝観測中のまま新規到達した観測点を検出するための比較用）
+  const seenObsNamesRef = useRef<Set<string>>(new Set())
   // VOICEVOX EEW 読み上げデバウンス（レベルアップ確定から3秒後に読み上げ）。
   // 複数 EEW が同時進行するケース（例: 2024/1/1 能登の同時多発）があるため、
   // 全て eventId 別の Map で管理する。単一 ref にすると、後から届いた別イベントの
@@ -480,12 +482,24 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             if (o.height.over && !prev.over && o.height.value >= prev.value) return true
             return false
           })
-          if (updatedObs.length > 0) {
-            ttsText = tsunamiObservationUpdateToText(updatedObs, event.headline)
+          // 波高未確定（観測中）のまま新規に到達が確認された観測点は「到達確認」として読み上げる
+          const newlyArrivedObs = (event.observations ?? [])
+            .filter(o => !o.height && !seenObsNamesRef.current.has(o.name))
+          const updateText = updatedObs.length > 0 ? tsunamiObservationUpdateToText(updatedObs, event.headline) : ''
+          const arrivalText = tsunamiArrivalToText(newlyArrivedObs)
+          if (updateText) {
+            ttsText = arrivalText ? `${updateText}${arrivalText}` : updateText
+          } else if (arrivalText) {
+            ttsText = `津波観測情報。${arrivalText}`
           }
         } else {
           const isDowngrade = prevGrade !== null && GRADE_RANK[currentGrade as GradeKey] < GRADE_RANK[prevGrade as GradeKey]
           ttsText = isDowngrade ? tsunamiDowngradeToText(event) : tsunamiToText(event)
+          // グレード変化と同時に観測中（波高未確定）で新規到達した観測点も読み上げに含める
+          const newlyArrivedObsOnGradeChange = (event.observations ?? [])
+            .filter(o => !o.height && !seenObsNamesRef.current.has(o.name))
+          const arrivalTextOnGradeChange = tsunamiArrivalToText(newlyArrivedObsOnGradeChange)
+          if (arrivalTextOnGradeChange) ttsText += arrivalTextOnGradeChange
         }
       }
       if (ttsText && type) {
@@ -526,6 +540,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           })
           for (const o of updatedObs552) newStatusEntries.push([o.name, prevMap552.has(o.name) ? 'updated' : 'new'])
         }
+        // 波高未確定（観測中）のまま新規到達した観測点もバッジ表示の対象にする
+        for (const o of event.observations ?? []) {
+          if (!o.height && !seenObsNamesRef.current.has(o.name)) newStatusEntries.push([o.name, 'new'])
+        }
       } else {
         const obsWithHeight552 = (event.observations ?? []).filter(o => !!o.height)
         if (obsWithHeight552.length > 0) {
@@ -536,6 +554,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             ts: Date.now(),
           })
           for (const o of obsWithHeight552) newStatusEntries.push([o.name, 'new'])
+        }
+        // 波高未確定（観測中）のまま新規到達した観測点もバッジ表示の対象にする
+        for (const o of event.observations ?? []) {
+          if (!o.height && !seenObsNamesRef.current.has(o.name)) newStatusEntries.push([o.name, 'new'])
         }
       }
 
@@ -550,6 +572,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
 
       for (const o of event.observations ?? []) {
+        seenObsNamesRef.current.add(o.name)
         if (!o.height) continue
         const prev = lastMaxObsHeightRef.current.get(o.name)
         if (prev === undefined || o.height.value > prev.value || (o.height.over && !prev.over)) {
@@ -582,6 +605,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     eewPhase1PromisesRef.current.clear()
     lastTsunamiGradeRef.current = null
     lastMaxObsHeightRef.current.clear()
+    seenObsNamesRef.current.clear()
     seenLpgmEventIdsRef.current.clear()
   }, [])
 
@@ -606,6 +630,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           const grade = tsunamiMaxGrade(tsunami)
           if (grade !== 'Unknown') lastTsunamiGradeRef.current = grade
           for (const o of tsunami.observations ?? []) {
+            seenObsNamesRef.current.add(o.name)
             if (o.height?.value != null) lastMaxObsHeightRef.current.set(o.name, { value: o.height.value, over: o.height.over })
           }
         }
