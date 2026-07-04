@@ -13,6 +13,19 @@ import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox } from '../utils/voicevox'
 import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, nankaiToText, kohatsuToText, lpgmToText } from '../utils/ttsText'
 
+// 観測点リストから、属する予報区（districtCode/districtName）を重複なく列挙する
+function uniqueDistricts(observations: { districtCode?: string; districtName?: string }[]): { code?: string; name?: string }[] {
+  const seen = new Set<string>()
+  const result: { code?: string; name?: string }[] = []
+  for (const o of observations) {
+    const key = o.districtCode ?? o.districtName ?? ''
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    result.push({ code: o.districtCode, name: o.districtName })
+  }
+  return result
+}
+
 // ライブイベント（地震・津波・EEW・長周期地震動・南海トラフ/後発地震）受信時の
 // 通知音・ウィンドウタイトル・タブ切替・VOICEVOX 読み上げ・ブラウザ通知を担うフック。
 // イベント種別ごとの続報判定・重複抑制に使う追跡 ref 群もこのフックが所有する。
@@ -75,8 +88,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // 津波観測点の新規/更新バッジ表示状態と自動クリアタイマー
   const [obsUpdateStatus, setObsUpdateStatus] = useState<Map<string, 'new' | 'updated'>>(() => new Map())
   const obsStatusClearTimerRef = useRef<number>(0)
-  // 津波観測データ受信時に地図でフォーカスする予報区
-  const [focusedDistrict, setFocusedDistrict] = useState<{ code?: string; name?: string; ts: number } | null>(null)
+  // 津波観測データ受信時にスクロールでフォーカスする予報区（今回の受信で変更があった区域全部＋その中の最高波高区域）
+  const [focusedDistrict, setFocusedDistrict] = useState<{ districts: { code?: string; name?: string }[]; top: { code?: string; name?: string }; ts: number } | null>(null)
 
   const handleLiveEvent = (event: AppEvent) => {
     // 受信時に該当タブを自動表示し、ウィンドウタイトルを更新する
@@ -506,14 +519,22 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         })
         if (updatedObs552.length > 0) {
           const topObs = updatedObs552.reduce((a, b) => (b.height!.value > a.height!.value ? b : a))
-          setFocusedDistrict({ code: topObs.districtCode, name: topObs.districtName, ts: Date.now() })
+          setFocusedDistrict({
+            districts: uniqueDistricts(updatedObs552),
+            top: { code: topObs.districtCode, name: topObs.districtName },
+            ts: Date.now(),
+          })
           for (const o of updatedObs552) newStatusEntries.push([o.name, prevMap552.has(o.name) ? 'updated' : 'new'])
         }
       } else {
         const obsWithHeight552 = (event.observations ?? []).filter(o => !!o.height)
         if (obsWithHeight552.length > 0) {
           const topObs = obsWithHeight552.reduce((a, b) => (b.height!.value > a.height!.value ? b : a))
-          setFocusedDistrict({ code: topObs.districtCode, name: topObs.districtName, ts: Date.now() })
+          setFocusedDistrict({
+            districts: uniqueDistricts(obsWithHeight552),
+            top: { code: topObs.districtCode, name: topObs.districtName },
+            ts: Date.now(),
+          })
           for (const o of obsWithHeight552) newStatusEntries.push([o.name, 'new'])
         }
       }
