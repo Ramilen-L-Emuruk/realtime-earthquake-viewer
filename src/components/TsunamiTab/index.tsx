@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation } from '../../types/earthquake'
 import { formatDateTimeMin, formatTime } from '../../utils/formatters'
 
@@ -128,7 +128,7 @@ function TsunamiHeightHeader({ label, style }: { label: string; style: GradeStyl
   )
 }
 
-function TsunamiAreaRow({ area, observations, style, onObservationClick, focusedDistrict, obsUpdateStatus }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle; onObservationClick?: (name: string) => void; focusedDistrict?: FocusedDistrict | null; obsUpdateStatus?: Map<string, 'new' | 'updated'> }) {
+function TsunamiAreaRow({ area, observations, style, onObservationClick, focusedDistrict, obsUpdateStatus, scrollMarginTop }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle; onObservationClick?: (name: string) => void; focusedDistrict?: FocusedDistrict | null; obsUpdateStatus?: Map<string, 'new' | 'updated'>; scrollMarginTop?: number }) {
   const rowRef = useRef<HTMLDivElement>(null)
 
   const isFocused = focusedDistrict != null && (
@@ -154,7 +154,7 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, focused
   const showImmediateBadge = area.immediate && observations.length === 0
 
   return (
-    <div ref={rowRef} className="border-b border-white/5 last:border-0">
+    <div ref={rowRef} className="border-b border-white/5 last:border-0" style={{ scrollMarginTop }}>
       <div className="flex items-center gap-3 px-4 py-3">
         <div className="flex-1 min-w-0">
           <span className="text-white font-semibold block" style={{ fontSize: '20px', lineHeight: '1.2' }}>
@@ -265,7 +265,7 @@ function TsunamiObservationRow({ obs, onObservationClick }: { obs: TsunamiObserv
   )
 }
 
-function TsunamiGradeCard({ grade, areas, observations, onObservationClick, focusedDistrict, obsUpdateStatus }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[]; onObservationClick?: (name: string) => void; focusedDistrict?: FocusedDistrict | null; obsUpdateStatus?: Map<string, 'new' | 'updated'> }) {
+function TsunamiGradeCard({ grade, areas, observations, onObservationClick, focusedDistrict, obsUpdateStatus, scrollMarginTop }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[]; onObservationClick?: (name: string) => void; focusedDistrict?: FocusedDistrict | null; obsUpdateStatus?: Map<string, 'new' | 'updated'>; scrollMarginTop?: number }) {
   if (areas.length === 0) return null
   const style = getGradeStyle(grade)
   const groups = groupAreasByHeight(areas).map(group => ({ ...group, areas: sortAreasByObservation(group.areas, observations) }))
@@ -288,6 +288,7 @@ function TsunamiGradeCard({ grade, areas, observations, onObservationClick, focu
               onObservationClick={onObservationClick}
               focusedDistrict={focusedDistrict}
               obsUpdateStatus={obsUpdateStatus}
+              scrollMarginTop={scrollMarginTop}
             />
           ))}
         </div>
@@ -306,6 +307,26 @@ function getTopGrade(tsunamis: JMATsunami[]): TsunamiGrade {
 export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservationClick, focusedDistrict, obsUpdateStatus }: Props) {
   // cancelledAt がある = 10秒表示中なので active に含める
   const active = tsunamis.filter(t => !t.cancelled || t.cancelledAt)
+
+  // sticky バナーの実高さを測り、自動スクロール先の scroll-margin-top に反映する
+  // （バナーは発令中/解除・地震カードリンクの有無で行数が変わり高さが可変のため固定値では合わない）
+  // 「津波情報なし」表示から実データ表示への切替でバナー要素自体が生成し直されるため、
+  // useRef + 空配列 useEffect ではなく callback ref で mount のたびに監視し直す
+  const bannerObserverRef = useRef<ResizeObserver | null>(null)
+  const [bannerHeight, setBannerHeight] = useState(0)
+
+  const bannerRef = useCallback((el: HTMLDivElement | null) => {
+    bannerObserverRef.current?.disconnect()
+    bannerObserverRef.current = null
+    if (!el) return
+    // contentRect は padding を含まない content-box。バナーには pt-3 の padding があるため
+    // 実際の占有高さ（border-box）は getBoundingClientRect で測る
+    const observer = new ResizeObserver(() => {
+      setBannerHeight(el.getBoundingClientRect().height)
+    })
+    observer.observe(el)
+    bannerObserverRef.current = observer
+  }, [])
 
   if (active.length === 0) {
     return (
@@ -337,7 +358,7 @@ export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservat
   return (
     <div className="h-full overflow-y-auto">
       {/* 発令中 / 解除バナー（sticky で常時表示）。対応する地震カードがある場合のみクリック可能。 */}
-      <div className="sticky top-0 z-10 px-3 pt-3">
+      <div ref={bannerRef} className="sticky top-0 z-10 px-3 pt-3">
         <div
           role={linkedQuake ? 'button' : undefined}
           tabIndex={linkedQuake ? 0 : undefined}
@@ -393,6 +414,7 @@ export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservat
                 onObservationClick={onObservationClick}
                 focusedDistrict={focusedDistrict}
                 obsUpdateStatus={obsUpdateStatus}
+                scrollMarginTop={bannerHeight}
               />
             ))}
             {unmatched.length > 0 && (
