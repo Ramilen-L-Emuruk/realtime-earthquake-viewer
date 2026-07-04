@@ -14,8 +14,9 @@ export function useStationCoords(): StationCoordsData | null {
       .then((d) => {
         if (active) setData(d)
       })
-      .catch(() => {
+      .catch((err) => {
         // 座標データが取得できなくても地図自体は表示する
+        console.warn('[data] station-coords 取得失敗（震度マーカーなしで継続）', err)
       })
     return () => {
       active = false

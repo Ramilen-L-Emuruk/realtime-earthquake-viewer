@@ -14,8 +14,9 @@ export function useSubRegions(): SubRegion[] | null {
       .then((d) => {
         if (active) setData(d)
       })
-      .catch(() => {
+      .catch((err) => {
         // 区域データが取得できなくても地図自体は表示する
+        console.warn('[data] subregions 取得失敗（区域集約なしで継続）', err)
       })
     return () => {
       active = false
