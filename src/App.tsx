@@ -538,6 +538,7 @@ export function App() {
             idleRevertSec={settings.idleRevertSec}
             eewLpgmEventId={activeLpgmSource === 'eew' ? activeLpgmEventId : null}
             focusObsName={focusedObsName}
+            obsUpdateStatus={obsUpdateStatus}
           />
           <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
           <SpecialInfoBanner nankai={nankai} kohatsu={kohatsu} />
