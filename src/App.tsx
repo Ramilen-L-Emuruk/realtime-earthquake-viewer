@@ -1039,7 +1039,7 @@ export function App() {
 
       loadReplayEvents([...preFiltered, ...normalEvents])
     } catch (e) {
-      console.error('replay fetch failed', e)
+      console.error('[replay] リプレイデータ取得失敗', e)
     } finally {
       setReplayIsFetching(false)
     }
@@ -1071,7 +1071,7 @@ export function App() {
     setReplayIsFetching(true)
     fetchDmdataReplayEvents(settings.dmdataApiKey, nextFrom, nextTo)
       .then(loadReplayEvents)
-      .catch((e) => console.error('replay prefetch failed', e))
+      .catch((e) => console.error('[replay] 先読み取得失敗', e))
       .finally(() => setReplayIsFetching(false))
   }, [replayCurrentTime, replayTimeOffset, replayIsFetching, loadReplayEvents, settings.dmdataApiKey])
 

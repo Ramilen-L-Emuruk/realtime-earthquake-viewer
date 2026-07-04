@@ -87,6 +87,8 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
       if (cancelled) return
       const prefs = prefRes.status === 'fulfilled' ? prefRes.value : null
       const subs = subRes.status === 'fulfilled' ? subRes.value : null
+      if (prefRes.status === 'rejected') console.warn('[data] prefectures 取得失敗（陸地塗りなしで継続）', prefRes.reason)
+      if (subRes.status === 'rejected') console.warn('[data] subregions 取得失敗（境界線なしで継続）', subRes.reason)
 
       // 1) 陸地塗り（都道府県ポリゴン・塗りのみ）
       if (prefs) {
