@@ -158,12 +158,14 @@ export function eewCancelToText(event: EEWAlert): string {
     : '緊急地震速報はキャンセルされました。'
 }
 
-/** VXSE51/52/53/61 地震情報取消の読み上げテキストを生成する。 */
-export function earthquakeCancelToText(event: JMAQuake): string {
-  const time = event.issue.time ? formatTime(event.issue.time) : null
-  const name = event.earthquake.hypocenter.name
-  if (time && name) return `${time}に発表された、${name}の地震情報はキャンセルされました。`
-  if (time) return `${time}に発表された地震情報はキャンセルされました。`
+/**
+ * VXSE51/52/53/61 地震情報取消の読み上げテキストを生成する。
+ * time は取消電文自体の発表時刻ではなく、同一 eventId で最後に受信した地震情報の発表時刻を渡すこと
+ * （呼び出し側 useLiveEventHandler.ts で解決する）。
+ */
+export function earthquakeCancelToText(time: string | null): string {
+  const formatted = time ? formatTime(time) : null
+  if (formatted) return `${formatted}に発表された地震情報はキャンセルされました。`
   return '地震情報はキャンセルされました。'
 }
 
