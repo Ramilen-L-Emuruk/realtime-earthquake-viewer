@@ -91,8 +91,14 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       title.clearTitleTimer('earthquake')
       title.applyPriority()
       if (settings.voicevoxEnabled) {
+        // 取消電文の issue.time は取消電文自体の発表時刻であり、取り消された元の地震情報の発表時刻ではない。
+        // 読み上げには同一 eventId で最後に受信した地震情報（既存カード）の time を使う。
+        const cancelEventId = event.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
+        const original = cancelEventId
+          ? earthquakesRef.current.find(e => e.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1] === cancelEventId)
+          : undefined
         setTimeout(() => {
-          speakWithVoicevox(settings.voicevoxUrl, earthquakeCancelToText(event), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+          speakWithVoicevox(settings.voicevoxUrl, earthquakeCancelToText(original?.time ?? null), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
         }, 1200)
       }
     } else if (event.kind === 'quake') {
