@@ -235,6 +235,9 @@ realtime-earthquake-viewer/
 │   │   └── TsunamiTab/             # 津波情報パネル
 │   ├── hooks/
 │   │   ├── useEarthquakes.ts       # DMDATA.JP / P2PQuake WS + REST 状態管理（VITE_VARIANT で切替）
+│   │   ├── useLiveEventHandler.ts  # ライブイベント受信時の通知音・タイトル・タブ切替・読み上げ
+│   │   ├── useAlertTitle.ts        # ウィンドウタイトル（情報タイトル）管理
+│   │   ├── useKyoshinAlerts.ts     # 揺れ検知に応じたタブ切替・タイトル・通知音
 │   │   ├── useKyoshinRealtime.ts   # Yahoo リアルタイム震度のポーリング
 │   │   ├── useKyoshinDetection.ts  # 強震モニタの揺れ検知（6層フィルタ）
 │   │   ├── useDmdssWaves.ts        # DM-D.S.S 版 EEW の P波・S波地表到達半径アニメーション
@@ -256,6 +259,7 @@ realtime-earthquake-viewer/
 │       ├── eew.ts                  # EEW 対象地域・最大震度・情報番号の算出
 │       ├── intensity.ts            # 震度スケール色・ラベル
 │       ├── kyoshinIntensity.ts     # リアルタイム震度インデックス→震度階級/色（気象庁配色）
+│       ├── notifications.ts        # ブラウザ通知の表示
 │       ├── lpgm.ts                 # 長周期地震動階級のラベル・色
 │       ├── tsunami.ts              # 津波情報の等級算出・観測情報のマージ
 │       ├── stationCoords.ts        # 地点名→座標の引き当て

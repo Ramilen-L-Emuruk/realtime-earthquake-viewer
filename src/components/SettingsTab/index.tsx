@@ -516,7 +516,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
                 <Row label="テスト読み上げ" description="">
                   <TestButton color="blue" onClick={() => {
                     unlockAudio()
-                    speakWithVoicevox(settings.voicevoxUrl, '緊急地震速報。三陸沖を震源とするマグニチュード7.2の地震が発生しました。予想最大震度6弱。', settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+                    speakWithVoicevox(settings.voicevoxUrl, '緊急地震速報。三陸沖を震源とするマグニチュード7.2の地震が発生しました。予想最大震度6強。', settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
                   }}>▶ 試聴</TestButton>
                 </Row>
               </>
@@ -658,7 +658,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
         <Row label="地震情報" description="三陸沖 M9.0 最大震度7 をリストと地図に追加">
           <TestButton color="red" onClick={onTest.earthquake}>地震テスト</TestButton>
         </Row>
-        <Row label="緊急地震速報（特別警報）" description="震度6弱以上 – eewSpecial 音 / 30秒間表示">
+        <Row label="緊急地震速報（特別警報）" description="震度6強 – eewSpecial 音 / 30秒間表示">
           <TestButton color="red" onClick={onTest.eew}>特別警報テスト</TestButton>
         </Row>
         <Row label="緊急地震速報（警報）" description="震度5強相当 – eew 音 / 30秒間表示">
@@ -741,7 +741,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">3.13.33</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">3.13.34</span></Row>
         <Row label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"
