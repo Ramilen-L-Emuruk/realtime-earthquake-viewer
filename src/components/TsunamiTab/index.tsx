@@ -3,8 +3,10 @@ import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation } from '../.
 import { formatDateTimeMin, formatTime } from '../../utils/formatters'
 
 export interface FocusedDistrict {
-  code?: string
-  name?: string
+  // 今回の受信で変更（新規/更新）があった区域すべて
+  districts: { code?: string; name?: string }[]
+  // その中で波高が最大の区域（画面に収まらない場合はこれを一番上に配置する）
+  top: { code?: string; name?: string }
   ts: number
 }
 
@@ -58,6 +60,12 @@ const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch', 'Foreca
 function matchesArea(obs: TsunamiObservation, area: TsunamiArea): boolean {
   if (obs.districtCode && area.code) return obs.districtCode === area.code
   return !!obs.districtName && obs.districtName === area.name
+}
+
+// FocusedDistrict の区域識別子（code/name）を発表区域に紐づける。照合ルールは matchesArea と同じ。
+function districtMatchesArea(district: { code?: string; name?: string }, area: TsunamiArea): boolean {
+  if (district.code && area.code) return district.code === area.code
+  return !!district.name && district.name === area.name
 }
 
 // 同一階級内で、予想波高（maxHeight.description）が連続して一致する区域を1グループにまとめる。
@@ -128,20 +136,10 @@ function TsunamiHeightHeader({ label, style }: { label: string; style: GradeStyl
   )
 }
 
-function TsunamiAreaRow({ area, observations, style, onObservationClick, focusedDistrict, obsUpdateStatus, scrollMarginTop }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle; onObservationClick?: (name: string) => void; focusedDistrict?: FocusedDistrict | null; obsUpdateStatus?: Map<string, 'new' | 'updated'>; scrollMarginTop?: number }) {
-  const rowRef = useRef<HTMLDivElement>(null)
-
-  const isFocused = focusedDistrict != null && (
-    (focusedDistrict.code && area.code) ? focusedDistrict.code === area.code : focusedDistrict.name === area.name
-  )
-
-  useEffect(() => {
-    if (isFocused && rowRef.current) {
-      rowRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-    }
-  // focusedDistrict.ts を依存にすることで同一 district の再フォーカスも発火する
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusedDistrict?.ts])
+function TsunamiAreaRow({ area, observations, style, onObservationClick, isChanged, isTop, registerRow, obsUpdateStatus }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle; onObservationClick?: (name: string) => void; isChanged: boolean; isTop: boolean; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; obsUpdateStatus?: Map<string, 'new' | 'updated'> }) {
+  const setRowRef = useCallback((el: HTMLDivElement | null) => {
+    registerRow?.(area, isChanged, isTop, el)
+  }, [registerRow, area, isChanged, isTop])
 
   const arrivalText = area.firstHeight?.arrivalTime
     ? `到達予想 ${formatTime(area.firstHeight.arrivalTime).slice(0, 5)}`
@@ -154,7 +152,7 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, focused
   const showImmediateBadge = area.immediate && observations.length === 0
 
   return (
-    <div ref={rowRef} className="border-b border-white/5 last:border-0" style={{ scrollMarginTop }}>
+    <div ref={setRowRef} className="border-b border-white/5 last:border-0">
       <div className="flex items-center gap-3 px-4 py-3">
         <div className="flex-1 min-w-0">
           <span className="text-white font-semibold block" style={{ fontSize: '20px', lineHeight: '1.2' }}>
@@ -265,7 +263,7 @@ function TsunamiObservationRow({ obs, onObservationClick }: { obs: TsunamiObserv
   )
 }
 
-function TsunamiGradeCard({ grade, areas, observations, onObservationClick, focusedDistrict, obsUpdateStatus, scrollMarginTop }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[]; onObservationClick?: (name: string) => void; focusedDistrict?: FocusedDistrict | null; obsUpdateStatus?: Map<string, 'new' | 'updated'>; scrollMarginTop?: number }) {
+function TsunamiGradeCard({ grade, areas, observations, onObservationClick, focusedDistrict, registerRow, obsUpdateStatus }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[]; onObservationClick?: (name: string) => void; focusedDistrict?: FocusedDistrict | null; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; obsUpdateStatus?: Map<string, 'new' | 'updated'> }) {
   if (areas.length === 0) return null
   const style = getGradeStyle(grade)
   const groups = groupAreasByHeight(areas).map(group => ({ ...group, areas: sortAreasByObservation(group.areas, observations) }))
@@ -286,9 +284,10 @@ function TsunamiGradeCard({ grade, areas, observations, onObservationClick, focu
               observations={observations.filter(o => matchesArea(o, area))}
               style={style}
               onObservationClick={onObservationClick}
-              focusedDistrict={focusedDistrict}
+              isChanged={focusedDistrict?.districts.some(d => districtMatchesArea(d, area)) ?? false}
+              isTop={focusedDistrict != null && districtMatchesArea(focusedDistrict.top, area)}
+              registerRow={registerRow}
               obsUpdateStatus={obsUpdateStatus}
-              scrollMarginTop={scrollMarginTop}
             />
           ))}
         </div>
@@ -328,6 +327,52 @@ export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservat
     bannerObserverRef.current = observer
   }, [])
 
+  // 今回変更された区域の行DOM（area.code ?? area.name をキーに登録・登録解除される）
+  const changedRowElsRef = useRef<Map<string, HTMLDivElement>>(new Map())
+  const topRowElRef = useRef<HTMLDivElement | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  const registerRow = useCallback((area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => {
+    const key = area.code ?? area.name ?? ''
+    if (el && isChanged) changedRowElsRef.current.set(key, el)
+    else changedRowElsRef.current.delete(key)
+    if (isTop) topRowElRef.current = el
+  }, [])
+
+  // 変更区域が画面に収まるならまとめて見えるように、収まらなければ波高最大の区域が
+  // ヘッダー直下に来るようにスクロールする
+  useEffect(() => {
+    if (!focusedDistrict) return
+    const container = containerRef.current
+    const changedEls = Array.from(changedRowElsRef.current.values())
+    if (!container || changedEls.length === 0) return
+
+    const containerRect = container.getBoundingClientRect()
+    const viewTop = containerRect.top + bannerHeight
+    const viewBottom = containerRect.bottom
+    const availableHeight = viewBottom - viewTop
+
+    const tops = changedEls.map(el => el.getBoundingClientRect().top)
+    const bottoms = changedEls.map(el => el.getBoundingClientRect().bottom)
+    const spanTop = Math.min(...tops)
+    const spanBottom = Math.max(...bottoms)
+    const spanHeight = spanBottom - spanTop
+
+    let delta = 0
+    if (spanHeight <= availableHeight) {
+      if (spanTop < viewTop) delta = spanTop - viewTop
+      else if (spanBottom > viewBottom) delta = spanBottom - viewBottom
+    } else if (topRowElRef.current) {
+      delta = topRowElRef.current.getBoundingClientRect().top - viewTop
+    }
+
+    if (Math.abs(delta) > 1) {
+      container.scrollTo({ top: container.scrollTop + delta, behavior: 'smooth' })
+    }
+  // focusedDistrict.ts を依存にすることで同一区域の再フォーカスも発火する
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusedDistrict?.ts, bannerHeight])
+
   if (active.length === 0) {
     return (
       <div className="h-full flex flex-col items-center justify-center gap-3 p-4">
@@ -356,7 +401,7 @@ export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservat
     : undefined
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div ref={containerRef} className="h-full overflow-y-auto">
       {/* 発令中 / 解除バナー（sticky で常時表示）。対応する地震カードがある場合のみクリック可能。 */}
       <div ref={bannerRef} className="sticky top-0 z-10 px-3 pt-3">
         <div
@@ -413,8 +458,8 @@ export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservat
                 observations={observations}
                 onObservationClick={onObservationClick}
                 focusedDistrict={focusedDistrict}
+                registerRow={registerRow}
                 obsUpdateStatus={obsUpdateStatus}
-                scrollMarginTop={bannerHeight}
               />
             ))}
             {unmatched.length > 0 && (
