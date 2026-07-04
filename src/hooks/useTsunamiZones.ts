@@ -14,8 +14,9 @@ export function useTsunamiZones(): TsunamiZones | null {
       .then((d) => {
         if (active) setData(d)
       })
-      .catch(() => {
+      .catch((err) => {
         // 海岸線データが取得できなくても地図自体は表示する
+        console.warn('[data] tsunami-zones 取得失敗（津波海岸線なしで継続）', err)
       })
     return () => {
       active = false
