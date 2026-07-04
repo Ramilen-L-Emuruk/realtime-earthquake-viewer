@@ -1,4 +1,5 @@
 import type { EEWAlert, EEWRegion } from '../types/earthquake'
+import type { AlertSoundType } from './alertSound'
 import { computeSWaveTravelTimeSec } from '../hooks/useDmdssWaves'
 
 // 司・翠川(1999)の距離減衰式を使ってEEW最終報後の自動解除秒数を計算する。
@@ -131,4 +132,32 @@ export function eewMaxScale(eew: EEWAlert): number {
 export function eewSerial(eew: EEWAlert): number | null {
   const n = Number(eew.issue?.serial)
   return Number.isInteger(n) && n > 0 ? n : null
+}
+
+// EEW 単発のレベル算出: 0=低震度予報 / 1=警報（severity=Warning） / 2=特別警報（severity=Warning かつ 震度6弱以上）
+// scaleTo:99 は DMDATA パーサーが割り当てる「震度算出不能」コードなので通常の震度比較から除外する
+// レベル1・2ともに severity（isWarning）必須。予報級電文（severity=Forecast）は震度だけ高くても常にレベル0とする。
+export function computeSingleEEWLevel(eew: EEWAlert): 0 | 1 | 2 {
+  if (eew.severity !== 'Warning') return 0
+  const scale = eewMaxScale(eew)
+  const intensityKnown = scale < 99
+  return (intensityKnown && scale >= 55) ? 2 : 1
+}
+
+export function computeEEWLevel(eews: ReadonlyMap<string, EEWAlert>): 0 | 1 | 2 | null {
+  if (eews.size === 0) return null
+  let max: 0 | 1 | 2 = 0
+  for (const eew of eews.values()) {
+    const level = computeSingleEEWLevel(eew)
+    if (level > max) max = level
+  }
+  return max
+}
+
+export function selectEEWSoundType(isNew: boolean, levelUpgraded: boolean, currentLevel: 0 | 1 | 2, isFinal: boolean): AlertSoundType {
+  if (isFinal && !isNew) return 'eewFinal'
+  if (isNew || levelUpgraded) {
+    return currentLevel === 2 ? 'eewSpecial' : currentLevel === 1 ? 'eew' : 'eewForecast'
+  }
+  return 'eewUpdate'
 }

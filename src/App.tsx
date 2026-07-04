@@ -15,8 +15,10 @@ import { useKyoshinDetection, MIN_DETECTION_INDEX } from './hooks/useKyoshinDete
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
 import { useDmdssWaves } from './hooks/useDmdssWaves'
 import { getIntensityLabel } from './utils/intensity'
-import { formatMagnitude } from './utils/formatters'
-import { eewMaxScale } from './utils/eew'
+import { formatMagnitude, formatDateTimeLocal } from './utils/formatters'
+import { eewMaxScale, computeSingleEEWLevel, computeEEWLevel, selectEEWSoundType } from './utils/eew'
+import { haversineKm } from './utils/geo'
+import { showBrowserNotification } from './utils/notifications'
 import { tsunamiMaxGrade, tsunamiOverallGrade } from './utils/tsunami'
 import { playAlertSound, playKyoshinUpdateSound, playCountdownBeep, kyoshinLevel, unlockAudio, setSoundVolume, type AlertSoundType } from './utils/alertSound'
 import { speakWithVoicevox } from './utils/voicevox'
@@ -33,57 +35,6 @@ const DEFAULT_TITLE = import.meta.env.VITE_VARIANT === 'dmdss'
   : 'リアルタイム地震ビューアー'
 
 const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
-
-function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6371
-  const dLat = (lat2 - lat1) * Math.PI / 180
-  const dLng = (lng2 - lng1) * Math.PI / 180
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2
-  return R * 2 * Math.asin(Math.sqrt(a))
-}
-
-function showBrowserNotification(
-  title: string,
-  body: string,
-  tag: string,
-  requireInteraction = false,
-) {
-  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
-  new Notification(title, {
-    body,
-    icon: `${import.meta.env.BASE_URL}icons/icon.svg`,
-    tag,
-    requireInteraction,
-  })
-}
-
-// EEW 単発のレベル算出: 0=低震度予報 / 1=警報（severity=Warning） / 2=特別警報（severity=Warning かつ 震度6弱以上）
-// scaleTo:99 は DMDATA パーサーが割り当てる「震度算出不能」コードなので通常の震度比較から除外する
-// レベル1・2ともに severity（isWarning）必須。予報級電文（severity=Forecast）は震度だけ高くても常にレベル0とする。
-function computeSingleEEWLevel(eew: EEWAlert): 0 | 1 | 2 {
-  if (eew.severity !== 'Warning') return 0
-  const scale = eewMaxScale(eew)
-  const intensityKnown = scale < 99
-  return (intensityKnown && scale >= 55) ? 2 : 1
-}
-
-function computeEEWLevel(eews: ReadonlyMap<string, EEWAlert>): 0 | 1 | 2 | null {
-  if (eews.size === 0) return null
-  let max: 0 | 1 | 2 = 0
-  for (const eew of eews.values()) {
-    const level = computeSingleEEWLevel(eew)
-    if (level > max) max = level
-  }
-  return max
-}
-
-function selectEEWSoundType(isNew: boolean, levelUpgraded: boolean, currentLevel: 0 | 1 | 2, isFinal: boolean): AlertSoundType {
-  if (isFinal && !isNew) return 'eewFinal'
-  if (isNew || levelUpgraded) {
-    return currentLevel === 2 ? 'eewSpecial' : currentLevel === 1 ? 'eew' : 'eewForecast'
-  }
-  return 'eewUpdate'
-}
 
 function computeEEWTitle(eews: ReadonlyMap<string, EEWAlert>): string {
   const primary = Array.from(eews.values()).sort((a, b) => eewMaxScale(b) - eewMaxScale(a))[0]
@@ -110,11 +61,6 @@ function applyPriorityTitle(
 // 自動復帰秒数が15秒設定のときのみ15秒、それ以外は30秒に揃える。
 function titleResetMs(idleRevertSec: number): number {
   return idleRevertSec === 15 ? 15000 : 30000
-}
-
-function formatDateTimeLocal(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
 export function App() {

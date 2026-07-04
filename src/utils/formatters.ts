@@ -42,6 +42,12 @@ export function formatTime(isoString: string): string {
   return `${h}:${m}:${s}`
 }
 
+/** datetime-local input 用のローカル時刻文字列（YYYY-MM-DDTHH:mm）を返す。 */
+export function formatDateTimeLocal(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
 export function formatDepth(depth: number): string {
   if (depth === 0) return 'ごく浅い'
   if (depth < 0) return '不明'
