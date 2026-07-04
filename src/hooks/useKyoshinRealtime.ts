@@ -122,11 +122,23 @@ export function useKyoshinRealtime(
 
     const isReplay = timeOffset != null
 
-    // target: 今回 fetch するタイムスタンプ。
-    // retryCount: 同一 target への再試行回数。accumulatedElapsed: リプレイ時、同一 target への
-    //   リトライで消費した実時間の累積（次の waitMs 計算に反映し遅れの蓄積を防ぐ）。
-    const tick = (target: Date, retryCount = 0, accumulatedElapsed = 0) => {
-      // fetch 開始時刻を記録し、成功後の待機時間から差し引いて遅延蓄積を防ぐ
+    // 初回 target: リアルタイム時のみ FETCH_OFFSET_MS 分だけ過去から開始し秒境界直後の失敗を抑制する
+    const initialTarget = isReplay
+      ? new Date(Date.now() + timeOffset)
+      : new Date(Date.now() - FETCH_OFFSET_MS)
+
+    // リプレイ時: (アンカー実時刻, アンカー target 時刻) の組を基準に、各 target の発火予定
+    // 実時刻を絶対値で計算する。setTimeout は指定時間ぴったりには発火しないため、待機時間を
+    // 「前回からの経過分を引く」相対計算にすると発火遅延がtickごとに積み重なり、再生時刻が
+    // 壁時計からどんどん遅れていく。絶対時刻を基準にすることで各tickの遅延がリセットされ、
+    // 蓄積しない。
+    const anchorRealMs = Date.now()
+    const anchorTargetMs = initialTarget.getTime()
+    const scheduledWaitMs = (nextTarget: Date): number =>
+      Math.max(0, anchorRealMs + (nextTarget.getTime() - anchorTargetMs) - Date.now())
+
+    // target: 今回 fetch するタイムスタンプ。retryCount: 同一 target への再試行回数。
+    const tick = (target: Date, retryCount = 0) => {
       const fetchStart = Date.now()
       fetchRealtimeIntensity(target)
         .then((rt) => {
@@ -146,9 +158,8 @@ export function useKyoshinRealtime(
             timer = setTimeout(() => tick(nextTarget), Math.max(0, POLL_MS - elapsed))
             return
           }
-          // リプレイ時: このtargetのリトライで消費した累積時間も差し引く
-          const elapsed = accumulatedElapsed + (Date.now() - fetchStart)
-          timer = setTimeout(() => tick(nextTarget), Math.max(0, POLL_MS - elapsed))
+          // リプレイ時: アンカーからの絶対時刻で次 tick の発火時刻を計算する
+          timer = setTimeout(() => tick(nextTarget), scheduledWaitMs(nextTarget))
         })
         .catch((err) => {
           if (!active) return
@@ -165,22 +176,17 @@ export function useKyoshinRealtime(
             timer = setTimeout(() => tick(target, retryCount + 1), RETRY_MS)
             return
           }
-          // リプレイ時: 累積時間を更新し、上限回数を超えたら諦めて次 target へ進める
+          // リプレイ時: 上限回数を超えたら諦めて次 target へ進める
           // （アーカイブ側の恒久的な欠損による無限リトライを防ぐ）
-          const totalElapsed = accumulatedElapsed + (Date.now() - fetchStart) + RETRY_MS
           if (retryCount + 1 >= REPLAY_MAX_RETRY_COUNT) {
             const nextTarget = new Date(target.getTime() + POLL_MS)
-            timer = setTimeout(() => tick(nextTarget), Math.max(0, POLL_MS - totalElapsed))
+            timer = setTimeout(() => tick(nextTarget), scheduledWaitMs(nextTarget))
             return
           }
-          timer = setTimeout(() => tick(target, retryCount + 1, totalElapsed), RETRY_MS)
+          timer = setTimeout(() => tick(target, retryCount + 1), RETRY_MS)
         })
     }
 
-    // 初回 target: リアルタイム時のみ FETCH_OFFSET_MS 分だけ過去から開始し秒境界直後の失敗を抑制する
-    const initialTarget = isReplay
-      ? new Date(Date.now() + timeOffset)
-      : new Date(Date.now() - FETCH_OFFSET_MS)
     tick(initialTarget)
     return () => {
       active = false
