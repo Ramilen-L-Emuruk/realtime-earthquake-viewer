@@ -193,7 +193,7 @@ export class DmdataWebSocket {
         this.onStatusChange?.('disconnected')
         return
       }
-      if (this.debug) dlog('接続失敗 → 再接続をスケジュール', { reason })
+      if (this.debug) dlog('接続失敗', { reason })
       this.scheduleReconnect()
     }
   }
@@ -394,6 +394,7 @@ export class DmdataWebSocket {
       RECONNECT_MAX_MS,
     )
     this.reconnectAttempt += 1
+    if (this.debug) dlog('再接続をスケジュール', { attempt: this.reconnectAttempt, delayMs: Math.round(delay) })
     this.reconnectTimer = setTimeout(() => {
       if (!this.stopped && !this.authError) this.tryConnect()
     }, delay)

@@ -491,8 +491,11 @@ const DING_PATTERNS: DingPattern[] = [
 /** 指定した種別の通知音を鳴らす。 */
 export function playAlertSound(type: AlertSoundType): void {
   const ctx = getCtx()
-  if (!ctx) return
-  console.debug(`[sound] playAlertSound type=${type}`)
+  if (!ctx) {
+    console.debug(`[sound] playAlertSound スキップ (AudioContext なし) type=${type}`)
+    return
+  }
+  console.debug(`[sound] playAlertSound type=${type} ctxState=${ctx.state}`)
   if (ctx.state === 'suspended') void ctx.resume()
   PLAYERS[type](ctx, ctx.currentTime + 0.02)
 }
@@ -550,8 +553,11 @@ export function playCountdownBeep(second: number): void {
 /** 強震モニタの最大インデックスに応じた震度更新音を鳴らす。 */
 export function playKyoshinUpdateSound(maxIndex: number): void {
   const ctx = getCtx()
-  if (!ctx) return
-  console.debug(`[sound] playKyoshinUpdateSound maxIndex=${maxIndex} level=${kyoshinLevel(maxIndex)}`)
+  if (!ctx) {
+    console.debug(`[sound] playKyoshinUpdateSound スキップ (AudioContext なし) maxIndex=${maxIndex}`)
+    return
+  }
+  console.debug(`[sound] playKyoshinUpdateSound maxIndex=${maxIndex} level=${kyoshinLevel(maxIndex)} ctxState=${ctx.state}`)
   if (ctx.state === 'suspended') void ctx.resume()
   const p = DING_PATTERNS[kyoshinLevel(maxIndex)]
   const base = ctx.currentTime + 0.02

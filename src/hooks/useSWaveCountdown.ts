@@ -57,12 +57,12 @@ export function useSWaveCountdown(
         const eewKey = `${circle.magnitude}-${circle.depth}`
         if (lastLoggedEEWRef.current !== eewKey) {
           lastLoggedEEWRef.current = eewKey
-          console.debug('[useSWaveCountdown] S波到達判定（EEW更新）', {
-            sRadius: `${sRadiusKm.toFixed(1)}km`,
-            distanceToHome: `${distanceKm.toFixed(1)}km`,
+          console.debug('[eew] S波到達判定（EEW更新）', {
+            sRadiusKm: Number(sRadiusKm.toFixed(1)),
+            distanceToHomeKm: Number(distanceKm.toFixed(1)),
             etaSec,
-            autoCancelSec: `${autoCancelSec.toFixed(1)}s`,
-            travelTimeSec: `${travelTimeSec.toFixed(1)}s`,
+            autoCancelSec: Number(autoCancelSec.toFixed(1)),
+            travelTimeSec: Number(travelTimeSec.toFixed(1)),
             willArriveBeforeCancel,
           })
         }
