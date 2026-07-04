@@ -382,6 +382,36 @@ export function tsunamiObservationUpdateToText(updatedObs: TsunamiObservation[],
   return `津波観測情報。${headlinePart}${detail}を観測しました。`
 }
 
+// 観測点を districtName（津波予報区）ごとにグループ化し、地点名のみ列挙する（tsunamiObservationDetailText の波高なし版）。
+function tsunamiArrivalDetailText(items: TsunamiObservation[]): string {
+  const groups: { districtName: string | null; items: TsunamiObservation[] }[] = []
+  for (const o of items) {
+    const key = o.districtName ?? null
+    const existing = key !== null ? groups.find(g => g.districtName === key) : undefined
+    if (existing) existing.items.push(o)
+    else groups.push({ districtName: key, items: [o] })
+  }
+  return groups.map(g => {
+    const stations = g.items.map(o => o.name).join('・')
+    return g.districtName ? `${g.districtName}、${stations}` : stations
+  }).join('、')
+}
+
+/**
+ * 最大波高が未確定（「観測中」）のまま新規に到達が確認された観測点の読み上げテキストを生成する。
+ * まだ maxHeight の数値が出ていない観測点（JMA電文で maxHeight.condition = "観測中"）が対象。
+ * 波高が未確定であること自体も明示的に読み上げる。件数は maxPoints で絞り、他 tsunami 系読み上げと同様に上限を設ける。
+ * 波高読み上げ（tsunamiObservationDetailText）と同様に districtName（津波予報区）ごとにグループ化する。
+ */
+export function tsunamiArrivalToText(obs: TsunamiObservation[], maxPoints = 5): string {
+  if (obs.length === 0) return ''
+  const shown = obs.slice(0, maxPoints)
+  const omitted = obs.length - shown.length
+  const suffix = omitted > 0 ? `、ほか${omitted}地点` : ''
+  const detail = tsunamiArrivalDetailText(shown)
+  return `${detail}${suffix}で到達を確認しました。最大波高は観測中です。`
+}
+
 /** 南海トラフ地震臨時情報（VYSE50/51/52）の読み上げテキストを生成する。 */
 export function nankaiToText(event: JMANankai): string {
   if (event.cancelled || event.kindName === '調査終了') {
