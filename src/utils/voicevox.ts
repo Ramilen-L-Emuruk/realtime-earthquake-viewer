@@ -105,7 +105,7 @@ export async function speakWithVoicevox(
   // 辞書が未ロードなら待つ（キャッシュ済みなら即時解決）
   await loadTtsReadingDict().catch(() => {})
   const normalized = applyTtsReadings(text)
-  console.debug(`[VoiceVox] 読み上げ: ${normalized}`)
+  console.debug(`[VoiceVox] 読み上げ: ${normalized}`, { speakerId, volume })
   text = normalized
 
   // 既存の再生を全て停止
@@ -118,7 +118,10 @@ export async function speakWithVoicevox(
   const sessionId = ++currentSessionId
 
   const ctx = getAudioContext()
-  if (!ctx) return
+  if (!ctx) {
+    console.debug('[VoiceVox] スキップ (AudioContext なし)')
+    return
+  }
   if (ctx.state === 'suspended') await ctx.resume()
 
   const gainNode = ctx.createGain()
