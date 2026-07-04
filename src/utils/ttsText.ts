@@ -235,9 +235,9 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
   const time = formatTime(event.earthquake.time)
 
   if (type === '顕著な地震の震源要素更新のお知らせ') {
-    let text = `顕著な地震の震源要素更新のお知らせ。${time}頃発生した${hypocenter.name}の地震について、${depthAmendPhrase(hypocenter.depth)}、マグニチュード${magnitudeText(hypocenter.magnitude)}に更新されました。`
-    text += domesticTsunamiText(domesticTsunami)
-    return text
+    // この電文（VXSE61）は震源要素の更新のみを伝え、津波の有無は含まない。
+    // 津波情報は別電文（VTSE41/51/52）で発表されるため、ここでは読み上げない。
+    return `顕著な地震の震源要素更新のお知らせ。${time}頃発生した${hypocenter.name}の地震について、${depthAmendPhrase(hypocenter.depth)}、マグニチュード${magnitudeText(hypocenter.magnitude)}に更新されました。`
   }
 
   if (type === '震源情報' || type === '遠地地震' || type === 'その他') {
