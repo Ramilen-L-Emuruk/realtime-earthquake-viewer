@@ -86,7 +86,7 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
   - 検証用スクリーンショットはリポジトリ直下に出力されるが**一時ファイル。コミット前に必ず削除する**（コミットしない）。`.playwright-mcp/` の出力も同様に Git 管理対象外（`.gitignore` 済み）。
 - **テスト機能の活用**: 設定タブのテストボタンで動作確認できる。
   - 地震テスト → 地震カード追加・地図の震度マーカー・自動タブ切替
-  - EEW 特別警報テスト → 震度6弱以上・特別警報（三陸沖 M7.2）→ `eewSpecial` 音・EEW カード（特別警報/赤）・震源マーカー
+  - EEW 特別警報テスト → 震度6強・特別警報（三陸沖 M7.2）→ `eewSpecial` 音・EEW カード（特別警報/赤）・震源マーカー
   - EEW 警報テスト → 震度5強相当・警報（茨城県沖 M6.5）→ `eew` 音・EEW カード（警報/赤）
   - EEW 予報テスト → 震度2程度・予報（宮城県沖 M4.5）→ `eewForecast` 音・EEW カード（予報/オレンジ）
   - 大警報テスト → 大津波警報（岩手・宮城・福島等）→ `tsunamiMajor` 音・津波タブの海岸線描画
@@ -156,7 +156,7 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 ### テストデータと UI 説明文
 - `SettingsTab/index.tsx` の `description` 文字列（例: 「震度5強相当」）は、`src/utils/testData.ts` の対応するテスト関数の実 `scaleTo` 値と一致させる。
   - EEW 警報テスト（`createTestEEWWarning`）: 最大 `scaleTo: 50` = 震度5強
-  - EEW 特別警報テスト（`createTestEEW`）: 最大 `scaleTo: 60` = 震度6弱
+  - EEW 特別警報テスト（`createTestEEW`）: 最大 `scaleTo: 60` = 震度6強
   - EEW 予報テスト（`createTestEEWForecast`）: 最大 `scaleTo: 25` = 震度2程度
 - 同じ説明文が `CLAUDE.md` の「テスト機能の活用」セクションにも記載されているため、変更時は両方を合わせて修正する。
 
