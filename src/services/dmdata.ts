@@ -39,6 +39,8 @@ function isDebugEnabled(includeTest: boolean): boolean {
   return includeTest
 }
 
+// 意図的に console.debug ではなく info を使う: opt-in のログのため、有効化したら
+// DevTools の Verbose 設定なしでも即座に見えるようにする。
 function dlog(...args: unknown[]): void {
   console.info('[DMDSS]', ...args)
 }
@@ -123,14 +125,13 @@ async function tryFetchTicket(
     }),
   })
   const body = await res.json() as Record<string, unknown>
-  if (debug) {
-    if (res.status === 200) {
-      dlog('socket チケット取得 OK', { status: res.status })
-    } else {
-      // 403/401/409 等の理由（契約スコープ不足・同時接続数上限など）を可視化する。
-      const e = (body as { error?: { message?: string; code?: number } }).error
-      dlog('socket チケット取得 失敗', { status: res.status, errorCode: e?.code, errorMessage: e?.message })
-    }
+  if (res.status === 200) {
+    if (debug) dlog('socket チケット取得 OK', { status: res.status })
+  } else {
+    // 403/401/409 等の理由（契約スコープ不足・同時接続数上限など）は実エラーのため、
+    // デバッグフラグに関係なく常に可視化する。
+    const e = (body as { error?: { message?: string; code?: number } }).error
+    console.warn('[DMDSS] socket チケット取得 失敗', { status: res.status, errorCode: e?.code, errorMessage: e?.message })
   }
   return { url: (body as { websocket?: { url: string } }).websocket?.url ?? '', status: res.status, body }
 }
@@ -186,7 +187,8 @@ export class DmdataWebSocket {
       const reason = err instanceof Error ? err.message : String(err)
       // 認証エラーは再試行しない
       if (err instanceof Error && err.message === 'auth') {
-        if (this.debug) dlog('認証エラーのため再接続しない（APIキーの契約スコープ・WebSocket権限を確認）', { reason })
+        // APIキー不正・契約スコープ不足は復旧不能の実エラーのため常に出力する。
+        console.error('[DMDSS] 認証エラーのため再接続しない（APIキーの契約スコープ・WebSocket権限を確認）', { reason })
         this.authError = true
         this.onStatusChange?.('disconnected')
         return
