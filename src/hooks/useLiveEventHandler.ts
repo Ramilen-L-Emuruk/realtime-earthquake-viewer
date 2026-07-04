@@ -9,6 +9,7 @@ import { eewMaxScale, computeSingleEEWLevel, selectEEWSoundType } from '../utils
 import { haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
 import { tsunamiMaxGrade } from '../utils/tsunami'
+import { matchesArea, sortAreasForCardDisplay } from '../components/TsunamiTab'
 import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox } from '../utils/voicevox'
 import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, tsunamiArrivalToText, nankaiToText, kohatsuToText, lpgmToText } from '../utils/ttsText'
@@ -24,6 +25,20 @@ function uniqueDistricts(observations: { districtCode?: string; districtName?: s
     result.push({ code: o.districtCode, name: o.districtName })
   }
   return result
+}
+
+// 波高未確定（観測中）の新規到達観測点しか無いとき、その中でどの区域をスクロール先の
+// 先頭にするかを、津波情報カードの実際の表示順（TsunamiGradeCard と同じ並び替え）から決める。
+// 電文内の記載順ではなく、画面上で一番上に表示される区域を優先する。
+function pickTopFromCardOrder(
+  newlyArrivedObs: { districtCode?: string; districtName?: string }[],
+  areas: import('../types/earthquake').TsunamiArea[],
+  allObservations: import('../types/earthquake').TsunamiObservation[],
+): { code?: string; name?: string } {
+  const ordered = sortAreasForCardDisplay(areas, allObservations)
+  const matched = ordered.find(area => newlyArrivedObs.some(o => matchesArea(o as import('../types/earthquake').TsunamiObservation, area)))
+  if (matched) return { code: matched.code, name: matched.name }
+  return { code: newlyArrivedObs[0].districtCode, name: newlyArrivedObs[0].districtName }
 }
 
 // ライブイベント（地震・津波・EEW・長周期地震動・南海トラフ/後発地震）受信時の
@@ -542,34 +557,36 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           if (o.height.over && !prev.over && o.height.value >= prev.value) return true
           return false
         })
-        if (updatedObs552.length > 0) {
-          const topObs = updatedObs552.reduce((a, b) => (b.height!.value > a.height!.value ? b : a))
+        // 波高未確定（観測中）のまま新規到達した観測点もスクロール・バッジ表示の対象にする
+        const newlyArrivedObs552 = (event.observations ?? []).filter(o => !o.height && !seenObsNamesRef.current.has(o.name))
+        if (updatedObs552.length > 0 || newlyArrivedObs552.length > 0) {
+          const topObs = updatedObs552.length > 0 ? updatedObs552.reduce((a, b) => (b.height!.value > a.height!.value ? b : a)) : null
           setFocusedDistrict({
-            districts: uniqueDistricts(updatedObs552),
-            top: { code: topObs.districtCode, name: topObs.districtName },
+            districts: uniqueDistricts([...updatedObs552, ...newlyArrivedObs552]),
+            top: topObs
+              ? { code: topObs.districtCode, name: topObs.districtName }
+              : pickTopFromCardOrder(newlyArrivedObs552, event.areas, event.observations ?? []),
             ts: Date.now(),
           })
-          for (const o of updatedObs552) newStatusEntries.push([o.name, prevMap552.has(o.name) ? 'updated' : 'new'])
         }
-        // 波高未確定（観測中）のまま新規到達した観測点もバッジ表示の対象にする
-        for (const o of event.observations ?? []) {
-          if (!o.height && !seenObsNamesRef.current.has(o.name)) newStatusEntries.push([o.name, 'new'])
-        }
+        for (const o of updatedObs552) newStatusEntries.push([o.name, prevMap552.has(o.name) ? 'updated' : 'new'])
+        for (const o of newlyArrivedObs552) newStatusEntries.push([o.name, 'new'])
       } else {
         const obsWithHeight552 = (event.observations ?? []).filter(o => !!o.height)
-        if (obsWithHeight552.length > 0) {
-          const topObs = obsWithHeight552.reduce((a, b) => (b.height!.value > a.height!.value ? b : a))
+        // 波高未確定（観測中）のまま新規到達した観測点もスクロール・バッジ表示の対象にする
+        const newlyArrivedObs552b = (event.observations ?? []).filter(o => !o.height && !seenObsNamesRef.current.has(o.name))
+        if (obsWithHeight552.length > 0 || newlyArrivedObs552b.length > 0) {
+          const topObs = obsWithHeight552.length > 0 ? obsWithHeight552.reduce((a, b) => (b.height!.value > a.height!.value ? b : a)) : null
           setFocusedDistrict({
-            districts: uniqueDistricts(obsWithHeight552),
-            top: { code: topObs.districtCode, name: topObs.districtName },
+            districts: uniqueDistricts([...obsWithHeight552, ...newlyArrivedObs552b]),
+            top: topObs
+              ? { code: topObs.districtCode, name: topObs.districtName }
+              : pickTopFromCardOrder(newlyArrivedObs552b, event.areas, event.observations ?? []),
             ts: Date.now(),
           })
-          for (const o of obsWithHeight552) newStatusEntries.push([o.name, 'new'])
         }
-        // 波高未確定（観測中）のまま新規到達した観測点もバッジ表示の対象にする
-        for (const o of event.observations ?? []) {
-          if (!o.height && !seenObsNamesRef.current.has(o.name)) newStatusEntries.push([o.name, 'new'])
-        }
+        for (const o of obsWithHeight552) newStatusEntries.push([o.name, 'new'])
+        for (const o of newlyArrivedObs552b) newStatusEntries.push([o.name, 'new'])
       }
 
       if (newStatusEntries.length > 0) {
