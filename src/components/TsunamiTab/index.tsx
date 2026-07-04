@@ -3,10 +3,10 @@ import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation } from '../.
 import { formatDateTimeMin, formatTime } from '../../utils/formatters'
 
 export interface FocusedDistrict {
-  // 今回の受信で変更（新規/更新）があった区域すべて
+  // 今回の受信で変更（新規/更新）があった区域すべて。対象区域が特定できない受信では空配列
   districts: { code?: string; name?: string }[]
-  // その中で波高が最大の区域（画面に収まらない場合はこれを一番上に配置する）
-  top: { code?: string; name?: string }
+  // その中で波高が最大の区域（画面に収まらない場合はこれを一番上に配置する）。districts が空のときは null（一番上へ戻す）
+  top: { code?: string; name?: string } | null
   ts: number
 }
 
@@ -57,7 +57,7 @@ const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch', 'Foreca
 
 // 観測情報が属する津波予報区（districtCode/districtName）を発表区域（area.code/area.name）に紐づける。
 // code が双方にあれば code を優先。無ければ name で照合する。
-function matchesArea(obs: TsunamiObservation, area: TsunamiArea): boolean {
+export function matchesArea(obs: TsunamiObservation, area: TsunamiArea): boolean {
   if (obs.districtCode && area.code) return obs.districtCode === area.code
   return !!obs.districtName && obs.districtName === area.name
 }
@@ -125,6 +125,12 @@ function sortAreasByObservation(areas: TsunamiArea[], observations: TsunamiObser
     .map(({ area }) => area)
 
   return [...sortedWithObservation, ...withoutObservation]
+}
+
+// TsunamiGradeCard が実際に描画する区域の並び順（グループ化＋区域内ソート）を、
+// カード外（読み上げ・自動スクロール判定など）からも再利用できるように公開する。
+export function sortAreasForCardDisplay(areas: TsunamiArea[], observations: TsunamiObservation[]): TsunamiArea[] {
+  return groupAreasByHeight(areas).flatMap(group => sortAreasByObservation(group.areas, observations))
 }
 
 function TsunamiHeightHeader({ label, style }: { label: string; style: GradeStyle }) {
@@ -197,7 +203,9 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, isChang
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-semibold" style={{ fontSize: '13px', color: style.heightColor }}>{obs.name}</span>
-                      <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: `${style.cardBorder}30`, color: style.heightColor }}>実測</span>
+                      <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: `${style.cardBorder}30`, color: style.heightColor }}>
+                        {obs.height ? '実測' : '到達確認'}
+                      </span>
                     </div>
                     <div className="mt-1" style={{ fontSize: '11px', color: '#9ca3af' }}>
                       {obs.arrivalTime && `${formatTime(obs.arrivalTime).slice(0, 5)}${obs.initial ? ` ${obs.initial}波` : ''}`}
@@ -208,8 +216,10 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, isChang
                       })()}
                     </div>
                   </div>
-                  {obs.height && (
+                  {obs.height ? (
                     <span className="font-bold flex-shrink-0" style={{ fontSize: '20px', color: style.heightColor }}>{obs.height.description}</span>
+                  ) : (
+                    <span className="flex-shrink-0" style={{ fontSize: '13px', color: '#9ca3af' }}>観測中</span>
                   )}
                 </div>
               </div>
@@ -285,7 +295,7 @@ function TsunamiGradeCard({ grade, areas, observations, onObservationClick, focu
               style={style}
               onObservationClick={onObservationClick}
               isChanged={focusedDistrict?.districts.some(d => districtMatchesArea(d, area)) ?? false}
-              isTop={focusedDistrict != null && districtMatchesArea(focusedDistrict.top, area)}
+              isTop={focusedDistrict?.top != null && districtMatchesArea(focusedDistrict.top, area)}
               registerRow={registerRow}
               obsUpdateStatus={obsUpdateStatus}
             />
@@ -344,8 +354,14 @@ export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservat
   useEffect(() => {
     if (!focusedDistrict) return
     const container = containerRef.current
+    if (!container) return
+    // 対象区域が特定できない受信（区域のみの発表・実質変化なしの続報・解除）は一番上へ戻す
+    if (focusedDistrict.districts.length === 0) {
+      container.scrollTo({ top: 0, behavior: 'smooth' })
+      return
+    }
     const changedEls = Array.from(changedRowElsRef.current.values())
-    if (!container || changedEls.length === 0) return
+    if (changedEls.length === 0) return
 
     const containerRect = container.getBoundingClientRect()
     const viewTop = containerRect.top + bannerHeight
