@@ -57,13 +57,17 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const lastTsunamiGradeRef = useRef<'MajorWarning' | 'Warning' | 'Watch' | 'Forecast' | null>(null)
   // 観測点ごとの読み上げ済み最大波高（更新があった観測点のみ TTS 発話するための比較用）
   const lastMaxObsHeightRef = useRef<Map<string, { value: number; over?: boolean }>>(new Map())
-  // VOICEVOX EEW 読み上げデバウンス（レベルアップ確定から3秒後に読み上げ）
-  const eewTtsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const eewTtsMaxTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // テキストはタイマー発火時に生成するため、イベントオブジェクトを保持する（変化なし続報も含め常に最新で上書き）
-  const eewTtsEventRef = useRef<EEWAlert | null>(null)
-  // Phase 1（「緊急地震速報、〇〇で地震。」）の再生完了 Promise。Phase 2 はこれを待ってから発話する
-  const eewPhase1PromiseRef = useRef<Promise<void>>(Promise.resolve())
+  // VOICEVOX EEW 読み上げデバウンス（レベルアップ確定から3秒後に読み上げ）。
+  // 複数 EEW が同時進行するケース（例: 2024/1/1 能登の同時多発）があるため、
+  // 全て eventId 別の Map で管理する。単一 ref にすると、後から届いた別イベントの
+  // 受信タイミングでタイマー・発話対象イベントが横取りされ、片方の続報が
+  // 「読み上げ済み最大震度」を更新できずに無限リトリガーする不具合が起きる。
+  const eewTtsTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  const eewTtsMaxTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  // タイマー発火時にテキストを生成するため、eventId ごとに最新イベントを保持する（変化なし続報も含め常に最新で上書き）
+  const eewTtsEventsRef = useRef<Map<string, EEWAlert>>(new Map())
+  // Phase 1（「緊急地震速報、〇〇で地震。」）の再生完了 Promise。Phase 2 はこれを待ってから発話する（eventId 別）
+  const eewPhase1PromisesRef = useRef<Map<string, Promise<void>>>(new Map())
   // EEW の eventId ごとに最後に Phase 1 を発話したときの震源情報を保持する（震源地名変化+座標移動の再発話判定用）
   const activeEEWAnnouncedHypocentersRef = useRef<Map<string, { name: string; lat: number; lng: number }>>(new Map())
   // 長周期地震動情報の更新検出: 受信済み eventId を追跡する
@@ -170,10 +174,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             }, 1200)
           }
         }
-        // EEW 解除時は読み上げタイマーをキャンセルする
-        if (eewTtsTimerRef.current) { clearTimeout(eewTtsTimerRef.current); eewTtsTimerRef.current = null }
-        if (eewTtsMaxTimerRef.current) { clearTimeout(eewTtsMaxTimerRef.current); eewTtsMaxTimerRef.current = null }
-        eewTtsEventRef.current = null
+        // EEW 解除時は当該 eventId の読み上げタイマーをキャンセルする
+        const pendingTimer = eewTtsTimersRef.current.get(key)
+        if (pendingTimer) { clearTimeout(pendingTimer); eewTtsTimersRef.current.delete(key) }
+        const pendingMaxTimer = eewTtsMaxTimersRef.current.get(key)
+        if (pendingMaxTimer) { clearTimeout(pendingMaxTimer); eewTtsMaxTimersRef.current.delete(key) }
+        eewTtsEventsRef.current.delete(key)
+        eewPhase1PromisesRef.current.delete(key)
         if (!event.expired && hadKey) {
           // 誤報取消（10秒キャンセル表示中）: 他に発表中のEEWがあってもリアルタイムタブでオーバーレイを見せる
           console.debug('[tab] → realtime (EEW誤報取消・キャンセル表示)')
@@ -248,34 +255,36 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 第1フェーズ（isNew即時）: 「緊急地震速報、〇〇で地震。」
       // 第2フェーズ（デバウンス後、かつ第1フェーズ完了後）: 「予想最大震度〇〇。」
       if (settings.voicevoxEnabled && settings.soundEnabled) {
-        eewTtsEventRef.current = event
+        eewTtsEventsRef.current.set(key, event)
         const firePhase2 = () => {
           // Phase2 が発火した時点で15秒上限タイマーをキャンセルする。
           // 3秒タイマー発火後も15秒タイマーが生き続けると、その間に scaleUpgraded で
           // 新しい3秒タイマーが登録された場合に15秒タイマーが割り込んで二重読み上げになるため。
-          if (eewTtsMaxTimerRef.current) {
-            clearTimeout(eewTtsMaxTimerRef.current)
-            eewTtsMaxTimerRef.current = null
+          const maxTimer = eewTtsMaxTimersRef.current.get(key)
+          if (maxTimer) {
+            clearTimeout(maxTimer)
+            eewTtsMaxTimersRef.current.delete(key)
           }
-          if (eewTtsEventRef.current) {
-            const spokenEvent = eewTtsEventRef.current
-            const spokenKey = spokenEvent.issue?.eventId ?? spokenEvent.id
+          const spokenEvent = eewTtsEventsRef.current.get(key)
+          if (spokenEvent) {
             // 読み上げた時点の震度を「発話済み最大震度」として記録する
-            activeEEWScalesRef.current.set(spokenKey, eewMaxScale(spokenEvent))
+            activeEEWScalesRef.current.set(key, eewMaxScale(spokenEvent))
             const text = eewIntensityToText(spokenEvent)
             if (text) {
               // Phase 1 の再生が終わってから Phase 2 を発話する
-              eewPhase1PromiseRef.current.then(() => {
+              const phase1Promise = eewPhase1PromisesRef.current.get(key) ?? Promise.resolve()
+              phase1Promise.then(() => {
                 speakWithVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
               })
             }
           }
         }
         const scheduleEewTts = () => {
-          eewTtsTimerRef.current = setTimeout(() => {
-            eewTtsTimerRef.current = null
+          const timer = setTimeout(() => {
+            eewTtsTimersRef.current.delete(key)
             firePhase2()
           }, 3000)
+          eewTtsTimersRef.current.set(key, timer)
         }
         // 続報での震源地名変化+座標移動の検出（B-3: 名前変化かつ50km超移動で再発話）
         const hypo = event.earthquake.hypocenter
@@ -286,8 +295,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         const firePhase1 = isNew || hypoFarMoved
 
         if (firePhase1) {
-          // 第1フェーズ：即時（完了 Promise を ref に保持）
-          eewPhase1PromiseRef.current = speakWithVoicevox(settings.voicevoxUrl, eewAlertToText(event), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+          // 第1フェーズ：即時（完了 Promise を eventId 別に保持）
+          const phase1Promise = speakWithVoicevox(settings.voicevoxUrl, eewAlertToText(event), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+          eewPhase1PromisesRef.current.set(key, phase1Promise)
           // 発話した震源情報を記録する
           if (Number.isFinite(hypo.latitude) && Number.isFinite(hypo.longitude)) {
             activeEEWAnnouncedHypocentersRef.current.set(key, { name: hypo.name, lat: hypo.latitude, lng: hypo.longitude })
@@ -296,17 +306,20 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // 第2フェーズ：デバウンス
             scheduleEewTts()
             // 上限タイマー: 第一報から15秒後に強制発火
-            eewTtsMaxTimerRef.current = setTimeout(() => {
-              eewTtsMaxTimerRef.current = null
-              if (eewTtsTimerRef.current) {
-                clearTimeout(eewTtsTimerRef.current)
-                eewTtsTimerRef.current = null
+            const maxTimer = setTimeout(() => {
+              eewTtsMaxTimersRef.current.delete(key)
+              const pendingTimer = eewTtsTimersRef.current.get(key)
+              if (pendingTimer) {
+                clearTimeout(pendingTimer)
+                eewTtsTimersRef.current.delete(key)
                 firePhase2()
               }
             }, 15000)
+            eewTtsMaxTimersRef.current.set(key, maxTimer)
           }
         } else if (levelUpgraded || scaleUpgraded) {
-          if (eewTtsTimerRef.current) { clearTimeout(eewTtsTimerRef.current); eewTtsTimerRef.current = null }
+          const pendingTimer = eewTtsTimersRef.current.get(key)
+          if (pendingTimer) { clearTimeout(pendingTimer); eewTtsTimersRef.current.delete(key) }
           scheduleEewTts()
         }
       }
@@ -528,8 +541,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // EEW 読み上げタイマーをアンマウント時にクリーンアップする
   useEffect(() => {
     return () => {
-      if (eewTtsTimerRef.current) clearTimeout(eewTtsTimerRef.current)
-      if (eewTtsMaxTimerRef.current) clearTimeout(eewTtsMaxTimerRef.current)
+      for (const timer of eewTtsTimersRef.current.values()) clearTimeout(timer)
+      for (const timer of eewTtsMaxTimersRef.current.values()) clearTimeout(timer)
     }
   }, [])
 
@@ -540,6 +553,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     activeEEWLevelsRef.current.clear()
     activeEEWScalesRef.current.clear()
     activeEEWAnnouncedHypocentersRef.current.clear()
+    for (const timer of eewTtsTimersRef.current.values()) clearTimeout(timer)
+    eewTtsTimersRef.current.clear()
+    for (const timer of eewTtsMaxTimersRef.current.values()) clearTimeout(timer)
+    eewTtsMaxTimersRef.current.clear()
+    eewTtsEventsRef.current.clear()
+    eewPhase1PromisesRef.current.clear()
     lastTsunamiGradeRef.current = null
     lastMaxObsHeightRef.current.clear()
     seenLpgmEventIdsRef.current.clear()
