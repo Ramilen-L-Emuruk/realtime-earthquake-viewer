@@ -57,7 +57,7 @@ const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch', 'Foreca
 
 // 観測情報が属する津波予報区（districtCode/districtName）を発表区域（area.code/area.name）に紐づける。
 // code が双方にあれば code を優先。無ければ name で照合する。
-function matchesArea(obs: TsunamiObservation, area: TsunamiArea): boolean {
+export function matchesArea(obs: TsunamiObservation, area: TsunamiArea): boolean {
   if (obs.districtCode && area.code) return obs.districtCode === area.code
   return !!obs.districtName && obs.districtName === area.name
 }
@@ -125,6 +125,12 @@ function sortAreasByObservation(areas: TsunamiArea[], observations: TsunamiObser
     .map(({ area }) => area)
 
   return [...sortedWithObservation, ...withoutObservation]
+}
+
+// TsunamiGradeCard が実際に描画する区域の並び順（グループ化＋区域内ソート）を、
+// カード外（読み上げ・自動スクロール判定など）からも再利用できるように公開する。
+export function sortAreasForCardDisplay(areas: TsunamiArea[], observations: TsunamiObservation[]): TsunamiArea[] {
+  return groupAreasByHeight(areas).flatMap(group => sortAreasByObservation(group.areas, observations))
 }
 
 function TsunamiHeightHeader({ label, style }: { label: string; style: GradeStyle }) {
