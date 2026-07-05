@@ -83,9 +83,15 @@ export function App() {
     setActiveTab('realtime')
   }
 
+  // useLiveEventHandler が返す resetTsunamiScrollToTop を revertToDefaultTab から呼べるようにする ref。
+  // revertToDefaultTab はフック呼び出しより前に定義されるため、defaultTabRef と同様に
+  // ref 経由で後から実体を代入する（呼び出されるのは常にレンダー後のためタイミング上問題ない）。
+  const resetTsunamiScrollRef = useRef<() => void>(() => {})
+
   // デフォルトタブへ復帰する。デフォルトタブが realtime の場合は
   // 抑制タイマーをセットせずそのまま移動する（realtime への強制移動を
   // 抑制する意味がないため）。
+  // 津波イベントを経由しない復帰で津波タブに切り替わる場合は、スクロール位置も一番上へ戻す。
   const revertToDefaultTab = () => {
     const tab = defaultTabRef.current
     if (tab === 'realtime') {
@@ -93,14 +99,16 @@ export function App() {
     } else {
       setActiveTabNonRealtime(tab)
     }
+    if (tab === 'tsunami') resetTsunamiScrollRef.current()
   }
 
   // ライブイベント受信処理（通知音・タイトル・タブ切替・読み上げ・ブラウザ通知）
-  const { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, focusedDistrict } = useLiveEventHandler({
+  const { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, focusedDistrict, resetTsunamiScrollToTop } = useLiveEventHandler({
     settings, title, earthquakesRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTab, setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate,
     revertToDefaultTab, selectQuake, setActiveLpgmEventId,
   })
+  resetTsunamiScrollRef.current = resetTsunamiScrollToTop
 
   const [replayTimeOffset, setReplayTimeOffset] = useState<number | null>(null)
 
