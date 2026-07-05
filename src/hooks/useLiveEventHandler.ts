@@ -672,5 +672,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     }
   }, [])
 
-  return { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, focusedDistrict }
+  // 津波イベントを経由しないタブ復帰（アイドル復帰・EEW全解除・揺れ検知終了）で
+  // 津波タブに切り替わったときに、スクロール位置を一番上へ戻すために公開する。
+  const resetTsunamiScrollToTop = useCallback(() => {
+    setFocusedDistrict({ districts: [], top: null, ts: Date.now() })
+  }, [])
+
+  return { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, focusedDistrict, resetTsunamiScrollToTop }
 }
