@@ -610,6 +610,12 @@ export function JapanMap({
   const subregions = useSubRegions()
   const activeFaults = useActiveFaults()
   const plateBoundaries = usePlateBoundaries()
+  // Canvas レンダラーは既定でクリック許容範囲(tolerance)が 0 のため、細い線だと
+  // ほぼ中心の1pxしか当たり判定が無い。ポップアップ付きの線レイヤーは
+  // ペインごとに tolerance を広げた専用レンダラーを使う。
+  const plateBoundaryRenderer = useMemo(() => L.canvas({ pane: 'plate-boundaries', tolerance: 8 }), [])
+  const activeFaultRenderer = useMemo(() => L.canvas({ pane: 'active-faults', tolerance: 8 }), [])
+  const tsunamiLineRenderer = useMemo(() => L.canvas({ pane: 'tsunami-lines', tolerance: 8 }), [])
   const [zoom, setZoom] = useState(6)
   // ズームに応じて強震モニタ観測点のサイズを補正する係数。
   // ズーム8を基準（×1.0）とし、ズームアウト時は小さく・ズームイン時は大きくする。
@@ -892,6 +898,7 @@ export function JapanMap({
               <Polyline
                 key={`plate-${si}-${i}`}
                 positions={line}
+                renderer={plateBoundaryRenderer}
                 pathOptions={{
                   color: seg.type === 'subduction' ? '#b91c1c' : '#1d4ed8',
                   weight: 2,
@@ -924,6 +931,7 @@ export function JapanMap({
               <Polyline
                 key={`fault-${seg.name}-${i}`}
                 positions={line}
+                renderer={activeFaultRenderer}
                 pathOptions={{ color: '#c2410c', weight: 1.2, opacity: 0.65 }}
               >
                 <Popup pane="popupPane">
@@ -1040,6 +1048,7 @@ export function JapanMap({
               <Polyline
                 key={`${line.name}-${i}`}
                 positions={segment}
+                renderer={tsunamiLineRenderer}
                 pathOptions={{
                   color: TSUNAMI_STYLE[line.grade].color,
                   weight: TSUNAMI_STYLE[line.grade].weight * iconScale,
