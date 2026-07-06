@@ -151,11 +151,14 @@ const JAPAN_CENTER: [number, number] = [38.25, 137.7]
 // 本土四端（宗谷岬・納沙布岬・神崎鼻・佐多岬）を囲むバウンディングボックス
 const JAPAN_BOUNDS: L.LatLngBoundsExpression = [[30.99, 129.43], [45.52, 145.82]]
 
-// 背景の海底地形タイル（ESRI World Ocean Base）。CSS でダークテーマへ暗く調整する。
+// 背景の海底地形タイル（GEBCO_basemap_NCEI）。CSS でダークテーマへ暗く調整する。
+// ESRI World Ocean Base は日本近海の実データがほぼ 1:577k 相当までしか無く、
+// それ以深にズームすると空タイル（単色の塗り）が返り「真っ青」になるため、
+// 全球で一貫した海底地形陰影を持つ GEBCO グリッド由来のタイルに変更した。
 const BATHYMETRY_URL =
-  'https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}'
+  'https://tiles.arcgis.com/tiles/C8EMgrsFcRFL6LrL/arcgis/rest/services/GEBCO_basemap_NCEI/MapServer/tile/{z}/{y}/{x}'
 const BATHYMETRY_ATTRIBUTION =
-  'Esri, GEBCO, NOAA, National Geographic, and other contributors'
+  'GEBCO; NOAA National Centers for Environmental Information (NCEI)'
 // 自動ズームの上限。このズーム以下では一次細分区域ごとの最大震度に集約表示する。
 const MAX_ZOOM = 8
 
@@ -864,7 +867,7 @@ export function JapanMap({
         <TileLayer
           url={BATHYMETRY_URL}
           attribution={BATHYMETRY_ATTRIBUTION}
-          maxNativeZoom={13}
+          maxNativeZoom={10}
         />
       )}
 
