@@ -875,9 +875,9 @@ export function JapanMap({
       <BaseMap suppressRegionLabels={mode === 'kyoshin'} />
 
       {/* 全国活断層線（産総研 活断層データベース）。地震情報・リアルタイムタブのみ、
-          区域塗り(z260)より背面に薄く表示する。 */}
+          区域塗り(z260/261)より前面に表示し、震度色塗りの上からでも視認できるようにする。 */}
       {(mode === 'quake' || mode === 'kyoshin') && showActiveFaults && activeFaults && (
-        <Pane name="active-faults" style={{ zIndex: 252 }}>
+        <Pane name="active-faults" style={{ zIndex: 263 }}>
           {activeFaults.map((seg) =>
             seg.lines.map((line, i) => (
               <Polyline
