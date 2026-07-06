@@ -914,9 +914,11 @@ export function JapanMap({
       )}
 
       {/* 全国活断層線（産総研 活断層データベース）。地震情報・リアルタイムタブのみ、
-          区域塗り(z260/261)より前面に表示し、震度色塗りの上からでも視認できるようにする。 */}
+          区域塗り(z260/261)より前面に表示し、震度色塗りの上からでも視認できるようにする。
+          IntensityPoints 等の pane 未指定 Canvas（既定 overlayPane, z400）がクリックを奪うため、
+          ポップアップを機能させるにはそれより前面（z402）に置く。 */}
       {(mode === 'quake' || mode === 'kyoshin') && showActiveFaults && activeFaults && (
-        <Pane name="active-faults" style={{ zIndex: 263 }}>
+        <Pane name="active-faults" style={{ zIndex: 402 }}>
           {activeFaults.map((seg) =>
             seg.lines.map((line, i) => (
               <Polyline
@@ -1028,9 +1030,11 @@ export function JapanMap({
         <FitToBounds signature={quakeSignature} positions={quakeFitPositions} />
       )}
       {/* 津波予報区の海岸線（等級ごとに色分け）。津波発報中は全モードで表示・点滅する。
-          preferCanvas 環境では Polyline への className が効かないため Pane 全体に適用する。 */}
+          preferCanvas 環境では Polyline への className が効かないため Pane 全体に適用する。
+          IntensityPoints 等の pane 未指定 Canvas（既定 overlayPane, z400）がクリックを奪うため、
+          ポップアップを機能させるにはそれより前面（z403）に置く。 */}
       {tsunamiLines.length > 0 && (
-        <Pane name="tsunami-lines" style={{ zIndex: 270 }} className="tsunami-blink">
+        <Pane name="tsunami-lines" style={{ zIndex: 403 }} className="tsunami-blink">
           {tsunamiLines.map((line) =>
             line.segments.map((segment, i) => (
               <Polyline
@@ -1066,10 +1070,11 @@ export function JapanMap({
       />
       <FocusObsPoint focusObsName={focusObsName} observationBars={observationBars} />
 
-      {/* 津波観測棒: 波高が判明している観測点に水位バーを描画。tsunami-lines(z270)より前面。
-          緯度降順（北→南）でレンダリングし、南側ほど手前に表示される。 */}
+      {/* 津波観測棒: 波高が判明している観測点に水位バーを描画。tsunami-lines(z403)より前面。
+          緯度降順（北→南）でレンダリングし、南側ほど手前に表示される。
+          Tooltip のホバー判定も overlayPane(z400) より前面である必要がある。 */}
       {mode === 'tsunami' && observationBars.length > 0 && (
-        <Pane name="tsunami-obs-bars" style={{ zIndex: 280 }}>
+        <Pane name="tsunami-obs-bars" style={{ zIndex: 404 }}>
           {observationBars.map((bar) => (
             <Marker
               key={`obs-bar-${bar.name}`}

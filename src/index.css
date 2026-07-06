@@ -28,6 +28,10 @@ body {
 
 .leaflet-container { background: #0a0c10; }
 
+/* MapUpdateTime 等、地図の外側で z-[1000] の固定UIオーバーレイを使う要素があり、
+   Leaflet 既定の popupPane(z700) だとその下に隠れてしまうため、確実に前面へ出す。 */
+.leaflet-popup-pane { z-index: 1001; }
+
 /* 背景の海底地形タイル（ESRI Ocean）をダークテーマへ暗く調整。
    タイルレイヤーのみに適用し、陸地・県境・ラベル・マーカー（別ペイン）には影響させない。 */
 .leaflet-tile-pane {
