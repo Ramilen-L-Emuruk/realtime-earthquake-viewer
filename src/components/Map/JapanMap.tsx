@@ -1101,9 +1101,9 @@ export function JapanMap({
               zIndexOffset={0}
             >
               <Tooltip direction="right" offset={[10, -bar.barPx / 2]} pane="tooltipPane">
-                <div style={{ lineHeight: 1.4 }}>
-                  <div style={{ fontWeight: 500, fontSize: '13px' }}>{bar.name}</div>
-                  <div style={{ color: bar.color, fontSize: '13px' }}>
+                <div className="text-sm">
+                  <div className="font-bold">{bar.name}</div>
+                  <div className="text-xs" style={{ color: bar.color }}>
                     {bar.height.over ? '>' : ''}{bar.height.description}
                   </div>
                 </div>
