@@ -899,7 +899,7 @@ export function JapanMap({
                   dashArray: '6 4',
                 }}
               >
-                <Popup>
+                <Popup pane="popupPane">
                   <div className="text-sm">
                     <div className="font-bold">{seg.plateA} – {seg.plateB}</div>
                     <div className="text-gray-600 text-xs">
@@ -926,7 +926,7 @@ export function JapanMap({
                 positions={line}
                 pathOptions={{ color: '#c2410c', weight: 1.2, opacity: 0.65 }}
               >
-                <Popup>
+                <Popup pane="popupPane">
                   <div className="text-sm">
                     <div className="font-bold">{seg.name}</div>
                     <div className="text-gray-600 text-xs">活断層（産総研 活断層データベース）</div>
@@ -1046,7 +1046,7 @@ export function JapanMap({
                   opacity: 0.9,
                 }}
               >
-                <Popup>
+                <Popup pane="popupPane">
                   <div className="text-sm">
                     <div className="font-bold">{line.name}</div>
                     <div className="text-gray-600 text-xs">
@@ -1082,7 +1082,7 @@ export function JapanMap({
               icon={getTsunamiObsBarIcon(bar.color, bar.barPx, bar.blinking)}
               zIndexOffset={0}
             >
-              <Tooltip direction="right" offset={[10, -bar.barPx / 2]}>
+              <Tooltip direction="right" offset={[10, -bar.barPx / 2]} pane="tooltipPane">
                 <div style={{ lineHeight: 1.4 }}>
                   <div style={{ fontWeight: 500, fontSize: '13px' }}>{bar.name}</div>
                   <div style={{ color: bar.color, fontSize: '13px' }}>
