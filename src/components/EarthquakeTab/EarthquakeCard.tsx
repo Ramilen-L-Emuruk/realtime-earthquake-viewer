@@ -10,6 +10,8 @@ import {
   formatCorrectType,
 } from '../../utils/formatters'
 import { getIntensityLabel, getIntensityColor, getIntensityBgColor, getDepthColor, getMagnitudeColor } from '../../utils/intensity'
+import { buildAreaPrefIndex, buildPrefAreaNamesIndex } from '../../utils/stationCoords'
+import { useStationCoords } from '../../hooks/useStationCoords'
 
 /** issue.type に応じたバッジの Tailwind クラスを返す。 */
 function issueTypeBadgeClass(type: IssueType): string {
@@ -71,19 +73,87 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
     }
   }, [isSelected])
 
+  const stationData = useStationCoords()
+
   const prefGroups = useMemo(() => {
     if (!isSelected || !quake.points.length) return []
-    const map = new Map<string, number>()
+
+    // pref 設定済みの点（JSON prefectures[] 由来）→ 都道府県別の最大震度とする
+    const prefMax = new Map<string, number>()
     for (const p of quake.points) {
-      if (!p.pref) continue  // pref 未設定（JSON の regions/stations）は都道府県表示に使わない
-      const cur = map.get(p.pref) ?? -1
-      if (p.scale > cur) map.set(p.pref, p.scale)
+      if (!p.pref) continue
+      const cur = prefMax.get(p.pref) ?? -1
+      if (p.scale > cur) prefMax.set(p.pref, p.scale)
     }
-    return Array.from(map.entries())
+
+    // pref 未設定の一次細分区域点（JSON regions[] 由来）を実際の都道府県ごとにグルーピングし、
+    // 県内全区域が同じ震度で揃っていれば「〇〇県」1件にまとめる（TTS 読み上げと同じ判定）。
+    // 既に prefectures[] 側にデータがある都道府県は、行の重複を避けるため区域側を無視する。
+    const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
+    const prefAreaNames = stationData ? buildPrefAreaNamesIndex(stationData) : null
+    const areaByPref = new Map<string, Map<string, number>>()
+    for (const p of quake.points) {
+      if (p.pref || !p.isArea) continue
+      const pref = areaPrefIndex?.get(p.addr)
+      if (!pref || prefMax.has(pref)) continue
+      const set = areaByPref.get(pref) ?? new Map<string, number>()
+      const cur = set.get(p.addr)
+      if (cur == null || p.scale > cur) set.set(p.addr, p.scale)
+      areaByPref.set(pref, set)
+    }
+
+    const result = new Map<string, number>(prefMax)
+    for (const [pref, addrScales] of areaByPref) {
+      const fullSet = prefAreaNames?.get(pref)
+      const scales = new Set(addrScales.values())
+      const isWholePref = fullSet != null && fullSet.size > 0
+        && addrScales.size === fullSet.size
+        && [...addrScales.keys()].every(n => fullSet.has(n))
+        && scales.size === 1
+      if (isWholePref) result.set(pref, [...scales][0])
+      else for (const [name, scale] of addrScales) result.set(name, scale)
+    }
+
+    return Array.from(result.entries())
       .map(([pref, scale]) => ({ pref, scale }))
       .filter(({ scale }) => scale >= 0)
       .sort((a, b) => b.scale - a.scale)
-  }, [isSelected, quake.points])
+  }, [isSelected, quake.points, stationData])
+
+  // 長周期地震動の区域も、地震の震度と同じ考え方で県内全区域が同じ階級で揃っていれば
+  // 「〇〇県」1件にまとめる（TTS の buildLpgmRegionText と同じ判定）。
+  const lpgmGroups = useMemo(() => {
+    const regions = lpgm?.regions?.filter(r => r.maxLgInt >= 1)
+    if (!isSelected || !regions || regions.length === 0) return []
+
+    const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
+    const prefAreaNames = stationData ? buildPrefAreaNamesIndex(stationData) : null
+
+    const noPref: { name: string; maxLgInt: number }[] = []
+    const byPref = new Map<string, Map<string, number>>()
+    for (const r of regions) {
+      const pref = areaPrefIndex?.get(r.name)
+      if (!pref) { noPref.push({ name: r.name, maxLgInt: r.maxLgInt }); continue }
+      const set = byPref.get(pref) ?? new Map<string, number>()
+      const cur = set.get(r.name)
+      if (cur == null || r.maxLgInt > cur) set.set(r.name, r.maxLgInt)
+      byPref.set(pref, set)
+    }
+
+    const result: { name: string; maxLgInt: number }[] = [...noPref]
+    for (const [pref, nameClasses] of byPref) {
+      const fullSet = prefAreaNames?.get(pref)
+      const classes = new Set(nameClasses.values())
+      const isWholePref = fullSet != null && fullSet.size > 0
+        && nameClasses.size === fullSet.size
+        && [...nameClasses.keys()].every(n => fullSet.has(n))
+        && classes.size === 1
+      if (isWholePref) result.push({ name: pref, maxLgInt: [...classes][0] })
+      else for (const [name, maxLgInt] of nameClasses) result.push({ name, maxLgInt })
+    }
+
+    return result.sort((a, b) => b.maxLgInt - a.maxLgInt)
+  }, [isSelected, lpgm, stationData])
 
   if (isSelected) {
     const typeStyle = getIssueTypeStyle(issue.type)
@@ -237,14 +307,11 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
           {/* 各地の震度 / 長周期地震動階級（LPGM トグルオン時は階級表示に切り替え） */}
           {(() => {
             const isLpgmActive = lpgm && activeLpgmEventId === lpgm.eventId
-            const lpgmRegions = lpgm?.regions?.filter(r => r.maxLgInt >= 1)
-              .slice()
-              .sort((a, b) => b.maxLgInt - a.maxLgInt)
 
-            if (isLpgmActive && lpgmRegions && lpgmRegions.length > 0) {
+            if (isLpgmActive && lpgmGroups.length > 0) {
               return (
                 <div className="flex flex-col gap-0.5 pt-1 border-t border-white/10">
-                  {lpgmRegions.map(({ name, maxLgInt }, idx) => (
+                  {lpgmGroups.map(({ name, maxLgInt }, idx) => (
                     <div
                       key={name}
                       className="flex items-center justify-between px-2 py-1.5 rounded"
