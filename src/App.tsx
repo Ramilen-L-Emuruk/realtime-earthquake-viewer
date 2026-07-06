@@ -545,6 +545,7 @@ export function App() {
             iconScale={settings.mapIconScale}
             showBathymetry={settings.showBathymetry}
             showActiveFaults={settings.showActiveFaults}
+            showPlateBoundaries={settings.showPlateBoundaries}
             kyoshinSites={kyoshin.sites}
             kyoshinIndices={kyoshin.indices}
             kyoshinPsWave={psWave}
