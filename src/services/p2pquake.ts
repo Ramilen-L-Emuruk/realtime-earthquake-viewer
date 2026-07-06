@@ -87,6 +87,37 @@ export async function fetchJmaQuake(limit = 50, offset = 0): Promise<JMAQuake[]>
   return raws.flatMap(r => { const e = convertEvent(r); return e && e.kind === 'quake' ? [e as JMAQuake] : [] })
 }
 
+// jma/quake のレート制限は 10リクエスト/分（IPごと）。ヒートマップ用の遡り取得では
+// リクエスト間隔を空けて上限に触れないようにする。
+const JMA_QUAKE_HISTORY_REQUEST_INTERVAL_MS = 6500
+const JMA_QUAKE_HISTORY_MAX_PAGES = 20
+
+// ヒートマップ用: 直近 `days` 日分の地震履歴を offset ページングでまとめて取得する。
+export async function fetchJmaQuakeHistory(days: number): Promise<JMAQuake[]> {
+  const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000
+  const collected: JMAQuake[] = []
+  let offset = 0
+  for (let page = 0; page < JMA_QUAKE_HISTORY_MAX_PAGES; page++) {
+    const batch = await fetchJmaQuake(100, offset)
+    if (batch.length === 0) break
+    collected.push(...batch)
+    const oldestTime = new Date(batch[batch.length - 1].earthquake.time).getTime()
+    if (oldestTime < cutoffMs || batch.length < 100) break
+    offset += batch.length
+    await new Promise(resolve => setTimeout(resolve, JMA_QUAKE_HISTORY_REQUEST_INTERVAL_MS))
+  }
+  // 同一地震でも「震度速報→震源情報→震源・震度情報→各地の震度情報」と複数の issue が
+  // 別レコードとして history に載るため、useEarthquakes.ts の sortQuakes と同じく
+  // earthquake.time で重複排除する（id は issue ごとに異なり重複排除のキーにならない）。
+  const seenTimes = new Set<string>()
+  const deduped = collected.filter(q => {
+    if (seenTimes.has(q.earthquake.time)) return false
+    seenTimes.add(q.earthquake.time)
+    return true
+  })
+  return deduped.filter(q => new Date(q.earthquake.time).getTime() >= cutoffMs)
+}
+
 export class P2PQuakeWebSocket {
   private ws: WebSocket | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null

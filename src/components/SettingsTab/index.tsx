@@ -397,6 +397,12 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
             onChange={v => onUpdate('showActiveFaults', v)}
           />
         </Row>
+        <Row label="地震活動ヒートマップを表示" description="地震情報・リアルタイムタブの地図に直近1ヶ月の地震活動をヒートマップで表示します（初回表示時にAPIから取得）">
+          <Toggle
+            checked={settings.showQuakeHeatmap}
+            onChange={v => onUpdate('showQuakeHeatmap', v)}
+          />
+        </Row>
         <Row label="定期自動リロード" description="毎日午前5時に画面を再起動してメモリを解放します（地震・津波・EEW 発報中は延期）">
           <Toggle
             checked={settings.periodicReloadHours > 0}
@@ -747,7 +753,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">3.16.1</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">3.18.0</span></Row>
         <Row label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"

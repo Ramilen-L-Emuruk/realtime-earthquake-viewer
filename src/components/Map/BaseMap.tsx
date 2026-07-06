@@ -40,6 +40,7 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
   useEffect(() => {
     // ペイン構成:
     //   basemap(250)           : 陸地塗り・区域境界・県境
+    //   quake-heat(255)        : 直近1ヶ月の地震活動ヒートマップ（JapanMap が使用）
     //   quake-region-fill(260) : 地震モードの一次細分区域別震度塗り（JapanMap が使用）
     //   eew-region-fill(260)   : EEW 予想震度の区域塗り（JapanMap が使用）
     //   lpgm-region-fill(261)  : 長周期地震動の区域塗り（JapanMap が使用）
