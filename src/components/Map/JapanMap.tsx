@@ -610,10 +610,6 @@ export function JapanMap({
   const subregions = useSubRegions()
   const activeFaults = useActiveFaults()
   const plateBoundaries = usePlateBoundaries()
-  // 地図全体は preferCanvas だが、破線・weight2 の細い線は Canvas の当たり判定
-  // （tolerance を広げても安定してヒットしない）とポップアップ相性が悪いため、
-  // この線だけ SVG レンダラーで描画してクリック判定を DOM ネイティブに委ねる。
-  const plateBoundaryRenderer = useMemo(() => L.svg({ pane: 'plate-boundaries' }), [])
   const [zoom, setZoom] = useState(6)
   // ズームに応じて強震モニタ観測点のサイズを補正する係数。
   // ズーム8を基準（×1.0）とし、ズームアウト時は小さく・ズームイン時は大きくする。
@@ -896,7 +892,6 @@ export function JapanMap({
               <Polyline
                 key={`plate-${si}-${i}`}
                 positions={line}
-                renderer={plateBoundaryRenderer}
                 pathOptions={{
                   color: seg.type === 'subduction' ? '#b91c1c' : '#1d4ed8',
                   weight: 2,
