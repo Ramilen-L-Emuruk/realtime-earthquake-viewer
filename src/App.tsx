@@ -544,6 +544,7 @@ export function App() {
             lpgm={activeLpgm ?? undefined}
             iconScale={settings.mapIconScale}
             showBathymetry={settings.showBathymetry}
+            showActiveFaults={settings.showActiveFaults}
             kyoshinSites={kyoshin.sites}
             kyoshinIndices={kyoshin.indices}
             kyoshinPsWave={psWave}
