@@ -13,6 +13,7 @@ import { matchesArea, sortAreasForCardDisplay } from '../components/TsunamiTab'
 import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox } from '../utils/voicevox'
 import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, tsunamiArrivalToText, nankaiToText, kohatsuToText, lpgmToText } from '../utils/ttsText'
+import { log } from '../utils/logger'
 
 // 観測点リストから、属する予報区（districtCode/districtName）を重複なく列挙する
 function uniqueDistricts(observations: { districtCode?: string; districtName?: string }[]): { code?: string; name?: string }[] {
@@ -117,7 +118,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     if (event.kind === 'quake' && event.cancelled) {
       // 地震情報取消: カード削除は useEarthquakes reducer が担う。通知音・読み上げのみここで処理する。
       if (settings.soundEnabled) playAlertSound('eewCancel')
-      console.debug('[tab] → earthquake (地震情報取消)')
+      log.debug('[tab] → earthquake (地震情報取消)')
       setActiveTabNonRealtime('earthquake')
       title.clearTitleTimer('earthquake')
       title.applyPriority()
@@ -133,7 +134,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         }, 1200)
       }
     } else if (event.kind === 'quake') {
-      console.debug('[tab] → earthquake (地震情報 VXSE51/52/53/61)')
+      log.debug('[tab] → earthquake (地震情報 VXSE51/52/53/61)')
       setActiveTabNonRealtime('earthquake')
       // DMDATA は VXSE51（targetDateTime）→ VXSE52/53（originTime）で earthquake.time が1分ずれるため、
       // eventId（quake.id から抽出）で同一イベントを判定する。id がない場合は earthquake.time で比較。
@@ -156,12 +157,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
       title.scheduleTitleRevert('earthquake')
     } else if (event.kind === 'tsunami' && !event.cancelled) {
-      console.debug('[tab] → tsunami (津波情報 VTSE41/51/52)')
+      log.debug('[tab] → tsunami (津波情報 VTSE41/51/52)')
       setActiveTabNonRealtime('tsunami')
       title.showTsunamiTitle()
     } else if (event.kind === 'tsunami' && event.cancelled) {
       // 「津波解除検出」effect はレンダー後の非同期発火のため、受信直後の即時反映用にここでもタイマーをリセットする。
-      console.debug('[tab] → tsunami (津波情報取消)')
+      log.debug('[tab] → tsunami (津波情報取消)')
       setActiveTabNonRealtime('tsunami')
       title.endTsunamiTitleWindow()
       title.applyPriority()
@@ -183,7 +184,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // expired: true は最終報タイマー満了による自動解除 → 音は鳴らさない
         // hadKey: P2PQuake WS と Yahoo の両方から cancel が来た場合の二重鳴り防止
         const hadKey = activeEEWLevelsRef.current.has(key)
-        console.debug(`[eew] キャンセル受信 key=${key} expired=${event.expired ?? false} hadKey=${hadKey} 種別=${event.expired ? '自動解除(タイマー満了)' : '誤報取消'}`)
+        log.debug(`[eew] キャンセル受信 key=${key} expired=${event.expired ?? false} hadKey=${hadKey} 種別=${event.expired ? '自動解除(タイマー満了)' : '誤報取消'}`)
         activeEEWLevelsRef.current.delete(key)
         activeEEWScalesRef.current.delete(key)
         activeEEWAnnouncedHypocentersRef.current.delete(key)
@@ -221,7 +222,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         eewPhase1PromisesRef.current.delete(key)
         if (!event.expired && hadKey) {
           // 誤報取消（10秒キャンセル表示中）: 他に発表中のEEWがあってもリアルタイムタブでオーバーレイを見せる
-          console.debug('[tab] → realtime (EEW誤報取消・キャンセル表示)')
+          log.debug('[tab] → realtime (EEW誤報取消・キャンセル表示)')
           setActiveTab('realtime')
         }
         if (activeEEWLevelsRef.current.size === 0) {
@@ -232,10 +233,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // 2発目（hadKey=false・expired=true）でタブが動かないよう expired を明示的に除外する。
           if (!hadKey && !event.expired) {
             if (kyoshinDetectedRef.current) {
-              console.debug('[tab] → realtime (EEW全解除・揺れ検知中)')
+              log.debug('[tab] → realtime (EEW全解除・揺れ検知中)')
               setActiveTab('realtime')
             } else {
-              console.debug(`[tab] → ${defaultTabRef.current} (EEW全解除)`)
+              log.debug(`[tab] → ${defaultTabRef.current} (EEW全解除)`)
               revertToDefaultTab()
             }
           }
@@ -255,7 +256,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
 
       // 新規発報・レベルアップは抑制なしで即時移動。続報は抑制タイマーを確認する。
       if (isNew || levelUpgraded) {
-        console.debug(`[tab] → realtime (EEW${isNew ? '新規発報' : 'レベルアップ'} key=${key})`)
+        log.debug(`[tab] → realtime (EEW${isNew ? '新規発報' : 'レベルアップ'} key=${key})`)
         setActiveTab('realtime')
       } else {
         setActiveTabRealtimeOnUpdate()
@@ -372,7 +373,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
 
     // 長周期地震動情報（DMDSS版のみ）
     if ((event as unknown as { kind?: string }).kind === 'lpgm') {
-      console.debug('[tab] → earthquake (長周期地震動)')
+      log.debug('[tab] → earthquake (長周期地震動)')
       setActiveTabNonRealtime('earthquake')
       const lpgmEvent = (event as unknown as { kind: string; data: import('../types/earthquake').JMALpgm }).data
       if (!lpgmEvent.cancelled) {

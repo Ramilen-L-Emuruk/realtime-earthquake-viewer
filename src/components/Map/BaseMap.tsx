@@ -4,6 +4,7 @@ import { useMap } from 'react-leaflet'
 import { loadPrefectures } from '../../utils/prefectures'
 import { loadSubRegions } from '../../utils/subregions'
 import { REGIONS } from '../../utils/regions'
+import { log } from '../../utils/logger'
 
 // ラベルの粒度を切り替えるズーム境界。
 //   zoom < LABEL_MIN              : ラベル非表示（遠地地震など大きく引いた状態）
@@ -87,8 +88,8 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
       if (cancelled) return
       const prefs = prefRes.status === 'fulfilled' ? prefRes.value : null
       const subs = subRes.status === 'fulfilled' ? subRes.value : null
-      if (prefRes.status === 'rejected') console.warn('[data] prefectures 取得失敗（陸地塗りなしで継続）', prefRes.reason)
-      if (subRes.status === 'rejected') console.warn('[data] subregions 取得失敗（境界線なしで継続）', subRes.reason)
+      if (prefRes.status === 'rejected') log.warn('[data] prefectures 取得失敗（陸地塗りなしで継続）', prefRes.reason)
+      if (subRes.status === 'rejected') log.warn('[data] subregions 取得失敗（境界線なしで継続）', subRes.reason)
 
       // 1) 陸地塗り（都道府県ポリゴン・塗りのみ）
       if (prefs) {

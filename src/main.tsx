@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import 'leaflet/dist/leaflet.css'
 import './index.css'
 import { App } from './App'
+import { log } from './utils/logger'
 
 // autoUpdate モードで新 SW がコントローラーになったら sw-updated イベントを発火する。
 // 初回インストール時（controller が null → SW）は除外し、更新時のみ通知する。
@@ -11,7 +12,7 @@ if ('serviceWorker' in navigator) {
   const wasControlled = Boolean(navigator.serviceWorker.controller)
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (wasControlled) {
-      console.debug('[sw] 新バージョン検知 → sw-updated 発火')
+      log.debug('[sw] 新バージョン検知 → sw-updated 発火')
       window.dispatchEvent(new CustomEvent('sw-updated'))
     }
   })

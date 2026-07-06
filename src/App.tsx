@@ -25,6 +25,7 @@ import { playCountdownBeep, unlockAudio, setSoundVolume } from './utils/alertSou
 import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
 import type { EEWAlert, JMAQuake } from './types/earthquake'
 import { fetchDmdataReplayEvents, filterPreWindowEvents, clearReplayCache } from './services/dmdataReplay'
+import { log, setLogReplayOffset } from './utils/logger'
 
 // 平常時のウィンドウタイトル（index.html の <title> と一致させる）。
 // AutoHotKey 等が、情報更新時のタイトル変化を検知してイベントを発火できるようにする。
@@ -76,10 +77,10 @@ export function App() {
   const setActiveTabRealtimeOnUpdate = () => {
     const remaining = realtimeTabSuppressedUntilRef.current - Date.now()
     if (remaining > 0) {
-      console.debug(`[tab] → realtime スキップ (EEW続報・抑制中 残り${remaining}ms)`)
+      log.debug(`[tab] → realtime スキップ (EEW続報・抑制中 残り${remaining}ms)`)
       return
     }
-    console.debug('[tab] → realtime (EEW続報)')
+    log.debug('[tab] → realtime (EEW続報)')
     setActiveTab('realtime')
   }
 
@@ -232,6 +233,11 @@ export function App() {
     return () => window.removeEventListener('sw-updated', onSwUpdated)
   }, [])
 
+  // ログのタイムスタンプもリプレイ時刻に追従させる
+  useEffect(() => {
+    setLogReplayOffset(replayTimeOffset)
+  }, [replayTimeOffset])
+
   // DMDSS版: リプレイ中はリプレイ時刻で毎秒更新、WS接続中は実時刻で毎秒更新、それ以外は null
   useEffect(() => {
     if (replayTimeOffset !== null) {
@@ -314,9 +320,9 @@ export function App() {
   const prevTsunamiActiveRef = useRef(false)
   useEffect(() => {
     if (!prevTsunamiActiveRef.current && tsunamiActive) {
-      console.debug(`[tsunami] 発表検出 grade=${tsunamiGrade}`)
+      log.debug(`[tsunami] 発表検出 grade=${tsunamiGrade}`)
     } else if (prevTsunamiActiveRef.current && !tsunamiActive) {
-      console.debug('[tsunami] 解除検出 (tsunamiActive: true→false)')
+      log.debug('[tsunami] 解除検出 (tsunamiActive: true→false)')
       title.endTsunamiTitleWindow()
       title.applyPriority({ tsunami: false })
     }
@@ -345,10 +351,10 @@ export function App() {
     // EEW 発報中または揺れ検知中はリアルタイムタブを維持する。それ以外はデフォルトタブへ戻す。
     const revert = () => {
       if (activeEEWsRef.current.size > 0 || kyoshinDetectedRef.current) {
-        console.debug(`[tab] → realtime (アイドル復帰・EEW中または揺れ検知中 idleRevertSec=${settings.idleRevertSec})`)
+        log.debug(`[tab] → realtime (アイドル復帰・EEW中または揺れ検知中 idleRevertSec=${settings.idleRevertSec})`)
         setActiveTab('realtime')
       } else {
-        console.debug(`[tab] → ${defaultTabRef.current} (アイドル復帰 idleRevertSec=${settings.idleRevertSec})`)
+        log.debug(`[tab] → ${defaultTabRef.current} (アイドル復帰 idleRevertSec=${settings.idleRevertSec})`)
         revertToDefaultTab()
         if (!title.tsunamiTitleFlag()) {
           title.setTitle(null)
@@ -395,7 +401,7 @@ export function App() {
   const prefetchEndRef = useRef<Date | null>(null)
 
   const handleStartReplay = useCallback(async (targetDate: Date) => {
-    console.debug(`[replay] リプレイ開始 targetDate=${targetDate.toISOString()}`)
+    log.debug(`[replay] リプレイ開始 targetDate=${targetDate.toISOString()}`)
     const offset = targetDate.getTime() - Date.now()
     const toTime = new Date(targetDate.getTime() + 3600_000)
     const preFrom = new Date(targetDate.getTime() - 24 * 3600_000)
@@ -421,7 +427,7 @@ export function App() {
 
       loadReplayEvents([...preFiltered, ...normalEvents])
     } catch (e) {
-      console.error('[replay] リプレイデータ取得失敗', e)
+      log.error('[replay] リプレイデータ取得失敗', e)
     } finally {
       setReplayIsFetching(false)
     }
@@ -447,7 +453,7 @@ export function App() {
     setReplayIsFetching(true)
     fetchDmdataReplayEvents(settings.dmdataApiKey, nextFrom, nextTo)
       .then(loadReplayEvents)
-      .catch((e) => console.error('[replay] 先読み取得失敗', e))
+      .catch((e) => log.error('[replay] 先読み取得失敗', e))
       .finally(() => setReplayIsFetching(false))
   }, [replayCurrentTime, replayTimeOffset, replayIsFetching, loadReplayEvents, settings.dmdataApiKey])
 
@@ -661,10 +667,10 @@ export function App() {
           onTabChange={(tab) => {
             if (tab === 'realtime') {
               realtimeTabSuppressedUntilRef.current = 0
-              console.debug('[tab] → realtime (手動選択)')
+              log.debug('[tab] → realtime (手動選択)')
               setActiveTab('realtime')
             } else {
-              console.debug(`[tab] → ${tab} (手動選択)`)
+              log.debug(`[tab] → ${tab} (手動選択)`)
               setActiveTabNonRealtime(tab)
             }
           }}

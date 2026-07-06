@@ -1,3 +1,5 @@
+import { log } from './logger'
+
 // 地震情報・緊急地震速報・津波情報の受信時に鳴らす通知音。
 // 音声ファイルを持たず Web Audio API で音を生成する（種別ごとに音が異なる）。
 //
@@ -492,10 +494,10 @@ const DING_PATTERNS: DingPattern[] = [
 export function playAlertSound(type: AlertSoundType): void {
   const ctx = getCtx()
   if (!ctx) {
-    console.debug(`[sound] playAlertSound スキップ (AudioContext なし) type=${type}`)
+    log.debug(`[sound] playAlertSound スキップ (AudioContext なし) type=${type}`)
     return
   }
-  console.debug(`[sound] playAlertSound type=${type} ctxState=${ctx.state}`)
+  log.debug(`[sound] playAlertSound type=${type} ctxState=${ctx.state}`)
   if (ctx.state === 'suspended') void ctx.resume()
   PLAYERS[type](ctx, ctx.currentTime + 0.02)
 }
@@ -554,10 +556,10 @@ export function playCountdownBeep(second: number): void {
 export function playKyoshinUpdateSound(maxIndex: number): void {
   const ctx = getCtx()
   if (!ctx) {
-    console.debug(`[sound] playKyoshinUpdateSound スキップ (AudioContext なし) maxIndex=${maxIndex}`)
+    log.debug(`[sound] playKyoshinUpdateSound スキップ (AudioContext なし) maxIndex=${maxIndex}`)
     return
   }
-  console.debug(`[sound] playKyoshinUpdateSound maxIndex=${maxIndex} level=${kyoshinLevel(maxIndex)} ctxState=${ctx.state}`)
+  log.debug(`[sound] playKyoshinUpdateSound maxIndex=${maxIndex} level=${kyoshinLevel(maxIndex)} ctxState=${ctx.state}`)
   if (ctx.state === 'suspended') void ctx.resume()
   const p = DING_PATTERNS[kyoshinLevel(maxIndex)]
   const base = ctx.currentTime + 0.02

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { SiteCoords } from '../services/kyoshin'
 import { haversineKm } from '../utils/geo'
+import { log } from '../utils/logger'
 
 export interface DetectedPoint {
   lat: number
@@ -374,7 +375,7 @@ export function useKyoshinDetection(
       }
       if (timerRef.current) clearTimeout(timerRef.current)
       timerRef.current = setTimeout(() => {
-        console.debug(`[kyoshin] 検知タイマー満了 → 検知終了 (DETECTION_DURATION_MS=${DETECTION_DURATION_MS}ms)`)
+        log.debug(`[kyoshin] 検知タイマー満了 → 検知終了 (DETECTION_DURATION_MS=${DETECTION_DURATION_MS}ms)`)
         prevDetectedRef.current = false
         setDetection(EMPTY)
         confirmedSitesRef.current.clear()
@@ -415,7 +416,7 @@ export function useKyoshinDetection(
         .sort((a, b) => b.index - a.index)
       const maxIndex = points[0]?.index ?? confirmedMaxIndex
       if (!prevDetectedRef.current) {
-        console.debug(`[kyoshin] 検知開始 maxIndex=${maxIndex} 観測点数=${points.length} MIN_DETECTION_INDEX=${MIN_DETECTION_INDEX}`)
+        log.debug(`[kyoshin] 検知開始 maxIndex=${maxIndex} 観測点数=${points.length} MIN_DETECTION_INDEX=${MIN_DETECTION_INDEX}`)
         prevDetectedRef.current = true
       }
       setDetection({ detected: true, maxIndex, points })

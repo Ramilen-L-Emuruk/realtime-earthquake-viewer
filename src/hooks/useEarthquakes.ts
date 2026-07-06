@@ -5,6 +5,7 @@ import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmda
 import { loadStationCoords, buildAreaPrefIndex } from '../utils/stationCoords'
 import { calcEEWCancelTime } from '../utils/eew'
 import { mergeTsunamiObservations } from '../utils/tsunami'
+import { log } from '../utils/logger'
 
 const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
 import {
@@ -731,7 +732,7 @@ export function useEarthquakes(
       })
       .catch((err: unknown) => {
         if (cancelled) return
-        console.error('[fetch] 初回データ取得失敗', err)
+        log.error('[fetch] 初回データ取得失敗', err)
         const msg = err instanceof Error ? err.message : '取得失敗'
         setState(prev => ({ ...prev, isLoading: false, error: msg }))
       })
