@@ -13,6 +13,7 @@ import { useTsunamiObsCoords } from '../../hooks/useTsunamiObsCoords'
 import { useSubRegions } from '../../hooks/useSubRegions'
 import type { SubRegion } from '../../utils/subregions'
 import { useActiveFaults } from '../../hooks/useActiveFaults'
+import { usePlateBoundaries } from '../../hooks/usePlateBoundaries'
 import { pointInRings, normalizeEpicenterLng } from '../../utils/geo'
 import { BaseMap } from './BaseMap'
 import { IntensityPoints } from './IntensityPoints'
@@ -571,6 +572,7 @@ interface Props {
   iconScale?: number
   showBathymetry?: boolean
   showActiveFaults?: boolean
+  showPlateBoundaries?: boolean
   kyoshinSites?: SiteCoords
   kyoshinIndices?: number[]
   kyoshinPsWave?: PsWaveCircle[]
@@ -591,6 +593,7 @@ export function JapanMap({
   iconScale = 1,
   showBathymetry = true,
   showActiveFaults = true,
+  showPlateBoundaries = true,
   kyoshinSites = [],
   kyoshinIndices = [],
   kyoshinPsWave = [],
@@ -606,6 +609,7 @@ export function JapanMap({
   const tsunamiObsCoords = useTsunamiObsCoords()
   const subregions = useSubRegions()
   const activeFaults = useActiveFaults()
+  const plateBoundaries = usePlateBoundaries()
   const [zoom, setZoom] = useState(6)
   // ズームに応じて強震モニタ観測点のサイズを補正する係数。
   // ズーム8を基準（×1.0）とし、ズームアウト時は小さく・ズームイン時は大きくする。
@@ -876,6 +880,36 @@ export function JapanMap({
       {/* 行政区域ベースマップ（タイル不使用・自前描画）。
           リアルタイム表示は観測点ドットで埋もれるため引きの地方ラベルは出さない。 */}
       <BaseMap suppressRegionLabels={mode === 'kyoshin'} />
+
+      {/* 日本周辺のプレート境界線（PB2002モデル）。地震情報・リアルタイムタブのみ、
+          区域塗り(z260/261)より前面・活断層線(z263)より背面に表示する。 */}
+      {(mode === 'quake' || mode === 'kyoshin') && showPlateBoundaries && plateBoundaries && (
+        <Pane name="plate-boundaries" style={{ zIndex: 262 }}>
+          {plateBoundaries.map((seg, si) =>
+            seg.lines.map((line, i) => (
+              <Polyline
+                key={`plate-${si}-${i}`}
+                positions={line}
+                pathOptions={{
+                  color: seg.type === 'subduction' ? '#b91c1c' : '#1d4ed8',
+                  weight: 2,
+                  opacity: 0.55,
+                  dashArray: '6 4',
+                }}
+              >
+                <Popup>
+                  <div className="text-sm">
+                    <div className="font-bold">{seg.plateA} – {seg.plateB}</div>
+                    <div className="text-gray-600 text-xs">
+                      プレート境界（{seg.type === 'subduction' ? '沈み込み境界' : '境界種別不明'}・PB2002モデル）
+                    </div>
+                  </div>
+                </Popup>
+              </Polyline>
+            )),
+          )}
+        </Pane>
+      )}
 
       {/* 全国活断層線（産総研 活断層データベース）。地震情報・リアルタイムタブのみ、
           区域塗り(z260/261)より前面に表示し、震度色塗りの上からでも視認できるようにする。 */}
