@@ -22,8 +22,10 @@ import { KyoshinSubThreshold } from './KyoshinSubThreshold'
 import { KyoshinDetectedPoints } from './KyoshinDetectedPoints'
 import { KyoshinMaxEffect } from './KyoshinMaxEffect'
 import { PsWaveLayer } from './PsWaveLayer'
+import { QuakeHeatmapLayer } from './QuakeHeatmapLayer'
 import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
 import type { DetectedPoint } from '../../hooks/useKyoshinDetection'
+import type { HeatPoint } from '../../utils/quakeHeatmap'
 import { log } from '../../utils/logger'
 
 // 津波観測棒アイコン。波高・色ごとにキャッシュして再利用する。
@@ -571,6 +573,7 @@ interface Props {
   iconScale?: number
   showBathymetry?: boolean
   showActiveFaults?: boolean
+  heatPoints?: HeatPoint[] | null
   kyoshinSites?: SiteCoords
   kyoshinIndices?: number[]
   kyoshinPsWave?: PsWaveCircle[]
@@ -591,6 +594,7 @@ export function JapanMap({
   iconScale = 1,
   showBathymetry = true,
   showActiveFaults = true,
+  heatPoints = null,
   kyoshinSites = [],
   kyoshinIndices = [],
   kyoshinPsWave = [],
@@ -876,6 +880,11 @@ export function JapanMap({
       {/* 行政区域ベースマップ（タイル不使用・自前描画）。
           リアルタイム表示は観測点ドットで埋もれるため引きの地方ラベルは出さない。 */}
       <BaseMap suppressRegionLabels={mode === 'kyoshin'} />
+
+      {/* 直近1ヶ月の地震活動ヒートマップ。区域塗り(z260)より背面のため震度色塗りと競合しない。 */}
+      {(mode === 'quake' || mode === 'kyoshin') && heatPoints && heatPoints.length > 0 && (
+        <QuakeHeatmapLayer points={heatPoints} />
+      )}
 
       {/* 全国活断層線（産総研 活断層データベース）。地震情報・リアルタイムタブのみ、
           区域塗り(z260/261)より前面に表示し、震度色塗りの上からでも視認できるようにする。 */}

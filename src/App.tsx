@@ -17,6 +17,7 @@ import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
 import { useKyoshinDetection } from './hooks/useKyoshinDetection'
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
 import { useDmdssWaves } from './hooks/useDmdssWaves'
+import { useQuakeHeatmap } from './hooks/useQuakeHeatmap'
 import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude, formatDateTimeLocal } from './utils/formatters'
 import { computeEEWLevel } from './utils/eew'
@@ -124,6 +125,8 @@ export function App() {
     resetState, loadReplayEvents,
   } = useEarthquakes(handleLiveEvent, settings.dmdataApiKey, settings.dmdataTestDelivery, replayTimeOffset)
   earthquakesRef.current = earthquakes
+
+  const { points: quakeHeatPoints } = useQuakeHeatmap(settings.showQuakeHeatmap, settings.dmdataApiKey, earthquakes)
 
   // 最新の非解除津波電文から観測データを収集（地図バー描画用）
   const latestTsunamiObservations = useMemo(() => {
@@ -545,6 +548,7 @@ export function App() {
             iconScale={settings.mapIconScale}
             showBathymetry={settings.showBathymetry}
             showActiveFaults={settings.showActiveFaults}
+            heatPoints={quakeHeatPoints}
             kyoshinSites={kyoshin.sites}
             kyoshinIndices={kyoshin.indices}
             kyoshinPsWave={psWave}

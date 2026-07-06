@@ -12,6 +12,7 @@ export interface AppSettings {
   mapIconScale: number      // 地図アイコンの倍率 (1 = 100%、UI 倍率とは独立)
   showBathymetry: boolean   // 背景に海底地形（ESRI Ocean）を表示する
   showActiveFaults: boolean // 地震情報・リアルタイムタブの地図に活断層線を表示する
+  showQuakeHeatmap: boolean // 地震情報・リアルタイムタブの地図に直近1ヶ月の地震活動ヒートマップを表示する
   defaultTab: DefaultTabSetting    // 起動時・アイドル復帰時に表示するタブ
   tsunamiPriorityDefault: boolean  // 津波発表中はデフォルトタブを津波情報にする
   tsunamiTitleTemporary: boolean   // ウィンドウタイトルの津波表示を受信後一定時間のみにする（false = 発表中ずっと表示）
@@ -45,6 +46,7 @@ const DEFAULTS: AppSettings = {
   mapIconScale: 1,
   showBathymetry: true,
   showActiveFaults: true,
+  showQuakeHeatmap: false,
   defaultTab: 'earthquake',
   tsunamiPriorityDefault: true,
   tsunamiTitleTemporary: false,
