@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { loadTsunamiZones, type TsunamiZones } from '../utils/tsunamiZones'
+import { log } from '../utils/logger'
 
 /**
  * 津波予報区の海岸線データを読み込むフック。
@@ -16,7 +17,7 @@ export function useTsunamiZones(): TsunamiZones | null {
       })
       .catch((err) => {
         // 海岸線データが取得できなくても地図自体は表示する
-        console.warn('[data] tsunami-zones 取得失敗（津波海岸線なしで継続）', err)
+        log.warn('[data] tsunami-zones 取得失敗（津波海岸線なしで継続）', err)
       })
     return () => {
       active = false

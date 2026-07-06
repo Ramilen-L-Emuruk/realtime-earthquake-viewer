@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { loadSubRegions, type SubRegion } from '../utils/subregions'
+import { log } from '../utils/logger'
 
 /**
  * 一次細分区域の境界データを読み込むフック。
@@ -16,7 +17,7 @@ export function useSubRegions(): SubRegion[] | null {
       })
       .catch((err) => {
         // 区域データが取得できなくても地図自体は表示する
-        console.warn('[data] subregions 取得失敗（区域集約なしで継続）', err)
+        log.warn('[data] subregions 取得失敗（区域集約なしで継続）', err)
       })
     return () => {
       active = false

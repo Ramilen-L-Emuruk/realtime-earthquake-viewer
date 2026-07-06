@@ -3,6 +3,7 @@ import type { PsWaveCircle } from '../services/kyoshin'
 import { computeSWaveTravelTimeSec } from './useDmdssWaves'
 import { calcEEWAutoCancelSec, S_WAVE_FALLBACK_KM_PER_SEC } from '../utils/eew'
 import { haversineKm } from '../utils/geo'
+import { log } from '../utils/logger'
 
 export interface SWaveArrival {
   distanceKm: number
@@ -57,7 +58,7 @@ export function useSWaveCountdown(
         const eewKey = `${circle.magnitude}-${circle.depth}`
         if (lastLoggedEEWRef.current !== eewKey) {
           lastLoggedEEWRef.current = eewKey
-          console.debug('[eew] S波到達判定（EEW更新）', {
+          log.debug('[eew] S波到達判定（EEW更新）', {
             sRadiusKm: Number(sRadiusKm.toFixed(1)),
             distanceToHomeKm: Number(distanceKm.toFixed(1)),
             etaSec,

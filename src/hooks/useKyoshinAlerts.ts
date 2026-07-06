@@ -7,6 +7,7 @@ import { useKyoshinDetection, MIN_DETECTION_INDEX } from './useKyoshinDetection'
 import { playAlertSound, playKyoshinUpdateSound, kyoshinLevel } from '../utils/alertSound'
 import { kyoshinIndexToLabel } from '../utils/kyoshinIntensity'
 import { showBrowserNotification } from '../utils/notifications'
+import { log } from '../utils/logger'
 
 // 強震モニタの揺れ検知に応じたタブ切替・ウィンドウタイトル・通知音・ブラウザ通知を担うフック。
 // effect の依存配列は抽出前の App.tsx と同一集合を維持すること
@@ -49,7 +50,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
   const prevDetectedRef = useRef(false)
   useEffect(() => {
     if (kyoshinDetection.detected && !prevDetectedRef.current) {
-      console.debug('[tab] → realtime (揺れ検知開始)')
+      log.debug('[tab] → realtime (揺れ検知開始)')
       setActiveTab('realtime')
       title.setTitle('📈 揺れ検知')
       if (settings.soundEnabled) {
@@ -62,7 +63,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
     } else if (!kyoshinDetection.detected && prevDetectedRef.current) {
       title.applyPriority({ kyoshinDetected: false })
       if (activeEEWsRef.current.size === 0) {
-        console.debug(`[tab] → ${defaultTabRef.current} (揺れ検知終了)`)
+        log.debug(`[tab] → ${defaultTabRef.current} (揺れ検知終了)`)
         revertToDefaultTab()
       }
     }
@@ -92,7 +93,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
       postPeakMinLevelRef.current = currLevel
       // 初回検知（prevMaxLevel === 0）は検知音が鳴るのでスキップ
       if (prevMaxLevel > 0) {
-        console.debug(`[tab] → realtime (揺れ検知レベルアップ level=${prevMaxLevel}→${currLevel})`)
+        log.debug(`[tab] → realtime (揺れ検知レベルアップ level=${prevMaxLevel}→${currLevel})`)
         setActiveTab('realtime')
         if (settings.soundEnabled) {
           playKyoshinUpdateSound(effectiveKyoshinMaxIndex)
@@ -106,7 +107,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
       const prevMinLevel = postPeakMinLevelRef.current
       maxSoundLevelRef.current = currLevel
       postPeakMinLevelRef.current = currLevel
-      console.debug(`[tab] → realtime (揺れ検知再エスカレーション level=${prevMinLevel}→${currLevel})`)
+      log.debug(`[tab] → realtime (揺れ検知再エスカレーション level=${prevMinLevel}→${currLevel})`)
       setActiveTab('realtime')
       if (settings.soundEnabled) {
         playKyoshinUpdateSound(effectiveKyoshinMaxIndex)

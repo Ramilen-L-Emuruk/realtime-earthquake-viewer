@@ -23,6 +23,7 @@ import { KyoshinMaxEffect } from './KyoshinMaxEffect'
 import { PsWaveLayer } from './PsWaveLayer'
 import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
 import type { DetectedPoint } from '../../hooks/useKyoshinDetection'
+import { log } from '../../utils/logger'
 
 // 津波観測棒アイコン。波高・色ごとにキャッシュして再利用する。
 const obsBarIconCache = new Map<string, L.DivIcon>()
@@ -184,11 +185,11 @@ function FitToBounds({ signature, positions }: { signature: string; positions: L
     lastFitRef.current = signature
 
     if (positions.length === 1) {
-      console.debug(`[map] flyTo lat=${positions[0][0].toFixed(3)} lng=${positions[0][1].toFixed(3)} (FitToBounds 1点)`)
+      log.debug(`[map] flyTo lat=${positions[0][0].toFixed(3)} lng=${positions[0][1].toFixed(3)} (FitToBounds 1点)`)
       map.flyTo(positions[0], MAX_ZOOM, { duration: 1.0 })
       return
     }
-    console.debug(`[map] flyToBounds (FitToBounds ${positions.length}点)`)
+    log.debug(`[map] flyToBounds (FitToBounds ${positions.length}点)`)
     map.flyToBounds(L.latLngBounds(positions), {
       padding: [48, 48],
       maxZoom: MAX_ZOOM,
@@ -249,10 +250,10 @@ function TsunamiFitToBounds({
       const positions = pendingObsPositionsRef.current
       pendingObsPositionsRef.current = []
       if (positions.length === 1) {
-        console.debug(`[map] flyTo lat=${positions[0][0].toFixed(3)} lng=${positions[0][1].toFixed(3)} (TsunamiFit 観測点 1点)`)
+        log.debug(`[map] flyTo lat=${positions[0][0].toFixed(3)} lng=${positions[0][1].toFixed(3)} (TsunamiFit 観測点 1点)`)
         map.flyTo(positions[0], MAX_ZOOM, { duration: 1.0 })
       } else {
-        console.debug(`[map] flyToBounds (TsunamiFit 観測点 ${positions.length}点)`)
+        log.debug(`[map] flyToBounds (TsunamiFit 観測点 ${positions.length}点)`)
         map.flyToBounds(L.latLngBounds(positions), { padding: [48, 48], maxZoom: MAX_ZOOM, duration: 1.0 })
       }
       return
@@ -260,7 +261,7 @@ function TsunamiFitToBounds({
 
     if (tsunamiSignature && tsunamiSignature !== lastTsunamiSigRef.current && tsunamiFitPositions.length > 0) {
       lastTsunamiSigRef.current = tsunamiSignature
-      console.debug(`[map] flyToBounds (TsunamiFit 海岸線 ${tsunamiFitPositions.length}点)`)
+      log.debug(`[map] flyToBounds (TsunamiFit 海岸線 ${tsunamiFitPositions.length}点)`)
       map.flyToBounds(L.latLngBounds(tsunamiFitPositions), { padding: [48, 48], maxZoom: MAX_ZOOM, duration: 1.0 })
       return
     }
@@ -268,10 +269,10 @@ function TsunamiFitToBounds({
     // Step 3: 入室時に変化なし（観測点更新も海岸線シグネチャ変化も無し）→ フォールバックフィット
     if (enteredTsunamiTab) {
       if (tsunamiFitPositions.length > 0) {
-        console.debug(`[map] flyToBounds (TsunamiFit 入室・変化なし 海岸線${tsunamiFitPositions.length}点)`)
+        log.debug(`[map] flyToBounds (TsunamiFit 入室・変化なし 海岸線${tsunamiFitPositions.length}点)`)
         map.flyToBounds(L.latLngBounds(tsunamiFitPositions), { padding: [48, 48], maxZoom: MAX_ZOOM, duration: 1.0 })
       } else {
-        console.debug('[map] flyToBounds JAPAN_BOUNDS (TsunamiFit 入室・変化なし・海岸線なし)')
+        log.debug('[map] flyToBounds JAPAN_BOUNDS (TsunamiFit 入室・変化なし・海岸線なし)')
         map.flyToBounds(JAPAN_BOUNDS, { padding: [20, 20], duration: 1.0 })
       }
     }
@@ -324,16 +325,16 @@ function FitToEEW({ eews, psWave, idleRevertSec = 30, detectedPoints = [] }: { e
       if (lastEewIdRef.current !== null) {
         lastEewIdRef.current = null
         if (userInteractedRef.current) {
-          console.debug(`[map] flyToBounds スキップ (EEW解除 userInteracted=${userInteractedRef.current})`)
+          log.debug(`[map] flyToBounds スキップ (EEW解除 userInteracted=${userInteractedRef.current})`)
         } else if (detectedPoints.length > 0) {
-          console.debug(`[map] flyToBounds (EEW解除・揺れ検知中 ${detectedPoints.length}点にフィット)`)
+          log.debug(`[map] flyToBounds (EEW解除・揺れ検知中 ${detectedPoints.length}点にフィット)`)
           isAutoFlyingRef.current = true
           map.flyToBounds(
             L.latLngBounds(detectedPoints.map(p => [p.lat, p.lng] as [number, number])),
             { padding: [60, 60], maxZoom: MAX_ZOOM, duration: 1.0 },
           )
         } else {
-          console.debug('[map] flyToBounds JAPAN_BOUNDS (EEW解除)')
+          log.debug('[map] flyToBounds JAPAN_BOUNDS (EEW解除)')
           isAutoFlyingRef.current = true
           map.flyToBounds(JAPAN_BOUNDS, { padding: [20, 20], duration: 1.0 })
         }
@@ -357,12 +358,12 @@ function FitToEEW({ eews, psWave, idleRevertSec = 30, detectedPoints = [] }: { e
         bounds = bounds ? bounds.extend(b) : b
       }
       if (bounds) {
-        console.debug(`[map] flyToBounds (EEW新規 波円${psWave.length}個 eewId=${eewEventId})`)
+        log.debug(`[map] flyToBounds (EEW新規 波円${psWave.length}個 eewId=${eewEventId})`)
         map.flyToBounds(bounds, { padding: [60, 60], maxZoom: MAX_ZOOM, duration: 0.8 })
       }
       return
     }
-    console.debug(`[map] flyTo lat=${latitude.toFixed(3)} lng=${longitude.toFixed(3)} (EEW新規 震源のみ eewId=${eewEventId})`)
+    log.debug(`[map] flyTo lat=${latitude.toFixed(3)} lng=${longitude.toFixed(3)} (EEW新規 震源のみ eewId=${eewEventId})`)
     map.flyTo([latitude, longitude], MAX_ZOOM, { duration: 0.8 })
   }, [latest, map])
 
@@ -372,13 +373,13 @@ function FitToEEW({ eews, psWave, idleRevertSec = 30, detectedPoints = [] }: { e
     const onInteraction = () => {
       if (isAutoFlyingRef.current) return
       if (!userInteractedRef.current) {
-        console.debug(`[map] ユーザー手動操作検知 → 自動フィット抑制開始 (idleRevertSec=${idleRevertSec})`)
+        log.debug(`[map] ユーザー手動操作検知 → 自動フィット抑制開始 (idleRevertSec=${idleRevertSec})`)
       }
       userInteractedRef.current = true
       window.clearTimeout(resetTimerRef.current)
       if (idleRevertSec > 0) {
         resetTimerRef.current = window.setTimeout(() => {
-          console.debug('[map] 自動フィット抑制解除 (idleRevertSec経過)')
+          log.debug('[map] 自動フィット抑制解除 (idleRevertSec経過)')
           userInteractedRef.current = false
         }, idleRevertSec * 1000)
       }
@@ -414,7 +415,7 @@ function FitToEEW({ eews, psWave, idleRevertSec = 30, detectedPoints = [] }: { e
       if (latest) {
         const { latitude, longitude } = latest.earthquake.hypocenter
         if (latitude > -200 && longitude > -200) {
-          console.debug(`[map] flyTo lat=${latitude.toFixed(3)} lng=${longitude.toFixed(3)} (EEW数減少・波円なし 再フィット)`)
+          log.debug(`[map] flyTo lat=${latitude.toFixed(3)} lng=${longitude.toFixed(3)} (EEW数減少・波円なし 再フィット)`)
           isAutoFlyingRef.current = true
           map.flyTo([latitude, longitude], MAX_ZOOM, { duration: 0.8 })
         }
@@ -429,7 +430,7 @@ function FitToEEW({ eews, psWave, idleRevertSec = 30, detectedPoints = [] }: { e
       bounds = bounds ? bounds.extend(b) : b
     }
     if (bounds) {
-      console.debug(`[map] flyToBounds (EEW数減少・波円${psWave.length}個 再フィット)`)
+      log.debug(`[map] flyToBounds (EEW数減少・波円${psWave.length}個 再フィット)`)
       isAutoFlyingRef.current = true
       map.flyToBounds(bounds, { padding: [60, 60], maxZoom: MAX_ZOOM, duration: 0.8 })
     }
@@ -443,7 +444,7 @@ function FitToEEW({ eews, psWave, idleRevertSec = 30, detectedPoints = [] }: { e
     if (eews.length === 0) return
     if (psWave.length === 0) return
     if (userInteractedRef.current) {
-      console.debug('[map] flyToBounds スキップ (EEW波円成長フォロー・ユーザー操作中)')
+      log.debug('[map] flyToBounds スキップ (EEW波円成長フォロー・ユーザー操作中)')
       return
     }
     if (isAutoFlyingRef.current) return
@@ -454,7 +455,7 @@ function FitToEEW({ eews, psWave, idleRevertSec = 30, detectedPoints = [] }: { e
       bounds = bounds ? bounds.extend(b) : b
     }
     if (bounds && !map.getBounds().contains(bounds)) {
-      console.debug(`[map] flyToBounds (EEW波円成長フォロー 波円${psWave.length}個)`)
+      log.debug(`[map] flyToBounds (EEW波円成長フォロー 波円${psWave.length}個)`)
       isAutoFlyingRef.current = true
       map.flyToBounds(bounds, { padding: [60, 60], maxZoom: MAX_ZOOM, duration: 0.8 })
     }
@@ -474,10 +475,10 @@ function FitToDetection({ points, hasEew }: { points: DetectedPoint[]; hasEew: b
       if (fittedRef.current) {
         fittedRef.current = false
         if (!hasEew) {
-          console.debug('[map] flyToBounds JAPAN_BOUNDS (揺れ検知終了)')
+          log.debug('[map] flyToBounds JAPAN_BOUNDS (揺れ検知終了)')
           map.flyToBounds(JAPAN_BOUNDS, { padding: [20, 20], duration: 1.0 })
         } else {
-          console.debug('[map] flyToBounds JAPAN スキップ (揺れ検知終了・EEW発報中)')
+          log.debug('[map] flyToBounds JAPAN スキップ (揺れ検知終了・EEW発報中)')
         }
       }
       return
@@ -486,11 +487,11 @@ function FitToDetection({ points, hasEew }: { points: DetectedPoint[]; hasEew: b
     fittedRef.current = true
 
     if (points.length === 1) {
-      console.debug(`[map] flyTo lat=${points[0].lat.toFixed(3)} lng=${points[0].lng.toFixed(3)} (揺れ検知 1点)`)
+      log.debug(`[map] flyTo lat=${points[0].lat.toFixed(3)} lng=${points[0].lng.toFixed(3)} (揺れ検知 1点)`)
       map.flyTo([points[0].lat, points[0].lng], MAX_ZOOM, { duration: 1.0 })
       return
     }
-    console.debug(`[map] flyToBounds (揺れ検知 ${points.length}点)`)
+    log.debug(`[map] flyToBounds (揺れ検知 ${points.length}点)`)
     map.flyToBounds(
       L.latLngBounds(points.map(p => [p.lat, p.lng] as [number, number])),
       { padding: [60, 60], maxZoom: MAX_ZOOM, duration: 1.0 },
@@ -518,11 +519,11 @@ function FitJapanOnEnter({
   useEffect(() => {
     // 揺れ検知中はFitToDetectionに任せ、日本全体へのリセットをスキップする
     if (hasDetection) {
-      console.debug('[map] FitJapanOnEnter スキップ (揺れ検知中)')
+      log.debug('[map] FitJapanOnEnter スキップ (揺れ検知中)')
       return
     }
     if (!hasEew) {
-      console.debug('[map] flyToBounds JAPAN_BOUNDS (realtimeタブ入室・EEWなし)')
+      log.debug('[map] flyToBounds JAPAN_BOUNDS (realtimeタブ入室・EEWなし)')
       map.flyToBounds(JAPAN_BOUNDS, { padding: [20, 20], duration: 1.0 })
       return
     }
@@ -534,7 +535,7 @@ function FitJapanOnEnter({
         bounds = bounds ? bounds.extend(b) : b
       }
       if (bounds) {
-        console.debug(`[map] flyToBounds (realtimeタブ入室・EEWあり 波円${psWave.length}個)`)
+        log.debug(`[map] flyToBounds (realtimeタブ入室・EEWあり 波円${psWave.length}個)`)
         map.flyToBounds(bounds, { padding: [60, 60], maxZoom: MAX_ZOOM, duration: 0.8 })
         return
       }
@@ -545,7 +546,7 @@ function FitJapanOnEnter({
     if (latest) {
       const { latitude, longitude } = latest.earthquake.hypocenter
       if (latitude > -200 && longitude > -200) {
-        console.debug(`[map] flyTo lat=${latitude.toFixed(3)} lng=${longitude.toFixed(3)} (realtimeタブ入室・EEWあり 震源のみ)`)
+        log.debug(`[map] flyTo lat=${latitude.toFixed(3)} lng=${longitude.toFixed(3)} (realtimeタブ入室・EEWあり 震源のみ)`)
         map.flyTo([latitude, longitude], MAX_ZOOM, { duration: 0.8 })
       }
     }
