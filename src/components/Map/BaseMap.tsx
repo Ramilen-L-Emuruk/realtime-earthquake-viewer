@@ -43,11 +43,12 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
     //   quake-region-fill(260) : 地震モードの一次細分区域別震度塗り（JapanMap が使用）
     //   eew-region-fill(260)   : EEW 予想震度の区域塗り（JapanMap が使用）
     //   lpgm-region-fill(261)  : 長周期地震動の区域塗り（JapanMap が使用）
-    //   plate-boundaries(262)  : 日本周辺のプレート境界線（JapanMap が使用）
     //   active-faults(263)     : 全国活断層線。震度塗りより前面（JapanMap が使用）
     //   tsunami-lines(270)     : 津波海岸線（JapanMap が使用）
     //   ps-wave(280)           : P/S波円（PsWaveLayer が使用）
-    //   overlayPane(400)       : 強震モニタ閾値以下・検知点（Leaflet デフォルト）
+    //   overlayPane(400)       : IntensityPoints 等 pane 未指定 Canvas レイヤーの既定ペイン（Leaflet デフォルト）。
+    //                            全画面を覆いクリックを奪うため、クリック可能なレイヤーはこれより前面に置く必要がある
+    //   plate-boundaries(401)  : 日本周辺のプレート境界線（JapanMap が使用。ポップアップのため overlayPane より前面）
     //   basemap-labels(450)    : 地方/県/区域名ラベル
     if (!map.getPane('basemap')) {
       const pane = map.createPane('basemap')

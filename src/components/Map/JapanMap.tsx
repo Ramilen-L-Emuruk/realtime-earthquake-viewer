@@ -610,6 +610,10 @@ export function JapanMap({
   const subregions = useSubRegions()
   const activeFaults = useActiveFaults()
   const plateBoundaries = usePlateBoundaries()
+  // 地図全体は preferCanvas だが、破線・weight2 の細い線は Canvas の当たり判定
+  // （tolerance を広げても安定してヒットしない）とポップアップ相性が悪いため、
+  // この線だけ SVG レンダラーで描画してクリック判定を DOM ネイティブに委ねる。
+  const plateBoundaryRenderer = useMemo(() => L.svg({ pane: 'plate-boundaries' }), [])
   const [zoom, setZoom] = useState(6)
   // ズームに応じて強震モニタ観測点のサイズを補正する係数。
   // ズーム8を基準（×1.0）とし、ズームアウト時は小さく・ズームイン時は大きくする。
@@ -881,15 +885,18 @@ export function JapanMap({
           リアルタイム表示は観測点ドットで埋もれるため引きの地方ラベルは出さない。 */}
       <BaseMap suppressRegionLabels={mode === 'kyoshin'} />
 
-      {/* 日本周辺のプレート境界線（PB2002モデル）。地震情報・リアルタイムタブのみ、
-          区域塗り(z260/261)より前面・活断層線(z263)より背面に表示する。 */}
+      {/* 日本周辺のプレート境界線（PB2002モデル）。地震情報・リアルタイムタブのみ。
+          IntensityPoints 等が pane 未指定の Canvas（既定の overlayPane, z400）を使っており、
+          そちらは常に全画面を覆ってクリックを奪うため、ポップアップを機能させるには
+          overlayPane より前面（z401）に置く必要がある。 */}
       {(mode === 'quake' || mode === 'kyoshin') && showPlateBoundaries && plateBoundaries && (
-        <Pane name="plate-boundaries" style={{ zIndex: 262 }}>
+        <Pane name="plate-boundaries" style={{ zIndex: 401 }}>
           {plateBoundaries.map((seg, si) =>
             seg.lines.map((line, i) => (
               <Polyline
                 key={`plate-${si}-${i}`}
                 positions={line}
+                renderer={plateBoundaryRenderer}
                 pathOptions={{
                   color: seg.type === 'subduction' ? '#b91c1c' : '#1d4ed8',
                   weight: 2,
