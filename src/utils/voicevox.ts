@@ -1,5 +1,4 @@
 import { getAudioContext } from './alertSound'
-import { applyTtsReadings, loadTtsReadingDict } from './ttsReadingDict'
 import { findPhraseBreakMatch, getTtsPhraseBreakDictCache, loadTtsPhraseBreakDict } from './ttsPhraseBreakDict'
 
 export type VoicevoxStyle = { name: string; id: number }
@@ -189,13 +188,8 @@ export async function speakWithVoicevox(
   volume: number,
 ): Promise<void> {
   // 辞書が未ロードなら待つ（キャッシュ済みなら即時解決）
-  await Promise.all([
-    loadTtsReadingDict().catch(() => {}),
-    loadTtsPhraseBreakDict().catch(() => {}),
-  ])
-  const normalized = applyTtsReadings(text)
-  console.debug(`[VoiceVox] 読み上げ: ${normalized}`, { speakerId, volume })
-  text = normalized
+  await loadTtsPhraseBreakDict().catch(() => {})
+  console.debug(`[VoiceVox] 読み上げ: ${text}`, { speakerId, volume })
 
   // 既存の再生を全て停止
   for (const src of activeSources) {
