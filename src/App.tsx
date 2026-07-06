@@ -22,7 +22,7 @@ import { formatMagnitude, formatDateTimeLocal } from './utils/formatters'
 import { computeEEWLevel } from './utils/eew'
 import { tsunamiOverallGrade } from './utils/tsunami'
 import { playCountdownBeep, unlockAudio, setSoundVolume } from './utils/alertSound'
-import { loadTtsReadingDict } from './utils/ttsReadingDict'
+import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
 import type { EEWAlert, JMAQuake } from './types/earthquake'
 import { fetchDmdataReplayEvents, filterPreWindowEvents, clearReplayCache } from './services/dmdataReplay'
 
@@ -144,7 +144,7 @@ export function App() {
 
   // TTS 読み辞書をアプリ起動時に事前ロードする（VOICEVOX 有効・無効に関わらず）
   useEffect(() => {
-    loadTtsReadingDict().catch(() => {})
+    loadTtsPhraseBreakDict().catch(() => {})
   }, [])
 
   // ブラウザの自動再生制限に対応: 初回のユーザー操作で音声を有効化する

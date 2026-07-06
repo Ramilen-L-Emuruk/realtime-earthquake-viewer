@@ -1,13 +1,20 @@
 import { getAudioContext } from './alertSound'
-import { applyTtsReadings, loadTtsReadingDict } from './ttsReadingDict'
+import { findPhraseBreakMatch, getTtsPhraseBreakDictCache, loadTtsPhraseBreakDict } from './ttsPhraseBreakDict'
 
 export type VoicevoxStyle = { name: string; id: number }
 export type VoicevoxSpeaker = { name: string; speaker_uuid: string; styles: VoicevoxStyle[] }
+
+// VOICEVOX の AccentPhrase（構造の詳細には立ち入らず、そのまま受け渡すだけなので unknown 値の記録として扱う）
+type AccentPhrase = Record<string, unknown>
 
 // 再生中のソース一覧（パイプライン再生中は複数になる）
 let activeSources: AudioBufferSourceNode[] = []
 // 現在のセッション ID。新しい読み上げが来たら古いパイプラインを打ち切るために使う
 let currentSessionId = 0
+
+// 句区切り辞書エントリの accent_phrases 取得結果キャッシュ（"speakerId:キー" -> AccentPhrase[]）。
+// 同じ地名・同じ話者の組み合わせで毎回 /accent_phrases を叩き直さないようにする。
+const phraseBreakCache = new Map<string, AccentPhrase[]>()
 
 /** VOICEVOX が起動中かどうかを確認する（2秒タイムアウト）。 */
 export async function checkVoicevoxAvailable(baseUrl: string): Promise<boolean> {
@@ -56,6 +63,76 @@ function splitIntoChunks(text: string): string[] {
   return merged.length > 0 ? merged : [text]
 }
 
+/** 通常テキストを /audio_query に渡し、accent_phrases 部分だけを取り出す。失敗時は null。 */
+async function fetchAccentPhrasesForText(
+  baseUrl: string,
+  text: string,
+  speakerId: number,
+): Promise<AccentPhrase[] | null> {
+  const res = await fetch(
+    `${baseUrl}/audio_query?text=${encodeURIComponent(text)}&speaker=${speakerId}`,
+    { method: 'POST' },
+  )
+  if (!res.ok) return null
+  const query = await res.json() as { accent_phrases: AccentPhrase[] }
+  return query.accent_phrases
+}
+
+/**
+ * 句区切り辞書エントリ（AquesTalk風カナ表記）を /accent_phrases(is_kana=true) にかけて
+ * 句区切り・アクセント位置を指定通りに確定した accent_phrases を取得する。
+ * 同じ話者・同じキーの結果はキャッシュして再利用する。失敗時は null。
+ */
+async function fetchAccentPhrasesForKey(
+  baseUrl: string,
+  key: string,
+  kanaReading: string,
+  speakerId: number,
+): Promise<AccentPhrase[] | null> {
+  const cacheKey = `${speakerId}:${key}`
+  const cached = phraseBreakCache.get(cacheKey)
+  if (cached) return cached
+
+  const res = await fetch(
+    `${baseUrl}/accent_phrases?text=${encodeURIComponent(kanaReading)}&speaker=${speakerId}&is_kana=true`,
+    { method: 'POST' },
+  )
+  if (!res.ok) return null
+  const phrases = await res.json() as AccentPhrase[]
+  phraseBreakCache.set(cacheKey, phrases)
+  return phrases
+}
+
+/**
+ * テキストを accent_phrases の配列に変換する。句区切り辞書のキーを含む場合は、
+ * その部分だけ /accent_phrases(is_kana=true) で処理し、前後の通常テキストと結合する
+ * （キーを含まない後続部分にさらに別のキーが含まれる場合は再帰的に処理する）。
+ * 失敗時は null。
+ */
+async function buildAccentPhrases(
+  baseUrl: string,
+  text: string,
+  speakerId: number,
+  phraseBreakDict: Record<string, string>,
+): Promise<AccentPhrase[] | null> {
+  if (text === '') return []
+
+  const match = findPhraseBreakMatch(text, phraseBreakDict)
+  if (!match) return fetchAccentPhrasesForText(baseUrl, text, speakerId)
+
+  const pre = text.slice(0, match.index)
+  const post = text.slice(match.index + match.key.length)
+
+  const [prePhrases, matchedPhrases, postPhrases] = await Promise.all([
+    buildAccentPhrases(baseUrl, pre, speakerId, phraseBreakDict),
+    fetchAccentPhrasesForKey(baseUrl, match.key, phraseBreakDict[match.key], speakerId),
+    buildAccentPhrases(baseUrl, post, speakerId, phraseBreakDict),
+  ])
+  if (!prePhrases || !matchedPhrases || !postPhrases) return null
+
+  return [...prePhrases, ...matchedPhrases, ...postPhrases]
+}
+
 /** 1チャンクを audio_query → synthesis して AudioBuffer を返す。失敗時は null。 */
 async function synthesizeChunk(
   baseUrl: string,
@@ -71,6 +148,14 @@ async function synthesizeChunk(
     if (!queryRes.ok) return null
 
     const query = await queryRes.json() as Record<string, unknown>
+
+    // 句区切り辞書にマッチする地名を含む場合は、accent_phrases を句区切り指定通りに組み直す
+    const phraseBreakDict = getTtsPhraseBreakDictCache()
+    if (phraseBreakDict && findPhraseBreakMatch(chunk, phraseBreakDict)) {
+      const phrases = await buildAccentPhrases(baseUrl, chunk, speakerId, phraseBreakDict)
+      if (phrases) query.accent_phrases = phrases
+    }
+
     query.speedScale = 1.2
 
     const synthRes = await fetch(
@@ -103,10 +188,8 @@ export async function speakWithVoicevox(
   volume: number,
 ): Promise<void> {
   // 辞書が未ロードなら待つ（キャッシュ済みなら即時解決）
-  await loadTtsReadingDict().catch(() => {})
-  const normalized = applyTtsReadings(text)
-  console.debug(`[VoiceVox] 読み上げ: ${normalized}`, { speakerId, volume })
-  text = normalized
+  await loadTtsPhraseBreakDict().catch(() => {})
+  console.debug(`[VoiceVox] 読み上げ: ${text}`, { speakerId, volume })
 
   // 既存の再生を全て停止
   for (const src of activeSources) {
