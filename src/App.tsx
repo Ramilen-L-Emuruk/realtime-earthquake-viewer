@@ -126,7 +126,7 @@ export function App() {
   } = useEarthquakes(handleLiveEvent, settings.dmdataApiKey, settings.dmdataTestDelivery, replayTimeOffset)
   earthquakesRef.current = earthquakes
 
-  const { points: quakeHeatPoints } = useQuakeHeatmap(settings.showQuakeHeatmap, settings.dmdataApiKey)
+  const { points: quakeHeatPoints } = useQuakeHeatmap(settings.showQuakeHeatmap, settings.dmdataApiKey, earthquakes)
 
   // 最新の非解除津波電文から観測データを収集（地図バー描画用）
   const latestTsunamiObservations = useMemo(() => {

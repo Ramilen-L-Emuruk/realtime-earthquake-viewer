@@ -1,7 +1,22 @@
+import type { JMAQuake } from '../types/earthquake'
+
 export interface HeatPoint {
   lat: number
   lng: number
   weight: number
+}
+
+// 地震の同一性判定キー。DMDSS版の id には14桁の eventId が埋め込まれておりそれを使う
+// （GD Earthquake List の eventId フィールドも同じ14桁形式のため突き合わせ可能）。
+// 通常版（P2PQuake）の id はこの形式を持たないため earthquake.time にフォールバックする。
+export function quakeIdentityKey(q: Pick<JMAQuake, 'id' | 'earthquake'>): string {
+  const dmdataEventId = q.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
+  return dmdataEventId ?? q.earthquake.time
+}
+
+// 震源が未確定（震度速報段階など）のプレースホルダー座標を判定する。
+export function hasValidHypocenter(lat: number, lng: number): boolean {
+  return lat > -200 && lng > -200
 }
 
 // マグニチュードをヒートマップの重みに変換する。
