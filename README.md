@@ -152,6 +152,7 @@ return
 | 行政区域（都道府県境界） | 気象庁 予報区等 GIS データ（[Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)） | ベースマップの陸地・県境を自前描画（タイル不使用）。一次細分区域と同一ソースで海岸線が整合。`scripts/build-prefectures.mjs` で生成 |
 | 一次細分区域（地震情報の地域） | 気象庁 予報区等 GIS データ（[Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)） | 区域境界・区域名ラベル・地震の区域別震度集約に使用。`scripts/build-subregions.mjs` で生成 |
 | 海底地形（背景・任意） | [Esri World Ocean Base](https://www.arcgis.com/home/item.html?id=1e126e7520f9466c9ca28b8f28b5e500) | 背景に海底地形を表示（設定で ON/OFF）。Esri, GEBCO, NOAA ほか |
+| 活断層線（任意） | 産業技術総合研究所（産総研）[活断層データベース](https://gbank.gsj.jp/activefault/) | 地震情報・リアルタイムタブの地図に全国の活断層線を表示（設定で ON/OFF）。政府標準利用規約2.0。`scripts/build-active-faults.mjs` で生成 |
 
 ### DM-D.S.S 版（DMDATA.JP）
 
@@ -207,12 +208,14 @@ realtime-earthquake-viewer/
 │       ├── tsunami-zones.json      # 津波予報区の海岸線座標（生成物）
 │       ├── tsunami-obs-coords.json # 津波観測点（験潮所等）の座標テーブル
 │       ├── prefectures.json        # 都道府県の境界ポリゴン（ベースマップ用・生成物）
-│       └── subregions.json         # 一次細分区域の境界ポリゴン（生成物）
+│       ├── subregions.json         # 一次細分区域の境界ポリゴン（生成物）
+│       └── active-faults.json      # 全国活断層線データ（生成物）
 ├── scripts/
 │   ├── build-station-coords.mjs    # 観測点座標テーブル生成スクリプト
 │   ├── build-tsunami-zones.mjs     # 津波予報区 海岸線データ生成スクリプト
 │   ├── build-prefectures.mjs       # 都道府県境界データ生成スクリプト
-│   └── build-subregions.mjs        # 一次細分区域境界データ生成スクリプト
+│   ├── build-subregions.mjs        # 一次細分区域境界データ生成スクリプト
+│   └── build-active-faults.mjs     # 全国活断層線データ生成スクリプト
 ├── src/
 │   ├── App.tsx                     # 地図常時表示 + タブ別パネル + 通知音/自動タブ切替/ウィンドウタイトル連携
 │   ├── components/
@@ -246,7 +249,8 @@ realtime-earthquake-viewer/
 │   │   ├── useStationCoords.ts     # 観測点座標テーブルの読み込み
 │   │   ├── useTsunamiZones.ts      # 津波予報区 海岸線データの読み込み
 │   │   ├── useTsunamiObsCoords.ts  # 津波観測点座標テーブルの読み込み
-│   │   └── useSubRegions.ts        # 一次細分区域境界データの読み込み
+│   │   ├── useSubRegions.ts        # 一次細分区域境界データの読み込み
+│   │   └── useActiveFaults.ts      # 全国活断層線データの読み込み
 │   ├── services/
 │   │   ├── kyoshin.ts              # Yahoo リアルタイム震度の取得・デコード
 │   │   ├── p2pquake.ts             # P2PQuake API クライアント（自動再接続）
@@ -267,6 +271,7 @@ realtime-earthquake-viewer/
 │       ├── tsunamiObsCoords.ts     # 津波観測点座標テーブルの読み込み
 │       ├── prefectures.ts          # 都道府県境界データの読み込み
 │       ├── subregions.ts           # 一次細分区域境界データの読み込み
+│       ├── activeFaults.ts         # 全国活断層線データの読み込み
 │       ├── regions.ts              # 地方区分ラベル一覧
 │       ├── geo.ts                  # 点の多角形内包判定（区域別集約用）
 │       ├── formatters.ts           # 日時・数値フォーマッター
@@ -298,3 +303,4 @@ MIT License
 
 地図データ: 「気象庁 予報区等GISデータ（都道府県・地震情報／細分区域・津波予報区）」
 海底地形: © Esri, GEBCO, NOAA, National Geographic, and other contributors
+活断層データ: 「産総研 活断層データベース」（政府標準利用規約2.0）

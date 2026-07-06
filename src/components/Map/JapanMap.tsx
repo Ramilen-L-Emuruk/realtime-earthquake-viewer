@@ -12,6 +12,7 @@ import { useTsunamiZones } from '../../hooks/useTsunamiZones'
 import { useTsunamiObsCoords } from '../../hooks/useTsunamiObsCoords'
 import { useSubRegions } from '../../hooks/useSubRegions'
 import type { SubRegion } from '../../utils/subregions'
+import { useActiveFaults } from '../../hooks/useActiveFaults'
 import { pointInRings, normalizeEpicenterLng } from '../../utils/geo'
 import { BaseMap } from './BaseMap'
 import { IntensityPoints } from './IntensityPoints'
@@ -566,6 +567,7 @@ interface Props {
   lpgm?: JMALpgm
   iconScale?: number
   showBathymetry?: boolean
+  showActiveFaults?: boolean
   kyoshinSites?: SiteCoords
   kyoshinIndices?: number[]
   kyoshinPsWave?: PsWaveCircle[]
@@ -585,6 +587,7 @@ export function JapanMap({
   lpgm,
   iconScale = 1,
   showBathymetry = true,
+  showActiveFaults = true,
   kyoshinSites = [],
   kyoshinIndices = [],
   kyoshinPsWave = [],
@@ -599,6 +602,7 @@ export function JapanMap({
   const tsunamiZones = useTsunamiZones()
   const tsunamiObsCoords = useTsunamiObsCoords()
   const subregions = useSubRegions()
+  const activeFaults = useActiveFaults()
   const [zoom, setZoom] = useState(6)
   // ズームに応じて強震モニタ観測点のサイズを補正する係数。
   // ズーム8を基準（×1.0）とし、ズームアウト時は小さく・ズームイン時は大きくする。
@@ -869,6 +873,29 @@ export function JapanMap({
       {/* 行政区域ベースマップ（タイル不使用・自前描画）。
           リアルタイム表示は観測点ドットで埋もれるため引きの地方ラベルは出さない。 */}
       <BaseMap suppressRegionLabels={mode === 'kyoshin'} />
+
+      {/* 全国活断層線（産総研 活断層データベース）。地震情報・リアルタイムタブのみ、
+          区域塗り(z260/261)より前面に表示し、震度色塗りの上からでも視認できるようにする。 */}
+      {(mode === 'quake' || mode === 'kyoshin') && showActiveFaults && activeFaults && (
+        <Pane name="active-faults" style={{ zIndex: 263 }}>
+          {activeFaults.map((seg) =>
+            seg.lines.map((line, i) => (
+              <Polyline
+                key={`fault-${seg.name}-${i}`}
+                positions={line}
+                pathOptions={{ color: '#c2410c', weight: 1.2, opacity: 0.65 }}
+              >
+                <Popup>
+                  <div className="text-sm">
+                    <div className="font-bold">{seg.name}</div>
+                    <div className="text-gray-600 text-xs">活断層（産総研 活断層データベース）</div>
+                  </div>
+                </Popup>
+              </Polyline>
+            )),
+          )}
+        </Pane>
+      )}
 
       {/* EEW 受信時: 対象地域を予想震度で色塗り（ラベル z270 より背面・観測点ドットの下）
           警報域(isWarning): fillOpacity 0.55 + weight 2 で強調。予報域: 0.3 + weight 1 */}

@@ -43,6 +43,7 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
     //   quake-region-fill(260) : 地震モードの一次細分区域別震度塗り（JapanMap が使用）
     //   eew-region-fill(260)   : EEW 予想震度の区域塗り（JapanMap が使用）
     //   lpgm-region-fill(261)  : 長周期地震動の区域塗り（JapanMap が使用）
+    //   active-faults(263)     : 全国活断層線。震度塗りより前面（JapanMap が使用）
     //   tsunami-lines(270)     : 津波海岸線（JapanMap が使用）
     //   ps-wave(280)           : P/S波円（PsWaveLayer が使用）
     //   overlayPane(400)       : 強震モニタ閾値以下・検知点（Leaflet デフォルト）
@@ -80,6 +81,9 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
 
     map.attributionControl?.addAttribution(
       '「気象庁 予報区等GISデータ（都道府県・地震情報／細分区域）」',
+    )
+    map.attributionControl?.addAttribution(
+      '「産総研 活断層データベース」',
     )
 
     let cancelled = false
