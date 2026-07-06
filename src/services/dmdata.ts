@@ -721,3 +721,58 @@ export async function fetchDmdataLpgms(
 
   return collected
 }
+
+// GD Earthquake List（gd.earthquake スコープ）の1件分。震源緯度経度・マグニチュードが
+// レスポンス内で完結しており、telegram 系のような電文個別取得（N+1）が不要。
+export interface GdEarthquakeItem {
+  eventId: string
+  originTime: string
+  latitude: number
+  longitude: number
+  magnitude: number
+}
+
+const GD_EARTHQUAKE_MAX_PAGES = 20
+
+// DMDATA REST API で震源カタログ（GD Earthquake List）を取得し、直近 `days` 日分に絞って返す。
+// 通常版の fetchJmaQuakeHistory に相当するヒートマップ用データ源。
+// gd.earthquake スコープが契約に含まれない場合は 403 で例外を投げる。
+export async function fetchDmdataGdEarthquakes(apiKey: string, days: number): Promise<GdEarthquakeItem[]> {
+  const headers = { Authorization: authHeader(apiKey) }
+  const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000
+  const collected: GdEarthquakeItem[] = []
+  let cursorToken: string | undefined
+
+  for (let page = 0; page < GD_EARTHQUAKE_MAX_PAGES; page++) {
+    const qs = cursorToken ? `&cursorToken=${cursorToken}` : ''
+    const res = await fetch(`${API_BASE}/gd/earthquake?limit=100${qs}`, { headers })
+    if (!res.ok) throw new Error(`gd/earthquake: ${res.status}`)
+    const json = await res.json() as {
+      items?: Array<{
+        eventId: string
+        originTime: string
+        hypocenter: { coordinate: { latitude: { value: string }; longitude: { value: string } } }
+        magnitude?: { value: string }
+      }>
+      nextToken?: string
+    }
+    const items = json.items ?? []
+    if (items.length === 0) break
+
+    let reachedCutoff = false
+    for (const it of items) {
+      if (new Date(it.originTime).getTime() < cutoffMs) { reachedCutoff = true; break }
+      collected.push({
+        eventId: it.eventId,
+        originTime: it.originTime,
+        latitude: parseFloat(it.hypocenter.coordinate.latitude.value),
+        longitude: parseFloat(it.hypocenter.coordinate.longitude.value),
+        magnitude: it.magnitude ? parseFloat(it.magnitude.value) : -1,
+      })
+    }
+    if (reachedCutoff || !json.nextToken) break
+    cursorToken = json.nextToken
+  }
+
+  return collected
+}

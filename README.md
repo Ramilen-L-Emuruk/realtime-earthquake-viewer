@@ -30,7 +30,7 @@
 | フレームワーク | React 18 + TypeScript |
 | ビルドツール | Vite 6 |
 | スタイル | Tailwind CSS（ダークテーマ） |
-| 地図 | React-Leaflet + 自前の行政区域ベースマップ（タイル不使用・ダーク／地方・県・都市ラベル） |
+| 地図 | React-Leaflet + 自前の行政区域ベースマップ（タイル不使用・ダーク／地方・県・都市ラベル） + leaflet.heat（地震活動ヒートマップ） |
 | PWA | vite-plugin-pwa + Workbox |
 | データ | 通常版: [P2PQuake API v2](https://api.p2pquake.net/v2/docs/) / DM-D.S.S 版: [DMDATA.JP API](https://dmdata.jp/) |
 | リアルタイム震度 | [Yahoo!天気・災害 リアルタイム震度](https://typhoon.yahoo.co.jp/weather/jp/earthquake/kyoshin/)（防災科研 強震モニタ由来）|
@@ -153,6 +153,7 @@ return
 | 一次細分区域（地震情報の地域） | 気象庁 予報区等 GIS データ（[Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)） | 区域境界・区域名ラベル・地震の区域別震度集約に使用。`scripts/build-subregions.mjs` で生成 |
 | 海底地形（背景・任意） | [GEBCO Basemap (NCEI)](https://tiles.arcgis.com/tiles/C8EMgrsFcRFL6LrL/arcgis/rest/services/GEBCO_basemap_NCEI/MapServer) | 背景に海底地形を表示（設定で ON/OFF）。GEBCO, NOAA/NCEI |
 | 活断層線（任意） | 産業技術総合研究所（産総研）[活断層データベース](https://gbank.gsj.jp/activefault/) | 地震情報・リアルタイムタブの地図に全国の活断層線を表示（設定で ON/OFF）。政府標準利用規約2.0。`scripts/build-active-faults.mjs` で生成 |
+| 地震活動ヒートマップ（任意） | P2PQuake API v2 `/jma/quake` | 直近1ヶ月の地震活動を地図にヒートマップ表示（設定で ON/OFF）。初回表示時に取得し localStorage に一定時間キャッシュ |
 
 ### DM-D.S.S 版（DMDATA.JP）
 
@@ -162,6 +163,7 @@ return
 | 地震情報 | DMDATA.JP VXSE51/52/53 | WebSocket + REST 履歴。VXSE53（震源・各地震度）は地域別震度をリアルタイムに表示 |
 | 津波情報 | DMDATA.JP VTSE41/51/52 | WebSocket リアルタイム受信 + REST 履歴。観測情報（VTSE51/VTSE52）は観測点名・波高・到達時刻を表示し、津波予報区コードが一致する発表区域に紐づけて表示。観測のみの電文（区域情報を含まない）が届いても直前の区域情報を保持し、観測値のみ更新 |
 | リアルタイム震度 | Yahoo!天気・災害 リアルタイム震度 | 通常版と同一（DMDATA.JP はリアルタイム震度を提供しないため） |
+| 地震活動ヒートマップ（任意） | DMDATA.JP API `GD Earthquake List`（`gd.earthquake` スコープ） | 直近1ヶ月の地震活動を地図にヒートマップ表示（設定で ON/OFF）。電文個別取得を伴わず一覧取得のみで完結 |
 
 DMDATA.JP のAPIキーは設定タブから入力し、ブラウザの localStorage に保存されます。APIキーは [dmdata.jp](https://dmdata.jp/) で取得できます。
 
@@ -230,7 +232,8 @@ realtime-earthquake-viewer/
 │   │   │   ├── KyoshinSubThreshold.tsx # 強震モニタの震度0以下（index 1〜6）の OffscreenCanvas 描画
 │   │   │   ├── KyoshinDetectedPoints.tsx # 揺れ検知された観測点の可変サイズ描画
 │   │   │   ├── KyoshinMaxEffect.tsx   # 強震モニタの最大震度エフェクト描画
-│   │   │   └── PsWaveLayer.tsx        # EEW P波・S波地表到達円の Canvas 描画レイヤー
+│   │   │   ├── PsWaveLayer.tsx        # EEW P波・S波地表到達円の Canvas 描画レイヤー
+│   │   │   └── QuakeHeatmapLayer.tsx  # 直近1ヶ月の地震活動ヒートマップ（leaflet.heat）
 │   │   ├── SpecialInfoBanner/      # 南海トラフ臨時情報・国民保護情報バナー
 │   │   ├── RealtimeTab/            # 凡例・注記パネル（地図は JapanMap が担当）
 │   │   ├── SettingsTab/            # 設定パネル
@@ -250,7 +253,8 @@ realtime-earthquake-viewer/
 │   │   ├── useTsunamiZones.ts      # 津波予報区 海岸線データの読み込み
 │   │   ├── useTsunamiObsCoords.ts  # 津波観測点座標テーブルの読み込み
 │   │   ├── useSubRegions.ts        # 一次細分区域境界データの読み込み
-│   │   └── useActiveFaults.ts      # 全国活断層線データの読み込み
+│   │   ├── useActiveFaults.ts      # 全国活断層線データの読み込み
+│   │   └── useQuakeHeatmap.ts      # 直近1ヶ月の地震活動ヒートマップ用データの取得・キャッシュ
 │   ├── services/
 │   │   ├── kyoshin.ts              # Yahoo リアルタイム震度の取得・デコード
 │   │   ├── p2pquake.ts             # P2PQuake API クライアント（自動再接続）
@@ -272,6 +276,7 @@ realtime-earthquake-viewer/
 │       ├── prefectures.ts          # 都道府県境界データの読み込み
 │       ├── subregions.ts           # 一次細分区域境界データの読み込み
 │       ├── activeFaults.ts         # 全国活断層線データの読み込み
+│       ├── quakeHeatmap.ts         # マグニチュード→ヒートマップ重みの変換
 │       ├── regions.ts              # 地方区分ラベル一覧
 │       ├── geo.ts                  # 点の多角形内包判定（区域別集約用）
 │       ├── formatters.ts           # 日時・数値フォーマッター
