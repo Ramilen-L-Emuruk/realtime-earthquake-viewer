@@ -8,6 +8,7 @@
 
 import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml, parseVyse5xFromXml, parseVyse60FromXml } from './dmdataParser'
+import { log } from '../utils/logger'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
 // DMDATA WebSocket 購読分類。telegram.earthquake は地震・津波両方の電文を配信する。
@@ -42,7 +43,7 @@ function isDebugEnabled(includeTest: boolean): boolean {
 // 意図的に console.debug ではなく info を使う: opt-in のログのため、有効化したら
 // DevTools の Verbose 設定なしでも即座に見えるようにする。
 function dlog(...args: unknown[]): void {
-  console.info('[DMDSS]', ...args)
+  log.info('[DMDSS]', ...args)
 }
 
 // base64 文字列をバイト列にデコードする。
@@ -131,7 +132,7 @@ async function tryFetchTicket(
     // 403/401/409 等の理由（契約スコープ不足・同時接続数上限など）は実エラーのため、
     // デバッグフラグに関係なく常に可視化する。
     const e = (body as { error?: { message?: string; code?: number } }).error
-    console.warn('[DMDSS] socket チケット取得 失敗', { status: res.status, errorCode: e?.code, errorMessage: e?.message })
+    log.warn('[DMDSS] socket チケット取得 失敗', { status: res.status, errorCode: e?.code, errorMessage: e?.message })
   }
   return { url: (body as { websocket?: { url: string } }).websocket?.url ?? '', status: res.status, body }
 }
@@ -188,7 +189,7 @@ export class DmdataWebSocket {
       // 認証エラーは再試行しない
       if (err instanceof Error && err.message === 'auth') {
         // APIキー不正・契約スコープ不足は復旧不能の実エラーのため常に出力する。
-        console.error('[DMDSS] 認証エラーのため再接続しない（APIキーの契約スコープ・WebSocket権限を確認）', { reason })
+        log.error('[DMDSS] 認証エラーのため再接続しない（APIキーの契約スコープ・WebSocket権限を確認）', { reason })
         this.authError = true
         this.onStatusChange?.('disconnected')
         return
