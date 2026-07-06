@@ -151,7 +151,7 @@ return
 | 津波予報区の海岸線 | 気象庁 予報区等 GIS データ（[Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)） | 津波の海域を海岸線として描画するためのライン座標 |
 | 行政区域（都道府県境界） | 気象庁 予報区等 GIS データ（[Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)） | ベースマップの陸地・県境を自前描画（タイル不使用）。一次細分区域と同一ソースで海岸線が整合。`scripts/build-prefectures.mjs` で生成 |
 | 一次細分区域（地震情報の地域） | 気象庁 予報区等 GIS データ（[Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)） | 区域境界・区域名ラベル・地震の区域別震度集約に使用。`scripts/build-subregions.mjs` で生成 |
-| 海底地形（背景・任意） | [Esri World Ocean Base](https://www.arcgis.com/home/item.html?id=1e126e7520f9466c9ca28b8f28b5e500) | 背景に海底地形を表示（設定で ON/OFF）。Esri, GEBCO, NOAA ほか |
+| 海底地形（背景・任意） | [GEBCO Basemap (NCEI)](https://tiles.arcgis.com/tiles/C8EMgrsFcRFL6LrL/arcgis/rest/services/GEBCO_basemap_NCEI/MapServer) | 背景に海底地形を表示（設定で ON/OFF）。GEBCO, NOAA/NCEI |
 | 活断層線（任意） | 産業技術総合研究所（産総研）[活断層データベース](https://gbank.gsj.jp/activefault/) | 地震情報・リアルタイムタブの地図に全国の活断層線を表示（設定で ON/OFF）。政府標準利用規約2.0。`scripts/build-active-faults.mjs` で生成 |
 
 ### DM-D.S.S 版（DMDATA.JP）
@@ -302,5 +302,5 @@ realtime-earthquake-viewer/
 MIT License
 
 地図データ: 「気象庁 予報区等GISデータ（都道府県・地震情報／細分区域・津波予報区）」
-海底地形: © Esri, GEBCO, NOAA, National Geographic, and other contributors
+海底地形: GEBCO; NOAA National Centers for Environmental Information (NCEI)
 活断層データ: 「産総研 活断層データベース」（政府標準利用規約2.0）
