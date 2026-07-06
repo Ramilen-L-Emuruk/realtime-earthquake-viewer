@@ -22,21 +22,25 @@ function tsunamiGradeLabel(grade: TsunamiGrade): string {
 const SCALE_DESCENDING: IntensityScale[] = [70, 60, 55, 50, 45, 40, 30, 20, 10] as IntensityScale[]
 
 // 県内の一次細分区域が全部同じ階級で揃っている場合、区域名の列挙を「〇〇県」1件にまとめる。
+// DMDATA JSON 電文由来の区域点は pref が空文字（dmdataParser.ts 参照）のため、
+// areaPrefIndex（区域名→県名の逆引き）で補完してからグルーピングする。
 // prefAreaNames が引けない（未読み込み）場合はまとめず区域名をそのまま返す。
 function aggregateAreaNamesByPref(
   areaNames: { pref: string; addr: string }[],
   prefAreaNames: Map<string, Set<string>> | null,
+  areaPrefIndex: Map<string, string> | null,
 ): string[] {
   const byPref = new Map<string, Set<string>>()
   for (const { pref, addr } of areaNames) {
-    const set = byPref.get(pref) ?? new Set<string>()
+    const resolvedPref = pref || areaPrefIndex?.get(addr) || ''
+    const set = byPref.get(resolvedPref) ?? new Set<string>()
     set.add(addr)
-    byPref.set(pref, set)
+    byPref.set(resolvedPref, set)
   }
   const result: string[] = []
   for (const [pref, names] of byPref) {
     const fullSet = prefAreaNames?.get(pref)
-    const isWholePref = fullSet != null && fullSet.size > 0
+    const isWholePref = pref !== '' && fullSet != null && fullSet.size > 0
       && names.size === fullSet.size && [...names].every(n => fullSet.has(n))
     if (isWholePref) result.push(pref)
     else result.push(...names)
@@ -48,10 +52,11 @@ function regionNamesForScale(
   points: EarthquakePoint[],
   scale: IntensityScale,
   prefAreaNames: Map<string, Set<string>> | null,
+  areaPrefIndex: Map<string, string> | null,
 ): string[] {
   const matched = points.filter(p => p.scale === scale)
   const areaPoints = matched.filter(p => p.isArea && p.addr !== p.pref)
-  if (areaPoints.length > 0) return aggregateAreaNamesByPref(areaPoints, prefAreaNames)
+  if (areaPoints.length > 0) return aggregateAreaNamesByPref(areaPoints, prefAreaNames, areaPrefIndex)
   return [...new Set(matched.map(p => p.pref).filter(Boolean))]
 }
 
@@ -88,13 +93,14 @@ function buildRegionText(
   const hasEpicenter = hypocenter != null && (hypocenter.latitude !== 0 || hypocenter.longitude !== 0)
   const stationData = getStationCoordsCache()
   const prefAreaNames = stationData ? buildPrefAreaNamesIndex(stationData) : null
+  const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
 
   const parts: string[] = []
   const mentioned = new Set<string>()  // 上位階で読み上げ済みの地域名
   for (let i = 0; i <= opts.intensityLevels; i++) {
     const scale = SCALE_DESCENDING[maxIdx + i]
     if (scale == null) break
-    let names = regionNamesForScale(points, scale, prefAreaNames).filter(n => !mentioned.has(n))
+    let names = regionNamesForScale(points, scale, prefAreaNames, areaPrefIndex).filter(n => !mentioned.has(n))
     if (names.length === 0) continue
     if (hasEpicenter) {
       names = [...names].sort((a, b) => {
