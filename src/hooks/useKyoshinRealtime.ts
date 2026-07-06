@@ -8,6 +8,7 @@ import {
   type YahooHypoInfoItem,
 } from '../services/kyoshin'
 import type { EEWAlert } from '../types/earthquake'
+import { log } from '../utils/logger'
 
 export interface KyoshinRealtime {
   sites: SiteCoords
@@ -168,7 +169,7 @@ export function useKyoshinRealtime(
             if (retryCount === 0) {
               failCountRef.current += 1
               if (failCountRef.current >= ERROR_THRESHOLD) {
-                console.warn(`[kyoshin] 連続取得失敗 (${failCountRef.current}回) → エラー表示`, err)
+                log.warn(`[kyoshin] 連続取得失敗 (${failCountRef.current}回) → エラー表示`, err)
                 setError(true)
               }
             }

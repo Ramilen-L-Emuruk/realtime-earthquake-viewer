@@ -1,5 +1,6 @@
 import { getAudioContext } from './alertSound'
 import { findPhraseBreakMatch, getTtsPhraseBreakDictCache, loadTtsPhraseBreakDict } from './ttsPhraseBreakDict'
+import { log } from './logger'
 
 export type VoicevoxStyle = { name: string; id: number }
 export type VoicevoxSpeaker = { name: string; speaker_uuid: string; styles: VoicevoxStyle[] }
@@ -189,7 +190,7 @@ export async function speakWithVoicevox(
 ): Promise<void> {
   // 辞書が未ロードなら待つ（キャッシュ済みなら即時解決）
   await loadTtsPhraseBreakDict().catch(() => {})
-  console.debug(`[VoiceVox] 読み上げ: ${text}`, { speakerId, volume })
+  log.debug(`[VoiceVox] 読み上げ: ${text}`, { speakerId, volume })
 
   // 既存の再生を全て停止
   for (const src of activeSources) {
@@ -202,7 +203,7 @@ export async function speakWithVoicevox(
 
   const ctx = getAudioContext()
   if (!ctx) {
-    console.debug('[VoiceVox] スキップ (AudioContext なし)')
+    log.debug('[VoiceVox] スキップ (AudioContext なし)')
     return
   }
   if (ctx.state === 'suspended') await ctx.resume()
