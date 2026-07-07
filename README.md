@@ -154,6 +154,7 @@ return
 | 海底地形（背景・任意） | [GEBCO Basemap (NCEI)](https://tiles.arcgis.com/tiles/C8EMgrsFcRFL6LrL/arcgis/rest/services/GEBCO_basemap_NCEI/MapServer) | 背景に海底地形を表示（設定で ON/OFF）。GEBCO, NOAA/NCEI |
 | 活断層線（任意） | 産業技術総合研究所（産総研）[活断層データベース](https://gbank.gsj.jp/activefault/) | 地震情報・リアルタイムタブの地図に全国の活断層線を表示（設定で ON/OFF）。政府標準利用規約2.0。`scripts/build-active-faults.mjs` で生成 |
 | 地震活動ヒートマップ（任意） | P2PQuake API v2 `/jma/quake` | 直近1ヶ月の地震活動を地図にヒートマップ表示（設定で ON/OFF）。初回表示時に取得し localStorage に一定時間キャッシュ |
+| プレート境界線（任意） | [PB2002](http://peterbird.name/publications/2003_pb2002/2003_pb2002.htm)（[fraxen/tectonicplates](https://github.com/fraxen/tectonicplates) GeoJSON化） | 地震情報・リアルタイムタブの地図に日本周辺のプレート境界線を表示（設定で ON/OFF）。Open Data Commons Attribution License。`scripts/build-plate-boundaries.mjs` で生成 |
 
 ### DM-D.S.S 版（DMDATA.JP）
 
@@ -211,13 +212,15 @@ realtime-earthquake-viewer/
 │       ├── tsunami-obs-coords.json # 津波観測点（験潮所等）の座標テーブル
 │       ├── prefectures.json        # 都道府県の境界ポリゴン（ベースマップ用・生成物）
 │       ├── subregions.json         # 一次細分区域の境界ポリゴン（生成物）
-│       └── active-faults.json      # 全国活断層線データ（生成物）
+│       ├── active-faults.json      # 全国活断層線データ（生成物）
+│       └── plate-boundaries.json   # 日本周辺のプレート境界線データ（生成物）
 ├── scripts/
 │   ├── build-station-coords.mjs    # 観測点座標テーブル生成スクリプト
 │   ├── build-tsunami-zones.mjs     # 津波予報区 海岸線データ生成スクリプト
 │   ├── build-prefectures.mjs       # 都道府県境界データ生成スクリプト
 │   ├── build-subregions.mjs        # 一次細分区域境界データ生成スクリプト
-│   └── build-active-faults.mjs     # 全国活断層線データ生成スクリプト
+│   ├── build-active-faults.mjs     # 全国活断層線データ生成スクリプト
+│   └── build-plate-boundaries.mjs  # プレート境界線データ生成スクリプト
 ├── src/
 │   ├── App.tsx                     # 地図常時表示 + タブ別パネル + 通知音/自動タブ切替/ウィンドウタイトル連携
 │   ├── components/
@@ -254,7 +257,8 @@ realtime-earthquake-viewer/
 │   │   ├── useTsunamiObsCoords.ts  # 津波観測点座標テーブルの読み込み
 │   │   ├── useSubRegions.ts        # 一次細分区域境界データの読み込み
 │   │   ├── useActiveFaults.ts      # 全国活断層線データの読み込み
-│   │   └── useQuakeHeatmap.ts      # 直近1ヶ月の地震活動ヒートマップ用データの取得・キャッシュ
+│   │   ├── useQuakeHeatmap.ts      # 直近1ヶ月の地震活動ヒートマップ用データの取得・キャッシュ
+│   │   └── usePlateBoundaries.ts   # プレート境界線データの読み込み
 │   ├── services/
 │   │   ├── kyoshin.ts              # Yahoo リアルタイム震度の取得・デコード
 │   │   ├── p2pquake.ts             # P2PQuake API クライアント（自動再接続）
@@ -277,6 +281,7 @@ realtime-earthquake-viewer/
 │       ├── subregions.ts           # 一次細分区域境界データの読み込み
 │       ├── activeFaults.ts         # 全国活断層線データの読み込み
 │       ├── quakeHeatmap.ts         # マグニチュード→ヒートマップ重みの変換
+│       ├── plateBoundaries.ts      # プレート境界線データの読み込み
 │       ├── regions.ts              # 地方区分ラベル一覧
 │       ├── geo.ts                  # 点の多角形内包判定（区域別集約用）
 │       ├── formatters.ts           # 日時・数値フォーマッター
@@ -309,3 +314,4 @@ MIT License
 地図データ: 「気象庁 予報区等GISデータ（都道府県・地震情報／細分区域・津波予報区）」
 海底地形: GEBCO; NOAA National Centers for Environmental Information (NCEI)
 活断層データ: 「産総研 活断層データベース」（政府標準利用規約2.0）
+プレート境界データ: PB2002 (Bird, 2003) — [fraxen/tectonicplates](https://github.com/fraxen/tectonicplates)（Open Data Commons Attribution License）
