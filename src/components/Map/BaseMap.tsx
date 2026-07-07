@@ -44,14 +44,14 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
     //   quake-region-fill(260) : 地震モードの一次細分区域別震度塗り（JapanMap が使用）
     //   eew-region-fill(260)   : EEW 予想震度の区域塗り（JapanMap が使用）
     //   lpgm-region-fill(261)  : 長周期地震動の区域塗り（JapanMap が使用）
+    //   line-layers(263)       : プレート境界線・活断層線の共有ペイン（JapanMap が使用。同一Canvasにまとめる
+    //                            理由は JapanMap 側コメント参照）
+    //   tsunami-lines(270)     : 津波海岸線（JapanMap が使用）
+    //   tsunami-obs-bars(280)  : 津波観測棒（JapanMap が使用）
     //   ps-wave(280)           : P/S波円（PsWaveLayer が使用）
     //   overlayPane(400)       : IntensityPoints 等 pane 未指定 Canvas レイヤーの既定ペイン（Leaflet デフォルト）。
-    //                            全画面を覆いクリックを奪うため、ポップアップ/ツールチップを持つレイヤーは
-    //                            これより前面に置く必要がある
-    //   plate-boundaries(401)  : 日本周辺のプレート境界線（JapanMap が使用。ポップアップのため overlayPane より前面）
-    //   active-faults(402)     : 全国活断層線（JapanMap が使用。ポップアップのため overlayPane より前面）
-    //   tsunami-lines(403)     : 津波海岸線（JapanMap が使用。ポップアップのため overlayPane より前面）
-    //   tsunami-obs-bars(404)  : 津波観測棒（JapanMap が使用。ツールチップのため overlayPane より前面）
+    //                            ポップアップ/ツールチップを持たないため pointerEvents を無効化し、
+    //                            背面レイヤーのクリック/ホバーを妨げないようにしている
     //   basemap-labels(450)    : 地方/県/区域名ラベル
     if (!map.getPane('basemap')) {
       const pane = map.createPane('basemap')
@@ -63,6 +63,13 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
       pane.style.zIndex = '280'
       pane.style.pointerEvents = 'none'
     }
+    // overlayPane は IntensityPoints/KyoshinPoints/LpgmPoints が pane 未指定の Canvas
+    // レンダラーで使う既定ペイン。これらはポップアップ/ツールチップを持たないが、Canvas 要素は
+    // SVG と異なり非インタラクティブでも pointerEvents が自動で無効化されないため、
+    // 背面のプレート境界線・活断層線・津波海岸線等のクリックを奪ってしまっていた。
+    // 明示的に無効化し、背面レイヤーへイベントを通す。
+    const overlayPane = map.getPane('overlayPane')
+    if (overlayPane) overlayPane.style.pointerEvents = 'none'
     if (!map.getPane('basemap-labels')) {
       const pane = map.createPane('basemap-labels')
       pane.style.zIndex = '450'

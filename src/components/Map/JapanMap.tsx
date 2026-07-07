@@ -903,9 +903,12 @@ export function JapanMap({
       {/* プレート境界線・活断層線の共有ペイン。react-leaflet の <Pane> は同名で二重に
           作成すると例外を投げるため、ペインの生成はここ一箇所のみで行い、各レイヤーは
           renderer={lineLayerRenderer} を指定するだけで同じペインへ描画する。
-          IntensityPoints 等が pane 未指定の Canvas（既定の overlayPane, z400）を使っており、
-          そちらは常に全画面を覆ってクリックを奪うため、overlayPane より前面（z401）に置く。 */}
-      {(mode === 'quake' || mode === 'kyoshin') && <Pane name="line-layers" style={{ zIndex: 401 }} />}
+          2つの線レイヤーを別ペイン（別Canvas）に分けると、上のペインの全画面Canvasが
+          （自身に線が無い場所でも）下のペインのクリックを吸収してしまうため、同時に
+          表示され得る線レイヤーは必ず同じペインにまとめる。
+          z=263 は区域塗り(z260/261)より前面・津波海岸線(z270)より背面。描画順は
+          プレート境界線→活断層線の順（JSX順）で、活断層線が視覚的に前面に来る。 */}
+      {(mode === 'quake' || mode === 'kyoshin') && <Pane name="line-layers" style={{ zIndex: 263 }} />}
 
       {/* 日本周辺のプレート境界線（PB2002モデル）。地震情報・リアルタイムタブのみ。 */}
       {(mode === 'quake' || mode === 'kyoshin') && showPlateBoundaries && plateBoundaries && (
@@ -939,9 +942,7 @@ export function JapanMap({
 
       {/* 全国活断層線（産総研 活断層データベース）。地震情報・リアルタイムタブのみ、
           区域塗り(z260/261)より前面に表示し、震度色塗りの上からでも視認できるようにする。
-          プレート境界線と同じ line-layers 共有ペイン（z401、生成はプレート境界線側で実施済み）を使う。
-          別ペインに分けると上のcanvasが（自身に線が無い場所でも）クリックを吸収し、下のペインへ
-          イベントが届かなくなるため、同時に表示され得る線レイヤーは必ず同じペインにまとめる。 */}
+          プレート境界線と同じ line-layers 共有ペイン（z263、生成はプレート境界線側で実施済み）を使う。 */}
       {(mode === 'quake' || mode === 'kyoshin') && showActiveFaults && activeFaults && (
         <>
           {activeFaults.map((seg) =>
@@ -1056,11 +1057,9 @@ export function JapanMap({
         <FitToBounds signature={quakeSignature} positions={quakeFitPositions} />
       )}
       {/* 津波予報区の海岸線（等級ごとに色分け）。津波発報中は全モードで表示・点滅する。
-          preferCanvas 環境では Polyline への className が効かないため Pane 全体に適用する。
-          IntensityPoints 等の pane 未指定 Canvas（既定 overlayPane, z400）がクリックを奪うため、
-          ポップアップを機能させるにはそれより前面（z403）に置く。 */}
+          preferCanvas 環境では Polyline への className が効かないため Pane 全体に適用する。 */}
       {tsunamiLines.length > 0 && (
-        <Pane name="tsunami-lines" style={{ zIndex: 403 }} className="tsunami-blink">
+        <Pane name="tsunami-lines" style={{ zIndex: 270 }} className="tsunami-blink">
           {tsunamiLines.map((line) =>
             line.segments.map((segment, i) => (
               <Polyline
@@ -1097,11 +1096,10 @@ export function JapanMap({
       />
       <FocusObsPoint focusObsName={focusObsName} observationBars={observationBars} />
 
-      {/* 津波観測棒: 波高が判明している観測点に水位バーを描画。tsunami-lines(z403)より前面。
-          緯度降順（北→南）でレンダリングし、南側ほど手前に表示される。
-          Tooltip のホバー判定も overlayPane(z400) より前面である必要がある。 */}
+      {/* 津波観測棒: 波高が判明している観測点に水位バーを描画。tsunami-lines(z270)より前面。
+          緯度降順（北→南）でレンダリングし、南側ほど手前に表示される。 */}
       {mode === 'tsunami' && observationBars.length > 0 && (
-        <Pane name="tsunami-obs-bars" style={{ zIndex: 404 }}>
+        <Pane name="tsunami-obs-bars" style={{ zIndex: 280 }}>
           {observationBars.map((bar) => (
             <Marker
               key={`obs-bar-${bar.name}`}
