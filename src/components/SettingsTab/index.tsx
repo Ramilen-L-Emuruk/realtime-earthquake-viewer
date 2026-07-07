@@ -403,6 +403,12 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
             onChange={v => onUpdate('showQuakeHeatmap', v)}
           />
         </Row>
+        <Row label="プレート境界線を表示" description="地震情報・リアルタイムタブの地図に日本周辺のプレート境界線を表示します（PB2002モデル）">
+          <Toggle
+            checked={settings.showPlateBoundaries}
+            onChange={v => onUpdate('showPlateBoundaries', v)}
+          />
+        </Row>
         <Row label="定期自動リロード" description="毎日午前5時に画面を再起動してメモリを解放します（地震・津波・EEW 発報中は延期）">
           <Toggle
             checked={settings.periodicReloadHours > 0}
@@ -753,7 +759,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">3.19.0</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">3.20.0</span></Row>
         <Row label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"

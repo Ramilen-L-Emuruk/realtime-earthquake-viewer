@@ -549,6 +549,7 @@ export function App() {
             showBathymetry={settings.showBathymetry}
             showActiveFaults={settings.showActiveFaults}
             heatPoints={quakeHeatPoints}
+            showPlateBoundaries={settings.showPlateBoundaries}
             kyoshinSites={kyoshin.sites}
             kyoshinIndices={kyoshin.indices}
             kyoshinPsWave={psWave}
