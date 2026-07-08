@@ -1,6 +1,8 @@
 const DATA_URL = `${import.meta.env.BASE_URL}data/tts-phrase-break-dict.json`
 
 let cache: Record<string, string> | null = null
+// _terms に列挙されたキー（地名ではなく一般用語）の集合。地名エントリとの読み上げ後ポーズの要否判定に使う。
+let termKeysCache: Set<string> = new Set()
 let inflight: Promise<Record<string, string>> | null = null
 
 /** 句区切り辞書を取得する。初回のみ fetch し、以降はキャッシュを返す。 */
@@ -10,10 +12,11 @@ export function loadTtsPhraseBreakDict(): Promise<Record<string, string>> {
     inflight = fetch(DATA_URL)
       .then((res) => {
         if (!res.ok) throw new Error(`tts-phrase-break-dict fetch failed: ${res.status}`)
-        return res.json() as Promise<Record<string, string>>
+        return res.json() as Promise<Record<string, string> & { _terms?: string[] }>
       })
       .then((data) => {
-        const { _comment: _, ...dict } = data as Record<string, string>
+        const { _comment: _, _terms, ...dict } = data as Record<string, string> & { _terms?: string[] }
+        termKeysCache = new Set(_terms ?? [])
         cache = dict
         return cache
       })
@@ -31,6 +34,15 @@ export function loadTtsPhraseBreakDict(): Promise<Record<string, string>> {
  */
 export function getTtsPhraseBreakDictCache(): Record<string, string> | null {
   return cache
+}
+
+/**
+ * 辞書キーが地名（区域名・港湾名等）かどうかを返す。
+ * 「深発地震」「遠地地震」「大津波」等の一般用語（_terms に列挙）は false。
+ * 地名の後だけ読み上げに短いポーズを挟みたい呼び出し側で使う。
+ */
+export function isPlaceNameKey(key: string): boolean {
+  return !termKeysCache.has(key)
 }
 
 /**
