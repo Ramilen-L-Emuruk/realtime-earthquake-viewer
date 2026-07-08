@@ -1,5 +1,5 @@
 import { getAudioContext } from './alertSound'
-import { findPhraseBreakMatch, getTtsPhraseBreakDictCache, loadTtsPhraseBreakDict } from './ttsPhraseBreakDict'
+import { findPhraseBreakMatch, getTtsPhraseBreakDictCache, isPlaceNameKey, loadTtsPhraseBreakDict } from './ttsPhraseBreakDict'
 import { log } from './logger'
 
 export type VoicevoxStyle = { name: string; id: number }
@@ -16,6 +16,26 @@ let currentSessionId = 0
 // 句区切り辞書エントリの accent_phrases 取得結果キャッシュ（"speakerId:キー" -> AccentPhrase[]）。
 // 同じ地名・同じ話者の組み合わせで毎回 /accent_phrases を叩き直さないようにする。
 const phraseBreakCache = new Map<string, AccentPhrase[]>()
+
+// 辞書該当「地名」の直後に挿入する短いポーズ（VOICEVOX が読点「、」に対して付与する pause_mora を参考にした値）。
+// 該当語は前後を独立に取得して結合するため continuation の抑揚が不連続になりがちだが、
+// 直後にポーズを挟むことで「区切って言い直した」ような自然な間として聞こえ、不連続感を目立たなくする。
+// 「深発地震」「遠地地震」等の一般用語（isPlaceNameKey が false を返すもの）は文中に自然に溶け込む語なので対象外。
+const DICT_TRAILING_PAUSE = {
+  text: '、',
+  consonant: null,
+  consonant_length: null,
+  vowel: 'pau',
+  vowel_length: 0.12,
+  pitch: 0,
+}
+
+/** フレーズ配列の最後の要素に辞書語用の短いポーズを付与したコピーを返す（キャッシュされた元配列は変更しない）。 */
+function withTrailingPause(phrases: AccentPhrase[]): AccentPhrase[] {
+  if (phrases.length === 0) return phrases
+  const last = { ...phrases[phrases.length - 1], pause_mora: DICT_TRAILING_PAUSE }
+  return [...phrases.slice(0, -1), last]
+}
 
 /** VOICEVOX が起動中かどうかを確認する（2秒タイムアウト）。 */
 export async function checkVoicevoxAvailable(baseUrl: string): Promise<boolean> {
@@ -108,6 +128,8 @@ async function fetchAccentPhrasesForKey(
  * テキストを accent_phrases の配列に変換する。句区切り辞書のキーを含む場合は、
  * その部分だけ /accent_phrases(is_kana=true) で処理し、前後の通常テキストと結合する
  * （キーを含まない後続部分にさらに別のキーが含まれる場合は再帰的に処理する）。
+ * 前後を独立に取得するため継ぎ目の抑揚は不連続になり得るが、該当語の直後に短いポーズ
+ * （DICT_TRAILING_PAUSE）を挟むことで区切りとして自然に聞こえるようにしている。
  * 失敗時は null。
  */
 async function buildAccentPhrases(
@@ -124,12 +146,14 @@ async function buildAccentPhrases(
   const pre = text.slice(0, match.index)
   const post = text.slice(match.index + match.key.length)
 
-  const [prePhrases, matchedPhrases, postPhrases] = await Promise.all([
+  const [prePhrases, matchedPhrasesRaw, postPhrases] = await Promise.all([
     buildAccentPhrases(baseUrl, pre, speakerId, phraseBreakDict),
     fetchAccentPhrasesForKey(baseUrl, match.key, phraseBreakDict[match.key], speakerId),
     buildAccentPhrases(baseUrl, post, speakerId, phraseBreakDict),
   ])
-  if (!prePhrases || !matchedPhrases || !postPhrases) return null
+  if (!prePhrases || !matchedPhrasesRaw || !postPhrases) return null
+
+  const matchedPhrases = isPlaceNameKey(match.key) ? withTrailingPause(matchedPhrasesRaw) : matchedPhrasesRaw
 
   return [...prePhrases, ...matchedPhrases, ...postPhrases]
 }
