@@ -18,6 +18,7 @@ import { ActiveFaultsLayer } from './ActiveFaultsLayer'
 import { PlateBoundariesLayer } from './PlateBoundariesLayer'
 import { pointInRings, normalizeEpicenterLng } from '../../utils/geo'
 import { BaseMap } from './BaseMap'
+import { TileTintLayer } from './TileTintLayer'
 import { IntensityPoints } from './IntensityPoints'
 import { LpgmPoints } from './LpgmPoints'
 import { KyoshinPoints } from './KyoshinPoints'
@@ -933,13 +934,20 @@ export function JapanMap({
       zoomDelta={0.5}
       wheelPxPerZoomLevel={100}
     >
-      {/* 背景: 海底地形タイル（tilePane z=200。CSS でダーク化） */}
+      {/* 背景: 海底地形タイル（tilePane z=200）。ダーク化は tile-tint ペイン（TileTintLayer,
+          z=220）の mix-blend-mode オーバーレイで行う（CSS filter は非力なGPUでパン時に
+          重いため不使用。詳細は TileTintLayer.tsx 参照）。keepBuffer はパン中のタイル
+          増減（＝tile-tintの再合成トリガー）自体を減らすため既定値2から引き上げている。 */}
       {showBathymetry && (
-        <TileLayer
-          url={BATHYMETRY_URL}
-          attribution={BATHYMETRY_ATTRIBUTION}
-          maxNativeZoom={10}
-        />
+        <>
+          <TileLayer
+            url={BATHYMETRY_URL}
+            attribution={BATHYMETRY_ATTRIBUTION}
+            maxNativeZoom={10}
+            keepBuffer={4}
+          />
+          <TileTintLayer />
+        </>
       )}
 
       <ZoomWatcher onZoom={setZoom} />

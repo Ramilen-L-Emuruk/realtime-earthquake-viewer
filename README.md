@@ -239,7 +239,8 @@ realtime-earthquake-viewer/
 │   │   │   ├── PsWaveLayer.tsx        # EEW P波・S波地表到達円の Canvas 描画レイヤー
 │   │   │   ├── QuakeHeatmapLayer.tsx  # 直近1ヶ月の地震活動ヒートマップ（leaflet.heat）
 │   │   │   ├── ActiveFaultsLayer.tsx  # 全国活断層線の Leaflet ネイティブ描画レイヤー（react-leaflet 非経由・再レンダー非依存）
-│   │   │   └── PlateBoundariesLayer.tsx # プレート境界線の Leaflet ネイティブ描画レイヤー（同上）
+│   │   │   ├── PlateBoundariesLayer.tsx # プレート境界線の Leaflet ネイティブ描画レイヤー（同上）
+│   │   │   └── TileTintLayer.tsx      # 海底地形タイルの暗色化（mix-blend-mode オーバーレイ。CSS filter 不使用）
 │   │   ├── SpecialInfoBanner/      # 南海トラフ臨時情報・国民保護情報バナー
 │   │   ├── RealtimeTab/            # 凡例・注記パネル（地図は JapanMap が担当）
 │   │   ├── SettingsTab/            # 設定パネル
