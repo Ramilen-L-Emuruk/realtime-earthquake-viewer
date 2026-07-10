@@ -6,7 +6,7 @@ import type { PlateBoundarySegment } from '../../utils/plateBoundaries'
 interface Props {
   plateBoundaries: PlateBoundarySegment[] | null
   visible: boolean
-  renderer: L.Canvas
+  renderer: L.Renderer
 }
 
 const SUBDUCTION_COLOR = '#b91c1c'

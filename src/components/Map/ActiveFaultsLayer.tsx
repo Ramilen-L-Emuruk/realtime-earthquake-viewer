@@ -6,7 +6,7 @@ import type { ActiveFaultSegment } from '../../utils/activeFaults'
 interface Props {
   activeFaults: ActiveFaultSegment[] | null
   visible: boolean
-  renderer: L.Canvas
+  renderer: L.Renderer
 }
 
 const FAULT_COLOR = '#c2410c'
