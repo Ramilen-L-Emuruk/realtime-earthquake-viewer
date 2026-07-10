@@ -5,6 +5,7 @@ import { loadPrefectures } from '../../utils/prefectures'
 import { loadSubRegions } from '../../utils/subregions'
 import { REGIONS } from '../../utils/regions'
 import { log } from '../../utils/logger'
+import { MAP_CANVAS_PADDING } from './mapCanvasPadding'
 
 // ラベルの粒度を切り替えるズーム境界。
 //   zoom < LABEL_MIN              : ラベル非表示（遠地地震など大きく引いた状態）
@@ -39,6 +40,7 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
 
   useEffect(() => {
     // ペイン構成:
+    //   tile-tint(220)         : 海底地形タイルの暗色オーバーレイ（TileTintLayer が使用）
     //   basemap(250)           : 陸地塗り・区域境界・県境
     //   quake-heat(255)        : 直近1ヶ月の地震活動ヒートマップ（JapanMap が使用）
     //   quake-region-fill(260) : 地震モードの一次細分区域別震度塗り（JapanMap が使用）
@@ -75,7 +77,9 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
       pane.style.zIndex = '450'
       pane.style.pointerEvents = 'none'
     }
-    const renderer = L.canvas({ pane: 'basemap', padding: 0.5 })
+    // padding: パン中に陸地塗り・境界線・ラベルが途切れないよう広めに確保する。
+    // 理由は mapCanvasPadding.ts 参照。
+    const renderer = L.canvas({ pane: 'basemap', padding: MAP_CANVAS_PADDING })
     const shapes = L.layerGroup().addTo(map)
     const regionLabels = L.layerGroup()
     const prefLabels = L.layerGroup()

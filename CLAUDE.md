@@ -162,7 +162,7 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 
 ### 地図描画ペイン名
 - `BaseMap.tsx` のペイン一覧コメントと、`JapanMap.tsx` で実際に作成するペイン名は完全に一致させる。
-  - 実在するペイン: `basemap`（z=250）・`quake-region-fill`（z=260）・`eew-region-fill`（z=260）・`basemap-labels`（z=270）
+  - 実在するペイン: `tile-tint`（z=220）・`basemap`（z=250）・`quake-region-fill`（z=260）・`eew-region-fill`（z=260）・`basemap-labels`（z=450）
   - `quake-pref-fill`（旧名）・`quake-region-labels` 等は**存在しない**。コメントに書かない。
 
 ### 震度集約の単位

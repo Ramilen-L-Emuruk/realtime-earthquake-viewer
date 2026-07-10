@@ -3,6 +3,7 @@ import L from 'leaflet'
 import { useMap } from 'react-leaflet'
 import type { SiteCoords } from '../../services/kyoshin'
 import { kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
+import { MAP_CANVAS_PADDING } from './mapCanvasPadding'
 
 interface Props {
   sites: SiteCoords
@@ -24,7 +25,7 @@ export function KyoshinPoints({ sites, indices, iconScale }: Props) {
   // 観測点が揃ったら一度だけマーカーを生成して地図に追加する
   useEffect(() => {
     if (sites.length === 0) return
-    const renderer = L.canvas({ padding: 0.5 })
+    const renderer = L.canvas({ padding: MAP_CANVAS_PADDING })
     const group = L.layerGroup()
     const markers = sites.map(([lat, lng]) =>
       L.circleMarker([lat, lng], {

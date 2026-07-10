@@ -28,11 +28,10 @@ body {
 
 .leaflet-container { background: #0a0c10; }
 
-/* 背景の海底地形タイル（ESRI Ocean）をダークテーマへ暗く調整。
-   タイルレイヤーのみに適用し、陸地・県境・ラベル・マーカー（別ペイン）には影響させない。 */
-.leaflet-tile-pane {
-  filter: brightness(0.42) saturate(1.15) contrast(1.05);
-}
+/* 背景の海底地形タイル（GEBCO_basemap_NCEI）のダーク化は、CSS filter ではなく
+   tile-tint ペイン（TileTintLayer.tsx）の mix-blend-mode オーバーレイで行っている。
+   filter はパン中に新規タイルが読み込まれるたびにタイルペイン全体の再フィルタが
+   発生し非力なGPUで重いため不使用。詳細は TileTintLayer.tsx のコメント参照。 */
 
 /* 行政区域ベースマップのラベル（地方名・県名・主要都市名）。背景なしの淡色テキスト。
    マーカー要素には Leaflet が位置決めの transform を当てるため、ラベルの中央寄せ・
