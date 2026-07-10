@@ -39,6 +39,7 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
 
   useEffect(() => {
     // ペイン構成:
+    //   tile-tint(220)         : 海底地形タイルの暗色オーバーレイ（TileTintLayer が使用）
     //   basemap(250)           : 陸地塗り・区域境界・県境
     //   quake-heat(255)        : 直近1ヶ月の地震活動ヒートマップ（JapanMap が使用）
     //   quake-region-fill(260) : 地震モードの一次細分区域別震度塗り（JapanMap が使用）
