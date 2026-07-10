@@ -15,6 +15,7 @@ import type { SubRegion } from '../../utils/subregions'
 import { useActiveFaults } from '../../hooks/useActiveFaults'
 import { usePlateBoundaries } from '../../hooks/usePlateBoundaries'
 import { ActiveFaultsLayer } from './ActiveFaultsLayer'
+import { PlateBoundariesLayer } from './PlateBoundariesLayer'
 import { pointInRings, normalizeEpicenterLng } from '../../utils/geo'
 import { BaseMap } from './BaseMap'
 import { IntensityPoints } from './IntensityPoints'
@@ -962,35 +963,14 @@ export function JapanMap({
           プレート境界線→活断層線の順（JSX順）で、活断層線が視覚的に前面に来る。 */}
       {(mode === 'quake' || mode === 'kyoshin') && <Pane name="line-layers" style={{ zIndex: 263 }} />}
 
-      {/* 日本周辺のプレート境界線（PB2002モデル）。地震情報・リアルタイムタブのみ。 */}
-      {(mode === 'quake' || mode === 'kyoshin') && showPlateBoundaries && plateBoundaries && (
-        <>
-          {plateBoundaries.map((seg, si) =>
-            seg.lines.map((line, i) => (
-              <Polyline
-                key={`plate-${si}-${i}`}
-                positions={line}
-                renderer={lineLayerRenderer}
-                pathOptions={{
-                  color: seg.type === 'subduction' ? '#b91c1c' : '#1d4ed8',
-                  weight: 2,
-                  opacity: 0.55,
-                  dashArray: '6 4',
-                }}
-              >
-                <Popup pane="popupPane">
-                  <div className="text-sm">
-                    <div className="font-bold">{seg.plateA} – {seg.plateB}</div>
-                    <div className="text-gray-600 text-xs">
-                      プレート境界（{seg.type === 'subduction' ? '沈み込み境界' : '境界種別不明'}・PB2002モデル）
-                    </div>
-                  </div>
-                </Popup>
-              </Polyline>
-            )),
-          )}
-        </>
-      )}
+      {/* 日本周辺のプレート境界線（PB2002モデル）。地震情報・リアルタイムタブのみ。
+          活断層線と同様に本数が多いため、react-leaflet の宣言的 Polyline ではなく専用レイヤー
+          コンポーネント（PlateBoundariesLayer）で Leaflet ネイティブ描画する。 */}
+      <PlateBoundariesLayer
+        plateBoundaries={plateBoundaries}
+        visible={(mode === 'quake' || mode === 'kyoshin') && showPlateBoundaries}
+        renderer={lineLayerRenderer}
+      />
 
       {/* 全国活断層線（産総研 活断層データベース）。地震情報・リアルタイムタブのみ、
           区域塗り(z260/261)より前面に表示し、震度色塗りの上からでも視認できるようにする。
