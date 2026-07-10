@@ -3,4 +3,4 @@
 // この範囲は moveend でのみ再確保・再描画されるため、1回の連続パン操作でこの範囲を
 // 超えると、まだ描かれていない領域が露出し地物が途切れて見える（実機確認で発生を確認済み）。
 // 地図上の Canvas 描画レイヤー全体でこの余白を揃えるための共有定数。
-export const MAP_CANVAS_PADDING = 4
+export const MAP_CANVAS_PADDING = 2
