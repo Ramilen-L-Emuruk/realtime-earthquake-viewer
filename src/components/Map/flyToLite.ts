@@ -5,21 +5,23 @@ import L from 'leaflet'
 // Canvas レンダラーはこの 'zoom' イベントのたびに自身の canvas 要素へ CSS transform を
 // 掛け直す（Renderer.js の _onZoom → _updateTransform）。この canvas は
 // mapCanvasPadding.ts の padding 分だけ実バッファがビューポートより大きく確保されて
-// いるため、非力な GPU では毎フレームの transform + 再合成コストが無視できない重さになる
-// （活断層線・地形タイル等の描画内容を全て OFF にしても、常時マウントされる BaseMap の
-// canvas だけでこのコストは残る）。
+// いる上、retina環境ではさらに縦横2倍（Canvas.js の _update）になるため、非力な GPU
+// では毎フレームの transform + 再合成コストが無視できない重さになる。
 //
 // flyTo/flyToBounds の呼び出し元は全てこのモジュール経由にし、アニメーション中だけ
 // 対象ペインを非表示にして transform コストそのものを発生させない。Leaflet のレンダラーは
 // moveend で必ずフル再描画・再配置を行うため（Renderer.getEvents() の moveend: this._update）、
 // 着地時に表示へ戻すだけで最終的な位置ズレは起きない。
-// 海底地形タイル（tilePane）・その暗色オーバーレイ（tile-tint）は対象外。
+//
+// 'basemap' はここに含めない。BaseMap.tsx で SVG レンダラーに変更済みで、SVG は
+// 解像度非依存のベクター要素のため Canvas 特有の「大きなテクスチャの毎フレーム再合成」
+// コストの土台自体が無く、隠さず表示したままで問題ない（BaseMap.tsx のコメント参照）。
+//
+// 海底地形タイル（tilePane）・その暗色オーバーレイ（tile-tint）も対象外。
 // tile-tint だけ隠すと明るい生タイルが露出し、tilePane も一緒に隠すと着地までタイルが
-// 消えて見える（どちらも見た目上のチラつきとして許容できない）。tile-tint も同じ
-// transform コストを払っているが（TileTintLayer.tsx 参照）、見た目の制約上ここでは
-// 非表示にできないため、既知のコストとして残る。
+// 消えて見える（どちらも見た目上のチラつきとして許容できない）。tile-tint は独自の
+// 軽量実装（TileTintLayer.tsx 参照）でこの制約を回避している。
 const HIDDEN_DURING_FLY_PANES = [
-  'basemap',
   'quake-heat',
   'quake-region-fill',
   'eew-region-fill',
