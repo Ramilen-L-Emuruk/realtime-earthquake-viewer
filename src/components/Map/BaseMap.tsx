@@ -5,6 +5,7 @@ import { loadPrefectures } from '../../utils/prefectures'
 import { loadSubRegions } from '../../utils/subregions'
 import { REGIONS } from '../../utils/regions'
 import { log } from '../../utils/logger'
+import { MAP_CANVAS_PADDING } from './mapCanvasPadding'
 
 // ラベルの粒度を切り替えるズーム境界。
 //   zoom < LABEL_MIN              : ラベル非表示（遠地地震など大きく引いた状態）
@@ -76,7 +77,9 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
       pane.style.zIndex = '450'
       pane.style.pointerEvents = 'none'
     }
-    const renderer = L.canvas({ pane: 'basemap', padding: 0.5 })
+    // padding: パン中に陸地塗り・境界線・ラベルが途切れないよう広めに確保する。
+    // 理由は mapCanvasPadding.ts 参照。
+    const renderer = L.canvas({ pane: 'basemap', padding: MAP_CANVAS_PADDING })
     const shapes = L.layerGroup().addTo(map)
     const regionLabels = L.layerGroup()
     const prefLabels = L.layerGroup()

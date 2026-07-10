@@ -27,6 +27,7 @@ import { KyoshinDetectedPoints } from './KyoshinDetectedPoints'
 import { KyoshinMaxEffect } from './KyoshinMaxEffect'
 import { PsWaveLayer } from './PsWaveLayer'
 import { QuakeHeatmapLayer } from './QuakeHeatmapLayer'
+import { MAP_CANVAS_PADDING } from './mapCanvasPadding'
 import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
 import type { DetectedPoint } from '../../hooks/useKyoshinDetection'
 import type { HeatPoint } from '../../utils/quakeHeatmap'
@@ -676,8 +677,10 @@ export function JapanMap({
   // 常に同時に表示され得るため、1つの共有ペイン・共有レンダラーにまとめる。
   // 津波海岸線は tsunami-blink（点滅アニメ）をペイン全体に適用する都合上、
   // 別ペインのまま独立させる（同時クリックの競合は稀なため許容する）。
-  const lineLayerRenderer = useMemo(() => L.canvas({ pane: 'line-layers', tolerance: 8 }), [])
-  const tsunamiLineRenderer = useMemo(() => L.canvas({ pane: 'tsunami-lines', tolerance: 8 }), [])
+  // padding: パン中に途切れないよう広めに確保する（理由は mapCanvasPadding.ts 参照）。
+  // 津波海岸線も同じ理由で活断層線・プレート境界線と揃える。
+  const lineLayerRenderer = useMemo(() => L.canvas({ pane: 'line-layers', tolerance: 8, padding: MAP_CANVAS_PADDING }), [])
+  const tsunamiLineRenderer = useMemo(() => L.canvas({ pane: 'tsunami-lines', tolerance: 8, padding: MAP_CANVAS_PADDING }), [])
   const [zoom, setZoom] = useState(6)
   // ズームに応じて強震モニタ観測点のサイズを補正する係数。
   // ズーム8を基準（×1.0）とし、ズームアウト時は小さく・ズームイン時は大きくする。

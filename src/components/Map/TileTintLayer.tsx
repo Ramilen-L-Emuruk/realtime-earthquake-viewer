@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import L from 'leaflet'
 import { useMap } from 'react-leaflet'
+import { MAP_CANVAS_PADDING } from './mapCanvasPadding'
 
 // brightness(0.42) と数式的に等価な暗さになる不透明度。
 // 黒(0,0,0)を multiply でブレンドすると結果は常に黒になり、その後の通常のアルファ合成で
@@ -27,12 +28,9 @@ const WORLD_BOUNDS: L.LatLngBoundsExpression = [
 // Renderer 標準機構が担うため、BaseMap.tsx の陸地塗りポリゴンと同様、追加のJSによる
 // 毎フレーム位置合わせは不要）。
 //
-// padding は必須: Leaflet の Canvas レンダラーは、描画する図形の地理的範囲に関わらず
-// 実際の <canvas> ピクセルバッファを「ビューポートサイズ×(1+2×padding)」でしか確保しない
-// （既定 padding=0.1）。バッファは moveend でのみ再確保・再描画されるため、1回の連続ドラッグ
-// でその範囲を超えて動かすと、まだ描かれていない透明領域が露出し、そこだけ tint が効かず
-// 生のタイル色が見えてしまう（実機確認で発生を確認済み）。単色矩形1枚の描画コストは
-// バッファが大きくなってもほぼ変わらないため、余裕を持たせて padding を大きめに取っている。
+// padding は必須（他のCanvas描画レイヤーと共通の理由。mapCanvasPadding.ts 参照）。
+// 単色矩形1枚の描画コストはバッファが大きくなってもほぼ変わらないため、他レイヤーと
+// 揃えても実質コスト増はない。
 export function TileTintLayer() {
   const map = useMap()
 
@@ -43,7 +41,7 @@ export function TileTintLayer() {
       pane.style.pointerEvents = 'none'
       pane.style.mixBlendMode = 'multiply'
     }
-    const renderer = L.canvas({ pane: 'tile-tint', padding: 2 })
+    const renderer = L.canvas({ pane: 'tile-tint', padding: MAP_CANVAS_PADDING })
     const tint = L.rectangle(WORLD_BOUNDS, {
       renderer,
       interactive: false,
