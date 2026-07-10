@@ -13,9 +13,15 @@ import L from 'leaflet'
 // moveend で必ずフル再描画・再配置を行うため（Renderer.getEvents() の moveend: this._update）、
 // 着地時に表示へ戻すだけで最終的な位置ズレは起きない。
 //
-// 'basemap' はここに含めない。BaseMap.tsx で SVG レンダラーに変更済みで、SVG は
-// 解像度非依存のベクター要素のため Canvas 特有の「大きなテクスチャの毎フレーム再合成」
-// コストの土台自体が無く、隠さず表示したままで問題ない（BaseMap.tsx のコメント参照）。
+// 'basemap'・'quake-region-fill'・'eew-region-fill'・'eew-lpgm-region-fill'・
+// 'line-layers'・'tsunami-lines' はここに含めない。いずれも SVG レンダラーに変更済み
+// （BaseMap.tsx・JapanMap.tsx 側の renderer 定義参照）。SVG は解像度非依存のベクター
+// 要素のため Canvas 特有の「大きなテクスチャの毎フレーム再合成」コストの土台自体が無く、
+// 隠さず表示したままで問題ない。
+//
+// 'quake-heat'（直近1ヶ月の地震活動ヒートマップ）は対象のまま残す。leaflet.heat
+// プラグインによる密度勾配の描画で、単色矩形やベクター図形と違い実際にラスタライズが
+// 必要なためSVG化できず、Canvas特有のコストがそのまま残っている。
 //
 // 海底地形タイル（tilePane）・その暗色オーバーレイ（tile-tint）も対象外。
 // tile-tint だけ隠すと明るい生タイルが露出し、tilePane も一緒に隠すと着地までタイルが
@@ -23,11 +29,6 @@ import L from 'leaflet'
 // 軽量実装（TileTintLayer.tsx 参照）でこの制約を回避している。
 const HIDDEN_DURING_FLY_PANES = [
   'quake-heat',
-  'quake-region-fill',
-  'eew-region-fill',
-  'eew-lpgm-region-fill',
-  'line-layers',
-  'tsunami-lines',
 ]
 
 function hidePanesUntilMoveEnd(map: L.Map): void {
