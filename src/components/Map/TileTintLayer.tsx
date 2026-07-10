@@ -28,9 +28,11 @@ const WORLD_BOUNDS: L.LatLngBoundsExpression = [
 // Renderer 標準機構が担うため、BaseMap.tsx の陸地塗りポリゴンと同様、追加のJSによる
 // 毎フレーム位置合わせは不要）。
 //
-// padding は必須（他のCanvas描画レイヤーと共通の理由。mapCanvasPadding.ts 参照）。
-// 単色矩形1枚の描画コストはバッファが大きくなってもほぼ変わらないため、他レイヤーと
-// 揃えても実質コスト増はない。
+// padding は他のCanvas描画レイヤーと共通の MAP_CANVAS_PADDING を使う（mapCanvasPadding.ts
+// 参照）。この矩形は輪郭を持たない単色塗りだが、Canvas 要素自体の縁（バッファの境界）は
+// 中身に関わらず常に存在するため、専用に小さい padding へ縮めると、パン・flyTo で
+// バッファの外にはみ出した瞬間にその境界線が「明るい未着色の矩形」として露出する
+// （実機確認で発生を確認済み。padding を小さくする最適化は不可）。
 export function TileTintLayer() {
   const map = useMap()
 
