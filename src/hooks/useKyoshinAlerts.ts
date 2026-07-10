@@ -102,13 +102,16 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
   // - ピーク後に一度落ちてから再上昇したとき（再エスカレーション）→ 音を鳴らす
   // 生インデックスではなく音レベル（0〜6）で比較することで、フレーム間の微細な
   // 数値変動（同一震度帯内のゆらぎ）による誤再鳴を防ぐ。
-  const maxSoundLevelRef = useRef(0)
+  // 「未観測」は -1 で表す（0 は有効な音レベルのため、0 と未観測を同一視すると
+  // 検知開始時の震度が2以下＝level0 だった地震で level0→level1 の初回エスカレーションが
+  // 「初回検知」判定に誤って巻き込まれ、無音になる不具合があったため）。
+  const maxSoundLevelRef = useRef(-1)
   // ピーク到達後に観測した最小レベル（再エスカレーション検出用）
-  const postPeakMinLevelRef = useRef(0)
+  const postPeakMinLevelRef = useRef(-1)
   useEffect(() => {
     if (!kyoshinDetection.detected) {
-      maxSoundLevelRef.current = 0
-      postPeakMinLevelRef.current = 0
+      maxSoundLevelRef.current = -1
+      postPeakMinLevelRef.current = -1
       return
     }
     const currLevel = kyoshinLevel(effectiveKyoshinMaxIndex)
@@ -117,8 +120,8 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
       // 新たな最大レベルに達した
       maxSoundLevelRef.current = currLevel
       postPeakMinLevelRef.current = currLevel
-      // 初回検知（prevMaxLevel === 0）は検知音が鳴るのでスキップ
-      if (prevMaxLevel > 0) {
+      // 初回検知（prevMaxLevel === -1＝未観測）は検知音が鳴るのでスキップ
+      if (prevMaxLevel >= 0) {
         log.debug(`[tab] → realtime (揺れ検知レベルアップ level=${prevMaxLevel}→${currLevel})`)
         setActiveTab('realtime')
         if (settings.soundEnabled) {
