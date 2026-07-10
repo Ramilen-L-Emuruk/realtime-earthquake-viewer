@@ -28,8 +28,16 @@ const SUBREGION_BORDER = '#39414f' // 一次細分区域の境界（細く控え
 
 /**
  * 行政区域ベースマップ（タイル不使用）。ダーク背景の上に、陸地塗り＋一次細分区域の
- * 細線＋県境＋ラベル（地方/県/区域名）を描画する。点数が多いため canvas に命令的描画し、
- * 専用ペイン（タイルとデータ描画の中間 z）へ載せる。
+ * 細線＋県境＋ラベル（地方/県/区域名）を描画する。専用ペイン（タイルとデータ描画の
+ * 中間 z）へ載せる。
+ *
+ * レンダラーは SVG を使う（Canvas ではない）。flyTo アニメーション中、ズーム変化の
+ * たびに発火する 'zoom' イベントで Renderer が自身の描画要素へ CSS transform を
+ * 掛け直すのは Canvas も SVG も同じだが、Canvas は実ピクセルバッファ（padding 分
+ * 割り増し・retina 環境ではさらに2倍）を持つ大きなテクスチャの再合成コストが乗る一方、
+ * SVG は解像度に依存しないベクター要素なのでその種のコストが原理的に発生しない。
+ * このためこのレイヤーは flyToLite.ts の HIDDEN_DURING_FLY_PANES に含めず、
+ * flyTo 中も表示したままにできる。
  */
 export function BaseMap({ suppressRegionLabels = false }: Props) {
   const map = useMap()
@@ -78,8 +86,9 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
       pane.style.pointerEvents = 'none'
     }
     // padding: パン中に陸地塗り・境界線・ラベルが途切れないよう広めに確保する。
-    // 理由は mapCanvasPadding.ts 参照。
-    const renderer = L.canvas({ pane: 'basemap', padding: MAP_CANVAS_PADDING })
+    // 理由は mapCanvasPadding.ts 参照（SVG でも同じ「moveend までは再計算されない」
+    // 制約があるため、この余白自体は Canvas 版と同様に必要）。
+    const renderer = L.svg({ pane: 'basemap', padding: MAP_CANVAS_PADDING })
     const shapes = L.layerGroup().addTo(map)
     const regionLabels = L.layerGroup()
     const prefLabels = L.layerGroup()
