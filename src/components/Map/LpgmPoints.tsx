@@ -3,6 +3,7 @@ import L from 'leaflet'
 import { useMap } from 'react-leaflet'
 import { getLpgmClassColor } from '../../utils/lpgm'
 import type { LatLng } from '../../utils/stationCoords'
+import { MAP_CANVAS_PADDING } from './mapCanvasPadding'
 
 interface Point {
   position: LatLng
@@ -22,7 +23,7 @@ export function LpgmPoints({ markers, iconScale }: Props) {
   const groupRef = useRef<L.LayerGroup | null>(null)
 
   useEffect(() => {
-    const renderer = L.canvas({ padding: 0.5 })
+    const renderer = L.canvas({ padding: MAP_CANVAS_PADDING })
     const group = L.layerGroup()
     for (const m of markers) {
       L.circleMarker(m.position, {

@@ -3,6 +3,7 @@ import L from 'leaflet'
 import { useMap } from 'react-leaflet'
 import { getIntensityColor, getScaleRadius } from '../../utils/intensity'
 import type { LatLng } from '../../utils/stationCoords'
+import { MAP_CANVAS_PADDING } from './mapCanvasPadding'
 
 interface Point {
   position: LatLng
@@ -23,7 +24,7 @@ export function IntensityPoints({ markers, iconScale }: Props) {
   const groupRef = useRef<L.LayerGroup | null>(null)
 
   useEffect(() => {
-    const renderer = L.canvas({ padding: 0.5 })
+    const renderer = L.canvas({ padding: MAP_CANVAS_PADDING })
     const group = L.layerGroup()
     // markers は震度の弱い順。先に弱い点、後に強い点を描くことで強い震度が前面に出る。
     for (const m of markers) {
