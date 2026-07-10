@@ -508,6 +508,53 @@ function FitToDetection({ points, hasEew }: { points: DetectedPoint[]; hasEew: b
   return null
 }
 
+// 候補クラスタ（未確定・主候補1件）が立った時点で候補点群にフィットする。
+// confirmed への昇格・別候補への交代・期限切れで解除/更新される。
+// hasDetection=true（確定検知中）の間は Japan へのリセットを行わない
+// （FitToDetection への引き継ぎ時にズームが往復してちらつくのを防ぐ）。
+function FitToCandidate({
+  points, candidateId, hasEew, hasDetection,
+}: { points: DetectedPoint[]; candidateId: number | null; hasEew: boolean; hasDetection: boolean }) {
+  const map = useMap()
+  const fittedIdRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    // 確定検知中は地図フィットを FitToDetection に完全に委譲する。
+    // 確定済み観測点を含むクラスタが pendingRef に「幽霊候補」として再登録され続けるケース
+    // （既存アルゴリズムの副作用: 確定済みサイトも changed に含まれるため、成長中のクラスタは
+    // 毎フレーム新しい candidateId で登録され得る）で、地図が数秒おきに再フィットし続けるのを防ぐ。
+    if (hasDetection) return
+    if (candidateId === null) {
+      if (fittedIdRef.current !== null) {
+        fittedIdRef.current = null
+        if (!hasEew) {
+          log.debug('[map] flyToBounds JAPAN_BOUNDS (候補クラスタ失効)')
+          map.flyToBounds(JAPAN_BOUNDS, { padding: [20, 20], duration: 1.0 })
+        } else {
+          log.debug('[map] flyToBounds JAPAN スキップ (候補クラスタ失効・EEW発報中)')
+        }
+      }
+      return
+    }
+    if (fittedIdRef.current === candidateId) return  // 同じ候補に既にフィット済み
+    fittedIdRef.current = candidateId  // 新規登録 or 別候補への交代 → 再フィット
+    if (points.length === 0) return  // 座標解決できた観測点が無い（通常発生しない）
+
+    if (points.length === 1) {
+      log.debug(`[map] flyTo lat=${points[0].lat.toFixed(3)} lng=${points[0].lng.toFixed(3)} (候補クラスタ 1点)`)
+      map.flyTo([points[0].lat, points[0].lng], MAX_ZOOM, { duration: 1.0 })
+      return
+    }
+    log.debug(`[map] flyToBounds (候補クラスタ ${points.length}点 id=${candidateId})`)
+    map.flyToBounds(
+      L.latLngBounds(points.map(p => [p.lat, p.lng] as [number, number])),
+      { padding: [60, 60], maxZoom: MAX_ZOOM, duration: 1.0 },
+    )
+  }, [points, candidateId, hasEew, hasDetection, map])
+
+  return null
+}
+
 // リアルタイムタブを開いた時点でズームをリセットする。
 // EEW が無ければ日本全体を表示。EEW 発報中は P波/S波 境界（P波優先）にフィット。
 // （地図は全タブ共通のため、他タブで寄った表示をリセットする）
@@ -581,6 +628,8 @@ interface Props {
   kyoshinPsWave?: PsWaveCircle[]
   eews?: EEWAlert[]
   detectedPoints?: DetectedPoint[]
+  candidatePoints?: DetectedPoint[]
+  candidateId?: number | null
   idleRevertSec?: number
   eewLpgmEventId?: string | null
   focusObsName?: { name: string; ts: number } | null
@@ -603,6 +652,8 @@ export function JapanMap({
   kyoshinPsWave = [],
   eews = [],
   detectedPoints = [],
+  candidatePoints = [],
+  candidateId = null,
   idleRevertSec = 30,
   eewLpgmEventId = null,
   focusObsName = null,
@@ -1014,14 +1065,17 @@ export function JapanMap({
         </>
       )}
 
-      {/* リアルタイムタブ入室時: EEW が無ければ日本全体を、EEW 中は波円にフィット */}
+      {/* リアルタイムタブ入室時: EEW が無ければ日本全体を、EEW 中は波円にフィット。
+          候補クラスタ発生時のタブ自動切替でも FitToCandidate のフィットを上書きしないよう、
+          hasDetection には候補段階（未確定）も含める。 */}
       {mode === 'kyoshin' && (
-        <FitJapanOnEnter hasEew={eews.length > 0} eews={eews} psWave={kyoshinPsWave} hasDetection={detectedPoints.length > 0} />
+        <FitJapanOnEnter hasEew={eews.length > 0} eews={eews} psWave={kyoshinPsWave} hasDetection={detectedPoints.length > 0 || candidatePoints.length > 0} />
       )}
 
       {/* 揺れ検知点: FitToDetection は常時レンダリングして検知終了時の日本全体戻しを担う */}
       {mode === 'kyoshin' && (
         <>
+          <FitToCandidate points={candidatePoints} candidateId={candidateId} hasEew={eews.length > 0} hasDetection={detectedPoints.length > 0} />
           <FitToDetection points={detectedPoints} hasEew={eews.length > 0} />
           <KyoshinDetectedPoints points={detectedPoints} iconScale={iconScale * kyoshinZoomScale} />
           <KyoshinMaxEffect sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale * kyoshinZoomScale} />

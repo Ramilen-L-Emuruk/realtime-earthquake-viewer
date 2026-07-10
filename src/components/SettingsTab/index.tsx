@@ -605,6 +605,9 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
         <Row label="揺れ検知（初回）" description="打撃2音 + シマー高周波">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('kyoshin') }}>▶ 試聴</TestButton>
         </Row>
+        <Row label="揺れ検知（候補）" description="控えめな単発チャイム（確定前の予兆通知）">
+          <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('kyoshinCandidate') }}>▶ 試聴</TestButton>
+        </Row>
         <Row label="揺れ検知・震度更新" description="震度をタップして試聴">
           <div className="flex flex-wrap gap-1.5 justify-end">
             <IntensityPlayButton scale={20} kyoshinIndex={9}  />
@@ -759,7 +762,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
       </Section>
 
       <Section title="このアプリについて">
-        <Row label="バージョン"><span className="text-xs text-secondary">3.20.3</span></Row>
+        <Row label="バージョン"><span className="text-xs text-secondary">3.21.0</span></Row>
         <Row label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"

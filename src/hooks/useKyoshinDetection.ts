@@ -14,6 +14,11 @@ export interface KyoshinDetection {
   maxIndex: number
   /** 急上昇した観測点（震度インデックス降順） */
   points: DetectedPoint[]
+  /** 未確定の主候補クラスタの構成観測点（Layer 2 成立・Layer 4 未確定）。主候補が無ければ空配列。 */
+  candidatePoints: DetectedPoint[]
+  /** 主候補クラスタの識別子（登録時刻 detectedAt をそのまま流用）。主候補が無ければ null。
+   *  同じ候補が pendingRef に留まる限り値は変わらないため、UI 側の再フィット判定に使える。 */
+  candidateId: number | null
 }
 
 // ---- 定数 ---------------------------------------------------------------
@@ -138,9 +143,36 @@ function buildClusters(
   return clusters
 }
 
+/**
+ * pendingRef の中から「主候補」1件を選ぶ（maxIndex 最大、同点なら detectedAt が新しい方）。
+ * 複数の無関係な候補が同時に存在しても bounds が無意味に拡大しないよう、常に1件だけを対象にする。
+ */
+function pickPrimaryCandidate(
+  alive: PendingCluster[],
+  curr: number[],
+  sites: SiteCoords,
+): { points: DetectedPoint[]; id: number | null } {
+  const primary = alive.reduce<PendingCluster | null>((best, p) =>
+    !best || p.maxIndex > best.maxIndex || (p.maxIndex === best.maxIndex && p.detectedAt > best.detectedAt)
+      ? p : best, null)
+  if (!primary) return { points: [], id: null }
+  const points: DetectedPoint[] = primary.siteIndices
+    .map((si) => {
+      const site = sites[si]
+      const idx = curr[si]
+      if (!site || idx === undefined) return null
+      return { lat: site[0], lng: site[1], index: idx }
+    })
+    .filter((p): p is DetectedPoint => p !== null)
+    .sort((a, b) => b.index - a.index)
+  return { points, id: primary.detectedAt }
+}
+
 // ---- Hook ----------------------------------------------------------------
 
-const EMPTY: KyoshinDetection = { detected: false, maxIndex: 0, points: [] }
+/** confirmed 状態のみ（candidatePoints/candidateId は別 state として保持し、hook の返り値で合成する） */
+type ConfirmedState = Pick<KyoshinDetection, 'detected' | 'maxIndex' | 'points'>
+const EMPTY: ConfirmedState = { detected: false, maxIndex: 0, points: [] }
 
 /**
  * Layer 0〜5 の6層構成による地震検知フック（Layer 3 は現在無効化中）。
@@ -173,7 +205,10 @@ export function useKyoshinDetection(
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const prevDetectedRef = useRef(false)
-  const [detection, setDetection] = useState<KyoshinDetection>(EMPTY)
+  const [detection, setDetection] = useState<ConfirmedState>(EMPTY)
+  // Layer 4: 主候補クラスタ（未確定）。地図フィット・早期タブ切替/通知音のトリガーに使う。
+  const [candidatePoints, setCandidatePoints] = useState<DetectedPoint[]>([])
+  const [candidateId, setCandidateId] = useState<number | null>(null)
 
   useEffect(() => {
     if (sites.length === 0 || indices.length === 0) return
@@ -340,7 +375,13 @@ export function useKyoshinDetection(
 
     if (clusters.length === 0) {
       // クラスタなしでも近傍確定・震度0随伴表示があれば後処理へ進む
-      if (!confirmed && !shindo0Attached) return
+      if (!confirmed && !shindo0Attached) {
+        // 新規クラスタは無いため alive（期限切れクリーンアップ済み）がそのまま最終状態
+        const primary = pickPrimaryCandidate(alive, curr, sites)
+        setCandidatePoints(primary.points)
+        setCandidateId(primary.id)
+        return
+      }
     }
 
     for (const cluster of clusters) {
@@ -368,6 +409,11 @@ export function useKyoshinDetection(
     }
 
     pendingRef.current = alive
+
+    // 新規登録・確定除去を反映した最新の alive から主候補を選び直す
+    const primary = pickPrimaryCandidate(alive, curr, sites)
+    setCandidatePoints(primary.points)
+    setCandidateId(primary.id)
 
     // Layer 4 確定時：新規確定観測点を confirmedSites に追加してタイマーをリセット
     if (confirmed) {
@@ -433,5 +479,5 @@ export function useKyoshinDetection(
     shindo0DisplaySitesRef.current.clear()
   }, [])
 
-  return detection
+  return { ...detection, candidatePoints, candidateId }
 }
