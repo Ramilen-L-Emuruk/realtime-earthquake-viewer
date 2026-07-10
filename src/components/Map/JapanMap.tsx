@@ -14,6 +14,8 @@ import { useSubRegions } from '../../hooks/useSubRegions'
 import type { SubRegion } from '../../utils/subregions'
 import { useActiveFaults } from '../../hooks/useActiveFaults'
 import { usePlateBoundaries } from '../../hooks/usePlateBoundaries'
+import { ActiveFaultsLayer } from './ActiveFaultsLayer'
+import { PlateBoundariesLayer } from './PlateBoundariesLayer'
 import { pointInRings, normalizeEpicenterLng } from '../../utils/geo'
 import { BaseMap } from './BaseMap'
 import { IntensityPoints } from './IntensityPoints'
@@ -961,60 +963,25 @@ export function JapanMap({
           プレート境界線→活断層線の順（JSX順）で、活断層線が視覚的に前面に来る。 */}
       {(mode === 'quake' || mode === 'kyoshin') && <Pane name="line-layers" style={{ zIndex: 263 }} />}
 
-      {/* 日本周辺のプレート境界線（PB2002モデル）。地震情報・リアルタイムタブのみ。 */}
-      {(mode === 'quake' || mode === 'kyoshin') && showPlateBoundaries && plateBoundaries && (
-        <>
-          {plateBoundaries.map((seg, si) =>
-            seg.lines.map((line, i) => (
-              <Polyline
-                key={`plate-${si}-${i}`}
-                positions={line}
-                renderer={lineLayerRenderer}
-                pathOptions={{
-                  color: seg.type === 'subduction' ? '#b91c1c' : '#1d4ed8',
-                  weight: 2,
-                  opacity: 0.55,
-                  dashArray: '6 4',
-                }}
-              >
-                <Popup pane="popupPane">
-                  <div className="text-sm">
-                    <div className="font-bold">{seg.plateA} – {seg.plateB}</div>
-                    <div className="text-gray-600 text-xs">
-                      プレート境界（{seg.type === 'subduction' ? '沈み込み境界' : '境界種別不明'}・PB2002モデル）
-                    </div>
-                  </div>
-                </Popup>
-              </Polyline>
-            )),
-          )}
-        </>
-      )}
+      {/* 日本周辺のプレート境界線（PB2002モデル）。地震情報・リアルタイムタブのみ。
+          活断層線と同様に本数が多いため、react-leaflet の宣言的 Polyline ではなく専用レイヤー
+          コンポーネント（PlateBoundariesLayer）で Leaflet ネイティブ描画する。 */}
+      <PlateBoundariesLayer
+        plateBoundaries={plateBoundaries}
+        visible={(mode === 'quake' || mode === 'kyoshin') && showPlateBoundaries}
+        renderer={lineLayerRenderer}
+      />
 
       {/* 全国活断層線（産総研 活断層データベース）。地震情報・リアルタイムタブのみ、
           区域塗り(z260/261)より前面に表示し、震度色塗りの上からでも視認できるようにする。
-          プレート境界線と同じ line-layers 共有ペイン（z263、生成はプレート境界線側で実施済み）を使う。 */}
-      {(mode === 'quake' || mode === 'kyoshin') && showActiveFaults && activeFaults && (
-        <>
-          {activeFaults.map((seg) =>
-            seg.lines.map((line, i) => (
-              <Polyline
-                key={`fault-${seg.name}-${i}`}
-                positions={line}
-                renderer={lineLayerRenderer}
-                pathOptions={{ color: '#c2410c', weight: 1.2, opacity: 0.65 }}
-              >
-                <Popup pane="popupPane">
-                  <div className="text-sm">
-                    <div className="font-bold">{seg.name}</div>
-                    <div className="text-gray-600 text-xs">活断層（産総研 活断層データベース）</div>
-                  </div>
-                </Popup>
-              </Polyline>
-            )),
-          )}
-        </>
-      )}
+          プレート境界線と同じ line-layers 共有ペイン（z263、生成はプレート境界線側で実施済み）を使う。
+          本数が多い（約3,400本）ため、react-leaflet の宣言的 Polyline ではなく専用レイヤー
+          コンポーネント（ActiveFaultsLayer）で Leaflet ネイティブ描画する。詳細はそちらのコメント参照。 */}
+      <ActiveFaultsLayer
+        activeFaults={activeFaults}
+        visible={(mode === 'quake' || mode === 'kyoshin') && showActiveFaults}
+        renderer={lineLayerRenderer}
+      />
 
       {/* EEW 受信時: 対象地域を予想震度で色塗り（ラベル z270 より背面・観測点ドットの下）
           警報域(isWarning): fillOpacity 0.55 + weight 2 で強調。予報域: 0.3 + weight 1 */}
