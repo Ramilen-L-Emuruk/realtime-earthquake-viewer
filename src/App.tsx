@@ -555,6 +555,8 @@ export function App() {
             kyoshinPsWave={psWave}
             eews={Array.from(activeEEWsNoCancelled.values())}
             detectedPoints={kyoshinDetection.points}
+            candidatePoints={kyoshinDetection.candidatePoints}
+            candidateId={kyoshinDetection.candidateId}
             idleRevertSec={settings.idleRevertSec}
             eewLpgmEventId={activeLpgmSource === 'eew' ? activeLpgmEventId : null}
             focusObsName={focusedObsName}

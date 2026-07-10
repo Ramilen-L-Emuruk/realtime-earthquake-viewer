@@ -10,7 +10,7 @@ export type AlertSoundType =
   'earthquake' | 'earthquakePrompt' | 'earthquakeInfo'
   | 'eew' | 'eewUpdate' | 'eewFinal' | 'eewCancel' | 'eewSpecial' | 'eewForecast'
   | 'tsunami' | 'tsunamiMajor' | 'tsunamiWatch' | 'tsunamiForecast' | 'tsunamiUpdate'
-  | 'kyoshin'
+  | 'kyoshin' | 'kyoshinCandidate'
   | 'specialInfo'
 
 let audioCtx: AudioContext | null = null
@@ -416,6 +416,11 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
     shg.gain.exponentialRampToValueAtTime(0.001, base + 0.18)
     sh.start(base + 0.02); sh.stop(base + 0.20)
     impact(ctx, 1047, base + 0.24, 0.42, 0.26, 0.18)
+  },
+
+  // 揺れ検知（候補・未確定）: 控えめな単発チャイム（確定音の1/4以下の音量）
+  kyoshinCandidate: (ctx, base) => {
+    ding(ctx, 880, base, 0.22, 0.07)
   },
 
   // 津波予報（若干の海面変動）: sine 穏やかなスイープ 380→460Hz × 2回（tsunamiWatch より低緊迫・低音量）
