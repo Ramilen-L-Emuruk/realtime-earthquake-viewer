@@ -670,18 +670,24 @@ export function JapanMap({
   const subregions = useSubRegions()
   const activeFaults = useActiveFaults()
   const plateBoundaries = usePlateBoundaries()
-  // Canvas レンダラーは既定でクリック許容範囲(tolerance)が 0 のため、細い線だと
-  // ほぼ中心の1pxしか当たり判定が無い。また、ポップアップ付きの線レイヤーを
-  // 別々のペイン（別々のCanvas）に分けて重ねると、上のペインのcanvasが
-  // （そのペイン自身に線が無い場所でも）クリックを吸収し、下のペインへ
+  // ポップアップ付きの線レイヤーを別々のペイン（別々の描画要素）に分けて重ねると、
+  // 上のペインの要素が（そのペイン自身に線が無い場所でも）クリックを吸収し、下のペインへ
   // イベントが届かなくなる。プレート境界線・活断層線は地震情報・リアルタイムタブで
   // 常に同時に表示され得るため、1つの共有ペイン・共有レンダラーにまとめる。
   // 津波海岸線は tsunami-blink（点滅アニメ）をペイン全体に適用する都合上、
   // 別ペインのまま独立させる（同時クリックの競合は稀なため許容する）。
   // padding: パン中に途切れないよう広めに確保する（理由は mapCanvasPadding.ts 参照）。
   // 津波海岸線も同じ理由で活断層線・プレート境界線と揃える。
-  const lineLayerRenderer = useMemo(() => L.canvas({ pane: 'line-layers', tolerance: 8, padding: MAP_CANVAS_PADDING }), [])
-  const tsunamiLineRenderer = useMemo(() => L.canvas({ pane: 'tsunami-lines', tolerance: 8, padding: MAP_CANVAS_PADDING }), [])
+  //
+  // レンダラーは SVG（Canvas ではない）。理由は BaseMap.tsx のコメント参照——Canvas は
+  // 実バッファがpadding分・retina環境ではさらに2倍膨れ、flyTo中の毎フレームtransformで
+  // 非力なGPUに負荷が乗るが、SVGは解像度非依存のベクター要素のためその負荷が原理的に
+  // 発生しない。これにより flyToLite.ts の HIDDEN_DURING_FLY_PANES からも除外できる。
+  const lineLayerRenderer = useMemo(() => L.svg({ pane: 'line-layers', padding: MAP_CANVAS_PADDING }), [])
+  const tsunamiLineRenderer = useMemo(() => L.svg({ pane: 'tsunami-lines', padding: MAP_CANVAS_PADDING }), [])
+  const quakeRegionFillRenderer = useMemo(() => L.svg({ pane: 'quake-region-fill', padding: MAP_CANVAS_PADDING }), [])
+  const eewRegionFillRenderer = useMemo(() => L.svg({ pane: 'eew-region-fill', padding: MAP_CANVAS_PADDING }), [])
+  const eewLpgmRegionFillRenderer = useMemo(() => L.svg({ pane: 'eew-lpgm-region-fill', padding: MAP_CANVAS_PADDING }), [])
   const [zoom, setZoom] = useState(6)
   // ズームに応じて強震モニタ観測点のサイズを補正する係数。
   // ズーム8を基準（×1.0）とし、ズームアウト時は小さく・ズームイン時は大きくする。
@@ -1004,6 +1010,7 @@ export function JapanMap({
               <Polygon
                 key={`eew-fill-${a.name}-${i}`}
                 positions={ring}
+                renderer={eewRegionFillRenderer}
                 pathOptions={{
                   color: getIntensityColor(a.scale),
                   weight: a.isWarning ? 2 : 1,
@@ -1024,6 +1031,7 @@ export function JapanMap({
               <Polygon
                 key={`eew-lpgm-${ri}-${i}`}
                 positions={ring}
+                renderer={eewLpgmRegionFillRenderer}
                 pathOptions={{
                   color: getLpgmClassColor(r.maxLgInt),
                   weight: 2,
@@ -1090,7 +1098,8 @@ export function JapanMap({
         <FitToBounds signature={quakeSignature} positions={quakeFitPositions} />
       )}
       {/* 津波予報区の海岸線（等級ごとに色分け）。津波発報中は全モードで表示・点滅する。
-          preferCanvas 環境では Polyline への className が効かないため Pane 全体に適用する。 */}
+          個々の Polyline ではなく Pane 全体に点滅クラスを適用する（線の本数に関わらず
+          常に一箇所の指定で済むため）。 */}
       {tsunamiLines.length > 0 && (
         <Pane name="tsunami-lines" style={{ zIndex: 270 }} className="tsunami-blink">
           {tsunamiLines.map((line) =>
@@ -1163,6 +1172,7 @@ export function JapanMap({
               <Polygon
                 key={`region-fill-${p.name}-${i}`}
                 positions={ring}
+                renderer={quakeRegionFillRenderer}
                 pathOptions={{
                   color: getIntensityColor(p.scale),
                   weight: 1,
