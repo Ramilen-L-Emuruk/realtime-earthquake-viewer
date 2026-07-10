@@ -71,6 +71,32 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 依存集合は抽出前と同一に維持する
   }, [kyoshinDetection.detected, effectiveKyoshinMaxIndex, settings.soundEnabled, settings.notifyDetection])
 
+  // 候補クラスタ発生時（Layer 2 成立・Layer 4 未確定）の早期反応:
+  // タブ切替＋タイトル変更＋控えめな候補音のみ（ブラウザ通知・フル音は確定時まで行わない）。
+  // 確定（detected: true）に昇格した場合は上の検知開始エフェクトが引き継ぐため、
+  // ここでは「detected が false のとき」だけを対象にして二重発火・ちらつきを防ぐ。
+  const prevCandidateActiveRef = useRef(false)
+  useEffect(() => {
+    const candidateActive = kyoshinDetection.candidatePoints.length > 0
+    if (candidateActive && !prevCandidateActiveRef.current && !kyoshinDetection.detected) {
+      log.debug('[tab] → realtime (候補クラスタ発生)')
+      setActiveTab('realtime')
+      title.setTitle('🔍 揺れの可能性')
+      if (settings.soundEnabled) {
+        playAlertSound('kyoshinCandidate')
+      }
+    } else if (!candidateActive && prevCandidateActiveRef.current && !kyoshinDetection.detected) {
+      // 確定に昇格せず期限切れ（誤報）で消えた場合のみ、静かに元へ戻す
+      title.applyPriority({ kyoshinDetected: false })
+      if (activeEEWsRef.current.size === 0) {
+        log.debug(`[tab] → ${defaultTabRef.current} (候補クラスタ失効)`)
+        revertToDefaultTab()
+      }
+    }
+    prevCandidateActiveRef.current = candidateActive
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 依存集合は上の検知開始エフェクトに合わせて絞る
+  }, [kyoshinDetection.candidatePoints.length, kyoshinDetection.detected, settings.soundEnabled])
+
   // 揺れ検知中の音再鳴ロジック
   // - 過去最大レベルを超えたとき（新たな最大）→ 音を鳴らす
   // - ピーク後に一度落ちてから再上昇したとき（再エスカレーション）→ 音を鳴らす
