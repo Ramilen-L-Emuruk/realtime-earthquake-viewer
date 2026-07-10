@@ -1,20 +1,16 @@
 import { useEffect } from 'react'
 import L from 'leaflet'
 import { useMap } from 'react-leaflet'
-import { MAP_CANVAS_PADDING } from './mapCanvasPadding'
 
 // brightness(0.42) と数式的に等価な暗さになる不透明度。
 // 黒(0,0,0)を multiply でブレンドすると結果は常に黒になり、その後の通常のアルファ合成で
 // backdrop * (1 - TINT_OPACITY) になる。1 - 0.58 = 0.42 で旧filterのbrightness値と一致する。
 const TINT_OPACITY = 0.58
 
-// 緯度は Web Mercator の安全上限（±85.0511...）の内側。経度は遠地地震の flyTo が
-// normalizeEpicenterLng（utils/geo.ts）で最寄りの ±360 コピーへ正規化されるケースを
-// カバーするため世界地図3周分（±540）を確保し、日付変更線を跨ぐ地震でも継ぎ目が出ないようにする。
-const WORLD_BOUNDS: L.LatLngBoundsExpression = [
-  [-85, -540],
-  [85, 540],
-]
+// ビューポートの何倍の余白を確保するか。Canvasと違いプレーンなdiv（テクスチャを持たない
+// 単色塗り）はサイズを大きくしてもGPU合成コストがほぼ変わらないため、Canvas系レイヤーの
+// MAP_CANVAS_PADDING（=2）より余裕を持たせても実質コスト増にならない。
+const MARGIN_FACTOR = 3
 
 // 海底地形タイル（tilePane, z=200）専用の暗色オーバーレイ。
 // 従来は .leaflet-tile-pane に CSS filter (brightness/saturate/contrast) をかけていたが、
@@ -22,15 +18,19 @@ const WORLD_BOUNDS: L.LatLngBoundsExpression = [
 // 描き直してシェーダーを通す必要があり、パン中に新規タイルが継続的に読み込まれる
 // （Leaflet の TileLayer はデスクトップで updateWhenIdle:false のため）たびに
 // タイルペイン全体の再フィルタが走っていた。非力なGPUではこれがパン時のカクつきの主因になる。
-// mix-blend-mode によるブレンド合成は GPU の通常の合成パスで完結し、タイルの増減に対して
-// 追加コストがほぼ発生しない。tilePane(200) と basemap(250) の間にペインを1つ作り、
-// そこに全球を覆う単色矩形を1回だけ描画する（パン・ズーム追従と再描画は Leaflet の
-// Renderer 標準機構が担うため、BaseMap.tsx の陸地塗りポリゴンと同様、追加のJSによる
-// 毎フレーム位置合わせは不要）。
 //
-// padding は必須（他のCanvas描画レイヤーと共通の理由。mapCanvasPadding.ts 参照）。
-// 単色矩形1枚の描画コストはバッファが大きくなってもほぼ変わらないため、他レイヤーと
-// 揃えても実質コスト増はない。
+// 以前は L.canvas + L.rectangle（Leaflet ネイティブのベクター描画）で実装していたが、
+// Canvas レンダラーは flyTo アニメーション中に毎フレーム発火する 'zoom' イベントのたびに
+// 自身の canvas 要素（padding分だけ実バッファがビューポートより大きい）へ CSS transform を
+// 掛け直す（Renderer._onZoom）。この「大きなテクスチャを毎フレーム再配置する」コストが
+// 非力なGPUで無視できない重さになっていた。
+//
+// このレイヤーの中身は単色塗りでテクスチャを持たないため、Canvas を使う必然性が無い。
+// マーカーと同じ「地図中心のレイヤーポイントに位置決めし、あとは Leaflet 標準の
+// パン用共有transform（.leaflet-map-pane の translate）に乗せる」方式のプレーンな div に
+// 置き換える。'move'/'zoom' イベント（パン・flyTo中を含め継続的に発火）のたびに
+// 位置を再計算するが、対象がプレーンな単色divなのでこの再計算・再配置は
+// Canvasの毎フレーム transform 更新と違ってGPU的にほぼ無コストで済む。
 export function TileTintLayer() {
   const map = useMap()
 
@@ -41,16 +41,46 @@ export function TileTintLayer() {
       pane.style.pointerEvents = 'none'
       pane.style.mixBlendMode = 'multiply'
     }
-    const renderer = L.canvas({ pane: 'tile-tint', padding: MAP_CANVAS_PADDING })
-    const tint = L.rectangle(WORLD_BOUNDS, {
-      renderer,
-      interactive: false,
-      stroke: false,
-      fill: true,
-      fillColor: '#000000',
-      fillOpacity: TINT_OPACITY,
-    }).addTo(map)
+    const pane = map.getPane('tile-tint')!
+
+    const tint = document.createElement('div')
+    tint.style.position = 'absolute'
+    tint.style.top = '0'
+    tint.style.left = '0'
+    tint.style.backgroundColor = '#000000'
+    tint.style.opacity = String(TINT_OPACITY)
+    pane.appendChild(tint)
+
+    let width = 0
+    let height = 0
+
+    function updateSize() {
+      const size = map.getSize()
+      width = size.x * (1 + 2 * MARGIN_FACTOR)
+      height = size.y * (1 + 2 * MARGIN_FACTOR)
+      tint.style.width = `${width}px`
+      tint.style.height = `${height}px`
+    }
+
+    function updatePosition() {
+      const centerPoint = map.latLngToLayerPoint(map.getCenter())
+      L.DomUtil.setPosition(tint, centerPoint.subtract([width / 2, height / 2]))
+    }
+
+    function onResize() {
+      updateSize()
+      updatePosition()
+    }
+
+    updateSize()
+    updatePosition()
+
+    map.on('move zoom', updatePosition)
+    map.on('resize', onResize)
+
     return () => {
+      map.off('move zoom', updatePosition)
+      map.off('resize', onResize)
       tint.remove()
     }
   }, [map])
