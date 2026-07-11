@@ -7,6 +7,7 @@ import { getScaleRadius } from '../../utils/intensity'
 
 const DURATION = 600
 const MIN_TRIGGER_INDEX = 7
+const SVG_NS = 'http://www.w3.org/2000/svg'
 
 interface Ripple {
   lat: number
@@ -14,8 +15,14 @@ interface Ripple {
   color: string
   startTime: number
   baseRadius: number
+  el: SVGCircleElement
 }
 
+// 最大震度更新時の波紋エフェクトを SVG で描画するレイヤー。
+// Canvas ではなく SVG を使うことで flyTo/ズームアニメーション中の再合成コストが発生しない
+// （理由は KyoshinPoints 参照）。同時に有効な波紋は通常 0〜1個程度の短命なアニメーションなので、
+// 波紋ごとに <circle> を1個生成し、rAF ループでその属性（cx/cy/r/stroke-opacity）だけを
+// 毎フレーム更新する。
 export function KyoshinMaxEffect({
   sites,
   indices,
@@ -26,21 +33,24 @@ export function KyoshinMaxEffect({
   iconScale: number
 }) {
   const map = useMap()
-  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const svgRef = useRef<SVGSVGElement | null>(null)
   const ripplesRef = useRef<Ripple[]>([])
   const rafRef = useRef<number | null>(null)
   const prevMaxIdxRef = useRef<number>(-1)
 
   useEffect(() => {
-    const canvas = document.createElement('canvas')
-    canvas.style.position = 'absolute'
-    canvas.style.pointerEvents = 'none'
-    canvas.style.transformOrigin = '0 0'
-    map.getPanes().overlayPane?.appendChild(canvas)
-    canvasRef.current = canvas
+    const pane = map.getPane('kyoshin-points')
+    if (!pane) return
+    const svg = document.createElementNS(SVG_NS, 'svg')
+    svg.style.position = 'absolute'
+    svg.style.pointerEvents = 'none'
+    svg.style.transformOrigin = '0 0'
+    svg.style.overflow = 'visible'
+    pane.appendChild(svg)
+    svgRef.current = svg
     return () => {
-      canvas.remove()
-      canvasRef.current = null
+      svg.remove()
+      svgRef.current = null
     }
   }, [map])
 
@@ -48,25 +58,22 @@ export function KyoshinMaxEffect({
     if (rafRef.current !== null) return
 
     const loop = () => {
-      const canvas = canvasRef.current
-      if (!canvas) {
+      const svg = svgRef.current
+      if (!svg) {
         rafRef.current = null
         return
       }
       const now = performance.now()
       const size = map.getSize()
-      canvas.width = size.x
-      canvas.height = size.y
-      L.DomUtil.setPosition(canvas, map.containerPointToLayerPoint([0, 0]))
+      svg.setAttribute('width', String(size.x))
+      svg.setAttribute('height', String(size.y))
+      // L.DomUtil.setPosition は型定義上 HTMLElement を要求するが、実装は style.transform の
+      // 書き換えのみで SVGElement でも問題なく動作する。
+      L.DomUtil.setPosition(svg as unknown as HTMLElement, map.containerPointToLayerPoint([0, 0]))
 
-      const ctx = canvas.getContext('2d')
-      if (!ctx) {
-        rafRef.current = null
-        return
-      }
-
+      const expired = ripplesRef.current.filter((r) => now - r.startTime >= DURATION)
+      for (const r of expired) r.el.remove()
       ripplesRef.current = ripplesRef.current.filter((r) => now - r.startTime < DURATION)
-      ctx.clearRect(0, 0, canvas.width, canvas.height)
 
       for (const r of ripplesRef.current) {
         const t = (now - r.startTime) / DURATION
@@ -74,12 +81,10 @@ export function KyoshinMaxEffect({
         const radius = r.baseRadius + r.baseRadius * 3 * eased
         const alpha = 0.75 * (1 - t)
         const pt = map.latLngToContainerPoint(L.latLng(r.lat, r.lng))
-        ctx.beginPath()
-        ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2)
-        ctx.strokeStyle = r.color
-        ctx.lineWidth = 2.5
-        ctx.globalAlpha = alpha
-        ctx.stroke()
+        r.el.setAttribute('cx', String(pt.x))
+        r.el.setAttribute('cy', String(pt.y))
+        r.el.setAttribute('r', String(radius))
+        r.el.setAttribute('stroke-opacity', String(alpha))
       }
 
       if (ripplesRef.current.length > 0) {
@@ -111,15 +116,23 @@ export function KyoshinMaxEffect({
     }
 
     if (maxIdx >= MIN_TRIGGER_INDEX && maxIdx > prevMaxIdxRef.current && maxSiteIdx >= 0) {
-      const [lat, lng] = sites[maxSiteIdx]
-      const color = kyoshinIntensityColor(maxIdx) ?? '#ffffff'
-      const jma = kyoshinIndexToJma(maxIdx)
-      const baseRadius = jma ? (getScaleRadius(jma.scale) + 2) * iconScale : 3 * iconScale
-      ripplesRef.current = [
-        ...ripplesRef.current,
-        { lat, lng, color, startTime: performance.now(), baseRadius },
-      ]
-      startLoop()
+      const svg = svgRef.current
+      if (svg) {
+        const [lat, lng] = sites[maxSiteIdx]
+        const color = kyoshinIntensityColor(maxIdx) ?? '#ffffff'
+        const jma = kyoshinIndexToJma(maxIdx)
+        const baseRadius = jma ? (getScaleRadius(jma.scale) + 2) * iconScale : 3 * iconScale
+        const el = document.createElementNS(SVG_NS, 'circle')
+        el.setAttribute('fill', 'none')
+        el.setAttribute('stroke', color)
+        el.setAttribute('stroke-width', '2.5')
+        svg.appendChild(el)
+        ripplesRef.current = [
+          ...ripplesRef.current,
+          { lat, lng, color, startTime: performance.now(), baseRadius, el },
+        ]
+        startLoop()
+      }
     }
 
     prevMaxIdxRef.current = maxIdx
@@ -127,12 +140,12 @@ export function KyoshinMaxEffect({
 
   useEffect(() => {
     const onZoomAnim = (e: L.ZoomAnimEvent) => {
-      const canvas = canvasRef.current
-      if (!canvas) return
+      const svg = svgRef.current
+      if (!svg) return
       const scale = map.getZoomScale(e.zoom)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const offset = (map as any)._latLngBoundsToNewLayerBounds(map.getBounds(), e.zoom, e.center).min
-      L.DomUtil.setTransform(canvas, offset, scale)
+      L.DomUtil.setTransform(svg as unknown as HTMLElement, offset, scale)
     }
     map.on('zoomanim', onZoomAnim as L.LeafletEventHandlerFn)
     return () => {
