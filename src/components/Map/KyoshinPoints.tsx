@@ -63,7 +63,7 @@ export function KyoshinPoints({ sites, indices, iconScale }: Props) {
     for (let i = 0; i < markers.length; i++) {
       const idx = indices[i]
       const color = kyoshinIntensityColor(idx)
-      // index 1〜6（震度0以下）は KyoshinSubThreshold が OffscreenCanvas で描画（index 0 はどちらも非表示）
+      // index 1〜6（震度0以下）は KyoshinSubThreshold が描画（index 0 はどちらも非表示）
       const fillOpacity = idx != null && idx <= 6 ? 0 : color ? 0.85 : 0
       markers[i].setRadius(radius)
       markers[i].setStyle({ fillColor: color ?? SHINDO0_COLOR, fillOpacity })
