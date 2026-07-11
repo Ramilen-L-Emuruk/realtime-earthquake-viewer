@@ -1002,45 +1002,52 @@ export function JapanMap({
       />
 
       {/* EEW 受信時: 対象地域を予想震度で色塗り（ラベル z270 より背面・観測点ドットの下）
-          警報域(isWarning): fillOpacity 0.55 + weight 2 で強調。予報域: 0.3 + weight 1 */}
-      {mode === 'kyoshin' && eewAreaFills.length > 0 && eewLpgmRegionAggregates.length === 0 && (
+          警報域(isWarning): fillOpacity 0.55 + weight 2 で強調。予報域: 0.3 + weight 1
+          ペインは mode==='kyoshin' の間は常時マウントし、中身だけを条件で出し分ける
+          （理由は quake-region-fill 側のコメント参照。EEW 受信の度に <Pane> を着脱すると
+          専用 SVG レンダラーが孤立し塗りが二度と出なくなる）。 */}
+      {mode === 'kyoshin' && (
         <Pane name="eew-region-fill" style={{ zIndex: 260 }}>
-          {eewAreaFills.map((a) =>
-            a.rings.map((ring, i) => (
-              <Polygon
-                key={`eew-fill-${a.name}-${i}`}
-                positions={ring}
-                renderer={eewRegionFillRenderer}
-                pathOptions={{
-                  color: getIntensityColor(a.scale),
-                  weight: a.isWarning ? 2 : 1,
-                  fillColor: getIntensityColor(a.scale),
-                  fillOpacity: a.isWarning ? 0.55 : 0.3,
-                }}
-              />
-            )),
-          )}
+          {eewAreaFills.length > 0 &&
+            eewLpgmRegionAggregates.length === 0 &&
+            eewAreaFills.map((a) =>
+              a.rings.map((ring, i) => (
+                <Polygon
+                  key={`eew-fill-${a.name}-${i}`}
+                  positions={ring}
+                  renderer={eewRegionFillRenderer}
+                  pathOptions={{
+                    color: getIntensityColor(a.scale),
+                    weight: a.isWarning ? 2 : 1,
+                    fillColor: getIntensityColor(a.scale),
+                    fillOpacity: a.isWarning ? 0.55 : 0.3,
+                  }}
+                />
+              )),
+            )}
         </Pane>
       )}
 
-      {/* EEW LPGM overlay: 選択された EEW の地域別予想長周期地震動階級を区域塗りで表示 */}
-      {mode === 'kyoshin' && eewLpgmRegionAggregates.length > 0 && (
+      {/* EEW LPGM overlay: 選択された EEW の地域別予想長周期地震動階級を区域塗りで表示
+          ペインの常時マウント方針は直上の eew-region-fill と同じ。 */}
+      {mode === 'kyoshin' && (
         <Pane name="eew-lpgm-region-fill" style={{ zIndex: 261 }}>
-          {eewLpgmRegionAggregates.flatMap((r, ri) =>
-            r.rings.map((ring, i) => (
-              <Polygon
-                key={`eew-lpgm-${ri}-${i}`}
-                positions={ring}
-                renderer={eewLpgmRegionFillRenderer}
-                pathOptions={{
-                  color: getLpgmClassColor(r.maxLgInt),
-                  weight: 2,
-                  fillColor: getLpgmClassColor(r.maxLgInt),
-                  fillOpacity: 0.5,
-                }}
-              />
-            ))
-          )}
+          {eewLpgmRegionAggregates.length > 0 &&
+            eewLpgmRegionAggregates.flatMap((r, ri) =>
+              r.rings.map((ring, i) => (
+                <Polygon
+                  key={`eew-lpgm-${ri}-${i}`}
+                  positions={ring}
+                  renderer={eewLpgmRegionFillRenderer}
+                  pathOptions={{
+                    color: getLpgmClassColor(r.maxLgInt),
+                    weight: 2,
+                    fillColor: getLpgmClassColor(r.maxLgInt),
+                    fillOpacity: 0.5,
+                  }}
+                />
+              ))
+            )}
         </Pane>
       )}
 
@@ -1164,10 +1171,17 @@ export function JapanMap({
 
       {/* 中間より引き: 一次細分区域ごとの最大震度を区域塗りつぶし＋区域中心マーカーで表示。
           LPGM 表示中は震度と重なるため非表示にする。
-          塗りはラベル(basemap-labels z270)より背面の専用ペイン(z260)に置く。 */}
-      {aggregateByRegion && !(lpgm && !lpgm.cancelled) && (
-        <Pane name="quake-region-fill" style={{ zIndex: 260 }}>
-          {regionAggregates.map((p) =>
+          塗りはラベル(basemap-labels z270)より背面の専用ペイン(z260)に置く。
+          ペイン自体は mode==='quake' の間は常時マウントし、中身だけを条件で出し分ける。
+          ズーム閾値をまたぐ度に <Pane> を丸ごと着脱すると、react-leaflet がペインの DOM を
+          破棄してもこのペイン専用に保持している SVG レンダラー（quakeRegionFillRenderer）は
+          map の内部レイヤー登録簿からは外れないため、次にペインが作り直されても
+          renderer.onAdd() が再実行されず、新しい（誰にも見えない孤立した）ペインDOMの
+          外側に取り残された古いコンテナへ描画され続け、塗りが二度と表示されなくなる。 */}
+      <Pane name="quake-region-fill" style={{ zIndex: 260 }}>
+        {aggregateByRegion &&
+          !(lpgm && !lpgm.cancelled) &&
+          regionAggregates.map((p) =>
             p.rings.map((ring, i) => (
               <Polygon
                 key={`region-fill-${p.name}-${i}`}
@@ -1182,8 +1196,7 @@ export function JapanMap({
               />
             )),
           )}
-        </Pane>
-      )}
+      </Pane>
       {aggregateByRegion && !(lpgm && !lpgm.cancelled) &&
         regionAggregates.map((p) => (
           <Marker
