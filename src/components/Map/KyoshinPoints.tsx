@@ -14,8 +14,10 @@ interface Props {
 // 震度0の点（および未データ）のドット半径
 const BASE_RADIUS = 2.5
 
-// 強震モニタの観測点（約1725点）を Canvas の色付きドットで描画するレイヤー。
-// DOM（divIcon）を使わず Canvas に集約することで、観測点が多くても軽快に動作する。
+// 強震モニタの観測点（約1725点）を SVG の色付きドットで描画するレイヤー。
+// Canvas ではなく SVG レンダラー（L.svg）を使うことで、flyTo/ズームアニメーション中に
+// 大きな Canvas バッファを再合成するコストが発生しない（理由は BaseMap.tsx の同種コメント参照。
+// このため専用ペイン kyoshin-points は flyToLite.ts の HIDDEN_DURING_FLY_PANES に含めていない）。
 //   index 0（データ無し）= 非表示 / index 1〜6（震度0以下）= KyoshinSubThreshold が描画 / index 7+（震度1以上）= 気象庁配色・固定サイズ（確定後は KyoshinDetectedPoints が可変サイズで上書き）
 // ドットは観測点リスト取得時に一度だけ生成し、毎秒の更新は色と半径の変更のみ行う。
 export function KyoshinPoints({ sites, indices, iconScale }: Props) {
@@ -25,7 +27,7 @@ export function KyoshinPoints({ sites, indices, iconScale }: Props) {
   // 観測点が揃ったら一度だけマーカーを生成して地図に追加する
   useEffect(() => {
     if (sites.length === 0) return
-    const renderer = L.canvas({ padding: MAP_CANVAS_PADDING })
+    const renderer = L.svg({ pane: 'kyoshin-points', padding: MAP_CANVAS_PADDING })
     const group = L.layerGroup()
     const markers = sites.map(([lat, lng]) =>
       L.circleMarker([lat, lng], {
@@ -34,6 +36,7 @@ export function KyoshinPoints({ sites, indices, iconScale }: Props) {
         stroke: false,
         fillOpacity: 0,
         fillColor: SHINDO0_COLOR,
+        interactive: false,
       }),
     )
     markers.forEach((m) => m.addTo(group))
@@ -41,6 +44,10 @@ export function KyoshinPoints({ sites, indices, iconScale }: Props) {
     markersRef.current = markers
     return () => {
       group.remove()
+      // renderer は circleMarker 経由で暗黙に地図へ追加されるため、明示的に外さないと
+      // 空になった <svg> コンテナが kyoshin-points ペインに残り続ける
+      // （React StrictMode の mount→cleanup→再mount で特に顕在化する）。
+      renderer.remove()
       markersRef.current = []
     }
     // sites は初回取得後は不変。map も不変。
