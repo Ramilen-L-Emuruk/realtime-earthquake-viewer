@@ -59,8 +59,12 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
     //   tsunami-lines(270)     : 津波海岸線（JapanMap が使用）
     //   tsunami-obs-bars(280)  : 津波観測棒（JapanMap が使用）
     //   ps-wave(280)           : P/S波円（PsWaveLayer が使用）
-    //   overlayPane(400)       : IntensityPoints 等 pane 未指定 Canvas レイヤーの既定ペイン（Leaflet デフォルト）。
-    //                            ポップアップ/ツールチップを持たないため pointerEvents を無効化し、
+    //   kyoshin-points(400)    : 強震モニタの観測点・検知点・波紋エフェクト（KyoshinPoints/
+    //                            KyoshinSubThreshold/KyoshinDetectedPoints/KyoshinMaxEffect が使用）
+    //   quake-points(400)      : 地震モードの観測点震度・長周期地震動観測点（IntensityPoints/
+    //                            LpgmPoints が使用）
+    //   overlayPane(400)       : pane 未指定 Canvas レイヤーの既定ペイン（Leaflet デフォルト）。
+    //                            現状これを使うレイヤーは無いが、念のため pointerEvents を無効化し、
     //                            背面レイヤーのクリック/ホバーを妨げないようにしている
     //   basemap-labels(450)    : 地方/県/区域名ラベル
     if (!map.getPane('basemap')) {
@@ -73,11 +77,19 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
       pane.style.zIndex = '280'
       pane.style.pointerEvents = 'none'
     }
-    // overlayPane は IntensityPoints/KyoshinPoints/LpgmPoints が pane 未指定の Canvas
-    // レンダラーで使う既定ペイン。これらはポップアップ/ツールチップを持たないが、Canvas 要素は
-    // SVG と異なり非インタラクティブでも pointerEvents が自動で無効化されないため、
-    // 背面のプレート境界線・活断層線・津波海岸線等のクリックを奪ってしまっていた。
-    // 明示的に無効化し、背面レイヤーへイベントを通す。
+    if (!map.getPane('kyoshin-points')) {
+      const pane = map.createPane('kyoshin-points')
+      pane.style.zIndex = '400'
+      pane.style.pointerEvents = 'none'
+    }
+    if (!map.getPane('quake-points')) {
+      const pane = map.createPane('quake-points')
+      pane.style.zIndex = '400'
+      pane.style.pointerEvents = 'none'
+    }
+    // overlayPane は pane 未指定の Canvas レンダラーが使う既定ペイン。Canvas 要素は SVG と異なり
+    // 非インタラクティブでも pointerEvents が自動で無効化されないため、背面のプレート境界線・
+    // 活断層線・津波海岸線等のクリックを奪ってしまう。念のため明示的に無効化しておく。
     const overlayPane = map.getPane('overlayPane')
     if (overlayPane) overlayPane.style.pointerEvents = 'none'
     if (!map.getPane('basemap-labels')) {
