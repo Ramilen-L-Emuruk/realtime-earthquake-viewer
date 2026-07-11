@@ -14,10 +14,10 @@ import L from 'leaflet'
 // 着地時に表示へ戻すだけで最終的な位置ズレは起きない。
 //
 // 'basemap'・'quake-region-fill'・'eew-region-fill'・'eew-lpgm-region-fill'・
-// 'line-layers'・'tsunami-lines' はここに含めない。いずれも SVG レンダラーに変更済み
-// （BaseMap.tsx・JapanMap.tsx 側の renderer 定義参照）。SVG は解像度非依存のベクター
-// 要素のため Canvas 特有の「大きなテクスチャの毎フレーム再合成」コストの土台自体が無く、
-// 隠さず表示したままで問題ない。
+// 'line-layers'・'tsunami-lines'・'kyoshin-points' はここに含めない。いずれも SVG レンダラーに
+// 変更済み（BaseMap.tsx・JapanMap.tsx・KyoshinPoints.tsx 等の renderer 定義参照）。SVG は
+// 解像度非依存のベクター要素のため Canvas 特有の「大きなテクスチャの毎フレーム再合成」コストの
+// 土台自体が無く、隠さず表示したままで問題ない。
 //
 // 'quake-heat'（直近1ヶ月の地震活動ヒートマップ）は対象のまま残す。leaflet.heat
 // プラグインによる密度勾配の描画で、単色矩形やベクター図形と違い実際にラスタライズが
