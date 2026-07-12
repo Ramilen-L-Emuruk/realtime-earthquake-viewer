@@ -996,8 +996,11 @@ export function JapanMap({
       {/* 上の可視線(SVG)のポップアップ当たり判定用の透明 Canvas ヒットペイン（z264, 可視線より前面）。
           プレート境界線・活断層線はこの単一ペインを共有する（別ペインに分けると、上のペインの
           全画面Canvasが自身に線の無い場所でも下のペインのクリックを吸収するため。理由は上の
-          line-layers のコメントと同じ）。透明なので flyTo 中は隠して差し支えない（flyToLite.ts）。 */}
-      {(mode === 'quake' || mode === 'kyoshin') && <Pane name="line-layers-hit" style={{ zIndex: 264 }} />}
+          line-layers のコメントと同じ）。透明なので flyTo 中は隠して差し支えない（flyToLite.ts）。
+          ペインは line-layers と同じく常時マウントする。mode をまたいで <Pane> を着脱すると、
+          専用 Canvas レンダラー（lineLayerHitRenderer, useMemo で使い回し）が孤立し、往復後に
+          当たり判定が二度と効かなくなるため（表示可否は各レイヤーの visible prop 側で制御）。 */}
+      <Pane name="line-layers-hit" style={{ zIndex: 264 }} />
 
       {/* 日本周辺のプレート境界線（PB2002モデル）。地震情報・リアルタイムタブのみ。
           活断層線と同様に本数が多いため、react-leaflet の宣言的 Polyline ではなく専用レイヤー
@@ -1154,10 +1157,13 @@ export function JapanMap({
       </Pane>
 
       {/* 津波海岸線ポップアップの当たり判定用・透明 Canvas ヒットレイヤー（可視線と別ペイン z271）。
-          可視線(z270)は interactive:false としてこちらへ委譲する。仕組み・理由は line-layers-hit と同じ。 */}
-      {tsunamiLines.length > 0 && (
-        <Pane name="tsunami-lines-hit" style={{ zIndex: 271 }}>
-          {tsunamiLines.map((line) =>
+          可視線(z270)は interactive:false としてこちらへ委譲する。仕組み・理由は line-layers-hit と同じ。
+          ペインは常時マウントし、表示条件は中身の JSX 側で出し分ける（tsunamiLineHitRenderer は
+          useMemo で使い回す専用 Canvas レンダラーのため、<Pane> を着脱すると孤立して当たり判定が
+          二度と効かなくなる。可視線側 tsunami-lines と同じ機構）。 */}
+      <Pane name="tsunami-lines-hit" style={{ zIndex: 271 }}>
+        {tsunamiLines.length > 0 &&
+          tsunamiLines.map((line) =>
             line.segments.map((segment, i) => (
               <Polyline
                 key={`hit-${line.name}-${i}`}
@@ -1179,8 +1185,7 @@ export function JapanMap({
               </Polyline>
             )),
           )}
-        </Pane>
-      )}
+      </Pane>
 
       {/* 津波フィット統合コンポーネント。観測点更新を優先し、海岸線フィットとの競合を防ぐ。
           モード切替をまたいで ref を保持するため常時レンダリング */}
