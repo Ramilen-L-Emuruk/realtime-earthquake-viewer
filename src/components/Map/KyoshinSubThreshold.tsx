@@ -43,6 +43,10 @@ export function KyoshinSubThreshold({ sites, indices, iconScale }: Props) {
   // 位置更新関数を最新 props で常に更新（stale closure 回避）。
   // 全点の cx/cy/r を再計算する（表示・非表示を問わず全点分。所属グループの切替時に
   // 古い座標のまま出現しないようにするため）。
+  // 更新後に即時実行もする。データ変化時の差分更新（下の useEffect）は「レベルが変わった点」
+  // しか半径を触らないため、iconScale だけ変わってレベル据え置きの点は、ここで全点まとめて
+  // 半径を再適用しないとアイコンスケール変更に追従できず、ドットの大きさが不揃いになる
+  // （circles 未生成時は早期 return するのでマウント時は no-op）。
   useEffect(() => {
     drawFnRef.current = () => {
       const circles = circlesRef.current
@@ -56,6 +60,7 @@ export function KyoshinSubThreshold({ sites, indices, iconScale }: Props) {
         c.setAttribute('r', String(radius))
       }
     }
+    drawFnRef.current()
   }, [sites, iconScale, map])
 
   // svg/group/circle のライフサイクル: sites 取得後に kyoshin-points ペインへ追加し、地図イベントで再配置
