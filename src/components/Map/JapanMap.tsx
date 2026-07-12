@@ -1112,10 +1112,15 @@ export function JapanMap({
       )}
       {/* 津波予報区の海岸線（等級ごとに色分け）。津波発報中は全モードで表示・点滅する。
           個々の Polyline ではなく Pane 全体に点滅クラスを適用する（線の本数に関わらず
-          常に一箇所の指定で済むため）。 */}
-      {tsunamiLines.length > 0 && (
-        <Pane name="tsunami-lines" style={{ zIndex: 270 }} className="tsunami-blink">
-          {tsunamiLines.map((line) =>
+          常に一箇所の指定で済むため）。
+          ペインは常時マウントし、表示条件（tsunamiLines の有無）は中身の JSX 側で出し分ける。
+          津波の解除→再発報で <Pane> を着脱すると、専用 SVG レンダラー（tsunamiLineRenderer,
+          useMemo で使い回し）は map の内部レイヤー登録簿から外れないため、ペイン DOM が
+          作り直されても renderer.onAdd() が再実行されず、孤立した旧コンテナへ描画され続けて
+          海岸線が二度と表示されなくなる（quake-region-fill 側のコメント参照）。 */}
+      <Pane name="tsunami-lines" style={{ zIndex: 270 }} className="tsunami-blink">
+        {tsunamiLines.length > 0 &&
+          tsunamiLines.map((line) =>
             line.segments.map((segment, i) => (
               <Polyline
                 key={`${line.name}-${i}`}
@@ -1138,8 +1143,7 @@ export function JapanMap({
               </Polyline>
             )),
           )}
-        </Pane>
-      )}
+      </Pane>
 
       {/* 津波フィット統合コンポーネント。観測点更新を優先し、海岸線フィットとの競合を防ぐ。
           モード切替をまたいで ref を保持するため常時レンダリング */}
