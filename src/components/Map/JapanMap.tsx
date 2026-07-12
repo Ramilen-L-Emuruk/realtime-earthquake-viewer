@@ -1003,53 +1003,54 @@ export function JapanMap({
 
       {/* EEW 受信時: 対象地域を予想震度で色塗り（ラベル z270 より背面・観測点ドットの下）
           警報域(isWarning): fillOpacity 0.55 + weight 2 で強調。予報域: 0.3 + weight 1
-          ペインは mode==='kyoshin' の間は常時マウントし、中身だけを条件で出し分ける
-          （理由は quake-region-fill 側のコメント参照。EEW 受信の度に <Pane> を着脱すると
-          専用 SVG レンダラーが孤立し塗りが二度と出なくなる）。 */}
-      {mode === 'kyoshin' && (
-        <Pane name="eew-region-fill" style={{ zIndex: 260 }}>
-          {eewAreaFills.length > 0 &&
-            eewLpgmRegionAggregates.length === 0 &&
-            eewAreaFills.map((a) =>
-              a.rings.map((ring, i) => (
-                <Polygon
-                  key={`eew-fill-${a.name}-${i}`}
-                  positions={ring}
-                  renderer={eewRegionFillRenderer}
-                  pathOptions={{
-                    color: getIntensityColor(a.scale),
-                    weight: a.isWarning ? 2 : 1,
-                    fillColor: getIntensityColor(a.scale),
-                    fillOpacity: a.isWarning ? 0.55 : 0.3,
-                  }}
-                />
-              )),
-            )}
-        </Pane>
-      )}
+          ペインは常時マウントし、表示条件（mode==='kyoshin' や EEW 受信有無）は中身の
+          JSX 側だけで出し分ける。mode をまたいで <Pane> を着脱すると、専用 SVG レンダラー
+          （eewRegionFillRenderer, useMemo で使い回し）は map の内部レイヤー登録簿から
+          外れないため、ペイン DOM が作り直されても renderer.onAdd() が再実行されず、
+          孤立した旧コンテナへ描画され続けて塗りが二度と表示されなくなる（quake-region-fill
+          側のコメント参照）。 */}
+      <Pane name="eew-region-fill" style={{ zIndex: 260 }}>
+        {mode === 'kyoshin' &&
+          eewAreaFills.length > 0 &&
+          eewLpgmRegionAggregates.length === 0 &&
+          eewAreaFills.map((a) =>
+            a.rings.map((ring, i) => (
+              <Polygon
+                key={`eew-fill-${a.name}-${i}`}
+                positions={ring}
+                renderer={eewRegionFillRenderer}
+                pathOptions={{
+                  color: getIntensityColor(a.scale),
+                  weight: a.isWarning ? 2 : 1,
+                  fillColor: getIntensityColor(a.scale),
+                  fillOpacity: a.isWarning ? 0.55 : 0.3,
+                }}
+              />
+            )),
+          )}
+      </Pane>
 
       {/* EEW LPGM overlay: 選択された EEW の地域別予想長周期地震動階級を区域塗りで表示
           ペインの常時マウント方針は直上の eew-region-fill と同じ。 */}
-      {mode === 'kyoshin' && (
-        <Pane name="eew-lpgm-region-fill" style={{ zIndex: 261 }}>
-          {eewLpgmRegionAggregates.length > 0 &&
-            eewLpgmRegionAggregates.flatMap((r, ri) =>
-              r.rings.map((ring, i) => (
-                <Polygon
-                  key={`eew-lpgm-${ri}-${i}`}
-                  positions={ring}
-                  renderer={eewLpgmRegionFillRenderer}
-                  pathOptions={{
-                    color: getLpgmClassColor(r.maxLgInt),
-                    weight: 2,
-                    fillColor: getLpgmClassColor(r.maxLgInt),
-                    fillOpacity: 0.5,
-                  }}
-                />
-              ))
-            )}
-        </Pane>
-      )}
+      <Pane name="eew-lpgm-region-fill" style={{ zIndex: 261 }}>
+        {mode === 'kyoshin' &&
+          eewLpgmRegionAggregates.length > 0 &&
+          eewLpgmRegionAggregates.flatMap((r, ri) =>
+            r.rings.map((ring, i) => (
+              <Polygon
+                key={`eew-lpgm-${ri}-${i}`}
+                positions={ring}
+                renderer={eewLpgmRegionFillRenderer}
+                pathOptions={{
+                  color: getLpgmClassColor(r.maxLgInt),
+                  weight: 2,
+                  fillColor: getLpgmClassColor(r.maxLgInt),
+                  fillOpacity: 0.5,
+                }}
+              />
+            ))
+          )}
+      </Pane>
 
       {/* 強震モニタ: Yahoo リアルタイム震度の観測点を描画 */}
       {mode === 'kyoshin' && (
