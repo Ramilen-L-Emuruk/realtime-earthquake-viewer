@@ -6,7 +6,10 @@ import type { PlateBoundarySegment } from '../../utils/plateBoundaries'
 interface Props {
   plateBoundaries: PlateBoundarySegment[] | null
   visible: boolean
+  /** 可視線を描く SVG レンダラー（flyTo 中も表示を維持するため SVG）。 */
   renderer: L.Renderer
+  /** ポップアップの当たり判定用の透明 Canvas レンダラー（tolerance 付き）。 */
+  hitRenderer: L.Renderer
 }
 
 const SUBDUCTION_COLOR = '#b91c1c'
@@ -29,7 +32,7 @@ function buildPlatePopupContent(seg: PlateBoundarySegment): HTMLElement {
 // ActiveFaultsLayer と同じ理由（react-leaflet の宣言的 Polyline だと強震モニタの毎秒更新の
 // たびに再レンダーされ重い）で、useMap + useEffect でマウント時に一度だけ構築する方式にしている。
 // セグメント単位で1本の L.polyline（複数ラインをまとめた multi-polyline）にまとめている。
-export function PlateBoundariesLayer({ plateBoundaries, visible, renderer }: Props) {
+export function PlateBoundariesLayer({ plateBoundaries, visible, renderer, hitRenderer }: Props) {
   const map = useMap()
   const groupRef = useRef<L.LayerGroup | null>(null)
 
@@ -37,12 +40,21 @@ export function PlateBoundariesLayer({ plateBoundaries, visible, renderer }: Pro
     if (!plateBoundaries) return
     const group = L.layerGroup()
     for (const seg of plateBoundaries) {
+      // 可視線（SVG）。当たり判定は持たせず（interactive:false）、下記の透明ヒット線に委ねる。
       L.polyline(seg.lines, {
         renderer,
         color: seg.type === 'subduction' ? SUBDUCTION_COLOR : OTHER_COLOR,
         weight: 2,
         opacity: 0.55,
         dashArray: '6 4',
+        interactive: false,
+      }).addTo(group)
+      // 当たり判定用の透明線（Canvas, tolerance 付きレンダラー）。可視線と同一形状を opacity:0 で
+      // 重ね、ポップアップはこちらに紐付ける。Canvas の tolerance により線から数pxずれても開く。
+      L.polyline(seg.lines, {
+        renderer: hitRenderer,
+        weight: 2,
+        opacity: 0,
       })
         .bindPopup(buildPlatePopupContent(seg))
         .addTo(group)
@@ -52,7 +64,7 @@ export function PlateBoundariesLayer({ plateBoundaries, visible, renderer }: Pro
       group.remove()
       groupRef.current = null
     }
-  }, [plateBoundaries, renderer])
+  }, [plateBoundaries, renderer, hitRenderer])
 
   useEffect(() => {
     const group = groupRef.current
