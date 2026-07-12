@@ -978,8 +978,13 @@ export function JapanMap({
           （自身に線が無い場所でも）下のペインのクリックを吸収してしまうため、同時に
           表示され得る線レイヤーは必ず同じペインにまとめる。
           z=263 は区域塗り(z260/261)より前面・津波海岸線(z270)より背面。描画順は
-          プレート境界線→活断層線の順（JSX順）で、活断層線が視覚的に前面に来る。 */}
-      {(mode === 'quake' || mode === 'kyoshin') && <Pane name="line-layers" style={{ zIndex: 263 }} />}
+          プレート境界線→活断層線の順（JSX順）で、活断層線が視覚的に前面に来る。
+          ペインは mode に関わらず常時マウントする。mode をまたいで <Pane> を着脱すると、
+          専用 SVG レンダラー（lineLayerRenderer, useMemo で使い回し）は map の内部レイヤー
+          登録簿から外れないため、ペイン DOM が作り直されても renderer.onAdd() が再実行されず、
+          孤立した旧コンテナへ描画され続けて線が二度と表示されなくなる（quake-region-fill
+          側のコメント参照）。表示可否は各レイヤーの visible prop 側で制御する。 */}
+      <Pane name="line-layers" style={{ zIndex: 263 }} />
 
       {/* 日本周辺のプレート境界線（PB2002モデル）。地震情報・リアルタイムタブのみ。
           活断層線と同様に本数が多いため、react-leaflet の宣言的 Polyline ではなく専用レイヤー
