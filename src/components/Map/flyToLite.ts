@@ -13,7 +13,7 @@ import L from 'leaflet'
 // moveend で必ずフル再描画・再配置を行うため（Renderer.getEvents() の moveend: this._update）、
 // 着地時に表示へ戻すだけで最終的な位置ズレは起きない。
 //
-// 'basemap'・'quake-region-fill'・'eew-region-fill'・'eew-lpgm-region-fill'・
+// 'basemap'・'quake-region-fill'・'eew-region-fill'・'eew-lpgm-region-fill'・'lpgm-region-fill'・
 // 'line-layers'・'tsunami-lines'・'kyoshin-points'・'quake-points' はここに含めない。いずれも
 // SVG レンダラーに変更済み（BaseMap.tsx・JapanMap.tsx・KyoshinPoints.tsx・IntensityPoints.tsx 等の
 // renderer 定義参照）。SVG は解像度非依存のベクター要素のため Canvas 特有の「大きなテクスチャの

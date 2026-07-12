@@ -51,11 +51,12 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
     //   tile-tint(220)         : 海底地形タイルの暗色オーバーレイ（TileTintLayer が使用）
     //   basemap(250)           : 陸地塗り・区域境界・県境
     //   quake-heat(255)        : 直近1ヶ月の地震活動ヒートマップ（JapanMap が使用）
-    //   quake-region-fill(260) : 地震モードの一次細分区域別震度塗り（JapanMap が使用）
-    //   eew-region-fill(260)   : EEW 予想震度の区域塗り（JapanMap が使用）
-    //   lpgm-region-fill(261)  : 長周期地震動の区域塗り（JapanMap が使用）
-    //   line-layers(263)       : プレート境界線・活断層線の共有ペイン（JapanMap が使用。同一Canvasにまとめる
-    //                            理由は JapanMap 側コメント参照）
+    //   quake-region-fill(260)     : 地震モードの一次細分区域別震度塗り（JapanMap が使用）
+    //   eew-region-fill(260)       : EEW 予想震度の区域塗り（JapanMap が使用）
+    //   eew-lpgm-region-fill(261)  : EEW 予想長周期地震動階級の区域塗り（JapanMap が使用）
+    //   lpgm-region-fill(261)      : 観測された長周期地震動階級の区域塗り（JapanMap が使用）
+    //   line-layers(263)           : プレート境界線・活断層線の共有ペイン（JapanMap が使用。同一ペイン・
+    //                                レンダラーにまとめる理由は JapanMap 側コメント参照）
     //   tsunami-lines(270)     : 津波海岸線（JapanMap が使用）
     //   tsunami-obs-bars(280)  : 津波観測棒（JapanMap が使用）
     //   ps-wave(280)           : P/S波円（PsWaveLayer が使用）
