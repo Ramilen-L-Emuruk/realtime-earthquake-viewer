@@ -23,12 +23,21 @@ import L from 'leaflet'
 // プラグインによる密度勾配の描画で、単色矩形やベクター図形と違い実際にラスタライズが
 // 必要なためSVG化できず、Canvas特有のコストがそのまま残っている。
 //
+// 'line-layers-hit'・'tsunami-lines-hit' は、プレート境界線・活断層線・津波海岸線の
+// ポップアップ当たり判定用に可視線(SVG)へ重ねた「透明な Canvas レイヤー」（JapanMap.tsx の
+// lineLayerHitRenderer/tsunamiLineHitRenderer 参照。SVG は tolerance を持てないため Canvas で
+// クリック許容範囲を稼ぐ）。Canvas なので flyTo 中の再合成コストが発生するが、完全に透明で
+// あり飛行中にホバー/クリックも発生しないため、ここで隠しても視覚・機能への影響は一切無い。
+// 可視線本体（'line-layers'・'tsunami-lines'）は SVG のままここに含めず、飛行中も表示を維持する。
+//
 // 海底地形タイル（tilePane）・その暗色オーバーレイ（tile-tint）も対象外。
 // tile-tint だけ隠すと明るい生タイルが露出し、tilePane も一緒に隠すと着地までタイルが
 // 消えて見える（どちらも見た目上のチラつきとして許容できない）。tile-tint は独自の
 // 軽量実装（TileTintLayer.tsx 参照）でこの制約を回避している。
 const HIDDEN_DURING_FLY_PANES = [
   'quake-heat',
+  'line-layers-hit',
+  'tsunami-lines-hit',
 ]
 
 function hidePanesUntilMoveEnd(map: L.Map): void {

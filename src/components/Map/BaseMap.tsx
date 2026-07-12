@@ -57,7 +57,10 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
     //   lpgm-region-fill(261)      : 観測された長周期地震動階級の区域塗り（JapanMap が使用）
     //   line-layers(263)           : プレート境界線・活断層線の共有ペイン（JapanMap が使用。同一ペイン・
     //                                レンダラーにまとめる理由は JapanMap 側コメント参照）
+    //   line-layers-hit(264)       : 上のポップアップ当たり判定用の透明Canvas（JapanMap が使用。可視線はSVGで
+    //                                tolerance非対応のため、Canvasのtoleranceで当たり判定を稼ぐ。flyTo中は隠す）
     //   tsunami-lines(270)     : 津波海岸線（JapanMap が使用）
+    //   tsunami-lines-hit(271) : 上のポップアップ当たり判定用の透明Canvas（JapanMap が使用。同上）
     //   tsunami-obs-bars(280)  : 津波観測棒（JapanMap が使用）
     //   ps-wave(280)           : P/S波円（PsWaveLayer が使用）
     //   kyoshin-points(400)    : 強震モニタの観測点・検知点・波紋エフェクト（KyoshinPoints/

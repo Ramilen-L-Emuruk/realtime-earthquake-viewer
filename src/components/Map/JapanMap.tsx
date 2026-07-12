@@ -685,6 +685,13 @@ export function JapanMap({
   // 発生しない。これにより flyToLite.ts の HIDDEN_DURING_FLY_PANES からも除外できる。
   const lineLayerRenderer = useMemo(() => L.svg({ pane: 'line-layers', padding: MAP_CANVAS_PADDING }), [])
   const tsunamiLineRenderer = useMemo(() => L.svg({ pane: 'tsunami-lines', padding: MAP_CANVAS_PADDING }), [])
+  // 上記の可視線は SVG。SVG は tolerance（クリック許容範囲）を持てず、当たり判定が実ストローク幅
+  // ぶんしかない（ポップアップ付きの細い線だと中心の数pxしか反応しない）。そこで可視線とは別ペインに
+  // 透明な Canvas レンダラーを重ね、tolerance:8 で線から数pxずれてもポップアップが開くようにする
+  // （Canvas 時代に入れていた緩和の復元）。透明かつ flyToLite.ts の HIDDEN_DURING_FLY_PANES で
+  // flyTo 中は隠すため、Canvas 特有の flyTo 再合成コストも視覚的な影響も無い。
+  const lineLayerHitRenderer = useMemo(() => L.canvas({ pane: 'line-layers-hit', tolerance: 8, padding: MAP_CANVAS_PADDING }), [])
+  const tsunamiLineHitRenderer = useMemo(() => L.canvas({ pane: 'tsunami-lines-hit', tolerance: 8, padding: MAP_CANVAS_PADDING }), [])
   const quakeRegionFillRenderer = useMemo(() => L.svg({ pane: 'quake-region-fill', padding: MAP_CANVAS_PADDING }), [])
   const eewRegionFillRenderer = useMemo(() => L.svg({ pane: 'eew-region-fill', padding: MAP_CANVAS_PADDING }), [])
   const eewLpgmRegionFillRenderer = useMemo(() => L.svg({ pane: 'eew-lpgm-region-fill', padding: MAP_CANVAS_PADDING }), [])
@@ -986,6 +993,12 @@ export function JapanMap({
           側のコメント参照）。表示可否は各レイヤーの visible prop 側で制御する。 */}
       <Pane name="line-layers" style={{ zIndex: 263 }} />
 
+      {/* 上の可視線(SVG)のポップアップ当たり判定用の透明 Canvas ヒットペイン（z264, 可視線より前面）。
+          プレート境界線・活断層線はこの単一ペインを共有する（別ペインに分けると、上のペインの
+          全画面Canvasが自身に線の無い場所でも下のペインのクリックを吸収するため。理由は上の
+          line-layers のコメントと同じ）。透明なので flyTo 中は隠して差し支えない（flyToLite.ts）。 */}
+      {(mode === 'quake' || mode === 'kyoshin') && <Pane name="line-layers-hit" style={{ zIndex: 264 }} />}
+
       {/* 日本周辺のプレート境界線（PB2002モデル）。地震情報・リアルタイムタブのみ。
           活断層線と同様に本数が多いため、react-leaflet の宣言的 Polyline ではなく専用レイヤー
           コンポーネント（PlateBoundariesLayer）で Leaflet ネイティブ描画する。 */}
@@ -993,6 +1006,7 @@ export function JapanMap({
         plateBoundaries={plateBoundaries}
         visible={(mode === 'quake' || mode === 'kyoshin') && showPlateBoundaries}
         renderer={lineLayerRenderer}
+        hitRenderer={lineLayerHitRenderer}
       />
 
       {/* 全国活断層線（産総研 活断層データベース）。地震情報・リアルタイムタブのみ、
@@ -1004,6 +1018,7 @@ export function JapanMap({
         activeFaults={activeFaults}
         visible={(mode === 'quake' || mode === 'kyoshin') && showActiveFaults}
         renderer={lineLayerRenderer}
+        hitRenderer={lineLayerHitRenderer}
       />
 
       {/* EEW 受信時: 対象地域を予想震度で色塗り（ラベル z270 より背面・観測点ドットの下）
@@ -1122,6 +1137,7 @@ export function JapanMap({
         {tsunamiLines.length > 0 &&
           tsunamiLines.map((line) =>
             line.segments.map((segment, i) => (
+              // 可視線（SVG）。当たり判定は持たせず（interactive:false）、下の透明ヒット線に委ねる。
               <Polyline
                 key={`${line.name}-${i}`}
                 positions={segment}
@@ -1130,6 +1146,26 @@ export function JapanMap({
                   color: TSUNAMI_STYLE[line.grade].color,
                   weight: TSUNAMI_STYLE[line.grade].weight * iconScale,
                   opacity: 0.9,
+                  interactive: false,
+                }}
+              />
+            )),
+          )}
+      </Pane>
+
+      {/* 津波海岸線ポップアップの当たり判定用・透明 Canvas ヒットレイヤー（可視線と別ペイン z271）。
+          可視線(z270)は interactive:false としてこちらへ委譲する。仕組み・理由は line-layers-hit と同じ。 */}
+      {tsunamiLines.length > 0 && (
+        <Pane name="tsunami-lines-hit" style={{ zIndex: 271 }}>
+          {tsunamiLines.map((line) =>
+            line.segments.map((segment, i) => (
+              <Polyline
+                key={`hit-${line.name}-${i}`}
+                positions={segment}
+                renderer={tsunamiLineHitRenderer}
+                pathOptions={{
+                  weight: TSUNAMI_STYLE[line.grade].weight * iconScale,
+                  opacity: 0,
                 }}
               >
                 <Popup pane="popupPane">
@@ -1143,7 +1179,8 @@ export function JapanMap({
               </Polyline>
             )),
           )}
-      </Pane>
+        </Pane>
+      )}
 
       {/* 津波フィット統合コンポーネント。観測点更新を優先し、海岸線フィットとの競合を防ぐ。
           モード切替をまたいで ref を保持するため常時レンダリング */}
