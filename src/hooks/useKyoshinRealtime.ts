@@ -32,6 +32,9 @@ const POLL_MS = 1000
 const FETCH_OFFSET_MS = 500
 // target が現在時刻よりこの値以上遅れていたらリアルタイムにリセットする (ms)
 const MAX_LAG_MS = 5000
+// リアルタイム時: 同一 target への最大リトライ回数（超過したら諦めて現在時刻ベースにリセットする）。
+// CDN 側で特定タイムスタンプの公開が恒久的に遅延・失敗するケースで無限リトライに張り付くのを防ぐ。
+const REALTIME_MAX_RETRY_COUNT = MAX_LAG_MS / RETRY_MS
 
 interface UseKyoshinRealtimeOptions {
   /** EEW の新規発報・更新・解除を検知したときに呼ばれるコールバック。 */
@@ -44,6 +47,8 @@ interface UseKyoshinRealtimeOptions {
  * Yahoo 強震モニタのリアルタイム震度を取得するフック。
  * enabled が true の間のみ観測点リストを取得し、1秒ごとに震度を更新する。
  * 受信失敗時は同一タイムスタンプで RETRY_MS 間隔でリトライし、受信できたらその遅延で結果を反映する。
+ * リアルタイム時は REALTIME_MAX_RETRY_COUNT 回を超えたら諦めて現在時刻ベースの target にリセットする
+ * （特定タイムスタンプが CDN 側で恒久的に取得できないケースで無限リトライに張り付くのを防ぐ）。
  * リプレイ時（timeOffset 指定時）はリトライで消費した実時間を累積して次の待機時間から差し引き、
  * かつ REPLAY_MAX_RETRY_COUNT 回を超えたら諦めて次 target へ進める（再生時刻からの遅れが蓄積しないようにする）。
  * hypoInfo の差分検出により EEW 発報・更新・解除を onEEWEvent で通知する。
@@ -172,6 +177,14 @@ export function useKyoshinRealtime(
                 log.warn(`[kyoshin] 連続取得失敗 (${failCountRef.current}回) → エラー表示`, err)
                 setError(true)
               }
+            }
+            // 同一 target への失敗が続き上限回数を超えたら、その target を諦めて
+            // 現在時刻ベースにリセットする（特定タイムスタンプが CDN 側で恒久的に
+            // 取得できないケースで無限リトライに張り付き続けるのを防ぐ）
+            if (retryCount + 1 >= REALTIME_MAX_RETRY_COUNT) {
+              log.warn(`[kyoshin] target への取得が ${retryCount + 1} 回失敗 → 現在時刻ベースにリセット`, err)
+              timer = setTimeout(() => tick(new Date(Date.now() - FETCH_OFFSET_MS)), RETRY_MS)
+              return
             }
             // 同一 target で RETRY_MS 後にリトライ
             timer = setTimeout(() => tick(target, retryCount + 1), RETRY_MS)
