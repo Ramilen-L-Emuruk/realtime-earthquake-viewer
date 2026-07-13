@@ -44,6 +44,15 @@ const SHINDO0_INDEX = 6
 const PROXIMITY_KM = 60
 /** クラスタ成立に必要な最低観測点数（2点は隣接センサー誤作動と区別不可のため3点以上） */
 const MIN_CLUSTER_SIZE = 3
+/** 広域確定の空間クラスタリング距離閾値 (km)。PROXIMITY_KM より大幅に広く取り、
+ *  隣接点どうしが鎖状につながる本物の広域イベント（例: 東北地方全域）を1クラスタとして拾う。
+ *  Union-Find の連結判定はこの半径内の隣接ペアが基準のため、離れた無関係な2地域が
+ *  この半径を大きく超えて隔たっている限り誤って統合されることはない。 */
+const WIDE_PROXIMITY_KM = 120
+/** 広域クラスタ成立に必要な最低観測点数。MIN_CLUSTER_SIZE より大幅に高くし、
+ *  単独/少数地点のセンサー誤作動では現実的に到達し得ない規模に設定することで、
+ *  広い範囲で同時に閾値を超えたこと自体をノイズ耐性の代わりとする。 */
+const WIDE_MIN_CLUSTER_SIZE = 8
 /** 候補クラスタの有効期限 (ms)：この時間内に再検出されなければ廃棄。
  *  ポーリング間隔は POLL_MS=1000 だが fetch のレイテンシ等で実際のフレーム間隔にはジッターが乗る。
  *  3フレーム分ちょうど（3000ms）だと正当な3フレーム目の再検出さえ僅かな遅延で期限切れになり得るため、
@@ -75,17 +84,23 @@ interface PendingCluster {
   siteIndices: number[]
   maxIndex: number
   detectedAt: number
+  /** 'tight': 通常クラスタ（PROXIMITY_KM/MIN_CLUSTER_SIZE）。'wide': 広域クラスタ（WIDE_PROXIMITY_KM/WIDE_MIN_CLUSTER_SIZE）。
+   *  同じ kind の候補としか照合しない（無関係な tight/wide 候補が誤って同一視されるのを防ぐ）。 */
+  kind: 'tight' | 'wide'
 }
 
 // ---- ユーティリティ ------------------------------------------------------
 
 /**
- * Union-Find を使い、PROXIMITY_KM 以内の観測点を連結してクラスタ列を返す。
- * 重心は構成点の算術平均とする。
+ * Union-Find を使い、proximityKm 以内の観測点を連結してクラスタ列を返す。
+ * 重心は構成点の算術平均とする。tight（PROXIMITY_KM/MIN_CLUSTER_SIZE）と
+ * wide（WIDE_PROXIMITY_KM/WIDE_MIN_CLUSTER_SIZE）の2種類のパラメータで呼び分ける。
  */
 function buildClusters(
   changedItems: Array<{ siteIdx: number; index: number }>,
   sites: SiteCoords,
+  proximityKm: number,
+  minClusterSize: number,
 ): Cluster[] {
   const n = changedItems.length
   const parent = Array.from({ length: n }, (_, i) => i)
@@ -104,7 +119,7 @@ function buildClusters(
     for (let b = a + 1; b < n; b++) {
       const siteB = sites[changedItems[b].siteIdx]
       if (!siteB) continue
-      if (haversineKm(siteA[0], siteA[1], siteB[0], siteB[1]) <= PROXIMITY_KM) {
+      if (haversineKm(siteA[0], siteA[1], siteB[0], siteB[1]) <= proximityKm) {
         const ra = find(a), rb = find(b)
         if (ra !== rb) parent[ra] = rb
       }
@@ -121,7 +136,7 @@ function buildClusters(
 
   const clusters: Cluster[] = []
   for (const members of groups.values()) {
-    if (members.length < MIN_CLUSTER_SIZE) continue
+    if (members.length < minClusterSize) continue
     let latSum = 0, lngSum = 0, maxIndex = 0
     const siteIndices: number[] = []
     for (const m of members) {
@@ -179,12 +194,18 @@ const EMPTY: ConfirmedState = { detected: false, maxIndex: 0, points: [] }
  *
  * Layer 0: 直近3フレームの時系列バッファ管理
  * Layer 1: 観測点レベルフィルタ（急上昇・震度3以上持続・ノイズブラックリスト）。震度0以下は対象外
- * Layer 2: 空間クラスタリング（Union-Find、最低3点、震度1以上の点のみ）
+ * Layer 2: 空間クラスタリング（Union-Find、震度1以上の点のみ）。tight（60km/最低3点、
+ *          delta 判定済みの changed が入力）と wide（300km/最低8点、delta を経由せず
+ *          このフレームで震度1以上の点を全部入力にする）の2パスを独立に実行し、
+ *          両方の結果を Layer 4 に渡す
  * Layer 3: グローバルサニティ（全体の15%以上が変化 → データ異常として棄却）※現在無効化中
- * Layer 4: テンポラル確定（2フレーム連続検出で確定、複数クラスタ独立管理）
- *          + 近傍確定：確定済み観測点が PENDING_MATCH_KM 以内にある場合、震度1以上の点を全フィルタースキップで即時確定
+ * Layer 4: テンポラル確定（2フレーム連続検出で確定、tight/wide は同種の候補としてのみ照合・複数クラスタ独立管理）
+ *          + 近傍確定：tight/near-confirm 済みの観測点が PENDING_MATCH_KM 以内にある場合、震度1以上の点を
+ *            全フィルタースキップで即時確定（wide 確定点はアンカーにしない。安全網が広域アンカーで
+ *            際限なく巨大化するのを防ぐため）
  *          + 震度0随伴表示：近傍確定と同条件で震度0の点を「表示専用の確定点」として追跡（アンカーにはならず新規検知のトリガーにもならない）
- * Layer 5: 観測点ノイズトラッキング（繰り返し誤検知観測点を5分除外）
+ * Layer 5: 観測点ノイズトラッキング（繰り返し誤検知観測点を5分除外）。wide 候補の空振りはノイズ扱いしない
+ *          （構成点数が多く、広域候補の空振り1回で多数の離れた観測点が同時にブラックリスト入りするのを防ぐため）
  */
 export function useKyoshinDetection(
   sites: SiteCoords,
@@ -196,6 +217,9 @@ export function useKyoshinDetection(
   const pendingRef = useRef<PendingCluster[]>([])
   // Layer 4: 確定済み観測点セット（Layer 1 の delta チェックをバイパスして毎フレーム追跡）
   const confirmedSitesRef = useRef<Set<number>>(new Set())
+  // Layer 4: 広域クラスタで確定した観測点セット（confirmedSitesRef と寿命管理は同一だが、
+  // 近傍確定のアンカーには使わない別セットとして保持する）
+  const wideConfirmedSitesRef = useRef<Set<number>>(new Set())
   // Layer 4: 近傍確定で追加された観測点セット（閾値 ACTIVE_MIN_INDEX で管理）
   const nearConfirmedSitesRef = useRef<Set<number>>(new Set())
   // Layer 4: 震度0随伴表示の観測点セット（表示専用。アンカーにはならず新規検知のトリガーにもならない）
@@ -263,6 +287,19 @@ export function useKyoshinDetection(
         continue
       }
 
+      // 広域クラスタで確定済みの観測点：confirmedSitesRef と同様に delta チェックをスキップ
+      if (wideConfirmedSitesRef.current.has(i)) {
+        if (idx >= ACTIVE_MIN_INDEX) {
+          changed.push({ siteIdx: i, index: idx })
+        } else if (idx === SHINDO0_INDEX) {
+          wideConfirmedSitesRef.current.delete(i)
+          shindo0DisplaySitesRef.current.add(i)  // 震度0まで減衰：表示専用の確定点へ格下げ
+        } else {
+          wideConfirmedSitesRef.current.delete(i)  // 震度0未満まで下がったら除外
+        }
+        continue
+      }
+
       // 近傍確定観測点：delta チェックをスキップ（閾値は ACTIVE_MIN_INDEX）
       if (nearConfirmedSitesRef.current.has(i)) {
         if (idx >= ACTIVE_MIN_INDEX) {
@@ -307,8 +344,24 @@ export function useKyoshinDetection(
 //      return
 //    }
 
-    // --- Layer 2: 空間クラスタリング ---
-    const clusters = changed.length > 0 ? buildClusters(changed, sites) : []
+    // --- Layer 2: 空間クラスタリング（tight/wide の2パス） ---
+    // tight は changed（delta 判定済み＝直近で急上昇した点）を入力にする。
+    // wide は delta を経由せず、このフレームで震度1以上の点を全部（居座り中の点も含めて）入力にする。
+    // 理由: 実データで「各観測点が入れ替わり立ち替わり一度だけ立ち上がり、その後横ばいで居座り続ける」
+    // タイプの広域地震が確認されており、delta 判定に頼ると同時に「新しく立ち上がった点」しか
+    // changed に残らず、居座っている点を合算できないため母数が育たず永遠に確定しない。
+    // wide はそもそも WIDE_MIN_CLUSTER_SIZE(8点)・WIDE_PROXIMITY_KM(300km) という強い制約で
+    // ノイズ耐性を確保しているため、tight のような delta（急上昇）要件は不要と判断した。
+    const wideCandidates: Array<{ siteIdx: number; index: number }> = []
+    for (let i = 0; i < curr.length; i++) {
+      if (curr[i] >= ACTIVE_MIN_INDEX) wideCandidates.push({ siteIdx: i, index: curr[i] })
+    }
+    const clustersTight = changed.length > 0 ? buildClusters(changed, sites, PROXIMITY_KM, MIN_CLUSTER_SIZE) : []
+    const clustersWide = wideCandidates.length > 0 ? buildClusters(wideCandidates, sites, WIDE_PROXIMITY_KM, WIDE_MIN_CLUSTER_SIZE) : []
+    const clusters: Array<Cluster & { kind: 'tight' | 'wide' }> = [
+      ...clustersTight.map((c) => ({ ...c, kind: 'tight' as const })),
+      ...clustersWide.map((c) => ({ ...c, kind: 'wide' as const })),
+    ]
 
     // --- Layer 4: テンポラル確定（候補との照合） ---
     // 期限切れ候補を廃棄し、廃棄された候補の観測点をノイズカウントアップ
@@ -322,8 +375,9 @@ export function useKyoshinDetection(
       }
     }
 
-    // Layer 5: 廃棄候補の観測点をノイズカウント
+    // Layer 5: 廃棄候補の観測点をノイズカウント（wide 候補の空振りは対象外。JSDoc 参照）
     for (const p of expired) {
+      if (p.kind !== 'tight') continue
       for (const si of p.siteIndices) {
         const entry = noisyRef.current.get(si) ?? { count: 0, until: 0 }
         entry.count += 1
@@ -347,10 +401,16 @@ export function useKyoshinDetection(
     // （随伴点はアンカーにならず confirmed も立てないため、検知タイマーは延長しない）。
     // changed を経由せず curr 全体を走査する。
     let shindo0Attached = false
+    // wideConfirmedSitesRef は意図的に含めない（広域アンカーで安全網が際限なく広がるのを防ぐ。JSDoc 参照）
     const allConfirmedSites = new Set([...confirmedSitesRef.current, ...nearConfirmedSitesRef.current])
     if (allConfirmedSites.size > 0) {
       for (let i = 0; i < curr.length; i++) {
-        if (confirmedSitesRef.current.has(i) || nearConfirmedSitesRef.current.has(i) || shindo0DisplaySitesRef.current.has(i)) continue
+        if (
+          confirmedSitesRef.current.has(i) ||
+          nearConfirmedSitesRef.current.has(i) ||
+          wideConfirmedSitesRef.current.has(i) ||
+          shindo0DisplaySitesRef.current.has(i)
+        ) continue
         const idx = curr[i]
         const isActiveCandidate = idx >= ACTIVE_MIN_INDEX
         const isShindo0Candidate = idx === SHINDO0_INDEX
@@ -384,17 +444,25 @@ export function useKyoshinDetection(
       }
     }
 
+    // tight/wide 別々に確定させる観測点リスト（登録先の ref が異なるため）
+    const confirmedWideSiteIndices: number[] = []
+
     for (const cluster of clusters) {
-      // 既存候補と照合
+      // 既存候補と照合（同じ kind の候補としか照合しない。無関係な tight/wide 候補の混同を防ぐ）
       const matchIdx = alive.findIndex(
-        (p) => haversineKm(p.centroid.lat, p.centroid.lng, cluster.centroid.lat, cluster.centroid.lng) <= PENDING_MATCH_KM,
+        (p) => p.kind === cluster.kind &&
+          haversineKm(p.centroid.lat, p.centroid.lng, cluster.centroid.lat, cluster.centroid.lng) <= PENDING_MATCH_KM,
       )
 
       if (matchIdx >= 0) {
         // 2フレーム目：確定
         confirmed = true
         if (cluster.maxIndex > confirmedMaxIndex) confirmedMaxIndex = cluster.maxIndex
-        confirmedSiteIndices.push(...cluster.siteIndices)
+        if (cluster.kind === 'tight') {
+          confirmedSiteIndices.push(...cluster.siteIndices)
+        } else {
+          confirmedWideSiteIndices.push(...cluster.siteIndices)
+        }
         // 確定した候補を候補リストから除去（連続更新は不要）
         alive.splice(matchIdx, 1)
       } else {
@@ -404,6 +472,7 @@ export function useKyoshinDetection(
           siteIndices: cluster.siteIndices,
           maxIndex: cluster.maxIndex,
           detectedAt: now,
+          kind: cluster.kind,
         })
       }
     }
@@ -415,11 +484,15 @@ export function useKyoshinDetection(
     setCandidatePoints(primary.points)
     setCandidateId(primary.id)
 
-    // Layer 4 確定時：新規確定観測点を confirmedSites に追加してタイマーをリセット
+    // Layer 4 確定時：新規確定観測点を種別ごとの ref に追加してタイマーをリセット
     if (confirmed) {
       for (const si of confirmedSiteIndices) {
         confirmedSitesRef.current.add(si)
         // Layer 5: 確定地震の観測点はノイズカウントをリセット
+        noisyRef.current.delete(si)
+      }
+      for (const si of confirmedWideSiteIndices) {
+        wideConfirmedSitesRef.current.add(si)
         noisyRef.current.delete(si)
       }
       if (timerRef.current) clearTimeout(timerRef.current)
@@ -428,15 +501,21 @@ export function useKyoshinDetection(
         prevDetectedRef.current = false
         setDetection(EMPTY)
         confirmedSitesRef.current.clear()
+        wideConfirmedSitesRef.current.clear()
         nearConfirmedSitesRef.current.clear()
         shindo0DisplaySitesRef.current.clear()
       }, DETECTION_DURATION_MS)
     }
 
     // 確定済み観測点が存在するフレームで毎回 points を更新（リアルタイム反映）
-    const allConfirmedSize = confirmedSitesRef.current.size + nearConfirmedSitesRef.current.size + shindo0DisplaySitesRef.current.size
+    const allConfirmedSize = confirmedSitesRef.current.size + wideConfirmedSitesRef.current.size + nearConfirmedSitesRef.current.size + shindo0DisplaySitesRef.current.size
     if (allConfirmedSize > 0) {
-      const allConfirmed = new Set([...confirmedSitesRef.current, ...nearConfirmedSitesRef.current, ...shindo0DisplaySitesRef.current])
+      const allConfirmed = new Set([
+        ...confirmedSitesRef.current,
+        ...wideConfirmedSitesRef.current,
+        ...nearConfirmedSitesRef.current,
+        ...shindo0DisplaySitesRef.current,
+      ])
       // nearConfirmedSites・shindo0DisplaySites の点は changed を通っていないため curr から直接収集する
       const passivePoints: Array<{ siteIdx: number; index: number }> = []
       for (const si of nearConfirmedSitesRef.current) {
@@ -475,6 +554,7 @@ export function useKyoshinDetection(
   useEffect(() => () => {
     if (timerRef.current) clearTimeout(timerRef.current)
     confirmedSitesRef.current.clear()
+    wideConfirmedSitesRef.current.clear()
     nearConfirmedSitesRef.current.clear()
     shindo0DisplaySitesRef.current.clear()
   }, [])
