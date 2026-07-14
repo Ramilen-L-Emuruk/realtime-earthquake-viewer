@@ -52,7 +52,7 @@ const WIDE_PROXIMITY_KM = 120
 /** 広域クラスタ成立に必要な最低観測点数。MIN_CLUSTER_SIZE より大幅に高くし、
  *  単独/少数地点のセンサー誤作動では現実的に到達し得ない規模に設定することで、
  *  広い範囲で同時に閾値を超えたこと自体をノイズ耐性の代わりとする。 */
-const WIDE_MIN_CLUSTER_SIZE = 8
+const WIDE_MIN_CLUSTER_SIZE = 12
 /** 候補クラスタの有効期限 (ms)：この時間内に再検出されなければ廃棄。
  *  ポーリング間隔は POLL_MS=1000 だが fetch のレイテンシ等で実際のフレーム間隔にはジッターが乗る。
  *  3フレーム分ちょうど（3000ms）だと正当な3フレーム目の再検出さえ僅かな遅延で期限切れになり得るため、
@@ -194,9 +194,9 @@ const EMPTY: ConfirmedState = { detected: false, maxIndex: 0, points: [] }
  *
  * Layer 0: 直近3フレームの時系列バッファ管理
  * Layer 1: 観測点レベルフィルタ（急上昇・震度3以上持続・ノイズブラックリスト）。震度0以下は対象外
- * Layer 2: 空間クラスタリング（Union-Find、震度1以上の点のみ）。tight（60km/最低3点、
- *          delta 判定済みの changed が入力）と wide（300km/最低8点、delta を経由せず
- *          このフレームで震度1以上の点を全部入力にする）の2パスを独立に実行し、
+ * Layer 2: 空間クラスタリング（Union-Find、震度1以上の点のみ）。tight（PROXIMITY_KM/MIN_CLUSTER_SIZE、
+ *          delta 判定済みの changed が入力）と wide（WIDE_PROXIMITY_KM/WIDE_MIN_CLUSTER_SIZE、
+ *          delta を経由せずこのフレームで震度1以上の点を全部入力にする）の2パスを独立に実行し、
  *          両方の結果を Layer 4 に渡す
  * Layer 3: グローバルサニティ（全体の15%以上が変化 → データ異常として棄却）※現在無効化中
  * Layer 4: テンポラル確定（2フレーム連続検出で確定、tight/wide は同種の候補としてのみ照合・複数クラスタ独立管理）
@@ -350,7 +350,7 @@ export function useKyoshinDetection(
     // 理由: 実データで「各観測点が入れ替わり立ち替わり一度だけ立ち上がり、その後横ばいで居座り続ける」
     // タイプの広域地震が確認されており、delta 判定に頼ると同時に「新しく立ち上がった点」しか
     // changed に残らず、居座っている点を合算できないため母数が育たず永遠に確定しない。
-    // wide はそもそも WIDE_MIN_CLUSTER_SIZE(8点)・WIDE_PROXIMITY_KM(300km) という強い制約で
+    // wide はそもそも WIDE_MIN_CLUSTER_SIZE・WIDE_PROXIMITY_KM という強い制約で
     // ノイズ耐性を確保しているため、tight のような delta（急上昇）要件は不要と判断した。
     const wideCandidates: Array<{ siteIdx: number; index: number }> = []
     for (let i = 0; i < curr.length; i++) {
