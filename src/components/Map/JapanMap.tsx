@@ -954,7 +954,18 @@ export function JapanMap({
       {/* 背景: 海底地形タイル（tilePane z=200）。ダーク化は tile-tint ペイン（TileTintLayer,
           z=220）の mix-blend-mode オーバーレイで行う（CSS filter は非力なGPUでパン時に
           重いため不使用。詳細は TileTintLayer.tsx 参照）。keepBuffer はパン中のタイル
-          増減（＝tile-tintの再合成トリガー）自体を減らすため既定値2から引き上げている。 */}
+          増減（＝tile-tintの再合成トリガー）自体を減らすため既定値2から引き上げている。
+          updateWhenZooming=false: Leaflet の GridLayer は既定で「flyTo/ピンチズーム中、
+          通過する整数ズームレベルごとに新しいタイルを読み込んで描画し直す」
+          （leaflet-src.js の GridLayer options コメント参照）。flyTo は開始と終了で
+          複数ズームレベルをまたぐことが多く（例: 日本全体 zoom5 → MAX_ZOOM=8）、
+          飛行中に何度も新規タイルの取得・DOM挿入・ペイントが走り、非力なGPUでは
+          これが体感カクつきの主因になる（実測: 海底地形ONで平均フレーム間隔が
+          約3倍に悪化）。false にすると飛行中は現在のズームのタイルをCSS transform で
+          拡縮したまま維持し（既存タイルの再利用なのでスケール変化のみ・新規読込なし）、
+          着地（moveend）時に一度だけ新しいズームのタイルへ切り替える。見た目の差は
+          「フィット中だけ地形が一瞬ぼやける」程度（通常のズーム操作でも起きる自然な現象）で、
+          ペインを隠す方式のような消灯・再点灯のチラつきは発生しない。 */}
       {showBathymetry && (
         <>
           <TileLayer
@@ -962,6 +973,7 @@ export function JapanMap({
             attribution={BATHYMETRY_ATTRIBUTION}
             maxNativeZoom={10}
             keepBuffer={4}
+            updateWhenZooming={false}
           />
           <TileTintLayer />
         </>
