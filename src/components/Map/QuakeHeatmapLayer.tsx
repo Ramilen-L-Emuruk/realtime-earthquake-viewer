@@ -28,14 +28,27 @@ export function QuakeHeatmapLayer({ points }: Props) {
     const canvas = (layer as unknown as { _canvas: HTMLCanvasElement })._canvas
     map.getPane('quake-heat')?.appendChild(canvas)
 
-    // leaflet.heat は 'moveend' でのみ再描画するため、flyTo 等のアニメーション中は
-    // 地図の動きに追従できず一瞬置いていかれる。PsWaveLayer 同様 'move'（アニメーション中も
-    // 連続発火）にも追従させ、常時位置を合わせる。
+    // leaflet.heat は 'moveend' でのみ再描画するため、パン中は地図の動きに追従できず
+    // 一瞬置いていかれる。PsWaveLayer 同様 'move'（パン中も連続発火）に追従させ、
+    // 常時位置を合わせる。
+    // ただしズーム変化を伴うアニメーション中（flyTo・ピンチ等、zoomstart〜zoomend）は
+    // スキップする。flyTo 中このペインは flyToLite が非表示にしており
+    // （HIDDEN_DURING_FLY_PANES）、見えないのに全点 blur 描画が毎フレーム走るのは
+    // 純粋な無駄で、非力な端末ではフィットのカクつき要因になるため。
+    // 着地時は leaflet.heat 自身の moveend リスナーが再描画する。
     const reset = (layer as unknown as { _reset: () => void })._reset.bind(layer)
-    map.on('move', reset)
+    let zooming = false
+    const onZoomStart = () => { zooming = true }
+    const onZoomEnd = () => { zooming = false }
+    const onMove = () => { if (!zooming) reset() }
+    map.on('move', onMove)
+    map.on('zoomstart', onZoomStart)
+    map.on('zoomend', onZoomEnd)
 
     return () => {
-      map.off('move', reset)
+      map.off('move', onMove)
+      map.off('zoomstart', onZoomStart)
+      map.off('zoomend', onZoomEnd)
       // onRemove は canvas が overlayPane の子であることを前提に removeChild するため、
       // 付け替えたままだと例外になる。removeLayer 前に元へ戻す。
       map.getPane('overlayPane')?.appendChild(canvas)

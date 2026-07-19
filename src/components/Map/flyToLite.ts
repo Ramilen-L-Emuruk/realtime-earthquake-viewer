@@ -22,6 +22,8 @@ import L from 'leaflet'
 // 'quake-heat'（直近1ヶ月の地震活動ヒートマップ）は対象のまま残す。leaflet.heat
 // プラグインによる密度勾配の描画で、単色矩形やベクター図形と違い実際にラスタライズが
 // 必要なためSVG化できず、Canvas特有のコストがそのまま残っている。
+// （JS 側の毎フレーム全点再描画も QuakeHeatmapLayer 側で zoomstart〜zoomend 間は
+// スキップする。ここで隠すのは合成コスト、あちらで止めるのは描画コスト。）
 //
 // 'line-layers-hit'・'tsunami-lines-hit' は、プレート境界線・活断層線・津波海岸線の
 // ポップアップ当たり判定用に可視線(SVG)へ重ねた「透明な Canvas レイヤー」（JapanMap.tsx の
@@ -40,12 +42,27 @@ const HIDDEN_DURING_FLY_PANES = [
   'tsunami-lines-hit',
 ]
 
-function hidePanesUntilMoveEnd(map: L.Map): void {
+// flyTo 中だけ地図コンテナへ付与するクラス（CSS 本体は src/index.css）。
+// Leaflet 標準 CSS の will-change: transform は、SVG レンダラーの <svg> には常時付く
+// （svg.leaflet-zoom-animated）が、タイルコンテナや divIcon マーカー等の div 系
+// .leaflet-zoom-animated には標準ズームアニメ中（.leaflet-zoom-anim が付く間）しか
+// 付かない。flyTo は毎フレーム JS で transform を書き換える方式で、このクラスを
+// 一切付けないため、div 系要素の transform 変更が毎フレームのメインスレッド再描画に
+// なってしまう。飛行中だけ will-change を効かせて合成レイヤーへ昇格させ、
+// コンポジタ側のテクスチャ移動・拡縮で済むようにする。
+// Leaflet 純正の leaflet-zoom-anim クラスを流用しないのは、あちらには
+// transition: transform 0.25s が同居しており（leaflet.css）、毎フレーム transform を
+// 書く flyTo に乗せるとレイヤーがトランジション遅延で波打つため。
+const FLY_BOOST_CLASS = 'fly-anim-boost'
+
+function boostFlightUntilMoveEnd(map: L.Map): void {
+  map.getContainer().classList.add(FLY_BOOST_CLASS)
   for (const name of HIDDEN_DURING_FLY_PANES) {
     const pane = map.getPane(name)
     if (pane) pane.style.visibility = 'hidden'
   }
   map.once('moveend', () => {
+    map.getContainer().classList.remove(FLY_BOOST_CLASS)
     for (const name of HIDDEN_DURING_FLY_PANES) {
       const pane = map.getPane(name)
       if (pane) pane.style.visibility = ''
@@ -59,7 +76,7 @@ export function flyToLite(
   zoom?: number,
   options?: L.ZoomPanOptions,
 ): void {
-  hidePanesUntilMoveEnd(map)
+  boostFlightUntilMoveEnd(map)
   map.flyTo(latlng, zoom, options)
 }
 
@@ -68,6 +85,6 @@ export function flyToBoundsLite(
   bounds: L.LatLngBoundsExpression,
   options?: L.FitBoundsOptions,
 ): void {
-  hidePanesUntilMoveEnd(map)
+  boostFlightUntilMoveEnd(map)
   map.flyToBounds(bounds, options)
 }
