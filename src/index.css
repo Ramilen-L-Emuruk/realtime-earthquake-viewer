@@ -116,3 +116,12 @@ body {
 .eew-blink {
   animation: eew-blink 1.2s step-end infinite;
 }
+
+/* flyTo 飛行中だけ flyToLite.ts が地図コンテナへ付与するクラス。
+   div 系の .leaflet-zoom-animated（タイルコンテナ・divIcon マーカー等）へ will-change を
+   効かせ、毎フレームの transform 変更をメインスレッド再描画ではなくコンポジタ合成で
+   処理させる（SVG レンダラーの <svg> は leaflet.css の svg.leaflet-zoom-animated で常時
+   will-change 済み）。Leaflet 純正の .leaflet-zoom-anim を流用しない理由は flyToLite.ts 参照。 */
+.fly-anim-boost .leaflet-zoom-animated {
+  will-change: transform;
+}
