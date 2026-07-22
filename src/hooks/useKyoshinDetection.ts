@@ -193,7 +193,10 @@ const EMPTY: ConfirmedState = { detected: false, maxIndex: 0, points: [] }
  * Layer 0〜5 の6層構成による地震検知フック（Layer 3 は現在無効化中）。
  *
  * Layer 0: 直近3フレームの時系列バッファ管理
- * Layer 1: 観測点レベルフィルタ（急上昇・震度3以上持続・ノイズブラックリスト）。震度0以下は対象外
+ * Layer 1: 観測点レベルフィルタ（急上昇・震度3以上持続・ノイズブラックリスト）。震度0以下は対象外。
+ *          tight 候補（pending）の構成観測点は delta チェックをスキップし、震度1以上である限り
+ *          横ばいでも changed に追加する（一度きり急上昇した後に横ばいへ移行する実波形が、
+ *          2フレーム目の delta=0 で changed から脱落し確定できないまま失効するのを防ぐため）
  * Layer 2: 空間クラスタリング（Union-Find、震度1以上の点のみ）。tight（PROXIMITY_KM/MIN_CLUSTER_SIZE、
  *          delta 判定済みの changed が入力）と wide（WIDE_PROXIMITY_KM/WIDE_MIN_CLUSTER_SIZE、
  *          delta を経由せずこのフレームで震度1以上の点を全部入力にする）の2パスを独立に実行し、
@@ -254,6 +257,15 @@ export function useKyoshinDetection(
     // Layer 5: 期限切れノイズエントリを清掃
     for (const [k, v] of noisyRef.current) {
       if (now >= v.until) noisyRef.current.delete(k)
+    }
+
+    // tight 候補（前フレームまでの pending）の構成観測点。Layer 1 で delta チェックを
+    // スキップする対象の判定に使う（このフレームの期限切れ判定は後段の Layer 4 で行うため、
+    // ここでは前フレーム時点の pending をそのまま使えばよい）。
+    const pendingTightSites = new Set<number>()
+    for (const p of pendingRef.current) {
+      if (p.kind !== 'tight') continue
+      for (const si of p.siteIndices) pendingTightSites.add(si)
     }
 
     // --- Layer 1: 観測点フィルタ ---
@@ -323,6 +335,15 @@ export function useKyoshinDetection(
         } else if (idx !== SHINDO0_INDEX) {
           shindo0DisplaySitesRef.current.delete(i)  // 震度0以外になったら除外
         }
+        continue
+      }
+
+      // tight 候補（pending）の構成観測点：delta チェックをスキップ（閾値は ACTIVE_MIN_INDEX）。
+      // 一度きり急上昇した後に横ばいへ移行する実波形（震度1〜2程度）は delta が 0 になり、
+      // 2フレーム目以降 changed から脱落して二度とクラスタが形成されず、PENDING_TIMEOUT_MS で
+      // 確定できないまま失効していた。候補である間は横ばいでも current 値を追跡対象にする。
+      if (pendingTightSites.has(i)) {
+        if (idx >= ACTIVE_MIN_INDEX) changed.push({ siteIdx: i, index: idx })
         continue
       }
 
