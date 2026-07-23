@@ -3,11 +3,13 @@ import {
   fetchSiteList,
   fetchRealtimeIntensity,
   hypoInfoItemToEEW,
+  startClockSync,
   type SiteCoords,
   type PsWaveCircle,
   type YahooHypoInfoItem,
 } from '../services/kyoshin'
 import type { EEWAlert } from '../types/earthquake'
+import { serverNow } from '../utils/clock'
 import { log } from '../utils/logger'
 
 export interface KyoshinRealtime {
@@ -28,8 +30,11 @@ const REPLAY_MAX_RETRY_COUNT = 5
 // 成功後に次タイムスタンプへ進むまでの待機時間 (ms)
 const POLL_MS = 1000
 // Yahoo サーバーがデータを公開するまでの遅延を考慮したオフセット (ms)。
-// 秒境界直後はデータが未公開のことが多いため、この分だけ過去を参照して初回失敗を減らす。
-const FETCH_OFFSET_MS = 500
+// 秒ファイルは「その秒が終わってから約0.5秒後（＝秒頭から約1.5秒後）」に登録される実測結果に基づき、
+// クロック同期後の serverNow() から登録済み秒を確実に引けるよう登録遅延+マージンを見込む。
+// （従来の 500ms は壁時計が遅れている環境での偶然の帳尻合わせに依存しており、
+//  クロックを正確に同期すると未登録秒(403)を叩いてしまうため引き上げた。）
+const FETCH_OFFSET_MS = 1800
 // target が現在時刻よりこの値以上遅れていたらリアルタイムにリセットする (ms)
 const MAX_LAG_MS = 5000
 // リアルタイム時: 同一 target への最大リトライ回数（超過したら諦めて現在時刻ベースにリセットする）。
@@ -128,10 +133,14 @@ export function useKyoshinRealtime(
 
     const isReplay = timeOffset != null
 
+    // live モードのみクロック同期を起動し serverNow() をサーバー時刻へ較正する
+    // （リプレイ中はアーカイブ時刻を使うため不要）
+    const stopClockSync = isReplay ? null : startClockSync()
+
     // 初回 target: リアルタイム時のみ FETCH_OFFSET_MS 分だけ過去から開始し秒境界直後の失敗を抑制する
     const initialTarget = isReplay
       ? new Date(Date.now() + timeOffset)
-      : new Date(Date.now() - FETCH_OFFSET_MS)
+      : new Date(serverNow() - FETCH_OFFSET_MS)
 
     // リプレイ時: (アンカー実時刻, アンカー target 時刻) の組を基準に、各 target の発火予定
     // 実時刻を絶対値で計算する。setTimeout は指定時間ぴったりには発火しないため、待機時間を
@@ -153,10 +162,10 @@ export function useKyoshinRealtime(
           const nextTarget = new Date(target.getTime() + POLL_MS)
           if (!isReplay) {
             // リアルタイム時のみ: target が現在時刻から大幅に遅れていたらリセット
-            const lag = Date.now() - nextTarget.getTime()
+            const lag = serverNow() - nextTarget.getTime()
             if (lag > MAX_LAG_MS) {
               const elapsed = Date.now() - fetchStart
-              timer = setTimeout(() => tick(new Date(Date.now() - FETCH_OFFSET_MS)), Math.max(0, POLL_MS - elapsed))
+              timer = setTimeout(() => tick(new Date(serverNow() - FETCH_OFFSET_MS)), Math.max(0, POLL_MS - elapsed))
               return
             }
             // fetch にかかった時間を待機時間から引いて POLL_MS ごとの一定間隔を維持する
@@ -183,7 +192,7 @@ export function useKyoshinRealtime(
             // 取得できないケースで無限リトライに張り付き続けるのを防ぐ）
             if (retryCount + 1 >= REALTIME_MAX_RETRY_COUNT) {
               log.warn(`[kyoshin] target への取得が ${retryCount + 1} 回失敗 → 現在時刻ベースにリセット`, err)
-              timer = setTimeout(() => tick(new Date(Date.now() - FETCH_OFFSET_MS)), RETRY_MS)
+              timer = setTimeout(() => tick(new Date(serverNow() - FETCH_OFFSET_MS)), RETRY_MS)
               return
             }
             // 同一 target で RETRY_MS 後にリトライ
@@ -205,6 +214,7 @@ export function useKyoshinRealtime(
     return () => {
       active = false
       if (timer !== null) clearTimeout(timer)
+      if (stopClockSync !== null) stopClockSync()
     }
   }, [enabled, timeOffset])
 

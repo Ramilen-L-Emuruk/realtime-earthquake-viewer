@@ -1,4 +1,5 @@
 import type { AppEvent, JMAQuake, IssueType, CorrectType, DomesticTsunami, TelegramLogEntry } from '../types/earthquake'
+import { serverNow, serverDate } from '../utils/clock'
 
 const API_BASE = 'https://api.p2pquake.net/v2'
 const WS_URL = 'wss://api.p2pquake.net/v2/ws'
@@ -94,7 +95,7 @@ const JMA_QUAKE_HISTORY_MAX_PAGES = 20
 
 // ヒートマップ用: 直近 `days` 日分の地震履歴を offset ページングでまとめて取得する。
 export async function fetchJmaQuakeHistory(days: number): Promise<JMAQuake[]> {
-  const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000
+  const cutoffMs = serverNow() - days * 24 * 60 * 60 * 1000
   const collected: JMAQuake[] = []
   let offset = 0
   for (let page = 0; page < JMA_QUAKE_HISTORY_MAX_PAGES; page++) {
@@ -148,7 +149,7 @@ export class P2PQuakeWebSocket {
         const appEvent = convertEvent(raw)
         this.onRawMessage?.({
           id: `${Date.now()}-${Math.random()}`,
-          receivedAt: new Date(),
+          receivedAt: serverDate(),
           source: 'p2pquake',
           headType: String(raw.code),
           isTest: false,
