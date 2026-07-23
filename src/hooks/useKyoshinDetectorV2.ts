@@ -65,7 +65,13 @@ export function useKyoshinDetectorV2(
     if (confirmed.length > 0) {
       log.debug(
         `[kyoshinV2] confirmed=${confirmed.length} triggers=${triggers.length} @${dataTime}`,
-        confirmed.map((d) => ({ id: d.id, epi: d.epicenter, score: d.score.toFixed(2) })),
+        confirmed.map((d) => ({
+          id: d.id,
+          epi: d.epicenter,
+          bearing: d.bearingDeg,
+          oneSided: d.oneSided,
+          score: d.score.toFixed(2),
+        })),
       )
     }
     // indices/sites は dataTime と同時に更新されるため deps は dataTime/enabled のみでよい

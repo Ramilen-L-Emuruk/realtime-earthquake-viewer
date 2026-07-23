@@ -7,6 +7,7 @@ import {
   clusterActive,
   estimateWaveFit,
   frameScore,
+  classify,
   step,
   initState,
   PARAMS,
@@ -15,6 +16,7 @@ import {
   type ActiveTrigger,
   type DetectorState,
 } from './kyoshinDetector'
+import { haversineKm } from './geo'
 
 // ============================================================
 // ヘルパー: 単一観測点の逐次フレームを流す（キャプチャ列の最小形）
@@ -312,11 +314,121 @@ describe('estimateWaveFit', () => {
   })
 })
 
+// ============================================================
+// estimateWaveFit: 片側配置（海溝型 type-B）の方位推定
+// ============================================================
+
+/** 震源から見かけ速度 V(km/s) で伝播したオンセットを持つクラスタを組み立てる。 */
+function clusterFromSource(
+  src: [number, number],
+  points: [number, number][],
+  vKmS = 6,
+): ActiveTrigger[] {
+  return points.map((p, i) => {
+    const onsetMs = Math.round((haversineKm(src[0], src[1], p[0], p[1]) / vKmS) * 1000)
+    return mkAT(`s${i}`, p[0], p[1], onsetMs)
+  })
+}
+
+describe('estimateWaveFit: 片側配置(type-B)', () => {
+  it('海側震源・陸側のみの配置では oneSided=true で震源方位が沖側(東)を向く', () => {
+    // 震源は東の沖合。観測点はすべて西側（陸側）に 2D で散らばる。
+    const src: [number, number] = [35.2, 140.5]
+    const land: [number, number][] = [
+      [35.2, 139.0],
+      [35.0, 139.5],
+      [35.4, 139.5],
+      [35.2, 139.5],
+      [35.0, 139.2],
+      [35.4, 139.2],
+    ]
+    const fit = estimateWaveFit(clusterFromSource(src, land))
+    expect(fit.oneSided).toBe(true)
+    expect(fit.azimuthalGapDeg).toBeGreaterThanOrEqual(PARAMS.ONE_SIDED_GAP_DEG)
+    expect(fit.bearingDeg).not.toBeNull()
+    // 震源は東（≈90°）方向
+    expect(fit.bearingDeg as number).toBeGreaterThan(45)
+    expect(fit.bearingDeg as number).toBeLessThan(135)
+    // 片側配置でも検知は担保される（平面波フィットで fitOk）
+    expect(fit.fitOk).toBe(true)
+    // 震央アンカーは最短距離（最も沖＝東寄り）の点
+    expect(fit.epicenter).toEqual([35.2, 139.5])
+  })
+
+  it('観測点が震源を囲む配置では oneSided=false（内陸浅発）', () => {
+    const src: [number, number] = [35.2, 139.2]
+    const around: [number, number][] = [
+      [35.2, 139.2], // 震央近傍（最早）
+      [35.5, 139.2], // 北
+      [34.9, 139.2], // 南
+      [35.2, 139.5], // 東
+      [35.2, 138.9], // 西
+    ]
+    const fit = estimateWaveFit(clusterFromSource(src, around))
+    expect(fit.oneSided).toBe(false)
+    expect(fit.azimuthalGapDeg).toBeLessThan(PARAMS.ONE_SIDED_GAP_DEG)
+    // 震央は最早オンセット点＝震央近傍
+    expect(fit.epicenter).toEqual([35.2, 139.2])
+    expect(fit.fitOk).toBe(true)
+  })
+})
+
 describe('frameScore', () => {
   it('点数が多くフィット良好なほど高スコア', () => {
-    const goodFit = { epicenter: SITE_A, velocityKmS: 3.3, residualRms: 0, fitOk: true }
-    const noFit = { epicenter: SITE_A, velocityKmS: NaN, residualRms: Infinity, fitOk: false }
+    const goodFit = {
+      epicenter: SITE_A,
+      velocityKmS: 3.3,
+      residualRms: 0,
+      fitOk: true,
+      radialFitOk: true,
+      bearingDeg: null,
+      oneSided: false,
+      azimuthalGapDeg: 0,
+    }
+    const noFit = {
+      epicenter: SITE_A,
+      velocityKmS: NaN,
+      residualRms: Infinity,
+      fitOk: false,
+      radialFitOk: false,
+      bearingDeg: null,
+      oneSided: false,
+      azimuthalGapDeg: 0,
+    }
     expect(frameScore(5, goodFit)).toBeGreaterThan(frameScore(2, noFit))
+  })
+})
+
+// ============================================================
+// classify: 確信度の非対称ゲート（radial 裏取り vs 片側配置）
+// ============================================================
+
+describe('classify', () => {
+  const HIGH = PARAMS.S_ON + 0.5 // confirmed しきい値を十分超えるスコア
+
+  it('fitOk でなければスコア・点数が高くても weak 止まり', () => {
+    expect(classify(HIGH, 20, false, false, false)).toBe('weak')
+  })
+
+  it('radial 裏取りあり: MIN_CONFIRM_SIZE(4) で confirmed に上げられる', () => {
+    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, true, true, false)).toBe('confirmed')
+  })
+
+  it('片側配置(radialFitOk=false): 4点では confirmed に上げず likely 止まり', () => {
+    // 高スコアでも片側配置の少数点はノイズ塊の偶然フィットと区別できない
+    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, true, false, false)).toBe('likely')
+  })
+
+  it('片側配置(radialFitOk=false): MIN_CONFIRM_SIZE_ONESIDED 点あれば confirmed 可', () => {
+    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE_ONESIDED, true, false, false)).toBe('confirmed')
+  })
+
+  it('スコアが S_LIKELY 未満なら fitOk でも weak', () => {
+    expect(classify(PARAMS.S_LIKELY - 0.1, 20, true, true, false)).toBe('weak')
+  })
+
+  it('ウォームアップ中は confirmed に上げず likely に留める', () => {
+    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, true, true, true)).toBe('likely')
   })
 })
 

@@ -21,7 +21,10 @@
  * 本コアは全体を value（計測震度）単位で扱い、境界で index → value 変換する。
  */
 
-import { haversineKm } from './geo'
+import { haversineKm, bearingDeg } from './geo'
+
+/** 緯度1度あたりのおおよその距離(km)。局所平面(ENU)近似での座標変換に使う。 */
+const KM_PER_DEG = 111.194
 
 // ============================================================
 // 型定義（設計書 §7.1）
@@ -73,6 +76,13 @@ export interface DetectionEvent {
   id: string
   /** 波面フィット由来の震源（最早オンセット点近傍）。フィット不能時は null */
   epicenter: [number, number] | null
+  /**
+   * 震源の方位（真北=0°・時計回り）。片側配置(type-B)で震源が沖のどちらにあるかを示す。
+   * 2D 方位が定まらない（共線配置など）場合は null。
+   */
+  bearingDeg: number | null
+  /** 片側配置か（海溝型 type-B）。true のとき epicenter は「最短距離の点」で沖合距離は不確実。 */
+  oneSided: boolean
   originTimeMs: number
   /** リーキー積分値 S_k */
   score: number
@@ -82,8 +92,10 @@ export interface DetectionEvent {
   memberKeys: string[]
   /** 直近フレームのクラスタ規模（減衰フレームでの再分類に使う） */
   lastSize: number
-  /** 直近フレームで波面フィットが成立したか */
+  /** 直近フレームで波面フィットが成立したか（radial または平面波） */
   lastFitOk: boolean
+  /** 直近フレームで radial フィット（震源を囲む配置）が成立したか。confirmed 判定に使う */
+  lastRadialFitOk: boolean
 }
 
 /** 検知エンジンの全状態。localStorage に永続化する対象。 */
@@ -140,10 +152,27 @@ export interface WaveFit {
   epicenter: [number, number] | null
   /** 見かけ速度(km/s)。フィット不能時は NaN */
   velocityKmS: number
-  /** オンセット×距離 線形回帰の残差 RMS(秒)。フィット不能時は Infinity */
+  /** 走時回帰の残差 RMS(秒)。フィット不能時は Infinity */
   residualRms: number
-  /** 十分な点数・距離レンジ・物理的な速度でフィットできたか */
+  /** 十分な点数・距離レンジ・物理的な速度でフィットできたか（radial または平面波のいずれか） */
   fitOk: boolean
+  /**
+   * radial フィット（震源＝最早点を囲む配置）が成立したか。confirmed 判定で「震源が良く拘束
+   * されている」証拠として使う。片側配置（平面波のみ）で fitOk なときは false になる。
+   */
+  radialFitOk: boolean
+  /**
+   * 震源の方位（真北=0°・時計回り, [0,360)）。平面波スローネスフィット由来。
+   * 片側配置(type-B)で「震源がどちらにあるか」を示す。2D 方位が定まらない場合は null。
+   */
+  bearingDeg: number | null
+  /**
+   * 片側配置か（海溝型 type-B）。アンカーから見たクラスタの方位ギャップが大きい状態。
+   * true のとき沖合方向の距離は不確実で、震央点は「最短距離（陸側最寄り）」の近似となる。
+   */
+  oneSided: boolean
+  /** アンカーから見たクラスタ点の最大方位ギャップ(度)。片側配置の指標。 */
+  azimuthalGapDeg: number
 }
 
 // ============================================================
@@ -190,10 +219,16 @@ export const PARAMS = {
   /** イベント化に要する最小クラスタ点数（2点は隣接センサー誤作動と区別不可のため 3 以上）。疎地域の少数点判定は Phase 3 */
   MIN_EVENT_SIZE: 3,
   /**
-   * confirmed に要する最小クラスタ点数。3点は自由度1で偶然直線に乗る（スプリアスフィット）ため
-   * 誤 confirmed の温床（並走検証で確認）。4点以上の裏取りを要求する。
+   * confirmed に要する最小クラスタ点数（radial 裏取りあり＝震源を囲む配置）。3点は自由度1で偶然
+   * 直線に乗る（スプリアスフィット）ため誤 confirmed の温床（並走検証で確認）。4点以上を要求する。
    */
   MIN_CONFIRM_SIZE: 4,
+  /**
+   * 片側配置（平面波フィットのみで radial 裏取りが無い type-B）で confirmed に上げるための最小点数。
+   * 片側配置は震源位置が縮退し 4 点程度ではノイズ塊の偶然フィットと区別できない（並走検証で size4 の
+   * 誤 confirmed を観測）。本物の海溝型 M4+ は陸側で多数点が並ぶため、多めの裏取りを要求する。
+   */
+  MIN_CONFIRM_SIZE_ONESIDED: 8,
   /** 波面フィットに要する最小点数 */
   MIN_FIT_POINTS: 3,
   /** 波面フィットに要する距離レンジ下限(km。縮退回避) */
@@ -203,6 +238,12 @@ export const PARAMS = {
   V_MAX_KMS: 8.0,
   /** 既存イベントとの同一判定距離(km) */
   PENDING_MATCH_KM: 120,
+  /**
+   * 片側配置(type-B)と判定する方位ギャップの下限(度)。アンカーから見たクラスタ点の最大方位
+   * ギャップがこれ以上なら「震源を囲んでいない＝沖合距離が縮退」とみなす。
+   * 内陸で囲まれた震源は通常 ≤120°、海溝型は陸側のみで ≥180° になる。
+   */
+  ONE_SIDED_GAP_DEG: 160,
 
   // ---- ③ スコア・確信度 ----
   /** 波面残差 RMS の「良好」目安(秒) */
@@ -374,38 +415,138 @@ export function clusterActive(triggers: ActiveTrigger[]): ActiveTrigger[][] {
   return clusters
 }
 
+const mean = (xs: number[]): number => xs.reduce((s, v) => s + v, 0) / xs.length
+
 /**
- * クラスタの波面フィット（軽量版）。
- * 震源を最早オンセット点に置き、オンセット時刻 t と震源距離 r の線形回帰で見かけ速度・残差を得る。
- * 地震なら「遠い点ほど遅い」ため残差が小さく傾きが正になる。ノイズは乗らない。
- * グリッド探索による震源推定は Phase 3。
+ * アンカー点から見たクラスタ各点の最大方位ギャップ(度)を返す。
+ * 震源を囲む配置ならギャップは小さく、陸側のみ（海溝型 type-B）なら 180° 以上になる。
+ * 方位を評価できる点が 2 未満のときはカバレッジ無しとみなし 360 を返す。
+ */
+function azimuthalGap(anchor: ActiveTrigger, cluster: ActiveTrigger[]): number {
+  const azimuths: number[] = []
+  for (const p of cluster) {
+    if (p === anchor) continue
+    if (haversineKm(anchor.lat, anchor.lng, p.lat, p.lng) < 1e-6) continue
+    azimuths.push(bearingDeg(anchor.lat, anchor.lng, p.lat, p.lng))
+  }
+  if (azimuths.length < 2) return 360
+  azimuths.sort((a, b) => a - b)
+  let maxGap = 0
+  for (let i = 1; i < azimuths.length; i++) {
+    maxGap = Math.max(maxGap, azimuths[i] - azimuths[i - 1])
+  }
+  // 端点の回り込み（最大方位→最小方位を 360 経由で結ぶ）
+  maxGap = Math.max(maxGap, 360 - azimuths[azimuths.length - 1] + azimuths[0])
+  return maxGap
+}
+
+/**
+ * 平面波スローネスフィット。局所平面(ENU, km)で t ≈ t0 + px·E + py·N を最小二乗する。
+ * スローネスベクトル (px, py)[s/km] は波の伝播方向（走時が増える向き）を指すため、
+ * その逆方向が震源方位、大きさの逆数が見かけ速度になる。
+ *
+ * 片側配置（海溝型）では震源を「点」で当てられなくても**方位は堅牢に決まる**。
+ * 一方、沖合距離は波面の曲率（1 秒量子化に埋もれる二次効果）からしか出ず復元不能なため、
+ * ここでは距離を推定せず方位のみを返す（設計書 §5-B）。
+ * 共線配置は 2D スローネスが退化する（det≤0）ため ok=false（方位不定）。
+ */
+function planeWaveFit(cluster: ActiveTrigger[]): {
+  ok: boolean
+  bearingDeg: number
+  velocityKmS: number
+  residualRms: number
+} {
+  const FAIL = { ok: false, bearingDeg: NaN, velocityKmS: NaN, residualRms: Infinity }
+  const n = cluster.length
+  const lat0 = mean(cluster.map((p) => p.lat))
+  const lng0 = mean(cluster.map((p) => p.lng))
+  const cosLat = Math.cos((lat0 * Math.PI) / 180)
+  const E = cluster.map((p) => (p.lng - lng0) * KM_PER_DEG * cosLat)
+  const N = cluster.map((p) => (p.lat - lat0) * KM_PER_DEG)
+  const T = cluster.map((p) => p.onsetMs / 1000)
+  const mE = mean(E)
+  const mN = mean(N)
+  const mT = mean(T)
+  let SEE = 0
+  let SNN = 0
+  let SEN = 0
+  let SEt = 0
+  let SNt = 0
+  for (let i = 0; i < n; i++) {
+    const de = E[i] - mE
+    const dn = N[i] - mN
+    const dt = T[i] - mT
+    SEE += de * de
+    SNN += dn * dn
+    SEN += de * dn
+    SEt += de * dt
+    SNt += dn * dt
+  }
+  // 開口（配置の 2D 広がり）が狭いと走時差が量子化に埋もれ、見かけ速度が偶然物理域に入る
+  // スプリアスフィットを生む。radial の距離レンジ下限と同じ FIT_RANGE_MIN_KM を課す。
+  const apertureKm = Math.hypot(
+    Math.max(...E) - Math.min(...E),
+    Math.max(...N) - Math.min(...N),
+  )
+  if (apertureKm < PARAMS.FIT_RANGE_MIN_KM) return FAIL
+  const det = SEE * SNN - SEN * SEN
+  if (det <= 0) return FAIL
+  const px = (SNN * SEt - SEN * SNt) / det
+  const py = (SEE * SNt - SEN * SEt) / det
+  const slow = Math.hypot(px, py)
+  if (slow <= 0) return FAIL
+  const velocityKmS = 1 / slow
+  const a = mT - px * mE - py * mN
+  let sqErr = 0
+  for (let i = 0; i < n; i++) {
+    const pred = a + px * E[i] + py * N[i]
+    sqErr += (T[i] - pred) ** 2
+  }
+  const residualRms = Math.sqrt(sqErr / n)
+  // 震源方位 = 伝播方向 (px,py) の逆向き。ENU なので atan2(East, North)=コンパス方位。
+  const back = ((Math.atan2(-px, -py) * 180) / Math.PI + 360) % 360
+  const ok = velocityKmS >= PARAMS.V_MIN_KMS && velocityKmS <= PARAMS.V_MAX_KMS
+  return { ok, bearingDeg: back, velocityKmS, residualRms }
+}
+
+/**
+ * クラスタの波面フィット。震央アンカーは最早オンセット点（最短距離の点）に置く。
+ *
+ * 2 系統を併用する:
+ *  - **radial フィット**: アンカーからの距離と走時の 1D 回帰。観測点が震源を囲む内陸浅発で有効
+ *    （最早点 ≈ 震央）。
+ *  - **平面波フィット**: 局所平面での 2D スローネス。片側配置（海溝型 type-B）で radial が壊れても
+ *    震源**方位**を堅牢に出す。
+ * どちらかが物理的に成立すれば fitOk とする。方位ギャップが大きければ oneSided（沖合距離は不確実）。
+ * グリッド探索による震央の点推定は採らない（片側配置では 1 秒量子化で radial 方向が不安定なため）。
  */
 export function estimateWaveFit(cluster: ActiveTrigger[]): WaveFit {
-  // 最早オンセット点を震源候補にする
+  // 最早オンセット点を震源アンカー（最短距離の点）にする
   let earliest = cluster[0]
   for (const p of cluster) if (p.onsetMs < earliest.onsetMs) earliest = p
   const epicenter: [number, number] = [earliest.lat, earliest.lng]
 
   if (cluster.length < PARAMS.MIN_FIT_POINTS) {
-    return { epicenter, velocityKmS: NaN, residualRms: Infinity, fitOk: false }
+    return {
+      epicenter,
+      velocityKmS: NaN,
+      residualRms: Infinity,
+      fitOk: false,
+      radialFitOk: false,
+      bearingDeg: null,
+      oneSided: false,
+      azimuthalGapDeg: 0,
+    }
   }
 
+  // ---- radial フィット: t = a + b·r（b = 1/見かけ速度[s/km]） ----
   const t0 = earliest.onsetMs
-  const rs: number[] = []
-  const ts: number[] = []
-  for (const p of cluster) {
-    rs.push(haversineKm(epicenter[0], epicenter[1], p.lat, p.lng))
-    ts.push((p.onsetMs - t0) / 1000) // 秒
-  }
+  const rs = cluster.map((p) => haversineKm(epicenter[0], epicenter[1], p.lat, p.lng))
+  const ts = cluster.map((p) => (p.onsetMs - t0) / 1000)
   const range = Math.max(...rs) - Math.min(...rs)
-  if (range < PARAMS.FIT_RANGE_MIN_KM) {
-    return { epicenter, velocityKmS: NaN, residualRms: Infinity, fitOk: false }
-  }
-
-  // 線形回帰 t = a + b·r（b = 1/見かけ速度[s/km]）
   const n = rs.length
-  const meanR = rs.reduce((s, v) => s + v, 0) / n
-  const meanT = ts.reduce((s, v) => s + v, 0) / n
+  const meanR = mean(rs)
+  const meanT = mean(ts)
   let sRR = 0
   let sRT = 0
   for (let i = 0; i < n; i++) {
@@ -419,12 +560,35 @@ export function estimateWaveFit(cluster: ActiveTrigger[]): WaveFit {
     const pred = a + b * rs[i]
     sqErr += (ts[i] - pred) ** 2
   }
-  const residualRms = Math.sqrt(sqErr / n)
-  const velocityKmS = b > 0 ? 1 / b : NaN
-  const fitOk =
-    b > 0 && velocityKmS >= PARAMS.V_MIN_KMS && velocityKmS <= PARAMS.V_MAX_KMS
+  const residualRadial = Math.sqrt(sqErr / n)
+  const vRadial = b > 0 ? 1 / b : NaN
+  const radialFitOk =
+    range >= PARAMS.FIT_RANGE_MIN_KM &&
+    b > 0 &&
+    vRadial >= PARAMS.V_MIN_KMS &&
+    vRadial <= PARAMS.V_MAX_KMS
 
-  return { epicenter, velocityKmS, residualRms, fitOk }
+  // ---- 平面波フィット（方位）＋方位カバレッジ ----
+  const plane = planeWaveFit(cluster)
+  const gap = azimuthalGap(earliest, cluster)
+  const oneSided = gap >= PARAMS.ONE_SIDED_GAP_DEG
+
+  // radial が成立すればその速度・残差を、そうでなければ平面波フィットのものを採用する。
+  const fitOk = radialFitOk || plane.ok
+  const velocityKmS = radialFitOk ? vRadial : plane.ok ? plane.velocityKmS : NaN
+  const residualRms = radialFitOk ? residualRadial : plane.ok ? plane.residualRms : Infinity
+  const bearingDeg = plane.ok ? plane.bearingDeg : null
+
+  return {
+    epicenter,
+    velocityKmS,
+    residualRms,
+    fitOk,
+    radialFitOk,
+    bearingDeg,
+    oneSided,
+    azimuthalGapDeg: gap,
+  }
 }
 
 /**
@@ -445,12 +609,26 @@ function clamp(x: number, lo: number, hi: number): number {
 
 /**
  * スコア・規模・フィット・ウォームアップから確信度を分類する。
+ *
  * likely 以上には**波面フィットの成立（伝播整合）を必須**とする。空間規模だけで likely に
  * 上げると、大きなノイズクラスタが誤って likely になる（並走検証で判明）。fitOk でなければ weak 止まり。
+ *
+ * confirmed には**震源拘束の強さ**で非対称なゲートを課す:
+ *  - radial 裏取りあり（震源を囲む配置）: MIN_CONFIRM_SIZE で確定可（震源が良く決まる）。
+ *  - 片側配置（平面波のみ・radialFitOk=false）: MIN_CONFIRM_SIZE_ONESIDED まで点数を要求する。
+ *    片側配置は震源が縮退し、少数点ではノイズ塊の偶然フィットと区別できない（並走検証で size4 の
+ *    誤 confirmed を観測）ため。本物の海溝型は陸側で多数点が並ぶので確定できる（設計書 §5-B）。
  */
-function classify(score: number, size: number, fitOk: boolean, warmup: boolean): Confidence {
+export function classify(
+  score: number,
+  size: number,
+  fitOk: boolean,
+  radialFitOk: boolean,
+  warmup: boolean,
+): Confidence {
+  const confirmSize = radialFitOk ? PARAMS.MIN_CONFIRM_SIZE : PARAMS.MIN_CONFIRM_SIZE_ONESIDED
   let c: Confidence = 'weak'
-  if (fitOk && score >= PARAMS.S_ON && size >= PARAMS.MIN_CONFIRM_SIZE) c = 'confirmed'
+  if (fitOk && score >= PARAMS.S_ON && size >= confirmSize) c = 'confirmed'
   else if (fitOk && score >= PARAMS.S_LIKELY) c = 'likely'
   // ウォームアップ中は confirmed に上げない（設計書 §7.4）
   if (warmup && c === 'confirmed') c = 'likely'
@@ -608,24 +786,36 @@ function associateAndScore(
     if (target) {
       target.score = PARAMS.DECAY * target.score + s
       target.epicenter = epi
+      target.bearingDeg = fit.bearingDeg
+      target.oneSided = fit.oneSided
       target.lastOnsetAtMs = now
       target.lastSize = cluster.length
       target.lastFitOk = fit.fitOk
+      target.lastRadialFitOk = fit.radialFitOk
       target.memberKeys = [...new Set([...target.memberKeys, ...memberKeys])]
-      target.confidence = classify(target.score, cluster.length, fit.fitOk, warmup)
+      target.confidence = classify(
+        target.score,
+        cluster.length,
+        fit.fitOk,
+        fit.radialFitOk,
+        warmup,
+      )
       updated.add(target.id)
     } else {
       const score = s // 初回は DECAY·0 + s
       const ev: DetectionEvent = {
         id: `evt-${idCounter++}`,
         epicenter: epi,
+        bearingDeg: fit.bearingDeg,
+        oneSided: fit.oneSided,
         originTimeMs: now,
         score,
-        confidence: classify(score, cluster.length, fit.fitOk, warmup),
+        confidence: classify(score, cluster.length, fit.fitOk, fit.radialFitOk, warmup),
         lastOnsetAtMs: now,
         memberKeys,
         lastSize: cluster.length,
         lastFitOk: fit.fitOk,
+        lastRadialFitOk: fit.radialFitOk,
       }
       events.push(ev)
       updated.add(ev.id)
@@ -637,7 +827,7 @@ function associateAndScore(
   for (const e of events) {
     if (!updated.has(e.id)) {
       e.score = PARAMS.DECAY * e.score
-      e.confidence = classify(e.score, e.lastSize, e.lastFitOk, warmup)
+      e.confidence = classify(e.score, e.lastSize, e.lastFitOk, e.lastRadialFitOk, warmup)
     }
     const idle = now - e.lastOnsetAtMs
     const duration = now - e.originTimeMs
