@@ -472,7 +472,8 @@ export function App() {
   // タイマーコールバック内から最新の detected 値を参照する ref（宣言はコンポーネント冒頭・代入はここ）
   kyoshinDetectedRef.current = kyoshinDetection.detected
 
-  // 新検知エンジン（純粋コア）を並走検証（設計書 §10.4/§13）。UI・音には影響しない。
+  // 新検知エンジン（純粋コア）。検知結果はリアルタイムタブの視覚カードにのみ用いる。
+  // 音・自動タブ切替・自動フィットには一切関与させない（frameScore 未調整のため）。
   // localStorage['kyoshinDetectorV2'] === '0' で無効化できる（既定 ON）。
   const kyoshinV2Enabled = useMemo(() => {
     try {
@@ -481,7 +482,7 @@ export function App() {
       return true
     }
   }, [])
-  useKyoshinDetectorV2(kyoshin.sites, kyoshin.indices, kyoshin.dataTime, kyoshinV2Enabled)
+  const kyoshinV2 = useKyoshinDetectorV2(kyoshin.sites, kyoshin.indices, kyoshin.dataTime, kyoshinV2Enabled)
 
   // DMDSS版: EEWデータから P波・S波半径を自前計算（100ms更新でスムーズ拡張）
   // activeEEWs (Map) の参照が安定している限り配列を再生成しない
@@ -611,6 +612,7 @@ export function App() {
               kyoshinDetection={kyoshinDetection}
               kyoshinSites={kyoshin.sites}
               kyoshinIndices={kyoshin.indices}
+              kyoshinV2Detections={kyoshinV2.detections}
               swaveArrival={swaveArrival}
               activeLpgmEventId={activeLpgmEventId}
               onToggleLpgm={(eventId) => {
