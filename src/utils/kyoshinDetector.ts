@@ -660,15 +660,30 @@ export function estimateWaveFit(cluster: ActiveTrigger[]): WaveFit {
 }
 
 /**
- * クラスタ規模と波面フィット品質から、1 フレームの「地震らしさ」スコア寄与 s を算出する。
- * DECAY=0.8 のとき定常で S ≈ s/(1−DECAY)=5s に収束するため、s≈0.3 で S_ON に到達する目安。
+ * クラスタ規模・振幅・波面フィット品質・空間連続性から、1 フレームの「地震らしさ」寄与 s を算出する。
+ *
+ * 設計（並走検証で改訂）: 旧実装は size を 8 で頭打ちにし振幅を無視していたため、大規模・高震度の
+ * 実地震（例: 大隅 M5.2 size108 震度3）が片側配置の高残差で waveFactor が下限に落ちて潰れ、likely
+ * 止まりだった。実地震とノイズを分ける材料（規模・振幅・連続性）をすべて score に反映する:
+ *  - sizeTerm  : size の平方根で逓減しつつ頭打ちを外す（大規模を正当に評価）。
+ *  - ampTerm   : クラスタ最大計測震度。実地震は震度が高く、ノイズは震度0近傍（＝confirmed 排除の要）。
+ *  - waveFactor: フィット残差の良さ。片側配置の高残差でも下限を上げ、強いクラスタを潰さない。
+ *  - contigFactor: 面の埋まり具合。連続性ゲート(CONTIG_MIN)近傍のノイズを穏やかに減点する。
+ * DECAY のとき定常 S ≈ s/(1−DECAY)。s≈0.3 で S_ON、s≈0.16 で S_LIKELY に到達する目安。
+ *
+ * @param size クラスタの観測点数
+ * @param peak クラスタ最大計測震度（value。震度0≈0, 震度1≈0.5, 震度2≈1.5, 震度3≈2.5）
+ * @param fit 波面フィット結果
+ * @param contiguity 空間連続性（spatialFill。0〜1）
  */
-export function frameScore(size: number, fit: WaveFit): number {
-  const sizeTerm = 0.25 + 0.05 * Math.min(size, 8)
+export function frameScore(size: number, peak: number, fit: WaveFit, contiguity: number): number {
+  const sizeTerm = 0.25 + 0.06 * Math.sqrt(Math.max(size, 0))
+  const ampTerm = clamp(0.7 + 0.3 * peak, 0.7, 1.6)
   const waveFactor = fit.fitOk
-    ? clamp(1.2 - fit.residualRms / PARAMS.RESID_GOOD_S, 0.3, 1.0)
-    : 0.3
-  return sizeTerm * waveFactor
+    ? clamp(1.2 - fit.residualRms / PARAMS.RESID_GOOD_S, 0.45, 1.0)
+    : 0.35
+  const contigFactor = clamp(0.6 + 0.7 * contiguity, 0.6, 1.2)
+  return sizeTerm * ampTerm * waveFactor * contigFactor
 }
 
 function clamp(x: number, lo: number, hi: number): number {
@@ -892,13 +907,14 @@ function associateAndScore(
   for (const cluster of clusters) {
     const fit = estimateWaveFit(cluster)
     const epi = fit.epicenter
-    const s = frameScore(cluster.length, fit)
     const clusterPeak = Math.max(...cluster.map((c) => c.peakValue))
     const memberKeys = cluster.map((c) => c.key)
     // 空間連続性ゲート: 面が埋まっているか（実地震）／スカスカか（広域ノイズ）。
     // 疎地域（震央周辺の観測点数が少ない）は連続性が本質的に低いのでゲート免除。
     const { contiguity, densityNear } = spatialFill(cluster, allSites)
     const spatialOk = densityNear < PARAMS.CONTIG_SPARSE_MIN || contiguity >= PARAMS.CONTIG_MIN
+    // score には規模・振幅・フィット品質・連続性を反映する（frameScore 参照）
+    const s = frameScore(cluster.length, clusterPeak, fit, contiguity)
 
     // 既存イベントとの帰属判定（震源が PENDING_MATCH_KM 以内）
     let target: DetectionEvent | undefined
