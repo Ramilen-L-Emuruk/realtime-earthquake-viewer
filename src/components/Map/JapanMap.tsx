@@ -31,7 +31,7 @@ import { QuakeHeatmapLayer } from './QuakeHeatmapLayer'
 import { MAP_CANVAS_PADDING } from './mapCanvasPadding'
 import { flyToLite, flyToBoundsLite } from './flyToLite'
 import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
-import type { DetectedPoint } from '../../hooks/useKyoshinDetection'
+import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { DetectionEvent } from '../../utils/kyoshinDetector'
 import type { HeatPoint } from '../../utils/quakeHeatmap'
 import { log } from '../../utils/logger'
@@ -637,7 +637,7 @@ interface Props {
   detectedPoints?: DetectedPoint[]
   candidatePoints?: DetectedPoint[]
   candidateId?: number | null
-  /** 新検知エンジン(v2)の検知イベント（実験的・視覚オーバーレイのみ）。 */
+  /** V2 検知エンジンの検知イベント（推定震央・方位の地図オーバーレイに使う）。 */
   kyoshinV2Detections?: DetectionEvent[]
   idleRevertSec?: number
   eewLpgmEventId?: string | null

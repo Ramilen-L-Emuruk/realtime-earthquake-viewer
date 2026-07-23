@@ -21,11 +21,10 @@ export interface KyoshinDetectorV2Result {
 const EMPTY: KyoshinDetectorV2Result = { detections: [], triggers: [], dataTime: '' }
 
 /**
- * 新・強震モニタ検知エンジン（純粋コア step）の React ラッパー。
+ * 強震モニタ検知エンジン（純粋コア step）の React ラッパー。
  *
- * 既存 useKyoshinDetection と**並走**させて検証するためのフック（設計書 §10.4 / §13）。
- * UI・音・タブ切替には一切影響を与えず、検知結果を返すのみ。
- * 検証用に最新結果を window.__kyoshinV2 へ公開する。
+ * 強震モニタ検知の唯一のエンジン。検知結果は音・自動タブ切替・自動フィット・地図オーバーレイ・
+ * リアルタイムタブのカード表示を駆動する。デバッグ用に最新結果を window.__kyoshinV2 へ公開する。
  *
  * @param sites 観測点座標（useKyoshinRealtime.sites）
  * @param indices 計測震度インデックス（useKyoshinRealtime.indices）

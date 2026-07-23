@@ -263,6 +263,13 @@ export const PARAMS = {
   /** 既存イベントとの同一判定距離(km) */
   PENDING_MATCH_KM: 120,
   /**
+   * 既存イベントへの帰属・イベント併合で「同一地震」とみなすメンバー観測点の重複率の下限。
+   * 重複率 = |共通メンバー| / min(|クラスタ|, |イベント|)。震央が null（フィット失敗）やジッタで
+   * 動いても、同じ観測点群が反応していれば同一イベントに再帰属・併合し、1 地震が複数 ID へ分裂
+   * するのを防ぐ（設計書 §5-E）。
+   */
+  MERGE_MEMBER_FRAC: 0.34,
+  /**
    * 片側配置(type-B)と判定する方位ギャップの下限(度)。アンカーから見たクラスタ点の最大方位
    * ギャップがこれ以上なら「震源を囲んでいない＝沖合距離が縮退」とみなす。
    * 内陸で囲まれた震源は通常 ≤120°、海溝型は陸側のみで ≥180° になる。
@@ -916,16 +923,19 @@ function associateAndScore(
     // score には規模・振幅・フィット品質・連続性を反映する（frameScore 参照）
     const s = frameScore(cluster.length, clusterPeak, fit, contiguity)
 
-    // 既存イベントとの帰属判定（震源が PENDING_MATCH_KM 以内）
+    // 既存イベントとの帰属判定: 震源近接（両方に震央がある場合）またはメンバー観測点の重複。
+    // メンバー重複を併用することで、フィット失敗(epicenter=null)や震央ジッタでも同じ観測点群を
+    // 同一イベントへ再帰属でき、1 地震が複数 ID に分裂するのを防ぐ（設計書 §5-E）。
+    const memberSet = new Set(memberKeys)
     let target: DetectionEvent | undefined
-    if (epi) {
-      for (const e of events) {
-        if (updated.has(e.id) || !e.epicenter) continue
-        const d = haversineKm(epi[0], epi[1], e.epicenter[0], e.epicenter[1])
-        if (d <= PARAMS.PENDING_MATCH_KM) {
-          target = e
-          break
-        }
+    for (const e of events) {
+      if (updated.has(e.id)) continue
+      const epiClose =
+        !!epi && !!e.epicenter &&
+        haversineKm(epi[0], epi[1], e.epicenter[0], e.epicenter[1]) <= PARAMS.PENDING_MATCH_KM
+      if (epiClose || memberOverlapFrac(memberSet, e.memberKeys) >= PARAMS.MERGE_MEMBER_FRAC) {
+        target = e
+        break
       }
     }
 
@@ -1007,7 +1017,87 @@ function associateAndScore(
     if (!terminated) survivors.push(e)
   }
 
-  return { events: survivors, nextEventId: idCounter }
+  // フレーム末に「同一地震」の分裂イベントを 1 本化する（設計書 §5-E）。
+  return { events: mergeEvents(survivors, warmup), nextEventId: idCounter }
+}
+
+/** クラスタ(a)とイベント(bKeys)のメンバー観測点の重複率 = |a∩b| / min(|a|,|b|)。 */
+export function memberOverlapFrac(a: Set<string>, bKeys: string[]): number {
+  if (a.size === 0 || bKeys.length === 0) return 0
+  let common = 0
+  for (const k of bKeys) if (a.has(k)) common++
+  return common / Math.min(a.size, bKeys.length)
+}
+
+/** フィット根拠の強さ（radial 裏取り > 平面波フィット成立 > フィット無し）。併合時の採用元選択に使う。 */
+function fitRank(e: DetectionEvent): number {
+  return e.lastRadialFitOk ? 2 : e.lastFitOk ? 1 : 0
+}
+
+/**
+ * 併合時に震央・波面フィット系フィールドの採用元にするイベントを選ぶ。
+ * 優先順: フィット根拠の強さ → 最大振幅 → 規模。
+ */
+function pickFitSource(a: DetectionEvent, b: DetectionEvent): DetectionEvent {
+  const ra = fitRank(a)
+  const rb = fitRank(b)
+  if (ra !== rb) return ra > rb ? a : b
+  if (a.lastPeak !== b.lastPeak) return a.lastPeak > b.lastPeak ? a : b
+  return a.lastSize >= b.lastSize ? a : b
+}
+
+/**
+ * 同一地震とみなせるイベント同士を 1 本化する（設計書 §5-E）。
+ *
+ * 帰属判定(associateAndScore)は updated 集合により 1 イベント=1 クラスタ/フレームに制限されるため、
+ * 1 フレームで複数クラスタに割れた同一地震が別 ID として残り得る。フレーム末にこのパスで畳み込む。
+ *
+ * 併合条件: メンバー観測点の重複率 ≥ MERGE_MEMBER_FRAC、または両者の震央が PENDING_MATCH_KM 以内。
+ * 基準イベント(host)は発生時刻が早い方。スコアは max（同一エネルギーの二重計上を避ける保守側）、
+ * メンバーは和集合、震央・波面フィット系はフィット根拠が強い方から採用し、確信度を再評価する。
+ */
+export function mergeEvents(events: DetectionEvent[], warmup: boolean): DetectionEvent[] {
+  if (events.length <= 1) return events
+  const ordered = [...events].sort((a, b) => a.originTimeMs - b.originTimeMs)
+  const hosts: DetectionEvent[] = []
+  for (const e of ordered) {
+    const eSet = new Set(e.memberKeys)
+    const host = hosts.find(
+      (h) =>
+        memberOverlapFrac(eSet, h.memberKeys) >= PARAMS.MERGE_MEMBER_FRAC ||
+        (!!e.epicenter && !!h.epicenter &&
+          haversineKm(e.epicenter[0], e.epicenter[1], h.epicenter[0], h.epicenter[1]) <=
+            PARAMS.PENDING_MATCH_KM),
+    )
+    if (!host) {
+      hosts.push(e)
+      continue
+    }
+    const fitSrc = pickFitSource(host, e)
+    host.score = Math.max(host.score, e.score)
+    host.memberKeys = [...new Set([...host.memberKeys, ...e.memberKeys])]
+    host.originTimeMs = Math.min(host.originTimeMs, e.originTimeMs)
+    host.lastOnsetAtMs = Math.max(host.lastOnsetAtMs, e.lastOnsetAtMs)
+    host.epicenter = fitSrc.epicenter
+    host.bearingDeg = fitSrc.bearingDeg
+    host.oneSided = fitSrc.oneSided
+    host.lastFitOk = fitSrc.lastFitOk
+    host.lastRadialFitOk = fitSrc.lastRadialFitOk
+    host.lastSpatialOk = fitSrc.lastSpatialOk
+    host.lastContiguity = fitSrc.lastContiguity
+    host.lastPeak = Math.max(host.lastPeak, e.lastPeak)
+    host.lastSize = Math.max(host.lastSize, e.lastSize)
+    host.confidence = classify(
+      host.score,
+      host.lastSize,
+      host.lastPeak,
+      host.lastFitOk,
+      host.lastRadialFitOk,
+      host.lastSpatialOk,
+      warmup,
+    )
+  }
+  return hosts
 }
 
 /**

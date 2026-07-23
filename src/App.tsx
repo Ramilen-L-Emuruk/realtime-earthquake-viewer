@@ -14,8 +14,8 @@ import { useAlertTitle } from './hooks/useAlertTitle'
 import { useLiveEventHandler } from './hooks/useLiveEventHandler'
 import { useKyoshinAlerts } from './hooks/useKyoshinAlerts'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
-import { useKyoshinDetection } from './hooks/useKyoshinDetection'
 import { useKyoshinDetectorV2 } from './hooks/useKyoshinDetectorV2'
+import { deriveKyoshinView } from './utils/kyoshinDetectionView'
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
 import { useDmdssWaves } from './hooks/useDmdssWaves'
 import { useQuakeHeatmap } from './hooks/useQuakeHeatmap'
@@ -53,7 +53,7 @@ export function App() {
   }
   // EEW 発報中（cancelledAt 除外済み）・揺れ検知フラグ・地震情報リスト・デフォルトタブを
   // タイマーコールバック内やフック間で参照するための ref。
-  // 値の確定はレンダー後半（useEarthquakes / useKyoshinDetection の後）で毎レンダー代入する。
+  // 値の確定はレンダー後半（useEarthquakes / useKyoshinDetectorV2 の後）で毎レンダー代入する。
   const activeEEWsRef = useRef<ReadonlyMap<string, EEWAlert>>(new Map())
   const kyoshinDetectedRef = useRef(false)
   const earthquakesRef = useRef<JMAQuake[]>([])
@@ -468,21 +468,16 @@ export function App() {
     onEEWEvent: isDmdss ? undefined : injectEvent,
     timeOffset: replayTimeOffset,
   })
-  const kyoshinDetection = useKyoshinDetection(kyoshin.sites, kyoshin.indices)
-  // タイマーコールバック内から最新の detected 値を参照する ref（宣言はコンポーネント冒頭・代入はここ）
-  kyoshinDetectedRef.current = kyoshinDetection.detected
-
-  // 新検知エンジン（純粋コア）。検知結果はリアルタイムタブの視覚カードにのみ用いる。
-  // 音・自動タブ切替・自動フィットには一切関与させない（frameScore 未調整のため）。
-  // localStorage['kyoshinDetectorV2'] === '0' で無効化できる（既定 ON）。
-  const kyoshinV2Enabled = useMemo(() => {
-    try {
-      return localStorage.getItem('kyoshinDetectorV2') !== '0'
-    } catch {
-      return true
-    }
-  }, [])
-  const kyoshinV2 = useKyoshinDetectorV2(kyoshin.sites, kyoshin.indices, kyoshin.dataTime, kyoshinV2Enabled)
+  // 強震モニタの揺れ検知は V2 エンジン（純粋コア step）で行う。
+  // 検知結果は音・自動タブ切替・自動フィット・地図オーバーレイ・リアルタイムタブのカードを駆動する。
+  const kyoshinV2 = useKyoshinDetectorV2(kyoshin.sites, kyoshin.indices, kyoshin.dataTime, true)
+  // V2 検知イベント → 表示状態（confirmed/candidate・検知点・候補点）へ変換する
+  const kyoshinView = useMemo(
+    () => deriveKyoshinView(kyoshinV2.detections, kyoshin.sites, kyoshin.indices),
+    [kyoshinV2.detections, kyoshin.sites, kyoshin.indices],
+  )
+  // タイマーコールバック内から最新の confirmed 値を参照する ref（宣言はコンポーネント冒頭・代入はここ）
+  kyoshinDetectedRef.current = kyoshinView.confirmed
 
   // DMDSS版: EEWデータから P波・S波半径を自前計算（100ms更新でスムーズ拡張）
   // activeEEWs (Map) の参照が安定している限り配列を再生成しない
@@ -518,9 +513,10 @@ export function App() {
 
   // 揺れ検知の開始/終了・レベル変化に応じたタブ切替・タイトル・通知音・ブラウザ通知
   useKyoshinAlerts({
-    kyoshinDetection,
-    kyoshinIndices: kyoshin.indices,
+    confirmed: kyoshinView.confirmed,
+    candidate: kyoshinView.candidate,
     hasActiveEEW,
+    kyoshinIndices: kyoshin.indices,
     settings,
     title,
     activeEEWsRef,
@@ -569,9 +565,9 @@ export function App() {
             kyoshinIndices={kyoshin.indices}
             kyoshinPsWave={psWave}
             eews={Array.from(activeEEWsNoCancelled.values())}
-            detectedPoints={kyoshinDetection.points}
-            candidatePoints={kyoshinDetection.candidatePoints}
-            candidateId={kyoshinDetection.candidateId}
+            detectedPoints={kyoshinView.detectedPoints}
+            candidatePoints={kyoshinView.candidatePoints}
+            candidateId={kyoshinView.candidateId}
             kyoshinV2Detections={kyoshinV2.detections}
             idleRevertSec={settings.idleRevertSec}
             eewLpgmEventId={activeLpgmSource === 'eew' ? activeLpgmEventId : null}
@@ -610,7 +606,6 @@ export function App() {
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'realtime' ? ' invisible pointer-events-none' : ''}`}>
             <RealtimeTab
               eews={Array.from(activeEEWs.values())}
-              kyoshinDetection={kyoshinDetection}
               kyoshinSites={kyoshin.sites}
               kyoshinIndices={kyoshin.indices}
               kyoshinV2Detections={kyoshinV2.detections}
