@@ -54,9 +54,9 @@ export interface SiteState {
   lastValue: number
   /** 最後にトリガーした dataTime(ms)。未トリガーは null */
   triggeredAt: number | null
-  /** トリガー稼働率(duty cycle)の EWMA。慢性ノイズ源の識別に使う */
+  /** トリガー稼働率(duty cycle)の EWMA。鳴りっぱなしの故障観測点の識別に使う */
   triggerRate: number
-  /** 恒常ノイズ源の減衰重み（0=無効化〜1=通常）。triggerRate から算出 */
+  /** 故障観測点ガードの減衰重み（0=除外〜1=通常）。triggerRate から算出。補助（散在ノイズの主判別は空間連続性ゲート CONTIG_*） */
   noiseWeight: number
 }
 
@@ -71,7 +71,7 @@ export interface ActiveTrigger {
   lastTrigMs: number
   /** エピソード中の最大 value */
   peakValue: number
-  /** 直近の noiseWeight（慢性ノイズ源はクラスタリング入力から除外する） */
+  /** 直近の noiseWeight（鳴りっぱなしの故障観測点はクラスタリング入力から除外する） */
   noiseWeight: number
 }
 
@@ -155,7 +155,7 @@ export interface TriggerResult {
   value: number
   /** 立ち上がり中か（second onset 検出の素） */
   rising: boolean
-  /** 観測点の noiseWeight（慢性ノイズ源の減衰重み） */
+  /** 観測点の noiseWeight（故障観測点ガードの減衰重み） */
   noiseWeight: number
 }
 
@@ -269,14 +269,19 @@ export const PARAMS = {
    */
   ONE_SIDED_GAP_DEG: 160,
 
-  // ---- 慢性ノイズ抑制（noiseWeight。設計書 §5-D）----
-  /** トリガー稼働率(duty cycle)の EWMA 時定数(ms)。慢性ノイズと一過性地震を分ける時間軸 */
+  // ---- 故障観測点ガード（noiseWeight。設計書 §5-D）----
+  // 単一観測点が鳴り続ける故障（stuck/暴走センサ）を、クラスタリング前に落とす補助的な仕組み。
+  // 散在する地域性ノイズの主判別は空間連続性ゲート（下記 CONTIG_*）が担う。連続性ゲートは
+  // クラスタ後に tier を決めるだけで、本物のクラスタに紛れ込んだ故障点の幾何汚染（震央・onset・
+  // 波面フィットのずれ）は除けない。その一点をこの前処理が埋める。既定閾値では duty ~42.5%以上
+  // （＝ほぼ鳴りっぱなし）の点のみが除外対象になる。
+  /** トリガー稼働率(duty cycle)の EWMA 時定数(ms)。故障（鳴り続け）と一過性地震を分ける時間軸 */
   NOISE_TAU_MS: 600_000,
   /** 稼働率がこの値以下なら noiseWeight=1（通常）。一過性地震(60-120s)の稼働率上昇を許容 */
   NOISE_DUTY_LO: 0.25,
-  /** 稼働率がこの値以上なら noiseWeight=0（慢性ノイズ源）。LO〜HI は線形補間 */
+  /** 稼働率がこの値以上なら noiseWeight=0（故障観測点）。LO〜HI は線形補間 */
   NOISE_DUTY_HI: 0.6,
-  /** noiseWeight がこの値未満の観測点はクラスタリング入力から除外する（慢性ノイズ源の排除） */
+  /** noiseWeight がこの値未満の観測点はクラスタリング入力から除外する（故障観測点の排除） */
   NOISE_WEIGHT_MIN: 0.5,
 
   // ---- 空間連続性ゲート（面的な埋まり具合。ノイズ＝スカスカ / 実地震＝連続を判別）----
@@ -401,8 +406,9 @@ export function updateSiteState(
     }
   }
 
-  // 慢性ノイズ源の識別: トリガー稼働率(duty cycle)を長時定数 EWMA で追跡し、
-  // 高稼働（鳴り続ける）点の noiseWeight を下げる。一過性の地震は稼働率がほとんど上がらない。
+  // 故障観測点ガード: トリガー稼働率(duty cycle)を長時定数 EWMA で追跡し、
+  // 鳴りっぱなしの故障点の noiseWeight を下げる。一過性の地震は稼働率がほとんど上がらない。
+  // （散在する地域性ノイズの主判別は空間連続性ゲート。ここは単一故障点を落とす補助的役割。）
   const aNoise = ewmaAlpha(dtMs, PARAMS.NOISE_TAU_MS)
   const triggerRate = prev.triggerRate + aNoise * ((triggered ? 1 : 0) - prev.triggerRate)
   const noiseWeight = clamp(
@@ -806,7 +812,8 @@ export function step(
   const activeTriggers = updateActiveTriggers(state.activeTriggers, triggers, now)
 
   // ---- ② クラスタリング＋波面フィット → ③ イベント帰属・積分 ----
-  // 慢性ノイズ源（noiseWeight 低）はクラスタリング入力から除外する（設計書 §5-D）。
+  // 鳴りっぱなしの故障観測点（noiseWeight 低）をクラスタリング入力から除外する補助ガード（§5-D）。
+  // 散在する地域性ノイズの主判別はクラスタ後の空間連続性ゲート（spatialFill）が担う。
   const clusterInput = Object.values(activeTriggers).filter(
     (at) => at.noiseWeight >= PARAMS.NOISE_WEIGHT_MIN,
   )
