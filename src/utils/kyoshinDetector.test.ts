@@ -169,18 +169,18 @@ describe('updateSiteState', () => {
 })
 
 // ============================================================
-// updateSiteState: 慢性ノイズ源の noiseWeight（設計書 §5-D）
+// updateSiteState: 故障観測点ガードの noiseWeight（設計書 §5-D）
 // ============================================================
 
-describe('updateSiteState: noiseWeight（慢性ノイズ抑制）', () => {
+describe('updateSiteState: noiseWeight（故障観測点ガード）', () => {
   const quiet = (): SiteState => ({
     sta: -3, lta: -3, sigma: 0, frozen: false,
     lastValue: -3, triggeredAt: null, triggerRate: 0, noiseWeight: 1,
   })
 
-  it('鳴り続ける観測点は noiseWeight が除外閾値未満まで下がる（慢性ノイズ源）', () => {
+  it('鳴り続ける観測点は noiseWeight が除外閾値未満まで下がる（故障観測点）', () => {
     let st = quiet()
-    // 20分間、毎秒トリガーし続ける（慢性ノイズを模擬）
+    // 20分間、毎秒トリガーし続ける（故障で鳴りっぱなしを模擬）
     for (let t = 0; t < 20 * 60; t++) {
       st = updateSiteState(st, indexToValue(14), 1000, (t + 1) * 1000).state
     }
