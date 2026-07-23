@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { EEWAlert } from '../types/earthquake'
 import type { PsWaveCircle } from '../services/kyoshin'
+import { serverNow } from '../utils/clock'
 
 // 地殻速度モデル（日本の平均的な1D速度構造に基づく）
 const VP1 = 6.0   // 地殻 P波 [km/s]
@@ -97,7 +98,8 @@ export function useDmdssWaves(
     }
 
     const compute = () => {
-      const now = Date.now() + (replayTimeOffset ?? 0)
+      // serverNow() はサーバー同期時刻（リプレイ時は clock.setReplayOffset 経由でオフセット反映済み）
+      const now = serverNow()
       const circles: PsWaveCircle[] = []
 
       for (const eew of activeEEWs) {
