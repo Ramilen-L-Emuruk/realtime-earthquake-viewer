@@ -27,7 +27,8 @@ import { playCountdownBeep, unlockAudio, setSoundVolume } from './utils/alertSou
 import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
 import type { EEWAlert, JMAQuake } from './types/earthquake'
 import { fetchDmdataReplayEvents, filterPreWindowEvents, clearReplayCache } from './services/dmdataReplay'
-import { log, setLogReplayOffset } from './utils/logger'
+import { log } from './utils/logger'
+import { setReplayOffset as setClockReplayOffset, serverNow, serverDate } from './utils/clock'
 
 // 平常時のウィンドウタイトル（index.html の <title> と一致させる）。
 // AutoHotKey 等が、情報更新時のタイトル変化を検知してイベントを発火できるようにする。
@@ -237,15 +238,16 @@ export function App() {
     return () => window.removeEventListener('sw-updated', onSwUpdated)
   }, [])
 
-  // ログのタイムスタンプもリプレイ時刻に追従させる
+  // アプリ時計とログのタイムスタンプをリプレイ時刻に追従させる
+  // （clock はライブ時サーバー同期、リプレイ時は setReplayOffset で絶対制御）
   useEffect(() => {
-    setLogReplayOffset(replayTimeOffset)
+    setClockReplayOffset(replayTimeOffset)
   }, [replayTimeOffset])
 
   // DMDSS版: リプレイ中はリプレイ時刻で毎秒更新、WS接続中は実時刻で毎秒更新、それ以外は null
   useEffect(() => {
     if (replayTimeOffset !== null) {
-      const tick = () => setNowTick(new Date(Date.now() + replayTimeOffset))
+      const tick = () => setNowTick(serverDate())
       tick()
       const id = setInterval(tick, 1000)
       return () => clearInterval(id)
@@ -254,8 +256,8 @@ export function App() {
       setNowTick(null)
       return
     }
-    setNowTick(new Date())
-    const id = setInterval(() => setNowTick(new Date()), 1000)
+    setNowTick(serverDate())
+    const id = setInterval(() => setNowTick(serverDate()), 1000)
     return () => clearInterval(id)
   }, [connectionStatus, replayTimeOffset])
 
@@ -446,10 +448,10 @@ export function App() {
   }, [resetState, resetTracking])
 
   // 再生時刻が prefetchEnd - 10分 に近づいたら次の1時間を先読みする
-  const replayCurrentTime = replayTimeOffset !== null ? new Date(Date.now() + replayTimeOffset) : null
+  const replayCurrentTime = replayTimeOffset !== null ? serverDate() : null
   useEffect(() => {
     if (replayTimeOffset === null || replayIsFetching || !prefetchEndRef.current) return
-    const remaining = prefetchEndRef.current.getTime() - (Date.now() + replayTimeOffset)
+    const remaining = prefetchEndRef.current.getTime() - serverNow()
     if (remaining > 10 * 60_000) return
     const nextFrom = prefetchEndRef.current
     const nextTo = new Date(nextFrom.getTime() + 3600_000)

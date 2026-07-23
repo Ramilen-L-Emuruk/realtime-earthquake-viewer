@@ -4,6 +4,7 @@ import { fetchJmaQuakeHistory } from '../services/p2pquake'
 import { fetchDmdataGdEarthquakes } from '../services/dmdata'
 import { magnitudeToWeight, quakeIdentityKey, hasValidHypocenter, type HeatPoint } from '../utils/quakeHeatmap'
 import { log } from '../utils/logger'
+import { serverNow } from '../utils/clock'
 
 const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
 const HEATMAP_DAYS = 30
@@ -35,7 +36,7 @@ function loadCache(): CacheEntry | null {
 
 function saveCache(points: KeyedHeatPoint[]): void {
   try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify({ fetchedAt: Date.now(), points }))
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ fetchedAt: serverNow(), points }))
   } catch {
     // ストレージ容量超過は無視（次回また取得を試みる）
   }
@@ -66,7 +67,7 @@ export function useQuakeHeatmap(
     }
 
     const cached = loadCache()
-    if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+    if (cached && serverNow() - cached.fetchedAt < CACHE_TTL_MS) {
       setBasePoints(cached.points)
       return
     }
@@ -119,7 +120,7 @@ export function useQuakeHeatmap(
   // 同一地震（quakeIdentityKey）が両方にあればライブ側（最新情報）を優先する。
   const points = useMemo(() => {
     if (!basePoints) return null
-    const cutoffMs = Date.now() - HEATMAP_DAYS * 24 * 60 * 60 * 1000
+    const cutoffMs = serverNow() - HEATMAP_DAYS * 24 * 60 * 60 * 1000
     const merged = new Map<string, HeatPoint>()
     for (const p of basePoints) merged.set(p.key, p)
     for (const q of earthquakes) {

@@ -4,6 +4,7 @@ import type { ConnectionStatus } from '../../types/earthquake'
 import { getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
 import { playAlertSound, playKyoshinUpdateSound, unlockAudio } from '../../utils/alertSound'
 import { checkVoicevoxAvailable, fetchVoicevoxSpeakers, speakWithVoicevox, type VoicevoxSpeaker } from '../../utils/voicevox'
+import { serverDate } from '../../utils/clock'
 
 const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
 
@@ -311,7 +312,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
   }
 
   const replayStartLabel = kyoshinTimeOffset != null
-    ? new Date(Date.now() + kyoshinTimeOffset).toLocaleString('ja-JP')
+    ? serverDate().toLocaleString('ja-JP')
     : null
 
   return (

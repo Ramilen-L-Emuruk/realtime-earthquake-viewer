@@ -8,6 +8,7 @@
 
 import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml, parseVyse5xFromXml, parseVyse60FromXml } from './dmdataParser'
+import { serverNow, serverDate } from '../utils/clock'
 import { log } from '../utils/logger'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
@@ -241,7 +242,7 @@ export class DmdataWebSocket {
   ): TelegramLogEntry {
     return {
       id: `${Date.now()}-${Math.random()}`,
-      receivedAt: new Date(),
+      receivedAt: serverDate(),
       source: 'dmdss',
       headType,
       isTest,
@@ -664,7 +665,7 @@ export async function fetchDmdataKohatsu(apiKey: string): Promise<JMAKohatsu | n
     const kohatsu = parseVyse60FromXml(xml)
     if (!kohatsu || kohatsu.cancelled) return null
     // 有効期限チェック: expireAt が過去なら null
-    if (new Date(kohatsu.expireAt) <= new Date()) return null
+    if (new Date(kohatsu.expireAt) <= serverDate()) return null
     return kohatsu
   } catch { return null }
 }
@@ -739,7 +740,7 @@ const GD_EARTHQUAKE_MAX_PAGES = 20
 // gd.earthquake スコープが契約に含まれない場合は 403 で例外を投げる。
 export async function fetchDmdataGdEarthquakes(apiKey: string, days: number): Promise<GdEarthquakeItem[]> {
   const headers = { Authorization: authHeader(apiKey) }
-  const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000
+  const cutoffMs = serverNow() - days * 24 * 60 * 60 * 1000
   const collected: GdEarthquakeItem[] = []
   let cursorToken: string | undefined
 

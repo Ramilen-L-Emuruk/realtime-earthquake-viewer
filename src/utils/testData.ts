@@ -1,7 +1,8 @@
 import type { JMAQuake, JMATsunami, EEWAlert, JMANankai, JMAKohatsu } from '../types/earthquake'
+import { serverNow, serverDate } from './clock'
 
 export function createTestEarthquake(): JMAQuake {
-  const now = new Date().toISOString()
+  const now = serverDate().toISOString()
   return {
     kind: 'quake',
     id: `test-eq-${Date.now()}`,
@@ -31,7 +32,7 @@ export function createTestEarthquake(): JMAQuake {
 }
 
 export function createTestEEWWarning(eventId?: string, serial = 1): EEWAlert {
-  const now = new Date()
+  const now = serverDate()
   const eid = eventId ?? `test-warn-${Date.now()}`
   return {
     kind: 'eew',
@@ -57,7 +58,7 @@ export function createTestEEWWarning(eventId?: string, serial = 1): EEWAlert {
 }
 
 export function createTestEEWForecast(eventId?: string, serial = 1): EEWAlert {
-  const now = new Date()
+  const now = serverDate()
   const eid = eventId ?? `test-forecast-${Date.now()}`
   return {
     kind: 'eew',
@@ -81,7 +82,7 @@ export function createTestEEWForecast(eventId?: string, serial = 1): EEWAlert {
 }
 
 export function createTestEEW(eventId?: string, serial = 1): EEWAlert {
-  const now = new Date()
+  const now = serverDate()
   const eid = eventId ?? `test-${Date.now()}`
   return {
     kind: 'eew',
@@ -111,7 +112,7 @@ export function createTestEEW(eventId?: string, serial = 1): EEWAlert {
 }
 
 export function createTestNankai(kindName: '調査中' | '巨大地震注意' | '巨大地震警戒'): JMANankai {
-  const now = new Date().toISOString()
+  const now = serverDate().toISOString()
   const kindCodeMap: Record<string, string> = {
     '調査中': '0201', '巨大地震注意': '0202', '巨大地震警戒': '0203',
   }
@@ -134,8 +135,8 @@ export function createTestNankai(kindName: '調査中' | '巨大地震注意' | 
 }
 
 export function createTestKohatsu(): JMAKohatsu {
-  const now = new Date().toISOString()
-  const expireAt = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString()
+  const now = serverDate().toISOString()
+  const expireAt = new Date(serverNow() + 7 * 24 * 3600 * 1000).toISOString()
   return {
     id: `test-kohatsu-${Date.now()}`,
     time: now,
@@ -149,7 +150,7 @@ export function createTestKohatsu(): JMAKohatsu {
 }
 
 export function createTestTsunamiForecast(): JMATsunami {
-  const now = new Date().toISOString()
+  const now = serverDate().toISOString()
   return {
     kind: 'tsunami',
     id: `test-tsunami-forecast-${Date.now()}`,
@@ -165,7 +166,7 @@ export function createTestTsunamiForecast(): JMATsunami {
 }
 
 export function createTestTsunamiWatch(): JMATsunami {
-  const now = new Date().toISOString()
+  const now = serverDate().toISOString()
   return {
     kind: 'tsunami',
     id: `test-tsunami-watch-${Date.now()}`,
@@ -180,7 +181,7 @@ export function createTestTsunamiWatch(): JMATsunami {
 }
 
 export function createTestTsunamiWarning(): JMATsunami {
-  const now = new Date().toISOString()
+  const now = serverDate().toISOString()
   return {
     kind: 'tsunami',
     id: `test-tsunami-warning-${Date.now()}`,
@@ -196,7 +197,7 @@ export function createTestTsunamiWarning(): JMATsunami {
 }
 
 export function createTestTsunami(): JMATsunami {
-  const now = new Date()
+  const now = serverDate()
   const nowIso = now.toISOString()
   const t = (offsetMin: number) => new Date(now.getTime() + offsetMin * 60000).toISOString()
   return {
