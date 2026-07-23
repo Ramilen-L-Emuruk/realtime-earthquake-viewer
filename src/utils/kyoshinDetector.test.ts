@@ -4,11 +4,16 @@ import {
   siteKey,
   ewmaAlpha,
   updateSiteState,
+  clusterActive,
+  estimateWaveFit,
+  frameScore,
   step,
   initState,
   PARAMS,
   type Frame,
   type SiteState,
+  type ActiveTrigger,
+  type DetectorState,
 } from './kyoshinDetector'
 
 // ============================================================
@@ -206,8 +211,209 @@ describe('step', () => {
     expect(r.state.sites[siteKey(36, 140)]).toBeUndefined()
   })
 
-  it('detections は Phase 1 では常に空（②③ 未実装）', () => {
+  it('単一観測点はクラスタ不成立でイベント化しない（単発ノイズ棄却）', () => {
     const results = runIndices([1, 1, 12, 13, 14])
     expect(results.every((r) => r.detections.length === 0)).toBe(true)
+  })
+})
+
+// ============================================================
+// Phase 2: ② 時空間アソシエーション
+// ============================================================
+
+/** ActiveTrigger を組み立てるヘルパー。 */
+function mkAT(
+  key: string,
+  lat: number,
+  lng: number,
+  onsetMs: number,
+  peakValue = 3,
+): ActiveTrigger {
+  return { key, lat, lng, onsetMs, lastTrigMs: onsetMs, peakValue }
+}
+
+// 震源 A から北へ約10km刻みで並ぶ3観測点（波面フィット検証用）
+const SITE_A: [number, number] = [35.0, 139.0]
+const SITE_B: [number, number] = [35.09, 139.0] // A から約10km
+const SITE_C: [number, number] = [35.18, 139.0] // A から約20km
+
+describe('clusterActive', () => {
+  it('近接点は同一クラスタ、遠方点は別クラスタになる', () => {
+    const triggers = [
+      mkAT('a', SITE_A[0], SITE_A[1], 0),
+      mkAT('b', SITE_B[0], SITE_B[1], 0), // a から約10km（同一）
+      mkAT('c', 36.5, 139.0, 0), // a から約167km（別）
+    ]
+    const clusters = clusterActive(triggers)
+    expect(clusters).toHaveLength(2)
+    const sizes = clusters.map((c) => c.length).sort()
+    expect(sizes).toEqual([1, 2])
+  })
+
+  it('空入力は空配列', () => {
+    expect(clusterActive([])).toEqual([])
+  })
+})
+
+describe('estimateWaveFit', () => {
+  it('遠い点ほど遅いオンセットなら波面フィットが成立し速度が物理域に入る', () => {
+    // A(0km,0s) B(10km,3s) C(20km,6s) → 見かけ速度 ≈ 3.3 km/s
+    const cluster = [
+      mkAT('a', SITE_A[0], SITE_A[1], 0),
+      mkAT('b', SITE_B[0], SITE_B[1], 3000),
+      mkAT('c', SITE_C[0], SITE_C[1], 6000),
+    ]
+    const fit = estimateWaveFit(cluster)
+    expect(fit.fitOk).toBe(true)
+    expect(fit.velocityKmS).toBeGreaterThanOrEqual(PARAMS.V_MIN_KMS)
+    expect(fit.velocityKmS).toBeLessThanOrEqual(PARAMS.V_MAX_KMS)
+    expect(fit.residualRms).toBeLessThan(1)
+    expect(fit.epicenter).toEqual(SITE_A) // 最早オンセット点
+  })
+
+  it('3点未満はフィット不能', () => {
+    const cluster = [mkAT('a', SITE_A[0], SITE_A[1], 0), mkAT('b', SITE_B[0], SITE_B[1], 3000)]
+    expect(estimateWaveFit(cluster).fitOk).toBe(false)
+  })
+
+  it('距離レンジが狭すぎる（密集）とフィット不能', () => {
+    // 3点とも同一地点付近 → 距離レンジ < FIT_RANGE_MIN_KM
+    const cluster = [
+      mkAT('a', 35.0, 139.0, 0),
+      mkAT('b', 35.001, 139.001, 2000),
+      mkAT('c', 35.002, 139.0, 4000),
+    ]
+    expect(estimateWaveFit(cluster).fitOk).toBe(false)
+  })
+})
+
+describe('frameScore', () => {
+  it('点数が多くフィット良好なほど高スコア', () => {
+    const goodFit = { epicenter: SITE_A, velocityKmS: 3.3, residualRms: 0, fitOk: true }
+    const noFit = { epicenter: SITE_A, velocityKmS: NaN, residualRms: Infinity, fitOk: false }
+    expect(frameScore(5, goodFit)).toBeGreaterThan(frameScore(2, noFit))
+  })
+})
+
+// ============================================================
+// Phase 2: ③ 確信度積分・イベントライフサイクル（step 統合）
+// ============================================================
+
+/** ウォームアップ無効の初期状態（confirmed まで検証するため）。 */
+function stateNoWarmup(startMs: number): DetectorState {
+  return { ...initState(startMs - 1000), warmupUntilMs: 0 }
+}
+
+/** 3観測点フレームを組み立てる。 */
+function frame3(dataTimeMs: number, a: number, b: number, c: number): Frame {
+  return { dataTimeMs, sites: [SITE_A, SITE_B, SITE_C], values: [a, b, c] }
+}
+
+/**
+ * 波面状に立ち上がる地震シナリオを流す。
+ * baseline を確立後、A→B→C の順に約3秒間隔でトリガーさせ、以後は高値維持。
+ */
+function runWaveScenario(extraQuietFrames = 0): {
+  state: DetectorState
+  last: ReturnType<typeof step>
+  peak: ReturnType<typeof step>
+} {
+  const start = 1_000_000
+  let state = stateNoWarmup(start)
+  // A@f4, B@f7, C@f10 でオンセット（3s刻み）。以後 f16 まで全高値維持。
+  const schedule: [number, number, number][] = [
+    [1, 1, 1], // f0 baseline
+    [1, 1, 1], // f1
+    [1, 1, 1], // f2
+    [1, 1, 1], // f3
+    [14, 1, 1], // f4 A onset
+    [14, 1, 1], // f5
+    [14, 1, 1], // f6
+    [14, 14, 1], // f7 B onset
+    [14, 14, 1], // f8
+    [14, 14, 1], // f9
+    [14, 14, 14], // f10 C onset
+    [14, 14, 14], // f11
+    [14, 14, 14], // f12
+    [14, 14, 14], // f13
+    [14, 14, 14], // f14
+    [14, 14, 14], // f15
+    [14, 14, 14], // f16
+    [14, 14, 14], // f17
+    [14, 14, 14], // f18
+  ]
+  let last!: ReturnType<typeof step>
+  schedule.forEach(([a, b, c], i) => {
+    last = step(state, frame3(start + i * 1000, a, b, c))
+    state = last.state
+  })
+  const peak = last
+  // 追加の静穏フレーム（終了判定検証用）
+  for (let i = 0; i < extraQuietFrames; i++) {
+    last = step(state, frame3(start + (schedule.length + i) * 1000, 1, 1, 1))
+    state = last.state
+  }
+  return { state, last, peak }
+}
+
+describe('step: イベントライフサイクル', () => {
+  it('波面状に立ち上がる3点クラスタは confirmed に到達する', () => {
+    const { peak } = runWaveScenario()
+    expect(peak.detections.length).toBeGreaterThanOrEqual(1)
+    const ev = peak.detections[0]
+    expect(ev.confidence).toBe('confirmed')
+    expect(ev.epicenter).toEqual(SITE_A)
+    expect(ev.memberKeys.length).toBe(3)
+  })
+
+  it('揺れが収まると END_TIMEOUT 経過後にイベントが終了する', () => {
+    // 高値維持後、十分な静穏フレームで active 失効＋スコア減衰＋idle 超過
+    const { last } = runWaveScenario(20)
+    expect(last.detections.length).toBe(0)
+  })
+
+  it('空間的に離れた2つの地震は別イベントに分離される', () => {
+    const start = 2_000_000
+    let state = stateNoWarmup(start)
+    // クラスタ1: A,B,C（関東）。クラスタ2: 遠方3点（約500km南西）
+    const D: [number, number] = [31.0, 131.0]
+    const E: [number, number] = [31.09, 131.0]
+    const F: [number, number] = [31.18, 131.0]
+    const sites = [SITE_A, SITE_B, SITE_C, D, E, F]
+    const seq: number[][] = [
+      [1, 1, 1, 1, 1, 1],
+      [1, 1, 1, 1, 1, 1],
+      [1, 1, 1, 1, 1, 1],
+      [14, 14, 14, 14, 14, 14], // 両クラスタ同時立ち上がり
+      [14, 14, 14, 14, 14, 14],
+      [14, 14, 14, 14, 14, 14],
+    ]
+    let last!: ReturnType<typeof step>
+    seq.forEach((values, i) => {
+      last = step(state, { dataTimeMs: start + i * 1000, sites, values })
+      state = last.state
+    })
+    // 震源が 100km 超離れているため 2 イベントに分かれる
+    expect(last.detections.length).toBe(2)
+  })
+
+  it('離れた単発トリガー2点はクラスタも形成せずイベント化しない', () => {
+    const start = 3_000_000
+    let state = stateNoWarmup(start)
+    const far1: [number, number] = [35.0, 139.0]
+    const far2: [number, number] = [40.0, 141.0] // 約600km
+    const sites = [far1, far2]
+    const seq: number[][] = [
+      [1, 1],
+      [1, 1],
+      [14, 14], // 両点トリガーするが遠すぎてクラスタ不成立
+      [14, 14],
+    ]
+    let last!: ReturnType<typeof step>
+    seq.forEach((values, i) => {
+      last = step(state, { dataTimeMs: start + i * 1000, sites, values })
+      state = last.state
+    })
+    expect(last.detections.length).toBe(0)
   })
 })
