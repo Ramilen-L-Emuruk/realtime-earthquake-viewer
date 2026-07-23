@@ -8,6 +8,7 @@ import {
   estimateWaveFit,
   frameScore,
   classify,
+  spatialFill,
   step,
   initState,
   PARAMS,
@@ -437,38 +438,81 @@ describe('classify', () => {
   const HIGH = PARAMS.S_ON + 0.5 // confirmed しきい値を十分超えるスコア
   const PEAK = PARAMS.MIN_LIKELY_PEAK + 1.0 // 振幅ゲートを十分超える
   const BIG = PARAMS.MIN_CONFIRM_SIZE_ONESIDED + 2 // サイズゲートを十分超える
+  // 引数順: (score, size, peak, fitOk, radialFitOk, spatialOk, warmup)
 
   it('fitOk でなければスコア・点数が高くても weak 止まり', () => {
-    expect(classify(HIGH, BIG, PEAK, false, false, false)).toBe('weak')
+    expect(classify(HIGH, BIG, PEAK, false, false, true, false)).toBe('weak')
   })
 
   it('radial 裏取りあり: MIN_CONFIRM_SIZE(4) で confirmed に上げられる', () => {
-    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, PEAK, true, true, false)).toBe('confirmed')
+    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, PEAK, true, true, true, false)).toBe('confirmed')
   })
 
   it('片側配置(radialFitOk=false): 4点では confirmed に上げず likely 止まり', () => {
     // 高スコアでも片側配置の少数点はノイズ塊の偶然フィットと区別できない
-    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, PEAK, true, false, false)).toBe('likely')
+    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, PEAK, true, false, true, false)).toBe('likely')
   })
 
   it('片側配置(radialFitOk=false): MIN_CONFIRM_SIZE_ONESIDED 点あれば confirmed 可', () => {
-    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE_ONESIDED, PEAK, true, false, false)).toBe('confirmed')
+    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE_ONESIDED, PEAK, true, false, true, false)).toBe('confirmed')
   })
 
   it('スコアが S_LIKELY 未満なら fitOk でも weak', () => {
-    expect(classify(PARAMS.S_LIKELY - 0.1, BIG, PEAK, true, true, false)).toBe('weak')
+    expect(classify(PARAMS.S_LIKELY - 0.1, BIG, PEAK, true, true, true, false)).toBe('weak')
   })
 
   it('ウォームアップ中は confirmed に上げず likely に留める', () => {
-    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, PEAK, true, true, true)).toBe('likely')
+    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, PEAK, true, true, true, true)).toBe('likely')
   })
 
   it('少数点(MIN_LIKELY_SIZE 未満)は高スコア・高振幅でも weak（平常時ノイズ抑制）', () => {
-    expect(classify(HIGH, PARAMS.MIN_LIKELY_SIZE - 1, PEAK, true, true, false)).toBe('weak')
+    expect(classify(HIGH, PARAMS.MIN_LIKELY_SIZE - 1, PEAK, true, true, true, false)).toBe('weak')
   })
 
   it('低振幅(震度0未満)は点数・スコアが十分でも weak（低振幅の都市ノイズ抑制）', () => {
-    expect(classify(HIGH, BIG, PARAMS.MIN_LIKELY_PEAK - 0.5, true, true, false)).toBe('weak')
+    expect(classify(HIGH, BIG, PARAMS.MIN_LIKELY_PEAK - 0.5, true, true, true, false)).toBe('weak')
+  })
+
+  it('空間連続性ゲート不成立(spatialOk=false)は高スコアでも weak（広域スカスカノイズ抑制）', () => {
+    expect(classify(HIGH, BIG, PEAK, true, true, false, false)).toBe('weak')
+  })
+})
+
+// ============================================================
+// spatialFill: 空間連続性（面の埋まり具合）
+// ============================================================
+
+describe('spatialFill（空間連続性）', () => {
+  // 0.1° 間隔の密なグリッド観測点（11×11＝121点）
+  const grid: [number, number][] = []
+  for (let i = 0; i < 11; i++) for (let j = 0; j < 11; j++) grid.push([35.0 + i * 0.1, 139.0 + j * 0.1])
+
+  // spatialFill は ActiveTrigger.key === siteKey(lat,lng) を前提にする（本番 step ではそうなる）
+  const gm = (lat: number, lng: number, i: number) => mkAT(siteKey(lat, lng), lat, lng, i * 100)
+
+  it('連続的に埋まったクラスタは高い連続性（実地震型）', () => {
+    // 中央 5×5 ブロックを全て反応させる（間に穴なし）
+    const members: ActiveTrigger[] = []
+    let n = 0
+    for (let i = 3; i <= 7; i++)
+      for (let j = 3; j <= 7; j++) members.push(gm(35.0 + i * 0.1, 139.0 + j * 0.1, n++))
+    expect(spatialFill(members, grid).contiguity).toBeGreaterThanOrEqual(PARAMS.CONTIG_MIN)
+  })
+
+  it('間が抜けたスカスカのクラスタは低い連続性（広域ノイズ型）', () => {
+    // グリッド全域に 0.3° 間隔で散在（各点の近傍に非反応点が多い）
+    const members: ActiveTrigger[] = []
+    let n = 0
+    for (let i = 0; i <= 9; i += 3)
+      for (let j = 0; j <= 9; j += 3) members.push(gm(35.0 + i * 0.1, 139.0 + j * 0.1, n++))
+    expect(spatialFill(members, grid).contiguity).toBeLessThan(PARAMS.CONTIG_MIN)
+  })
+
+  it('疎地域（周辺観測点が少ない）は densityNear が小さく検出できる', () => {
+    // 3点だけの孤立クラスタ（全観測点もその3点のみ）
+    const iso: [number, number][] = [[40, 141], [40.1, 141], [40.2, 141]]
+    const members = iso.map((p, i) => gm(p[0], p[1], i))
+    expect(spatialFill(members, iso).densityNear).toBeLessThan(PARAMS.CONTIG_SPARSE_MIN)
   })
 })
 

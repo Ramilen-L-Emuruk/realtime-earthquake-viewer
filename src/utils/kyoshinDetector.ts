@@ -102,6 +102,10 @@ export interface DetectionEvent {
   lastRadialFitOk: boolean
   /** 直近フレームのクラスタ最大計測震度（value）。likely ゲート（振幅下限）に使う */
   lastPeak: number
+  /** 直近フレームで空間連続性ゲートを通過したか（疎地域は免除で true） */
+  lastSpatialOk: boolean
+  /** 直近フレームの空間連続性（各メンバー近傍の反応割合の中央値）。診断用 */
+  lastContiguity: number
 }
 
 /** 検知エンジンの全状態。localStorage に永続化する対象。 */
@@ -274,6 +278,22 @@ export const PARAMS = {
   NOISE_DUTY_HI: 0.6,
   /** noiseWeight がこの値未満の観測点はクラスタリング入力から除外する（慢性ノイズ源の排除） */
   NOISE_WEIGHT_MIN: 0.5,
+
+  // ---- 空間連続性ゲート（面的な埋まり具合。ノイズ＝スカスカ / 実地震＝連続を判別）----
+  /** 局所連続性を測る近傍半径(km)。各メンバーのこの範囲で「一緒に反応した割合」を見る */
+  CONTIG_RADIUS_KM: 25,
+  /**
+   * likely 以上に要する局所連続性（メンバーごとの近傍反応割合の中央値）の下限。
+   * 実データ検証: 実地震(福岡0.50/長野0.545) と 広域ノイズ(北関東≤0.30) が 0.30〜0.50 で分離。
+   */
+  CONTIG_MIN: 0.4,
+  /** 疎地域ガードの局所密度を測る半径(km) */
+  CONTIG_DENSITY_RADIUS_KM: 50,
+  /**
+   * 疎地域ガード: 震央周辺(CONTIG_DENSITY_RADIUS_KM)の観測点数がこの値未満なら連続性ゲートを
+   * 適用しない（離島・沖合など元々スカスカな地域で実地震を潰さないため。設計書 §5-A）。
+   */
+  CONTIG_SPARSE_MIN: 15,
 
   // ---- ③ スコア・確信度 ----
   /** 波面残差 RMS の「良好」目安(秒) */
@@ -661,19 +681,61 @@ function clamp(x: number, lo: number, hi: number): number {
  *    片側配置は震源が縮退し、少数点ではノイズ塊の偶然フィットと区別できない（並走検証で size4 の
  *    誤 confirmed を観測）ため。本物の海溝型は陸側で多数点が並ぶので確定できる（設計書 §5-B）。
  */
+/**
+ * クラスタの空間的な「埋まり具合」を測る（設計書 §5-D）。
+ * 実地震は felt エリア内の観測点が連続的にほぼ全て反応する（高い連続性）が、
+ * 広域ノイズは間に非反応点が挟まりスカスカになる（低い連続性）。地域に依らない per-cluster 量。
+ *
+ * @param cluster クラスタ（反応中の観測点）
+ * @param allSites 現フレームの全観測点座標（非反応点を知るために必要）
+ * @returns contiguity（各メンバー近傍の反応割合の中央値）と densityNear（震央周辺の観測点数）
+ */
+export function spatialFill(
+  cluster: ActiveTrigger[],
+  allSites: [number, number][],
+): { contiguity: number; densityNear: number } {
+  const memberSet = new Set(cluster.map((c) => c.key))
+  const cLat = mean(cluster.map((c) => c.lat))
+  const cLng = mean(cluster.map((c) => c.lng))
+
+  let densityNear = 0
+  for (const s of allSites) {
+    if (haversineKm(cLat, cLng, s[0], s[1]) <= PARAMS.CONTIG_DENSITY_RADIUS_KM) densityNear++
+  }
+
+  const contigs: number[] = []
+  for (const m of cluster) {
+    let near = 0
+    let nearMembers = 0
+    for (const s of allSites) {
+      if (haversineKm(m.lat, m.lng, s[0], s[1]) <= PARAMS.CONTIG_RADIUS_KM) {
+        near++
+        if (memberSet.has(siteKey(s[0], s[1]))) nearMembers++
+      }
+    }
+    if (near > 0) contigs.push(nearMembers / near)
+  }
+  contigs.sort((a, b) => a - b)
+  const contiguity = contigs.length > 0 ? contigs[Math.floor(contigs.length / 2)] : 0
+  return { contiguity, densityNear }
+}
+
 export function classify(
   score: number,
   size: number,
   peak: number,
   fitOk: boolean,
   radialFitOk: boolean,
+  spatialOk: boolean,
   warmup: boolean,
 ): Confidence {
   // likely 以上の下限ゲート（平常時ノイズ抑制。並走検証で決定）:
   //  - 波面フィット成立（伝播整合）
+  //  - 空間連続性（面が埋まっている＝実地震。スカスカ＝広域ノイズを除外。疎地域は spatialOk=true で免除）
   //  - クラスタ点数が少数点ノイズを超える（MIN_LIKELY_SIZE）
   //  - クラスタ最大振幅が震度0 以上（MIN_LIKELY_PEAK。低振幅の都市ノイズを除外）
-  if (!fitOk || size < PARAMS.MIN_LIKELY_SIZE || peak < PARAMS.MIN_LIKELY_PEAK) return 'weak'
+  if (!fitOk || !spatialOk || size < PARAMS.MIN_LIKELY_SIZE || peak < PARAMS.MIN_LIKELY_PEAK)
+    return 'weak'
 
   const confirmSize = radialFitOk ? PARAMS.MIN_CONFIRM_SIZE : PARAMS.MIN_CONFIRM_SIZE_ONESIDED
   let c: Confidence = 'weak'
@@ -754,6 +816,7 @@ export function step(
     state.events,
     state.nextEventId,
     clusters,
+    frame.sites,
     now,
     warmup,
   )
@@ -811,6 +874,7 @@ function associateAndScore(
   prevEvents: DetectionEvent[],
   nextEventId: number,
   clusters: ActiveTrigger[][],
+  allSites: [number, number][],
   now: number,
   warmup: boolean,
 ): { events: DetectionEvent[]; nextEventId: number } {
@@ -824,6 +888,10 @@ function associateAndScore(
     const s = frameScore(cluster.length, fit)
     const clusterPeak = Math.max(...cluster.map((c) => c.peakValue))
     const memberKeys = cluster.map((c) => c.key)
+    // 空間連続性ゲート: 面が埋まっているか（実地震）／スカスカか（広域ノイズ）。
+    // 疎地域（震央周辺の観測点数が少ない）は連続性が本質的に低いのでゲート免除。
+    const { contiguity, densityNear } = spatialFill(cluster, allSites)
+    const spatialOk = densityNear < PARAMS.CONTIG_SPARSE_MIN || contiguity >= PARAMS.CONTIG_MIN
 
     // 既存イベントとの帰属判定（震源が PENDING_MATCH_KM 以内）
     let target: DetectionEvent | undefined
@@ -848,6 +916,8 @@ function associateAndScore(
       target.lastFitOk = fit.fitOk
       target.lastRadialFitOk = fit.radialFitOk
       target.lastPeak = clusterPeak
+      target.lastSpatialOk = spatialOk
+      target.lastContiguity = contiguity
       target.memberKeys = [...new Set([...target.memberKeys, ...memberKeys])]
       target.confidence = classify(
         target.score,
@@ -855,6 +925,7 @@ function associateAndScore(
         clusterPeak,
         fit.fitOk,
         fit.radialFitOk,
+        spatialOk,
         warmup,
       )
       updated.add(target.id)
@@ -867,13 +938,23 @@ function associateAndScore(
         oneSided: fit.oneSided,
         originTimeMs: now,
         score,
-        confidence: classify(score, cluster.length, clusterPeak, fit.fitOk, fit.radialFitOk, warmup),
+        confidence: classify(
+          score,
+          cluster.length,
+          clusterPeak,
+          fit.fitOk,
+          fit.radialFitOk,
+          spatialOk,
+          warmup,
+        ),
         lastOnsetAtMs: now,
         memberKeys,
         lastSize: cluster.length,
         lastFitOk: fit.fitOk,
         lastRadialFitOk: fit.radialFitOk,
         lastPeak: clusterPeak,
+        lastSpatialOk: spatialOk,
+        lastContiguity: contiguity,
       }
       events.push(ev)
       updated.add(ev.id)
@@ -885,7 +966,15 @@ function associateAndScore(
   for (const e of events) {
     if (!updated.has(e.id)) {
       e.score = PARAMS.DECAY * e.score
-      e.confidence = classify(e.score, e.lastSize, e.lastPeak, e.lastFitOk, e.lastRadialFitOk, warmup)
+      e.confidence = classify(
+        e.score,
+        e.lastSize,
+        e.lastPeak,
+        e.lastFitOk,
+        e.lastRadialFitOk,
+        e.lastSpatialOk,
+        warmup,
+      )
     }
     const idle = now - e.lastOnsetAtMs
     const duration = now - e.originTimeMs
