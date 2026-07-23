@@ -96,6 +96,8 @@ export interface DetectionEvent {
   lastFitOk: boolean
   /** 直近フレームで radial フィット（震源を囲む配置）が成立したか。confirmed 判定に使う */
   lastRadialFitOk: boolean
+  /** 直近フレームのクラスタ最大計測震度（value）。likely ゲート（振幅下限）に使う */
+  lastPeak: number
 }
 
 /** 検知エンジンの全状態。localStorage に永続化する対象。 */
@@ -229,6 +231,18 @@ export const PARAMS = {
    * 誤 confirmed を観測）。本物の海溝型 M4+ は陸側で多数点が並ぶため、多めの裏取りを要求する。
    */
   MIN_CONFIRM_SIZE_ONESIDED: 8,
+  /**
+   * likely 以上に上げるための最小クラスタ点数。少数点（size 3）は平常時ノイズが多く
+   * （並走検証: 平常時の偽 likely はほぼ size3）、揺れの可能性として提示するには不足。
+   * これ未満は weak 止まり（＝表示対象外）。
+   */
+  MIN_LIKELY_SIZE: 4,
+  /**
+   * likely 以上に上げるためのクラスタ最大計測震度の下限（0.0 = 震度0）。振幅が震度0 未満の
+   * クラスタは都市ノイズ（並走検証: 夜間 size8 でも peak -1.0 の例）で、地震ではない。
+   * 実地震は最低でも震度0 以上の点を含む（福岡 震度1 で peak 0.5）。
+   */
+  MIN_LIKELY_PEAK: 0.0,
   /** 波面フィットに要する最小点数 */
   MIN_FIT_POINTS: 3,
   /** 波面フィットに要する距離レンジ下限(km。縮退回避) */
@@ -622,14 +636,21 @@ function clamp(x: number, lo: number, hi: number): number {
 export function classify(
   score: number,
   size: number,
+  peak: number,
   fitOk: boolean,
   radialFitOk: boolean,
   warmup: boolean,
 ): Confidence {
+  // likely 以上の下限ゲート（平常時ノイズ抑制。並走検証で決定）:
+  //  - 波面フィット成立（伝播整合）
+  //  - クラスタ点数が少数点ノイズを超える（MIN_LIKELY_SIZE）
+  //  - クラスタ最大振幅が震度0 以上（MIN_LIKELY_PEAK。低振幅の都市ノイズを除外）
+  if (!fitOk || size < PARAMS.MIN_LIKELY_SIZE || peak < PARAMS.MIN_LIKELY_PEAK) return 'weak'
+
   const confirmSize = radialFitOk ? PARAMS.MIN_CONFIRM_SIZE : PARAMS.MIN_CONFIRM_SIZE_ONESIDED
   let c: Confidence = 'weak'
-  if (fitOk && score >= PARAMS.S_ON && size >= confirmSize) c = 'confirmed'
-  else if (fitOk && score >= PARAMS.S_LIKELY) c = 'likely'
+  if (score >= PARAMS.S_ON && size >= confirmSize) c = 'confirmed'
+  else if (score >= PARAMS.S_LIKELY) c = 'likely'
   // ウォームアップ中は confirmed に上げない（設計書 §7.4）
   if (warmup && c === 'confirmed') c = 'likely'
   return c
@@ -768,6 +789,7 @@ function associateAndScore(
     const fit = estimateWaveFit(cluster)
     const epi = fit.epicenter
     const s = frameScore(cluster.length, fit)
+    const clusterPeak = Math.max(...cluster.map((c) => c.peakValue))
     const memberKeys = cluster.map((c) => c.key)
 
     // 既存イベントとの帰属判定（震源が PENDING_MATCH_KM 以内）
@@ -792,10 +814,12 @@ function associateAndScore(
       target.lastSize = cluster.length
       target.lastFitOk = fit.fitOk
       target.lastRadialFitOk = fit.radialFitOk
+      target.lastPeak = clusterPeak
       target.memberKeys = [...new Set([...target.memberKeys, ...memberKeys])]
       target.confidence = classify(
         target.score,
         cluster.length,
+        clusterPeak,
         fit.fitOk,
         fit.radialFitOk,
         warmup,
@@ -810,12 +834,13 @@ function associateAndScore(
         oneSided: fit.oneSided,
         originTimeMs: now,
         score,
-        confidence: classify(score, cluster.length, fit.fitOk, fit.radialFitOk, warmup),
+        confidence: classify(score, cluster.length, clusterPeak, fit.fitOk, fit.radialFitOk, warmup),
         lastOnsetAtMs: now,
         memberKeys,
         lastSize: cluster.length,
         lastFitOk: fit.fitOk,
         lastRadialFitOk: fit.radialFitOk,
+        lastPeak: clusterPeak,
       }
       events.push(ev)
       updated.add(ev.id)
@@ -827,7 +852,7 @@ function associateAndScore(
   for (const e of events) {
     if (!updated.has(e.id)) {
       e.score = PARAMS.DECAY * e.score
-      e.confidence = classify(e.score, e.lastSize, e.lastFitOk, e.lastRadialFitOk, warmup)
+      e.confidence = classify(e.score, e.lastSize, e.lastPeak, e.lastFitOk, e.lastRadialFitOk, warmup)
     }
     const idle = now - e.lastOnsetAtMs
     const duration = now - e.originTimeMs
