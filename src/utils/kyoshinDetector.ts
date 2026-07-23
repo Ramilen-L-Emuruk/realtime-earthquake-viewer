@@ -54,7 +54,9 @@ export interface SiteState {
   lastValue: number
   /** 最後にトリガーした dataTime(ms)。未トリガーは null */
   triggeredAt: number | null
-  /** 恒常ノイズ源の減衰重み（0=無効化〜1=通常） */
+  /** トリガー稼働率(duty cycle)の EWMA。慢性ノイズ源の識別に使う */
+  triggerRate: number
+  /** 恒常ノイズ源の減衰重み（0=無効化〜1=通常）。triggerRate から算出 */
   noiseWeight: number
 }
 
@@ -69,6 +71,8 @@ export interface ActiveTrigger {
   lastTrigMs: number
   /** エピソード中の最大 value */
   peakValue: number
+  /** 直近の noiseWeight（慢性ノイズ源はクラスタリング入力から除外する） */
+  noiseWeight: number
 }
 
 /** 検知イベント（多重地震・余震を同時に保持できる）。 */
@@ -147,6 +151,8 @@ export interface TriggerResult {
   value: number
   /** 立ち上がり中か（second onset 検出の素） */
   rising: boolean
+  /** 観測点の noiseWeight（慢性ノイズ源の減衰重み） */
+  noiseWeight: number
 }
 
 /** 波面フィットの結果。 */
@@ -259,6 +265,16 @@ export const PARAMS = {
    */
   ONE_SIDED_GAP_DEG: 160,
 
+  // ---- 慢性ノイズ抑制（noiseWeight。設計書 §5-D）----
+  /** トリガー稼働率(duty cycle)の EWMA 時定数(ms)。慢性ノイズと一過性地震を分ける時間軸 */
+  NOISE_TAU_MS: 600_000,
+  /** 稼働率がこの値以下なら noiseWeight=1（通常）。一過性地震(60-120s)の稼働率上昇を許容 */
+  NOISE_DUTY_LO: 0.25,
+  /** 稼働率がこの値以上なら noiseWeight=0（慢性ノイズ源）。LO〜HI は線形補間 */
+  NOISE_DUTY_HI: 0.6,
+  /** noiseWeight がこの値未満の観測点はクラスタリング入力から除外する（慢性ノイズ源の排除） */
+  NOISE_WEIGHT_MIN: 0.5,
+
   // ---- ③ スコア・確信度 ----
   /** 波面残差 RMS の「良好」目安(秒) */
   RESID_GOOD_S: 3.0,
@@ -311,6 +327,7 @@ function initSiteState(value: number): SiteState {
     frozen: false,
     lastValue: value,
     triggeredAt: null,
+    triggerRate: 0,
     noiseWeight: 1,
   }
 }
@@ -364,6 +381,16 @@ export function updateSiteState(
     }
   }
 
+  // 慢性ノイズ源の識別: トリガー稼働率(duty cycle)を長時定数 EWMA で追跡し、
+  // 高稼働（鳴り続ける）点の noiseWeight を下げる。一過性の地震は稼働率がほとんど上がらない。
+  const aNoise = ewmaAlpha(dtMs, PARAMS.NOISE_TAU_MS)
+  const triggerRate = prev.triggerRate + aNoise * ((triggered ? 1 : 0) - prev.triggerRate)
+  const noiseWeight = clamp(
+    1 - (triggerRate - PARAMS.NOISE_DUTY_LO) / (PARAMS.NOISE_DUTY_HI - PARAMS.NOISE_DUTY_LO),
+    0,
+    1,
+  )
+
   const state: SiteState = {
     sta,
     lta,
@@ -372,7 +399,8 @@ export function updateSiteState(
     frozen: triggered,
     lastValue: value,
     triggeredAt: triggered ? dataTimeMs : prev.triggeredAt,
-    noiseWeight: prev.noiseWeight,
+    triggerRate,
+    noiseWeight,
   }
   return { state, path, triggered, rising }
 }
@@ -708,16 +736,19 @@ export function step(
 
     const { state: next, path, triggered, rising } = updateSiteState(prev, value, dtMs, now)
     sites[key] = next
-    if (triggered) triggers.push({ key, lat, lng, triggered, path, value, rising })
+    if (triggered)
+      triggers.push({ key, lat, lng, triggered, path, value, rising, noiseWeight: next.noiseWeight })
   }
 
   // ---- ② 継続トリガーの更新（フレーム跨ぎ）----
   const activeTriggers = updateActiveTriggers(state.activeTriggers, triggers, now)
 
   // ---- ② クラスタリング＋波面フィット → ③ イベント帰属・積分 ----
-  const clusters = clusterActive(Object.values(activeTriggers)).filter(
-    (c) => c.length >= PARAMS.MIN_EVENT_SIZE,
+  // 慢性ノイズ源（noiseWeight 低）はクラスタリング入力から除外する（設計書 §5-D）。
+  const clusterInput = Object.values(activeTriggers).filter(
+    (at) => at.noiseWeight >= PARAMS.NOISE_WEIGHT_MIN,
   )
+  const clusters = clusterActive(clusterInput).filter((c) => c.length >= PARAMS.MIN_EVENT_SIZE)
   const warmup = now < state.warmupUntilMs
   const { events, nextEventId } = associateAndScore(
     state.events,
@@ -757,6 +788,7 @@ function updateActiveTriggers(
     if (existing) {
       existing.lastTrigMs = now
       existing.peakValue = Math.max(existing.peakValue, t.value)
+      existing.noiseWeight = t.noiseWeight
     } else {
       next[t.key] = {
         key: t.key,
@@ -765,6 +797,7 @@ function updateActiveTriggers(
         onsetMs: now,
         lastTrigMs: now,
         peakValue: t.value,
+        noiseWeight: t.noiseWeight,
       }
     }
   }

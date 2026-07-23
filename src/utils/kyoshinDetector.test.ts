@@ -105,7 +105,7 @@ describe('updateSiteState', () => {
     // 前状態: 静穏（value=-3 で収束）
     const prev: SiteState = {
       sta: -3, lta: -3, sigma: 0, frozen: false,
-      lastValue: -3, triggeredAt: null, noiseWeight: 1,
+      lastValue: -3, triggeredAt: null, triggerRate: 0, noiseWeight: 1,
     }
     // index 8 (value 1.0) へ急上昇
     const r = updateSiteState(prev, indexToValue(8), 1000, 2000)
@@ -118,7 +118,7 @@ describe('updateSiteState', () => {
     // 前状態: value=0.4 付近で安定（sta≈lta で delta 小、σ 小）
     const prev: SiteState = {
       sta: 0.4, lta: 0.4, sigma: 0, frozen: false,
-      lastValue: 0.55, triggeredAt: null, noiseWeight: 1,
+      lastValue: 0.55, triggeredAt: null, triggerRate: 0, noiseWeight: 1,
     }
     // value 0.6（震度1超）だが前値 0.55 からの上昇はわずか
     const r = updateSiteState(prev, 0.6, 1000, 2000)
@@ -129,7 +129,7 @@ describe('updateSiteState', () => {
   it('下限未満（TRIG_FLOOR 未満）は常に非トリガー', () => {
     const prev: SiteState = {
       sta: -3, lta: -3, sigma: 0, frozen: false,
-      lastValue: -3, triggeredAt: null, noiseWeight: 1,
+      lastValue: -3, triggeredAt: null, triggerRate: 0, noiseWeight: 1,
     }
     // value -2.0（index 2、TRIG_FLOOR=-1.5 未満）
     const r = updateSiteState(prev, -2.0, 1000, 2000)
@@ -139,7 +139,7 @@ describe('updateSiteState', () => {
   it('σ→0 の完全静穏点が微小上昇（マージン未満）で誤発火しない', () => {
     const prev: SiteState = {
       sta: -1.0, lta: -1.0, sigma: 0, frozen: false,
-      lastValue: -1.0, triggeredAt: null, noiseWeight: 1,
+      lastValue: -1.0, triggeredAt: null, triggerRate: 0, noiseWeight: 1,
     }
     // lta=-1.0 に対し value=-0.9（+0.1 のみ、SIGMA_FLOOR_MARGIN=0.75 未満）
     // かつ delta も小、絶対レベルも ABS_LEVEL 未満
@@ -150,7 +150,7 @@ describe('updateSiteState', () => {
   it('トリガー発火時は次フレームで LTA を凍結する（frozen=true）', () => {
     const prev: SiteState = {
       sta: -3, lta: -3, sigma: 0, frozen: false,
-      lastValue: -3, triggeredAt: null, noiseWeight: 1,
+      lastValue: -3, triggeredAt: null, triggerRate: 0, noiseWeight: 1,
     }
     const r = updateSiteState(prev, indexToValue(8), 1000, 2000)
     expect(r.state.frozen).toBe(true)
@@ -160,10 +160,39 @@ describe('updateSiteState', () => {
   it('凍結中は LTA が揺れに追随せず据え置かれる（余震マスキング防止）', () => {
     const prev: SiteState = {
       sta: 1.0, lta: -3, sigma: 0, frozen: true,
-      lastValue: 1.0, triggeredAt: 1000, noiseWeight: 1,
+      lastValue: 1.0, triggeredAt: 1000, triggerRate: 0, noiseWeight: 1,
     }
     const r = updateSiteState(prev, indexToValue(10), 1000, 2000)
     expect(r.state.lta).toBe(-3) // 凍結で不変
+  })
+})
+
+// ============================================================
+// updateSiteState: 慢性ノイズ源の noiseWeight（設計書 §5-D）
+// ============================================================
+
+describe('updateSiteState: noiseWeight（慢性ノイズ抑制）', () => {
+  const quiet = (): SiteState => ({
+    sta: -3, lta: -3, sigma: 0, frozen: false,
+    lastValue: -3, triggeredAt: null, triggerRate: 0, noiseWeight: 1,
+  })
+
+  it('鳴り続ける観測点は noiseWeight が除外閾値未満まで下がる（慢性ノイズ源）', () => {
+    let st = quiet()
+    // 20分間、毎秒トリガーし続ける（慢性ノイズを模擬）
+    for (let t = 0; t < 20 * 60; t++) {
+      st = updateSiteState(st, indexToValue(14), 1000, (t + 1) * 1000).state
+    }
+    expect(st.triggerRate).toBeGreaterThan(0.6)
+    expect(st.noiseWeight).toBeLessThan(PARAMS.NOISE_WEIGHT_MIN)
+  })
+
+  it('一過性の地震（60秒トリガー）では noiseWeight はほぼ1のまま（除外されない）', () => {
+    let st = quiet()
+    for (let t = 0; t < 60; t++) {
+      st = updateSiteState(st, indexToValue(14), 1000, (t + 1) * 1000).state
+    }
+    expect(st.noiseWeight).toBeGreaterThan(0.9)
   })
 })
 
@@ -230,8 +259,9 @@ function mkAT(
   lng: number,
   onsetMs: number,
   peakValue = 3,
+  noiseWeight = 1,
 ): ActiveTrigger {
-  return { key, lat, lng, onsetMs, lastTrigMs: onsetMs, peakValue }
+  return { key, lat, lng, onsetMs, lastTrigMs: onsetMs, peakValue, noiseWeight }
 }
 
 // 震源 A から北へ約10km刻みで並ぶ3観測点（波面フィット検証用）
