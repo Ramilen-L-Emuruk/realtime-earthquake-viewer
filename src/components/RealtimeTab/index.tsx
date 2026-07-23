@@ -3,6 +3,7 @@
 import type { EEWAlert } from '../../types/earthquake'
 import type { KyoshinDetection } from '../../hooks/useKyoshinDetection'
 import { MIN_DETECTION_INDEX } from '../../hooks/useKyoshinDetection'
+import type { DetectionEvent, Confidence } from '../../utils/kyoshinDetector'
 import type { SiteCoords } from '../../services/kyoshin'
 import type { SWaveArrival } from '../../hooks/useSWaveCountdown'
 import { formatDateTime, formatTime } from '../../utils/formatters'
@@ -31,6 +32,8 @@ interface Props {
   kyoshinSites: SiteCoords
   kyoshinIndices: number[]
   swaveArrival: SWaveArrival | null
+  /** 新検知エンジン(v2)の検知イベント。視覚カードのみ・音/タブ切替には未使用。 */
+  kyoshinV2Detections: DetectionEvent[]
   activeLpgmEventId?: string | null
   onToggleLpgm?: (eventId: string) => void
   onDeactivateLpgm?: () => void
@@ -373,7 +376,56 @@ function SWaveArrivalCard({ arrival }: { arrival: SWaveArrival }) {
   )
 }
 
-export function RealtimeTab({ eews, kyoshinDetection, kyoshinSites, kyoshinIndices, swaveArrival, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: Props) {
+// 新検知エンジン(v2)の確信度別スタイル。confirmed=赤・likely=橙・weak=灰。
+const V2_TIER: Record<Confidence, { label: string; color: string; bg: string; border: string; rank: number }> = {
+  confirmed: { label: '検知', color: '#f87171', bg: '#450a0a', border: '#ef4444', rank: 0 },
+  likely: { label: '可能性', color: '#fcd34d', bg: '#451a03', border: '#d97706', rank: 1 },
+  weak: { label: '微弱', color: '#9ca3af', bg: 'rgba(42,42,42,0.6)', border: '#4b5563', rank: 2 },
+}
+
+// 方位(度・真北0°時計回り)を8方位の日本語に変換する。
+const COMPASS_8 = ['北', '北東', '東', '南東', '南', '南西', '西', '北西']
+function bearingToJp(deg: number): string {
+  return COMPASS_8[Math.round(((deg % 360) + 360) % 360 / 45) % 8]
+}
+
+// v2 検知イベント 1 件のカード。片側配置(type-B)では震央は最短距離の点で、震源方位を併記する。
+function KyoshinV2EventCard({ ev }: { ev: DetectionEvent }) {
+  const tier = V2_TIER[ev.confidence]
+  const time = new Date(ev.originTimeMs).toLocaleTimeString('ja-JP', { hour12: false })
+  const epi = ev.epicenter
+  return (
+    <div className="rounded-lg overflow-hidden" style={{ border: `1px solid ${tier.border}`, backgroundColor: tier.bg }}>
+      <div className="flex items-center gap-2 px-3 py-1.5" style={{ borderBottom: `1px solid ${tier.border}55` }}>
+        <span className="text-xs font-bold px-1.5 py-0.5 rounded flex-shrink-0" style={{ backgroundColor: tier.border, color: '#fff' }}>
+          {tier.label}
+        </span>
+        <span className="text-xs text-secondary">強震モニタ検知</span>
+        <span className="text-xs text-secondary ml-auto">{ev.lastSize}点</span>
+      </div>
+      <div className="flex flex-col gap-1 px-3 py-2">
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-secondary font-mono">{time}</span>
+          <span className="text-xs font-mono" style={{ color: tier.color }}>score {ev.score.toFixed(2)}</span>
+        </div>
+        {epi ? (
+          <div className="text-sm text-white font-mono">
+            推定震央 {epi[0].toFixed(2)}, {epi[1].toFixed(2)}
+          </div>
+        ) : (
+          <div className="text-sm text-secondary">震央推定中</div>
+        )}
+        {ev.oneSided && ev.bearingDeg != null && (
+          <div className="text-xs" style={{ color: tier.color }}>
+            片側配置：震源は{bearingToJp(ev.bearingDeg)}方向（{Math.round(ev.bearingDeg)}°・距離は不確実）
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+export function RealtimeTab({ eews, kyoshinDetection, kyoshinSites, kyoshinIndices, kyoshinV2Detections, swaveArrival, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: Props) {
   return (
     <div className="flex flex-col min-h-full p-3 gap-3">
       {/* データカード */}
@@ -396,6 +448,28 @@ export function RealtimeTab({ eews, kyoshinDetection, kyoshinSites, kyoshinIndic
         kyoshinSites={kyoshinSites}
         kyoshinIndices={kyoshinIndices}
       />
+
+      {/* 新検知エンジン(v2)の検知イベント（実験的・視覚のみ）。weak は除外し confirmed/likely のみ、確信度順→スコア順で最大6件 */}
+      {(() => {
+        const events = kyoshinV2Detections.filter(d => d.confidence !== 'weak')
+        if (events.length === 0) return null
+        const sorted = [...events].sort(
+          (a, b) => V2_TIER[a.confidence].rank - V2_TIER[b.confidence].rank || b.score - a.score,
+        )
+        const shown = sorted.slice(0, 6)
+        const rest = sorted.length - shown.length
+        return (
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <h3 className="text-white text-xs font-bold">強震モニタ検知（v2・実験的）</h3>
+              <span className="text-xs text-secondary">{sorted.length}件</span>
+            </div>
+            {shown.map(ev => <KyoshinV2EventCard key={ev.id} ev={ev} />)}
+            {rest > 0 && <span className="text-xs text-secondary">他{rest}件</span>}
+            <p className="text-xs text-secondary">※実験的な機器検知の暫定値。音・自動タブ切替には未使用です。</p>
+          </div>
+        )
+      })()}
 
       {/* スペーサー：データが少ないときに情報セクションを下部へ押し出す */}
       <div className="flex-1" />
