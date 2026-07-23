@@ -8,6 +8,7 @@ import {
   estimateWaveFit,
   frameScore,
   classify,
+  spatialFill,
   step,
   initState,
   PARAMS,
@@ -105,7 +106,7 @@ describe('updateSiteState', () => {
     // 前状態: 静穏（value=-3 で収束）
     const prev: SiteState = {
       sta: -3, lta: -3, sigma: 0, frozen: false,
-      lastValue: -3, triggeredAt: null, noiseWeight: 1,
+      lastValue: -3, triggeredAt: null, triggerRate: 0, noiseWeight: 1,
     }
     // index 8 (value 1.0) へ急上昇
     const r = updateSiteState(prev, indexToValue(8), 1000, 2000)
@@ -118,7 +119,7 @@ describe('updateSiteState', () => {
     // 前状態: value=0.4 付近で安定（sta≈lta で delta 小、σ 小）
     const prev: SiteState = {
       sta: 0.4, lta: 0.4, sigma: 0, frozen: false,
-      lastValue: 0.55, triggeredAt: null, noiseWeight: 1,
+      lastValue: 0.55, triggeredAt: null, triggerRate: 0, noiseWeight: 1,
     }
     // value 0.6（震度1超）だが前値 0.55 からの上昇はわずか
     const r = updateSiteState(prev, 0.6, 1000, 2000)
@@ -129,7 +130,7 @@ describe('updateSiteState', () => {
   it('下限未満（TRIG_FLOOR 未満）は常に非トリガー', () => {
     const prev: SiteState = {
       sta: -3, lta: -3, sigma: 0, frozen: false,
-      lastValue: -3, triggeredAt: null, noiseWeight: 1,
+      lastValue: -3, triggeredAt: null, triggerRate: 0, noiseWeight: 1,
     }
     // value -2.0（index 2、TRIG_FLOOR=-1.5 未満）
     const r = updateSiteState(prev, -2.0, 1000, 2000)
@@ -139,7 +140,7 @@ describe('updateSiteState', () => {
   it('σ→0 の完全静穏点が微小上昇（マージン未満）で誤発火しない', () => {
     const prev: SiteState = {
       sta: -1.0, lta: -1.0, sigma: 0, frozen: false,
-      lastValue: -1.0, triggeredAt: null, noiseWeight: 1,
+      lastValue: -1.0, triggeredAt: null, triggerRate: 0, noiseWeight: 1,
     }
     // lta=-1.0 に対し value=-0.9（+0.1 のみ、SIGMA_FLOOR_MARGIN=0.75 未満）
     // かつ delta も小、絶対レベルも ABS_LEVEL 未満
@@ -150,7 +151,7 @@ describe('updateSiteState', () => {
   it('トリガー発火時は次フレームで LTA を凍結する（frozen=true）', () => {
     const prev: SiteState = {
       sta: -3, lta: -3, sigma: 0, frozen: false,
-      lastValue: -3, triggeredAt: null, noiseWeight: 1,
+      lastValue: -3, triggeredAt: null, triggerRate: 0, noiseWeight: 1,
     }
     const r = updateSiteState(prev, indexToValue(8), 1000, 2000)
     expect(r.state.frozen).toBe(true)
@@ -160,10 +161,39 @@ describe('updateSiteState', () => {
   it('凍結中は LTA が揺れに追随せず据え置かれる（余震マスキング防止）', () => {
     const prev: SiteState = {
       sta: 1.0, lta: -3, sigma: 0, frozen: true,
-      lastValue: 1.0, triggeredAt: 1000, noiseWeight: 1,
+      lastValue: 1.0, triggeredAt: 1000, triggerRate: 0, noiseWeight: 1,
     }
     const r = updateSiteState(prev, indexToValue(10), 1000, 2000)
     expect(r.state.lta).toBe(-3) // 凍結で不変
+  })
+})
+
+// ============================================================
+// updateSiteState: 故障観測点ガードの noiseWeight（設計書 §5-D）
+// ============================================================
+
+describe('updateSiteState: noiseWeight（故障観測点ガード）', () => {
+  const quiet = (): SiteState => ({
+    sta: -3, lta: -3, sigma: 0, frozen: false,
+    lastValue: -3, triggeredAt: null, triggerRate: 0, noiseWeight: 1,
+  })
+
+  it('鳴り続ける観測点は noiseWeight が除外閾値未満まで下がる（故障観測点）', () => {
+    let st = quiet()
+    // 20分間、毎秒トリガーし続ける（故障で鳴りっぱなしを模擬）
+    for (let t = 0; t < 20 * 60; t++) {
+      st = updateSiteState(st, indexToValue(14), 1000, (t + 1) * 1000).state
+    }
+    expect(st.triggerRate).toBeGreaterThan(0.6)
+    expect(st.noiseWeight).toBeLessThan(PARAMS.NOISE_WEIGHT_MIN)
+  })
+
+  it('一過性の地震（60秒トリガー）では noiseWeight はほぼ1のまま（除外されない）', () => {
+    let st = quiet()
+    for (let t = 0; t < 60; t++) {
+      st = updateSiteState(st, indexToValue(14), 1000, (t + 1) * 1000).state
+    }
+    expect(st.noiseWeight).toBeGreaterThan(0.9)
   })
 })
 
@@ -230,8 +260,9 @@ function mkAT(
   lng: number,
   onsetMs: number,
   peakValue = 3,
+  noiseWeight = 1,
 ): ActiveTrigger {
-  return { key, lat, lng, onsetMs, lastTrigMs: onsetMs, peakValue }
+  return { key, lat, lng, onsetMs, lastTrigMs: onsetMs, peakValue, noiseWeight }
 }
 
 // 震源 A から北へ約10km刻みで並ぶ3観測点（波面フィット検証用）
@@ -374,28 +405,41 @@ describe('estimateWaveFit: 片側配置(type-B)', () => {
 })
 
 describe('frameScore', () => {
-  it('点数が多くフィット良好なほど高スコア', () => {
-    const goodFit = {
-      epicenter: SITE_A,
-      velocityKmS: 3.3,
-      residualRms: 0,
-      fitOk: true,
-      radialFitOk: true,
-      bearingDeg: null,
-      oneSided: false,
-      azimuthalGapDeg: 0,
-    }
-    const noFit = {
-      epicenter: SITE_A,
-      velocityKmS: NaN,
-      residualRms: Infinity,
-      fitOk: false,
-      radialFitOk: false,
-      bearingDeg: null,
-      oneSided: false,
-      azimuthalGapDeg: 0,
-    }
-    expect(frameScore(5, goodFit)).toBeGreaterThan(frameScore(2, noFit))
+  const goodFit = {
+    epicenter: SITE_A,
+    velocityKmS: 3.3,
+    residualRms: 0,
+    fitOk: true,
+    radialFitOk: true,
+    bearingDeg: null,
+    oneSided: false,
+    azimuthalGapDeg: 0,
+  }
+  const noFit = {
+    epicenter: SITE_A,
+    velocityKmS: NaN,
+    residualRms: Infinity,
+    fitOk: false,
+    radialFitOk: false,
+    bearingDeg: null,
+    oneSided: false,
+    azimuthalGapDeg: 0,
+  }
+
+  it('点数が多くフィット良好・高振幅・高連続性なほど高スコア', () => {
+    expect(frameScore(20, 2.0, goodFit, 0.8)).toBeGreaterThan(frameScore(3, 0, noFit, 0.3))
+  })
+
+  it('振幅(peak)が高いほど高スコア（同一 size/fit/連続性）', () => {
+    expect(frameScore(10, 2.5, goodFit, 0.6)).toBeGreaterThan(frameScore(10, 0, goodFit, 0.6))
+  })
+
+  it('size 上限が撤廃され大規模ほど高スコア（旧 min(size,8) 頭打ちの解消）', () => {
+    expect(frameScore(80, 1.5, goodFit, 0.6)).toBeGreaterThan(frameScore(8, 1.5, goodFit, 0.6))
+  })
+
+  it('空間連続性が高いほど高スコア（同一 size/振幅/fit）', () => {
+    expect(frameScore(10, 1.0, goodFit, 0.9)).toBeGreaterThan(frameScore(10, 1.0, goodFit, 0.4))
   })
 })
 
@@ -405,30 +449,83 @@ describe('frameScore', () => {
 
 describe('classify', () => {
   const HIGH = PARAMS.S_ON + 0.5 // confirmed しきい値を十分超えるスコア
+  const PEAK = PARAMS.MIN_LIKELY_PEAK + 1.0 // 振幅ゲートを十分超える
+  const BIG = PARAMS.MIN_CONFIRM_SIZE_ONESIDED + 2 // サイズゲートを十分超える
+  // 引数順: (score, size, peak, fitOk, radialFitOk, spatialOk, warmup)
 
   it('fitOk でなければスコア・点数が高くても weak 止まり', () => {
-    expect(classify(HIGH, 20, false, false, false)).toBe('weak')
+    expect(classify(HIGH, BIG, PEAK, false, false, true, false)).toBe('weak')
   })
 
   it('radial 裏取りあり: MIN_CONFIRM_SIZE(4) で confirmed に上げられる', () => {
-    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, true, true, false)).toBe('confirmed')
+    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, PEAK, true, true, true, false)).toBe('confirmed')
   })
 
   it('片側配置(radialFitOk=false): 4点では confirmed に上げず likely 止まり', () => {
     // 高スコアでも片側配置の少数点はノイズ塊の偶然フィットと区別できない
-    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, true, false, false)).toBe('likely')
+    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, PEAK, true, false, true, false)).toBe('likely')
   })
 
   it('片側配置(radialFitOk=false): MIN_CONFIRM_SIZE_ONESIDED 点あれば confirmed 可', () => {
-    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE_ONESIDED, true, false, false)).toBe('confirmed')
+    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE_ONESIDED, PEAK, true, false, true, false)).toBe('confirmed')
   })
 
   it('スコアが S_LIKELY 未満なら fitOk でも weak', () => {
-    expect(classify(PARAMS.S_LIKELY - 0.1, 20, true, true, false)).toBe('weak')
+    expect(classify(PARAMS.S_LIKELY - 0.1, BIG, PEAK, true, true, true, false)).toBe('weak')
   })
 
   it('ウォームアップ中は confirmed に上げず likely に留める', () => {
-    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, true, true, true)).toBe('likely')
+    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, PEAK, true, true, true, true)).toBe('likely')
+  })
+
+  it('少数点(MIN_LIKELY_SIZE 未満)は高スコア・高振幅でも weak（平常時ノイズ抑制）', () => {
+    expect(classify(HIGH, PARAMS.MIN_LIKELY_SIZE - 1, PEAK, true, true, true, false)).toBe('weak')
+  })
+
+  it('低振幅(震度0未満)は点数・スコアが十分でも weak（低振幅の都市ノイズ抑制）', () => {
+    expect(classify(HIGH, BIG, PARAMS.MIN_LIKELY_PEAK - 0.5, true, true, true, false)).toBe('weak')
+  })
+
+  it('空間連続性ゲート不成立(spatialOk=false)は高スコアでも weak（広域スカスカノイズ抑制）', () => {
+    expect(classify(HIGH, BIG, PEAK, true, true, false, false)).toBe('weak')
+  })
+})
+
+// ============================================================
+// spatialFill: 空間連続性（面の埋まり具合）
+// ============================================================
+
+describe('spatialFill（空間連続性）', () => {
+  // 0.1° 間隔の密なグリッド観測点（11×11＝121点）
+  const grid: [number, number][] = []
+  for (let i = 0; i < 11; i++) for (let j = 0; j < 11; j++) grid.push([35.0 + i * 0.1, 139.0 + j * 0.1])
+
+  // spatialFill は ActiveTrigger.key === siteKey(lat,lng) を前提にする（本番 step ではそうなる）
+  const gm = (lat: number, lng: number, i: number) => mkAT(siteKey(lat, lng), lat, lng, i * 100)
+
+  it('連続的に埋まったクラスタは高い連続性（実地震型）', () => {
+    // 中央 5×5 ブロックを全て反応させる（間に穴なし）
+    const members: ActiveTrigger[] = []
+    let n = 0
+    for (let i = 3; i <= 7; i++)
+      for (let j = 3; j <= 7; j++) members.push(gm(35.0 + i * 0.1, 139.0 + j * 0.1, n++))
+    expect(spatialFill(members, grid).contiguity).toBeGreaterThanOrEqual(PARAMS.CONTIG_MIN)
+  })
+
+  it('間が抜けたスカスカのクラスタは低い連続性（広域ノイズ型）', () => {
+    // グリッド全域に 0.3° 間隔で散在（各点の近傍に非反応点が多い）
+    const members: ActiveTrigger[] = []
+    let n = 0
+    for (let i = 0; i <= 9; i += 3)
+      for (let j = 0; j <= 9; j += 3) members.push(gm(35.0 + i * 0.1, 139.0 + j * 0.1, n++))
+    expect(spatialFill(members, grid).contiguity).toBeLessThan(PARAMS.CONTIG_MIN)
+  })
+
+  it('疎地域（周辺観測点が少ない）は densityNear が小さく検出できる', () => {
+    // 3点だけの孤立クラスタ（全観測点もその3点のみ）
+    const iso: [number, number][] = [[40, 141], [40.1, 141], [40.2, 141]]
+    const members = iso.map((p, i) => gm(p[0], p[1], i))
+    expect(spatialFill(members, iso).densityNear).toBeLessThan(PARAMS.CONTIG_SPARSE_MIN)
   })
 })
 

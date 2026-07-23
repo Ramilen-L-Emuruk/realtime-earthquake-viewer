@@ -54,7 +54,9 @@ export interface SiteState {
   lastValue: number
   /** 最後にトリガーした dataTime(ms)。未トリガーは null */
   triggeredAt: number | null
-  /** 恒常ノイズ源の減衰重み（0=無効化〜1=通常） */
+  /** トリガー稼働率(duty cycle)の EWMA。鳴りっぱなしの故障観測点の識別に使う */
+  triggerRate: number
+  /** 故障観測点ガードの減衰重み（0=除外〜1=通常）。triggerRate から算出。補助（散在ノイズの主判別は空間連続性ゲート CONTIG_*） */
   noiseWeight: number
 }
 
@@ -69,6 +71,8 @@ export interface ActiveTrigger {
   lastTrigMs: number
   /** エピソード中の最大 value */
   peakValue: number
+  /** 直近の noiseWeight（鳴りっぱなしの故障観測点はクラスタリング入力から除外する） */
+  noiseWeight: number
 }
 
 /** 検知イベント（多重地震・余震を同時に保持できる）。 */
@@ -96,6 +100,12 @@ export interface DetectionEvent {
   lastFitOk: boolean
   /** 直近フレームで radial フィット（震源を囲む配置）が成立したか。confirmed 判定に使う */
   lastRadialFitOk: boolean
+  /** 直近フレームのクラスタ最大計測震度（value）。likely ゲート（振幅下限）に使う */
+  lastPeak: number
+  /** 直近フレームで空間連続性ゲートを通過したか（疎地域は免除で true） */
+  lastSpatialOk: boolean
+  /** 直近フレームの空間連続性（各メンバー近傍の反応割合の中央値）。診断用 */
+  lastContiguity: number
 }
 
 /** 検知エンジンの全状態。localStorage に永続化する対象。 */
@@ -145,6 +155,8 @@ export interface TriggerResult {
   value: number
   /** 立ち上がり中か（second onset 検出の素） */
   rising: boolean
+  /** 観測点の noiseWeight（故障観測点ガードの減衰重み） */
+  noiseWeight: number
 }
 
 /** 波面フィットの結果。 */
@@ -229,6 +241,18 @@ export const PARAMS = {
    * 誤 confirmed を観測）。本物の海溝型 M4+ は陸側で多数点が並ぶため、多めの裏取りを要求する。
    */
   MIN_CONFIRM_SIZE_ONESIDED: 8,
+  /**
+   * likely 以上に上げるための最小クラスタ点数。少数点（size 3）は平常時ノイズが多く
+   * （並走検証: 平常時の偽 likely はほぼ size3）、揺れの可能性として提示するには不足。
+   * これ未満は weak 止まり（＝表示対象外）。
+   */
+  MIN_LIKELY_SIZE: 4,
+  /**
+   * likely 以上に上げるためのクラスタ最大計測震度の下限（0.0 = 震度0）。振幅が震度0 未満の
+   * クラスタは都市ノイズ（並走検証: 夜間 size8 でも peak -1.0 の例）で、地震ではない。
+   * 実地震は最低でも震度0 以上の点を含む（福岡 震度1 で peak 0.5）。
+   */
+  MIN_LIKELY_PEAK: 0.0,
   /** 波面フィットに要する最小点数 */
   MIN_FIT_POINTS: 3,
   /** 波面フィットに要する距離レンジ下限(km。縮退回避) */
@@ -244,6 +268,37 @@ export const PARAMS = {
    * 内陸で囲まれた震源は通常 ≤120°、海溝型は陸側のみで ≥180° になる。
    */
   ONE_SIDED_GAP_DEG: 160,
+
+  // ---- 故障観測点ガード（noiseWeight。設計書 §5-D）----
+  // 単一観測点が鳴り続ける故障（stuck/暴走センサ）を、クラスタリング前に落とす補助的な仕組み。
+  // 散在する地域性ノイズの主判別は空間連続性ゲート（下記 CONTIG_*）が担う。連続性ゲートは
+  // クラスタ後に tier を決めるだけで、本物のクラスタに紛れ込んだ故障点の幾何汚染（震央・onset・
+  // 波面フィットのずれ）は除けない。その一点をこの前処理が埋める。既定閾値では duty ~42.5%以上
+  // （＝ほぼ鳴りっぱなし）の点のみが除外対象になる。
+  /** トリガー稼働率(duty cycle)の EWMA 時定数(ms)。故障（鳴り続け）と一過性地震を分ける時間軸 */
+  NOISE_TAU_MS: 600_000,
+  /** 稼働率がこの値以下なら noiseWeight=1（通常）。一過性地震(60-120s)の稼働率上昇を許容 */
+  NOISE_DUTY_LO: 0.25,
+  /** 稼働率がこの値以上なら noiseWeight=0（故障観測点）。LO〜HI は線形補間 */
+  NOISE_DUTY_HI: 0.6,
+  /** noiseWeight がこの値未満の観測点はクラスタリング入力から除外する（故障観測点の排除） */
+  NOISE_WEIGHT_MIN: 0.5,
+
+  // ---- 空間連続性ゲート（面的な埋まり具合。ノイズ＝スカスカ / 実地震＝連続を判別）----
+  /** 局所連続性を測る近傍半径(km)。各メンバーのこの範囲で「一緒に反応した割合」を見る */
+  CONTIG_RADIUS_KM: 25,
+  /**
+   * likely 以上に要する局所連続性（メンバーごとの近傍反応割合の中央値）の下限。
+   * 実データ検証: 実地震(福岡0.50/長野0.545) と 広域ノイズ(北関東≤0.30) が 0.30〜0.50 で分離。
+   */
+  CONTIG_MIN: 0.4,
+  /** 疎地域ガードの局所密度を測る半径(km) */
+  CONTIG_DENSITY_RADIUS_KM: 50,
+  /**
+   * 疎地域ガード: 震央周辺(CONTIG_DENSITY_RADIUS_KM)の観測点数がこの値未満なら連続性ゲートを
+   * 適用しない（離島・沖合など元々スカスカな地域で実地震を潰さないため。設計書 §5-A）。
+   */
+  CONTIG_SPARSE_MIN: 15,
 
   // ---- ③ スコア・確信度 ----
   /** 波面残差 RMS の「良好」目安(秒) */
@@ -297,6 +352,7 @@ function initSiteState(value: number): SiteState {
     frozen: false,
     lastValue: value,
     triggeredAt: null,
+    triggerRate: 0,
     noiseWeight: 1,
   }
 }
@@ -350,6 +406,17 @@ export function updateSiteState(
     }
   }
 
+  // 故障観測点ガード: トリガー稼働率(duty cycle)を長時定数 EWMA で追跡し、
+  // 鳴りっぱなしの故障点の noiseWeight を下げる。一過性の地震は稼働率がほとんど上がらない。
+  // （散在する地域性ノイズの主判別は空間連続性ゲート。ここは単一故障点を落とす補助的役割。）
+  const aNoise = ewmaAlpha(dtMs, PARAMS.NOISE_TAU_MS)
+  const triggerRate = prev.triggerRate + aNoise * ((triggered ? 1 : 0) - prev.triggerRate)
+  const noiseWeight = clamp(
+    1 - (triggerRate - PARAMS.NOISE_DUTY_LO) / (PARAMS.NOISE_DUTY_HI - PARAMS.NOISE_DUTY_LO),
+    0,
+    1,
+  )
+
   const state: SiteState = {
     sta,
     lta,
@@ -358,7 +425,8 @@ export function updateSiteState(
     frozen: triggered,
     lastValue: value,
     triggeredAt: triggered ? dataTimeMs : prev.triggeredAt,
-    noiseWeight: prev.noiseWeight,
+    triggerRate,
+    noiseWeight,
   }
   return { state, path, triggered, rising }
 }
@@ -592,15 +660,30 @@ export function estimateWaveFit(cluster: ActiveTrigger[]): WaveFit {
 }
 
 /**
- * クラスタ規模と波面フィット品質から、1 フレームの「地震らしさ」スコア寄与 s を算出する。
- * DECAY=0.8 のとき定常で S ≈ s/(1−DECAY)=5s に収束するため、s≈0.3 で S_ON に到達する目安。
+ * クラスタ規模・振幅・波面フィット品質・空間連続性から、1 フレームの「地震らしさ」寄与 s を算出する。
+ *
+ * 設計（並走検証で改訂）: 旧実装は size を 8 で頭打ちにし振幅を無視していたため、大規模・高震度の
+ * 実地震（例: 大隅 M5.2 size108 震度3）が片側配置の高残差で waveFactor が下限に落ちて潰れ、likely
+ * 止まりだった。実地震とノイズを分ける材料（規模・振幅・連続性）をすべて score に反映する:
+ *  - sizeTerm  : size の平方根で逓減しつつ頭打ちを外す（大規模を正当に評価）。
+ *  - ampTerm   : クラスタ最大計測震度。実地震は震度が高く、ノイズは震度0近傍（＝confirmed 排除の要）。
+ *  - waveFactor: フィット残差の良さ。片側配置の高残差でも下限を上げ、強いクラスタを潰さない。
+ *  - contigFactor: 面の埋まり具合。連続性ゲート(CONTIG_MIN)近傍のノイズを穏やかに減点する。
+ * DECAY のとき定常 S ≈ s/(1−DECAY)。s≈0.3 で S_ON、s≈0.16 で S_LIKELY に到達する目安。
+ *
+ * @param size クラスタの観測点数
+ * @param peak クラスタ最大計測震度（value。震度0≈0, 震度1≈0.5, 震度2≈1.5, 震度3≈2.5）
+ * @param fit 波面フィット結果
+ * @param contiguity 空間連続性（spatialFill。0〜1）
  */
-export function frameScore(size: number, fit: WaveFit): number {
-  const sizeTerm = 0.25 + 0.05 * Math.min(size, 8)
+export function frameScore(size: number, peak: number, fit: WaveFit, contiguity: number): number {
+  const sizeTerm = 0.25 + 0.06 * Math.sqrt(Math.max(size, 0))
+  const ampTerm = clamp(0.7 + 0.3 * peak, 0.7, 1.6)
   const waveFactor = fit.fitOk
-    ? clamp(1.2 - fit.residualRms / PARAMS.RESID_GOOD_S, 0.3, 1.0)
-    : 0.3
-  return sizeTerm * waveFactor
+    ? clamp(1.2 - fit.residualRms / PARAMS.RESID_GOOD_S, 0.45, 1.0)
+    : 0.35
+  const contigFactor = clamp(0.6 + 0.7 * contiguity, 0.6, 1.2)
+  return sizeTerm * ampTerm * waveFactor * contigFactor
 }
 
 function clamp(x: number, lo: number, hi: number): number {
@@ -619,17 +702,66 @@ function clamp(x: number, lo: number, hi: number): number {
  *    片側配置は震源が縮退し、少数点ではノイズ塊の偶然フィットと区別できない（並走検証で size4 の
  *    誤 confirmed を観測）ため。本物の海溝型は陸側で多数点が並ぶので確定できる（設計書 §5-B）。
  */
+/**
+ * クラスタの空間的な「埋まり具合」を測る（設計書 §5-D）。
+ * 実地震は felt エリア内の観測点が連続的にほぼ全て反応する（高い連続性）が、
+ * 広域ノイズは間に非反応点が挟まりスカスカになる（低い連続性）。地域に依らない per-cluster 量。
+ *
+ * @param cluster クラスタ（反応中の観測点）
+ * @param allSites 現フレームの全観測点座標（非反応点を知るために必要）
+ * @returns contiguity（各メンバー近傍の反応割合の中央値）と densityNear（震央周辺の観測点数）
+ */
+export function spatialFill(
+  cluster: ActiveTrigger[],
+  allSites: [number, number][],
+): { contiguity: number; densityNear: number } {
+  const memberSet = new Set(cluster.map((c) => c.key))
+  const cLat = mean(cluster.map((c) => c.lat))
+  const cLng = mean(cluster.map((c) => c.lng))
+
+  let densityNear = 0
+  for (const s of allSites) {
+    if (haversineKm(cLat, cLng, s[0], s[1]) <= PARAMS.CONTIG_DENSITY_RADIUS_KM) densityNear++
+  }
+
+  const contigs: number[] = []
+  for (const m of cluster) {
+    let near = 0
+    let nearMembers = 0
+    for (const s of allSites) {
+      if (haversineKm(m.lat, m.lng, s[0], s[1]) <= PARAMS.CONTIG_RADIUS_KM) {
+        near++
+        if (memberSet.has(siteKey(s[0], s[1]))) nearMembers++
+      }
+    }
+    if (near > 0) contigs.push(nearMembers / near)
+  }
+  contigs.sort((a, b) => a - b)
+  const contiguity = contigs.length > 0 ? contigs[Math.floor(contigs.length / 2)] : 0
+  return { contiguity, densityNear }
+}
+
 export function classify(
   score: number,
   size: number,
+  peak: number,
   fitOk: boolean,
   radialFitOk: boolean,
+  spatialOk: boolean,
   warmup: boolean,
 ): Confidence {
+  // likely 以上の下限ゲート（平常時ノイズ抑制。並走検証で決定）:
+  //  - 波面フィット成立（伝播整合）
+  //  - 空間連続性（面が埋まっている＝実地震。スカスカ＝広域ノイズを除外。疎地域は spatialOk=true で免除）
+  //  - クラスタ点数が少数点ノイズを超える（MIN_LIKELY_SIZE）
+  //  - クラスタ最大振幅が震度0 以上（MIN_LIKELY_PEAK。低振幅の都市ノイズを除外）
+  if (!fitOk || !spatialOk || size < PARAMS.MIN_LIKELY_SIZE || peak < PARAMS.MIN_LIKELY_PEAK)
+    return 'weak'
+
   const confirmSize = radialFitOk ? PARAMS.MIN_CONFIRM_SIZE : PARAMS.MIN_CONFIRM_SIZE_ONESIDED
   let c: Confidence = 'weak'
-  if (fitOk && score >= PARAMS.S_ON && size >= confirmSize) c = 'confirmed'
-  else if (fitOk && score >= PARAMS.S_LIKELY) c = 'likely'
+  if (score >= PARAMS.S_ON && size >= confirmSize) c = 'confirmed'
+  else if (score >= PARAMS.S_LIKELY) c = 'likely'
   // ウォームアップ中は confirmed に上げない（設計書 §7.4）
   if (warmup && c === 'confirmed') c = 'likely'
   return c
@@ -687,21 +819,26 @@ export function step(
 
     const { state: next, path, triggered, rising } = updateSiteState(prev, value, dtMs, now)
     sites[key] = next
-    if (triggered) triggers.push({ key, lat, lng, triggered, path, value, rising })
+    if (triggered)
+      triggers.push({ key, lat, lng, triggered, path, value, rising, noiseWeight: next.noiseWeight })
   }
 
   // ---- ② 継続トリガーの更新（フレーム跨ぎ）----
   const activeTriggers = updateActiveTriggers(state.activeTriggers, triggers, now)
 
   // ---- ② クラスタリング＋波面フィット → ③ イベント帰属・積分 ----
-  const clusters = clusterActive(Object.values(activeTriggers)).filter(
-    (c) => c.length >= PARAMS.MIN_EVENT_SIZE,
+  // 鳴りっぱなしの故障観測点（noiseWeight 低）をクラスタリング入力から除外する補助ガード（§5-D）。
+  // 散在する地域性ノイズの主判別はクラスタ後の空間連続性ゲート（spatialFill）が担う。
+  const clusterInput = Object.values(activeTriggers).filter(
+    (at) => at.noiseWeight >= PARAMS.NOISE_WEIGHT_MIN,
   )
+  const clusters = clusterActive(clusterInput).filter((c) => c.length >= PARAMS.MIN_EVENT_SIZE)
   const warmup = now < state.warmupUntilMs
   const { events, nextEventId } = associateAndScore(
     state.events,
     state.nextEventId,
     clusters,
+    frame.sites,
     now,
     warmup,
   )
@@ -736,6 +873,7 @@ function updateActiveTriggers(
     if (existing) {
       existing.lastTrigMs = now
       existing.peakValue = Math.max(existing.peakValue, t.value)
+      existing.noiseWeight = t.noiseWeight
     } else {
       next[t.key] = {
         key: t.key,
@@ -744,6 +882,7 @@ function updateActiveTriggers(
         onsetMs: now,
         lastTrigMs: now,
         peakValue: t.value,
+        noiseWeight: t.noiseWeight,
       }
     }
   }
@@ -757,6 +896,7 @@ function associateAndScore(
   prevEvents: DetectionEvent[],
   nextEventId: number,
   clusters: ActiveTrigger[][],
+  allSites: [number, number][],
   now: number,
   warmup: boolean,
 ): { events: DetectionEvent[]; nextEventId: number } {
@@ -767,8 +907,14 @@ function associateAndScore(
   for (const cluster of clusters) {
     const fit = estimateWaveFit(cluster)
     const epi = fit.epicenter
-    const s = frameScore(cluster.length, fit)
+    const clusterPeak = Math.max(...cluster.map((c) => c.peakValue))
     const memberKeys = cluster.map((c) => c.key)
+    // 空間連続性ゲート: 面が埋まっているか（実地震）／スカスカか（広域ノイズ）。
+    // 疎地域（震央周辺の観測点数が少ない）は連続性が本質的に低いのでゲート免除。
+    const { contiguity, densityNear } = spatialFill(cluster, allSites)
+    const spatialOk = densityNear < PARAMS.CONTIG_SPARSE_MIN || contiguity >= PARAMS.CONTIG_MIN
+    // score には規模・振幅・フィット品質・連続性を反映する（frameScore 参照）
+    const s = frameScore(cluster.length, clusterPeak, fit, contiguity)
 
     // 既存イベントとの帰属判定（震源が PENDING_MATCH_KM 以内）
     let target: DetectionEvent | undefined
@@ -792,12 +938,17 @@ function associateAndScore(
       target.lastSize = cluster.length
       target.lastFitOk = fit.fitOk
       target.lastRadialFitOk = fit.radialFitOk
+      target.lastPeak = clusterPeak
+      target.lastSpatialOk = spatialOk
+      target.lastContiguity = contiguity
       target.memberKeys = [...new Set([...target.memberKeys, ...memberKeys])]
       target.confidence = classify(
         target.score,
         cluster.length,
+        clusterPeak,
         fit.fitOk,
         fit.radialFitOk,
+        spatialOk,
         warmup,
       )
       updated.add(target.id)
@@ -810,12 +961,23 @@ function associateAndScore(
         oneSided: fit.oneSided,
         originTimeMs: now,
         score,
-        confidence: classify(score, cluster.length, fit.fitOk, fit.radialFitOk, warmup),
+        confidence: classify(
+          score,
+          cluster.length,
+          clusterPeak,
+          fit.fitOk,
+          fit.radialFitOk,
+          spatialOk,
+          warmup,
+        ),
         lastOnsetAtMs: now,
         memberKeys,
         lastSize: cluster.length,
         lastFitOk: fit.fitOk,
         lastRadialFitOk: fit.radialFitOk,
+        lastPeak: clusterPeak,
+        lastSpatialOk: spatialOk,
+        lastContiguity: contiguity,
       }
       events.push(ev)
       updated.add(ev.id)
@@ -827,7 +989,15 @@ function associateAndScore(
   for (const e of events) {
     if (!updated.has(e.id)) {
       e.score = PARAMS.DECAY * e.score
-      e.confidence = classify(e.score, e.lastSize, e.lastFitOk, e.lastRadialFitOk, warmup)
+      e.confidence = classify(
+        e.score,
+        e.lastSize,
+        e.lastPeak,
+        e.lastFitOk,
+        e.lastRadialFitOk,
+        e.lastSpatialOk,
+        warmup,
+      )
     }
     const idle = now - e.lastOnsetAtMs
     const duration = now - e.originTimeMs
