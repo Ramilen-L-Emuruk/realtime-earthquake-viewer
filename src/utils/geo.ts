@@ -12,6 +12,22 @@ export function haversineKm(lat1: number, lng1: number, lat2: number, lng2: numb
 }
 
 /**
+ * 地点1から地点2への初期方位（great-circle bearing）を返す。
+ * 真北を 0° とし時計回りに [0, 360) で返す（東=90°・南=180°・西=270°）。
+ * 強震モニタ検知エンジンの片側配置判定・震源方位推定で使用する。
+ */
+export function bearingDeg(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const toRad = (deg: number) => deg * (Math.PI / 180)
+  const phi1 = toRad(lat1)
+  const phi2 = toRad(lat2)
+  const dLng = toRad(lng2 - lng1)
+  const y = Math.sin(dLng) * Math.cos(phi2)
+  const x = Math.cos(phi1) * Math.sin(phi2) - Math.sin(phi1) * Math.cos(phi2) * Math.cos(dLng)
+  const deg = (Math.atan2(y, x) * 180) / Math.PI
+  return (deg + 360) % 360
+}
+
+/**
  * 地図中心経度から見て最も近い側に経度を補正する。
  * 日本中心（137.7°）からベネズエラ（-68.8°）→ 291.2° に補正するケースで使用。
  */

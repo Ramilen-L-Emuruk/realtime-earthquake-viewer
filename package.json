@@ -8,7 +8,9 @@
     "dev:dmdss": "cross-env VITE_VARIANT=dmdss vite",
     "build": "tsc -b && vite build",
     "build:dmdss": "tsc -b && cross-env VITE_VARIANT=dmdss vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "fflate": "^0.8.3",
@@ -31,6 +33,7 @@
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.2",
     "vite": "^6.0.7",
-    "vite-plugin-pwa": "^0.21.1"
+    "vite-plugin-pwa": "^0.21.1",
+    "vitest": "^4.1.10"
   }
 }
