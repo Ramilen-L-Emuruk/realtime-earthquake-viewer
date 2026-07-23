@@ -15,6 +15,7 @@ import { useLiveEventHandler } from './hooks/useLiveEventHandler'
 import { useKyoshinAlerts } from './hooks/useKyoshinAlerts'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
 import { useKyoshinDetection } from './hooks/useKyoshinDetection'
+import { useKyoshinDetectorV2 } from './hooks/useKyoshinDetectorV2'
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
 import { useDmdssWaves } from './hooks/useDmdssWaves'
 import { useQuakeHeatmap } from './hooks/useQuakeHeatmap'
@@ -470,6 +471,17 @@ export function App() {
   const kyoshinDetection = useKyoshinDetection(kyoshin.sites, kyoshin.indices)
   // タイマーコールバック内から最新の detected 値を参照する ref（宣言はコンポーネント冒頭・代入はここ）
   kyoshinDetectedRef.current = kyoshinDetection.detected
+
+  // 新検知エンジン（純粋コア）を並走検証（設計書 §10.4/§13）。UI・音には影響しない。
+  // localStorage['kyoshinDetectorV2'] === '0' で無効化できる（既定 ON）。
+  const kyoshinV2Enabled = useMemo(() => {
+    try {
+      return localStorage.getItem('kyoshinDetectorV2') !== '0'
+    } catch {
+      return true
+    }
+  }, [])
+  useKyoshinDetectorV2(kyoshin.sites, kyoshin.indices, kyoshin.dataTime, kyoshinV2Enabled)
 
   // DMDSS版: EEWデータから P波・S波半径を自前計算（100ms更新でスムーズ拡張）
   // activeEEWs (Map) の参照が安定している限り配列を再生成しない
