@@ -405,30 +405,40 @@ describe('frameScore', () => {
 
 describe('classify', () => {
   const HIGH = PARAMS.S_ON + 0.5 // confirmed しきい値を十分超えるスコア
+  const PEAK = PARAMS.MIN_LIKELY_PEAK + 1.0 // 振幅ゲートを十分超える
+  const BIG = PARAMS.MIN_CONFIRM_SIZE_ONESIDED + 2 // サイズゲートを十分超える
 
   it('fitOk でなければスコア・点数が高くても weak 止まり', () => {
-    expect(classify(HIGH, 20, false, false, false)).toBe('weak')
+    expect(classify(HIGH, BIG, PEAK, false, false, false)).toBe('weak')
   })
 
   it('radial 裏取りあり: MIN_CONFIRM_SIZE(4) で confirmed に上げられる', () => {
-    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, true, true, false)).toBe('confirmed')
+    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, PEAK, true, true, false)).toBe('confirmed')
   })
 
   it('片側配置(radialFitOk=false): 4点では confirmed に上げず likely 止まり', () => {
     // 高スコアでも片側配置の少数点はノイズ塊の偶然フィットと区別できない
-    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, true, false, false)).toBe('likely')
+    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, PEAK, true, false, false)).toBe('likely')
   })
 
   it('片側配置(radialFitOk=false): MIN_CONFIRM_SIZE_ONESIDED 点あれば confirmed 可', () => {
-    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE_ONESIDED, true, false, false)).toBe('confirmed')
+    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE_ONESIDED, PEAK, true, false, false)).toBe('confirmed')
   })
 
   it('スコアが S_LIKELY 未満なら fitOk でも weak', () => {
-    expect(classify(PARAMS.S_LIKELY - 0.1, 20, true, true, false)).toBe('weak')
+    expect(classify(PARAMS.S_LIKELY - 0.1, BIG, PEAK, true, true, false)).toBe('weak')
   })
 
   it('ウォームアップ中は confirmed に上げず likely に留める', () => {
-    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, true, true, true)).toBe('likely')
+    expect(classify(HIGH, PARAMS.MIN_CONFIRM_SIZE, PEAK, true, true, true)).toBe('likely')
+  })
+
+  it('少数点(MIN_LIKELY_SIZE 未満)は高スコア・高振幅でも weak（平常時ノイズ抑制）', () => {
+    expect(classify(HIGH, PARAMS.MIN_LIKELY_SIZE - 1, PEAK, true, true, false)).toBe('weak')
+  })
+
+  it('低振幅(震度0未満)は点数・スコアが十分でも weak（低振幅の都市ノイズ抑制）', () => {
+    expect(classify(HIGH, BIG, PARAMS.MIN_LIKELY_PEAK - 0.5, true, true, false)).toBe('weak')
   })
 })
 
