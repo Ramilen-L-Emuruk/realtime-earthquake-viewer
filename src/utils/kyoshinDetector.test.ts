@@ -405,28 +405,41 @@ describe('estimateWaveFit: 片側配置(type-B)', () => {
 })
 
 describe('frameScore', () => {
-  it('点数が多くフィット良好なほど高スコア', () => {
-    const goodFit = {
-      epicenter: SITE_A,
-      velocityKmS: 3.3,
-      residualRms: 0,
-      fitOk: true,
-      radialFitOk: true,
-      bearingDeg: null,
-      oneSided: false,
-      azimuthalGapDeg: 0,
-    }
-    const noFit = {
-      epicenter: SITE_A,
-      velocityKmS: NaN,
-      residualRms: Infinity,
-      fitOk: false,
-      radialFitOk: false,
-      bearingDeg: null,
-      oneSided: false,
-      azimuthalGapDeg: 0,
-    }
-    expect(frameScore(5, goodFit)).toBeGreaterThan(frameScore(2, noFit))
+  const goodFit = {
+    epicenter: SITE_A,
+    velocityKmS: 3.3,
+    residualRms: 0,
+    fitOk: true,
+    radialFitOk: true,
+    bearingDeg: null,
+    oneSided: false,
+    azimuthalGapDeg: 0,
+  }
+  const noFit = {
+    epicenter: SITE_A,
+    velocityKmS: NaN,
+    residualRms: Infinity,
+    fitOk: false,
+    radialFitOk: false,
+    bearingDeg: null,
+    oneSided: false,
+    azimuthalGapDeg: 0,
+  }
+
+  it('点数が多くフィット良好・高振幅・高連続性なほど高スコア', () => {
+    expect(frameScore(20, 2.0, goodFit, 0.8)).toBeGreaterThan(frameScore(3, 0, noFit, 0.3))
+  })
+
+  it('振幅(peak)が高いほど高スコア（同一 size/fit/連続性）', () => {
+    expect(frameScore(10, 2.5, goodFit, 0.6)).toBeGreaterThan(frameScore(10, 0, goodFit, 0.6))
+  })
+
+  it('size 上限が撤廃され大規模ほど高スコア（旧 min(size,8) 頭打ちの解消）', () => {
+    expect(frameScore(80, 1.5, goodFit, 0.6)).toBeGreaterThan(frameScore(8, 1.5, goodFit, 0.6))
+  })
+
+  it('空間連続性が高いほど高スコア（同一 size/振幅/fit）', () => {
+    expect(frameScore(10, 1.0, goodFit, 0.9)).toBeGreaterThan(frameScore(10, 1.0, goodFit, 0.4))
   })
 })
 
