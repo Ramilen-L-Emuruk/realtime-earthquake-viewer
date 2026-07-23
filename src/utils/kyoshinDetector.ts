@@ -7,11 +7,12 @@
  *
  * 実装済み: Phase 1（① 自己正規化トリガー）＋ Phase 2（② 時空間アソシエーション・③ 確信度積分）。
  *
- * 【Phase 2 の簡略化（設計書からの意図的な差分。Phase 3 で拡張予定）】
+ * 【簡略化（設計書からの意図的な差分。後続フェーズで拡張予定）】
  * - 波面フィットは軽量版: 震源＝最早オンセット点、オンセット×距離の最小二乗で見かけ速度・残差を出す
- *   （グリッド探索による震源推定は Phase 3）。
- * - 空間クラスタは固定距離 PROXIMITY_KM の union-find（密度正規化・地理ブロックは Phase 3）。
- * - 地域類型（疎地域の単点判定・海域片側・遠地平面波）は未実装（Phase 3）。
+ *   （グリッド探索による震源推定は Phase 3 後段）。
+ * - クラスタは時空間ゲート付きシード成長（Phase 3 で single-linkage の巨大ブロブ融合を是正済み）。
+ *   密度正規化・地理ブロックは未実装。
+ * - 地域類型（疎地域の単点判定・海域片側 type-B 震央・遠地平面波）は未実装（Phase 3 後段）。
  *
  * 【単位に関する設計判断（設計書 §5① の refinement）】
  * 強震モニタの値は計測震度（≒ 地動振幅の対数）で、-3.0〜7.0 の連続値。
@@ -180,12 +181,19 @@ export const PARAMS = {
   // ---- ② アソシエーション ----
   /** トリガー点が「継続中」とみなされる猶予(ms)。最後のトリガーからこの時間で失効 */
   ACTIVE_WINDOW_MS: 8_000,
-  /** 空間クラスタの距離閾値(km) */
+  /** 空間クラスタの近傍リンク距離(km) */
   PROXIMITY_KM: 60,
+  /** クラスタのシードからの直径上限(km)。巨大ブロブ融合を防ぐ */
+  MAX_CLUSTER_RADIUS_KM: 300,
+  /** シード成長の時空間ゲート許容(秒)。量子化・近接同時性を吸収しつつ非伝播な併合を弾く */
+  CLUSTER_T_TOL_S: 3,
   /** イベント化に要する最小クラスタ点数（2点は隣接センサー誤作動と区別不可のため 3 以上）。疎地域の少数点判定は Phase 3 */
   MIN_EVENT_SIZE: 3,
-  /** confirmed に要する最小クラスタ点数 */
-  MIN_CONFIRM_SIZE: 3,
+  /**
+   * confirmed に要する最小クラスタ点数。3点は自由度1で偶然直線に乗る（スプリアスフィット）ため
+   * 誤 confirmed の温床（並走検証で確認）。4点以上の裏取りを要求する。
+   */
+  MIN_CONFIRM_SIZE: 4,
   /** 波面フィットに要する最小点数 */
   MIN_FIT_POINTS: 3,
   /** 波面フィットに要する距離レンジ下限(km。縮退回避) */
@@ -319,40 +327,51 @@ export function updateSiteState(
 // ============================================================
 
 /**
- * 継続中トリガー点を空間クラスタに分割する（PROXIMITY_KM の union-find）。
+ * 継続中トリガー点をクラスタに分割する（時空間ゲート付きシード成長）。
+ *
+ * 単純な単一連結（union-find）は、広域で揺れると近接点が数珠つなぎになり felt エリア全体を
+ * 巨大ブロブに融合する（並走検証で判明）。これを避けるため、最早オンセット点をシードに、
+ * 幅優先で近傍リンク（PROXIMITY_KM）を辿りつつ、採否は**シード基準の時空間妥当性**で決める:
+ *  - シードからの距離が MAX_CLUSTER_RADIUS_KM 以内
+ *  - オンセット遅延 dt が波面として妥当: dt ∈ [r/V_MAX, r/V_MIN] ± CLUSTER_T_TOL_S
+ * これにより、非伝播な同時多発・ノイズは弾かれ、本物の伝播波面（遠いほど遅い）は 1 クラスタに保たれる。
+ *
  * @returns クラスタ（ActiveTrigger の配列）の配列
  */
 export function clusterActive(triggers: ActiveTrigger[]): ActiveTrigger[][] {
-  const n = triggers.length
-  const parent = Array.from({ length: n }, (_, i) => i)
-  const find = (x: number): number => {
-    while (parent[x] !== x) {
-      parent[x] = parent[parent[x]]
-      x = parent[x]
-    }
-    return x
-  }
-  const union = (a: number, b: number) => {
-    const ra = find(a)
-    const rb = find(b)
-    if (ra !== rb) parent[ra] = rb
-  }
+  const sorted = [...triggers].sort((a, b) => a.onsetMs - b.onsetMs)
+  const assigned = new Set<string>()
+  const clusters: ActiveTrigger[][] = []
 
-  for (let i = 0; i < n; i++) {
-    for (let j = i + 1; j < n; j++) {
-      const d = haversineKm(triggers[i].lat, triggers[i].lng, triggers[j].lat, triggers[j].lng)
-      if (d <= PARAMS.PROXIMITY_KM) union(i, j)
-    }
-  }
+  for (const seed of sorted) {
+    if (assigned.has(seed.key)) continue
+    const cluster = [seed]
+    assigned.add(seed.key)
+    const queue: ActiveTrigger[] = [seed]
 
-  const groups = new Map<number, ActiveTrigger[]>()
-  for (let i = 0; i < n; i++) {
-    const r = find(i)
-    const g = groups.get(r)
-    if (g) g.push(triggers[i])
-    else groups.set(r, [triggers[i]])
+    while (queue.length > 0) {
+      const p = queue.shift() as ActiveTrigger
+      for (const q of sorted) {
+        if (assigned.has(q.key)) continue
+        // 空間リンク: 既存メンバー p の近傍にあること（連結性）
+        if (haversineKm(p.lat, p.lng, q.lat, q.lng) > PARAMS.PROXIMITY_KM) continue
+        // 直径上限: シードから離れすぎない
+        const rFromSeed = haversineKm(seed.lat, seed.lng, q.lat, q.lng)
+        if (rFromSeed > PARAMS.MAX_CLUSTER_RADIUS_KM) continue
+        // 時空間ゲート: シード基準のオンセット遅延が波面として妥当か
+        const dt = (q.onsetMs - seed.onsetMs) / 1000
+        const minDt = rFromSeed / PARAMS.V_MAX_KMS - PARAMS.CLUSTER_T_TOL_S
+        const maxDt = rFromSeed / PARAMS.V_MIN_KMS + PARAMS.CLUSTER_T_TOL_S
+        if (dt < minDt || dt > maxDt) continue
+
+        cluster.push(q)
+        assigned.add(q.key)
+        queue.push(q)
+      }
+    }
+    clusters.push(cluster)
   }
-  return [...groups.values()]
+  return clusters
 }
 
 /**
