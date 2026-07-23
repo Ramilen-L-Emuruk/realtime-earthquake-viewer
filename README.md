@@ -292,7 +292,8 @@ realtime-earthquake-viewer/
 │       ├── formatters.ts           # 日時・数値フォーマッター
 │       ├── ttsText.ts              # 読み上げテキスト生成（地震・EEW・津波）
 │       ├── voicevox.ts             # VOICEVOX 連携（音声合成・話者一覧取得）
-│       ├── logger.ts               # console ログへの時刻付与（リプレイ中はリプレイ時刻に追従）
+│       ├── clock.ts                # アプリ全体の時刻基準（サーバー同期・壁時計ずれ非依存の serverNow）
+│       ├── logger.ts               # console ログへの時刻付与（clock の serverNow に追従）
 │       └── testData.ts             # 設定タブのテストボタン用サンプルデータ生成
 ├── index.html
 ├── package.json

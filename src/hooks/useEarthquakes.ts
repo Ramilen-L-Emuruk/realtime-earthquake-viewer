@@ -6,6 +6,7 @@ import { loadStationCoords, buildAreaPrefIndex } from '../utils/stationCoords'
 import { calcEEWCancelTime } from '../utils/eew'
 import { mergeTsunamiObservations } from '../utils/tsunami'
 import { log } from '../utils/logger'
+import { serverNow, serverDate } from '../utils/clock'
 
 const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
 import {
@@ -206,12 +207,13 @@ export function useEarthquakes(
   // WebSocket 受信時のエントリポイント: event.time を基準にキューへ挿入する
   // live モードでは event.time ≈ now なので次のティック（最大 100ms 後）に即時発火する
   const enqueueEvent = useCallback((event: AppEvent, overrideTime?: Date) => {
-    const t = overrideTime ?? new Date((event as { time?: string }).time ?? Date.now())
+    const t = overrideTime ?? new Date((event as { time?: string }).time ?? serverNow())
     insertSorted(eventQueueRef.current, { eventTime: t, payload: { kind: 'event', event } })
   }, [])
 
-  // リプレイ時は差し替えることで再生時刻基準のディスパッチに切り替える
-  const getTimeRef = useRef<() => Date>(() => new Date())
+  // 時刻ソースはアプリ時計(serverDate)に一元化。ライブ時はサーバー同期、
+  // リプレイ時は clock.setReplayOffset により再生時刻を返すため差し替え不要。
+  const getTimeRef = useRef<() => Date>(serverDate)
 
   const handleEvent = useCallback((event: AppEvent) => {
     // ライブ受信／テスト送信のイベントを通知（サイレントモード中は抑制）
@@ -433,13 +435,6 @@ export function useEarthquakes(
     })
   }, [])
 
-  // リプレイ時刻オフセットに応じて時刻ソースを切り替える
-  useEffect(() => {
-    getTimeRef.current = replayTimeOffset !== null
-      ? () => new Date(Date.now() + replayTimeOffset)
-      : () => new Date()
-  }, [replayTimeOffset])
-
   // キューディスパッチャー: 10ms ごとに eventTime <= 現在時刻のエントリを処理する
   useEffect(() => {
     const id = setInterval(() => {
@@ -559,7 +554,7 @@ export function useEarthquakes(
           const allTsunami = tsunamiEvents
             .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
           const latestTsunami = allTsunami[0]
-          const now = new Date()
+          const now = serverDate()
           const tsunamis = latestTsunami
             && !latestTsunami.cancelled
             && !(latestTsunami.validDateTime && new Date(latestTsunami.validDateTime) <= now)
@@ -584,7 +579,7 @@ export function useEarthquakes(
 
           // 後発地震注意情報の有効期限タイマー（初回ロード時）
           if (kohatsuData && !kohatsuData.cancelled) {
-            const expireMs = new Date(kohatsuData.expireAt).getTime() - Date.now()
+            const expireMs = new Date(kohatsuData.expireAt).getTime() - serverNow()
             if (expireMs > 0) {
               if (kohatsuExpireTimerRef.current !== undefined) window.clearTimeout(kohatsuExpireTimerRef.current)
               kohatsuExpireTimerRef.current = window.setTimeout(() => {
@@ -602,7 +597,7 @@ export function useEarthquakes(
             lpgmByEventId,
             nankai: nankaiData ?? null,
             kohatsu: kohatsuData ?? null,
-            lastUpdate: new Date(),
+            lastUpdate: serverDate(),
             isLoading: false,
             hasMore: !!nextToken,
             error: null,
@@ -610,7 +605,7 @@ export function useEarthquakes(
           // 初回ロードで津波が有効（validDateTime未来）の場合、キューへ解除イベントを挿入する
           if (tsunamis.length > 0 && latestTsunami?.validDateTime) {
             const expireTime = new Date(latestTsunami.validDateTime)
-            if (expireTime > new Date()) {
+            if (expireTime > serverDate()) {
               insertSorted(eventQueueRef.current, {
                 eventTime: expireTime,
                 payload: { kind: 'event', event: { ...latestTsunami, cancelled: true } as AppEvent },
@@ -656,7 +651,7 @@ export function useEarthquakes(
             kohatsuExpireTimerRef.current = undefined
           }
           if (!kohatsu.cancelled) {
-            const expireMs = new Date(kohatsu.expireAt).getTime() - Date.now()
+            const expireMs = new Date(kohatsu.expireAt).getTime() - serverNow()
             if (expireMs > 0) {
               kohatsuExpireTimerRef.current = window.setTimeout(() => {
                 kohatsuExpireTimerRef.current = undefined
@@ -704,7 +699,7 @@ export function useEarthquakes(
         const allTsunami = (tsunamiEvents as JMATsunami[])
           .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
         const latestTsunami = allTsunami[0]
-        const nowP2p = new Date()
+        const nowP2p = serverDate()
         const tsunamis = latestTsunami
           && !latestTsunami.cancelled
           && !(latestTsunami.validDateTime && new Date(latestTsunami.validDateTime) <= nowP2p)
@@ -714,7 +709,7 @@ export function useEarthquakes(
           ...prev,
           earthquakes,
           tsunamis,
-          lastUpdate: new Date(),
+          lastUpdate: serverDate(),
           isLoading: false,
           hasMore: quakeEvents.length === MAX_HISTORY_RETAINED,
           error: null,
@@ -722,7 +717,7 @@ export function useEarthquakes(
         // 初回ロードで津波が有効（validDateTime未来）の場合、キューへ解除イベントを挿入する
         if (tsunamis.length > 0 && latestTsunami?.validDateTime) {
           const expireTime = new Date(latestTsunami.validDateTime)
-          if (expireTime > new Date()) {
+          if (expireTime > serverDate()) {
             insertSorted(eventQueueRef.current, {
               eventTime: expireTime,
               payload: { kind: 'event', event: { ...latestTsunami, cancelled: true } as AppEvent },
@@ -899,7 +894,7 @@ export function useEarthquakes(
   const simulateKohatsu = useCallback(() => {
     const kohatsu = createTestKohatsu()
     if (kohatsuExpireTimerRef.current !== undefined) window.clearTimeout(kohatsuExpireTimerRef.current)
-    const expireMs = new Date(kohatsu.expireAt).getTime() - Date.now()
+    const expireMs = new Date(kohatsu.expireAt).getTime() - serverNow()
     if (expireMs > 0) {
       kohatsuExpireTimerRef.current = window.setTimeout(() => {
         kohatsuExpireTimerRef.current = undefined
