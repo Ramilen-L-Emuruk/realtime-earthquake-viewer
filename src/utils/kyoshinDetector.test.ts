@@ -9,6 +9,8 @@ import {
   frameScore,
   classify,
   spatialFill,
+  mergeEvents,
+  memberOverlapFrac,
   step,
   initState,
   PARAMS,
@@ -16,6 +18,7 @@ import {
   type SiteState,
   type ActiveTrigger,
   type DetectorState,
+  type DetectionEvent,
 } from './kyoshinDetector'
 import { haversineKm } from './geo'
 
@@ -653,5 +656,106 @@ describe('step: イベントライフサイクル', () => {
       state = last.state
     })
     expect(last.detections.length).toBe(0)
+  })
+})
+
+// ============================================================
+// §5-E: イベント併合（分裂統合）
+// ============================================================
+
+describe('memberOverlapFrac', () => {
+  it('共通メンバーが無ければ 0', () => {
+    expect(memberOverlapFrac(new Set(['s1', 's2']), ['s3', 's4'])).toBe(0)
+  })
+
+  it('片方がもう片方の部分集合なら 1（分母は小さい方）', () => {
+    expect(memberOverlapFrac(new Set(['s1', 's2', 's3']), ['s1', 's2', 's3', 's4', 's5'])).toBe(1)
+  })
+
+  it('半分重複なら 0.5', () => {
+    expect(memberOverlapFrac(new Set(['s1', 's2', 's3', 's4']), ['s3', 's4', 's5', 's6'])).toBeCloseTo(0.5)
+  })
+
+  it('空集合は 0', () => {
+    expect(memberOverlapFrac(new Set(), ['s1'])).toBe(0)
+    expect(memberOverlapFrac(new Set(['s1']), [])).toBe(0)
+  })
+})
+
+describe('mergeEvents（分裂統合 §5-E）', () => {
+  function evOf(over: Partial<DetectionEvent> & { id: string }): DetectionEvent {
+    const originTimeMs = over.originTimeMs ?? 1_000_000
+    return {
+      id: over.id,
+      epicenter: over.epicenter ?? null,
+      bearingDeg: over.bearingDeg ?? null,
+      oneSided: over.oneSided ?? false,
+      originTimeMs,
+      score: over.score ?? 1.0,
+      confidence: over.confidence ?? 'likely',
+      lastOnsetAtMs: over.lastOnsetAtMs ?? originTimeMs,
+      memberKeys: over.memberKeys ?? [],
+      lastSize: over.lastSize ?? over.memberKeys?.length ?? 0,
+      lastFitOk: over.lastFitOk ?? true,
+      lastRadialFitOk: over.lastRadialFitOk ?? false,
+      lastPeak: over.lastPeak ?? 1.0,
+      lastSpatialOk: over.lastSpatialOk ?? true,
+      lastContiguity: over.lastContiguity ?? 0.5,
+    }
+  }
+
+  it('メンバー重複が高い2イベントは1本化される（score=max・memberKeys=和集合・originTime=min）', () => {
+    const a = evOf({ id: 'evt-1', originTimeMs: 1_000_000, score: 0.9, memberKeys: ['s1', 's2', 's3', 's4'] })
+    const b = evOf({ id: 'evt-2', originTimeMs: 1_002_000, score: 1.7, memberKeys: ['s3', 's4', 's5', 's6'] })
+    const merged = mergeEvents([a, b], false)
+    expect(merged.length).toBe(1)
+    expect(merged[0].score).toBeCloseTo(1.7)
+    expect(merged[0].originTimeMs).toBe(1_000_000)
+    expect(new Set(merged[0].memberKeys)).toEqual(new Set(['s1', 's2', 's3', 's4', 's5', 's6']))
+  })
+
+  it('メンバーが素で震央も離れていれば併合しない', () => {
+    const a = evOf({ id: 'evt-1', epicenter: [35.0, 139.0], memberKeys: ['s1', 's2', 's3'] })
+    const b = evOf({ id: 'evt-2', epicenter: [31.0, 131.0], memberKeys: ['t1', 't2', 't3'] }) // 約500km
+    expect(mergeEvents([a, b], false).length).toBe(2)
+  })
+
+  it('メンバーが素でも震央が PENDING_MATCH_KM 以内なら併合する', () => {
+    const a = evOf({ id: 'evt-1', epicenter: [35.0, 139.0], memberKeys: ['s1', 's2', 's3'] })
+    const b = evOf({ id: 'evt-2', epicenter: [35.09, 139.0], memberKeys: ['t1', 't2', 't3'] }) // 約10km
+    expect(mergeEvents([a, b], false).length).toBe(1)
+  })
+
+  it('併合後はフィット根拠の強い方の震央を採用し確信度を再評価する', () => {
+    const weak = evOf({
+      id: 'evt-1', originTimeMs: 1_000_000, score: 0.9, confidence: 'likely',
+      epicenter: [35.5, 139.5], memberKeys: ['s1', 's2', 's3', 's4'],
+      lastRadialFitOk: false, lastFitOk: true, lastSize: 4,
+    })
+    const strong = evOf({
+      id: 'evt-2', originTimeMs: 1_001_000, score: PARAMS.S_ON + 0.5, confidence: 'likely',
+      epicenter: [35.0, 139.0], memberKeys: ['s3', 's4', 's5', 's6'],
+      lastRadialFitOk: true, lastFitOk: true, lastSize: 6,
+      lastPeak: PARAMS.MIN_LIKELY_PEAK + 1.0, lastSpatialOk: true,
+    })
+    const merged = mergeEvents([weak, strong], false)
+    expect(merged.length).toBe(1)
+    expect(merged[0].epicenter).toEqual([35.0, 139.0]) // radial 裏取り側を採用
+    expect(merged[0].confidence).toBe('confirmed')      // score=max・radial・size で再評価
+  })
+
+  it('ウォームアップ中は併合後も confirmed に上げない', () => {
+    const weak = evOf({ id: 'evt-1', score: 0.9, memberKeys: ['s1', 's2', 's3', 's4'], lastRadialFitOk: false })
+    const strong = evOf({
+      id: 'evt-2', score: PARAMS.S_ON + 0.5, memberKeys: ['s3', 's4', 's5', 's6'],
+      lastRadialFitOk: true, lastFitOk: true, lastSize: 6, lastPeak: PARAMS.MIN_LIKELY_PEAK + 1.0,
+    })
+    expect(mergeEvents([weak, strong], true)[0].confidence).toBe('likely')
+  })
+
+  it('単一イベント・空配列はそのまま返す', () => {
+    const a = evOf({ id: 'evt-1' })
+    expect(mergeEvents([a], false)).toEqual([a])
+    expect(mergeEvents([], false)).toEqual([])
   })
 })

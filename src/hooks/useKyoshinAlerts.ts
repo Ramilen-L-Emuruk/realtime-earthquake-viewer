@@ -3,21 +3,30 @@ import type { EEWAlert } from '../types/earthquake'
 import type { TabId } from '../components/IconNav'
 import type { AppSettings } from './useSettings'
 import type { AlertTitleApi } from './useAlertTitle'
-import { useKyoshinDetection, MIN_DETECTION_INDEX } from './useKyoshinDetection'
+import { MIN_DETECTION_INDEX } from '../utils/kyoshinDetectionView'
 import { playAlertSound, playKyoshinUpdateSound, kyoshinLevel } from '../utils/alertSound'
 import { kyoshinIndexToLabel } from '../utils/kyoshinIntensity'
 import { showBrowserNotification } from '../utils/notifications'
 import { log } from '../utils/logger'
 
-// 強震モニタの揺れ検知に応じたタブ切替・ウィンドウタイトル・通知音・ブラウザ通知を担うフック。
-// effect の依存配列は抽出前の App.tsx と同一集合を維持すること
-// （増減させると再発火タイミングが変わり、音の再鳴リグレッションになる）。
+// 強震モニタの揺れ検知（V2 エンジン）に応じたタブ切替・ウィンドウタイトル・通知音・ブラウザ通知を担うフック。
+//
+// confirmed（確定検知）と candidate（likely・可能性）の2段で反応する:
+//  - candidate 立ち上がり → realtime タブ＋控えめな候補音（確定前の早期反応）
+//  - confirmed 立ち上がり → realtime タブ＋検知音＋ブラウザ通知
+//  - confirmed 中のレベルアップ／再エスカレーション → 更新音の再鳴
+//  - 各々の終了 → EEW が無ければデフォルトタブへ復帰
+// 音レベルは全観測点の実効最大インデックス（表示と一致）で判定する。
 
 export interface KyoshinAlertsDeps {
-  kyoshinDetection: ReturnType<typeof useKyoshinDetection>
-  kyoshinIndices: Parameters<typeof useKyoshinDetection>[1]
+  /** confirmed イベントが1件以上あるか（V2 検知の確定） */
+  confirmed: boolean
+  /** likely イベントが1件以上あるか（V2 検知の可能性・早期反応の駆動元） */
+  candidate: boolean
   /** cancelledAt 除外済みのアクティブ EEW が1件以上あるか */
   hasActiveEEW: boolean
+  /** 現フレームの全観測点インデックス（実効最大インデックスの再計算に使う） */
+  kyoshinIndices: number[]
   settings: AppSettings
   /** useAlertTitle の戻り値（ウィンドウタイトル操作 API） */
   title: AlertTitleApi
@@ -31,26 +40,27 @@ export interface KyoshinAlertsDeps {
 
 export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
   const {
-    kyoshinDetection, kyoshinIndices, hasActiveEEW, settings, title,
+    confirmed, candidate, hasActiveEEW, kyoshinIndices, settings, title,
     activeEEWsRef, defaultTabRef, setActiveTab, revertToDefaultTab,
   } = deps
 
-  // EEW受信中または揺れ検知中は全観測点ベースの最大インデックスを使う（表示と音を一致させる）
+  // EEW 受信中または揺れ検知中は全観測点ベースの最大インデックスを使う（表示と音を一致させる）。
+  // 非検知・非 EEW 時は音を鳴らさないため 0 でよい。
   const effectiveKyoshinMaxIndex = useMemo(() => {
-    if (!(hasActiveEEW || kyoshinDetection.detected)) return kyoshinDetection.maxIndex
+    if (!(hasActiveEEW || confirmed)) return 0
     let max = 0
     for (const idx of kyoshinIndices) {
       if (idx >= MIN_DETECTION_INDEX && idx > max) max = idx
     }
-    return max > 0 ? max : kyoshinDetection.maxIndex
-  }, [hasActiveEEW, kyoshinDetection.detected, kyoshinDetection.maxIndex, kyoshinIndices])
+    return max
+  }, [hasActiveEEW, confirmed, kyoshinIndices])
 
-  // 揺れ検知時にリアルタイムタブを自動表示＋ウィンドウタイトル更新＋通知音
-  // 検知終了（true → false）時は EEW・津波の状態に合わせてタイトルを再評価する
-  const prevDetectedRef = useRef(false)
+  // 確定検知時に realtime タブを自動表示＋ウィンドウタイトル更新＋通知音。
+  // 検知終了（true → false）時は EEW・津波の状態に合わせてタイトルを再評価する。
+  const prevConfirmedRef = useRef(false)
   useEffect(() => {
-    if (kyoshinDetection.detected && !prevDetectedRef.current) {
-      log.debug('[tab] → realtime (揺れ検知開始)')
+    if (confirmed && !prevConfirmedRef.current) {
+      log.debug('[tab] → realtime (揺れ検知開始 V2 confirmed)')
       setActiveTab('realtime')
       title.setTitle('📈 揺れ検知')
       if (settings.soundEnabled) {
@@ -60,44 +70,42 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
         const label = kyoshinIndexToLabel(effectiveKyoshinMaxIndex) ?? '?'
         showBrowserNotification('揺れを検知中', `推定最大震度 ${label}（強震モニタ）`, 'kyoshin-detection')
       }
-    } else if (!kyoshinDetection.detected && prevDetectedRef.current) {
+    } else if (!confirmed && prevConfirmedRef.current) {
       title.applyPriority({ kyoshinDetected: false })
       if (activeEEWsRef.current.size === 0) {
-        log.debug(`[tab] → ${defaultTabRef.current} (揺れ検知終了)`)
+        log.debug(`[tab] → ${defaultTabRef.current} (揺れ検知終了 V2)`)
         revertToDefaultTab()
       }
     }
-    prevDetectedRef.current = kyoshinDetection.detected
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 依存集合は抽出前と同一に維持する
-  }, [kyoshinDetection.detected, effectiveKyoshinMaxIndex, settings.soundEnabled, settings.notifyDetection])
+    prevConfirmedRef.current = confirmed
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 音の再鳴を安定させるため依存は限定する
+  }, [confirmed, effectiveKyoshinMaxIndex, settings.soundEnabled, settings.notifyDetection])
 
-  // 候補クラスタ発生時（Layer 2 成立・Layer 4 未確定）の早期反応:
-  // タブ切替＋タイトル変更＋控えめな候補音のみ（ブラウザ通知・フル音は確定時まで行わない）。
-  // 確定（detected: true）に昇格した場合は上の検知開始エフェクトが引き継ぐため、
-  // ここでは「detected が false のとき」だけを対象にして二重発火・ちらつきを防ぐ。
-  const prevCandidateActiveRef = useRef(false)
+  // 可能性（likely）発生時の早期反応: タブ切替＋タイトル変更＋控えめな候補音のみ
+  // （ブラウザ通知・フル音は確定時まで行わない）。確定（confirmed）に昇格した場合は上の
+  // 検知開始エフェクトが引き継ぐため、ここでは confirmed が false のときだけを対象にする。
+  const prevCandidateRef = useRef(false)
   useEffect(() => {
-    const candidateActive = kyoshinDetection.candidatePoints.length > 0
-    if (candidateActive && !prevCandidateActiveRef.current && !kyoshinDetection.detected) {
-      log.debug('[tab] → realtime (候補クラスタ発生)')
+    if (candidate && !prevCandidateRef.current && !confirmed) {
+      log.debug('[tab] → realtime (揺れの可能性 V2 likely)')
       setActiveTab('realtime')
       title.setTitle('🔍 揺れの可能性')
       if (settings.soundEnabled) {
         playAlertSound('kyoshinCandidate')
       }
-    } else if (!candidateActive && prevCandidateActiveRef.current && !kyoshinDetection.detected) {
-      // 確定に昇格せず期限切れ（誤報）で消えた場合のみ、静かに元へ戻す
+    } else if (!candidate && prevCandidateRef.current && !confirmed) {
+      // 確定に昇格せず消えた場合のみ、静かに元へ戻す
       title.applyPriority({ kyoshinDetected: false })
       if (activeEEWsRef.current.size === 0) {
-        log.debug(`[tab] → ${defaultTabRef.current} (候補クラスタ失効)`)
+        log.debug(`[tab] → ${defaultTabRef.current} (揺れの可能性 失効 V2)`)
         revertToDefaultTab()
       }
     }
-    prevCandidateActiveRef.current = candidateActive
+    prevCandidateRef.current = candidate
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 依存集合は上の検知開始エフェクトに合わせて絞る
-  }, [kyoshinDetection.candidatePoints.length, kyoshinDetection.detected, settings.soundEnabled])
+  }, [candidate, confirmed, settings.soundEnabled])
 
-  // 揺れ検知中の音再鳴ロジック
+  // 確定検知中の音再鳴ロジック
   // - 過去最大レベルを超えたとき（新たな最大）→ 音を鳴らす
   // - ピーク後に一度落ちてから再上昇したとき（再エスカレーション）→ 音を鳴らす
   // 生インデックスではなく音レベル（0〜6）で比較することで、フレーム間の微細な
@@ -109,7 +117,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
   // ピーク到達後に観測した最小レベル（再エスカレーション検出用）
   const postPeakMinLevelRef = useRef(-1)
   useEffect(() => {
-    if (!kyoshinDetection.detected) {
+    if (!confirmed) {
       maxSoundLevelRef.current = -1
       postPeakMinLevelRef.current = -1
       return
@@ -142,6 +150,6 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
         playKyoshinUpdateSound(effectiveKyoshinMaxIndex)
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 依存集合は抽出前と同一に維持する
-  }, [effectiveKyoshinMaxIndex, kyoshinDetection.detected, settings.soundEnabled])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 音の再鳴を安定させるため依存は限定する
+  }, [effectiveKyoshinMaxIndex, confirmed, settings.soundEnabled])
 }
