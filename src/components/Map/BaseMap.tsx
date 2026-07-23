@@ -70,6 +70,7 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
     //   overlayPane(400)       : pane 未指定 Canvas レイヤーの既定ペイン（Leaflet デフォルト）。
     //                            現状これを使うレイヤーは無いが、念のため pointerEvents を無効化し、
     //                            背面レイヤーのクリック/ホバーを妨げないようにしている
+    //   kyoshin-v2(440)        : 新検知エンジン(v2)の暫定震央・方位マーカー（KyoshinV2Overlay が使用）
     //   basemap-labels(450)    : 地方/県/区域名ラベル
     if (!map.getPane('basemap')) {
       const pane = map.createPane('basemap')
@@ -89,6 +90,11 @@ export function BaseMap({ suppressRegionLabels = false }: Props) {
     if (!map.getPane('quake-points')) {
       const pane = map.createPane('quake-points')
       pane.style.zIndex = '400'
+      pane.style.pointerEvents = 'none'
+    }
+    if (!map.getPane('kyoshin-v2')) {
+      const pane = map.createPane('kyoshin-v2')
+      pane.style.zIndex = '440'
       pane.style.pointerEvents = 'none'
     }
     // overlayPane は pane 未指定の Canvas レンダラーが使う既定ペイン。Canvas 要素は SVG と異なり
