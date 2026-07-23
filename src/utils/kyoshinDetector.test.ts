@@ -236,6 +236,7 @@ function mkAT(
 const SITE_A: [number, number] = [35.0, 139.0]
 const SITE_B: [number, number] = [35.09, 139.0] // A から約10km
 const SITE_C: [number, number] = [35.18, 139.0] // A から約20km
+const SITE_D: [number, number] = [35.27, 139.0] // A から約30km
 
 describe('clusterActive', () => {
   it('近接点は同一クラスタ、遠方点は別クラスタになる', () => {
@@ -252,6 +253,30 @@ describe('clusterActive', () => {
 
   it('空入力は空配列', () => {
     expect(clusterActive([])).toEqual([])
+  })
+
+  it('同時多発（非伝播）の広域トリガーは巨大ブロブに融合せず分割される', () => {
+    // 南北に約20km刻みで10点、全て同一オンセット（データ不整合・広域ノイズを模擬）
+    const pts = Array.from({ length: 10 }, (_, i) =>
+      mkAT(`p${i}`, 35.0 + i * 0.18, 139.0, 0),
+    )
+    const clusters = clusterActive(pts)
+    // 単一連結なら 1 個の size 10 になるが、時空間ゲートで小クラスタに割れる
+    expect(clusters.length).toBeGreaterThan(1)
+    expect(Math.max(...clusters.map((c) => c.length))).toBeLessThan(pts.length)
+  })
+
+  it('本物の伝播波面（遠いほど遅い）は1クラスタに保たれる', () => {
+    // 同じ配置だが、震源(先頭)から約4km/sで伝播するオンセット時刻を与える
+    const V = 4 // km/s
+    const pts = Array.from({ length: 10 }, (_, i) => {
+      const lat = 35.0 + i * 0.18
+      const rKm = (lat - 35.0) * 111 // 緯度差→おおよそのkm
+      return mkAT(`w${i}`, lat, 139.0, Math.round((rKm / V) * 1000))
+    })
+    const clusters = clusterActive(pts)
+    expect(clusters.length).toBe(1)
+    expect(clusters[0].length).toBe(10)
   })
 })
 
@@ -304,14 +329,15 @@ function stateNoWarmup(startMs: number): DetectorState {
   return { ...initState(startMs - 1000), warmupUntilMs: 0 }
 }
 
-/** 3観測点フレームを組み立てる。 */
-function frame3(dataTimeMs: number, a: number, b: number, c: number): Frame {
-  return { dataTimeMs, sites: [SITE_A, SITE_B, SITE_C], values: [a, b, c] }
+/** 4観測点フレームを組み立てる。 */
+function frame4(dataTimeMs: number, a: number, b: number, c: number, d: number): Frame {
+  return { dataTimeMs, sites: [SITE_A, SITE_B, SITE_C, SITE_D], values: [a, b, c, d] }
 }
 
 /**
  * 波面状に立ち上がる地震シナリオを流す。
- * baseline を確立後、A→B→C の順に約3秒間隔でトリガーさせ、以後は高値維持。
+ * baseline 確立後、A→B→C→D の順に約3秒間隔でトリガーさせ、以後は高値維持。
+ * confirmed は MIN_CONFIRM_SIZE=4 のため、4点揃う（D onset）以降に成立しうる。
  */
 function runWaveScenario(extraQuietFrames = 0): {
   state: DetectorState
@@ -320,50 +346,53 @@ function runWaveScenario(extraQuietFrames = 0): {
 } {
   const start = 1_000_000
   let state = stateNoWarmup(start)
-  // A@f4, B@f7, C@f10 でオンセット（3s刻み）。以後 f16 まで全高値維持。
-  const schedule: [number, number, number][] = [
-    [1, 1, 1], // f0 baseline
-    [1, 1, 1], // f1
-    [1, 1, 1], // f2
-    [1, 1, 1], // f3
-    [14, 1, 1], // f4 A onset
-    [14, 1, 1], // f5
-    [14, 1, 1], // f6
-    [14, 14, 1], // f7 B onset
-    [14, 14, 1], // f8
-    [14, 14, 1], // f9
-    [14, 14, 14], // f10 C onset
-    [14, 14, 14], // f11
-    [14, 14, 14], // f12
-    [14, 14, 14], // f13
-    [14, 14, 14], // f14
-    [14, 14, 14], // f15
-    [14, 14, 14], // f16
-    [14, 14, 14], // f17
-    [14, 14, 14], // f18
+  const schedule: [number, number, number, number][] = [
+    [1, 1, 1, 1], // f0 baseline
+    [1, 1, 1, 1], // f1
+    [1, 1, 1, 1], // f2
+    [1, 1, 1, 1], // f3
+    [14, 1, 1, 1], // f4 A onset
+    [14, 1, 1, 1], // f5
+    [14, 1, 1, 1], // f6
+    [14, 14, 1, 1], // f7 B onset
+    [14, 14, 1, 1], // f8
+    [14, 14, 1, 1], // f9
+    [14, 14, 14, 1], // f10 C onset
+    [14, 14, 14, 1], // f11
+    [14, 14, 14, 1], // f12
+    [14, 14, 14, 14], // f13 D onset
+    [14, 14, 14, 14], // f14
+    [14, 14, 14, 14], // f15
+    [14, 14, 14, 14], // f16
+    [14, 14, 14, 14], // f17
+    [14, 14, 14, 14], // f18
+    [14, 14, 14, 14], // f19
+    [14, 14, 14, 14], // f20
+    [14, 14, 14, 14], // f21
+    [14, 14, 14, 14], // f22
   ]
   let last!: ReturnType<typeof step>
-  schedule.forEach(([a, b, c], i) => {
-    last = step(state, frame3(start + i * 1000, a, b, c))
+  schedule.forEach(([a, b, c, d], i) => {
+    last = step(state, frame4(start + i * 1000, a, b, c, d))
     state = last.state
   })
   const peak = last
   // 追加の静穏フレーム（終了判定検証用）
   for (let i = 0; i < extraQuietFrames; i++) {
-    last = step(state, frame3(start + (schedule.length + i) * 1000, 1, 1, 1))
+    last = step(state, frame4(start + (schedule.length + i) * 1000, 1, 1, 1, 1))
     state = last.state
   }
   return { state, last, peak }
 }
 
 describe('step: イベントライフサイクル', () => {
-  it('波面状に立ち上がる3点クラスタは confirmed に到達する', () => {
+  it('波面状に立ち上がる4点クラスタは confirmed に到達する', () => {
     const { peak } = runWaveScenario()
     expect(peak.detections.length).toBeGreaterThanOrEqual(1)
     const ev = peak.detections[0]
     expect(ev.confidence).toBe('confirmed')
     expect(ev.epicenter).toEqual(SITE_A)
-    expect(ev.memberKeys.length).toBe(3)
+    expect(ev.memberKeys.length).toBe(4)
   })
 
   it('揺れが収まると END_TIMEOUT 経過後にイベントが終了する', () => {
