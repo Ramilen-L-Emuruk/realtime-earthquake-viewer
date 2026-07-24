@@ -10,7 +10,7 @@ import { formatDateTime, formatTime } from '../../utils/formatters'
 import { getIntensityColor, getIntensityLabel, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
 import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
 import { eewAreas, eewMaxScale, eewSerial } from '../../utils/eew'
-import { kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
+import { kyoshinIndexToJma, kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
 
 // 凡例は地図と同じ気象庁の震度配色（getIntensityColor）を使う。scale=0 は震度0（灰色）。
 const SCALE_LEGEND: { label: string; scale: number }[] = [
@@ -332,10 +332,18 @@ function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent
   const maxCount = groups.reduce((m, g) => Math.max(m, g.count), 1)
   const totalActive = activeCount || events.reduce((s, e) => s + e.lastSize, 0)
 
+  // カードの枠・背景は最大震度の気象庁配色に合わせる（地図マーカー・EEW カードと一貫）。
+  // 確信度（検知/可能性/微弱）は枠色ではなく左上のチップで示す。
+  // 震度1未満（faint＝震度0級で最大震度ラベルが無い）は震度色が定まらないため、確信度ティア色（淡青）へフォールバック。
+  const maxJma = kyoshinIndexToJma(maxIndex)
+  const hasIntensity = maxJma != null && maxJma.label !== '0'
+  const frameBorder = hasIntensity ? getIntensityColor(maxJma.scale) : tier.border
+  const frameBg = hasIntensity ? getIntensityBgColor(maxJma.scale) : tier.bg
+
   return (
-    <div className="rounded-lg overflow-hidden" style={{ border: `1px solid ${tier.border}`, backgroundColor: tier.bg }}>
-      {/* ヘッダー: 確信度ティア・広域バッジ・時刻 */}
-      <div className="flex items-center gap-2 px-3 py-1.5" style={{ borderBottom: `1px solid ${tier.border}55` }}>
+    <div className="rounded-lg overflow-hidden" style={{ border: `1px solid ${frameBorder}`, backgroundColor: frameBg }}>
+      {/* ヘッダー: 確信度チップ・広域バッジ・時刻。枠色は最大震度、チップ色は確信度で 2 軸を分離。 */}
+      <div className="flex items-center gap-2 px-3 py-1.5" style={{ borderBottom: `1px solid ${frameBorder}55` }}>
         <span className="text-xs font-bold px-1.5 py-0.5 rounded flex-shrink-0" style={{ backgroundColor: tier.border, color: '#fff' }}>
           {tier.label}
         </span>
