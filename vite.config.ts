@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { perfReportPlugin } from './scripts/perf/vite-plugin-perf-report'
 
 const variant = process.env.VITE_VARIANT ?? 'standard'
 const isDmdss = variant === 'dmdss'
@@ -27,6 +28,8 @@ export default defineConfig({
   },
   plugins: [
     react(),
+    // dev サーバー専用: 実機計測の証跡収集（/__perf-script・/__perf-report）。build には含まれない
+    perfReportPlugin(),
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['icons/*.svg', 'icons/*.png'],
