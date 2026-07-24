@@ -381,6 +381,39 @@ export function initState(dataTimeMs = 0): DetectorState {
   }
 }
 
+/** 永続化する学習資産（点別床・セル慢性活性）。一過性の hist・triggeredAtMs・events は含めない。 */
+export interface LearnedState {
+  /** 座標キー → [floorMean, floorDev]。既定床から動いた点のみ（静穏点は省略＝復元時に既定初期化）。 */
+  floors: Record<string, [number, number]>
+  /** セルキー → 慢性活性(0〜1) */
+  cellActivity: Record<string, number>
+}
+
+/**
+ * 学習資産だけを抽出する（localStorage 保存用）。
+ * 既定床のままの静穏点（floorMean/floorDev がともに微小）は省いて保存量を抑える。
+ */
+export function extractLearned(state: DetectorState): LearnedState {
+  const floors: Record<string, [number, number]> = {}
+  for (const [k, s] of Object.entries(state.sites)) {
+    if (s.floorMean > 0.05 || s.floorDev > 0.05) floors[k] = [s.floorMean, s.floorDev]
+  }
+  return { floors, cellActivity: { ...state.cellActivity } }
+}
+
+/**
+ * 学習資産を状態へ流し込む（コールドスタート直後の再読込用）。
+ * 点別床は「床のみ持つ SiteState」として先置きし、初フレームでその床から検知を開始できるようにする
+ * （hist は空・triggeredAtMs は null＝一過性は復元しない）。warmup は無いので初手から検知可能。
+ */
+export function hydrateLearned(state: DetectorState, learned: LearnedState): DetectorState {
+  const sites: Record<string, SiteState> = { ...state.sites }
+  for (const [k, fd] of Object.entries(learned.floors)) {
+    sites[k] = { hist: [], floorMean: fd[0], floorDev: fd[1], triggeredAtMs: null }
+  }
+  return { ...state, sites, cellActivity: { ...learned.cellActivity } }
+}
+
 /** 現フレームの 1 観測点の観測結果（L1〜L2 の途中集計）。 */
 interface FramePoint {
   key: string
@@ -410,9 +443,13 @@ export function step(
   const now = frame.dataTimeMs
   const dtMs = now - state.lastDataTimeMs
 
-  // 不連続（大きな時刻ジャンプ・巻き戻し）は状態をリセットして作り直す。
+  // 不連続（大きな時刻ジャンプ・巻き戻し・コールドスタート初フレーム）は一過性の状態を
+  // 作り直す。ただし学習資産（点別床・セル慢性活性）は引き継ぐ（永続化からの復元を保つ・
+  // 数十秒の欠測で床/地域活性を捨てない）。
   if (dtMs <= 0 || dtMs > PARAMS.MAX_DT_GAP_MS) {
-    const rebuilt = ingest(initState(now), frame)
+    const seed = initState(now)
+    seed.cellActivity = { ...state.cellActivity }
+    const rebuilt = ingest(seed, frame, state)
     return { state: rebuilt, detections: [], triggers: [] }
   }
 
@@ -704,15 +741,23 @@ function updateCellActivity(
 }
 
 /**
- * トリガー判定を伴わずに全観測点の状態を初期化して取り込む。
- * 不連続リセット直後の 1 フレーム目に使う（この 1 フレームはトリガー対象にしない）。
+ * トリガー判定を伴わずに全観測点の状態を取り込む。不連続リセット直後の 1 フレーム目に使う
+ * （この 1 フレームはトリガー対象にしない）。
+ *
+ * `prev` を渡すと、既知点の**点別床（学習資産）は引き継ぎ**、hist・triggeredAtMs（一過性）だけ
+ * リセットする。これで永続化からの復元・数十秒の欠測をまたいでも床を失わない。
  */
-function ingest(state: DetectorState, frame: Frame): DetectorState {
+function ingest(state: DetectorState, frame: Frame, prev?: DetectorState): DetectorState {
   const sites: Record<string, SiteState> = {}
   for (let i = 0; i < frame.values.length; i++) {
     if (frame.missing?.[i]) continue
     const [lat, lng] = frame.sites[i]
-    sites[siteKey(lat, lng)] = initSiteState(indexToValue(frame.values[i]), frame.dataTimeMs)
+    const key = siteKey(lat, lng)
+    const value = indexToValue(frame.values[i])
+    const prior = prev?.sites[key]
+    sites[key] = prior
+      ? { hist: [{ t: frame.dataTimeMs, v: value }], floorMean: prior.floorMean, floorDev: prior.floorDev, triggeredAtMs: null }
+      : initSiteState(value, frame.dataTimeMs)
   }
   return { ...state, sites, lastDataTimeMs: frame.dataTimeMs }
 }
