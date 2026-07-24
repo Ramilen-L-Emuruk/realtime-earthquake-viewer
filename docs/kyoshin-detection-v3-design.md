@@ -124,7 +124,8 @@ V2 は「波面フィットで震源を決め、その品質を時間積分し�
 | `CONFIRM_DENSITY_FRAC` | 確定点数の密度正規化（疎地域救済） | 0.6 |
 | `CONFIRM_FRAMES` | confirmed 連続フレーム | 2 |
 | `MERGE_EVENT_KM` | イベント重心併合距離（分裂統合） | 100 km |
-| `HOLD_MS` | 確定保持 | 10 s |
+| `HOLD_MS` | 確定保持（confirmed のイベント存続） | 10 s |
+| `LIKELY_HOLD_MS` | likely/faint のティア保持（§16） | 10 s |
 | `MIN_LIKELY_INTENSITY` | likely の最大震度下限（未満は faint・§13） | 震度1（value 0.5） |
 | `MIN_CONFIRM_INTENSITY` | confirmed の最大震度下限 | 震度1（慢性活性セルは震度2） |
 | `FLOOR_CAP` | 点別床の上限（鈍化防止） | 要較正 |
@@ -338,3 +339,21 @@ per-point 微小再エスカレーションは能登で168回鳴り過剰だっ�
   面）・自動フィット（メンバー観測点フットプリントへ）・カード（推定最大震度＋震度分布）。「どこが・
   どれだけ揺れているか」は実測の観測点で示し、推定した中心点は出さない。
 - カード表示に使う `kyoshinV2Detections`（`RealtimeTab`）は引き続き必要なため存置。
+
+## 16. likely/faint のティア保持 LIKELY_HOLD_MS（2026-07-24・弱い検知の早期消滅を解消）
+
+**動機**: confirmed は `everConfirmed` ラッチ＋イベント存続（`HOLD_MS`）で揺れが収まっても維持されるが、
+**likely/faint にはラッチが無く、揺れの面（size）が `MIN_LIKELY_POINTS` を割った瞬間に weak（＝非表示）へ
+即転落**していた。confirmed 未達の弱いイベント（福岡 M2.4 震度1 など）は面が数秒で縮むため「検知が
+一瞬で表示されてすぐ消える」挙動になっていた（福岡はハーネスで likely が 7 秒だけ＝05:49:43〜:49 で消滅を実測）。
+
+**変更**: `DetectionEvent.lastSpreadAtMs`（最後に size ≥ MIN_LIKELY_POINTS だった時刻）を追加し、
+`updateEventMetrics` の分類で `spreadHeld = hasSpread || (now − lastSpreadAtMs ≤ LIKELY_HOLD_MS)` を likely/faint
+の判定に使う。confirmed のラッチに相当するが、こちらは**最後に spread を持ったフレームからの経過**で切る
+時間上限付き（1 局が居残っても survival で無限表示にならない）。保持中のティア（likely/faint）は保持された
+最大震度から再評価する（震度1 を保てば likely、震度0 級なら faint）。
+
+**検証（ハーネス実データ）**: 福岡の likely が **7 秒 → 16 秒（05:49:43〜:59）** に延長（最後の spread=:49
+＋ LIKELY_HOLD_MS 10s）。confirmed の正コントロール（福島県沖など）は既存ラッチのままで無影響。特異度は
+**平常 18:00・欠測グリッチとも 0/0/0 を維持**＝誤 likely/faint が存在しないので保持で延命される誤検知も無い。
+型チェック 0・vitest 31 件（likely 保持の回帰テスト +1）。
