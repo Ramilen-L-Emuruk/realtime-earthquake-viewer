@@ -7,18 +7,21 @@ const SVG_NS = 'http://www.w3.org/2000/svg'
 
 // 検知エンジンの検知イベントを地図に重ねるオーバーレイ。
 // 自動フィットはメンバー観測点に対して行う（本オーバーレイはイベント中心の可視化のみを担う）。
-// confirmed / likely のみ描画（weak は平常時ノイズが多いため除外＝カード表示と同基準）。
-// 中心はメンバー観測点の重心（epicenter・近傍一致型のため震源推定はしない・任意の目印）。
+// confirmed / likely / faint を描画（weak は非表示＝カード表示と同基準）。faint（震度0級・無音）は
+// 淡色・非脈動で控えめに描く。中心はメンバー観測点の重心（近傍一致型のため震源推定はしない・任意の目印）。
 //
 // 描画方式は KyoshinDetectedPoints を踏襲（生 SVG を pane に appendChild。flyTo/ズーム中は
 // svg 全体の transform 1 回で追従し毎フレームの DOM 再構築を避ける）。理由は同ファイル参照。
 
-const TIER_COLOR: Record<'confirmed' | 'likely', string> = {
+// confirmed=赤・likely=橙・faint=淡青（震度0級・無音の控えめ表示）
+type OverlayTier = 'confirmed' | 'likely' | 'faint'
+const TIER_COLOR: Record<OverlayTier, string> = {
   confirmed: '#ef4444',
   likely: '#f59e0b',
+  faint: '#60a5fa',
 }
-// confirmed を likely より前面に描く
-const TIER_Z: Record<'confirmed' | 'likely', number> = { likely: 0, confirmed: 1 }
+// confirmed を最前面、faint を最背面に描く
+const TIER_Z: Record<OverlayTier, number> = { faint: 0, likely: 1, confirmed: 2 }
 
 export function KyoshinV2Overlay({
   detections,
@@ -67,8 +70,9 @@ export function KyoshinV2Overlay({
       while (svg.firstChild) svg.removeChild(svg.firstChild)
 
       const events = detections.filter(
-        (d): d is DetectionEvent & { confidence: 'confirmed' | 'likely' } =>
-          (d.confidence === 'confirmed' || d.confidence === 'likely') && d.epicenter != null,
+        (d): d is DetectionEvent & { confidence: OverlayTier } =>
+          (d.confidence === 'confirmed' || d.confidence === 'likely' || d.confidence === 'faint') &&
+          d.epicenter != null,
       )
       const sorted = [...events].sort((a, b) => TIER_Z[a.confidence] - TIER_Z[b.confidence])
       const s = iconScale
@@ -76,27 +80,31 @@ export function KyoshinV2Overlay({
         const [lat, lng] = ev.epicenter as [number, number]
         const pt = map.latLngToContainerPoint(L.latLng(lat, lng))
         const color = TIER_COLOR[ev.confidence]
+        const faint = ev.confidence === 'faint'
 
         // 中心（メンバー重心）を不確実性の破線円で表現（震源推定ではない目印）
         const ring = mkCircle(pt.x, pt.y, 22 * s, color)
         ring.setAttribute('fill', 'none')
-        ring.setAttribute('stroke-width', String(2 * s))
+        ring.setAttribute('stroke-width', String((faint ? 1.5 : 2) * s))
         ring.setAttribute('stroke-dasharray', `${4 * s} ${3 * s}`)
-        ring.setAttribute('opacity', '0.8')
+        ring.setAttribute('opacity', faint ? '0.45' : '0.8')
         svg.appendChild(ring)
 
-        // 脈動する外周リング（注意喚起）
-        const pulse = mkCircle(pt.x, pt.y, 12 * s, color)
-        pulse.setAttribute('fill', 'none')
-        pulse.setAttribute('stroke-width', String(2.5 * s))
-        pulse.setAttribute('class', 'animate-pulse')
-        svg.appendChild(pulse)
+        // 脈動する外周リング（注意喚起）。faint は無音・控えめのため脈動させない。
+        if (!faint) {
+          const pulse = mkCircle(pt.x, pt.y, 12 * s, color)
+          pulse.setAttribute('fill', 'none')
+          pulse.setAttribute('stroke-width', String(2.5 * s))
+          pulse.setAttribute('class', 'animate-pulse')
+          svg.appendChild(pulse)
+        }
 
         // 中心のドット
-        const dot = mkCircle(pt.x, pt.y, 4.5 * s, color)
+        const dot = mkCircle(pt.x, pt.y, (faint ? 3.5 : 4.5) * s, color)
         dot.setAttribute('fill', color)
         dot.setAttribute('stroke', '#ffffff')
         dot.setAttribute('stroke-width', String(1 * s))
+        dot.setAttribute('opacity', faint ? '0.7' : '1')
         svg.appendChild(dot)
       }
     }

@@ -284,11 +284,12 @@ function SWaveArrivalCard({ arrival }: { arrival: SWaveArrival }) {
   )
 }
 
-// 検知エンジンの確信度別スタイル。confirmed=赤・likely=橙・weak=灰。
+// 検知エンジンの確信度別スタイル。confirmed=赤・likely=橙・faint=淡青(震度0級・無音)・weak=灰。
 const V2_TIER: Record<Confidence, { label: string; color: string; bg: string; border: string }> = {
   confirmed: { label: '検知', color: '#f87171', bg: '#450a0a', border: '#ef4444' },
   likely: { label: '可能性', color: '#fcd34d', bg: '#451a03', border: '#d97706' },
-  weak: { label: '微弱', color: '#9ca3af', bg: 'rgba(42,42,42,0.6)', border: '#4b5563' },
+  faint: { label: '微弱', color: '#93c5fd', bg: 'rgba(30,41,59,0.55)', border: '#3b5b80' },
+  weak: { label: '検出', color: '#9ca3af', bg: 'rgba(42,42,42,0.6)', border: '#4b5563' },
 }
 
 // 強震モニタ検知の集約カード。
@@ -297,9 +298,15 @@ const V2_TIER: Record<Confidence, { label: string; color: string; bg: string; bo
 // （震源を推定しないため、揺れている地域数と全体の震度分布・推定最大震度を主情報とする）。
 // 複数地域にまたがる場合は「広域」を示し、N 件の別地震のように見えるのを防ぐ。
 function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent[]; siteIndex: Map<string, DetectedPoint> }) {
-  // 最上位ティア（confirmed があれば検知、なければ可能性）
-  const hasConfirmed = events.some(e => e.confidence === 'confirmed')
-  const tier = hasConfirmed ? V2_TIER.confirmed : V2_TIER.likely
+  // 最上位ティア（confirmed > likely > faint）。faint のみ＝震度0級のコヒーレント揺れ（無音・控えめ表示）。
+  const topTier: Confidence = events.some(e => e.confidence === 'confirmed')
+    ? 'confirmed'
+    : events.some(e => e.confidence === 'likely')
+      ? 'likely'
+      : 'faint'
+  const tier = V2_TIER[topTier]
+  const isFaint = topTier === 'faint'
+  const heading = isFaint ? '微弱な揺れの兆候' : '強震モニタ検知'
   const regionCount = events.length
   const earliestMs = events.reduce((m, e) => Math.min(m, e.originTimeMs), Infinity)
   const time = new Date(earliestMs).toLocaleTimeString('ja-JP', { hour12: false })
@@ -333,7 +340,7 @@ function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent
           {tier.label}
         </span>
         <span className="text-xs" style={{ color: tier.color }}>
-          {regionCount >= 2 ? `強震モニタ検知（広域・${regionCount}地域）` : '強震モニタ検知'}
+          {regionCount >= 2 ? `${heading}（広域・${regionCount}地域）` : heading}
         </span>
         <span className="text-xs text-secondary ml-auto font-mono">{time}</span>
       </div>

@@ -351,6 +351,33 @@ describe('step: 特異度の第2軸（セル慢性活性ガード）', () => {
   })
 })
 
+describe('step: faint ティア（震度0級のコヒーレント揺れ）', () => {
+  it('震度0(value 0.0)まで立ち上がる同期クラスタは faint（likely/confirmed ではない）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    // 静穏 value -0.5 → 揺れ value 0.0（震度0）。rise 0.5 で onset、最大震度は震度1未満。
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 6; i++, t += 1000) frames.push(uniformFrame(defs, t, -0.5))
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(defs, t, 0.0))
+    const { detections } = drive(frames, meta)
+
+    const faint = detections.filter((d) => d.confidence === 'faint')
+    expect(faint.length).toBe(1)
+    expect(faint[0].maxIntensity).toBeLessThan(PARAMS.MIN_LIKELY_INTENSITY)
+    expect(detections.some((d) => d.confidence === 'confirmed' || d.confidence === 'likely')).toBe(false)
+  })
+
+  it('同じ配置でも震度1(value 0.5)まで上がれば likely 以上に昇格する', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const frames = quietThenShake(defs, { quietCount: 6, shakeCount: 5, shakeValue: 0.5 })
+    const { detections } = drive(frames, meta)
+    expect(detections.some((d) => d.confidence === 'confirmed' || d.confidence === 'likely')).toBe(true)
+    expect(detections.some((d) => d.confidence === 'faint')).toBe(false)
+  })
+})
+
 describe('step: 不連続リセット', () => {
   it('大きな時刻ジャンプで状態をリセットしその1フレームは検知しない', () => {
     const defs = grid3x3(35.0, 139.0, 0.1)
