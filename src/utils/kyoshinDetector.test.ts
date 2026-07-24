@@ -317,6 +317,29 @@ describe('step: 保持と明滅防止', () => {
     expect(stillConfirmed).toBe(true)
   })
 
+  it('likely に達したイベントは面が縮んでも LIKELY_HOLD_MS はティアを維持し経過後 weak へ落ちる', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    // 静穏 → 上段 3 点だけ震度1(value 0.5) で揺れる。密網で size3<confirm 点数=likely 止まり（confirmed 未達）。
+    for (let i = 0; i < 6; i++, t += 1000) state = step(state, uniformFrame(defs, t, 0), meta).state
+    const shake = (tt: number): Frame => frameWith(defs, tt, (i) => (i <= 2 ? 0.5 : 0))
+    for (let i = 0; i < 4; i++, t += 1000) state = step(state, shake(t), meta).state
+    expect(state.events.some((e) => e.confidence === 'likely')).toBe(true)
+    expect(state.events.some((e) => e.confidence === 'confirmed')).toBe(false)
+
+    // 面を縮小: 1 点のみ震度1継続・他 2 点は床下(value -1.0)。size<MIN_LIKELY_POINTS で spread 喪失だが
+    // 最大震度は 0.5 を維持。recentOnset(TRIG_ACTIVE_MS)が抜けたあとも LIKELY_HOLD_MS の間は likely を保つ。
+    const shrink = (tt: number): Frame => frameWith(defs, tt, (i) => (i === 0 ? 0.5 : i <= 2 ? -1.0 : 0))
+    for (let i = 0; i < 12; i++, t += 1000) state = step(state, shrink(t), meta).state
+    expect(state.events.some((e) => e.confidence === 'likely')).toBe(true)
+
+    // LIKELY_HOLD_MS を十分超えると likely/faint でなくなる（イベントは 1 局居残りで存置＝weak）
+    for (let i = 0; i < 12; i++, t += 1000) state = step(state, shrink(t), meta).state
+    expect(state.events.some((e) => e.confidence === 'likely' || e.confidence === 'faint')).toBe(false)
+  })
+
   it('揺れが続く限り onset が止まっても size は減衰せずイベントが維持される（早期消滅の回帰）', () => {
     const defs = grid3x3(35.0, 139.0, 0.1)
     const meta = buildStationMeta(sitesOf(defs))
