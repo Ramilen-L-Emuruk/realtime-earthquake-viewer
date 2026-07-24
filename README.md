@@ -221,7 +221,9 @@ realtime-earthquake-viewer/
 │   ├── build-prefectures.mjs       # 都道府県境界データ生成スクリプト
 │   ├── build-subregions.mjs        # 一次細分区域境界データ生成スクリプト
 │   ├── build-active-faults.mjs     # 全国活断層線データ生成スクリプト
-│   └── build-plate-boundaries.mjs  # プレート境界線データ生成スクリプト
+│   ├── build-plate-boundaries.mjs  # プレート境界線データ生成スクリプト
+│   └── perf/
+│       └── measure-kyoshin-static.js  # 強震モニタ静止時の描画負荷計測スクリプト（ブラウザ注入用）
 ├── src/
 │   ├── App.tsx                     # 地図常時表示 + タブ別パネル + 通知音/自動タブ切替/ウィンドウタイトル連携
 │   ├── components/
