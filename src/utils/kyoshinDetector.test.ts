@@ -220,6 +220,22 @@ describe('step: 特異度（散在ノイズを排除）', () => {
     expect(detections.some((d) => d.confidence === 'likely')).toBe(false)
   })
 
+  it('疎地域（離島・過疎網）は少数点でも confirmed になる（密度正規化・改良5）', () => {
+    // 本土から遠く離れた小さな観測点クラスタ（互いに近傍・avail=3）。密度正規化で 5 点未満でも確定。
+    const defs: StationDef[] = [
+      { lat: 28.3, lng: 129.4 },
+      { lat: 28.35, lng: 129.45 },
+      { lat: 28.4, lng: 129.4 },
+      { lat: 28.35, lng: 129.35 },
+    ]
+    const meta = buildStationMeta(sitesOf(defs))
+    // avail が少ない（各点 3）ことを確認
+    expect(meta.avail[siteKey(28.35, 129.45)]).toBeLessThan(PARAMS.CONFIRM_POINTS)
+    const frames = quietThenShake(defs, { quietCount: 5, shakeCount: 5, shakeValue: 2.0 })
+    const { detections } = drive(frames, meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(true)
+  })
+
   it('平常（微小変動のみ）では検知ゼロ', () => {
     const defs = grid3x3(35.0, 139.0, 0.1)
     const meta = buildStationMeta(sitesOf(defs))
@@ -247,6 +263,18 @@ describe('step: グループ化とID安定性', () => {
     const cells = new Set(defs.map((d) => meta.cellOf[siteKey(d.lat, d.lng)]))
     expect(cells.size).toBeGreaterThanOrEqual(2)
 
+    const frames = quietThenShake(defs, { quietCount: 5, shakeCount: 4, shakeValue: 2.0 })
+    const { detections } = drive(frames, meta)
+    const active = detections.filter((d) => d.confidence !== 'weak')
+    expect(active.length).toBe(1)
+  })
+
+  it('近傍グラフが分断された同一地震の2パッチは1イベントに統合される（重心≤MERGE_EVENT_KM）', () => {
+    // 2つの 3×3 グリッドを ~78km 離す（各パッチ内は近傍・パッチ間は R_KM 外＝別成分）→ 統合パスで1本化
+    const a = grid3x3(35.0, 139.0, 0.1)
+    const b = grid3x3(35.7, 139.0, 0.1)
+    const defs = [...a, ...b]
+    const meta = buildStationMeta(sitesOf(defs))
     const frames = quietThenShake(defs, { quietCount: 5, shakeCount: 4, shakeValue: 2.0 })
     const { detections } = drive(frames, meta)
     const active = detections.filter((d) => d.confidence !== 'weak')
