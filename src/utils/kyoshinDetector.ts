@@ -73,6 +73,8 @@ export interface DetectionEvent {
   confirmStreak: number
   /** 一度でも confirmed に達したか（明滅防止のラッチ。HOLD 中は confirmed を維持） */
   everConfirmed: boolean
+  /** 最後に spread（size ≥ MIN_LIKELY_POINTS）を持った dataTime(ms)。LIKELY_HOLD_MS の likely/faint 保持に使う。未達は 0 */
+  lastSpreadAtMs: number
 }
 
 /** 検知エンジンの全状態。localStorage への永続化を想定（floor・cellActivity が学習資産）。 */
@@ -160,8 +162,19 @@ export const PARAMS = {
   MAX_DT_GAP_MS: 10_000,
 
   // ---- L2 同期 onset の空間的広がり（連結成分） ----
-  /** 近傍点数（K 近傍） */
-  K: 7,
+  /**
+   * 近傍点数（K 近傍）。各点が R_KM 以内で近い順に保持する隣接点の数。この隣接グラフが L2 の
+   * 連結成分（＝面判定）の土台になる。
+   * 7→12 の根拠: 密な観測網（九州・関東など）では近傍7点が半径 ~15km 以内で埋まり、40km 以内でも
+   * 20〜30km 離れた点は隣接リストから溢れる。本物の揺れの面でも、床を超えて onset した点が 20〜30km
+   * 間隔で、その間を埋める点が震度0（床下）で脱落すると、7 近傍では連結経路が断たれ面が育たず非検知に
+   * なる（福岡 M2.4 震度1・2026-07-22 05:49 の取りこぼしが実例。K を上げると likely で回復）。12 は
+   * これらを橋渡しできるが半径は R_KM=40km のままなので拡散はしない。実地震19件で回帰0・1件改善
+   * （紀伊水道 likely→confirmed）、平常35分＋欠測グリッチで可聴誤検知0、漏れ境界（無音 faint）は
+   * K=16 で K=12 はその4段手前、を実データで確認済み。onset 点数律速の微小地震（滋賀 M2.5 等）は
+   * K を上げても救えない＝これは連結の穴専用の狙い撃ち修正。
+   */
+  K: 12,
   /** 近傍半径(km) */
   R_KM: 40,
   /**
@@ -207,6 +220,14 @@ export const PARAMS = {
   CONFIRM_FRAMES: 2,
   /** 確定保持(ms)。確定揺れ点が途切れてもこの間はイベントを保持（明滅防止・V1 相当の保持） */
   HOLD_MS: 10_000,
+  /**
+   * likely/faint のティア保持(ms)。一度 likely/faint に達した（spread を持った）イベントは、揺れの面が
+   * 一時的に MIN_LIKELY_POINTS を割ってもこの間はティアを維持する（confirmed の everConfirmed ラッチに
+   * 相当するが、こちらは「最後に spread を持ったフレームからの経過」で切る時間上限付き）。confirmed 未達の
+   * 弱いイベント（例: 福岡 M2.4 震度1）が面の収縮で数秒後に weak＝非表示へ即転落し「検知が一瞬で消える」
+   * のを防ぐ。1 局居残りで無限表示にならないよう survival(HOLD_MS)ではなく spread 基準で上限を切る。
+   */
+  LIKELY_HOLD_MS: 10_000,
 
   // ---- 特異度・第2軸（セル別慢性活性） ----
   /** セル慢性活性の学習時定数(ms)。長時定数で「その地域が平常時どれだけ点を出すか」を学ぶ */
@@ -660,6 +681,7 @@ function associate(
         epicenter: null,
         confirmStreak: 0,
         everConfirmed: false,
+        lastSpreadAtMs: 0,
       }
       updateEventMetrics(ev, cur, triggeredAt, cellActivity, cellOf, avail, now)
       events.push(ev)
@@ -708,6 +730,7 @@ function mergeAdjacentEvents(events: DetectionEvent[]): DetectionEvent[] {
     host.lastSize = host.lastSize + e.lastSize
     host.maxIntensity = Math.max(host.maxIntensity, e.maxIntensity)
     host.lastOnsetAtMs = Math.max(host.lastOnsetAtMs, e.lastOnsetAtMs)
+    host.lastSpreadAtMs = Math.max(host.lastSpreadAtMs, e.lastSpreadAtMs)
     host.confirmStreak = Math.max(host.confirmStreak, e.confirmStreak)
     host.everConfirmed = host.everConfirmed || e.everConfirmed
     host.confidence = host.everConfirmed
@@ -729,7 +752,8 @@ function mergeAdjacentEvents(events: DetectionEvent[]): DetectionEvent[] {
  * - lastOnsetAtMs: 揺れ継続中（size>0）は毎フレーム更新し、揺れが収まってから HOLD_MS 経過で解除する。
  * - confidence  : 点数＋最大震度ゲート＋CONFIRM_FRAMES 連続。特異度は点別床(L1)とセル慢性活性で二軸。
  *   慢性活性セルでは確定点数・確定震度のバーを引き上げる（北関東のコヒーレントノイズ対策・第2軸）。
- *   一度 confirmed に達したら HOLD 中は confirmed を維持する（明滅防止のラッチ）。
+ *   一度 confirmed に達したら HOLD 中は confirmed を維持する（明滅防止のラッチ）。likely/faint も一度
+ *   spread を持てば LIKELY_HOLD_MS の間はティアを維持する（弱いイベントの「一瞬で消える」防止）。
  */
 function updateEventMetrics(
   e: DetectionEvent,
@@ -790,11 +814,17 @@ function updateEventMetrics(
   //  - confirmed/likely は震度1以上（音を鳴らす重み）。confirmed 到達後は HOLD 中ラッチで維持。
   //  - faint は同期 onset の広がりはあるが震度1未満（震度0級）。無音で控えめに可視化する。
   const hasSpread = size >= PARAMS.MIN_LIKELY_POINTS
+  if (hasSpread) e.lastSpreadAtMs = now
+  // spread を持った likely/faint は、面が一時的に MIN_LIKELY_POINTS を割っても LIKELY_HOLD_MS の間は
+  // ティアを維持する（confirmed の everConfirmed ラッチに相当・時間上限付き）。confirmed 未達の弱い
+  // イベントが数秒で weak（非表示）へ即転落し「検知が一瞬で消える」のを防ぐ。
+  const spreadHeld =
+    hasSpread || (e.lastSpreadAtMs > 0 && now - e.lastSpreadAtMs <= PARAMS.LIKELY_HOLD_MS)
   if (e.everConfirmed) {
     e.confidence = 'confirmed'
-  } else if (hasSpread && e.maxIntensity >= PARAMS.MIN_LIKELY_INTENSITY) {
+  } else if (spreadHeld && e.maxIntensity >= PARAMS.MIN_LIKELY_INTENSITY) {
     e.confidence = 'likely'
-  } else if (hasSpread) {
+  } else if (spreadHeld) {
     e.confidence = 'faint'
   } else {
     e.confidence = 'weak'
