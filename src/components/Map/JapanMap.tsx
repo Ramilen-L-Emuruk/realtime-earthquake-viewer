@@ -25,14 +25,12 @@ import { KyoshinPoints } from './KyoshinPoints'
 import { KyoshinSubThreshold } from './KyoshinSubThreshold'
 import { KyoshinDetectedPoints } from './KyoshinDetectedPoints'
 import { KyoshinMaxEffect } from './KyoshinMaxEffect'
-import { KyoshinV2Overlay } from './KyoshinV2Overlay'
 import { PsWaveLayer } from './PsWaveLayer'
 import { QuakeHeatmapLayer } from './QuakeHeatmapLayer'
 import { MAP_CANVAS_PADDING } from './mapCanvasPadding'
 import { flyToLite, flyToBoundsLite } from './flyToLite'
 import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
-import type { DetectionEvent } from '../../utils/kyoshinDetector'
 import type { HeatPoint } from '../../utils/quakeHeatmap'
 import { log } from '../../utils/logger'
 
@@ -637,8 +635,6 @@ interface Props {
   detectedPoints?: DetectedPoint[]
   candidatePoints?: DetectedPoint[]
   candidateId?: number | null
-  /** V2 検知エンジンの検知イベント（推定震央・方位の地図オーバーレイに使う）。 */
-  kyoshinV2Detections?: DetectionEvent[]
   idleRevertSec?: number
   eewLpgmEventId?: string | null
   focusObsName?: { name: string; ts: number } | null
@@ -663,7 +659,6 @@ export function JapanMap({
   detectedPoints = [],
   candidatePoints = [],
   candidateId = null,
-  kyoshinV2Detections = [],
   idleRevertSec = 30,
   eewLpgmEventId = null,
   focusObsName = null,
@@ -1126,7 +1121,6 @@ export function JapanMap({
           <FitToDetection points={detectedPoints} hasEew={eews.length > 0} />
           <KyoshinDetectedPoints points={detectedPoints} iconScale={iconScale * kyoshinZoomScale} />
           <KyoshinMaxEffect sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale * kyoshinZoomScale} />
-          <KyoshinV2Overlay detections={kyoshinV2Detections} iconScale={iconScale * kyoshinZoomScale} />
         </>
       )}
 
