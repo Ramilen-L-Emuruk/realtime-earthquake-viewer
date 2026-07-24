@@ -284,20 +284,29 @@ function SWaveArrivalCard({ arrival }: { arrival: SWaveArrival }) {
   )
 }
 
-// 新検知エンジン(v2)の確信度別スタイル。confirmed=赤・likely=橙・weak=灰。
-const V2_TIER: Record<Confidence, { label: string; color: string; bg: string; border: string; rank: number }> = {
-  confirmed: { label: '検知', color: '#f87171', bg: '#450a0a', border: '#ef4444', rank: 0 },
-  likely: { label: '可能性', color: '#fcd34d', bg: '#451a03', border: '#d97706', rank: 1 },
-  weak: { label: '微弱', color: '#9ca3af', bg: 'rgba(42,42,42,0.6)', border: '#4b5563', rank: 2 },
+// 検知エンジンの確信度別スタイル。confirmed=赤・likely=橙・weak=灰。
+const V2_TIER: Record<Confidence, { label: string; color: string; bg: string; border: string }> = {
+  confirmed: { label: '検知', color: '#f87171', bg: '#450a0a', border: '#ef4444' },
+  likely: { label: '可能性', color: '#fcd34d', bg: '#451a03', border: '#d97706' },
+  weak: { label: '微弱', color: '#9ca3af', bg: 'rgba(42,42,42,0.6)', border: '#4b5563' },
 }
 
-// 検知イベント 1 件のカード。確信度ティア・推定最大震度＋メンバー観測点の震度分布を表示する。
-// 震源は推定しない（近傍一致型）ため、反応した観測点数と反応地点の広がりを主情報とする。
-function KyoshinV2EventCard({ ev, points }: { ev: DetectionEvent; points: DetectedPoint[] }) {
-  const tier = V2_TIER[ev.confidence]
-  const time = new Date(ev.originTimeMs).toLocaleTimeString('ja-JP', { hour12: false })
+// 強震モニタ検知の集約カード。
+// 近傍一致型の検知は震度5+ の大地震で有感域が複数の地域（連結成分）に分かれるため、コアは
+// 複数の confirmed/likely イベントを同時に返す。これを「1 つの揺れ」として 1 枚に集約表示する
+// （震源を推定しないため、揺れている地域数と全体の震度分布・推定最大震度を主情報とする）。
+// 複数地域にまたがる場合は「広域」を示し、N 件の別地震のように見えるのを防ぐ。
+function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent[]; siteIndex: Map<string, DetectedPoint> }) {
+  // 最上位ティア（confirmed があれば検知、なければ可能性）
+  const hasConfirmed = events.some(e => e.confidence === 'confirmed')
+  const tier = hasConfirmed ? V2_TIER.confirmed : V2_TIER.likely
+  const regionCount = events.length
+  const earliestMs = events.reduce((m, e) => Math.min(m, e.originTimeMs), Infinity)
+  const time = new Date(earliestMs).toLocaleTimeString('ja-JP', { hour12: false })
 
-  // メンバー観測点の現在インデックスから最大震度と震度分布を集計する
+  // 全イベントのメンバー観測点を和集合（重複除去）で集約し、震度分布・最大震度を集計する
+  const memberKeys = [...new Set(events.flatMap(e => e.memberKeys))]
+  const points = resolveMembers(memberKeys, siteIndex)
   const counts = new Map<string, { color: string; count: number }>()
   let maxIndex = 0
   let activeCount = 0
@@ -314,15 +323,18 @@ function KyoshinV2EventCard({ ev, points }: { ev: DetectionEvent; points: Detect
   const maxColor = kyoshinIntensityColor(maxIndex) ?? '#9ca3af'
   const groups = LABEL_ORDER.filter(l => counts.has(l)).map(l => ({ label: l, ...counts.get(l)! }))
   const maxCount = groups.reduce((m, g) => Math.max(m, g.count), 1)
+  const totalActive = activeCount || events.reduce((s, e) => s + e.lastSize, 0)
 
   return (
     <div className="rounded-lg overflow-hidden" style={{ border: `1px solid ${tier.border}`, backgroundColor: tier.bg }}>
-      {/* ヘッダー: 確信度ティア・反応観測点数・時刻 */}
+      {/* ヘッダー: 確信度ティア・広域バッジ・時刻 */}
       <div className="flex items-center gap-2 px-3 py-1.5" style={{ borderBottom: `1px solid ${tier.border}55` }}>
         <span className="text-xs font-bold px-1.5 py-0.5 rounded flex-shrink-0" style={{ backgroundColor: tier.border, color: '#fff' }}>
           {tier.label}
         </span>
-        <span className="text-xs" style={{ color: tier.color }}>強震モニタ検知</span>
+        <span className="text-xs" style={{ color: tier.color }}>
+          {regionCount >= 2 ? `強震モニタ検知（広域・${regionCount}地域）` : '強震モニタ検知'}
+        </span>
         <span className="text-xs text-secondary ml-auto font-mono">{time}</span>
       </div>
       <div className="flex gap-3 p-3">
@@ -334,7 +346,7 @@ function KyoshinV2EventCard({ ev, points }: { ev: DetectionEvent; points: Detect
           </span>
         </div>
         <div className="flex flex-col gap-1.5 flex-1 min-w-0">
-          {/* 震度分布（メンバー観測点） */}
+          {/* 震度分布（全メンバー観測点の集約） */}
           {groups.length > 0 && (
             <div className="flex flex-col gap-1">
               {groups.map(g => (
@@ -350,7 +362,9 @@ function KyoshinV2EventCard({ ev, points }: { ev: DetectionEvent; points: Detect
               ))}
             </div>
           )}
-          <span className="text-xs text-secondary">{activeCount || ev.lastSize}観測点で反応 ・ 推定値</span>
+          <span className="text-xs text-secondary">
+            {totalActive}観測点で反応{regionCount >= 2 ? ` ・ ${regionCount}地域` : ''} ・ 推定値
+          </span>
         </div>
       </div>
     </div>
@@ -377,24 +391,15 @@ export function RealtimeTab({ eews, kyoshinSites, kyoshinIndices, kyoshinV2Detec
       }
       {swaveArrival !== null && <SWaveArrivalCard arrival={swaveArrival} />}
 
-      {/* 強震モニタ検知（V2）: weak を除外し confirmed/likely のみを確信度順→スコア順で最大4件表示 */}
+      {/* 強震モニタ検知: weak を除外した confirmed/likely を 1 つの揺れとして集約表示する。
+          大地震では有感域が複数の地域（連結成分）に分かれてコアが複数イベントを返すため、
+          N 件の別地震に見せず「広域・N地域」として 1 枚にまとめる。 */}
       {(() => {
-        const events = [...kyoshinV2Detections]
-          .filter(d => d.confidence !== 'weak')
-          .sort((a, b) => V2_TIER[a.confidence].rank - V2_TIER[b.confidence].rank || b.maxIntensity - a.maxIntensity)
+        const events = [...kyoshinV2Detections].filter(d => d.confidence !== 'weak')
         if (events.length === 0) return null
-        const shown = events.slice(0, 4)
-        const rest = events.length - shown.length
         return (
           <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-2">
-              <h3 className="text-white text-xs font-bold">強震モニタ検知</h3>
-              <span className="text-xs text-secondary">{events.length}件</span>
-            </div>
-            {shown.map(ev => (
-              <KyoshinV2EventCard key={ev.id} ev={ev} points={resolveMembers(ev.memberKeys, siteIndex)} />
-            ))}
-            {rest > 0 && <span className="text-xs text-secondary">他{rest}件</span>}
+            <KyoshinDetectionSummary events={events} siteIndex={siteIndex} />
             <p className="text-xs text-secondary">※強震モニタによる推定値。気象庁発表とは異なる場合があります。</p>
           </div>
         )
