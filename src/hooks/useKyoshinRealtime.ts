@@ -35,7 +35,10 @@ const POLL_MS = 1000
 // （従来の 500ms は壁時計が遅れている環境での偶然の帳尻合わせに依存しており、
 //  クロックを正確に同期すると未登録秒(403)を叩いてしまうため引き上げた。）
 const FETCH_OFFSET_MS = 1800
-// target が現在時刻よりこの値以上遅れていたらリアルタイムにリセットする (ms)
+// 同一 target の取得に失敗し続けたとき現在時刻ベースへリセットするまでの許容時間 (ms)。
+// REALTIME_MAX_RETRY_COUNT の算出に用いる。
+// （成功時の遅れは nextTarget をフロンティアへ再アンカーすることで抑えるため、
+//  ここでの lag 判定は行わない。）
 const MAX_LAG_MS = 5000
 // リアルタイム時: 同一 target への最大リトライ回数（超過したら諦めて現在時刻ベースにリセットする）。
 // CDN 側で特定タイムスタンプの公開が恒久的に遅延・失敗するケースで無限リトライに張り付くのを防ぐ。
@@ -78,7 +81,8 @@ export function useKyoshinRealtime(
 
   // リアルタイム震度をポーリング（enabled の間のみ）。
   // 各 tick は明示的な target タイムスタンプを取得する。
-  // 成功したら target + POLL_MS を次の target として POLL_MS 後に tick する（コマ落ち防止）。
+  // 成功後の次 target は、ライブ時は「target + POLL_MS」とフロンティア(serverNow - FETCH_OFFSET_MS)の
+  // 大きい方（遅延蓄積を防ぐ再アンカー）、リプレイ時は「target + POLL_MS」で等速に辿る。
   // 失敗時は同一 target で RETRY_MS 後にリトライする（リプレイ時は REPLAY_MAX_RETRY_COUNT 回で打ち切り）。
   // siteConfigId が変化したとき（リプレイ日付切替など）に対応する sitelist を自動で取得する。
   useEffect(() => {
@@ -159,21 +163,21 @@ export function useKyoshinRealtime(
         .then((rt) => {
           if (!active) return
           processResult(rt)
-          const nextTarget = new Date(target.getTime() + POLL_MS)
           if (!isReplay) {
-            // リアルタイム時のみ: target が現在時刻から大幅に遅れていたらリセット
-            const lag = serverNow() - nextTarget.getTime()
-            if (lag > MAX_LAG_MS) {
-              const elapsed = Date.now() - fetchStart
-              timer = setTimeout(() => tick(new Date(serverNow() - FETCH_OFFSET_MS)), Math.max(0, POLL_MS - elapsed))
-              return
-            }
+            // ライブ: 次ターゲットは「前回 + POLL_MS」と「フロンティア(serverNow - FETCH_OFFSET_MS)」の
+            // 大きい方。通常は両者がほぼ一致しコマ飛びしないが、描画負荷などで tick の発火が遅延した場合は
+            // 最新へジャンプして遅れを溜め込まない。前回 + POLL_MS で這うだけだと発火遅延が毎 tick 蓄積し、
+            // fetch が高速でも表示が数秒遅れていく（相対スケジュールの弱点）。この再アンカーにより lag は
+            // 常に FETCH_OFFSET_MS 以下に張り付く。
+            const nextTarget = new Date(Math.max(target.getTime() + POLL_MS, serverNow() - FETCH_OFFSET_MS))
             // fetch にかかった時間を待機時間から引いて POLL_MS ごとの一定間隔を維持する
             const elapsed = Date.now() - fetchStart
             timer = setTimeout(() => tick(nextTarget), Math.max(0, POLL_MS - elapsed))
             return
           }
-          // リプレイ時: アンカーからの絶対時刻で次 tick の発火時刻を計算する
+          // リプレイ時: アーカイブを等速で辿るため crawl (+POLL_MS)。
+          // アンカーからの絶対時刻で次 tick の発火時刻を計算し、発火遅延を蓄積させない。
+          const nextTarget = new Date(target.getTime() + POLL_MS)
           timer = setTimeout(() => tick(nextTarget), scheduledWaitMs(nextTarget))
         })
         .catch((err) => {
