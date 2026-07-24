@@ -1,136 +1,102 @@
 /**
- * 強震モニタ地震検知エンジン（純粋コア）。
+ * 強震モニタ揺れ検知エンジン V3（純粋コア・近傍一致／PLUM 型）。
  *
- * 設計書: docs/kyoshin-detection-design.md
+ * 設計書: docs/kyoshin-detection-v3-design.md
  * React から切り離した純粋関数として実装する（副作用・現在時刻の直接参照を持たない。
  * 時刻はすべて frame.dataTimeMs から供給する）。決定的で単体テスト可能。
  *
- * 実装済み: Phase 1（① 自己正規化トリガー）＋ Phase 2（② 時空間アソシエーション・③ 確信度積分）。
+ * 【V2 からの転換】
+ * V2 は「波面フィットで震源を決め、その品質を時間積分して確信度を出す」設計だった。これが
+ * Kanto の壁（弱い震度1の実地震と北関東の間欠ノイズが per-cluster 特徴で分離不能）・確定
+ * レイテンシ（積分が登るのに 5〜6 秒）・明滅（フィット破綻で confirmed→weak 転落）・分裂
+ * （震央ジッタで別 ID）・warmup（LTA が 60 秒落ち着かない）を生んだ。
  *
- * 【簡略化（設計書からの意図的な差分。後続フェーズで拡張予定）】
- * - 波面フィットは軽量版: 震源＝最早オンセット点、オンセット×距離の最小二乗で見かけ速度・残差を出す
- *   （グリッド探索による震源推定は Phase 3 後段）。
- * - クラスタは時空間ゲート付きシード成長（Phase 3 で single-linkage の巨大ブロブ融合を是正済み）。
- *   密度正規化・地理ブロックは未実装。
- * - 地域類型（疎地域の単点判定・海域片側 type-B 震央・遠地平面波）は未実装（Phase 3 後段）。
+ * V3 は JMA EEW（PLUM 法・着未着法）と Scratch 前身の調査から収束した「震源非依存の面判定」に作り替える:
+ *  L1 点トリガー   : 点別のノイズ床（長時定数・オンライン学習）を超え、かつ今まさに立ち上がったか。
+ *  L2 近傍同時性   : その点の K 近傍のうち一定数が短時間窓で一緒に立ち上がったか（PLUM／着未着）。
+ *  L3 グループ化   : 確定揺れ点を K 近傍グラフの連結成分で束ね、固定格子セルで安定 ID を与える。
+ *  L4 確信度       : 点数＋最大震度ゲート＋連続フレーム。特異度は「点別床」と「セル別慢性活性」の二軸で守る。
+ * 波面フィット・震源推定・時間積分・warmup は廃止。可動部を減らし V1 相当（数秒）で確定する。
  *
- * 【単位に関する設計判断（設計書 §5① の refinement）】
- * 強震モニタの値は計測震度（≒ 地動振幅の対数）で、-3.0〜7.0 の連続値。
- * 対数スケールのため、STA/LTA の「比」ではなく「差 (STA − LTA)」を用いる。
- * 差はそのまま線形振幅の対数比に相当し、オフセットを持つ index の比より物理的に正しい。
+ * 【単位】強震モニタの値は計測震度（≒ 地動振幅の対数）で -3.0〜7.0 の連続値。震度0≈0.0。
  * 本コアは全体を value（計測震度）単位で扱い、境界で index → value 変換する。
  */
 
-import { haversineKm, bearingDeg } from './geo'
+import { haversineKm } from './geo'
 
-/** 緯度1度あたりのおおよその距離(km)。局所平面(ENU)近似での座標変換に使う。 */
+/** 緯度1度あたりのおおよその距離(km)。近傍探索のバウンディングボックス前段に使う。 */
 const KM_PER_DEG = 111.194
 
 // ============================================================
-// 型定義（設計書 §7.1）
+// 型定義
 // ============================================================
 
-/** トリガーの発火経路。 */
-export type TriggerPath =
-  | 'fast' // 急オンセット（STA−LTA・立ち上がり）
-  | 'slow' // 絶対レベル（ゆっくり成長する強い揺れ）
-  | 'sync' // 空間同期（Phase 3 で判定。ここでは未使用）
-  | null
-
-/** 確信度の 3 段階（設計書 §2）。 */
-export type Confidence = 'confirmed' | 'likely' | 'weak'
+/**
+ * 確信度の 4 段階。
+ * - confirmed: コヒーレントな揺れの広がり ＋ 震度1以上（音＋自動タブ＋フィット）
+ * - likely   : 広がりあり ＋ 震度1以上（早期反応・候補音＋タブ）
+ * - faint    : 同期 onset の広がりはあるが震度1未満（震度0級。無音で控えめに可視化）
+ * - weak     : 広がり不足（非表示）
+ */
+export type Confidence = 'confirmed' | 'likely' | 'faint' | 'weak'
 
 /** 1 観測点の逐次状態。キーは座標（siteKey）で管理する。 */
 export interface SiteState {
-  /** 短時間平均（value 単位） */
-  sta: number
-  /** 長時間平均（value 単位。トリガー中は凍結） */
-  lta: number
-  /** ばらつき（|value − lta| の EWMA） */
-  sigma: number
-  /** LTA/σ を凍結中か（トリガー発火中は基準を汚さない） */
-  frozen: boolean
-  /** 前フレームの value（立ち上がり検出用） */
-  lastValue: number
-  /** 最後にトリガーした dataTime(ms)。未トリガーは null */
-  triggeredAt: number | null
-  /** トリガー稼働率(duty cycle)の EWMA。鳴りっぱなしの故障観測点の識別に使う */
-  triggerRate: number
-  /** 故障観測点ガードの減衰重み（0=除外〜1=通常）。triggerRate から算出。補助（散在ノイズの主判別は空間連続性ゲート CONTIG_*） */
-  noiseWeight: number
-}
-
-/** 継続中のトリガー点（② のクラスタリング対象。フレーム跨ぎで追跡）。 */
-export interface ActiveTrigger {
-  key: string
-  lat: number
-  lng: number
-  /** 現エピソードの最初のトリガー時刻(ms)。波面フィットのオンセット時刻に使う */
-  onsetMs: number
-  /** 直近トリガー時刻(ms)。ACTIVE_WINDOW_MS 内なら「継続中」 */
-  lastTrigMs: number
-  /** エピソード中の最大 value */
-  peakValue: number
-  /** 直近の noiseWeight（鳴りっぱなしの故障観測点はクラスタリング入力から除外する） */
-  noiseWeight: number
+  /** 直近の (dataTime, value) 履歴。オンセット上昇量(rate)の窓評価に使う（欠測・ジッタ吸収）。 */
+  hist: { t: number; v: number }[]
+  /** 点別ノイズ床の平均（value・長時定数 EWMA。慢性的に騒がしい点ほど高い） */
+  floorMean: number
+  /** 点別ノイズ床のばらつき（|value − floorMean| の長時定数 EWMA） */
+  floorDev: number
+  /** 最後にオンセット・トリガーした dataTime(ms)。未トリガーは null */
+  triggeredAtMs: number | null
 }
 
 /** 検知イベント（多重地震・余震を同時に保持できる）。 */
 export interface DetectionEvent {
   id: string
-  /** 波面フィット由来の震源（最早オンセット点近傍）。フィット不能時は null */
-  epicenter: [number, number] | null
-  /**
-   * 震源の方位（真北=0°・時計回り）。片側配置(type-B)で震源が沖のどちらにあるかを示す。
-   * 2D 方位が定まらない（共線配置など）場合は null。
-   */
-  bearingDeg: number | null
-  /** 片側配置か（海溝型 type-B）。true のとき epicenter は「最短距離の点」で沖合距離は不確実。 */
-  oneSided: boolean
-  originTimeMs: number
-  /** リーキー積分値 S_k */
-  score: number
   confidence: Confidence
-  lastOnsetAtMs: number
-  /** 参加観測点の座標キー */
+  /** 参加した確定揺れ点の座標キー（累積和集合。UI の震度分布・自動フィットに使う） */
   memberKeys: string[]
-  /** 直近フレームのクラスタ規模（減衰フレームでの再分類に使う） */
+  /** 占有する固定格子セル（安定 ID の錨・セル慢性活性の更新対象） */
+  cells: string[]
+  originTimeMs: number
+  /** 直近に確定揺れ点を伴った dataTime(ms)。HOLD_MS 経過で解除 */
+  lastOnsetAtMs: number
+  /** 推定最大震度（メンバー現在 value の最大＝PLUM 出力）。カード・音レベルに使う */
+  maxIntensity: number
+  /** 直近フレームのアクティブメンバー数（トリガー継続窓内）。確定点数ゲートに使う */
   lastSize: number
-  /** 直近フレームで波面フィットが成立したか（radial または平面波） */
-  lastFitOk: boolean
-  /** 直近フレームで radial フィット（震源を囲む配置）が成立したか。confirmed 判定に使う */
-  lastRadialFitOk: boolean
-  /** 直近フレームのクラスタ最大計測震度（value）。likely ゲート（振幅下限）に使う */
-  lastPeak: number
-  /** 直近フレームで空間連続性ゲートを通過したか（疎地域は免除で true） */
-  lastSpatialOk: boolean
-  /** 直近フレームの空間連続性（各メンバー近傍の反応割合の中央値）。診断用 */
-  lastContiguity: number
+  /** メンバー点の重心（表示専用・任意）。震源推定ではない。 */
+  epicenter: [number, number] | null
+  /** confirmed 条件を連続で満たしたフレーム数（CONFIRM_FRAMES 連続で confirmed） */
+  confirmStreak: number
+  /** 一度でも confirmed に達したか（明滅防止のラッチ。HOLD 中は confirmed を維持） */
+  everConfirmed: boolean
 }
 
-/** 検知エンジンの全状態。localStorage に永続化する対象。 */
+/** 検知エンジンの全状態。localStorage への永続化を想定（floor・cellActivity が学習資産）。 */
 export interface DetectorState {
   /** 座標キー → 逐次状態 */
   sites: Record<string, SiteState>
-  /** 継続中トリガー点（座標キー → ActiveTrigger） */
-  activeTriggers: Record<string, ActiveTrigger>
   /** アクティブイベント集合 */
   events: DetectionEvent[]
+  /** セル別の慢性活性（0〜1・長時定数）。平常時に確定揺れ点を出す地域ほど高い＝特異度の第2軸 */
+  cellActivity: Record<string, number>
   /** イベント ID 採番用の連番（決定性のため乱数・時刻を使わない） */
   nextEventId: number
   /** 連続性チェック用（前フレームの dataTime） */
   lastDataTimeMs: number
-  /** ウォームアップ完了時刻(ms)。これ以前は確信度を confirmed に上げない */
-  warmupUntilMs: number
 }
 
-/** 事前計算する静的な観測点メタ（座標キー → メタ）。検知中は不変で永続化不要。 */
+/** 事前計算（実行時に一度）する静的な観測点メタ。座標キーで引く。 */
 export interface StationMeta {
-  /** 地理ブロック（島・地域。海で分断） */
-  blockId: string
-  /** 観測網の内側か（方位カバレッジ十分か） */
-  isNetworkInterior: boolean
-  noiseEnv: 'urban' | 'volcanic' | 'quiet' | 'coastal'
+  /** 各点の K 近傍（R_KM 以内）の座標キー配列 */
+  neighbors: Record<string, string[]>
+  /** 各点の R_KM 以内に実在する近傍数（疎地域救済の割合条件の分母） */
+  avail: Record<string, number>
+  /** 各点が属する固定格子セルのキー */
+  cellOf: Record<string, string>
 }
 
 /** 1 フレーム分の入力。 */
@@ -144,184 +110,126 @@ export interface Frame {
   missing?: boolean[]
 }
 
-/** ① トリガー評価の結果（1 観測点分）。 */
+/** トリガー結果（1 観測点分・診断用）。 */
 export interface TriggerResult {
   key: string
   lat: number
   lng: number
-  triggered: boolean
-  path: TriggerPath
   /** 現フレームの value（計測震度） */
   value: number
-  /** 立ち上がり中か（second onset 検出の素） */
-  rising: boolean
-  /** 観測点の noiseWeight（故障観測点ガードの減衰重み） */
-  noiseWeight: number
-}
-
-/** 波面フィットの結果。 */
-export interface WaveFit {
-  epicenter: [number, number] | null
-  /** 見かけ速度(km/s)。フィット不能時は NaN */
-  velocityKmS: number
-  /** 走時回帰の残差 RMS(秒)。フィット不能時は Infinity */
-  residualRms: number
-  /** 十分な点数・距離レンジ・物理的な速度でフィットできたか（radial または平面波のいずれか） */
-  fitOk: boolean
-  /**
-   * radial フィット（震源＝最早点を囲む配置）が成立したか。confirmed 判定で「震源が良く拘束
-   * されている」証拠として使う。片側配置（平面波のみ）で fitOk なときは false になる。
-   */
-  radialFitOk: boolean
-  /**
-   * 震源の方位（真北=0°・時計回り, [0,360)）。平面波スローネスフィット由来。
-   * 片側配置(type-B)で「震源がどちらにあるか」を示す。2D 方位が定まらない場合は null。
-   */
-  bearingDeg: number | null
-  /**
-   * 片側配置か（海溝型 type-B）。アンカーから見たクラスタの方位ギャップが大きい状態。
-   * true のとき沖合方向の距離は不確実で、震央点は「最短距離（陸側最寄り）」の近似となる。
-   */
-  oneSided: boolean
-  /** アンカーから見たクラスタ点の最大方位ギャップ(度)。片側配置の指標。 */
-  azimuthalGapDeg: number
+  /** 近傍同時性を満たした確定揺れ点か */
+  confirmedShaking: boolean
 }
 
 // ============================================================
-// パラメータ（設計書 §9。すべて value=計測震度 単位。実データ調整前提）
+// パラメータ（設計書 §6。すべて value=計測震度 単位。ハーネスで較正）
 // ============================================================
 
 export const PARAMS = {
-  // ---- ① トリガー ----
-  /** 短時間平均の時定数(ms) */
-  STA_TAU_MS: 2_000,
-  /** 長時間平均の時定数(ms) */
-  LTA_TAU_MS: 45_000,
-  /** 速い経路(delta): STA − LTA がこの値以上で発火（静穏点の床値。value 単位 ≒ 対数振幅比） */
-  DELTA_TRIG: 1.0,
-  /** 速い経路(delta)のノイズ正規化係数: 恒常ノイズ点は STA−LTA ≥ K_SIGMA_DELTA·σ を要求 */
-  K_SIGMA_DELTA: 3.0,
-  /** 速い経路(sigma): value ≥ LTA + K_SIGMA·σ で発火 */
-  K_SIGMA: 4.0,
+  // ---- L1 点トリガー ----
   /**
-   * σ ベース発火の最小マージン(value)。σ→0（完全静穏）の点が微小変動で誤発火するのを防ぐ。
-   * 実際の判定は value ≥ LTA + max(K_SIGMA·σ, SIGMA_FLOOR_MARGIN)。
+   * しきい床への上乗せ(value)。value ≥ floor + これ で「その点の平常を超えた（levelActive）」。
+   * 判別の芯を絶対レベルから「同期 onset の空間的広がり（L2 連結成分）」へ移したため 0.0 まで下げる。
+   * 強震モニタは 0.5 刻み量子化（震度0=0.0 / 震度1=0.5）なので、静穏点（floor≈0）ではこれを 0 に
+   * しないと震度0(value 0.0)を取り込めず faint が発火しない。慢性ノイズ点は floor 自体が高く据え置き
+   * （相対的に鈍いまま）。実データ実験（level≥0.0・rise≥0.5）で平常の onset連結成分≤2 を確認済み。
    */
-  SIGMA_FLOOR_MARGIN: 0.75,
-  /** 遅い経路: 立ち上がりの急峻さを問わず value がこの絶対値以上で発火（0.5=震度1） */
-  ABS_LEVEL: 0.5,
-  /** 量子化ノイズ除去の絶対下限（-1.5 = index 3）。これ未満は常に非トリガー */
+  LEVEL_MARGIN: 0.0,
+  /**
+   * 「継続して揺れている」メンバー判定の床への上乗せ(value)。value ≥ floor + これ を sustained とみなす。
+   * イベントの継続点数・保持(HOLD)はこの sustained（＝床を明確に超えて揺れ続けている点）で数える。
+   * LEVEL_MARGIN=0 だと平常の震度0(value 0.0)も levelActive になり保持が切れないため、継続判定は
+   * 一段高いこの床で行う。震度1(value 0.5)は floor≈0 で sustained、平常の震度0(0.0)は非 sustained。
+   */
+  SUSTAIN_MARGIN: 0.4,
+  /** オンセット上昇量の下限(value)。RATE_DT_MS 窓での value 上昇がこれ以上で「今立ち上がった」 */
+  RATE_MIN: 0.5,
+  /** オンセット上昇量の評価窓(ms)。1 フレーム差でなく窓で見て欠測・ジッタを吸収する */
+  RATE_DT_MS: 2_500,
+  /** 量子化ノイズ除去の絶対下限(value)。これ未満は常に非トリガー（-1.5 = index 3） */
   TRIG_FLOOR: -1.5,
-  /** 立ち上がり判定: 前フレームからの value 増分がこの値以上で rising=true */
-  RISE_DELTA: 0.5,
-  /** フレーム間隔がこの値を超えて飛んだら状態を不連続とみなしリセット */
+  /** 点別ノイズ床の学習時定数(ms)。慢性ノイズを捉えるため分オーダー（V2 の LTA 45s より遅い） */
+  FLOOR_TAU_MS: 900_000,
+  /** 床＝floorMean + FLOOR_SIGMA_K·floorDev。ばらつきの大きい点を鈍くする係数 */
+  FLOOR_SIGMA_K: 3.0,
+  /** 点別床の下限(value)。静穏点でもこの床は保つ（微小変動の誤発火防止） */
+  FLOOR_MIN: 0.0,
+  /** 点別床の上限(value)。慢性ノイズ点でも鈍くしすぎない（実地震を潰さない） */
+  FLOOR_CAP: 1.5,
+  /** フレーム間隔がこれを超えて飛んだら状態を不連続とみなしリセット */
   MAX_DT_GAP_MS: 10_000,
-  /** ウォームアップ期間(ms)。起動後この間は確信度を confirmed に上げない */
-  WARMUP_MS: 60_000,
 
-  // ---- ② アソシエーション ----
-  /** トリガー点が「継続中」とみなされる猶予(ms)。最後のトリガーからこの時間で失効 */
-  ACTIVE_WINDOW_MS: 8_000,
-  /** 空間クラスタの近傍リンク距離(km) */
-  PROXIMITY_KM: 60,
-  /** クラスタのシードからの直径上限(km)。巨大ブロブ融合を防ぐ */
-  MAX_CLUSTER_RADIUS_KM: 300,
-  /** シード成長の時空間ゲート許容(秒)。量子化・近接同時性を吸収しつつ非伝播な併合を弾く */
-  CLUSTER_T_TOL_S: 3,
-  /** イベント化に要する最小クラスタ点数（2点は隣接センサー誤作動と区別不可のため 3 以上）。疎地域の少数点判定は Phase 3 */
-  MIN_EVENT_SIZE: 3,
+  // ---- L2 同期 onset の空間的広がり（連結成分） ----
+  /** 近傍点数（K 近傍） */
+  K: 7,
+  /** 近傍半径(km) */
+  R_KM: 40,
   /**
-   * confirmed に要する最小クラスタ点数（radial 裏取りあり＝震源を囲む配置）。3点は自由度1で偶然
-   * 直線に乗る（スプリアスフィット）ため誤 confirmed の温床（並走検証で確認）。4点以上を要求する。
+   * 揺れクラスタに要する同期 onset の連結成分サイズ下限。直近 COINCIDENCE_MS に onset した点を
+   * K 近傍グラフで連結し、この数以上の成分を「面として揺れている」＝実地震とみなす。散在ノイズは
+   * 成分が育たず脱落する（平常25分・全国で成分≥3 は 0 回を実測）。時間差 onset も成分で束ねる。
    */
-  MIN_CONFIRM_SIZE: 4,
-  /**
-   * 片側配置（平面波フィットのみで radial 裏取りが無い type-B）で confirmed に上げるための最小点数。
-   * 片側配置は震源位置が縮退し 4 点程度ではノイズ塊の偶然フィットと区別できない（並走検証で size4 の
-   * 誤 confirmed を観測）。本物の海溝型 M4+ は陸側で多数点が並ぶため、多めの裏取りを要求する。
-   */
-  MIN_CONFIRM_SIZE_ONESIDED: 8,
-  /**
-   * likely 以上に上げるための最小クラスタ点数。少数点（size 3）は平常時ノイズが多く
-   * （並走検証: 平常時の偽 likely はほぼ size3）、揺れの可能性として提示するには不足。
-   * これ未満は weak 止まり（＝表示対象外）。
-   */
-  MIN_LIKELY_SIZE: 4,
-  /**
-   * likely 以上に上げるためのクラスタ最大計測震度の下限（0.0 = 震度0）。振幅が震度0 未満の
-   * クラスタは都市ノイズ（並走検証: 夜間 size8 でも peak -1.0 の例）で、地震ではない。
-   * 実地震は最低でも震度0 以上の点を含む（福岡 震度1 で peak 0.5）。
-   */
-  MIN_LIKELY_PEAK: 0.0,
-  /** 波面フィットに要する最小点数 */
-  MIN_FIT_POINTS: 3,
-  /** 波面フィットに要する距離レンジ下限(km。縮退回避) */
-  FIT_RANGE_MIN_KM: 15,
-  /** 見かけ速度の許容下限・上限(km/s) */
-  V_MIN_KMS: 2.0,
-  V_MAX_KMS: 8.0,
-  /** 既存イベントとの同一判定距離(km) */
-  PENDING_MATCH_KM: 120,
-  /**
-   * 片側配置(type-B)と判定する方位ギャップの下限(度)。アンカーから見たクラスタ点の最大方位
-   * ギャップがこれ以上なら「震源を囲んでいない＝沖合距離が縮退」とみなす。
-   * 内陸で囲まれた震源は通常 ≤120°、海溝型は陸側のみで ≥180° になる。
-   */
-  ONE_SIDED_GAP_DEG: 160,
+  MIN_CLUSTER: 3,
+  /** 同期とみなす時間窓(ms)。この窓内に onset した点を連結対象にする */
+  COINCIDENCE_MS: 4_000,
+  /** トリガー継続窓(ms)。最終トリガーからこの間「継続中（＝アクティブメンバー）」とみなす */
+  TRIG_ACTIVE_MS: 8_000,
 
-  // ---- 故障観測点ガード（noiseWeight。設計書 §5-D）----
-  // 単一観測点が鳴り続ける故障（stuck/暴走センサ）を、クラスタリング前に落とす補助的な仕組み。
-  // 散在する地域性ノイズの主判別は空間連続性ゲート（下記 CONTIG_*）が担う。連続性ゲートは
-  // クラスタ後に tier を決めるだけで、本物のクラスタに紛れ込んだ故障点の幾何汚染（震央・onset・
-  // 波面フィットのずれ）は除けない。その一点をこの前処理が埋める。既定閾値では duty ~42.5%以上
-  // （＝ほぼ鳴りっぱなし）の点のみが除外対象になる。
-  /** トリガー稼働率(duty cycle)の EWMA 時定数(ms)。故障（鳴り続け）と一過性地震を分ける時間軸 */
-  NOISE_TAU_MS: 600_000,
-  /** 稼働率がこの値以下なら noiseWeight=1（通常）。一過性地震(60-120s)の稼働率上昇を許容 */
-  NOISE_DUTY_LO: 0.25,
-  /** 稼働率がこの値以上なら noiseWeight=0（故障観測点）。LO〜HI は線形補間 */
-  NOISE_DUTY_HI: 0.6,
-  /** noiseWeight がこの値未満の観測点はクラスタリング入力から除外する（故障観測点の排除） */
-  NOISE_WEIGHT_MIN: 0.5,
-
-  // ---- 空間連続性ゲート（面的な埋まり具合。ノイズ＝スカスカ / 実地震＝連続を判別）----
-  /** 局所連続性を測る近傍半径(km)。各メンバーのこの範囲で「一緒に反応した割合」を見る */
-  CONTIG_RADIUS_KM: 25,
+  // ---- L3 格子・グループ化 ----
+  /** 固定格子セルの寸法(度)。安定 ID の錨・セル慢性活性の単位（≒ 20km） */
+  CELL_DEG: 0.2,
+  /** 既存イベントへの帰属・併合とみなすメンバー重複率の下限 */
+  MERGE_MEMBER_FRAC: 0.34,
   /**
-   * likely 以上に要する局所連続性（メンバーごとの近傍反応割合の中央値）の下限。
-   * 実データ検証: 実地震(福岡0.50/長野0.545) と 広域ノイズ(北関東≤0.30) が 0.30〜0.50 で分離。
+   * イベント重心がこの距離(km)以内なら 1 地震として併合する（フレーム末の consolidation）。
+   * 沖合・深発の揺れ域は海/山のギャップで近傍グラフが分断され複数成分に割れる（福島県沖 49km・
+   * 根室沖 78km で実観測）。同一地震の分裂を 1 本化する。離れた別地震（数百km 級）は併合しない。
    */
-  CONTIG_MIN: 0.4,
-  /** 疎地域ガードの局所密度を測る半径(km) */
-  CONTIG_DENSITY_RADIUS_KM: 50,
-  /**
-   * 疎地域ガード: 震央周辺(CONTIG_DENSITY_RADIUS_KM)の観測点数がこの値未満なら連続性ゲートを
-   * 適用しない（離島・沖合など元々スカスカな地域で実地震を潰さないため。設計書 §5-A）。
-   */
-  CONTIG_SPARSE_MIN: 15,
+  MERGE_EVENT_KM: 100,
 
-  // ---- ③ スコア・確信度 ----
-  /** 波面残差 RMS の「良好」目安(秒) */
-  RESID_GOOD_S: 3.0,
-  /** リーキー積分の減衰率(1フレームあたり) */
-  DECAY: 0.8,
-  /** confirmed 発報のスコア上限しきい値 */
-  S_ON: 1.5,
-  /** likely のスコアしきい値 */
-  S_LIKELY: 0.8,
-  /** イベント維持の下限しきい値（下回ると終了判定へ） */
-  S_OFF: 0.5,
-  /** 無オンセットでの終了猶予(ms) */
-  END_TIMEOUT_MS: 10_000,
-  /** イベント強制終了の上限継続時間(ms) */
-  MAX_EVENT_DURATION_MS: 300_000,
+  // ---- L4 確信度・発報 ----
+  /** likely（可能性）に要する確定揺れ点数 */
+  MIN_LIKELY_POINTS: 3,
+  /** likely の最大震度下限(value)。0.5 = 震度1 */
+  MIN_LIKELY_INTENSITY: 0.5,
+  /** confirmed（検知）に要する確定揺れ点数（密な観測網での上限） */
+  CONFIRM_POINTS: 5,
+  /**
+   * 確定点数の密度正規化（改良5・疎地域救済）。局所に実在する観測点が少ない地域（離島・過疎網）では
+   * CONFIRM_POINTS を「(局所実在近傍数+1) × この割合」まで下げる（下限 MIN_LIKELY_POINTS）。
+   * 例: 奄美（局所実在 ~3）は 3 点で確定可。密な網（局所実在 ≥8）は CONFIRM_POINTS のまま。
+   * 近傍一致（L2）自体が空間コヒーレンスを要求するので、平常時ノイズは点数を下げても通らない。
+   */
+  CONFIRM_DENSITY_FRAC: 0.6,
+  /** confirmed の最大震度下限(value)。0.5 = 震度1 */
+  MIN_CONFIRM_INTENSITY: 0.5,
+  /** confirmed 連続フレーム数（積分待ちなしで V1 相当の速さ） */
+  CONFIRM_FRAMES: 2,
+  /** 確定保持(ms)。確定揺れ点が途切れてもこの間はイベントを保持（明滅防止・V1 相当の保持） */
+  HOLD_MS: 10_000,
+
+  // ---- 特異度・第2軸（セル別慢性活性） ----
+  /** セル慢性活性の学習時定数(ms)。長時定数で「その地域が平常時どれだけ点を出すか」を学ぶ */
+  CELL_ACTIVITY_TAU_MS: 1_800_000,
+  /** 慢性活性セルとみなす閾値。これ超で確定バーを引き上げる */
+  CHRONIC_THRESHOLD: 0.25,
+  /** 慢性活性セルでの確定点数の引き上げ幅 */
+  CHRONIC_POINT_BUMP: 4,
+  /** 慢性活性セルでの確定最大震度下限(value)。1.5 = 震度2（北関東のコヒーレント震度1 を弾く） */
+  CHRONIC_CONFIRM_INTENSITY: 1.5,
+  /**
+   * セル慢性活性の学習を凍結する最大震度(value)。これ以上の高震度イベント（明らかに実地震）が
+   * 属するセルは慢性活性を更新しない（実地震で地域軸を汚さない）。2.5 = 震度3。
+   * 低震度（震度1〜2）のコヒーレント同時多発は凍結せず学習させ、地域ノイズとして受け止める。
+   */
+  CELL_FREEZE_INTENSITY: 2.5,
 } as const
 
 // ============================================================
-// 内部ヘルパー
+// ヘルパー
 // ============================================================
 
-/** 計測震度インデックス(0〜20) → 計測震度 value(-3.0〜7.0)。設計書 §3.2 */
+/** 計測震度インデックス(0〜20) → 計測震度 value(-3.0〜7.0)。 */
 export function indexToValue(index: number): number {
   return -3.0 + index * 0.5
 }
@@ -334,692 +242,625 @@ export function siteKey(lat: number, lng: number): string {
   return `${lat.toFixed(3)},${lng.toFixed(3)}`
 }
 
+/** 座標 → 固定格子セルキー（CELL_DEG 等間隔ビン）。 */
+export function cellKey(lat: number, lng: number): string {
+  const cell = PARAMS.CELL_DEG
+  return `${Math.floor(lat / cell)},${Math.floor(lng / cell)}`
+}
+
 /**
  * Δt を考慮した EWMA 係数を返す。α = 1 − exp(−Δt/τ)。
- * フレーム欠損で Δt が伸びても時定数を保つ（設計書 §3.3-2）。
+ * フレーム欠損で Δt が伸びても時定数を保つ。
  */
 export function ewmaAlpha(dtMs: number, tauMs: number): number {
   if (dtMs <= 0) return 0
   return 1 - Math.exp(-dtMs / tauMs)
 }
 
-/** 新規観測点の初期状態。初期 LTA は現在値に置く（ウォームアップで収束）。 */
-function initSiteState(value: number): SiteState {
-  return {
-    sta: value,
-    lta: value,
-    sigma: 0,
-    frozen: false,
-    lastValue: value,
-    triggeredAt: null,
-    triggerRate: 0,
-    noiseWeight: 1,
-  }
-}
-
-/**
- * 1 観測点の逐次状態を更新し、トリガー判定を行う（純粋）。
- * @param prev 前状態（無ければ null で新規初期化）
- * @param value 現フレームの計測震度
- * @param dtMs 前フレームからの経過時間
- * @param dataTimeMs 現フレームのデータ時刻
- * @returns 更新後状態とトリガー結果（path/triggered/rising）
- */
-export function updateSiteState(
-  prev: SiteState | null,
-  value: number,
-  dtMs: number,
-  dataTimeMs: number,
-): { state: SiteState; path: TriggerPath; triggered: boolean; rising: boolean } {
-  if (prev == null) {
-    const state = initSiteState(value)
-    return { state, path: null, triggered: false, rising: false }
-  }
-
-  const aSta = ewmaAlpha(dtMs, PARAMS.STA_TAU_MS)
-  const aLta = ewmaAlpha(dtMs, PARAMS.LTA_TAU_MS)
-
-  // STA は常に追随。LTA/σ は凍結中は更新しない（基準汚染＝余震マスキング防止）。
-  const sta = prev.sta + aSta * (value - prev.sta)
-  const lta = prev.frozen ? prev.lta : prev.lta + aLta * (value - prev.lta)
-  const sigma = prev.frozen
-    ? prev.sigma
-    : prev.sigma + aLta * (Math.abs(value - lta) - prev.sigma)
-
-  // ---- トリガー評価 ----
-  const rising = value - prev.lastValue >= PARAMS.RISE_DELTA
-  let path: TriggerPath = null
-  let triggered = false
-
-  if (value >= PARAMS.TRIG_FLOOR) {
-    // delta 経路も per-point ノイズで正規化する（静穏点は DELTA_TRIG 床、恒常ノイズ点は k·σ を要求）。
-    // 実データの過検知対策（並走検証で判明。σ を見ない素の delta は都市微動で誤発火する）。
-    const fastByDelta = sta - lta >= Math.max(PARAMS.DELTA_TRIG, PARAMS.K_SIGMA_DELTA * sigma)
-    const sigmaMargin = Math.max(PARAMS.K_SIGMA * sigma, PARAMS.SIGMA_FLOOR_MARGIN)
-    const fastBySigma = value >= lta + sigmaMargin
-    if (fastByDelta || fastBySigma) {
-      path = 'fast'
-      triggered = true
-    } else if (value >= PARAMS.ABS_LEVEL) {
-      path = 'slow'
-      triggered = true
-    }
-  }
-
-  // 故障観測点ガード: トリガー稼働率(duty cycle)を長時定数 EWMA で追跡し、
-  // 鳴りっぱなしの故障点の noiseWeight を下げる。一過性の地震は稼働率がほとんど上がらない。
-  // （散在する地域性ノイズの主判別は空間連続性ゲート。ここは単一故障点を落とす補助的役割。）
-  const aNoise = ewmaAlpha(dtMs, PARAMS.NOISE_TAU_MS)
-  const triggerRate = prev.triggerRate + aNoise * ((triggered ? 1 : 0) - prev.triggerRate)
-  const noiseWeight = clamp(
-    1 - (triggerRate - PARAMS.NOISE_DUTY_LO) / (PARAMS.NOISE_DUTY_HI - PARAMS.NOISE_DUTY_LO),
-    0,
-    1,
-  )
-
-  const state: SiteState = {
-    sta,
-    lta,
-    sigma,
-    // トリガー中は次フレームで LTA/σ を凍結する
-    frozen: triggered,
-    lastValue: value,
-    triggeredAt: triggered ? dataTimeMs : prev.triggeredAt,
-    triggerRate,
-    noiseWeight,
-  }
-  return { state, path, triggered, rising }
-}
-
-// ============================================================
-// ② 時空間アソシエーション
-// ============================================================
-
-/**
- * 継続中トリガー点をクラスタに分割する（時空間ゲート付きシード成長）。
- *
- * 単純な単一連結（union-find）は、広域で揺れると近接点が数珠つなぎになり felt エリア全体を
- * 巨大ブロブに融合する（並走検証で判明）。これを避けるため、最早オンセット点をシードに、
- * 幅優先で近傍リンク（PROXIMITY_KM）を辿りつつ、採否は**シード基準の時空間妥当性**で決める:
- *  - シードからの距離が MAX_CLUSTER_RADIUS_KM 以内
- *  - オンセット遅延 dt が波面として妥当: dt ∈ [r/V_MAX, r/V_MIN] ± CLUSTER_T_TOL_S
- * これにより、非伝播な同時多発・ノイズは弾かれ、本物の伝播波面（遠いほど遅い）は 1 クラスタに保たれる。
- *
- * @returns クラスタ（ActiveTrigger の配列）の配列
- */
-export function clusterActive(triggers: ActiveTrigger[]): ActiveTrigger[][] {
-  const sorted = [...triggers].sort((a, b) => a.onsetMs - b.onsetMs)
-  const assigned = new Set<string>()
-  const clusters: ActiveTrigger[][] = []
-
-  for (const seed of sorted) {
-    if (assigned.has(seed.key)) continue
-    const cluster = [seed]
-    assigned.add(seed.key)
-    const queue: ActiveTrigger[] = [seed]
-
-    while (queue.length > 0) {
-      const p = queue.shift() as ActiveTrigger
-      for (const q of sorted) {
-        if (assigned.has(q.key)) continue
-        // 空間リンク: 既存メンバー p の近傍にあること（連結性）
-        if (haversineKm(p.lat, p.lng, q.lat, q.lng) > PARAMS.PROXIMITY_KM) continue
-        // 直径上限: シードから離れすぎない
-        const rFromSeed = haversineKm(seed.lat, seed.lng, q.lat, q.lng)
-        if (rFromSeed > PARAMS.MAX_CLUSTER_RADIUS_KM) continue
-        // 時空間ゲート: シード基準のオンセット遅延が波面として妥当か
-        const dt = (q.onsetMs - seed.onsetMs) / 1000
-        const minDt = rFromSeed / PARAMS.V_MAX_KMS - PARAMS.CLUSTER_T_TOL_S
-        const maxDt = rFromSeed / PARAMS.V_MIN_KMS + PARAMS.CLUSTER_T_TOL_S
-        if (dt < minDt || dt > maxDt) continue
-
-        cluster.push(q)
-        assigned.add(q.key)
-        queue.push(q)
-      }
-    }
-    clusters.push(cluster)
-  }
-  return clusters
-}
-
-const mean = (xs: number[]): number => xs.reduce((s, v) => s + v, 0) / xs.length
-
-/**
- * アンカー点から見たクラスタ各点の最大方位ギャップ(度)を返す。
- * 震源を囲む配置ならギャップは小さく、陸側のみ（海溝型 type-B）なら 180° 以上になる。
- * 方位を評価できる点が 2 未満のときはカバレッジ無しとみなし 360 を返す。
- */
-function azimuthalGap(anchor: ActiveTrigger, cluster: ActiveTrigger[]): number {
-  const azimuths: number[] = []
-  for (const p of cluster) {
-    if (p === anchor) continue
-    if (haversineKm(anchor.lat, anchor.lng, p.lat, p.lng) < 1e-6) continue
-    azimuths.push(bearingDeg(anchor.lat, anchor.lng, p.lat, p.lng))
-  }
-  if (azimuths.length < 2) return 360
-  azimuths.sort((a, b) => a - b)
-  let maxGap = 0
-  for (let i = 1; i < azimuths.length; i++) {
-    maxGap = Math.max(maxGap, azimuths[i] - azimuths[i - 1])
-  }
-  // 端点の回り込み（最大方位→最小方位を 360 経由で結ぶ）
-  maxGap = Math.max(maxGap, 360 - azimuths[azimuths.length - 1] + azimuths[0])
-  return maxGap
-}
-
-/**
- * 平面波スローネスフィット。局所平面(ENU, km)で t ≈ t0 + px·E + py·N を最小二乗する。
- * スローネスベクトル (px, py)[s/km] は波の伝播方向（走時が増える向き）を指すため、
- * その逆方向が震源方位、大きさの逆数が見かけ速度になる。
- *
- * 片側配置（海溝型）では震源を「点」で当てられなくても**方位は堅牢に決まる**。
- * 一方、沖合距離は波面の曲率（1 秒量子化に埋もれる二次効果）からしか出ず復元不能なため、
- * ここでは距離を推定せず方位のみを返す（設計書 §5-B）。
- * 共線配置は 2D スローネスが退化する（det≤0）ため ok=false（方位不定）。
- */
-function planeWaveFit(cluster: ActiveTrigger[]): {
-  ok: boolean
-  bearingDeg: number
-  velocityKmS: number
-  residualRms: number
-} {
-  const FAIL = { ok: false, bearingDeg: NaN, velocityKmS: NaN, residualRms: Infinity }
-  const n = cluster.length
-  const lat0 = mean(cluster.map((p) => p.lat))
-  const lng0 = mean(cluster.map((p) => p.lng))
-  const cosLat = Math.cos((lat0 * Math.PI) / 180)
-  const E = cluster.map((p) => (p.lng - lng0) * KM_PER_DEG * cosLat)
-  const N = cluster.map((p) => (p.lat - lat0) * KM_PER_DEG)
-  const T = cluster.map((p) => p.onsetMs / 1000)
-  const mE = mean(E)
-  const mN = mean(N)
-  const mT = mean(T)
-  let SEE = 0
-  let SNN = 0
-  let SEN = 0
-  let SEt = 0
-  let SNt = 0
-  for (let i = 0; i < n; i++) {
-    const de = E[i] - mE
-    const dn = N[i] - mN
-    const dt = T[i] - mT
-    SEE += de * de
-    SNN += dn * dn
-    SEN += de * dn
-    SEt += de * dt
-    SNt += dn * dt
-  }
-  // 開口（配置の 2D 広がり）が狭いと走時差が量子化に埋もれ、見かけ速度が偶然物理域に入る
-  // スプリアスフィットを生む。radial の距離レンジ下限と同じ FIT_RANGE_MIN_KM を課す。
-  const apertureKm = Math.hypot(
-    Math.max(...E) - Math.min(...E),
-    Math.max(...N) - Math.min(...N),
-  )
-  if (apertureKm < PARAMS.FIT_RANGE_MIN_KM) return FAIL
-  const det = SEE * SNN - SEN * SEN
-  if (det <= 0) return FAIL
-  const px = (SNN * SEt - SEN * SNt) / det
-  const py = (SEE * SNt - SEN * SEt) / det
-  const slow = Math.hypot(px, py)
-  if (slow <= 0) return FAIL
-  const velocityKmS = 1 / slow
-  const a = mT - px * mE - py * mN
-  let sqErr = 0
-  for (let i = 0; i < n; i++) {
-    const pred = a + px * E[i] + py * N[i]
-    sqErr += (T[i] - pred) ** 2
-  }
-  const residualRms = Math.sqrt(sqErr / n)
-  // 震源方位 = 伝播方向 (px,py) の逆向き。ENU なので atan2(East, North)=コンパス方位。
-  const back = ((Math.atan2(-px, -py) * 180) / Math.PI + 360) % 360
-  const ok = velocityKmS >= PARAMS.V_MIN_KMS && velocityKmS <= PARAMS.V_MAX_KMS
-  return { ok, bearingDeg: back, velocityKmS, residualRms }
-}
-
-/**
- * クラスタの波面フィット。震央アンカーは最早オンセット点（最短距離の点）に置く。
- *
- * 2 系統を併用する:
- *  - **radial フィット**: アンカーからの距離と走時の 1D 回帰。観測点が震源を囲む内陸浅発で有効
- *    （最早点 ≈ 震央）。
- *  - **平面波フィット**: 局所平面での 2D スローネス。片側配置（海溝型 type-B）で radial が壊れても
- *    震源**方位**を堅牢に出す。
- * どちらかが物理的に成立すれば fitOk とする。方位ギャップが大きければ oneSided（沖合距離は不確実）。
- * グリッド探索による震央の点推定は採らない（片側配置では 1 秒量子化で radial 方向が不安定なため）。
- */
-export function estimateWaveFit(cluster: ActiveTrigger[]): WaveFit {
-  // 最早オンセット点を震源アンカー（最短距離の点）にする
-  let earliest = cluster[0]
-  for (const p of cluster) if (p.onsetMs < earliest.onsetMs) earliest = p
-  const epicenter: [number, number] = [earliest.lat, earliest.lng]
-
-  if (cluster.length < PARAMS.MIN_FIT_POINTS) {
-    return {
-      epicenter,
-      velocityKmS: NaN,
-      residualRms: Infinity,
-      fitOk: false,
-      radialFitOk: false,
-      bearingDeg: null,
-      oneSided: false,
-      azimuthalGapDeg: 0,
-    }
-  }
-
-  // ---- radial フィット: t = a + b·r（b = 1/見かけ速度[s/km]） ----
-  const t0 = earliest.onsetMs
-  const rs = cluster.map((p) => haversineKm(epicenter[0], epicenter[1], p.lat, p.lng))
-  const ts = cluster.map((p) => (p.onsetMs - t0) / 1000)
-  const range = Math.max(...rs) - Math.min(...rs)
-  const n = rs.length
-  const meanR = mean(rs)
-  const meanT = mean(ts)
-  let sRR = 0
-  let sRT = 0
-  for (let i = 0; i < n; i++) {
-    sRR += (rs[i] - meanR) ** 2
-    sRT += (rs[i] - meanR) * (ts[i] - meanT)
-  }
-  const b = sRR > 0 ? sRT / sRR : 0
-  const a = meanT - b * meanR
-  let sqErr = 0
-  for (let i = 0; i < n; i++) {
-    const pred = a + b * rs[i]
-    sqErr += (ts[i] - pred) ** 2
-  }
-  const residualRadial = Math.sqrt(sqErr / n)
-  const vRadial = b > 0 ? 1 / b : NaN
-  const radialFitOk =
-    range >= PARAMS.FIT_RANGE_MIN_KM &&
-    b > 0 &&
-    vRadial >= PARAMS.V_MIN_KMS &&
-    vRadial <= PARAMS.V_MAX_KMS
-
-  // ---- 平面波フィット（方位）＋方位カバレッジ ----
-  const plane = planeWaveFit(cluster)
-  const gap = azimuthalGap(earliest, cluster)
-  const oneSided = gap >= PARAMS.ONE_SIDED_GAP_DEG
-
-  // radial が成立すればその速度・残差を、そうでなければ平面波フィットのものを採用する。
-  const fitOk = radialFitOk || plane.ok
-  const velocityKmS = radialFitOk ? vRadial : plane.ok ? plane.velocityKmS : NaN
-  const residualRms = radialFitOk ? residualRadial : plane.ok ? plane.residualRms : Infinity
-  const bearingDeg = plane.ok ? plane.bearingDeg : null
-
-  return {
-    epicenter,
-    velocityKmS,
-    residualRms,
-    fitOk,
-    radialFitOk,
-    bearingDeg,
-    oneSided,
-    azimuthalGapDeg: gap,
-  }
-}
-
-/**
- * クラスタ規模・振幅・波面フィット品質・空間連続性から、1 フレームの「地震らしさ」寄与 s を算出する。
- *
- * 設計（並走検証で改訂）: 旧実装は size を 8 で頭打ちにし振幅を無視していたため、大規模・高震度の
- * 実地震（例: 大隅 M5.2 size108 震度3）が片側配置の高残差で waveFactor が下限に落ちて潰れ、likely
- * 止まりだった。実地震とノイズを分ける材料（規模・振幅・連続性）をすべて score に反映する:
- *  - sizeTerm  : size の平方根で逓減しつつ頭打ちを外す（大規模を正当に評価）。
- *  - ampTerm   : クラスタ最大計測震度。実地震は震度が高く、ノイズは震度0近傍（＝confirmed 排除の要）。
- *  - waveFactor: フィット残差の良さ。片側配置の高残差でも下限を上げ、強いクラスタを潰さない。
- *  - contigFactor: 面の埋まり具合。連続性ゲート(CONTIG_MIN)近傍のノイズを穏やかに減点する。
- * DECAY のとき定常 S ≈ s/(1−DECAY)。s≈0.3 で S_ON、s≈0.16 で S_LIKELY に到達する目安。
- *
- * @param size クラスタの観測点数
- * @param peak クラスタ最大計測震度（value。震度0≈0, 震度1≈0.5, 震度2≈1.5, 震度3≈2.5）
- * @param fit 波面フィット結果
- * @param contiguity 空間連続性（spatialFill。0〜1）
- */
-export function frameScore(size: number, peak: number, fit: WaveFit, contiguity: number): number {
-  const sizeTerm = 0.25 + 0.06 * Math.sqrt(Math.max(size, 0))
-  const ampTerm = clamp(0.7 + 0.3 * peak, 0.7, 1.6)
-  const waveFactor = fit.fitOk
-    ? clamp(1.2 - fit.residualRms / PARAMS.RESID_GOOD_S, 0.45, 1.0)
-    : 0.35
-  const contigFactor = clamp(0.6 + 0.7 * contiguity, 0.6, 1.2)
-  return sizeTerm * ampTerm * waveFactor * contigFactor
-}
-
 function clamp(x: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, x))
 }
 
-/**
- * スコア・規模・フィット・ウォームアップから確信度を分類する。
- *
- * likely 以上には**波面フィットの成立（伝播整合）を必須**とする。空間規模だけで likely に
- * 上げると、大きなノイズクラスタが誤って likely になる（並走検証で判明）。fitOk でなければ weak 止まり。
- *
- * confirmed には**震源拘束の強さ**で非対称なゲートを課す:
- *  - radial 裏取りあり（震源を囲む配置）: MIN_CONFIRM_SIZE で確定可（震源が良く決まる）。
- *  - 片側配置（平面波のみ・radialFitOk=false）: MIN_CONFIRM_SIZE_ONESIDED まで点数を要求する。
- *    片側配置は震源が縮退し、少数点ではノイズ塊の偶然フィットと区別できない（並走検証で size4 の
- *    誤 confirmed を観測）ため。本物の海溝型は陸側で多数点が並ぶので確定できる（設計書 §5-B）。
- */
-/**
- * クラスタの空間的な「埋まり具合」を測る（設計書 §5-D）。
- * 実地震は felt エリア内の観測点が連続的にほぼ全て反応する（高い連続性）が、
- * 広域ノイズは間に非反応点が挟まりスカスカになる（低い連続性）。地域に依らない per-cluster 量。
- *
- * @param cluster クラスタ（反応中の観測点）
- * @param allSites 現フレームの全観測点座標（非反応点を知るために必要）
- * @returns contiguity（各メンバー近傍の反応割合の中央値）と densityNear（震央周辺の観測点数）
- */
-export function spatialFill(
-  cluster: ActiveTrigger[],
-  allSites: [number, number][],
-): { contiguity: number; densityNear: number } {
-  const memberSet = new Set(cluster.map((c) => c.key))
-  const cLat = mean(cluster.map((c) => c.lat))
-  const cLng = mean(cluster.map((c) => c.lng))
+const mean = (xs: number[]): number => (xs.length ? xs.reduce((s, v) => s + v, 0) / xs.length : 0)
 
-  let densityNear = 0
-  for (const s of allSites) {
-    if (haversineKm(cLat, cLng, s[0], s[1]) <= PARAMS.CONTIG_DENSITY_RADIUS_KM) densityNear++
+/** 点別ノイズ床の実効値（value）。floorMean + K·floorDev を [FLOOR_MIN, FLOOR_CAP] にクランプ。 */
+function effectiveFloor(s: SiteState): number {
+  return clamp(s.floorMean + PARAMS.FLOOR_SIGMA_K * s.floorDev, PARAMS.FLOOR_MIN, PARAMS.FLOOR_CAP)
+}
+
+// ============================================================
+// L0 静的メタ（実行時に一度計算・キャッシュ）
+// ============================================================
+
+/**
+ * 観測点座標から K 近傍グラフと格子割当を計算する（純粋）。
+ *
+ * 近傍は「メモリ上にある実行時座標」からの純粋な幾何計算で、追加リクエストは発生しない。
+ * 事前計算 JSON を出荷せず実行時に組むことで、siteConfigId 版差での siteKey ドリフトを構造的に防ぐ。
+ * O(点数²) だが観測点集合ごとに一度だけ（フレーム毎ではない）計算しキャッシュする前提。
+ * バウンディングボックス前段で haversine 呼び出しを大幅に間引く。
+ */
+export function buildStationMeta(sites: [number, number][]): StationMeta {
+  const neighbors: Record<string, string[]> = {}
+  const avail: Record<string, number> = {}
+  const cellOf: Record<string, string> = {}
+
+  // 重複座標を畳んだ一意点列（siteKey・座標）
+  const uniq: { key: string; lat: number; lng: number }[] = []
+  const seen = new Set<string>()
+  for (const [lat, lng] of sites) {
+    const key = siteKey(lat, lng)
+    if (seen.has(key)) continue
+    seen.add(key)
+    uniq.push({ key, lat, lng })
+    cellOf[key] = cellKey(lat, lng)
   }
 
-  const contigs: number[] = []
-  for (const m of cluster) {
-    let near = 0
-    let nearMembers = 0
-    for (const s of allSites) {
-      if (haversineKm(m.lat, m.lng, s[0], s[1]) <= PARAMS.CONTIG_RADIUS_KM) {
-        near++
-        if (memberSet.has(siteKey(s[0], s[1]))) nearMembers++
+  const latMargin = PARAMS.R_KM / KM_PER_DEG
+  for (const p of uniq) {
+    // 近い順に距離を集め、R_KM 以内を avail、その先頭 K を neighbors とする
+    const cand: { key: string; d: number }[] = []
+    for (const q of uniq) {
+      if (q.key === p.key) continue
+      if (Math.abs(q.lat - p.lat) > latMargin) continue // 緯度バウンディングボックス前段
+      const d = haversineKm(p.lat, p.lng, q.lat, q.lng)
+      if (d <= PARAMS.R_KM) cand.push({ key: q.key, d })
+    }
+    cand.sort((a, b) => a.d - b.d)
+    avail[p.key] = cand.length
+    neighbors[p.key] = cand.slice(0, PARAMS.K).map((c) => c.key)
+  }
+
+  return { neighbors, avail, cellOf }
+}
+
+// ============================================================
+// L1 点トリガー
+// ============================================================
+
+/** 新規観測点の初期状態。床は既定値で開始（warmup 不要・初手から検知可能）。 */
+function initSiteState(value: number, t: number): SiteState {
+  return {
+    hist: [{ t, v: value }],
+    floorMean: value,
+    floorDev: 0,
+    triggeredAtMs: null,
+  }
+}
+
+/** 履歴に (t,v) を積み、RATE_DT_MS の 2 倍より古いサンプルを捨てる。 */
+function pushHist(hist: { t: number; v: number }[], t: number, v: number): void {
+  hist.push({ t, v })
+  const cutoff = t - PARAMS.RATE_DT_MS * 2
+  while (hist.length > 2 && hist[0].t < cutoff) hist.shift()
+}
+
+/**
+ * RATE_DT_MS 窓での value 上昇量を返す。窓の起点（now − RATE_DT_MS 以前で最新のサンプル）が
+ * 無ければ null（コールドスタート直後・オンセット評価不能）。欠測でフレームが飛んでも時刻基準なので頑健。
+ */
+function windowRate(hist: { t: number; v: number }[], now: number): number | null {
+  const target = now - PARAMS.RATE_DT_MS
+  let baseline: { t: number; v: number } | null = null
+  for (const s of hist) {
+    if (s.t <= target + 500) baseline = s // 起点許容 0.5s
+  }
+  if (!baseline) return null
+  const cur = hist[hist.length - 1]
+  return cur.v - baseline.v
+}
+
+// ============================================================
+// L3 グループ化（K 近傍グラフの連結成分）
+// ============================================================
+
+/**
+ * 確定揺れ点を K 近傍グラフの連結成分に束ねる（境界の無い方式・セル境界での分裂を避ける）。
+ * a〜b は「b が a の近傍」または「a が b の近傍」で連結（K 近傍の非対称性を吸収）。
+ */
+function connectedComponents(keys: string[], neighbors: Record<string, string[]>): string[][] {
+  const inSet = new Set(keys)
+  const visited = new Set<string>()
+  const components: string[][] = []
+
+  for (const start of keys) {
+    if (visited.has(start)) continue
+    const comp: string[] = []
+    const queue = [start]
+    visited.add(start)
+    while (queue.length > 0) {
+      const cur = queue.shift() as string
+      comp.push(cur)
+      // cur → 近傍（cur の近傍のうち確定揺れ点）
+      for (const nb of neighbors[cur] ?? []) {
+        if (inSet.has(nb) && !visited.has(nb)) {
+          visited.add(nb)
+          queue.push(nb)
+        }
+      }
+      // 近傍 → cur（cur を近傍に持つ確定揺れ点。非対称性の補完）
+      for (const other of keys) {
+        if (visited.has(other)) continue
+        if ((neighbors[other] ?? []).includes(cur)) {
+          visited.add(other)
+          queue.push(other)
+        }
       }
     }
-    if (near > 0) contigs.push(nearMembers / near)
+    components.push(comp)
   }
-  contigs.sort((a, b) => a - b)
-  const contiguity = contigs.length > 0 ? contigs[Math.floor(contigs.length / 2)] : 0
-  return { contiguity, densityNear }
+  return components
 }
 
-export function classify(
-  score: number,
-  size: number,
-  peak: number,
-  fitOk: boolean,
-  radialFitOk: boolean,
-  spatialOk: boolean,
-  warmup: boolean,
-): Confidence {
-  // likely 以上の下限ゲート（平常時ノイズ抑制。並走検証で決定）:
-  //  - 波面フィット成立（伝播整合）
-  //  - 空間連続性（面が埋まっている＝実地震。スカスカ＝広域ノイズを除外。疎地域は spatialOk=true で免除）
-  //  - クラスタ点数が少数点ノイズを超える（MIN_LIKELY_SIZE）
-  //  - クラスタ最大振幅が震度0 以上（MIN_LIKELY_PEAK。低振幅の都市ノイズを除外）
-  if (!fitOk || !spatialOk || size < PARAMS.MIN_LIKELY_SIZE || peak < PARAMS.MIN_LIKELY_PEAK)
-    return 'weak'
-
-  const confirmSize = radialFitOk ? PARAMS.MIN_CONFIRM_SIZE : PARAMS.MIN_CONFIRM_SIZE_ONESIDED
-  let c: Confidence = 'weak'
-  if (score >= PARAMS.S_ON && size >= confirmSize) c = 'confirmed'
-  else if (score >= PARAMS.S_LIKELY) c = 'likely'
-  // ウォームアップ中は confirmed に上げない（設計書 §7.4）
-  if (warmup && c === 'confirmed') c = 'likely'
-  return c
+/** クラスタ(a)とイベント(bKeys)のメンバー重複率 = |a∩b| / min(|a|,|b|)。 */
+export function memberOverlapFrac(a: Set<string>, bKeys: string[]): number {
+  if (a.size === 0 || bKeys.length === 0) return 0
+  let common = 0
+  for (const k of bKeys) if (a.has(k)) common++
+  return common / Math.min(a.size, bKeys.length)
 }
 
 // ============================================================
-// step（設計書 §7.1）
+// step
 // ============================================================
 
-/** 空の検知状態を生成する（コールドスタート用）。 */
+/** 空の検知状態を生成する（コールドスタート用）。warmup は無い。 */
 export function initState(dataTimeMs = 0): DetectorState {
   return {
     sites: {},
-    activeTriggers: {},
     events: [],
+    cellActivity: {},
     nextEventId: 1,
     lastDataTimeMs: dataTimeMs,
-    warmupUntilMs: dataTimeMs + PARAMS.WARMUP_MS,
   }
+}
+
+/** 永続化する学習資産（点別床・セル慢性活性）。一過性の hist・triggeredAtMs・events は含めない。 */
+export interface LearnedState {
+  /** 座標キー → [floorMean, floorDev]。既定床から動いた点のみ（静穏点は省略＝復元時に既定初期化）。 */
+  floors: Record<string, [number, number]>
+  /** セルキー → 慢性活性(0〜1) */
+  cellActivity: Record<string, number>
+}
+
+/**
+ * 学習資産だけを抽出する（localStorage 保存用）。
+ * 既定床のままの静穏点（floorMean/floorDev がともに微小）は省いて保存量を抑える。
+ */
+export function extractLearned(state: DetectorState): LearnedState {
+  const floors: Record<string, [number, number]> = {}
+  for (const [k, s] of Object.entries(state.sites)) {
+    if (s.floorMean > 0.05 || s.floorDev > 0.05) floors[k] = [s.floorMean, s.floorDev]
+  }
+  return { floors, cellActivity: { ...state.cellActivity } }
+}
+
+/**
+ * 学習資産を状態へ流し込む（コールドスタート直後の再読込用）。
+ * 点別床は「床のみ持つ SiteState」として先置きし、初フレームでその床から検知を開始できるようにする
+ * （hist は空・triggeredAtMs は null＝一過性は復元しない）。warmup は無いので初手から検知可能。
+ */
+export function hydrateLearned(state: DetectorState, learned: LearnedState): DetectorState {
+  const sites: Record<string, SiteState> = { ...state.sites }
+  for (const [k, fd] of Object.entries(learned.floors)) {
+    sites[k] = { hist: [], floorMean: fd[0], floorDev: fd[1], triggeredAtMs: null }
+  }
+  return { ...state, sites, cellActivity: { ...learned.cellActivity } }
+}
+
+/** 現フレームの 1 観測点の観測結果（L1〜L2 の途中集計）。 */
+interface FramePoint {
+  key: string
+  lat: number
+  lng: number
+  value: number
+  /** 床 + LEVEL_MARGIN を超え「揺れている」か（rate 不問。onset 素地・最大震度に使う。震度0 を含む） */
+  levelActive: boolean
+  /** 床 + SUSTAIN_MARGIN を超え「継続して明確に揺れている」か（継続点数・保持に使う。平常の震度0 は除外） */
+  sustained: boolean
+  /** 今フレームでオンセット・トリガーしたか（levelActive かつ立ち上がり） */
+  onset: boolean
 }
 
 /**
  * 1 フレーム分の状態遷移（純粋）。1 秒ごとに呼ぶ。
  *
- * ① 各観測点のトリガー判定 → ② 継続トリガーのクラスタリング・波面フィット・イベント帰属
- * → ③ リーキー積分・確信度分類・終了判定、の順で処理する。
+ * L1 点トリガー → L2 近傍同時性 → L3 連結成分グループ化・イベント帰属 → L4 確信度分類・保持判定。
  *
  * @param state 前状態
  * @param frame 現フレーム
- * @param _meta 静的観測点メタ（Phase 3 の地域類型で使用。現状未使用）
+ * @param meta 静的観測点メタ（未指定ならフレーム座標から都度構築。テスト・小規模用）
  */
 export function step(
   state: DetectorState,
   frame: Frame,
-  _meta?: Record<string, StationMeta>,
+  meta?: StationMeta,
 ): { state: DetectorState; detections: DetectionEvent[]; triggers: TriggerResult[] } {
   const now = frame.dataTimeMs
   const dtMs = now - state.lastDataTimeMs
 
-  // 不連続（大きな時刻ジャンプ・巻き戻し）は状態をリセットして作り直す（設計書 §3.3-2,3）。
+  // 不連続（大きな時刻ジャンプ・巻き戻し・コールドスタート初フレーム）は一過性の状態を
+  // 作り直す。ただし学習資産（点別床・セル慢性活性）は引き継ぐ（永続化からの復元を保つ・
+  // 数十秒の欠測で床/地域活性を捨てない）。
   if (dtMs <= 0 || dtMs > PARAMS.MAX_DT_GAP_MS) {
-    const rebuilt = ingestWithoutTrigger(initState(now), frame)
+    const seed = initState(now)
+    seed.cellActivity = { ...state.cellActivity }
+    const rebuilt = ingest(seed, frame, state)
     return { state: rebuilt, detections: [], triggers: [] }
   }
 
-  // ---- ① トリガー ----
+  const m = meta ?? buildStationMeta(frame.sites)
+
+  // ---- L1 点トリガー ----
   const sites: Record<string, SiteState> = {}
-  const triggers: TriggerResult[] = []
+  const points: FramePoint[] = []
+  const cur = new Map<string, FramePoint>()
+  const triggeredAt: Record<string, number | null> = {}
+
   for (let i = 0; i < frame.values.length; i++) {
     if (frame.missing?.[i]) continue
     const [lat, lng] = frame.sites[i]
     const key = siteKey(lat, lng)
     const value = indexToValue(frame.values[i])
-    const prev = state.sites[key] ?? null
+    const prev = state.sites[key]
 
-    const { state: next, path, triggered, rising } = updateSiteState(prev, value, dtMs, now)
-    sites[key] = next
-    if (triggered)
-      triggers.push({ key, lat, lng, triggered, path, value, rising, noiseWeight: next.noiseWeight })
+    if (!prev) {
+      const s = initSiteState(value, now)
+      sites[key] = s
+      triggeredAt[key] = null
+      continue
+    }
+
+    const hist = [...prev.hist]
+    pushHist(hist, now, value)
+    const floor = effectiveFloor(prev)
+    const levelActive = value >= floor + PARAMS.LEVEL_MARGIN && value >= PARAMS.TRIG_FLOOR
+    const sustained = value >= floor + PARAMS.SUSTAIN_MARGIN && value >= PARAMS.TRIG_FLOOR
+    const rate = windowRate(hist, now)
+    const onset = levelActive && rate != null && rate >= PARAMS.RATE_MIN
+
+    const s: SiteState = {
+      hist,
+      floorMean: prev.floorMean,
+      floorDev: prev.floorDev,
+      triggeredAtMs: onset ? now : prev.triggeredAtMs,
+    }
+    sites[key] = s
+    triggeredAt[key] = s.triggeredAtMs
+
+    const fp: FramePoint = { key, lat, lng, value, levelActive, sustained, onset }
+    points.push(fp)
+    cur.set(key, fp)
   }
 
-  // ---- ② 継続トリガーの更新（フレーム跨ぎ）----
-  const activeTriggers = updateActiveTriggers(state.activeTriggers, triggers, now)
-
-  // ---- ② クラスタリング＋波面フィット → ③ イベント帰属・積分 ----
-  // 鳴りっぱなしの故障観測点（noiseWeight 低）をクラスタリング入力から除外する補助ガード（§5-D）。
-  // 散在する地域性ノイズの主判別はクラスタ後の空間連続性ゲート（spatialFill）が担う。
-  const clusterInput = Object.values(activeTriggers).filter(
-    (at) => at.noiseWeight >= PARAMS.NOISE_WEIGHT_MIN,
+  // ---- L2 同期 onset の空間的広がり（連結成分で確定揺れ点を判定）----
+  // 「直近 COINCIDENCE_MS に onset した点」を K 近傍グラフで連結し、成分サイズが MIN_CLUSTER 以上の
+  // 成分を「揺れクラスタ」とする。成分＜MIN_CLUSTER は散在ノイズとして破棄する（Scratch のグリッド
+  // 上昇割合に相当する面判定。per-point の近傍一致より頑健で、時間差 onset のクラスタも取りこぼさず、
+  // 絶対レベルを震度0 まで下げても平常ノイズは成分が育たず脱落する）。
+  const recentOnset: string[] = []
+  for (const p of points) {
+    const trigAt = triggeredAt[p.key]
+    if (trigAt != null && now - trigAt <= PARAMS.COINCIDENCE_MS) recentOnset.push(p.key)
+  }
+  const clusters = connectedComponents(recentOnset, m.neighbors).filter(
+    (c) => c.length >= PARAMS.MIN_CLUSTER,
   )
-  const clusters = clusterActive(clusterInput).filter((c) => c.length >= PARAMS.MIN_EVENT_SIZE)
-  const warmup = now < state.warmupUntilMs
-  const { events, nextEventId } = associateAndScore(
+  const confirmedShaking = clusters.flat()
+  const shakingSet = new Set(confirmedShaking)
+  const triggers: TriggerResult[] = points
+    .filter((p) => p.onset || shakingSet.has(p.key))
+    .map((p) => ({
+      key: p.key,
+      lat: p.lat,
+      lng: p.lng,
+      value: p.value,
+      confirmedShaking: shakingSet.has(p.key),
+    }))
+
+  // ---- L3 イベント帰属（クラスタ＝広がりのある成分をイベントへ）----
+  const { events, nextEventId } = associate(
     state.events,
     state.nextEventId,
     clusters,
-    frame.sites,
+    cur,
+    triggeredAt,
+    state.cellActivity,
+    m.cellOf,
+    m.avail,
     now,
-    warmup,
   )
+
+  // ---- セル慢性活性の学習（特異度の第2軸）----
+  const cellActivity = updateCellActivity(
+    state.cellActivity,
+    confirmedShaking,
+    events,
+    m.cellOf,
+    dtMs,
+  )
+
+  // ---- 点別ノイズ床の学習 ----
+  // 揺れていない・近傍同時でない「静穏な点」だけで床を更新する（実イベント・群発で床が汚れ鈍化しない）。
+  const coincidentSet = new Set(confirmedShaking)
+  for (const p of points) {
+    const s = sites[p.key]
+    if (p.levelActive || coincidentSet.has(p.key)) continue // 凍結
+    const a = ewmaAlpha(dtMs, PARAMS.FLOOR_TAU_MS)
+    s.floorMean = s.floorMean + a * (p.value - s.floorMean)
+    s.floorDev = s.floorDev + a * (Math.abs(p.value - s.floorMean) - s.floorDev)
+  }
 
   const nextState: DetectorState = {
     sites,
-    activeTriggers,
     events,
+    cellActivity,
     nextEventId,
     lastDataTimeMs: now,
-    warmupUntilMs: state.warmupUntilMs,
   }
-  // detections はアクティブな全イベント（確信度は各々の tier で表現）。スコア降順。
-  const detections = [...events].sort((x, y) => y.score - x.score)
+  // detections はアクティブな全イベント。最大震度降順（強い順）。
+  const detections = [...events].sort((x, y) => y.maxIntensity - x.maxIntensity)
   return { state: nextState, detections, triggers }
 }
 
-/** 継続トリガー点を更新する。今フレームのトリガーで onset を追跡し、失効分を落とす。 */
-function updateActiveTriggers(
-  prev: Record<string, ActiveTrigger>,
-  triggers: TriggerResult[],
-  now: number,
-): Record<string, ActiveTrigger> {
-  const next: Record<string, ActiveTrigger> = {}
-  // 既存の継続点を引き継ぐ（失効していないもの）
-  for (const at of Object.values(prev)) {
-    if (now - at.lastTrigMs <= PARAMS.ACTIVE_WINDOW_MS) next[at.key] = { ...at }
-  }
-  // 今フレームのトリガーを反映
-  for (const t of triggers) {
-    const existing = next[t.key]
-    if (existing) {
-      existing.lastTrigMs = now
-      existing.peakValue = Math.max(existing.peakValue, t.value)
-      existing.noiseWeight = t.noiseWeight
-    } else {
-      next[t.key] = {
-        key: t.key,
-        lat: t.lat,
-        lng: t.lng,
-        onsetMs: now,
-        lastTrigMs: now,
-        peakValue: t.value,
-        noiseWeight: t.noiseWeight,
-      }
-    }
-  }
-  return next
-}
-
 /**
- * クラスタを既存イベントに帰属（震源近接）or 新規生成し、③ リーキー積分・確信度分類・終了判定を行う。
+ * 連結成分を既存イベントに帰属（メンバー重複 or セル共有）or 新規生成し、L4 の確信度分類・保持判定を行う。
  */
-function associateAndScore(
+function associate(
   prevEvents: DetectionEvent[],
   nextEventId: number,
-  clusters: ActiveTrigger[][],
-  allSites: [number, number][],
+  components: string[][],
+  cur: Map<string, FramePoint>,
+  triggeredAt: Record<string, number | null>,
+  cellActivity: Record<string, number>,
+  cellOf: Record<string, string>,
+  avail: Record<string, number>,
   now: number,
-  warmup: boolean,
 ): { events: DetectionEvent[]; nextEventId: number } {
-  const events = prevEvents.map((e) => ({ ...e, memberKeys: [...e.memberKeys] }))
+  const events = prevEvents.map((e) => ({
+    ...e,
+    memberKeys: [...e.memberKeys],
+    cells: [...e.cells],
+  }))
   const updated = new Set<string>()
   let idCounter = nextEventId
 
-  for (const cluster of clusters) {
-    const fit = estimateWaveFit(cluster)
-    const epi = fit.epicenter
-    const clusterPeak = Math.max(...cluster.map((c) => c.peakValue))
-    const memberKeys = cluster.map((c) => c.key)
-    // 空間連続性ゲート: 面が埋まっているか（実地震）／スカスカか（広域ノイズ）。
-    // 疎地域（震央周辺の観測点数が少ない）は連続性が本質的に低いのでゲート免除。
-    const { contiguity, densityNear } = spatialFill(cluster, allSites)
-    const spatialOk = densityNear < PARAMS.CONTIG_SPARSE_MIN || contiguity >= PARAMS.CONTIG_MIN
-    // score には規模・振幅・フィット品質・連続性を反映する（frameScore 参照）
-    const s = frameScore(cluster.length, clusterPeak, fit, contiguity)
+  for (const comp of components) {
+    const compSet = new Set(comp)
+    const compCells = new Set(comp.map((k) => cellOf[k]).filter(Boolean))
 
-    // 既存イベントとの帰属判定（震源が PENDING_MATCH_KM 以内）
+    // 既存イベントへの帰属: メンバー重複率 or セル共有（震央ジッタでも同一 ID を保つ）。
     let target: DetectionEvent | undefined
-    if (epi) {
-      for (const e of events) {
-        if (updated.has(e.id) || !e.epicenter) continue
-        const d = haversineKm(epi[0], epi[1], e.epicenter[0], e.epicenter[1])
-        if (d <= PARAMS.PENDING_MATCH_KM) {
-          target = e
-          break
-        }
+    for (const e of events) {
+      if (updated.has(e.id)) continue
+      const overlap = memberOverlapFrac(compSet, e.memberKeys) >= PARAMS.MERGE_MEMBER_FRAC
+      const cellShare = e.cells.some((c) => compCells.has(c))
+      if (overlap || cellShare) {
+        target = e
+        break
       }
     }
 
     if (target) {
-      target.score = PARAMS.DECAY * target.score + s
-      target.epicenter = epi
-      target.bearingDeg = fit.bearingDeg
-      target.oneSided = fit.oneSided
+      target.memberKeys = [...new Set([...target.memberKeys, ...comp])]
+      target.cells = [...new Set([...target.cells, ...compCells])]
       target.lastOnsetAtMs = now
-      target.lastSize = cluster.length
-      target.lastFitOk = fit.fitOk
-      target.lastRadialFitOk = fit.radialFitOk
-      target.lastPeak = clusterPeak
-      target.lastSpatialOk = spatialOk
-      target.lastContiguity = contiguity
-      target.memberKeys = [...new Set([...target.memberKeys, ...memberKeys])]
-      target.confidence = classify(
-        target.score,
-        cluster.length,
-        clusterPeak,
-        fit.fitOk,
-        fit.radialFitOk,
-        spatialOk,
-        warmup,
-      )
+      updateEventMetrics(target, cur, triggeredAt, cellActivity, cellOf, avail, now)
       updated.add(target.id)
     } else {
-      const score = s // 初回は DECAY·0 + s
       const ev: DetectionEvent = {
         id: `evt-${idCounter++}`,
-        epicenter: epi,
-        bearingDeg: fit.bearingDeg,
-        oneSided: fit.oneSided,
+        confidence: 'weak',
+        memberKeys: [...comp],
+        cells: [...compCells],
         originTimeMs: now,
-        score,
-        confidence: classify(
-          score,
-          cluster.length,
-          clusterPeak,
-          fit.fitOk,
-          fit.radialFitOk,
-          spatialOk,
-          warmup,
-        ),
         lastOnsetAtMs: now,
-        memberKeys,
-        lastSize: cluster.length,
-        lastFitOk: fit.fitOk,
-        lastRadialFitOk: fit.radialFitOk,
-        lastPeak: clusterPeak,
-        lastSpatialOk: spatialOk,
-        lastContiguity: contiguity,
+        maxIntensity: 0,
+        lastSize: 0,
+        epicenter: null,
+        confirmStreak: 0,
+        everConfirmed: false,
       }
+      updateEventMetrics(ev, cur, triggeredAt, cellActivity, cellOf, avail, now)
       events.push(ev)
       updated.add(ev.id)
     }
   }
 
-  // 今フレームで更新されなかったイベントは減衰させ、終了判定する
+  // 今フレームで確定揺れ点を伴わなかったイベント: 指標を再評価し、HOLD 経過で解除する。
   const survivors: DetectionEvent[] = []
   for (const e of events) {
     if (!updated.has(e.id)) {
-      e.score = PARAMS.DECAY * e.score
-      e.confidence = classify(
-        e.score,
-        e.lastSize,
-        e.lastPeak,
-        e.lastFitOk,
-        e.lastRadialFitOk,
-        e.lastSpatialOk,
-        warmup,
-      )
+      updateEventMetrics(e, cur, triggeredAt, cellActivity, cellOf, avail, now)
     }
-    const idle = now - e.lastOnsetAtMs
-    const duration = now - e.originTimeMs
-    const terminated =
-      (e.score < PARAMS.S_OFF && idle >= PARAMS.END_TIMEOUT_MS) ||
-      duration >= PARAMS.MAX_EVENT_DURATION_MS
-    if (!terminated) survivors.push(e)
+    if (now - e.lastOnsetAtMs <= PARAMS.HOLD_MS) survivors.push(e)
   }
 
-  return { events: survivors, nextEventId: idCounter }
+  return { events: mergeAdjacentEvents(survivors), nextEventId: idCounter }
 }
 
 /**
- * トリガー判定を伴わずに全観測点の状態を初期化して取り込む。
- * 不連続リセット直後の 1 フレーム目に使う（この 1 フレームはトリガー対象にしない）。
+ * 重心が MERGE_EVENT_KM 以内のイベントを 1 本化する（フレーム末 consolidation）。
+ * 沖合・深発の揺れ域が海/山ギャップで複数成分に割れた同一地震を統合する。
+ * host は発生時刻が早い方（＝ID を継承）。メンバー・セルは和集合、点数は合算、最大震度は max、
+ * 確信度は everConfirmed の論理和で再評価する。離れた別地震（>MERGE_EVENT_KM）は併合しない。
  */
-function ingestWithoutTrigger(state: DetectorState, frame: Frame): DetectorState {
+function mergeAdjacentEvents(events: DetectionEvent[]): DetectionEvent[] {
+  if (events.length <= 1) return events
+  const ordered = [...events].sort((a, b) => a.originTimeMs - b.originTimeMs)
+  const hosts: DetectionEvent[] = []
+  for (const e of ordered) {
+    const host = hosts.find(
+      (h) =>
+        !!e.epicenter &&
+        !!h.epicenter &&
+        haversineKm(e.epicenter[0], e.epicenter[1], h.epicenter[0], h.epicenter[1]) <=
+          PARAMS.MERGE_EVENT_KM,
+    )
+    if (!host) {
+      hosts.push(e)
+      continue
+    }
+    // 重心は点数の多い側（主パッチ）を採用
+    if (e.lastSize > host.lastSize) host.epicenter = e.epicenter
+    host.memberKeys = [...new Set([...host.memberKeys, ...e.memberKeys])]
+    host.cells = [...new Set([...host.cells, ...e.cells])]
+    host.lastSize = host.lastSize + e.lastSize
+    host.maxIntensity = Math.max(host.maxIntensity, e.maxIntensity)
+    host.lastOnsetAtMs = Math.max(host.lastOnsetAtMs, e.lastOnsetAtMs)
+    host.confirmStreak = Math.max(host.confirmStreak, e.confirmStreak)
+    host.everConfirmed = host.everConfirmed || e.everConfirmed
+    host.confidence = host.everConfirmed
+      ? 'confirmed'
+      : host.confidence === 'likely' || e.confidence === 'likely'
+        ? 'likely'
+        : host.confidence
+  }
+  return hosts
+}
+
+/**
+ * イベントの指標（アクティブメンバー数・最大震度・重心）を再計算し、確信度を分類する。
+ *
+ * - lastSize    : 現在「揺れているメンバー数」＝ sustained（床を明確に超えて継続中）または直近
+ *   TRIG_ACTIVE_MS に onset したメンバー。値が頭打ちで onset が止まっても、揺れが続く限り減らない
+ *   （旧実装は onset 数のみで数え、揺れ継続中に size が減衰してイベントが早期消滅する不具合があった）。
+ * - maxIntensity: levelActive なメンバー現在 value の最大（震度0 を含む＝PLUM 出力・faint 表示）。無ければ前値。
+ * - lastOnsetAtMs: 揺れ継続中（size>0）は毎フレーム更新し、揺れが収まってから HOLD_MS 経過で解除する。
+ * - confidence  : 点数＋最大震度ゲート＋CONFIRM_FRAMES 連続。特異度は点別床(L1)とセル慢性活性で二軸。
+ *   慢性活性セルでは確定点数・確定震度のバーを引き上げる（北関東のコヒーレントノイズ対策・第2軸）。
+ *   一度 confirmed に達したら HOLD 中は confirmed を維持する（明滅防止のラッチ）。
+ */
+function updateEventMetrics(
+  e: DetectionEvent,
+  cur: Map<string, FramePoint>,
+  triggeredAt: Record<string, number | null>,
+  cellActivity: Record<string, number>,
+  cellOf: Record<string, string>,
+  avail: Record<string, number>,
+  now: number,
+): void {
+  let size = 0
+  let maxV = -Infinity
+  let availLocal = 0
+  const lats: number[] = []
+  const lngs: number[] = []
+  for (const k of e.memberKeys) {
+    const p = cur.get(k)
+    const t = triggeredAt[k]
+    const recentOnset = t != null && now - t <= PARAMS.TRIG_ACTIVE_MS
+    // 「揺れているメンバー」= 床を明確に超えて継続中（sustained）or 直近 onset。値頭打ちでも減らない。
+    if ((p && p.sustained) || recentOnset) {
+      size++
+      availLocal = Math.max(availLocal, avail[k] ?? 0) // 局所に実在する近傍数（密度）
+    }
+    if (p && p.levelActive) {
+      if (p.value > maxV) maxV = p.value
+      lats.push(p.lat)
+      lngs.push(p.lng)
+    }
+  }
+  e.lastSize = size
+  if (maxV > -Infinity) e.maxIntensity = maxV
+  if (lats.length > 0) e.epicenter = [mean(lats), mean(lngs)]
+  // 揺れが続く限り保持を更新（揺れが収まってから HOLD_MS で解除。onset 途絶では解除しない）
+  if (size > 0) e.lastOnsetAtMs = now
+
+  // 地域軸: イベントが占有するセルの慢性活性の最大値
+  let chronic = 0
+  for (const c of e.cells) chronic = Math.max(chronic, cellActivity[c] ?? 0)
+  const isChronic = chronic >= PARAMS.CHRONIC_THRESHOLD
+
+  // 確定点数: 密な網では CONFIRM_POINTS（＋慢性活性セルは引き上げ）。疎地域（局所実在近傍が少ない
+  // 離島・過疎網）では「(局所実在数+1)×CONFIRM_DENSITY_FRAC」まで下げる（下限 MIN_LIKELY_POINTS）。
+  const confirmPointsReq = PARAMS.CONFIRM_POINTS + (isChronic ? PARAMS.CHRONIC_POINT_BUMP : 0)
+  const densityReq = Math.ceil((availLocal + 1) * PARAMS.CONFIRM_DENSITY_FRAC)
+  const effectiveConfirmReq = Math.max(
+    PARAMS.MIN_LIKELY_POINTS,
+    Math.min(confirmPointsReq, densityReq),
+  )
+  const confirmIntensityReq = isChronic
+    ? PARAMS.CHRONIC_CONFIRM_INTENSITY
+    : PARAMS.MIN_CONFIRM_INTENSITY
+  const meetsConfirm = size >= effectiveConfirmReq && e.maxIntensity >= confirmIntensityReq
+  e.confirmStreak = meetsConfirm ? e.confirmStreak + 1 : 0
+  if (e.confirmStreak >= PARAMS.CONFIRM_FRAMES) e.everConfirmed = true
+
+  // 確信度: 実在性（広がり size）は L2 で担保済み。ここで点数・最大震度から段階化する。
+  //  - confirmed/likely は震度1以上（音を鳴らす重み）。confirmed 到達後は HOLD 中ラッチで維持。
+  //  - faint は同期 onset の広がりはあるが震度1未満（震度0級）。無音で控えめに可視化する。
+  const hasSpread = size >= PARAMS.MIN_LIKELY_POINTS
+  if (e.everConfirmed) {
+    e.confidence = 'confirmed'
+  } else if (hasSpread && e.maxIntensity >= PARAMS.MIN_LIKELY_INTENSITY) {
+    e.confidence = 'likely'
+  } else if (hasSpread) {
+    e.confidence = 'faint'
+  } else {
+    e.confidence = 'weak'
+  }
+
+  void cellOf
+}
+
+/**
+ * セル別慢性活性を更新する（特異度の第2軸）。
+ *
+ * 平常時に確定揺れ点を出すセルほど活性が上がる＝北関東等のコヒーレントノイズ地域を「名指しせず」学習する。
+ * ただし高震度イベント（明らかに実地震・CELL_FREEZE_INTENSITY 以上）が属するセルは凍結し、実地震で
+ * 地域軸を汚さない。低震度（震度1〜2）のコヒーレント同時多発は凍結せず学習させ、地域ノイズとして受け止める。
+ */
+function updateCellActivity(
+  prev: Record<string, number>,
+  confirmedShaking: string[],
+  events: DetectionEvent[],
+  cellOf: Record<string, string>,
+  dtMs: number,
+): Record<string, number> {
+  const next: Record<string, number> = { ...prev }
+  const a = ewmaAlpha(dtMs, PARAMS.CELL_ACTIVITY_TAU_MS)
+
+  // 今フレームで確定揺れ点を出したセル
+  const firedCells = new Set<string>()
+  for (const k of confirmedShaking) {
+    const c = cellOf[k]
+    if (c) firedCells.add(c)
+  }
+  // 高震度イベントが占有するセル（学習凍結対象）
+  const frozenCells = new Set<string>()
+  for (const e of events) {
+    if (e.maxIntensity >= PARAMS.CELL_FREEZE_INTENSITY) for (const c of e.cells) frozenCells.add(c)
+  }
+
+  // 発火セルは 1 へ、非発火の既知セルは 0 へ、長時定数で寄せる（凍結セルは据え置き）。
+  const keys = new Set<string>([...Object.keys(next), ...firedCells])
+  for (const c of keys) {
+    if (frozenCells.has(c)) continue
+    const target = firedCells.has(c) ? 1 : 0
+    const v0 = next[c] ?? 0
+    next[c] = v0 + a * (target - v0)
+  }
+  return next
+}
+
+/**
+ * トリガー判定を伴わずに全観測点の状態を取り込む。不連続リセット直後の 1 フレーム目に使う
+ * （この 1 フレームはトリガー対象にしない）。
+ *
+ * `prev` を渡すと、既知点の**点別床（学習資産）は引き継ぎ**、hist・triggeredAtMs（一過性）だけ
+ * リセットする。これで永続化からの復元・数十秒の欠測をまたいでも床を失わない。
+ */
+function ingest(state: DetectorState, frame: Frame, prev?: DetectorState): DetectorState {
   const sites: Record<string, SiteState> = {}
   for (let i = 0; i < frame.values.length; i++) {
     if (frame.missing?.[i]) continue
     const [lat, lng] = frame.sites[i]
-    sites[siteKey(lat, lng)] = initSiteState(indexToValue(frame.values[i]))
+    const key = siteKey(lat, lng)
+    const value = indexToValue(frame.values[i])
+    const prior = prev?.sites[key]
+    sites[key] = prior
+      ? { hist: [{ t: frame.dataTimeMs, v: value }], floorMean: prior.floorMean, floorDev: prior.floorDev, triggeredAtMs: null }
+      : initSiteState(value, frame.dataTimeMs)
   }
   return { ...state, sites, lastDataTimeMs: frame.dataTimeMs }
 }

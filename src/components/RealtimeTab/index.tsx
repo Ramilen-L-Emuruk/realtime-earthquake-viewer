@@ -1,9 +1,9 @@
 // リアルタイムタブの右パネル。地図エリアは JapanMap が強震モニタ（観測点）と
-// 予報円を描画し、ここでは EEW 情報カード・説明・震度スケール凡例・注記を表示する。
+// 予報円を描画し、ここでは EEW 情報カード・強震モニタ検知(V2)カード・震度スケール凡例・注記を表示する。
+import { useMemo } from 'react'
 import type { EEWAlert } from '../../types/earthquake'
-import type { KyoshinDetection } from '../../hooks/useKyoshinDetection'
-import { MIN_DETECTION_INDEX } from '../../hooks/useKyoshinDetection'
 import type { DetectionEvent, Confidence } from '../../utils/kyoshinDetector'
+import { MIN_DETECTION_INDEX, buildSiteIndex, resolveMembers, type DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { SiteCoords } from '../../services/kyoshin'
 import type { SWaveArrival } from '../../hooks/useSWaveCountdown'
 import { formatDateTime, formatTime } from '../../utils/formatters'
@@ -28,11 +28,10 @@ const SCALE_LEGEND: { label: string; scale: number }[] = [
 
 interface Props {
   eews: EEWAlert[]
-  kyoshinDetection: KyoshinDetection
   kyoshinSites: SiteCoords
   kyoshinIndices: number[]
   swaveArrival: SWaveArrival | null
-  /** 新検知エンジン(v2)の検知イベント。視覚カードのみ・音/タブ切替には未使用。 */
+  /** V2 検知エンジンの検知イベント（音・自動タブ切替・自動フィット・カード表示を駆動）。 */
   kyoshinV2Detections: DetectionEvent[]
   activeLpgmEventId?: string | null
   onToggleLpgm?: (eventId: string) => void
@@ -256,97 +255,6 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
 // 震度ラベルの降順（表示ソート用）
 const LABEL_ORDER = ['7', '6強', '6弱', '5強', '5弱', '4', '3', '2', '1', '0']
 
-function KyoshinDetectionCard({
-  detection,
-  hasEEW,
-  kyoshinSites,
-  kyoshinIndices,
-}: {
-  detection: KyoshinDetection
-  hasEEW: boolean
-  kyoshinSites: SiteCoords
-  kyoshinIndices: number[]
-}) {
-  const useAllPoints = hasEEW || detection.detected
-
-  if (!useAllPoints) return null
-
-  // EEW受信中または検知中は全観測点の現在インデックスで集計、それ以外は確定点のみ
-  const counts = new Map<string, { color: string; count: number }>()
-  let maxIndex = 0
-
-  if (hasEEW || detection.detected) {
-    for (let i = 0; i < kyoshinIndices.length; i++) {
-      const idx = kyoshinIndices[i]
-      if (idx < MIN_DETECTION_INDEX) continue
-      const site = kyoshinSites[i]
-      if (!site) continue
-      const label = kyoshinIndexToLabel(idx)
-      if (!label) continue
-      if (!counts.has(label)) counts.set(label, { color: kyoshinIntensityColor(idx) ?? '#9ca3af', count: 0 })
-      counts.get(label)!.count++
-      if (idx > maxIndex) maxIndex = idx
-    }
-  }
-
-  // 全点集計が空の場合は確定点にフォールバック
-  if (counts.size === 0) {
-    for (const p of detection.points) {
-      const label = kyoshinIndexToLabel(p.index)
-      if (!label) continue
-      if (!counts.has(label)) counts.set(label, { color: kyoshinIntensityColor(p.index) ?? '#9ca3af', count: 0 })
-      counts.get(label)!.count++
-      if (p.index > maxIndex) maxIndex = p.index
-    }
-  }
-
-  if (counts.size === 0) return null
-
-  const maxLabel = kyoshinIndexToLabel(maxIndex)
-  if (!maxLabel) return null
-  const maxColor = kyoshinIntensityColor(maxIndex) ?? '#9ca3af'
-
-  const groups = LABEL_ORDER.filter(l => counts.has(l)).map(l => ({ label: l, ...counts.get(l)! }))
-
-  return (
-    <div className="rounded-lg p-3 border border-border bg-card">
-      <div className="flex items-center gap-2 mb-1">
-        <span
-          className="inline-block w-2 h-2 rounded-full animate-pulse flex-shrink-0"
-          style={{ backgroundColor: maxColor }}
-        />
-        <span className="text-xs text-secondary">揺れを検知中（強震モニタ）</span>
-      </div>
-      <div className="flex items-center gap-3 mb-2">
-        <span className="text-xs text-secondary">推定最大震度</span>
-        <span
-          className="font-black text-5xl leading-none"
-          style={{
-            color: '#ffffff',
-            textShadow: `0 0 12px ${maxColor}, 0 2px 4px rgba(0,0,0,0.8)`,
-          }}
-        >
-          {maxLabel}
-        </span>
-      </div>
-      <div className="space-y-1.5">
-        {groups.map(g => (
-          <div key={g.label} className="flex items-center gap-3">
-            <span
-              className="inline-block w-10 text-center text-sm font-bold rounded py-1 flex-shrink-0"
-              style={{ backgroundColor: g.color, color: '#fff' }}
-            >
-              {g.label}
-            </span>
-            <span className="text-base font-medium text-white">{g.count}<span className="text-sm text-secondary ml-0.5">点</span></span>
-          </div>
-        ))}
-      </div>
-      <p className="text-xs text-secondary mt-2">※推定値。気象庁発表とは異なる場合があります</p>
-    </div>
-  )
-}
-
 function SWaveArrivalCard({ arrival }: { arrival: SWaveArrival }) {
   const borderColor = arrival.arrived ? '#ef4444' : '#f97316'
   return (
@@ -376,56 +284,103 @@ function SWaveArrivalCard({ arrival }: { arrival: SWaveArrival }) {
   )
 }
 
-// 新検知エンジン(v2)の確信度別スタイル。confirmed=赤・likely=橙・weak=灰。
-const V2_TIER: Record<Confidence, { label: string; color: string; bg: string; border: string; rank: number }> = {
-  confirmed: { label: '検知', color: '#f87171', bg: '#450a0a', border: '#ef4444', rank: 0 },
-  likely: { label: '可能性', color: '#fcd34d', bg: '#451a03', border: '#d97706', rank: 1 },
-  weak: { label: '微弱', color: '#9ca3af', bg: 'rgba(42,42,42,0.6)', border: '#4b5563', rank: 2 },
+// 検知エンジンの確信度別スタイル。confirmed=赤・likely=橙・faint=淡青(震度0級・無音)・weak=灰。
+const V2_TIER: Record<Confidence, { label: string; color: string; bg: string; border: string }> = {
+  confirmed: { label: '検知', color: '#f87171', bg: '#450a0a', border: '#ef4444' },
+  likely: { label: '可能性', color: '#fcd34d', bg: '#451a03', border: '#d97706' },
+  faint: { label: '微弱', color: '#93c5fd', bg: 'rgba(30,41,59,0.55)', border: '#3b5b80' },
+  weak: { label: '検出', color: '#9ca3af', bg: 'rgba(42,42,42,0.6)', border: '#4b5563' },
 }
 
-// 方位(度・真北0°時計回り)を8方位の日本語に変換する。
-const COMPASS_8 = ['北', '北東', '東', '南東', '南', '南西', '西', '北西']
-function bearingToJp(deg: number): string {
-  return COMPASS_8[Math.round(((deg % 360) + 360) % 360 / 45) % 8]
-}
+// 強震モニタ検知の集約カード。
+// 近傍一致型の検知は震度5+ の大地震で有感域が複数の地域（連結成分）に分かれるため、コアは
+// 複数の confirmed/likely イベントを同時に返す。これを「1 つの揺れ」として 1 枚に集約表示する
+// （震源を推定しないため、揺れている地域数と全体の震度分布・推定最大震度を主情報とする）。
+// 複数地域にまたがる場合は「広域」を示し、N 件の別地震のように見えるのを防ぐ。
+function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent[]; siteIndex: Map<string, DetectedPoint> }) {
+  // 最上位ティア（confirmed > likely > faint）。faint のみ＝震度0級のコヒーレント揺れ（無音・控えめ表示）。
+  const topTier: Confidence = events.some(e => e.confidence === 'confirmed')
+    ? 'confirmed'
+    : events.some(e => e.confidence === 'likely')
+      ? 'likely'
+      : 'faint'
+  const tier = V2_TIER[topTier]
+  const isFaint = topTier === 'faint'
+  const heading = isFaint ? '微弱な揺れの兆候' : '強震モニタ検知'
+  const regionCount = events.length
+  const earliestMs = events.reduce((m, e) => Math.min(m, e.originTimeMs), Infinity)
+  const time = new Date(earliestMs).toLocaleTimeString('ja-JP', { hour12: false })
 
-// v2 検知イベント 1 件のカード。片側配置(type-B)では震央は最短距離の点で、震源方位を併記する。
-function KyoshinV2EventCard({ ev }: { ev: DetectionEvent }) {
-  const tier = V2_TIER[ev.confidence]
-  const time = new Date(ev.originTimeMs).toLocaleTimeString('ja-JP', { hour12: false })
-  const epi = ev.epicenter
+  // 全イベントのメンバー観測点を和集合（重複除去）で集約し、震度分布・最大震度を集計する
+  const memberKeys = [...new Set(events.flatMap(e => e.memberKeys))]
+  const points = resolveMembers(memberKeys, siteIndex)
+  const counts = new Map<string, { color: string; count: number }>()
+  let maxIndex = 0
+  let activeCount = 0
+  for (const p of points) {
+    if (p.index < MIN_DETECTION_INDEX) continue
+    const label = kyoshinIndexToLabel(p.index)
+    if (!label) continue
+    if (!counts.has(label)) counts.set(label, { color: kyoshinIntensityColor(p.index) ?? '#9ca3af', count: 0 })
+    counts.get(label)!.count++
+    activeCount++
+    if (p.index > maxIndex) maxIndex = p.index
+  }
+  const maxLabel = kyoshinIndexToLabel(maxIndex)
+  const maxColor = kyoshinIntensityColor(maxIndex) ?? '#9ca3af'
+  const groups = LABEL_ORDER.filter(l => counts.has(l)).map(l => ({ label: l, ...counts.get(l)! }))
+  const maxCount = groups.reduce((m, g) => Math.max(m, g.count), 1)
+  const totalActive = activeCount || events.reduce((s, e) => s + e.lastSize, 0)
+
   return (
     <div className="rounded-lg overflow-hidden" style={{ border: `1px solid ${tier.border}`, backgroundColor: tier.bg }}>
+      {/* ヘッダー: 確信度ティア・広域バッジ・時刻 */}
       <div className="flex items-center gap-2 px-3 py-1.5" style={{ borderBottom: `1px solid ${tier.border}55` }}>
         <span className="text-xs font-bold px-1.5 py-0.5 rounded flex-shrink-0" style={{ backgroundColor: tier.border, color: '#fff' }}>
           {tier.label}
         </span>
-        <span className="text-xs text-secondary">強震モニタ検知</span>
-        <span className="text-xs text-secondary ml-auto">{ev.lastSize}点</span>
+        <span className="text-xs" style={{ color: tier.color }}>
+          {regionCount >= 2 ? `${heading}（広域・${regionCount}地域）` : heading}
+        </span>
+        <span className="text-xs text-secondary ml-auto font-mono">{time}</span>
       </div>
-      <div className="flex flex-col gap-1 px-3 py-2">
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-secondary font-mono">{time}</span>
-          <span className="text-xs font-mono" style={{ color: tier.color }}>score {ev.score.toFixed(2)}</span>
+      <div className="flex gap-3 p-3">
+        {/* 推定最大震度 */}
+        <div className="flex flex-col items-center justify-center flex-shrink-0" style={{ minWidth: '68px' }}>
+          <span className="text-xs text-secondary">推定最大震度</span>
+          <span className="font-black leading-none text-white" style={{ fontSize: '48px', textShadow: `0 0 12px ${maxColor}` }}>
+            {maxLabel ?? '—'}
+          </span>
         </div>
-        {epi ? (
-          <div className="text-sm text-white font-mono">
-            推定震央 {epi[0].toFixed(2)}, {epi[1].toFixed(2)}
-          </div>
-        ) : (
-          <div className="text-sm text-secondary">震央推定中</div>
-        )}
-        {ev.oneSided && ev.bearingDeg != null && (
-          <div className="text-xs" style={{ color: tier.color }}>
-            片側配置：震源は{bearingToJp(ev.bearingDeg)}方向（{Math.round(ev.bearingDeg)}°・距離は不確実）
-          </div>
-        )}
+        <div className="flex flex-col gap-1.5 flex-1 min-w-0">
+          {/* 震度分布（全メンバー観測点の集約） */}
+          {groups.length > 0 && (
+            <div className="flex flex-col gap-1">
+              {groups.map(g => (
+                <div key={g.label} className="flex items-center gap-2">
+                  <span className="w-6 text-center text-xs font-bold rounded flex-shrink-0" style={{ backgroundColor: g.color, color: '#fff' }}>
+                    {g.label}
+                  </span>
+                  <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.08)' }}>
+                    <div style={{ width: `${(g.count / maxCount) * 100}%`, height: '100%', background: g.color }} />
+                  </div>
+                  <span className="text-xs text-white w-8 text-right">{g.count}点</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <span className="text-xs text-secondary">
+            {totalActive}観測点で反応{regionCount >= 2 ? ` ・ ${regionCount}地域` : ''} ・ 推定値
+          </span>
+        </div>
       </div>
     </div>
   )
 }
 
-export function RealtimeTab({ eews, kyoshinDetection, kyoshinSites, kyoshinIndices, kyoshinV2Detections, swaveArrival, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: Props) {
+export function RealtimeTab({ eews, kyoshinSites, kyoshinIndices, kyoshinV2Detections, swaveArrival, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: Props) {
+  // メンバー観測点キー → 現在の座標＋インデックスの索引（各カードの震度分布集計に使う）
+  const siteIndex = useMemo(() => buildSiteIndex(kyoshinSites, kyoshinIndices), [kyoshinSites, kyoshinIndices])
   return (
     <div className="flex flex-col min-h-full p-3 gap-3">
       {/* データカード */}
@@ -442,31 +397,17 @@ export function RealtimeTab({ eews, kyoshinDetection, kyoshinSites, kyoshinIndic
         ))
       }
       {swaveArrival !== null && <SWaveArrivalCard arrival={swaveArrival} />}
-      <KyoshinDetectionCard
-        detection={kyoshinDetection}
-        hasEEW={eews.length > 0}
-        kyoshinSites={kyoshinSites}
-        kyoshinIndices={kyoshinIndices}
-      />
 
-      {/* 新検知エンジン(v2)の検知イベント（実験的・視覚のみ）。weak は除外し confirmed/likely のみ、確信度順→スコア順で最大6件 */}
+      {/* 強震モニタ検知: weak を除外した confirmed/likely を 1 つの揺れとして集約表示する。
+          大地震では有感域が複数の地域（連結成分）に分かれてコアが複数イベントを返すため、
+          N 件の別地震に見せず「広域・N地域」として 1 枚にまとめる。 */}
       {(() => {
-        const events = kyoshinV2Detections.filter(d => d.confidence !== 'weak')
+        const events = [...kyoshinV2Detections].filter(d => d.confidence !== 'weak')
         if (events.length === 0) return null
-        const sorted = [...events].sort(
-          (a, b) => V2_TIER[a.confidence].rank - V2_TIER[b.confidence].rank || b.score - a.score,
-        )
-        const shown = sorted.slice(0, 6)
-        const rest = sorted.length - shown.length
         return (
           <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-2">
-              <h3 className="text-white text-xs font-bold">強震モニタ検知（v2・実験的）</h3>
-              <span className="text-xs text-secondary">{sorted.length}件</span>
-            </div>
-            {shown.map(ev => <KyoshinV2EventCard key={ev.id} ev={ev} />)}
-            {rest > 0 && <span className="text-xs text-secondary">他{rest}件</span>}
-            <p className="text-xs text-secondary">※実験的な機器検知の暫定値。音・自動タブ切替には未使用です。</p>
+            <KyoshinDetectionSummary events={events} siteIndex={siteIndex} />
+            <p className="text-xs text-secondary">※強震モニタによる推定値。気象庁発表とは異なる場合があります。</p>
           </div>
         )
       })()}
