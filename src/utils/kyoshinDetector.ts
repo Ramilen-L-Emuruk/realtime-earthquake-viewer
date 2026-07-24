@@ -31,8 +31,14 @@ const KM_PER_DEG = 111.194
 // 型定義
 // ============================================================
 
-/** 確信度の 3 段階。 */
-export type Confidence = 'confirmed' | 'likely' | 'weak'
+/**
+ * 確信度の 4 段階。
+ * - confirmed: コヒーレントな揺れの広がり ＋ 震度1以上（音＋自動タブ＋フィット）
+ * - likely   : 広がりあり ＋ 震度1以上（早期反応・候補音＋タブ）
+ * - faint    : 同期 onset の広がりはあるが震度1未満（震度0級。無音で控えめに可視化）
+ * - weak     : 広がり不足（非表示）
+ */
+export type Confidence = 'confirmed' | 'likely' | 'faint' | 'weak'
 
 /** 1 観測点の逐次状態。キーは座標（siteKey）で管理する。 */
 export interface SiteState {
@@ -121,8 +127,14 @@ export interface TriggerResult {
 
 export const PARAMS = {
   // ---- L1 点トリガー ----
-  /** しきい床への上乗せ(value)。床 + これ を超えたら「その点の平常を超えた」 */
-  LEVEL_MARGIN: 0.5,
+  /**
+   * しきい床への上乗せ(value)。value ≥ floor + これ で「その点の平常を超えた（levelActive）」。
+   * 判別の芯を絶対レベルから「同期 onset の空間的広がり（L2 連結成分）」へ移したため 0.0 まで下げる。
+   * 強震モニタは 0.5 刻み量子化（震度0=0.0 / 震度1=0.5）なので、静穏点（floor≈0）ではこれを 0 に
+   * しないと震度0(value 0.0)を取り込めず faint が発火しない。慢性ノイズ点は floor 自体が高く据え置き
+   * （相対的に鈍いまま）。実データ実験（level≥0.0・rise≥0.5）で平常の onset連結成分≤2 を確認済み。
+   */
+  LEVEL_MARGIN: 0.0,
   /** オンセット上昇量の下限(value)。RATE_DT_MS 窓での value 上昇がこれ以上で「今立ち上がった」 */
   RATE_MIN: 0.5,
   /** オンセット上昇量の評価窓(ms)。1 フレーム差でなく窓で見て欠測・ジッタを吸収する */
@@ -140,16 +152,18 @@ export const PARAMS = {
   /** フレーム間隔がこれを超えて飛んだら状態を不連続とみなしリセット */
   MAX_DT_GAP_MS: 10_000,
 
-  // ---- L2 近傍同時性 ----
+  // ---- L2 同期 onset の空間的広がり（連結成分） ----
   /** 近傍点数（K 近傍） */
   K: 7,
   /** 近傍半径(km) */
   R_KM: 40,
-  /** 近傍一致に要する数 */
-  MIN_NEIGHBORS: 3,
-  /** 近傍一致の割合条件（疎地域救済）。agree/avail がこれ以上でも確定揺れ点 */
-  MIN_NEIGHBOR_FRAC: 0.5,
-  /** 近傍一致とみなす時間窓(ms)。この窓内で一緒に立ち上がったか */
+  /**
+   * 揺れクラスタに要する同期 onset の連結成分サイズ下限。直近 COINCIDENCE_MS に onset した点を
+   * K 近傍グラフで連結し、この数以上の成分を「面として揺れている」＝実地震とみなす。散在ノイズは
+   * 成分が育たず脱落する（平常25分・全国で成分≥3 は 0 回を実測）。時間差 onset も成分で束ねる。
+   */
+  MIN_CLUSTER: 3,
+  /** 同期とみなす時間窓(ms)。この窓内に onset した点を連結対象にする */
   COINCIDENCE_MS: 4_000,
   /** トリガー継続窓(ms)。最終トリガーからこの間「継続中（＝アクティブメンバー）」とみなす */
   TRIG_ACTIVE_MS: 8_000,
@@ -509,36 +523,36 @@ export function step(
     cur.set(key, fp)
   }
 
-  // ---- L2 近傍同時性（確定揺れ点の判定）----
-  // 「最近オンセットした点」で、K 近傍のうち一定数（数 or 割合）が COINCIDENCE_MS 窓で
-  // 一緒に立ち上がった点を確定揺れ点とする。孤立・散在ノイズは近傍が揃わず脱落する。
-  const confirmedShaking: string[] = []
-  const triggers: TriggerResult[] = []
+  // ---- L2 同期 onset の空間的広がり（連結成分で確定揺れ点を判定）----
+  // 「直近 COINCIDENCE_MS に onset した点」を K 近傍グラフで連結し、成分サイズが MIN_CLUSTER 以上の
+  // 成分を「揺れクラスタ」とする。成分＜MIN_CLUSTER は散在ノイズとして破棄する（Scratch のグリッド
+  // 上昇割合に相当する面判定。per-point の近傍一致より頑健で、時間差 onset のクラスタも取りこぼさず、
+  // 絶対レベルを震度0 まで下げても平常ノイズは成分が育たず脱落する）。
+  const recentOnset: string[] = []
   for (const p of points) {
     const trigAt = triggeredAt[p.key]
-    const recentOnset = trigAt != null && now - trigAt <= PARAMS.COINCIDENCE_MS
-    let ok = false
-    if (recentOnset) {
-      const nb = m.neighbors[p.key] ?? []
-      let agree = 0
-      for (const n of nb) {
-        const nt = triggeredAt[n]
-        if (nt != null && now - nt <= PARAMS.COINCIDENCE_MS) agree++
-      }
-      const availN = m.avail[p.key] ?? nb.length
-      ok = agree >= PARAMS.MIN_NEIGHBORS || agree / Math.max(availN, 1) >= PARAMS.MIN_NEIGHBOR_FRAC
-      if (ok) confirmedShaking.push(p.key)
-    }
-    if (p.onset || ok)
-      triggers.push({ key: p.key, lat: p.lat, lng: p.lng, value: p.value, confirmedShaking: ok })
+    if (trigAt != null && now - trigAt <= PARAMS.COINCIDENCE_MS) recentOnset.push(p.key)
   }
+  const clusters = connectedComponents(recentOnset, m.neighbors).filter(
+    (c) => c.length >= PARAMS.MIN_CLUSTER,
+  )
+  const confirmedShaking = clusters.flat()
+  const shakingSet = new Set(confirmedShaking)
+  const triggers: TriggerResult[] = points
+    .filter((p) => p.onset || shakingSet.has(p.key))
+    .map((p) => ({
+      key: p.key,
+      lat: p.lat,
+      lng: p.lng,
+      value: p.value,
+      confirmedShaking: shakingSet.has(p.key),
+    }))
 
-  // ---- L3 グループ化・イベント帰属 ----
-  const components = connectedComponents(confirmedShaking, m.neighbors)
+  // ---- L3 イベント帰属（クラスタ＝広がりのある成分をイベントへ）----
   const { events, nextEventId } = associate(
     state.events,
     state.nextEventId,
-    components,
+    clusters,
     cur,
     triggeredAt,
     state.cellActivity,
@@ -755,11 +769,16 @@ function updateEventMetrics(
   e.confirmStreak = meetsConfirm ? e.confirmStreak + 1 : 0
   if (e.confirmStreak >= PARAMS.CONFIRM_FRAMES) e.everConfirmed = true
 
-  // 確信度: ラッチ（confirmed 到達後は HOLD 中維持）→ confirmed → likely → weak
+  // 確信度: 実在性（広がり size）は L2 で担保済み。ここで点数・最大震度から段階化する。
+  //  - confirmed/likely は震度1以上（音を鳴らす重み）。confirmed 到達後は HOLD 中ラッチで維持。
+  //  - faint は同期 onset の広がりはあるが震度1未満（震度0級）。無音で控えめに可視化する。
+  const hasSpread = size >= PARAMS.MIN_LIKELY_POINTS
   if (e.everConfirmed) {
     e.confidence = 'confirmed'
-  } else if (size >= PARAMS.MIN_LIKELY_POINTS && e.maxIntensity >= PARAMS.MIN_LIKELY_INTENSITY) {
+  } else if (hasSpread && e.maxIntensity >= PARAMS.MIN_LIKELY_INTENSITY) {
     e.confidence = 'likely'
+  } else if (hasSpread) {
+    e.confidence = 'faint'
   } else {
     e.confidence = 'weak'
   }
