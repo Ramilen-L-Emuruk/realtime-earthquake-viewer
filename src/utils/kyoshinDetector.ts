@@ -135,6 +135,13 @@ export const PARAMS = {
    * （相対的に鈍いまま）。実データ実験（level≥0.0・rise≥0.5）で平常の onset連結成分≤2 を確認済み。
    */
   LEVEL_MARGIN: 0.0,
+  /**
+   * 「継続して揺れている」メンバー判定の床への上乗せ(value)。value ≥ floor + これ を sustained とみなす。
+   * イベントの継続点数・保持(HOLD)はこの sustained（＝床を明確に超えて揺れ続けている点）で数える。
+   * LEVEL_MARGIN=0 だと平常の震度0(value 0.0)も levelActive になり保持が切れないため、継続判定は
+   * 一段高いこの床で行う。震度1(value 0.5)は floor≈0 で sustained、平常の震度0(0.0)は非 sustained。
+   */
+  SUSTAIN_MARGIN: 0.4,
   /** オンセット上昇量の下限(value)。RATE_DT_MS 窓での value 上昇がこれ以上で「今立ち上がった」 */
   RATE_MIN: 0.5,
   /** オンセット上昇量の評価窓(ms)。1 フレーム差でなく窓で見て欠測・ジッタを吸収する */
@@ -447,8 +454,10 @@ interface FramePoint {
   lat: number
   lng: number
   value: number
-  /** 床 + マージンを超え「揺れている」か（rate 不問。メンバー・最大震度に使う） */
+  /** 床 + LEVEL_MARGIN を超え「揺れている」か（rate 不問。onset 素地・最大震度に使う。震度0 を含む） */
   levelActive: boolean
+  /** 床 + SUSTAIN_MARGIN を超え「継続して明確に揺れている」か（継続点数・保持に使う。平常の震度0 は除外） */
+  sustained: boolean
   /** 今フレームでオンセット・トリガーしたか（levelActive かつ立ち上がり） */
   onset: boolean
 }
@@ -506,6 +515,7 @@ export function step(
     pushHist(hist, now, value)
     const floor = effectiveFloor(prev)
     const levelActive = value >= floor + PARAMS.LEVEL_MARGIN && value >= PARAMS.TRIG_FLOOR
+    const sustained = value >= floor + PARAMS.SUSTAIN_MARGIN && value >= PARAMS.TRIG_FLOOR
     const rate = windowRate(hist, now)
     const onset = levelActive && rate != null && rate >= PARAMS.RATE_MIN
 
@@ -518,7 +528,7 @@ export function step(
     sites[key] = s
     triggeredAt[key] = s.triggeredAtMs
 
-    const fp: FramePoint = { key, lat, lng, value, levelActive, onset }
+    const fp: FramePoint = { key, lat, lng, value, levelActive, sustained, onset }
     points.push(fp)
     cur.set(key, fp)
   }
@@ -712,8 +722,11 @@ function mergeAdjacentEvents(events: DetectionEvent[]): DetectionEvent[] {
 /**
  * イベントの指標（アクティブメンバー数・最大震度・重心）を再計算し、確信度を分類する。
  *
- * - lastSize    : トリガー継続窓(TRIG_ACTIVE_MS)内にあるメンバー数。波が広がるほど増え、8s 保持される。
- * - maxIntensity: メンバー現在 value の最大（＝PLUM 出力）。levelActive なメンバーが無ければ前値を保つ。
+ * - lastSize    : 現在「揺れているメンバー数」＝ sustained（床を明確に超えて継続中）または直近
+ *   TRIG_ACTIVE_MS に onset したメンバー。値が頭打ちで onset が止まっても、揺れが続く限り減らない
+ *   （旧実装は onset 数のみで数え、揺れ継続中に size が減衰してイベントが早期消滅する不具合があった）。
+ * - maxIntensity: levelActive なメンバー現在 value の最大（震度0 を含む＝PLUM 出力・faint 表示）。無ければ前値。
+ * - lastOnsetAtMs: 揺れ継続中（size>0）は毎フレーム更新し、揺れが収まってから HOLD_MS 経過で解除する。
  * - confidence  : 点数＋最大震度ゲート＋CONFIRM_FRAMES 連続。特異度は点別床(L1)とセル慢性活性で二軸。
  *   慢性活性セルでは確定点数・確定震度のバーを引き上げる（北関東のコヒーレントノイズ対策・第2軸）。
  *   一度 confirmed に達したら HOLD 中は confirmed を維持する（明滅防止のラッチ）。
@@ -733,12 +746,14 @@ function updateEventMetrics(
   const lats: number[] = []
   const lngs: number[] = []
   for (const k of e.memberKeys) {
+    const p = cur.get(k)
     const t = triggeredAt[k]
-    if (t != null && now - t <= PARAMS.TRIG_ACTIVE_MS) {
+    const recentOnset = t != null && now - t <= PARAMS.TRIG_ACTIVE_MS
+    // 「揺れているメンバー」= 床を明確に超えて継続中（sustained）or 直近 onset。値頭打ちでも減らない。
+    if ((p && p.sustained) || recentOnset) {
       size++
       availLocal = Math.max(availLocal, avail[k] ?? 0) // 局所に実在する近傍数（密度）
     }
-    const p = cur.get(k)
     if (p && p.levelActive) {
       if (p.value > maxV) maxV = p.value
       lats.push(p.lat)
@@ -748,6 +763,8 @@ function updateEventMetrics(
   e.lastSize = size
   if (maxV > -Infinity) e.maxIntensity = maxV
   if (lats.length > 0) e.epicenter = [mean(lats), mean(lngs)]
+  // 揺れが続く限り保持を更新（揺れが収まってから HOLD_MS で解除。onset 途絶では解除しない）
+  if (size > 0) e.lastOnsetAtMs = now
 
   // 地域軸: イベントが占有するセルの慢性活性の最大値
   let chronic = 0

@@ -317,6 +317,19 @@ describe('step: 保持と明滅防止', () => {
     expect(stillConfirmed).toBe(true)
   })
 
+  it('揺れが続く限り onset が止まっても size は減衰せずイベントが維持される（早期消滅の回帰）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    // 震度1(value 0.5)で立ち上がった後、値を頭打ちのまま長く保持（新規 onset は数秒で止まる）。
+    // TRIG_ACTIVE_MS(8s)を大きく超える 15 フレーム継続させる。
+    const frames = quietThenShake(defs, { quietCount: 6, shakeCount: 15, shakeValue: 0.5 })
+    const { detections } = drive(frames, meta)
+    const active = detections.filter((d) => d.confidence !== 'weak')
+    expect(active.length).toBe(1)
+    // 揺れ継続中はメンバー数が維持される（onset 基準だと 0 に減衰していた）
+    expect(active[0].lastSize).toBeGreaterThanOrEqual(PARAMS.MIN_LIKELY_POINTS)
+  })
+
   it('HOLD_MS を十分超えるとイベントは解除される', () => {
     const defs = grid3x3(35.0, 139.0, 0.1)
     const meta = buildStationMeta(sitesOf(defs))
