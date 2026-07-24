@@ -3,6 +3,8 @@ import {
   step,
   initState,
   buildStationMeta,
+  extractLearned,
+  hydrateLearned,
   indexToValue,
   siteKey,
   cellKey,
@@ -331,5 +333,58 @@ describe('step: 不連続リセット', () => {
     const r = step(state, uniformFrame(defs, t + PARAMS.MAX_DT_GAP_MS + 5000, 3.0), meta)
     expect(r.detections.length).toBe(0)
     expect(r.state.events.length).toBe(0)
+  })
+
+  it('不連続リセットでも学習資産（点別床・セル慢性活性）は引き継ぐ', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const k = siteKey(35.0, 139.0)
+    const cell = meta.cellOf[k]
+    let state = initState(-1000)
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) state = step(state, uniformFrame(defs, t, 0), meta).state
+    // 学習資産を手で仕込む
+    state.sites[k] = { hist: [], floorMean: 0.8, floorDev: 0.3, triggeredAtMs: null }
+    state.cellActivity[cell] = 0.7
+    // 不連続ジャンプ
+    const r = step(state, uniformFrame(defs, t + PARAMS.MAX_DT_GAP_MS + 5000, 0.0), meta)
+    expect(r.state.sites[k].floorMean).toBeCloseTo(0.8)
+    expect(r.state.sites[k].floorDev).toBeCloseTo(0.3)
+    expect(r.state.cellActivity[cell]).toBeCloseTo(0.7)
+  })
+})
+
+describe('永続化: extractLearned / hydrateLearned', () => {
+  it('学習した床とセル活性を抽出→復元できる（既定床の静穏点は省略）', () => {
+    const state = initState(0)
+    state.sites['a'] = { hist: [], floorMean: 0.9, floorDev: 0.4, triggeredAtMs: null } // 学習済み
+    state.sites['b'] = { hist: [], floorMean: 0.0, floorDev: 0.0, triggeredAtMs: null } // 静穏（省略対象）
+    state.cellActivity['c1'] = 0.6
+
+    const learned = extractLearned(state)
+    expect(learned.floors['a']).toEqual([0.9, 0.4])
+    expect(learned.floors['b']).toBeUndefined() // 微小床は保存しない
+    expect(learned.cellActivity['c1']).toBeCloseTo(0.6)
+
+    const restored = hydrateLearned(initState(0), learned)
+    expect(restored.sites['a'].floorMean).toBeCloseTo(0.9)
+    expect(restored.sites['a'].floorDev).toBeCloseTo(0.4)
+    expect(restored.sites['a'].triggeredAtMs).toBeNull()
+    expect(restored.cellActivity['c1']).toBeCloseTo(0.6)
+  })
+
+  it('復元した床は初フレームから有効（学習で鈍った点は誤検知しにくい）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    // 全点の床を高く（震度1.5相当）復元した状態から開始
+    const learned = {
+      floors: Object.fromEntries(defs.map((d) => [siteKey(d.lat, d.lng), [1.5, 0.2] as [number, number]])),
+      cellActivity: {},
+    }
+    const state = hydrateLearned(initState(0), learned)
+    // 震度1(value 0.5)のコヒーレント揺れ: 床(1.5)+マージン(0.5)=2.0 を超えないので確定しない
+    const frames = quietThenShake(defs, { quietCount: 5, shakeCount: 5, shakeValue: 0.5 })
+    const { detections } = drive(frames, meta, state)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
   })
 })

@@ -4,13 +4,44 @@ import {
   step,
   initState,
   buildStationMeta,
+  extractLearned,
+  hydrateLearned,
   siteKey,
   type DetectorState,
   type StationMeta,
+  type LearnedState,
   type DetectionEvent,
   type TriggerResult,
 } from '../utils/kyoshinDetector'
 import { log } from '../utils/logger'
+
+/** 学習資産（点別床・セル慢性活性）の localStorage キー。座標/セル基準なので siteConfigId 版差に非依存。 */
+const LEARNED_KEY = 'kyoshin-v3-learned'
+/** 学習資産の保存間隔(ms)。毎フレーム書くと無駄なのでスロットルする。 */
+const SAVE_INTERVAL_MS = 60_000
+
+/** localStorage から学習資産を復元した初期状態を作る（無ければ空状態）。 */
+function loadInitialState(): DetectorState {
+  const base = initState(0)
+  try {
+    const raw = localStorage.getItem(LEARNED_KEY)
+    if (!raw) return base
+    const learned = JSON.parse(raw) as LearnedState
+    if (!learned || typeof learned !== 'object' || !learned.floors) return base
+    return hydrateLearned(base, learned)
+  } catch {
+    return base
+  }
+}
+
+/** 学習資産を localStorage に保存する（容量超過・無効環境は握りつぶす）。 */
+function saveLearned(state: DetectorState): void {
+  try {
+    localStorage.setItem(LEARNED_KEY, JSON.stringify(extractLearned(state)))
+  } catch {
+    /* localStorage 不可（容量超過・プライベートモード等）は学習を諦めるだけ。検知は継続 */
+  }
+}
 
 export interface KyoshinDetectorV2Result {
   /** アクティブな検知イベント（最大震度降順） */
@@ -51,8 +82,9 @@ export function useKyoshinDetectorV2(
   dataTime: string,
   enabled: boolean,
 ): KyoshinDetectorV2Result {
-  const stateRef = useRef<DetectorState>(initState(0))
+  const stateRef = useRef<DetectorState>(loadInitialState())
   const metaRef = useRef<{ sig: string; meta: StationMeta } | null>(null)
+  const lastSaveRef = useRef(0)
   const [result, setResult] = useState<KyoshinDetectorV2Result>(EMPTY)
 
   useEffect(() => {
@@ -74,6 +106,12 @@ export function useKyoshinDetectorV2(
     )
     stateRef.current = state
     setResult({ detections, triggers, dataTime })
+
+    // 学習資産（点別床・セル慢性活性）を定期的に永続化する（再読込・5時リロード後も学習を保つ）
+    if (dataTimeMs - lastSaveRef.current >= SAVE_INTERVAL_MS) {
+      lastSaveRef.current = dataTimeMs
+      saveLearned(state)
+    }
 
     // 検証用にグローバル公開（Playwright から window.__kyoshinV2 を参照する）
     ;(window as unknown as Record<string, unknown>).__kyoshinV2 = {
