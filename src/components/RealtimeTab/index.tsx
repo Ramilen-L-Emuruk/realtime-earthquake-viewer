@@ -291,18 +291,11 @@ const V2_TIER: Record<Confidence, { label: string; color: string; bg: string; bo
   weak: { label: '微弱', color: '#9ca3af', bg: 'rgba(42,42,42,0.6)', border: '#4b5563', rank: 2 },
 }
 
-// 方位(度・真北0°時計回り)を8方位の日本語に変換する。
-const COMPASS_8 = ['北', '北東', '東', '南東', '南', '南西', '西', '北西']
-function bearingToJp(deg: number): string {
-  return COMPASS_8[Math.round(((deg % 360) + 360) % 360 / 45) % 8]
-}
-
-// V2 検知イベント 1 件のカード。確信度ティア・推定最大震度＋メンバー観測点の震度分布・
-// 推定震央（片側配置(type-B)では震源方位）を表示する。震度分布はそのイベントのメンバー観測点から集計する。
+// 検知イベント 1 件のカード。確信度ティア・推定最大震度＋メンバー観測点の震度分布を表示する。
+// 震源は推定しない（近傍一致型）ため、反応した観測点数と反応地点の広がりを主情報とする。
 function KyoshinV2EventCard({ ev, points }: { ev: DetectionEvent; points: DetectedPoint[] }) {
   const tier = V2_TIER[ev.confidence]
   const time = new Date(ev.originTimeMs).toLocaleTimeString('ja-JP', { hour12: false })
-  const subtitle = ev.oneSided ? '片側配置（沖合の疑い）' : '震源を囲む配置'
 
   // メンバー観測点の現在インデックスから最大震度と震度分布を集計する
   const counts = new Map<string, { color: string; count: number }>()
@@ -324,13 +317,13 @@ function KyoshinV2EventCard({ ev, points }: { ev: DetectionEvent; points: Detect
 
   return (
     <div className="rounded-lg overflow-hidden" style={{ border: `1px solid ${tier.border}`, backgroundColor: tier.bg }}>
-      {/* ヘッダー: 確信度ティア・配置種別・スコア */}
+      {/* ヘッダー: 確信度ティア・反応観測点数・時刻 */}
       <div className="flex items-center gap-2 px-3 py-1.5" style={{ borderBottom: `1px solid ${tier.border}55` }}>
         <span className="text-xs font-bold px-1.5 py-0.5 rounded flex-shrink-0" style={{ backgroundColor: tier.border, color: '#fff' }}>
           {tier.label}
         </span>
-        <span className="text-xs" style={{ color: tier.color }}>{subtitle}</span>
-        <span className="text-xs text-secondary ml-auto font-mono">score {ev.score.toFixed(1)}</span>
+        <span className="text-xs" style={{ color: tier.color }}>強震モニタ検知</span>
+        <span className="text-xs text-secondary ml-auto font-mono">{time}</span>
       </div>
       <div className="flex gap-3 p-3">
         {/* 推定最大震度 */}
@@ -341,22 +334,6 @@ function KyoshinV2EventCard({ ev, points }: { ev: DetectionEvent; points: Detect
           </span>
         </div>
         <div className="flex flex-col gap-1.5 flex-1 min-w-0">
-          {/* 震源・時刻 */}
-          <div className="flex items-start justify-between gap-2">
-            {ev.oneSided && ev.bearingDeg != null ? (
-              <span className="text-sm text-white leading-tight">
-                震源は{bearingToJp(ev.bearingDeg)}方向
-                <span className="text-xs text-secondary ml-1">沖合・距離不確実</span>
-              </span>
-            ) : ev.epicenter ? (
-              <span className="text-sm text-white font-mono">
-                推定震央 {ev.epicenter[0].toFixed(2)}, {ev.epicenter[1].toFixed(2)}
-              </span>
-            ) : (
-              <span className="text-sm text-secondary">震央推定中</span>
-            )}
-            <span className="text-xs text-secondary font-mono flex-shrink-0">{time}</span>
-          </div>
           {/* 震度分布（メンバー観測点） */}
           {groups.length > 0 && (
             <div className="flex flex-col gap-1">
@@ -404,7 +381,7 @@ export function RealtimeTab({ eews, kyoshinSites, kyoshinIndices, kyoshinV2Detec
       {(() => {
         const events = [...kyoshinV2Detections]
           .filter(d => d.confidence !== 'weak')
-          .sort((a, b) => V2_TIER[a.confidence].rank - V2_TIER[b.confidence].rank || b.score - a.score)
+          .sort((a, b) => V2_TIER[a.confidence].rank - V2_TIER[b.confidence].rank || b.maxIntensity - a.maxIntensity)
         if (events.length === 0) return null
         const shown = events.slice(0, 4)
         const rest = events.length - shown.length

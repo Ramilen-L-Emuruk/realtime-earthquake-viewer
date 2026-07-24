@@ -5,11 +5,10 @@ import type { DetectionEvent } from '../../utils/kyoshinDetector'
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
 
-// V2 検知エンジンの検知イベント（推定震央・方位）を地図に重ねるオーバーレイ。
-// 自動フィットはメンバー観測点に対して行う（本オーバーレイは震央位置の可視化のみを担う）。
+// 検知エンジンの検知イベントを地図に重ねるオーバーレイ。
+// 自動フィットはメンバー観測点に対して行う（本オーバーレイはイベント中心の可視化のみを担う）。
 // confirmed / likely のみ描画（weak は平常時ノイズが多いため除外＝カード表示と同基準）。
-// 震央は最早オンセット点（＝最短距離の点）。片側配置(type-B)では距離が不確実なので、
-// 破線円の代わりに bearing 方向へ矢印を伸ばして「震源はこちら・距離は不確実」を示す。
+// 中心はメンバー観測点の重心（epicenter・近傍一致型のため震源推定はしない・任意の目印）。
 //
 // 描画方式は KyoshinDetectedPoints を踏襲（生 SVG を pane に appendChild。flyTo/ズーム中は
 // svg 全体の transform 1 回で追従し毎フレームの DOM 再構築を避ける）。理由は同ファイル参照。
@@ -78,41 +77,13 @@ export function KyoshinV2Overlay({
         const pt = map.latLngToContainerPoint(L.latLng(lat, lng))
         const color = TIER_COLOR[ev.confidence]
 
-        if (ev.oneSided && ev.bearingDeg != null) {
-          // 片側配置: 震源方位（真北0°時計回り）へ矢印。画面 y は下向き。
-          const rad = (ev.bearingDeg * Math.PI) / 180
-          const dx = Math.sin(rad)
-          const dy = -Math.cos(rad)
-          const near = 14 * s
-          const far = 52 * s
-          const x1 = pt.x + dx * near
-          const y1 = pt.y + dy * near
-          const x2 = pt.x + dx * far
-          const y2 = pt.y + dy * far
-          svg.appendChild(mkLine(x1, y1, x2, y2, color, 2.5 * s))
-          // 矢じり（三角形）
-          const head = 9 * s
-          const halfW = 5 * s
-          const bx = x2 - dx * head
-          const by = y2 - dy * head
-          const px = -dy
-          const py = dx
-          const poly = document.createElementNS(SVG_NS, 'polygon')
-          poly.setAttribute(
-            'points',
-            `${x2},${y2} ${bx + px * halfW},${by + py * halfW} ${bx - px * halfW},${by - py * halfW}`,
-          )
-          poly.setAttribute('fill', color)
-          svg.appendChild(poly)
-        } else {
-          // 震源を囲む配置: 不確実性を破線円で表現
-          const ring = mkCircle(pt.x, pt.y, 22 * s, color)
-          ring.setAttribute('fill', 'none')
-          ring.setAttribute('stroke-width', String(2 * s))
-          ring.setAttribute('stroke-dasharray', `${4 * s} ${3 * s}`)
-          ring.setAttribute('opacity', '0.8')
-          svg.appendChild(ring)
-        }
+        // 中心（メンバー重心）を不確実性の破線円で表現（震源推定ではない目印）
+        const ring = mkCircle(pt.x, pt.y, 22 * s, color)
+        ring.setAttribute('fill', 'none')
+        ring.setAttribute('stroke-width', String(2 * s))
+        ring.setAttribute('stroke-dasharray', `${4 * s} ${3 * s}`)
+        ring.setAttribute('opacity', '0.8')
+        svg.appendChild(ring)
 
         // 脈動する外周リング（注意喚起）
         const pulse = mkCircle(pt.x, pt.y, 12 * s, color)
@@ -121,7 +92,7 @@ export function KyoshinV2Overlay({
         pulse.setAttribute('class', 'animate-pulse')
         svg.appendChild(pulse)
 
-        // 震央中心のドット
+        // 中心のドット
         const dot = mkCircle(pt.x, pt.y, 4.5 * s, color)
         dot.setAttribute('fill', color)
         dot.setAttribute('stroke', '#ffffff')
@@ -166,16 +137,4 @@ function mkCircle(cx: number, cy: number, r: number, stroke: string): SVGCircleE
   c.setAttribute('r', String(r))
   c.setAttribute('stroke', stroke)
   return c
-}
-
-function mkLine(x1: number, y1: number, x2: number, y2: number, stroke: string, width: number): SVGLineElement {
-  const l = document.createElementNS(SVG_NS, 'line')
-  l.setAttribute('x1', String(x1))
-  l.setAttribute('y1', String(y1))
-  l.setAttribute('x2', String(x2))
-  l.setAttribute('y2', String(y2))
-  l.setAttribute('stroke', stroke)
-  l.setAttribute('stroke-width', String(width))
-  l.setAttribute('stroke-linecap', 'round')
-  return l
 }

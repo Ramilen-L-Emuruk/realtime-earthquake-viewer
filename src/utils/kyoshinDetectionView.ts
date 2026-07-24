@@ -63,12 +63,12 @@ function eventIdNum(id: string): number | null {
 }
 
 /**
- * V2 検知イベント列から表示状態を導出する。
+ * 検知イベント列から表示状態を導出する。
  *
  * - detectedPoints: confirmed 全イベントのメンバー観測点の和集合（フットプリント全体にフィット）。
- * - candidatePoints: 主 likely イベント（score 最大）1件のメンバー観測点（V1 の主候補フィットに対応）。
+ * - candidatePoints: 主 likely イベント（最大震度が最大）1件のメンバー観測点（主候補フィットに対応）。
  *   複数 likely の和集合にすると境界が飛び跳ねるため、常に1件へ絞る。
- * - 震央には**フィットしない**（メンバー観測点にフィットする）。片側配置・深発の不確実な震央へ
+ * - 震央には**フィットしない**（メンバー観測点にフィットする）。不確実な震央へ
  *   地図が飛ぶ事故を構造的に避けるため。
  */
 export function deriveKyoshinView(
@@ -85,7 +85,7 @@ export function deriveKyoshinView(
   for (const e of confirmedEvents) for (const k of e.memberKeys) detectedKeys.add(k)
 
   const primaryLikely = likelyEvents.reduce<DetectionEvent | null>(
-    (best, e) => (!best || e.score > best.score ? e : best),
+    (best, e) => (!best || e.maxIntensity > best.maxIntensity ? e : best),
     null,
   )
 
