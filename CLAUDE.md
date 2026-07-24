@@ -121,10 +121,11 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 ## コミット
 
 - **Conventional Commits**（`feat` / `fix` / `refactor` / `docs` / `chore` / `perf` / `ci`）。説明は日本語。
-- コミットメッセージ末尾に必ず付与:
+- コミットメッセージ末尾に必ず付与する。**モデル名はその時作業している Claude モデルに合わせる**（ハーネスが指定するモデル名を使用する。特定モデルに固定しない）:
   ```
-  Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+  Co-Authored-By: Claude <モデル名> <noreply@anthropic.com>
   ```
+  例（Sonnet 5 で作業時）: `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>`
 - 検証用スクリーンショット（`*.png`）はコミットに含めない。
 - Windows 環境のため `LF will be replaced by CRLF` の警告が出るが正常（無視してよい）。
 - ワークツリー内のコミットでは `package.json` の `version` を変更しない（下記「バージョン管理」参照）。バージョン確定は main へのマージ後に別途行う。
