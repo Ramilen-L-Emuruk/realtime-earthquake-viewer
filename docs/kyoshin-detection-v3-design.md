@@ -324,3 +324,17 @@ onset ベースの一過性のまま）。→ 紀伊水道は likely が 7:46:38
 巨大地震は有感域が全国 >300km に割れるため **能登 M7.6 で約10回**（連続する広域大動なので許容）。当初試した
 per-point 微小再エスカレーションは能登で168回鳴り過剰だったため廃止し、上記（初＋全体再エスカレーション＋
 別地点）に整理。`REGION_MATCH_KM` は 250→300 で単発中規模の分裂フラグメント誤発報（別地点1回）が消えることを確認。
+
+## 15. イベント中心マーカーの撤去（2026-07-24）
+
+`KyoshinV2Overlay`（confirmed/likely/faint 各イベントの中心に破線円＋脈動＋ドットを描く地図オーバーレイ）を
+**削除**した。近傍一致型は震源を推定せず、この「中心」はメンバー観測点の重心にすぎない。震央のように
+見えて実態は重心＝**信頼性が低く誤解を招く**ため、地図には表示しない方針とした（§7-8・§13-14 の
+`KyoshinV2Overlay` 記述は本節で無効化）。
+
+- 削除: `src/components/Map/KyoshinV2Overlay.tsx`、BaseMap の `kyoshin-v2` pane、JapanMap の描画/import/
+  `kyoshinV2Detections` prop、App→JapanMap の同 prop 受け渡し。
+- **残す**: `KyoshinDetectedPoints`（震度1以上の観測点ドット＝実測）・`KyoshinSubThreshold`（震度0以下の
+  面）・自動フィット（メンバー観測点フットプリントへ）・カード（推定最大震度＋震度分布）。「どこが・
+  どれだけ揺れているか」は実測の観測点で示し、推定した中心点は出さない。
+- カード表示に使う `kyoshinV2Detections`（`RealtimeTab`）は引き続き必要なため存置。

@@ -236,7 +236,6 @@ realtime-earthquake-viewer/
 │   │   │   ├── KyoshinSubThreshold.tsx # 強震モニタの震度0以下（index 1〜6）の OffscreenCanvas 描画
 │   │   │   ├── KyoshinDetectedPoints.tsx # 揺れ検知された観測点の可変サイズ描画
 │   │   │   ├── KyoshinMaxEffect.tsx   # 強震モニタの最大震度エフェクト描画
-│   │   │   ├── KyoshinV2Overlay.tsx   # 強震モニタ検知(V2)の推定震央・方位オーバーレイ
 │   │   │   ├── PsWaveLayer.tsx        # EEW P波・S波地表到達円の Canvas 描画レイヤー
 │   │   │   ├── QuakeHeatmapLayer.tsx  # 直近1ヶ月の地震活動ヒートマップ（leaflet.heat）
 │   │   │   ├── ActiveFaultsLayer.tsx  # 全国活断層線の Leaflet ネイティブ描画レイヤー（react-leaflet 非経由・再レンダー非依存）
