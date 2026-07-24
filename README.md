@@ -243,7 +243,7 @@ realtime-earthquake-viewer/
 │   │   │   ├── TileTintLayer.tsx      # 海底地形タイルの暗色化（mix-blend-mode オーバーレイ。CSS filter 不使用）
 │   │   │   └── flyToLite.ts           # flyTo/flyToBounds 実行中に Canvas 描画ペインを一時非表示化するヘルパー（非力なGPUでのアニメーション中カクつき対策）
 │   │   ├── SpecialInfoBanner/      # 南海トラフ臨時情報・国民保護情報バナー
-│   │   ├── RealtimeTab/            # 凡例・注記パネル（地図は JapanMap が担当）
+│   │   ├── RealtimeTab/            # 強震モニタ検知(V2)カード・EEW情報・凡例・注記パネル（地図は JapanMap が担当）
 │   │   ├── SettingsTab/            # 設定パネル
 │   │   ├── TelegramTab/            # 受信電文ログビューアー（DM-D.S.S 版）
 │   │   └── TsunamiTab/             # 津波情報パネル
@@ -251,9 +251,9 @@ realtime-earthquake-viewer/
 │   │   ├── useEarthquakes.ts       # DMDATA.JP / P2PQuake WS + REST 状態管理（VITE_VARIANT で切替）
 │   │   ├── useLiveEventHandler.ts  # ライブイベント受信時の通知音・タイトル・タブ切替・読み上げ
 │   │   ├── useAlertTitle.ts        # ウィンドウタイトル（情報タイトル）管理
-│   │   ├── useKyoshinAlerts.ts     # 揺れ検知（候補・確定）に応じたタブ切替・タイトル・通知音
+│   │   ├── useKyoshinAlerts.ts     # 強震モニタ検知（候補=likely・確定=confirmed）に応じたタブ切替・タイトル・通知音
 │   │   ├── useKyoshinRealtime.ts   # Yahoo リアルタイム震度のポーリング
-│   │   ├── useKyoshinDetection.ts  # 強震モニタの揺れ検知（6層フィルタ）
+│   │   ├── useKyoshinDetectorV2.ts # 強震モニタの揺れ検知エンジン（純粋コア step の React ラッパー）
 │   │   ├── useDmdssWaves.ts        # DM-D.S.S 版 EEW の P波・S波地表到達半径アニメーション
 │   │   ├── useSWaveCountdown.ts    # S波到達カウントダウン
 │   │   ├── useSettings.ts          # アプリ設定（localStorage 永続化）
@@ -276,6 +276,8 @@ realtime-earthquake-viewer/
 │       ├── eew.ts                  # EEW 対象地域・最大震度・情報番号の算出
 │       ├── intensity.ts            # 震度スケール色・ラベル
 │       ├── kyoshinIntensity.ts     # リアルタイム震度インデックス→震度階級/色（気象庁配色）
+│       ├── kyoshinDetector.ts      # 強震モニタ検知エンジン（純粋コア: トリガー→アソシエーション→確信度スコア→分裂統合）
+│       ├── kyoshinDetectionView.ts # V2 検知イベント→表示状態（確信度・検知点・候補点）への変換
 │       ├── notifications.ts        # ブラウザ通知の表示
 │       ├── lpgm.ts                 # 長周期地震動階級のラベル・色
 │       ├── tsunami.ts              # 津波情報の等級算出・観測情報のマージ

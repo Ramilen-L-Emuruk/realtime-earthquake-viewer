@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useMap } from 'react-leaflet'
 import L from 'leaflet'
-import type { DetectedPoint } from '../../hooks/useKyoshinDetection'
+import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import { kyoshinIndexToJma, kyoshinIntensityColor } from '../../utils/kyoshinIntensity'
 import { getScaleRadius } from '../../utils/intensity'
 
