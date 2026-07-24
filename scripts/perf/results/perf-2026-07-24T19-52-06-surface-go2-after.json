@@ -1,0 +1,41 @@
+{
+  "meta": {
+    "when": "2026-07-24T19:52:06.446Z",
+    "label": "surface-go2-after",
+    "url": "http://192.168.0.64:5173/realtime-earthquake-viewer/dmdss/",
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "viewport": "1272x768",
+    "devicePixelRatio": 1.5,
+    "pathCount": 1725,
+    "circleCount": 255,
+    "durationMs": 15000
+  },
+  "frame": {
+    "frames": 852,
+    "fps": 56.8,
+    "p50": 16.7,
+    "p95": 17.1,
+    "max": 149.9
+  },
+  "longTask": {
+    "count": 11,
+    "totalMs": 608,
+    "maxMs": 69
+  },
+  "domWrites": {
+    "mapPaneAttrPerSec": 21.8,
+    "mapPaneNodesPerSec": 15.5,
+    "kyoshinAttrPerSec": 21.8,
+    "kyoshinNodesPerSec": 15.5,
+    "raw": {
+      "map": {
+        "attr": 327,
+        "nodes": 232
+      },
+      "kyoshin": {
+        "attr": 327,
+        "nodes": 232
+      }
+    }
+  }
+}
