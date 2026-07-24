@@ -159,14 +159,27 @@ export const PARAMS = {
   CELL_DEG: 0.2,
   /** 既存イベントへの帰属・併合とみなすメンバー重複率の下限 */
   MERGE_MEMBER_FRAC: 0.34,
+  /**
+   * イベント重心がこの距離(km)以内なら 1 地震として併合する（フレーム末の consolidation）。
+   * 沖合・深発の揺れ域は海/山のギャップで近傍グラフが分断され複数成分に割れる（福島県沖 49km・
+   * 根室沖 78km で実観測）。同一地震の分裂を 1 本化する。離れた別地震（数百km 級）は併合しない。
+   */
+  MERGE_EVENT_KM: 100,
 
   // ---- L4 確信度・発報 ----
   /** likely（可能性）に要する確定揺れ点数 */
   MIN_LIKELY_POINTS: 3,
   /** likely の最大震度下限(value)。0.5 = 震度1 */
   MIN_LIKELY_INTENSITY: 0.5,
-  /** confirmed（検知）に要する確定揺れ点数 */
+  /** confirmed（検知）に要する確定揺れ点数（密な観測網での上限） */
   CONFIRM_POINTS: 5,
+  /**
+   * 確定点数の密度正規化（改良5・疎地域救済）。局所に実在する観測点が少ない地域（離島・過疎網）では
+   * CONFIRM_POINTS を「(局所実在近傍数+1) × この割合」まで下げる（下限 MIN_LIKELY_POINTS）。
+   * 例: 奄美（局所実在 ~3）は 3 点で確定可。密な網（局所実在 ≥8）は CONFIRM_POINTS のまま。
+   * 近傍一致（L2）自体が空間コヒーレンスを要求するので、平常時ノイズは点数を下げても通らない。
+   */
+  CONFIRM_DENSITY_FRAC: 0.6,
   /** confirmed の最大震度下限(value)。0.5 = 震度1 */
   MIN_CONFIRM_INTENSITY: 0.5,
   /** confirmed 連続フレーム数（積分待ちなしで V1 相当の速さ） */
@@ -530,6 +543,7 @@ export function step(
     triggeredAt,
     state.cellActivity,
     m.cellOf,
+    m.avail,
     now,
   )
 
@@ -576,6 +590,7 @@ function associate(
   triggeredAt: Record<string, number | null>,
   cellActivity: Record<string, number>,
   cellOf: Record<string, string>,
+  avail: Record<string, number>,
   now: number,
 ): { events: DetectionEvent[]; nextEventId: number } {
   const events = prevEvents.map((e) => ({
@@ -606,7 +621,7 @@ function associate(
       target.memberKeys = [...new Set([...target.memberKeys, ...comp])]
       target.cells = [...new Set([...target.cells, ...compCells])]
       target.lastOnsetAtMs = now
-      updateEventMetrics(target, cur, triggeredAt, cellActivity, cellOf, now)
+      updateEventMetrics(target, cur, triggeredAt, cellActivity, cellOf, avail, now)
       updated.add(target.id)
     } else {
       const ev: DetectionEvent = {
@@ -622,7 +637,7 @@ function associate(
         confirmStreak: 0,
         everConfirmed: false,
       }
-      updateEventMetrics(ev, cur, triggeredAt, cellActivity, cellOf, now)
+      updateEventMetrics(ev, cur, triggeredAt, cellActivity, cellOf, avail, now)
       events.push(ev)
       updated.add(ev.id)
     }
@@ -632,12 +647,52 @@ function associate(
   const survivors: DetectionEvent[] = []
   for (const e of events) {
     if (!updated.has(e.id)) {
-      updateEventMetrics(e, cur, triggeredAt, cellActivity, cellOf, now)
+      updateEventMetrics(e, cur, triggeredAt, cellActivity, cellOf, avail, now)
     }
     if (now - e.lastOnsetAtMs <= PARAMS.HOLD_MS) survivors.push(e)
   }
 
-  return { events: survivors, nextEventId: idCounter }
+  return { events: mergeAdjacentEvents(survivors), nextEventId: idCounter }
+}
+
+/**
+ * 重心が MERGE_EVENT_KM 以内のイベントを 1 本化する（フレーム末 consolidation）。
+ * 沖合・深発の揺れ域が海/山ギャップで複数成分に割れた同一地震を統合する。
+ * host は発生時刻が早い方（＝ID を継承）。メンバー・セルは和集合、点数は合算、最大震度は max、
+ * 確信度は everConfirmed の論理和で再評価する。離れた別地震（>MERGE_EVENT_KM）は併合しない。
+ */
+function mergeAdjacentEvents(events: DetectionEvent[]): DetectionEvent[] {
+  if (events.length <= 1) return events
+  const ordered = [...events].sort((a, b) => a.originTimeMs - b.originTimeMs)
+  const hosts: DetectionEvent[] = []
+  for (const e of ordered) {
+    const host = hosts.find(
+      (h) =>
+        !!e.epicenter &&
+        !!h.epicenter &&
+        haversineKm(e.epicenter[0], e.epicenter[1], h.epicenter[0], h.epicenter[1]) <=
+          PARAMS.MERGE_EVENT_KM,
+    )
+    if (!host) {
+      hosts.push(e)
+      continue
+    }
+    // 重心は点数の多い側（主パッチ）を採用
+    if (e.lastSize > host.lastSize) host.epicenter = e.epicenter
+    host.memberKeys = [...new Set([...host.memberKeys, ...e.memberKeys])]
+    host.cells = [...new Set([...host.cells, ...e.cells])]
+    host.lastSize = host.lastSize + e.lastSize
+    host.maxIntensity = Math.max(host.maxIntensity, e.maxIntensity)
+    host.lastOnsetAtMs = Math.max(host.lastOnsetAtMs, e.lastOnsetAtMs)
+    host.confirmStreak = Math.max(host.confirmStreak, e.confirmStreak)
+    host.everConfirmed = host.everConfirmed || e.everConfirmed
+    host.confidence = host.everConfirmed
+      ? 'confirmed'
+      : host.confidence === 'likely' || e.confidence === 'likely'
+        ? 'likely'
+        : host.confidence
+  }
+  return hosts
 }
 
 /**
@@ -655,15 +710,20 @@ function updateEventMetrics(
   triggeredAt: Record<string, number | null>,
   cellActivity: Record<string, number>,
   cellOf: Record<string, string>,
+  avail: Record<string, number>,
   now: number,
 ): void {
   let size = 0
   let maxV = -Infinity
+  let availLocal = 0
   const lats: number[] = []
   const lngs: number[] = []
   for (const k of e.memberKeys) {
     const t = triggeredAt[k]
-    if (t != null && now - t <= PARAMS.TRIG_ACTIVE_MS) size++
+    if (t != null && now - t <= PARAMS.TRIG_ACTIVE_MS) {
+      size++
+      availLocal = Math.max(availLocal, avail[k] ?? 0) // 局所に実在する近傍数（密度）
+    }
     const p = cur.get(k)
     if (p && p.levelActive) {
       if (p.value > maxV) maxV = p.value
@@ -680,11 +740,18 @@ function updateEventMetrics(
   for (const c of e.cells) chronic = Math.max(chronic, cellActivity[c] ?? 0)
   const isChronic = chronic >= PARAMS.CHRONIC_THRESHOLD
 
+  // 確定点数: 密な網では CONFIRM_POINTS（＋慢性活性セルは引き上げ）。疎地域（局所実在近傍が少ない
+  // 離島・過疎網）では「(局所実在数+1)×CONFIRM_DENSITY_FRAC」まで下げる（下限 MIN_LIKELY_POINTS）。
   const confirmPointsReq = PARAMS.CONFIRM_POINTS + (isChronic ? PARAMS.CHRONIC_POINT_BUMP : 0)
+  const densityReq = Math.ceil((availLocal + 1) * PARAMS.CONFIRM_DENSITY_FRAC)
+  const effectiveConfirmReq = Math.max(
+    PARAMS.MIN_LIKELY_POINTS,
+    Math.min(confirmPointsReq, densityReq),
+  )
   const confirmIntensityReq = isChronic
     ? PARAMS.CHRONIC_CONFIRM_INTENSITY
     : PARAMS.MIN_CONFIRM_INTENSITY
-  const meetsConfirm = size >= confirmPointsReq && e.maxIntensity >= confirmIntensityReq
+  const meetsConfirm = size >= effectiveConfirmReq && e.maxIntensity >= confirmIntensityReq
   e.confirmStreak = meetsConfirm ? e.confirmStreak + 1 : 0
   if (e.confirmStreak >= PARAMS.CONFIRM_FRAMES) e.everConfirmed = true
 
