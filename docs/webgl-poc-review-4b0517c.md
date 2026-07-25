@@ -7,8 +7,8 @@
 >
 > **ステータス:**
 > - 第1ラウンドの **HIGH 2件・LOW 3件は `ef18b34` で対応済み**。独立検証で修正を実測確認（下記「対応記録・独立検証」）
-> - **【未対応】新規 HIGH 1件**: pan 計測の開始 zoom が run ごとに揃っていない（下記「4.」）。
->   飽和している現状では表に出ないが、**天井を破れた瞬間に頂点軸を汚す**。実機で回す前の対応を推奨
+> - **新規 HIGH 1件（HIGH4）は `9ecf5e8` で対応済み**: pan 計測の開始 zoom を `measureOnce` 冒頭で
+>   `setZoom(5)` に固定。zoom 計測が任意位置で終わった後も次 pan が z5 開始になることを実測確認（下記「4.」）
 
 ## 結論
 
@@ -181,13 +181,13 @@ HIGH 2件を残したまま実機で回すと、交絡対策を入れた回で�
 
 ## 現時点の残タスク（第2ラウンド）
 
-1. **【HIGH】4. pan 計測の開始 zoom を揃える**（下記「4.」。`measureOnce` 冒頭に `setZoom(5)` を追加）
-2. その後に実機で `__runLayerBSuite('surface-go2')` を実行
+1. ~~**【HIGH】4. pan 計測の開始 zoom を揃える**~~ → **`9ecf5e8` で対応済み**（`measureOnce` 冒頭に `setZoom(START_ZOOM=5)`）
+2. その後に実機で `__runLayerBSuite('surface-go2')`（または `surface-go2-v3`）を実行 ← **残るはこれのみ**
 
-4. を残したまま実機で回しても、**飽和している限りは結果に影響しない**（全 run 16.9ms）。
+HIGH4 を残したまま実機で回しても、**飽和している限りは結果に影響しなかった**（全 run 16.9ms）。
 ただし `ef18b34` の狙いどおり天井を破れた場合、頂点軸（`verts-thin`）の比較が
-開始 zoom の差で汚れる。**天井を破れたときにだけ牙を剥く**性質のため、
-「破れてから直す」では計測をやり直す手間が生じる。先に入れておくのが安い。
+開始 zoom の差で汚れる。**天井を破れたときにだけ牙を剥く**性質のため、破れてからの計測やり直しを
+避けるべく先に入れた。
 
 ## 対応記録・独立検証（`ef18b34`）
 
@@ -231,7 +231,7 @@ HIGH 2件を残したまま実機で回すと、交絡対策を入れた回で�
 
 ---
 
-## 【HIGH】4. pan 計測の開始 zoom が run ごとに揃っていない（`ef18b34` 時点で**未対応**）
+## 【HIGH】4. pan 計測の開始 zoom が run ごとに揃っていない（`9ecf5e8` で**対応済み**）
 
 ### 現象
 
@@ -314,6 +314,12 @@ __pocMap.queryRenderedFeatures({ layers: ['points'] }).length   // 317
 __pocMap.setZoom(5); await new Promise(r => __pocMap.once('idle', r))
 __pocMap.queryRenderedFeatures({ layers: ['points'] }).length   // 1418
 ```
+
+### 対応記録（`9ecf5e8`）
+
+`measureOnce` 冒頭に `map.setZoom(START_ZOOM)`（`START_ZOOM = 5`）を追加し、全計測を同じ開始 zoom
+＝描画量から始める。`warmup()` 末尾も `START_ZOOM` へ統一。独立検証: z7 へずらして pan → z5 で計測、
+zoom 計測が z5.96 で終わった後の pan も z5 開始（`high4fixed = true`）を実測確認。`tsc -b` 通過。
 
 ## 引き続き別工数の課題（`4b0517c` / `ef18b34` いずれの範囲外）
 
