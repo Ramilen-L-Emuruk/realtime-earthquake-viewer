@@ -1,0 +1,472 @@
+// 【PoC専用・使い捨て】検証項目6（毎秒更新）の律速切り分け。
+//
+// 強震モニタは毎秒、全観測点（約1,725）の震度 index を更新する。現行 Leaflet+SVG は
+// 「前回レベルから変化した点だけ setStyle」の差分更新で、平常時はほぼ書き込み 0＋SVG は
+// 変更要素だけ再ペイント（KyoshinPoints.tsx 段階0）。MapLibre(WebGL) に移すと 1 点でも
+// 変われば全ビューポート再描画になる（ダブルバッファの swap で前フレームを保持しないため、
+// SVG のような「変わった要素だけ再ラスタライズ」ができない）。
+//
+// 「全画面」には観測点だけでなく本番のベースマップ（陸地塗り＋細分区域境界＋県境の約6万頂点）も
+// 含まれ、毎秒まとめて塗り直される。そこで本番相当のベースマップを敷いた上で、更新方式ごとに
+// 「毎秒の全画面再描画」＋「更新の CPU コスト」を切り分けて測る:
+//   - baseline     : 更新なし（静止の床）
+//   - feature-state: 既に GPU に乗った頂点の状態(色)だけ更新。再タイル化なし＝更新 CPU 最小・
+//                    再描画は毎秒全画面。WebGL の最良ケース。
+//   - setData      : 観測点 GeoJSON を丸ごと差し替え。geojson-vt が worker で再タイル化＋全画面
+//                    再描画。素朴実装の悪ケース。
+//
+// 判定: feature-state が baseline に近ければ「WebGL でも毎秒更新は軽く回せる」＝一本化 GO 材料。
+//       setData が longtask/フレーム遅延を生めば「素朴な setData は不可・feature-state 必須」という
+//       移植制約が判明する。どちらも天井を破らなければ検証項目7（EEW 複合）へ積む。
+import * as maplibregl from 'maplibre-gl'
+import 'maplibre-gl/dist/maplibre-gl.css'
+import type { FeatureCollection, Point, Polygon, LineString } from 'geojson'
+
+// 本体 JapanMap.tsx / kyoshinIntensity.ts と揃える描画パラメータ
+const JAPAN_CENTER: [number, number] = [137.7, 38.25] // MapLibre は [lng, lat]
+const BATHYMETRY_URL =
+  'https://tiles.arcgis.com/tiles/C8EMgrsFcRFL6LrL/arcgis/rest/services/GEBCO_basemap_NCEI/MapServer/tile/{z}/{y}/{x}'
+const BASE_RADIUS = 2.5
+// 現行の強震モニタ観測点数（約1,725）に合わせて station-coords を均等サンプリングする（main.ts と同じ）
+const TARGET_POINTS = 1725
+const LEVELS = 10 // lvl 0..9
+// 強震モニタ風の簡易段階配色（負荷測定用・厳密な気象庁配色ではない。lvl 0 は震度0以下のグレー）
+const COLORS = [
+  '#9ca3af',
+  '#2b8cbe',
+  '#41b6c4',
+  '#7fcdbb',
+  '#c7e9b4',
+  '#ffffb2',
+  '#fecc5c',
+  '#fd8d3c',
+  '#f03b20',
+  '#bd0026',
+]
+// 本番 kyoshin モードのベースマップ配色（BaseMap.tsx と一致・毎秒の全画面再描画で塗り直される対象）
+const LAND_FILL = '#161b24' // 陸地塗り（都道府県ポリゴン）
+const SUBREGION_BORDER = '#39414f' // 一次細分区域の境界線
+const PREF_BORDER = '#56607a' // 県境
+// 全計測の開始 zoom（可視ジオメトリ量＝描画量を揃える。measure.ts と同思想）
+const START_ZOOM = 5
+const REPORT_URL = '/__perf-report'
+
+type LevelProps = { lvl: number }
+
+const map = new maplibregl.Map({
+  container: 'map',
+  center: JAPAN_CENTER,
+  zoom: START_ZOOM,
+  attributionControl: false,
+  // 素の描画負荷を測るため、ラベル等の余計なレイヤーは持たせない
+  style: {
+    version: 8,
+    sources: {
+      gebco: { type: 'raster', tiles: [BATHYMETRY_URL], tileSize: 256 },
+    },
+    layers: [
+      { id: 'bg', type: 'background', paint: { 'background-color': '#0a0c10' } },
+      { id: 'gebco', type: 'raster', source: 'gebco' },
+    ],
+  },
+})
+
+// setData で properties.lvl を差し替えて再利用するため、生成後の FeatureCollection を保持する
+let fc: FeatureCollection<Point, LevelProps> = { type: 'FeatureCollection', features: [] }
+let pointCount = 0
+let basemapVertices = 0
+
+// station-coords（約4,372点）を TARGET_POINTS へ均等サンプリングし、feature に id と lvl:0 を付与する。
+// feature-state は feature.id が無いと機能しないため、top-level id（0..n-1）を必ず振る。
+async function loadPoints(): Promise<FeatureCollection<Point, LevelProps>> {
+  const d: { stations: Record<string, [number, number]> } = await fetch(
+    '/data/station-coords.json',
+  ).then((r) => r.json())
+  const coords = Object.values(d.stations)
+  const step = Math.max(1, Math.round(coords.length / TARGET_POINTS))
+  const sampled = coords.filter((_, i) => i % step === 0).slice(0, TARGET_POINTS)
+  return {
+    type: 'FeatureCollection',
+    features: sampled.map(([lat, lon], i) => ({
+      type: 'Feature',
+      id: i,
+      properties: { lvl: 0 },
+      geometry: { type: 'Point', coordinates: [lon, lat] },
+    })),
+  }
+}
+
+// 本番 kyoshin モード相当のベースマップ（陸地塗り＋細分区域境界＋県境）を MapLibre feature へ変換する。
+// rings は [lat,lng] 順・GeoJSON は [lng,lat] 順のため入れ替える（main.ts と同じ）。BaseMap.tsx は各リングを
+// 独立に塗る（穴処理なし）ため、ここでも各リングを 1 ポリゴン feature とする。
+type Ringed = { rings: [number, number][][] }
+async function loadBasemap(): Promise<{
+  fill: FeatureCollection<Polygon>
+  prefLines: FeatureCollection<LineString>
+  subLines: FeatureCollection<LineString>
+  vertexCount: number
+}> {
+  const [prefs, subs] = await Promise.all([
+    fetch('/data/prefectures.json').then((r) => r.json() as Promise<Record<string, Ringed>>),
+    fetch('/data/subregions.json').then((r) => r.json() as Promise<Ringed[]>),
+  ])
+  const fill: FeatureCollection<Polygon>['features'] = []
+  const prefLines: FeatureCollection<LineString>['features'] = []
+  const subLines: FeatureCollection<LineString>['features'] = []
+  let v = 0
+  for (const shape of Object.values(prefs)) {
+    for (const ring of shape.rings) {
+      const coords = ring.map(([lat, lng]) => [lng, lat] as [number, number])
+      v += coords.length
+      fill.push({
+        type: 'Feature',
+        properties: {},
+        geometry: { type: 'Polygon', coordinates: [coords] },
+      })
+      prefLines.push({
+        type: 'Feature',
+        properties: {},
+        geometry: { type: 'LineString', coordinates: coords },
+      })
+    }
+  }
+  for (const sr of subs) {
+    for (const ring of sr.rings) {
+      const coords = ring.map(([lat, lng]) => [lng, lat] as [number, number])
+      v += coords.length
+      subLines.push({
+        type: 'Feature',
+        properties: {},
+        geometry: { type: 'LineString', coordinates: coords },
+      })
+    }
+  }
+  return {
+    fill: { type: 'FeatureCollection', features: fill },
+    prefLines: { type: 'FeatureCollection', features: prefLines },
+    subLines: { type: 'FeatureCollection', features: subLines },
+    vertexCount: v,
+  }
+}
+
+// 毎秒の更新レベルを生成: 全点にランダムな lvl(0..9)＝「毎秒全点変化」の最悪ケース（上界）。
+// WebGL は変化数に依らず全画面再描画になるため、最悪でも天井内なら現実（部分変化）は当然収まる。
+function genLevels(n: number): Uint8Array {
+  const a = new Uint8Array(n)
+  for (let i = 0; i < n; i++) a[i] = (Math.random() * LEVELS) | 0
+  return a
+}
+
+// feature-state 方式: 既に GPU に乗った頂点の状態(色)だけ更新。再タイル化は起きない。
+function applyFeatureState(levels: Uint8Array): void {
+  for (let i = 0; i < levels.length; i++) {
+    map.setFeatureState({ source: 'points', id: i }, { lvl: levels[i] })
+  }
+}
+
+// setData 方式: 保持している fc の properties.lvl を全点書き換えて丸ごと差し替える。
+// geojson-vt が worker で再タイル化する（＝メインスレッド同期部分だけでは測れない実コストがある）。
+function applySetData(levels: Uint8Array): void {
+  const feats = fc.features
+  for (let i = 0; i < levels.length; i++) feats[i].properties.lvl = levels[i]
+  ;(map.getSource('points') as maplibregl.GeoJSONSource | undefined)?.setData(fc)
+}
+
+// baseline / feature-state phase の前に、直前 phase の状態を素の lvl:0 に戻す
+function resetToBaseline(): void {
+  map.removeFeatureState({ source: 'points' })
+  const feats = fc.features
+  for (let i = 0; i < feats.length; i++) feats[i].properties.lvl = 0
+  ;(map.getSource('points') as maplibregl.GeoJSONSource | undefined)?.setData(fc)
+}
+
+// circle-color 式: feature-state.lvl 優先、無ければ properties.lvl、既定 0。
+// これで baseline / feature-state / setData を同一レイヤーで測れる。
+function buildColorExpr(): maplibregl.ExpressionSpecification {
+  const matchArgs: (number | string)[] = []
+  for (let i = 0; i < LEVELS - 1; i++) matchArgs.push(i, COLORS[i])
+  return [
+    'match',
+    ['coalesce', ['feature-state', 'lvl'], ['get', 'lvl'], 0],
+    ...matchArgs,
+    COLORS[LEVELS - 1],
+  ] as unknown as maplibregl.ExpressionSpecification
+}
+
+function updateStat(mode: string, extra = ''): void {
+  const el = document.getElementById('stat')
+  if (!el) return
+  el.textContent = [
+    `mode   : ${mode}`,
+    `points : ${pointCount.toLocaleString()}`,
+    `base   : ${basemapVertices.toLocaleString()} 頂点`,
+    `zoom   : ${map.getZoom().toFixed(2)}`,
+    `pixelR : ${map.getPixelRatio?.() ?? window.devicePixelRatio}  (device ${window.devicePixelRatio})`,
+    extra,
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+map.on('load', async () => {
+  const [pts, base] = await Promise.all([loadPoints(), loadBasemap()])
+  fc = pts
+  pointCount = fc.features.length
+  basemapVertices = base.vertexCount
+
+  // 本番 kyoshin モード相当のベースマップ（観測点の背面）。毎秒の全画面再描画では、観測点だけでなく
+  // この3層も丸ごと塗り直される＝現行の全画面再描画コストを再現する。
+  map.addSource('land', { type: 'geojson', data: base.fill })
+  map.addLayer({ id: 'land', type: 'fill', source: 'land', paint: { 'fill-color': LAND_FILL } })
+  map.addSource('sub-lines', { type: 'geojson', data: base.subLines })
+  map.addLayer({
+    id: 'sub-borders',
+    type: 'line',
+    source: 'sub-lines',
+    paint: { 'line-color': SUBREGION_BORDER, 'line-width': 0.5 },
+  })
+  map.addSource('pref-lines', { type: 'geojson', data: base.prefLines })
+  map.addLayer({
+    id: 'pref-borders',
+    type: 'line',
+    source: 'pref-lines',
+    paint: { 'line-color': PREF_BORDER, 'line-width': 1 },
+  })
+
+  // 観測点（最前面）
+  map.addSource('points', { type: 'geojson', data: fc })
+  map.addLayer({
+    id: 'points',
+    type: 'circle',
+    source: 'points',
+    paint: {
+      'circle-radius': BASE_RADIUS,
+      'circle-color': buildColorExpr(),
+      'circle-opacity': 0.85,
+    },
+  })
+
+  ;(window as unknown as { __rtReady: boolean }).__rtReady = true
+  updateStat('baseline')
+})
+
+map.on('zoomend', () => updateStat(currentMode))
+map.on('error', (e) => {
+  const el = document.getElementById('stat')
+  if (el) el.textContent = 'ERROR: ' + (e.error?.message ?? String(e))
+  console.error('[rt] map error', e.error)
+})
+
+// --- 手動確認用の毎秒更新トグル（本計測は __runRealtimeSuite が自動駆動する） ---
+let currentMode: 'baseline' | 'feature-state' | 'setData' = 'baseline'
+let manualTimer: number | undefined
+
+function startManual(mode: 'feature-state' | 'setData'): void {
+  stopManual()
+  currentMode = mode
+  const apply = mode === 'feature-state' ? applyFeatureState : applySetData
+  manualTimer = window.setInterval(() => {
+    const lv = genLevels(pointCount)
+    const t0 = performance.now()
+    apply(lv)
+    updateStat(mode, `applyMs: ${(performance.now() - t0).toFixed(1)}`)
+  }, 1000)
+  updateStat(mode)
+}
+
+function stopManual(): void {
+  if (manualTimer != null) {
+    clearInterval(manualTimer)
+    manualTimer = undefined
+  }
+  currentMode = 'baseline'
+  resetToBaseline()
+  updateStat('baseline')
+}
+
+document.getElementById('fsBtn')?.addEventListener('click', () => startManual('feature-state'))
+document.getElementById('sdBtn')?.addEventListener('click', () => startManual('setData'))
+document.getElementById('stopBtn')?.addEventListener('click', () => stopManual())
+
+// --- 計測ランナー（measure.ts の p95/longtask/report/warmup 手法を踏襲。駆動は毎秒更新） ---
+type Mode = 'baseline' | 'feature-state' | 'setData'
+
+function waitIdle(timeoutMs = 8000): Promise<void> {
+  return new Promise((res) => {
+    const t = setTimeout(res, timeoutMs)
+    map.once('idle', () => {
+      clearTimeout(t)
+      res()
+    })
+  })
+}
+
+// 計測前のウォームアップ: 全整数ズームを踏んで初回タイル読み込み・geojson-vt 再タイル化を先に払う
+// （初訪問ズームの交絡を除く。measure.ts と同じ・レビュー HIGH1 の教訓）。末尾は START_ZOOM に戻す。
+async function warmup(): Promise<void> {
+  for (const z of [4, 5, 6, 7, START_ZOOM]) {
+    map.setZoom(z)
+    await waitIdle(5000)
+  }
+}
+
+const round = (v: number | null) => (v == null ? null : Math.round(v * 100) / 100)
+function stats(xs: number[]) {
+  if (xs.length === 0) return { n: 0, p50: null, p95: null, max: null, mean: null }
+  const s = [...xs].sort((a, b) => a - b)
+  const pick = (q: number) => s[Math.min(s.length - 1, Math.floor(s.length * q))]
+  return {
+    n: s.length,
+    p50: round(pick(0.5)),
+    p95: round(pick(0.95)),
+    max: round(s[s.length - 1]),
+    mean: round(xs.reduce((a, b) => a + b, 0) / xs.length),
+  }
+}
+
+async function measureRealtime(mode: Mode, durationMs: number, label: string) {
+  currentMode = mode
+  map.setZoom(START_ZOOM)
+  await waitIdle()
+  // 前 phase の状態を素に戻してから測る（feature-state 残り・setData の色残りを排除）
+  resetToBaseline()
+  await waitIdle()
+
+  const frameDeltas: number[] = []
+  let last = performance.now()
+  let rafId = requestAnimationFrame(function loop(t) {
+    frameDeltas.push(t - last)
+    last = t
+    rafId = requestAnimationFrame(loop)
+  })
+
+  const longTasks: number[] = []
+  let po: PerformanceObserver | null = null
+  try {
+    po = new PerformanceObserver((l) => {
+      for (const e of l.getEntries()) longTasks.push(e.duration)
+    })
+    po.observe({ type: 'longtask' })
+  } catch {
+    po = null
+  }
+
+  // 毎秒 1 回、全点更新を回す（baseline は駆動なし）
+  const applyMs: number[] = []
+  let timer: number | undefined
+  if (mode !== 'baseline') {
+    const apply = mode === 'feature-state' ? applyFeatureState : applySetData
+    timer = window.setInterval(() => {
+      const lv = genLevels(pointCount)
+      const t0 = performance.now()
+      apply(lv)
+      applyMs.push(performance.now() - t0)
+    }, 1000)
+  }
+
+  await new Promise((r) => setTimeout(r, durationMs))
+
+  if (timer != null) clearInterval(timer)
+  cancelAnimationFrame(rafId)
+  if (po) po.disconnect()
+
+  frameDeltas.shift() // 開始タイミング依存のノイズを捨てる
+  const frame = stats(frameDeltas)
+
+  const result = {
+    meta: {
+      when: new Date().toISOString(),
+      label,
+      mode,
+      durationMs,
+      url: location.href,
+      ua: navigator.userAgent,
+      viewport: `${innerWidth}x${innerHeight}`,
+      devicePixelRatio: window.devicePixelRatio,
+      points: pointCount,
+      basemapVertices,
+      canvasW: map.getCanvas().width,
+      canvasH: map.getCanvas().height,
+      jsHeapMB: (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
+        ? Math.round(
+            (performance as unknown as { memory: { usedJSHeapSize: number } }).memory
+              .usedJSHeapSize / 1048576,
+          )
+        : null,
+    },
+    frame: {
+      frames: frame.n,
+      fps: round(frame.n / (durationMs / 1000)),
+      p50: frame.p50,
+      p95: frame.p95,
+      max: frame.max,
+    },
+    // 更新処理そのものの所要時間（メインスレッド同期部分）。feature-state はこれが更新 CPU の実体。
+    // setData は再タイル化が worker で非同期のため、この値は同期部分のみ＝実コストの下界（過小評価）。
+    // setData の真の負荷は frame.p95 / longTask（再タイル化がフレーム遅延・longtask に現れる）で読む。
+    apply: mode === 'baseline' ? null : stats(applyMs),
+    longTask: {
+      count: po ? longTasks.length : -1,
+      totalMs: round(longTasks.reduce((a, b) => a + b, 0)),
+      maxMs: round(longTasks.length ? Math.max(...longTasks) : 0),
+    },
+  }
+
+  resetToBaseline()
+  currentMode = 'baseline'
+  updateStat('baseline')
+
+  try {
+    const res = await fetch(REPORT_URL, { method: 'POST', body: JSON.stringify(result) })
+    console.log(
+      `[rt] ${label} ${mode}: ${res.ok ? await res.text() : 'HTTP ' + res.status}`,
+      result.frame,
+      result.apply,
+    )
+  } catch (e) {
+    console.warn('[rt] report 送信失敗（結果はログから回収可）:', e, result)
+  }
+  return result
+}
+
+const w = window as unknown as Record<string, unknown>
+
+// 単発計測: await __measureRealtime({ mode:'setData', durationMs:12000, label:'adhoc' })
+w.__measureRealtime = (opts: { mode?: Mode; durationMs?: number; label?: string } = {}) =>
+  measureRealtime(opts.mode ?? 'feature-state', opts.durationMs ?? 12000, opts.label ?? 'adhoc')
+
+// 反応表スイート: ウォームアップ → baseline / feature-state / setData を順に毎秒更新で測る。
+// durationMs=12000 なら各 12 サンプルの applyMs が取れる。
+w.__runRealtimeSuite = async (labelBase = 'realtime', durationMs = 12000) => {
+  console.log('[rt] ウォームアップ（z4〜7 全整数・非計測）')
+  await warmup()
+  console.log(`[rt] suite 開始（device DPR ${window.devicePixelRatio}・各 ${durationMs}ms）`)
+  await measureRealtime('baseline', durationMs, `${labelBase}-baseline`)
+  await measureRealtime('feature-state', durationMs, `${labelBase}-fs`)
+  await measureRealtime('setData', durationMs, `${labelBase}-setdata`)
+  console.log('[rt] suite 完了')
+}
+
+// 更新処理単体ベンチ: 描画を挟まず apply を連続実行し、メインスレッド同期コストだけを測る。
+// feature-state の 1,725 setFeatureState の純コスト確認用。setData は worker 再タイル化を含まない
+// 下界である点に注意（真の総合影響は __runRealtimeSuite の frame/longTask で読む）。
+w.__benchApply = (mode: 'feature-state' | 'setData' = 'feature-state', iters = 50) => {
+  const apply = mode === 'feature-state' ? applyFeatureState : applySetData
+  const ms: number[] = []
+  for (let k = 0; k < iters; k++) {
+    const lv = genLevels(pointCount)
+    const t0 = performance.now()
+    apply(lv)
+    ms.push(performance.now() - t0)
+  }
+  resetToBaseline()
+  const s = stats(ms)
+  console.log(`[rt] benchApply ${mode} ×${iters}（同期・描画なし）:`, s)
+  return s
+}
+
+// 計測スクリプトから触れるよう map と現在状態を露出する
+Object.assign(w, {
+  __rtMap: map,
+  __rtGetMode: () => currentMode,
+})
