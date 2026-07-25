@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "dev:dmdss": "cross-env VITE_VARIANT=dmdss vite",
+    "dev:poc": "vite --config vite.poc.config.ts",
     "build": "tsc -b && vite build",
     "build:dmdss": "tsc -b && cross-env VITE_VARIANT=dmdss vite build",
     "preview": "vite preview",
@@ -29,6 +30,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
     "cross-env": "^7.0.3",
+    "maplibre-gl": "^6.0.0",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.2",
