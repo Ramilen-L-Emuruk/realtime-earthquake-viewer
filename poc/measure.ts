@@ -30,6 +30,10 @@ export interface MeasureDeps {
 }
 
 const REPORT_URL = '/__perf-report'
+// 全計測の開始 zoom。zoom 駆動の終了位置は駆動時間依存で不定になり、次 run の pan 計測の開始
+// zoom（＝可視ジオメトリ量。頂点数・点数は zoom で2倍以上変わる）を汚すため固定する（レビュー HIGH4）。
+// warmup の末尾もここへ戻すので、全計測が同じ描画量から始まる。
+const START_ZOOM = 5
 
 function waitIdle(map: MaplibreMap, timeoutMs = 8000): Promise<void> {
   return new Promise((res) => {
@@ -77,10 +81,10 @@ function startDrive(map: MaplibreMap, phase: Phase): () => void {
 // 先に済ませる（初訪問ズームの交絡を除く。2026-07-25 の zoom 33.3ms はこれが原因だった）。
 // setZoom は瞬間移動で中間ズームを訪れないため、計測時に連続スイープする z4〜7 の全整数を
 // 明示的に列挙する。特に GeoJSON ソース(faults/points)は map zoom と 1:1 で、z6 を抜かすと
-// baseline zoom の最中に geojson-vt 再タイル化コストが残る（レビュー HIGH1）。末尾の 5 は
-// 計測開始位置（初期 zoom）へ戻すため。
+// baseline zoom の最中に geojson-vt 再タイル化コストが残る（レビュー HIGH1）。末尾は START_ZOOM に
+// 戻し、後続の各計測（measureOnce 冒頭でも START_ZOOM へ）と開始 zoom＝描画量を揃える。
 async function warmup(map: MaplibreMap): Promise<void> {
-  for (const z of [4, 5, 6, 7, 5]) {
+  for (const z of [4, 5, 6, 7, START_ZOOM]) {
     map.setZoom(z)
     await waitIdle(map, 5000)
   }
@@ -93,6 +97,9 @@ async function measureOnce(
   label: string,
 ): Promise<Record<string, unknown>> {
   const { map } = deps
+  // 全計測を同じ開始 zoom（＝同じ可視ジオメトリ量）に揃える（レビュー HIGH4）。
+  // zoom 駆動の終了位置は駆動時間依存で不定になり、次 run の pan の開始 zoom を汚すため。
+  map.setZoom(START_ZOOM)
   await waitIdle(map)
 
   const frameDeltas: number[] = []
