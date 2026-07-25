@@ -4,7 +4,7 @@
 > 対象ファイル: `poc/measure.ts` / `poc/main.ts` / `poc/README.md`
 > 関連: 計画書 [webgl-rendering-migration-plan.md](webgl-rendering-migration-plan.md) §6 ／ 観点 [webgl-layerb-verification-points.md](webgl-layerb-verification-points.md) ／ 手順 [poc/README.md](../poc/README.md)
 > レビュー日: 2026-07-25
-> **ステータス: HIGH 2件が未修正。実機で回す前に対応を推奨**
+> **ステータス: 対応済み（`ef18b34`）。HIGH 2件・LOW 3件すべて修正。下記「対応記録」参照**
 
 ## 結論
 
@@ -175,6 +175,20 @@ for (const run of runs) {
 HIGH 2件を残したまま実機で回すと、交絡対策を入れた回でありながら最も高いコスト
 （geojson-vt 再タイル化）が baseline と `verts-thin` に残るため、
 **判定を誤る危険が対策前と同程度に残る**。
+
+## 対応記録（`ef18b34`）
+
+上記 HIGH 2件・LOW 3件はすべて対応済み（コミット `ef18b34` fix: 層B PoC計測のウォームアップ交絡残存を修正）。
+
+| 指摘 | 対応 | 検証 |
+|---|---|---|
+| HIGH1 | `warmup()` を `[7,4,5]`→`[4,5,6,7,5]`（全整数ズームを踏む） | 実機ブラウザで faults/points の到達 z = `[4,5,6,7]`（z6 到達）を実測確認 |
+| HIGH2 | スイートループで faults 差し替え(`verts-thin`)後に `warmup()` 再実行。`baseline-warm` 前の full 復帰時も温め直す | 19計測完走・`verts-thin` 後の再温めが破綻なく通過 |
+| LOW 3-1 | `points-off` 軸を復活 | `pts=0` を確認 |
+| LOW 3-2 | README のリード文二重・「1軸だけ」矛盾を解消 | — |
+| LOW 3-3 | `measure.ts` 冒頭コメントをウォームアップ/`baseline-warm` 反映へ更新 | — |
+
+計測数 17→19。`tsc -b` 通過。GPU フレーム時間・CPU スロットル・Leaflet 比較は下記のとおり引き続き別工数。
 
 ## 引き続き別工数の課題（このコミットの範囲外）
 
