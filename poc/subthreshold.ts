@@ -353,6 +353,10 @@ function makeSubThresholdCustomLayer(points: TestPoint[]): maplibregl.CustomLaye
 
       // GL 状態を復元（CustomLayerInterface の作法・レビュー LOW3。MapLibre も再設定するが、
       // 次フレーム冒頭の feedback loop 予防も兼ねて明示的に外す）。
+      // FBO も本描画先へ戻す（レビュー LOW5）。resize は fbo を bind したまま抜け、mainFBO へ戻すのは
+      // count>0 のレベルの合成パスだけ。「resize が走る」かつ「全レベル点ゼロ」のフレームでは fbo が
+      // bind されたまま抜け、後続レイヤーがオフスクリーン FBO に描かれて消える（本番の初回ロード時に踏む）。
+      gl.bindFramebuffer(gl.FRAMEBUFFER, mainFBO)
       gl.bindTexture(gl.TEXTURE_2D, null)
       gl.disable(gl.BLEND)
       gl.disableVertexAttribArray(aPos)
