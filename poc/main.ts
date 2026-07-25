@@ -247,6 +247,14 @@ installMeasure({
       (map as unknown as { getPixelRatio?: () => number }).getPixelRatio?.() ?? state.pixelRatio,
     canvasW: map.getCanvas().width,
     canvasH: map.getCanvas().height,
+    // performance.memory は JSヒープのみ。WebGL バッファ/テクスチャは含まないため、
+    // 真の実行時メモリはタスクマネージャ併用が要る（計画書 §8「実行時メモリ」）。
+    jsHeapMB: (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
+      ? Math.round(
+          (performance as unknown as { memory: { usedJSHeapSize: number } }).memory.usedJSHeapSize /
+            1048576,
+        )
+      : null,
   }),
 })
 
