@@ -257,6 +257,10 @@ function makeSubThresholdCustomLayer(points: TestPoint[]): maplibregl.CustomLaye
       const canvas = mapRef.getCanvas()
       const w = canvas.width
       const h = canvas.height
+      // render 開始時の本描画 FBO（MapLibre のメイン描画先）を resize より前に控える。
+      // resize は内部で fbo を bind するため、この取得を後ろに置くと初回フレームで mainFBO=fbo になり、
+      // 合成が tex を読みつつ tex を attach した fbo へ描く feedback loop になる（レビュー MEDIUM1 の真因）。
+      const mainFBO = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null
       if (texW !== w || texH !== h) {
         gl.bindTexture(gl.TEXTURE_2D, tex)
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
@@ -266,11 +270,12 @@ function makeSubThresholdCustomLayer(points: TestPoint[]): maplibregl.CustomLaye
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
         gl.bindFramebuffer(gl.FRAMEBUFFER, fbo)
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0)
+        // resize でこのユニットに残った tex を外す（合成は TEXTURE0 だが resize は別ユニットのことがあり、
+        // 残ると FBO 描画時に feedback loop を作る。ANGLE は全ユニットをチェックするため・レビュー MEDIUM1）
+        gl.bindTexture(gl.TEXTURE_2D, null)
         texW = w
         texH = h
       }
-      // MapLibre が render を呼ぶ時点でバインドしている本描画 FBO を控える
-      const mainFBO = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null
       const matrix = args.defaultProjectionData.mainMatrix
       const dpr = window.devicePixelRatio || 1
       const size = TEST_RADIUS * 2 * dpr
@@ -308,6 +313,9 @@ function makeSubThresholdCustomLayer(points: TestPoint[]): maplibregl.CustomLaye
         gl.scissor(minX, h - maxY, maxX - minX, maxY - minY)
 
         // ① オフスクリーン FBO へ「不透明」で描く（BBox のみクリア・同レベル重なりは上書き＝濃くならない）
+        // feedback loop 回避（レビュー MEDIUM1）: 前レベルの合成で bind した tex を、その tex を
+        // attach した fbo の描画先にする前に外す。ANGLE は許容するが規格上グレーで実機保証が無い。
+        gl.bindTexture(gl.TEXTURE_2D, null)
         gl.bindFramebuffer(gl.FRAMEBUFFER, fbo)
         gl.viewport(0, 0, w, h)
         gl.clearColor(0, 0, 0, 0)
@@ -336,9 +344,19 @@ function makeSubThresholdCustomLayer(points: TestPoint[]): maplibregl.CustomLaye
         gl.enableVertexAttribArray(aQuad)
         gl.vertexAttribPointer(aQuad, 2, gl.FLOAT, false, 0, 0)
         gl.drawArrays(gl.TRIANGLES, 0, 6)
+        // 合成で使い終わった tex を、その場（activeTexture=TEXTURE0）で即外す。
+        // 次レベルの FBO 描画（描画先が tex を attach）との feedback loop を確実に断つ（レビュー MEDIUM1）。
+        gl.bindTexture(gl.TEXTURE_2D, null)
 
         gl.disable(gl.SCISSOR_TEST)
       }
+
+      // GL 状態を復元（CustomLayerInterface の作法・レビュー LOW3。MapLibre も再設定するが、
+      // 次フレーム冒頭の feedback loop 予防も兼ねて明示的に外す）。
+      gl.bindTexture(gl.TEXTURE_2D, null)
+      gl.disable(gl.BLEND)
+      gl.disableVertexAttribArray(aPos)
+      gl.disableVertexAttribArray(aQuad)
     },
     onRemove(_map: maplibregl.Map, gl: WebGL2RenderingContext) {
       gl.deleteProgram(pointProg)
