@@ -1,0 +1,31 @@
+{
+  "meta": {
+    "when": "2026-07-25T04:47:41.933Z",
+    "label": "surface-go2-dpr-0.75",
+    "phase": "zoom",
+    "durationMs": 10000,
+    "url": "http://192.168.0.64:5183/poc/index.html",
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "viewport": "1272x768",
+    "devicePixelRatio": 1.5,
+    "faults": "full",
+    "faultVertices": 31646,
+    "points": 1458,
+    "lineWidth": 1.2,
+    "pixelRatio": 0.75,
+    "canvasW": 954,
+    "canvasH": 576
+  },
+  "frame": {
+    "frames": 593,
+    "fps": 59.3,
+    "p50": 16.7,
+    "p95": 16.9,
+    "max": 49.9
+  },
+  "longTask": {
+    "count": 1,
+    "totalMs": 62,
+    "maxMs": 62
+  }
+}
