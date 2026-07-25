@@ -2,16 +2,20 @@
 //
 // 静止/パン/ズームの3局面でフレーム時間(p50/p95/max)・FPS・longtask を測り、負荷3軸
 //   - 頂点数軸  : 活断層 full / thin
-//   - 塗り面積軸: line-width
+//   - 塗り面積軸: line-width（＋観測点 circle の on/off）
 //   - DPR軸    : pixelRatio
-// を baseline から1軸ずつ振った反応を /__perf-report へ送る（perfReportPlugin が開発機へ保存）。
+// を振った反応を /__perf-report へ送る（perfReportPlugin が開発機へ保存）。
 //
 // パン/ズームは rAF ごとにカメラを動かし「操作中の毎フレーム全画面再描画」を強制する
 // （Leaflet の CSS transform パンと違い、WebGL 地図は操作中に毎フレーム描き直す。§8）。
 //
+// 2026-07-25 の飽和・交絡を受け、スイートは (1) 冒頭に全整数ズームのウォームアップ、
+// (2) 負荷を上げる方向（DPR2.0・線幅8/12・overload）で vsync 天井の突破を狙う、
+// (3) 末尾に baseline-warm 対照、で構成する（詳細は __runLayerBSuite 直前のコメント）。
+//
 // 実機での使い方（Surface Go 2）:
-//   PoC ページを開き、DevTools コンソールで  await window.__runLayerBSuite('surface-go2')
-//   を1回実行すると、baseline(static/pan/zoom) と各軸(pan/zoom) の証跡が開発機へ自動保存される。
+//   PoC ページで await window.__runLayerBSuite('surface-go2') を1回実行すると、ウォームアップ後に
+//   baseline(static/pan/zoom)・各軸(pan/zoom)・baseline-warm の証跡が開発機へ自動保存される。
 import type { Map as MaplibreMap } from 'maplibre-gl'
 
 export type Axis = { faults?: 'full' | 'thin'; lw?: number; pr?: number; points?: boolean }
@@ -69,10 +73,14 @@ function startDrive(map: MaplibreMap, phase: Phase): () => void {
   return () => cancelAnimationFrame(id)
 }
 
-// 計測前のウォームアップ: 各ズームレベルを一往復し、初回タイル読み込み・ジオメトリ再タイル化を
+// 計測前のウォームアップ: 全整数ズームを踏んで初回タイル読み込み・ジオメトリ再タイル化を
 // 先に済ませる（初訪問ズームの交絡を除く。2026-07-25 の zoom 33.3ms はこれが原因だった）。
+// setZoom は瞬間移動で中間ズームを訪れないため、計測時に連続スイープする z4〜7 の全整数を
+// 明示的に列挙する。特に GeoJSON ソース(faults/points)は map zoom と 1:1 で、z6 を抜かすと
+// baseline zoom の最中に geojson-vt 再タイル化コストが残る（レビュー HIGH1）。末尾の 5 は
+// 計測開始位置（初期 zoom）へ戻すため。
 async function warmup(map: MaplibreMap): Promise<void> {
-  for (const z of [7, 4, 5]) {
+  for (const z of [4, 5, 6, 7, 5]) {
     map.setZoom(z)
     await waitIdle(map, 5000)
   }
@@ -195,20 +203,35 @@ export function installMeasure(deps: MeasureDeps): void {
       { name: 'verts-thin', axis: { ...baseline, faults: 'thin' }, phases: axisPhases },
       // 下げ方向の対照（天井を破れたときにのみ意味を持つ）
       { name: 'dpr-1.0', axis: { ...baseline, pr: 1.0 }, phases: axisPhases },
+      // 観測点 circle の描画寄与（塗り面積の一部）を切り分ける
+      { name: 'points-off', axis: { ...baseline, points: false }, phases: axisPhases },
     ]
-    // 交絡除去: 計測前に各ズームレベルを一往復して温める（初回タイル取得・ジオメトリ再タイル化を先に払う）
-    console.log('[layerB] ウォームアップ（z4〜7 一往復・非計測）')
+    // 交絡除去: 計測前に全整数ズームを踏んで温める（初回タイル取得・geojson-vt 再タイル化を先に払う）
+    console.log('[layerB] ウォームアップ（z4〜7 全整数・非計測）')
     await deps.applyAxis(baseline)
     await warmup(deps.map)
     console.log(`[layerB] suite 開始（device DPR ${dpr}・各 ${durationMs}ms）`)
+    let prevFaults = baseline.faults
     for (const run of runs) {
       await deps.applyAxis(run.axis)
+      // ジオメトリ差し替え(faults 切替)は全ズームのタイル化をやり直すため、その run は再度温める。
+      // 怠ると verts-thin の zoom 計測に再タイル化コストが乗り、頂点軸だけ不利になる（レビュー HIGH2）。
+      const f = run.axis.faults
+      if (f && f !== prevFaults) {
+        await warmup(deps.map)
+        prevFaults = f
+      }
       for (const phase of run.phases) {
         await measureOnce(deps, phase, durationMs, `${labelBase}-${run.name}`)
       }
     }
     // ウォーム後の baseline 対照: zoom がここでも 33.3ms なら交絡仮説は棄却（真の負荷）、16.9ms なら交絡確定
     await deps.applyAxis(baseline)
+    // baseline は full。直前 run が thin だと差し替えで全ズーム再タイル化になるため、対照計測前に温め直す
+    if (prevFaults !== baseline.faults) {
+      await warmup(deps.map)
+      prevFaults = baseline.faults
+    }
     await measureOnce(deps, 'zoom', durationMs, `${labelBase}-baseline-warm`)
     await measureOnce(deps, 'pan', durationMs, `${labelBase}-baseline-warm`)
     console.log('[layerB] suite 完了')
