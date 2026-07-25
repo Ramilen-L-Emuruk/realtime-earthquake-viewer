@@ -1,0 +1,26 @@
+{
+  "meta": {
+    "when": "2026-07-25T15:08:18.706Z",
+    "label": "surface-go2-sub-custom",
+    "mapKey": "custom",
+    "phase": "zoom",
+    "durationMs": 8000,
+    "url": "http://192.168.0.64:5183/poc/subthreshold.html",
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "viewport": "1272x768",
+    "devicePixelRatio": 1.5,
+    "points": 320
+  },
+  "frame": {
+    "frames": 479,
+    "fps": 59.88,
+    "p50": 16.7,
+    "p95": 16.8,
+    "max": 21.2
+  },
+  "longTask": {
+    "count": 0,
+    "totalMs": 0,
+    "maxMs": 0
+  }
+}
