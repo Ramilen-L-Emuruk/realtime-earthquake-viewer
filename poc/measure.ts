@@ -159,9 +159,18 @@ export function installMeasure(deps: MeasureDeps): void {
   //
   // 2026-07-25 の実機（Surface Go 2）計測で、pan は全軸そろって p95 16.9ms（60Hz の vsync 上限）に
   // 張り付き、塗り面積を 1/4 にしても頂点を 68% 削っても数値が動かなかった。天井より上の余裕は
-  // 原理的に測れないため、pan だけでは律速を判定できない（計画書 §6 結果記録）。
-  // 唯一劣化が出たのは zoom（p95 33.3ms・54fps・longtask 6件）なので、各軸を zoom でも測って
-  // 「実際に効いている局面」で切り分ける。所要は約2.3分（13計測 × 10秒）。
+  // 原理的に測れないため、pan では律速を判定できない（計画書 §6 結果記録）。
+  //
+  // zoom へ軸を広げた2回目で、zoom も同じく飽和していると判明した。1回目に baseline zoom だけが
+  // 33.3ms を出したのは軸の反応ではなく、スイート中で最初に z4〜7 を訪れたことによる
+  // 初回タイル読み込み（ウォームアップ）。線幅を 4 に増やした run が逆に 16.9ms へ改善し、
+  // longtask が実行順に 3→2→1→0→0→0 と減衰したのが証拠。
+  //
+  // 【未修正の課題】この suite はまだ計画書 §6「測定方法」の指定を満たしていない:
+  //   - DPR は 2.0 へ「上げる」指定なのに 0.75 まで下げる方向にしか振っていない（天井下では無意味）
+  //   - CPU スロットル軸・GPU フレーム時間・performance.memory・Leaflet 比較がいずれも未実装
+  //   - ウォームアップパス（計測前に z4〜7 を一往復）と末尾の対照 baseline-warm が未実装
+  // 所要は約2.3分（13計測 × 10秒）。
   w.__runLayerBSuite = async (labelBase = 'layerB', durationMs = 10000) => {
     const dpr = window.devicePixelRatio || 1
     const baseline: Axis = { faults: 'full', lw: 1.2, pr: dpr, points: true }
