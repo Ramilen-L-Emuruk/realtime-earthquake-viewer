@@ -11,7 +11,7 @@
 //
 // 実機での使い方（Surface Go 2）:
 //   PoC ページを開き、DevTools コンソールで  await window.__runLayerBSuite('surface-go2')
-//   を1回実行すると、baseline(static/pan/zoom) と各軸(pan) の証跡が開発機へ自動保存される。
+//   を1回実行すると、baseline(static/pan/zoom) と各軸(pan/zoom) の証跡が開発機へ自動保存される。
 import type { Map as MaplibreMap } from 'maplibre-gl'
 
 export type Axis = { faults?: 'full' | 'thin'; lw?: number; pr?: number; points?: boolean }
@@ -156,20 +156,27 @@ export function installMeasure(deps: MeasureDeps): void {
     measureOnce(deps, opts.phase ?? 'pan', opts.durationMs ?? 10000, opts.label ?? 'adhoc')
 
   // 反応表スイート: baseline から1軸ずつ振り、律速(CPU/頂点 か GPUフィルレート)を切り分ける。
+  //
+  // 2026-07-25 の実機（Surface Go 2）計測で、pan は全軸そろって p95 16.9ms（60Hz の vsync 上限）に
+  // 張り付き、塗り面積を 1/4 にしても頂点を 68% 削っても数値が動かなかった。天井より上の余裕は
+  // 原理的に測れないため、pan だけでは律速を判定できない（計画書 §6 結果記録）。
+  // 唯一劣化が出たのは zoom（p95 33.3ms・54fps・longtask 6件）なので、各軸を zoom でも測って
+  // 「実際に効いている局面」で切り分ける。所要は約2.3分（13計測 × 10秒）。
   w.__runLayerBSuite = async (labelBase = 'layerB', durationMs = 10000) => {
     const dpr = window.devicePixelRatio || 1
     const baseline: Axis = { faults: 'full', lw: 1.2, pr: dpr, points: true }
+    const axisPhases: Phase[] = ['pan', 'zoom']
     const runs: { name: string; axis: Axis; phases: Phase[] }[] = [
       { name: 'baseline', axis: baseline, phases: ['static', 'pan', 'zoom'] },
       // DPR軸: 下げて改善するなら GPU フィルレート律速
-      { name: 'dpr-1.0', axis: { ...baseline, pr: 1.0 }, phases: ['pan'] },
-      { name: 'dpr-0.75', axis: { ...baseline, pr: 0.75 }, phases: ['pan'] },
+      { name: 'dpr-1.0', axis: { ...baseline, pr: 1.0 }, phases: axisPhases },
+      { name: 'dpr-0.75', axis: { ...baseline, pr: 0.75 }, phases: axisPhases },
       // 頂点数軸: thin で改善するなら CPU/頂点処理律速
-      { name: 'verts-thin', axis: { ...baseline, faults: 'thin' }, phases: ['pan'] },
+      { name: 'verts-thin', axis: { ...baseline, faults: 'thin' }, phases: axisPhases },
       // 塗り面積軸: 線を太くして悪化するなら GPU フィルレート律速
-      { name: 'fill-lw4', axis: { ...baseline, lw: 4 }, phases: ['pan'] },
+      { name: 'fill-lw4', axis: { ...baseline, lw: 4 }, phases: axisPhases },
       // 点の寄与
-      { name: 'points-off', axis: { ...baseline, points: false }, phases: ['pan'] },
+      { name: 'points-off', axis: { ...baseline, points: false }, phases: axisPhases },
     ]
     console.log(`[layerB] suite 開始（device DPR ${dpr}・各 ${durationMs}ms）`)
     for (const run of runs) {

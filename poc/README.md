@@ -33,9 +33,9 @@ npm run dev:poc -- --host --port 5180
    ```js
    await window.__runLayerBSuite('surface-go2')
    ```
-4. baseline（静止/パン/ズーム）＋各軸（パン）を順に自動計測し、
+4. baseline（静止/パン/ズーム）＋各軸（**パン/ズーム**）を順に自動計測し、
    開発機の `scripts/perf/results/perf-*-surface-go2-*.json` へ自動保存される
-   （各10秒・全体で約1.5分）。進行は `[layerB]` コンソールログで分かる。
+   （13計測・各10秒・全体で約2.3分）。進行は `[layerB]` コンソールログで分かる。
 
 補助:
 - 単発計測: `await window.__measureLayerB({ phase:'pan', durationMs:10000, label:'xxx' })`
@@ -43,7 +43,7 @@ npm run dev:poc -- --host --port 5180
 
 ## 3軸と律速判定
 
-スイートは baseline から1軸だけ動かす。**パン時**の FPS / フレーム時間 p95 の反応で律速が決まる:
+スイートは baseline から1軸だけ動かす。フレーム時間 p95 の反応で律速が決まる:
 
 | 動かす軸 | run 名 | こう出たら |
 |---|---|---|
@@ -56,6 +56,23 @@ npm run dev:poc -- --host --port 5180
   → 計画書 §6「フィルレート律速だった場合の分岐」へ。間引き廃止は保留、DPR 抑制(`pixelRatio`)が本命。
 - **CPU/頂点律速**（頂点減で改善・DPR に鈍感）
   → MapLibre 化 GO。PoC 項目2以降（軽さ・カメラ・当たり判定・非加算合成）へ進む。
+
+### 【重要】p95 が 16.7ms 付近なら、その局面では判定できない
+
+**2026-07-25 実機（Surface Go 2・60Hz）の結果**: pan は全軸そろって p95 **16.9ms 一定**だった。
+塗り面積を 1/4 にしても頂点を 68% 削っても線幅を 3.3 倍にしても動かない。これは
+**baseline が既に vsync 上限（16.7ms）に張り付いていて、天井より上の余裕が原理的に測れない**ため。
+軸を振る前に **baseline が p95 > 16.7ms を出しているか**を必ず確認すること。
+
+- 飽和していたら「律速が特定できない」ではなく **「その局面では層 B が律速していない」** と読む。
+- 実機で唯一天井を破ったのは **zoom**（p95 33.3ms・54fps・longtask 6件/最大85ms）。そのため
+  各軸を `['pan','zoom']` で測るようにしてある（劣化が出る局面でこそ切り分けが効く）。
+- `max` は判定に使わない。単発のタイル読み込み・GC・`pixelRatio` 変更時の描画バッファ再確保が
+  乗って軸と無関係に上下する（実機では DPR を下げた run の方が max が悪化する非単調が出た）。
+
+数値・判定・次アクションの全文は
+[docs/webgl-layerb-verification-points.md](../docs/webgl-layerb-verification-points.md) と
+計画書 §6「結果記録」にある。
 
 ## 結果の読み方
 
