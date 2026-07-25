@@ -362,7 +362,7 @@
 
 - **PoC**: `poc/subthreshold.html` / `poc/subthreshold.ts`（使い捨て）。3ペイン比較 — 左=標準 circle（①違反の見本）／中=現行 SVG 相当の `<g opacity>` 見本（正解）／右=カスタムレイヤー（FBO 二層合成）。同一のテスト点配置（index3 を80点密集・index5 を80点密集・両者を重ねたクラスタの3群）。
 - **原理**: レベルごとに①オフスクリーン FBO へ**不透明**で全点を描き（同レベルの重なりは飽和＝濃くならない）→②その FBO を `subThresholdOpacity(level)` で本描画へ premultiplied over 合成（レベル間は別 FBO なので積み重なる）。現行 SVG の `<g opacity>` と等価。
-- **レビュー経緯**: `3c2ddaf`（初版）→ [webgl-poc-review-3c2ddaf.md](webgl-poc-review-3c2ddaf.md) の指摘 → `3a42d36`（feedback loop 解消・GL 状態復元）。LOW 1件（点ゼロのフレームで FBO 束縛が漏れる）は本番移植の着手時までの課題として未対応。
+- **レビュー経緯**: `3c2ddaf`（初版）→ [webgl-poc-review-3c2ddaf.md](webgl-poc-review-3c2ddaf.md) の指摘 → `3a42d36`（feedback loop 解消・GL 状態復元）。LOW 1件（点ゼロのフレームで FBO 束縛が漏れる）も対応済み（`render` 末尾の復元に `bindFramebuffer(mainFBO)` を追加）。
 - **計測環境**: Surface Go 2 実機（Edge）、viewport 1272×768・DPR 1.5・60Hz、開発機の `dev:poc` へ LAN 接続。`await window.__runSubSuite('surface-go2-sub')` で 3方式 × static/pan/zoom = 9計測・各8秒。証跡: `scripts/perf/results/perf-2026-07-25T15-0[7-8]-*-surface-go2-sub-*.json`（9件）。
 
 | 方式 | phase | p50 | p95 | fps | max | longtask 件/最大/合計 |
