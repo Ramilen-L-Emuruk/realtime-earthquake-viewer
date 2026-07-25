@@ -333,12 +333,14 @@ function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent
   const totalActive = activeCount || events.reduce((s, e) => s + e.lastSize, 0)
 
   // カードの枠・背景は最大震度の気象庁配色に合わせる（地図マーカー・EEW カードと一貫）。
-  // 確信度（検知/可能性/微弱）は枠色ではなく左上のチップで示す。
-  // 震度1未満（faint＝震度0級で最大震度ラベルが無い）は震度色が定まらないため、確信度ティア色（淡青）へフォールバック。
+  // 確信度（検知/可能性/微弱）は枠色ではなく左上のチップで示す。枠色にティア（確信度）を
+  // 混ぜると、everConfirmed のラッチ（明滅防止）で confirmed が震度1未満まで減衰した後も
+  // 保持され続ける間、震度0なのに赤枠のままになる不整合が起きるため、震度1未満は常に
+  // 震度0の色（SHINDO0_COLOR）へフォールバックする（ティアには依存しない）。
   const maxJma = kyoshinIndexToJma(maxIndex)
   const hasIntensity = maxJma != null && maxJma.label !== '0'
-  const frameBorder = hasIntensity ? getIntensityColor(maxJma.scale) : tier.border
-  const frameBg = hasIntensity ? getIntensityBgColor(maxJma.scale) : tier.bg
+  const frameBorder = hasIntensity ? getIntensityColor(maxJma.scale) : SHINDO0_COLOR
+  const frameBg = hasIntensity ? getIntensityBgColor(maxJma.scale) : 'rgba(42,42,42,0.6)'
 
   return (
     <div className="rounded-lg overflow-hidden" style={{ border: `1px solid ${frameBorder}`, backgroundColor: frameBg }}>
