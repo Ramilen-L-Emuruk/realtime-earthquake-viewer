@@ -1,10 +1,14 @@
-# 層B PoC 計測改訂（`4b0517c`）レビュー — ウォームアップ交絡の残存
+# 層B PoC 計測 レビュー綴り（`4b0517c` → `ef18b34`）
 
-> 対象コミット: `4b0517c` perf: 層B PoC計測を負荷上げ方向へ改訂（飽和・ウォームアップ交絡に対処）
+> 対象コミット: `4b0517c`（負荷上げ方向への改訂・ウォームアップ導入）→ `ef18b34`（本レビュー HIGH/LOW 対応）
 > 対象ファイル: `poc/measure.ts` / `poc/main.ts` / `poc/README.md`
 > 関連: 計画書 [webgl-rendering-migration-plan.md](webgl-rendering-migration-plan.md) §6 ／ 観点 [webgl-layerb-verification-points.md](webgl-layerb-verification-points.md) ／ 手順 [poc/README.md](../poc/README.md)
-> レビュー日: 2026-07-25
-> **ステータス: 対応済み（`ef18b34`）。HIGH 2件・LOW 3件すべて修正。下記「対応記録」参照**
+> レビュー日: 2026-07-25（第1ラウンド: `4b0517c` ／ 第2ラウンド: `ef18b34`）
+>
+> **ステータス:**
+> - 第1ラウンドの **HIGH 2件・LOW 3件は `ef18b34` で対応済み**。独立検証で修正を実測確認（下記「対応記録・独立検証」）
+> - **【未対応】新規 HIGH 1件**: pan 計測の開始 zoom が run ごとに揃っていない（下記「4.」）。
+>   飽和している現状では表に出ないが、**天井を破れた瞬間に頂点軸を汚す**。実機で回す前の対応を推奨
 
 ## 結論
 
@@ -165,18 +169,27 @@ for (const run of runs) {
 
 ---
 
-## 推奨対応順
+## 推奨対応順（第1ラウンド時点・すべて `ef18b34` で対応済み）
 
-1. **HIGH 1**（`warmup()` を `[4,5,6,7,5]` に）— 1行の変更で効果が大きい
-2. **HIGH 2**（`applyAxis` のジオメトリ差し替え後に `warmup()` 再実行）
-3. LOW 3件（README・冒頭コメントの整合、`points-off` の可否判断）
-4. その後に実機で `__runLayerBSuite('surface-go2')` を実行
+1. ~~**HIGH 1**（`warmup()` を `[4,5,6,7,5]` に）~~ → 対応済み
+2. ~~**HIGH 2**（ジオメトリ差し替え後に `warmup()` 再実行）~~ → 対応済み
+3. ~~LOW 3件~~ → 対応済み
 
 HIGH 2件を残したまま実機で回すと、交絡対策を入れた回でありながら最も高いコスト
 （geojson-vt 再タイル化）が baseline と `verts-thin` に残るため、
-**判定を誤る危険が対策前と同程度に残る**。
+判定を誤る危険が対策前と同程度に残っていた。
 
-## 対応記録（`ef18b34`）
+## 現時点の残タスク（第2ラウンド）
+
+1. **【HIGH】4. pan 計測の開始 zoom を揃える**（下記「4.」。`measureOnce` 冒頭に `setZoom(5)` を追加）
+2. その後に実機で `__runLayerBSuite('surface-go2')` を実行
+
+4. を残したまま実機で回しても、**飽和している限りは結果に影響しない**（全 run 16.9ms）。
+ただし `ef18b34` の狙いどおり天井を破れた場合、頂点軸（`verts-thin`）の比較が
+開始 zoom の差で汚れる。**天井を破れたときにだけ牙を剥く**性質のため、
+「破れてから直す」では計測をやり直す手間が生じる。先に入れておくのが安い。
+
+## 対応記録・独立検証（`ef18b34`）
 
 上記 HIGH 2件・LOW 3件はすべて対応済み（コミット `ef18b34` fix: 層B PoC計測のウォームアップ交絡残存を修正）。
 
@@ -190,7 +203,119 @@ HIGH 2件を残したまま実機で回すと、交絡対策を入れた回で�
 
 計測数 17→19。`tsc -b` 通過。GPU フレーム時間・CPU スロットル・Leaflet 比較は下記のとおり引き続き別工数。
 
-## 引き続き別工数の課題（このコミットの範囲外）
+### 独立検証の結果（レビュー側で再実測・開発機 Chrome 150）
+
+修正の主張を鵜呑みにせず、レビュー側で計測し直した。**HIGH 1・2 はいずれも修正を確認**。
+
+**HIGH1**: 修正後 `warmup()` `[4,5,6,7,5]` のソース別到達 z と、連続スイープ中の初出:
+
+| ソース | 到達した z | スイープ中の初出（漏れ） |
+|---|---|---|
+| `gebco` | 5, 6, 7, 8 | なし |
+| `faults` | **4, 5, 6, 7** | **なし** |
+| `points` | **4, 5, 6, 7** | **なし** |
+
+3ソースすべて漏れゼロ。z6 が埋まった。
+
+**HIGH2**: スイート全 run の `prevFaults` 遷移を追跡し、温め直しが走る箇所を確認:
+
+| run | `axis.faults` | `warmup()` 再実行 | 妥当性 |
+|---|---|---|---|
+| baseline / overload / dpr-2.0 / fill-lw12 / fill-lw8 | full | なし | ○ 冒頭 warmup 済み |
+| **verts-thin** | thin | **あり** | ○ full→thin の差し替え |
+| **dpr-1.0** | full | **あり** | ○ thin→full の復帰 |
+| points-off | full | なし | ○ 直前が full |
+| `baseline-warm` 前 | full | なし（ガードは通るが不発） | ○ 冗長だが無害 |
+
+**LOW 3件**も対応を確認。計測数 19（baseline 3 ＋ 軸7種×2局面 14 ＋ `baseline-warm` 2）・README の「約3.5分」も妥当。
+
+---
+
+## 【HIGH】4. pan 計測の開始 zoom が run ごとに揃っていない（`ef18b34` 時点で**未対応**）
+
+### 現象
+
+`startDrive` の zoom 駆動は「現在位置から ±0.02 刻みで z4〜7 を往復」する実装のため、
+**計測終了時にどの zoom で止まるかが不定**。実測:
+
+| 駆動時間 | 終了 zoom |
+|---|---|
+| 3,000ms | 5.42 |
+| 5,000ms | 4.96 |
+| **7,000ms** | **6.66** |
+| 10,000ms | 4.92 |
+
+各 run は `phases: ['pan', 'zoom']` の順で回るため、
+**run N の pan 計測は、run N−1 の zoom 計測が残した任意の位置から始まる**。
+
+### なぜ重要か — 頂点軸を狙い撃ちで汚す
+
+zoom によって描画対象のジオメトリ量が大きく変わる（実測）:
+
+| zoom | 可視 `faults` 頂点数 | 可視観測点 |
+|---|---|---|
+| 4 | 5,701 | 1,458 |
+| **5** | **7,043** | 1,418 |
+| 6 | 6,413 | 1,014 |
+| 6.7 | 3,237 | 454 |
+| **7** | **3,105**（z5 の 44%） | **317**（z5 の 22%） |
+
+塗り面積はビューポート固定なので DPR 軸・線幅軸への影響は小さいが、
+**頂点数と点数は zoom で 2 倍以上変わる**。つまりこの交絡は
+**HIGH2 で対処したのと同じ「CPU/頂点律速を判定する軸」を汚す**。
+
+さらに **`ef18b34` の修正が開始 zoom の不揃いを一段強めている**:
+`warmup()` が走る run（`verts-thin` / `dpr-1.0`）は warmup 末尾の **z5 から決定的に**始まる一方、
+他の run は前 run の残した不定位置から始まる。再タイル化の非対称を解消した代わりに、
+開始 zoom の非対称が生じた形。
+
+**現状は全 run が p95 16.9ms に飽和しているため表面化しない。**
+ただし `ef18b34` の目的は vsync 天井（16.7ms）を破ることであり、
+**破れた瞬間にこの交絡が効き始める**。
+
+### 修正案
+
+`measureOnce` の冒頭（既存の `waitIdle` の直前）でカメラを固定位置へ戻す:
+
+```ts
+const START_ZOOM = 5
+
+async function measureOnce(...) {
+  const { map } = deps
+  map.setZoom(START_ZOOM)   // 全計測を同じ描画量から開始させる
+  await waitIdle(map)
+  ...
+}
+```
+
+`warmup()` も z5 で終わるため、これで**全計測が z5 開始で揃う**。
+pan 駆動（`panBy` ±600px で反転）は水平方向にほぼ戻るため、中心のドリフトは有界で追加対処は不要。
+
+### 再現手順
+
+```js
+// zoom 駆動を模して、終了位置が駆動時間で変わることを見る
+for (const ms of [3000, 7000]) {
+  __pocMap.setZoom(5); await new Promise(r => __pocMap.once('idle', r))
+  let dir = 1; const t0 = performance.now()
+  await new Promise(res => { const step = () => {
+    let nz = __pocMap.getZoom() + 0.02 * dir
+    if (nz >= 7) { nz = 7; dir = -1 } else if (nz <= 4) { nz = 4; dir = 1 }
+    __pocMap.setZoom(nz)
+    if (performance.now() - t0 >= ms) return res()
+    requestAnimationFrame(step)
+  }; requestAnimationFrame(step) })
+  console.log(ms, '→ 終了zoom', __pocMap.getZoom().toFixed(2))
+}
+
+// zoom ごとの可視ジオメトリ量
+__pocMap.setZoom(7); await new Promise(r => __pocMap.once('idle', r))
+__pocMap.queryRenderedFeatures({ layers: ['points'] }).length   // 317
+__pocMap.setZoom(5); await new Promise(r => __pocMap.once('idle', r))
+__pocMap.queryRenderedFeatures({ layers: ['points'] }).length   // 1418
+```
+
+## 引き続き別工数の課題（`4b0517c` / `ef18b34` いずれの範囲外）
 
 計画書 §6 測定方法の指定のうち、未対応のまま残っているもの:
 
