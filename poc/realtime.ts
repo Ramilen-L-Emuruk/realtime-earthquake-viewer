@@ -51,6 +51,11 @@ const PREF_BORDER = '#56607a' // 県境
 // 全計測の開始 zoom（可視ジオメトリ量＝描画量を揃える。measure.ts と同思想）
 const START_ZOOM = 5
 const REPORT_URL = '/__perf-report'
+// 更新起因フレームを測るウィンドウ幅（レビュー HIGH6）。apply/triggerRepaint 直後、計測用 rAF は
+// MapLibre の再描画(render)より先に発火するため、直後 1 フレームは apply の CPU コストしか乗らず、
+// 全画面再描画は次フレームへ落ちる。直後 N フレームの dt を集めてその最大を 1 サンプルとし、再描画
+// フレームを取りこぼさない。開発機実測で render は apply 直後 2 フレーム目（16.8ms）に乗ることを確認。
+const UPDATE_FRAME_WINDOW = 2
 
 type LevelProps = { lvl: number }
 // 計測モード: baseline=更新なしの床 / repaint-only=更新なしで全画面再描画のみ（再描画コスト単独・提案4）/
@@ -339,19 +344,25 @@ async function measureRealtime(mode: Mode, durationMs: number, label: string) {
   resetToBaseline()
   await waitIdle()
 
-  // 更新起因フレームを名指しで測る（レビュー MEDIUM1）。毎秒 1 回の更新は全フレームの ~1.7%(実機60Hz)
-  // しか占めず p95(上位5%を切る)の外に埋もれるため、setInterval で pendingUpdate を立て、直後の rAF
-  // フレームの所要時間だけを updateFrameMs に集める。「毎秒カクつくか」に直答するのはこの分布と longTask。
+  // 更新起因フレームを名指しで測る（レビュー MEDIUM1 / HIGH6）。毎秒 1 回の更新は全フレームの
+  // ~1.7%(実機60Hz) しか占めず p95(上位5%を切る)の外に埋もれるため、更新フレームを名指しで測る。
+  // ただし計測用 rAF は再描画(render)より先に発火する（HIGH6）ので、apply 直後 1 フレームは apply の
+  // CPU しか乗らない。直後 UPDATE_FRAME_WINDOW フレームの dt を集め、その最大（＝再描画を含むフレーム）
+  // を 1 サンプルとして updateFrameMs に入れる。「毎秒カクつくか」に直答するのはこの分布と longTask。
   const frameDeltas: number[] = []
   const updateFrameMs: number[] = []
-  let pendingUpdate = false
+  let framesToWatch = 0
+  let updateSpan: number[] = []
   let last = performance.now()
   let rafId = requestAnimationFrame(function loop(t) {
     const dt = t - last
     frameDeltas.push(dt)
-    if (pendingUpdate) {
-      updateFrameMs.push(dt)
-      pendingUpdate = false
+    if (framesToWatch > 0) {
+      updateSpan.push(dt)
+      if (--framesToWatch === 0) {
+        updateFrameMs.push(Math.max(...updateSpan))
+        updateSpan = []
+      }
     }
     last = t
     rafId = requestAnimationFrame(loop)
@@ -386,7 +397,9 @@ async function measureRealtime(mode: Mode, durationMs: number, label: string) {
         map.triggerRepaint() // repaint-only: 属性更新なしで全画面再描画だけ要求する
       }
       applyMs.push(performance.now() - t0)
-      pendingUpdate = true
+      // 再描画は apply 直後の次フレームに乗るため、直後 UPDATE_FRAME_WINDOW フレームを監視する（HIGH6）
+      framesToWatch = UPDATE_FRAME_WINDOW
+      updateSpan = []
     }, 1000)
   }
 
@@ -427,8 +440,9 @@ async function measureRealtime(mode: Mode, durationMs: number, label: string) {
       p95: frame.p95,
       max: frame.max,
     },
-    // 【判定はこれで読む】更新起因フレームの所要時間分布（レビュー MEDIUM1）。毎秒スパイクは frame.p95 に
-    // 埋もれるため、更新直後フレームを名指しで測ったこの値・max・longTask で「毎秒カクつくか」を判定する。
+    // 【判定はこれで読む】更新起因フレームの所要時間分布（レビュー MEDIUM1 / HIGH6）。毎秒スパイクは
+    // frame.p95 に埋もれるため、apply 直後ウィンドウの最大（＝全画面再描画を含むフレーム）を名指しで
+    // 測ったこの値・max・longTask で「毎秒カクつくか」を判定する。
     updateFrame: mode === 'baseline' ? null : stats(updateFrameMs),
     // 更新処理そのものの所要時間（メインスレッド同期部分）。feature-state はこれが更新 CPU の実体。
     // setData は再タイル化が worker で非同期のため、この値は同期部分のみ＝実コストの下界（過小評価）。
