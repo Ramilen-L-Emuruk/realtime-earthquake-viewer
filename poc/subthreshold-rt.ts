@@ -416,9 +416,11 @@ function makeSubThresholdRtLayer(positions: Float32Array, n: number) {
 // カスタムレイヤーは GeoJSON ソースを介さないため、座標は事前に Mercator へ変換して 1 本のバッファに詰める。
 // TARGET_POINTS が実観測点数を超える場合（レビュー HIGH2 の負荷軸③ 17,250 等）は実測点を巡回で複製して
 // 埋める。GPU/CPU負荷の測定が目的で観測点の実在性は問わないため、位置の重複は許容する。
-// 注意（セルフレビュー MEDIUM）: 同一座標が複数 index を持つため genLevels で異なるレベルを引くと、
-// 同一ピクセルで異レベルの点が重なって見える（drawcall・断片数など計測コストには影響しない）。
-// ③スケールで目視確認する場合、色の重なりが不自然に見えても実装のバグではない。
+// 注意（レビュー MEDIUM6）: 同一座標が複数 index を持つため genLevels で異なるレベルを引くと、
+// 同一ピクセルで異レベルの点が重なって見える。断片数・頂点処理・転送量は点数に比例して増える
+// （計測コストには効く）——増えないのは可視の塗り面積だけ（実測: ②4,372点→③17,250点で
+// 塗りピクセル+0.8%。ユニーク座標が②で頭打ちのため）。③は方式間の相対比較には有効だが、
+// 本番の観測点分布（重複なし）とは可視負荷の性質が異なるため本番負荷の予測には使えない。
 async function loadPositions(): Promise<Float32Array> {
   const d: { stations: Record<string, [number, number]> } = await fetch(
     '/data/station-coords.json',
