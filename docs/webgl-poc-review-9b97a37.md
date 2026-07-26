@@ -5,10 +5,13 @@
 > 関連: 計画書 [webgl-rendering-migration-plan.md](webgl-rendering-migration-plan.md) §6 検証項目6 ／ 前レビュー [webgl-poc-review-3c2ddaf.md](webgl-poc-review-3c2ddaf.md)・[webgl-poc-review-4b0517c.md](webgl-poc-review-4b0517c.md)
 > レビュー日: 2026-07-25（開発機 Chrome 150 / RTX 4070 Ti / DPR 1 / **165Hz モニタ**）
 >
-> **ステータス: HIGH 7 まで対応済み・方式差の分離を実測確認。残るは LOW 8 のみ（実機計測は可）**
-> - **【未対応・新規】LOW 8**: 計測終了時に最後の apply の裾が切れ、`settle` に ~0ms の打ち切り
->   サンプルが混入（`mean` が約 17% 下振れ）・`updateFrame` が 1 件欠ける（`n = applyN − 1`）。
->   **`p50` / `max` は無傷で結論は変わらない**ため、実機計測はこのまま進めてよい（下記「8.」）
+> **ステータス: レビュー全件対応済み・検証項目6 は実機でクリア（この綴りは完了）**
+> - **【対応済み `d0e1f5f`】LOW 8**: 計測終了時に最後の apply の裾が切れる問題（`settle` に ~0ms の
+>   打ち切りサンプルが混入して `mean` が約 17% 下振れ・`updateFrame` が 1 件欠落・`console.assert` が
+>   `updateFrameMs` を検査せず誤って通る）を、計測ウィンドウ後の**排水期間 `DRAIN_MS`(=1000ms)** で解消。
+>   実測で apply/settle/updateFrame の n が全モード一致（6/6/6）・`settle` の mean が p50 相当
+>   （setData: p50 317 / mean 316.9）・排水期間のフレームが frame 統計に混ざっていない（n=1019＝
+>   6000ms 分のみ）ことを確認（下記「8.」）
 > - 設計・実装は妥当で、前レビューの教訓が全て反映されていた。指摘はいずれも指標・負荷の精度に関するもの
 > - **【対応済み `e27552b`】HIGH 7**: `updateFrame` が `setData` の負荷（worker 再タイル化の数百ms バースト）を
 >   捉えない問題を、apply→次の idle までの収束時間 `settle` を計測項目に追加して解消（feature-state は render
@@ -378,7 +381,7 @@ map.once('idle', () => console.log('settle', performance.now() - t0))  // → 31
 
 ---
 
-## 【LOW】8. 計測終了時に最後の apply の裾が切られる（`e27552b` 時点で**未対応**）
+## 【LOW】8. 計測終了時に最後の apply の裾が切られる（**`d0e1f5f` で対応済み**）
 
 HIGH 7 の対応で入った `settle` は**方式差を正しく分離できている**（下記「検証」）。
 ただし**計測ウィンドウの末端で最後の apply の裾が切れる**ため、2 つの副作用がある。
@@ -459,4 +462,14 @@ apply:       n=6
    → **実施済み（証跡 `perf-2026-07-26T03-2[23]-*-surface-go2-rt-*` 4件）。検証項目6 はクリア**
    — `repaint-only` の収束 6.6ms・`feature-state` 16.3ms・`setData` 356.1ms（いずれも `settleTimeouts` 0）。
    fps 59.8〜60・longtask 全モード 0 件・実機目視でカクつきなし・`ERROR:` なし。
-   本設計は `feature-state` 採用。結果は計画書 §6 結果記録（検証項目6） ← **準備完了。次はこれ**
+   本設計は `feature-state` 採用。結果は計画書 §6 結果記録（検証項目6）
+9. ~~**【LOW】8** 計測ウィンドウ末端の裾切れ（排水期間を設ける・`console.assert` に `updateFrame` を追加）~~
+   → **`d0e1f5f` で対応**（`DRAIN_MS`=1000ms の排水期間・`windowOpen` で frame 統計を分離）。
+   実測で n が全モード一致・`settle` の mean が p50 相当・排水フレームが frame 統計に混ざらないことを確認
+
+---
+
+**この綴りは完了。** 検証項目6 は実機でクリアし、レビュー指摘（MEDIUM 1・HIGH 2・LOW 3・提案 1・情報 1）は
+全件対応済み。指標は 4 往復（`p95` → `updateFrame` → 窓拡張 → `render` 起点＋`settle` → 排水期間）を経て
+**方式差を正しく分離できる状態**になった。次の論点は計画書 §6「検証項目5×6 の交差点」
+（カスタムレイヤーの毎秒更新・未検証）。
