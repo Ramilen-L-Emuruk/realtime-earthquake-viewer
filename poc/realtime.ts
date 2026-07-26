@@ -6,8 +6,9 @@
 // 変われば全ビューポート再描画になる（ダブルバッファの swap で前フレームを保持しないため、
 // SVG のような「変わった要素だけ再ラスタライズ」ができない）。
 //
-// 「全画面」には観測点だけでなく本番のベースマップ（陸地塗り＋細分区域境界＋県境の約6万頂点）も
-// 含まれ、毎秒まとめて塗り直される。そこで本番相当のベースマップを敷いた上で、更新方式ごとに
+// 「全画面」には観測点だけでなく本番のベースマップ（陸地塗り＋細分区域境界＋県境の約4万頂点。県境リングは
+// fill と line の両方で描画されるため実描画頂点は 40,917）も含まれ、毎秒まとめて塗り直される。そこで
+// 本番相当のベースマップを敷いた上で、更新方式ごとに
 // 「毎秒の全画面再描画」＋「更新の CPU コスト」を切り分けて測る:
 //   - baseline     : 更新なし（静止の床）
 //   - feature-state: 既に GPU に乗った頂点の状態(色)だけ更新。再タイル化なし＝更新 CPU 最小・
@@ -52,6 +53,9 @@ const START_ZOOM = 5
 const REPORT_URL = '/__perf-report'
 
 type LevelProps = { lvl: number }
+// 計測モード: baseline=更新なしの床 / repaint-only=更新なしで全画面再描画のみ（再描画コスト単独・提案4）/
+// feature-state=GPU 上の状態(色)だけ更新 / setData=GeoJSON 丸ごと差し替え。
+type Mode = 'baseline' | 'repaint-only' | 'feature-state' | 'setData'
 
 const map = new maplibregl.Map({
   container: 'map',
@@ -62,7 +66,9 @@ const map = new maplibregl.Map({
   style: {
     version: 8,
     sources: {
-      gebco: { type: 'raster', tiles: [BATHYMETRY_URL], tileSize: 256 },
+      // maxzoom: タイルセットの実カバレッジ上限（z7）。未指定だと手動で z8+ にズームした際に存在しない
+      // タイルを要求して 404 がコンソールを埋め、ERROR: の目視確認と紛らわしい（レビュー情報5）。
+      gebco: { type: 'raster', tiles: [BATHYMETRY_URL], tileSize: 256, maxzoom: 7 },
     },
     layers: [
       { id: 'bg', type: 'background', paint: { 'background-color': '#0a0c10' } },
@@ -83,7 +89,9 @@ async function loadPoints(): Promise<FeatureCollection<Point, LevelProps>> {
     '/data/station-coords.json',
   ).then((r) => r.json())
   const coords = Object.values(d.stations)
-  const step = Math.max(1, Math.round(coords.length / TARGET_POINTS))
+  // floor で間引き間隔を決める（round だと 4,372/1,725≈2.53 が 3 に切り上がり 1,458 点＝目標の 85% しか
+  // 残らない。floor なら step=2 で 2,186 点候補→slice で 1,725 ちょうど）。レビュー LOW2。
+  const step = Math.max(1, Math.floor(coords.length / TARGET_POINTS))
   const sampled = coords.filter((_, i) => i % step === 0).slice(0, TARGET_POINTS)
   return {
     type: 'FeatureCollection',
@@ -117,7 +125,8 @@ async function loadBasemap(): Promise<{
   for (const shape of Object.values(prefs)) {
     for (const ring of shape.rings) {
       const coords = ring.map(([lat, lng]) => [lng, lat] as [number, number])
-      v += coords.length
+      // 県境リングは fill と prefLines の両方で描画されるため、頂点は 2 回計上する（レビュー LOW3）。
+      v += coords.length * 2
       fill.push({
         type: 'Feature',
         properties: {},
@@ -258,7 +267,7 @@ map.on('error', (e) => {
 })
 
 // --- 手動確認用の毎秒更新トグル（本計測は __runRealtimeSuite が自動駆動する） ---
-let currentMode: 'baseline' | 'feature-state' | 'setData' = 'baseline'
+let currentMode: Mode = 'baseline'
 let manualTimer: number | undefined
 
 function startManual(mode: 'feature-state' | 'setData'): void {
@@ -289,8 +298,6 @@ document.getElementById('sdBtn')?.addEventListener('click', () => startManual('s
 document.getElementById('stopBtn')?.addEventListener('click', () => stopManual())
 
 // --- 計測ランナー（measure.ts の p95/longtask/report/warmup 手法を踏襲。駆動は毎秒更新） ---
-type Mode = 'baseline' | 'feature-state' | 'setData'
-
 function waitIdle(timeoutMs = 8000): Promise<void> {
   return new Promise((res) => {
     const t = setTimeout(res, timeoutMs)
@@ -332,10 +339,20 @@ async function measureRealtime(mode: Mode, durationMs: number, label: string) {
   resetToBaseline()
   await waitIdle()
 
+  // 更新起因フレームを名指しで測る（レビュー MEDIUM1）。毎秒 1 回の更新は全フレームの ~1.7%(実機60Hz)
+  // しか占めず p95(上位5%を切る)の外に埋もれるため、setInterval で pendingUpdate を立て、直後の rAF
+  // フレームの所要時間だけを updateFrameMs に集める。「毎秒カクつくか」に直答するのはこの分布と longTask。
   const frameDeltas: number[] = []
+  const updateFrameMs: number[] = []
+  let pendingUpdate = false
   let last = performance.now()
   let rafId = requestAnimationFrame(function loop(t) {
-    frameDeltas.push(t - last)
+    const dt = t - last
+    frameDeltas.push(dt)
+    if (pendingUpdate) {
+      updateFrameMs.push(dt)
+      pendingUpdate = false
+    }
     last = t
     rafId = requestAnimationFrame(loop)
   })
@@ -351,16 +368,25 @@ async function measureRealtime(mode: Mode, durationMs: number, label: string) {
     po = null
   }
 
-  // 毎秒 1 回、全点更新を回す（baseline は駆動なし）
+  // 毎秒 1 回、更新を回す（baseline は駆動なし）。repaint-only は属性更新せず全画面再描画だけ要求し、
+  // 再描画コスト単独を測る（feature-state − repaint-only ≒ 更新 CPU 分）。レビュー提案4。
   const applyMs: number[] = []
   let timer: number | undefined
   if (mode !== 'baseline') {
-    const apply = mode === 'feature-state' ? applyFeatureState : applySetData
+    const apply =
+      mode === 'feature-state' ? applyFeatureState : mode === 'setData' ? applySetData : null
     timer = window.setInterval(() => {
-      const lv = genLevels(pointCount)
-      const t0 = performance.now()
-      apply(lv)
+      let t0: number
+      if (apply) {
+        const lv = genLevels(pointCount) // 更新値生成は計測外（apply の同期コストだけを applyMs に入れる）
+        t0 = performance.now()
+        apply(lv)
+      } else {
+        t0 = performance.now()
+        map.triggerRepaint() // repaint-only: 属性更新なしで全画面再描画だけ要求する
+      }
       applyMs.push(performance.now() - t0)
+      pendingUpdate = true
     }, 1000)
   }
 
@@ -401,9 +427,12 @@ async function measureRealtime(mode: Mode, durationMs: number, label: string) {
       p95: frame.p95,
       max: frame.max,
     },
+    // 【判定はこれで読む】更新起因フレームの所要時間分布（レビュー MEDIUM1）。毎秒スパイクは frame.p95 に
+    // 埋もれるため、更新直後フレームを名指しで測ったこの値・max・longTask で「毎秒カクつくか」を判定する。
+    updateFrame: mode === 'baseline' ? null : stats(updateFrameMs),
     // 更新処理そのものの所要時間（メインスレッド同期部分）。feature-state はこれが更新 CPU の実体。
     // setData は再タイル化が worker で非同期のため、この値は同期部分のみ＝実コストの下界（過小評価）。
-    // setData の真の負荷は frame.p95 / longTask（再タイル化がフレーム遅延・longtask に現れる）で読む。
+    // repaint-only は triggerRepaint 要求コストのみ（ほぼ 0）。総合影響は updateFrame / max / longTask で読む。
     apply: mode === 'baseline' ? null : stats(applyMs),
     longTask: {
       count: po ? longTasks.length : -1,
@@ -435,13 +464,14 @@ const w = window as unknown as Record<string, unknown>
 w.__measureRealtime = (opts: { mode?: Mode; durationMs?: number; label?: string } = {}) =>
   measureRealtime(opts.mode ?? 'feature-state', opts.durationMs ?? 12000, opts.label ?? 'adhoc')
 
-// 反応表スイート: ウォームアップ → baseline / feature-state / setData を順に毎秒更新で測る。
-// durationMs=12000 なら各 12 サンプルの applyMs が取れる。
+// 反応表スイート: ウォームアップ → baseline / repaint-only / feature-state / setData を順に毎秒更新で測る。
+// durationMs=12000 なら各 12 サンプルの updateFrame / applyMs が取れる。
 w.__runRealtimeSuite = async (labelBase = 'realtime', durationMs = 12000) => {
   console.log('[rt] ウォームアップ（z4〜7 全整数・非計測）')
   await warmup()
   console.log(`[rt] suite 開始（device DPR ${window.devicePixelRatio}・各 ${durationMs}ms）`)
   await measureRealtime('baseline', durationMs, `${labelBase}-baseline`)
+  await measureRealtime('repaint-only', durationMs, `${labelBase}-repaint`)
   await measureRealtime('feature-state', durationMs, `${labelBase}-fs`)
   await measureRealtime('setData', durationMs, `${labelBase}-setdata`)
   console.log('[rt] suite 完了')

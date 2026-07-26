@@ -71,7 +71,8 @@ async function loadPoints(): Promise<FeatureCollection<Point>> {
     '/data/station-coords.json',
   ).then((r) => r.json())
   const coords = Object.values(d.stations)
-  const step = Math.max(1, Math.round(coords.length / TARGET_POINTS))
+  // floor で間引き間隔を決める（round だと step=3 で 1,458 点＝目標の 85% しか残らない）。レビュー LOW2。
+  const step = Math.max(1, Math.floor(coords.length / TARGET_POINTS))
   const sampled = coords.filter((_, i) => i % step === 0).slice(0, TARGET_POINTS)
   return {
     type: 'FeatureCollection',
