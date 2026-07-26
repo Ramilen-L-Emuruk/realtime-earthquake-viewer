@@ -55,6 +55,10 @@ const REPORT_URL = '/__perf-report'
 // (1000ms)を超えて収束しないと idle が発火せず settle が沈黙するため、この時間で打ち切って下限値を計上し、
 // 収束しなかった事実を settleTimeouts で明示する。周期の数倍を取る。
 const SETTLE_TIMEOUT_MS = 5000
+// 計測ウィンドウ終了後、末尾 apply の再描画/収束を拾う排水期間（レビュー LOW8）。周期分待てば最後の apply の
+// settle/updateFrame が確定する（即確定だと計測終了と同時の apply が tEnd-t≈0 で打ち切られ mean が下振れし、
+// updateFrame が 1 件欠ける）。排水後もなお未収束の apply だけを打ち切り対象にする。
+const DRAIN_MS = 1000
 
 type LevelProps = { lvl: number }
 // 計測モード: baseline=更新なしの床 / repaint-only=更新なしで全画面再描画のみ（再描画コスト単独・提案4）/
@@ -361,10 +365,11 @@ async function measureRealtime(mode: Mode, durationMs: number, label: string) {
   let settleTimeouts = 0
   const pendingApplies: number[] = [] // 未解決 apply の時刻を FIFO で保持し、全 apply を個別に解決する
   let measuring = true
+  let windowOpen = true // durationMs の計測ウィンドウ中のみ true（排水期間中は false・frame 集計から除く）
   let last = performance.now()
   let rafId = requestAnimationFrame(function loop(t) {
     const dt = t - last
-    frameDeltas.push(dt)
+    if (windowOpen) frameDeltas.push(dt) // frame は計測ウィンドウ分のみ。排水期間の dt は含めない（LOW8）
     if (updateArmed && updateRendered) {
       updateFrameMs.push(dt)
       updateArmed = false
@@ -440,8 +445,13 @@ async function measureRealtime(mode: Mode, durationMs: number, label: string) {
 
   await new Promise((r) => setTimeout(r, durationMs))
 
+  // 計測ウィンドウ終了。frame 集計を止め、setInterval だけ止めて排水期間（DRAIN_MS）を待つ。この間も
+  // onIdle/onRender/rafId は生きているため、末尾 apply の settle/updateFrame の裾が確定する（レビュー LOW8）。
+  windowOpen = false
   if (timer != null) clearInterval(timer)
-  // 計測終了時点で未収束の apply は「収束せず打ち切り」として経過時間（下限）を計上し、全 apply を必ず
+  await new Promise((r) => setTimeout(r, DRAIN_MS))
+
+  // 排水後もなお未収束の apply だけを「収束せず打ち切り」として経過時間（下限）で計上し、全 apply を必ず
   // settle に残す（レビュー CRITICAL: 最悪ケースで settle が空・settleTimeouts=0 に化けるのを防ぐ）。
   const tEnd = performance.now()
   for (const t of pendingApplies) settleMs.push(tEnd - t)
@@ -456,8 +466,8 @@ async function measureRealtime(mode: Mode, durationMs: number, label: string) {
   const frame = stats(frameDeltas)
   // 全 apply が idle / timeout / 打ち切りのいずれかで settle に記録されているはず（記録漏れの自己検知）
   console.assert(
-    settleMs.length === applyMs.length,
-    `settle 記録漏れ: settleMs=${settleMs.length} applyMs=${applyMs.length}`,
+    settleMs.length === applyMs.length && updateFrameMs.length === applyMs.length,
+    `記録漏れ: settle=${settleMs.length} updateFrame=${updateFrameMs.length} apply=${applyMs.length}`,
   )
 
   const result = {
