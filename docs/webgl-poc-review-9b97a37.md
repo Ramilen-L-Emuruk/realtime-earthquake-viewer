@@ -5,11 +5,17 @@
 > 関連: 計画書 [webgl-rendering-migration-plan.md](webgl-rendering-migration-plan.md) §6 検証項目6 ／ 前レビュー [webgl-poc-review-3c2ddaf.md](webgl-poc-review-3c2ddaf.md)・[webgl-poc-review-4b0517c.md](webgl-poc-review-4b0517c.md)
 > レビュー日: 2026-07-25（開発機 Chrome 150 / RTX 4070 Ti / DPR 1 / **165Hz モニタ**）
 >
-> **ステータス: 実機計測の前に MEDIUM 1件の対応を推奨**
-> - 設計・実装は妥当。**前レビューの教訓が全て反映されている**
-> - **【未対応】MEDIUM 1**: `p95` は毎秒スパイクを**構造的に拾えない**。このまま実機で回すと
->   「p95 は問題なし」と読めてしまい、肝心のカクつきを見逃す
-> - **【未対応】LOW 2件**（点数が目標の 85% / ベースマップ頂点数の数え方）・**提案 1件**
+> **ステータス: レビュー全件を `3560156` で対応済み（実機計測の準備完了）**
+> - 設計・実装は妥当で、前レビューの教訓が全て反映されていた。指摘はいずれも指標・負荷の精度に関するもの
+> - **【対応済み `3560156`】MEDIUM 1**: 更新起因フレームを名指しで記録する `updateFrame` を追加し、
+>   判定指標を `frame.p95` から `updateFrame` / `max` / `longTask` へ移した
+> - **【対応済み `3560156`】提案 4**: `repaint-only` モード（属性更新なしで全画面再描画のみ＝再描画
+>   コスト単独）を追加し、スイートに 1 phase 追加。項目6「毎秒1回の全画面描画がカクつくか」に直答できる
+> - **【対応済み `3560156`】LOW 2**: サンプリングを `round`→`floor` にし 1,458→1,725 点
+> - **【対応済み `3560156`】LOW 3**: 県境リングを fill+line で 2 回計上し basemapVertices を 40,917 へ是正
+> - **【対応済み `3560156`】情報 5**: `gebco` に `maxzoom:7` を指定
+> - 開発機ブラウザで points 1,725 / base 40,917 / updateFrame 記録 / repaint-only 動作を確認済み。
+>   実機（Surface Go 2）で `__runRealtimeSuite('surface-go2-rt')` を回すのが次のステップ
 
 ## 結論
 
