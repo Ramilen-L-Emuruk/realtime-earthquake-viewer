@@ -7,7 +7,8 @@
 // 落ちている。本番の KyoshinSubThreshold は毎秒レベル更新を必ず通るため、項目7（EEW 複合）の前に潰す。
 //
 // このページは本番相当のベースマップ（陸塗り＋細分境界＋県境の約4万頂点）を敷いた上に KyoshinSubThreshold
-// 相当のカスタムレイヤー（約1,725 観測点・index 1〜6）を最前面に置き、更新方式ごとに毎秒更新のコストを測る:
+// 相当のカスタムレイヤー（既定 1,725 観測点・index 1〜6。?points=N で負荷軸を振れる。レビュー HIGH2）を
+// 最前面に置き、更新方式ごとに毎秒更新のコストを測る:
 //   - baseline      : 更新なし（静止の床）
 //   - repaint-only  : 属性更新なしで全画面再描画だけ要求（カスタムレイヤー再描画コスト単独・提案4 相当）
 //   - custom-update : インデックスバッファ方式。座標は静的、毎秒はレベル順 index の並べ替え(カウンティング
@@ -31,8 +32,27 @@ const MAX_SUB_IDX = 6
 const SHINDO0_COLOR = '#9ca3af'
 // 本番相当の実半径（BASE_RADIUS×iconScale）。subthreshold.ts の目視用 9 ではなく本番負荷を測る。
 const BASE_RADIUS = 2.5
-// 現行の強震モニタ観測点数（約1,725）に合わせて station-coords を均等サンプリングする（realtime.ts と同じ）
-const TARGET_POINTS = 1725
+// 描画点数の負荷軸（レビュー HIGH2）。開発機は170Hzでvsync天井(5.9ms)に3モードとも張り付き、方式間の
+// 差が測定分解能を下回るため、URLクエリ ?points=N で振れるようにする。既定は①現行の強震モニタ観測点数
+// （約1,725）。② station-coords 全点（約4,372・間引きなし） ③ 現行の10倍（17,250・分離点を探す）。
+// custom 経路の index バッファは Uint16Array（LOW4）のため 65,535 点が上限。超えるクエリは黙って壊れる
+// （添字ラップ）とセルフレビューで指摘されたため、上限でクランプし console.warn で気付けるようにする。
+const MAX_UINT16_POINTS = 65535
+function readTargetPoints(): number {
+  const q = new URLSearchParams(location.search).get('points')
+  const n = q ? parseInt(q, 10) : NaN
+  if (!q) return 1725
+  if (!Number.isFinite(n) || n <= 0) {
+    console.warn(`[subrt] ?points=${q} は不正な値のため既定値 1725 を使う`)
+    return 1725
+  }
+  if (n > MAX_UINT16_POINTS) {
+    console.warn(`[subrt] ?points=${n} は Uint16 index の上限(${MAX_UINT16_POINTS})を超えるためクランプする`)
+    return MAX_UINT16_POINTS
+  }
+  return n
+}
+const TARGET_POINTS = readTargetPoints()
 // 本番 kyoshin モードのベースマップ配色（BaseMap.tsx と一致・毎秒の全画面再描画で塗り直される対象）
 const LAND_FILL = '#161b24' // 陸地塗り（都道府県ポリゴン）
 const SUBREGION_BORDER = '#39414f' // 一次細分区域の境界線
@@ -60,11 +80,15 @@ function hexToRgb(hex: string): [number, number, number] {
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]
 }
 
-// 毎秒の更新レベルを生成: 全点にランダムな index(0..6)＝「毎秒全点変化」の最悪ケース（上界）。
+// 毎秒の更新レベルを生成: 全点にランダムな index(1..6)＝「毎秒全点変化」の最悪ケース（上界）。
+// index 0（非表示）は含めない（レビュー HIGH1）。含めると repaint-only の静止床（initLevels、index
+// 1〜6のみ）より描画点数が約15%少なくなり、差分に「更新は軽い」という過小評価バイアスが乗ってしまう
+// ——上界を測る PoC では、現実の分布（index 0 も混ざる）より両モードの点数を揃えることを優先する
+// （現実の部分変化は index 1〜6 に閉じた上界の内側に必ず収まる）。
 // WebGL は変化数に依らず全画面再描画になるため、最悪でも天井内なら現実（部分変化）は当然収まる。
 function genLevels(n: number): Uint8Array {
   const a = new Uint8Array(n)
-  for (let i = 0; i < n; i++) a[i] = (Math.random() * (MAX_SUB_IDX + 1)) | 0
+  for (let i = 0; i < n; i++) a[i] = ((Math.random() * MAX_SUB_IDX) | 0) + 1
   return a
 }
 
@@ -390,14 +414,24 @@ function makeSubThresholdRtLayer(positions: Float32Array, n: number) {
 
 // station-coords（約4,372点）を TARGET_POINTS へ均等サンプリングし、Mercator 座標の Float32Array にする。
 // カスタムレイヤーは GeoJSON ソースを介さないため、座標は事前に Mercator へ変換して 1 本のバッファに詰める。
+// TARGET_POINTS が実観測点数を超える場合（レビュー HIGH2 の負荷軸③ 17,250 等）は実測点を巡回で複製して
+// 埋める。GPU/CPU負荷の測定が目的で観測点の実在性は問わないため、位置の重複は許容する。
+// 注意（セルフレビュー MEDIUM）: 同一座標が複数 index を持つため genLevels で異なるレベルを引くと、
+// 同一ピクセルで異レベルの点が重なって見える（drawcall・断片数など計測コストには影響しない）。
+// ③スケールで目視確認する場合、色の重なりが不自然に見えても実装のバグではない。
 async function loadPositions(): Promise<Float32Array> {
   const d: { stations: Record<string, [number, number]> } = await fetch(
     '/data/station-coords.json',
   ).then((r) => r.json())
   const coords = Object.values(d.stations) // [lat, lon]
-  // floor で間引き間隔を決める（round だと目標の 85% しか残らない。realtime.ts LOW2 と同じ）
-  const step = Math.max(1, Math.floor(coords.length / TARGET_POINTS))
-  const sampled = coords.filter((_, i) => i % step === 0).slice(0, TARGET_POINTS)
+  let sampled: [number, number][]
+  if (TARGET_POINTS <= coords.length) {
+    // floor で間引き間隔を決める（round だと目標の 85% しか残らない。realtime.ts LOW2 と同じ）
+    const step = Math.max(1, Math.floor(coords.length / TARGET_POINTS))
+    sampled = coords.filter((_, i) => i % step === 0).slice(0, TARGET_POINTS)
+  } else {
+    sampled = Array.from({ length: TARGET_POINTS }, (_, i) => coords[i % coords.length])
+  }
   const arr = new Float32Array(sampled.length * 2)
   sampled.forEach(([lat, lon], i) => {
     const m = maplibregl.MercatorCoordinate.fromLngLat({ lng: lon, lat })
@@ -730,6 +764,9 @@ async function measureSubRt(mode: Mode, durationMs: number, label: string) {
       basemapVertices,
       canvasW: map.getCanvas().width,
       canvasH: map.getCanvas().height,
+      // baseline実測から逆算できるが、実機(60Hz)と開発機(170Hz等)で天井が別物なので明示しておく
+      // （レビュー 情報5）。frame.p50はvsync間隔の実質値なので、この値自体がヒントになる。
+      estimatedVsyncMs: mode === 'baseline' ? frame.p50 : null,
       jsHeapMB: (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
         ? Math.round(
             (performance as unknown as { memory: { usedJSHeapSize: number } }).memory.usedJSHeapSize /
@@ -752,7 +789,9 @@ async function measureSubRt(mode: Mode, durationMs: number, label: string) {
     settle: mode === 'baseline' ? null : stats(settleMs),
     settleTimeouts: mode === 'baseline' ? null : settleTimeouts,
     // 更新処理そのものの同期コスト。custom-update はカウンティングソート、naive-rebuild はレベル別座標構築、
-    // repaint-only は triggerRepaint 要求のみ（ほぼ 0）。custom-update − repaint-only ≒ 更新 CPU の実体。
+    // repaint-only は triggerRepaint 要求のみ（ほぼ 0）。差分は取らない — custom-update/naive-rebuild は
+    // apply 値そのものが単体で更新 CPU の実体（レビュー MEDIUM3）。custom-update − repaint-only の差分を
+    // 見るべきは updateFrame（GPU アップロード＋再描画を含む）の方。
     apply: mode === 'baseline' ? null : stats(applyMs),
     longTask: {
       count: po ? longTasks.length : -1,

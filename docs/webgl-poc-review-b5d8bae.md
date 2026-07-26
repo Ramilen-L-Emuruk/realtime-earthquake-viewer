@@ -6,12 +6,19 @@
 > 前レビュー [webgl-poc-review-3c2ddaf.md](webgl-poc-review-3c2ddaf.md)（項目5）・[webgl-poc-review-9b97a37.md](webgl-poc-review-9b97a37.md)（項目6）
 > レビュー日: 2026-07-26（開発機 Chrome / DPR 1 / **リフレッシュレート 170Hz** / canvas 1904×929）
 >
-> **ステータス:**
+> **ステータス: HIGH 1・MEDIUM 3・情報 5 を対応済み。HIGH 2 は負荷軸のコード対応済み・実機での分離点探しが残**
+> - **【対応済み】HIGH 1**: `genLevels` を index 1〜6 に閉じ、`repaint-only`（1,725点）と更新モード（1,725点）の
+>   描画点数を一致させた。ピクセル等価性（差0）も回帰なしで再確認済み（下記「検証」）
+> - **【コード対応済み・実機計測は未実施】HIGH 2**: `TARGET_POINTS` を `?points=N` の URL クエリで振れるようにした
+>   （既定①1,725／②4,372／③17,250）。①②③ のいずれでも点数どおりに描画され、④の複製ロジック（実観測点を
+>   巡回して埋める）も含め動作は確認済み。**ただし「どこで custom/naive が分離するか」は実機スイートでの計測が
+>   必要**（下記「8.」）。開発機/検証環境では3モードとも vsync 天井に張り付くため、この環境での計測に意味は無い
+> - **【対応済み】MEDIUM 3**: `apply` 統計のコメントを「差分不要・単体で更新CPU」に修正
+> - **【対応済み】情報 5**: `meta.estimatedVsyncMs`（baseline の `frame.p50`）を追加し、天井の手がかりを証跡に残した
 > - **実装の正しさは検証済み**: `custom-update` と `naive-rebuild` の描画結果が**ピクセル完全一致**（差 0）。
 >   index バッファ方式は静的座標＋レンジ描画で素朴実装と等価な絵を出している
 > - **項目5・項目6 のレビュー指摘は全件踏襲されている**（下記「踏襲の確認」）。手戻りなし
-> - **HIGH 1（描画点数の非対称）・HIGH 2（測定分解能を下回る負荷）は実機スイート前に対応したい**
-> - MEDIUM 3 はコメントの食い違い、LOW 4 は本設計への申し送り
+> - LOW 4 は本設計への申し送りのまま（PoC 側の対応は不要）
 
 ## 結論
 
@@ -257,3 +264,51 @@ window.__benchSubRtApply('naive-rebuild', 60)   // p50 0.0 / max 0.1
 4. 実機スイート（`await window.__runSubRtSuite('surface-go2-subrt')`）。項目6 に倣い**3回**測る
    （ミリ秒スケールのばらつきが約2倍あるため単発では信頼区間が不明）
 5. 結果を計画書 §6「検証項目5×6 の交差点」へ記録し、項目7（EEW 複合負荷）へ進む
+
+---
+
+## 8. 対応確認（HIGH 1・HIGH 2・MEDIUM 3・情報 5）
+
+上記 1〜3（＋情報5）をコードに反映し、検証環境（Chrome・DPR 1・60Hz 相当）で回帰確認した。
+
+### HIGH 1: 点数の非対称は解消
+
+`genLevels` を `((Math.random() * MAX_SUB_IDX) | 0) + 1` に変更（index 1〜6 のみ生成）。
+
+```
+repaint-only(initLevels): 1,725
+custom-update(genLevels): 1,725   ← 修正前は約1,465（差260=index0の個数）
+```
+
+`custom-update` と `naive-rebuild` の等価性（ピクセル差0・最大チャンネル差0）も回帰なしを再確認した。
+
+### HIGH 2: 負荷軸をコードに追加（実機での分離点探しは未実施）
+
+`TARGET_POINTS` を `?points=N` の URL クエリから読む `readTargetPoints()` に変更（既定 1,725 は不変）。
+`loadPositions` は `TARGET_POINTS` が実観測点数（station-coords 約4,372）を超える場合、実測点を巡回で
+複製して埋めるようにした（GPU/CPU 負荷の測定が目的で観測点の実在性は問わないため）。
+
+```
+?points=4372  → points: 4,372（station-coords 全点・間引きなし）
+?points=17250 → points: 17,250（複製ロジックで生成・描画点数も17,250と一致）
+```
+
+①②③ いずれも指定どおりの点数で描画されることは確認した。**「どの点数で custom/naive が分離するか」を
+確かめる実機スイートの実行はこの対応に含まない**（検証環境・開発機のいずれも vsync 天井に張り付き、
+分解能以下の環境で測っても情報が無いため）。実機（Surface Go 2 等）で
+`await window.__runSubRtSuite('surface-go2-subrt', 12000)` を `?points=` を変えながら回す作業が残る。
+
+### MEDIUM 3: コメント修正のみ（実装変更なし）
+
+`apply` のコメントを「差分は取らない — apply 値そのものが単体で更新CPU。差分を見るべきは updateFrame」
+に修正。数値・ロジックの変更はない。
+
+### 情報 5: `meta.estimatedVsyncMs` を追加
+
+`baseline` 計測の `frame.p50` を `meta.estimatedVsyncMs` としても記録するようにした（`baseline` 以外は
+`null`）。検証環境での実測は `frame.p50 = estimatedVsyncMs = 16.7ms`（60Hz 相当）で一致を確認した。
+
+### 残作業
+
+実機スイート（`__runSubRtSuite`）を `?points=1725 / 4372 / 17250` の3水準で回し、分離点の有無を
+計画書 §6「検証項目5×6 の交差点」に記録する。項目4・5（推奨対応順）はここに引き継ぐ。
