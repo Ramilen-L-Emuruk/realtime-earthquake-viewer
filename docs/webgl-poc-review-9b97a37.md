@@ -5,11 +5,15 @@
 > 関連: 計画書 [webgl-rendering-migration-plan.md](webgl-rendering-migration-plan.md) §6 検証項目6 ／ 前レビュー [webgl-poc-review-3c2ddaf.md](webgl-poc-review-3c2ddaf.md)・[webgl-poc-review-4b0517c.md](webgl-poc-review-4b0517c.md)
 > レビュー日: 2026-07-25（開発機 Chrome 150 / RTX 4070 Ti / DPR 1 / **165Hz モニタ**）
 >
-> **ステータス: レビュー全件を `3560156` + `aa7067d` で対応済み（実機計測の準備完了）**
+> **ステータス: `aa7067d` で HIGH 6 は feature-state について解消。ただし `setData` に残穴（HIGH 7）**
 > - 設計・実装は妥当で、前レビューの教訓が全て反映されていた。指摘はいずれも指標・負荷の精度に関するもの
-> - **【対応済み `aa7067d`】HIGH 6**: `updateFrame` が全画面再描画を取りこぼしていた問題（計測用 rAF が
->   再描画 render より先に発火し、apply 直後フレームには CPU コストしか乗らない）を、apply 直後
->   `UPDATE_FRAME_WINDOW`(=2) フレームの最大を 1 サンプルとする方式で是正。再描画の乗る次フレームを捕捉する
+> - **【未対応・新規】HIGH 7**: `updateFrame` は **`setData` の負荷をほぼ全く捉えていない**。
+>   `setData` の `render` は 4 フレーム目から始まり 51 フレーム・**315ms** のバーストとして出るため
+>   ウィンドウ(1〜2)の外。**並べると `setData` の方が安く見え、順位が逆転する**。
+>   実機計測の前に対応を推奨（下記「7.」）
+> - **【対応済み `aa7067d`・feature-state について】HIGH 6**: `updateFrame` が全画面再描画を取りこぼす
+>   問題（計測用 rAF が `render` より先に発火する）を `UPDATE_FRAME_WINDOW`(=2) で是正。
+>   **feature-state は `render` がフレーム 1 に来るため窓内に収まり、修正は正しく効いている**（実測確認）
 > - **【対応済み `3560156`】MEDIUM 1**: 更新起因フレームを名指しで記録する `updateFrame` を追加し、
 >   判定指標を `frame.p95` から `updateFrame` / `max` / `longTask` へ移した（記録フレームのずれは HIGH6 で是正）
 > - **【対応済み `3560156`】提案 4**: `repaint-only` モード（属性更新なしで全画面再描画のみ＝再描画
@@ -291,6 +295,85 @@ console.log(log.slice(log.findIndex(x => x.startsWith('apply-end')), -1).slice(0
 // → apply-end, raf, render, raf, raf の順（raf が render より先）
 ```
 
+---
+
+## 【HIGH】7. `updateFrame` は `setData` の負荷をほぼ全く捉えていない（`aa7067d` 時点で**未対応**）
+
+HIGH 6 の対策（`UPDATE_FRAME_WINDOW = 2`）は **`feature-state` については正しい**が、
+**`setData` には効いていない**。両方式で `render` の発生タイミングが根本的に違うため。
+
+### 測定
+
+`apply` 直後を 1 フレーム目として、`render` イベントが発生したフレーム番号:
+
+| 方式 | `render` 発生フレーム | ウィンドウ(1〜2)内 | ウィンドウ外 |
+|---|---|---|---|
+| feature-state | **[1]** | **1 件** | 0 件 |
+| **setData** | **[4, 7, 8, 9, 10, … 56]** | **0 件** | **51 件** |
+
+`apply` から地図が `idle` へ落ち着くまでの所要時間:
+
+| 方式 | `applyMs`（同期部分） | **収束まで（apply → idle）** | `render` 回数 |
+|---|---|---|---|
+| feature-state | 0.4ms | **4.9ms** | 1 |
+| **setData** | 0.2ms | **315ms** | **51** |
+
+### 何が起きているか
+
+`setData` は geojson-vt が **worker で再タイル化**するため、
+
+1. 同期部分（properties 書き換え＋`setData` 呼び出し）は **0.2ms** で戻る
+2. `render` は **4 フレーム目から始まり**、タイルの再生成・アップロードが終わるまで
+   **51 フレーム・315ms にわたって断続的に続く**（MapLibre はソースが loading の間描き続ける）
+
+つまり **`setData` のコストは単発スパイクではなく持続的な再描画バースト**であり、
+「更新直後の N フレーム」という窓の考え方そのものが `setData` には合わない。
+
+### なぜ重大か — 比較の順位が逆転する
+
+`updateFrame` は
+
+- `feature-state`: 再描画を含む**実コスト**
+- `setData`: **同期部分（0.2ms）のみ**、再描画バーストは全て窓の外
+
+を測ることになる。両者を並べると **`setData` の方が安く見える** — 事実と正反対の順位になる。
+検証項目6 は「素朴な `setData` が可か、`feature-state` が必須か」を決める項目であり、
+この逆転はそのまま移植方針の誤りにつながる。
+
+なお開発機（RTX 4070 Ti・165Hz）で既に **315ms** かかっている。実機（UHD 615）では更に伸びるため、
+**毎秒更新の周期 1,000ms に収まらず、地図が常時再描画状態になる**可能性がある。
+これは項目6 の結論を左右する重要な観測点でありながら、現在の指標では検出できない。
+
+### 修正案
+
+**`settleMs`（apply → 次の `idle` までの時間）を計測項目に追加する。** これが `setData` の
+負荷を最も素直に表し、「毎秒周期に収まるか」に直答する。
+
+```ts
+// setInterval 内（apply 直後）
+const tApply = performance.now()
+map.once('idle', () => settleMs.push(performance.now() - tApply))
+```
+
+- `feature-state` では `settleMs ≈ updateFrame` になる（render 1 回で収束するため）
+- `setData` では `settleMs` が本体のコストを表す
+- `settleMs > 1000ms` なら**更新が周期内に収束していない**＝素朴な `setData` は不可、と即断できる
+
+`updateFrame` は `feature-state` 用の指標として残してよい（そちらでは正しく機能している）。
+併せて「【判定はこれで読む】」のコメントに、**方式によって見るべき指標が違う**旨を明記したい。
+
+### 再現手順
+
+```js
+const map = window.__rtMap
+// PoC と同じ FC を組む（floor サンプリング・id 付与）は省略、fc / N を用意した前提
+const t0 = performance.now()
+for (let i = 0; i < N; i++) fc.features[i].properties.lvl = (Math.random()*10)|0
+map.getSource('points').setData(fc)
+console.log('sync', performance.now() - t0)          // → 0.2ms
+map.once('idle', () => console.log('settle', performance.now() - t0))  // → 315ms
+```
+
 ## 未検証（実機側の課題）
 
 - **UHD 615 で毎秒の全画面再描画が体感のカクつきになるか**（項目6 の本題）。
@@ -310,4 +393,6 @@ console.log(log.slice(log.findIndex(x => x.startsWith('apply-end')), -1).slice(0
 5. ~~**【情報】5** `gebco` の `maxzoom`~~ → **対応確認済み**（`maxzoom = 7`）
 6. ~~**【HIGH】6** `updateFrame` の記録フレームを 1 つ後ろへ（または `render` 基準に）~~
    → **`aa7067d` で対応（案1: apply 直後 2 フレームの最大を採用）。render の乗る次フレームを捕捉すると実測確認**
-7. 実機で `__runRealtimeSuite('surface-go2-rt')` を実行 ← **準備完了。次はこれ**
+7. **【HIGH】7** `settleMs`（apply → 次の `idle`）を計測項目に追加する
+   ← **実機で回す前に。これが無いと `setData` の負荷がほぼゼロと報告され、順位が逆転する**
+8. 実機で `__runRealtimeSuite('surface-go2-rt')` を実行
