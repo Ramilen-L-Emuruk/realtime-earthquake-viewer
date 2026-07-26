@@ -6,17 +6,17 @@
 > 前レビュー [webgl-poc-review-b5d8bae.md](webgl-poc-review-b5d8bae.md)（項目5×6 交差点）
 > レビュー日: 2026-07-26（開発機 Chrome / DPR 1 / 170Hz）
 >
-> **ステータス:**
+> **ステータス: HIGH 1・HIGH 2 対応済み。実機投入可。**
 > - **設計の骨格は良い。** 本番コード（`JapanMap.tsx` / `PsWaveLayer.tsx` / `useDmdssWaves.ts`）を調査して
 >   タイムラインを再現しており、`composite-pause` / `composite-nopause` の対比は本番の緩和策の要否を
 >   判定できる良い問いの立て方
-> - **【HIGH 1】`flyto-only` と `baseline` で強震点カスタムレイヤーが実質存在しない**（実測: 描画 0点・
->   FBO 往復 0回）。**実機投入前に直すこと** — 一番測りたい「flyTo とカスタムレイヤー再描画の重なり」が
->   基準線から抜ける
-> - **【HIGH 2】`wave.update()` が render サイクル外で GL を呼んでいる**。項目5×6 の dirty フラグ方式から
->   後退しており、`waveApply` の定義が項目5×6 の `apply` と揃わない
-> - MEDIUM 3・LOW 4 は本設計への申し送り
-> - 型チェック エラー 0（`--strict`・DOM lib 付き単体チェック）。`glError` 0
+> - **【対応済み】HIGH 1**: 静止床（初期化・`reset()`）を全点 index 0 から `initKyoshinLevels`（index 1〜6
+>   巡回）に変更。実測で `baseline` でも `pts:1725・quad:6` になることを確認（修正前は `0/0`）。詳細は
+>   下記「対応確認」
+> - **【対応済み】HIGH 2**: `wave.update()` を dirty フラグ方式（`dirtyWave`・pending 変数）に変更し、
+>   GL 呼び出しは `render()` の冒頭に集約した。`waveApply` は純CPU計測（p50 0.1ms）に戻った
+> - MEDIUM 3・LOW 4 は本設計への申し送りのまま（PoC 側の対応は不要）
+> - 型チェック エラー 0（`--strict`・DOM lib 付き単体チェック）。`glError` 0（対応後も再確認済み）
 
 ## 結論
 
@@ -194,3 +194,33 @@ window.__eewStop()
    - **`composite-nopause` だけ悪化**するなら「flyTo 中の予報円停止は MapLibre でも維持すべき」という
      設計制約が判明する（本番の緩和策に根拠が付く）
    - `settle` 系はモード比較に使わない（項目5×6 で判明した vsync 位相依存）
+
+---
+
+## 対応確認（HIGH 1・HIGH 2）
+
+上記 1〜2 をコードに反映し、開発機（Chrome・DPR 1）で回帰確認した。
+
+### HIGH 1: 静止床にカスタムレイヤーの描画コストが乗るようになった
+
+`initKyoshinLevels`（index 1〜6 巡回・`poc/subthreshold-rt.ts` の `initLevels` と同じ考え方）を追加し、
+初期化と `reset()` の両方に適用。再現手順どおりの実測:
+
+```
+baseline / flyto-only（静止床）: pts:1725, quad:6   ← 修正前は pts:0, quad:0
+composite 実行中               : pts:1725, quad:6
+停止後（静止床へ復帰）          : pts:1725, quad:6
+```
+
+`composite − flyto-only` の差から強震点の描画コストが抜ける問題は解消した。
+
+### HIGH 2: `waveApply` が純粋CPU計測に戻った
+
+`update()` を幾何計算＋`dirtyWave`フラグ立てのみに変更し、`gl.bufferData` は `render()` 冒頭に移動した
+（`onAdd` で保持していた `glRef` は不要になり削除）。実測で `waveApply` p50 0.1ms・`glError` 0 を確認。
+項目5×6 の `apply`（純粋CPU）と同じ定義に揃った。
+
+### 残作業
+
+MEDIUM 3・LOW 4 は本設計への申し送りのまま。実機スイート（`__runEewSuite`）は未実施——上記2点の
+修正により基準線が正しくなったため、実機投入してよい状態になった。
