@@ -5,7 +5,10 @@
 > 関連: 計画書 [webgl-rendering-migration-plan.md](webgl-rendering-migration-plan.md) §6 検証項目6 ／ 前レビュー [webgl-poc-review-3c2ddaf.md](webgl-poc-review-3c2ddaf.md)・[webgl-poc-review-4b0517c.md](webgl-poc-review-4b0517c.md)
 > レビュー日: 2026-07-25（開発機 Chrome 150 / RTX 4070 Ti / DPR 1 / **165Hz モニタ**）
 >
-> **ステータス: レビュー全件を `3560156` + `aa7067d` + `e27552b` で対応済み（実機計測の準備完了）**
+> **ステータス: HIGH 7 まで対応済み・方式差の分離を実測確認。残るは LOW 8 のみ（実機計測は可）**
+> - **【未対応・新規】LOW 8**: 計測終了時に最後の apply の裾が切れ、`settle` に ~0ms の打ち切り
+>   サンプルが混入（`mean` が約 17% 下振れ）・`updateFrame` が 1 件欠ける（`n = applyN − 1`）。
+>   **`p50` / `max` は無傷で結論は変わらない**ため、実機計測はこのまま進めてよい（下記「8.」）
 > - 設計・実装は妥当で、前レビューの教訓が全て反映されていた。指摘はいずれも指標・負荷の精度に関するもの
 > - **【対応済み `e27552b`】HIGH 7**: `updateFrame` が `setData` の負荷（worker 再タイル化の数百ms バースト）を
 >   捉えない問題を、apply→次の idle までの収束時間 `settle` を計測項目に追加して解消（feature-state は render
@@ -372,6 +375,64 @@ map.getSource('points').setData(fc)
 console.log('sync', performance.now() - t0)          // → 0.2ms
 map.once('idle', () => console.log('settle', performance.now() - t0))  // → 315ms
 ```
+
+---
+
+## 【LOW】8. 計測終了時に最後の apply の裾が切られる（`e27552b` 時点で**未対応**）
+
+HIGH 7 の対応で入った `settle` は**方式差を正しく分離できている**（下記「検証」）。
+ただし**計測ウィンドウの末端で最後の apply の裾が切れる**ため、2 つの副作用がある。
+
+### 測定（setData・durationMs=6000）
+
+```
+settle:      n=6  p50=315.7  max=315.9  mean=263.52   ← mean だけ大きく下振れ
+updateFrame: n=5                                       ← apply n=6 に 1 件足りない
+apply:       n=6
+```
+
+`(5 × 315.8 + 0) / 6 = 263.2` が実測 mean 263.52 と一致する。すなわち
+**1 件が ~0ms として `settleMs` に積まれている**。
+
+### 原因
+
+`setInterval(…, 1000)` は `durationMs`=6000 のとき t≈1000…6000 の 6 回発火し、
+**最後の apply（t≈6000）は計測終了と同時**になる。このとき
+
+- `settle`: 終了処理 `for (const t of pendingApplies) settleMs.push(tEnd - t)` が
+  **`tEnd - t ≈ 0`** を積む。「収束しなかったので下限値で打ち切る」ための処理が、
+  **「まだ時間が経っていないだけ」の apply にも適用されている**。
+- `updateFrame`: 記録には apply → `render` → 次の rAF が要るが、その前に
+  `cancelAnimationFrame` が走るため**最後の 1 件が失われる**（全モードで `n = applyN − 1`）。
+
+### 影響と位置づけ
+
+- **`p50` / `max` は無傷**（ドキュメントもそこを読めと指示している）ため、**結論は変わらない**。
+- ただし **`mean` は約 17% 下振れ**する（サンプル数が少ないほど悪化）。
+- **`console.assert(settleMs.length === applyMs.length)` は通ってしまう**
+  （`settleMs` は 6 件あるため）。**`updateFrameMs` は検査対象外**なので、
+  「記録漏れ 0」と表示されながら `updateFrame` は 1 件欠けている。assert が誤った安心を与える。
+
+### 修正案
+
+**計測終了後に排水期間を設ける。** `durationMs` 経過で `setInterval` を止め、
+そこから数百 ms（例: 1 周期分 or `min(SETTLE_TIMEOUT_MS, 1000)`）待ってから確定する。
+これで「本当に収束しなかった apply」だけが打ち切り対象になり、`updateFrame` の
+最後の 1 件も記録される。
+
+併せて `console.assert` に `updateFrameMs.length` の検査も加えると、この種の漏れを自己検知できる。
+
+### 検証: HIGH 7 の対応は正しく効いている
+
+| mode | `settle` p50 / max | `updateFrame` p50 / max | `settleTimeouts` | applyN / settleN |
+|---|---|---|---|---|
+| repaint-only | 5.8 / 6.2 | 5.9 / 6.0 | 0 | 6 / 6 |
+| feature-state | **7.7 / 8.6** | 5.9 / 5.9 | 0 | 6 / 6 |
+| **setData** | **317 / 317.5** | 5.8 / 5.9 | 0 | 6 / 6 |
+
+`setData` と `feature-state` で **約 40 倍**の差が出ており、HIGH 7 以前は見えなかった方式差が
+明確に分離されている。`console.assert` も沈黙（`settleN === applyN`）。
+`updateFrame` は render 発火起点になり、**apply ごとに 1 サンプル**を保つ設計も確認した。
 
 ## 未検証（実機側の課題）
 
