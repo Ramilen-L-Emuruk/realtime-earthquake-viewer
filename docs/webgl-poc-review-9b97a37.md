@@ -5,21 +5,21 @@
 > 関連: 計画書 [webgl-rendering-migration-plan.md](webgl-rendering-migration-plan.md) §6 検証項目6 ／ 前レビュー [webgl-poc-review-3c2ddaf.md](webgl-poc-review-3c2ddaf.md)・[webgl-poc-review-4b0517c.md](webgl-poc-review-4b0517c.md)
 > レビュー日: 2026-07-25（開発機 Chrome 150 / RTX 4070 Ti / DPR 1 / **165Hz モニタ**）
 >
-> **ステータス: `3560156` で 4 件は対応確認済み。ただし MEDIUM 1 の対策に残穴（HIGH 6）**
+> **ステータス: レビュー全件を `3560156` + `aa7067d` で対応済み（実機計測の準備完了）**
 > - 設計・実装は妥当で、前レビューの教訓が全て反映されていた。指摘はいずれも指標・負荷の精度に関するもの
-> - **【未対応・新規】HIGH 6**: MEDIUM 1 の対策として入った `updateFrame` が、**測りたかった
->   全画面再描画を取りこぼしている**（rAF の登録順により再描画は次フレームへ落ちる）。
->   実機計測の前に対応を推奨（下記「6.」）
+> - **【対応済み `aa7067d`】HIGH 6**: `updateFrame` が全画面再描画を取りこぼしていた問題（計測用 rAF が
+>   再描画 render より先に発火し、apply 直後フレームには CPU コストしか乗らない）を、apply 直後
+>   `UPDATE_FRAME_WINDOW`(=2) フレームの最大を 1 サンプルとする方式で是正。再描画の乗る次フレームを捕捉する
 > - **【対応済み `3560156`】MEDIUM 1**: 更新起因フレームを名指しで記録する `updateFrame` を追加し、
->   判定指標を `frame.p95` から `updateFrame` / `max` / `longTask` へ移した
->   — **方針は正しいが実装に 1 フレームのずれ。HIGH 6 参照**
+>   判定指標を `frame.p95` から `updateFrame` / `max` / `longTask` へ移した（記録フレームのずれは HIGH6 で是正）
 > - **【対応済み `3560156`】提案 4**: `repaint-only` モード（属性更新なしで全画面再描画のみ＝再描画
 >   コスト単独）を追加し、スイートに 1 phase 追加。項目6「毎秒1回の全画面描画がカクつくか」に直答できる
 > - **【対応済み `3560156`】LOW 2**: サンプリングを `round`→`floor` にし 1,458→1,725 点
 > - **【対応済み `3560156`】LOW 3**: 県境リングを fill+line で 2 回計上し basemapVertices を 40,917 へ是正
 > - **【対応済み `3560156`】情報 5**: `gebco` に `maxzoom:7` を指定
-> - 開発機ブラウザで points 1,725 / base 40,917 / updateFrame 記録 / repaint-only 動作を確認済み。
->   実機（Surface Go 2）で `__runRealtimeSuite('surface-go2-rt')` を回すのが次のステップ
+> - 開発機で確認: points 1,725 / base 40,917 / updateFrame が render 側フレーム(16.9ms)を採用・旧実装は
+>   取りこぼし側(16.5ms)を記録していたことを実測。実機（Surface Go 2）で
+>   `__runRealtimeSuite('surface-go2-rt')` を回すのが次のステップ
 
 ## 結論
 
@@ -208,7 +208,7 @@ gebco: { type: 'raster', tiles: [BATHYMETRY_URL], tileSize: 256 }   // maxzoom �
 
 ---
 
-## 【HIGH】6. `updateFrame` が全画面再描画を取りこぼしている（`3560156` 時点で**未対応**）
+## 【HIGH】6. `updateFrame` が全画面再描画を取りこぼしている（**`aa7067d` で対応済み**）
 
 MEDIUM 1 の対策として入った `updateFrame` の**方針は正しい**（分位数で薄めず更新フレームを名指しで
 測る）。しかし**記録するフレームが 1 つ手前**で、肝心の全画面再描画が入っていない。
@@ -308,6 +308,6 @@ console.log(log.slice(log.findIndex(x => x.startsWith('apply-end')), -1).slice(0
 4. ~~**【提案】4** `repaint-only` 対照~~ → **対応確認済み**
    （静止時 `render` 0 件 → `triggerRepaint`×3 で 3 件＝no-op でないことを実測。スイートに 4 phase）
 5. ~~**【情報】5** `gebco` の `maxzoom`~~ → **対応確認済み**（`maxzoom = 7`）
-6. **【HIGH】6** `updateFrame` の記録フレームを 1 つ後ろへ（または `render` 基準に）
-   ← **実機で回す前に。これが残ると項目6 の判定を誤る**
-7. 実機で `__runRealtimeSuite('surface-go2-rt')` を実行
+6. ~~**【HIGH】6** `updateFrame` の記録フレームを 1 つ後ろへ（または `render` 基準に）~~
+   → **`aa7067d` で対応（案1: apply 直後 2 フレームの最大を採用）。render の乗る次フレームを捕捉すると実測確認**
+7. 実機で `__runRealtimeSuite('surface-go2-rt')` を実行 ← **準備完了。次はこれ**
