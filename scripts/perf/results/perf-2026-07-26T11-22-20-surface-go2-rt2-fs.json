@@ -1,0 +1,51 @@
+{
+  "meta": {
+    "when": "2026-07-26T11:22:21.153Z",
+    "label": "surface-go2-rt2-fs",
+    "mode": "feature-state",
+    "durationMs": 12000,
+    "url": "http://192.168.0.64:5183/poc/realtime.html",
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "viewport": "1272x768",
+    "devicePixelRatio": 1.5,
+    "points": 1725,
+    "basemapVertices": 40917,
+    "canvasW": 1908,
+    "canvasH": 1152,
+    "jsHeapMB": 33
+  },
+  "frame": {
+    "frames": 711,
+    "fps": 59.25,
+    "p50": 16.7,
+    "p95": 17,
+    "max": 82.9
+  },
+  "updateFrame": {
+    "n": 12,
+    "p50": 18.8,
+    "p95": 82.9,
+    "max": 82.9,
+    "mean": 28.12
+  },
+  "settle": {
+    "n": 12,
+    "p50": 30.8,
+    "p95": 63.1,
+    "max": 63.1,
+    "mean": 26.56
+  },
+  "settleTimeouts": 0,
+  "apply": {
+    "n": 12,
+    "p50": 3.9,
+    "p95": 20,
+    "max": 20,
+    "mean": 5.13
+  },
+  "longTask": {
+    "count": 1,
+    "totalMs": 63,
+    "maxMs": 63
+  }
+}
