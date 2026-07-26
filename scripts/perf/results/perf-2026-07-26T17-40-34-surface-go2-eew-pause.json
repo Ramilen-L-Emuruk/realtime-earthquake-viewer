@@ -1,0 +1,63 @@
+{
+  "meta": {
+    "when": "2026-07-26T17:40:34.868Z",
+    "label": "surface-go2-eew-pause",
+    "mode": "composite-pause",
+    "scenarioMs": 30000,
+    "url": "http://192.168.0.64:5183/poc/eew-composite.html",
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "viewport": "1272x768",
+    "devicePixelRatio": 1.5,
+    "points": 1725,
+    "basemapVertices": 40917,
+    "canvasW": 1908,
+    "canvasH": 1152,
+    "jsHeapMB": 50
+  },
+  "frame": {
+    "frames": 1830,
+    "fps": 59.92,
+    "p50": 16.7,
+    "p95": 16.9,
+    "max": 31.7,
+    "dropped": 0
+  },
+  "flyToFrame": {
+    "frames": 156,
+    "p50": 16.7,
+    "p95": 19.5,
+    "max": 31.7,
+    "dropped": 0
+  },
+  "kyoshinApply": {
+    "n": 28,
+    "p50": 0.3,
+    "p95": 1.6,
+    "max": 1.6,
+    "mean": 0.39
+  },
+  "waveApply": {
+    "n": 264,
+    "p50": 0.2,
+    "p95": 0.7,
+    "max": 1.7,
+    "mean": 0.26
+  },
+  "areaEvents": [
+    {
+      "name": "detect-add",
+      "applyMs": 0,
+      "settleMs": 365.6
+    },
+    {
+      "name": "clear-remove",
+      "applyMs": 0.4,
+      "settleMs": 67.2
+    }
+  ],
+  "longTask": {
+    "count": 0,
+    "totalMs": 0,
+    "maxMs": 0
+  }
+}

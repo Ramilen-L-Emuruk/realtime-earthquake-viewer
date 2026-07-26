@@ -1,0 +1,51 @@
+{
+  "meta": {
+    "when": "2026-07-26T17:40:04.241Z",
+    "label": "surface-go2-eew-flyonly",
+    "mode": "flyto-only",
+    "scenarioMs": 30000,
+    "url": "http://192.168.0.64:5183/poc/eew-composite.html",
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "viewport": "1272x768",
+    "devicePixelRatio": 1.5,
+    "points": 1725,
+    "basemapVertices": 40917,
+    "canvasW": 1908,
+    "canvasH": 1152,
+    "jsHeapMB": 35
+  },
+  "frame": {
+    "frames": 1827,
+    "fps": 59.49,
+    "p50": 16.7,
+    "p95": 17.1,
+    "max": 79.8,
+    "dropped": 5
+  },
+  "flyToFrame": {
+    "frames": 155,
+    "p50": 16.7,
+    "p95": 23.6,
+    "max": 36,
+    "dropped": 2
+  },
+  "kyoshinApply": null,
+  "waveApply": null,
+  "areaEvents": [
+    {
+      "name": "detect-add",
+      "applyMs": 0.2,
+      "settleMs": 248
+    },
+    {
+      "name": "clear-remove",
+      "applyMs": 0.9,
+      "settleMs": 337
+    }
+  ],
+  "longTask": {
+    "count": 2,
+    "totalMs": 124,
+    "maxMs": 73
+  }
+}
