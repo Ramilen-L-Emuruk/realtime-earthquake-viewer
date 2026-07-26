@@ -455,4 +455,8 @@ apply:       n=6
    → **`aa7067d` で対応（案1: apply 直後 2 フレームの最大を採用）。render の乗る次フレームを捕捉すると実測確認**
 7. ~~**【HIGH】7** `settleMs`（apply → 次の `idle`）を計測項目に追加する~~
    → **`e27552b` で対応（settle 追加＋updateFrame の render ベース化＋settle の FIFO 化）。セルフレビュー3巡で PASS**
-8. 実機で `__runRealtimeSuite('surface-go2-rt')` を実行 ← **準備完了。次はこれ**
+8. ~~実機で `__runRealtimeSuite('surface-go2-rt')` を実行~~
+   → **実施済み（証跡 `perf-2026-07-26T03-2[23]-*-surface-go2-rt-*` 4件）。検証項目6 はクリア**
+   — `repaint-only` の収束 6.6ms・`feature-state` 16.3ms・`setData` 356.1ms（いずれも `settleTimeouts` 0）。
+   fps 59.8〜60・longtask 全モード 0 件・実機目視でカクつきなし・`ERROR:` なし。
+   本設計は `feature-state` 採用。結果は計画書 §6 結果記録（検証項目6） ← **準備完了。次はこれ**
