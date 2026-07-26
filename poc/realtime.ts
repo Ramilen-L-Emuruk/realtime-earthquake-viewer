@@ -51,11 +51,10 @@ const PREF_BORDER = '#56607a' // 県境
 // 全計測の開始 zoom（可視ジオメトリ量＝描画量を揃える。measure.ts と同思想）
 const START_ZOOM = 5
 const REPORT_URL = '/__perf-report'
-// 更新起因フレームを測るウィンドウ幅（レビュー HIGH6）。apply/triggerRepaint 直後、計測用 rAF は
-// MapLibre の再描画(render)より先に発火するため、直後 1 フレームは apply の CPU コストしか乗らず、
-// 全画面再描画は次フレームへ落ちる。直後 N フレームの dt を集めてその最大を 1 サンプルとし、再描画
-// フレームを取りこぼさない。開発機実測で render は apply 直後 2 フレーム目（16.8ms）に乗ることを確認。
-const UPDATE_FRAME_WINDOW = 2
+// settle（apply→idle 収束時間）のタイムアウト上限（レビュー CRITICAL）。setData の再タイル化が周期
+// (1000ms)を超えて収束しないと idle が発火せず settle が沈黙するため、この時間で打ち切って下限値を計上し、
+// 収束しなかった事実を settleTimeouts で明示する。周期の数倍を取る。
+const SETTLE_TIMEOUT_MS = 5000
 
 type LevelProps = { lvl: number }
 // 計測モード: baseline=更新なしの床 / repaint-only=更新なしで全画面再描画のみ（再描画コスト単独・提案4）/
@@ -346,23 +345,30 @@ async function measureRealtime(mode: Mode, durationMs: number, label: string) {
 
   // 更新起因フレームを名指しで測る（レビュー MEDIUM1 / HIGH6）。毎秒 1 回の更新は全フレームの
   // ~1.7%(実機60Hz) しか占めず p95(上位5%を切る)の外に埋もれるため、更新フレームを名指しで測る。
-  // ただし計測用 rAF は再描画(render)より先に発火する（HIGH6）ので、apply 直後 1 フレームは apply の
-  // CPU しか乗らない。直後 UPDATE_FRAME_WINDOW フレームの dt を集め、その最大（＝再描画を含むフレーム）
-  // を 1 サンプルとして updateFrameMs に入れる。「毎秒カクつくか」に直答するのはこの分布と longTask。
+  // 計測用 rAF は再描画(render)より先に発火し、しかも render が乗るフレームは機種依存（feature-state は
+  // 直後・setData は数フレーム後）なので、固定窓ではなく render イベント発火を起点にする（HIGH6/HIGH 統合）。
+  // render 発火後の最初の rAF フレーム（＝再描画を含むフレーム）の dt を 1 サンプルとする。
   const frameDeltas: number[] = []
   const updateFrameMs: number[] = []
-  let framesToWatch = 0
-  let updateSpan: number[] = []
+  let updateArmed = false // apply 直後、次の再描画フレームを待っている
+  let updateRendered = false // その待機中に render が発火した
+  // settle: apply→次の idle までの収束時間（HIGH7）。setData の再タイル化バーストを丸ごと含む。ただし
+  // 収束が周期を超えると idle が発火せず沈黙するため（レビュー CRITICAL）、apply ごとに SETTLE_TIMEOUT_MS の
+  // タイムアウトを競わせる。複数 apply が 1 回の idle に相乗りした場合は pendingApplies に溜まっている全 apply
+  // をまとめて計上する（直近だけでなく全件・後続 apply による記録消失を防ぐ）。計測終了時点で未解決の apply は
+  // 経過時間を下限値として打ち切り計上してから measuring=false にする（以降の遅延発火は measuring で無視）。
+  const settleMs: number[] = []
+  let settleTimeouts = 0
+  const pendingApplies: number[] = [] // 未解決 apply の時刻を FIFO で保持し、全 apply を個別に解決する
+  let measuring = true
   let last = performance.now()
   let rafId = requestAnimationFrame(function loop(t) {
     const dt = t - last
     frameDeltas.push(dt)
-    if (framesToWatch > 0) {
-      updateSpan.push(dt)
-      if (--framesToWatch === 0) {
-        updateFrameMs.push(Math.max(...updateSpan))
-        updateSpan = []
-      }
+    if (updateArmed && updateRendered) {
+      updateFrameMs.push(dt)
+      updateArmed = false
+      updateRendered = false
     }
     last = t
     rafId = requestAnimationFrame(loop)
@@ -383,9 +389,25 @@ async function measureRealtime(mode: Mode, durationMs: number, label: string) {
   // 再描画コスト単独を測る（feature-state − repaint-only ≒ 更新 CPU 分）。レビュー提案4。
   const applyMs: number[] = []
   let timer: number | undefined
+  let onRender: (() => void) | undefined
+  let onIdle: (() => void) | undefined
   if (mode !== 'baseline') {
     const apply =
       mode === 'feature-state' ? applyFeatureState : mode === 'setData' ? applySetData : null
+    // render 発火を updateFrame の窓の起点にする（rAF ループが直後の再描画フレームを 1 つ記録する）
+    onRender = () => {
+      if (updateArmed) updateRendered = true
+    }
+    // idle は「その時点で未解決の apply が全部収束した」ことを意味するので、溜まっている全 apply を計上する。
+    // 単一変数だと後続 apply に上書きされ、収束しない最悪ケースで記録が丸ごと消える（レビュー CRITICAL 再発）。
+    onIdle = () => {
+      if (!measuring || pendingApplies.length === 0) return
+      const now = performance.now()
+      for (const t of pendingApplies) settleMs.push(now - t)
+      pendingApplies.length = 0
+    }
+    map.on('render', onRender)
+    map.on('idle', onIdle)
     timer = window.setInterval(() => {
       let t0: number
       if (apply) {
@@ -397,20 +419,46 @@ async function measureRealtime(mode: Mode, durationMs: number, label: string) {
         map.triggerRepaint() // repaint-only: 属性更新なしで全画面再描画だけ要求する
       }
       applyMs.push(performance.now() - t0)
-      // 再描画は apply 直後の次フレームに乗るため、直後 UPDATE_FRAME_WINDOW フレームを監視する（HIGH6）
-      framesToWatch = UPDATE_FRAME_WINDOW
-      updateSpan = []
+      // 次の render 発火後の最初のフレームを再描画フレームとして 1 つ記録する（HIGH6/HIGH）
+      updateArmed = true
+      updateRendered = false
+      // apply→idle の収束時間。全 apply を pendingApplies に積み idle でまとめて解決する。idle が来ないまま
+      // SETTLE_TIMEOUT_MS 経った apply は個別に下限値で打ち切り settleTimeouts に数える＝収束しない最悪
+      // ケースでも沈黙しない（レビュー CRITICAL）。単一変数だと後続 apply に上書きされ数え漏れるため配列で持つ。
+      const tApply = performance.now()
+      pendingApplies.push(tApply)
+      window.setTimeout(() => {
+        if (!measuring) return
+        const idx = pendingApplies.indexOf(tApply)
+        if (idx === -1) return // 既に idle 側で解決済み
+        pendingApplies.splice(idx, 1)
+        settleMs.push(SETTLE_TIMEOUT_MS)
+        settleTimeouts++
+      }, SETTLE_TIMEOUT_MS)
     }, 1000)
   }
 
   await new Promise((r) => setTimeout(r, durationMs))
 
   if (timer != null) clearInterval(timer)
+  // 計測終了時点で未収束の apply は「収束せず打ち切り」として経過時間（下限）を計上し、全 apply を必ず
+  // settle に残す（レビュー CRITICAL: 最悪ケースで settle が空・settleTimeouts=0 に化けるのを防ぐ）。
+  const tEnd = performance.now()
+  for (const t of pendingApplies) settleMs.push(tEnd - t)
+  pendingApplies.length = 0
+  measuring = false // 以降に遅延発火する idle/timeout は settleMs に入れない
+  if (onRender) map.off('render', onRender)
+  if (onIdle) map.off('idle', onIdle)
   cancelAnimationFrame(rafId)
   if (po) po.disconnect()
 
   frameDeltas.shift() // 開始タイミング依存のノイズを捨てる
   const frame = stats(frameDeltas)
+  // 全 apply が idle / timeout / 打ち切りのいずれかで settle に記録されているはず（記録漏れの自己検知）
+  console.assert(
+    settleMs.length === applyMs.length,
+    `settle 記録漏れ: settleMs=${settleMs.length} applyMs=${applyMs.length}`,
+  )
 
   const result = {
     meta: {
@@ -440,13 +488,19 @@ async function measureRealtime(mode: Mode, durationMs: number, label: string) {
       p95: frame.p95,
       max: frame.max,
     },
-    // 【判定はこれで読む】更新起因フレームの所要時間分布（レビュー MEDIUM1 / HIGH6）。毎秒スパイクは
-    // frame.p95 に埋もれるため、apply 直後ウィンドウの最大（＝全画面再描画を含むフレーム）を名指しで
-    // 測ったこの値・max・longTask で「毎秒カクつくか」を判定する。
+    // 【feature-state はこれで読む】更新起因フレームの所要時間分布（MEDIUM1 / HIGH6）。毎秒スパイクは
+    // frame.p95 に埋もれるため、render 発火後の最初のフレーム（＝再描画を含むフレーム）を名指しで測る。
+    // ※setData は再描画が worker 再タイル化で数百 ms のバーストになり 1 フレームに収まらないため settle で読む。
     updateFrame: mode === 'baseline' ? null : stats(updateFrameMs),
+    // 【setData はこれで読む】apply→次の idle までの収束時間（HIGH7）。feature-state は render 1 回で
+    // 収束し settle≈updateFrame、setData は再タイル化バーストを丸ごと含む。p95/max が周期(1000ms)を超えたら
+    // 毎秒更新が収束しきらず地図が常時再描画状態＝素朴な setData は不可、と判定できる。settleTimeouts>0 は
+    // SETTLE_TIMEOUT_MS 内に一度も収束しなかった回数＝さらに深刻（その回の settle 値は下限）。
+    settle: mode === 'baseline' ? null : stats(settleMs),
+    settleTimeouts: mode === 'baseline' ? null : settleTimeouts,
     // 更新処理そのものの所要時間（メインスレッド同期部分）。feature-state はこれが更新 CPU の実体。
     // setData は再タイル化が worker で非同期のため、この値は同期部分のみ＝実コストの下界（過小評価）。
-    // repaint-only は triggerRepaint 要求コストのみ（ほぼ 0）。総合影響は updateFrame / max / longTask で読む。
+    // repaint-only は triggerRepaint 要求コストのみ（ほぼ 0）。総合影響は updateFrame / settle / max / longTask で読む。
     apply: mode === 'baseline' ? null : stats(applyMs),
     longTask: {
       count: po ? longTasks.length : -1,
