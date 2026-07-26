@@ -106,6 +106,16 @@ function genLevels(n: number): Uint8Array {
   return a
 }
 
+// baseline/flyto-onlyの静止床に使う固定レベル（index 1〜6を巡回。poc/subthreshold-rt.tsのinitLevelsと
+// 同じ考え方）。全点index0（非表示）だと render() が全レベルをスキップしてカスタムレイヤーの描画・再描画
+// コストが基準線に一切乗らず、EEW発報中は強震点が必ず表示されているという本番の実態からも外れる
+// （レビュー b4524cd HIGH1）。
+function initKyoshinLevels(n: number): Uint8Array {
+  const a = new Uint8Array(n)
+  for (let i = 0; i < n; i++) a[i] = (i % MAX_SUB_IDX) + 1
+  return a
+}
+
 // WebGLシェーダーのコンパイル/リンク（makeKyoshinLayer・makeWaveLayerで共用）
 function compileShader(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
   const s = gl.createShader(type)!
@@ -148,8 +158,9 @@ function makeKyoshinLayer(positions: Float32Array, n: number) {
     dirtyIdx = true
   }
 
-  // 初期は静止床（index 0=非表示）に揃える
-  countingSort(new Uint8Array(n))
+  // 初期は静止床（index 1〜6を巡回。レビュー b4524cd HIGH1: 全点index0だと描画0点になり基準線から
+  // カスタムレイヤーの描画コストが抜ける）
+  countingSort(initKyoshinLevels(n))
   dirtyIdx = false
 
   let pointProg: WebGLProgram
@@ -320,7 +331,7 @@ void main() {
       countingSort(levels)
     },
     reset(): void {
-      countingSort(new Uint8Array(n))
+      countingSort(initKyoshinLevels(n))
       mapRef?.triggerRepaint()
     },
   }
@@ -378,15 +389,24 @@ void main() {
 
   // fragment shaderのu_innerTはdraw時に読むだけなので、update()からrender()へ値を渡すために保持する
   let sInnerRatioForShader = 0
-  let glRef: WebGL2RenderingContext | null = null
   let mapRef: maplibregl.Map | null = null
+
+  // update()で計算した幾何をrender()の冒頭でGPUへアップロードするためのdirtyフラグ方式
+  // （poc/subthreshold-rt.tsのdirtyIdxと同じ考え方。レビュー b4524cd HIGH2: 以前はupdate()が
+  // renderサイクル外でgl.bufferDataを呼んでおり、CustomLayerInterfaceの作法から外れるとともに、
+  // waveApplyの計測値に「幾何計算」と「GPUアップロード」が混在し、項目5×6のapply（純粋CPU）と
+  // 横並び比較できなくなっていた）。
+  let dirtyWave = false
+  let pendingRingPos: Float32Array | null = null
+  let pendingFanData: Float32Array | null = null
+  let pendingFanCount = 0
+  let pendingSInnerRatio = 0
 
   const layer = {
     id: 'eew-wave',
     type: 'custom',
     onAdd(map: maplibregl.Map, gl: WebGL2RenderingContext) {
       mapRef = map
-      glRef = gl
       ringProg = linkProgram(gl, RING_VS, RING_FS)
       fanProg = linkProgram(gl, FAN_VS, FAN_FS)
       uRingMatrix = gl.getUniformLocation(ringProg, 'u_matrix')
@@ -401,6 +421,22 @@ void main() {
       fanBuf = gl.createBuffer()!
     },
     render(gl: WebGL2RenderingContext, args: { defaultProjectionData: { mainMatrix: Float32Array } }) {
+      if (dirtyWave) {
+        if (pendingRingPos) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, ringBuf)
+          gl.bufferData(gl.ARRAY_BUFFER, pendingRingPos, gl.DYNAMIC_DRAW)
+          ringVertexCount = WAVE_SEGMENTS
+        }
+        if (pendingFanData) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, fanBuf)
+          gl.bufferData(gl.ARRAY_BUFFER, pendingFanData, gl.DYNAMIC_DRAW)
+          fanVertexCount = pendingFanCount
+        }
+        sInnerRatioForShader = pendingSInnerRatio
+        dirtyWave = false
+        pendingRingPos = null
+        pendingFanData = null
+      }
       if (!hasData) return
       const matrix = args.defaultProjectionData.mainMatrix
       gl.enable(gl.BLEND)
@@ -443,12 +479,12 @@ void main() {
 
   return {
     layer: layer as maplibregl.CustomLayerInterface,
-    // pRadiusKm/sRadiusKmを中心(EPICENTER)からのメルカトル座標に変換し頂点バッファを作り直す。
-    // 幾何そのものが毎回変わるため（項目5×6のnaive-rebuildと同種）バッファの作り直しは避けられないが、
-    // 頂点数が小さい(リング+扇形で計 WAVE_SEGMENTS*2+2 程度)ため実コストは軽いはずというのがPoCの狙い。
+    // pRadiusKm/sRadiusKmを中心(EPICENTER)からのメルカトル座標に変換し頂点データを作り直す。
+    // 幾何そのものが毎回変わるため（項目5×6のnaive-rebuildと同種）作り直し自体は避けられないが、
+    // GPUへのアップロードはrender()の冒頭でdirtyWaveを見て行う（レビュー b4524cd HIGH2）。
+    // ここでは幾何計算のみ行い、GL呼び出しは一切しない——waveApplyの計測値を項目5×6のapply
+    // （純粋CPU）と揃えるため。
     update(pRadiusKm: number, sRadiusKm: number, sInnerRadiusKm: number): void {
-      const gl = glRef
-      if (!gl) return
       const mc = maplibregl.MercatorCoordinate.fromLngLat({ lng: EPICENTER[0], lat: EPICENTER[1] })
       const metersToMerc = mc.meterInMercatorCoordinateUnits()
 
@@ -459,9 +495,6 @@ void main() {
         ringPos[i * 2] = mc.x + pRadiusMerc * Math.cos(a)
         ringPos[i * 2 + 1] = mc.y + pRadiusMerc * Math.sin(a)
       }
-      gl.bindBuffer(gl.ARRAY_BUFFER, ringBuf)
-      gl.bufferData(gl.ARRAY_BUFFER, ringPos, gl.DYNAMIC_DRAW)
-      ringVertexCount = WAVE_SEGMENTS
 
       // 扇形: 中心(t=0) + 外周点(t=1) × (WAVE_SEGMENTS+1)（最後に最初の外周点を複製して閉じる）
       const fanCount = WAVE_SEGMENTS + 2
@@ -477,10 +510,12 @@ void main() {
         fanData[o + 1] = mc.y + sRadiusMerc * Math.sin(a)
         fanData[o + 2] = 1
       }
-      gl.bindBuffer(gl.ARRAY_BUFFER, fanBuf)
-      gl.bufferData(gl.ARRAY_BUFFER, fanData, gl.DYNAMIC_DRAW)
-      fanVertexCount = fanCount
-      sInnerRatioForShader = sRadiusKm > 0 ? Math.min(1, sInnerRadiusKm / sRadiusKm) : 0
+
+      pendingRingPos = ringPos
+      pendingFanData = fanData
+      pendingFanCount = fanCount
+      pendingSInnerRatio = sRadiusKm > 0 ? Math.min(1, sInnerRadiusKm / sRadiusKm) : 0
+      dirtyWave = true
       hasData = true
       mapRef?.triggerRepaint()
     },
@@ -488,6 +523,9 @@ void main() {
       hasData = false
       ringVertexCount = 0
       fanVertexCount = 0
+      pendingRingPos = null
+      pendingFanData = null
+      dirtyWave = false
       mapRef?.triggerRepaint()
     },
   }
