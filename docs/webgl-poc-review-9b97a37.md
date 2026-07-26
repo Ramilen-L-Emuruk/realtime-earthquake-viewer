@@ -5,10 +5,14 @@
 > 関連: 計画書 [webgl-rendering-migration-plan.md](webgl-rendering-migration-plan.md) §6 検証項目6 ／ 前レビュー [webgl-poc-review-3c2ddaf.md](webgl-poc-review-3c2ddaf.md)・[webgl-poc-review-4b0517c.md](webgl-poc-review-4b0517c.md)
 > レビュー日: 2026-07-25（開発機 Chrome 150 / RTX 4070 Ti / DPR 1 / **165Hz モニタ**）
 >
-> **ステータス: レビュー全件を `3560156` で対応済み（実機計測の準備完了）**
+> **ステータス: `3560156` で 4 件は対応確認済み。ただし MEDIUM 1 の対策に残穴（HIGH 6）**
 > - 設計・実装は妥当で、前レビューの教訓が全て反映されていた。指摘はいずれも指標・負荷の精度に関するもの
+> - **【未対応・新規】HIGH 6**: MEDIUM 1 の対策として入った `updateFrame` が、**測りたかった
+>   全画面再描画を取りこぼしている**（rAF の登録順により再描画は次フレームへ落ちる）。
+>   実機計測の前に対応を推奨（下記「6.」）
 > - **【対応済み `3560156`】MEDIUM 1**: 更新起因フレームを名指しで記録する `updateFrame` を追加し、
 >   判定指標を `frame.p95` から `updateFrame` / `max` / `longTask` へ移した
+>   — **方針は正しいが実装に 1 フレームのずれ。HIGH 6 参照**
 > - **【対応済み `3560156`】提案 4**: `repaint-only` モード（属性更新なしで全画面再描画のみ＝再描画
 >   コスト単独）を追加し、スイートに 1 phase 追加。項目6「毎秒1回の全画面描画がカクつくか」に直答できる
 > - **【対応済み `3560156`】LOW 2**: サンプリングを `round`→`floor` にし 1,458→1,725 点
@@ -202,6 +206,91 @@ gebco: { type: 'raster', tiles: [BATHYMETRY_URL], tileSize: 256 }   // maxzoom �
 `ERROR:` の目視確認と紛らわしいので、`maxzoom` を指定しておくと実機確認が楽になる。
 本番移植時にはいずれ必要になる指定でもある。
 
+---
+
+## 【HIGH】6. `updateFrame` が全画面再描画を取りこぼしている（`3560156` 時点で**未対応**）
+
+MEDIUM 1 の対策として入った `updateFrame` の**方針は正しい**（分位数で薄めず更新フレームを名指しで
+測る）。しかし**記録するフレームが 1 つ手前**で、肝心の全画面再描画が入っていない。
+
+### 測定（イベント時系列・2 回とも同じ並び）
+
+```
+apply-end@401.1  →  raf@403  →  render@406.4  →  raf@408.8
+                     ↑ここを updateFrame として記録        ↑再描画はこの区間(403→408.8)に入る
+
+apply-end@1401   →  raf@1403.1 → render@1407.3 → raf@1409
+```
+
+### 原因
+
+`setInterval` で `apply()` が走った後、次のフレームで
+
+1. **計測用 rAF が先に発火**（先に登録されているため）→ ここで `dt` を `updateFrameMs` に入れる
+2. **その後に MapLibre が再描画**（`render` イベント）
+
+という順になる。したがって `updateFrame` に入るのは **`apply()` の CPU コストだけ**で、
+**全画面再描画のコストは次のフレームの `dt` へ落ちる**。
+
+これは rAF コールバックの登録順という**構造的な事実**であり、機種・負荷に依らない
+（開発機では全フレーム 5.9ms 前後で差が出ないため、時間差ではなくイベント順序で確認した）。
+
+### なぜ重大か
+
+検証項目6 の問いは「**毎秒 1 回の全画面再描画が体感のカクつきになるか**」であり、
+取りこぼしているのが**まさにその全画面再描画**である。
+
+コードには `// 【判定はこれで読む】` と明記されているため、実機で `updateFrame.max = 16.7ms` と
+出れば「問題なし」と読んでしまう。しかし実際の再描画フレームはその次にあり、
+`3560156` のコミットメッセージ自身が記録している
+
+> feature-state で frame.max 50.1 に対し updateFrame.max 16.7
+
+も、**50.1ms のフレームが 1 つ後ろにずれていた**と考えれば整合する。
+
+なお `frame.max` と `longTask` は出力されているため**計測全体が盲目なわけではない**。
+ただし「判定はこれで読む」と名指しした指標が外している以上、誤読の危険は高い。
+
+### 修正案（前者を推奨）
+
+**1. 更新後の複数フレームを拾って最大を取る**（単純・確実）
+
+```ts
+let pendingUpdate = 0
+// setInterval 内（apply / triggerRepaint の直後）
+pendingUpdate = 2                    // 直後 2 フレームを見る
+// rAF 内
+if (pendingUpdate > 0) {
+  pendingUpdate--
+  span.push(dt)                      // 2 つ集めたら max を 1 サンプルとして updateFrameMs へ
+}
+```
+
+**2. `render` イベントを基準にする**（厳密）
+
+`map.on('render')` で再描画の発生を捉え、**その `render` を含むフレーム区間**の `dt` を記録する。
+
+いずれの場合も、`repaint-only` phase も同じ経路を通るため同時に是正される。
+
+### 再現手順
+
+```js
+const map = window.__rtMap
+const log = []; const t0 = performance.now()
+const mark = k => log.push(`${k}@${(performance.now()-t0).toFixed(1)}`)
+map.on('render', () => mark('render'))
+let raf = requestAnimationFrame(function l(){ mark('raf'); raf = requestAnimationFrame(l) })
+setTimeout(() => {
+  mark('apply-start')
+  for (let i = 0; i < 1725; i++) map.setFeatureState({source:'points', id:i}, {lvl:(Math.random()*10)|0})
+  mark('apply-end')
+}, 400)
+await new Promise(r => setTimeout(r, 1200))
+cancelAnimationFrame(raf)
+console.log(log.slice(log.findIndex(x => x.startsWith('apply-end')), -1).slice(0, 5))
+// → apply-end, raf, render, raf, raf の順（raf が render より先）
+```
+
 ## 未検証（実機側の課題）
 
 - **UHD 615 で毎秒の全画面再描画が体感のカクつきになるか**（項目6 の本題）。
@@ -212,9 +301,13 @@ gebco: { type: 'raster', tiles: [BATHYMETRY_URL], tileSize: 256 }   // maxzoom �
 
 ## 推奨対応順
 
-1. **【MEDIUM】1** 更新フレーム時間の直接記録を追加し、判定指標を `p95` から
-   `updateFrame` / `max` / `longTask` へ移す ← **実機で回す前に**
-2. **【LOW】2** サンプリングを `Math.floor` にして 1,725 点にそろえる（同上・1 行）
-3. 実機で `__runRealtimeSuite('surface-go2-rt')` を実行
-4. **【LOW】3**（頂点数の数え方）・**【提案】4**（`repaint-only` 対照）は任意。
-   4 を入れると項目6 の結論がより明確になる
+1. ~~**【MEDIUM】1** 更新フレーム時間の直接記録を追加し、判定指標を `p95` から移す~~
+   → **`3560156` で対応。ただし記録フレームが 1 つ手前で全画面再描画が入っていない（HIGH 6）**
+2. ~~**【LOW】2** サンプリングを `Math.floor` にして 1,725 点にそろえる~~ → **対応確認済み**（`points : 1,725`）
+3. ~~**【LOW】3** 頂点数の数え方~~ → **対応確認済み**（`base : 40,917 頂点`＝描画ベースと一致）
+4. ~~**【提案】4** `repaint-only` 対照~~ → **対応確認済み**
+   （静止時 `render` 0 件 → `triggerRepaint`×3 で 3 件＝no-op でないことを実測。スイートに 4 phase）
+5. ~~**【情報】5** `gebco` の `maxzoom`~~ → **対応確認済み**（`maxzoom = 7`）
+6. **【HIGH】6** `updateFrame` の記録フレームを 1 つ後ろへ（または `render` 基準に）
+   ← **実機で回す前に。これが残ると項目6 の判定を誤る**
+7. 実機で `__runRealtimeSuite('surface-go2-rt')` を実行
