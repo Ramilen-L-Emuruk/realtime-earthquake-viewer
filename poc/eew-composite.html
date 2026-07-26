@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>検証項目7 PoC — EEW発報シナリオの複合負荷</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0a0c10;
+        color: #e5e7eb;
+        font: 13px/1.5 system-ui, sans-serif;
+      }
+      #map {
+        position: absolute;
+        inset: 0;
+      }
+      #ui {
+        position: absolute;
+        top: 8px;
+        left: 8px;
+        z-index: 10;
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        background: rgba(18, 21, 26, 0.92);
+        padding: 8px;
+        border-radius: 8px;
+        max-width: 480px;
+      }
+      #ui button {
+        font: 12px system-ui, sans-serif;
+        color: #e5e7eb;
+        background: #1f2937;
+        border: 1px solid #374151;
+        border-radius: 6px;
+        padding: 5px 9px;
+        cursor: pointer;
+      }
+      #ui button:hover {
+        background: #374151;
+      }
+      #stat {
+        position: absolute;
+        left: 8px;
+        bottom: 8px;
+        z-index: 10;
+        background: rgba(18, 21, 26, 0.92);
+        padding: 8px 10px;
+        border-radius: 8px;
+        font-family: ui-monospace, monospace;
+        white-space: pre;
+        color: #a7f3d0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <div id="ui">
+      <button id="flyOnlyBtn">flyto-only シナリオ実行</button>
+      <button id="pauseBtn">composite-pause シナリオ実行</button>
+      <button id="nopauseBtn">composite-nopause シナリオ実行</button>
+      <button id="stopBtn">停止</button>
+    </div>
+    <div id="stat">loading…</div>
+    <script type="module" src="/poc/eew-composite.ts"></script>
+  </body>
+</html>
