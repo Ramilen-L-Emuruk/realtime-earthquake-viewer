@@ -5,25 +5,24 @@
 > 関連: 計画書 [webgl-rendering-migration-plan.md](webgl-rendering-migration-plan.md) §6 検証項目6 ／ 前レビュー [webgl-poc-review-3c2ddaf.md](webgl-poc-review-3c2ddaf.md)・[webgl-poc-review-4b0517c.md](webgl-poc-review-4b0517c.md)
 > レビュー日: 2026-07-25（開発機 Chrome 150 / RTX 4070 Ti / DPR 1 / **165Hz モニタ**）
 >
-> **ステータス: `aa7067d` で HIGH 6 は feature-state について解消。ただし `setData` に残穴（HIGH 7）**
+> **ステータス: レビュー全件を `3560156` + `aa7067d` + `e27552b` で対応済み（実機計測の準備完了）**
 > - 設計・実装は妥当で、前レビューの教訓が全て反映されていた。指摘はいずれも指標・負荷の精度に関するもの
-> - **【未対応・新規】HIGH 7**: `updateFrame` は **`setData` の負荷をほぼ全く捉えていない**。
->   `setData` の `render` は 4 フレーム目から始まり 51 フレーム・**315ms** のバーストとして出るため
->   ウィンドウ(1〜2)の外。**並べると `setData` の方が安く見え、順位が逆転する**。
->   実機計測の前に対応を推奨（下記「7.」）
-> - **【対応済み `aa7067d`・feature-state について】HIGH 6**: `updateFrame` が全画面再描画を取りこぼす
->   問題（計測用 rAF が `render` より先に発火する）を `UPDATE_FRAME_WINDOW`(=2) で是正。
->   **feature-state は `render` がフレーム 1 に来るため窓内に収まり、修正は正しく効いている**（実測確認）
+> - **【対応済み `e27552b`】HIGH 7**: `updateFrame` が `setData` の負荷（worker 再タイル化の数百ms バースト）を
+>   捉えない問題を、apply→次の idle までの収束時間 `settle` を計測項目に追加して解消（feature-state は render
+>   1回で収束し settle≈updateFrame、setData は 336ms のバーストを丸ごと含む。p95/max>1000ms で素朴 setData 不可）。
+>   併せて `updateFrame` を固定窓から render 発火ベースへ、`settle` を FIFO（全 apply 個別解決・非収束は timeout
+>   打ち切り）へ再設計し、セルフレビュー3巡で「最悪ケースで指標が沈黙/逆転する」穴を実機前に潰した
+> - **【対応済み `aa7067d`／HIGH7 で再設計】HIGH 6**: `updateFrame` が全画面再描画を取りこぼす問題（計測用 rAF が
+>   `render` より先に発火する）を是正。当初の固定窓 `UPDATE_FRAME_WINDOW` は HIGH7 対応で render 発火ベースに置換
 > - **【対応済み `3560156`】MEDIUM 1**: 更新起因フレームを名指しで記録する `updateFrame` を追加し、
->   判定指標を `frame.p95` から `updateFrame` / `max` / `longTask` へ移した（記録フレームのずれは HIGH6 で是正）
+>   判定指標を `frame.p95` から `updateFrame` / `max` / `longTask` へ移した（記録フレームのずれは HIGH6/7 で是正）
 > - **【対応済み `3560156`】提案 4**: `repaint-only` モード（属性更新なしで全画面再描画のみ＝再描画
 >   コスト単独）を追加し、スイートに 1 phase 追加。項目6「毎秒1回の全画面描画がカクつくか」に直答できる
 > - **【対応済み `3560156`】LOW 2**: サンプリングを `round`→`floor` にし 1,458→1,725 点
 > - **【対応済み `3560156`】LOW 3**: 県境リングを fill+line で 2 回計上し basemapVertices を 40,917 へ是正
 > - **【対応済み `3560156`】情報 5**: `gebco` に `maxzoom:7` を指定
-> - 開発機で確認: points 1,725 / base 40,917 / updateFrame が render 側フレーム(16.9ms)を採用・旧実装は
->   取りこぼし側(16.5ms)を記録していたことを実測。実機（Surface Go 2）で
->   `__runRealtimeSuite('surface-go2-rt')` を回すのが次のステップ
+> - 開発機で確認: points 1,725 / base 40,917 / settle が setData 336ms・feature-state 8ms と方式差を分離・
+>   applyN===settleN（記録漏れ0）・コンソールエラー0。実機（Surface Go 2）で `__runRealtimeSuite('surface-go2-rt')` が次のステップ
 
 ## 結論
 
@@ -297,7 +296,7 @@ console.log(log.slice(log.findIndex(x => x.startsWith('apply-end')), -1).slice(0
 
 ---
 
-## 【HIGH】7. `updateFrame` は `setData` の負荷をほぼ全く捉えていない（`aa7067d` 時点で**未対応**）
+## 【HIGH】7. `updateFrame` は `setData` の負荷をほぼ全く捉えていない（**`e27552b` で対応済み**）
 
 HIGH 6 の対策（`UPDATE_FRAME_WINDOW = 2`）は **`feature-state` については正しい**が、
 **`setData` には効いていない**。両方式で `render` の発生タイミングが根本的に違うため。
@@ -393,6 +392,6 @@ map.once('idle', () => console.log('settle', performance.now() - t0))  // → 31
 5. ~~**【情報】5** `gebco` の `maxzoom`~~ → **対応確認済み**（`maxzoom = 7`）
 6. ~~**【HIGH】6** `updateFrame` の記録フレームを 1 つ後ろへ（または `render` 基準に）~~
    → **`aa7067d` で対応（案1: apply 直後 2 フレームの最大を採用）。render の乗る次フレームを捕捉すると実測確認**
-7. **【HIGH】7** `settleMs`（apply → 次の `idle`）を計測項目に追加する
-   ← **実機で回す前に。これが無いと `setData` の負荷がほぼゼロと報告され、順位が逆転する**
-8. 実機で `__runRealtimeSuite('surface-go2-rt')` を実行
+7. ~~**【HIGH】7** `settleMs`（apply → 次の `idle`）を計測項目に追加する~~
+   → **`e27552b` で対応（settle 追加＋updateFrame の render ベース化＋settle の FIFO 化）。セルフレビュー3巡で PASS**
+8. 実機で `__runRealtimeSuite('surface-go2-rt')` を実行 ← **準備完了。次はこれ**
