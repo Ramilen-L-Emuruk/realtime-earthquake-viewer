@@ -1,0 +1,52 @@
+{
+  "meta": {
+    "when": "2026-07-26T14:53:27.487Z",
+    "label": "surface-go2-subrt-p17250-naive",
+    "mode": "naive-rebuild",
+    "durationMs": 12000,
+    "url": "http://192.168.0.64:5183/poc/subthreshold-rt.html?points=17250",
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "viewport": "1272x768",
+    "devicePixelRatio": 1.5,
+    "points": 17250,
+    "basemapVertices": 40917,
+    "canvasW": 1908,
+    "canvasH": 1152,
+    "estimatedVsyncMs": null,
+    "jsHeapMB": 34
+  },
+  "frame": {
+    "frames": 719,
+    "fps": 59.92,
+    "p50": 16.7,
+    "p95": 17,
+    "max": 20
+  },
+  "updateFrame": {
+    "n": 12,
+    "p50": 16.7,
+    "p95": 17,
+    "max": 17,
+    "mean": 16.63
+  },
+  "settle": {
+    "n": 12,
+    "p50": 15.2,
+    "p95": 27.6,
+    "max": 27.6,
+    "mean": 15.17
+  },
+  "settleTimeouts": 0,
+  "apply": {
+    "n": 12,
+    "p50": 2.1,
+    "p95": 2.8,
+    "max": 2.8,
+    "mean": 1.96
+  },
+  "longTask": {
+    "count": 0,
+    "totalMs": 0,
+    "maxMs": 0
+  }
+}
