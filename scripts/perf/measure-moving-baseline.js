@@ -26,7 +26,7 @@
  *   5. **同じ区間を複数回**行い、1 回の値で断定しない（人の操作依存で再現性が落ちるため）。
  *
  * 指標（PoC 側 poc/measure.ts・poc/label.ts と揃える。揃えないと比較できない）:
- *   - frame:            rAF フレーム間隔 p50/p95/max・fps（fps は実測 durationMs 割り） … 主指標
+ *   - frame:            rAF フレーム間隔 p50/p95/max・fps（fps は名目でなく実測 elapsedMs 割り） … 主指標
  *   - longTask:         >50ms のロングタスク件数・合計・最大 … 主指標
  *   - estimatedVsyncMs: 静止2秒の rAF p50。**必須**（無いと「何フレーム落ち」を後から読めない）
  *   - blockMaxMs/Top3:  MessageChannel ブロック検出器によるメインスレッド最長連続ブロック
@@ -74,6 +74,11 @@ window.__measureMovingBaseline = async function measureMovingBaseline(opts = {})
   // --- ② 移動中計測 -----------------------------------------------------------------------------
   // DOM 変更カウント（mapPane 全体と、うち kyoshin-points ペイン配下を分計）。移動中に kyoshinAttrPerSec が
   // 跳ね上がれば「差分更新は移動時に全点書き換えへ戻る（＝地図が動くと全点の座標が変わる）」の裏付け。
+  // 計測窓の実測経過時間。fps・domWrites 毎秒換算は名目 durationMs でなくこれで割る（比較相手の
+  // poc/measure.ts と定義を揃える。移動中はメインスレッドがブロックされ実測は名目より延びうるため、
+  // 名目割りだと重い区間ほど fps・毎秒換算が過大＝実際より良く見える。fps 名目割りの再発3度目・
+  // 依頼書§2 が明示していた項目）。
+  const tStart = performance.now()
   const counts = { map: { attr: 0, nodes: 0 }, kyoshin: { attr: 0, nodes: 0 } }
   const tally = (bucket) => (records) => {
     for (const r of records) {
@@ -135,6 +140,7 @@ window.__measureMovingBaseline = async function measureMovingBaseline(opts = {})
   lastPing = performance.now()
   mc.port2.postMessage(0) // 移動窓の開始と同時にブロック検出を開始
   await new Promise((r) => setTimeout(r, durationMs))
+  const elapsedMs = performance.now() - tStart
 
   cancelAnimationFrame(rafId)
   blockRunning = false
@@ -147,7 +153,7 @@ window.__measureMovingBaseline = async function measureMovingBaseline(opts = {})
   const sorted = [...frameDeltas].sort((a, b) => a - b)
   const pick = (q) =>
     sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))] : null
-  const perSec = (n) => Math.round((n / (durationMs / 1000)) * 10) / 10
+  const perSec = (n) => Math.round((n / (elapsedMs / 1000)) * 10) / 10
   const sortedBlocks = [...blockGaps].sort((a, b) => b - a)
 
   const result = {
@@ -164,13 +170,15 @@ window.__measureMovingBaseline = async function measureMovingBaseline(opts = {})
       circleCount,
       kyoshinActive: pathCount > 1000,
       durationMs,
+      // 実測経過（名目 durationMs との差＝計測窓内のブロック超過分。fps/perSec はこちらで割る）。
+      elapsedMs: round(elapsedMs),
       vsyncMs,
       // 何フレーム落ちかを後から読むための天井。移動窓ではなく先頭の静止2秒で取る（必須）。
       estimatedVsyncMs,
     },
     frame: {
       frames: sorted.length,
-      fps: round(sorted.length / (durationMs / 1000)),
+      fps: round(sorted.length / (elapsedMs / 1000)),
       p50: round(pick(0.5)),
       p95: round(pick(0.95)),
       max: round(sorted[sorted.length - 1] ?? null),

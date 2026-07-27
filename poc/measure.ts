@@ -146,7 +146,8 @@ async function measureOnce(
   await waitIdle(map)
 
   const frameDeltas: number[] = []
-  let last = performance.now()
+  const t0 = performance.now()
+  let last = t0
   let rafId = requestAnimationFrame(function loop(t) {
     frameDeltas.push(t - last)
     last = t
@@ -167,10 +168,13 @@ async function measureOnce(
   const stopDrive = startDrive(map, phase)
   await new Promise((r) => setTimeout(r, durationMs))
   stopDrive()
+  const elapsedMs = performance.now() - t0
   cancelAnimationFrame(rafId)
   if (po) po.disconnect()
 
-  const frame = summarizeFrames(frameDeltas, durationMs)
+  // fps は名目 durationMs でなく実測 elapsedMs で割る（Leaflet 側 measureOnce・camera measureOneFly と
+  // 定義を統一。レビュー(cffb623) MEDIUM: 層B の本関数だけ名目割りが残っていた＝fps 名目割りの最後の1箇所）。
+  const frame = summarizeFrames(frameDeltas, elapsedMs)
   // static は何も動かさないため frame.p50 が実質そのままvsync間隔になる（項目5×6 情報5と同じ手）。
   // 検証項目2（poc/leaflet-measure.ts）と天井の異なる環境で測っていないかを突き合わせるための
   // 証跡（レビュー b4524cd 系譜 HIGH4: Leaflet側にこれが無く、同じ「開発機」でも天井が違う
@@ -188,6 +192,7 @@ async function measureOnce(
       ua: navigator.userAgent,
       viewport: `${innerWidth}x${innerHeight}`,
       devicePixelRatio: window.devicePixelRatio,
+      elapsedMs: round(elapsedMs),
       estimatedVsyncMs: phase === 'static' ? frame.p50 : null,
       ...deps.snapshot(),
     },
