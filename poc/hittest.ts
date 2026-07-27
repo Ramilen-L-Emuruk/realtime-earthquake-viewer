@@ -146,6 +146,20 @@ map.on('click', (e) => {
   )
 })
 
+// 本番（Leaflet版）は当たり判定用の透明線が interactive なため、Leaflet が自動で
+// leaflet-interactive クラス経由の cursor:pointer をホバー時に当てる。MapLibre には
+// この自動処理が無いため、mousemove のたびに同じ bbox 判定を呼んでカーソルを手動で切り替える。
+// 状態が変わったときだけ style を書き換え、無駄な再代入を避ける。
+let hovering = false
+map.on('mousemove', (e) => {
+  const r = Number((document.getElementById('r') as HTMLInputElement).value)
+  const hit = hitTest(e.point.x, e.point.y, r).hit
+  if (hit !== hovering) {
+    hovering = hit
+    map.getCanvas().style.cursor = hovering ? 'pointer' : ''
+  }
+})
+
 const rInput = document.getElementById('r') as HTMLInputElement
 rInput.value = String(DEFAULT_R)
 const rValEl = document.getElementById('rVal') as HTMLElement
