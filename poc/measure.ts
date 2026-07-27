@@ -173,7 +173,11 @@ async function measureOnce(
   if (po) po.disconnect()
 
   // fps は名目 durationMs でなく実測 elapsedMs で割る（Leaflet 側 measureOnce・camera measureOneFly と
-  // 定義を統一。レビュー(cffb623) MEDIUM: 層B の本関数だけ名目割りが残っていた＝fps 名目割りの最後の1箇所）。
+  // 定義を統一。レビュー(cffb623) で層B の本関数の名目割りが判明したため実測割りへ）。
+  // 【訂正・レビュー(8cf28d6)】以前ここに「fps 名目割りの最後の1箇所」と書いたのは誤りだった。名目割りは
+  // 他に poc/realtime.ts・poc/subthreshold-rt.ts・poc/subthreshold.ts（いずれも結論は apply 収束時間や
+  // ピクセル一致ベースで fps 非依存＋既存証跡との比較のため据え置き）と scripts/perf/measure-kyoshin-static.js
+  // （段階0 の器・別途実測割りへ更新）に残る。
   const frame = summarizeFrames(frameDeltas, elapsedMs)
   // static は何も動かさないため frame.p50 が実質そのままvsync間隔になる（項目5×6 情報5と同じ手）。
   // 検証項目2（poc/leaflet-measure.ts）と天井の異なる環境で測っていないかを突き合わせるための

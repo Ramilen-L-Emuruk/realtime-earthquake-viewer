@@ -59,7 +59,8 @@ window.__measureKyoshinStatic = async function measureKyoshinStatic(durationMs =
 
   // --- フレーム時間
   const frameDeltas = []
-  let lastT = performance.now()
+  const t0 = performance.now()
+  let lastT = t0
   let rafId = 0
   const loop = (t) => {
     frameDeltas.push(t - lastT)
@@ -82,6 +83,7 @@ window.__measureKyoshinStatic = async function measureKyoshinStatic(durationMs =
 
   console.log(`[measureKyoshinStatic] 計測開始（${durationMs}ms・静止したまま待機）`)
   await new Promise((resolve) => setTimeout(resolve, durationMs))
+  const elapsedMs = performance.now() - t0
 
   cancelAnimationFrame(rafId)
   moMap.disconnect()
@@ -94,7 +96,11 @@ window.__measureKyoshinStatic = async function measureKyoshinStatic(durationMs =
   const pick = (q) =>
     sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))] : null
   const round = (v) => (v == null ? null : Math.round(v * 100) / 100)
-  const perSec = (n) => Math.round((n / (durationMs / 1000)) * 10) / 10
+  // fps・毎秒換算は名目 durationMs でなく実測 elapsedMs で割る（PoC 各計測・移動中計測 measure-moving-baseline.js
+  // と定義統一。レビュー(8cf28d6) 対応）。【注意】過去の証跡 surface-go2-before/after（段階0 の表）は名目割りで
+  // 記録されている＝この更新後に測り直した after とは物差しが変わる。after は測り直して移動中と同一物差しにできるが、
+  // before は改修前コードが要り測り直せない（比較時は「before/旧after=名目・新規=実測」を明示すること）。
+  const perSec = (n) => Math.round((n / (elapsedMs / 1000)) * 10) / 10
 
   const result = {
     meta: {
@@ -107,10 +113,11 @@ window.__measureKyoshinStatic = async function measureKyoshinStatic(durationMs =
       pathCount,
       circleCount,
       durationMs,
+      elapsedMs: round(elapsedMs),
     },
     frame: {
       frames: sorted.length,
-      fps: round(sorted.length / (durationMs / 1000)),
+      fps: round(sorted.length / (elapsedMs / 1000)),
       p50: round(pick(0.5)),
       p95: round(pick(0.95)),
       max: round(sorted[sorted.length - 1]),
