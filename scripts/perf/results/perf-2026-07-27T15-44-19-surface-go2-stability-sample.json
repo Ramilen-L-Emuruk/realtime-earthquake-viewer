@@ -1,0 +1,33 @@
+{
+  "meta": {
+    "when": "2026-07-27T15:44:21.051Z",
+    "label": "surface-go2-stability-sample",
+    "kind": "stability-sample",
+    "url": "http://192.168.0.64:5173/poc/index.html",
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "faults": "full",
+    "faultVertices": 31646,
+    "points": 1725,
+    "lineWidth": 1.2,
+    "pixelRatio": 1.5,
+    "canvasW": 1908,
+    "canvasH": 1152,
+    "jsHeapMB": 35.9,
+    "webglMemory": {
+      "bufferBytes": 2342096,
+      "textureBytes": 38273499,
+      "renderbufferBytes": 0,
+      "totalBytes": 40615595,
+      "tracked": true
+    }
+  },
+  "sample": {
+    "elapsedSec": 1022,
+    "jsHeapMB": 35.9,
+    "webglTotalMB": 38.73,
+    "contextLost": 0,
+    "contextRestored": 0,
+    "ltCount": 0,
+    "ltMaxMs": 0
+  }
+}
