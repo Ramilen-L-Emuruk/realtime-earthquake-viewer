@@ -16,7 +16,7 @@
 // 実機での使い方（Surface Go 2）:
 //   PoC ページで await window.__runLayerBSuite('surface-go2') を1回実行すると、ウォームアップ後に
 //   baseline(static/pan/zoom)・各軸(pan/zoom)・baseline-warm の証跡が開発機へ自動保存される。
-import type { Map as MaplibreMap } from 'maplibre-gl'
+import type { Map as MaplibreMap, FitBoundsOptions } from 'maplibre-gl'
 
 export type Axis = { faults?: 'full' | 'thin'; lw?: number; pr?: number; points?: boolean }
 export type Phase = 'static' | 'pan' | 'zoom'
@@ -90,6 +90,45 @@ async function warmup(map: MaplibreMap): Promise<void> {
   }
 }
 
+const round = (v: number | null) => (v == null ? null : Math.round(v * 100) / 100)
+
+// frameDeltas から frame 統計を作る（項目3のflyTo計測とも共有）。
+// 最初のフレーム間隔は計測開始タイミング依存のノイズなので捨てる。
+function summarizeFrames(frameDeltas: number[], elapsedMs: number) {
+  const deltas = frameDeltas.slice(1)
+  const sorted = [...deltas].sort((a, b) => a - b)
+  const pick = (q: number) =>
+    sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))] : null
+  return {
+    frames: sorted.length,
+    fps: round(sorted.length / (elapsedMs / 1000)),
+    p50: round(pick(0.5)),
+    p95: round(pick(0.95)),
+    max: round(sorted[sorted.length - 1] ?? null),
+  }
+}
+
+function summarizeLongTasks(longTasks: number[], observed: boolean) {
+  return {
+    count: observed ? longTasks.length : -1,
+    totalMs: round(longTasks.reduce((a, b) => a + b, 0)),
+    maxMs: round(longTasks.length ? Math.max(...longTasks) : 0),
+  }
+}
+
+async function sendReport(
+  result: Record<string, unknown>,
+  logLabel: string,
+  frame: unknown,
+): Promise<void> {
+  try {
+    const res = await fetch(REPORT_URL, { method: 'POST', body: JSON.stringify(result) })
+    console.log(`${logLabel}: ${res.ok ? await res.text() : 'HTTP ' + res.status}`, frame)
+  } catch (e) {
+    console.warn(`${logLabel} report 送信失敗（結果はログから回収可）:`, e, result)
+  }
+}
+
 async function measureOnce(
   deps: MeasureDeps,
   phase: Phase,
@@ -127,13 +166,7 @@ async function measureOnce(
   cancelAnimationFrame(rafId)
   if (po) po.disconnect()
 
-  // 最初のフレーム間隔は計測開始タイミング依存のノイズなので捨てる
-  frameDeltas.shift()
-  const sorted = [...frameDeltas].sort((a, b) => a - b)
-  const pick = (q: number) =>
-    sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))] : null
-  const round = (v: number | null) => (v == null ? null : Math.round(v * 100) / 100)
-
+  const frame = summarizeFrames(frameDeltas, durationMs)
   const result = {
     meta: {
       when: new Date().toISOString(),
@@ -148,32 +181,157 @@ async function measureOnce(
       // 検証項目2（poc/leaflet-measure.ts）と天井の異なる環境で測っていないかを突き合わせるための
       // 証跡（レビュー b4524cd 系譜 HIGH4: Leaflet側にこれが無く、同じ「開発機」でも天井が違う
       // （60Hz対170Hz）測定を並べて食い違う事故があった）。
-      estimatedVsyncMs: phase === 'static' ? round(pick(0.5)) : null,
+      estimatedVsyncMs: phase === 'static' ? frame.p50 : null,
       ...deps.snapshot(),
     },
-    frame: {
-      frames: sorted.length,
-      fps: round(sorted.length / (durationMs / 1000)),
-      p50: round(pick(0.5)),
-      p95: round(pick(0.95)),
-      max: round(sorted[sorted.length - 1] ?? null),
-    },
-    longTask: {
-      count: po ? longTasks.length : -1,
-      totalMs: round(longTasks.reduce((a, b) => a + b, 0)),
-      maxMs: round(longTasks.length ? Math.max(...longTasks) : 0),
-    },
+    frame,
+    longTask: summarizeLongTasks(longTasks, po != null),
   }
 
-  try {
-    const res = await fetch(REPORT_URL, { method: 'POST', body: JSON.stringify(result) })
-    console.log(
-      `[layerB] ${label} ${phase}: ${res.ok ? await res.text() : 'HTTP ' + res.status}`,
-      result.frame,
-    )
-  } catch (e) {
-    console.warn('[layerB] report 送信失敗（結果はログから回収可）:', e, result)
+  await sendReport(result, `[layerB] ${label} ${phase}`, result.frame)
+  return result
+}
+
+// --- 検証項目3: カメラ操作（flyTo/fitBounds）の滑らかさ ---
+//
+// 本番の flyTo パターン（JapanMap.tsx 調査済み・flyToLite.ts 経由の全呼び出しを集計）:
+//   - 単一点への flyTo: 目標 zoom は MAX_ZOOM(8) 固定
+//   - 複数点への flyToBounds: padding は [60,60]（EEW検知系）・[48,48]（津波/観測点フィット）・
+//     [20,20]（JAPAN_BOUNDS 全体復帰）の3パターン
+//   - duration は 0.8秒（EEW系）・1.0秒（それ以外）の二値
+// MapLibre の flyTo/fitBounds の duration は**ミリ秒**単位（Leaflet は秒単位）のため、
+// 本 PoC では durationSec を受け取り ×1000 して渡す（取り違え防止のため変数名で明示）。
+export type FlyKind = 'point' | 'bounds'
+const CAMERA_MAX_ZOOM = 8
+// JapanMap.tsx の JAPAN_BOUNDS（[lat,lng]）を MapLibre の [lng,lat] 順へ変換した値
+const JAPAN_BOUNDS_LNGLAT: [[number, number], [number, number]] = [
+  [129.43, 30.99],
+  [145.82, 45.52],
+]
+
+function randomPointInJapan(): [number, number] {
+  const [[lng0, lat0], [lng1, lat1]] = JAPAN_BOUNDS_LNGLAT
+  return [lng0 + Math.random() * (lng1 - lng0), lat0 + Math.random() * (lat1 - lat0)]
+}
+
+// padding 60/48 の本番用途（EEW検知点・観測点/海岸線フィット）は、JAPAN_BOUNDS のような広域では
+// なく、日本全体の中のごく一部に散らばる少数点への「タイトなズームイン」（maxZoom:MAX_ZOOM 付き）。
+// 同じ JAPAN_BOUNDS を使い回すと padding の差しか測れず最も負荷が高い局面（大きなズーム変化）が
+// 抜けるため（レビュー HIGH2）、局所クラスタの bounds を都度生成する。
+const LOCAL_CLUSTER_SPREAD_DEG = 0.15
+function randomLocalClusterBounds(pointCount = 3): [[number, number], [number, number]] {
+  const [lng0, lat0] = randomPointInJapan()
+  let minLng = lng0
+  let maxLng = lng0
+  let minLat = lat0
+  let maxLat = lat0
+  for (let i = 1; i < pointCount; i++) {
+    const lng = lng0 + (Math.random() - 0.5) * LOCAL_CLUSTER_SPREAD_DEG * 2
+    const lat = lat0 + (Math.random() - 0.5) * LOCAL_CLUSTER_SPREAD_DEG * 2
+    minLng = Math.min(minLng, lng)
+    maxLng = Math.max(maxLng, lng)
+    minLat = Math.min(minLat, lat)
+    maxLat = Math.max(maxLat, lat)
   }
+  return [
+    [minLng, minLat],
+    [maxLng, maxLat],
+  ]
+}
+
+// padding から本番と同じ意味の bounds/maxZoom を決める。
+// [20,20] は JAPAN_BOUNDS への全体復帰（JapanMap.tsx:288 等）、[60,60]/[48,48] は
+// EEW検知点・観測点/海岸線への局所フィット（同 :344-346 等、いずれも maxZoom:MAX_ZOOM 付き）。
+function boundsTargetForPadding(padding: number): {
+  bounds: [[number, number], [number, number]]
+  maxZoom?: number
+} {
+  if (padding === 20) return { bounds: JAPAN_BOUNDS_LNGLAT }
+  return { bounds: randomLocalClusterBounds(), maxZoom: CAMERA_MAX_ZOOM }
+}
+
+// fitBounds の options を組み立てる。maxZoom が無いケース（padding=20）で `maxZoom: undefined` を
+// キーごと渡すと、MapLibre 内部のデフォルト値マージが効かず fitBounds が NaN 座標を計算して
+// 例外を投げる（実機検証中に踏んだ・maplibre-gl の既知の挙動）。undefined ならキー自体を含めない。
+function fitBoundsOptions(
+  padding: number,
+  maxZoom: number | undefined,
+  durationSec: number,
+): FitBoundsOptions {
+  const opts: FitBoundsOptions = { padding, duration: durationSec * 1000, essential: true }
+  if (maxZoom != null) opts.maxZoom = maxZoom
+  return opts
+}
+
+// flyTo/fitBounds 1回分（呼び出し〜'moveend' 発火まで）を1計測単位とする。
+// measureOnce（固定durationで回してframeDeltaを集計）と違い、実際の飛行時間そのものが計測対象になる。
+async function measureOneFly(
+  map: MaplibreMap,
+  fly: () => void,
+  label: string,
+  extraMeta: Record<string, unknown>,
+  snapshot: () => Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const frameDeltas: number[] = []
+  let last = performance.now()
+  let rafId = requestAnimationFrame(function loop(t) {
+    frameDeltas.push(t - last)
+    last = t
+    rafId = requestAnimationFrame(loop)
+  })
+
+  const longTasks: number[] = []
+  let po: PerformanceObserver | null = null
+  try {
+    po = new PerformanceObserver((l) => {
+      for (const e of l.getEntries()) longTasks.push(e.duration)
+    })
+    po.observe({ type: 'longtask' })
+  } catch {
+    po = null
+  }
+
+  const t0 = performance.now()
+  // 何らかの理由で 'moveend' が発火しない事故に備え、フレーム収集ループが無限に残らないようにする。
+  // map.once だとタイムアウト経路でリスナー参照を解除する手段が無く連続実行のたびに蓄積するため
+  // （レビュー MEDIUM）、on/off を自前で対にして確実に外す。
+  const moveEndPromise = new Promise<void>((res) => {
+    let settled = false
+    const handler = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      map.off('moveend', handler)
+      res()
+    }
+    const timeout = setTimeout(handler, 15000)
+    map.on('moveend', handler)
+  })
+  fly()
+  await moveEndPromise
+  const elapsedMs = performance.now() - t0
+  cancelAnimationFrame(rafId)
+  if (po) po.disconnect()
+
+  const frame = summarizeFrames(frameDeltas, elapsedMs)
+  const result = {
+    meta: {
+      when: new Date().toISOString(),
+      label,
+      phase: 'flyto',
+      elapsedMs: round(elapsedMs),
+      url: location.href,
+      ua: navigator.userAgent,
+      viewport: `${innerWidth}x${innerHeight}`,
+      devicePixelRatio: window.devicePixelRatio,
+      ...extraMeta,
+      ...snapshot(),
+    },
+    frame,
+    longTask: summarizeLongTasks(longTasks, po != null),
+  }
+
+  await sendReport(result, `[camera] ${label}`, result.frame)
   return result
 }
 
@@ -247,5 +405,75 @@ export function installMeasure(deps: MeasureDeps): void {
     await measureOnce(deps, 'zoom', durationMs, `${labelBase}-baseline-warm`)
     await measureOnce(deps, 'pan', durationMs, `${labelBase}-baseline-warm`)
     console.log('[layerB] suite 完了')
+  }
+
+  // 単発計測: await __measureCameraFly({ kind:'bounds', padding:60, durationSec:0.8 })
+  w.__measureCameraFly = (
+    opts: { kind?: FlyKind; durationSec?: number; padding?: number } = {},
+  ) => {
+    const durationSec = opts.durationSec ?? 1.0
+    if ((opts.kind ?? 'point') === 'bounds') {
+      const padding = opts.padding ?? 60
+      const { bounds, maxZoom } = boundsTargetForPadding(padding)
+      return measureOneFly(
+        deps.map,
+        () => deps.map.fitBounds(bounds, fitBoundsOptions(padding, maxZoom, durationSec)),
+        'adhoc-bounds',
+        { kind: 'bounds', padding, durationSec, bounds, maxZoom },
+        deps.snapshot,
+      )
+    }
+    const target = randomPointInJapan()
+    return measureOneFly(
+      deps.map,
+      () =>
+        deps.map.flyTo({
+          center: target,
+          zoom: CAMERA_MAX_ZOOM,
+          duration: durationSec * 1000,
+          essential: true,
+        }),
+      'adhoc-point',
+      { kind: 'point', target, zoom: CAMERA_MAX_ZOOM, durationSec },
+      deps.snapshot,
+    )
+  }
+
+  // カメラ操作スイート: 本番の flyTo（単一点・zoom8）⇔ flyToBounds（padding 60/48 は局所クラスタへの
+  // ズームイン、20 は JAPAN_BOUNDS 全体復帰。boundsTargetForPadding 参照）を rounds 回往復し、
+  // duration 0.8秒/1.0秒を交互に踏んで実機の滑らかさを測る。
+  w.__runCameraSuite = async (labelBase = 'camera', rounds = 8) => {
+    const { map } = deps
+    map.setZoom(START_ZOOM)
+    await waitIdle(map)
+    console.log(`[camera] suite 開始（${rounds} 往復）`)
+    const paddings = [60, 48, 20] as const
+    for (let i = 0; i < rounds; i++) {
+      const durationSec = i % 2 === 0 ? 0.8 : 1.0
+      const target = randomPointInJapan()
+      await measureOneFly(
+        map,
+        () =>
+          map.flyTo({
+            center: target,
+            zoom: CAMERA_MAX_ZOOM,
+            duration: durationSec * 1000,
+            essential: true,
+          }),
+        `${labelBase}-point-d${durationSec}`,
+        { kind: 'point', target, zoom: CAMERA_MAX_ZOOM, durationSec },
+        deps.snapshot,
+      )
+      const padding = paddings[i % paddings.length]
+      const { bounds, maxZoom } = boundsTargetForPadding(padding)
+      await measureOneFly(
+        map,
+        () => map.fitBounds(bounds, fitBoundsOptions(padding, maxZoom, durationSec)),
+        `${labelBase}-bounds-p${padding}-d${durationSec}`,
+        { kind: 'bounds', padding, durationSec, bounds, maxZoom },
+        deps.snapshot,
+      )
+    }
+    console.log('[camera] suite 完了')
   }
 }

@@ -200,6 +200,19 @@ $('zoomBtn').addEventListener('click', () => {
   map.easeTo({ zoom: z < 6.5 ? z + 1.5 : z - 1.5, duration: 700 })
 })
 
+// 手動確認用のカメラ試験（検証項目3）。計測は __measureCameraFly / __runCameraSuite が行う
+// （measure.ts の installMeasure が公開）。ここではボタンクリックで単発の flyTo/fitBounds を蹴るだけ。
+$('flyPointBtn').addEventListener('click', () => {
+  void (
+    window as unknown as { __measureCameraFly: (o?: object) => Promise<unknown> }
+  ).__measureCameraFly({ kind: 'point' })
+})
+$('flyBoundsBtn').addEventListener('click', () => {
+  void (
+    window as unknown as { __measureCameraFly: (o?: object) => Promise<unknown> }
+  ).__measureCameraFly({ kind: 'bounds' })
+})
+
 // 計測ランナー用: 3軸を適用し UI・stat も同期して、描画が落ち着くまで待つ
 async function applyAxis(a: { faults?: 'full' | 'thin'; lw?: number; pr?: number; points?: boolean }) {
   if (a.faults && a.faults !== state.faults) {
