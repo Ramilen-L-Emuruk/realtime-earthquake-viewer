@@ -144,3 +144,11 @@ Leaflet PoC の飛行は fps 43.4〜57.1 で、**コマ落ちとして見える�
 - **使い方**: 本ファイル冒頭の使い方ではなく `scripts/perf/measure-moving-baseline.js` 冒頭コメントの手順に従う
   （実機で `npm run dev:dmdss -- --host` → `document.head.appendChild(...src:'/__perf-script?file=moving-baseline')` →
   区間ごとに `__measureMovingBaseline` を実行し②の合図で操作）。
+- **【2026-07-27 追記・静止ベースラインとの物差し統一（レビュー8cf28d6）】** §1 の段階0 表（fps 48.2/50.5→56.8・
+  DOM 21.8回/秒 等）は **名目 durationMs 割り**で記録されていたため、実測 elapsedMs 割りの移動中計測と直接
+  並べられなかった。`measure-kyoshin-static.js` を実測割りに更新済み。**`after`（現行 v3.23.1）を
+  `/__perf-script?file=kyoshin-static`（既定）で静止1回測り直せば、移動中計測と同一物差しの静止基準になる。**
+  `before`（改修前）は改修前コードが要り測り直せないので「before/旧after＝名目・新規＝実測」を明示すること。
+  なお開発機での動作確認時、静止（無操作）でも `kyoshinAttrPerSec≈1041` と段階0 表の 21.8 と大きく食い違った
+  （開発機のライブデータ差か差分更新の挙動か未確認・計測器起因ではない＝attr カウントは不変）。**実機で
+  静止時 kyoshinAttrPerSec が本当に低いのか、この機会に確認されたい**（移動中の全点書き換え仮説の対照になる）。
