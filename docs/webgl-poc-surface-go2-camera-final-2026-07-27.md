@@ -4,6 +4,12 @@
 > 証跡: `surface-go2-camera-v2*` 34件 ／ `surface-go2-leaflet-camera-v2*` 34件（**計68件・新実装**）
 > 前報: [webgl-poc-surface-go2-camera-leaflet-2026-07-27.md](webgl-poc-surface-go2-camera-leaflet-2026-07-27.md)（**本文書が結論を覆す**）
 > 実装: `dc0658d`（両エンジンに着地コスト計測 `landingBlockMaxMs` を対称に導入）
+> **【計測環境】dev サーバー（`vite dev --config vite.poc.config.ts`）で取得。本番ビルドではない。**
+> ただし本項目は**同一条件下での両エンジンの相対比較**であり、
+> (a) PoC は React を使わない（素の TS + MapLibre / Leaflet）ため development モードの影響を受けない
+> (b) 両エンジンとも同じ dev 環境で測っている
+> ——以上から、**優劣の判定はビルドモードに影響されない**。
+> **絶対値**（着地 188.1ms / 36.1ms 等）は本番ビルドで変わりうる（**未検証**）。
 >
 > **結論: 検証項目3 は MapLibre 優位で決着。前回の「Leaflet が優る」は誤りだった。**
 > - **着地コストが 5.2倍**（中央値 36.1ms 対 188.1ms）・**最大 574.7ms**
