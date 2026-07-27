@@ -18,6 +18,7 @@
 import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import type { FeatureCollection, Point } from 'geojson'
+import { summarizeFrames } from './measure'
 
 const JAPAN_CENTER: [number, number] = [137.7, 38.25]
 // JapanMap.tsx の JAPAN_BOUNDS（[lat,lng]）を [lng,lat] へ変換した値。計測時に日本全体を
@@ -279,7 +280,12 @@ interface LabelRenderResult {
   // グリフ生成コストの判定指標は glyphsGenerated を見ること（renderedSymbols は副次情報）。
   renderedSymbols: number
   glyphsGenerated: number
+  // idle までの所要時間。レビュー指摘（新規HIGH）: グリフ生成コストの指標として無情報
+  // だった（生成量が region+2→subregion+125と60倍以上変わっても elapsedMs の差は0.7ms・
+  // 約612msで一定）。一度きりの生成コストは平均的な所要時間には埋もれず、該当フレーム
+  // 1点にだけ跳ねる性質のため、frame.max（下記）の方が生成コストを反映する。
   elapsedMs: number
+  frame: ReturnType<typeof summarizeFrames>
   longTaskCount: number
   longTaskTotalMs: number
   longTaskMaxMs: number
@@ -287,6 +293,13 @@ interface LabelRenderResult {
 
 // 対象レイヤーだけ visibility:visible にし、他は none にして描画・グリフ生成コストを計測する。
 function measureLabelLayer(layerId: string, label: string): Promise<LabelRenderResult> {
+  const frameDeltas: number[] = []
+  let last = performance.now()
+  let rafId = requestAnimationFrame(function loop(t) {
+    frameDeltas.push(t - last)
+    last = t
+    rafId = requestAnimationFrame(loop)
+  })
   const longTasks: number[] = []
   let po: PerformanceObserver | null = null
   try {
@@ -303,6 +316,7 @@ function measureLabelLayer(layerId: string, label: string): Promise<LabelRenderR
     function finish() {
       clearTimeout(timeout)
       map.off('idle', finish)
+      cancelAnimationFrame(rafId)
       if (po) po.disconnect()
       const elapsedMs = performance.now() - t0
       const round = (v: number) => Math.round(v * 10) / 10
@@ -311,6 +325,7 @@ function measureLabelLayer(layerId: string, label: string): Promise<LabelRenderR
         renderedSymbols: map.queryRenderedFeatures({ layers: [layerId] }).length,
         glyphsGenerated: totalGlyphsGenerated(),
         elapsedMs: round(elapsedMs),
+        frame: summarizeFrames(frameDeltas, elapsedMs),
         longTaskCount: po ? longTasks.length : -1,
         longTaskTotalMs: round(longTasks.reduce((a, b) => a + b, 0)),
         longTaskMaxMs: round(longTasks.length ? Math.max(...longTasks) : 0),
@@ -338,6 +353,19 @@ function waitIdle(timeoutMs: number): Promise<void> {
 // await __runLabelZoomSuite() で 日本全体を視野に固定したまま regions→prefectures→
 // subregions→intensity の順にレイヤーを1つずつ表示させ、各段の実描画数・グリフ生成コストを
 // 計測する。計測後は本番相当のズーム連動表示に戻す。
+//
+// 【重要】ページをリロードしてから1回だけ実行すること。glyphManager のグリフキャッシュは
+// ページを閉じるまで消えないため、2回目以降の実行では glyphsGenerated が全段で最終値の
+// まま変化しない（=既に生成済みのグリフを再描画するだけになり、生成コストの計測が無効化
+// される。動作確認中に実際に踏んだ）。
+//
+// 【計測環境の限界】frame.max（rAFフレーム時間）はグリフ生成コストの検出手段だが、この
+// PoCをPlaywright/Chromium(headless)で動かす開発機では、何もしていない静止状態でも
+// rAF間隔のノイズフロアが最大18.7ms程度あり、209個程度のグリフ生成コストはそのノイズに
+// 埋もれて検出できなかった（レビュー環境=実際のChrome・vsync6.1msでは17.6msのスパイクが
+// 検出された）。この指標は非力な実機（Surface Go 2等、生成コストがノイズフロアを超えやすい）
+// でこそ意味を持つ可能性が高く、開発機での「frame.maxが動かない」は「生成コストが無い」
+// ことの証明にはならない。
 async function runLabelZoomSuite(): Promise<LabelRenderResult[]> {
   map.fitBounds(JAPAN_BOUNDS_LNGLAT, { padding: 20, duration: 0 })
   for (const id of LABEL_LAYER_IDS) {

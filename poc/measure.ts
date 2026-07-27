@@ -96,9 +96,9 @@ async function warmup(map: MaplibreMap): Promise<void> {
 
 const round = (v: number | null) => (v == null ? null : Math.round(v * 100) / 100)
 
-// frameDeltas から frame 統計を作る（項目3のflyTo計測とも共有）。
+// frameDeltas から frame 統計を作る（項目3のflyTo計測・§8ラベル計測とも共有）。
 // 最初のフレーム間隔は計測開始タイミング依存のノイズなので捨てる。
-function summarizeFrames(frameDeltas: number[], elapsedMs: number) {
+export function summarizeFrames(frameDeltas: number[], elapsedMs: number) {
   const deltas = frameDeltas.slice(1)
   const sorted = [...deltas].sort((a, b) => a - b)
   const pick = (q: number) =>
