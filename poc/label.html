@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>§8 PoC — MapLibre 日本語ラベル描画（glyphs未設定）</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0a0c10;
+      }
+      #map {
+        position: absolute;
+        inset: 0;
+      }
+      .panel {
+        position: absolute;
+        z-index: 10;
+        background: rgba(18, 21, 26, 0.92);
+        color: #e5e7eb;
+        font: 12px/1.5 system-ui, sans-serif;
+        padding: 10px 12px;
+        border-radius: 8px;
+      }
+      #controls {
+        top: 8px;
+        right: 8px;
+      }
+      #controls .row {
+        display: flex;
+        gap: 6px;
+      }
+      #controls button {
+        flex: 1;
+        padding: 4px 8px;
+        background: #1f2937;
+        color: #e5e7eb;
+        border: 1px solid #374151;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      #stat {
+        left: 8px;
+        bottom: 8px;
+        color: #a7f3d0;
+        font-family: ui-monospace, monospace;
+        white-space: pre;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <div id="controls" class="panel">
+      <div class="row">
+        <button id="z5">zoom5(地方)</button>
+        <button id="z6">zoom6(地方)</button>
+        <button id="z8">zoom8(県)</button>
+        <button id="z11">zoom11(区域)</button>
+      </div>
+    </div>
+    <div id="stat" class="panel">loading…</div>
+    <script type="module" src="/poc/label.ts"></script>
+  </body>
+</html>
