@@ -277,14 +277,29 @@ interface LabelRenderResult {
   // 実描画数（queryRenderedFeatures 実測）。ソース内フィーチャ数より少なく出ることがある
   // （text-allow-overlap 既定 false の3レイヤーは、日本全体を視野に収めた低ズームで多数の
   // 点が密集し衝突判定で間引かれるため。正常な挙動であり生成失敗ではない）。
-  // グリフ生成コストの判定指標は glyphsGenerated を見ること（renderedSymbols は副次情報）。
+  // 「狙った文字種を実際に生成したか」は glyphsGenerated で、「その生成が何ms掛かるか」は
+  // blockMaxMs（下記）で読む。
   renderedSymbols: number
   glyphsGenerated: number
+  // 【主指標】グリフ生成に伴うメインスレッドの最長連続ブロック時間（ms）。MessageChannel の
+  // ping-pong で計測し、vsync に量子化されないためリフレッシュレート非依存で生成コストを
+  // 捉える。実測（Intel Iris Xe・60Hz 開発機・headed）: 区域192件＝196グリフの初回生成で
+  // 3回とも blockMaxMs≈20ms（2番手≈16ms）、cached 再表示・生成0の対照では≈6ms。
+  // σ~0.5ms で再現性が高い（＝「開発機では検出できない」は誤りだった。計測器の問題）。
+  blockMaxMs: number
+  // 上位3ブロック。生成は MapLibre が複数チャンクに分割するため（最長≈20ms＋次点≈16ms 等）、
+  // 単一の最大値だけでなく分割の様子も残す。
+  blockTop3Ms: number[]
   // idle までの所要時間。レビュー指摘（新規HIGH）: グリフ生成コストの指標として無情報
   // だった（生成量が region+2→subregion+125と60倍以上変わっても elapsedMs の差は0.7ms・
-  // 約612msで一定）。一度きりの生成コストは平均的な所要時間には埋もれず、該当フレーム
-  // 1点にだけ跳ねる性質のため、frame.max（下記）の方が生成コストを反映する。
+  // 約612msで一定）。参考値として残す。
   elapsedMs: number
+  // rAF フレーム間隔の要約（p50/p95/max）。【注意・副指標】vsync に量子化されるため計測器
+  // としては鈍い。60Hz（budget 16.7ms）では最長≈20ms の生成ブロックが budget を僅かに
+  // 超えるだけで、vsync 位相との整列次第で 17ms に吸収されたり 33/50ms に跳ねたりする
+  // （＝frame.max は 60Hz では生成コストの有無を安定判定できない）。生成コストは blockMaxMs
+  // を見ること。高リフレッシュ機（例: 6.1ms/164Hz のレビュー機）では 20ms ブロックが明確に
+  // 浮くため frame.max でも検出できる（レビュー実測 subregions 35.3ms・再現性 0.2ms）。
   frame: ReturnType<typeof summarizeFrames>
   longTaskCount: number
   longTaskTotalMs: number
@@ -292,15 +307,25 @@ interface LabelRenderResult {
 }
 
 // 対象レイヤーだけ visibility:visible にし、他は none にして描画・グリフ生成コストを計測する。
+//
+// 計測は2系統を並行して回す:
+//   ① MessageChannel ブロック検出器（主指標 blockMaxMs/blockTop3Ms）— visibility 切替の
+//      直前に開始し、生成に伴うメインスレッドの連続ブロックを vsync 非依存で捉える。
+//   ② rAF フレーム間隔（副指標 frame）— vsync に量子化されるため 60Hz 開発機では鈍い
+//      （LabelRenderResult.frame のコメント参照）。参考・高リフレッシュ機向けに残す。
+//
+// 【過去の誤り・訂正済み】以前ここに「rAFループ開始→visibility切替 の順だと生成コストが
+// frame.max に現れず、順序を逆にすると 49.9ms のスパイクを複数回再現できる」と書いていたが、
+// これは誤りだった。①のブロック検出器で測ると、順序に関わらず生成ブロックは常に blockMaxMs
+// ≈20ms で再現性高く存在する（3回試行 σ~0.5ms）。順序を変えて rAF で「49.9ms が出たり
+// 出なかったり」したのは、20ms 級のブロックが 16.7ms の frame budget を僅かに超えるだけで
+// vsync 位相との整列に依存する量子化アーティファクトであり、順序が検出可否を決めていた
+// わけではなかった。visibility を先に設定するのは「計測窓の中で生成を起こす」ための自然な
+// 順序として残すが、検出の決め手ではない。
 function measureLabelLayer(layerId: string, label: string): Promise<LabelRenderResult> {
   const frameDeltas: number[] = []
-  let last = performance.now()
-  let rafId = requestAnimationFrame(function loop(t) {
-    frameDeltas.push(t - last)
-    last = t
-    rafId = requestAnimationFrame(loop)
-  })
   const longTasks: number[] = []
+  const blockGaps: number[] = []
   let po: PerformanceObserver | null = null
   try {
     po = new PerformanceObserver((l) => {
@@ -310,20 +335,49 @@ function measureLabelLayer(layerId: string, label: string): Promise<LabelRenderR
   } catch {
     po = null
   }
+  // 主指標: メインスレッド連続ブロック検出。MessageChannel の ping-pong はアイドル時
+  // サブマイクロ秒で往復するため、往復間隔がそのまま「連続ブロックされた時間」になる。
+  // アイドル時の膨大なサブms往復は捨て、3ms 超のブロックだけ記録する（描画5〜6ms・
+  // 生成20ms級を漏らさず、配列を小さく保つ）。
+  const mc = new MessageChannel()
+  let blockRunning = true
+  let lastPing = performance.now()
+  mc.port1.onmessage = () => {
+    const now = performance.now()
+    const gap = now - lastPing
+    lastPing = now
+    if (gap > 3) blockGaps.push(gap)
+    if (blockRunning) mc.port2.postMessage(0)
+  }
   const t0 = performance.now()
   return new Promise((res) => {
+    lastPing = performance.now()
+    mc.port2.postMessage(0) // visibility 切替の直前にブロック検出を開始（生成を取りこぼさない）
+    for (const id of LABEL_LAYER_IDS) {
+      map.setLayoutProperty(id, 'visibility', id === layerId ? 'visible' : 'none')
+    }
+    let last = performance.now()
+    let rafId = requestAnimationFrame(function loop(t) {
+      frameDeltas.push(t - last)
+      last = t
+      rafId = requestAnimationFrame(loop)
+    })
     const timeout = setTimeout(finish, 8000)
     function finish() {
       clearTimeout(timeout)
       map.off('idle', finish)
       cancelAnimationFrame(rafId)
+      blockRunning = false
       if (po) po.disconnect()
       const elapsedMs = performance.now() - t0
       const round = (v: number) => Math.round(v * 10) / 10
+      const sortedBlocks = blockGaps.slice().sort((a, b) => b - a)
       const result: LabelRenderResult = {
         label,
         renderedSymbols: map.queryRenderedFeatures({ layers: [layerId] }).length,
         glyphsGenerated: totalGlyphsGenerated(),
+        blockMaxMs: round(sortedBlocks[0] ?? 0),
+        blockTop3Ms: sortedBlocks.slice(0, 3).map(round),
         elapsedMs: round(elapsedMs),
         frame: summarizeFrames(frameDeltas, elapsedMs),
         longTaskCount: po ? longTasks.length : -1,
@@ -332,9 +386,6 @@ function measureLabelLayer(layerId: string, label: string): Promise<LabelRenderR
       }
       console.log(`[label] ${label}`, result)
       res(result)
-    }
-    for (const id of LABEL_LAYER_IDS) {
-      map.setLayoutProperty(id, 'visibility', id === layerId ? 'visible' : 'none')
     }
     map.once('idle', finish)
   })
@@ -359,13 +410,17 @@ function waitIdle(timeoutMs: number): Promise<void> {
 // まま変化しない（=既に生成済みのグリフを再描画するだけになり、生成コストの計測が無効化
 // される。動作確認中に実際に踏んだ）。
 //
-// 【計測環境の限界】frame.max（rAFフレーム時間）はグリフ生成コストの検出手段だが、この
-// PoCをPlaywright/Chromium(headless)で動かす開発機では、何もしていない静止状態でも
-// rAF間隔のノイズフロアが最大18.7ms程度あり、209個程度のグリフ生成コストはそのノイズに
-// 埋もれて検出できなかった（レビュー環境=実際のChrome・vsync6.1msでは17.6msのスパイクが
-// 検出された）。この指標は非力な実機（Surface Go 2等、生成コストがノイズフロアを超えやすい）
-// でこそ意味を持つ可能性が高く、開発機での「frame.maxが動かない」は「生成コストが無い」
-// ことの証明にはならない。
+// 【計測器の選択】グリフ生成コストは blockMaxMs（MessageChannel ブロック検出器）で読む。
+// frame.max（rAFフレーム時間）は vsync に量子化されるため計測環境のリフレッシュレートに
+// 左右される: この開発機は headed だが物理モニタが 60Hz（vsync 16.7ms・実測）で、最長20ms
+// 級の生成ブロックが frame budget を僅かに超えるだけのため frame.max では安定検出できない
+// （＝過去に「開発機では検出できない・実機を待つしかない」と書いたのは誤り。計測器を
+// blockMaxMs に替えれば 60Hz 開発機でも σ~0.5ms で検出できる）。レビュー機は同じく headed
+// だが高リフレッシュ（6.1ms/≒164Hz）のため 20ms ブロックが frame.max でも明確に浮いた
+// （subregions 35.3ms）。両者の観測差は headed/headless でも Playwright/実Chrome でもなく、
+// 物理モニタのリフレッシュレート差にすぎない。実機（Surface Go 2）計測の価値は「開発機で
+// 測れないから」ではなく「非力機での生成コスト絶対値を知るため」（blockMaxMs が 2〜3倍に
+// 伸びれば longtask 閾値 50ms に達しうる）。
 async function runLabelZoomSuite(): Promise<LabelRenderResult[]> {
   map.fitBounds(JAPAN_BOUNDS_LNGLAT, { padding: 20, duration: 0 })
   for (const id of LABEL_LAYER_IDS) {
