@@ -11,6 +11,11 @@ import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import type { FeatureCollection, MultiLineString, Point } from 'geojson'
 import { installMeasure } from './measure'
+import { installWebglMemoryTracker, snapshotWebglMemory } from './webglMemoryTracker'
+
+// §8「実行時メモリ」検証: Map インスタンス生成（内部で canvas.getContext('webgl2') が
+// 呼ばれる）より前に必ずインストールする。
+installWebglMemoryTracker()
 
 // 本体 JapanMap.tsx / ActiveFaultsLayer.tsx / kyoshinIntensity.ts と揃える描画パラメータ
 const JAPAN_CENTER: [number, number] = [137.7, 38.25] // MapLibre は [lng, lat]
@@ -84,18 +89,30 @@ async function loadPoints(): Promise<FeatureCollection<Point>> {
   }
 }
 
+// jsHeapMB は performance.memory（Chrome系限定）から。無ければ null。
+function currentJsHeapMB(): number | null {
+  const mem = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
+  return mem ? Math.round((mem.usedJSHeapSize / 1048576) * 10) / 10 : null
+}
+
 // stat パネル: 現在のパラメータと頂点数・観測点数を表示（計測時の状態確認用）
 let faultVertices = 0
 let pointCount = 0
 function updateStat() {
   const el = document.getElementById('stat')
   if (!el) return
+  const wgl = snapshotWebglMemory()
+  const mb = (b: number) => Math.round((b / 1048576) * 10) / 10
+  const jsHeapMB = currentJsHeapMB()
+  const wglTotalMB = mb(wgl.totalBytes)
   el.textContent = [
     `faults : ${state.faults}  (${faultVertices.toLocaleString()} 頂点)`,
     `points : ${state.pointsOn ? pointCount.toLocaleString() : 'off'}`,
     `line-w : ${state.lineWidth}`,
     `pixelR : ${map.getPixelRatio?.() ?? state.pixelRatio}  (device ${window.devicePixelRatio})`,
     `zoom   : ${map.getZoom().toFixed(2)}`,
+    `WebGL推定(buf/tex/rb): ${mb(wgl.bufferBytes)}/${mb(wgl.textureBytes)}/${mb(wgl.renderbufferBytes)}MB = ${wglTotalMB}MB`,
+    `推定実行時メモリ: JS${jsHeapMB ?? '?'}MB + WebGL${wglTotalMB}MB = ${jsHeapMB != null ? Math.round((jsHeapMB + wglTotalMB) * 10) / 10 : '?'}MB`,
   ].join('\n')
 }
 
@@ -261,14 +278,12 @@ installMeasure({
       (map as unknown as { getPixelRatio?: () => number }).getPixelRatio?.() ?? state.pixelRatio,
     canvasW: map.getCanvas().width,
     canvasH: map.getCanvas().height,
-    // performance.memory は JSヒープのみ。WebGL バッファ/テクスチャは含まないため、
-    // 真の実行時メモリはタスクマネージャ併用が要る（計画書 §8「実行時メモリ」）。
-    jsHeapMB: (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
-      ? Math.round(
-          (performance as unknown as { memory: { usedJSHeapSize: number } }).memory.usedJSHeapSize /
-            1048576,
-        )
-      : null,
+    // performance.memory は JSヒープのみ。WebGL バッファ/テクスチャ/レンダーバッファは
+    // webglMemoryTracker.ts の推定値で補う（計画書 §8「実行時メモリ」）。あくまで概算であり、
+    // 実機のタスクマネージャ実測との突き合わせは別途必要（本 PoC の役割は軸を振ったときに
+    // 推定値が単調に反応するかの確認まで）。
+    jsHeapMB: currentJsHeapMB(),
+    webglMemory: snapshotWebglMemory(),
   }),
 })
 
