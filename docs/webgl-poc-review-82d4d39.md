@@ -6,7 +6,7 @@
 > 対応する MapLibre 側 `poc/main.ts` / `poc/measure.ts`（層B・検証項目1）
 > レビュー日: 2026-07-26（開発機 Chrome / DPR 1）
 >
-> **ステータス: HIGH 1・MEDIUM 2 対応済み。実機投入可。**
+> **ステータス: HIGH 1・MEDIUM 2・HIGH 4 対応済み。実機投入可。**
 > - **比較の枠組みは正しく作られている。** 特に `panBy` の `moveend` 罠を自力で見つけて回避したのは、
 >   **この項目の成立自体を救った修正**（下記「最大の功績」）
 > - **【対応済み】HIGH 1**: `startDrive` の停止関数が `moveend` の同期コストを ms で返すようにし、
@@ -15,6 +15,9 @@
 >   `null` になることを確認。詳細は下記「対応確認」
 > - **【対応済み】MEDIUM 2**: `fps` を名目 `durationMs` ではなく実測経過時間（`elapsedMs`）で
 >   割るように統一した（項目7 HIGH1 と同じ定義）
+> - **【対応済み】HIGH 4**: `estimatedVsyncMs`（`static` の `frame.p50` を天井の証跡として記録）を
+>   Leaflet 側に追加。**比較相手の `poc/measure.ts`（MapLibre側）にも同じフィールドを追加**し、
+>   両者を同じ天井で測ったかを証跡で判別できるようにした
 > - **【情報 3】Leaflet 有利なバイアスが2つある**（当たり判定ヒット線の省略・DPR 軸の不在）。
 >   結果の読み方に効くため記録する（対応は不要・実機計測時に読み方の指針として参照する）
 > - 型チェック エラー 0（`--strict`・DOM lib 付き単体チェック）。対応後も再確認済み
@@ -296,3 +299,25 @@ vsync 天井に隠されない実コストを出す指標**であり、**比較�
 3. **MapLibre 側が飽和したままなら差の下限しか出ない。** その場合はヘッダコメントの予告どおり
    **Performance トレースでのメインスレッド内訳計測**へ進む（両者が天井に張り付いたら
    フレーム時間はもう情報を持たない）
+
+---
+
+## 対応確認（HIGH 4）
+
+`estimatedVsyncMs`（`static` フェーズの `frame.p50` を天井の証跡として記録）を
+`poc/leaflet-measure.ts` の `meta` へ追加した。
+
+セルフレビューで「比較相手の `poc/measure.ts`（MapLibre側）に同フィールドが無いままでは
+非対称」という指摘を追加で受け、**`poc/measure.ts` 側にも同じ `estimatedVsyncMs` を追加した**
+（HIGH4の元指摘は Leaflet 側の欠落のみを名指ししていたが、項目2が両者を並べて比較する項目である
+以上、証跡は両方に無ければ本来の目的を満たさないため）。
+
+実測（開発機）: Leaflet 側 `static` 実行で `estimatedVsyncMs:16.7`（`frame.p50` と一致・`pan` は
+`null`）、MapLibre 側 `poc/index.html` の `static` 実行でも同様に `estimatedVsyncMs:16.7` を確認。
+型チェックエラー0・console error 0。
+
+### 残作業
+
+実機スイート（`__runLeafletBSuite`・`__runLayerBSuite`）は未実施。両者の証跡に天井の手がかりが
+入ったため、同一セッションでの再計測（推奨対応順2）を実施すれば、食い違いが起きても即座に
+「環境が違う」と判別できる状態になった。

@@ -144,6 +144,11 @@ async function measureOnce(
       ua: navigator.userAgent,
       viewport: `${innerWidth}x${innerHeight}`,
       devicePixelRatio: window.devicePixelRatio,
+      // static は何も動かさないため frame.p50 が実質そのままvsync間隔になる（項目5×6 情報5と同じ手）。
+      // 検証項目2（poc/leaflet-measure.ts）と天井の異なる環境で測っていないかを突き合わせるための
+      // 証跡（レビュー b4524cd 系譜 HIGH4: Leaflet側にこれが無く、同じ「開発機」でも天井が違う
+      // （60Hz対170Hz）測定を並べて食い違う事故があった）。
+      estimatedVsyncMs: phase === 'static' ? round(pick(0.5)) : null,
       ...deps.snapshot(),
     },
     frame: {
