@@ -1,0 +1,9 @@
+{
+  "meta": {
+    "label": "surface-go2-memory"
+  },
+  "stat": "faults : full  (31,646 頂点)\npoints : 1,725\nline-w : 1.2\npixelR : 1.5  (device 1.5)\nzoom   : 8.00\nWebGL推定(buf/tex/rb): 2.8/33.3/0MB = 36.1MB\n推定実行時メモリ: JS77.3MB + WebGL36.1MB = 113.4MB",
+  "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+  "dpr": 1.5,
+  "viewport": "1272x768"
+}
