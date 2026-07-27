@@ -20,7 +20,7 @@
 | 6 毎秒更新 | 済 | 済（`rt` 12） | **決着**＝feature-state 採用 |
 | 5×6 交差点 | 済 | 済（`subrt` 20） | **決着**＝インデックスバッファ方式 |
 | 7 EEW 複合負荷 | 済 | 済（`eew` 8） | **決着**＝天井内 |
-| §8 テキスト描画 | 済 | 済（`label` 4） | **要対処・方式決定済**＝初回グリフ生成 100〜260ms。対処は **B（グリフPBF自前生成・ホスト）に決定**（2026-07-27）・実装は本設計 |
+| §8 テキスト描画 | 済 | 済（`label` 4＋B案A/B各1） | **決着（B案採用・実機確認済み）**＝B案（グリフPBF自前生成）で区域192は4.7倍改善（実機）。県47は改善後も`blockMaxMs`122ms・longtask残存のため本番実装で追加対処が要る。[実機結果](webgl-glyph-pipeline-b-surface-go2-2026-07-27.md) |
 | §8 実行時メモリ | 済（推定ツール＋安定性観測ハーネス） | WebGL 推定（`memory` 1）＋**安定性観測 決着（PASS・実機30分完走）** | **決着（PASS）**＝実機（Surface Go 2）で `__runStabilitySuite` 30分完走・`contextLost:0`・メモリは初期立ち上がり後プラトー（41〜44MB帯で振動）。§8末尾／[結果記録](webgl-poc-surface-go2-stability-2026-07-27.md)参照（2026-07-28） |
 | モバイル | 描画一次確認 | — | リリース後対応（GO/NO-GO 外） |
 
@@ -898,6 +898,8 @@ MapLibre 側の longtask は 2 スイート目でほぼ消えた（**原因は�
     - **glyph 生成コストは vsync 非依存の計測器なら 60Hz 開発機でも再現性高く検出できる。** `poc/label.ts` の `measureLabelLayer` に MessageChannel ping-pong によるメインスレッド連続ブロック検出（`blockMaxMs`/`blockTop3Ms`）を主指標として追加。区域192件＝196グリフの初回生成で **3回とも `blockMaxMs`≈20ms（20.6/19.6/20.2、σ~0.5ms）**、cached 再表示・生成0の対照では≈6ms（生成コストを描画コストからクリーンに分離できた）。suite 実行では生成量に単調反応: regions 15→4.5ms・prefectures 84→9.5ms・**subregions 209→24.2ms**・intensity 218→5.8ms。
     - **一方 `frame.max` は同 suite で全段16.9msのまま無反応。** 最長20ms級のブロックが 16.7ms budget を僅かに超えるだけで、vsync 位相との整列次第で 17ms に吸収されたり 33/50ms に跳ねたりする量子化アーティファクトのため（前セッションで「rAF ループと visibility 切替の順序を変えたら49.9msが1回だけ出た」のもこれ。統計ノイズでも順序依存でもなかった）。60Hz では frame.max は生成コストの計測器として不適で、`blockMaxMs` を主指標に据えた。
     - **Surface Go 2 外挿の再定式化**: 判断に効くのは合計時間ではなく最長連続ブロック（開発機 ≈20〜24ms）。longtask は開発機では全段0（50ms 閾値未満）だが、2〜3倍遅い実機なら `blockMaxMs` が ≈40〜60ms に達し閾値を跨ぐ可能性がある。「§8 テキスト描画は無視できるとは言い切れない」という結論は維持するが、実機計測の価値は「開発機で測れないから」ではなく「非力機での生成コスト絶対値を知るため」に訂正する。
+  - **【2026-07-28 B案（グリフPBF自前生成）PoC裏取り・開発機】** `scripts/build-glyphs.mjs`（`@mapbox/tiny-sdf`＋`@napi-rs/canvas`＋`pbf`でMapLibre公式glyphs.protoに準拠したPBFをビルド時生成）と`poc/label.ts`（`?glyphs=1`でA/B切替、`localIdeographFontFamily:false`必須の罠を回避）を実装。開発機実測で `blockMaxMs` 区域45.8→7.4ms（6.2倍）・県38.2→6.6ms（5.8倍）と生成スパイクが消えることを確認（詳細: [webgl-glyph-pipeline-b-2026-07-28.md](webgl-glyph-pipeline-b-2026-07-28.md)）。本番実装で潰すべき障害（スタック名の単一情報源化・codepoint集合のドリフト検知等）も自己レビューで先回りして記録済み。
+  - **【2026-07-28 B案 実機決着（Surface Go 2）】** [結果記録](webgl-glyph-pipeline-b-surface-go2-2026-07-27.md)。**B案は実機でも有効**（区域192で`blockMaxMs` 206.8→43.8ms・4.7倍、longtask 1件→0件）。**ただし開発機PoCの「生成スパイクが恒久的に消える」は実機では言い過ぎ**——**県47はB案適用後も`blockMaxMs` 122.1ms・longtask 2件（最大73ms）が残る**（実機の絶対値は開発機の3〜18倍重く、PBFのパース・テクスチャアップロード自体が非力機ではまだ軽くないため）。**§8 テキスト描画の実機再計測はこれで完了**。本番実装では県47段階のlongtask残存への対処（プリフェッチ・表示タイミング遅延等）を追加TODOとする。
 - **React 統合方式・MapLibre 最新 API** — 本設計時に Context7 で裏取り（未確定）。
 - **学習コスト・工数** — Leaflet 資産を捨てるため相応の工数。
 - **2 バリアントの地図描画は共通** — standard / DMDSS の差はデータソース側で、地図描画レイヤー自体はバリアント非依存の見込み。PoC・移行は実質 1 系統で足りる（要確認）。§5 の「双方で成立」は主にデータ連携部分の話。

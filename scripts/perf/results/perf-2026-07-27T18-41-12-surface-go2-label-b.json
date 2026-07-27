@@ -1,0 +1,99 @@
+{
+  "meta": {
+    "label": "surface-go2-label-b"
+  },
+  "results": [
+    {
+      "label": "regions(地方9件)",
+      "renderedSymbols": 8,
+      "glyphsGenerated": 55,
+      "blockMaxMs": 10.2,
+      "blockTop3Ms": [
+        10.2,
+        9.8,
+        9.4
+      ],
+      "elapsedMs": 617.8,
+      "frame": {
+        "frames": 35,
+        "fps": 56.65,
+        "p50": 16.7,
+        "p95": 16.8,
+        "max": 17
+      },
+      "longTaskCount": 0,
+      "longTaskTotalMs": 0,
+      "longTaskMaxMs": 0,
+      "serverGlyphs": true
+    },
+    {
+      "label": "prefectures(県47件)",
+      "renderedSymbols": 24,
+      "glyphsGenerated": 170,
+      "blockMaxMs": 122.1,
+      "blockTop3Ms": [
+        122.1,
+        104,
+        41.7
+      ],
+      "elapsedMs": 946.4,
+      "frame": {
+        "frames": 42,
+        "fps": 44.38,
+        "p50": 16.7,
+        "p95": 33.3,
+        "max": 116.5
+      },
+      "longTaskCount": 2,
+      "longTaskTotalMs": 142,
+      "longTaskMaxMs": 73,
+      "serverGlyphs": true
+    },
+    {
+      "label": "subregions(区域192件・最多ユニーク漢字)",
+      "renderedSymbols": 49,
+      "glyphsGenerated": 211,
+      "blockMaxMs": 43.8,
+      "blockTop3Ms": [
+        43.8,
+        27,
+        25.6
+      ],
+      "elapsedMs": 1026.5,
+      "frame": {
+        "frames": 57,
+        "fps": 55.53,
+        "p50": 16.7,
+        "p95": 17.3,
+        "max": 50
+      },
+      "longTaskCount": 0,
+      "longTaskTotalMs": 0,
+      "longTaskMaxMs": 0,
+      "serverGlyphs": true
+    },
+    {
+      "label": "intensity(震度ラベル)",
+      "renderedSymbols": 45,
+      "glyphsGenerated": 306,
+      "blockMaxMs": 24.4,
+      "blockTop3Ms": [
+        24.4,
+        21.9,
+        20.2
+      ],
+      "elapsedMs": 605.7,
+      "frame": {
+        "frames": 35,
+        "fps": 57.78,
+        "p50": 16.7,
+        "p95": 17,
+        "max": 17
+      },
+      "longTaskCount": 0,
+      "longTaskTotalMs": 0,
+      "longTaskMaxMs": 0,
+      "serverGlyphs": true
+    }
+  ]
+}

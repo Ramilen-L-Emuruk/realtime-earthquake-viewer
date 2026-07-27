@@ -1,0 +1,99 @@
+{
+  "meta": {
+    "label": "surface-go2-label-a"
+  },
+  "results": [
+    {
+      "label": "regions(地方9件)",
+      "renderedSymbols": 8,
+      "glyphsGenerated": 15,
+      "blockMaxMs": 11.9,
+      "blockTop3Ms": [
+        11.9,
+        11.7,
+        8.7
+      ],
+      "elapsedMs": 634.1,
+      "frame": {
+        "frames": 36,
+        "fps": 56.77,
+        "p50": 16.7,
+        "p95": 16.8,
+        "max": 16.9
+      },
+      "longTaskCount": 0,
+      "longTaskTotalMs": 0,
+      "longTaskMaxMs": 0,
+      "serverGlyphs": false
+    },
+    {
+      "label": "prefectures(県47件)",
+      "renderedSymbols": 24,
+      "glyphsGenerated": 84,
+      "blockMaxMs": 223,
+      "blockTop3Ms": [
+        223,
+        18.3,
+        17.6
+      ],
+      "elapsedMs": 929.1,
+      "frame": {
+        "frames": 43,
+        "fps": 46.28,
+        "p50": 16.7,
+        "p95": 16.8,
+        "max": 216.6
+      },
+      "longTaskCount": 1,
+      "longTaskTotalMs": 213,
+      "longTaskMaxMs": 213,
+      "serverGlyphs": false
+    },
+    {
+      "label": "subregions(区域192件・最多ユニーク漢字)",
+      "renderedSymbols": 49,
+      "glyphsGenerated": 209,
+      "blockMaxMs": 206.8,
+      "blockTop3Ms": [
+        206.8,
+        67,
+        22.5
+      ],
+      "elapsedMs": 1040.8,
+      "frame": {
+        "frames": 48,
+        "fps": 46.12,
+        "p50": 16.7,
+        "p95": 17.7,
+        "max": 183.3
+      },
+      "longTaskCount": 1,
+      "longTaskTotalMs": 203,
+      "longTaskMaxMs": 203,
+      "serverGlyphs": false
+    },
+    {
+      "label": "intensity(震度ラベル)",
+      "renderedSymbols": 45,
+      "glyphsGenerated": 218,
+      "blockMaxMs": 35.5,
+      "blockTop3Ms": [
+        35.5,
+        13.7,
+        13
+      ],
+      "elapsedMs": 591.6,
+      "frame": {
+        "frames": 33,
+        "fps": 55.78,
+        "p50": 16.7,
+        "p95": 16.8,
+        "max": 33.2
+      },
+      "longTaskCount": 0,
+      "longTaskTotalMs": 0,
+      "longTaskMaxMs": 0,
+      "serverGlyphs": false
+    }
+  ]
+}
