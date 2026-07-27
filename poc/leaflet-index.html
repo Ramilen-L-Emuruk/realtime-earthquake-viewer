@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>検証項目2 PoC — Leaflet 側の律速切り分け（層B 比較対象）</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0a0c10;
+      }
+      #map {
+        position: absolute;
+        inset: 0;
+        background: #0a0c10;
+      }
+      .panel {
+        position: absolute;
+        z-index: 10;
+        background: rgba(18, 21, 26, 0.92);
+        color: #e5e7eb;
+        font: 12px/1.5 system-ui, sans-serif;
+        padding: 10px 12px;
+        border-radius: 8px;
+      }
+      #controls {
+        top: 8px;
+        right: 8px;
+        min-width: 190px;
+      }
+      #controls label {
+        display: block;
+        margin: 6px 0 2px;
+        color: #9ca3af;
+      }
+      #controls select,
+      #controls input[type='range'] {
+        width: 100%;
+      }
+      #controls .row {
+        display: flex;
+        gap: 6px;
+        margin-top: 8px;
+      }
+      #controls button {
+        flex: 1;
+        padding: 4px;
+        background: #1f2937;
+        color: #e5e7eb;
+        border: 1px solid #374151;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      #stat {
+        left: 8px;
+        bottom: 8px;
+        color: #a7f3d0;
+        font-family: ui-monospace, monospace;
+        white-space: pre;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <div id="controls" class="panel">
+      <label>活断層（頂点数軸）</label>
+      <select id="faults">
+        <option value="full">full（間引き無し・31,646頂点）</option>
+        <option value="thin">thin（間引き 0.002・9,874頂点）</option>
+      </select>
+      <label>線幅 weight（塗り面積軸）: <span id="lwVal">1.2</span></label>
+      <input id="lw" type="range" min="0.5" max="12" step="0.5" value="1.2" />
+      <label><input id="points" type="checkbox" checked /> 観測点 circleMarker を描く</label>
+      <div class="row">
+        <button id="panBtn">パン試験</button>
+        <button id="zoomBtn">ズーム試験</button>
+      </div>
+    </div>
+    <div id="stat" class="panel">loading…</div>
+    <script type="module" src="/poc/leaflet-main.ts"></script>
+  </body>
+</html>
