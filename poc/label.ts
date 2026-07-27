@@ -412,15 +412,20 @@ function waitIdle(timeoutMs: number): Promise<void> {
 //
 // 【計測器の選択】グリフ生成コストは blockMaxMs（MessageChannel ブロック検出器）で読む。
 // frame.max（rAFフレーム時間）は vsync に量子化されるため計測環境のリフレッシュレートに
-// 左右される: この開発機は headed だが物理モニタが 60Hz（vsync 16.7ms・実測）で、最長20ms
-// 級の生成ブロックが frame budget を僅かに超えるだけのため frame.max では安定検出できない
-// （＝過去に「開発機では検出できない・実機を待つしかない」と書いたのは誤り。計測器を
-// blockMaxMs に替えれば 60Hz 開発機でも σ~0.5ms で検出できる）。レビュー機は同じく headed
-// だが高リフレッシュ（6.1ms/≒164Hz）のため 20ms ブロックが frame.max でも明確に浮いた
-// （subregions 35.3ms）。両者の観測差は headed/headless でも Playwright/実Chrome でもなく、
-// 物理モニタのリフレッシュレート差にすぎない。実機（Surface Go 2）計測の価値は「開発機で
-// 測れないから」ではなく「非力機での生成コスト絶対値を知るため」（blockMaxMs が 2〜3倍に
-// 伸びれば longtask 閾値 50ms に達しうる）。
+// 左右される: この環境は vsync 16.7ms(60Hz)・レビュー側の環境は vsync 5.9〜6.1ms(≒164Hz)で、
+// 最長20ms級の生成ブロックが 16.7ms budget を僅かに超えるだけのため、この環境の frame.max
+// では安定検出できない（＝過去に「開発機では検出できない・実機を待つしかない」と書いたのは
+// 誤り。計測器を blockMaxMs に替えれば vsync 16.7ms 環境でも σ~0.5ms で検出できる）。
+// 【vsync差の原因は未特定】双方とも headed（headless ではない）と確認済みだが、同一の
+// Windowsマシン上・双方 headed 申告にも関わらず vsync が 16.7ms と 5.9〜6.1ms に分かれる
+// 原因は特定していない（別モニタか、別の実行コンテキストか、他要因かは未検証。以前
+// 「別セッションの別の物理機のリフレッシュレート差」と断定したのは、確かめずに原因を
+// 名付けた誤りだった）。
+// blockMaxMs は両環境でほぼ同値（後述 runLabelZoomSuite 実測: 16.7ms環境で≈20ms、
+// 5.9ms環境で18.6ms）を返しており、vsync 非依存であることは実証済み。したがって
+// この vsync 差の原因を特定する実務上の必要はない。実機（Surface Go 2）計測の価値は
+// 「開発機で測れないから」ではなく「非力機での生成コスト絶対値を知るため」
+// （blockMaxMs が 2〜3倍に伸びれば longtask 閾値 50ms に達しうる）。
 async function runLabelZoomSuite(): Promise<LabelRenderResult[]> {
   map.fitBounds(JAPAN_BOUNDS_LNGLAT, { padding: 20, duration: 0 })
   for (const id of LABEL_LAYER_IDS) {
