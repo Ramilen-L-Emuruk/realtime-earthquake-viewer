@@ -1,0 +1,52 @@
+{
+  "meta": {
+    "when": "2026-07-27T14:30:32.546Z",
+    "label": "surface-go2-leaflet-camera-v2b-bounds-p60-d1",
+    "phase": "flyto",
+    "elapsedMs": 1081.5,
+    "url": "http://192.168.0.64:5173/poc/leaflet-index.html",
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "viewport": "1272x768",
+    "devicePixelRatio": 1.5,
+    "estimatedVsyncMs": 16.7,
+    "kind": "bounds",
+    "padding": 60,
+    "durationSec": 1,
+    "bounds": [
+      [
+        43.25367615245754,
+        145.6328340930992
+      ],
+      [
+        43.40962656515489,
+        145.75917296010365
+      ]
+    ],
+    "maxZoom": 8,
+    "faults": "full",
+    "faultVertices": 31646,
+    "points": 1725,
+    "lineWidth": 1.2,
+    "canvasW": 1272,
+    "canvasH": 768,
+    "jsHeapMB": 21
+  },
+  "frame": {
+    "frames": 60,
+    "fps": 55.48,
+    "p50": 16.7,
+    "p95": 16.8,
+    "max": 33.4
+  },
+  "landingBlockMaxMs": 160.1,
+  "landingBlockTop3Ms": [
+    160.1,
+    48.6,
+    28.4
+  ],
+  "longTask": {
+    "count": 1,
+    "totalMs": 109,
+    "maxMs": 109
+  }
+}

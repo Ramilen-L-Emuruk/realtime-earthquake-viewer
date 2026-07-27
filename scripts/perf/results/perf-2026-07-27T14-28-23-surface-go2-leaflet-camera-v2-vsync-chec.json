@@ -1,0 +1,33 @@
+{
+  "meta": {
+    "when": "2026-07-27T14:28:24.759Z",
+    "label": "surface-go2-leaflet-camera-v2-vsync-check",
+    "phase": "static",
+    "durationMs": 2000,
+    "url": "http://192.168.0.64:5173/poc/leaflet-index.html",
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "viewport": "1272x768",
+    "devicePixelRatio": 1.5,
+    "estimatedVsyncMs": 16.7,
+    "faults": "full",
+    "faultVertices": 31646,
+    "points": 1725,
+    "lineWidth": 1.2,
+    "canvasW": 1272,
+    "canvasH": 768,
+    "jsHeapMB": 16
+  },
+  "frame": {
+    "frames": 117,
+    "fps": 58.22,
+    "p50": 16.7,
+    "p95": 17.1,
+    "max": 89.45
+  },
+  "moveendMs": null,
+  "longTask": {
+    "count": 0,
+    "totalMs": 0,
+    "maxMs": 0
+  }
+}

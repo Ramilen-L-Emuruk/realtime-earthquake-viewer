@@ -1,0 +1,60 @@
+{
+  "meta": {
+    "when": "2026-07-27T14:26:06.532Z",
+    "label": "surface-go2-camera-v2b-bounds-p48-d1",
+    "phase": "flyto",
+    "elapsedMs": 1022,
+    "url": "http://192.168.0.64:5173/poc/index.html",
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "viewport": "1272x768",
+    "devicePixelRatio": 1.5,
+    "estimatedVsyncMs": 16.7,
+    "kind": "bounds",
+    "padding": 48,
+    "durationSec": 1,
+    "bounds": [
+      [
+        135.29032846325427,
+        39.36903442354506
+      ],
+      [
+        135.3582463899732,
+        39.51228839043741
+      ]
+    ],
+    "maxZoom": 8,
+    "faults": "full",
+    "faultVertices": 31646,
+    "points": 1725,
+    "lineWidth": 1.2,
+    "pixelRatio": 1.5,
+    "canvasW": 1908,
+    "canvasH": 1152,
+    "jsHeapMB": 71.5,
+    "webglMemory": {
+      "bufferBytes": 1764022,
+      "textureBytes": 39060001,
+      "renderbufferBytes": 0,
+      "totalBytes": 40824023,
+      "tracked": true
+    }
+  },
+  "frame": {
+    "frames": 40,
+    "fps": 39.14,
+    "p50": 16.7,
+    "p95": 78.3,
+    "max": 116.5
+  },
+  "landingBlockMaxMs": 125.5,
+  "landingBlockTop3Ms": [
+    125.5,
+    68.8,
+    68.3
+  ],
+  "longTask": {
+    "count": 2,
+    "totalMs": 180,
+    "maxMs": 120
+  }
+}
