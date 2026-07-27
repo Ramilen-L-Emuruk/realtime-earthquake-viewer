@@ -1,0 +1,54 @@
+{
+  "meta": {
+    "label": "surface-go2-warm-subregions"
+  },
+  "result": {
+    "stage": "subregions",
+    "cold": {
+      "label": "subregions cold(区域192件・未ウォーム)",
+      "renderedSymbols": 49,
+      "glyphsGenerated": 211,
+      "blockMaxMs": 95,
+      "blockTop3Ms": [
+        95,
+        92.9,
+        83.9
+      ],
+      "elapsedMs": 1606.2,
+      "frame": {
+        "frames": 73,
+        "fps": 45.45,
+        "p50": 16.7,
+        "p95": 69.8,
+        "max": 100.1
+      },
+      "longTaskCount": 1,
+      "longTaskTotalMs": 86,
+      "longTaskMaxMs": 86,
+      "serverGlyphs": true
+    },
+    "warm": {
+      "label": "subregions warm(区域192件・ウォーム後)",
+      "renderedSymbols": 49,
+      "glyphsGenerated": 211,
+      "blockMaxMs": 63.8,
+      "blockTop3Ms": [
+        63.8,
+        19.2,
+        15.4
+      ],
+      "elapsedMs": 669.9,
+      "frame": {
+        "frames": 36,
+        "fps": 53.74,
+        "p50": 16.7,
+        "p95": 17.7,
+        "max": 55.1
+      },
+      "longTaskCount": 0,
+      "longTaskTotalMs": 0,
+      "longTaskMaxMs": 0,
+      "serverGlyphs": true
+    }
+  }
+}
