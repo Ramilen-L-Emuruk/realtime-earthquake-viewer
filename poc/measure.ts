@@ -298,6 +298,23 @@ async function measureOneFly(
     po = null
   }
 
+  // 【レビュー(b46f058) MEDIUM2 対応・対称化】Leaflet 側（measureOneFlyLeaflet）に着地(moveend)コスト
+  // 検出を入れた一方、MapLibre 側は「毎フレーム描画だから着地に偏るコストは無い」と仮定していたが
+  // 未検証だった。同じ MessageChannel ブロック検出器を入れ、MapLibre の着地時ブロックを landingBlockMaxMs
+  // として証跡で示す（≒0 なら仮定が裏付けられる。両エンジンを同一実装で揃え項目3 を対称に測り直す）。
+  const LANDING_SETTLE_MS = 300
+  const blockGaps: number[] = []
+  const mc = new MessageChannel()
+  let blockRunning = true
+  let lastPing = performance.now()
+  mc.port1.onmessage = () => {
+    const now = performance.now()
+    const gap = now - lastPing
+    lastPing = now
+    if (gap > 3) blockGaps.push(gap)
+    if (blockRunning) mc.port2.postMessage(0)
+  }
+
   const t0 = performance.now()
   // 何らかの理由で 'moveend' が発火しない事故に備え、フレーム収集ループが無限に残らないようにする。
   // map.once だとタイムアウト経路でリスナー参照を解除する手段が無く連続実行のたびに蓄積するため
@@ -314,12 +331,18 @@ async function measureOneFly(
     const timeout = setTimeout(handler, 15000)
     map.on('moveend', handler)
   })
+  lastPing = performance.now()
+  mc.port2.postMessage(0) // 飛行開始の直前にブロック検出を開始
   fly()
   await moveEndPromise
   const elapsedMs = performance.now() - t0
-  cancelAnimationFrame(rafId)
+  cancelAnimationFrame(rafId) // frame 統計は飛行中のみ（Leaflet 側と揃える）
+  // 着地の同期処理は moveend 前後に走るため、短い settle の間もブロック検出・longtask を回してから止める。
+  await new Promise((r) => setTimeout(r, LANDING_SETTLE_MS))
+  blockRunning = false
   if (po) po.disconnect()
 
+  const sortedBlocks = blockGaps.slice().sort((a, b) => b - a)
   const frame = summarizeFrames(frameDeltas, elapsedMs)
   const result = {
     meta: {
@@ -342,6 +365,11 @@ async function measureOneFly(
       ...snapshot(),
     },
     frame,
+    // 着地(moveend)コスト（Leaflet 版 landingBlockMaxMs と対称）。飛行開始〜settle 終了の区間内の
+    // メインスレッド最長連続ブロック。MapLibre は毎フレーム描画のため着地に偏らず ≈0 になる想定で、
+    // その裏付けを証跡に残す（frame.p95/max と併読。厳密には区間内最長ブロックで着地由来は非保証）。
+    landingBlockMaxMs: round(sortedBlocks[0] ?? 0),
+    landingBlockTop3Ms: sortedBlocks.slice(0, 3).map((v) => round(v)),
     longTask: summarizeLongTasks(longTasks, po != null),
   }
 

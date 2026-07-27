@@ -80,8 +80,10 @@ flyToBounds（padding 60/48/20）を 8 往復・duration 0.8/1.0秒交互で計�
 [webgl-poc-surface-go2-camera-leaflet-2026-07-27.md](../docs/webgl-poc-surface-go2-camera-leaflet-2026-07-27.md)）。
 MessageChannel ブロック検出器で moveend 前後のメインスレッド最長連続ブロックを捕捉する。**読み方**:
 `landingBlockMaxMs` が小さければ Leaflet 優位は本物、大きければ「飛行中は滑らかだが着地で固まる」
-＝frame 統計の Leaflet 優位は物差しの違いが作っていた、と判断する。MapLibre 側は毎フレーム描画で
-着地に偏るコストが無いため、この指標は Leaflet 側のみ。
+＝frame 統計の Leaflet 優位は物差しの違いが作っていた、と判断する。**MapLibre 側 `__runCameraSuite`
+にも同じ `landingBlockMaxMs` を対称に入れてある**（当初「MapLibre は着地コスト無し」と仮定していたが
+未検証だったため。開発機実測で MapLibre も point 13.3ms・bounds 5.8ms＝≈0 ではなかった）。**両エンジンを
+新実装で揃えて実機再計測**し、frame 統計＋着地ブロックの両面で比較する。
 - 単発計測: `await window.__measureLeafletCameraFly({ kind:'point', durationSec:0.8 })` /
   `await window.__measureLeafletCameraFly({ kind:'bounds', padding:60, durationSec:1.0 })`
 - 実機で `surface-go2-leaflet-camera*` として保存された証跡を、MapLibre 側 `surface-go2-camera*`（34件）と
