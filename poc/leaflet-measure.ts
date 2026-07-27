@@ -54,6 +54,72 @@ const ZOOM_MAX = 7
 // 前のアニメーションが着地してから次を発火する（自己干渉を避ける）
 const ZOOM_NATIVE_INTERVAL_MS = 400
 
+// --- 検証項目3: カメラ操作（flyTo/flyToBounds）の Leaflet 版 ---
+// poc/measure.ts（MapLibre 版 measureOneFly / __runCameraSuite）と apples-to-apples にするための対応物。
+// 目的: 実機で MapLibre 側がカメラ操作中に vsync 天井を破った（fps 28.2〜52.7）のに対し、Leaflet 側の
+// 同条件計測が無く優劣を判定できない、を解消する（検証項目3・実機報告
+// webgl-poc-surface-go2-2026-07-27.md）。既存の Leaflet PoC（poc/main.ts の MapLibre 版と同一の
+// GEBCO＋活断層＋観測点構成）にカメラ計測を足すことで、本番アプリ側の交絡（レイヤー内容差）を挟まず
+// PoC 対 PoC の同条件比較にする。
+//
+// MapLibre 版との対応と相違:
+//   - 座標順: Leaflet は [lat, lng]（MapLibre は [lng, lat]）
+//   - duration: Leaflet の flyTo/flyToBounds は**秒**（MapLibre はミリ秒）。durationSec をそのまま渡す
+//   - 本番 flyTo パターン（JapanMap.tsx 調査・MapLibre 版と同一）: 単一点は zoom=CAMERA_MAX_ZOOM(8) 固定、
+//     複数点フィットは padding 60(EEW検知)/48(津波・観測点)/20(JAPAN_BOUNDS 全体復帰)、duration 0.8/1.0秒
+export type FlyKind = 'point' | 'bounds'
+const CAMERA_MAX_ZOOM = 8
+// JapanMap.tsx の JAPAN_BOUNDS そのまま（Leaflet は [lat, lng] 順）。MapLibre 版はこれを [lng,lat] に
+// 入れ替えた値を使っている（poc/measure.ts）。
+const JAPAN_BOUNDS_LATLNG: [[number, number], [number, number]] = [
+  [30.99, 129.43],
+  [45.52, 145.82],
+]
+const LOCAL_CLUSTER_SPREAD_DEG = 0.15
+// 直近の static 計測で得た vsync 推定値。カメラ計測（measureOneFlyLeaflet）は常時カメラが動くため
+// static 相当の推定が取れず、スイート先頭の static 計測でキャッシュした値を証跡に添える
+// （MapLibre 版 measure.ts の lastEstimatedVsyncMs と同じ仕組み・レビュー HIGH4/HIGH2 の系譜。
+// どの天井で測ったかを証跡に残し、環境違いの取り違えを防ぐ）。
+let lastEstimatedVsyncMs: number | null = null
+
+function randomPointInJapan(): [number, number] {
+  const [[lat0, lng0], [lat1, lng1]] = JAPAN_BOUNDS_LATLNG
+  return [lat0 + Math.random() * (lat1 - lat0), lng0 + Math.random() * (lng1 - lng0)]
+}
+
+// 局所クラスタの bounds（MapLibre 版 randomLocalClusterBounds と対応・[lat,lng] 順）。
+// padding 60/48 の本番用途（EEW検知点・観測点/海岸線フィット）は日本全体ではなく、ごく一部に散らばる
+// 少数点への「タイトなズームイン」（maxZoom 付き）なので、都度この局所 bounds を生成する。
+function randomLocalClusterBounds(pointCount = 3): [[number, number], [number, number]] {
+  const [lat0, lng0] = randomPointInJapan()
+  let minLat = lat0
+  let maxLat = lat0
+  let minLng = lng0
+  let maxLng = lng0
+  for (let i = 1; i < pointCount; i++) {
+    const lat = lat0 + (Math.random() - 0.5) * LOCAL_CLUSTER_SPREAD_DEG * 2
+    const lng = lng0 + (Math.random() - 0.5) * LOCAL_CLUSTER_SPREAD_DEG * 2
+    minLat = Math.min(minLat, lat)
+    maxLat = Math.max(maxLat, lat)
+    minLng = Math.min(minLng, lng)
+    maxLng = Math.max(maxLng, lng)
+  }
+  return [
+    [minLat, minLng],
+    [maxLat, maxLng],
+  ]
+}
+
+// padding から本番と同じ意味の bounds/maxZoom を決める（MapLibre 版 boundsTargetForPadding と対応）。
+// 20 = JAPAN_BOUNDS 全体復帰（maxZoom 無し）、60/48 = 局所クラスタへのタイトなズームイン（maxZoom:8）。
+function boundsTargetForPadding(padding: number): {
+  bounds: [[number, number], [number, number]]
+  maxZoom?: number
+} {
+  if (padding === 20) return { bounds: JAPAN_BOUNDS_LATLNG }
+  return { bounds: randomLocalClusterBounds(), maxZoom: CAMERA_MAX_ZOOM }
+}
+
 function waitTilesLoaded(layer: TileLayer, timeoutMs = 5000): Promise<void> {
   return new Promise((res) => {
     if (!layer.isLoading()) {
@@ -187,6 +253,15 @@ async function measureOnce(
     sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))] : null
   const round = (v: number | null) => (v == null ? null : Math.round(v * 100) / 100)
 
+  // static は何も動かさないため frame.p50 が実質そのままvsync間隔になる（項目5×6 情報5・
+  // 項目7 baseline と同じ手）。MapLibre側(poc/measure.ts)にはこれが無く、実際に「開発機」と
+  // 記録された2つの測定が天井の違う環境（60Hz対170Hz）で取られ数値が食い違う事故があった
+  // （レビュー HIGH4）。どの天井で測ったかを証跡に残す。
+  const estimatedVsyncMs = phase === 'static' ? round(pick(0.5)) : null
+  // カメラ計測（measureOneFlyLeaflet）が証跡に添えられるよう、static 計測時にモジュールへキャッシュ
+  // する（MapLibre 版 measure.ts の lastEstimatedVsyncMs と同じ仕組み）。
+  if (phase === 'static' && estimatedVsyncMs != null) lastEstimatedVsyncMs = estimatedVsyncMs
+
   const result = {
     meta: {
       when: new Date().toISOString(),
@@ -197,11 +272,7 @@ async function measureOnce(
       ua: navigator.userAgent,
       viewport: `${innerWidth}x${innerHeight}`,
       devicePixelRatio: window.devicePixelRatio,
-      // static は何も動かさないため frame.p50 が実質そのままvsync間隔になる（項目5×6 情報5・
-      // 項目7 baseline と同じ手）。MapLibre側(poc/measure.ts)にはこれが無く、実際に「開発機」と
-      // 記録された2つの測定が天井の違う環境（60Hz対170Hz）で取られ数値が食い違う事故があった
-      // （レビュー HIGH4）。どの天井で測ったかを証跡に残す。
-      estimatedVsyncMs: phase === 'static' ? round(pick(0.5)) : null,
+      estimatedVsyncMs,
       ...deps.snapshot(),
     },
     frame: {
@@ -232,6 +303,102 @@ async function measureOnce(
     )
   } catch (e) {
     console.warn('[leafletB] report 送信失敗（結果はログから回収可）:', e, result)
+  }
+  return result
+}
+
+// flyTo/flyToBounds 1回分（呼び出し〜'moveend' 発火まで）を1計測単位とする（MapLibre 版 measureOneFly
+// と対応）。measureOnce（固定 duration でフレーム集計）と違い、飛行時間そのものが計測対象になる。
+async function measureOneFlyLeaflet(
+  deps: MeasureDeps,
+  fly: () => void,
+  label: string,
+  extraMeta: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const { map } = deps
+  const frameDeltas: number[] = []
+  let last = performance.now()
+  let rafId = requestAnimationFrame(function loop(t) {
+    frameDeltas.push(t - last)
+    last = t
+    rafId = requestAnimationFrame(loop)
+  })
+
+  const longTasks: number[] = []
+  let po: PerformanceObserver | null = null
+  try {
+    po = new PerformanceObserver((l) => {
+      for (const e of l.getEntries()) longTasks.push(e.duration)
+    })
+    po.observe({ type: 'longtask' })
+  } catch {
+    po = null
+  }
+
+  const t0 = performance.now()
+  // 'moveend' が発火しない事故に備えタイムアウトを対にする（MapLibre 版と同じ。map.once だと
+  // タイムアウト経路でリスナーを外せず連続実行で蓄積するため、on/off を自前で対にして確実に外す）。
+  const moveEndPromise = new Promise<void>((res) => {
+    let settled = false
+    const handler = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      map.off('moveend', handler)
+      res()
+    }
+    const timeout = setTimeout(handler, 15000)
+    map.on('moveend', handler)
+  })
+  fly()
+  await moveEndPromise
+  const elapsedMs = performance.now() - t0
+  cancelAnimationFrame(rafId)
+  if (po) po.disconnect()
+
+  frameDeltas.shift()
+  const sorted = [...frameDeltas].sort((a, b) => a - b)
+  const pick = (q: number) =>
+    sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))] : null
+  const round = (v: number | null) => (v == null ? null : Math.round(v * 100) / 100)
+
+  const result = {
+    meta: {
+      when: new Date().toISOString(),
+      label,
+      phase: 'flyto',
+      elapsedMs: round(elapsedMs),
+      url: location.href,
+      ua: navigator.userAgent,
+      viewport: `${innerWidth}x${innerHeight}`,
+      devicePixelRatio: window.devicePixelRatio,
+      // スイート先頭の static 計測でキャッシュした vsync 推定値（無ければ null）。MapLibre 版と同様。
+      estimatedVsyncMs: lastEstimatedVsyncMs,
+      ...extraMeta,
+      ...deps.snapshot(),
+    },
+    frame: {
+      frames: sorted.length,
+      fps: round(sorted.length / (elapsedMs / 1000)),
+      p50: round(pick(0.5)),
+      p95: round(pick(0.95)),
+      max: round(sorted[sorted.length - 1] ?? null),
+    },
+    longTask: {
+      count: po ? longTasks.length : -1,
+      totalMs: round(longTasks.reduce((a, b) => a + b, 0)),
+      maxMs: round(longTasks.length ? Math.max(...longTasks) : 0),
+    },
+  }
+
+  try {
+    const res = await fetch(REPORT_URL, { method: 'POST', body: JSON.stringify(result) })
+    console.log(
+      `[leaflet-camera] ${label}: ${res.ok ? await res.text() : 'HTTP ' + res.status}`,
+      result.frame,
+    )
+  } catch (e) {
+    console.warn('[leaflet-camera] report 送信失敗（結果はログから回収可）:', e, result)
   }
   return result
 }
@@ -278,5 +445,75 @@ export function installLeafletMeasure(deps: MeasureDeps): void {
     await measureOnce(deps, 'zoom-forced', durationMs, `${labelBase}-baseline-warm`)
     await measureOnce(deps, 'pan', durationMs, `${labelBase}-baseline-warm`)
     console.log('[leafletB] suite 完了')
+  }
+
+  // --- 検証項目3: カメラ操作（MapLibre 版 __measureCameraFly / __runCameraSuite と apples-to-apples）---
+
+  // 単発計測: await __measureLeafletCameraFly({ kind:'bounds', padding:60, durationSec:0.8 })
+  w.__measureLeafletCameraFly = (
+    opts: { kind?: FlyKind; durationSec?: number; padding?: number } = {},
+  ) => {
+    const durationSec = opts.durationSec ?? 1.0
+    if ((opts.kind ?? 'point') === 'bounds') {
+      const padding = opts.padding ?? 60
+      const { bounds, maxZoom } = boundsTargetForPadding(padding)
+      return measureOneFlyLeaflet(
+        deps,
+        () =>
+          deps.map.flyToBounds(bounds, {
+            padding: [padding, padding],
+            ...(maxZoom != null ? { maxZoom } : {}),
+            duration: durationSec,
+          }),
+        'adhoc-bounds',
+        { kind: 'bounds', padding, durationSec, bounds, maxZoom },
+      )
+    }
+    const target = randomPointInJapan()
+    return measureOneFlyLeaflet(
+      deps,
+      () => deps.map.flyTo(target, CAMERA_MAX_ZOOM, { duration: durationSec }),
+      'adhoc-point',
+      { kind: 'point', target, zoom: CAMERA_MAX_ZOOM, durationSec },
+    )
+  }
+
+  // カメラ操作スイート。MapLibre 版 __runCameraSuite と同じ構造: 先頭で static を1回踏み vsync を
+  // 証跡に残す → 単一点 flyTo（zoom8）⇔ flyToBounds（padding 60/48/20）を rounds 回、duration
+  // 0.8/1.0秒を交互に踏む。ラベルは MapLibre 版と同形式（point-d{sec} / bounds-p{pad}-d{sec}）にして
+  // 突き合わせやすくする。実機での呼び出し: await window.__runLeafletCameraSuite('surface-go2-leaflet-camera')
+  w.__runLeafletCameraSuite = async (labelBase = 'leaflet-camera', rounds = 8) => {
+    const { map, tileLayer } = deps
+    map.setZoom(START_ZOOM, { animate: false })
+    await waitTilesLoaded(tileLayer)
+    // vsync 天井の実測を証跡に残す（この static 計測が lastEstimatedVsyncMs を更新し、以降の
+    // 各 measureOneFlyLeaflet に添えられる）。
+    await measureOnce(deps, 'static', 2000, `${labelBase}-vsync-check`)
+    console.log(`[leaflet-camera] suite 開始（${rounds} 往復）`)
+    const paddings = [60, 48, 20] as const
+    for (let i = 0; i < rounds; i++) {
+      const durationSec = i % 2 === 0 ? 0.8 : 1.0
+      const target = randomPointInJapan()
+      await measureOneFlyLeaflet(
+        deps,
+        () => map.flyTo(target, CAMERA_MAX_ZOOM, { duration: durationSec }),
+        `${labelBase}-point-d${durationSec}`,
+        { kind: 'point', target, zoom: CAMERA_MAX_ZOOM, durationSec },
+      )
+      const padding = paddings[i % paddings.length]
+      const { bounds, maxZoom } = boundsTargetForPadding(padding)
+      await measureOneFlyLeaflet(
+        deps,
+        () =>
+          map.flyToBounds(bounds, {
+            padding: [padding, padding],
+            ...(maxZoom != null ? { maxZoom } : {}),
+            duration: durationSec,
+          }),
+        `${labelBase}-bounds-p${padding}-d${durationSec}`,
+        { kind: 'bounds', padding, durationSec, bounds, maxZoom },
+      )
+    }
+    console.log('[leaflet-camera] suite 完了')
   }
 }
