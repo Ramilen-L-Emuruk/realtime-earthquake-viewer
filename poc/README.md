@@ -9,7 +9,8 @@
 | ファイル | 役割 |
 |---|---|
 | `poc/index.html` / `poc/main.ts` | 素の maplibre-gl で 背景(GEBCO raster)＋活断層(line)＋観測点(circle) を描画。3軸を実行時に切替 |
-| `poc/measure.ts` | 静止/パン/ズームのフレーム時間・longtask 計測ランナー。証跡を `/__perf-report` へ送る |
+| `poc/measure.ts` | 静止/パン/ズームのフレーム時間・longtask 計測ランナー（層B）＋検証項目3（カメラ操作）の flyTo/fitBounds 計測。証跡を `/__perf-report` へ送る |
+| `poc/hittest.html` / `poc/hittest.ts` | 検証項目4: bbox方式（`queryRenderedFeatures`＋小さな bbox）の当たり判定 PoC。既知の直線でオフセット距離を制御して検証 |
 | `vite.poc.config.ts` | PoC専用の最小 vite（react/PWA/サブパスを外す。`optimizeDeps.exclude:['maplibre-gl']` で GeoJSON worker を有効化） |
 | `scripts/perf/build-active-faults-full.mjs` | フル解像度活断層(31,646頂点)生成。thin(9,874頂点) は本体の `active-faults.json` |
 
@@ -41,6 +42,28 @@ npm run dev:poc -- --host --port 5180
 補助:
 - 単発計測: `await window.__measureLayerB({ phase:'pan', durationMs:10000, label:'xxx' })`
 - 右上の UI で手動に軸（活断層 full/thin・線幅・pixelRatio・観測点 on/off）を変えられる。
+
+## 検証項目3: カメラ操作（flyTo/fitBounds）スイート
+
+`poc/index.html`（`poc/main.ts`/`poc/measure.ts`）と同じページで実行する。本番の flyTo パターン
+（`JapanMap.tsx`調査: 単一点は zoom=8 固定、複数点フィットは padding 60/48/20、duration 0.8秒(EEW系)/
+1.0秒(それ以外)）を再現し、flyTo/fitBounds 呼び出し〜`moveend` までのフレーム時間・longtask を計測する。
+
+```js
+await window.__runCameraSuite('surface-go2-camera')
+```
+
+補助:
+- 単発計測: `await window.__measureCameraFly({ kind:'point', durationSec:0.8 })` /
+  `await window.__measureCameraFly({ kind:'bounds', padding:60, durationSec:1.0 })`
+- 右上 UI の「flyTo試験」「fitBounds試験」ボタンでも単発実行できる。
+
+## 検証項目4: 当たり判定（bbox方式）
+
+`http://localhost:5180/poc/hittest.html`（実機は `http://<開発機のIP>:5180/poc/hittest.html`）を開く。
+右上スライダーで許容半径 r（px）を変え、地図（オレンジ=活断層、シアン=テスト線）をクリックすると
+左下にヒット結果が出る。開発機での自動検証は `docs/webgl-rendering-migration-plan.md` §6 検証項目4を参照
+（r=8px でオフセット8px以内=ヒット・9px以上=非ヒットの境界一致を zoom5/8/11 で確認済み・決着）。
 
 ## 3軸と律速判定
 
