@@ -69,8 +69,10 @@ function waitTilesLoaded(layer: TileLayer, timeoutMs = 5000): Promise<void> {
 }
 
 // phase に応じてカメラを動かし続ける。停止関数を返す。
-function startDrive(map: LeafletMap, phase: Phase): () => void {
-  if (phase === 'static') return () => {}
+// 停止関数は、フェーズ終了時に同期的に発生したコスト（pan の moveend 一括再描画）があれば
+// その所要時間(ms)を返す。無ければ undefined（レビュー b4524cd 系譜・82d4d39 HIGH1 対応）。
+function startDrive(map: LeafletMap, phase: Phase): () => number | undefined {
+  if (phase === 'static') return () => undefined
   if (phase === 'pan') {
     // 実ドラッグ（Handler.Drag._onDrag）と同じ経路: 毎フレームは _rawPanBy + 'move' のみ発火する
     // （SVGレンダラーは 'moveend' しか購読しないため、ここでは全パス再描画は起きない）。
@@ -88,10 +90,16 @@ function startDrive(map: LeafletMap, phase: Phase): () => void {
       id = requestAnimationFrame(step)
     })
     // フェーズ終了 = 実ドラッグでの指を離すタイミング相当。ここで初めて 'moveend' を1回発火し、
-    // SVGレンダラーの全パス再描画（本来ドラッグ終了時に1回だけ起きるコスト）を反映させる。
+    // SVGレンダラーの全パス再描画（本来ドラッグ終了時に1回だけ起きるコスト）を起こす。
+    // 【レビュー HIGH1】この同期コストは cancelAnimationFrame 後に起きるためフレーム統計
+    // （p50/p95/max）には一切現れない。Leaflet の pan は「動作中は軽いが離した瞬間に一括で払う」
+    // 性質なので、この「払う分」を測らないと Leaflet 有利に偏る。moveendMs として名指しで返す
+    // （MapLibre 側には対応するコストが存在しない——この非対称自体が項目2 の答えの一部）。
     return () => {
       cancelAnimationFrame(id)
+      const t0 = performance.now()
       map.fire('moveend')
+      return performance.now() - t0
     }
   }
   if (phase === 'zoom-forced') {
@@ -109,15 +117,22 @@ function startDrive(map: LeafletMap, phase: Phase): () => void {
       map.setZoom(nz, { animate: false })
       id = requestAnimationFrame(step)
     })
-    return () => cancelAnimationFrame(id)
+    return () => {
+      cancelAnimationFrame(id)
+      return undefined
+    }
   }
-  // zoom-native
+  // zoom-native: 着地コストは400ms間隔の往復の中で(次のsetZoom呼び出し前に)発火済みのため、
+  // フェーズ終了時に追加で払うコストは無い（レビュー 82d4d39 HIGH1 の補足）。
   let toggled = false
   const id = setInterval(() => {
     map.setZoom(toggled ? START_ZOOM : ZOOM_MAX, { animate: true })
     toggled = !toggled
   }, ZOOM_NATIVE_INTERVAL_MS)
-  return () => clearInterval(id)
+  return () => {
+    clearInterval(id)
+    return undefined
+  }
 }
 
 async function warmup(map: LeafletMap, tileLayer: TileLayer): Promise<void> {
@@ -138,7 +153,8 @@ async function measureOnce(
   await waitTilesLoaded(tileLayer)
 
   const frameDeltas: number[] = []
-  let last = performance.now()
+  const frameCollectStart = performance.now()
+  let last = frameCollectStart
   let rafId = requestAnimationFrame(function loop(t) {
     frameDeltas.push(t - last)
     last = t
@@ -158,7 +174,10 @@ async function measureOnce(
 
   const stopDrive = startDrive(map, phase)
   await new Promise((r) => setTimeout(r, durationMs))
-  stopDrive()
+  const moveendMs = stopDrive()
+  // fpsはdurationMs(名目値)ではなく実測経過時間で割る（項目7 HIGH1と同じ理由。moveendの同期コスト
+  // 分だけ実際の経過時間はdurationMsよりわずかに長くなりうる。レビュー b4524cd 系譜・MEDIUM2 対応）。
+  const elapsedMs = performance.now() - frameCollectStart
   cancelAnimationFrame(rafId)
   if (po) po.disconnect()
 
@@ -182,11 +201,17 @@ async function measureOnce(
     },
     frame: {
       frames: sorted.length,
-      fps: round(sorted.length / (durationMs / 1000)),
+      fps: round(sorted.length / (elapsedMs / 1000)),
       p50: round(pick(0.5)),
       p95: round(pick(0.95)),
       max: round(sorted[sorted.length - 1] ?? null),
     },
+    // ドラッグ終了時（pan のみ）の一括再描画コスト。動作中のフレーム時間とは別物として名指しで
+    // 記録する（項目7 の areaEvents と同じ考え方）。MapLibre 側には対応するコストが存在しない。
+    // 注意: この同期コストは elapsedMs（＝fps の分母）にも含まれるため、pan の fps がわずかに
+    // 下がる形でも同じコストの影響が出る。二重に不利と見なさず、fps低下とmoveendMsは同じ1つの
+    // コストを2つの角度（動作中平均への影響／単発の実額）から見ているだけと読むこと。
+    moveendMs: moveendMs != null ? round(moveendMs) : null,
     longTask: {
       count: po ? longTasks.length : -1,
       totalMs: round(longTasks.reduce((a, b) => a + b, 0)),

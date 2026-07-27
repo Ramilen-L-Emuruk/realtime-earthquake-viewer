@@ -182,8 +182,14 @@
      - 1・2回目は**判定不成立**だった。pan・zoom とも飽和した baseline から負荷を**下げて**振っていたため何も測れておらず、さらに 1回目に zoom で見えた劣化（33.3ms）は**タイル初回読み込みのウォームアップ交絡**だった（3回目の `baseline-warm` 対照 16.9ms で確定）。経緯と撤回した主張は下記「結果記録」、スイート改訂のレビューは [webgl-poc-review-4b0517c.md](webgl-poc-review-4b0517c.md)。
      - **残る論点**（層 B の外）: 検証項目2 の Leaflet 比較（未実施）・検証項目5 非加算合成・毎秒更新・EEW 複合負荷・真の実行時メモリ。観点は [webgl-layerb-verification-points.md](webgl-layerb-verification-points.md)。
 2. **フル解像度描画の軽さ**: MapLibre で 背景タイル＋県境＋**間引き前フル解像度の活断層**＋強震点を描画し、非力機相当（CPU 4 倍スロットル・実機）でも現行以上に軽い（パン/ズーム時のロングタスク減・FPS 同等以上）。
-   - **【2026-07-27 進捗・開発機検証済み・実機計測は未実施】** 層B（項目1）は「MapLibreは現行負荷でvsync天井を破らない」ことを確定させたが、「Leafletより軽いか」には答えていない（両者とも60fpsに張り付く場合、メインスレッドの仕事量差はフレーム時間だけでは区別できない可能性がある）。`poc/leaflet-main.ts` / `poc/leaflet-measure.ts` / `poc/leaflet-index.html` として、`poc/main.ts`（MapLibre版）と条件を揃えた最小構成のLeaflet版PoCを作成した。負荷軸は活断層full/thin・線幅・観測点on/off（DPR軸はLeafletに対応APIが無いため対象外）。パンは実ドラッグと同じ経路（`_rawPanBy`+`'move'`のみを毎フレーム、`'moveend'`はフェーズ終了時に1回）で駆動し、ズームは`zoom-native`（本番同様のアニメーションズーム）と`zoom-forced`（MapLibre同様に毎フレーム強制再描画）の両方を測れるようにした。
-   - **残作業**: 実機（Surface Go 2）で `await window.__runLeafletBSuite('surface-go2')` を実行し、層B（項目1）の実測値と比較してGO/NO-GO判定する。まずはフレーム時間比較で試し、決着しない場合はPerformanceトレースでのメインスレッド内訳計測を検討する（ユーザー確認済み・2026-07-27）。
+   - **【2026-07-27 進捗・レビュー対応済み・実機計測は未実施】** 層B（項目1）は「MapLibreは現行負荷でvsync天井を破らない」ことを確定させたが、「Leafletより軽いか」には答えていない（両者とも60fpsに張り付く場合、メインスレッドの仕事量差はフレーム時間だけでは区別できない可能性がある）。`poc/leaflet-main.ts` / `poc/leaflet-measure.ts` / `poc/leaflet-index.html` として、`poc/main.ts`（MapLibre版）と条件を揃えた最小構成のLeaflet版PoCを作成した。負荷軸は活断層full/thin・線幅・観測点on/off（DPR軸はLeafletに対応APIが無いため対象外）。パンは実ドラッグと同じ経路（`_rawPanBy`+`'move'`のみを毎フレーム、`'moveend'`はフェーズ終了時に1回）で駆動し、ズームは`zoom-native`（本番同様のアニメーションズーム）と`zoom-forced`（MapLibre同様に毎フレーム強制再描画）の両方を測れるようにした。
+   - **レビュー対応済み**: `panBy(...,{animate:false})`が内部で`'move'`と`'moveend'`を同一発火し実ドラッグでは
+     起きないフル再描画を毎フレーム注入していた問題（比較の前提を壊す重大な罠）を`_rawPanBy`+`'move'`のみの
+     駆動に修正済み（コミット済み・レビューでも「比較の成立を救った修正」と評価）。その後のレビューで、
+     ドラッグ終了時の一括再描画コストが計測窓の外に落ちて`pan`が実際より軽く出てしまう問題（HIGH1）と
+     `fps`算出の定義不一致（MEDIUM2）を追加指摘され、`moveendMs`として名指し記録・実測経過時間ベースの
+     `fps`に修正した。詳細は[レビュー綴り](webgl-poc-review-82d4d39.md)。
+   - **残作業**: 実機（Surface Go 2）で `await window.__runLeafletBSuite('surface-go2')` を実行し、層B（項目1）の実測値と比較してGO/NO-GO判定する。まずはフレーム時間比較で試し、決着しない場合はPerformanceトレースでのメインスレッド内訳計測を検討する（ユーザー確認済み・2026-07-27）。同一セッションでMapLibre側（層B）の再計測も検討する（レビュー推奨）。
 3. **カメラ操作の滑らかさ**: flyTo・パン・ズームがスロットル下・実機で滑らか。
 4. **当たり判定**: 活断層クリックで `queryRenderedFeatures` によりポップアップが線近傍で開く（現行 tolerance 相当）。
 5. **非加算合成の再現**: `KyoshinSubThreshold` の **①同一レベル内は重なっても濃くならない／②レベル間は素直に濃くなる** の二層挙動を再現できるか（**WebGL 共通の最難関。抜けると見た目が変わる**）。標準 circle レイヤーは同一レイヤー内でも通常のアルファブレンド（over 合成）で重なりが濃くなるため、レベルごとに別レイヤー化＋各レイヤー内の重なり潰し（ステンシル/デプス等のカスタムレイヤー）が要る公算。
