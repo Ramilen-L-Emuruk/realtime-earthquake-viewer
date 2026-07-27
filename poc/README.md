@@ -85,11 +85,17 @@ await window.__runLabelZoomSuite()
 はページを閉じるまで消えないため、2回目以降の実行では`glyphsGenerated`が全段で変化しなくなる
 （既に生成済みのグリフを再描画するだけになり計測が無効化される）。
 
-結果の`frame.max`がグリフ生成コストの指標（`elapsedMs`は無情報だったためレビュー指摘で追加）。
-ただし**開発機（Playwright/Chromiumのheadless実行）ではrAFノイズフロア自体が最大18.7ms程度あり、
-生成コストがそこに埋もれて検出できない**ことを確認済み（レビュー環境の実Chrome・vsync6.1msでは
-17.6msのスパイクを検出できている）。この指標は非力な実機（Surface Go 2等）でこそ意味を持つ
-可能性が高く、開発機で反応が見えないことは「生成コストが無い」ことの証明にはならない。
+結果の`blockMaxMs`がグリフ生成コストの**主指標**（MessageChannel でメインスレッドの最長連続
+ブロックを vsync 非依存で計測）。開発機（headed・60Hz・Intel Iris Xe）実測で、生成グリフ数に
+単調反応する: regions 15→4.5ms・prefectures 84→9.5ms・**subregions 209→24.2ms**・intensity 218→5.8ms。
+`frame.max`（rAFフレーム時間）は**副指標**で、vsync に量子化されるため 60Hz では全段16.9msのまま
+生成コストに反応しない（＝60Hz 開発機では frame.max は不適な計測器。当初「開発機では検出
+できない」と結論したのは計測器の誤選択が原因で、`blockMaxMs` に替えれば σ~0.5ms で検出できる）。
+高リフレッシュ機（レビュー機 6.1ms/≒164Hz）では 20ms ブロックが frame.max でも明確に浮く
+（subregions 35.3ms）。**両環境の観測差は headed/headless でも Playwright/実Chrome でもなく、
+物理モニタのリフレッシュレート差にすぎない。** longtask は全段0（24msブロックは50ms閾値未満）だが、
+非力な実機（Surface Go 2、`blockMaxMs` が 2〜3倍に伸びうる）では閾値を跨ぐ可能性があり、実機
+計測の価値はその絶対値を知る点にある（「開発機で測れないから」ではない）。
 
 ## 3軸と律速判定
 
