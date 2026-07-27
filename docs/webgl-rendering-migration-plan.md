@@ -14,7 +14,7 @@
 | 段階0（層A 差分更新） | 済 | 済 | **完了**（v3.23.1 リリース済） |
 | 1 律速切り分け | 済 | 済（19計測） | **決着**＝律速に到達しない |
 | 2 Leaflet 比較 | 済 | 済（`leafletB` 44＋`layerB-vs` 38） | **決着**＝一本化 GO |
-| 3 カメラ操作 | 済 | MapLibre 済（`camera` 34）・Leaflet 未（計測スイート実装済み・実機待ち） | **保留**＝Leaflet 側の実機計測を待って優劣判定 |
+| 3 カメラ操作 | 済 | MapLibre 済（`camera` 34）・Leaflet 第1回済だが着地コスト計測漏れ→修正済・再計測待ち | **保留**＝Leaflet を `landingBlockMaxMs` 込みで再計測して優劣判定 |
 | 4 当たり判定 | 済（bbox＋ナロー r=8） | 不要 | **決着** |
 | 5 非加算合成 | 済 | 済（`sub-` 9） | **決着**＝FBO 二層合成で等価 |
 | 6 毎秒更新 | 済 | 済（`rt-` 28） | **決着**＝feature-state 採用 |
@@ -228,6 +228,7 @@
    - **【結果の読み方・計測前に共有（2026-07-27 レビュー(8657812) の MEDIUM 2件）】**
      - **① 飛行先の乱数は両エンジンで独立**（`randomPointInJapan` 等を実行時に引くため、MapLibre 側の既計測とは別の飛行列になる）＝厳密な1対1ペア比較ではない。**まず現状のまま計測し、差が明確なら（項目2 の 9 倍のように）平均・分布比較で判定できる。差が微妙（≒1.5倍以内）で乱数ばらつきに埋もれる場合に限り**、乱数シードを固定して同一飛行列を両エンジンで再現するペア比較へ切り替える（その場合は MapLibre 側も再計測が必要）。
      - **② Leaflet PoC は本番より軽い**（本番 `ActiveFaultsLayer.tsx` は可視 SVG 線に加え当たり判定用の透明 Canvas 線を重ねて持つが、PoC は MapLibre 版に対応物が無く省略している。[webgl-poc-review-82d4d39.md](webgl-poc-review-82d4d39.md) 情報3）。よって **Leaflet PoC が MapLibre より遅ければ結論は強まる（本番はさらに遅いはず＝安全側）**。逆に **Leaflet PoC が MapLibre より速い場合はこのバイアスを差し引く必要があり、そのまま結論にできない**（当たり判定線を足した条件での再計測を検討）。
+   - **【2026-07-27 Leaflet 側 実機計測 第1回・判定は保留のまま／計測漏れを修正】** 実機で `__runLeafletCameraSuite` を2スイート実行（`surface-go2-leaflet-camera*` 34件）。frame 統計・longtask 上は **Leaflet が明確に優った**（longtask 0 対 MapLibre 13件・2スイート目 p95 中央 17.1ms 対 49.9ms）。**だが結論にできない**——[webgl-poc-surface-go2-camera-leaflet-2026-07-27.md](webgl-poc-surface-go2-camera-leaflet-2026-07-27.md) が指摘したとおり、**Leaflet は飛行中 CSS transform でサボり着地（moveend）で一括再描画する性質のため、その着地コストが `measureOneFlyLeaflet` の frame 統計から漏れていた**（measureOnce の moveendMs と同じ穴の再発）。→ **`measureOneFlyLeaflet` に MessageChannel ブロック検出器を追加し着地コストを `landingBlockMaxMs` として名指しで捕捉するよう修正済み**（開発機ですら frame p95 16.8ms の裏で着地ブロック 20〜24.9ms を検出＝隠れコストの存在を確認）。**残作業: Leaflet 側のみ実機で再計測**し、`landingBlockMaxMs` が小さければ Leaflet 優位は本物、大きければ「飛行中は滑らかだが着地で固まる」体感評価へ切り替える。MapLibre 側は毎フレーム描画で着地に偏るコストが無いため再計測不要。
 4. **当たり判定**: 活断層クリックで `queryRenderedFeatures` によりポップアップが線近傍で開く（現行 tolerance 相当）。
    - **【2026-07-27 進捗・開発機検証済み・決着】** 本番（ActiveFaultsLayer.tsx・JapanMap.tsx 調査: 可視線は SVG・`interactive:false`、当たり判定は同一形状を重ねた透明 Canvas 線 `L.canvas({ tolerance: 8 })`。プレート境界線・津波海岸線も同一パターン）に対し、MapLibre の `queryRenderedFeatures` には tolerance 相当のオプションが無いため、**クリック点中心の正方形 bbox（1辺 2r px）でヒット判定する「bbox方式」を採用**（transparent hit-layer 方式との2択のうち、AskUserQuestion で確定）。`poc/hittest.ts`／`poc/hittest.html` を新規作成した。
    - オフセット距離を厳密に制御するため、地図中心の緯度を通る既知の直線（テスト線）を追加し、`map.project()` で得たスクリーン座標を基準にPlaywrightで px オフセットを作って自動検証。**r=8px のとき、線からのオフセットが8px以内は必ずヒット・9px以上は必ず非ヒット**という境界一致を zoom 5/8/11 の3水準で確認した（bbox方式はスクリーンピクセル座標系で判定するため、期待どおりズーム非依存）。300px超の遠方点は全r値で非ヒット（誤検知なし）。**本番の `tolerance:8` 相当として r=8 を初期値に採用する**。

@@ -74,6 +74,14 @@ await window.__runLeafletCameraSuite('surface-go2-leaflet-camera')
 
 先頭で `static` を1回踏んで vsync を証跡（`estimatedVsyncMs`）に残し、単一点 flyTo（zoom8）⇔
 flyToBounds（padding 60/48/20）を 8 往復・duration 0.8/1.0秒交互で計測する（計 17 計測。MapLibre 側と同数）。
+
+**着地（moveend）コストも測る**（`landingBlockMaxMs`）。Leaflet は飛行中 CSS transform でサボり着地で
+一括再描画するため、frame 統計だけだと Leaflet が構造的に有利に出る（実機第1回でこの穴が判明・
+[webgl-poc-surface-go2-camera-leaflet-2026-07-27.md](../docs/webgl-poc-surface-go2-camera-leaflet-2026-07-27.md)）。
+MessageChannel ブロック検出器で moveend 前後のメインスレッド最長連続ブロックを捕捉する。**読み方**:
+`landingBlockMaxMs` が小さければ Leaflet 優位は本物、大きければ「飛行中は滑らかだが着地で固まる」
+＝frame 統計の Leaflet 優位は物差しの違いが作っていた、と判断する。MapLibre 側は毎フレーム描画で
+着地に偏るコストが無いため、この指標は Leaflet 側のみ。
 - 単発計測: `await window.__measureLeafletCameraFly({ kind:'point', durationSec:0.8 })` /
   `await window.__measureLeafletCameraFly({ kind:'bounds', padding:60, durationSec:1.0 })`
 - 実機で `surface-go2-leaflet-camera*` として保存された証跡を、MapLibre 側 `surface-go2-camera*`（34件）と
