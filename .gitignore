@@ -32,6 +32,11 @@ coverage/
 verify-*.png
 verify-*.jpg
 
+# 事前生成グリフ PBF（scripts/build-glyphs.mjs の出力・ビルド生成物）。
+# 開発機 PoC は再配布不可のシステムフォント(Yu Gothic)由来のためコミットしない。
+# 本番は OFL フォント(Noto Sans JP 等)から CI/ビルド時に生成する。
+public/fonts/
+
 # Editor directories
 .vscode/*
 !.vscode/extensions.json
