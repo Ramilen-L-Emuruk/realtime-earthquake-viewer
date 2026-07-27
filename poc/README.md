@@ -60,6 +60,25 @@ await window.__runCameraSuite('surface-go2-camera')
   `await window.__measureCameraFly({ kind:'bounds', padding:60, durationSec:1.0 })`
 - 右上 UI の「flyTo試験」「fitBounds試験」ボタンでも単発実行できる。
 
+### Leaflet 側の同条件比較（項目3 の GO/NO-GO 判定に必須）
+
+MapLibre 側だけでは優劣を判定できない（実機で MapLibre がカメラ操作中に vsync 天井を破ったが、
+比較対象が無い）。`poc/leaflet-index.html`（`poc/leaflet-main.ts`/`poc/leaflet-measure.ts`）で、
+上記 `__runCameraSuite` と **apples-to-apples**（同一の GEBCO＋活断層＋観測点構成・同じ flyTo パターン・
+同形式のラベル）の Leaflet 版カメラ計測を実行できる。座標順（Leaflet は `[lat,lng]`）と duration 単位
+（Leaflet は**秒**）だけ Leaflet 仕様に合わせてある。
+
+```js
+await window.__runLeafletCameraSuite('surface-go2-leaflet-camera')
+```
+
+先頭で `static` を1回踏んで vsync を証跡（`estimatedVsyncMs`）に残し、単一点 flyTo（zoom8）⇔
+flyToBounds（padding 60/48/20）を 8 往復・duration 0.8/1.0秒交互で計測する（計 17 計測。MapLibre 側と同数）。
+- 単発計測: `await window.__measureLeafletCameraFly({ kind:'point', durationSec:0.8 })` /
+  `await window.__measureLeafletCameraFly({ kind:'bounds', padding:60, durationSec:1.0 })`
+- 実機で `surface-go2-leaflet-camera*` として保存された証跡を、MapLibre 側 `surface-go2-camera*`（34件）と
+  fps・`frame.p95`・`frame.max`・longtask で突き合わせて判定する。
+
 ## 検証項目4: 当たり判定（bbox方式＋点-線分距離の円判定）
 
 `http://localhost:5180/poc/hittest.html`（実機は `http://<開発機のIP>:5180/poc/hittest.html`）を開く。
