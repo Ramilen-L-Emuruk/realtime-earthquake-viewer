@@ -335,6 +335,29 @@ async function measureOneFlyLeaflet(
     po = null
   }
 
+  // 【レビュー(0fa20f7)対応・着地コストの計測】Leaflet は飛行中 CSS transform で地図を引き伸ばすだけで
+  // 実際の SVG パス再描画を moveend（着地）まで遅延する（項目2 で確認済みの「動作中は静かで離した瞬間に
+  // 1回払う」性質）。この着地の同期再描画は rAF フレーム統計（frame.p95/max）に現れず、50ms 未満だと
+  // longTask にも出ないため、frame 統計だけで比べると Leaflet が構造的に有利に出てしまう
+  // （measureOnce の moveendMs と同じ穴が、このカメラ計測パスで再発していた）。moveend は Leaflet の
+  // アニメーション内部から自動発火するため「手動 fire して時間を測る」pan の手法は使えない。代わりに
+  // vsync 非依存の MessageChannel ブロック検出器（label PoC で実証）でメインスレッドの最長連続ブロックを
+  // 測り、着地の同期再描画を landingBlockMaxMs として名指しで捕捉する。飛行中フレームは軽い（CSS
+  // transform）ため最長ブロック＝着地コストになる。MapLibre 側は毎フレーム描画で着地に偏るコストが無く
+  // 既存 frame 統計で全量を捉えるため、この指標は不要（MapLibre 側の再計測も不要）。
+  const LANDING_SETTLE_MS = 300
+  const blockGaps: number[] = []
+  const mc = new MessageChannel()
+  let blockRunning = true
+  let lastPing = performance.now()
+  mc.port1.onmessage = () => {
+    const now = performance.now()
+    const gap = now - lastPing
+    lastPing = now
+    if (gap > 3) blockGaps.push(gap)
+    if (blockRunning) mc.port2.postMessage(0)
+  }
+
   const t0 = performance.now()
   // 'moveend' が発火しない事故に備えタイムアウトを対にする（MapLibre 版と同じ。map.once だと
   // タイムアウト経路でリスナーを外せず連続実行で蓄積するため、on/off を自前で対にして確実に外す）。
@@ -350,12 +373,19 @@ async function measureOneFlyLeaflet(
     const timeout = setTimeout(handler, 15000)
     map.on('moveend', handler)
   })
+  lastPing = performance.now()
+  mc.port2.postMessage(0) // 飛行開始の直前にブロック検出を開始
   fly()
   await moveEndPromise
   const elapsedMs = performance.now() - t0
-  cancelAnimationFrame(rafId)
+  cancelAnimationFrame(rafId) // frame 統計は飛行中のみ（MapLibre と揃える）
+  // 着地の同期再描画は moveend 発火の前後に走るため、短い settle の間もブロック検出・longtask を
+  // 回してから止める（この間 rAF は止めているので frame 統計＝飛行中のみは保たれる）。
+  await new Promise((r) => setTimeout(r, LANDING_SETTLE_MS))
+  blockRunning = false
   if (po) po.disconnect()
 
+  const sortedBlocks = blockGaps.slice().sort((a, b) => b - a)
   frameDeltas.shift()
   const sorted = [...frameDeltas].sort((a, b) => a - b)
   const pick = (q: number) =>
@@ -384,6 +414,14 @@ async function measureOneFlyLeaflet(
       p95: round(pick(0.95)),
       max: round(sorted[sorted.length - 1] ?? null),
     },
+    // 着地（moveend）の同期再描画コストの指標（measureOnce の moveendMs に相当。MapLibre 側には
+    // 対応するコストが存在しない＝この非対称が項目3 の読みの核心）。【厳密には】飛行開始〜settle 終了の
+    // 区間内でのメインスレッド最長連続ブロックであり、「着地由来」であることはコード上は保証しない。
+    // ただし飛行中フレームが軽い（＝frame.p95/max が vsync 近傍で低い）ときは、この最長ブロックは
+    // 着地の一括再描画と推定してよい。frame.p95 が既に高い回は飛行中にもブロックがあった可能性が
+    // あるので landingBlockTop3Ms と frame を併せて読むこと（飛行中のタイル読込等が混じりうる）。
+    landingBlockMaxMs: round(sortedBlocks[0] ?? 0),
+    landingBlockTop3Ms: sortedBlocks.slice(0, 3).map((v) => round(v)),
     longTask: {
       count: po ? longTasks.length : -1,
       totalMs: round(longTasks.reduce((a, b) => a + b, 0)),
