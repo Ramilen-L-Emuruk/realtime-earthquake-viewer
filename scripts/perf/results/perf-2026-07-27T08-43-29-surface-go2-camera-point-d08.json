@@ -1,0 +1,47 @@
+{
+  "meta": {
+    "when": "2026-07-27T08:43:30.128Z",
+    "label": "surface-go2-camera-point-d0.8",
+    "phase": "flyto",
+    "elapsedMs": 812.8,
+    "url": "http://192.168.0.64:5173/poc/index.html",
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "viewport": "1272x768",
+    "devicePixelRatio": 1.5,
+    "estimatedVsyncMs": 16.7,
+    "kind": "point",
+    "target": [
+      142.95938779900163,
+      34.57833523139776
+    ],
+    "zoom": 8,
+    "durationSec": 0.8,
+    "faults": "full",
+    "faultVertices": 31646,
+    "points": 1725,
+    "lineWidth": 1.2,
+    "pixelRatio": 1.5,
+    "canvasW": 1908,
+    "canvasH": 1152,
+    "jsHeapMB": 36,
+    "webglMemory": {
+      "bufferBytes": 2415598,
+      "textureBytes": 38011370,
+      "renderbufferBytes": 0,
+      "totalBytes": 40426968,
+      "tracked": true
+    }
+  },
+  "frame": {
+    "frames": 37,
+    "fps": 45.52,
+    "p50": 16.8,
+    "p95": 49.7,
+    "max": 49.9
+  },
+  "longTask": {
+    "count": 1,
+    "totalMs": 57,
+    "maxMs": 57
+  }
+}

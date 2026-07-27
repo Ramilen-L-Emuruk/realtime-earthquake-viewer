@@ -1,0 +1,97 @@
+{
+  "meta": {
+    "label": "surface-go2-label"
+  },
+  "results": [
+    {
+      "label": "regions(地方9件)",
+      "renderedSymbols": 8,
+      "glyphsGenerated": 15,
+      "blockMaxMs": 11.9,
+      "blockTop3Ms": [
+        11.9,
+        9,
+        8.6
+      ],
+      "elapsedMs": 635.5,
+      "frame": {
+        "frames": 36,
+        "fps": 56.65,
+        "p50": 16.7,
+        "p95": 16.8,
+        "max": 16.8
+      },
+      "longTaskCount": 0,
+      "longTaskTotalMs": 0,
+      "longTaskMaxMs": 0
+    },
+    {
+      "label": "prefectures(県47件)",
+      "renderedSymbols": 24,
+      "glyphsGenerated": 84,
+      "blockMaxMs": 75.6,
+      "blockTop3Ms": [
+        75.6,
+        23.5,
+        15.2
+      ],
+      "elapsedMs": 648,
+      "frame": {
+        "frames": 34,
+        "fps": 52.47,
+        "p50": 16.7,
+        "p95": 16.9,
+        "max": 83.3
+      },
+      "longTaskCount": 1,
+      "longTaskTotalMs": 66,
+      "longTaskMaxMs": 66
+    },
+    {
+      "label": "subregions(区域192件・最多ユニーク漢字)",
+      "renderedSymbols": 49,
+      "glyphsGenerated": 209,
+      "blockMaxMs": 113.2,
+      "blockTop3Ms": [
+        113.2,
+        48,
+        13.7
+      ],
+      "elapsedMs": 1003.5,
+      "frame": {
+        "frames": 52,
+        "fps": 51.82,
+        "p50": 16.7,
+        "p95": 16.9,
+        "max": 99.9
+      },
+      "longTaskCount": 1,
+      "longTaskTotalMs": 110,
+      "longTaskMaxMs": 110
+    },
+    {
+      "label": "intensity(震度ラベル)",
+      "renderedSymbols": 45,
+      "glyphsGenerated": 218,
+      "blockMaxMs": 91.6,
+      "blockTop3Ms": [
+        91.6,
+        37.8,
+        17.6
+      ],
+      "elapsedMs": 605.4,
+      "frame": {
+        "frames": 30,
+        "fps": 49.55,
+        "p50": 16.7,
+        "p95": 28.7,
+        "max": 83.3
+      },
+      "longTaskCount": 1,
+      "longTaskTotalMs": 89,
+      "longTaskMaxMs": 89
+    }
+  ],
+  "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+  "dpr": 1.5
+}
