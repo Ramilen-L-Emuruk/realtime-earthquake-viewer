@@ -145,3 +145,26 @@ npm run preview -- --host  # サブパス配信
   ビルドモードで変わるとは考えにくい。もし変わるなら計測器側を疑うべき）
 - 人の操作に依存する区間は**同じ操作を複数回**行うこと（本日 n=3 で運用した）
 - **本番ビルドの成果物自体を計測のために変更しないこと。** 壁1 の対処は配信サーバー側に留める
+
+---
+
+## 6. 実装状況（開発機・2026-07-28・実機計測待ち）
+
+**壁1・壁2 とも対応し、開発機で本番ビルドのエンドツーエンド検証済み。**
+
+- **壁1（推奨案 a を採用）**: `scripts/perf/vite-plugin-perf-report.ts` の `apply:'serve'` を外し、
+  `configurePreviewServer` を追加（`configureServer` と同じミドルウェアを共有関数 `registerPerfMiddlewares` で
+  両サーバーに登録）。build/transform 系フックを持たないため**本番バンドルには非影響**。
+  → **`npm run build:dmdss` 成功（生成物変わらず・`dist-dmdss/sw.js` も生成）**、
+  **preview で `/__perf-script?file=moving-baseline` が HTTP 200・`/__perf-report` も保存**を確認（従来は応答しなかった）。
+- **壁2（運用）**: 計測は SW 有効・タイル温め済みで統一。`measure-moving-baseline.js` の meta に
+  **`swControlled`（`navigator.serviceWorker.controller` の有無）**と **`buildMode`** を追加。
+  本番ビルド検証時 `swControlled: true`・`buildMode: 'production'` が正しく記録された。
+- **配信コマンドの訂正**: DMDSS の preview は standard 変種の `npm run preview` ではなく
+  **`npm run preview:dmdss`**（新設・`cross-env VITE_VARIANT=dmdss vite preview`。base /realtime-earthquake-viewer/dmdss/）。
+- **区間D（静止）**: `segment:'static'` を追加（操作合図を出さない）。層A残差の実寸＝本依頼の本来の目的。
+- **手順**: `scripts/perf/measure-moving-baseline.js` 冒頭コメントの「本番ビルド計測」節を参照。新ラベル
+  `surface-go2-prod-{static,pan,zoom,autozoom}`・各 `buildMode:'production'` で実行。
+- **開発機での参考観測**（実機ではない）: 本番ビルドの静止で `kyoshinAttrPerSec ≈ 11.6`。同じ開発機の
+  dev サーバー計測（≈1041）より桁違いに小さく、**dev モード/HMR が dev の DOM 書き込みを膨らませていた**
+  ことを示唆（＝本依頼＝本番ビルド較正の必要性を裏付け）。移動中の実測は実機で複数回（実機セッション担当）。
