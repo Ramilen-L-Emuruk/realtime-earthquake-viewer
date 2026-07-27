@@ -4,9 +4,10 @@ import path from 'node:path'
 
 // 実機計測の証跡収集用 dev サーバー専用プラグイン（apply: 'serve'。本番ビルドには一切含まれない）。
 //
-//   GET  /__perf-script : scripts/perf/measure-kyoshin-static.js を配信する。
-//                         自動実行クエリ（auto/duration/label）はスクリプト自身が
-//                         document.currentScript.src から読む（本プラグインは素通し）。
+//   GET  /__perf-script : 計測スクリプトを配信する。既定は scripts/perf/measure-kyoshin-static.js。
+//                         ?file=moving-baseline で measure-moving-baseline.js（本番移動中計測）を配信する。
+//                         自動実行/区間クエリはスクリプト自身が document.currentScript.src から読む
+//                         （本プラグインは素通し）。file はallowlistで解決しパストラバーサルを防ぐ。
 //   POST /__perf-report : 計測結果 JSON を scripts/perf/results/perf-<日時>-<label>.json へ保存する。
 //
 // 想定フロー（実機計測・使い方はスクリプト冒頭コメントも参照）:
@@ -21,16 +22,30 @@ import path from 'node:path'
 
 const MAX_BODY_BYTES = 1024 * 1024
 
+// 配信可能な計測スクリプトの allowlist（?file= で選択。パストラバーサル防止のため任意パスは受け付けない）。
+const PERF_SCRIPTS: Record<string, string> = {
+  'kyoshin-static': 'scripts/perf/measure-kyoshin-static.js',
+  'moving-baseline': 'scripts/perf/measure-moving-baseline.js',
+}
+
 export function perfReportPlugin(): Plugin {
   return {
     name: 'perf-report',
     apply: 'serve',
     configureServer(server) {
-      server.middlewares.use('/__perf-script', (_req, res) => {
+      server.middlewares.use('/__perf-script', (req, res) => {
         res.setHeader('access-control-allow-origin', '*')
         res.setHeader('cache-control', 'no-store')
         res.setHeader('content-type', 'text/javascript; charset=utf-8')
-        res.end(fs.readFileSync(path.resolve('scripts/perf/measure-kyoshin-static.js'), 'utf8'))
+        // ?file= を allowlist で解決（既定は従来の kyoshin-static・後方互換）。未知の値は 400。
+        const fileKey = new URL(req.url ?? '', 'http://x').searchParams.get('file') ?? 'kyoshin-static'
+        const rel = PERF_SCRIPTS[fileKey]
+        if (!rel) {
+          res.statusCode = 400
+          res.end(`unknown perf script: ${fileKey}`)
+          return
+        }
+        res.end(fs.readFileSync(path.resolve(rel), 'utf8'))
       })
 
       server.middlewares.use('/__perf-report', (req, res) => {

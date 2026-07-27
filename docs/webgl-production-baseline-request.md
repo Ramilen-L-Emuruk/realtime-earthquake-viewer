@@ -122,3 +122,25 @@ Leaflet PoC の飛行は fps 43.4〜57.1 で、**コマ落ちとして見える�
   同じ穴を踏んでいる
 - 計測は**人の操作**に依存するため再現性が落ちる。**同じ操作を複数回**行い、
   1 回の値で断定しないこと（本日 n=1 での断定を複数回訂正している）
+
+---
+
+## 5. 実装状況（開発機・2026-07-27・実機計測待ち）
+
+**依頼どおり実装した。** 本番コードは非改変・注入型。
+
+- **スクリプト**: `scripts/perf/measure-moving-baseline.js`（`measure-kyoshin-static.js` を下敷きに、
+  estimatedVsyncMs・blockMaxMs・区間 segment を追加）。`window.__measureMovingBaseline({ label, segment, durationMs })`
+  で、①静止2秒の vsync 計測 → ②移動窓（合図後に人が操作）を計測し `/__perf-report` へ送信する。
+- **配信**: `scripts/perf/vite-plugin-perf-report.ts` の `/__perf-script` に `?file=` を追加（allowlist・
+  既定は従来の kyoshin-static で後方互換）。`/__perf-script?file=moving-baseline` で読み込む。
+- **取得指標**: frame(p50/p95/max・fps は実測割り)・longTask・**estimatedVsyncMs（先頭静止2秒 p50・必須）**・
+  **blockMaxMs/blockTop3Ms（MessageChannel）**・**domWrites（mapPane/kyoshin 分計・移動で全点書き換えへ戻るかの主指標）**・
+  meta(viewport/DPR/pathCount/circleCount/kyoshinActive/segment/mode)。
+- **区間**: `segment:'pan'`（手動パン）/ `'zoom'`（手動ズーム）/ `'autozoom'`（地震テストボタンで自動ズーム）。
+- **開発機検証済み**: ワークツリーの dmdss サーバー（kyoshin・観測点1725）で `/__perf-script?file=moving-baseline`
+  配信 → 計測実行を確認。estimatedVsyncMs 16.7・全指標 populate・domWrites の kyoshin 観測が機能・
+  コンソールエラー0（kyoshin 403 較正のみ）。**実機（Surface Go 2・DPR1.5）での各区間複数回計測は実機セッション担当。**
+- **使い方**: 本ファイル冒頭の使い方ではなく `scripts/perf/measure-moving-baseline.js` 冒頭コメントの手順に従う
+  （実機で `npm run dev:dmdss -- --host` → `document.head.appendChild(...src:'/__perf-script?file=moving-baseline')` →
+  区間ごとに `__measureMovingBaseline` を実行し②の合図で操作）。
