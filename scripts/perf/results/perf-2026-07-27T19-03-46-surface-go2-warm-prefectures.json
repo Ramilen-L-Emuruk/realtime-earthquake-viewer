@@ -1,0 +1,54 @@
+{
+  "meta": {
+    "label": "surface-go2-warm-prefectures"
+  },
+  "result": {
+    "stage": "prefectures",
+    "cold": {
+      "label": "prefectures cold(県47件・未ウォーム)",
+      "renderedSymbols": 24,
+      "glyphsGenerated": 170,
+      "blockMaxMs": 136.1,
+      "blockTop3Ms": [
+        136.1,
+        57,
+        29
+      ],
+      "elapsedMs": 1268.7,
+      "frame": {
+        "frames": 63,
+        "fps": 49.66,
+        "p50": 16.7,
+        "p95": 33.4,
+        "max": 101.3
+      },
+      "longTaskCount": 1,
+      "longTaskTotalMs": 52,
+      "longTaskMaxMs": 52,
+      "serverGlyphs": true
+    },
+    "warm": {
+      "label": "prefectures warm(県47件・ウォーム後)",
+      "renderedSymbols": 24,
+      "glyphsGenerated": 170,
+      "blockMaxMs": 10.7,
+      "blockTop3Ms": [
+        10.7,
+        10.4,
+        9.5
+      ],
+      "elapsedMs": 636.8,
+      "frame": {
+        "frames": 36,
+        "fps": 56.53,
+        "p50": 16.7,
+        "p95": 16.8,
+        "max": 16.8
+      },
+      "longTaskCount": 0,
+      "longTaskTotalMs": 0,
+      "longTaskMaxMs": 0,
+      "serverGlyphs": true
+    }
+  }
+}
