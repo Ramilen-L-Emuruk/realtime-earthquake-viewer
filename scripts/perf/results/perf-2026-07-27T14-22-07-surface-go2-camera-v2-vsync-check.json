@@ -1,0 +1,41 @@
+{
+  "meta": {
+    "when": "2026-07-27T14:22:08.824Z",
+    "label": "surface-go2-camera-v2-vsync-check",
+    "phase": "static",
+    "durationMs": 2000,
+    "url": "http://192.168.0.64:5173/poc/index.html",
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "viewport": "1272x768",
+    "devicePixelRatio": 1.5,
+    "elapsedMs": 2010.1,
+    "estimatedVsyncMs": 16.7,
+    "faults": "full",
+    "faultVertices": 31646,
+    "points": 1725,
+    "lineWidth": 1.2,
+    "pixelRatio": 1.5,
+    "canvasW": 1908,
+    "canvasH": 1152,
+    "jsHeapMB": 40.3,
+    "webglMemory": {
+      "bufferBytes": 692128,
+      "textureBytes": 6291576,
+      "renderbufferBytes": 0,
+      "totalBytes": 6983704,
+      "tracked": true
+    }
+  },
+  "frame": {
+    "frames": 119,
+    "fps": 59.2,
+    "p50": 16.7,
+    "p95": 17,
+    "max": 17.1
+  },
+  "longTask": {
+    "count": 0,
+    "totalMs": 0,
+    "maxMs": 0
+  }
+}
