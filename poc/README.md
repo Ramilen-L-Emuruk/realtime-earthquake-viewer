@@ -86,18 +86,27 @@ await window.__runLabelZoomSuite()
 （既に生成済みのグリフを再描画するだけになり計測が無効化される）。
 
 結果の`blockMaxMs`がグリフ生成コストの**主指標**（MessageChannel でメインスレッドの最長連続
-ブロックを vsync 非依存で計測）。開発機（headed・60Hz・Intel Iris Xe）実測で、生成グリフ数に
-単調反応する: regions 15→4.5ms・prefectures 84→9.5ms・**subregions 209→24.2ms**・intensity 218→5.8ms。
+ブロックを vsync 非依存で計測）。開発機（headed・60Hz・Intel Iris Xe）で `__runLabelZoomSuite()`
+を4回実行した実測レンジ: regions 15→3.4〜5.6ms・prefectures 84→9.5〜24.8ms・
+**subregions 209→16.9〜24.4ms**・intensity 218→5.2〜5.8ms。**実行間ばらつきが小さくない**
+（prefectures/subregionsは2倍前後・regions/intensityは小さい）が、生成量の多い2段
+（prefectures・subregions）が常に生成量の少ない2段（regions・intensity、いずれも6ms未満）を
+明確に上回るという定性的なパターンはどの回でも崩れていない。原因（実行毎のOS/GCタイミング差
+等）は未調査。これとは別に、subregionsだけをリロード後に毎回フレッシュな状態で単独計測
+（他レイヤーの生成を挟まない）した3回試行では20.6/19.6/20.2msとより安定していた（σ~0.5ms）。
+suite内計測と単独計測で分散の大きさが違うのは、測定文脈（先行する生成の有無・実行順）が
+違うためで、どちらかが誤りというわけではない。
 `frame.max`（rAFフレーム時間）は**副指標**で、vsync に量子化されるため 60Hz では全段16.9msのまま
 生成コストに反応しない（＝60Hz 開発機では frame.max は不適な計測器。当初「開発機では検出
-できない」と結論したのは計測器の誤選択が原因で、`blockMaxMs` に替えれば σ~0.5ms で検出できる）。
-vsync 5.9〜6.1ms(≒164Hz)の環境では 20ms ブロックが frame.max でも明確に浮く（subregions 35.3ms）。
-**両環境の観測差は headed/headless でも Playwright/実Chrome でもない**（双方 headed 確認済み）。
-**ただし vsync 差そのものの原因は未特定**（別モニタか別実行コンテキストか未検証。断定しない）。
-`blockMaxMs` は両環境でほぼ同値（16.7ms環境≈20ms・5.9ms環境18.6ms）を返し vsync 非依存と実証済みの
-ため、原因を追う実務上の必要はない。longtask は全段0（24msブロックは50ms閾値未満）だが、
-非力な実機（Surface Go 2、`blockMaxMs` が 2〜3倍に伸びうる）では閾値を跨ぐ可能性があり、実機
-計測の価値はその絶対値を知る点にある（「開発機で測れないから」ではない）。
+できない」と結論したのは計測器の誤選択が原因で、`blockMaxMs` に替えれば検出できる）。
+vsync 5.9〜6.1ms(≒164Hz)の環境では同種のブロックが frame.max でも明確に浮く（レビュー機の
+単独計測で subregions 35.3ms・suite計測で18.6ms）。**両環境の観測差は headed/headless でも
+Playwright/実Chrome でもない**（双方 headed 確認済み）。**ただし vsync 差そのものの原因は
+未特定**（別モニタか別実行コンテキストか未検証。断定しない）。`blockMaxMs` は両環境で
+同程度の範囲（16.7ms環境は上記レンジ・5.9ms環境は単発計測で18.6ms）に収まり vsync 非依存と
+実証済みのため、原因を追う実務上の必要はない。longtask は全段0（観測した最大24.8msも
+50ms閾値未満）だが、非力な実機（Surface Go 2、`blockMaxMs` が 2〜3倍に伸びうる）では閾値を
+跨ぐ可能性があり、実機計測の価値はその絶対値を知る点にある（「開発機で測れないから」ではない）。
 
 ## 3軸と律速判定
 
