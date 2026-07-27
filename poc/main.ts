@@ -111,7 +111,9 @@ function updateStat() {
     `line-w : ${state.lineWidth}`,
     `pixelR : ${map.getPixelRatio?.() ?? state.pixelRatio}  (device ${window.devicePixelRatio})`,
     `zoom   : ${map.getZoom().toFixed(2)}`,
-    `WebGL推定(buf/tex/rb): ${mb(wgl.bufferBytes)}/${mb(wgl.textureBytes)}/${mb(wgl.renderbufferBytes)}MB = ${wglTotalMB}MB`,
+    // tracked:false は「WebGLを使っていない」ではなく「webgl2コンテキストを未捕捉」を示す
+    // （レビュー LOW: webgl1環境ではgetContextパッチが反応せず静かに0を返し続けるため区別する）。
+    `WebGL推定(buf/tex/rb)${wgl.tracked ? '' : '[未計測]'}: ${mb(wgl.bufferBytes)}/${mb(wgl.textureBytes)}/${mb(wgl.renderbufferBytes)}MB = ${wglTotalMB}MB`,
     `推定実行時メモリ: JS${jsHeapMB ?? '?'}MB + WebGL${wglTotalMB}MB = ${jsHeapMB != null ? Math.round((jsHeapMB + wglTotalMB) * 10) / 10 : '?'}MB`,
   ].join('\n')
 }

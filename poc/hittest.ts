@@ -1,25 +1,35 @@
 // 【PoC専用・使い捨て】検証項目4: 活断層クリックの当たり判定（bbox方式）検証。
 //
 // 本番（ActiveFaultsLayer.tsx・JapanMap.tsx 調査済み）は「可視線(SVG, interactive:false) ＋
-// 当たり判定専用の透明 Canvas 線（L.canvas({ tolerance: 8 })）」という構成。プレート境界線・
-// 津波海岸線も同一パターン。MapLibre の queryRenderedFeatures には tolerance 相当のオプションが
-// 無いため、クリック点を中心にした小さな正方形 bbox（1辺 2r px）を渡してヒット判定する
-// 「bbox方式」で代替する（AskUserQuestion で確定・code-architect 調査での2択のうち採用）。
+// 当たり判定専用の透明 Canvas 線（L.canvas({ tolerance: 8 })）」という構成。Leaflet の
+// tolerance 判定は pointToSegmentDistance（ユークリッド距離）による**円**（半径 tolerance）。
+// MapLibre の queryRenderedFeatures には tolerance 相当のオプションが無いため bbox 方式で
+// 代替するが、bbox は**正方形**であり、円とは斜め方向で最大 √2 倍（r=8px→11.3px）ずれる
+// （レビュー HIGH1: 当初は水平線+垂直オフセットのみで検証しており、円と正方形が恒等的に
+// 一致する軸だけを見ていた・境界一致は無情報な結果だった）。
+// 対処として、bbox はブロードフェーズ（候補の粗い絞り込み）にとどめ、候補フィーチャーに対し
+// 実際の点-線分距離（ユークリッド・円判定）でナローフェーズ絞り込みを行う（レビュー推奨(b)）。
+// 円は正方形 bbox（1辺2r、同心）に必ず内接するため、bbox が円判定の候補を取りこぼすことはない。
 //
 // オフセット距離を正確に制御して検証するため、実データ(活断層)は背景の見た目確認用として
 // 重ねつつ、地図中心を通る「既知の直線」を1本追加する。この直線の緯度は固定・経度のみ動く
 // ため、緯度方向のオフセット量をピクセル単位で厳密に作れる。
 import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import type { FeatureCollection, MultiLineString, LineString } from 'geojson'
+import type { FeatureCollection, MultiLineString, LineString, Position } from 'geojson'
 
 const JAPAN_CENTER: [number, number] = [137.7, 38.25] // MapLibre は [lng, lat]
 const BATHYMETRY_URL =
   'https://tiles.arcgis.com/tiles/C8EMgrsFcRFL6LrL/arcgis/rest/services/GEBCO_basemap_NCEI/MapServer/tile/{z}/{y}/{x}'
 const FAULT_COLOR = '#c2410c'
 const TEST_LINE_COLOR = '#22d3ee'
-// 本番の ActiveFaultsLayer.tsx 当たり判定線（L.canvas tolerance:8）相当として採用する基準値
-// （§6 検証項目4の実測でも r=8 が tolerance:8 と境界一致することを確認済み）
+// 本番の ActiveFaultsLayer.tsx 当たり判定線（L.canvas tolerance:8）に合わせる基準値。
+// ナローフェーズを円判定にしたことで tolerance:8 の円に対応するが、Leaflet の実効許容半径は
+// 厳密には `tolerance + weight/2`（stroke省略時のデフォルト true・ソース直読で確認済み）。
+// 本番の当たり判定線は weight が活断層1.2・プレート境界2・津波海岸線は可変（grade×iconScale）
+// とレイヤーごとに異なるため、単一の r で全レイヤーに厳密一致させることはできない。
+// r=8 は素の tolerance 値であり、本番はレイヤーにより +0.6px（活断層）〜+1px（プレート境界）
+// 程度広い、という残差がある前提で採用する（レビュー指摘・セルフレビューで精度主張を訂正）。
 const DEFAULT_R = 8
 
 const map = new maplibregl.Map({
@@ -118,18 +128,55 @@ export interface HitResult {
   names: string[]
 }
 
+// 点(px,py)から線分(ax,ay)-(bx,by)への最短距離（スクリーンピクセル、ユークリッド）。
+// Leaflet の pointToSegmentDistance と同じ考え方（本番の当たり判定に合わせる）。
+function distToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax
+  const dy = by - ay
+  const lenSq = dx * dx + dy * dy
+  if (lenSq === 0) return Math.hypot(px - ax, py - ay)
+  let t = ((px - ax) * dx + (py - ay) * dy) / lenSq
+  t = Math.max(0, Math.min(1, t))
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+}
+
+// フィーチャーの LineString/MultiLineString 全セグメントに対する、点(x,y)からの最短距離(px)。
+// 各頂点は都度 map.project() でスクリーン座標に変換する（PoC規模の候補数・頂点数なら十分軽い）。
+function nearestDistancePx(x: number, y: number, feature: maplibregl.MapGeoJSONFeature): number {
+  const geom = feature.geometry
+  const lines: Position[][] =
+    geom.type === 'LineString'
+      ? [geom.coordinates]
+      : geom.type === 'MultiLineString'
+        ? geom.coordinates
+        : []
+  let minDist = Infinity
+  for (const line of lines) {
+    for (let i = 0; i < line.length - 1; i++) {
+      const a = map.project(line[i] as [number, number])
+      const b = map.project(line[i + 1] as [number, number])
+      const d = distToSegment(x, y, a.x, a.y, b.x, b.y)
+      if (d < minDist) minDist = d
+    }
+  }
+  return minDist
+}
+
 // bbox方式の当たり判定本体。(x, y) はキャンバス相対のスクリーン座標、r は許容半径(px)。
-// 本番の tolerance:8 に対応する許容量として、1辺 2r px の正方形 bbox を渡す。
+// ブロードフェーズ: 1辺 2r px の正方形 bbox で候補を粗く絞る（bboxは円に外接するため
+// 取りこぼしはない）。ナローフェーズ: 候補に対し実際の点-線分距離（円判定）で絞り込み、
+// 本番の tolerance:8（円）と一致する当たり判定にする（レビュー HIGH1 対応）。
 function hitTest(x: number, y: number, r: number, layers = ['faults', 'testline']): HitResult {
   const bbox: [maplibregl.PointLike, maplibregl.PointLike] = [
     [x - r, y - r],
     [x + r, y + r],
   ]
-  const features = map.queryRenderedFeatures(bbox, { layers })
+  const candidates = map.queryRenderedFeatures(bbox, { layers })
+  const hitFeatures = candidates.filter((f) => nearestDistancePx(x, y, f) <= r)
   const names = [
-    ...new Set(features.map((f) => (f.properties as { name?: string } | null)?.name ?? '?')),
+    ...new Set(hitFeatures.map((f) => (f.properties as { name?: string } | null)?.name ?? '?')),
   ]
-  return { hit: features.length > 0, names }
+  return { hit: hitFeatures.length > 0, names }
 }
 
 map.on('click', (e) => {

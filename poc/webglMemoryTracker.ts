@@ -22,11 +22,16 @@ export interface WebglMemorySnapshot {
   textureBytes: number
   renderbufferBytes: number
   totalBytes: number
+  /** webgl2 コンテキストを一度でも捕捉できたか。false なら totalBytes=0 は「計測できていない」
+   * ことを意味し、「WebGLを使っていない」の意味ではない（レビュー LOW: webgl1 環境では
+   * getContext パッチが type==='webgl2' にしか反応せず、静かに 0 を返し続けるため区別が必要）。 */
+  tracked: boolean
 }
 
 let bufferBytes = 0
 let textureBytes = 0
 let renderbufferBytes = 0
+let tracked = false
 
 let bufferSizes = new WeakMap<WebGLBuffer, number>()
 let textureSizes = new WeakMap<WebGLTexture, number>()
@@ -170,6 +175,7 @@ function setRenderbufferSize(rb: WebGLRenderbuffer | null, bytes: number): void 
 }
 
 function wrapContext(gl: WebGL2RenderingContext): void {
+  tracked = true
   gl.canvas.addEventListener('webglcontextlost', resetTrackerState)
 
   const origBindTexture = gl.bindTexture.bind(gl)
@@ -318,5 +324,6 @@ export function snapshotWebglMemory(): WebglMemorySnapshot {
     textureBytes,
     renderbufferBytes,
     totalBytes: bufferBytes + textureBytes + renderbufferBytes,
+    tracked,
   }
 }

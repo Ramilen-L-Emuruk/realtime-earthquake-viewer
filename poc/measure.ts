@@ -35,6 +35,10 @@ const REPORT_URL = '/__perf-report'
 // warmup の末尾もここへ戻すので、全計測が同じ描画量から始まる。
 const START_ZOOM = 5
 
+// 直近の static 計測（measureOnce）で得た vsync 推定値。measureOneFly（カメラ計測）は常時
+// カメラが動いていて static 計測ができないため、この値をキャッシュして使い回す（レビュー HIGH2）。
+let lastEstimatedVsyncMs: number | null = null
+
 function waitIdle(map: MaplibreMap, timeoutMs = 8000): Promise<void> {
   return new Promise((res) => {
     const t = setTimeout(res, timeoutMs)
@@ -167,6 +171,13 @@ async function measureOnce(
   if (po) po.disconnect()
 
   const frame = summarizeFrames(frameDeltas, durationMs)
+  // static は何も動かさないため frame.p50 が実質そのままvsync間隔になる（項目5×6 情報5と同じ手）。
+  // 検証項目2（poc/leaflet-measure.ts）と天井の異なる環境で測っていないかを突き合わせるための
+  // 証跡（レビュー b4524cd 系譜 HIGH4: Leaflet側にこれが無く、同じ「開発機」でも天井が違う
+  // （60Hz対170Hz）測定を並べて食い違う事故があった）。カメラ計測（measureOneFly）は常時
+  // カメラが動いていて static を取れないため、直近の static 計測値をキャッシュして使い回す
+  // （レビュー HIGH2: __runCameraSuite が static を一度も踏まず、新設パスで再発していた）。
+  if (phase === 'static') lastEstimatedVsyncMs = frame.p50
   const result = {
     meta: {
       when: new Date().toISOString(),
@@ -177,10 +188,6 @@ async function measureOnce(
       ua: navigator.userAgent,
       viewport: `${innerWidth}x${innerHeight}`,
       devicePixelRatio: window.devicePixelRatio,
-      // static は何も動かさないため frame.p50 が実質そのままvsync間隔になる（項目5×6 情報5と同じ手）。
-      // 検証項目2（poc/leaflet-measure.ts）と天井の異なる環境で測っていないかを突き合わせるための
-      // 証跡（レビュー b4524cd 系譜 HIGH4: Leaflet側にこれが無く、同じ「開発機」でも天井が違う
-      // （60Hz対170Hz）測定を並べて食い違う事故があった）。
       estimatedVsyncMs: phase === 'static' ? frame.p50 : null,
       ...deps.snapshot(),
     },
@@ -324,6 +331,13 @@ async function measureOneFly(
       ua: navigator.userAgent,
       viewport: `${innerWidth}x${innerHeight}`,
       devicePixelRatio: window.devicePixelRatio,
+      // レビュー HIGH2: __runCameraSuite 側で static 計測を一度踏み lastEstimatedVsyncMs を
+      // 確定させてから使う。単発の __measureCameraFly のみ呼んだ場合は null のままになりうる。
+      // 注意（セルフレビュー指摘）: __runCameraSuite 実行後に static を挟まず単発計測だけを
+      // 繰り返すと、直近スイート時点の古い値が使われ続ける（値自体は間違っていないが、
+      // ディスプレイのリフレッシュレートや電源プロファイルが変わった後は再度スイートを
+      // 走らせて更新すること）。
+      estimatedVsyncMs: lastEstimatedVsyncMs,
       ...extraMeta,
       ...snapshot(),
     },
@@ -446,6 +460,9 @@ export function installMeasure(deps: MeasureDeps): void {
     const { map } = deps
     map.setZoom(START_ZOOM)
     await waitIdle(map)
+    // レビュー HIGH2: vsync天井の実測を証跡に残すため、カメラ計測本体の前に一度 static を
+    // 踏む（measureOnce 内で lastEstimatedVsyncMs が更新され、以降の measureOneFly 全てに使う）。
+    await measureOnce(deps, 'static', 2000, `${labelBase}-vsync-check`)
     console.log(`[camera] suite 開始（${rounds} 往復）`)
     const paddings = [60, 48, 20] as const
     for (let i = 0; i < rounds; i++) {

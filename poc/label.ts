@@ -223,6 +223,72 @@ for (const [id, z] of Object.entries(zoomButtons)) {
   document.getElementById(id)?.addEventListener('click', () => map.setZoom(z))
 }
 
+// レビュー MEDIUM3: glyphs 無しは「サーバー生成PBFが無いぶん、ASCII数字も含め全文字を
+// クライアント側で TinySDF ラスタライズする」ことを意味する（追認1: !this.url 分岐）。
+// 「描ける」ことは確認済みだが「安い」かは未確認だったため、ズーム帯をまたいで新しい
+// 文字種（地方9件→県47件→区域192件、後者ほどユニーク漢字数が多い）が初出現する際の
+// longtask・所要時間を計測する。1回目の zoom 遷移は初回グリフ生成、2回目以降の同ズーム
+// 遷移はキャッシュ済みのため、初出現時とキャッシュ済みの差も見える。
+interface LabelZoomTransitionResult {
+  label: string
+  targetZoom: number
+  elapsedMs: number
+  longTaskCount: number
+  longTaskTotalMs: number
+  longTaskMaxMs: number
+}
+function measureLabelZoomTransition(targetZoom: number, label: string): Promise<LabelZoomTransitionResult> {
+  const longTasks: number[] = []
+  let po: PerformanceObserver | null = null
+  try {
+    po = new PerformanceObserver((l) => {
+      for (const e of l.getEntries()) longTasks.push(e.duration)
+    })
+    po.observe({ type: 'longtask' })
+  } catch {
+    po = null
+  }
+  const t0 = performance.now()
+  return new Promise((res) => {
+    const timeout = setTimeout(finish, 8000)
+    function finish() {
+      clearTimeout(timeout)
+      map.off('idle', finish)
+      if (po) po.disconnect()
+      const elapsedMs = performance.now() - t0
+      const round = (v: number) => Math.round(v * 10) / 10
+      const result: LabelZoomTransitionResult = {
+        label,
+        targetZoom,
+        elapsedMs: round(elapsedMs),
+        // po===null（longtask未サポート環境でcatchに落ちた場合）と「観測して0件だった」を
+        // 区別するセンチネル値-1を使う。既存の層B系PoC（measure.ts等）と同じ規約
+        // （セルフレビュー: 本ファイルだけこのガードを欠いていた）。
+        longTaskCount: po ? longTasks.length : -1,
+        longTaskTotalMs: round(longTasks.reduce((a, b) => a + b, 0)),
+        longTaskMaxMs: round(longTasks.length ? Math.max(...longTasks) : 0),
+      }
+      console.log(`[label] ${label}`, result)
+      res(result)
+    }
+    map.once('idle', finish)
+    map.setZoom(targetZoom)
+  })
+}
+
+// await __runLabelZoomSuite() で z5(非表示)→z6(地方)→z8(県)→z11(区域・最もユニーク漢字が
+// 多い) の順に遷移させ、各段のグリフ生成コストを計測する。
+async function runLabelZoomSuite(): Promise<LabelZoomTransitionResult[]> {
+  const results: LabelZoomTransitionResult[] = []
+  results.push(await measureLabelZoomTransition(6, 'z-any->z6(region,9件)'))
+  results.push(await measureLabelZoomTransition(8, 'z6->z8(prefecture,47件)'))
+  results.push(await measureLabelZoomTransition(11, 'z8->z11(subregion,192件・最多ユニーク漢字)'))
+  return results
+}
+
 // Playwright からの確認用: レイヤーの可視状態・キャンバスのピクセル抽出は
 // map.queryRenderedFeatures や map.getCanvas() を直接使えるため、追加の露出は最小限にする。
-Object.assign(window as unknown as Record<string, unknown>, { __labelMap: map })
+Object.assign(window as unknown as Record<string, unknown>, {
+  __labelMap: map,
+  __runLabelZoomSuite: runLabelZoomSuite,
+})
