@@ -210,8 +210,11 @@ window.__stopStabilitySuite()  // 途中で止める
 （ランダム地点へ flyTo → 日本全体へ戻す＝タイル/テクスチャの確保・解放を促す）、その都度
 `jsHeapMB`・`webglMemory` 推定・`contextLost` 回数・longtask をスナップショットして `/__perf-report` へ送る。
 末尾に first/last/min/max とデルタの要約（`surface-go2-stability-summary`）を送る。
-- **判定は人が読む**: `contextLost > 0` は不安定。`webglTotalMB`/`jsHeapMB` の `deltaFirstToLast` が
-  持続的に増え続けるならリーク疑い（単発の増減・初期ウォームアップの立ち上がりは無視）。
+**運用仕様・合否条件**（実施前に決めておく。詳細は計画書 §8）:
+- **時間/操作**: 最低30分（既定 `minutes=30`・余力あれば60分）、`sampleEverySec=30`。開始後は放置でよい（ハーネスが自動でカメラを動かす）。
+- **FAIL（いずれか該当で移行に赤信号）**: ①`contextLost > 0` ②サンプルが意図時間より前で途切れる（タブ kill/reload） ③`jsHeapMB`/`webglTotalMB` の `deltaFirstToLast` が頭打ちにならず単調増加（リーク）。
+- **PASS**: `contextLost === 0` かつ 完走 かつ メモリが初期ウォームアップ後に頭打ち（プラトー）。
+- **判定は人が読む**: **初期の立ち上がり増加（working set がタイル/テクスチャで埋まる分）は正常なので無視**し、後半で持続的・単調に増え続けるかだけを見る（min/max/first/last の並びで判断）。
 - **タブ kill 自体はページ消滅のため自己申告できない**。最後に届いたサンプルの `elapsedSec`/`when` が
   「いつまで生きていたか」を示す（実機側でサンプルが途切れたら kill/reload と判断する）。
 
