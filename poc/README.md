@@ -10,7 +10,7 @@
 |---|---|
 | `poc/index.html` / `poc/main.ts` | 素の maplibre-gl で 背景(GEBCO raster)＋活断層(line)＋観測点(circle) を描画。3軸を実行時に切替 |
 | `poc/measure.ts` | 静止/パン/ズームのフレーム時間・longtask 計測ランナー（層B）＋検証項目3（カメラ操作）の flyTo/fitBounds 計測。証跡を `/__perf-report` へ送る |
-| `poc/hittest.html` / `poc/hittest.ts` | 検証項目4: bbox方式（`queryRenderedFeatures`＋小さな bbox）の当たり判定 PoC。既知の直線でオフセット距離を制御して検証 |
+| `poc/hittest.html` / `poc/hittest.ts` | 検証項目4: bbox方式（`queryRenderedFeatures`でブロードフェーズ）＋点-線分距離の円判定（ナローフェーズ）の当たり判定 PoC。既知の直線でオフセット距離を制御して検証 |
 | `poc/label.html` / `poc/label.ts` | §8「テキスト描画」: glyphs未設定・text-fontにOS日本語フォント名のみでラベルが描けるかの検証 |
 | `poc/webglMemoryTracker.ts` | §8「実行時メモリ」: WebGLコンテキストをプロキシしバッファ/テクスチャ確保量を推定するユーティリティ。`poc/main.ts` に統合済み |
 | `vite.poc.config.ts` | PoC専用の最小 vite（react/PWA/サブパスを外す。`optimizeDeps.exclude:['maplibre-gl']` で GeoJSON worker を有効化） |
@@ -60,12 +60,16 @@ await window.__runCameraSuite('surface-go2-camera')
   `await window.__measureCameraFly({ kind:'bounds', padding:60, durationSec:1.0 })`
 - 右上 UI の「flyTo試験」「fitBounds試験」ボタンでも単発実行できる。
 
-## 検証項目4: 当たり判定（bbox方式）
+## 検証項目4: 当たり判定（bbox方式＋点-線分距離の円判定）
 
 `http://localhost:5180/poc/hittest.html`（実機は `http://<開発機のIP>:5180/poc/hittest.html`）を開く。
 右上スライダーで許容半径 r（px）を変え、地図（オレンジ=活断層、シアン=テスト線）をクリックすると
-左下にヒット結果が出る。開発機での自動検証は `docs/webgl-rendering-migration-plan.md` §6 検証項目4を参照
-（r=8px でオフセット8px以内=ヒット・9px以上=非ヒットの境界一致を zoom5/8/11 で確認済み・決着）。
+左下にヒット結果が出る。当たり判定は「bboxで候補を粗く絞る（ブロードフェーズ）→候補に対し実際の
+点-線分距離をユークリッドで計算し円判定する（ナローフェーズ）」の2段構成（本番Leafletの
+tolerance判定＝円と一致させるため。bboxのみの正方形判定だと斜め方向で最大√2倍まで拾ってしまう
+問題をレビュー指摘で解消した）。開発機での自動検証は `docs/webgl-rendering-migration-plan.md`
+§6 検証項目4を参照（r=8px でオフセット8px以内=ヒット・9px以上=非ヒットの境界一致を zoom5/8/11 で
+確認済み・決着）。
 
 ## 3軸と律速判定
 
