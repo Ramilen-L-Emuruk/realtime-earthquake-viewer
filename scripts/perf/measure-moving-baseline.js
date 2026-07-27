@@ -25,6 +25,21 @@
  *      動かさないこと**。結果は開発機の scripts/perf/results/ へ自動送信される。
  *   5. **同じ区間を複数回**行い、1 回の値で断定しない（人の操作依存で再現性が落ちるため）。
  *
+ * 使い方（本番ビルド計測・残作業D・docs/webgl-production-build-measure-request.md）:
+ *   本日の計測は dev サーバーで、React development モード等のオーバーヘッドを含む。実ユーザーが触る
+ *   本番ビルドで較正するため、`vite preview` で同じ区間・指標を測り直す。
+ *   1. 開発機で `npm run build:dmdss` → `npm run preview:dmdss -- --host`（base は /realtime-earthquake-viewer/dmdss/。
+ *      standard 変種の `npm run preview` ではないことに注意）。perfReportPlugin は configurePreviewServer で
+ *      preview でも /__perf-script・/__perf-report を提供する（残作業D の壁1・検証済み）。
+ *   2. 実機で本番ビルドを開き、**地図を一通り触ってタイルをキャッシュ→リロードして SW 有効を確認**
+ *      （DevTools → Application → Service Workers）＝実ユーザーの定常状態に揃える（壁2）。
+ *   3. 上と同じく script を読み込み、区間ごとに **buildMode:'production' を付けて**新ラベルで実行する:
+ *        await window.__measureMovingBaseline({ label:'surface-go2-prod-static',   segment:'static',   durationMs:15000, buildMode:'production' })
+ *        await window.__measureMovingBaseline({ label:'surface-go2-prod-pan',      segment:'pan',      durationMs:15000, buildMode:'production' })
+ *        await window.__measureMovingBaseline({ label:'surface-go2-prod-zoom',     segment:'zoom',     durationMs:15000, buildMode:'production' })
+ *        await window.__measureMovingBaseline({ label:'surface-go2-prod-autozoom', segment:'autozoom', durationMs:20000, buildMode:'production' })
+ *      meta に buildMode / swControlled が入り dev 証跡と区別できる。区間D=static は層A残差の実寸（本来の目的）。
+ *
  * 指標（PoC 側 poc/measure.ts・poc/label.ts と揃える。揃えないと比較できない）:
  *   - frame:            rAF フレーム間隔 p50/p95/max・fps（fps は名目でなく実測 elapsedMs 割り） … 主指標
  *   - longTask:         >50ms のロングタスク件数・合計・最大 … 主指標
@@ -135,7 +150,9 @@ window.__measureMovingBaseline = async function measureMovingBaseline(opts = {})
       ? '設定タブの「地震テスト」ボタンを押してください（自動ズーム flyTo/fitBounds を発火）'
       : segment === 'zoom'
         ? 'ホイール/ズームボタンでズームを繰り返してください'
-        : '地図をドラッグしてパンを繰り返してください'
+        : segment === 'static'
+          ? '何も操作せず静止して待ってください（区間D＝層A残差の実寸）'
+          : '地図をドラッグしてパンを繰り返してください'
   console.log(`[movingBaseline] ② 移動中計測 ${durationMs}ms … ▶ 今すぐ操作: ${hint}`)
   lastPing = performance.now()
   mc.port2.postMessage(0) // 移動窓の開始と同時にブロック検出を開始
@@ -169,6 +186,14 @@ window.__measureMovingBaseline = async function measureMovingBaseline(opts = {})
       pathCount,
       circleCount,
       kyoshinActive: pathCount > 1000,
+      // dev サーバー計測か本番ビルド計測かを証跡で区別する（残作業D）。buildMode は呼び出し側が渡す
+      // （'production'/'dev'。既定 'unknown'）。swControlled は本番ビルドの PWA Service Worker が
+      // 制御下にあるか＝タイル等がキャッシュから返る状態かの記録（壁2。dev には SW が無く false）。
+      buildMode: String(opts.buildMode ?? 'unknown'),
+      swControlled:
+        typeof navigator !== 'undefined' &&
+        typeof navigator.serviceWorker !== 'undefined' &&
+        !!navigator.serviceWorker.controller,
       durationMs,
       // 実測経過（名目 durationMs との差＝計測窓内のブロック超過分。fps/perSec はこちらで割る）。
       elapsedMs: round(elapsedMs),

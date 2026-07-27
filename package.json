@@ -10,6 +10,7 @@
     "build": "tsc -b && vite build",
     "build:dmdss": "tsc -b && cross-env VITE_VARIANT=dmdss vite build",
     "preview": "vite preview",
+    "preview:dmdss": "cross-env VITE_VARIANT=dmdss vite preview",
     "test": "vitest run",
     "test:watch": "vitest"
   },
