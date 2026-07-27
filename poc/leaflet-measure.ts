@@ -197,6 +197,11 @@ async function measureOnce(
       ua: navigator.userAgent,
       viewport: `${innerWidth}x${innerHeight}`,
       devicePixelRatio: window.devicePixelRatio,
+      // static は何も動かさないため frame.p50 が実質そのままvsync間隔になる（項目5×6 情報5・
+      // 項目7 baseline と同じ手）。MapLibre側(poc/measure.ts)にはこれが無く、実際に「開発機」と
+      // 記録された2つの測定が天井の違う環境（60Hz対170Hz）で取られ数値が食い違う事故があった
+      // （レビュー HIGH4）。どの天井で測ったかを証跡に残す。
+      estimatedVsyncMs: phase === 'static' ? round(pick(0.5)) : null,
       ...deps.snapshot(),
     },
     frame: {
