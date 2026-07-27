@@ -1,0 +1,54 @@
+{
+  "meta": {
+    "when": "2026-07-27T08:36:27.240Z",
+    "label": "surface-go2-camera-bounds-p60-d1",
+    "phase": "flyto",
+    "elapsedMs": 1023.2,
+    "url": "http://192.168.0.64:5173/poc/index.html",
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "viewport": "1272x768",
+    "devicePixelRatio": 1.5,
+    "estimatedVsyncMs": 16.7,
+    "kind": "bounds",
+    "padding": 60,
+    "durationSec": 1,
+    "bounds": [
+      [
+        145.72664883723462,
+        36.08152223511003
+      ],
+      [
+        145.8637056818575,
+        36.16739305041062
+      ]
+    ],
+    "maxZoom": 8,
+    "faults": "full",
+    "faultVertices": 31646,
+    "points": 1725,
+    "lineWidth": 1.2,
+    "pixelRatio": 1.5,
+    "canvasW": 1908,
+    "canvasH": 1152,
+    "jsHeapMB": 35.6,
+    "webglMemory": {
+      "bufferBytes": 2992276,
+      "textureBytes": 19137012,
+      "renderbufferBytes": 0,
+      "totalBytes": 22129288,
+      "tracked": true
+    }
+  },
+  "frame": {
+    "frames": 46,
+    "fps": 44.96,
+    "p50": 16.7,
+    "p95": 47.4,
+    "max": 50.1
+  },
+  "longTask": {
+    "count": 0,
+    "totalMs": 0,
+    "maxMs": 0
+  }
+}
