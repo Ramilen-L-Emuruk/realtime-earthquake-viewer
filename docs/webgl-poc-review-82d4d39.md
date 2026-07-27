@@ -6,15 +6,18 @@
 > 対応する MapLibre 側 `poc/main.ts` / `poc/measure.ts`（層B・検証項目1）
 > レビュー日: 2026-07-26（開発機 Chrome / DPR 1）
 >
-> **ステータス:**
+> **ステータス: HIGH 1・MEDIUM 2 対応済み。実機投入可。**
 > - **比較の枠組みは正しく作られている。** 特に `panBy` の `moveend` 罠を自力で見つけて回避したのは、
 >   **この項目の成立自体を救った修正**（下記「最大の功績」）
-> - **【HIGH 1】ドラッグ終了時の全パス再描画コストが計測窓の外に落ちている。** コメントは「反映させる」と
->   書いているが実際には統計に入らず、**Leaflet 有利に偏る**。実機投入前に直したい
-> - **【MEDIUM 2】`fps` が名目 `durationMs` 割り**（項目7 で HIGH1 として直した箇所と定義が不一致）
+> - **【対応済み】HIGH 1**: `startDrive` の停止関数が `moveend` の同期コストを ms で返すようにし、
+>   `measureOnce` が結果へ `moveendMs` として名指しで記録するようにした。実測で `pan` は
+>   `moveendMs:6.3`（31,646頂点の活断層線の再クリップ・再簡略化・再描画コスト）、他フェーズは
+>   `null` になることを確認。詳細は下記「対応確認」
+> - **【対応済み】MEDIUM 2**: `fps` を名目 `durationMs` ではなく実測経過時間（`elapsedMs`）で
+>   割るように統一した（項目7 HIGH1 と同じ定義）
 > - **【情報 3】Leaflet 有利なバイアスが2つある**（当たり判定ヒット線の省略・DPR 軸の不在）。
->   結果の読み方に効くため記録する
-> - 型チェック エラー 0（`--strict`・DOM lib 付き単体チェック）
+>   結果の読み方に効くため記録する（対応は不要・実機計測時に読み方の指針として参照する）
+> - 型チェック エラー 0（`--strict`・DOM lib 付き単体チェック）。対応後も再確認済み
 
 ## この項目の位置づけ
 
@@ -182,3 +185,40 @@ Leaflet に `setPixelRatio` 相当の公開 API が無いため、層B の 3 軸
    - `pan` は HIGH 1 の `moveendMs` と併せて読む（動作中の軽さと終了時の一括コストは別物）
    - フレーム時間で差が出なければ、ヘッダコメントの予告どおり
      **Performance トレースでのメインスレッド内訳計測**へ進む（飽和した指標では仕事量の差は見えない）
+
+---
+
+## 対応確認（HIGH 1・MEDIUM 2）
+
+上記 1〜2 をコードに反映し、開発機（Chrome・DPR 1）で回帰確認した。
+
+### HIGH 1: `moveendMs` として名指しで記録するようにした
+
+`startDrive` の戻り値を `() => void` から `() => number | undefined` に変更し、`pan` の停止関数が
+`map.fire('moveend')` の同期コストを計測して返すようにした。`measureOnce` はこれを結果へ
+`moveendMs` として記録する（`pan` 以外は `null`）。
+
+実測（`durationMs:2000`）:
+
+```
+pan         : frame.p50/p95/max = 16.7/16.9/17.0, moveendMs = 6.3
+static      : frame.p50/p95/max = 16.7/16.9/17.0, moveendMs = null
+zoom-native : frame.p50/p95/max = 16.7/16.9/17.0, moveendMs = null
+zoom-forced : frame.p50/p95/max = 33.3/50.1/50.2, moveendMs = null
+```
+
+`pan` の動作中フレーム時間は `static` と同水準（軽い）を保ったまま、ドラッグ終了時の一括コスト
+（31,646頂点の活断層線の再クリップ・再簡略化・再描画）が `moveendMs:6.3` として分離して見えるように
+なった。この開発機では6.3msは天井(16.7ms)の半分以下だが、非力な実機ではもっと重くなりうる値であり、
+以前は完全に見えなかったコストが可視化された。
+
+### MEDIUM 2: `fps` の定義を統一
+
+`fps` の分母を名目 `durationMs` から実測経過時間（`elapsedMs = performance.now() - frameCollectStart`。
+`stopDrive()` 呼び出し後、`cancelAnimationFrame` 前に確定）に変更した。項目7 HIGH1 と同じ定義になった。
+
+### 残作業
+
+実機スイート（`__runLeafletBSuite`）は未実施。上記2点の修正により `pan` の測定精度が上がったため、
+実機投入してよい状態になった。あわせて MapLibre 側（層B）の同一セッションでの再計測（推奨対応順4）も
+実機作業時に検討すること。
