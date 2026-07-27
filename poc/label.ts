@@ -473,9 +473,52 @@ async function runLabelZoomSuite(): Promise<LabelRenderResult[]> {
   return results
 }
 
+// 【県47緩和策の検証】実機で B案でも県47段階に blockMaxMs 122ms・longtask 2件が残る
+// （docs/webgl-glyph-pipeline-b-surface-go2-2026-07-27.md）。緩和策候補「起動時にグリフを
+// プリフェッチ・ウォームしておけば、地震検知の自動ズームで県名が初出する瞬間のコストを先取り
+// できるのでは」が実機文書で「未検証」とされた。これに直答するため、同一段階を
+//   cold: 初回表示（グリフ未ロード＝地震瞬間にウォーム無しで踏むコスト）
+//   warm: 一旦隠して再表示（グリフはキャッシュ済み＝起動時ウォーム後に踏むコスト）
+// で対照する。warm の blockMaxMs/longtask が cold より大きく下がれば「ウォームで先取り可能」、
+// 変わらなければ「パース/テクスチャアップロード以外の描画コストが残る＝別の緩和策が要る」と分かる。
+//
+// 【重要】共有漢字（県名と区域名は多くの漢字を共有）による汚染を避けるため、1 ページロードにつき
+// 1 段階だけ測ること。ページをリロードしてから __runLabelWarmSuite('prefectures') または
+// __runLabelWarmSuite('subregions') を 1 回だけ実行する（cold 計測が真に「未ロード」であるために、
+// 他段階のグリフを先に触らない）。B案（?glyphs=1）で実機の残存コストを検証するのが主目的。
+async function runLabelWarmSuite(
+  stage: 'prefectures' | 'subregions' = 'prefectures',
+): Promise<{ stage: string; cold: LabelRenderResult; warm: LabelRenderResult }> {
+  const layerId = `${stage}-label`
+  const jpName = stage === 'prefectures' ? '県47件' : '区域192件'
+  map.fitBounds(JAPAN_BOUNDS_LNGLAT, { padding: 20, duration: 0 })
+  for (const id of LABEL_LAYER_IDS) {
+    if (id !== 'intensity-label') map.setLayerZoomRange(id, 0, 24)
+    map.setLayoutProperty(id, 'visibility', 'none')
+  }
+  await waitIdle(3000)
+
+  // cold: グリフ未ロードでの初回表示。measureLabelLayer が対象を visible・他を none にする。
+  const cold = await measureLabelLayer(layerId, `${stage} cold(${jpName}・未ウォーム)`)
+  // 一旦隠す → 再表示で「ウォーム済み」の再描画を起こす（グリフはキャッシュ済みのまま）。
+  map.setLayoutProperty(layerId, 'visibility', 'none')
+  await waitIdle(1500)
+  const warm = await measureLabelLayer(layerId, `${stage} warm(${jpName}・ウォーム後)`)
+
+  // 本番相当のズーム連動表示に戻す。
+  map.setLayerZoomRange('regions-label', LABEL_MIN_ZOOM, REGION_MAX_ZOOM)
+  map.setLayerZoomRange('prefectures-label', REGION_MAX_ZOOM, CITY_LABEL_MIN_ZOOM)
+  map.setLayerZoomRange('subregions-label', CITY_LABEL_MIN_ZOOM, 24)
+  for (const id of LABEL_LAYER_IDS) map.setLayoutProperty(id, 'visibility', 'visible')
+  map.jumpTo({ center: JAPAN_CENTER, zoom: 6 })
+
+  return { stage, cold, warm }
+}
+
 // Playwright からの確認用: レイヤーの可視状態・キャンバスのピクセル抽出は
 // map.queryRenderedFeatures や map.getCanvas() を直接使えるため、追加の露出は最小限にする。
 Object.assign(window as unknown as Record<string, unknown>, {
   __labelMap: map,
   __runLabelZoomSuite: runLabelZoomSuite,
+  __runLabelWarmSuite: runLabelWarmSuite,
 })
