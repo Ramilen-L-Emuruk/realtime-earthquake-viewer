@@ -36,10 +36,18 @@ const LABEL_MIN_ZOOM = 5.5
 const REGION_MAX_ZOOM = 7.5
 const CITY_LABEL_MIN_ZOOM = 9
 
-// glyphs は意図的に設定しない（本 PoC の検証対象そのもの）。text-font に日本語フォントを
-// 並べ、ローカル表意文字レンダリングだけで描けるかを見る。Windows(実機 Surface Go 2)を
-// 主対象に、代表的な和文フォント名を優先度順で並べる。
-const JP_TEXT_FONT = ['Yu Gothic UI', 'Meiryo', 'MS Gothic', 'Noto Sans CJK JP']
+// 【B案検証トグル】?glyphs=1 で、ビルド時に事前生成した SDF グリフ PBF
+// （scripts/build-glyphs.mjs が出力する public/fonts/<stack>/<range>.pbf）をフェッチする構成に
+// 切り替える。クエリ無し（既定）は従来どおり glyphs 未設定＝クライアント TinySDF 生成で、
+// 実行時に生成スパイク（実機 75〜260ms）が乗る A案。両者を同一計測で対照する。
+const USE_GLYPHS = new URLSearchParams(location.search).has('glyphs')
+// 事前生成グリフのフォントスタック名。build-glyphs.mjs の GLYPH_STACK（既定 'Yu Gothic'）および
+// 出力ディレクトリ名 public/fonts/<stack>/ と完全一致させる必要がある（MapLibre は text-font 値を
+// そのまま {fontstack} に展開して PBF を要求するため）。
+const GLYPH_STACK = 'Yu Gothic'
+// A案は OS 標準の和文フォントを優先度順で並べてローカル表意文字レンダリングに委ねる。
+// B案は事前生成グリフのスタック 1 本だけを指す。
+const JP_TEXT_FONT = USE_GLYPHS ? [GLYPH_STACK] : ['Yu Gothic UI', 'Meiryo', 'MS Gothic', 'Noto Sans CJK JP']
 
 const REGIONS: { name: string; lat: number; lng: number }[] = [
   { name: '北海道', lat: 43.4, lng: 142.8 },
@@ -116,9 +124,18 @@ const map = new maplibregl.Map({
   center: JAPAN_CENTER,
   zoom: 6,
   attributionControl: false,
-  // glyphs キー自体を持たせない構成（Context7 で確認した公式サンプルと同じ）。
+  // 【B案の要】MapLibre は localIdeographFontFamily の既定が 'sans-serif' のため、CJK 統合漢字・
+  // ひらがな・カタカナ・ハングルは glyphs URL を設定していても既定でクライアント TinySDF 生成に
+  // 回される（＝生成スパイクの元凶。A案で glyphs 無しでも日本語が描けていたのはこのため）。
+  // B案でサーバー事前生成 PBF から CJK を取得させるには false を明示して既定を無効化する必要がある。
+  // A案は既定（'sans-serif'・ローカル生成）のまま。
+  ...(USE_GLYPHS ? { localIdeographFontFamily: false } : {}),
+  // A案: glyphs キー自体を持たせない（クライアント TinySDF 生成）。
+  // B案(?glyphs=1): 事前生成 PBF の URL を設定する。{fontstack} は text-font 値（GLYPH_STACK）に、
+  // {range} は 256 codepoint ブロックに MapLibre が展開して要求する。
   style: {
     version: 8,
+    ...(USE_GLYPHS ? { glyphs: '/fonts/{fontstack}/{range}.pbf' } : {}),
     sources: {
       gebco: { type: 'raster', tiles: [BATHYMETRY_URL], tileSize: 256, maxzoom: 10 },
     },
@@ -217,7 +234,7 @@ map.on('load', async () => {
   })
 
   Object.assign(window as unknown as Record<string, unknown>, { __pocReady: true })
-  updateStat(`zoom: ${map.getZoom().toFixed(2)}\n地方${regionFC.features.length}/県${prefFC.features.length}/区域${subFC.features.length}件\n震度ラベル${intensityFCData.features.length}件（初期非表示・ボタンで表示切替）`)
+  updateStat(`mode: ${USE_GLYPHS ? 'B案(事前生成glyphs)' : 'A案(TinySDF)'}\nzoom: ${map.getZoom().toFixed(2)}\n地方${regionFC.features.length}/県${prefFC.features.length}/区域${subFC.features.length}件\n震度ラベル${intensityFCData.features.length}件（初期非表示・ボタンで表示切替）`)
 })
 
 map.on('zoomend', () => {
@@ -304,6 +321,10 @@ interface LabelRenderResult {
   longTaskCount: number
   longTaskTotalMs: number
   longTaskMaxMs: number
+  // 計測時のモード（true=B案・事前生成グリフをフェッチ／false=A案・クライアント TinySDF 生成）。
+  // 証跡 JSON 単体で A/B どちらの計測か判別できるようにする（[[webgl-migration-plan]] の
+  // 「計測が本当に狙った負荷を踏んだかを結果自身に含める」教訓）。
+  serverGlyphs: boolean
 }
 
 // 対象レイヤーだけ visibility:visible にし、他は none にして描画・グリフ生成コストを計測する。
@@ -383,6 +404,7 @@ function measureLabelLayer(layerId: string, label: string): Promise<LabelRenderR
         longTaskCount: po ? longTasks.length : -1,
         longTaskTotalMs: round(longTasks.reduce((a, b) => a + b, 0)),
         longTaskMaxMs: round(longTasks.length ? Math.max(...longTasks) : 0),
+        serverGlyphs: USE_GLYPHS,
       }
       console.log(`[label] ${label}`, result)
       res(result)
