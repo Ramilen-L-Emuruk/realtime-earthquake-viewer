@@ -20,6 +20,13 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import type { FeatureCollection, Point } from 'geojson'
 
 const JAPAN_CENTER: [number, number] = [137.7, 38.25]
+// JapanMap.tsx の JAPAN_BOUNDS（[lat,lng]）を [lng,lat] へ変換した値。計測時に日本全体を
+// 視野に収めたまま固定するために使う（レビュー HIGH: ズームで視野を切り替える方式は
+// 対象点が画面外に出て狙った文字種が一度も描画されない事故を起こした）。
+const JAPAN_BOUNDS_LNGLAT: [[number, number], [number, number]] = [
+  [129.43, 30.99],
+  [145.82, 45.52],
+]
 const BATHYMETRY_URL =
   'https://tiles.arcgis.com/tiles/C8EMgrsFcRFL6LrL/arcgis/rest/services/GEBCO_basemap_NCEI/MapServer/tile/{z}/{y}/{x}'
 
@@ -181,10 +188,14 @@ map.on('load', async () => {
     },
   })
 
-  // 震度ラベル: 常時表示で文字描画そのものの確認用（本番はズーム非依存で地震発生時のみ
-  // 表示されるが、PoC では表示条件を分離して確認しやすくする）。
+  // 震度ラベル: 文字描画そのものの確認用（本番はズーム非依存で地震発生時のみ表示されるが、
+  // PoC では表示条件を分離して確認しやすくする）。
   // 本番(JapanMap.tsx:95) は `label.length > 1 ? size*0.42 : size*0.6` と2文字ラベル
   // （"5弱"等）だけ縮小するため、同じ分岐を text-size の data-driven expression で再現する。
+  // 初期状態は非表示（レビュー HIGH: 以前は常時表示にしていたため、__runLabelZoomSuite
+  // 実行前の load 時点で既にグリフが生成されてしまい、intensity 計測値が「suite開始前に
+  // 済んでいた」というアーティファクトになっていた）。目視確認は下の「震度ラベル表示」
+  // ボタンで手動トグルする。
   map.addLayer({
     id: 'intensity-label',
     type: 'symbol',
@@ -194,6 +205,7 @@ map.on('load', async () => {
       'text-font': JP_TEXT_FONT,
       'text-size': ['case', ['>', ['length', ['get', 'label']], 1], 9, 13],
       'text-allow-overlap': true,
+      visibility: 'none',
     },
     paint: {
       'text-color': '#fbbf24',
@@ -204,7 +216,7 @@ map.on('load', async () => {
   })
 
   Object.assign(window as unknown as Record<string, unknown>, { __pocReady: true })
-  updateStat(`zoom: ${map.getZoom().toFixed(2)}\n地方${regionFC.features.length}/県${prefFC.features.length}/区域${subFC.features.length}件\n震度ラベル${intensityFCData.features.length}件（常時表示）`)
+  updateStat(`zoom: ${map.getZoom().toFixed(2)}\n地方${regionFC.features.length}/県${prefFC.features.length}/区域${subFC.features.length}件\n震度ラベル${intensityFCData.features.length}件（初期非表示・ボタンで表示切替）`)
 })
 
 map.on('zoomend', () => {
@@ -223,21 +235,58 @@ for (const [id, z] of Object.entries(zoomButtons)) {
   document.getElementById(id)?.addEventListener('click', () => map.setZoom(z))
 }
 
-// レビュー MEDIUM3: glyphs 無しは「サーバー生成PBFが無いぶん、ASCII数字も含め全文字を
-// クライアント側で TinySDF ラスタライズする」ことを意味する（追認1: !this.url 分岐）。
-// 「描ける」ことは確認済みだが「安い」かは未確認だったため、ズーム帯をまたいで新しい
-// 文字種（地方9件→県47件→区域192件、後者ほどユニーク漢字数が多い）が初出現する際の
-// longtask・所要時間を計測する。1回目の zoom 遷移は初回グリフ生成、2回目以降の同ズーム
-// 遷移はキャッシュ済みのため、初出現時とキャッシュ済みの差も見える。
-interface LabelZoomTransitionResult {
+// 震度ラベルは初期非表示のため（上記コメント参照）、目視確認用の手動トグルを用意する。
+document.getElementById('toggleIntensity')?.addEventListener('click', () => {
+  const current = map.getLayoutProperty('intensity-label', 'visibility') ?? 'visible'
+  map.setLayoutProperty('intensity-label', 'visibility', current === 'none' ? 'visible' : 'none')
+})
+
+// レビュー MEDIUM3→HIGH（再指摘）: glyphs 無しは「サーバー生成PBFが無いぶん、ASCII数字も
+// 含め全文字をクライアント側で TinySDF ラスタライズする」ことを意味する（追認1: !this.url
+// 分岐）。「描ける」ことは確認済みだが「安い」かは未確認だったため、当初はズーム帯を
+// またいで新しい文字種が初出現する際の longtask を計測する方式にした。
+// **しかしこれは失敗だった**（レビューが独立検証で発見）: ズームインすると視野が狭まり
+// 対象点が画面外に出るため、県47件・区域192件のラベルは一度も描画されず、
+// `map.style.glyphManager.entries` を直接観測しても全ズーム帯でグリフ生成数が
+// 40種のまま不変（＝地方9件と震度ラベルの初期表示ぶんだけ）だった。「longtask 0」は
+// 「安い」ではなく「ほとんど何も生成していない」ことの誤読だった。
+// 対処: 日本全体が映るビューを固定したまま、各レイヤーの minzoom/maxzoom 制約を
+// setLayerZoomRange で計測時だけ外し、visibility の出し入れだけでレイヤーを順に出す。
+// 結果には renderedSymbols（実描画数）・glyphsGenerated（累積グリフ生成数）を含め、
+// 「longtaskが0＝安い」なのか「何も生成していない」なのかを後から判別できるようにする
+// （LOWで tracked フラグに入れたのと同じ処方箋）。
+const LABEL_LAYER_IDS = ['regions-label', 'prefectures-label', 'subregions-label', 'intensity-label'] as const
+
+// map.style.glyphManager は公開型（maplibre-gl.d.ts の Style クラス定義）にそのまま乗るため
+// キャスト不要（セルフレビュー指摘: 当初 `as unknown as {...}` していたが、将来 MapLibre が
+// この内部構造を変えた際に「コンパイルエラーで気づける」利点を自ら手放し「黙って0を返す」
+// 方向に倒すのは、本PoCが問題視した「longtask 0＝生成していないことの誤読」と同じ失敗の
+// 再生産になるため、素の型のまま使う）。
+function totalGlyphsGenerated(): number {
+  const entries = map.style.glyphManager.entries
+  let total = 0
+  for (const stack of Object.keys(entries)) {
+    total += Object.keys(entries[stack].glyphs).length
+  }
+  return total
+}
+
+interface LabelRenderResult {
   label: string
-  targetZoom: number
+  // 実描画数（queryRenderedFeatures 実測）。ソース内フィーチャ数より少なく出ることがある
+  // （text-allow-overlap 既定 false の3レイヤーは、日本全体を視野に収めた低ズームで多数の
+  // 点が密集し衝突判定で間引かれるため。正常な挙動であり生成失敗ではない）。
+  // グリフ生成コストの判定指標は glyphsGenerated を見ること（renderedSymbols は副次情報）。
+  renderedSymbols: number
+  glyphsGenerated: number
   elapsedMs: number
   longTaskCount: number
   longTaskTotalMs: number
   longTaskMaxMs: number
 }
-function measureLabelZoomTransition(targetZoom: number, label: string): Promise<LabelZoomTransitionResult> {
+
+// 対象レイヤーだけ visibility:visible にし、他は none にして描画・グリフ生成コストを計測する。
+function measureLabelLayer(layerId: string, label: string): Promise<LabelRenderResult> {
   const longTasks: number[] = []
   let po: PerformanceObserver | null = null
   try {
@@ -257,13 +306,11 @@ function measureLabelZoomTransition(targetZoom: number, label: string): Promise<
       if (po) po.disconnect()
       const elapsedMs = performance.now() - t0
       const round = (v: number) => Math.round(v * 10) / 10
-      const result: LabelZoomTransitionResult = {
+      const result: LabelRenderResult = {
         label,
-        targetZoom,
+        renderedSymbols: map.queryRenderedFeatures({ layers: [layerId] }).length,
+        glyphsGenerated: totalGlyphsGenerated(),
         elapsedMs: round(elapsedMs),
-        // po===null（longtask未サポート環境でcatchに落ちた場合）と「観測して0件だった」を
-        // 区別するセンチネル値-1を使う。既存の層B系PoC（measure.ts等）と同じ規約
-        // （セルフレビュー: 本ファイルだけこのガードを欠いていた）。
         longTaskCount: po ? longTasks.length : -1,
         longTaskTotalMs: round(longTasks.reduce((a, b) => a + b, 0)),
         longTaskMaxMs: round(longTasks.length ? Math.max(...longTasks) : 0),
@@ -271,18 +318,48 @@ function measureLabelZoomTransition(targetZoom: number, label: string): Promise<
       console.log(`[label] ${label}`, result)
       res(result)
     }
+    for (const id of LABEL_LAYER_IDS) {
+      map.setLayoutProperty(id, 'visibility', id === layerId ? 'visible' : 'none')
+    }
     map.once('idle', finish)
-    map.setZoom(targetZoom)
   })
 }
 
-// await __runLabelZoomSuite() で z5(非表示)→z6(地方)→z8(県)→z11(区域・最もユニーク漢字が
-// 多い) の順に遷移させ、各段のグリフ生成コストを計測する。
-async function runLabelZoomSuite(): Promise<LabelZoomTransitionResult[]> {
-  const results: LabelZoomTransitionResult[] = []
-  results.push(await measureLabelZoomTransition(6, 'z-any->z6(region,9件)'))
-  results.push(await measureLabelZoomTransition(8, 'z6->z8(prefecture,47件)'))
-  results.push(await measureLabelZoomTransition(11, 'z8->z11(subregion,192件・最多ユニーク漢字)'))
+function waitIdle(timeoutMs: number): Promise<void> {
+  return new Promise((res) => {
+    const t = setTimeout(res, timeoutMs)
+    map.once('idle', () => {
+      clearTimeout(t)
+      res()
+    })
+  })
+}
+
+// await __runLabelZoomSuite() で 日本全体を視野に固定したまま regions→prefectures→
+// subregions→intensity の順にレイヤーを1つずつ表示させ、各段の実描画数・グリフ生成コストを
+// 計測する。計測後は本番相当のズーム連動表示に戻す。
+async function runLabelZoomSuite(): Promise<LabelRenderResult[]> {
+  map.fitBounds(JAPAN_BOUNDS_LNGLAT, { padding: 20, duration: 0 })
+  for (const id of LABEL_LAYER_IDS) {
+    if (id !== 'intensity-label') map.setLayerZoomRange(id, 0, 24)
+    map.setLayoutProperty(id, 'visibility', 'none')
+  }
+  await waitIdle(3000)
+
+  const results: LabelRenderResult[] = []
+  results.push(await measureLabelLayer('regions-label', 'regions(地方9件)'))
+  results.push(await measureLabelLayer('prefectures-label', 'prefectures(県47件)'))
+  results.push(await measureLabelLayer('subregions-label', 'subregions(区域192件・最多ユニーク漢字)'))
+  results.push(await measureLabelLayer('intensity-label', 'intensity(震度ラベル)'))
+
+  // 本番相当のズーム連動表示に戻す。center も明示的に復元する（fitBounds が動かした ままだと
+  // 偶然 JAPAN_CENTER に近い値になるだけで、意図した復元ではなかったためレビュー指摘で修正）。
+  map.setLayerZoomRange('regions-label', LABEL_MIN_ZOOM, REGION_MAX_ZOOM)
+  map.setLayerZoomRange('prefectures-label', REGION_MAX_ZOOM, CITY_LABEL_MIN_ZOOM)
+  map.setLayerZoomRange('subregions-label', CITY_LABEL_MIN_ZOOM, 24)
+  for (const id of LABEL_LAYER_IDS) map.setLayoutProperty(id, 'visibility', 'visible')
+  map.jumpTo({ center: JAPAN_CENTER, zoom: 6 })
+
   return results
 }
 
