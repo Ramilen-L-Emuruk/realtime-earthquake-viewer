@@ -1,0 +1,55 @@
+{
+  "meta": {
+    "when": "2026-07-27T17:24:46.798Z",
+    "label": "surface-go2-prod-autozoom",
+    "segment": "autozoom",
+    "mode": "kyoshin",
+    "url": "http://192.168.0.64:5195/realtime-earthquake-viewer/dmdss/",
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "viewport": "1272x768",
+    "devicePixelRatio": 1.5,
+    "pathCount": 1725,
+    "circleCount": 214,
+    "kyoshinActive": true,
+    "buildMode": "production",
+    "swControlled": false,
+    "durationMs": 20000,
+    "elapsedMs": 20007.5,
+    "vsyncMs": 2000,
+    "estimatedVsyncMs": 16.7
+  },
+  "frame": {
+    "frames": 1146,
+    "fps": 57.28,
+    "p50": 16.7,
+    "p95": 16.8,
+    "max": 233.4
+  },
+  "longTask": {
+    "count": 4,
+    "totalMs": 549,
+    "maxMs": 244
+  },
+  "blockMaxMs": 296.2,
+  "blockTop3Ms": [
+    296.2,
+    175.5,
+    137.7
+  ],
+  "domWrites": {
+    "mapPaneAttrPerSec": 352.7,
+    "mapPaneNodesPerSec": 94.5,
+    "kyoshinAttrPerSec": 2.1,
+    "kyoshinNodesPerSec": 87.8,
+    "raw": {
+      "map": {
+        "attr": 7056,
+        "nodes": 1891
+      },
+      "kyoshin": {
+        "attr": 42,
+        "nodes": 1756
+      }
+    }
+  }
+}
