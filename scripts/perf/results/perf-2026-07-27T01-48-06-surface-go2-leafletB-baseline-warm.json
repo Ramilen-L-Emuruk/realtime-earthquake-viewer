@@ -1,0 +1,33 @@
+{
+  "meta": {
+    "when": "2026-07-27T01:48:07.346Z",
+    "label": "surface-go2-leafletB-baseline-warm",
+    "phase": "zoom-forced",
+    "durationMs": 10000,
+    "url": "http://192.168.0.64:5183/poc/leaflet-index.html",
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "viewport": "1272x768",
+    "devicePixelRatio": 1.5,
+    "estimatedVsyncMs": null,
+    "faults": "full",
+    "faultVertices": 31646,
+    "points": 1725,
+    "lineWidth": 1.2,
+    "canvasW": 1272,
+    "canvasH": 768,
+    "jsHeapMB": 61
+  },
+  "frame": {
+    "frames": 66,
+    "fps": 6.49,
+    "p50": 149.9,
+    "p95": 183.5,
+    "max": 283.2
+  },
+  "moveendMs": null,
+  "longTask": {
+    "count": 67,
+    "totalMs": 9603,
+    "maxMs": 252
+  }
+}

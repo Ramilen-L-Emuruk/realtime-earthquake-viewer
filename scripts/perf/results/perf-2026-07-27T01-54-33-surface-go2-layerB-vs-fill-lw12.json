@@ -1,0 +1,33 @@
+{
+  "meta": {
+    "when": "2026-07-27T01:54:34.379Z",
+    "label": "surface-go2-layerB-vs-fill-lw12",
+    "phase": "zoom",
+    "durationMs": 10000,
+    "url": "http://192.168.0.64:5183/poc/index.html",
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "viewport": "1272x768",
+    "devicePixelRatio": 1.5,
+    "estimatedVsyncMs": null,
+    "faults": "full",
+    "faultVertices": 31646,
+    "points": 1725,
+    "lineWidth": 12,
+    "pixelRatio": 1.5,
+    "canvasW": 1908,
+    "canvasH": 1152,
+    "jsHeapMB": 65
+  },
+  "frame": {
+    "frames": 594,
+    "fps": 59.4,
+    "p50": 16.7,
+    "p95": 17,
+    "max": 33.6
+  },
+  "longTask": {
+    "count": 0,
+    "totalMs": 0,
+    "maxMs": 0
+  }
+}
