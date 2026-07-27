@@ -11,6 +11,8 @@
 | `poc/index.html` / `poc/main.ts` | 素の maplibre-gl で 背景(GEBCO raster)＋活断層(line)＋観測点(circle) を描画。3軸を実行時に切替 |
 | `poc/measure.ts` | 静止/パン/ズームのフレーム時間・longtask 計測ランナー（層B）＋検証項目3（カメラ操作）の flyTo/fitBounds 計測。証跡を `/__perf-report` へ送る |
 | `poc/hittest.html` / `poc/hittest.ts` | 検証項目4: bbox方式（`queryRenderedFeatures`＋小さな bbox）の当たり判定 PoC。既知の直線でオフセット距離を制御して検証 |
+| `poc/label.html` / `poc/label.ts` | §8「テキスト描画」: glyphs未設定・text-fontにOS日本語フォント名のみでラベルが描けるかの検証 |
+| `poc/webglMemoryTracker.ts` | §8「実行時メモリ」: WebGLコンテキストをプロキシしバッファ/テクスチャ確保量を推定するユーティリティ。`poc/main.ts` に統合済み |
 | `vite.poc.config.ts` | PoC専用の最小 vite（react/PWA/サブパスを外す。`optimizeDeps.exclude:['maplibre-gl']` で GeoJSON worker を有効化） |
 | `scripts/perf/build-active-faults-full.mjs` | フル解像度活断層(31,646頂点)生成。thin(9,874頂点) は本体の `active-faults.json` |
 
@@ -109,7 +111,23 @@ await window.__runCameraSuite('surface-go2-camera')
 ## 結果の読み方
 
 各 JSON の `frame.p95`（体感を決めるフレーム時間の95%）・`frame.fps`・`longTask` を run 横断で比較する。
-`meta` に軸パラメータ（`faults` / `faultVertices` / `lineWidth` / `pixelRatio` / `canvasW`×`canvasH` / `devicePixelRatio`）が入る。
+`meta` に軸パラメータ（`faults` / `faultVertices` / `lineWidth` / `pixelRatio` / `canvasW`×`canvasH` / `devicePixelRatio`）と、
+`jsHeapMB`（JSヒープ）・`webglMemory`（WebGL推定メモリ、下記参照）が入る。
+
+## 実行時メモリ推定（検証項目: §8「実行時メモリ」）
+
+`performance.memory` は JS ヒープのみで WebGL バッファ・テクスチャ・レンダーバッファを含まない。
+`poc/webglMemoryTracker.ts` が WebGL コンテキストをプロキシして `bufferData`/`texStorage2D`/
+`renderbufferStorage` 等の呼び出しから確保量を推定し、`poc/main.ts` の stat パネル・計測レポート
+（`meta.webglMemory` = `{bufferBytes, textureBytes, renderbufferBytes, totalBytes}`）に統合済み。
+
+- stat パネルの「WebGL推定(buf/tex/rb)」「推定実行時メモリ」を見れば、開発機でも軸を振ったときの
+  反応（実測: DPR 1.0→2.0 でテクスチャ推定値が約1.89倍＝DPR¹に近い線形。塗り面積のDPR²則とは
+  別軸で、主に可視タイル枚数の増加として効いていると見られる）を確認できる。
+- あくまで概算（ミップレベル未考慮・不明フォーマットは安全側に丸め）。**実機のタスクマネージャ実測
+  との突き合わせ・長時間稼働でのリーク有無の確認は未実施**（§8 に記載、残作業）。
+- `webglcontextlost` 時はカウンタ・bind状態をリセットする（旧コンテキストのオブジェクトは
+  `delete*()` されないまま失効するため、リセットしないと二重計上になる）。
 
 ## トラブルシュート
 
