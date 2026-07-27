@@ -493,4 +493,161 @@ export function installMeasure(deps: MeasureDeps): void {
     }
     console.log('[camera] suite 完了')
   }
+
+  // --- 検証項目: §8「実行時メモリ」= 長時間稼働の安定性観測 ---
+  //
+  // 【計測方針（2026-07-27 ユーザー判断）】VRAM（GPU テクスチャ）はブラウザ/OS から観測できず
+  // `performance.memory` は JS ヒープのみのため、バイトの厳密計測は原理的に不可能。そこで
+  // §8 の問い（＝移行で 4GB 機が不安定化するか）に直答するため、**実機で長時間稼働させて
+  // タブ kill / context lost / OOM という「結果」が起きるかを観測**する（webgl-poc-surface-go2-2026-07-27.md
+  // ③・計画書 §8）。バイト計測でなく結果を見る。
+  //
+  // 実利用（防災アプリ＝常時表示・時々 EEW で flyTo）を模し、sampleEverySec ごとに1回だけ軽く
+  // カメラを動かして（ランダム地点へ flyTo → 日本全体へ戻す＝タイル/テクスチャの確保・解放を促す）、
+  // その都度 jsHeap・webglMemory 推定・contextLost 回数・longtask をスナップショットして /__perf-report へ送る。
+  // 末尾に first/last/min/max とデルタの要約を送る。**判定は人が読む**: contextLost>0 は不安定、
+  // webglTotalMB / jsHeapMB の deltaFirstToLast が持続的に増え続けるならリーク疑い（単発の増減は無視）。
+  //
+  // 実機での呼び出し: await window.__runStabilitySuite('surface-go2-stability', 30)  // 30分
+  // 途中停止: window.__stopStabilitySuite()
+  // 【注意】タブ kill 自体はページ消滅のため自己申告できない。最後に届いたサンプルの elapsedSec/when が
+  // 「いつまで生きていたか」を示す（＝実機側でサンプルが途切れたら kill/reload と判断する）。
+  w.__runStabilitySuite = async (labelBase = 'stability', minutes = 30, sampleEverySec = 30) => {
+    const { map } = deps
+    const canvas = map.getCanvas()
+    let contextLost = 0
+    let contextRestored = 0
+    const onLost = () => {
+      contextLost++
+      console.warn(`[stability] webglcontextlost #${contextLost}`)
+    }
+    const onRestored = () => {
+      contextRestored++
+      console.warn(`[stability] webglcontextrestored #${contextRestored}`)
+    }
+    canvas.addEventListener('webglcontextlost', onLost)
+    canvas.addEventListener('webglcontextrestored', onRestored)
+
+    let stopped = false
+    w.__stopStabilitySuite = () => {
+      stopped = true
+    }
+
+    const longTasks: number[] = []
+    let po: PerformanceObserver | null = null
+    try {
+      po = new PerformanceObserver((l) => {
+        for (const e of l.getEntries()) longTasks.push(e.duration)
+      })
+      po.observe({ type: 'longtask' })
+    } catch {
+      po = null
+    }
+
+    const samples: Record<string, number | null>[] = []
+    const takeSample = () => {
+      const snap = deps.snapshot() as { jsHeapMB?: number | null; webglMemory?: { totalBytes?: number } }
+      const webglTotalMB =
+        snap.webglMemory?.totalBytes != null ? round(snap.webglMemory.totalBytes / 1048576) : null
+      // 消費済み longtask は切り捨てる（配列を溜め続けると、まさに測りたい jsHeap トレンドに
+      // ハーネス自身のメモリ増加が混入するため）。
+      const newLt = longTasks.splice(0, longTasks.length)
+      const s: Record<string, number | null> = {
+        elapsedSec: Math.round((performance.now() - t0) / 1000),
+        jsHeapMB: snap.jsHeapMB ?? null,
+        webglTotalMB,
+        contextLost,
+        contextRestored,
+        ltCount: newLt.length,
+        ltMaxMs: round(newLt.length ? Math.max(...newLt) : 0),
+      }
+      samples.push(s)
+      return s
+    }
+    const sampleMeta = () => ({
+      when: new Date().toISOString(),
+      label: `${labelBase}-sample`,
+      kind: 'stability-sample',
+      url: location.href,
+      ua: navigator.userAgent,
+      ...deps.snapshot(),
+    })
+    // moveend が来なくても進めるようタイムアウトと対にする。map.once ではタイムアウト経路で
+    // リスナーが残り連続実行で蓄積するため（measureOneFly と同じ教訓）、on/off を自前で対にして外す。
+    const flyAndWait = (fly: () => void) =>
+      new Promise<void>((res) => {
+        let settled = false
+        const handler = () => {
+          if (settled) return
+          settled = true
+          clearTimeout(timeout)
+          map.off('moveend', handler)
+          res()
+        }
+        const timeout = setTimeout(handler, 3000)
+        map.on('moveend', handler)
+        fly()
+      })
+
+    const t0 = performance.now()
+    const totalMs = minutes * 60_000
+    map.setZoom(START_ZOOM)
+    await waitIdle(map)
+    console.log(
+      `[stability] 開始: ${minutes}分・${sampleEverySec}秒ごとにサンプル。途中停止は __stopStabilitySuite()`,
+    )
+    await sendReport({ meta: sampleMeta(), sample: takeSample() }, '[stability] sample(初期)', null)
+
+    while (!stopped && performance.now() - t0 < totalMs) {
+      // 実利用を模した軽い活動: ランダム地点へ flyTo → 日本全体へ戻す（タイル/テクスチャの確保・解放を促す）
+      await flyAndWait(() =>
+        map.flyTo({ center: randomPointInJapan(), zoom: CAMERA_MAX_ZOOM, duration: 1000, essential: true }),
+      )
+      await flyAndWait(() =>
+        map.fitBounds(JAPAN_BOUNDS_LNGLAT, { padding: 20, duration: 1000, essential: true }),
+      )
+      // サンプル間隔は近似（2回の flyAndWait が計 ~2000ms で終わる前提で残りを待つ）。フレーム落ちで
+      // 飛行が延びると間隔は延びうるが、各サンプルの elapsedSec は実測値なので記録自体は正確。
+      await new Promise((r) => setTimeout(r, Math.max(0, sampleEverySec * 1000 - 2000)))
+      const s = takeSample()
+      await sendReport({ meta: sampleMeta(), sample: s }, `[stability] +${s.elapsedSec}s`, s)
+    }
+
+    canvas.removeEventListener('webglcontextlost', onLost)
+    canvas.removeEventListener('webglcontextrestored', onRestored)
+    if (po) po.disconnect()
+
+    const trend = (key: 'jsHeapMB' | 'webglTotalMB') => {
+      const arr = samples.map((s) => s[key]).filter((v): v is number => v != null)
+      if (!arr.length) return null
+      return {
+        first: arr[0],
+        last: arr[arr.length - 1],
+        min: Math.min(...arr),
+        max: Math.max(...arr),
+        deltaFirstToLast: round(arr[arr.length - 1] - arr[0]),
+      }
+    }
+    const summary = {
+      meta: {
+        when: new Date().toISOString(),
+        label: `${labelBase}-summary`,
+        kind: 'stability-summary',
+        url: location.href,
+        ua: navigator.userAgent,
+        durationSec: Math.round((performance.now() - t0) / 1000),
+        samples: samples.length,
+        ...deps.snapshot(),
+      },
+      contextLost,
+      contextRestored,
+      jsHeapMB: trend('jsHeapMB'),
+      webglTotalMB: trend('webglTotalMB'),
+      // 自動判定ではなく人が読むための目安。contextLost>0 は不安定。デルタが持続的増加ならリーク疑い。
+      stableHint: contextLost === 0,
+    }
+    await sendReport(summary, '[stability] summary', summary)
+    console.log('[stability] 完了', summary)
+    return summary
+  }
 }
