@@ -21,10 +21,10 @@
 | 5×6 交差点 | 済 | 済（`subrt` 20） | **決着**＝インデックスバッファ方式 |
 | 7 EEW 複合負荷 | 済 | 済（`eew` 8） | **決着**＝天井内 |
 | §8 テキスト描画 | 済 | 済（`label` 4） | **要対処・方式決定済**＝初回グリフ生成 100〜260ms。対処は **B（グリフPBF自前生成・ホスト）に決定**（2026-07-27）・実装は本設計 |
-| §8 実行時メモリ | 済（推定ツール＋安定性観測ハーネス） | WebGL 推定のみ（`memory` 1）・長時間観測は実機待ち | **方針決定済・資材作成済**＝バイト計測でなく**実機での長時間稼働の安定性**（タブkill/context lost）を答とする。`__runStabilitySuite` 実装済み（2026-07-27） |
+| §8 実行時メモリ | 済（推定ツール＋安定性観測ハーネス） | WebGL 推定（`memory` 1）＋**安定性観測 決着（PASS・実機30分完走）** | **決着（PASS）**＝実機（Surface Go 2）で `__runStabilitySuite` 30分完走・`contextLost:0`・メモリは初期立ち上がり後プラトー（41〜44MB帯で振動）。§8末尾／[結果記録](webgl-poc-surface-go2-stability-2026-07-27.md)参照（2026-07-28） |
 | モバイル | 描画一次確認 | — | リリース後対応（GO/NO-GO 外） |
 
-**総合: GO/NO-GO は GO。** 実機待ちで残るのは「項目3 の Leaflet 側カメラ計測（比較対象の作成が要る）」と「§8 実行時メモリの本番比較」。§8 テキスト描画は要対処だが方式選択で回避可能なため GO は不変。
+**総合: GO/NO-GO は GO。** §8 実行時メモリの安定性観測は PASS で決着（2026-07-28）。実機待りで残るのは「本番ビルドでの実機再計測（層 A 残差の実寸・残作業D）」。§8 テキスト描画は要対処だが方式選択で回避可能なため GO は不変。
 
 本ドキュメントは「非力な PC で地図描画が重い」問題に対し、描画基盤を MapLibre GL JS へ一本化する取り組みの調査結果・方式判断・保つべき仕様・進め方を記録する。実装はまだ行っていない。進め方は **「まず問題を二層（静止時負荷／フル解像度負荷）に分解 → 安価な中間改善（層 A の差分更新化）と律速（CPU / GPU フィルレート）の切り分けを先に実測 → その結果で全面リライトの是非を確定 → PoC で残る致命的リスクを潰す → 本設計」** の順とする（詳細は §2.4・§6）。律速がフィルレートだと判明した場合は、間引き廃止を保留し DPR 抑制を軸に対策を組み替える分岐を持つ（一本化の是非は DPR 抑制の実装手段の観点から再判断する。§6「フィルレート律速だった場合の分岐」）。
 
@@ -865,6 +865,13 @@ MapLibre 側の longtask は 2 スイート目でほぼ消えた（**原因は�
       - **操作**: ハーネスが実利用を模した軽い活動（30秒ごとに flyTo/fitBounds）を自動で継続する。ユーザーは開始後は放置でよい。
       - **FAIL 条件（いずれか1つでも該当したら移行に赤信号）**: ①`contextLost > 0`（通常操作中に WebGL コンテキスト喪失）②サンプルが意図した時間より前で途切れる（＝タブ kill / reload。最後のサンプルの `elapsedSec` で判定）③`jsHeapMB` または `webglTotalMB` の `deltaFirstToLast` が頭打ちにならず単調に増え続ける（リーク）。
       - **PASS 条件**: `contextLost === 0` かつ タブ生存（意図時間まで完走）かつ メモリが**初期ウォームアップ後に頭打ち（プラトー）**。**初期の立ち上がり増加（working set がタイル/テクスチャで埋まる分）は正常なので無視し、後半で持続的・単調に増え続けるかだけを見る**（min/max/first/last の並びで判断）。
+    - **【2026-07-28 決着・PASS】** 実機（Surface Go 2）で `__runStabilitySuite('surface-go2-stability', 30)` を実行。
+      1回目（15:27〜）は別環境からの `git pull` が PoC dev サーバー（`:5173`）を自動再起動させ42サンプルで中断
+      （[[feedback-no-pull-during-long-measurement]]）、2回目（15:59〜16:26）で **30分04秒（1804秒・61サンプル）完走**。
+      `contextLost:0`・`contextRestored:0`。`jsHeapMB` は27.9〜38.8MBで終始振動。`webglTotalMB` は最初の約3.5分で
+      6.98MB→39.4MBと立ち上がった後、残り約26.5分は41〜44MB帯で振動するのみでプラトー（単調増加の継続なし）。
+      **PASS 条件を全て満たし FAIL 条件は該当なし。§8 実行時メモリの安定性観測はこれで決着**（結果記録:
+      [webgl-poc-surface-go2-stability-2026-07-27.md](webgl-poc-surface-go2-stability-2026-07-27.md)）。
     - `performance.memory` は JS ヒープのみで WebGL バッファ・テクスチャ・レンダーバッファを含まない。ブラウザに WebGL メモリ使用量の直接取得 API は無いため、`poc/webglMemoryTracker.ts` を新設し、`HTMLCanvasElement.prototype.getContext` をモンキーパッチして MapLibre が内部生成する WebGL2 コンテキストを捕捉、`bufferData`/`texImage2D`/`texStorage2D`/`renderbufferStorage` 等の呼び出しを横取りして確保・解放バイト数を積算する方式で推定値を得る構成にした。ブラウザに WebGL メモリ使用量の直接取得 API は無いため、`poc/webglMemoryTracker.ts` を新設し、`HTMLCanvasElement.prototype.getContext` をモンキーパッチして MapLibre が内部生成する WebGL2 コンテキストを捕捉、`bufferData`/`texImage2D`/`texStorage2D`/`renderbufferStorage` 等の呼び出しを横取りして確保・解放バイト数を積算する方式で推定値を得る構成にした。
   - **つまずき1（実機投入前に解消）**: `HTMLCanvasElement.prototype.getContext` を `bind(proto)` して差し替えたところ、実際の canvas 要素から呼ばれた際に `TypeError: Illegal invocation` が発生した。`bind` すると `this` がプロトタイプ自体に固定されるため。`bind` せず元関数を保持し、呼び出し時の実際の `this`（本物の canvas 要素）で `call` するよう修正した。
   - **つまずき2（実機投入前に解消）**: 当初 `texImage2D` のみをフックしたところ、実際に運用してみるとテクスチャ推定値が常時 0MB のままだった。`node_modules/maplibre-gl` のソースを確認したところ、MapLibre はタイル用テクスチャ等の主要テクスチャを `texImage2D` ではなく `texStorage2D`（不変ストレージ確保）＋`texSubImage2D`（データ転送のみ）で確保しており、`texImage2D` はほぼ使っていなかった。`texStorage2D` も同様にフックし解消した。
