@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import L from 'leaflet'
 import { MapContainer, TileLayer, Marker, Polyline, Polygon, Popup, Pane, Tooltip, useMap, useMapEvents } from 'react-leaflet'
-import type { JMAQuake, JMATsunami, TsunamiGrade, TsunamiObservation, EEWAlert, JMALpgm } from '../../types/earthquake'
+import type { TsunamiGrade, EEWAlert } from '../../types/earthquake'
 import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
 import { getLpgmClassColor, getLpgmClassLabel } from '../../utils/lpgm'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
@@ -29,10 +29,10 @@ import { PsWaveLayer } from './PsWaveLayer'
 import { QuakeHeatmapLayer } from './QuakeHeatmapLayer'
 import { MAP_CANVAS_PADDING } from './mapCanvasPadding'
 import { flyToLite, flyToBoundsLite } from './flyToLite'
-import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
+import type { PsWaveCircle } from '../../services/kyoshin'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
-import type { HeatPoint } from '../../utils/quakeHeatmap'
 import { log } from '../../utils/logger'
+import type { JapanMapProps, MapMode } from './mapTypes'
 
 // 津波観測棒アイコン。波高・色ごとにキャッシュして再利用する。
 const obsBarIconCache = new Map<string, L.DivIcon>()
@@ -615,31 +615,9 @@ function FitJapanOnEnter({
   return null
 }
 
-export type MapMode = 'quake' | 'tsunami' | 'kyoshin'
-
-interface Props {
-  mode: MapMode
-  quake: JMAQuake | null
-  tsunamis: JMATsunami[]
-  observations?: TsunamiObservation[]
-  lpgm?: JMALpgm
-  iconScale?: number
-  showBathymetry?: boolean
-  showActiveFaults?: boolean
-  heatPoints?: HeatPoint[] | null
-  showPlateBoundaries?: boolean
-  kyoshinSites?: SiteCoords
-  kyoshinIndices?: number[]
-  kyoshinPsWave?: PsWaveCircle[]
-  eews?: EEWAlert[]
-  detectedPoints?: DetectedPoint[]
-  candidatePoints?: DetectedPoint[]
-  candidateId?: number | null
-  idleRevertSec?: number
-  eewLpgmEventId?: string | null
-  focusObsName?: { name: string; ts: number } | null
-  obsUpdateStatus?: Map<string, 'new' | 'updated'>
-}
+// 型は mapTypes.ts に集約（MapLibre 移行で JapanMapGL/MapView と共有）。
+// MapMode は既存の import 元（App 等）の後方互換のため再エクスポートする。
+export type { MapMode } from './mapTypes'
 
 export function JapanMap({
   mode,
@@ -663,7 +641,7 @@ export function JapanMap({
   eewLpgmEventId = null,
   focusObsName = null,
   obsUpdateStatus,
-}: Props) {
+}: JapanMapProps) {
   const stationCoords = useStationCoords()
   const tsunamiZones = useTsunamiZones()
   const tsunamiObsCoords = useTsunamiObsCoords()
