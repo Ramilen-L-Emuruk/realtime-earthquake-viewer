@@ -16,6 +16,7 @@ import { useKyoshinAlerts } from './hooks/useKyoshinAlerts'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
 import { useKyoshinDetectorV2 } from './hooks/useKyoshinDetectorV2'
 import { deriveKyoshinView } from './utils/kyoshinDetectionView'
+import { filterSubThresholdIndices } from './utils/kyoshinSubThresholdFilter'
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
 import { useDmdssWaves } from './hooks/useDmdssWaves'
 import { useQuakeHeatmap } from './hooks/useQuakeHeatmap'
@@ -484,6 +485,11 @@ export function App() {
     () => deriveKyoshinView(kyoshinV2.detections, kyoshin.sites, kyoshin.indices),
     [kyoshinV2.detections, kyoshin.sites, kyoshin.indices],
   )
+  // 震度0ドット表示専用: 検知エンジンが学習した慢性ノイズ床でフィルタする（震度1+表示には手を入れない）
+  const kyoshinSubIndices = useMemo(
+    () => filterSubThresholdIndices(kyoshin.sites, kyoshin.indices, kyoshinV2.floors),
+    [kyoshin.sites, kyoshin.indices, kyoshinV2.floors],
+  )
   // タイマーコールバック内から最新の confirmed 値を参照する ref（宣言はコンポーネント冒頭・代入はここ）
   kyoshinDetectedRef.current = kyoshinView.confirmed
 
@@ -573,6 +579,7 @@ export function App() {
             showPlateBoundaries={settings.showPlateBoundaries}
             kyoshinSites={kyoshin.sites}
             kyoshinIndices={kyoshin.indices}
+            kyoshinSubIndices={kyoshinSubIndices}
             kyoshinPsWave={psWave}
             eews={eewsForMap}
             detectedPoints={kyoshinView.detectedPoints}
