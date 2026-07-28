@@ -21,6 +21,7 @@ import { pointInRings, normalizeEpicenterLng } from '../utils/geo'
 export const QUAKE_MAX_ZOOM = 8
 // 震源経度の正規化に使う日本中心の経度（Leaflet 版 JAPAN_CENTER[1] と一致）。
 const JAPAN_CENTER_LNG = 137.7
+const JAPAN_CENTER_LAT = 38.25
 
 export interface IntensityMarker {
   key: string
@@ -68,6 +69,10 @@ export interface QuakeLayerData {
   lpgmMarkers: LpgmMarker[]
   /** LPGM 一次細分区域集約（階級の弱い順）。 */
   lpgmRegionAggregates: LpgmRegionAggregate[]
+  /** 地震モードのカメラフィット対象（各観測点＋震源）。 */
+  quakeFitPositions: LatLng[]
+  /** カメラフィットの発火判定用シグネチャ（変化時のみフィット）。 */
+  quakeSignature: string
 }
 
 export function useQuakeLayerData(
@@ -205,6 +210,16 @@ export function useQuakeLayerData(
       .sort((a, b) => a.maxLgInt - b.maxLgInt)
   }, [lpgmActive, lpgm, subregions])
 
+  // 地震モードのカメラフィット対象（各観測点＋震源。遠地地震は震源のみになるため日本中心も加える）。
+  const quakeFitPositions = useMemo<LatLng[]>(() => {
+    const positions = intensityMarkers.map((m) => m.position)
+    if (epicenter) positions.push(epicenter)
+    if (quake?.issue.type === '遠地地震' && hasEpicenter) positions.push([JAPAN_CENTER_LAT, JAPAN_CENTER_LNG])
+    return positions
+  }, [intensityMarkers, epicenter, hasEpicenter, quake])
+
+  const quakeSignature = `${quake?.id ?? ''}:${quakeFitPositions.length}`
+
   return {
     intensityMarkers,
     aggregateByRegion,
@@ -215,5 +230,7 @@ export function useQuakeLayerData(
     lpgmActive,
     lpgmMarkers,
     lpgmRegionAggregates,
+    quakeFitPositions,
+    quakeSignature,
   }
 }

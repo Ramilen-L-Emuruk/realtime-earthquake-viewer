@@ -43,3 +43,46 @@ export function fitToPositions(
   for (const [lat, lng] of positions) bounds.extend([lng, lat])
   map.fitBounds(bounds, { padding, maxZoom, duration: durationSec * 1000 })
 }
+
+/** bounds へ fitBounds する（duration 秒→ms）。 */
+export function flyToBounds(
+  map: maplibregl.Map,
+  bounds: maplibregl.LngLatBounds,
+  opts: { padding?: number; maxZoom?: number; durationSec?: number } = {},
+): void {
+  const { padding = 48, maxZoom = MAX_ZOOM, durationSec = 1.0 } = opts
+  map.fitBounds(bounds, { padding, maxZoom, duration: durationSec * 1000 })
+}
+
+// EEW 予報円（P波優先・無ければ S波）を包む bounds を算出する。各円は中心 ± 半径ぶんの箱として
+// 加える（Leaflet の L.latLng(c).toBounds(radius*2*1000) と同じく半径=箱の半幅）。半径0の円は無視。
+export function boundsFromCircles(
+  circles: { lat: number; lng: number; pRadius: number; sRadius: number }[],
+): maplibregl.LngLatBounds | null {
+  let bounds: maplibregl.LngLatBounds | null = null
+  for (const c of circles) {
+    const radiusKm = c.pRadius > 0 ? c.pRadius : c.sRadius
+    if (radiusKm <= 0) continue
+    const latDelta = radiusKm / 111.32
+    const lngDelta = radiusKm / (111.32 * Math.cos((c.lat * Math.PI) / 180))
+    const sw: [number, number] = [c.lng - lngDelta, c.lat - latDelta]
+    const ne: [number, number] = [c.lng + lngDelta, c.lat + latDelta]
+    if (!bounds) bounds = new maplibregl.LngLatBounds(sw, ne)
+    else {
+      bounds.extend(sw)
+      bounds.extend(ne)
+    }
+  }
+  return bounds
+}
+
+// 現在の表示範囲が target bounds を完全に含むか（EEW 波円成長フォローの「収まっているか」判定）。
+export function mapContainsBounds(map: maplibregl.Map, target: maplibregl.LngLatBounds): boolean {
+  const view = map.getBounds()
+  return (
+    view.getWest() <= target.getWest() &&
+    view.getEast() >= target.getEast() &&
+    view.getSouth() <= target.getSouth() &&
+    view.getNorth() >= target.getNorth()
+  )
+}
