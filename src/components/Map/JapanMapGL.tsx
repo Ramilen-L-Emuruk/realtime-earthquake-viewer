@@ -7,7 +7,11 @@ import { KyoshinSubThresholdGL } from './KyoshinSubThresholdGL'
 import { KyoshinPointsGL } from './KyoshinPointsGL'
 import { KyoshinDetectedPointsGL } from './KyoshinDetectedPointsGL'
 import { KyoshinMaxEffectGL } from './KyoshinMaxEffectGL'
+import { ActiveFaultsGL } from './ActiveFaultsGL'
+import { PlateBoundariesGL } from './PlateBoundariesGL'
 import { JAPAN_CENTER, fitJapan } from './gl/camera'
+import { useActiveFaults } from '../../hooks/useActiveFaults'
+import { usePlateBoundaries } from '../../hooks/usePlateBoundaries'
 import type { JapanMapProps } from './mapTypes'
 import { log } from '../../utils/logger'
 
@@ -29,10 +33,16 @@ export function JapanMapGL({
   kyoshinIndices = [],
   detectedPoints = [],
   iconScale = 1,
+  showActiveFaults = true,
+  showPlateBoundaries = true,
 }: JapanMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const [map, setMap] = useState<maplibregl.Map | null>(null)
+  const activeFaults = useActiveFaults()
+  const plateBoundaries = usePlateBoundaries()
+  // 活断層・プレート境界は地震／リアルタイム震度モードで表示する（Leaflet 版と同条件）。
+  const showOverlayLines = mode === 'quake' || mode === 'kyoshin'
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -73,6 +83,9 @@ export function JapanMapGL({
         <MapGLContext.Provider value={map}>
           {/* 後続フェーズのレイヤーコンポーネントはここに置く（map を Context で購読） */}
           <BaseMapGL showBathymetry={showBathymetry} />
+          {/* 活断層・プレート境界（quake/kyoshin モード）。kyoshin ドット群の下に敷く。 */}
+          <PlateBoundariesGL plateBoundaries={plateBoundaries} visible={showOverlayLines && showPlateBoundaries} />
+          <ActiveFaultsGL activeFaults={activeFaults} visible={showOverlayLines && showActiveFaults} />
           {mode === 'kyoshin' && (
             <>
               {/* SubThreshold(index1〜6)を先に置き、その上に KyoshinPoints(index7+)を重ねる。
