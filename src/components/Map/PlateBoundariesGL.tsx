@@ -3,7 +3,7 @@ import { useMapGL } from './mapGLContext'
 import type { PlateBoundarySegment } from '../../utils/plateBoundaries'
 import { segmentsToMultiLineFC } from './gl/geojson'
 import { bindLinePopup, twoLinePopupHtml, type LinePopupHandle } from './gl/linePopup'
-import { KYOSHIN_LAYER_ORDER, firstExistingLayerId } from './gl/kyoshinLayers'
+import { addOrderedLayer } from './gl/layerOrder'
 
 // 日本周辺のプレート境界線（PB2002モデル）を描画する MapLibre 版（Leaflet の PlateBoundariesLayer 相当）。
 // セグメント1件=MultiLineString feature 1件にまとめ、1枚の line レイヤーで描く。沈み込み境界と
@@ -34,26 +34,23 @@ export function PlateBoundariesGL({ plateBoundaries, visible }: Props) {
       type: seg.type,
     }))
     map.addSource(SRC, { type: 'geojson', data: fc })
-    // 線は kyoshin ドット群の下（＝あれば最初の kyoshin レイヤーの直前、無ければ最上段）へ挿入する。
-    map.addLayer(
-      {
-        id: LYR,
-        type: 'line',
-        source: SRC,
-        layout: {
-          'line-join': 'round',
-          'line-cap': 'butt',
-          visibility: visible ? 'visible' : 'none',
-        },
-        paint: {
-          'line-color': ['match', ['get', 'type'], 'subduction', SUBDUCTION_COLOR, OTHER_COLOR],
-          'line-width': 2,
-          'line-opacity': 0.55,
-          'line-dasharray': [3, 2],
-        },
+    // MAP_LAYER_ORDER に従い最下層付近（活断層より下）へ挿入する（追加順非依存）。
+    addOrderedLayer(map, {
+      id: LYR,
+      type: 'line',
+      source: SRC,
+      layout: {
+        'line-join': 'round',
+        'line-cap': 'butt',
+        visibility: visible ? 'visible' : 'none',
       },
-      firstExistingLayerId(map, KYOSHIN_LAYER_ORDER),
-    )
+      paint: {
+        'line-color': ['match', ['get', 'type'], 'subduction', SUBDUCTION_COLOR, OTHER_COLOR],
+        'line-width': 2,
+        'line-opacity': 0.55,
+        'line-dasharray': [3, 2],
+      },
+    })
     popupRef.current = bindLinePopup(map, LYR, HIT_TOL_PX, (f) => {
       const p = f.properties ?? {}
       const type = p.type === 'subduction' ? '沈み込み境界' : '境界種別不明'
