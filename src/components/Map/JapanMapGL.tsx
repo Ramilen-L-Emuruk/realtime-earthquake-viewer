@@ -3,6 +3,7 @@ import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { MapGLContext } from './mapGLContext'
 import { BaseMapGL } from './BaseMapGL'
+import { LabelsGL } from './LabelsGL'
 import { KyoshinSubThresholdGL } from './KyoshinSubThresholdGL'
 import { KyoshinPointsGL } from './KyoshinPointsGL'
 import { KyoshinDetectedPointsGL } from './KyoshinDetectedPointsGL'
@@ -112,9 +113,14 @@ export function JapanMapGL({
       center: JAPAN_CENTER,
       zoom: INITIAL_ZOOM,
       attributionControl: false,
-      // F0: 背景色のみの空スタイル。ソース/レイヤーは後続フェーズで追加する。
+      // CJK ラベルはビルド時に事前生成した SDF グリフ PBF（public/fonts/<stack>/<range>.pbf）を
+      // 使う。localIdeographFontFamily:false で漢字を実行時 TinySDF 生成に回さず、必ずサーバー
+      // グリフを取りに行かせる（区域名初出＝自動ズームと重なる最悪局面の生成スパイクを恒久的に消す。
+      // 移行計画 §8・scripts/build-glyphs.mjs）。
+      localIdeographFontFamily: false,
       style: {
         version: 8,
+        glyphs: `${import.meta.env.BASE_URL}fonts/{fontstack}/{range}.pbf`,
         sources: {},
         layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#0a0c10' } }],
       },
@@ -149,6 +155,8 @@ export function JapanMapGL({
         <MapGLContext.Provider value={map}>
           {/* 後続フェーズのレイヤーコンポーネントはここに置く（map を Context で購読） */}
           <BaseMapGL showBathymetry={showBathymetry} />
+          {/* 地名ラベル（地方/県/区域名・最前面）。リアルタイム表示では地方ラベルを抑制する。 */}
+          <LabelsGL suppressRegionLabels={mode === 'kyoshin'} />
           {/* 活断層・プレート境界（quake/kyoshin モード）。kyoshin ドット群の下に敷く。 */}
           {/* 地震活動ヒートマップ（quake/kyoshin モードで heatPoints があるとき・区域塗りより背面）。 */}
           {(mode === 'quake' || mode === 'kyoshin') && heatPoints && heatPoints.length > 0 && (

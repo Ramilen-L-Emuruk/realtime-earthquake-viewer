@@ -37,6 +37,10 @@ export const MAP_LAYER_ORDER = [
   'pswave',
   // 津波海岸線は発報中は全モードで最前面付近に描く（Leaflet の z270 相当）。
   'tsunami-lines',
+  // 地名ラベル（地方/県/区域名）は最前面（Leaflet の basemap-labels z450 相当）。
+  'basemap-region-labels',
+  'basemap-pref-labels',
+  'basemap-subregion-labels',
 ] as const
 
 export type MapLayerId = (typeof MAP_LAYER_ORDER)[number]
