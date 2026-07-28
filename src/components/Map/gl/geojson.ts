@@ -1,5 +1,5 @@
 import type { LatLng } from '../../../utils/stationCoords'
-import type { Feature, FeatureCollection, Polygon, LineString } from 'geojson'
+import type { Feature, FeatureCollection, Polygon, LineString, MultiLineString, GeoJsonProperties } from 'geojson'
 
 // 生成データ（public/data/*.json）は Leaflet の [lat,lng] 順。MapLibre / GeoJSON は [lng,lat] 順の
 // ため、リング座標を入れ替える共通ヘルパ。MapLibre 移行の全レイヤーで再利用する。
@@ -37,4 +37,23 @@ export function ringsToLineFC(ringGroups: LatLng[][][]): FeatureCollection<LineS
     }
   }
   return { type: 'FeatureCollection', features }
+}
+
+/**
+ * 複数ライン（LatLng[][]）を持つセグメント配列を、セグメント1件=MultiLineString Feature 1件の
+ * FeatureCollection にする（活断層・プレート境界のように、1セグメントに属性＋複数ラインを持つデータ用）。
+ * props でセグメントからクリック時のポップアップに使う属性を取り出す。
+ */
+export function segmentsToMultiLineFC<T extends { lines: LatLng[][] }>(
+  segments: T[],
+  props: (seg: T) => GeoJsonProperties,
+): FeatureCollection<MultiLineString> {
+  return {
+    type: 'FeatureCollection',
+    features: segments.map((seg) => ({
+      type: 'Feature',
+      properties: props(seg),
+      geometry: { type: 'MultiLineString', coordinates: seg.lines.map(ringToLngLat) },
+    })),
+  }
 }
