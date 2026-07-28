@@ -3,6 +3,7 @@ import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { MapGLContext } from './mapGLContext'
 import { BaseMapGL } from './BaseMapGL'
+import { KyoshinPointsGL } from './KyoshinPointsGL'
 import { JAPAN_CENTER, fitJapan } from './gl/camera'
 import type { JapanMapProps } from './mapTypes'
 import { log } from '../../utils/logger'
@@ -18,7 +19,13 @@ import { log } from '../../utils/logger'
 // 初期ズーム（load 後に fitJapan で日本全体フレーミングへ合わせるため暫定値）。
 const INITIAL_ZOOM = 5
 
-export function JapanMapGL({ showBathymetry = true }: JapanMapProps) {
+export function JapanMapGL({
+  mode,
+  showBathymetry = true,
+  kyoshinSites = [],
+  kyoshinIndices = [],
+  iconScale = 1,
+}: JapanMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const [map, setMap] = useState<maplibregl.Map | null>(null)
@@ -62,6 +69,9 @@ export function JapanMapGL({ showBathymetry = true }: JapanMapProps) {
         <MapGLContext.Provider value={map}>
           {/* 後続フェーズのレイヤーコンポーネントはここに置く（map を Context で購読） */}
           <BaseMapGL showBathymetry={showBathymetry} />
+          {mode === 'kyoshin' && (
+            <KyoshinPointsGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
+          )}
         </MapGLContext.Provider>
       </div>
     </div>
