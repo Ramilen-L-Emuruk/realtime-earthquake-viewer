@@ -13,6 +13,15 @@ export const KYOSHIN_LAYER_ORDER = [
   'kyoshin-ripple',
 ] as const
 
+// ids のうち map 上に既に存在する最初のレイヤー id を返す（無ければ undefined）。
+// beforeId の算出に使う（このレイヤーより前面に来るべき層の直前へ挿入する用途）。
+export function firstExistingLayerId(map: MapLibreMap, ids: readonly string[]): string | undefined {
+  for (const id of ids) {
+    if (map.getLayer(id)) return id
+  }
+  return undefined
+}
+
 // layer を KYOSHIN_LAYER_ORDER の正しいスロットへ追加する。自分より後段（前面）にあるべき
 // 既存レイヤーのうち最初のものを beforeId に指定して、その直前へ挿入する（該当が無ければ最上段）。
 export function addKyoshinLayer(map: MapLibreMap, layer: LayerSpecification): void {
