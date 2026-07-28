@@ -24,6 +24,8 @@ export interface JapanMapProps {
   showPlateBoundaries?: boolean
   kyoshinSites?: SiteCoords
   kyoshinIndices?: number[]
+  /** 震度0ドット（KyoshinSubThresholdGL）専用の慢性ノイズ床フィルタ適用済みインデックス。未指定時は kyoshinIndices をそのまま使う。 */
+  kyoshinSubIndices?: number[]
   kyoshinPsWave?: PsWaveCircle[]
   eews?: EEWAlert[]
   detectedPoints?: DetectedPoint[]

@@ -289,6 +289,17 @@ function effectiveFloor(s: SiteState): number {
   return clamp(s.floorMean + PARAMS.FLOOR_SIGMA_K * s.floorDev, PARAMS.FLOOR_MIN, PARAMS.FLOOR_CAP)
 }
 
+/**
+ * 表示専用の慢性ノイズ床（value）。震度0ドット表示（KyoshinSubThresholdGL）のフィルタに使う。
+ * 検知トリガー用の effectiveFloor と異なり下限 FLOOR_MIN を適用しない。静かな観測点（floorMean が
+ * 低い）はそのまま低い床のまま敏感に反応させ、慢性的にノイジーな観測点（floorMean が高い＝大阪・
+ * 岡山のような都市部の常時微振動点）だけ床を上げて平常時の反応を鈍く見せる。上限 FLOOR_CAP のみ
+ * 検知トリガー用の床と共有する（実地震の反応まで潰さないため）。
+ */
+export function chronicNoiseFloor(s: SiteState): number {
+  return Math.min(s.floorMean + PARAMS.FLOOR_SIGMA_K * s.floorDev, PARAMS.FLOOR_CAP)
+}
+
 // ============================================================
 // L0 静的メタ（実行時に一度計算・キャッシュ）
 // ============================================================

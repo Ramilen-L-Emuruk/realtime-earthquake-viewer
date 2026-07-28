@@ -295,6 +295,7 @@ realtime-earthquake-viewer/
 │       ├── kyoshinIntensity.ts     # リアルタイム震度インデックス→震度階級/色（気象庁配色）
 │       ├── kyoshinDetector.ts      # 強震モニタ検知エンジン（純粋コア: トリガー→アソシエーション→確信度スコア→分裂統合）
 │       ├── kyoshinDetectionView.ts # V2 検知イベント→表示状態（確信度・検知点・候補点）への変換
+│       ├── kyoshinSubThresholdFilter.ts # 震度0ドット表示専用: 検知エンジンが学習した慢性ノイズ床でフィルタ
 │       ├── notifications.ts        # ブラウザ通知の表示
 │       ├── lpgm.ts                 # 長周期地震動階級のラベル・色
 │       ├── tsunami.ts              # 津波情報の等級算出・観測情報のマージ

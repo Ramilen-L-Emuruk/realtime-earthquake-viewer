@@ -203,6 +203,7 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 - 対象は **index 1〜6**（震度0以下）。index 0 はデータ無し（`gl/subThresholdLayer.ts` の `subThresholdOpacity(0) = 0`）のため非表示。「0〜6」とコメントしない。
 - `KyoshinPointsGL.tsx` が気象庁配色で描画するのは **index 7+**（震度1以上）。
 - `KyoshinSubThresholdGL.tsx` は「同レベルのドット同士が重なっても濃くならない」非加算合成を FBO 二層合成のカスタムレイヤー（`gl/subThresholdLayer.ts`）で再現する。毎秒更新は index バッファのカウンティングソート＋`triggerRepaint`。
+- `KyoshinSubThresholdGL` に渡す `indices` は **Yahoo の生 index をそのまま渡さない**。`App.tsx` が `kyoshinSubThresholdFilter.ts` の `filterSubThresholdIndices` で、検知エンジン（`kyoshinDetector.ts`）が観測点ごとに学習した慢性ノイズ床（`chronicNoiseFloor`）＋`SUSTAIN_MARGIN` を超えた点だけに絞った `kyoshinSubIndices` を作り、`JapanMapGL` の `kyoshinSubIndices` prop 経由で渡す（`kyoshinIndices`＝生データは `KyoshinPointsGL`/`KyoshinMaxEffectGL` にそのまま渡り続ける・震度1+表示には影響しない）。大阪・岡山のような慢性的にノイジーな観測点が平常時ずっと点灯し続ける問題への対策（2026-07-29）。`floors` が空（検知エンジン未学習の起動直後1フレーム目）はフィルタなしで生データを返す。
 
 ### README プロジェクト構成ツリー
 - `src/components/`・`src/hooks/`・`src/utils/` に新ファイルを追加した場合は、`README.md` の「プロジェクト構成」ツリーにも追記する（README 更新の条件に含める）。
