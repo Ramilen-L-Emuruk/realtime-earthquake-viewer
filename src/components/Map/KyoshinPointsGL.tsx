@@ -3,6 +3,7 @@ import type { FeatureCollection, Point } from 'geojson'
 import { useMapGL } from './mapGLContext'
 import type { SiteCoords } from '../../services/kyoshin'
 import { kyoshinIntensityColor } from '../../utils/kyoshinIntensity'
+import { addKyoshinLayer } from './gl/kyoshinLayers'
 
 // 強震モニタの観測点（約1725点）のうち index 7+（震度1以上）を気象庁配色の circle で描画する
 // MapLibre 版（Leaflet の KyoshinPoints 相当）。index 0（データ無し）と index 1〜6（震度0以下・
@@ -43,7 +44,7 @@ export function KyoshinPointsGL({ sites, indices, iconScale }: Props) {
       })),
     }
     map.addSource(SRC, { type: 'geojson', data: fc })
-    map.addLayer({
+    addKyoshinLayer(map, {
       id: LYR,
       type: 'circle',
       source: SRC,
