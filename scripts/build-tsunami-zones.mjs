@@ -46,9 +46,10 @@ function perpDist([y, x], [ay, ax], [by, bx]) {
   return Math.hypot(y - cy, x - cx)
 }
 
-// Douglas-Peucker で海岸線ラインを間引く。区域塗り(subregions)と同じ許容誤差に揃える
-// （拡大時の崩れを抑えつつ、地図縮尺では見た目を保ったまま頂点数を減らす）。
-const EPSILON = 0.002 // 度（約220m相当）
+// Douglas-Peucker の許容誤差。0 = 間引き撤廃（全頂点保持）。ソースは既に高精細版 `_1` のため、撤廃する
+// だけで津波予報区の海岸線が最高精細になる（区域境界と同様。座標は toLatLng の丸めが下限精度。
+// ダウンロード量は増えるが描画性能は不変）。
+const EPSILON = 0 // 度（0=撤廃・全頂点保持。以前は 0.002≈220m で間引いていた）
 function simplify(points) {
   if (points.length < 3) return points
   let maxD = 0

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { IconNav, type TabId } from './components/IconNav'
-import { JapanMap, type MapMode } from './components/Map/JapanMap'
+import { MapView, type MapMode } from './components/Map/MapView'
 import { MapUpdateTime } from './components/MapUpdateTime'
 import { EarthquakeTab } from './components/EarthquakeTab'
 import { RealtimeTab } from './components/RealtimeTab'
@@ -189,6 +189,14 @@ export function App() {
     () => new Map([...activeEEWs].filter(([, v]) => !v.cancelledAt)),
     [activeEEWs],
   )
+
+  // 地図・パネルへ渡す EEW 配列は参照を安定させる。JSX 内で Array.from を直接呼ぶと毎レンダー
+  // 新しい配列になり、psWave の 100ms tick 等で App が再レンダーするたびに useEewLayerData の
+  // eewAreaFills（useMemo）が中身同一のまま再計算され、EEW 区域塗りが同一ジオメトリを冗長に
+  // setData → geojson-vt 再タイル化 → 連続自己再描画（weak GPU でのカクつき要因）を招く。
+  // useMemo で EEW データが実際に変わったときだけ配列を作り直す。
+  const eewsForMap = useMemo(() => Array.from(activeEEWsNoCancelled.values()), [activeEEWsNoCancelled])
+  const eewsForPanel = useMemo(() => Array.from(activeEEWs.values()), [activeEEWs])
 
   // EEW カード経由で選択したLPGMは、次報でforecastMaxLpgmClassがなくなった場合や
   // EEW 解除時に自動的に選択解除する
@@ -552,7 +560,7 @@ export function App() {
       <div className="flex-1 overflow-hidden flex flex-col lg:flex-row">
         {/* 常時表示の地図エリア（タブに応じて内容を切替） */}
         <div className="relative flex-1 min-h-0">
-          <JapanMap
+          <MapView
             mode={mapMode}
             quake={mapQuake}
             tsunamis={tsunamis}
@@ -566,7 +574,7 @@ export function App() {
             kyoshinSites={kyoshin.sites}
             kyoshinIndices={kyoshin.indices}
             kyoshinPsWave={psWave}
-            eews={Array.from(activeEEWsNoCancelled.values())}
+            eews={eewsForMap}
             detectedPoints={kyoshinView.detectedPoints}
             candidatePoints={kyoshinView.candidatePoints}
             candidateId={kyoshinView.candidateId}
@@ -606,7 +614,7 @@ export function App() {
           </div>
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'realtime' ? ' invisible pointer-events-none' : ''}`}>
             <RealtimeTab
-              eews={Array.from(activeEEWs.values())}
+              eews={eewsForPanel}
               kyoshinSites={kyoshin.sites}
               kyoshinIndices={kyoshin.indices}
               kyoshinV2Detections={kyoshinV2.detections}
