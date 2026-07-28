@@ -49,6 +49,11 @@ const FONT_SIZE = 24
 const BUFFER = 3
 const RADIUS = 8
 const CUTOFF = 0.25
+// フォントウェイト。可変フォント(Noto Sans JP・wght 軸)から太めのインスタンスでグリフを焼く。
+// 既定 700(Bold)＝ダーク地図上で細い文字が「非常に見づらい」とのユーザー指摘を受け、視認性を最優先に
+// 太字化する(Regular=400・SemiBold=600 より更に太い)。tiny-sdf は canvas の font 文字列にこの値を渡し、
+// napi-rs/canvas(skia) が可変フォントの wght 軸を選択する。
+const FONT_WEIGHT = process.env.GLYPH_WEIGHT ?? '700'
 
 // フォント指定。GLYPH_FONT にファイルパスが与えられれば登録して使う。既定は本リポジトリに同梱した
 // Noto Sans JP(OFL・再配布可)の可変フォント。これにより `node scripts/build-glyphs.mjs` 一発で
@@ -64,14 +69,37 @@ if (FONT_FILE) {
 const STACK = process.env.GLYPH_STACK ?? FONT_FAMILY
 const OUT_DIR = path.join(ROOT, 'public', 'fonts', STACK)
 
+// フォントスタック名の単一情報源(src/components/Map/gl/fontStack.ts の JP_FONT_STACK)と、これから
+// 出力する STACK が一致することをビルド時に照合する。ずれると MapLibre は該当テキストを無音で描かなく
+// なる(glyphs URL の {fontstack} と public/fonts/<stack>/ が食い違うサイレント障害)ため、ここで早期失敗
+// させる。.mjs は .ts を import できないためソースを読んでリテラルを取り出して突き合わせる。
+function readAppFontStack() {
+  const src = fs.readFileSync(path.join(ROOT, 'src', 'components', 'Map', 'gl', 'fontStack.ts'), 'utf8')
+  const m = src.match(/JP_FONT_STACK\s*=\s*'([^']+)'/)
+  if (!m) throw new Error('fontStack.ts から JP_FONT_STACK を読み取れなかった')
+  return m[1]
+}
+const APP_FONT_STACK = readAppFontStack()
+if (STACK !== APP_FONT_STACK) {
+  throw new Error(
+    `フォントスタック名の不一致: build-glyphs の STACK="${STACK}" ≠ アプリの JP_FONT_STACK="${APP_FONT_STACK}"。` +
+      `public/fonts/<stack>/ と text-font がずれるとテキストが無音で消える。fontStack.ts と GLYPH_STACK/GLYPH_FAMILY を揃えること。`,
+  )
+}
+
 /** ラベルに実際に使われる Unicode コードポイント集合を集める。 */
 function collectCodepoints() {
   const cps = new Set()
   const add = (s) => {
     for (const ch of s) cps.add(ch.codePointAt(0))
   }
-  // 地方 9（poc/label.ts の REGIONS と一致）
-  ;['北海道', '東北', '関東', '中部', '近畿', '中国', '四国', '九州', '沖縄'].forEach(add)
+  // 地方 9。単一情報源 src/utils/regions.ts の REGIONS から名前を読む（リテラル再定義だと LabelsGL が
+  // 使う REGIONS と非連動になり、地方区分変更時に新しい地方名だけ空白表示になる。.mjs は .ts を import
+  // できないためソースを読んで name を取り出す）。
+  const regionsSrc = fs.readFileSync(path.join(ROOT, 'src', 'utils', 'regions.ts'), 'utf8')
+  const regionNames = [...regionsSrc.matchAll(/name:\s*'([^']+)'/g)].map((m) => m[1])
+  if (regionNames.length === 0) throw new Error('regions.ts から地方名を読み取れなかった')
+  regionNames.forEach(add)
   // 震度ラベル（poc/label.ts の INTENSITY_LABELS と一致）
   ;['1', '2', '3', '4', '5弱', '5強', '6弱', '6強', '7'].forEach(add)
   // 県 47（prefectures.json のキー）
@@ -126,6 +154,7 @@ function main() {
     radius: RADIUS,
     cutoff: CUTOFF,
     fontFamily: FONT_FAMILY,
+    fontWeight: FONT_WEIGHT,
   })
   const cps = collectCodepoints()
   const blocks = groupByBlock(cps)
@@ -158,7 +187,7 @@ function main() {
     totalGlyphs += glyphs.length
   }
   console.log(
-    `glyphs generated: stack="${STACK}" font="${FONT_FILE || FONT_FAMILY}" ` +
+    `glyphs generated: stack="${STACK}" font="${FONT_FILE || FONT_FAMILY}" weight=${FONT_WEIGHT} ` +
       `codepoints=${cps.size} blocks=${sortedBlocks.length} glyphs=${totalGlyphs} -> public/fonts/${STACK}/`,
   )
 }
