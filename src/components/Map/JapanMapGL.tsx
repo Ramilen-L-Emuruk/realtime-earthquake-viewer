@@ -3,6 +3,7 @@ import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { MapGLContext } from './mapGLContext'
 import { BaseMapGL } from './BaseMapGL'
+import { JAPAN_CENTER, fitJapan } from './gl/camera'
 import type { JapanMapProps } from './mapTypes'
 import { log } from '../../utils/logger'
 
@@ -14,8 +15,7 @@ import { log } from '../../utils/logger'
 //
 // maplibre-gl 6 は default export を持たないため `import * as maplibregl`。
 
-// JapanMap.tsx の JAPAN_CENTER は Leaflet の [lat,lng]。MapLibre は [lng,lat] のため入れ替える。
-const JAPAN_CENTER: [number, number] = [138.0, 38.0]
+// 初期ズーム（load 後に fitJapan で日本全体フレーミングへ合わせるため暫定値）。
 const INITIAL_ZOOM = 5
 
 export function JapanMapGL({ showBathymetry = true }: JapanMapProps) {
@@ -41,7 +41,11 @@ export function JapanMapGL({ showBathymetry = true }: JapanMapProps) {
     // 検証用（Playwright から map を操作・レイヤー確認するため。PoC の __labelMap と同様の dev 補助）。
     ;(window as unknown as Record<string, unknown>).__mapGL = m
     m.on('error', (e) => log.error('[JapanMapGL] map error', e.error))
-    m.once('load', () => setMap(m))
+    m.once('load', () => {
+      // 本アプリの既定フレーミング（日本全体・padding 20）へ即時に合わせる。
+      fitJapan(m, 0)
+      setMap(m)
+    })
     return () => {
       mapRef.current = null
       setMap(null)
