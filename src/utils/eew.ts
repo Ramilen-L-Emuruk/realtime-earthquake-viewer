@@ -31,7 +31,7 @@ function calcPGV600(X: number, mw: number, depth: number): number {
  * 断層長（宇津 1977）を考慮した断層最短距離に変換してから計算する。
  * バッファ係数・上限キャップを適用済み。
  */
-function calcFeltRadiusKm(mjma: number, depth: number, targetIntensity = 1.0): number {
+export function calcFeltRadiusKm(mjma: number, depth: number, targetIntensity = 1.0): number {
   const mw = mjmaToMw(Math.max(mjma, 3.0))
   const faultHalfLen = 10 ** (0.5 * mw - 1.85)  // 断層半長(km)（宇津 1977: log L = 0.5Mw - 1.85）
   // 震度 targetIntensity に対応するPGVしきい値（翠川他 1999: I = 2.68 + 1.72·log(PGV)）
