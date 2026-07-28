@@ -18,9 +18,11 @@
  *   - flyto-widezoom-quake: 【分離】広ズーム(EEW 画角)でカメラ移動のみ＝高精細ベース×カメラの単独コスト
  *   - static-kyoshin     : リアルタイムモニタ静止（観測点1700+毎秒更新が加わる）
  *   - pan-maxzoom-kyoshin: リアルタイムで高ズーム連続パン
- *   - eew-static         : 【分離】EEW 複合をカメラ静止で＝毎秒更新+波+EEW塗り × 高精細ベースの持続コスト単独
  *   - maxload-eew        : 【防災アプリ最悪ケース】リアルタイム稼働中に EEW 特別警報テストを発火し、
  *                          予想震度塗り+震源+カメラ flyTo+毎秒更新を高精細ベースマップごと同時に走らせる
+ *                          （新規発報条件＝前回 n=3 基準と同一。EEW セクションの先頭で発火する）
+ *   - eew-static         : 【分離】EEW 複合をカメラ静止で＝毎秒更新+波+EEW塗り × 高精細ベースの持続コスト単独
+ *                          （直前 maxload の EEW が残るため続報になるが狙いは損なわれない）
  *
  * 使い方 A（手動・開発機/実機）: 本ファイルを DevTools コンソールへ貼り付け →
  *   `await window.__measureAppRender({ label: 'surface-go2' })` の返り値 JSON を記録。
@@ -257,28 +259,32 @@
     })
     scenarios['pan-maxzoom-kyoshin'] = await measureWindow(DUR, drivePan([139.6, 35.6], 11, 0.3, 0.1))
 
-    // 6) 【分離】EEW 複合を「カメラ静止」で測る＝毎秒更新+波(100ms)+EEW塗り × 高精細ベース(広ズーム・陸)。
-    //    EEW を発火→自動 flyTo が収まるのを待ってから、陸が広く映る定点へ固定して静止計測する。
-    //    maxload が遅く eew-static も遅ければ「カメラ移動でなく複合再描画×広ズームのベース」が主因、
-    //    eew-static が健全なら主因は flyTo 着地側（flyto-widezoom と突き合わせる）。
-    const EEW_LAND_VIEW = [140.8, 39.3] // 東北の陸が広く映る定点
-    m.jumpTo({ center: EEW_LAND_VIEW, zoom: 7.5 })
-    await sleep(300)
-    const eewFired1 = clickTestButton('EEW特別警報テスト') || clickTestButton('特別警報テスト')
-    await sleep(4000) // 発火時の自動 flyTo の収束を待つ
-    m.jumpTo({ center: EEW_LAND_VIEW, zoom: 7.5 }) // 定点へ戻して静止（陸を広く映す）
-    await sleep(500)
-    scenarios['eew-static'] = await measureWindow(8000, (d) => sleep(d))
-    scenarios['eew-static'].detect.eewFired = eewFired1
-
-    // 7) 【防災アプリ最悪ケース】リアルタイム稼働中に EEW 特別警報テスト発火（震度7・特別警報）。
+    // 6) 【防災アプリ最悪ケース】リアルタイム稼働中に EEW 特別警報テスト発火（震度7・特別警報）。
     //    予想震度塗り+震源+カメラ flyTo+毎秒更新+高精細ベースマップを同時に走らせて blockMaxMs を見る。
+    //    ※EEW セクションの先頭に置く＝計測窓内で最初の発火＝「新規発報」条件。前回 n=3 の基準
+    //      （maxload-eew が唯一・最初の発火）と同一条件で比較できるようにする（レビュー review-b9f5b95 の MEDIUM）。
     m.jumpTo({ center: [141.0, 38.3], zoom: 7 })
     await sleep(300)
     const eewFired = clickTestButton('EEW特別警報テスト') || clickTestButton('特別警報テスト')
     scenarios['maxload-eew'] = await measureWindow(opts.maxloadMs || 12000, (d) => sleep(d))
     scenarios['maxload-eew'].detect.eewFired = eewFired
     scenarios['maxload-eew'].detect.kyoshinReady = kyoshinOk
+
+    // 7) 【分離】EEW 複合を「カメラ静止」で測る＝毎秒更新+波(100ms)+EEW塗り × 高精細ベース(広ズーム・陸)。
+    //    直前 maxload の EEW がまだ有効（自動解除 ~30秒 > 経過 ~12秒）なため、ここの発火は「続報」になるが、
+    //    本シナリオの狙いは「カメラ静止での複合再描画の持続コスト」で、続報でも塗り/毎秒更新/波は同様に走り、
+    //    続報の再フィット flyTo は下の定点 jumpTo で上書きするため目的は損なわれない。maxload が遅く
+    //    eew-static も遅ければ主因は「複合再描画×広ズームのベース」、eew-static が健全なら flyTo 側
+    //    （flyto-widezoom と突き合わせる）。
+    const EEW_LAND_VIEW = [140.8, 39.3] // 東北の陸が広く映る定点
+    m.jumpTo({ center: EEW_LAND_VIEW, zoom: 7.5 })
+    await sleep(300)
+    const eewFired1 = clickTestButton('EEW特別警報テスト') || clickTestButton('特別警報テスト')
+    await sleep(4000) // 発火（続報）時の自動 flyTo の収束を待つ
+    m.jumpTo({ center: EEW_LAND_VIEW, zoom: 7.5 }) // 定点へ戻して静止（陸を広く映す）
+    await sleep(500)
+    scenarios['eew-static'] = await measureWindow(8000, (d) => sleep(d))
+    scenarios['eew-static'].detect.eewFired = eewFired1
 
     const result = {
       meta: {
