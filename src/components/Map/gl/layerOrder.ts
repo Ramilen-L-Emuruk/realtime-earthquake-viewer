@@ -32,6 +32,8 @@ export const MAP_LAYER_ORDER = [
   'kyoshin-detected',
   'kyoshin-ripple',
   'pswave',
+  // 津波海岸線は発報中は全モードで最前面付近に描く（Leaflet の z270 相当）。
+  'tsunami-lines',
 ] as const
 
 export type MapLayerId = (typeof MAP_LAYER_ORDER)[number]
