@@ -5,7 +5,7 @@ import { useMapGL } from './mapGLContext'
 import type { SiteCoords } from '../../services/kyoshin'
 import { kyoshinIntensityColor, kyoshinIndexToJma } from '../../utils/kyoshinIntensity'
 import { getScaleRadius } from '../../utils/intensity'
-import { addKyoshinLayer } from './gl/kyoshinLayers'
+import { addOrderedLayer } from './gl/layerOrder'
 
 // 最大震度更新時の波紋エフェクトを描画する MapLibre 版（Leaflet の KyoshinMaxEffect 相当）。
 // 波紋は最大インデックスが MIN_TRIGGER_INDEX 以上へ更新されたときに発生する短命アニメーション
@@ -49,7 +49,7 @@ export function KyoshinMaxEffectGL({ sites, indices, iconScale }: Props) {
   useEffect(() => {
     if (!map) return
     map.addSource(SRC, { type: 'geojson', data: EMPTY_FC })
-    addKyoshinLayer(map, {
+    addOrderedLayer(map, {
       id: LYR,
       type: 'circle',
       source: SRC,

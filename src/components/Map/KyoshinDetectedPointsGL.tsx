@@ -5,7 +5,7 @@ import { useMapGL } from './mapGLContext'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import { kyoshinIndexToJma, kyoshinIntensityColor } from '../../utils/kyoshinIntensity'
 import { getScaleRadius } from '../../utils/intensity'
-import { addKyoshinLayer } from './gl/kyoshinLayers'
+import { addOrderedLayer } from './gl/layerOrder'
 
 // 揺れ検知済み（確定）観測点を描画する MapLibre 版（Leaflet の KyoshinDetectedPoints 相当）。
 // points は検知中のみの少数（最大でも数十点程度）なので、KyoshinPoints のような feature-state 差分は
@@ -52,7 +52,7 @@ export function KyoshinDetectedPointsGL({ points, iconScale }: Props) {
   useEffect(() => {
     if (!map) return
     map.addSource(SRC, { type: 'geojson', data: EMPTY_FC })
-    addKyoshinLayer(map, {
+    addOrderedLayer(map, {
       id: LYR,
       type: 'circle',
       source: SRC,
