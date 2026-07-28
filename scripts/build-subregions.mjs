@@ -12,8 +12,10 @@ import { writeFile, mkdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
+// 末尾 `_1` は簡素化の緩い高精細版（原始約142,787頂点）。簡素化のきつい `_01` 版（約1/6.5・粗い行政界で
+// 海岸線が角張る）から切替えた。同じ 194 feature・properties(code/name/namekana)で区域定義は不変。
 const SOURCE_URL =
-  'https://raw.githubusercontent.com/Ichihai1415/JMA-GIS-GeoJSON/release/AreaForecastLocalE_GIS_20240520_01.geojson'
+  'https://raw.githubusercontent.com/Ichihai1415/JMA-GIS-GeoJSON/release/AreaForecastLocalE_GIS_20240520_1.geojson'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const OUT_DIR = join(__dirname, '..', 'public', 'data')
