@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
+// ?worker&url でワーカーとその依存（maplibre-gl-shared.mjs）を1ファイルにバンドルし URL を得る。
+// 単なる ?url だとワーカー単体しかコピーされず、ワーカー内の `import './maplibre-gl-shared.mjs'` が
+// 本番で 404 になり geojson タイル化が動かない（境界・区域が描画されない）。
+import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import { MapGLContext } from './mapGLContext'
 import { BaseMapGL } from './BaseMapGL'
 import { LabelsGL } from './LabelsGL'
@@ -47,6 +51,13 @@ import { log } from '../../utils/logger'
 // 子コンポーネントが useMapGL() で map を購読して描画する。
 //
 // maplibre-gl 6 は default export を持たないため `import * as maplibregl`。
+//
+// バンドラ（Vite/rollup）利用時は MapLibre GL JS v6 のワーカー URL を明示設定する必要がある
+// （v5→v6 移行ガイド: バンドラのモジュールグラフは worker ファイルパスを確実に解決できないため
+// setWorkerUrl() の一度きりの呼び出しが必須）。これを怠ると本番ビルドで GeoJSON ワーカーが解決できず、
+// 全 geojson ソースがタイル化されない＝ラスタ背景だけ描画され境界・区域・震度点等のベクタが一切出ない。
+// dev では未バンドルで自動解決されるため顕在化せず、本番のみで壊れる。モジュール読込時に一度だけ実行する。
+maplibregl.setWorkerUrl(maplibreWorkerUrl)
 
 // 初期ズーム（load 後に fitJapan で日本全体フレーミングへ合わせるため暫定値）。
 const INITIAL_ZOOM = 5
