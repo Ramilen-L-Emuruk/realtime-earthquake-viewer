@@ -115,6 +115,23 @@
   - **津波海岸線**（`build-tsunami-zones.mjs`・気象庁 津波予報区）: ソースは既に高精細版 `_1` だったため撤廃のみで最高精細に。86,846頂点（gzip 0.28MB）。大警報テストで三陸リアス海岸が高精細描画されることを確認。
   - **プレート境界線**（PB2002/fraxen）: 間引きは元々なし。原典が粗い全球モデルのため、これがソースの上限（別データに替えない限り高精細化不可・据え置き）。
   - 津波海岸線は細分区分とは別の気象庁データセットのため、細分区分の海岸線とは極拡大でわずかにズレうるが、津波発報時のみ太い等級色で描く event 用のため実害小（厳密一致まで求めるなら別途 dissolve 的処理が必要）。
+- **高精細化後の描画性能の実機計測ハーネス（2026-07-28）**: 上記の高精細化で地図上の主要な線・塗りの総頂点数が
+  約 358,000（一次細分区域142,471＋都道府県97,562＋活断層31,436＋津波86,846）＝**PoC 実機検証基準の 40,917 頂点の
+  約8.75倍**になった（レビュー `docs/webgl-migration-review-89188bd.md` の MEDIUM 指摘）。PoC 項目1 は合成スケーリング
+  （塗り面積4倍・線幅10倍）で律速不到達を確認したもので、実ジオメトリの生頂点増（頂点シェーダ・ライン結合数）は
+  性質が異なりうるため、**非力機（Surface Go 2）での実機計測で裏取りする**。
+  - ツール: `scripts/perf/measure-app-render.js`（PoC `poc/measure.ts` の実証済みプリミティブを実アプリ向けに移植）。
+    実アプリの `window.__mapGL` を駆動し 6 シナリオを計測: static/pan-maxzoom/zoom を quake・kyoshin 各モードで、
+    加えて **`maxload-eew`（防災アプリ最悪ケース）＝リアルタイム稼働中に EEW 特別警報テストを発火し、予想震度塗り＋
+    震源＋カメラ flyTo＋毎秒更新＋高精細ベースマップを同時に走らせる**。
+  - 主指標は **blockMaxMs（MessageChannel ping-pong の vsync 非依存ブロック検出）**——開発機は vsync 天井に張り付き
+    frame では差が出ないが、非力機の「カクッと引っかかる」実コストはこれで捉えられる（PoC の教訓）。fps は実 elapsed 割り、
+    各シナリオに `detect`（queryRenderedFeatures 数）を持たせ「狙った負荷を実際に踏んだか」を結果自身で保証する。
+  - 実機運用: `npm run dev:dmdss -- --host` → 実機ブラウザで DevTools から1行注入
+    `document.head.appendChild(Object.assign(document.createElement('script'),{src:'/__perf-script?file=measure-app-render.js&auto=1&label=surface-go2-hires'}))`
+    → 全シナリオ自動計測 → `scripts/perf/results/` へ証跡保存（perf-report プラグインを `?file=` で新スクリプト配信可に拡張）。
+  - 開発機スモークテスト済み（全6シナリオ動作・detect フラグで負荷計上を確認・`maxload-eew` が blockMax 最大＝設計通り）。
+    **実数の判定（非力機で発報時にカクつかないか）は実機計測待ち。**
 
 ### 2.4 問題の二層構造（重要な前提）
 
