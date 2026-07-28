@@ -15,8 +15,10 @@
  *   - static-quake       : 地震情報モード静止（境界+活断層+プレート+ラベルの高精細ジオメトリ・vsync 床）
  *   - pan-maxzoom-quake  : 高ズームで連続パン（全レイヤー・頂点シェーダ+ライン結合の実負荷）
  *   - zoom-quake         : ズームイン/アウト往復（再タイル化・LOD 切替コスト）
+ *   - flyto-widezoom-quake: 【分離】広ズーム(EEW 画角)でカメラ移動のみ＝高精細ベース×カメラの単独コスト
  *   - static-kyoshin     : リアルタイムモニタ静止（観測点1700+毎秒更新が加わる）
  *   - pan-maxzoom-kyoshin: リアルタイムで高ズーム連続パン
+ *   - eew-static         : 【分離】EEW 複合をカメラ静止で＝毎秒更新+波+EEW塗り × 高精細ベースの持続コスト単独
  *   - maxload-eew        : 【防災アプリ最悪ケース】リアルタイム稼働中に EEW 特別警報テストを発火し、
  *                          予想震度塗り+震源+カメラ flyTo+毎秒更新を高精細ベースマップごと同時に走らせる
  *
@@ -105,6 +107,17 @@
       po = null
     }
 
+    // 窓の途中(60%地点)でも detect を採る。maxload 等は終端でカメラが海上へ flyTo して陸が
+    // 画面外になり end の detect が全0になるため、負荷が乗っている最中のスナップショットを別に持つ。
+    let detectMid = null
+    const midTimer = setTimeout(() => {
+      try {
+        detectMid = detect()
+      } catch {
+        /* 途中で query 不可な状態でも計測は続ける */
+      }
+    }, Math.round(durationMs * 0.6))
+
     const t0 = performance.now()
     lastPing = performance.now()
     mc.port2.postMessage(0)
@@ -112,6 +125,7 @@
     else await sleep(durationMs)
     const elapsedMs = performance.now() - t0
 
+    clearTimeout(midTimer)
     running = false
     cancelAnimationFrame(rafId)
     if (po) po.disconnect()
@@ -130,6 +144,7 @@
       },
       jsHeapMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null,
       detect: detect(),
+      detectMid,
     }
   }
 
@@ -229,6 +244,10 @@
     scenarios['pan-maxzoom-quake'] = await measureWindow(DUR, drivePan([136.0, 35.3], 12, 0.4, 0.15))
     // 3) ズーム往復
     scenarios['zoom-quake'] = await measureWindow(DUR, driveZoom([138.7, 35.38], 8, 13.5))
+    // 3.5) 【分離】広ズーム(EEW 発報の画角)で連続パン＝高精細ベースマップ×カメラ移動のみ。
+    //      EEW も kyoshin も無い純粋な地震情報モードで、広ズーム時のベース再描画コストを単独で捉える。
+    //      これが遅ければ「頂点数×広ズーム×カメラ」が主因、健全なら maxload の犯人は EEW 複合側。
+    scenarios['flyto-widezoom-quake'] = await measureWindow(DUR, drivePan([139.5, 37.5], 7.5, 0.6, 0.25))
 
     // 4-5) リアルタイム(kyoshin)モード：観測点1700+毎秒更新が加わる
     const kyoshinOk = await waitKyoshinReady()
@@ -238,7 +257,21 @@
     })
     scenarios['pan-maxzoom-kyoshin'] = await measureWindow(DUR, drivePan([139.6, 35.6], 11, 0.3, 0.1))
 
-    // 6) 【防災アプリ最悪ケース】リアルタイム稼働中に EEW 特別警報テスト発火（震度7・特別警報）。
+    // 6) 【分離】EEW 複合を「カメラ静止」で測る＝毎秒更新+波(100ms)+EEW塗り × 高精細ベース(広ズーム・陸)。
+    //    EEW を発火→自動 flyTo が収まるのを待ってから、陸が広く映る定点へ固定して静止計測する。
+    //    maxload が遅く eew-static も遅ければ「カメラ移動でなく複合再描画×広ズームのベース」が主因、
+    //    eew-static が健全なら主因は flyTo 着地側（flyto-widezoom と突き合わせる）。
+    const EEW_LAND_VIEW = [140.8, 39.3] // 東北の陸が広く映る定点
+    m.jumpTo({ center: EEW_LAND_VIEW, zoom: 7.5 })
+    await sleep(300)
+    const eewFired1 = clickTestButton('EEW特別警報テスト') || clickTestButton('特別警報テスト')
+    await sleep(4000) // 発火時の自動 flyTo の収束を待つ
+    m.jumpTo({ center: EEW_LAND_VIEW, zoom: 7.5 }) // 定点へ戻して静止（陸を広く映す）
+    await sleep(500)
+    scenarios['eew-static'] = await measureWindow(8000, (d) => sleep(d))
+    scenarios['eew-static'].detect.eewFired = eewFired1
+
+    // 7) 【防災アプリ最悪ケース】リアルタイム稼働中に EEW 特別警報テスト発火（震度7・特別警報）。
     //    予想震度塗り+震源+カメラ flyTo+毎秒更新+高精細ベースマップを同時に走らせて blockMaxMs を見る。
     m.jumpTo({ center: [141.0, 38.3], zoom: 7 })
     await sleep(300)
