@@ -213,7 +213,7 @@ export function JapanMapGL({
                   さらに検知点・波紋を最前面に重ねる（Leaflet 版の重畳順と一致）。 */}
               <KyoshinSubThresholdGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
               <KyoshinPointsGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
-              <KyoshinDetectedPointsGL points={detectedPoints} iconScale={iconScale} />
+              <KyoshinDetectedPointsGL confirmedPoints={detectedPoints} candidatePoints={candidatePoints} iconScale={iconScale} />
               <KyoshinMaxEffectGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
               {/* リアルタイム震度モードのカメラ追従（検知点/候補クラスタ/タブ入室）。EEW 追従は Camera-2。 */}
               <FitJapanOnEnterGL hasEew={eews.length > 0} hasDetection={detectedPoints.length > 0 || candidatePoints.length > 0} />
