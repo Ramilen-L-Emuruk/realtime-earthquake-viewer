@@ -290,7 +290,7 @@ realtime-earthquake-viewer/
 │   │   └── earthquake.ts           # 地震情報・EEW・津波情報の型定義
 │   └── utils/
 │       ├── alertSound.ts           # 通知音生成（Web Audio API）
-│       ├── eew.ts                  # EEW 対象地域・最大震度・情報番号の算出
+│       ├── eew.ts                  # EEW 対象地域・最大震度・情報番号の算出、自動解除時刻の計算、hypoInfo差分からのEEW導出
 │       ├── intensity.ts            # 震度スケール色・ラベル
 │       ├── kyoshinIntensity.ts     # リアルタイム震度インデックス→震度階級/色（気象庁配色）
 │       ├── kyoshinDetector.ts      # 強震モニタ検知エンジン（純粋コア: トリガー→アソシエーション→確信度スコア→分裂統合）
