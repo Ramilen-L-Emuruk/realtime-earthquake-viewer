@@ -1,6 +1,7 @@
 import type { EEWAlert, EEWRegion } from '../types/earthquake'
 import type { AlertSoundType } from './alertSound'
 import { computeSWaveTravelTimeSec } from '../hooks/useDmdssWaves'
+import { hypoInfoItemToEEW, type YahooHypoInfoItem } from '../services/kyoshin'
 
 // 司・翠川(1999)の距離減衰式を使ってEEW最終報後の自動解除秒数を計算する。
 // 有感半径（震度1以上が届く距離）を逆算し、1.5倍のバッファを乗せてS波到達時刻を求める。
@@ -160,4 +161,70 @@ export function selectEEWSoundType(isNew: boolean, levelUpgraded: boolean, curre
     return currentLevel === 2 ? 'eewSpecial' : currentLevel === 1 ? 'eew' : 'eewForecast'
   }
   return 'eewUpdate'
+}
+
+// Yahoo hypoInfo（強震モニタのEEW一覧）は1秒間隔のポーリングで取得するスナップショットのため、
+// ネットワーク遅延や配信タイミングのブレで対象 reportId が1回だけ欠落することがある。
+// 消滅を即座に解除確定にすると、JMAの取消電文が無いのに解除扱いになってしまうため、
+// この回数分は猶予を持って様子を見る（復活すれば何も起きない）。
+const HYPO_INFO_MISSING_CONFIRM_TICKS = 2
+
+/** hypoInfo 消滅の連続検出回数を reportId ごとに追跡する状態。 */
+export interface HypoInfoPendingMissing {
+  item: YahooHypoInfoItem
+  missingTicks: number
+}
+
+/**
+ * Yahoo hypoInfo の前回・今回スナップショットを比較し、新規発報・続報・解除に相当する
+ * EEWAlert を導出する。消滅（前回まで追跡していた reportId が今回に無い）は
+ * HYPO_INFO_MISSING_CONFIRM_TICKS 回連続で確認できて初めて解除を確定する。
+ *
+ * 解除確定時、直前に isCancel=true を確認できていれば「誤報取消」として cancelled のみ立てる。
+ * それ以外（有効期限切れ・欠測からの復帰断念）は expired も立てて自動終了として扱い、
+ * 誤報取消の音・通知（useLiveEventHandler の !event.expired 分岐）を鳴らさないようにする。
+ */
+export function diffHypoInfoEvents(
+  prev: YahooHypoInfoItem[],
+  curr: YahooHypoInfoItem[],
+  prevPendingMissing: ReadonlyMap<string, HypoInfoPendingMissing>,
+): { events: EEWAlert[]; pendingMissing: Map<string, HypoInfoPendingMissing> } {
+  const events: EEWAlert[] = []
+  const currMap = new Map(curr.map(it => [it.reportId, it]))
+
+  // 直前まで追跡していた全アイテム（前回スナップショット ∪ 消滅猶予中のアイテム）。
+  // 猶予中の reportId は呼び出し元の設計上 prev には含まれない（消滅した回の prev からは
+  // 既に消えている）ため重複は起きないはずだが、念のため has チェックで安全側に倒す。
+  const trackedItems = new Map<string, YahooHypoInfoItem>()
+  for (const it of prev) trackedItems.set(it.reportId, it)
+  for (const [id, pending] of prevPendingMissing) {
+    if (!trackedItems.has(id)) trackedItems.set(id, pending.item)
+  }
+
+  // 新規発報・報番号更新
+  for (const item of curr) {
+    const prevItem = trackedItems.get(item.reportId)
+    const isNew = !prevItem
+    const isUpdated = !!prevItem && item.reportNum !== prevItem.reportNum
+    if (isNew || isUpdated) {
+      events.push(hypoInfoItemToEEW(item))
+    }
+  }
+
+  // 消滅判定（猶予つき）: リストに復活したものは pendingMissing に残さずここで消える
+  const pendingMissing = new Map<string, HypoInfoPendingMissing>()
+  for (const [reportId, item] of trackedItems) {
+    if (currMap.has(reportId)) continue
+    const missingTicks = (prevPendingMissing.get(reportId)?.missingTicks ?? 0) + 1
+    if (missingTicks < HYPO_INFO_MISSING_CONFIRM_TICKS) {
+      pendingMissing.set(reportId, { item, missingTicks })
+      continue
+    }
+    // 消える直前に確認できていた isCancel の値をそのまま尊重する（誤報取消 か 自動終了 かの分岐）
+    const wasExplicitCancel = item.isCancel === 'true'
+    const cancelledEEW = hypoInfoItemToEEW(item)
+    events.push({ ...cancelledEEW, cancelled: true, expired: wasExplicitCancel ? undefined : true })
+  }
+
+  return { events, pendingMissing }
 }

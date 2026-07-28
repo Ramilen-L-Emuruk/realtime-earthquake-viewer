@@ -2,13 +2,13 @@ import { useEffect, useRef, useState } from 'react'
 import {
   fetchSiteList,
   fetchRealtimeIntensity,
-  hypoInfoItemToEEW,
   startClockSync,
   type SiteCoords,
   type PsWaveCircle,
   type YahooHypoInfoItem,
 } from '../services/kyoshin'
 import type { EEWAlert } from '../types/earthquake'
+import { diffHypoInfoEvents, type HypoInfoPendingMissing } from '../utils/eew'
 import { serverNow } from '../utils/clock'
 import { log } from '../utils/logger'
 
@@ -73,6 +73,8 @@ export function useKyoshinRealtime(
   const currentSiteConfigIdRef = useRef<string | null>(null)
   const failCountRef = useRef(0)
   const prevHypoInfoRef = useRef<YahooHypoInfoItem[]>([])
+  // hypoInfo 消滅の連続検出回数（reportId ごと）。瞬間的な欠測を確定解除にしないための猶予状態。
+  const pendingMissingRef = useRef<Map<string, HypoInfoPendingMissing>>(new Map())
   // コールバックを ref で保持し tick クロージャから安定参照する
   const onEEWEventRef = useRef(options?.onEEWEvent)
   onEEWEventRef.current = options?.onEEWEvent
@@ -90,6 +92,11 @@ export function useKyoshinRealtime(
     let active = true
     failCountRef.current = 0
     setError(false)
+    // ライブ/リプレイ切替（timeOffset 変化）でエフェクトが再起動したとき、旧セッションの
+    // hypoInfo 追跡状態を持ち越さない。持ち越すと、切替直後に旧セッションのアイテムが
+    // 「消滅」と誤判定され、猶予後に古い震源データの幽霊キャンセルイベントが発火してしまう。
+    prevHypoInfoRef.current = []
+    pendingMissingRef.current = new Map()
     let timer: ReturnType<typeof setTimeout> | null = null
 
     const processResult = (rt: Awaited<ReturnType<typeof fetchRealtimeIntensity>>) => {
@@ -111,26 +118,9 @@ export function useKyoshinRealtime(
       const curr = rt.hypoInfo
       const onEEW = onEEWEventRef.current
       if (onEEW) {
-        const currMap = new Map(curr.map((it) => [it.reportId, it]))
-        const prevMap = new Map(prev.map((it) => [it.reportId, it]))
-
-        // 新規発報・報番号更新
-        for (const item of curr) {
-          const prevItem = prevMap.get(item.reportId)
-          const isNew = !prevItem
-          const isUpdated = prevItem && item.reportNum !== prevItem.reportNum
-          if (isNew || isUpdated) {
-            onEEW(hypoInfoItemToEEW(item))
-          }
-        }
-
-        // 消滅による解除（前回あったが今回リストにない）
-        for (const prevItem of prev) {
-          if (!currMap.has(prevItem.reportId)) {
-            const cancelledEEW = hypoInfoItemToEEW(prevItem)
-            onEEW({ ...cancelledEEW, cancelled: true })
-          }
-        }
+        const { events, pendingMissing } = diffHypoInfoEvents(prev, curr, pendingMissingRef.current)
+        pendingMissingRef.current = pendingMissing
+        for (const ev of events) onEEW(ev)
       }
       prevHypoInfoRef.current = curr
     }
