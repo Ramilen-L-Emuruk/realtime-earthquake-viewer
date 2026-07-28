@@ -26,71 +26,29 @@ body {
 ::-webkit-scrollbar-track { background: #12151a; }
 ::-webkit-scrollbar-thumb { background: #2a2d38; border-radius: 2px; }
 
-.leaflet-container { background: #0a0c10; }
+/* 地図は MapLibre GL JS（JapanMapGL）。ベースマップのダーク化・地名ラベルは GL レイヤー側で行うため、
+   旧 Leaflet 用の CSS（.leaflet-* / .base-*-label / .fly-anim-boost）は F7 で撤去した。 */
 
-/* 背景の海底地形タイル（GEBCO_basemap_NCEI）のダーク化は、CSS filter ではなく
-   tile-tint ペイン（TileTintLayer.tsx）の mix-blend-mode オーバーレイで行っている。
-   filter はパン中に新規タイルが読み込まれるたびにタイルペイン全体の再フィルタが
-   発生し非力なGPUで重いため不使用。詳細は TileTintLayer.tsx のコメント参照。 */
-
-/* 行政区域ベースマップのラベル（地方名・県名・主要都市名）。背景なしの淡色テキスト。
-   マーカー要素には Leaflet が位置決めの transform を当てるため、ラベルの中央寄せ・
-   オフセットは内側 span 側で行う（Leaflet は span を触らないので確実に効く）。 */
-.base-region-label,
-.base-pref-label,
-.base-city-label {
-  pointer-events: none;
-}
-.base-region-label > span,
-.base-pref-label > span,
-.base-subregion-label > span {
-  position: absolute;
-  left: 0;
-  top: 0;
-  white-space: nowrap;
-  font-weight: 600;
-  text-shadow: 0 0 3px #0a0c10, 0 0 3px #0a0c10, 0 0 2px #0a0c10;
-  /* 代表点（マーカー位置）を中心に合わせる */
-  transform: translate(-50%, -50%);
-}
-.base-region-label > span {
-  color: #dbe3ee;
-  font-size: 15px;
-  letter-spacing: 0.05em;
-}
-.base-pref-label > span {
-  color: #cbd5e1;
-  font-size: 12px;
-}
-/* 県中心に置かれる最大震度バッジと重ならないようずらす。
-   県ごとに余白の大きい側へ寄せて県外へのはみ出しを防ぐ。 */
-.base-pref-label--up > span {
-  transform: translate(-50%, calc(-50% - 1.5em));
-}
-.base-pref-label--down > span {
-  transform: translate(-50%, calc(-50% + 1.5em));
-}
-.base-subregion-label > span {
-  color: #93a3b8;
-  font-size: 11px;
-}
-
-.leaflet-control-attribution {
-  background: rgba(10, 12, 16, 0.8) !important;
-  color: #64748b !important;
-  font-size: 9px !important;
-}
-.leaflet-control-attribution a { color: #94a3b8 !important; }
-
-.leaflet-popup-content-wrapper {
+/* ポップアップ（活断層・プレート境界・震源・区域塗り等の maplibregl.Popup）をダークテーマに合わせる。
+   MapLibre 既定は白背景のため、コンテンツと吹き出しの色を上書きする。 */
+.maplibregl-popup-content {
   background: #1a1d26;
   color: #e2e8f0;
   border: 1px solid #2a2d38;
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  padding: 8px 12px;
 }
-.leaflet-popup-tip { background: #1a1d26; }
-.leaflet-popup-close-button { color: #94a3b8 !important; }
+.maplibregl-popup-close-button { color: #94a3b8; font-size: 16px; }
+/* 吹き出しの三角は anchor 方向ごとに border で描かれるため、各方向を背景色に合わせる。 */
+.maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color: #1a1d26; }
+.maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color: #1a1d26; }
+.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: #1a1d26; }
+.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: #1a1d26; }
+.maplibregl-popup-anchor-top-left .maplibregl-popup-tip { border-bottom-color: #1a1d26; }
+.maplibregl-popup-anchor-top-right .maplibregl-popup-tip { border-bottom-color: #1a1d26; }
+.maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip { border-top-color: #1a1d26; }
+.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip { border-top-color: #1a1d26; }
 
 
 @keyframes tsunami-blink {
@@ -115,13 +73,4 @@ body {
 }
 .eew-blink {
   animation: eew-blink 1.2s step-end infinite;
-}
-
-/* flyTo 飛行中だけ flyToLite.ts が地図コンテナへ付与するクラス。
-   div 系の .leaflet-zoom-animated（タイルコンテナ・divIcon マーカー等）へ will-change を
-   効かせ、毎フレームの transform 変更をメインスレッド再描画ではなくコンポジタ合成で
-   処理させる（SVG レンダラーの <svg> は leaflet.css の svg.leaflet-zoom-animated で常時
-   will-change 済み）。Leaflet 純正の .leaflet-zoom-anim を流用しない理由は flyToLite.ts 参照。 */
-.fly-anim-boost .leaflet-zoom-animated {
-  will-change: transform;
 }

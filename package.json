@@ -14,18 +14,13 @@
   },
   "dependencies": {
     "fflate": "^0.8.3",
-    "leaflet": "^1.9.4",
-    "leaflet.heat": "^0.2.0",
     "maplibre-gl": "^6.0.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-leaflet": "^4.2.1"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@mapbox/tiny-sdf": "^2.2.0",
     "@napi-rs/canvas": "^1.0.2",
-    "@types/leaflet": "^1.9.14",
-    "@types/leaflet.heat": "^0.2.5",
     "@types/node": "^25.9.3",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",

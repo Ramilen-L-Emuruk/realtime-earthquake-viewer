@@ -30,7 +30,7 @@
 | フレームワーク | React 18 + TypeScript |
 | ビルドツール | Vite 6 |
 | スタイル | Tailwind CSS（ダークテーマ） |
-| 地図 | React-Leaflet + 自前の行政区域ベースマップ（タイル不使用・ダーク／地方・県・都市ラベル） + leaflet.heat（地震活動ヒートマップ） |
+| 地図 | MapLibre GL JS（WebGL 描画）+ 自前の行政区域ベースマップ（陸/境界＋海底地形タイル・ダーク／地方・県・区域名ラベルは事前生成 SDF グリフの symbol 描画）+ ネイティブ heatmap（地震活動）+ 震度0以下ドットは FBO 非加算合成のカスタムレイヤー |
 | PWA | vite-plugin-pwa + Workbox |
 | データ | 通常版: [P2PQuake API v2](https://api.p2pquake.net/v2/docs/) / DM-D.S.S 版: [DMDATA.JP API](https://dmdata.jp/) |
 | リアルタイム震度 | [Yahoo!天気・災害 リアルタイム震度](https://typhoon.yahoo.co.jp/weather/jp/earthquake/kyoshin/)（防災科研 強震モニタ由来）|
@@ -207,6 +207,7 @@ realtime-earthquake-viewer/
 │       └── deploy.yml              # GitHub Pages 自動デプロイ
 ├── public/
 │   ├── icons/                      # アプリアイコン
+│   ├── fonts/                      # 地名ラベル用の事前生成 SDF グリフ PBF（Noto Sans JP/・build-glyphs.mjs 生成物）
 │   └── data/
 │       ├── station-coords.json     # 震度観測点・細分区域の座標テーブル（生成物）
 │       ├── tsunami-zones.json      # 津波予報区の海岸線座標（生成物）
@@ -222,6 +223,8 @@ realtime-earthquake-viewer/
 │   ├── build-subregions.mjs        # 一次細分区域境界データ生成スクリプト
 │   ├── build-active-faults.mjs     # 全国活断層線データ生成スクリプト
 │   ├── build-plate-boundaries.mjs  # プレート境界線データ生成スクリプト
+│   ├── build-glyphs.mjs            # 地名ラベル用 SDF グリフ PBF 生成（同梱 Noto Sans JP を @mapbox/tiny-sdf で焼く）
+│   ├── fonts/                      # グリフ生成のソースフォント（Noto Sans JP・OFL・非配信）
 │   └── perf/                          # 描画負荷計測（WebGL 移行計画 段階0）
 │       ├── measure-kyoshin-static.js  # 計測スクリプト（ブラウザ注入・自動実行/自動送信対応）
 │       ├── vite-plugin-perf-report.ts # dev 専用: 計測スクリプト配信・実機からの証跡受信
@@ -232,22 +235,29 @@ realtime-earthquake-viewer/
 │   │   ├── IconNav.tsx             # アイコンボタンによるナビゲーション
 │   │   ├── MapUpdateTime.tsx       # 地図左上の更新時刻オーバーレイ
 │   │   ├── EarthquakeTab/          # 地震情報パネル（カード一覧・選択）
-│   │   ├── Map/
-│   │   │   ├── JapanMap.tsx           # Leaflet 日本地図（震度マーカー / 津波海岸線 / 強震モニタ）
-│   │   │   ├── BaseMap.tsx            # 行政区域ベースマップ（県境・一次細分区域境界・陸地・地方/県/区域名ラベル）
-│   │   │   ├── IntensityPoints.tsx    # 地震情報タブの観測点震度マーカー（Leaflet CircleMarker）
-│   │   │   ├── KyoshinPoints.tsx      # 強震モニタ観測点の Canvas 描画レイヤー（震度1以上）
-│   │   │   ├── KyoshinSubThreshold.tsx # 強震モニタの震度0以下（index 1〜6）の OffscreenCanvas 描画
-│   │   │   ├── KyoshinDetectedPoints.tsx # 揺れ検知された観測点の可変サイズ描画
-│   │   │   ├── KyoshinMaxEffect.tsx   # 強震モニタの最大震度エフェクト描画
-│   │   │   ├── PsWaveLayer.tsx        # EEW P波・S波地表到達円の Canvas 描画レイヤー
-│   │   │   ├── QuakeHeatmapLayer.tsx  # 直近1ヶ月の地震活動ヒートマップ（leaflet.heat）
-│   │   │   ├── ActiveFaultsLayer.tsx  # 全国活断層線の Leaflet ネイティブ描画レイヤー（react-leaflet 非経由・再レンダー非依存）
-│   │   │   ├── PlateBoundariesLayer.tsx # プレート境界線の Leaflet ネイティブ描画レイヤー（同上）
-│   │   │   ├── TileTintLayer.tsx      # 海底地形タイルの暗色化（mix-blend-mode オーバーレイ。CSS filter 不使用）
-│   │   │   └── flyToLite.ts           # flyTo/flyToBounds 実行中に Canvas 描画ペインを一時非表示化するヘルパー（非力なGPUでのアニメーション中カクつき対策）
+│   │   ├── Map/                       # MapLibre GL JS 地図。全レイヤーを WebGL で描画（*GL.tsx）
+│   │   │   ├── MapView.tsx            # 地図ラッパー（App と JapanMapGL の間で Props 契約を仲介）
+│   │   │   ├── mapTypes.ts            # 地図 Props / モード型の単一情報源
+│   │   │   ├── JapanMapGL.tsx         # MapLibre 地図の中枢（map 生成・スタイル・全レイヤー配線）
+│   │   │   ├── mapGLContext.ts        # map インスタンス購読 Context（react-leaflet useMap 相当を自前実装）
+│   │   │   ├── BaseMapGL.tsx          # 行政区域ベースマップ（陸地塗り・県境・一次細分区域境界・海底地形タイル暗色化）
+│   │   │   ├── LabelsGL.tsx           # 地方/県/区域名ラベル（symbol + 事前生成 SDF グリフ・ズーム帯で粒度切替）
+│   │   │   ├── QuakeIntensityPointsGL.tsx # 地震情報タブの観測点震度点（circle）
+│   │   │   ├── QuakeRegionFillGL.tsx  # 一次細分区域別の震度塗り＋震度バッジ
+│   │   │   ├── EpicenterGL.tsx        # 震源マーカー（×）＋ポップアップ
+│   │   │   ├── QuakeHeatmapGL.tsx     # 直近1ヶ月の地震活動ヒートマップ（MapLibre ネイティブ heatmap）
+│   │   │   ├── LpgmPointsGL.tsx / LpgmRegionFillGL.tsx # 長周期地震動の観測点点・区域塗り
+│   │   │   ├── KyoshinPointsGL.tsx    # 強震モニタ観測点（震度1以上・feature-state 毎秒更新）
+│   │   │   ├── KyoshinSubThresholdGL.tsx # 震度0以下（index 1〜6）。FBO 二層合成のカスタムレイヤー（非加算合成）
+│   │   │   ├── KyoshinDetectedPointsGL.tsx / KyoshinMaxEffectGL.tsx # 揺れ検知点・最大震度波紋エフェクト
+│   │   │   ├── ActiveFaultsGL.tsx / PlateBoundariesGL.tsx # 活断層線・プレート境界線（line＋当たり判定ポップアップ）
+│   │   │   ├── TsunamiLinesGL.tsx / TsunamiObsBarsGL.tsx # 津波海岸線（等級色・点滅）・津波観測棒
+│   │   │   ├── EewRegionFillGL.tsx / EewLpgmRegionFillGL.tsx / EewEpicentersGL.tsx # EEW 予想震度塗り・予想長周期塗り・震源
+│   │   │   ├── PsWaveGL.tsx           # EEW P波・S波地表到達円（getCanvasContainer 上のオーバーレイ Canvas）
+│   │   │   ├── CameraFollowsGL.tsx    # カメラ追従一括（地震/検知/候補/EEW/津波フィット・観測フォーカス・idle 抑制）
+│   │   │   └── gl/                    # GL 補助（layerOrder=描画順の単一情報源 / geojson / camera / linePopup / subThresholdLayer）
 │   │   ├── SpecialInfoBanner/      # 南海トラフ臨時情報・国民保護情報バナー
-│   │   ├── RealtimeTab/            # 強震モニタ検知(V2)カード・EEW情報・凡例・注記パネル（地図は JapanMap が担当）
+│   │   ├── RealtimeTab/            # 強震モニタ検知(V2)カード・EEW情報・凡例・注記パネル（地図は JapanMapGL が担当）
 │   │   ├── SettingsTab/            # 設定パネル
 │   │   ├── TelegramTab/            # 受信電文ログビューアー（DM-D.S.S 版）
 │   │   └── TsunamiTab/             # 津波情報パネル
@@ -267,7 +277,10 @@ realtime-earthquake-viewer/
 │   │   ├── useSubRegions.ts        # 一次細分区域境界データの読み込み
 │   │   ├── useActiveFaults.ts      # 全国活断層線データの読み込み
 │   │   ├── useQuakeHeatmap.ts      # 直近1ヶ月の地震活動ヒートマップ用データの取得・キャッシュ
-│   │   └── usePlateBoundaries.ts   # プレート境界線データの読み込み
+│   │   ├── usePlateBoundaries.ts   # プレート境界線データの読み込み
+│   │   ├── useQuakeLayerData.ts    # 地震モードの描画派生データ（震度点・区域集約・震源・LPGM）を計算する共有フック
+│   │   ├── useTsunamiLayerData.ts  # 津波モードの描画派生データ（海岸線・観測棒）を計算する共有フック
+│   │   └── useEewLayerData.ts      # EEW の描画派生データ（予想震度塗り・予想長周期塗り・震源）を計算する共有フック
 │   ├── services/
 │   │   ├── kyoshin.ts              # Yahoo リアルタイム震度の取得・デコード
 │   │   ├── p2pquake.ts             # P2PQuake API クライアント（自動再接続）
@@ -285,6 +298,7 @@ realtime-earthquake-viewer/
 │       ├── notifications.ts        # ブラウザ通知の表示
 │       ├── lpgm.ts                 # 長周期地震動階級のラベル・色
 │       ├── tsunami.ts              # 津波情報の等級算出・観測情報のマージ
+│       ├── tsunamiStyle.ts         # 津波等級ごとの海岸線色・線幅・重なり順の定義
 │       ├── stationCoords.ts        # 地点名→座標の引き当て
 │       ├── tsunamiZones.ts         # 津波予報区 海岸線データの引き当て
 │       ├── tsunamiObsCoords.ts     # 津波観測点座標テーブルの読み込み
