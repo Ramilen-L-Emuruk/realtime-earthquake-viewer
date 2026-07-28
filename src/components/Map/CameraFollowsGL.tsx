@@ -8,7 +8,7 @@ import {
   fitToPositions,
   fitJapan,
   flyToPoint,
-  flyToBounds,
+  flyToBoundsSnapped,
   boundsFromCircles,
   mapContainsBounds,
   MAX_ZOOM,
@@ -185,7 +185,7 @@ export function FitToEEWGL({
     const bounds = boundsFromCircles(psWave)
     if (bounds) {
       log.debug(`[mapGL] EEW新規 波円${psWave.length}個へフィット`)
-      flyToBounds(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
+      flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
       return
     }
     log.debug('[mapGL] EEW新規 震源へフィット')
@@ -246,7 +246,7 @@ export function FitToEEWGL({
     }
     log.debug(`[mapGL] EEW数減少・波円${psWave.length}個へ再フィット`)
     isAutoFlyingRef.current = true
-    flyToBounds(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
+    flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
   }, [eews.length, psWave, latest, map])
 
   // 予報円の成長に追従（表示に収まらなくなった時のみズームアウト）。
@@ -258,7 +258,7 @@ export function FitToEEWGL({
     if (bounds && !mapContainsBounds(map, bounds)) {
       log.debug(`[mapGL] EEW波円成長フォロー 波円${psWave.length}個`)
       isAutoFlyingRef.current = true
-      flyToBounds(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
+      flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
     }
   }, [eews.length, psWave, map])
 
