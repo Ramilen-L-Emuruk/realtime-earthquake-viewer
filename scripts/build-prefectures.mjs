@@ -15,8 +15,10 @@ import { writeFile, mkdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
+// 末尾 `_1` は簡素化の緩い高精細版。簡素化のきつい `_01` 版から切替えた（陸塗り＝海岸線シルエットは県
+// ポリゴンが作るため、区域と揃えて高精細化しないと海岸線がズレて見える）。区域定義・properties は不変。
 const SOURCE_URL =
-  'https://raw.githubusercontent.com/Ichihai1415/JMA-GIS-GeoJSON/release/AreaInformationPrefectureEarthquake_GIS_20190125_01.geojson'
+  'https://raw.githubusercontent.com/Ichihai1415/JMA-GIS-GeoJSON/release/AreaInformationPrefectureEarthquake_GIS_20190125_1.geojson'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const OUT_DIR = join(__dirname, '..', 'public', 'data')
