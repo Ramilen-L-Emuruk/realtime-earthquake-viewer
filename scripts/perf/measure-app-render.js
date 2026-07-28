@@ -15,7 +15,8 @@
  *   - static-quake       : 地震情報モード静止（境界+活断層+プレート+ラベルの高精細ジオメトリ・vsync 床）
  *   - pan-maxzoom-quake  : 高ズームで連続パン（全レイヤー・頂点シェーダ+ライン結合の実負荷）
  *   - zoom-quake         : ズームイン/アウト往復（再タイル化・LOD 切替コスト）
- *   - flyto-widezoom-quake: 【分離】広ズーム(EEW 画角)でカメラ移動のみ＝高精細ベース×カメラの単独コスト
+ *   - flyto-widezoom-quake: 【分離】広ズーム(EEW 画角)でカメラ移動のみ・低密度ルート＝高精細ベース×カメラの単独コスト
+ *   - flyto-sanriku-quake : 【ピンポイント】三陸沖(EEW 震源=最密リアス海岸)へカメラ移動・quake のみ＝最密域飛行の単独コスト
  *   - static-kyoshin     : リアルタイムモニタ静止（観測点1700+毎秒更新が加わる）
  *   - pan-maxzoom-kyoshin: リアルタイムで高ズーム連続パン
  *   - maxload-eew        : 【防災アプリ最悪ケース】リアルタイム稼働中に EEW 特別警報テストを発火し、
@@ -248,8 +249,13 @@
     scenarios['zoom-quake'] = await measureWindow(DUR, driveZoom([138.7, 35.38], 8, 13.5))
     // 3.5) 【分離】広ズーム(EEW 発報の画角)で連続パン＝高精細ベースマップ×カメラ移動のみ。
     //      EEW も kyoshin も無い純粋な地震情報モードで、広ズーム時のベース再描画コストを単独で捉える。
-    //      これが遅ければ「頂点数×広ズーム×カメラ」が主因、健全なら maxload の犯人は EEW 複合側。
+    //      経路は茨城〜栃木付近（相対的に密度の低い区間）。三陸ルート(下)との対照になる。
     scenarios['flyto-widezoom-quake'] = await measureWindow(DUR, drivePan([139.5, 37.5], 7.5, 0.6, 0.25))
+    // 3.6) 【ピンポイント検証】EEW 震源=三陸沖(38.1,142.9・最密リアス海岸の直近)へ向けてカメラ移動(quake のみ・
+    //      EEW/kyoshin なし)。内陸[140.5,39.0]から震源[142.9,38.1]へ＝三陸リアス海岸を横断する経路。
+    //      flyto-widezoom(低密度ルート)と比較し、三陸ルートだけ突出して重ければ「最密ジオメトリ域への
+    //      カメラ移動」が maxload の支配要因と確定する（診断 docs/webgl-migration-hires-perf-diagnosis-2026-07-28.md）。
+    scenarios['flyto-sanriku-quake'] = await measureWindow(DUR, drivePan([140.5, 39.0], 8, 2.4, -0.9))
 
     // 4-5) リアルタイム(kyoshin)モード：観測点1700+毎秒更新が加わる
     const kyoshinOk = await waitKyoshinReady()
