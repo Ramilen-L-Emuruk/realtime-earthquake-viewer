@@ -3,6 +3,7 @@ import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { MapGLContext } from './mapGLContext'
 import { BaseMapGL } from './BaseMapGL'
+import { KyoshinSubThresholdGL } from './KyoshinSubThresholdGL'
 import { KyoshinPointsGL } from './KyoshinPointsGL'
 import { JAPAN_CENTER, fitJapan } from './gl/camera'
 import type { JapanMapProps } from './mapTypes'
@@ -70,7 +71,11 @@ export function JapanMapGL({
           {/* 後続フェーズのレイヤーコンポーネントはここに置く（map を Context で購読） */}
           <BaseMapGL showBathymetry={showBathymetry} />
           {mode === 'kyoshin' && (
-            <KyoshinPointsGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
+            <>
+              {/* SubThreshold(index1〜6)を先に置き、その上に KyoshinPoints(index7+)を重ねる */}
+              <KyoshinSubThresholdGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
+              <KyoshinPointsGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
+            </>
           )}
         </MapGLContext.Provider>
       </div>
