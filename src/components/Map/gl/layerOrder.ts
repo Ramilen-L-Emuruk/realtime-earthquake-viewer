@@ -22,6 +22,7 @@ export const MAP_LAYER_ORDER = [
   'quake-region-fill',
   'quake-region-fill-line',
   'quake-lpgm-region-fill',
+  'quake-lpgm-region-fill-line',
   'quake-points',
   'quake-lpgm-points',
   'epicenter',

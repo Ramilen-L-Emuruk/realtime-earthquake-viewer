@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import type { JMAQuake } from '../types/earthquake'
+import type { JMAQuake, JMALpgm } from '../types/earthquake'
 import { useStationCoords } from './useStationCoords'
 import { useSubRegions } from './useSubRegions'
 import {
@@ -37,6 +37,18 @@ export interface RegionAggregate {
   label: LatLng
 }
 
+export interface LpgmMarker {
+  position: LatLng
+  lgInt: number
+}
+
+export interface LpgmRegionAggregate {
+  name: string
+  maxLgInt: number
+  rings: LatLng[][]
+  label: LatLng
+}
+
 export interface QuakeLayerData {
   /** 観測点ごとの震度点（震度の弱い順＝強い震度を前面に描画する想定）。 */
   intensityMarkers: IntensityMarker[]
@@ -50,12 +62,19 @@ export interface QuakeLayerData {
   epicenter: LatLng | null
   /** 震源ポップアップ用の都道府県別最大震度（震度の降順）。 */
   prefIntensities: [string, number][]
+  /** 長周期地震動（LPGM）電文が進行中か（進行中は quake 震度表示を置き換える）。 */
+  lpgmActive: boolean
+  /** LPGM 観測点マーカー（階級の弱い順）。 */
+  lpgmMarkers: LpgmMarker[]
+  /** LPGM 一次細分区域集約（階級の弱い順）。 */
+  lpgmRegionAggregates: LpgmRegionAggregate[]
 }
 
 export function useQuakeLayerData(
   mode: string,
   quake: JMAQuake | null | undefined,
   zoom: number,
+  lpgm?: JMALpgm | null,
 ): QuakeLayerData {
   const stationCoords = useStationCoords()
   const subregions = useSubRegions()
@@ -161,6 +180,31 @@ export function useQuakeLayerData(
     return Object.entries(maxByPref).sort((a, b) => b[1] - a[1])
   }, [quake])
 
+  const lpgmActive = !!(lpgm && !lpgm.cancelled)
+
+  // LPGM 観測点マーカー（Leaflet 版 lpgmMarkers と同一導出）。
+  const lpgmMarkers = useMemo<LpgmMarker[]>(() => {
+    if (!lpgmActive || !lpgm?.points?.length || !stationCoords) return []
+    const markers: LpgmMarker[] = []
+    for (const p of lpgm.points) {
+      const pref = p.pref || stationPrefIndex.get(p.name) || ''
+      const position = lookupPointCoords(stationCoords, pref, p.name, false)
+      if (!position) continue
+      markers.push({ position, lgInt: p.lgInt })
+    }
+    return markers.sort((a, b) => a.lgInt - b.lgInt)
+  }, [lpgmActive, lpgm, stationCoords, stationPrefIndex])
+
+  // LPGM 一次細分区域集約（Leaflet 版 lpgmRegionAggregates と同一導出）。
+  const lpgmRegionAggregates = useMemo<LpgmRegionAggregate[]>(() => {
+    if (!lpgmActive || !lpgm?.regions?.length || !subregions) return []
+    const maxByName = new Map(lpgm.regions.map((r) => [r.name, r.maxLgInt]))
+    return subregions
+      .filter((sr) => (maxByName.get(sr.name) ?? 0) >= 1)
+      .map((sr) => ({ name: sr.name, maxLgInt: maxByName.get(sr.name)!, rings: sr.rings, label: sr.label }))
+      .sort((a, b) => a.maxLgInt - b.maxLgInt)
+  }, [lpgmActive, lpgm, subregions])
+
   return {
     intensityMarkers,
     aggregateByRegion,
@@ -168,5 +212,8 @@ export function useQuakeLayerData(
     hasEpicenter,
     epicenter,
     prefIntensities,
+    lpgmActive,
+    lpgmMarkers,
+    lpgmRegionAggregates,
   }
 }
