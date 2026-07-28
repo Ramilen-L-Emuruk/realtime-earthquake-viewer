@@ -31,7 +31,6 @@ export interface AppSettings {
   voicevoxSpeakerId: number        // VOICEVOX 話者 ID
   ttsIntensityLevels: number       // 読み上げる震度階数（最大震度から何階級分。0 = 最大震度のみ）
   ttsMaxRegions: number            // 読み上げる最大地域数（0 = 無制限）
-  mapEngine: 'leaflet' | 'maplibre' // 地図描画エンジン（MapLibre 移行中の切替フラグ。既定 leaflet）
 }
 
 // 通常版とDMDSS版の設定を localStorage 上で分離する
@@ -67,7 +66,6 @@ const DEFAULTS: AppSettings = {
   voicevoxSpeakerId: 0,
   ttsIntensityLevels: 2,
   ttsMaxRegions: 10,
-  mapEngine: 'leaflet',
 }
 
 function load(): AppSettings {

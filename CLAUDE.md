@@ -4,7 +4,7 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 
 ## プロジェクト概要
 
-- React 18 + TypeScript + Vite 6 製の PWA。Leaflet 地図で地震情報・緊急地震速報・津波情報・リアルタイム震度を表示する。
+- React 18 + TypeScript + Vite 6 製の PWA。MapLibre GL JS（WebGL）地図で地震情報・緊急地震速報・津波情報・リアルタイム震度を表示する。
 - データ: DMDATA.JP API（WebSocket + REST）／ Yahoo リアルタイム震度（強震モニタ・HTTPS JSON）（DMDSS 版）、P2PQuake API v2（標準版）。
 - GitHub Pages（サブパス配信 `/realtime-earthquake-viewer/`）へ GitHub Actions で自動デプロイ。
 
@@ -171,7 +171,8 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 ## 構成メモ
 
 - `src/App.tsx`: レイアウトの中枢。地図常時表示＋アイコンナビ（右端）でパネル内容を切替。地図内容・更新時刻・通知音・自動タブ切替・EEW 連携の制御もここ。
-- 地図のモード（`JapanMap` の `mode`）: `quake`（地震）／`tsunami`（津波海岸線）／`kyoshin`（リアルタイム震度・予報円）。
+- 地図は MapLibre GL JS（`JapanMapGL`）に一本化。`MapView` が App と地図実装の間の薄いラッパー。旧 Leaflet 版 JapanMap とエンジン切替フラグは F7 で撤去済み。
+- 地図のモード（`JapanMapGL` の `mode`）: `quake`（地震）／`tsunami`（津波海岸線）／`kyoshin`（リアルタイム震度・予報円）。
 - 生成データ（`public/data/*.json`）は座標が大きいため遅延読込（初回利用時に一度だけ fetch しキャッシュ）。  
   ベースマップ用（`prefectures.json` / `subregions.json`）は地図初回表示時、地震/津波用（`station-coords.json` / `tsunami-zones.json`）は該当タブ表示時に fetch する。
 
@@ -186,18 +187,19 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
   - EEW 予報テスト（`createTestEEWForecast`）: 最大 `scaleTo: 25` = 震度2程度
 - 同じ説明文が `CLAUDE.md` の「テスト機能の活用」セクションにも記載されているため、変更時は両方を合わせて修正する。
 
-### 地図描画ペイン名
-- `BaseMap.tsx` のペイン一覧コメントと、`JapanMap.tsx` で実際に作成するペイン名は完全に一致させる。
-  - 実在するペイン: `tile-tint`（z=220）・`basemap`（z=250）・`quake-region-fill`（z=260）・`eew-region-fill`（z=260）・`basemap-labels`（z=450）
-  - `quake-pref-fill`（旧名）・`quake-region-labels` 等は**存在しない**。コメントに書かない。
+### 地図レイヤーの描画順
+- 描画順（背面→前面）の単一情報源は `src/components/Map/gl/layerOrder.ts` の `MAP_LAYER_ORDER`。各レイヤーコンポーネントは `addOrderedLayer` で追加し、この配列上で自分より前面に来るべき既存レイヤーの直前へ挿入することで、データ到着タイミングに依存せず順序を保証する。
+  - 新レイヤーを足すときは `MAP_LAYER_ORDER` に id を追加し、コンポーネントの `id` と一致させる。配列に無い id は最上段へ積まれる。
+  - custom レイヤー（`kyoshin-subthreshold`）は `getStyle().layers` に現れない（MapLibre 仕様）。順序確認は `map.style._order` を見る。
 
 ### 震度集約の単位
 - ズームアウト時の集約単位は**一次細分区域**（`subregions.json` 由来）。「都道府県」という表現はコメント・ドキュメントで使わない。
-  - 定数 `PREF_AGGREGATE_MAX_ZOOM` の「PREF」は旧名の名残。動作は一次細分区域単位。
+  - 閾値定数は `useQuakeLayerData.ts` の `QUAKE_MAX_ZOOM`（= 8。gl/camera.ts の MAX_ZOOM と一致）。この zoom 以下で区域集約に切り替える。
 
 ### KyoshinSubThreshold の対象範囲
-- 対象は **index 1〜6**（震度0以下）。index 0 はデータ無し（`subThresholdOpacity(0) = 0`）のため非表示。「0〜6」とコメントしない。
-- `KyoshinPoints.tsx` が気象庁配色で描画するのは **index 7+**（震度1以上）。
+- 対象は **index 1〜6**（震度0以下）。index 0 はデータ無し（`gl/subThresholdLayer.ts` の `subThresholdOpacity(0) = 0`）のため非表示。「0〜6」とコメントしない。
+- `KyoshinPointsGL.tsx` が気象庁配色で描画するのは **index 7+**（震度1以上）。
+- `KyoshinSubThresholdGL.tsx` は「同レベルのドット同士が重なっても濃くならない」非加算合成を FBO 二層合成のカスタムレイヤー（`gl/subThresholdLayer.ts`）で再現する。毎秒更新は index バッファのカウンティングソート＋`triggerRepaint`。
 
 ### README プロジェクト構成ツリー
 - `src/components/`・`src/hooks/`・`src/utils/` に新ファイルを追加した場合は、`README.md` の「プロジェクト構成」ツリーにも追記する（README 更新の条件に含める）。
