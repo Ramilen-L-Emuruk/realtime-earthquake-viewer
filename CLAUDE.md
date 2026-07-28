@@ -80,7 +80,10 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
   - **必ず `run_in_background: true` でバックグラウンドタスクとして起動する**（ユーザー指示）。フォアグラウンドで起動するとプロセスが応答を返さずハングするため。
   - **検証用に起動した dev サーバーは Claude のセッション中は停止せず起動したままにする**（ユーザー指示）。次の検証では新規起動せず、稼働中のサーバー（既定 5173）へ Playwright で接続して再利用する。セッションをまたぐ必要は無い。
 - `__APP_VERSION__` はビルド時に `vite.config.ts` の `define` が `package.json` の `version` から注入する定数のため、dev サーバーは `package.json` の `version` を変更したあと**再起動しないと新しい値を反映しない**（HMR では拾えない）。
-- **本番ビルド確認**（大きめの変更時）: `npm run build`。
+- **本番ビルド確認（大きめの変更時は必須）**: `npm run build` でビルドが通ることを確認するだけでなく、**`npm run preview`（本番ビルドのサブパス配信）を起動し Playwright MCP でブラウザ確認まで行う**。
+  - preview URL: standard は `http://localhost:4173/realtime-earthquake-viewer/`／DMDSS は `npm run build:dmdss` → `npm run preview:dmdss`。
+  - 地図系の変更では `map.isSourceLoaded(id)`・`queryRenderedFeatures` で **geojson ソースが実際にタイル化・描画されているか**まで確認する（ラスタ地形だけ出ていても油断しない）。
+  - **理由（2026-07-28 v4.0.0→v4.0.1 の本番限定バグ）**: dev サーバー（`vite dev`）は未バンドルでモジュールを解決するため、**本番ビルド（rollup バンドル）でのみ壊れる不具合が dev では再現しない**。実例＝MapLibre GL v6 の `setWorkerUrl()` 欠落で geojson ワーカーのパスが本番だけ解決できず、地図のベクタ（県境・一次細分区域・震度点・活断層等）が全滅した（全ソース `isSourceLoaded=false`・ラスタ地形だけ描画）。dev のみで検証し preview を飛ばしたため見逃し、GitHub Pages で初めて発覚した。**worker/asset のパス解決・コード分割・minify 起因の壊れは dev では出ない**ため、大きな変更は必ず本番ビルドをブラウザで確認する。
 - **ブラウザ確認（修正時は必須）**: **Playwright MCP**（`mcp__playwright__*` ツール群）で上記 URL を開き、`browser_take_screenshot`・`browser_evaluate` で表示や DOM を確認する。**`preview_start` / `preview_*` ツール（Claude Preview MCP）は使用しない。**
   - **起動確認時は必ず DMDSS 版（`npm run dev:dmdss`）を起動する**。ユーザーも実機確認を行うため、DMDSS 版が起動していることを必ず確認してからブラウザ検証を行う。
 - **修正後の確認は徹底する**。型チェック・ブラウザ動作など複数の手段で確実に修正されたことを確認する。「たぶん直っているだろう」でコミットしない。
