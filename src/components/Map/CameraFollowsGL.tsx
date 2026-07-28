@@ -8,8 +8,8 @@ import {
   fitToPositions,
   fitJapan,
   flyToPoint,
-  flyToBounds,
-  boundsFromCircles,
+  flyToBoundsSnapped,
+  boundsFromCirclesForEewFollow,
   mapContainsBounds,
   MAX_ZOOM,
 } from './gl/camera'
@@ -182,10 +182,10 @@ export function FitToEEWGL({
     window.clearTimeout(resetTimerRef.current)
     isAutoFlyingRef.current = true
     // 波円が既にあれば波円へ直接フィット（震源→波円のギクシャク防止）。
-    const bounds = boundsFromCircles(psWave)
+    const bounds = boundsFromCirclesForEewFollow(psWave)
     if (bounds) {
       log.debug(`[mapGL] EEW新規 波円${psWave.length}個へフィット`)
-      flyToBounds(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
+      flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
       return
     }
     log.debug('[mapGL] EEW新規 震源へフィット')
@@ -232,7 +232,7 @@ export function FitToEEWGL({
     if (eews.length === 0) return
     if (userInteractedRef.current) return
 
-    const bounds = boundsFromCircles(psWave)
+    const bounds = boundsFromCirclesForEewFollow(psWave)
     if (!bounds) {
       if (latest) {
         const { latitude, longitude } = latest.earthquake.hypocenter
@@ -246,7 +246,7 @@ export function FitToEEWGL({
     }
     log.debug(`[mapGL] EEW数減少・波円${psWave.length}個へ再フィット`)
     isAutoFlyingRef.current = true
-    flyToBounds(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
+    flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
   }, [eews.length, psWave, latest, map])
 
   // 予報円の成長に追従（表示に収まらなくなった時のみズームアウト）。
@@ -254,11 +254,11 @@ export function FitToEEWGL({
     if (!map) return
     if (eews.length === 0 || psWave.length === 0) return
     if (userInteractedRef.current || isAutoFlyingRef.current) return
-    const bounds = boundsFromCircles(psWave)
+    const bounds = boundsFromCirclesForEewFollow(psWave)
     if (bounds && !mapContainsBounds(map, bounds)) {
       log.debug(`[mapGL] EEW波円成長フォロー 波円${psWave.length}個`)
       isAutoFlyingRef.current = true
-      flyToBounds(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
+      flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
     }
   }, [eews.length, psWave, map])
 
