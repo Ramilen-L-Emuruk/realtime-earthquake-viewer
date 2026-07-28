@@ -54,6 +54,35 @@ export function flyToBounds(
   map.fitBounds(bounds, { padding, maxZoom, duration: durationSec * 1000 })
 }
 
+// 旧 Leaflet 版の MapContainer は zoomSnap=0.5（da119cc JapanMap.tsx:950）で、fitBounds/flyToBounds の
+// 着地ズームは常に 0.5 段階へ丸められていた。この「段階」がヒステリシスとなり、EEW 予報円が連続成長
+// （実発報時 ~10/s）しても、再フィットは円が 0.5 レベルぶん育つまで発火せず頻発しなかった。
+// MapLibre の fitBounds は分数ズームで円へぴったり合わせるため余白が無く、少しの成長で毎回はみ出し→
+// 再フィットが頻発する（移行で失われたのは zoomSnap だけ・成長フォローの contains 判定は現行と同一）。
+export const EEW_ZOOM_SNAP = 0.5
+
+/**
+ * bounds に合うズームを算出し zoomStep 段階へ切り下げて（＝わずかにズームアウトして余白を残して）fly する。
+ * 旧 Leaflet の `getBoundsZoom(inside=false)`＋`zoomSnap` 相当のヒステリシスを再現する。
+ */
+export function flyToBoundsSnapped(
+  map: maplibregl.Map,
+  bounds: maplibregl.LngLatBounds,
+  opts: { padding?: number; maxZoom?: number; durationSec?: number; zoomStep?: number } = {},
+): void {
+  const { padding = 48, maxZoom = MAX_ZOOM, durationSec = 1.0, zoomStep = EEW_ZOOM_SNAP } = opts
+  const cam = map.cameraForBounds(bounds, { padding, maxZoom })
+  if (!cam || cam.zoom == null) {
+    // cameraForBounds が算出不可なときは通常 fitBounds にフォールバック（分数ズーム）。
+    map.fitBounds(bounds, { padding, maxZoom, duration: durationSec * 1000 })
+    return
+  }
+  // 円が収まる最大ズームを zoomStep 段階へ切り下げる。浮動小数の 6.9999… が 6.5 に落ちるのを防ぐため
+  // わずかなイプシロンを足してから floor する。
+  const snappedZoom = Math.floor((cam.zoom + 1e-6) / zoomStep) * zoomStep
+  map.flyTo({ center: cam.center, zoom: snappedZoom, duration: durationSec * 1000 })
+}
+
 // EEW 予報円（P波優先・無ければ S波）を包む bounds を算出する。各円は中心 ± 半径ぶんの箱として
 // 加える（Leaflet の L.latLng(c).toBounds(radius*2*1000) と同じく半径=箱の半幅）。半径0の円は無視。
 export function boundsFromCircles(
