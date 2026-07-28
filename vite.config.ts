@@ -22,6 +22,10 @@ export default defineConfig({
   build: {
     outDir: isDmdss ? 'dist-dmdss' : 'dist',
   },
+  // maplibre-gl を依存最適化(pre-bundle)の対象外にする。pre-bundle されると GeoJSON タイル化を
+  // 担う web worker のロードが壊れ、line/circle が描画されない（背景 raster は worker 不要なので
+  // 描けてしまい切り分けにくい）。PoC で確認済みの既知の罠（MapLibre 移行 F0）。
+  optimizeDeps: { exclude: ['maplibre-gl'] },
   define: {
     'import.meta.env.VITE_VARIANT': JSON.stringify(variant),
     __APP_VERSION__: JSON.stringify(pkg.version),

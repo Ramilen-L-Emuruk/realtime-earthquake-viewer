@@ -4,7 +4,9 @@ import path from 'node:path'
 
 // 実機計測の証跡収集用 dev サーバー専用プラグイン（apply: 'serve'。本番ビルドには一切含まれない）。
 //
-//   GET  /__perf-script : scripts/perf/measure-kyoshin-static.js を配信する。
+//   GET  /__perf-script : 計測スクリプトを配信する。?file= で選択（ホワイトリスト）。
+//                         既定 measure-kyoshin-static.js（段階0・後方互換）。
+//                         MapLibre 実アプリの描画負荷計測は ?file=measure-app-render.js。
 //                         自動実行クエリ（auto/duration/label）はスクリプト自身が
 //                         document.currentScript.src から読む（本プラグインは素通し）。
 //   POST /__perf-report : 計測結果 JSON を scripts/perf/results/perf-<日時>-<label>.json へ保存する。
@@ -21,16 +23,21 @@ import path from 'node:path'
 
 const MAX_BODY_BYTES = 1024 * 1024
 
+// ?file= で配信できる計測スクリプト（ホワイトリスト。任意ファイル読み出しを防ぐ）。
+const PERF_SCRIPTS = new Set(['measure-kyoshin-static.js', 'measure-app-render.js'])
+
 export function perfReportPlugin(): Plugin {
   return {
     name: 'perf-report',
     apply: 'serve',
     configureServer(server) {
-      server.middlewares.use('/__perf-script', (_req, res) => {
+      server.middlewares.use('/__perf-script', (req, res) => {
         res.setHeader('access-control-allow-origin', '*')
         res.setHeader('cache-control', 'no-store')
         res.setHeader('content-type', 'text/javascript; charset=utf-8')
-        res.end(fs.readFileSync(path.resolve('scripts/perf/measure-kyoshin-static.js'), 'utf8'))
+        const file = new URL(req.url ?? '', 'http://x').searchParams.get('file') ?? 'measure-kyoshin-static.js'
+        const safe = PERF_SCRIPTS.has(file) ? file : 'measure-kyoshin-static.js'
+        res.end(fs.readFileSync(path.resolve('scripts/perf', safe), 'utf8'))
       })
 
       server.middlewares.use('/__perf-report', (req, res) => {
