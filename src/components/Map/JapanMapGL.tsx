@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { MapGLContext } from './mapGLContext'
+import { BaseMapGL } from './BaseMapGL'
 import type { JapanMapProps } from './mapTypes'
 import { log } from '../../utils/logger'
 
@@ -17,7 +18,7 @@ import { log } from '../../utils/logger'
 const JAPAN_CENTER: [number, number] = [138.0, 38.0]
 const INITIAL_ZOOM = 5
 
-export function JapanMapGL(_props: JapanMapProps) {
+export function JapanMapGL({ showBathymetry = true }: JapanMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const [map, setMap] = useState<maplibregl.Map | null>(null)
@@ -37,6 +38,8 @@ export function JapanMapGL(_props: JapanMapProps) {
       },
     })
     mapRef.current = m
+    // 検証用（Playwright から map を操作・レイヤー確認するため。PoC の __labelMap と同様の dev 補助）。
+    ;(window as unknown as Record<string, unknown>).__mapGL = m
     m.on('error', (e) => log.error('[JapanMapGL] map error', e.error))
     m.once('load', () => setMap(m))
     return () => {
@@ -46,11 +49,17 @@ export function JapanMapGL(_props: JapanMapProps) {
     }
   }, [])
 
+  // MapLibre は container に position:relative を強制するため、地図領域を埋める absolute inset-0 は
+  // 外側ラッパーに掛け、MapLibre コンテナ自身は h-full/w-full でラッパーいっぱいに広げる
+  // （container 直下に absolute inset-0 を掛けると position を上書きされ高さ0に潰れる）。
   return (
-    <div ref={containerRef} className="absolute inset-0">
-      <MapGLContext.Provider value={map}>
-        {/* 後続フェーズのレイヤーコンポーネントはここに置く（map を Context で購読） */}
-      </MapGLContext.Provider>
+    <div className="absolute inset-0">
+      <div ref={containerRef} className="h-full w-full">
+        <MapGLContext.Provider value={map}>
+          {/* 後続フェーズのレイヤーコンポーネントはここに置く（map を Context で購読） */}
+          <BaseMapGL showBathymetry={showBathymetry} />
+        </MapGLContext.Provider>
+      </div>
     </div>
   )
 }
