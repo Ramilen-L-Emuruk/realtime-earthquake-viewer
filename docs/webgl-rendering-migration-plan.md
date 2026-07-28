@@ -130,8 +130,16 @@
   - 実機運用: `npm run dev:dmdss -- --host` → 実機ブラウザで DevTools から1行注入
     `document.head.appendChild(Object.assign(document.createElement('script'),{src:'/__perf-script?file=measure-app-render.js&auto=1&label=surface-go2-hires'}))`
     → 全シナリオ自動計測 → `scripts/perf/results/` へ証跡保存（perf-report プラグインを `?file=` で新スクリプト配信可に拡張）。
-  - 開発機スモークテスト済み（全6シナリオ動作・detect フラグで負荷計上を確認・`maxload-eew` が blockMax 最大＝設計通り）。
-    **実数の判定（非力機で発報時にカクつかないか）は実機計測待ち。**
+  - 開発機スモークテスト済み（detect フラグで負荷計上を確認・`maxload-eew` が blockMax 最大＝設計通り）。
+  - **実機計測結果（2026-07-28・Surface Go 2・n=3）**: `docs/webgl-migration-hires-perf-surface-go2-2026-07-28.md`。
+    静止/パン/ズームの5シナリオは温まると健全（blockMax 41〜113ms）だが、**`maxload-eew`（防災最悪ケース）だけ
+    3回とも fps17〜19・longtask 計約2秒（12秒の15〜21%）と劣化が再現**＝EEW 発報時特有の負荷。PoC 検証項目7
+    （fps59.9〜60・longtask 0）からの実質的な劣化として **HIGH で確認**された（頂点数8.75倍増の懸念が実機で顕在化）。
+  - **原因切り分けのため分離シナリオを追加（`flyto-widezoom-quake`＝広ズームのカメラ×高精細ベース単体／
+    `eew-static`＝EEW 複合をカメラ静止で＝毎秒更新+波+EEW塗り×ベースの持続コスト単体）＋`detectMid`（窓の途中でも
+    detect を採り、終端の海上ビューで全0になる問題を解消）**。次の実機計測で「ベース×広ズーム×カメラ」か
+    「EEW 複合の持続再描画」かの支配源を確定し、盲目的な対処を避けてから狙って直す方針（レビュー
+    `webgl-migration-review-89188bd.md` の警告に沿う）。
 
 ### 2.4 問題の二層構造（重要な前提）
 
