@@ -20,6 +20,7 @@ import { TsunamiObsBarsGL } from './TsunamiObsBarsGL'
 import { EewRegionFillGL } from './EewRegionFillGL'
 import { EewLpgmRegionFillGL } from './EewLpgmRegionFillGL'
 import { EewEpicentersGL } from './EewEpicentersGL'
+import { PsWaveGL } from './PsWaveGL'
 import { JAPAN_CENTER, fitJapan } from './gl/camera'
 import { useActiveFaults } from '../../hooks/useActiveFaults'
 import { usePlateBoundaries } from '../../hooks/usePlateBoundaries'
@@ -49,6 +50,7 @@ export function JapanMapGL({
   obsUpdateStatus,
   eews = [],
   eewLpgmEventId = null,
+  kyoshinPsWave = [],
   heatPoints,
   showBathymetry = true,
   kyoshinSites = [],
@@ -184,6 +186,8 @@ export function JapanMapGL({
             regionAggregates={eewLpgmRegionAggregates}
             visible={eewLpgmRegionAggregates.length > 0}
           />
+          {/* EEW 予報円（S波塗り／P波外周）。全モードで表示（実 EEW 発報時のみ値が入る）。 */}
+          <PsWaveGL psWave={kyoshinPsWave} />
           {/* EEW 震源（×印・点滅）。全モードで表示し、リアルタイム震度モード以外は半透明。 */}
           {eewEpicenters.length > 0 && (
             <EewEpicentersGL epicenters={eewEpicenters} iconScale={iconScale} fullOpacity={mode === 'kyoshin'} />
