@@ -13,6 +13,8 @@ import { QuakeIntensityPointsGL } from './QuakeIntensityPointsGL'
 import { QuakeRegionFillGL } from './QuakeRegionFillGL'
 import { QuakeHeatmapGL } from './QuakeHeatmapGL'
 import { EpicenterGL } from './EpicenterGL'
+import { LpgmPointsGL } from './LpgmPointsGL'
+import { LpgmRegionFillGL } from './LpgmRegionFillGL'
 import { JAPAN_CENTER, fitJapan } from './gl/camera'
 import { useActiveFaults } from '../../hooks/useActiveFaults'
 import { usePlateBoundaries } from '../../hooks/usePlateBoundaries'
@@ -34,6 +36,7 @@ const INITIAL_ZOOM = 5
 export function JapanMapGL({
   mode,
   quake,
+  lpgm,
   heatPoints,
   showBathymetry = true,
   kyoshinSites = [],
@@ -53,8 +56,17 @@ export function JapanMapGL({
   // 活断層・プレート境界は地震／リアルタイム震度モードで表示する（Leaflet 版と同条件）。
   const showOverlayLines = mode === 'quake' || mode === 'kyoshin'
   // 地震モードの派生データ（震度点／区域集約／震源）。Leaflet 版と共有の導出フック。
-  const { intensityMarkers, aggregateByRegion, regionAggregates, hasEpicenter, epicenter, prefIntensities } =
-    useQuakeLayerData(mode, quake, zoom)
+  const {
+    intensityMarkers,
+    aggregateByRegion,
+    regionAggregates,
+    hasEpicenter,
+    epicenter,
+    prefIntensities,
+    lpgmActive,
+    lpgmMarkers,
+    lpgmRegionAggregates,
+  } = useQuakeLayerData(mode, quake, zoom, lpgm)
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -109,9 +121,29 @@ export function JapanMapGL({
           <ActiveFaultsGL activeFaults={activeFaults} visible={showOverlayLines && showActiveFaults} />
           {mode === 'quake' && (
             <>
-              {/* 区域集約時は一次細分区域塗り＋震度ラベル、高ズーム時は観測点ごとの震度点。 */}
-              <QuakeRegionFillGL regionAggregates={regionAggregates} iconScale={iconScale} visible={aggregateByRegion} />
-              <QuakeIntensityPointsGL markers={intensityMarkers} iconScale={iconScale} visible={!aggregateByRegion} />
+              {/* 通常の震度表示（LPGM 進行中は非表示＝下の LPGM 表示に置き換わる）。
+                  区域集約時は一次細分区域塗り＋震度ラベル、高ズーム時は観測点ごとの震度点。 */}
+              <QuakeRegionFillGL
+                regionAggregates={regionAggregates}
+                iconScale={iconScale}
+                visible={aggregateByRegion && !lpgmActive}
+              />
+              <QuakeIntensityPointsGL
+                markers={intensityMarkers}
+                iconScale={iconScale}
+                visible={!aggregateByRegion && !lpgmActive}
+              />
+              {/* LPGM（長周期地震動）進行中: 区域集約時は区域塗り＋階級ラベル、高ズーム時は観測点ドット。 */}
+              <LpgmRegionFillGL
+                regionAggregates={lpgmRegionAggregates}
+                iconScale={iconScale}
+                visible={aggregateByRegion && lpgmActive}
+              />
+              <LpgmPointsGL
+                markers={lpgmMarkers}
+                iconScale={iconScale}
+                visible={!aggregateByRegion && lpgmActive}
+              />
               {hasEpicenter && epicenter && quake && (
                 <EpicenterGL quake={quake} epicenter={epicenter} prefIntensities={prefIntensities} iconScale={iconScale} />
               )}
