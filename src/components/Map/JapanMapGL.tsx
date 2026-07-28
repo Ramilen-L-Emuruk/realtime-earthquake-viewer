@@ -15,10 +15,13 @@ import { QuakeHeatmapGL } from './QuakeHeatmapGL'
 import { EpicenterGL } from './EpicenterGL'
 import { LpgmPointsGL } from './LpgmPointsGL'
 import { LpgmRegionFillGL } from './LpgmRegionFillGL'
+import { TsunamiLinesGL } from './TsunamiLinesGL'
+import { TsunamiObsBarsGL } from './TsunamiObsBarsGL'
 import { JAPAN_CENTER, fitJapan } from './gl/camera'
 import { useActiveFaults } from '../../hooks/useActiveFaults'
 import { usePlateBoundaries } from '../../hooks/usePlateBoundaries'
 import { useQuakeLayerData } from '../../hooks/useQuakeLayerData'
+import { useTsunamiLayerData } from '../../hooks/useTsunamiLayerData'
 import type { JapanMapProps } from './mapTypes'
 import { log } from '../../utils/logger'
 
@@ -37,6 +40,9 @@ export function JapanMapGL({
   mode,
   quake,
   lpgm,
+  tsunamis = [],
+  observations = [],
+  obsUpdateStatus,
   heatPoints,
   showBathymetry = true,
   kyoshinSites = [],
@@ -67,6 +73,8 @@ export function JapanMapGL({
     lpgmMarkers,
     lpgmRegionAggregates,
   } = useQuakeLayerData(mode, quake, zoom, lpgm)
+  // 津波の派生データ（海岸線＋観測棒）。発報中は全モードで海岸線を描くため常時計算する。
+  const { tsunamiLines, observationBars } = useTsunamiLayerData(tsunamis, observations, obsUpdateStatus)
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -159,6 +167,10 @@ export function JapanMapGL({
               <KyoshinMaxEffectGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
             </>
           )}
+          {/* 津波海岸線: 発報中は全モードで最前面付近に描画・点滅する。 */}
+          {tsunamiLines.length > 0 && <TsunamiLinesGL lines={tsunamiLines} iconScale={iconScale} />}
+          {/* 津波観測棒: 津波モードで波高バーを立てる。 */}
+          {mode === 'tsunami' && observationBars.length > 0 && <TsunamiObsBarsGL bars={observationBars} />}
         </MapGLContext.Provider>
       </div>
     </div>
