@@ -5,6 +5,7 @@ import { loadPrefectures } from '../../utils/prefectures'
 import { loadSubRegions } from '../../utils/subregions'
 import { REGIONS } from '../../utils/regions'
 import { addOrderedLayer } from './gl/layerOrder'
+import { JP_FONT_STACK } from './gl/fontStack'
 import { log } from '../../utils/logger'
 
 // 地名ラベル（地方名／県名／区域名）を MapLibre の symbol レイヤーで描画する（Leaflet 版 BaseMap の
@@ -23,12 +24,12 @@ const LABEL_MIN_ZOOM = 5.5
 const REGION_MAX_ZOOM = 7.5
 const CITY_LABEL_MIN_ZOOM = 9
 
-// 事前生成グリフのフォントスタック名（scripts/build-glyphs.mjs の GLYPH_STACK・出力ディレクトリ名
-// public/fonts/Noto Sans JP/ と完全一致させる。MapLibre は text-font 値を glyphs URL の {fontstack} に使う）。
-const JP_TEXT_FONT = ['Noto Sans JP']
+// symbol レイヤーの text-font。フォントスタック名は gl/fontStack.ts が単一情報源
+// （build-glyphs.mjs の出力ディレクトリ名と本値の一致はビルド時に照合される。詳細は fontStack.ts）。
+const JP_TEXT_FONT = [JP_FONT_STACK]
 
-// 縁取り: 本番(index.css)は text-shadow を重ねたソフトなグローで縁取る。MapLibre の text-halo-width は
-// ハードエッジのため、幅を絞り halo-blur でぼかして近づける（PoC で調整済みの値）。
+// 縁取り: ダーク地図上での視認性を確保するため、太めの halo-width＋halo-blur で背景色のソフトなグローを
+// 敷く（旧 Leaflet の三重 text-shadow 相当）。グリフ自体も Bold(700)で焼いている（build-glyphs.mjs）。
 const HALO_COLOR = '#0a0c10'
 
 const REGION_SRC = 'basemap-region-labels'
@@ -66,15 +67,15 @@ export function LabelsGL({ suppressRegionLabels }: Props) {
       layout: {
         'text-field': ['get', 'name'],
         'text-font': JP_TEXT_FONT,
-        'text-size': 15,
+        'text-size': 17,
         'text-letter-spacing': 0.05,
         visibility: suppressRegionLabels ? 'none' : 'visible',
       },
       paint: {
-        'text-color': '#dbe3ee',
+        'text-color': '#eef2f7',
         'text-halo-color': HALO_COLOR,
-        'text-halo-width': 0.8,
-        'text-halo-blur': 0.5,
+        'text-halo-width': 1.8,
+        'text-halo-blur': 0.6,
       },
     })
 
@@ -106,14 +107,14 @@ export function LabelsGL({ suppressRegionLabels }: Props) {
           layout: {
             'text-field': ['get', 'name'],
             'text-font': JP_TEXT_FONT,
-            'text-size': 12,
+            'text-size': 14,
             'text-offset': ['case', ['==', ['get', 'dir'], 'up'], ['literal', [0, -1.5]], ['literal', [0, 1.5]]],
           },
           paint: {
-            'text-color': '#cbd5e1',
+            'text-color': '#e3e9f0',
             'text-halo-color': HALO_COLOR,
-            'text-halo-width': 0.7,
-            'text-halo-blur': 0.5,
+            'text-halo-width': 1.7,
+            'text-halo-blur': 0.6,
           },
         })
       }
@@ -138,13 +139,13 @@ export function LabelsGL({ suppressRegionLabels }: Props) {
           layout: {
             'text-field': ['get', 'name'],
             'text-font': JP_TEXT_FONT,
-            'text-size': 11,
+            'text-size': 13,
           },
           paint: {
-            'text-color': '#93a3b8',
+            'text-color': '#b3bece',
             'text-halo-color': HALO_COLOR,
-            'text-halo-width': 0.6,
-            'text-halo-blur': 0.4,
+            'text-halo-width': 1.4,
+            'text-halo-blur': 0.5,
           },
         })
       }
