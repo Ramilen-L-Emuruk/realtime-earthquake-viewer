@@ -21,7 +21,15 @@ import { EewRegionFillGL } from './EewRegionFillGL'
 import { EewLpgmRegionFillGL } from './EewLpgmRegionFillGL'
 import { EewEpicentersGL } from './EewEpicentersGL'
 import { PsWaveGL } from './PsWaveGL'
-import { QuakeFitGL, FitJapanOnEnterGL, FitToDetectionGL, FitToCandidateGL } from './CameraFollowsGL'
+import {
+  QuakeFitGL,
+  FitJapanOnEnterGL,
+  FitToDetectionGL,
+  FitToCandidateGL,
+  FitToEEWGL,
+  TsunamiFitGL,
+  FocusObsGL,
+} from './CameraFollowsGL'
 import { JAPAN_CENTER, fitJapan } from './gl/camera'
 import { useActiveFaults } from '../../hooks/useActiveFaults'
 import { usePlateBoundaries } from '../../hooks/usePlateBoundaries'
@@ -52,6 +60,8 @@ export function JapanMapGL({
   eews = [],
   eewLpgmEventId = null,
   kyoshinPsWave = [],
+  idleRevertSec = 30,
+  focusObsName = null,
   heatPoints,
   showBathymetry = true,
   kyoshinSites = [],
@@ -87,7 +97,11 @@ export function JapanMapGL({
     quakeSignature,
   } = useQuakeLayerData(mode, quake, zoom, lpgm)
   // 津波の派生データ（海岸線＋観測棒）。発報中は全モードで海岸線を描くため常時計算する。
-  const { tsunamiLines, observationBars } = useTsunamiLayerData(tsunamis, observations, obsUpdateStatus)
+  const { tsunamiLines, observationBars, tsunamiFitPositions, tsunamiSignature } = useTsunamiLayerData(
+    tsunamis,
+    observations,
+    obsUpdateStatus,
+  )
   // EEW の派生データ（予想震度塗り／予想長周期塗り／震源）。
   const { eewAreaFills, eewLpgmRegionAggregates, eewEpicenters } = useEewLayerData(mode, eews, eewLpgmEventId)
 
@@ -186,6 +200,8 @@ export function JapanMapGL({
               <FitJapanOnEnterGL hasEew={eews.length > 0} hasDetection={detectedPoints.length > 0 || candidatePoints.length > 0} />
               <FitToCandidateGL points={candidatePoints} candidateId={candidateId} hasEew={eews.length > 0} hasDetection={detectedPoints.length > 0} />
               <FitToDetectionGL points={detectedPoints} hasEew={eews.length > 0} />
+              {/* EEW 追従（idle 抑制つき）。 */}
+              <FitToEEWGL eews={eews} psWave={kyoshinPsWave} idleRevertSec={idleRevertSec} detectedPoints={detectedPoints} />
             </>
           )}
           {/* EEW 予想震度塗り（kyoshin モード・EEW LPGM 表示中は隠す）と予想長周期塗り。 */}
@@ -207,6 +223,14 @@ export function JapanMapGL({
           {tsunamiLines.length > 0 && <TsunamiLinesGL lines={tsunamiLines} iconScale={iconScale} />}
           {/* 津波観測棒: 津波モードで波高バーを立てる。 */}
           {mode === 'tsunami' && observationBars.length > 0 && <TsunamiObsBarsGL bars={observationBars} />}
+          {/* 津波カメラ追従・観測フォーカス（モード切替をまたいで ref 保持するため常時マウント）。 */}
+          <TsunamiFitGL
+            mode={mode}
+            tsunamiSignature={tsunamiSignature}
+            tsunamiFitPositions={tsunamiFitPositions}
+            observationBars={observationBars}
+          />
+          <FocusObsGL focusObsName={focusObsName} observationBars={observationBars} />
         </MapGLContext.Provider>
       </div>
     </div>
