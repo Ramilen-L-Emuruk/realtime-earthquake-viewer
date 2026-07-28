@@ -1,4 +1,4 @@
-import type { Map as MapLibreMap, LayerSpecification } from 'maplibre-gl'
+import type { Map as MapLibreMap, LayerSpecification, CustomLayerInterface } from 'maplibre-gl'
 
 // 地図オーバーレイ全レイヤーの描画順（先頭ほど下＝背面、末尾ほど前面）を単一の情報源に定める。
 // MapLibre の addLayer は既定でスタック最上段に積むため、データ到着タイミングの差でマウント順が
@@ -51,7 +51,7 @@ export function firstExistingLayerId(map: MapLibreMap, ids: readonly string[]): 
 
 // layer を MAP_LAYER_ORDER の正しいスロットへ追加する。自分より後段（前面）に来るべき既存レイヤーの
 // うち最初のものを beforeId に指定して、その直前へ挿入する（該当が無ければ最上段）。
-export function addOrderedLayer(map: MapLibreMap, layer: LayerSpecification): void {
+export function addOrderedLayer(map: MapLibreMap, layer: LayerSpecification | CustomLayerInterface): void {
   const selfPos = MAP_LAYER_ORDER.indexOf(layer.id as MapLayerId)
   const beforeId =
     selfPos >= 0 ? firstExistingLayerId(map, MAP_LAYER_ORDER.slice(selfPos + 1)) : undefined
