@@ -3,6 +3,7 @@ import { useMapGL } from './mapGLContext'
 import { loadPrefectures } from '../../utils/prefectures'
 import { loadSubRegions } from '../../utils/subregions'
 import { ringsToPolygonFC, ringsToLineFC } from './gl/geojson'
+import { addOrderedLayer } from './gl/layerOrder'
 import { log } from '../../utils/logger'
 
 // 行政区域ベースマップ（MapLibre 版・Leaflet の BaseMap 相当）。ダーク背景の上に
@@ -44,7 +45,7 @@ export function BaseMapGL({ showBathymetry }: Props) {
 
     // 海底地形ラスタ（陸地塗りの下）。showBathymetry の初期値で可視を決める。
     map.addSource(SRC_GEBCO, { type: 'raster', tiles: [BATHYMETRY_URL], tileSize: 256, maxzoom: 10 })
-    map.addLayer({
+    addOrderedLayer(map, {
       id: LYR_GEBCO,
       type: 'raster',
       source: SRC_GEBCO,
@@ -60,17 +61,19 @@ export function BaseMapGL({ showBathymetry }: Props) {
       if (prefRes.status === 'rejected') log.warn('[data] prefectures 取得失敗（陸地塗りなしで継続）', prefRes.reason)
       if (subRes.status === 'rejected') log.warn('[data] subregions 取得失敗（境界線なしで継続）', subRes.reason)
 
+      // MAP_LAYER_ORDER に従い最下層スロット（land-fill < sub-borders < pref-borders）へ挿入する。
+      // 遅延読込で faults/plates 等のオーバーレイより後に追加されても、常にその背面へ入る。
       // 1) 陸地塗り（都道府県ポリゴン・塗りのみ）
       if (prefs) {
         const rings = Object.values(prefs).map((s) => s.rings)
         map.addSource(SRC_LAND, { type: 'geojson', data: ringsToPolygonFC(rings) })
-        map.addLayer({ id: LYR_LAND, type: 'fill', source: SRC_LAND, paint: { 'fill-color': LAND_FILL } })
+        addOrderedLayer(map, { id: LYR_LAND, type: 'fill', source: SRC_LAND, paint: { 'fill-color': LAND_FILL } })
       }
       // 2) 一次細分区域の細い境界線（陸地塗りより前面）
       if (subs) {
         const rings = subs.map((sr) => sr.rings)
         map.addSource(SRC_SUB, { type: 'geojson', data: ringsToLineFC(rings) })
-        map.addLayer({
+        addOrderedLayer(map, {
           id: LYR_SUB,
           type: 'line',
           source: SRC_SUB,
@@ -81,7 +84,7 @@ export function BaseMapGL({ showBathymetry }: Props) {
       if (prefs) {
         const rings = Object.values(prefs).map((s) => s.rings)
         map.addSource(SRC_PREF, { type: 'geojson', data: ringsToLineFC(rings) })
-        map.addLayer({
+        addOrderedLayer(map, {
           id: LYR_PREF,
           type: 'line',
           source: SRC_PREF,
