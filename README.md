@@ -315,6 +315,7 @@ realtime-earthquake-viewer/
 │       ├── voicevox.ts             # VOICEVOX 連携（音声合成・話者一覧取得）
 │       ├── clock.ts                # アプリ全体の時刻基準（サーバー同期・壁時計ずれ非依存の serverNow）
 │       ├── logger.ts               # console ログへの時刻付与（clock の serverNow に追従）
+│       ├── gebcoPrefetch.ts        # 海底地形タイル（GEBCO）の先読み: 沖縄〜択捉相当をアイドル時に低ズーム優先でバックグラウンド fetch
 │       └── testData.ts             # 設定タブのテストボタン用サンプルデータ生成
 ├── index.html
 ├── package.json
