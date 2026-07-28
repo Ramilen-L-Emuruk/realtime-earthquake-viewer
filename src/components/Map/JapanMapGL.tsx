@@ -9,9 +9,12 @@ import { KyoshinDetectedPointsGL } from './KyoshinDetectedPointsGL'
 import { KyoshinMaxEffectGL } from './KyoshinMaxEffectGL'
 import { ActiveFaultsGL } from './ActiveFaultsGL'
 import { PlateBoundariesGL } from './PlateBoundariesGL'
+import { QuakeIntensityPointsGL } from './QuakeIntensityPointsGL'
+import { QuakeRegionFillGL } from './QuakeRegionFillGL'
 import { JAPAN_CENTER, fitJapan } from './gl/camera'
 import { useActiveFaults } from '../../hooks/useActiveFaults'
 import { usePlateBoundaries } from '../../hooks/usePlateBoundaries'
+import { useQuakeLayerData } from '../../hooks/useQuakeLayerData'
 import type { JapanMapProps } from './mapTypes'
 import { log } from '../../utils/logger'
 
@@ -28,6 +31,7 @@ const INITIAL_ZOOM = 5
 
 export function JapanMapGL({
   mode,
+  quake,
   showBathymetry = true,
   kyoshinSites = [],
   kyoshinIndices = [],
@@ -39,10 +43,14 @@ export function JapanMapGL({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const [map, setMap] = useState<maplibregl.Map | null>(null)
+  // 集約切替（zoom <= MAX_ZOOM で一次細分区域集約）判定のため現在ズームを追跡する。
+  const [zoom, setZoom] = useState(INITIAL_ZOOM)
   const activeFaults = useActiveFaults()
   const plateBoundaries = usePlateBoundaries()
   // 活断層・プレート境界は地震／リアルタイム震度モードで表示する（Leaflet 版と同条件）。
   const showOverlayLines = mode === 'quake' || mode === 'kyoshin'
+  // 地震モードの派生データ（震度点／区域集約／震源）。Leaflet 版と共有の導出フック。
+  const { intensityMarkers, aggregateByRegion, regionAggregates } = useQuakeLayerData(mode, quake, zoom)
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -65,9 +73,14 @@ export function JapanMapGL({
     m.once('load', () => {
       // 本アプリの既定フレーミング（日本全体・padding 20）へ即時に合わせる。
       fitJapan(m, 0)
+      setZoom(m.getZoom())
       setMap(m)
     })
+    // ズーム確定ごとに zoom state を更新（集約切替の再評価用）。
+    const onZoomEnd = () => setZoom(m.getZoom())
+    m.on('zoomend', onZoomEnd)
     return () => {
+      m.off('zoomend', onZoomEnd)
       mapRef.current = null
       setMap(null)
       m.remove()
@@ -86,6 +99,13 @@ export function JapanMapGL({
           {/* 活断層・プレート境界（quake/kyoshin モード）。kyoshin ドット群の下に敷く。 */}
           <PlateBoundariesGL plateBoundaries={plateBoundaries} visible={showOverlayLines && showPlateBoundaries} />
           <ActiveFaultsGL activeFaults={activeFaults} visible={showOverlayLines && showActiveFaults} />
+          {mode === 'quake' && (
+            <>
+              {/* 区域集約時は一次細分区域塗り＋震度ラベル、高ズーム時は観測点ごとの震度点。 */}
+              <QuakeRegionFillGL regionAggregates={regionAggregates} iconScale={iconScale} visible={aggregateByRegion} />
+              <QuakeIntensityPointsGL markers={intensityMarkers} iconScale={iconScale} visible={!aggregateByRegion} />
+            </>
+          )}
           {mode === 'kyoshin' && (
             <>
               {/* SubThreshold(index1〜6)を先に置き、その上に KyoshinPoints(index7+)を重ねる。
