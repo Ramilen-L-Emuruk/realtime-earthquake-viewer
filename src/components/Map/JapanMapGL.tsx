@@ -11,6 +11,8 @@ import { ActiveFaultsGL } from './ActiveFaultsGL'
 import { PlateBoundariesGL } from './PlateBoundariesGL'
 import { QuakeIntensityPointsGL } from './QuakeIntensityPointsGL'
 import { QuakeRegionFillGL } from './QuakeRegionFillGL'
+import { QuakeHeatmapGL } from './QuakeHeatmapGL'
+import { EpicenterGL } from './EpicenterGL'
 import { JAPAN_CENTER, fitJapan } from './gl/camera'
 import { useActiveFaults } from '../../hooks/useActiveFaults'
 import { usePlateBoundaries } from '../../hooks/usePlateBoundaries'
@@ -32,6 +34,7 @@ const INITIAL_ZOOM = 5
 export function JapanMapGL({
   mode,
   quake,
+  heatPoints,
   showBathymetry = true,
   kyoshinSites = [],
   kyoshinIndices = [],
@@ -50,7 +53,8 @@ export function JapanMapGL({
   // 活断層・プレート境界は地震／リアルタイム震度モードで表示する（Leaflet 版と同条件）。
   const showOverlayLines = mode === 'quake' || mode === 'kyoshin'
   // 地震モードの派生データ（震度点／区域集約／震源）。Leaflet 版と共有の導出フック。
-  const { intensityMarkers, aggregateByRegion, regionAggregates } = useQuakeLayerData(mode, quake, zoom)
+  const { intensityMarkers, aggregateByRegion, regionAggregates, hasEpicenter, epicenter, prefIntensities } =
+    useQuakeLayerData(mode, quake, zoom)
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -97,6 +101,10 @@ export function JapanMapGL({
           {/* 後続フェーズのレイヤーコンポーネントはここに置く（map を Context で購読） */}
           <BaseMapGL showBathymetry={showBathymetry} />
           {/* 活断層・プレート境界（quake/kyoshin モード）。kyoshin ドット群の下に敷く。 */}
+          {/* 地震活動ヒートマップ（quake/kyoshin モードで heatPoints があるとき・区域塗りより背面）。 */}
+          {(mode === 'quake' || mode === 'kyoshin') && heatPoints && heatPoints.length > 0 && (
+            <QuakeHeatmapGL points={heatPoints} />
+          )}
           <PlateBoundariesGL plateBoundaries={plateBoundaries} visible={showOverlayLines && showPlateBoundaries} />
           <ActiveFaultsGL activeFaults={activeFaults} visible={showOverlayLines && showActiveFaults} />
           {mode === 'quake' && (
@@ -104,6 +112,9 @@ export function JapanMapGL({
               {/* 区域集約時は一次細分区域塗り＋震度ラベル、高ズーム時は観測点ごとの震度点。 */}
               <QuakeRegionFillGL regionAggregates={regionAggregates} iconScale={iconScale} visible={aggregateByRegion} />
               <QuakeIntensityPointsGL markers={intensityMarkers} iconScale={iconScale} visible={!aggregateByRegion} />
+              {hasEpicenter && epicenter && quake && (
+                <EpicenterGL quake={quake} epicenter={epicenter} prefIntensities={prefIntensities} iconScale={iconScale} />
+              )}
             </>
           )}
           {mode === 'kyoshin' && (

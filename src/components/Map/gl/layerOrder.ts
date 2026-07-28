@@ -9,7 +9,13 @@ import type { Map as MapLibreMap, LayerSpecification } from 'maplibre-gl'
 // quake モードのレイヤー群と kyoshin モードのレイヤー群は排他（mode 切替で同時には存在しない）だが、
 // アルゴリズム上の全順序として一列に並べておけば齟齬は起きない。
 export const MAP_LAYER_ORDER = [
-  // ベースマップ（BaseMapGL）は 'gebco'/'land'/境界線を別途最下層に敷くためここには含めない。
+  // ベースマップ（BaseMapGL）。陸地塗り・境界線は生成データの遅延読込後に追加されるため、
+  // 素の addLayer（最上段）だと読込順次第でオーバーレイの上に乗る事故がある。最下層スロットとして
+  // ここに含め、BaseMapGL も addOrderedLayer で追加することで常に最背面へ固定する。
+  'gebco-raster',
+  'land-fill',
+  'sub-borders',
+  'pref-borders',
   'plate-boundaries',
   'active-faults',
   'quake-heat',
