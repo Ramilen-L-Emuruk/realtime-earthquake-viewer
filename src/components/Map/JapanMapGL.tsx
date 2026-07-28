@@ -17,11 +17,15 @@ import { LpgmPointsGL } from './LpgmPointsGL'
 import { LpgmRegionFillGL } from './LpgmRegionFillGL'
 import { TsunamiLinesGL } from './TsunamiLinesGL'
 import { TsunamiObsBarsGL } from './TsunamiObsBarsGL'
+import { EewRegionFillGL } from './EewRegionFillGL'
+import { EewLpgmRegionFillGL } from './EewLpgmRegionFillGL'
+import { EewEpicentersGL } from './EewEpicentersGL'
 import { JAPAN_CENTER, fitJapan } from './gl/camera'
 import { useActiveFaults } from '../../hooks/useActiveFaults'
 import { usePlateBoundaries } from '../../hooks/usePlateBoundaries'
 import { useQuakeLayerData } from '../../hooks/useQuakeLayerData'
 import { useTsunamiLayerData } from '../../hooks/useTsunamiLayerData'
+import { useEewLayerData } from '../../hooks/useEewLayerData'
 import type { JapanMapProps } from './mapTypes'
 import { log } from '../../utils/logger'
 
@@ -43,6 +47,8 @@ export function JapanMapGL({
   tsunamis = [],
   observations = [],
   obsUpdateStatus,
+  eews = [],
+  eewLpgmEventId = null,
   heatPoints,
   showBathymetry = true,
   kyoshinSites = [],
@@ -75,6 +81,8 @@ export function JapanMapGL({
   } = useQuakeLayerData(mode, quake, zoom, lpgm)
   // 津波の派生データ（海岸線＋観測棒）。発報中は全モードで海岸線を描くため常時計算する。
   const { tsunamiLines, observationBars } = useTsunamiLayerData(tsunamis, observations, obsUpdateStatus)
+  // EEW の派生データ（予想震度塗り／予想長周期塗り／震源）。
+  const { eewAreaFills, eewLpgmRegionAggregates, eewEpicenters } = useEewLayerData(mode, eews, eewLpgmEventId)
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -166,6 +174,19 @@ export function JapanMapGL({
               <KyoshinDetectedPointsGL points={detectedPoints} iconScale={iconScale} />
               <KyoshinMaxEffectGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
             </>
+          )}
+          {/* EEW 予想震度塗り（kyoshin モード・EEW LPGM 表示中は隠す）と予想長周期塗り。 */}
+          <EewRegionFillGL
+            areaFills={eewAreaFills}
+            visible={eewAreaFills.length > 0 && eewLpgmRegionAggregates.length === 0}
+          />
+          <EewLpgmRegionFillGL
+            regionAggregates={eewLpgmRegionAggregates}
+            visible={eewLpgmRegionAggregates.length > 0}
+          />
+          {/* EEW 震源（×印・点滅）。全モードで表示し、リアルタイム震度モード以外は半透明。 */}
+          {eewEpicenters.length > 0 && (
+            <EewEpicentersGL epicenters={eewEpicenters} iconScale={iconScale} fullOpacity={mode === 'kyoshin'} />
           )}
           {/* 津波海岸線: 発報中は全モードで最前面付近に描画・点滅する。 */}
           {tsunamiLines.length > 0 && <TsunamiLinesGL lines={tsunamiLines} iconScale={iconScale} />}
