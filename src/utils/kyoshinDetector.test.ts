@@ -367,6 +367,63 @@ describe('step: 保持と明滅防止', () => {
   })
 })
 
+describe('step: 大きな揺れ直後のノイズ床フリーズ（群発地震での感度劣化対策）', () => {
+  /**
+   * 2026-07-28 熊本群発地震のリプレイ検証で発見した実挙動: 本震級の揺れが収まった後もしばらく
+   * 残留変動（value が levelActive の閾値を割ったり超えたりしながら緩やかに収まる）が続くと、
+   * その「levelActive でない」瞬間の値が静穏点の床学習に取り込まれ続け、ノイズ床
+   * （floorMean + FLOOR_SIGMA_K・floorDev）が FLOOR_CAP まで上昇してしまう。一度 FLOOR_CAP まで
+   * 上がると、震度1程度の後続の弱い余震は levelActive にすらならず検知できなくなる（実データでは
+   * 本震後 8 分間、震度1相当の余震 5 件が完全に無反応だった。詳細はハーネスでの熊本群発リプレイ参照）。
+   * FLOOR_FREEZE_MS は、onset した点についてその後一定時間は床学習をスキップし、揺れの残響を
+   * ノイズとして誤学習しないようにする。
+   */
+  it('onset した点は COINCIDENCE_MS を過ぎても FLOOR_FREEZE_MS の間はノイズ床を更新しない', () => {
+    const defs = grid3x3(32.6, 130.7, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) state = step(state, uniformFrame(defs, t, -2.0), meta).state
+    for (let i = 0; i < 4; i++, t += 1000) state = step(state, uniformFrame(defs, t, 4.0), meta).state
+    expect(state.events.some((e) => e.confidence === 'confirmed')).toBe(true)
+
+    const key = siteKey(defs[4].lat, defs[4].lng)
+    const floorMeanAtOnset = state.sites[key].floorMean
+    const floorDevAtOnset = state.sites[key].floorDev
+
+    // COINCIDENCE_MS(4s) を過ぎても FLOOR_FREEZE_MS 未満の間、levelActive でない値(揺れの残響)を
+    // 1 秒間隔(実運用と同じ頻度)で与え続ける。
+    const untilMs = PARAMS.FLOOR_FREEZE_MS - 60_000
+    while (t < untilMs) {
+      t += 1000
+      state = step(state, uniformFrame(defs, t, -1.0), meta).state
+    }
+    expect(state.sites[key].floorMean).toBeCloseTo(floorMeanAtOnset)
+    expect(state.sites[key].floorDev).toBeCloseTo(floorDevAtOnset)
+  })
+
+  it('FLOOR_FREEZE_MS を過ぎれば通常どおりノイズ床の学習を再開する', () => {
+    const defs = grid3x3(32.6, 130.7, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) state = step(state, uniformFrame(defs, t, -2.0), meta).state
+    for (let i = 0; i < 4; i++, t += 1000) state = step(state, uniformFrame(defs, t, 4.0), meta).state
+
+    const key = siteKey(defs[4].lat, defs[4].lng)
+    const floorMeanAtOnset = state.sites[key].floorMean
+
+    // FLOOR_FREEZE_MS を十分に超えるまで 1 秒間隔で経過させる(MAX_DT_GAP_MS 超のジャンプは
+    // 不連続リセット扱いになり学習が起きないため、実運用と同じ 1 秒刻みで積み上げる)。
+    const untilMs = PARAMS.FLOOR_FREEZE_MS + 60_000
+    while (t < untilMs) {
+      t += 1000
+      state = step(state, uniformFrame(defs, t, -1.0), meta).state
+    }
+    expect(state.sites[key].floorMean).not.toBeCloseTo(floorMeanAtOnset)
+  })
+})
+
 describe('step: 特異度の第2軸（セル慢性活性ガード）', () => {
   it('慢性活性セルでは震度1のコヒーレント同時多発を confirmed にしない', () => {
     const defs = grid3x3(36.1, 140.3, 0.1) // 北関東型

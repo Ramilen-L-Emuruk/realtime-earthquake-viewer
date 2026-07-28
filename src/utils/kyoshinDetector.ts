@@ -152,6 +152,18 @@ export const PARAMS = {
   TRIG_FLOOR: -1.5,
   /** 点別ノイズ床の学習時定数(ms)。慢性ノイズを捉えるため分オーダー（V2 の LTA 45s より遅い） */
   FLOOR_TAU_MS: 900_000,
+  /**
+   * onset した点のノイズ床学習フリーズ期間(ms)。onset から COINCIDENCE_MS(4s) を過ぎて揺れが収まった
+   * と判定された直後も、この期間はノイズ床の学習をスキップする。2026-07-28 熊本群発地震のリプレイ
+   * 検証で発見: 対策前は COINCIDENCE_MS が過ぎた瞬間から即座に学習が再開されるため、本震・大きめの
+   * 余震の減衰過程で続く残留変動（levelActive を割ったり超えたりしながら緩やかに収まる値）が静穏点の
+   * ノイズ床として誤学習され、FLOOR_CAP まで押し上げてしまっていた（実データでは本震後 8 分間、
+   * 震度1相当の余震 5 件が完全に無反応だった）。単発の孤立した地震では大きな影響はない
+   * （FLOOR_TAU_MS=15分の時定数でゆっくり回復する余地がある）が、数分おきに余震が続く群発地震では
+   * 床が回復する前に次の onset が来るため劣化が蓄積し続ける。トリガー対象は onset した観測点のみ
+   * （confirmed に無関係のノイズ地域を鈍くする FLOOR_CAP の本来の役目は妨げない）。
+   */
+  FLOOR_FREEZE_MS: 600_000,
   /** 床＝floorMean + FLOOR_SIGMA_K·floorDev。ばらつきの大きい点を鈍くする係数 */
   FLOOR_SIGMA_K: 3.0,
   /** 点別床の下限(value)。静穏点でもこの床は保つ（微小変動の誤発火防止） */
@@ -614,10 +626,15 @@ export function step(
 
   // ---- 点別ノイズ床の学習 ----
   // 揺れていない・近傍同時でない「静穏な点」だけで床を更新する（実イベント・群発で床が汚れ鈍化しない）。
+  // onset から FLOOR_FREEZE_MS の間は、COINCIDENCE_MS を過ぎて揺れが収まったと判定された直後でも
+  // 学習をスキップする（揺れの残響を静穏点のノイズ床として誤学習しないようにする。詳細は FLOOR_FREEZE_MS
+  // のコメント参照）。
   const coincidentSet = new Set(confirmedShaking)
   for (const p of points) {
     const s = sites[p.key]
-    if (p.levelActive || coincidentSet.has(p.key)) continue // 凍結
+    if (p.levelActive || coincidentSet.has(p.key)) continue // 凍結(揺れ中)
+    const trigAt = triggeredAt[p.key]
+    if (trigAt != null && now - trigAt <= PARAMS.FLOOR_FREEZE_MS) continue // 凍結(揺れの残響期間)
     const a = ewmaAlpha(dtMs, PARAMS.FLOOR_TAU_MS)
     s.floorMean = s.floorMean + a * (p.value - s.floorMean)
     s.floorDev = s.floorDev + a * (Math.abs(p.value - s.floorMean) - s.floorDev)
