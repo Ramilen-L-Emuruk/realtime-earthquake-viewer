@@ -12,8 +12,10 @@ import { writeFile, mkdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
+// 末尾 `_1` は簡素化の緩い高精細版（原始約142,787頂点）。簡素化のきつい `_01` 版（約1/6.5・粗い行政界で
+// 海岸線が角張る）から切替えた。同じ 194 feature・properties(code/name/namekana)で区域定義は不変。
 const SOURCE_URL =
-  'https://raw.githubusercontent.com/Ichihai1415/JMA-GIS-GeoJSON/release/AreaForecastLocalE_GIS_20240520_01.geojson'
+  'https://raw.githubusercontent.com/Ichihai1415/JMA-GIS-GeoJSON/release/AreaForecastLocalE_GIS_20240520_1.geojson'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const OUT_DIR = join(__dirname, '..', 'public', 'data')
@@ -44,8 +46,10 @@ function perpDist([y, x], [ay, ax], [by, bx]) {
   return Math.hypot(y - cy, x - cx)
 }
 
-// Douglas-Peucker（拡大時の崩れを抑えるため詳細を残す）。
-const EPSILON = 0.002 // 度（約220m相当）
+// Douglas-Peucker の許容誤差。0 = 間引き撤廃（ほぼ厳密に collinear な点のみ除去＝全頂点保持）。
+// WebGL(MapLibre)移行でフル解像度描画が実質無償になったため、深いズームでも境界がなめらかになるよう
+// 撤廃する（座標は toLatLng の小数4桁丸め≈11mが下限精度。ダウンロード量は増えるが描画性能は不変）。
+const EPSILON = 0 // 度（0=撤廃・全頂点保持。以前は 0.002≈220m で間引いていた）
 function simplify(points) {
   if (points.length < 3) return points
   let maxD = 0

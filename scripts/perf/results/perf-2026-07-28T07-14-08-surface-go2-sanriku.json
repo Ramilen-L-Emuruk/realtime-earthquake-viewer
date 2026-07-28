@@ -1,0 +1,404 @@
+{
+  "meta": {
+    "when": "2026-07-28T07:14:08.975Z",
+    "label": "surface-go2-sanriku",
+    "url": "http://192.168.0.64:5199/realtime-earthquake-viewer/dmdss/",
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
+    "viewport": "1272x768",
+    "devicePixelRatio": 1.5,
+    "canvas": "1246x1152",
+    "estimatedVsyncMs": 16.7,
+    "jsHeapMB": 220
+  },
+  "scenarios": {
+    "static-quake": {
+      "elapsedMs": 6025.8,
+      "frame": {
+        "frames": 357,
+        "fps": 59.25,
+        "p50": 16.7,
+        "p95": 16.8,
+        "max": 33.5
+      },
+      "blockMaxMs": 40.4,
+      "blockTop3Ms": [
+        40.4,
+        40.3,
+        34.1
+      ],
+      "longtask": {
+        "count": 0,
+        "maxMs": 0,
+        "totalMs": 0
+      },
+      "jsHeapMB": 262,
+      "detect": {
+        "zoom": 6,
+        "land-fill": 254,
+        "sub-borders": 363,
+        "pref-borders": 306,
+        "active-faults": 457,
+        "plate-boundaries": 8,
+        "quake-region-fill": 0,
+        "eew-region-fill": 0
+      },
+      "detectMid": {
+        "zoom": 6,
+        "land-fill": 254,
+        "sub-borders": 363,
+        "pref-borders": 306,
+        "active-faults": 457,
+        "plate-boundaries": 8,
+        "quake-region-fill": 0,
+        "eew-region-fill": 0
+      }
+    },
+    "pan-maxzoom-quake": {
+      "elapsedMs": 6024.9,
+      "frame": {
+        "frames": 340,
+        "fps": 56.43,
+        "p50": 16.7,
+        "p95": 32.8,
+        "max": 50
+      },
+      "blockMaxMs": 60.5,
+      "blockTop3Ms": [
+        60.5,
+        46,
+        44.4
+      ],
+      "longtask": {
+        "count": 0,
+        "maxMs": 0,
+        "totalMs": 0
+      },
+      "jsHeapMB": 98,
+      "detect": {
+        "zoom": 12,
+        "land-fill": 8,
+        "sub-borders": 8,
+        "pref-borders": 8,
+        "active-faults": 3,
+        "plate-boundaries": 0,
+        "quake-region-fill": 0,
+        "eew-region-fill": 0
+      },
+      "detectMid": {
+        "zoom": 12,
+        "land-fill": 4,
+        "sub-borders": 0,
+        "pref-borders": 0,
+        "active-faults": 5,
+        "plate-boundaries": 0,
+        "quake-region-fill": 0,
+        "eew-region-fill": 0
+      }
+    },
+    "zoom-quake": {
+      "elapsedMs": 6058,
+      "frame": {
+        "frames": 320,
+        "fps": 52.82,
+        "p50": 16.7,
+        "p95": 33.4,
+        "max": 83.2
+      },
+      "blockMaxMs": 85.1,
+      "blockTop3Ms": [
+        85.1,
+        71.5,
+        63.9
+      ],
+      "longtask": {
+        "count": 1,
+        "maxMs": 56,
+        "totalMs": 56
+      },
+      "jsHeapMB": 115,
+      "detect": {
+        "zoom": 8,
+        "land-fill": 48,
+        "sub-borders": 64,
+        "pref-borders": 48,
+        "active-faults": 102,
+        "plate-boundaries": 5,
+        "quake-region-fill": 0,
+        "eew-region-fill": 0
+      },
+      "detectMid": {
+        "zoom": 12.49,
+        "land-fill": 8,
+        "sub-borders": 6,
+        "pref-borders": 6,
+        "active-faults": 0,
+        "plate-boundaries": 0,
+        "quake-region-fill": 0,
+        "eew-region-fill": 0
+      }
+    },
+    "flyto-widezoom-quake": {
+      "elapsedMs": 6016.1,
+      "frame": {
+        "frames": 333,
+        "fps": 55.35,
+        "p50": 16.7,
+        "p95": 27.6,
+        "max": 72.3
+      },
+      "blockMaxMs": 77.2,
+      "blockTop3Ms": [
+        77.2,
+        76.9,
+        54.2
+      ],
+      "longtask": {
+        "count": 2,
+        "maxMs": 63,
+        "totalMs": 121
+      },
+      "jsHeapMB": 138,
+      "detect": {
+        "zoom": 7.5,
+        "land-fill": 43,
+        "sub-borders": 57,
+        "pref-borders": 45,
+        "active-faults": 69,
+        "plate-boundaries": 0,
+        "quake-region-fill": 0,
+        "eew-region-fill": 0
+      },
+      "detectMid": {
+        "zoom": 7.5,
+        "land-fill": 33,
+        "sub-borders": 47,
+        "pref-borders": 34,
+        "active-faults": 74,
+        "plate-boundaries": 0,
+        "quake-region-fill": 0,
+        "eew-region-fill": 0
+      }
+    },
+    "flyto-sanriku-quake": {
+      "elapsedMs": 6011.2,
+      "frame": {
+        "frames": 338,
+        "fps": 56.23,
+        "p50": 16.7,
+        "p95": 22.6,
+        "max": 50
+      },
+      "blockMaxMs": 53.4,
+      "blockTop3Ms": [
+        53.4,
+        51.4,
+        45.2
+      ],
+      "longtask": {
+        "count": 0,
+        "maxMs": 0,
+        "totalMs": 0
+      },
+      "jsHeapMB": 153,
+      "detect": {
+        "zoom": 8,
+        "land-fill": 0,
+        "sub-borders": 0,
+        "pref-borders": 0,
+        "active-faults": 0,
+        "plate-boundaries": 4,
+        "quake-region-fill": 0,
+        "eew-region-fill": 0
+      },
+      "detectMid": {
+        "zoom": 8,
+        "land-fill": 22,
+        "sub-borders": 24,
+        "pref-borders": 22,
+        "active-faults": 9,
+        "plate-boundaries": 0,
+        "quake-region-fill": 0,
+        "eew-region-fill": 0
+      }
+    },
+    "static-kyoshin": {
+      "elapsedMs": 6023.1,
+      "frame": {
+        "frames": 350,
+        "fps": 58.11,
+        "p50": 16.7,
+        "p95": 16.8,
+        "max": 56.1
+      },
+      "blockMaxMs": 58.2,
+      "blockTop3Ms": [
+        58.2,
+        38.9,
+        35.7
+      ],
+      "longtask": {
+        "count": 0,
+        "maxMs": 0,
+        "totalMs": 0
+      },
+      "jsHeapMB": 175,
+      "detect": {
+        "zoom": 6,
+        "land-fill": 254,
+        "sub-borders": 363,
+        "pref-borders": 306,
+        "active-faults": 457,
+        "plate-boundaries": 8,
+        "kyoshin-points": 978,
+        "kyoshin-subthreshold": 0,
+        "eew-region-fill": 0
+      },
+      "detectMid": {
+        "zoom": 6,
+        "land-fill": 254,
+        "sub-borders": 363,
+        "pref-borders": 306,
+        "active-faults": 457,
+        "plate-boundaries": 8,
+        "kyoshin-points": 978,
+        "kyoshin-subthreshold": 0,
+        "eew-region-fill": 0
+      }
+    },
+    "pan-maxzoom-kyoshin": {
+      "elapsedMs": 6027.1,
+      "frame": {
+        "frames": 343,
+        "fps": 56.91,
+        "p50": 16.7,
+        "p95": 20.6,
+        "max": 66.7
+      },
+      "blockMaxMs": 63.7,
+      "blockTop3Ms": [
+        63.7,
+        40.5,
+        39.5
+      ],
+      "longtask": {
+        "count": 0,
+        "maxMs": 0,
+        "totalMs": 0
+      },
+      "jsHeapMB": 187,
+      "detect": {
+        "zoom": 11,
+        "land-fill": 23,
+        "sub-borders": 21,
+        "pref-borders": 21,
+        "active-faults": 5,
+        "plate-boundaries": 0,
+        "kyoshin-points": 19,
+        "kyoshin-subthreshold": 0,
+        "eew-region-fill": 0
+      },
+      "detectMid": {
+        "zoom": 11,
+        "land-fill": 25,
+        "sub-borders": 22,
+        "pref-borders": 22,
+        "active-faults": 4,
+        "plate-boundaries": 0,
+        "kyoshin-points": 20,
+        "kyoshin-subthreshold": 0,
+        "eew-region-fill": 0
+      }
+    },
+    "maxload-eew": {
+      "elapsedMs": 12043,
+      "frame": {
+        "frames": 208,
+        "fps": 17.27,
+        "p50": 52.2,
+        "p95": 83.7,
+        "max": 281.9
+      },
+      "blockMaxMs": 293.8,
+      "blockTop3Ms": [
+        293.8,
+        119.7,
+        104.7
+      ],
+      "longtask": {
+        "count": 43,
+        "maxMs": 264,
+        "totalMs": 2586
+      },
+      "jsHeapMB": 199,
+      "detect": {
+        "zoom": 8,
+        "land-fill": 0,
+        "sub-borders": 0,
+        "pref-borders": 0,
+        "active-faults": 0,
+        "plate-boundaries": 4,
+        "kyoshin-points": 0,
+        "kyoshin-subthreshold": 0,
+        "eew-region-fill": 0,
+        "eewFired": true,
+        "kyoshinReady": true
+      },
+      "detectMid": {
+        "zoom": 8,
+        "land-fill": 0,
+        "sub-borders": 0,
+        "pref-borders": 0,
+        "active-faults": 0,
+        "plate-boundaries": 4,
+        "kyoshin-points": 0,
+        "kyoshin-subthreshold": 0,
+        "eew-region-fill": 0
+      }
+    },
+    "eew-static": {
+      "elapsedMs": 8026.6,
+      "frame": {
+        "frames": 166,
+        "fps": 20.68,
+        "p50": 49.9,
+        "p95": 83.2,
+        "max": 102.1
+      },
+      "blockMaxMs": 93.1,
+      "blockTop3Ms": [
+        93.1,
+        92,
+        91.6
+      ],
+      "longtask": {
+        "count": 24,
+        "maxMs": 70,
+        "totalMs": 1307
+      },
+      "jsHeapMB": 220,
+      "detect": {
+        "zoom": 7.5,
+        "land-fill": 34,
+        "sub-borders": 50,
+        "pref-borders": 34,
+        "active-faults": 45,
+        "plate-boundaries": 0,
+        "kyoshin-points": 148,
+        "kyoshin-subthreshold": 0,
+        "eew-region-fill": 22,
+        "eewFired": true
+      },
+      "detectMid": {
+        "zoom": 7.5,
+        "land-fill": 34,
+        "sub-borders": 50,
+        "pref-borders": 34,
+        "active-faults": 45,
+        "plate-boundaries": 0,
+        "kyoshin-points": 148,
+        "kyoshin-subthreshold": 0,
+        "eew-region-fill": 22
+      }
+    }
+  }
+}
