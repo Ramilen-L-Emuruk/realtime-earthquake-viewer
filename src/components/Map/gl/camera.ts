@@ -1,5 +1,6 @@
 import * as maplibregl from 'maplibre-gl'
 import type { LatLng } from '../../../utils/stationCoords'
+import { calcFeltRadiusKm } from '../../../utils/eew'
 
 // カメラ操作の共通ヘルパ（MapLibre 版）。Leaflet の flyToLite/flyToBoundsLite 相当だが、
 // flyTo 中のペイン非表示最適化（flyToLite.ts）は MapLibre では不要のため素の camera API を使う。
@@ -83,15 +84,29 @@ export function flyToBoundsSnapped(
   map.flyTo({ center: cam.center, zoom: snappedZoom, duration: durationSec * 1000 })
 }
 
-// EEW 予報円（P波優先・無ければ S波）を包む bounds を算出する。各円は中心 ± 半径ぶんの箱として
-// 加える（Leaflet の L.latLng(c).toBounds(radius*2*1000) と同じく半径=箱の半幅）。半径0の円は無視。
-export function boundsFromCircles(
-  circles: { lat: number; lng: number; pRadius: number; sRadius: number }[],
+// EEW フォローの「引きの画（ルーズ）」余白係数。有感半径を囲む際に外側へ少し余白を持たせる。
+// 日本全体ハードキャップがあるため大地震（有感半径が日本超え）では効かず、中小地震の見え方だけを整える。
+export const EEW_FOLLOW_LOOSE = 1.2
+
+// EEW 予報円を追従するための bounds を算出する。追従基準は「揺れが実際に届く前線」＝S波円（sRadius・
+// 無ければ pRadius）とし、速い P波円は追わない（P波を追うとカメラが揺れの到達より先へ際限なく広がるため）。
+// 各波円の半径を「S波が届くと思われる範囲」＝有感半径（calcFeltRadiusKm・震度1+ が届く距離）でクランプし、
+// ルーズ余白を掛け、最後に日本全体（JAPAN_BOUNDS）を超えないようクランプする。これにより S波前線を追い、
+// 有感半径を余裕を持って囲んだところ（大地震では日本全体）でズームアウトが止まる。magnitude 不明時は
+// 有感半径クランプを外し日本全体キャップのみ効かせる。
+// 各円は中心 ± 半径ぶんの箱として加える（Leaflet の L.latLng(c).toBounds(radius*2*1000) と同じく半径=箱の半幅）。
+export function boundsFromCirclesForEewFollow(
+  circles: { lat: number; lng: number; pRadius: number; sRadius: number; depth?: number; magnitude?: number }[],
 ): maplibregl.LngLatBounds | null {
   let bounds: maplibregl.LngLatBounds | null = null
   for (const c of circles) {
-    const radiusKm = c.pRadius > 0 ? c.pRadius : c.sRadius
-    if (radiusKm <= 0) continue
+    // 揺れの前線＝S波円を基準に追従する（sRadius 優先・無ければ pRadius へフォールバック）。
+    const waveRadiusKm = c.sRadius > 0 ? c.sRadius : c.pRadius
+    if (waveRadiusKm <= 0) continue
+    // S波が届くと思われる範囲でクランプ。magnitude が有効な値のときのみ有感半径を算出する。
+    const hasMag = c.magnitude != null && Number.isFinite(c.magnitude) && c.magnitude > 0
+    const feltRadiusKm = hasMag ? calcFeltRadiusKm(c.magnitude as number, c.depth ?? 0) : Infinity
+    const radiusKm = Math.min(waveRadiusKm, feltRadiusKm) * EEW_FOLLOW_LOOSE
     const latDelta = radiusKm / 111.32
     const lngDelta = radiusKm / (111.32 * Math.cos((c.lat * Math.PI) / 180))
     const sw: [number, number] = [c.lng - lngDelta, c.lat - latDelta]
@@ -102,7 +117,19 @@ export function boundsFromCircles(
       bounds.extend(ne)
     }
   }
-  return bounds
+  return bounds ? clampBoundsToJapan(bounds) : null
+}
+
+// bounds が日本全体（JAPAN_BOUNDS）より広がらないよう各辺を内側へ詰める（大地震で有感半径が日本を
+// 超えても海だけの画にしないためのハードキャップ）。日本と交差しない（完全に日本外の）場合は元のまま返す。
+function clampBoundsToJapan(b: maplibregl.LngLatBounds): maplibregl.LngLatBounds {
+  const [[jw, js], [je, jn]] = JAPAN_BOUNDS
+  const w = Math.max(b.getWest(), jw)
+  const s = Math.max(b.getSouth(), js)
+  const e = Math.min(b.getEast(), je)
+  const n = Math.min(b.getNorth(), jn)
+  if (w < e && s < n) return new maplibregl.LngLatBounds([w, s], [e, n])
+  return b
 }
 
 // 現在の表示範囲が target bounds を完全に含むか（EEW 波円成長フォローの「収まっているか」判定）。
