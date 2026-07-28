@@ -34,7 +34,12 @@ export function useTsunamiLayerData(
   tsunamis: JMATsunami[],
   observations: TsunamiObservation[],
   obsUpdateStatus?: Map<string, 'new' | 'updated'>,
-): { tsunamiLines: TsunamiLine[]; observationBars: TsunamiObsBar[] } {
+): {
+  tsunamiLines: TsunamiLine[]
+  observationBars: TsunamiObsBar[]
+  tsunamiFitPositions: LatLng[]
+  tsunamiSignature: string
+} {
   const tsunamiZones = useTsunamiZones()
   const tsunamiObsCoords = useTsunamiObsCoords()
 
@@ -77,5 +82,12 @@ export function useTsunamiLayerData(
     return bars.sort((a, b) => b.lat - a.lat)
   }, [tsunamiObsCoords, observations, obsUpdateStatus])
 
-  return { tsunamiLines, observationBars }
+  // カメラフィット対象（描画する海岸線の全座標）とフィット発火判定用シグネチャ。
+  const tsunamiFitPositions = useMemo<LatLng[]>(
+    () => tsunamiLines.flatMap((l) => l.segments.flat()),
+    [tsunamiLines],
+  )
+  const tsunamiSignature = tsunamiLines.map((l) => `${l.name}:${l.grade}`).join(',')
+
+  return { tsunamiLines, observationBars, tsunamiFitPositions, tsunamiSignature }
 }
