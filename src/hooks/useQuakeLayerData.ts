@@ -48,6 +48,8 @@ export interface QuakeLayerData {
   hasEpicenter: boolean
   /** 震源座標（[lat, lng]・経度は地図中心基準で正規化済み）。無効時は null。 */
   epicenter: LatLng | null
+  /** 震源ポップアップ用の都道府県別最大震度（震度の降順）。 */
+  prefIntensities: [string, number][]
 }
 
 export function useQuakeLayerData(
@@ -149,5 +151,22 @@ export function useQuakeLayerData(
     ]
   }, [hasEpicenter, quake])
 
-  return { intensityMarkers, aggregateByRegion, regionAggregates, hasEpicenter, epicenter }
+  // 震源ポップアップ用の都道府県別最大震度（Leaflet 版 prefIntensities と同一導出）。
+  const prefIntensities = useMemo<[string, number][]>(() => {
+    if (!quake) return []
+    const maxByPref = quake.points.reduce<Record<string, number>>((acc, p) => {
+      if (!acc[p.pref] || p.scale > acc[p.pref]) acc[p.pref] = p.scale
+      return acc
+    }, {})
+    return Object.entries(maxByPref).sort((a, b) => b[1] - a[1])
+  }, [quake])
+
+  return {
+    intensityMarkers,
+    aggregateByRegion,
+    regionAggregates,
+    hasEpicenter,
+    epicenter,
+    prefIntensities,
+  }
 }
