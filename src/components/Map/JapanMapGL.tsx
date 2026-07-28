@@ -21,6 +21,7 @@ import { EewRegionFillGL } from './EewRegionFillGL'
 import { EewLpgmRegionFillGL } from './EewLpgmRegionFillGL'
 import { EewEpicentersGL } from './EewEpicentersGL'
 import { PsWaveGL } from './PsWaveGL'
+import { QuakeFitGL, FitJapanOnEnterGL, FitToDetectionGL, FitToCandidateGL } from './CameraFollowsGL'
 import { JAPAN_CENTER, fitJapan } from './gl/camera'
 import { useActiveFaults } from '../../hooks/useActiveFaults'
 import { usePlateBoundaries } from '../../hooks/usePlateBoundaries'
@@ -56,6 +57,8 @@ export function JapanMapGL({
   kyoshinSites = [],
   kyoshinIndices = [],
   detectedPoints = [],
+  candidatePoints = [],
+  candidateId = null,
   iconScale = 1,
   showActiveFaults = true,
   showPlateBoundaries = true,
@@ -80,6 +83,8 @@ export function JapanMapGL({
     lpgmActive,
     lpgmMarkers,
     lpgmRegionAggregates,
+    quakeFitPositions,
+    quakeSignature,
   } = useQuakeLayerData(mode, quake, zoom, lpgm)
   // 津波の派生データ（海岸線＋観測棒）。発報中は全モードで海岸線を描くため常時計算する。
   const { tsunamiLines, observationBars } = useTsunamiLayerData(tsunamis, observations, obsUpdateStatus)
@@ -165,6 +170,8 @@ export function JapanMapGL({
               {hasEpicenter && epicenter && quake && (
                 <EpicenterGL quake={quake} epicenter={epicenter} prefIntensities={prefIntensities} iconScale={iconScale} />
               )}
+              {/* 地震モードのカメラフィット（signature 変化時に観測点＋震源へ）。 */}
+              <QuakeFitGL signature={quakeSignature} positions={quakeFitPositions} />
             </>
           )}
           {mode === 'kyoshin' && (
@@ -175,6 +182,10 @@ export function JapanMapGL({
               <KyoshinPointsGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
               <KyoshinDetectedPointsGL points={detectedPoints} iconScale={iconScale} />
               <KyoshinMaxEffectGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
+              {/* リアルタイム震度モードのカメラ追従（検知点/候補クラスタ/タブ入室）。EEW 追従は Camera-2。 */}
+              <FitJapanOnEnterGL hasEew={eews.length > 0} hasDetection={detectedPoints.length > 0 || candidatePoints.length > 0} />
+              <FitToCandidateGL points={candidatePoints} candidateId={candidateId} hasEew={eews.length > 0} hasDetection={detectedPoints.length > 0} />
+              <FitToDetectionGL points={detectedPoints} hasEew={eews.length > 0} />
             </>
           )}
           {/* EEW 予想震度塗り（kyoshin モード・EEW LPGM 表示中は隠す）と予想長周期塗り。 */}
