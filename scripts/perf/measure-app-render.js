@@ -10,6 +10,11 @@
  *   - fps は名目 duration ではなく実 elapsed 割り（PoC で3度踏んだ罠）。
  *   - detect: 各シナリオで queryRenderedFeatures 等を記録し「狙った負荷を実際に踏んだか」を
  *     結果自身に持たせる（PoC の「差の出ない条件で差が出ないのを良い結果と誤読する」対策）。
+ *   - move / blockTimeline: ブロック検出の各発生時刻と movestart/moveend の時系列を記録し、
+ *     重いブロックがカメラ移動(flyTo)区間に集中するかを機種非依存で判定する（move.blockDuringMoveMs
+ *     ≫ blockWhileStillMs なら diagnosis-3 の「flyTo×同時データ更新の重なり」仮説が数値で裏付く）。
+ *     静止シナリオ(ハーネスがカメラを駆動しない窓)での想定外の move は、実データ由来の検知フィットが
+ *     計測に混入したシグナルにもなる（caveat-real-quake の担保）。
  *
  * 計測シナリオ:
  *   - static-quake       : 地震情報モード静止（境界+活断層+プレート+ラベルの高精細ジオメトリ・vsync 床）
@@ -57,6 +62,37 @@
     return { frames: st.n, fps: round(st.n / (elapsedMs / 1000)), p50: st.p50, p95: st.p95, max: st.max }
   }
 
+  // movestart/moveend の時系列(絶対時刻)から「カメラが動いていた区間」を t0 相対[開始,終了]で復元する。
+  // 入れ子(easeTo 中の再フィット等)は深さカウンタで畳み、取りこぼし(窓外で開始/未クローズ)には保守的に
+  // 窓端で丸める。復元後に重なり/隣接区間をマージし、ブロック時間の移動中/静止中按分に使う。
+  function buildMoveWindows(events, t0, elapsedMs) {
+    const wins = []
+    let depth = 0
+    let start = null
+    for (const e of events) {
+      const t = round(e.at - t0)
+      if (e.type === 'start') {
+        if (depth === 0) start = Math.max(0, t)
+        depth++
+      } else if (depth === 0) {
+        // 窓開始前から動いていた移動の moveend → 窓頭から当該時刻までを区間とする。
+        wins.push([0, Math.min(round(elapsedMs), t)])
+      } else if (--depth === 0) {
+        wins.push([start ?? 0, t])
+        start = null
+      }
+    }
+    if (depth > 0) wins.push([start ?? 0, round(elapsedMs)]) // 窓末で未クローズの移動
+    wins.sort((a, b) => a[0] - b[0])
+    const merged = []
+    for (const w of wins) {
+      const last = merged[merged.length - 1]
+      if (last && w[0] <= last[1]) last[1] = Math.max(last[1], w[1])
+      else merged.push([w[0], w[1]])
+    }
+    return merged
+  }
+
   const map = () => window.__mapGL
 
   // 現ビューポートで指定レイヤー群が実際に何 feature 描画されているか（負荷を踏んだ証跡）。
@@ -89,7 +125,8 @@
     })
 
     // vsync 非依存のブロック検出（ping-pong の往復間隔＝メインスレッドが止まった時間）。
-    const blockGaps = []
+    // 各ブロックの発生時刻(絶対)も記録し、後で t0 相対へ直してカメラ移動区間との重なりを判定する。
+    const blockEvents = [] // { at, gap }（at は performance.now() 絶対値）
     const mc = new MessageChannel()
     let running = true
     let lastPing = performance.now()
@@ -97,7 +134,7 @@
       const now = performance.now()
       const gap = now - lastPing
       lastPing = now
-      if (gap > 3) blockGaps.push(gap)
+      if (gap > 3) blockEvents.push({ at: now, gap })
       if (running) mc.port2.postMessage(0)
     }
 
@@ -123,15 +160,21 @@
       }
     }, Math.round(durationMs * 0.6))
 
-    // カメラ確定(moveend)の回数を数える。maxload-eew では計測窓中にユーザー操作もハーネス駆動も
-    // 無いため、これは「アプリ側の自動 flyTo(予報円成長への再フィット含む)の発火回数」に等しい。
-    // 予報円成長への反復再フィット仮説(diagnosis-2)を数値で確定するための計測フック。回数はデータ駆動で
-    // GPU 速度に依存しないため、開発機でも本番と同じ回数になる。
+    // カメラ移動イベントの時系列。movestart→moveend の対から「カメラが動いていた区間」を復元し、
+    // 重いブロックがその区間に集中するか(diagnosis-3 の flyTo×同時データ更新の重なり 仮説)を直接判定する。
+    // 併せて、静止シナリオ(ハーネスがカメラを駆動しない窓)での想定外の movestart は、実データ由来の
+    // 検知フィット等の混入シグナルになる(caveat-real-quake)。moveendCount は従来どおりカメラ確定回数
+    // （データ駆動で GPU 速度非依存＝機種非依存）を保持する。
+    const moveEvents = [] // { at, type: 'start'|'end' }
     let moveendCount = 0
+    const onMoveStart = () => moveEvents.push({ at: performance.now(), type: 'start' })
     const onMoveEnd = () => {
+      moveEvents.push({ at: performance.now(), type: 'end' })
       moveendCount++
     }
-    map().on('moveend', onMoveEnd)
+    const mm = map()
+    mm.on('movestart', onMoveStart)
+    mm.on('moveend', onMoveEnd)
 
     // map の 'render'(全体再描画)発火回数。非力機では1回の再描画が高コスト(358k頂点)なので、
     // 「連続再描画させている駆動源」を機種非依存で捉える鍵。maxload と eew-static で比べ、maxload だけ
@@ -140,7 +183,7 @@
     const onRender = () => {
       renderCount++
     }
-    map().on('render', onRender)
+    mm.on('render', onRender)
 
     const t0 = performance.now()
     lastPing = performance.now()
@@ -153,11 +196,31 @@
     running = false
     cancelAnimationFrame(rafId)
     if (po) po.disconnect()
-    map().off('moveend', onMoveEnd)
-    map().off('render', onRender)
+    mm.off('movestart', onMoveStart)
+    mm.off('moveend', onMoveEnd)
+    mm.off('render', onRender)
     frameDeltas.shift() // 先頭は計測開始前の待ち時間を含むため捨てる
 
-    const sortedBlocks = blockGaps.slice().sort((a, b) => b - a)
+    // t0 相対の時系列へ変換し、カメラ移動区間を復元してブロック時間を移動中/静止中に按分する。
+    const blockTimeline = blockEvents.map((b) => ({ t: round(b.at - t0), ms: round(b.gap) }))
+    const moveTimeline = moveEvents.map((e) => ({ t: round(e.at - t0), type: e.type }))
+    const moveWindows = buildMoveWindows(moveEvents, t0, elapsedMs)
+    const inMoveWindow = (t) => moveWindows.some((w) => t >= w[0] && t <= w[1])
+    let blockDuringMoveMs = 0
+    let blockWhileStillMs = 0
+    let blockMaxDuringMove = 0
+    let blockMaxWhileStill = 0
+    for (const b of blockTimeline) {
+      if (inMoveWindow(b.t)) {
+        blockDuringMoveMs += b.ms
+        if (b.ms > blockMaxDuringMove) blockMaxDuringMove = b.ms
+      } else {
+        blockWhileStillMs += b.ms
+        if (b.ms > blockMaxWhileStill) blockMaxWhileStill = b.ms
+      }
+    }
+
+    const sortedBlocks = blockTimeline.map((b) => b.ms).sort((a, b) => b - a)
     return {
       elapsedMs: round(elapsedMs),
       moveendCount,
@@ -166,6 +229,19 @@
       frame: summarizeFrames(frameDeltas, elapsedMs),
       blockMaxMs: round(sortedBlocks[0] ?? 0),
       blockTop3Ms: sortedBlocks.slice(0, 3).map(round),
+      // 【diagnosis-3 実証フック】カメラ移動区間との時系列相関。move.blockDuringMoveMs ≫ blockWhileStillMs なら
+      // 「重いブロックは flyTo 進行中に集中する（flyTo×同時データ更新の重なり）」が数値で裏付けられる。
+      move: {
+        windows: moveWindows, // [[開始,終了],...]（ms・t0 相対。カメラが動いていた区間）
+        count: moveWindows.length,
+        totalMoveMs: round(moveWindows.reduce((a, w) => a + (w[1] - w[0]), 0)),
+        blockDuringMoveMs: round(blockDuringMoveMs),
+        blockWhileStillMs: round(blockWhileStillMs),
+        blockMaxDuringMove: round(blockMaxDuringMove),
+        blockMaxWhileStill: round(blockMaxWhileStill),
+      },
+      blockTimeline: blockTimeline.slice(0, 300), // 生の時系列（先頭300件で頭打ち・payload 制限対策）
+      moveTimeline,
       longtask: {
         count: po ? longTasks.length : -1,
         maxMs: round(longTasks.length ? Math.max(...longTasks) : 0),
@@ -356,11 +432,15 @@
       scenarios,
     }
 
-    // 読みやすいサマリをログ（実機の DevTools で一目で分かるように）
+    // 読みやすいサマリをログ（実機の DevTools で一目で分かるように）。
+    // blockMove/blockStill＝重いブロックの合計を「カメラ移動中／静止中」に按分した値。
+    // maxload-eew で blockMove ≫ blockStill なら flyTo×同時更新の重なりが主因と読める（diagnosis-3）。
     console.log('[measureAppRender] 完了。blockMaxMs（小さいほど良い・非力機の実カクつき指標）:')
     for (const [k, v] of Object.entries(scenarios)) {
       console.log(
-        `  ${k.padEnd(22)} fps ${String(v.frame.fps).padStart(5)}  blockMax ${String(v.blockMaxMs).padStart(6)}ms  longtaskMax ${v.longtask.maxMs}ms`,
+        `  ${k.padEnd(22)} fps ${String(v.frame.fps).padStart(5)}  blockMax ${String(v.blockMaxMs).padStart(6)}ms` +
+          `  blockMove ${String(v.move.blockDuringMoveMs).padStart(6)}ms  blockStill ${String(v.move.blockWhileStillMs).padStart(6)}ms` +
+          `  moveWin ${v.move.count}  longtaskMax ${v.longtask.maxMs}ms`,
       )
     }
 
