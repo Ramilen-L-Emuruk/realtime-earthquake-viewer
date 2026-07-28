@@ -25,6 +25,8 @@ import {
 const MAX_HISTORY_RETAINED = 50   // 初回取得件数（設定の最大選択値に合わせる）
 const LOAD_MORE_BATCH = 50        // 「もっと見る」1回あたりの取得件数
 const MAX_TELEGRAM_LOG = 200      // 電文ログの最大保持件数
+// テスト発報（EEW・津波）の自動解除までの時間。実発報の解除ロジックとは無関係の、テスト表示専用の固定値。
+const TEST_AUTO_DISMISS_MS = 90000
 
 const ISSUE_PRIORITY: Record<string, number> = {
   '各地の震度情報': 4,
@@ -851,37 +853,37 @@ export function useEarthquakes(
   }, [handleEvent])
 
   const simulateEEW = useCallback(
-    () => runSimulateEEW('special', createTestEEW, 30000, testEEWTimersRef.current, handleEvent),
+    () => runSimulateEEW('special', createTestEEW, TEST_AUTO_DISMISS_MS, testEEWTimersRef.current, handleEvent),
     [handleEvent],
   )
 
   const simulateEEWWarning = useCallback(
-    () => runSimulateEEW('warning', createTestEEWWarning, 30000, testEEWTimersRef.current, handleEvent),
+    () => runSimulateEEW('warning', createTestEEWWarning, TEST_AUTO_DISMISS_MS, testEEWTimersRef.current, handleEvent),
     [handleEvent],
   )
 
   const simulateEEWForecast = useCallback(
-    () => runSimulateEEW('forecast', createTestEEWForecast, 30000, testEEWTimersRef.current, handleEvent),
+    () => runSimulateEEW('forecast', createTestEEWForecast, TEST_AUTO_DISMISS_MS, testEEWTimersRef.current, handleEvent),
     [handleEvent],
   )
 
   const simulateTsunami = useCallback(
-    () => runSimulateTsunami(createTestTsunami, 30000, testTsunamiRef, handleEvent),
+    () => runSimulateTsunami(createTestTsunami, TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent),
     [handleEvent],
   )
 
   const simulateTsunamiWarning = useCallback(
-    () => runSimulateTsunami(createTestTsunamiWarning, 30000, testTsunamiRef, handleEvent),
+    () => runSimulateTsunami(createTestTsunamiWarning, TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent),
     [handleEvent],
   )
 
   const simulateTsunamiWatch = useCallback(
-    () => runSimulateTsunami(createTestTsunamiWatch, 30000, testTsunamiRef, handleEvent),
+    () => runSimulateTsunami(createTestTsunamiWatch, TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent),
     [handleEvent],
   )
 
   const simulateTsunamiForecast = useCallback(
-    () => runSimulateTsunami(createTestTsunamiForecast, 30000, testTsunamiRef, handleEvent),
+    () => runSimulateTsunami(createTestTsunamiForecast, TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent),
     [handleEvent],
   )
 
