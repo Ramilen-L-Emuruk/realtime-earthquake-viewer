@@ -10,7 +10,8 @@ import { addOrderedLayer } from './gl/layerOrder'
 // 表示/非表示は layout.visibility の切替のみ（データ再構築はしない）。クリック時は bbox tolerance で
 // 当たり判定し、活断層名のポップアップを出す（Leaflet 版の透明ヒット線＋tolerance に相当）。
 
-const FAULT_COLOR = '#c2410c'
+// ダーク地図に馴染ませた控えめな活断層色（鮮やかな #c2410c は目立ちすぎるため彩度を落とした暗い赤茶）。
+const FAULT_COLOR = '#96421f'
 const HIT_TOL_PX = 4
 
 const SRC = 'active-faults'
@@ -42,8 +43,8 @@ export function ActiveFaultsGL({ activeFaults, visible }: Props) {
       },
       paint: {
         'line-color': FAULT_COLOR,
-        'line-width': 1.2,
-        'line-opacity': 0.65,
+        'line-width': 1,
+        'line-opacity': 0.4,
       },
     })
     popupRef.current = bindLinePopup(map, LYR, HIT_TOL_PX, (f) =>
