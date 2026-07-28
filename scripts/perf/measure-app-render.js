@@ -24,6 +24,8 @@
  *                          （新規発報条件＝前回 n=3 基準と同一。EEW セクションの先頭で発火する）
  *   - eew-static         : 【分離】EEW 複合をカメラ静止で＝毎秒更新+波+EEW塗り × 高精細ベースの持続コスト単独
  *                          （直前 maxload の EEW が残るため続報になるが狙いは損なわれない）
+ *   - eew-nofills        : 【内訳切り分け】eew-static と同一状態で EEW 区域塗りレイヤーだけ非表示。
+ *                          eew-static − eew-nofills ＝ 区域塗りの per-render コスト（予報円/震源は WebGL 外）
  *
  * 使い方 A（手動・開発機/実機）: 本ファイルを DevTools コンソールへ貼り付け →
  *   `await window.__measureAppRender({ label: 'surface-go2' })` の返り値 JSON を記録。
@@ -306,15 +308,35 @@
     //    続報の再フィット flyTo は下の定点 jumpTo で上書きするため目的は損なわれない。maxload が遅く
     //    eew-static も遅ければ主因は「複合再描画×広ズームのベース」、eew-static が健全なら flyTo 側
     //    （flyto-widezoom と突き合わせる）。
-    const EEW_LAND_VIEW = [140.8, 39.3] // 東北の陸が広く映る定点
-    m.jumpTo({ center: EEW_LAND_VIEW, zoom: 7.5 })
+    // 定点は EEW 予想震度塗りが実際に写る視点（maxload の detectMid で eew-region-fill>0 を確認済みの
+    // 震源近傍・三陸沿岸）にする。北にずらすと塗りが画角外になり eew-static/eew-nofills の対照が無意味になる。
+    const EEW_LAND_VIEW = [141.0, 38.3]
+    const EEW_LAND_ZOOM = 7
+    m.jumpTo({ center: EEW_LAND_VIEW, zoom: EEW_LAND_ZOOM })
     await sleep(300)
     const eewFired1 = clickTestButton('EEW特別警報テスト') || clickTestButton('特別警報テスト')
     await sleep(4000) // 発火（続報）時の自動 flyTo の収束を待つ
-    m.jumpTo({ center: EEW_LAND_VIEW, zoom: 7.5 }) // 定点へ戻して静止（陸を広く映す）
+    m.jumpTo({ center: EEW_LAND_VIEW, zoom: EEW_LAND_ZOOM }) // 定点へ戻して静止（塗りが写る震源近傍）
     await sleep(500)
     scenarios['eew-static'] = await measureWindow(8000, (d) => sleep(d))
     scenarios['eew-static'].detect.eewFired = eewFired1
+
+    // 7b) 【内訳切り分け】直前の eew-static と同一状態（EEW 有効・カメラ EEW_LAND_VIEW 固定）で、EEW 区域塗り
+    //     レイヤーだけを非表示にして再計測する。予報円は自前 canvas・震源は HTML マーカーで WebGL 描画の外なので、
+    //     EEW が WebGL 描画に足しているのは実質この塗りだけ。eew-static − eew-nofills の差＝塗りの per-render コスト。
+    //     この差が支配的なら「区域塗りの高精細ジオメトリ」を見た目を保ったまま軽量化(LOD等)する対処が的。
+    const EEW_FILL_LAYERS = ['eew-region-fill', 'eew-region-fill-line', 'eew-lpgm-region-fill', 'eew-lpgm-region-fill-line']
+    const hidden = []
+    for (const id of EEW_FILL_LAYERS) {
+      if (m.getLayer(id)) {
+        m.setLayoutProperty(id, 'visibility', 'none')
+        hidden.push(id)
+      }
+    }
+    await sleep(500)
+    scenarios['eew-nofills'] = await measureWindow(8000, (d) => sleep(d))
+    scenarios['eew-nofills'].detect.hiddenFillLayers = hidden
+    for (const id of hidden) m.setLayoutProperty(id, 'visibility', 'visible') // 状態を戻す
 
     const result = {
       meta: {
