@@ -221,7 +221,11 @@ export function useEarthquakes(
     // ライブ受信／テスト送信のイベントを通知（サイレントモード中は抑制）
     if (!isSilentRef.current) onLiveEventRef.current?.(event)
 
-    // 556（EEW）: 最終報受信時、解除時刻にキャンセルイベントをキューへ挿入する
+    // 556（EEW）: 最終報受信時、解除時刻にキャンセルイベントをキューへ挿入する。
+    // standard版の Yahoo hypoInfo 経由 EEW は useKyoshinRealtime 側の消滅検出（diffHypoInfoEvents）
+    // でも独立に解除イベントが発生しうるため、同一 eventId に対しここでのタイマー式解除と
+    // 二重に発火することがある。2発目は activeEEWs から既に消えているため
+    // useEarthquakes/useLiveEventHandler の hadKey チェックで無視される（意図した重複）。
     if (event.kind === 'eew') {
       const eew = event as EEWAlert
       if (!eew.cancelled && !eew.test && eew.isFinal) {
