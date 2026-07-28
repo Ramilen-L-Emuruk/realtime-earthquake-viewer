@@ -553,7 +553,6 @@ export function App() {
         {/* 常時表示の地図エリア（タブに応じて内容を切替） */}
         <div className="relative flex-1 min-h-0">
           <MapView
-            engine={settings.mapEngine}
             mode={mapMode}
             quake={mapQuake}
             tsunamis={tsunamis}
