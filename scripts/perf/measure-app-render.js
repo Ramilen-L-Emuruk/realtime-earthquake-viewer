@@ -121,6 +121,25 @@
       }
     }, Math.round(durationMs * 0.6))
 
+    // カメラ確定(moveend)の回数を数える。maxload-eew では計測窓中にユーザー操作もハーネス駆動も
+    // 無いため、これは「アプリ側の自動 flyTo(予報円成長への再フィット含む)の発火回数」に等しい。
+    // 予報円成長への反復再フィット仮説(diagnosis-2)を数値で確定するための計測フック。回数はデータ駆動で
+    // GPU 速度に依存しないため、開発機でも本番と同じ回数になる。
+    let moveendCount = 0
+    const onMoveEnd = () => {
+      moveendCount++
+    }
+    map().on('moveend', onMoveEnd)
+
+    // map の 'render'(全体再描画)発火回数。非力機では1回の再描画が高コスト(358k頂点)なので、
+    // 「連続再描画させている駆動源」を機種非依存で捉える鍵。maxload と eew-static で比べ、maxload だけ
+    // render が突出していれば「何かが計測窓中ずっと triggerRepaint/再描画させている」ことの証拠になる。
+    let renderCount = 0
+    const onRender = () => {
+      renderCount++
+    }
+    map().on('render', onRender)
+
     const t0 = performance.now()
     lastPing = performance.now()
     mc.port2.postMessage(0)
@@ -132,11 +151,16 @@
     running = false
     cancelAnimationFrame(rafId)
     if (po) po.disconnect()
+    map().off('moveend', onMoveEnd)
+    map().off('render', onRender)
     frameDeltas.shift() // 先頭は計測開始前の待ち時間を含むため捨てる
 
     const sortedBlocks = blockGaps.slice().sort((a, b) => b - a)
     return {
       elapsedMs: round(elapsedMs),
+      moveendCount,
+      renderCount,
+      renderPerSec: round(renderCount / (elapsedMs / 1000)),
       frame: summarizeFrames(frameDeltas, elapsedMs),
       blockMaxMs: round(sortedBlocks[0] ?? 0),
       blockTop3Ms: sortedBlocks.slice(0, 3).map(round),
