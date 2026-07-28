@@ -3,6 +3,7 @@ import type { FeatureCollection, Point } from 'geojson'
 import { useMapGL } from './mapGLContext'
 import type { SiteCoords } from '../../services/kyoshin'
 import { SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
+import { addKyoshinLayer } from './gl/kyoshinLayers'
 
 // 強震モニタの震度0以下（index 1〜6）を描画する MapLibre 版（Leaflet の KyoshinSubThreshold 相当）。
 // index 0（データ無し）と index 7+（震度1以上・KyoshinPoints が描画）は対象外。
@@ -52,7 +53,7 @@ export function KyoshinSubThresholdGL({ sites, indices, iconScale }: Props) {
       })),
     }
     map.addSource(SRC, { type: 'geojson', data: fc })
-    map.addLayer({
+    addKyoshinLayer(map, {
       id: LYR,
       type: 'circle',
       source: SRC,
