@@ -324,6 +324,12 @@ realtime-earthquake-viewer/
 
 ---
 
+## 開発者向けドキュメント
+
+- 強震モニタ揺れ検知エンジンの詳細仕様: [`docs/kyoshin-detection-spec.md`](docs/kyoshin-detection-spec.md)
+
+---
+
 ## 注意事項
 
 - 本アプリが表示する情報は参考情報です。避難等の判断は気象庁や自治体の公式情報を確認してください。
