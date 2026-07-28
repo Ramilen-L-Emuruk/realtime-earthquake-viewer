@@ -10,10 +10,12 @@ import {
   cellKey,
   ewmaAlpha,
   memberOverlapFrac,
+  chronicNoiseFloor,
   PARAMS,
   type DetectorState,
   type Frame,
   type StationMeta,
+  type SiteState,
 } from './kyoshinDetector'
 
 // ============================================================
@@ -477,5 +479,28 @@ describe('永続化: extractLearned / hydrateLearned', () => {
     const frames = quietThenShake(defs, { quietCount: 5, shakeCount: 5, shakeValue: 0.5 })
     const { detections } = drive(frames, meta, state)
     expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+})
+
+describe('chronicNoiseFloor（震度0ドット表示専用の慢性ノイズ床）', () => {
+  const site = (floorMean: number, floorDev: number): SiteState => ({
+    hist: [],
+    floorMean,
+    floorDev,
+    triggeredAtMs: null,
+  })
+
+  it('effectiveFloor と異なり下限(FLOOR_MIN=0.0)でクランプしない（静かな点はマイナスのまま）', () => {
+    // 東京のような静かな観測点: floorMean が負（value -2.0 相当）でばらつきも小さい
+    expect(chronicNoiseFloor(site(-2.0, 0.1))).toBeLessThan(0)
+  })
+
+  it('上限(FLOOR_CAP)はトリガー用の床と共有し頭打ちにする（実地震まで潰さない）', () => {
+    // 大阪のような慢性ノイズ観測点: floorMean+3*floorDev が FLOOR_CAP を超える
+    expect(chronicNoiseFloor(site(1.0, 1.0))).toBeCloseTo(PARAMS.FLOOR_CAP)
+  })
+
+  it('学習前（floorMean=floorDev=0）は 0 を返す', () => {
+    expect(chronicNoiseFloor(site(0, 0))).toBeCloseTo(0)
   })
 })

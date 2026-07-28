@@ -78,6 +78,7 @@ export function JapanMapGL({
   showBathymetry = true,
   kyoshinSites = [],
   kyoshinIndices = [],
+  kyoshinSubIndices,
   detectedPoints = [],
   candidatePoints = [],
   candidateId = null,
@@ -211,7 +212,7 @@ export function JapanMapGL({
             <>
               {/* SubThreshold(index1〜6)を先に置き、その上に KyoshinPoints(index7+)を重ねる。
                   さらに検知点・波紋を最前面に重ねる（Leaflet 版の重畳順と一致）。 */}
-              <KyoshinSubThresholdGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
+              <KyoshinSubThresholdGL sites={kyoshinSites} indices={kyoshinSubIndices ?? kyoshinIndices} iconScale={iconScale} />
               <KyoshinPointsGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
               <KyoshinDetectedPointsGL points={detectedPoints} iconScale={iconScale} />
               <KyoshinMaxEffectGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />

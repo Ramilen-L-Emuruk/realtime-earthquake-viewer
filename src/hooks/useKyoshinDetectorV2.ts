@@ -7,6 +7,7 @@ import {
   extractLearned,
   hydrateLearned,
   siteKey,
+  chronicNoiseFloor,
   type DetectorState,
   type StationMeta,
   type LearnedState,
@@ -50,9 +51,14 @@ export interface KyoshinDetectorV2Result {
   triggers: TriggerResult[]
   /** 対象データ時刻 */
   dataTime: string
+  /**
+   * 観測点ごとの表示用慢性ノイズ床（座標キー→value）。震度0ドット表示（KyoshinSubThresholdGL）が
+   * 慢性的にノイジーな観測点を鈍く見せるフィルタに使う。未学習（空オブジェクト）はフィルタ未適用の合図。
+   */
+  floors: Record<string, number>
 }
 
-const EMPTY: KyoshinDetectorV2Result = { detections: [], triggers: [], dataTime: '' }
+const EMPTY: KyoshinDetectorV2Result = { detections: [], triggers: [], dataTime: '', floors: {} }
 
 /** 観測点集合の簡易シグネチャ（点数＋先頭・末尾座標）。これが変わったら近傍メタを組み直す。 */
 function siteSignature(sites: SiteCoords): string {
@@ -105,7 +111,11 @@ export function useKyoshinDetectorV2(
       metaRef.current.meta,
     )
     stateRef.current = state
-    setResult({ detections, triggers, dataTime })
+
+    const floors: Record<string, number> = {}
+    for (const [key, s] of Object.entries(state.sites)) floors[key] = chronicNoiseFloor(s)
+
+    setResult({ detections, triggers, dataTime, floors })
 
     // 学習資産（点別床・セル慢性活性）を定期的に永続化する（再読込・5時リロード後も学習を保つ）
     if (dataTimeMs - lastSaveRef.current >= SAVE_INTERVAL_MS) {
