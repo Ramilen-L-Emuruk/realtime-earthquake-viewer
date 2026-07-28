@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { IconNav, type TabId } from './components/IconNav'
-import { JapanMap, type MapMode } from './components/Map/JapanMap'
+import { MapView, type MapMode } from './components/Map/MapView'
 import { MapUpdateTime } from './components/MapUpdateTime'
 import { EarthquakeTab } from './components/EarthquakeTab'
 import { RealtimeTab } from './components/RealtimeTab'
@@ -552,7 +552,8 @@ export function App() {
       <div className="flex-1 overflow-hidden flex flex-col lg:flex-row">
         {/* 常時表示の地図エリア（タブに応じて内容を切替） */}
         <div className="relative flex-1 min-h-0">
-          <JapanMap
+          <MapView
+            engine={settings.mapEngine}
             mode={mapMode}
             quake={mapQuake}
             tsunamis={tsunamis}
