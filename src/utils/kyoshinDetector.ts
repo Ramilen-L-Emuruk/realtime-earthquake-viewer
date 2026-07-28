@@ -228,6 +228,18 @@ export const PARAMS = {
   CONFIRM_DENSITY_FRAC: 0.6,
   /** confirmed の最大震度下限(value)。0.5 = 震度1 */
   MIN_CONFIRM_INTENSITY: 0.5,
+  /**
+   * confirmed（確定検知）に要する「確定震度レベル以上に達したメンバー数」の下限。
+   * size（震度0 を含む onset 連結成分の点数）が揃っても、実際に confirmIntensityReq（通常 震度1）
+   * 以上に達した点が1つだけなら confirmed にしない（likely/faint に留める）。
+   * 「単点だけ震度1・周囲は震度0 の気配」という分布は実地震の揺れではなく局所ノイズの典型
+   * （2026-07-27 13:35 茨城県北部の誤 confirmed が実例＝震度1到達点1・周囲震度0 の5点連結が
+   * 69秒 confirmed 居座り）。実地震は震央周辺の複数点が同レベルに達する（同地域・同震度1 の実地震で
+   * 震度1到達点12。confirmed 実地震カタログ12件の最小でも 3）。§18・実データ検証で確認。
+   * 震源非依存の面判定を保ったままノイズを弾く第3のゲート（likely には課さない＝1点震度1 の
+   * 弱い実地震〈福岡 M2.4 等〉を取りこぼさない）。
+   */
+  CONFIRM_INTENSE_POINTS: 2,
   /** confirmed 連続フレーム数（積分待ちなしで V1 相当の速さ） */
   CONFIRM_FRAMES: 2,
   /** 確定保持(ms)。確定揺れ点が途切れてもこの間はイベントを保持（明滅防止・V1 相当の保持） */
@@ -778,10 +790,12 @@ function mergeAdjacentEvents(events: DetectionEvent[]): DetectionEvent[] {
  *   （旧実装は onset 数のみで数え、揺れ継続中に size が減衰してイベントが早期消滅する不具合があった）。
  * - maxIntensity: levelActive なメンバー現在 value の最大（震度0 を含む＝PLUM 出力・faint 表示）。無ければ前値。
  * - lastOnsetAtMs: 揺れ継続中（size>0）は毎フレーム更新し、揺れが収まってから HOLD_MS 経過で解除する。
- * - confidence  : 点数＋最大震度ゲート＋CONFIRM_FRAMES 連続。特異度は点別床(L1)とセル慢性活性で二軸。
- *   慢性活性セルでは確定点数・確定震度のバーを引き上げる（北関東のコヒーレントノイズ対策・第2軸）。
- *   一度 confirmed に達したら HOLD 中は confirmed を維持する（明滅防止のラッチ）。likely/faint も一度
- *   spread を持てば LIKELY_HOLD_MS の間はティアを維持する（弱いイベントの「一瞬で消える」防止）。
+ * - confidence  : 点数＋最大震度ゲート＋確定震度到達点数(CONFIRM_INTENSE_POINTS)＋CONFIRM_FRAMES 連続。
+ *   特異度は点別床(L1)とセル慢性活性で二軸に、さらに「確定震度に達した点が複数あるか」で第3軸を足す
+ *   （単点だけ震度1・周囲は震度0 の局所ノイズを弾く。§18）。慢性活性セルでは確定点数・確定震度のバーを
+ *   引き上げる（北関東のコヒーレントノイズ対策・第2軸）。一度 confirmed に達したら HOLD 中は confirmed を
+ *   維持する（明滅防止のラッチ）。likely/faint も一度 spread を持てば LIKELY_HOLD_MS の間はティアを維持
+ *   する（弱いイベントの「一瞬で消える」防止。震度1到達点数ゲートは confirmed のみで likely には課さない）。
  */
 function updateEventMetrics(
   e: DetectionEvent,
@@ -797,6 +811,7 @@ function updateEventMetrics(
   let availLocal = 0
   const lats: number[] = []
   const lngs: number[] = []
+  const activeVals: number[] = [] // levelActive メンバーの現 value（震度1到達点数ゲート用）
   for (const k of e.memberKeys) {
     const p = cur.get(k)
     const t = triggeredAt[k]
@@ -808,6 +823,7 @@ function updateEventMetrics(
     }
     if (p && p.levelActive) {
       if (p.value > maxV) maxV = p.value
+      activeVals.push(p.value)
       lats.push(p.lat)
       lngs.push(p.lng)
     }
@@ -834,7 +850,12 @@ function updateEventMetrics(
   const confirmIntensityReq = isChronic
     ? PARAMS.CHRONIC_CONFIRM_INTENSITY
     : PARAMS.MIN_CONFIRM_INTENSITY
-  const meetsConfirm = size >= effectiveConfirmReq && e.maxIntensity >= confirmIntensityReq
+  // 確定震度レベル以上に達した点数。「単点だけ強く・周囲は震度0」というノイズ分布を弾く第3ゲート。
+  const intenseCount = activeVals.filter((v) => v >= confirmIntensityReq).length
+  const meetsConfirm =
+    size >= effectiveConfirmReq &&
+    e.maxIntensity >= confirmIntensityReq &&
+    intenseCount >= PARAMS.CONFIRM_INTENSE_POINTS
   e.confirmStreak = meetsConfirm ? e.confirmStreak + 1 : 0
   if (e.confirmStreak >= PARAMS.CONFIRM_FRAMES) e.everConfirmed = true
 
