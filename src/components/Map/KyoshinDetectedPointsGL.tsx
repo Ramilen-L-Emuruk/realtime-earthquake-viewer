@@ -47,11 +47,15 @@ function buildFC(points: DetectedPoint[], iconScale: number): FeatureCollection<
 export function KyoshinDetectedPointsGL({ points, iconScale }: Props) {
   const map = useMapGL()
   const addedRef = useRef(false)
+  // 直近に setData した内容の署名。points は kyoshinView が indices tick（毎秒）で作り直されるため
+  // 検知フットプリントが不変でも参照だけ変わる。同一内容の再 setData（＝geojson-vt 再タイル化）を避ける。
+  const lastSigRef = useRef<string | null>(null)
 
   // source + layer を一度だけ作る。
   useEffect(() => {
     if (!map) return
     map.addSource(SRC, { type: 'geojson', data: EMPTY_FC })
+    lastSigRef.current = JSON.stringify(EMPTY_FC) // 生成直後の空 FC を基準に（同一なら以降スキップ）
     addOrderedLayer(map, {
       id: LYR,
       type: 'circle',
@@ -72,14 +76,19 @@ export function KyoshinDetectedPointsGL({ points, iconScale }: Props) {
       if (map.getLayer(LYR)) map.removeLayer(LYR)
       if (map.getSource(SRC)) map.removeSource(SRC)
       addedRef.current = false
+      lastSigRef.current = null
     }
   }, [map])
 
-  // データ／倍率変化のたびに丸ごと差し替える。
+  // データ／倍率変化のたびに丸ごと差し替える。内容が前回と同一ならスキップして再タイル化を避ける。
   useEffect(() => {
     if (!map || !addedRef.current) return
+    const fc = buildFC(points, iconScale)
+    const sig = JSON.stringify(fc)
+    if (sig === lastSigRef.current) return
+    lastSigRef.current = sig
     const src = map.getSource(SRC) as GeoJSONSource | undefined
-    src?.setData(buildFC(points, iconScale))
+    src?.setData(fc)
   }, [map, points, iconScale])
 
   return null
