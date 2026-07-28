@@ -49,8 +49,10 @@ function perpDist([y, x], [ay, ax], [by, bx]) {
   return Math.hypot(y - cy, x - cx)
 }
 
-// Douglas-Peucker でリングを間引く。拡大時の崩れを抑えるため詳細を残す。
-const EPSILON = 0.002 // 度（約220m相当）。小さいほど詳細。
+// Douglas-Peucker の許容誤差。0 = 間引き撤廃（ほぼ厳密に collinear な点のみ除去＝全頂点保持）。
+// WebGL(MapLibre)移行でフル解像度描画が実質無償になったため撤廃する（座標は toLatLng の小数4桁丸め
+// ≈11mが下限精度。ダウンロード量は増えるが描画性能は不変）。
+const EPSILON = 0 // 度（0=撤廃・全頂点保持。以前は 0.002≈220m で間引いていた）
 function simplify(points) {
   if (points.length < 3) return points
   let maxD = 0
