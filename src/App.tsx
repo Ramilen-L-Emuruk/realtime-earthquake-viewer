@@ -123,7 +123,7 @@ export function App() {
     injectEvent, loadMoreEarthquakes,
     simulateEarthquake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast,
-    simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast,
+    simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateKohatsu,
     resetState, loadReplayEvents,
   } = useEarthquakes(handleLiveEvent, settings.dmdataApiKey, settings.dmdataTestDelivery, replayTimeOffset)
@@ -671,6 +671,7 @@ export function App() {
                 tsunamiWarning:   simulateTsunamiWarning,
                 tsunamiWatch:     simulateTsunamiWatch,
                 tsunamiForecast:  simulateTsunamiForecast,
+                tsunamiRetraction: simulateTsunamiRetraction,
                 nankaiChecking:   () => simulateNankai('調査中'),
                 nankaiWatch:      () => simulateNankai('巨大地震注意'),
                 nankaiWarning:    () => simulateNankai('巨大地震警戒'),

@@ -1,6 +1,9 @@
 import type { JMAQuake, JMATsunami, EEWAlert, JMANankai, JMAKohatsu } from '../types/earthquake'
 import { serverNow, serverDate } from './clock'
 
+// テスト発報（EEW・津波）の自動解除までの時間。実発報の解除ロジックとは無関係の、テスト表示専用の固定値。
+export const TEST_AUTO_DISMISS_MS = 90000
+
 export function createTestEarthquake(): JMAQuake {
   const now = serverDate().toISOString()
   return {
@@ -149,18 +152,38 @@ export function createTestKohatsu(): JMAKohatsu {
   }
 }
 
+// 予報は実運用でも明示的な解除電文を伴わず ValidDateTime の期限切れで消えるため、
+// テストデータにも validDateTime を持たせ、期限切れ経路（cancelReason: 'expired'）を再現する。
 export function createTestTsunamiForecast(): JMATsunami {
-  const now = serverDate().toISOString()
+  const now = serverDate()
+  const nowIso = now.toISOString()
   return {
     kind: 'tsunami',
     id: `test-tsunami-forecast-${Date.now()}`,
-    time: now,
+    time: nowIso,
     cancelled: false,
-    issue: { source: 'テスト', time: now, type: 'Focus' },
+    validDateTime: new Date(now.getTime() + TEST_AUTO_DISMISS_MS).toISOString(),
+    issue: { source: 'テスト', time: nowIso, type: 'Focus' },
     areas: [
       { grade: 'Forecast', immediate: false, name: '北海道太平洋沿岸東部' },
       { grade: 'Forecast', immediate: false, name: '北海道太平洋沿岸中部' },
       { grade: 'Forecast', immediate: false, name: '北海道日本海沿岸南部' },
+    ],
+  }
+}
+
+// 誤報取消（InfoType=取消 相当）のテスト。警報・注意報混在の発表後、90秒後に電文全体が取り消される。
+export function createTestTsunamiRetraction(): JMATsunami {
+  const now = serverDate().toISOString()
+  return {
+    kind: 'tsunami',
+    id: `test-tsunami-retraction-${Date.now()}`,
+    time: now,
+    cancelled: false,
+    issue: { source: 'テスト', time: now, type: 'Focus' },
+    areas: [
+      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', maxHeight: { description: '3m', value: 3.0 } },
+      { grade: 'Watch', immediate: false, name: '北海道太平洋沿岸東部', maxHeight: { description: '1m', value: 1.0 } },
     ],
   }
 }

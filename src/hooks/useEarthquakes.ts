@@ -18,15 +18,15 @@ import {
   createTestTsunamiWarning,
   createTestTsunamiWatch,
   createTestTsunamiForecast,
+  createTestTsunamiRetraction,
   createTestNankai,
   createTestKohatsu,
+  TEST_AUTO_DISMISS_MS,
 } from '../utils/testData'
 
 const MAX_HISTORY_RETAINED = 50   // 初回取得件数（設定の最大選択値に合わせる）
 const LOAD_MORE_BATCH = 50        // 「もっと見る」1回あたりの取得件数
 const MAX_TELEGRAM_LOG = 200      // 電文ログの最大保持件数
-// テスト発報（EEW・津波）の自動解除までの時間。実発報の解除ロジックとは無関係の、テスト表示専用の固定値。
-const TEST_AUTO_DISMISS_MS = 90000
 
 const ISSUE_PRIORITY: Record<string, number> = {
   '各地の震度情報': 4,
@@ -84,12 +84,13 @@ function runSimulateTsunami(
   cancelMs: number,
   ref: TestTsunamiRef,
   handleEvent: (event: AppEvent) => void,
+  cancelReason: 'lifted' | 'retracted' = 'lifted',
 ) {
   if (ref.current) window.clearTimeout(ref.current.cancelTimer)
   const tsunami = createFn()
   handleEvent(tsunami)
   const cancelTimer = window.setTimeout(() => {
-    handleEvent({ ...tsunami, cancelled: true })
+    handleEvent({ ...tsunami, cancelled: true, cancelReason })
     ref.current = null
   }, cancelMs)
   ref.current = { cancelTimer, tsunami }
@@ -261,7 +262,7 @@ export function useEarthquakes(
         if (expireTime > getTimeRef.current()) {
           insertSorted(eventQueueRef.current, {
             eventTime: expireTime,
-            payload: { kind: 'event', event: { ...tsunami, cancelled: true, expired: true } as AppEvent },
+            payload: { kind: 'event', event: { ...tsunami, cancelled: true, cancelReason: 'expired' } as AppEvent },
           })
         }
       }
@@ -373,17 +374,14 @@ export function useEarthquakes(
               // eventId がない場合は従来通り id 全体で照合（フォールバック）
               if ((!cancelEventId || !currentEventId) && current.id !== tsunami.id) return prev
             }
-            // validDateTime 満了（expired）は即削除、明示的取消電文は 10秒表示
-            if (tsunami.expired) {
-              return { ...prev, tsunamis: [], lastUpdate: now }
-            }
+            // 解除・取消・期限切れのいずれも同じ10秒表示を経る。表示内容は cancelReason で出し分ける（TsunamiTab側）。
             if (prev.tsunamis.length > 0 && !prev.tsunamis[0].cancelledAt) {
               insertSorted(eventQueueRef.current, {
                 eventTime: new Date(now.getTime() + 10_000),
                 payload: { kind: 'purge-cancelled-tsunami' },
                 silent: true,
               })
-              return { ...prev, tsunamis: [{ ...prev.tsunamis[0], cancelledAt: now }], lastUpdate: now }
+              return { ...prev, tsunamis: [{ ...prev.tsunamis[0], cancelledAt: now, cancelReason: tsunami.cancelReason }], lastUpdate: now }
             }
             return { ...prev, tsunamis: [], lastUpdate: now }
           }
@@ -614,7 +612,7 @@ export function useEarthquakes(
             if (expireTime > serverDate()) {
               insertSorted(eventQueueRef.current, {
                 eventTime: expireTime,
-                payload: { kind: 'event', event: { ...latestTsunami, cancelled: true } as AppEvent },
+                payload: { kind: 'event', event: { ...latestTsunami, cancelled: true, cancelReason: 'expired' } as AppEvent },
               })
             }
           }
@@ -726,7 +724,7 @@ export function useEarthquakes(
           if (expireTime > serverDate()) {
             insertSorted(eventQueueRef.current, {
               eventTime: expireTime,
-              payload: { kind: 'event', event: { ...latestTsunami, cancelled: true } as AppEvent },
+              payload: { kind: 'event', event: { ...latestTsunami, cancelled: true, cancelReason: 'expired' } as AppEvent },
             })
           }
         }
@@ -886,8 +884,18 @@ export function useEarthquakes(
     [handleEvent],
   )
 
-  const simulateTsunamiForecast = useCallback(
-    () => runSimulateTsunami(createTestTsunamiForecast, TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent),
+  // 予報のみは実運用でも ValidDateTime の期限切れで静かに消えるため（明示的な解除電文を伴わない）、
+  // 他の津波テストと違い runSimulateTsunami（明示的キャンセル）は使わず、通常の期限切れ経路に任せる。
+  const simulateTsunamiForecast = useCallback(() => {
+    if (testTsunamiRef.current) {
+      window.clearTimeout(testTsunamiRef.current.cancelTimer)
+      testTsunamiRef.current = null
+    }
+    handleEvent(createTestTsunamiForecast())
+  }, [handleEvent])
+
+  const simulateTsunamiRetraction = useCallback(
+    () => runSimulateTsunami(createTestTsunamiRetraction, TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent, 'retracted'),
     [handleEvent],
   )
 
@@ -938,7 +946,7 @@ export function useEarthquakes(
     clearTelegramLog,
     simulateEarthquake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast,
-    simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast,
+    simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateKohatsu,
     resetState,
     loadReplayEvents,

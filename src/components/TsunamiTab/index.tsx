@@ -55,6 +55,15 @@ const GRADE_LABEL: Record<TsunamiGrade, string> = {
 
 const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch', 'Forecast', 'Unknown']
 
+// 解除表示（cancelledAt セット中）の見出し・説明文・オーバーレイ短文を cancelReason ごとに出し分ける。
+// 気象庁の運用上、警報・注意報は「解除」、誤発表は「取消」、予報は解除電文を伴わず「有効期間終了」で
+// 静かに消えるため、それぞれ表現が異なる（Issue #2）。
+const CANCEL_REASON_LABEL: Record<NonNullable<JMATsunami['cancelReason']>, { title: string; desc: string; badge: string }> = {
+  lifted:    { title: '津波情報 解除',       badge: '解除', desc: 'この津波情報は解除されました' },
+  retracted: { title: '津波情報 取消',       badge: '取消', desc: 'この津波情報は誤って発表されたため取り消されました' },
+  expired:   { title: '津波予報 有効期間終了', badge: '終了', desc: 'この津波予報は有効期間が終了しました' },
+}
+
 // 観測情報が属する津波予報区（districtCode/districtName）を発表区域（area.code/area.name）に紐づける。
 // code が双方にあれば code を優先。無ければ name で照合する。
 export function matchesArea(obs: TsunamiObservation, area: TsunamiArea): boolean {
@@ -407,9 +416,7 @@ export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservat
   const isCancelledDisplay = active.every(t => !!t.cancelledAt)
   const topGrade = getTopGrade(active)
   const topStyle = getGradeStyle(topGrade)
-  // 解除表示中、対象が津波予報（Forecast）のみの場合は「解除」ではなく「有効期間終了」と表現する。
-  // 気象庁の運用上、警報・注意報は「解除」されるが、予報（若干の海面変動）に解除という概念はない（Issue #2）。
-  const isForecastOnlyCancel = isCancelledDisplay && topGrade === 'Forecast'
+  const cancelInfo = CANCEL_REASON_LABEL[active[0]?.cancelReason ?? 'lifted']
   const latestTime = active[0]?.time
   const sourceEarthquake = active[0]?.sourceEarthquake
 
@@ -434,7 +441,7 @@ export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservat
             style={{ background: isCancelledDisplay ? 'rgba(75,85,99,0.18)' : `${topStyle.cardBorder}18` }}>
             <div className="flex items-center justify-between gap-2">
               <div className="font-bold" style={{ fontSize: '14px', color: isCancelledDisplay ? '#9ca3af' : topStyle.headerColor }}>
-                {isCancelledDisplay ? (isForecastOnlyCancel ? '津波予報 有効期間終了' : '津波情報 解除') : `${GRADE_LABEL[topGrade]} 発令中`}
+                {isCancelledDisplay ? cancelInfo.title : `${GRADE_LABEL[topGrade]} 発令中`}
               </div>
               {latestTime && (
                 <div className="text-right flex-shrink-0" style={{ fontSize: '11px', color: isCancelledDisplay ? '#6b7280' : topStyle.arrivalColor, opacity: 0.8 }}>
@@ -443,7 +450,7 @@ export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservat
               )}
             </div>
             <div className="mt-1" style={{ fontSize: '11px', color: isCancelledDisplay ? '#6b7280' : topStyle.headerColor, opacity: 0.8 }}>
-              {isCancelledDisplay ? (isForecastOnlyCancel ? 'この津波予報は有効期間が終了しました' : 'この津波情報は解除されました') : topGrade === 'Forecast' ? '若干の海面変動があるかもしれません' : '海岸・河川から直ちに離れてください'}
+              {isCancelledDisplay ? cancelInfo.desc : topGrade === 'Forecast' ? '若干の海面変動があるかもしれません' : '海岸・河川から直ちに離れてください'}
             </div>
             {!isCancelledDisplay && sourceEarthquake && (
               <div className="mt-1.5 pt-1.5" style={{ fontSize: '11px', color: topStyle.arrivalColor, opacity: 0.9, borderTop: `1px solid ${topStyle.cardBorder}40` }}>
@@ -465,8 +472,8 @@ export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservat
           <div key={t.id} className="flex flex-col gap-3 relative">
             {t.cancelledAt && (
               <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg" style={{ minHeight: '80px' }}>
-                <span className="font-black text-white" style={{ fontSize: '40px', lineHeight: 1.1 }}>{isForecastOnlyCancel ? '終了' : '解除'}</span>
-                <span className="text-sm font-bold text-white/90 mt-1">{isForecastOnlyCancel ? 'この津波予報は有効期間が終了しました' : 'この津波情報は解除されました'}</span>
+                <span className="font-black text-white" style={{ fontSize: '40px', lineHeight: 1.1 }}>{cancelInfo.badge}</span>
+                <span className="text-sm font-bold text-white/90 mt-1">{cancelInfo.desc}</span>
               </div>
             )}
             {GRADE_ORDER.map(grade => (

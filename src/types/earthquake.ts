@@ -109,7 +109,9 @@ export interface JMATsunami {
   eventId?: string
   time: string
   cancelled: boolean
-  expired?: boolean
+  // cancelled=true のときの解除理由。'lifted'=気象庁の正式解除（区域が電文から消える）、
+  // 'retracted'=誤って発表した電文の取消（InfoType=取消）、'expired'=ValidDateTime満了によりアプリが自動検出。
+  cancelReason?: 'lifted' | 'retracted' | 'expired'
   cancelledAt?: Date
   headline?: string
   // 付加文（固定文）。避難行動の呼びかけなど JMA 公式の定型文。長文の解説（FreeFormComment）は含まない。
