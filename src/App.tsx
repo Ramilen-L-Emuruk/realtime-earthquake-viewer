@@ -190,6 +190,16 @@ export function App() {
     () => new Map([...activeEEWs].filter(([, v]) => !v.cancelledAt)),
     [activeEEWs],
   )
+  // EEW受信中または揺れ検知中は全観測点ベースの最大インデックスを使う（表示と音を一致させる）
+  const hasActiveEEW = activeEEWsNoCancelled.size > 0
+  // 強震モニタ検知エンジン（useKyoshinDetectorV2）の EEW 連動緩和専用。severity='Warning' のみを見る
+  // （eew.ts の computeSingleEEWLevel と同じ方針＝単独点 PLUM 検知等の低確度な予報級(Forecast)は、
+  // 震度だけ高くても信用しない。hasActiveEEW をそのまま使うと予報級1件だけで全国規模の確定緩和が
+  // 発動し、単点ノイズ由来の誤 confirmed を EEW 経由で再導入しかねないため区別する）。
+  const hasActiveWarningEEW = useMemo(
+    () => [...activeEEWsNoCancelled.values()].some((eew) => eew.severity === 'Warning'),
+    [activeEEWsNoCancelled],
+  )
 
   // 地図・パネルへ渡す EEW 配列は参照を安定させる。JSX 内で Array.from を直接呼ぶと毎レンダー
   // 新しい配列になり、psWave の 100ms tick 等で App が再レンダーするたびに useEewLayerData の
@@ -479,7 +489,7 @@ export function App() {
   })
   // 強震モニタの揺れ検知は V2 エンジン（純粋コア step）で行う。
   // 検知結果は音・自動タブ切替・自動フィット・地図オーバーレイ・リアルタイムタブのカードを駆動する。
-  const kyoshinV2 = useKyoshinDetectorV2(kyoshin.sites, kyoshin.indices, kyoshin.dataTime, true)
+  const kyoshinV2 = useKyoshinDetectorV2(kyoshin.sites, kyoshin.indices, kyoshin.dataTime, true, hasActiveWarningEEW)
   // V2 検知イベント → 表示状態（confirmed/candidate・検知点・候補点）へ変換する
   const kyoshinView = useMemo(
     () => deriveKyoshinView(kyoshinV2.detections, kyoshin.sites, kyoshin.indices),
@@ -498,9 +508,6 @@ export function App() {
   const activeEEWList = useMemo(() => Array.from(activeEEWsNoCancelled.values()), [activeEEWsNoCancelled])
   const dmdssWaves = useDmdssWaves(activeEEWList, isDmdss, replayTimeOffset)
   const psWave = isDmdss ? dmdssWaves : kyoshin.psWave
-
-  // EEW受信中または揺れ検知中は全観測点ベースの最大インデックスを使う（表示と音を一致させる）
-  const hasActiveEEW = activeEEWsNoCancelled.size > 0
 
   const home = useMemo(
     () => (settings.homeLat !== null && settings.homeLng !== null
