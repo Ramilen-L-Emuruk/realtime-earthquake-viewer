@@ -209,6 +209,13 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
   - `condition === '仮定震源要素'`（単独観測点処理・震源未確定の初期報）は円を生成しない（[usePsWaveCalc.ts](src/hooks/usePsWaveCalc.ts)）。DMDATA・P2PQuakeは電文の `condition` フィールドでこれを正しく判別できるが、**Yahoo hypoInfo には相当フィールドが無く常に `condition:'以上'` 固定**（[kyoshin.ts](src/services/kyoshin.ts) の `hypoInfoItemToEEW`）。標準版でYahoo hypoInfoが先にEEWを検知した場合、この判別が効かない非対称性が残る。
   - 標準版はYahoo hypoInfoを主系のEEW検知源とし、P2PQuake WS（code=556）は基本 `areas`（地域別予想震度）の補完役だったが、P2PQuakeの方が `condition`・`hypocenter` とも数値型で正確なため、`enrichEEW`（[useEarthquakes.ts](src/hooks/useEarthquakes.ts)）はこれらも上書きするようにした（報番号が古い場合は上書きしない）。
 
+### EEWレベル判定（特別警報の条件）
+- EEWの警報級別（0=予報／1=警報／2=特別警報）は `computeSingleEEWLevel`（[eew.ts](src/utils/eew.ts)）が単一の情報源。`RealtimeTab/index.tsx` の `EEWCard`（カード見出し・配色）もここに一本化しており、別ロジックで再計算しない。
+  - 気象庁の実基準に合わせ、特別警報（レベル2）は「震度6弱以上」**または**「長周期地震動階級4以上」のいずれかで判定する（`eewMaxScale(eew) >= 55` or `eewMaxLpgmClass(eew) >= 4`）。
+  - **長周期地震動階級のデータは DMDATA（DMDSS版）限定**。`forecastMaxLpgmClass`・地域別 `EEWRegion.lgIntTo` とも DMDATA 電文からのみパースされる（[dmdataParser.ts](src/services/dmdataParser.ts)）。Yahoo hypoInfo（[kyoshin.ts](src/services/kyoshin.ts) の `hypoInfoItemToEEW`）・P2PQuake API v2（[epsp-specifications/json-api-v2.yaml](https://github.com/p2pquake/epsp-specifications/blob/master/json-api-v2.yaml)）とも該当フィールドが存在しないため、標準版では `eewMaxLpgmClass` が常に0になり、震度のみでレベルが決まる。
+  - `condition === '仮定震源要素'`（単独点処理）かつ areas が空の場合は、`eewMaxLpgmClass` も `eewMaxScale` と同様に0を返す（単独点PLUM検知では地域別の詳細予想が発表されないため）。
+  - `RealtimeTab/index.tsx` の「推定長周期地震動」バナー表示・`App.tsx` の選択解除判定とも、電文全体の `forecastMaxLpgmClass` 単体ではなく `eewMaxLpgmClass(eew)` を参照する。地域別 `lgIntTo` のみで階級4以上に達したケースでも根拠バナーと地図トグルが表示されるようにするため。
+
 ### 地図レイヤーの描画順
 - 描画順（背面→前面）の単一情報源は `src/components/Map/gl/layerOrder.ts` の `MAP_LAYER_ORDER`。各レイヤーコンポーネントは `addOrderedLayer` で追加し、この配列上で自分より前面に来るべき既存レイヤーの直前へ挿入することで、データ到着タイミングに依存せず順序を保証する。
   - 新レイヤーを足すときは `MAP_LAYER_ORDER` に id を追加し、コンポーネントの `id` と一致させる。配列に無い id は最上段へ積まれる。
