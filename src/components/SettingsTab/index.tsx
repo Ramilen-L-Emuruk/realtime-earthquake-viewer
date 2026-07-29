@@ -5,6 +5,8 @@ import { getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../ut
 import { playAlertSound, playKyoshinUpdateSound, unlockAudio } from '../../utils/alertSound'
 import { checkVoicevoxAvailable, fetchVoicevoxSpeakers, speakWithVoicevox, type VoicevoxSpeaker } from '../../utils/voicevox'
 import { serverDate } from '../../utils/clock'
+import type { UseTestScenariosResult } from '../../hooks/useTestScenarios'
+import type { ScenarioCategory } from '../../types/testScenario'
 
 const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
 
@@ -38,6 +40,7 @@ interface Props {
   replayIsFetching?: boolean
   onStartReplay?: (date: Date) => void
   onStopReplay?: () => void
+  scenarioTest: UseTestScenariosResult
 }
 
 // ---- Reusable UI parts ----
@@ -56,7 +59,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function Row({ label, description, children }: {
   label: string
   description?: string
-  children: React.ReactNode
+  children?: React.ReactNode
 }) {
   return (
     <div className="flex items-center justify-between gap-4 px-4 py-3">
@@ -134,10 +137,11 @@ const BUTTON_CLASSES: Record<ButtonColor, string> = {
   green:  'bg-green-700 hover:bg-green-600',
 }
 
-function TestButton({ color, onClick, children }: {
+function TestButton({ color, onClick, children, disabled }: {
   color: ButtonColor
   onClick: () => void
   children: React.ReactNode
+  disabled?: boolean
 }) {
   const [fired, setFired] = useState(false)
 
@@ -150,13 +154,24 @@ function TestButton({ color, onClick, children }: {
   return (
     <button
       onClick={handle}
-      className={`text-xs text-white px-3 py-1.5 rounded transition-colors ${
+      disabled={disabled}
+      className={`text-xs text-white px-3 py-1.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
         fired ? 'bg-gray-600' : BUTTON_CLASSES[color]
       }`}
     >
       {fired ? '送信済み ✓' : children}
     </button>
   )
+}
+
+const SCENARIO_CATEGORY_COLOR: Record<ScenarioCategory, ButtonColor> = {
+  'eew-special': 'red',
+  'eew-warning': 'orange',
+  'eew-forecast': 'yellow',
+  quake: 'red',
+  tsunami: 'purple',
+  lpgm: 'blue',
+  foreign: 'green',
 }
 
 // 震度別の色付き小ボタン（通知音テスト用）
@@ -278,7 +293,7 @@ function HomeLocationSection({
   )
 }
 
-export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onSetKyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus, replayIsFetching, onStartReplay, onStopReplay }: Props) {
+export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onSetKyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus, replayIsFetching, onStartReplay, onStopReplay, scenarioTest }: Props) {
   const [voicevoxStatus, setVoicevoxStatus] = useState<'idle' | 'checking' | 'available' | 'unavailable'>('idle')
   const [voicevoxSpeakers, setVoicevoxSpeakers] = useState<VoicevoxSpeaker[]>([])
 
@@ -749,6 +764,37 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
         <Row label="ブラウザ通知" description="テスト通知を即時送信（要通知許可）">
           <TestButton color="green" onClick={onTest.notification}>通知テスト</TestButton>
         </Row>
+      </Section>
+
+      <Section title="実地震テスト">
+        <div className="px-4 py-2 bg-yellow-900/30 border-b border-yellow-700/40">
+          <p className="text-yellow-400 text-xs">⚠️ 実際に発生した地震の電文データを、発生時と同じ間隔で再生します。動作確認用です。</p>
+        </div>
+        {scenarioTest.loadState === 'error' && (
+          <Row label="シナリオ一覧の取得に失敗しました" />
+        )}
+        {scenarioTest.loadState === 'loaded' && scenarioTest.scenarios.length === 0 && (
+          <Row label="利用可能なシナリオがありません" />
+        )}
+        {scenarioTest.scenarios.map(s => {
+          const playing = scenarioTest.playingIds.has(s.id)
+          const failed = scenarioTest.errorIds.has(s.id)
+          return (
+            <Row
+              key={s.id}
+              label={s.label}
+              description={failed ? `${s.description}（取得に失敗しました。再度押すとリトライします）` : s.description}
+            >
+              <TestButton
+                color={failed ? 'red' : SCENARIO_CATEGORY_COLOR[s.category]}
+                disabled={playing}
+                onClick={() => scenarioTest.play(s.id)}
+              >
+                {playing ? '再生中…' : failed ? '再試行' : '再生'}
+              </TestButton>
+            </Row>
+          )
+        })}
       </Section>
 
       <Section title="テスト時刻設定（強震モニタ）">
