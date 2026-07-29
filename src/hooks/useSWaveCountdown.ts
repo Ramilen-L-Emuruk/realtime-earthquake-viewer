@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PsWaveCircle } from '../services/kyoshin'
 import { computeSWaveTravelTimeSec } from './useDmdssWaves'
-import { calcEEWAutoCancelSec, S_WAVE_FALLBACK_KM_PER_SEC } from '../utils/eew'
+import { calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, S_WAVE_FALLBACK_KM_PER_SEC } from '../utils/eew'
 import { haversineKm } from '../utils/geo'
 import { log } from '../utils/logger'
 
@@ -37,24 +37,25 @@ export function useSWaveCountdown(
     const circle = psWave.reduce((best, c) => c.sRadius > best.sRadius ? c : best, psWave[0])
     const distanceKm = haversineKm(circle.lat, circle.lng, home.lat, home.lng)
     const sRadiusKm = circle.sRadius
-    const arrived = sRadiusKm >= distanceKm
+    let arrived = sRadiusKm >= distanceKm
 
     let etaSec: number | null
-    if (arrived) {
-      etaSec = 0
-    } else if (circle.depth !== undefined && sRadiusKm > 0) {
-      // DMDSS版: 2層速度モデルの解析的逆算で正確な ETA を計算
-      // computeSWaveTravelTimeSec は computeRadius の逆関数なので
-      // 「現在の波面時刻」と「目標距離の到達時刻」の差が残り秒数
+    if (circle.depth !== undefined && sRadiusKm > 0) {
+      // DMDSS版: 2層速度モデルの解析的逆算で理論上のS波到達走時を計算し、安全マージンを加算する
+      // （震源近傍は直達波がそのまま立ち上がるが、遠方ほど表面波の分離・コーダ波の重畳で
+      //  揺れの立ち上がりがなだらかになり、S波理論到達より体感開始が遅れる傾向があるため）
+      const marginSec = calcArrivalSafetyMarginSec(distanceKm)
       const tNow = computeSWaveTravelTimeSec(sRadiusKm, circle.depth)
-      const tArrival = computeSWaveTravelTimeSec(distanceKm, circle.depth)
-      etaSec = Math.max(0, Math.round(tArrival - tNow))
+      const tArrivalWithMargin = computeSWaveTravelTimeSec(distanceKm, circle.depth) + marginSec
+      arrived = tNow >= tArrivalWithMargin
+      etaSec = arrived ? 0 : Math.max(0, Math.round(tArrivalWithMargin - tNow))
 
       // DMDSS版のみ: EEW解除前にS波が自宅に到達しない場合は非表示
-      if (circle.magnitude !== undefined) {
+      // （安全マージン込みの到達時刻で判定する。マージン無しの理論到達時刻だけで解除前と
+      //   判定すると、実際の体感到達は解除後にずれ込むケースをカードで見せてしまうため）
+      if (!arrived && circle.magnitude !== undefined) {
         const autoCancelSec = calcEEWAutoCancelSec(circle.magnitude, circle.depth)
-        const travelTimeSec = computeSWaveTravelTimeSec(distanceKm, circle.depth)
-        const willArriveBeforeCancel = travelTimeSec < autoCancelSec
+        const willArriveBeforeCancel = tArrivalWithMargin < autoCancelSec
         const eewKey = `${circle.magnitude}-${circle.depth}`
         if (lastLoggedEEWRef.current !== eewKey) {
           lastLoggedEEWRef.current = eewKey
@@ -62,8 +63,9 @@ export function useSWaveCountdown(
             sRadiusKm: Number(sRadiusKm.toFixed(1)),
             distanceToHomeKm: Number(distanceKm.toFixed(1)),
             etaSec,
+            marginSec: Number(marginSec.toFixed(1)),
             autoCancelSec: Number(autoCancelSec.toFixed(1)),
-            travelTimeSec: Number(travelTimeSec.toFixed(1)),
+            tArrivalWithMargin: Number(tArrivalWithMargin.toFixed(1)),
             willArriveBeforeCancel,
           })
         }
@@ -73,6 +75,8 @@ export function useSWaveCountdown(
           return
         }
       }
+    } else if (arrived) {
+      etaSec = 0
     } else {
       // Yahoo版またはS波がまだ地表に出ていない場合: フレーム差分で速度を推定
       // ※Yahoo版の更新間隔は約1秒なので delta ≈ km/s として扱える
