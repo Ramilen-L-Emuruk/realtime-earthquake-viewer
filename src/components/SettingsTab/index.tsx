@@ -400,6 +400,23 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
             onChange={v => onUpdate('showActiveFaults', v)}
           />
         </Row>
+        <Row label="活断層線の濃さ" description="活断層線の不透明度を調整します（濃くするほど目立ちます）">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-secondary w-8 text-right">
+              {Math.round(settings.activeFaultOpacity * 100)}%
+            </span>
+            <input
+              type="range"
+              min={0.05}
+              max={1}
+              step={0.05}
+              value={settings.activeFaultOpacity}
+              onChange={e => onUpdate('activeFaultOpacity', Number(e.target.value))}
+              disabled={!settings.showActiveFaults}
+              className="w-24 accent-blue-500 disabled:opacity-40"
+            />
+          </div>
+        </Row>
         <Row label="地震活動ヒートマップを表示" description="地震情報・リアルタイムタブの地図に直近1ヶ月の地震活動をヒートマップで表示します（初回表示時にAPIから取得）">
           <Toggle
             checked={settings.showQuakeHeatmap}

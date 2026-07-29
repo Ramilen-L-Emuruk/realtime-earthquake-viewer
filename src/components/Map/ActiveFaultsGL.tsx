@@ -21,9 +21,10 @@ const LYR = 'active-faults'
 interface Props {
   activeFaults: ActiveFaultSegment[] | null
   visible: boolean
+  opacity: number
 }
 
-export function ActiveFaultsGL({ activeFaults, visible }: Props) {
+export function ActiveFaultsGL({ activeFaults, visible, opacity }: Props) {
   const map = useMapGL()
   const popupRef = useRef<LinePopupHandle | null>(null)
 
@@ -45,7 +46,9 @@ export function ActiveFaultsGL({ activeFaults, visible }: Props) {
       paint: {
         'line-color': FAULT_COLOR,
         'line-width': 1,
-        'line-opacity': 0.4,
+        'line-opacity': opacity,
+        // スライダー操作が引きずらないよう既定トランジションを無効化。
+        'line-opacity-transition': { duration: 0, delay: 0 },
       },
     })
     popupRef.current = bindLinePopup(map, LYR, HIT_TOL_PX, (f) =>
@@ -64,6 +67,12 @@ export function ActiveFaultsGL({ activeFaults, visible }: Props) {
     if (!map || !map.getLayer(LYR)) return
     map.setLayoutProperty(LYR, 'visibility', visible ? 'visible' : 'none')
   }, [map, visible, activeFaults])
+
+  // 濃さ（不透明度）の変更を反映。
+  useEffect(() => {
+    if (!map || !map.getLayer(LYR)) return
+    map.setPaintProperty(LYR, 'line-opacity', opacity)
+  }, [map, opacity, activeFaults])
 
   return null
 }
