@@ -12,6 +12,7 @@ export interface AppSettings {
   mapIconScale: number      // 地図アイコンの倍率 (1 = 100%、UI 倍率とは独立)
   showBathymetry: boolean   // 背景に海底地形（ESRI Ocean）を表示する
   showActiveFaults: boolean // 地震情報・リアルタイムタブの地図に活断層線を表示する
+  activeFaultOpacity: number // 活断層線の不透明度（濃さ、0.05〜1.0）
   showQuakeHeatmap: boolean // 地震情報・リアルタイムタブの地図に直近1ヶ月の地震活動ヒートマップを表示する
   showPlateBoundaries: boolean // 地震情報・リアルタイムタブの地図にプレート境界線を表示する
   defaultTab: DefaultTabSetting    // 起動時・アイドル復帰時に表示するタブ
@@ -47,6 +48,7 @@ const DEFAULTS: AppSettings = {
   mapIconScale: 1,
   showBathymetry: true,
   showActiveFaults: true,
+  activeFaultOpacity: 0.4,
   showQuakeHeatmap: false,
   showPlateBoundaries: true,
   defaultTab: 'earthquake',

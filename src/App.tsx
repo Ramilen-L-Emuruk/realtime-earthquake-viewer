@@ -585,6 +585,7 @@ export function App() {
             iconScale={settings.mapIconScale}
             showBathymetry={settings.showBathymetry}
             showActiveFaults={settings.showActiveFaults}
+            activeFaultOpacity={settings.activeFaultOpacity}
             heatPoints={quakeHeatPoints}
             showPlateBoundaries={settings.showPlateBoundaries}
             kyoshinSites={kyoshin.sites}
