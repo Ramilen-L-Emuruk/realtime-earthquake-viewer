@@ -15,7 +15,7 @@
 - **地震情報タブ**: 過去の地震をカード表示。地図に各観測点の震度を色付きドットで表示し、震源をマーク。カードを選択するとその地震の情報に切り替わる。
 - **リアルタイムタブ**: 各観測点のリアルタイム震度を毎秒更新で地図に表示。緊急地震速報の発報時は予報円・震源を地図に重ねて表示し、右パネルに EEW 情報カードを表示。揺れの候補クラスタが立った時点でタブ切替・タイトル変更・控えめな通知音・地図フィットで早期に知らせ、確定すると検知カード・通知音・ブラウザ通知を伴う本検知へ切り替わる。
 - **津波情報タブ**: 大津波警報・津波警報・津波注意報・津波予報（若干の海面変動）を表示。同一階級内で予想波高が同じ区域はグルーピングして表示し、津波予報区コードが一致する観測情報（観測点名・波高・到達時刻）は該当区域の直下に表示。紐づけできない観測（沖合観測など）は別カードにフォールバック表示。対象海域を地図の海岸線に等級色で描画し対象区域へ自動ズーム。
-- **設定タブ**: 通知音・ブラウザ通知・表示件数・UI 倍率・デフォルトタブ・自動復帰時間などを設定。各種テスト送信も可能。DM-D.S.S 版では DMDATA.JP の API キー設定・接続状態確認も行える。
+- **設定タブ**: 通知音・ブラウザ通知・表示件数・UI 倍率・デフォルトタブ・自動復帰時間などを設定。合成データによる各種テスト送信に加え、実際に発生した地震の電文データを発生時と同じ間隔で再生する「実地震テスト」も可能（標準版・DM-D.S.S 版共通）。DM-D.S.S 版では DMDATA.JP の API キー設定・接続状態確認も行える。
 - **通知音**: 地震情報・緊急地震速報・津波情報の受信時に種別ごとの音を再生。
 - **自動タブ切替**: 情報受信時に該当タブを自動表示。一定時間操作がなければデフォルトタブへ復帰。
 - **PWA 対応**: ホーム画面へのインストールとオフラインキャッシュに対応。
@@ -75,6 +75,16 @@ npm run preview
 > - 津波予報区の海岸線（`public/data/tsunami-zones.json`）: `node scripts/build-tsunami-zones.mjs`
 > - 都道府県境界（`public/data/prefectures.json`）: `node scripts/build-prefectures.mjs`
 > - 一次細分区域境界（`public/data/subregions.json`）: `node scripts/build-subregions.mjs`
+
+> 実地震テストのシナリオ（`public/data/test-scenarios/*.json`）は、DMDATA.JP の archive API から実際の電文を取得して追加できます（要 DMDATA.JP API キー。取得した電文はパース済みの内部型として保存し、生電文は保存しません）。APIキーはシェル履歴に残らないよう環境変数での指定を推奨します。
+> ```bash
+> DMDATA_API_KEY=<APIキー> npm run capture-scenario -- \
+>   --from=<開始日時ISO> --to=<終了日時ISO> \
+>   --id=<シナリオID> --label=<表示名> --description=<説明文> --category=<カテゴリ>
+> ```
+> `category` は `eew-special` / `eew-warning` / `eew-forecast` / `quake` / `tsunami` / `lpgm` / `foreign` のいずれか。
+>
+> ⚠️ **生成した `public/data/test-scenarios/*.json`（`index.json` を除く）はコミットしないでください**（`.gitignore` 済み）。DMDATA.JP [利用規約](https://dmdata.jp/terms/)第15条により、緊急地震速報（EEW）の二次配信は法人契約以外では「公開APIへの使用」「許可なき第三者への表示・鳴動」が制限されています。本リポジトリは GitHub Pages で公開されるため、EEWを含むシナリオをコミットするとこの制限に抵触するおそれがあります。取得したシナリオは各自のローカル環境でのみ利用してください。
 
 ---
 
@@ -215,7 +225,10 @@ realtime-earthquake-viewer/
 │       ├── prefectures.json        # 都道府県の境界ポリゴン（ベースマップ用・生成物）
 │       ├── subregions.json         # 一次細分区域の境界ポリゴン（生成物）
 │       ├── active-faults.json      # 全国活断層線データ（生成物）
-│       └── plate-boundaries.json   # 日本周辺のプレート境界線データ（生成物）
+│       ├── plate-boundaries.json   # 日本周辺のプレート境界線データ（生成物）
+│       └── test-scenarios/         # 実地震テストのシナリオデータ（生成物・capture-test-scenario.ts で追加）
+│           ├── index.json          # シナリオ一覧（id/label/description/category/durationMs）
+│           └── <id>.json           # シナリオ本体（時刻オフセット付きのパース済み電文列）
 ├── scripts/
 │   ├── build-station-coords.mjs    # 観測点座標テーブル生成スクリプト
 │   ├── build-tsunami-zones.mjs     # 津波予報区 海岸線データ生成スクリプト
@@ -224,6 +237,7 @@ realtime-earthquake-viewer/
 │   ├── build-active-faults.mjs     # 全国活断層線データ生成スクリプト
 │   ├── build-plate-boundaries.mjs  # プレート境界線データ生成スクリプト
 │   ├── build-glyphs.mjs            # 地名ラベル用 SDF グリフ PBF 生成（同梱 Noto Sans JP を @mapbox/tiny-sdf で焼く）
+│   ├── capture-test-scenario.ts    # 実地震テストのシナリオキャプチャ CLI（DMDATA archive → 内部型JSON、tsx実行）
 │   ├── fonts/                      # グリフ生成のソースフォント（Noto Sans JP・OFL・非配信）
 │   └── perf/                          # 描画負荷計測（WebGL 移行計画 段階0）
 │       ├── measure-kyoshin-static.js  # 計測スクリプト（ブラウザ注入・自動実行/自動送信対応）
@@ -271,6 +285,7 @@ realtime-earthquake-viewer/
 │   │   ├── usePsWaveCalc.ts        # EEW の P波・S波地表到達半径アニメーション（標準版・DM-D.S.S 版共通の自前計算）
 │   │   ├── useSWaveCountdown.ts    # S波到達カウントダウン
 │   │   ├── useSettings.ts          # アプリ設定（localStorage 永続化）
+│   │   ├── useTestScenarios.ts     # 実地震テストのシナリオ一覧・再生管理（標準版・DM-D.S.S 版共通）
 │   │   ├── useStationCoords.ts     # 観測点座標テーブルの読み込み
 │   │   ├── useTsunamiZones.ts      # 津波予報区 海岸線データの読み込み
 │   │   ├── useTsunamiObsCoords.ts  # 津波観測点座標テーブルの読み込み
@@ -287,7 +302,8 @@ realtime-earthquake-viewer/
 │   │   ├── dmdata.ts               # DMDATA.JP WebSocket クライアント（DM-D.S.S 版用）
 │   │   └── dmdataParser.ts         # DMDATA.JP JSON 電文 → 内部型変換（DM-D.S.S 版用）
 │   ├── types/
-│   │   └── earthquake.ts           # 地震情報・EEW・津波情報の型定義
+│   │   ├── earthquake.ts           # 地震情報・EEW・津波情報の型定義
+│   │   └── testScenario.ts         # 実地震テストのシナリオデータ型定義
 │   └── utils/
 │       ├── alertSound.ts           # 通知音生成（Web Audio API）
 │       ├── eew.ts                  # EEW 対象地域・最大震度・情報番号の算出、自動解除時刻の計算、hypoInfo差分からのEEW導出
@@ -316,7 +332,8 @@ realtime-earthquake-viewer/
 │       ├── clock.ts                # アプリ全体の時刻基準（サーバー同期・壁時計ずれ非依存の serverNow）
 │       ├── logger.ts               # console ログへの時刻付与（clock の serverNow に追従）
 │       ├── gebcoPrefetch.ts        # 海底地形タイル（GEBCO）の先読み: 沖縄〜択捉相当をアイドル時に低ズーム優先でバックグラウンド fetch
-│       └── testData.ts             # 設定タブのテストボタン用サンプルデータ生成
+│       ├── testData.ts             # 設定タブのテストボタン用サンプルデータ生成
+│       └── testScenarioReplay.ts   # 実地震テストシナリオの時刻シフト・ID再採番（「今」基準にインスタンス化）
 ├── index.html
 ├── package.json
 ├── vite.config.ts                  # Vite + PWA 設定（base 設定含む）
