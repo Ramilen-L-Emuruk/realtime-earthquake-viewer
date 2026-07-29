@@ -64,16 +64,16 @@ function jstParts(date: Date): { dateStr: string; ts: string } {
   return { dateStr, ts: `${dateStr}${hour}${get('minute')}${get('second')}` }
 }
 
-/** 緊急地震速報の予報円（P波/S波）。半径は km。 */
+/** 緊急地震速報の予報円（P波/S波）。半径は km。震源深度・マグニチュードから自前計算する（標準版・DMDSS版共通）。 */
 export interface PsWaveCircle {
   lat: number
   lng: number
   pRadius: number
   sRadius: number
-  /** 震源深度 [km]。DMDSS版のみ設定される（Yahoo版は undefined）。 */
-  depth?: number
-  /** マグニチュード。DMDSS版のみ設定される（Yahoo版は undefined）。続報で更新される。 */
-  magnitude?: number
+  /** 震源深度 [km]。 */
+  depth: number
+  /** マグニチュード。続報で更新される。 */
+  magnitude: number
 }
 
 /** Yahoo hypoInfo の EEW 情報（1件）。フィールドはすべて文字列。 */
@@ -100,8 +100,6 @@ export interface RealtimeIntensity {
   siteConfigId: string
   /** 観測点ごとの震度インデックス(0〜20)。sitelist と同順。 */
   indices: number[]
-  /** 予報円（EEW 発報中のみ要素を持つ）。 */
-  psWave: PsWaveCircle[]
   /** EEW 情報（発報中のみ要素を持つ）。 */
   hypoInfo: YahooHypoInfoItem[]
 }
@@ -182,24 +180,13 @@ export async function fetchRealtimeIntensity(now: Date): Promise<RealtimeIntensi
       }
       const json = (await res.json()) as {
         realTimeData?: { dataTime?: string; siteConfigId?: string; intensity?: string }
-        psWave?: {
-          items?: { latitude?: string; longitude?: string; pRadius?: number; sRadius?: number }[]
-        }
         hypoInfo?: { items?: YahooHypoInfoItem[] }
       }
       const intensity = json.realTimeData?.intensity ?? ''
       const indices = Array.from(intensity, (c) => c.charCodeAt(0) - 100)
-      const psWave: PsWaveCircle[] = (json.psWave?.items ?? [])
-        .map((it) => ({
-          lat: parseCoord(it.latitude),
-          lng: parseCoord(it.longitude),
-          pRadius: Number(it.pRadius) || 0,
-          sRadius: Number(it.sRadius) || 0,
-        }))
-        .filter((c) => Number.isFinite(c.lat) && Number.isFinite(c.lng))
       const hypoInfo: YahooHypoInfoItem[] = json.hypoInfo?.items ?? []
       const siteConfigId = json.realTimeData?.siteConfigId ?? ''
-      return { dataTime: json.realTimeData?.dataTime ?? '', siteConfigId, indices, psWave, hypoInfo }
+      return { dataTime: json.realTimeData?.dataTime ?? '', siteConfigId, indices, hypoInfo }
     } catch (err) {
       lastErr = err
     }

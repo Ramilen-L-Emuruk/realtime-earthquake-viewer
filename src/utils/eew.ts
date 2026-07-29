@@ -1,6 +1,6 @@
 import type { EEWAlert, EEWRegion } from '../types/earthquake'
 import type { AlertSoundType } from './alertSound'
-import { computeSWaveTravelTimeSec } from '../hooks/useDmdssWaves'
+import { computeSWaveTravelTimeSec } from '../hooks/usePsWaveCalc'
 import { hypoInfoItemToEEW, type YahooHypoInfoItem } from '../services/kyoshin'
 
 // 司・翠川(1999)の距離減衰式を使ってEEW最終報後の自動解除秒数を計算する。

@@ -81,18 +81,17 @@ function computeRadius(t: number, depth: number, v1: number, v2: number, cosIc: 
 }
 
 /**
- * DMDSS版専用: アクティブな EEW の震源・発生時刻から P波・S波の地表到達半径を計算する。
+ * アクティブな EEW の震源・発生時刻から P波・S波の地表到達半径を計算する（標準版・DMDSS版共通）。
  * 100ms ごとに更新することでスムーズな拡張アニメーションを実現する。
  */
-export function useDmdssWaves(
+export function usePsWaveCalc(
   activeEEWs: EEWAlert[],
-  enabled: boolean,
   replayTimeOffset: number | null = null,
 ): PsWaveCircle[] {
   const [waves, setWaves] = useState<PsWaveCircle[]>([])
 
   useEffect(() => {
-    if (!enabled || activeEEWs.length === 0) {
+    if (activeEEWs.length === 0) {
       setWaves([])
       return
     }
@@ -131,7 +130,7 @@ export function useDmdssWaves(
     compute()
     const id = setInterval(compute, UPDATE_INTERVAL_MS)
     return () => clearInterval(id)
-  }, [activeEEWs, enabled, replayTimeOffset])
+  }, [activeEEWs, replayTimeOffset])
 
   return waves
 }
