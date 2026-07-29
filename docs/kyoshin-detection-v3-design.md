@@ -414,3 +414,30 @@ K 近傍グラフで連結成分5（size=5）を作って confirmed（`CONFIRM_P
 
 **残る限界（受容）**: confirmed を阻止されたノイズは likely（候補音レベル）には残る。1点だけ震度1・周囲震度0 の
 分布は福岡型（本物の極弱地震・likely）と震源非依存の面判定では原理的に不可分なため、likely 段は分離しない。
+
+## 19. EEW（severity=Warning）発表中の確定緩和（2026-07-29・Scratch 版との比較から着想）
+
+**動機**: 別実装（Scratch 3.0 版「リアルタイム地震ビューアー」・同じ DM-D.S.S 系データを使用）との比較検証で、
+Scratch 版は単点の急峻な立ち上がりや EEW 予想円内の点を優先的に許可する状態機械を持ち、V3 より速く・敏感に
+反応することが分かった。ただし Scratch 版の「1点で仮許可」は V3 が意図的に排除してきた誤検知パターン（茨城県
+北部 §18・熊本群発 §16・北関東慢性ノイズ §11 相当）そのものであり、そのまま輸入すると誤報耐性を損なう。一方
+Scratch 版の「EEW 予想円内の点を優先」は、EEW（気象庁発表）というすでに強いエビデンスがある局面に限定した
+緩和であり、震源非依存の面判定という V3 の設計原則を壊さずに速さだけを取り込める。
+
+**変更**: `Frame.eewActive`（呼び出し側で `severity==='Warning'` の EEW が1件でもアクティブなら true。低確度の
+予報級 severity=Forecast は含めない＝`eew.ts` の `computeSingleEEWLevel` と同じ「予報級は信用しない」方針に
+合わせる。App.tsx では `hasActiveWarningEEW` という専用の派生値を用意し、震源距離・予想円は一切見ない）が
+true の間、`updateEventMetrics` の確定点数・確定連続フレーム数を `CONFIRM_POINTS`(5)/`CONFIRM_FRAMES`(2) から
+`EEW_CONFIRM_POINTS`(3)/`EEW_CONFIRM_FRAMES`(1) に差し替える。単点ノイズを弾く `MIN_CLUSTER`・
+`CONFIRM_INTENSE_POINTS`・`MIN_CONFIRM_INTENSITY`・慢性活性の引き上げ幅は変えない。
+
+セルフレビューで「hasActiveEEW（severity 不問）をそのまま使うと、低確度な予報級1件だけで全国規模の確定緩和が
+発動し、§18 で塞いだ単点ノイズ誤 confirmed を EEW 経由で再導入しかねない」との指摘を受け、Warning 限定の
+`hasActiveWarningEEW` に切り替えた。
+
+**検証**: 型チェック0・vitest 40件（`kyoshinDetector.test.ts`。EEW 緩和が効くこと・`MIN_CLUSTER` と
+`CONFIRM_INTENSE_POINTS` は EEW 中でも緩まないことの回帰テスト +4）。
+
+**残る限界（受容）**: `hasActiveWarningEEW` は全国一律のフラグで震源距離を見ないため、Warning 級 EEW の震源から
+遠い無関係な地域でも同じだけ緩和がかかる。ただし L2（近傍同時性・連結成分）の空間コヒーレンス要求は変えていない
+ため、無関係な地域でこの緩和だけでノイズが confirmed に通ることはない（点数・フレーム数のバーを下げるだけ）。

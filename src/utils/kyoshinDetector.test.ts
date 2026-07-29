@@ -206,6 +206,80 @@ describe('step: 近傍同時の揺れを confirmed 検知', () => {
   })
 })
 
+describe('step: EEW 発表中の確定緩和（§19）', () => {
+  it('EEW 発表中は密な網でも CONFIRM_POINTS(5) 未満・EEW_CONFIRM_POINTS(3) で confirmed になる', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1) // 9点・全点相互近傍（avail=8・密度正規化の影響を受けない）
+    const meta = buildStationMeta(sitesOf(defs))
+    // 9点中3点だけ揺らす（EEW_CONFIRM_POINTS ちょうど）。残り6点は静穏のまま。
+    const shakeIdx = new Set([0, 1, 2])
+    const quiet = (t: number, eewActive: boolean): Frame => ({ ...uniformFrame(defs, t, 0), eewActive })
+    const shake = (t: number, eewActive: boolean): Frame => ({
+      ...frameWith(defs, t, (i) => (shakeIdx.has(i) ? 2.0 : 0)),
+      eewActive,
+    })
+
+    let t = 0
+    const framesEEW: Frame[] = []
+    for (let i = 0; i < 5; i++, t += 1000) framesEEW.push(quiet(t, true))
+    for (let i = 0; i < 4; i++, t += 1000) framesEEW.push(shake(t, true))
+    const { detections: detEEW } = drive(framesEEW, meta)
+    expect(detEEW.some((d) => d.confidence === 'confirmed')).toBe(true)
+
+    t = 0
+    const framesNormal: Frame[] = []
+    for (let i = 0; i < 5; i++, t += 1000) framesNormal.push(quiet(t, false))
+    for (let i = 0; i < 4; i++, t += 1000) framesNormal.push(shake(t, false))
+    const { detections: detNormal } = drive(framesNormal, meta)
+    expect(detNormal.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+
+  it('EEW 発表中は CONFIRM_FRAMES(2) を待たず EEW_CONFIRM_FRAMES(1) で確定する', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) {
+      state = step(state, { ...uniformFrame(defs, t, 0), eewActive: true }, meta).state
+    }
+    // 揺れ開始 1 フレーム目（EEW_CONFIRM_FRAMES=1）で confirmed になるはず
+    const r = step(state, { ...uniformFrame(defs, t, 2.0), eewActive: true }, meta)
+    expect(r.detections.some((d) => d.confidence === 'confirmed')).toBe(true)
+  })
+
+  it('EEW 発表中でも近傍が揃わない孤立単点は confirmed にならない（MIN_CLUSTER は緩めない）', () => {
+    const defs: StationDef[] = [
+      { lat: 33.0, lng: 131.0 },
+      { lat: 35.0, lng: 139.0 },
+      { lat: 38.0, lng: 141.0 },
+      { lat: 43.0, lng: 143.0 },
+      { lat: 34.0, lng: 135.0 },
+    ]
+    const meta = buildStationMeta(sitesOf(defs))
+    const frames = quietThenShake(defs, { quietCount: 5, shakeCount: 5, shakeValue: 3.0 }).map(
+      (f): Frame => ({ ...f, eewActive: true }),
+    )
+    const { detections } = drive(frames, meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+
+  it('EEW 発表中でも「単点だけ確定震度・周囲は震度0」は confirmed にならない（CONFIRM_INTENSE_POINTS は緩めない）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1) // 9点・全点相互近傍
+    const meta = buildStationMeta(sitesOf(defs))
+    const frames: Frame[] = []
+    let t = 0
+    // 静穏期は value=-0.5（floor 学習後も 0.0→0.5 の立ち上がりで全点 onset させるための下準備）
+    for (let i = 0; i < 5; i++, t += 1000) {
+      frames.push({ ...uniformFrame(defs, t, -0.5), eewActive: true })
+    }
+    // 1点だけ震度1(0.5)・残り8点は震度0(0.0) で onset（茨城県北部の誤 confirmed と同型の分布）
+    for (let i = 0; i < 5; i++, t += 1000) {
+      frames.push({ ...frameWith(defs, t, (idx) => (idx === 0 ? 0.5 : 0.0)), eewActive: true })
+    }
+    const { detections } = drive(frames, meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+})
+
 describe('step: 特異度（散在ノイズを排除）', () => {
   it('孤立した単点ノイズは近傍が揃わず confirmed にならない', () => {
     const defs: StationDef[] = [
