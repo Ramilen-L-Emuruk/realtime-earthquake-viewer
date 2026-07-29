@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, EEWRegion, IntensityScale, EarthquakePoint, AppEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataKohatsu } from '../services/dmdata'
 import { loadStationCoords, buildAreaPrefIndex } from '../utils/stationCoords'
@@ -228,12 +228,26 @@ export function useEarthquakes(
   // offset = earthquakes.length だと重複除去ズレで古いデータが抜け落ちるため、API 呼び出し回数ベースで管理する
   const p2pRawOffsetRef = useRef(0)
 
-  // P2PQuake WS の VXSE43/45 相当（556）受信時に既存の Yahoo EEW へ地域別予想震度を注入する（音・タブ切替なし）。
-  const enrichEEW = useCallback((eventId: string, areas: EEWRegion[]) => {
+  // P2PQuake WS の VXSE43/45 相当（556）受信時に既存の Yahoo EEW へ地域別予想震度・震源要素を注入する
+  // （音・タブ切替なし）。P2PQuakeはcondition（仮定震源要素の判別）・hypocenter（数値型・パース不要）
+  // ともYahoo hypoInfoより正確なため、両方を上書きする。ただし報番号が古い場合は上書きしない
+  // （WS/ポーリングの到着順序が入れ替わり、新しい報を古い報の値で退行させないため）。
+  const enrichEEW = useCallback((eventId: string, source: EEWAlert) => {
     setState(prev => {
       const existing = prev.activeEEWs.get(eventId)
       if (!existing) return prev
-      const enriched = { ...existing, areas }
+      const existingSerial = Number(existing.issue?.serial ?? 0)
+      const sourceSerial = Number(source.issue?.serial ?? 0)
+      if (sourceSerial < existingSerial) return prev
+      const enriched: EEWAlert = {
+        ...existing,
+        areas: source.areas ?? source.regions ?? existing.areas,
+        earthquake: {
+          ...existing.earthquake,
+          condition: source.earthquake.condition,
+          hypocenter: source.earthquake.hypocenter,
+        },
+      }
       return { ...prev, activeEEWs: new Map(prev.activeEEWs).set(eventId, enriched) }
     })
   }, [])
@@ -785,7 +799,7 @@ export function useEarthquakes(
           return
         }
         if (stateRef.current.activeEEWs.has(key)) {
-          enrichEEW(key, eew.areas ?? eew.regions ?? [])
+          enrichEEW(key, eew)
         } else {
           enqueueEvent(event)  // フォールバック: Yahoo が未検出のEEW
         }
