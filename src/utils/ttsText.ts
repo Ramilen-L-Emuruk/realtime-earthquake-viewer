@@ -334,7 +334,7 @@ export function tsunamiToText(event: JMATsunami): string {
 /** VTSE41/51/52 津波情報 引き下げ時の読み上げテキストを生成する。 */
 export function tsunamiDowngradeToText(event: JMATsunami): string {
   const topGrade = GRADE_ORDER.find(g => event.areas.some(a => a.grade === g))
-  if (!topGrade) return tsunamiCancelToText()
+  if (!topGrade) return tsunamiCancelToText(event.cancelReason)
 
   const topAreas = event.areas.filter(a => a.grade === topGrade)
   const areaNames = topAreas.map(a => a.name).join('、')
@@ -345,8 +345,10 @@ export function tsunamiDowngradeToText(event: JMATsunami): string {
   return `${gradeLabel}に切り替えられました。現在、${areaNames}に${gradeLabel}が発表されています。${heightPart}${lowerPart}`
 }
 
-/** VTSE41/51/52 津波警報等 全解除の読み上げテキストを生成する。 */
-export function tsunamiCancelToText(): string {
+/** VTSE41/51/52 津波警報等 全解除の読み上げテキストを cancelReason ごとに生成する。 */
+export function tsunamiCancelToText(cancelReason: JMATsunami['cancelReason']): string {
+  if (cancelReason === 'retracted') return '津波警報等は誤って発表されたため取り消されました。'
+  if (cancelReason === 'expired') return '津波予報の有効期間が終了しました。'
   return '津波警報等は全て解除されました。'
 }
 

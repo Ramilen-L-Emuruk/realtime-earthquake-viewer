@@ -17,6 +17,7 @@ export interface TestFunctions {
   tsunamiWarning: () => void
   tsunamiWatch: () => void
   tsunamiForecast: () => void
+  tsunamiRetraction: () => void
   nankaiChecking?: () => void
   nankaiWatch?: () => void
   nankaiWarning?: () => void
@@ -689,17 +690,20 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
         <Row label="緊急地震速報（予報）" description="震度2程度 – eewForecast 音 / 30秒間表示">
           <TestButton color="yellow" onClick={onTest.eewForecast}>予報テスト</TestButton>
         </Row>
-        <Row label="津波警報（大津波警報）" description="岩手・宮城・福島等 – tsunamiMajor 音 / 30秒間表示">
+        <Row label="津波警報（大津波警報）" description="岩手・宮城・福島等 – tsunamiMajor 音 / 90秒後に解除">
           <TestButton color="purple" onClick={onTest.tsunami}>大警報テスト</TestButton>
         </Row>
-        <Row label="津波警報（津波警報）" description="青森・茨城等 – tsunami 音 / 30秒間表示">
+        <Row label="津波警報（津波警報）" description="青森・茨城等 – tsunami 音 / 90秒後に解除">
           <TestButton color="orange" onClick={onTest.tsunamiWarning}>警報テスト</TestButton>
         </Row>
-        <Row label="津波警報（注意報）" description="北海道沿岸 – tsunamiWatch 音 / 30秒間表示">
+        <Row label="津波警報（注意報）" description="北海道沿岸 – tsunamiWatch 音 / 90秒後に解除">
           <TestButton color="blue" onClick={onTest.tsunamiWatch}>注意報テスト</TestButton>
         </Row>
-        <Row label="津波予報（若干の海面変動）" description="北海道沿岸 – tsunamiForecast 音 / 30秒間表示">
+        <Row label="津波予報（若干の海面変動）" description="北海道沿岸 – tsunamiForecast 音 / 90秒後に有効期間終了">
           <TestButton color="blue" onClick={onTest.tsunamiForecast}>予報テスト</TestButton>
+        </Row>
+        <Row label="津波警報（誤報取消）" description="青森・北海道等 – tsunami 音 / 90秒後に誤報として取消">
+          <TestButton color="red" onClick={onTest.tsunamiRetraction}>誤報取消テスト</TestButton>
         </Row>
         {isDmdss && onTest.nankaiChecking && (
           <Row label="南海トラフ臨時情報（調査中）" description="バナー表示 + specialInfo 音（バナー消去ボタンなし・再テストで上書き）">
