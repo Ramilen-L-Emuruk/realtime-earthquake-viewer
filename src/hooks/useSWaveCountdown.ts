@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PsWaveCircle } from '../services/kyoshin'
-import { computeSWaveTravelTimeSec } from './useDmdssWaves'
+import { computeSWaveTravelTimeSec } from './usePsWaveCalc'
 import { calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, S_WAVE_FALLBACK_KM_PER_SEC } from '../utils/eew'
 import { haversineKm } from '../utils/geo'
 import { log } from '../utils/logger'
@@ -41,7 +41,7 @@ export function useSWaveCountdown(
 
     let etaSec: number | null
     if (circle.depth !== undefined && sRadiusKm > 0) {
-      // DMDSS版: 2層速度モデルの解析的逆算で理論上のS波到達走時を計算し、安全マージンを加算する
+      // 2層速度モデルの解析的逆算で理論上のS波到達走時を計算し、安全マージンを加算する
       // （震源近傍は直達波がそのまま立ち上がるが、遠方ほど表面波の分離・コーダ波の重畳で
       //  揺れの立ち上がりがなだらかになり、S波理論到達より体感開始が遅れる傾向があるため）
       const marginSec = calcArrivalSafetyMarginSec(distanceKm)
@@ -50,7 +50,7 @@ export function useSWaveCountdown(
       arrived = tNow >= tArrivalWithMargin
       etaSec = arrived ? 0 : Math.max(0, Math.round(tArrivalWithMargin - tNow))
 
-      // DMDSS版のみ: EEW解除前にS波が自宅に到達しない場合は非表示
+      // EEW解除前にS波が自宅に到達しない場合は非表示
       // （安全マージン込みの到達時刻で判定する。マージン無しの理論到達時刻だけで解除前と
       //   判定すると、実際の体感到達は解除後にずれ込むケースをカードで見せてしまうため）
       if (!arrived && circle.magnitude !== undefined) {
@@ -78,8 +78,8 @@ export function useSWaveCountdown(
     } else if (arrived) {
       etaSec = 0
     } else {
-      // Yahoo版またはS波がまだ地表に出ていない場合: フレーム差分で速度を推定
-      // ※Yahoo版の更新間隔は約1秒なので delta ≈ km/s として扱える
+      // S波がまだ地表に出ていない場合: フレーム差分で速度を推定
+      // ※更新間隔は約100ms〜1秒なので delta ≈ km/s として扱える
       let speed = S_WAVE_FALLBACK_KM_PER_SEC
       if (prevSRadiusRef.current !== null) {
         const delta = sRadiusKm - prevSRadiusRef.current
