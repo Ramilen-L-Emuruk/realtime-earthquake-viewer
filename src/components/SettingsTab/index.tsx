@@ -13,6 +13,7 @@ export interface TestFunctions {
   eew: () => void
   eewWarning: () => void
   eewForecast: () => void
+  eewRetraction: () => void
   tsunami: () => void
   tsunamiWarning: () => void
   tsunamiWatch: () => void
@@ -681,14 +682,17 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
         <Row label="地震情報" description="三陸沖 M9.0 最大震度7 をリストと地図に追加">
           <TestButton color="red" onClick={onTest.earthquake}>地震テスト</TestButton>
         </Row>
-        <Row label="緊急地震速報（特別警報）" description="震度6強 – eewSpecial 音 / 30秒間表示">
+        <Row label="緊急地震速報（特別警報）" description="震度6強 – eewSpecial 音 / 10秒以内に再度押すと続報、押さなければ最終報確定→無音で自動解除（数分後）">
           <TestButton color="red" onClick={onTest.eew}>特別警報テスト</TestButton>
         </Row>
-        <Row label="緊急地震速報（警報）" description="震度5強相当 – eew 音 / 30秒間表示">
+        <Row label="緊急地震速報（警報）" description="震度5強相当 – eew 音 / 10秒以内に再度押すと続報、押さなければ最終報確定→無音で自動解除（数分後）">
           <TestButton color="orange" onClick={onTest.eewWarning}>警報テスト</TestButton>
         </Row>
-        <Row label="緊急地震速報（予報）" description="震度2程度 – eewForecast 音 / 30秒間表示">
+        <Row label="緊急地震速報（予報）" description="震度2程度 – eewForecast 音 / 10秒以内に再度押すと続報、押さなければ最終報確定→無音で自動解除（数分後）">
           <TestButton color="yellow" onClick={onTest.eewForecast}>予報テスト</TestButton>
+        </Row>
+        <Row label="緊急地震速報（誤報取消）" description="警報相当（日向灘 M6.5） – eewCancel 音 / 10秒後に誤報として取消（音・通知・読み上げあり）">
+          <TestButton color="purple" onClick={onTest.eewRetraction}>誤報取消テスト</TestButton>
         </Row>
         <Row label="津波警報（大津波警報）" description="岩手・宮城・福島等 – tsunamiMajor 音 / 90秒後に解除">
           <TestButton color="purple" onClick={onTest.tsunami}>大警報テスト</TestButton>
