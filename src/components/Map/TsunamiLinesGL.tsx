@@ -15,7 +15,8 @@ import { bindLinePopup, twoLinePopupHtml, type LinePopupHandle } from './gl/line
 
 const SRC = 'tsunami-lines'
 const LYR = 'tsunami-lines'
-const HIT_TOL_PX = 5
+// 線クリックの当たり判定許容（px）。旧 Leaflet の Canvas ヒットレンダラー tolerance:8 に揃える。
+const HIT_TOL_PX = 8
 // 点滅周期。Leaflet の tsunami-blink（2.5s step-end）に合わせる。
 const BLINK_PERIOD_MS = 2500
 // サイクル内で点灯している割合（0〜80% は点灯・80〜100% は消灯）。step-end 相当のハード切替。
