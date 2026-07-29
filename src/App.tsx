@@ -18,7 +18,7 @@ import { useKyoshinDetectorV2 } from './hooks/useKyoshinDetectorV2'
 import { deriveKyoshinView } from './utils/kyoshinDetectionView'
 import { filterSubThresholdIndices } from './utils/kyoshinSubThresholdFilter'
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
-import { useDmdssWaves } from './hooks/useDmdssWaves'
+import { usePsWaveCalc } from './hooks/usePsWaveCalc'
 import { useQuakeHeatmap } from './hooks/useQuakeHeatmap'
 import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude, formatDateTimeLocal } from './utils/formatters'
@@ -507,11 +507,10 @@ export function App() {
   // タイマーコールバック内から最新の confirmed 値を参照する ref（宣言はコンポーネント冒頭・代入はここ）
   kyoshinDetectedRef.current = kyoshinView.confirmed
 
-  // DMDSS版: EEWデータから P波・S波半径を自前計算（100ms更新でスムーズ拡張）
+  // EEWデータから P波・S波半径を自前計算（100ms更新でスムーズ拡張、標準版・DMDSS版共通）
   // activeEEWs (Map) の参照が安定している限り配列を再生成しない
   const activeEEWList = useMemo(() => Array.from(activeEEWsNoCancelled.values()), [activeEEWsNoCancelled])
-  const dmdssWaves = useDmdssWaves(activeEEWList, isDmdss, replayTimeOffset)
-  const psWave = isDmdss ? dmdssWaves : kyoshin.psWave
+  const psWave = usePsWaveCalc(activeEEWList, replayTimeOffset)
 
   const home = useMemo(
     () => (settings.homeLat !== null && settings.homeLng !== null

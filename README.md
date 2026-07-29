@@ -268,7 +268,7 @@ realtime-earthquake-viewer/
 │   │   ├── useKyoshinAlerts.ts     # 強震モニタ検知（候補=likely・確定=confirmed）に応じたタブ切替・タイトル・通知音
 │   │   ├── useKyoshinRealtime.ts   # Yahoo リアルタイム震度のポーリング
 │   │   ├── useKyoshinDetectorV2.ts # 強震モニタの揺れ検知エンジン（純粋コア step の React ラッパー）
-│   │   ├── useDmdssWaves.ts        # DM-D.S.S 版 EEW の P波・S波地表到達半径アニメーション
+│   │   ├── usePsWaveCalc.ts        # EEW の P波・S波地表到達半径アニメーション（標準版・DM-D.S.S 版共通の自前計算）
 │   │   ├── useSWaveCountdown.ts    # S波到達カウントダウン
 │   │   ├── useSettings.ts          # アプリ設定（localStorage 永続化）
 │   │   ├── useStationCoords.ts     # 観測点座標テーブルの読み込み

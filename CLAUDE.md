@@ -108,12 +108,12 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
   - 津波は実際の電文と同じく「解除」「取消」「期限切れ」の3経路とも10秒間の解除表示を経る（`JMATsunami.cancelReason`で出し分け）。
     大警報・警報・注意報テストは約90秒後に「解除」表示、誤報取消テストは約90秒後に「取消」表示、予報テストは
     `validDateTime` の期限切れにより約90秒後に「有効期間終了」表示になる（実運用でも予報は明示的な解除電文を伴わない）。
-  - ※予報円は実データ依存のため平常時は表示されない。
+  - P波・S波の予報円は震源要素（震源・深さ・マグニチュード・発生時刻）から自前計算する（標準版・DMDSS版共通）ため、上記のEEWテストボタンでも実際に円が拡大する様子を検証できる。
 
 ### 環境による制約
 
 - 一部の外部ホストへ到達できない環境がある（例: 防災科研 kmoni の HTTPS）。Yahoo 強震モニタ（`weather-kyoshin.*.storage-yahoo.jp`）・DMDATA.JP API は到達可能。
-- **予報円（Yahoo `psWave`）は実 EEW 発報時のみデータが入る**ため、平常時は実地確認できない。コードのみ確認し、実発報時の確認をユーザーに委ねる。
+- 予報円は自前計算（`usePsWaveCalc`）に統一済みのためテストボタンでも確認できるが、気象庁の実電文が発表初期に載せる「仮定震源要素」（単独観測点処理・震源未確定）の判別は、情報源によって精度が異なる（DMDATA/P2PQuakeは`condition`フィールドで判別可能、Yahoo hypoInfoには相当フィールドが無い）。この非対称性そのものの実地震での挙動は、実発報時の確認をユーザーに委ねる。
 
 ## README 更新
 
@@ -202,6 +202,12 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
   - 表示文言（見出し・説明文・オーバーレイ短文）は `TsunamiTab/index.tsx` の `CANCEL_REASON_LABEL` が単一の情報源。新しい cancelReason を増やす場合はここと型定義（`types/earthquake.ts`）を同時に直す。
   - **この出し分けは DMDSS 版（DMDATA.JP）限定**。P2PQuake API v2 の公式スキーマ（`JMATsunami`）には `InfoType`・`ValidDateTime` に相当するフィールドが存在しない（[epsp-specifications/json-api-v2.yaml](https://github.com/p2pquake/epsp-specifications/blob/master/json-api-v2.yaml)）ため、通常版（P2PQuake経由）では `cancelReason` は常に `undefined` になり、`CANCEL_REASON_LABEL` のフォールバックで常に「解除」表示になる（クラッシュ等はしない）。
   - `ValidDateTime` が付くのは「津波予報（若干の海面変動）のみ発表の場合」「警報・注意報解除後に予報のみが残る場合」の2パターンのみ、と気象庁の電文解説資料に明記されている（[地震火山関連XML電文解説資料](https://dmdata.jp/docs/jma/manual/0101-0185.pdf) 5.ValidDateTime）。警報・注意報が1区域でも残っている間は付与されない。
+
+### EEW P波・S波予報円の計算元（usePsWaveCalc）
+- P波・S波の地表到達円は `usePsWaveCalc.ts`（旧 `useDmdssWaves.ts`）が2層速度モデル（地殻＋マントル・Pn/Sn屈折波）で自前計算する。**標準版・DMDSS版で共通**（2026-07-29 統合。以前は標準版のみ Yahoo `RealTimeData` の `psWave.items` をそのまま使っていたが、Yahoo側は実発報時にしかデータが入らずテストボタンとも無関係だった）。
+  - 入力は `EEWAlert.earthquake.hypocenter`（lat/lng/depth/magnitude）と `originTime`。ソースが DMDATA・P2PQuake・Yahoo hypoInfo のいずれでも同じ形なら動く。
+  - `condition === '仮定震源要素'`（単独観測点処理・震源未確定の初期報）は円を生成しない（[usePsWaveCalc.ts](src/hooks/usePsWaveCalc.ts)）。DMDATA・P2PQuakeは電文の `condition` フィールドでこれを正しく判別できるが、**Yahoo hypoInfo には相当フィールドが無く常に `condition:'以上'` 固定**（[kyoshin.ts](src/services/kyoshin.ts) の `hypoInfoItemToEEW`）。標準版でYahoo hypoInfoが先にEEWを検知した場合、この判別が効かない非対称性が残る。
+  - 標準版はYahoo hypoInfoを主系のEEW検知源とし、P2PQuake WS（code=556）は基本 `areas`（地域別予想震度）の補完役だったが、P2PQuakeの方が `condition`・`hypocenter` とも数値型で正確なため、`enrichEEW`（[useEarthquakes.ts](src/hooks/useEarthquakes.ts)）はこれらも上書きするようにした（報番号が古い場合は上書きしない）。
 
 ### 地図レイヤーの描画順
 - 描画順（背面→前面）の単一情報源は `src/components/Map/gl/layerOrder.ts` の `MAP_LAYER_ORDER`。各レイヤーコンポーネントは `addOrderedLayer` で追加し、この配列上で自分より前面に来るべき既存レイヤーの直前へ挿入することで、データ到着タイミングに依存せず順序を保証する。

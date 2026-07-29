@@ -4,7 +4,6 @@ import {
   fetchRealtimeIntensity,
   startClockSync,
   type SiteCoords,
-  type PsWaveCircle,
   type YahooHypoInfoItem,
 } from '../services/kyoshin'
 import type { EEWAlert } from '../types/earthquake'
@@ -15,7 +14,6 @@ import { log } from '../utils/logger'
 export interface KyoshinRealtime {
   sites: SiteCoords
   indices: number[]
-  psWave: PsWaveCircle[]
   dataTime: string
   /** 連続して取得に失敗し、更新が停止している場合 true */
   error: boolean
@@ -67,7 +65,6 @@ export function useKyoshinRealtime(
 ): KyoshinRealtime {
   const [sites, setSites] = useState<SiteCoords>([])
   const [indices, setIndices] = useState<number[]>([])
-  const [psWave, setPsWave] = useState<PsWaveCircle[]>([])
   const [dataTime, setDataTime] = useState('')
   const [error, setError] = useState(false)
   const currentSiteConfigIdRef = useRef<string | null>(null)
@@ -103,7 +100,6 @@ export function useKyoshinRealtime(
       failCountRef.current = 0
       setError(false)
       setIndices(rt.indices)
-      setPsWave(rt.psWave)
       setDataTime(rt.dataTime)
 
       // siteConfigId が変わった場合のみ対応する sitelist を取得して反映する
@@ -212,5 +208,5 @@ export function useKyoshinRealtime(
     }
   }, [enabled, timeOffset])
 
-  return { sites, indices, psWave, dataTime, error }
+  return { sites, indices, dataTime, error }
 }
