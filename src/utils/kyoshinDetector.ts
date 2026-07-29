@@ -111,12 +111,16 @@ export interface Frame {
   /** 欠測フラグ（あれば。true の点は状態更新から除外） */
   missing?: boolean[]
   /**
-   * severity='Warning' の EEW が発表中か（呼び出し側の責務。低確度な予報級(Forecast)・cancelled/expired
-   * は含めないこと＝eew.ts の computeSingleEEWLevel と同じ「予報級は信用しない」方針に合わせる）。
+   * 震源要素が確定した（単独点処理=仮定震源要素でない）EEW が発表中か（呼び出し側の責務。
+   * cancelled/expired は含めないこと）。severity（Warning/Forecast）は推定震度の大小を示す軸に
+   * 過ぎず、予報級でも震度3〜4相当は普通にありうるため使わない。condition='仮定震源要素' は
+   * 1 観測点のみのデータで震源を仮決めした速報で、震源・マグニチュード・推定震度の誤差が大きい
+   * （eew.ts の eewMaxScale・RealtimeTab・ttsText が同じ条件で推定震度等を信用しない/非表示にする
+   * のと同じ判断基準）。
    * true の間は confirmed の確定条件（点数・連続フレーム数）を EEW_CONFIRM_POINTS・EEW_CONFIRM_FRAMES に
-   * 差し替えて緩和する（震源座標・距離は見ない＝震源非依存を保ったまま「すでに警報級の地震が起きたと
-   * 分かっている」局面でだけ確定を早める。§19）。単点ノイズを弾く MIN_CLUSTER・CONFIRM_INTENSE_POINTS・
-   * MIN_CONFIRM_INTENSITY は EEW 中でも変えない。
+   * 差し替えて緩和する（震源座標・距離は見ない＝震源非依存を保ったまま「すでに震源が確定した地震が
+   * 起きたと分かっている」局面でだけ確定を早める。§19）。単点ノイズを弾く MIN_CLUSTER・
+   * CONFIRM_INTENSE_POINTS・MIN_CONFIRM_INTENSITY は EEW 中でも変えない。
    */
   eewActive?: boolean
 }
