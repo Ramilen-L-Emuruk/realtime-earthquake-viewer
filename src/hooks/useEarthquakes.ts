@@ -27,6 +27,8 @@ import {
 const MAX_HISTORY_RETAINED = 50   // 初回取得件数（設定の最大選択値に合わせる）
 const LOAD_MORE_BATCH = 50        // 「もっと見る」1回あたりの取得件数
 const MAX_TELEGRAM_LOG = 200      // 電文ログの最大保持件数
+const EEW_FINAL_SILENCE_MS = 10000 // EEW発報テスト（特別警報・警報・予報）: この間隔クリックが無ければ最終報として確定する
+const EEW_RETRACTION_CANCEL_MS = 10000 // EEW誤報取消テスト: 発報からこの秒数後に取消電文を送る
 
 const ISSUE_PRIORITY: Record<string, number> = {
   '各地の震度情報': 4,
@@ -75,7 +77,8 @@ function enrichEEWPref(eew: EEWAlert, index: Map<string, string> | null): EEWAle
 }
 
 type TestEEWKind = 'special' | 'warning' | 'forecast'
-type TestEEWEntry = { eventId: string; serial: number; cancelTimer: number }
+type TestEEWEntry = { eventId: string; serial: number; finalizeTimer: number }
+type TestEEWRetractionEntry = { eventId: string; serial: number; cancelTimer: number }
 
 type TestTsunamiRef = React.MutableRefObject<{ cancelTimer: number; tsunami: JMATsunami } | null>
 
@@ -96,10 +99,15 @@ function runSimulateTsunami(
   ref.current = { cancelTimer, tsunami }
 }
 
+// EEW発報テスト（特別警報・警報・予報）: クリックのたびに続報（isFinal未設定）を送る。
+// silenceMs 経過しても再クリックが無ければ、その時点のイベントを isFinal:true で確定送信する。
+// 確定後は本番と全く同じ calcEEWCancelTime ベースの自動解除（無音・即消去）がそのままかかる
+// （DMDSS版の実運用と同一経路。Standard版は実データに isFinal が来ないため、この検知経路
+// 自体は実運用で通らないが、解除後の共有ロジックはバリアント共通のため検証できる）。
 function runSimulateEEW(
   kind: TestEEWKind,
   createFn: (eventId: string, serial: number) => EEWAlert,
-  cancelMs: number,
+  silenceMs: number,
   timers: Map<TestEEWKind, TestEEWEntry>,
   handleEvent: (event: AppEvent) => void,
 ) {
@@ -107,14 +115,35 @@ function runSimulateEEW(
   const isContinuation = prev !== undefined
   const eventId = isContinuation ? prev.eventId : `test-${kind}-${Date.now()}`
   const serial = isContinuation ? prev.serial + 1 : 1
+  if (prev) window.clearTimeout(prev.finalizeTimer)
+  const eew = createFn(eventId, serial)
+  handleEvent(eew)
+  const finalizeTimer = window.setTimeout(() => {
+    handleEvent({ ...eew, isFinal: true })
+    timers.delete(kind)
+  }, silenceMs)
+  timers.set(kind, { eventId, serial, finalizeTimer })
+}
+
+// EEW誤報取消テスト: 通常発報のまま cancelMs 後に明示的な取消電文（cancelled:true、isFinal無し）
+// を送る。誤報取消は音・ブラウザ通知・読み上げを伴う（自動解除との対比用）。
+function runSimulateEEWRetraction(
+  createFn: (eventId: string, serial: number) => EEWAlert,
+  cancelMs: number,
+  ref: React.MutableRefObject<TestEEWRetractionEntry | null>,
+  handleEvent: (event: AppEvent) => void,
+) {
+  const prev = ref.current
+  const eventId = prev ? prev.eventId : `test-eew-retraction-${Date.now()}`
+  const serial = prev ? prev.serial + 1 : 1
   if (prev) window.clearTimeout(prev.cancelTimer)
   const eew = createFn(eventId, serial)
   handleEvent(eew)
   const cancelTimer = window.setTimeout(() => {
     handleEvent({ ...eew, cancelled: true })
-    timers.delete(kind)
+    ref.current = null
   }, cancelMs)
-  timers.set(kind, { eventId, serial, cancelTimer })
+  ref.current = { eventId, serial, cancelTimer }
 }
 
 export interface EarthquakeState {
@@ -176,6 +205,8 @@ export function useEarthquakes(
   const isSilentRef = useRef(false)
   // テスト EEW の発報状態を種別ごとに独立管理（複数EEW同時テスト対応）
   const testEEWTimersRef = useRef<Map<TestEEWKind, TestEEWEntry>>(new Map())
+  // EEW 誤報取消テストの発報状態
+  const testEEWRetractionRef = useRef<TestEEWRetractionEntry | null>(null)
   // テスト津波の発報状態を種別ごとに独立管理
   const testTsunamiRef = useRef<{ cancelTimer: number; tsunami: JMATsunami } | null>(null)
   // 現在の state を WS コールバック内から参照するための ref
@@ -855,17 +886,22 @@ export function useEarthquakes(
   }, [handleEvent])
 
   const simulateEEW = useCallback(
-    () => runSimulateEEW('special', createTestEEW, TEST_AUTO_DISMISS_MS, testEEWTimersRef.current, handleEvent),
+    () => runSimulateEEW('special', createTestEEW, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent),
     [handleEvent],
   )
 
   const simulateEEWWarning = useCallback(
-    () => runSimulateEEW('warning', createTestEEWWarning, TEST_AUTO_DISMISS_MS, testEEWTimersRef.current, handleEvent),
+    () => runSimulateEEW('warning', createTestEEWWarning, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent),
     [handleEvent],
   )
 
   const simulateEEWForecast = useCallback(
-    () => runSimulateEEW('forecast', createTestEEWForecast, TEST_AUTO_DISMISS_MS, testEEWTimersRef.current, handleEvent),
+    () => runSimulateEEW('forecast', createTestEEWForecast, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent),
+    [handleEvent],
+  )
+
+  const simulateEEWRetraction = useCallback(
+    () => runSimulateEEWRetraction(createTestEEWWarning, EEW_RETRACTION_CANCEL_MS, testEEWRetractionRef, handleEvent),
     [handleEvent],
   )
 
@@ -945,7 +981,7 @@ export function useEarthquakes(
     loadMoreEarthquakes,
     clearTelegramLog,
     simulateEarthquake,
-    simulateEEW, simulateEEWWarning, simulateEEWForecast,
+    simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateKohatsu,
     resetState,
