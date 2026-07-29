@@ -54,6 +54,10 @@ export function KyoshinPointsGL({ sites, indices, iconScale }: Props) {
         'circle-color': ['coalesce', ['feature-state', 'color'], '#000000'],
         'circle-opacity': ['coalesce', ['feature-state', 'opacity'], 0],
         'circle-stroke-width': 0,
+        // 毎秒の setFeatureState 更新を瞬時に反映させる。既定(約300ms)のままだと
+        // 色・不透明度の変化が補間フェードし、Leaflet 版の瞬時切替（setStyle）と乖離する。
+        'circle-color-transition': { duration: 0, delay: 0 },
+        'circle-opacity-transition': { duration: 0, delay: 0 },
       },
     })
     prevLevelsRef.current = new Int8Array(sites.length)

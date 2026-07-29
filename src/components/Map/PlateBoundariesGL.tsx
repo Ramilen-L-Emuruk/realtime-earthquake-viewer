@@ -12,7 +12,8 @@ import { addOrderedLayer } from './gl/layerOrder'
 
 const SUBDUCTION_COLOR = '#b91c1c'
 const OTHER_COLOR = '#1d4ed8'
-const HIT_TOL_PX = 5
+// 線クリックの当たり判定許容（px）。旧 Leaflet の Canvas ヒットレンダラー tolerance:8 に揃える。
+const HIT_TOL_PX = 8
 
 const SRC = 'plate-boundaries'
 const LYR = 'plate-boundaries'
@@ -41,7 +42,8 @@ export function PlateBoundariesGL({ plateBoundaries, visible }: Props) {
       source: SRC,
       layout: {
         'line-join': 'round',
-        'line-cap': 'butt',
+        // 破線端を丸に（旧 Leaflet SVG レンダラーの既定 line-cap:round に揃える）。
+        'line-cap': 'round',
         visibility: visible ? 'visible' : 'none',
       },
       paint: {

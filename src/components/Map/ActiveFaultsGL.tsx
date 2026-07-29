@@ -12,7 +12,8 @@ import { addOrderedLayer } from './gl/layerOrder'
 
 // ダーク地図に馴染ませた控えめな活断層色（鮮やかな #c2410c は目立ちすぎるため彩度を落とした暗い赤茶）。
 const FAULT_COLOR = '#96421f'
-const HIT_TOL_PX = 4
+// 線クリックの当たり判定許容（px）。旧 Leaflet の Canvas ヒットレンダラー tolerance:8 に揃える。
+const HIT_TOL_PX = 8
 
 const SRC = 'active-faults'
 const LYR = 'active-faults'
