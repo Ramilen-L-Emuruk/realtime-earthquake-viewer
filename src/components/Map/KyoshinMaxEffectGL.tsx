@@ -59,6 +59,10 @@ export function KyoshinMaxEffectGL({ sites, indices, iconScale }: Props) {
         'circle-stroke-color': ['get', 'color'],
         'circle-stroke-width': 2.5,
         'circle-stroke-opacity': ['coalesce', ['feature-state', 'opacity'], 0],
+        // rAF で毎フレーム更新する半径・不透明度を瞬時に反映させる。既定(約300ms)のままだと
+        // 高頻度更新に約300msの遅延フィルタが重なり、波紋の拡大・フェードが鈍って歪む。
+        'circle-radius-transition': { duration: 0, delay: 0 },
+        'circle-stroke-opacity-transition': { duration: 0, delay: 0 },
       },
     })
     addedRef.current = true
