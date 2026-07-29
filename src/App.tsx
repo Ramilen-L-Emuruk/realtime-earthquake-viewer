@@ -9,6 +9,7 @@ import { SettingsTab } from './components/SettingsTab'
 import { TelegramTab } from './components/TelegramTab'
 import { SpecialInfoBanner } from './components/SpecialInfoBanner'
 import { useEarthquakes } from './hooks/useEarthquakes'
+import { useTestScenarios } from './hooks/useTestScenarios'
 import { useSettings } from './hooks/useSettings'
 import { useAlertTitle } from './hooks/useAlertTitle'
 import { useLiveEventHandler } from './hooks/useLiveEventHandler'
@@ -128,6 +129,8 @@ export function App() {
     resetState, loadReplayEvents,
   } = useEarthquakes(handleLiveEvent, settings.dmdataApiKey, settings.dmdataTestDelivery, replayTimeOffset)
   earthquakesRef.current = earthquakes
+
+  const scenarioTest = useTestScenarios(loadReplayEvents)
 
   const { points: quakeHeatPoints } = useQuakeHeatmap(settings.showQuakeHeatmap, settings.dmdataApiKey, earthquakes)
 
@@ -706,6 +709,7 @@ export function App() {
               replayIsFetching={replayIsFetching}
               onStartReplay={isDmdss ? handleStartReplay : undefined}
               onStopReplay={isDmdss ? handleStopReplay : undefined}
+              scenarioTest={scenarioTest}
             />
           </div>
         </div>
