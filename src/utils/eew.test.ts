@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { diffHypoInfoEvents, type HypoInfoPendingMissing } from './eew'
+import { calcArrivalSafetyMarginSec, diffHypoInfoEvents, type HypoInfoPendingMissing } from './eew'
 import type { YahooHypoInfoItem } from '../services/kyoshin'
 
 function makeItem(overrides: Partial<YahooHypoInfoItem> = {}): YahooHypoInfoItem {
@@ -100,5 +100,24 @@ describe('diffHypoInfoEvents', () => {
     expect(cancelledA?.cancelled).toBe(true)
     expect(updatedB?.issue?.serial).toBe('2')
     expect(updatedB?.cancelled).toBe(false)
+  })
+})
+
+describe('calcArrivalSafetyMarginSec', () => {
+  it('震源直上(0km)ではマージンが0になる', () => {
+    expect(calcArrivalSafetyMarginSec(0)).toBe(0)
+  })
+
+  it('距離に比例して増加する（70kmで約2.1秒）', () => {
+    expect(calcArrivalSafetyMarginSec(70)).toBeCloseTo(2.1, 5)
+  })
+
+  it('上限(4秒)を超える距離では頭打ちになる', () => {
+    expect(calcArrivalSafetyMarginSec(1000)).toBe(4)
+  })
+
+  it('上限に到達する境界(約133.3km)の前後で連続的に頭打ちに切り替わる', () => {
+    expect(calcArrivalSafetyMarginSec(133.3)).toBeCloseTo(4, 1)
+    expect(calcArrivalSafetyMarginSec(133.34)).toBe(4)
   })
 })

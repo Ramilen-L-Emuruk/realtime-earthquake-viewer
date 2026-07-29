@@ -112,6 +112,21 @@ export function calcShakingDurationSec(magnitude: number | undefined, distanceKm
   return baseDurationSec + pathDurationSec
 }
 
+// DMDSS版カウントダウンの安全マージン。震源近傍は直達波がそのまま立ち上がるため遅れがほぼ無いが、
+// 遠方ほど表面波の分離・コーダ波の重畳で揺れの立ち上がりがなだらかになり、S波理論到達より
+// 体感開始が遅れる傾向がある（実測: 2026-07-29、震源距離70kmで理論到達より約2秒遅れて有感化）。
+// 係数は実測1件からの外挿値であり物理式の裏付けはない。今後別の震源距離での実測が増えたら再検証する。
+const ARRIVAL_MARGIN_COEF_SEC_PER_KM = 0.03  // 70km地点で2.1秒 ≈ 実測に一致
+const ARRIVAL_MARGIN_CAP_SEC = 4              // 上限（約133km地点で頭打ち）
+
+/**
+ * DMDSS版のS波到達カウントダウンに乗せる安全マージン[秒]を、震源距離から返す。
+ * 震源直上(0km)では0秒、距離に比例して増加し、ARRIVAL_MARGIN_CAP_SEC で頭打ちになる。
+ */
+export function calcArrivalSafetyMarginSec(distanceKm: number): number {
+  return Math.min(distanceKm * ARRIVAL_MARGIN_COEF_SEC_PER_KM, ARRIVAL_MARGIN_CAP_SEC)
+}
+
 // EEW の areas が未設定の場合 regions にフォールバックする（旧形式互換）。
 
 export function eewAreas(eew: EEWAlert): EEWRegion[] {
