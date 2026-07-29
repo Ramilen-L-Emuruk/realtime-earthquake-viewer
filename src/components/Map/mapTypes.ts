@@ -20,6 +20,7 @@ export interface JapanMapProps {
   iconScale?: number
   showBathymetry?: boolean
   showActiveFaults?: boolean
+  activeFaultOpacity?: number
   heatPoints?: HeatPoint[] | null
   showPlateBoundaries?: boolean
   kyoshinSites?: SiteCoords
