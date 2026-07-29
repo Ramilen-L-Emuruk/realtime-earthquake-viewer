@@ -22,7 +22,7 @@ import { usePsWaveCalc } from './hooks/usePsWaveCalc'
 import { useQuakeHeatmap } from './hooks/useQuakeHeatmap'
 import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude, formatDateTimeLocal } from './utils/formatters'
-import { computeEEWLevel } from './utils/eew'
+import { computeEEWLevel, eewMaxLpgmClass } from './utils/eew'
 import { tsunamiOverallGrade } from './utils/tsunami'
 import { playCountdownBeep, unlockAudio, setSoundVolume } from './utils/alertSound'
 import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
@@ -212,12 +212,12 @@ export function App() {
   const eewsForMap = useMemo(() => Array.from(activeEEWsNoCancelled.values()), [activeEEWsNoCancelled])
   const eewsForPanel = useMemo(() => Array.from(activeEEWs.values()), [activeEEWs])
 
-  // EEW カード経由で選択したLPGMは、次報でforecastMaxLpgmClassがなくなった場合や
-  // EEW 解除時に自動的に選択解除する
+  // EEW カード経由で選択したLPGMは、次報で長周期地震動階級（地域別lgIntTo優先）が
+  // なくなった場合や EEW 解除時に自動的に選択解除する
   useEffect(() => {
     if (!activeLpgmEventId || activeLpgmSource !== 'eew') return
     const eew = activeEEWsNoCancelled.get(activeLpgmEventId)
-    if (!eew || eew.forecastMaxLpgmClass == null || eew.forecastMaxLpgmClass < 1) {
+    if (!eew || eewMaxLpgmClass(eew) < 1) {
       setActiveLpgmEventId(null)
       setActiveLpgmSource(null)
     }

@@ -144,20 +144,38 @@ export function eewMaxScale(eew: EEWAlert): number {
   return eew.forecastMaxScale ?? 0
 }
 
+/** 対象地域の最大予想長周期地震動階級（1〜4）。データが無ければ0。
+ * eewMaxScale と同じ考え方で areas の地域別 lgIntTo を優先し、
+ * condition=仮定震源要素（単独点処理）かつ areas が空の場合は forecastMaxLpgmClass を使わず0を返す
+ * （単独点PLUM検知では地域別の詳細予想が発表されないため）。
+ * Yahoo hypoInfo・P2PQuake 由来の EEW は長周期地震動階級のフィールド自体を持たないため常に0になる
+ * （DMDATA=DMDSS版のみ取得可能。標準版は震度のみでレベル判定される）。
+ */
+export function eewMaxLpgmClass(eew: EEWAlert): number {
+  const areasMax = eewAreas(eew).reduce((max, r) => Math.max(max, r.lgIntTo ?? 0), 0)
+  if (areasMax > 0) return areasMax
+  if (eew.earthquake.condition === '仮定震源要素') return 0
+  return eew.forecastMaxLpgmClass ?? 0
+}
+
 /** 情報番号（第N報）。取得できなければ null。 */
 export function eewSerial(eew: EEWAlert): number | null {
   const n = Number(eew.issue?.serial)
   return Number.isInteger(n) && n > 0 ? n : null
 }
 
-// EEW 単発のレベル算出: 0=低震度予報 / 1=警報（severity=Warning） / 2=特別警報（severity=Warning かつ 震度6弱以上）
+// EEW 単発のレベル算出: 0=低震度予報 / 1=警報（severity=Warning） / 2=特別警報
+// （severity=Warning かつ 震度6弱以上 または 長周期地震動階級4以上）。
+// 気象庁の実基準（震度6弱以上 or 長周期地震動階級4以上）に合わせている。
 // scaleTo:99 は DMDATA パーサーが割り当てる「震度算出不能」コードなので通常の震度比較から除外する
 // レベル1・2ともに severity（isWarning）必須。予報級電文（severity=Forecast）は震度だけ高くても常にレベル0とする。
 export function computeSingleEEWLevel(eew: EEWAlert): 0 | 1 | 2 {
   if (eew.severity !== 'Warning') return 0
   const scale = eewMaxScale(eew)
   const intensityKnown = scale < 99
-  return (intensityKnown && scale >= 55) ? 2 : 1
+  const isSpecialByIntensity = intensityKnown && scale >= 55
+  const isSpecialByLpgm = eewMaxLpgmClass(eew) >= 4
+  return (isSpecialByIntensity || isSpecialByLpgm) ? 2 : 1
 }
 
 export function computeEEWLevel(eews: ReadonlyMap<string, EEWAlert>): 0 | 1 | 2 | null {

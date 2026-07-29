@@ -9,7 +9,7 @@ import type { SWaveArrival } from '../../hooks/useSWaveCountdown'
 import { formatDateTime, formatTime } from '../../utils/formatters'
 import { getIntensityColor, getIntensityLabel, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
 import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
-import { eewAreas, eewMaxScale, eewSerial } from '../../utils/eew'
+import { eewAreas, eewMaxScale, eewMaxLpgmClass, eewSerial, computeSingleEEWLevel } from '../../utils/eew'
 import { kyoshinIndexToJma, kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
 
 // 凡例は地図と同じ気象庁の震度配色（getIntensityColor）を使う。scale=0 は震度0（灰色）。
@@ -45,8 +45,10 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
   onDeactivateLpgm?: () => void
 }) {
   const maxScale = eewMaxScale(eew)
-  const isWarning = eew.severity === 'Warning'
-  const isSpecial = isWarning && maxScale >= 55
+  const lpgmClass = eewMaxLpgmClass(eew)
+  const level = computeSingleEEWLevel(eew)
+  const isWarning = level >= 1
+  const isSpecial = level === 2
   const areas = eewAreas(eew)
   const serial = eewSerial(eew)
   const { hypocenter } = eew.earthquake
@@ -130,26 +132,27 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
           </div>
         )}
 
-        {/* 推定最大長周期地震動階級（クリックで地図表示トグル） */}
-        {eew.forecastMaxLpgmClass != null && eew.forecastMaxLpgmClass >= 1 && (
+        {/* 推定最大長周期地震動階級（クリックで地図表示トグル）。地域別 lgIntTo 優先のため
+            電文全体の forecastMaxLpgmClass が無くても地域別データがあれば表示する（eewMaxLpgmClass参照） */}
+        {lpgmClass >= 1 && (
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onToggleLpgm?.(eew.issue?.eventId ?? eew.id) }}
             className="w-full rounded-lg py-2 px-4 flex items-center justify-center gap-4 hover:opacity-80 transition-opacity"
             style={{
-              backgroundColor: getLpgmClassBgColor(eew.forecastMaxLpgmClass),
-              border: `2px solid ${getLpgmClassColor(eew.forecastMaxLpgmClass)}`,
+              backgroundColor: getLpgmClassBgColor(lpgmClass),
+              border: `2px solid ${getLpgmClassColor(lpgmClass)}`,
               outline: activeLpgmEventId === (eew.issue?.eventId ?? eew.id)
-                ? `2px solid ${getLpgmClassColor(eew.forecastMaxLpgmClass)}`
+                ? `2px solid ${getLpgmClassColor(lpgmClass)}`
                 : undefined,
               outlineOffset: '2px',
             }}
           >
-            <span className="text-sm font-medium" style={{ color: getLpgmClassColor(eew.forecastMaxLpgmClass) }}>
+            <span className="text-sm font-medium" style={{ color: getLpgmClassColor(lpgmClass) }}>
               推定長周期地震動
             </span>
             <span className="text-2xl font-black" style={{ color: '#ffffff' }}>
-              {getLpgmClassLabel(eew.forecastMaxLpgmClass)}
+              {getLpgmClassLabel(lpgmClass)}
             </span>
           </button>
         )}
