@@ -116,11 +116,12 @@ Yahoo RealTimeData (1Hz JSON)
    - `effectiveConfirmReq` は密度正規化済み: `max(MIN_LIKELY_POINTS, min(confirmPointsBase(+慢性活性なら
      CHRONIC_POINT_BUMP), ceil((局所実在近傍数+1) × CONFIRM_DENSITY_FRAC)))`。疎地域（離島等）は
      点数要件を自動的に下げる
-   - `confirmPointsBase`・`confirmFramesReq` は `frame.eewActive`（呼び出し側が `severity='Warning'` の
-     EEW 発表中かを渡す。予報級 Forecast は含めない）が true の間、`CONFIRM_POINTS`/`CONFIRM_FRAMES` の
-     代わりに緩和値 `EEW_CONFIRM_POINTS`/`EEW_CONFIRM_FRAMES` を使う（震源座標・距離は見ない＝震源非依存を
-     維持したまま確定を早める）。単点ノイズを弾く `CONFIRM_INTENSE_POINTS`・`MIN_CONFIRM_INTENSITY`・
-     `MIN_CLUSTER`・慢性活性の引き上げ幅は EEW 中でも変えない
+   - `confirmPointsBase`・`confirmFramesReq` は `frame.eewActive`（呼び出し側が「震源要素が確定した
+     （単独点処理=仮定震源要素でない）EEW が発表中か」を渡す。severity は推定震度の大小を示す軸に
+     過ぎず判定に使わない）が true の間、`CONFIRM_POINTS`/`CONFIRM_FRAMES` の代わりに緩和値
+     `EEW_CONFIRM_POINTS`/`EEW_CONFIRM_FRAMES` を使う（震源座標・距離は見ない＝震源非依存を維持したまま
+     確定を早める）。単点ノイズを弾く `CONFIRM_INTENSE_POINTS`・`MIN_CONFIRM_INTENSITY`・`MIN_CLUSTER`・
+     慢性活性の引き上げ幅は EEW 中でも変えない
    - `confirmIntensityReq` は通常 `MIN_CONFIRM_INTENSITY`、慢性活性セルでは `CHRONIC_CONFIRM_INTENSITY`
      （後述の第2軸）
    - `intenseCount`（`confirmIntensityReq` 以上に達した levelActive メンバー数）が `CONFIRM_INTENSE_POINTS`
@@ -141,7 +142,7 @@ Yahoo RealTimeData (1Hz JSON)
 | 第2軸: セル別慢性活性 `cellActivity` | 平常時に確定揺れ点をよく出すセルでは確定バー（点数・震度）を引き上げる | 北関東等、複数観測点が間欠的にコヒーレントに反応する地域ノイズ（点別床だけでは防げない） |
 | 第3軸: 確定震度到達点数 `CONFIRM_INTENSE_POINTS` | 確定震度以上に達した levelActive メンバーが一定数未満なら confirmed にしない | 「単点だけ確定震度・周囲は震度0」という局所ノイズの分布（茨城県北部 2026-07-27 の誤 confirmed が実例） |
 
-いずれの軸も EEW（severity=Warning）発表中の確定緩和（`EEW_CONFIRM_POINTS`/`EEW_CONFIRM_FRAMES`）で変わらない。
+いずれの軸も EEW（震源要素確定）発表中の確定緩和（`EEW_CONFIRM_POINTS`/`EEW_CONFIRM_FRAMES`）で変わらない。
 緩和されるのは確定点数・確定連続フレーム数のバーのみで、単点ノイズを弾く仕組み自体は EEW 中でも維持される。
 
 `cellActivity` は `CELL_FREEZE_INTENSITY`（震度3相当）以上の高震度イベントが属するセルでは学習を凍結し、
@@ -177,7 +178,7 @@ Yahoo RealTimeData (1Hz JSON)
 | `MIN_CONFIRM_INTENSITY` | confirmed の最大震度下限 | 0.5（震度1） |
 | `CONFIRM_INTENSE_POINTS` | confirmed に要する確定震度到達点数（単点ノイズ除去の第3軸） | 2 |
 | `CONFIRM_FRAMES` | confirmed 連続フレーム数 | 2 |
-| `EEW_CONFIRM_POINTS` | EEW（severity=Warning）発表中に CONFIRM_POINTS の代わりに使う確定点数 | 3 |
+| `EEW_CONFIRM_POINTS` | EEW（震源要素確定）発表中に CONFIRM_POINTS の代わりに使う確定点数 | 3 |
 | `EEW_CONFIRM_FRAMES` | EEW 発表中に CONFIRM_FRAMES の代わりに使う確定連続フレーム数 | 1 |
 | `HOLD_MS` | confirmed イベントの保持 | 10,000 ms |
 | `LIKELY_HOLD_MS` | likely/faint ティアの保持 | 10,000 ms |

@@ -81,23 +81,24 @@ function siteSignature(sites: SiteCoords): string {
  * @param indices 計測震度インデックス（useKyoshinRealtime.indices）
  * @param dataTime データ時刻文字列（useKyoshinRealtime.dataTime）
  * @param enabled 有効フラグ（false の間は何もしない）
- * @param hasActiveWarningEEW severity='Warning' の EEW が発表中か（Forecast 除く・cancelled 除く）。
- *   true の間は confirmed の確定条件を緩和する（§19）。低確度の予報級では緩和しない。
+ * @param hasActiveNonAssumedEEW 震源要素が確定した（単独点処理=仮定震源要素でない）EEW が発表中か
+ *   （cancelled 除く）。true の間は confirmed の確定条件を緩和する（§19）。単独点処理由来の速報は
+ *   震源・推定震度の誤差が大きいため緩和しない。
  */
 export function useKyoshinDetectorV2(
   sites: SiteCoords,
   indices: number[],
   dataTime: string,
   enabled: boolean,
-  hasActiveWarningEEW: boolean,
+  hasActiveNonAssumedEEW: boolean,
 ): KyoshinDetectorV2Result {
   const stateRef = useRef<DetectorState>(loadInitialState())
   const metaRef = useRef<{ sig: string; meta: StationMeta } | null>(null)
   const lastSaveRef = useRef(0)
   // dataTime 更新時のみ step() を進める設計（下記 useEffect の deps 参照）に合わせ、EEW 状態は
   // ref で最新値を持ち回す（deps に含めると EEW 変化のたびに同一フレームへ再度 step() してしまう）。
-  const hasActiveWarningEEWRef = useRef(hasActiveWarningEEW)
-  hasActiveWarningEEWRef.current = hasActiveWarningEEW
+  const hasActiveNonAssumedEEWRef = useRef(hasActiveNonAssumedEEW)
+  hasActiveNonAssumedEEWRef.current = hasActiveNonAssumedEEW
   const [result, setResult] = useState<KyoshinDetectorV2Result>(EMPTY)
 
   useEffect(() => {
@@ -118,7 +119,7 @@ export function useKyoshinDetectorV2(
         dataTimeMs,
         sites: sites as [number, number][],
         values: indices,
-        eewActive: hasActiveWarningEEWRef.current,
+        eewActive: hasActiveNonAssumedEEWRef.current,
       },
       metaRef.current.meta,
     )
@@ -140,7 +141,7 @@ export function useKyoshinDetectorV2(
       detections,
       triggers: triggers.length,
       dataTime,
-      eewActive: hasActiveWarningEEWRef.current,
+      eewActive: hasActiveNonAssumedEEWRef.current,
     }
     const confirmed = detections.filter((d) => d.confidence === 'confirmed')
     if (confirmed.length > 0) {
