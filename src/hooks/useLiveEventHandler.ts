@@ -188,17 +188,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         activeEEWLevelsRef.current.delete(key)
         activeEEWScalesRef.current.delete(key)
         activeEEWAnnouncedHypocentersRef.current.delete(key)
-        if (hadKey && settings.soundEnabled && !event.expired) {
-          playAlertSound('eewCancel')
-        }
-        if (hadKey && settings.voicevoxEnabled && !event.expired) {
-          setTimeout(() => {
-            speakWithVoicevox(settings.voicevoxUrl, eewCancelToText(event), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
-          }, 1200)
-        }
-        // 自動解除後に誤報取消電文が届いたケース: hadKey=false だが expired でもない
-        // EEW は既に画面から消えているため UI 更新は不要だが、誤報をユーザーに明示通知する
-        if (!hadKey && !event.expired) {
+        // 誤報取消（expired でない）は hadKey の有無に関わらず音・通知・読み上げを行う。
+        // hadKey=true: 画面に表示中の誤報取消。hadKey=false: 既に自動解除済みの後に遅れて誤報取消電文が届いたケース。
+        if (!event.expired) {
           if (settings.soundEnabled) playAlertSound('eewCancel')
           if (settings.notifyMinScale >= 0 && settings.notifyEEW) {
             showBrowserNotification(
