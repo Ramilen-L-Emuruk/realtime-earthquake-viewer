@@ -110,6 +110,19 @@ export interface Frame {
   values: number[]
   /** 欠測フラグ（あれば。true の点は状態更新から除外） */
   missing?: boolean[]
+  /**
+   * 震源要素が確定した（単独点処理=仮定震源要素でない）EEW が発表中か（呼び出し側の責務。
+   * cancelled/expired は含めないこと）。severity（Warning/Forecast）は推定震度の大小を示す軸に
+   * 過ぎず、予報級でも震度3〜4相当は普通にありうるため使わない。condition='仮定震源要素' は
+   * 1 観測点のみのデータで震源を仮決めした速報で、震源・マグニチュード・推定震度の誤差が大きい
+   * （eew.ts の eewMaxScale・RealtimeTab・ttsText が同じ条件で推定震度等を信用しない/非表示にする
+   * のと同じ判断基準）。
+   * true の間は confirmed の確定条件（点数・連続フレーム数）を EEW_CONFIRM_POINTS・EEW_CONFIRM_FRAMES に
+   * 差し替えて緩和する（震源座標・距離は見ない＝震源非依存を保ったまま「すでに震源が確定した地震が
+   * 起きたと分かっている」局面でだけ確定を早める。§19）。単点ノイズを弾く MIN_CLUSTER・
+   * CONFIRM_INTENSE_POINTS・MIN_CONFIRM_INTENSITY は EEW 中でも変えない。
+   */
+  eewActive?: boolean
 }
 
 /** トリガー結果（1 観測点分・診断用）。 */
@@ -244,6 +257,15 @@ export const PARAMS = {
   CONFIRM_FRAMES: 2,
   /** 確定保持(ms)。確定揺れ点が途切れてもこの間はイベントを保持（明滅防止・V1 相当の保持） */
   HOLD_MS: 10_000,
+  /**
+   * EEW 発表中（frame.eewActive）に CONFIRM_POINTS の代わりに使う確定点数。MIN_LIKELY_POINTS と
+   * 同値にして「likely 相当の広がりがあれば、最大震度・確定震度到達点数さえ満たせば即 confirmed」
+   * という分かりやすい緩和にする。CHRONIC_POINT_BUMP はこの値の上にも適用する（慢性ノイズ地域の
+   * 慎重さは EEW 中でも維持）。§19。
+   */
+  EEW_CONFIRM_POINTS: 3,
+  /** EEW 発表中に CONFIRM_FRAMES の代わりに使う確定連続フレーム数（1 = 積分待ちなしで即確定）。§19 */
+  EEW_CONFIRM_FRAMES: 1,
   /**
    * likely/faint のティア保持(ms)。一度 likely/faint に達した（spread を持った）イベントは、揺れの面が
    * 一時的に MIN_LIKELY_POINTS を割ってもこの間はティアを維持する（confirmed の everConfirmed ラッチに
@@ -625,6 +647,7 @@ export function step(
     m.cellOf,
     m.avail,
     now,
+    frame.eewActive ?? false,
   )
 
   // ---- セル慢性活性の学習（特異度の第2軸）----
@@ -677,6 +700,7 @@ function associate(
   cellOf: Record<string, string>,
   avail: Record<string, number>,
   now: number,
+  eewActive: boolean,
 ): { events: DetectionEvent[]; nextEventId: number } {
   const events = prevEvents.map((e) => ({
     ...e,
@@ -706,7 +730,7 @@ function associate(
       target.memberKeys = [...new Set([...target.memberKeys, ...comp])]
       target.cells = [...new Set([...target.cells, ...compCells])]
       target.lastOnsetAtMs = now
-      updateEventMetrics(target, cur, triggeredAt, cellActivity, cellOf, avail, now)
+      updateEventMetrics(target, cur, triggeredAt, cellActivity, cellOf, avail, now, eewActive)
       updated.add(target.id)
     } else {
       const ev: DetectionEvent = {
@@ -723,7 +747,7 @@ function associate(
         everConfirmed: false,
         lastSpreadAtMs: 0,
       }
-      updateEventMetrics(ev, cur, triggeredAt, cellActivity, cellOf, avail, now)
+      updateEventMetrics(ev, cur, triggeredAt, cellActivity, cellOf, avail, now, eewActive)
       events.push(ev)
       updated.add(ev.id)
     }
@@ -733,7 +757,7 @@ function associate(
   const survivors: DetectionEvent[] = []
   for (const e of events) {
     if (!updated.has(e.id)) {
-      updateEventMetrics(e, cur, triggeredAt, cellActivity, cellOf, avail, now)
+      updateEventMetrics(e, cur, triggeredAt, cellActivity, cellOf, avail, now, eewActive)
     }
     if (now - e.lastOnsetAtMs <= PARAMS.HOLD_MS) survivors.push(e)
   }
@@ -796,6 +820,9 @@ function mergeAdjacentEvents(events: DetectionEvent[]): DetectionEvent[] {
  *   引き上げる（北関東のコヒーレントノイズ対策・第2軸）。一度 confirmed に達したら HOLD 中は confirmed を
  *   維持する（明滅防止のラッチ）。likely/faint も一度 spread を持てば LIKELY_HOLD_MS の間はティアを維持
  *   する（弱いイベントの「一瞬で消える」防止。震度1到達点数ゲートは confirmed のみで likely には課さない）。
+ * - eewActive    : EEW 発表中は確定点数・確定連続フレーム数を EEW_CONFIRM_POINTS・EEW_CONFIRM_FRAMES に
+ *   差し替えて確定を早める。CONFIRM_INTENSE_POINTS・MIN_CONFIRM_INTENSITY・慢性活性の引き上げ幅は
+ *   変えないため、単点ノイズを弾く仕組み自体は EEW 中でも維持される（§19）。
  */
 function updateEventMetrics(
   e: DetectionEvent,
@@ -805,6 +832,7 @@ function updateEventMetrics(
   cellOf: Record<string, string>,
   avail: Record<string, number>,
   now: number,
+  eewActive: boolean,
 ): void {
   let size = 0
   let maxV = -Infinity
@@ -841,7 +869,10 @@ function updateEventMetrics(
 
   // 確定点数: 密な網では CONFIRM_POINTS（＋慢性活性セルは引き上げ）。疎地域（局所実在近傍が少ない
   // 離島・過疎網）では「(局所実在数+1)×CONFIRM_DENSITY_FRAC」まで下げる（下限 MIN_LIKELY_POINTS）。
-  const confirmPointsReq = PARAMS.CONFIRM_POINTS + (isChronic ? PARAMS.CHRONIC_POINT_BUMP : 0)
+  // EEW 発表中は基礎点数を EEW_CONFIRM_POINTS に差し替えて確定を早める（震源非依存のまま・§19）。
+  // 慢性活性セルの引き上げ幅はそのまま適用し、EEW 中でも慢性ノイズ地域の慎重さは維持する。
+  const confirmPointsBase = eewActive ? PARAMS.EEW_CONFIRM_POINTS : PARAMS.CONFIRM_POINTS
+  const confirmPointsReq = confirmPointsBase + (isChronic ? PARAMS.CHRONIC_POINT_BUMP : 0)
   const densityReq = Math.ceil((availLocal + 1) * PARAMS.CONFIRM_DENSITY_FRAC)
   const effectiveConfirmReq = Math.max(
     PARAMS.MIN_LIKELY_POINTS,
@@ -857,7 +888,8 @@ function updateEventMetrics(
     e.maxIntensity >= confirmIntensityReq &&
     intenseCount >= PARAMS.CONFIRM_INTENSE_POINTS
   e.confirmStreak = meetsConfirm ? e.confirmStreak + 1 : 0
-  if (e.confirmStreak >= PARAMS.CONFIRM_FRAMES) e.everConfirmed = true
+  const confirmFramesReq = eewActive ? PARAMS.EEW_CONFIRM_FRAMES : PARAMS.CONFIRM_FRAMES
+  if (e.confirmStreak >= confirmFramesReq) e.everConfirmed = true
 
   // 確信度: 実在性（広がり size）は L2 で担保済み。ここで点数・最大震度から段階化する。
   //  - confirmed/likely は震度1以上（音を鳴らす重み）。confirmed 到達後は HOLD 中ラッチで維持。

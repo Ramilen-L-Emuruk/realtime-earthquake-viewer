@@ -414,3 +414,44 @@ K 近傍グラフで連結成分5（size=5）を作って confirmed（`CONFIRM_P
 
 **残る限界（受容）**: confirmed を阻止されたノイズは likely（候補音レベル）には残る。1点だけ震度1・周囲震度0 の
 分布は福岡型（本物の極弱地震・likely）と震源非依存の面判定では原理的に不可分なため、likely 段は分離しない。
+
+## 19. EEW（震源要素確定）発表中の確定緩和（2026-07-29・Scratch 版との比較から着想）
+
+**動機**: 別実装（Scratch 3.0 版「リアルタイム地震ビューアー」・同じ DM-D.S.S 系データを使用）との比較検証で、
+Scratch 版は単点の急峻な立ち上がりや EEW 予想円内の点を優先的に許可する状態機械を持ち、V3 より速く・敏感に
+反応することが分かった。ただし Scratch 版の「1点で仮許可」は V3 が意図的に排除してきた誤検知パターン（茨城県
+北部 §18・熊本群発 §16・北関東慢性ノイズ §11 相当）そのものであり、そのまま輸入すると誤報耐性を損なう。一方
+Scratch 版の「EEW 予想円内の点を優先」は、EEW（気象庁発表）というすでに強いエビデンスがある局面に限定した
+緩和であり、震源非依存の面判定という V3 の設計原則を壊さずに速さだけを取り込める。
+
+**変更**: `Frame.eewActive` が true の間、`updateEventMetrics` の確定点数・確定連続フレーム数を
+`CONFIRM_POINTS`(5)/`CONFIRM_FRAMES`(2) から `EEW_CONFIRM_POINTS`(3)/`EEW_CONFIRM_FRAMES`(1) に差し替える。
+単点ノイズを弾く `MIN_CLUSTER`・`CONFIRM_INTENSE_POINTS`・`MIN_CONFIRM_INTENSITY`・慢性活性の引き上げ幅は
+変えない。震源座標・距離は一切見ない（震源非依存を維持）。
+
+**判定条件の試行錯誤（すべてユーザーとの対話で是正）**:
+1. 当初案: `hasActiveEEW`（`severity` 不問）→ セルフレビューで「予報級1件だけで全国規模の確定緩和が発動し、
+   §18 で塞いだ単点ノイズ誤 confirmed を EEW 経由で再導入しかねない」との指摘を受け、Warning 限定に修正。
+2. `severity==='Warning'` 限定（`hasActiveWarningEEW`）→ ユーザー指摘「単独点は低精度だが、通常の予報は
+   確度が高いのでは」を受けて `dmdataParser.ts` の `parseEEW` を確認すると、`severity` は DMDATA 電文の
+   `isWarning`（推定震度が警報レベルに達したか）で決まる軸であり、震源推定の精度（単独点処理か複数点処理か
+   ＝`earthquake.condition==='仮定震源要素'`）とは独立していると判明。複数観測点による確度の高い処理でも
+   推定震度が低ければ severity は Forecast のままになりうる。
+3. さらにユーザー指摘「予報でも震度3なので結構揺れている」を受け、severity（推定震度の大小）で判定すること
+   自体が目的（震源要素の精度が担保された局面でのみ緩和する）とズレていると判明。**最終的に判定軸を
+   `severity` から `earthquake.condition !== '仮定震源要素'`（震源要素が確定した EEW か）に変更した
+   （`hasActiveNonAssumedEEW`）**。`condition==='仮定震源要素'` は 1 観測点のみのデータで震源を仮決めした
+   速報で、震源・マグニチュード・推定震度の誤差が大きい——`eew.ts` の `eewMaxScale`（単独点処理時は
+   `forecastMaxScale` を信用せず 0 を返す）・`RealtimeTab`・`ttsText.ts`（単独点処理時はマグニチュード・
+   深さ・推定震度を非表示/読み上げない）と同じ判断基準に揃えた。severity=Warning の EEW は通常 areas
+   （地域別確定予想）を伴い震源要素も確定していることが多いため、この変更は Warning 級の挙動をほぼ変えず、
+   Forecast のまま震源要素が確定した地震（震度3〜4相当を含む）を新たに拾えるようになる。
+
+**検証**: 型チェック0・vitest 40件（`kyoshinDetector.test.ts`。EEW 緩和が効くこと・`MIN_CLUSTER` と
+`CONFIRM_INTENSE_POINTS` は EEW 中でも緩まないことの回帰テスト +4）。判定条件の変更（severity→condition）は
+`App.tsx` 側の派生値のみの変更で、`kyoshinDetector.ts` 側のテスト・ロジックへの影響はない。
+
+**残る限界（受容）**: `hasActiveNonAssumedEEW` は全国一律のフラグで震源距離を見ないため、震源要素が確定した
+EEW の震源から遠い無関係な地域でも同じだけ緩和がかかる。ただし L2（近傍同時性・連結成分）の空間コヒーレンス
+要求は変えていないため、無関係な地域でこの緩和だけでノイズが confirmed に通ることはない（点数・フレーム数の
+バーを下げるだけ）。
