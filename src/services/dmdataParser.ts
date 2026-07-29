@@ -479,8 +479,9 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   const id = `dmdata-xml-tsunami-${eventId}-${serial}`
   const cancelled = infoType === '取消'
 
+  // InfoType=取消: 誤って発表した電文そのものの取消（誤報取消）
   if (cancelled) {
-    return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: true, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [] }
+    return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: true, cancelReason: 'retracted', issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [] }
   }
 
   const forecastEl = xmlQ(doc, 'Forecast')
@@ -552,8 +553,8 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
     })
   }
 
-  // Forecast があるのに有効エリアが0件 = 全エリアが解除済み
-  if (areas.length === 0) return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: true, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [] }
+  // Forecast があるのに有効エリアが0件 = 気象庁による正式な解除（区域が電文から消える）
+  if (areas.length === 0) return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: true, cancelReason: 'lifted', issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [] }
 
   // Observation も含む場合（VTSE51①: Forecast + Observation 両方あり）
   const observations = observationEl ? parseTsunamiObservationsFromXml(observationEl) : undefined
@@ -629,8 +630,9 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
     : undefined
   const eventId = rawEventId || undefined
 
+  // InfoType=取消: 誤って発表した電文そのものの取消（誤報取消）
   if (cancelled) {
-    return { kind: 'tsunami', id, eventId, time, cancelled: true, issue: { source, time, type: 'Focus' }, areas: [] }
+    return { kind: 'tsunami', id, eventId, time, cancelled: true, cancelReason: 'retracted', issue: { source, time, type: 'Focus' }, areas: [] }
   }
 
   const body = obj(data.body)
@@ -719,7 +721,7 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
     const it = obj(item)
     const kind = obj(it.kind)
     const grade = parseTsunamiGradeByCode(str(kind.code))
-    if (grade === 'Unknown') continue  // 解除・予報区は除外
+    if (grade === 'Unknown') continue  // 解除系コード（50/60/00等）のみ除外。予報(71/72/73)はForecastとして残る
     const firstHeight = obj(it.firstHeight)
     const maxHeight = obj(it.maxHeight)
     // DMDATA JSON v1.1.0: maxHeight.height.value が m 単位（maxHeight.value ではない）
@@ -766,8 +768,8 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
     })
   }
 
-  // 全予報区が解除済み（Kind/Code が 50/60/71/72/73/00 など）
-  if (areas.length === 0) return { kind: 'tsunami', id, eventId, time, cancelled: true, issue: { source, time, type: 'Focus' }, areas: [] }
+  // 全区域が電文から消えた = 気象庁による正式な解除（Kind/Code が 50/60/00 など、grade判定不能で除外された結果0件）
+  if (areas.length === 0) return { kind: 'tsunami', id, eventId, time, cancelled: true, cancelReason: 'lifted', issue: { source, time, type: 'Focus' }, areas: [] }
 
   return { kind: 'tsunami', id, eventId, time, cancelled: false, validDateTime, headline, warningComment, sourceEarthquake, issue: { source, time, type: 'Focus' }, areas, observations }
 }

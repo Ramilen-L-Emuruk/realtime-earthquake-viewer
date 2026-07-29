@@ -102,8 +102,11 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
   - 警報テスト → 津波警報（青森・茨城等）→ `tsunami` 音・津波タブの海岸線描画
   - 注意報テスト → 津波注意報（北海道）→ `tsunamiWatch` 音・津波タブの海岸線描画
   - 予報テスト → 津波予報・若干の海面変動（北海道）→ `tsunamiForecast` 音・津波タブの海岸線描画
+  - 誤報取消テスト → 津波警報＋注意報（青森・北海道等）→ `tsunami` 音・津波タブの海岸線描画
   - EEW は約90秒で自動解除（解除音）。同ボタン再クリックで続報（`eewUpdate` 音）。異なるボタンを押すと前の EEW タイマーをキャンセルし新規発報。
-  - 津波テスト（大警報・警報・注意報・予報）はいずれも約90秒で自動解除。
+  - 津波は実際の電文と同じく「解除」「取消」「期限切れ」の3経路とも10秒間の解除表示を経る（`JMATsunami.cancelReason`で出し分け）。
+    大警報・警報・注意報テストは約90秒後に「解除」表示、誤報取消テストは約90秒後に「取消」表示、予報テストは
+    `validDateTime` の期限切れにより約90秒後に「有効期間終了」表示になる（実運用でも予報は明示的な解除電文を伴わない）。
   - ※予報円は実データ依存のため平常時は表示されない。
 
 ### 環境による制約
@@ -189,6 +192,15 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
   - EEW 特別警報テスト（`createTestEEW`）: 最大 `scaleTo: 60` = 震度6強
   - EEW 予報テスト（`createTestEEWForecast`）: 最大 `scaleTo: 25` = 震度2程度
 - 同じ説明文が `CLAUDE.md` の「テスト機能の活用」セクションにも記載されているため、変更時は両方を合わせて修正する。
+
+### 津波情報の解除理由（cancelReason）
+- 津波が消える経路は実際の電文でも3つあり、`JMATsunami.cancelReason`（`'lifted' | 'retracted' | 'expired'`）で区別する。**3経路とも `cancelledAt` セット→10秒間表示→purge という同じ流れを通る**（[useEarthquakes.ts](src/hooks/useEarthquakes.ts) の tsunami ケース）。
+  - `lifted`（解除）: 気象庁の正式解除。`InfoType` は `発表` のまま、区域(Item)が電文から消えることで検出（`dmdataParser.ts` の `areas.length === 0` フォールバック）
+  - `retracted`（取消）: 誤って発表した電文の撤回。`InfoType === '取消'` で検出
+  - `expired`（期限切れ）: `validDateTime` の満了をアプリが検出。予報（若干の海面変動）は明示的な解除電文を伴わずこの経路で消えることが多い
+  - 表示文言（見出し・説明文・オーバーレイ短文）は `TsunamiTab/index.tsx` の `CANCEL_REASON_LABEL` が単一の情報源。新しい cancelReason を増やす場合はここと型定義（`types/earthquake.ts`）を同時に直す。
+  - **この出し分けは DMDSS 版（DMDATA.JP）限定**。P2PQuake API v2 の公式スキーマ（`JMATsunami`）には `InfoType`・`ValidDateTime` に相当するフィールドが存在しない（[epsp-specifications/json-api-v2.yaml](https://github.com/p2pquake/epsp-specifications/blob/master/json-api-v2.yaml)）ため、通常版（P2PQuake経由）では `cancelReason` は常に `undefined` になり、`CANCEL_REASON_LABEL` のフォールバックで常に「解除」表示になる（クラッシュ等はしない）。
+  - `ValidDateTime` が付くのは「津波予報（若干の海面変動）のみ発表の場合」「警報・注意報解除後に予報のみが残る場合」の2パターンのみ、と気象庁の電文解説資料に明記されている（[地震火山関連XML電文解説資料](https://dmdata.jp/docs/jma/manual/0101-0185.pdf) 5.ValidDateTime）。警報・注意報が1区域でも残っている間は付与されない。
 
 ### 地図レイヤーの描画順
 - 描画順（背面→前面）の単一情報源は `src/components/Map/gl/layerOrder.ts` の `MAP_LAYER_ORDER`。各レイヤーコンポーネントは `addOrderedLayer` で追加し、この配列上で自分より前面に来るべき既存レイヤーの直前へ挿入することで、データ到着タイミングに依存せず順序を保証する。

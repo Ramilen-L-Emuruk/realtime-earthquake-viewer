@@ -167,7 +167,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       title.endTsunamiTitleWindow()
       title.applyPriority()
       if (settings.voicevoxEnabled) {
-        speakWithVoicevox(settings.voicevoxUrl, tsunamiCancelToText(), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+        speakWithVoicevox(settings.voicevoxUrl, tsunamiCancelToText(event.cancelReason), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
       }
       lastTsunamiGradeRef.current = null
       lastMaxObsHeightRef.current.clear()
