@@ -84,6 +84,7 @@ export function JapanMapGL({
   candidateId = null,
   iconScale = 1,
   showActiveFaults = true,
+  activeFaultOpacity = 0.4,
   showPlateBoundaries = true,
 }: JapanMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -175,7 +176,7 @@ export function JapanMapGL({
             <QuakeHeatmapGL points={heatPoints} />
           )}
           <PlateBoundariesGL plateBoundaries={plateBoundaries} visible={showOverlayLines && showPlateBoundaries} />
-          <ActiveFaultsGL activeFaults={activeFaults} visible={showOverlayLines && showActiveFaults} />
+          <ActiveFaultsGL activeFaults={activeFaults} visible={showOverlayLines && showActiveFaults} opacity={activeFaultOpacity} />
           {mode === 'quake' && (
             <>
               {/* 通常の震度表示（LPGM 進行中は非表示＝下の LPGM 表示に置き換わる）。
