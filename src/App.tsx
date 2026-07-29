@@ -307,8 +307,9 @@ export function App() {
 
   // 津波発表中フラグ（解除済みでない津波情報があるか。Forecast＝若干の海面変動も含む）とバッジ用グレード
   // tsunamiGrade は色分け用のため MajorWarning/Warning/Watch のみ（Forecast は除外）
+  // cancelledAt（10秒表示中）は解除表示に切り替わっているため非アクティブ扱いにする（EEW・地震カードと同じ扱い）
   const tsunamiGrade = tsunamiOverallGrade(tsunamis)
-  const tsunamiActive = tsunamis.some(t => !t.cancelled)
+  const tsunamiActive = tsunamis.some(t => !t.cancelled && !t.cancelledAt)
 
   // 初回ページロード時に REST API で取得した既存の EEW/津波状態をタイトルに反映する
   // （WebSocket 受信前に既にアクティブな情報がある場合のみ一度だけ動作）
