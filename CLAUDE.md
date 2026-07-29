@@ -109,6 +109,7 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
     大警報・警報・注意報テストは約90秒後に「解除」表示、誤報取消テストは約90秒後に「取消」表示、予報テストは
     `validDateTime` の期限切れにより約90秒後に「有効期間終了」表示になる（実運用でも予報は明示的な解除電文を伴わない）。
   - P波・S波の予報円は震源要素（震源・深さ・マグニチュード・発生時刻）から自前計算する（標準版・DMDSS版共通）ため、上記のEEWテストボタンでも実際に円が拡大する様子を検証できる。
+  - **実地震テスト**（設定タブ「実地震テスト」セクション）→ 実際に発生した地震の電文（EEW・地震情報・津波情報等）を、発生時と同じ間隔でキューに投入し再生する。合成データのテストボタンと異なり本物の電文を時刻シフト・ID再採番のみ行って再現するため、続報の推移（例: 津波警報→大津波警報への引き上げ）もそのまま検証できる。標準版・DMDSS版共通。再生中は対象ボタンが「再生中…」表示でdisabledになり、シナリオ末尾+安全マージン後に再度押せるようになる。**シナリオデータはリポジトリに同梱していない**（DMDATA.JP利用規約上の理由。後述）ため、リポジトリを取得した直後は「利用可能なシナリオがありません」の空表示になる。試すには各自の DMDATA.JP 契約で `capture-scenario` を実行してローカルにシナリオを追加する必要がある。シナリオの追加方法・設計判断は「実地震テストシナリオの時刻シフト・ID再採番」節を参照。
 
 ### 環境による制約
 
@@ -230,6 +231,13 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 - `KyoshinPointsGL.tsx` が気象庁配色で描画するのは **index 7+**（震度1以上）。
 - `KyoshinSubThresholdGL.tsx` は「同レベルのドット同士が重なっても濃くならない」非加算合成を FBO 二層合成のカスタムレイヤー（`gl/subThresholdLayer.ts`）で再現する。毎秒更新は index バッファのカウンティングソート＋`triggerRepaint`。
 - `KyoshinSubThresholdGL` に渡す `indices` は **Yahoo の生 index をそのまま渡さない**。`App.tsx` が `kyoshinSubThresholdFilter.ts` の `filterSubThresholdIndices` で、検知エンジン（`kyoshinDetector.ts`）が観測点ごとに学習した慢性ノイズ床（`chronicNoiseFloor`）＋`SUSTAIN_MARGIN` を超えた点だけに絞った `kyoshinSubIndices` を作り、`JapanMapGL` の `kyoshinSubIndices` prop 経由で渡す（`kyoshinIndices`＝生データは `KyoshinPointsGL`/`KyoshinMaxEffectGL` にそのまま渡り続ける・震度1+表示には影響しない）。大阪・岡山のような慢性的にノイジーな観測点が平常時ずっと点灯し続ける問題への対策（2026-07-29）。`floors` が空（検知エンジン未学習の起動直後1フレーム目）はフィルタなしで生データを返す。
+
+### 実地震テストシナリオの時刻シフト・ID再採番
+- 実地震テストのシナリオデータ（`public/data/test-scenarios/*.json`）は、キャプチャ時点の絶対時刻（`baseTime`＋各エントリの `offsetMs`）をそのまま保持している。再生時は `testScenarioReplay.ts` の `instantiateScenario` が `now - baseTime` の差分を全イベントの時刻フィールドに一律加算して「今」基準にシフトしてから、`useEarthquakes.ts` の `loadReplayEvents`（`eventQueueRef` の時刻順キュー）に渡す。**クロック全体をずらす方式（DMDATA リプレイ機能の `setReplayOffset`）は使わない**——ライブ接続を維持したまま追加投入する既存の合成テストボタンと同じ思想のため。
+- 時刻シフトが必須な理由: EEW の P波・S波円計算（`usePsWaveCalc.ts`）・EEW 自動解除（`calcEEWCancelTime`）・津波の期限切れ判定（`validDateTime`）はいずれも絶対時刻を見て動く。シフトしないとロード直後に「もう過去」と判定され即座にキャンセルされる。
+- ID 再採番が必要な理由: 同じシナリオを連打した場合に `activeEEWs`（`Map<eventId, EEWAlert>`）等のキーが衝突し、前回の再生と表示が混線するのを防ぐため。`instantiateScenario` 内の `makeIdRemapper` が元の `eventId` 文字列→新 ID の対応を 1 回の再生を通して一貫させる（同じ元 ID の続報は必ず同じ新 ID になる）。新 ID は `useEarthquakes.ts` の `\d{14}` 正規表現（quake 関連の同一イベント判定）と互換な 14 桁数字にする。
+- キャプチャは `scripts/capture-test-scenario.ts`（`tsx` 実行）が `dmdataReplay.ts` の `fetchDmdataReplayEvents` をそのまま再利用し、DMDATA archive から取得した電文をパース済みの内部型（`AppEvent` 等）として JSON 化する。**生電文は保存しない**（standard 版は DMDATA 形式の生電文をパースできないため、両バリアント共通で使うにはパース後の内部型で保存する必要がある）。南海トラフ・後発地震（VYSE50/51/60）の XML パースはブラウザの `DOMParser` に依存するため、キャプチャスクリプトは `jsdom` でグローバルに代替している。
+- **`public/data/test-scenarios/*.json`（`index.json` を除く）は `.gitignore` 済みでコミット禁止**。DMDATA.JP [利用規約](https://dmdata.jp/terms/)第15条により、EEW の二次配信は法人契約以外では「公開APIへの使用」「許可なき第三者への表示・鳴動」が制限される。本リポジトリは GitHub Pages で公開されるため、EEW を含むシナリオをコミットすると抵触するおそれがある（2026-07-30 に判明。個人契約下で `capture-scenario` を実行して得たサンプルをコミットしようとして発覚）。`index.json` は空配列 `[]` のテンプレートとしてのみ管理し、実データは各自のローカル環境に留める。
 
 ### README プロジェクト構成ツリー
 - `src/components/`・`src/hooks/`・`src/utils/` に新ファイルを追加した場合は、`README.md` の「プロジェクト構成」ツリーにも追記する（README 更新の条件に含める）。

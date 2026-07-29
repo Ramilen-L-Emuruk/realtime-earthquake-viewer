@@ -39,3 +39,9 @@ verify-*.jpg
 
 # Claude directories
 .claude/
+
+# 実地震テストのシナリオ本体（DMDATA.JP利用規約第15条によりEEWの二次配信は
+# 個人契約では制限されるため、各自の契約でキャプチャしたものはコミットしない。
+# index.json は空配列のテンプレートとしてのみ管理する。
+public/data/test-scenarios/*.json
+!public/data/test-scenarios/index.json
