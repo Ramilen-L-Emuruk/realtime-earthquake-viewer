@@ -16,7 +16,10 @@ import { bindLinePopup, twoLinePopupHtml, type LinePopupHandle } from './gl/line
 const SRC = 'tsunami-lines'
 const LYR = 'tsunami-lines'
 const HIT_TOL_PX = 5
-const BLINK_PERIOD_MS = 1000
+// 点滅周期。Leaflet の tsunami-blink（2.5s step-end）に合わせる。
+const BLINK_PERIOD_MS = 2500
+// サイクル内で点灯している割合（0〜80% は点灯・80〜100% は消灯）。step-end 相当のハード切替。
+const BLINK_ON_RATIO = 0.8
 
 const EMPTY_FC: FeatureCollection<MultiLineString> = { type: 'FeatureCollection', features: [] }
 
@@ -55,17 +58,22 @@ export function TsunamiLinesGL({ lines, iconScale }: Props) {
         'line-color': ['get', 'color'],
         'line-width': ['get', 'width'],
         'line-opacity': 0.9,
+        // トランジションを無効化。既定(約300ms)のままだと setPaintProperty のたびに
+        // 補間され、オン(0.9)↔オフ(0) の切替が中間の透明度を経てフェードしてしまう。
+        // duration:0 で瞬時に切り替え、はっきりした点滅にする。
+        'line-opacity-transition': { duration: 0, delay: 0 },
       },
     })
     popupRef.current = bindLinePopup(map, LYR, HIT_TOL_PX, (f) =>
       twoLinePopupHtml(String(f.properties?.name ?? ''), String(f.properties?.label ?? '津波予報')),
     )
-    // 点滅（Leaflet の tsunami-blink CSS 相当）: line-opacity を正弦で 0.45〜0.9 に揺らす。
+    // 点滅（Leaflet の tsunami-blink CSS を忠実再現）: 2.5s 周期で 0〜80% は不透明(0.9)・
+    // 80〜100% は消灯(0) のハード切替（step-end 相当）。滑らかな脈動ではなくフラッシュ点滅。
     const start = performance.now()
     const pulse = () => {
       if (!map.getLayer(LYR)) return
       const t = ((performance.now() - start) % BLINK_PERIOD_MS) / BLINK_PERIOD_MS
-      const opacity = 0.45 + 0.45 * (0.5 + 0.5 * Math.cos(t * Math.PI * 2))
+      const opacity = t < BLINK_ON_RATIO ? 0.9 : 0
       map.setPaintProperty(LYR, 'line-opacity', opacity)
       rafRef.current = requestAnimationFrame(pulse)
     }
