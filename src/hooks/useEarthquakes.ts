@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataKohatsu } from '../services/dmdata'
+import { QUAKE_ISSUE_PRIORITY, mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes } from '../utils/quakeMerge'
 import { loadStationCoords, buildAreaPrefIndex } from '../utils/stationCoords'
 import { calcEEWCancelTime } from '../utils/eew'
 import { mergeTsunamiObservations } from '../utils/tsunami'
@@ -29,21 +30,6 @@ const LOAD_MORE_BATCH = 50        // 「もっと見る」1回あたりの取得
 const MAX_TELEGRAM_LOG = 200      // 電文ログの最大保持件数
 const EEW_FINAL_SILENCE_MS = 10000 // EEW発報テスト（特別警報・警報・予報）: この間隔クリックが無ければ最終報として確定する
 const EEW_RETRACTION_CANCEL_MS = 10000 // EEW誤報取消テスト: 発報からこの秒数後に取消電文を送る
-
-const ISSUE_PRIORITY: Record<string, number> = {
-  '各地の震度情報': 4,
-  '震源・震度情報': 3,
-  '震源情報': 2,
-  '震度速報': 1,
-  '顕著な地震の震源要素更新のお知らせ': 5,
-  '遠地地震': 0,
-  'その他': 0,
-}
-
-const sortQuakes = (arr: JMAQuake[]): JMAQuake[] =>
-  [...arr].sort((a, b) =>
-    new Date(b.earthquake.time).getTime() - new Date(a.earthquake.time).getTime()
-  )
 
 type QueuePayload =
   | { kind: 'event'; event: AppEvent }
@@ -361,51 +347,18 @@ export function useEarthquakes(
             }
           }
 
-          // DMDATA は同一イベントで VXSE51（targetDateTime）→ VXSE52/53（originTime）の順に届くが、
-          // earthquake.time が1分程度ずれるため別カード扱いになる。eventId で同一エントリを特定する。
-          const dmdataEventId = quake.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
-          const isSameEntry = (e: JMAQuake): boolean => {
-            if (dmdataEventId) {
-              const eId = e.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
-              if (eId) return eId === dmdataEventId
-            }
-            return e.earthquake.time === quake.earthquake.time
+          // 同一イベントの既存カードを探し、リアルタイム統合コアで1枚に統合する。
+          // eventId で同一性を判定し（VXSE51 の targetDateTime と VXSE52/53 の originTime で
+          // earthquake.time が約1分ずれるため）、VXSE61 の震源マージ・震度保持・優先度判定は
+          // すべて mergeQuakeInto に委譲する（履歴経路と同一ロジック）。
+          const existing = prev.earthquakes.find(e => sameQuakeEntry(e, quake))
+          const merged = mergeQuakeInto(existing, quake)
+          if (merged === existing) return prev
+          return {
+            ...prev,
+            earthquakes: sortQuakes([merged, ...prev.earthquakes.filter(e => !sameQuakeEntry(e, quake))]),
+            lastUpdate: now,
           }
-          const existing = prev.earthquakes.find(isSameEntry)
-
-          // VXSE61（顕著な地震の震源要素更新のお知らせ）: points を失わないよう震源フィールドのみをマージ
-          if (quake.issue.type === '顕著な地震の震源要素更新のお知らせ') {
-            if (existing) {
-              const merged: JMAQuake = {
-                ...existing,
-                time: quake.time,
-                issue: quake.issue,
-                earthquake: {
-                  ...existing.earthquake,
-                  hypocenter: quake.earthquake.hypocenter,
-                  domesticTsunami: quake.earthquake.domesticTsunami !== '不明'
-                    ? quake.earthquake.domesticTsunami
-                    : existing.earthquake.domesticTsunami,
-                },
-              }
-              return {
-                ...prev,
-                earthquakes: sortQuakes([merged, ...prev.earthquakes.filter(e => !isSameEntry(e))]),
-                lastUpdate: now,
-              }
-            }
-            // 既存カードなし: 通常追加処理へフォールスルー
-          }
-
-          // 取消表示中のカードは ISSUE_PRIORITY を無視して常に新規カードで置き換える
-          if (existing && !existing.cancelledAt && (ISSUE_PRIORITY[existing.issue.type] ?? 0) > (ISSUE_PRIORITY[quake.issue.type] ?? 0)) {
-            return prev
-          }
-          const earthquakes = sortQuakes([
-            quake,
-            ...prev.earthquakes.filter(e => !isSameEntry(e)),
-          ])
-          return { ...prev, earthquakes, lastUpdate: now }
         }
         case 'tsunami': {
           const tsunami = event as JMATsunami
@@ -591,15 +544,8 @@ export function useEarthquakes(
           if (cancelled) return
           const { quakes: quakeEvents, nextToken } = quakeResult
           dmdataCursorRef.current = nextToken
-          const seenQuakes = new Map<string, JMAQuake>()
-          for (const q of quakeEvents) {
-            const key = q.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1] ?? q.earthquake.time
-            const existing = seenQuakes.get(key)
-            if (!existing || (ISSUE_PRIORITY[q.issue.type] ?? 0) > (ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
-              seenQuakes.set(key, q)
-            }
-          }
-          const earthquakes = sortQuakes(Array.from(seenQuakes.values()))
+          // 種別横断の生電文を eventId ごとに統合（リアルタイムと同一ロジック）。
+          const earthquakes = mergeQuakeHistory(quakeEvents)
           const allTsunami = tsunamiEvents
             .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
           const latestTsunami = allTsunami[0]
@@ -740,7 +686,7 @@ export function useEarthquakes(
         for (const q of quakeEvents) {
           const key = q.earthquake.time
           const existing = seenQuakes.get(key)
-          if (!existing || (ISSUE_PRIORITY[q.issue.type] ?? 0) > (ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
+          if (!existing || (QUAKE_ISSUE_PRIORITY[q.issue.type] ?? 0) > (QUAKE_ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
             seenQuakes.set(key, q)
           }
         }
@@ -828,24 +774,15 @@ export function useEarthquakes(
         const existingQuakes = stateRef.current.earthquakes
         const { quakes: events, nextToken } = await fetchDmdataEarthquakes(apiKey, LOAD_MORE_BATCH, cursor)
         dmdataCursorRef.current = nextToken
-        setState(prev => {
-          const seenKeys = new Set(prev.earthquakes.map(e => e.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1] ?? e.earthquake.time))
-          const seenForBatch = new Map<string, JMAQuake>()
-          for (const q of events) {
-            const key = q.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1] ?? q.earthquake.time
-            if (seenKeys.has(key)) continue
-            const existing = seenForBatch.get(key)
-            if (!existing || (ISSUE_PRIORITY[q.issue.type] ?? 0) > (ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
-              seenForBatch.set(key, q)
-            }
-          }
-          return {
-            ...prev,
-            earthquakes: sortQuakes([...prev.earthquakes, ...Array.from(seenForBatch.values())]),
-            isLoadingMore: false,
-            hasMore: !!nextToken,
-          }
-        })
+        // 既存カード群を base に、新バッチの生電文を eventId ごとに統合する。
+        // これによりバッチ跨ぎ（先に届いた VXSE61 単独カードへ後続の VXSE53 の震度を合流など）も
+        // リアルタイムと同一結果になる。
+        setState(prev => ({
+          ...prev,
+          earthquakes: mergeQuakeHistory(events, prev.earthquakes),
+          isLoadingMore: false,
+          hasMore: !!nextToken,
+        }))
         // 新しく読み込んだ地震に対応する LPGM を追加取得（失敗は無視）
         const newOldest = [...existingQuakes, ...events].reduce<string | null>((acc, q) => {
           const t = q.earthquake.time
@@ -878,7 +815,7 @@ export function useEarthquakes(
             const key = q.earthquake.time
             if (seenKeys.has(key)) continue
             const existing = seenForBatch.get(key)
-            if (!existing || (ISSUE_PRIORITY[q.issue.type] ?? 0) > (ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
+            if (!existing || (QUAKE_ISSUE_PRIORITY[q.issue.type] ?? 0) > (QUAKE_ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
               seenForBatch.set(key, q)
             }
           }
