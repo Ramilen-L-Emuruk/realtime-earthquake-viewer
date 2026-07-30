@@ -325,6 +325,66 @@ describe('step: 特異度（散在ノイズを排除）', () => {
   })
 })
 
+describe('step: 欠測点(missing)の扱い', () => {
+  /**
+   * 実データ調査（2026-07-29）で判明: Yahoo 強震モニタは観測点の約3%が index=-1（charCode 99）を
+   * 恒常的に返す。Yahoo公式サイト自身も CSS で `.kyoshin_si--1{display:none}` として非表示にしており、
+   * これは計測震度ではなく欠測（観測点データなし）を示す特殊値である。missing で除外しないと、
+   * この値が value=-3.5 のまま扱われ、欠測から復旧した瞬間の急上昇（-3.5 → 実測値）が onset と
+   * 誤認識され、近傍が同時に復旧すると誤検知（likely/confirmed）につながる（過去に記録した
+   * 「全国的なデータ欠測グリッチ」と同種のリスク）。
+   *
+   * 下の2テストは同一シナリオを missing フラグの有無だけ変えて対照する:
+   *   近傍3点が欠測相当の異常低値(index -1 = value -3.5)を静穏期間ずっと返し、その後まとめて
+   *   震度2相当へ復帰する。missing なし＝バグ再現（誤検知する）／missing あり＝修正（誤検知しない）。
+   */
+  const ANOMALY_IDXS = [0, 1, 2] // 3×3 グリッド先頭行（相互に近傍・連結成分を作る）
+
+  /**
+   * @param useMissing 欠測点を missing:true で除外するか（false は修正前＝実測値-3.5として扱う）
+   * @returns 復帰後の最終検知結果
+   */
+  function missingThenRecover(useMissing: boolean): ReturnType<typeof step>['detections'] {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    // 静穏期間: ANOMALY_IDXS は欠測相当(index -1)、それ以外は震度0。
+    for (let i = 0; i < 8; i++, t += 1000) {
+      const frame: Frame = {
+        dataTimeMs: t,
+        sites: sitesOf(defs),
+        values: defs.map((_, j) => (ANOMALY_IDXS.includes(j) ? -1 : valueToIndex(0.0))),
+        missing: useMissing ? defs.map((_, j) => ANOMALY_IDXS.includes(j)) : undefined,
+      }
+      state = step(state, frame, meta).state
+    }
+    // 復帰: ANOMALY_IDXS が一斉に震度2相当へ（missing は付けない＝復旧した実測値）。
+    let detections: ReturnType<typeof step>['detections'] = []
+    for (let i = 0; i < 4; i++, t += 1000) {
+      const frame: Frame = {
+        dataTimeMs: t,
+        sites: sitesOf(defs),
+        values: defs.map((_, j) => valueToIndex(ANOMALY_IDXS.includes(j) ? 2.0 : 0.0)),
+      }
+      const r = step(state, frame, meta)
+      state = r.state
+      detections = r.detections
+    }
+    return detections
+  }
+
+  it('欠測点(-1)を実測値として扱うと復帰時の急上昇で誤検知する（修正前バグの再現）', () => {
+    const detections = missingThenRecover(false)
+    expect(detections.some((d) => d.confidence === 'confirmed' || d.confidence === 'likely')).toBe(true)
+  })
+
+  it('欠測点を missing で除外すれば復帰しても誤検知しない（修正の検証）', () => {
+    const detections = missingThenRecover(true)
+    expect(detections.some((d) => d.confidence === 'confirmed' || d.confidence === 'likely')).toBe(false)
+  })
+})
+
 describe('step: グループ化とID安定性', () => {
   it('セル境界をまたぐ揺れも1イベントに保たれる（近傍グラフ連結）', () => {
     const defs: StationDef[] = [
