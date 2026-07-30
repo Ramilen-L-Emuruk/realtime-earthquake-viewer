@@ -441,22 +441,13 @@ async function fetchOneTelegram(
   return null
 }
 
-// 地震情報の優先度（高いほど優先）。useEarthquakes.ts の ISSUE_PRIORITY と同じ値。
-const QUAKE_ISSUE_PRIORITY: Record<string, number> = {
-  '顕著な地震の震源要素更新のお知らせ': 5, '各地の震度情報': 4, '震源・震度情報': 3,
-  '震源情報': 2, '震度速報': 1, '遠地地震': 0, 'その他': 0,
-}
-
-// 電文 ID から eventId（14桁タイムスタンプ）を抽出する。
-// VXSE51/52/53/61 はすべて同じ eventId を共有するため、同一地震の同定に使用できる。
-function extractQuakeEventId(q: JMAQuake): string | null {
-  return q.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1] ?? null
-}
-
 // DMDATA REST API で地震履歴（VXSE51/52/53: 震度速報・震源情報・震源＋各地震度）を取得する。
-// VXSE61（顕著な地震震源要素更新）も並列取得し、同一イベントの hypocenter をマージする。
+// VXSE61（顕著な地震震源要素更新）も並列取得する。同一 eventId の電文どうしの統合
+// （VXSE61 の震源マージ・震度の保持・優先度判定など）は呼び出し側（useEarthquakes の
+// mergeQuakeHistory）がリアルタイム経路と同一ロジックで行うため、ここでは cutoffTime による
+// 不完全カードの除外だけを行い、種別横断の生電文をそのまま返す。
 // VXSE51/52 は VXSE53 未発表の地震速報をカバーするため初期表示の欠落を防ぐ。
-// cursorToken を指定するとカーソル位置以降の古い電文を取得する（「もっと見る」用）。
+// cursorToken を指定するとカーソル位置以降の古い電文を取得する（「もっと見る」用・VXSE53 に適用）。
 //
 // 初回フェッチの時刻窓統一:
 // 各タイプは同じ limit でも発生頻度が違うため取得できる受信時刻範囲がズレる。
@@ -538,41 +529,10 @@ export async function fetchDmdataEarthquakes(
 
   const withinCutoff = (q: JMAQuake): boolean => !cutoffTime || q.time >= cutoffTime
 
-  const rawQuakes = [...parsed53, ...parsed51, ...parsed52].filter(withinCutoff)
-
-  // 同一イベントの VXSE51/52/53 を eventId で重複排除（高優先度を保持）
-  // VXSE51 は earthquake.time が targetDateTime、VXSE52/53 は originTime で異なるため
-  // earthquake.time ではなく eventId で同一性を判定する。
-  const seenByEid = new Map<string, JMAQuake>()
-  const noEidQuakes: JMAQuake[] = []
-  for (const q of rawQuakes) {
-    const eid = extractQuakeEventId(q)
-    if (!eid) { noEidQuakes.push(q); continue }
-    const existing = seenByEid.get(eid)
-    if (!existing || (QUAKE_ISSUE_PRIORITY[q.issue.type] ?? 0) > (QUAKE_ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
-      seenByEid.set(eid, q)
-    }
-  }
-  const quakes = [...Array.from(seenByEid.values()), ...noEidQuakes]
-
-  // VXSE61（顕著な地震震源要素更新）: cutoffTime 内のものを対応エントリに震源マージ、なければ単独カードとして追加
-  for (const amended of parsed61.filter(withinCutoff)) {
-    if (amended.issue.type !== '顕著な地震の震源要素更新のお知らせ') continue
-    const amendedEid = extractQuakeEventId(amended)
-    const idx = quakes.findIndex(q =>
-      amendedEid ? extractQuakeEventId(q) === amendedEid : q.earthquake.time === amended.earthquake.time,
-    )
-    if (idx >= 0) {
-      quakes[idx] = {
-        ...quakes[idx],
-        time: amended.time,
-        issue: amended.issue,
-        earthquake: { ...quakes[idx].earthquake, hypocenter: amended.earthquake.hypocenter },
-      }
-    } else {
-      quakes.push(amended)
-    }
-  }
+  // cutoffTime による不完全カード除外のみ行い、種別横断（VXSE51/52/53/61）の生電文を返す。
+  // 同一 eventId の統合（VXSE61 の震源マージ・震度の保持・優先度判定）は呼び出し側の
+  // mergeQuakeHistory がリアルタイム経路と同一ロジックで行う。
+  const quakes = [...parsed53, ...parsed51, ...parsed52, ...parsed61].filter(withinCutoff)
 
   return { quakes, nextToken: json53.nextToken }
 }
