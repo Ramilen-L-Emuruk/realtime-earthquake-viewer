@@ -5,12 +5,18 @@
 //   - 観測点: https://weather-kyoshin.west.edge.storage-yahoo.jp/SiteList/sitelist.json
 //   - 震度  : https://weather-kyoshin.{west|east}.edge.storage-yahoo.jp/RealTimeData/yyyyMMdd/yyyyMMddHHmmss.json
 //   - intensity 文字列は各文字の charCode - 100 が観測点ごとの震度インデックス(0〜20)。
+//   - 負の値（実測は -1）は欠測（観測点データなし）を示す特殊値であり計測震度ではない。
+//     Yahoo公式サイト自身も CSS で `.kyoshin_si--1{display:none}` として非表示にしている
+//     （2026-07-29 実データ・公式サイトのCSS調査で確認。全観測点の約3%が該当）。
 
 import type { EEWAlert, IntensityScale } from '../types/earthquake'
 import { feedServerSample, serverNow } from '../utils/clock'
 
 /** 観測点座標の配列（[緯度, 経度]）。インデックスが intensity 文字列の位置に対応。 */
 export type SiteCoords = [number, number][]
+
+/** index がこの値未満なら欠測（観測点データなし）。計測震度としては扱えない。 */
+export const MISSING_INDEX_THRESHOLD = 0
 
 const SITELIST_BASE =
   'https://weather-kyoshin.west.edge.storage-yahoo.jp/SiteList'
@@ -98,7 +104,7 @@ export interface RealtimeIntensity {
   dataTime: string
   /** このデータに対応する観測点リストのバージョン識別子。 */
   siteConfigId: string
-  /** 観測点ごとの震度インデックス(0〜20)。sitelist と同順。 */
+  /** 観測点ごとの震度インデックス(0〜20)。sitelist と同順。負の値は欠測（MISSING_INDEX_THRESHOLD 参照）。 */
   indices: number[]
   /** EEW 情報（発報中のみ要素を持つ）。 */
   hypoInfo: YahooHypoInfoItem[]

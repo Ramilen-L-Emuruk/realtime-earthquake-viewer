@@ -106,7 +106,7 @@ export interface Frame {
   dataTimeMs: number
   /** SiteCoords（座標の順序 = values の順序） */
   sites: [number, number][]
-  /** indices（計測震度インデックス 0〜20） */
+  /** indices（計測震度インデックス 0〜20。負値は欠測を示すことがあるが missing で除外して渡すこと） */
   values: number[]
   /** 欠測フラグ（あれば。true の点は状態更新から除外） */
   missing?: boolean[]
