@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { SiteCoords } from '../services/kyoshin'
+import { MISSING_INDEX_THRESHOLD, type SiteCoords } from '../services/kyoshin'
 import {
   step,
   initState,
@@ -119,6 +119,9 @@ export function useKyoshinDetectorV2(
         dataTimeMs,
         sites: sites as [number, number][],
         values: indices,
+        // 欠測点（Yahoo が index<0 で返す観測点データなし）を除外する。渡さないと欠測復旧時の
+        // 急上昇がオンセットと誤認識されうる（missing の実際の判定根拠は services/kyoshin.ts 参照）。
+        missing: indices.map((idx) => idx < MISSING_INDEX_THRESHOLD),
         eewActive: hasActiveNonAssumedEEWRef.current,
       },
       metaRef.current.meta,
