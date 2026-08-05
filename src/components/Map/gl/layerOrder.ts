@@ -8,6 +8,9 @@ import type { Map as MapLibreMap, LayerSpecification, CustomLayerInterface } fro
 //
 // quake モードのレイヤー群と kyoshin モードのレイヤー群は排他（mode 切替で同時には存在しない）だが、
 // アルゴリズム上の全順序として一列に並べておけば齟齬は起きない。
+// 旧 Leaflet 実装のペイン z-index（tile-tint220 / basemap250 / quake-heat255 /
+// region-fill系260-261 / line-layers263 / tsunami-lines270 / ps-wave280 /
+// kyoshin-points・quake-points400 / basemap-labels450）を踏襲した並び。
 export const MAP_LAYER_ORDER = [
   // ベースマップ（BaseMapGL）。陸地塗り・境界線は生成データの遅延読込後に追加されるため、
   // 素の addLayer（最上段）だと読込順次第でオーバーレイの上に乗る事故がある。最下層スロットとして
@@ -16,27 +19,29 @@ export const MAP_LAYER_ORDER = [
   'land-fill',
   'sub-borders',
   'pref-borders',
-  'plate-boundaries',
-  'active-faults',
+  // 地震活動ヒートマップ（旧 z255）。プレート境界線・活断層線（旧 z263）より背面。
   'quake-heat',
   'quake-region-fill',
   'quake-region-fill-line',
+  'eew-region-fill',
+  'eew-region-fill-line',
   'quake-lpgm-region-fill',
   'quake-lpgm-region-fill-line',
+  'eew-lpgm-region-fill',
+  'eew-lpgm-region-fill-line',
+  'plate-boundaries',
+  'active-faults',
+  // 津波海岸線（旧 z270）。プレート境界線・活断層線より前面だが、予報円・観測点よりは背面。
+  'tsunami-lines',
+  // EEW 予報円（旧 z280）。海岸線より前面、観測点・ラベルよりは背面。
+  'pswave',
   'quake-points',
   'quake-lpgm-points',
   'epicenter',
-  'eew-region-fill',
-  'eew-region-fill-line',
-  'eew-lpgm-region-fill',
-  'eew-lpgm-region-fill-line',
   'kyoshin-subthreshold',
   'kyoshin-points',
   'kyoshin-detected',
   'kyoshin-ripple',
-  'pswave',
-  // 津波海岸線は発報中は全モードで最前面付近に描く（Leaflet の z270 相当）。
-  'tsunami-lines',
   // 地名ラベル（地方/県/区域名）は最前面（Leaflet の basemap-labels z450 相当）。
   'basemap-region-labels',
   'basemap-pref-labels',
