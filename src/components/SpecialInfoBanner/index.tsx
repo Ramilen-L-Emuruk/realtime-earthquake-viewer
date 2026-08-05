@@ -43,7 +43,9 @@ export function SpecialInfoBanner({ nankai, kohatsu }: Props) {
   if (!nankai && !kohatsu) return null
 
   return (
-    <div className="absolute bottom-0 left-0 right-0 z-[1000] pointer-events-none">
+    // z-[99999]: 区域集約震度バッジ（QuakeRegionFillGL）は scale（JMA震度階級の数値コード、震度7=70）
+    // × 1000 で最大 zIndex 70000 まで積むため、それより確実に高い値にして常に最前面に出す。
+    <div className="absolute bottom-0 left-0 right-0 z-[99999] pointer-events-none">
       <div className="pointer-events-auto max-h-[40vh] overflow-y-auto">
         {nankai && <NankaiBanner nankai={nankai} />}
         {kohatsu && <KohatsuBanner kohatsu={kohatsu} />}
