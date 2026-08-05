@@ -1,6 +1,6 @@
 // リアルタイムタブの右パネル。地図エリアは JapanMap が強震モニタ（観測点）と
 // 予報円を描画し、ここでは EEW 情報カード・強震モニタ検知(V2)カード・震度スケール凡例・注記を表示する。
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
 import type { EEWAlert } from '../../types/earthquake'
 import type { DetectionEvent, Confidence } from '../../utils/kyoshinDetector'
 import { MIN_DETECTION_INDEX, buildSiteIndex, resolveMembers, type DetectedPoint } from '../../utils/kyoshinDetectionView'
@@ -300,7 +300,13 @@ const V2_TIER: Record<Confidence, { label: string; color: string; bg: string; bo
 // 複数の confirmed/likely イベントを同時に返す。これを「1 つの揺れ」として 1 枚に集約表示する
 // （震源を推定しないため、揺れている地域数と全体の震度分布・推定最大震度を主情報とする）。
 // 複数地域にまたがる場合は「広域」を示し、N 件の別地震のように見えるのを防ぐ。
+// バー幅スケールの直近ピーク保持時間。短すぎると通常の点数変動でも他の震度のバーが
+// 伸びて見える誤解が残り、長すぎると前の地震が収まりきる前に次の地震が来た場合に
+// 新しい地震の実際の点数がスケールに対して過小表示され続ける。両者のバランスを取る値。
+const SCALE_PEAK_WINDOW_MS = 15_000
+
 function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent[]; siteIndex: Map<string, DetectedPoint> }) {
+  const scaleHistoryRef = useRef<{ t: number; v: number }[]>([])
   // 最上位ティア（confirmed > likely > faint）。faint のみ＝震度0級のコヒーレント揺れ（無音・控えめ表示）。
   const topTier: Confidence = events.some(e => e.confidence === 'confirmed')
     ? 'confirmed'
@@ -332,7 +338,16 @@ function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent
   const maxLabel = kyoshinIndexToLabel(maxIndex)
   const maxColor = kyoshinIntensityColor(maxIndex) ?? '#9ca3af'
   const groups = LABEL_ORDER.filter(l => counts.has(l)).map(l => ({ label: l, ...counts.get(l)! }))
-  const maxCount = groups.reduce((m, g) => Math.max(m, g.count), 1)
+  const rawMaxCount = groups.reduce((m, g) => Math.max(m, g.count), 1)
+  // バー幅のスケール（分母）は直近 SCALE_PEAK_WINDOW_MS 内のピークを使う。単純な瞬間値だと、
+  // 無関係な震度の点数が変わらなくても、最大値だった震度の点数が減っただけで他のバーが
+  // 伸びて見えてしまう。かといって無期限に保持すると、前の揺れが収まりきる前に次の地震が
+  // 来た場合に新しい地震の点数がスケールに対して過小表示され続けるため、短い時間窓で減衰させる。
+  const now = Date.now()
+  const history = scaleHistoryRef.current
+  history.push({ t: now, v: rawMaxCount })
+  while (history.length > 0 && history[0] && now - history[0].t > SCALE_PEAK_WINDOW_MS) history.shift()
+  const maxCount = history.reduce((m, h) => Math.max(m, h.v), 1)
   const totalActive = activeCount || events.reduce((s, e) => s + e.lastSize, 0)
 
   // カードの枠・背景は最大震度の気象庁配色に合わせる（地図マーカー・EEW カードと一貫）。
