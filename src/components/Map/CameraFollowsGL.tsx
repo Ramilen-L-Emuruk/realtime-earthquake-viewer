@@ -11,6 +11,7 @@ import {
   flyToBoundsSnapped,
   boundsFromCirclesForEewFollow,
   mapContainsBounds,
+  isProgrammaticFlight,
   MAX_ZOOM,
 } from './gl/camera'
 import { log } from '../../utils/logger'
@@ -141,7 +142,6 @@ export function FitToEEWGL({
 }) {
   const map = useMapGL()
   const lastEewIdRef = useRef<string | null>(null)
-  const isAutoFlyingRef = useRef(false)
   const userInteractedRef = useRef(false)
   const resetTimerRef = useRef<number | undefined>(undefined)
   const prevEewsCountRef = useRef<number>(0)
@@ -163,11 +163,9 @@ export function FitToEEWGL({
           log.debug('[mapGL] EEW解除 フィットスキップ (userInteracted)')
         } else if (detectedPoints.length > 0) {
           log.debug(`[mapGL] EEW解除・揺れ検知中 ${detectedPoints.length}点へフィット`)
-          isAutoFlyingRef.current = true
           fitToPositions(map, detectedPoints.map(dp2ll), { padding: 60, maxZoom: MAX_ZOOM, durationSec: 1.0 })
         } else {
           log.debug('[mapGL] fitJapan (EEW解除)')
-          isAutoFlyingRef.current = true
           fitJapan(map, 1.0)
         }
       }
@@ -180,7 +178,6 @@ export function FitToEEWGL({
     lastEewIdRef.current = eewEventId
     userInteractedRef.current = false
     window.clearTimeout(resetTimerRef.current)
-    isAutoFlyingRef.current = true
     // 波円が既にあれば波円へ直接フィット（震源→波円のギクシャク防止）。
     const bounds = boundsFromCirclesForEewFollow(psWave)
     if (bounds) {
@@ -193,10 +190,14 @@ export function FitToEEWGL({
   }, [latest, map])
 
   // ユーザー手動操作の検知と idleRevertSec 秒後の追従再開。
+  // isProgrammaticFlight(map) は gl/camera.ts の fit 系関数（このコンポーネント自身の呼び出しに限らず、
+  // FitToDetectionGL/FitToCandidateGL/FitJapanOnEnterGL 等 同じ map を操作する他コンポーネントの呼び出しも
+  // 含む）が起こした zoomstart/dragstart を除外する。私有 ref では自分の呼び出ししか除外できず、
+  // 他コンポーネントの自動フィットをユーザー操作と誤認して追従を止めてしまっていたため。
   useEffect(() => {
     if (!map) return
     const onInteraction = () => {
-      if (isAutoFlyingRef.current) return
+      if (isProgrammaticFlight(map)) return
       userInteractedRef.current = true
       window.clearTimeout(resetTimerRef.current)
       if (idleRevertSec > 0) {
@@ -205,16 +206,11 @@ export function FitToEEWGL({
         }, idleRevertSec * 1000)
       }
     }
-    const onMoveEnd = () => {
-      isAutoFlyingRef.current = false
-    }
     map.on('zoomstart', onInteraction)
     map.on('dragstart', onInteraction)
-    map.on('moveend', onMoveEnd)
     return () => {
       map.off('zoomstart', onInteraction)
       map.off('dragstart', onInteraction)
-      map.off('moveend', onMoveEnd)
       window.clearTimeout(resetTimerRef.current)
     }
   }, [map, idleRevertSec])
@@ -238,26 +234,25 @@ export function FitToEEWGL({
         const { latitude, longitude } = latest.earthquake.hypocenter
         if (latitude > -200 && longitude > -200) {
           log.debug('[mapGL] EEW数減少・波円なし 震源へ再フィット')
-          isAutoFlyingRef.current = true
           flyToPoint(map, [latitude, longitude], MAX_ZOOM, 0.8)
         }
       }
       return
     }
     log.debug(`[mapGL] EEW数減少・波円${psWave.length}個へ再フィット`)
-    isAutoFlyingRef.current = true
     flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
   }, [eews.length, psWave, latest, map])
 
   // 予報円の成長に追従（表示に収まらなくなった時のみズームアウト）。
+  // isProgrammaticFlight(map) により、他コンポーネントの自動フィットが進行中の間もこの効果は
+  // 再フィットを待つ（同時に複数のカメラアニメーションが競合するのを避ける）。
   useEffect(() => {
     if (!map) return
     if (eews.length === 0 || psWave.length === 0) return
-    if (userInteractedRef.current || isAutoFlyingRef.current) return
+    if (userInteractedRef.current || isProgrammaticFlight(map)) return
     const bounds = boundsFromCirclesForEewFollow(psWave)
     if (bounds && !mapContainsBounds(map, bounds)) {
       log.debug(`[mapGL] EEW波円成長フォロー 波円${psWave.length}個`)
-      isAutoFlyingRef.current = true
       flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
     }
   }, [eews.length, psWave, map])
