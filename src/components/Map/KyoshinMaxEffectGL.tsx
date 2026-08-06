@@ -4,7 +4,6 @@ import type { Feature, FeatureCollection, Point } from 'geojson'
 import { useMapGL } from './mapGLContext'
 import type { SiteCoords } from '../../services/kyoshin'
 import { kyoshinIntensityColor, kyoshinIndexToJma } from '../../utils/kyoshinIntensity'
-import { getScaleRadius } from '../../utils/intensity'
 import { addOrderedLayer } from './gl/layerOrder'
 
 // 最大震度更新時の波紋エフェクトを描画する MapLibre 版（Leaflet の KyoshinMaxEffect 相当）。
@@ -14,6 +13,11 @@ import { addOrderedLayer } from './gl/layerOrder'
 // MapLibre では波紋 1 個を circle feature 1 個で表し、rAF ループで半径・stroke 不透明度を
 // feature-state で毎フレーム更新する（円は画面ピクセル半径なので Leaflet の containerPoint 半径と等価）。
 // 失効した波紋は setData でソースから取り除く。色は feature プロパティ（['get','color']）から読む。
+//
+// 発生時の半径・膨張倍率は intensity.ts の getScaleRadius（マーカー用の控えめな値）を流用せず、
+// 波紋専用のカーブ（RIPPLE_BASE_RADIUS／RIPPLE_EXPANSION）を使う。震度1〜4あたりはgetScaleRadiusの
+// 差が1px刻みしかなく波紋の大小がほぼ見分けられなかったため、発生時の大きさ・広がる勢いの両方を
+// 震度に応じてはっきり変化させ、震度が高いほど大きく・勢いよく広がるようにしている。
 
 const DURATION = 600
 const MIN_TRIGGER_INDEX = 7
@@ -23,11 +27,48 @@ const LYR = 'kyoshin-ripple'
 
 const EMPTY_FC: FeatureCollection<Point> = { type: 'FeatureCollection', features: [] }
 
+// 波紋の発生時半径（px、iconScale適用前）。JMA 震度スケール値（getScaleRadius と同じキー）ごとに指定。
+const RIPPLE_BASE_RADIUS: Record<number, number> = {
+  '-1': 5,
+  10: 5,  // 震度0/1
+  20: 6,  // 震度2
+  30: 8,  // 震度3
+  40: 10, // 震度4
+  45: 13, // 震度5弱
+  50: 15, // 震度5強
+  55: 18, // 震度6弱
+  60: 21, // 震度6強
+  70: 26, // 震度7
+}
+
+// 波紋の膨張倍率（発生時半径の何倍まで広がるか）。震度が高いほど大きく勢いよく広がる。
+const RIPPLE_EXPANSION: Record<number, number> = {
+  '-1': 2.5,
+  10: 2.5,
+  20: 3,
+  30: 3.5,
+  40: 4,
+  45: 4.5,
+  50: 5,
+  55: 5.5,
+  60: 6,
+  70: 7,
+}
+
+function getRippleBaseRadius(scale: number): number {
+  return RIPPLE_BASE_RADIUS[scale] ?? 5
+}
+
+function getRippleExpansion(scale: number): number {
+  return RIPPLE_EXPANSION[scale] ?? 2.5
+}
+
 interface Ripple {
   id: number
   color: string
   startTime: number
   baseRadius: number
+  expansion: number
   feature: Feature<Point>
 }
 
@@ -99,7 +140,7 @@ export function KyoshinMaxEffectGL({ sites, indices, iconScale }: Props) {
           continue
         }
         const eased = 1 - (1 - t) * (1 - t)
-        const radius = r.baseRadius + r.baseRadius * 3 * eased
+        const radius = r.baseRadius + r.baseRadius * (r.expansion - 1) * eased
         const alpha = 0.75 * (1 - t)
         map.setFeatureState({ source: SRC, id: r.id }, { radius, opacity: alpha })
         alive.push(r)
@@ -138,7 +179,8 @@ export function KyoshinMaxEffectGL({ sites, indices, iconScale }: Props) {
       const [lat, lng] = sites[maxSiteIdx]
       const color = kyoshinIntensityColor(maxIdx) ?? '#ffffff'
       const jma = kyoshinIndexToJma(maxIdx)
-      const baseRadius = jma ? (getScaleRadius(jma.scale) + 2) * iconScale : 3 * iconScale
+      const baseRadius = (jma ? getRippleBaseRadius(jma.scale) : 5) * iconScale
+      const expansion = jma ? getRippleExpansion(jma.scale) : 2.5
       const id = nextIdRef.current++
       const feature: Feature<Point> = {
         type: 'Feature',
@@ -146,7 +188,7 @@ export function KyoshinMaxEffectGL({ sites, indices, iconScale }: Props) {
         properties: { color },
         geometry: { type: 'Point', coordinates: [lng, lat] },
       }
-      ripplesRef.current = [...ripplesRef.current, { id, color, startTime: performance.now(), baseRadius, feature }]
+      ripplesRef.current = [...ripplesRef.current, { id, color, startTime: performance.now(), baseRadius, expansion, feature }]
       syncSource()
       startLoop()
     }
