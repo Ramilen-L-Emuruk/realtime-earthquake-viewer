@@ -18,13 +18,36 @@ export const JAPAN_BOUNDS: [[number, number], [number, number]] = [
 // JapanMap.tsx の JAPAN_CENTER [lat,lng] を [lng,lat] へ。
 export const JAPAN_CENTER: [number, number] = [137.7, 38.25]
 
+// 「プログラムによるカメラ操作が進行中か」の共有状態。kyoshin モードでは FitJapanOnEnter／
+// FitToCandidate／FitToDetection／FitToEEW が同じ map インスタンスを別々のコンポーネントから
+// 操作するが、MapLibre の flyTo/fitBounds はプログラム操作でも zoomstart/dragstart を発火する。
+// FitToEEW はこれらのイベントで「ユーザーが手動操作したか」を判定するため、各コンポーネントが
+// 私有の ref で自分の操作だけを除外していると、他コンポーネントの自動フィットをユーザー操作と
+// 誤認してしまう（実際の地震では EEW と揺れ検知が同時に動くため起きやすい）。ここに一元化し、
+// このファイルの fit 系関数を呼ぶたびに立てることで、発生源を問わず判定できるようにする。
+const programmaticFlights = new WeakMap<maplibregl.Map, number>()
+
+function beginProgrammaticFlight(map: maplibregl.Map): void {
+  programmaticFlights.set(map, (programmaticFlights.get(map) ?? 0) + 1)
+  map.once('moveend', () => {
+    programmaticFlights.set(map, Math.max(0, (programmaticFlights.get(map) ?? 1) - 1))
+  })
+}
+
+/** 現在 map 上でこのファイルの fit 系関数によるカメラ操作が進行中か。 */
+export function isProgrammaticFlight(map: maplibregl.Map): boolean {
+  return (programmaticFlights.get(map) ?? 0) > 0
+}
+
 /** 日本全体にフィットする（本アプリの既定フレーミング・padding 20）。 */
 export function fitJapan(map: maplibregl.Map, durationSec = 1.0): void {
+  beginProgrammaticFlight(map)
   map.fitBounds(JAPAN_BOUNDS, { padding: 20, duration: durationSec * 1000 })
 }
 
 /** 1 点へ flyTo する（[lat,lng] で受ける）。 */
 export function flyToPoint(map: maplibregl.Map, [lat, lng]: LatLng, zoom = MAX_ZOOM, durationSec = 1.0): void {
+  beginProgrammaticFlight(map)
   map.flyTo({ center: [lng, lat], zoom, duration: durationSec * 1000 })
 }
 
@@ -42,6 +65,7 @@ export function fitToPositions(
   }
   const bounds = new maplibregl.LngLatBounds()
   for (const [lat, lng] of positions) bounds.extend([lng, lat])
+  beginProgrammaticFlight(map)
   map.fitBounds(bounds, { padding, maxZoom, duration: durationSec * 1000 })
 }
 
@@ -52,6 +76,7 @@ export function flyToBounds(
   opts: { padding?: number; maxZoom?: number; durationSec?: number } = {},
 ): void {
   const { padding = 48, maxZoom = MAX_ZOOM, durationSec = 1.0 } = opts
+  beginProgrammaticFlight(map)
   map.fitBounds(bounds, { padding, maxZoom, duration: durationSec * 1000 })
 }
 
@@ -75,12 +100,14 @@ export function flyToBoundsSnapped(
   const cam = map.cameraForBounds(bounds, { padding, maxZoom })
   if (!cam || cam.zoom == null) {
     // cameraForBounds が算出不可なときは通常 fitBounds にフォールバック（分数ズーム）。
+    beginProgrammaticFlight(map)
     map.fitBounds(bounds, { padding, maxZoom, duration: durationSec * 1000 })
     return
   }
   // 円が収まる最大ズームを zoomStep 段階へ切り下げる。浮動小数の 6.9999… が 6.5 に落ちるのを防ぐため
   // わずかなイプシロンを足してから floor する。
   const snappedZoom = Math.floor((cam.zoom + 1e-6) / zoomStep) * zoomStep
+  beginProgrammaticFlight(map)
   map.flyTo({ center: cam.center, zoom: snappedZoom, duration: durationSec * 1000 })
 }
 

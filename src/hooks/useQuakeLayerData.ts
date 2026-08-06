@@ -9,6 +9,7 @@ import {
   type LatLng,
 } from '../utils/stationCoords'
 import { pointInRings, normalizeEpicenterLng } from '../utils/geo'
+import { extractQuakeEventId } from '../utils/quakeMerge'
 
 // 地震モードの描画に必要な派生データ（観測点ごとの震度点／一次細分区域集約／震源）を
 // 一箇所で計算する共有フック。Leaflet 版 JapanMap 内の同名 memo 群と同じ導出を行う
@@ -127,9 +128,14 @@ export function useQuakeLayerData(
     })
   }, [subregions])
 
-  const regionAggregates = useMemo<RegionAggregate[]>(() => {
-    if (!aggregateByRegion || subregionIndex.length === 0) return []
+  // 区域名 → 最大震度。aggregateByRegion（現在ズーム依存）とは無関係に常に計算する。
+  // quakeFitPositions が「実際に塗られる区域」を zoom の変化を待たずに参照するために必要
+  // （QuakeFitGL のフィットは常に maxZoom=MAX_ZOOM でキャップされるため、フィット着地後は
+  // 必ず aggregateByRegion=true になる。フィット計算時点の現在 zoom がたまたま > MAX_ZOOM でも
+  // 着地後の状態を先取りして区域マッチングする必要がある）。
+  const regionMaxByName = useMemo<Map<string, number>>(() => {
     const maxByName = new Map<string, number>()
+    if (mode !== 'quake' || !quake || subregionIndex.length === 0) return maxByName
 
     // パス1: isArea:false 観測点 → 点内包判定。
     for (const m of intensityMarkers) {
@@ -145,21 +151,23 @@ export function useQuakeLayerData(
     }
 
     // パス2: isArea:true の地点 → 区域名で直接マッチ（観測点が海上でも確実に塗る）。
-    if (quake) {
-      for (const p of quake.points) {
-        if (!p.isArea) continue
-        const cur = maxByName.get(p.addr)
-        if (cur == null || p.scale > cur) maxByName.set(p.addr, p.scale)
-      }
+    for (const p of quake.points) {
+      if (!p.isArea) continue
+      const cur = maxByName.get(p.addr)
+      if (cur == null || p.scale > cur) maxByName.set(p.addr, p.scale)
     }
+    return maxByName
+  }, [mode, quake, subregionIndex, intensityMarkers])
 
+  const regionAggregates = useMemo<RegionAggregate[]>(() => {
+    if (!aggregateByRegion || subregionIndex.length === 0) return []
     const list: RegionAggregate[] = []
     for (const e of subregionIndex) {
-      const scale = maxByName.get(e.sr.name)
+      const scale = regionMaxByName.get(e.sr.name)
       if (scale != null) list.push({ name: e.sr.name, scale, rings: e.sr.rings, label: e.sr.label })
     }
     return list.sort((a, b) => a.scale - b.scale)
-  }, [aggregateByRegion, subregionIndex, intensityMarkers, quake])
+  }, [aggregateByRegion, subregionIndex, regionMaxByName])
 
   const hasEpicenter = !!(
     quake &&
@@ -210,15 +218,50 @@ export function useQuakeLayerData(
       .sort((a, b) => a.maxLgInt - b.maxLgInt)
   }, [lpgmActive, lpgm, subregions])
 
-  // 地震モードのカメラフィット対象（各観測点＋震源。遠地地震は震源のみになるため日本中心も加える）。
+  // 地震モードのカメラフィット対象。観測点の代表点ではなく、実際に塗られる一次細分区域ポリゴンの
+  // 外接矩形（bbox）でフィットする（区域が代表点よりはみ出た形のときにフレームから溢れるのを防ぐ）。
+  // 区域が1件もマッチしない場合（遠地地震等・区域集約されない）のみ観測点の生座標にフォールバックする。
+  //
+  // LPGM 表示中（lpgmActive）は quake ではなく lpgm 自身の区域・観測点でフィットする。LPGM は
+  // 地震一覧の各行から eventId 単位で個別にトグルできる（App.tsx の onToggleLpgm は
+  // selectedQuakeId を変えない）ため、選択中の quake と表示中の LPGM が別の地震のことがある。
+  // quake 側のデータでフィットすると無関係な地震の位置にカメラが留まったままになる。
   const quakeFitPositions = useMemo<LatLng[]>(() => {
-    const positions = intensityMarkers.map((m) => m.position)
+    if (lpgmActive) {
+      const positions: LatLng[] = []
+      if (lpgm?.regions?.length && subregionIndex.length > 0) {
+        const names = new Set(lpgm.regions.filter((r) => r.maxLgInt >= 1).map((r) => r.name))
+        for (const e of subregionIndex) {
+          if (!names.has(e.sr.name)) continue
+          positions.push([e.minLat, e.minLng], [e.maxLat, e.maxLng])
+        }
+      }
+      if (positions.length === 0) {
+        for (const m of lpgmMarkers) positions.push(m.position)
+      }
+      // quake が LPGM と同一イベントのときのみ震源を加える（無関係な地震の震源を混ぜない）。
+      if (epicenter && quake && lpgm && extractQuakeEventId(quake) === lpgm.eventId) {
+        positions.push(epicenter)
+      }
+      return positions
+    }
+    const positions: LatLng[] = []
+    if (regionMaxByName.size > 0) {
+      for (const e of subregionIndex) {
+        if (!regionMaxByName.has(e.sr.name)) continue
+        positions.push([e.minLat, e.minLng], [e.maxLat, e.maxLng])
+      }
+    } else {
+      for (const m of intensityMarkers) positions.push(m.position)
+    }
     if (epicenter) positions.push(epicenter)
     if (quake?.issue.type === '遠地地震' && hasEpicenter) positions.push([JAPAN_CENTER_LAT, JAPAN_CENTER_LNG])
     return positions
-  }, [intensityMarkers, epicenter, hasEpicenter, quake])
+  }, [lpgmActive, lpgm, lpgmMarkers, regionMaxByName, subregionIndex, intensityMarkers, epicenter, hasEpicenter, quake])
 
-  const quakeSignature = `${quake?.id ?? ''}:${quakeFitPositions.length}`
+  // LPGM 表示の切替（同じ quake のまま lpgmActive だけが変わる、あるいは別イベントの LPGM に
+  // 切り替わる）でも再フィットが発火するよう、lpgm の eventId を signature に含める。
+  const quakeSignature = `${quake?.id ?? ''}:${lpgmActive ? (lpgm?.eventId ?? '') : ''}:${quakeFitPositions.length}`
 
   return {
     intensityMarkers,
