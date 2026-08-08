@@ -158,7 +158,7 @@ return
 | 地震情報・津波情報 | [P2PQuake API v2](https://api.p2pquake.net/v2/docs/) | 無料・認証不要。WebSocket + REST |
 | 緊急地震速報 | P2PQuake API v2 (code: 556) | リアルタイム WebSocket |
 | リアルタイム震度 | [Yahoo!天気・災害 リアルタイム震度](https://typhoon.yahoo.co.jp/weather/jp/earthquake/kyoshin/) | 観測点ごとのリアルタイム震度 JSON（HTTPS・1秒更新、防災科研 強震モニタ由来） |
-| 観測点座標 | 気象庁 震度観測点一覧（[iku55 氏による JSON 化](https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1)） | 地図に各地点をプロットするための座標テーブル |
+| 観測点座標・所属区域 | 気象庁 震度観測点一覧（[iku55 氏による JSON 化](https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1)） | 地図に各地点をプロットするための座標テーブル。あわせて各観測点が属する一次細分区域も保持し、区域別震度集約の帰属に使う（座標は約1km粒度のため、ポリゴンとの内包判定では細い島や海岸沿いの観測点が海側に落ちる） |
 | 津波予報区の海岸線 | 気象庁 予報区等 GIS データ（[Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)） | 津波の海域を海岸線として描画するためのライン座標 |
 | 行政区域（都道府県境界） | 気象庁 予報区等 GIS データ（[Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)） | ベースマップの陸地・県境を自前描画（タイル不使用）。一次細分区域と同一ソースで海岸線が整合。`scripts/build-prefectures.mjs` で生成 |
 | 一次細分区域（地震情報の地域） | 気象庁 予報区等 GIS データ（[Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)） | 区域境界・区域名ラベル・地震の区域別震度集約に使用。`scripts/build-subregions.mjs` で生成 |
@@ -219,7 +219,7 @@ realtime-earthquake-viewer/
 │   ├── icons/                      # アプリアイコン
 │   ├── fonts/                      # 地名ラベル用の事前生成 SDF グリフ PBF（Noto Sans JP/・build-glyphs.mjs 生成物）
 │   └── data/
-│       ├── station-coords.json     # 震度観測点・細分区域の座標テーブル（生成物）
+│       ├── station-coords.json     # 震度観測点・細分区域の座標＋観測点の所属区域テーブル（生成物）
 │       ├── tsunami-zones.json      # 津波予報区の海岸線座標（生成物）
 │       ├── tsunami-obs-coords.json # 津波観測点（験潮所等）の座標テーブル
 │       ├── prefectures.json        # 都道府県の境界ポリゴン（ベースマップ用・生成物）
