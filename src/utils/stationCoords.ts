@@ -6,11 +6,19 @@
 
 export type LatLng = [number, number]
 
+/**
+ * stations の値。3 要素目は regionNames の添字＝その観測点が属する一次細分区域。
+ * 元データに区域が無い観測点は 2 要素のまま。
+ */
+export type StationEntry = [number, number] | [number, number, number]
+
 export interface StationCoordsData {
-  /** "都道府県|観測点名" -> [lat, lon]（isArea: false の地点用） */
-  stations: Record<string, LatLng>
+  /** "都道府県|観測点名" -> [lat, lon, regionIdx?]（isArea: false の地点用） */
+  stations: Record<string, StationEntry>
   /** "都道府県|細分区域名" -> [lat, lon]（isArea: true の地点用） */
   areas: Record<string, LatLng>
+  /** 一次細分区域名の一覧（stations の 3 要素目が指す先）。旧データには無いため optional。 */
+  regionNames?: string[]
 }
 
 const DATA_URL = `${import.meta.env.BASE_URL}data/station-coords.json`
@@ -116,5 +124,24 @@ export function lookupPointCoords(
 ): LatLng | null {
   const key = `${pref}|${addr}`
   if (isArea) return data.areas[key] ?? null
-  return data.stations[key] ?? null
+  const entry = data.stations[key]
+  return entry ? [entry[0], entry[1]] : null
+}
+
+/**
+ * 観測点が属する一次細分区域名を引く（isArea:false の地点用）。
+ * 未収録の観測点・区域を持たない観測点・旧データ（regionNames 無し）では null を返す。
+ *
+ * 座標からの点内包判定では、元データの 0.01 度（約 1km）粒度の丸めによって細い島や
+ * 海岸沿いの観測点が海側に落ち、区域集約から漏れたり隣県の区域に誤って入る。
+ * 区域の帰属はジオメトリではなくこのテーブルを正とする。
+ */
+export function lookupStationRegion(
+  data: StationCoordsData,
+  pref: string,
+  addr: string,
+): string | null {
+  const regionIdx = data.stations[`${pref}|${addr}`]?.[2]
+  if (regionIdx == null) return null
+  return data.regionNames?.[regionIdx] ?? null
 }
