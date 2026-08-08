@@ -4,6 +4,7 @@ import { useStationCoords } from './useStationCoords'
 import { useSubRegions } from './useSubRegions'
 import {
   lookupPointCoords,
+  lookupStationRegion,
   buildAreaPrefIndex,
   buildStationPrefIndex,
   type LatLng,
@@ -30,6 +31,10 @@ export interface IntensityMarker {
   scale: number
   pref: string
   addr: string
+  /** 電文上の区分。true は観測点ではなく一次細分区域そのものの代表点。 */
+  isArea: boolean
+  /** 観測点が属する一次細分区域名（座標テーブル由来）。未収録なら null。 */
+  region: string | null
 }
 
 export interface RegionAggregate {
@@ -102,7 +107,15 @@ export function useQuakeLayerData(
         p.pref || ((p.isArea ? areaPrefIndex.get(p.addr) : stationPrefIndex.get(p.addr)) ?? '')
       const position = lookupPointCoords(stationCoords, pref, p.addr, p.isArea)
       if (!position) return
-      markers.push({ key: `${pref}|${p.addr}|${i}`, position, scale: p.scale, pref, addr: p.addr })
+      markers.push({
+        key: `${pref}|${p.addr}|${i}`,
+        position,
+        scale: p.scale,
+        pref,
+        addr: p.addr,
+        isArea: p.isArea,
+        region: p.isArea ? p.addr : lookupStationRegion(stationCoords, pref, p.addr),
+      })
     })
     return markers.sort((a, b) => a.scale - b.scale)
   }, [mode, quake, stationCoords, areaPrefIndex, stationPrefIndex])
@@ -135,16 +148,28 @@ export function useQuakeLayerData(
   // 着地後の状態を先取りして区域マッチングする必要がある）。
   const regionMaxByName = useMemo<Map<string, number>>(() => {
     const maxByName = new Map<string, number>()
-    if (mode !== 'quake' || !quake || subregionIndex.length === 0) return maxByName
+    if (mode !== 'quake' || !quake) return maxByName
 
-    // パス1: isArea:false 観測点 → 点内包判定。
+    const bump = (name: string, scale: number) => {
+      const cur = maxByName.get(name)
+      if (cur == null || scale > cur) maxByName.set(name, scale)
+    }
+
+    // パス1: 観測点(isArea:false) → 座標テーブルが持つ所属区域名で直接マッチ。
+    // 観測点座標は元データが 0.01 度（約 1km）粒度のため、細い島や海岸沿いでは点内包判定が
+    // 海側に落ちて集約から漏れる・隣県の区域に誤って入る（lookupStationRegion 参照）。
+    // 区域を持たない観測点（テーブル未収録）のみ、従来どおり座標の点内包判定にフォールバックする。
     for (const m of intensityMarkers) {
+      if (m.isArea) continue // パス2 が区域名で直接扱う
+      if (m.region) {
+        bump(m.region, m.scale)
+        continue
+      }
       const [lat, lng] = m.position
       for (const e of subregionIndex) {
         if (lat < e.minLat || lat > e.maxLat || lng < e.minLng || lng > e.maxLng) continue
         if (pointInRings(lat, lng, e.sr.rings)) {
-          const cur = maxByName.get(e.sr.name)
-          if (cur == null || m.scale > cur) maxByName.set(e.sr.name, m.scale)
+          bump(e.sr.name, m.scale)
           break
         }
       }
@@ -153,8 +178,7 @@ export function useQuakeLayerData(
     // パス2: isArea:true の地点 → 区域名で直接マッチ（観測点が海上でも確実に塗る）。
     for (const p of quake.points) {
       if (!p.isArea) continue
-      const cur = maxByName.get(p.addr)
-      if (cur == null || p.scale > cur) maxByName.set(p.addr, p.scale)
+      bump(p.addr, p.scale)
     }
     return maxByName
   }, [mode, quake, subregionIndex, intensityMarkers])
@@ -246,12 +270,14 @@ export function useQuakeLayerData(
       return positions
     }
     const positions: LatLng[] = []
-    if (regionMaxByName.size > 0) {
-      for (const e of subregionIndex) {
-        if (!regionMaxByName.has(e.sr.name)) continue
-        positions.push([e.minLat, e.minLng], [e.maxLat, e.maxLng])
-      }
-    } else {
+    for (const e of subregionIndex) {
+      if (!regionMaxByName.has(e.sr.name)) continue
+      positions.push([e.minLat, e.minLng], [e.maxLat, e.maxLng])
+    }
+    // regionMaxByName は座標テーブル由来のため subregions のロードを待たずに埋まる。
+    // 「区域が1件もマッチしない」判定は Map のサイズではなく実際に得られたポリゴン数で行う
+    // （未ロード時に震源だけへフィットしてしまうのを防ぐ）。
+    if (positions.length === 0) {
       for (const m of intensityMarkers) positions.push(m.position)
     }
     if (epicenter) positions.push(epicenter)
