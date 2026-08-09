@@ -114,7 +114,7 @@ Yahoo RealTimeData (1Hz JSON)
    ラッチが立つ。一度立つと `HOLD_MS` の間は（揺れが弱まっても）`confirmed` を維持する（明滅防止）
    - **(a) 通常経路**: `lastSize ≥ effectiveConfirmReq` かつ `maxIntensity ≥ confirmIntensityReq` かつ
      `intenseCount ≥ CONFIRM_INTENSE_POINTS`
-   - **(b) 高震度 fast path（§20）**: `HIGH_CONFIRM_INTENSITY`（震度3）以上に達した levelActive メンバーが
+   - **(b) 高震度 fast path（設計書§20）**: `HIGH_CONFIRM_INTENSITY`（震度3）以上に達した levelActive メンバーが
      `HIGH_CONFIRM_POINTS` 点以上。点数ゲート（`effectiveConfirmReq`・慢性活性セルの引き上げ幅を含む）を
      免除する。`confirmFramesReq` の連続要求は (a) (b) 共通で免除しない（単フレームの跳ね値を弾く安全弁）
    - `effectiveConfirmReq` は密度正規化済み: `max(MIN_LIKELY_POINTS, min(confirmPointsBase(+慢性活性なら
@@ -149,7 +149,7 @@ Yahoo RealTimeData (1Hz JSON)
 いずれの軸も EEW（震源要素確定）発表中の確定緩和（`EEW_CONFIRM_POINTS`/`EEW_CONFIRM_FRAMES`）で変わらない。
 緩和されるのは確定点数・確定連続フレーム数のバーのみで、単点ノイズを弾く仕組み自体は EEW 中でも維持される。
 
-高震度 fast path（§20）だけは第2軸（慢性活性セルの確定バー引き上げ）も併せて免除する。慢性ノイズの学習床は
+高震度 fast path（設計書§20）だけは第2軸（慢性活性セルの確定バー引き上げ）も併せて免除する。慢性ノイズの学習床は
 `FLOOR_CAP`=1.5（震度2相当）で頭打ちになるため `HIGH_CONFIRM_INTENSITY`=2.5 はその外側にあり、平常時2時間
 （全国1725点）の実データでも value≥2.5 の出現が皆無だったことを確認している。第1軸（点別床）と `MIN_CLUSTER`
 （空間コヒーレンス）は fast path でも維持される——fast path が数えるのは同一イベントのメンバーだけなので、
@@ -189,7 +189,7 @@ Yahoo RealTimeData (1Hz JSON)
 | `MIN_CONFIRM_INTENSITY` | confirmed の最大震度下限 | 0.5（震度1） |
 | `CONFIRM_INTENSE_POINTS` | confirmed に要する確定震度到達点数（単点ノイズ除去の第3軸） | 2 |
 | `CONFIRM_FRAMES` | confirmed 連続フレーム数 | 2 |
-| `HIGH_CONFIRM_INTENSITY` | 高震度 fast path の震度下限（点数ゲートを免除・§20） | 2.5（震度3） |
+| `HIGH_CONFIRM_INTENSITY` | 高震度 fast path の震度下限（点数ゲートを免除・設計書§20） | 2.5（震度3） |
 | `HIGH_CONFIRM_POINTS` | 高震度 fast path に要する高震度到達点数 | 2 |
 | `EEW_CONFIRM_POINTS` | EEW（震源要素確定）発表中に CONFIRM_POINTS の代わりに使う確定点数 | 3 |
 | `EEW_CONFIRM_FRAMES` | EEW 発表中に CONFIRM_FRAMES の代わりに使う確定連続フレーム数 | 1 |
