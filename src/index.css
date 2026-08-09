@@ -31,6 +31,13 @@ body {
 
 /* ポップアップ（活断層・プレート境界・震源・区域塗り等の maplibregl.Popup）をダークテーマに合わせる。
    MapLibre 既定は白背景のため、コンテンツと吹き出しの色を上書きする。 */
+/* 吹き出しは HTML マーカーより必ず前面に置く。
+   マーカー側は重なり順の制御に z-index を使っており（震度ラベルは 震度値 × INTENSITY_Z(1000) で
+   最大 70000、LPGM ラベルは 階級 × 1000）、ポップアップは既定が z-index:auto。両者は同じ
+   スタッキングコンテキスト（.maplibregl-map 直下）に並ぶため、放置すると吹き出しがラベルの下へ潜る。 */
+.maplibregl-popup {
+  z-index: 100000;
+}
 .maplibregl-popup-content {
   background: #1a1d26;
   color: #e2e8f0;
