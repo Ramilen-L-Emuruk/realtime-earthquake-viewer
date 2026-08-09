@@ -1,5 +1,6 @@
 import * as maplibregl from 'maplibre-gl'
 import type { Map as MapLibreMap, MapMouseEvent, MapGeoJSONFeature } from 'maplibre-gl'
+import { escapeHtml } from './popupHtml'
 
 // 線レイヤーのクリック当たり判定＋ポップアップを担う共通ユーティリティ。
 // MapLibre の queryRenderedFeatures はクリック点の実描画ピクセルにヒットした feature を返すため、
@@ -50,10 +51,8 @@ export function bindLinePopup(
 // title / subtitle はプレーンテキストとして埋め込むため、呼び出し側で信頼できる値のみ渡す
 // （データは自前生成の public/data 由来で、ユーザー入力は含まない）。
 export function twoLinePopupHtml(title: string, subtitle: string): string {
-  const esc = (s: string) =>
-    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   return (
-    `<div class="text-sm"><div class="font-bold" style="color:#111">${esc(title)}</div>` +
-    `<div class="text-xs" style="color:#4b5563">${esc(subtitle)}</div></div>`
+    `<div class="text-sm"><div class="font-bold">${escapeHtml(title)}</div>` +
+    `<div class="text-xs" style="color:#94a3b8">${escapeHtml(subtitle)}</div></div>`
   )
 }

@@ -61,8 +61,8 @@ function buildLabelEl(scale: number, iconScale: number): HTMLDivElement {
 function popupHtml(name: string, scale: number): string {
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   return (
-    `<div class="text-sm"><div class="font-bold" style="color:#111">${esc(name)}</div>` +
-    `<div class="text-xs" style="color:#4b5563">最大震度 ${esc(getIntensityLabel(scale))}</div></div>`
+    `<div class="text-sm"><div class="font-bold">${esc(name)}</div>` +
+    `<div class="text-xs" style="color:#94a3b8">最大震度 ${esc(getIntensityLabel(scale))}</div></div>`
   )
 }
 

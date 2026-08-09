@@ -59,8 +59,8 @@ function buildLabelEl(lgInt: number, iconScale: number): HTMLDivElement {
 function popupHtml(name: string, lgInt: number): string {
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   return (
-    `<div class="text-sm"><div class="font-bold" style="color:#111">${esc(name)}</div>` +
-    `<div class="text-xs" style="color:#4b5563">長周期地震動 ${esc(getLpgmClassLabel(lgInt))}</div></div>`
+    `<div class="text-sm"><div class="font-bold">${esc(name)}</div>` +
+    `<div class="text-xs" style="color:#94a3b8">長周期地震動 ${esc(getLpgmClassLabel(lgInt))}</div></div>`
   )
 }
 

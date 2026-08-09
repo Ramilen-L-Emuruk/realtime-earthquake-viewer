@@ -24,7 +24,7 @@ function tooltipHtml(bar: TsunamiObsBar): string {
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   const desc = `${bar.height.over ? '>' : ''}${bar.height.description}`
   return (
-    `<div class="text-sm"><div class="font-bold" style="color:#111">${esc(bar.name)}</div>` +
+    `<div class="text-sm"><div class="font-bold">${esc(bar.name)}</div>` +
     `<div class="text-xs" style="color:${bar.color}">${esc(desc)}</div></div>`
   )
 }

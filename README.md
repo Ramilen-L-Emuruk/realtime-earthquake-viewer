@@ -12,7 +12,7 @@
 
 地図を常時表示し、右端のアイコンボタンで右パネルの内容を切り替える構成です。
 
-- **地震情報タブ**: 過去の地震をカード表示。地図に各観測点の震度を色付きドットで表示し、震源をマーク。カードを選択するとその地震の情報に切り替わる。
+- **地震情報タブ**: 過去の地震をカード表示。地図に各観測点の震度を色付きドットで表示し、震源をマーク。観測点はホバーで観測点名と震度、クリックで所属する一次細分区域と震源距離まで表示する。カードを選択するとその地震の情報に切り替わる。
 - **リアルタイムタブ**: 各観測点のリアルタイム震度を毎秒更新で地図に表示。緊急地震速報の発報時は予報円・震源を地図に重ねて表示し、右パネルに EEW 情報カードを表示。揺れの候補クラスタが立った時点でタブ切替・タイトル変更・控えめな通知音・地図フィットで早期に知らせ、確定すると検知カード・通知音・ブラウザ通知を伴う本検知へ切り替わる。
 - **津波情報タブ**: 大津波警報・津波警報・津波注意報・津波予報（若干の海面変動）を表示。同一階級内で予想波高が同じ区域はグルーピングして表示し、津波予報区コードが一致する観測情報（観測点名・波高・到達時刻）は該当区域の直下に表示。紐づけできない観測（沖合観測など）は別カードにフォールバック表示。対象海域を地図の海岸線に等級色で描画し対象区域へ自動ズーム。
 - **設定タブ**: 通知音・ブラウザ通知・表示件数・UI 倍率・デフォルトタブ・自動復帰時間などを設定。合成データによる各種テスト送信に加え、実際に発生した地震の電文データを発生時と同じ間隔で再生する「実地震テスト」も可能（標準版・DM-D.S.S 版共通）。DM-D.S.S 版では DMDATA.JP の API キー設定・接続状態確認も行える。
@@ -256,11 +256,11 @@ realtime-earthquake-viewer/
 │   │   │   ├── mapGLContext.ts        # map インスタンス購読 Context（react-leaflet useMap 相当を自前実装）
 │   │   │   ├── BaseMapGL.tsx          # 行政区域ベースマップ（陸地塗り・県境・一次細分区域境界・海底地形タイル暗色化）
 │   │   │   ├── LabelsGL.tsx           # 地方/県/区域名ラベル（symbol + 事前生成 SDF グリフ・ズーム帯で粒度切替）
-│   │   │   ├── QuakeIntensityPointsGL.tsx # 地震情報タブの観測点震度点（circle）
+│   │   │   ├── QuakeIntensityPointsGL.tsx # 地震情報タブの観測点震度点（circle＋ホバー/クリックのポップアップ）
 │   │   │   ├── QuakeRegionFillGL.tsx  # 一次細分区域別の震度塗り＋震度バッジ
 │   │   │   ├── EpicenterGL.tsx        # 震源マーカー（×）＋ポップアップ
 │   │   │   ├── QuakeHeatmapGL.tsx     # 直近1ヶ月の地震活動ヒートマップ（MapLibre ネイティブ heatmap）
-│   │   │   ├── LpgmPointsGL.tsx / LpgmRegionFillGL.tsx # 長周期地震動の観測点点・区域塗り
+│   │   │   ├── LpgmPointsGL.tsx / LpgmRegionFillGL.tsx # 長周期地震動の観測点点（ポップアップ付き）・区域塗り
 │   │   │   ├── KyoshinPointsGL.tsx    # 強震モニタ観測点（震度1以上・feature-state 毎秒更新）
 │   │   │   ├── KyoshinSubThresholdGL.tsx # 震度0以下（index 1〜6）。FBO 二層合成のカスタムレイヤー（非加算合成）
 │   │   │   ├── KyoshinDetectedPointsGL.tsx / KyoshinMaxEffectGL.tsx # 揺れ検知点・最大震度波紋エフェクト
@@ -269,7 +269,7 @@ realtime-earthquake-viewer/
 │   │   │   ├── EewRegionFillGL.tsx / EewLpgmRegionFillGL.tsx / EewEpicentersGL.tsx # EEW 予想震度塗り・予想長周期塗り・震源
 │   │   │   ├── PsWaveGL.tsx           # EEW P波・S波地表到達円（getCanvasContainer 上のオーバーレイ Canvas）
 │   │   │   ├── CameraFollowsGL.tsx    # カメラ追従一括（地震/検知/候補/EEW/津波フィット・観測フォーカス・idle 抑制）
-│   │   │   └── gl/                    # GL 補助（layerOrder=描画順の単一情報源 / geojson / camera / linePopup / subThresholdLayer）
+│   │   │   └── gl/                    # GL 補助（layerOrder=描画順の単一情報源 / geojson / camera / linePopup / pointPopup / popupHtml / subThresholdLayer）
 │   │   ├── SpecialInfoBanner/      # 南海トラフ臨時情報・国民保護情報バナー
 │   │   ├── RealtimeTab/            # 強震モニタ検知(V2)カード・EEW情報・凡例・注記パネル（地図は JapanMapGL が担当）
 │   │   ├── SettingsTab/            # 設定パネル

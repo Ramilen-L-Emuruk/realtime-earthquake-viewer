@@ -40,14 +40,14 @@ function buildPopupHtml(quake: JMAQuake, prefIntensities: [string, number][]): s
         `<div style="display:flex;align-items:center;gap:8px;font-size:12px">` +
         `<span style="display:inline-block;width:20px;text-align:center;font-weight:700;border-radius:3px;` +
         `color:#fff;font-size:10px;background:${color}">${esc(label)}</span>` +
-        `<span style="color:#374151">${esc(pref)}</span></div>`
+        `<span style="color:#cbd5e1">${esc(pref)}</span></div>`
       )
     })
     .join('')
   return (
     `<div class="text-sm" style="min-width:160px">` +
-    `<div class="font-bold" style="margin-bottom:4px;color:#111">${esc(hc.name)}</div>` +
-    `<div class="text-xs" style="color:#4b5563">${esc(formatMagnitude(hc.magnitude))} / 深さ ${esc(formatDepth(hc.depth))}</div>` +
+    `<div class="font-bold" style="margin-bottom:4px">${esc(hc.name)}</div>` +
+    `<div class="text-xs" style="color:#94a3b8">${esc(formatMagnitude(hc.magnitude))} / 深さ ${esc(formatDepth(hc.depth))}</div>` +
     (rows ? `<div style="margin-top:8px;display:flex;flex-direction:column;gap:2px">${rows}</div>` : '') +
     `</div>`
   )
