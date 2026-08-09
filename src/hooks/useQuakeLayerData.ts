@@ -47,6 +47,10 @@ export interface RegionAggregate {
 export interface LpgmMarker {
   position: LatLng
   lgInt: number
+  /** 観測点名（ポップアップ表示用）。 */
+  name: string
+  /** 都道府県名。電文に無ければ座標テーブルの索引から補完する。 */
+  pref: string
 }
 
 export interface LpgmRegionAggregate {
@@ -247,7 +251,7 @@ export function useQuakeLayerData(
       const pref = p.pref || stationPrefIndex.get(p.name) || ''
       const position = lookupPointCoords(stationCoords, pref, p.name, false)
       if (!position) continue
-      markers.push({ position, lgInt: p.lgInt })
+      markers.push({ position, lgInt: p.lgInt, name: p.name, pref })
     }
     return markers.sort((a, b) => a.lgInt - b.lgInt)
   }, [lpgmActive, lpgm, stationCoords, stationPrefIndex])

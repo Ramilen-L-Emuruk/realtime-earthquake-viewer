@@ -4,6 +4,13 @@ export interface HeatPoint {
   lat: number
   lng: number
   weight: number
+  /** 震源地名。DMDSS の GD Earthquake List が返さない場合は空文字。 */
+  name: string
+  /** 発生時刻（ISO 文字列）。 */
+  time: string
+  /** 深さ(km)。不明・未取得は -1（formatDepth が「不明」に落とす）。 */
+  depth: number
+  magnitude: number
 }
 
 // 地震の同一性判定キー。DMDSS版の id には14桁の eventId が埋め込まれておりそれを使う

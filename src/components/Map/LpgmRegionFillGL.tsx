@@ -7,6 +7,7 @@ import { getLpgmClassColor, getLpgmClassLabel } from '../../utils/lpgm'
 import type { LpgmRegionAggregate } from '../../hooks/useQuakeLayerData'
 import { ringToLngLat } from './gl/geojson'
 import { addOrderedLayer } from './gl/layerOrder'
+import { attachMarkerClaim, type PopupHandle } from './gl/popupRegistry'
 
 // 長周期地震動のズームアウト時、一次細分区域ごとの最大階級を塗る MapLibre 版
 // （Leaflet 版 JapanMap の lpgm-region-fill ペイン＋区域中心マーカー相当）。
@@ -59,14 +60,16 @@ function buildLabelEl(lgInt: number, iconScale: number): HTMLDivElement {
 function popupHtml(name: string, lgInt: number): string {
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   return (
-    `<div class="text-sm"><div class="font-bold" style="color:#111">${esc(name)}</div>` +
-    `<div class="text-xs" style="color:#4b5563">長周期地震動 ${esc(getLpgmClassLabel(lgInt))}</div></div>`
+    `<div class="text-sm"><div class="font-bold">${esc(name)}</div>` +
+    `<div class="text-xs" style="color:#94a3b8">長周期地震動 ${esc(getLpgmClassLabel(lgInt))}</div></div>`
   )
 }
 
 export function LpgmRegionFillGL({ regionAggregates, iconScale, visible }: Props) {
   const map = useMapGL()
   const markersRef = useRef<maplibregl.Marker[]>([])
+  // ラベルマーカーのクリック宣言（レイヤー由来のポップアップと二重に開かないための調停）。
+  const claimsRef = useRef<PopupHandle[]>([])
   const addedRef = useRef(false)
 
   useEffect(() => {
@@ -88,6 +91,8 @@ export function LpgmRegionFillGL({ regionAggregates, iconScale, visible }: Props
     })
     addedRef.current = true
     return () => {
+      for (const c of claimsRef.current) c.remove()
+      claimsRef.current = []
       for (const mk of markersRef.current) mk.remove()
       markersRef.current = []
       if (map.getLayer(LINE_LYR)) map.removeLayer(LINE_LYR)
@@ -102,6 +107,8 @@ export function LpgmRegionFillGL({ regionAggregates, iconScale, visible }: Props
     const src = map.getSource(FILL_SRC) as GeoJSONSource | undefined
     src?.setData(buildFillFC(regionAggregates))
 
+    for (const c of claimsRef.current) c.remove()
+    claimsRef.current = []
     for (const mk of markersRef.current) mk.remove()
     markersRef.current = []
     if (!visible) return
@@ -115,6 +122,7 @@ export function LpgmRegionFillGL({ regionAggregates, iconScale, visible }: Props
         .setLngLat([r.label[1], r.label[0]])
         .setPopup(popup)
         .addTo(map)
+      claimsRef.current.push(attachMarkerClaim(map, el))
       markersRef.current.push(marker)
     }
   }, [map, regionAggregates, iconScale, visible])

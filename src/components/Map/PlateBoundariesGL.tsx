@@ -2,7 +2,8 @@ import { useEffect, useRef } from 'react'
 import { useMapGL } from './mapGLContext'
 import type { PlateBoundarySegment } from '../../utils/plateBoundaries'
 import { segmentsToMultiLineFC } from './gl/geojson'
-import { bindLinePopup, twoLinePopupHtml, type LinePopupHandle } from './gl/linePopup'
+import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
+import { twoLinePopupHtml } from './gl/popupHtml'
 import { addOrderedLayer } from './gl/layerOrder'
 
 // 日本周辺のプレート境界線（PB2002モデル）を描画する MapLibre 版（Leaflet の PlateBoundariesLayer 相当）。
@@ -25,7 +26,7 @@ interface Props {
 
 export function PlateBoundariesGL({ plateBoundaries, visible }: Props) {
   const map = useMapGL()
-  const popupRef = useRef<LinePopupHandle | null>(null)
+  const popupRef = useRef<PopupHandle | null>(null)
 
   useEffect(() => {
     if (!map || !plateBoundaries) return
@@ -53,13 +54,18 @@ export function PlateBoundariesGL({ plateBoundaries, visible }: Props) {
         'line-dasharray': [3, 2],
       },
     })
-    popupRef.current = bindLinePopup(map, LYR, HIT_TOL_PX, (f) => {
-      const p = f.properties ?? {}
-      const type = p.type === 'subduction' ? '沈み込み境界' : '境界種別不明'
-      return twoLinePopupHtml(
-        `${p.plateA ?? ''} – ${p.plateB ?? ''}`,
-        `プレート境界（${type}・PB2002モデル）`,
-      )
+    popupRef.current = registerPopupSource(map, {
+      layerId: LYR,
+      priority: 'line',
+      tolPx: HIT_TOL_PX,
+      buildClickHtml: (f) => {
+        const p = f.properties ?? {}
+        const type = p.type === 'subduction' ? '沈み込み境界' : '境界種別不明'
+        return twoLinePopupHtml(
+          `${p.plateA ?? ''} – ${p.plateB ?? ''}`,
+          `プレート境界（${type}・PB2002モデル）`,
+        )
+      },
     })
     return () => {
       popupRef.current?.remove()

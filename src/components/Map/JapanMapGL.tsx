@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import * as maplibregl from 'maplibre-gl'
-import 'maplibre-gl/dist/maplibre-gl.css'
+// maplibre-gl.css は main.tsx が index.css より前に読む（カスケード順を固定するため。詳細は main.tsx）。
 // ?worker&url でワーカーとその依存（maplibre-gl-shared.mjs）を1ファイルにバンドルし URL を得る。
 // 単なる ?url だとワーカー単体しかコピーされず、ワーカー内の `import './maplibre-gl-shared.mjs'` が
 // 本番で 404 になり geojson タイル化が動かない（境界・区域が描画されない）。
@@ -190,6 +190,7 @@ export function JapanMapGL({
                 markers={stationMarkers}
                 iconScale={iconScale}
                 visible={!aggregateByRegion && !lpgmActive}
+                epicenter={epicenter}
               />
               {/* LPGM（長周期地震動）進行中: 区域集約時は区域塗り＋階級ラベル、高ズーム時は観測点ドット。 */}
               <LpgmRegionFillGL
