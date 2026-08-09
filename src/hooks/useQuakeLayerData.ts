@@ -57,8 +57,13 @@ export interface LpgmRegionAggregate {
 }
 
 export interface QuakeLayerData {
-  /** 観測点ごとの震度点（震度の弱い順＝強い震度を前面に描画する想定）。 */
+  /**
+   * 電文の震度点すべて（震度の弱い順）。区域の代表点（isArea:true）を含むため、
+   * ドット描画には使わない（→ stationMarkers）。カメラフィットのフォールバック用。
+   */
   intensityMarkers: IntensityMarker[]
+  /** 観測点だけの震度点（震度の弱い順＝強い震度を前面に描画する想定）。 */
+  stationMarkers: IntensityMarker[]
   /** true のとき一次細分区域へ集約して塗る（zoom <= QUAKE_MAX_ZOOM）。 */
   aggregateByRegion: boolean
   /** 区域ごとの最大震度集約（弱い順）。aggregateByRegion=false のときは空。 */
@@ -120,7 +125,22 @@ export function useQuakeLayerData(
     return markers.sort((a, b) => a.scale - b.scale)
   }, [mode, quake, stationCoords, areaPrefIndex, stationPrefIndex])
 
-  const aggregateByRegion = mode === 'quake' && !!quake && zoom <= QUAKE_MAX_ZOOM
+  // 区域の代表点（isArea:true）は区域内観測点の重心であって観測値の位置ではないため、
+  // ドット描画からは除く。区域の震度は区域塗り（regionAggregates）が表現する。
+  const stationMarkers = useMemo(
+    () => intensityMarkers.filter((m) => !m.isArea),
+    [intensityMarkers],
+  )
+
+  const lpgmActive = !!(lpgm && !lpgm.cancelled)
+
+  // 観測点を1つも持たない電文（震度速報＝DMDATA VXSE51／P2PQuake ScalePrompt）は、
+  // 拡大しても増える情報が無い。区域の代表点をドットにすると「その地点の観測値」に
+  // 見えてしまうため、ズームに関わらず区域集約を維持する。
+  // LPGM 表示中は LPGM 側の粒度（lpgmMarkers）で決まるため対象外。
+  const aggregateByRegion =
+    mode === 'quake' && !!quake &&
+    (zoom <= QUAKE_MAX_ZOOM || (!lpgmActive && stationMarkers.length === 0))
 
   // 一次細分区域に bbox を付与（点内包判定の前段フィルタ用）。
   const subregionIndex = useMemo(() => {
@@ -159,8 +179,7 @@ export function useQuakeLayerData(
     // 観測点座標は元データが 0.01 度（約 1km）粒度のため、細い島や海岸沿いでは点内包判定が
     // 海側に落ちて集約から漏れる・隣県の区域に誤って入る（lookupStationRegion 参照）。
     // 区域を持たない観測点（テーブル未収録）のみ、従来どおり座標の点内包判定にフォールバックする。
-    for (const m of intensityMarkers) {
-      if (m.isArea) continue // パス2 が区域名で直接扱う
+    for (const m of stationMarkers) {
       if (m.region) {
         bump(m.region, m.scale)
         continue
@@ -181,7 +200,7 @@ export function useQuakeLayerData(
       bump(p.addr, p.scale)
     }
     return maxByName
-  }, [mode, quake, subregionIndex, intensityMarkers])
+  }, [mode, quake, subregionIndex, stationMarkers])
 
   const regionAggregates = useMemo<RegionAggregate[]>(() => {
     if (!aggregateByRegion || subregionIndex.length === 0) return []
@@ -211,13 +230,14 @@ export function useQuakeLayerData(
   const prefIntensities = useMemo<[string, number][]>(() => {
     if (!quake) return []
     const maxByPref = quake.points.reduce<Record<string, number>>((acc, p) => {
+      // 区域点・観測点は pref を持たないことがある（regions[] 由来は常に空）。
+      // 空キーのまま集計すると震源ポップアップに名前の無い行が出るため除外する。
+      if (!p.pref) return acc
       if (!acc[p.pref] || p.scale > acc[p.pref]) acc[p.pref] = p.scale
       return acc
     }, {})
     return Object.entries(maxByPref).sort((a, b) => b[1] - a[1])
   }, [quake])
-
-  const lpgmActive = !!(lpgm && !lpgm.cancelled)
 
   // LPGM 観測点マーカー（Leaflet 版 lpgmMarkers と同一導出）。
   const lpgmMarkers = useMemo<LpgmMarker[]>(() => {
@@ -291,6 +311,7 @@ export function useQuakeLayerData(
 
   return {
     intensityMarkers,
+    stationMarkers,
     aggregateByRegion,
     regionAggregates,
     hasEpicenter,

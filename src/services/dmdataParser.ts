@@ -320,6 +320,17 @@ function xmlQ(parent: Element | Document, localName: string): Element | null {
   return null
 }
 
+// XML ヘルパー: 直下の子要素だけを localName で返す。
+// xmlQ は子孫すべてを探すため、Area 直下の MaxInt と City 配下の MaxInt のように
+// 同名要素が入れ子になっている箇所では取り違える。階層を特定したいときはこちらを使う。
+function xmlChild(parent: Element, localName: string): Element | null {
+  const children = parent.children
+  for (let i = 0; i < children.length; i++) {
+    if (children[i].localName === localName) return children[i]
+  }
+  return null
+}
+
 function xmlText(el: Element | null): string {
   return el?.textContent?.trim() ?? ''
 }
@@ -362,11 +373,12 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     }
   }
 
+  // VXSE51（震度速報）は震源が未確定の段階で発表されるため Earthquake 要素を持たない。
+  // JSON 経路（parseEarthquake）と同じく、この電文だけ震源なしを許容する。
   const earthquakeEl = xmlQ(doc, 'Earthquake')
-  if (!earthquakeEl) return null
+  if (!earthquakeEl && headType !== 'VXSE51') return null
 
-  const originTime = xmlText(xmlQ(earthquakeEl, 'OriginTime'))
-  const hypocenterEl = xmlQ(earthquakeEl, 'Hypocenter')
+  const hypocenterEl = earthquakeEl ? xmlQ(earthquakeEl, 'Hypocenter') : null
   const areaEl = hypocenterEl ? xmlQ(hypocenterEl, 'Area') : null
   // 遠地地震は Area/DetailedName に詳細震央地名（例: "ベネズエラ沿岸"）が入る。なければ Area/Name にフォールバック。
   const hypName = (areaEl ? xmlText(xmlQ(areaEl, 'DetailedName')) : '')
@@ -374,17 +386,26 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   const coordStr = areaEl ? xmlText(xmlQ(areaEl, 'Coordinate')) : ''
   const { lat, lng, depth } = parseJmaCoord(coordStr)
 
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null
+  // 震源を持つ電文で座標が読めないものは不正として捨てる（震度速報は上で除外済み）。
+  if (earthquakeEl && (!Number.isFinite(lat) || !Number.isFinite(lng))) return null
 
-  const magnitudeStr = xmlText(xmlQ(earthquakeEl, 'Magnitude'))
-  const magnitude = parseFloat(magnitudeStr) || 0
+  // 震度速報は Head/TargetDateTime（地震検知時刻）を earthquake.time に充てる。
+  // JSON 経路が data.targetDateTime を使うのと揃える。
+  const originTime = earthquakeEl
+    ? xmlText(xmlQ(earthquakeEl, 'OriginTime'))
+    : xmlText(xmlQ(doc, 'TargetDateTime'))
+
+  const magnitude = earthquakeEl
+    ? (parseFloat(xmlText(xmlQ(earthquakeEl, 'Magnitude'))) || 0)
+    : 0
 
   // MaxInt は Intensity > Observation 直下
   const obsEl = xmlQ(doc, 'Observation')
   const maxIntStr = obsEl ? xmlText(xmlQ(obsEl, 'MaxInt')) : ''
   const maxScale = parseIntensityStr(maxIntStr || null)
 
-  // 各観測点（IntensityStation）は Pref 内にある
+  // 震度は Pref 配下に「一次細分区域(Area) → 市区町村(City) → 観測点(IntensityStation)」と
+  // 入れ子で入る。震度速報は Area までしか持たず、震源・震度情報は両方を持つ。
   const points: JMAQuake['points'] = []
   const allEls = doc.getElementsByTagName('*')
   const prefEls: Element[] = []
@@ -393,14 +414,27 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   }
   for (const prefEl of prefEls) {
     const prefName = xmlText(xmlQ(prefEl, 'Name'))
-    const stEls = prefEl.getElementsByTagName('*')
-    for (let i = 0; i < stEls.length; i++) {
-      if (stEls[i].localName !== 'IntensityStation') continue
-      const stEl = stEls[i]
+    const descendants = prefEl.getElementsByTagName('*')
+    for (let i = 0; i < descendants.length; i++) {
+      const el = descendants[i]
+
+      if (el.localName === 'Area') {
+        // 区域は JSON 経路の regions[] と同じ規約で pref を空にする。EarthquakeCard は
+        // pref の有無で「都道府県の点」と「区域の点」を見分けるため（座標側は
+        // useQuakeLayerData が区域名から都道府県を逆引きして引き当てる）。
+        const areaName = xmlText(xmlChild(el, 'Name'))
+        const areaScale = parseIntensityStr(xmlText(xmlChild(el, 'MaxInt')) || null)
+        if (areaName && areaScale >= 0) {
+          points.push({ pref: '', addr: areaName, isArea: true, scale: areaScale as IntensityScale })
+        }
+        continue
+      }
+
+      if (el.localName !== 'IntensityStation') continue
       // JMA XML では地方公共団体の観測局名末尾に '＊'(U+FF0A) が付く。
       // station-coords.json のキーには '＊' がないため除去して引き当てる。
-      const stName = xmlText(xmlQ(stEl, 'Name')).replace(/＊$/, '')
-      const intStr = xmlText(xmlQ(stEl, 'Int'))
+      const stName = xmlText(xmlChild(el, 'Name')).replace(/＊$/, '')
+      const intStr = xmlText(xmlChild(el, 'Int'))
       const scale = parseIntensityStr(intStr || null)
       if (stName && scale >= 0) {
         points.push({ pref: prefName, addr: stName, isArea: false, scale: scale as IntensityScale })
@@ -437,7 +471,14 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     },
     earthquake: {
       time: originTime,
-      hypocenter: { name: hypName, latitude: lat, longitude: lng, depth, magnitude },
+      hypocenter: {
+        name: hypName,
+        // 震度速報は震源情報なし。-200 は「位置不明」センチネル（JSON 経路と同じ）。
+        latitude: Number.isFinite(lat) ? lat : -200,
+        longitude: Number.isFinite(lng) ? lng : -200,
+        depth,
+        magnitude,
+      },
       maxScale: maxScale >= 0 ? maxScale as IntensityScale : -1,
       domesticTsunami: domestic,
     },
