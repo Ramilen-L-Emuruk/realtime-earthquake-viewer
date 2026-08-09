@@ -254,6 +254,7 @@ geojson ソースの中身を数えるときは **`await map.getSource(id).getDa
 - P波・S波の地表到達円は `usePsWaveCalc.ts`（旧 `useDmdssWaves.ts`）が2層速度モデル（地殻＋マントル・Pn/Sn屈折波）で自前計算する。**標準版・DMDSS版で共通**（2026-07-29 統合。以前は標準版のみ Yahoo `RealTimeData` の `psWave.items` をそのまま使っていたが、Yahoo側は実発報時にしかデータが入らずテストボタンとも無関係だった）。
   - 入力は `EEWAlert.earthquake.hypocenter`（lat/lng/depth/magnitude）と `originTime`。ソースが DMDATA・P2PQuake・Yahoo hypoInfo のいずれでも同じ形なら動く。
   - `condition === '仮定震源要素'`（単独観測点処理・震源未確定の初期報）は円を生成しない（[usePsWaveCalc.ts](src/hooks/usePsWaveCalc.ts)）。DMDATA・P2PQuakeは電文の `condition` フィールドでこれを正しく判別できるが、**Yahoo hypoInfo には相当フィールドが無く常に `condition:'以上'` 固定**（[kyoshin.ts](src/services/kyoshin.ts) の `hypoInfoItemToEEW`）。標準版でYahoo hypoInfoが先にEEWを検知した場合、この判別が効かない非対称性が残る。
+  - **仮定震源要素の扱いは4箇所で揃える**（片方だけ直すと「予報円は出ないのに震源は確定と同じ見た目」のような非対称が生まれる）: 予報円を出さない（`usePsWaveCalc`）／カードで M・深さを隠す（`RealtimeTab`）／震度・長周期階級を0扱い（`eew.ts` の `eewMaxScale`・`eewMaxLpgmClass`）／**地図の震源×印をかなり薄く描く**（`useEewLayerData` の `EewEpicenter.isAssumed` → `EewEpicentersGL` の `ASSUMED_OPACITY_RATIO`）。形は確定震源と同じで濃さだけ変える。
   - 標準版はYahoo hypoInfoを主系のEEW検知源とし、P2PQuake WS（code=556）は基本 `areas`（地域別予想震度）の補完役だったが、P2PQuakeの方が `condition`・`hypocenter` とも数値型で正確なため、`enrichEEW`（[useEarthquakes.ts](src/hooks/useEarthquakes.ts)）はこれらも上書きするようにした（報番号が古い場合は上書きしない）。
 
 ### EEWレベル判定（特別警報の条件）
@@ -267,6 +268,8 @@ geojson ソースの中身を数えるときは **`await map.getSource(id).getDa
 - 描画順（背面→前面）の単一情報源は `src/components/Map/gl/layerOrder.ts` の `MAP_LAYER_ORDER`。各レイヤーコンポーネントは `addOrderedLayer` で追加し、この配列上で自分より前面に来るべき既存レイヤーの直前へ挿入することで、データ到着タイミングに依存せず順序を保証する。
   - 新レイヤーを足すときは `MAP_LAYER_ORDER` に id を追加し、コンポーネントの `id` と一致させる。配列に無い id は最上段へ積まれる。
   - custom レイヤー（`kyoshin-subthreshold`）は `getStyle().layers` に現れない（MapLibre 仕様）。順序確認は `map.style._order` を見る。
+- `maplibregl.Marker` の不透明度は **element の `style.opacity` ではなく Marker のオプション**（`opacity` / `opacityWhenCovered`）で渡す。Marker は「地形に隠れたとき薄くする」制御のため element の `style.opacity` を自前で上書きするので、`el.style.cssText` に書いても無視される。`EewEpicentersGL` はこれが原因で「リアルタイム震度モード以外は半透明 0.4」がコメント通りに動いていなかった（2026-08-09 に修正）。`opacityWhenCovered` を省くと地形有効時に既定の 0.2 が効くため、隠蔽時も同じ濃さにしたいなら同値を渡す。
+- **EEW の「予想」系レイヤー（`eew-region-fill` / `eew-lpgm-region-fill`）は kyoshin モード限定**。`useEewLayerData` が `mode !== 'kyoshin'` で空配列を返すことで担保しており、`JapanMapGL` 側のモード分岐の外に置かれていても地震情報タブには出ない。地震情報タブの実測の区域塗りと同じ地図に並ぶと「予想」と「実測」が同じ配色で見分けられなくなるため。EEW 震源の×印だけは全モードで表示する（kyoshin 以外は半透明 0.4）。
 
 ### 震度集約の単位
 - ズームアウト時の集約単位は**一次細分区域**（`subregions.json` 由来）。「都道府県」という表現はコメント・ドキュメントで使わない。
