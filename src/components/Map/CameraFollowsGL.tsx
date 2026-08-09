@@ -10,6 +10,8 @@ import {
   flyToPoint,
   flyToBoundsSnapped,
   boundsFromCirclesForEewFollow,
+  boundsForLiveFollow,
+  boundsFromPositions,
   mapContainsBounds,
   isProgrammaticFlight,
   MAX_ZOOM,
@@ -62,6 +64,8 @@ export function FitJapanOnEnterGL({ hasEew, hasDetection }: { hasEew: boolean; h
 }
 
 // ── 揺れ検知点にフィットし、検知終了時は日本全体に戻す（EEW 中は戻さない） ──────────
+// 初回（検知開始）は hasEew を無視して検知点へ寄せる。その後は検知点が画面からはみ出したときだけ
+// 追い直す（1点増えるたびに動かさないよう flyToBoundsSnapped のズーム段階をヒステリシスに使う）。
 export function FitToDetectionGL({ points, hasEew }: { points: DetectedPoint[]; hasEew: boolean }) {
   const map = useMapGL()
   const fittedRef = useRef(false)
@@ -77,10 +81,21 @@ export function FitToDetectionGL({ points, hasEew }: { points: DetectedPoint[]; 
       }
       return
     }
-    if (fittedRef.current) return
-    fittedRef.current = true
-    log.debug(`[mapGL] 揺れ検知フィット (${points.length}点)`)
-    fitToPositions(map, points.map(dp2ll), { padding: 60, maxZoom: MAX_ZOOM, durationSec: 1.0 })
+    if (!fittedRef.current) {
+      fittedRef.current = true
+      log.debug(`[mapGL] 揺れ検知フィット (${points.length}点)`)
+      fitToPositions(map, points.map(dp2ll), { padding: 60, maxZoom: MAX_ZOOM, durationSec: 1.0 })
+      return
+    }
+    // 検知範囲の成長追従。EEW 発報中は FitToEEWGL が「有感半径 ∪ 検知点」を追うため、ここでは追わない。
+    // 両方が「自分の bounds がはみ出したら引く」を持つと目標が2つになり、互いに相手をはみ出させ合って
+    // 振動する（ズーム段階のヒステリシスでは止まらない。目標同士が排他のため）。hasEew で持ち主を分ける。
+    if (hasEew) return
+    if (isProgrammaticFlight(map)) return
+    const bounds = boundsFromPositions(points.map(dp2ll))
+    if (!bounds || mapContainsBounds(map, bounds)) return
+    log.debug(`[mapGL] 揺れ検知 成長フォロー (${points.length}点)`)
+    flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
   }, [map, points, hasEew])
   return null
 }
@@ -243,19 +258,23 @@ export function FitToEEWGL({
     flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
   }, [eews.length, psWave, latest, map])
 
-  // 予報円の成長に追従（表示に収まらなくなった時のみズームアウト）。
+  // 予報円と揺れ検知点の広がりに追従（表示に収まらなくなった時のみズームアウト）。
+  // 目標は「有感半径 bounds ∪ 検知点」の単一 bounds。EEW 発報中の追従はこの効果が一手に引き受け、
+  // FitToDetectionGL 側は hasEew で止まる（目標を2つにすると振動するため。boundsForLiveFollow 参照）。
+  // psWave が空でも eews があれば検知点だけで追う。仮定震源要素・M不明・自動解除直後は円が作れず、
+  // 以前はここで早期 return していたため「EEW は生きているのに誰も追わない」穴になっていた。
   // isProgrammaticFlight(map) により、他コンポーネントの自動フィットが進行中の間もこの効果は
   // 再フィットを待つ（同時に複数のカメラアニメーションが競合するのを避ける）。
   useEffect(() => {
     if (!map) return
-    if (eews.length === 0 || psWave.length === 0) return
+    if (eews.length === 0) return
     if (userInteractedRef.current || isProgrammaticFlight(map)) return
-    const bounds = boundsFromCirclesForEewFollow(psWave)
+    const bounds = boundsForLiveFollow(psWave, detectedPoints.map(dp2ll))
     if (bounds && !mapContainsBounds(map, bounds)) {
-      log.debug(`[mapGL] EEW波円成長フォロー 波円${psWave.length}個`)
+      log.debug(`[mapGL] EEW成長フォロー 波円${psWave.length}個+検知${detectedPoints.length}点`)
       flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
     }
-  }, [eews.length, psWave, map])
+  }, [eews.length, psWave, detectedPoints, map])
 
   return null
 }
