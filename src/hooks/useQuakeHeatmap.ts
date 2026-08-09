@@ -12,7 +12,10 @@ const HEATMAP_DAYS = 30
 // キャッシュ取得後にライブ受信した地震は earthquakes とのマージで別途反映するため、
 // このキャッシュ自体はやや古くても実害は小さい。
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000
-const CACHE_KEY = isDmdss ? 'quake-heatmap-cache-dmdss' : 'quake-heatmap-cache'
+// 保存形式に震源名・深さ・発生時刻を足したため、旧形式と混ざらないようキーを変える（v2）。
+const CACHE_KEY = isDmdss ? 'quake-heatmap-cache-dmdss-v2' : 'quake-heatmap-cache-v2'
+// 旧形式のキャッシュは二度と読まないので、見かけたら掃除する。
+const LEGACY_CACHE_KEYS = ['quake-heatmap-cache', 'quake-heatmap-cache-dmdss']
 
 // quakeIdentityKey で重複排除できるよう、キャッシュ側の点にもキーを持たせる。
 interface KeyedHeatPoint extends HeatPoint {
@@ -26,6 +29,7 @@ interface CacheEntry {
 
 function loadCache(): CacheEntry | null {
   try {
+    for (const key of LEGACY_CACHE_KEYS) localStorage.removeItem(key)
     const raw = localStorage.getItem(CACHE_KEY)
     if (!raw) return null
     return JSON.parse(raw) as CacheEntry
@@ -82,6 +86,10 @@ export function useQuakeHeatmap(
             lat: it.latitude,
             lng: it.longitude,
             weight: magnitudeToWeight(it.magnitude),
+            name: it.name,
+            time: it.originTime,
+            depth: it.depth,
+            magnitude: it.magnitude,
           })),
         )
       : fetchJmaQuakeHistory(HEATMAP_DAYS).then(quakes =>
@@ -92,6 +100,10 @@ export function useQuakeHeatmap(
               lat: q.earthquake.hypocenter.latitude,
               lng: q.earthquake.hypocenter.longitude,
               weight: magnitudeToWeight(q.earthquake.hypocenter.magnitude),
+              name: q.earthquake.hypocenter.name,
+              time: q.earthquake.time,
+              depth: q.earthquake.hypocenter.depth,
+              magnitude: q.earthquake.hypocenter.magnitude,
             })),
         )
 
@@ -125,10 +137,18 @@ export function useQuakeHeatmap(
     for (const p of basePoints) merged.set(p.key, p)
     for (const q of earthquakes) {
       if (q.cancelled || q.cancelledAt) continue
-      const { latitude, longitude, magnitude } = q.earthquake.hypocenter
+      const { latitude, longitude, magnitude, name, depth } = q.earthquake.hypocenter
       if (!hasValidHypocenter(latitude, longitude)) continue
       if (new Date(q.earthquake.time).getTime() < cutoffMs) continue
-      merged.set(quakeIdentityKey(q), { lat: latitude, lng: longitude, weight: magnitudeToWeight(magnitude) })
+      merged.set(quakeIdentityKey(q), {
+        lat: latitude,
+        lng: longitude,
+        weight: magnitudeToWeight(magnitude),
+        name,
+        time: q.earthquake.time,
+        depth,
+        magnitude,
+      })
     }
     return Array.from(merged.values())
   }, [basePoints, earthquakes])

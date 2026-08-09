@@ -9,18 +9,25 @@ export function ringToLngLat(ring: LatLng[]): [number, number][] {
   return ring.map(([lat, lng]) => [lng, lat])
 }
 
-/** リング群を、各リング1枚のポリゴン Feature 群にした FeatureCollection（穴なし・独立描画）。 */
-export function ringsToPolygonFC(ringGroups: LatLng[][][]): FeatureCollection<Polygon> {
+/**
+ * リング群を、各リング1枚のポリゴン Feature 群にした FeatureCollection（穴なし・独立描画）。
+ * props を渡すと、リンググループの添字から各 Feature の属性を作る
+ * （区域名など、クリック時のポップアップに使う値を載せるため）。
+ */
+export function ringsToPolygonFC(
+  ringGroups: LatLng[][][],
+  props?: (groupIndex: number) => GeoJsonProperties,
+): FeatureCollection<Polygon> {
   const features: Feature<Polygon>[] = []
-  for (const rings of ringGroups) {
+  ringGroups.forEach((rings, groupIndex) => {
     for (const ring of rings) {
       features.push({
         type: 'Feature',
-        properties: {},
+        properties: props ? props(groupIndex) : {},
         geometry: { type: 'Polygon', coordinates: [ringToLngLat(ring)] },
       })
     }
-  }
+  })
   return { type: 'FeatureCollection', features }
 }
 
