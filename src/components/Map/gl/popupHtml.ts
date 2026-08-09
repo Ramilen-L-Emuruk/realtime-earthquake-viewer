@@ -11,6 +11,14 @@ export function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+/** 見出し＋補足の2段組み本文（活断層・プレート境界・津波海岸線などの共通形）。 */
+export function twoLinePopupHtml(title: string, subtitle: string): string {
+  return (
+    `<div class="text-sm"><div class="font-bold">${escapeHtml(title)}</div>` +
+    `<div class="text-xs" style="color:#94a3b8">${escapeHtml(subtitle)}</div></div>`
+  )
+}
+
 /** 震度・長周期地震動階級を示す色付きバッジ（震源ポップアップの県別震度と同じ見た目）。 */
 export function badgeHtml(label: string, color: string): string {
   return (

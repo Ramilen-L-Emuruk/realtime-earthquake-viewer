@@ -7,6 +7,7 @@ import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../util
 import type { RegionAggregate } from '../../hooks/useQuakeLayerData'
 import { ringToLngLat } from './gl/geojson'
 import { addOrderedLayer } from './gl/layerOrder'
+import { attachMarkerClaim, type PopupHandle } from './gl/popupRegistry'
 
 // 地震モードのズームアウト時、一次細分区域ごとの最大震度を塗る MapLibre 版
 // （Leaflet 版 JapanMap の quake-region-fill ペイン＋区域中心マーカー相当）。
@@ -69,6 +70,8 @@ function popupHtml(name: string, scale: number): string {
 export function QuakeRegionFillGL({ regionAggregates, iconScale, visible }: Props) {
   const map = useMapGL()
   const markersRef = useRef<maplibregl.Marker[]>([])
+  // ラベルマーカーのクリック宣言（レイヤー由来のポップアップと二重に開かないための調停）。
+  const claimsRef = useRef<PopupHandle[]>([])
   const addedRef = useRef(false)
 
   // fill + line レイヤーを一度だけ作る。
@@ -92,6 +95,8 @@ export function QuakeRegionFillGL({ regionAggregates, iconScale, visible }: Prop
     })
     addedRef.current = true
     return () => {
+      for (const c of claimsRef.current) c.remove()
+      claimsRef.current = []
       for (const mk of markersRef.current) mk.remove()
       markersRef.current = []
       if (map.getLayer(LINE_LYR)) map.removeLayer(LINE_LYR)
@@ -107,6 +112,8 @@ export function QuakeRegionFillGL({ regionAggregates, iconScale, visible }: Prop
     const src = map.getSource(FILL_SRC) as GeoJSONSource | undefined
     src?.setData(buildFillFC(regionAggregates))
 
+    for (const c of claimsRef.current) c.remove()
+    claimsRef.current = []
     for (const mk of markersRef.current) mk.remove()
     markersRef.current = []
     if (!visible) return
@@ -121,6 +128,7 @@ export function QuakeRegionFillGL({ regionAggregates, iconScale, visible }: Prop
         .setLngLat([r.label[1], r.label[0]])
         .setPopup(popup)
         .addTo(map)
+      claimsRef.current.push(attachMarkerClaim(map, el))
       markersRef.current.push(marker)
     }
   }, [map, regionAggregates, iconScale, visible])
