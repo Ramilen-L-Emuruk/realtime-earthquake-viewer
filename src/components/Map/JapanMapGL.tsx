@@ -98,7 +98,7 @@ export function JapanMapGL({
   const showOverlayLines = mode === 'quake' || mode === 'kyoshin'
   // 地震モードの派生データ（震度点／区域集約／震源）。Leaflet 版と共有の導出フック。
   const {
-    intensityMarkers,
+    stationMarkers,
     aggregateByRegion,
     regionAggregates,
     hasEpicenter,
@@ -187,7 +187,7 @@ export function JapanMapGL({
                 visible={aggregateByRegion && !lpgmActive}
               />
               <QuakeIntensityPointsGL
-                markers={intensityMarkers}
+                markers={stationMarkers}
                 iconScale={iconScale}
                 visible={!aggregateByRegion && !lpgmActive}
               />
