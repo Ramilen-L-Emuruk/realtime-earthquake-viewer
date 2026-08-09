@@ -253,6 +253,37 @@ export const PARAMS = {
    * 弱い実地震〈福岡 M2.4 等〉を取りこぼさない）。
    */
   CONFIRM_INTENSE_POINTS: 2,
+  /**
+   * 高震度 fast path の震度下限(value)。2.5 = 震度3。この震度に達したメンバーが
+   * HIGH_CONFIRM_POINTS 点以上あれば、確定点数（size）のゲートを免除して confirmed にする（§20）。
+   *
+   * 2.5 の根拠:
+   *  - 点別ノイズ床の学習上限は FLOOR_CAP=1.5（震度2相当）。慢性的に騒がしい点でも学習床はここで
+   *    頭打ちになるため、2.5 はノイズ床が到達しうる範囲の外側にある。
+   *  - 既存の CELL_FREEZE_INTENSITY と同値。あちらは「これ以上の高震度は明らかに実地震なので
+   *    セル慢性活性の学習を凍結する」という判断で、本パラメータはその同じ境界を確定条件でも使う。
+   *    片方だけ動かすと「実地震とみなして地域軸の学習は止めるのに、確定は点数が揃うまで待たせる」
+   *    という非対称が生まれるため、値を変えるときは両方を揃えて検討すること。
+   *  - 実データ（2026-08-09 検証）: 平常時2時間（7200フレーム・全国1725点。2026-08-08 13:00 台の
+   *    日中と 2026-08-09 00:00 台の深夜）で value >= 2.5 の出現は **0 点**。2点連結どころか単点すら
+   *    現れない。慢性活性セルでの引き上げ（CHRONIC_POINT_BUMP・CHRONIC_CONFIRM_INTENSITY）も
+   *    この fast path では併せて免除するが、慢性・非慢性を問わず 2.5 の出現が皆無であるため
+   *    地域軸の分岐は設けない（効く場面が観測されていない分岐は足さない）。
+   */
+  HIGH_CONFIRM_INTENSITY: 2.5,
+  /**
+   * 高震度 fast path に要する点数。CONFIRM_INTENSE_POINTS と同値にする＝「単点は信じない」という
+   * §18 の思想は高震度でも維持したまま、震度のバーだけ 0.5 → 2.5 に上げて点数待ちを外す対称的な拡張。
+   *
+   * 2 である根拠（3 では機能しない）: 2026-08-07 10:02 の福井の地震（最大震度3）を Yahoo 実データで
+   * 追うと、全国で value >= 2.5 に達した観測点はピークでも **2 点**（相互距離 13km）しかなかった。
+   * 3 にすると本ケースのような「震度3が数点だけ」の地震を一切救えず、パラメータとして死ぬ。
+   *
+   * なおこの 2 点は必ず同一イベントのメンバー＝L2 連結成分の由来であることが構造的に保証される
+   * （updateEventMetrics は e.memberKeys しか走査しない）。遠く離れた 2 点がたまたま同時に高震度でも
+   * 別イベントとして扱われるため fast path は発火せず、空間コヒーレンスの要求は温存される。
+   */
+  HIGH_CONFIRM_POINTS: 2,
   /** confirmed 連続フレーム数（積分待ちなしで V1 相当の速さ） */
   CONFIRM_FRAMES: 2,
   /** 確定保持(ms)。確定揺れ点が途切れてもこの間はイベントを保持（明滅防止・V1 相当の保持） */
@@ -820,6 +851,8 @@ function mergeAdjacentEvents(events: DetectionEvent[]): DetectionEvent[] {
  *   引き上げる（北関東のコヒーレントノイズ対策・第2軸）。一度 confirmed に達したら HOLD 中は confirmed を
  *   維持する（明滅防止のラッチ）。likely/faint も一度 spread を持てば LIKELY_HOLD_MS の間はティアを維持
  *   する（弱いイベントの「一瞬で消える」防止。震度1到達点数ゲートは confirmed のみで likely には課さない）。
+ *   高震度 fast path（§20）: HIGH_CONFIRM_INTENSITY(震度3) 以上に達したメンバーが HIGH_CONFIRM_POINTS 点
+ *   以上あれば点数ゲート（慢性活性セルの引き上げ幅を含む）を免除する。CONFIRM_FRAMES の連続要求は残す。
  * - eewActive    : EEW 発表中は確定点数・確定連続フレーム数を EEW_CONFIRM_POINTS・EEW_CONFIRM_FRAMES に
  *   差し替えて確定を早める。CONFIRM_INTENSE_POINTS・MIN_CONFIRM_INTENSITY・慢性活性の引き上げ幅は
  *   変えないため、単点ノイズを弾く仕組み自体は EEW 中でも維持される（§19）。
@@ -883,10 +916,19 @@ function updateEventMetrics(
     : PARAMS.MIN_CONFIRM_INTENSITY
   // 確定震度レベル以上に達した点数。「単点だけ強く・周囲は震度0」というノイズ分布を弾く第3ゲート。
   const intenseCount = activeVals.filter((v) => v >= confirmIntensityReq).length
+  // 高震度 fast path（§20）: HIGH_CONFIRM_INTENSITY(震度3) 以上に達したメンバーが
+  // HIGH_CONFIRM_POINTS 点以上あれば、点数（size）ゲートを免除して確定する。震度3級はノイズ床の
+  // 学習上限 FLOOR_CAP の外側にあり、かつ同一の連結成分内で複数点が同時に到達しているため、
+  // 周辺へ揺れが伝播して CONFIRM_POINTS(5点) が揃うのを待つ必要がない。
+  // 免除するのは点数ゲート（size・慢性活性セルの引き上げ幅を含む）だけで、CONFIRM_FRAMES による
+  // 連続フレーム要求は残す（単フレームの跳ね値・落雷起因の瞬間ノイズを弾く安全弁）。
+  const highIntenseCount = activeVals.filter((v) => v >= PARAMS.HIGH_CONFIRM_INTENSITY).length
+  const meetsHighFastPath = highIntenseCount >= PARAMS.HIGH_CONFIRM_POINTS
   const meetsConfirm =
-    size >= effectiveConfirmReq &&
-    e.maxIntensity >= confirmIntensityReq &&
-    intenseCount >= PARAMS.CONFIRM_INTENSE_POINTS
+    meetsHighFastPath ||
+    (size >= effectiveConfirmReq &&
+      e.maxIntensity >= confirmIntensityReq &&
+      intenseCount >= PARAMS.CONFIRM_INTENSE_POINTS)
   e.confirmStreak = meetsConfirm ? e.confirmStreak + 1 : 0
   const confirmFramesReq = eewActive ? PARAMS.EEW_CONFIRM_FRAMES : PARAMS.CONFIRM_FRAMES
   if (e.confirmStreak >= confirmFramesReq) e.everConfirmed = true
