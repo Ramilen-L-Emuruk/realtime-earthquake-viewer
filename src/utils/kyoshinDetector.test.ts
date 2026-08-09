@@ -280,6 +280,63 @@ describe('step: EEW 発表中の確定緩和（§19）', () => {
   })
 })
 
+describe('step: 高震度 fast path（§20）', () => {
+  /**
+   * 9点グリッドのうち3点だけを onset させて連結成分（MIN_CLUSTER=3）を作る。
+   * size=3 は effectiveConfirmReq（密な網では CONFIRM_POINTS=5）に届かないため、通常経路では
+   * 確定しない構成。高震度に達した点の「値」と「数」だけで結果が変わることを対照実験で確かめる。
+   */
+  function shakeThree(defs: StationDef[], peakValue: number, peakCount: number): Frame[] {
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
+    for (let i = 0; i < 4; i++, t += 1000) {
+      // 先頭 peakCount 点を peakValue、残りの onset 要員（計3点）は震度1(0.5)、他は静穏のまま
+      frames.push(frameWith(defs, t, (idx) => (idx < peakCount ? peakValue : idx < 3 ? 0.5 : 0)))
+    }
+    return frames
+  }
+
+  it('震度3(2.5)が2点あれば CONFIRM_POINTS(5) 未満の点数でも confirmed になる', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1) // 9点・全点相互近傍
+    const meta = buildStationMeta(sitesOf(defs))
+    const { detections } = drive(shakeThree(defs, 2.5, 2), meta)
+    const confirmed = detections.filter((d) => d.confidence === 'confirmed')
+    expect(confirmed.length).toBe(1)
+    // 点数ゲートを免除して確定したことの確認（通常経路なら CONFIRM_POINTS 点が要る）
+    expect(confirmed[0].lastSize).toBeLessThan(PARAMS.CONFIRM_POINTS)
+    expect(confirmed[0].maxIntensity).toBeCloseTo(2.5)
+  })
+
+  it('同じ点数構成でも震度2.0止まりなら confirmed にならない（HIGH_CONFIRM_INTENSITY の対照）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const { detections } = drive(shakeThree(defs, 2.0, 2), meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+
+  it('震度3が1点だけでは fast path が発火しない（HIGH_CONFIRM_POINTS の対照）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const { detections } = drive(shakeThree(defs, 2.5, 1), meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+
+  it('fast path でも CONFIRM_FRAMES は免除しない（単フレームの跳ね値では確定しない）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
+    // 高震度2点は1フレームだけ出て直後に静穏へ戻る（落雷起因の瞬間ノイズを模す）
+    frames.push(frameWith(defs, t, (idx) => (idx < 2 ? 2.5 : idx < 3 ? 0.5 : 0)))
+    t += 1000
+    for (let i = 0; i < 3; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
+    const { detections } = drive(frames, meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+})
+
 describe('step: 特異度（散在ノイズを排除）', () => {
   it('孤立した単点ノイズは近傍が揃わず confirmed にならない', () => {
     const defs: StationDef[] = [
