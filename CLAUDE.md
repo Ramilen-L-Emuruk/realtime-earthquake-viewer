@@ -132,6 +132,7 @@ DMDATA.JP の契約が要るが、この手順は契約不要で、標準版・D
 3. **配置する** — 本体を `public/data/test-scenarios/<id>.json`（`id` はファイル名と一致させる）に置き、
    `index.json` にメタ（`baseTime`・`entries` を除いた部分）を 1 件追加する。
 4. **再生する** — 設定タブ「実地震テスト」の該当行の「再生」ボタン。
+   - 履歴には同じ地震の**本物**が並ぶため、`earthquake.hypocenter.name` に目印（例: 「【検証】」）を付けておくと取り違えずに済む。再生時に時刻はシフトされるので、時刻での判別は当てにならない。
 5. **後始末（必須）**
    - **`index.json` は Git 管理対象**。検証が終わったら必ず空配列 `[]` に戻す（`git checkout -- public/data/test-scenarios/index.json`）。
    - シナリオ本体は `.gitignore` 済みだが、混乱を避けるため削除する。
@@ -149,6 +150,12 @@ HTML マーカー（`QuakeRegionFillGL` の `maplibregl.Marker`）なので、`b
 同じ集約ロジックを Node 側でも再現して突き合わせると、データと描画の両方を確実に確認できる。
 実例（2026-08-09 の区域集約修正）では、Node 側の再現と DOM 集計がともに「震度1×6・震度2×3・震度3×1」で一致することを確認した。
 配色の差は目視だと見落とすため、色は名前ではなく `rgb()` の実値で照合する。
+
+地図の内部状態は `window.__mapGL`（`JapanMapGL` が露出。本番ビルドでも有効）から読む。
+geojson ソースの中身を数えるときは **`await map.getSource(id).getData()`** を使うこと。
+`source._data` は MapLibre v6 には存在せず（`undefined` を空データと誤読して「0件」に見える）、
+`queryRenderedFeatures` / `querySourceFeatures` はビューポート内のタイルに限られるため全件集計には使えない。
+レイヤーの表示切替は `map.getLayoutProperty(id, 'visibility')` で確認する（未設定時は `undefined` ＝表示）。
 
 ### 環境による制約
 
@@ -264,6 +271,25 @@ HTML マーカー（`QuakeRegionFillGL` の `maplibregl.Marker`）なので、`b
 ### 震度集約の単位
 - ズームアウト時の集約単位は**一次細分区域**（`subregions.json` 由来）。「都道府県」という表現はコメント・ドキュメントで使わない。
   - 閾値定数は `useQuakeLayerData.ts` の `QUAKE_MAX_ZOOM`（= 8。gl/camera.ts の MAX_ZOOM と一致）。この zoom 以下で区域集約に切り替える。
+  - **観測点を1つも持たない電文（震度速報）では zoom に関わらず集約を維持する**（`aggregateByRegion` の第2条件 `stationMarkers.length === 0`）。拡大しても増える情報が無いうえ、区域の代表点をドットにすると「その地点の観測値」に見えてしまうため。判定は電文種別ではなく**データの粒度**で行う。LPGM 表示中は `aggregateByRegion` を LPGM と共用しているため対象外にしている（選択中の quake と表示中の LPGM は別イベントのことがある）。
+
+### 地震電文の points 構造（バリアント・経路差）
+
+`JMAQuake.points` には観測点（`isArea:false`）と一次細分区域（`isArea:true`）が混在しうる。
+**区域の点は区域内観測点の重心**（`station-coords.json` の `areas`）であって観測値の位置ではないため、**ドット描画には使わない**。
+
+- `useQuakeLayerData` の `stationMarkers`（`isArea:false` のみ）が `QuakeIntensityPointsGL` に渡る唯一の入力。`intensityMarkers`（全点）はカメラフィットのフォールバック専用。取り違えると区域の重心に「観測していない震度」のドットが立つ。
+- 電文ごとの中身（2026-08-09 に実電文で確認）:
+
+| 経路 | 震度速報 | 詳細報 |
+|---|---|---|
+| DMDSS: WebSocket（JSON・`parseIntensityPoints`） | 区域のみ | **区域＋観測点** |
+| DMDSS: REST 履歴（XML・`parseEarthquakeFromXml`） | 区域のみ | 区域＋観測点 |
+| 標準版: P2PQuake | 区域のみ（`ScalePrompt`） | **観測点のみ**（`DetailScale` は区域を落とす） |
+
+- DMDATA の JSON スキーマで出現条件の注記があるのは `stations`（「VXSE53、VXSE62時のみ出現」）だけで、`regions`・`prefectures` は全種別に出る（[earthquake-information](https://dmdata.jp/docs/reference/conversion/json/schema/earthquake-information)）。**詳細報でも区域が必ず来る**のが標準版との最大の差。
+- 震度速報（VXSE51）は震源が未確定のため **`Earthquake` 要素／`body.earthquake` を持たない**。座標は `-200`（位置不明センチネル）、発生時刻は `TargetDateTime`（JSON は `data.targetDateTime`）を使う。両パーサともこの電文だけ震源なしを許容する。**XML パーサ側にこの例外が無く、DMDSS 版はリロードすると震度速報が丸ごと消えていた**（2026-08-09 に修正）。
+- `pref` の有無が「都道府県の点」と「区域の点」の識別子を兼ねる（`EarthquakeCard` の `prefGroups`）。**区域は必ず `pref: ''` で積む**。都道府県名を入れると区域が都道府県として誤読される。座標側は `useQuakeLayerData` が区域名から都道府県を逆引きして引き当てる。
 
 ### KyoshinSubThreshold の対象範囲
 - 対象は **index 1〜6**（震度0以下）。index 0 はデータ無し（`gl/subThresholdLayer.ts` の `subThresholdOpacity(0) = 0`）のため非表示。「0〜6」とコメントしない。
