@@ -7,7 +7,7 @@ import type { IntensityMarker } from '../../hooks/useQuakeLayerData'
 import type { LatLng } from '../../utils/stationCoords'
 import { haversineKm } from '../../utils/geo'
 import { addOrderedLayer } from './gl/layerOrder'
-import { bindPointPopup, type PointPopupHandle } from './gl/pointPopup'
+import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
 import { badgeHtml, escapeHtml } from './gl/popupHtml'
 
 // 地震情報タブの各観測点の震度を色付きドットで描画する MapLibre 版（Leaflet の IntensityPoints 相当）。
@@ -15,7 +15,7 @@ import { badgeHtml, escapeHtml } from './gl/popupHtml'
 // feature プロパティに持たせ、circle-sort-key に scale を与えて強い震度を前面へ重ねる（弱→強の順）。
 // 更新は地震電文の切替時のみ（頻度が低い）なので setData で丸ごと差し替える。
 //
-// ホバーで観測点名＋震度、クリックで所属区域・震源距離まで出す（gl/pointPopup.ts）。
+// ホバーで観測点名＋震度、クリックで所属区域・震源距離まで出す（gl/popupRegistry.ts）。
 // ズームアウト時の区域塗り（QuakeRegionFillGL）が区域名を出すのに対し、観測点表示に切り替わると
 // 地図から情報が取れなくなるのを避けるため、同じ情報量をこちら側にも持たせている。
 
@@ -106,7 +106,7 @@ function clickHtml(f: MapGeoJSONFeature): string {
 export function QuakeIntensityPointsGL({ markers, iconScale, visible, epicenter }: Props) {
   const map = useMapGL()
   const addedRef = useRef(false)
-  const popupRef = useRef<PointPopupHandle | null>(null)
+  const popupRef = useRef<PopupHandle | null>(null)
 
   useEffect(() => {
     if (!map) return
@@ -127,7 +127,9 @@ export function QuakeIntensityPointsGL({ markers, iconScale, visible, epicenter 
         'circle-stroke-width': 1,
       },
     })
-    popupRef.current = bindPointPopup(map, LYR, {
+    popupRef.current = registerPopupSource(map, {
+      layerId: LYR,
+      priority: 'point',
       tolPx: HIT_TOL_PX,
       rankKey: 'scale',
       buildHoverHtml: hoverHtml,

@@ -5,7 +5,7 @@ import { useMapGL } from './mapGLContext'
 import { getLpgmClassColor, getLpgmClassLabel } from '../../utils/lpgm'
 import type { LpgmMarker } from '../../hooks/useQuakeLayerData'
 import { addOrderedLayer } from './gl/layerOrder'
-import { bindPointPopup, type PointPopupHandle } from './gl/pointPopup'
+import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
 import { badgeHtml, escapeHtml } from './gl/popupHtml'
 
 // 長周期地震動観測点を色付きドットで描画する MapLibre 版（Leaflet の LpgmPoints 相当）。
@@ -69,7 +69,7 @@ function clickHtml(f: MapGeoJSONFeature): string {
 export function LpgmPointsGL({ markers, iconScale, visible }: Props) {
   const map = useMapGL()
   const addedRef = useRef(false)
-  const popupRef = useRef<PointPopupHandle | null>(null)
+  const popupRef = useRef<PopupHandle | null>(null)
 
   useEffect(() => {
     if (!map) return
@@ -90,7 +90,9 @@ export function LpgmPointsGL({ markers, iconScale, visible }: Props) {
         'circle-stroke-width': 1,
       },
     })
-    popupRef.current = bindPointPopup(map, LYR, {
+    popupRef.current = registerPopupSource(map, {
+      layerId: LYR,
+      priority: 'point',
       tolPx: HIT_TOL_PX,
       rankKey: 'lgInt',
       buildHoverHtml: hoverHtml,

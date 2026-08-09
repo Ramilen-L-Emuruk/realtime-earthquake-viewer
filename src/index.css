@@ -50,7 +50,7 @@ body {
 .maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip { border-top-color: #1a1d26; }
 .maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip { border-top-color: #1a1d26; }
 
-/* 観測点のホバー用ポップアップ（gl/pointPopup.ts）。吹き出し自身がマウスを受け取ると
+/* ホバー用ポップアップ（gl/popupRegistry.ts）。吹き出し自身がマウスを受け取ると
    「点から外れた」と判定されて出る/消えるを繰り返すため、当たり判定から外す。 */
 .map-hover-popup { pointer-events: none; }
 .map-hover-popup .maplibregl-popup-content { padding: 5px 9px; }

@@ -2,7 +2,8 @@ import { useEffect, useRef } from 'react'
 import { useMapGL } from './mapGLContext'
 import type { ActiveFaultSegment } from '../../utils/activeFaults'
 import { segmentsToMultiLineFC } from './gl/geojson'
-import { bindLinePopup, twoLinePopupHtml, type LinePopupHandle } from './gl/linePopup'
+import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
+import { twoLinePopupHtml } from './gl/popupHtml'
 import { addOrderedLayer } from './gl/layerOrder'
 
 // 全国活断層線（産総研 活断層データベース）を描画する MapLibre 版（Leaflet の ActiveFaultsLayer 相当）。
@@ -26,7 +27,7 @@ interface Props {
 
 export function ActiveFaultsGL({ activeFaults, visible, opacity }: Props) {
   const map = useMapGL()
-  const popupRef = useRef<LinePopupHandle | null>(null)
+  const popupRef = useRef<PopupHandle | null>(null)
 
   // データ到着で一度だけ source + layer を構築。
   useEffect(() => {
@@ -51,9 +52,13 @@ export function ActiveFaultsGL({ activeFaults, visible, opacity }: Props) {
         'line-opacity-transition': { duration: 0, delay: 0 },
       },
     })
-    popupRef.current = bindLinePopup(map, LYR, HIT_TOL_PX, (f) =>
-      twoLinePopupHtml(String(f.properties?.name ?? ''), '活断層（産総研 活断層データベース）'),
-    )
+    popupRef.current = registerPopupSource(map, {
+      layerId: LYR,
+      priority: 'line',
+      tolPx: HIT_TOL_PX,
+      buildClickHtml: (f) =>
+        twoLinePopupHtml(String(f.properties?.name ?? ''), '活断層（産総研 活断層データベース）'),
+    })
     return () => {
       popupRef.current?.remove()
       popupRef.current = null

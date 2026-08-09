@@ -6,7 +6,8 @@ import type { TsunamiLine } from '../../hooks/useTsunamiLayerData'
 import { TSUNAMI_STYLE } from '../../utils/tsunamiStyle'
 import { ringToLngLat } from './gl/geojson'
 import { addOrderedLayer } from './gl/layerOrder'
-import { bindLinePopup, twoLinePopupHtml, type LinePopupHandle } from './gl/linePopup'
+import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
+import { twoLinePopupHtml } from './gl/popupHtml'
 
 // 津波予報区の海岸線を等級ごとに色分けして描画する MapLibre 版（Leaflet の tsunami-lines 相当）。
 // 等級1件=MultiLineString feature 1件にまとめ、色・太さを feature プロパティに前計算して
@@ -43,7 +44,7 @@ function buildFC(lines: TsunamiLine[], iconScale: number): FeatureCollection<Mul
 
 export function TsunamiLinesGL({ lines, iconScale }: Props) {
   const map = useMapGL()
-  const popupRef = useRef<LinePopupHandle | null>(null)
+  const popupRef = useRef<PopupHandle | null>(null)
   const rafRef = useRef<number | null>(null)
   const addedRef = useRef(false)
 
@@ -65,9 +66,13 @@ export function TsunamiLinesGL({ lines, iconScale }: Props) {
         'line-opacity-transition': { duration: 0, delay: 0 },
       },
     })
-    popupRef.current = bindLinePopup(map, LYR, HIT_TOL_PX, (f) =>
-      twoLinePopupHtml(String(f.properties?.name ?? ''), String(f.properties?.label ?? '津波予報')),
-    )
+    popupRef.current = registerPopupSource(map, {
+      layerId: LYR,
+      priority: 'line',
+      tolPx: HIT_TOL_PX,
+      buildClickHtml: (f) =>
+        twoLinePopupHtml(String(f.properties?.name ?? ''), String(f.properties?.label ?? '津波予報')),
+    })
     // 点滅（Leaflet の tsunami-blink CSS を忠実再現）: 2.5s 周期で 0〜80% は不透明(0.9)・
     // 80〜100% は消灯(0) のハード切替（step-end 相当）。滑らかな脈動ではなくフラッシュ点滅。
     const start = performance.now()

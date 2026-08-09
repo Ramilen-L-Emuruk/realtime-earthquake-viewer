@@ -269,7 +269,7 @@ realtime-earthquake-viewer/
 │   │   │   ├── EewRegionFillGL.tsx / EewLpgmRegionFillGL.tsx / EewEpicentersGL.tsx # EEW 予想震度塗り・予想長周期塗り・震源
 │   │   │   ├── PsWaveGL.tsx           # EEW P波・S波地表到達円（getCanvasContainer 上のオーバーレイ Canvas）
 │   │   │   ├── CameraFollowsGL.tsx    # カメラ追従一括（地震/検知/候補/EEW/津波フィット・観測フォーカス・idle 抑制）
-│   │   │   └── gl/                    # GL 補助（layerOrder=描画順の単一情報源 / geojson / camera / linePopup / pointPopup / popupHtml / subThresholdLayer）
+│   │   │   └── gl/                    # GL 補助（layerOrder=描画順の単一情報源 / popupRegistry=ポップアップの当たり判定調停 / popupHtml / geojson / camera / subThresholdLayer）
 │   │   ├── SpecialInfoBanner/      # 南海トラフ臨時情報・国民保護情報バナー
 │   │   ├── RealtimeTab/            # 強震モニタ検知(V2)カード・EEW情報・凡例・注記パネル（地図は JapanMapGL が担当）
 │   │   ├── SettingsTab/            # 設定パネル

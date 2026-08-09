@@ -5,6 +5,7 @@ import type { JMAQuake } from '../../types/earthquake'
 import type { LatLng } from '../../utils/stationCoords'
 import { getIntensityColor, getIntensityLabel } from '../../utils/intensity'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
+import { attachMarkerClaim } from './gl/popupRegistry'
 
 // 地震モードの震源（×印）を描画する MapLibre 版（Leaflet 版 JapanMap の震源マーカー相当）。
 // × アイコンは HTML の maplibregl.Marker（Leaflet の DivIcon SVG と同じ形）で最前面に置く。
@@ -67,8 +68,12 @@ export function EpicenterGL({ quake, epicenter, prefIntensities, iconScale }: Pr
       .setLngLat([epicenter[1], epicenter[0]])
       .setPopup(popup)
       .addTo(map)
+    // マーカーのクリックは地図コンテナへバブリングして map の click も発火させる。
+    // レイヤー由来のポップアップが同時に開かないよう、調停器へこの click を宣言する。
+    const claim = attachMarkerClaim(map, el)
     markerRef.current = marker
     return () => {
+      claim.remove()
       marker.remove()
       markerRef.current = null
     }
