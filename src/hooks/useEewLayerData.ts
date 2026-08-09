@@ -27,6 +27,8 @@ export interface EewLpgmRegionAggregate {
 export interface EewEpicenter {
   id: string
   position: LatLng
+  /** 仮定震源要素（単独観測点処理）による未確定の震源か。確定震源と描き分けるために使う。 */
+  isAssumed: boolean
 }
 
 export function useEewLayerData(
@@ -67,8 +69,11 @@ export function useEewLayerData(
   }, [mode, eews, subregionByName])
 
   // 選択された EEW の地域別予想長周期地震動階級を区域塗りで表示。
+  // これは「予想」値なので、地震情報タブの実測の区域塗り（QuakeRegionFillGL /
+  // LpgmRegionFillGL）と同じ地図に並ぶと実測と見分けがつかない。eewAreaFills と同じく
+  // kyoshin モードに限定する（トグル元も RealtimeTab の EEW カードのみ）。
   const eewLpgmRegionAggregates = useMemo<EewLpgmRegionAggregate[]>(() => {
-    if (!eewLpgmEventId || !subregions) return []
+    if (mode !== 'kyoshin' || !eewLpgmEventId || !subregions) return []
     const eew = eews.find((e) => (e.issue?.eventId ?? e.id) === eewLpgmEventId)
     if (!eew) return []
     const areas = eewAreas(eew).filter((a) => (a.lgIntTo ?? 0) >= 1)
@@ -78,7 +83,7 @@ export function useEewLayerData(
       .filter((sr) => (maxByName.get(sr.name) ?? 0) >= 1)
       .map((sr) => ({ name: sr.name, maxLgInt: maxByName.get(sr.name)!, rings: sr.rings }))
       .sort((a, b) => a.maxLgInt - b.maxLgInt)
-  }, [eewLpgmEventId, eews, subregions])
+  }, [mode, eewLpgmEventId, eews, subregions])
 
   // 各 EEW の震源（有効なもののみ・経度は地図中心基準で正規化）。全モードで表示する。
   const eewEpicenters = useMemo<EewEpicenter[]>(() => {
@@ -86,7 +91,13 @@ export function useEewLayerData(
     for (const eew of eews) {
       const hc = eew.earthquake.hypocenter
       if (hc.latitude > -200 && hc.longitude > -200) {
-        list.push({ id: eew.id, position: [hc.latitude, normalizeEpicenterLng(hc.longitude, JAPAN_CENTER_LNG)] })
+        list.push({
+          id: eew.id,
+          position: [hc.latitude, normalizeEpicenterLng(hc.longitude, JAPAN_CENTER_LNG)],
+          // 単独観測点処理の震源は後続報で大きく動く。予報円を出さない・カードで M/深さを
+          // 隠すのと同じ扱いを地図の震源にも与えるため、確定/未確定を描画側へ伝える。
+          isAssumed: eew.earthquake.condition === '仮定震源要素',
+        })
       }
     }
     return list
