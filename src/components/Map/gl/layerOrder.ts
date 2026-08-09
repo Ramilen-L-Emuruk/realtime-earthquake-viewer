@@ -17,10 +17,16 @@ export const MAP_LAYER_ORDER = [
   // ここに含め、BaseMapGL も addOrderedLayer で追加することで常に最背面へ固定する。
   'gebco-raster',
   'land-fill',
+  // 一次細分区域の当たり判定用の透明 fill（区域名ポップアップの受け皿）。描画には寄与しないが、
+  // 下地の一部としてここに置く。他に何もヒットしないときだけ出るよう優先度は basemap。
+  'subregion-hit',
   'sub-borders',
   'pref-borders',
   // 地震活動ヒートマップ（旧 z255）。プレート境界線・活断層線（旧 z263）より背面。
   'quake-heat',
+  // ヒートマップのクリック当たり判定用の透明レイヤー。heatmap レイヤーは queryRenderedFeatures に
+  // ヒットしない（密度描画のため個別 feature を返さない）ので、同じ点を circle で重ねて拾う。
+  'quake-heat-hit',
   'quake-region-fill',
   'quake-region-fill-line',
   'eew-region-fill',

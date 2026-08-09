@@ -1,9 +1,11 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useMapGL } from './mapGLContext'
 import { loadPrefectures } from '../../utils/prefectures'
 import { loadSubRegions } from '../../utils/subregions'
 import { ringsToPolygonFC, ringsToLineFC } from './gl/geojson'
 import { addOrderedLayer } from './gl/layerOrder'
+import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
+import { twoLinePopupHtml } from './gl/popupHtml'
 import { log } from '../../utils/logger'
 import { BATHYMETRY_URL, prefetchBathymetryTiles } from '../../utils/gebcoPrefetch'
 
@@ -22,6 +24,8 @@ const BATHYMETRY_BRIGHTNESS_MAX = 0.42
 
 const SRC_LAND = 'basemap-land'
 const SRC_SUB = 'basemap-sub-borders'
+const SRC_SUB_HIT = 'basemap-subregion-hit'
+const LYR_SUB_HIT = 'subregion-hit'
 const SRC_PREF = 'basemap-pref-borders'
 const SRC_GEBCO = 'gebco'
 const LYR_GEBCO = 'gebco-raster'
@@ -35,6 +39,7 @@ interface Props {
 
 export function BaseMapGL({ showBathymetry }: Props) {
   const map = useMapGL()
+  const popupRef = useRef<PopupHandle | null>(null)
 
   useEffect(() => {
     if (!map) return
@@ -81,6 +86,27 @@ export function BaseMapGL({ showBathymetry }: Props) {
           source: SRC_SUB,
           paint: { 'line-color': SUBREGION_BORDER, 'line-width': 0.5 },
         })
+        // 区域名ポップアップの当たり判定。塗りは完全透明で見た目に出さず、区域名だけを載せる。
+        // 地図のどこを押しても「そこがどの一次細分区域か」は分かる、という最後の受け皿にする
+        // （優先度 basemap ＝ 観測点・線・区域塗り・ヒートマップのどれにも当たらなかったときだけ出る）。
+        map.addSource(SRC_SUB_HIT, {
+          type: 'geojson',
+          data: ringsToPolygonFC(rings, (i) => ({ name: subs[i].name })),
+        })
+        addOrderedLayer(map, {
+          id: LYR_SUB_HIT,
+          type: 'fill',
+          source: SRC_SUB_HIT,
+          paint: { 'fill-color': '#000000', 'fill-opacity': 0 },
+        })
+        popupRef.current = registerPopupSource(map, {
+          layerId: LYR_SUB_HIT,
+          priority: 'basemap',
+          tolPx: 1,
+          // 全面を覆うレイヤーなので、カーソルは変えない（どこでも指マークになってしまう）。
+          hoverCursor: false,
+          buildClickHtml: (f) => twoLinePopupHtml(String(f.properties?.name ?? ''), '一次細分区域'),
+        })
       }
       // 3) 県境（強調・細線より前面）
       if (prefs) {
@@ -98,10 +124,12 @@ export function BaseMapGL({ showBathymetry }: Props) {
     return () => {
       cancelled = true
       prefetchAbort.abort()
-      for (const id of [LYR_PREF, LYR_SUB, LYR_LAND, LYR_GEBCO]) {
+      popupRef.current?.remove()
+      popupRef.current = null
+      for (const id of [LYR_PREF, LYR_SUB, LYR_SUB_HIT, LYR_LAND, LYR_GEBCO]) {
         if (map.getLayer(id)) map.removeLayer(id)
       }
-      for (const id of [SRC_PREF, SRC_SUB, SRC_LAND, SRC_GEBCO]) {
+      for (const id of [SRC_PREF, SRC_SUB, SRC_SUB_HIT, SRC_LAND, SRC_GEBCO]) {
         if (map.getSource(id)) map.removeSource(id)
       }
     }

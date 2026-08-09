@@ -18,11 +18,12 @@ import type { Map as MapLibreMap, MapMouseEvent, MapGeoJSONFeature, PointLike } 
 
 /**
  * 当たり判定の優先度。狭くて狙って押したものほど先に拾う。
- * point（観測点・震源）> line（活断層・海岸線）> fill（区域塗り）> basemap（県・区域の下地）。
+ * point（観測点・震源）> line（活断層・海岸線）> fill（震度・EEW の区域塗り）>
+ * heat（地震活動ヒートマップ＝背景の情報）> basemap（一次細分区域の下地＝最後の受け皿）。
  */
-export type PopupPriority = 'point' | 'line' | 'fill' | 'basemap'
+export type PopupPriority = 'point' | 'line' | 'fill' | 'heat' | 'basemap'
 
-const PRIORITY_ORDER: readonly PopupPriority[] = ['point', 'line', 'fill', 'basemap']
+const PRIORITY_ORDER: readonly PopupPriority[] = ['point', 'line', 'fill', 'heat', 'basemap']
 
 export interface PopupSource {
   layerId: string
@@ -34,6 +35,17 @@ export interface PopupSource {
   /** ホバー時の簡易表示。省略するとホバーでは吹き出しを出さず、カーソルだけ変える。 */
   buildHoverHtml?: (feature: MapGeoJSONFeature) => string
   buildClickHtml: (feature: MapGeoJSONFeature) => string
+  /**
+   * 指定するとクリックポップアップを開いている間この間隔(ms)で本文を作り直す。
+   * EEW の「S波到達まで あと何秒」のように、時間経過で内容が古くなる表示に使う。
+   */
+  refreshMs?: number
+  /**
+   * ホバー時にカーソルを pointer にするか（既定 true）。
+   * 一次細分区域の下地のように地図全面を覆うレイヤーで true にすると、どこにいても
+   * 指マークになって「押せるもの」の区別が付かなくなるため false にする。
+   */
+  hoverCursor?: boolean
 }
 
 export interface PopupHandle {
@@ -55,6 +67,8 @@ interface Registry {
   cursorOwned: boolean
   /** 直前の click を HTML マーカーが消費したか。 */
   markerClaimed: boolean
+  /** 開いているクリックポップアップの定期再生成（refreshMs 指定時のみ）。 */
+  refresh: { source: PopupSource; feature: MapGeoJSONFeature; timer: number } | null
   detach: () => void
 }
 
@@ -97,12 +111,40 @@ function createRegistry(map: MapLibreMap): Registry {
     hoverHtml: null,
     cursorOwned: false,
     markerClaimed: false,
+    refresh: null,
     detach: () => {},
   }
 
   const closeHover = () => {
     reg.hoverPopup.remove()
     reg.hoverHtml = null
+  }
+
+  const stopRefresh = () => {
+    if (!reg.refresh) return
+    clearInterval(reg.refresh.timer)
+    reg.refresh = null
+  }
+
+  const startRefresh = (source: PopupSource, feature: MapGeoJSONFeature) => {
+    stopRefresh()
+    if (!source.refreshMs) return
+    const timer = window.setInterval(() => {
+      if (!reg.clickPopup.isOpen()) {
+        stopRefresh()
+        return
+      }
+      reg.clickPopup.setHTML(source.buildClickHtml(feature))
+    }, source.refreshMs)
+    reg.refresh = { source, feature, timer }
+  }
+
+  // 閉じるボタンで閉じられたときも再生成を止める。
+  reg.clickPopup.on('close', stopRefresh)
+
+  const closeClick = () => {
+    stopRefresh()
+    reg.clickPopup.remove()
   }
 
   const releaseCursor = () => {
@@ -134,13 +176,13 @@ function createRegistry(map: MapLibreMap): Registry {
     if (reg.markerClaimed) {
       // マーカーが自前の吹き出しを開いた直後。レイヤー由来は出さず、残っていれば閉じる。
       reg.markerClaimed = false
-      reg.clickPopup.remove()
+      closeClick()
       closeHover()
       return
     }
     const hit = findTop(e.point)
     if (!hit) {
-      reg.clickPopup.remove()
+      closeClick()
       return
     }
     closeHover()
@@ -148,6 +190,7 @@ function createRegistry(map: MapLibreMap): Registry {
       .setLngLat(anchorOf(hit.feature, e.lngLat))
       .setHTML(hit.source.buildClickHtml(hit.feature))
       .addTo(map)
+    startRefresh(hit.source, hit.feature)
   }
 
   const onMouseMove = (e: MapMouseEvent) => {
@@ -162,8 +205,12 @@ function createRegistry(map: MapLibreMap): Registry {
       closeHover()
       return
     }
-    map.getCanvas().style.cursor = 'pointer'
-    reg.cursorOwned = true
+    if (hit.source.hoverCursor === false) {
+      releaseCursor()
+    } else {
+      map.getCanvas().style.cursor = 'pointer'
+      reg.cursorOwned = true
+    }
     if (reg.clickPopup.isOpen()) return
     if (!hit.source.buildHoverHtml) {
       closeHover()
@@ -189,7 +236,7 @@ function createRegistry(map: MapLibreMap): Registry {
     map.off('mousemove', onMouseMove)
     map.off('mouseout', onMouseOut)
     closeHover()
-    reg.clickPopup.remove()
+    closeClick()
     releaseCursor()
   }
 
