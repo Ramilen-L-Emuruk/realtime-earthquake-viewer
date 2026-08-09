@@ -5,6 +5,7 @@ import type { JMAQuake } from '../../types/earthquake'
 import type { LatLng } from '../../utils/stationCoords'
 import { getIntensityColor, getIntensityLabel } from '../../utils/intensity'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
+import { attachMarkerClaim } from './gl/popupRegistry'
 
 // 地震モードの震源（×印）を描画する MapLibre 版（Leaflet 版 JapanMap の震源マーカー相当）。
 // × アイコンは HTML の maplibregl.Marker（Leaflet の DivIcon SVG と同じ形）で最前面に置く。
@@ -40,14 +41,14 @@ function buildPopupHtml(quake: JMAQuake, prefIntensities: [string, number][]): s
         `<div style="display:flex;align-items:center;gap:8px;font-size:12px">` +
         `<span style="display:inline-block;width:20px;text-align:center;font-weight:700;border-radius:3px;` +
         `color:#fff;font-size:10px;background:${color}">${esc(label)}</span>` +
-        `<span style="color:#374151">${esc(pref)}</span></div>`
+        `<span style="color:#cbd5e1">${esc(pref)}</span></div>`
       )
     })
     .join('')
   return (
     `<div class="text-sm" style="min-width:160px">` +
-    `<div class="font-bold" style="margin-bottom:4px;color:#111">${esc(hc.name)}</div>` +
-    `<div class="text-xs" style="color:#4b5563">${esc(formatMagnitude(hc.magnitude))} / 深さ ${esc(formatDepth(hc.depth))}</div>` +
+    `<div class="font-bold" style="margin-bottom:4px">${esc(hc.name)}</div>` +
+    `<div class="text-xs" style="color:#94a3b8">${esc(formatMagnitude(hc.magnitude))} / 深さ ${esc(formatDepth(hc.depth))}</div>` +
     (rows ? `<div style="margin-top:8px;display:flex;flex-direction:column;gap:2px">${rows}</div>` : '') +
     `</div>`
   )
@@ -67,8 +68,12 @@ export function EpicenterGL({ quake, epicenter, prefIntensities, iconScale }: Pr
       .setLngLat([epicenter[1], epicenter[0]])
       .setPopup(popup)
       .addTo(map)
+    // マーカーのクリックは地図コンテナへバブリングして map の click も発火させる。
+    // レイヤー由来のポップアップが同時に開かないよう、調停器へこの click を宣言する。
+    const claim = attachMarkerClaim(map, el)
     markerRef.current = marker
     return () => {
+      claim.remove()
       marker.remove()
       markerRef.current = null
     }

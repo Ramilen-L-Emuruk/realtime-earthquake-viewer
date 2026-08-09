@@ -691,6 +691,18 @@ export interface GdEarthquakeItem {
   latitude: number
   longitude: number
   magnitude: number
+  /** 震源地名。レスポンスに含まれない場合は空文字。 */
+  name: string
+  /** 深さ(km)。値なし・数値化できない（「不明」等）場合は -1。 */
+  depth: number
+}
+
+/** GD Earthquake List の深さフィールドを km の数値にする。取れなければ -1。 */
+function gdDepthKm(depth?: { value?: string | null }): number {
+  const raw = depth?.value
+  if (raw == null) return -1
+  const n = parseFloat(raw)
+  return Number.isFinite(n) ? n : -1
 }
 
 const GD_EARTHQUAKE_MAX_PAGES = 20
@@ -712,7 +724,13 @@ export async function fetchDmdataGdEarthquakes(apiKey: string, days: number): Pr
       items?: Array<{
         eventId: string
         originTime: string
-        hypocenter: { coordinate: { latitude: { value: string }; longitude: { value: string } } }
+        hypocenter: {
+          // 震源地名・深さはヒートマップのポップアップ表示に使う。契約や電文の種別によっては
+          // 欠けることがあるため optional として扱い、欠測時は空文字 / -1 に倒す。
+          name?: string
+          coordinate: { latitude: { value: string }; longitude: { value: string } }
+          depth?: { value?: string | null }
+        }
         magnitude?: { value: string }
       }>
       nextToken?: string
@@ -729,6 +747,8 @@ export async function fetchDmdataGdEarthquakes(apiKey: string, days: number): Pr
         latitude: parseFloat(it.hypocenter.coordinate.latitude.value),
         longitude: parseFloat(it.hypocenter.coordinate.longitude.value),
         magnitude: it.magnitude ? parseFloat(it.magnitude.value) : -1,
+        name: it.hypocenter.name ?? '',
+        depth: gdDepthKm(it.hypocenter.depth),
       })
     }
     if (reachedCutoff || !json.nextToken) break
