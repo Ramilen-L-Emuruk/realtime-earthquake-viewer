@@ -41,8 +41,11 @@ export const MAP_LAYER_ORDER = [
   'tsunami-lines',
   // EEW 予報円（旧 z280）。海岸線より前面、観測点・ラベルよりは背面。
   'pswave',
-  // 地震情報タブの詳細観測点（QuakeIntensityPointsGL）・長周期地震動観測点（LpgmPointsGL）は
-  // HTML マーカーで描くため、GL レイヤーの描画順（この配列）には現れない。マーカーは常に最前面。
+  // 区域中心の震度・階級ラベル（旧 HTML Marker・常に最前面だった）。観測点と同じ前面グループに置く。
+  'quake-region-label',
+  'quake-lpgm-region-label',
+  'quake-points',
+  'quake-lpgm-points',
   'epicenter',
   'kyoshin-subthreshold',
   'kyoshin-points',
