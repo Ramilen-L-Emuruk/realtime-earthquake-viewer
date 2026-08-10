@@ -346,7 +346,7 @@ realtime-earthquake-viewer/
 
 ## 開発者向けドキュメント
 
-- 強震モニタ揺れ検知エンジンの詳細仕様: [`docs/kyoshin-detection-spec.md`](docs/kyoshin-detection-spec.md)
+- 強震モニタ揺れ検知エンジンの詳細仕様: [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md)
 
 ---
 
