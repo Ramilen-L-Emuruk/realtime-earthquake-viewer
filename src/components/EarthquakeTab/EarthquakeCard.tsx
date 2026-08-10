@@ -210,12 +210,15 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
             </span>
           </div>
 
-          {/* 長周期地震動観測情報（クリックで地図表示トグル） */}
+          {/* 長周期地震動観測情報（クリックで地図表示トグル）。
+              カード自体が<button>のため、ネスト禁止のHTML仕様に合わせ<div role="button">にする。 */}
           {lpgm && lpgm.maxClass >= 1 && (
-            <button
-              type="button"
+            <div
+              role="button"
+              tabIndex={0}
               onClick={(e) => { e.stopPropagation(); onToggleLpgm?.(lpgm.eventId) }}
-              className="w-full rounded-lg py-2 px-4 flex items-center justify-center gap-4 hover:opacity-80 transition-opacity"
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onToggleLpgm?.(lpgm.eventId) } }}
+              className="w-full rounded-lg py-2 px-4 flex items-center justify-center gap-4 hover:opacity-80 transition-opacity cursor-pointer"
               style={{
                 backgroundColor: getLpgmClassBgColor(lpgm.maxClass),
                 border: `2px solid ${getLpgmClassColor(lpgm.maxClass)}`,
@@ -231,7 +234,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
               <span className="text-2xl font-black" style={{ color: '#ffffff' }}>
                 {getLpgmClassLabel(lpgm.maxClass)}
               </span>
-            </button>
+            </div>
           )}
 
           {/* 日時 + 訂正情報 */}
