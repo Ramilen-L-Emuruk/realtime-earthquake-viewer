@@ -39,9 +39,17 @@ verify-*.jpg
 
 # Claude directories
 .claude/*
-# ただし共通利用するプロジェクトエージェント定義は Git 管理する
+# .claude/agents/ 配下はホワイトリスト方式:
+# ディレクトリ自体は再包含して走査可能にし、中身は原則無視、
+# 本プロジェクトで共通利用する定義だけを明示的に許可する。
+# 新しい共通エージェントを追加するときは、本ファイルにも許可行を足すこと
+# （足さないと git status にも git add -A にも現れず、サイレントに未追跡化される）。
+# サブディレクトリを増やす場合は !.claude/agents/<dir>/ の再包含が別途必要。
 !.claude/agents/
-!.claude/agents/**
+.claude/agents/*
+!.claude/agents/adversarial-reviewer.md
+!.claude/agents/doc-objectivity-reviewer.md
+!.claude/agents/meta-reviewer.md
 
 # 実地震テストのシナリオ本体（DMDATA.JP利用規約第15条によりEEWの二次配信は
 # 個人契約では制限されるため、各自の契約でキャプチャしたものはコミットしない。
