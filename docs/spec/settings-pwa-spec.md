@@ -128,6 +128,7 @@ type TestScenarioFile = {
       | { kind: 'lpgm'; data: JMALpgm }            // 長周期地震動観測情報（VXSE62）
       | { kind: 'nankai'; data: JMANankai }        // 南海トラフ地震関連情報（VYSE50/51）
       | { kind: 'kohatsu'; data: JMAKohatsu }      // 後発地震注意情報（VYSE60）
+    silent?: boolean                                // true のとき音・通知・読み上げを抑制（続報の連投で多重発火を避けたい場合等）
   }>
 }
 ```

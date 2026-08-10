@@ -119,9 +119,9 @@ standard 版で Yahoo hypoInfo が先に単独観測点処理の EEW を検知�
 
 **明示的な取消電文が来ない限り**、EEW は一定時間経過後に**無音・即消去**される（キャンセルオーバーレイなし）。
 計算式は**司・翠川式**（震源からの距離に応じて震度がどれだけ減衰するかを近似する経験式・地震工学で広く使われる）
-の距離減衰から S 波到達時刻を逆算し、+30 秒したもの。最終報から最低 60 秒（`MIN_CANCEL_SEC`）は
-表示を保つ。詳細は `src/utils/eew.ts` の `calcEEWCancelTime` / `calcEEWAutoCancelSec` / `calcFeltRadiusKm`
-（二分探索）参照。
+から**有感半径**を二分探索で逆算し、そこまで S 波が届く時間 + 30 秒を自動解除時刻とする。最終報から最低
+60 秒（`MIN_CANCEL_SEC`）は表示を保つ。詳細は `src/utils/eew.ts` の `calcEEWCancelTime` /
+`calcEEWAutoCancelSec` / `calcFeltRadiusKm`（二分探索）参照。
 
 ## 8. 誤報取消（明示的な取消電文）
 

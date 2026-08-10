@@ -136,6 +136,8 @@ App が直接持つのは「1 秒毎更新」（強震モニタ・`kyoshinIndice
 realtime-earthquake-viewer/
 ├── src/
 │   ├── App.tsx                # レイアウトの中枢
+│   ├── main.tsx               # Vite エントリポイント（React root）
+│   ├── index.css              # グローバル CSS
 │   ├── components/            # UI コンポーネント
 │   │   ├── Map/               # 地図（MapLibre GL・全 GL レイヤー） → map-rendering-spec.md
 │   │   ├── EarthquakeTab/     # 地震情報タブ → quake-spec.md
@@ -160,6 +162,7 @@ realtime-earthquake-viewer/
 │   │   ├── clock.ts           # サーバー同期時刻（serverNow）
 │   │   ├── testData.ts        # 合成テストデータ生成
 │   │   └── testScenarioReplay.ts # 実地震シナリオの時刻シフト・ID 再採番
+│   ├── data/                  # 合成テストデータ用の実データサンプル（noto-honshin-2024-*）
 │   └── types/                 # 型定義
 ├── public/
 │   ├── data/                  # 事前生成データ（座標・境界・辞書）→ data-sources-spec.md §6
@@ -169,7 +172,10 @@ realtime-earthquake-viewer/
 ├── docs/
 │   ├── spec/                  # 現在参照される仕様書（この文書を含む）
 │   └── archive/               # 完了済み PoC・移行記録
+├── README.md                  # プロジェクトの概要と導線
+├── CLAUDE.md                  # Claude Code 向けの開発ワークフロー
 ├── vite.config.ts             # Vite + PWA 設定・バリアント切替
+├── tsconfig.json              # TypeScript 設定
 ├── package.json
 └── LICENSE
 ```
@@ -217,7 +223,7 @@ Redux 等のグローバルストアは使わず、React のフック（`useStat
 ## 9. 関連する既知の設計判断
 
 - 地図の Leaflet 版は v4.0.0 で完全撤去、MapLibre GL に一本化された（`docs/archive/webgl-migration/` 参照）
-- 予報円は Yahoo `psWave.items` から自前計算（`usePsWaveCalc`）に統一（両バリアント共通）
+- 予報円は震源要素（lat/lng/depth/magnitude）と `originTime` を入力とする自前計算（`usePsWaveCalc`）に統一（両バリアント共通）。**以前は Yahoo `psWave.items` を使っていたが、現在は入力として一切参照しない**（詳細は [`eew-spec.md`](eew-spec.md) §6 参照）
 - 「テスト時刻設定（強震モニタ）」の replayTimeOffset は現状 P2PQuake WS も止める副作用がある（既知の HIGH 課題）
 
 ## 10. 改訂履歴
