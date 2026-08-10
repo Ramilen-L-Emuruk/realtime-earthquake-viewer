@@ -85,7 +85,7 @@ export function App() {
       log.debug(`[tab] → realtime スキップ (EEW続報・抑制中 残り${remaining}ms)`)
       return
     }
-    log.debug('[tab] → realtime (EEW続報)')
+    log.info('[tab] → realtime (EEW続報)')
     setActiveTab('realtime')
   }
 
@@ -352,9 +352,9 @@ export function App() {
   const prevTsunamiActiveRef = useRef(false)
   useEffect(() => {
     if (!prevTsunamiActiveRef.current && tsunamiActive) {
-      log.debug(`[tsunami] 発表検出 grade=${tsunamiGrade}`)
+      log.info(`[tsunami] 発表検出 grade=${tsunamiGrade}`)
     } else if (prevTsunamiActiveRef.current && !tsunamiActive) {
-      log.debug('[tsunami] 解除検出 (tsunamiActive: true→false)')
+      log.info('[tsunami] 解除検出 (tsunamiActive: true→false)')
       title.endTsunamiTitleWindow()
       title.applyPriority({ tsunami: false })
     }
@@ -383,10 +383,10 @@ export function App() {
     // EEW 発報中または揺れ検知中はリアルタイムタブを維持する。それ以外はデフォルトタブへ戻す。
     const revert = () => {
       if (activeEEWsRef.current.size > 0 || kyoshinDetectedRef.current) {
-        log.debug(`[tab] → realtime (アイドル復帰・EEW中または揺れ検知中 idleRevertSec=${settings.idleRevertSec})`)
+        log.info(`[tab] → realtime (アイドル復帰・EEW中または揺れ検知中 idleRevertSec=${settings.idleRevertSec})`)
         setActiveTab('realtime')
       } else {
-        log.debug(`[tab] → ${defaultTabRef.current} (アイドル復帰 idleRevertSec=${settings.idleRevertSec})`)
+        log.info(`[tab] → ${defaultTabRef.current} (アイドル復帰 idleRevertSec=${settings.idleRevertSec})`)
         revertToDefaultTab()
         if (!title.tsunamiTitleFlag()) {
           title.setTitle(null)
@@ -433,7 +433,7 @@ export function App() {
   const prefetchEndRef = useRef<Date | null>(null)
 
   const handleStartReplay = useCallback(async (targetDate: Date) => {
-    log.debug(`[replay] リプレイ開始 targetDate=${targetDate.toISOString()}`)
+    log.info(`[replay] リプレイ開始 targetDate=${targetDate.toISOString()}`)
     const offset = targetDate.getTime() - Date.now()
     const toTime = new Date(targetDate.getTime() + 3600_000)
     const preFrom = new Date(targetDate.getTime() - 24 * 3600_000)
@@ -719,10 +719,10 @@ export function App() {
           onTabChange={(tab) => {
             if (tab === 'realtime') {
               realtimeTabSuppressedUntilRef.current = 0
-              log.debug('[tab] → realtime (手動選択)')
+              log.info('[tab] → realtime (手動選択)')
               setActiveTab('realtime')
             } else {
-              log.debug(`[tab] → ${tab} (手動選択)`)
+              log.info(`[tab] → ${tab} (手動選択)`)
               setActiveTabNonRealtime(tab)
             }
           }}
