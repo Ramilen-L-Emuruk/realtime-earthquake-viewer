@@ -54,7 +54,9 @@ export interface PopupHandle {
 
 // ホバー側の吹き出しは CSS で pointer-events を切る（index.css）。
 // 吹き出し自身がマウスを受け取ると「対象から外れた」と判定され、出る/消えるを繰り返して明滅する。
-const HOVER_CLASS = 'map-hover-popup'
+// HTML マーカーが自前でホバー吹き出しを出す場合も同じクラスを使う必要があるため export する
+// （QuakeIntensityPointsGL 等）。
+export const HOVER_CLASS = 'map-hover-popup'
 const POPUP_OFFSET = 12
 
 interface Registry {
