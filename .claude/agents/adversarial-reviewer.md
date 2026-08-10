@@ -1,6 +1,6 @@
 ---
 name: adversarial-reviewer
-description: ソース修正後の敵対的レビューを実施する。実装から裏取りしバグ・エッジケース・機能間競合を検出する。修正はせず指摘のみ返す。
+description: 変更後（コード・ドキュメント問わず）の敵対的レビューを実施する。実装から裏取りしバグ・エッジケース・機能間競合・仕様書と実装の乖離を検出する。修正はせず指摘のみ返す。
 model: sonnet
 tools: [Read, Grep, Glob, Bash]
 ---
