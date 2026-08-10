@@ -193,7 +193,7 @@ export function App() {
     () => new Map([...activeEEWs].filter(([, v]) => !v.cancelledAt)),
     [activeEEWs],
   )
-  // EEW受信中または揺れ検知中は全観測点ベースの最大インデックスを使う（表示と音を一致させる）
+  // cancelledAt 除外済みのアクティブ EEW が1件以上あるか（S波カウントダウン等が参照する）
   const hasActiveEEW = activeEEWsNoCancelled.size > 0
   // 強震モニタ検知エンジン（useKyoshinDetectorV2）の EEW 連動緩和専用。震源要素が確定した（単独点処理=
   // 仮定震源要素でない）EEW のみを見る。severity（Warning/Forecast）は推定震度の大小を示す軸に過ぎず、
@@ -544,8 +544,6 @@ export function App() {
     candidate: kyoshinView.candidate,
     confirmedShocks: kyoshinView.confirmedShocks,
     dataTime: kyoshin.dataTime,
-    hasActiveEEW,
-    kyoshinIndices: kyoshin.indices,
     settings,
     title,
     activeEEWsRef,
