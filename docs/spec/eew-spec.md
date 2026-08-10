@@ -50,15 +50,21 @@
 | 経路 | バリアント | severity | condition | 長周期 lgIntTo | 使い方 |
 |---|---|---|---|---|---|
 | DMDATA WS/REST | DMDSS | 電文値（Warning/Forecast） | 電文値（`'仮定震源要素'` あり） | あり | 主系 |
-| P2PQuake WS | standard | 電文に無い（後述バグ） | 数値/文字列 | なし | 主系（DMDSS 版は不使用） |
+| P2PQuake WS | standard | 電文に無いが `convertEvent` で一律 `'Warning'` 付与 | 数値/文字列 | なし | 主系（DMDSS 版は不使用） |
 | Yahoo hypoInfo | 両バリアント | 震度からの推定（`>= 5弱 ? 'Warning' : 'Forecast'`） | 常に `'以上'` 固定 | なし | standard 版で補完的に検知 |
 
+P2PQuake API v2 の `code=556` は気象庁 EEW 警報（VXSE43/45 相当）の二次配信のみで、ペイロードに
+severity フィールドは存在しない。JMA 仕様上ここで配信されるものは全て警報級のため、`convertEvent`
+（`src/services/p2pquake.ts`）で `severity: 'Warning'` を明示付与する。
+
 **enrichEEW（`useEarthquakes.ts`）**: Yahoo hypoInfo で先に検知した EEW に、後着の P2PQuake / DMDATA で
-より正確な `areas` / `condition` / `hypocenter` を上書きする。ただし現状の実装では以下の課題がある:
-- Yahoo 続報が「新しい報」として `activeEEWs` を丸ごと上書きすると、enrichEEW で入れた情報が揮発する
-- P2PQuake 経路は severity フィールド自体が生成されておらず、Yahoo が後着するまで警報級が
-  「予報」扱いに落ちる（`code=556` は仕様上すべて警報級なので `severity: 'Warning'` を付与するか、
-  `areas[].kindCode ∈ {10, 11, 19}` から導出するのが正しい）
+より正確な `areas` / `condition` / `hypocenter` を上書きする。severity は upgrade only（既存 `'Warning'` は
+維持、`Forecast/Unknown` から `'Warning'` への格上げのみ許可）。Warning への格上げ時は `onLiveEvent` に
+enriched オブジェクトを渡して `useLiveEventHandler` 側の音・通知・タブ切替のレベル再評価をトリガーする
+（Yahoo 弱推定＋P2PQuake 後着で無音になる事象の解消）。ただし現状は次の課題が残る:
+- Yahoo 続報が「新しい報」として `activeEEWs` を丸ごと上書きすると、enrichEEW で入れた `areas` /
+  `earthquake.condition` / `earthquake.hypocenter` が揮発する（`case 'eew'` のマージ側では severity だけを
+  upgrade only で保持）
 
 ## 4. レベル判定（`computeSingleEEWLevel`）
 
