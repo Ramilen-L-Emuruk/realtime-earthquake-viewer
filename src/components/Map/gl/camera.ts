@@ -44,6 +44,78 @@ export function isProgrammaticFlight(map: maplibregl.Map): boolean {
   return (programmaticFlights.get(map) ?? 0) > 0
 }
 
+/** useUserInteractionGuard の idleRevertSec 既定値（秒）。設定タブ「自動復帰までの時間」の既定と揃える。 */
+export const DEFAULT_IDLE_REVERT_SEC = 30
+
+interface UserInteractionState {
+  interacting: boolean
+  timer: number | undefined
+  idleRevertSec: number
+  listeners: Set<(interacting: boolean) => void>
+}
+
+// kyoshin モードでは FitToCandidate／FitToDetection／FitToEEW が、津波モードでは TsunamiFitGL が
+// 同じ map の zoomstart/dragstart を監視する。コンポーネントごとに個別のリスナーを張ると同じ
+// イベントを N 回処理するだけで実害は無いが、判定ロジックを変える際に N 箇所のマウント順序を
+// 意識する必要が出るため、map ごとに 1 組だけ登録し listeners 経由で購読者へ配る。
+const userInteractionStates = new WeakMap<maplibregl.Map, UserInteractionState>()
+
+function notifyInteraction(state: UserInteractionState, value: boolean): void {
+  if (state.interacting === value) return
+  state.interacting = value
+  for (const listener of state.listeners) listener(value)
+}
+
+function ensureUserInteractionState(map: maplibregl.Map): UserInteractionState {
+  const existing = userInteractionStates.get(map)
+  if (existing) return existing
+  const state: UserInteractionState = {
+    interacting: false,
+    timer: undefined,
+    idleRevertSec: DEFAULT_IDLE_REVERT_SEC,
+    listeners: new Set(),
+  }
+  // isProgrammaticFlight(map) で、このファイルの fit 系関数自身が起こした zoomstart/dragstart を除外する
+  // （プログラムによる flyTo/fitBounds も同名イベントを発火するため、私有 ref では自分の呼び出ししか
+  // 除外できず、他コンポーネントの自動フィットをユーザー操作と誤認してしまう）。
+  const onInteraction = () => {
+    if (isProgrammaticFlight(map)) return
+    notifyInteraction(state, true)
+    window.clearTimeout(state.timer)
+    if (state.idleRevertSec > 0) {
+      state.timer = window.setTimeout(() => notifyInteraction(state, false), state.idleRevertSec * 1000)
+    }
+  }
+  map.on('zoomstart', onInteraction)
+  map.on('dragstart', onInteraction)
+  userInteractionStates.set(map, state)
+  return state
+}
+
+/**
+ * map 単位のユーザー操作状態を購読する。idleRevertSec は購読者間で共有され、最後に呼ばれた値が使われる
+ * （本アプリでは全 Fit* コンポーネントに同じユーザー設定値を渡す想定のため競合しない）。
+ * 戻り値の isInteracting は購読開始時点のスナップショット、reset は EEW 新規受信時のような
+ * 強制解除に使う。interacting の変化は listener 呼び出しで通知する（購読側で再レンダリングを誘発する）。
+ */
+export function subscribeUserInteraction(
+  map: maplibregl.Map,
+  idleRevertSec: number,
+  listener: (interacting: boolean) => void,
+): { isInteracting: boolean; unsubscribe: () => void; reset: () => void } {
+  const state = ensureUserInteractionState(map)
+  state.idleRevertSec = idleRevertSec
+  state.listeners.add(listener)
+  return {
+    isInteracting: state.interacting,
+    unsubscribe: () => state.listeners.delete(listener),
+    reset: () => {
+      window.clearTimeout(state.timer)
+      notifyInteraction(state, false)
+    },
+  }
+}
+
 /** 日本全体にフィットする（本アプリの既定フレーミング・padding 20）。 */
 export function fitJapan(map: maplibregl.Map, durationSec = 1.0): void {
   beginProgrammaticFlight(map)
