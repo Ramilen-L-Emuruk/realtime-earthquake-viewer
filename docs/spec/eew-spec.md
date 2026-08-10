@@ -75,12 +75,11 @@
 気象庁の実基準に合わせた OR 条件。長周期地震動階級は DMDATA 電文（VXSE43/44/45）にのみ載るため、
 standard 版では `eewMaxLpgmClass` が常に 0 になり震度のみでレベルが決まる。
 
-`eewMaxScale`・`eewMaxLpgmClass` は:
-- 電文全体の `forecastMaxScale` / `forecastMaxLpgmClass`
-- 地域別 `areas[].scaleTo` / `areas[].lgIntTo` の最大
-
-の大きい方を取る。ただし `condition === '仮定震源要素'` かつ `areas` が空のときは 0 を返す
-（単独観測点処理では地域別の詳細予想が発表されないため）。
+`eewMaxScale`・`eewMaxLpgmClass` は**地域別 `areas[].scaleTo` / `areas[].lgIntTo` の最大を優先**し、
+**`areas` が空または最大が 0 のときのみ**電文全体の `forecastMaxScale` / `forecastMaxLpgmClass` に
+フォールバックする（大きい方を取るのではない）。さらに `condition === '仮定震源要素'` かつ
+`areas` の最大が 0（実質空）のときは 0 を返す（単独観測点処理では地域別の詳細予想が発表されないため
+`forecastMaxScale` を使わない・`src/utils/eew.ts:140-159` 参照）。
 
 ## 5. 仮定震源要素（単独観測点処理）の扱い
 

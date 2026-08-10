@@ -167,7 +167,7 @@ DMDATA リプレイ機能の `setReplayOffset` は使わない（ライブ接続
 - 要 DMDATA.JP API キー
 
 **既知の課題**:
-- `EEW_TYPES` から `VXSE43`（警報）・`VXSE44`（予報）が抜けており（実装は `new Set(['VXSE45'])`）、警報級・予報 EEW が archive リプレイ時に捨てられる
+- **archive リプレイの `EEW_TYPES` から `VXSE43`（警報）が抜けており**（`src/services/dmdataReplay.ts:8` は `new Set(['VXSE45'])`）、警報級 EEW が archive リプレイ時に捨てられる（VXSE44 は廃止予定のため live 側と同様に除外は仕様通り）
 - `idPrefix` の 7 文字部分一致で誤マッチの可能性
 
 ### P2PQuake からシナリオを作る手順（DMDATA 契約なし）
@@ -181,21 +181,56 @@ DMDATA リプレイ機能の `setReplayOffset` は使わない（ライブ接続
 
 ## 7. 合成テストデータ（`src/utils/testData.ts`）
 
-各テストボタンで生成する合成イベントの実装。CLAUDE.md「テスト機能の活用」節と説明文を一致させる:
+各テストボタンで生成する合成イベントの実装。本節が単一情報源（CLAUDE.md「コード整合性チェック
+ポイント」表からこの節がリンクされる側）。
 
-| ボタン | 実装関数 | 最大 scaleTo | 対応 CLAUDE.md 記載 |
+| ボタン | 実装関数 | 最大 scaleTo | 生成イベント |
 |---|---|---|---|
-| EEW 特別警報テスト | `createTestEEW` | 60 | 震度 6 強・特別警報（三陸沖 M7.2） |
-| EEW 警報テスト | `createTestEEWWarning` | 50 | 震度 5 強相当・警報（日向灘 M6.5） |
-| EEW 予報テスト | `createTestEEWForecast` | 25 | 震度 2 程度・予報（宮城県沖 M4.5） |
-| 地震テスト | `createTestQuake` | - | 地震カード追加 |
-| 大警報テスト | `createTestTsunami('MajorWarning')` | - | 大津波警報 |
-| 警報テスト | `createTestTsunami('Warning')` | - | 津波警報 |
-| 注意報テスト | `createTestTsunami('Watch')` | - | 津波注意報 |
-| 予報テスト | `createTestTsunami('Forecast')` | - | 津波予報 |
+| EEW 特別警報テスト | `createTestEEW()` | 60 | 震度 6 強・特別警報（三陸沖 M7.2）※長周期地震動階級 4 |
+| EEW 警報テスト | `createTestEEWWarning()` | 50 | 震度 5 強相当・警報（日向灘 M6.5） |
+| EEW 予報テスト | `createTestEEWForecast()` | 25 | 震度 2 程度・予報（宮城県沖 M4.5） |
+| EEW 誤報取消テスト | `createTestEEWWarning()` + `EEW_RETRACTION_CANCEL_MS`(10s) 後に取消 | 50→取消 | 10 秒後に `cancelled:true` 電文で `eewCancel` 音・通知・読み上げを検証 |
+| 地震テスト | `createTestEarthquake()` | - | 令和 6 年能登半島地震の実データベース（`src/data/noto-honshin-2024-*.json`）を採用 |
+| 大津波警報テスト | `createTestTsunami()` | - | 大津波警報（無引数で MajorWarning） |
+| 津波警報テスト | `createTestTsunamiWarning()` | - | 津波警報 |
+| 津波注意報テスト | `createTestTsunamiWatch()` | - | 津波注意報 |
+| 津波予報テスト | `createTestTsunamiForecast()` | - | 津波予報（`TEST_AUTO_DISMISS_MS`=90 秒後に `expired` 経路で解除） |
+| 津波誤報取消テスト | `createTestTsunamiRetraction()` + 90 秒後に取消電文 | - | 警報・注意報混在の発表 → 90 秒後に電文全体が取り消される（`retracted` 経路） |
+| 揺れの候補テスト（強震モニタ） | `runSimulateKyoshinFaint`／`runSimulateKyoshinLikely`（実装は `useEarthquakes.ts`） | - | 弱い揺れ検知の候補（`faint`／`likely`）を UI に反映して発報経路を検証 |
+| 揺れ検知テスト（強震モニタ） | `runSimulateKyoshinConfirmed`（実装は `useEarthquakes.ts`） | - | 揺れ検知（`confirmed`）を発報。`detected` 音・カメラ自動フィット・カード表示を検証 |
 
-「10 秒以内に再クリックで続報」「押さなければ自動確定」等のロジックは `useEarthquakes.ts` の
-`runSimulateEEW` 系で実装。
+「10 秒以内に再クリックで続報」「押さなければ自動確定」（`EEW_FINAL_SILENCE_MS`=10 秒）等の
+ロジックは `useEarthquakes.ts` の `runSimulateEEW` 系で実装。
+
+### 通知音の対応
+
+- `eewSpecial` — EEW 特別警報テスト
+- `eew` — EEW 警報テスト
+- `eewForecast` — EEW 予報テスト
+- `eewCancel` — EEW 誤報取消テスト（10 秒後の取消電文で発火）
+- `eewUpdate` — 続報時（`isNew:false`）
+- `eewFinal` — 最終報（無音の自動消去ではなく明示的な最終報用）
+- `tsunamiMajor` — 大津波警報テスト
+- `tsunami` — 津波警報テスト
+- `tsunamiWatch` — 津波注意報テスト
+- `tsunamiForecast` — 津波予報テスト
+- `detected` / `foreshock` — 揺れ検知テスト（`confirmed`／`likely`・`faint`）
+
+### 自動解除・自動確定のタイミング
+
+- **EEW 誤報取消**: `EEW_RETRACTION_CANCEL_MS`（10 秒）後に明示取消電文が届き、カードに「誤報として取り消されました」を 10 秒表示 → 消去
+- **EEW 続報の受付**: `EEW_FINAL_SILENCE_MS`（10 秒）以内に再度テストボタンを押すと続報として発報。押さなければ `isFinal:true` として自動確定 → 無音消去
+- **津波予報の期限切れ**: `TEST_AUTO_DISMISS_MS`（90 秒）で `validDateTime` に到達し `expired` 経路で解除
+- **津波誤報取消**: `TEST_AUTO_DISMISS_MS`（90 秒）後に取消電文が届き `retracted` 経路で 10 秒間「取消」表示
+
+### DOM 検証テクニック（動作確認用）
+
+Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認したいときの主要な取り出し方:
+
+- **地図の震度バッジ集計**: `maplibregl.Marker` の `element.textContent` に震度文字列（`1`〜`7`）が入る。`document.querySelectorAll('.maplibregl-marker')` から集計できる
+- **地図ソースの内容**: `await window.__mapGL.getSource('<sourceId>').getData()` で GeoJSON を取り出せる（本番ビルドでも `window.__mapGL` は露出。`src/components/Map/JapanMapGL.tsx`）
+- **レイヤーの表示状態**: `window.__mapGL.getLayoutProperty('<layerId>', 'visibility')`
+- **時間経過を伴う挙動の再現**: 自動解除・アイドル復帰・続報自動確定は `localStorage` の書き換え＋リロード、または `setTimeout` の時間送りで確認する
 
 ## 8. 定期自動リロード
 
