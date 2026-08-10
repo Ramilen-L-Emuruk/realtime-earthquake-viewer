@@ -235,8 +235,8 @@ export function JapanMapGL({
             regionAggregates={eewLpgmRegionAggregates}
             visible={eewLpgmRegionAggregates.length > 0}
           />
-          {/* EEW 予報円（S波塗り／P波外周）。全モードで表示（実 EEW 発報時のみ値が入る）。 */}
-          <PsWaveGL psWave={kyoshinPsWave} />
+          {/* EEW 予報円（S波塗り／P波外周）。全モードで表示し、リアルタイム震度モード以外は半透明（震源×印と同じ扱い）。 */}
+          <PsWaveGL psWave={kyoshinPsWave} fullOpacity={mode === 'kyoshin'} />
           {/* EEW 震源（×印・点滅）。全モードで表示し、リアルタイム震度モード以外は半透明。 */}
           {eewEpicenters.length > 0 && (
             <EewEpicentersGL epicenters={eewEpicenters} iconScale={iconScale} fullOpacity={mode === 'kyoshin'} />
