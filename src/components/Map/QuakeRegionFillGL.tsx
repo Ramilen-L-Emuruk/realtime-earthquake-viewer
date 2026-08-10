@@ -3,21 +3,22 @@ import * as maplibregl from 'maplibre-gl'
 import type { GeoJSONSource } from 'maplibre-gl'
 import type { Feature, FeatureCollection, Polygon } from 'geojson'
 import { useMapGL } from './mapGLContext'
-import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
+import { getIntensityColor, getIntensityLabel } from '../../utils/intensity'
 import type { RegionAggregate } from '../../hooks/useQuakeLayerData'
 import { ringToLngLat } from './gl/geojson'
 import { addOrderedLayer } from './gl/layerOrder'
 import { attachMarkerClaim, type PopupHandle } from './gl/popupRegistry'
+import { buildIntensityBadgeEl, INTENSITY_BADGE_Z } from './gl/intensityBadge'
 
 // 地震モードのズームアウト時、一次細分区域ごとの最大震度を塗る MapLibre 版
 // （Leaflet 版 JapanMap の quake-region-fill ペイン＋区域中心マーカー相当）。
 // 区域塗りは fill+line レイヤー、区域中心の震度ラベルは HTML マーカー（maplibregl.Marker）で描く
 // （ラベル文字は symbol+text だと glyph 依存になるため、Leaflet の DivIcon と同じく HTML で出す）。
+// バッジ要素自体は観測点ラベル（QuakeIntensityPointsGL）と共有（gl/intensityBadge.ts）。
 
 const FILL_SRC = 'quake-region-fill'
 const FILL_LYR = 'quake-region-fill'
 const LINE_LYR = 'quake-region-fill-line'
-const INTENSITY_Z = 1000
 
 const EMPTY_FC: FeatureCollection<Polygon> = { type: 'FeatureCollection', features: [] }
 
@@ -42,21 +43,6 @@ function buildFillFC(regions: RegionAggregate[]): FeatureCollection<Polygon> {
     }
   }
   return { type: 'FeatureCollection', features }
-}
-
-// 区域中心の震度ラベル（Leaflet 版 getIntensityIcon と同じ円形ボックス）を作る。
-function buildLabelEl(scale: number, iconScale: number): HTMLDivElement {
-  const size = (getScaleRadius(scale) * 2 + 8) * iconScale
-  const color = getIntensityColor(scale)
-  const label = getIntensityLabel(scale)
-  const fontSize = label.length > 1 ? size * 0.42 : size * 0.6
-  const el = document.createElement('div')
-  el.style.cssText =
-    `width:${size}px;height:${size}px;background:${color};border:1px solid rgba(255,255,255,0.7);` +
-    `border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;` +
-    `font-weight:700;font-size:${fontSize}px;line-height:1;box-shadow:0 0 3px rgba(0,0,0,0.7);cursor:pointer`
-  el.textContent = label
-  return el
 }
 
 function popupHtml(name: string, scale: number): string {
@@ -118,9 +104,9 @@ export function QuakeRegionFillGL({ regionAggregates, iconScale, visible }: Prop
     markersRef.current = []
     if (!visible) return
     for (const r of regionAggregates) {
-      const el = buildLabelEl(r.scale, iconScale)
-      // 強い震度ほど前面（Leaflet の zIndexOffset = scale*INTENSITY_Z 相当）。
-      el.style.zIndex = String(r.scale * INTENSITY_Z)
+      const el = buildIntensityBadgeEl(r.scale, iconScale)
+      // 強い震度ほど前面（Leaflet の zIndexOffset = scale*INTENSITY_BADGE_Z 相当）。
+      el.style.zIndex = String(r.scale * INTENSITY_BADGE_Z)
       const popup = new maplibregl.Popup({ closeButton: true, offset: 12 }).setHTML(
         popupHtml(r.name, r.scale),
       )

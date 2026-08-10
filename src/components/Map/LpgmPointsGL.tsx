@@ -1,27 +1,20 @@
 import { useEffect, useRef } from 'react'
-import type { GeoJSONSource, MapGeoJSONFeature } from 'maplibre-gl'
-import type { Feature, FeatureCollection, Point } from 'geojson'
+import * as maplibregl from 'maplibre-gl'
 import { useMapGL } from './mapGLContext'
 import { getLpgmClassColor, getLpgmClassLabel } from '../../utils/lpgm'
 import type { LpgmMarker } from '../../hooks/useQuakeLayerData'
-import { addOrderedLayer } from './gl/layerOrder'
-import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
+import { buildLpgmBadgeEl, LPGM_BADGE_Z } from './gl/lpgmBadge'
+import { attachMarkerClaim, HOVER_CLASS, type PopupHandle } from './gl/popupRegistry'
 import { badgeHtml, escapeHtml } from './gl/popupHtml'
 
-// 長周期地震動観測点を色付きドットで描画する MapLibre 版（Leaflet の LpgmPoints 相当）。
-// 高ズーム時（区域集約しないとき）に階級 1〜4 を JMA 公式色で表示する。色は前計算して feature
-// プロパティに持たせ、circle-sort-key に lgInt を与えて強い階級を前面へ（弱→強の順）。
+// 長周期地震動観測点を階級ラベル付き四角バッジで描画する MapLibre 版。
+// 区域ラベル（LpgmRegionFillGL）と同じ HTML Marker 方式（バッジ要素は gl/lpgmBadge.ts 共有）。
+// 震度観測点（QuakeIntensityPointsGL）と違い、LPGM の points は常に観測点そのもの
+// （区域代表点は points ではなく regions という別枠の電文データから来る）ため、isArea の
+// 出し分けは不要。
 //
-// ホバー／クリックのポップアップは震度観測点（QuakeIntensityPointsGL）と同じ作法で束ねる。
-// この2つは同じ地震モード内で LPGM 表示の有無だけで入れ替わるため、片方だけ無反応にしない。
-
-const SRC = 'quake-lpgm-points'
-const LYR = 'quake-lpgm-points'
-const BASE_RADIUS = 5
-// 円が小さいので当たり判定に余裕を持たせる（QuakeIntensityPointsGL と同じ考え方）。
-const HIT_TOL_PX = 8
-
-const EMPTY_FC: FeatureCollection<Point> = { type: 'FeatureCollection', features: [] }
+// 更新は電文切替時のみ（頻度が低い）なので、region-fill 同様に毎回作り直す。
+// ホバーで観測点名＋階級、クリックで都道府県まで出す。
 
 interface Props {
   markers: LpgmMarker[]
@@ -29,100 +22,76 @@ interface Props {
   visible: boolean
 }
 
-function buildFC(markers: LpgmMarker[]): FeatureCollection<Point> {
-  const features: Feature<Point>[] = markers.map((m) => ({
-    type: 'Feature',
-    properties: {
-      color: getLpgmClassColor(m.lgInt),
-      lgInt: m.lgInt,
-      name: m.name,
-      pref: m.pref,
-    },
-    geometry: { type: 'Point', coordinates: [m.position[1], m.position[0]] },
-  }))
-  return { type: 'FeatureCollection', features }
-}
-
-function hoverHtml(f: MapGeoJSONFeature): string {
-  const lgInt = Number(f.properties?.lgInt ?? 0)
+function hoverHtml(m: LpgmMarker): string {
   return (
     `<div style="display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap">` +
-    `${badgeHtml(String(lgInt), getLpgmClassColor(lgInt))}` +
-    `<span style="font-weight:600">${escapeHtml(String(f.properties?.name ?? ''))}</span></div>`
+    `${badgeHtml(String(m.lgInt), getLpgmClassColor(m.lgInt))}` +
+    `<span style="font-weight:600">${escapeHtml(m.name)}</span></div>`
   )
 }
 
-function clickHtml(f: MapGeoJSONFeature): string {
-  const lgInt = Number(f.properties?.lgInt ?? 0)
-  const pref = String(f.properties?.pref ?? '')
+function clickHtml(m: LpgmMarker): string {
   return (
     `<div style="min-width:150px">` +
-    `<div style="font-weight:700;font-size:13px">${escapeHtml(String(f.properties?.name ?? ''))}</div>` +
-    (pref ? `<div style="margin-top:2px;font-size:11px;color:#94a3b8">${escapeHtml(pref)}</div>` : '') +
+    `<div style="font-weight:700;font-size:13px">${escapeHtml(m.name)}</div>` +
+    (m.pref ? `<div style="margin-top:2px;font-size:11px;color:#94a3b8">${escapeHtml(m.pref)}</div>` : '') +
     `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:12px">` +
-    `${badgeHtml(String(lgInt), getLpgmClassColor(lgInt))}` +
-    `<span style="color:#cbd5e1">長周期地震動${escapeHtml(getLpgmClassLabel(lgInt))}</span></div>` +
+    `${badgeHtml(String(m.lgInt), getLpgmClassColor(m.lgInt))}` +
+    `<span style="color:#cbd5e1">長周期地震動${escapeHtml(getLpgmClassLabel(m.lgInt))}</span></div>` +
     `</div>`
   )
 }
 
 export function LpgmPointsGL({ markers, iconScale, visible }: Props) {
   const map = useMapGL()
-  const addedRef = useRef(false)
-  const popupRef = useRef<PopupHandle | null>(null)
+  const markersRef = useRef<maplibregl.Marker[]>([])
+  const hoverPopupsRef = useRef<maplibregl.Popup[]>([])
+  const claimsRef = useRef<PopupHandle[]>([])
 
+  // データ／倍率／表示切替のたびに全バッジを作り直す（region-fill と同じ差し替え方式）。
   useEffect(() => {
-    if (!map) return
-    map.addSource(SRC, { type: 'geojson', data: EMPTY_FC })
-    addOrderedLayer(map, {
-      id: LYR,
-      type: 'circle',
-      source: SRC,
-      layout: {
-        'circle-sort-key': ['get', 'lgInt'],
-        visibility: visible ? 'visible' : 'none',
-      },
-      paint: {
-        'circle-radius': BASE_RADIUS * iconScale,
-        'circle-color': ['get', 'color'],
-        'circle-opacity': 0.9,
-        'circle-stroke-color': 'rgba(255,255,255,0.7)',
-        'circle-stroke-width': 1,
-      },
-    })
-    popupRef.current = registerPopupSource(map, {
-      layerId: LYR,
-      priority: 'point',
-      tolPx: HIT_TOL_PX,
-      rankKey: 'lgInt',
-      buildHoverHtml: hoverHtml,
-      buildClickHtml: clickHtml,
-    })
-    addedRef.current = true
-    return () => {
-      popupRef.current?.remove()
-      popupRef.current = null
-      if (map.getLayer(LYR)) map.removeLayer(LYR)
-      if (map.getSource(SRC)) map.removeSource(SRC)
-      addedRef.current = false
+    if (!map || !visible) return
+
+    for (const m of markers) {
+      const el = buildLpgmBadgeEl(m.lgInt, iconScale)
+      // 強い階級ほど前面（区域ラベルと同じ zIndex 係数）。
+      el.style.zIndex = String(m.lgInt * LPGM_BADGE_Z)
+      const lngLat: [number, number] = [m.position[1], m.position[0]]
+
+      const hoverPopup = new maplibregl.Popup({
+        closeButton: false,
+        closeOnClick: false,
+        className: HOVER_CLASS,
+        offset: 12,
+        maxWidth: '240px',
+      }).setHTML(hoverHtml(m))
+      const clickPopup = new maplibregl.Popup({ closeButton: true, offset: 12, maxWidth: '280px' }).setHTML(
+        clickHtml(m),
+      )
+
+      // クリックでポップアップが開いている間はホバー吹き出しを重ねて出さない。
+      el.addEventListener('mouseenter', () => {
+        if (clickPopup.isOpen()) return
+        hoverPopup.setLngLat(lngLat).addTo(map)
+      })
+      el.addEventListener('mouseleave', () => hoverPopup.remove())
+
+      const marker = new maplibregl.Marker({ element: el }).setLngLat(lngLat).setPopup(clickPopup).addTo(map)
+
+      claimsRef.current.push(attachMarkerClaim(map, el))
+      hoverPopupsRef.current.push(hoverPopup)
+      markersRef.current.push(marker)
     }
-  }, [map])
 
-  useEffect(() => {
-    if (!map || !addedRef.current) return
-    const src = map.getSource(SRC) as GeoJSONSource | undefined
-    src?.setData(buildFC(markers))
-  }, [map, markers])
-
-  useEffect(() => {
-    if (!map || !map.getLayer(LYR)) return
-    map.setPaintProperty(LYR, 'circle-radius', BASE_RADIUS * iconScale)
-  }, [map, iconScale])
-
-  useEffect(() => {
-    if (!map || !map.getLayer(LYR)) return
-    map.setLayoutProperty(LYR, 'visibility', visible ? 'visible' : 'none')
-  }, [map, visible])
+    return () => {
+      for (const c of claimsRef.current) c.remove()
+      claimsRef.current = []
+      for (const p of hoverPopupsRef.current) p.remove()
+      hoverPopupsRef.current = []
+      for (const mk of markersRef.current) mk.remove()
+      markersRef.current = []
+    }
+  }, [map, markers, iconScale, visible])
 
   return null
 }
