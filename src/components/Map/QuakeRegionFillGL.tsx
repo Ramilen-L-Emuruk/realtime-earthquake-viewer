@@ -1,26 +1,31 @@
 import { useEffect, useRef } from 'react'
-import * as maplibregl from 'maplibre-gl'
-import type { GeoJSONSource } from 'maplibre-gl'
-import type { Feature, FeatureCollection, Polygon } from 'geojson'
+import type { GeoJSONSource, MapGeoJSONFeature } from 'maplibre-gl'
+import type { Feature, FeatureCollection, Point, Polygon } from 'geojson'
 import { useMapGL } from './mapGLContext'
-import { getIntensityColor, getIntensityLabel } from '../../utils/intensity'
+import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
 import type { RegionAggregate } from '../../hooks/useQuakeLayerData'
 import { ringToLngLat } from './gl/geojson'
 import { addOrderedLayer } from './gl/layerOrder'
-import { attachMarkerClaim, type PopupHandle } from './gl/popupRegistry'
-import { buildIntensityBadgeEl, INTENSITY_BADGE_Z } from './gl/intensityBadge'
+import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
+import { escapeHtml } from './gl/popupHtml'
+import { ensureIntensityIcons, intensityIconId, INTENSITY_ICON_BASE_RADIUS } from './gl/intensityIcons'
 
 // 地震モードのズームアウト時、一次細分区域ごとの最大震度を塗る MapLibre 版
 // （Leaflet 版 JapanMap の quake-region-fill ペイン＋区域中心マーカー相当）。
-// 区域塗りは fill+line レイヤー、区域中心の震度ラベルは HTML マーカー（maplibregl.Marker）で描く
-// （ラベル文字は symbol+text だと glyph 依存になるため、Leaflet の DivIcon と同じく HTML で出す）。
-// バッジ要素自体は観測点ラベル（QuakeIntensityPointsGL）と共有（gl/intensityBadge.ts）。
+// 区域塗りは fill+line レイヤー、区域中心の震度ラベルは観測点（QuakeIntensityPointsGL）と同じ
+// icon-image 方式で描く（gl/intensityIcons.ts の Canvas2D 事前ラスタライズ画像を共有）。
+// クリックのみでポップアップを出す（ホバーは元々無し）。
 
 const FILL_SRC = 'quake-region-fill'
 const FILL_LYR = 'quake-region-fill'
 const LINE_LYR = 'quake-region-fill-line'
+const LABEL_SRC = 'quake-region-label'
+const LABEL_LYR = 'quake-region-label'
+// バッジがそれほど小さくない（区域代表点は数十件程度）ため、当たり判定に少し余裕を持たせる。
+const HIT_TOL_PX = 10
 
-const EMPTY_FC: FeatureCollection<Polygon> = { type: 'FeatureCollection', features: [] }
+const EMPTY_FILL_FC: FeatureCollection<Polygon> = { type: 'FeatureCollection', features: [] }
+const EMPTY_LABEL_FC: FeatureCollection<Point> = { type: 'FeatureCollection', features: [] }
 
 interface Props {
   regionAggregates: RegionAggregate[]
@@ -45,25 +50,41 @@ function buildFillFC(regions: RegionAggregate[]): FeatureCollection<Polygon> {
   return { type: 'FeatureCollection', features }
 }
 
-function popupHtml(name: string, scale: number): string {
-  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+// 区域中心の震度ラベル用 Point Feature 群。
+// 旧 HTML Marker 版（buildIntensityBadgeEl）のサイズ比率 (getScaleRadius*2+8) を踏襲。
+function buildLabelFC(regions: RegionAggregate[], iconScale: number): FeatureCollection<Point> {
+  const features: Feature<Point>[] = regions.map((r) => ({
+    type: 'Feature',
+    properties: {
+      iconId: intensityIconId(r.scale),
+      iconSizeRatio: ((getScaleRadius(r.scale) + 4) * iconScale) / INTENSITY_ICON_BASE_RADIUS,
+      scale: r.scale,
+      name: r.name,
+    },
+    geometry: { type: 'Point', coordinates: [r.label[1], r.label[0]] },
+  }))
+  return { type: 'FeatureCollection', features }
+}
+
+function clickHtml(f: MapGeoJSONFeature): string {
+  const scale = Number(f.properties?.scale ?? -1)
+  const name = String(f.properties?.name ?? '')
   return (
-    `<div class="text-sm"><div class="font-bold">${esc(name)}</div>` +
-    `<div class="text-xs" style="color:#94a3b8">最大震度 ${esc(getIntensityLabel(scale))}</div></div>`
+    `<div class="text-sm"><div class="font-bold">${escapeHtml(name)}</div>` +
+    `<div class="text-xs" style="color:#94a3b8">最大震度 ${escapeHtml(getIntensityLabel(scale))}</div></div>`
   )
 }
 
 export function QuakeRegionFillGL({ regionAggregates, iconScale, visible }: Props) {
   const map = useMapGL()
-  const markersRef = useRef<maplibregl.Marker[]>([])
-  // ラベルマーカーのクリック宣言（レイヤー由来のポップアップと二重に開かないための調停）。
-  const claimsRef = useRef<PopupHandle[]>([])
   const addedRef = useRef(false)
+  const popupRef = useRef<PopupHandle | null>(null)
 
-  // fill + line レイヤーを一度だけ作る。
+  // fill + line + ラベル用レイヤーを一度だけ作る。
   useEffect(() => {
     if (!map) return
-    map.addSource(FILL_SRC, { type: 'geojson', data: EMPTY_FC })
+    ensureIntensityIcons(map)
+    map.addSource(FILL_SRC, { type: 'geojson', data: EMPTY_FILL_FC })
     addOrderedLayer(map, {
       id: FILL_LYR,
       type: 'fill',
@@ -79,12 +100,33 @@ export function QuakeRegionFillGL({ regionAggregates, iconScale, visible }: Prop
       layout: { visibility: visible ? 'visible' : 'none' },
       paint: { 'line-color': ['get', 'color'], 'line-width': 1 },
     })
+    map.addSource(LABEL_SRC, { type: 'geojson', data: EMPTY_LABEL_FC })
+    addOrderedLayer(map, {
+      id: LABEL_LYR,
+      type: 'symbol',
+      source: LABEL_SRC,
+      layout: {
+        'icon-image': ['get', 'iconId'],
+        'icon-size': ['get', 'iconSizeRatio'],
+        'icon-allow-overlap': true,
+        'icon-ignore-placement': true,
+        'symbol-sort-key': ['get', 'scale'],
+        visibility: visible ? 'visible' : 'none',
+      },
+    })
+    popupRef.current = registerPopupSource(map, {
+      layerId: LABEL_LYR,
+      priority: 'point',
+      tolPx: HIT_TOL_PX,
+      rankKey: 'scale',
+      buildClickHtml: clickHtml,
+    })
     addedRef.current = true
     return () => {
-      for (const c of claimsRef.current) c.remove()
-      claimsRef.current = []
-      for (const mk of markersRef.current) mk.remove()
-      markersRef.current = []
+      popupRef.current?.remove()
+      popupRef.current = null
+      if (map.getLayer(LABEL_LYR)) map.removeLayer(LABEL_LYR)
+      if (map.getSource(LABEL_SRC)) map.removeSource(LABEL_SRC)
       if (map.getLayer(LINE_LYR)) map.removeLayer(LINE_LYR)
       if (map.getLayer(FILL_LYR)) map.removeLayer(FILL_LYR)
       if (map.getSource(FILL_SRC)) map.removeSource(FILL_SRC)
@@ -92,39 +134,22 @@ export function QuakeRegionFillGL({ regionAggregates, iconScale, visible }: Prop
     }
   }, [map])
 
-  // データ／倍率変化: 塗りを差し替え、ラベルマーカーを作り直す。
+  // データ／倍率変化: 塗り・ラベルを差し替え。
   useEffect(() => {
     if (!map || !addedRef.current) return
-    const src = map.getSource(FILL_SRC) as GeoJSONSource | undefined
-    src?.setData(buildFillFC(regionAggregates))
+    const fillSrc = map.getSource(FILL_SRC) as GeoJSONSource | undefined
+    fillSrc?.setData(buildFillFC(regionAggregates))
+    const labelSrc = map.getSource(LABEL_SRC) as GeoJSONSource | undefined
+    labelSrc?.setData(buildLabelFC(regionAggregates, iconScale))
+  }, [map, regionAggregates, iconScale])
 
-    for (const c of claimsRef.current) c.remove()
-    claimsRef.current = []
-    for (const mk of markersRef.current) mk.remove()
-    markersRef.current = []
-    if (!visible) return
-    for (const r of regionAggregates) {
-      const el = buildIntensityBadgeEl(r.scale, iconScale)
-      // 強い震度ほど前面（Leaflet の zIndexOffset = scale*INTENSITY_BADGE_Z 相当）。
-      el.style.zIndex = String(r.scale * INTENSITY_BADGE_Z)
-      const popup = new maplibregl.Popup({ closeButton: true, offset: 12 }).setHTML(
-        popupHtml(r.name, r.scale),
-      )
-      const marker = new maplibregl.Marker({ element: el })
-        .setLngLat([r.label[1], r.label[0]])
-        .setPopup(popup)
-        .addTo(map)
-      claimsRef.current.push(attachMarkerClaim(map, el))
-      markersRef.current.push(marker)
-    }
-  }, [map, regionAggregates, iconScale, visible])
-
-  // 表示切替（fill/line レイヤー）。マーカーは上の effect が visible を見て出し分ける。
+  // 表示切替（fill/line/ラベル レイヤー）。
   useEffect(() => {
     if (!map || !map.getLayer(FILL_LYR)) return
     const v = visible ? 'visible' : 'none'
     map.setLayoutProperty(FILL_LYR, 'visibility', v)
     map.setLayoutProperty(LINE_LYR, 'visibility', v)
+    map.setLayoutProperty(LABEL_LYR, 'visibility', v)
   }, [map, visible])
 
   return null
