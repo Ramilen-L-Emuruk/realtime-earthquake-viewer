@@ -1,26 +1,32 @@
 import { useEffect, useRef } from 'react'
-import * as maplibregl from 'maplibre-gl'
-import type { GeoJSONSource } from 'maplibre-gl'
-import type { Feature, FeatureCollection, Polygon } from 'geojson'
+import type { GeoJSONSource, MapGeoJSONFeature } from 'maplibre-gl'
+import type { Feature, FeatureCollection, Point, Polygon } from 'geojson'
 import { useMapGL } from './mapGLContext'
 import { getLpgmClassColor, getLpgmClassLabel } from '../../utils/lpgm'
 import type { LpgmRegionAggregate } from '../../hooks/useQuakeLayerData'
 import { ringToLngLat } from './gl/geojson'
 import { addOrderedLayer } from './gl/layerOrder'
-import { attachMarkerClaim, type PopupHandle } from './gl/popupRegistry'
-import { buildLpgmBadgeEl, LPGM_BADGE_Z } from './gl/lpgmBadge'
+import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
+import { escapeHtml } from './gl/popupHtml'
+import { ensureLpgmIcons, lpgmIconId, LPGM_ICON_BASE_RADIUS } from './gl/lpgmIcons'
 
 // 長周期地震動のズームアウト時、一次細分区域ごとの最大階級を塗る MapLibre 版
 // （Leaflet 版 JapanMap の lpgm-region-fill ペイン＋区域中心マーカー相当）。
-// 区域塗りは fill+line、区域中心の階級ラベルは HTML マーカー（Leaflet の getLpgmRegionIcon
-// 四角ボックスを再現・glyph 非依存）で描く。バッジ要素自体は観測点ラベル（LpgmPointsGL）と共有
-// （gl/lpgmBadge.ts）。
+// 区域塗りは fill+line、区域中心の階級ラベルは観測点（LpgmPointsGL）と同じ icon-image 方式で描く
+// （gl/lpgmIcons.ts の Canvas2D 事前ラスタライズ画像を共有）。クリックのみでポップアップを出す
+// （ホバーは元々無し）。
 
 const FILL_SRC = 'quake-lpgm-region-fill'
 const FILL_LYR = 'quake-lpgm-region-fill'
 const LINE_LYR = 'quake-lpgm-region-fill-line'
+const LABEL_SRC = 'quake-lpgm-region-label'
+const LABEL_LYR = 'quake-lpgm-region-label'
+const HIT_TOL_PX = 10
+// 旧 HTML Marker 版（buildLpgmBadgeEl）のバッジサイズ(32px固定・階級によらない)を踏襲。
+const BASE_RADIUS = 16
 
-const EMPTY_FC: FeatureCollection<Polygon> = { type: 'FeatureCollection', features: [] }
+const EMPTY_FILL_FC: FeatureCollection<Polygon> = { type: 'FeatureCollection', features: [] }
+const EMPTY_LABEL_FC: FeatureCollection<Point> = { type: 'FeatureCollection', features: [] }
 
 interface Props {
   regionAggregates: LpgmRegionAggregate[]
@@ -43,24 +49,38 @@ function buildFillFC(regions: LpgmRegionAggregate[]): FeatureCollection<Polygon>
   return { type: 'FeatureCollection', features }
 }
 
-function popupHtml(name: string, lgInt: number): string {
-  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+function buildLabelFC(regions: LpgmRegionAggregate[], iconScale: number): FeatureCollection<Point> {
+  const features: Feature<Point>[] = regions.map((r) => ({
+    type: 'Feature',
+    properties: {
+      iconId: lpgmIconId(r.maxLgInt),
+      iconSizeRatio: (BASE_RADIUS * iconScale) / LPGM_ICON_BASE_RADIUS,
+      lgInt: r.maxLgInt,
+      name: r.name,
+    },
+    geometry: { type: 'Point', coordinates: [r.label[1], r.label[0]] },
+  }))
+  return { type: 'FeatureCollection', features }
+}
+
+function clickHtml(f: MapGeoJSONFeature): string {
+  const lgInt = Number(f.properties?.lgInt ?? 0)
+  const name = String(f.properties?.name ?? '')
   return (
-    `<div class="text-sm"><div class="font-bold">${esc(name)}</div>` +
-    `<div class="text-xs" style="color:#94a3b8">長周期地震動 ${esc(getLpgmClassLabel(lgInt))}</div></div>`
+    `<div class="text-sm"><div class="font-bold">${escapeHtml(name)}</div>` +
+    `<div class="text-xs" style="color:#94a3b8">長周期地震動 ${escapeHtml(getLpgmClassLabel(lgInt))}</div></div>`
   )
 }
 
 export function LpgmRegionFillGL({ regionAggregates, iconScale, visible }: Props) {
   const map = useMapGL()
-  const markersRef = useRef<maplibregl.Marker[]>([])
-  // ラベルマーカーのクリック宣言（レイヤー由来のポップアップと二重に開かないための調停）。
-  const claimsRef = useRef<PopupHandle[]>([])
   const addedRef = useRef(false)
+  const popupRef = useRef<PopupHandle | null>(null)
 
   useEffect(() => {
     if (!map) return
-    map.addSource(FILL_SRC, { type: 'geojson', data: EMPTY_FC })
+    ensureLpgmIcons(map)
+    map.addSource(FILL_SRC, { type: 'geojson', data: EMPTY_FILL_FC })
     addOrderedLayer(map, {
       id: FILL_LYR,
       type: 'fill',
@@ -75,12 +95,33 @@ export function LpgmRegionFillGL({ regionAggregates, iconScale, visible }: Props
       layout: { visibility: visible ? 'visible' : 'none' },
       paint: { 'line-color': ['get', 'color'], 'line-width': 1 },
     })
+    map.addSource(LABEL_SRC, { type: 'geojson', data: EMPTY_LABEL_FC })
+    addOrderedLayer(map, {
+      id: LABEL_LYR,
+      type: 'symbol',
+      source: LABEL_SRC,
+      layout: {
+        'icon-image': ['get', 'iconId'],
+        'icon-size': ['get', 'iconSizeRatio'],
+        'icon-allow-overlap': true,
+        'icon-ignore-placement': true,
+        'symbol-sort-key': ['get', 'lgInt'],
+        visibility: visible ? 'visible' : 'none',
+      },
+    })
+    popupRef.current = registerPopupSource(map, {
+      layerId: LABEL_LYR,
+      priority: 'point',
+      tolPx: HIT_TOL_PX,
+      rankKey: 'lgInt',
+      buildClickHtml: clickHtml,
+    })
     addedRef.current = true
     return () => {
-      for (const c of claimsRef.current) c.remove()
-      claimsRef.current = []
-      for (const mk of markersRef.current) mk.remove()
-      markersRef.current = []
+      popupRef.current?.remove()
+      popupRef.current = null
+      if (map.getLayer(LABEL_LYR)) map.removeLayer(LABEL_LYR)
+      if (map.getSource(LABEL_SRC)) map.removeSource(LABEL_SRC)
       if (map.getLayer(LINE_LYR)) map.removeLayer(LINE_LYR)
       if (map.getLayer(FILL_LYR)) map.removeLayer(FILL_LYR)
       if (map.getSource(FILL_SRC)) map.removeSource(FILL_SRC)
@@ -90,34 +131,18 @@ export function LpgmRegionFillGL({ regionAggregates, iconScale, visible }: Props
 
   useEffect(() => {
     if (!map || !addedRef.current) return
-    const src = map.getSource(FILL_SRC) as GeoJSONSource | undefined
-    src?.setData(buildFillFC(regionAggregates))
-
-    for (const c of claimsRef.current) c.remove()
-    claimsRef.current = []
-    for (const mk of markersRef.current) mk.remove()
-    markersRef.current = []
-    if (!visible) return
-    for (const r of regionAggregates) {
-      const el = buildLpgmBadgeEl(r.maxLgInt, iconScale)
-      el.style.zIndex = String(r.maxLgInt * LPGM_BADGE_Z)
-      const popup = new maplibregl.Popup({ closeButton: true, offset: 12 }).setHTML(
-        popupHtml(r.name, r.maxLgInt),
-      )
-      const marker = new maplibregl.Marker({ element: el })
-        .setLngLat([r.label[1], r.label[0]])
-        .setPopup(popup)
-        .addTo(map)
-      claimsRef.current.push(attachMarkerClaim(map, el))
-      markersRef.current.push(marker)
-    }
-  }, [map, regionAggregates, iconScale, visible])
+    const fillSrc = map.getSource(FILL_SRC) as GeoJSONSource | undefined
+    fillSrc?.setData(buildFillFC(regionAggregates))
+    const labelSrc = map.getSource(LABEL_SRC) as GeoJSONSource | undefined
+    labelSrc?.setData(buildLabelFC(regionAggregates, iconScale))
+  }, [map, regionAggregates, iconScale])
 
   useEffect(() => {
     if (!map || !map.getLayer(FILL_LYR)) return
     const v = visible ? 'visible' : 'none'
     map.setLayoutProperty(FILL_LYR, 'visibility', v)
     map.setLayoutProperty(LINE_LYR, 'visibility', v)
+    map.setLayoutProperty(LABEL_LYR, 'visibility', v)
   }, [map, visible])
 
   return null
