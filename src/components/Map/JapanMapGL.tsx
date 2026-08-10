@@ -35,7 +35,7 @@ import {
   TsunamiFitGL,
   FocusObsGL,
 } from './CameraFollowsGL'
-import { JAPAN_CENTER, fitJapan } from './gl/camera'
+import { JAPAN_CENTER, fitJapan, DEFAULT_IDLE_REVERT_SEC } from './gl/camera'
 import { useActiveFaults } from '../../hooks/useActiveFaults'
 import { usePlateBoundaries } from '../../hooks/usePlateBoundaries'
 import { useQuakeLayerData } from '../../hooks/useQuakeLayerData'
@@ -72,7 +72,7 @@ export function JapanMapGL({
   eews = [],
   eewLpgmEventId = null,
   kyoshinPsWave = [],
-  idleRevertSec = 30,
+  idleRevertSec = DEFAULT_IDLE_REVERT_SEC,
   focusObsName = null,
   heatPoints,
   showBathymetry = true,
@@ -259,7 +259,7 @@ export function JapanMapGL({
                 <EpicenterGL quake={quake} epicenter={epicenter} prefIntensities={prefIntensities} iconScale={iconScale} />
               )}
               {/* 地震モードのカメラフィット（signature 変化時に観測点＋震源へ）。 */}
-              <QuakeFitGL signature={quakeSignature} positions={quakeFitPositions} />
+              <QuakeFitGL signature={quakeSignature} positions={quakeFitPositions} idleRevertSec={idleRevertSec} />
             </>
           )}
           {mode === 'kyoshin' && (
@@ -268,8 +268,14 @@ export function JapanMapGL({
                   カメラ移動という副作用そのものがモード入室時にのみ起きてほしいため、レイヤーとは
                   異なり条件付きマウントのままにする（常時マウントすると非表示タブでも発火しうる）。 */}
               <FitJapanOnEnterGL hasEew={eews.length > 0} hasDetection={detectedPoints.length > 0 || candidatePoints.length > 0} />
-              <FitToCandidateGL points={candidatePoints} candidateId={candidateId} hasEew={eews.length > 0} hasDetection={detectedPoints.length > 0} />
-              <FitToDetectionGL points={detectedPoints} hasEew={eews.length > 0} />
+              <FitToCandidateGL
+                points={candidatePoints}
+                candidateId={candidateId}
+                hasEew={eews.length > 0}
+                hasDetection={detectedPoints.length > 0}
+                idleRevertSec={idleRevertSec}
+              />
+              <FitToDetectionGL points={detectedPoints} hasEew={eews.length > 0} idleRevertSec={idleRevertSec} />
               {/* EEW 追従（idle 抑制つき）。 */}
               <FitToEEWGL eews={eews} psWave={kyoshinPsWave} idleRevertSec={idleRevertSec} detectedPoints={detectedPoints} />
             </>
@@ -306,6 +312,7 @@ export function JapanMapGL({
             tsunamiSignature={tsunamiSignature}
             tsunamiFitPositions={tsunamiFitPositions}
             observationBars={observationBars}
+            idleRevertSec={idleRevertSec}
           />
           <FocusObsGL focusObsName={focusObsName} observationBars={observationBars} />
         </MapGLContext.Provider>

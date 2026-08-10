@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type * as maplibregl from 'maplibre-gl'
 import { useMapGL } from './mapGLContext'
 import type { LatLng } from '../../utils/stationCoords'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
@@ -17,6 +18,8 @@ import {
   boundsFromPositions,
   mapContainsBounds,
   isProgrammaticFlight,
+  subscribeUserInteraction,
+  DEFAULT_IDLE_REVERT_SEC,
   MAX_ZOOM,
 } from './gl/camera'
 import { log } from '../../utils/logger'
@@ -41,17 +44,66 @@ function eewHypocenters(eews: EEWAlert[]): LatLng[] {
   return positions
 }
 
+// ── ユーザー操作中判定の共有フック ───────────────────────────────────────────────
+// zoomstart/dragstart を起点に「ユーザーが手動操作した」とみなし、idleRevertSec 秒間
+// 操作が無ければ自動的に解除する。実体（リスナー登録・タイマー・isProgrammaticFlight 除外）は
+// gl/camera.ts の subscribeUserInteraction が map 単位で一元管理し、複数の Fit* コンポーネントが
+// 同じ map を購読しても zoomstart/dragstart の登録は 1 組だけになる。
+// 戻り値は boolean の state（ref ではない）にしているのが要点: idleRevertSec 経過で
+// interacting が false に戻った瞬間、これを deps に含む呼び出し側の useEffect が再実行される。
+// ref 版だと「操作終了」を検知する再トリガーが無く、操作中に来た更新が再レンダリングの
+// 機会を得られないまま永久にスキップされ続けてしまう（成長フォロー等のセルフヒール手段を
+// 持たない QuakeFitGL/FitToCandidateGL で実際に問題になった）。
+function useUserInteractionGuard(
+  map: maplibregl.Map | null,
+  idleRevertSec = DEFAULT_IDLE_REVERT_SEC,
+): [boolean, () => void] {
+  const [isInteracting, setIsInteracting] = useState(false)
+  const resetRef = useRef<() => void>(() => {})
+
+  useEffect(() => {
+    if (!map) return
+    const sub = subscribeUserInteraction(map, idleRevertSec, setIsInteracting)
+    resetRef.current = sub.reset
+    setIsInteracting(sub.isInteracting)
+    return () => {
+      sub.unsubscribe()
+      resetRef.current = () => {}
+    }
+  }, [map, idleRevertSec])
+
+  const reset = useCallback(() => resetRef.current(), [])
+
+  return [isInteracting, reset]
+}
+
 // ── 地震モード: signature が変わったとき quakeFitPositions にフィットする ────────────
-export function QuakeFitGL({ signature, positions }: { signature: string; positions: LatLng[] }) {
+export function QuakeFitGL({
+  signature,
+  positions,
+  idleRevertSec = DEFAULT_IDLE_REVERT_SEC,
+}: {
+  signature: string
+  positions: LatLng[]
+  idleRevertSec?: number
+}) {
   const map = useMapGL()
   const lastFitRef = useRef<string>('')
+  const [isUserInteracting] = useUserInteractionGuard(map, idleRevertSec)
   useEffect(() => {
     if (!map || !signature || positions.length === 0) return
     if (lastFitRef.current === signature) return
+    // マーク確定は isUserInteracting 判定の後で行う。操作中に来た更新は lastFitRef を進めずに
+    // 見送ることで、isUserInteracting が false に戻った時点の再レンダリング（useUserInteractionGuard
+    // 参照）でこの effect が再実行され、同じ signature のまま取り戻せるようにする。
+    if (isUserInteracting) {
+      log.debug('[mapGL] quake fit スキップ (userInteracting)')
+      return
+    }
     lastFitRef.current = signature
     log.debug(`[mapGL] quake fit (${positions.length}点)`)
     fitToPositions(map, positions, { padding: 48, maxZoom: MAX_ZOOM, durationSec: 1.0 })
-  }, [map, signature, positions])
+  }, [map, signature, positions, isUserInteracting])
   return null
 }
 
@@ -82,15 +134,24 @@ export function FitJapanOnEnterGL({ hasEew, hasDetection }: { hasEew: boolean; h
 // ── 揺れ検知点にフィットし、検知終了時は日本全体に戻す（EEW 中は戻さない） ──────────
 // 初回（検知開始）は hasEew を無視して検知点へ寄せる。その後は検知点が画面からはみ出したときだけ
 // 追い直す（1点増えるたびに動かさないよう flyToBoundsSnapped のズーム段階をヒステリシスに使う）。
-export function FitToDetectionGL({ points, hasEew }: { points: DetectedPoint[]; hasEew: boolean }) {
+export function FitToDetectionGL({
+  points,
+  hasEew,
+  idleRevertSec = DEFAULT_IDLE_REVERT_SEC,
+}: {
+  points: DetectedPoint[]
+  hasEew: boolean
+  idleRevertSec?: number
+}) {
   const map = useMapGL()
   const fittedRef = useRef(false)
+  const [isUserInteracting] = useUserInteractionGuard(map, idleRevertSec)
   useEffect(() => {
     if (!map) return
     if (points.length === 0) {
       if (fittedRef.current) {
         fittedRef.current = false
-        if (!hasEew) {
+        if (!hasEew && !isUserInteracting) {
           log.debug('[mapGL] fitJapan (揺れ検知終了)')
           fitJapan(map, 1.0)
         }
@@ -98,6 +159,11 @@ export function FitToDetectionGL({ points, hasEew }: { points: DetectedPoint[]; 
       return
     }
     if (!fittedRef.current) {
+      // マーク確定は isUserInteracting 判定の後で行う（QuakeFitGL と同じ理由）。
+      if (isUserInteracting) {
+        log.debug('[mapGL] 揺れ検知フィット スキップ (userInteracting)')
+        return
+      }
       fittedRef.current = true
       log.debug(`[mapGL] 揺れ検知フィット (${points.length}点)`)
       fitToPositions(map, points.map(dp2ll), { padding: 60, maxZoom: MAX_ZOOM, durationSec: 1.0 })
@@ -107,12 +173,12 @@ export function FitToDetectionGL({ points, hasEew }: { points: DetectedPoint[]; 
     // 両方が「自分の bounds がはみ出したら引く」を持つと目標が2つになり、互いに相手をはみ出させ合って
     // 振動する（ズーム段階のヒステリシスでは止まらない。目標同士が排他のため）。hasEew で持ち主を分ける。
     if (hasEew) return
-    if (isProgrammaticFlight(map)) return
+    if (isProgrammaticFlight(map) || isUserInteracting) return
     const bounds = boundsFromPositions(points.map(dp2ll))
     if (!bounds || mapContainsBounds(map, bounds)) return
     log.debug(`[mapGL] 揺れ検知 成長フォロー (${points.length}点)`)
     flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
-  }, [map, points, hasEew])
+  }, [map, points, hasEew, isUserInteracting])
   return null
 }
 
@@ -122,21 +188,24 @@ export function FitToCandidateGL({
   candidateId,
   hasEew,
   hasDetection,
+  idleRevertSec = DEFAULT_IDLE_REVERT_SEC,
 }: {
   points: DetectedPoint[]
   candidateId: number | null
   hasEew: boolean
   hasDetection: boolean
+  idleRevertSec?: number
 }) {
   const map = useMapGL()
   const fittedIdRef = useRef<number | null>(null)
+  const [isUserInteracting] = useUserInteractionGuard(map, idleRevertSec)
   useEffect(() => {
     if (!map) return
     if (hasDetection) return
     if (candidateId === null) {
       if (fittedIdRef.current !== null) {
         fittedIdRef.current = null
-        if (!hasEew) {
+        if (!hasEew && !isUserInteracting) {
           log.debug('[mapGL] fitJapan (候補クラスタ失効)')
           fitJapan(map, 1.0)
         }
@@ -144,15 +213,22 @@ export function FitToCandidateGL({
       return
     }
     if (fittedIdRef.current === candidateId) return
-    fittedIdRef.current = candidateId
     if (points.length === 0) return
+    // マーク確定は isUserInteracting 判定の後で行う（QuakeFitGL と同じ理由。候補クラスタは
+    // 確定検知に育つまで同じ candidateId を保つため、ここで先にマークすると成長フォロー相当の
+    // セルフヒール手段が無く、操作中に来た候補が永久にフィットされなくなる）。
+    if (isUserInteracting) {
+      log.debug(`[mapGL] 候補クラスタフィット スキップ (userInteracting, id=${candidateId})`)
+      return
+    }
+    fittedIdRef.current = candidateId
     log.debug(`[mapGL] 候補クラスタフィット (${points.length}点 id=${candidateId})`)
     if (points.length === 1) {
       flyToPoint(map, dp2ll(points[0]), MAX_ZOOM, 1.0)
       return
     }
     fitToPositions(map, points.map(dp2ll), { padding: 60, maxZoom: MAX_ZOOM, durationSec: 1.0 })
-  }, [map, points, candidateId, hasEew, hasDetection])
+  }, [map, points, candidateId, hasEew, hasDetection, isUserInteracting])
   return null
 }
 
@@ -169,7 +245,7 @@ const GROWTH_FOLLOW_SUPPRESS_MS = 3000
 export function FitToEEWGL({
   eews,
   psWave,
-  idleRevertSec = 30,
+  idleRevertSec = DEFAULT_IDLE_REVERT_SEC,
   detectedPoints = [],
 }: {
   eews: EEWAlert[]
@@ -179,8 +255,7 @@ export function FitToEEWGL({
 }) {
   const map = useMapGL()
   const lastEewIdRef = useRef<string | null>(null)
-  const userInteractedRef = useRef(false)
-  const resetTimerRef = useRef<number | undefined>(undefined)
+  const [isUserInteracting, resetUserInteraction] = useUserInteractionGuard(map, idleRevertSec)
   const prevEewsCountRef = useRef<number>(0)
   const prevPsWaveCountRef = useRef<number>(0)
   const suppressGrowthUntilRef = useRef<number>(0)
@@ -192,12 +267,15 @@ export function FitToEEWGL({
       : null
 
   // 新規 EEW 受信 → 震源/波円へフィット。解除 → 検知点 or 日本全体へ。
+  // 新規 EEW 受信時は resetUserInteraction() でユーザー操作フラグを強制的に解除する。
+  // 新しい警報が来た瞬間は操作中でも問答無用でフォーカスを見せる意図的な仕様
+  // （他の Fit* と異なり「常に発火させる」側を選んでいる）。
   useEffect(() => {
     if (!map) return
     if (!latest) {
       if (lastEewIdRef.current !== null) {
         lastEewIdRef.current = null
-        if (userInteractedRef.current) {
+        if (isUserInteracting) {
           log.debug('[mapGL] EEW解除 フィットスキップ (userInteracted)')
         } else if (detectedPoints.length > 0) {
           log.debug(`[mapGL] EEW解除・揺れ検知中 ${detectedPoints.length}点へフィット`)
@@ -214,8 +292,7 @@ export function FitToEEWGL({
     const eewEventId = latest.issue?.eventId ?? latest.id
     if (lastEewIdRef.current === eewEventId) return
     lastEewIdRef.current = eewEventId
-    userInteractedRef.current = false
-    window.clearTimeout(resetTimerRef.current)
+    resetUserInteraction()
     suppressGrowthUntilRef.current = Date.now() + GROWTH_FOLLOW_SUPPRESS_MS
     // 波円が既にあれば波円へ直接フィット（震源→波円のギクシャク防止）。他に発報中の EEW があっても
     // それらの円は含めない。psWave prop は usePsWaveCalc が別 Effect で非同期に更新するため、新規 EEW
@@ -230,33 +307,11 @@ export function FitToEEWGL({
     }
     log.debug('[mapGL] EEW新規 震源へフィット')
     flyToPoint(map, [latitude, longitude], MAX_ZOOM, 0.8)
-  }, [latest, map])
-
-  // ユーザー手動操作の検知と idleRevertSec 秒後の追従再開。
-  // isProgrammaticFlight(map) は gl/camera.ts の fit 系関数（このコンポーネント自身の呼び出しに限らず、
-  // FitToDetectionGL/FitToCandidateGL/FitJapanOnEnterGL 等 同じ map を操作する他コンポーネントの呼び出しも
-  // 含む）が起こした zoomstart/dragstart を除外する。私有 ref では自分の呼び出ししか除外できず、
-  // 他コンポーネントの自動フィットをユーザー操作と誤認して追従を止めてしまっていたため。
-  useEffect(() => {
-    if (!map) return
-    const onInteraction = () => {
-      if (isProgrammaticFlight(map)) return
-      userInteractedRef.current = true
-      window.clearTimeout(resetTimerRef.current)
-      if (idleRevertSec > 0) {
-        resetTimerRef.current = window.setTimeout(() => {
-          userInteractedRef.current = false
-        }, idleRevertSec * 1000)
-      }
-    }
-    map.on('zoomstart', onInteraction)
-    map.on('dragstart', onInteraction)
-    return () => {
-      map.off('zoomstart', onInteraction)
-      map.off('dragstart', onInteraction)
-      window.clearTimeout(resetTimerRef.current)
-    }
-  }, [map, idleRevertSec])
+    // psWave/detectedPoints は意図的に依存配列から外している。この effect は「新規 EEW を検知した
+    // 瞬間」だけに反応させたく、psWave/detectedPoints の変化では再実行させない
+    // （lastEewIdRef の実質的な等値チェックで弾かれるため deps に入れても害はないが、
+    // 「latest（新規判定）に反応する effect」であることを deps だけで誤読させないための明示）。
+  }, [latest, map, isUserInteracting, resetUserInteraction])
 
   // EEW 数 or 波円数が減少かつ残りがある場合: 残りへ強制再フィット。
   useEffect(() => {
@@ -269,7 +324,7 @@ export function FitToEEWGL({
     const psWaveDecreased = psWave.length < prevPsCount
     if (!eewDecreased && !psWaveDecreased) return
     if (eews.length === 0) return
-    if (userInteractedRef.current) return
+    if (isUserInteracting) return
 
     // 円のある EEW は円の box、円が無い（仮定震源要素等の）EEW も震源座標一点は必ず含める
     // （円だけを見ると、その EEW が画面から取り残される）。
@@ -286,7 +341,7 @@ export function FitToEEWGL({
     }
     log.debug(`[mapGL] EEW数減少・残り${eews.length}件へ再フィット`)
     flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
-  }, [eews, psWave, latest, map])
+  }, [eews, psWave, latest, map, isUserInteracting])
 
   // 予報円・震源座標・揺れ検知点の広がりに追従（表示に収まらなくなった時のみズームアウト）。
   // 目標は「有感半径 bounds ∪ 震源座標 ∪ 検知点」の単一 bounds。EEW 発報中の追従はこの効果が一手に
@@ -299,14 +354,14 @@ export function FitToEEWGL({
   useEffect(() => {
     if (!map) return
     if (eews.length === 0) return
-    if (userInteractedRef.current || isProgrammaticFlight(map)) return
+    if (isUserInteracting || isProgrammaticFlight(map)) return
     if (Date.now() < suppressGrowthUntilRef.current) return
     const bounds = boundsForLiveFollow(psWave, eewHypocenters(eews), detectedPoints.map(dp2ll))
     if (bounds && !mapContainsBounds(map, bounds)) {
       log.debug(`[mapGL] EEW成長フォロー 波円${psWave.length}個+震源${eews.length}件+検知${detectedPoints.length}点`)
       flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
     }
-  }, [eews, psWave, detectedPoints, map])
+  }, [eews, psWave, detectedPoints, map, isUserInteracting])
 
   return null
 }
@@ -317,17 +372,20 @@ export function TsunamiFitGL({
   tsunamiSignature,
   tsunamiFitPositions,
   observationBars,
+  idleRevertSec = DEFAULT_IDLE_REVERT_SEC,
 }: {
   mode: string
   tsunamiSignature: string
   tsunamiFitPositions: LatLng[]
   observationBars: { name: string; lat: number; lng: number; height: { value: number } }[]
+  idleRevertSec?: number
 }) {
   const map = useMapGL()
   const lastTsunamiSigRef = useRef<string>('')
   const prevObsMapRef = useRef<Map<string, number>>(new Map())
   const pendingObsPositionsRef = useRef<LatLng[]>([])
   const prevModeRef = useRef<string>(mode)
+  const [isUserInteracting] = useUserInteractionGuard(map, idleRevertSec)
 
   useEffect(() => {
     if (!map) return
@@ -347,6 +405,7 @@ export function TsunamiFitGL({
 
     // Step 2: 津波タブのときだけフィット。
     if (mode !== 'tsunami') return
+    if (isUserInteracting) return
 
     if (pendingObsPositionsRef.current.length > 0) {
       const positions = pendingObsPositionsRef.current
@@ -371,7 +430,7 @@ export function TsunamiFitGL({
         fitJapan(map, 1.0)
       }
     }
-  }, [map, mode, tsunamiSignature, tsunamiFitPositions, observationBars])
+  }, [map, mode, tsunamiSignature, tsunamiFitPositions, observationBars, isUserInteracting])
 
   return null
 }
