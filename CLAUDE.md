@@ -98,7 +98,7 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
   - 自動解除や時間経過で発火する挙動（自動タブ切替・アイドル復帰など）は、`localStorage` の書き換え＋リロードや DOM 検査で確認する。
   - **確認後も開発サーバーは停止しない**（セッション中は起動したまま残す）。`Stop-Process -Name node` のような一括停止は MCP サーバーまで巻き込むため使わない。
   - 検証用スクリーンショットはリポジトリ直下に出力されるが**一時ファイル。コミット前に必ず削除する**（コミットしない）。`.playwright-mcp/` の出力も同様に Git 管理対象外（`.gitignore` 済み）。
-- **テスト機能の活用**: 設定タブのテストボタンで動作確認できる。各ボタンの詳細（対象電文・音・自動タブ切替・自動解除タイミング等）と、実データから P2PQuake 経由でシナリオを作る手順・DOM 検証手法は [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §2・§6・§7 を参照する。
+- **テスト機能の活用**: 設定タブのテストボタンで動作確認できる。各ボタンの詳細（対象電文・音・自動タブ切替・自動解除タイミング等）と DOM 検証手法は [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §7、実データから P2PQuake 経由でシナリオを作る手順は同 §6 を参照する。
 
 ### 環境による制約
 
@@ -294,7 +294,7 @@ README は「一般利用者・フォーカー・貢献者への導線」であ�
 | 津波の解除経路（`cancelReason` 3 種・DMDSS 限定・standard 版フォールバック） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §3 |
 | EEW P/S 波予報円の計算・仮定震源要素の連動箇所 | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §5-§6 |
 | EEW レベル判定（特別警報の条件・長周期の DMDATA 限定） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
-| 地図レイヤー描画順・EEW 予想レイヤーの kyoshin 限定・`maplibregl.Marker` の opacity | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §3・§7・§10 |
+| 地図レイヤー描画順・EEW 予想レイヤーの kyoshin 限定・`maplibregl.Marker` の opacity | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §2・§3・§7・§10 |
 | 震度集約の単位（一次細分区域）・観測点 0 件時の集約維持 | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §7 |
 | 地震電文の `points` 構造（バリアント経路差・`pref` 空の識別規則） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §4 |
 | `KyoshinSubThreshold` の対象範囲（index 1〜6）・慢性ノイズ床フィルタ | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) |

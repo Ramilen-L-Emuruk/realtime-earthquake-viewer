@@ -1,7 +1,11 @@
 # 強震モニタ地震検知エンジン 設計書
 
+> ⚠️ **本文書は歴史資料**（当時 V2 として実装された後、V3 設計に置換済み）。
+> **現行仕様は [`kyoshin-detection-spec.md`](kyoshin-detection-spec.md)、V3 の設計判断・調査履歴は
+> [`kyoshin-detection-v3-design.md`](kyoshin-detection-v3-design.md) を参照**。
+
 **対象**: Yahoo リアルタイム震度（強震モニタ）ストリームからの地震検知ロジック
-**ステータス**: 設計確定（実装未着手）
+**ステータス**: 歴史資料（当時は「設計確定（実装未着手）」だったが、後に V3 設計に置換）
 **前提バリアント**: standard / DMDSS 両方（`useKyoshinRealtime` は常時 `enabled=true`）
 
 ---

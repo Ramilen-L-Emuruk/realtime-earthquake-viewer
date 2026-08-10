@@ -185,7 +185,7 @@ AutoHotKey 等の外部監視ツールから状態を検知できる。
 - 初回発火時に権限リクエスト
 - `tag` で通知を種別ごとに識別（同一 tag は上書き）
 - EEW の tag は `eew-${key}`、津波の tag は `'tsunami'` 固定
-- `requireInteraction: true` でユーザーが閉じるまで残す
+- **`requireInteraction: true` は EEW 発報（`useLiveEventHandler.ts` の新規・レベルアップ経路）と津波警報のみに渡す**。誤報取消・強震モニタ揺れ検知は `requireInteraction: false` で自然消滅させる
 
 ## 8. 関連実装ファイル
 
