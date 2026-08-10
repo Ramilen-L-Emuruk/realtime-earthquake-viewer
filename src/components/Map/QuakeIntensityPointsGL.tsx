@@ -1,24 +1,33 @@
 import { useEffect, useRef } from 'react'
-import * as maplibregl from 'maplibre-gl'
+import type { GeoJSONSource, MapGeoJSONFeature } from 'maplibre-gl'
+import type { Feature, FeatureCollection, Point } from 'geojson'
 import { useMapGL } from './mapGLContext'
-import { getIntensityColor, getIntensityLabel } from '../../utils/intensity'
+import { getIntensityColor, getIntensityLabel, getScaleRadius } from '../../utils/intensity'
 import type { IntensityMarker } from '../../hooks/useQuakeLayerData'
 import type { LatLng } from '../../utils/stationCoords'
 import { haversineKm } from '../../utils/geo'
-import { buildIntensityBadgeEl, INTENSITY_BADGE_Z } from './gl/intensityBadge'
-import { attachMarkerClaim, HOVER_CLASS, type PopupHandle } from './gl/popupRegistry'
+import { addOrderedLayer } from './gl/layerOrder'
+import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
 import { badgeHtml, escapeHtml } from './gl/popupHtml'
+import { ensureIntensityIcons, intensityIconId, INTENSITY_ICON_BASE_RADIUS } from './gl/intensityIcons'
 
 // 地震情報タブの各観測点の震度を丸バッジ（震度ラベル付き）で描画する MapLibre 版。
 // 高ズーム時（区域集約しないとき）に観測点ごとに表示する。
-// 区域ラベル（QuakeRegionFillGL）と同じ HTML Marker 方式（バッジ要素は gl/intensityBadge.ts 共有）。
-// GL circle レイヤーではないため、区域塗りと違って symbol の自動衝突回避は効かない
-// （観測点が密集する場所ではバッジ同士が重なりうる）。
+// バッジは Canvas2D で事前ラスタライズした画像を icon-image として貼る（gl/intensityIcons.ts）。
+// symbol の text-field＋text-offset でフォントのグリフを丸の中心に揃える案は、CJK フォントの
+// ベースライン特性により安定した中央揃えができなかったため不採用（詳細は intensityIcons.ts）。
+// 更新は地震電文の切替時のみ（頻度が低い）なので setData で丸ごと差し替える。
 //
-// 更新は地震電文の切替時のみ（頻度が低い）なので、region-fill 同様に毎回作り直す。
-// ホバーで観測点名＋震度、クリックで所属区域・震源距離まで出す。
+// ホバーで観測点名＋震度、クリックで所属区域・震源距離まで出す（gl/popupRegistry.ts）。
 // ズームアウト時の区域塗り（QuakeRegionFillGL）が区域名を出すのに対し、観測点表示に切り替わると
 // 地図から情報が取れなくなるのを避けるため、同じ情報量をこちら側にも持たせている。
+
+const SRC = 'quake-points'
+const LYR = 'quake-points'
+// 震度1の円は半径 4px しかないため、当たり判定に余裕を持たせる（指でも外さない程度）。
+const HIT_TOL_PX = 8
+
+const EMPTY_FC: FeatureCollection<Point> = { type: 'FeatureCollection', features: [] }
 
 interface Props {
   markers: IntensityMarker[]
@@ -28,29 +37,64 @@ interface Props {
   epicenter: LatLng | null
 }
 
-/** ホバー時の簡易表示（震度バッジ＋観測点名）。 */
-function hoverHtml(m: IntensityMarker): string {
+function buildFC(
+  markers: IntensityMarker[],
+  iconScale: number,
+  epicenter: LatLng | null,
+): FeatureCollection<Point> {
+  const features: Feature<Point>[] = markers.map((m) => {
+    const radius = (getScaleRadius(m.scale) + 3) * iconScale
+    return {
+      type: 'Feature',
+      properties: {
+        iconId: intensityIconId(m.scale),
+        iconSizeRatio: radius / INTENSITY_ICON_BASE_RADIUS,
+        scale: m.scale,
+        addr: m.addr,
+        pref: m.pref,
+        region: m.region ?? '',
+        isArea: m.isArea,
+        // 震源が無い電文では距離を出さない（-1 を「不明」の番兵として扱う）。
+        distanceKm: epicenter
+          ? Math.round(haversineKm(epicenter[0], epicenter[1], m.position[0], m.position[1]))
+          : -1,
+      },
+      geometry: { type: 'Point', coordinates: [m.position[1], m.position[0]] },
+    }
+  })
+  return { type: 'FeatureCollection', features }
+}
+
+/** ポップアップの見出し。電文の addr は観測点名、isArea の地点では一次細分区域名が入っている。 */
+function titleOf(f: MapGeoJSONFeature): string {
+  return String(f.properties?.addr ?? '')
+}
+
+function hoverHtml(f: MapGeoJSONFeature): string {
+  const scale = Number(f.properties?.scale ?? -1)
   return (
     `<div style="display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap">` +
-    `${badgeHtml(getIntensityLabel(m.scale), getIntensityColor(m.scale))}` +
-    `<span style="font-weight:600">${escapeHtml(m.addr)}</span></div>`
+    `${badgeHtml(getIntensityLabel(scale), getIntensityColor(scale))}` +
+    `<span style="font-weight:600">${escapeHtml(titleOf(f))}</span></div>`
   )
 }
 
-/** クリック時の詳細表示（震度・所属区域・震源距離）。 */
-function clickHtml(m: IntensityMarker, epicenter: LatLng | null): string {
+function clickHtml(f: MapGeoJSONFeature): string {
+  const scale = Number(f.properties?.scale ?? -1)
+  const pref = String(f.properties?.pref ?? '')
+  const region = String(f.properties?.region ?? '')
+  const isArea = Boolean(f.properties?.isArea)
+  const distanceKm = Number(f.properties?.distanceKm ?? -1)
+
   // 観測点は「都道府県 / 所属一次細分区域」、区域代表点は区分そのものを添える。
-  const sub = m.isArea
-    ? [m.pref, '一次細分区域（代表点）'].filter(Boolean).join(' / ')
-    : [m.pref, m.region ?? ''].filter(Boolean).join(' / ')
-  const distanceKm = epicenter
-    ? Math.round(haversineKm(epicenter[0], epicenter[1], m.position[0], m.position[1]))
-    : -1
+  const sub = isArea
+    ? [pref, '一次細分区域（代表点）'].filter(Boolean).join(' / ')
+    : [pref, region].filter(Boolean).join(' / ')
 
   const rows = [
     `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:12px">` +
-      `${badgeHtml(getIntensityLabel(m.scale), getIntensityColor(m.scale))}` +
-      `<span style="color:#cbd5e1">震度 ${escapeHtml(getIntensityLabel(m.scale))}</span></div>`,
+      `${badgeHtml(getIntensityLabel(scale), getIntensityColor(scale))}` +
+      `<span style="color:#cbd5e1">震度 ${escapeHtml(getIntensityLabel(scale))}</span></div>`,
     distanceKm >= 0
       ? `<div style="margin-top:4px;font-size:11px;color:#94a3b8">震源から約 ${distanceKm}km</div>`
       : '',
@@ -58,7 +102,7 @@ function clickHtml(m: IntensityMarker, epicenter: LatLng | null): string {
 
   return (
     `<div style="min-width:150px">` +
-    `<div style="font-weight:700;font-size:13px">${escapeHtml(m.addr)}</div>` +
+    `<div style="font-weight:700;font-size:13px">${escapeHtml(titleOf(f))}</div>` +
     (sub ? `<div style="margin-top:2px;font-size:11px;color:#94a3b8">${escapeHtml(sub)}</div>` : '') +
     rows +
     `</div>`
@@ -67,54 +111,56 @@ function clickHtml(m: IntensityMarker, epicenter: LatLng | null): string {
 
 export function QuakeIntensityPointsGL({ markers, iconScale, visible, epicenter }: Props) {
   const map = useMapGL()
-  const markersRef = useRef<maplibregl.Marker[]>([])
-  const hoverPopupsRef = useRef<maplibregl.Popup[]>([])
-  const claimsRef = useRef<PopupHandle[]>([])
+  const addedRef = useRef(false)
+  const popupRef = useRef<PopupHandle | null>(null)
 
-  // データ／倍率／表示切替のたびに全バッジを作り直す（region-fill と同じ差し替え方式）。
   useEffect(() => {
-    if (!map || !visible) return
-
-    for (const m of markers) {
-      const el = buildIntensityBadgeEl(m.scale, iconScale)
-      // 強い震度ほど前面（区域ラベルと同じ zIndex 係数）。
-      el.style.zIndex = String(m.scale * INTENSITY_BADGE_Z)
-      const lngLat: [number, number] = [m.position[1], m.position[0]]
-
-      const hoverPopup = new maplibregl.Popup({
-        closeButton: false,
-        closeOnClick: false,
-        className: HOVER_CLASS,
-        offset: 12,
-        maxWidth: '240px',
-      }).setHTML(hoverHtml(m))
-      const clickPopup = new maplibregl.Popup({ closeButton: true, offset: 12, maxWidth: '280px' }).setHTML(
-        clickHtml(m, epicenter),
-      )
-
-      // クリックでポップアップが開いている間はホバー吹き出しを重ねて出さない。
-      el.addEventListener('mouseenter', () => {
-        if (clickPopup.isOpen()) return
-        hoverPopup.setLngLat(lngLat).addTo(map)
-      })
-      el.addEventListener('mouseleave', () => hoverPopup.remove())
-
-      const marker = new maplibregl.Marker({ element: el }).setLngLat(lngLat).setPopup(clickPopup).addTo(map)
-
-      claimsRef.current.push(attachMarkerClaim(map, el))
-      hoverPopupsRef.current.push(hoverPopup)
-      markersRef.current.push(marker)
-    }
-
+    if (!map) return
+    ensureIntensityIcons(map)
+    map.addSource(SRC, { type: 'geojson', data: EMPTY_FC })
+    addOrderedLayer(map, {
+      id: LYR,
+      type: 'symbol',
+      source: SRC,
+      layout: {
+        'icon-image': ['get', 'iconId'],
+        'icon-size': ['get', 'iconSizeRatio'],
+        'icon-allow-overlap': true,
+        'icon-ignore-placement': true,
+        'symbol-sort-key': ['get', 'scale'],
+        visibility: visible ? 'visible' : 'none',
+      },
+    })
+    popupRef.current = registerPopupSource(map, {
+      layerId: LYR,
+      priority: 'point',
+      tolPx: HIT_TOL_PX,
+      rankKey: 'scale',
+      buildHoverHtml: hoverHtml,
+      buildClickHtml: clickHtml,
+    })
+    addedRef.current = true
     return () => {
-      for (const c of claimsRef.current) c.remove()
-      claimsRef.current = []
-      for (const p of hoverPopupsRef.current) p.remove()
-      hoverPopupsRef.current = []
-      for (const mk of markersRef.current) mk.remove()
-      markersRef.current = []
+      popupRef.current?.remove()
+      popupRef.current = null
+      if (map.getLayer(LYR)) map.removeLayer(LYR)
+      if (map.getSource(SRC)) map.removeSource(SRC)
+      addedRef.current = false
     }
-  }, [map, markers, iconScale, epicenter, visible])
+  }, [map])
+
+  // データ／倍率変化で丸ごと差し替え。
+  useEffect(() => {
+    if (!map || !addedRef.current) return
+    const src = map.getSource(SRC) as GeoJSONSource | undefined
+    src?.setData(buildFC(markers, iconScale, epicenter))
+  }, [map, markers, iconScale, epicenter])
+
+  // 表示切替（区域集約時は非表示）。
+  useEffect(() => {
+    if (!map || !map.getLayer(LYR)) return
+    map.setLayoutProperty(LYR, 'visibility', visible ? 'visible' : 'none')
+  }, [map, visible])
 
   return null
 }

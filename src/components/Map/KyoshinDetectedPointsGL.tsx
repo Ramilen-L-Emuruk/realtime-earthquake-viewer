@@ -3,17 +3,30 @@ import type { GeoJSONSource } from 'maplibre-gl'
 import type { FeatureCollection, Point } from 'geojson'
 import { useMapGL } from './mapGLContext'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
-import { kyoshinIndexToJma, kyoshinIntensityColor } from '../../utils/kyoshinIntensity'
+import { kyoshinIndexToJma } from '../../utils/kyoshinIntensity'
 import { getScaleRadius } from '../../utils/intensity'
 import { addOrderedLayer } from './gl/layerOrder'
+import {
+  ensureKyoshinDetectedIcons,
+  kyoshinDetectedIconId,
+  KYOSHIN_DETECTED_ICON_BASE_RADIUS,
+} from './gl/kyoshinDetectedIcons'
 
 // 揺れ検知点（confirmed＝確定／likely＝候補）を描画する MapLibre 版（Leaflet の KyoshinDetectedPoints 相当）。
-// 両者とも通常の震度点（KyoshinPoints）より一回り大きい拡大マーカーで示すが、confirmed は likely より
-// さらに半径を上げ白フチを付けて一段目立たせる（確信度の違いを大きさ・縁取りで視覚化する）。
-// points は検知中のみの少数（confirmed＋likely合わせても最大でも数十点程度）なので、KyoshinPoints のような
-// feature-state 差分は行わず、更新のたびに GeoJSON を作り直して setData で丸ごと差し替える（Leaflet 版と同じくフル再描画）。
-// 色・半径・フチは feature プロパティに持たせて paint 式（['get',...]）から読み、震度の低い点が下・高い点が
-// 上に重なるよう circle-sort-key に index を与える（Leaflet 版の index 昇順ソート描画と一致）。
+// 丸背景・色・フチ・震度ラベルを Canvas2D で事前ラスタライズした1枚の画像（gl/kyoshinDetectedIcons.ts）を
+// icon-image として表示する（地震情報タブの観測点 QuakeIntensityPointsGL と同方式）。
+//
+// 丸背景を circle レイヤーで、震度ラベルを別の symbol レイヤーで重ねる方式（旧実装）も試したが、
+// circle は MapLibre の衝突判定に一切参加しない仕様のため丸同士の重なりを防げず、さらに文字レイヤーは
+// 丸レイヤーとは独立に描画されるため「下に完全に隠れた丸の文字まで重ねて表示してしまう」問題があった
+// （2026-08-10 の実機検証）。丸ごと icon-image 化することで、重なった場合も「丸＋文字セット」で
+// 前面に来た1点だけが完全に読める状態になる（QuakeIntensityPointsGL と同じ考え方）。
+// icon-allow-overlap は true のまま（重なりは許容し、位置情報を落とさない）。symbol-sort-key で
+// 震度の高い点を前面に描くことで、密集地帯でも「一番強い震度」は必ず正しく読める。
+//
+// points は検知中のみの少数（confirmed＋likely合わせても最大でも数十〜百点程度）なので、KyoshinPoints
+// のような feature-state 差分は行わず、更新のたびに GeoJSON を作り直して setData で丸ごと差し替える
+// （Leaflet 版と同じくフル再描画）。
 
 const SRC = 'kyoshin-detected'
 const LYR = 'kyoshin-detected'
@@ -21,10 +34,10 @@ const LYR = 'kyoshin-detected'
 const EMPTY_FC: FeatureCollection<Point> = { type: 'FeatureCollection', features: [] }
 
 // 確信度別の半径ボーナス（通常震度点の半径 getScaleRadius(scale) に加算）。
-// confirmed は likely よりさらに大きく＋白フチで、一目で「確定」と分かるようにする。
+// confirmed は likely よりさらに大きく＋太めの白フチ（gl/kyoshinDetectedIcons.ts）で、
+// 一目で「確定」と分かるようにする。
 const CONFIRMED_RADIUS_BONUS = 6
 const CANDIDATE_RADIUS_BONUS = 2
-const CONFIRMED_STROKE_WIDTH = 2
 
 interface Props {
   confirmedPoints: DetectedPoint[]
@@ -46,32 +59,42 @@ function pointKey(p: DetectedPoint): string {
   return `${p.lat},${p.lng}`
 }
 
-function buildFC(confirmedPoints: DetectedPoint[], candidatePoints: DetectedPoint[], iconScale: number): FeatureCollection<Point> {
+function buildFC(
+  confirmedPoints: DetectedPoint[],
+  candidatePoints: DetectedPoint[],
+  iconScale: number,
+): FeatureCollection<Point> {
   // confirmed と座標が重なる candidate は confirmed 側の見た目を優先し、二重描画しない。
   const confirmedKeys = new Set(confirmedPoints.map(pointKey))
   const filteredCandidates = candidatePoints.filter((p) => !confirmedKeys.has(pointKey(p)))
 
-  const confirmedFeatures = confirmedPoints.map((p) => ({
-    type: 'Feature' as const,
-    properties: {
-      color: kyoshinIntensityColor(p.index) ?? '#ffffff',
-      radius: detectedRadius(p.index, iconScale, CONFIRMED_RADIUS_BONUS),
-      strokeWidth: CONFIRMED_STROKE_WIDTH,
-      index: p.index,
-    },
-    geometry: { type: 'Point' as const, coordinates: [p.lng, p.lat] },
-  }))
+  const confirmedFeatures = confirmedPoints.map((p) => {
+    const radius = detectedRadius(p.index, iconScale, CONFIRMED_RADIUS_BONUS)
+    const rank = kyoshinIndexToJma(p.index)?.rank ?? 0
+    return {
+      type: 'Feature' as const,
+      properties: {
+        index: p.index,
+        iconId: kyoshinDetectedIconId(rank, true),
+        iconSizeRatio: radius / KYOSHIN_DETECTED_ICON_BASE_RADIUS,
+      },
+      geometry: { type: 'Point' as const, coordinates: [p.lng, p.lat] },
+    }
+  })
 
-  const candidateFeatures = filteredCandidates.map((p) => ({
-    type: 'Feature' as const,
-    properties: {
-      color: kyoshinIntensityColor(p.index) ?? '#ffffff',
-      radius: detectedRadius(p.index, iconScale, CANDIDATE_RADIUS_BONUS),
-      strokeWidth: 0,
-      index: p.index,
-    },
-    geometry: { type: 'Point' as const, coordinates: [p.lng, p.lat] },
-  }))
+  const candidateFeatures = filteredCandidates.map((p) => {
+    const radius = detectedRadius(p.index, iconScale, CANDIDATE_RADIUS_BONUS)
+    const rank = kyoshinIndexToJma(p.index)?.rank ?? 0
+    return {
+      type: 'Feature' as const,
+      properties: {
+        index: p.index,
+        iconId: kyoshinDetectedIconId(rank, false),
+        iconSizeRatio: radius / KYOSHIN_DETECTED_ICON_BASE_RADIUS,
+      },
+      geometry: { type: 'Point' as const, coordinates: [p.lng, p.lat] },
+    }
+  })
 
   return { type: 'FeatureCollection', features: [...confirmedFeatures, ...candidateFeatures] }
 }
@@ -86,22 +109,21 @@ export function KyoshinDetectedPointsGL({ confirmedPoints, candidatePoints, icon
   // source + layer を一度だけ作る。
   useEffect(() => {
     if (!map) return
+    ensureKyoshinDetectedIcons(map)
     map.addSource(SRC, { type: 'geojson', data: EMPTY_FC })
     lastSigRef.current = JSON.stringify(EMPTY_FC) // 生成直後の空 FC を基準に（同一なら以降スキップ）
     addOrderedLayer(map, {
       id: LYR,
-      type: 'circle',
+      type: 'symbol',
       source: SRC,
-      paint: {
-        'circle-radius': ['get', 'radius'],
-        'circle-color': ['get', 'color'],
-        'circle-opacity': 1,
-        'circle-stroke-width': ['get', 'strokeWidth'],
-        'circle-stroke-color': '#ffffff',
-      },
       layout: {
-        // 震度の低い点を下、高い点を上に重ねる。
-        'circle-sort-key': ['get', 'index'],
+        'icon-image': ['get', 'iconId'],
+        'icon-size': ['get', 'iconSizeRatio'],
+        // 地震情報タブの観測点（QuakeIntensityPointsGL）と同方式: 重なりは許容し、
+        // symbol-sort-key（震度が高いほど大きい値）で震度の強い点を前面に描く。
+        'icon-allow-overlap': true,
+        'icon-ignore-placement': true,
+        'symbol-sort-key': ['get', 'index'],
       },
     })
     addedRef.current = true
