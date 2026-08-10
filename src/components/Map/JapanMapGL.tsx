@@ -117,7 +117,7 @@ export function JapanMapGL({
     obsUpdateStatus,
   )
   // EEW の派生データ（予想震度塗り／予想長周期塗り／震源）。
-  const { eewAreaFills, eewLpgmRegionAggregates, eewEpicenters } = useEewLayerData(mode, eews, eewLpgmEventId)
+  const { eewAreaFills, eewLpgmRegionAggregates, eewEpicenters } = useEewLayerData(eews, eewLpgmEventId)
 
   // 地名ラベル（LabelsGL）の重なり判定の再評価トリガー。震度バッジ・観測点・検知点等
   // 「マーカー」側の**位置情報**が変わったときだけ値が変わるようにする（区域塗りは判定対象外・
@@ -200,38 +200,61 @@ export function JapanMapGL({
           {/* 地名ラベル（地方/県/区域名・最前面）。 */}
           <LabelsGL overlapSignature={overlapSignature} />
           {/* 活断層・プレート境界（quake/kyoshin モード）。kyoshin ドット群の下に敷く。 */}
-          {/* 地震活動ヒートマップ（quake/kyoshin モードで heatPoints があるとき・区域塗りより背面）。 */}
-          {(mode === 'quake' || mode === 'kyoshin') && heatPoints && heatPoints.length > 0 && (
-            <QuakeHeatmapGL points={heatPoints} />
-          )}
+          {/* 地震活動ヒートマップ（quake/kyoshin モードで heatPoints があるとき・区域塗りより背面）。
+              GeoJSON source を持つレイヤーは mode に関わらず常時マウントし visible だけで切り替える
+              （条件付きレンダリングで addSource/removeSource を繰り返すと、非同期タイル化待ちの間
+              タブ切替直後の数フレームが空白になるフリッカーの原因になるため）。 */}
+          <QuakeHeatmapGL
+            points={heatPoints ?? []}
+            visible={(mode === 'quake' || mode === 'kyoshin') && !!heatPoints && heatPoints.length > 0}
+          />
           <PlateBoundariesGL plateBoundaries={plateBoundaries} visible={showOverlayLines && showPlateBoundaries} />
           <ActiveFaultsGL activeFaults={activeFaults} visible={showOverlayLines && showActiveFaults} opacity={activeFaultOpacity} />
+          {/* 通常の震度表示（LPGM 進行中は非表示＝下の LPGM 表示に置き換わる）。
+              区域集約時は一次細分区域塗り＋震度ラベル、高ズーム時は観測点ごとの震度点。
+              上と同じ理由で quake モード限定でも常時マウントし visible だけ切り替える。 */}
+          <QuakeRegionFillGL
+            regionAggregates={regionAggregates}
+            iconScale={iconScale}
+            visible={mode === 'quake' && aggregateByRegion && !lpgmActive}
+          />
+          <QuakeIntensityPointsGL
+            markers={stationMarkers}
+            iconScale={iconScale}
+            visible={mode === 'quake' && !aggregateByRegion && !lpgmActive}
+            epicenter={epicenter}
+          />
+          {/* LPGM（長周期地震動）進行中: 区域集約時は区域塗り＋階級ラベル、高ズーム時は観測点ドット。 */}
+          <LpgmRegionFillGL
+            regionAggregates={lpgmRegionAggregates}
+            iconScale={iconScale}
+            visible={mode === 'quake' && aggregateByRegion && lpgmActive}
+          />
+          <LpgmPointsGL
+            markers={lpgmMarkers}
+            iconScale={iconScale}
+            visible={mode === 'quake' && !aggregateByRegion && lpgmActive}
+          />
+          {/* SubThreshold(index1〜6)を先に置き、その上に KyoshinPoints(index7+)を重ねる。
+              さらに検知点・波紋を最前面に重ねる（Leaflet 版の重畳順と一致）。同じ理由で常時マウント。
+              SubThreshold は custom レイヤーで style spec の visibility が効かないため、
+              内部で毎秒の triggerRepaint 自体を止める自前ガードを持つ（KyoshinSubThresholdGL 側）。 */}
+          <KyoshinSubThresholdGL
+            sites={kyoshinSites}
+            indices={kyoshinSubIndices ?? kyoshinIndices}
+            iconScale={iconScale}
+            visible={mode === 'kyoshin'}
+          />
+          <KyoshinPointsGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} visible={mode === 'kyoshin'} />
+          <KyoshinDetectedPointsGL
+            confirmedPoints={detectedPoints}
+            candidatePoints={candidatePoints}
+            iconScale={iconScale}
+            visible={mode === 'kyoshin'}
+          />
+          <KyoshinMaxEffectGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} visible={mode === 'kyoshin'} />
           {mode === 'quake' && (
             <>
-              {/* 通常の震度表示（LPGM 進行中は非表示＝下の LPGM 表示に置き換わる）。
-                  区域集約時は一次細分区域塗り＋震度ラベル、高ズーム時は観測点ごとの震度点。 */}
-              <QuakeRegionFillGL
-                regionAggregates={regionAggregates}
-                iconScale={iconScale}
-                visible={aggregateByRegion && !lpgmActive}
-              />
-              <QuakeIntensityPointsGL
-                markers={stationMarkers}
-                iconScale={iconScale}
-                visible={!aggregateByRegion && !lpgmActive}
-                epicenter={epicenter}
-              />
-              {/* LPGM（長周期地震動）進行中: 区域集約時は区域塗り＋階級ラベル、高ズーム時は観測点ドット。 */}
-              <LpgmRegionFillGL
-                regionAggregates={lpgmRegionAggregates}
-                iconScale={iconScale}
-                visible={aggregateByRegion && lpgmActive}
-              />
-              <LpgmPointsGL
-                markers={lpgmMarkers}
-                iconScale={iconScale}
-                visible={!aggregateByRegion && lpgmActive}
-              />
               {hasEpicenter && epicenter && quake && (
                 <EpicenterGL quake={quake} epicenter={epicenter} prefIntensities={prefIntensities} iconScale={iconScale} />
               )}
@@ -241,13 +264,9 @@ export function JapanMapGL({
           )}
           {mode === 'kyoshin' && (
             <>
-              {/* SubThreshold(index1〜6)を先に置き、その上に KyoshinPoints(index7+)を重ねる。
-                  さらに検知点・波紋を最前面に重ねる（Leaflet 版の重畳順と一致）。 */}
-              <KyoshinSubThresholdGL sites={kyoshinSites} indices={kyoshinSubIndices ?? kyoshinIndices} iconScale={iconScale} />
-              <KyoshinPointsGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
-              <KyoshinDetectedPointsGL confirmedPoints={detectedPoints} candidatePoints={candidatePoints} iconScale={iconScale} />
-              <KyoshinMaxEffectGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} />
-              {/* リアルタイム震度モードのカメラ追従（検知点/候補クラスタ/タブ入室）。EEW 追従は Camera-2。 */}
+              {/* リアルタイム震度モードのカメラ追従（検知点/候補クラスタ/タブ入室）。EEW 追従は Camera-2。
+                  カメラ移動という副作用そのものがモード入室時にのみ起きてほしいため、レイヤーとは
+                  異なり条件付きマウントのままにする（常時マウントすると非表示タブでも発火しうる）。 */}
               <FitJapanOnEnterGL hasEew={eews.length > 0} hasDetection={detectedPoints.length > 0 || candidatePoints.length > 0} />
               <FitToCandidateGL points={candidatePoints} candidateId={candidateId} hasEew={eews.length > 0} hasDetection={detectedPoints.length > 0} />
               <FitToDetectionGL points={detectedPoints} hasEew={eews.length > 0} />
@@ -255,14 +274,17 @@ export function JapanMapGL({
               <FitToEEWGL eews={eews} psWave={kyoshinPsWave} idleRevertSec={idleRevertSec} detectedPoints={detectedPoints} />
             </>
           )}
-          {/* EEW 予想震度塗り（kyoshin モード・EEW LPGM 表示中は隠す）と予想長周期塗り。 */}
+          {/* EEW 予想震度塗り（kyoshin モード・EEW LPGM 表示中は隠す）と予想長周期塗り。
+              データ自体は mode に関わらず常時計算（useEewLayerData）しておき、visible だけで
+              表示を絞る。kyoshin タブへ切り替えた瞬間に GeoJSON source が空→実データへ非同期
+              タイル化される隙を作らないため。 */}
           <EewRegionFillGL
             areaFills={eewAreaFills}
-            visible={eewAreaFills.length > 0 && eewLpgmRegionAggregates.length === 0}
+            visible={mode === 'kyoshin' && eewAreaFills.length > 0 && eewLpgmRegionAggregates.length === 0}
           />
           <EewLpgmRegionFillGL
             regionAggregates={eewLpgmRegionAggregates}
-            visible={eewLpgmRegionAggregates.length > 0}
+            visible={mode === 'kyoshin' && eewLpgmRegionAggregates.length > 0}
           />
           {/* EEW 予報円（S波塗り／P波外周）。全モードで表示し、リアルタイム震度モード以外は半透明（震源×印と同じ扱い）。 */}
           <PsWaveGL psWave={kyoshinPsWave} fullOpacity={mode === 'kyoshin'} />
@@ -270,9 +292,13 @@ export function JapanMapGL({
           {eewEpicenters.length > 0 && (
             <EewEpicentersGL epicenters={eewEpicenters} iconScale={iconScale} fullOpacity={mode === 'kyoshin'} />
           )}
-          {/* 津波海岸線: 発報中は全モードで最前面付近に描画・点滅する。 */}
-          {tsunamiLines.length > 0 && <TsunamiLinesGL lines={tsunamiLines} iconScale={iconScale} />}
-          {/* 津波観測棒: 津波モードで波高バーを立てる。 */}
+          {/* 津波海岸線: 発報中は全モードで最前面付近に描画・点滅する。GeoJSON source を持つため
+              常時マウントし visible だけ切り替える（発表/全解除で 0↔非0 になるたびの
+              addSource/removeSource churn を避ける）。 */}
+          <TsunamiLinesGL lines={tsunamiLines} iconScale={iconScale} visible={tsunamiLines.length > 0} />
+          {/* 津波観測棒: 津波モードで波高バーを立てる。HTML Marker ベースで GeoJSON source の
+              非同期タイル化を伴わないため、タブ切替時のマウント/アンマウント自体は実害が薄い
+              （観測点名キーの差分更新で、更新のたびの全マーカー作り直しは別途解消済み）。 */}
           {mode === 'tsunami' && observationBars.length > 0 && <TsunamiObsBarsGL bars={observationBars} />}
           {/* 津波カメラ追従・観測フォーカス（モード切替をまたいで ref 保持するため常時マウント）。 */}
           <TsunamiFitGL

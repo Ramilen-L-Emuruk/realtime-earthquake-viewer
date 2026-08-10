@@ -57,7 +57,6 @@ export interface EewEpicenter {
 }
 
 export function useEewLayerData(
-  mode: string,
   eews: EEWAlert[],
   eewLpgmEventId?: string | null,
 ): {
@@ -73,9 +72,13 @@ export function useEewLayerData(
     return m
   }, [subregions])
 
+  // 表示制限（kyoshin モード限定）は呼び出し側（JapanMapGL の visible prop）で行う。
+  // ここで mode ガードを掛けて data を [] に落とすと、非 kyoshin タブでは source が空のまま
+  // 放置され、kyoshin タブへ切り替えた瞬間に初めて setData される＝非同期タイル化待ちの間
+  // 塗りが一瞬空白になるフリッカーの原因になるため、mode に関わらず常時計算する。
   // EEW 対象地域を予想最大震度(scaleTo)の色で塗る。kindCode 10/11/19 は強震動警戒域（警報）。
   const eewAreaFills = useMemo<EewAreaFill[]>(() => {
-    if (mode !== 'kyoshin' || eews.length === 0) return []
+    if (eews.length === 0) return []
     const maxByName = new Map<string, number>()
     // 予想震度の最大値を与えた EEW の震源を、区域ごとに覚えておく（S波到達の推定に使う）。
     const originByName = new Map<string, EewOrigin | null>()
@@ -116,14 +119,15 @@ export function useEewLayerData(
     }
     // 弱い予想震度を先（下）、強い予想震度を後（前面）に。
     return list.sort((a, b) => a.scale - b.scale)
-  }, [mode, eews, subregionByName])
+  }, [eews, subregionByName])
 
   // 選択された EEW の地域別予想長周期地震動階級を区域塗りで表示。
   // これは「予想」値なので、地震情報タブの実測の区域塗り（QuakeRegionFillGL /
   // LpgmRegionFillGL）と同じ地図に並ぶと実測と見分けがつかない。eewAreaFills と同じく
-  // kyoshin モードに限定する（トグル元も RealtimeTab の EEW カードのみ）。
+  // kyoshin モードに限定する（表示制限は呼び出し側の visible prop・トグル元も RealtimeTab の
+  // EEW カードのみ）。
   const eewLpgmRegionAggregates = useMemo<EewLpgmRegionAggregate[]>(() => {
-    if (mode !== 'kyoshin' || !eewLpgmEventId || !subregions) return []
+    if (!eewLpgmEventId || !subregions) return []
     const eew = eews.find((e) => (e.issue?.eventId ?? e.id) === eewLpgmEventId)
     if (!eew) return []
     const areas = eewAreas(eew).filter((a) => (a.lgIntTo ?? 0) >= 1)
@@ -133,7 +137,7 @@ export function useEewLayerData(
       .filter((sr) => (maxByName.get(sr.name) ?? 0) >= 1)
       .map((sr) => ({ name: sr.name, maxLgInt: maxByName.get(sr.name)!, rings: sr.rings, label: sr.label }))
       .sort((a, b) => a.maxLgInt - b.maxLgInt)
-  }, [mode, eewLpgmEventId, eews, subregions])
+  }, [eewLpgmEventId, eews, subregions])
 
   // 各 EEW の震源（有効なもののみ・経度は地図中心基準で正規化）。全モードで表示する。
   const eewEpicenters = useMemo<EewEpicenter[]>(() => {

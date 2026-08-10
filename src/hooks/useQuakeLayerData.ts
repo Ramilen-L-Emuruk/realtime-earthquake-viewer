@@ -206,15 +206,19 @@ export function useQuakeLayerData(
     return maxByName
   }, [mode, quake, subregionIndex, stationMarkers])
 
+  // aggregateByRegion（ズーム依存）とは無関係に常に計算する。ズームアウトして区域表示に
+  // 切り替わる瞬間に初めて実データで setData されるのを避けるため（GeoJSON source の
+  // 非同期タイル化待ちで区域塗りが一瞬空になるフリッカーの原因だった）。regionMaxByName・
+  // quakeFitPositions と同じ「zoomを待たない」設計に揃える。
   const regionAggregates = useMemo<RegionAggregate[]>(() => {
-    if (!aggregateByRegion || subregionIndex.length === 0) return []
+    if (subregionIndex.length === 0) return []
     const list: RegionAggregate[] = []
     for (const e of subregionIndex) {
       const scale = regionMaxByName.get(e.sr.name)
       if (scale != null) list.push({ name: e.sr.name, scale, rings: e.sr.rings, label: e.sr.label })
     }
     return list.sort((a, b) => a.scale - b.scale)
-  }, [aggregateByRegion, subregionIndex, regionMaxByName])
+  }, [subregionIndex, regionMaxByName])
 
   const hasEpicenter = !!(
     quake &&
