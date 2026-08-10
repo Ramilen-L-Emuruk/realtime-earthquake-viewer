@@ -31,6 +31,8 @@ export interface KyoshinView {
   candidatePoints: DetectedPoint[]
   /** 主 likely イベントの安定 ID（FitToCandidate の再フィット判定用）。無ければ null。 */
   candidateId: number | null
+  /** 主 likely イベントのメンバー観測点の最大インデックス（likely 中の音レベル追跡に使う）。無ければ0。 */
+  candidateMaxIndex: number
   /**
    * confirmed 各イベント（＝地域）の代表点と最大インデックス。地域単位の発報（新地域の検知・
    * 既存地域の再上昇で鳴らす）に使う。震源ではなくメンバー重心＋メンバー最大震度。
@@ -99,6 +101,15 @@ export function deriveKyoshinView(
     null,
   )
 
+  // 主 likely イベントのメンバー最大インデックス（likely 中の音レベル追跡の基準値作りに使う）
+  let candidateMaxIndex = 0
+  if (primaryLikely) {
+    for (const k of primaryLikely.memberKeys) {
+      const p = byKey.get(k)
+      if (p && p.index > candidateMaxIndex) candidateMaxIndex = p.index
+    }
+  }
+
   // confirmed 各イベント（地域）の代表点＋メンバー最大インデックス（地域単位発報の入力）
   const confirmedShocks = confirmedEvents.flatMap((e) => {
     if (!e.epicenter) return []
@@ -116,6 +127,7 @@ export function deriveKyoshinView(
     detectedPoints: resolveMembers([...detectedKeys], byKey),
     candidatePoints: primaryLikely ? resolveMembers(primaryLikely.memberKeys, byKey) : [],
     candidateId: primaryLikely ? eventIdNum(primaryLikely.id) : null,
+    candidateMaxIndex,
     confirmedShocks,
   }
 }
