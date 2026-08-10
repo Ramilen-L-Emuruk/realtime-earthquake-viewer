@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import * as maplibregl from 'maplibre-gl'
 // maplibre-gl.css は main.tsx が index.css より前に読む（カスケード順を固定するため。詳細は main.tsx）。
 // ?worker&url でワーカーとその依存（maplibre-gl-shared.mjs）を1ファイルにバンドルし URL を得る。
@@ -119,6 +119,35 @@ export function JapanMapGL({
   // EEW の派生データ（予想震度塗り／予想長周期塗り／震源）。
   const { eewAreaFills, eewLpgmRegionAggregates, eewEpicenters } = useEewLayerData(mode, eews, eewLpgmEventId)
 
+  // 地名ラベル（LabelsGL）の重なり判定の再評価トリガー。震度バッジ・観測点・検知点等
+  // 「マーカー」側の**位置情報**が変わったときだけ値が変わるようにする（区域塗りは判定対象外・
+  // labelOverlap.ts 参照。EEW 予想震度塗りはバッジを持たないため含めない）。kyoshinIndices
+  // （観測点の指数・毎秒更新）はここに含めない——観測点の位置は不変なので、値が変わっても
+  // ラベルとの重なりの有無自体は変化しないため（含めると毎秒再評価が走ってしまう）。
+  const overlapSignature = useMemo(() => {
+    const parts = [
+      aggregateByRegion ? regionAggregates.map((r) => r.name).join(',') : '',
+      aggregateByRegion && lpgmActive ? lpgmRegionAggregates.map((r) => r.name).join(',') : '',
+      !aggregateByRegion ? stationMarkers.map((m) => `${m.position[0]},${m.position[1]}`).join(';') : '',
+      !aggregateByRegion && lpgmActive ? lpgmMarkers.map((m) => `${m.position[0]},${m.position[1]}`).join(';') : '',
+      mode === 'kyoshin' ? kyoshinSites.length : 0,
+      mode === 'kyoshin' ? detectedPoints.map((p) => `${p.lat},${p.lng}`).join(';') : '',
+      mode === 'kyoshin' ? candidatePoints.map((p) => `${p.lat},${p.lng}`).join(';') : '',
+    ]
+    return parts.join('|')
+  }, [
+    aggregateByRegion,
+    regionAggregates,
+    lpgmActive,
+    lpgmRegionAggregates,
+    stationMarkers,
+    lpgmMarkers,
+    mode,
+    kyoshinSites,
+    detectedPoints,
+    candidatePoints,
+  ])
+
   useEffect(() => {
     if (!containerRef.current) return
     const m = new maplibregl.Map({
@@ -168,8 +197,8 @@ export function JapanMapGL({
         <MapGLContext.Provider value={map}>
           {/* 後続フェーズのレイヤーコンポーネントはここに置く（map を Context で購読） */}
           <BaseMapGL showBathymetry={showBathymetry} />
-          {/* 地名ラベル（地方/県/区域名・最前面）。リアルタイム表示では地方ラベルを抑制する。 */}
-          <LabelsGL suppressRegionLabels={mode === 'kyoshin'} />
+          {/* 地名ラベル（地方/県/区域名・最前面）。 */}
+          <LabelsGL overlapSignature={overlapSignature} />
           {/* 活断層・プレート境界（quake/kyoshin モード）。kyoshin ドット群の下に敷く。 */}
           {/* 地震活動ヒートマップ（quake/kyoshin モードで heatPoints があるとき・区域塗りより背面）。 */}
           {(mode === 'quake' || mode === 'kyoshin') && heatPoints && heatPoints.length > 0 && (
