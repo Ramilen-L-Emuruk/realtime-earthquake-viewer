@@ -53,13 +53,17 @@ function buildProgram(gl: WebGLRenderingContext): WebGLProgram {
 
 interface Props {
   psWave: PsWaveCircle[]
+  /** リアルタイム震度モードのとき不透明、それ以外は半透明（EEW 震源×印と同じ扱い）。 */
+  fullOpacity: boolean
 }
 
-export function PsWaveGL({ psWave }: Props) {
+export function PsWaveGL({ psWave, fullOpacity }: Props) {
   const map = useMapGL()
   const psWaveRef = useRef<PsWaveCircle[]>(psWave)
+  const fullOpacityRef = useRef(fullOpacity)
   const triggerRef = useRef<(() => void) | null>(null)
   psWaveRef.current = psWave
+  fullOpacityRef.current = fullOpacity
 
   useEffect(() => {
     if (!map) return
@@ -80,6 +84,7 @@ export function PsWaveGL({ psWave }: Props) {
       }
       ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0)
       ctx2d.clearRect(0, 0, w, h)
+      ctx2d.globalAlpha = fullOpacityRef.current ? 1 : 0.4
 
       for (const c of psWaveRef.current) {
         const center = map.project([c.lng, c.lat])
@@ -218,7 +223,7 @@ export function PsWaveGL({ psWave }: Props) {
   // 自動で呼ばれないため、triggerRepaint で明示的に次フレームの描画を予約する）。
   useEffect(() => {
     triggerRef.current?.()
-  }, [psWave])
+  }, [psWave, fullOpacity])
 
   return null
 }
