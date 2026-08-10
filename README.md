@@ -257,7 +257,7 @@ realtime-earthquake-viewer/
 │   │   │   ├── mapGLContext.ts        # map インスタンス購読 Context（react-leaflet useMap 相当を自前実装）
 │   │   │   ├── BaseMapGL.tsx          # 行政区域ベースマップ（陸地塗り・県境・一次細分区域境界・海底地形タイル暗色化）
 │   │   │   ├── LabelsGL.tsx           # 地方/県/区域名ラベル（symbol + 事前生成 SDF グリフ・ズーム帯で粒度切替）
-│   │   │   ├── QuakeIntensityPointsGL.tsx # 地震情報タブの観測点震度点（circle＋ホバー/クリックのポップアップ）
+│   │   │   ├── QuakeIntensityPointsGL.tsx # 地震情報タブの観測点震度（震度ラベル付き丸バッジ HTML マーカー＋ホバー/クリックのポップアップ）
 │   │   │   ├── QuakeRegionFillGL.tsx  # 一次細分区域別の震度塗り＋震度バッジ
 │   │   │   ├── EpicenterGL.tsx        # 震源マーカー（×）＋ポップアップ
 │   │   │   ├── QuakeHeatmapGL.tsx     # 直近1ヶ月の地震活動ヒートマップ（MapLibre ネイティブ heatmap）
@@ -270,7 +270,7 @@ realtime-earthquake-viewer/
 │   │   │   ├── EewRegionFillGL.tsx / EewLpgmRegionFillGL.tsx / EewEpicentersGL.tsx # EEW 予想震度塗り・予想長周期塗り・震源
 │   │   │   ├── PsWaveGL.tsx           # EEW P波・S波地表到達円（getCanvasContainer 上のオーバーレイ Canvas）
 │   │   │   ├── CameraFollowsGL.tsx    # カメラ追従一括（地震/検知/候補/EEW/津波フィット・観測フォーカス・idle 抑制）
-│   │   │   └── gl/                    # GL 補助（layerOrder=描画順の単一情報源 / popupRegistry=ポップアップの当たり判定調停 / popupHtml / geojson / bounds=追従範囲の合成・包含判定（maplibre 非依存）/ camera / subThresholdLayer）
+│   │   │   └── gl/                    # GL 補助（layerOrder=描画順の単一情報源 / popupRegistry=ポップアップの当たり判定調停 / popupHtml / geojson / bounds=追従範囲の合成・包含判定（maplibre 非依存）/ camera / subThresholdLayer / intensityBadge=震度ラベル付き丸バッジ要素（区域ラベル・観測点ラベルで共有））
 │   │   ├── SpecialInfoBanner/      # 南海トラフ臨時情報・国民保護情報バナー
 │   │   ├── RealtimeTab/            # 強震モニタ検知(V2)カード・EEW情報・凡例・注記パネル（地図は JapanMapGL が担当）
 │   │   ├── SettingsTab/            # 設定パネル
