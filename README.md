@@ -261,7 +261,7 @@ realtime-earthquake-viewer/
 │   │   │   ├── QuakeRegionFillGL.tsx  # 一次細分区域別の震度塗り＋震度バッジ
 │   │   │   ├── EpicenterGL.tsx        # 震源マーカー（×）＋ポップアップ
 │   │   │   ├── QuakeHeatmapGL.tsx     # 直近1ヶ月の地震活動ヒートマップ（MapLibre ネイティブ heatmap）
-│   │   │   ├── LpgmPointsGL.tsx / LpgmRegionFillGL.tsx # 長周期地震動の観測点点（ポップアップ付き）・区域塗り
+│   │   │   ├── LpgmPointsGL.tsx / LpgmRegionFillGL.tsx # 長周期地震動の観測点（階級ラベル付き四角バッジ HTML マーカー）・区域塗り
 │   │   │   ├── KyoshinPointsGL.tsx    # 強震モニタ観測点（震度1以上・feature-state 毎秒更新）
 │   │   │   ├── KyoshinSubThresholdGL.tsx # 震度0以下（index 1〜6）。FBO 二層合成のカスタムレイヤー（非加算合成）
 │   │   │   ├── KyoshinDetectedPointsGL.tsx / KyoshinMaxEffectGL.tsx # 揺れ検知点・最大震度波紋エフェクト
@@ -270,7 +270,7 @@ realtime-earthquake-viewer/
 │   │   │   ├── EewRegionFillGL.tsx / EewLpgmRegionFillGL.tsx / EewEpicentersGL.tsx # EEW 予想震度塗り・予想長周期塗り・震源
 │   │   │   ├── PsWaveGL.tsx           # EEW P波・S波地表到達円（getCanvasContainer 上のオーバーレイ Canvas）
 │   │   │   ├── CameraFollowsGL.tsx    # カメラ追従一括（地震/検知/候補/EEW/津波フィット・観測フォーカス・idle 抑制）
-│   │   │   └── gl/                    # GL 補助（layerOrder=描画順の単一情報源 / popupRegistry=ポップアップの当たり判定調停 / popupHtml / geojson / bounds=追従範囲の合成・包含判定（maplibre 非依存）/ camera / subThresholdLayer / intensityBadge=震度ラベル付き丸バッジ要素（区域ラベル・観測点ラベルで共有））
+│   │   │   └── gl/                    # GL 補助（layerOrder=描画順の単一情報源 / popupRegistry=ポップアップの当たり判定調停 / popupHtml / geojson / bounds=追従範囲の合成・包含判定（maplibre 非依存）/ camera / subThresholdLayer / intensityBadge=震度ラベル付き丸バッジ要素（区域ラベル・観測点ラベルで共有）/ lpgmBadge=長周期地震動の階級ラベル付き四角バッジ要素（区域ラベル・観測点ラベルで共有））
 │   │   ├── SpecialInfoBanner/      # 南海トラフ臨時情報・国民保護情報バナー
 │   │   ├── RealtimeTab/            # 強震モニタ検知(V2)カード・EEW情報・凡例・注記パネル（地図は JapanMapGL が担当）
 │   │   ├── SettingsTab/            # 設定パネル
