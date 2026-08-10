@@ -97,18 +97,33 @@ export function boundsFromEewCircles(circles: EewFollowCircle[]): BoundsTuple | 
 }
 
 /**
- * EEW 発報中のライブ追従の目標 bounds（タプル）。EEW の有感半径 bounds と揺れ検知点の外接矩形を合成する。
+ * EEW の円 box と震源座標一点を合成した bounds。円がまだ無い EEW（仮定震源要素・震源未確定、または
+ * usePsWaveCalc の再計算が1レンダー遅れているタイミング）でも、震源座標だけは必ず含める。
+ * boundsFromEewCircles だけを追従先にすると、円の無い EEW の震源が画面外に取り残されるため。
+ * 円のある EEW の震源座標は円の box に包含されるので、合成しても範囲は変わらない（無害）。
+ */
+export function boundsFromEewCirclesAndHypocenters(
+  circles: EewFollowCircle[],
+  hypocenters: LatLng[],
+): BoundsTuple | null {
+  return mergeBounds(boundsFromEewCircles(circles), boundsFromPositionsTuple(hypocenters))
+}
+
+/**
+ * EEW 発報中のライブ追従の目標 bounds（タプル）。EEW の有感半径 bounds・震源座標と揺れ検知点の
+ * 外接矩形を合成する。
  *
- * 合成する理由: 片方だけを追うと、もう片方が画面外へ取り残される。かといって両者に別々の追従を
- * 持たせると目標が2つになり、互いに相手をはみ出させ合って振動する。目標を1つに束ねることで
- * 「EEW の予想範囲と実際に揺れている観測点の両方が必ず入る」画を単一の判定で維持できる。
+ * 合成する理由: どれか一つだけを追うと、他が画面外へ取り残される。かといって別々の追従を
+ * 持たせると目標が複数になり、互いに相手をはみ出させ合って振動する。目標を1つに束ねることで
+ * 「EEW の予想範囲・震源・実際に揺れている観測点のすべてが必ず入る」画を単一の判定で維持できる。
  *
  * 検知点側には日本全体クランプをかけない。JAPAN_BOUNDS は本州〜北海道を囲う枠で沖縄を含まないため、
  * 沖縄の観測点が反応した場合に切り捨ててしまう。ハードキャップは円側にのみ効かせる。
  */
 export function boundsForLiveFollowTuple(
   circles: EewFollowCircle[],
+  hypocenters: LatLng[],
   detectedPositions: LatLng[],
 ): BoundsTuple | null {
-  return mergeBounds(boundsFromEewCircles(circles), boundsFromPositionsTuple(detectedPositions))
+  return mergeBounds(boundsFromEewCirclesAndHypocenters(circles, hypocenters), boundsFromPositionsTuple(detectedPositions))
 }
