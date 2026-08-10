@@ -140,6 +140,12 @@ export function FitToCandidateGL({
   return null
 }
 
+// 新規 EEW 受信直後、成長フォロー（下の useEffect）を抑制する時間。すでに検知点が広範囲な状態で
+// 新規 EEW を受けても、まず EEW 自身（震源/波円）へのフォーカスを見せてから成長フォローに委ねる。
+// 無いと、フォーカス直後に検知点が更新された瞬間、成長フォローが検知点全体を含む範囲へ即座に
+// 引き直してしまい「一瞬 EEW にフォーカス→即ズームアウト」というちらつきになる。
+const GROWTH_FOLLOW_SUPPRESS_MS = 3000
+
 // ── EEW 追従（idle 抑制つき・最も複雑） ──────────────────────────────────────────
 // 新規 EEW: 震源中心→予報円へフィット。解除: 検知中なら検知点、無ければ日本全体へ。
 // ユーザーが手動でズーム/パンしたら idleRevertSec 秒間追従を停止（0=EEW更新まで）。
@@ -161,6 +167,7 @@ export function FitToEEWGL({
   const resetTimerRef = useRef<number | undefined>(undefined)
   const prevEewsCountRef = useRef<number>(0)
   const prevPsWaveCountRef = useRef<number>(0)
+  const suppressGrowthUntilRef = useRef<number>(0)
 
   // 最新 EEW（originTime 降順）を追従対象とする。
   const latest =
@@ -193,6 +200,7 @@ export function FitToEEWGL({
     lastEewIdRef.current = eewEventId
     userInteractedRef.current = false
     window.clearTimeout(resetTimerRef.current)
+    suppressGrowthUntilRef.current = Date.now() + GROWTH_FOLLOW_SUPPRESS_MS
     // 波円が既にあれば波円へ直接フィット（震源→波円のギクシャク防止）。
     const bounds = boundsFromCirclesForEewFollow(psWave)
     if (bounds) {
@@ -265,10 +273,12 @@ export function FitToEEWGL({
   // 以前はここで早期 return していたため「EEW は生きているのに誰も追わない」穴になっていた。
   // isProgrammaticFlight(map) により、他コンポーネントの自動フィットが進行中の間もこの効果は
   // 再フィットを待つ（同時に複数のカメラアニメーションが競合するのを避ける）。
+  // 新規 EEW 受信直後は GROWTH_FOLLOW_SUPPRESS_MS の間、この効果自体を止める（上の useEffect 参照）。
   useEffect(() => {
     if (!map) return
     if (eews.length === 0) return
     if (userInteractedRef.current || isProgrammaticFlight(map)) return
+    if (Date.now() < suppressGrowthUntilRef.current) return
     const bounds = boundsForLiveFollow(psWave, detectedPoints.map(dp2ll))
     if (bounds && !mapContainsBounds(map, bounds)) {
       log.debug(`[mapGL] EEW成長フォロー 波円${psWave.length}個+検知${detectedPoints.length}点`)
