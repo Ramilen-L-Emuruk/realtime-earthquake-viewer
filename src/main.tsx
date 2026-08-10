@@ -15,7 +15,7 @@ if ('serviceWorker' in navigator) {
   const wasControlled = Boolean(navigator.serviceWorker.controller)
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (wasControlled) {
-      log.debug('[sw] 新バージョン検知 → sw-updated 発火')
+      log.info('[sw] 新バージョン検知 → sw-updated 発火')
       window.dispatchEvent(new CustomEvent('sw-updated'))
     }
   })

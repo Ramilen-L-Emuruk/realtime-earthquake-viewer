@@ -211,7 +211,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
   const prevConfirmedRef = useRef(false)
   useEffect(() => {
     if (confirmed && !prevConfirmedRef.current) {
-      log.debug('[tab] → realtime (揺れ検知開始 V3 confirmed)')
+      log.info('[tab] → realtime (揺れ検知開始 V3 confirmed)')
       setActiveTab('realtime')
       title.setTitle('📈 揺れ検知')
       if (settings.soundEnabled) {
@@ -224,7 +224,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
     } else if (!confirmed && prevConfirmedRef.current) {
       title.applyPriority({ kyoshinDetected: false })
       if (activeEEWsRef.current.size === 0) {
-        log.debug(`[tab] → ${defaultTabRef.current} (揺れ検知終了 V3)`)
+        log.info(`[tab] → ${defaultTabRef.current} (揺れ検知終了 V3)`)
         revertToDefaultTab()
       }
     }
@@ -238,7 +238,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
   const prevCandidateRef = useRef(false)
   useEffect(() => {
     if (candidate && !prevCandidateRef.current && !confirmed) {
-      log.debug('[tab] → realtime (揺れの可能性 V3 likely)')
+      log.info('[tab] → realtime (揺れの可能性 V3 likely)')
       setActiveTab('realtime')
       title.setTitle('🔍 揺れの可能性')
       if (settings.soundEnabled) {
@@ -248,7 +248,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
       // 確定に昇格せず消えた場合のみ、静かに元へ戻す
       title.applyPriority({ kyoshinDetected: false })
       if (activeEEWsRef.current.size === 0) {
-        log.debug(`[tab] → ${defaultTabRef.current} (揺れの可能性 失効 V3)`)
+        log.info(`[tab] → ${defaultTabRef.current} (揺れの可能性 失効 V3)`)
         revertToDefaultTab()
       }
     }
@@ -280,7 +280,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
       maxSoundLevelRef.current = currLevel
       postPeakMinLevelRef.current = currLevel
       if (prevMaxLevel >= 0) {
-        log.debug(`[tab] → realtime (揺れ検知レベルアップ level=${prevMaxLevel}→${currLevel} confirmed=${confirmed})`)
+        log.info(`[tab] → realtime (揺れ検知レベルアップ level=${prevMaxLevel}→${currLevel} confirmed=${confirmed})`)
         setActiveTab('realtime')
         if (settings.soundEnabled) {
           playKyoshinUpdateSound(effectiveKyoshinMaxIndex, gainScale)
@@ -292,7 +292,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
       const prevMinLevel = postPeakMinLevelRef.current
       maxSoundLevelRef.current = currLevel
       postPeakMinLevelRef.current = currLevel
-      log.debug(`[tab] → realtime (揺れ検知再エスカレーション level=${prevMinLevel}→${currLevel} confirmed=${confirmed})`)
+      log.info(`[tab] → realtime (揺れ検知再エスカレーション level=${prevMinLevel}→${currLevel} confirmed=${confirmed})`)
       setActiveTab('realtime')
       if (settings.soundEnabled) {
         playKyoshinUpdateSound(effectiveKyoshinMaxIndex, gainScale)
@@ -346,7 +346,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
         ) {
           reg.fired = true
           lastNewRegionTickRef.current = tick
-          log.debug('[tab] → realtime (別地点で揺れ検知 V3)')
+          log.info('[tab] → realtime (別地点で揺れ検知 V3)')
           setActiveTab('realtime')
           if (settings.soundEnabled) playAlertSound('kyoshin')
           if (settings.notifyMinScale >= 0 && settings.notifyDetection) {
