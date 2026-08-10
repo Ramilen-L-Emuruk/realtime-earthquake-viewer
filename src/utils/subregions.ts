@@ -10,6 +10,8 @@ export interface SubRegion {
   name: string
   /** 区域名ラベルを置く代表点（最大リングの重心） */
   label: LatLng
+  /** ラベルの退避方向（区域中心の震度バッジと重ならないよう text-offset で up/down にずらす） */
+  dir: 'up' | 'down'
   /** 区域の境界リング */
   rings: LatLng[][]
 }
