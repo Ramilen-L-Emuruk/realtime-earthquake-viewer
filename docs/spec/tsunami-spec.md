@@ -61,7 +61,7 @@
 ## 4. 電文パース
 
 ### DMDATA JSON（`parseTsunami`）
-- `src/services/dmdataParser.ts:751-758`
+- `src/services/dmdataParser.ts` の `parseTsunami` 関数
 - `tsunami.forecasts` から区域別の等級・波高・到達時刻を抽出
 - `tsunami.observations` から観測情報を抽出
 - 未知の Kind/Code は `Unknown` → 除外される（現状は既知コードが固定のため実害は限定的）
@@ -73,10 +73,7 @@
 ### P2PQuake（`convertEvent`）
 - `src/services/p2pquake.ts` の code=552 分岐
 - `JMATsunami` 型に変換（`InfoType` / `ValidDateTime` は付与されない）
-- `earthquake.domesticTsunami` の英語値（`None` / `Watch` / `Warning` / `MajorWarning` 等）を日本語化する
-
-**既知の課題**: `p2pquake.ts` の `DOMESTIC_TSUNAMI_MAP` に `MajorWarning` キーが無く、大津波警報が
-「不明」（灰色）フォールバックに落ちる（HIGH 課題）。
+- 津波の等級（`areas[].grade`）は英語のまま（`MajorWarning` / `Warning` / `Watch` / `Forecast`）で内部型に流れ、`useLiveEventHandler.ts` 等の分岐で直接 `grade === 'MajorWarning'` として判定される（`DOMESTIC_TSUNAMI_MAP` は地震情報 code=551 の `earthquake.domesticTsunami` 用で、津波の等級には使われない）
 
 ## 5. 状態管理（`useEarthquakes.ts` の tsunami ケース）
 
@@ -94,7 +91,7 @@
 
 `src/utils/tsunami.ts` の関数。津波観測点の連続電文で、同一観測点の観測値を最新に更新する。
 
-- キーは `districtCode ?? districtName ?? ''`
+- キーは `${o.districtCode ?? o.districtName ?? ''}|${o.name}`（区域コード or 区域名 と観測点名を `|` で連結。同じ区域内の複数観測点を区別するため）
 - 同一キーで既存があれば更新、なければ追加
 - `over` フラグ（既定波高を超えたかどうか）は JSON 経路のみ設定される（XML 経路では常に undefined）
 

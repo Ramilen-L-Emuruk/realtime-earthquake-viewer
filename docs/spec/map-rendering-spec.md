@@ -141,7 +141,7 @@ Yahoo リアルタイム震度は 1 秒毎に更新される。以下のレイ�
 
 ### カスタムレイヤーの GL リソース
 - `KyoshinSubThresholdGL` は FBO 二層合成で「同レベルドットの重畳を非加算合成」を実現
-- `PsWaveGL` は Canvas オーバーレイ（getCanvasContainer 上）で描画
+- `PsWaveGL` は `type: 'custom'` のカスタムレイヤーで、内部でオフスクリーンの 2D canvas に円を描画してから `gl.texImage2D` で WebGL テクスチャに転送する構造（旧実装は `getCanvasContainer` 上の DOM Canvas オーバーレイだったが、カスタムレイヤー方式に置換済み）
 
 ### 大量マーカーの実装方針
 - 座標に強く紐づく DOM 要素（震源×印・観測バー）は `maplibregl.Marker` を使う

@@ -98,11 +98,10 @@ P2PQuake の生 JSON は英語の enum で来るフィールドがあるため�
 `convertEvent` で日本語化する:
 
 - `issue.type`: `ScalePrompt` → `震度速報` 等
-- `issue.correct`: `None` → `なし`、`Correction` → `訂正` 等
-- `earthquake.domesticTsunami`: `None` → `なし`、`Warning` → `警報` 等
+- `issue.correct`: `None` → `なし`、`Unknown` → `訂正`、`ScaleOnly` → `震度のみ訂正`、`DestinationOnly` → `震源を訂正`、`ScaleAndDestination` → `震度・震源を訂正`（`Correction` というキーは存在しない）
+- `earthquake.domesticTsunami`: `None` → `なし`、`Watch` → `注意`、`Warning` → `警報` 等（P2PQuake API v2 の `earthquake.domesticTsunami` の値ドメインは `None` / `Unknown` / `Checking` / `NonEffective` / `Watch` / `Warning` のみ。**`MajorWarning` は含まれない**。津波の大津波警報は code=552（`JMATsunami`）の `areas[].grade` 側で扱われ、こちらは英語のまま内部型に流れる）
 
 **既知の欠落**:
-- `domesticTsunami.MajorWarning` がマップに無く、大津波警報が「不明」（灰色）フォールバックに落ちる
 - code=556（EEW）で `severity` フィールドが生成されておらず、`computeSingleEEWLevel` が予報扱いに落とす
 - `points[].scale=46`（震度 5 弱以上推定）が既知震度マップにない
 
@@ -116,8 +115,8 @@ P2PQuake の生 JSON は英語の enum で来るフィールドがあるため�
 
 ### エンドポイント
 
-- 観測点リスト: `https://weather-kyoshin.<region>.storage-yahoo.jp/SiteList/sitelist_<siteConfigId>.json`
-- リアルタイム震度: `https://weather-kyoshin.<region>.storage-yahoo.jp/RealTimeData/yyyyMMdd/yyyyMMddHHmmss.json`
+- 観測点リスト: `https://weather-kyoshin.<region>.edge.storage-yahoo.jp/SiteList/sitelist_<siteConfigId>.json`
+- リアルタイム震度: `https://weather-kyoshin.<region>.edge.storage-yahoo.jp/RealTimeData/yyyyMMdd/yyyyMMddHHmmss.json`
 - `<region>` は west / east（west を優先、失敗時 east にフォールバック）
 
 ### 認証
