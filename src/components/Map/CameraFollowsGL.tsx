@@ -4,12 +4,15 @@ import type { LatLng } from '../../utils/stationCoords'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { EEWAlert } from '../../types/earthquake'
 import type { PsWaveCircle } from '../../services/kyoshin'
+import { computeEewCircle } from '../../hooks/usePsWaveCalc'
+import { serverNow } from '../../utils/clock'
 import {
   fitToPositions,
   fitJapan,
   flyToPoint,
   flyToBoundsSnapped,
   boundsFromCirclesForEewFollow,
+  boundsFromCirclesAndHypocentersForEewFollow,
   boundsForLiveFollow,
   boundsFromPositions,
   mapContainsBounds,
@@ -24,6 +27,19 @@ import { log } from '../../utils/logger'
 // EEW 追従（idle 抑制つき・最も複雑）と津波追従は別ファイル（Camera-2）で扱う。
 
 const dp2ll = (p: DetectedPoint): LatLng => [p.lat, p.lng]
+
+// アクティブな EEW から震源座標（有効なものだけ）を抽出する。円がまだ無い EEW（仮定震源要素・
+// 震源未確定・タイミング上まだ psWave に反映されていない新規 EEW）でも、追従 bounds に震源だけは
+// 必ず含めるために使う（円のある EEW も含む。震源座標は円の box に包含されるため合成しても無害）。
+function eewHypocenters(eews: EEWAlert[]): LatLng[] {
+  const positions: LatLng[] = []
+  for (const eew of eews) {
+    const { latitude, longitude } = eew.earthquake.hypocenter
+    if (latitude <= -200 || longitude <= -200) continue
+    positions.push([latitude, longitude])
+  }
+  return positions
+}
 
 // ── 地震モード: signature が変わったとき quakeFitPositions にフィットする ────────────
 export function QuakeFitGL({ signature, positions }: { signature: string; positions: LatLng[] }) {
@@ -201,10 +217,14 @@ export function FitToEEWGL({
     userInteractedRef.current = false
     window.clearTimeout(resetTimerRef.current)
     suppressGrowthUntilRef.current = Date.now() + GROWTH_FOLLOW_SUPPRESS_MS
-    // 波円が既にあれば波円へ直接フィット（震源→波円のギクシャク防止）。
-    const bounds = boundsFromCirclesForEewFollow(psWave)
+    // 波円が既にあれば波円へ直接フィット（震源→波円のギクシャク防止）。他に発報中の EEW があっても
+    // それらの円は含めない。psWave prop は usePsWaveCalc が別 Effect で非同期に更新するため、新規 EEW
+    // 受信直後のこのレンダーではまだ反映されていない（psWave.find に頼ると常に外れて震源フォールバック
+    // に落ちてしまう）。ここでは psWave を待たず、その場で自身の円だけを直接計算する。
+    const ownCircle = computeEewCircle(latest, serverNow())
+    const bounds = ownCircle ? boundsFromCirclesForEewFollow([ownCircle]) : null
     if (bounds) {
-      log.debug(`[mapGL] EEW新規 波円${psWave.length}個へフィット`)
+      log.debug('[mapGL] EEW新規 自身の波円へフィット')
       flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
       return
     }
@@ -251,26 +271,28 @@ export function FitToEEWGL({
     if (eews.length === 0) return
     if (userInteractedRef.current) return
 
-    const bounds = boundsFromCirclesForEewFollow(psWave)
+    // 円のある EEW は円の box、円が無い（仮定震源要素等の）EEW も震源座標一点は必ず含める
+    // （円だけを見ると、その EEW が画面から取り残される）。
+    const bounds = boundsFromCirclesAndHypocentersForEewFollow(psWave, eewHypocenters(eews))
     if (!bounds) {
       if (latest) {
         const { latitude, longitude } = latest.earthquake.hypocenter
         if (latitude > -200 && longitude > -200) {
-          log.debug('[mapGL] EEW数減少・波円なし 震源へ再フィット')
+          log.debug('[mapGL] EEW数減少・座標なし 震源へ再フィット')
           flyToPoint(map, [latitude, longitude], MAX_ZOOM, 0.8)
         }
       }
       return
     }
-    log.debug(`[mapGL] EEW数減少・波円${psWave.length}個へ再フィット`)
+    log.debug(`[mapGL] EEW数減少・残り${eews.length}件へ再フィット`)
     flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
-  }, [eews.length, psWave, latest, map])
+  }, [eews, psWave, latest, map])
 
-  // 予報円と揺れ検知点の広がりに追従（表示に収まらなくなった時のみズームアウト）。
-  // 目標は「有感半径 bounds ∪ 検知点」の単一 bounds。EEW 発報中の追従はこの効果が一手に引き受け、
-  // FitToDetectionGL 側は hasEew で止まる（目標を2つにすると振動するため。boundsForLiveFollow 参照）。
-  // psWave が空でも eews があれば検知点だけで追う。仮定震源要素・M不明・自動解除直後は円が作れず、
-  // 以前はここで早期 return していたため「EEW は生きているのに誰も追わない」穴になっていた。
+  // 予報円・震源座標・揺れ検知点の広がりに追従（表示に収まらなくなった時のみズームアウト）。
+  // 目標は「有感半径 bounds ∪ 震源座標 ∪ 検知点」の単一 bounds。EEW 発報中の追従はこの効果が一手に
+  // 引き受け、FitToDetectionGL 側は hasEew で止まる（目標を2つにすると振動するため。boundsForLiveFollow
+  // 参照）。円が無い（仮定震源要素・M不明・自動解除直後等の）EEW も震源座標一点は必ず含める。
+  // 円だけを見ると、その EEW の震源が画面から取り残される穴になるため。
   // isProgrammaticFlight(map) により、他コンポーネントの自動フィットが進行中の間もこの効果は
   // 再フィットを待つ（同時に複数のカメラアニメーションが競合するのを避ける）。
   // 新規 EEW 受信直後は GROWTH_FOLLOW_SUPPRESS_MS の間、この効果自体を止める（上の useEffect 参照）。
@@ -279,12 +301,12 @@ export function FitToEEWGL({
     if (eews.length === 0) return
     if (userInteractedRef.current || isProgrammaticFlight(map)) return
     if (Date.now() < suppressGrowthUntilRef.current) return
-    const bounds = boundsForLiveFollow(psWave, detectedPoints.map(dp2ll))
+    const bounds = boundsForLiveFollow(psWave, eewHypocenters(eews), detectedPoints.map(dp2ll))
     if (bounds && !mapContainsBounds(map, bounds)) {
-      log.debug(`[mapGL] EEW成長フォロー 波円${psWave.length}個+検知${detectedPoints.length}点`)
+      log.debug(`[mapGL] EEW成長フォロー 波円${psWave.length}個+震源${eews.length}件+検知${detectedPoints.length}点`)
       flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
     }
-  }, [eews.length, psWave, detectedPoints, map])
+  }, [eews, psWave, detectedPoints, map])
 
   return null
 }

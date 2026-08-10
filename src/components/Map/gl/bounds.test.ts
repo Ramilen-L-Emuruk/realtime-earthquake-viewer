@@ -189,8 +189,8 @@ describe('boundsFromEewCircles', () => {
 })
 
 describe('boundsForLiveFollowTuple', () => {
-  it('円も検知点も無ければ null', () => {
-    expect(boundsForLiveFollowTuple([], [])).toBeNull()
+  it('円も震源座標も検知点も無ければ null', () => {
+    expect(boundsForLiveFollowTuple([], [], [])).toBeNull()
   })
 
   it('円が作れなくても検知点があれば検知点だけで追従する', () => {
@@ -202,7 +202,7 @@ describe('boundsForLiveFollowTuple', () => {
     ]
 
     // Act
-    const bounds = boundsForLiveFollowTuple([], points)
+    const bounds = boundsForLiveFollowTuple([], [], points)
 
     // Assert
     expect(bounds).toEqual([140.5, 36.4, 140.9, 38.6])
@@ -212,7 +212,26 @@ describe('boundsForLiveFollowTuple', () => {
     const circles: EewFollowCircle[] = [
       { lat: 37.35, lng: 141.75, pRadius: 100, sRadius: 80, depth: 60, magnitude: 4.0 },
     ]
-    expect(boundsForLiveFollowTuple(circles, [])).toEqual(boundsFromEewCircles(circles))
+    expect(boundsForLiveFollowTuple(circles, [], [])).toEqual(boundsFromEewCircles(circles))
+  })
+
+  it('円が無い EEW の震源座標も含める（仮定震源要素等で psWave に円が無いケース）', () => {
+    // Arrange: 円が作れない EEW の震源だけが取り残されないことを確認する。
+    const hypocenters: [number, number][] = [[35.0, 139.0]]
+
+    // Act
+    const bounds = boundsForLiveFollowTuple([], hypocenters, [])
+
+    // Assert
+    expect(bounds).toEqual([139.0, 35.0, 139.0, 35.0])
+  })
+
+  it('円のある EEW の震源座標を合成しても円だけの bounds と変わらない（円に包含されるため無害）', () => {
+    const circles: EewFollowCircle[] = [
+      { lat: 37.35, lng: 141.75, pRadius: 100, sRadius: 80, depth: 60, magnitude: 4.0 },
+    ]
+    const bounds = boundsForLiveFollowTuple(circles, [[37.35, 141.75]], [])
+    expect(bounds).toEqual(boundsFromEewCircles(circles))
   })
 
   it('検知点が円をはみ出す場合、両方が入る矩形になる（2026-08-07 福島県沖の実例）', () => {
@@ -228,7 +247,7 @@ describe('boundsForLiveFollowTuple', () => {
     const circleBounds = boundsFromEewCircles(circles)!
 
     // Act
-    const bounds = boundsForLiveFollowTuple(circles, points)!
+    const bounds = boundsForLiveFollowTuple(circles, [], points)!
 
     // Assert: 北端は検知点が、南端は円が決める（互いにはみ出し合う関係を両取りする）
     expect(bounds[3]).toBeCloseTo(38.6, 5)
@@ -246,7 +265,7 @@ describe('boundsForLiveFollowTuple', () => {
     const okinawa: [number, number][] = [[26.21, 127.68]]
 
     // Act
-    const bounds = boundsForLiveFollowTuple(circles, okinawa)!
+    const bounds = boundsForLiveFollowTuple(circles, [], okinawa)!
 
     // Assert: 沖縄が矩形の南西端として残っている
     expect(bounds[1]).toBeCloseTo(26.21, 5)
