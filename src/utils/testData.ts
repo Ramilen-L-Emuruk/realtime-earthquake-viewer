@@ -1,36 +1,64 @@
-import type { JMAQuake, JMATsunami, EEWAlert, JMANankai, JMAKohatsu } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, EEWAlert, JMANankai, JMAKohatsu, EarthquakePoint, JMALpgm } from '../types/earthquake'
 import { serverNow, serverDate } from './clock'
+import notoHonshinPoints from '../data/noto-honshin-2024-points.json'
+import notoHonshinLpgm from '../data/noto-honshin-2024-lpgm.json'
 
 // テスト発報（EEW・津波）の自動解除までの時間。実発報の解除ロジックとは無関係の、テスト表示専用の固定値。
 export const TEST_AUTO_DISMISS_MS = 90000
 
+// eventId は DMDATA 電文が共有する14桁タイムスタンプ（YYYYMMDDHHmmss）形式。
+// quake.id を `dmdata-quake-{eventId}-1` にすることで extractQuakeEventId が拾えるようにし、
+// createTestLpgm が同じ eventId の長周期地震動データを lpgmByEventId に正しく紐づけられるようにする。
+function toEventIdTimestamp(d: Date): string {
+  const pad = (n: number, len = 2) => String(n).padStart(len, '0')
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+}
+
 export function createTestEarthquake(): JMAQuake {
-  const now = serverDate().toISOString()
+  const nowDate = serverDate()
+  const now = nowDate.toISOString()
+  const eventId = toEventIdTimestamp(nowDate)
   return {
     kind: 'quake',
-    id: `test-eq-${Date.now()}`,
+    id: `dmdata-quake-${eventId}-1`,
     time: now,
-    issue: { source: 'テスト', time: now, type: '震源・震度情報', correct: 'なし' },
+    issue: { source: 'テスト', time: now, type: '各地の震度情報', correct: 'なし' },
     earthquake: {
       time: now,
-      // 2011年東北地方太平洋沖地震を参考にしたパラメータ
-      hypocenter: { name: '三陸沖', latitude: 38.1, longitude: 142.9, depth: 24, magnitude: 9.0 },
+      // 令和6年能登半島地震の本震（2024/1/1 16:10発生）の実データを元にしたパラメータ。
+      // 震度・津波はDMDATA archive（気象庁電文, VXSE53「震源・震度情報」16:24発表）の
+      // 確定報、震源要素（座標・深さ）は同日21:30に発表された「顕著な地震の震源要素更新の
+      // お知らせ」（VXSE61）による確定値を採用（速報時の深さ0kmから16kmに更新）。
+      hypocenter: { name: '石川県能登地方', latitude: 37.495, longitude: 137.27, depth: 16, magnitude: 7.6 },
       maxScale: 70,
       domesticTsunami: '警報等',
     },
-    // addr は地図の震度マーカー表示用に、座標テーブル（public/data/station-coords.json）に
-    // 実在する観測点名を使用する。市区町村名のままだと座標が引けずマーカーが出ない。
-    points: [
-      { pref: '宮城県', addr: '栗原市築館',         isArea: false, scale: 70 },
-      { pref: '宮城県', addr: '気仙沼市赤岩',        isArea: false, scale: 60 },
-      { pref: '宮城県', addr: '仙台青葉区大倉',      isArea: false, scale: 60 },
-      { pref: '岩手県', addr: '大船渡市大船渡町',    isArea: false, scale: 55 },
-      { pref: '岩手県', addr: '宮古市鍬ヶ崎',       isArea: false, scale: 55 },
-      { pref: '福島県', addr: '福島市花園町',        isArea: false, scale: 55 },
-      { pref: '茨城県', addr: '水戸市金町',          isArea: false, scale: 50 },
-      { pref: '栃木県', addr: '日光市瀬川',          isArea: false, scale: 45 },
-      { pref: '埼玉県', addr: '熊谷市桜町',          isArea: false, scale: 30 },
-    ],
+    // observed points: DMDATA archive確定報（VXSE53「震源・震度情報」16:24発表）に含まれる
+    // 観測点別震度（2782件）と一次細分区域別最大震度（119件、addr は public/data/subregions.json
+    // の区域名と一致）をすべてそのまま採用（src/data/noto-honshin-2024-points.json）。
+    // 都道府県ごとの代表点数件だけでは、ズームインした際にその都道府県の観測点が1つも表示
+    // されない・区域集約表示（ズームアウト時）で「観測点のある区域だけ塗られ隣接区域は
+    // 無色」という穴だらけの表示になる、という2つの不整合が生じるため、全観測点を反映する。
+    // 輪島市門前町走出（震度7）のみ例外的に手動追加: 本震直後は停電・通信障害で観測データが
+    // 未着で電文に反映されず、気象庁が2024/1/25の報道発表で「震度追加」として震度7
+    // （計測震度6.5）を確定させたもの（電文形式では取得不可、気象庁公式発表を典拠とする）。
+    points: notoHonshinPoints as EarthquakePoint[],
+  }
+}
+
+// 本震と同一 eventId（14桁タイムスタンプ）を持つ長周期地震動観測情報（VXSE62, 2024/1/1
+// 16:23発表）の実データ。震度データと同じくDMDATA archive確定報から採取（最大階級4）。
+export function createTestLpgm(eventId: string): JMALpgm {
+  const now = serverDate().toISOString()
+  return {
+    id: `test-lpgm-${eventId}`,
+    eventId,
+    time: now,
+    originTime: now,
+    maxClass: notoHonshinLpgm.maxClass,
+    cancelled: false,
+    regions: notoHonshinLpgm.regions,
+    points: notoHonshinLpgm.points,
   }
 }
 
