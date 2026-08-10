@@ -182,9 +182,11 @@ geojson ソースの中身を数えるときは **`await map.getSource(id).getDa
 
 | 変更規模 | 例 | エージェント構成 |
 |---|---|---|
-| 小規模 | 1〜2 ファイルの typo/スタイル修正・軽微なパラメータ調整 | `code-reviewer` 1 エージェント |
-| 中規模 | 機能追加・複数ファイル・条件分岐の変更 | `code-reviewer` + `silent-failure-hunter` の並列 2 エージェント |
-| 大規模 | アーキテクチャ変更・複数機能横断 | 領域別に複数エージェント並列 ＋ **機能間競合レビュー**（EEW×津波・地図×EEW 等）＋ **メタレビュー**（CRITICAL/HIGH の実装からの再検証） |
+| 小規模 | 1〜2 ファイルの typo/スタイル修正・軽微なパラメータ調整 | `adversarial-reviewer` 1 エージェント |
+| 中規模 | 機能追加・複数ファイル・条件分岐の変更 | `adversarial-reviewer` + `silent-failure-hunter` の並列 2 エージェント |
+| 大規模 | アーキテクチャ変更・複数機能横断 | 領域別に `adversarial-reviewer` を複数並列 ＋ **機能間競合レビュー**（EEW×津波・地図×EEW 等）＋ **メタレビュー**（`meta-reviewer` で CRITICAL/HIGH の実装からの再検証） |
+
+`adversarial-reviewer` / `meta-reviewer` の定義は [`.claude/agents/`](.claude/agents/) を参照（プロジェクトローカル・共通利用のため Git 管理）。
 
 ### レビュー観点（全エージェント共通）
 
@@ -202,7 +204,7 @@ geojson ソースの中身を数えるときは **`await map.getSource(id).getDa
 
 ### メタレビュー（大規模変更時）
 
-CRITICAL / HIGH の指摘は**別エージェントで実装から再検証**する。目的:
+CRITICAL / HIGH の指摘は **`meta-reviewer` エージェント**で実装から再検証する。目的:
 - 過大評価（CRITICAL が実は HIGH 相当）を検出
 - 修正方針の副作用（別バグを生む可能性）を検出
 - 事実誤認・根拠の誤りを検出
@@ -248,8 +250,10 @@ CRITICAL / HIGH の指摘は**別エージェントで実装から再検証**す
 
 ### エージェント構成
 
-- 更新規模が小さい場合（1 ファイル・数行の追記）: `comment-analyzer` 1 エージェント
-- 更新規模が大きい場合（複数仕様書・README 大幅改訂・CLAUDE.md 追記）: `comment-analyzer` + `code-explorer` の並列 2 エージェント（後者は「初見の開発者視点」を担当）
+- 更新規模が小さい場合（1 ファイル・数行の追記）: `doc-objectivity-reviewer` 1 エージェント
+- 更新規模が大きい場合（複数仕様書・README 大幅改訂・CLAUDE.md 追記）: `doc-objectivity-reviewer` + `code-explorer` の並列 2 エージェント（後者は「初見の開発者視点」で追加観点を担当）
+
+`doc-objectivity-reviewer` の定義は [`.claude/agents/`](.claude/agents/) を参照（プロジェクトローカル・共通利用のため Git 管理）。
 
 ### レビュー観点
 
