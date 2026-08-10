@@ -14,22 +14,28 @@ export interface KyoshinJma {
   label: string
   /** JMA 震度スケール値（マーカー半径算出 getScaleRadius 用: 10〜70） */
   scale: number
+  /**
+   * 震度階級の順序（0=震度0 … 9=震度7）。scale は震度0/1がともに10で同値になるため、
+   * 「表示階級が実際に1段階上がったか」を判定する用途（例: 波紋エフェクトの発生トリガー）には
+   * scale ではなくこちらを使う。
+   */
+  rank: number
 }
 
 export function kyoshinIndexToJma(index: number | undefined): KyoshinJma | null {
   if (index == null || Number.isNaN(index)) return null
   const value = -3.0 + index * 0.5
   if (value < 0.0) return null
-  if (value < 0.5) return { label: '0', scale: 10 }
-  if (value < 1.5) return { label: '1', scale: 10 }
-  if (value < 2.5) return { label: '2', scale: 20 }
-  if (value < 3.5) return { label: '3', scale: 30 }
-  if (value < 4.5) return { label: '4', scale: 40 }
-  if (value < 5.0) return { label: '5弱', scale: 45 }
-  if (value < 5.5) return { label: '5強', scale: 50 }
-  if (value < 6.0) return { label: '6弱', scale: 55 }
-  if (value < 6.5) return { label: '6強', scale: 60 }
-  return { label: '7', scale: 70 }
+  if (value < 0.5) return { label: '0', scale: 10, rank: 0 }
+  if (value < 1.5) return { label: '1', scale: 10, rank: 1 }
+  if (value < 2.5) return { label: '2', scale: 20, rank: 2 }
+  if (value < 3.5) return { label: '3', scale: 30, rank: 3 }
+  if (value < 4.5) return { label: '4', scale: 40, rank: 4 }
+  if (value < 5.0) return { label: '5弱', scale: 45, rank: 5 }
+  if (value < 5.5) return { label: '5強', scale: 50, rank: 6 }
+  if (value < 6.0) return { label: '6弱', scale: 55, rank: 7 }
+  if (value < 6.5) return { label: '6強', scale: 60, rank: 8 }
+  return { label: '7', scale: 70, rank: 9 }
 }
 
 /** 震度階級ラベルのみが必要なときの簡易版。 */

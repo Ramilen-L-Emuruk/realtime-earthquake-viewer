@@ -7,8 +7,9 @@ import { kyoshinIntensityColor, kyoshinIndexToJma } from '../../utils/kyoshinInt
 import { addOrderedLayer } from './gl/layerOrder'
 
 // 最大震度更新時の波紋エフェクトを描画する MapLibre 版（Leaflet の KyoshinMaxEffect 相当）。
-// 波紋は最大インデックスが MIN_TRIGGER_INDEX 以上へ更新されたときに発生する短命アニメーション
-// （同時に有効なのは通常 0〜1 個）。円の stroke を DURATION ミリ秒かけて拡大＋フェードさせる。
+// 波紋は表示上のJMA震度階級（kyoshinIndexToJma の rank）が MIN_TRIGGER_RANK 以上へ
+// 1段階以上上がったときに発生する短命アニメーション（同時に有効なのは通常 0〜1 個）。
+// 円の stroke を DURATION ミリ秒かけて拡大＋フェードさせる。
 //
 // MapLibre では波紋 1 個を circle feature 1 個で表し、rAF ループで半径・stroke 不透明度を
 // feature-state で毎フレーム更新する（円は画面ピクセル半径なので Leaflet の containerPoint 半径と等価）。
@@ -18,9 +19,15 @@ import { addOrderedLayer } from './gl/layerOrder'
 // 波紋専用のカーブ（RIPPLE_BASE_RADIUS／RIPPLE_EXPANSION）を使う。震度1〜4あたりはgetScaleRadiusの
 // 差が1px刻みしかなく波紋の大小がほぼ見分けられなかったため、発生時の大きさ・広がる勢いの両方を
 // 震度に応じてはっきり変化させ、震度が高いほど大きく・勢いよく広がるようにしている。
+//
+// トリガー判定は生indexではなく rank（表示階級）で行う。強震モニタの生indexは0.5刻みの
+// 計測震度に対応する整数値で、同じJMA階級の範囲内に複数の生index値が存在する
+// （例: 震度4＝計測震度3.5〜4.5未満には index 13/14 の2値がある）。実際の揺れは連続的に
+// 上下するため、生indexの最大値だけを見ていると、表示震度が変わらないまま生indexが
+// 微増するたびに波紋が誤発生してしまう（2026-08-10 に発覚）。
 
 const DURATION = 600
-const MIN_TRIGGER_INDEX = 7
+const MIN_TRIGGER_RANK = 1
 
 const SRC = 'kyoshin-ripple'
 const LYR = 'kyoshin-ripple'
@@ -82,7 +89,7 @@ export function KyoshinMaxEffectGL({ sites, indices, iconScale }: Props) {
   const map = useMapGL()
   const ripplesRef = useRef<Ripple[]>([])
   const rafRef = useRef<number | null>(null)
-  const prevMaxIdxRef = useRef<number>(-1)
+  const prevRankRef = useRef<number>(-1)
   const nextIdRef = useRef<number>(1)
   const addedRef = useRef(false)
 
@@ -156,7 +163,7 @@ export function KyoshinMaxEffectGL({ sites, indices, iconScale }: Props) {
     rafRef.current = requestAnimationFrame(loop)
   }
 
-  // 最大インデックス更新の監視。MIN_TRIGGER_INDEX 以上へ上昇したら波紋を発生させる。
+  // 最大震度階級（rank）の監視。MIN_TRIGGER_RANK 以上へ1段階以上上がったら波紋を発生させる。
   useEffect(() => {
     if (!map || !addedRef.current || indices.length === 0 || sites.length === 0) return
 
@@ -169,18 +176,21 @@ export function KyoshinMaxEffectGL({ sites, indices, iconScale }: Props) {
       }
     }
 
-    // 再生リセット・データソース切替で最大値が大幅に下落した場合は前回最大をリセット。
-    if (maxIdx < prevMaxIdxRef.current - 5) {
-      prevMaxIdxRef.current = maxIdx
+    const jma = kyoshinIndexToJma(maxIdx)
+    const rank = jma?.rank ?? -1
+
+    // rank が下がった（揺れが収まった・再生リセットやデータソース切替で最大値が変わった等）場合は
+    // 前回 rank を追従させるだけで、波紋は発生させない。
+    if (rank < prevRankRef.current) {
+      prevRankRef.current = rank
       return
     }
 
-    if (maxIdx >= MIN_TRIGGER_INDEX && maxIdx > prevMaxIdxRef.current && maxSiteIdx >= 0) {
+    if (jma && rank >= MIN_TRIGGER_RANK && rank > prevRankRef.current && maxSiteIdx >= 0) {
       const [lat, lng] = sites[maxSiteIdx]
       const color = kyoshinIntensityColor(maxIdx) ?? '#ffffff'
-      const jma = kyoshinIndexToJma(maxIdx)
-      const baseRadius = (jma ? getRippleBaseRadius(jma.scale) : 5) * iconScale
-      const expansion = jma ? getRippleExpansion(jma.scale) : 2.5
+      const baseRadius = getRippleBaseRadius(jma.scale) * iconScale
+      const expansion = getRippleExpansion(jma.scale)
       const id = nextIdRef.current++
       const feature: Feature<Point> = {
         type: 'Feature',
@@ -193,7 +203,7 @@ export function KyoshinMaxEffectGL({ sites, indices, iconScale }: Props) {
       startLoop()
     }
 
-    prevMaxIdxRef.current = maxIdx
+    prevRankRef.current = rank
   }, [map, indices, sites, iconScale])
 
   return null
