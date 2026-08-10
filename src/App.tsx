@@ -542,6 +542,7 @@ export function App() {
   useKyoshinAlerts({
     confirmed: kyoshinView.confirmed,
     candidate: kyoshinView.candidate,
+    candidateMaxIndex: kyoshinView.candidateMaxIndex,
     confirmedShocks: kyoshinView.confirmedShocks,
     dataTime: kyoshin.dataTime,
     settings,
