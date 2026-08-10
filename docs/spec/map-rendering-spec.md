@@ -62,7 +62,8 @@ const mapMode = mapTab === 'tsunami' ? 'tsunami'
 
 - 地方名・県名・区域名を symbol + icon-image で描画
 - ズーム帯で表示粒度を切替（低ズームは地方名、高ズームは区域名）
-- 事前生成 SDF グリフ（Noto Sans JP・`public/fonts/`）を使用
+- 事前生成 **SDF グリフ**（Noto Sans JP・`public/fonts/`）を使用
+  - **SDF**（Signed Distance Field / 符号付き距離場）: 文字の輪郭を「各ピクセルから輪郭までの符号付き距離」として保存する画像形式。拡大縮小してもエッジが滲まないため MapLibre GL の文字描画に採用されている
 - グリフ生成スクリプト: `scripts/build-glyphs.mjs`（`@mapbox/tiny-sdf` で焼く）
 - 震度バッジ・観測点ドット等のマーカーと画面上で実際に重なっている間は `text-opacity` を下げる
   （`src/components/Map/gl/labelOverlap.ts` の `queryRenderedFeatures` ベース判定）
@@ -140,7 +141,8 @@ Yahoo リアルタイム震度は 1 秒毎に更新される。以下のレイ�
 - コンポーネント unmount 時にも cleanup が必要
 
 ### カスタムレイヤーの GL リソース
-- `KyoshinSubThresholdGL` は FBO 二層合成で「同レベルドットの重畳を非加算合成」を実現
+- `KyoshinSubThresholdGL` は **FBO 二層合成**で「同レベルドットの重畳を非加算合成」を実現
+  - **FBO**（Framebuffer Object）: 画面ではなくオフスクリーンのテクスチャに描画するための WebGL の仕組み。1 層目に「その点が塗られているかどうか」を書き込み、2 層目でその結果を通常の paint に合成することで、同じ震度階級のドットが何個重なっても濃くならないブレンドを実現している
 - `PsWaveGL` は `type: 'custom'` のカスタムレイヤーで、内部でオフスクリーンの 2D canvas に円を描画してから `gl.texImage2D` で WebGL テクスチャに転送する構造（旧実装は `getCanvasContainer` 上の DOM Canvas オーバーレイだったが、カスタムレイヤー方式に置換済み）
 
 ### 大量マーカーの実装方針
