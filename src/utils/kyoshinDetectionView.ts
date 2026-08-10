@@ -3,7 +3,7 @@
 // エンジンは震源・確信度・メンバー観測点キーを持つが、地図フィット/検知点マーカーは
 // 座標＋現在インデックスの点列（DetectedPoint）を要求するため、ここで memberKeys を解決する。
 
-import { siteKey, type DetectionEvent } from './kyoshinDetector'
+import { computeSiteKeys, type DetectionEvent } from './kyoshinDetector'
 import type { SiteCoords } from '../services/kyoshin'
 
 /** 地図フィット・検知点マーカー・ヒストグラムが扱う観測点（座標＋現在インデックス）。 */
@@ -31,6 +31,8 @@ export interface KyoshinView {
   candidatePoints: DetectedPoint[]
   /** 主 likely イベントの安定 ID（FitToCandidate の再フィット判定用）。無ければ null。 */
   candidateId: number | null
+  /** 主 likely イベントのメンバー観測点の最大インデックス（likely 中の音レベル追跡に使う）。無ければ0。 */
+  candidateMaxIndex: number
   /**
    * confirmed 各イベント（＝地域）の代表点と最大インデックス。地域単位の発報（新地域の検知・
    * 既存地域の再上昇で鳴らす）に使う。震源ではなくメンバー重心＋メンバー最大震度。
@@ -38,15 +40,20 @@ export interface KyoshinView {
   confirmedShocks: { lat: number; lng: number; index: number }[]
 }
 
-/** 座標キー → 観測点（座標＋現在インデックス）の索引を作る。memberKeys 解決に使う。 */
+/**
+ * 座標キー → 観測点（座標＋現在インデックス）の索引を作る。memberKeys 解決に使う。
+ * キーは kyoshinDetector 側と同じ computeSiteKeys で構築する（座標衝突時の別実体化を検知エンジンと
+ * 一致させる。同じ sites 配列を同じ順序で渡す前提のため、ずれると memberKeys の解決が食い違う）。
+ */
 export function buildSiteIndex(sites: SiteCoords, indices: number[]): Map<string, DetectedPoint> {
   const byKey = new Map<string, DetectedPoint>()
+  const keys = computeSiteKeys(sites as [number, number][])
   for (let i = 0; i < sites.length; i++) {
     const s = sites[i]
     if (!s) continue
     const idx = indices[i]
     if (idx === undefined) continue
-    byKey.set(siteKey(s[0], s[1]), { lat: s[0], lng: s[1], index: idx })
+    byKey.set(keys[i], { lat: s[0], lng: s[1], index: idx })
   }
   return byKey
 }
@@ -94,6 +101,15 @@ export function deriveKyoshinView(
     null,
   )
 
+  // 主 likely イベントのメンバー最大インデックス（likely 中の音レベル追跡の基準値作りに使う）
+  let candidateMaxIndex = 0
+  if (primaryLikely) {
+    for (const k of primaryLikely.memberKeys) {
+      const p = byKey.get(k)
+      if (p && p.index > candidateMaxIndex) candidateMaxIndex = p.index
+    }
+  }
+
   // confirmed 各イベント（地域）の代表点＋メンバー最大インデックス（地域単位発報の入力）
   const confirmedShocks = confirmedEvents.flatMap((e) => {
     if (!e.epicenter) return []
@@ -111,6 +127,7 @@ export function deriveKyoshinView(
     detectedPoints: resolveMembers([...detectedKeys], byKey),
     candidatePoints: primaryLikely ? resolveMembers(primaryLikely.memberKeys, byKey) : [],
     candidateId: primaryLikely ? eventIdNum(primaryLikely.id) : null,
+    candidateMaxIndex,
     confirmedShocks,
   }
 }

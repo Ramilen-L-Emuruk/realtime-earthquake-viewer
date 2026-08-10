@@ -3,6 +3,7 @@ import {
   step,
   initState,
   buildStationMeta,
+  computeSiteKeys,
   extractLearned,
   hydrateLearned,
   indexToValue,
@@ -166,6 +167,94 @@ describe('buildStationMeta', () => {
     const meta = buildStationMeta(sitesOf(defs))
     expect(meta.avail[siteKey(40.0, 143.0)]).toBe(0)
     expect(meta.neighbors[siteKey(40.0, 143.0)]).toEqual([])
+  })
+})
+
+// ============================================================
+// computeSiteKeys / 座標衝突（2026-08-08 天草・芦北地方 M3.1 の誤報調査で発覚）
+//
+// Yahoo 強震モニタの公開座標は観測点によっては小数第1位までしか精度が無く、複数の実観測点が
+// 同一座標として配信されることがある（全1725点中207グループ・431点が生座標レベルで完全一致）。
+// siteKey(lat,lng) だけをキーにすると後発の点が先勝ちの点を黙って上書きし、その点の実測値が
+// 検知エンジンから消える。computeSiteKeys は同一座標の2件目以降に #2, #3... を付与して
+// 別実体化し、buildStationMeta / step / kyoshinDetectionView.buildSiteIndex がこれを共有する。
+// ============================================================
+
+describe('computeSiteKeys', () => {
+  it('座標が一意なら siteKey と同じ', () => {
+    const sites: [number, number][] = [
+      [35.0, 139.0],
+      [36.0, 140.0],
+    ]
+    expect(computeSiteKeys(sites)).toEqual([siteKey(35.0, 139.0), siteKey(36.0, 140.0)])
+  })
+  it('同一座標が複数回現れたら出現順に #2, #3... を付与する', () => {
+    const sites: [number, number][] = [
+      [32.2, 130.4],
+      [35.0, 139.0],
+      [32.2, 130.4],
+      [32.2, 130.4],
+    ]
+    const keys = computeSiteKeys(sites)
+    const base = siteKey(32.2, 130.4)
+    expect(keys).toEqual([base, siteKey(35.0, 139.0), `${base}#2`, `${base}#3`])
+    // 4件とも別実体（重複無し）
+    expect(new Set(keys).size).toBe(4)
+  })
+})
+
+describe('buildStationMeta: 座標衝突時も両方の点を近傍グラフに残す', () => {
+  it('同一座標2点はどちらも avail/neighbors/cellOf を持つ（以前は後発が丸ごと消えていた）', () => {
+    const defs = [
+      ...grid3x3(35.0, 139.0, 0.1), // 周囲に9点（衝突点を近傍として拾わせる下地）
+      { lat: 32.2, lng: 130.4 },
+      { lat: 32.2, lng: 130.4 }, // 完全に同じ座標の別観測点
+    ]
+    const meta = buildStationMeta(sitesOf(defs))
+    const base = siteKey(32.2, 130.4)
+    expect(meta.avail[base]).toBeDefined()
+    expect(meta.avail[`${base}#2`]).toBeDefined()
+    expect(meta.cellOf[base]).toBe(meta.cellOf[`${base}#2`]) // 同座標なので同一セル
+    // 互いを近傍として認識する（距離0）
+    expect(meta.neighbors[base]).toContain(`${base}#2`)
+    expect(meta.neighbors[`${base}#2`]).toContain(base)
+  })
+})
+
+describe('step: 座標衝突点があってもクラスタの最大値を取りこぼさない', () => {
+  it('先着点が本震を記録し後着の別観測点が静穏なままでも、confirmed の maxIntensity は本震側の値を保つ', () => {
+    // 2026-08-08 18:47 天草・芦北地方 M3.1 の誤報の再現: 配列順で先の点(#1)が震度3相当を記録し、
+    // 同一座標の後発点(#2)は静穏(0.0)のまま。旧実装は siteKey だけで管理していたため後発点が
+    // 同一フレーム内で先着点を上書きし、本震側の実測値がエンジンから丸ごと消えていた。
+    const grid = grid3x3(35.0, 139.0, 0.1)
+    const dupCoord = grid[8] // (35.1, 139.1)
+    const defs = [...grid, { lat: dupCoord.lat, lng: dupCoord.lng }] // index 9 = 座標衝突の別観測点
+    const spikeIdx = 8 // 先着（座標衝突の #1）＝本震を記録
+    const quietIdx = 9 // 後発（座標衝突の #2）＝ずっと静穏
+
+    const frames: Frame[] = []
+    let t = 0
+    for (let n = 0; n < 6; n++, t += 1000) {
+      frames.push(frameWith(defs, t, () => 0.0))
+    }
+    for (let n = 0; n < 5; n++, t += 1000) {
+      frames.push(
+        frameWith(defs, t, (i) => {
+          if (i === quietIdx) return 0.0 // 座標衝突の相手はずっと静穏
+          if (i === spikeIdx) return 2.5 // 震度3相当の実測（本震）
+          return 1.0 // 周辺は震度2相当で同期して揺れる
+        }),
+      )
+    }
+
+    const meta = buildStationMeta(sitesOf(defs))
+    const { detections } = drive(frames, meta)
+    const confirmed = detections.find((d) => d.confidence === 'confirmed')
+    expect(confirmed).toBeDefined()
+    // 座標衝突で上書きされていれば周辺と同じ 1.0 止まりになる。別実体なら 2.5 まで反映される。
+    expect(confirmed!.maxIntensity).toBeCloseTo(2.5)
+    const dupBaseKey = siteKey(dupCoord.lat, dupCoord.lng)
+    expect(confirmed!.memberKeys).toContain(dupBaseKey) // 先着（本震側）
   })
 })
 

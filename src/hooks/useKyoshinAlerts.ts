@@ -3,7 +3,6 @@ import type { EEWAlert } from '../types/earthquake'
 import type { TabId } from '../components/IconNav'
 import type { AppSettings } from './useSettings'
 import type { AlertTitleApi } from './useAlertTitle'
-import { MIN_DETECTION_INDEX } from '../utils/kyoshinDetectionView'
 import { playAlertSound, playKyoshinUpdateSound, kyoshinLevel } from '../utils/alertSound'
 import { kyoshinIndexToLabel } from '../utils/kyoshinIntensity'
 import { showBrowserNotification } from '../utils/notifications'
@@ -16,10 +15,18 @@ import { log } from '../utils/logger'
 // 「別地点（離れた地域）の地震」にも発報する:
 //  - candidate 立ち上がり → realtime タブ＋控えめな候補音（確定前の早期反応）
 //  - confirmed 立ち上がり（初検知）→ realtime タブ＋検知音＋ブラウザ通知
-//  - confirmed 中の（全体）レベルアップ／再エスカレーション → 更新音（同一地震の揺れ強まり）
+//  - candidate/confirmed 中の（全体）レベルアップ／再エスカレーション → 更新音（同一地震の揺れ強まり）。
+//    likely 中は confirmed 中より控えめな音量で鳴らし、確信度に見合わない大きさで鳴らさないようにする。
 //  - 検知中に離れた別地域が確定（REGION_MATCH_KM より遠い）→ 検知音（別地点の地震）
 //  - 各々の終了 → EEW が無ければデフォルトタブへ復帰
-// 音レベルは全観測点の実効最大インデックス（表示と一致）で判定する。
+// 音レベルは confirmed 中は confirmedShocks、likely 中は candidateMaxIndex（どちらもイベント自身の
+// メンバー観測点の最大インデックス。カードの推定最大震度と同じ導出元）で判定する。以前は全観測点の
+// 生インデックスを無条件スキャンしていたため、検知イベントと無関係な1点が閾値を跨ぐだけでカード表示と
+// 食い違う音が鳴ることがあった（2026-08-08 18:47 天草・芦北地方 M3.1 の誤報調査で発覚）。
+
+/** likely（未確定）中に更新音を鳴らす際の音量倍率。候補音（kyoshinCandidate）が確定音の1/4以下の
+ * 音量に抑えてあるのと同じ考え方で、確信度に見合わない大きさで鳴らさないようにする。 */
+const CANDIDATE_SOUND_GAIN_SCALE = 0.25
 
 /** 同一の揺れ（地域）とみなす代表点間の距離(km)。これより離れた確定は別地点＝別発報。 */
 const REGION_MATCH_KM = 300
@@ -46,14 +53,12 @@ export interface KyoshinAlertsDeps {
   confirmed: boolean
   /** likely イベントが1件以上あるか（V3 検知の可能性・早期反応の駆動元） */
   candidate: boolean
+  /** 主 likely イベントのメンバー観測点の最大インデックス（likely 中の音レベル追跡に使う） */
+  candidateMaxIndex: number
   /** confirmed 各イベント（地域）の代表点＋最大インデックス（別地点発報の入力） */
   confirmedShocks: { lat: number; lng: number; index: number }[]
   /** 現フレームのデータ時刻文字列（毎フレーム更新される別地点発報エフェクトの駆動キー） */
   dataTime: string
-  /** cancelledAt 除外済みのアクティブ EEW が1件以上あるか */
-  hasActiveEEW: boolean
-  /** 現フレームの全観測点インデックス（実効最大インデックスの再計算に使う） */
-  kyoshinIndices: number[]
   settings: AppSettings
   /** useAlertTitle の戻り値（ウィンドウタイトル操作 API） */
   title: AlertTitleApi
@@ -67,20 +72,17 @@ export interface KyoshinAlertsDeps {
 
 export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
   const {
-    confirmed, candidate, confirmedShocks, dataTime, hasActiveEEW, kyoshinIndices, settings, title,
+    confirmed, candidate, candidateMaxIndex, confirmedShocks, dataTime, settings, title,
     activeEEWsRef, defaultTabRef, setActiveTab, revertToDefaultTab,
   } = deps
 
-  // EEW 受信中または揺れ検知中は全観測点ベースの最大インデックスを使う（表示と音を一致させる）。
-  // 非検知・非 EEW 時は音を鳴らさないため 0 でよい。
+  // confirmed 中はイベント自身のメンバー最大インデックス、likely 中は主候補イベントの最大インデックス。
+  // 非検知時は音を鳴らさないため 0 でよい。
   const effectiveKyoshinMaxIndex = useMemo(() => {
-    if (!(hasActiveEEW || confirmed)) return 0
-    let max = 0
-    for (const idx of kyoshinIndices) {
-      if (idx >= MIN_DETECTION_INDEX && idx > max) max = idx
-    }
-    return max
-  }, [hasActiveEEW, confirmed, kyoshinIndices])
+    if (confirmed) return confirmedShocks.reduce((max, s) => Math.max(max, s.index), 0)
+    if (candidate) return candidateMaxIndex
+    return 0
+  }, [confirmed, confirmedShocks, candidate, candidateMaxIndex])
 
   // 確定検知の開始/終了: realtime タブ＋タイトル＋通知音＋ブラウザ通知。
   const prevConfirmedRef = useRef(false)
@@ -131,29 +133,34 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 依存集合は検知開始エフェクトに合わせて絞る
   }, [candidate, confirmed, settings.soundEnabled])
 
-  // 確定検知中の音再鳴ロジック（同一地震の揺れ強まり）
+  // likely/confirmed 中の音再鳴ロジック（同一地震の揺れ強まり）
   // - 過去最大レベルを超えたとき（新たな最大）→ 音を鳴らす
   // - ピーク後に一度落ちてから再上昇したとき（再エスカレーション）→ 音を鳴らす
   // 生インデックスではなく音レベル（0〜6）で比較することで、フレーム間の微細な数値変動による誤再鳴を防ぐ。
-  // 「未観測」は -1 で表す（0 は有効な音レベルのため）。
+  // 「未観測」は -1 で表す（0 は有効な音レベルのため）。likely 中もリセットせず追跡を続けることで、
+  // likely→confirmed の遷移で「最初から高いレベルで確定した」場合も正しく「レベルが上がった」と
+  // 検出できる（likely 中に基準値が育っているため）。confirmed か candidate のどちらもなくなったら
+  // 追跡を打ち切る。音量は confirmed 中のみ通常、likely 中は控えめ（CANDIDATE_SOUND_GAIN_SCALE）にし、
+  // まだ確定していない検知に確信度以上の大きさで反応しないようにする。
   const maxSoundLevelRef = useRef(-1)
   const postPeakMinLevelRef = useRef(-1)
   useEffect(() => {
-    if (!confirmed) {
+    if (!confirmed && !candidate) {
       maxSoundLevelRef.current = -1
       postPeakMinLevelRef.current = -1
       return
     }
+    const gainScale = confirmed ? 1 : CANDIDATE_SOUND_GAIN_SCALE
     const currLevel = kyoshinLevel(effectiveKyoshinMaxIndex)
     const prevMaxLevel = maxSoundLevelRef.current
     if (currLevel > prevMaxLevel) {
       maxSoundLevelRef.current = currLevel
       postPeakMinLevelRef.current = currLevel
       if (prevMaxLevel >= 0) {
-        log.debug(`[tab] → realtime (揺れ検知レベルアップ level=${prevMaxLevel}→${currLevel})`)
+        log.debug(`[tab] → realtime (揺れ検知レベルアップ level=${prevMaxLevel}→${currLevel} confirmed=${confirmed})`)
         setActiveTab('realtime')
         if (settings.soundEnabled) {
-          playKyoshinUpdateSound(effectiveKyoshinMaxIndex)
+          playKyoshinUpdateSound(effectiveKyoshinMaxIndex, gainScale)
         }
       }
     } else if (currLevel < postPeakMinLevelRef.current) {
@@ -162,14 +169,14 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
       const prevMinLevel = postPeakMinLevelRef.current
       maxSoundLevelRef.current = currLevel
       postPeakMinLevelRef.current = currLevel
-      log.debug(`[tab] → realtime (揺れ検知再エスカレーション level=${prevMinLevel}→${currLevel})`)
+      log.debug(`[tab] → realtime (揺れ検知再エスカレーション level=${prevMinLevel}→${currLevel} confirmed=${confirmed})`)
       setActiveTab('realtime')
       if (settings.soundEnabled) {
-        playKyoshinUpdateSound(effectiveKyoshinMaxIndex)
+        playKyoshinUpdateSound(effectiveKyoshinMaxIndex, gainScale)
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 音の再鳴を安定させるため依存は限定する
-  }, [effectiveKyoshinMaxIndex, confirmed, settings.soundEnabled])
+  }, [effectiveKyoshinMaxIndex, confirmed, candidate, settings.soundEnabled])
 
   // 別地点の地震: 検知中に、既存の確定地域から REGION_MATCH_KM より離れた新地域が確定したら発報する
   // （Scratch 前身のグリッド単位発報に相当。グローバル真偽の初検知だけでは進行中の別地点を鳴らせない）。

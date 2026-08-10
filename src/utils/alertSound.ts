@@ -557,17 +557,21 @@ export function playCountdownBeep(second: number): void {
   }
 }
 
-/** 強震モニタの最大インデックスに応じた震度更新音を鳴らす。 */
-export function playKyoshinUpdateSound(maxIndex: number): void {
+/**
+ * 強震モニタの最大インデックスに応じた震度更新音を鳴らす。
+ * @param gainScale 音量倍率（既定1.0）。likely（未確定）中に鳴らす場合は控えめな値を渡し、
+ *   confirmed 中の更新と聞き分けられるようにする（確信度に見合わない大きさで鳴らさないため）。
+ */
+export function playKyoshinUpdateSound(maxIndex: number, gainScale = 1): void {
   const ctx = getCtx()
   if (!ctx) {
     log.debug(`[sound] playKyoshinUpdateSound スキップ (AudioContext なし) maxIndex=${maxIndex}`)
     return
   }
-  log.debug(`[sound] playKyoshinUpdateSound maxIndex=${maxIndex} level=${kyoshinLevel(maxIndex)} ctxState=${ctx.state}`)
+  log.debug(`[sound] playKyoshinUpdateSound maxIndex=${maxIndex} level=${kyoshinLevel(maxIndex)} gainScale=${gainScale} ctxState=${ctx.state}`)
   if (ctx.state === 'suspended') void ctx.resume()
   const p = DING_PATTERNS[kyoshinLevel(maxIndex)]
   const base = ctx.currentTime + 0.02
   const fn = p.deep ? dingDeep : ding
-  p.freqs.forEach((freq, i) => fn(ctx, freq, base + i * p.interval, p.duration, p.gain))
+  p.freqs.forEach((freq, i) => fn(ctx, freq, base + i * p.interval, p.duration, p.gain * gainScale))
 }
