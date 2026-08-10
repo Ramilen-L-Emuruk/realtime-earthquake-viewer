@@ -28,6 +28,7 @@ const EMPTY_FC: FeatureCollection<MultiLineString> = { type: 'FeatureCollection'
 interface Props {
   lines: TsunamiLine[]
   iconScale: number
+  visible: boolean
 }
 
 function buildFC(lines: TsunamiLine[], iconScale: number): FeatureCollection<MultiLineString> {
@@ -42,11 +43,17 @@ function buildFC(lines: TsunamiLine[], iconScale: number): FeatureCollection<Mul
   return { type: 'FeatureCollection', features }
 }
 
-export function TsunamiLinesGL({ lines, iconScale }: Props) {
+export function TsunamiLinesGL({ lines, iconScale, visible }: Props) {
   const map = useMapGL()
   const popupRef = useRef<PopupHandle | null>(null)
   const rafRef = useRef<number | null>(null)
   const addedRef = useRef(false)
+  // pulse() から最新の visible を読むための ref。常時マウント化した後もこのループ自体は
+  // アンマウントまで回り続けるため、非表示中に setPaintProperty を呼ばないようここで止める
+  // （setPaintProperty は値が変わらなくても内部で triggerRepaint するため、素通しだと
+  // 非表示タブでも毎フレームのフル repaint を強制し続けてしまう）。
+  const visibleRef = useRef(visible)
+  visibleRef.current = visible
 
   useEffect(() => {
     if (!map) return
@@ -55,7 +62,7 @@ export function TsunamiLinesGL({ lines, iconScale }: Props) {
       id: LYR,
       type: 'line',
       source: SRC,
-      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      layout: { 'line-join': 'round', 'line-cap': 'round', visibility: visible ? 'visible' : 'none' },
       paint: {
         'line-color': ['get', 'color'],
         'line-width': ['get', 'width'],
@@ -78,9 +85,11 @@ export function TsunamiLinesGL({ lines, iconScale }: Props) {
     const start = performance.now()
     const pulse = () => {
       if (!map.getLayer(LYR)) return
-      const t = ((performance.now() - start) % BLINK_PERIOD_MS) / BLINK_PERIOD_MS
-      const opacity = t < BLINK_ON_RATIO ? 0.9 : 0
-      map.setPaintProperty(LYR, 'line-opacity', opacity)
+      if (visibleRef.current) {
+        const t = ((performance.now() - start) % BLINK_PERIOD_MS) / BLINK_PERIOD_MS
+        const opacity = t < BLINK_ON_RATIO ? 0.9 : 0
+        map.setPaintProperty(LYR, 'line-opacity', opacity)
+      }
       rafRef.current = requestAnimationFrame(pulse)
     }
     rafRef.current = requestAnimationFrame(pulse)
@@ -101,6 +110,12 @@ export function TsunamiLinesGL({ lines, iconScale }: Props) {
     const src = map.getSource(SRC) as GeoJSONSource | undefined
     src?.setData(buildFC(lines, iconScale))
   }, [map, lines, iconScale])
+
+  // 表示切替（津波警報の発表/全解除用）。
+  useEffect(() => {
+    if (!map || !map.getLayer(LYR)) return
+    map.setLayoutProperty(LYR, 'visibility', visible ? 'visible' : 'none')
+  }, [map, visible])
 
   return null
 }

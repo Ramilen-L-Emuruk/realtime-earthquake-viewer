@@ -14,6 +14,10 @@ import { badgeHtml, escapeHtml } from './gl/popupHtml'
 // （予報円を出さない・カードで M/深さを隠すのと同じ扱いを地図にも与える）。
 //
 // クリックで震源名・第何報・M・深さ・予想最大震度・警報種別を出す（地震情報の震源マーカーと対）。
+//
+// 震源 id をキーに差分更新する。特に fullOpacity（モード切替由来）だけが変わったときに
+// 全マーカーを作り直すと、EEW発報中にタブを切り替えるだけで震源×印が一瞬消えてしまうため、
+// opacity だけの変化は marker.setOpacity() で済ませ、マーカー自体は作り直さない。
 
 /** 仮定震源要素の×印の不透明度倍率。確定震源に対してかなり薄くする。 */
 const ASSUMED_OPACITY_RATIO = 0.35
@@ -29,16 +33,25 @@ interface Props {
 
 // 不透明度はここでは設定しない。element の style.opacity は Marker 自身が
 // （地形に隠れたときの制御のため）毎フレーム上書きするので、Marker のオプションで渡す。
-function buildCrossEl(iconScale: number, isAssumed: boolean): HTMLDivElement {
+// style.cssText の丸ごと代入は Marker がポジショニングに使う transform を消してしまうため、
+// 更新時は個別プロパティだけ触る。
+function updateCrossEl(el: HTMLDivElement, iconScale: number, isAssumed: boolean): void {
   const s = Math.round(32 * iconScale)
-  const el = document.createElement('div')
-  el.style.cssText = `width:${s}px;height:${s}px;cursor:pointer`
+  el.style.width = `${s}px`
+  el.style.height = `${s}px`
+  el.style.cursor = 'pointer'
   if (isAssumed) el.title = '震源未確定（単独観測点処理）'
+  else el.removeAttribute('title')
   // eew-blink クラスで点滅（Leaflet 版 getEpicenterIcon(blink=true) と同じ CSS）。
   el.innerHTML =
     `<svg viewBox="0 0 32 32" width="${s}" height="${s}" class="eew-blink" xmlns="http://www.w3.org/2000/svg">` +
     `<line x1="4" y1="4" x2="28" y2="28" stroke="#ff2222" stroke-width="4" stroke-linecap="round"/>` +
     `<line x1="28" y1="4" x2="4" y2="28" stroke="#ff2222" stroke-width="4" stroke-linecap="round"/></svg>`
+}
+
+function buildCrossEl(iconScale: number, isAssumed: boolean): HTMLDivElement {
+  const el = document.createElement('div')
+  updateCrossEl(el, iconScale, isAssumed)
   return el
 }
 
@@ -70,19 +83,51 @@ function buildPopupHtml(ep: EewEpicenter): string {
   )
 }
 
+interface EpicenterEntry {
+  marker: maplibregl.Marker
+  popup: maplibregl.Popup
+  claim: PopupHandle
+  isAssumed: boolean
+}
+
 export function EewEpicentersGL({ epicenters, iconScale, fullOpacity }: Props) {
   const map = useMapGL()
-  const markersRef = useRef<maplibregl.Marker[]>([])
-  // マーカーのクリック宣言（レイヤー由来のポップアップと二重に開かないための調停）。
-  const claimsRef = useRef<PopupHandle[]>([])
+  const entriesRef = useRef<Map<string, EpicenterEntry>>(new Map())
+  // 最新の fullOpacity を ref で持ち、下の主 effect（fullOpacity を deps に含めない）から
+  // 新規マーカー生成時の初期 opacity 計算に使う。
+  const fullOpacityRef = useRef(fullOpacity)
+  fullOpacityRef.current = fullOpacity
 
+  const opacityFor = (isAssumed: boolean): string => {
+    const baseOpacity = fullOpacityRef.current ? 1 : 0.4
+    return String(
+      isAssumed ? Math.max(baseOpacity * ASSUMED_OPACITY_RATIO, ASSUMED_OPACITY_MIN) : baseOpacity,
+    )
+  }
+
+  // 震源一覧・アイコン倍率の変化で差分更新する。fullOpacity はここでは扱わない
+  // （下の別 effect で marker.setOpacity() のみ行う）。
   useEffect(() => {
     if (!map) return
-    const baseOpacity = fullOpacity ? 1 : 0.4
+    const entries = entriesRef.current
+    const seen = new Set<string>()
     for (const ep of epicenters) {
-      const opacity = String(ep.isAssumed
-        ? Math.max(baseOpacity * ASSUMED_OPACITY_RATIO, ASSUMED_OPACITY_MIN)
-        : baseOpacity)
+      seen.add(ep.id)
+      const existing = entries.get(ep.id)
+      // isAssumed（確定/未確定）が変わらない限り、位置・見た目・ポップアップだけ更新して使い回す。
+      if (existing && existing.isAssumed === ep.isAssumed) {
+        const el = existing.marker.getElement() as HTMLDivElement
+        updateCrossEl(el, iconScale, ep.isAssumed)
+        existing.marker.setLngLat([ep.position[1], ep.position[0]])
+        existing.marker.setOpacity(opacityFor(ep.isAssumed))
+        existing.popup.setHTML(buildPopupHtml(ep)).setOffset(Math.round(32 * iconScale) * 0.4)
+        continue
+      }
+      if (existing) {
+        existing.claim.remove()
+        existing.marker.remove()
+        entries.delete(ep.id)
+      }
       const el = buildCrossEl(iconScale, ep.isAssumed)
       const popup = new maplibregl.Popup({ closeButton: true, offset: Math.round(32 * iconScale) * 0.4 }).setHTML(
         buildPopupHtml(ep),
@@ -90,20 +135,40 @@ export function EewEpicentersGL({ epicenters, iconScale, fullOpacity }: Props) {
       // opacityWhenCovered は指定しない。このアプリは terrain（3D地形）を使っておらず
       // 「覆われたとき」が起きないため効果が無い一方、指定すると Marker がオクルージョン判定の
       // 経路に入り、ポップアップのクリックが効かなくなる（外すと開くことを実測で確認）。
-      const marker = new maplibregl.Marker({ element: el, opacity })
+      const marker = new maplibregl.Marker({ element: el, opacity: opacityFor(ep.isAssumed) })
         .setLngLat([ep.position[1], ep.position[0]])
         .setPopup(popup)
         .addTo(map)
-      claimsRef.current.push(attachMarkerClaim(map, el))
-      markersRef.current.push(marker)
+      const claim = attachMarkerClaim(map, el)
+      entries.set(ep.id, { marker, popup, claim, isAssumed: ep.isAssumed })
     }
+    for (const [id, entry] of entries) {
+      if (seen.has(id)) continue
+      entry.claim.remove()
+      entry.marker.remove()
+      entries.delete(id)
+    }
+  }, [map, epicenters, iconScale])
+
+  // fullOpacity（モード切替由来）だけの変化は setOpacity のみで反映し、マーカーは作り直さない。
+  useEffect(() => {
+    for (const entry of entriesRef.current.values()) {
+      entry.marker.setOpacity(opacityFor(entry.isAssumed))
+    }
+    // opacityFor は fullOpacityRef 経由で最新値を読むだけの純関数的ヘルパーなので deps には不要。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fullOpacity])
+
+  useEffect(() => {
+    const entries = entriesRef.current
     return () => {
-      for (const c of claimsRef.current) c.remove()
-      claimsRef.current = []
-      for (const mk of markersRef.current) mk.remove()
-      markersRef.current = []
+      for (const entry of entries.values()) {
+        entry.claim.remove()
+        entry.marker.remove()
+      }
+      entries.clear()
     }
-  }, [map, epicenters, iconScale, fullOpacity])
+  }, [map])
 
   return null
 }

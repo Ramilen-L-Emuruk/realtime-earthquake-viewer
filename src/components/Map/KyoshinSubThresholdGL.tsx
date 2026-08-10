@@ -20,9 +20,15 @@ interface Props {
   sites: SiteCoords
   indices: number[]
   iconScale: number
+  /**
+   * 表示/非表示（モード切替用）。false のときは毎秒の triggerRepaint を止め、
+   * バックグラウンドタブでもフルキャンバス再描画が走り続けるのを防ぐ
+   * （レベル配列自体は裏で更新し続け、表示に戻った瞬間に1回だけ repaint する）。
+   */
+  visible: boolean
 }
 
-export function KyoshinSubThresholdGL({ sites, indices, iconScale }: Props) {
+export function KyoshinSubThresholdGL({ sites, indices, iconScale, visible }: Props) {
   const map = useMapGL()
   const layerRef = useRef<SubThresholdLayer | null>(null)
 
@@ -48,6 +54,10 @@ export function KyoshinSubThresholdGL({ sites, indices, iconScale }: Props) {
   }, [map, sites])
 
   // 毎秒の震度更新（レベル配列を作り setLevels → triggerRepaint で反映）。
+  // レベル配列自体は非表示中も更新し続けるが、triggerRepaint（フルキャンバス再描画）は
+  // visible のときだけ呼ぶ。他タブを見ている間もバックグラウンドで毎秒フル repaint が
+  // 走り続けるコストを避けるため（gl/subThresholdLayer.ts の render() 側は setVisible で
+  // 早期リターンする二重ガードにしてあるが、そもそも repaint 自体を起こさない方が安い）。
   useEffect(() => {
     const sub = layerRef.current
     if (!map || !sub) return
@@ -57,16 +67,24 @@ export function KyoshinSubThresholdGL({ sites, indices, iconScale }: Props) {
       levels[i] = idx >= 1 && idx <= MAX_SUB_IDX ? idx : 0
     }
     sub.setLevels(levels)
-    map.triggerRepaint()
-  }, [map, indices, sites])
+    if (visible) map.triggerRepaint()
+  }, [map, indices, sites, visible])
+
+  // 表示切替。非表示→表示になった瞬間、裏で更新済みのレベルを1回だけ描画に反映する。
+  useEffect(() => {
+    const sub = layerRef.current
+    if (!map || !sub) return
+    sub.setVisible(visible)
+    if (visible) map.triggerRepaint()
+  }, [map, visible])
 
   // UI 倍率の変化で半径を更新。
   useEffect(() => {
     const sub = layerRef.current
     if (!map || !sub) return
     sub.setIconScale(iconScale)
-    map.triggerRepaint()
-  }, [map, iconScale])
+    if (visible) map.triggerRepaint()
+  }, [map, iconScale, visible])
 
   return null
 }
