@@ -23,9 +23,10 @@ interface Props {
   sites: SiteCoords
   indices: number[]
   iconScale: number
+  visible: boolean
 }
 
-export function KyoshinPointsGL({ sites, indices, iconScale }: Props) {
+export function KyoshinPointsGL({ sites, indices, iconScale, visible }: Props) {
   const map = useMapGL()
   // 各点に前回適用した表示レベル（0 = 不可視、7+ = 可視）。差分更新用。
   const prevLevelsRef = useRef<Int8Array>(new Int8Array(0))
@@ -48,6 +49,7 @@ export function KyoshinPointsGL({ sites, indices, iconScale }: Props) {
       id: LYR,
       type: 'circle',
       source: SRC,
+      layout: { visibility: visible ? 'visible' : 'none' },
       paint: {
         'circle-radius': BASE_RADIUS * iconScale,
         // 色・不透明度は feature-state から読む（未設定＝不可視）。
@@ -92,6 +94,12 @@ export function KyoshinPointsGL({ sites, indices, iconScale }: Props) {
     if (!map || !map.getLayer(LYR)) return
     map.setPaintProperty(LYR, 'circle-radius', BASE_RADIUS * iconScale)
   }, [map, iconScale])
+
+  // 表示切替（モード切替用）。
+  useEffect(() => {
+    if (!map || !map.getLayer(LYR)) return
+    map.setLayoutProperty(LYR, 'visibility', visible ? 'visible' : 'none')
+  }, [map, visible])
 
   return null
 }

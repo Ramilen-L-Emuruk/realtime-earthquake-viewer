@@ -43,6 +43,7 @@ interface Props {
   confirmedPoints: DetectedPoint[]
   candidatePoints: DetectedPoint[]
   iconScale: number
+  visible: boolean
 }
 
 // 検知点1点の描画半径（Leaflet 版と同一ロジックを confidence 別ボーナスへ一般化）。
@@ -99,7 +100,7 @@ function buildFC(
   return { type: 'FeatureCollection', features: [...confirmedFeatures, ...candidateFeatures] }
 }
 
-export function KyoshinDetectedPointsGL({ confirmedPoints, candidatePoints, iconScale }: Props) {
+export function KyoshinDetectedPointsGL({ confirmedPoints, candidatePoints, iconScale, visible }: Props) {
   const map = useMapGL()
   const addedRef = useRef(false)
   // 直近に setData した内容の署名。points は kyoshinView が indices tick（毎秒）で作り直されるため
@@ -124,6 +125,7 @@ export function KyoshinDetectedPointsGL({ confirmedPoints, candidatePoints, icon
         'icon-allow-overlap': true,
         'icon-ignore-placement': true,
         'symbol-sort-key': ['get', 'index'],
+        visibility: visible ? 'visible' : 'none',
       },
     })
     addedRef.current = true
@@ -145,6 +147,12 @@ export function KyoshinDetectedPointsGL({ confirmedPoints, candidatePoints, icon
     const src = map.getSource(SRC) as GeoJSONSource | undefined
     src?.setData(fc)
   }, [map, confirmedPoints, candidatePoints, iconScale])
+
+  // 表示切替（モード切替用）。
+  useEffect(() => {
+    if (!map || !map.getLayer(LYR)) return
+    map.setLayoutProperty(LYR, 'visibility', visible ? 'visible' : 'none')
+  }, [map, visible])
 
   return null
 }

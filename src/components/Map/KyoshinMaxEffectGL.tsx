@@ -83,9 +83,10 @@ interface Props {
   sites: SiteCoords
   indices: number[]
   iconScale: number
+  visible: boolean
 }
 
-export function KyoshinMaxEffectGL({ sites, indices, iconScale }: Props) {
+export function KyoshinMaxEffectGL({ sites, indices, iconScale, visible }: Props) {
   const map = useMapGL()
   const ripplesRef = useRef<Ripple[]>([])
   const rafRef = useRef<number | null>(null)
@@ -101,6 +102,7 @@ export function KyoshinMaxEffectGL({ sites, indices, iconScale }: Props) {
       id: LYR,
       type: 'circle',
       source: SRC,
+      layout: { visibility: visible ? 'visible' : 'none' },
       paint: {
         'circle-radius': ['coalesce', ['feature-state', 'radius'], 0],
         'circle-color': 'rgba(0,0,0,0)',
@@ -205,6 +207,12 @@ export function KyoshinMaxEffectGL({ sites, indices, iconScale }: Props) {
 
     prevRankRef.current = rank
   }, [map, indices, sites, iconScale])
+
+  // 表示切替（モード切替用）。
+  useEffect(() => {
+    if (!map || !map.getLayer(LYR)) return
+    map.setLayoutProperty(LYR, 'visibility', visible ? 'visible' : 'none')
+  }, [map, visible])
 
   return null
 }

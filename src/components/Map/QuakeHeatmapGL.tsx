@@ -32,6 +32,7 @@ const EMPTY_FC: FeatureCollection<Point> = { type: 'FeatureCollection', features
 
 interface Props {
   points: HeatPoint[]
+  visible: boolean
 }
 
 function buildFC(points: HeatPoint[]): FeatureCollection<Point> {
@@ -79,7 +80,7 @@ function clickHtml(f: MapGeoJSONFeature): string {
   )
 }
 
-export function QuakeHeatmapGL({ points }: Props) {
+export function QuakeHeatmapGL({ points, visible }: Props) {
   const map = useMapGL()
   const addedRef = useRef(false)
   const popupRef = useRef<PopupHandle | null>(null)
@@ -92,6 +93,7 @@ export function QuakeHeatmapGL({ points }: Props) {
       type: 'heatmap',
       source: SRC,
       maxzoom: HEAT_MAX_ZOOM + 1,
+      layout: { visibility: visible ? 'visible' : 'none' },
       paint: {
         // 各点の重み（quakeHeatmap 側で 0〜1 に正規化済み）。
         'heatmap-weight': ['coalesce', ['get', 'weight'], 0.5],
@@ -119,6 +121,7 @@ export function QuakeHeatmapGL({ points }: Props) {
       type: 'circle',
       source: SRC,
       maxzoom: HEAT_MAX_ZOOM + 1,
+      layout: { visibility: visible ? 'visible' : 'none' },
       paint: {
         'circle-radius': HIT_RADIUS_PX,
         'circle-color': '#000000',
@@ -149,6 +152,14 @@ export function QuakeHeatmapGL({ points }: Props) {
     const src = map.getSource(SRC) as GeoJSONSource | undefined
     src?.setData(buildFC(points))
   }, [map, points])
+
+  // 表示切替（津波モードとの往復用）。
+  useEffect(() => {
+    if (!map || !map.getLayer(LYR)) return
+    const v = visible ? 'visible' : 'none'
+    map.setLayoutProperty(LYR, 'visibility', v)
+    map.setLayoutProperty(HIT_LYR, 'visibility', v)
+  }, [map, visible])
 
   return null
 }

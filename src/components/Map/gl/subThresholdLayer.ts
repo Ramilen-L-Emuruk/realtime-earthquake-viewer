@@ -79,6 +79,13 @@ export interface SubThresholdLayer {
   setLevels(levels: Uint8Array): void
   /** UI 倍率の変化で点の半径を更新（次フレームから反映）。呼び出し側で triggerRepaint する。 */
   setIconScale(scale: number): void
+  /**
+   * 表示/非表示を切り替える。custom レイヤーは style spec の visibility layout プロパティを
+   * 持たないため、render() 冒頭でこのフラグを見て早期リターンする自前実装で代替する。
+   * 非表示中も render() 自体は呼ばれうる（他レイヤー由来の repaint 等）ため、そのたびに
+   * FBO への多重描画が走らないようここで止める。
+   */
+  setVisible(visible: boolean): void
 }
 
 // 観測点座標（Mercator の Float32Array・[x,y] を n 点分）を受け取り、カスタムレイヤーを生成する。
@@ -118,6 +125,8 @@ export function makeSubThresholdLayer(
     }
     dirtyIdx = true
   }
+
+  let visible = true
 
   // 初期は全点 index 0（非表示）。最初の setLevels で実データが入る。
   countingSort(new Uint8Array(n))
@@ -191,6 +200,7 @@ export function makeSubThresholdLayer(
       tex = gl.createTexture()!
     },
     render(gl: WebGL2RenderingContext, args: maplibregl.CustomRenderMethodInput) {
+      if (!visible) return
       const canvas = mapRef.getCanvas()
       const w = canvas.width
       const h = canvas.height
@@ -289,6 +299,9 @@ export function makeSubThresholdLayer(
     },
     setIconScale(scale: number): void {
       iconScale = scale
+    },
+    setVisible(v: boolean): void {
+      visible = v
     },
   }
 }
