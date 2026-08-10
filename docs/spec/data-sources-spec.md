@@ -1,0 +1,257 @@
+# データソース仕様書
+
+> 本書は**アプリが使用する外部データソースと接続の仕組み**をまとめた仕様書。
+> 実コードと食い違う場合は実コードを正とする。
+
+## 1. 概要
+
+3 系統のデータソースを扱う:
+
+- **DMDATA.JP**（DMDSS 版・要 API キー） — 地震情報・EEW・津波情報の主系
+- **P2PQuake API v2**（標準版・認証不要） — 地震情報・EEW・津波情報の主系
+- **Yahoo!天気・災害 リアルタイム震度**（両バリアント共通） — 強震モニタデータ、EEW 補完
+
+さらに以下も外部・準外部データとして扱う:
+
+- 気象庁 予報区等 GIS データ（座標テーブル・境界・海岸線・生成物）
+- GEBCO 海底地形タイル（背景・オプショナル）
+- 産総研 活断層データベース（オプショナル）
+- PB2002 プレート境界（オプショナル）
+
+## 2. DMDATA.JP（DMDSS 版）
+
+### エンドポイント
+
+- WebSocket: `wss://ws.api.dmdata.jp/v2/socket`
+- REST: `https://api.dmdata.jp/v2/*`
+
+### 認証
+
+Basic 認証（`Authorization: Basic base64(apiKey:)`）。API キーはユーザーが設定タブで入力し、
+`localStorage` に平文保存する（BYOK / Bring Your Own Key 方式）。ビルド時にキーが埋め込まれることはない。
+
+### 受信する電文種別
+
+| 種別コード | 内容 | 用途 |
+|---|---|---|
+| VXSE43 | 緊急地震速報（警報） | EEW 警報表示 |
+| VXSE44 | 緊急地震速報（予報） | EEW 予報表示 |
+| VXSE45 | 地震動予報 | EEW 詳細 |
+| VXSE51 | 震度速報 | 地震カード（速報） |
+| VXSE52 | 震源に関する情報 | 地震カード（震源） |
+| VXSE53 | 震源・震度に関する情報 | 地震カード（詳細報） |
+| VXSE61 | 顕著な地震の震源要素更新 | 続報統合 |
+| VXSE62 | 長周期地震動観測情報 | 長周期区域塗り |
+| VTSE41 | 津波警報・注意報 | 津波タブ |
+| VTSE51 | 津波観測情報 | 津波観測バー |
+| VTSE52 | 沖合の津波観測情報 | 津波観測バー |
+| VYSE50 | 南海トラフ地震関連解説情報 | 南海トラフバナー |
+| VYSE51 | 南海トラフ地震臨時情報 | 南海トラフバナー |
+| VYSE60 | 後発地震注意情報 | 後発地震バナー |
+
+**電文本体の展開**: WebSocket の `body` は base64 + gzip で配信される。ブラウザネイティブの
+`DecompressionStream('gzip')` で復号してから `dmdataParser.ts` で内部型に変換する。
+
+### WebSocket 接続（`src/services/dmdata.ts`）
+
+- 自動再接続（指数バックオフ、`RECONNECT_BASE_MS=3000`、`RECONNECT_MAX_MS=30000`）
+- `type: 'ping'` を受けたら `pong` を返す
+- `stopped` / `authError` 以外は close 時に自動再接続
+- 認証失敗（401/403）時は `authError` で停止
+
+**既知の課題**:
+- ping ウォッチドッグなし（半開通信で「接続中」表示のまま無応答）
+- close code を分岐せず全て再接続対象に扱う
+- `reconnectAttempt` が `onopen` でリセットされ、start 前切断で指数バックオフが機能しない
+
+### REST 履歴取得（`fetchDmdataEarthquakes` 等）
+
+起動時に過去 24 時間の主要電文を取得してカードに反映する。ページング（`nextToken`）に対応。
+
+### 試験報（VXSE42）
+
+設定タブの「試験報を受信（検証用）」を有効にすると、毎正時に配信される配信テスト電文も受信できる。
+実地震を待たずにリアルタイム受信経路を検証できる（受信した試験 EEW は通常の発報と同様に表示される）。
+
+## 3. P2PQuake API v2（標準版）
+
+### エンドポイント
+
+- WebSocket: `wss://api.p2pquake.net/v2/ws`
+- REST: `https://api.p2pquake.net/v2/history`
+
+### 認証
+
+**不要**（公開 API）。
+
+### 受信するコード
+
+| code | 内容 | 用途 |
+|---|---|---|
+| 551 | JMA 地震情報 | 地震タブ |
+| 552 | JMA 津波情報 | 津波タブ |
+| 556 | 緊急地震速報 | EEW |
+
+### convertEvent の日本語化
+
+P2PQuake の生 JSON は英語の enum で来るフィールドがあるため、`src/services/p2pquake.ts` の
+`convertEvent` で日本語化する:
+
+- `issue.type`: `ScalePrompt` → `震度速報` 等
+- `issue.correct`: `None` → `なし`、`Correction` → `訂正` 等
+- `earthquake.domesticTsunami`: `None` → `なし`、`Warning` → `警報` 等
+
+**既知の欠落**:
+- `domesticTsunami.MajorWarning` がマップに無く、大津波警報が「不明」（灰色）フォールバックに落ちる
+- code=556（EEW）で `severity` フィールドが生成されておらず、`computeSingleEEWLevel` が予報扱いに落とす
+- `points[].scale=46`（震度 5 弱以上推定）が既知震度マップにない
+
+### WebSocket 再接続
+
+- 指数バックオフ（`3000ms → ×1.5`、上限 `30000ms`）
+- 成功時にカウンタリセット
+- エラー・不正メッセージのログ出力なし（既知の課題）
+
+## 4. Yahoo リアルタイム震度（両バリアント共通）
+
+### エンドポイント
+
+- 観測点リスト: `https://weather-kyoshin.<region>.storage-yahoo.jp/SiteList/sitelist_<siteConfigId>.json`
+- リアルタイム震度: `https://weather-kyoshin.<region>.storage-yahoo.jp/RealTimeData/yyyyMMdd/yyyyMMddHHmmss.json`
+- `<region>` は west / east（west を優先、失敗時 east にフォールバック）
+
+### 認証
+
+不要。
+
+### データ
+
+- **観測点リスト**: 約 1725 点の緯度経度＋観測点情報（年に数回更新される・`siteConfigId` で判別）
+- **リアルタイム震度**: 1 秒毎の JSON。`realTimeData.intensity` 文字列（1 文字＝1 観測点、`charCodeAt(0)-100` が index 0〜20）
+- **震源情報（hypoInfo）**: EEW 相当の情報（震源・M・calcintensity 等）を含む場合がある
+
+### index → 震度の変換
+
+`indexToValue(index) = -3.0 + index * 0.5`（0.5 刻み量子化、index 6 = 震度 0 = value 0.0）。
+`index = -1` は欠測センチネル（公式 CSS が裏付け）。
+
+### クロック同期（`startClockSync`）
+
+Yahoo は未登録秒には 403 を返す（登録遅延約 1.5 秒）。この 403 → 200 遷移を捉えて時刻を較正する
+（`src/services/kyoshin.ts` の `syncClockOnce`）。
+
+- 30 秒毎に実行
+- guessSec の前後 `[-4, +2]` の探索窓で 200 になる境界を検出
+- 検出した境界を `feedServerSample` に渡して EMA 較正（`clock.ts`）
+
+**既知の課題**:
+- `isRegistered` が `res.status === 200` のみで判定するため、5xx/429 も「未登録」誤認しうる
+- 探索窓が固定で、壁時計が数秒以上ずれると恒久的に較正不能になる
+- 較正失敗時の無警告 `Date.now()` フォールバック（診断 API `getServerClockOffsetMs` は全体で未使用）
+
+### EEW 補完（`hypoInfoItemToEEW`）
+
+Yahoo の `hypoInfo.items` を EEW 型に変換して P2PQuake（標準版）や DMDATA（DMDSS 版）と統合する。
+`condition` に相当するフィールドが無いため常に `'以上'` を返す（single-point PLUM 検知の判別不能・
+既知の限界）。severity は震度からのヒューリスティック推定（`scaleNum >= 45 ? 'Warning' : 'Forecast'`）。
+
+## 5. クロック同期（`src/utils/clock.ts`）
+
+**壁時計は絶対値として信用しない**。以下の時刻は `serverNow()` で取得する:
+
+- EEW P/S 波円計算
+- EEW 自動解除タイミング
+- 津波 `validDateTime` の期限判定
+- Yahoo 取得ラグ計算
+- 実地震テストシナリオの時刻シフト
+
+### 実装
+
+- `serverNow(): number` — サーバー基準の epoch ms を返す
+- 内部で `K = trueServerEpoch - performance.now()` を保持
+- Yahoo クロック較正から `feedServerSample(trueServerEpoch)` で K を EMA 更新（α = 0.2）
+- 未較正時（K = null）は `Date.now()` にフォールバック
+
+### 既知の課題
+
+- `feedServerSample` に外れ値検知なし（初回サンプルは無条件採用）
+- 未較正時のフォールバックが無警告
+- Page Visibility API 未考慮（バックグラウンドタブでの較正遅延）
+
+## 6. 生成データ（`public/data/`）
+
+事前生成された座標・境界データ。地図初回表示時または該当タブ表示時に fetch する。
+
+| ファイル | 生成スクリプト | 用途 |
+|---|---|---|
+| `station-coords.json` | `scripts/build-station-coords.mjs` | 震度観測点の座標＋所属区域 |
+| `tsunami-zones.json` | `scripts/build-tsunami-zones.mjs` | 津波予報区の海岸線 |
+| `tsunami-obs-coords.json` | 手動整備 | 津波観測点座標 |
+| `prefectures.json` | `scripts/build-prefectures.mjs` | 都道府県境界 |
+| `subregions.json` | `scripts/build-subregions.mjs` | 一次細分区域境界 |
+| `active-faults.json` | `scripts/build-active-faults.mjs` | 全国活断層線 |
+| `plate-boundaries.json` | `scripts/build-plate-boundaries.mjs` | プレート境界線 |
+| `tts-phrase-break-dict.json` | 手動整備 | 読み上げ用の句区切り辞書 |
+| `test-scenarios/index.json` | 手動 or `capture-test-scenario.ts` | 実地震テストシナリオ一覧（本体は .gitignore） |
+
+出典:
+- 気象庁 予報区等 GIS データ: [Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)
+- 観測点座標: [iku55 氏による JSON 化](https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1)
+- GEBCO 海底地形: [GEBCO Basemap (NCEI)](https://tiles.arcgis.com/tiles/C8EMgrsFcRFL6LrL/arcgis/rest/services/GEBCO_basemap_NCEI/MapServer)
+- 活断層: 産業技術総合研究所 [活断層データベース](https://gbank.gsj.jp/activefault/)（政府標準利用規約 2.0）
+- プレート境界: [PB2002](http://peterbird.name/publications/2003_pb2002/2003_pb2002.htm)（[fraxen/tectonicplates](https://github.com/fraxen/tectonicplates)、ODbL）
+
+## 7. リプレイ機能
+
+### 「テスト時刻設定（強震モニタ）」（standard 版のみ有効）
+
+Yahoo リアルタイム震度を過去の時刻から順に再生する。標準版で有効。
+
+**既知の課題**: 実装が useEarthquakes.ts の接続 useEffect の先頭で `replayTimeOffset !== null` の
+早期 return を行うため、standard 版の P2PQuake WS 接続まで停止する副作用がある（HIGH 課題）。
+
+### 実地震テストシナリオ
+
+`useTestScenarios.ts` が管理。両バリアント共通で動作する。詳細は
+[`settings-pwa-spec.md`](settings-pwa-spec.md) の「実地震テスト」節。
+
+## 8. 震度スケール
+
+| 値 | 震度 |
+|---|---|
+| 10 | 1 |
+| 20 | 2 |
+| 30 | 3 |
+| 40 | 4 |
+| 45 | 5弱 |
+| 50 | 5強 |
+| 55 | 6弱 |
+| 60 | 6強 |
+| 70 | 7 |
+
+センチネル値:
+- `-1` — 震度算出不能・不明
+- `-200` — 位置不明（震度速報の震源座標フォールバック）
+- `99` — （実装上は使われない・`eew.ts:170` にコメントとガードが残るがデッドコード）
+
+## 9. 環境による制約
+
+- 一部の外部ホストに到達できない環境がある（例: 防災科研 kmoni の HTTPS）。Yahoo 強震モニタ・DMDATA.JP は到達可能
+- P2PQuake API は非公式サービスのためサービス継続性は保証されない
+- DMDATA.JP は個人契約では EEW の二次配信が制限される（利用規約第 15 条）ため、GitHub Pages 公開版に
+  実 EEW シナリオをコミットしない運用が必要
+
+## 10. 関連実装ファイル
+
+- `src/services/dmdata.ts` — DMDATA WebSocket + 認証
+- `src/services/dmdataParser.ts` — DMDATA JSON/XML パース
+- `src/services/dmdataReplay.ts` — DMDATA archive リプレイ
+- `src/services/p2pquake.ts` — P2PQuake クライアント
+- `src/services/kyoshin.ts` — Yahoo リアルタイム震度 + クロック同期
+- `src/utils/clock.ts` — サーバー同期時刻 `serverNow`
+- `src/utils/tarParser.ts` — DMDATA archive の tar 展開
+- `src/hooks/useKyoshinRealtime.ts` — Yahoo ポーリング
+
+## 11. 改訂履歴
+
+- 2026-08-10: 仕様書構造の再編にあわせて新規作成
