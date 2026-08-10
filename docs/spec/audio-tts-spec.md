@@ -66,6 +66,10 @@ playAlertSound(type: AlertSoundType)
 
 ## 3. VOICEVOX 読み上げ（`voicevox`）
 
+**VOICEVOX** は無料で配布されている音声合成ソフトウェア（[voicevox.hiroshiba.jp](https://voicevox.hiroshiba.jp/)）。
+ユーザーが自分の PC 上で起動しておくと、その HTTP API に対してテキスト → 音声合成をリクエストできる。
+本アプリは任意機能として組み込んでおり、VOICEVOX を起動していない場合は無音で失敗する。
+
 `src/utils/voicevox.ts`。VOICEVOX ローカル HTTP API（デフォルト `http://localhost:50021`）を呼び出して
 音声合成する。任意機能で、有効化はユーザー設定 `voicevoxEnabled` による。
 

@@ -7,6 +7,8 @@ React + TypeScript + MapLibre GL JS で構築されています。
 🌐 **通常版（P2PQuake）**: https://ramilen-l-emuruk.github.io/realtime-earthquake-viewer/
 🌐 **DM-D.S.S 版（DMDATA.JP）**: https://ramilen-l-emuruk.github.io/realtime-earthquake-viewer/dmdss/
 
+> 「DM-D.S.S」は DMDATA.JP のサービス名。以下のドキュメントとコード（`VITE_VARIANT=dmdss`）では表記を短縮して **DMDSS** と記載する。
+
 ## 主な機能
 
 - **地震情報**: 過去の地震カード・観測点別震度・区域塗り・震源マーカーを地図に表示

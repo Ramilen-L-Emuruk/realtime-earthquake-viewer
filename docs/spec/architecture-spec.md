@@ -15,6 +15,8 @@ React 18 + TypeScript + Vite 6 で作られた PWA（Progressive Web App）。�
 
 ## 2. データフロー（俯瞰）
 
+> **地図モードの内部名について**: 本アプリの地図は 3 つのモード（`quake` = 地震情報タブ / `tsunami` = 津波情報タブ / `kyoshin` = リアルタイム震度タブ）で表示を切り替える。`kyoshin` は「強震モニタ由来のデータを描画するモード」という意味の内部名で、UI 上のタブ名（「リアルタイム」）とは表記が異なる点に注意。
+
 ```
 [外部データソース]
   ├─ DMDATA.JP  (WebSocket + REST)       ← DMDSS 版
