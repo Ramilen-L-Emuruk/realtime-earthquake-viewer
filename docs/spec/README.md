@@ -22,6 +22,17 @@
 | [kyoshin-detection-v3-design.md](kyoshin-detection-v3-design.md) | 強震モニタ検知の設計判断・調査・改訂履歴 | 同上（経緯資料） |
 | [kyoshin-detection-design.md](kyoshin-detection-design.md) | 強震モニタ検知の旧設計書（歴史資料・V3 に置換済み） | 同上 |
 
+## 推奨読了順（初めて触る開発者向け）
+
+上の一覧はアルファベット順ではなく、以下の推奨順に並べている:
+
+1. **[architecture-spec.md](architecture-spec.md)** — 全体像・バリアント切替・データフローの俯瞰
+2. **[data-sources-spec.md](data-sources-spec.md)** — DMDATA / P2PQuake / Yahoo の電文コード・エンドポイント（後続の spec で参照される用語の予備知識）
+3. **[eew-spec.md](eew-spec.md) / [tsunami-spec.md](tsunami-spec.md) / [quake-spec.md](quake-spec.md)** — 主要 3 機能。触りたい機能から読む
+4. **[map-rendering-spec.md](map-rendering-spec.md)** — 地図描画のレイヤー構成・描画順（上記 3 機能の描画側を触るなら必読）
+5. **[audio-tts-spec.md](audio-tts-spec.md) / [settings-pwa-spec.md](settings-pwa-spec.md)** — 音・通知・設定 UI
+6. **[kyoshin-detection-spec.md](kyoshin-detection-spec.md)** — 強震モニタ検知エンジン（他機能と独立性が高いので後回しでよい）
+
 ## 仕様書の書き方（新規追加時）
 
 1. **冒頭に位置づけを書く**: 何のための文書か・実コードとの関係性を明示
