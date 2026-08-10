@@ -711,7 +711,7 @@ export function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onS
         <div className="px-4 py-2 bg-yellow-900/30 border-b border-yellow-700/40">
           <p className="text-yellow-400 text-xs">⚠️ 動作確認用です。実際のデータは変更されません。</p>
         </div>
-        <Row label="地震情報" description="三陸沖 M9.0 最大震度7 をリストと地図に追加">
+        <Row label="地震情報" description="令和6年能登半島地震・本震 M7.6 最大震度7（実データ）をリストと地図に追加">
           <TestButton color="red" onClick={onTest.earthquake}>地震テスト</TestButton>
         </Row>
         <Row label="緊急地震速報（特別警報）" description="震度6強 – eewSpecial 音 / 10秒以内に再度押すと続報、押さなければ最終報確定→無音で自動解除（数分後）">

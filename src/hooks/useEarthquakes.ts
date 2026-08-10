@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataKohatsu } from '../services/dmdata'
-import { QUAKE_ISSUE_PRIORITY, mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes } from '../utils/quakeMerge'
+import { QUAKE_ISSUE_PRIORITY, mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId } from '../utils/quakeMerge'
 import { loadStationCoords, buildAreaPrefIndex } from '../utils/stationCoords'
 import { calcEEWCancelTime } from '../utils/eew'
 import { mergeTsunamiObservations } from '../utils/tsunami'
@@ -12,6 +12,7 @@ import { serverNow, serverDate } from '../utils/clock'
 const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
 import {
   createTestEarthquake,
+  createTestLpgm,
   createTestEEW,
   createTestEEWWarning,
   createTestEEWForecast,
@@ -833,7 +834,14 @@ export function useEarthquakes(
   }, [])
 
   const simulateEarthquake = useCallback(() => {
-    handleEvent(createTestEarthquake())
+    const quake = createTestEarthquake()
+    handleEvent(quake)
+    const eventId = extractQuakeEventId(quake)
+    if (eventId) {
+      const lpgm = createTestLpgm(eventId)
+      setState(prev => ({ ...prev, lpgmByEventId: new Map(prev.lpgmByEventId).set(eventId, lpgm) }))
+      onLiveEventRef.current?.({ kind: 'lpgm', data: lpgm } as unknown as AppEvent)
+    }
   }, [handleEvent])
 
   const simulateEEW = useCallback(

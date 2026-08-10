@@ -113,19 +113,34 @@ export async function fetchDmdataReplayEvents(
   endDateObj.setDate(endDateObj.getDate() + 1)
   const endDate = toDateStr(endDateObj)
 
-  const listRes = await fetch(
-    `https://api.dmdata.jp/v2/archive?datetime=${startDate}~${endDate}&classification=telegram.earthquake,eew.forecast`,
-    { headers: { Authorization: authHeader(apiKey) } },
-  )
-  if (!listRes.ok) throw new Error(`Archive list failed: ${listRes.status}`)
-  const listJson = (await listRes.json()) as { status: string; items: ArchiveItem[] }
-  if (listJson.status !== 'ok') throw new Error('Archive list error')
+  // archiveリストAPIは1回の応答で最大20件までしか返さないため、nextTokenが尽きるまで
+  // cursorTokenで全ページを取得する（打ち切ると広い期間の指定で古い側のアーカイブが
+  // 無言で欠落し、本震当日のデータごと消えるという事故につながる）。
+  const items: ArchiveItem[] = []
+  let cursorToken: string | undefined
+  for (;;) {
+    const params = new URLSearchParams({
+      datetime: `${startDate}~${endDate}`,
+      classification: 'telegram.earthquake,eew.forecast',
+    })
+    if (cursorToken) params.set('cursorToken', cursorToken)
+    const listRes = await fetch(
+      `https://api.dmdata.jp/v2/archive?${params.toString()}`,
+      { headers: { Authorization: authHeader(apiKey) } },
+    )
+    if (!listRes.ok) throw new Error(`Archive list failed: ${listRes.status}`)
+    const listJson = (await listRes.json()) as { status: string; items: ArchiveItem[]; nextToken?: string }
+    if (listJson.status !== 'ok') throw new Error('Archive list error')
+    items.push(...listJson.items)
+    if (!listJson.nextToken) break
+    cursorToken = listJson.nextToken
+  }
 
   const dec = new TextDecoder()
   const entries: ReplayEntry[] = []
 
   await Promise.all(
-    listJson.items.map(async (item) => {
+    items.map(async (item) => {
       const files = await downloadArchive(item.url, apiKey)
 
       const manifestBytes = files.get('telegrams.json')
