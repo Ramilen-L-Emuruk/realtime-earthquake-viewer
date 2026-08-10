@@ -160,9 +160,12 @@ AutoHotKey 等の外部監視ツールから状態を検知できる。
 
 - `settings.soundEnabled` — 音の ON/OFF
 - `settings.voicevoxEnabled` — 読み上げの ON/OFF
-- `settings.notificationEnabled` — ブラウザ通知の ON/OFF
+- **ブラウザ通知は種別ごとに 3 つの独立トグル**:
+  - `settings.notifyEEW` — 緊急地震速報の発報・昇格時のブラウザ通知 ON/OFF
+  - `settings.notifyTsunami` — 津波注意報以上のブラウザ通知 ON/OFF
+  - `settings.notifyDetection` — 強震モニタ揺れ検知時のブラウザ通知 ON/OFF
 - `settings.notifyMinScale` — 通知の最低震度
-- `settings.autoReturnSec` — 自動タブ復帰までの時間
+- `settings.idleRevertSec` — **操作なし経過後**にデフォルトタブへ戻るまでの秒数（`0` で無効。「情報受信後の N 秒」ではなく「ユーザー操作が止まってからの N 秒」で判定）
 
 ### 既知の課題
 

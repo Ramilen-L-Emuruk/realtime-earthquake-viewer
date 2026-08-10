@@ -64,7 +64,7 @@ React 18 + TypeScript + Vite 6 で作られた PWA（Progressive Web App）。�
 
 `vite.config.ts` の `define`・`base`・`build.outDir`・`manifest.name` が `VITE_VARIANT` によって切り替わる。
 コード側では各所で `const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'` として参照する
-（現在 4〜7 ファイルで個別定義。共通化候補）。
+（複数ファイルで個別定義・共通化候補）。
 
 **バリアント別に有効な機能マトリクス**:
 
@@ -79,6 +79,7 @@ React 18 + TypeScript + Vite 6 で作られた PWA（Progressive Web App）。�
 | 津波の cancelReason 出し分け | × | ○ |
 | 詳細報での区域＋観測点同時表示 | ×（観測点のみ） | ○ |
 | 南海トラフ・後発地震情報 | × | ○ |
+| 電文ログ（TelegramTab） | ×（UI は表示・常に空） | ○ |
 | 実地震テスト再生 | ○ | ○ |
 | VOICEVOX 読み上げ | ○ | ○ |
 | ヒートマップ | ○ | ○ |
@@ -97,8 +98,9 @@ React 18 + TypeScript + Vite 6 で作られた PWA（Progressive Web App）。�
   `usePsWaveCalc` / `useLiveEventHandler` / `useAlertTitle`）を配線する
 - 通知音・ブラウザ通知・自動タブ切替・カメラ自動フィット・VOICEVOX 読み上げ・EEW 状態管理などの制御をここで行う
 
-App は「1 秒毎更新」（強震モニタ・kyoshinIndices）と「100ms 更新」（EEW 発報中の psWave）の 2 つのタイマーを持ち、
-その state を子コンポーネントに配る。過剰な再レンダーが伝播しないよう、下位で `useMemo`・`React.memo` を活用する
+App が直接持つのは「1 秒毎更新」（強震モニタ・`kyoshinIndices`）系の state だけで、「100ms 更新」の psWave は
+`usePsWaveCalc` フック内部で `setInterval` が回る。App はこれらの state を子コンポーネントに配る。
+過剰な再レンダーが伝播しないよう、下位で `useMemo`・`React.memo` を活用する
 （詳細は [`map-rendering-spec.md`](map-rendering-spec.md) 参照）。
 
 ### MapView / JapanMapGL
@@ -111,7 +113,7 @@ App は「1 秒毎更新」（強震モニタ・kyoshinIndices）と「100ms 更
 
 ### IconNav（右端タブナビ）
 
-`ITEMS` 配列で 5 タブを定義（`earthquake` / `realtime` / `tsunami` / `telegrams` / `settings`）。
+`ITEMS` 配列で 5 タブを定義（実装順: `earthquake` / `realtime` / `tsunami` / `settings` / `telegrams`）。
 どのタブも標準版・DMDSS 版で常時表示される（`telegrams` は standard 版では常に空だが、UI は表示）。
 
 ### 各タブパネル
@@ -149,18 +151,9 @@ Redux 等のグローバルストアは使わず、React のフック（`useStat
 
 ## 7. 生成データ（`public/data/`）
 
-以下は事前生成された座標テーブル・境界データ。地図初回表示時または該当タブ表示時に fetch される。
+`public/data/` 配下には事前生成された座標テーブル・境界データを配置する。地図初回表示時または該当タブ表示時に fetch される。
 
-| ファイル | 生成スクリプト | 用途 |
-|---|---|---|
-| `station-coords.json` | `scripts/build-station-coords.mjs` | 震度観測点の座標＋所属区域 |
-| `tsunami-zones.json` | `scripts/build-tsunami-zones.mjs` | 津波予報区の海岸線 |
-| `tsunami-obs-coords.json` | 手動整備 | 津波観測点（験潮所）座標 |
-| `prefectures.json` | `scripts/build-prefectures.mjs` | 都道府県境界 |
-| `subregions.json` | `scripts/build-subregions.mjs` | 一次細分区域境界 |
-| `active-faults.json` | `scripts/build-active-faults.mjs` | 全国活断層線 |
-| `plate-boundaries.json` | `scripts/build-plate-boundaries.mjs` | プレート境界線 |
-| `tts-phrase-break-dict.json` | 手動整備 | 読み上げ用の句区切り辞書 |
+**単一情報源**: 全ファイル一覧・生成スクリプト・出典は [`data-sources-spec.md §6`](data-sources-spec.md) を参照。ここで重複記載していた表は削除した（`architecture-spec.md` と `data-sources-spec.md` の 2 箇所に置いていたところ内容がドリフトしていた反省）。
 
 `public/data/test-scenarios/*.json` は実地震テストのシナリオデータで、`.gitignore` されている
 （DMDATA.JP 利用規約第 15 条により EEW 二次配信が個人契約で制限されるため）。詳細は

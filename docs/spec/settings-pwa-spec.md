@@ -20,9 +20,9 @@
 ### 全般設定
 - **通知音**: ON/OFF ＋ 音量（0〜1）
 - **VOICEVOX 読み上げ**: ON/OFF ＋ URL 設定 ＋ 話者選択 ＋ テスト読み上げ
-- **ブラウザ通知**: ON/OFF ＋ 通知しきい値（`震度1以上`〜`震度7`から選択）
+- **ブラウザ通知**: 種別ごとに独立トグル 3 種（`notifyEEW` / `notifyTsunami` / `notifyDetection`）＋ 通知しきい値（`notifyMinScale`。`震度1以上`〜`震度7`から選択）
 - **デフォルトタブ**: 平常時に表示するタブ
-- **自動復帰までの時間**: 情報受信後にデフォルトタブへ戻る時間
+- **自動復帰までの時間**: `idleRevertSec` = **ユーザー操作が止まってから**デフォルトタブへ戻る秒数（`0` で無効）
 
 ### 表示設定
 - **UI 倍率**: 画面全体の UI 拡大縮小
@@ -80,7 +80,7 @@ README・CLAUDE.md にも明記されている運用。
 - **base path**: `/realtime-earthquake-viewer/`（標準）または `/realtime-earthquake-viewer/dmdss/`
 - **outDir**: `dist/` または `dist-dmdss/`
 - **manifest.name / short_name / description**: バリアントで切り替え
-- **manifest.icons**: `public/icons/icon.svg` を参照（PNG は現状無し・HIGH 課題）
+- **manifest.icons**: `vite.config.ts` は `icons/icon-192.png` / `icons/icon-512.png` を参照するが、`public/icons/` には実 PNG が無く SVG のみ（MEDIUM 課題）。`includeAssets` の glob は未マッチ時に警告なく通るため、生成 manifest.json のエントリは残るが実運用の影響（Android/Chrome インストール時のアイコン欠落）は未検証
 
 ### Service Worker のスコープ
 
@@ -111,6 +111,8 @@ JS + 事前生成 GeoJSON のみで動く）。
 `public/data/test-scenarios/*.json` にシナリオ本体を置く。
 
 ```ts
+// docs/spec/settings-pwa-spec.md の参考記述
+// 正の型は src/types/testScenario.ts と src/services/dmdataReplay.ts の ReplayPayload を参照
 type TestScenarioFile = {
   id: string
   label: string
@@ -120,7 +122,12 @@ type TestScenarioFile = {
   baseTime: string   // ISO
   entries: Array<{
     offsetMs: number
-    payload: { kind: 'event' | 'raw', event?: AppEvent, raw?: RawEntry }
+    // ReplayPayload は 4 バリアント（実装: dmdataReplay.ts）
+    payload:
+      | { kind: 'event'; event: AppEvent }         // quake / eew / tsunami
+      | { kind: 'lpgm'; data: JMALpgm }            // 長周期地震動観測情報（VXSE62）
+      | { kind: 'nankai'; data: JMANankai }        // 南海トラフ地震関連情報（VYSE50/51）
+      | { kind: 'kohatsu'; data: JMAKohatsu }      // 後発地震注意情報（VYSE60）
   }>
 }
 ```
@@ -160,7 +167,7 @@ DMDATA リプレイ機能の `setReplayOffset` は使わない（ライブ接続
 - 要 DMDATA.JP API キー
 
 **既知の課題**:
-- `EEW_TYPES` から `VXSE43`（警報）が抜けており、警報級 EEW が archive リプレイ時に捨てられる
+- `EEW_TYPES` から `VXSE43`（警報）・`VXSE44`（予報）が抜けており（実装は `new Set(['VXSE45'])`）、警報級・予報 EEW が archive リプレイ時に捨てられる
 - `idPrefix` の 7 文字部分一致で誤マッチの可能性
 
 ### P2PQuake からシナリオを作る手順（DMDATA 契約なし）
@@ -192,8 +199,8 @@ DMDATA リプレイ機能の `setReplayOffset` は使わない（ライブ接続
 
 ## 8. 定期自動リロード
 
-キオスク運用（ディスプレイに常設）向けに、N 時間毎にページ全体をリロードする機能。
-`useSettings.ts` の `periodicReloadHours` で設定。デフォルトは無効（0）。
+キオスク運用（ディスプレイに常設）向けに、N 時間ごとに **毎日午前 5 時基準**でページ全体をリロードする機能。
+`useSettings.ts` の `periodicReloadHours` で設定。**デフォルトは `1`（毎日午前 5 時にリロード）**。`0` で無効化。
 
 ## 9. ホーム地点
 

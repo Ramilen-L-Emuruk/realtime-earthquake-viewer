@@ -62,9 +62,12 @@
 - 区域は必ず `pref: ''` で積む
 - 観測点は `pref: '<都道府県名>'` で積む
 
-**既知の非対称**: XML 経路（`parseEarthquakeFromXml`）は観測点に `pref: prefName` を積んでおり、
-JSON 経路（`pref: ''`）と非対称。`EarthquakeCard` の `prefGroups` は「pref 空前提」で組まれているため、
-XML 経路（REST 履歴）で県内内訳表示が崩れる（HIGH 課題）。
+**既知の非対称（MEDIUM）**: XML 経路（`parseEarthquakeFromXml`）は観測点に `pref: prefName` を積んでおり、
+JSON 経路（`pref: ''`）と非対称。`EarthquakeCard` の `prefGroups` は「pref 非空＝都道府県ロールアップ点」
+「pref 空＝一次細分区域点」の 2 経路を明確に分けて処理するため、値の誤りは起きない。ただし XML 経路では
+区域点にも `pref` が付くと想定した場合、区域単位の内訳表示（isWholePref による「県内で震度が割れているとき
+個別表示、揃っていれば県単位にまとめる」ロジック）が使われず、県単位に丸まる可能性がある。実データで
+症状が発生するかは未検証のため MEDIUM 相当。
 
 ## 5. 震源未確定（震度速報）の扱い
 
@@ -112,8 +115,9 @@ XML 経路（REST 履歴）で県内内訳表示が崩れる（HIGH 課題）。
 - `prefGroups`: 都道府県ごとに集約した震度リスト
 - 訂正バッジ（`correct !== 'なし'` のとき）
 
-**`prefGroups` の集約規則**（`src/components/EarthquakeTab/EarthquakeCard.tsx:78-121`）:
-- 「pref 空前提＝区域点」「pref 非空＝都道府県ロールアップ点」という前提で分岐
+**`prefGroups` の集約規則**（`src/components/EarthquakeTab/EarthquakeCard.tsx` の `prefGroups`）:
+- ここでの「集約」は `§7 地図描画のズーム集約`（一次細分区域単位）とは別軸で、**カード表示専用に都道府県単位で集約**する処理
+- 「pref 非空＝都道府県ロールアップ点」「pref 空＝一次細分区域点」の 2 経路に分けて処理
 - 都道府県内で震度が割れているケースは区域単位で個別表示
 - 全区域が同一震度の場合は都道府県単位でまとめて表示
 

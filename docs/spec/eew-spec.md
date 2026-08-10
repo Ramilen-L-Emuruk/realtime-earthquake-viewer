@@ -62,13 +62,16 @@
 
 ## 4. レベル判定（`computeSingleEEWLevel`）
 
-`src/utils/eew.ts` の `computeSingleEEWLevel(eew)` が単一情報源。返り値は数値 3 段階:
+`src/utils/eew.ts` の `computeSingleEEWLevel(eew)` が単一情報源。判定は 3 段階の直列条件で行う:
 
-- `0`: 予報（severity !== 'Warning'、または `eewMaxScale(eew) < 35`）
-- `1`: 警報（震度 3.5〜6 弱未満、または長周期 1〜3）
-- `2`: 特別警報（震度 6 弱以上 **または** 長周期 4 以上）
+1. `severity !== 'Warning'` → `0`（予報）で早期 return（P2PQuake の予報電文・Yahoo severity が Forecast のケース）
+2. 特別警報判定（下記 OR 条件のいずれか）→ `2`
+3. 上記に該当しない（severity === 'Warning' かつ特別警報の条件を満たさない）→ `1`（警報）
 
-**特別警報の判定条件**: `eewMaxScale(eew) >= 55` OR `eewMaxLpgmClass(eew) >= 4`。
+**特別警報の判定条件**（OR）:
+- `eewMaxScale(eew) >= 55`（震度 6 弱以上・ただし `scale < 99` の範囲で判定）
+- `eewMaxLpgmClass(eew) >= 4`（長周期地震動階級 4 以上）
+
 気象庁の実基準に合わせた OR 条件。長周期地震動階級は DMDATA 電文（VXSE43/44/45）にのみ載るため、
 standard 版では `eewMaxLpgmClass` が常に 0 になり震度のみでレベルが決まる。
 
@@ -82,17 +85,17 @@ standard 版では `eewMaxLpgmClass` が常に 0 になり震度のみでレベ�
 ## 5. 仮定震源要素（単独観測点処理）の扱い
 
 電文の `condition === '仮定震源要素'` は「単独観測点による PLUM 検知・震源未確定の初期報」を意味する。
-以下の**複数箇所で連動して非表示化する**（片方だけ直すと非対称になる）:
+以下の**複数箇所で連動して非表示化する**（片方だけ直すと非対称になる）。数を書くと列挙漏れがドリフトしやすいため、
+新たに `condition` を参照する箇所を追加したときは必ずこのリストに追記する:
 
-1. **予報円を出さない** — `src/hooks/usePsWaveCalc.ts:96`（`condition === '仮定震源要素'` で早期 return）
-2. **カードで M・深さを隠す** — `src/components/RealtimeTab/index.tsx:171`
-3. **震度・長周期階級を 0 扱い** — `src/utils/eew.ts` の `eewMaxScale`・`eewMaxLpgmClass`
-4. **地図の震源×印を薄く描く** — `src/hooks/useEewLayerData.ts` で `EewEpicenter.isAssumed` フラグ生成 →
-   `src/components/Map/EewEpicentersGL.tsx` の `ASSUMED_OPACITY_RATIO` で不透明度を下げる
-5. **検知エンジンの EEW 連動緩和判定** — `src/App.tsx:205-208` の `hasActiveNonAssumedEEW`
-6. **揺れ検知の基準震源選定** — `src/hooks/useKyoshinAlerts.ts:84` の `extractEewInfo`
-
-（さらに `src/utils/ttsText.ts:196` にも同種の判定があるため、実装上は 7 箇所）
+- **予報円を出さない** — `src/hooks/usePsWaveCalc.ts` の `computeEewCircle`（`condition === '仮定震源要素'` で早期 return）
+- **カードで M・深さを隠す** — `src/components/RealtimeTab/index.tsx` の EEW カード内表示条件
+- **震度・長周期階級を 0 扱い** — `src/utils/eew.ts` の `eewMaxScale` / `eewMaxLpgmClass`
+- **地図の震源×印を薄く描く** — `src/hooks/useEewLayerData.ts` で `EewEpicenter.isAssumed` フラグ生成 →
+  `src/components/Map/EewEpicentersGL.tsx` の `ASSUMED_OPACITY_RATIO` で不透明度を下げる
+- **検知エンジンの EEW 連動緩和判定** — `src/App.tsx` の `hasActiveNonAssumedEEW`
+- **揺れ検知の基準震源選定** — `src/hooks/useKyoshinAlerts.ts` の `extractEewInfo`
+- **読み上げテキスト生成** — `src/utils/ttsText.ts`（EEW 読み上げ関数群で `condition` を参照）
 
 **バリアント差の非対称**: Yahoo hypoInfo は `condition` に相当するフィールドを持たず常に `'以上'` を返すため、
 standard 版で Yahoo hypoInfo が先に単独観測点処理の EEW を検知した場合、後続の P2PQuake / DMDATA で
