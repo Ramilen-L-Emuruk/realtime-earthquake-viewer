@@ -81,6 +81,38 @@ function computeRadius(t: number, depth: number, v1: number, v2: number, cosIc: 
 }
 
 /**
+ * 単一 EEW の震源・発生時刻（now 時点）から P波・S波の地表到達円を計算する。円が作れない場合
+ * （取消済み・座標無効・震源未確定・仮定震源要素・未発生）は null。
+ *
+ * usePsWaveCalc の 100ms ポーリングとは独立に、新規 EEW 受信直後などその場で1件だけ即時計算したい
+ * 場面（CameraFollowsGL の新規 EEW フィット）でも使う。psWave state は別 Effect の非同期更新を待つため、
+ * 新規 EEW 受信直後の1レンダーではまだ反映されていないことがあり、そこでは使えない。
+ */
+export function computeEewCircle(eew: EEWAlert, now: number): PsWaveCircle | null {
+  if (eew.cancelled || eew.cancelledAt) return null
+  const { hypocenter } = eew.earthquake
+  if (!Number.isFinite(hypocenter.latitude) || !Number.isFinite(hypocenter.longitude)) return null
+  // マグニチュード・深さが仮の値（震源未確定・単独点処理）の場合はカードと同様に円を生成しない
+  if (!hypocenter.name || eew.earthquake.condition === '仮定震源要素') return null
+
+  const originMs = new Date(eew.earthquake.originTime).getTime()
+  const t = (now - originMs) / 1000
+  if (t < 0) return null
+
+  const depth = Math.max(0, hypocenter.depth ?? 0)
+
+  return {
+    eventId: eew.issue?.eventId ?? eew.id,
+    lat: hypocenter.latitude,
+    lng: hypocenter.longitude,
+    pRadius: computeRadius(t, depth, VP1, VP2, COS_IC_P),
+    sRadius: computeRadius(t, depth, VS1, VS2, COS_IC_S),
+    depth,
+    magnitude: hypocenter.magnitude,
+  }
+}
+
+/**
  * アクティブな EEW の震源・発生時刻から P波・S波の地表到達半径を計算する（標準版・DMDSS版共通）。
  * 100ms ごとに更新することでスムーズな拡張アニメーションを実現する。
  */
@@ -100,30 +132,10 @@ export function usePsWaveCalc(
       // serverNow() はサーバー同期時刻（リプレイ時は clock.setReplayOffset 経由でオフセット反映済み）
       const now = serverNow()
       const circles: PsWaveCircle[] = []
-
       for (const eew of activeEEWs) {
-        if (eew.cancelled || eew.cancelledAt) continue
-        const { hypocenter } = eew.earthquake
-        if (!Number.isFinite(hypocenter.latitude) || !Number.isFinite(hypocenter.longitude)) continue
-        // マグニチュード・深さが仮の値（震源未確定・単独点処理）の場合はカードと同様に円を生成しない
-        if (!hypocenter.name || eew.earthquake.condition === '仮定震源要素') continue
-
-        const originMs = new Date(eew.earthquake.originTime).getTime()
-        const t = (now - originMs) / 1000
-        if (t < 0) continue
-
-        const depth = Math.max(0, hypocenter.depth ?? 0)
-
-        circles.push({
-          lat: hypocenter.latitude,
-          lng: hypocenter.longitude,
-          pRadius: computeRadius(t, depth, VP1, VP2, COS_IC_P),
-          sRadius: computeRadius(t, depth, VS1, VS2, COS_IC_S),
-          depth,
-          magnitude: hypocenter.magnitude,
-        })
+        const circle = computeEewCircle(eew, now)
+        if (circle) circles.push(circle)
       }
-
       setWaves(circles)
     }
 

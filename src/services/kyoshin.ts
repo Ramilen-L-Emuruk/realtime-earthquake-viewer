@@ -72,6 +72,8 @@ function jstParts(date: Date): { dateStr: string; ts: string } {
 
 /** 緊急地震速報の予報円（P波/S波）。半径は km。震源深度・マグニチュードから自前計算する（標準版・DMDSS版共通）。 */
 export interface PsWaveCircle {
+  /** どの EEW の円かを識別する（eew.issue?.eventId ?? eew.id）。カメラフィットで単体を特定するために使う。 */
+  eventId: string
   lat: number
   lng: number
   pRadius: number
