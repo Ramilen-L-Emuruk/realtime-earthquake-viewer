@@ -128,6 +128,52 @@ App が直接持つのは「1 秒毎更新」（強震モニタ・`kyoshinIndice
 | TelegramTab | `src/components/TelegramTab/` | 受信電文ログ（DMDSS 版のみ実データ、standard は空表示） |
 | SettingsTab | `src/components/SettingsTab/` | 各種設定・テストボタン・実地震テスト再生・API キー入力 |
 
+## 4.5 トップレベルのディレクトリ構成
+
+各ディレクトリ配下の詳細は個別仕様書と実装コードに委ねる。ここでは初見開発者向けに「何がどこにあるか」を俯瞰する:
+
+```
+realtime-earthquake-viewer/
+├── src/
+│   ├── App.tsx                # レイアウトの中枢
+│   ├── components/            # UI コンポーネント
+│   │   ├── Map/               # 地図（MapLibre GL・全 GL レイヤー） → map-rendering-spec.md
+│   │   ├── EarthquakeTab/     # 地震情報タブ → quake-spec.md
+│   │   ├── RealtimeTab/       # リアルタイム震度タブ（kyoshin モード）
+│   │   ├── TsunamiTab/        # 津波情報タブ → tsunami-spec.md
+│   │   ├── TelegramTab/       # 電文ログタブ（DMDSS 版のみ実データ）
+│   │   ├── SettingsTab/       # 設定タブ → settings-pwa-spec.md
+│   │   ├── SpecialInfoBanner/ # 南海トラフ・後発地震情報バナー
+│   │   └── IconNav.tsx        # 右端タブナビ
+│   ├── hooks/                 # データ取得・状態管理・派生データ計算
+│   ├── services/              # 外部データソースクライアント → data-sources-spec.md
+│   │   ├── dmdata.ts          # DMDATA.JP WebSocket + REST
+│   │   ├── dmdataParser.ts    # DMDATA JSON/XML パース
+│   │   ├── dmdataReplay.ts    # 実地震シナリオリプレイ（archive 取得）
+│   │   ├── p2pquake.ts        # P2PQuake（標準版）
+│   │   └── kyoshin.ts         # Yahoo リアルタイム震度・クロック同期
+│   ├── utils/                 # 純粋関数群
+│   │   ├── eew.ts             # EEW レベル判定・自動解除 → eew-spec.md
+│   │   ├── alertSound.ts      # 通知音生成 → audio-tts-spec.md
+│   │   ├── voicevox.ts        # VOICEVOX 連携
+│   │   ├── kyoshinDetector.ts # 揺れ検知エンジン → kyoshin-detection-spec.md
+│   │   ├── clock.ts           # サーバー同期時刻（serverNow）
+│   │   ├── testData.ts        # 合成テストデータ生成
+│   │   └── testScenarioReplay.ts # 実地震シナリオの時刻シフト・ID 再採番
+│   └── types/                 # 型定義
+├── public/
+│   ├── data/                  # 事前生成データ（座標・境界・辞書）→ data-sources-spec.md §6
+│   ├── fonts/                 # SDF グリフ（地名ラベル用）
+│   └── icons/                 # PWA アイコン
+├── scripts/                   # 生成データ・グリフ生成スクリプト、実地震シナリオキャプチャ
+├── docs/
+│   ├── spec/                  # 現在参照される仕様書（この文書を含む）
+│   └── archive/               # 完了済み PoC・移行記録
+├── vite.config.ts             # Vite + PWA 設定・バリアント切替
+├── package.json
+└── LICENSE
+```
+
 ## 5. 状態管理
 
 Redux 等のグローバルストアは使わず、React のフック（`useState` / `useReducer` / `useRef`）で構成する。
