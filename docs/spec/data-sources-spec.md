@@ -35,8 +35,8 @@ Basic 認証（`Authorization: Basic base64(apiKey:)`）。API キーはユー�
 | 種別コード | 内容 | 用途 |
 |---|---|---|
 | VXSE43 | 緊急地震速報（警報） | EEW 警報表示 |
-| VXSE44 | 緊急地震速報（予報） | EEW 予報表示 |
-| VXSE45 | 地震動予報 | EEW 詳細 |
+| VXSE44 | 緊急地震速報（予報） | **受信対象外**（廃止予定・VXSE45 で代替。`EEW_TYPES` から除外済み） |
+| VXSE45 | 地震動予報 | EEW 詳細（長周期地震動階級を含む） |
 | VXSE51 | 震度速報 | 地震カード（速報） |
 | VXSE52 | 震源に関する情報 | 地震カード（震源） |
 | VXSE53 | 震源・震度に関する情報 | 地震カード（詳細報） |
@@ -99,7 +99,7 @@ P2PQuake の生 JSON は英語の enum で来るフィールドがあるため�
 
 - `issue.type`: `ScalePrompt` → `震度速報` 等
 - `issue.correct`: `None` → `なし`、`Unknown` → `訂正`、`ScaleOnly` → `震度のみ訂正`、`DestinationOnly` → `震源を訂正`、`ScaleAndDestination` → `震度・震源を訂正`（`Correction` というキーは存在しない）
-- `earthquake.domesticTsunami`: `None` → `なし`、`Watch` → `注意`、`Warning` → `警報` 等（P2PQuake API v2 の `earthquake.domesticTsunami` の値ドメインは `None` / `Unknown` / `Checking` / `NonEffective` / `Watch` / `Warning` のみ。**`MajorWarning` は含まれない**。津波の大津波警報は code=552（`JMATsunami`）の `areas[].grade` 側で扱われ、こちらは英語のまま内部型に流れる）
+- `earthquake.domesticTsunami`: `None` → `なし`、`Watch` → `注意報`、`Warning` → `警報等` 等（`src/services/p2pquake.ts:22-26` の `DOMESTIC_TSUNAMI_MAP` が扱う値ドメインは `None` / `Unknown` / `Checking` / `SeaFloor`（`海面変動の可能性`） / `NonEffective`（`若干の海面変動`） / `Watch`（`注意報`） / `Warning`（`警報等`） の 7 種。**`MajorWarning` は含まれない**。津波の大津波警報は code=552（`JMATsunami`）の `areas[].grade` 側で扱われ、こちらは英語のまま内部型に流れる）
 
 **既知の欠落**:
 - code=556（EEW）で `severity` フィールドが生成されておらず、`computeSingleEEWLevel` が予報扱いに落とす
