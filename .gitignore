@@ -38,7 +38,10 @@ verify-*.jpg
 .idea/
 
 # Claude directories
-.claude/
+.claude/*
+# ただし共通利用するプロジェクトエージェント定義は Git 管理する
+!.claude/agents/
+!.claude/agents/**
 
 # 実地震テストのシナリオ本体（DMDATA.JP利用規約第15条によりEEWの二次配信は
 # 個人契約では制限されるため、各自の契約でキャプチャしたものはコミットしない。

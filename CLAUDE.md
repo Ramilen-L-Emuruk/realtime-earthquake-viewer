@@ -38,15 +38,17 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
      ```
 3. **実装**（**ワークツリー内では `package.json` の `version` フィールドを変更しない**。理由は下記「バージョン管理」参照）
 4. **検証**（下記「検証」を実施。型チェック必須＋**実行確認（ブラウザ確認）必須**）
-5. **README 更新**（下記「README 更新」の条件に該当する場合）
-6. **コミット前確認**（実装・検証・README 更新が終わったら、コミットする前に必ずユーザーに確認を取る。**省略しない**）
+5. **敵対的レビュー**（下記「敵対的レビュー」の手順で必ず実施。**全変更が対象。小規模修正でも省略しない**。指摘があれば実装に戻る）
+6. **ドキュメント更新**（下記「ドキュメント更新」の条件に該当する場合。関連する仕様書（`docs/spec/`）・README.md・CLAUDE.md・コード内コメントを**同一コミットで**更新する）
+7. **ドキュメント客観レビュー**（下記「ドキュメント客観レビュー」の手順で必ず実施。**ドキュメントを更新した場合のみ**・技術的すぎないか・初見の読み手に伝わるかをエージェントで客観的に検証。指摘があればドキュメント修正に戻る）
+8. **コミット前確認**（実装・検証・敵対的レビュー・ドキュメント更新が終わったら、コミットする前に必ずユーザーに確認を取る。**省略しない**）
    - 何を・なぜ・どう直したかを簡潔に提示し、コミットしてよいか確認する
    - 確認が取れるまで次のステップに進まない
-7. **コミット**（確認が取れたら、下記「コミット」の規約に従いコミットする。バージョンはまだ変更しない）
-8. **main へのマージ**（**ユーザーから明示的に指示があったときのみ**。ワークツリーの変更を main にマージする前に必ず確認する。必ずマージコミットを作成する（`--no-ff`））
-9. **バージョン更新**（**main へのマージ直後・main 上で実施**。下記「バージョン管理」の手順に従う。マージしない限りこのステップは発生しない）
-10. **プッシュ**（**ユーザーから明示的に指示があったときのみ**。自動では行わない。バージョンを上げた場合は `npm version` が作成したタグも一緒に送る）
-11. **リリース後のクリーンアップ**（プッシュ完了後に必ず実施する）
+9. **コミット**（確認が取れたら、下記「コミット」の規約に従いコミットする。バージョンはまだ変更しない）
+10. **main へのマージ**（**ユーザーから明示的に指示があったときのみ**。ワークツリーの変更を main にマージする前に必ず確認する。必ずマージコミットを作成する（`--no-ff`））
+11. **バージョン更新**（**main へのマージ直後・main 上で実施**。下記「バージョン管理」の手順に従う。マージしない限りこのステップは発生しない）
+12. **プッシュ**（**ユーザーから明示的に指示があったときのみ**。自動では行わない。バージョンを上げた場合は `npm version` が作成したタグも一緒に送る）
+13. **リリース後のクリーンアップ**（プッシュ完了後に必ず実施する）
    - **ワークツリーの削除**:
      - ワークツリー内にいる場合は先に `ExitWorktree(action: "keep")` で抜けてから削除する
      - `git worktree remove .claude/worktrees/<name>` でワークツリーディレクトリを削除
@@ -60,10 +62,13 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
      - MCP サーバーを巻き込まないよう `Stop-Process -Name node` は使わないこと
 
 > ユーザーから「修正前に状況を整理し問題点をまとめ、修正内容を確認してから作業する」方針の指示済み。
-> ユーザーから「今後は必要に応じて README を更新して、コミットまで自動で行う」方針の指示済み。
+> ユーザーから「今後は必要に応じて README を更新して、コミットまで自動で行う」方針の指示済み（ただし後述の「コミット前確認」が優先。実装・検証・敵対的レビュー・ドキュメント更新の後に必ずユーザー確認を取ってからコミットする。「自動で行う」はワークフロー全体を止めないという意味であって、コミット前の一時停止をスキップする意味ではない）。
 > ユーザーから「修正後（main へのマージ直後）は毎回バージョン種別（メジャー/マイナー/パッチ/なし）を確認する」方針の指示済み。
 > ユーザーから「main へのマージはユーザーに確認してから行う」方針の指示済み。
 > ユーザーから「リリース後はワークツリー削除と dev サーバー停止をクリーンアップとして実施する」方針の指示済み。
+> ユーザーから「ソース修正後は全変更で敵対的レビューを行う」方針の指示済み（2026-08-10）。
+> ユーザーから「修正時は関連仕様書・他ドキュメント類も合わせて修正する」方針の指示済み（2026-08-10）。
+> ユーザーから「ドキュメント更新後は技術的すぎないか客観レビューを行う」方針の指示済み（2026-08-10）。
 > 2026-07-12: 複数ワークツリーを並行して進めている場合に、各セッションがマージ前の古いバージョンを見て同じ番号（例: パッチ +1）を選んでしまい、結果的にバージョンが正しく積み上がらない事故が発生。対策として、バージョン確定を「ワークツリー内でのコミット時」から「main へのマージ直後・main 上」に移した（下記「バージョン管理」参照）。
 > 2026-07-12: 上記の変更で「バージョン確認」がコミット前の一時停止ゲートを兼ねていたことが判明。バージョン確認をマージ後に移した結果、コミット前に立ち止まる仕組みが失われていたため、コミット前確認を独立したステップとして追加した（バージョンとは無関係に、コミットしてよいかを毎回確認する）。
 
@@ -93,98 +98,128 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
   - 自動解除や時間経過で発火する挙動（自動タブ切替・アイドル復帰など）は、`localStorage` の書き換え＋リロードや DOM 検査で確認する。
   - **確認後も開発サーバーは停止しない**（セッション中は起動したまま残す）。`Stop-Process -Name node` のような一括停止は MCP サーバーまで巻き込むため使わない。
   - 検証用スクリーンショットはリポジトリ直下に出力されるが**一時ファイル。コミット前に必ず削除する**（コミットしない）。`.playwright-mcp/` の出力も同様に Git 管理対象外（`.gitignore` 済み）。
-- **テスト機能の活用**: 設定タブのテストボタンで動作確認できる。
-  - 地震テスト → 地震カード追加・地図の震度マーカー・自動タブ切替
-  - EEW 特別警報テスト → 震度6強・特別警報（三陸沖 M7.2）→ `eewSpecial` 音・EEW カード（特別警報/赤）・震源マーカー
-  - EEW 警報テスト → 震度5強相当・警報（日向灘 M6.5）→ `eew` 音・EEW カード（警報/赤）
-  - EEW 予報テスト → 震度2程度・予報（宮城県沖 M4.5）→ `eewForecast` 音・EEW カード（予報/オレンジ）
-  - この3ボタンはいずれも、10秒以内に再クリックすると続報（`eewUpdate` 音）、押さなければその時点のイベントを最終報（`isFinal:true`）として確定する。確定後は本番と同じ `calcEEWCancelTime`（司・翠川式の距離減衰から算出したS波到達時刻＋30秒、最終報から最低60秒）で数分後に**無音・即消去**（キャンセルオーバーレイなし）。**DMDSS版の実運用経路をそのまま再現**（Standard版は実データに `isFinal` が来ないため実運用ではこの検知経路自体を通らないが、解除後の無音・即消去ロジックはバリアント共通のため検証できる）。
-  - EEW 誤報取消テスト → 警報相当（日向灘 M6.5）→ `eew` 音で発報後、10秒後に明示的な取消電文（`cancelled:true`、`isFinal`無し）を送信 → `eewCancel` 音・ブラウザ通知・読み上げを伴う「誤報取消」を検証（上記3ボタンの「自動解除（無音）」との対比用）。
-  - 大警報テスト → 大津波警報（岩手・宮城・福島等）→ `tsunamiMajor` 音・津波タブの海岸線描画
-  - 警報テスト → 津波警報（青森・茨城等）→ `tsunami` 音・津波タブの海岸線描画
-  - 注意報テスト → 津波注意報（北海道）→ `tsunamiWatch` 音・津波タブの海岸線描画
-  - 予報テスト → 津波予報・若干の海面変動（北海道）→ `tsunamiForecast` 音・津波タブの海岸線描画
-  - 誤報取消テスト → 津波警報＋注意報（青森・北海道等）→ `tsunami` 音・津波タブの海岸線描画
-  - 津波は実際の電文と同じく「解除」「取消」「期限切れ」の3経路とも10秒間の解除表示を経る（`JMATsunami.cancelReason`で出し分け）。
-    大警報・警報・注意報テストは約90秒後に「解除」表示、誤報取消テストは約90秒後に「取消」表示、予報テストは
-    `validDateTime` の期限切れにより約90秒後に「有効期間終了」表示になる（実運用でも予報は明示的な解除電文を伴わない）。
-  - P波・S波の予報円は震源要素（震源・深さ・マグニチュード・発生時刻）から自前計算する（標準版・DMDSS版共通）ため、上記のEEWテストボタンでも実際に円が拡大する様子を検証できる。
-  - **実地震テスト**（設定タブ「実地震テスト」セクション）→ 実際に発生した地震の電文（EEW・地震情報・津波情報等）を、発生時と同じ間隔でキューに投入し再生する。合成データのテストボタンと異なり本物の電文を時刻シフト・ID再採番のみ行って再現するため、続報の推移（例: 津波警報→大津波警報への引き上げ）もそのまま検証できる。標準版・DMDSS版共通。再生中は対象ボタンが「再生中…」表示でdisabledになり、シナリオ末尾+安全マージン後に再度押せるようになる。**シナリオデータはリポジトリに同梱していない**（DMDATA.JP利用規約上の理由。後述）ため、リポジトリを取得した直後は「利用可能なシナリオがありません」の空表示になる。試すには各自の DMDATA.JP 契約で `capture-scenario` を実行してローカルにシナリオを追加する必要がある。シナリオの追加方法・設計判断は「実地震テストシナリオの時刻シフト・ID再採番」節を参照。DMDATA.JP 契約が無い場合でも、下記「実データからテストシナリオを作る」の手順で P2PQuake から作成できる。
-
-### 実データからテストシナリオを作る（DMDATA 契約なしで可能）
-
-区域集約・震度分布・続報の推移など、**合成テストデータ（`testData.ts`）では再現できない実データ由来の挙動**を検証したいときは、
-過去に実際に発生した地震を P2PQuake API v2（認証不要）から取得してシナリオ化する。`scripts/capture-test-scenario.ts` は
-DMDATA.JP の契約が要るが、この手順は契約不要で、標準版・DMDSS版のどちらでも再生できる。
-
-1. **対象の電文を取得する**（P2PQuake API v2 `history`・認証不要）
-   - `https://api.p2pquake.net/v2/history?codes=551&limit=100&offset=<N>` を offset を進めながら探す。
-     `codes` は 551=地震情報 / 552=津波情報 / 556=EEW。offset 100 でおよそ 8 日前まで遡れる（地震の発生頻度による）。
-   - 同じ地震でも `points: []` の速報が混在するため、観測点別震度が要る検証では `points` の入った報を選ぶ。
-2. **内部型に包む**
-   - P2PQuake のスキーマは内部型に近い。`kind`（551→`'quake'` / 552→`'tsunami'` / 556→`'eew'`）と 14 桁数字の `eventId` を足す。
-   - ただし **`issue.type`・`issue.correct`・`earthquake.domesticTsunami` は英語のまま返る**ため、
-     `src/services/p2pquake.ts` の `convertEvent` と同じ日本語化を通すこと。飛ばすとカード見出しが `DetailScale` のような
-     英語のまま表示される（2026-08-09 の検証で実際に踏んだ。地図の区域塗りには影響しないが、カード表示を見る検証では必須）。
-   - それを `TestScenarioFile`（`src/types/testScenario.ts`）に包む:
-     `{ id, label, description, category, durationMs, baseTime, entries: [{ offsetMs: 0, payload: { kind: 'event', event } }] }`
-   - `baseTime` は先頭エントリの絶対時刻（ISO）。再生時に `instantiateScenario` がここを基準に「今」へ一律シフトする。
-3. **配置する** — 本体を `public/data/test-scenarios/<id>.json`（`id` はファイル名と一致させる）に置き、
-   `index.json` にメタ（`baseTime`・`entries` を除いた部分）を 1 件追加する。
-4. **再生する** — 設定タブ「実地震テスト」の該当行の「再生」ボタン。
-   - 履歴には同じ地震の**本物**が並ぶため、`earthquake.hypocenter.name` に目印（例: 「【検証】」）を付けておくと取り違えずに済む。再生時に時刻はシフトされるので、時刻での判別は当てにならない。
-5. **後始末（必須）**
-   - **`index.json` は Git 管理対象**。検証が終わったら必ず空配列 `[]` に戻す（`git checkout -- public/data/test-scenarios/index.json`）。
-   - シナリオ本体は `.gitignore` 済みだが、混乱を避けるため削除する。
-
-**検証結果の裏取りはスクリーンショットの目視ではなく DOM で行う。** 区域塗りの震度ラベルは symbol レイヤーではなく
-HTML マーカー（`QuakeRegionFillGL` の `maplibregl.Marker`）なので、`browser_evaluate` から数値で照合できる。
-
-```js
-// 区域ラベルを「震度ラベル / 背景色」で集計する（震源マーカーはテキストが空なので自然に除外される）
-[...document.querySelectorAll('.maplibregl-marker')]
-  .map(m => { const el = m.firstElementChild || m; return { t: el.textContent.trim(), bg: getComputedStyle(el).backgroundColor } })
-  .filter(x => x.t)
-```
-
-同じ集約ロジックを Node 側でも再現して突き合わせると、データと描画の両方を確実に確認できる。
-実例（2026-08-09 の区域集約修正）では、Node 側の再現と DOM 集計がともに「震度1×6・震度2×3・震度3×1」で一致することを確認した。
-配色の差は目視だと見落とすため、色は名前ではなく `rgb()` の実値で照合する。
-
-地図の内部状態は `window.__mapGL`（`JapanMapGL` が露出。本番ビルドでも有効）から読む。
-geojson ソースの中身を数えるときは **`await map.getSource(id).getData()`** を使うこと。
-`source._data` は MapLibre v6 には存在せず（`undefined` を空データと誤読して「0件」に見える）、
-`queryRenderedFeatures` / `querySourceFeatures` はビューポート内のタイルに限られるため全件集計には使えない。
-レイヤーの表示切替は `map.getLayoutProperty(id, 'visibility')` で確認する（未設定時は `undefined` ＝表示）。
+- **テスト機能の活用**: 設定タブのテストボタンで動作確認できる。各ボタンの詳細（対象電文・音・自動タブ切替・自動解除タイミング等）と DOM 検証手法は [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §7、実データから P2PQuake 経由でシナリオを作る手順は同 §6 を参照する。
 
 ### 環境による制約
 
 - 一部の外部ホストへ到達できない環境がある（例: 防災科研 kmoni の HTTPS）。Yahoo 強震モニタ（`weather-kyoshin.*.storage-yahoo.jp`）・DMDATA.JP API は到達可能。
 - 予報円は自前計算（`usePsWaveCalc`）に統一済みのためテストボタンでも確認できるが、気象庁の実電文が発表初期に載せる「仮定震源要素」（単独観測点処理・震源未確定）の判別は、情報源によって精度が異なる（DMDATA/P2PQuakeは`condition`フィールドで判別可能、Yahoo hypoInfoには相当フィールドが無い）。この非対称性そのものの実地震での挙動は、実発報時の確認をユーザーに委ねる。
 
-## README 更新
+## 敵対的レビュー
 
-機能・画面構成・データソース・依存・デプロイ方法・設定項目・プロジェクト構成に影響する変更では、`README.md` の該当箇所（機能一覧／技術スタック／データソース／プロジェクト構成 等）も合わせて最新化する。
-スタイルの微調整やレイアウトの軽微な調整など、README の記載に影響しない変更では更新不要。
+**全変更（コード・ドキュメント問わず）でエージェントによる敵対的レビューを実施する**。目的:
+- 実装から裏取りしたバグ・エッジケース・機能間競合を検出する
+- コミット前に「レビュー観点の抜け」を客観的に潰す
+- 既存コメント・ドキュメントの誤解を疑う（実コードを信じる）
 
-## 検知仕様書の更新
+### 実施タイミング
 
-`src/utils/kyoshinDetector.ts`（強震モニタ揺れ検知エンジン）のパラメータ・判定ロジックを変更した場合は、
-以下2つのドキュメントも**同一コミットで**合わせて更新する。
+**検証（型チェック＋ブラウザ確認）が完了した後、ドキュメント更新の前**。指摘があれば実装に戻り、修正後に敵対的レビューをもう 1 度回す。
 
-- [`docs/kyoshin-detection-spec.md`](docs/kyoshin-detection-spec.md)（仕様書）: **現在の実装が何をどう処理するか**を書く文書。
-  パラメータ一覧表（§5）と判定ロジックの記述（§4）は実装と1対1で対応させる。この文書は冒頭で自ら
-  「食い違う場合は実コードを正とする」と宣言している＝実装を変えて放置すると即座に嘘になるため、後回しにしない。
-- [`docs/kyoshin-detection-v3-design.md`](docs/kyoshin-detection-v3-design.md)（設計書）: **なぜそうしたか**の経緯・調査・検証履歴を
-  節番号付きで追記する（§13 以降が改訂履歴。新しい変更は末尾に §N を足す）。仕様書側からは「設計書§N」の形で参照する
-  （仕様書自身の節番号と紛らわしいので「§N」単独で書かない）。
+### エージェント構成(変更規模で可変)
+
+| 変更規模 | 例 | エージェント構成 |
+|---|---|---|
+| 小規模 | 1〜2 ファイルの typo/スタイル修正・軽微なパラメータ調整 | `adversarial-reviewer` 1 エージェント |
+| 中規模 | 機能追加・複数ファイル・条件分岐の変更 | `adversarial-reviewer` + `silent-failure-hunter` の並列 2 エージェント |
+| 大規模 | アーキテクチャ変更・複数機能横断 | 領域別に `adversarial-reviewer` を複数並列 ＋ **機能間競合レビュー**（EEW×津波・地図×EEW 等）＋ **メタレビュー**（`meta-reviewer` で CRITICAL/HIGH の実装からの再検証） |
+
+`adversarial-reviewer` / `meta-reviewer` の定義は [`.claude/agents/`](.claude/agents/) を参照（プロジェクトローカル・共通利用のため Git 管理）。
+
+### レビュー観点（全エージェント共通）
+
+- **実装から裏取り**: 既存コメント・仕様書・CLAUDE.md を鵜呑みにせず、実コードを読んで挙動を確認する
+- **修正はしない**: レビュアーは変更をコミットしない。指摘のみ返す
+- **分類**: CRITICAL / HIGH / MEDIUM / LOW で分類する
+- **統一フォーマット**:
+  ```
+  [レベル] [ファイル:行] 見出し
+  - 事実（実装からの引用）
+  - 問題
+  - 影響（どの機能・どのバリアント・どの経路）
+  - 修正方針の候補（実施はしない）
+  ```
+
+### メタレビュー（大規模変更時）
+
+CRITICAL / HIGH の指摘は **`meta-reviewer` エージェント**で実装から再検証する。目的:
+- 過大評価（CRITICAL が実は HIGH 相当）を検出
+- 修正方針の副作用（別バグを生む可能性）を検出
+- 事実誤認・根拠の誤りを検出
+
+判定は「確認済み / 過大評価 / 過小評価 / 誤検出 / 修正方針要再検討」のいずれか。
+
+### 参考
+
+過去のレビュー実施例は `.claude/review-reports/` にアーカイブされている（`.gitignore` 済み・共有はコミット外）。
+
+## ドキュメント更新
+
+コードの変更に応じて、関連するドキュメントを**同一コミットで**更新する。対象は以下:
+
+- **`docs/spec/` 配下の該当機能仕様書**: 実装が仕様と 1 対 1 で対応する箇所（パラメータ・判定条件・データフロー等）を変更したら、必ず仕様書側も更新する。仕様書は冒頭で自ら「実コードを正とする」と宣言しているため、放置すると即座に嘘になる。
+- **`README.md`**: 機能・技術スタック・バリアント差分・データソース・注意事項・ライセンス関連の変更のみ更新（README は概要と導線のみを残す方針。詳細はすべて `docs/spec/` 配下に集約する）
+- **`CLAUDE.md`**: 変更時のワークフロー・検証手順・コード整合性チェックポイント・バージョン管理などに影響する変更のみ更新
+- **コード内コメント**: 変更した処理のコメントを実装と一致させる（`common/comment-integrity.md` 参照）
+
+スタイルの微調整・レイアウトの軽微な調整など、上記のいずれの記載にも影響しない変更ではドキュメント更新不要。
+
+### 特殊ケース: 強震モニタ検知仕様書の更新
+
+`src/utils/kyoshinDetector.ts`（強震モニタ揺れ検知エンジン）のパラメータ・判定ロジックを変更した場合は、上記の一般則に加えて**以下 2 つのドキュメントを同一コミットで**更新する:
+
+- [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md)（仕様書）: **現在の実装が何をどう処理するか**を書く文書。パラメータ一覧表（§5）と判定ロジックの記述（§4）は実装と 1 対 1 で対応させる。
+- [`docs/spec/kyoshin-detection-v3-design.md`](docs/spec/kyoshin-detection-v3-design.md)（設計書）: **なぜそうしたか**の経緯・調査・検証履歴を節番号付きで追記する（§13 以降が改訂履歴。新しい変更は末尾に §N を足す）。仕様書側からは「設計書§N」の形で参照する（仕様書自身の節番号と紛らわしいので「§N」単独で書かない）。
 
 パラメータ表と実装の一致は機械的に確認できる（`PARAMS` のキー・値を §5 の表と突き合わせる）。
 2026-08-09 の高震度 fast path 追加時にこの照合を行い、37件全件一致を確認した。
 
-> 2026-08-09: 検知ロジック修正時にこれらのドキュメントを更新すべき旨がどこにも明文化されておらず、
-> 更新するかどうかが作業者の判断に委ねられていた（実際には spec.md 冒頭の自己定義を読んで判断していた）。
-> 次に触る人が同じ判断に至る保証が無いため、ルールとして明文化した。
+> 2026-08-09: 検知ロジック修正時にこれらのドキュメントを更新すべき旨がどこにも明文化されておらず、更新するかどうかが作業者の判断に委ねられていた。次に触る人が同じ判断に至る保証が無いため、ルールとして明文化した。
+> 2026-08-10: 「関連ドキュメントの更新」の一般則に格上げし、検知仕様書はその特殊ケースとして位置づけを変更した。
+
+## ドキュメント客観レビュー
+
+**ドキュメントを更新した場合のみ**、更新されたドキュメントを対象にエージェントで客観レビューを実施する。
+目的: 技術的すぎないか・初見の読み手に伝わるか・実装と乖離していないかを検証する。
+
+### 実施タイミング
+
+**ドキュメント更新の直後、コミット前確認の前**。指摘があればドキュメントに戻る。
+
+### エージェント構成
+
+- 更新規模が小さい場合（1 ファイル・数行の追記）: `doc-objectivity-reviewer` 1 エージェント
+- 更新規模が大きい場合（複数仕様書・README 大幅改訂・CLAUDE.md 追記）: `doc-objectivity-reviewer` + `code-explorer` の並列 2 エージェント（後者は「初見の開発者視点」で追加観点を担当）
+
+`doc-objectivity-reviewer` の定義は [`.claude/agents/`](.claude/agents/) を参照（プロジェクトローカル・共通利用のため Git 管理）。
+
+### レビュー観点
+
+- **読者が誰か明示されているか**: 一般利用者向け / 開発者向け / 特定機能を触る人向け 等
+- **前提知識のない読み手が理解できるか**: 過度な略語・専門用語の初出説明はあるか
+- **実装との乖離がないか**: パラメータ値・関数名・行番号・ファイル名の正確性
+- **冗長でないか**: 同じ内容が複数箇所に重複していないか（重複は単一情報源へ集約する候補）
+- **技術的すぎないか**: 「実装の内部詳細」と「読者が知るべき挙動」の粒度が分離されているか
+- **過剰でないか / 情報量が適切か**: 実装の複雑度・機能の重要度に対して分量が釣り合っているか。読者が知る必要のない詳細（内部変数の一時的な状態遷移・改訂履歴の細部・過去の失敗の詳述など）を延々書いていないか。「あって困らない」を理由に膨らませていないか
+- **仕様書相互の整合性**: 別の仕様書と食い違う記述はないか
+
+### README 特有の観点
+
+README は「一般利用者・フォーカー・貢献者への導線」であることを念頭に:
+- 実装内部の詳細（プロジェクト構成ツリー・パラメータ値等）が入り込んでいないか
+- 詳細は `docs/spec/` 配下の仕様書へリンク委譲されているか
+- 開発者専用の情報（デプロイ手順・EEW 二次配信の規約制限等）が混入していないか
+
+### 出力形式
+
+```
+[レベル] [ファイル:節/行] 見出し
+- 記述の該当箇所
+- 何が伝わりにくいか / 何が実装と食い違うか
+- 修正方針の候補
+```
+
+レベルは CRITICAL（誤情報・法的リスク）/ HIGH（読み手が誤解する）/ MEDIUM（冗長・重複）/ LOW（表現改善余地）。
 
 ## プランモード
 
@@ -251,80 +286,19 @@ geojson ソースの中身を数えるときは **`await map.getSource(id).getDa
 
 ## コード整合性チェックポイント
 
-新機能追加・修正時にコメントと実装が乖離しやすい箇所。変更前後に必ず照合すること。
+新機能追加・修正時にコメントと実装が乖離しやすい項目は、以下の仕様書（`docs/spec/`）に単一情報源として集約している。変更時に該当仕様書を参照し、コード修正と同一コミットで仕様書側も更新する（詳細は上記「ドキュメント更新」節）。
 
-### テストデータと UI 説明文
-- `SettingsTab/index.tsx` の `description` 文字列（例: 「震度5強相当」）は、`src/utils/testData.ts` の対応するテスト関数の実 `scaleTo` 値と一致させる。
-  - EEW 警報テスト（`createTestEEWWarning`）: 最大 `scaleTo: 50` = 震度5強
-  - EEW 特別警報テスト（`createTestEEW`）: 最大 `scaleTo: 60` = 震度6強
-  - EEW 予報テスト（`createTestEEWForecast`）: 最大 `scaleTo: 25` = 震度2程度
-- 同じ説明文が `CLAUDE.md` の「テスト機能の活用」セクションにも記載されているため、変更時は両方を合わせて修正する。
+| 項目 | 単一情報源となる仕様書 |
+|---|---|
+| テストデータと UI 説明文（テストボタンの `scaleTo` 値等） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §7 |
+| 津波の解除経路（`cancelReason` 3 種・DMDSS 限定・standard 版フォールバック） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §3 |
+| EEW P/S 波予報円の計算・仮定震源要素の連動箇所 | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §5-§6 |
+| EEW レベル判定（特別警報の条件・長周期の DMDATA 限定） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
+| 地図レイヤー描画順・EEW 予想レイヤーの kyoshin 限定・`maplibregl.Marker` の opacity | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §2・§3・§7・§10 |
+| 震度集約の単位（一次細分区域）・観測点 0 件時の集約維持 | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §7 |
+| 地震電文の `points` 構造（バリアント経路差・`pref` 空の識別規則） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §4 |
+| `KyoshinSubThreshold` の対象範囲（index 1〜6）・慢性ノイズ床フィルタ | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) |
+| 実地震テストシナリオの時刻シフト・ID 再採番・利用規約制約 | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6 |
 
-### 津波情報の解除理由（cancelReason）
-- 津波が消える経路は実際の電文でも3つあり、`JMATsunami.cancelReason`（`'lifted' | 'retracted' | 'expired'`）で区別する。**3経路とも `cancelledAt` セット→10秒間表示→purge という同じ流れを通る**（[useEarthquakes.ts](src/hooks/useEarthquakes.ts) の tsunami ケース）。
-  - `lifted`（解除）: 気象庁の正式解除。`InfoType` は `発表` のまま、区域(Item)が電文から消えることで検出（`dmdataParser.ts` の `areas.length === 0` フォールバック）
-  - `retracted`（取消）: 誤って発表した電文の撤回。`InfoType === '取消'` で検出
-  - `expired`（期限切れ）: `validDateTime` の満了をアプリが検出。予報（若干の海面変動）は明示的な解除電文を伴わずこの経路で消えることが多い
-  - 表示文言（見出し・説明文・オーバーレイ短文）は `TsunamiTab/index.tsx` の `CANCEL_REASON_LABEL` が単一の情報源。新しい cancelReason を増やす場合はここと型定義（`types/earthquake.ts`）を同時に直す。
-  - **この出し分けは DMDSS 版（DMDATA.JP）限定**。P2PQuake API v2 の公式スキーマ（`JMATsunami`）には `InfoType`・`ValidDateTime` に相当するフィールドが存在しない（[epsp-specifications/json-api-v2.yaml](https://github.com/p2pquake/epsp-specifications/blob/master/json-api-v2.yaml)）ため、通常版（P2PQuake経由）では `cancelReason` は常に `undefined` になり、`CANCEL_REASON_LABEL` のフォールバックで常に「解除」表示になる（クラッシュ等はしない）。
-  - `ValidDateTime` が付くのは「津波予報（若干の海面変動）のみ発表の場合」「警報・注意報解除後に予報のみが残る場合」の2パターンのみ、と気象庁の電文解説資料に明記されている（[地震火山関連XML電文解説資料](https://dmdata.jp/docs/jma/manual/0101-0185.pdf) 5.ValidDateTime）。警報・注意報が1区域でも残っている間は付与されない。
+各仕様書は冒頭で「食い違う場合は実コードを正とする」と宣言している。放置すると即座に嘘になる文書なので、実装変更時に必ず追従させる。
 
-### EEW P波・S波予報円の計算元（usePsWaveCalc）
-- P波・S波の地表到達円は `usePsWaveCalc.ts`（旧 `useDmdssWaves.ts`）が2層速度モデル（地殻＋マントル・Pn/Sn屈折波）で自前計算する。**標準版・DMDSS版で共通**（2026-07-29 統合。以前は標準版のみ Yahoo `RealTimeData` の `psWave.items` をそのまま使っていたが、Yahoo側は実発報時にしかデータが入らずテストボタンとも無関係だった）。
-  - 入力は `EEWAlert.earthquake.hypocenter`（lat/lng/depth/magnitude）と `originTime`。ソースが DMDATA・P2PQuake・Yahoo hypoInfo のいずれでも同じ形なら動く。
-  - `condition === '仮定震源要素'`（単独観測点処理・震源未確定の初期報）は円を生成しない（[usePsWaveCalc.ts](src/hooks/usePsWaveCalc.ts)）。DMDATA・P2PQuakeは電文の `condition` フィールドでこれを正しく判別できるが、**Yahoo hypoInfo には相当フィールドが無く常に `condition:'以上'` 固定**（[kyoshin.ts](src/services/kyoshin.ts) の `hypoInfoItemToEEW`）。標準版でYahoo hypoInfoが先にEEWを検知した場合、この判別が効かない非対称性が残る。
-  - **仮定震源要素の扱いは4箇所で揃える**（片方だけ直すと「予報円は出ないのに震源は確定と同じ見た目」のような非対称が生まれる）: 予報円を出さない（`usePsWaveCalc`）／カードで M・深さを隠す（`RealtimeTab`）／震度・長周期階級を0扱い（`eew.ts` の `eewMaxScale`・`eewMaxLpgmClass`）／**地図の震源×印をかなり薄く描く**（`useEewLayerData` の `EewEpicenter.isAssumed` → `EewEpicentersGL` の `ASSUMED_OPACITY_RATIO`）。形は確定震源と同じで濃さだけ変える。
-  - 標準版はYahoo hypoInfoを主系のEEW検知源とし、P2PQuake WS（code=556）は基本 `areas`（地域別予想震度）の補完役だったが、P2PQuakeの方が `condition`・`hypocenter` とも数値型で正確なため、`enrichEEW`（[useEarthquakes.ts](src/hooks/useEarthquakes.ts)）はこれらも上書きするようにした（報番号が古い場合は上書きしない）。
-
-### EEWレベル判定（特別警報の条件）
-- EEWの警報級別（0=予報／1=警報／2=特別警報）は `computeSingleEEWLevel`（[eew.ts](src/utils/eew.ts)）が単一の情報源。`RealtimeTab/index.tsx` の `EEWCard`（カード見出し・配色）もここに一本化しており、別ロジックで再計算しない。
-  - 気象庁の実基準に合わせ、特別警報（レベル2）は「震度6弱以上」**または**「長周期地震動階級4以上」のいずれかで判定する（`eewMaxScale(eew) >= 55` or `eewMaxLpgmClass(eew) >= 4`）。
-  - **長周期地震動階級のデータは DMDATA（DMDSS版）限定**。`forecastMaxLpgmClass`・地域別 `EEWRegion.lgIntTo` とも DMDATA 電文からのみパースされる（[dmdataParser.ts](src/services/dmdataParser.ts)）。Yahoo hypoInfo（[kyoshin.ts](src/services/kyoshin.ts) の `hypoInfoItemToEEW`）・P2PQuake API v2（[epsp-specifications/json-api-v2.yaml](https://github.com/p2pquake/epsp-specifications/blob/master/json-api-v2.yaml)）とも該当フィールドが存在しないため、標準版では `eewMaxLpgmClass` が常に0になり、震度のみでレベルが決まる。
-  - `condition === '仮定震源要素'`（単独点処理）かつ areas が空の場合は、`eewMaxLpgmClass` も `eewMaxScale` と同様に0を返す（単独点PLUM検知では地域別の詳細予想が発表されないため）。
-  - `RealtimeTab/index.tsx` の「推定長周期地震動」バナー表示・`App.tsx` の選択解除判定とも、電文全体の `forecastMaxLpgmClass` 単体ではなく `eewMaxLpgmClass(eew)` を参照する。地域別 `lgIntTo` のみで階級4以上に達したケースでも根拠バナーと地図トグルが表示されるようにするため。
-
-### 地図レイヤーの描画順
-- 描画順（背面→前面）の単一情報源は `src/components/Map/gl/layerOrder.ts` の `MAP_LAYER_ORDER`。各レイヤーコンポーネントは `addOrderedLayer` で追加し、この配列上で自分より前面に来るべき既存レイヤーの直前へ挿入することで、データ到着タイミングに依存せず順序を保証する。
-  - 新レイヤーを足すときは `MAP_LAYER_ORDER` に id を追加し、コンポーネントの `id` と一致させる。配列に無い id は最上段へ積まれる。
-  - custom レイヤー（`kyoshin-subthreshold`）は `getStyle().layers` に現れない（MapLibre 仕様）。順序確認は `map.style._order` を見る。
-- `maplibregl.Marker` の不透明度は **element の `style.opacity` ではなく Marker のオプション**（`opacity` / `opacityWhenCovered`）で渡す。Marker は「地形に隠れたとき薄くする」制御のため element の `style.opacity` を自前で上書きするので、`el.style.cssText` に書いても無視される。`EewEpicentersGL` はこれが原因で「リアルタイム震度モード以外は半透明 0.4」がコメント通りに動いていなかった（2026-08-09 に修正）。`opacityWhenCovered` を省くと地形有効時に既定の 0.2 が効くため、隠蔽時も同じ濃さにしたいなら同値を渡す。
-- **EEW の「予想」系レイヤー（`eew-region-fill` / `eew-lpgm-region-fill`）は kyoshin モード限定**。`useEewLayerData` が `mode !== 'kyoshin'` で空配列を返すことで担保しており、`JapanMapGL` 側のモード分岐の外に置かれていても地震情報タブには出ない。地震情報タブの実測の区域塗りと同じ地図に並ぶと「予想」と「実測」が同じ配色で見分けられなくなるため。EEW 震源の×印だけは全モードで表示する（kyoshin 以外は半透明 0.4）。
-
-### 震度集約の単位
-- ズームアウト時の集約単位は**一次細分区域**（`subregions.json` 由来）。「都道府県」という表現はコメント・ドキュメントで使わない。
-  - 閾値定数は `useQuakeLayerData.ts` の `QUAKE_MAX_ZOOM`（= 8。gl/camera.ts の MAX_ZOOM と一致）。この zoom 以下で区域集約に切り替える。
-  - **観測点を1つも持たない電文（震度速報）では zoom に関わらず集約を維持する**（`aggregateByRegion` の第2条件 `stationMarkers.length === 0`）。拡大しても増える情報が無いうえ、区域の代表点をドットにすると「その地点の観測値」に見えてしまうため。判定は電文種別ではなく**データの粒度**で行う。LPGM 表示中は `aggregateByRegion` を LPGM と共用しているため対象外にしている（選択中の quake と表示中の LPGM は別イベントのことがある）。
-
-### 地震電文の points 構造（バリアント・経路差）
-
-`JMAQuake.points` には観測点（`isArea:false`）と一次細分区域（`isArea:true`）が混在しうる。
-**区域の点は区域内観測点の重心**（`station-coords.json` の `areas`）であって観測値の位置ではないため、**ドット描画には使わない**。
-
-- `useQuakeLayerData` の `stationMarkers`（`isArea:false` のみ）が `QuakeIntensityPointsGL` に渡る唯一の入力。`intensityMarkers`（全点）はカメラフィットのフォールバック専用。取り違えると区域の重心に「観測していない震度」のドットが立つ。
-- 電文ごとの中身（2026-08-09 に実電文で確認）:
-
-| 経路 | 震度速報 | 詳細報 |
-|---|---|---|
-| DMDSS: WebSocket（JSON・`parseIntensityPoints`） | 区域のみ | **区域＋観測点** |
-| DMDSS: REST 履歴（XML・`parseEarthquakeFromXml`） | 区域のみ | 区域＋観測点 |
-| 標準版: P2PQuake | 区域のみ（`ScalePrompt`） | **観測点のみ**（`DetailScale` は区域を落とす） |
-
-- DMDATA の JSON スキーマで出現条件の注記があるのは `stations`（「VXSE53、VXSE62時のみ出現」）だけで、`regions`・`prefectures` は全種別に出る（[earthquake-information](https://dmdata.jp/docs/reference/conversion/json/schema/earthquake-information)）。**詳細報でも区域が必ず来る**のが標準版との最大の差。
-- 震度速報（VXSE51）は震源が未確定のため **`Earthquake` 要素／`body.earthquake` を持たない**。座標は `-200`（位置不明センチネル）、発生時刻は `TargetDateTime`（JSON は `data.targetDateTime`）を使う。両パーサともこの電文だけ震源なしを許容する。**XML パーサ側にこの例外が無く、DMDSS 版はリロードすると震度速報が丸ごと消えていた**（2026-08-09 に修正）。
-- `pref` の有無が「都道府県の点」と「区域の点」の識別子を兼ねる（`EarthquakeCard` の `prefGroups`）。**区域は必ず `pref: ''` で積む**。都道府県名を入れると区域が都道府県として誤読される。座標側は `useQuakeLayerData` が区域名から都道府県を逆引きして引き当てる。
-
-### KyoshinSubThreshold の対象範囲
-- 対象は **index 1〜6**（震度0以下）。index 0 はデータ無し（`gl/subThresholdLayer.ts` の `subThresholdOpacity(0) = 0`）のため非表示。「0〜6」とコメントしない。
-- `KyoshinPointsGL.tsx` が気象庁配色で描画するのは **index 7+**（震度1以上）。
-- `KyoshinSubThresholdGL.tsx` は「同レベルのドット同士が重なっても濃くならない」非加算合成を FBO 二層合成のカスタムレイヤー（`gl/subThresholdLayer.ts`）で再現する。毎秒更新は index バッファのカウンティングソート＋`triggerRepaint`。
-- `KyoshinSubThresholdGL` に渡す `indices` は **Yahoo の生 index をそのまま渡さない**。`App.tsx` が `kyoshinSubThresholdFilter.ts` の `filterSubThresholdIndices` で、検知エンジン（`kyoshinDetector.ts`）が観測点ごとに学習した慢性ノイズ床（`chronicNoiseFloor`）＋`SUSTAIN_MARGIN` を超えた点だけに絞った `kyoshinSubIndices` を作り、`JapanMapGL` の `kyoshinSubIndices` prop 経由で渡す（`kyoshinIndices`＝生データは `KyoshinPointsGL`/`KyoshinMaxEffectGL` にそのまま渡り続ける・震度1+表示には影響しない）。大阪・岡山のような慢性的にノイジーな観測点が平常時ずっと点灯し続ける問題への対策（2026-07-29）。`floors` が空（検知エンジン未学習の起動直後1フレーム目）はフィルタなしで生データを返す。
-
-### 実地震テストシナリオの時刻シフト・ID再採番
-- 実地震テストのシナリオデータ（`public/data/test-scenarios/*.json`）は、キャプチャ時点の絶対時刻（`baseTime`＋各エントリの `offsetMs`）をそのまま保持している。再生時は `testScenarioReplay.ts` の `instantiateScenario` が `now - baseTime` の差分を全イベントの時刻フィールドに一律加算して「今」基準にシフトしてから、`useEarthquakes.ts` の `loadReplayEvents`（`eventQueueRef` の時刻順キュー）に渡す。**クロック全体をずらす方式（DMDATA リプレイ機能の `setReplayOffset`）は使わない**——ライブ接続を維持したまま追加投入する既存の合成テストボタンと同じ思想のため。
-- 時刻シフトが必須な理由: EEW の P波・S波円計算（`usePsWaveCalc.ts`）・EEW 自動解除（`calcEEWCancelTime`）・津波の期限切れ判定（`validDateTime`）はいずれも絶対時刻を見て動く。シフトしないとロード直後に「もう過去」と判定され即座にキャンセルされる。
-- ID 再採番が必要な理由: 同じシナリオを連打した場合に `activeEEWs`（`Map<eventId, EEWAlert>`）等のキーが衝突し、前回の再生と表示が混線するのを防ぐため。`instantiateScenario` 内の `makeIdRemapper` が元の `eventId` 文字列→新 ID の対応を 1 回の再生を通して一貫させる（同じ元 ID の続報は必ず同じ新 ID になる）。新 ID は `useEarthquakes.ts` の `\d{14}` 正規表現（quake 関連の同一イベント判定）と互換な 14 桁数字にする。
-- キャプチャは `scripts/capture-test-scenario.ts`（`tsx` 実行）が `dmdataReplay.ts` の `fetchDmdataReplayEvents` をそのまま再利用し、DMDATA archive から取得した電文をパース済みの内部型（`AppEvent` 等）として JSON 化する。**生電文は保存しない**（standard 版は DMDATA 形式の生電文をパースできないため、両バリアント共通で使うにはパース後の内部型で保存する必要がある）。南海トラフ・後発地震（VYSE50/51/60）の XML パースはブラウザの `DOMParser` に依存するため、キャプチャスクリプトは `jsdom` でグローバルに代替している。
-- **`public/data/test-scenarios/*.json`（`index.json` を除く）は `.gitignore` 済みでコミット禁止**。DMDATA.JP [利用規約](https://dmdata.jp/terms/)第15条により、EEW の二次配信は法人契約以外では「公開APIへの使用」「許可なき第三者への表示・鳴動」が制限される。本リポジトリは GitHub Pages で公開されるため、EEW を含むシナリオをコミットすると抵触するおそれがある（2026-07-30 に判明。個人契約下で `capture-scenario` を実行して得たサンプルをコミットしようとして発覚）。`index.json` は空配列 `[]` のテンプレートとしてのみ管理し、実データは各自のローカル環境に留める。
-
-### README プロジェクト構成ツリー
-- `src/components/`・`src/hooks/`・`src/utils/` に新ファイルを追加した場合は、`README.md` の「プロジェクト構成」ツリーにも追記する（README 更新の条件に含める）。
