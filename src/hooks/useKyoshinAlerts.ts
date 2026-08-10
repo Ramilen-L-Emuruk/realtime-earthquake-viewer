@@ -3,7 +3,6 @@ import type { EEWAlert } from '../types/earthquake'
 import type { TabId } from '../components/IconNav'
 import type { AppSettings } from './useSettings'
 import type { AlertTitleApi } from './useAlertTitle'
-import { MIN_DETECTION_INDEX } from '../utils/kyoshinDetectionView'
 import { playAlertSound, playKyoshinUpdateSound, kyoshinLevel } from '../utils/alertSound'
 import { kyoshinIndexToLabel } from '../utils/kyoshinIntensity'
 import { showBrowserNotification } from '../utils/notifications'
@@ -19,7 +18,10 @@ import { log } from '../utils/logger'
 //  - confirmed 中の（全体）レベルアップ／再エスカレーション → 更新音（同一地震の揺れ強まり）
 //  - 検知中に離れた別地域が確定（REGION_MATCH_KM より遠い）→ 検知音（別地点の地震）
 //  - 各々の終了 → EEW が無ければデフォルトタブへ復帰
-// 音レベルは全観測点の実効最大インデックス（表示と一致）で判定する。
+// 音レベルは confirmedShocks（confirmed イベント自身のメンバー観測点の最大インデックス。カードの
+// 推定最大震度と同じ導出元）で判定する。以前は全観測点の生インデックスを無条件スキャンしていたため、
+// 検知イベントと無関係な1点が閾値を跨ぐだけでカード表示と食い違う音が鳴ることがあった
+// （2026-08-08 18:47 天草・芦北地方 M3.1 の誤報調査で発覚）。
 
 /** 同一の揺れ（地域）とみなす代表点間の距離(km)。これより離れた確定は別地点＝別発報。 */
 const REGION_MATCH_KM = 300
@@ -50,10 +52,6 @@ export interface KyoshinAlertsDeps {
   confirmedShocks: { lat: number; lng: number; index: number }[]
   /** 現フレームのデータ時刻文字列（毎フレーム更新される別地点発報エフェクトの駆動キー） */
   dataTime: string
-  /** cancelledAt 除外済みのアクティブ EEW が1件以上あるか */
-  hasActiveEEW: boolean
-  /** 現フレームの全観測点インデックス（実効最大インデックスの再計算に使う） */
-  kyoshinIndices: number[]
   settings: AppSettings
   /** useAlertTitle の戻り値（ウィンドウタイトル操作 API） */
   title: AlertTitleApi
@@ -67,20 +65,15 @@ export interface KyoshinAlertsDeps {
 
 export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
   const {
-    confirmed, candidate, confirmedShocks, dataTime, hasActiveEEW, kyoshinIndices, settings, title,
+    confirmed, candidate, confirmedShocks, dataTime, settings, title,
     activeEEWsRef, defaultTabRef, setActiveTab, revertToDefaultTab,
   } = deps
 
-  // EEW 受信中または揺れ検知中は全観測点ベースの最大インデックスを使う（表示と音を一致させる）。
-  // 非検知・非 EEW 時は音を鳴らさないため 0 でよい。
+  // confirmed イベント自身のメンバー観測点群の最大インデックス。非検知時は音を鳴らさないため 0 でよい。
   const effectiveKyoshinMaxIndex = useMemo(() => {
-    if (!(hasActiveEEW || confirmed)) return 0
-    let max = 0
-    for (const idx of kyoshinIndices) {
-      if (idx >= MIN_DETECTION_INDEX && idx > max) max = idx
-    }
-    return max
-  }, [hasActiveEEW, confirmed, kyoshinIndices])
+    if (!confirmed) return 0
+    return confirmedShocks.reduce((max, s) => Math.max(max, s.index), 0)
+  }, [confirmed, confirmedShocks])
 
   // 確定検知の開始/終了: realtime タブ＋タイトル＋通知音＋ブラウザ通知。
   const prevConfirmedRef = useRef(false)

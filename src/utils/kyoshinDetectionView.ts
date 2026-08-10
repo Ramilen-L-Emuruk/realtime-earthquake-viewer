@@ -3,7 +3,7 @@
 // エンジンは震源・確信度・メンバー観測点キーを持つが、地図フィット/検知点マーカーは
 // 座標＋現在インデックスの点列（DetectedPoint）を要求するため、ここで memberKeys を解決する。
 
-import { siteKey, type DetectionEvent } from './kyoshinDetector'
+import { computeSiteKeys, type DetectionEvent } from './kyoshinDetector'
 import type { SiteCoords } from '../services/kyoshin'
 
 /** 地図フィット・検知点マーカー・ヒストグラムが扱う観測点（座標＋現在インデックス）。 */
@@ -38,15 +38,20 @@ export interface KyoshinView {
   confirmedShocks: { lat: number; lng: number; index: number }[]
 }
 
-/** 座標キー → 観測点（座標＋現在インデックス）の索引を作る。memberKeys 解決に使う。 */
+/**
+ * 座標キー → 観測点（座標＋現在インデックス）の索引を作る。memberKeys 解決に使う。
+ * キーは kyoshinDetector 側と同じ computeSiteKeys で構築する（座標衝突時の別実体化を検知エンジンと
+ * 一致させる。同じ sites 配列を同じ順序で渡す前提のため、ずれると memberKeys の解決が食い違う）。
+ */
 export function buildSiteIndex(sites: SiteCoords, indices: number[]): Map<string, DetectedPoint> {
   const byKey = new Map<string, DetectedPoint>()
+  const keys = computeSiteKeys(sites as [number, number][])
   for (let i = 0; i < sites.length; i++) {
     const s = sites[i]
     if (!s) continue
     const idx = indices[i]
     if (idx === undefined) continue
-    byKey.set(siteKey(s[0], s[1]), { lat: s[0], lng: s[1], index: idx })
+    byKey.set(keys[i], { lat: s[0], lng: s[1], index: idx })
   }
   return byKey
 }

@@ -99,6 +99,8 @@ export interface StationMeta {
   avail: Record<string, number>
   /** 各点が属する固定格子セルのキー */
   cellOf: Record<string, string>
+  /** フレーム配列と同じ並びの一意キー（computeSiteKeys の結果）。座標衝突時の別実体化に使う。 */
+  keys: string[]
 }
 
 /** 1 フレーム分の入力。 */
@@ -340,6 +342,27 @@ export function siteKey(lat: number, lng: number): string {
   return `${lat.toFixed(3)},${lng.toFixed(3)}`
 }
 
+/**
+ * フレーム配列（座標順）→ 一意キー配列。Yahoo 強震モニタの公開座標は観測点によっては小数第1位までしか
+ * 精度が無く、複数の実観測点が同一座標として配信されることがある（2026-08-08 天草・芦北地方の地震の
+ * 誤報調査で発覚。全1725点中207グループ・431点が生座標レベルで完全一致）。siteKey(lat,lng) だけを
+ * キーにすると後から処理した点が先勝ちの点を黙って上書きし、床学習・オンセット判定が別センサーの
+ * データで汚染される（EWMA・onset窓は「同一物理点の連続観測」が前提）。同一座標が複数回現れた場合は
+ * 出現順に #2, #3... を付与し、別実体として扱う。Yahoo 公式サイト自身も座標の重複を一切マージせず
+ * 観測点ごとに別の描画要素（circle）を出し、震度が大きい方が上に重なるよう描画順をソートしているだけ
+ * ——うちの実装でも別実体のまま持てば、既存の最大値集計（updateEventMetrics 等）が同じ結果に自然と
+ * 収束する。
+ */
+export function computeSiteKeys(sites: [number, number][]): string[] {
+  const seen = new Map<string, number>()
+  return sites.map(([lat, lng]) => {
+    const base = siteKey(lat, lng)
+    const n = (seen.get(base) ?? 0) + 1
+    seen.set(base, n)
+    return n === 1 ? base : `${base}#${n}`
+  })
+}
+
 /** 座標 → 固定格子セルキー（CELL_DEG 等間隔ビン）。 */
 export function cellKey(lat: number, lng: number): string {
   const cell = PARAMS.CELL_DEG
@@ -394,16 +417,16 @@ export function buildStationMeta(sites: [number, number][]): StationMeta {
   const avail: Record<string, number> = {}
   const cellOf: Record<string, string> = {}
 
-  // 重複座標を畳んだ一意点列（siteKey・座標）
-  const uniq: { key: string; lat: number; lng: number }[] = []
-  const seen = new Set<string>()
-  for (const [lat, lng] of sites) {
-    const key = siteKey(lat, lng)
-    if (seen.has(key)) continue
-    seen.add(key)
-    uniq.push({ key, lat, lng })
-    cellOf[key] = cellKey(lat, lng)
-  }
+  // 座標が衝突する点も computeSiteKeys で別実体化した上で、全点をそのまま近傍計算にかける
+  // （以前はここで座標重複を畳んで後発の点を丸ごと捨てていたため、それらの点は近傍グラフに
+  // 一切載らずどのクラスタにも参加できなかった＝床学習・オンセット判定から常に排除されていた）。
+  const keys = computeSiteKeys(sites)
+  const uniq: { key: string; lat: number; lng: number }[] = sites.map(([lat, lng], i) => ({
+    key: keys[i],
+    lat,
+    lng,
+  }))
+  for (const p of uniq) cellOf[p.key] = cellKey(p.lat, p.lng)
 
   const latMargin = PARAMS.R_KM / KM_PER_DEG
   for (const p of uniq) {
@@ -420,7 +443,7 @@ export function buildStationMeta(sites: [number, number][]): StationMeta {
     neighbors[p.key] = cand.slice(0, PARAMS.K).map((c) => c.key)
   }
 
-  return { neighbors, avail, cellOf }
+  return { neighbors, avail, cellOf, keys }
 }
 
 // ============================================================
@@ -587,6 +610,7 @@ export function step(
 ): { state: DetectorState; detections: DetectionEvent[]; triggers: TriggerResult[] } {
   const now = frame.dataTimeMs
   const dtMs = now - state.lastDataTimeMs
+  const m = meta ?? buildStationMeta(frame.sites)
 
   // 不連続（大きな時刻ジャンプ・巻き戻し・コールドスタート初フレーム）は一過性の状態を
   // 作り直す。ただし学習資産（点別床・セル慢性活性）は引き継ぐ（永続化からの復元を保つ・
@@ -594,11 +618,9 @@ export function step(
   if (dtMs <= 0 || dtMs > PARAMS.MAX_DT_GAP_MS) {
     const seed = initState(now)
     seed.cellActivity = { ...state.cellActivity }
-    const rebuilt = ingest(seed, frame, state)
+    const rebuilt = ingest(seed, frame, m, state)
     return { state: rebuilt, detections: [], triggers: [] }
   }
-
-  const m = meta ?? buildStationMeta(frame.sites)
 
   // ---- L1 点トリガー ----
   const sites: Record<string, SiteState> = {}
@@ -609,7 +631,7 @@ export function step(
   for (let i = 0; i < frame.values.length; i++) {
     if (frame.missing?.[i]) continue
     const [lat, lng] = frame.sites[i]
-    const key = siteKey(lat, lng)
+    const key = m.keys[i]
     const value = indexToValue(frame.values[i])
     const prev = state.sites[key]
 
@@ -1002,13 +1024,13 @@ function updateCellActivity(
  *
  * `prev` を渡すと、既知点の**点別床（学習資産）は引き継ぎ**、hist・triggeredAtMs（一過性）だけ
  * リセットする。これで永続化からの復元・数十秒の欠測をまたいでも床を失わない。
+ * キーは呼び出し側が構築済みの `meta.keys`（座標衝突の別実体化を含む）を使う。
  */
-function ingest(state: DetectorState, frame: Frame, prev?: DetectorState): DetectorState {
+function ingest(state: DetectorState, frame: Frame, meta: StationMeta, prev?: DetectorState): DetectorState {
   const sites: Record<string, SiteState> = {}
   for (let i = 0; i < frame.values.length; i++) {
     if (frame.missing?.[i]) continue
-    const [lat, lng] = frame.sites[i]
-    const key = siteKey(lat, lng)
+    const key = meta.keys[i]
     const value = indexToValue(frame.values[i])
     const prior = prev?.sites[key]
     sites[key] = prior
