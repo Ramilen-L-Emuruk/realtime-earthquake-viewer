@@ -45,9 +45,10 @@ Basic 認証（`Authorization: Basic base64(apiKey:)`）。API キーはユー�
 | VTSE41 | 津波警報・注意報 | 津波タブ |
 | VTSE51 | 津波観測情報 | 津波観測バー |
 | VTSE52 | 沖合の津波観測情報 | 津波観測バー |
-| VYSE50 | 南海トラフ地震関連解説情報 | 南海トラフバナー |
-| VYSE51 | 南海トラフ地震臨時情報 | 南海トラフバナー |
-| VYSE60 | 後発地震注意情報 | 後発地震バナー |
+| VYSE50 | 南海トラフ地震臨時情報（発表段階の情報） | 南海トラフバナー |
+| VYSE51 | 南海トラフ地震臨時情報（追加情報） | 南海トラフバナー |
+| VYSE52 | 南海トラフ地震関連解説情報 | **受信対象外**（補足解説電文でステータス判定に使えないため） |
+| VYSE60 | 北海道・三陸沖後発地震注意情報 | 後発地震バナー |
 
 **電文本体の展開**: WebSocket の `body` は base64 + gzip で配信される。ブラウザネイティブの
 `DecompressionStream('gzip')` で復号してから `dmdataParser.ts` で内部型に変換する。
@@ -115,9 +116,9 @@ P2PQuake の生 JSON は英語の enum で来るフィールドがあるため�
 
 ### エンドポイント
 
-- 観測点リスト: `https://weather-kyoshin.<region>.edge.storage-yahoo.jp/SiteList/sitelist_<siteConfigId>.json`
+- 観測点リスト: `https://weather-kyoshin.west.edge.storage-yahoo.jp/SiteList/sitelist_<siteConfigId>.json`（**west 固定**・`src/services/kyoshin.ts:21-22` の `SITELIST_BASE`）
 - リアルタイム震度: `https://weather-kyoshin.<region>.edge.storage-yahoo.jp/RealTimeData/yyyyMMdd/yyyyMMddHHmmss.json`
-- `<region>` は west / east（west を優先、失敗時 east にフォールバック）
+- リアルタイム震度の `<region>` は west / east（west を優先、失敗時 east にフォールバック。SiteList は west のみ）
 
 ### 認証
 
@@ -152,7 +153,8 @@ Yahoo は未登録秒には 403 を返す（登録遅延約 1.5 秒）。この 
 
 Yahoo の `hypoInfo.items` を EEW 型に変換して P2PQuake（標準版）や DMDATA（DMDSS 版）と統合する。
 `condition` に相当するフィールドが無いため常に `'以上'` を返す（single-point PLUM 検知の判別不能・
-既知の限界）。severity は震度からのヒューリスティック推定（`scaleNum >= 45 ? 'Warning' : 'Forecast'`）。
+既知の限界。**PLUM 法** の詳細は [`eew-spec.md`](eew-spec.md) §5 参照）。severity は震度からの
+ヒューリスティック推定（`scaleNum >= 45 ? 'Warning' : 'Forecast'`）。
 
 ## 5. クロック同期（`src/utils/clock.ts`）
 
@@ -187,7 +189,7 @@ Yahoo の `hypoInfo.items` を EEW 型に変換して P2PQuake（標準版）や
 | `tsunami-zones.json` | `scripts/build-tsunami-zones.mjs` | 津波予報区の海岸線 |
 | `tsunami-obs-coords.json` | 手動整備 | 津波観測点座標 |
 | `prefectures.json` | `scripts/build-prefectures.mjs` | 都道府県境界 |
-| `subregions.json` | `scripts/build-subregions.mjs` | 一次細分区域境界 |
+| `subregions.json` | `scripts/build-subregions.mjs` | 一次細分区域境界（**一次細分区域** の定義は [`quake-spec.md`](quake-spec.md) §1 参照） |
 | `active-faults.json` | `scripts/build-active-faults.mjs` | 全国活断層線 |
 | `plate-boundaries.json` | `scripts/build-plate-boundaries.mjs` | プレート境界線 |
 | `tts-phrase-break-dict.json` | 手動整備 | 読み上げ用の句区切り辞書 |
