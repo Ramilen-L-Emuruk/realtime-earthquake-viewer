@@ -1,7 +1,7 @@
 /**
  * 強震モニタ揺れ検知エンジン V3（純粋コア・近傍一致／PLUM 型）。
  *
- * 設計書: docs/kyoshin-detection-v3-design.md
+ * 設計書: docs/spec/kyoshin-detection-v3-design.md
  * React から切り離した純粋関数として実装する（副作用・現在時刻の直接参照を持たない。
  * 時刻はすべて frame.dataTimeMs から供給する）。決定的で単体テスト可能。
  *

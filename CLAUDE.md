@@ -172,10 +172,10 @@ geojson ソースの中身を数えるときは **`await map.getSource(id).getDa
 `src/utils/kyoshinDetector.ts`（強震モニタ揺れ検知エンジン）のパラメータ・判定ロジックを変更した場合は、
 以下2つのドキュメントも**同一コミットで**合わせて更新する。
 
-- [`docs/kyoshin-detection-spec.md`](docs/kyoshin-detection-spec.md)（仕様書）: **現在の実装が何をどう処理するか**を書く文書。
+- [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md)（仕様書）: **現在の実装が何をどう処理するか**を書く文書。
   パラメータ一覧表（§5）と判定ロジックの記述（§4）は実装と1対1で対応させる。この文書は冒頭で自ら
   「食い違う場合は実コードを正とする」と宣言している＝実装を変えて放置すると即座に嘘になるため、後回しにしない。
-- [`docs/kyoshin-detection-v3-design.md`](docs/kyoshin-detection-v3-design.md)（設計書）: **なぜそうしたか**の経緯・調査・検証履歴を
+- [`docs/spec/kyoshin-detection-v3-design.md`](docs/spec/kyoshin-detection-v3-design.md)（設計書）: **なぜそうしたか**の経緯・調査・検証履歴を
   節番号付きで追記する（§13 以降が改訂履歴。新しい変更は末尾に §N を足す）。仕様書側からは「設計書§N」の形で参照する
   （仕様書自身の節番号と紛らわしいので「§N」単独で書かない）。
 
