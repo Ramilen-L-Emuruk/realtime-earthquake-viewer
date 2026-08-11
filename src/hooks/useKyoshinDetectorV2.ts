@@ -80,6 +80,8 @@ function siteSignature(sites: SiteCoords): string {
  * @param sites 観測点座標（useKyoshinRealtime.sites）
  * @param indices 計測震度インデックス（useKyoshinRealtime.indices）
  * @param dataTime データ時刻文字列（useKyoshinRealtime.dataTime）
+ * @param sitesSiteConfigId sites がどの `siteConfigId` で fetch されたか
+ * @param indicesSiteConfigId indices が属する `siteConfigId`（毎フレーム RealTimeData 由来）
  * @param enabled 有効フラグ（false の間は何もしない）
  * @param hasActiveNonAssumedEEW 震源要素が確定した（単独点処理=仮定震源要素でない）EEW が発表中か
  *   （cancelled 除く）。true の間は confirmed の確定条件を緩和する（§19）。単独点処理由来の速報は
@@ -89,6 +91,8 @@ export function useKyoshinDetectorV2(
   sites: SiteCoords,
   indices: number[],
   dataTime: string,
+  sitesSiteConfigId: string | null,
+  indicesSiteConfigId: string | null,
   enabled: boolean,
   hasActiveNonAssumedEEW: boolean,
 ): KyoshinDetectorV2Result {
@@ -107,25 +111,45 @@ export function useKyoshinDetectorV2(
     const dataTimeMs = new Date(dataTime).getTime()
     if (!Number.isFinite(dataTimeMs)) return
 
+    // sites と indices の siteConfigId が一致するフレームだけを処理する。
+    // siteConfigId 切替直後は「新しい indices・旧い sites」の状態が発生し、単なる長さ
+    // 判定では見逃す（旧新で観測点数がたまたま一致した年切替）と、位置ベースの対応付け
+    // （kyoshinDetector.step 内 `frame.sites[i]`）で座標と震度が誤ペアリングされ、TypeError も
+    // 出ずに検知点マーカー・震度0ドットが誤った位置に表示される。両者の siteConfigId が
+    // 揃うまで step() をスキップする（長さ不整合の TypeError 対策も兼ねる）。
+    if (sitesSiteConfigId == null || indicesSiteConfigId == null) return
+    if (sitesSiteConfigId !== indicesSiteConfigId) return
+    if (sites.length !== indices.length) return
+
     // 観測点集合が変わったときだけ近傍メタを構築（フレーム毎の O(点数²) を避ける）
     const sig = siteSignature(sites)
     if (!metaRef.current || metaRef.current.sig !== sig) {
       metaRef.current = { sig, meta: buildStationMeta(sites as [number, number][]) }
     }
 
-    const { state, detections, triggers } = step(
-      stateRef.current,
-      {
-        dataTimeMs,
-        sites: sites as [number, number][],
-        values: indices,
-        // 欠測点（Yahoo が index<0 で返す観測点データなし）を除外する。渡さないと欠測復旧時の
-        // 急上昇がオンセットと誤認識されうる（missing の実際の判定根拠は services/kyoshin.ts 参照）。
-        missing: indices.map((idx) => idx < MISSING_INDEX_THRESHOLD),
-        eewActive: hasActiveNonAssumedEEWRef.current,
-      },
-      metaRef.current.meta,
-    )
+    let stepResult: ReturnType<typeof step>
+    try {
+      stepResult = step(
+        stateRef.current,
+        {
+          dataTimeMs,
+          sites: sites as [number, number][],
+          values: indices,
+          // 欠測点（Yahoo が index<0 で返す観測点データなし）を除外する。渡さないと欠測復旧時の
+          // 急上昇がオンセットと誤認識されうる（missing の実際の判定根拠は services/kyoshin.ts 参照）。
+          missing: indices.map((idx) => idx < MISSING_INDEX_THRESHOLD),
+          eewActive: hasActiveNonAssumedEEWRef.current,
+        },
+        metaRef.current.meta,
+      )
+    } catch (err) {
+      // step 内部で予期せぬ例外（sites/indices の長さ不整合を潜り抜けたケース等）が
+      // 発生した場合、stateRef を破損させずログして次フレームで再試行する。
+      // 例外を握り潰さないと useEffect のクリーンアップが走らず検知エンジンが恒久停止する。
+      log.error('[kyoshinV2] step() threw:', err)
+      return
+    }
+    const { state, detections, triggers } = stepResult
     stateRef.current = state
 
     const floors: Record<string, number> = {}
@@ -158,7 +182,14 @@ export function useKyoshinDetectorV2(
         })),
       )
     }
-    // indices/sites は dataTime と同時に更新されるため deps は dataTime/enabled のみでよい
+    // indices/sites は dataTime と同時に更新されるため deps は dataTime/enabled のみでよい。
+    // 例外として siteConfigId 切替時は sites が非同期に遅れて更新されるが、その期間は上の
+    // sitesSiteConfigId/indicesSiteConfigId ガードで step() をスキップするため deps に加える
+    // 必要はない（次の dataTime tick で両者が揃った時点で再評価される）。
+    // この最適化は React 18 の自動バッチングによって useKyoshinRealtime の processResult 内で
+    // setIndices/setDataTime/setIndicesSiteConfigId が単一レンダーにまとまることを前提にしている。
+    // 将来 processResult のリファクタでこの前提が崩れると、dataTime だけ先に更新されて古い
+    // siteConfigId でガードを誤って通過するリスクがあるため、リファクタ時はここも要見直し。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataTime, enabled])
 

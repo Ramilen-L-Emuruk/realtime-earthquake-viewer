@@ -15,6 +15,13 @@ export interface KyoshinRealtime {
   sites: SiteCoords
   indices: number[]
   dataTime: string
+  /** sites がどの `siteConfigId` に属するか（fetchSiteList 成功時にセット）。
+   *  検知エンジン側で「sites と indices が同じ観測点集合か」を判定するのに使う。 */
+  sitesSiteConfigId: string | null
+  /** indices が属する `siteConfigId`（毎フレーム RealTimeData JSON に含まれる値）。
+   *  `sitesSiteConfigId` と一致しないフレームは、`siteConfigId` 切替直後の一時的な
+   *  「新 indices・旧 sites」状態のため、下流の検知エンジン等は処理をスキップする。 */
+  indicesSiteConfigId: string | null
   /** 連続して取得に失敗し、更新が停止している場合 true */
   error: boolean
 }
@@ -66,6 +73,8 @@ export function useKyoshinRealtime(
   const [sites, setSites] = useState<SiteCoords>([])
   const [indices, setIndices] = useState<number[]>([])
   const [dataTime, setDataTime] = useState('')
+  const [sitesSiteConfigId, setSitesSiteConfigId] = useState<string | null>(null)
+  const [indicesSiteConfigId, setIndicesSiteConfigId] = useState<string | null>(null)
   const [error, setError] = useState(false)
   const currentSiteConfigIdRef = useRef<string | null>(null)
   const failCountRef = useRef(0)
@@ -101,13 +110,29 @@ export function useKyoshinRealtime(
       setError(false)
       setIndices(rt.indices)
       setDataTime(rt.dataTime)
+      // indices が属する siteConfigId を記録（下流で sites 側の siteConfigId と突合する）。
+      setIndicesSiteConfigId(rt.siteConfigId ?? null)
 
-      // siteConfigId が変わった場合のみ対応する sitelist を取得して反映する
+      // siteConfigId が変わった場合のみ対応する sitelist を取得して反映する。
+      // currentSiteConfigIdRef の更新は fetch 成功後に行う（失敗時に ref を先行更新
+      // していると、次 tick で「siteConfigId が同じ」と判定されて再試行しなくなり、
+      // sites が旧 siteConfigId のまま更新されず indices と長さ不整合になる。
+      // fetchSiteList 側も失敗 Promise をキャッシュから削除して再試行可能にしている）。
       if (rt.siteConfigId && rt.siteConfigId !== currentSiteConfigIdRef.current) {
-        currentSiteConfigIdRef.current = rt.siteConfigId
-        fetchSiteList(rt.siteConfigId)
-          .then((s) => { if (active) setSites(s) })
-          .catch(() => { /* 取得失敗は無視（次 tick で再試行される） */ })
+        const nextId = rt.siteConfigId
+        fetchSiteList(nextId)
+          .then((s) => {
+            if (active) {
+              currentSiteConfigIdRef.current = nextId
+              setSites(s)
+              setSitesSiteConfigId(nextId)
+            }
+          })
+          .catch((err) => {
+            // 失敗は次 tick で再試行される（ref は据え置き）。恒久的に失敗し続けた場合に
+            // 気付けるよう最低限の警告ログを残す。無音で握り潰さない。
+            log.warn('[kyoshin] sitelist fetch failed, will retry next tick', err)
+          })
       }
 
       const prev = prevHypoInfoRef.current
@@ -208,5 +233,5 @@ export function useKyoshinRealtime(
     }
   }, [enabled, timeOffset])
 
-  return { sites, indices, dataTime, error }
+  return { sites, indices, dataTime, sitesSiteConfigId, indicesSiteConfigId, error }
 }
