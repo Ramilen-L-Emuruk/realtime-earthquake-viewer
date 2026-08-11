@@ -27,7 +27,7 @@ import { computeEEWLevel, eewMaxLpgmClass } from './utils/eew'
 import { tsunamiOverallGrade } from './utils/tsunami'
 import { playCountdownBeep, unlockAudio, setSoundVolume } from './utils/alertSound'
 import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
-import type { EEWAlert, JMAQuake } from './types/earthquake'
+import type { EEWAlert, JMAQuake, JMATsunami } from './types/earthquake'
 import { fetchDmdataReplayEvents, filterPreWindowEvents, clearReplayCache } from './services/dmdataReplay'
 import { log } from './utils/logger'
 import { setReplayOffset as setClockReplayOffset, serverNow, serverDate } from './utils/clock'
@@ -65,6 +65,8 @@ export function App() {
   const activeEEWsRef = useRef<ReadonlyMap<string, EEWAlert>>(new Map())
   const kyoshinDetectedRef = useRef(false)
   const earthquakesRef = useRef<JMAQuake[]>([])
+  // 津波リスト（続報判定に使う）。値の確定は下方で毎レンダー tsunamis で更新する。
+  const tsunamisRef = useRef<JMATsunami[]>([])
   const defaultTabRef = useRef<TabId>(settings.defaultTab)
   // ウィンドウタイトル（情報タイトル）管理
   const title = useAlertTitle({ activeEEWsRef, kyoshinDetectedRef })
@@ -116,7 +118,7 @@ export function App() {
 
   // ライブイベント受信処理（通知音・タイトル・タブ切替・読み上げ・ブラウザ通知）
   const { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, focusedDistrict, resetTsunamiScrollToTop } = useLiveEventHandler({
-    settings, title, earthquakesRef, kyoshinDetectedRef, defaultTabRef,
+    settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTab, setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate,
     revertToDefaultTab, selectQuake, setActiveLpgmEventId,
   })
@@ -135,6 +137,7 @@ export function App() {
     resetState, loadReplayEvents,
   } = useEarthquakes(handleLiveEvent, settings.dmdataApiKey, settings.dmdataTestDelivery, replayTimeOffset)
   earthquakesRef.current = earthquakes
+  tsunamisRef.current = tsunamis
 
   const scenarioTest = useTestScenarios(loadReplayEvents)
 

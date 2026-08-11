@@ -149,7 +149,10 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
   `playAlertSound(type)`。種別: `eewSpecial` / `eew` / `eewForecast` / `eewUpdate` / `eewFinal` / `eewCancel`
 - **通知**: `showBrowserNotification(...)` で OS 通知
 - **読み上げ**: `speakWithVoicevox(eewAlertToText(...))`
-- **自動タブ切替**: 新規・レベルアップ時に `setActiveTab('realtime')` 強制
+- **自動タブ切替**: 新規・レベルアップ時に `setActiveTab('realtime')` 強制。続報は
+  `setActiveTabRealtimeOnUpdate()` で抑制タイマー（tsunami 側で 15 秒セット）を尊重する。
+  **特別警報級 EEW（level=2）発表中は tsunami 側からタブが奪われない**優先度ルールと対称
+  （詳細は [`tsunami-spec.md`](tsunami-spec.md) §11 参照）
 - **カメラフィット**: `useEewLayerData` 経由で `FitToEEWGL` が発火
 
 **音種別の優先順位**（`selectEEWSoundType` の判定順）:
