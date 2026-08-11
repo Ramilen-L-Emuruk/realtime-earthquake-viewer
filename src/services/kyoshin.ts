@@ -47,6 +47,15 @@ export function fetchSiteList(siteConfigId?: string): Promise<SiteCoords> {
       return res.json() as Promise<{ items: SiteCoords }>
     })
     .then((json) => json.items)
+    .catch((err) => {
+      // 失敗した Promise をキャッシュに残さない。残すと同一 siteConfigId への
+      // 再試行が全て過去の失敗 Promise を返してしまい、siteConfigId 切替直後の
+      // 一時的な失敗で検知エンジンが恒久停止する（sites が旧 ID のまま更新されず、
+      // indices と長さ不整合になった時点で kyoshinDetector.step() が TypeError で
+      // 恒久停止しうる）。エラーは呼び出し元へ再スローする。
+      siteListCache.delete(cacheKey)
+      throw err
+    })
 
   siteListCache.set(cacheKey, promise)
   return promise
@@ -222,14 +231,23 @@ const REG_DELAY_MS = 480
 /** 較正に使うエッジ（west は east より登録が速い実測結果に基づく）。 */
 const SYNC_EDGE: 'west' | 'east' = 'west'
 
-/** 指定エッジ・エポック秒の秒ファイルが登録済み(200)かをキャッシュバスターで判定する。 */
-async function isRegistered(edge: 'west' | 'east', epochSec: number): Promise<boolean> {
+/**
+ * 指定エッジ・エポック秒の秒ファイルが登録済み(200)かをキャッシュバスターで判定する。
+ * 戻り値:
+ *   - `true`: 登録済み（200）
+ *   - `false`: 未登録（403 or 404。Yahoo 側でファイル未生成の状態）
+ *   - `null`: 判定不能（5xx / 429 / タイムアウト等）。呼び出し元は較正をスキップし、
+ *            この回のサンプルを無視すること。5xx→200 のような一時的な CDN 障害を
+ *            「未登録→登録」の遷移と誤認して clock.feedServerSample を汚染するのを防ぐ。
+ */
+export async function isRegistered(edge: 'west' | 'east', epochSec: number): Promise<boolean | null> {
   const { dateStr, ts } = jstParts(new Date(epochSec * 1000))
   const res = await fetch(`${REALTIME_BASE(edge)}/${dateStr}/${ts}.json?_=${Math.random()}`, {
     cache: 'no-store',
   })
-  // 未登録は 403（環境により 404）。200 のみ登録済みとみなす。
-  return res.status === 200
+  if (res.status === 200) return true
+  if (res.status === 403 || res.status === 404) return false
+  return null
 }
 
 /**
@@ -239,9 +257,10 @@ async function isRegistered(edge: 'west' | 'east', epochSec: number): Promise<bo
 async function syncClockOnce(): Promise<void> {
   const guessSec = Math.floor(serverNow() / 1000)
   // フロンティア（最新の登録済み秒）を探す: guess+2 から下げて最初に 200 になる秒
+  // （null=判定不能は探索対象としてスキップし、次の秒へ進む）
   let frontier: number | null = null
   for (let s = guessSec + 2; s >= guessSec - 4; s--) {
-    if (await isRegistered(SYNC_EDGE, s)) {
+    if ((await isRegistered(SYNC_EDGE, s)) === true) {
       frontier = s
       break
     }
@@ -253,14 +272,14 @@ async function syncClockOnce(): Promise<void> {
   const start = performance.now()
   while (performance.now() - start < SYNC_FLIP_TIMEOUT_MS) {
     const p0 = performance.now()
-    let registered: boolean
+    let registered: boolean | null
     try {
       registered = await isRegistered(SYNC_EDGE, target)
     } catch {
       return
     }
     const pMid = (p0 + performance.now()) / 2
-    if (registered) {
+    if (registered === true) {
       // flip を挟めていない（開始時点で既に登録済み）場合は今回は見送る
       if (last403Perf === null) return
       const flipPerf = (last403Perf + pMid) / 2
@@ -270,7 +289,14 @@ async function syncClockOnce(): Promise<void> {
       feedServerSample(serverAtFlip + (performance.now() - flipPerf))
       return
     }
-    last403Perf = pMid
+    if (registered === false) {
+      // 明示的な未登録（403/404）のみ last403Perf に採用する。判定不能（null: 5xx/429/
+      // タイムアウト境界のブレ）を採用すると 5xx→200 遷移を「未登録→登録」と誤認して
+      // feedServerSample を汚染し、以後 30 秒ごとに真の時刻からずれた基準で target 選定・
+      // EEW キャンセル判定・S 波半径計算が行われる（誰にも見えない形で時計がじわじわ狂う）。
+      last403Perf = pMid
+    }
+    // registered === null は較正基準として使わず次ポーリングへ進む
     await new Promise((r) => setTimeout(r, SYNC_POLL_MS))
   }
 }

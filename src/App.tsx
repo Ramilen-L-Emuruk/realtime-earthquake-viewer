@@ -40,6 +40,12 @@ const DEFAULT_TITLE = import.meta.env.VITE_VARIANT === 'dmdss'
 
 const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
 
+// siteConfigId 切替直後に kyoshin.sites / kyoshin.indices の siteConfigId が揃うまで
+// 下流へ渡す代替として使う空配列（毎レンダー新規生成しないようモジュール定数で共有）。
+// 空配列を freeze せず可変配列として扱っているのは既存 SiteCoords 型定義が可変配列のため。
+const EMPTY_SITES: [number, number][] = []
+const EMPTY_INDICES: number[] = []
+
 export function App() {
   const { settings, updateSetting } = useSettings()
   const [activeTab, setActiveTab] = useState<TabId>(settings.defaultTab)
@@ -496,16 +502,26 @@ export function App() {
   })
   // 強震モニタの揺れ検知は V2 エンジン（純粋コア step）で行う。
   // 検知結果は音・自動タブ切替・自動フィット・地図オーバーレイ・リアルタイムタブのカードを駆動する。
-  const kyoshinV2 = useKyoshinDetectorV2(kyoshin.sites, kyoshin.indices, kyoshin.dataTime, true, hasActiveNonAssumedEEW)
+  const kyoshinV2 = useKyoshinDetectorV2(kyoshin.sites, kyoshin.indices, kyoshin.dataTime, kyoshin.sitesSiteConfigId, kyoshin.indicesSiteConfigId, true, hasActiveNonAssumedEEW)
+  // siteConfigId 切替直後の一時的な「新 indices・旧 sites」状態では sites[i] と indices[i] を
+  // 位置対応で使う下流（描画・タブ表示・派生ビュー）でも誤ペアリングが起きるため、両者の
+  // siteConfigId が揃うまで空配列にゲートする。sitelist の非同期取得が完了した次フレームで
+  // 元の実データに戻る（切替頻度は年数回、非表示時間はネットワーク往復 1 回分）。
+  const kyoshinSitesGated = kyoshin.sitesSiteConfigId != null
+    && kyoshin.sitesSiteConfigId === kyoshin.indicesSiteConfigId
+    ? kyoshin.sites : EMPTY_SITES
+  const kyoshinIndicesGated = kyoshin.sitesSiteConfigId != null
+    && kyoshin.sitesSiteConfigId === kyoshin.indicesSiteConfigId
+    ? kyoshin.indices : EMPTY_INDICES
   // V2 検知イベント → 表示状態（confirmed/candidate・検知点・候補点）へ変換する
   const kyoshinView = useMemo(
-    () => deriveKyoshinView(kyoshinV2.detections, kyoshin.sites, kyoshin.indices),
-    [kyoshinV2.detections, kyoshin.sites, kyoshin.indices],
+    () => deriveKyoshinView(kyoshinV2.detections, kyoshinSitesGated, kyoshinIndicesGated),
+    [kyoshinV2.detections, kyoshinSitesGated, kyoshinIndicesGated],
   )
   // 震度0ドット表示専用: 検知エンジンが学習した慢性ノイズ床でフィルタする（震度1+表示には手を入れない）
   const kyoshinSubIndices = useMemo(
-    () => filterSubThresholdIndices(kyoshin.sites, kyoshin.indices, kyoshinV2.floors),
-    [kyoshin.sites, kyoshin.indices, kyoshinV2.floors],
+    () => filterSubThresholdIndices(kyoshinSitesGated, kyoshinIndicesGated, kyoshinV2.floors),
+    [kyoshinSitesGated, kyoshinIndicesGated, kyoshinV2.floors],
   )
   // タイマーコールバック内から最新の confirmed 値を参照する ref（宣言はコンポーネント冒頭・代入はここ）
   kyoshinDetectedRef.current = kyoshinView.confirmed
@@ -590,8 +606,8 @@ export function App() {
             activeFaultOpacity={settings.activeFaultOpacity}
             heatPoints={quakeHeatPoints}
             showPlateBoundaries={settings.showPlateBoundaries}
-            kyoshinSites={kyoshin.sites}
-            kyoshinIndices={kyoshin.indices}
+            kyoshinSites={kyoshinSitesGated}
+            kyoshinIndices={kyoshinIndicesGated}
             kyoshinSubIndices={kyoshinSubIndices}
             kyoshinPsWave={psWave}
             eews={eewsForMap}
@@ -635,8 +651,8 @@ export function App() {
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'realtime' ? ' invisible pointer-events-none' : ''}`}>
             <RealtimeTab
               eews={eewsForPanel}
-              kyoshinSites={kyoshin.sites}
-              kyoshinIndices={kyoshin.indices}
+              kyoshinSites={kyoshinSitesGated}
+              kyoshinIndices={kyoshinIndicesGated}
               kyoshinV2Detections={kyoshinV2.detections}
               swaveArrival={swaveArrival}
               activeLpgmEventId={activeLpgmEventId}
