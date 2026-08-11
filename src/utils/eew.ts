@@ -188,11 +188,25 @@ export function computeEEWLevel(eews: ReadonlyMap<string, EEWAlert>): 0 | 1 | 2 
   return max
 }
 
+/**
+ * EEW 受信時の再生音を決定する。優先順位は以下（最初に一致した分岐で return）:
+ *   1. 新規発報 or レベル格上げ（`isNew || levelUpgraded`）
+ *      → `currentLevel` に応じて `eewSpecial`（=2）／`eew`（=1）／`eewForecast`（=0）
+ *   2. 続報の最終報（新規でも格上げでもない・`isFinal`）→ `eewFinal`
+ *   3. 通常続報 → `eewUpdate`
+ *
+ * `isFinal` より新規/格上げ判定を先に評価するのは、最終報で震度・長周期階級が上がって
+ * `levelUpgraded=true` になる最重要ケース（最終報で震度 6 弱以上へ格上げ等）を警戒音で
+ * 知らせるため。isFinal を先にすると eewFinal（穏やかな終了音）で上書きされてしまう。
+ *
+ * 呼び出し元（`useLiveEventHandler.ts`）の不変条件により `isNew && levelUpgraded` は
+ * 同時に true にならない（`levelUpgraded` は `!isNew && currentLevel > prevLevel` の場合のみ真）。
+ */
 export function selectEEWSoundType(isNew: boolean, levelUpgraded: boolean, currentLevel: 0 | 1 | 2, isFinal: boolean): AlertSoundType {
-  if (isFinal && !isNew) return 'eewFinal'
   if (isNew || levelUpgraded) {
     return currentLevel === 2 ? 'eewSpecial' : currentLevel === 1 ? 'eew' : 'eewForecast'
   }
+  if (isFinal) return 'eewFinal'
   return 'eewUpdate'
 }
 

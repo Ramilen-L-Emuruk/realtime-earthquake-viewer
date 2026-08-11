@@ -152,8 +152,15 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
 - **自動タブ切替**: 新規・レベルアップ時に `setActiveTab('realtime')` 強制
 - **カメラフィット**: `useEewLayerData` 経由で `FitToEEWGL` が発火
 
-続報時（`isNew:false`）は音を `eewUpdate` に抑制する。ただし現状は続報時の音・読み上げの多重発火防止に
-弱い箇所がある（`useLiveEventHandler.ts` 内の 5 箇所の setTimeout が未追跡）。
+**音種別の優先順位**（`selectEEWSoundType` の判定順）:
+1. **新規発報またはレベル格上げ**（`isNew || levelUpgraded`）→ `currentLevel` に応じて
+   `eewSpecial`（特別警報）／`eew`（警報）／`eewForecast`（予報）。**`isFinal` より優先**するため、
+   最終報で震度・長周期階級が上がって levelUpgraded=true になる最重要ケースでも警戒音を鳴らす。
+2. **続報の最終報**（`!isNew && !levelUpgraded && isFinal`）→ `eewFinal`（穏やかな終了音）
+3. **通常続報**（上記のいずれでもない）→ `eewUpdate`
+
+ただし現状は続報時の音・読み上げの多重発火防止に弱い箇所がある（`useLiveEventHandler.ts` 内の
+5 箇所の setTimeout が未追跡）。
 
 ## 10. `activeEEWs` の状態遷移
 
