@@ -102,8 +102,12 @@ P2PQuake の生 JSON は英語の enum で来るフィールドがあるため�
 - `issue.correct`: `None` → `なし`、`Unknown` → `訂正`、`ScaleOnly` → `震度のみ訂正`、`DestinationOnly` → `震源を訂正`、`ScaleAndDestination` → `震度・震源を訂正`（`Correction` というキーは存在しない）
 - `earthquake.domesticTsunami`: `None` → `なし`、`Watch` → `注意報`、`Warning` → `警報等` 等（`src/services/p2pquake.ts:22-26` の `DOMESTIC_TSUNAMI_MAP` が扱う値ドメインは `None` / `Unknown` / `Checking` / `SeaFloor`（`海面変動の可能性`） / `NonEffective`（`若干の海面変動`） / `Watch`（`注意報`） / `Warning`（`警報等`） の 7 種。**`MajorWarning` は含まれない**。津波の大津波警報は code=552（`JMATsunami`）の `areas[].grade` 側で扱われ、こちらは英語のまま内部型に流れる）
 
+**severity の付与**: code=556（EEW）は P2PQuake API v2 のペイロードに severity フィールドを持たないが、
+JMA 仕様上ここで配信される 556 は全て警報級であるため `convertEvent` が `severity: 'Warning'` を
+明示付与する（付与しないと後段の `computeSingleEEWLevel` が予報扱いに落とし警報音・特別警報表示が
+発火しない）。
+
 **既知の欠落**:
-- code=556（EEW）で `severity` フィールドが生成されておらず、`computeSingleEEWLevel` が予報扱いに落とす
 - `points[].scale=46`（震度 5 弱以上推定）が既知震度マップにない
 
 ### WebSocket 再接続
@@ -130,6 +134,25 @@ P2PQuake の生 JSON は英語の enum で来るフィールドがあるため�
 - **リアルタイム震度**: 1 秒毎の JSON。`realTimeData.intensity` 文字列（1 文字＝1 観測点、`charCodeAt(0)-100` が index 0〜20）
 - **震源情報（hypoInfo）**: EEW 相当の情報（震源・M・calcintensity 等）を含む場合がある
 
+`siteConfigId` 切替時（年数回）: `fetchSiteList` は Promise キャッシュを持つが、失敗した Promise は
+キャッシュから削除して再試行可能にする。`useKyoshinRealtime` は `currentSiteConfigIdRef` の更新を
+fetch 成功後に行い、失敗時は ref を据え置いて次 tick で再試行させる（失敗は `log.warn` で通知）。
+`sites`／`indices` の状態にはそれぞれの `siteConfigId` を紐付けて公開し、`useKyoshinDetectorV2` は
+`sitesSiteConfigId !== indicesSiteConfigId` のフレームを step() 呼び出しからスキップする（切替直後の
+「新 indices・旧 sites」で `frame.sites[i]` アクセスが `TypeError` になる恒久停止と、点数が偶然一致
+した年切替で座標と震度が位置ベースで誤ペアリングされる検知エンジン内部の不整合を防ぐ）。
+検知エンジン外の下流経路（地図描画・RealtimeTab・派生ビュー `deriveKyoshinView` ／
+`filterSubThresholdIndices`）も同じ `sites[i]`／`indices[i]` の位置対応で消費するため、`src/App.tsx` で
+`sitesSiteConfigId === indicesSiteConfigId` の条件を満たさない期間は空配列にゲートして通す。
+sitelist の非同期取得が完了した次フレームで元の実データに戻る（非表示時間はネットワーク往復 1 回分）。
+step 内例外も try/catch でログ出力の上、次フレームへ復帰する。
+
+**残る既知の課題**（発生頻度・切替頻度から今回のスコープ外）:
+- 並行 `fetchSiteList` 呼び出しの順序保証がない（1 回目の応答が 2 回目より遅れると `sites`／`sitesSiteConfigId`
+  を古い内容へ巻き戻す可能性）
+- sitelist 取得失敗時のリトライに上限・バックオフがない（Yahoo 側で `siteConfigId` の URL が恒久的に
+  無効になった場合、毎 tick 無制限に再試行する）
+
 ### index → 震度の変換
 
 `indexToValue(index) = -3.0 + index * 0.5`（0.5 刻み量子化、index 6 = 震度 0 = value 0.0）。
@@ -144,8 +167,12 @@ Yahoo は未登録秒には 403 を返す（登録遅延約 1.5 秒）。この 
 - guessSec の前後 `[-4, +2]` の探索窓で 200 になる境界を検出
 - 検出した境界を `feedServerSample` に渡して EMA 較正（`clock.ts`）
 
+`isRegistered` は `200` → `true`（登録済み）、`403/404` → `false`（未登録）、
+`5xx`/`429`/その他 → `null`（判定不能）の三値を返し、`syncClockOnce` は `null` の
+サンプルを較正基準として採用しない（CDN の一時的な障害を「未登録→登録」遷移と誤認して
+`feedServerSample` を汚染し、時計がじわじわ狂うのを防ぐ）。
+
 **既知の課題**:
-- `isRegistered` が `res.status === 200` のみで判定するため、5xx/429 も「未登録」誤認しうる
 - 探索窓が固定で、壁時計が数秒以上ずれると恒久的に較正不能になる
 - 較正失敗時の無警告 `Date.now()` フォールバック（診断 API `getServerClockOffsetMs` は全体で未使用）
 

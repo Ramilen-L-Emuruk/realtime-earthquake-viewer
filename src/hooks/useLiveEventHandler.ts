@@ -8,7 +8,7 @@ import { getIntensityLabel } from '../utils/intensity'
 import { eewMaxScale, computeSingleEEWLevel, selectEEWSoundType } from '../utils/eew'
 import { haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
-import { tsunamiMaxGrade } from '../utils/tsunami'
+import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, hasActiveSpecialEEW } from '../utils/tsunami'
 import { matchesArea, sortAreasForCardDisplay } from '../components/TsunamiTab'
 import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox } from '../utils/voicevox'
@@ -56,6 +56,9 @@ export interface LiveEventHandlerDeps {
   title: AlertTitleApi
   /** 地震情報リスト（App 所有・useEarthquakes の直後に毎レンダー更新） */
   earthquakesRef: React.MutableRefObject<JMAQuake[]>
+  /** 津波リスト（App 所有・useEarthquakes の直後に毎レンダー更新）。
+   *  津波続報の判定（同一 eventId の観測点更新でタブを毎回奪わない）に使う。 */
+  tsunamisRef: React.MutableRefObject<JMATsunami[]>
   /** 強震モニタの揺れ検知フラグ（App 所有・毎レンダー更新） */
   kyoshinDetectedRef: React.MutableRefObject<boolean>
   /** アイドル復帰で戻すデフォルトタブ（App 所有・毎レンダー更新。デバッグログ用） */
@@ -70,7 +73,7 @@ export interface LiveEventHandlerDeps {
 
 export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const {
-    settings, title, earthquakesRef, kyoshinDetectedRef, defaultTabRef,
+    settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTab, setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate,
     revertToDefaultTab, selectQuake, setActiveLpgmEventId,
   } = deps
@@ -157,13 +160,34 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
       title.scheduleTitleRevert('earthquake')
     } else if (event.kind === 'tsunami' && !event.cancelled) {
-      log.info('[tab] → tsunami (津波情報 VTSE41/51/52)')
-      setActiveTabNonRealtime('tsunami')
+      // タブ強制切替の優先度ルール（CRIT-4 対応）:
+      //   - 新規発報（別 eventId or 前回取消済み）と grade 格上げのみが tsunami タブを奪える
+      //   - 続報（同一 eventId の観測点更新等）は setActiveTabNonRealtime を呼ばず抑制タイマー
+      //     をリセットしない（毎回 15 秒抑制が再セットされて EEW 続報が realtime へ戻れなく
+      //     なる事象を回避）
+      //   - 特別警報級 EEW（level=2）発表中は津波の新規発報でもタブを奪わずバッジ扱いに留める
+      const current = tsunamisRef.current[0]
+      const isNew = isTsunamiNewFire(event, current)
+      const upgraded = isTsunamiGradeUpgrade(event, current)
+      const specialEEWActive = hasActiveSpecialEEW(activeEEWLevelsRef.current)
+      const canGrabTab = (isNew || upgraded) && !specialEEWActive
+      if (canGrabTab) {
+        log.info(`[tab] → tsunami (${isNew ? '新規発報' : 'グレード格上げ'})`)
+        setActiveTabNonRealtime('tsunami')
+      } else {
+        log.debug(`[tab] tsunami タブ強制切替スキップ (isNew=${isNew}, upgraded=${upgraded}, specialEEW=${specialEEWActive})`)
+      }
       title.showTsunamiTitle()
     } else if (event.kind === 'tsunami' && event.cancelled) {
       // 「津波解除検出」effect はレンダー後の非同期発火のため、受信直後の即時反映用にここでもタイマーをリセットする。
-      log.info('[tab] → tsunami (津波情報取消)')
-      setActiveTabNonRealtime('tsunami')
+      // 特別警報級 EEW 発表中は取消電文でもタブを奪わない（新規発報側の canGrabTab ルールと対称）。
+      // タイトル・音・状態リセットは従来通り行い、通知漏れは起こさない。
+      if (hasActiveSpecialEEW(activeEEWLevelsRef.current)) {
+        log.debug('[tab] tsunami 取消タブ切替スキップ (specialEEW 発表中)')
+      } else {
+        log.info('[tab] → tsunami (津波情報取消)')
+        setActiveTabNonRealtime('tsunami')
+      }
       title.endTsunamiTitleWindow()
       title.applyPriority()
       if (settings.voicevoxEnabled) {

@@ -35,7 +35,7 @@ const ISSUE_TYPE_MAP: Record<string, IssueType> = {
   Other: 'その他',
 }
 
-function convertEvent(raw: RawP2PEvent): AppEvent | null {
+export function convertEvent(raw: RawP2PEvent): AppEvent | null {
   const { code, ...rest } = raw
   let converted = rest
   // issue.type を日本語に変換
@@ -59,7 +59,13 @@ function convertEvent(raw: RawP2PEvent): AppEvent | null {
   }
   if (code === 551) return { kind: 'quake', ...converted } as JMAQuake
   if (code === 552) return { kind: 'tsunami', ...converted } as AppEvent
-  if (code === 556) return { kind: 'eew', ...converted } as AppEvent
+  // P2PQuake API v2 の code=556 は気象庁 EEW 警報（VXSE43/45 相当）の二次配信のみで、
+  // ペイロードに severity 相当フィールドが含まれない。JMA の仕様上ここで配信される
+  // ものは全て警報級であり、Warning を明示付与しないと後段の computeSingleEEWLevel が
+  // 常に Forecast 扱い（レベル0）に格下げして警報音・特別警報表示が発火しなくなる。
+  // スプレッドの後に置くことで、将来 P2PQuake が severity フィールドを追加しても
+  // 「常に Warning で確定させる」意図をコード順で保証する。
+  if (code === 556) return { kind: 'eew', ...converted, severity: 'Warning' } as AppEvent
   return null
 }
 

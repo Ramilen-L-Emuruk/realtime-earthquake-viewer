@@ -226,9 +226,14 @@ DMDATA リプレイ機能の `setReplayOffset` は使わない（ライブ接続
 
 ### DOM 検証テクニック（動作確認用）
 
-Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認したいときの主要な取り出し方:
+Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認したいときの主要な取り出し方
+（`window.__mapGL` の基本操作と v6 での注意点は [`map-rendering-spec.md`](map-rendering-spec.md) §11 も参照）:
 
-- **地図の震度バッジ集計**: `maplibregl.Marker` の `element.textContent` に震度文字列（`1`〜`7`）が入る。`document.querySelectorAll('.maplibregl-marker')` から集計できる
+- **地図の震度バッジ集計**: 震度バッジ（区域ラベル・地震観測点・長周期区域・強震モニタ揺れ検知点）は 2026-08-10 の統一で全て symbol レイヤー（`icon-image`）に移行済み。これらは `.maplibregl-marker` に現れないため、集計は GeoJSON ソースから行う:
+  - 例: `await window.__mapGL.getSource('quake-region-label').getData()` で震度区域ラベルの `features[].properties.scale` を集計できる
+  - ソース ID・レイヤー ID は各 `src/components/Map/*GL.tsx` の冒頭で定数（例: `SRC`／`FILL_SRC`／`LABEL_SRC`／`LABEL_LYR` など）として定義されているので、そこから逆引きする（実装変更で名前が変わる可能性があるため、ここに全リストは掲載しない）
+  - 可視レイヤーに絞って集計したい場合は `window.__mapGL.queryRenderedFeatures({ layers: ['<レイヤーID>'] })` を使う
+- **HTML Marker 経由の要素**: 震源×印（`EpicenterGL`）・EEW 震源（`EewEpicentersGL`）・津波観測棒（`TsunamiObsBarsGL`）は現在も `maplibregl.Marker` のまま。これらだけは `document.querySelectorAll('.maplibregl-marker')` で拾える（震度バッジは含まれない）
 - **地図ソースの内容**: `await window.__mapGL.getSource('<sourceId>').getData()` で GeoJSON を取り出せる（本番ビルドでも `window.__mapGL` は露出。`src/components/Map/JapanMapGL.tsx`）
 - **レイヤーの表示状態**: `window.__mapGL.getLayoutProperty('<layerId>', 'visibility')`
 - **時間経過を伴う挙動の再現**: 自動解除・アイドル復帰・続報自動確定は `localStorage` の書き換え＋リロード、または `setTimeout` の時間送りで確認する
