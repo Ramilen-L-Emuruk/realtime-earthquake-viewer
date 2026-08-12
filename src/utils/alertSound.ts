@@ -48,6 +48,32 @@ export function getAudioContext(): AudioContext | null {
 
 // ─── 内部プリミティブ ─────────────────────────────────────────────
 
+// マスターチェーン: 全音源を Gain → DynamicsCompressor → destination の順で流す。
+// 特別警報級 EEW と大津波警報が同時に発火した場合、素の加算合成では波形がクリップして
+// ノイズに埋もれるため、compressor で合成音圧の暴走を抑制する（CRIT-3 対応）。
+// 単独再生時の音色はほぼ変わらず（threshold 以下は素通し）、複数音が重なったときだけ
+// リミッター的に働く。パラメータは音楽制作でリミッターとして使うときの標準的な値。
+let _master: GainNode | null = null
+let _compressor: DynamicsCompressorNode | null = null
+/**
+ * 全ての音源が最終的に流れ込む master 入力ノード。VOICEVOX 読み上げも含めて
+ * このモジュール外の音源もここへ接続することで、合成音圧の暴走を防ぐ。
+ */
+export function getMasterInput(ctx: AudioContext): AudioNode {
+  if (_master) return _master
+  _master = ctx.createGain()
+  _master.gain.value = 1.0
+  _compressor = ctx.createDynamicsCompressor()
+  _compressor.threshold.value = -6
+  _compressor.knee.value = 6
+  _compressor.ratio.value = 4
+  _compressor.attack.value = 0.003
+  _compressor.release.value = 0.25
+  _master.connect(_compressor)
+  _compressor.connect(ctx.destination)
+  return _master
+}
+
 let _reverb: ConvolverNode | null = null
 function getReverb(ctx: AudioContext): ConvolverNode {
   if (_reverb) return _reverb
@@ -59,7 +85,7 @@ function getReverb(ctx: AudioContext): ConvolverNode {
   }
   _reverb = ctx.createConvolver()
   _reverb.buffer = buf
-  _reverb.connect(ctx.destination)
+  _reverb.connect(getMasterInput(ctx))
   return _reverb
 }
 
@@ -69,7 +95,7 @@ function pianoNote(ctx: AudioContext, freq: number, t: number, dur: number, gain
 
   const sin = ctx.createOscillator(); const sinG = ctx.createGain()
   sin.type = 'sine'; sin.frequency.value = freq
-  sin.connect(sinG); sinG.connect(ctx.destination)
+  sin.connect(sinG); sinG.connect(getMasterInput(ctx))
   sinG.gain.setValueAtTime(0, t)
   sinG.gain.linearRampToValueAtTime(p, t + 0.005)
   sinG.gain.exponentialRampToValueAtTime(0.001, t + dur)
@@ -77,7 +103,7 @@ function pianoNote(ctx: AudioContext, freq: number, t: number, dur: number, gain
 
   const tri = ctx.createOscillator(); const triG = ctx.createGain()
   tri.type = 'triangle'; tri.frequency.value = freq
-  tri.connect(triG); triG.connect(ctx.destination)
+  tri.connect(triG); triG.connect(getMasterInput(ctx))
   triG.gain.setValueAtTime(0, t)
   triG.gain.linearRampToValueAtTime(p * 0.50, t + 0.005)
   triG.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.18)
@@ -85,7 +111,7 @@ function pianoNote(ctx: AudioContext, freq: number, t: number, dur: number, gain
 
   const h2 = ctx.createOscillator(); const h2G = ctx.createGain()
   h2.type = 'sine'; h2.frequency.value = freq * 2
-  h2.connect(h2G); h2G.connect(ctx.destination)
+  h2.connect(h2G); h2G.connect(getMasterInput(ctx))
   h2G.gain.setValueAtTime(0, t)
   h2G.gain.linearRampToValueAtTime(p * 0.18, t + 0.005)
   h2G.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.25)
@@ -99,7 +125,7 @@ function pianoNote(ctx: AudioContext, freq: number, t: number, dur: number, gain
   ns.buffer = nbuf
   ng.gain.setValueAtTime(p * 0.28, t)
   ng.gain.exponentialRampToValueAtTime(0.001, t + 0.008)
-  ns.connect(ng); ng.connect(ctx.destination)
+  ns.connect(ng); ng.connect(getMasterInput(ctx))
   ns.start(t); ns.stop(t + 0.010)
 
   if (wet > 0) {
@@ -120,7 +146,7 @@ function darkPiano(ctx: AudioContext, freq: number, t: number, dur: number, gain
 
   const s1 = ctx.createOscillator(); const g1 = ctx.createGain()
   s1.type = 'sine'; s1.frequency.value = freq
-  s1.connect(g1); g1.connect(ctx.destination)
+  s1.connect(g1); g1.connect(getMasterInput(ctx))
   g1.gain.setValueAtTime(0, t)
   g1.gain.linearRampToValueAtTime(p, t + 0.008)
   g1.gain.exponentialRampToValueAtTime(0.001, t + dur)
@@ -128,7 +154,7 @@ function darkPiano(ctx: AudioContext, freq: number, t: number, dur: number, gain
 
   const s2 = ctx.createOscillator(); const g2 = ctx.createGain()
   s2.type = 'sine'; s2.frequency.value = freq * 2
-  s2.connect(g2); g2.connect(ctx.destination)
+  s2.connect(g2); g2.connect(getMasterInput(ctx))
   g2.gain.setValueAtTime(0, t)
   g2.gain.linearRampToValueAtTime(p * 0.25, t + 0.008)
   g2.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.35)
@@ -136,7 +162,7 @@ function darkPiano(ctx: AudioContext, freq: number, t: number, dur: number, gain
 
   const s3 = ctx.createOscillator(); const g3 = ctx.createGain()
   s3.type = 'sine'; s3.frequency.value = freq * 3
-  s3.connect(g3); g3.connect(ctx.destination)
+  s3.connect(g3); g3.connect(getMasterInput(ctx))
   g3.gain.setValueAtTime(0, t)
   g3.gain.linearRampToValueAtTime(p * 0.08, t + 0.008)
   g3.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.20)
@@ -150,7 +176,7 @@ function darkPiano(ctx: AudioContext, freq: number, t: number, dur: number, gain
   ns.buffer = nbuf
   ng.gain.setValueAtTime(p * 0.14, t)
   ng.gain.exponentialRampToValueAtTime(0.001, t + 0.006)
-  ns.connect(ng); ng.connect(ctx.destination)
+  ns.connect(ng); ng.connect(getMasterInput(ctx))
   ns.start(t); ns.stop(t + 0.008)
 
   if (wet > 0) {
@@ -172,7 +198,7 @@ function darkAlarm(ctx: AudioContext, freq: number, t: number, dur: number, gain
 
   const sq = ctx.createOscillator(); const sqG = ctx.createGain()
   sq.type = 'square'; sq.frequency.value = freq
-  sq.connect(sqG); sqG.connect(ctx.destination)
+  sq.connect(sqG); sqG.connect(getMasterInput(ctx))
   sqG.gain.setValueAtTime(0, t)
   sqG.gain.linearRampToValueAtTime(p * 0.35, t + 0.010)
   sqG.gain.setValueAtTime(p * 0.35, hold)
@@ -181,7 +207,7 @@ function darkAlarm(ctx: AudioContext, freq: number, t: number, dur: number, gain
 
   const si = ctx.createOscillator(); const siG = ctx.createGain()
   si.type = 'sine'; si.frequency.value = freq * 0.5
-  si.connect(siG); siG.connect(ctx.destination)
+  si.connect(siG); siG.connect(getMasterInput(ctx))
   siG.gain.setValueAtTime(0, t)
   siG.gain.linearRampToValueAtTime(p * 0.55, t + 0.010)
   siG.gain.setValueAtTime(p * 0.55, hold)
@@ -190,7 +216,7 @@ function darkAlarm(ctx: AudioContext, freq: number, t: number, dur: number, gain
 
   const tr = ctx.createOscillator(); const trG = ctx.createGain()
   tr.type = 'triangle'; tr.frequency.value = freq * 1.5
-  tr.connect(trG); trG.connect(ctx.destination)
+  tr.connect(trG); trG.connect(getMasterInput(ctx))
   trG.gain.setValueAtTime(0, t)
   trG.gain.linearRampToValueAtTime(p * 0.18, t + 0.010)
   trG.gain.setValueAtTime(p * 0.18, hold)
@@ -206,7 +232,7 @@ function darkSweep(ctx: AudioContext, f1: number, f2: number, t: number, dur: nu
   tr.type = 'triangle'
   tr.frequency.setValueAtTime(f1, t)
   tr.frequency.exponentialRampToValueAtTime(f2, t + dur)
-  tr.connect(trG); trG.connect(ctx.destination)
+  tr.connect(trG); trG.connect(getMasterInput(ctx))
   trG.gain.setValueAtTime(0, t)
   trG.gain.linearRampToValueAtTime(p * 0.60, t + 0.015)
   trG.gain.setValueAtTime(p * 0.60, t + dur - 0.04)
@@ -217,7 +243,7 @@ function darkSweep(ctx: AudioContext, f1: number, f2: number, t: number, dur: nu
   si.type = 'sine'
   si.frequency.setValueAtTime(f1, t)
   si.frequency.exponentialRampToValueAtTime(f2, t + dur)
-  si.connect(siG); siG.connect(ctx.destination)
+  si.connect(siG); siG.connect(getMasterInput(ctx))
   siG.gain.setValueAtTime(0, t)
   siG.gain.linearRampToValueAtTime(p * 0.40, t + 0.015)
   siG.gain.setValueAtTime(p * 0.40, t + dur - 0.04)
@@ -235,7 +261,7 @@ function sweep(ctx: AudioContext, type: OscillatorType, freqStart: number, freqE
   osc.frequency.linearRampToValueAtTime(freqEnd, startAt + duration * 0.55)
   osc.frequency.linearRampToValueAtTime(freqStart, startAt + duration)
   osc.connect(g)
-  g.connect(ctx.destination)
+  g.connect(getMasterInput(ctx))
   const peak = gain * globalVolume
   g.gain.setValueAtTime(0, startAt)
   g.gain.linearRampToValueAtTime(peak, startAt + 0.015)
@@ -251,7 +277,7 @@ function impact(ctx: AudioContext, freq: number, t: number, dur: number, gain: n
 
   const so = ctx.createOscillator(); const sg = ctx.createGain()
   so.type = 'sine'; so.frequency.value = freq
-  so.connect(sg); sg.connect(ctx.destination)
+  so.connect(sg); sg.connect(getMasterInput(ctx))
   sg.gain.setValueAtTime(0, t)
   sg.gain.linearRampToValueAtTime(p, t + 0.003)
   sg.gain.exponentialRampToValueAtTime(0.001, t + dur)
@@ -259,7 +285,7 @@ function impact(ctx: AudioContext, freq: number, t: number, dur: number, gain: n
 
   const to = ctx.createOscillator(); const tg = ctx.createGain()
   to.type = 'triangle'; to.frequency.value = freq
-  to.connect(tg); tg.connect(ctx.destination)
+  to.connect(tg); tg.connect(getMasterInput(ctx))
   tg.gain.setValueAtTime(0, t)
   tg.gain.linearRampToValueAtTime(p * 0.45, t + 0.003)
   tg.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.18)
@@ -267,7 +293,7 @@ function impact(ctx: AudioContext, freq: number, t: number, dur: number, gain: n
 
   const subO = ctx.createOscillator(); const subG = ctx.createGain()
   subO.type = 'sine'; subO.frequency.value = freq * 0.5
-  subO.connect(subG); subG.connect(ctx.destination)
+  subO.connect(subG); subG.connect(getMasterInput(ctx))
   subG.gain.setValueAtTime(0, t)
   subG.gain.linearRampToValueAtTime(p * 0.35, t + 0.004)
   subG.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.45)
@@ -281,7 +307,7 @@ function impact(ctx: AudioContext, freq: number, t: number, dur: number, gain: n
   ns.buffer = nbuf
   ngn.gain.setValueAtTime(p * noiseMix, t)
   ngn.gain.exponentialRampToValueAtTime(0.001, t + 0.007)
-  ns.connect(ngn); ngn.connect(ctx.destination)
+  ns.connect(ngn); ngn.connect(getMasterInput(ctx))
   ns.start(t); ns.stop(t + 0.009)
 }
 
@@ -291,7 +317,7 @@ function ding(ctx: AudioContext, freq: number, t: number, dur: number, gain: num
 
   const so = ctx.createOscillator(); const sg = ctx.createGain()
   so.type = 'sine'; so.frequency.value = freq
-  so.connect(sg); sg.connect(ctx.destination)
+  so.connect(sg); sg.connect(getMasterInput(ctx))
   sg.gain.setValueAtTime(0, t)
   sg.gain.linearRampToValueAtTime(p, t + 0.006)
   sg.gain.exponentialRampToValueAtTime(0.001, t + dur)
@@ -299,7 +325,7 @@ function ding(ctx: AudioContext, freq: number, t: number, dur: number, gain: num
 
   const ho = ctx.createOscillator(); const hg = ctx.createGain()
   ho.type = 'sine'; ho.frequency.value = freq * 2
-  ho.connect(hg); hg.connect(ctx.destination)
+  ho.connect(hg); hg.connect(getMasterInput(ctx))
   hg.gain.setValueAtTime(0, t)
   hg.gain.linearRampToValueAtTime(p * 0.20, t + 0.006)
   hg.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.22)
@@ -312,7 +338,7 @@ function dingDeep(ctx: AudioContext, freq: number, t: number, dur: number, gain:
 
   const so = ctx.createOscillator(); const sg = ctx.createGain()
   so.type = 'sine'; so.frequency.value = freq * 0.5
-  so.connect(sg); sg.connect(ctx.destination)
+  so.connect(sg); sg.connect(getMasterInput(ctx))
   const p = gain * globalVolume
   sg.gain.setValueAtTime(0, t)
   sg.gain.linearRampToValueAtTime(p * 0.50, t + 0.008)
@@ -374,7 +400,7 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
     bs.type = 'sine'
     bs.frequency.setValueAtTime(55, base)
     bs.frequency.exponentialRampToValueAtTime(110, base + 0.30)
-    bs.connect(bg); bg.connect(ctx.destination)
+    bs.connect(bg); bg.connect(getMasterInput(ctx))
     const bp = 0.22 * globalVolume
     bg.gain.setValueAtTime(0, base)
     bg.gain.linearRampToValueAtTime(bp, base + 0.02)
@@ -389,7 +415,7 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
 
     const to = ctx.createOscillator(); const tg = ctx.createGain()
     to.type = 'triangle'; to.frequency.value = 880
-    to.connect(tg); tg.connect(ctx.destination)
+    to.connect(tg); tg.connect(getMasterInput(ctx))
     const tp = 0.032 * globalVolume
     tg.gain.setValueAtTime(0, base + 0.65)
     tg.gain.linearRampToValueAtTime(tp, base + 0.68)
@@ -410,7 +436,7 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
     impact(ctx, 1318, base + 0.00, 0.30, 0.28, 0.28)
     const sh = ctx.createOscillator(); const shg = ctx.createGain()
     sh.type = 'sine'; sh.frequency.value = 2637
-    sh.connect(shg); shg.connect(ctx.destination)
+    sh.connect(shg); shg.connect(getMasterInput(ctx))
     shg.gain.setValueAtTime(0, base + 0.02)
     shg.gain.linearRampToValueAtTime(0.28 * globalVolume * 0.10, base + 0.025)
     shg.gain.exponentialRampToValueAtTime(0.001, base + 0.18)
@@ -528,7 +554,7 @@ export function playCountdownBeep(second: number): void {
     const pt  = t0 + i * period
     const osc = ctx.createOscillator(); const env = ctx.createGain()
     osc.type = 'square'; osc.frequency.value = 440
-    osc.connect(env); env.connect(ctx.destination)
+    osc.connect(env); env.connect(getMasterInput(ctx))
     env.gain.setValueAtTime(0, pt)
     env.gain.linearRampToValueAtTime(0.22 * globalVolume, pt + 0.003)
     env.gain.setValueAtTime(0.22 * globalVolume, pt + pulseW - 0.003)
@@ -539,7 +565,7 @@ export function playCountdownBeep(second: number): void {
   if (second === 1) {
     const sub = ctx.createOscillator(); const sg = ctx.createGain()
     sub.type = 'sine'; sub.frequency.value = 110
-    sub.connect(sg); sg.connect(ctx.destination)
+    sub.connect(sg); sg.connect(getMasterInput(ctx))
     sg.gain.setValueAtTime(0, t0)
     sg.gain.linearRampToValueAtTime(0.30 * globalVolume, t0 + 0.010)
     sg.gain.setValueAtTime(0.30 * globalVolume, t0 + 0.24)
@@ -548,7 +574,7 @@ export function playCountdownBeep(second: number): void {
 
     const hi = ctx.createOscillator(); const hg = ctx.createGain()
     hi.type = 'sine'; hi.frequency.value = 1320
-    hi.connect(hg); hg.connect(ctx.destination)
+    hi.connect(hg); hg.connect(getMasterInput(ctx))
     hg.gain.setValueAtTime(0, t0)
     hg.gain.linearRampToValueAtTime(0.16 * globalVolume, t0 + 0.005)
     hg.gain.setValueAtTime(0.16 * globalVolume, t0 + 0.24)
