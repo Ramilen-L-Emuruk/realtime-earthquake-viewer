@@ -53,9 +53,8 @@
 | P2PQuake WS | standard | 電文に無いが `convertEvent` で一律 `'Warning'` 付与 | 数値/文字列 | なし | 主系（DMDSS 版は不使用） |
 | Yahoo hypoInfo | 両バリアント | 震度からの推定（`>= 5弱 ? 'Warning' : 'Forecast'`） | 常に `'以上'` 固定 | なし | standard 版で補完的に検知 |
 
-P2PQuake API v2 の `code=556` は気象庁 EEW 警報（VXSE43/45 相当）の二次配信のみで、ペイロードに
-severity フィールドは存在しない。JMA 仕様上ここで配信されるものは全て警報級のため、`convertEvent`
-（`src/services/p2pquake.ts`）で `severity: 'Warning'` を明示付与する。
+P2PQuake の 556 で severity が付与される仕組みは [`data-sources-spec.md`](data-sources-spec.md) §3
+を参照（電文仕様と付与ロジックはそちらに一本化）。
 
 **enrichEEW（`useEarthquakes.ts`）**: Yahoo hypoInfo で先に検知した EEW に、後着の P2PQuake / DMDATA で
 より正確な `areas` / `condition` / `hypocenter` を上書きする。severity は upgrade only（既存 `'Warning'` は
@@ -150,9 +149,11 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
 - **通知**: `showBrowserNotification(...)` で OS 通知
 - **読み上げ**: `speakWithVoicevox(eewAlertToText(...))`
 - **自動タブ切替**: 新規・レベルアップ時に `setActiveTab('realtime')` 強制。続報は
-  `setActiveTabRealtimeOnUpdate()` で抑制タイマー（tsunami 側で 15 秒セット）を尊重する。
-  **特別警報級 EEW（level=2）発表中は tsunami 側からタブが奪われない**優先度ルールと対称
-  （詳細は [`tsunami-spec.md`](tsunami-spec.md) §11 参照）
+  `setActiveTabRealtimeOnUpdate()` で抑制タイマーを尊重する。抑制タイマーは
+  `setActiveTabNonRealtime` 呼び出し全般で共有されるため、直前 15 秒以内に地震情報・
+  津波情報・長周期地震動情報のいずれかで非 realtime タブへ切り替わっていれば、EEW 続報は
+  realtime へ戻らない。**特別警報級 EEW（level=2）発表中は tsunami 側からタブが奪われない**
+  優先度ルールと対称（詳細は [`tsunami-spec.md`](tsunami-spec.md) §11 参照）
 - **カメラフィット**: `useEewLayerData` 経由で `FitToEEWGL` が発火
 
 **音種別の優先順位**（`selectEEWSoundType` の判定順）:

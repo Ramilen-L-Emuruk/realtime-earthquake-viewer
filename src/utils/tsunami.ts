@@ -35,9 +35,12 @@ export function tsunamiOverallGrade(tsunamis: JMATsunami[]): 'MajorWarning' | 'W
  *   - `current` が取消済み（`cancelled` or 10秒表示中の `cancelledAt`）
  *   - `current.eventId` と `next.eventId` が異なる（別地震の津波）
  *   - `eventId` が両者で欠落する場合は `sourceEarthquake.originTime` で代替判定
- *     （P2PQuake API v2 の 552 電文は `eventId` を持たないため、この
- *     フォールバックが無いと別地震の新規津波が常に続報扱いになる）
- *   - 上記いずれの識別子も取れない場合は false（保守的に続報扱い）
+ *     （DMDATA XML の Earthquake 要素経由でのみ機能する。P2PQuake API v2 の
+ *     生 552 電文には `earthquake` 相当のフィールドが無く `sourceEarthquake` は
+ *     常に undefined になるため、標準版ではこのフォールバックは実質発火しない）
+ *   - 上記いずれの識別子も取れない場合は false（保守的に続報扱い）。
+ *     標準版はこの経路がデフォルトで、別地震の新規津波でもタブが奪われない
+ *     （grade 格上げか手動タブ切替に依存する）
  */
 export function isTsunamiNewFire(next: JMATsunami, current: JMATsunami | undefined): boolean {
   if (!current) return true

@@ -226,7 +226,8 @@ DMDATA リプレイ機能の `setReplayOffset` は使わない（ライブ接続
 
 ### DOM 検証テクニック（動作確認用）
 
-Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認したいときの主要な取り出し方:
+Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認したいときの主要な取り出し方
+（`window.__mapGL` の基本操作と v6 での注意点は [`map-rendering-spec.md`](map-rendering-spec.md) §11 も参照）:
 
 - **地図の震度バッジ集計**: 震度バッジ（区域ラベル・地震観測点・長周期区域・強震モニタ揺れ検知点）は 2026-08-10 の統一で全て symbol レイヤー（`icon-image`）に移行済み。これらは `.maplibregl-marker` に現れないため、集計は GeoJSON ソースから行う:
   - 例: `await window.__mapGL.getSource('quake-region-label').getData()` で震度区域ラベルの `features[].properties.scale` を集計できる
