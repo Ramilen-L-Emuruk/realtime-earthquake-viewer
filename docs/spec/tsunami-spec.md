@@ -147,14 +147,15 @@ tsunami タブへの強制切替は「**新規発報／grade 格上げ／かつ�
 
 | 判定 | 定義 | true の条件 |
 |---|---|---|
-| `isTsunamiNewFire(next, current)` | 新規発報か | `current` 無し／取消済み／`eventId` 相違、または `eventId` 欠落時に `sourceEarthquake.originTime` 相違 |
+| `isTsunamiNewFire(next, current)` | 新規発報か | `current` 無し／取消済み／`eventId` 相違、または `eventId` 欠落時に `sourceEarthquake.originTime` 相違（DMDATA XML の Earthquake 要素経由のフォールバック） |
 | `isTsunamiGradeUpgrade(next, current)` | grade 格上げか | `MajorWarning > Warning > Watch > Forecast > Unknown` の順で `next > current` |
-| `hasActiveSpecialEEW(activeEEWLevels)` | 特別警報級 EEW 発表中か | Map 内に `level=2` が 1 件以上 |
+| `hasActiveSpecialEEW(activeEEWLevels)` | 特別警報級 EEW 発表中か | `useLiveEventHandler.ts` 内の `activeEEWLevelsRef`（`Map<eventId, 0\|1\|2>`）に `level=2` が 1 件以上（`eew-spec.md §10` の `activeEEWs` とは別オブジェクト） |
 
-**バリアント差**: DMDSS 版（DMDATA）は電文に 14 桁 `eventId` が付与されるため厳密判定が可能。
-標準版（P2PQuake）の `code=552` は生 JSON に `eventId` を持たないため、`sourceEarthquake.originTime`
-（Earthquake 要素の発生時刻）で代替判定する。両方の識別子が取れない場合は保守的に続報扱いにする
-（別地震の新規津波でもタブが奪われず、後続の grade 格上げか手動タブ切替に依存する）。
+**バリアント差**: DMDSS 版（DMDATA）は電文に 14 桁 `eventId` が常に付与されるため厳密判定が可能。
+標準版（P2PQuake）の `code=552` は生 JSON に `eventId` を持たず、`earthquake` 相当のフィールド自体が
+無いため `sourceEarthquake` も常に `undefined` になる。よって上表の `originTime` フォールバックは
+**標準版では事実上常に不成立**し、保守的な続報扱い（別地震の新規津波でもタブが奪われない）が
+デフォルト挙動になる。ユーザーは grade 格上げ検知か手動タブ切替で対応する必要がある。
 
 タブ強制切替（`setActiveTabNonRealtime('tsunami')`）は `(isNew || upgraded) && !specialEEWActive`
 のときのみ呼ぶ。呼ばれた瞬間に `realtimeTabSuppressedUntilRef = Date.now() + 15000` がセットされ、
