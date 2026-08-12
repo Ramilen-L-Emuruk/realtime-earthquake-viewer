@@ -141,12 +141,37 @@
 
 ## 11. 自動タブ切替
 
-新規 tsunami イベント（`!event.cancelled`）で `setActiveTabNonRealtime('tsunami')` を呼ぶ。
-同時に `realtimeTabSuppressedUntilRef = Date.now() + 15000` をセットして、以後 15 秒は
-EEW 続報での realtime タブへの自動切替を抑制する。
+tsunami タブへの強制切替は「**新規発報／grade 格上げ／かつ特別警報級 EEW 発表中でない**」
+場合のみ発火する（`useLiveEventHandler.ts` の tsunami 分岐）。判定は `src/utils/tsunami.ts` の
+純関数 3 つに分離してテスト可能にしている:
 
-**既知の課題**: 津波の観測点更新電文が連続する状況では、続報判定なしでこの抑制が繰り返し
-リセットされるため、EEW 発報中でも realtime タブに戻れなくなる可能性（HIGH 課題）。
+| 判定 | 定義 | true の条件 |
+|---|---|---|
+| `isTsunamiNewFire(next, current)` | 新規発報か | `current` 無し／取消済み／`eventId` 相違、または `eventId` 欠落時に `sourceEarthquake.originTime` 相違（DMDATA XML の Earthquake 要素経由のフォールバック） |
+| `isTsunamiGradeUpgrade(next, current)` | grade 格上げか | `MajorWarning > Warning > Watch > Forecast > Unknown` の順で `next > current` |
+| `hasActiveSpecialEEW(activeEEWLevels)` | 特別警報級 EEW 発表中か | `useLiveEventHandler.ts` 内の `activeEEWLevelsRef`（`Map<eventId, 0\|1\|2>`）に `level=2` が 1 件以上（`eew-spec.md §10` の `activeEEWs` とは別オブジェクト） |
+
+**バリアント差**: DMDSS 版（DMDATA）は電文に 14 桁 `eventId` が常に付与されるため厳密判定が可能。
+標準版（P2PQuake）の `code=552` は生 JSON に `eventId` を持たず、`earthquake` 相当のフィールド自体が
+無いため `sourceEarthquake` も常に `undefined` になる。よって上表の `originTime` フォールバックは
+**標準版では事実上常に不成立**し、保守的な続報扱い（別地震の新規津波でもタブが奪われない）が
+デフォルト挙動になる。ユーザーは grade 格上げ検知か手動タブ切替で対応する必要がある。
+
+タブ強制切替（`setActiveTabNonRealtime('tsunami')`）は `(isNew || upgraded) && !specialEEWActive`
+のときのみ呼ぶ。呼ばれた瞬間に `realtimeTabSuppressedUntilRef = Date.now() + 15000` がセットされ、
+以後 15 秒は EEW 続報での realtime タブへの自動切替を抑制する。
+
+続報（同一 eventId の観測点更新等）は `setActiveTabNonRealtime` を呼ばず抑制タイマーを触らない。
+`title.showTsunamiTitle()` は続報でも呼ぶのでタイトルバッジは維持される。
+
+**優先度ルール**（tsunami × EEW の同時発報時）:
+
+- 通常時: tsunami 新規発報・grade 格上げは realtime を奪って tsunami タブを表示
+- 特別警報級 EEW 発表中: tsunami はタブを奪わずタイトル通知のみ（S 波カウントダウン等の
+  realtime タブが最優先。ユーザー手動でタブ切替可能）
+- 誤報取消・自動解除は 10 秒間 tsunami タブに強制切替（従来通り）。
+  ただし特別警報級 EEW 発表中は取消でもタブを奪わない（新規発報側のルールと対称）。
+  タイトルの `endTsunamiTitleWindow()`・解除音・状態リセットは常に実行される（通知漏れ無し）
 
 ## 12. 関連実装ファイル
 

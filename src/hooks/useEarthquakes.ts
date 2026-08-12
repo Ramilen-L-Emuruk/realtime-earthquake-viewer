@@ -220,23 +220,40 @@ export function useEarthquakes(
   // ともYahoo hypoInfoより正確なため、両方を上書きする。ただし報番号が古い場合は上書きしない
   // （WS/ポーリングの到着順序が入れ替わり、新しい報を古い報の値で退行させないため）。
   const enrichEEW = useCallback((eventId: string, source: EEWAlert) => {
-    setState(prev => {
-      const existing = prev.activeEEWs.get(eventId)
-      if (!existing) return prev
-      const existingSerial = Number(existing.issue?.serial ?? 0)
-      const sourceSerial = Number(source.issue?.serial ?? 0)
-      if (sourceSerial < existingSerial) return prev
-      const enriched: EEWAlert = {
-        ...existing,
-        areas: source.areas ?? source.regions ?? existing.areas,
-        earthquake: {
-          ...existing.earthquake,
-          condition: source.earthquake.condition,
-          hypocenter: source.earthquake.hypocenter,
-        },
-      }
-      return { ...prev, activeEEWs: new Map(prev.activeEEWs).set(eventId, enriched) }
-    })
+    // 現在の state から既存 EEW を取り出して severity の格上げを判定する。
+    // setState の関数内で判定して外側から onLiveEvent を呼ぶ二重評価を避けるため、
+    // stateRef.current 経由で参照する。
+    const existing = stateRef.current.activeEEWs.get(eventId)
+    if (!existing) return
+    const existingSerial = Number(existing.issue?.serial ?? 0)
+    const sourceSerial = Number(source.issue?.serial ?? 0)
+    if (sourceSerial < existingSerial) return
+    // severity は upgrade only。既存が Warning のときはソースが弱くても維持し、
+    // 既存が Forecast/Unknown で source が Warning のときは Warning に格上げする。
+    // Yahoo hypoInfo 由来の推定 severity（scaleNum ヒューリスティック）に対して
+    // P2PQuake code=556（仕様上 Warning 固定）が来たときにレベルダウンさせない。
+    // 現状 enrichEEW の呼び出し元は P2PQuake code=556 のみで source.severity は常に
+    // Warning。`source.severity ?? existing.severity` は将来別ソースから呼ばれる場合の
+    // 防御分岐（severity は必須プロパティなので現状 undefined にはならない）。
+    const enriched: EEWAlert = {
+      ...existing,
+      severity: existing.severity === 'Warning' ? 'Warning' : (source.severity ?? existing.severity),
+      areas: source.areas ?? source.regions ?? existing.areas,
+      earthquake: {
+        ...existing.earthquake,
+        condition: source.earthquake.condition,
+        hypocenter: source.earthquake.hypocenter,
+      },
+    }
+    setState(prev => ({ ...prev, activeEEWs: new Map(prev.activeEEWs).set(eventId, enriched) }))
+    // severity が Warning に格上げされた場合、useLiveEventHandler 側の
+    // activeEEWLevelsRef（音・通知・タブ切替を駆動する独立トラッカー）が
+    // Yahoo の弱い初回推定のままにならないよう、通知層へ再評価を明示的に発火する。
+    // Yahoo hypoInfo 先着＋P2PQuake code=556 後着の順序で警報が無音・通知なしになる
+    // CRIT-1 の完全解消に必要な連携（レポート修正方針②）。
+    if (existing.severity !== 'Warning' && enriched.severity === 'Warning' && !isSilentRef.current) {
+      onLiveEventRef.current?.(enriched)
+    }
   }, [])
 
   // WebSocket 受信時のエントリポイント: event.time を基準にキューへ挿入する
@@ -426,9 +443,16 @@ export function useEarthquakes(
             next.set(key, { ...existing, cancelledAt: now })
             return { ...prev, activeEEWs: next, lastUpdate: now }
           }
+          // 続報の上書きだが severity は upgrade only にする（Yahoo hypoInfo 続報が
+          // 弱い推定値で来ても、既に P2PQuake WS 経由で Warning に上げていたら維持）。
+          // areas/earthquake の enrichment 保持は別途扱う（本コミットの範囲外）。
+          const existing = prev.activeEEWs.get(key)
+          const merged: EEWAlert = existing
+            ? { ...eew, severity: existing.severity === 'Warning' ? 'Warning' : eew.severity }
+            : eew
           return {
             ...prev,
-            activeEEWs: new Map(prev.activeEEWs).set(key, eew),
+            activeEEWs: new Map(prev.activeEEWs).set(key, merged),
             lastUpdate: now,
           }
         }

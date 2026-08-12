@@ -50,15 +50,20 @@
 | 経路 | バリアント | severity | condition | 長周期 lgIntTo | 使い方 |
 |---|---|---|---|---|---|
 | DMDATA WS/REST | DMDSS | 電文値（Warning/Forecast） | 電文値（`'仮定震源要素'` あり） | あり | 主系 |
-| P2PQuake WS | standard | 電文に無い（後述バグ） | 数値/文字列 | なし | 主系（DMDSS 版は不使用） |
+| P2PQuake WS | standard | 電文に無いが `convertEvent` で一律 `'Warning'` 付与 | 数値/文字列 | なし | 主系（DMDSS 版は不使用） |
 | Yahoo hypoInfo | 両バリアント | 震度からの推定（`>= 5弱 ? 'Warning' : 'Forecast'`） | 常に `'以上'` 固定 | なし | standard 版で補完的に検知 |
 
+P2PQuake の 556 で severity が付与される仕組みは [`data-sources-spec.md`](data-sources-spec.md) §3
+を参照（電文仕様と付与ロジックはそちらに一本化）。
+
 **enrichEEW（`useEarthquakes.ts`）**: Yahoo hypoInfo で先に検知した EEW に、後着の P2PQuake / DMDATA で
-より正確な `areas` / `condition` / `hypocenter` を上書きする。ただし現状の実装では以下の課題がある:
-- Yahoo 続報が「新しい報」として `activeEEWs` を丸ごと上書きすると、enrichEEW で入れた情報が揮発する
-- P2PQuake 経路は severity フィールド自体が生成されておらず、Yahoo が後着するまで警報級が
-  「予報」扱いに落ちる（`code=556` は仕様上すべて警報級なので `severity: 'Warning'` を付与するか、
-  `areas[].kindCode ∈ {10, 11, 19}` から導出するのが正しい）
+より正確な `areas` / `condition` / `hypocenter` を上書きする。severity は upgrade only（既存 `'Warning'` は
+維持、`Forecast/Unknown` から `'Warning'` への格上げのみ許可）。Warning への格上げ時は `onLiveEvent` に
+enriched オブジェクトを渡して `useLiveEventHandler` 側の音・通知・タブ切替のレベル再評価をトリガーする
+（Yahoo 弱推定＋P2PQuake 後着で無音になる事象の解消）。ただし現状は次の課題が残る:
+- Yahoo 続報が「新しい報」として `activeEEWs` を丸ごと上書きすると、enrichEEW で入れた `areas` /
+  `earthquake.condition` / `earthquake.hypocenter` が揮発する（`case 'eew'` のマージ側では severity だけを
+  upgrade only で保持）
 
 ## 4. レベル判定（`computeSingleEEWLevel`）
 
@@ -143,11 +148,23 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
   `playAlertSound(type)`。種別: `eewSpecial` / `eew` / `eewForecast` / `eewUpdate` / `eewFinal` / `eewCancel`
 - **通知**: `showBrowserNotification(...)` で OS 通知
 - **読み上げ**: `speakWithVoicevox(eewAlertToText(...))`
-- **自動タブ切替**: 新規・レベルアップ時に `setActiveTab('realtime')` 強制
+- **自動タブ切替**: 新規・レベルアップ時に `setActiveTab('realtime')` 強制。続報は
+  `setActiveTabRealtimeOnUpdate()` で抑制タイマーを尊重する。抑制タイマーは
+  `setActiveTabNonRealtime` 呼び出し全般で共有されるため、直前 15 秒以内に地震情報・
+  津波情報・長周期地震動情報のいずれかで非 realtime タブへ切り替わっていれば、EEW 続報は
+  realtime へ戻らない。**特別警報級 EEW（level=2）発表中は tsunami 側からタブが奪われない**
+  優先度ルールと対称（詳細は [`tsunami-spec.md`](tsunami-spec.md) §11 参照）
 - **カメラフィット**: `useEewLayerData` 経由で `FitToEEWGL` が発火
 
-続報時（`isNew:false`）は音を `eewUpdate` に抑制する。ただし現状は続報時の音・読み上げの多重発火防止に
-弱い箇所がある（`useLiveEventHandler.ts` 内の 5 箇所の setTimeout が未追跡）。
+**音種別の優先順位**（`selectEEWSoundType` の判定順）:
+1. **新規発報またはレベル格上げ**（`isNew || levelUpgraded`）→ `currentLevel` に応じて
+   `eewSpecial`（特別警報）／`eew`（警報）／`eewForecast`（予報）。**`isFinal` より優先**するため、
+   最終報で震度・長周期階級が上がって levelUpgraded=true になる最重要ケースでも警戒音を鳴らす。
+2. **続報の最終報**（`!isNew && !levelUpgraded && isFinal`）→ `eewFinal`（穏やかな終了音）
+3. **通常続報**（上記のいずれでもない）→ `eewUpdate`
+
+ただし現状は続報時の音・読み上げの多重発火防止に弱い箇所がある（`useLiveEventHandler.ts` 内の
+5 箇所の setTimeout が未追跡）。
 
 ## 10. `activeEEWs` の状態遷移
 

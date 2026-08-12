@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { calcArrivalSafetyMarginSec, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, type HypoInfoPendingMissing } from './eew'
+import { calcArrivalSafetyMarginSec, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, selectEEWSoundType, type HypoInfoPendingMissing } from './eew'
 import type { YahooHypoInfoItem } from '../services/kyoshin'
 import type { EEWAlert } from '../types/earthquake'
 
@@ -201,6 +201,44 @@ describe('computeSingleEEWLevel', () => {
   it('震度6弱以上と長周期地震動階級4以上を同時に満たしてもレベル2のまま', () => {
     const eew = makeEEW({ forecastMaxScale: 60, forecastMaxLpgmClass: 4 })
     expect(computeSingleEEWLevel(eew)).toBe(2)
+  })
+})
+
+describe('selectEEWSoundType', () => {
+  it('新規発報・特別警報級は eewSpecial', () => {
+    expect(selectEEWSoundType(true, false, 2, false)).toBe('eewSpecial')
+  })
+
+  it('新規発報・警報級は eew', () => {
+    expect(selectEEWSoundType(true, false, 1, false)).toBe('eew')
+  })
+
+  it('新規発報・予報級は eewForecast', () => {
+    expect(selectEEWSoundType(true, false, 0, false)).toBe('eewForecast')
+  })
+
+  it('新規発報かつ最終報でも新規側の音（警報系）を優先する', () => {
+    expect(selectEEWSoundType(true, false, 2, true)).toBe('eewSpecial')
+  })
+
+  it('レベル格上げは新規と同じ扱い（特別警報級）', () => {
+    expect(selectEEWSoundType(false, true, 2, false)).toBe('eewSpecial')
+  })
+
+  it('レベル格上げは新規と同じ扱い（警報級）', () => {
+    expect(selectEEWSoundType(false, true, 1, false)).toBe('eew')
+  })
+
+  it('最終報かつレベル格上げは eewFinal より eewSpecial を優先する（CRIT-2 対応：最終報で震度が上がる最重要ケースを警戒音で知らせる）', () => {
+    expect(selectEEWSoundType(false, true, 2, true)).toBe('eewSpecial')
+  })
+
+  it('続報の最終報（新規でも格上げでもない）は eewFinal', () => {
+    expect(selectEEWSoundType(false, false, 1, true)).toBe('eewFinal')
+  })
+
+  it('通常続報（最終でも新規でも格上げでもない）は eewUpdate', () => {
+    expect(selectEEWSoundType(false, false, 1, false)).toBe('eewUpdate')
   })
 })
 
