@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 
 // アイドル復帰時に戻すデフォルトタブの選択肢（津波情報・設定は対象外）
 export type DefaultTabSetting = 'earthquake' | 'realtime'
@@ -83,7 +83,9 @@ function load(): AppSettings {
 export function useSettings() {
   const [settings, setSettings] = useState<AppSettings>(load)
 
-  const updateSetting = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
+  // useCallback で参照を安定化する（React.memo 化された SettingsTab へ props として
+  // 渡されるため、毎レンダー新関数だと memo が破られる）。
+  const updateSetting = useCallback(<K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     setSettings(prev => {
       const next = { ...prev, [key]: value }
       try {
@@ -91,7 +93,7 @@ export function useSettings() {
       } catch { /* storage full */ }
       return next
     })
-  }
+  }, [])
 
   return { settings, updateSetting }
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation } from '../../types/earthquake'
 import { formatDateTimeMin, formatTime } from '../../utils/formatters'
 
@@ -322,7 +322,8 @@ function getTopGrade(tsunamis: JMATsunami[]): TsunamiGrade {
   return 'Unknown'
 }
 
-export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservationClick, focusedDistrict, obsUpdateStatus }: Props) {
+// React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
+export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservationClick, focusedDistrict, obsUpdateStatus }: Props) {
   // cancelledAt がある = 10秒表示中なので active に含める
   const active = tsunamis.filter(t => !t.cancelled || t.cancelledAt)
 
@@ -513,4 +514,4 @@ export function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservat
       </div>
     </div>
   )
-}
+})

@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { memo, useState, useCallback } from 'react'
 import { zipSync } from 'fflate'
 import type { TelegramLogEntry } from '../../types/earthquake'
 
@@ -57,7 +57,8 @@ interface Props {
   onClear: () => void
 }
 
-export function TelegramTab({ telegramLog, onClear }: Props) {
+// React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
+export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
   const [kindFilter, setKindFilter] = useState<KindFilter>('all')
@@ -317,4 +318,4 @@ export function TelegramTab({ telegramLog, onClear }: Props) {
       </div>
     </div>
   )
-}
+})

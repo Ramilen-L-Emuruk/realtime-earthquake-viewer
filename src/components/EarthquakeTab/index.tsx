@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { JMAQuake, JMALpgm } from '../../types/earthquake'
 import { EarthquakeCard } from './EarthquakeCard'
 
@@ -17,7 +18,8 @@ interface Props {
 
 // 地震情報タブの右パネル。地震カードの一覧を表示し、クリックで地図表示対象を選択する。
 // 地図そのものは App が常時表示する。
-export function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, lpgmByEventId, activeLpgmEventId, onToggleLpgm }: Props) {
+// React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
+export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, lpgmByEventId, activeLpgmEventId, onToggleLpgm }: Props) {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -76,4 +78,4 @@ export function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, is
       )}
     </div>
   )
-}
+})

@@ -105,6 +105,28 @@ App が直接持つのは「1 秒毎更新」（強震モニタ・`kyoshinIndice
 過剰な再レンダーが伝播しないよう、下位で `useMemo`・`React.memo` を活用する
 （詳細は [`map-rendering-spec.md`](map-rendering-spec.md) 参照）。
 
+### タブコンポーネントの再レンダー抑制
+
+`EarthquakeTab` / `RealtimeTab` / `TsunamiTab` / `TelegramTab` / `SettingsTab` と `IconNav` は
+すべて `React.memo` でラップされている。App が psWave の 100ms 更新や kyoshin の 1Hz 更新で
+再レンダーするたびに、非表示中のタブ（`invisible` で DOM ツリーは維持）まで reconciliation を
+受けないようにするため。
+
+memo を効かせるには props が参照安定である必要があるため、以下を実施している:
+- App の inline 関数 props（`toggleLpgmFromEarthquake` / `linkTsunamiToEarthquake` / `handleTabChange` 等）は
+  `useCallback` で参照を安定化
+- `setActiveTabNonRealtime` / `setActiveTabRealtimeOnUpdate` も `useCallback` 化
+- `filteredEarthquakes = earthquakes.filter(...)` は `useMemo` で包む（`Array.filter` は毎回新規配列を
+  返すため、包まないと `EarthquakeTab` / `TsunamiTab` の memo が破られる）
+- `SettingsTab.onTest` は多数のテスト関数をまとめたオブジェクトなので `useMemo` で安定化
+- `useSettings.updateSetting` は `useCallback`、`useTestScenarios` の戻り値オブジェクトは `useMemo` で参照安定化
+
+実測（Playwright + 一時的な render counter）: EEW 特別警報テストで発報中 5 秒間、非表示の
+`EarthquakeTab` / `TsunamiTab` / `SettingsTab` はいずれも 0 回レンダー（memo 適用前は SettingsTab で
+120 回、`filteredEarthquakes` メモ化前は EarthquakeTab / TsunamiTab も同等以上）。usePsWaveCalc の
+100ms 更新と kyoshin 1Hz 更新による親再レンダーの連鎖は非表示タブに届かず、実質的な CPU 負荷を大幅に
+削減する。
+
 ### MapView / JapanMapGL
 
 `MapView` は App と地図実装（`JapanMapGL`）の間の薄いラッパー。`JapanMapGL` が MapLibre GL の中枢で、
