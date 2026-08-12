@@ -53,12 +53,37 @@ export function App() {
   const [focusedObsName, setFocusedObsName] = useState<{ name: string; ts: number } | null>(null)
   const [activeLpgmEventId, setActiveLpgmEventId] = useState<string | null>(null)
   const [activeLpgmSource, setActiveLpgmSource] = useState<'earthquake' | 'eew' | null>(null)
-  // 地震カード切替時は LPGM 表示をリセットする
-  const selectQuake = (id: string | null) => {
+  // 地震カード切替時は LPGM 表示をリセットする。子タブ（React.memo 化済み）へ props として
+  // 渡すため useCallback で参照を安定化する（毎レンダー再生成すると memo が破られる）。
+  const selectQuake = useCallback((id: string | null) => {
     setSelectedQuakeId(id)
     setActiveLpgmEventId(null)
     setActiveLpgmSource(null)
-  }
+  }, [])
+  // 地震情報タブ / EEW（リアルタイム）タブそれぞれで LPGM 表示をトグルするハンドラー。
+  // 同じ eventId を再度渡すと非表示化、それ以外の eventId なら表示中の source を切り替える。
+  const toggleLpgmFromEarthquake = useCallback((eventId: string) => {
+    setActiveLpgmEventId(prev => {
+      const next = prev === eventId ? null : eventId
+      setActiveLpgmSource(next ? 'earthquake' : null)
+      return next
+    })
+  }, [])
+  const toggleLpgmFromEew = useCallback((eventId: string) => {
+    setActiveLpgmEventId(prev => {
+      const next = prev === eventId ? null : eventId
+      setActiveLpgmSource(next ? 'eew' : null)
+      return next
+    })
+  }, [])
+  const deactivateLpgm = useCallback(() => {
+    setActiveLpgmEventId(null)
+    setActiveLpgmSource(null)
+  }, [])
+  // 津波タブで観測点名をクリックしたときにフォーカス対象として通知する。
+  const focusTsunamiObs = useCallback((name: string) => {
+    setFocusedObsName({ name, ts: Date.now() })
+  }, [])
   // EEW 発報中（cancelledAt 除外済み）・揺れ検知フラグ・地震情報リスト・デフォルトタブを
   // タイマーコールバック内やフック間で参照するための ref。
   // 値の確定はレンダー後半（useEarthquakes / useKyoshinDetectorV2 の後）で毎レンダー代入する。
@@ -80,14 +105,16 @@ export function App() {
   const realtimeTabSuppressedUntilRef = useRef<number>(0)
 
   // リアルタイム以外のタブへ移動するときに呼ぶ。抑制タイマーをリセットする。
-  const setActiveTabNonRealtime = (tab: Exclude<TabId, 'realtime'>) => {
+  // 子タブ・useLiveEventHandler へ props として渡すため useCallback で参照を安定化する
+  // （React.memo 化した子タブが親レンダーで無駄に再レンダーされないようにする）。
+  const setActiveTabNonRealtime = useCallback((tab: Exclude<TabId, 'realtime'>) => {
     realtimeTabSuppressedUntilRef.current = Date.now() + 15000
     setActiveTab(tab)
-  }
+  }, [])
 
   // EEW 続報（新規発報・レベルアップ以外）による realtime タブ移動。
   // 抑制タイマー発動中はスキップする。
-  const setActiveTabRealtimeOnUpdate = () => {
+  const setActiveTabRealtimeOnUpdate = useCallback(() => {
     const remaining = realtimeTabSuppressedUntilRef.current - Date.now()
     if (remaining > 0) {
       log.debug(`[tab] → realtime スキップ (EEW続報・抑制中 残り${remaining}ms)`)
@@ -95,7 +122,7 @@ export function App() {
     }
     log.info('[tab] → realtime (EEW続報)')
     setActiveTab('realtime')
-  }
+  }, [])
 
   // useLiveEventHandler が返す resetTsunamiScrollToTop を revertToDefaultTab から呼べるようにする ref。
   // revertToDefaultTab はフック呼び出しより前に定義されるため、defaultTabRef と同様に
@@ -139,6 +166,61 @@ export function App() {
   earthquakesRef.current = earthquakes
   tsunamisRef.current = tsunamis
 
+  // 津波タブから地震情報カードへのリンク（地震タブへ移動して該当カードを選択する）。
+  // selectQuake は上で useCallback 化、setActiveTabNonRealtime も useCallback 化済み。
+  const linkTsunamiToEarthquake = useCallback((earthquakeTime: string) => {
+    selectQuake(earthquakeTime)
+    setActiveTabNonRealtime('earthquake')
+  }, [selectQuake, setActiveTabNonRealtime])
+  // SettingsTab の onTest オブジェクトはメモ化して同一参照を保つ（毎レンダー再生成すると
+  // React.memo 化された SettingsTab が無駄に再レンダーされる）。
+  // WARNING: 新規テストハンドラーを追加するときは、対応する simulate* 関数を必ず
+  // 下方の deps 配列にも追加すること。deps を更新し忘れると testHandlers 内で古い
+  // クロージャを握り続け、テスト関数のバグが再現できなくなる（`react-hooks/exhaustive-deps`
+  // による自動検出は現状の lint 設定では実行されない）。
+  const testHandlers = useMemo(() => ({
+    earthquake:        simulateEarthquake,
+    eew:               simulateEEW,
+    eewWarning:        simulateEEWWarning,
+    eewForecast:       simulateEEWForecast,
+    eewRetraction:     simulateEEWRetraction,
+    tsunami:           simulateTsunami,
+    tsunamiWarning:    simulateTsunamiWarning,
+    tsunamiWatch:      simulateTsunamiWatch,
+    tsunamiForecast:   simulateTsunamiForecast,
+    tsunamiRetraction: simulateTsunamiRetraction,
+    nankaiChecking:    () => simulateNankai('調査中'),
+    nankaiWatch:       () => simulateNankai('巨大地震注意'),
+    nankaiWarning:     () => simulateNankai('巨大地震警戒'),
+    kohatsu:           simulateKohatsu,
+    notification:      () => {
+      if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
+        alert('先に「通知を許可する」ボタンをクリックしてください。')
+        return
+      }
+      new Notification('地震情報テスト', {
+        body: '東京都内陸部（テスト） 最大震度4 M5.5',
+        icon: `${import.meta.env.BASE_URL}icons/icon.svg`,
+        tag: 'test-notification',
+      })
+    },
+  }), [
+    simulateEarthquake, simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWRetraction,
+    simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
+    simulateNankai, simulateKohatsu,
+  ])
+  // IconNav の onTabChange。手動タブ切替は抑制タイマーをリセットして即時反映する。
+  const handleTabChange = useCallback((tab: TabId) => {
+    if (tab === 'realtime') {
+      realtimeTabSuppressedUntilRef.current = 0
+      log.info('[tab] → realtime (手動選択)')
+      setActiveTab('realtime')
+    } else {
+      log.info(`[tab] → ${tab} (手動選択)`)
+      setActiveTabNonRealtime(tab)
+    }
+  }, [setActiveTabNonRealtime])
+
   const scenarioTest = useTestScenarios(loadReplayEvents)
 
   const { points: quakeHeatPoints } = useQuakeHeatmap(settings.showQuakeHeatmap, settings.dmdataApiKey, earthquakes)
@@ -177,8 +259,13 @@ export function App() {
     }
   }, [])
 
-  const filteredEarthquakes = earthquakes
-    .filter(q => settings.minDisplayScale < 0 || q.earthquake.maxScale >= settings.minDisplayScale)
+  // filter は毎回新規配列を返すため useMemo で参照を安定化する
+  // （EarthquakeTab / TsunamiTab へ props として渡すため。毎レンダー新配列を渡すと
+  // shallow compare で常に不一致となり React.memo が実質無効化される）。
+  const filteredEarthquakes = useMemo(
+    () => earthquakes.filter(q => settings.minDisplayScale < 0 || q.earthquake.maxScale >= settings.minDisplayScale),
+    [earthquakes, settings.minDisplayScale],
+  )
 
   const latest = filteredEarthquakes[0] ?? null
   // キャンセル表示中のカードは選択対象から除外する（フォールバック用）
@@ -642,13 +729,7 @@ export function App() {
               error={error}
               lpgmByEventId={lpgmByEventId}
               activeLpgmEventId={activeLpgmEventId}
-              onToggleLpgm={(eventId) => {
-                setActiveLpgmEventId(prev => {
-                  const next = prev === eventId ? null : eventId
-                  setActiveLpgmSource(next ? 'earthquake' : null)
-                  return next
-                })
-              }}
+              onToggleLpgm={toggleLpgmFromEarthquake}
             />
           </div>
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'realtime' ? ' invisible pointer-events-none' : ''}`}>
@@ -659,28 +740,16 @@ export function App() {
               kyoshinV2Detections={kyoshinV2.detections}
               swaveArrival={swaveArrival}
               activeLpgmEventId={activeLpgmEventId}
-              onToggleLpgm={(eventId) => {
-                setActiveLpgmEventId(prev => {
-                  const next = prev === eventId ? null : eventId
-                  setActiveLpgmSource(next ? 'eew' : null)
-                  return next
-                })
-              }}
-              onDeactivateLpgm={() => {
-                setActiveLpgmEventId(null)
-                setActiveLpgmSource(null)
-              }}
+              onToggleLpgm={toggleLpgmFromEew}
+              onDeactivateLpgm={deactivateLpgm}
             />
           </div>
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'tsunami' ? ' invisible pointer-events-none' : ''}`}>
             <TsunamiTab
               tsunamis={tsunamis}
               earthquakes={filteredEarthquakes}
-              onEarthquakeLink={(earthquakeTime) => {
-                selectQuake(earthquakeTime)
-                setActiveTabNonRealtime('earthquake')
-              }}
-              onObservationClick={(name) => setFocusedObsName({ name, ts: Date.now() })}
+              onEarthquakeLink={linkTsunamiToEarthquake}
+              onObservationClick={focusTsunamiObs}
               focusedDistrict={focusedDistrict}
               obsUpdateStatus={obsUpdateStatus}
             />
@@ -693,33 +762,7 @@ export function App() {
               settings={settings}
               onUpdate={updateSetting}
               dmdataConnectionStatus={connectionStatus}
-              onTest={{
-                earthquake:   simulateEarthquake,
-                eew:          simulateEEW,
-                eewWarning:   simulateEEWWarning,
-                eewForecast:  simulateEEWForecast,
-                eewRetraction: simulateEEWRetraction,
-                tsunami:          simulateTsunami,
-                tsunamiWarning:   simulateTsunamiWarning,
-                tsunamiWatch:     simulateTsunamiWatch,
-                tsunamiForecast:  simulateTsunamiForecast,
-                tsunamiRetraction: simulateTsunamiRetraction,
-                nankaiChecking:   () => simulateNankai('調査中'),
-                nankaiWatch:      () => simulateNankai('巨大地震注意'),
-                nankaiWarning:    () => simulateNankai('巨大地震警戒'),
-                kohatsu:          simulateKohatsu,
-                notification: () => {
-                  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
-                    alert('先に「通知を許可する」ボタンをクリックしてください。')
-                    return
-                  }
-                  new Notification('地震情報テスト', {
-                    body: '東京都内陸部（テスト） 最大震度4 M5.5',
-                    icon: `${import.meta.env.BASE_URL}icons/icon.svg`,
-                    tag: 'test-notification',
-                  })
-                },
-              }}
+              onTest={testHandlers}
               kyoshinTimeOffset={replayTimeOffset}
               onSetKyoshinTimeOffset={isDmdss ? undefined : setReplayTimeOffset}
               kyoshinInputDateTime={kyoshinInputDateTime}
@@ -735,16 +778,7 @@ export function App() {
         {/* アイコンナビ（一番外側＝右端 / モバイルは最下部） */}
         <IconNav
           activeTab={activeTab}
-          onTabChange={(tab) => {
-            if (tab === 'realtime') {
-              realtimeTabSuppressedUntilRef.current = 0
-              log.info('[tab] → realtime (手動選択)')
-              setActiveTab('realtime')
-            } else {
-              log.info(`[tab] → ${tab} (手動選択)`)
-              setActiveTabNonRealtime(tab)
-            }
-          }}
+          onTabChange={handleTabChange}
           tsunamiGrade={tsunamiGrade}
           eewLevel={computeEEWLevel(activeEEWsNoCancelled)}
         />

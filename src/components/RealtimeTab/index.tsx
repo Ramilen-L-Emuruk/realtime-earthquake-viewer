@@ -1,6 +1,6 @@
 // リアルタイムタブの右パネル。地図エリアは JapanMap が強震モニタ（観測点）と
 // 予報円を描画し、ここでは EEW 情報カード・強震モニタ検知(V2)カード・震度スケール凡例・注記を表示する。
-import { useMemo, useRef } from 'react'
+import { memo, useMemo, useRef } from 'react'
 import type { EEWAlert } from '../../types/earthquake'
 import type { DetectionEvent, Confidence } from '../../utils/kyoshinDetector'
 import { MIN_DETECTION_INDEX, buildSiteIndex, resolveMembers, type DetectedPoint } from '../../utils/kyoshinDetectionView'
@@ -406,7 +406,8 @@ function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent
   )
 }
 
-export function RealtimeTab({ eews, kyoshinSites, kyoshinIndices, kyoshinV2Detections, swaveArrival, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: Props) {
+// React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
+export const RealtimeTab = memo(function RealtimeTab({ eews, kyoshinSites, kyoshinIndices, kyoshinV2Detections, swaveArrival, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: Props) {
   // メンバー観測点キー → 現在の座標＋インデックスの索引（各カードの震度分布集計に使う）
   const siteIndex = useMemo(() => buildSiteIndex(kyoshinSites, kyoshinIndices), [kyoshinSites, kyoshinIndices])
   return (
@@ -479,4 +480,4 @@ export function RealtimeTab({ eews, kyoshinSites, kyoshinIndices, kyoshinV2Detec
       </div>
     </div>
   )
-}
+})
