@@ -57,12 +57,26 @@ playAlertSound(type: AlertSoundType)
 - `globalVolume`（0.0〜1.0）を `setGlobalVolume(v)` で更新
 - 各種別内の相対バランスは `PLAYERS[type]` 内でハードコード
 
+### マスターチェーンとリミッター
+
+`alertSound` の全音源と `voicevox` の TTS 発話は、個々の `.connect(ctx.destination)` ではなく
+`getMasterInput(ctx)`（`alertSound.ts` から export）を経由し、
+`GainNode → DynamicsCompressorNode → ctx.destination` の順で流れる。特別警報級 EEW
+（`eewSpecial`）と大津波警報（`tsunamiMajor`）が同時発火した場合、または TTS 継続中に
+警報音が重なった場合、素の加算合成では波形がクリップして警報音がノイズに埋もれるため、
+compressor で合成音圧の暴走をリミッター的に抑える。単独再生時は threshold 以下なので
+音色に実質影響しない。パラメータは threshold=-6dB / knee=6 / ratio=4 / attack=3ms /
+release=250ms（音楽制作のリミッター標準的な値）。
+
 ### 既知の課題
 
-- 優先度制御・キュー・重複再生防止が皆無。EEW と津波の同時発報で音が加算合成される
-  （現状はドメイン特性上、同時発生は稀）
+- 優先度キュー（低優先度の音を高優先度中に抑制するシリアライズ）と重複再生の抑止（dedup）は
+  未実装。マスターチェーンの compressor で合成音圧の暴走は防いでいるが、UX として「特別警報中は
+  他の音を鳴らさない」「同一種別の呼び出しを短時間ガードする」等の能動的な制御は行っていない。
+  dedup を種別単位で入れると、群発地震で連続する別イベントの警報音を誤って抑止してしまう
+  リスクがあるため、実装するなら eventId 単位のキーで慎重に設計する必要がある
 - `AudioContext.resume()` の Promise を await せずに `currentTime + 0.02` をスケジュール（iOS Safari で初回音がドロップしうる）
-- `eewSpecial` の内部ゲイン合計が 1.0 を超え、単独でもクリップしうる
+- `eewSpecial` の内部ゲイン合計が 1.0 を超え、単独でもクリップしうる（compressor で緩和される）
 
 ## 3. VOICEVOX 読み上げ（`voicevox`）
 
