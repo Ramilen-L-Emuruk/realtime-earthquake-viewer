@@ -1,4 +1,4 @@
-import { getAudioContext } from './alertSound'
+import { getAudioContext, getMasterInput } from './alertSound'
 import { findPhraseBreakMatch, getTtsPhraseBreakDictCache, isPlaceNameKey, loadTtsPhraseBreakDict } from './ttsPhraseBreakDict'
 import { log } from './logger'
 
@@ -234,7 +234,10 @@ export async function speakWithVoicevox(
 
   const gainNode = ctx.createGain()
   gainNode.gain.value = Math.min(1, Math.max(0, volume))
-  gainNode.connect(ctx.destination)
+  // TTS も alertSound と同じマスターチェーン（Gain → DynamicsCompressor → destination）を
+  // 経由させる。TTS 継続中に次の警報音が加算されても合成音圧の暴走を compressor で抑える
+  // （CRIT-3 対応の一部）。
+  gainNode.connect(getMasterInput(ctx))
 
   const chunks = splitIntoChunks(text)
 
