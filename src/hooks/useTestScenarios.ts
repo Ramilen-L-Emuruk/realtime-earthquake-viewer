@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import type { TestScenarioFile, TestScenarioIndex } from '../types/testScenario'
 import type { ReplayEntry } from '../services/dmdataReplay'
 import { instantiateScenario } from '../utils/testScenarioReplay'
@@ -109,5 +109,11 @@ export function useTestScenarios(
       .finally(() => { fetchingIdsRef.current.delete(id) })
   }, [loadReplayEvents])
 
-  return { loadState, scenarios, playingIds, errorIds, play }
+  // 戻り値をメモ化する。呼び出し元（SettingsTab）が React.memo でラップされており、
+  // 毎レンダー新オブジェクトを返すと props の shallow compare で常に不一致となり
+  // memo が破られるため、内部で参照する各値が変わったときだけ新オブジェクトを返す。
+  return useMemo(
+    () => ({ loadState, scenarios, playingIds, errorIds, play }),
+    [loadState, scenarios, playingIds, errorIds, play],
+  )
 }

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { memo, type ReactNode } from 'react'
 
 export type TabId = 'earthquake' | 'realtime' | 'tsunami' | 'settings' | 'telegrams'
 
@@ -79,7 +79,8 @@ interface Props {
 }
 
 // 縦並び（モバイルは横並び）のアイコンボタンによるナビゲーション。
-export function IconNav({ activeTab, onTabChange, tsunamiGrade, eewLevel }: Props) {
+// React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
+export const IconNav = memo(function IconNav({ activeTab, onTabChange, tsunamiGrade, eewLevel }: Props) {
   return (
     <nav
       className="flex flex-row lg:flex-col items-center justify-center lg:justify-start gap-1 p-1.5 bg-panel border-t lg:border-t-0 lg:border-l border-border flex-shrink-0"
@@ -109,4 +110,4 @@ export function IconNav({ activeTab, onTabChange, tsunamiGrade, eewLevel }: Prop
       ))}
     </nav>
   )
-}
+})
