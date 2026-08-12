@@ -283,6 +283,8 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
     ? '遠地地震'
     : (VXSE_ISSUE_TYPE[headType] ?? '震源・震度情報')
 
+  const correct: CorrectType = str(data.infoType) === '訂正' ? '訂正' : 'なし'
+
   return {
     kind: 'quake',
     id: `dmdata-quake-${eventId}-${str(data.serialNo ?? data.serial ?? '1')}`,
@@ -292,7 +294,7 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
       source: str(data.editorialOffice ?? data.publishingOffice),
       time: str(data.reportDateTime ?? data.pressDateTime),
       type: issueType,
-      correct: 'なし' as CorrectType,
+      correct,
     },
     earthquake: {
       time: originTime,
