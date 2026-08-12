@@ -2,7 +2,7 @@
 // parseEarthquakeFromXml（REST 履歴経路）のテスト。
 // DOMParser を使うためこのファイルだけ jsdom 環境で動かす（既定は node）。
 import { describe, it, expect } from 'vitest'
-import { parseEarthquakeFromXml } from './dmdataParser'
+import { parseEarthquake, parseEarthquakeFromXml } from './dmdataParser'
 
 // 震度速報（VXSE51）。震源が未確定の段階で出るため Earthquake 要素を持たず、
 // 震度は Pref > Area（一次細分区域）までしか無い。
@@ -161,5 +161,47 @@ describe('parseEarthquakeFromXml: 震源・震度に関する情報（VXSE53）'
   it('震源を持つはずの電文で座標が読めなければ捨てる', () => {
     const broken = VXSE53_XML.replace('+39.9+142.2-50000/', '')
     expect(parseEarthquakeFromXml('VXSE53', broken)).toBeNull()
+  })
+})
+
+// JSON 経路（parseEarthquake）: infoType の訂正フラグが握り潰されないことを確認する。
+// 従来は correct を 'なし' 固定にしていて、UI での「訂正」バッジ表示が発火しなかった。
+describe('parseEarthquake: JSON 訂正フラグの伝播', () => {
+  const baseJson = {
+    eventId: '20260809025800',
+    serialNo: '2',
+    reportDateTime: '2026-08-09T03:05:00+09:00',
+    targetDateTime: '2026-08-09T02:58:00+09:00',
+    editorialOffice: '気象庁',
+    body: {
+      earthquake: {
+        arrivalTime: '2026-08-09T02:58:00+09:00',
+        hypocenter: {
+          name: '岩手県沖',
+          coordinate: { latitude: { value: '39.9' }, longitude: { value: '142.2' }, height: { value: '-50000' } },
+        },
+        magnitude: { value: '5.1' },
+        maxInt: '4',
+      },
+      intensity: { maxInt: '4' },
+    },
+  }
+
+  it('infoType が「訂正」なら correct=訂正 になる', () => {
+    const quake = parseEarthquake('VXSE53', { ...baseJson, infoType: '訂正' })
+    expect(quake).not.toBeNull()
+    expect(quake!.issue.correct).toBe('訂正')
+  })
+
+  it('infoType が「発表」なら correct=なし のまま', () => {
+    const quake = parseEarthquake('VXSE53', { ...baseJson, infoType: '発表' })
+    expect(quake).not.toBeNull()
+    expect(quake!.issue.correct).toBe('なし')
+  })
+
+  it('infoType 欠落時は correct=なし', () => {
+    const quake = parseEarthquake('VXSE53', baseJson)
+    expect(quake).not.toBeNull()
+    expect(quake!.issue.correct).toBe('なし')
   })
 })
