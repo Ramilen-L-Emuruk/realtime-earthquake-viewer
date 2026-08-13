@@ -235,17 +235,20 @@ export function useQuakeLayerData(
   }, [hasEpicenter, quake])
 
   // 震源ポップアップ用の都道府県別最大震度（Leaflet 版 prefIntensities と同一導出）。
+  //
+  // QUAKE-2 で XML 経路の観測点も pref: '' に統一されたため、pref が空のケースを
+  // 区域名→都道府県逆引き（areaPrefIndex）・観測点名→都道府県逆引き（stationPrefIndex）で
+  // 復元する。intensityMarkers（L114-128）と同じフォールバックロジックを揃える。
   const prefIntensities = useMemo<[string, number][]>(() => {
     if (!quake) return []
     const maxByPref = quake.points.reduce<Record<string, number>>((acc, p) => {
-      // 区域点・観測点は pref を持たないことがある（regions[] 由来は常に空）。
-      // 空キーのまま集計すると震源ポップアップに名前の無い行が出るため除外する。
-      if (!p.pref) return acc
-      if (!acc[p.pref] || p.scale > acc[p.pref]) acc[p.pref] = p.scale
+      const pref = p.pref || (p.isArea ? areaPrefIndex.get(p.addr) : stationPrefIndex.get(p.addr))
+      if (!pref) return acc
+      if (!acc[pref] || p.scale > acc[pref]) acc[pref] = p.scale
       return acc
     }, {})
     return Object.entries(maxByPref).sort((a, b) => b[1] - a[1])
-  }, [quake])
+  }, [quake, areaPrefIndex, stationPrefIndex])
 
   // LPGM 観測点マーカー（Leaflet 版 lpgmMarkers と同一導出）。
   const lpgmMarkers = useMemo<LpgmMarker[]>(() => {

@@ -62,16 +62,21 @@
 | DMDSS: REST XML（`parseEarthquakeFromXml`） | 区域のみ | 区域＋観測点 |
 | 標準版: P2PQuake | 区域のみ（ScalePrompt） | **観測点のみ**（DetailScale は区域を落とす） |
 
-**識別規則**: `pref` の有無で「都道府県の点」と「区域の点」を識別する。
-- 区域は必ず `pref: ''` で積む
-- 観測点は `pref: '<都道府県名>'` で積む
+**識別規則**: `pref` の有無で「点の役割」を識別する。
+- 区域は必ず `pref: ''` で積む（`isArea: true`）
+- 観測点も `pref: ''` で積む（`isArea: false`）。DMDSS の JSON 経路と XML 経路の両方で統一（QUAKE-2）
+- JSON 経路のみ、`prefectures[]` 由来の**都道府県ロールアップ点**を `pref: '<都道府県名>', isArea: false` で追加する
 
-**既知の非対称（MEDIUM）**: XML 経路（`parseEarthquakeFromXml`）は観測点に `pref: prefName` を積んでおり、
-JSON 経路（`pref: ''`）と非対称。`EarthquakeCard` の `prefGroups` は「pref 非空＝都道府県ロールアップ点」
-「pref 空＝一次細分区域点」の 2 経路を明確に分けて処理するため、値の誤りは起きない。ただし XML 経路では
-区域点にも `pref` が付くと想定した場合、区域単位の内訳表示（isWholePref による「県内で震度が割れているとき
-個別表示、揃っていれば県単位にまとめる」ロジック）が使われず、県単位に丸まる可能性がある。実データで
-症状が発生するかは未検証のため MEDIUM 相当。
+**QUAKE-2 の対応（2026-08-13）**: 以前は XML 経路（`parseEarthquakeFromXml`）が観測点に `pref: prefName` を
+積んでおり JSON 経路と非対称だった。`EarthquakeCard.prefGroups` は「pref 非空＝都道府県ロールアップ点」
+前提で処理するため、XML 経路のみ「観測点値」を都道府県別最大震度と誤解して区域最大震度を上書きしていた。
+現在は XML 側も `pref: ''` に統一済み。
+
+**pref 逆引きが必要な派生データ**: `pref` が空でも `station-coords.json` の逆引き（`buildAreaPrefIndex` /
+`buildStationPrefIndex`）で都道府県は復元可能。以下の派生データは pref が空でも都道府県を再構築する:
+- `useQuakeLayerData.intensityMarkers` — 地図に置く観測点マーカーの色・位置
+- `useQuakeLayerData.prefIntensities` — 震源ポップアップの都道府県別最大震度
+- `ttsText.regionNamesForScale` — 読み上げの都道府県名フォールバック
 
 ## 5. 震源未確定（震度速報）の扱い
 
