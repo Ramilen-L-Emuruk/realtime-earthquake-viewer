@@ -74,7 +74,7 @@ const mapMode = mapTab === 'tsunami' ? 'tsunami'
 
 - 地震カード選択時 → 該当地震の震央＋主要観測点を含む範囲
 - 揺れ検知時（confirmed） → 検知メンバー観測点のフットプリント
-- EEW 発報時 → 震源＋警報区域を含む範囲
+- EEW 発報時 → 震源＋警報区域を含む範囲（**kyoshin モード時のみ**。下記「既知の限界」参照）
 - 津波情報表示時 → 対象海域を含む範囲
 
 **ユーザー操作の尊重**: `gl/camera.ts` の `ensureUserInteractionState` が `zoomstart`・`dragstart` を
@@ -82,6 +82,12 @@ const mapMode = mapTab === 'tsunami' ? 'tsunami'
 
 **カメラの重複制御**: `beginProgrammaticFlight` / `isProgrammaticFlight` カウンタで自動アニメーション中の
 判定を持ち、重複した flyTo/fitBounds が壊れないようにする。
+
+**既知の限界（MAP-5）**: EEW 追従の `FitToEEWGL` は `mode === 'kyoshin'` のときのみマウントされる。
+kyoshin モードから tsunami/quake モードへ切り替えるとアンマウントされ、以降その EEW を追従できない。
+初回の敵対的レビューで「常時マウント化」を試みたが、`QuakeFitGL`/`TsunamiFitGL` との flyTo 争い・
+EEW 解除後の他モード帰還が未実装等の副作用が広範に発生することが判明し revert した。正しい修正には
+mode を全 Fit*GL に配って優先度で調停する大規模リファクタが必要で、スコープ外とした。
 
 ## 7. mode 別レイヤー一覧
 
