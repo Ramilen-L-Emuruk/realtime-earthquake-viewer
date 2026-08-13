@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react'
+import { log } from '../utils/logger'
 
 // アイドル復帰時に戻すデフォルトタブの選択肢（津波情報・設定は対象外）
 export type DefaultTabSetting = 'earthquake' | 'realtime'
@@ -70,12 +71,78 @@ const DEFAULTS: AppSettings = {
   ttsMaxRegions: 10,
 }
 
-function load(): AppSettings {
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+  return Math.min(max, Math.max(min, value))
+}
+
+function ensureBool(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback
+}
+
+function ensureString(value: unknown, fallback: string): string {
+  return typeof value === 'string' ? value : fallback
+}
+
+function ensureDefaultTab(value: unknown, fallback: DefaultTabSetting): DefaultTabSetting {
+  return value === 'earthquake' || value === 'realtime' ? value : fallback
+}
+
+function clampNumberOrNull(value: unknown, min: number, max: number): number | null {
+  if (value === null) return null
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  return Math.min(max, Math.max(min, value))
+}
+
+// 壊れた JSON・型不一致・範囲外の値は既定値に落とす（不正な localStorage で App がクラッシュしない
+// ようにするための境界防御。ここでは意味的な妥当性までは検証せず、型と範囲だけを担保する）。
+// export はテスト向け（ランタイムからは load() 経由でのみ使う）。
+export function sanitize(partial: Partial<AppSettings>): AppSettings {
+  return {
+    minDisplayScale: clampNumber(partial.minDisplayScale, -1, 70, DEFAULTS.minDisplayScale),
+    notifyMinScale: clampNumber(partial.notifyMinScale, -1, 70, DEFAULTS.notifyMinScale),
+    soundEnabled: ensureBool(partial.soundEnabled, DEFAULTS.soundEnabled),
+    soundVolume: clampNumber(partial.soundVolume, 0, 1, DEFAULTS.soundVolume),
+    uiScale: clampNumber(partial.uiScale, 0.5, 3, DEFAULTS.uiScale),
+    mapIconScale: clampNumber(partial.mapIconScale, 0.5, 3, DEFAULTS.mapIconScale),
+    showBathymetry: ensureBool(partial.showBathymetry, DEFAULTS.showBathymetry),
+    showActiveFaults: ensureBool(partial.showActiveFaults, DEFAULTS.showActiveFaults),
+    activeFaultOpacity: clampNumber(partial.activeFaultOpacity, 0.05, 1, DEFAULTS.activeFaultOpacity),
+    showQuakeHeatmap: ensureBool(partial.showQuakeHeatmap, DEFAULTS.showQuakeHeatmap),
+    showPlateBoundaries: ensureBool(partial.showPlateBoundaries, DEFAULTS.showPlateBoundaries),
+    defaultTab: ensureDefaultTab(partial.defaultTab, DEFAULTS.defaultTab),
+    tsunamiPriorityDefault: ensureBool(partial.tsunamiPriorityDefault, DEFAULTS.tsunamiPriorityDefault),
+    tsunamiTitleTemporary: ensureBool(partial.tsunamiTitleTemporary, DEFAULTS.tsunamiTitleTemporary),
+    idleRevertSec: clampNumber(partial.idleRevertSec, 0, 3600, DEFAULTS.idleRevertSec),
+    periodicReloadHours: clampNumber(partial.periodicReloadHours, 0, 168, DEFAULTS.periodicReloadHours),
+    notifyEEW: ensureBool(partial.notifyEEW, DEFAULTS.notifyEEW),
+    notifyTsunami: ensureBool(partial.notifyTsunami, DEFAULTS.notifyTsunami),
+    notifyDetection: ensureBool(partial.notifyDetection, DEFAULTS.notifyDetection),
+    homeLat: clampNumberOrNull(partial.homeLat, -90, 90),
+    homeLng: clampNumberOrNull(partial.homeLng, -180, 180),
+    dmdataApiKey: ensureString(partial.dmdataApiKey, DEFAULTS.dmdataApiKey),
+    dmdataTestDelivery: ensureBool(partial.dmdataTestDelivery, DEFAULTS.dmdataTestDelivery),
+    voicevoxEnabled: ensureBool(partial.voicevoxEnabled, DEFAULTS.voicevoxEnabled),
+    voicevoxUrl: ensureString(partial.voicevoxUrl, DEFAULTS.voicevoxUrl),
+    voicevoxSpeakerId: clampNumber(partial.voicevoxSpeakerId, 0, 100000, DEFAULTS.voicevoxSpeakerId),
+    ttsIntensityLevels: clampNumber(partial.ttsIntensityLevels, 0, 10, DEFAULTS.ttsIntensityLevels),
+    ttsMaxRegions: clampNumber(partial.ttsMaxRegions, 0, 100, DEFAULTS.ttsMaxRegions),
+  }
+}
+
+// export はテスト向け（ランタイムからは useSettings 内でのみ使う）。
+export function load(): AppSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return DEFAULTS
-    return { ...DEFAULTS, ...(JSON.parse(raw) as Partial<AppSettings>) }
-  } catch {
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object') {
+      log.warn('[settings] localStorage の値が object でないため既定値で復旧', { key: STORAGE_KEY })
+      return DEFAULTS
+    }
+    return sanitize(parsed as Partial<AppSettings>)
+  } catch (e) {
+    log.warn('[settings] localStorage の読み込みに失敗、既定値で復旧', e)
     return DEFAULTS
   }
 }
