@@ -132,6 +132,12 @@ JMA 仕様上ここで配信される 556 は全て警報級であるため `con
 - **リアルタイム震度**: 1 秒毎の JSON。`realTimeData.intensity` 文字列（1 文字＝1 観測点、`charCodeAt(0)-100` が index 0〜20）
 - **震源情報（hypoInfo）**: EEW 相当の情報（震源・M・calcintensity 等）を含む場合がある
 
+`fetchRealtimeIntensity` は `res.ok` に加えて `realTimeData` の存在、`realTimeData.intensity` が
+非空の文字列であることを検証する（フィールド欠落・型不一致・空文字は次エッジ／リトライへフォールバック）。
+`calcintensityToScale` は「空文字・null/undefined」（震度未確定の想定内）以外の未知コードで `log.warn` を出す
+（silent に severity=Forecast 格下げを防ぐ）。
+`useKyoshinRealtime.processResult` は try/catch で例外を隔離し、ローカルバグと fetch 失敗を分けて扱う。
+
 `siteConfigId` 切替時（年数回）: `fetchSiteList` は Promise キャッシュを持つが、失敗した Promise は
 キャッシュから削除して再試行可能にする。`useKyoshinRealtime` は `currentSiteConfigIdRef` の更新を
 fetch 成功後に行い、失敗時は ref を据え置いて次 tick で再試行させる（失敗は `log.warn` で通知）。

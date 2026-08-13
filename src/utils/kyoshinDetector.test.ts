@@ -529,6 +529,52 @@ describe('step: 欠測点(missing)の扱い', () => {
     const detections = missingThenRecover(true)
     expect(detections.some((d) => d.confidence === 'confirmed' || d.confidence === 'likely')).toBe(false)
   })
+
+  /**
+   * KYO-1: 学習資産（floorMean/floorDev）を持つ点が長時間欠測を挟んで復帰した際、
+   * 前回の hist を据え置くと windowRate が「N秒前の値」を「RATE_DT_MS 窓の最新」と誤認する。
+   * hist を空リセットすることで、緩やかなドリフト（気温・風・センサー再較正等）が
+   * 復帰直後の急上昇として検出されない。
+   */
+  it('KYO-1: 学習済み点が長時間欠測を挟んで緩やかに値変化しても、hist リセットで誤検知しない', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    // 学習期間: 全点が震度0で 15 秒間観測（floorMean/floorDev が育つ）
+    for (let i = 0; i < 15; i++, t += 1000) {
+      const frame: Frame = {
+        dataTimeMs: t,
+        sites: sitesOf(defs),
+        values: defs.map(() => valueToIndex(0.0)),
+      }
+      state = step(state, frame, meta).state
+    }
+    // ANOMALY_IDXS が 60 秒間欠測
+    for (let i = 0; i < 60; i++, t += 1000) {
+      const frame: Frame = {
+        dataTimeMs: t,
+        sites: sitesOf(defs),
+        values: defs.map((_, j) => (ANOMALY_IDXS.includes(j) ? -1 : valueToIndex(0.0))),
+        missing: defs.map((_, j) => ANOMALY_IDXS.includes(j)),
+      }
+      state = step(state, frame, meta).state
+    }
+    // 復帰: 緩やかなドリフトで震度0.5 相当（RATE_DT_MS 窓では検出されない上昇量）に戻る
+    let detections: ReturnType<typeof step>['detections'] = []
+    for (let i = 0; i < 4; i++, t += 1000) {
+      const frame: Frame = {
+        dataTimeMs: t,
+        sites: sitesOf(defs),
+        values: defs.map((_, j) => valueToIndex(ANOMALY_IDXS.includes(j) ? 0.5 : 0.0)),
+      }
+      const r = step(state, frame, meta)
+      state = r.state
+      detections = r.detections
+    }
+    // 復帰値 0.5 は静穏時の床から急上昇ではなく、緩やかドリフト扱い → 誤検知は出ない
+    expect(detections.some((d) => d.confidence === 'confirmed' || d.confidence === 'likely')).toBe(false)
+  })
 })
 
 describe('step: グループ化とID安定性', () => {

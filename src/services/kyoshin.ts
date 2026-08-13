@@ -11,6 +11,7 @@
 
 import type { EEWAlert, IntensityScale } from '../types/earthquake'
 import { feedServerSample, serverNow } from '../utils/clock'
+import { log } from '../utils/logger'
 
 /** 観測点座標の配列（[緯度, 経度]）。インデックスが intensity 文字列の位置に対応。 */
 export type SiteCoords = [number, number][]
@@ -137,14 +138,26 @@ function parseDepth(value: string | undefined): number {
 /**
  * Yahoo の calcintensity コードを IntensityScale に変換する。
  * フォーマット: "01"→10, "02"→20, "03"→30, "04"→40,
- *              "5-"→45, "5+"→50, "6-"→55, "6+"→60, "07"→70, その他/不明→-1（フォールバック）
+ *              "5-"→45, "5+"→50, "6-"→55, "6+"→60, "07"→70
+ * 未知コードは -1 を返し、`log.warn` で通知する（KYO-2: silent 格下げ防止）。
+ * 呼び出し側の hypoInfoItemToEEW は scale===-1 のとき severity=Forecast に落とす分岐を
+ * 持つため、Yahoo が仕様外コードを送ってきた場合に警報が silent に予報へ格下げされる。
+ * 空文字・null/undefined（震度未確定の想定内）は抑制対象で無警告。
  */
 function calcintensityToScale(s: string): IntensityScale {
   const map: Record<string, IntensityScale> = {
     '01': 10, '02': 20, '03': 30, '04': 40,
     '5-': 45, '5+': 50, '6-': 55, '6+': 60, '07': 70,
   }
-  return map[s] ?? -1
+  const scale = map[s]
+  if (scale === undefined) {
+    // 空文字・null/undefined 相当は震度未確定として想定内（発報直後の EEW で頻出）。
+    // それ以外の値はマップ外＝仕様変更/不整合の可能性。1Hz ポーリングで頻発しうるため
+    // log.warn（error はより重要なイベント用に温存）で残す。
+    if (s !== '' && s != null) log.warn(`[kyoshin] 未知の calcintensity コード: "${s}" → -1 フォールバック`)
+    return -1
+  }
+  return scale
 }
 
 /** Yahoo hypoInfo の1件を EEWAlert に変換する。 */
@@ -199,11 +212,19 @@ export async function fetchRealtimeIntensity(now: Date): Promise<RealtimeIntensi
         realTimeData?: { dataTime?: string; siteConfigId?: string; intensity?: string }
         hypoInfo?: { items?: YahooHypoInfoItem[] }
       }
-      const intensity = json.realTimeData?.intensity ?? ''
+      // KYO-3: realTimeData / intensity の欠落・空文字はメンテナンス・空応答の兆候。
+      // silent に「空震度配列」で返すと検知エンジンが「全点データ無し」と正しく判定できず、
+      // 誤って success として集計される。フィールド欠落・型不一致に加え空文字も失敗として扱う。
+      const rt = json.realTimeData
+      if (!rt || typeof rt.intensity !== 'string' || rt.intensity.length === 0) {
+        lastErr = new Error(`realtime response missing/empty realTimeData.intensity (edge=${edge})`)
+        continue
+      }
+      const intensity = rt.intensity
       const indices = Array.from(intensity, (c) => c.charCodeAt(0) - 100)
       const hypoInfo: YahooHypoInfoItem[] = json.hypoInfo?.items ?? []
-      const siteConfigId = json.realTimeData?.siteConfigId ?? ''
-      return { dataTime: json.realTimeData?.dataTime ?? '', siteConfigId, indices, hypoInfo }
+      const siteConfigId = rt.siteConfigId ?? ''
+      return { dataTime: rt.dataTime ?? '', siteConfigId, indices, hypoInfo }
     } catch (err) {
       lastErr = err
     }
