@@ -134,10 +134,12 @@
 | 津波注意報の新規発表 | `tsunamiWatch` | あり | あり |
 | 津波予報の新規発表 | `tsunamiForecast` | あり | あり |
 | 続報（レベル変化なし） | 抑制（読み上げのみ） | 抑制 | あり |
-| 解除・取消・期限切れ | **無音**（既知の課題） | 抑制 | あり |
+| 解除・取消・期限切れ | `tsunamiCancel`（cancelReason の 3 種を単一音で区別せず伝える） | 抑制 | あり |
 
-**既知の課題**: 津波の解除/取消/期限切れで通知音が鳴らない（`useLiveEventHandler.ts:163-176` に
-`playAlertSound` 呼び出しが無い）。地震取消・EEW 取消は音があるのに津波だけ非対称。
+音・TTS は `spokenTsunamiCancelEventIdsRef`（`useLiveEventHandler.ts`）で **eventId 単位** に
+重複発火を抑止する。P2PQuake WS と DMDATA WS から同一 eventId で cancel が届いた 2 回目、
+または合成 expired タイマーが同一 eventId に複数積み上がった 2 回目以降は握り潰す。
+ページリロード直後の初回解除は Set が空のため正常に発火する。
 
 ## 11. 自動タブ切替
 
