@@ -170,9 +170,34 @@ Yahoo リアルタイム震度は 1 秒毎に更新される。以下のレイ�
 
 ## 12. WebGL コンテキストロスト
 
-`webglcontextlost` / `webglcontextrestored` イベントは現状購読していない。MapLibre v6 は
-custom レイヤーを自動復元しないため、コンテキストロストが起きると `kyoshin-subthreshold` と `pswave` の
-2 つが無音で消失する（HIGH 課題）。モバイル常駐 PWA で GPU リソース回収時に発生しうる。
+MapLibre v6 は WebGL コンテキストロスト時、内蔵レイヤーは `_contextRestored` の
+`setStyle(style, {diff:false})` 経由で復元するが、custom レイヤーは復元しない
+（公式コードが `console.warn("Custom layer ... cannot be restored")` で明示）。
+
+本アプリでは `map.on('webglcontextrestored', ...)` を各 custom レイヤーコンポーネントで購読し、
+restore 時に手動で `addOrderedLayer` 経由で再追加する:
+
+- `pswave`（`PsWaveGL.tsx`）: 同一の `customLayer` オブジェクトを再追加。onAdd が新しい gl から
+  program/buffer/texture 参照を作り直す。
+- `kyoshin-subthreshold`（`KyoshinSubThresholdGL.tsx`）: `makeSubThresholdLayer` で
+  レイヤーオブジェクトごと作り直し、成功後に `layerRef` を差し替えて setLevels/setIconScale/setVisible の
+  窓口を維持する。restore 直後にマウント時点の値ではなく現在の props/直近 levels を再適用する
+  （`iconScaleRef` / `visibleRef` / `levelsRef` で保持）。
+
+### タイミング設計上の注意
+
+MapLibre v6 の `_contextRestored` は `setStyle(..., {diff:false})` を呼んだ直後、**同じ同期実行内**で
+`webglcontextrestored` を発火する。この時点で新しい `Style` は `_load()` が次フレームまで遅延され
+`_loaded=false` のため、直接 `addLayer` を呼ぶと `_checkLoaded` が `Error: Style is not done loading.`
+を投げる。さらに MapLibre の `Evented.fire` はリスナー単位で try/catch しないため、1 つの例外が
+後続の custom layer のハンドラを止めうる。
+
+対策:
+- `map.isStyleLoaded()` を確認し、false のときは `map.once('style.load', ...)` で待ってから追加
+- 各コンポーネントで try/catch し、失敗は `log.error` で記録（他 custom layer のハンドラは巻き添えにしない）
+
+モバイル常駐 PWA で GPU リソース回収時（バックグラウンド長時間放置後の復帰・端末リソース逼迫）に
+発生しうる。
 
 ## 13. 関連実装ファイル
 
