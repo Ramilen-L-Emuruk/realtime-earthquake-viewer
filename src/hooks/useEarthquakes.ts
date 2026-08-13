@@ -916,8 +916,11 @@ export function useEarthquakes(
   const simulateEarthquake = useCallback(() => {
     const quake = createTestEarthquake()
     handleEvent(quake)
+    // VAR-2: 長周期地震動観測情報（VXSE62）は DMDATA 経由でのみ配信される。standard 版で
+    // 「地震テスト」ボタンから LPGM を注入すると、実データでは絶対に届かないバッジ表示が
+    // テストで出て混乱するため isDmdss のときだけ LPGM を注入する。
     const eventId = extractQuakeEventId(quake)
-    if (eventId) {
+    if (eventId && isDmdss) {
       const lpgm = createTestLpgm(eventId)
       setState(prev => ({ ...prev, lpgmByEventId: new Map(prev.lpgmByEventId).set(eventId, lpgm) }))
       onLiveEventRef.current?.({ kind: 'lpgm', data: lpgm } as unknown as AppEvent)
