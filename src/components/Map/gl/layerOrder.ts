@@ -46,7 +46,6 @@ export const MAP_LAYER_ORDER = [
   'quake-lpgm-region-label',
   'quake-points',
   'quake-lpgm-points',
-  'epicenter',
   'kyoshin-subthreshold',
   'kyoshin-points',
   'kyoshin-detected',

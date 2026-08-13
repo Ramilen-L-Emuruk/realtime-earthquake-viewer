@@ -15,7 +15,8 @@ import { SHINDO0_COLOR } from '../../../utils/kyoshinIntensity'
 // ソート）＋呼び出し側の triggerRepaint で反映する。
 
 // 対象は index 1〜6（震度0以下）。index 0 はデータ無し（subThresholdOpacity(0)=0）で非表示。
-const MAX_SUB_IDX = 6
+// 呼び出し側の KyoshinSubThresholdGL.tsx でも levels[] 値域の上限として使うため export する。
+export const MAX_SUB_IDX = 6
 // 本番の実半径（BASE_RADIUS×iconScale）。Leaflet 版 KyoshinSubThreshold と揃える。
 const BASE_RADIUS = 2.5
 // index バッファは Uint16Array のため 65,535 点が上限（強震モニタは約1,725点で十分収まる）。

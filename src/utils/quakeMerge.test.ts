@@ -3,6 +3,7 @@ import {
   mergeQuakeInto,
   mergeQuakeHistory,
   extractQuakeEventId,
+  extractQuakeEventIdFromId,
   sameQuakeEntry,
   hasIntensity,
 } from './quakeMerge'
@@ -73,6 +74,32 @@ describe('extractQuakeEventId', () => {
 
   it('形式外の id では null を返す（P2P 由来など）', () => {
     expect(extractQuakeEventId(makeQuake({ id: 'p2p-12345' }))).toBeNull()
+  })
+})
+
+describe('extractQuakeEventIdFromId', () => {
+  it('undefined 入力は null を返す', () => {
+    expect(extractQuakeEventIdFromId(undefined)).toBeNull()
+  })
+
+  it('null 入力は null を返す', () => {
+    expect(extractQuakeEventIdFromId(null)).toBeNull()
+  })
+
+  it('空文字は null を返す', () => {
+    expect(extractQuakeEventIdFromId('')).toBeNull()
+  })
+
+  it('dmdata-quake- 形式から14桁 eventId を抽出する', () => {
+    expect(extractQuakeEventIdFromId('dmdata-quake-20260728162718-1')).toBe('20260728162718')
+  })
+
+  it('dmdata-xml-quake- 形式にも対応する', () => {
+    expect(extractQuakeEventIdFromId('dmdata-xml-quake-20260728162718-3')).toBe('20260728162718')
+  })
+
+  it('形式外の id 文字列は null を返す', () => {
+    expect(extractQuakeEventIdFromId('p2p-12345')).toBeNull()
   })
 })
 

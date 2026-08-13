@@ -17,10 +17,16 @@ export const QUAKE_ISSUE_PRIORITY: Record<string, number> = {
 
 const AMENDMENT_TYPE = '顕著な地震の震源要素更新のお知らせ'
 
-// 電文 ID から eventId（14桁タイムスタンプ）を抽出する。
+// 電文 ID 文字列から eventId（14桁タイムスタンプ）を抽出する。
 // VXSE51/52/53/61 はすべて同じ eventId を共有するため、同一地震の同定に使用できる。
+// 電文 ID の書式: `dmdata-quake-YYYYMMDDhhmmss-<serial>` または `dmdata-xml-quake-…`（archive リプレイ経路）。
+export function extractQuakeEventIdFromId(id: string | undefined | null): string | null {
+  return id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1] ?? null
+}
+
+// 地震カード (JMAQuake) の id フィールドから eventId を抽出するラッパ。
 export function extractQuakeEventId(q: JMAQuake): string | null {
-  return q.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1] ?? null
+  return extractQuakeEventIdFromId(q.id)
 }
 
 // 2つの地震カードが同一イベントかどうか。
