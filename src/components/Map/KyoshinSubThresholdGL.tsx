@@ -3,7 +3,7 @@ import * as maplibregl from 'maplibre-gl'
 import { useMapGL } from './mapGLContext'
 import type { SiteCoords } from '../../services/kyoshin'
 import { addOrderedLayer } from './gl/layerOrder'
-import { makeSubThresholdLayer, type SubThresholdLayer } from './gl/subThresholdLayer'
+import { makeSubThresholdLayer, MAX_SUB_IDX, type SubThresholdLayer } from './gl/subThresholdLayer'
 import { log } from '../../utils/logger'
 
 // 強震モニタの震度0以下（index 1〜6）を描画する MapLibre 版（Leaflet の KyoshinSubThreshold 相当）。
@@ -14,8 +14,6 @@ import { log } from '../../utils/logger'
 // 本描画先へ over 合成するカスタムレイヤーを使う（GL 実装は gl/subThresholdLayer.ts・PoC で実証済み）。
 // 毎秒更新は index バッファのカウンティングソート＋triggerRepaint で反映する（feature-state はカスタム
 // レイヤーの paint 式に効かないため使わない）。
-
-const MAX_SUB_IDX = 6
 
 interface Props {
   sites: SiteCoords

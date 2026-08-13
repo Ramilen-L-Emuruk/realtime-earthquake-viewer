@@ -6,7 +6,7 @@ import { magnitudeToWeight, quakeIdentityKey, hasValidHypocenter, type HeatPoint
 import { log } from '../utils/logger'
 import { serverNow } from '../utils/clock'
 
-const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
+import { isDmdss } from '../utils/env'
 const HEATMAP_DAYS = 30
 // 1ヶ月分の再取得は API 呼び出しコストがあるため、一定時間は localStorage のキャッシュを再利用する。
 // キャッシュ取得後にライブ受信した地震は earthquakes とのマージで別途反映するため、

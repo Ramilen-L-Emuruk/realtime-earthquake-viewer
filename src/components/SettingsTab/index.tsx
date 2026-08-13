@@ -7,8 +7,7 @@ import { checkVoicevoxAvailable, fetchVoicevoxSpeakers, speakWithVoicevox, type 
 import { serverDate } from '../../utils/clock'
 import type { UseTestScenariosResult } from '../../hooks/useTestScenarios'
 import type { ScenarioCategory } from '../../types/testScenario'
-
-const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
+import { isDmdss } from '../../utils/env'
 
 export interface TestFunctions {
   earthquake: () => void
