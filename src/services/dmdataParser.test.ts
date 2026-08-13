@@ -2,7 +2,7 @@
 // parseEarthquakeFromXml（REST 履歴経路）のテスト。
 // DOMParser を使うためこのファイルだけ jsdom 環境で動かす（既定は node）。
 import { describe, it, expect } from 'vitest'
-import { parseEarthquake, parseEarthquakeFromXml } from './dmdataParser'
+import { parseEarthquake, parseEarthquakeFromXml, parseEEW, parseTsunami } from './dmdataParser'
 
 // 震度速報（VXSE51）。震源が未確定の段階で出るため Earthquake 要素を持たず、
 // 震度は Pref > Area（一次細分区域）までしか無い。
@@ -203,5 +203,196 @@ describe('parseEarthquake: JSON 訂正フラグの伝播', () => {
     const quake = parseEarthquake('VXSE53', baseJson)
     expect(quake).not.toBeNull()
     expect(quake!.issue.correct).toBe('なし')
+  })
+})
+
+// DMD-7: EEW（VXSE43/45）JSON パーサーの基本テスト。severity 付与・cancel・LPGM を検証する。
+describe('parseEEW: JSON 電文の severity・cancel・LPGM', () => {
+  const baseEEWJson = {
+    eventId: '20260101120000',
+    serialNo: '1',
+    reportDateTime: '2026-01-01T12:00:10+09:00',
+    body: {
+      earthquake: {
+        originTime: '2026-01-01T12:00:00+09:00',
+        arrivalTime: '2026-01-01T12:00:00+09:00',
+        condition: '以上',
+        hypocenter: {
+          name: '茨城県沖',
+          coordinate: { latitude: { value: '36.2' }, longitude: { value: '141.0' }, height: { value: '-30000' } },
+        },
+        magnitude: { value: '6.5' },
+      },
+      intensity: {
+        forecastMaxInt: { from: '5-', to: '5+' },
+        forecastMaxLgInt: { from: '2', to: '3' },
+      },
+    },
+  }
+
+  it('VXSE45 は severity=Forecast（予報）', () => {
+    const eew = parseEEW('VXSE45', baseEEWJson)
+    expect(eew).not.toBeNull()
+    expect(eew!.severity).toBe('Forecast')
+  })
+
+  it('VXSE43 は severity=Warning（警報）', () => {
+    const eew = parseEEW('VXSE43', baseEEWJson)
+    expect(eew).not.toBeNull()
+    expect(eew!.severity).toBe('Warning')
+  })
+
+  it('body.isWarning=true なら VXSE45 でも severity=Warning に格上げ', () => {
+    const eew = parseEEW('VXSE45', { ...baseEEWJson, body: { ...baseEEWJson.body, isWarning: true } })
+    expect(eew).not.toBeNull()
+    expect(eew!.severity).toBe('Warning')
+  })
+
+  it('isCanceled=true は cancelled 電文（座標 0・areas 空・VXSE43 は severity=Warning 保持）', () => {
+    const cancelJson = { ...baseEEWJson, body: { ...baseEEWJson.body, isCanceled: true } }
+    const eew = parseEEW('VXSE43', cancelJson)
+    expect(eew).not.toBeNull()
+    expect(eew!.cancelled).toBe(true)
+    expect(eew!.earthquake.hypocenter.latitude).toBe(0)
+    expect(eew!.areas).toEqual([])
+    expect(eew!.severity).toBe('Warning')
+    // 座標欠落でも cancelled=true なら null を返さない
+    const noCoord = { ...baseEEWJson, body: { ...baseEEWJson.body, isCanceled: true, earthquake: { ...baseEEWJson.body.earthquake, hypocenter: { name: 'テスト' } } } }
+    expect(parseEEW('VXSE43', noCoord)).not.toBeNull()
+  })
+
+  it('forecastMaxScale は to 優先・range 外は undefined', () => {
+    // parseIntensityStr マップ: 5- → 45 / 5+ → 50 / 6- → 55 / 6+ → 60
+    // 正常系: to='5+' → 50（震度5強）
+    const eew = parseEEW('VXSE45', baseEEWJson)
+    expect(eew!.forecastMaxScale).toBe(50)
+    // to のみ・from 欠落: to='6-' → 55
+    const toOnly = {
+      ...baseEEWJson,
+      body: { ...baseEEWJson.body, intensity: { ...baseEEWJson.body.intensity, forecastMaxInt: { to: '6-' } } },
+    }
+    expect(parseEEW('VXSE45', toOnly)!.forecastMaxScale).toBe(55)
+    // 範囲外（不明値）は undefined
+    const outOfRange = {
+      ...baseEEWJson,
+      body: { ...baseEEWJson.body, intensity: { ...baseEEWJson.body.intensity, forecastMaxInt: { to: '不明' } } },
+    }
+    expect(parseEEW('VXSE45', outOfRange)!.forecastMaxScale).toBeUndefined()
+  })
+
+  it('forecastMaxLpgmClass は to 優先、範囲外は undefined', () => {
+    const eew = parseEEW('VXSE45', baseEEWJson)
+    expect(eew!.forecastMaxLpgmClass).toBe(3)
+    // 範囲外は undefined
+    const outOfRange = {
+      ...baseEEWJson,
+      body: { ...baseEEWJson.body, intensity: { ...baseEEWJson.body.intensity, forecastMaxLgInt: { from: '5', to: '5' } } },
+    }
+    expect(parseEEW('VXSE45', outOfRange)!.forecastMaxLpgmClass).toBeUndefined()
+  })
+
+  it('isLastInfo=true は isFinal=true', () => {
+    const finalJson = { ...baseEEWJson, body: { ...baseEEWJson.body, isLastInfo: true } }
+    expect(parseEEW('VXSE45', finalJson)!.isFinal).toBe(true)
+  })
+
+  it('座標が読めない発表電文（非 cancel）は null', () => {
+    const badJson = {
+      ...baseEEWJson,
+      body: {
+        ...baseEEWJson.body,
+        earthquake: { ...baseEEWJson.body.earthquake, hypocenter: { name: '茨城県沖' } },
+      },
+    }
+    expect(parseEEW('VXSE45', badJson)).toBeNull()
+  })
+})
+
+// TSU-2: 津波情報 JSON パーサーの基本テスト。発表・取消・sourceEarthquake の付与を検証する。
+describe('parseTsunami: JSON 電文の発表・取消・sourceEarthquake', () => {
+  const baseTsunamiJson = {
+    eventId: '20260101120000',
+    serialNo: '1',
+    reportDateTime: '2026-01-01T12:05:00+09:00',
+    editorialOffice: '気象庁',
+    infoType: '発表',
+    body: {
+      tsunami: {
+        forecasts: [
+          {
+            // 実装は forecasts[].kind.code を見て grade を決める（parseTsunamiGradeByCode）
+            kind: { code: '52' },
+            name: '関東',
+            firstHeight: {
+              arrivalTime: '2026-01-01T12:30:00+09:00',
+              condition: 'ただちに津波来襲と予測',
+            },
+            maxHeight: { description: '10m超', height: { value: '10', condition: '巨大' } },
+          },
+        ],
+      },
+      earthquakes: [
+        {
+          hypocenter: { name: '房総半島沖' },
+          magnitude: { value: '8.5' },
+          originTime: '2026-01-01T12:00:00+09:00',
+        },
+      ],
+    },
+  }
+
+  it('通常発表: cancelled=false・eventId・sourceEarthquake が付与される', () => {
+    const t = parseTsunami('VTSE51', baseTsunamiJson)
+    expect(t).not.toBeNull()
+    expect(t!.cancelled).toBe(false)
+    expect(t!.eventId).toBe('20260101120000')
+    expect(t!.sourceEarthquake?.hypocenterName).toBe('房総半島沖')
+    expect(t!.sourceEarthquake?.magnitude).toBe(8.5)
+  })
+
+  it('infoType=取消: cancelled=true・cancelReason=retracted・areas 空', () => {
+    const cancelJson = { ...baseTsunamiJson, infoType: '取消' }
+    const t = parseTsunami('VTSE51', cancelJson)
+    expect(t).not.toBeNull()
+    expect(t!.cancelled).toBe(true)
+    expect(t!.cancelReason).toBe('retracted')
+    expect(t!.areas).toEqual([])
+  })
+
+  it('eventId 未設定時は eventId プロパティが undefined になる', () => {
+    const noId = { ...baseTsunamiJson, eventId: '' }
+    const t = parseTsunami('VTSE51', noId)
+    expect(t).not.toBeNull()
+    expect(t!.eventId).toBeUndefined()
+  })
+
+  it('sourceEarthquake は hypocenterName が空なら undefined', () => {
+    const noHypo = {
+      ...baseTsunamiJson,
+      body: { ...baseTsunamiJson.body, earthquakes: [{ magnitude: { value: '8.5' } }] },
+    }
+    const t = parseTsunami('VTSE51', noHypo)
+    expect(t).not.toBeNull()
+    expect(t!.sourceEarthquake).toBeUndefined()
+  })
+
+  it('forecasts が全て解除系コード（60）のとき areas=[] で cancelReason=lifted', () => {
+    // parseTsunamiGradeByCode: 60 は解除系（Unknown）で continue → areas 空 → 正式解除扱い
+    const liftedJson = {
+      ...baseTsunamiJson,
+      body: {
+        ...baseTsunamiJson.body,
+        tsunami: {
+          forecasts: [
+            { kind: { code: '60' }, name: '関東' },
+          ],
+        },
+      },
+    }
+    const t = parseTsunami('VTSE51', liftedJson)
+    expect(t).not.toBeNull()
+    expect(t!.cancelled).toBe(true)
+    expect(t!.cancelReason).toBe('lifted')
+    expect(t!.areas).toEqual([])
   })
 })
