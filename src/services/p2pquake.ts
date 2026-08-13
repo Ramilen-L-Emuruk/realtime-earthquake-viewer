@@ -23,6 +23,8 @@ const DOMESTIC_TSUNAMI_MAP: Record<string, DomesticTsunami> = {
   None: 'なし', Unknown: '不明', Checking: '調査中',
   SeaFloor: '海面変動の可能性', NonEffective: '若干の海面変動',
   Watch: '注意報', Warning: '警報等',
+  // QUAKE-5: 大津波警報。欠落していると DOMESTIC_TSUNAMI_MAP[raw]=undefined → '不明' 灰色格下げに
+  MajorWarning: '警報等',
 }
 
 const ISSUE_TYPE_MAP: Record<string, IssueType> = {

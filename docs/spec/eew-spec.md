@@ -102,6 +102,7 @@ standard 版では `eewMaxLpgmClass` が常に 0 になり震度のみでレベ�
 - **検知エンジンの EEW 連動緩和判定** — `src/App.tsx` の `hasActiveNonAssumedEEW`
 - **揺れ検知の基準震源選定** — `src/hooks/useKyoshinAlerts.ts` の `extractEewInfo`
 - **読み上げテキスト生成** — `src/utils/ttsText.ts`（EEW 読み上げ関数群で `condition` を参照）
+- **`condition`/`hypocenter` の明示マージ** — `src/hooks/useEarthquakes.ts` の `enrichEEW`（§3 参照。後着の P2PQuake / DMDATA で明示的に上書きし、Yahoo 由来の誤った `condition` が残り続けないようにする。ここが崩れると下流の全判定が破綻する）
 
 **バリアント差の非対称**: Yahoo hypoInfo は `condition` に相当するフィールドを持たず常に `'以上'` を返すため、
 standard 版で Yahoo hypoInfo が先に単独観測点処理の EEW を検知した場合、後続の P2PQuake / DMDATA で
@@ -120,6 +121,16 @@ standard 版で Yahoo hypoInfo が先に単独観測点処理の EEW を検知�
 震源深さは `Math.max(0, depth ?? 0)` でクランプする。深さ不明（`-1` センチネル）が来ると 0 に落ちて
 「ごく浅い」として計算される点は既知の課題（`depth < 0` で「深さ不明・円を出さない」分岐が望ましい）。
 
+**既知の限界（EEW-5）**: `depth > MOHO_KM`（33km）の分岐は「マントル速度で直達波」のみを
+計算しており、地殻区間を経由する屈折波（本来は Snell 則で扱うべき）を考慮しない。結果として:
+
+- 走時を **相対誤差 約 19%（一定）** で過小評価する（例: 震源直上 R=0 で約 2 秒、R=100km で約 5.6 秒、
+  R=300km で約 15.9 秒。絶対値は距離に比例して拡大するが相対誤差は距離非依存）
+- `depth=MOHO_KM` 前後で分岐境界の不連続ジャンプが生じる
+
+正しい修正には Snell 則ベースの traveltime 再設計が必要で、`computeSWaveTravelTimeSec` と対にリファクタする
+大きな作業になるためスコープ外とした（単純な max 比較で 2 区間走時を代替する案は代数的に無効と判明済み）。
+
 ## 7. 自動解除（`calcEEWCancelTime`）
 
 **明示的な取消電文が来ない限り**、EEW は一定時間経過後に**無音・即消去**される（キャンセルオーバーレイなし）。
@@ -133,12 +144,16 @@ standard 版で Yahoo hypoInfo が先に単独観測点処理の EEW を検知�
 DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` 無し）が来た場合、自動解除と異なり
 以下を伴う:
 
-- `eewCancel` 音の再生
-- ブラウザ通知
-- VOICEVOX 読み上げ
+- `eewCancel` 音の再生（`hadKey=true` のみ。二重鳴り防止）
+- ブラウザ通知（`hadKey` 有無を問わず発火。tag=`eew-cancel-${key}` で自動上書きされるため二重にならない）
+- VOICEVOX 読み上げ（`hadKey=true` のみ。二重鳴り防止）
 - カードに「誤報として取り消されました」表示（10 秒間）
 
 `useLiveEventHandler.ts` の EEW 分岐で「`event.expired` フラグの有無」で自動解除と誤報取消を区別する。
+`hadKey` は「このセッションで `activeEEWLevelsRef` に既に登録されていた eventId か」を表す:
+
+- **hadKey=true**: 画面に表示中の EEW を取り消す通常経路 → 音・通知・読み上げの全てを発火
+- **hadKey=false**: 既に自動解除済みの後に本物の誤報取消が遅延到達したケース、または P2PQuake WS と Yahoo の両方から cancel が来た場合の 2 回目 → 通知のみ発火（音・読み上げは二重鳴り防止のためスキップ）
 
 ## 9. 音・タブ切替・通知の連動
 
@@ -154,7 +169,7 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
   津波情報・長周期地震動情報のいずれかで非 realtime タブへ切り替わっていれば、EEW 続報は
   realtime へ戻らない。**特別警報級 EEW（level=2）発表中は tsunami 側からタブが奪われない**
   優先度ルールと対称（詳細は [`tsunami-spec.md`](tsunami-spec.md) §11 参照）
-- **カメラフィット**: `useEewLayerData` 経由で `FitToEEWGL` が発火
+- **カメラフィット**: `useEewLayerData` 経由で `FitToEEWGL` が発火（kyoshin モード限定。詳細は [`map-rendering-spec.md`](map-rendering-spec.md) §6「既知の限界（MAP-5）」参照）
 
 **音種別の優先順位**（`selectEEWSoundType` の判定順）:
 1. **新規発報またはレベル格上げ**（`isNew || levelUpgraded`）→ `currentLevel` に応じて
@@ -189,6 +204,7 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
 | `FELT_RADIUS_BUFFER` | 1.5 | 司・翠川式の有感半径マージン倍率 |
 | `MAX_FELT_RADIUS_KM` | 2500 | 有感半径の上限（巨大地震での飽和防止） |
 | `UPDATE_INTERVAL_MS` | 100 | P/S 波半径の更新周期（`usePsWaveCalc`） |
+| `MOHO_KM` | 33 | モホ面深さ。地殻/マントル分岐の閾値（`usePsWaveCalc.computeRadius`） |
 | `ASSUMED_OPACITY_RATIO` | 0.35 | 仮定震源の×印の相対不透明度（kyoshin モード） |
 | `ASSUMED_OPACITY_MIN` | 0.2 | 仮定震源の×印の絶対下限（他モード） |
 | `EEW_FINAL_SILENCE_MS` | 10000 | 最終報後の再クリック続報テスト受付時間 |

@@ -1,6 +1,7 @@
 import { memo } from 'react'
 import type { JMAQuake, JMALpgm } from '../../types/earthquake'
 import { EarthquakeCard } from './EarthquakeCard'
+import { extractQuakeEventId } from '../../utils/quakeMerge'
 
 interface Props {
   earthquakes: JMAQuake[]
@@ -54,7 +55,12 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
     <div className="p-3 space-y-2">
       {earthquakes.map((quake, i) => (
         <EarthquakeCard
-          key={quake.id}
+          // QUAKE-4: 続報で id 末尾の serial が変わるたびに EarthquakeCard がリマウントされ、
+          // isSelected の副作用（強制スクロール）が発火してユーザー操作を妨害する。
+          // extractQuakeEventId が取れれば eventId 単位で安定させる（DMDATA 経路）。
+          // P2PQuake（standard 版）は id パターン非対応で mergeQuakeInto が続報で id を更新するため、
+          // sameQuakeEntry の同一性判定に使われる `earthquake.time` を fallback キーにする。
+          key={extractQuakeEventId(quake) ?? quake.earthquake.time}
           quake={quake}
           isLatest={i === 0}
           isSelected={quake.earthquake.time === selectedId}

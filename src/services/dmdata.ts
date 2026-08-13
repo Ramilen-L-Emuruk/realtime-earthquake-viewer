@@ -27,6 +27,14 @@ const VYSE_KOHATSU_TYPES = new Set(['VYSE60'])
 const RECONNECT_BASE_MS = 3000
 const RECONNECT_MAX_MS = 30000
 const RECONNECT_FACTOR = 1.5
+// DMDATA v2 は概ね 15〜30 秒間隔で ping を送出する。90 秒間 ping/data の受信が無い場合は
+// 半開通信（TCP は生きているが実質無応答）と判定して自発 close → 再接続する。
+const PING_WATCHDOG_MS = 90000
+const PING_WATCHDOG_CHECK_MS = 15000
+// start 受信後、この時間だけ接続が維持できたら reconnectAttempt をリセットする。
+// start 受信直後にリセットしてしまうと「open→start→即切断」を繰り返すフラッピングで
+// バックオフが効かず高頻度でチケット再取得を叩き続ける状態になるため、健全性を確認してからリセットする。
+const STABLE_CONNECTION_MS = 15000
 
 function authHeader(apiKey: string): string {
   return 'Basic ' + btoa(apiKey + ':')
@@ -159,6 +167,11 @@ export class DmdataWebSocket {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private stopped = false
   private authError = false
+  // 最後にサーバー活動を確認した時刻（ping / data 受信）。ping ウォッチドッグが読む。
+  private lastActivityAt = 0
+  private pingWatchdogTimer: ReturnType<typeof setInterval> | null = null
+  // start 受信後の安定判定タイマー。STABLE_CONNECTION_MS 継続で reconnectAttempt をリセットする。
+  private stableConnectionTimer: ReturnType<typeof setTimeout> | null = null
 
   onEvent: ((ev: DmdataEvent) => void) | null = null
   onStatusChange: ((s: ConnectionStatus) => void) | null = null
@@ -203,9 +216,12 @@ export class DmdataWebSocket {
   private openWs(url: string) {
     const ws = new WebSocket(url, 'dmdata.v2')
     this.ws = ws
+    // start 受信で正常購読が確定するまで reconnectAttempt を維持する（DMD-3）。
+    // onopen で 0 リセットしてしまうと、start 前に切断される状態で指数バックオフが効かなくなる。
+    this.lastActivityAt = performance.now()
+    this.startPingWatchdog()
 
     ws.onopen = () => {
-      this.reconnectAttempt = 0
       if (this.debug) dlog('WebSocket open')
     }
 
@@ -214,12 +230,28 @@ export class DmdataWebSocket {
       try {
         msg = JSON.parse(ev.data as string) as Record<string, unknown>
       } catch { return /* メッセージエンベロープのパース失敗は無視 */ }
+      // 任意メッセージ受信でサーバー活動を確認したとみなす（ping ウォッチドッグ用）。
+      // duration 計測は単調増加する performance.now() を使う（壁時計・serverNow は NTP 補正で
+      // 非連続にジャンプするため duration 計測には不適）。
+      this.lastActivityAt = performance.now()
       // body の復号は非同期（gunzip）。発火後は待たない。
       void this.handleMessage(msg)
     }
 
     ws.onclose = (ev) => {
       if (this.debug) dlog('WebSocket close', { code: ev.code, reason: ev.reason })
+      this.stopPingWatchdog()
+      this.stopStableConnectionTimer()
+      // 既知の非回復系 close code は authError 相当に停止する（DMD-2）。
+      // 現状は 1008（Policy Violation）のみを非回復扱いにする。4xxx（application-defined）は
+      // DMDATA が実際に何を送るか公式仕様の裏取りが取れておらず、一律停止だと誤判定時に
+      // 自動復旧経路が無くなるため、通常の再接続対象に含めておく。
+      if (!this.stopped && isNonRecoverableCloseCode(ev.code)) {
+        log.error('[DMDSS] 非回復系 close code のため再接続しない', { code: ev.code, reason: ev.reason })
+        this.authError = true
+        this.onStatusChange?.('disconnected')
+        return
+      }
       if (!this.stopped && !this.authError) {
         this.onStatusChange?.('disconnected')
         this.scheduleReconnect()
@@ -228,6 +260,49 @@ export class DmdataWebSocket {
 
     ws.onerror = () => {
       if (this.debug) dlog('WebSocket error')
+    }
+  }
+
+  // DMDATA v2 は概ね 15〜30 秒間隔で ping を送出する。PING_WATCHDOG_MS 以上受信が
+  // 無ければ半開通信と判定して自発的に close する（onclose 経由で再接続される）。
+  // duration 計測は単調増加する performance.now() を使うため、クロック較正ジャンプの影響は受けない。
+  // 注意: 真の半開通信では ws.close() は要求として動くだけで、実際の onclose 発火まで
+  // ブラウザ/OS のタイムアウトに依存して数十秒〜遅延することがある。
+  private startPingWatchdog() {
+    this.stopPingWatchdog()
+    this.pingWatchdogTimer = setInterval(() => {
+      if (this.stopped || this.authError) return
+      const elapsed = performance.now() - this.lastActivityAt
+      if (elapsed > PING_WATCHDOG_MS) {
+        if (this.debug) dlog('ping ウォッチドッグ発火・自発 close', { elapsedMs: Math.round(elapsed) })
+        try { this.ws?.close() } catch { /* 既に close 済みは無視 */ }
+      }
+    }, PING_WATCHDOG_CHECK_MS)
+  }
+
+  private stopPingWatchdog() {
+    if (this.pingWatchdogTimer !== null) {
+      clearInterval(this.pingWatchdogTimer)
+      this.pingWatchdogTimer = null
+    }
+  }
+
+  // start 受信後、STABLE_CONNECTION_MS 継続で reconnectAttempt をリセットする。
+  // 「start 受信直後にリセット」だとフラッピング（start→即切断の繰り返し）でバックオフが
+  // 効かず高頻度でチケット再取得を叩き続ける状態になるため、安定を確認してからリセットする。
+  private scheduleStableReset() {
+    this.stopStableConnectionTimer()
+    this.stableConnectionTimer = setTimeout(() => {
+      if (this.stopped || this.authError) return
+      this.reconnectAttempt = 0
+      if (this.debug) dlog('接続安定・reconnectAttempt リセット')
+    }, STABLE_CONNECTION_MS)
+  }
+
+  private stopStableConnectionTimer() {
+    if (this.stableConnectionTimer !== null) {
+      clearTimeout(this.stableConnectionTimer)
+      this.stableConnectionTimer = null
     }
   }
 
@@ -256,6 +331,10 @@ export class DmdataWebSocket {
 
   private async handleMessage(msg: Record<string, unknown>) {
     if (msg.type === 'start') {
+      // 購読開始が確定してから安定判定を予約する（DMD-3）。
+      // STABLE_CONNECTION_MS 継続で reconnectAttempt をリセット。
+      // start 直後の即時リセットだと start→即切断のフラッピングでバックオフが効かない。
+      this.scheduleStableReset()
       if (this.debug) dlog('start（購読開始）', { classifications: (msg as { classifications?: unknown }).classifications })
       this.onStatusChange?.('connected')
       return
@@ -408,12 +487,22 @@ export class DmdataWebSocket {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
+    this.stopPingWatchdog()
+    this.stopStableConnectionTimer()
     if (this.ws) {
       this.ws.onclose = null
       this.ws.close()
       this.ws = null
     }
   }
+}
+
+// 非回復系 WebSocket close code を判定する。
+// 保守的に 1008（Policy Violation）のみ非回復扱いにする。4xxx（application-defined）は
+// DMDATA v2 の公式仕様の裏取りが取れておらず、一律停止だと誤判定時に自動復旧経路が
+// 無くなるため通常の再接続対象に含める。実運用ログで意味が判明したら個別に列挙する。
+export function isNonRecoverableCloseCode(code: number): boolean {
+  return code === 1008
 }
 
 // REST API で電文1件を取得し、地震情報・津波情報・長周期地震動観測情報のいずれかにパースして返す。

@@ -629,9 +629,20 @@ export function step(
   const triggeredAt: Record<string, number | null> = {}
 
   for (let i = 0; i < frame.values.length; i++) {
-    if (frame.missing?.[i]) continue
-    const [lat, lng] = frame.sites[i]
     const key = m.keys[i]
+    if (frame.missing?.[i]) {
+      // KYO-1: 欠測フレームでも学習資産（floorMean/floorDev）は据え置く。
+      // 完全消失 → 次フレームで initSiteState から再学習になると、慢性ノイズ点の
+      // floorDev=0 リセットが揺れ検知の閾値を崩し自己マスキングを起こしうる。
+      // hist は空配列にリセットする（据え置くと復帰時に「N秒前のサンプル」を
+      // windowRate が「RATE_DT_MS 窓の直近」として拾い、経過時間の乖離を検証しないため、
+      // 気温/風/センサー再較正等による緩やかなドリフトを偽オンセットと誤判定しうる）。
+      // triggeredAtMs は COINCIDENCE_MS の時刻ベース判定で自然に減衰するため保持可。
+      const prev = state.sites[key]
+      if (prev) sites[key] = { ...prev, hist: [] }
+      continue
+    }
+    const [lat, lng] = frame.sites[i]
     const value = indexToValue(frame.values[i])
     const prev = state.sites[key]
 

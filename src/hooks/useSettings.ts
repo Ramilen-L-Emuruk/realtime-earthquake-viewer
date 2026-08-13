@@ -7,7 +7,7 @@ export interface AppSettings {
   minDisplayScale: number   // 最低表示震度 (-1 = すべて)
   notifyMinScale: number    // 通知最低震度 (-1 = 通知しない)
   soundEnabled: boolean     // 地震・EEW・津波の受信時に音を鳴らす
-  soundVolume: number       // 通知音の全体音量 (0.0 〜 1.0)
+  soundVolume: number       // 通知音・VOICEVOX 読み上げ共通の全体音量 (0.0 〜 1.0)
   uiScale: number           // UI 倍率 (1 = 100%)
   mapIconScale: number      // 地図アイコンの倍率 (1 = 100%、UI 倍率とは独立)
   showBathymetry: boolean   // 背景に海底地形（ESRI Ocean）を表示する

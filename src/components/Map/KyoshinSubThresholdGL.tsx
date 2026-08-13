@@ -4,6 +4,7 @@ import { useMapGL } from './mapGLContext'
 import type { SiteCoords } from '../../services/kyoshin'
 import { addOrderedLayer } from './gl/layerOrder'
 import { makeSubThresholdLayer, type SubThresholdLayer } from './gl/subThresholdLayer'
+import { log } from '../../utils/logger'
 
 // 強震モニタの震度0以下（index 1〜6）を描画する MapLibre 版（Leaflet の KyoshinSubThreshold 相当）。
 // index 0（データ無し）と index 7+（震度1以上・KyoshinPoints が描画）は対象外。
@@ -31,6 +32,12 @@ interface Props {
 export function KyoshinSubThresholdGL({ sites, indices, iconScale, visible }: Props) {
   const map = useMapGL()
   const layerRef = useRef<SubThresholdLayer | null>(null)
+  // restore 直後に「マウント時点の値」ではなく現在の props を復元するため ref で保持する。
+  const iconScaleRef = useRef(iconScale)
+  const visibleRef = useRef(visible)
+  const levelsRef = useRef<Uint8Array | null>(null)
+  iconScaleRef.current = iconScale
+  visibleRef.current = visible
 
   // 観測点座標が確定したらカスタムレイヤーを生成して追加する（座標は静的）。
   useEffect(() => {
@@ -42,14 +49,48 @@ export function KyoshinSubThresholdGL({ sites, indices, iconScale, visible }: Pr
       positions[i * 2] = m.x
       positions[i * 2 + 1] = m.y
     })
-    const sub = makeSubThresholdLayer(positions, sites.length, iconScale)
-    layerRef.current = sub
-    addOrderedLayer(map, sub.layer)
+    // 各 restore で GL リソース参照を再構築するため、レイヤーオブジェクトごと作り直す。
+    // 成功後に layerRef を差し替えるため、部分的成功（addOrderedLayer 失敗時に layerRef だけ
+    // 新オブジェクトを指す）は起きない。
+    const makeAndAdd = (): SubThresholdLayer | null => {
+      // 既存レイヤーが残っていれば無駄な再生成を避ける（PsWaveGL の再追加パターンと対称）。
+      if (map.getLayer('kyoshin-subthreshold')) return layerRef.current
+      const sub = makeSubThresholdLayer(positions, sites.length, iconScaleRef.current)
+      try {
+        addOrderedLayer(map, sub.layer)
+      } catch (err) {
+        log.error('[KyoshinSubThresholdGL] custom layer re-add failed', err)
+        return null
+      }
+      // restore 時にマウント時点の値ではなく現在の props/直近 levels を反映する。
+      sub.setVisible(visibleRef.current)
+      sub.setIconScale(iconScaleRef.current)
+      if (levelsRef.current) sub.setLevels(levelsRef.current)
+      layerRef.current = sub
+      return sub
+    }
+    let sub = makeAndAdd()
+    // MAP-1: WebGL context lost/restored 時に MapLibre は custom layer を復元しない
+    // （公式コードが console.warn で明示）ため、restore イベントで手動再追加する。
+    //
+    // 重要（v6 タイミング設計）: `_contextRestored` は setStyle 直後の同期実行内で
+    // `webglcontextrestored` を発火し、この時点で新 Style は _loaded=false のため addLayer は
+    // Error("Style is not done loading.") を投げる。style.load を待ってから再追加する。
+    // さらに Evented.fire はリスナー単位で try/catch しないため各コンポーネントで try/catch する。
+    const doReadd = () => { sub = makeAndAdd() ?? sub }
+    const onRestored = () => {
+      log.warn('[KyoshinSubThresholdGL] WebGL context restored, re-adding custom layer')
+      if (map.isStyleLoaded()) doReadd()
+      else map.once('style.load', doReadd)
+    }
+    map.on('webglcontextrestored', onRestored)
     return () => {
-      if (map.getLayer(sub.layer.id)) map.removeLayer(sub.layer.id)
+      map.off('webglcontextrestored', onRestored)
+      // 登録されていない fn への off は no-op のため、常に呼んで cleanup を対称にする。
+      map.off('style.load', doReadd)
+      if (sub && map.getLayer(sub.layer.id)) map.removeLayer(sub.layer.id)
       layerRef.current = null
     }
-    // iconScale は生成時の初期値のみ使用（変化は下の setIconScale で反映）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map, sites])
 
@@ -66,6 +107,8 @@ export function KyoshinSubThresholdGL({ sites, indices, iconScale, visible }: Pr
       const idx = indices[i] ?? 0
       levels[i] = idx >= 1 && idx <= MAX_SUB_IDX ? idx : 0
     }
+    // restore 直後の再適用用に直近の levels を保持する（MAP-1 対応）。
+    levelsRef.current = levels
     sub.setLevels(levels)
     if (visible) map.triggerRepaint()
   }, [map, indices, sites, visible])

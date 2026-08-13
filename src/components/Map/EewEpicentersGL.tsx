@@ -70,8 +70,13 @@ function buildPopupHtml(ep: EewEpicenter): string {
     `<span style="font-weight:700;font-size:13px">${escapeHtml(ep.name)}</span>` +
     (serialText ? `<span style="font-size:11px;color:#94a3b8">${serialText}</span>` : '') +
     `</div>` +
+    // EEW-6: 仮定震源要素（単独観測点処理）は M・深さが未確定なので数値を隠す。
+    // カード表示（RealtimeTab の EEWCard）と同じ扱いにする。
     `<div style="margin-top:2px;font-size:11px;color:#94a3b8">` +
-    `${escapeHtml(formatMagnitude(ep.magnitude))} / 深さ ${escapeHtml(formatDepth(ep.depth))}</div>` +
+    (provisional
+      ? '震源調査中'
+      : `${escapeHtml(formatMagnitude(ep.magnitude))} / 深さ ${escapeHtml(formatDepth(ep.depth))}`) +
+    `</div>` +
     `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:12px">` +
     `${badgeHtml(getIntensityLabel(ep.maxScale), getIntensityColor(ep.maxScale))}` +
     `<span style="color:#cbd5e1">予想最大震度 ${escapeHtml(getIntensityLabel(ep.maxScale))}</span>` +

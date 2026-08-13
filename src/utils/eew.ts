@@ -229,7 +229,8 @@ export interface HypoInfoPendingMissing {
  *
  * 解除確定時、直前に isCancel=true を確認できていれば「誤報取消」として cancelled のみ立てる。
  * それ以外（有効期限切れ・欠測からの復帰断念）は expired も立てて自動終了として扱い、
- * 誤報取消の音・通知（useLiveEventHandler の !event.expired 分岐）を鳴らさないようにする。
+ * 誤報取消の音・通知（useLiveEventHandler の !event.expired かつ hadKey=true 分岐）を鳴らさないようにする。
+ * hadKey は AUD-2 対応で追加された二重鳴り防止ガード（受信元別に cancel が届いた場合の 2 回目対策）。
  */
 export function diffHypoInfoEvents(
   prev: YahooHypoInfoItem[],

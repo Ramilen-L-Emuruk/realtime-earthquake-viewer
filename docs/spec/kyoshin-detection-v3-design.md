@@ -519,3 +519,30 @@ localStorage 永続化で活性が高いセルが生じた場合の挙動は今�
 出づらい」という指摘もあったが、単独点は機器ノイズ・発破の典型パターンでもあり、`MIN_CLUSTER` の緩和は
 §18 で塞いだ誤検知経路を再び開くリスクが大きいため今回のスコープ外とした。福井のケースは onset 連結成分が
 4点あったため、この制約下でも実用上の短縮効果が得られている。
+
+## 21. 欠測フレームでの学習資産巻き添え消失を修正（2026-08-13・KYO-1）
+
+**問題**: `step()` の欠測分岐は当初 `if (frame.missing?.[i]) continue` で `sites[key]` に何も入れず、
+学習資産（`floorMean`/`floorDev`）ごと消失させていた。次フレームで `initSiteState` から再学習に入り
+`floorDev=0` にリセットされるため、慢性ノイズ点ほど直後に誤 onset を招くリスクがあった（KYO-1）。
+
+**初回修正の踏み外し**: `sites[key] = prev` で `SiteState` を丸ごと据え置いたところ、`hist` も凍結されて
+しまい、`pushHist` は配列長を 2 未満に絞らない仕様（`while (hist.length > 2 && ...) shift()`）のため
+「60秒前の値」が復帰1フレーム目の `windowRate` で「`RATE_DT_MS`(2.5秒) 窓の直近サンプル」として採用される
+状態が生じた。敵対的レビュアーの検証で 3 点欠測→復帰の合成シナリオを実行したところ、緩やかなドリフト
+（value 0.0→0.5、震度0.5相当）でも 3 点同時 onset → `MIN_CLUSTER`(3) 到達 → likely 相当を誤検知することが
+再現された。
+
+**確定修正**: `sites[key] = { ...prev, hist: [] }` として学習資産のみ保持し `hist` は空リセット。
+復帰1フレーム目の `windowRate` は基準サンプル無しで `null` を返すため `onset=false`。緩やかなドリフトが
+偽オンセットに化ける経路を塞ぐ。`triggeredAtMs` は据え置いても `COINCIDENCE_MS`(4秒) の時刻ベース判定で
+自然に減衰するため保持で問題無い。
+
+**検証**:
+- 型チェック0・vitest 289件（既存 265 → B6 で +23、本節で +1・KYO-1 の回帰テスト）
+- 回帰テスト: 学習済み 3 点が 60 秒欠測を挟んで震度 0.5 相当に緩やか復帰しても confirmed/likely を出さないこと
+
+**関連 KYO 修正（同コミット）**:
+- KYO-2: `calcintensityToScale` 未知コードで `log.warn`（空文字/null/undefined は震度未確定として抑制）
+- KYO-3: `fetchRealtimeIntensity` で `realTimeData.intensity` の欠落・空文字を明示的な失敗として扱い次エッジへ
+- KYO-4: `useKyoshinRealtime.processResult` を try/catch で隔離しローカルバグを fetch 失敗と誤集計しない

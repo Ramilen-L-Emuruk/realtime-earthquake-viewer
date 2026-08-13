@@ -73,8 +73,10 @@ export function KyoshinPointsGL({ sites, indices, iconScale, visible }: Props) {
   }, [map, sites])
 
   // 毎秒の震度更新（feature-state 差分・変化した点だけ）。
+  // MAP-2: 非表示中は setFeatureState を止める。visible=false 中は prevLevelsRef が古い値のまま
+  // 保持され、表示に戻った瞬間の useEffect（依存に visible を含める）で差分反映される。
   useEffect(() => {
-    if (!map || !addedRef.current) return
+    if (!map || !addedRef.current || !visible) return
     const prev = prevLevelsRef.current
     for (let i = 0; i < sites.length; i++) {
       const idx = indices[i]
@@ -87,7 +89,7 @@ export function KyoshinPointsGL({ sites, indices, iconScale, visible }: Props) {
         { color: color ?? '#000000', opacity: color ? VISIBLE_OPACITY : 0 },
       )
     }
-  }, [map, indices, sites])
+  }, [map, indices, sites, visible])
 
   // UI 倍率の変化で半径を更新（震度によらず一律のため paint プロパティ一括更新）。
   useEffect(() => {
