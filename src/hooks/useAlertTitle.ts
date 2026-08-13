@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { EEWAlert } from '../types/earthquake'
 import { eewMaxScale } from '../utils/eew'
 import { getIntensityLabel } from '../utils/intensity'
@@ -156,6 +156,19 @@ export function useAlertTitle(opts: {
     window.clearTimeout(timersRef.current.tsunami)
     tsunamiTitleWindowActiveRef.current = false
   }
+
+  // アンマウント時に 4 種のタイマーを掃除する。HMR や React StrictMode の dev 二重実行で
+  // フックが再マウントされる場合、残存タイマーが古いクロージャの applyPriority を呼んで
+  // ゾンビ状態遷移を起こすのを防ぐ（RCT-2）。
+  useEffect(() => {
+    const timers = timersRef.current
+    return () => {
+      window.clearTimeout(timers.earthquake)
+      window.clearTimeout(timers.eew)
+      window.clearTimeout(timers.tsunami)
+      window.clearTimeout(timers.specialInfo)
+    }
+  }, [])
 
   return {
     alertTitle,

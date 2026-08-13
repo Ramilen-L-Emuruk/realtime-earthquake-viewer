@@ -666,11 +666,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     }
   }
 
-  // EEW 読み上げタイマーをアンマウント時にクリーンアップする
+  // EEW 読み上げタイマーと観測点ステータス自動消去タイマーをアンマウント時にクリーンアップする
   useEffect(() => {
     return () => {
       for (const timer of eewTtsTimersRef.current.values()) clearTimeout(timer)
       for (const timer of eewTtsMaxTimersRef.current.values()) clearTimeout(timer)
+      window.clearTimeout(obsStatusClearTimerRef.current)
     }
   }, [])
 
@@ -691,6 +692,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     lastMaxObsHeightRef.current.clear()
     seenObsNamesRef.current.clear()
     seenLpgmEventIdsRef.current.clear()
+    // 60秒 obs バッジ自動消去タイマーもリプレイ切替時に持ち越さない（アンマウント経路と対称）
+    window.clearTimeout(obsStatusClearTimerRef.current)
+    obsStatusClearTimerRef.current = 0
   }, [])
 
   // pre-window イベントから T 時点の追跡 ref を復元する（サイレント注入後の正確な音判定に必要）

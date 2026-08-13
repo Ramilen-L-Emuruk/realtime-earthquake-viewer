@@ -1,5 +1,6 @@
 import type { AppEvent, JMAQuake, IssueType, CorrectType, DomesticTsunami, TelegramLogEntry } from '../types/earthquake'
 import { serverNow, serverDate } from '../utils/clock'
+import { log } from '../utils/logger'
 
 const API_BASE = 'https://api.p2pquake.net/v2'
 const WS_URL = 'wss://api.p2pquake.net/v2/ws'
@@ -40,12 +41,14 @@ const ISSUE_TYPE_MAP: Record<string, IssueType> = {
 export function convertEvent(raw: RawP2PEvent): AppEvent | null {
   const { code, ...rest } = raw
   let converted = rest
-  // issue.type を日本語に変換
+  // issue.type を日本語に変換（未知の英語コードは 'その他' に格下げしつつ log.warn で早期発見できるように）
   if (converted.issue && typeof (converted.issue as Record<string, unknown>).type === 'string') {
-    const mapped = ISSUE_TYPE_MAP[(converted.issue as Record<string, unknown>).type as string]
-    if (mapped) {
-      converted = { ...converted, issue: { ...(converted.issue as object), type: mapped } }
+    const rawType = (converted.issue as Record<string, unknown>).type as string
+    const mapped = ISSUE_TYPE_MAP[rawType]
+    if (!mapped) {
+      log.warn('[p2pquake] 未知の issue.type を "その他" にフォールバック', { rawType })
     }
+    converted = { ...converted, issue: { ...(converted.issue as object), type: mapped ?? 'その他' } }
   }
   // issue.correct を日本語に変換
   if (converted.issue && typeof (converted.issue as Record<string, unknown>).correct === 'string') {
@@ -192,7 +195,16 @@ export class P2PQuakeWebSocket {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
-    this.ws?.close()
-    this.ws = null
+    if (this.ws) {
+      // close() 前に全ハンドラを外す。onclose に再接続ロジックがあるため、
+      // 参照を残したまま close() すると shouldReconnect=false でも onStatusChange('disconnected')
+      // が呼ばれ、後続の GC タイミングでゾンビイベントが発火する可能性がある。
+      this.ws.onopen = null
+      this.ws.onmessage = null
+      this.ws.onclose = null
+      this.ws.onerror = null
+      this.ws.close()
+      this.ws = null
+    }
   }
 }

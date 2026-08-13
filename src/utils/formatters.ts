@@ -49,12 +49,14 @@ export function formatDateTimeLocal(date: Date): string {
 }
 
 export function formatDepth(depth: number): string {
+  if (!Number.isFinite(depth)) return '不明'
   if (depth === 0) return 'ごく浅い'
   if (depth < 0) return '不明'
   return `${depth}km`
 }
 
 export function formatMagnitude(magnitude: number): string {
+  if (!Number.isFinite(magnitude)) return '不明'
   if (magnitude < 0) return '不明'
   return `M${magnitude.toFixed(1)}`
 }

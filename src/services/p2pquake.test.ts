@@ -51,6 +51,11 @@ describe('convertEvent', () => {
       expect((result as unknown as { issue: { type: string } }).issue.type).toBe('震度速報')
     })
 
+    it('未知の issue.type は「その他」にフォールバックする（将来の API 拡張時に UI が壊れないため）', () => {
+      const result = convertEvent({ code: 551, issue: { type: 'FutureType' } })
+      expect((result as unknown as { issue: { type: string } }).issue.type).toBe('その他')
+    })
+
     it('issue.correct の英語コードを日本語に変換し、未知値は「なし」にフォールバック', () => {
       const known = convertEvent({ code: 551, issue: { correct: 'ScaleOnly' } })
       expect((known as unknown as { issue: { correct: string } }).issue.correct).toBe('震度のみ訂正')
