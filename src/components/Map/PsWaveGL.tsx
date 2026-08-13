@@ -5,6 +5,7 @@ import type { PsWaveCircle } from '../../services/kyoshin'
 import { computeSWaveRadiusAtTime, computeSWaveTravelTimeSec } from '../../hooks/usePsWaveCalc'
 import { calcShakingDurationSec, S_WAVE_FALLBACK_KM_PER_SEC } from '../../utils/eew'
 import { addOrderedLayer } from './gl/layerOrder'
+import { log } from '../../utils/logger'
 
 // 緊急地震速報の予報円（S波=塗りつぶし＋後端フェード / P波=破線外周）を描画する MapLibre 版
 // （Leaflet 版 PsWaveLayer 相当）。円弧・グラデーションは Canvas2D で描く方が素直なため、
@@ -209,11 +210,39 @@ export function PsWaveGL({ psWave, fullOpacity }: Props) {
     triggerRef.current = requestRepaint
     map.on('move', requestRepaint)
     map.on('resize', requestRepaint)
+    // MAP-1: WebGL context lost/restored 時に MapLibre は custom layer を復元しない
+    // （公式コードが console.warn で明示）ため、restore で手動再追加する。
+    // customLayer は同一オブジェクトを再利用し、onAdd の中で新しい gl コンテキストから
+    // program/buffer/texture 参照を作り直す（onAdd は addLayer 内部で再度呼ばれる）。
+    //
+    // 重要（v6 タイミング設計）: `_contextRestored` は `setStyle(..., {diff:false})` を呼んだ直後、
+    // 同じ同期実行内で `webglcontextrestored` を発火する。この時点で新 Style は `_loaded=false` のため、
+    // ここで即 addLayer すると `_checkLoaded` が `Error: Style is not done loading.` を投げる。
+    // さらに `Evented.fire` はリスナー単位で try/catch しないため、例外が後続リスナーを止める。
+    // → `map.isStyleLoaded()` が false の間は `map.once('style.load', ...)` で待ってから追加し、
+    //    各コンポーネントが try/catch で例外を隔離する。
+    const readdLayer = () => {
+      try {
+        if (!map.getLayer(LYR)) addOrderedLayer(map, customLayer)
+        requestRepaint()
+      } catch (err) {
+        log.error('[PsWaveGL] custom layer re-add failed', err)
+      }
+    }
+    const onRestored = () => {
+      log.warn('[PsWaveGL] WebGL context restored, re-adding custom layer')
+      if (map.isStyleLoaded()) readdLayer()
+      else map.once('style.load', readdLayer)
+    }
+    map.on('webglcontextrestored', onRestored)
     requestRepaint()
 
     return () => {
       map.off('move', requestRepaint)
       map.off('resize', requestRepaint)
+      map.off('webglcontextrestored', onRestored)
+      // 登録されていない fn への off は no-op のため、常に呼んで cleanup を対称にする。
+      map.off('style.load', readdLayer)
       triggerRef.current = null
       if (map.getLayer(LYR)) map.removeLayer(LYR)
     }

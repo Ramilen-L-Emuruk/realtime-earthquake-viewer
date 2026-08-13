@@ -9,7 +9,7 @@ import { log } from './logger'
 export type AlertSoundType =
   'earthquake' | 'earthquakePrompt' | 'earthquakeInfo'
   | 'eew' | 'eewUpdate' | 'eewFinal' | 'eewCancel' | 'eewSpecial' | 'eewForecast'
-  | 'tsunami' | 'tsunamiMajor' | 'tsunamiWatch' | 'tsunamiForecast' | 'tsunamiUpdate'
+  | 'tsunami' | 'tsunamiMajor' | 'tsunamiWatch' | 'tsunamiForecast' | 'tsunamiUpdate' | 'tsunamiCancel'
   | 'kyoshin' | 'kyoshinCandidate'
   | 'specialInfo'
 
@@ -476,6 +476,15 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
   tsunamiUpdate: (ctx, base) => {
     ding(ctx, 370, base + 0.00, 0.55, 0.14)
     ding(ctx, 555, base + 0.28, 0.55, 0.11)
+  },
+
+  // 津波解除・取消・失効: ding 高音 → 中音 → 低音 降下3音（穏やかな解除通知）。
+  // eewCancel と同じ「降下」パターンで統一する（津波系の tsunamiWatch/tsunami/tsunamiMajor は
+  // 上昇スイープで緊迫感を出しているため、逆向きの下降で「解除」の情報を対比させる）。
+  tsunamiCancel: (ctx, base) => {
+    ding(ctx, 700, base + 0.00, 0.55, 0.14)
+    ding(ctx, 520, base + 0.22, 0.55, 0.12)
+    ding(ctx, 380, base + 0.44, 0.55, 0.10)
   },
 
   // 南海トラフ臨時情報・後発地震注意情報: ピアノA4×2連打 → D5（情報発表の穏やかな緊張感）

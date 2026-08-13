@@ -74,7 +74,9 @@ function computeRadius(t: number, depth: number, v1: number, v2: number, cosIc: 
 
     return Math.max(directRadius, headRadius)
   } else {
-    // 震源がマントル内: マントル速度で直達波
+    // 震源がマントル内: マントル速度で直達波（簡略）。
+    // 既知の限界（EEW-5・DOC 化されている）: 地殻区間を考慮しないため到達時刻を過小評価する。
+    // 33km 前後で不連続ジャンプもある。Snell 則ベースの本来の屈折波再設計は今後の課題。
     const hypo = v2 * t
     return hypo > depth ? Math.sqrt(hypo ** 2 - depth ** 2) : 0
   }

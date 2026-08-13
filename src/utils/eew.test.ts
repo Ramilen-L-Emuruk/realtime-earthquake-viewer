@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { calcArrivalSafetyMarginSec, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, selectEEWSoundType, type HypoInfoPendingMissing } from './eew'
+import { calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, selectEEWSoundType, type HypoInfoPendingMissing } from './eew'
 import type { YahooHypoInfoItem } from '../services/kyoshin'
 import type { EEWAlert } from '../types/earthquake'
 
@@ -293,5 +293,93 @@ describe('eewMaxLpgmClass', () => {
       areas: [{ pref: 'A県', name: 'A地域', scaleFrom: 30, scaleTo: 40, kindCode: '10', arrivalTime: null, lgIntTo: 3 }],
     })
     expect(eewMaxLpgmClass(eew)).toBe(3)
+  })
+})
+
+// EEW-4: 司・翠川式ベースの自動解除ロジック。細部の丸めに依存しない性質ベースのテスト。
+describe('calcFeltRadiusKm: 司・翠川式による有感半径の逆算', () => {
+  it('マグニチュードが大きいほど有感半径が大きくなる（浅発 depth=10）', () => {
+    const r5 = calcFeltRadiusKm(5.0, 10)
+    const r6 = calcFeltRadiusKm(6.0, 10)
+    const r7 = calcFeltRadiusKm(7.0, 10)
+    expect(r5).toBeLessThan(r6)
+    expect(r6).toBeLessThan(r7)
+  })
+
+  it('浅発と深発（同 M6.0）: 半径は 0 より大きく上限内に収まる', () => {
+    const rShallow = calcFeltRadiusKm(6.0, 10)
+    const rDeep = calcFeltRadiusKm(6.0, 300)
+    expect(rShallow).toBeGreaterThan(0)
+    expect(rDeep).toBeGreaterThan(0)
+    expect(rShallow).toBeLessThanOrEqual(2500)
+    expect(rDeep).toBeLessThanOrEqual(2500)
+  })
+
+  it('targetIntensity が大きいほど有感半径は狭くなる（震度1 > 震度3 > 震度5）', () => {
+    const r1 = calcFeltRadiusKm(7.0, 10, 1.0)
+    const r3 = calcFeltRadiusKm(7.0, 10, 3.0)
+    const r5 = calcFeltRadiusKm(7.0, 10, 5.0)
+    expect(r1).toBeGreaterThan(r3)
+    expect(r3).toBeGreaterThan(r5)
+  })
+
+  it('MAX_FELT_RADIUS_KM=2500 の上限にクランプする（M9.5 で発火）', () => {
+    // M9.0 では実測 ~1935km でクランプ未発火。M9.5 で理論値が上限を超えクランプが効く。
+    expect(calcFeltRadiusKm(9.5, 10)).toBeLessThanOrEqual(2500)
+    // 二分探索の丸め誤差で 2500.0 に近い値になる（Number.EPSILON レベル）
+    expect(calcFeltRadiusKm(10.0, 10)).toBeCloseTo(2500, 10)
+  })
+
+  it('mjma<3.0 は 3.0 として扱う（下限クランプ）', () => {
+    expect(calcFeltRadiusKm(2.0, 10)).toBe(calcFeltRadiusKm(3.0, 10))
+  })
+
+  it('ゴールデン値: M6.0 depth=10 の有感半径（現在値ピン留め・係数改変時の警戒用）', () => {
+    // 実装式の絶対値ピン留め。将来の係数改変や式リファクタで大きくずれたら気付く。
+    // 単調性テストだけでは係数の絶対値変化を検知できないため。
+    expect(calcFeltRadiusKm(6.0, 10)).toBeCloseTo(478, 0)
+  })
+})
+
+describe('calcEEWAutoCancelSec: 自動解除までの秒数（有感半径のS波到達 + 30秒）', () => {
+  it('マグニチュードが大きいほど自動解除秒数も長くなる', () => {
+    expect(calcEEWAutoCancelSec(5.0, 10)).toBeLessThan(calcEEWAutoCancelSec(7.0, 10))
+  })
+
+  it('30 秒（FIXED_BUFFER_SEC）以上を返す', () => {
+    expect(calcEEWAutoCancelSec(5.0, 10)).toBeGreaterThanOrEqual(30)
+    expect(calcEEWAutoCancelSec(3.0, 10)).toBeGreaterThanOrEqual(30)
+  })
+})
+
+describe('calcEEWCancelTime: 発震時刻起点の自動解除時刻（MIN_CANCEL_SEC 下限保証付き）', () => {
+  function makeEEWFor(m: number, depth: number, originTime: string): EEWAlert {
+    return makeEEW({
+      earthquake: {
+        originTime,
+        arrivalTime: originTime,
+        condition: '以上',
+        hypocenter: { name: 'テスト震源', latitude: 35.0, longitude: 135.0, depth, magnitude: m },
+      },
+    })
+  }
+
+  it('originTime + autoCancelSec が reportTime + 60 秒より後なら originTime 基準を返す（大 M）', () => {
+    const originTime = '2026-01-01T12:00:00Z'
+    const reportTime = new Date('2026-01-01T12:00:10Z')
+    const eew = makeEEWFor(7.0, 10, originTime)
+    const cancel = calcEEWCancelTime(eew, reportTime)
+    const originBase = new Date(new Date(originTime).getTime() + calcEEWAutoCancelSec(7.0, 10) * 1000)
+    expect(cancel.getTime()).toBe(originBase.getTime())
+    expect(cancel.getTime()).toBeGreaterThan(reportTime.getTime() + 60 * 1000)
+  })
+
+  it('小さな M・遅い reportTime では reportTime + MIN_CANCEL_SEC(60秒) の下限が採用される', () => {
+    const originTime = '2026-01-01T12:00:00Z'
+    const reportTime = new Date('2026-01-01T12:05:00Z')
+    const eew = makeEEWFor(5.0, 10, originTime)
+    const cancel = calcEEWCancelTime(eew, reportTime)
+    const minTime = new Date(reportTime.getTime() + 60 * 1000)
+    expect(cancel.getTime()).toBe(minTime.getTime())
   })
 })

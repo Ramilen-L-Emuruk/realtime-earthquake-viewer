@@ -10,7 +10,9 @@
 //            歪まない。K は feedServerSample() でサーバー由来の時刻から EMA 推定する。
 //   replay : serverNow = Date.now() + replayOffset   (アーカイブ再生・手動時刻の絶対制御。既存挙動を維持)
 //
-// 未較正（K 未推定・非リプレイ）時は壁時計へフォールバックする。
+// 未較正（K 未推定・非リプレイ）時は壁時計へフォールバックし、CLK-3 対応で一定間隔で log.warn を出す。
+
+import { log } from './logger'
 
 /** K 推定の EMA 係数。大きいほど新しいサンプルに追従。 */
 const EMA_ALPHA = 0.2
@@ -21,6 +23,10 @@ let kEpochMs: number | null = null
 /** リプレイ/手動時刻のオフセット(ms)。null のとき live モード。 */
 let replayOffsetMs: number | null = null
 
+/** CLK-3: 未較正フォールバック警告のスロットル用（最終警告時刻）。 */
+let lastUncalibratedWarnAtMs = 0
+const UNCALIBRATED_WARN_INTERVAL_MS = 60000
+
 /**
  * 最良推定のサーバー現在時刻（epoch ms）。
  * アプリ内で「現在時刻」が必要な箇所は Date.now()/new Date() の代わりにこれを使う。
@@ -28,7 +34,14 @@ let replayOffsetMs: number | null = null
 export function serverNow(): number {
   if (replayOffsetMs !== null) return Date.now() + replayOffsetMs
   if (kEpochMs !== null) return performance.now() + kEpochMs
-  return Date.now()
+  // CLK-3: 未較正で壁時計にフォールバック中。到達不能環境で無音の恒久フォールバックに
+  // ならないよう、60 秒間隔で警告を出す。フォールバック自体は続行（挙動は既存と同一）。
+  const now = Date.now()
+  if (now - lastUncalibratedWarnAtMs > UNCALIBRATED_WARN_INTERVAL_MS) {
+    lastUncalibratedWarnAtMs = now
+    log.warn('[clock] サーバー時刻未較正のため Date.now() にフォールバック中（Yahoo 到達不能等）')
+  }
+  return now
 }
 
 /** serverNow() の Date 版。 */

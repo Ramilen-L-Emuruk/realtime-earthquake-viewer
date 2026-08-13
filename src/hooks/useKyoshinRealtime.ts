@@ -173,7 +173,13 @@ export function useKyoshinRealtime(
       fetchRealtimeIntensity(target)
         .then((rt) => {
           if (!active) return
-          processResult(rt)
+          // KYO-4: processResult 内の例外を fetch 失敗と誤集計しないよう独立の try/catch で
+          // 隔離する。失敗しても次 tick のスケジュールは通常経路で継続する。
+          try {
+            processResult(rt)
+          } catch (err) {
+            log.error('[kyoshin] processResult 内例外（ローカルバグ・ネットワーク失敗とは別）', err)
+          }
           if (!isReplay) {
             // ライブ: 次ターゲットは「前回 + POLL_MS」と「フロンティア(serverNow - FETCH_OFFSET_MS)」の
             // 大きい方。通常は両者がほぼ一致しコマ飛びしないが、描画負荷などで tick の発火が遅延した場合は

@@ -17,6 +17,7 @@ import type {
   TsunamiGrade,
   TsunamiObservation,
 } from '../types/earthquake'
+import { log } from '../utils/logger'
 
 // EEW: "1","2","3","4","5-","5+","6-","6+","7","不明" 等
 // 地震情報: "1","2","3","4","5弱","5強","6弱","6強","7","不明" 等
@@ -283,6 +284,8 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
     ? '遠地地震'
     : (VXSE_ISSUE_TYPE[headType] ?? '震源・震度情報')
 
+  const correct: CorrectType = str(data.infoType) === '訂正' ? '訂正' : 'なし'
+
   return {
     kind: 'quake',
     id: `dmdata-quake-${eventId}-${str(data.serialNo ?? data.serial ?? '1')}`,
@@ -292,7 +295,7 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
       source: str(data.editorialOffice ?? data.publishingOffice),
       time: str(data.reportDateTime ?? data.pressDateTime),
       type: issueType,
-      correct: 'なし' as CorrectType,
+      correct,
     },
     earthquake: {
       time: originTime,
@@ -390,9 +393,10 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   if (earthquakeEl && (!Number.isFinite(lat) || !Number.isFinite(lng))) return null
 
   // 震度速報は Head/TargetDateTime（地震検知時刻）を earthquake.time に充てる。
-  // JSON 経路が data.targetDateTime を使うのと揃える。
+  // 通常電文は arrivalTime を優先し、無ければ originTime にフォールバックする（JSON 経路の
+  // parseEarthquake と揃える。DMD-4: 従来 XML は OriginTime を採用し JSON と 1 分ずれていた）。
   const originTime = earthquakeEl
-    ? xmlText(xmlQ(earthquakeEl, 'OriginTime'))
+    ? (xmlText(xmlQ(earthquakeEl, 'ArrivalTime')) || xmlText(xmlQ(earthquakeEl, 'OriginTime')))
     : xmlText(xmlQ(doc, 'TargetDateTime'))
 
   const magnitude = earthquakeEl
@@ -550,8 +554,14 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
     const areaCode = xmlText(xmlQ(itemEl, 'Code')) || undefined
     const kindEl = xmlQ(itemEl, 'Kind')
     const kindCode = kindEl ? xmlText(xmlQ(kindEl, 'Code')) : ''
-    const grade = parseTsunamiGradeByCode(kindCode)
-    if (grade === 'Unknown' || !areaName) continue
+    let grade = parseTsunamiGradeByCode(kindCode)
+    if (!areaName) continue
+    if (grade === 'Unknown') {
+      if (isKnownCancelCode(kindCode)) continue
+      // DMD-5: 未知コードは silent lifted 誤認を避けるため Warning 相当で保持し警告する
+      log.warn(`[tsunami XML] 未知の Kind/Code: "${kindCode}" → 安全側で Warning として areas 保持`)
+      grade = 'Warning'
+    }
 
     const fhEl = xmlQ(itemEl, 'FirstHeight')
     const arrivalTime = fhEl ? xmlText(xmlQ(fhEl, 'ArrivalTime')) : ''
@@ -649,6 +659,14 @@ function parseTsunamiGradeByCode(code: string): TsunamiGrade {
   if (code === '62') return 'Watch'
   if (code === '71' || code === '72' || code === '73') return 'Forecast'
   return 'Unknown'
+}
+
+// DMD-5: 既知の「解除」相当コード。areas 空の判定で lifted 扱いに落として良いのはこれのみ。
+// 未知コードは JMA のコード改定により生じうる。silent に解除扱いにすると警報継続中でも UI が
+// 「解除」と表示するため危険。呼び出し側で「grade==='Unknown' かつ !isKnownCancelCode」を
+// 検知したら log.warn の上、安全側の grade（Warning）で areas を保持する。
+function isKnownCancelCode(code: string): boolean {
+  return code === '50' || code === '60' || code === '00'
 }
 
 // 津波情報 (VTSE41: 大津波警報特別、VTSE51: 警報・注意報・解除、VTSE52: 沖合観測)
@@ -761,8 +779,15 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
   for (const item of rawItems) {
     const it = obj(item)
     const kind = obj(it.kind)
-    const grade = parseTsunamiGradeByCode(str(kind.code))
-    if (grade === 'Unknown') continue  // 解除系コード（50/60/00等）のみ除外。予報(71/72/73)はForecastとして残る
+    const codeStr = str(kind.code)
+    let grade = parseTsunamiGradeByCode(codeStr)
+    if (grade === 'Unknown') {
+      if (isKnownCancelCode(codeStr)) continue  // 既知の解除コード（50/60/00）は除外
+      // DMD-5: 未知コードは JMA コード改定の可能性。silent に解除扱いにせず、
+      // 安全側の grade（Warning）で areas を保持し警告ログを残す。
+      log.warn(`[tsunami] 未知の Kind/Code: "${codeStr}" → 安全側で Warning として areas 保持`)
+      grade = 'Warning'
+    }
     const firstHeight = obj(it.firstHeight)
     const maxHeight = obj(it.maxHeight)
     // DMDATA JSON v1.1.0: maxHeight.height.value が m 単位（maxHeight.value ではない）

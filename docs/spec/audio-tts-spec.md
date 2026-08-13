@@ -38,6 +38,7 @@
 | `tsunamiWatch` | 津波注意報 | 短めのスイープ |
 | `tsunamiForecast` | 津波予報（若干の海面変動） | 単音のチャイム |
 | `tsunamiUpdate` | 津波観測情報の更新 | 小音量のティン音 |
+| `tsunamiCancel` | 津波の解除・取消・期限切れ（cancelReason の 3 種は音では区別せず単一音で伝える） | 降下 3 音（700Hz→520Hz→380Hz） |
 | `quake` | 地震情報 | 単音 |
 | `quakeUpdate` | 地震続報 | 短い上昇 |
 | `foreshock` | 揺れの候補（faint/likely） | 微小音 |
@@ -176,8 +177,8 @@ AutoHotKey 等の外部監視ツールから状態を検知できる。
 
 ### 設定連動
 
-- `settings.soundEnabled` — 音の ON/OFF
-- `settings.voicevoxEnabled` — 読み上げの ON/OFF
+- `settings.soundEnabled` — アラート音の ON/OFF
+- `settings.voicevoxEnabled` — 読み上げの ON/OFF（`soundEnabled` と独立）
 - **ブラウザ通知は種別ごとに 3 つの独立トグル**:
   - `settings.notifyEEW` — 緊急地震速報の発報・昇格時のブラウザ通知 ON/OFF
   - `settings.notifyTsunami` — 津波注意報以上のブラウザ通知 ON/OFF
@@ -187,10 +188,14 @@ AutoHotKey 等の外部監視ツールから状態を検知できる。
 
 ### 既知の課題
 
-- `soundEnabled` と `voicevoxEnabled` の依存関係が箇所によって逆転（EEW 本編は AND、取消系は voicevoxEnabled 単独）
-- 津波の解除/取消/期限切れで通知音が鳴らない（他の取消系は音があるのに津波だけ非対称）
 - 5 箇所の setTimeout が未追跡・キャンセル不能で時系列逆転が起きうる
 - 続報時のタブ切替に優先度なし。EEW 誤報取消の 10 秒オーバーレイ中に無関係な地震情報でタブが即消える
+
+### 解消済み
+
+- **AUD-2**: EEW キャンセル電文が P2PQuake WS と Yahoo の両方から届いた場合の二重鳴り防止。`hadKey=true`（このセッションで表示中の EEW）のみで音・通知・読み上げを発火（`useLiveEventHandler.ts`）
+- **AUD-6**: 津波の解除/取消/期限切れの通知音を追加（`playAlertSound('tsunamiCancel')`。ding 高→中→低の降下 3 音）
+- **AUD-7**: 読み上げは常に `voicevoxEnabled` 単独で判定するように統一。`soundEnabled` はアラート音のみに影響し、`voicevoxEnabled` の可否とは独立に動く
 
 ## 7. ブラウザ通知（`notifications`）
 

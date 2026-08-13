@@ -417,7 +417,7 @@ export const RealtimeTab = memo(function RealtimeTab({ eews, kyoshinSites, kyosh
         .sort((a, b) => b.earthquake.originTime.localeCompare(a.earthquake.originTime))
         .map(eew => (
           <EEWCard
-            key={eew.id}
+            key={eew.issue?.eventId ?? eew.id}
             eew={eew}
             activeLpgmEventId={activeLpgmEventId}
             onToggleLpgm={onToggleLpgm}

@@ -59,11 +59,9 @@ Basic 認証（`Authorization: Basic base64(apiKey:)`）。API キーはユー�
 - `type: 'ping'` を受けたら `pong` を返す
 - `stopped` / `authError` 以外は close 時に自動再接続
 - 認証失敗（401/403）時は `authError` で停止
-
-**既知の課題**:
-- ping ウォッチドッグなし（半開通信で「接続中」表示のまま無応答）
-- close code を分岐せず全て再接続対象に扱う
-- `reconnectAttempt` が `onopen` でリセットされ、start 前切断で指数バックオフが機能しない
+- ping ウォッチドッグ: 最終受信から `PING_WATCHDOG_MS=90000` 経過で自発 close → 再接続（半開通信対策）
+- 非回復系 close code: 保守的に `1008`（Policy Violation）のみ `authError` 相当に停止。`4xxx` は DMDATA v2 の公式仕様の裏取りが取れておらず、通常の再接続対象に含める（実運用ログで意味が判明したら個別に列挙する）
+- `reconnectAttempt` のリセットは `start` 受信後 `STABLE_CONNECTION_MS=15000` 継続で行う（フラッピングでバックオフが効かなくなるのを防ぐため）
 
 ### REST 履歴取得（`fetchDmdataEarthquakes` 等）
 
@@ -133,6 +131,12 @@ JMA 仕様上ここで配信される 556 は全て警報級であるため `con
 - **観測点リスト**: 約 1725 点の緯度経度＋観測点情報（年に数回更新される・`siteConfigId` で判別）
 - **リアルタイム震度**: 1 秒毎の JSON。`realTimeData.intensity` 文字列（1 文字＝1 観測点、`charCodeAt(0)-100` が index 0〜20）
 - **震源情報（hypoInfo）**: EEW 相当の情報（震源・M・calcintensity 等）を含む場合がある
+
+`fetchRealtimeIntensity` は `res.ok` に加えて `realTimeData` の存在、`realTimeData.intensity` が
+非空の文字列であることを検証する（フィールド欠落・型不一致・空文字は次エッジ／リトライへフォールバック）。
+`calcintensityToScale` は「空文字・null/undefined」（震度未確定の想定内）以外の未知コードで `log.warn` を出す
+（silent に severity=Forecast 格下げを防ぐ）。
+`useKyoshinRealtime.processResult` は try/catch で例外を隔離し、ローカルバグと fetch 失敗を分けて扱う。
 
 `siteConfigId` 切替時（年数回）: `fetchSiteList` は Promise キャッシュを持つが、失敗した Promise は
 キャッシュから削除して再試行可能にする。`useKyoshinRealtime` は `currentSiteConfigIdRef` の更新を
