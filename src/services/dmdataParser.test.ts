@@ -2,7 +2,7 @@
 // parseEarthquakeFromXml（REST 履歴経路）のテスト。
 // DOMParser を使うためこのファイルだけ jsdom 環境で動かす（既定は node）。
 import { describe, it, expect } from 'vitest'
-import { parseEarthquake, parseEarthquakeFromXml, parseEEW, parseTsunami } from './dmdataParser'
+import { parseEarthquake, parseEarthquakeFromXml, parseEEW, parseTsunami, parseLpgmFromXml } from './dmdataParser'
 
 // 震度速報（VXSE51）。震源が未確定の段階で出るため Earthquake 要素を持たず、
 // 震度は Pref > Area（一次細分区域）までしか無い。
@@ -143,10 +143,13 @@ describe('parseEarthquakeFromXml: 震源・震度に関する情報（VXSE53）'
     expect(area).toEqual({ pref: '', addr: '岩手県沿岸北部', isArea: true, scale: 40 })
   })
 
-  it('観測点は所属都道府県を pref に持つ', () => {
+  it('観測点は JSON 経路の stations[] と同じ規約で pref を空文字にする（QUAKE-2）', () => {
+    // 以前は pref: prefName を付けていたが、EarthquakeCard.prefGroups が「観測点値」を
+    // 都道府県別最大震度と誤解し、区域単位の最大震度が観測点値に上書きされる問題があった。
+    // 対称性のため JSON stations[] と同じ pref: '' に統一する。
     const points = parseEarthquakeFromXml('VXSE53', VXSE53_XML)!.points
     const station = points.find(p => !p.isArea)!
-    expect(station).toEqual({ pref: '岩手県', addr: '普代村銅屋', isArea: false, scale: 30 })
+    expect(station).toEqual({ pref: '', addr: '普代村銅屋', isArea: false, scale: 30 })
   })
 
   it('震源を持つ電文では震源要素を読む', () => {
@@ -394,5 +397,71 @@ describe('parseTsunami: JSON 電文の発表・取消・sourceEarthquake', () =>
     expect(t!.cancelled).toBe(true)
     expect(t!.cancelReason).toBe('lifted')
     expect(t!.areas).toEqual([])
+  })
+})
+
+// 長周期地震動観測情報（VXSE62）。Area 直下と City 配下に同名の Name/MaxLgInt があるため
+// DMD-6 で xmlChild（直下限定）が正しく Area 直下だけを拾うことを検証する。
+const VXSE62_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/" xmlns:eb="http://xml.kishou.go.jp/jmaxml1/body/earthquake1/">
+  <Control>
+    <Title>長周期地震動に関する観測情報</Title>
+    <DateTime>2026-08-13T10:00:00Z</DateTime>
+    <PublishingOffice>気象庁</PublishingOffice>
+  </Control>
+  <Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+    <Title>長周期地震動に関する観測情報</Title>
+    <ReportDateTime>2026-08-13T19:00:00+09:00</ReportDateTime>
+    <TargetDateTime>2026-08-13T18:58:00+09:00</TargetDateTime>
+    <EventID>20260813185800</EventID>
+    <Serial>1</Serial>
+    <InfoType>発表</InfoType>
+  </Head>
+  <Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
+    <Earthquake>
+      <OriginTime>2026-08-13T18:58:00+09:00</OriginTime>
+    </Earthquake>
+    <Intensity xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
+      <Observation>
+        <MaxLgInt>3</MaxLgInt>
+        <Pref>
+          <Name>東京都</Name>
+          <Code>13</Code>
+          <Area>
+            <Name>東京都２３区</Name>
+            <Code>250</Code>
+            <MaxLgInt>3</MaxLgInt>
+            <City>
+              <Name>千代田区</Name>
+              <Code>13101</Code>
+              <MaxLgInt>2</MaxLgInt>
+            </City>
+          </Area>
+        </Pref>
+      </Observation>
+    </Intensity>
+  </Body>
+</Report>`
+
+describe('parseLpgmFromXml: xmlChild が Area 直下の値を拾い、配下 City の値に引きずられない（DMD-6）', () => {
+  it('regions に Area 直下の Name/Code/MaxLgInt が入る', () => {
+    const lpgm = parseLpgmFromXml(VXSE62_XML)
+    if (!lpgm) throw new Error('parseLpgmFromXml returned null unexpectedly')
+    if (lpgm.cancelled) throw new Error('expected発表 but got取消')
+    expect(lpgm.regions).toEqual([
+      { code: '250', name: '東京都２３区', maxLgInt: 3 },
+    ])
+  })
+
+  it('取消電文は cancelled=true で返す', () => {
+    const cancelXml = VXSE62_XML.replace('<InfoType>発表</InfoType>', '<InfoType>取消</InfoType>')
+    const lpgm = parseLpgmFromXml(cancelXml)
+    if (!lpgm) throw new Error('parseLpgmFromXml returned null unexpectedly')
+    expect(lpgm.cancelled).toBe(true)
+  })
+
+  it('MaxLgInt が 0 のときは null（対象階級外）', () => {
+    const noClassXml = VXSE62_XML.replace('<MaxLgInt>3</MaxLgInt>\n        <Pref>', '<MaxLgInt>0</MaxLgInt>\n        <Pref>')
+    expect(parseLpgmFromXml(noClassXml)).toBeNull()
   })
 })

@@ -4,7 +4,7 @@ import { getIntensityLabel } from './intensity'
 import { tsunamiMaxGrade } from './tsunami'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
-import { getStationCoordsCache, buildAreaPrefIndex, buildPrefAreaNamesIndex } from './stationCoords'
+import { getStationCoordsCache, buildAreaPrefIndex, buildStationPrefIndex, buildPrefAreaNamesIndex } from './stationCoords'
 
 const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch', 'Forecast']
 
@@ -53,11 +53,15 @@ function regionNamesForScale(
   scale: IntensityScale,
   prefAreaNames: Map<string, Set<string>> | null,
   areaPrefIndex: Map<string, string> | null,
+  stationPrefIndex: Map<string, string> | null,
 ): string[] {
   const matched = points.filter(p => p.scale === scale)
   const areaPoints = matched.filter(p => p.isArea && p.addr !== p.pref)
   if (areaPoints.length > 0) return aggregateAreaNamesByPref(areaPoints, prefAreaNames, areaPrefIndex)
-  return [...new Set(matched.map(p => p.pref).filter(Boolean))]
+  // QUAKE-2 で XML 経路の観測点も pref: '' になったため、pref が空でも observation の
+  // addr から都道府県を逆引きしてフォールバックする（既存の areaPrefIndex 相当を観測点にも適用）。
+  const prefs = matched.map(p => p.pref || stationPrefIndex?.get(p.addr) || '')
+  return [...new Set(prefs.filter(Boolean))]
 }
 
 // ソート用二乗距離（緯度方向補正あり）
@@ -94,13 +98,14 @@ function buildRegionText(
   const stationData = getStationCoordsCache()
   const prefAreaNames = stationData ? buildPrefAreaNamesIndex(stationData) : null
   const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
+  const stationPrefIndex = stationData ? buildStationPrefIndex(stationData) : null
 
   const parts: string[] = []
   const mentioned = new Set<string>()  // 上位階で読み上げ済みの地域名
   for (let i = 0; i <= opts.intensityLevels; i++) {
     const scale = SCALE_DESCENDING[maxIdx + i]
     if (scale == null) break
-    let names = regionNamesForScale(points, scale, prefAreaNames, areaPrefIndex).filter(n => !mentioned.has(n))
+    let names = regionNamesForScale(points, scale, prefAreaNames, areaPrefIndex, stationPrefIndex).filter(n => !mentioned.has(n))
     if (names.length === 0) continue
     if (hasEpicenter) {
       names = [...names].sort((a, b) => {
