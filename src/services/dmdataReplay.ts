@@ -5,7 +5,9 @@ import { calcEEWCancelTime } from '../utils/eew'
 
 const QUAKE_TYPES = new Set(['VXSE51', 'VXSE52', 'VXSE53', 'VXSE61'])
 const TSUNAMI_TYPES = new Set(['VTSE41', 'VTSE51', 'VTSE52'])
-const EEW_TYPES = new Set(['VXSE45'])
+// DMD-8: VXSE43（EEW 警報）を追加。従来は archive リプレイ時に警報級 EEW が黙って
+// 捨てられ、実地震シナリオ収録の警報経路が完全に欠落していた。
+const EEW_TYPES = new Set(['VXSE43', 'VXSE45'])
 const LPGM_TYPES = new Set(['VXSE62'])
 const NANKAI_TYPES = new Set(['VYSE50', 'VYSE51'])
 const KOHATSU_TYPES = new Set(['VYSE60'])
