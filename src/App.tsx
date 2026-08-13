@@ -31,14 +31,13 @@ import type { EEWAlert, JMAQuake, JMATsunami } from './types/earthquake'
 import { fetchDmdataReplayEvents, filterPreWindowEvents, clearReplayCache } from './services/dmdataReplay'
 import { log } from './utils/logger'
 import { setReplayOffset as setClockReplayOffset, serverNow, serverDate } from './utils/clock'
+import { isDmdss } from './utils/env'
 
 // 平常時のウィンドウタイトル（index.html の <title> と一致させる）。
 // AutoHotKey 等が、情報更新時のタイトル変化を検知してイベントを発火できるようにする。
-const DEFAULT_TITLE = import.meta.env.VITE_VARIANT === 'dmdss'
+const DEFAULT_TITLE = isDmdss
   ? 'リアルタイム地震ビューアー (DM-D.S.S)'
   : 'リアルタイム地震ビューアー'
-
-const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
 
 // siteConfigId 切替直後に kyoshin.sites / kyoshin.indices の siteConfigId が揃うまで
 // 下流へ渡す代替として使う空配列（毎レンダー新規生成しないようモジュール定数で共有）。
@@ -617,9 +616,8 @@ export function App() {
   kyoshinDetectedRef.current = kyoshinView.confirmed
 
   // EEWデータから P波・S波半径を自前計算（100ms更新でスムーズ拡張、標準版・DMDSS版共通）
-  // activeEEWs (Map) の参照が安定している限り配列を再生成しない
-  const activeEEWList = useMemo(() => Array.from(activeEEWsNoCancelled.values()), [activeEEWsNoCancelled])
-  const psWave = usePsWaveCalc(activeEEWList, replayTimeOffset)
+  // eewsForMap（activeEEWsNoCancelled の配列）と同一内容のため使い回して二重 useMemo を避ける。
+  const psWave = usePsWaveCalc(eewsForMap, replayTimeOffset)
 
   const home = useMemo(
     () => (settings.homeLat !== null && settings.homeLng !== null

@@ -14,6 +14,7 @@ import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox } from '../utils/voicevox'
 import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, tsunamiArrivalToText, nankaiToText, kohatsuToText, lpgmToText } from '../utils/ttsText'
 import { log } from '../utils/logger'
+import { extractQuakeEventIdFromId } from '../utils/quakeMerge'
 
 // 観測点リストから、属する予報区（districtCode/districtName）を重複なく列挙する
 function uniqueDistricts(observations: { districtCode?: string; districtName?: string }[]): { code?: string; name?: string }[] {
@@ -132,9 +133,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       if (settings.voicevoxEnabled) {
         // 取消電文の issue.time は取消電文自体の発表時刻であり、取り消された元の地震情報の発表時刻ではない。
         // 読み上げには同一 eventId で最後に受信した地震情報（既存カード）の time を使う。
-        const cancelEventId = event.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
+        const cancelEventId = extractQuakeEventIdFromId(event.id)
         const original = cancelEventId
-          ? earthquakesRef.current.find(e => e.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1] === cancelEventId)
+          ? earthquakesRef.current.find(e => extractQuakeEventIdFromId(e.id) === cancelEventId)
           : undefined
         setTimeout(() => {
           speakWithVoicevox(settings.voicevoxUrl, earthquakeCancelToText(original?.time ?? null), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
@@ -146,7 +147,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // DMDATA は VXSE51（targetDateTime）→ VXSE52/53（originTime）で earthquake.time が1分ずれるため、
       // eventId（quake.id から抽出）で同一イベントを判定する。id がない場合は earthquake.time で比較。
       const quakeId = (event as import('../types/earthquake').JMAQuake).id
-      const eventIdPart = quakeId?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
+      const eventIdPart = extractQuakeEventIdFromId(quakeId)
       // issue.type を含めて種別ごとに独立判定（震度速報/震源情報/震源・震度情報 等が別報のため）
       const incomingKey = eventIdPart
         ? `${eventIdPart}:${event.issue.type}`
@@ -428,10 +429,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       const lpgmEvent = (event as unknown as { kind: string; data: import('../types/earthquake').JMALpgm }).data
       if (!lpgmEvent.cancelled) {
         // 紐づく地震カードを選択し、自動的に LPGM 表示をオンにする
-        const matchedQuake = earthquakesRef.current.find(q => {
-          const eventIdPart = q.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
-          return eventIdPart === lpgmEvent.eventId
-        })
+        const matchedQuake = earthquakesRef.current.find(q => extractQuakeEventIdFromId(q.id) === lpgmEvent.eventId)
         if (matchedQuake) selectQuake(matchedQuake.earthquake.time)
         setActiveLpgmEventId(lpgmEvent.eventId)
       }
@@ -704,7 +702,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         const ev = payload.event
         if (ev.kind === 'quake') {
           const quake = ev as JMAQuake
-          const eventIdPart = quake.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
+          const eventIdPart = extractQuakeEventIdFromId(quake.id)
           lastNewQuakeTimeRef.current = eventIdPart
             ? `${eventIdPart}:${quake.issue.type}`
             : quake.earthquake.time

@@ -9,7 +9,7 @@ import { mergeTsunamiObservations } from '../utils/tsunami'
 import { log } from '../utils/logger'
 import { serverNow, serverDate } from '../utils/clock'
 
-const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'
+import { isDmdss } from '../utils/env'
 import {
   createTestEarthquake,
   createTestLpgm,
@@ -353,11 +353,11 @@ export function useEarthquakes(
 
           // 取消電文: 同一 eventId のカードに cancelledAt を付け、10秒後に purge する
           if (quake.cancelled) {
-            const cancelEventId = quake.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
+            const cancelEventId = extractQuakeEventId(quake)
             const cancelIssueType = quake.issue.type
             let found = false
             const earthquakes = prev.earthquakes.map(e => {
-              const eId = e.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
+              const eId = extractQuakeEventId(e)
               const matches = cancelEventId && eId
                 ? eId === cancelEventId && e.issue.type === cancelIssueType
                 : e.id === quake.id

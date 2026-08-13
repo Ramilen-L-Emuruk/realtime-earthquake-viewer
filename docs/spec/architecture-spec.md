@@ -65,8 +65,7 @@ React 18 + TypeScript + Vite 6 で作られた PWA（Progressive Web App）。�
 | DMDSS | `npm run dev:dmdss` | `dist-dmdss/` | `/realtime-earthquake-viewer/dmdss/` | DMDATA + Yahoo |
 
 `vite.config.ts` の `define`・`base`・`build.outDir`・`manifest.name` が `VITE_VARIANT` によって切り替わる。
-コード側では各所で `const isDmdss = import.meta.env.VITE_VARIANT === 'dmdss'` として参照する
-（複数ファイルで個別定義・共通化候補）。
+コード側は `src/utils/env.ts` に定義された `isDmdss`（単一情報源）を各ファイルから import して参照する。
 
 **バリアント別に有効な機能マトリクス**:
 

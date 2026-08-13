@@ -65,7 +65,7 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
           isLatest={i === 0}
           isSelected={quake.earthquake.time === selectedId}
           onSelect={() => onSelect(quake.earthquake.time)}
-          lpgm={lpgmByEventId.get(quake.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1] ?? '')}
+          lpgm={lpgmByEventId.get(extractQuakeEventId(quake) ?? '')}
           activeLpgmEventId={activeLpgmEventId}
           onToggleLpgm={onToggleLpgm}
         />

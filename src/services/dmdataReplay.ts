@@ -2,6 +2,7 @@ import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseVyse5xFromXml,
 import { parseTar } from '../utils/tarParser'
 import type { AppEvent, JMAQuake, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, JMATsunami } from '../types/earthquake'
 import { calcEEWCancelTime } from '../utils/eew'
+import { extractQuakeEventIdFromId } from '../utils/quakeMerge'
 
 const QUAKE_TYPES = new Set(['VXSE51', 'VXSE52', 'VXSE53', 'VXSE61'])
 const TSUNAMI_TYPES = new Set(['VTSE41', 'VTSE51', 'VTSE52'])
@@ -248,7 +249,7 @@ export function filterPreWindowEvents(
 
     if (ev.kind === 'quake') {
       const quake = ev as JMAQuake
-      const eid = quake.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
+      const eid = extractQuakeEventIdFromId(quake.id)
       if (!eid) { result.push(entry); continue }
       const existing = quakeByEventId.get(eid)
       if (!existing || entry.replayTime > existing.replayTime) {
