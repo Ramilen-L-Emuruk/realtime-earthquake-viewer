@@ -125,6 +125,9 @@ V2 は「波面フィットで震源を決め、その品質を時間積分し�
 | `CONFIRM_FRAMES` | confirmed 連続フレーム | 2 |
 | `HIGH_CONFIRM_INTENSITY` | 高震度 fast path の震度下限（点数ゲート免除・§20） | 震度3（value 2.5） |
 | `HIGH_CONFIRM_POINTS` | 高震度 fast path に要する高震度到達点数（§20） | 2 |
+| `CONFIRM_INTENSE_POINTS` | confirmed に要する確定震度到達点数（単点強震ノイズ除去の第3軸・§18） | 2 |
+| `EEW_CONFIRM_POINTS` | EEW（震源要素確定）発表中に `CONFIRM_POINTS` の代わりに使う確定点数（§19） | 3 |
+| `EEW_CONFIRM_FRAMES` | EEW 発表中に `CONFIRM_FRAMES` の代わりに使う確定連続フレーム数（§19） | 1 |
 | `MERGE_EVENT_KM` | イベント重心併合距離（分裂統合） | 100 km |
 | `HOLD_MS` | 確定保持（confirmed のイベント存続） | 10 s |
 | `LIKELY_HOLD_MS` | likely/faint のティア保持（§16） | 10 s |
