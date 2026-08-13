@@ -92,3 +92,17 @@ EEW カクつきの直接解ではない**（ベース単体は健全・タイ�
 - **後続タスク**: 案3（PMTiles ベクタタイル化）＝描画アーキテクチャの長期正攻法。tippecanoe の Windows/CI
   ツーリング・区域集約データの二本立て・PMTiles 配信の実現性調査から着手する。EEW を案2/2b で解消した後に。
 - 案1（geojson tolerance/maxzoom の底上げ）は案2 実装時に併せて検討（併用可能な軽い底上げ）。
+
+## 6. 顛末（追記・2026-07-28）— 案2/2b は未実施のまま真因が別で解消
+
+上記の決定後に切り分けを進めた結果、真因は「区域ジオメトリそのものの重さ」ではなく
+**App の JSX 内 `Array.from(activeEEWsNoCancelled.values())` の毎レンダー新配列生成による
+EEW 派生の連鎖再実行 → 同一ジオメトリの冗長 setData**であることが判明した
+（[diagnosis-5](webgl-migration-hires-perf-diagnosis-5-2026-07-28.md) を参照）。
+
+- **修正**: App 側の `useMemo` 2 か所と検知点 sink ガード。案2（feature-state 化）にも案2b（`triggerRepaint` throttle）にも
+  一切手を入れずに解消した。dev 機で render 56→6/s、setData 12→0/s、塗り表示は不変を確認。
+- **本書 §5 の位置づけ**: 案2/2b の実装は**行われていない**。実装コードは高精細 geojson のままで、静的化・feature-state 化は
+  未実装。案2/2b は「必要になったときの選択肢」として保留。
+- **案3（PMTiles ベクタタイル化）**: 未着手。EEW カクつきが上記修正で解消したため優先度は下がったが、
+  コールドスタート・LOD・転送量の観点では依然として有効な選択肢として残る。

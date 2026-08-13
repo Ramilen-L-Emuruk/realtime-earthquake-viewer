@@ -1,5 +1,11 @@
 # 地図描画 Leaflet → MapLibre GL JS 一本化 本番移行 実装計画
 
+> **本文書はアーカイブ（歴史資料）**。移行は 2026-07-28 に **v4.0.0** としてリリース済み（`main` タグ v4.0.0）。
+> 以下のチェックボックスは起案時点の未達成表記だが、成功基準はリリース時に**実質的に達成**（実機 fps 目標
+> 59-60 は最終計測で 55-57 前後まで達し、残る 3 割は別タスク扱いで受容判断）。移行作業中に発覚した
+> EEW 区域塗りの冗長 setData 問題は [`webgl-migration-hires-perf-diagnosis-5-2026-07-28.md`](webgl-migration-hires-perf-diagnosis-5-2026-07-28.md)
+> で v4.0.0 リリース前に解消済み。
+
 > 起案: 2026-07-28。`docs/webgl-rendering-migration-plan.md` §7 移行戦略を段階化・具体化したもの。
 > 前提となる PoC 検証は全て完了（GO 確定）。PoC の参照実装は使い捨てブランチ `worktree/feat/webgl-poc`
 > の `poc/` にある。本枝 `worktree/feat/webgl-migration` は `main` から分岐。
