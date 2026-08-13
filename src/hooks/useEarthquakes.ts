@@ -1006,6 +1006,12 @@ export function useEarthquakes(
     }))
     eventQueueRef.current = []
     quakeIntensityCacheRef.current.clear()
+    // 後発地震注意情報の7日タイマーもリセット対象。resetState 後に古いタイマーが残ると、
+    // リプレイモード切替→ライブ復帰後に発火して新しく設定された kohatsu を null に上書きしうる。
+    if (kohatsuExpireTimerRef.current !== undefined) {
+      window.clearTimeout(kohatsuExpireTimerRef.current)
+      kohatsuExpireTimerRef.current = undefined
+    }
   }, [])
 
   const loadReplayEvents = useCallback((entries: import('../services/dmdataReplay').ReplayEntry[]) => {
