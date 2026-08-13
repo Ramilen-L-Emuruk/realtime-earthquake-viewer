@@ -133,12 +133,16 @@ standard 版で Yahoo hypoInfo が先に単独観測点処理の EEW を検知�
 DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` 無し）が来た場合、自動解除と異なり
 以下を伴う:
 
-- `eewCancel` 音の再生
-- ブラウザ通知
-- VOICEVOX 読み上げ
+- `eewCancel` 音の再生（`hadKey=true` のみ。二重鳴り防止）
+- ブラウザ通知（`hadKey` 有無を問わず発火。tag=`eew-cancel-${key}` で自動上書きされるため二重にならない）
+- VOICEVOX 読み上げ（`hadKey=true` のみ。二重鳴り防止）
 - カードに「誤報として取り消されました」表示（10 秒間）
 
 `useLiveEventHandler.ts` の EEW 分岐で「`event.expired` フラグの有無」で自動解除と誤報取消を区別する。
+`hadKey` は「このセッションで `activeEEWLevelsRef` に既に登録されていた eventId か」を表す:
+
+- **hadKey=true**: 画面に表示中の EEW を取り消す通常経路 → 音・通知・読み上げの全てを発火
+- **hadKey=false**: 既に自動解除済みの後に本物の誤報取消が遅延到達したケース、または P2PQuake WS と Yahoo の両方から cancel が来た場合の 2 回目 → 通知のみ発火（音・読み上げは二重鳴り防止のためスキップ）
 
 ## 9. 音・タブ切替・通知の連動
 

@@ -106,6 +106,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const activeEEWAnnouncedHypocentersRef = useRef<Map<string, { name: string; lat: number; lng: number }>>(new Map())
   // 長周期地震動情報の更新検出: 受信済み eventId を追跡する
   const seenLpgmEventIdsRef = useRef<Set<string>>(new Set())
+  // 津波解除/取消/失効: 音・TTS を発火済みの eventId を追跡する（AUD-6 の重複鳴り防止）。
+  // TSU-3 で同一スロットに別 eventId を上書きするケースもあるため eventId 単位で管理する。
+  // 直前状態（lastTsunamiGradeRef===null）で判定するとリロード後の初回解除を握り潰す。
+  const spokenTsunamiCancelEventIdsRef = useRef<Set<string>>(new Set())
   // 津波観測点の新規/更新バッジ表示状態と自動クリアタイマー
   const [obsUpdateStatus, setObsUpdateStatus] = useState<Map<string, 'new' | 'updated'>>(() => new Map())
   const obsStatusClearTimerRef = useRef<number>(0)
@@ -181,17 +185,39 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     } else if (event.kind === 'tsunami' && event.cancelled) {
       // 「津波解除検出」effect はレンダー後の非同期発火のため、受信直後の即時反映用にここでもタイマーをリセットする。
       // 特別警報級 EEW 発表中は取消電文でもタブを奪わない（新規発報側の canGrabTab ルールと対称）。
-      // タイトル・音・状態リセットは従来通り行い、通知漏れは起こさない。
+      // タイトル・状態リセットは従来通り行い、通知漏れは起こさない。
+      // 音・TTS・タブ切替は eventId 単位で 1 回だけ発火する（TSU-1/3/4 経路で同一 eventId の
+      // expired が複数キューに積まれても 2 回目以降を握り潰す）。
+      // ページリロード後の初回解除は Set に無いため正常に発火する（HIGH-1 対応: 「未追跡」と
+      // 「解除済み」を lastTsunamiGradeRef===null で混同していたのを eventId 単位に置き換え）。
+      // eventId 単位で追跡（serial が変わっても同一 event の重複 cancel を捕捉できる）。
+      // eventId が空文字 or 未設定の電文は event.id にフォールバック（XML 経路の parseTsunamiFromXml
+      // は EventID 欠落時に空文字を返すため `??` ではなく `||` を使う）。長期セッションでの無制限
+      // 増加を防ぐため 200 件を超えたらクリア（DMDSS 続報・合成 expired タイマー・P2PQuake 経路の
+      // 重複を捕捉できる深さ。実運用でこの件数の cancel を 1 セッションで扱うことは非現実的）。
+      const cancelId = (event.eventId || event.id)
+      if (spokenTsunamiCancelEventIdsRef.current.size > 200) {
+        spokenTsunamiCancelEventIdsRef.current.clear()
+      }
+      const alreadySpoken = spokenTsunamiCancelEventIdsRef.current.has(cancelId)
       if (hasActiveSpecialEEW(activeEEWLevelsRef.current)) {
         log.debug('[tab] tsunami 取消タブ切替スキップ (specialEEW 発表中)')
-      } else {
+      } else if (!alreadySpoken) {
         log.info('[tab] → tsunami (津波情報取消)')
         setActiveTabNonRealtime('tsunami')
       }
       title.endTsunamiTitleWindow()
       title.applyPriority()
-      if (settings.voicevoxEnabled) {
-        speakWithVoicevox(settings.voicevoxUrl, tsunamiCancelToText(event.cancelReason), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+      // 津波解除・取消・失効の通知音（AUD-6）。cancelReason の 3 種を区別せず単一音で伝える。
+      // TTS は eewCancel と同じく音の後ろへずらして音響重複を避ける。
+      if (!alreadySpoken) {
+        spokenTsunamiCancelEventIdsRef.current.add(cancelId)
+        if (settings.soundEnabled) playAlertSound('tsunamiCancel')
+        if (settings.voicevoxEnabled) {
+          setTimeout(() => {
+            speakWithVoicevox(settings.voicevoxUrl, tsunamiCancelToText(event.cancelReason), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+          }, 1200)
+        }
       }
       lastTsunamiGradeRef.current = null
       lastMaxObsHeightRef.current.clear()
@@ -206,27 +232,34 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       if (event.cancelled) {
         // EEW キャンセル（誤報取消）または解除（最終報満了）: レベル追跡から除去
         // expired: true は最終報タイマー満了による自動解除 → 音は鳴らさない
-        // hadKey: P2PQuake WS と Yahoo の両方から cancel が来た場合の二重鳴り防止
+        // hadKey: P2PQuake WS と Yahoo の両方から cancel が来た場合の二重鳴り防止（AUD-2）
         const hadKey = activeEEWLevelsRef.current.has(key)
         log.info(`[eew] キャンセル受信 key=${key} expired=${event.expired ?? false} hadKey=${hadKey} 種別=${event.expired ? '自動解除(タイマー満了)' : '誤報取消'}`)
         activeEEWLevelsRef.current.delete(key)
         activeEEWScalesRef.current.delete(key)
         activeEEWAnnouncedHypocentersRef.current.delete(key)
-        // 誤報取消（expired でない）は hadKey の有無に関わらず音・通知・読み上げを行う。
-        // hadKey=true: 画面に表示中の誤報取消。hadKey=false: 既に自動解除済みの後に遅れて誤報取消電文が届いたケース。
+        // 音・読み上げは hadKey=true（このセッションで表示中の EEW を取り消す場合）のみ発火する。
+        // hadKey=false のケースは 2 種類ある:
+        //   1. 既に自動解除済みの後に遅れて届いた本物の誤報取消電文（訂正情報として重要）
+        //   2. P2PQuake WS と Yahoo の両方から cancel が届いた場合の 2 回目（同一情報の重複）
+        // 音・読み上げは 2 の二重鳴りを避けるため hadKey ガードするが、
+        // ブラウザ通知は tag=`eew-cancel-${key}` で自動上書きされるため hadKey ガード不要。
+        // 1 のケースでも通知だけは伝えることで訂正情報の握り潰しを防ぐ（AUD-2）。
         if (!event.expired) {
-          if (settings.soundEnabled) playAlertSound('eewCancel')
+          if (hadKey) {
+            if (settings.soundEnabled) playAlertSound('eewCancel')
+            if (settings.voicevoxEnabled) {
+              setTimeout(() => {
+                speakWithVoicevox(settings.voicevoxUrl, eewCancelToText(event), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+              }, 1200)
+            }
+          }
           if (settings.notifyMinScale >= 0 && settings.notifyEEW) {
             showBrowserNotification(
               '緊急地震速報 誤報取消',
               `${event.earthquake.hypocenter.name} の緊急地震速報は誤報でした`,
               `eew-cancel-${key}`,
             )
-          }
-          if (settings.voicevoxEnabled) {
-            setTimeout(() => {
-              speakWithVoicevox(settings.voicevoxUrl, eewCancelToText(event), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
-            }, 1200)
           }
         }
         // EEW 解除時は当該 eventId の読み上げタイマーをキャンセルする
@@ -309,7 +342,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // VOICEVOX: 2フェーズ読み上げ
       // 第1フェーズ（isNew即時、または続報での震源更新時）: 「緊急地震速報、〇〇で地震。」/「震源を更新、〇〇で地震。」
       // 第2フェーズ（デバウンス後、かつ第1フェーズ完了後）: 「予想最大震度〇〇。」（震源更新時は新しい震源に基づき読み直す）
-      if (settings.voicevoxEnabled && settings.soundEnabled) {
+      // 読み上げは soundEnabled と独立に voicevoxEnabled のみで判定する（AUD-7）。
+      if (settings.voicevoxEnabled) {
         eewTtsEventsRef.current.set(key, event)
         const firePhase2 = () => {
           // Phase2 が発火した時点で15秒上限タイマーをキャンセルする。
@@ -423,7 +457,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         if (settings.soundEnabled) {
           playAlertSound('specialInfo')
         }
-        if (settings.voicevoxEnabled && settings.soundEnabled) {
+        // 読み上げは soundEnabled と独立に voicevoxEnabled のみで判定する（AUD-7）。
+        if (settings.voicevoxEnabled) {
           const ttsText = specialEvent.kind === 'nankai'
             ? nankaiToText(specialEvent.data as Parameters<typeof nankaiToText>[0])
             : kohatsuToText(specialEvent.data as Parameters<typeof kohatsuToText>[0])
@@ -467,8 +502,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         true,
       )
     }
-    // 通知音（地震情報・津波情報）
-    if (!settings.soundEnabled) return
+    // 通知音（地震情報・津波情報）の種別判定。voicevox の delay 決定にも使うため
+    // soundEnabled と独立に計算する（AUD-7: 読み上げは voicevoxEnabled 単独判定）。
     let type: AlertSoundType | null = null
     if (event.kind === 'tsunami') {
       if (!event.cancelled) {
@@ -492,7 +527,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
            : 'earthquake'  // 震源・震度情報 / 各地の震度情報
     }
     if (!type) return
-    playAlertSound(type)
+    if (settings.soundEnabled) playAlertSound(type)
 
     // VOICEVOX 読み上げ（新しい情報が来たら再生中を割り込み停止して読み直す）
     if (settings.voicevoxEnabled) {

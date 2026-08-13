@@ -508,8 +508,8 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             onChange={v => onUpdate('soundEnabled', v)}
           />
         </Row>
-        {settings.soundEnabled && (
-          <Row label="音量" description="通知音の音量を調整します">
+        {(settings.soundEnabled || settings.voicevoxEnabled) && (
+          <Row label="音量" description="通知音・読み上げ（下記 VOICEVOX を含む）共通の音量">
             <div className="flex items-center gap-2">
               <span className="text-xs text-secondary w-8 text-right">
                 {Math.round(settings.soundVolume * 100)}%

@@ -18,7 +18,7 @@
 セクション別に以下の設定を提供:
 
 ### 全般設定
-- **通知音**: ON/OFF ＋ 音量（0〜1）
+- **通知音**: ON/OFF ＋ 音量（0〜1、VOICEVOX 読み上げにも共通適用）
 - **VOICEVOX 読み上げ**: ON/OFF ＋ URL 設定 ＋ 話者選択 ＋ テスト読み上げ
 - **ブラウザ通知**: 種別ごとに独立トグル 3 種（`notifyEEW` / `notifyTsunami` / `notifyDetection`）＋ 通知しきい値（`notifyMinScale`。`震度1以上`〜`震度7`から選択）
 - **デフォルトタブ**: 平常時に表示するタブ
@@ -215,6 +215,7 @@ DMDATA リプレイ機能の `setReplayOffset` は使わない（ライブ接続
 - `tsunami` — 津波警報テスト
 - `tsunamiWatch` — 津波注意報テスト
 - `tsunamiForecast` — 津波予報テスト
+- `tsunamiCancel` — 津波系テストボタン全て（大津波警報／警報／注意報／予報／誤報取消）で共通発火。`TEST_AUTO_DISMISS_MS`（90 秒）後の `expired`／`lifted`／`retracted` いずれの cancelReason でも同じ音を鳴らす
 - `detected` / `foreshock` — 揺れ検知テスト（`confirmed`／`likely`・`faint`）
 
 ### 自動解除・自動確定のタイミング
