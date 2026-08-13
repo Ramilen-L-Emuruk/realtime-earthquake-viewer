@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react'
 import { log } from '../utils/logger'
+import { isDmdss } from '../utils/env'
 
 // アイドル復帰時に戻すデフォルトタブの選択肢（津波情報・設定は対象外）
 export type DefaultTabSetting = 'earthquake' | 'realtime'
@@ -36,7 +37,7 @@ export interface AppSettings {
 }
 
 // 通常版とDMDSS版の設定を localStorage 上で分離する
-const STORAGE_KEY = import.meta.env.VITE_VARIANT === 'dmdss'
+const STORAGE_KEY = isDmdss
   ? 'quake-viewer-settings-dmdss'
   : 'quake-viewer-settings'
 

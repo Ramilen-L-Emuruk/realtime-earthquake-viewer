@@ -1,4 +1,5 @@
 import type { JMAQuake } from '../types/earthquake'
+import { extractQuakeEventIdFromId } from './quakeMerge'
 
 export interface HeatPoint {
   lat: number
@@ -17,7 +18,7 @@ export interface HeatPoint {
 // （GD Earthquake List の eventId フィールドも同じ14桁形式のため突き合わせ可能）。
 // 通常版（P2PQuake）の id はこの形式を持たないため earthquake.time にフォールバックする。
 export function quakeIdentityKey(q: Pick<JMAQuake, 'id' | 'earthquake'>): string {
-  const dmdataEventId = q.id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1]
+  const dmdataEventId = extractQuakeEventIdFromId(q.id)
   return dmdataEventId ?? q.earthquake.time
 }
 
