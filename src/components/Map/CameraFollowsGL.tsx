@@ -132,7 +132,9 @@ export function FitJapanOnEnterGL({ hasEew, hasDetection }: { hasEew: boolean; h
 }
 
 // ── 揺れ検知点にフィットし、検知終了時は日本全体に戻す（EEW 中は戻さない） ──────────
-// 初回（検知開始）は hasEew を無視して検知点へ寄せる。その後は検知点が画面からはみ出したときだけ
+// MAP-4 対応: 初回フィットも hasEew 時は FitToEEWGL に委譲してスキップする（従来は初回のみ
+// hasEew を無視して検知点へ寄せていたが、EEW と同じコミットで発生する二段ジャンプを回避）。
+// 以降は検知点が画面からはみ出したときだけ
 // 追い直す（1点増えるたびに動かさないよう flyToBoundsSnapped のズーム段階をヒステリシスに使う）。
 export function FitToDetectionGL({
   points,
@@ -162,6 +164,15 @@ export function FitToDetectionGL({
       // マーク確定は isUserInteracting 判定の後で行う（QuakeFitGL と同じ理由）。
       if (isUserInteracting) {
         log.debug('[mapGL] 揺れ検知フィット スキップ (userInteracting)')
+        return
+      }
+      // MAP-4: EEW 発報中は FitToEEWGL に一任し、初回フィットも発火させない。
+      // 従来は初回のみ hasEew を無視して検知点へ寄せていたため、EEW と検知が同一コミットで到着
+      // した際にカメラが二段ジャンプしていた。fittedRef を立てるだけで実際の flyTo は EEW 終息後
+      // に成長追従の分岐（下）に委ねる。
+      if (hasEew) {
+        log.debug('[mapGL] 揺れ検知フィット スキップ (EEW発報中・FitToEEW に委譲)')
+        fittedRef.current = true
         return
       }
       fittedRef.current = true

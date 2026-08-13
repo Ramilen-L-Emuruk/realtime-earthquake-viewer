@@ -138,15 +138,17 @@ export function KyoshinDetectedPointsGL({ confirmedPoints, candidatePoints, icon
   }, [map])
 
   // データ／倍率変化のたびに丸ごと差し替える。内容が前回と同一ならスキップして再タイル化を避ける。
+  // MAP-2: 非表示中は setData を止める（visible=false 中は lastSigRef を維持し、表示に戻った瞬間
+  // に visible を含む依存変化で差分反映される）。
   useEffect(() => {
-    if (!map || !addedRef.current) return
+    if (!map || !addedRef.current || !visible) return
     const fc = buildFC(confirmedPoints, candidatePoints, iconScale)
     const sig = JSON.stringify(fc)
     if (sig === lastSigRef.current) return
     lastSigRef.current = sig
     const src = map.getSource(SRC) as GeoJSONSource | undefined
     src?.setData(fc)
-  }, [map, confirmedPoints, candidatePoints, iconScale])
+  }, [map, confirmedPoints, candidatePoints, iconScale, visible])
 
   // 表示切替（モード切替用）。
   useEffect(() => {

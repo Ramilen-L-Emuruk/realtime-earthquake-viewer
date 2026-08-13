@@ -39,7 +39,7 @@ type QueuePayload =
   | { kind: 'kohatsu'; data: JMAKohatsu }
   | { kind: 'purge-cancelled-quake'; id: string }
   | { kind: 'purge-cancelled-eew'; key: string }
-  | { kind: 'purge-cancelled-tsunami' }
+  | { kind: 'purge-cancelled-tsunami'; id: string }
 
 interface QueueEntry {
   eventTime: Date
@@ -256,12 +256,24 @@ export function useEarthquakes(
     }
   }, [])
 
+  // VAR-1: standard 版で kyoshin テスト時刻設定中はキューの time base（getTimeRef=擬似過去時刻）が
+  // 実時刻から乖離するため、実時刻ベースの絶対時刻を持つ予約が「発火時刻 > 現在」で永久滞留し、
+  // リプレイ解除時に一斉発火する。実時刻ベースの eventTime は必ず now 以下にクランプして即発火させる。
+  // live 中は eventTime ≈ serverDate() ≈ 実時刻で誤差ミリ秒未満、実害なし。
+  // enqueueEvent と handleEvent 内の直接 insertSorted 3 箇所（EEW 最終報自動解除・TSU-1 期限切れ・
+  // 初回ロード津波期限切れ）で共通利用する。
+  const clampToNow = useCallback((raw: Date): Date => {
+    const now = getTimeRef.current()
+    return raw > now ? now : raw
+  }, [])
+
   // WebSocket 受信時のエントリポイント: event.time を基準にキューへ挿入する
   // live モードでは event.time ≈ now なので次のティック（最大 100ms 後）に即時発火する
   const enqueueEvent = useCallback((event: AppEvent, overrideTime?: Date) => {
-    const t = overrideTime ?? new Date((event as { time?: string }).time ?? serverNow())
-    insertSorted(eventQueueRef.current, { eventTime: t, payload: { kind: 'event', event } })
-  }, [])
+    const raw = overrideTime ?? new Date((event as { time?: string }).time ?? serverNow())
+    const eventTime = clampToNow(raw)
+    insertSorted(eventQueueRef.current, { eventTime, payload: { kind: 'event', event } })
+  }, [clampToNow])
 
   // 時刻ソースはアプリ時計(serverDate)に一元化。ライブ時はサーバー同期、
   // リプレイ時は clock.setReplayOffset により再生時刻を返すため差し替え不要。
@@ -281,7 +293,8 @@ export function useEarthquakes(
       if (!eew.cancelled && !eew.test && eew.isFinal) {
         const cancelTime = calcEEWCancelTime(eew, new Date(eew.time))
         insertSorted(eventQueueRef.current, {
-          eventTime: cancelTime,
+          // VAR-1: kyoshin リプレイ中の real-time 予約が永久滞留するのを防ぐため clampToNow を適用。
+          eventTime: clampToNow(cancelTime),
           payload: { kind: 'event', event: { ...eew, cancelled: true, expired: true } as AppEvent },
         })
       }
@@ -290,9 +303,9 @@ export function useEarthquakes(
     // 地震情報（551）の震度キャッシュ更新は setState の外で行う
     if (event.kind === 'quake') {
       const quake = event as JMAQuake
-      const m = quake.id?.match(/^dmdata-quake-(\d{14})-/)
-      // DMDATA は ID 埋め込みのタイムスタンプをキーに使う（通常版は earthquake.time）
-      const cacheKey = m ? m[1] : quake.earthquake.time
+      // DMDATA は ID 埋め込みのタイムスタンプをキーに使う（通常版は earthquake.time）。
+      // extractQuakeEventId で xml/json 経路の共通抽出（DRY: 独自正規表現を持たない）。
+      const cacheKey = extractQuakeEventId(quake) ?? quake.earthquake.time
       // VXSE51 の震度データをキャッシュ（後続 VXSE52 への補完用）
       if (quake.issue.type === '震度速報' && quake.earthquake.maxScale >= 0) {
         quakeIntensityCacheRef.current.set(cacheKey, {
@@ -303,14 +316,29 @@ export function useEarthquakes(
     }
 
     // 552（津波）: ValidDateTime あり → 期限切れ時刻にキャンセルイベントをキューへ挿入する
-    // 後続の新しい津波電文が来た場合、旧キャンセルが発火してもステート側でidチェックにより無視される
+    // TSU-1: validDateTime を持つ続報だけ「古い予約を消して新しい予約を積み直す」。
+    // 観測のみ続報（validDateTime なし）は既存の expired 予約を触らず据え置く
+    // （消してから積み直しをしないと、期限切れによる自動失効が二度と起きなくなる）。
     if (event.kind === 'tsunami') {
       const tsunami = event as JMATsunami
       if (!tsunami.cancelled && tsunami.validDateTime) {
+        // 同一 eventId で cancelled=false の expired 予約を除去してから積み直す。
+        // eventId が無い電文（P2PQuake 経路など）は id 全体で照合するフォールバック。
+        const purgeKey = tsunami.eventId
+        eventQueueRef.current = eventQueueRef.current.filter(entry => {
+          if (entry.payload.kind !== 'event') return true
+          const ev = entry.payload.event
+          if (ev.kind !== 'tsunami') return true
+          const evAny = ev as JMATsunami
+          if (evAny.cancelReason !== 'expired') return true
+          if (purgeKey && evAny.eventId) return evAny.eventId !== purgeKey
+          return evAny.id !== tsunami.id
+        })
         const expireTime = new Date(tsunami.validDateTime)
         if (expireTime > getTimeRef.current()) {
           insertSorted(eventQueueRef.current, {
-            eventTime: expireTime,
+            // VAR-1: kyoshin リプレイ中の real-time 予約が永久滞留するのを防ぐため clampToNow を適用。
+            eventTime: clampToNow(expireTime),
             payload: { kind: 'event', event: { ...tsunami, cancelled: true, cancelReason: 'expired' } as AppEvent },
           })
         }
@@ -348,10 +376,9 @@ export function useEarthquakes(
             return { ...prev, earthquakes, lastUpdate: now }
           }
 
-          const m = quake.id?.match(/^dmdata-quake-(\d{14})-/)
-          const eventId = m?.[1]
-          // DMDATA は ID 埋め込みのタイムスタンプをキーに使う（通常版は earthquake.time）
-          const cacheKey = eventId ?? quake.earthquake.time
+          // DMDATA は ID 埋め込みのタイムスタンプをキーに使う（通常版は earthquake.time）。
+          // extractQuakeEventId で xml/json 経路の共通抽出（DRY）。
+          const cacheKey = extractQuakeEventId(quake) ?? quake.earthquake.time
 
           // VXSE52/53: 震度がない場合に VXSE51 キャッシュから maxScale・points を補完する
           if (quake.earthquake.maxScale < 0 && quake.points.length === 0) {
@@ -392,9 +419,11 @@ export function useEarthquakes(
             }
             // 解除・取消・期限切れのいずれも同じ10秒表示を経る。表示内容は cancelReason で出し分ける（TsunamiTab側）。
             if (prev.tsunamis.length > 0 && !prev.tsunamis[0].cancelledAt) {
+              // TSU-4: purge 予約に対象 id を持たせ、他イベントが後で置換した場合に誤って
+              // 新しいカードを 10 秒前に消してしまうレースを防ぐ。
               insertSorted(eventQueueRef.current, {
                 eventTime: new Date(now.getTime() + 10_000),
-                payload: { kind: 'purge-cancelled-tsunami' },
+                payload: { kind: 'purge-cancelled-tsunami', id: prev.tsunamis[0].id },
                 silent: true,
               })
               return { ...prev, tsunamis: [{ ...prev.tsunamis[0], cancelledAt: now, cancelReason: tsunami.cancelReason }], lastUpdate: now }
@@ -414,6 +443,13 @@ export function useEarthquakes(
             const areas = tsunami.areas.length > 0 ? tsunami.areas : current.areas
             const observations = mergeTsunamiObservations(current.observations, tsunami.observations)
             return { ...prev, tsunamis: [{ ...tsunami, areas, observations }], lastUpdate: now }
+          }
+          // TSU-3: 別 eventId の tsunami で既存を上書きするケースを検知したら警告する。
+          // 実装は 1 件スロットのまま（複数同時発表は稀なため型変更はスコープ外）だが、
+          // 上書きが発生した事実がログから追えるようにする。
+          if (current && current.eventId && tsunami.eventId
+              && current.eventId !== tsunami.eventId && !current.cancelledAt) {
+            log.warn(`[tsunami] 別 eventId の tsunami で上書き（複数同時発表・実装は 1 件スロット）: prev=${current.eventId} next=${tsunami.eventId}`)
           }
           return { ...prev, tsunamis: [tsunami], lastUpdate: now }
         }
@@ -504,7 +540,10 @@ export function useEarthquakes(
           })
         } else if (payload.kind === 'purge-cancelled-tsunami') {
           setState(prev => {
+            // TSU-4: 現在の tsunami が purge 対象と id 一致し、かつ cancelledAt が付いていれば消去する。
+            // 別 id の tsunami に置き換わっている場合は誤消去せず据え置く。
             if (prev.tsunamis.length === 0 || !prev.tsunamis[0].cancelledAt) return prev
+            if (prev.tsunamis[0].id !== payload.id) return prev
             return { ...prev, tsunamis: [] }
           })
         } else if (payload.kind === 'kohatsu') {
@@ -546,8 +585,10 @@ export function useEarthquakes(
   useEffect(() => {
     let cancelled = false
 
-    // リプレイ中は WebSocket 接続しない
-    if (replayTimeOffset !== null) return
+    // VAR-1: リプレイ中は DMDSS の DMDATA WS のみ止め、standard 版の P2PQuake WS は稼働継続する。
+    // replayTimeOffset は現状 kyoshin のテスト時刻設定でのみ使う。DMDSS 版はアーカイブ再生と混じる
+    // ため live 停止が必要だが、standard 版では kyoshin リプレイ中も地震・津波のライブ更新は継続すべき。
+    if (isDmdss && replayTimeOffset !== null) return
 
     if (isDmdss) {
       // --- DMDSS版: APIキー未設定なら接続しない ---
@@ -622,12 +663,14 @@ export function useEarthquakes(
             hasMore: !!nextToken,
             error: null,
           }))
-          // 初回ロードで津波が有効（validDateTime未来）の場合、キューへ解除イベントを挿入する
+          // 初回ロードで津波が有効（validDateTime未来）の場合、キューへ解除イベントを挿入する。
+          // DMDSS 版はリプレイ中この effect 自体が return されるため clampToNow は不要だが、
+          // 将来リプレイ許可時への安全弁として適用しておく。
           if (tsunamis.length > 0 && latestTsunami?.validDateTime) {
             const expireTime = new Date(latestTsunami.validDateTime)
             if (expireTime > serverDate()) {
               insertSorted(eventQueueRef.current, {
-                eventTime: expireTime,
+                eventTime: clampToNow(expireTime),
                 payload: { kind: 'event', event: { ...latestTsunami, cancelled: true, cancelReason: 'expired' } as AppEvent },
               })
             }
@@ -734,12 +777,25 @@ export function useEarthquakes(
           hasMore: quakeEvents.length === MAX_HISTORY_RETAINED,
           error: null,
         }))
-        // 初回ロードで津波が有効（validDateTime未来）の場合、キューへ解除イベントを挿入する
+        // 初回ロードで津波が有効（validDateTime未来）の場合、キューへ解除イベントを挿入する。
+        // VAR-1 の副作用対応: standard 版で kyoshin リプレイのトグル時にこの effect が cleanup→
+        // 再実行されるため、同一 eventId の既存 expired 予約を除去してから積む（TSU-1 と同じ排除）。
         if (tsunamis.length > 0 && latestTsunami?.validDateTime) {
+          const purgeKey = latestTsunami.eventId
+          eventQueueRef.current = eventQueueRef.current.filter(entry => {
+            if (entry.payload.kind !== 'event') return true
+            const ev = entry.payload.event
+            if (ev.kind !== 'tsunami') return true
+            const evAny = ev as JMATsunami
+            if (evAny.cancelReason !== 'expired') return true
+            if (purgeKey && evAny.eventId) return evAny.eventId !== purgeKey
+            return evAny.id !== latestTsunami.id
+          })
           const expireTime = new Date(latestTsunami.validDateTime)
           if (expireTime > serverDate()) {
             insertSorted(eventQueueRef.current, {
-              eventTime: expireTime,
+              // VAR-1: kyoshin リプレイ中の real-time 予約が永久滞留するのを防ぐため clampToNow を適用。
+              eventTime: clampToNow(expireTime),
               payload: { kind: 'event', event: { ...latestTsunami, cancelled: true, cancelReason: 'expired' } as AppEvent },
             })
           }

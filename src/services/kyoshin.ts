@@ -271,22 +271,46 @@ export async function isRegistered(edge: 'west' | 'east', epochSec: number): Pro
   return null
 }
 
+/** CLK-1: 探索窓の指数拡張パラメータ。連続失敗のたびに広げ、上限で頭打ち。 */
+const BASE_SEARCH_ABOVE = 2
+const BASE_SEARCH_BELOW = 4
+const MAX_SEARCH_HALF_SEC = 60
+
+/** 探索窓を計算する（連続失敗回数を渡す）。 */
+function searchRange(consecutiveFail: number): { above: number; below: number } {
+  const factor = Math.min(2 ** consecutiveFail, MAX_SEARCH_HALF_SEC / BASE_SEARCH_ABOVE)
+  return {
+    above: Math.min(BASE_SEARCH_ABOVE * factor, MAX_SEARCH_HALF_SEC),
+    below: Math.min(BASE_SEARCH_BELOW * factor, MAX_SEARCH_HALF_SEC),
+  }
+}
+
+let syncConsecutiveFail = 0
+
 /**
  * フロンティア(403->200 境界)を1回較正し、サーバー現在時刻を clock へ供給する。
- * 失敗時（境界を挟めない等）は何もせず次周期に委ねる。
+ * 失敗時（境界を挟めない等）は何もせず次周期に委ねる。連続失敗のたびに探索窓を指数拡張する。
  */
 async function syncClockOnce(): Promise<void> {
   const guessSec = Math.floor(serverNow() / 1000)
-  // フロンティア（最新の登録済み秒）を探す: guess+2 から下げて最初に 200 になる秒
+  const { above, below } = searchRange(syncConsecutiveFail)
+  // フロンティア（最新の登録済み秒）を探す: guess+above から下げて最初に 200 になる秒
   // （null=判定不能は探索対象としてスキップし、次の秒へ進む）
   let frontier: number | null = null
-  for (let s = guessSec + 2; s >= guessSec - 4; s--) {
+  for (let s = guessSec + above; s >= guessSec - below; s--) {
     if ((await isRegistered(SYNC_EDGE, s)) === true) {
       frontier = s
       break
     }
   }
-  if (frontier === null) return
+  if (frontier === null) {
+    syncConsecutiveFail += 1
+    if (syncConsecutiveFail % 3 === 0) {
+      log.warn(`[kyoshin] clock sync frontier not found for ${syncConsecutiveFail} consecutive tries, search window expanded`, { above, below })
+    }
+    return
+  }
+  syncConsecutiveFail = 0
   // frontier+1 を短時間ポーリングし、403->200 の flip を performance.now() で挟む
   const target = frontier + 1
   let last403Perf: number | null = null

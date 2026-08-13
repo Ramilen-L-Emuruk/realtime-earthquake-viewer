@@ -276,7 +276,11 @@ export function JapanMapGL({
                 idleRevertSec={idleRevertSec}
               />
               <FitToDetectionGL points={detectedPoints} hasEew={eews.length > 0} idleRevertSec={idleRevertSec} />
-              {/* EEW 追従（idle 抑制つき）。 */}
+              {/* EEW 追従（idle 抑制つき）。
+                  MAP-5 の常時マウント化は QuakeFitGL/TsunamiFitGL との flyTo 争い・EEW 解除後の
+                  帰還未実装等の副作用が広範で、正しい対応には大規模リファクタが必要と判明したため
+                  revert。kyoshin モード限定のままとし、他モード滞在中の EEW 追従中断は既知の限界
+                  として仕様書に明記する。 */}
               <FitToEEWGL eews={eews} psWave={kyoshinPsWave} idleRevertSec={idleRevertSec} detectedPoints={detectedPoints} />
             </>
           )}

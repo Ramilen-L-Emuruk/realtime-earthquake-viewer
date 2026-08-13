@@ -166,8 +166,9 @@ export function KyoshinMaxEffectGL({ sites, indices, iconScale, visible }: Props
   }
 
   // 最大震度階級（rank）の監視。MIN_TRIGGER_RANK 以上へ1段階以上上がったら波紋を発生させる。
+  // MAP-2: 非表示中は監視・波紋発生・rAF ループを止める（24/7 常駐 PWA の無駄な GPU/CPU 消費対策）。
   useEffect(() => {
-    if (!map || !addedRef.current || indices.length === 0 || sites.length === 0) return
+    if (!map || !addedRef.current || indices.length === 0 || sites.length === 0 || !visible) return
 
     let maxIdx = -1
     let maxSiteIdx = -1
@@ -206,7 +207,7 @@ export function KyoshinMaxEffectGL({ sites, indices, iconScale, visible }: Props
     }
 
     prevRankRef.current = rank
-  }, [map, indices, sites, iconScale])
+  }, [map, indices, sites, iconScale, visible])
 
   // 表示切替（モード切替用）。
   useEffect(() => {
