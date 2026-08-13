@@ -417,7 +417,6 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     if (allEls[i].localName === 'Pref') prefEls.push(allEls[i])
   }
   for (const prefEl of prefEls) {
-    const prefName = xmlText(xmlQ(prefEl, 'Name'))
     const descendants = prefEl.getElementsByTagName('*')
     for (let i = 0; i < descendants.length; i++) {
       const el = descendants[i]
@@ -441,7 +440,11 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
       const intStr = xmlText(xmlChild(el, 'Int'))
       const scale = parseIntensityStr(intStr || null)
       if (stName && scale >= 0) {
-        points.push({ pref: prefName, addr: stName, isArea: false, scale: scale as IntensityScale })
+        // QUAKE-2: 観測点は JSON 経路の stations[] と同じ規約で pref を空にする。
+        // 以前は pref: prefName を付けていたため EarthquakeCard.prefGroups が
+        // 「観測点値」を都道府県別最大震度と誤解し、区域単位の最大震度が観測点値に
+        // 上書きされて低震度に見える不具合があった。
+        points.push({ pref: '', addr: stName, isArea: false, scale: scale as IntensityScale })
       }
     }
   }
@@ -878,22 +881,30 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
     if (allEls[i].localName === 'Pref') prefEls.push(allEls[i])
   }
   for (const prefEl of prefEls) {
-    const prefName = xmlText(xmlQ(prefEl, 'Name'))
+    // DMD-6: Pref 配下には Area/Name（孫要素）も存在するため、xmlQ（子孫全体検索）は
+    // 文書順で先に出た方を拾って誤検出しうる。Pref 直下の Name だけを取る xmlChild に置換。
+    const prefName = xmlText(xmlChild(prefEl, 'Name'))
     const prefChildren = prefEl.getElementsByTagName('*')
     const areaElsArr: Element[] = []
     for (let i = 0; i < prefChildren.length; i++) {
       if (prefChildren[i].localName === 'Area') areaElsArr.push(prefChildren[i])
     }
     for (const areaEl of areaElsArr) {
-      const areaName    = xmlText(xmlQ(areaEl, 'Name'))
-      const areaCode    = xmlText(xmlQ(areaEl, 'Code'))
-      const areaMaxLgInt = parseInt(xmlText(xmlQ(areaEl, 'MaxLgInt')), 10)
+      // DMD-6: xmlQ は子孫全体検索のため、Area 配下に別の Name/Code（例: 観測点の Name）
+      // があると先に出た方を拾って誤検出する可能性がある。Area 直下の要素だけを取る
+      // xmlChild に置換してレイアウト変更に対する脆弱性を減らす。
+      // MaxLgInt も同様（Area 直下と City 直下に同名要素あり）。
+      const areaName    = xmlText(xmlChild(areaEl, 'Name'))
+      const areaCode    = xmlText(xmlChild(areaEl, 'Code'))
+      const areaMaxLgInt = parseInt(xmlText(xmlChild(areaEl, 'MaxLgInt')), 10)
       if (areaMaxLgInt >= 1) regions.push({ code: areaCode, name: areaName, maxLgInt: areaMaxLgInt })
 
       const areaChildren = areaEl.getElementsByTagName('*')
       for (let i = 0; i < areaChildren.length; i++) {
         if (areaChildren[i].localName !== 'IntensityStation') continue
         const stEl  = areaChildren[i]
+        // IntensityStation 直下には Name/Code/LgInt しかなく、これらと同名の子孫要素は
+        // 存在しないため xmlQ（子孫検索）でも xmlChild と同じ結果になる（DMD-6 対象外）。
         const stName = xmlText(xmlQ(stEl, 'Name'))
         const stCode = xmlText(xmlQ(stEl, 'Code'))
         const lgInt  = parseInt(xmlText(xmlQ(stEl, 'LgInt')), 10)
