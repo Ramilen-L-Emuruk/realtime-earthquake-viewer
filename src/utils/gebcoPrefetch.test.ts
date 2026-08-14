@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { lngLatToTile, buildPrefetchTiles, shouldSkipPrefetch } from './gebcoPrefetch'
+import { lngLatToTile, buildPrefetchTiles, shouldSkipPrefetch, MAX_TILE_ZOOM } from './gebcoPrefetch'
 
 describe('lngLatToTile', () => {
   it('zoom0では常に(0,0)を返す（世界全体が1タイル）', () => {
@@ -48,6 +48,12 @@ describe('buildPrefetchTiles', () => {
     const tiles = buildPrefetchTiles(4)
     const keys = tiles.map((t) => `${t.z}/${t.x}/${t.y}`)
     expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  it('引数なしのとき MAX_TILE_ZOOM までの全ズームを含む（自動フィット上限で使うタイルを漏らさない）', () => {
+    const zooms = new Set(buildPrefetchTiles().map((t) => t.z))
+    const expected = new Set(Array.from({ length: MAX_TILE_ZOOM + 1 }, (_, z) => z))
+    expect(zooms).toEqual(expected)
   })
 })
 

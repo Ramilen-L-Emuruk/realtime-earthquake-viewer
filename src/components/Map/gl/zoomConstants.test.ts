@@ -1,0 +1,43 @@
+import { describe, it, expect } from 'vitest'
+import { MAX_ZOOM } from './camera'
+import { QUAKE_MAX_ZOOM } from '../../../hooks/useQuakeLayerData'
+import { GEBCO_SOURCE_MAX_ZOOM, GEBCO_TILE_SIZE, MAX_TILE_ZOOM } from '../../../utils/gebcoPrefetch'
+import { DETAIL_MIN_ZOOM } from './zoomLevels'
+
+// 複数モジュールに散らばるズーム閾値の「相互関係」を固定する回帰テスト。
+//
+// MapLibre GL JS のズームは 512px タイル基準で、Leaflet（256px 基準）の同じ数値より 1 段深い。
+// 移行時にこの差を無視して Leaflet 版の値をそのまま持ち込んだため、自動フィットの上限が意図の
+// 2 倍寄っていた（かつラベルの表示開始ズームには届かず地名が出なかった）という事故があった。
+// 同種の取り違えを機械的に検出できるよう、値そのものではなく定数どうしの関係を固定する。
+//
+// テスト対象がモジュール横断のため、個々のモジュールの単体テスト（camera.test.ts 等）ではなく
+// 専用ファイルに置く。
+
+describe('ズーム閾値の相互関係', () => {
+  it('区域集約の閾値がカメラの寄り上限と同値（フィット着地後は必ず区域集約になる前提）', () => {
+    // useQuakeLayerData は MAX_ZOOM から導出しているため現状は自明に真。
+    // 将来また独自リテラルへ戻された場合に落ちることを狙ったガード。
+    expect(QUAKE_MAX_ZOOM).toBe(MAX_ZOOM)
+  })
+
+  it('GEBCO 先読みの最大タイル z がマップズーム上限より深い（タイル座標系との混同検出）', () => {
+    // 512px より小さいタイルのソースは、マップズーム z のときタイル z+1 を要求する。
+    // MAX_ZOOM をそのままタイル z として使うと、自動フィット上限で実際に使うタイルが先読みから漏れる。
+    // なお MAX_ZOOM を GEBCO_SOURCE_MAX_ZOOM 以上まで上げるとクランプが効いて両者が並び、この
+    // 不等号は意図的に成り立たなくなる（そのときは先読み範囲の設計自体を見直すこと）。
+    expect(GEBCO_TILE_SIZE).toBeLessThan(512)
+    expect(MAX_TILE_ZOOM).toBeGreaterThan(MAX_ZOOM)
+  })
+
+  it('GEBCO 先読みの最大タイル z がタイルセットの実在最大 z を超えない', () => {
+    // 超えると存在しないタイルを叩くが、先読みは失敗を握りつぶすため無症状で空回りする。
+    expect(MAX_TILE_ZOOM).toBeLessThanOrEqual(GEBCO_SOURCE_MAX_ZOOM)
+  })
+
+  it('細線の下限ズームがカメラの寄り上限より浅い（寄った画で県境・活断層が消えない）', () => {
+    // DETAIL_MIN_ZOOM を MAX_ZOOM 以上へ上げると、自動フィットの着地点でも県境・一次細分区域境界・
+    // 活断層が一切出なくなる（地震カード選択後の地図が陸地塗りだけになる）。
+    expect(DETAIL_MIN_ZOOM).toBeLessThan(MAX_ZOOM)
+  })
+})

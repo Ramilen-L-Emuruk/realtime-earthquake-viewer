@@ -8,7 +8,12 @@ import { DETAIL_MIN_ZOOM } from './gl/zoomLevels'
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
 import { twoLinePopupHtml } from './gl/popupHtml'
 import { log } from '../../utils/logger'
-import { BATHYMETRY_URL, prefetchBathymetryTiles } from '../../utils/gebcoPrefetch'
+import {
+  BATHYMETRY_URL,
+  GEBCO_SOURCE_MAX_ZOOM,
+  GEBCO_TILE_SIZE,
+  prefetchBathymetryTiles,
+} from '../../utils/gebcoPrefetch'
 
 // 行政区域ベースマップ（MapLibre 版・Leaflet の BaseMap 相当）。ダーク背景の上に
 // 海底地形ラスタ（暗色化）＋陸地塗り＋一次細分区域の細線＋県境を描画する。
@@ -48,7 +53,15 @@ export function BaseMapGL({ showBathymetry }: Props) {
     const prefetchAbort = new AbortController()
 
     // 海底地形ラスタ（陸地塗りの下）。showBathymetry の初期値で可視を決める。
-    map.addSource(SRC_GEBCO, { type: 'raster', tiles: [BATHYMETRY_URL], tileSize: 256, maxzoom: 10 })
+    // GEBCO_SOURCE_MAX_ZOOM はタイルセット側に実在する最大タイル z（Leaflet 版の maxNativeZoom={10}
+    // 相当）で、マップズーム基準の閾値（gl/camera.ts の MAX_ZOOM 等）とは別の座標系。両者を混同しない
+    // こと。タイル座標側の値は先読み（gebcoPrefetch.ts）と共有する必要があるため同ファイルが持つ。
+    map.addSource(SRC_GEBCO, {
+      type: 'raster',
+      tiles: [BATHYMETRY_URL],
+      tileSize: GEBCO_TILE_SIZE,
+      maxzoom: GEBCO_SOURCE_MAX_ZOOM,
+    })
     addOrderedLayer(map, {
       id: LYR_GEBCO,
       type: 'raster',
