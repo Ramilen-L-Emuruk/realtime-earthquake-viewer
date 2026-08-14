@@ -60,6 +60,8 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
           // extractQuakeEventId が取れれば eventId 単位で安定させる（DMDATA 経路）。
           // P2PQuake（standard 版）は id パターン非対応で mergeQuakeInto が続報で id を更新するため、
           // sameQuakeEntry の同一性判定に使われる `earthquake.time` を fallback キーにする。
+          // なお selectedId 側は App.tsx の selectedQuake 導出で eventId 一致による選択継続を
+          // 既に処理済み（LOW-B1）のため、ここでは selectedId との文字列一致だけで判定する。
           key={extractQuakeEventId(quake) ?? quake.earthquake.time}
           quake={quake}
           isLatest={i === 0}

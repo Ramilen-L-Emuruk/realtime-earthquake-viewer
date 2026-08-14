@@ -64,20 +64,31 @@ export function fetchSiteList(siteConfigId?: string): Promise<SiteCoords> {
 
 /** 日時を JST(UTC+9)の {yyyyMMdd, yyyyMMddHHmmss} 文字列に変換する。 */
 function jstParts(date: Date): { dateStr: string; ts: string } {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Tokyo',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).formatToParts(date)
-  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '00'
-  const hour = get('hour') === '24' ? '00' : get('hour')
-  const dateStr = `${get('year')}${get('month')}${get('day')}`
-  return { dateStr, ts: `${dateStr}${hour}${get('minute')}${get('second')}` }
+  const format = (d: Date) => {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Tokyo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).formatToParts(d)
+    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '00'
+    return { year: get('year'), month: get('month'), day: get('day'), hour: get('hour'), minute: get('minute'), second: get('second') }
+  }
+  const p = format(date)
+  // LOW-B3: 一部のブラウザ実装（旧 IE 系・古い V8）は 0 時ちょうどを "24" として返す。
+  // その場合は日付だけ翌日に繰り上げ、hour は '00' に、minute/second は元の値のまま使う
+  // （現行の主要ブラウザ・Node ではこの分岐に到達しないが防御的コード）。
+  if (p.hour === '24') {
+    const shifted = format(new Date(date.getTime() + 60 * 60 * 1000))
+    const dateStrShifted = `${shifted.year}${shifted.month}${shifted.day}`
+    return { dateStr: dateStrShifted, ts: `${dateStrShifted}00${p.minute}${p.second}` }
+  }
+  const dateStr = `${p.year}${p.month}${p.day}`
+  return { dateStr, ts: `${dateStr}${p.hour}${p.minute}${p.second}` }
 }
 
 /** 緊急地震速報の予報円（P波/S波）。半径は km。震源深度・マグニチュードから自前計算する（標準版・DMDSS版共通）。 */
