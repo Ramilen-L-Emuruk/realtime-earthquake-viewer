@@ -56,7 +56,9 @@ const mapMode = mapTab === 'tsunami' ? 'tsunami'
 設定で ON/OFF 切替可能。
 
 **地形先読み**: `src/utils/gebcoPrefetch.ts` が沖縄〜択捉相当の低ズームタイルをアイドル時に
-バックグラウンド fetch する。
+バックグラウンド fetch する。GEBCO は 256px タイルのソースなので MapLibre が要求するタイル z は
+マップズーム +1 になる（§6 のズーム基準とは別の座標系）。先読み範囲もタイル座標系で決めるため、
+`MAX_ZOOM` をそのままタイル z として使わないこと。
 
 ## 5. ラベル描画（`LabelsGL`）
 
@@ -76,6 +78,16 @@ const mapMode = mapTab === 'tsunami' ? 'tsunami'
 - 揺れ検知時（confirmed） → 検知メンバー観測点のフットプリント
 - EEW 発報時 → 震源＋警報区域を含む範囲（**kyoshin モード時のみ**。下記「既知の限界」参照）
 - 津波情報表示時 → 対象海域を含む範囲
+
+**寄り上限とズーム値の基準**: 自動フィットが寄る上限は `gl/camera.ts` の `MAX_ZOOM`（現在 7）。
+MapLibre GL JS のズームは 512px タイル基準で数えるため、Leaflet（256px 基準）の同じ数値より 1 段深い
+（MapLibre の z は Leaflet の z+1 相当）。コードに書くズーム値は常に MapLibre 基準に統一し、Leaflet 版
+から値を移す場合は 1 段引く。`MAX_ZOOM` を変えるときは、同じ基準で揃えている以下も併せて見直すこと:
+
+- ラベル粒度の切替帯（§5・値は `LabelsGL.tsx` の定数）
+- 震度の区域集約の閾値（[quake-spec.md](quake-spec.md) §7。`MAX_ZOOM` から導出しており独自の値を持たない）
+- ヒートマップの収束ズーム（`QuakeHeatmapGL` の `HEAT_MAX_ZOOM`）
+- 地形先読みの最大タイル z（§4。タイル座標系なので `MAX_ZOOM` そのものではない）
 
 **ユーザー操作の尊重**: `gl/camera.ts` の `ensureUserInteractionState` が `zoomstart`・`dragstart` を
 購読し、ユーザーが地図を操作している間は自動フィットを抑制する。
