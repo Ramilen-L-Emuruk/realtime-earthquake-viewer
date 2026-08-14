@@ -4,7 +4,7 @@ import type { ConnectionStatus } from '../../types/earthquake'
 import { getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
 import { playAlertSound, playKyoshinUpdateSound, unlockAudio } from '../../utils/alertSound'
 import { checkVoicevoxAvailable, fetchVoicevoxSpeakers, speakWithVoicevox, type VoicevoxSpeaker } from '../../utils/voicevox'
-import { serverDate } from '../../utils/clock'
+import { serverDate, getServerClockOffsetMs } from '../../utils/clock'
 import type { UseTestScenariosResult } from '../../hooks/useTestScenarios'
 import type { ScenarioCategory } from '../../types/testScenario'
 import { isDmdss } from '../../utils/env'
@@ -215,6 +215,21 @@ function NotificationPermissionButton() {
       通知を許可する
     </button>
   )
+}
+
+// LOW-A5: サーバー時刻オフセット表示。Yahoo 強震モニタ経由で較正済みなら差分（ms）を、
+// 未較正（Yahoo 到達不能など）なら「未較正」を表示する。5 秒ごとに再取得。
+function ServerClockOffsetDisplay() {
+  const [offsetMs, setOffsetMs] = useState<number | null>(getServerClockOffsetMs())
+  useEffect(() => {
+    const id = window.setInterval(() => setOffsetMs(getServerClockOffsetMs()), 5000)
+    return () => window.clearInterval(id)
+  }, [])
+  if (offsetMs === null) {
+    return <span className="text-xs text-secondary">未較正</span>
+  }
+  const sign = offsetMs > 0 ? '+' : ''
+  return <span className="text-xs text-secondary">{sign}{offsetMs} ms</span>
 }
 
 // ---- Main component ----
@@ -858,6 +873,9 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
           <span className="text-xs text-secondary text-right">
             国土数値情報（行政区域）国土交通省 / Natural Earth
           </span>
+        </Row>
+        <Row label="サーバー時刻オフセット" description="Yahoo 強震モニタ経由でサーバー時刻に較正した際の壁時計との差分（診断用）。「未較正」は Yahoo 到達不能などで較正が動いていないことを示す">
+          <ServerClockOffsetDisplay />
         </Row>
       </Section>
 

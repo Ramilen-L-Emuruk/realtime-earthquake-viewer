@@ -74,19 +74,25 @@ export function getMasterInput(ctx: AudioContext): AudioNode {
   return _master
 }
 
+// LOW-B2: _reverb を ctx とペアで保持する。現状は getCtx() が audioCtx を再生成しないため
+// この分岐が実行時に到達することはないが、将来 getCtx() の実装が変わって AudioContext を
+// 再生成するようになった場合の防御的コード。ctx が変わったら convolver を作り直す。
 let _reverb: ConvolverNode | null = null
+let _reverbCtx: AudioContext | null = null
 function getReverb(ctx: AudioContext): ConvolverNode {
-  if (_reverb) return _reverb
+  if (_reverb && _reverbCtx === ctx) return _reverb
   const len = Math.floor(ctx.sampleRate * 1.8)
   const buf = ctx.createBuffer(2, len, ctx.sampleRate)
   for (let ch = 0; ch < 2; ch++) {
     const d = buf.getChannelData(ch)
     for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.2)
   }
-  _reverb = ctx.createConvolver()
-  _reverb.buffer = buf
-  _reverb.connect(getMasterInput(ctx))
-  return _reverb
+  const convolver = ctx.createConvolver()
+  convolver.buffer = buf
+  convolver.connect(getMasterInput(ctx))
+  _reverb = convolver
+  _reverbCtx = ctx
+  return convolver
 }
 
 // ピアノ風トーン: triangle 攻撃 + sine 余韻 + 第2倍音 + ノイズ鍵盤感（地震情報系に使用）

@@ -24,6 +24,7 @@ import { useQuakeHeatmap } from './hooks/useQuakeHeatmap'
 import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude, formatDateTimeLocal } from './utils/formatters'
 import { computeEEWLevel, eewMaxLpgmClass } from './utils/eew'
+import { extractQuakeEventId } from './utils/quakeMerge'
 import { tsunamiOverallGrade } from './utils/tsunami'
 import { playCountdownBeep, unlockAudio, setSoundVolume } from './utils/alertSound'
 import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
@@ -269,8 +270,24 @@ export function App() {
   const latest = filteredEarthquakes[0] ?? null
   // キャンセル表示中のカードは選択対象から除外する（フォールバック用）
   const latestNonCancelled = filteredEarthquakes.find(q => !q.cancelledAt) ?? null
-  // 選択中の地震（未選択／一覧から消えた場合はキャンセル済み除外の最新にフォールバック）
-  const selectedQuake = filteredEarthquakes.find(q => q.earthquake.time === selectedQuakeId && !q.cancelledAt) ?? latestNonCancelled
+  // 選択中の地震: 選択当時の time を持つカードを探す。DMDATA は VXSE51（targetDateTime）→
+  // VXSE52/53（originTime）で earthquake.time が 1 分ずれるため、time で見つからないときは
+  // 選択当時のカードから eventId を回収し、同一 eventId で再検索する（LOW-B1）。それでも
+  // 見つからなければキャンセル除外の最新にフォールバック。
+  const selectedQuake = (() => {
+    if (!selectedQuakeId) return latestNonCancelled
+    const byTime = filteredEarthquakes.find(q => q.earthquake.time === selectedQuakeId && !q.cancelledAt)
+    if (byTime) return byTime
+    // 選択当時のカードから eventId を取り、同一 eventId のカードを再検索する。
+    // filteredEarthquakes から消えている場合は latestNonCancelled にフォールバック。
+    const historical = filteredEarthquakes.find(q => q.earthquake.time === selectedQuakeId)
+    const eid = historical ? extractQuakeEventId(historical) : null
+    if (eid) {
+      const byEventId = filteredEarthquakes.find(q => extractQuakeEventId(q) === eid && !q.cancelledAt)
+      if (byEventId) return byEventId
+    }
+    return latestNonCancelled
+  })()
   // 地図に表示中の LPGM（バッジクリックでトグル）
   const activeLpgm = activeLpgmEventId ? (lpgmByEventId.get(activeLpgmEventId) ?? null) : null
 
