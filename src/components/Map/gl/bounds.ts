@@ -28,6 +28,29 @@ export const JAPAN_BOUNDS: [[number, number], [number, number]] = [
   [145.82, 45.52],
 ]
 
+// 離島まで含めた「日本全体」の枠（先島諸島〜択捉島・小笠原諸島。南鳥島・沖ノ鳥島は含まない）。
+// JAPAN_BOUNDS は本州〜北海道を囲う枠で南西諸島・小笠原を含まないため、遠地地震のように震源が
+// 地球規模で離れるフィットでは列島が画面際に張り付いてしまう。
+// utils/gebcoPrefetch.ts の海底地形タイル先読み範囲もこの枠を参照する（この枠へ寄せる以上、
+// 先読み範囲も同じであるべきという関係のため）。
+export const JAPAN_WIDE_BOUNDS: [[number, number], [number, number]] = [
+  [122, 24],
+  [149, 46],
+]
+
+/**
+ * JAPAN_WIDE_BOUNDS の南西・北東を、本アプリ共通の LatLng（[lat,lng]）2 点で返す。
+ * カメラフィットの対象座標列（`useQuakeLayerData` の `quakeFitPositions`）へ日本全体を
+ * 合成するためのもの。[lng,lat] → [lat,lng] の並べ替えを呼び出し側に散らさず一箇所に閉じる。
+ */
+export function japanWideCornersLatLng(): [LatLng, LatLng] {
+  const [[west, south], [east, north]] = JAPAN_WIDE_BOUNDS
+  return [
+    [south, west],
+    [north, east],
+  ]
+}
+
 // EEW フォローの「引きの画（ルーズ）」余白係数。有感半径を囲む際に外側へ少し余白を持たせる。
 // 日本全体ハードキャップがあるため大地震（有感半径が日本超え）では効かず、中小地震の見え方だけを整える。
 export const EEW_FOLLOW_LOOSE = 1.2

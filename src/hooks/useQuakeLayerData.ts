@@ -11,6 +11,7 @@ import {
 } from '../utils/stationCoords'
 import { pointInRings, normalizeEpicenterLng } from '../utils/geo'
 import { extractQuakeEventId } from '../utils/quakeMerge'
+import { japanWideCornersLatLng } from '../components/Map/gl/bounds'
 
 // 地震モードの描画に必要な派生データ（観測点ごとの震度点／一次細分区域集約／震源）を
 // 一箇所で計算する共有フック。Leaflet 版 JapanMap 内の同名 memo 群と同じ導出を行う
@@ -23,7 +24,6 @@ import { extractQuakeEventId } from '../utils/quakeMerge'
 export const QUAKE_MAX_ZOOM = 8
 // 震源経度の正規化に使う日本中心の経度（Leaflet 版 JAPAN_CENTER[1] と一致）。
 const JAPAN_CENTER_LNG = 137.7
-const JAPAN_CENTER_LAT = 38.25
 
 export interface IntensityMarker {
   key: string
@@ -312,7 +312,12 @@ export function useQuakeLayerData(
       for (const m of intensityMarkers) positions.push(m.position)
     }
     if (epicenter) positions.push(epicenter)
-    if (quake?.issue.type === '遠地地震' && hasEpicenter) positions.push([JAPAN_CENTER_LAT, JAPAN_CENTER_LNG])
+    // 遠地地震は国内で震度を観測しないため、フィット対象が震源 1 点だけになる。震源しか無いと
+    // 日本が枠外へ出てしまうので、離島まで含めた日本全体の枠の南西・北東 2 隅を加え、
+    // 「震源 ∪ 日本全体」が必ず収まるようにする。
+    if (quake?.issue.type === '遠地地震' && hasEpicenter) {
+      positions.push(...japanWideCornersLatLng())
+    }
     return positions
   }, [lpgmActive, lpgm, lpgmMarkers, regionMaxByName, subregionIndex, intensityMarkers, epicenter, hasEpicenter, quake])
 

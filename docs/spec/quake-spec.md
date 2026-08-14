@@ -47,6 +47,7 @@
 | 震度速報 | VXSE51 | ScalePrompt | 震源未確定・区域別震度のみ |
 | 震源情報 | VXSE52 | Destination | 震源のみ・震度なし |
 | 各地の震度 | VXSE53 | ScaleAndDestination（DetailScale） | 震源＋観測点・区域震度 |
+| 遠地地震 | VXSE53（電文標題が「遠地地震に関する情報」） | Foreign | 国外の地震。国内で震度を観測しないため観測点・区域震度なし |
 | 訂正 | VXSE61 | — | 顕著な地震の震源要素更新 |
 | 取消 | — | — | 誤発表の取消 |
 

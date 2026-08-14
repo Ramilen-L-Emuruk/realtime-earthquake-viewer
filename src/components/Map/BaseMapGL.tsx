@@ -4,6 +4,7 @@ import { loadPrefectures } from '../../utils/prefectures'
 import { loadSubRegions } from '../../utils/subregions'
 import { ringsToPolygonFC, ringsToLineFC } from './gl/geojson'
 import { addOrderedLayer } from './gl/layerOrder'
+import { DETAIL_MIN_ZOOM } from './gl/zoomLevels'
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
 import { twoLinePopupHtml } from './gl/popupHtml'
 import { log } from '../../utils/logger'
@@ -77,6 +78,8 @@ export function BaseMapGL({ showBathymetry }: Props) {
         addOrderedLayer(map, { id: LYR_LAND, type: 'fill', source: SRC_LAND, paint: { 'fill-color': LAND_FILL } })
       }
       // 2) 一次細分区域の細い境界線（陸地塗りより前面）
+      // 区域線・県境は引いた画で網目が潰れるため minzoom を設ける（gl/zoomLevels.ts）。
+      // 陸地塗りには設けない（列島のシルエットは低ズームでも位置の手掛かりになるため）。
       if (subs) {
         const rings = subs.map((sr) => sr.rings)
         map.addSource(SRC_SUB, { type: 'geojson', data: ringsToLineFC(rings) })
@@ -84,6 +87,7 @@ export function BaseMapGL({ showBathymetry }: Props) {
           id: LYR_SUB,
           type: 'line',
           source: SRC_SUB,
+          minzoom: DETAIL_MIN_ZOOM,
           paint: { 'line-color': SUBREGION_BORDER, 'line-width': 0.5 },
         })
         // 区域名ポップアップの当たり判定。塗りは完全透明で見た目に出さず、区域名だけを載せる。
@@ -93,10 +97,12 @@ export function BaseMapGL({ showBathymetry }: Props) {
           type: 'geojson',
           data: ringsToPolygonFC(rings, (i) => ({ name: subs[i].name })),
         })
+        // 区域線が消える倍率では当たり判定も消す（線が見えないのに区域名だけ出るのを避ける）。
         addOrderedLayer(map, {
           id: LYR_SUB_HIT,
           type: 'fill',
           source: SRC_SUB_HIT,
+          minzoom: DETAIL_MIN_ZOOM,
           paint: { 'fill-color': '#000000', 'fill-opacity': 0 },
         })
         popupRef.current = registerPopupSource(map, {
@@ -116,6 +122,7 @@ export function BaseMapGL({ showBathymetry }: Props) {
           id: LYR_PREF,
           type: 'line',
           source: SRC_PREF,
+          minzoom: DETAIL_MIN_ZOOM,
           paint: { 'line-color': PREF_BORDER, 'line-width': 1 },
         })
       }
