@@ -415,6 +415,11 @@ export function App() {
     if (activeTab !== 'settings' && activeTab !== 'telegrams') setLastContentTab(activeTab)
   }, [activeTab])
   const mapTab = (activeTab === 'settings' || activeTab === 'telegrams') ? lastContentTab : activeTab
+  // 常時表示する地図の内容は mapTab（設定タブ中は直前のタブ）に応じて切り替える。
+  // mapTab から MapMode への写像は kyoshinSubIndices の分岐（PERF-1）でも使うため
+  // ここ 1 箇所で導出し、下流はこれを参照する（マッピング重複を避ける）。
+  const mapMode: MapMode =
+    mapTab === 'tsunami' ? 'tsunami' : mapTab === 'realtime' ? 'kyoshin' : 'quake'
 
   // 津波発表中フラグ（解除済みでない津波情報があるか。Forecast＝若干の海面変動も含む）とバッジ用グレード
   // tsunamiGrade は色分け用のため MajorWarning/Warning/Watch のみ（Forecast は除外）
@@ -608,9 +613,14 @@ export function App() {
     [kyoshinV2.detections, kyoshinSitesGated, kyoshinIndicesGated],
   )
   // 震度0ドット表示専用: 検知エンジンが学習した慢性ノイズ床でフィルタする（震度1+表示には手を入れない）
+  // PERF-1: kyoshin モード以外では KyoshinSubThreshold レイヤーが表示されないため、
+  // 他モードのとき filterSubThresholdIndices の毎秒 1725 点走査をスキップする
+  // （`undefined` を返せば JapanMapGL 側で kyoshinIndices にフォールバックする）。
   const kyoshinSubIndices = useMemo(
-    () => filterSubThresholdIndices(kyoshinSitesGated, kyoshinIndicesGated, kyoshinV2.floors),
-    [kyoshinSitesGated, kyoshinIndicesGated, kyoshinV2.floors],
+    () => (mapMode === 'kyoshin'
+      ? filterSubThresholdIndices(kyoshinSitesGated, kyoshinIndicesGated, kyoshinV2.floors)
+      : undefined),
+    [mapMode, kyoshinSitesGated, kyoshinIndicesGated, kyoshinV2.floors],
   )
   // タイマーコールバック内から最新の confirmed 値を参照する ref（宣言はコンポーネント冒頭・代入はここ）
   kyoshinDetectedRef.current = kyoshinView.confirmed
@@ -657,9 +667,6 @@ export function App() {
     revertToDefaultTab,
   })
 
-  // 常時表示する地図の内容は mapTab（設定タブ中は直前のタブ）に応じて切り替える
-  const mapMode: MapMode =
-    mapTab === 'tsunami' ? 'tsunami' : mapTab === 'realtime' ? 'kyoshin' : 'quake'
   const mapQuake = mapTab === 'earthquake' ? selectedQuake : latest
 
   // 地図左上の更新時刻: リアルタイム表示はリアルタイム震度(kyoshin)の更新時刻、
