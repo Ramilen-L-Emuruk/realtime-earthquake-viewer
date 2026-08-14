@@ -80,6 +80,13 @@ const mapMode = mapTab === 'tsunami' ? 'tsunami'
 **ユーザー操作の尊重**: `gl/camera.ts` の `ensureUserInteractionState` が `zoomstart`・`dragstart` を
 購読し、ユーザーが地図を操作している間は自動フィットを抑制する。
 
+**明示選択によるバイパス**: 上記の抑制は「電文更新起点の自動追従」を対象とした挙動であり、
+ユーザー自身が明示的に選択した操作（地震カードのクリック・津波タブから地震情報へのリンク）は
+抑制の対象外として扱う。App 側の `quakeSelectionTick` が明示クリック時のみ +1 され、
+`QuakeFitGL` はこの tick が進んだフレームでは `isUserInteracting` を無視して強制フィットする。
+EEW も同様に「新規 EEW 受信時は `resetUserInteraction()` してからフィットする」（`FitToEEWGL`）
+という同種のバイパスを持つ。
+
 **カメラの重複制御**: `beginProgrammaticFlight` / `isProgrammaticFlight` カウンタで自動アニメーション中の
 判定を持ち、重複した flyTo/fitBounds が壊れないようにする。
 

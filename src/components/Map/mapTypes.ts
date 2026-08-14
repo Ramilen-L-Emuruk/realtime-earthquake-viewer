@@ -36,4 +36,10 @@ export interface JapanMapProps {
   eewLpgmEventId?: string | null
   focusObsName?: { name: string; ts: number } | null
   obsUpdateStatus?: Map<string, 'new' | 'updated'>
+  /**
+   * 地震カードをユーザーが明示的に選んだ回数（単調増加）。QuakeFitGL が「明示選択」と
+   * 「電文更新起点の自動追従」を区別するために使う。ズーム/パン中でもカードクリックには
+   * 追従してほしいため、tick が進んだフィットは isUserInteracting を無視して発火する。
+   */
+  quakeSelectionTick?: number
 }
