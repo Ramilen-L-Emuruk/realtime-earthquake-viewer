@@ -7,7 +7,7 @@ import { loadStationCoords, buildAreaPrefIndex } from '../utils/stationCoords'
 import { calcEEWCancelTime } from '../utils/eew'
 import { mergeTsunamiObservations } from '../utils/tsunami'
 import { log } from '../utils/logger'
-import { serverNow, serverDate } from '../utils/clock'
+import { serverNow, serverDate, isReplayClock } from '../utils/clock'
 
 import { isDmdss } from '../utils/env'
 import {
@@ -258,11 +258,15 @@ export function useEarthquakes(
 
   // VAR-1: standard 版で kyoshin テスト時刻設定中はキューの time base（getTimeRef=擬似過去時刻）が
   // 実時刻から乖離するため、実時刻ベースの絶対時刻を持つ予約が「発火時刻 > 現在」で永久滞留し、
-  // リプレイ解除時に一斉発火する。実時刻ベースの eventTime は必ず now 以下にクランプして即発火させる。
-  // live 中は eventTime ≈ serverDate() ≈ 実時刻で誤差ミリ秒未満、実害なし。
-  // enqueueEvent と handleEvent 内の直接 insertSorted 3 箇所（EEW 最終報自動解除・TSU-1 期限切れ・
-  // 初回ロード津波期限切れ）で共通利用する。
+  // リプレイ解除時に一斉発火する。**リプレイ中のみ**、実時刻ベースの eventTime を now 以下にクランプ
+  // して即発火させる。
+  //
+  // TSU-5A のレビューで判明した既存バグ修正: 以前は live 中も一律クランプしていたため、
+  // 意図的な未来時刻（validDateTime=数分〜数時間後・EEW cancel time・TSU-5A の 24h フェイルセーフ）
+  // まで now に潰されて受信直後に発火していた（TSU-1 の validDateTime 経路・EEW 最終報自動解除・
+  // 初回ロード津波期限切れ・TSU-5A が全て影響）。live 中は素通しにする。
   const clampToNow = useCallback((raw: Date): Date => {
+    if (!isReplayClock()) return raw
     const now = getTimeRef.current()
     return raw > now ? now : raw
   }, [])
@@ -315,30 +319,46 @@ export function useEarthquakes(
       }
     }
 
-    // 552（津波）: ValidDateTime あり → 期限切れ時刻にキャンセルイベントをキューへ挿入する
+    // 552（津波）: 期限切れ時刻にキャンセルイベントをキューへ挿入する。
     // TSU-1: validDateTime を持つ続報だけ「古い予約を消して新しい予約を積み直す」。
-    // 観測のみ続報（validDateTime なし）は既存の expired 予約を触らず据え置く
-    // （消してから積み直しをしないと、期限切れによる自動失効が二度と起きなくなる）。
+    // TSU-5A: standard 版（P2PQuake）は API 仕様上 validDateTime を持たないため、
+    // 解除電文が届かない例外ケースに備えて 24h 後の自動非表示フェイルセーフを積む。
+    // DMDSS 版で validDateTime が無い電文（VTSE51②/VTSE52 の観測のみ続報）は正規パターンで、
+    // 既存の expired 予約を触らず据え置く（消してから積み直しをしないと、期限切れによる自動失効が
+    // 二度と起きなくなる）。よって purge は「これから insert する場合」または「明示解除電文」の
+    // 場合のみ実行する（DMDSS の観測のみ続報では purge も insert もしない）。
     if (event.kind === 'tsunami') {
       const tsunami = event as JMATsunami
-      if (!tsunami.cancelled && tsunami.validDateTime) {
-        // 同一 eventId で cancelled=false の expired 予約を除去してから積み直す。
-        // eventId が無い電文（P2PQuake 経路など）は id 全体で照合するフォールバック。
-        const purgeKey = tsunami.eventId
+      const now = getTimeRef.current()
+      let expireTime: Date | null = null
+      if (!tsunami.cancelled) {
+        if (tsunami.validDateTime) {
+          expireTime = new Date(tsunami.validDateTime)
+        } else if (!isDmdss) {
+          const FAILSAFE_MS = 24 * 60 * 60 * 1000
+          expireTime = new Date(now.getTime() + FAILSAFE_MS)
+        }
+      }
+      const shouldModifyQueue = tsunami.cancelled || expireTime !== null
+      if (shouldModifyQueue) {
+        // 津波は「常に 1 件スロット」（tsunami-spec §5・TSU-3）で管理されるため、
+        // expired 予約は最新 1 件だけ残せば充分。P2PQuake 経路は eventId が無く id も続報ごとに
+        // 変わるため、id/eventId 一致条件を課すと古い予約が消えず積み上がる問題があった。
+        // 明示解除電文でも purge するのは、TSU-5A の 24h 予約を解決済み津波に対して発火させないため。
         eventQueueRef.current = eventQueueRef.current.filter(entry => {
           if (entry.payload.kind !== 'event') return true
           const ev = entry.payload.event
           if (ev.kind !== 'tsunami') return true
           const evAny = ev as JMATsunami
-          if (evAny.cancelReason !== 'expired') return true
-          if (purgeKey && evAny.eventId) return evAny.eventId !== purgeKey
-          return evAny.id !== tsunami.id
+          return evAny.cancelReason !== 'expired'
         })
-        const expireTime = new Date(tsunami.validDateTime)
-        if (expireTime > getTimeRef.current()) {
+        if (expireTime && expireTime > now) {
+          // clampToNow は「電文由来の絶対時刻」（TSU-1 の validDateTime）にのみ適用する。
+          // TSU-5A の 24h フェイルセーフは `now + 24h` の相対時刻で既に getTimeRef 時間軸に
+          // 揃っているため、clampToNow に通すとリプレイ中は必ず now に潰されて即発火する。
+          const eventTime = tsunami.validDateTime ? clampToNow(expireTime) : expireTime
           insertSorted(eventQueueRef.current, {
-            // VAR-1: kyoshin リプレイ中の real-time 予約が永久滞留するのを防ぐため clampToNow を適用。
-            eventTime: clampToNow(expireTime),
+            eventTime,
             payload: { kind: 'event', event: { ...tsunami, cancelled: true, cancelReason: 'expired' } as AppEvent },
           })
         }
