@@ -13,15 +13,20 @@ import { LABEL_TEXT_OPACITY_EXPR, updateLabelOverlap, type LabelOverlapTarget } 
 // basemap-labels 相当）。日本語は事前生成した SDF グリフ（public/fonts/Noto Sans JP/・JapanMapGL の
 // style.glyphs と localIdeographFontFamily:false 設定を参照）を GPU 描画する。
 //
-// ズームによる粒度切替は各レイヤーの minzoom/maxzoom で宣言的に行う（Leaflet 版の zoomend ハンドラ
-// 相当・境界値は BaseMap.tsx と一致）:
-//   5.5 <= zoom < 7.5 : 地方ラベル（引きの画）
-//   7.5 <= zoom < 9   : 県名ラベル
-//   9   <= zoom       : 一次細分区域名ラベル（寄り）
+// ズームによる粒度切替は各レイヤーの minzoom/maxzoom で宣言的に行う（Leaflet 版の zoomend ハンドラ相当）:
+//   4.5 <= zoom < 6.5 : 地方ラベル（引きの画。日本全体フィットはこの帯に入る）
+//   6.5 <= zoom < 8   : 県名ラベル
+//   8   <= zoom       : 一次細分区域名ラベル（寄り。自動フィットは MAX_ZOOM=7 でキャップされるため
+//                       手動でさらに寄ったときだけ出る）
+//
+// 値は MapLibre 基準（512px タイル）。Leaflet 版 BaseMap.tsx の 5.5/7.5/9 は 256px タイル基準なので
+// 同じ縮尺は 1 段引いた値になる（gl/camera.ts の MAX_ZOOM 参照）。移行時に旧値をそのまま持ち込んで
+// いたため、日本全体フィット（MapLibre 基準で約 5.1）が LABEL_MIN_ZOOM=5.5 に届かず地名が
+// 一切出ない状態になっていた。
 
-const LABEL_MIN_ZOOM = 5.5
-const REGION_MAX_ZOOM = 7.5
-const CITY_LABEL_MIN_ZOOM = 9
+const LABEL_MIN_ZOOM = 4.5
+const REGION_MAX_ZOOM = 6.5
+const CITY_LABEL_MIN_ZOOM = 8
 
 // symbol レイヤーの text-font。フォントスタック名は gl/fontStack.ts が単一情報源
 // （build-glyphs.mjs の出力ディレクトリ名と本値の一致はビルド時に照合される。詳細は fontStack.ts）。
