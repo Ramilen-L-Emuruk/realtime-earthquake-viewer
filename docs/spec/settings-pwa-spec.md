@@ -80,13 +80,17 @@ README・CLAUDE.md にも明記されている運用。
 - **base path**: `/realtime-earthquake-viewer/`（標準）または `/realtime-earthquake-viewer/dmdss/`
 - **outDir**: `dist/` または `dist-dmdss/`
 - **manifest.name / short_name / description**: バリアントで切り替え
-- **manifest.icons**: `vite.config.ts` は `icons/icon-192.png` / `icons/icon-512.png` を参照するが、`public/icons/` には実 PNG が無く SVG のみ（MEDIUM 課題）。`includeAssets` の glob は未マッチ時に警告なく通るため、生成 manifest.json のエントリは残るが実運用の影響（Android/Chrome インストール時のアイコン欠落）は未検証
+- **manifest.icons**: `public/icons/` には `icon.svg` のみ実在する。SEC-5 で manifest エントリを SVG 単一（`sizes: 'any', purpose: 'any maskable'`）に統合済み。以前は `icon-192.png` / `icon-512.png` を参照していたが実 PNG が無く 404 になっていた。iOS の `apple-touch-icon` は仕様上 PNG 前提で SVG 対応は未確定のため、ホーム画面追加時のアイコン表示は実機検証が必要（未実施・残課題）
 
 ### Service Worker のスコープ
 
 配信パスの違い（`/realtime-earthquake-viewer/` vs `/dmdss/`）で SW スコープが自然に分離される。
-ただし standard 版を先に開いた端末で DMDSS 版へ初回アクセスした瞬間は、standard の NavigationRoute が
-横取りしうる（既知の MEDIUM 課題）。
+
+**SEC-3 対応（2026-08-14）**: standard 版を先に開いた端末で DMDSS 版へ初回アクセスした際に
+standard の NavigationRoute が横取りする問題への対策として、standard 版の workbox に
+`navigateFallbackDenylist: [/^\/realtime-earthquake-viewer\/dmdss(\/|$)/]` を追加済み。
+末尾スラッシュ有り無しの両方を許容する正規表現で `/dmdss` と `/dmdss/` の両方をカバーする。
+DMDSS 版はこの denylist を空配列にする（自分自身のパスなので影響なし）。
 
 ### キャッシュポリシー
 

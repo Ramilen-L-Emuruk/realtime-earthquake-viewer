@@ -6,9 +6,15 @@
  * ポップアップ本文へプレーンテキストを埋め込む際のエスケープ。
  * 埋め込む値は自前生成の public/data・気象庁電文由来だが、HTML 文字列を組み立てる以上
  * 表示側で必ず通す（電文の地名に & が含まれても壊れないようにするため）。
+ * SEC-1: 属性値内で使う場合を想定して " と ' もエスケープする（要素内テキストとしても無害）。
  */
 export function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 }
 
 /** 見出し＋補足の2段組み本文（活断層・プレート境界・津波海岸線などの共通形）。 */
