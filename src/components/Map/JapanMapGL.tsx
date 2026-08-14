@@ -86,12 +86,20 @@ export function JapanMapGL({
   showActiveFaults = true,
   activeFaultOpacity = 0.4,
   showPlateBoundaries = true,
+  quakeSelectionTick = 0,
 }: JapanMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const [map, setMap] = useState<maplibregl.Map | null>(null)
   // 集約切替（zoom <= MAX_ZOOM で一次細分区域集約）判定のため現在ズームを追跡する。
   const [zoom, setZoom] = useState(INITIAL_ZOOM)
+  // QuakeFitGL が「最後に処理した quakeSelectionTick の値」を保持する ref。
+  // ここ（JapanMapGL は常時マウント）で保有し、QuakeFitGL に props で渡すことで
+  // タブ切替による QuakeFitGL のリマウントをまたいでも「明示選択で tick が進んだ最初の
+  // フィットだけ explicit=true」という判定を保つ（QuakeFitGL 内で useRef すると
+  // リマウントのたびに初期値へリセットされ、タブ復帰のたびに強制フィットが走る不具合が
+  // 出る。CameraFollowsGL.tsx の QuakeFitGL コメント参照）。
+  const lastConsumedQuakeTickRef = useRef<number>(0)
   const activeFaults = useActiveFaults()
   const plateBoundaries = usePlateBoundaries()
   // 活断層・プレート境界は地震／リアルタイム震度モードで表示する（Leaflet 版と同条件）。
@@ -264,7 +272,13 @@ export function JapanMapGL({
                 <EpicenterGL quake={quake} epicenter={epicenter} prefIntensities={prefIntensities} iconScale={iconScale} />
               )}
               {/* 地震モードのカメラフィット（signature 変化時に観測点＋震源へ）。 */}
-              <QuakeFitGL signature={quakeSignature} positions={quakeFitPositions} idleRevertSec={idleRevertSec} />
+              <QuakeFitGL
+                signature={quakeSignature}
+                positions={quakeFitPositions}
+                selectionTick={quakeSelectionTick}
+                lastConsumedTickRef={lastConsumedQuakeTickRef}
+                idleRevertSec={idleRevertSec}
+              />
             </>
           )}
           {mode === 'kyoshin' && (
