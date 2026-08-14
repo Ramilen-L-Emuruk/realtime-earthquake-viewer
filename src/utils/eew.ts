@@ -164,10 +164,10 @@ export function eewSerial(eew: EEWAlert): number | null {
   return Number.isInteger(n) && n > 0 ? n : null
 }
 
-// EEW 単発のレベル算出: 0=低震度予報 / 1=警報（severity=Warning） / 2=特別警報
-// （severity=Warning かつ 震度6弱以上 または 長周期地震動階級4以上）。
-// 気象庁の実基準（震度6弱以上 or 長周期地震動階級4以上）に合わせている。
-// scaleTo:99 は DMDATA パーサーが割り当てる「震度算出不能」コードなので通常の震度比較から除外する
+// EEW 単発のレベル算出: 0=予報級（severity!=='Warning'。震度の高低に関係なく警報未満は全て 0）
+// / 1=警報（severity==='Warning'） / 2=特別警報（severity==='Warning' かつ 震度6弱以上 または
+// 長周期地震動階級4以上）。気象庁の実基準（震度6弱以上 or 長周期地震動階級4以上）に合わせている。
+// scaleTo:99 は DMDATA パーサーが割り当てる「震度算出不能」コードなので通常の震度比較から除外する。
 // レベル1・2ともに severity（isWarning）必須。予報級電文（severity=Forecast）は震度だけ高くても常にレベル0とする。
 export function computeSingleEEWLevel(eew: EEWAlert): 0 | 1 | 2 {
   if (eew.severity !== 'Warning') return 0

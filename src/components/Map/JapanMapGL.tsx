@@ -168,7 +168,12 @@ export function JapanMapGL({
       },
     })
     mapRef.current = m
-    // 検証用（Playwright から map を操作・レイヤー確認するため。PoC の __labelMap と同様の dev 補助）。
+    // 検証用: 本番ビルドでも意図的に window.__mapGL を公開する。CLAUDE.md の検証手順
+    // （実データの map.getSource(...).getData() 集計・Playwright からの map 操作）と
+    // docs/spec/settings-pwa-spec.md の「開発者向け機能」節が明示的にこれを利用する。
+    // 露出範囲は Same-Origin Policy による: 異なるオリジンの親ページから contentWindow.__mapGL
+    // を読み取ることはできない（同一オリジンに限定）。frame-ancestors CSP は現状未実装（index.html
+    // の SEC-2 注記参照）だが、SOP により実質的な露出範囲は限定的。
     ;(window as unknown as Record<string, unknown>).__mapGL = m
     m.on('error', (e) => log.error('[JapanMapGL] map error', e.error))
     m.once('load', () => {
