@@ -62,7 +62,19 @@
 | DMDSS: REST XML（`parseEarthquakeFromXml`） | 区域のみ | 区域＋観測点 |
 | 標準版: P2PQuake | 区域のみ（ScalePrompt） | **観測点のみ**（DetailScale は区域を落とす） |
 
-**識別規則**: `pref` の有無で「点の役割」を識別する。
+**QUAKE-6 の既知の制約（P2PQuake API 仕様上）**: 実データ検証（`api.p2pquake.net/v2/history?codes=551`）で確認
+した通り、P2PQuake API は**観測点電文（DetailScale）と区域速報電文（ScalePrompt）を別々に送信**する仕様に
+なっており、両者を 1 電文で束ねる仕組みがない。よって標準版では:
+- **DetailScale**（詳細な震度情報・観測点別）: `points[].isArea: false` のみ（区域なし）
+- **ScalePrompt**（震度速報・区域別）: `points[].isArea: true` のみ（観測点なし）
+
+いずれも `pref` は非空で届く（P2PQuake の JSON 構造上の仕様）。`EarthquakeCard` は「pref 非空を都道府県
+ロールアップ点として扱う」設計なので、DetailScale 時に「都道府県別最大震度」だけが表示され、DMDSS 版のように
+「県内の一次細分区域ごとに震度が割れている場合の内訳」は原理的に出せない（区域粒度データが電文に含まれていない）。
+これはバグではなく **P2PQuake API 仕様と DMDATA との情報粒度差**。区域粒度を必要な用途では DMDSS 版を使う。
+
+**識別規則**（**DMDSS 経路限定**）: DMDATA JSON / XML 経路の points について `pref` の有無で
+「点の役割」を識別する。P2PQuake 経路は上記の通り常に `pref` 非空で届くため、この規則の対象外。
 - 区域は必ず `pref: ''` で積む（`isArea: true`）
 - 観測点も `pref: ''` で積む（`isArea: false`）。DMDSS の JSON 経路と XML 経路の両方で統一（QUAKE-2）
 - JSON 経路のみ、`prefectures[]` 由来の**都道府県ロールアップ点**を `pref: '<都道府県名>', isArea: false` で追加する
