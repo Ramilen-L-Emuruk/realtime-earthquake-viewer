@@ -50,15 +50,27 @@ export function App() {
   const { settings, updateSetting } = useSettings()
   const [activeTab, setActiveTab] = useState<TabId>(settings.defaultTab)
   const [selectedQuakeId, setSelectedQuakeId] = useState<string | null>(null)
+  // 地震カードのユーザー明示選択カウンタ。QuakeFitGL が「明示選択」と「電文更新起点の自動追従」を
+  // 区別するために使う（明示選択中はユーザー操作中フラグを無視して強制フィット・
+  // CameraFollowsGL.tsx QuakeFitGL 参照）。
+  const [quakeSelectionTick, setQuakeSelectionTick] = useState(0)
   const [focusedObsName, setFocusedObsName] = useState<{ name: string; ts: number } | null>(null)
   const [activeLpgmEventId, setActiveLpgmEventId] = useState<string | null>(null)
   const [activeLpgmSource, setActiveLpgmSource] = useState<'earthquake' | 'eew' | null>(null)
   // 地震カード切替時は LPGM 表示をリセットする。子タブ（React.memo 化済み）へ props として
   // 渡すため useCallback で参照を安定化する（毎レンダー再生成すると memo が破られる）。
-  const selectQuake = useCallback((id: string | null) => {
+  //
+  // opts.explicit は「ユーザーがカード（や津波→地震リンク）を直接クリックした」ことを示す。
+  // 電文受信ハンドラ（useLiveEventHandler）からも新規・続報のたびに selectQuake を呼んで
+  // 選択状態を最新カードへ追従させるが、こちらは explicit=false（省略）で呼び、
+  // QuakeFitGL に「電文起点の自動更新」として扱わせる（isUserInteracting を尊重）。
+  // explicit=true の呼び出しだけが quakeSelectionTick を進め、QuakeFitGL が isUserInteracting
+  // を無視して強制フィットする（CameraFollowsGL.tsx の QuakeFitGL 参照）。
+  const selectQuake = useCallback((id: string | null, opts?: { explicit?: boolean }) => {
     setSelectedQuakeId(id)
     setActiveLpgmEventId(null)
     setActiveLpgmSource(null)
+    if (opts?.explicit) setQuakeSelectionTick(t => t + 1)
   }, [])
   // 地震情報タブ / EEW（リアルタイム）タブそれぞれで LPGM 表示をトグルするハンドラー。
   // 同じ eventId を再度渡すと非表示化、それ以外の eventId なら表示中の source を切り替える。
@@ -166,10 +178,18 @@ export function App() {
   earthquakesRef.current = earthquakes
   tsunamisRef.current = tsunamis
 
+  // EarthquakeTab のカードクリックからの選択。ユーザーが自らカードをクリックした挙動なので
+  // explicit=true を渡し、QuakeFitGL に isUserInteracting を無視して強制フィットさせる。
+  const selectQuakeFromCard = useCallback((id: string) => {
+    selectQuake(id, { explicit: true })
+  }, [selectQuake])
+
   // 津波タブから地震情報カードへのリンク（地震タブへ移動して該当カードを選択する）。
   // selectQuake は上で useCallback 化、setActiveTabNonRealtime も useCallback 化済み。
+  // ユーザーが自らリンクをクリックした挙動なので explicit=true で明示選択扱いにし、
+  // モード切替（tsunami→quake）で QuakeFitGL がリマウントされた直後でも強制フィットさせる。
   const linkTsunamiToEarthquake = useCallback((earthquakeTime: string) => {
-    selectQuake(earthquakeTime)
+    selectQuake(earthquakeTime, { explicit: true })
     setActiveTabNonRealtime('earthquake')
   }, [selectQuake, setActiveTabNonRealtime])
   // SettingsTab の onTest オブジェクトはメモ化して同一参照を保つ（毎レンダー再生成すると
@@ -730,6 +750,7 @@ export function App() {
             eewLpgmEventId={activeLpgmSource === 'eew' ? activeLpgmEventId : null}
             focusObsName={focusedObsName}
             obsUpdateStatus={obsUpdateStatus}
+            quakeSelectionTick={quakeSelectionTick}
           />
           <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
           <SpecialInfoBanner nankai={nankai} kohatsu={kohatsu} />
@@ -743,7 +764,7 @@ export function App() {
             <EarthquakeTab
               earthquakes={filteredEarthquakes}
               selectedId={selectedQuake?.earthquake.time ?? null}
-              onSelect={selectQuake}
+              onSelect={selectQuakeFromCard}
               isLoading={isLoading}
               isLoadingMore={isLoadingMore}
               hasMore={hasMore}

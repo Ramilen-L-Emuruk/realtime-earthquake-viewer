@@ -78,32 +78,64 @@ function useUserInteractionGuard(
 }
 
 // ── 地震モード: signature が変わったとき quakeFitPositions にフィットする ────────────
+// selectionTick は「ユーザーが地震カード（または津波→地震リンク）を明示的にクリックした」
+// 瞬間だけ App が +1 する単調増加カウンタ。電文受信ハンドラ（useLiveEventHandler）からも
+// selectQuake は呼ばれるが、そちらは opts.explicit=false で呼ばれるため tick は進まない。
+// selectionTick の変化で入ってきたフィットは isUserInteracting を無視して強制発火する
+// （FitToEEWGL が新規 EEW 受信時に resetUserInteraction するのと同じ考え方）。
+// signature だけが変わったフィット（電文更新で latest が変わった／取消フォールバック等）は
+// 従来通り isUserInteracting を尊重し、ユーザーがズーム/パン中の勝手なジャンプを避ける。
+//
+// lastConsumedTickRef は「このコンポーネントが最後に処理した selectionTick の値」を保持する
+// 状態。QuakeFitGL 自身の useRef ではなく親（JapanMapGL）が保有した ref を props で受け取る
+// 設計にしている理由:
+// QuakeFitGL は mode==='quake' の条件付きレンダー（JapanMapGL 内）で、タブ切替のたびに
+// アンマウント/リマウントされる。もし ref を QuakeFitGL 自身に持たせると、リマウントのたびに
+// 初期値へリセットされ、「App 側の selectionTick は既に非 0（過去に明示選択が起きていた）だが、
+// このリマウントは単なるタブ復帰」というケースを区別できず、必ず explicit=true と誤判定して
+// タブ復帰のたびに isUserInteracting を無視した強制フィットが走ってしまう。
+// 親（JapanMapGL）は quake モード以外でも常時マウントされているため、その useRef はリマウントを
+// またいで生存する。これにより「明示選択で tick が進んだ最初のフィットだけ explicit=true」
+// という本来の意図が保たれる。
 export function QuakeFitGL({
   signature,
   positions,
+  selectionTick = 0,
+  lastConsumedTickRef,
   idleRevertSec = DEFAULT_IDLE_REVERT_SEC,
 }: {
   signature: string
   positions: LatLng[]
+  selectionTick?: number
+  lastConsumedTickRef: React.MutableRefObject<number>
   idleRevertSec?: number
 }) {
   const map = useMapGL()
   const lastFitRef = useRef<string>('')
-  const [isUserInteracting] = useUserInteractionGuard(map, idleRevertSec)
+  const [isUserInteracting, resetUserInteraction] = useUserInteractionGuard(map, idleRevertSec)
   useEffect(() => {
     if (!map || !signature || positions.length === 0) return
-    if (lastFitRef.current === signature) return
-    // マーク確定は isUserInteracting 判定の後で行う。操作中に来た更新は lastFitRef を進めずに
-    // 見送ることで、isUserInteracting が false に戻った時点の再レンダリング（useUserInteractionGuard
-    // 参照）でこの effect が再実行され、同じ signature のまま取り戻せるようにする。
-    if (isUserInteracting) {
+    // ユーザーが明示的にカードを選んだか（selectionTick が進んだか）。tick が同じなら
+    // 電文更新起点のフィットとして扱う（isUserInteracting を尊重）。
+    const explicit = lastConsumedTickRef.current !== selectionTick
+    lastConsumedTickRef.current = selectionTick
+    // 自動フィットは signature 一致で再発火を抑制する。明示選択は同じ地震を再度選ぶケースも
+    // あり得るため signature 一致でも通す（zoom で拡大→同じカードで戻す等）。
+    if (!explicit && lastFitRef.current === signature) return
+    // マーク確定は isUserInteracting 判定の後で行う。自動フィットが操作中に来ても lastFitRef を
+    // 進めずに見送ることで、isUserInteracting が false に戻った時点の再レンダリング
+    // （useUserInteractionGuard 参照）でこの effect が再実行され、同じ signature のまま
+    // 取り戻せるようにする。
+    if (!explicit && isUserInteracting) {
       log.debug('[mapGL] quake fit スキップ (userInteracting)')
       return
     }
+    if (explicit) resetUserInteraction()
     lastFitRef.current = signature
-    log.debug(`[mapGL] quake fit (${positions.length}点)`)
+    log.debug(`[mapGL] quake fit (${positions.length}点${explicit ? ' 明示選択' : ''})`)
     fitToPositions(map, positions, { padding: 48, maxZoom: MAX_ZOOM, durationSec: 1.0 })
-  }, [map, signature, positions, isUserInteracting])
+    // lastConsumedTickRef は ref なので依存配列に入れない（参照の同一性は保たれる）。
+  }, [map, signature, positions, selectionTick, isUserInteracting, resetUserInteraction])
   return null
 }
 
