@@ -58,6 +58,44 @@
 **`validDateTime` が付く条件**（気象庁仕様）: 「津波予報（若干の海面変動）のみ発表の場合」または
 「警報・注意報解除後に予報のみが残る場合」の 2 パターンのみ。警報・注意報が 1 区域でも残っている間は付与されない。
 
+### TSU-5A: standard 版の 24h フェイルセーフ（2026-08-14）
+
+P2PQuake API 仕様上 `validDateTime` が届かないため、通常の TSU-1 経路（validDateTime 満了の
+`expired` 予約）は standard 版では発火しない。津波は明示的な解除電文（`cancelled=true`）で消えるのが
+正常経路だが、解除電文が届かない例外ケース（P2PQuake API 障害等）に備えて、`useEarthquakes.ts` は
+**standard 版で validDateTime を持たない tsunami に対して 24h 後の `expired` 予約を積む**フェイルセーフを備える。
+
+- 実行条件: `!isDmdss && !tsunami.cancelled && !tsunami.validDateTime`
+- 予約時刻: 現在時刻から 24 時間後（気象庁の実運用で警報・注意報が 24h を超えて継続することは稀。
+  ただし 2011 年東日本大震災級の広域災害では大津波警報が半日以上継続した実例がある。24h を超える
+  例外的な長時間継続警報の途中で表示が消える場合は、次の続報受信で予約が積み直されるため実害は
+  限定的だが、意図されたフェイルセーフの限界として認識する）
+
+**purge/insert の分岐**:
+- purge（`cancelReason='expired'` 既存予約の全除去）は「これから insert する場合」または
+  「明示解除電文（`cancelled=true`）を受信した場合」のみ実行する
+- DMDSS で `validDateTime` を持たない非キャンセル電文（VTSE51②/VTSE52 の**観測のみ続報**）は
+  正規パターン。この経路では purge も insert もスキップして既存の TSU-1 予約を温存する
+  （消すと期限切れによる自動失効が二度と起きなくなる）
+- 明示解除電文でも purge を実行するのは、TSU-5A の 24h 予約を「解決済み津波」に対して
+  発火させないため（レビュー2巡目で発覚した CRITICAL への対応）
+- P2PQuake は eventId が無く id も続報ごとに変わるため、`cancelReason='expired'` な予約は
+  id/eventId 一致条件を課さず全除去する（TSU-3「常に 1 件スロット」で管理されるため 1 件残せば充分）
+
+**時刻軸の扱い（`clampToNow`）**:
+- TSU-1（`validDateTime` 由来）は電文の**絶対時刻**。standard 版の kyoshin リプレイ中は
+  `clampToNow` で `getTimeRef` の擬似過去時刻に潰して即発火させる（VAR-1 の目的）
+- TSU-5A の 24h フェイルセーフは `getTimeRef` 起点の**相対時刻**（`now + 24h`）で、既に同じ時間軸
+  に乗っている。`clampToNow` を通すとリプレイ中は必ず `now` に潰されて即発火するため、
+  TSU-5A では `clampToNow` を経由せず直接 `expireTime` を使う（レビュー3巡目で発覚した CRITICAL への対応）
+
+**既知の適用漏れ**: TSU-5A は `handleEvent` 経由でのみ発火する。初回ロード時の履歴取得
+（`fetchHistory([552], 10)`）は `handleEvent` を経由せず直接 `setState` するため、フェイルセーフが
+仕掛けられない。「ページを開いた瞬間に standard 版で有効な津波警報が既に存在し、以後一切続報が
+来ない」というレアケースで、次のライブ tsunami 受信までフェイルセーフが働かない。実運用では
+リロードするか続報を受信すれば救済される。
+- DMDSS 版で `validDateTime` を持たない電文は仕様外扱い（正常経路の解除電文を期待）
+
 ## 4. 電文パース
 
 ### DMDATA JSON（`parseTsunami`）

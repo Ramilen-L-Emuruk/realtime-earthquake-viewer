@@ -108,6 +108,15 @@ JMA 仕様上ここで配信される 556 は全て警報級であるため `con
 **既知の欠落**:
 - `points[].scale=46`（震度 5 弱以上推定）が既知震度マップにない
 
+**既知の情報粒度制約（QUAKE-6・TSU-5A）**: 実データ検証で確認済み。DMDSS の DMDATA と比較して以下が API 仕様
+上の制約として存在する（詳細は [`quake-spec.md`](quake-spec.md) §4・[`tsunami-spec.md`](tsunami-spec.md) §3）:
+- **地震情報**: `DetailScale`（観測点のみ）と `ScalePrompt`（区域のみ）が別電文で送られる。1 電文に
+  両方を含めないため、標準版では県内の区域粒度内訳（一次細分区域ごとの震度差）を出せない
+- **津波情報**: `validDateTime` フィールドが**そもそも存在しない**。標準版では
+  `useEarthquakes` の TSU-1 経路（validDateTime による自動失効予約）が発火せず、
+  解除電文 (`cancelled=true`) が届くまで表示され続ける。異例の障害で解除電文が届かない場合の
+  フェイルセーフとして、`useEarthquakes` は 24h タイマーで自動非表示にする（TSU-5A）
+
 ### WebSocket 再接続
 
 - 指数バックオフ（`3000ms → ×1.5`、上限 `30000ms`）
