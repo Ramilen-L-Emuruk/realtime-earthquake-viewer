@@ -55,6 +55,13 @@ const mapMode = mapTab === 'tsunami' ? 'tsunami'
 タイル取得は不要で、全て事前生成された GeoJSON から自前描画する。海底地形タイルは唯一の外部ラスタで、
 設定で ON/OFF 切替可能。
 
+**ズームアウト時の非表示化**: 都道府県境界・一次細分区域境界（`BaseMapGL`）と活断層（`ActiveFaultsGL`）は、
+`gl/zoomLevels.ts` の `DETAIL_MIN_ZOOM`（3.5）を下回るズームでは描画しない（線を簡略化するのではなく
+レイヤーごと消す）。遠地地震のフィットのように世界規模まで引くと、これらの線が潰れて列島が塗り潰された
+塊になるため。陸地塗りとプレート境界は対象外で、引いた画でも列島の位置は分かる。
+なお通常の日本全体表示は地図の幅で決まり、スマホ幅（375px）で約 3.8・デスクトップで約 5.0 のため、
+どちらも従来どおり描画される。
+
 **地形先読み**: `src/utils/gebcoPrefetch.ts` が沖縄〜択捉相当の低ズームタイルをアイドル時に
 バックグラウンド fetch する。
 
@@ -72,7 +79,9 @@ const mapMode = mapTab === 'tsunami' ? 'tsunami'
 
 以下のシチュエーションでカメラを自動フィットする:
 
-- 地震カード選択時 → 該当地震の震央＋主要観測点を含む範囲
+- 地震カード選択時 → 該当地震の震源＋主要観測点を含む範囲
+  - **遠地地震**（[`quake-spec.md`](quake-spec.md) §3）は国内で震度を観測せず対象が震源 1 点だけになるため、
+    離島を含む日本全体の枠（`gl/bounds.ts` の `JAPAN_WIDE_BOUNDS`）を合成してフィットする
 - 揺れ検知時（confirmed） → 検知メンバー観測点のフットプリント
 - EEW 発報時 → 震源＋警報区域を含む範囲（**kyoshin モード時のみ**。下記「既知の限界」参照）
 - 津波情報表示時 → 対象海域を含む範囲
@@ -223,6 +232,7 @@ MapLibre v6 の `_contextRestored` は `setStyle(..., {diff:false})` を呼ん�
   - `layerOrder.ts` — 描画順の単一情報源
   - `camera.ts` — カメラ操作・ユーザー操作検知
   - `bounds.ts` — 追従範囲の合成・包含判定
+  - `zoomLevels.ts` — 複数レイヤーで共有する表示ズーム閾値（`DETAIL_MIN_ZOOM`）
   - `labelOverlap.ts` — ラベルの重なり検知
   - `popupRegistry.ts` — ポップアップの当たり判定調停
   - `popupHtml.ts` — ポップアップ HTML 生成

@@ -96,4 +96,4 @@ MIT License
 - 地図データ: 「気象庁 予報区等 GIS データ（都道府県・地震情報／細分区域・津波予報区）」
 - 海底地形: GEBCO; NOAA National Centers for Environmental Information (NCEI)
 - 活断層データ: 「産総研 活断層データベース」（政府標準利用規約 2.0）
-- プレート境界データ: PB2002 (Bird, 2003) — [fraxen/tectonicplates](https://github.com/fraxen/tectonicplates)（Open Data Commons Attribution License）
+- プレート境界データ: PB2002 (Bird, 2003) — データ整備: Hugo Ahlenius・Nordpil [fraxen/tectonicplates](https://github.com/fraxen/tectonicplates)（Open Data Commons Attribution License 1.0）

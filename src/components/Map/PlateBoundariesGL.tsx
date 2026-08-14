@@ -6,7 +6,7 @@ import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
 import { twoLinePopupHtml } from './gl/popupHtml'
 import { addOrderedLayer } from './gl/layerOrder'
 
-// 日本周辺のプレート境界線（PB2002モデル）を描画する MapLibre 版（Leaflet の PlateBoundariesLayer 相当）。
+// 全球のプレート境界線（PB2002モデル）を描画する MapLibre 版（Leaflet の PlateBoundariesLayer 相当）。
 // セグメント1件=MultiLineString feature 1件にまとめ、1枚の line レイヤーで描く。沈み込み境界と
 // その他で色を変えるため type を feature プロパティに持たせ、line-color を match 式で分岐する。
 // 破線は Leaflet の dashArray '6 4'（px）相当を、MapLibre の線幅単位 dasharray で weight2 に合わせ [3,2]。

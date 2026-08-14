@@ -7,11 +7,15 @@ import {
   clampBoundsToJapan,
   mergeBounds,
   JAPAN_BOUNDS,
+  JAPAN_WIDE_BOUNDS,
+  japanWideCornersLatLng,
   type BoundsTuple,
   type EewFollowCircle,
 } from './bounds'
 
 const [[JAPAN_W, JAPAN_S], [JAPAN_E, JAPAN_N]] = JAPAN_BOUNDS
+const [[WIDE_W, WIDE_S], [WIDE_E, WIDE_N]] = JAPAN_WIDE_BOUNDS
+const wideTuple: BoundsTuple = [WIDE_W, WIDE_S, WIDE_E, WIDE_N]
 
 describe('mergeBounds', () => {
   it('両方 null なら null を返す', () => {
@@ -271,5 +275,49 @@ describe('boundsForLiveFollowTuple', () => {
     expect(bounds[1]).toBeCloseTo(26.21, 5)
     expect(bounds[0]).toBeCloseTo(127.68, 5)
     expect(boundsContains(bounds, [127.68, 26.21, 127.68, 26.21])).toBe(true)
+  })
+})
+
+// 遠地地震のカメラフィット（useQuakeLayerData の quakeFitPositions）は、この枠の南西・北東 2 隅を
+// フィット対象へ加えることで日本全体を必ず画面へ収める。座標順（[lng,lat]）を取り違えると日本から
+// 大きく外れた矩形になり、遠地地震でしか再現しない不具合になるためテストで固定する。
+describe('JAPAN_WIDE_BOUNDS', () => {
+  it('[lng,lat] 順の南西・北東で、南西 < 北東になっている', () => {
+    expect(WIDE_W).toBeLessThan(WIDE_E)
+    expect(WIDE_S).toBeLessThan(WIDE_N)
+  })
+
+  it('本州〜北海道の枠（JAPAN_BOUNDS）を完全に含む', () => {
+    expect(boundsContains(wideTuple,[JAPAN_W, JAPAN_S, JAPAN_E, JAPAN_N])).toBe(true)
+  })
+
+  it.each([
+    ['与那国島', 122.94, 24.45],
+    ['沖縄本島', 127.68, 26.21],
+    ['父島（小笠原）', 142.19, 27.09],
+    ['択捉島', 148.75, 45.33],
+    ['稚内', 141.68, 45.42],
+  ])('%s を含む', (_name, lng, lat) => {
+    expect(boundsContains(wideTuple,[lng, lat, lng, lat])).toBe(true)
+  })
+})
+
+describe('japanWideCornersLatLng', () => {
+  it('[lat,lng] 順の南西・北東 2 点を返す（[lng,lat] のまま渡さない）', () => {
+    // Arrange & Act
+    const [sw, ne] = japanWideCornersLatLng()
+
+    // Assert: 日本の緯度は 20〜50 度台・経度は 120〜150 度台。並びを取り違えると
+    // 緯度に 122 のような値が入り、フィット先が日本から大きく外れる。
+    expect(sw).toEqual([24, 122])
+    expect(ne).toEqual([46, 149])
+  })
+
+  it('返した 2 点の外接矩形が JAPAN_WIDE_BOUNDS と一致する', () => {
+    // Arrange & Act: boundsFromPositionsTuple は [lat,lng] を受けて [w,s,e,n] を返す。
+    const bounds = boundsFromPositionsTuple(japanWideCornersLatLng())
+
+    // Assert
+    expect(bounds).toEqual(wideTuple)
   })
 })

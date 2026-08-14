@@ -455,7 +455,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             onChange={v => onUpdate('showQuakeHeatmap', v)}
           />
         </Row>
-        <Row label="プレート境界線を表示" description="地震情報・リアルタイムタブの地図に日本周辺のプレート境界線を表示します（PB2002モデル）">
+        <Row label="プレート境界線を表示" description="地震情報・リアルタイムタブの地図に世界のプレート境界線を表示します（PB2002モデル）">
           <Toggle
             checked={settings.showPlateBoundaries}
             onChange={v => onUpdate('showPlateBoundaries', v)}
