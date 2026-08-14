@@ -23,7 +23,8 @@ const LYR = 'quake-heat'
 const HIT_LYR = 'quake-heat-hit'
 
 // Leaflet 版と揃えた見え方の基準ズーム（この付近以下で全域が均される）。
-const HEAT_MAX_ZOOM = 8
+// MapLibre 基準（512px タイル）なので Leaflet 版の 8 から 1 段引いた値＝同じ縮尺（gl/camera.ts の MAX_ZOOM 参照）。
+const HEAT_MAX_ZOOM = 7
 // 当たり判定の円半径(px)。見た目には出ないので、指で押しやすい大きさにする。
 const HIT_RADIUS_PX = 9
 const HIT_TOL_PX = 4

@@ -11,6 +11,7 @@ import {
 } from '../utils/stationCoords'
 import { pointInRings, normalizeEpicenterLng } from '../utils/geo'
 import { extractQuakeEventId } from '../utils/quakeMerge'
+import { MAX_ZOOM } from '../components/Map/gl/camera'
 
 // 地震モードの描画に必要な派生データ（観測点ごとの震度点／一次細分区域集約／震源）を
 // 一箇所で計算する共有フック。Leaflet 版 JapanMap 内の同名 memo 群と同じ導出を行う
@@ -19,8 +20,11 @@ import { extractQuakeEventId } from '../utils/quakeMerge'
 // zoom は地図の現在ズーム。MAX_ZOOM 以下では観測点個別ではなく一次細分区域ごとの最大震度へ
 // 集約する（aggregateByRegion）。zoom は動的なので呼び出し側（各エンジンの地図）が観測して渡す。
 
-// 集約切替のズーム閾値（gl/camera.ts の MAX_ZOOM・Leaflet 版 JapanMap の MAX_ZOOM と一致）。
-export const QUAKE_MAX_ZOOM = 8
+// 集約切替のズーム閾値。カメラの寄り上限（gl/camera.ts の MAX_ZOOM）と必ず同値でなければならない
+// ——「自動フィット着地後は必ず区域集約になる」という前提に regionMaxByName の常時計算が依存している
+// （下の regionMaxByName のコメント参照）。値を独自に持たず MAX_ZOOM から導出することで、片方だけ
+// 変更されて前提が静かに崩れる事故を構造的に防ぐ。
+export const QUAKE_MAX_ZOOM = MAX_ZOOM
 // 震源経度の正規化に使う日本中心の経度（Leaflet 版 JAPAN_CENTER[1] と一致）。
 const JAPAN_CENTER_LNG = 137.7
 const JAPAN_CENTER_LAT = 38.25

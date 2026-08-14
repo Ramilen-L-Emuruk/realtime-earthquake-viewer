@@ -20,7 +20,14 @@ import {
 // 追従の目標範囲そのものの計算（矩形の合成・包含・有感半径クランプ）は maplibre 非依存の
 // gl/bounds.ts が担い、ここはその結果を LngLatBounds へ変換して地図を動かす層に徹する。
 
-export const MAX_ZOOM = 8
+// 自動フィットが寄る上限ズーム。
+// Leaflet は 256px タイル基準、MapLibre GL JS は 512px タイル基準でズームレベルを数えるため、
+// 同じ数値でも縮尺が 2 倍ずれる（MapLibre の z は Leaflet の z+1 相当）。移行時に Leaflet 版の
+// MAX_ZOOM=8 をそのまま持ち込んでいたため、実際には旧 zoom 9 相当（緯度38で約239m/px）まで
+// 寄っていた。7 が旧 MAX_ZOOM=8（同約478m/px）と同じ縮尺。
+// 以降「マップズーム基準の閾値」は全てこの MapLibre 基準（512px タイル）で書く
+// ＝ Leaflet 版から値を持ち込む際は 1 段引くこと（LabelsGL・useQuakeLayerData・QuakeHeatmapGL も同様）。
+export const MAX_ZOOM = 7
 // JapanMap.tsx の JAPAN_CENTER [lat,lng] を [lng,lat] へ。
 export const JAPAN_CENTER: [number, number] = [137.7, 38.25]
 
