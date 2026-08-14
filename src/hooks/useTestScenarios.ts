@@ -4,6 +4,7 @@ import type { ReplayEntry } from '../services/dmdataReplay'
 import { instantiateScenario } from '../utils/testScenarioReplay'
 import { serverDate } from '../utils/clock'
 import { log } from '../utils/logger'
+import { validateScenarioIndex, validateScenarioFile } from '../utils/testScenarioSchema'
 
 const INDEX_URL = `${import.meta.env.BASE_URL}data/test-scenarios/index.json`
 const scenarioUrl = (id: string): string => `${import.meta.env.BASE_URL}data/test-scenarios/${id}.json`
@@ -42,12 +43,19 @@ export function useTestScenarios(
     fetch(INDEX_URL)
       .then(res => {
         if (!res.ok) throw new Error(`test-scenarios index fetch failed: ${res.status}`)
-        return res.json() as Promise<TestScenarioIndex>
+        return res.json() as Promise<unknown>
       })
-      .then(index => {
+      .then(raw => {
         if (cancelled) return
-        setScenarios(index)
-        setLoadState('loaded')
+        // 破損 JSON でも UI をクラッシュさせないため配列全体を捨てず、要素単位で通ったものだけ採用する。
+        // malformed=true は「トップレベルが配列ですらない」深刻な破損。UI 上は「シナリオがありません」
+        // という空リスト表示になり正常な空リストと区別できないため、少なくともコンソールには
+        // 「破損」と明示的にログ出しして開発者・QA が原因を特定できるようにする。
+        const { valid, skipped, malformed } = validateScenarioIndex(raw)
+        if (malformed) log.error('[testScenarios] index.json のトップレベルが配列ではない（配信破損）')
+        else if (skipped > 0) log.warn(`[testScenarios] index.json の破損エントリ ${skipped} 件をスキップ`)
+        setScenarios(valid)
+        setLoadState(malformed ? 'error' : 'loaded')
       })
       .catch(err => {
         if (cancelled) return
@@ -90,9 +98,17 @@ export function useTestScenarios(
     fetch(scenarioUrl(id))
       .then(res => {
         if (!res.ok) throw new Error(`scenario fetch failed: ${res.status}`)
-        return res.json() as Promise<TestScenarioFile>
+        return res.json() as Promise<unknown>
       })
-      .then(scenario => {
+      .then(raw => {
+        // 破損 JSON をそのまま instantiateScenario に渡すと実行時に落ちるため、
+        // ここで型検証して壊れているならエラー扱いにする（instantiateScenario は valid 前提）。
+        const scenario = validateScenarioFile(raw)
+        if (!scenario) {
+          log.error(`[testScenarios] シナリオファイルの型検証失敗 id=${id}`)
+          setErrorIds(prev => new Set(prev).add(id))
+          return
+        }
         scenarioCacheRef.current.set(id, scenario)
         setErrorIds(prev => {
           if (!prev.has(id)) return prev

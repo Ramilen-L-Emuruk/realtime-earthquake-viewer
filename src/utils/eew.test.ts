@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, selectEEWSoundType, type HypoInfoPendingMissing } from './eew'
+import { calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewSerial, selectEEWSoundType, type HypoInfoPendingMissing } from './eew'
 import type { YahooHypoInfoItem } from '../services/kyoshin'
 import type { EEWAlert } from '../types/earthquake'
 
@@ -381,5 +381,48 @@ describe('calcEEWCancelTime: 発震時刻起点の自動解除時刻（MIN_CANCE
     const cancel = calcEEWCancelTime(eew, reportTime)
     const minTime = new Date(reportTime.getTime() + 60 * 1000)
     expect(cancel.getTime()).toBe(minTime.getTime())
+  })
+})
+
+describe('eewSerial', () => {
+  it('issue.serial が正の整数文字列なら number に変換して返す', () => {
+    const eew = makeEEW({ issue: { time: '2026-01-01T12:00:00Z', eventId: 'e1', serial: '3' } })
+    expect(eewSerial(eew)).toBe(3)
+  })
+
+  it('serial が "1" でも受け付ける（初報）', () => {
+    const eew = makeEEW({ issue: { time: '2026-01-01T12:00:00Z', eventId: 'e1', serial: '1' } })
+    expect(eewSerial(eew)).toBe(1)
+  })
+
+  it('serial が数値以外の文字列なら null', () => {
+    const eew = makeEEW({ issue: { time: '2026-01-01T12:00:00Z', eventId: 'e1', serial: 'abc' } })
+    expect(eewSerial(eew)).toBeNull()
+  })
+
+  it('serial が 0 以下なら null（第0報は仕様上ない）', () => {
+    const eew = makeEEW({ issue: { time: '2026-01-01T12:00:00Z', eventId: 'e1', serial: '0' } })
+    expect(eewSerial(eew)).toBeNull()
+  })
+
+  it('serial が負なら null', () => {
+    const eew = makeEEW({ issue: { time: '2026-01-01T12:00:00Z', eventId: 'e1', serial: '-2' } })
+    expect(eewSerial(eew)).toBeNull()
+  })
+
+  it('serial が浮動小数点なら null（整数のみ受け付ける）', () => {
+    const eew = makeEEW({ issue: { time: '2026-01-01T12:00:00Z', eventId: 'e1', serial: '1.5' } })
+    expect(eewSerial(eew)).toBeNull()
+  })
+
+  it('serial が空文字なら null', () => {
+    const eew = makeEEW({ issue: { time: '2026-01-01T12:00:00Z', eventId: 'e1', serial: '' } })
+    expect(eewSerial(eew)).toBeNull()
+  })
+
+  it('issue 自体が無ければ null', () => {
+    const eew = makeEEW()
+    // issue プロパティが未定義（optional chain で null を返すルート）
+    expect(eewSerial(eew)).toBeNull()
   })
 })
