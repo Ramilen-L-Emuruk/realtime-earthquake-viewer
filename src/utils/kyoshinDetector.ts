@@ -489,11 +489,27 @@ function windowRate(hist: { t: number; v: number }[], now: number): number | nul
 /**
  * 確定揺れ点を K 近傍グラフの連結成分に束ねる（境界の無い方式・セル境界での分裂を避ける）。
  * a〜b は「b が a の近傍」または「a が b の近傍」で連結（K 近傍の非対称性を吸収）。
+ *
+ * PERF-2: 逆方向探索（cur を近傍に持つ点）を毎回 O(n·K) で全走査する実装から、
+ * keys 内の点だけを対象にした `reverseAdj`（cur -> [cur を近傍に持つ keys 内の点]）
+ * を事前構築して O(n·K) 全体に落とす。keys が大規模な同時 onset（大地震・多点ノイズ）
+ * のときの探索コストがボトルネックだったのを解消する。
  */
 function connectedComponents(keys: string[], neighbors: Record<string, string[]>): string[][] {
   const inSet = new Set(keys)
   const visited = new Set<string>()
   const components: string[][] = []
+
+  // 逆方向隣接: cur を近傍に含む keys 内の点を高速に引く。K が定数なので構築 O(n·K)。
+  const reverseAdj = new Map<string, string[]>()
+  for (const key of keys) {
+    for (const nb of neighbors[key] ?? []) {
+      if (!inSet.has(nb)) continue
+      const list = reverseAdj.get(nb)
+      if (list) list.push(key)
+      else reverseAdj.set(nb, [key])
+    }
+  }
 
   for (const start of keys) {
     if (visited.has(start)) continue
@@ -510,13 +526,11 @@ function connectedComponents(keys: string[], neighbors: Record<string, string[]>
           queue.push(nb)
         }
       }
-      // 近傍 → cur（cur を近傍に持つ確定揺れ点。非対称性の補完）
-      for (const other of keys) {
+      // 近傍 → cur（cur を近傍に持つ確定揺れ点。非対称性の補完・reverseAdj で O(1) ルックアップ）
+      for (const other of reverseAdj.get(cur) ?? []) {
         if (visited.has(other)) continue
-        if ((neighbors[other] ?? []).includes(cur)) {
-          visited.add(other)
-          queue.push(other)
-        }
+        visited.add(other)
+        queue.push(other)
       }
     }
     components.push(comp)
