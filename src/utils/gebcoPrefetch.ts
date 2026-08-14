@@ -12,6 +12,14 @@ import { MAX_ZOOM } from '../components/Map/gl/camera'
 export const BATHYMETRY_URL =
   'https://tiles.arcgis.com/tiles/C8EMgrsFcRFL6LrL/arcgis/rest/services/GEBCO_basemap_NCEI/MapServer/tile/{z}/{y}/{x}'
 
+/**
+ * GEBCO ソースのタイルサイズ（px）。BaseMapGL の addSource と MAX_TILE_ZOOM の算出で共有する。
+ * MapLibre の基準は 512px なので、256px のソースはマップズーム z のときタイル z+1 を要求する。
+ */
+export const GEBCO_TILE_SIZE = 256
+/** GEBCO タイルセットに実在する最大タイル z（これを超えるズームはオーバーズーム扱いで新規取得されない）。 */
+export const GEBCO_SOURCE_MAX_ZOOM = 10
+
 // 先読み対象範囲: 沖縄（先島諸島）〜択捉島相当。fitJapan が使う JAPAN_BOUNDS（camera.ts）より
 // 広く取り、実際に地震・EEW が発生しうる範囲をカバーする。
 const PREFETCH_WEST = 122
@@ -37,10 +45,18 @@ export function lngLatToTile(lng: number, lat: number, z: number): [number, numb
   return [Math.min(Math.max(x, 0), n - 1), Math.min(Math.max(y, 0), n - 1)]
 }
 
-/** 先読み対象範囲・ズームのタイル一覧を、低ズーム優先（0→maxZoom）で並べて返す。 */
-export function buildPrefetchTiles(maxZoom: number = MAX_ZOOM): TileXYZ[] {
+// 先読みする最大タイルズーム。GEBCO_TILE_SIZE が MapLibre 基準の 512px より小さいため、MapLibre は
+// 「マップズーム z のとき タイル z+1」を要求する（実測: マップ zoom 8 で /tile/9/... を取得）。
+// MAX_ZOOM（マップズーム基準）をそのままタイル z として使うと、自動フィットの上限で実際に使う
+// タイルが先読み対象から 1 段漏れる。タイルセットに実在しない z を叩いても意味が無いので
+// GEBCO_SOURCE_MAX_ZOOM でクランプする（fetch 失敗は握りつぶすため、超過しても無症状で
+// 先読みだけが空回りする。テストで境界を固定している）。
+export const MAX_TILE_ZOOM = Math.min(MAX_ZOOM + 1, GEBCO_SOURCE_MAX_ZOOM)
+
+/** 先読み対象範囲・ズームのタイル一覧を、低ズーム優先（0→maxTileZoom）で並べて返す。 */
+export function buildPrefetchTiles(maxTileZoom: number = MAX_TILE_ZOOM): TileXYZ[] {
   const tiles: TileXYZ[] = []
-  for (let z = 0; z <= maxZoom; z++) {
+  for (let z = 0; z <= maxTileZoom; z++) {
     const [x0, y0] = lngLatToTile(PREFETCH_WEST, PREFETCH_NORTH, z)
     const [x1, y1] = lngLatToTile(PREFETCH_EAST, PREFETCH_SOUTH, z)
     for (let x = x0; x <= x1; x++) {
