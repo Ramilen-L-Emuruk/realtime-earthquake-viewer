@@ -2,6 +2,14 @@
 <html lang="ja">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      SEC-2 注記: クリックジャッキング対策として frame-ancestors CSP を検討したが、
+      CSP 仕様上 `<meta>` 経由での frame-ancestors・report-uri・sandbox は
+      **ブラウザで無視される**ため、meta タグでは実装不能。GitHub Pages は静的ホスティングで
+      レスポンスヘッダーの設定手段を提供していないため、現状ヘッダー配信も不可。
+      将来ヘッダー配信可能なホスティングへ移行するか、Service Worker の fetch ハンドラで
+      レスポンスヘッダーを付与する対応が必要（現状は未実装・既知の未対策項目）。
+    -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#12151a" />
     <meta name="description" content="気象庁の地震情報・緊急地震速報・津波情報をリアルタイムに表示します。" />
@@ -9,7 +17,12 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="地震ビューアー" />
     <link rel="icon" type="image/svg+xml" href="./icons/icon.svg" />
-    <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+    <!--
+      SEC-5: PNG 不在のため apple-touch-icon も SVG に指定するが、iOS Safari の apple-touch-icon は
+      仕様上 PNG 前提であり SVG が使われるかは未確定（実機検証が必要）。iOS のホーム画面追加で
+      アイコンが正しく表示されない可能性があるため、根本対応には `icons/` に実 PNG を追加する必要がある。
+    -->
+    <link rel="apple-touch-icon" href="./icons/icon.svg" />
     <title>リアルタイム地震ビューアー</title>
   </head>
   <body>
