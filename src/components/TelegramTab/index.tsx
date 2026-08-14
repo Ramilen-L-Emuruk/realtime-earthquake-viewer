@@ -1,6 +1,7 @@
 import { memo, useState, useCallback } from 'react'
 import { zipSync } from 'fflate'
 import type { TelegramLogEntry } from '../../types/earthquake'
+import { isDmdss } from '../../utils/env'
 
 const HEAD_TYPE_LABEL: Record<string, string> = {
   VXSE43: 'EEW警報',
@@ -176,15 +177,19 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
       </div>
 
       <div className="flex gap-2 px-4 py-2 border-b border-border flex-shrink-0">
-        <select
-          value={sourceFilter}
-          onChange={e => setSourceFilter(e.target.value as SourceFilter)}
-          className="flex-1 text-xs bg-card border border-border rounded px-2 py-1 text-secondary focus:text-white focus:outline-none"
-        >
-          <option value="all">全ソース</option>
-          <option value="dmdss">DMDSS</option>
-          <option value="p2pquake">P2PQuake</option>
-        </select>
+        {/* standard 版は P2PQuake のみを受信するためソースフィルタは意味を持たない（唯一の選択肢が P2PQuake になる）。
+            DMDSS 版のみ dmdss/p2pquake の共存があり、フィルタとして機能する。 */}
+        {isDmdss && (
+          <select
+            value={sourceFilter}
+            onChange={e => setSourceFilter(e.target.value as SourceFilter)}
+            className="flex-1 text-xs bg-card border border-border rounded px-2 py-1 text-secondary focus:text-white focus:outline-none"
+          >
+            <option value="all">全ソース</option>
+            <option value="dmdss">DMDSS</option>
+            <option value="p2pquake">P2PQuake</option>
+          </select>
+        )}
         <select
           value={kindFilter}
           onChange={e => setKindFilter(e.target.value as KindFilter)}

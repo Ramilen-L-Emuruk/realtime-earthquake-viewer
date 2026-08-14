@@ -37,6 +37,8 @@ interface Props {
   onSetKyoshinInputDateTime: (value: string) => void
   dmdataConnectionStatus?: ConnectionStatus
   replayIsFetching?: boolean
+  /** 直近のリプレイ取得エラー（null = 正常）。ボタン下に赤字で表示する。 */
+  replayError?: string | null
   onStartReplay?: (date: Date) => void
   onStopReplay?: () => void
   scenarioTest: UseTestScenariosResult
@@ -308,7 +310,7 @@ function HomeLocationSection({
 }
 
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onSetKyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus, replayIsFetching, onStartReplay, onStopReplay, scenarioTest }: Props) {
+export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onSetKyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus, replayIsFetching, replayError, onStartReplay, onStopReplay, scenarioTest }: Props) {
   const [voicevoxStatus, setVoicevoxStatus] = useState<'idle' | 'checking' | 'available' | 'unavailable'>('idle')
   const [voicevoxSpeakers, setVoicevoxSpeakers] = useState<VoicevoxSpeaker[]>([])
 
@@ -833,6 +835,11 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             </button>
           </div>
         </Row>
+        {replayError && (
+          <Row label="取得失敗">
+            <span className="text-xs text-red-400 break-all">{replayError}</span>
+          </Row>
+        )}
         {replayStartLabel != null && (
           <Row label="再生中">
             <div className="flex gap-2 items-center">
