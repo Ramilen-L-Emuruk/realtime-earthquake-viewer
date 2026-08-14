@@ -21,8 +21,11 @@ async function gunzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
   const ds = new DecompressionStream('gzip')
   const writer = ds.writable.getWriter()
   const reader = ds.readable.getReader()
-  writer.write(bytes as unknown as ArrayBuffer)
-  writer.close()
+  // write()/close() は Promise を返す。未 await だと書き込み側の失敗（バックプレッシャ違反・
+  // 破損 gzip でのフラッシュ失敗等）が unhandled rejection として飛び、リプレイ全体の
+  // エラー経路と一致しなくなる。await して例外を fetchDmdataReplayEvents 側の try/catch に集約する。
+  await writer.write(bytes as unknown as ArrayBuffer)
+  await writer.close()
   const chunks: Uint8Array[] = []
   for (;;) {
     const { done, value } = await reader.read()
