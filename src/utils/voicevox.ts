@@ -12,6 +12,11 @@ type AccentPhrase = Record<string, unknown>
 let activeSources: AudioBufferSourceNode[] = []
 // 現在のセッション ID。新しい読み上げが来たら古いパイプラインを打ち切るために使う
 let currentSessionId = 0
+// 現在のセッションで進行中の fetch を一括中断するための AbortController（AUD-4）。
+// sessionId のインクリメントだけでは in-flight の /audio_query・/synthesis リクエストは
+// 完走してしまい、VOICEVOX 側の直列処理を占有して新規発話が待たされる。新セッション開始時に
+// abort() することで旧セッションのリクエストを即座に打ち切る。
+let currentAbortController: AbortController | null = null
 
 // 句区切り辞書エントリの accent_phrases 取得結果キャッシュ（"speakerId:キー" -> AccentPhrase[]）。
 // 同じ地名・同じ話者の組み合わせで毎回 /accent_phrases を叩き直さないようにする。
@@ -89,10 +94,11 @@ async function fetchAccentPhrasesForText(
   baseUrl: string,
   text: string,
   speakerId: number,
+  signal?: AbortSignal,
 ): Promise<AccentPhrase[] | null> {
   const res = await fetch(
     `${baseUrl}/audio_query?text=${encodeURIComponent(text)}&speaker=${speakerId}`,
-    { method: 'POST' },
+    { method: 'POST', signal },
   )
   if (!res.ok) return null
   const query = await res.json() as { accent_phrases: AccentPhrase[] }
@@ -109,6 +115,7 @@ async function fetchAccentPhrasesForKey(
   key: string,
   kanaReading: string,
   speakerId: number,
+  signal?: AbortSignal,
 ): Promise<AccentPhrase[] | null> {
   const cacheKey = `${speakerId}:${key}`
   const cached = phraseBreakCache.get(cacheKey)
@@ -116,7 +123,7 @@ async function fetchAccentPhrasesForKey(
 
   const res = await fetch(
     `${baseUrl}/accent_phrases?text=${encodeURIComponent(kanaReading)}&speaker=${speakerId}&is_kana=true`,
-    { method: 'POST' },
+    { method: 'POST', signal },
   )
   if (!res.ok) return null
   const phrases = await res.json() as AccentPhrase[]
@@ -137,19 +144,20 @@ async function buildAccentPhrases(
   text: string,
   speakerId: number,
   phraseBreakDict: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<AccentPhrase[] | null> {
   if (text === '') return []
 
   const match = findPhraseBreakMatch(text, phraseBreakDict)
-  if (!match) return fetchAccentPhrasesForText(baseUrl, text, speakerId)
+  if (!match) return fetchAccentPhrasesForText(baseUrl, text, speakerId, signal)
 
   const pre = text.slice(0, match.index)
   const post = text.slice(match.index + match.key.length)
 
   const [prePhrases, matchedPhrasesRaw, postPhrases] = await Promise.all([
-    buildAccentPhrases(baseUrl, pre, speakerId, phraseBreakDict),
-    fetchAccentPhrasesForKey(baseUrl, match.key, phraseBreakDict[match.key], speakerId),
-    buildAccentPhrases(baseUrl, post, speakerId, phraseBreakDict),
+    buildAccentPhrases(baseUrl, pre, speakerId, phraseBreakDict, signal),
+    fetchAccentPhrasesForKey(baseUrl, match.key, phraseBreakDict[match.key], speakerId, signal),
+    buildAccentPhrases(baseUrl, post, speakerId, phraseBreakDict, signal),
   ])
   if (!prePhrases || !matchedPhrasesRaw || !postPhrases) return null
 
@@ -164,11 +172,12 @@ async function synthesizeChunk(
   chunk: string,
   speakerId: number,
   ctx: AudioContext,
+  signal?: AbortSignal,
 ): Promise<AudioBuffer | null> {
   try {
     const queryRes = await fetch(
       `${baseUrl}/audio_query?text=${encodeURIComponent(chunk)}&speaker=${speakerId}`,
-      { method: 'POST' },
+      { method: 'POST', signal },
     )
     if (!queryRes.ok) return null
 
@@ -177,7 +186,7 @@ async function synthesizeChunk(
     // 句区切り辞書にマッチする地名を含む場合は、accent_phrases を句区切り指定通りに組み直す
     const phraseBreakDict = getTtsPhraseBreakDictCache()
     if (phraseBreakDict && findPhraseBreakMatch(chunk, phraseBreakDict)) {
-      const phrases = await buildAccentPhrases(baseUrl, chunk, speakerId, phraseBreakDict)
+      const phrases = await buildAccentPhrases(baseUrl, chunk, speakerId, phraseBreakDict, signal)
       if (phrases) query.accent_phrases = phrases
     }
 
@@ -189,6 +198,7 @@ async function synthesizeChunk(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(query),
+        signal,
       },
     )
     if (!synthRes.ok) return null
@@ -196,6 +206,7 @@ async function synthesizeChunk(
     const wav = await synthRes.arrayBuffer()
     return await ctx.decodeAudioData(wav)
   } catch {
+    // abort による例外もここに落ちる。null で返して呼び出し元に「合成失敗」として扱わせる。
     return null
   }
 }
@@ -222,6 +233,14 @@ export async function speakWithVoicevox(
   }
   activeSources = []
 
+  // 旧セッションの in-flight fetch を打ち切る（AUD-4）。abort() は同期完了なので
+  // ここから先の await は新しいコントローラーの signal を使う。
+  if (currentAbortController) {
+    try { currentAbortController.abort() } catch { /* 二重 abort は無視 */ }
+  }
+  currentAbortController = new AbortController()
+  const signal = currentAbortController.signal
+
   // セッション ID を更新して古いパイプラインを無効化
   const sessionId = ++currentSessionId
 
@@ -242,7 +261,7 @@ export async function speakWithVoicevox(
   const chunks = splitIntoChunks(text)
 
   // 次チャンクを先行合成するためのキュー
-  let nextBufferPromise: Promise<AudioBuffer | null> = synthesizeChunk(baseUrl, chunks[0], speakerId, ctx)
+  let nextBufferPromise: Promise<AudioBuffer | null> = synthesizeChunk(baseUrl, chunks[0], speakerId, ctx, signal)
 
   // 次のチャンクを再生開始する予定時刻（AudioContext の時間軸）
   let scheduleAt = -1
@@ -260,7 +279,7 @@ export async function speakWithVoicevox(
 
     // 次チャンクの合成を先行開始（現在のチャンクの再生と並行）
     if (i + 1 < chunks.length) {
-      nextBufferPromise = synthesizeChunk(baseUrl, chunks[i + 1], speakerId, ctx)
+      nextBufferPromise = synthesizeChunk(baseUrl, chunks[i + 1], speakerId, ctx, signal)
     }
 
     if (!buffer) continue  // 合成失敗したチャンクはスキップ

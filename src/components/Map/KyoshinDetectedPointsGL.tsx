@@ -112,7 +112,9 @@ export function KyoshinDetectedPointsGL({ confirmedPoints, candidatePoints, icon
     if (!map) return
     ensureKyoshinDetectedIcons(map)
     map.addSource(SRC, { type: 'geojson', data: EMPTY_FC })
-    lastSigRef.current = JSON.stringify(EMPTY_FC) // 生成直後の空 FC を基準に（同一なら以降スキップ）
+    // 初回 effect で必ず setData が走るよう null 起点にする（マウント直後の props.iconScale は
+    // 1 固定ではないため事前 sig を書いても一致しないケースが出る。空 FC への 1 回の setData は
+    // 実質ノーコストなので、null 起点にして初回一致を狙わない方が単純）。
     addOrderedLayer(map, {
       id: LYR,
       type: 'symbol',
@@ -140,12 +142,21 @@ export function KyoshinDetectedPointsGL({ confirmedPoints, candidatePoints, icon
   // データ／倍率変化のたびに丸ごと差し替える。内容が前回と同一ならスキップして再タイル化を避ける。
   // MAP-2: 非表示中は setData を止める（visible=false 中は lastSigRef を維持し、表示に戻った瞬間
   // に visible を含む依存変化で差分反映される）。
+  //
+  // 毎秒の点数チェックを早期化: kyoshinView は indices tick（≈1Hz）で points 参照を作り直すため
+  // 検知フットプリント不変でも参照が変わる。JSON.stringify(fc) は毎秒 O(N) 級のコストで走るため、
+  // まず軽量 signature（点数 + iconScale + 各点の lat/lng/index の join）で比較して同一なら
+  // buildFC / JSON.stringify を丸ごとスキップする。フットプリントが変わったときのみ重い比較を行う。
   useEffect(() => {
     if (!map || !addedRef.current || !visible) return
+    // 軽量 signature: 点数と iconScale と各点の識別情報。JSON より 10x 以上高速。
+    const lightSig = `${confirmedPoints.length}|${candidatePoints.length}|${iconScale}|`
+      + confirmedPoints.map((p) => `${p.lat},${p.lng},${p.index}`).join(';')
+      + '#'
+      + candidatePoints.map((p) => `${p.lat},${p.lng},${p.index}`).join(';')
+    if (lightSig === lastSigRef.current) return
+    lastSigRef.current = lightSig
     const fc = buildFC(confirmedPoints, candidatePoints, iconScale)
-    const sig = JSON.stringify(fc)
-    if (sig === lastSigRef.current) return
-    lastSigRef.current = sig
     const src = map.getSource(SRC) as GeoJSONSource | undefined
     src?.setData(fc)
   }, [map, confirmedPoints, candidatePoints, iconScale, visible])

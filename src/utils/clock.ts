@@ -82,3 +82,21 @@ export function getServerClockOffsetMs(): number | null {
   if (kEpochMs === null) return null
   return Math.round(performance.now() + kEpochMs - Date.now())
 }
+
+// Page Visibility 対応: タブが hidden の間、performance.now() は継続するが、
+// setInterval/setTimeout はブラウザによって 1s→1min まで throttle される。この間サーバー同期
+// ポーリング（kyoshin.ts startClockSync）が事実上停止し、visible 復帰時の K は「throttle 前の
+// サーバー時刻」を基準にしたまま。壁時計に対する performance.now() の相対関係は保たれるので
+// 較正済み K は形式的には有効だが、ハイバネート・スリープ復帰など performance.now() 自体が
+// 大きく飛ぶ環境（Chromium は wall clock 追従で復帰後 monotonic 保証が必ずしも成立しない）を
+// 想定して安全側に振る: visible 復帰時に K を捨て、次のサンプルまで壁時計フォールバックへ戻す。
+// フォールバック中は既存の未較正 warn 機構（60 秒スロットル）で診断可能。
+// SSR / 非ブラウザ環境（Node のテスト等）では document 参照が失敗するためガードする。
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && replayOffsetMs === null && kEpochMs !== null) {
+      log.info('[clock] タブ復帰: K を破棄して次のサーバーサンプルで再較正')
+      kEpochMs = null
+    }
+  })
+}

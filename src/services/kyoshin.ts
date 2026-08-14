@@ -212,6 +212,11 @@ export function hypoInfoItemToEEW(item: YahooHypoInfoItem): EEWAlert {
 export async function fetchRealtimeIntensity(now: Date): Promise<RealtimeIntensity> {
   const { dateStr, ts } = jstParts(now)
   let lastErr: unknown = null
+  // AbortController は付けていない。useKyoshinRealtime の tick は .then/.catch 内でのみ次の
+  // setTimeout を仕込む設計で、単一 effect 内では直列。ただし timeOffset 変化で effect が
+  // 再起動した瞬間だけ、旧 effect の in-flight fetch と新 effect の初回 tick が短時間並走しうる。
+  // 旧 effect の cleanup は active=false を立てて結果を握り潰すため実害はないが、厳密には
+  // 「多重リクエストが起き得る」状態。復帰時の即時サンプルを優先し abort は行わない設計。
   for (const edge of ['west', 'east'] as const) {
     try {
       const res = await fetch(`${REALTIME_BASE(edge)}/${dateStr}/${ts}.json`)
