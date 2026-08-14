@@ -566,6 +566,8 @@ export function App() {
   // Yahoo hypoInfo の EEW を injectEvent で状態に注入する（音・タブ切替も発火）
   const [kyoshinInputDateTime, setKyoshinInputDateTime] = useState(() => formatDateTimeLocal(new Date()))
   const [replayIsFetching, setReplayIsFetching] = useState(false)
+  // 直近のリプレイ取得エラーメッセージ（null = エラー無し）。SettingsTab に赤字で表示する。
+  const [replayError, setReplayError] = useState<string | null>(null)
   // リプレイ開始後に次のウィンドウをプリフェッチする終端時刻
   const prefetchEndRef = useRef<Date | null>(null)
 
@@ -580,6 +582,7 @@ export function App() {
     setReplayTimeOffset(offset)
     prefetchEndRef.current = toTime
     setReplayIsFetching(true)
+    setReplayError(null)
     try {
       const [normalEvents, preEvents] = await Promise.all([
         fetchDmdataReplayEvents(settings.dmdataApiKey, targetDate, toTime),
@@ -597,6 +600,14 @@ export function App() {
       loadReplayEvents([...preFiltered, ...normalEvents])
     } catch (e) {
       log.error('[replay] リプレイデータ取得失敗', e)
+      // ユーザーが「押しても始まらない」状態にならないよう UI に理由を出す。403/認証エラー等も含む。
+      const message = e instanceof Error ? e.message : String(e)
+      setReplayError(message)
+      // 取得完全失敗時は「再生中」表示が残ると「取得失敗」赤字と矛盾するため、offset・prefetchEnd も
+      // 巻き戻す（try 開始前の setReplayTimeOffset を try 内に移すと pre-window fetch 中の serverNow が
+      // ずれるため、失敗経路でだけ巻き戻す形にする）。
+      setReplayTimeOffset(null)
+      prefetchEndRef.current = null
     } finally {
       setReplayIsFetching(false)
     }
@@ -608,6 +619,7 @@ export function App() {
     resetState()
     resetTracking()
     clearReplayCache()
+    setReplayError(null)
   }, [resetState, resetTracking])
 
   // 再生時刻が prefetchEnd - 10分 に近づいたら次の1時間を先読みする
@@ -621,8 +633,17 @@ export function App() {
     prefetchEndRef.current = nextTo
     setReplayIsFetching(true)
     fetchDmdataReplayEvents(settings.dmdataApiKey, nextFrom, nextTo)
-      .then(loadReplayEvents)
-      .catch((e) => log.error('[replay] 先読み取得失敗', e))
+      .then((events) => {
+        loadReplayEvents(events)
+        // 前回の一過性エラーから回復した場合に赤字が残り続けないようクリアする（次のプリフェッチが
+        // 成功しても表示が残るとユーザーが「まだ失敗中」と誤認するため）。
+        setReplayError(null)
+      })
+      .catch((e) => {
+        log.error('[replay] 先読み取得失敗', e)
+        // 先読み失敗はリプレイ継続を止めないが、以後電文が来なくなるためユーザーに理由を出す。
+        setReplayError(`先読み取得失敗: ${e instanceof Error ? e.message : String(e)}`)
+      })
       .finally(() => setReplayIsFetching(false))
   }, [replayCurrentTime, replayTimeOffset, replayIsFetching, loadReplayEvents, settings.dmdataApiKey])
 
@@ -811,6 +832,7 @@ export function App() {
               kyoshinInputDateTime={kyoshinInputDateTime}
               onSetKyoshinInputDateTime={setKyoshinInputDateTime}
               replayIsFetching={replayIsFetching}
+              replayError={replayError}
               onStartReplay={isDmdss ? handleStartReplay : undefined}
               onStopReplay={isDmdss ? handleStopReplay : undefined}
               scenarioTest={scenarioTest}

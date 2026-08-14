@@ -21,6 +21,14 @@ const LEARNED_KEY = 'kyoshin-v3-learned'
 /** 学習資産の保存間隔(ms)。毎フレーム書くと無駄なのでスロットルする。 */
 const SAVE_INTERVAL_MS = 60_000
 
+// localStorage が壊れた/無効な環境（プライベートモード・dom.storage.enabled=false・
+// 一部の iframe サンドボックス等）では、getItem/setItem が呼ばれるたびに例外を投げる。
+// `useKyoshinDetectorV2` は ≈1Hz で再レンダーされ、`useRef` の引数式は毎レンダー評価される
+// ため、単純に catch で log すると同じ warn が毎秒（保存側は 60 秒ごと）に無限に積み上がる。
+// モジュールスコープの一度限りフラグでスパムを抑制する。
+let loadWarned = false
+let saveWarned = false
+
 /** localStorage から学習資産を復元した初期状態を作る（無ければ空状態）。 */
 function loadInitialState(): DetectorState {
   const base = initState(0)
@@ -30,7 +38,14 @@ function loadInitialState(): DetectorState {
     const learned = JSON.parse(raw) as LearnedState
     if (!learned || typeof learned !== 'object' || !learned.floors) return base
     return hydrateLearned(base, learned)
-  } catch {
+  } catch (e) {
+    // localStorage アクセス不可・JSON 破損等。復元できないだけで検知エンジンは動くため
+    // warn で通知する（error にすると初回起動や localStorage 無効環境で常時エラー化する）。
+    // 毎レンダー評価に対する再ログを避けるため、セッション中一度きりに絞る。
+    if (!loadWarned) {
+      loadWarned = true
+      log.warn('[detector] 学習資産の復元失敗（新規セッションとして初期化）', e)
+    }
     return base
   }
 }
@@ -39,8 +54,14 @@ function loadInitialState(): DetectorState {
 function saveLearned(state: DetectorState): void {
   try {
     localStorage.setItem(LEARNED_KEY, JSON.stringify(extractLearned(state)))
-  } catch {
-    /* localStorage 不可（容量超過・プライベートモード等）は学習を諦めるだけ。検知は継続 */
+  } catch (e) {
+    // 容量超過・プライベートモード等は学習を諦めるだけ。検知は継続。保存失敗を可視化する
+    // ことで「なぜ次回起動時に学習資産が復元されないか」を追跡できるようにする。
+    // 60 秒ごとの保存失敗が延々続くのを避けるため、セッション中一度きりに絞る。
+    if (!saveWarned) {
+      saveWarned = true
+      log.warn('[detector] 学習資産の保存失敗（localStorage 容量超過・プライベートモード等）', e)
+    }
   }
 }
 
