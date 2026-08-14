@@ -3,7 +3,7 @@ import type { CustomLayerInterface } from 'maplibre-gl'
 import { useMapGL } from './mapGLContext'
 import type { PsWaveCircle } from '../../services/kyoshin'
 import { computeSWaveRadiusAtTime, computeSWaveTravelTimeSec } from '../../hooks/usePsWaveCalc'
-import { calcShakingDurationSec, S_WAVE_FALLBACK_KM_PER_SEC } from '../../utils/eew'
+import { calcShakingDurationSec } from '../../utils/eew'
 import { addOrderedLayer } from './gl/layerOrder'
 import { log } from '../../utils/logger'
 
@@ -94,14 +94,11 @@ export function PsWaveGL({ psWave, fullOpacity }: Props) {
 
         if (c.sRadius > 0) {
           const durationSec = calcShakingDurationSec(c.magnitude, c.sRadius)
-          let sInnerRadiusKm = 0
-          if (c.depth !== undefined) {
-            const tNow = computeSWaveTravelTimeSec(c.sRadius, c.depth)
-            const tTrailing = tNow - durationSec
-            sInnerRadiusKm = tTrailing > 0 ? computeSWaveRadiusAtTime(tTrailing, c.depth) : 0
-          } else {
-            sInnerRadiusKm = Math.max(0, c.sRadius - S_WAVE_FALLBACK_KM_PER_SEC * durationSec)
-          }
+          // PsWaveCircle.depth は number 必須（usePsWaveCalc.ts で Math.max(0, hypocenter.depth ?? 0)
+          // で 0 埋め）のため、以前あった undefined フォールバックはデッドコードだった。
+          const tNow = computeSWaveTravelTimeSec(c.sRadius, c.depth)
+          const tTrailing = tNow - durationSec
+          const sInnerRadiusKm = tTrailing > 0 ? computeSWaveRadiusAtTime(tTrailing, c.depth) : 0
 
           const lonOffsetS = (c.sRadius * 1000) / (111320 * cosLat)
           const edgeS = map.project([c.lng + lonOffsetS, c.lat])

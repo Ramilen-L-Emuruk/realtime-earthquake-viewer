@@ -22,6 +22,9 @@ const CORRECT_TYPE_MAP: Record<string, CorrectType> = {
 
 const DOMESTIC_TSUNAMI_MAP: Record<string, DomesticTsunami> = {
   None: 'なし', Unknown: '不明', Checking: '調査中',
+  // SeaFloor は DomesticTsunami 型に含まれる正規値だが、P2PQuake API v2 の実運用で
+  // この enum が返る実例は確認できていない（実データ検証で 0 件）。型網羅性維持と、
+  // 将来の API 変更時に未変換のまま流さないためエントリは残す。
   SeaFloor: '海面変動の可能性', NonEffective: '若干の海面変動',
   Watch: '注意報', Warning: '警報等',
   // QUAKE-5: 大津波警報。欠落していると DOMESTIC_TSUNAMI_MAP[raw]=undefined → '不明' 灰色格下げに
