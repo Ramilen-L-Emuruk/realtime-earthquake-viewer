@@ -30,9 +30,9 @@ import { tsunamiOverallGrade } from './utils/tsunami'
 import { playCountdownBeep, unlockAudio, setSoundVolume } from './utils/alertSound'
 import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
 import type { EEWAlert, JMAQuake, JMATsunami } from './types/earthquake'
-import { fetchDmdataReplayEvents, filterPreWindowEvents, clearReplayCache } from './services/dmdataReplay'
+import { useReplayController } from './hooks/useReplayController'
 import { log } from './utils/logger'
-import { setReplayOffset as setClockReplayOffset, serverNow, serverDate } from './utils/clock'
+import { setReplayOffset as setClockReplayOffset, serverDate } from './utils/clock'
 import { isDmdss } from './utils/env'
 
 // 平常時のウィンドウタイトル（index.html の <title> と一致させる）。
@@ -621,124 +621,18 @@ export function App() {
   // 強震モニタ（常時ポーリング: タブ非表示中も揺れ検知を継続する）
   // Yahoo hypoInfo の EEW を injectEvent で状態に注入する（音・タブ切替も発火）
   const [kyoshinInputDateTime, setKyoshinInputDateTime] = useState(() => formatDateTimeLocal(new Date()))
-  const [replayIsFetching, setReplayIsFetching] = useState(false)
-  // 直近のリプレイ取得エラーメッセージ（null = エラー無し）。SettingsTab に赤字で表示する。
-  const [replayError, setReplayError] = useState<string | null>(null)
-  // リプレイ開始後に次のウィンドウをプリフェッチする終端時刻
-  const prefetchEndRef = useRef<Date | null>(null)
-  // リプレイの世代番号。開始・停止のたびに増やす。
-  // アーカイブ取得は中断できない（AbortController を通していない）ため、完了時に
-  // 「自分を始めたセッションがまだ現役か」を照合して、古い結果が新しいセッションへ
-  // 紛れ込むのを防ぐ。これが無いと「停止 → 別の日で再開」した直後に、前の日の電文が
-  // 後から注入されたり、古い側の finally が新しい取得中の表示を消したりする。
-  const replaySessionRef = useRef(0)
-
-  const handleStartReplay = useCallback(async (targetDate: Date) => {
-    log.info(`[replay] リプレイ開始 targetDate=${targetDate.toISOString()}`)
-    const session = ++replaySessionRef.current
-    const offset = targetDate.getTime() - Date.now()
-    const toTime = new Date(targetDate.getTime() + 3600_000)
-    const preFrom = new Date(targetDate.getTime() - 24 * 3600_000)
-    resetState()
-    resetTracking()
-    clearReplayCache()
-    setReplayTimeOffset(offset)
-    prefetchEndRef.current = toTime
-    setReplayIsFetching(true)
-    setReplayError(null)
-    try {
-      const [normalEvents, preEvents] = await Promise.all([
-        fetchDmdataReplayEvents(settings.dmdataApiKey, targetDate, toTime),
-        fetchDmdataReplayEvents(settings.dmdataApiKey, preFrom, targetDate),
-      ])
-      // 取得中に停止・別日での再開が行われていたら、この結果は捨てる（下の resetTracking や
-      // loadReplayEvents が新しいセッションの状態を壊すため、state には一切触れない）。
-      if (replaySessionRef.current !== session) {
-        log.info('[replay] 取得完了時に別セッションへ切り替わっていたため結果を破棄')
-        return
-      }
-      // pre-window: T時点で有効な電文を即時発火（replayTime = T-1ms）させて初期状態を再現する
-      const preFiltered = filterPreWindowEvents(preEvents, targetDate)
-        .map(e => ({ ...e, replayTime: new Date(targetDate.getTime() - 1), silent: true }))
-      // フェッチ中に WS 切断タイミングで ref が再セットされる競合を排除するため直前に再リセット
-      resetTracking()
-
-      // pre-window イベントから T 時点の追跡 ref を復元する（サイレント注入後の正確な音判定に必要）
-      restorePreWindowTracking(preFiltered)
-
-      loadReplayEvents([...preFiltered, ...normalEvents])
-    } catch (e) {
-      log.error('[replay] リプレイデータ取得失敗', e)
-      // 既に別セッションへ移っていれば、そちらのエラー表示や再生を上書きしない。
-      if (replaySessionRef.current !== session) {
-        log.info('[replay] 取得失敗時に別セッションへ切り替わっていたためエラー表示を抑制')
-        return
-      }
-      // ユーザーが「押しても始まらない」状態にならないよう UI に理由を出す。403/認証エラー等も含む。
-      const message = e instanceof Error ? e.message : String(e)
-      setReplayError(message)
-      // 取得完全失敗時は「再生中」表示が残ると「取得失敗」赤字と矛盾するため、offset・prefetchEnd も
-      // 巻き戻す（try 開始前の setReplayTimeOffset を try 内に移すと pre-window fetch 中の serverNow が
-      // ずれるため、失敗経路でだけ巻き戻す形にする）。
-      setReplayTimeOffset(null)
-      prefetchEndRef.current = null
-    } finally {
-      // 新しいセッションが進行中なら、その「取得中...」表示を古い側が消してはいけない。
-      if (replaySessionRef.current === session) setReplayIsFetching(false)
-    }
-  }, [resetState, resetTracking, restorePreWindowTracking, loadReplayEvents, settings.dmdataApiKey])
-
-  const handleStopReplay = useCallback(() => {
-    // 世代を進めて、進行中の取得（本編・先読みとも）の結果を無効化する。
-    replaySessionRef.current++
-    setReplayTimeOffset(null)
-    prefetchEndRef.current = null
-    resetState()
-    resetTracking()
-    clearReplayCache()
-    setReplayError(null)
-    // 取得中に停止された場合、上で世代を進めたことで取得側の finally は false にしない。
-    // ここで戻さないと「取得中...」のまま確定ボタンが押せなくなる。
-    setReplayIsFetching(false)
-  }, [resetState, resetTracking])
-
-  // 再生時刻が prefetchEnd - 10分 に近づいたら次の1時間を先読みする
-  const replayCurrentTime = replayTimeOffset !== null ? serverDate() : null
-  useEffect(() => {
-    if (replayTimeOffset === null || replayIsFetching || !prefetchEndRef.current) return
-    const remaining = prefetchEndRef.current.getTime() - serverNow()
-    if (remaining > 10 * 60_000) return
-    const nextFrom = prefetchEndRef.current
-    const nextTo = new Date(nextFrom.getTime() + 3600_000)
-    prefetchEndRef.current = nextTo
-    setReplayIsFetching(true)
-    // 先読みも本編と同じく中断できないため、完了時に世代を照合する。
-    // これが無いと、停止・再開をまたいだ先読みが古い日付の電文を新セッションへ注入する。
-    const session = replaySessionRef.current
-    fetchDmdataReplayEvents(settings.dmdataApiKey, nextFrom, nextTo)
-      .then((events) => {
-        if (replaySessionRef.current !== session) {
-          log.info('[replay] 先読み完了時に別セッションへ切り替わっていたため結果を破棄')
-          return
-        }
-        loadReplayEvents(events)
-        // 前回の一過性エラーから回復した場合に赤字が残り続けないようクリアする（次のプリフェッチが
-        // 成功しても表示が残るとユーザーが「まだ失敗中」と誤認するため）。
-        setReplayError(null)
-      })
-      .catch((e) => {
-        log.error('[replay] 先読み取得失敗', e)
-        if (replaySessionRef.current !== session) {
-          log.info('[replay] 先読み失敗時に別セッションへ切り替わっていたためエラー表示を抑制')
-          return
-        }
-        // 先読み失敗はリプレイ継続を止めないが、以後電文が来なくなるためユーザーに理由を出す。
-        setReplayError(`先読み取得失敗: ${e instanceof Error ? e.message : String(e)}`)
-      })
-      .finally(() => {
-        if (replaySessionRef.current === session) setReplayIsFetching(false)
-      })
-  }, [replayCurrentTime, replayTimeOffset, replayIsFetching, loadReplayEvents, settings.dmdataApiKey])
+  // リプレイの取得・世代管理は useReplayController に集約している（非同期の完了順序に
+  // 依存する状態機械のため、単体でテストできる形に切り出した）。
+  // 時計への反映（setClockReplayOffset）は上の useEffect が replayTimeOffset を見て行う。
+  const replay = useReplayController({
+    apiKey: settings.dmdataApiKey,
+    timeOffset: replayTimeOffset,
+    setTimeOffset: setReplayTimeOffset,
+    resetState,
+    resetTracking,
+    restorePreWindowTracking,
+    loadReplayEvents,
+  })
 
   // DMDSS版: Yahoo hypoInfo からのEEW検出は不要（DMDATAが直接配信するため）
   const kyoshin = useKyoshinRealtime(true, {
@@ -951,10 +845,10 @@ export function App() {
               onSetKyoshinTimeOffset={isDmdss ? undefined : setReplayTimeOffset}
               kyoshinInputDateTime={kyoshinInputDateTime}
               onSetKyoshinInputDateTime={setKyoshinInputDateTime}
-              replayIsFetching={replayIsFetching}
-              replayError={replayError}
-              onStartReplay={isDmdss ? handleStartReplay : undefined}
-              onStopReplay={isDmdss ? handleStopReplay : undefined}
+              replayIsFetching={replay.isFetching}
+              replayError={replay.error}
+              onStartReplay={isDmdss ? replay.start : undefined}
+              onStopReplay={isDmdss ? replay.stop : undefined}
               scenarioTest={scenarioTest}
             />
           </div>

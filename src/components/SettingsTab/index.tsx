@@ -840,7 +840,9 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
           </div>
         </Row>
         {replayError && (
-          <Row label="取得失敗">
+          // 再生が始まっていれば部分的な取りこぼし、始まっていなければ取得そのものの失敗。
+          // 同じ赤字でも、再生中に「取得失敗」と大書きすると本文の「継続中」と矛盾して見える。
+          <Row label={replayStartLabel != null ? '取り込みの警告' : '取得失敗'}>
             <span className="text-xs text-red-400 break-all">{replayError}</span>
           </Row>
         )}
