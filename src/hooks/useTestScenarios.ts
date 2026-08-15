@@ -5,6 +5,7 @@ import { instantiateScenario } from '../utils/testScenarioReplay'
 import { serverDate } from '../utils/clock'
 import { log } from '../utils/logger'
 import { validateScenarioIndex, validateScenarioFile } from '../utils/testScenarioSchema'
+import { fetchJsonWithTimeout } from '../utils/fetchJson'
 
 const INDEX_URL = `${import.meta.env.BASE_URL}data/test-scenarios/index.json`
 const scenarioUrl = (id: string): string => `${import.meta.env.BASE_URL}data/test-scenarios/${id}.json`
@@ -40,11 +41,7 @@ export function useTestScenarios(
 
   useEffect(() => {
     let cancelled = false
-    fetch(INDEX_URL)
-      .then(res => {
-        if (!res.ok) throw new Error(`test-scenarios index fetch failed: ${res.status}`)
-        return res.json() as Promise<unknown>
-      })
+    fetchJsonWithTimeout<unknown>(INDEX_URL, 'test-scenarios index')
       .then(raw => {
         if (cancelled) return
         // 破損 JSON でも UI をクラッシュさせないため配列全体を捨てず、要素単位で通ったものだけ採用する。
@@ -95,11 +92,7 @@ export function useTestScenarios(
     if (cached) { runScenario(cached); return }
 
     fetchingIdsRef.current.add(id)
-    fetch(scenarioUrl(id))
-      .then(res => {
-        if (!res.ok) throw new Error(`scenario fetch failed: ${res.status}`)
-        return res.json() as Promise<unknown>
-      })
+    fetchJsonWithTimeout<unknown>(scenarioUrl(id), 'scenario')
       .then(raw => {
         // 破損 JSON をそのまま instantiateScenario に渡すと実行時に落ちるため、
         // ここで型検証して壊れているならエラー扱いにする（instantiateScenario は valid 前提）。

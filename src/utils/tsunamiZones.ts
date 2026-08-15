@@ -3,6 +3,8 @@
 //
 // データは scripts/build-tsunami-zones.mjs で生成・更新する。
 
+import { fetchJsonWithTimeout } from './fetchJson'
+
 export type LatLng = [number, number]
 
 /** 区域名 -> 海岸線ラインの配列（1区域が複数ラインを持つ場合がある） */
@@ -15,16 +17,12 @@ let inflight: Promise<TsunamiZones> | null = null
 
 /**
  * 津波予報区の海岸線データを取得する。初回のみ fetch し、以降はキャッシュを返す。
- * 取得に失敗した場合は inflight を破棄して次回リトライ可能にする。
+ * 取得に失敗した場合（タイムアウトを含む）は inflight を破棄して次回リトライ可能にする。
  */
 export function loadTsunamiZones(): Promise<TsunamiZones> {
   if (cache) return Promise.resolve(cache)
   if (!inflight) {
-    inflight = fetch(DATA_URL)
-      .then((res) => {
-        if (!res.ok) throw new Error(`tsunami-zones fetch failed: ${res.status}`)
-        return res.json() as Promise<TsunamiZones>
-      })
+    inflight = fetchJsonWithTimeout<TsunamiZones>(DATA_URL, 'tsunami-zones')
       .then((data) => {
         cache = data
         return data

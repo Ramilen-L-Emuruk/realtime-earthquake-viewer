@@ -4,6 +4,8 @@
 // 座標データは public/data/station-coords.json に置かれており、
 // scripts/build-station-coords.mjs で生成・更新する。
 
+import { fetchJsonWithTimeout } from './fetchJson'
+
 export type LatLng = [number, number]
 
 /**
@@ -28,16 +30,12 @@ let inflight: Promise<StationCoordsData> | null = null
 
 /**
  * 座標テーブルを取得する。初回のみ fetch し、以降はキャッシュを返す。
- * 取得に失敗した場合は inflight を破棄して次回リトライ可能にする。
+ * 取得に失敗した場合（タイムアウトを含む）は inflight を破棄して次回リトライ可能にする。
  */
 export function loadStationCoords(): Promise<StationCoordsData> {
   if (cache) return Promise.resolve(cache)
   if (!inflight) {
-    inflight = fetch(DATA_URL)
-      .then((res) => {
-        if (!res.ok) throw new Error(`station-coords fetch failed: ${res.status}`)
-        return res.json() as Promise<StationCoordsData>
-      })
+    inflight = fetchJsonWithTimeout<StationCoordsData>(DATA_URL, 'station-coords')
       .then((data) => {
         cache = data
         return data
