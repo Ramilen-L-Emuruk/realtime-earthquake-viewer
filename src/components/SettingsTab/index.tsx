@@ -350,8 +350,11 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
     ? serverDate().toLocaleString('ja-JP')
     : null
 
+  // 現状は親が flex コンテナでないため flex-1 が効かず、実スクロールは App.tsx 側のタブ領域が担う。
+  // ただし親に flex が付けばこの要素自身がスクロール領域に変わるため、横スクロールの抑止は
+  // 先に付けておく（overflow-y だけだと overflow-x も auto に格上げされる）。
   return (
-    <div className="flex-1 overflow-y-auto p-3">
+    <div className="flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none p-3">
 
       {isDmdss && (
         <Section title="DM-D.S.S 接続設定">
