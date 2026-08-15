@@ -157,6 +157,12 @@ export function useQuakeLayerData(
   // 「たまたま拡大していれば助かる」ものではなく必ず踏む。
   // 読み込み中（failed=false・data=null）は集約を維持する——データ到着の瞬間にドットから
   // 区域塗りへ切り替わるちらつきを避けるため（regionAggregates を常時計算しているのと同じ理由）。
+  //
+  // 座標テーブル（station-coords.json）が取得できないときは stationMarkers が空になるため、
+  // 上の「観測点 0 件」条件によりズームに関わらず集約が維持される。これは意図した結果で正しい
+  // （座標が無ければ観測点ドットも描けないので、集約をやめても表示できるものが増えない）。
+  // この場合に地図へ何が残るかは電文次第——区域を持つ電文なら区域塗りは出る（区域塗りは電文の
+  // 区域名で引くため座標テーブルに依存しない）。詳細は docs/spec/quake-spec.md §7.3。
   const aggregateByRegion =
     mode === 'quake' && !!quake && !subregionsFailed &&
     (zoom <= QUAKE_MAX_ZOOM || (!lpgmActive && stationMarkers.length === 0))
