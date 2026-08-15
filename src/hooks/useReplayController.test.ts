@@ -4,8 +4,9 @@
 // 「古い取得が後から完了したとき、その結果を受け取ってよいか」を判定する仕組みが要る。
 // その判定（世代照合）と、取りこぼしの通知文言をここで検証する。
 //
-// Hook 本体の結線（どの state 更新が照合の後ろにあるか）は、このプロジェクトに
-// React のテスト環境が無いため実機のブラウザ操作で確認している。
+// Hook 本体の結線（どの state 更新が照合の後ろにあるか）は useReplayController.wiring.test.ts
+// で見ている。あちらは React を動かすため jsdom 環境で走るので、DOM 非依存のこちらとは
+// ファイルを分けている（同居させると、この純粋関数のテストまで jsdom に引きずられる）。
 import { describe, it, expect } from 'vitest'
 import { createSessionGuard, createEmptyLoss, addLoss, formatLossNotice } from './useReplayController'
 
