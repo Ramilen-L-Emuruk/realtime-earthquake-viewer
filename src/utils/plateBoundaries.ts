@@ -18,7 +18,7 @@ let cache: PlateBoundarySegment[] | null = null
 let inflight: Promise<PlateBoundarySegment[]> | null = null
 
 /**
- * 日本周辺のプレート境界線データを取得する。初回のみ fetch し、以降はキャッシュを返す。
+ * 全球のプレート境界線データを取得する。初回のみ fetch し、以降はキャッシュを返す。
  * 取得に失敗した場合は inflight を破棄して次回リトライ可能にする。
  */
 export function loadPlateBoundaries(): Promise<PlateBoundarySegment[]> {

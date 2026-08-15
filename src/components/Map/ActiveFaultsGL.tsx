@@ -5,6 +5,7 @@ import { segmentsToMultiLineFC } from './gl/geojson'
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
 import { twoLinePopupHtml } from './gl/popupHtml'
 import { addOrderedLayer } from './gl/layerOrder'
+import { DETAIL_MIN_ZOOM } from './gl/zoomLevels'
 
 // 全国活断層線（産総研 活断層データベース）を描画する MapLibre 版（Leaflet の ActiveFaultsLayer 相当）。
 // セグメント1件=MultiLineString feature 1件（約580件）にまとめ、1枚の line レイヤーで描く。
@@ -39,6 +40,8 @@ export function ActiveFaultsGL({ activeFaults, visible, opacity }: Props) {
       id: LYR,
       type: 'line',
       source: SRC,
+      // 引いた画では線が潰れて列島が塗り潰された塊になるため描画しない（gl/zoomLevels.ts）。
+      minzoom: DETAIL_MIN_ZOOM,
       layout: {
         'line-join': 'round',
         'line-cap': 'round',

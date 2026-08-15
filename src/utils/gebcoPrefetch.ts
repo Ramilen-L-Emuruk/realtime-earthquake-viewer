@@ -1,4 +1,5 @@
 import { MAX_ZOOM } from '../components/Map/gl/camera'
+import { JAPAN_WIDE_BOUNDS } from '../components/Map/gl/bounds'
 
 // GEBCO 海底地形タイル（BaseMapGL.tsx の背景ラスタソースと同一 URL）の先読み。
 // 沖縄（先島諸島）〜択捉島相当の範囲を、アイドル時に低ズーム優先でバックグラウンド fetch し
@@ -20,12 +21,9 @@ export const GEBCO_TILE_SIZE = 256
 /** GEBCO タイルセットに実在する最大タイル z（これを超えるズームはオーバーズーム扱いで新規取得されない）。 */
 export const GEBCO_SOURCE_MAX_ZOOM = 10
 
-// 先読み対象範囲: 沖縄（先島諸島）〜択捉島相当。fitJapan が使う JAPAN_BOUNDS（camera.ts）より
-// 広く取り、実際に地震・EEW が発生しうる範囲をカバーする。
-const PREFETCH_WEST = 122
-const PREFETCH_SOUTH = 24
-const PREFETCH_EAST = 149
-const PREFETCH_NORTH = 46
+// 先読み対象範囲は離島まで含めた日本全体の枠（JAPAN_WIDE_BOUNDS）と同一にする。遠地地震のフィットが
+// 実際にこの枠へ寄せるため、枠を広げたら先読み範囲も追従すべきという関係にあり、値を二重に持たない。
+const [[PREFETCH_WEST, PREFETCH_SOUTH], [PREFETCH_EAST, PREFETCH_NORTH]] = JAPAN_WIDE_BOUNDS
 
 // 同時 fetch 数（外部タイルサーバー・他の通信への負荷を抑える）。
 const CONCURRENCY = 3
