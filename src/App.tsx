@@ -263,9 +263,15 @@ export function App() {
     setSoundVolume(settings.soundVolume)
   }, [settings.soundVolume])
 
-  // TTS 読み辞書をアプリ起動時に事前ロードする（VOICEVOX 有効・無効に関わらず）
+  // TTS 読み辞書をアプリ起動時に事前ロードする（VOICEVOX 有効・無効に関わらず）。
+  // ここで揃えておけば読み上げ時に待たされない。失敗しても読み上げは句区切りなしで成立するが、
+  // 「なぜ句区切りが効かないのか」を後から追えるようログは残す。
   useEffect(() => {
-    loadTtsPhraseBreakDict().catch(() => {})
+    loadTtsPhraseBreakDict().catch((err) => {
+      // 起動時に 1 回だけなので、他の生成データローダと同じ warn で残す
+      // （読み上げ時の再試行は繰り返されうるため voicevox.ts 側は debug）。
+      log.warn('[data] tts-phrase-break-dict 事前ロード失敗（読み上げの句区切りが効かない）', err)
+    })
   }, [])
 
   // ブラウザの自動再生制限に対応: 初回のユーザー操作で音声を有効化する

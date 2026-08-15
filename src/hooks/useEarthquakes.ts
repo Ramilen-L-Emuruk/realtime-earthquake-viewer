@@ -702,11 +702,14 @@ export function useEarthquakes(
           setState(prev => ({ ...prev, isLoading: false, error: msg }))
         })
 
-      // EEW の pref 補完用に細分区域名→都道府県の逆引きインデックスを先読み（取得失敗は無視）
+      // EEW の pref 補完用に細分区域名→都道府県の逆引きインデックスを先読み。
+      // 取得できなくても EEW 自体は流す（都道府県名が付かないだけ）が、無音にはしない。
       let areaPrefIndex: Map<string, string> | null = null
       loadStationCoords()
         .then(data => { areaPrefIndex = buildAreaPrefIndex(data) })
-        .catch(() => {})
+        .catch(err => {
+          log.warn('[data] station-coords 取得失敗（EEW 予想震度の都道府県名が補完されない）', err)
+        })
 
       // DMDSS WebSocket 接続（dmdataTestDelivery 有効時は試験報・訓練報も受信）
       const ws = new DmdataWebSocket(dmdataApiKey, dmdataTestDelivery)
