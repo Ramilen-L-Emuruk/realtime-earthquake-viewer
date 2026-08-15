@@ -48,16 +48,30 @@ export function formatDateTimeLocal(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
+/**
+ * 深さが判明しているか。パーサは深さ不明の電文（遠地地震で頻出）を -1 センチネルで渡すため、
+ * 表示・読み上げはいずれもこの判定で「不明」を弾く。`0` は「ごく浅い」という有効値。
+ */
+export function hasDepth(depth: number): boolean {
+  return Number.isFinite(depth) && depth >= 0
+}
+
 export function formatDepth(depth: number): string {
-  if (!Number.isFinite(depth)) return '不明'
+  if (!hasDepth(depth)) return '不明'
   if (depth === 0) return 'ごく浅い'
-  if (depth < 0) return '不明'
   return `${depth}km`
 }
 
+/**
+ * 規模が有効値か。パーサは規模不明の電文を NaN（DMDATA 経路）または -1（P2PQuake 経路）で
+ * 渡してくるため、表示・読み上げ・タイトルはいずれもこの判定で「不明」を弾く。
+ */
+export function hasMagnitude(magnitude: number): boolean {
+  return Number.isFinite(magnitude) && magnitude >= 0
+}
+
 export function formatMagnitude(magnitude: number): string {
-  if (!Number.isFinite(magnitude)) return '不明'
-  if (magnitude < 0) return '不明'
+  if (!hasMagnitude(magnitude)) return '不明'
   return `M${magnitude.toFixed(1)}`
 }
 

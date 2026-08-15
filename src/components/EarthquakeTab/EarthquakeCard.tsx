@@ -8,6 +8,7 @@ import {
   formatDomesticTsunami,
   formatIssueType,
   formatCorrectType,
+  hasMagnitude,
 } from '../../utils/formatters'
 import { getIntensityLabel, getIntensityColor, getIntensityBgColor, getDepthColor, getMagnitudeColor } from '../../utils/intensity'
 import { buildAreaPrefIndex, buildPrefAreaNamesIndex } from '../../utils/stationCoords'
@@ -268,7 +269,8 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                   マグニチュード
                 </span>
                 <span className="font-black leading-none" style={{ fontSize: '28px', color: '#ffffff' }}>
-                  {hypocenter.magnitude.toFixed(1)}
+                  {/* 規模不明（-1／NaN）を toFixed に通すと "-1.0"／"NaN" と表示される。深さ側の formatDepth と揃える */}
+                  {hasMagnitude(hypocenter.magnitude) ? hypocenter.magnitude.toFixed(1) : '不明'}
                 </span>
               </div>
               <div

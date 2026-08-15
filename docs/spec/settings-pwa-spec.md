@@ -28,6 +28,7 @@
 - **UI 倍率**: 画面全体の UI 拡大縮小
 - **地図アイコン倍率**: 地図上のバッジ・観測点ドットのサイズ
 - **表示件数**: 地震カードの表示数上限
+- **最低表示震度**: これ未満の地震をリストに出さない。遠地地震は国内震度を持たないため対象外（常に表示）
 - **ダークモード**: 常時 ON（切替なし）
 - **ホーム地点**: 現在地の緯度経度（震源距離表示に使用）
 
@@ -37,7 +38,7 @@
 - **試験報を受信**: 毎正時の配信テスト受信を有効化
 
 ### テスト機能
-- **地震テスト** / **EEW 特別警報テスト** / **EEW 警報テスト** / **EEW 予報テスト** / **EEW 誤報取消テスト**
+- **地震テスト** / **遠地地震テスト** / **EEW 特別警報テスト** / **EEW 警報テスト** / **EEW 予報テスト** / **EEW 誤報取消テスト**
 - **大警報テスト** / **警報テスト** / **注意報テスト** / **予報テスト** / **誤報取消テスト**（津波系）
 - **揺れの候補テスト** / **揺れ検知テスト**（強震モニタ）
 - **実地震テスト**: シナリオ一覧から再生
@@ -196,13 +197,14 @@ DMDATA リプレイ機能の `setReplayOffset` は使わない（ライブ接続
 | EEW 予報テスト | `createTestEEWForecast()` | 25 | 震度 2 程度・予報（宮城県沖 M4.5） |
 | EEW 誤報取消テスト | `createTestEEWWarning()` + `EEW_RETRACTION_CANCEL_MS`(10s) 後に取消 | 50→取消 | 10 秒後に `cancelled:true` 電文で `eewCancel` 音・通知・読み上げを検証 |
 | 地震テスト | `createTestEarthquake()` | - | 令和 6 年能登半島地震の実データベース（`src/data/noto-honshin-2024-*.json`）を採用 |
+| 遠地地震テスト | `createTestForeignQuake(includeForecastText)` | - | メキシコ・チアパス州沿岸 M7.4（2026-07-17）の実電文ベース。深さ不明・付加文 `0226`＋`0230` の報を採り、「深さ句の省略」「付加文原文の読み上げ」「`0230` 由来の津波区分（`domesticTsunami: 'なし'`）」を一度に確認できる。付加文は DMDATA 経由でのみ配信されるため、呼び出し側は `isDmdss` を渡して DMDSS 版でのみ `forecastText` を注入する |
 | 大津波警報テスト | `createTestTsunami()` | - | 大津波警報（無引数で MajorWarning） |
 | 津波警報テスト | `createTestTsunamiWarning()` | - | 津波警報 |
 | 津波注意報テスト | `createTestTsunamiWatch()` | - | 津波注意報 |
 | 津波予報テスト | `createTestTsunamiForecast()` | - | 津波予報（`TEST_AUTO_DISMISS_MS`=90 秒後に `expired` 経路で解除） |
 | 津波誤報取消テスト | `createTestTsunamiRetraction()` + 90 秒後に取消電文 | - | 警報・注意報混在の発表 → 90 秒後に電文全体が取り消される（`retracted` 経路） |
 | 揺れの候補テスト（強震モニタ） | `runSimulateKyoshinFaint`／`runSimulateKyoshinLikely`（実装は `useEarthquakes.ts`） | - | 弱い揺れ検知の候補（`faint`／`likely`）を UI に反映して発報経路を検証 |
-| 揺れ検知テスト（強震モニタ） | `runSimulateKyoshinConfirmed`（実装は `useEarthquakes.ts`） | - | 揺れ検知（`confirmed`）を発報。`detected` 音・カメラ自動フィット・カード表示を検証 |
+| 揺れ検知テスト（強震モニタ） | `runSimulateKyoshinConfirmed`（実装は `useEarthquakes.ts`） | - | 揺れ検知（`confirmed`）を発報。`kyoshin` 音・カメラ自動フィット・カード表示を検証 |
 
 「10 秒以内に再クリックで続報」「押さなければ自動確定」（`EEW_FINAL_SILENCE_MS`=10 秒）等の
 ロジックは `useEarthquakes.ts` の `runSimulateEEW` 系で実装。
@@ -220,7 +222,8 @@ DMDATA リプレイ機能の `setReplayOffset` は使わない（ライブ接続
 - `tsunamiWatch` — 津波注意報テスト
 - `tsunamiForecast` — 津波予報テスト
 - `tsunamiCancel` — 津波系テストボタン全て（大津波警報／警報／注意報／予報／誤報取消）で共通発火。`TEST_AUTO_DISMISS_MS`（90 秒）後の `expired`／`lifted`／`retracted` いずれの cancelReason でも同じ音を鳴らす
-- `detected` / `foreshock` — 揺れ検知テスト（`confirmed`／`likely`・`faint`）
+- `earthquake` / `earthquakePrompt` / `earthquakeInfo` — 地震テスト（各地の震度／震度速報／震源情報・遠地地震）
+- `kyoshin` / `kyoshinCandidate` — 揺れ検知テスト（`confirmed`／`likely`・`faint`）
 
 ### 自動解除・自動確定のタイミング
 

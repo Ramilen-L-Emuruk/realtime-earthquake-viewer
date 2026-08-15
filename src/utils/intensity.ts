@@ -1,3 +1,5 @@
+import { hasDepth, hasMagnitude } from './formatters'
+
 export const INTENSITY_LABELS: Record<number, string> = {
   '-1': '不明',
   10: '1',
@@ -53,7 +55,7 @@ export function getIntensityBgColor(scale: number): string {
  * 深さに応じた色（浅い=赤系、深い=青系）。気象庁震度配色に準拠した段階色。
  */
 export function getDepthColor(depth: number): string {
-  if (depth < 0) return '#666666'     // 不明
+  if (!hasDepth(depth)) return '#666666'  // 不明（formatDepth と同じ判定）
   if (depth === 0) return '#f00000'   // ごく浅い → 赤（震度6弱相当）
   if (depth <= 20) return '#ff6600'   // 〜20km → オレンジ（震度5強相当）
   if (depth <= 40) return '#ffa000'   // 〜40km → 黄橙（震度5弱相当）
@@ -68,7 +70,10 @@ export function getDepthColor(depth: number): string {
  * 小さい(M2未満)=薄青(震度1相当) → 大きい(M7以上)=紫(震度7相当)
  */
 export function getMagnitudeColor(magnitude: number): string {
-  if (magnitude < 0) return '#666666'
+  // 規模不明のセンチネルは経路によって -1（P2PQuake）と NaN（DMDATA）の二種類がある。
+  // NaN は以降の比較がすべて false になり最終行の紫（M7 以上）に落ちてしまうため、
+  // formatMagnitude と同じ判定（hasMagnitude）で先に灰色へ弾く。
+  if (!hasMagnitude(magnitude)) return '#666666'
   if (magnitude < 2.0) return '#7bb4c8'   // M2未満 → 薄青（震度1相当）
   if (magnitude < 3.0) return '#0070c8'   // M2〜3 → 青（震度2相当）
   if (magnitude < 4.0) return '#00b050'   // M3〜4 → 緑（震度3相当）
