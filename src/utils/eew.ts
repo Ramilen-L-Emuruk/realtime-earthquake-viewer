@@ -1,6 +1,8 @@
 import type { EEWAlert, EEWRegion } from '../types/earthquake'
 import type { AlertSoundType } from './alertSound'
 import { computeSWaveTravelTimeSec } from '../hooks/usePsWaveCalc'
+import { isValidIntensityScale } from './intensity'
+import { isValidLpgmClass } from './lpgm'
 import { hypoInfoItemToEEW, type YahooHypoInfoItem } from '../services/kyoshin'
 
 // 司・翠川(1999)の距離減衰式を使ってEEW最終報後の自動解除秒数を計算する。
@@ -133,15 +135,24 @@ export function eewAreas(eew: EEWAlert): EEWRegion[] {
   return eew.areas ?? eew.regions ?? []
 }
 
-/** 対象地域の最大予想震度（scale 値）。
+/** 対象地域の最大予想震度（scale 値）。震度が取れないときは 0 を返す。
  * condition=仮定震源要素（単独点処理）かつ areas が空の場合は forecastMaxScale を使わず 0 を返す。
  * 単独点PLUM検知では forecastMaxInt が設定されても地域別予想は発表されないため。
+ *
+ * 震度スケール外の値（`IntensityScale` に無い中間値・範囲外値）は採用しない。
+ * `EEWRegion` は型で守られているが、実地震シナリオ JSON のように型検査を通らない経路から
+ * 値が来るため、実行時にも弾く。これが無いと、壊れた入力の scaleTo がそのまま 55 との比較を
+ * 通って特別警報へ誤昇格しうる。未確定の -1 は Math.max の初期値 0 に丸められる。
  */
 export function eewMaxScale(eew: EEWAlert): number {
-  const areasMax = eewAreas(eew).reduce((max, r) => Math.max(max, r.scaleTo), 0)
+  const areasMax = eewAreas(eew).reduce(
+    (max, r) => (isValidIntensityScale(r.scaleTo) ? Math.max(max, r.scaleTo) : max),
+    0,
+  )
   if (areasMax > 0) return areasMax
   if (eew.earthquake.condition === '仮定震源要素') return 0
-  return eew.forecastMaxScale ?? 0
+  const forecast = eew.forecastMaxScale
+  return forecast != null && isValidIntensityScale(forecast) ? forecast : 0
 }
 
 /** 対象地域の最大予想長周期地震動階級（1〜4）。データが無ければ0。
@@ -152,10 +163,14 @@ export function eewMaxScale(eew: EEWAlert): number {
  * （DMDATA=DMDSS版のみ取得可能。標準版は震度のみでレベル判定される）。
  */
 export function eewMaxLpgmClass(eew: EEWAlert): number {
-  const areasMax = eewAreas(eew).reduce((max, r) => Math.max(max, r.lgIntTo ?? 0), 0)
+  const areasMax = eewAreas(eew).reduce(
+    (max, r) => (r.lgIntTo != null && isValidLpgmClass(r.lgIntTo) ? Math.max(max, r.lgIntTo) : max),
+    0,
+  )
   if (areasMax > 0) return areasMax
   if (eew.earthquake.condition === '仮定震源要素') return 0
-  return eew.forecastMaxLpgmClass ?? 0
+  const forecast = eew.forecastMaxLpgmClass
+  return forecast != null && isValidLpgmClass(forecast) ? forecast : 0
 }
 
 /** 情報番号（第N報）。取得できなければ null。 */
@@ -167,13 +182,12 @@ export function eewSerial(eew: EEWAlert): number | null {
 // EEW 単発のレベル算出: 0=予報級（severity!=='Warning'。震度の高低に関係なく警報未満は全て 0）
 // / 1=警報（severity==='Warning'） / 2=特別警報（severity==='Warning' かつ 震度6弱以上 または
 // 長周期地震動階級4以上）。気象庁の実基準（震度6弱以上 or 長周期地震動階級4以上）に合わせている。
-// scaleTo:99 は DMDATA パーサーが割り当てる「震度算出不能」コードなので通常の震度比較から除外する。
+// 震度が取れないケース（地域別予想なし・全地域が震度未確定の -1・仮定震源要素）では eewMaxScale が
+// 0 を返すため、55 との比較だけで自然に特別警報から外れる。専用のガードは要らない。
 // レベル1・2ともに severity（isWarning）必須。予報級電文（severity=Forecast）は震度だけ高くても常にレベル0とする。
 export function computeSingleEEWLevel(eew: EEWAlert): 0 | 1 | 2 {
   if (eew.severity !== 'Warning') return 0
-  const scale = eewMaxScale(eew)
-  const intensityKnown = scale < 99
-  const isSpecialByIntensity = intensityKnown && scale >= 55
+  const isSpecialByIntensity = eewMaxScale(eew) >= 55
   const isSpecialByLpgm = eewMaxLpgmClass(eew) >= 4
   return (isSpecialByIntensity || isSpecialByLpgm) ? 2 : 1
 }

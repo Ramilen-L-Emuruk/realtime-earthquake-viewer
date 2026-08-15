@@ -1,6 +1,7 @@
 import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
 import { eewMaxScale } from './eew'
 import { getIntensityLabel } from './intensity'
+import { isValidLpgmClass } from './lpgm'
 import { tsunamiMaxGrade } from './tsunami'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
@@ -251,7 +252,9 @@ export function eewIntensityToText(event: EEWAlert): string {
       text += '予想震度なし。'
     }
   }
-  if (event.forecastMaxLpgmClass != null && event.forecastMaxLpgmClass >= 1) {
+  // 階級 1〜4 以外は読み上げない。読み上げは地図の色フォールバックのような逃げ場が無く、
+  // 「予想最大階級99」のような文言がそのまま音声で出てしまうため（詳細は docs/spec/eew-spec.md §4）。
+  if (event.forecastMaxLpgmClass != null && isValidLpgmClass(event.forecastMaxLpgmClass)) {
     text += `予想最大階級${event.forecastMaxLpgmClass}。`
   }
   return text
@@ -265,7 +268,9 @@ export function eewToText(event: EEWAlert): string {
   if (scale > 0) {
     text += `予想最大震度${intensityText(scale)}。`
   }
-  if (event.forecastMaxLpgmClass != null && event.forecastMaxLpgmClass >= 1) {
+  // 階級 1〜4 以外は読み上げない。読み上げは地図の色フォールバックのような逃げ場が無く、
+  // 「予想最大階級99」のような文言がそのまま音声で出てしまうため（詳細は docs/spec/eew-spec.md §4）。
+  if (event.forecastMaxLpgmClass != null && isValidLpgmClass(event.forecastMaxLpgmClass)) {
     text += `予想最大階級${event.forecastMaxLpgmClass}。`
   }
   return text
