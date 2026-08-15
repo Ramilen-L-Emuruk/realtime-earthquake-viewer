@@ -3,6 +3,8 @@
 // データは scripts/build-active-faults.mjs で生成・更新する。
 // 出典: 産業技術総合研究所（産総研）活断層データベース（政府標準利用規約2.0）
 
+import { fetchJsonWithTimeout } from './fetchJson'
+
 export type LatLng = [number, number]
 
 export interface ActiveFaultSegment {
@@ -17,16 +19,12 @@ let inflight: Promise<ActiveFaultSegment[]> | null = null
 
 /**
  * 全国活断層線データを取得する。初回のみ fetch し、以降はキャッシュを返す。
- * 取得に失敗した場合は inflight を破棄して次回リトライ可能にする。
+ * 取得に失敗した場合（タイムアウトを含む）は inflight を破棄して次回リトライ可能にする。
  */
 export function loadActiveFaults(): Promise<ActiveFaultSegment[]> {
   if (cache) return Promise.resolve(cache)
   if (!inflight) {
-    inflight = fetch(DATA_URL)
-      .then((res) => {
-        if (!res.ok) throw new Error(`active-faults fetch failed: ${res.status}`)
-        return res.json() as Promise<ActiveFaultSegment[]>
-      })
+    inflight = fetchJsonWithTimeout<ActiveFaultSegment[]>(DATA_URL, 'active-faults')
       .then((data) => {
         cache = data
         return data
