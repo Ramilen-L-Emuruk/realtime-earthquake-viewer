@@ -1,7 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import { MAX_ZOOM } from './camera'
 import { QUAKE_MAX_ZOOM } from '../../../hooks/useQuakeLayerData'
-import { GEBCO_SOURCE_MAX_ZOOM, GEBCO_TILE_SIZE, MAX_TILE_ZOOM } from '../../../utils/gebcoPrefetch'
+import {
+  desiredTileZoom,
+  GEBCO_HIRES_MIN_ZOOM,
+  GEBCO_OVERVIEW_MAX_ZOOM,
+  GEBCO_SOURCE_MAX_ZOOM,
+  GEBCO_TILE_SIZE,
+  MAX_TILE_ZOOM,
+} from '../../../utils/gebcoPrefetch'
 import { DETAIL_MIN_ZOOM } from './zoomLevels'
 
 // 複数モジュールに散らばるズーム閾値の「相互関係」を固定する回帰テスト。
@@ -39,5 +46,17 @@ describe('ズーム閾値の相互関係', () => {
     // DETAIL_MIN_ZOOM を MAX_ZOOM 以上へ上げると、自動フィットの着地点でも県境・一次細分区域境界・
     // 活断層が一切出なくなる（地震カード選択後の地図が陸地塗りだけになる）。
     expect(DETAIL_MIN_ZOOM).toBeLessThan(MAX_ZOOM)
+  })
+
+  it('海底地形の高解像度層の下限ズームが、下地層と同一タイルを要求する帯のちょうど外側にある', () => {
+    // 下限ズームでは、上層が下地層（maxzoom でクランプされる）より深いタイルを要求する。ここが崩れると
+    // 2 層が同じタイルを個別に取得するだけの帯が残る（実測でその帯の存在を確認済み）。
+    expect(desiredTileZoom(GEBCO_HIRES_MIN_ZOOM)).toBeGreaterThan(GEBCO_OVERVIEW_MAX_ZOOM)
+    // わずかに下のズームでは重複帯の内側にいる（＝そこで上層を描かない判断が正しい）。下限を必要以上に
+    // 高くすると、二重取得は起きないままここが破れる。境界を両側から締めることで「寄っても高解像度が
+    // 出ない」劣化を検出する。
+    expect(desiredTileZoom(GEBCO_HIRES_MIN_ZOOM - 0.01)).toBeLessThanOrEqual(GEBCO_OVERVIEW_MAX_ZOOM)
+    // 自動フィットの寄り上限では必ず高解像度層が出る。
+    expect(GEBCO_HIRES_MIN_ZOOM).toBeLessThan(MAX_ZOOM)
   })
 })
