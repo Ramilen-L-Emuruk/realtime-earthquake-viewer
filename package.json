@@ -1,7 +1,7 @@
 {
   "name": "realtime-earthquake-viewer",
   "private": true,
-  "version": "4.13.3",
+  "version": "4.13.6",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -23,6 +23,7 @@
   "devDependencies": {
     "@mapbox/tiny-sdf": "^2.2.0",
     "@napi-rs/canvas": "^1.0.2",
+    "@testing-library/react": "^16.3.2",
     "@types/jsdom": "^28.0.3",
     "@types/node": "^25.9.3",
     "@types/react": "^18.3.12",

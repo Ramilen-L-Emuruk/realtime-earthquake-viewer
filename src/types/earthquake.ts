@@ -64,6 +64,14 @@ export interface JMAQuake {
   }
   points: EarthquakePoint[]
   /**
+   * 同一地震を貫いて変わらない内部キー。統合・選択・通知の同一性判定はすべてこれで行う。
+   * `mergeQuakeInto` が統合のたびに既存カードの値を引き継ぐため、続報で `id` が変わっても不変。
+   * DMDATA 経路は電文が共有する eventId、P2PQuake 経路は eventId が配信されないため
+   * 最初に受信した報から生成する（生成規則は `utils/quakeMerge.ts` の `quakeEventKey`）。
+   * 統合前の生電文には存在しないため optional。
+   */
+  eventKey?: string
+  /**
    * 気象庁の付加文（津波に関する固定付加文）の原文。DMDATA 経路でのみ得られる。
    * 遠地地震は付加文コードが 021x 系だけでは表現しきれない（022x/023x 系を併用する）ため、
    * domesticTsunami への丸め込みで意味が落ちる。原文を読み上げに使う用途で保持する。

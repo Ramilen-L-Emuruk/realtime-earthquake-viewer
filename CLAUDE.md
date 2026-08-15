@@ -60,6 +60,9 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
     - **理由**: リリースまで待つ間にも main は他セッションのマージで進む。取り込みを後回しにすると乖離が積み上がり、リリース時にまとめて衝突する
     - この取り込みは 1 回きりの緩和策であり、待ち行列に長く留まればまた乖離する。リリース待ちが長引いたら再度取り込んでよい
 11. **リリース待ちへの登録**（ブランチ名の接頭辞を `ready/` に付け替える。**省略するとそのブランチは永久にリリースされない**）
+    - **改名前に必ずユーザーに確認を取る。省略しない**
+      - コミットの承認は「この変更を記録してよいか」であって「完成したか」ではない。改名は**この内容でリリースしてよい**という宣言であり、他セッションや監視モードが候補として拾い得る状態にする**外向きの操作**
+      - 手順 10 でコンフリクト解消を伴った場合は、コミット前確認で見せた内容と実際の中身が変わっている。**差分を提示してから確認する**
     ```bash
     git branch -m worktree/<type>/<name> ready/<type>/<name>
     ```
@@ -72,6 +75,7 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 12. **ここで実装セッションは終了**（ブランチはリリース待ち行列に入る。下記「リリース」参照）
     - ユーザーに「コミット済み・リリース待ち」であることを伝える。**マージ・バージョン更新・プッシュを自発的に行わない**
     - ユーザーがそのままリリースを指示した場合は、`ExitWorktree(action: "keep")` でワークツリーを抜けて「リリース」へ進む（出す候補が自分の 1 本だけなら、セッションを分ける必要はない）
+    - **セッションを開いたまま待つ場合は、マージを監視して自分で後片付けしてもよい**（任意。詳細は下記「マージ後の自己クリーンアップ」）
     - セッションを終える際は、検証用に起動した dev サーバー（Vite）を停止する（セッション中は停止せず再利用する。詳細は下記「検証」）
       ```bash
       # ポート 5173（または起動ログで確認した実ポート）を使用しているプロセスを終了
@@ -79,6 +83,93 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
       kill $(netstat -ano | grep :5173 | awk '{print $5}' | head -1) 2>/dev/null || true
       ```
       - MCP サーバーを巻き込まないよう `Stop-Process -Name node` は使わないこと
+
+### ユーザーからの合図
+
+ユーザーが特別な言い回しを覚える必要はないが、次の意図は取り違えないこと。
+
+| ユーザーの言葉 | 意味 |
+|---|---|
+| 「コミットして」 | 手順 9〜10 を実行する。**手順 11（`ready/` 改名）の手前で止まり、改めて確認する** |
+| 「リリース待ちに入れて」 | 手順 11 を実行し、実装セッションを終える |
+| 「リリースして」 | 続けて「リリース」の手続きへ進む |
+| 「これで十分」 | レビューの反復（敵対的レビュー・ドキュメント客観レビューのいずれも）を打ち切り、その時点の内容で確定する |
+| 「まだ直したい」 | `ready/*` を `worktree/*` へ戻して作業を再開する（push 前ならいつでも巻き戻せる） |
+
+**push するまでは、いずれの操作も引き返せる。** コミットも `ready/` 改名もローカルの操作にすぎない。「もう戻れない」と誤解させないこと。
+
+### マージ後の自己クリーンアップ（任意）
+
+実装セッションを開いたまま待つ場合、自分のブランチがマージされるのを監視して、自分でワークツリーを片付けてよい。**自分のワークツリーは自分で消すのが最も確実**（他セッションのロックに阻まれないため）。
+
+**ただし条件が 1 つある。**
+
+> **監視に入る前に必ず `ExitWorktree(action: "keep")` でワークツリーを出ること。**
+> 居座ったままだとリリースセッションが `git worktree remove` に失敗する。**片付けを速くするつもりが、かえって妨げることになる。**
+
+監視を始める前に `git branch --show-current` が `main` を返すことを確認する（ワークツリーを出られているかの機械的な確認）。そのうえで `Monitor` を `persistent: true` で起動する。
+
+```bash
+cd <リポジトリのトップレベル>
+fails=0
+while true; do
+  sleep 120
+  # ready/ が消えた場合、理由は 2 つある。取り違えると作業場を消す
+  git rev-parse --verify --quiet ready/<type>/<name> >/dev/null || {
+    if git rev-parse --verify --quiet worktree/<type>/<name> >/dev/null; then
+      echo "REVERTED-TO-WORKTREE: 作業中へ戻されました。何もせず監視を終了します"
+    else
+      echo "ALREADY-CLEANED: ready/<type>/<name>"
+    fi
+    exit 0
+  }
+  if git fetch --quiet 2>/dev/null; then
+    fails=0
+  else
+    fails=$((fails + 1))
+    [ "$fails" -ge 5 ] && {
+      echo "WATCH-ERROR: git fetch が5回連続で失敗しました。監視を終了します"
+      exit 1
+    }
+    continue
+  fi
+  git merge-base --is-ancestor ready/<type>/<name> origin/main 2>/dev/null && {
+    echo "MERGED-AND-PUSHED: ready/<type>/<name>"
+    exit 0
+  }
+done
+```
+
+ポーリング間隔が「監視モード」（60 秒）より緩いのは、待つ対象が違うため。あちらはブランチの出現、こちらは push の完了を待つ。
+
+**ループが黙って回り続ける状態を作らないこと。** 上の 2 つの脱出口がそれを担っている。
+
+- **ブランチが先に消された場合** — リリース側が手順 7 まで済ませた。`ALREADY-CLEANED` で正常終了する。これが無いと `merge-base` が「そんなオブジェクトは無い」で失敗し続け、仕事が終わったのに監視だけが気づかず回り続ける
+- **`git fetch` が恒久的に失敗する場合**（資格情報の失効・ネットワーク断） — 5 回連続で `WATCH-ERROR` を出して終了する。これが無いと永久に無音で回る
+
+> この検知は**リリース手続きのマージが `--no-ff` であること**に依存している（ブランチの tip が履歴上の祖先として残るため）。マージ方式を変える場合はこの節も見直すこと。
+
+> **見るのは `main` ではなく `origin/main`。ここを間違えると作業が消える。**
+> ローカルの `main` はリリース手続きの**マージ**の時点で更新される。しかしその後の**統合後の検証**で不具合が見つかれば、`git reset --hard origin/main` でマージごと破棄されうる。`main` を見て発火すると、**破棄される前にブランチとワークツリーを消してしまい、作業内容を指す ref が一つも残らない**。`origin/main` は push 成功後にしか進まないため、これを条件にすれば確定後にのみ発火する。
+
+通知の種類ごとに動きが変わる。
+
+| 通知 | 意味 | すること |
+|---|---|---|
+| `MERGED-AND-PUSHED` | リリースが確定した | 下記の片付けへ進む |
+| `REVERTED-TO-WORKTREE` | ユーザーが「まだ直したい」で作業中へ戻した | **何もしない。** 作業を再開する場所なので消してはならない |
+| `ALREADY-CLEANED` | リリース側が既に片付けた | 何もしない |
+| `WATCH-ERROR` | `git fetch` が繰り返し失敗した | ユーザーに報告する |
+
+`MERGED-AND-PUSHED` の場合の片付け:
+
+1. `git worktree list` で**自分のワークツリーがまだ残っているか確認する**
+2. **AskUserQuestion で削除してよいか確認する。** 他の削除経路（リリース手順 7・取りこぼし検出）はすべて確認を課している。ここだけ無確認にする理由はない
+3. 承認後、`git worktree remove` と `git branch -d` で片付ける
+4. **既に無ければ何もしない。** リリースセッションが先に片付けただけであり、エラーではない
+5. 確認した直後にリリースセッションが消すこともある。**削除コマンドが「対象が無い」と言って失敗しても、それも正常**として扱う
+
+**これは「うまくいけば早く片付く」という上積みにすぎない。** 監視が働かなくても、次のリリースの取りこぼし検出（`/release` スキル手順 1）で必ず回収される。先着順でよく、競合を調停する仕組みは要らない。
 
 > ユーザーから「修正前に状況を整理し問題点をまとめ、修正内容を確認してから作業する」方針の指示済み。
 > ユーザーから「今後は必要に応じて README を更新して、コミットまで自動で行う」方針の指示済み（ただし後述の「コミット前確認」が優先。実装・検証・敵対的レビュー・ドキュメント更新の後に必ずユーザー確認を取ってからコミットする。「自動で行う」はワークフロー全体を止めないという意味であって、コミット前の一時停止をスキップする意味ではない）。
@@ -292,6 +383,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | `node scripts/build-prefectures.mjs` | 都道府県境界データ（`public/data/prefectures.json`）の再生成（ベースマップ用） |
 | `node scripts/build-subregions.mjs` | 一次細分区域境界データ（`public/data/subregions.json`）の再生成 |
 | `node scripts/build-glyphs.mjs` | 地名ラベル用 SDF グリフ（`public/fonts/`）の再生成。**地名（地方・県・区域）が増減したら実行する**（`npm run build` が前段で `--check` を走らせ、未生成の文字があればビルドを止める。詳細は [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §5）。県名・区域名は `public/data/*.json` から読むため、**`build-prefectures.mjs`・`build-subregions.mjs` を先に実行すること** |
+| `npm run capture-scenario` | 実地震テストシナリオを DMDATA archive から取得（`scripts/capture-test-scenario.ts`）。**要 DMDATA.JP API キー**（置き場所・渡し方は [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6）。**ワークツリーでの注意**: キーを置く `.env.local` は Git 管理外のため**引き継がれない**。ワークツリー内で使うときはメインリポジトリ直下からコピーする。読めているかは引数なしで `npm run capture-scenario` を実行して確認する（`--from は必須です` なら読めている／`APIキーが必要です` なら読めていない。値をエコーせずに済む）。ただしシェルに `DMDATA_API_KEY` が残っていると `.env.local` が無くても通ってしまうため、事前に残っていないことを確かめる |
 | `npm version patch\|minor\|major` | バージョン更新・コミット・git tag 作成（リリース時に 1 回だけ実行。詳細は「リリース」参照） |
 
 ## 構成メモ
@@ -310,6 +402,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 項目 | 単一情報源となる仕様書 |
 |---|---|
 | テストデータと UI 説明文（テストボタンの `scaleTo` 値等） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §7 |
+| 設定タブのセクション構成・並び順の方針（`Section` の出現順・重大度は軽い順・カテゴリ順は両テストセクションと通知設定の種別トグルで共通） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §2 |
 | 津波の解除経路（`cancelReason` 3 種・DMDSS 限定・standard 版フォールバック） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §3 |
 | EEW P/S 波予報円の計算・仮定震源要素の連動箇所 | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §5-§6 |
 | EEW レベル判定（特別警報の条件・長周期の DMDATA 限定） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
@@ -319,6 +412,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 画面サイズ別レイアウトの分岐条件（`side` / `sideNarrow` / `roomy`）・パネル比率・折りたたみ | [`docs/spec/architecture-spec.md`](docs/spec/architecture-spec.md) §4「画面サイズ別のレイアウト」 |
 | 震度集約の単位（一次細分区域）・観測点 0 件時の集約維持 | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §7 |
 | 地震電文の `points` 構造（バリアント経路差・`pref` 空の識別規則） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §4 |
+| 地震の同一性判定（`eventKey`・統合/選択/通知の共通キー・取消のマッチング・P2PQuake で分離できない限界） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §6.1・§6.2 |
 | 遠地地震の識別（VXSE53・`Head/Title`）・付加文コードと `forecastText` | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §3（遠地地震に関する情報） |
 | `KyoshinSubThreshold` の対象範囲（index 1〜6）・慢性ノイズ床フィルタ | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) |
 | 実地震テストシナリオの時刻シフト・ID 再採番・利用規約制約 | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6 |
