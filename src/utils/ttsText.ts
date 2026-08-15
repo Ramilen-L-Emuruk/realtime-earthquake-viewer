@@ -1,10 +1,11 @@
-import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, EarthquakePoint, DomesticTsunami, TsunamiObservation } from '../types/earthquake'
+import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
 import { eewMaxScale } from './eew'
 import { getIntensityLabel } from './intensity'
 import { tsunamiMaxGrade } from './tsunami'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
 import { getStationCoordsCache, buildAreaPrefIndex, buildStationPrefIndex, buildPrefAreaNamesIndex } from './stationCoords'
+import { hasMagnitude, hasDepth } from './formatters'
 
 const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch', 'Forecast']
 
@@ -137,16 +138,52 @@ function magnitudeText(mag: number): string {
   return mag.toFixed(1)
 }
 
-/** 「〇〇を震源とする」の〇〇部分を返す（Destination/ScaleAndDestination 系） */
-function depthSourcePhrase(depth: number): string {
-  if (depth <= 0) return 'ごく浅い場所'
-  return `深さ${depth}キロメートル`
+/**
+ * 「マグニチュード7.1の」句を返す（「〜の地震が発生しました」に続ける）。規模不明では空文字。
+ * 規模不明の電文は遠地地震で実在し、そのまま読ませると「NaN」「マイナス1.0」になる。
+ */
+function magnitudePhrase(mag: number): string {
+  return hasMagnitude(mag) ? `マグニチュード${magnitudeText(mag)}の` : ''
 }
 
-/** 「震源の深さ〇〇」の〇〇部分を返す（顕著な地震の震源要素更新のお知らせ 系） */
+/**
+ * 「〇〇、深さ120キロメートル」のように震源名と深さを繋いだ句を返す（「〜を震源とする」に続ける）。
+ * 深さ不明のときは深さ句ごと省いて震源名だけを返す。震源名が無ければ空文字。
+ */
+function hypocenterPhrase(hypocenter: { name: string; depth: number }): string {
+  const depth = depthSourcePhrase(hypocenter.depth)
+  if (!hypocenter.name) return ''
+  return depth ? `${hypocenter.name}、${depth}` : hypocenter.name
+}
+
+/**
+ * 「〇〇、深さ120キロメートルを震源とするマグニチュード7.1の地震が発生しました。」を組み立てる。
+ * 震源名・深さ・規模のいずれが欠けても文が破綻しないよう、欠けた要素は句ごと省く。
+ * 震源名が取れない電文（パース異常）では震源に触れず規模だけを伝える文になる。
+ */
+function quakeOccurrenceText(hypocenter: Hypocenter): string {
+  const source = hypocenterPhrase(hypocenter)
+  const mag = magnitudePhrase(hypocenter.magnitude)
+  return source
+    ? `${source}を震源とする${mag}地震が発生しました。`
+    : `${mag}地震が発生しました。`
+}
+
+/**
+ * 「〇〇を震源とする」の深さ部分を返す（Destination/ScaleAndDestination 系）。
+ * 表示側 formatDepth と判定を揃える（負値 = 不明 / 0 = ごく浅い）。負値では空文字を返す。
+ * 深さ不明の電文は遠地地震で頻出し（`depth: {value: null, condition: "不明"}`）、
+ * パーサはこれを -1 センチネルに落とすため、0 と同一視すると「ごく浅い場所」と誤読する。
+ */
+function depthSourcePhrase(depth: number): string {
+  if (!hasDepth(depth)) return ''
+  return depth === 0 ? 'ごく浅い場所' : `深さ${depth}キロメートル`
+}
+
+/** 「震源の深さ〇〇」の〇〇部分を返す（顕著な地震の震源要素更新のお知らせ 系）。深さ不明では空文字。 */
 function depthAmendPhrase(depth: number): string {
-  if (depth <= 0) return '震源の深さはごく浅く'
-  return `震源の深さ${depth}キロメートル`
+  if (!hasDepth(depth)) return ''
+  return depth === 0 ? '震源の深さはごく浅く' : `震源の深さ${depth}キロメートル`
 }
 
 function intensityText(scale: IntensityScale | number): string {
@@ -159,6 +196,14 @@ function formatTime(isoTime: string): string {
   // 分をゼロ埋めすると VOICEVOX が「06分」を「ぜろろくふん」と桁読みしてしまうため、
   // TTS 用テキストではゼロ埋めしない（表示用の formatters.ts の formatTime とは別）
   return `${d.getHours()}時${d.getMinutes()}分`
+}
+
+/**
+ * 「10日21時34分」形式。遠地地震は発表が発生から数十分後になることがあり、
+ * 日付をまたいで受信する場合があるため日から読み上げる。
+ */
+function formatDayTime(isoTime: string): string {
+  return `${new Date(isoTime).getDate()}日${formatTime(isoTime)}`
 }
 
 /** VXSE43/45 EEW キャンセル（誤報取消）の読み上げテキストを生成する。 */
@@ -254,19 +299,36 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
   if (type === '顕著な地震の震源要素更新のお知らせ') {
     // この電文（VXSE61）は震源要素の更新のみを伝え、津波の有無は含まない。
     // 津波情報は別電文（VTSE41/51/52）で発表されるため、ここでは読み上げない。
-    return `顕著な地震の震源要素更新のお知らせ。${time}頃発生した${hypocenter.name}の地震について、${depthAmendPhrase(hypocenter.depth)}、マグニチュード${magnitudeText(hypocenter.magnitude)}に更新されました。`
+    const amended = [
+      depthAmendPhrase(hypocenter.depth),
+      hasMagnitude(hypocenter.magnitude) ? `マグニチュード${magnitudeText(hypocenter.magnitude)}` : '',
+    ].filter(Boolean).join('、')
+    const head = `顕著な地震の震源要素更新のお知らせ。${time}頃発生した${hypocenter.name}の地震について、`
+    // 深さ・規模とも不明なら要素を並べられないため、更新があった事実だけを伝える。
+    return amended ? `${head}${amended}に更新されました。` : `${head}震源要素が更新されました。`
   }
 
-  if (type === '震源情報' || type === '遠地地震' || type === 'その他') {
+  if (type === '遠地地震') {
+    // 気象庁「遠地地震に関する情報」（VXSE53・Head/Title で識別）。国外の規模の大きな地震を
+    // 日本への津波影響とあわせて伝える電文で、国内震度は伴わない（maxScale は常に -1）。
+    const prefix = isNew ? '遠地地震に関する情報。' : '遠地地震に関する情報が更新されました。'
+    const text = `${prefix}${formatDayTime(event.earthquake.time)}頃、${quakeOccurrenceText(hypocenter)}`
+    // 付加文の原文を優先する。遠地地震は 022x/023x 系の付加文を併用するため、
+    // domesticTsunami（021x 系の区分）へ丸めると意味が落ちる。
+    // 原文を持たない経路（P2PQuake）は従来どおり区分から文を起こす。
+    return text + (event.forecastText || domesticTsunamiText(domesticTsunami))
+  }
+
+  if (type === '震源情報' || type === 'その他') {
     const prefix = isNew ? '震源情報。' : '震源情報が更新されました。'
-    let text = `${prefix}${time}頃、${hypocenter.name}、${depthSourcePhrase(hypocenter.depth)}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
+    let text = `${prefix}${time}頃、${quakeOccurrenceText(hypocenter)}`
     text += domesticTsunamiText(domesticTsunami)
     return text
   }
 
   // ScaleAndDestination / DetailScale
   const prefix = isNew ? '地震情報。' : '地震情報が更新されました。'
-  let text = `${prefix}${time}頃、${hypocenter.name}、${depthSourcePhrase(hypocenter.depth)}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
+  let text = `${prefix}${time}頃、${quakeOccurrenceText(hypocenter)}`
 
   text += domesticTsunamiText(domesticTsunami)
 

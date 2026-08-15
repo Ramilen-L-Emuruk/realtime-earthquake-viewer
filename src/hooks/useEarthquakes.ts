@@ -12,6 +12,7 @@ import { serverNow, serverDate, isReplayClock } from '../utils/clock'
 import { isDmdss } from '../utils/env'
 import {
   createTestEarthquake,
+  createTestForeignQuake,
   createTestLpgm,
   createTestEEW,
   createTestEEWWarning,
@@ -947,6 +948,12 @@ export function useEarthquakes(
     }
   }, [handleEvent])
 
+  const simulateForeignQuake = useCallback(() => {
+    // 付加文（気象庁の固定付加文の原文）は DMDATA 経由でのみ配信される。standard 版では
+    // 実データで届かないため含めない（LPGM を isDmdss 限定にしているのと同じ理由）。
+    handleEvent(createTestForeignQuake(isDmdss))
+  }, [handleEvent])
+
   const simulateEEW = useCallback(
     () => runSimulateEEW('special', createTestEEW, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent),
     [handleEvent],
@@ -1049,6 +1056,7 @@ export function useEarthquakes(
     loadMoreEarthquakes,
     clearTelegramLog,
     simulateEarthquake,
+    simulateForeignQuake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateKohatsu,

@@ -14,6 +14,45 @@ function toEventIdTimestamp(d: Date): string {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
 }
 
+/**
+ * 遠地地震（気象庁「遠地地震に関する情報」VXSE53）のテストデータ。
+ *
+ * 2026-07-17 23:49（JST）メキシコ・チアパス州沿岸 M7.4 の実電文を元にしたパラメータ。
+ * 深さ不明（`depth: {value: null, condition: "不明"}` → パーサは -1 センチネル）で、
+ * 付加文が 021x 系ではなく `0226`（震源の近傍で津波発生の可能性）＋`0230`（日本への
+ * 津波の影響なし）という、遠地地震特有の組み合わせになる報を選んでいる。
+ * これにより「深さ句の省略」「付加文原文の読み上げ」「0230 の津波区分マップ」を一度に確認できる。
+ *
+ * @param includeForecastText 付加文の原文を含めるか。付加文は DMDATA 経路でのみ配信され、
+ *   P2PQuake（標準版）には存在しないため、standard 版のテストでは false を渡して
+ *   実データで起こり得ない読み上げが出ないようにする。
+ */
+export function createTestForeignQuake(includeForecastText: boolean): JMAQuake {
+  const nowDate = serverDate()
+  const now = nowDate.toISOString()
+  const eventId = toEventIdTimestamp(nowDate)
+  return {
+    kind: 'quake',
+    id: `dmdata-quake-${eventId}-1`,
+    eventId,
+    time: now,
+    issue: { source: 'テスト', time: now, type: '遠地地震', correct: 'なし' },
+    earthquake: {
+      time: now,
+      // 震源名は詳細震央地名（DetailedName）。実電文では震央地名「中米」より詳細なこちらを採る。
+      hypocenter: { name: 'メキシコ、チアパス州沿岸', latitude: 14.4, longitude: -93.0, depth: -1, magnitude: 7.4 },
+      // 遠地地震は国内で震度を観測しないため maxScale は常に -1。
+      maxScale: -1,
+      // 0230（この地震による日本への津波の影響はありません）由来。
+      domesticTsunami: 'なし',
+    },
+    points: [],
+    forecastText: includeForecastText
+      ? '震源の近傍で津波発生の可能性があります。この地震による日本への津波の影響はありません。'
+      : undefined,
+  }
+}
+
 export function createTestEarthquake(): JMAQuake {
   const nowDate = serverDate()
   const now = nowDate.toISOString()
