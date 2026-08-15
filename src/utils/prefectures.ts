@@ -3,6 +3,8 @@
 //
 // データは scripts/build-prefectures.mjs で生成・更新する。
 
+import { fetchJsonWithTimeout } from './fetchJson'
+
 export type LatLng = [number, number]
 
 export interface PrefectureShape {
@@ -28,16 +30,12 @@ export function getPrefecturesCache(): Prefectures | null {
 
 /**
  * 都道府県の境界データを取得する。初回のみ fetch し、以降はキャッシュを返す。
- * 取得に失敗した場合は inflight を破棄して次回リトライ可能にする。
+ * 取得に失敗した場合（タイムアウトを含む）は inflight を破棄して次回リトライ可能にする。
  */
 export function loadPrefectures(): Promise<Prefectures> {
   if (cache) return Promise.resolve(cache)
   if (!inflight) {
-    inflight = fetch(DATA_URL)
-      .then((res) => {
-        if (!res.ok) throw new Error(`prefectures fetch failed: ${res.status}`)
-        return res.json() as Promise<Prefectures>
-      })
+    inflight = fetchJsonWithTimeout<Prefectures>(DATA_URL, 'prefectures')
       .then((data) => {
         cache = data
         return data
