@@ -103,7 +103,10 @@ export default defineConfig({
         screenshots: [],
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        // pbf は地名ラベルの SDF グリフ（public/fonts/<stack>/）。これを含めないとオフライン時に
+        // グリフだけ取得できず、MapLibre が実行時のフォント生成にフォールバックする（字形がシステム
+        // フォントに変わり、事前生成で消したはずのメインスレッド停止も復活する）。
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2,pbf}'],
         // SEC-3: standard 版の scope が /realtime-earthquake-viewer/ で DMDSS 版の /dmdss/
         // サブパスも包含するため、両バリアントを同一オリジンで訪れると standard の SW が
         // DMDSS 版のナビゲーションリクエストを横取りしうる。standard 版のみ /dmdss/ を

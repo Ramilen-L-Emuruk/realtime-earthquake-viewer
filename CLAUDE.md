@@ -77,7 +77,8 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 > **コードを修正した場合は、型チェックだけでなく必ずアプリを起動して実行確認（ブラウザ確認）まで行う。**
 > 型チェックのみで完了とせず、**特に指定がない場合は `npm run dev:dmdss`（DMDSS 版）で起動し**、Playwright MCP で実際の表示・挙動を確認してからコミットする。
 
-- **型チェック（必須）**: `npx tsc -b`（または `npm run build`）。エラー0を確認する。
+- **型チェック（必須）**: `npx tsc -b`。エラー0を確認する。
+  - `npm run build` でも型チェックは走るが、その前段に**地名ラベル用グリフの検証**（`build-glyphs.mjs --check`）が入る。ここで落ちた場合は型エラーではなく「グリフの焼き直し忘れ」なので、メッセージを読んで切り分けること（下記「補助コマンド」参照）。
 - **アプリ起動（デフォルト: DMDSS 版）**: **特にバリアントの指定がない場合は `npm run dev:dmdss` を使用する**。
   - DMDSS 版 URL: `http://localhost:5173/realtime-earthquake-viewer/dmdss/`
   - standard 版が明示的に必要な場合のみ `npm run dev` → `http://localhost:5173/realtime-earthquake-viewer/`
@@ -268,13 +269,13 @@ README は「一般利用者・フォーカー・貢献者への導線」であ�
 | コマンド | 用途 |
 |----------|------|
 | `npm run dev` | 開発サーバー |
-| `npm run build` | 型チェック + 本番ビルド |
+| `npm run build` | 地名ラベル用グリフの検証 + 型チェック + 本番ビルド |
 | `npm run preview` | 本番ビルドのプレビュー（サブパス配信） |
 | `node scripts/build-station-coords.mjs` | 観測点座標テーブル（`public/data/station-coords.json`）の再生成 |
 | `node scripts/build-tsunami-zones.mjs` | 津波予報区 海岸線データ（`public/data/tsunami-zones.json`）の再生成 |
 | `node scripts/build-prefectures.mjs` | 都道府県境界データ（`public/data/prefectures.json`）の再生成（ベースマップ用） |
 | `node scripts/build-subregions.mjs` | 一次細分区域境界データ（`public/data/subregions.json`）の再生成 |
-| `node scripts/build-glyphs.mjs` | 地名ラベル用 SDF グリフ（`public/fonts/`）の再生成。**地名（地方・県・区域）が増減したら必ず実行する**（忘れるとその文字が無警告で空白になりうる。詳細は [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §5）。県名・区域名は `public/data/*.json` から読むため、**`build-prefectures.mjs`・`build-subregions.mjs` を先に実行すること** |
+| `node scripts/build-glyphs.mjs` | 地名ラベル用 SDF グリフ（`public/fonts/`）の再生成。**地名（地方・県・区域）が増減したら実行する**（`npm run build` が前段で `--check` を走らせ、未生成の文字があればビルドを止める。詳細は [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §5）。県名・区域名は `public/data/*.json` から読むため、**`build-prefectures.mjs`・`build-subregions.mjs` を先に実行すること** |
 | `npm version patch\|minor\|major` | バージョン更新・コミット・git tag 作成（main へのマージ直後に実行。詳細は「バージョン管理」参照） |
 
 ## 構成メモ
