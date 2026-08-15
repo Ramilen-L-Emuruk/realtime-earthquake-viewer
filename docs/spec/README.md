@@ -16,7 +16,7 @@
 | [quake-spec.md](quake-spec.md) | 地震情報（電文パース・区域集約・カード表示） | `src/utils/quakeMerge.ts`, `src/components/EarthquakeTab/`, `src/hooks/useQuakeLayerData.ts` |
 | [map-rendering-spec.md](map-rendering-spec.md) | MapLibre GL・レイヤー順・描画パフォーマンス | `src/components/Map/`, `src/components/Map/gl/` |
 | [audio-tts-spec.md](audio-tts-spec.md) | 通知音・VOICEVOX・ウィンドウタイトル | `src/utils/alertSound.ts`, `src/utils/voicevox.ts`, `src/hooks/useAlertTitle.ts` |
-| [data-sources-spec.md](data-sources-spec.md) | DMDATA / P2PQuake / Yahoo 統合仕様・クロック同期 | `src/services/`, `src/utils/clock.ts` |
+| [data-sources-spec.md](data-sources-spec.md) | DMDATA / P2PQuake / Yahoo 統合仕様・クロック同期・生成データ | `src/services/`, `src/utils/clock.ts`, `src/utils/fetchJson.ts` |
 | [settings-pwa-spec.md](settings-pwa-spec.md) | 設定タブ・localStorage・PWA・実地震テスト | `src/components/SettingsTab/`, `src/hooks/useSettings.ts`, `vite.config.ts` |
 | [kyoshin-detection-spec.md](kyoshin-detection-spec.md) | 強震モニタ揺れ検知エンジン（詳細仕様） | `src/utils/kyoshinDetector.ts` |
 | [kyoshin-detection-v3-design.md](kyoshin-detection-v3-design.md) | 強震モニタ検知の設計判断・調査・改訂履歴 | 同上（経緯資料） |
