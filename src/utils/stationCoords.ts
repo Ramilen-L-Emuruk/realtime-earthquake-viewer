@@ -27,6 +27,30 @@ const DATA_URL = `${import.meta.env.BASE_URL}data/station-coords.json`
 
 let cache: StationCoordsData | null = null
 let inflight: Promise<StationCoordsData> | null = null
+/** 取得成功を待っている購読者（onStationCoordsLoaded）。成功時に一度呼んで捨てる。 */
+const waiters = new Set<(data: StationCoordsData) => void>()
+
+/**
+ * 取得成功時に一度だけ呼ばれるコールバックを登録する。既に取得済みなら即座に呼ぶ。
+ * 戻り値は購読解除関数。
+ *
+ * 本データは複数の呼び出し元（地図の震度点・地震カード・EEW の都道府県補完）が別々の
+ * タイミングで要求する。loadStationCoords は失敗時に inflight を捨てて次回リトライ可能に
+ * するため、先に要求した側が失敗しても、後から要求した側の再取得が成功することがある。
+ * その成功を、既に失敗を見た側にも伝えるための仕組み（伝えないと、地震カードには
+ * 都道府県別の震度が出るのに地図には震度が出ない、という非対称が固定される）。
+ * 詳細は utils/subregions.ts の同名関数のコメントも参照。
+ */
+export function onStationCoordsLoaded(fn: (data: StationCoordsData) => void): () => void {
+  if (cache) {
+    fn(cache)
+    return () => {}
+  }
+  waiters.add(fn)
+  return () => {
+    waiters.delete(fn)
+  }
+}
 
 /**
  * 座標テーブルを取得する。初回のみ fetch し、以降はキャッシュを返す。
@@ -37,7 +61,25 @@ export function loadStationCoords(): Promise<StationCoordsData> {
   if (!inflight) {
     inflight = fetchJsonWithTimeout<StationCoordsData>(DATA_URL, 'station-coords')
       .then((data) => {
+        // 中身の形まで見る。ビルドや配信の破損で空の表が 200 で返ると、呼び出し側は
+        // 「取得成功・観測点 0 件」として扱ってしまい、地図に震度が出ない状態が失敗として
+        // 検知されないまま進む。ここで例外にして通信失敗と同じ経路へ載せる。
+        // areas も必須。欠けたまま通すと buildAreaPrefIndex・lookupPointCoords が
+        // Object.keys(undefined) で TypeError を投げ、レンダー中の例外になる（ErrorBoundary は無い）。
+        if (
+          !data ||
+          typeof data !== 'object' ||
+          !data.stations ||
+          Object.keys(data.stations).length === 0 ||
+          !data.areas ||
+          typeof data.areas !== 'object' ||
+          Object.keys(data.areas).length === 0
+        ) {
+          throw new Error('station-coords fetch returned no data (empty or malformed)')
+        }
         cache = data
+        for (const fn of waiters) fn(data)
+        waiters.clear()
         return data
       })
       .catch((err) => {
