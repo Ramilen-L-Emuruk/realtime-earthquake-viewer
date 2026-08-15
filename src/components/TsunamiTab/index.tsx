@@ -144,8 +144,8 @@ export function sortAreasForCardDisplay(areas: TsunamiArea[], observations: Tsun
 
 function TsunamiHeightHeader({ label, style }: { label: string; style: GradeStyle }) {
   return (
-    <div className="px-4 py-1 font-black leading-none"
-      style={{ fontSize: '22px', color: style.heightColor, backgroundColor: `${style.cardBorder}14`, borderBottom: `1px solid ${style.cardBorder}33` }}>
+    <div className="px-3 py-1 font-black leading-none text-[18px] roomy:px-4 roomy:text-[22px]"
+      style={{ color: style.heightColor, backgroundColor: `${style.cardBorder}14`, borderBottom: `1px solid ${style.cardBorder}33` }}>
       {label}
     </div>
   )
@@ -168,9 +168,9 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, isChang
 
   return (
     <div ref={setRowRef} className="border-b border-white/5 last:border-0">
-      <div className="flex items-center gap-3 px-4 py-3">
+      <div className="flex items-center gap-2 px-3 py-2 roomy:gap-3 roomy:px-4 roomy:py-3">
         <div className="flex-1 min-w-0">
-          <span className="text-white font-semibold block" style={{ fontSize: '20px', lineHeight: '1.2' }}>
+          <span className="text-white font-semibold block text-[17px] roomy:text-[20px]" style={{ lineHeight: '1.2' }}>
             {area.name}
           </span>
           {arrivalText && (
@@ -257,14 +257,14 @@ function TsunamiObservationRow({ obs, onObservationClick }: { obs: TsunamiObserv
   const clickable = !!obs.height && !!onObservationClick
   return (
     <div
-      className={`flex items-center gap-3 px-4 py-3 border-b border-white/5 last:border-0${clickable ? ' cursor-pointer hover:brightness-125 transition-[filter]' : ''}`}
+      className={`flex items-center gap-2 px-3 py-2 border-b border-white/5 last:border-0 roomy:gap-3 roomy:px-4 roomy:py-3${clickable ? ' cursor-pointer hover:brightness-125 transition-[filter]' : ''}`}
       onClick={clickable ? () => onObservationClick!(obs.name) : undefined}
       role={clickable ? 'button' : undefined}
       tabIndex={clickable ? 0 : undefined}
       onKeyDown={clickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') onObservationClick!(obs.name) } : undefined}
     >
       <div className="flex-1 min-w-0">
-        <span className="text-white font-semibold block" style={{ fontSize: '18px' }}>
+        <span className="text-white font-semibold block text-[16px] roomy:text-[18px]">
           {obs.name}
         </span>
         {obs.arrivalTime && (
@@ -438,7 +438,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
           onKeyDown={linkedQuake ? (e) => { if (e.key === 'Enter' || e.key === ' ') onEarthquakeLink?.(linkedQuake.earthquake.time) } : undefined}
           className={`rounded-lg overflow-hidden${linkedQuake ? ' cursor-pointer hover:opacity-90 transition-opacity' : ''}`}
           style={{ background: isCancelledDisplay ? '#1a1a1a' : topStyle.headerBg, border: `2px solid ${isCancelledDisplay ? '#4b5563' : topStyle.cardBorder}` }}>
-          <div className="px-4 py-3"
+          <div className="px-3 py-2 roomy:px-4 roomy:py-3"
             style={{ background: isCancelledDisplay ? 'rgba(75,85,99,0.18)' : `${topStyle.cardBorder}18` }}>
             <div className="flex items-center justify-between gap-2">
               <div className="font-bold" style={{ fontSize: '14px', color: isCancelledDisplay ? '#9ca3af' : topStyle.headerColor }}>
@@ -465,7 +465,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
         </div>
       </div>
 
-      <div className="p-3 flex flex-col gap-3">
+      <div className="p-2 flex flex-col gap-2 roomy:p-3 roomy:gap-3">
       {active.map(t => {
         const observations = t.observations ?? []
         const unmatched = observations.filter(o => !t.areas.some(a => matchesArea(o, a)))

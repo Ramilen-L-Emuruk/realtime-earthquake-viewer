@@ -21,7 +21,7 @@ export function MapUpdateTime({ lastUpdate, error = false }: Props) {
   const valid = lastUpdate && !Number.isNaN(lastUpdate.getTime())
   return (
     <div
-      className={`absolute z-[99999] bg-black/80 text-xl font-mono px-2.5 py-1 rounded pointer-events-none ${
+      className={`absolute z-[99999] bg-black/80 font-mono rounded pointer-events-none text-sm px-2 py-0.5 roomy:text-xl roomy:px-2.5 roomy:py-1 ${
         error ? 'text-red-400' : 'text-white'
       }`}
       style={{

@@ -34,7 +34,13 @@ export interface AppSettings {
   voicevoxSpeakerId: number        // VOICEVOX 話者 ID
   ttsIntensityLevels: number       // 読み上げる震度階数（最大震度から何階級分。0 = 最大震度のみ）
   ttsMaxRegions: number            // 読み上げる最大地域数（0 = 無制限）
+  panelRatio: number               // 縦積みレイアウト（スマホ縦など）でのパネル高さ比率（0.2〜0.8）
 }
+
+// パネル高さ比率の可動範囲。境界のつまみをドラッグしたときのクランプ幅と、
+// localStorage 復元時の sanitize で同じ値を使う（UI とストレージで範囲がずれないようにする）。
+export const PANEL_RATIO_MIN = 0.2
+export const PANEL_RATIO_MAX = 0.8
 
 // 通常版とDMDSS版の設定を localStorage 上で分離する
 const STORAGE_KEY = isDmdss
@@ -70,6 +76,7 @@ const DEFAULTS: AppSettings = {
   voicevoxSpeakerId: 0,
   ttsIntensityLevels: 2,
   ttsMaxRegions: 10,
+  panelRatio: 0.45,
 }
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
@@ -128,6 +135,7 @@ export function sanitize(partial: Partial<AppSettings>): AppSettings {
     voicevoxSpeakerId: clampNumber(partial.voicevoxSpeakerId, 0, 100000, DEFAULTS.voicevoxSpeakerId),
     ttsIntensityLevels: clampNumber(partial.ttsIntensityLevels, 0, 10, DEFAULTS.ttsIntensityLevels),
     ttsMaxRegions: clampNumber(partial.ttsMaxRegions, 0, 100, DEFAULTS.ttsMaxRegions),
+    panelRatio: clampNumber(partial.panelRatio, PANEL_RATIO_MIN, PANEL_RATIO_MAX, DEFAULTS.panelRatio),
   }
 }
 
@@ -158,7 +166,12 @@ export function useSettings() {
       const next = { ...prev, [key]: value }
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
-      } catch { /* storage full */ }
+      } catch (e) {
+        // 容量超過・プライベートブラウジング等で保存できないケース。state には反映するので
+        // 操作自体は効くが、次回の起動時には既定値へ戻る。無言だと「設定が勝手に戻る」
+        // 症状の原因を追えないため、読み込み側（load）と同じくログには残す。
+        log.warn('[settings] localStorage への保存に失敗（この変更は次回起動時に失われる）', e)
+      }
       return next
     })
   }, [])
