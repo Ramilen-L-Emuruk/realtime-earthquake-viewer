@@ -16,13 +16,14 @@
 //       必要な codepoint を含む 256 ブロックだけを生成する（ラベルは既知有限集合のため軽量）。
 //
 // 使い方:
-//   node scripts/build-glyphs.mjs                    # 既定: 同梱の Noto Sans JP(scripts/fonts/NotoSansJP-VF.ttf)
+//   node scripts/build-glyphs.mjs                    # 既定: 同梱の M PLUS Rounded 1c ExtraBold
 //   GLYPH_FONT=path/to/Other.ttf \                   # 別フォントを使う場合のみ上書き
-//     GLYPH_STACK="Other Family" node scripts/build-glyphs.mjs
+//     GLYPH_FAMILY="Internal Family" GLYPH_STACK="Other Family" node scripts/build-glyphs.mjs
 //
-// 本番フォント: 再配布可能な Noto Sans JP(OFL) の可変フォントを scripts/fonts/ に同梱し、既定で登録する
-// （システム Yu Gothic は再配布不可のため不採用）。出力 public/fonts/Noto Sans JP/ を MapLibre が配信する。
-// 見た目はフォント差で微変するが perf 特性（事前生成で TinySDF スパイクを消す）は不変。
+// 本番フォント: 再配布可能な M PLUS Rounded 1c ExtraBold(OFL) を scripts/fonts/ に同梱し、既定で登録する
+// （システム Meiryo / UD デジタル教科書体は再配布不可のため不採用）。出力 public/fonts/M PLUS Rounded 1c/ を
+// MapLibre が配信する。丸ゴシック＋ExtraBold を選んだのは、暗い地図上の小さな地名ラベル（13〜17px）で
+// 輪郭が識別しやすく太さも稼げるため。perf 特性（事前生成で TinySDF スパイクを消す）はフォントに依らず不変。
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -49,24 +50,53 @@ const FONT_SIZE = 24
 const BUFFER = 3
 const RADIUS = 8
 const CUTOFF = 0.25
-// フォントウェイト。可変フォント(Noto Sans JP・wght 軸)から太めのインスタンスでグリフを焼く。
-// 既定 700(Bold)＝ダーク地図上で細い文字が「非常に見づらい」とのユーザー指摘を受け、視認性を最優先に
-// 太字化する(Regular=400・SemiBold=600 より更に太い)。tiny-sdf は canvas の font 文字列にこの値を渡し、
-// napi-rs/canvas(skia) が可変フォントの wght 軸を選択する。
-const FONT_WEIGHT = process.env.GLYPH_WEIGHT ?? '700'
+// フォントウェイト。既定 800(ExtraBold)＝ダーク地図上で細い文字が「非常に見づらい」とのユーザー指摘を
+// 受け、視認性を最優先に太字化する。tiny-sdf は canvas の font 文字列にこの値を渡し、napi-rs/canvas
+// (skia) が登録済みフォントから該当ウェイトを選ぶ（同梱フォントは ExtraBold 単体＝800 のみを持つため、
+// ここを変える場合は対応ウェイトの TTF を GLYPH_FONT で併せて差し替えること）。
+const FONT_WEIGHT = process.env.GLYPH_WEIGHT ?? '800'
 
 // フォント指定。GLYPH_FONT にファイルパスが与えられれば登録して使う。既定は本リポジトリに同梱した
-// Noto Sans JP(OFL・再配布可)の可変フォント。これにより `node scripts/build-glyphs.mjs` 一発で
+// M PLUS Rounded 1c ExtraBold(OFL・再配布可)。これにより `node scripts/build-glyphs.mjs` 一発で
 // 開発機でも Linux CI でも同一の glyph を再生成できる（区域名の増減時に回し直す想定）。
-const DEFAULT_FONT_FILE = path.join(ROOT, 'scripts', 'fonts', 'NotoSansJP-VF.ttf')
+const DEFAULT_FONT_FILE = path.join(ROOT, 'scripts', 'fonts', 'MPLUSRounded1c-ExtraBold.ttf')
 const FONT_FILE = process.env.GLYPH_FONT ?? (fs.existsSync(DEFAULT_FONT_FILE) ? DEFAULT_FONT_FILE : '')
-let FONT_FAMILY = process.env.GLYPH_FAMILY ?? 'Noto Sans JP'
+// canvas に渡す「内部」ファミリ名。M PLUS Rounded 1c は配布名と TTF 内部の名前が一致せず、ExtraBold は
+// "Rounded Mplus 1c" の weight 800 として登録される。ここに配布名を書くと skia がフォントを見つけられず、
+// 例外を出さないまま別フォントで焼いてしまうため実測値を使う（GLYPH_FAMILY で上書き可）。
+let FONT_FAMILY = process.env.GLYPH_FAMILY ?? 'Rounded Mplus 1c'
+const FAMILIES_BEFORE = new Set(GlobalFonts.families.map((f) => f.family))
 if (FONT_FILE) {
   const ok = GlobalFonts.registerFromPath(path.resolve(FONT_FILE))
   if (!ok) throw new Error(`failed to register font: ${FONT_FILE}`)
 }
-// glyphs URL のディレクトリ名 ＝ style の text-font 値。両者を一致させる必要がある。
-const STACK = process.env.GLYPH_STACK ?? FONT_FAMILY
+// registerFromPath が成功しても、canvas に渡す FONT_FAMILY が TTF 内部の名前と食い違っていれば skia は
+// 例外を投げずシステム既定フォントで描いてしまう（実測で確認済み。配布名 "M PLUS Rounded 1c" を渡すと
+// 別形状のグリフが無言で生成された）。ビルドは "glyphs generated" と成功ログを出したまま全グリフが化ける
+// ため、登録結果と突き合わせてここで失敗させる。GLYPH_FONT 未指定時はシステム側の全ファミリを対象にする。
+const CANDIDATES = FONT_FILE ? GlobalFonts.families.filter((f) => !FAMILIES_BEFORE.has(f.family)) : GlobalFonts.families
+const MATCHED = CANDIDATES.find((f) => f.family === FONT_FAMILY)
+if (!MATCHED) {
+  throw new Error(
+    `フォントファミリ名の不一致: GLYPH_FAMILY="${FONT_FAMILY}" が見つからない。skia は例外を出さず別フォントで` +
+      `焼くため停止する。${
+        FONT_FILE
+          ? `${path.basename(FONT_FILE)} が登録したファミリ: ${CANDIDATES.map((f) => f.family).join(' / ') || '(なし)'}`
+          : 'GLYPH_FONT でフォントファイルを指定するか、GLYPH_FAMILY を実在するファミリ名にすること。'
+      }`,
+  )
+}
+// ウェイトも同様に無言で代替される（同梱フォントは静的な ExtraBold 単体なので、400 を渡しても 800 が
+// 返るだけで指定ミスに気付けない）。持っていないウェイトを要求していたら止める。
+if (!MATCHED.styles.some((s) => String(s.weight) === FONT_WEIGHT)) {
+  throw new Error(
+    `フォントウェイトの不一致: GLYPH_WEIGHT=${FONT_WEIGHT} は "${FONT_FAMILY}" に存在しない` +
+      `（利用可能: ${MATCHED.styles.map((s) => s.weight).join(' / ')}）。skia が近いウェイトで無言に代替するため停止する。`,
+  )
+}
+// glyphs URL のディレクトリ名 ＝ style の text-font 値。上の FONT_FAMILY（TTF 内部名）とは別物なので、
+// アプリ側の JP_FONT_STACK と一致する配布名を既定に置く（下の照合で不一致ならビルドを失敗させる）。
+const STACK = process.env.GLYPH_STACK ?? 'M PLUS Rounded 1c'
 const OUT_DIR = path.join(ROOT, 'public', 'fonts', STACK)
 
 // フォントスタック名の単一情報源(src/components/Map/gl/fontStack.ts の JP_FONT_STACK)と、これから
@@ -160,6 +190,18 @@ function main() {
   const blocks = groupByBlock(cps)
   fs.rmSync(OUT_DIR, { recursive: true, force: true })
   fs.mkdirSync(OUT_DIR, { recursive: true })
+
+  // OFL 1.1 第2条は、フォントソフトウェアの派生物を配布する各コピーに著作権表示とライセンス全文を
+  // 添付することを求める。エンドユーザーへ実際に配信されるのは public/fonts/<stack>/ 配下の SDF 派生物
+  // なので、ライセンス文を出力先にも複製する（scripts/fonts/ はビルド時ソースで配信対象外のため）。
+  // GLYPH_FONT で別フォントに差し替えた場合は同梱ライセンスと対応しなくなるので複製しない。
+  // 判定は path.resolve で正規化してから行う（GLYPH_FONT に相対パスやフォワードスラッシュで同じ
+  // ファイルを指定されたとき、素の文字列比較では別物と見なされ複製が漏れるため）。
+  const LICENSE_SRC = path.join(ROOT, 'scripts', 'fonts', 'OFL.txt')
+  const usesBundledFont = FONT_FILE !== '' && path.resolve(FONT_FILE) === path.resolve(DEFAULT_FONT_FILE)
+  if (usesBundledFont && fs.existsSync(LICENSE_SRC)) {
+    fs.copyFileSync(LICENSE_SRC, path.join(OUT_DIR, 'OFL.txt'))
+  }
 
   const sortedBlocks = [...blocks.keys()].sort((a, b) => a - b)
   let totalGlyphs = 0

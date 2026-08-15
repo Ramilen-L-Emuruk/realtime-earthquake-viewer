@@ -10,7 +10,7 @@ import { log } from '../../utils/logger'
 import { LABEL_TEXT_OPACITY_EXPR, updateLabelOverlap, type LabelOverlapTarget } from './gl/labelOverlap'
 
 // 地名ラベル（地方名／県名／区域名）を MapLibre の symbol レイヤーで描画する（Leaflet 版 BaseMap の
-// basemap-labels 相当）。日本語は事前生成した SDF グリフ（public/fonts/Noto Sans JP/・JapanMapGL の
+// basemap-labels 相当）。日本語は事前生成した SDF グリフ（public/fonts/M PLUS Rounded 1c/・JapanMapGL の
 // style.glyphs と localIdeographFontFamily:false 設定を参照）を GPU 描画する。
 //
 // ズームによる粒度切替は各レイヤーの minzoom/maxzoom で宣言的に行う（Leaflet 版の zoomend ハンドラ
@@ -28,7 +28,7 @@ const CITY_LABEL_MIN_ZOOM = 9
 const JP_TEXT_FONT = [JP_FONT_STACK]
 
 // 縁取り: ダーク地図上での視認性を確保するため、太めの halo-width＋halo-blur で背景色のソフトなグローを
-// 敷く（旧 Leaflet の三重 text-shadow 相当）。グリフ自体も Bold(700)で焼いている（build-glyphs.mjs）。
+// 敷く（旧 Leaflet の三重 text-shadow 相当）。グリフ自体も ExtraBold(800)で焼いている（build-glyphs.mjs）。
 const HALO_COLOR = '#0a0c10'
 
 const REGION_SRC = 'basemap-region-labels'

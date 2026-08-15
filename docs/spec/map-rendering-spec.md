@@ -62,9 +62,13 @@ const mapMode = mapTab === 'tsunami' ? 'tsunami'
 
 - 地方名・県名・区域名を symbol + icon-image で描画
 - ズーム帯で表示粒度を切替（低ズームは地方名、高ズームは区域名）
-- 事前生成 **SDF グリフ**（Noto Sans JP・`public/fonts/`）を使用
+- 事前生成 **SDF グリフ**（M PLUS Rounded 1c ExtraBold・`public/fonts/`）を使用
+  - **適用されるのは本節のラベルのみ**。震度バッジ等の数字は Canvas2D でラスタライズしたアイコン画像（`gl/intensityIcons.ts`・`gl/lpgmIcons.ts`・`gl/kyoshinDetectedIcons.ts`）で描いており、別のフォント指定を持つ
+  - 暗い地図の上に小さく置く地名（13〜17px）を読ませるため、丸ゴシック（角を丸めた字形のゴシック体）の太いウェイトを採用している
   - **SDF**（Signed Distance Field / 符号付き距離場）: 文字の輪郭を「各ピクセルから輪郭までの符号付き距離」として保存する画像形式。拡大縮小してもエッジが滲まないため MapLibre GL の文字描画に採用されている
 - グリフ生成スクリプト: `scripts/build-glyphs.mjs`（`@mapbox/tiny-sdf` で焼く）
+  - 収録するのは地方名・県名・区域名・震度ラベル・ASCII に実際に現れる文字だけ。**地名を増減したら再生成が必要**
+  - 再生成を忘れると、その文字が生成済みブロック（256 文字単位）内にあれば警告なしで空白になり、ブロックごと未生成なら警告付きで実行時生成にフォールバックして事前生成の目的（初回描画時のメインスレッド停止の回避）が失われる
 - 震度バッジ・観測点ドット等のマーカーと画面上で実際に重なっている間は `text-opacity` を下げる
   （`src/components/Map/gl/labelOverlap.ts` の `queryRenderedFeatures` ベース判定）
 
