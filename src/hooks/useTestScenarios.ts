@@ -41,7 +41,9 @@ export function useTestScenarios(
 
   useEffect(() => {
     let cancelled = false
-    fetchJsonWithTimeout<unknown>(INDEX_URL, 'test-scenarios index')
+    // 実地震テストは設定タブの機能で、失敗しても地図は変わらない（一覧側に専用の表示がある）。
+    // 地図に重ねる取得状況表示には数えない。
+    fetchJsonWithTimeout<unknown>(INDEX_URL, 'test-scenarios index', { trackStatus: false })
       .then(raw => {
         if (cancelled) return
         // 破損 JSON でも UI をクラッシュさせないため配列全体を捨てず、要素単位で通ったものだけ採用する。
@@ -92,7 +94,8 @@ export function useTestScenarios(
     if (cached) { runScenario(cached); return }
 
     fetchingIdsRef.current.add(id)
-    fetchJsonWithTimeout<unknown>(scenarioUrl(id), 'scenario')
+    // 再生失敗は再生ボタン側（errorIds）に出るため、地図に重ねる取得状況表示には数えない。
+    fetchJsonWithTimeout<unknown>(scenarioUrl(id), `scenario:${id}`, { trackStatus: false })
       .then(raw => {
         // 破損 JSON をそのまま instantiateScenario に渡すと実行時に落ちるため、
         // ここで型検証して壊れているならエラー扱いにする（instantiateScenario は valid 前提）。
