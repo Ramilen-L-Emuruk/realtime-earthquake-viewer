@@ -278,7 +278,8 @@ README は「一般利用者・フォーカー・貢献者への導線」であ�
 
 ## 構成メモ
 
-- `src/App.tsx`: レイアウトの中枢。地図常時表示＋アイコンナビ（右端）でパネル内容を切替。地図内容・更新時刻・通知音・自動タブ切替・EEW 連携の制御もここ。
+- `src/App.tsx`: レイアウトの中枢。地図常時表示＋アイコンナビでパネル内容を切替。地図内容・更新時刻・通知音・自動タブ切替・EEW 連携の制御もここ。
+- レイアウトは画面の向き・高さで切り替わる（左右分割／上下分割）。分岐条件は `tailwind.config.js` の `screens`（`side` / `sideNarrow` / `roomy`）が単一情報源。上下分割時は境界のつまみで比率変更・折りたたみができる（`PanelResizeHandle`）。詳細は [`docs/spec/architecture-spec.md`](docs/spec/architecture-spec.md) の「画面サイズ別のレイアウト」。
 - 地図は MapLibre GL JS（`JapanMapGL`）に一本化。`MapView` が App と地図実装の間の薄いラッパー。旧 Leaflet 版 JapanMap とエンジン切替フラグは F7 で撤去済み。
 - 地図のモード（`JapanMapGL` の `mode`）: `quake`（地震）／`tsunami`（津波海岸線）／`kyoshin`（リアルタイム震度・予報円）。
 - 生成データ（`public/data/*.json`）は座標が大きいため遅延読込（初回利用時に一度だけ fetch しキャッシュ）。  
@@ -295,6 +296,7 @@ README は「一般利用者・フォーカー・貢献者への導線」であ�
 | EEW P/S 波予報円の計算・仮定震源要素の連動箇所 | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §5-§6 |
 | EEW レベル判定（特別警報の条件・長周期の DMDATA 限定） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
 | 地図レイヤー描画順・EEW 予想レイヤーの kyoshin 限定・`maplibregl.Marker` の opacity | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §2・§3・§7・§10 |
+| 画面サイズ別レイアウトの分岐条件（`side` / `sideNarrow` / `roomy`）・パネル比率・折りたたみ | [`docs/spec/architecture-spec.md`](docs/spec/architecture-spec.md) §4「画面サイズ別のレイアウト」 |
 | 震度集約の単位（一次細分区域）・観測点 0 件時の集約維持 | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §7 |
 | 地震電文の `points` 構造（バリアント経路差・`pref` 空の識別規則） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §4 |
 | `KyoshinSubThreshold` の対象範囲（index 1〜6）・慢性ノイズ床フィルタ | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) |

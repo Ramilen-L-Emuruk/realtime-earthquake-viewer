@@ -190,21 +190,23 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
           {formatIssueType(issue.type)}
         </div>
 
-        <div className="flex flex-col gap-2 p-3">
+        {/* 画面が狭い・低い環境（roomy 未満＝スマホ縦/横）では余白と文字を詰め、
+            各地の震度がスクロールせずに見えるようにする。roomy 以上は従来の寸法。 */}
+        <div className="flex flex-col gap-1.5 p-2 roomy:gap-2 roomy:p-3">
           {/* 最大震度（横並び） */}
           <div
-            className="w-full rounded-lg py-3 px-5 flex items-center justify-center gap-4"
+            className="w-full rounded-lg py-1.5 px-3 flex items-center justify-center gap-2 roomy:py-3 roomy:px-5 roomy:gap-4"
             style={{
               backgroundColor: getIntensityBgColor(maxScale),
               border: `2px solid ${getIntensityColor(maxScale)}`,
             }}
           >
-            <span className="text-base font-medium" style={{ color: getIntensityColor(maxScale) }}>
+            <span className="text-sm font-medium roomy:text-base" style={{ color: getIntensityColor(maxScale) }}>
               最大震度
             </span>
             <span
-              className="font-black leading-none"
-              style={{ fontSize: '88px', color: '#ffffff' }}
+              className="font-black leading-none text-[52px] roomy:text-[88px]"
+              style={{ color: '#ffffff' }}
             >
               {maxScale === -1 ? '?' : getIntensityLabel(maxScale)}
             </span>
@@ -218,7 +220,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
               tabIndex={0}
               onClick={(e) => { e.stopPropagation(); onToggleLpgm?.(lpgm.eventId) }}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onToggleLpgm?.(lpgm.eventId) } }}
-              className="w-full rounded-lg py-2 px-4 flex items-center justify-center gap-4 hover:opacity-80 transition-opacity cursor-pointer"
+              className="w-full rounded-lg py-1 px-3 flex items-center justify-center gap-2 hover:opacity-80 transition-opacity cursor-pointer roomy:py-2 roomy:px-4 roomy:gap-4"
               style={{
                 backgroundColor: getLpgmClassBgColor(lpgm.maxClass),
                 border: `2px solid ${getLpgmClassColor(lpgm.maxClass)}`,
@@ -228,10 +230,10 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                 outlineOffset: '2px',
               }}
             >
-              <span className="text-sm font-medium" style={{ color: getLpgmClassColor(lpgm.maxClass) }}>
+              <span className="text-xs font-medium roomy:text-sm" style={{ color: getLpgmClassColor(lpgm.maxClass) }}>
                 長周期地震動
               </span>
-              <span className="text-2xl font-black" style={{ color: '#ffffff' }}>
+              <span className="text-xl font-black roomy:text-2xl" style={{ color: '#ffffff' }}>
                 {getLpgmClassLabel(lpgm.maxClass)}
               </span>
             </div>
@@ -239,7 +241,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
 
           {/* 日時 + 訂正情報 */}
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-secondary" style={{ fontSize: '20px' }}>
+            <span className="text-secondary text-base roomy:text-xl">
               {formatQuakeTime(earthquake.time)}
             </span>
             {issue.correct !== 'なし' && (
@@ -250,7 +252,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
           </div>
 
           {/* 震源地 */}
-          <div className="font-bold text-white leading-tight" style={{ fontSize: '30px' }}>
+          <div className="font-bold text-white leading-tight text-[22px] roomy:text-[30px]">
             {hasLocation ? hypocenter.name : '震源調査中'}
           </div>
 
@@ -258,7 +260,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
           {hasLocation && (
             <div className="grid grid-cols-2 gap-2">
               <div
-                className="flex flex-col gap-1 rounded-lg p-2.5"
+                className="flex flex-col gap-0.5 rounded-lg p-2 roomy:gap-1 roomy:p-2.5"
                 style={{
                   backgroundColor: `${magColor}26`,
                   border: `2px solid ${magColor}`,
@@ -267,12 +269,12 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                 <span className="text-xs font-medium tracking-wide" style={{ color: magColor }}>
                   マグニチュード
                 </span>
-                <span className="font-black leading-none" style={{ fontSize: '28px', color: '#ffffff' }}>
+                <span className="font-black leading-none text-[22px] roomy:text-[28px]" style={{ color: '#ffffff' }}>
                   {hypocenter.magnitude.toFixed(1)}
                 </span>
               </div>
               <div
-                className="flex flex-col gap-1 rounded-lg p-2.5"
+                className="flex flex-col gap-0.5 rounded-lg p-2 roomy:gap-1 roomy:p-2.5"
                 style={{
                   backgroundColor: `${depthColor}26`,
                   border: `2px solid ${depthColor}`,
@@ -281,7 +283,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                 <span className="text-xs font-medium tracking-wide" style={{ color: depthColor }}>
                   深さ
                 </span>
-                <span className="font-black leading-none" style={{ fontSize: '28px', color: '#ffffff' }}>
+                <span className="font-black leading-none text-[22px] roomy:text-[28px]" style={{ color: '#ffffff' }}>
                   {formatDepth(hypocenter.depth)}
                 </span>
               </div>
@@ -290,7 +292,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
 
           {/* 国内津波情報 */}
           <div
-            className="w-full rounded-lg py-2 px-3 text-center font-bold text-base"
+            className="w-full rounded-lg py-1 px-3 text-center font-bold text-sm roomy:py-2 roomy:text-base"
             style={{
               backgroundColor: `${tsunamiInfo.color}22`,
               border: `1px solid ${tsunamiInfo.color}`,
@@ -302,7 +304,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
 
           {/* 震源の緯度・経度 */}
           {hasLocation && (
-            <div className="text-sm text-secondary">
+            <div className="text-xs text-secondary roomy:text-sm">
               北緯 {hypocenter.latitude.toFixed(1)}° 東経 {hypocenter.longitude.toFixed(1)}°
             </div>
           )}
@@ -317,16 +319,16 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                   {lpgmGroups.map(({ name, maxLgInt }, idx) => (
                     <div
                       key={name}
-                      className="flex items-center justify-between px-2 py-1.5 rounded"
+                      className="flex items-center justify-between px-2 py-1 rounded roomy:py-1.5"
                       style={{ backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent' }}
                     >
                       <span
-                        className="font-bold flex-shrink-0 whitespace-nowrap"
-                        style={{ fontSize: '18px', color: getLpgmClassColor(maxLgInt) }}
+                        className="font-bold flex-shrink-0 whitespace-nowrap text-[15px] roomy:text-[18px]"
+                        style={{ color: getLpgmClassColor(maxLgInt) }}
                       >
                         長周期 {getLpgmClassLabel(maxLgInt)}
                       </span>
-                      <span className="text-white" style={{ fontSize: '18px' }}>{name}</span>
+                      <span className="text-white text-[15px] roomy:text-[18px]">{name}</span>
                     </div>
                   ))}
                 </div>
@@ -338,16 +340,16 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                 {prefGroups.map(({ pref, scale }, idx) => (
                   <div
                     key={pref}
-                    className="flex items-center justify-between px-2 py-1.5 rounded"
+                    className="flex items-center justify-between px-2 py-1 rounded roomy:py-1.5"
                     style={{ backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent' }}
                   >
                     <span
-                      className="font-bold flex-shrink-0 whitespace-nowrap"
-                      style={{ fontSize: '18px', color: getIntensityColor(scale) }}
+                      className="font-bold flex-shrink-0 whitespace-nowrap text-[15px] roomy:text-[18px]"
+                      style={{ color: getIntensityColor(scale) }}
                     >
                       震度{getIntensityLabel(scale)}
                     </span>
-                    <span className="text-white" style={{ fontSize: '18px' }}>{pref}</span>
+                    <span className="text-white text-[15px] roomy:text-[18px]">{pref}</span>
                   </div>
                 ))}
               </div>
