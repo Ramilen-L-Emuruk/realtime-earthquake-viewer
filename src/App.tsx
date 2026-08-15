@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback, type CSSProperties } from 'react'
 import { IconNav, type TabId } from './components/IconNav'
+import { PanelResizeHandle } from './components/PanelResizeHandle'
 import { MapView, type MapMode } from './components/Map/MapView'
 import { MapUpdateTime } from './components/MapUpdateTime'
 import { EarthquakeTab } from './components/EarthquakeTab'
@@ -48,7 +49,23 @@ const EMPTY_INDICES: number[] = []
 
 export function App() {
   const { settings, updateSetting } = useSettings()
-  const [activeTab, setActiveTab] = useState<TabId>(settings.defaultTab)
+  const [activeTab, setActiveTabState] = useState<TabId>(settings.defaultTab)
+  // パネルの折りたたみ状態。地図を全画面で見るための一時的な状態なので、意図的に設定へ
+  // 保存しない（起動直後に情報が見えない状態を作らないため、リロードで必ず展開に戻る）。
+  const [panelCollapsed, setPanelCollapsed] = useState(false)
+  // 縦積みレイアウト（スマホ縦など）でのパネル高さ比率。ドラッグ中は毎フレームここだけを
+  // 更新し、指を離した時点で設定（localStorage）へ保存する。
+  const [panelRatio, setPanelRatio] = useState(settings.panelRatio)
+
+  // タブ切替は「その内容をユーザーに見せる」意図なので、パネルが折りたたまれていれば必ず展開する。
+  // ラッパーにしているのは、activeTab の変化を監視する useEffect では拾えない経路があるため。
+  // EEW のレベルアップ・揺れ検知の続報・津波の続報はいずれも「既に表示中のタブ」へ
+  // setActiveTab を呼ぶ（値が変わらない）ため、監視型だと畳んだまま気付けない。
+  // 以降 App 内の全てのタブ切替（フックへ props で渡すものも含む）はこのラッパーを通す。
+  const setActiveTab = useCallback((tab: TabId) => {
+    setPanelCollapsed(false)
+    setActiveTabState(tab)
+  }, [])
   const [selectedQuakeId, setSelectedQuakeId] = useState<string | null>(null)
   // 地震カードのユーザー明示選択カウンタ。QuakeFitGL が「明示選択」と「電文更新起点の自動追従」を
   // 区別するために使う（明示選択中はユーザー操作中フラグを無視して強制フィット・
@@ -105,6 +122,11 @@ export function App() {
   // 津波リスト（続報判定に使う）。値の確定は下方で毎レンダー tsunamis で更新する。
   const tsunamisRef = useRef<JMATsunami[]>([])
   const defaultTabRef = useRef<TabId>(settings.defaultTab)
+  // 表示中のタブ。「同じタブをもう一度押したら折りたたむ」判定に使う。
+  // handleTabChange の deps に activeTab を入れると切替のたびに関数の参照が変わり、
+  // React.memo 化した IconNav が再レンダーされるため ref で参照する（値は毎レンダー同期）。
+  const activeTabRef = useRef<TabId>(activeTab)
+  activeTabRef.current = activeTab
   // ウィンドウタイトル（情報タイトル）管理
   const title = useAlertTitle({ activeEEWsRef, kyoshinDetectedRef })
   // SW アップデート検知時のカウントダウン秒数（null = 待機なし、0以下でリロード）
@@ -130,6 +152,11 @@ export function App() {
     const remaining = realtimeTabSuppressedUntilRef.current - Date.now()
     if (remaining > 0) {
       log.debug(`[tab] → realtime スキップ (EEW続報・抑制中 残り${remaining}ms)`)
+      // タブは動かさないが、折りたたみだけは解除する。抑制は「ユーザーが自分で選んだタブを
+      // 勝手に切り替えない」ための仕組みであって、情報を隠したままにするためのものではない。
+      // これを入れないと「手動で別タブへ移動 → 折りたたむ → 抑制中に続報が届く」経路で、
+      // 抑制が切れるまで（最大 15 秒）パネルが畳まれたままになる。
+      setPanelCollapsed(false)
       return
     }
     log.info('[tab] → realtime (EEW続報)')
@@ -230,7 +257,13 @@ export function App() {
     simulateNankai, simulateKohatsu,
   ])
   // IconNav の onTabChange。手動タブ切替は抑制タイマーをリセットして即時反映する。
+  // 表示中のタブをもう一度押した場合はタブ切替ではなく、パネルの折りたたみをトグルする
+  // （地図を全画面で見るための操作。特に画面の狭いスマホ向け）。
   const handleTabChange = useCallback((tab: TabId) => {
+    if (tab === activeTabRef.current) {
+      setPanelCollapsed(c => !c)
+      return
+    }
     if (tab === 'realtime') {
       realtimeTabSuppressedUntilRef.current = 0
       log.info('[tab] → realtime (手動選択)')
@@ -240,6 +273,20 @@ export function App() {
       setActiveTabNonRealtime(tab)
     }
   }, [setActiveTabNonRealtime])
+
+  // パネル境界のつまみ操作。ドラッグ中（Change）は state だけを更新して追従性を保ち、
+  // 指を離した時点（Commit）で設定へ保存する。折りたたみ中にドラッグされた場合は
+  // 「引き出す」操作とみなして展開する。
+  const handlePanelRatioChange = useCallback((ratio: number) => {
+    setPanelCollapsed(false)
+    setPanelRatio(ratio)
+  }, [])
+  const handlePanelRatioCommit = useCallback((ratio: number) => {
+    setPanelCollapsed(false)
+    setPanelRatio(ratio)
+    updateSetting('panelRatio', ratio)
+  }, [updateSetting])
+  const togglePanelCollapsed = useCallback(() => setPanelCollapsed(c => !c), [])
 
   const scenarioTest = useTestScenarios(loadReplayEvents)
 
@@ -683,6 +730,15 @@ export function App() {
   // タイマーコールバック内から最新の confirmed 値を参照する ref（宣言はコンポーネント冒頭・代入はここ）
   kyoshinDetectedRef.current = kyoshinView.confirmed
 
+  // 警報級の状況（EEW 発報中・津波発表中・揺れ検知中）が立ち上がったときの保険。
+  // 通常はタブ切替（setActiveTab ラッパー）が展開を担うが、リアルタイムタブへの自動移動が
+  // 抑制されている間（realtimeTabSuppressedUntilRef）はタブ切替自体が起きないため、
+  // 状況の変化そのものからも展開できるようにしておく。
+  const alertActive = hasActiveEEW || tsunamiActive || kyoshinView.confirmed
+  useEffect(() => {
+    if (alertActive) setPanelCollapsed(false)
+  }, [alertActive])
+
   // EEWデータから P波・S波半径を自前計算（100ms更新でスムーズ拡張、標準版・DMDSS版共通）
   // eewsForMap（activeEEWsNoCancelled の配列）と同一内容のため使い回して二重 useMemo を避ける。
   const psWave = usePsWaveCalc(eewsForMap, replayTimeOffset)
@@ -743,8 +799,14 @@ export function App() {
 
   return (
     <div className="flex flex-col h-dvh bg-app text-white overflow-hidden">
-      {/* 地図(左) | パネル | アイコンナビ(右端)。モバイルは縦積み(地図上・パネル・ナビ下)。 */}
-      <div className="flex-1 overflow-hidden flex flex-col lg:flex-row">
+      {/* 地図(左) | パネル | アイコンナビ(右端)。
+          side ブレークポイント未満（スマホ縦など）は縦積み(地図上・つまみ・パネル・ナビ下)になり、
+          パネルの高さは --panel-ratio（つまみのドラッグで可変・折りたたみ時 0）で決まる。
+          side 以上（PC・スマホ横）は左右分割で、パネル幅は固定。 */}
+      <div
+        className="flex-1 overflow-hidden flex flex-col side:flex-row"
+        style={{ '--panel-ratio': panelCollapsed ? 0 : panelRatio } as CSSProperties}
+      >
         {/* 常時表示の地図エリア（タブに応じて内容を切替） */}
         <div className="relative flex-1 min-h-0">
           <MapView
@@ -777,10 +839,22 @@ export function App() {
           <SpecialInfoBanner nankai={nankai} kohatsu={kohatsu} />
         </div>
 
-        {/* パネル（タブに応じて内容を切替）。モバイルは下部固定高さ + スクロール。 */}
-        {/* 各タブを absolute で重ねて visibility で切り替えることで、スクロール位置をタブごとに独立管理する。
-            display:none（hidden クラス）は scrollTop をリセットするため使わない。 */}
-        <div className="h-96 flex-shrink-0 lg:h-auto lg:flex-none lg:w-96 border-t lg:border-t-0 lg:border-l border-border relative">
+        {/* 地図とパネルの境界（縦積み時のみ）。ドラッグで高さ比率を変え、タップで折りたたむ。 */}
+        <PanelResizeHandle
+          ratio={panelRatio}
+          collapsed={panelCollapsed}
+          onRatioChange={handlePanelRatioChange}
+          onRatioCommit={handlePanelRatioCommit}
+          onToggleCollapse={togglePanelCollapsed}
+        />
+
+        {/* パネル（タブに応じて内容を切替）。縦積み時は --panel-ratio 由来の高さ + スクロール。
+            折りたたみ時は縦積みなら高さ（--panel-ratio=0）、左右分割なら幅が 0 になり地図が全画面になる。
+            各タブを absolute で重ねて visibility で切り替えることで、スクロール位置をタブごとに独立管理する。
+            折りたたみを含め display:none（hidden クラス）を使わないのは、scrollTop がリセットされるため。 */}
+        <div className={`flex-shrink-0 h-[calc(var(--panel-ratio)*100%)] overflow-hidden side:h-auto side:flex-none border-border relative ${
+          panelCollapsed ? 'side:w-0 side:border-l-0' : 'side:w-96 sideNarrow:w-80 side:border-l'
+        }`}>
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'earthquake' ? ' invisible pointer-events-none' : ''}`}>
             <EarthquakeTab
               earthquakes={filteredEarthquakes}
@@ -840,10 +914,11 @@ export function App() {
           </div>
         </div>
 
-        {/* アイコンナビ（一番外側＝右端 / モバイルは最下部） */}
+        {/* アイコンナビ（一番外側＝右端 / 縦積み時は最下部） */}
         <IconNav
           activeTab={activeTab}
           onTabChange={handleTabChange}
+          panelCollapsed={panelCollapsed}
           tsunamiGrade={tsunamiGrade}
           eewLevel={computeEEWLevel(activeEEWsNoCancelled)}
         />

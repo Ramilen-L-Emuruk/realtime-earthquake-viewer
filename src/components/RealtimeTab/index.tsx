@@ -101,11 +101,13 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
         )}
       </div>
 
-      <div className="flex flex-col gap-2 p-3">
+      {/* 画面が狭い・低い環境（roomy 未満＝スマホ縦/横）では余白と文字を詰め、
+          対象地域や到達予想時刻がスクロールせずに見えるようにする。roomy 以上は従来の寸法。 */}
+      <div className="flex flex-col gap-1.5 p-2 roomy:gap-2 roomy:p-3">
         {/* 最大震度バナー */}
         {maxScale > 0 ? (
           <div
-            className="w-full rounded-lg py-3 px-4 flex items-center justify-center gap-4"
+            className="w-full rounded-lg py-1.5 px-3 flex items-center justify-center gap-2 roomy:py-3 roomy:px-4 roomy:gap-4"
             style={{
               backgroundColor: getIntensityBgColor(maxScale),
               border: `2px solid ${getIntensityColor(maxScale)}`,
@@ -114,13 +116,13 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
             <span className="text-sm font-medium" style={{ color: getIntensityColor(maxScale) }}>
               予想最大震度
             </span>
-            <span className="font-black leading-none" style={{ fontSize: '72px', color: '#ffffff' }}>
+            <span className="font-black leading-none text-[48px] roomy:text-[72px]" style={{ color: '#ffffff' }}>
               {getIntensityLabel(maxScale)}
             </span>
           </div>
         ) : (
           <div
-            className="w-full rounded-lg py-3.5 px-4 flex flex-col items-center justify-center gap-1"
+            className="w-full rounded-lg py-2 px-4 flex flex-col items-center justify-center gap-1 roomy:py-3.5"
             style={{ backgroundColor: 'rgba(42,42,42,0.8)', border: '2px solid #4b5563' }}
           >
             {eew.earthquake.condition === '仮定震源要素' ? (
@@ -138,7 +140,7 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onToggleLpgm?.(eew.issue?.eventId ?? eew.id) }}
-            className="w-full rounded-lg py-2 px-4 flex items-center justify-center gap-4 hover:opacity-80 transition-opacity"
+            className="w-full rounded-lg py-1 px-3 flex items-center justify-center gap-2 hover:opacity-80 transition-opacity roomy:py-2 roomy:px-4 roomy:gap-4"
             style={{
               backgroundColor: getLpgmClassBgColor(lpgmClass),
               border: `2px solid ${getLpgmClassColor(lpgmClass)}`,
@@ -148,22 +150,22 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
               outlineOffset: '2px',
             }}
           >
-            <span className="text-sm font-medium" style={{ color: getLpgmClassColor(lpgmClass) }}>
+            <span className="text-xs font-medium roomy:text-sm" style={{ color: getLpgmClassColor(lpgmClass) }}>
               推定長周期地震動
             </span>
-            <span className="text-2xl font-black" style={{ color: '#ffffff' }}>
+            <span className="text-xl font-black roomy:text-2xl" style={{ color: '#ffffff' }}>
               {getLpgmClassLabel(lpgmClass)}
             </span>
           </button>
         )}
 
         {/* 発生時刻 */}
-        <div className="text-secondary" style={{ fontSize: '18px' }}>
+        <div className="text-secondary text-[15px] roomy:text-[18px]">
           {formatDateTime(eew.earthquake.originTime)}ごろ
         </div>
 
         {/* 震源名 */}
-        <div className="font-bold text-white leading-tight" style={{ fontSize: '26px' }}>
+        <div className="font-bold text-white leading-tight text-[20px] roomy:text-[26px]">
           {hypocenter.name || '震源調査中'}
         </div>
 
@@ -171,7 +173,7 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
         {hypocenter.name && eew.earthquake.condition !== '仮定震源要素' && (
           <div className="grid grid-cols-2 gap-2">
             <div
-              className="flex flex-col gap-1 rounded-lg p-2.5"
+              className="flex flex-col gap-0.5 rounded-lg p-2 roomy:gap-1 roomy:p-2.5"
               style={{
                 backgroundColor: `${magColor}26`,
                 border: `2px solid ${magColor}`,
@@ -180,12 +182,12 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
               <span className="text-xs font-medium tracking-wide" style={{ color: magColor }}>
                 マグニチュード
               </span>
-              <span className="font-black leading-none" style={{ fontSize: '24px', color: '#ffffff' }}>
+              <span className="font-black leading-none text-[20px] roomy:text-[24px]" style={{ color: '#ffffff' }}>
                 {hypocenter.magnitude.toFixed(1)}
               </span>
             </div>
             <div
-              className="flex flex-col gap-1 rounded-lg p-2.5"
+              className="flex flex-col gap-0.5 rounded-lg p-2 roomy:gap-1 roomy:p-2.5"
               style={{
                 backgroundColor: `${depthColor}26`,
                 border: `2px solid ${depthColor}`,
@@ -194,7 +196,7 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
               <span className="text-xs font-medium tracking-wide" style={{ color: depthColor }}>
                 深さ
               </span>
-              <span className="font-black leading-none" style={{ fontSize: '24px', color: '#ffffff' }}>
+              <span className="font-black leading-none text-[20px] roomy:text-[24px]" style={{ color: '#ffffff' }}>
                 {hypocenter.depth}km
               </span>
             </div>
@@ -260,8 +262,9 @@ const LABEL_ORDER = ['7', '6強', '6弱', '5強', '5弱', '4', '3', '2', '1', '0
 
 function SWaveArrivalCard({ arrival }: { arrival: SWaveArrival }) {
   const borderColor = arrival.arrived ? '#ef4444' : '#f97316'
+  // 余白のみ圧縮する。カウントダウンの数字は緊急度が高く、一目で読めることが要るため縮めない。
   return (
-    <div className="bg-card rounded-lg p-3 border-2" style={{ borderColor }}>
+    <div className="bg-card rounded-lg p-2 border-2 roomy:p-3" style={{ borderColor }}>
       <div className="flex items-center gap-2 mb-1">
         <span
           className="inline-block w-2 h-2 rounded-full flex-shrink-0"
@@ -372,11 +375,11 @@ function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent
         </span>
         <span className="text-xs text-secondary ml-auto font-mono">{time}</span>
       </div>
-      <div className="flex gap-3 p-3">
+      <div className="flex gap-2 p-2 roomy:gap-3 roomy:p-3">
         {/* 推定最大震度 */}
         <div className="flex flex-col items-center justify-center flex-shrink-0" style={{ minWidth: '68px' }}>
           <span className="text-xs text-secondary">推定最大震度</span>
-          <span className="font-black leading-none text-white" style={{ fontSize: '48px', textShadow: `0 0 12px ${maxColor}` }}>
+          <span className="font-black leading-none text-white text-[36px] roomy:text-[48px]" style={{ textShadow: `0 0 12px ${maxColor}` }}>
             {maxLabel ?? '—'}
           </span>
         </div>
@@ -411,7 +414,7 @@ export const RealtimeTab = memo(function RealtimeTab({ eews, kyoshinSites, kyosh
   // メンバー観測点キー → 現在の座標＋インデックスの索引（各カードの震度分布集計に使う）
   const siteIndex = useMemo(() => buildSiteIndex(kyoshinSites, kyoshinIndices), [kyoshinSites, kyoshinIndices])
   return (
-    <div className="flex flex-col min-h-full p-3 gap-3">
+    <div className="flex flex-col min-h-full p-2 gap-2 roomy:p-3 roomy:gap-3">
       {/* データカード */}
       {[...eews]
         .sort((a, b) => b.earthquake.originTime.localeCompare(a.earthquake.originTime))

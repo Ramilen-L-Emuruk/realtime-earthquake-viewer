@@ -9,7 +9,7 @@ React 18 + TypeScript + Vite 6 で作られた PWA（Progressive Web App）。�
 津波情報・リアルタイム震度をブラウザで表示する。地図は MapLibre GL JS（WebGL 描画）に統一されている。
 
 **主要な設計原則**:
-- 地図は常時表示、右パネルをタブで切り替える
+- 地図は常時表示、情報パネルをタブで切り替える（画面サイズにより左右分割 / 上下分割）
 - 全ての時刻は「サーバー同期時刻（`serverNow`）」を基準にする（壁時計は信用しない）
 - データソースはバリアントごとに切り替える（standard vs DMDSS）
 
@@ -38,7 +38,7 @@ React 18 + TypeScript + Vite 6 で作られた PWA（Progressive Web App）。�
 [UI]
   ├─ App.tsx          … 全体レイアウト・イベント連動
   ├─ MapView          … 地図（4 タブ共通で常時表示）
-  ├─ IconNav          … 右端のタブナビ
+  ├─ IconNav          … タブナビ（右端 or 最下部）
   └─ 各タブパネル     … EarthquakeTab / RealtimeTab / TsunamiTab / TelegramTab / SettingsTab
 
 [副作用]
@@ -93,8 +93,8 @@ React 18 + TypeScript + Vite 6 で作られた PWA（Progressive Web App）。�
 
 ### App.tsx（レイアウトの中枢）
 
-- 地図（`MapView` 経由で `JapanMapGL`）を左に常時表示、右パネルをタブで切り替える
-- 右端の `IconNav` から `mapTab` を切り替え。`mapTab === 'realtime'` は kyoshin モード
+- 地図（`MapView` 経由で `JapanMapGL`）を常時表示し、情報パネルをタブで切り替える
+- `IconNav` から `mapTab` を切り替え。`mapTab === 'realtime'` は kyoshin モード
 - 各種フック（`useEarthquakes` / `useKyoshinRealtime` / `useKyoshinAlerts` / `useKyoshinDetectorV2` /
   `usePsWaveCalc` / `useLiveEventHandler` / `useAlertTitle`）を配線する
 - 通知音・ブラウザ通知・自動タブ切替・カメラ自動フィット・VOICEVOX 読み上げ・EEW 状態管理などの制御をここで行う
@@ -103,6 +103,53 @@ App が直接持つのは「1 秒毎更新」（強震モニタ・`kyoshinIndice
 `usePsWaveCalc` フック内部で `setInterval` が回る。App はこれらの state を子コンポーネントに配る。
 過剰な再レンダーが伝播しないよう、下位で `useMemo`・`React.memo` を活用する
 （詳細は [`map-rendering-spec.md`](map-rendering-spec.md) 参照）。
+
+### 画面サイズ別のレイアウト
+
+地図と情報パネルの並べ方は、画面の幅だけでなく**向きと高さ**で決まる。幅だけで判定すると、
+スマートフォンの横画面（例 844×390）が「幅は足りないが高さが極端に低い」状態になり、
+上下に積んだパネルが画面高を占有して地図が見えなくなるため。
+
+判定に使うブレークポイントは `tailwind.config.js` の `theme.extend.screens` が単一情報源:
+
+| 名前 | 条件 | 効果 |
+|---|---|---|
+| `side` | 幅 1024px 以上、または 横向きかつ高さ 600px 以下 | 地図とパネルを**左右分割**（PC・タブレット横・スマホ横） |
+| `sideNarrow` | 横向き・高さ 600px 以下・幅 1023px 以下 | 左右分割のうち狭い画面。パネル幅を絞る（`w-80`＝20rem。PC は `w-96`＝24rem） |
+| `roomy` | 幅 640px 以上 **かつ** 高さ 601px 以上 | カードの文字・余白をゆったり表示。**未満は圧縮表示**になる |
+
+パネル幅を rem で書いているのは、UI 倍率設定（`uiScale`）がルートの `font-size` を変えるため。
+既定の倍率 100% では 20rem＝320px / 24rem＝384px になり、倍率を上げれば同じ比率で広くなる。
+
+`side` 未満（スマホ縦・タブレット縦）は**縦積み**（地図が上・パネルが下）になり、次の 2 つが加わる:
+
+- **パネル高さの可変**: 地図とパネルの境界に `PanelResizeHandle` を置き、ドラッグで比率を
+  20〜80% の範囲で変更できる。比率は設定 `panelRatio` として保存され、CSS 変数 `--panel-ratio`
+  経由でパネルの高さ（`calc(var(--panel-ratio) * 100%)`）に反映される。
+- **折りたたみ**: つまみのタップ、または表示中タブのアイコン再押下でパネルを畳み、地図を全画面にする
+  （左右分割時は幅が 0 になる）。折りたたみ状態は**保存しない**。起動直後に情報が見えない状態を
+  作らないため、リロードすると必ず展開に戻る。加えて、タブが切り替わったとき、および
+  EEW 発報・津波発表・揺れ検知が立ち上がったときは自動的に展開する。
+
+`roomy` 未満での圧縮は各カード側で `roomy:` プレフィックス付きのクラスとして表現する
+（モバイルファースト。既定＝圧縮値、`roomy:` で従来の寸法に戻す）。適用先:
+
+| ファイル | 圧縮する箇所 |
+|---|---|
+| `EarthquakeTab/EarthquakeCard.tsx` | 選択カードの最大震度・長周期・日時・震源名・M/深さ・各地の震度行 |
+| `EarthquakeTab/index.tsx` | カード一覧の外枠（余白のみ） |
+| `RealtimeTab/index.tsx` | EEW カード各部・揺れ検知カード・S 波カウントダウンの余白・タブ外枠 |
+| `TsunamiTab/index.tsx` | 予報区ヘッダー・区域行・観測点行・サマリーバナー・タブ外枠 |
+| `MapUpdateTime.tsx` | 地図左上の更新時刻 |
+
+圧縮の対象は**各カードの主要な見出し・数値と余白**で、次のものは意図的に対象外にしている:
+
+- 注記・補足のようにもともと小さい文字（11〜14px 前後）。狭い画面ほど読めなくなるため
+- 「キャンセル」など全画面オーバーレイの強調表示（`EarthquakeCard` / EEW カード / 津波カード）。
+  目立たせること自体が目的のため
+- 津波の観測高さや S 波カウントダウンの秒数のように、小さくすると読み取りを誤りうる数値
+
+そのため各カードにインラインの `fontSize` 指定が残っているが、上記に当てはまるものは変換漏れではない。
 
 ### タブコンポーネントの再レンダー抑制
 
@@ -134,10 +181,14 @@ memo を効かせるには props が参照安定である必要があるため�
 各レイヤーは独立したコンポーネント（`*GL.tsx`）として実装され、`mapGLContext` から map インスタンスを取得する。
 描画順は `src/components/Map/gl/layerOrder.ts` の `MAP_LAYER_ORDER` が単一情報源。
 
-### IconNav（右端タブナビ）
+### IconNav（タブナビ）
 
 `ITEMS` 配列で 5 タブを定義（実装順: `earthquake` / `realtime` / `tsunami` / `settings` / `telegrams`）。
 どのタブも標準版・DMDSS 版で常時表示される（`telegrams` は standard 版では常に空だが、UI は表示）。
+配置は左右分割時が右端の縦並び、縦積み時が最下部の横並び。
+
+**表示中のタブをもう一度押すとパネルの折りたたみをトグルする**（タブ切替は起きない）。畳んでいる間は
+そのタブのボタンの塗りが弱くなり、`aria-expanded` が `false` になる。
 
 ### 各タブパネル
 
@@ -167,7 +218,8 @@ realtime-earthquake-viewer/
 │   │   ├── TelegramTab/       # 電文ログタブ（DMDSS 版のみ実データ）
 │   │   ├── SettingsTab/       # 設定タブ → settings-pwa-spec.md
 │   │   ├── SpecialInfoBanner/ # 南海トラフ・後発地震情報バナー
-│   │   └── IconNav.tsx        # 右端タブナビ
+│   │   ├── IconNav.tsx        # タブナビ（右端 or 最下部）
+│   │   └── PanelResizeHandle.tsx # 縦積み時の地図／パネル境界（高さ調整・折りたたみ）
 │   ├── hooks/                 # データ取得・状態管理・派生データ計算
 │   ├── services/              # 外部データソースクライアント → data-sources-spec.md
 │   │   ├── dmdata.ts          # DMDATA.JP WebSocket + REST

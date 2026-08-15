@@ -74,40 +74,58 @@ const EEW_BADGE_COLOR: Record<number, string> = {
 interface Props {
   activeTab: TabId
   onTabChange: (tab: TabId) => void
+  /** パネルが折りたたまれているか（表示中タブのボタンの状態表示に使う）。 */
+  panelCollapsed: boolean
   tsunamiGrade: 'MajorWarning' | 'Warning' | 'Watch' | null
   eewLevel: 0 | 1 | 2 | null
 }
 
-// 縦並び（モバイルは横並び）のアイコンボタンによるナビゲーション。
+// アイコンボタンによるナビゲーション。左右分割時（side 以上）は右端で縦並び、
+// 縦積み時（スマホ縦など）は最下部で横並びになる。
+// 表示中のタブをもう一度押すとパネルの折りたたみをトグルする（挙動は App 側）。
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const IconNav = memo(function IconNav({ activeTab, onTabChange, tsunamiGrade, eewLevel }: Props) {
+export const IconNav = memo(function IconNav({ activeTab, onTabChange, panelCollapsed, tsunamiGrade, eewLevel }: Props) {
   return (
     <nav
-      className="flex flex-row lg:flex-col items-center justify-center lg:justify-start gap-1 p-1.5 bg-panel border-t lg:border-t-0 lg:border-l border-border flex-shrink-0"
-      style={{ paddingBottom: 'max(0.375rem, env(safe-area-inset-bottom, 0px))' }}
+      className="flex flex-row side:flex-col items-center justify-center side:justify-start gap-1 p-1.5 bg-panel border-t side:border-t-0 side:border-l border-border flex-shrink-0"
+      // 縦積み時は下端、左右分割時は右端に来るため、両方の safe-area を確保する
+      // （横向き時の inset-bottom / 縦向き時の inset-right はいずれも 0 になるので相互に干渉しない）。
+      style={{
+        paddingBottom: 'max(0.375rem, env(safe-area-inset-bottom, 0px))',
+        paddingRight: 'max(0.375rem, env(safe-area-inset-right, 0px))',
+      }}
     >
-      {ITEMS.map((item) => (
-        <button
-          key={item.id}
-          onClick={() => onTabChange(item.id)}
-          aria-label={item.label}
-          aria-current={activeTab === item.id}
-          title={item.label}
-          className={`relative w-11 h-11 flex items-center justify-center rounded-lg transition-colors ${
-            activeTab === item.id
-              ? 'bg-white/15 text-white'
-              : 'text-secondary hover:text-white hover:bg-white/5'
-          }`}
-        >
-          {ICONS[item.id]}
-          {item.id === 'tsunami' && tsunamiGrade !== null && (
-            <span className={`absolute top-1 right-1 w-2 h-2 rounded-full ${TSUNAMI_BADGE_COLOR[tsunamiGrade]} animate-pulse`} />
-          )}
-          {item.id === 'realtime' && eewLevel !== null && (
-            <span className={`absolute top-1 right-1 w-2 h-2 rounded-full ${EEW_BADGE_COLOR[eewLevel]} animate-pulse`} />
-          )}
-        </button>
-      ))}
+      {ITEMS.map((item) => {
+        const isActive = activeTab === item.id
+        return (
+          <button
+            key={item.id}
+            onClick={() => onTabChange(item.id)}
+            // ボタン名（aria-label）は状態で変えない。折りたたみの状態は aria-expanded が伝える
+            // 役割を持つため、名前まで変えると読み上げも DOM 検索も不安定になる。
+            aria-label={item.label}
+            aria-current={isActive}
+            aria-expanded={isActive ? !panelCollapsed : undefined}
+            title={isActive ? `${item.label}（もう一度押すとパネルを${panelCollapsed ? '開く' : '畳む'}）` : item.label}
+            className={`relative w-11 h-11 flex items-center justify-center rounded-lg transition-colors ${
+              isActive
+                ? panelCollapsed
+                  // 折りたたみ中は「選択中だが内容は非表示」であることを、塗りを弱めて示す。
+                  ? 'bg-white/5 text-white/70'
+                  : 'bg-white/15 text-white'
+                : 'text-secondary hover:text-white hover:bg-white/5'
+            }`}
+          >
+            {ICONS[item.id]}
+            {item.id === 'tsunami' && tsunamiGrade !== null && (
+              <span className={`absolute top-1 right-1 w-2 h-2 rounded-full ${TSUNAMI_BADGE_COLOR[tsunamiGrade]} animate-pulse`} />
+            )}
+            {item.id === 'realtime' && eewLevel !== null && (
+              <span className={`absolute top-1 right-1 w-2 h-2 rounded-full ${EEW_BADGE_COLOR[eewLevel]} animate-pulse`} />
+            )}
+          </button>
+        )
+      })}
     </nav>
   )
 })

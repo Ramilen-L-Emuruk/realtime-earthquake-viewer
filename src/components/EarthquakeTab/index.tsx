@@ -52,7 +52,7 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
   }
 
   return (
-    <div className="p-3 space-y-2">
+    <div className="p-2 space-y-1.5 roomy:p-3 roomy:space-y-2">
       {earthquakes.map((quake, i) => (
         <EarthquakeCard
           // QUAKE-4: 続報で id 末尾の serial が変わるたびに EarthquakeCard がリマウントされ、
