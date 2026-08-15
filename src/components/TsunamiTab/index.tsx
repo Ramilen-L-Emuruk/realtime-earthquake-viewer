@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation } from '../../types/earthquake'
 import { formatDateTimeMin, formatTime } from '../../utils/formatters'
+import { quakeEventKey } from '../../utils/quakeMerge'
 
 export interface FocusedDistrict {
   // 今回の受信で変更（新規/更新）があった区域すべて。対象区域が特定できない受信では空配列
@@ -13,7 +14,7 @@ export interface FocusedDistrict {
 interface Props {
   tsunamis: JMATsunami[]
   earthquakes?: JMAQuake[]
-  onEarthquakeLink?: (earthquakeTime: string) => void
+  onEarthquakeLink?: (quakeKey: string) => void
   onObservationClick?: (name: string) => void
   focusedDistrict?: FocusedDistrict | null
   obsUpdateStatus?: Map<string, 'new' | 'updated'>
@@ -436,8 +437,8 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
         <div
           role={linkedQuake ? 'button' : undefined}
           tabIndex={linkedQuake ? 0 : undefined}
-          onClick={linkedQuake ? () => onEarthquakeLink?.(linkedQuake.earthquake.time) : undefined}
-          onKeyDown={linkedQuake ? (e) => { if (e.key === 'Enter' || e.key === ' ') onEarthquakeLink?.(linkedQuake.earthquake.time) } : undefined}
+          onClick={linkedQuake ? () => onEarthquakeLink?.(quakeEventKey(linkedQuake)) : undefined}
+          onKeyDown={linkedQuake ? (e) => { if (e.key === 'Enter' || e.key === ' ') onEarthquakeLink?.(quakeEventKey(linkedQuake)) } : undefined}
           className={`rounded-lg overflow-hidden${linkedQuake ? ' cursor-pointer hover:opacity-90 transition-opacity' : ''}`}
           style={{ background: isCancelledDisplay ? '#1a1a1a' : topStyle.headerBg, border: `2px solid ${isCancelledDisplay ? '#4b5563' : topStyle.cardBorder}` }}>
           <div className="px-3 py-2 roomy:px-4 roomy:py-3"

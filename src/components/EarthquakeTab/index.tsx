@@ -1,7 +1,7 @@
 import { memo } from 'react'
 import type { JMAQuake, JMALpgm } from '../../types/earthquake'
 import { EarthquakeCard } from './EarthquakeCard'
-import { extractQuakeEventId } from '../../utils/quakeMerge'
+import { extractQuakeEventId, quakeEventKey } from '../../utils/quakeMerge'
 
 interface Props {
   earthquakes: JMAQuake[]
@@ -57,16 +57,13 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
         <EarthquakeCard
           // QUAKE-4: 続報で id 末尾の serial が変わるたびに EarthquakeCard がリマウントされ、
           // isSelected の副作用（強制スクロール）が発火してユーザー操作を妨害する。
-          // extractQuakeEventId が取れれば eventId 単位で安定させる（DMDATA 経路）。
-          // P2PQuake（standard 版）は id パターン非対応で mergeQuakeInto が続報で id を更新するため、
-          // sameQuakeEntry の同一性判定に使われる `earthquake.time` を fallback キーにする。
-          // なお selectedId 側は App.tsx の selectedQuake 導出で eventId 一致による選択継続を
-          // 既に処理済み（LOW-B1）のため、ここでは selectedId との文字列一致だけで判定する。
-          key={extractQuakeEventId(quake) ?? quake.earthquake.time}
+          // eventKey は続報でも変わらないため、React の key・選択判定の両方をこれで安定させる
+          // （どちらも quakeEventKey に統一。発生時刻は同じ分に起きた別の地震と衝突する）。
+          key={quakeEventKey(quake)}
           quake={quake}
           isLatest={i === 0}
-          isSelected={quake.earthquake.time === selectedId}
-          onSelect={() => onSelect(quake.earthquake.time)}
+          isSelected={quakeEventKey(quake) === selectedId}
+          onSelect={() => onSelect(quakeEventKey(quake))}
           lpgm={lpgmByEventId.get(extractQuakeEventId(quake) ?? '')}
           activeLpgmEventId={activeLpgmEventId}
           onToggleLpgm={onToggleLpgm}
