@@ -19,7 +19,14 @@ export function* parseTar(bytes: Uint8Array): Generator<TarEntry> {
 
     offset += HEADER
 
-    if ((typeFlag === '0' || typeFlag === '\0') && name && !isNaN(size)) {
+    // サイズが読めないヘッダに当たったら、そこで打ち切らず必ず投げる。
+    // 黙って続けると offset が NaN に汚染され、次の while 判定が常に false になって
+    // ジェネレータが正常終了と区別つかない形で終わる（＝以降の全エントリが無言で消える）。
+    if (Number.isNaN(size)) {
+      throw new Error(`tar 破損: サイズヘッダを解析できない (offset=${offset - HEADER}, name="${name}")`)
+    }
+
+    if ((typeFlag === '0' || typeFlag === '\0') && name) {
       yield { name, content: bytes.subarray(offset, offset + size) }
     }
 
