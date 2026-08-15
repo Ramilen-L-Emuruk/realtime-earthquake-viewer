@@ -39,10 +39,12 @@
 | `tsunamiForecast` | 津波予報（若干の海面変動） | 単音のチャイム |
 | `tsunamiUpdate` | 津波観測情報の更新 | 小音量のティン音 |
 | `tsunamiCancel` | 津波の解除・取消・期限切れ（cancelReason の 3 種は音では区別せず単一音で伝える） | 降下 3 音（700Hz→520Hz→380Hz） |
-| `quake` | 地震情報 | 単音 |
-| `quakeUpdate` | 地震続報 | 短い上昇 |
-| `foreshock` | 揺れの候補（faint/likely） | 微小音 |
-| `detected` | 揺れ検知（confirmed） | 通知音 |
+| `earthquake` | 地震情報（震源・震度 / 各地の震度） | ピアノ上昇 4 音 E4→G#4→B4→E5 |
+| `earthquakePrompt` | 地震情報（震度速報） | ピアノ上昇 3 音 G#4→B4→E5 |
+| `earthquakeInfo` | 地震情報（震源情報・遠地地震・その他） | ピアノ 2 音 G4→B4（控えめ） |
+| `kyoshin` | 揺れ検知（confirmed） | 打撃 2 音 + シマー高周波 |
+| `kyoshinCandidate` | 揺れの候補（faint / likely） | 控えめな単発チャイム |
+| `specialInfo` | 南海トラフ臨時情報・後発地震注意情報 | ピアノ A4×2 連打 → D5 |
 
 ### 発火 API
 
@@ -125,16 +127,22 @@ release=250ms（音楽制作のリミッター標準的な値）。
 
 - `eewAlertToText(eew)` — EEW 全体の読み上げ（新規発報用）
 - `eewIntensityToText(eew)` — 震度・区域だけを短く読み上げ
-- `quakeToText(quake)` — 地震情報
-- `tsunamiToText(tsunami)` / `tsunamiCancelToText(tsunami)` — 津波
+- `earthquakeToText(quake, opts, isNew)` — 地震情報（`isNew:false` で更新報の言い回しになる）
+- `tsunamiToText(tsunami)` / `tsunamiCancelToText(cancelReason)` — 津波
 - `lpgmToText(...)` — 長周期地震動
 - `nankaiToText(...)` / `kohatsuToText(...)` — 南海トラフ・後発地震
 
 ### 特殊な扱い
 
 - **仮定震源要素**: `condition === '仮定震源要素'` の場合は M・深さを読み上げない（EEW-spec 参照）
-- **震源深さ不明**: `depth <= 0` で「ごく浅い場所」と読み上げる（`-1` は不明センチネル・現状「ごく浅い」に落ちる HIGH 課題）
-- **マグニチュード不明**: 現状 NaN ガードなしで `M${NaN.toFixed(1)}` を生成しうる
+- **震源深さ不明**: 深さ不明（負値）では**深さ句ごと省く**。`0` のみ「ごく浅い場所」と読む
+- **マグニチュード不明**: 規模不明（`NaN`＝DMDATA 経路／負値＝P2PQuake 経路）ではマグニチュード句ごと省く
+- 上記 2 つの判定は `formatters.ts` の共有関数 `hasDepth` / `hasMagnitude` で行う。カード表示
+  （`formatDepth` / `formatMagnitude`）・色付け（`getDepthColor` / `getMagnitudeColor`）も同じ関数を使うため、
+  カードが「不明」と出すものを読み上げが「ごく浅い」「M0.0」と言うような食い違いは起きない
+- **遠地地震**: 「遠地地震に関する情報。」と名乗り、**日付から読み上げる**（発表が発生の数十分後になり日付をまたぐため）。
+  津波の一文は電文の付加文原文（`JMAQuake.forecastText`）を優先し、無い経路では津波区分から起こす
+  （付加文コードの詳細は [quake-spec.md](quake-spec.md) §3）
 
 ## 5. ウィンドウタイトル（`useAlertTitle`）
 
@@ -147,6 +155,7 @@ AutoHotKey 等の外部監視ツールから状態を検知できる。
 |---|---|
 | 平常時 | `リアルタイム地震ビューアー` |
 | 地震情報受信 | `🔴 地震情報 <震源> 最大震度<N>` |
+| 遠地地震受信 | `🔴 遠地地震 <震源> M<規模>`（国内震度がないため震度は出さない。規模不明なら省略） |
 | EEW 発報 | `🚨 緊急地震速報 <震源> 最大震度<N>予想` |
 | 津波情報発表 | `🌊 津波情報 発表中` |
 | 揺れの候補（未確定） | `🔍 揺れの可能性` |
@@ -237,3 +246,4 @@ return
 ## 10. 改訂履歴
 
 - 2026-08-10: 仕様書構造の再編にあわせて新規作成
+- 2026-08-15: 遠地地震の読み上げを独立させ、深さ不明の誤読（既知の HIGH 課題）と規模不明の誤表示を解消

@@ -213,6 +213,12 @@ function parseIntensityPoints(intensity: Record<string, unknown>): JMAQuake['poi
 // 0215: この地震による津波の心配はない
 // 0216: 震源が海底の場合、津波が発生するおそれあり（調査中）
 // 0217: 今後の情報に注意（調査中）
+// 0230: この地震による日本への津波の影響はない（遠地地震で使われる）
+//
+// 遠地地震は上記に加えて 022x 系（0221「太平洋の広域に津波発生の可能性」・0222「太平洋で
+// 津波発生の可能性」・0226「震源の近傍で津波発生の可能性」）を併用する。これらは震源周辺・
+// 太平洋側の状況を述べるもので日本国内への影響区分ではないため、domesticTsunami には
+// 反映しない（付加文の原文は forecastText に保持し、読み上げ側で使う）。
 function parseDomesticTsunamiFromComments(comments: Record<string, unknown>): DomesticTsunami {
   const codes = arr(obj(comments.forecast).codes)
   for (const code of codes) {
@@ -223,8 +229,47 @@ function parseDomesticTsunamiFromComments(comments: Record<string, unknown>): Do
     if (code === '0215') return 'なし'
     if (code === '0216') return '海面変動の可能性'
     if (code === '0217') return '調査中'
+    if (code === '0230') return 'なし'
+  }
+  // 022x 系（震源近傍・太平洋側で津波発生の可能性）は日本国内への影響区分ではないため
+  // 単独で来ても正常。警告は「区分にも 022x にも当てはまらない＝未知のコードだけが届いた」
+  // ケースに絞る（正常系で鳴らすと、電文構造が本当に変わったときの検知価値が下がる）。
+  const known022x = new Set(['0221', '0222', '0226'])
+  if (codes.length > 0 && !codes.some(code => known022x.has(String(code)))) {
+    log.warn(`[dmdata] 付加文コードから津波区分を導出できません: ${codes.join(' ')} → 不明`)
   }
   return '不明'
+}
+
+// 気象庁の固定付加文（複数行）を1行に整形する。各行は句点で終わるため連結で文が繋がる。
+// 例: "震源の近傍で津波発生の可能性があります。\nこの地震による日本への津波の影響はありません。"
+//   → "震源の近傍で津波発生の可能性があります。この地震による日本への津波の影響はありません。"
+function normalizeForecastText(text: string): string {
+  return text.split(/\r?\n/).map(line => line.trim()).filter(Boolean).join('')
+}
+
+// 付加文の原文を取り出す。コードは届いているのに原文が空という状態は電文構造の変化を示す。
+// この場合 TTS は区分由来の文へ静かに退行し、022x/023x 系の前置き（「震源の近傍で津波発生の
+// 可能性があります」等）が落ちたまま一見自然な文が読み上げられるため、警告を残して検知可能にする。
+function extractForecastText(rawText: string, codes: unknown[]): string {
+  const text = normalizeForecastText(rawText)
+  if (!text && codes.length > 0) {
+    log.warn(`[dmdata] 付加文コード(${codes.join(' ')})はあるが原文を取得できませんでした`)
+  }
+  return text
+}
+
+/**
+ * 電文種別コードと Head/Title（JSON は `title`）から issue.type を決める。
+ *
+ * 遠地地震は各地の震度と同じ VXSE53 で配信され、`Head/Title` だけが「遠地地震に関する情報」になる
+ * （`Control/Title` は「震源・震度に関する情報」のまま）。通常報・取消報のどちらもこの規則で判定する。
+ * 取消報でこの判定を落とすと `'震源・震度情報'` になり、既存カードの `'遠地地震'` と一致しないため、
+ * 取消マッチング（`useEarthquakes` の eventId ＋ issue.type 照合）が外れてカードが消えずに残る。
+ */
+function resolveIssueType(headType: string, title: string): IssueType {
+  if (title === '遠地地震に関する情報') return '遠地地震'
+  return VXSE_ISSUE_TYPE[headType] ?? '震源・震度情報'
 }
 
 // 地震情報 (VXSE51/52/53)
@@ -236,7 +281,7 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
     const eventId = str(data.eventId)
     const serial = str(data.serialNo ?? data.serial ?? '1')
     const reportTime = str(data.reportDateTime ?? data.pressDateTime)
-    const issueType: IssueType = VXSE_ISSUE_TYPE[headType] ?? '震源・震度情報'
+    const issueType = resolveIssueType(headType, str(data.title))
     return {
       kind: 'quake',
       id: `dmdata-quake-${eventId}-${serial}`,
@@ -263,6 +308,10 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
   // domesticTsunami は DMDATA JSON スキーマに存在しないため comments コードから導出する
   const domestic = (str(earthquake.domesticTsunami) as DomesticTsunami)
     || parseDomesticTsunamiFromComments(obj(body.comments))
+  const forecastText = extractForecastText(
+    str(obj(obj(body.comments).forecast).text),
+    arr(obj(obj(body.comments).forecast).codes),
+  )
 
   // VXSE51/53 は intensity から地域別震度を取り出す。VXSE52 は観測データなし。
   const points = (headType === 'VXSE53' || headType === 'VXSE51')
@@ -278,11 +327,8 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
   const originTime = (headType === 'VXSE51' ? str(data.targetDateTime) : str(earthquake.arrivalTime))
     || str(earthquake.originTime)
 
-  // 遠地地震は data.title === '遠地地震に関する情報' で判定する（data.body.type には存在しない）。
-  // VXSE_ISSUE_TYPE では VXSE53 が ScaleAndDestination だが、遠地地震は Foreign で統一する。
-  const issueType: IssueType = str(data.title) === '遠地地震に関する情報'
-    ? '遠地地震'
-    : (VXSE_ISSUE_TYPE[headType] ?? '震源・震度情報')
+  // 遠地地震は data.title で判定する（data.body.type には現れない）。判定規則は resolveIssueType 参照。
+  const issueType = resolveIssueType(headType, str(data.title))
 
   const correct: CorrectType = str(data.infoType) === '訂正' ? '訂正' : 'なし'
 
@@ -311,6 +357,7 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
       domesticTsunami: domestic,
     },
     points,
+    forecastText: forecastText || undefined,
   }
 }
 
@@ -321,6 +368,16 @@ function xmlQ(parent: Element | Document, localName: string): Element | null {
     if (els[i].localName === localName) return els[i]
   }
   return null
+}
+
+// XML ヘルパー: localName が一致する子孫要素をすべて返す（xmlQ の複数版）。
+function xmlAll(parent: Element | Document, localName: string): Element[] {
+  const els = parent.getElementsByTagName('*')
+  const result: Element[] = []
+  for (let i = 0; i < els.length; i++) {
+    if (els[i].localName === localName) result.push(els[i])
+  }
+  return result
 }
 
 // XML ヘルパー: 直下の子要素だけを localName で返す。
@@ -361,10 +418,13 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   const eventId = xmlText(xmlQ(doc, 'EventID'))
   const infoType = xmlText(xmlQ(doc, 'InfoType'))
   const serial = xmlText(xmlQ(doc, 'Serial')) || '1'
+  // Head/Title を見る（Control/Title と区別するため Head 要素を先に取得する）。
+  // 取消報でも同じ判定が要るため、取消の早期リターンより前で解決しておく。
+  const headInfoEl = xmlQ(doc, 'Head')
+  const issueType = resolveIssueType(headType, headInfoEl ? xmlText(xmlQ(headInfoEl, 'Title')) : '')
 
   // 取消電文（InfoType === '取消'）: Earthquake 要素が存在しないため早期リターン
   if (infoType === '取消') {
-    const issueType: IssueType = VXSE_ISSUE_TYPE[headType] ?? '震源・震度情報'
     return {
       kind: 'quake',
       id: `dmdata-xml-quake-${eventId}-${serial}`,
@@ -399,8 +459,11 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     ? (xmlText(xmlQ(earthquakeEl, 'ArrivalTime')) || xmlText(xmlQ(earthquakeEl, 'OriginTime')))
     : xmlText(xmlQ(doc, 'TargetDateTime'))
 
+  // Magnitude 要素が空・欠落の電文は「規模不明」。`|| 0` で 0 に潰すと M0.0 と実測値のように
+  // 表示・読み上げされるため、NaN のまま返して不明判定（formatters の hasMagnitude）に委ねる。
+  // VXSE51（震度速報）は Earthquake 要素自体を持たず、震源情報なしの意味で 0 を維持する。
   const magnitude = earthquakeEl
-    ? (parseFloat(xmlText(xmlQ(earthquakeEl, 'Magnitude'))) || 0)
+    ? parseFloat(xmlText(xmlQ(earthquakeEl, 'Magnitude')))
     : 0
 
   // MaxInt は Intensity > Observation 直下
@@ -449,22 +512,21 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     }
   }
 
-  // 遠地地震は Head/Title で判定する（Control/Title と区別するため Head 要素を先に取得する）
-  const headInfoEl = xmlQ(doc, 'Head')
-  const titleText = headInfoEl ? xmlText(xmlQ(headInfoEl, 'Title')) : ''
-  const issueType: IssueType = titleText === '遠地地震に関する情報'
-    ? '遠地地震'
-    : (VXSE_ISSUE_TYPE[headType] ?? '震源・震度情報')
   const correct: CorrectType = infoType === '訂正' ? '訂正' : 'なし'
 
-  // ForecastComment > Code（スペース区切り複数コード）から domesticTsunami を導出
-  // 例: <ForecastComment><Code>0212 0241</Code></ForecastComment> → ['0212', '0241']
+  // ForecastComment > Code から domesticTsunami を導出。
+  // 実電文はスペース区切りで 1 要素にまとまる（例: <Code>0226 0230</Code>）が、兄弟要素に
+  // 分割された場合でもコードを取りこぼさないよう、配下の Code をすべて集めて連結する。
   const forecastCommentEl = xmlQ(doc, 'ForecastComment')
-  const forecastCodeEl = forecastCommentEl ? xmlQ(forecastCommentEl, 'Code') : null
-  const forecastCodes = forecastCodeEl
-    ? forecastCodeEl.textContent!.trim().split(/\s+/)
+  const forecastCodes = forecastCommentEl
+    ? xmlAll(forecastCommentEl, 'Code').flatMap(el => xmlText(el).split(/\s+/)).filter(Boolean)
     : []
   const domestic = parseDomesticTsunamiFromComments({ forecast: { codes: forecastCodes } })
+  // 付加文の原文（ForecastComment > Text）。JSON 経路の comments.forecast.text と同じ内容。
+  const forecastText = extractForecastText(
+    forecastCommentEl ? xmlText(xmlQ(forecastCommentEl, 'Text')) : '',
+    forecastCodes,
+  )
 
   return {
     kind: 'quake',
@@ -490,6 +552,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
       domesticTsunami: domestic,
     },
     points,
+    forecastText: forecastText || undefined,
   }
 }
 
