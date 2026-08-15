@@ -17,6 +17,7 @@ import type {
   TsunamiGrade,
   TsunamiObservation,
 } from '../types/earthquake'
+import { isValidLpgmClass } from '../utils/lpgm'
 import { log } from '../utils/logger'
 
 // EEW: "1","2","3","4","5-","5+","6-","6+","7","不明" 等
@@ -87,7 +88,7 @@ function parseEEWRegions(intensity: Record<string, unknown>): EEWRegion[] {
     const scaleFrom = parseIntensityStr(str(fm.from))
     const lgRaw = obj(r.forecastMaxLgInt)
     const lgVal = parseInt(str(lgRaw.to) || str(lgRaw.from), 10)
-    const lgIntTo = (!isNaN(lgVal) && lgVal >= 1 && lgVal <= 4) ? lgVal : undefined
+    const lgIntTo = isValidLpgmClass(lgVal) ? lgVal : undefined
     regions.push({
       pref: '',
       name,
@@ -126,7 +127,7 @@ export function parseEEW(headType: string, data: Record<string, unknown>): EEWAl
   const forecastMaxLgInt = obj(intensity.forecastMaxLgInt)
   const lpgmStr = str(forecastMaxLgInt.to) || str(forecastMaxLgInt.from)
   const lpgmClass = parseInt(lpgmStr, 10)
-  const forecastMaxLpgmClass = (!isCanceled && lpgmClass >= 1 && lpgmClass <= 4) ? lpgmClass : undefined
+  const forecastMaxLpgmClass = (!isCanceled && isValidLpgmClass(lpgmClass)) ? lpgmClass : undefined
 
   return {
     kind: 'eew',

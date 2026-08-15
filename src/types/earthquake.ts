@@ -1,5 +1,8 @@
 export type IntensityScale = -1 | 10 | 20 | 30 | 40 | 45 | 50 | 55 | 60 | 70
 
+/** 長周期地震動階級（1〜4）。階級 4 以上は EEW 特別警報の条件になる。 */
+export type LpgmClass = 1 | 2 | 3 | 4
+
 export interface Hypocenter {
   name: string
   latitude: number
@@ -144,11 +147,13 @@ export interface JMATsunami {
 export interface EEWRegion {
   pref: string
   name: string
-  scaleFrom: number
-  scaleTo: number
+  /** 予想震度の下限。震度未確定は -1（`EarthquakePoint.scale` と同じセンチネル） */
+  scaleFrom: IntensityScale
+  /** 予想震度の上限。地域別の最大予想震度として `eewMaxScale()` が参照する */
+  scaleTo: IntensityScale
   kindCode: string
   arrivalTime: string | null
-  lgIntTo?: number  // 地域別予想長周期地震動階級（1〜4）。電文に含まれない場合は undefined
+  lgIntTo?: LpgmClass  // 地域別予想長周期地震動階級。電文に含まれない場合は undefined
 }
 
 export interface EEWAlert {
@@ -181,7 +186,7 @@ export interface EEWAlert {
   // areas が空の場合のフォールバックとして eewMaxScale() が使用する。
   forecastMaxScale?: IntensityScale
   // DMDATA EEW 電文 body.intensity.forecastMaxLpgmInt から取得した推定最大長周期地震動階級（1〜4）。
-  forecastMaxLpgmClass?: number
+  forecastMaxLpgmClass?: LpgmClass
 }
 
 export interface LpgmPoint {

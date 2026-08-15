@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewSerial, selectEEWSoundType, type HypoInfoPendingMissing } from './eew'
+import { calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewMaxScale, eewSerial, selectEEWSoundType, type HypoInfoPendingMissing } from './eew'
 import type { YahooHypoInfoItem } from '../services/kyoshin'
-import type { EEWAlert } from '../types/earthquake'
+import type { EEWAlert, IntensityScale, LpgmClass } from '../types/earthquake'
 
 function makeEEW(overrides: Partial<EEWAlert> = {}): EEWAlert {
   return {
@@ -157,10 +157,67 @@ describe('computeSingleEEWLevel', () => {
     expect(computeSingleEEWLevel(eew)).toBe(2)
   })
 
-  it('震度算出不能(scaleTo:99)は特別警報の対象外でレベル1', () => {
+  it('震度未確定(scaleTo:-1)は特別警報の対象外でレベル1', () => {
     const eew = makeEEW({
-      areas: [{ pref: 'テスト県', name: 'テスト地域', scaleFrom: 99, scaleTo: 99, kindCode: '10', arrivalTime: null }],
+      areas: [{ pref: 'テスト県', name: 'テスト地域', scaleFrom: -1, scaleTo: -1, kindCode: '10', arrivalTime: null }],
     })
+    expect(computeSingleEEWLevel(eew)).toBe(1)
+  })
+
+  // 実地震シナリオ JSON など型検査を通らない経路から不正値が来た場合の防御。
+  // 震度スケール外の値をそのまま比較に使うと特別警報へ誤昇格する。
+  it('areas の震度スケール外の値(scaleTo:99)は採用せず特別警報にしない', () => {
+    const eew = makeEEW({
+      areas: [{
+        pref: 'テスト県',
+        name: 'テスト地域',
+        scaleFrom: -1,
+        scaleTo: 99 as unknown as IntensityScale,
+        kindCode: '10',
+        arrivalTime: null,
+      }],
+    })
+    expect(eewMaxScale(eew)).toBe(0)
+    expect(computeSingleEEWLevel(eew)).toBe(1)
+  })
+
+  it('震度スケール外の forecastMaxScale(66)も採用せず特別警報にしない', () => {
+    const eew = makeEEW({ forecastMaxScale: 66 as unknown as IntensityScale })
+    expect(eewMaxScale(eew)).toBe(0)
+    expect(computeSingleEEWLevel(eew)).toBe(1)
+  })
+
+  // 特別警報は震度と長周期地震動階級の OR 判定なので、震度側だけ守っても誤昇格は防げない。
+  it('範囲外の長周期地震動階級(lgIntTo:99)は採用せず特別警報にしない', () => {
+    const eew = makeEEW({
+      areas: [{
+        pref: 'A県',
+        name: 'A地域',
+        scaleFrom: 30,
+        scaleTo: 40,
+        kindCode: '10',
+        arrivalTime: null,
+        lgIntTo: 99 as unknown as LpgmClass,
+      }],
+    })
+    expect(eewMaxLpgmClass(eew)).toBe(0)
+    expect(computeSingleEEWLevel(eew)).toBe(1)
+  })
+
+  it('範囲外の forecastMaxLpgmClass(99)も採用せず特別警報にしない', () => {
+    const eew = makeEEW({ forecastMaxLpgmClass: 99 as unknown as LpgmClass })
+    expect(eewMaxLpgmClass(eew)).toBe(0)
+    expect(computeSingleEEWLevel(eew)).toBe(1)
+  })
+
+  it('areas に有効値と不正値が混在する場合は有効値の最大を採る', () => {
+    const eew = makeEEW({
+      areas: [
+        { pref: 'A県', name: 'A地域', scaleFrom: 30, scaleTo: 40, kindCode: '10', arrivalTime: null },
+        { pref: 'B県', name: 'B地域', scaleFrom: -1, scaleTo: 99 as unknown as IntensityScale, kindCode: '10', arrivalTime: null },
+      ],
+    })
+    expect(eewMaxScale(eew)).toBe(40)
     expect(computeSingleEEWLevel(eew)).toBe(1)
   })
 
