@@ -96,11 +96,24 @@ export interface ReplayEntry {
   silent?: boolean
 }
 
+/**
+ * 取得結果。取りこぼしの件数を呼び出し元へ返すため、電文の配列だけでなく
+ * 「読めなかったもの」の数も添える。ログにしか出さないと、UI 上は
+ * 「静かな時間帯だった」のか「取りこぼした」のかを区別できない。
+ */
+export interface ReplayFetchResult {
+  entries: ReplayEntry[]
+  /** 取り込めなかった電文の数（目録エントリの異常・本体の破損・パース失敗の合計）。 */
+  skipped: number
+  /** 取得・展開に失敗したアーカイブの数（1 件でも成功していれば例外にはしない）。 */
+  failedArchives: number
+}
+
 export async function fetchDmdataReplayEvents(
   apiKey: string,
   fromTime: Date,
   toTime: Date,
-): Promise<ReplayEntry[]> {
+): Promise<ReplayFetchResult> {
   // アーカイブは JST 日付で索引されているため、UTC 日付との差を吸収するため
   // 開始日を -1 日、終了日を +1 日して確実に対象アーカイブを含める
   const startDateObj = new Date(fromTime)
@@ -327,7 +340,7 @@ export async function fetchDmdataReplayEvents(
     }
   }
 
-  return entries
+  return { entries, skipped: skippedCount, failedArchives }
 }
 
 // T 時点でまだ有効な電文のみを残すフィルタ（pre-window 初期状態用）
