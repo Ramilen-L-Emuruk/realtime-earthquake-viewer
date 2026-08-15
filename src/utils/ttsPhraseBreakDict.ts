@@ -30,7 +30,9 @@ export function loadTtsPhraseBreakDict(): Promise<Record<string, string>> {
     inflight = fetchJsonWithTimeout<Record<string, string> & { _terms?: string[] }>(
       DATA_URL,
       'tts-phrase-break-dict',
-      DICT_FETCH_TIMEOUT_MS,
+      // 取れなくても読み上げの句区切りが効かないだけで地図は変わらないため、
+      // 地図に重ねる取得状況表示には数えない。
+      { timeoutMs: DICT_FETCH_TIMEOUT_MS, trackStatus: false },
     )
       .then((data) => {
         const { _comment: _, _terms, ...dict } = data as Record<string, string> & { _terms?: string[] }

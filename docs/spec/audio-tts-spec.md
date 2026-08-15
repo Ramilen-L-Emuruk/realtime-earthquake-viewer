@@ -94,13 +94,17 @@ release=250ms（音楽制作のリミッター標準的な値）。
 
 - `POST /audio_query` — テキストからアクセント句を生成
 - `POST /synthesis` — アクセント句から WAV を合成
+- `POST /accent_phrases` — 句区切り辞書のカナ表記からアクセント句を作る（下記「辞書」節で使う）
 
 合成 WAV は `AudioContext.decodeAudioData` でデコードして `AudioBufferSourceNode` で再生する。
 
 ### セッション管理
 
-- モジュール変数 `activeSources: Set<AudioBufferSourceNode>` と `currentSessionId: number`
+- モジュール変数 `activeSources: AudioBufferSourceNode[]` と `currentSessionId: number`
 - `speakWithVoicevox(text)` を呼ぶたびに既存の再生を全 stop() し、`currentSessionId++` で新セッションに切替
+- 同時に旧セッションの `AbortController` を abort し、進行中の合成リクエスト
+  （`/audio_query`・`/synthesis`・`/accent_phrases`）も打ち切る。セッション ID だけでは
+  in-flight のリクエストが完走して VOICEVOX の処理を占有し、新しい発話が待たされるため
 - **単一グローバルセッション**なので、EEW / 地震 / 津波 / LPGM の全読み上げがこの単一セッションを共有する
 
 ### 辞書（読み仮名の補正）
@@ -119,7 +123,6 @@ release=250ms（音楽制作のリミッター標準的な値）。
 
 ### 既知の課題
 
-- 中断時に進行中の fetch がキャンセルされない（AbortController 未使用）
 - 全種別が単一セッションを共有するため、無関係な津波観測更新が EEW 警報読み上げを打ち切りうる
 - 通常チャンクの音声合成に一切キャッシュがない（定型句「緊急地震速報。」等も毎回合成）
 - 音声合成そのものの失敗パス（`synthesizeChunk` の `catch`）にログがなく原因追跡ができない
@@ -209,6 +212,7 @@ AutoHotKey 等の外部監視ツールから状態を検知できる。
 ### 解消済み
 
 - **AUD-2**: EEW キャンセル電文が P2PQuake WS と Yahoo の両方から届いた場合の二重鳴り防止。`hadKey=true`（このセッションで表示中の EEW）のみで音・通知・読み上げを発火（`useLiveEventHandler.ts`）
+- **AUD-4**: 新しい読み上げの開始時に旧セッションの合成リクエストを `AbortController` で打ち切るようにした。セッション ID の更新だけでは in-flight のリクエストが完走して VOICEVOX を占有し、新規発話が待たされていた
 - **AUD-6**: 津波の解除/取消/期限切れの通知音を追加（`playAlertSound('tsunamiCancel')`。ding 高→中→低の降下 3 音）
 - **AUD-7**: 読み上げは常に `voicevoxEnabled` 単独で判定するように統一。`soundEnabled` はアラート音のみに影響し、`voicevoxEnabled` の可否とは独立に動く
 

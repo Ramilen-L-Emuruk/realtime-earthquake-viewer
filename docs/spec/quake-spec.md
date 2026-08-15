@@ -196,6 +196,9 @@ P2PQuake（標準版）では `undefined` となり従来どおり区分から�
 ため、上記のフォールバックとログはそのまま働く（生成データ全般に共通。タイムアウト値は
 [`data-sources-spec.md`](data-sources-spec.md) §6 参照）。
 
+利用者に向けては、取得に失敗した件数を地図左上に出す
+（[`data-sources-spec.md`](data-sources-spec.md) §6「取得状況の表示」）。
+
 失敗時の `console` 出力は、震度側が `error`（「観測点ドットで代替」の旨）で 1 度だけ。
 ベースマップの境界線・区域名ラベル側の警告は
 [`map-rendering-spec.md`](map-rendering-spec.md) §4・§5 を参照。
