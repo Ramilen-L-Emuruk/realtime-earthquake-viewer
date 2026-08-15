@@ -303,6 +303,7 @@ README は「一般利用者・フォーカー・貢献者への導線」であ�
 | 遠地地震の識別（VXSE53・`Head/Title`）・付加文コードと `forecastText` | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §3（遠地地震に関する情報） |
 | `KyoshinSubThreshold` の対象範囲（index 1〜6）・慢性ノイズ床フィルタ | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) |
 | 実地震テストシナリオの時刻シフト・ID 再採番・利用規約制約 | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6 |
+| archive リプレイの重複排除（XML 版／JSON 版どちらを採用するか）・失敗の封じ込め範囲 | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6（「アーカイブの構造」「取りこぼしの扱い」） |
 
 各仕様書は冒頭で「食い違う場合は実コードを正とする」と宣言している。放置すると即座に嘘になる文書なので、実装変更時に必ず追従させる。
 

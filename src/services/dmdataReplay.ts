@@ -2,6 +2,8 @@ import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseVyse5xFromXml,
 import { parseTar } from '../utils/tarParser'
 import type { AppEvent, JMAQuake, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, JMATsunami } from '../types/earthquake'
 import { calcEEWCancelTime } from '../utils/eew'
+import { gunzip } from '../utils/gzip'
+import { log } from '../utils/logger'
 import { extractQuakeEventIdFromId } from '../utils/quakeMerge'
 
 const QUAKE_TYPES = new Set(['VXSE51', 'VXSE52', 'VXSE53', 'VXSE61'])
@@ -12,21 +14,15 @@ const EEW_TYPES = new Set(['VXSE43', 'VXSE45'])
 const LPGM_TYPES = new Set(['VXSE62'])
 const NANKAI_TYPES = new Set(['VYSE50', 'VYSE51'])
 const KOHATSU_TYPES = new Set(['VYSE60'])
+// このモジュールが取り込む電文種別の全体。archive の classification には対象外の種別も
+// 多数含まれるため、まずこれで絞ってから欠落を警告する（絞る前に警告すると、正常動作で
+// ログが埋まって本当の異常が見えなくなる）。
+const HANDLED_TYPES = new Set([
+  ...QUAKE_TYPES, ...TSUNAMI_TYPES, ...EEW_TYPES, ...LPGM_TYPES, ...NANKAI_TYPES, ...KOHATSU_TYPES,
+])
 
 function authHeader(apiKey: string): string {
   return 'Basic ' + btoa(apiKey + ':')
-}
-
-// gzip を展開する。writer/reader を自前で回すと、書き込みと読み出しを直列に並べた瞬間に
-// バックプレッシャで相互待ちに陥る（writer.write() は readable 側が読み進んでキューに空きが
-// できるまで resolve しない）。pipeThrough + Response に任せればポンプ処理はブラウザ側が持つため、
-// その事故が構造的に起きない。展開中の失敗（破損 gzip 等）は arrayBuffer() の await が
-// 例外として投げ、fetchDmdataReplayEvents 側の try/catch に集約される。
-async function gunzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
-  const stream = new Blob([bytes as BlobPart])
-    .stream()
-    .pipeThrough(new DecompressionStream('gzip'))
-  return new Uint8Array(await new Response(stream).arrayBuffer())
 }
 
 function toDateStr(d: Date): string {
@@ -68,7 +64,7 @@ async function downloadArchive(url: string, apiKey: string): Promise<Map<string,
     const res = await fetch(url, { headers: { Authorization: authHeader(apiKey) } })
     if (!res.ok) throw new Error(`Archive fetch failed: ${res.status}`)
     const gz = new Uint8Array(await res.arrayBuffer())
-    const tar = await gunzipBytes(gz)
+    const tar = await gunzip(gz)
     const files = new Map<string, Uint8Array>()
     for (const entry of parseTar(tar)) {
       files.set(entry.name, entry.content)
@@ -140,79 +136,183 @@ export async function fetchDmdataReplayEvents(
   const dec = new TextDecoder()
   const entries: ReplayEntry[] = []
 
+  // 取り込めなかった電文の総数。1 通ごとの詳細は log.warn / log.error に出るが、
+  // 「取りこぼしがあったか」だけは最後にまとめて 1 行で分かるようにする。
+  let skippedCount = 0
+  // 取得・展開に失敗したアーカイブの数。全滅かどうかの判定に使う。
+  let failedArchives = 0
+
   await Promise.all(
     items.map(async (item) => {
-      const files = await downloadArchive(item.url, apiKey)
+      // アーカイブ単位で隔離する。ここを Promise.all に素通しすると、1 つのアーカイブの
+      // 破損（tar/gzip の異常・CDN の一時エラー）だけで、他のアーカイブから既に読み取れた
+      // 電文まで巻き添えで捨てられる。日をまたぐ期間指定ほど被害が大きくなるため、
+      // 「壊れたアーカイブだけ諦めて残りは活かす」を既定にする。
+      let files: Map<string, Uint8Array>
+      try {
+        files = await downloadArchive(item.url, apiKey)
+      } catch (e) {
+        log.error(`[replay] アーカイブの取得・展開に失敗したためスキップ date=${item.date} classification=${item.classification}`, e)
+        failedArchives++
+        return
+      }
 
       const manifestBytes = files.get('telegrams.json')
-      if (!manifestBytes) return
-      const manifest: ManifestEntry[] = JSON.parse(dec.decode(manifestBytes))
+      if (!manifestBytes) {
+        // アーカイブは取得できたのに目録が無い＝そのアーカイブの中身を丸ごと読めない。
+        // 例外にせず他のアーカイブの処理は続けるが、無言で捨てると「電文 0 件だが成功」に
+        // 化けて原因が追えなくなるため必ず記録する。
+        log.warn(`[replay] アーカイブに telegrams.json が無いためスキップ date=${item.date} classification=${item.classification}`)
+        return
+      }
+
+      let manifest: ManifestEntry[]
+      try {
+        manifest = JSON.parse(dec.decode(manifestBytes))
+      } catch (e) {
+        // 目録自体が壊れている場合も同様に、そのアーカイブのみ諦めて他は継続する。
+        log.error(`[replay] telegrams.json の解析に失敗したためスキップ date=${item.date} classification=${item.classification}`, e)
+        return
+      }
 
       for (const entry of manifest) {
+        // head を持たないエントリ（目録の構造異常）。この判定はループ内 try の外にあるため、
+        // 素通しすると TypeError がアーカイブ単位の失敗に化ける。1 件のおかしな行で
+        // 他の電文まで落とさないよう、ここで弾く。
+        if (!entry?.head) {
+          log.warn(`[replay] head を持たない目録エントリをスキップ id=${entry?.id ?? '(不明)'}`)
+          skippedCount++
+          continue
+        }
         if (entry.head.test) continue
+
         const entryTime = new Date(entry.head.time)
+        if (Number.isNaN(entryTime.getTime())) {
+          // 時刻が読めない電文をそのまま通すと replayTime が Invalid Date になり、
+          // 再生キューの並べ替え・発火判定が静かに破綻する。ここで弾く。
+          log.warn(`[replay] head.time が不正な電文をスキップ id=${entry.id} time=${entry.head.time}`)
+          skippedCount++
+          continue
+        }
         if (entryTime < fromTime || entryTime >= toTime) continue
 
         const headType = entry.head.type
-        const idPrefix = entry.id.slice(0, 7)
+        // この実装が扱わない種別はここで落とす。以降のスキップはすべて
+        // 「本来あるはずのものが見つからない」異常なので、警告付きで記録する。
+        // （先に絞らないと、対象外の電文が通常運転で大量に警告を出し、
+        //   本当の異常が埋もれてログが役に立たなくなる）
+        if (!HANDLED_TYPES.has(headType)) continue
 
-        if (NANKAI_TYPES.has(headType) || KOHATSU_TYPES.has(headType)) {
-          // XML 形式電文（VYSE50/51/60）: originalId を持たない場合があるため別処理
-          const xmlFileName = [...files.keys()].find(
-            (n) => n.endsWith('.xml') && n.includes(idPrefix),
+        try {
+          const idPrefix = entry.id.slice(0, 7)
+
+          if (NANKAI_TYPES.has(headType) || KOHATSU_TYPES.has(headType)) {
+            // XML 形式電文（VYSE50/51/60）。これらは XML パーサ（parseVyse5xFromXml /
+            // parseVyse60FromXml）でしか読めないため、XML 版エントリ（originalId 無し）だけを拾う。
+            // 実アーカイブでは確認できた全種別が XML 版と JSON 版の 2 エントリで載っていたため、
+            // VYSE 系にも JSON 版が現れうる。それをここで弾かないと、JSON 版の id で .xml を
+            // 探して見つからず「本体が見つからず」警告を出し続けることになる。
+            if (entry.originalId) continue
+            const xmlFileName = [...files.keys()].find(
+              (n) => n.endsWith('.xml') && n.includes(idPrefix),
+            )
+            const bodyBytes = xmlFileName ? files.get(xmlFileName) : undefined
+            if (!bodyBytes) {
+              log.warn(`[replay] XML 電文の本体が見つからずスキップ id=${entry.id} type=${headType}`)
+              skippedCount++
+              continue
+            }
+            const xmlText = dec.decode(bodyBytes)
+
+            let payload: ReplayPayload | null = null
+            if (NANKAI_TYPES.has(headType)) {
+              const nankai = parseVyse5xFromXml(xmlText)
+              if (nankai) payload = { kind: 'nankai', data: nankai }
+            } else {
+              const kohatsu = parseVyse60FromXml(xmlText)
+              if (kohatsu) payload = { kind: 'kohatsu', data: kohatsu }
+            }
+            if (payload) {
+              entries.push({ payload, replayTime: entryTime })
+            } else {
+              log.warn(`[replay] XML 電文のパースに失敗しスキップ id=${entry.id} type=${headType}`)
+              skippedCount++
+            }
+            continue
+          }
+
+          // JSON 形式電文（地震・津波・EEW・VXSE62）
+          //
+          // manifest には同じ電文が XML 版と JSON 版の 2 エントリで載る。originalId を持つ方が
+          // JSON 版（XML から変換されたもの）で、その値は元の XML エントリの id を指す。
+          // ここで originalId 無しを落とすのは元の XML 側を捨てて JSON 版だけを拾うためで、
+          // 同一電文の二重取り込みを防ぐ正常な重複排除。実データでは manifest の約半数が
+          // これに該当するため、警告は出さない（出すと正常運転でログが埋まる）。
+          if (!entry.originalId) continue
+          const jsonFileName = [...files.keys()].find(
+            (n) => n.endsWith('.json') && n !== 'telegrams.json' && n.includes(idPrefix),
           )
-          if (!xmlFileName) continue
-          const bodyBytes = files.get(xmlFileName)
-          if (!bodyBytes) continue
-          const xmlText = dec.decode(bodyBytes)
+          const bodyBytes = jsonFileName ? files.get(jsonFileName) : undefined
+          if (!jsonFileName || !bodyBytes) {
+            log.warn(`[replay] JSON 電文の本体が見つからずスキップ id=${entry.id} type=${headType}`)
+            skippedCount++
+            continue
+          }
+          const data = JSON.parse(dec.decode(bodyBytes)) as Record<string, unknown>
 
           let payload: ReplayPayload | null = null
-          if (NANKAI_TYPES.has(headType)) {
-            const nankai = parseVyse5xFromXml(xmlText)
-            if (nankai) payload = { kind: 'nankai', data: nankai }
-          } else {
-            const kohatsu = parseVyse60FromXml(xmlText)
-            if (kohatsu) payload = { kind: 'kohatsu', data: kohatsu }
+          if (EEW_TYPES.has(headType)) {
+            const event = parseEEW(headType, data)
+            if (event) payload = { kind: 'event', event }
+          } else if (QUAKE_TYPES.has(headType)) {
+            const event = parseEarthquake(headType, data)
+            if (event) payload = { kind: 'event', event }
+          } else if (TSUNAMI_TYPES.has(headType)) {
+            const event = parseTsunami(headType, data)
+            if (event) payload = { kind: 'event', event }
+          } else if (LPGM_TYPES.has(headType)) {
+            const lpgm = parseLpgm(data)
+            if (lpgm) payload = { kind: 'lpgm', data: lpgm }
           }
-          if (payload) entries.push({ payload, replayTime: entryTime })
-          continue
-        }
 
-        // JSON 形式電文（地震・津波・EEW・VXSE62）
-        if (!entry.originalId) continue
-        const jsonFileName = [...files.keys()].find(
-          (n) => n.endsWith('.json') && n !== 'telegrams.json' && n.includes(idPrefix),
-        )
-        if (!jsonFileName) continue
-
-        const bodyBytes = files.get(jsonFileName)
-        if (!bodyBytes) continue
-        const data = JSON.parse(dec.decode(bodyBytes)) as Record<string, unknown>
-
-        let payload: ReplayPayload | null = null
-        if (EEW_TYPES.has(headType)) {
-          const event = parseEEW(headType, data)
-          if (event) payload = { kind: 'event', event }
-        } else if (QUAKE_TYPES.has(headType)) {
-          const event = parseEarthquake(headType, data)
-          if (event) payload = { kind: 'event', event }
-        } else if (TSUNAMI_TYPES.has(headType)) {
-          const event = parseTsunami(headType, data)
-          if (event) payload = { kind: 'event', event }
-        } else if (LPGM_TYPES.has(headType)) {
-          const lpgm = parseLpgm(data)
-          if (lpgm) payload = { kind: 'lpgm', data: lpgm }
-        }
-
-        if (payload) {
-          // ファイル名の17桁タイムスタンプ（YYYYMMDDHHMMSSmmm）はミリ秒精度の実受信時刻。
-          // pressDateTime は秒単位で切り捨てられているため、ファイル名から ms を優先的に取得する。
-          const replayTime = parseMsFromFileName(jsonFileName) ?? new Date((data.pressDateTime as string | undefined) ?? entryTime.toISOString())
-          entries.push({ payload, replayTime })
+          if (payload) {
+            // ファイル名の17桁タイムスタンプ（YYYYMMDDHHMMSSmmm）はミリ秒精度の実受信時刻。
+            // pressDateTime は秒単位で切り捨てられているため、ファイル名から ms を優先的に取得する。
+            const replayTime = parseMsFromFileName(jsonFileName) ?? new Date((data.pressDateTime as string | undefined) ?? entryTime.toISOString())
+            entries.push({ payload, replayTime })
+          } else {
+            log.warn(`[replay] 電文のパースに失敗しスキップ id=${entry.id} type=${headType}`)
+            skippedCount++
+          }
+        } catch (e) {
+          // 1 通の破損（JSON 破損・パーサ内の例外）で全体を落とさない。以前は個別の
+          // try/catch が無く、壊れた電文が 1 通あるだけで Promise.all ごと reject し、
+          // その日を含む期間の再生が丸ごと不可能になっていた。
+          log.error(`[replay] 電文の取り込みに失敗しスキップ id=${entry.id} type=${headType}`, e)
+          skippedCount++
         }
       }
     }),
   )
+
+  // 全アーカイブが失敗した場合だけは例外にする。認証エラー・権限不足・ネットワーク全断など、
+  // 個別の破損ではなく共通の原因であることがほとんどで、これを握り潰すと UI には
+  // 「成功したが電文 0 件」としか見えない。1 件でも成功していれば部分的成功として扱う。
+  if (items.length > 0 && failedArchives === items.length) {
+    throw new Error(`Archive fetch failed: ${items.length} 件のアーカイブすべてを取得できませんでした`)
+  }
+  if (failedArchives > 0) {
+    log.warn(`[replay] ${items.length} 件中 ${failedArchives} 件のアーカイブをスキップした（残りから取り込みを継続）`)
+  }
+  if (skippedCount > 0) {
+    log.warn(`[replay] ${skippedCount} 件の電文を取り込めなかった（範囲 ${fromTime.toISOString()}〜${toTime.toISOString()}）`)
+  }
+  if (items.length > 0 && entries.length === 0) {
+    // アーカイブは取得できたのに 1 件も取り込めなかった状態。指定期間に本当に電文が
+    // 無いだけのこともあるため例外にはしないが、UI 側は「成功」としか見えないので
+    // 診断の手がかりを残す。
+    log.warn(`[replay] アーカイブ ${items.length} 件を取得したが対象電文は 0 件（範囲 ${fromTime.toISOString()}〜${toTime.toISOString()}）`)
+  }
 
   entries.sort((a, b) => a.replayTime.getTime() - b.replayTime.getTime())
 
