@@ -44,9 +44,12 @@ body {
   border: 1px solid #2a2d38;
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-  padding: 8px 12px;
+  /* 内容は Tailwind の rem ベースで書かれており UI 倍率に追従するため、余白・閉じるボタンも
+     rem で揃える（px のままだと倍率を上げたとき中身だけ膨らんで余白が詰まる）。
+     枠線・角丸・影は装飾のヘアラインなので倍率に連動させない。 */
+  padding: 0.5rem 0.75rem;
 }
-.maplibregl-popup-close-button { color: #94a3b8; font-size: 16px; }
+.maplibregl-popup-close-button { color: #94a3b8; font-size: 1rem; }
 /* 吹き出しの三角は anchor 方向ごとに border で描かれるため、各方向を背景色に合わせる。 */
 .maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color: #1a1d26; }
 .maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color: #1a1d26; }
@@ -60,7 +63,7 @@ body {
 /* ホバー用ポップアップ（gl/popupRegistry.ts）。吹き出し自身がマウスを受け取ると
    「点から外れた」と判定されて出る/消えるを繰り返すため、当たり判定から外す。 */
 .map-hover-popup { pointer-events: none; }
-.map-hover-popup .maplibregl-popup-content { padding: 5px 9px; }
+.map-hover-popup .maplibregl-popup-content { padding: 0.3125rem 0.5625rem; }
 
 
 @keyframes tsunami-blink {

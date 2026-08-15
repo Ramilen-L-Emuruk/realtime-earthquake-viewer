@@ -316,6 +316,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 地図レイヤー描画順・EEW 予想レイヤーの kyoshin 限定・`maplibregl.Marker` の opacity | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §2・§3・§7・§10 |
 | ズーム値の基準（MapLibre 512px タイル vs Leaflet 256px タイル）・`MAX_ZOOM` に揃える閾値群 | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §4・§6 |
 | ラベルのフォントスタック名の一致・グリフ収録文字の網羅性・フォント適用範囲（ラベル限定） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §5 |
+| 倍率の適用範囲（UI は rem で書く／地図の描画物には `iconScale` を渡す。枠線・影は倍率に連動させない） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §2「表示設定」 |
 | 画面サイズ別レイアウトの分岐条件（`side` / `sideNarrow` / `roomy`）・パネル比率・折りたたみ | [`docs/spec/architecture-spec.md`](docs/spec/architecture-spec.md) §4「画面サイズ別のレイアウト」 |
 | 震度集約の単位（一次細分区域）・観測点 0 件時の集約維持 | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §7 |
 | 地震電文の `points` 構造（バリアント経路差・`pref` 空の識別規則） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §4 |
