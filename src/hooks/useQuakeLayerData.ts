@@ -72,7 +72,10 @@ export interface QuakeLayerData {
   intensityMarkers: IntensityMarker[]
   /** 観測点だけの震度点（震度の弱い順＝強い震度を前面に描画する想定）。 */
   stationMarkers: IntensityMarker[]
-  /** true のとき一次細分区域へ集約して塗る（zoom <= QUAKE_MAX_ZOOM）。 */
+  /**
+   * true のとき一次細分区域へ集約して塗る（zoom <= QUAKE_MAX_ZOOM）。
+   * 区域データ（subregions.json）の取得に失敗したときは、集約しても塗るポリゴンが無いため false。
+   */
   aggregateByRegion: boolean
   /** 区域ごとの最大震度集約（弱い順）。aggregateByRegion=false のときは空。 */
   regionAggregates: RegionAggregate[]
@@ -101,7 +104,7 @@ export function useQuakeLayerData(
   lpgm?: JMALpgm | null,
 ): QuakeLayerData {
   const stationCoords = useStationCoords()
-  const subregions = useSubRegions()
+  const { data: subregions, failed: subregionsFailed } = useSubRegions()
 
   const areaPrefIndex = useMemo(
     () => (stationCoords ? buildAreaPrefIndex(stationCoords) : new Map<string, string>()),
@@ -146,8 +149,16 @@ export function useQuakeLayerData(
   // 拡大しても増える情報が無い。区域の代表点をドットにすると「その地点の観測値」に
   // 見えてしまうため、ズームに関わらず区域集約を維持する。
   // LPGM 表示中は LPGM 側の粒度（lpgmMarkers）で決まるため対象外。
+  //
+  // 区域データ（subregions.json）の取得が失敗で確定したときは集約しない。塗る区域ポリゴンが
+  // 1件も作れない（regionAggregates が空）のに、JapanMapGL は区域塗りと観測点ドットを排他で
+  // 切り替えるため、集約を維持したままだと地図から震度が完全に消えるため。自動フィットの
+  // 着地ズームは常に QUAKE_MAX_ZOOM でキャップされる（gl/camera.ts）ので、この経路は
+  // 「たまたま拡大していれば助かる」ものではなく必ず踏む。
+  // 読み込み中（failed=false・data=null）は集約を維持する——データ到着の瞬間にドットから
+  // 区域塗りへ切り替わるちらつきを避けるため（regionAggregates を常時計算しているのと同じ理由）。
   const aggregateByRegion =
-    mode === 'quake' && !!quake &&
+    mode === 'quake' && !!quake && !subregionsFailed &&
     (zoom <= QUAKE_MAX_ZOOM || (!lpgmActive && stationMarkers.length === 0))
 
   // 一次細分区域に bbox を付与（点内包判定の前段フィルタ用）。

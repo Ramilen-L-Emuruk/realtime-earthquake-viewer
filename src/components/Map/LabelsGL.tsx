@@ -107,8 +107,19 @@ export function LabelsGL({ overlapSignature }: Props) {
     // 県名・区域名は境界データ（label 座標・dir）に依存するため取得後に追加する。
     Promise.allSettled([loadPrefectures(), loadSubRegions()]).then(([prefRes, subRes]) => {
       if (cancelled || !map.getSource(REGION_SRC)) return
-      if (prefRes.status === 'rejected') log.warn('[LabelsGL] prefectures 取得失敗（県名ラベルなしで継続）', prefRes.reason)
-      if (subRes.status === 'rejected') log.warn('[LabelsGL] subregions 取得失敗（区域名ラベルなしで継続）', subRes.reason)
+      // 失敗ログには「どのズーム帯のラベルが欠けるか」を書く。ラベルはズーム帯ごとに粒度を
+      // 切り替える（上の対応表）ため、これが無いと「取得に失敗して出ない」のか「そのズーム帯では
+      // 元々出さない設計」なのかを、地図を見ても console を見ても区別できない。
+      if (prefRes.status === 'rejected')
+        log.warn(
+          `[LabelsGL] prefectures 取得失敗（zoom ${REGION_MAX_ZOOM}〜${CITY_LABEL_MIN_ZOOM} の県名ラベルが出ない。他ズーム帯の地方名・区域名ラベルは影響なし）`,
+          prefRes.reason,
+        )
+      if (subRes.status === 'rejected')
+        log.warn(
+          `[LabelsGL] subregions 取得失敗（zoom ${CITY_LABEL_MIN_ZOOM} 以上の区域名ラベルが出ない。それ未満の地方名・県名ラベルは影響なし）`,
+          subRes.reason,
+        )
 
       // 県名ラベル。県中心の最大震度バッジと重ならないよう dir（up/down）で 1.5em ずらす
       // （Leaflet 版 base-pref-label--up/down の transform 相当。text-offset の単位は em）。
