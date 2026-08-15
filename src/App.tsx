@@ -3,6 +3,7 @@ import { IconNav, type TabId } from './components/IconNav'
 import { PanelResizeHandle } from './components/PanelResizeHandle'
 import { MapView, type MapMode } from './components/Map/MapView'
 import { MapUpdateTime } from './components/MapUpdateTime'
+import { MapDataStatus } from './components/MapDataStatus'
 import { EarthquakeTab } from './components/EarthquakeTab'
 import { RealtimeTab } from './components/RealtimeTab'
 import { TsunamiTab } from './components/TsunamiTab'
@@ -850,7 +851,20 @@ export function App() {
             obsUpdateStatus={obsUpdateStatus}
             quakeSelectionTick={quakeSelectionTick}
           />
-          <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
+          {/* 地図左上に重ねる情報の置き場。上から更新時刻・生成データの取得状況。
+              z-[99999]: 区域集約震度バッジ（QuakeRegionFillGL）は el.style.zIndex = scale*1000 で、
+              scale は JMA 震度階級の数値コード（震度7 = 70）まであるため最大 70000 まで積む。
+              それより確実に高い値にして常に最前面に出す。 */}
+          <div
+            className="absolute z-[99999] pointer-events-none flex flex-col items-start gap-1"
+            style={{
+              top: 'max(0.5rem, env(safe-area-inset-top, 0px))',
+              left: 'max(0.5rem, env(safe-area-inset-left, 0px))',
+            }}
+          >
+            <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
+            <MapDataStatus />
+          </div>
           <SpecialInfoBanner nankai={nankai} kohatsu={kohatsu} />
         </div>
 
