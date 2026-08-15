@@ -275,10 +275,13 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
       })
   }, [replayCurrentTime, timeOffset, isFetching, apiKey])
 
-  // 取得エラーがあればそちらを優先して出す（そのとき再生は止まっているか、
-  // 以後の電文が届かない状態なので、損失の件数より先に伝えるべき情報）。
-  // エラーが無ければ、このセッションで確定した損失を出し続ける。
-  return { isFetching, error: fetchError ?? formatLossNotice(loss), start, stop }
+  // 取得エラーと確定した損失は別の事実なので、両方あるなら両方出す。
+  // 片方を優先して隠すと「先読みが失敗した」表示の裏で、既に確定していた
+  // 取りこぼしがいったん画面から消え、後で復活するという分かりにくい挙動になる。
+  // エラーを先に置くのは、再生が止まっているか以後の電文が届かない状態を示すため。
+  const error = [fetchError, formatLossNotice(loss)].filter(Boolean).join(' / ') || null
+
+  return { isFetching, error, start, stop }
 }
 
 function msgOf(e: unknown): string {

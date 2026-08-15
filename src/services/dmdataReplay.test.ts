@@ -319,6 +319,28 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     expect(warns.join('\n')).toMatch(/head\.time/)
   })
 
+  // new Date(null) は Invalid Date ではなく 1970-01-01 を返す。数値チェックだけだと
+  // すり抜けて、直後の「範囲外なら continue」に古い電文として無言で吸収される。
+  it('head.time が null の電文も警告を残してスキップする（1970年に化けさせない）', async () => {
+    const gz = await makeTarGz([
+      {
+        name: 'telegrams.json',
+        content: JSON.stringify([
+          { id: 'nulltime', originalId: 'nulltime', classification: 'telegram.earthquake', head: { type: 'VXSE53', time: null, test: false } },
+          manifestEntry('jjjjjjj0'),
+        ]),
+      },
+      { name: 'jjjjjjj0_20260810120500000_0.json', content: quakeBody('種子島近海') },
+    ])
+    globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
+
+    const result = await fetchDmdataReplayEvents('key', FROM, TO)
+
+    expect(result.entries).toHaveLength(1)
+    expect(result.skipped).toBe(1)
+    expect(warns.join('\n')).toMatch(/head\.time/)
+  })
+
   it('対象外の種別は警告を出さない（正常運転でログを埋めない）', async () => {
     const gz = await makeTarGz([
       // VZSE40 等の対象外種別。本体ファイルが無くても警告は出ないこと
