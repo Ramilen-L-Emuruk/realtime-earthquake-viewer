@@ -310,6 +310,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 項目 | 単一情報源となる仕様書 |
 |---|---|
 | テストデータと UI 説明文（テストボタンの `scaleTo` 値等） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §7 |
+| 設定タブのセクション構成・並び順の方針（`Section` の出現順・重大度は軽い順・カテゴリ順は両テストセクションと通知設定の種別トグルで共通） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §2 |
 | 津波の解除経路（`cancelReason` 3 種・DMDSS 限定・standard 版フォールバック） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §3 |
 | EEW P/S 波予報円の計算・仮定震源要素の連動箇所 | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §5-§6 |
 | EEW レベル判定（特別警報の条件・長周期の DMDATA 限定） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
