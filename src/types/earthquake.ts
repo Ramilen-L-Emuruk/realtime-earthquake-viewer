@@ -60,6 +60,13 @@ export interface JMAQuake {
     domesticTsunami: DomesticTsunami
   }
   points: EarthquakePoint[]
+  /**
+   * 気象庁の付加文（津波に関する固定付加文）の原文。DMDATA 経路でのみ得られる。
+   * 遠地地震は付加文コードが 021x 系だけでは表現しきれない（022x/023x 系を併用する）ため、
+   * domesticTsunami への丸め込みで意味が落ちる。原文を読み上げに使う用途で保持する。
+   * P2PQuake 経路は付加文を配信しないため undefined。
+   */
+  forecastText?: string
 }
 
 export type TsunamiGrade = 'MajorWarning' | 'Warning' | 'Watch' | 'Forecast' | 'Unknown'

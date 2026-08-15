@@ -4,6 +4,7 @@
 // データは scripts/build-subregions.mjs で生成・更新する。
 
 import type { LatLng } from './prefectures'
+import { fetchJsonWithTimeout } from './fetchJson'
 
 export interface SubRegion {
   /** 区域名（例: 神奈川県東部・石狩地方北部） */
@@ -55,16 +56,12 @@ export function onSubRegionsLoaded(fn: (data: SubRegion[]) => void): () => void 
 
 /**
  * 一次細分区域の境界データを取得する。初回のみ fetch し、以降はキャッシュを返す。
- * 取得に失敗した場合は inflight を破棄して次回リトライ可能にする。
+ * 取得に失敗した場合（タイムアウトを含む）は inflight を破棄して次回リトライ可能にする。
  */
 export function loadSubRegions(): Promise<SubRegion[]> {
   if (cache) return Promise.resolve(cache)
   if (!inflight) {
-    inflight = fetch(DATA_URL)
-      .then((res) => {
-        if (!res.ok) throw new Error(`subregions fetch failed: ${res.status}`)
-        return res.json() as Promise<SubRegion[]>
-      })
+    inflight = fetchJsonWithTimeout<SubRegion[]>(DATA_URL, 'subregions')
       .then((data) => {
         // 中身の形（配列・非空）まで見る。ビルドや配信の破損で `[]` や非配列が 200 で返ると、
         // 呼び出し側は「取得成功・区域 0 件」として扱ってしまい、区域が描けない状態が

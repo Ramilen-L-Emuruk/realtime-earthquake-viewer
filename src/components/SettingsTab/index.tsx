@@ -11,6 +11,7 @@ import { isDmdss } from '../../utils/env'
 
 export interface TestFunctions {
   earthquake: () => void
+  foreignQuake: () => void
   eew: () => void
   eewWarning: () => void
   eewForecast: () => void
@@ -730,6 +731,9 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         </div>
         <Row label="地震情報" description="令和6年能登半島地震・本震 M7.6 最大震度7（実データ）をリストと地図に追加">
           <TestButton color="red" onClick={onTest.earthquake}>地震テスト</TestButton>
+        </Row>
+        <Row label="遠地地震" description="メキシコ・チアパス州沿岸 M7.4 深さ不明（実データ）– earthquakeInfo 音 / 国内震度なし・日本への津波影響なし">
+          <TestButton color="purple" onClick={onTest.foreignQuake}>遠地地震テスト</TestButton>
         </Row>
         <Row label="緊急地震速報（特別警報）" description="震度6強 – eewSpecial 音 / 10秒以内に再度押すと続報、押さなければ最終報確定→無音で自動解除（数分後）">
           <TestButton color="red" onClick={onTest.eew}>特別警報テスト</TestButton>

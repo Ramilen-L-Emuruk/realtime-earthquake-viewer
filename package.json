@@ -1,13 +1,13 @@
 {
   "name": "realtime-earthquake-viewer",
   "private": true,
-  "version": "4.9.0",
+  "version": "4.12.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "dev:dmdss": "cross-env VITE_VARIANT=dmdss vite",
-    "build": "tsc -b && vite build",
-    "build:dmdss": "tsc -b && cross-env VITE_VARIANT=dmdss vite build",
+    "build": "node scripts/build-glyphs.mjs --check && tsc -b && vite build",
+    "build:dmdss": "node scripts/build-glyphs.mjs --check && tsc -b && cross-env VITE_VARIANT=dmdss vite build",
     "preview": "vite preview",
     "preview:dmdss": "cross-env VITE_VARIANT=dmdss vite preview",
     "test": "vitest run",

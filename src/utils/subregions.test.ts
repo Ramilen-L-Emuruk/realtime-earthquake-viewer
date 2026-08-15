@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import type { SubRegion } from './subregions'
+import { DATA_FETCH_TIMEOUT_MS } from './fetchJson'
 
 // subregions.ts はモジュールスコープに cache / inflight / 購読者を持つため、
 // テストごとに resetModules して新しいインスタンスを読み直す。
@@ -16,8 +17,18 @@ function okResponse(body: unknown) {
   return { ok: true, json: async () => body } as unknown as Response
 }
 
+/** signal が abort されるまで解決しない fetch（応答が返らない回線の再現）。 */
+function hangingFetch(init?: { signal?: AbortSignal }) {
+  return new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => {
+      reject(new DOMException('The operation was aborted.', 'AbortError'))
+    })
+  })
+}
+
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.useRealTimers()
 })
 
 describe('loadSubRegions', () => {
@@ -53,6 +64,25 @@ describe('loadSubRegions', () => {
     const { loadSubRegions } = await freshModule()
 
     await expect(loadSubRegions()).rejects.toThrow(/no data/)
+  })
+
+  it('応答が返らないときはタイムアウトで失敗確定し、次の要求で再取得できる', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce((_url: string, init?: { signal?: AbortSignal }) => hangingFetch(init))
+      .mockResolvedValueOnce(okResponse(SAMPLE))
+    vi.stubGlobal('fetch', fetchMock)
+    const { loadSubRegions, getSubRegionsCache } = await freshModule()
+
+    // 待ち続けず、タイムアウトで reject する（＝呼び出し側のフォールバックが動ける）
+    const assertion = expect(loadSubRegions()).rejects.toThrow(/timed out/)
+    await vi.advanceTimersByTimeAsync(DATA_FETCH_TIMEOUT_MS)
+    await assertion
+    expect(getSubRegionsCache()).toBeNull()
+
+    expect(await loadSubRegions()).toEqual(SAMPLE)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('失敗後に呼び直すと再取得する（inflightを破棄してリトライ可能にする）', async () => {

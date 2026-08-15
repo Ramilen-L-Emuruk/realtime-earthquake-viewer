@@ -3,6 +3,7 @@ import { IconNav, type TabId } from './components/IconNav'
 import { PanelResizeHandle } from './components/PanelResizeHandle'
 import { MapView, type MapMode } from './components/Map/MapView'
 import { MapUpdateTime } from './components/MapUpdateTime'
+import { MapDataStatus } from './components/MapDataStatus'
 import { EarthquakeTab } from './components/EarthquakeTab'
 import { RealtimeTab } from './components/RealtimeTab'
 import { TsunamiTab } from './components/TsunamiTab'
@@ -196,7 +197,7 @@ export function App() {
     earthquakes, tsunamis, activeEEWs, lpgmByEventId, nankai, kohatsu, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
     telegramLog, clearTelegramLog,
     injectEvent, loadMoreEarthquakes,
-    simulateEarthquake,
+    simulateEarthquake, simulateForeignQuake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateKohatsu,
@@ -227,6 +228,7 @@ export function App() {
   // による自動検出は現状の lint 設定では実行されない）。
   const testHandlers = useMemo(() => ({
     earthquake:        simulateEarthquake,
+    foreignQuake:      simulateForeignQuake,
     eew:               simulateEEW,
     eewWarning:        simulateEEWWarning,
     eewForecast:       simulateEEWForecast,
@@ -252,7 +254,8 @@ export function App() {
       })
     },
   }), [
-    simulateEarthquake, simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWRetraction,
+    simulateEarthquake, simulateForeignQuake,
+    simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateKohatsu,
   ])
@@ -310,9 +313,15 @@ export function App() {
     setSoundVolume(settings.soundVolume)
   }, [settings.soundVolume])
 
-  // TTS 読み辞書をアプリ起動時に事前ロードする（VOICEVOX 有効・無効に関わらず）
+  // TTS 読み辞書をアプリ起動時に事前ロードする（VOICEVOX 有効・無効に関わらず）。
+  // ここで揃えておけば読み上げ時に待たされない。失敗しても読み上げは句区切りなしで成立するが、
+  // 「なぜ句区切りが効かないのか」を後から追えるようログは残す。
   useEffect(() => {
-    loadTtsPhraseBreakDict().catch(() => {})
+    loadTtsPhraseBreakDict().catch((err) => {
+      // 起動時に 1 回だけなので、他の生成データローダと同じ warn で残す
+      // （読み上げ時の再試行は繰り返されうるため voicevox.ts 側は debug）。
+      log.warn('[data] tts-phrase-break-dict 事前ロード失敗（読み上げの句区切りが効かない）', err)
+    })
   }, [])
 
   // ブラウザの自動再生制限に対応: 初回のユーザー操作で音声を有効化する
@@ -329,8 +338,15 @@ export function App() {
   // filter は毎回新規配列を返すため useMemo で参照を安定化する
   // （EarthquakeTab / TsunamiTab へ props として渡すため。毎レンダー新配列を渡すと
   // shallow compare で常に不一致となり React.memo が実質無効化される）。
+  // 遠地地震は国外の地震を伝える情報で国内震度を持たない（maxScale は常に -1）。
+  // 「最低表示震度」は国内の小さい地震を一覧から省く設定なので、震度で比べようがない
+  // 遠地地震まで巻き添えで消えないよう対象外にする（M7 以上でしか発表されない情報のため）。
   const filteredEarthquakes = useMemo(
-    () => earthquakes.filter(q => settings.minDisplayScale < 0 || q.earthquake.maxScale >= settings.minDisplayScale),
+    () => earthquakes.filter(q =>
+      settings.minDisplayScale < 0
+      || q.issue.type === '遠地地震'
+      || q.earthquake.maxScale >= settings.minDisplayScale
+    ),
     [earthquakes, settings.minDisplayScale],
   )
 
@@ -835,7 +851,20 @@ export function App() {
             obsUpdateStatus={obsUpdateStatus}
             quakeSelectionTick={quakeSelectionTick}
           />
-          <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
+          {/* 地図左上に重ねる情報の置き場。上から更新時刻・生成データの取得状況。
+              z-[99999]: 区域集約震度バッジ（QuakeRegionFillGL）は el.style.zIndex = scale*1000 で、
+              scale は JMA 震度階級の数値コード（震度7 = 70）まであるため最大 70000 まで積む。
+              それより確実に高い値にして常に最前面に出す。 */}
+          <div
+            className="absolute z-[99999] pointer-events-none flex flex-col items-start gap-1"
+            style={{
+              top: 'max(0.5rem, env(safe-area-inset-top, 0px))',
+              left: 'max(0.5rem, env(safe-area-inset-left, 0px))',
+            }}
+          >
+            <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
+            <MapDataStatus />
+          </div>
           <SpecialInfoBanner nankai={nankai} kohatsu={kohatsu} />
         </div>
 

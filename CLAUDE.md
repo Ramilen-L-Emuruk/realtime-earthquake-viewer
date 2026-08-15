@@ -97,7 +97,8 @@ realtime-earthquake-viewer（リアルタイム地震ビューアー）で作業
 > **コードを修正した場合は、型チェックだけでなく必ずアプリを起動して実行確認（ブラウザ確認）まで行う。**
 > 型チェックのみで完了とせず、**特に指定がない場合は `npm run dev:dmdss`（DMDSS 版）で起動し**、Playwright MCP で実際の表示・挙動を確認してからコミットする。
 
-- **型チェック（必須）**: `npx tsc -b`（または `npm run build`）。エラー0を確認する。
+- **型チェック（必須）**: `npx tsc -b`。エラー0を確認する。
+  - `npm run build` でも型チェックは走るが、その前段に**地名ラベル用グリフの検証**（`build-glyphs.mjs --check`）が入る。ここで落ちた場合は型エラーではなく「グリフの焼き直し忘れ」なので、メッセージを読んで切り分けること（下記「補助コマンド」参照）。
 - **アプリ起動（デフォルト: DMDSS 版）**: **特にバリアントの指定がない場合は `npm run dev:dmdss` を使用する**。
   - DMDSS 版 URL: `http://localhost:5173/realtime-earthquake-viewer/dmdss/`
   - standard 版が明示的に必要な場合のみ `npm run dev` → `http://localhost:5173/realtime-earthquake-viewer/`
@@ -283,12 +284,13 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | コマンド | 用途 |
 |----------|------|
 | `npm run dev` | 開発サーバー |
-| `npm run build` | 型チェック + 本番ビルド |
+| `npm run build` | 地名ラベル用グリフの検証 + 型チェック + 本番ビルド |
 | `npm run preview` | 本番ビルドのプレビュー（サブパス配信） |
 | `node scripts/build-station-coords.mjs` | 観測点座標テーブル（`public/data/station-coords.json`）の再生成 |
 | `node scripts/build-tsunami-zones.mjs` | 津波予報区 海岸線データ（`public/data/tsunami-zones.json`）の再生成 |
 | `node scripts/build-prefectures.mjs` | 都道府県境界データ（`public/data/prefectures.json`）の再生成（ベースマップ用） |
 | `node scripts/build-subregions.mjs` | 一次細分区域境界データ（`public/data/subregions.json`）の再生成 |
+| `node scripts/build-glyphs.mjs` | 地名ラベル用 SDF グリフ（`public/fonts/`）の再生成。**地名（地方・県・区域）が増減したら実行する**（`npm run build` が前段で `--check` を走らせ、未生成の文字があればビルドを止める。詳細は [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §5）。県名・区域名は `public/data/*.json` から読むため、**`build-prefectures.mjs`・`build-subregions.mjs` を先に実行すること** |
 | `npm version patch\|minor\|major` | バージョン更新・コミット・git tag 作成（リリース時に 1 回だけ実行。詳細は「リリース」参照） |
 
 ## 構成メモ
@@ -298,7 +300,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 - 地図は MapLibre GL JS（`JapanMapGL`）に一本化。`MapView` が App と地図実装の間の薄いラッパー。旧 Leaflet 版 JapanMap とエンジン切替フラグは F7 で撤去済み。
 - 地図のモード（`JapanMapGL` の `mode`）: `quake`（地震）／`tsunami`（津波海岸線）／`kyoshin`（リアルタイム震度・予報円）。
 - 生成データ（`public/data/*.json`）は座標が大きいため遅延読込（初回利用時に一度だけ fetch しキャッシュ）。  
-  ベースマップ用（`prefectures.json` / `subregions.json`）は地図初回表示時、地震/津波用（`station-coords.json` / `tsunami-zones.json`）は該当タブ表示時に fetch する。
+  地図は常時表示のため、地図が使うもの（`prefectures.json` / `subregions.json` / `station-coords.json` / `tsunami-zones.json` / `active-faults.json` / `plate-boundaries.json` / `tsunami-obs-coords.json`）は表示モードに関わらず地図の初回表示時にまとめて要求する。実地震テストシナリオの本体だけは再生時に取得する。
 
 ## コード整合性チェックポイント
 
@@ -312,11 +314,14 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | EEW レベル判定（特別警報の条件・長周期の DMDATA 限定） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
 | 地図レイヤー描画順・EEW 予想レイヤーの kyoshin 限定・`maplibregl.Marker` の opacity | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §2・§3・§7・§10 |
 | ズーム値の基準（MapLibre 512px タイル vs Leaflet 256px タイル）・`MAX_ZOOM` に揃える閾値群 | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §4・§6 |
+| ラベルのフォントスタック名の一致・グリフ収録文字の網羅性・フォント適用範囲（ラベル限定） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §5 |
 | 画面サイズ別レイアウトの分岐条件（`side` / `sideNarrow` / `roomy`）・パネル比率・折りたたみ | [`docs/spec/architecture-spec.md`](docs/spec/architecture-spec.md) §4「画面サイズ別のレイアウト」 |
 | 震度集約の単位（一次細分区域）・観測点 0 件時の集約維持 | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §7 |
 | 地震電文の `points` 構造（バリアント経路差・`pref` 空の識別規則） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §4 |
+| 遠地地震の識別（VXSE53・`Head/Title`）・付加文コードと `forecastText` | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §3（遠地地震に関する情報） |
 | `KyoshinSubThreshold` の対象範囲（index 1〜6）・慢性ノイズ床フィルタ | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) |
 | 実地震テストシナリオの時刻シフト・ID 再採番・利用規約制約 | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6 |
+| 生成データ（`public/data/*.json`）の取得タイムアウト値・失敗時の扱い（TTS 辞書のみ別値） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §6 |
 
 各仕様書は冒頭で「食い違う場合は実コードを正とする」と宣言している。放置すると即座に嘘になる文書なので、実装変更時に必ず追従させる。
 

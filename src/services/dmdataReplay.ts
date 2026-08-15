@@ -17,26 +17,16 @@ function authHeader(apiKey: string): string {
   return 'Basic ' + btoa(apiKey + ':')
 }
 
+// gzip を展開する。writer/reader を自前で回すと、書き込みと読み出しを直列に並べた瞬間に
+// バックプレッシャで相互待ちに陥る（writer.write() は readable 側が読み進んでキューに空きが
+// できるまで resolve しない）。pipeThrough + Response に任せればポンプ処理はブラウザ側が持つため、
+// その事故が構造的に起きない。展開中の失敗（破損 gzip 等）は arrayBuffer() の await が
+// 例外として投げ、fetchDmdataReplayEvents 側の try/catch に集約される。
 async function gunzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
-  const ds = new DecompressionStream('gzip')
-  const writer = ds.writable.getWriter()
-  const reader = ds.readable.getReader()
-  // write()/close() は Promise を返す。未 await だと書き込み側の失敗（バックプレッシャ違反・
-  // 破損 gzip でのフラッシュ失敗等）が unhandled rejection として飛び、リプレイ全体の
-  // エラー経路と一致しなくなる。await して例外を fetchDmdataReplayEvents 側の try/catch に集約する。
-  await writer.write(bytes as unknown as ArrayBuffer)
-  await writer.close()
-  const chunks: Uint8Array[] = []
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    chunks.push(value)
-  }
-  const total = chunks.reduce((n, c) => n + c.length, 0)
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const c of chunks) { out.set(c, offset); offset += c.length }
-  return out
+  const stream = new Blob([bytes as BlobPart])
+    .stream()
+    .pipeThrough(new DecompressionStream('gzip'))
+  return new Uint8Array(await new Response(stream).arrayBuffer())
 }
 
 function toDateStr(d: Date): string {
@@ -86,6 +76,11 @@ async function downloadArchive(url: string, apiKey: string): Promise<Map<string,
     return files
   })()
   archiveCache.set(url, promise)
+  // 失敗した Promise を残すと、以後そのセッション中は同じ URL が常にキャッシュ済みの失敗を返し、
+  // ネットワークが復旧しても再取得されない。先読み（App.tsx のプリフェッチ）は clearReplayCache() を
+  // 呼ばないため、一過性の障害で再生が無言のまま止まったきりになる。reject 時はキャッシュから外す。
+  // この catch はキャッシュ掃除専用で、エラー自体は返した promise 経由で呼び出し元へ伝わる。
+  promise.catch(() => archiveCache.delete(url))
   return promise
 }
 
