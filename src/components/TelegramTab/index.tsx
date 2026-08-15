@@ -231,7 +231,10 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto">
+      {/* ここが実際のスクロール領域（ヘッダーは flex-shrink-0 で固定）。overflow-y だけを auto に
+          すると overflow-x も auto に格上げされ横スクロールしてしまうため、App.tsx の
+          TAB_SCROLLER_CLASS と同じ指定で塞ぐ（祖先の指定は子の overflow 計算に効かない）。 */}
+      <div className="flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none">
         {filtered.length === 0 ? (
           <div className="flex items-center justify-center h-32 text-sm text-secondary">
             {telegramLog.length === 0 ? '電文を待機中...' : 'フィルタ条件に一致なし'}
