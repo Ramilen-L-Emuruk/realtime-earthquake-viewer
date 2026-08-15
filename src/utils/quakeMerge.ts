@@ -29,14 +29,63 @@ export function extractQuakeEventId(q: JMAQuake): string | null {
   return extractQuakeEventIdFromId(q.id)
 }
 
+// 地震カードの安定キー。統合・選択・通知の同一性判定はすべてこの値で行う。
+// 統合済みカードは mergeQuakeInto が付けた eventKey を持ち、続報で id が変わっても不変。
+// 統合前の生電文にはまだ無いため、その場で新規キーを導出する。
+export function quakeEventKey(q: JMAQuake): string {
+  return q.eventKey ?? initialQuakeKey(q)
+}
+
+// 生電文からイベントキーを新規に作る。DMDATA は全報が共有する eventId をそのまま使う。
+// P2PQuake は eventId を配信せず、レコード id も報ごとに変わるため、
+// 「発生時刻＋その報の id」で一意化する。このキーが作られるのはイベントの初報だけで、
+// 以降の続報は mergeQuakeInto が初報のキーを引き継ぐ（＝キーは事後的に安定する）。
+function initialQuakeKey(q: JMAQuake): string {
+  return extractQuakeEventId(q) ?? `p2p:${q.earthquake.time}#${q.id}`
+}
+
+// 同一イベントのまま震源名が変わりうる電文か。
+// - 訂正報（infoType=訂正／P2PQuake の `correct`）: 震源そのものを訂正する
+// - 顕著な地震の震源要素更新（VXSE61 / P2PQuake の DestinationAmended）: 震源要素を差し替える
+//   電文で、`issue.correct` は「なし」のまま来る。mergeQuakeInto の分岐 A が hypocenter を
+//   丸ごと置き換える設計と対になる条件なので、ここから外すと震源名が変わった更新報が
+//   別カードに分裂する（P2PQuake 経路は eventId が無く震源名で判定するため）。
+function allowsHypocenterChange(q: JMAQuake): boolean {
+  return q.issue.correct !== 'なし' || q.issue.type === AMENDMENT_TYPE
+}
+
+// 震源名が「両方とも判明していて食い違う」なら別イベントとみなせる。
+// 震度速報は震源が未確定で名前が空のため判定に使わない（震源を伴う続報と合流させる）。
+//
+// 副作用: 条件が対称なので、片方が震源名の変更を許す電文（訂正報・震源要素更新）であれば
+// 常に「食い違いなし」になる。震源要素更新のカードが残っている間は、同じ分に起きた別の
+// 地震の報まで吸収しうる（`docs/spec/quake-spec.md` §6.1 の限界の 3 つ目）。
+function hasConflictingHypocenter(a: JMAQuake, b: JMAQuake): boolean {
+  const na = a.earthquake.hypocenter.name
+  const nb = b.earthquake.hypocenter.name
+  if (!na || !nb || na === nb) return false
+  return !allowsHypocenterChange(a) && !allowsHypocenterChange(b)
+}
+
 // 2つの地震カードが同一イベントかどうか。
+// 判定の優先順は「安定キー → eventId → 発生時刻＋震源名」。
 // DMDATA は VXSE51（targetDateTime）→ VXSE52/53（originTime）で earthquake.time が
-// 約1分ずれるため、eventId があればそれを優先し、無ければ earthquake.time で比較する。
+// 約1分ずれるため eventId を優先する。P2PQuake は eventId が無いため発生時刻で比較するが、
+// 同時刻は分単位でしか一致しない（P2PQuake の発生時刻は秒が常に 00）ので、
+// 震源名まで見て「同じ分に起きた別の地震」を分離する。
+//
+// 第1分岐（双方が eventKey を持つ）は、実運用では incoming 側が統合前の生電文なので通らない。
+// 統合済みカードどうしを比較する将来の呼び出し・テストのための分岐。
+//
+// 限界（`docs/spec/quake-spec.md` §6.1）: P2PQuake 経路では、同じ分に起きた別々の地震を
+// 常には分離できない。震源名が同じ場合と、震源が未確定の震度速報が絡む場合がこれにあたる。
 export function sameQuakeEntry(a: JMAQuake, b: JMAQuake): boolean {
+  if (a.eventKey && b.eventKey) return a.eventKey === b.eventKey
   const ea = extractQuakeEventId(a)
   const eb = extractQuakeEventId(b)
   if (ea && eb) return ea === eb
-  return a.earthquake.time === b.earthquake.time
+  if (a.earthquake.time !== b.earthquake.time) return false
+  return !hasConflictingHypocenter(a, b)
 }
 
 // カードが実際の震度データ（最大震度 or 各地の震度）を持つか。
@@ -64,12 +113,18 @@ export function sortQuakes(arr: JMAQuake[]): JMAQuake[] {
 //     * 既存がより新しい VXSE61 なら、その更新後の震源・種別を保持したまま incoming の震度を採る。
 //
 // 戻り値が existing と同一参照なら「変化なし」を意味する（呼び出し側は状態を更新しない）。
+//
+// 統合結果には必ず eventKey を持たせる。既存カードがあればそのキーを引き継ぐため、
+// P2PQuake のように続報で id が変わる経路でも、カードのキーは初報のまま不変になる。
 export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuake): JMAQuake {
+  const eventKey = existing?.eventKey ?? quakeEventKey(incoming)
+
   // --- A. incoming が VXSE61（顕著地震の震源要素更新） ---
   if (incoming.issue.type === AMENDMENT_TYPE) {
-    if (!existing) return incoming
+    if (!existing) return { ...incoming, eventKey }
     return {
       ...existing,
+      eventKey,
       time: incoming.time,
       issue: incoming.issue,
       earthquake: {
@@ -83,7 +138,7 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
   }
 
   // --- B. incoming が通常電文 ---
-  if (!existing) return incoming
+  if (!existing) return { ...incoming, eventKey }
 
   // 据え置き判定: 既存が実震度を持ち・未取消・より高優先度なら更新しない。
   // hasIntensity を条件に含めることで、VXSE61 単独カードや震度欠落カードは
@@ -96,7 +151,7 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
     return existing
   }
 
-  let result = incoming
+  let result: JMAQuake = { ...incoming, eventKey }
 
   // 震度欠落の後続電文（震源のみ等）は既存の震度で補完する。
   if (!hasIntensity(incoming) && hasIntensity(existing)) {
@@ -121,31 +176,31 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
   return result
 }
 
-// 電文群を eventId（無ければ earthquake.time）ごとに時刻順で畳み込み、リアルタイムと
-// 同一の統合結果を得る。base は統合済みの既存カード群（「もっと見る」でのバッチ跨ぎ用）。
+// 電文群をイベントごとに時刻順で畳み込み、リアルタイムと同一の統合結果を得る。
+// base は統合済みの既存カード群（「もっと見る」でのバッチ跨ぎ用）。
+//
+// 同一イベントの判定は sameQuakeEntry に一本化している（Map のキー方式では、震源名を見る
+// 判定や「震度速報は震源名が空」の扱いを表現できないため）。件数は履歴数十〜数百件なので
+// 線形探索で足りる。
 export function mergeQuakeHistory(newQuakes: JMAQuake[], base: JMAQuake[] = []): JMAQuake[] {
-  const byKey = new Map<string, JMAQuake>()
-  const keyOf = (q: JMAQuake): string => extractQuakeEventId(q) ?? q.earthquake.time
-
-  for (const q of base) {
-    byKey.set(keyOf(q), q)
-  }
+  const merged: JMAQuake[] = [...base]
 
   // 電文の発表時刻昇順で適用する（＝到着順の再現）。
   const ordered = [...newQuakes].sort((a, b) =>
     new Date(a.time).getTime() - new Date(b.time).getTime()
   )
   for (const q of ordered) {
-    const key = keyOf(q)
+    const index = merged.findIndex(e => sameQuakeEntry(e, q))
     // 取消電文（infoType=取消）: 履歴では取消された地震のカードを表示しない。
     // ライブ経路（useEarthquakes の取消専用分岐）は取消を10秒表示してから purge するが、
     // 過去情報である履歴ではその最終状態（非表示）に一致させる。
     if (q.cancelled) {
-      byKey.delete(key)
+      if (index >= 0) merged.splice(index, 1)
       continue
     }
-    byKey.set(key, mergeQuakeInto(byKey.get(key), q))
+    if (index >= 0) merged[index] = mergeQuakeInto(merged[index], q)
+    else merged.push(mergeQuakeInto(undefined, q))
   }
 
-  return sortQuakes(Array.from(byKey.values()))
+  return sortQuakes(merged)
 }

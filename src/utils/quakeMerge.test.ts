@@ -6,8 +6,9 @@ import {
   extractQuakeEventIdFromId,
   sameQuakeEntry,
   hasIntensity,
+  quakeEventKey,
 } from './quakeMerge'
-import type { JMAQuake, IssueType, IntensityScale, EarthquakePoint, DomesticTsunami } from '../types/earthquake'
+import type { JMAQuake, IssueType, IntensityScale, EarthquakePoint, DomesticTsunami, CorrectType } from '../types/earthquake'
 
 interface QuakeOpts {
   eventId?: string
@@ -19,6 +20,7 @@ interface QuakeOpts {
   quakeTime?: string     // earthquake.time（発生時刻）
   mag?: number
   hypoName?: string
+  correct?: CorrectType  // 訂正区分（既定は 'なし'）
   tsunami?: DomesticTsunami
   cancelledAt?: Date
 }
@@ -34,7 +36,7 @@ function makeQuake(o: QuakeOpts = {}): JMAQuake {
     id: o.id ?? `dmdata-quake-${eventId}-1`,
     time,
     ...(o.cancelledAt ? { cancelledAt: o.cancelledAt } : {}),
-    issue: { source: 'dmdata', time, type, correct: 'なし' },
+    issue: { source: 'dmdata', time, type, correct: o.correct ?? 'なし' },
     earthquake: {
       time: o.quakeTime ?? '2026-07-28T07:27:00Z',
       hypocenter: {
@@ -117,6 +119,57 @@ describe('sameQuakeEntry', () => {
     expect(sameQuakeEntry(a, b)).toBe(true)
     expect(sameQuakeEntry(a, c)).toBe(false)
   })
+
+  it('eventId が無い場合、同時刻でも震源名が食い違えば別イベントとする', () => {
+    const domestic = makeQuake({ id: 'p2p-1', hypoName: '群馬県南部' })
+    const foreign = makeQuake({ id: 'p2p-2', hypoName: 'インドネシア、フローレス' })
+    expect(sameQuakeEntry(domestic, foreign)).toBe(false)
+  })
+
+  it('震源名が空の震度速報は、震源を伴う続報と同一イベントとみなす', () => {
+    const prompt = makeQuake({ id: 'p2p-1', type: '震度速報', hypoName: '' })
+    const detail = makeQuake({ id: 'p2p-2', type: '各地の震度情報', hypoName: '熊本県熊本地方' })
+    expect(sameQuakeEntry(prompt, detail)).toBe(true)
+  })
+
+  it('訂正報は震源名が変わっても同一イベントとみなす', () => {
+    const original = makeQuake({ id: 'p2p-1', hypoName: '日向灘' })
+    const corrected = makeQuake({ id: 'p2p-2', hypoName: '豊後水道', correct: '震源を訂正' })
+    expect(sameQuakeEntry(original, corrected)).toBe(true)
+  })
+
+  // VXSE61（P2PQuake の DestinationAmended）は震源要素を差し替える電文で、issue.correct は
+  // 「なし」のまま来る。これを訂正報と同じ扱いにしないと、震源名が変わった更新報が
+  // P2PQuake 経路で別カードに分裂する。
+  it('震源要素更新は issue.correct が「なし」でも震源名の変更を許容する', () => {
+    const original = makeQuake({ id: 'p2p-1', hypoName: '石川県能登地方' })
+    const amended = makeQuake({ id: 'p2p-2', hypoName: '能登半島沖', type: '顕著な地震の震源要素更新のお知らせ' })
+    expect(sameQuakeEntry(original, amended)).toBe(true)
+  })
+
+  it('eventKey を持つカード同士は eventKey だけで判定する', () => {
+    const a: JMAQuake = { ...makeQuake({ id: 'p2p-1' }), eventKey: 'key-1' }
+    const b: JMAQuake = { ...makeQuake({ id: 'p2p-2' }), eventKey: 'key-1' }
+    const c: JMAQuake = { ...makeQuake({ id: 'p2p-3' }), eventKey: 'key-2' }
+    expect(sameQuakeEntry(a, b)).toBe(true)
+    expect(sameQuakeEntry(a, c)).toBe(false)
+  })
+})
+
+describe('quakeEventKey', () => {
+  it('DMDATA 経路は電文の eventId をキーにする', () => {
+    expect(quakeEventKey(makeQuake({ id: 'dmdata-quake-20260728162718-1' }))).toBe('20260728162718')
+  })
+
+  it('P2P 経路の生電文は発生時刻とレコード id から作る', () => {
+    const key = quakeEventKey(makeQuake({ id: 'p2p-1', quakeTime: '2026-07-28T07:27:00Z' }))
+    expect(key).toBe('p2p:2026-07-28T07:27:00Z#p2p-1')
+  })
+
+  it('付与済みの eventKey を優先する（続報で id が変わっても不変）', () => {
+    const card: JMAQuake = { ...makeQuake({ id: 'p2p-9' }), eventKey: 'p2p:2026-07-28T07:27:00Z#p2p-1' }
+    expect(quakeEventKey(card)).toBe('p2p:2026-07-28T07:27:00Z#p2p-1')
+  })
 })
 
 describe('hasIntensity', () => {
@@ -152,7 +205,8 @@ describe('mergeQuakeInto — VXSE61（顕著地震）', () => {
   it('既存が無ければ顕著地震は震度なし単独カードになる', () => {
     const n = makeNoIntensity({ type: '顕著な地震の震源要素更新のお知らせ' })
     const merged = mergeQuakeInto(undefined, n)
-    expect(merged).toBe(n)
+    // 統合結果には eventKey が付くため、中身が incoming と一致することで確認する。
+    expect(merged).toEqual({ ...n, eventKey: quakeEventKey(n) })
     expect(hasIntensity(merged)).toBe(false)
   })
 
@@ -198,7 +252,7 @@ describe('mergeQuakeInto — 通常電文どうし', () => {
   it('低優先度(既存) に 高優先度 が来たら置換する', () => {
     const e = makeQuake({ type: '震度速報', maxScale: 40 })
     const n = makeQuake({ type: '各地の震度情報', maxScale: 70 })
-    expect(mergeQuakeInto(e, n)).toBe(n)
+    expect(mergeQuakeInto(e, n)).toEqual({ ...n, eventKey: quakeEventKey(n) })
   })
 
   it('震度欠落の後続電文は既存の震度で補完される', () => {
@@ -213,7 +267,7 @@ describe('mergeQuakeInto — 通常電文どうし', () => {
   it('取消表示中(cancelledAt)のカードは優先度に関わらず通常電文で置換される', () => {
     const e = makeQuake({ type: '各地の震度情報', maxScale: 70, cancelledAt: new Date() })
     const n = makeQuake({ type: '震度速報', maxScale: 40 })
-    expect(mergeQuakeInto(e, n)).toBe(n)
+    expect(mergeQuakeInto(e, n)).toEqual({ ...n, eventKey: quakeEventKey(n) })
   })
 
   it('顕著地震とマージ済みの完成カード（震度あり）は低優先度の後続電文で据え置く', () => {
@@ -279,6 +333,84 @@ describe('mergeQuakeHistory', () => {
     const merged = mergeQuakeHistory([a, b])
     expect(merged).toHaveLength(1)
     expect(merged[0].earthquake.maxScale).toBe(70)
+  })
+
+  // 2026-08-15 06:58 の実データ（群馬県南部 震度2／インドネシア、フローレスの遠地地震）。
+  // P2PQuake の発生時刻は分単位のため両者の earthquake.time が完全一致し、
+  // 以前は優先度比較（各地の震度情報 4 > 遠地地震 0）で遠地地震のカードが捨てられていた。
+  it('P2P 由来で同じ分に起きた別震源の地震は 2 枚に分かれる', () => {
+    const domestic = makeQuake({
+      id: 'p2p-1', type: '各地の震度情報', maxScale: 20, hypoName: '群馬県南部',
+      quakeTime: '2026-08-15T06:58:00+09:00', time: '2026-08-15T07:01:29+09:00',
+    })
+    const foreign = makeNoIntensity({
+      id: 'p2p-2', type: '遠地地震', hypoName: 'インドネシア、フローレス',
+      quakeTime: '2026-08-15T06:58:00+09:00', time: '2026-08-15T07:29:04+09:00',
+    })
+    const merged = mergeQuakeHistory([domestic, foreign])
+    expect(merged).toHaveLength(2)
+    expect(merged.map(q => q.earthquake.hypocenter.name).sort())
+      .toEqual(['インドネシア、フローレス', '群馬県南部'])
+    // キーが衝突していない＝選択・通知が 2 枚の間で連動しない
+    expect(new Set(merged.map(q => q.eventKey)).size).toBe(2)
+  })
+
+  it('DMDATA 由来で同じ分に起きた 2 地震も別 eventKey になる', () => {
+    const domestic = makeQuake({
+      id: 'dmdata-quake-20260815065801-1', hypoName: '群馬県南部',
+      quakeTime: '2026-08-15T06:58:00+09:00',
+    })
+    const foreign = makeNoIntensity({
+      id: 'dmdata-quake-20260815065802-1', type: '遠地地震', hypoName: 'インドネシア、フローレス',
+      quakeTime: '2026-08-15T06:58:00+09:00',
+    })
+    const merged = mergeQuakeHistory([domestic, foreign])
+    expect(merged).toHaveLength(2)
+    expect(new Set(merged.map(q => q.eventKey)).size).toBe(2)
+  })
+
+  it('P2P 経路で震源要素更新が震源名を変えてもカードは 1 枚のまま', () => {
+    const detail = makeQuake({
+      id: 'p2p-1', type: '各地の震度情報', maxScale: 70,
+      hypoName: '石川県能登地方', time: '2026-07-28T07:31:00Z',
+    })
+    const amended = makeNoIntensity({
+      id: 'p2p-2', type: '顕著な地震の震源要素更新のお知らせ',
+      hypoName: '能登半島沖', time: '2026-07-28T07:45:00Z',
+    })
+    const merged = mergeQuakeHistory([detail, amended])
+    expect(merged).toHaveLength(1)
+    expect(merged[0].earthquake.hypocenter.name).toBe('能登半島沖')  // 震源は更新される
+    expect(merged[0].earthquake.maxScale).toBe(70)                   // 震度は保持される
+  })
+
+  // 既知の限界（docs/spec/quake-spec.md §6.1）。震源が未確定の震度速報は震源名が空で、
+  // 同じ分に起きたどの地震の速報かを電文から判別できない。先に届いた震源付きの報と
+  // 合流するため、カードの中身が別の地震に入れ替わる。分離できないことを固定しておく。
+  it('［限界］震源名が空の震度速報は、同じ分の別地震の詳細報と合流してしまう', () => {
+    const promptOfY = makeQuake({ id: 'p2p-y1', type: '震度速報', maxScale: 30, hypoName: '' })
+    const detailOfX = makeQuake({
+      id: 'p2p-x1', type: '各地の震度情報', maxScale: 50,
+      hypoName: '大阪府北部', time: '2026-07-28T07:29:00Z',
+    })
+    const detailOfY = makeQuake({
+      id: 'p2p-y2', type: '各地の震度情報', maxScale: 40,
+      hypoName: '東京都２３区', time: '2026-07-28T07:31:00Z',
+    })
+    const merged = mergeQuakeHistory([promptOfY, detailOfX, detailOfY])
+    // 最終的な枚数と表示内容は正しく 2 枚に落ち着く
+    expect(merged.map(q => q.earthquake.hypocenter.name).sort()).toEqual(['大阪府北部', '東京都２３区'])
+    // ただし Y の速報が確保したキーを X のカードが引き継いでいる（＝この過程で
+    // Y のカードを選択していたユーザーには中身が X にすり替わって見える）
+    expect(merged.find(q => q.earthquake.hypocenter.name === '大阪府北部')?.eventKey)
+      .toBe('p2p:2026-07-28T07:27:00Z#p2p-y1')
+  })
+
+  it('統合結果には eventKey が付き、続報でも初報のキーを保つ', () => {
+    const first = mergeQuakeInto(undefined, makeQuake({ id: 'p2p-1', type: '震度速報', maxScale: 40 }))
+    const second = mergeQuakeInto(first, makeQuake({ id: 'p2p-2', type: '各地の震度情報', maxScale: 70 }))
+    expect(first.eventKey).toBe('p2p:2026-07-28T07:27:00Z#p2p-1')
+    expect(second.eventKey).toBe(first.eventKey)
   })
 
   it('新しい地震が先頭に来るよう earthquake.time 降順で並ぶ', () => {

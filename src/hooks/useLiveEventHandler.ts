@@ -15,7 +15,22 @@ import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox } from '../utils/voicevox'
 import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, tsunamiArrivalToText, nankaiToText, kohatsuToText, lpgmToText } from '../utils/ttsText'
 import { log } from '../utils/logger'
-import { extractQuakeEventIdFromId } from '../utils/quakeMerge'
+import { extractQuakeEventIdFromId, quakeEventKey, sameQuakeEntry } from '../utils/quakeMerge'
+
+// 音・タブ切替の「新規地震か続報か」を判定するためのキー。
+// 生電文だけから作り、earthquakesRef（統合済みカード）には依存させない。ref は App の
+// レンダー本体でしか更新されず、非表示タブの復帰時（setInterval は最大 1 分まで throttle
+// される。utils/clock.ts の Page Visibility 対応コメント参照）にキューが一括で捌けると
+// 直前の統合結果を含まないため、同じ地震の続報を「新規」と誤判定して音が鳴り直す。
+//
+// DMDATA は全報が eventId を共有する。P2PQuake は eventId を持たないが、発生時刻と震源名は
+// 続報間で変わらない（変わるのは訂正報・震源要素更新のときで、それは通知に値する変化）。
+// issue.type まで含めるのは、震度速報／震源情報／各地の震度情報を別報として扱うため。
+function newQuakeTrackingKey(q: JMAQuake): string {
+  const base = extractQuakeEventIdFromId(q.id)
+    ?? `${q.earthquake.time}|${q.earthquake.hypocenter.name}`
+  return `${base}:${q.issue.type}`
+}
 
 // 観測点リストから、属する予報区（districtCode/districtName）を重複なく列挙する
 function uniqueDistricts(observations: { districtCode?: string; districtName?: string }[]): { code?: string; name?: string }[] {
@@ -80,8 +95,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     revertToDefaultTab, selectQuake, setActiveLpgmEventId,
   } = deps
 
-  // 直近に「新規地震」として注目を移した earthquake.time。続報（同一 time）では選択を維持する。
-  const lastNewQuakeTimeRef = useRef<string | null>(null)
+  // 直近に「新規地震」として注目を移したキー（`eventKey:issue.type`）。
+  // 同一イベント・同一種別の続報では新規扱いにせず、音・タブ切替を再発火させない。
+  const lastNewQuakeKeyRef = useRef<string | null>(null)
   // EEW の eventId ごとにレベルを追跡（複数EEW対応）
   // key = issue.eventId ?? id、value = 0=低震度予報 / 1=警報（severity=Warning または予想震度5弱以上） / 2=特別警報
   const activeEEWLevelsRef = useRef<Map<string, 0 | 1 | 2>>(new Map())
@@ -145,20 +161,20 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     } else if (event.kind === 'quake') {
       log.info('[tab] → earthquake (地震情報 VXSE51/52/53/61)')
       setActiveTabNonRealtime('earthquake')
-      // DMDATA は VXSE51（targetDateTime）→ VXSE52/53（originTime）で earthquake.time が1分ずれるため、
-      // eventId（quake.id から抽出）で同一イベントを判定する。id がない場合は earthquake.time で比較。
-      const quakeId = (event as import('../types/earthquake').JMAQuake).id
-      const eventIdPart = extractQuakeEventIdFromId(quakeId)
-      // issue.type を含めて種別ごとに独立判定（震度速報/震源情報/震源・震度情報 等が別報のため）
-      const incomingKey = eventIdPart
-        ? `${eventIdPart}:${event.issue.type}`
-        : event.earthquake.time
-      isNewQuake = incomingKey !== lastNewQuakeTimeRef.current
+      const incomingQuake = event as import('../types/earthquake').JMAQuake
+      const incomingKey = newQuakeTrackingKey(incomingQuake)
+      isNewQuake = incomingKey !== lastNewQuakeKeyRef.current
       if (isNewQuake) {
-        lastNewQuakeTimeRef.current = incomingKey
+        lastNewQuakeKeyRef.current = incomingKey
       }
       // 新規・続報いずれも、受信した地震カードを選択状態にする。
-      selectQuake(event.earthquake.time)
+      // 選択 ID はカードと照合するため eventKey で渡す。P2PQuake は続報ごとにレコード id が
+      // 変わるので、既存カードがあればそのキーを引き継ぐ（このハンドラは useEarthquakes の
+      // 統合より前に呼ばれるため、earthquakesRef はこの電文を取り込む前の状態）。
+      // 同一 tick に複数電文が捌けて ref が追いつかない場合はキーが実カードと一致せず、
+      // 選択は「取消でない最新カード」へフォールバックする（App.tsx の selectedQuake 導出）。
+      const existingCard = earthquakesRef.current.find(q => sameQuakeEntry(q, incomingQuake))
+      selectQuake(quakeEventKey(existingCard ?? incomingQuake))
       const { hypocenter, maxScale } = event.earthquake
       const isForeignQuake = event.issue.type === '遠地地震'
       // 震度なし続報（VXSE52 等）ではタイトルを更新しない（直前の VXSE51 表示を維持する）。
@@ -438,7 +454,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       if (!lpgmEvent.cancelled) {
         // 紐づく地震カードを選択し、自動的に LPGM 表示をオンにする
         const matchedQuake = earthquakesRef.current.find(q => extractQuakeEventIdFromId(q.id) === lpgmEvent.eventId)
-        if (matchedQuake) selectQuake(matchedQuake.earthquake.time)
+        if (matchedQuake) selectQuake(quakeEventKey(matchedQuake))
         setActiveLpgmEventId(lpgmEvent.eventId)
       }
       if (settings.soundEnabled) {
@@ -684,7 +700,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // リプレイ開始・終了時に追跡 ref を初期化する。
   // handleStartReplay の useCallback deps を壊さないよう安定参照（deps なし）にする。
   const resetTracking = useCallback(() => {
-    lastNewQuakeTimeRef.current = null
+    lastNewQuakeKeyRef.current = null
     activeEEWLevelsRef.current.clear()
     activeEEWScalesRef.current.clear()
     activeEEWAnnouncedHypocentersRef.current.clear()
@@ -709,11 +725,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       if (payload.kind === 'event') {
         const ev = payload.event
         if (ev.kind === 'quake') {
-          const quake = ev as JMAQuake
-          const eventIdPart = extractQuakeEventIdFromId(quake.id)
-          lastNewQuakeTimeRef.current = eventIdPart
-            ? `${eventIdPart}:${quake.issue.type}`
-            : quake.earthquake.time
+          // ライブ経路（上の handleLiveEvent）と同じキーの組み立て方にそろえる。
+          // なおこの復元は DMDATA archive の再生専用で、standard 版からは呼ばれない
+          // （`App.tsx` が onStartReplay を isDmdss のときだけ配線している）。
+          lastNewQuakeKeyRef.current = newQuakeTrackingKey(ev as JMAQuake)
         } else if (ev.kind === 'eew') {
           const eew = ev as EEWAlert
           const key = eew.issue?.eventId ?? eew.id
