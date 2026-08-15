@@ -26,7 +26,7 @@ import { useQuakeHeatmap } from './hooks/useQuakeHeatmap'
 import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude, formatDateTimeLocal } from './utils/formatters'
 import { computeEEWLevel, eewMaxLpgmClass } from './utils/eew'
-import { extractQuakeEventId } from './utils/quakeMerge'
+import { quakeEventKey } from './utils/quakeMerge'
 import { tsunamiOverallGrade } from './utils/tsunami'
 import { playCountdownBeep, unlockAudio, setSoundVolume } from './utils/alertSound'
 import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
@@ -216,8 +216,8 @@ export function App() {
   // selectQuake は上で useCallback 化、setActiveTabNonRealtime も useCallback 化済み。
   // ユーザーが自らリンクをクリックした挙動なので explicit=true で明示選択扱いにし、
   // モード切替（tsunami→quake）で QuakeFitGL がリマウントされた直後でも強制フィットさせる。
-  const linkTsunamiToEarthquake = useCallback((earthquakeTime: string) => {
-    selectQuake(earthquakeTime, { explicit: true })
+  const linkTsunamiToEarthquake = useCallback((quakeKey: string) => {
+    selectQuake(quakeKey, { explicit: true })
     setActiveTabNonRealtime('earthquake')
   }, [selectQuake, setActiveTabNonRealtime])
   // SettingsTab の onTest オブジェクトはメモ化して同一参照を保つ（毎レンダー再生成すると
@@ -353,23 +353,14 @@ export function App() {
   const latest = filteredEarthquakes[0] ?? null
   // キャンセル表示中のカードは選択対象から除外する（フォールバック用）
   const latestNonCancelled = filteredEarthquakes.find(q => !q.cancelledAt) ?? null
-  // 選択中の地震: 選択当時の time を持つカードを探す。DMDATA は VXSE51（targetDateTime）→
-  // VXSE52/53（originTime）で earthquake.time が 1 分ずれるため、time で見つからないときは
-  // 選択当時のカードから eventId を回収し、同一 eventId で再検索する（LOW-B1）。それでも
-  // 見つからなければキャンセル除外の最新にフォールバック。
+  // 選択中の地震: selectedQuakeId はカードの eventKey。eventKey は続報でも変わらないため、
+  // 電文が更新されても選択は同じカードに追従する（以前は earthquake.time を選択 ID にしていたが、
+  // VXSE51→52/53 で時刻が 1 分ずれる問題に加え、同じ分に起きた別の地震と衝突していた）。
+  // 該当カードが消えている・取消表示中の場合はキャンセル除外の最新にフォールバックする。
   const selectedQuake = (() => {
     if (!selectedQuakeId) return latestNonCancelled
-    const byTime = filteredEarthquakes.find(q => q.earthquake.time === selectedQuakeId && !q.cancelledAt)
-    if (byTime) return byTime
-    // 選択当時のカードから eventId を取り、同一 eventId のカードを再検索する。
-    // filteredEarthquakes から消えている場合は latestNonCancelled にフォールバック。
-    const historical = filteredEarthquakes.find(q => q.earthquake.time === selectedQuakeId)
-    const eid = historical ? extractQuakeEventId(historical) : null
-    if (eid) {
-      const byEventId = filteredEarthquakes.find(q => extractQuakeEventId(q) === eid && !q.cancelledAt)
-      if (byEventId) return byEventId
-    }
-    return latestNonCancelled
+    return filteredEarthquakes.find(q => quakeEventKey(q) === selectedQuakeId && !q.cancelledAt)
+      ?? latestNonCancelled
   })()
   // 地図に表示中の LPGM（バッジクリックでトグル）
   const activeLpgm = activeLpgmEventId ? (lpgmByEventId.get(activeLpgmEventId) ?? null) : null
@@ -377,7 +368,7 @@ export function App() {
   // 選択中の地震カードがキャンセル状態になったら即座に選択解除する
   useEffect(() => {
     if (!selectedQuakeId) return
-    const selected = filteredEarthquakes.find(q => q.earthquake.time === selectedQuakeId)
+    const selected = filteredEarthquakes.find(q => quakeEventKey(q) === selectedQuakeId)
     if (selected?.cancelledAt) {
       setSelectedQuakeId(null)
     }
@@ -422,15 +413,18 @@ export function App() {
   }, [activeEEWs, activeLpgmEventId, activeLpgmSource])
 
   // ブラウザ通知: 新しい地震が設定震度以上なら通知
+  // 重複抑止は eventKey で行う（earthquake.time では、同じ分に起きた 2 件目の地震が
+  // 「通知済み」と誤判定されて通知が出ない）。
   const lastNotifiedIdRef = useRef<string | null>(null)
   useEffect(() => {
     const latestQuake = earthquakes[0]
     if (!latestQuake) return
     if (settings.notifyMinScale < 0) return
-    if (latestQuake.earthquake.time === lastNotifiedIdRef.current) return
+    const notifyKey = quakeEventKey(latestQuake)
+    if (notifyKey === lastNotifiedIdRef.current) return
     if (latestQuake.earthquake.maxScale < settings.notifyMinScale) return
     if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
-    lastNotifiedIdRef.current = latestQuake.earthquake.time
+    lastNotifiedIdRef.current = notifyKey
     const scale = getIntensityLabel(latestQuake.earthquake.maxScale)
     new Notification('地震情報', {
       body: `${latestQuake.earthquake.hypocenter.name} 最大震度${scale} ${formatMagnitude(latestQuake.earthquake.hypocenter.magnitude)}`,
@@ -818,7 +812,7 @@ export function App() {
           <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'earthquake' ? ' invisible pointer-events-none' : ''}`}>
             <EarthquakeTab
               earthquakes={filteredEarthquakes}
-              selectedId={selectedQuake?.earthquake.time ?? null}
+              selectedId={selectedQuake ? quakeEventKey(selectedQuake) : null}
               onSelect={selectQuakeFromCard}
               isLoading={isLoading}
               isLoadingMore={isLoadingMore}

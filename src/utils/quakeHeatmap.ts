@@ -16,10 +16,15 @@ export interface HeatPoint {
 
 // 地震の同一性判定キー。DMDSS版の id には14桁の eventId が埋め込まれておりそれを使う
 // （GD Earthquake List の eventId フィールドも同じ14桁形式のため突き合わせ可能）。
-// 通常版（P2PQuake）の id はこの形式を持たないため earthquake.time にフォールバックする。
+// 通常版（P2PQuake）の id はこの形式を持たないため発生時刻にフォールバックするが、
+// P2PQuake の発生時刻は分単位のため震源名まで含めて「同じ分に起きた別の地震」を分ける
+// （震源名を持たない震度速報は座標も無く、ヒートマップでは hasValidHypocenter で除外される）。
+// 副作用: 震源を訂正した報は訂正前後で別キーになり、1 つの地震が 2 点残ることがある。
+// ヒートマップは分布の統計表示なので、別々の地震が 1 点に潰れる方を避ける選択をしている
+// （カード側の統合は `quakeMerge.sameQuakeEntry` が訂正報を正しく 1 イベントにまとめる）。
 export function quakeIdentityKey(q: Pick<JMAQuake, 'id' | 'earthquake'>): string {
   const dmdataEventId = extractQuakeEventIdFromId(q.id)
-  return dmdataEventId ?? q.earthquake.time
+  return dmdataEventId ?? `${q.earthquake.time}|${q.earthquake.hypocenter.name}`
 }
 
 // 震源が未確定（震度速報段階など）のプレースホルダー座標を判定する。
