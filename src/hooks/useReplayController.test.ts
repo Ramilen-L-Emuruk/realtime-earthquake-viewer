@@ -7,7 +7,7 @@
 // Hook 本体の結線（どの state 更新が照合の後ろにあるか）は、このプロジェクトに
 // React のテスト環境が無いため実機のブラウザ操作で確認している。
 import { describe, it, expect } from 'vitest'
-import { createSessionGuard, formatPartialFailureNotice } from './useReplayController'
+import { createSessionGuard, createEmptyLoss, addLoss, formatLossNotice } from './useReplayController'
 
 describe('createSessionGuard', () => {
   it('開始した直後のセッションは現役', () => {
@@ -85,14 +85,43 @@ describe('createSessionGuard', () => {
   })
 })
 
-describe('formatPartialFailureNotice', () => {
+describe('addLoss', () => {
+  it('電文の取りこぼしを積み上げる', () => {
+    let loss = createEmptyLoss()
+    loss = addLoss(loss, 3, [])
+    loss = addLoss(loss, 2, [])
+
+    // 一度失われた電文は後続の取得が成功しても戻らないので、消さずに積む
+    expect(loss.skippedTelegrams).toBe(5)
+  })
+
+  // 本編と初期状態は日付範囲が重なるため同じアーカイブを両方が読む。件数で合算すると
+  // 1 件の障害が「2 件」と表示される。URL の集合で持つことでこれを防ぐ。
+  it('同じアーカイブを二重に数えない', () => {
+    let loss = createEmptyLoss()
+    loss = addLoss(loss, 0, ['https://x/a', 'https://x/b'])
+    loss = addLoss(loss, 0, ['https://x/a'])
+
+    expect(loss.failedArchives.size).toBe(2)
+  })
+
+  it('元の損失を書き換えない（不変）', () => {
+    const original = createEmptyLoss()
+    const next = addLoss(original, 1, ['https://x/a'])
+
+    expect(original.skippedTelegrams).toBe(0)
+    expect(original.failedArchives.size).toBe(0)
+    expect(next.skippedTelegrams).toBe(1)
+  })
+})
+
+describe('formatLossNotice', () => {
   it('何も欠けていなければ出さない', () => {
-    expect(formatPartialFailureNotice(0, 0)).toBeNull()
-    expect(formatPartialFailureNotice(-1, 0)).toBeNull()
+    expect(formatLossNotice(createEmptyLoss())).toBeNull()
   })
 
   it('電文の取りこぼしを件数付きで知らせる', () => {
-    const msg = formatPartialFailureNotice(3, 0)
+    const msg = formatLossNotice(addLoss(createEmptyLoss(), 3, []))
     expect(msg).toMatch(/3 件の電文/)
     // 失敗と誤読されないよう、再生が続いていることを必ず添える
     expect(msg).toMatch(/継続中/)
@@ -101,18 +130,14 @@ describe('formatPartialFailureNotice', () => {
   // アーカイブ丸ごとの失敗は「その日に何通あったか」が分からないため電文数に合算できない。
   // 黙らせると「1 日分まるごと欠けた再生」を成功と見分けられなくなる。
   it('アーカイブ単位の失敗も知らせる', () => {
-    const msg = formatPartialFailureNotice(0, 2)
+    const msg = formatLossNotice(addLoss(createEmptyLoss(), 0, ['https://x/a', 'https://x/b']))
     expect(msg).toMatch(/2 件のアーカイブ/)
     expect(msg).toMatch(/継続中/)
   })
 
   it('両方欠けたときは両方を並べる', () => {
-    const msg = formatPartialFailureNotice(5, 1)
+    const msg = formatLossNotice(addLoss(createEmptyLoss(), 5, ['https://x/a']))
     expect(msg).toMatch(/1 件のアーカイブ/)
     expect(msg).toMatch(/5 件の電文/)
-  })
-
-  it('先読み時は接頭辞で区別できる', () => {
-    expect(formatPartialFailureNotice(2, 0, '先読みで')).toMatch(/^先読みで/)
   })
 })

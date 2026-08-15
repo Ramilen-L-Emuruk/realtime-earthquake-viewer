@@ -75,7 +75,30 @@ export function createSessionGuard(): SessionGuard {
 }
 
 /**
- * 部分的な取りこぼしから UI 用のメッセージを組み立てる。何も欠けていなければ null。
+ * このセッションで取りこぼした総量。再生を止めるまで積み上げる。
+ *
+ * 一度失われた電文は後続の取得が成功しても戻らない。回復しうる一過性のエラーと違い、
+ * 確定した事実なので、成功で上書きして消してはいけない。
+ */
+export interface ReplayLoss {
+  skippedTelegrams: number
+  /** 読めなかったアーカイブの URL。同じアーカイブを複数回読むため集合で持つ。 */
+  failedArchives: Set<string>
+}
+
+export function createEmptyLoss(): ReplayLoss {
+  return { skippedTelegrams: 0, failedArchives: new Set() }
+}
+
+/** 取得結果を損失に足し込む（URL は集合なので二重計上されない）。 */
+export function addLoss(loss: ReplayLoss, skipped: number, failedArchiveUrls: string[]): ReplayLoss {
+  const failedArchives = new Set(loss.failedArchives)
+  for (const url of failedArchiveUrls) failedArchives.add(url)
+  return { skippedTelegrams: loss.skippedTelegrams + skipped, failedArchives }
+}
+
+/**
+ * 損失から UI 用のメッセージを組み立てる。何も欠けていなければ null。
  *
  * アーカイブ単位の失敗（丸ごと読めなかった日）と電文単位の失敗（1 通ずつの破損）は
  * 粒度が違うので分けて数える。前者は「その日の電文が何通あったか」すら分からないため、
@@ -84,16 +107,12 @@ export function createSessionGuard(): SessionGuard {
  * 「再生は継続中」を必ず添えるのは、これが失敗通知と同じ赤字で出るため。
  * 添えないと再生が止まったと誤読される。
  */
-export function formatPartialFailureNotice(
-  skipped: number,
-  failedArchives: number,
-  prefix = '',
-): string | null {
+export function formatLossNotice(loss: ReplayLoss): string | null {
   const parts: string[] = []
-  if (failedArchives > 0) parts.push(`${failedArchives} 件のアーカイブ`)
-  if (skipped > 0) parts.push(`${skipped} 件の電文`)
+  if (loss.failedArchives.size > 0) parts.push(`${loss.failedArchives.size} 件のアーカイブ`)
+  if (loss.skippedTelegrams > 0) parts.push(`${loss.skippedTelegrams} 件の電文`)
   if (parts.length === 0) return null
-  return `${prefix}${parts.join('・')}を取り込めませんでした（再生は継続中。詳細はコンソール）`
+  return `${parts.join('・')}を取り込めませんでした（再生は継続中。詳細はコンソール）`
 }
 
 export function useReplayController(deps: ReplayControllerDeps): ReplayController {
@@ -102,7 +121,11 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
   const { apiKey, timeOffset } = deps
 
   const [isFetching, setIsFetching] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // 回復しうる失敗（取得エラー）。次の取得が成功したら消してよい。
+  const [fetchError, setFetchError] = useState<string | null>(null)
+  // 確定した損失。取り込めなかった電文は後続の取得が成功しても戻らないので、
+  // 停止するまで積み上げたまま表示し続ける。
+  const [loss, setLoss] = useState<ReplayLoss>(createEmptyLoss)
   /** 先読み済みの終端時刻。 */
   const prefetchEndRef = useRef<Date | null>(null)
   // 世代照合。開始・停止のたびに世代を進め、非同期の完了時に現役かどうかを照合する。
@@ -114,6 +137,11 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
 
   // deps は毎レンダー変わり得るため ref 経由で最新を参照する。これをしないと
   // start/stop の参照が毎レンダー変わり、これらを props で受け取る側の memo が効かなくなる。
+  //
+  // apiKey だけは start 内（depsRef 経由）と先読み effect（上の分割代入を直接参照し依存配列にも記載）で
+  // 参照経路が違うが、これは意図的。コールバックは「呼ばれた時点の最新」でよいのに対し、
+  // effect は値が変わったら再評価される必要がある（依存配列に入れないと古いキーで先読みし続ける）。
+  // 片方に揃えると、start が古いキーを掴むか、effect がキー変更に反応しなくなる。
   const depsRef = useRef(deps)
   depsRef.current = deps
 
@@ -131,7 +159,9 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
     d.setTimeOffset(offset)
     prefetchEndRef.current = toTime
     setIsFetching(true)
-    setError(null)
+    setFetchError(null)
+    // 新しいセッションなので損失も数え直す
+    setLoss(createEmptyLoss())
 
     try {
       // 本編と初期状態を同時に取る。どちらかが失敗したらリプレイ全体を中止する
@@ -166,11 +196,11 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
 
       // 取りこぼしがあれば、再生は始まっていても必ず知らせる。黙って減った電文は
       // 「そういう時間帯だった」と見分けが付かず、テスト結果の誤読につながる。
-      const notice = formatPartialFailureNotice(
-        normal.skipped + pre.skipped,
-        normal.failedArchives + pre.failedArchives,
-      )
-      if (notice) setError(notice)
+      // 本編と初期状態は日付範囲が重なり同じアーカイブを読むため、URL の集合で重複を除く。
+      setLoss(prev => addLoss(
+        addLoss(prev, normal.skipped, normal.failedArchiveUrls),
+        pre.skipped, pre.failedArchiveUrls,
+      ))
     } catch (e) {
       log.error('[replay] リプレイデータ取得失敗', e)
       // 既に別セッションへ移っていれば、そちらのエラー表示や再生を上書きしない。
@@ -178,7 +208,7 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
         log.info('[replay] 取得失敗時に別セッションへ切り替わっていたためエラー表示を抑制')
         return
       }
-      setError(msgOf(e))
+      setFetchError(msgOf(e))
       // 「再生中」表示が残ると赤字と矛盾するため、オフセットと先読み位置も巻き戻す。
       d.setTimeOffset(null)
       prefetchEndRef.current = null
@@ -197,7 +227,9 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
     d.resetState()
     d.resetTracking()
     clearReplayCache()
-    setError(null)
+    setFetchError(null)
+    // 損失は「このセッションで失われた量」なので、停止と同時に数え直す。
+    setLoss(createEmptyLoss())
     // 取得中に停止された場合、上で世代を進めたことで取得側の finally は false にしない。
     // ここで戻さないと「取得中...」のまま確定ボタンが押せなくなる。
     setIsFetching(false)
@@ -223,9 +255,10 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
           return
         }
         depsRef.current.loadReplayEvents(result.entries)
-        // 取りこぼしがあれば知らせ、無ければ一過性のエラーから回復したとみなして赤字を消す
-        // （残ったままだと「まだ失敗中」と誤認される）。
-        setError(formatPartialFailureNotice(result.skipped, result.failedArchives, '先読みで'))
+        // 取得自体は通ったので、一過性のエラー表示は消してよい（残ったままだと
+        // 「まだ失敗中」と誤認される）。ただし確定した損失はここでは消さない。
+        setFetchError(null)
+        setLoss(prev => addLoss(prev, result.skipped, result.failedArchiveUrls))
       })
       .catch((e) => {
         log.error('[replay] 先読み取得失敗', e)
@@ -234,14 +267,18 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
           return
         }
         // 先読み失敗は再生を止めないが、以後電文が来なくなるため理由を出す。
-        setError(`先読み取得失敗: ${msgOf(e)}`)
+        // 「再生中」のまま出るので、止まったと誤読されないよう状況も添える。
+        setFetchError(`先読みに失敗したため、以後の電文が届きません: ${msgOf(e)}`)
       })
       .finally(() => {
         if (guard.isCurrent(session)) setIsFetching(false)
       })
   }, [replayCurrentTime, timeOffset, isFetching, apiKey])
 
-  return { isFetching, error, start, stop }
+  // 取得エラーがあればそちらを優先して出す（そのとき再生は止まっているか、
+  // 以後の電文が届かない状態なので、損失の件数より先に伝えるべき情報）。
+  // エラーが無ければ、このセッションで確定した損失を出し続ける。
+  return { isFetching, error: fetchError ?? formatLossNotice(loss), start, stop }
 }
 
 function msgOf(e: unknown): string {

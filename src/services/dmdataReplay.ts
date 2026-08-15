@@ -105,8 +105,14 @@ export interface ReplayFetchResult {
   entries: ReplayEntry[]
   /** 取り込めなかった電文の数（目録エントリの異常・本体の破損・パース失敗の合計）。 */
   skipped: number
-  /** 取得・展開に失敗したアーカイブの数（1 件でも成功していれば例外にはしない）。 */
-  failedArchives: number
+  /**
+   * 取り込めなかったアーカイブの URL（1 件でも成功していれば例外にはしない）。
+   *
+   * 件数ではなく URL を返すのは、呼び出し元が重複を除けるようにするため。本編と初期状態は
+   * 日付範囲が重なるので同じアーカイブを両方が読む。取得自体は `archiveCache` により 1 回だが、
+   * 件数で返すと呼び出し元が単純合算して実数の 2 倍を表示してしまう。
+   */
+  failedArchiveUrls: string[]
 }
 
 export async function fetchDmdataReplayEvents(
@@ -152,8 +158,10 @@ export async function fetchDmdataReplayEvents(
   // 取り込めなかった電文の総数。1 通ごとの詳細は log.warn / log.error に出るが、
   // 「取りこぼしがあったか」だけは最後にまとめて 1 行で分かるようにする。
   let skippedCount = 0
-  // 取得・展開に失敗したアーカイブの数。全滅かどうかの判定に使う。
-  let failedArchives = 0
+  // 読み取れなかったアーカイブの URL。取得・展開の失敗だけでなく、目録が無い・壊れている
+  // ケースも含める。これらは「アーカイブは落ちてきたが中身を 1 通も読めない」状態であり、
+  // 取得エラーと同じく丸ごと欠落する。数え漏らすと UI が無警告のまま「電文 0 件の成功」に化ける。
+  const failedArchiveUrls: string[] = []
 
   await Promise.all(
     items.map(async (item) => {
@@ -166,7 +174,7 @@ export async function fetchDmdataReplayEvents(
         files = await downloadArchive(item.url, apiKey)
       } catch (e) {
         log.error(`[replay] アーカイブの取得・展開に失敗したためスキップ date=${item.date} classification=${item.classification}`, e)
-        failedArchives++
+        failedArchiveUrls.push(item.url)
         return
       }
 
@@ -174,8 +182,9 @@ export async function fetchDmdataReplayEvents(
       if (!manifestBytes) {
         // アーカイブは取得できたのに目録が無い＝そのアーカイブの中身を丸ごと読めない。
         // 例外にせず他のアーカイブの処理は続けるが、無言で捨てると「電文 0 件だが成功」に
-        // 化けて原因が追えなくなるため必ず記録する。
+        // 化けて原因が追えなくなるため、取得失敗と同じ扱いで数える。
         log.warn(`[replay] アーカイブに telegrams.json が無いためスキップ date=${item.date} classification=${item.classification}`)
+        failedArchiveUrls.push(item.url)
         return
       }
 
@@ -185,6 +194,7 @@ export async function fetchDmdataReplayEvents(
       } catch (e) {
         // 目録自体が壊れている場合も同様に、そのアーカイブのみ諦めて他は継続する。
         log.error(`[replay] telegrams.json の解析に失敗したためスキップ date=${item.date} classification=${item.classification}`, e)
+        failedArchiveUrls.push(item.url)
         return
       }
 
@@ -308,14 +318,14 @@ export async function fetchDmdataReplayEvents(
     }),
   )
 
-  // 全アーカイブが失敗した場合だけは例外にする。認証エラー・権限不足・ネットワーク全断など、
+  // 全アーカイブが読めなかった場合だけは例外にする。認証エラー・権限不足・ネットワーク全断など、
   // 個別の破損ではなく共通の原因であることがほとんどで、これを握り潰すと UI には
-  // 「成功したが電文 0 件」としか見えない。1 件でも成功していれば部分的成功として扱う。
-  if (items.length > 0 && failedArchives === items.length) {
-    throw new Error(`Archive fetch failed: ${items.length} 件のアーカイブすべてを取得できませんでした`)
+  // 「成功したが電文 0 件」としか見えない。1 件でも読めていれば部分的成功として扱う。
+  if (items.length > 0 && failedArchiveUrls.length === items.length) {
+    throw new Error(`Archive fetch failed: ${items.length} 件のアーカイブすべてを読み取れませんでした`)
   }
-  if (failedArchives > 0) {
-    log.warn(`[replay] ${items.length} 件中 ${failedArchives} 件のアーカイブをスキップした（残りから取り込みを継続）`)
+  if (failedArchiveUrls.length > 0) {
+    log.warn(`[replay] ${items.length} 件中 ${failedArchiveUrls.length} 件のアーカイブをスキップした（残りから取り込みを継続）`)
   }
   if (skippedCount > 0) {
     log.warn(`[replay] ${skippedCount} 件の電文を取り込めなかった（範囲 ${fromTime.toISOString()}〜${toTime.toISOString()}）`)
@@ -340,7 +350,7 @@ export async function fetchDmdataReplayEvents(
     }
   }
 
-  return { entries, skipped: skippedCount, failedArchives }
+  return { entries, skipped: skippedCount, failedArchiveUrls }
 }
 
 // T 時点でまだ有効な電文のみを残すフィルタ（pre-window 初期状態用）
