@@ -25,14 +25,17 @@
 // MapLibre が配信する。丸ゴシック＋ExtraBold を選んだのは、暗い地図上の小さな地名ラベル（13〜17px）で
 // 輪郭が識別しやすく太さも稼げるため。perf 特性（事前生成で TinySDF スパイクを消す）はフォントに依らず不変。
 
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { PbfReader, PbfWriter } from 'pbf'
 
-// 検証モード（--check）は生成物を読むだけで完結する。グリフ生成に要る @napi-rs/canvas は native addon で
-// 環境差により読み込みが失敗しうるため、ビルドの前段に置く検証がその都合で巻き添えになることは避けたい。
-// そこで native 依存は動的 import にし、実際に焼くとき（main）だけ読み込む。
+// 検証モード（--check）は native 依存（@napi-rs/canvas）を読み込まない。native addon は環境差で読み込みに
+// 失敗しうるため、ビルドの前段に置く検証がその都合で巻き添えになることは避けたい。そこで native 依存は
+// 動的 import にし、実際に焼くとき（main）だけ読み込む。
+// ただし完全に生成物だけで閉じるわけではなく、フォント指紋の照合のため scripts/fonts/ のフォント実体は
+// --check でも読む（後述の buildFingerprint）。
 const CHECK_ONLY = process.argv.includes('--check')
 
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
@@ -216,6 +219,9 @@ async function main() {
     fs.copyFileSync(LICENSE_SRC, path.join(OUT_DIR, 'OFL.txt'))
   }
 
+  // 焼いた条件を残す（--check がこれと現在の設定を突き合わせ、フォント差し替え後の焼き直し忘れを検知する）。
+  fs.writeFileSync(path.join(OUT_DIR, BUILD_INFO_FILE), `${JSON.stringify(buildFingerprint(), null, 2)}\n`)
+
   const sortedBlocks = [...blocks.keys()].sort((a, b) => a - b)
   let totalGlyphs = 0
   for (const b of sortedBlocks) {
@@ -250,6 +256,57 @@ async function main() {
 // 半角スペースは字形を持たないため幅・高さ 0 で焼かれるのが正常（実測でも空になるのはこれだけ）。
 // 下の「空グリフ」検査から除外する。
 const SPACE_CODEPOINT = 0x20
+
+// グリフを焼いた条件を残すファイル（出力先に置く）。MapLibre は <start>-<end>.pbf しか取りに行かないため、
+// 同居させてもグリフ取得には影響しない。**生成物と一緒にコミットすること**（CI は --check しか実行せず、
+// このファイルが無いと「焼いた条件を確認できない」で停止する）。
+const BUILD_INFO_FILE = 'build-info.json'
+
+/**
+ * 焼いたときの条件（フォント実体・ファミリ・ウェイト・SDF パラメータ）の指紋。
+ *
+ * 収録文字が同じでも、フォントやウェイトを差し替えて焼き直しを忘れれば、字形だけが古いまま配信される。
+ * 「どの文字が入っているか」を見る検査では捕まえられないため、生成時に指紋を残して --check で照合する。
+ * フォントはファイル名が同じでも中身が変わりうるのでハッシュを取る。
+ *
+ * 注意: これにより --check は scripts/fonts/ のフォント実体にも依存する（生成物だけでは完結しない）。
+ */
+function buildFingerprint() {
+  // GLYPH_FONT で明示指定された場合は存在チェックを経ていないため、ここで確認する。
+  // これが無いと readFileSync の生の ENOENT になり、他の失敗系と違って何をすべきか分からない。
+  if (FONT_FILE && !fs.existsSync(FONT_FILE)) {
+    throw new Error(`フォントが見つからない: ${FONT_FILE}（GLYPH_FONT の指定を確認すること）。指紋の照合にはフォント実体が要る。`)
+  }
+  return {
+    font: FONT_FILE ? path.basename(FONT_FILE) : '(system font)',
+    fontSha256: FONT_FILE ? crypto.createHash('sha256').update(fs.readFileSync(FONT_FILE)).digest('hex') : '',
+    family: FONT_FAMILY,
+    weight: FONT_WEIGHT,
+    sdf: { fontSize: FONT_SIZE, buffer: BUFFER, radius: RADIUS, cutoff: CUTOFF },
+  }
+}
+
+/** 指紋を 1 行で読める形にする（食い違いをその場で見比べられるように）。 */
+function describeFingerprint(f) {
+  const sha = String(f?.fontSha256 ?? '').slice(0, 12) || '-'
+  const sdf = f?.sdf ?? {}
+  return `font=${f?.font} sha=${sha} family="${f?.family}" weight=${f?.weight} sdf=${sdf.fontSize}/${sdf.buffer}/${sdf.radius}/${sdf.cutoff}`
+}
+
+/**
+ * 指紋の相違点を列挙する（JSON 文字列の比較だとキーの並び順を変えられただけで誤検知するため、
+ * 値そのものを項目ごとに突き合わせる）。
+ */
+function diffFingerprints(recorded, current) {
+  const differences = []
+  for (const key of ['font', 'fontSha256', 'family', 'weight']) {
+    if (String(recorded?.[key] ?? '') !== String(current[key])) differences.push(key)
+  }
+  for (const key of ['fontSize', 'buffer', 'radius', 'cutoff']) {
+    if (Number(recorded?.sdf?.[key]) !== current.sdf[key]) differences.push(`sdf.${key}`)
+  }
+  return differences
+}
 
 /**
  * 生成済み PBF から収録グリフを読み出す（glyphs.proto: fontstack=1 / glyphs=3 / id=1・width=3・height=4）。
@@ -320,6 +377,35 @@ function check() {
         '（収録はされているため取りこぼしには見えないが、ラベル上では空白で描かれる）。',
     )
   }
+  // ここまでで「どの文字が入っているか」は保証できるが、フォント自体を差し替えて焼き直しを忘れた場合は
+  // 収録も字形も揃ったまま形だけが古い。生成時に残した指紋と現在の設定を突き合わせて検知する。
+  const infoPath = path.join(OUT_DIR, BUILD_INFO_FILE)
+  if (!fs.existsSync(infoPath)) {
+    throw new Error(
+      `${BUILD_INFO_FILE} が無く、グリフを焼いた条件を確認できない（生成物と一緒にコミットし忘れた可能性）。` +
+        '`node scripts/build-glyphs.mjs` で焼き直すこと。',
+    )
+  }
+  let recorded
+  try {
+    // Windows のエディタ等で保存し直されると先頭に BOM が付き、JSON.parse はこれを受け付けない。
+    // 内容としては壊れていないので取り除いてから読む。
+    recorded = JSON.parse(fs.readFileSync(infoPath, 'utf8').replace(/^﻿/, ''))
+  } catch (e) {
+    // 壊れた JSON をそのまま投げると用途不明な SyntaxError になる。どのファイルをどうすべきか添える。
+    throw new Error(`${infoPath} を読めない（内容が壊れている）。\`node scripts/build-glyphs.mjs\` で焼き直すこと。 — ${e.message}`)
+  }
+  const differences = diffFingerprints(recorded, buildFingerprint())
+  if (differences.length > 0) {
+    throw new Error(
+      `グリフを焼いた条件が現在の設定と食い違う（収録文字は足りているが、字形が古いまま配信される）。\n` +
+        `  相違点  : ${differences.join(', ')}\n` +
+        `  焼いた時: ${describeFingerprint(recorded)}\n` +
+        `  現在    : ${describeFingerprint(buildFingerprint())}\n` +
+        '`node scripts/build-glyphs.mjs` で焼き直すこと。',
+    )
+  }
+
   // 余分は害がない（使われなくなった文字が残っているだけ）ので停止はしない。再生成の目安として報告する。
   const extra = [...present.keys()].filter((cp) => !required.has(cp))
   const extraNote = extra.length > 0 ? ` / 未使用の収録文字 ${extra.length} 件（再生成で除去できる）` : ''

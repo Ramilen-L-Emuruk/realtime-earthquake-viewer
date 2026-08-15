@@ -50,7 +50,10 @@ function drawBadge(scale: number): ImageData {
 
   const label = getIntensityLabel(scale)
   ctx.fillStyle = '#ffffff'
-  ctx.font = `700 ${label.length > 1 ? r * 0.85 : r * 1.15}px "Noto Sans JP", sans-serif`
+  // 以前は "Noto Sans JP" を先頭に指定していたが、@font-face 登録は一度も無く、同名フォントの同梱も
+  // 撤去済みのため実態どおり sans-serif のみにする。通常の閲覧環境では描画は変わらない（ただし OS に
+  // 同名フォントを手動インストールしている端末では、これまでそちらが使われていたぶん字形が変わる）。
+  ctx.font = `700 ${label.length > 1 ? r * 0.85 : r * 1.15}px sans-serif`
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
   ctx.fillText(label, cx, cy)
