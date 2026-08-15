@@ -209,11 +209,15 @@ export async function fetchDmdataReplayEvents(
         }
         if (entry.head.test) continue
 
-        const entryTime = new Date(entry.head.time)
+        // 時刻が読めない電文をそのまま通すと replayTime が Invalid Date になり、
+        // 再生キューの並べ替え・発火判定が静かに破綻する。ここで弾く。
+        //
+        // 文字列であることを先に確かめるのは、new Date(null) が Invalid Date ではなく
+        // 1970-01-01 を返すため。数値チェックだけだと null がすり抜け、直後の範囲外判定に
+        // 「ただの古い電文」として無言で吸収されてしまう（undefined は Invalid Date になる）。
+        const entryTime = new Date(typeof entry.head.time === 'string' ? entry.head.time : NaN)
         if (Number.isNaN(entryTime.getTime())) {
-          // 時刻が読めない電文をそのまま通すと replayTime が Invalid Date になり、
-          // 再生キューの並べ替え・発火判定が静かに破綻する。ここで弾く。
-          log.warn(`[replay] head.time が不正な電文をスキップ id=${entry.id} time=${entry.head.time}`)
+          log.warn(`[replay] head.time が不正な電文をスキップ id=${entry.id} time=${String(entry.head.time)}`)
           skippedCount++
           continue
         }
