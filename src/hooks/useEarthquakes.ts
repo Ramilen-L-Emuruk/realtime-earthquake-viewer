@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataKohatsu } from '../services/dmdata'
-import { QUAKE_ISSUE_PRIORITY, mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId } from '../utils/quakeMerge'
+import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey } from '../utils/quakeMerge'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex } from '../utils/stationCoords'
 import { calcEEWCancelTime } from '../utils/eew'
 import { mergeTsunamiObservations } from '../utils/tsunami'
@@ -308,9 +308,12 @@ export function useEarthquakes(
     // 地震情報（551）の震度キャッシュ更新は setState の外で行う
     if (event.kind === 'quake') {
       const quake = event as JMAQuake
-      // DMDATA は ID 埋め込みのタイムスタンプをキーに使う（通常版は earthquake.time）。
-      // extractQuakeEventId で xml/json 経路の共通抽出（DRY: 独自正規表現を持たない）。
-      const cacheKey = extractQuakeEventId(quake) ?? quake.earthquake.time
+      // キャッシュのキーはイベントの安定キー。DMDATA は eventId なので全報で一致する。
+      // P2PQuake は報ごとに別キーになるためこのキャッシュは実質効かず、通常経路では
+      // mergeQuakeInto（既存カードの震度で埋める）が同じ補完を担う。ただし対象カードが
+      // 既に消えている場合（取消の 10 秒後 purge など）はどちらも効かず震度は欠落する。
+      // ここを earthquake.time に戻すと、同じ分に起きた別の地震の震度を引いてしまう。
+      const cacheKey = quakeEventKey(quake)
       // VXSE51 の震度データをキャッシュ（後続 VXSE52 への補完用）
       if (quake.issue.type === '震度速報' && quake.earthquake.maxScale >= 0) {
         quakeIntensityCacheRef.current.set(cacheKey, {
@@ -372,16 +375,13 @@ export function useEarthquakes(
         case 'quake': {
           let quake = event as JMAQuake
 
-          // 取消電文: 同一 eventId のカードに cancelledAt を付け、10秒後に purge する
+          // 取消電文: 同一イベント・同一種別のカードに cancelledAt を付け、10秒後に purge する。
+          // 種別まで見るのは、遠地地震の取消報が「震源・震度情報」のカードを巻き込まないようにするため
+          // （遠地地震は VXSE53 を共有し Head/Title だけが異なる。dmdataParser の resolveIssueType 参照）。
           if (quake.cancelled) {
-            const cancelEventId = extractQuakeEventId(quake)
-            const cancelIssueType = quake.issue.type
             let found = false
             const earthquakes = prev.earthquakes.map(e => {
-              const eId = extractQuakeEventId(e)
-              const matches = cancelEventId && eId
-                ? eId === cancelEventId && e.issue.type === cancelIssueType
-                : e.id === quake.id
+              const matches = sameQuakeEntry(e, quake) && e.issue.type === quake.issue.type
               if (matches && !e.cancelledAt) {
                 found = true
                 insertSorted(eventQueueRef.current, {
@@ -393,13 +393,19 @@ export function useEarthquakes(
               }
               return e
             })
-            if (!found) return prev
+            if (!found) {
+              // 取消対象が見つからない＝取消がどのカードにも効いていない。無言で捨てると
+              // 「取り消されたはずの地震が残り続ける」原因を後から追えないため記録する。
+              log.warn('[quake] 取消電文に対応するカードが見つからず無視した', {
+                id: quake.id, issueType: quake.issue.type, quakeTime: quake.earthquake.time,
+              })
+              return prev
+            }
             return { ...prev, earthquakes, lastUpdate: now }
           }
 
-          // DMDATA は ID 埋め込みのタイムスタンプをキーに使う（通常版は earthquake.time）。
-          // extractQuakeEventId で xml/json 経路の共通抽出（DRY）。
-          const cacheKey = extractQuakeEventId(quake) ?? quake.earthquake.time
+          // キーの決め方と P2PQuake での扱いは上の同名変数（震度キャッシュ更新側）と同じ。
+          const cacheKey = quakeEventKey(quake)
 
           // VXSE52/53: 震度がない場合に VXSE51 キャッシュから maxScale・points を補完する
           if (quake.earthquake.maxScale < 0 && quake.points.length === 0) {
@@ -414,9 +420,8 @@ export function useEarthquakes(
           }
 
           // 同一イベントの既存カードを探し、リアルタイム統合コアで1枚に統合する。
-          // eventId で同一性を判定し（VXSE51 の targetDateTime と VXSE52/53 の originTime で
-          // earthquake.time が約1分ずれるため）、VXSE61 の震源マージ・震度保持・優先度判定は
-          // すべて mergeQuakeInto に委譲する（履歴経路と同一ロジック）。
+          // 同一性の判定は sameQuakeEntry、VXSE61 の震源マージ・震度保持・優先度判定は
+          // mergeQuakeInto に委譲する（いずれも履歴経路と同一ロジック）。
           const existing = prev.earthquakes.find(e => sameQuakeEntry(e, quake))
           const merged = mergeQuakeInto(existing, quake)
           if (merged === existing) return prev
@@ -781,15 +786,10 @@ export function useEarthquakes(
     ])
       .then(([quakeEvents, tsunamiEvents]) => {
         if (cancelled) return
-        const seenQuakes = new Map<string, JMAQuake>()
-        for (const q of quakeEvents) {
-          const key = q.earthquake.time
-          const existing = seenQuakes.get(key)
-          if (!existing || (QUAKE_ISSUE_PRIORITY[q.issue.type] ?? 0) > (QUAKE_ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
-            seenQuakes.set(key, q)
-          }
-        }
-        const earthquakes = sortQuakes(Array.from(seenQuakes.values()))
+        // 種別横断の生電文をイベントごとに統合する（DMDSS 版・リアルタイムと同一ロジック）。
+        // 以前は earthquake.time をキーにした Map で「優先度が最も高い 1 報」を選んでいたが、
+        // P2PQuake の発生時刻は分単位のため、同じ分に起きた別の地震が 1 枚に潰れていた。
+        const earthquakes = mergeQuakeHistory(quakeEvents)
         const allTsunami = (tsunamiEvents as JMATsunami[])
           .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
         const latestTsunami = allTsunami[0]
@@ -920,24 +920,14 @@ export function useEarthquakes(
         const offset = p2pRawOffsetRef.current
         const events = await fetchJmaQuake(LOAD_MORE_BATCH, offset)
         p2pRawOffsetRef.current += events.length
-        setState(prev => {
-          const seenKeys = new Set(prev.earthquakes.map(e => e.earthquake.time))
-          const seenForBatch = new Map<string, JMAQuake>()
-          for (const q of events) {
-            const key = q.earthquake.time
-            if (seenKeys.has(key)) continue
-            const existing = seenForBatch.get(key)
-            if (!existing || (QUAKE_ISSUE_PRIORITY[q.issue.type] ?? 0) > (QUAKE_ISSUE_PRIORITY[existing.issue.type] ?? 0)) {
-              seenForBatch.set(key, q)
-            }
-          }
-          return {
-            ...prev,
-            earthquakes: sortQuakes([...prev.earthquakes, ...Array.from(seenForBatch.values())]),
-            isLoadingMore: false,
-            hasMore: events.length === LOAD_MORE_BATCH,
-          }
-        })
+        // 既存カード群を base に新バッチを統合する（DMDSS 版と同じ扱い）。
+        // バッチ跨ぎで同一イベントの続報が届いた場合もリアルタイムと同一結果になる。
+        setState(prev => ({
+          ...prev,
+          earthquakes: mergeQuakeHistory(events, prev.earthquakes),
+          isLoadingMore: false,
+          hasMore: events.length === LOAD_MORE_BATCH,
+        }))
       }
     } catch {
       setState(prev => ({ ...prev, isLoadingMore: false }))

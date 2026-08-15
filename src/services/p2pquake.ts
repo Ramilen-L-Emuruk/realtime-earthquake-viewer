@@ -1,5 +1,6 @@
 import type { AppEvent, JMAQuake, IssueType, CorrectType, DomesticTsunami, TelegramLogEntry } from '../types/earthquake'
 import { serverNow, serverDate } from '../utils/clock'
+import { quakeIdentityKey } from '../utils/quakeHeatmap'
 import { log } from '../utils/logger'
 
 const API_BASE = 'https://api.p2pquake.net/v2'
@@ -122,12 +123,14 @@ export async function fetchJmaQuakeHistory(days: number): Promise<JMAQuake[]> {
     await new Promise(resolve => setTimeout(resolve, JMA_QUAKE_HISTORY_REQUEST_INTERVAL_MS))
   }
   // 同一地震でも「震度速報→震源情報→震源・震度情報→各地の震度情報」と複数の issue が
-  // 別レコードとして history に載るため、useEarthquakes.ts の sortQuakes と同じく
-  // earthquake.time で重複排除する（id は issue ごとに異なり重複排除のキーにならない）。
-  const seenTimes = new Set<string>()
+  // 別レコードとして history に載るため重複排除する（id は issue ごとに異なりキーにならない）。
+  // ヒートマップ側と同じ quakeIdentityKey を使う。発生時刻だけをキーにすると、
+  // 同じ分に起きた別の地震が 1 件に潰れる。
+  const seenKeys = new Set<string>()
   const deduped = collected.filter(q => {
-    if (seenTimes.has(q.earthquake.time)) return false
-    seenTimes.add(q.earthquake.time)
+    const key = quakeIdentityKey(q)
+    if (seenKeys.has(key)) return false
+    seenKeys.add(key)
     return true
   })
   return deduped.filter(q => new Date(q.earthquake.time).getTime() >= cutoffMs)
