@@ -146,7 +146,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
 
     expect(result.entries).toHaveLength(1)
     expect(result.skipped).toBe(3)
-    expect(result.failedArchives).toBe(0)
+    expect(result.failedArchiveUrls).toHaveLength(0)
   })
 
   it('一部のアーカイブが失敗した件数を戻り値で返す', async () => {
@@ -162,7 +162,71 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     const result = await fetchDmdataReplayEvents('key', FROM, TO)
 
     expect(result.entries).toHaveLength(1)
-    expect(result.failedArchives).toBe(1)
+    expect(result.failedArchiveUrls).toHaveLength(1)
+  })
+
+  // 「アーカイブは落ちてきたが目録が無い／壊れている」は、取得エラーと同じく中身を
+  // 丸ごと読めない状態。ここを数え漏らすと、全アーカイブがこれに該当したときに
+  // { skipped: 0, failedArchiveUrls: [] } が返り、UI が無警告のまま
+  // 「電文 0 件の成功」に化ける。
+  it('目録が無いアーカイブを読めなかった数に含める', async () => {
+    const noManifest = await makeTarGz([{ name: 'body.json', content: quakeBody('無関係') }])
+    const good = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('ggggggg7')]) },
+      { name: 'ggggggg7_20260810120500000_0.json', content: quakeBody('駿河湾') },
+    ])
+    globalThis.fetch = mockArchives([
+      { url: 'https://x/nomanifest', gz: noManifest },
+      { url: 'https://x/good', gz: good },
+    ]) as unknown as typeof fetch
+
+    const result = await fetchDmdataReplayEvents('key', FROM, TO)
+
+    expect(result.entries).toHaveLength(1)
+    expect(result.failedArchiveUrls).toEqual(['https://x/nomanifest'])
+  })
+
+  it('目録が壊れているアーカイブを読めなかった数に含める', async () => {
+    const brokenManifest = await makeTarGz([{ name: 'telegrams.json', content: '[[[壊れた' }])
+    const good = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('hhhhhhh8')]) },
+      { name: 'hhhhhhh8_20260810120500000_0.json', content: quakeBody('相模湾') },
+    ])
+    globalThis.fetch = mockArchives([
+      { url: 'https://x/brokenmanifest', gz: brokenManifest },
+      { url: 'https://x/good', gz: good },
+    ]) as unknown as typeof fetch
+
+    const result = await fetchDmdataReplayEvents('key', FROM, TO)
+
+    expect(result.entries).toHaveLength(1)
+    expect(result.failedArchiveUrls).toEqual(['https://x/brokenmanifest'])
+  })
+
+  it('全アーカイブの目録が読めない場合は例外にする（無警告の成功にしない）', async () => {
+    const noManifest = await makeTarGz([{ name: 'body.json', content: quakeBody('無関係') }])
+    globalThis.fetch = mockArchives([
+      { url: 'https://x/a', gz: noManifest },
+      { url: 'https://x/b', gz: noManifest },
+    ]) as unknown as typeof fetch
+
+    await expect(fetchDmdataReplayEvents('key', FROM, TO)).rejects.toThrow(/すべてを読み取れませんでした/)
+  })
+
+  it('読めなかったアーカイブは URL で返す（呼び出し元が重複を除けるように）', async () => {
+    const good = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('iiiiiii9')]) },
+      { name: 'iiiiiii9_20260810120500000_0.json', content: quakeBody('若狭湾') },
+    ])
+    globalThis.fetch = mockArchives([
+      { url: 'https://x/broken', gz: 'error' },
+      { url: 'https://x/good', gz: good },
+    ]) as unknown as typeof fetch
+
+    const result = await fetchDmdataReplayEvents('key', FROM, TO)
+
+    // 本編と初期状態が同じアーカイブを読んでも、呼び出し元は URL で重複を除ける
+    expect(result.failedArchiveUrls).toEqual(['https://x/broken'])
   })
 
   it('すべて正常なら skipped も failedArchives も 0', async () => {
@@ -176,7 +240,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
 
     expect(result.entries).toHaveLength(1)
     expect(result.skipped).toBe(0)
-    expect(result.failedArchives).toBe(0)
+    expect(result.failedArchiveUrls).toHaveLength(0)
   })
 
   it('破損した電文が 1 通あっても、他の電文は取り込まれる（全滅しない）', async () => {
