@@ -205,6 +205,17 @@ DMDATA リプレイ機能の `setReplayOffset` は使わない（ライブ接続
 - 南海トラフ・後発地震（VYSE50/51/60）の XML パースは `jsdom` でグローバル `DOMParser` を代替
 - 要 DMDATA.JP API キー
 
+**API キーの置き場所**: リポジトリ直下の `.env.local` に `DMDATA_API_KEY` を書けば、`npm run capture-scenario`
+が起動時に読み込む（雛形は `.env.example`）。シェルの種類（PowerShell / Git Bash）を問わない。
+優先順位は `--api-key` 引数 ＞ 実行時の環境変数 ＞ `.env.local` で、`--api-key` はコマンド履歴・プロセス一覧に
+残るため常用しない。アプリ画面で使うキー（設定タブ入力・localStorage 保存）とは別物で、互いに影響しない。
+
+`.env.local` は **BOM なし UTF-8** で保存する。BOM 付きだと変数名の先頭に BOM が混ざって別名の変数として
+読まれ、キーが未設定として扱われる（BOM はエディタで不可視のため、その場合はキー未設定エラーに続けて
+BOM の可能性を警告する）。PowerShell のリダイレクトや `Out-File` は BOM 付き（UTF-16 になることもある）で
+書き出すため、`.env.example` をコピーして編集するのが確実。読み込みに `process.loadEnvFile()` を使うため
+Node.js 20.12 以上が必要（満たさない場合はその旨を表示して停止する）。
+
 ### P2PQuake からシナリオを作る手順（DMDATA 契約なし）
 
 1. P2PQuake API v2 `history` から対象電文を取得（認証不要）
