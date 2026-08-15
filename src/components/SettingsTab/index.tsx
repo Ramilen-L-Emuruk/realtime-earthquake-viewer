@@ -350,8 +350,11 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
     ? serverDate().toLocaleString('ja-JP')
     : null
 
+  // 現状は親が flex コンテナでないため flex-1 が効かず、実スクロールは App.tsx 側のタブ領域が担う。
+  // ただし親に flex が付けばこの要素自身がスクロール領域に変わるため、横スクロールの抑止は
+  // 先に付けておく（overflow-y だけだと overflow-x も auto に格上げされる）。
   return (
-    <div className="flex-1 overflow-y-auto p-3">
+    <div className="flex-1 overflow-y-auto overflow-x-hidden overscroll-x-none p-3">
 
       {isDmdss && (
         <Section title="DM-D.S.S 接続設定">
@@ -421,10 +424,17 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             ))}
           </select>
         </Row>
+        {/* ── 地図レイヤー: 地形 → 地質構造 → 観測データ の順 ── */}
         <Row label="海底地形を表示" description="背景の海域に海底地形（陰影）を表示します">
           <Toggle
             checked={settings.showBathymetry}
             onChange={v => onUpdate('showBathymetry', v)}
+          />
+        </Row>
+        <Row label="プレート境界線を表示" description="地震情報・リアルタイムタブの地図に世界のプレート境界線を表示します（PB2002モデル）">
+          <Toggle
+            checked={settings.showPlateBoundaries}
+            onChange={v => onUpdate('showPlateBoundaries', v)}
           />
         </Row>
         <Row label="活断層線を表示" description="地震情報・リアルタイムタブの地図に全国の活断層線を表示します（産総研 活断層データベース）">
@@ -454,18 +464,6 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
           <Toggle
             checked={settings.showQuakeHeatmap}
             onChange={v => onUpdate('showQuakeHeatmap', v)}
-          />
-        </Row>
-        <Row label="プレート境界線を表示" description="地震情報・リアルタイムタブの地図に世界のプレート境界線を表示します（PB2002モデル）">
-          <Toggle
-            checked={settings.showPlateBoundaries}
-            onChange={v => onUpdate('showPlateBoundaries', v)}
-          />
-        </Row>
-        <Row label="定期自動リロード" description="毎日午前5時に画面を再起動してメモリを解放します（地震・津波・EEW 発報中は延期）">
-          <Toggle
-            checked={settings.periodicReloadHours > 0}
-            onChange={v => onUpdate('periodicReloadHours', v ? 1 : 0)}
           />
         </Row>
       </Section>
@@ -515,6 +513,15 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             <option value={180}>3分</option>
             <option value={300}>5分</option>
           </select>
+        </Row>
+      </Section>
+
+      <Section title="動作設定">
+        <Row label="定期自動リロード" description="毎日午前5時に画面を再起動してメモリを解放します（地震・津波・EEW 発報中は延期）">
+          <Toggle
+            checked={settings.periodicReloadHours > 0}
+            onChange={v => onUpdate('periodicReloadHours', v ? 1 : 0)}
+          />
         </Row>
       </Section>
 
@@ -634,14 +641,15 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
                 />
               </div>
             </Row>
+            {/* ── 種別トグル: テスト系と同じ 揺れ検知 → EEW → 津波 の順 ── */}
+            <Row label="揺れ検知通知" description="強震モニタで揺れを検知したときに通知（推定値・頻度高め）">
+              <Toggle checked={settings.notifyDetection} onChange={v => onUpdate('notifyDetection', v)} />
+            </Row>
             <Row label="EEW 通知" description="緊急地震速報の発報・昇格時に通知（重複送信しない）">
               <Toggle checked={settings.notifyEEW} onChange={v => onUpdate('notifyEEW', v)} />
             </Row>
             <Row label="津波通知" description="津波注意報以上が発表されたときに通知">
               <Toggle checked={settings.notifyTsunami} onChange={v => onUpdate('notifyTsunami', v)} />
-            </Row>
-            <Row label="揺れ検知通知" description="強震モニタで揺れを検知したときに通知（推定値・頻度高め）">
-              <Toggle checked={settings.notifyDetection} onChange={v => onUpdate('notifyDetection', v)} />
             </Row>
           </>
         )}
@@ -654,12 +662,12 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         <div className="px-4 py-2 bg-blue-900/30 border-b border-blue-700/40">
           <p className="text-blue-300 text-xs">クリックで各通知音を試聴できます（設定の通知音 ON/OFF に関わらず鳴ります）</p>
         </div>
-        {/* ── 揺れ検知 ── */}
-        <Row label="揺れ検知（初回）" description="打撃2音 + シマー高周波">
-          <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('kyoshin') }}>▶ 試聴</TestButton>
-        </Row>
+        {/* ── 揺れ検知（候補 → 初回 → 更新の順） ── */}
         <Row label="揺れ検知（候補）" description="控えめな単発チャイム（確定前の予兆通知）">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('kyoshinCandidate') }}>▶ 試聴</TestButton>
+        </Row>
+        <Row label="揺れ検知（初回）" description="打撃2音 + シマー高周波">
+          <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('kyoshin') }}>▶ 試聴</TestButton>
         </Row>
         <Row label="揺れ検知・震度更新" description="震度をタップして試聴">
           <div className="flex flex-wrap gap-1.5 justify-end">
@@ -729,39 +737,43 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         <div className="px-4 py-2 bg-yellow-900/30 border-b border-yellow-700/40">
           <p className="text-yellow-400 text-xs">⚠️ 動作確認用です。実際のデータは変更されません。</p>
         </div>
+        {/* ── 緊急地震速報（EEW）: 軽 → 重、取消は末尾 ── */}
+        <Row label="緊急地震速報（予報）" description="震度2程度 – eewForecast 音 / 10秒以内に再度押すと続報、押さなければ最終報確定→無音で自動解除（数分後）">
+          <TestButton color="yellow" onClick={onTest.eewForecast}>予報テスト</TestButton>
+        </Row>
+        <Row label="緊急地震速報（警報）" description="震度5強相当 – eew 音 / 10秒以内に再度押すと続報、押さなければ最終報確定→無音で自動解除（数分後）">
+          <TestButton color="orange" onClick={onTest.eewWarning}>警報テスト</TestButton>
+        </Row>
+        <Row label="緊急地震速報（特別警報）" description="震度6強 – eewSpecial 音 / 10秒以内に再度押すと続報、押さなければ最終報確定→無音で自動解除（数分後）">
+          <TestButton color="red" onClick={onTest.eew}>特別警報テスト</TestButton>
+        </Row>
+        <Row label="緊急地震速報（誤報取消）" description="警報相当（日向灘 M6.5） – eewCancel 音 / 10秒後に誤報として取消（音・通知・読み上げあり）">
+          <TestButton color="purple" onClick={onTest.eewRetraction}>誤報取消テスト</TestButton>
+        </Row>
+        {/* ── 地震情報 ── */}
         <Row label="地震情報" description="令和6年能登半島地震・本震 M7.6 最大震度7（実データ）をリストと地図に追加">
           <TestButton color="red" onClick={onTest.earthquake}>地震テスト</TestButton>
         </Row>
         <Row label="遠地地震" description="メキシコ・チアパス州沿岸 M7.4 深さ不明（実データ）– earthquakeInfo 音 / 国内震度なし・日本への津波影響なし">
           <TestButton color="purple" onClick={onTest.foreignQuake}>遠地地震テスト</TestButton>
         </Row>
-        <Row label="緊急地震速報（特別警報）" description="震度6強 – eewSpecial 音 / 10秒以内に再度押すと続報、押さなければ最終報確定→無音で自動解除（数分後）">
-          <TestButton color="red" onClick={onTest.eew}>特別警報テスト</TestButton>
-        </Row>
-        <Row label="緊急地震速報（警報）" description="震度5強相当 – eew 音 / 10秒以内に再度押すと続報、押さなければ最終報確定→無音で自動解除（数分後）">
-          <TestButton color="orange" onClick={onTest.eewWarning}>警報テスト</TestButton>
-        </Row>
-        <Row label="緊急地震速報（予報）" description="震度2程度 – eewForecast 音 / 10秒以内に再度押すと続報、押さなければ最終報確定→無音で自動解除（数分後）">
-          <TestButton color="yellow" onClick={onTest.eewForecast}>予報テスト</TestButton>
-        </Row>
-        <Row label="緊急地震速報（誤報取消）" description="警報相当（日向灘 M6.5） – eewCancel 音 / 10秒後に誤報として取消（音・通知・読み上げあり）">
-          <TestButton color="purple" onClick={onTest.eewRetraction}>誤報取消テスト</TestButton>
-        </Row>
-        <Row label="津波警報（大津波警報）" description="岩手・宮城・福島等 – tsunamiMajor 音 / 90秒後に解除">
-          <TestButton color="purple" onClick={onTest.tsunami}>大警報テスト</TestButton>
-        </Row>
-        <Row label="津波警報（津波警報）" description="青森・茨城等 – tsunami 音 / 90秒後に解除">
-          <TestButton color="orange" onClick={onTest.tsunamiWarning}>警報テスト</TestButton>
+        {/* ── 津波情報: 軽 → 重、取消は末尾 ── */}
+        <Row label="津波予報（若干の海面変動）" description="北海道沿岸 – tsunamiForecast 音 / 90秒後に有効期間終了">
+          <TestButton color="blue" onClick={onTest.tsunamiForecast}>予報テスト</TestButton>
         </Row>
         <Row label="津波警報（注意報）" description="北海道沿岸 – tsunamiWatch 音 / 90秒後に解除">
           <TestButton color="blue" onClick={onTest.tsunamiWatch}>注意報テスト</TestButton>
         </Row>
-        <Row label="津波予報（若干の海面変動）" description="北海道沿岸 – tsunamiForecast 音 / 90秒後に有効期間終了">
-          <TestButton color="blue" onClick={onTest.tsunamiForecast}>予報テスト</TestButton>
+        <Row label="津波警報（津波警報）" description="青森・茨城等 – tsunami 音 / 90秒後に解除">
+          <TestButton color="orange" onClick={onTest.tsunamiWarning}>警報テスト</TestButton>
+        </Row>
+        <Row label="津波警報（大津波警報）" description="岩手・宮城・福島等 – tsunamiMajor 音 / 90秒後に解除">
+          <TestButton color="purple" onClick={onTest.tsunami}>大警報テスト</TestButton>
         </Row>
         <Row label="津波警報（誤報取消）" description="青森・北海道等 – tsunami 音 / 90秒後に誤報として取消">
           <TestButton color="red" onClick={onTest.tsunamiRetraction}>誤報取消テスト</TestButton>
         </Row>
+        {/* ── 臨時情報・後発地震 ── */}
         {isDmdss && onTest.nankaiChecking && (
           <Row label="南海トラフ臨時情報（調査中）" description="バナー表示 + specialInfo 音（バナー消去ボタンなし・再テストで上書き）">
             <TestButton color="yellow" onClick={onTest.nankaiChecking}>調査中テスト</TestButton>
@@ -782,6 +794,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             <TestButton color="blue" onClick={onTest.kohatsu}>後発地震テスト</TestButton>
           </Row>
         )}
+        {/* ── その他 ── */}
         <Row label="ブラウザ通知" description="テスト通知を即時送信（要通知許可）">
           <TestButton color="green" onClick={onTest.notification}>通知テスト</TestButton>
         </Row>

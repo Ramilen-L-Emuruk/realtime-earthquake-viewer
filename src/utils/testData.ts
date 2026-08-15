@@ -122,7 +122,7 @@ export function createTestEEWWarning(eventId?: string, serial = 1): EEWAlert {
     areas: [
       { pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null, lgIntTo: 3 },
       { pref: '宮崎県', name: '宮崎県南部', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: null, lgIntTo: 2 },
-      { pref: '大分県', name: '大分県南部', scaleFrom: 35, scaleTo: 40, kindCode: '10', arrivalTime: null, lgIntTo: 1 },
+      { pref: '大分県', name: '大分県南部', scaleFrom: 30, scaleTo: 40, kindCode: '10', arrivalTime: null, lgIntTo: 1 },
     ],
   }
 }
@@ -145,8 +145,8 @@ export function createTestEEWForecast(eventId?: string, serial = 1): EEWAlert {
     cancelled: false,
     issue: { eventId: eid, serial: String(serial), time: now.toISOString() },
     areas: [
-      { pref: '宮城県', name: '宮城県北部', scaleFrom: 20, scaleTo: 25, kindCode: '10', arrivalTime: null },
-      { pref: '宮城県', name: '宮城県中部', scaleFrom: 15, scaleTo: 20, kindCode: '10', arrivalTime: null },
+      { pref: '宮城県', name: '宮城県北部', scaleFrom: 20, scaleTo: 20, kindCode: '10', arrivalTime: null },
+      { pref: '宮城県', name: '宮城県中部', scaleFrom: 10, scaleTo: 20, kindCode: '10', arrivalTime: null },
     ],
   }
 }
