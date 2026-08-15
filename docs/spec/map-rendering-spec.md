@@ -104,9 +104,12 @@ MapLibre はソースの最大タイル z を超えるズームではそのタ�
 
 - 地方名・県名・区域名を symbol + icon-image で描画
 - ズーム帯で表示粒度を切替（低ズームは地方名、高ズームは区域名）
-- 文字サイズは「地図アイコン倍率」（[`settings-pwa-spec.md`](settings-pwa-spec.md) §2「表示設定」）で震度バッジと揃えて拡縮する。
+- 文字サイズは「地図アイコン倍率」（[`settings-pwa-spec.md`](settings-pwa-spec.md) §2「主な項目の補足」）で震度バッジと揃えて拡縮する。
   バッジとの間隔は `text-offset` の em 指定（文字サイズに対する比）で決めているため、文字とバッジの双方に
   同じ倍率が掛かる限り、倍率を変えても間隔の比率は崩れない
+  - この倍率が変えるのは見た目の大きさだけで、クリック・タップの当たり判定（`QuakeHeatmapGL` の
+    `HIT_RADIUS_PX` など）には連動しない。押しやすさのための値であり、倍率に連れて広げると
+    密集した地域で隣の対象を拾いやすくなるため
 - 事前生成 **SDF グリフ**（M PLUS Rounded 1c ExtraBold・`public/fonts/`）を使用
   - **適用されるのは本節のラベルのみ**。震度バッジ等の数字は Canvas2D でラスタライズしたアイコン画像（`gl/intensityIcons.ts`・`gl/lpgmIcons.ts`・`gl/kyoshinDetectedIcons.ts`）で描いており、そちらは端末のシステムフォント（`sans-serif`）を使う
   - 暗い地図の上に小さく置く地名（倍率 100% で 13〜17px）を読ませるため、丸ゴシック（角を丸めた字形のゴシック体）の太いウェイトを採用している
@@ -310,6 +313,7 @@ MapLibre v6 の `_contextRestored` は `setStyle(..., {diff:false})` を呼ん�
   - `popupHtml.ts` — ポップアップ HTML 生成
   - `geojson.ts` — GeoJSON 生成ヘルパー
   - `subThresholdLayer.ts` — 震度 0 ドットのカスタムレイヤー
+  - `tsunamiObsBar.ts` — 津波観測バーの寸法計算（地図アイコン倍率の適用範囲を含む）
   - `fontStack.ts` — グリフスタック設定
   - `intensityIcons.ts` / `lpgmIcons.ts` / `kyoshinDetectedIcons.ts` — 事前ラスタライズアイコン
 

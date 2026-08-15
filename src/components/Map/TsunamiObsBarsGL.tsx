@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import * as maplibregl from 'maplibre-gl'
 import { useMapGL } from './mapGLContext'
 import type { TsunamiObsBar } from '../../hooks/useTsunamiLayerData'
+import { barMetrics, popupOffset, BAR_RADIUS } from './gl/tsunamiObsBar'
 
 // 津波観測棒（波高バー）を描画する MapLibre 版（Leaflet の tsunami-obs-bars 相当）。
 // 各観測点に、波高に比例した高さの縦バーを HTML マーカー（底辺アンカー）で立てる。
@@ -10,11 +11,6 @@ import type { TsunamiObsBar } from '../../hooks/useTsunamiLayerData'
 // 観測点名をキーに差分更新する（Marker/Popup/DOM要素は使い回し、内容だけ書き換える）。
 // 全remove→全再生成だと、発報中の高頻度な観測値更新のたびに全観測棒が一瞬消えてから
 // 再生成され、ちらつく。
-
-// バー幅・脚の張り出し・角丸（px・iconScale 適用前の基準値）。実描画は地図アイコンの倍率を掛けた値。
-const W = 6
-const FOOT = 3
-const RADIUS = 3
 
 function tooltipHtml(bar: TsunamiObsBar): string {
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -25,28 +21,12 @@ function tooltipHtml(bar: TsunamiObsBar): string {
   )
 }
 
-/**
- * iconScale 適用後の実寸。バー本体・コンテナ・ツールチップ位置がすべてこの値を使う
- * （倍率の乗算を各所に散らすと、片方だけ直したときにバーと吹き出しの位置がズレる）。
- */
-function barMetrics(bar: TsunamiObsBar, iconScale: number) {
-  return {
-    w: W * iconScale,
-    foot: FOOT * iconScale,
-    barPx: bar.barPx * iconScale,
-    r: RADIUS * iconScale,
-  }
-}
-
-/** ツールチップの縦オフセット（バーの中ほどに出す）。 */
-function popupOffset(bar: TsunamiObsBar, iconScale: number): [number, number] {
-  return [10, -barMetrics(bar, iconScale).barPx / 2]
-}
-
 // 既存 el の見た目だけ更新する。className の丸ごと代入は Marker がコンストラクタで付与する
 // 'maplibregl-marker' クラスを消してしまうため、blink クラスは classList.toggle で足し引きする。
 function updateBarEl(el: HTMLDivElement, bar: TsunamiObsBar, iconScale: number): void {
-  const { w, foot, barPx, r } = barMetrics(bar, iconScale)
+  const { w, foot, barPx } = barMetrics(bar, iconScale)
+  // 角丸だけは倍率を掛けない（枠線・影と同じ装飾の扱い・gl/tsunamiObsBar.ts 参照）。
+  const r = BAR_RADIUS
   // 寸法は幅・高さとも毎回ここで書く。倍率変更時は観測点名キーで既存マーカーを再利用する（下の
   // 差分更新）ため、生成時にしか設定しない値があると、その値だけ古い倍率のまま取り残される。
   el.style.width = `${w + foot}px`
