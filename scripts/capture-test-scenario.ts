@@ -77,7 +77,14 @@ async function main(): Promise<void> {
   const args = parseCliArgs()
 
   console.log(`DMDATA archiveから ${args.from.toISOString()} 〜 ${args.to.toISOString()} を取得中...`)
-  const entries = await fetchDmdataReplayEvents(args.apiKey, args.from, args.to)
+  const { entries, skipped, failedArchiveUrls } = await fetchDmdataReplayEvents(args.apiKey, args.from, args.to)
+  // 収録したシナリオが「実際より静かな」ものになっていないか判断できるよう、
+  // 取りこぼしがあれば件数を出す（詳細は取得時の警告ログを参照）。
+  // 0 件で終了する場合こそこの情報が要る（本当に静かだったのか、取りこぼして
+  // 0 件になったのかを区別できない）ため、件数チェックより前に出す。
+  if (skipped > 0 || failedArchiveUrls.length > 0) {
+    console.warn(`警告: ${skipped}件の電文・${failedArchiveUrls.length}件のアーカイブを取り込めませんでした`)
+  }
   if (entries.length === 0) {
     console.error('指定範囲に電文が見つかりませんでした')
     process.exit(1)
