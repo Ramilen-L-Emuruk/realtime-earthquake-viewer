@@ -218,7 +218,7 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
 - `src/hooks/useEarthquakes.ts` — 状態管理・enrichEEW・キュー
 - `src/hooks/useLiveEventHandler.ts` — 音・通知・タブ切替の連動
 - `src/hooks/usePsWaveCalc.ts` — P/S 波予報円計算
-- `src/hooks/useEewLayerData.ts` — 地図レイヤーデータ生成
+- `src/hooks/useEewLayerData.ts` — 地図レイヤーデータ生成（区域塗りは `subregions.json` 依存。取得失敗時は代替表示なし・再取得成功で復帰。[`quake-spec.md`](quake-spec.md) §7.2）
 - `src/components/RealtimeTab/index.tsx` — EEW カード表示
 - `src/components/Map/EewEpicentersGL.tsx` — 震源×印
 - `src/components/Map/EewRegionFillGL.tsx` — 予想震度区域塗り

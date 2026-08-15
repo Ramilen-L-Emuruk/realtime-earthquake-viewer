@@ -55,6 +55,14 @@ const mapMode = mapTab === 'tsunami' ? 'tsunami'
 タイル取得は不要で、全て事前生成された GeoJSON から自前描画する。海底地形タイルは唯一の外部ラスタで、
 設定で ON/OFF 切替可能。
 
+**生成データの取得に失敗したとき**: 該当するレイヤーを作らずに描画を続ける（`prefectures.json` なら
+陸地塗りと県境、`subregions.json` なら区域境界線と区域名ポップアップの当たり判定）。`console` には
+何が出なくなるかを含む警告を出す。震度表示側は区域データが無いと別のフォールバックを行う
+（[`quake-spec.md`](quake-spec.md) §7.2）。
+
+ただしこれは通信がエラーで終わる場合の話で、応答もエラーも返らずハングした場合は、レイヤーが
+出ないまま警告も出ない（生成データのローダは取得のタイムアウトを持たない）。
+
 **地形先読み**: `src/utils/gebcoPrefetch.ts` が沖縄〜択捉相当の低ズームタイルをアイドル時に
 バックグラウンド fetch する。
 
@@ -67,6 +75,10 @@ const mapMode = mapTab === 'tsunami' ? 'tsunami'
 - グリフ生成スクリプト: `scripts/build-glyphs.mjs`（`@mapbox/tiny-sdf` で焼く）
 - 震度バッジ・観測点ドット等のマーカーと画面上で実際に重なっている間は `text-opacity` を下げる
   （`src/components/Map/gl/labelOverlap.ts` の `queryRenderedFeatures` ベース判定）
+
+県名・区域名は境界データ（`prefectures.json` / `subregions.json`）に依存する。取得に失敗した場合は
+そのラベルだけが出ず、他のズーム帯のラベルは影響を受けない。`console` の警告には対象のズーム帯を
+含めている（「取得に失敗して出ない」のか「そのズーム帯では元々出さない設計」なのかを区別するため）。
 
 ## 6. カメラ制御（`CameraFollowsGL`）
 
