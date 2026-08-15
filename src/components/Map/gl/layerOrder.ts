@@ -15,6 +15,8 @@ export const MAP_LAYER_ORDER = [
   // ベースマップ（BaseMapGL）。陸地塗り・境界線は生成データの遅延読込後に追加されるため、
   // 素の addLayer（最上段）だと読込順次第でオーバーレイの上に乗る事故がある。最下層スロットとして
   // ここに含め、BaseMapGL も addOrderedLayer で追加することで常に最背面へ固定する。
+  // 海底地形は 2 層（下: 低ズーム固定のオーバービュー／上: 現在ズーム相当の高解像度）。理由は BaseMapGL 参照。
+  'gebco-overview-raster',
   'gebco-raster',
   'land-fill',
   // 一次細分区域の当たり判定用の透明 fill（区域名ポップアップの受け皿）。描画には寄与しないが、
