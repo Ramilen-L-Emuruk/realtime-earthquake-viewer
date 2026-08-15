@@ -16,12 +16,15 @@ import type { ReplayEntry } from '../services/dmdataReplay'
 import { serverNow, serverDate } from '../utils/clock'
 import { log } from '../utils/logger'
 
+// この 3 つを公開しているのは、結線テストが取得の日付範囲と「先読みが走る/走らない」境界を
+// これらから組み立てるため。テスト側で値を複製すると、しきい値を広げたときにテストは
+// 通り続けるのに境界を試さなくなる（黙って劣化する）。
 /** 本編として先に読み込む長さ（リプレイ開始時刻から先）。 */
-const WINDOW_MS = 3600_000
+export const WINDOW_MS = 3600_000
 /** 初期状態の再現に使う遡り幅。 */
-const PRE_WINDOW_MS = 24 * 3600_000
+export const PRE_WINDOW_MS = 24 * 3600_000
 /** 読み込み済みの終端がこれを切ったら次のウィンドウを先読みする。 */
-const PREFETCH_MARGIN_MS = 10 * 60_000
+export const PREFETCH_MARGIN_MS = 10 * 60_000
 
 export interface ReplayControllerDeps {
   apiKey: string
