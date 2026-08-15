@@ -294,11 +294,21 @@ archive の目録（各アーカイブ内の `telegrams.json`）は、**同じ�
 各テストボタンで生成する合成イベントの実装。本節が単一情報源（CLAUDE.md「コード整合性チェック
 ポイント」表からこの節がリンクされる側）。
 
+> **震度値の制約**: 震度値（`scaleFrom` / `scaleTo` / `maxScale` 等）には `src/utils/intensity.ts` の
+> `INTENSITY_LABELS` が持つ値（`-1`/`10`/`20`/`30`/`40`/`45`/`50`/`55`/`60`/`70`）だけを使う。
+> 中間値（`25` 等）を書くと `getIntensityLabel()` が「不明」・`getIntensityColor()` が灰色を返し、
+> 震度表示と地図の区域塗りが同時に壊れる。
+> **`EEWRegion` の `scaleFrom` / `scaleTo` は `number` 型のため型検査では防げない**
+> （`EarthquakePoint.scale` と `JMAQuake.earthquake.maxScale` は `IntensityScale` 型で守られる）。
+> 実データ側では、DMDATA 経路（`dmdataParser.ts` の `parseIntensityStr()`）が上記の値しか生成しない。
+> 一方 standard 版の EEW（P2PQuake code=556）は API のレスポンスを検証せずそのまま流すため
+> （`p2pquake.ts` の `convertEvent()`）、同じ保証は無い。
+
 | ボタン | 実装関数 | 最大 scaleTo | 生成イベント |
 |---|---|---|---|
 | EEW 特別警報テスト | `createTestEEW()` | 60 | 震度 6 強・特別警報（三陸沖 M7.2）※長周期地震動階級 4 |
 | EEW 警報テスト | `createTestEEWWarning()` | 50 | 震度 5 強相当・警報（日向灘 M6.5） |
-| EEW 予報テスト | `createTestEEWForecast()` | 25 | 震度 2 程度・予報（宮城県沖 M4.5） |
+| EEW 予報テスト | `createTestEEWForecast()` | 20 | 震度 2 程度・予報（宮城県沖 M4.5） |
 | EEW 誤報取消テスト | `createTestEEWWarning()` + `EEW_RETRACTION_CANCEL_MS`(10s) 後に取消 | 50→取消 | 10 秒後に `cancelled:true` 電文で `eewCancel` 音・通知・読み上げを検証 |
 | 地震テスト | `createTestEarthquake()` | - | 令和 6 年能登半島地震の実データベース（`src/data/noto-honshin-2024-*.json`）を採用 |
 | 遠地地震テスト | `createTestForeignQuake(includeForecastText)` | - | メキシコ・チアパス州沿岸 M7.4（2026-07-17）の実電文ベース。深さ不明・付加文 `0226`＋`0230` の報を採り、「深さ句の省略」「付加文原文の読み上げ」「`0230` 由来の津波区分（`domesticTsunami: 'なし'`）」を一度に確認できる。付加文は DMDATA 経由でのみ配信されるため、呼び出し側は `isDmdss` を渡して DMDSS 版でのみ `forecastText` を注入する |
@@ -408,3 +418,8 @@ Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認した�
   未記載だったため書き直した。§7 はテストボタン表から実装に存在しない「揺れの候補テスト」
   「揺れ検知テスト」の 2 行を削除し（参照先の `runSimulateKyoshin*` は `src/` に存在しない）、
   記載が漏れていた南海トラフ臨時情報 3 種・後発地震・通知テストを追加した
+- 2026-08-15: EEW テストデータが震度スケールに無い中間値を持っていたのを修正（§7）。予報テストの
+  `scaleTo` が `25` だったため予想最大震度が「不明」と表示され、地図の区域塗りも灰色に落ちていた
+  （`25 → 20`）。あわせて表示に現れていなかった `scaleFrom` の中間値 2 件も直した
+  （予報テスト `15 → 10`・警報テスト `35 → 30`）。同じミスを繰り返さないよう、震度値に使える値の
+  制約を §7 冒頭に明記した
