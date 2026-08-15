@@ -129,8 +129,13 @@ export function BaseMapGL({ showBathymetry }: Props) {
       if (cancelled) return
       const prefs = prefRes.status === 'fulfilled' ? prefRes.value : null
       const subs = subRes.status === 'fulfilled' ? subRes.value : null
-      if (prefRes.status === 'rejected') log.warn('[data] prefectures 取得失敗（陸地塗りなしで継続）', prefRes.reason)
-      if (subRes.status === 'rejected') log.warn('[data] subregions 取得失敗（境界線なしで継続）', subRes.reason)
+      // 何が欠けるかを具体的に書く（陸地が真っ黒＝海底地形ラスタだけ、という見た目から
+      // 原因を辿れるようにする）。ベースマップの塗り・境界線は全ズームで出す想定のため、
+      // ラベル（LabelsGL）と違いズーム帯による出し分けは無い。
+      if (prefRes.status === 'rejected')
+        log.warn('[data] prefectures 取得失敗（陸地塗りと県境が全ズームで出ない。海底地形ラスタのみになる）', prefRes.reason)
+      if (subRes.status === 'rejected')
+        log.warn('[data] subregions 取得失敗（区域境界線と区域名ポップアップの当たり判定が全ズームで出ない）', subRes.reason)
 
       // MAP_LAYER_ORDER に従い最下層スロット（land-fill < sub-borders < pref-borders）へ挿入する。
       // 遅延読込で faults/plates 等のオーバーレイより後に追加されても、常にその背面へ入る。

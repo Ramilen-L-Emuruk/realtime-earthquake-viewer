@@ -64,7 +64,9 @@ export function useEewLayerData(
   eewLpgmRegionAggregates: EewLpgmRegionAggregate[]
   eewEpicenters: EewEpicenter[]
 } {
-  const subregions = useSubRegions()
+  // EEW の予想震度・予想長周期は一次細分区域単位でしか表現できないため、区域データの取得に
+  // 失敗した場合の代替表示は無い（塗りが出ないまま。失敗自体は useSubRegions が error ログを出す）。
+  const { data: subregions } = useSubRegions()
 
   const subregionByName = useMemo(() => {
     const m = new Map<string, SubRegion>()
