@@ -3,7 +3,7 @@ import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, In
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataKohatsu } from '../services/dmdata'
 import { QUAKE_ISSUE_PRIORITY, mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId } from '../utils/quakeMerge'
-import { loadStationCoords, buildAreaPrefIndex } from '../utils/stationCoords'
+import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex } from '../utils/stationCoords'
 import { calcEEWCancelTime } from '../utils/eew'
 import { mergeTsunamiObservations } from '../utils/tsunami'
 import { log } from '../utils/logger'
@@ -703,11 +703,17 @@ export function useEarthquakes(
           setState(prev => ({ ...prev, isLoading: false, error: msg }))
         })
 
-      // EEW の pref 補完用に細分区域名→都道府県の逆引きインデックスを先読み。
+      // EEW の pref 補完用に細分区域名→都道府県の逆引きインデックスを先読みする。
+      // インデックスは取得成功の購読で受ける。この変数は接続中に届く「すべての」EEW に使い回される
+      // ため、単に .then で一度だけ埋めると、初回取得が一時的に失敗しただけでこの接続の間ずっと
+      // 補完が効かない状態に固定されてしまう。購読しておけば、他の呼び出し元（地図・地震カード）の
+      // 再取得が成功した時点で以降の EEW から補完が復帰する。
       // 取得できなくても EEW 自体は流す（都道府県名が付かないだけ）が、無音にはしない。
       let areaPrefIndex: Map<string, string> | null = null
+      const unsubscribeStationCoords = onStationCoordsLoaded(data => {
+        areaPrefIndex = buildAreaPrefIndex(data)
+      })
       loadStationCoords()
-        .then(data => { areaPrefIndex = buildAreaPrefIndex(data) })
         .catch(err => {
           log.warn('[data] station-coords 取得失敗（EEW 予想震度の都道府県名が補完されない）', err)
         })
@@ -763,6 +769,7 @@ export function useEarthquakes(
 
       return () => {
         cancelled = true
+        unsubscribeStationCoords()
         ws.disconnect()
       }
     }
