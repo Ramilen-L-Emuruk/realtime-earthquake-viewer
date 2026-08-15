@@ -26,6 +26,12 @@ export function loadTsunamiZones(): Promise<TsunamiZones> {
         return res.json() as Promise<TsunamiZones>
       })
       .then((data) => {
+        // 中身の形まで見る。ビルドや配信の破損で空の表が 200 で返ると、呼び出し側は
+        // 「取得成功・予報区 0 件」として扱ってしまい、津波の海岸線が出ない状態が失敗として
+        // 検知されないまま進む。ここで例外にして通信失敗と同じ経路へ載せる。
+        if (!data || typeof data !== 'object' || Object.keys(data).length === 0) {
+          throw new Error('tsunami-zones fetch returned no data (empty or malformed)')
+        }
         cache = data
         return data
       })

@@ -139,6 +139,15 @@ P2PQuake API 仕様上 `validDateTime` が届かないため、通常の TSU-1 �
 - ソースは気象庁 予報区等 GIS データ（`Ichihai1415/JMA-GIS-GeoJSON`）
 - 生成スクリプト: `scripts/build-tsunami-zones.mjs`
 
+**取得に失敗したとき**: 海岸線は描かれない。このデータでしか描けないため代替表示は無く、
+警報・注意報の範囲が地図から消える（観測点の波高バーは別データなので残り、カード・一覧にも
+影響しない）。海岸線の座標はカメラの自動フィット対象でもあるため、対象海域への自動フィットも
+効かなくなり、観測点の位置または日本全体の表示に落ちる（[`map-rendering-spec.md`](map-rendering-spec.md) §6）。
+
+本データを要求するのは海岸線描画の 1 箇所だけなので、区域データ（[`quake-spec.md`](quake-spec.md) §7.2）
+のような再取得による復帰も起きず、ページを再読み込みするまで戻らない。失敗は `console.error` に
+「海岸線が出ない」旨で出力される。
+
 ### 描画（`TsunamiLinesGL`）
 
 - 等級ごとの色・線幅は `src/utils/tsunamiStyle.ts` で定義
