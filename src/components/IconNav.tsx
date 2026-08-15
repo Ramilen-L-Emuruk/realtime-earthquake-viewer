@@ -4,8 +4,9 @@ export type TabId = 'earthquake' | 'realtime' | 'tsunami' | 'settings' | 'telegr
 
 const ICON_PROPS = {
   viewBox: '0 0 24 24',
-  width: 22,
-  height: 22,
+  // サイズは rem 指定（22px 相当）。width/height 属性の数値は px 固定で UI 倍率の外に出てしまい、
+  // 倍率を上げてもナビのアイコンだけ元の大きさのまま取り残される。
+  className: 'w-[1.375rem] h-[1.375rem]',
   fill: 'none',
   stroke: 'currentColor',
   strokeWidth: 2,

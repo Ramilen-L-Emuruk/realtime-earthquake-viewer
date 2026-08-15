@@ -49,7 +49,7 @@ export interface LabelOverlapTarget {
   lngLat: [number, number]
   /** ラベル文字列（矩形サイズの推定に使う）。 */
   text: string
-  /** text-size（px）。 */
+  /** text-size（px・iconScale 適用前の基準値）。実描画サイズは updateLabelOverlap 側で iconScale を掛ける。 */
   textSize: number
   /** text-offset の大きさ（em）。up/down 双方向オフセットを使うラベルのみ指定。 */
   offsetEm?: number
@@ -88,16 +88,21 @@ function isVisibleHit(f: MapGeoJSONFeature): boolean {
  * 各ラベルについて、対象レイヤーと画面上で重なっているかを判定し、setFeatureState で
  * dimmed フラグを反映する。対象レイヤーが1つも存在しない（quake/kyoshin どちらのモードでもない等）
  * 場合は全ラベルの dimmed を false にする。
+ *
+ * iconScale は地図アイコンの倍率（設定値）。ラベルの text-size も同倍率で描画されるため
+ * （LabelsGL）、判定に使う矩形・オフセットにも同じ倍率を掛けないと、倍率変更時に
+ * 「実際は重なっているのに薄くならない」ズレが出る。
  */
-export function updateLabelOverlap(map: MapLibreMap, targets: LabelOverlapTarget[]): void {
+export function updateLabelOverlap(map: MapLibreMap, targets: LabelOverlapTarget[], iconScale: number): void {
   const layers = OVERLAP_CHECK_LAYER_IDS.filter((id) => map.getLayer(id))
   for (const t of targets) {
     let dimmed = false
     if (layers.length > 0) {
       const point = map.project(t.lngLat)
-      const offsetPx = t.offsetEm ? t.offsetEm * t.textSize : 0
+      const textSize = t.textSize * iconScale
+      const offsetPx = t.offsetEm ? t.offsetEm * textSize : 0
       const cy = t.dir === 'up' ? point.y - offsetPx : t.dir === 'down' ? point.y + offsetPx : point.y
-      const { halfW, halfH } = estimateHalfExtent(t.text, t.textSize)
+      const { halfW, halfH } = estimateHalfExtent(t.text, textSize)
       const hits = map
         .queryRenderedFeatures(
           [

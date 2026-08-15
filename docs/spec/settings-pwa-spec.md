@@ -25,8 +25,8 @@
 - **自動復帰までの時間**: `idleRevertSec` = **ユーザー操作が止まってから**デフォルトタブへ戻る秒数（`0` で無効）
 
 ### 表示設定
-- **UI 倍率**: 画面全体の UI 拡大縮小
-- **地図アイコン倍率**: 地図上のバッジ・観測点ドットのサイズ
+- **UI 倍率**: 画面全体の UI 拡大縮小（文字・余白・ナビのアイコンが追従する。枠線や影の太さは変わらない）
+- **地図アイコン倍率**: 地図上に描かれるもの全般の大きさ（UI 倍率とは独立）。震度バッジ・観測点ドット・地名ラベル・震源の×印・長周期地震動の階級表示・強震モニタの検知表示・津波の海岸線と観測バー・地震活動ヒートマップなどが対象
 - **表示件数**: 地震カードの表示数上限
 - **最低表示震度**: これ未満の地震をリストに出さない。遠地地震は国内震度を持たないため対象外（常に表示）
 - **ダークモード**: 常時 ON（切替なし）
@@ -338,7 +338,7 @@ Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認した�
   - 例: `await window.__mapGL.getSource('quake-region-label').getData()` で震度区域ラベルの `features[].properties.scale` を集計できる
   - ソース ID・レイヤー ID は各 `src/components/Map/*GL.tsx` の冒頭で定数（例: `SRC`／`FILL_SRC`／`LABEL_SRC`／`LABEL_LYR` など）として定義されているので、そこから逆引きする（実装変更で名前が変わる可能性があるため、ここに全リストは掲載しない）
   - 可視レイヤーに絞って集計したい場合は `window.__mapGL.queryRenderedFeatures({ layers: ['<レイヤーID>'] })` を使う
-- **HTML Marker 経由の要素**: 震源×印（`EpicenterGL`）・EEW 震源（`EewEpicentersGL`）・津波観測棒（`TsunamiObsBarsGL`）は現在も `maplibregl.Marker` のまま。これらだけは `document.querySelectorAll('.maplibregl-marker')` で拾える（震度バッジは含まれない）
+- **HTML Marker 経由の要素**: 震源×印（`EpicenterGL`）・EEW 震源（`EewEpicentersGL`）・津波の観測バー（`TsunamiObsBarsGL`）は現在も `maplibregl.Marker` のまま。これらだけは `document.querySelectorAll('.maplibregl-marker')` で拾える（震度バッジは含まれない）
 - **地図ソースの内容**: `await window.__mapGL.getSource('<sourceId>').getData()` で GeoJSON を取り出せる（本番ビルドでも `window.__mapGL` は露出。`src/components/Map/JapanMapGL.tsx`）
 - **レイヤーの表示状態**: `window.__mapGL.getLayoutProperty('<layerId>', 'visibility')`
 - **時間経過を伴う挙動の再現**: 自動解除・アイドル復帰・続報自動確定は `localStorage` の書き換え＋リロード、または `setTimeout` の時間送りで確認する
@@ -385,3 +385,7 @@ Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認した�
   解消済みだった「`EEW_TYPES` から `VXSE43` が抜けている」の記述を削除（実装は 68819f8 で修正済み）。
   なお XML/JSON の 2 エントリ構造は 3 日分のアーカイブを実測して確認したもので、VYSE 系のみ
   該当データが無く未確認
+- 2026-08-16: UI 倍率・地図アイコン倍率が効いていなかった箇所を塞いだ（§2）。UI 側は px 直書きのままだった
+  文字・ナビのアイコンを rem に寄せ、地図側は地名ラベル・津波の観測バー・地震活動ヒートマップにも倍率を
+  渡すようにした。あわせて §2 の説明を実際の適用範囲に合わせて書き直した（枠線・影は装飾のため
+  従来どおり倍率に連動しない）

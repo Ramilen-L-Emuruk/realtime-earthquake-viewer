@@ -80,7 +80,7 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
     >
       {eew.cancelledAt && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg">
-          <span className="font-black text-white" style={{ fontSize: '48px', lineHeight: 1.1 }}>キャンセル</span>
+          <span className="font-black text-white" style={{ fontSize: '3rem', lineHeight: 1.1 }}>キャンセル</span>
           <span className="text-sm font-bold text-white/90 mt-1">この緊急地震速報は取り消されました</span>
         </div>
       )}
@@ -116,7 +116,7 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
             <span className="text-sm font-medium" style={{ color: getIntensityColor(maxScale) }}>
               予想最大震度
             </span>
-            <span className="font-black leading-none text-[48px] roomy:text-[72px]" style={{ color: '#ffffff' }}>
+            <span className="font-black leading-none text-[3rem] roomy:text-[4.5rem]" style={{ color: '#ffffff' }}>
               {getIntensityLabel(maxScale)}
             </span>
           </div>
@@ -143,6 +143,8 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
             className="w-full rounded-lg py-1 px-3 flex items-center justify-center gap-2 hover:opacity-80 transition-opacity roomy:py-2 roomy:px-4 roomy:gap-4"
             style={{
               backgroundColor: getLpgmClassBgColor(lpgmClass),
+              // 枠線・アウトラインは装飾のヘアラインのため px 据え置き（UI 倍率に連動させない）。
+              // 文字・余白側は rem で書いてあり倍率に追従する。
               border: `2px solid ${getLpgmClassColor(lpgmClass)}`,
               outline: activeLpgmEventId === (eew.issue?.eventId ?? eew.id)
                 ? `2px solid ${getLpgmClassColor(lpgmClass)}`
@@ -160,12 +162,12 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
         )}
 
         {/* 発生時刻 */}
-        <div className="text-secondary text-[15px] roomy:text-[18px]">
+        <div className="text-secondary text-[0.9375rem] roomy:text-[1.125rem]">
           {formatDateTime(eew.earthquake.originTime)}ごろ
         </div>
 
         {/* 震源名 */}
-        <div className="font-bold text-white leading-tight text-[20px] roomy:text-[26px]">
+        <div className="font-bold text-white leading-tight text-[1.25rem] roomy:text-[1.625rem]">
           {hypocenter.name || '震源調査中'}
         </div>
 
@@ -182,7 +184,7 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
               <span className="text-xs font-medium tracking-wide" style={{ color: magColor }}>
                 マグニチュード
               </span>
-              <span className="font-black leading-none text-[20px] roomy:text-[24px]" style={{ color: '#ffffff' }}>
+              <span className="font-black leading-none text-[1.25rem] roomy:text-[1.5rem]" style={{ color: '#ffffff' }}>
                 {hypocenter.magnitude.toFixed(1)}
               </span>
             </div>
@@ -196,7 +198,7 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
               <span className="text-xs font-medium tracking-wide" style={{ color: depthColor }}>
                 深さ
               </span>
-              <span className="font-black leading-none text-[20px] roomy:text-[24px]" style={{ color: '#ffffff' }}>
+              <span className="font-black leading-none text-[1.25rem] roomy:text-[1.5rem]" style={{ color: '#ffffff' }}>
                 {hypocenter.depth}km
               </span>
             </div>
@@ -377,9 +379,9 @@ function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent
       </div>
       <div className="flex gap-2 p-2 roomy:gap-3 roomy:p-3">
         {/* 推定最大震度 */}
-        <div className="flex flex-col items-center justify-center flex-shrink-0" style={{ minWidth: '68px' }}>
+        <div className="flex flex-col items-center justify-center flex-shrink-0" style={{ minWidth: '4.25rem' }}>
           <span className="text-xs text-secondary">推定最大震度</span>
-          <span className="font-black leading-none text-white text-[36px] roomy:text-[48px]" style={{ textShadow: `0 0 12px ${maxColor}` }}>
+          <span className="font-black leading-none text-white text-[2.25rem] roomy:text-[3rem]" style={{ textShadow: `0 0 12px ${maxColor}` }}>
             {maxLabel ?? '—'}
           </span>
         </div>
