@@ -1,5 +1,11 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { lngLatToTile, buildPrefetchTiles, shouldSkipPrefetch, MAX_TILE_ZOOM } from './gebcoPrefetch'
+import {
+  lngLatToTile,
+  buildPrefetchTiles,
+  shouldSkipPrefetch,
+  MAX_TILE_ZOOM,
+  GEBCO_OVERVIEW_MAX_ZOOM,
+} from './gebcoPrefetch'
 
 describe('lngLatToTile', () => {
   it('zoom0では常に(0,0)を返す（世界全体が1タイル）', () => {
@@ -54,6 +60,17 @@ describe('buildPrefetchTiles', () => {
     const zooms = new Set(buildPrefetchTiles().map((t) => t.z))
     const expected = new Set(Array.from({ length: MAX_TILE_ZOOM + 1 }, (_, z) => z))
     expect(zooms).toEqual(expected)
+  })
+
+  it('常時下地のオーバービュー層が使う z のタイルがキューの先頭に固まっている（下地が最速で温まる前提）', () => {
+    // 下地層は「遠距離フィットの直後でも必ず描かれている」ことが役割なので、先読みの完走を待たずに
+    // 揃う必要がある。低ズーム優先で並ぶ実装ゆえ、下地に要る z のタイルはキュー先頭に連続して収まる。
+    const tiles = buildPrefetchTiles()
+    const overviewCount = tiles.filter((t) => t.z <= GEBCO_OVERVIEW_MAX_ZOOM).length
+    expect(overviewCount).toBeGreaterThan(0)
+    expect(tiles.slice(0, overviewCount).every((t) => t.z <= GEBCO_OVERVIEW_MAX_ZOOM)).toBe(true)
+    // 先読み全体のごく一部（1 割未満）で下地が揃う。ここが膨らむと下地の温まりが遅れる。
+    expect(overviewCount).toBeLessThan(tiles.length * 0.1)
   })
 })
 

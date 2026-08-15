@@ -183,7 +183,13 @@ export function JapanMapGL({
     // を読み取ることはできない（同一オリジンに限定）。frame-ancestors CSP は現状未実装（index.html
     // の SEC-2 注記参照）だが、SOP により実質的な露出範囲は限定的。
     ;(window as unknown as Record<string, unknown>).__mapGL = m
-    m.on('error', (e) => log.error('[JapanMapGL] map error', e.error))
+    // ソース単位のエラーは MapLibre が sourceId をイベントへ載せてくる（型定義には現れないが実測で確認）。
+    // 海底地形のように同一 URL のソースを複数持つ場合（BaseMapGL の 2 層構成）、メッセージ中の URL だけでは
+    // どちらの層が落ちたか判別できないため sourceId も残す。
+    m.on('error', (e) => {
+      const sourceId = (e as { sourceId?: string }).sourceId
+      log.error('[JapanMapGL] map error', { sourceId, error: e.error })
+    })
     m.once('load', () => {
       // 本アプリの既定フレーミング（日本全体・padding 20）へ即時に合わせる。
       fitJapan(m, 0)
