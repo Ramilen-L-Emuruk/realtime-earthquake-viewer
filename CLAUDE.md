@@ -274,6 +274,7 @@ README は「一般利用者・フォーカー・貢献者への導線」であ�
 | `node scripts/build-tsunami-zones.mjs` | 津波予報区 海岸線データ（`public/data/tsunami-zones.json`）の再生成 |
 | `node scripts/build-prefectures.mjs` | 都道府県境界データ（`public/data/prefectures.json`）の再生成（ベースマップ用） |
 | `node scripts/build-subregions.mjs` | 一次細分区域境界データ（`public/data/subregions.json`）の再生成 |
+| `node scripts/build-glyphs.mjs` | 地名ラベル用 SDF グリフ（`public/fonts/`）の再生成。**地名（地方・県・区域）が増減したら必ず実行する**（忘れるとその文字が無警告で空白になりうる。詳細は [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §5）。県名・区域名は `public/data/*.json` から読むため、**`build-prefectures.mjs`・`build-subregions.mjs` を先に実行すること** |
 | `npm version patch\|minor\|major` | バージョン更新・コミット・git tag 作成（main へのマージ直後に実行。詳細は「バージョン管理」参照） |
 
 ## 構成メモ
@@ -295,6 +296,7 @@ README は「一般利用者・フォーカー・貢献者への導線」であ�
 | EEW P/S 波予報円の計算・仮定震源要素の連動箇所 | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §5-§6 |
 | EEW レベル判定（特別警報の条件・長周期の DMDATA 限定） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
 | 地図レイヤー描画順・EEW 予想レイヤーの kyoshin 限定・`maplibregl.Marker` の opacity | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §2・§3・§7・§10 |
+| ラベルのフォントスタック名の一致・グリフ収録文字の網羅性・フォント適用範囲（ラベル限定） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §5 |
 | 震度集約の単位（一次細分区域）・観測点 0 件時の集約維持 | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §7 |
 | 地震電文の `points` 構造（バリアント経路差・`pref` 空の識別規則） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §4 |
 | `KyoshinSubThreshold` の対象範囲（index 1〜6）・慢性ノイズ床フィルタ | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) |
