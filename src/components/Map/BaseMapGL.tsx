@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import type { Map as MapLibreMap, RasterLayerSpecification } from 'maplibre-gl'
 import { useMapGL } from './mapGLContext'
 import { loadPrefectures } from '../../utils/prefectures'
 import { loadSubRegions } from '../../utils/subregions'
@@ -9,6 +10,8 @@ import { twoLinePopupHtml } from './gl/popupHtml'
 import { log } from '../../utils/logger'
 import {
   BATHYMETRY_URL,
+  GEBCO_HIRES_MIN_ZOOM,
+  GEBCO_OVERVIEW_MAX_ZOOM,
   GEBCO_SOURCE_MAX_ZOOM,
   GEBCO_TILE_SIZE,
   prefetchBathymetryTiles,
@@ -34,9 +37,45 @@ const LYR_SUB_HIT = 'subregion-hit'
 const SRC_PREF = 'basemap-pref-borders'
 const SRC_GEBCO = 'gebco'
 const LYR_GEBCO = 'gebco-raster'
+const SRC_GEBCO_OVERVIEW = 'gebco-overview'
+const LYR_GEBCO_OVERVIEW = 'gebco-overview-raster'
 const LYR_LAND = 'land-fill'
 const LYR_SUB = 'sub-borders'
 const LYR_PREF = 'pref-borders'
+
+interface BathymetryLayerOptions {
+  sourceId: string
+  layerId: string
+  /** ソース側の最大タイル z（タイル座標系）。マップズームがこれを超えると MapLibre はこの z のタイルを拡大して描き続ける。 */
+  sourceMaxZoom: number
+  visible: boolean
+  /** 描画を始めるマップズーム（マップズーム基準）。省略時は全ズームで描画する。 */
+  minZoom?: number
+  /** 省略時は MapLibre 既定（300ms のクロスフェード）。 */
+  fadeMs?: number
+}
+
+// 海底地形ラスタ層を 1 枚追加する（オーバービュー層と高解像度層は maxzoom・minzoom・フェードだけが違う）。
+function addBathymetryLayer(map: MapLibreMap, opts: BathymetryLayerOptions): void {
+  map.addSource(opts.sourceId, {
+    type: 'raster',
+    tiles: [BATHYMETRY_URL],
+    tileSize: GEBCO_TILE_SIZE,
+    maxzoom: opts.sourceMaxZoom,
+  })
+  const paint: NonNullable<RasterLayerSpecification['paint']> = {
+    'raster-brightness-max': BATHYMETRY_BRIGHTNESS_MAX,
+  }
+  if (opts.fadeMs !== undefined) paint['raster-fade-duration'] = opts.fadeMs
+  addOrderedLayer(map, {
+    id: opts.layerId,
+    type: 'raster',
+    source: opts.sourceId,
+    ...(opts.minZoom !== undefined ? { minzoom: opts.minZoom } : {}),
+    layout: { visibility: opts.visible ? 'visible' : 'none' },
+    paint,
+  })
+}
 
 interface Props {
   showBathymetry: boolean
@@ -51,22 +90,33 @@ export function BaseMapGL({ showBathymetry }: Props) {
     let cancelled = false
     const prefetchAbort = new AbortController()
 
-    // 海底地形ラスタ（陸地塗りの下）。showBathymetry の初期値で可視を決める。
-    // GEBCO_SOURCE_MAX_ZOOM はタイルセット側に実在する最大タイル z（Leaflet 版の maxNativeZoom={10}
-    // 相当）で、マップズーム基準の閾値（gl/camera.ts の MAX_ZOOM 等）とは別の座標系。両者を混同しない
-    // こと。タイル座標側の値は先読み（gebcoPrefetch.ts）と共有する必要があるため同ファイルが持つ。
-    map.addSource(SRC_GEBCO, {
-      type: 'raster',
-      tiles: [BATHYMETRY_URL],
-      tileSize: GEBCO_TILE_SIZE,
-      maxzoom: GEBCO_SOURCE_MAX_ZOOM,
+    // 海底地形ラスタ（陸地塗りの下）は 2 層構成にする。showBathymetry の初期値で可視を決める。
+    // GEBCO_SOURCE_MAX_ZOOM / GEBCO_OVERVIEW_MAX_ZOOM はタイル座標側の z（Leaflet 版の
+    // maxNativeZoom={10} 相当）で、マップズーム基準の閾値（gl/camera.ts の MAX_ZOOM や下記の
+    // GEBCO_HIRES_MIN_ZOOM）とは別の座標系。両者を混同しないこと。いずれも先読み
+    // （gebcoPrefetch.ts）と関係する値のため同ファイルが持つ。
+    //
+    // 2 層にする理由: MapLibre は現在の視野に必要なタイルしか保持しないため、沖縄→北海道のような
+    // 遠距離フィットの直後は飛行先のタイルが未取得で、1 層だと素の背景色（style の bg）が数百 ms
+    // 露出する（HTTP キャッシュは先読みで温めてあるが、デコード＋テクスチャ化＋フェードの分は残る）。
+    // 下層は maxzoom を低く固定し、MapLibre が maxzoom 超のズームでそのタイルを拡大して描き続ける
+    // 性質を使って「どのズーム・どの位置でも粗い海底地形が必ず下地にある」状態を作る。上層の高解像度が
+    // 届いたらその上に載って差し替わる。下層はフェード 0（常在の下地なので、クロスフェードの対象は
+    // 上層だけでよい）。上層には minzoom を付け、2 層が同一タイルを要求するだけになる低ズーム帯を
+    // 描画対象から外す（GEBCO_HIRES_MIN_ZOOM のコメント参照）。
+    addBathymetryLayer(map, {
+      sourceId: SRC_GEBCO_OVERVIEW,
+      layerId: LYR_GEBCO_OVERVIEW,
+      sourceMaxZoom: GEBCO_OVERVIEW_MAX_ZOOM,
+      visible: showBathymetry,
+      fadeMs: 0,
     })
-    addOrderedLayer(map, {
-      id: LYR_GEBCO,
-      type: 'raster',
-      source: SRC_GEBCO,
-      layout: { visibility: showBathymetry ? 'visible' : 'none' },
-      paint: { 'raster-brightness-max': BATHYMETRY_BRIGHTNESS_MAX },
+    addBathymetryLayer(map, {
+      sourceId: SRC_GEBCO,
+      layerId: LYR_GEBCO,
+      sourceMaxZoom: GEBCO_SOURCE_MAX_ZOOM,
+      visible: showBathymetry,
+      minZoom: GEBCO_HIRES_MIN_ZOOM,
     })
     // 沖縄〜択捉相当の範囲を、アイドル時に低ズーム優先でバックグラウンド先読み。
     // 初期表示（fitJapan）の通信と競合しないよう遅延なく開始してよい
@@ -139,19 +189,21 @@ export function BaseMapGL({ showBathymetry }: Props) {
       prefetchAbort.abort()
       popupRef.current?.remove()
       popupRef.current = null
-      for (const id of [LYR_PREF, LYR_SUB, LYR_SUB_HIT, LYR_LAND, LYR_GEBCO]) {
+      for (const id of [LYR_PREF, LYR_SUB, LYR_SUB_HIT, LYR_LAND, LYR_GEBCO, LYR_GEBCO_OVERVIEW]) {
         if (map.getLayer(id)) map.removeLayer(id)
       }
-      for (const id of [SRC_PREF, SRC_SUB, SRC_SUB_HIT, SRC_LAND, SRC_GEBCO]) {
+      for (const id of [SRC_PREF, SRC_SUB, SRC_SUB_HIT, SRC_LAND, SRC_GEBCO, SRC_GEBCO_OVERVIEW]) {
         if (map.getSource(id)) map.removeSource(id)
       }
     }
   }, [map])
 
-  // 海底地形の表示切替（形状は作り直さず可視だけ更新）。
+  // 海底地形の表示切替（形状は作り直さず可視だけ更新）。オーバービュー層も同じ設定で連動させる。
   useEffect(() => {
-    if (!map || !map.getLayer(LYR_GEBCO)) return
-    map.setLayoutProperty(LYR_GEBCO, 'visibility', showBathymetry ? 'visible' : 'none')
+    if (!map) return
+    for (const id of [LYR_GEBCO_OVERVIEW, LYR_GEBCO]) {
+      if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', showBathymetry ? 'visible' : 'none')
+    }
   }, [map, showBathymetry])
 
   return null

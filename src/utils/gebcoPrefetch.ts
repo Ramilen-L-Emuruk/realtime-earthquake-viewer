@@ -19,6 +19,37 @@ export const BATHYMETRY_URL =
 export const GEBCO_TILE_SIZE = 256
 /** GEBCO タイルセットに実在する最大タイル z（これを超えるズームはオーバーズーム扱いで新規取得されない）。 */
 export const GEBCO_SOURCE_MAX_ZOOM = 10
+/**
+ * 常時下地として敷くオーバービュー層（BaseMapGL）の最大タイル z。
+ * 日本全体を眺める縮尺帯に相当する低ズームを常時カバーする値で、遠距離フィットの直後にもこの精細さの
+ * 下地が必ず残る（下げればボケが増え、上げれば保持タイル数が増えるトレードオフ）。fitJapan の着地ズームは
+ * ビューポートの大きさで変わるため、その値と厳密に一致させる必要はない。この z のタイルは先読み（下記）にも
+ * 含まれるため初回表示から即描画できる。
+ */
+export const GEBCO_OVERVIEW_MAX_ZOOM = 5
+/**
+ * MapLibre（512px タイル基準）がマップズーム z のときに要求するタイル z を返す
+ * （ラスタソースは丸め方式が round のため `Math.round`）。マップズーム基準とタイル座標系の変換は
+ * 混同事故が起きやすいので、両方を扱う箇所はこの関数を通す。
+ */
+export function desiredTileZoom(mapZoom: number): number {
+  return Math.round(mapZoom + Math.log2(512 / GEBCO_TILE_SIZE))
+}
+
+/**
+ * 高解像度層（BaseMapGL の上層）を描画し始めるマップズーム。**マップズーム基準（512px タイル）** の値で、
+ * このファイルの他の定数（タイル座標系の z）とは別の座標系。混同しないこと。
+ *
+ * 上層が下層より深いタイルを要求し始めるのは `desiredTileZoom(z) > GEBCO_OVERVIEW_MAX_ZOOM` のとき。
+ * `Math.round` の境界から、その最小の z は `GEBCO_OVERVIEW_MAX_ZOOM + 0.5 - log2(512 / タイルサイズ)`
+ * （256px タイルなら 4.5）。これ未満のズームでは 2 層が同一タイルを要求するだけで見た目は変わらないため
+ * （実測: マップズーム 3 で 20 タイルすべてが二重取得）、上層の minzoom に指定して描画対象から外す。
+ * 非表示のレイヤーはソースの更新対象にならないため、タイル取得ごと止まる。
+ *
+ * タイルサイズから導出しているので `GEBCO_TILE_SIZE` を変えてもズレない。境界のタイトさは
+ * `src/components/Map/gl/zoomConstants.test.ts` が両側から固定している。
+ */
+export const GEBCO_HIRES_MIN_ZOOM = GEBCO_OVERVIEW_MAX_ZOOM + 0.5 - Math.log2(512 / GEBCO_TILE_SIZE)
 
 // 先読み対象範囲: 沖縄（先島諸島）〜択捉島相当。fitJapan が使う JAPAN_BOUNDS（camera.ts）より
 // 広く取り、実際に地震・EEW が発生しうる範囲をカバーする。
