@@ -50,6 +50,12 @@ verify-*.jpg
 !.claude/agents/adversarial-reviewer.md
 !.claude/agents/doc-objectivity-reviewer.md
 !.claude/agents/meta-reviewer.md
+# .claude/skills/ も同じホワイトリスト方式。スキルは 1 つがディレクトリ単位のため、
+# ディレクトリの再包含（!.claude/skills/<name>/）が必要になる点に注意。
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/release/
+!.claude/skills/release/SKILL.md
 
 # 実地震テストのシナリオ本体（DMDATA.JP利用規約第15条によりEEWの二次配信は
 # 個人契約では制限されるため、各自の契約でキャプチャしたものはコミットしない。
