@@ -244,9 +244,17 @@ Yahoo の `hypoInfo.items` を EEW 型に変換して P2PQuake（標準版）や
 
 ## 7. リプレイ機能
 
-### 「テスト時刻設定（強震モニタ）」（standard 版のみ有効）
+### 「テスト時刻設定（強震モニタ）」
 
-Yahoo リアルタイム震度を過去の時刻から順に再生する。標準版で有効。
+設定タブで日時を指定して過去を再生する機能。**同じボタンがバリアントによって別の動きをする**。
+
+| バリアント | 動き |
+|---|---|
+| standard | アプリの時計をずらすだけ。Yahoo リアルタイム震度が過去の時刻から再生される |
+| DMDSS | 上記に加えて、DMDATA アーカイブから当時の電文（地震・津波・EEW 等）も取得して流す |
+
+DMDSS 版のアーカイブ取得（目録の構造・取りこぼしの扱い）は
+[`settings-pwa-spec.md`](settings-pwa-spec.md) §6「テスト時刻設定（強震モニタ）」を参照。
 
 **既知の課題**: 実装が useEarthquakes.ts の接続 useEffect の先頭で `replayTimeOffset !== null` の
 早期 return を行うため、standard 版の P2PQuake WS 接続まで停止する副作用がある（HIGH 課題）。
