@@ -231,7 +231,7 @@ Yahoo の `hypoInfo.items` を EEW 型に変換して P2PQuake（標準版）や
 | `prefectures.json` | `scripts/build-prefectures.mjs` | 都道府県境界 |
 | `subregions.json` | `scripts/build-subregions.mjs` | 一次細分区域境界（**一次細分区域** の定義は [`quake-spec.md`](quake-spec.md) §1 参照） |
 | `active-faults.json` | `scripts/build-active-faults.mjs` | 全国活断層線 |
-| `plate-boundaries.json` | `scripts/build-plate-boundaries.mjs` | プレート境界線 |
+| `plate-boundaries.json` | `scripts/build-plate-boundaries.mjs` | プレート境界線（全球・52 プレート） |
 | `tts-phrase-break-dict.json` | 手動整備 | 読み上げ用の句区切り辞書 |
 | `test-scenarios/index.json` | 手動 or `capture-test-scenario.ts` | 実地震テストシナリオ一覧（本体は .gitignore） |
 
@@ -240,7 +240,7 @@ Yahoo の `hypoInfo.items` を EEW 型に変換して P2PQuake（標準版）や
 - 観測点座標: [iku55 氏による JSON 化](https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1)
 - GEBCO 海底地形: [GEBCO Basemap (NCEI)](https://tiles.arcgis.com/tiles/C8EMgrsFcRFL6LrL/arcgis/rest/services/GEBCO_basemap_NCEI/MapServer)
 - 活断層: 産業技術総合研究所 [活断層データベース](https://gbank.gsj.jp/activefault/)（政府標準利用規約 2.0）
-- プレート境界: [PB2002](http://peterbird.name/publications/2003_pb2002/2003_pb2002.htm)（[fraxen/tectonicplates](https://github.com/fraxen/tectonicplates)、ODbL）
+- プレート境界: [PB2002](http://peterbird.name/publications/2003_pb2002/2003_pb2002.htm)（Peter Bird）／データ整備: Hugo Ahlenius・Nordpil [fraxen/tectonicplates](https://github.com/fraxen/tectonicplates)（[Open Data Commons Attribution License 1.0](http://opendatacommons.org/licenses/by/1.0/)）
 
 ## 7. リプレイ機能
 
