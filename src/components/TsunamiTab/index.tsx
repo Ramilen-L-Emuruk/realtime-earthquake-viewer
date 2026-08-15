@@ -427,8 +427,10 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
     ? earthquakes.find(q => q.eventId === tsunamiEventId && !q.cancelledAt)
     : undefined
 
+  // h-full を持つ下記の要素自身がスクロール領域になるため、横スクロールの抑止は
+  // App.tsx の TAB_SCROLLER_CLASS ではなくここで行う（祖先の指定は子に効かない）。
   return (
-    <div ref={containerRef} className="h-full overflow-y-auto">
+    <div ref={containerRef} className="h-full overflow-y-auto overflow-x-hidden overscroll-x-none">
       {/* 発令中 / 解除バナー（sticky で常時表示）。対応する地震カードがある場合のみクリック可能。 */}
       <div ref={bannerRef} className="sticky top-0 z-10 px-3 pt-3">
         <div
