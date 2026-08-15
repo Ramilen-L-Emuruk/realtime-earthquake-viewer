@@ -291,6 +291,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | `node scripts/build-prefectures.mjs` | 都道府県境界データ（`public/data/prefectures.json`）の再生成（ベースマップ用） |
 | `node scripts/build-subregions.mjs` | 一次細分区域境界データ（`public/data/subregions.json`）の再生成 |
 | `node scripts/build-glyphs.mjs` | 地名ラベル用 SDF グリフ（`public/fonts/`）の再生成。**地名（地方・県・区域）が増減したら実行する**（`npm run build` が前段で `--check` を走らせ、未生成の文字があればビルドを止める。詳細は [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §5）。県名・区域名は `public/data/*.json` から読むため、**`build-prefectures.mjs`・`build-subregions.mjs` を先に実行すること** |
+| `npm run capture-scenario` | 実地震テストシナリオを DMDATA archive から取得（`scripts/capture-test-scenario.ts`）。**要 DMDATA.JP API キー**（置き場所・渡し方は [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6）。**ワークツリーでの注意**: キーを置く `.env.local` は Git 管理外のため**引き継がれない**。ワークツリー内で使うときはメインリポジトリ直下からコピーする。読めているかは引数なしで `npm run capture-scenario` を実行して確認する（`--from は必須です` なら読めている／`APIキーが必要です` なら読めていない。値をエコーせずに済む）。ただしシェルに `DMDATA_API_KEY` が残っていると `.env.local` が無くても通ってしまうため、事前に残っていないことを確かめる |
 | `npm version patch\|minor\|major` | バージョン更新・コミット・git tag 作成（リリース時に 1 回だけ実行。詳細は「リリース」参照） |
 
 ## 構成メモ
