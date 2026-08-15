@@ -7,4 +7,4 @@
 // 両者がずれると MapLibre はエラーを出さず、該当テキストが**無音で消える**だけになる（背景・レイヤー自体は
 // 正常に描かれるためデバッグしにくいサイレント障害）。そこでアプリ側の唯一の定義をここに集約し、
 // build-glyphs.mjs は本ファイルを読んで STACK と突き合わせ、不一致ならビルドを失敗させる。
-export const JP_FONT_STACK = 'Noto Sans JP'
+export const JP_FONT_STACK = 'M PLUS Rounded 1c'

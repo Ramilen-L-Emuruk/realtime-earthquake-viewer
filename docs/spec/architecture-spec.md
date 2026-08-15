@@ -141,6 +141,7 @@ App が直接持つのは「1 秒毎更新」（強震モニタ・`kyoshinIndice
 | `RealtimeTab/index.tsx` | EEW カード各部・揺れ検知カード・S 波カウントダウンの余白・タブ外枠 |
 | `TsunamiTab/index.tsx` | 予報区ヘッダー・区域行・観測点行・サマリーバナー・タブ外枠 |
 | `MapUpdateTime.tsx` | 地図左上の更新時刻 |
+| `MapDataStatus.tsx` | 地図左上の生成データ取得状況 |
 
 圧縮の対象は**各カードの主要な見出し・数値と余白**で、次のものは意図的に対象外にしている:
 

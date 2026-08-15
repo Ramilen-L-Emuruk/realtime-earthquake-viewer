@@ -14,20 +14,14 @@ function formatDatetime(date: Date): string {
 }
 
 // 地図左上に重ねて表示する更新時刻（黒背景）。通常は白文字、エラー停止時は赤文字。
-// z-[99999]: 区域集約震度バッジ（QuakeRegionFillGL）は el.style.zIndex = scale*1000 で、
-// scale は JMA 震度階級の数値コード（震度7 = 70）まであるため最大 70000 まで積む。
-// それより確実に高い値にして常に最前面に出す。
+// 重ね位置（absolute・z-index・セーフエリア）は App.tsx 側の地図左上ラッパーが持つ。
 export function MapUpdateTime({ lastUpdate, error = false }: Props) {
   const valid = lastUpdate && !Number.isNaN(lastUpdate.getTime())
   return (
     <div
-      className={`absolute z-[99999] bg-black/80 font-mono rounded pointer-events-none text-sm px-2 py-0.5 roomy:text-xl roomy:px-2.5 roomy:py-1 ${
+      className={`bg-black/80 font-mono rounded text-sm px-2 py-0.5 roomy:text-xl roomy:px-2.5 roomy:py-1 ${
         error ? 'text-red-400' : 'text-white'
       }`}
-      style={{
-        top: 'max(0.5rem, env(safe-area-inset-top, 0px))',
-        left: 'max(0.5rem, env(safe-area-inset-left, 0px))',
-      }}
     >
       更新 {valid ? formatDatetime(lastUpdate) : '受信待機中…'}
     </div>

@@ -5,6 +5,7 @@ import type { AppSettings } from './useSettings'
 import type { AlertTitleApi } from './useAlertTitle'
 import type { ReplayEntry } from '../services/dmdataReplay'
 import { getIntensityLabel } from '../utils/intensity'
+import { formatMagnitude, hasMagnitude } from '../utils/formatters'
 import { eewMaxScale, computeSingleEEWLevel, selectEEWSoundType } from '../utils/eew'
 import { haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
@@ -159,9 +160,16 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 新規・続報いずれも、受信した地震カードを選択状態にする。
       selectQuake(event.earthquake.time)
       const { hypocenter, maxScale } = event.earthquake
-      // 震度なし続報（VXSE52 等）ではタイトルを更新しない（直前の VXSE51 表示を維持する）
-      if (maxScale >= 0 || isNewQuake) {
-        title.setTitle(`🔴 地震情報 ${hypocenter.name} 最大震度${getIntensityLabel(maxScale)}`)
+      const isForeignQuake = event.issue.type === '遠地地震'
+      // 震度なし続報（VXSE52 等）ではタイトルを更新しない（直前の VXSE51 表示を維持する）。
+      // ただし遠地地震は maxScale が常に -1 で、続報も同じ eventId・種別のため isNewQuake も
+      // false になる。この条件のままだと規模が確定した続報がタイトルに一切反映されないため除外する。
+      if (maxScale >= 0 || isNewQuake || isForeignQuake) {
+        // 遠地地震は国内で震度を観測しない（maxScale は常に -1）。「最大震度不明」と出すと
+        // 震度が判明していないだけに読めてしまうため、規模を出す別書式にする。
+        title.setTitle(isForeignQuake
+          ? `🔴 遠地地震 ${hypocenter.name}${hasMagnitude(hypocenter.magnitude) ? ` ${formatMagnitude(hypocenter.magnitude)}` : ''}`
+          : `🔴 地震情報 ${hypocenter.name} 最大震度${getIntensityLabel(maxScale)}`)
       }
       title.scheduleTitleRevert('earthquake')
     } else if (event.kind === 'tsunami' && !event.cancelled) {

@@ -223,8 +223,6 @@ export async function speakWithVoicevox(
   speakerId: number,
   volume: number,
 ): Promise<void> {
-  // 辞書が未ロードなら待つ（キャッシュ済みなら即時解決）
-  await loadTtsPhraseBreakDict().catch(() => {})
   log.debug(`[VoiceVox] 読み上げ: ${text}`, { speakerId, volume })
 
   // 既存の再生を全て停止
@@ -243,6 +241,20 @@ export async function speakWithVoicevox(
 
   // セッション ID を更新して古いパイプラインを無効化
   const sessionId = ++currentSessionId
+
+  // 辞書が未ロードならここで待つ（キャッシュ済みなら即時解決）。取得できなくても句区切りが
+  // 効かないだけで読み上げは続行する（synthesizeChunk はキャッシュを都度参照し、未取得なら
+  // 句区切り処理を飛ばす）。ここで長く待つと緊急地震速報の読み上げがそのまま遅れるため、
+  // 辞書側は共通値より短いタイムアウトを使う（ttsPhraseBreakDict.ts）。
+  // 失敗は読み上げのたびに繰り返されうるのでログは debug に留める。
+  //
+  // 待つのはセッションを確立した後にすること。先に待つと、辞書が未取得の間に重なった複数の
+  // 読み上げが同じ取得完了を待ち合わせ、解決後に後着が先着のセッションを追い越して先着が
+  // 1 音も鳴らずに消える。ここで待てば、待機中に来た読み上げが即座に旧セッションを無効化できる。
+  await loadTtsPhraseBreakDict().catch((err) => {
+    log.debug('[VoiceVox] 句区切り辞書の取得に失敗（区切りなしで読み上げ）', err)
+  })
+  if (currentSessionId !== sessionId) return  // 辞書待ちの間に割り込まれた
 
   const ctx = getAudioContext()
   if (!ctx) {

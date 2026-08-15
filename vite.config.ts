@@ -103,7 +103,14 @@ export default defineConfig({
         screenshots: [],
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        // pbf は地名ラベルの SDF グリフ（public/fonts/<stack>/）。これを含めないとオフライン時に
+        // グリフだけ取得できず、MapLibre が実行時のフォント生成にフォールバックする（字形がシステム
+        // フォントに変わり、事前生成で消したはずのメインスレッド停止も復活する）。
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2,pbf}'],
+        // precache に載せる 1 ファイルの上限。ライブラリ既定と同値だが、暗黙の既定に依存すると
+        // 「いつの間にか除外されていた」に気づけないため明示する。超過時は vite-plugin-pwa が
+        // ビルドを失敗させる（黙って除外はしない）。
+        maximumFileSizeToCacheInBytes: 2 * 1024 * 1024,
         // SEC-3: standard 版の scope が /realtime-earthquake-viewer/ で DMDSS 版の /dmdss/
         // サブパスも包含するため、両バリアントを同一オリジンで訪れると standard の SW が
         // DMDSS 版のナビゲーションリクエストを横取りしうる。standard 版のみ /dmdss/ を
