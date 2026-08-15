@@ -209,6 +209,149 @@ describe('parseEarthquake: JSON 訂正フラグの伝播', () => {
   })
 })
 
+// 遠地地震に関する情報。VXSE53 で配信され、Control/Title は「震源・震度に関する情報」のまま
+// Head/Title だけが「遠地地震に関する情報」になる。国内震度を伴わず、深さ不明の報が多い。
+// 付加文は 021x 系ではなく 0226（震源近傍で津波発生の可能性）＋0230（日本への津波の影響なし）
+// のように 022x/023x 系を併用する（コードはスペース区切りで 1 つの Code 要素に入る）。
+const FOREIGN_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/" xmlns:jmx_eb="http://xml.kishou.go.jp/jmaxml1/elementBasis1/">
+  <Control>
+    <Title>震源・震度に関する情報</Title>
+    <DateTime>2026-07-17T14:55:00Z</DateTime>
+    <PublishingOffice>気象庁</PublishingOffice>
+  </Control>
+  <Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+    <Title>遠地地震に関する情報</Title>
+    <ReportDateTime>2026-07-17T23:55:00+09:00</ReportDateTime>
+    <TargetDateTime>2026-07-17T23:55:00+09:00</TargetDateTime>
+    <EventID>20260717235535</EventID>
+    <InfoType>発表</InfoType>
+    <Serial>1</Serial>
+  </Head>
+  <Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
+    <Earthquake>
+      <OriginTime>2026-07-17T23:49:00+09:00</OriginTime>
+      <ArrivalTime>2026-07-17T23:49:00+09:00</ArrivalTime>
+      <Hypocenter>
+        <Area>
+          <Name>中米</Name>
+          <Code type="震央地名">945</Code>
+          <jmx_eb:Coordinate description="北緯１４．４度　西経　９３．０度　深さ不明">+14.4-093.0/</jmx_eb:Coordinate>
+          <DetailedName>メキシコ、チアパス州沿岸</DetailedName>
+        </Area>
+      </Hypocenter>
+      <jmx_eb:Magnitude type="M">7.4</jmx_eb:Magnitude>
+    </Earthquake>
+    <Comments>
+      <ForecastComment codeType="固定付加文">
+        <Text>震源の近傍で津波発生の可能性があります。
+この地震による日本への津波の影響はありません。</Text>
+        <Code>0226 0230</Code>
+      </ForecastComment>
+    </Comments>
+  </Body>
+</Report>`
+
+const FOREIGN_JSON = {
+  type: '震源・震度に関する情報',
+  title: '遠地地震に関する情報',
+  infoType: '発表',
+  editorialOffice: '気象庁本庁',
+  eventId: '20260717235535',
+  serialNo: '1',
+  reportDateTime: '2026-07-17T23:55:00+09:00',
+  targetDateTime: '2026-07-17T23:55:00+09:00',
+  headline: '１７日２３時４９分ころ、海外で規模の大きな地震がありました。',
+  body: {
+    earthquake: {
+      originTime: '2026-07-17T23:49:00+09:00',
+      arrivalTime: '2026-07-17T23:49:00+09:00',
+      hypocenter: {
+        code: '945',
+        name: '中米',
+        // 深さ不明の報は coordinate.height ごと省かれる（高さフォールバックも効かない）
+        coordinate: { latitude: { value: '14.4000' }, longitude: { value: '-93.0000' } },
+        depth: { type: '深さ', unit: 'km', value: null, condition: '不明' },
+        detailed: { code: '1069', name: 'メキシコ、チアパス州沿岸' },
+      },
+      magnitude: { type: 'マグニチュード', value: '7.4', unit: 'M' },
+    },
+    comments: {
+      forecast: {
+        text: '震源の近傍で津波発生の可能性があります。\nこの地震による日本への津波の影響はありません。',
+        codes: ['0226', '0230'],
+      },
+    },
+  },
+}
+
+describe('遠地地震に関する情報（VXSE53・Head/Title で識別）', () => {
+  it('XML: Control/Title ではなく Head/Title を見て 遠地地震 と判定する', () => {
+    const quake = parseEarthquakeFromXml('VXSE53', FOREIGN_XML)
+    expect(quake).not.toBeNull()
+    expect(quake!.issue.type).toBe('遠地地震')
+  })
+
+  it('JSON: title で 遠地地震 と判定する', () => {
+    expect(parseEarthquake('VXSE53', FOREIGN_JSON)!.issue.type).toBe('遠地地震')
+  })
+
+  it('震源名は詳細震央地名を採る', () => {
+    expect(parseEarthquakeFromXml('VXSE53', FOREIGN_XML)!.earthquake.hypocenter.name).toBe('メキシコ、チアパス州沿岸')
+    expect(parseEarthquake('VXSE53', FOREIGN_JSON)!.earthquake.hypocenter.name).toBe('メキシコ、チアパス州沿岸')
+  })
+
+  it('深さ不明は -1 センチネルになる（0＝ごく浅い と区別する）', () => {
+    expect(parseEarthquakeFromXml('VXSE53', FOREIGN_XML)!.earthquake.hypocenter.depth).toBe(-1)
+    expect(parseEarthquake('VXSE53', FOREIGN_JSON)!.earthquake.hypocenter.depth).toBe(-1)
+  })
+
+  it('付加文 0230（日本への津波の影響なし）を津波区分に反映する', () => {
+    expect(parseEarthquakeFromXml('VXSE53', FOREIGN_XML)!.earthquake.domesticTsunami).toBe('なし')
+    expect(parseEarthquake('VXSE53', FOREIGN_JSON)!.earthquake.domesticTsunami).toBe('なし')
+  })
+
+  it('付加文の原文を1行に整形して forecastText に保持する', () => {
+    const expected = '震源の近傍で津波発生の可能性があります。この地震による日本への津波の影響はありません。'
+    expect(parseEarthquakeFromXml('VXSE53', FOREIGN_XML)!.forecastText).toBe(expected)
+    expect(parseEarthquake('VXSE53', FOREIGN_JSON)!.forecastText).toBe(expected)
+  })
+
+  it('国内震度を伴わないため maxScale は -1・points は空', () => {
+    const quake = parseEarthquake('VXSE53', FOREIGN_JSON)!
+    expect(quake.earthquake.maxScale).toBe(-1)
+    expect(quake.points).toEqual([])
+  })
+
+  it('取消電文でも 遠地地震 と判定する（既存カードと issue.type が一致しないと取消が反映されない）', () => {
+    const cancelXml = FOREIGN_XML.replace('<InfoType>発表</InfoType>', '<InfoType>取消</InfoType>')
+    const fromXml = parseEarthquakeFromXml('VXSE53', cancelXml)!
+    expect(fromXml.cancelled).toBe(true)
+    expect(fromXml.issue.type).toBe('遠地地震')
+
+    const fromJson = parseEarthquake('VXSE53', { ...FOREIGN_JSON, infoType: '取消' })!
+    expect(fromJson.cancelled).toBe(true)
+    expect(fromJson.issue.type).toBe('遠地地震')
+  })
+
+  it('規模が欠落した XML は 0 ではなく不明（NaN）として返す', () => {
+    const noMag = FOREIGN_XML.replace('<jmx_eb:Magnitude type="M">7.4</jmx_eb:Magnitude>', '<jmx_eb:Magnitude type="M"></jmx_eb:Magnitude>')
+    const quake = parseEarthquakeFromXml('VXSE53', noMag)!
+    expect(Number.isNaN(quake.earthquake.hypocenter.magnitude)).toBe(true)
+  })
+
+  it('付加文コードが複数の Code 要素に分かれていても取りこぼさない', () => {
+    // 実電文はスペース区切りで 1 要素にまとまるが、兄弟要素に分割された場合も 0230 を拾う
+    const split = FOREIGN_XML.replace('<Code>0226 0230</Code>', '<Code>0226</Code>\n        <Code>0230</Code>')
+    expect(parseEarthquakeFromXml('VXSE53', split)!.earthquake.domesticTsunami).toBe('なし')
+  })
+
+  it('付加文が無い電文では forecastText を undefined にする', () => {
+    const noComments = { ...FOREIGN_JSON, body: { ...FOREIGN_JSON.body, comments: {} } }
+    expect(parseEarthquake('VXSE53', noComments)!.forecastText).toBeUndefined()
+  })
+})
+
 // DMD-7: EEW（VXSE43/45）JSON パーサーの基本テスト。severity 付与・cancel・LPGM を検証する。
 describe('parseEEW: JSON 電文の severity・cancel・LPGM', () => {
   const baseEEWJson = {

@@ -196,7 +196,7 @@ export function App() {
     earthquakes, tsunamis, activeEEWs, lpgmByEventId, nankai, kohatsu, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
     telegramLog, clearTelegramLog,
     injectEvent, loadMoreEarthquakes,
-    simulateEarthquake,
+    simulateEarthquake, simulateForeignQuake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateKohatsu,
@@ -227,6 +227,7 @@ export function App() {
   // による自動検出は現状の lint 設定では実行されない）。
   const testHandlers = useMemo(() => ({
     earthquake:        simulateEarthquake,
+    foreignQuake:      simulateForeignQuake,
     eew:               simulateEEW,
     eewWarning:        simulateEEWWarning,
     eewForecast:       simulateEEWForecast,
@@ -252,7 +253,8 @@ export function App() {
       })
     },
   }), [
-    simulateEarthquake, simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWRetraction,
+    simulateEarthquake, simulateForeignQuake,
+    simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateKohatsu,
   ])
@@ -329,8 +331,15 @@ export function App() {
   // filter は毎回新規配列を返すため useMemo で参照を安定化する
   // （EarthquakeTab / TsunamiTab へ props として渡すため。毎レンダー新配列を渡すと
   // shallow compare で常に不一致となり React.memo が実質無効化される）。
+  // 遠地地震は国外の地震を伝える情報で国内震度を持たない（maxScale は常に -1）。
+  // 「最低表示震度」は国内の小さい地震を一覧から省く設定なので、震度で比べようがない
+  // 遠地地震まで巻き添えで消えないよう対象外にする（M7 以上でしか発表されない情報のため）。
   const filteredEarthquakes = useMemo(
-    () => earthquakes.filter(q => settings.minDisplayScale < 0 || q.earthquake.maxScale >= settings.minDisplayScale),
+    () => earthquakes.filter(q =>
+      settings.minDisplayScale < 0
+      || q.issue.type === '遠地地震'
+      || q.earthquake.maxScale >= settings.minDisplayScale
+    ),
     [earthquakes, settings.minDisplayScale],
   )
 
