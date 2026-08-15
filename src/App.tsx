@@ -48,6 +48,12 @@ const DEFAULT_TITLE = isDmdss
 const EMPTY_SITES: [number, number][] = []
 const EMPTY_INDICES: number[] = []
 
+// 各タブのスクロール領域に共通で当てるクラス。パネルは縦一列の表示で横スクロールを想定しない。
+// overflow-y だけを auto にすると CSS 仕様で overflow-x の visible も auto に格上げされるため、
+// 中身が数 px でもはみ出すと指で左右に動いてしまう（パネル幅が最も狭い sideNarrow＝スマホ横で
+// 顕在化する）。overflow-x-hidden で塞ぎ、overscroll-x-none で iOS の横ラバーバンドも止める。
+const TAB_SCROLLER_CLASS = 'absolute inset-0 overflow-y-auto overflow-x-hidden overscroll-x-none'
+
 export function App() {
   const { settings, updateSetting } = useSettings()
   const [activeTab, setActiveTabState] = useState<TabId>(settings.defaultTab)
@@ -809,7 +815,7 @@ export function App() {
         <div className={`flex-shrink-0 h-[calc(var(--panel-ratio)*100%)] overflow-hidden side:h-auto side:flex-none border-border relative ${
           panelCollapsed ? 'side:w-0 side:border-l-0' : 'side:w-96 sideNarrow:w-80 side:border-l'
         }`}>
-          <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'earthquake' ? ' invisible pointer-events-none' : ''}`}>
+          <div className={`${TAB_SCROLLER_CLASS}${activeTab !== 'earthquake' ? ' invisible pointer-events-none' : ''}`}>
             <EarthquakeTab
               earthquakes={filteredEarthquakes}
               selectedId={selectedQuake ? quakeEventKey(selectedQuake) : null}
@@ -824,7 +830,7 @@ export function App() {
               onToggleLpgm={toggleLpgmFromEarthquake}
             />
           </div>
-          <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'realtime' ? ' invisible pointer-events-none' : ''}`}>
+          <div className={`${TAB_SCROLLER_CLASS}${activeTab !== 'realtime' ? ' invisible pointer-events-none' : ''}`}>
             <RealtimeTab
               eews={eewsForPanel}
               kyoshinSites={kyoshinSitesGated}
@@ -836,7 +842,7 @@ export function App() {
               onDeactivateLpgm={deactivateLpgm}
             />
           </div>
-          <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'tsunami' ? ' invisible pointer-events-none' : ''}`}>
+          <div className={`${TAB_SCROLLER_CLASS}${activeTab !== 'tsunami' ? ' invisible pointer-events-none' : ''}`}>
             <TsunamiTab
               tsunamis={tsunamis}
               earthquakes={filteredEarthquakes}
@@ -846,10 +852,10 @@ export function App() {
               obsUpdateStatus={obsUpdateStatus}
             />
           </div>
-          <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'telegrams' ? ' invisible pointer-events-none' : ''}`}>
+          <div className={`${TAB_SCROLLER_CLASS}${activeTab !== 'telegrams' ? ' invisible pointer-events-none' : ''}`}>
             <TelegramTab telegramLog={telegramLog} onClear={clearTelegramLog} />
           </div>
-          <div className={`absolute inset-0 overflow-y-auto${activeTab !== 'settings' ? ' invisible pointer-events-none' : ''}`}>
+          <div className={`${TAB_SCROLLER_CLASS}${activeTab !== 'settings' ? ' invisible pointer-events-none' : ''}`}>
             <SettingsTab
               settings={settings}
               onUpdate={updateSetting}

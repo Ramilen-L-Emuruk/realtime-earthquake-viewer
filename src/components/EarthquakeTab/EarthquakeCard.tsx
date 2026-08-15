@@ -405,9 +405,12 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
 
         {/* 地震詳細 */}
         <div className="flex-1 min-w-0">
-          {/* 地域名 + 発表種別 */}
+          {/* 地域名 + 発表種別。
+              震源地名は縮小を許す（min-w-0）。flex-shrink-0 だと max-content 幅を保ったまま
+              折り返さないため、「メキシコ、チアパス州沿岸」級の長い名前がパネル幅を押し広げ、
+              幅の最も狭いスマホ横（sideNarrow・320px）で横スクロールが発生していた。 */}
           <div className="flex items-center gap-2 mb-1">
-            <span className="text-white font-bold text-lg leading-tight flex-shrink-0">
+            <span className="text-white font-bold text-lg leading-tight min-w-0">
               {hasLocation ? hypocenter.name : '震源調査中'}
             </span>
             <span className={`text-xs px-1.5 py-0.5 rounded min-w-0 truncate ${issueTypeBadgeClass(issue.type)}`}>

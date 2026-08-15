@@ -46,7 +46,9 @@ export function SpecialInfoBanner({ nankai, kohatsu }: Props) {
     // z-[99999]: 区域集約震度バッジ（QuakeRegionFillGL）は scale（JMA震度階級の数値コード、震度7=70）
     // × 1000 で最大 zIndex 70000 まで積むため、それより確実に高い値にして常に最前面に出す。
     <div className="absolute bottom-0 left-0 right-0 z-[99999] pointer-events-none">
-      <div className="pointer-events-auto max-h-[40vh] overflow-y-auto">
+      {/* max-h で高さが制約されるためこの要素自身がスクロール領域になる。overflow-y だけを auto に
+          すると overflow-x も auto に格上げされ横スクロールしてしまうため、明示的に塞ぐ。 */}
+      <div className="pointer-events-auto max-h-[40vh] overflow-y-auto overflow-x-hidden overscroll-x-none">
         {nankai && <NankaiBanner nankai={nankai} />}
         {kohatsu && <KohatsuBanner kohatsu={kohatsu} />}
       </div>
