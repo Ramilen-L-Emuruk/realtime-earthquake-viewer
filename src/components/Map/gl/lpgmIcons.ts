@@ -40,7 +40,8 @@ function drawBadge(lgInt: number): ImageData {
   ctx.stroke()
 
   ctx.fillStyle = '#ffffff'
-  ctx.font = `700 ${r * 1.1}px "Noto Sans JP", sans-serif`
+  // "Noto Sans JP" は @font-face 未登録で効いておらず、同梱も撤去済み（理由は intensityIcons.ts 参照）。
+  ctx.font = `700 ${r * 1.1}px sans-serif`
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
   ctx.fillText(String(lgInt), cx, cy)

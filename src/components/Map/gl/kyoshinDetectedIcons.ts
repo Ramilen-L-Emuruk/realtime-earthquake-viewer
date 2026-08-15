@@ -59,7 +59,8 @@ function drawBadge(rank: number, confirmed: boolean): ImageData {
 
   const label = RANK_LABELS[rank] ?? '?'
   ctx.fillStyle = '#ffffff'
-  ctx.font = `700 ${label.length > 1 ? r * 0.85 : r * 1.15}px "Noto Sans JP", sans-serif`
+  // "Noto Sans JP" は @font-face 未登録で効いておらず、同梱も撤去済み（理由は intensityIcons.ts 参照）。
+  ctx.font = `700 ${label.length > 1 ? r * 0.85 : r * 1.15}px sans-serif`
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
   ctx.fillText(label, cx, cy)

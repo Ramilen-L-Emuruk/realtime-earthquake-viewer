@@ -1,0 +1,12 @@
+{
+  "font": "MPLUSRounded1c-ExtraBold.ttf",
+  "fontSha256": "8e7c15901dca87f1451b356dda594f7d092ba252a5dcc47da74523a242493c36",
+  "family": "Rounded Mplus 1c",
+  "weight": "800",
+  "sdf": {
+    "fontSize": 24,
+    "buffer": 3,
+    "radius": 8,
+    "cutoff": 0.25
+  }
+}
