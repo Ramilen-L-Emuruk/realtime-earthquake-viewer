@@ -145,7 +145,7 @@ export function sortAreasForCardDisplay(areas: TsunamiArea[], observations: Tsun
 
 function TsunamiHeightHeader({ label, style }: { label: string; style: GradeStyle }) {
   return (
-    <div className="px-3 py-1 font-black leading-none text-[18px] roomy:px-4 roomy:text-[22px]"
+    <div className="px-3 py-1 font-black leading-none text-[1.125rem] roomy:px-4 roomy:text-[1.375rem]"
       style={{ color: style.heightColor, backgroundColor: `${style.cardBorder}14`, borderBottom: `1px solid ${style.cardBorder}33` }}>
       {label}
     </div>
@@ -171,11 +171,11 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, isChang
     <div ref={setRowRef} className="border-b border-white/5 last:border-0">
       <div className="flex items-center gap-2 px-3 py-2 roomy:gap-3 roomy:px-4 roomy:py-3">
         <div className="flex-1 min-w-0">
-          <span className="text-white font-semibold block text-[17px] roomy:text-[20px]" style={{ lineHeight: '1.2' }}>
+          <span className="text-white font-semibold block text-[1.0625rem] roomy:text-[1.25rem]" style={{ lineHeight: '1.2' }}>
             {area.name}
           </span>
           {arrivalText && (
-            <span className="block mt-1" style={{ fontSize: '15px', color: style.arrivalColor }}>
+            <span className="block mt-1" style={{ fontSize: '0.9375rem', color: style.arrivalColor }}>
               {arrivalText}
             </span>
           )}
@@ -212,12 +212,12 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, isChang
                 <div className="flex items-center gap-2">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-semibold" style={{ fontSize: '13px', color: style.heightColor }}>{obs.name}</span>
+                      <span className="font-semibold" style={{ fontSize: '0.8125rem', color: style.heightColor }}>{obs.name}</span>
                       <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: `${style.cardBorder}30`, color: style.heightColor }}>
                         {obs.height ? '実測' : '到達確認'}
                       </span>
                     </div>
-                    <div className="mt-1" style={{ fontSize: '11px', color: '#9ca3af' }}>
+                    <div className="mt-1" style={{ fontSize: '0.6875rem', color: '#9ca3af' }}>
                       {obs.arrivalTime && `${formatTime(obs.arrivalTime).slice(0, 5)}${obs.initial ? ` ${obs.initial}波` : ''}`}
                       {/* 同名 station があれば満潮時刻をここに表示 */}
                       {(() => {
@@ -227,9 +227,9 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, isChang
                     </div>
                   </div>
                   {obs.height ? (
-                    <span className="font-bold flex-shrink-0" style={{ fontSize: '20px', color: style.heightColor }}>{obs.height.description}</span>
+                    <span className="font-bold flex-shrink-0" style={{ fontSize: '1.25rem', color: style.heightColor }}>{obs.height.description}</span>
                   ) : (
-                    <span className="flex-shrink-0" style={{ fontSize: '13px', color: '#9ca3af' }}>観測中</span>
+                    <span className="flex-shrink-0" style={{ fontSize: '0.8125rem', color: '#9ca3af' }}>観測中</span>
                   )}
                 </div>
               </div>
@@ -239,10 +239,10 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, isChang
           {stations.filter(s => !observedNames.has(s.name)).map((st, i) => (
             <div key={i} className="px-3 py-2 rounded" style={{ border: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.03)' }}>
               <div className="flex items-baseline gap-2 flex-wrap">
-                <span className="font-semibold" style={{ fontSize: '13px', color: '#d1d5db' }}>{st.name}</span>
+                <span className="font-semibold" style={{ fontSize: '0.8125rem', color: '#d1d5db' }}>{st.name}</span>
                 <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: 'rgba(255,255,255,0.08)', color: '#9ca3af' }}>予測</span>
               </div>
-              <div className="mt-1" style={{ fontSize: '11px', color: '#9ca3af' }}>
+              <div className="mt-1" style={{ fontSize: '0.6875rem', color: '#9ca3af' }}>
                 {st.arrivalTime && `到達 ${formatTime(st.arrivalTime).slice(0, 5)}`}
                 {st.highTideDateTime && `　満潮 ${formatTime(st.highTideDateTime).slice(0, 5)}`}
               </div>
@@ -265,17 +265,17 @@ function TsunamiObservationRow({ obs, onObservationClick }: { obs: TsunamiObserv
       onKeyDown={clickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') onObservationClick!(obs.name) } : undefined}
     >
       <div className="flex-1 min-w-0">
-        <span className="text-white font-semibold block text-[16px] roomy:text-[18px]">
+        <span className="text-white font-semibold block text-[1rem] roomy:text-[1.125rem]">
           {obs.name}
         </span>
         {obs.arrivalTime && (
-          <span className="block mt-1 text-secondary" style={{ fontSize: '13px' }}>
+          <span className="block mt-1 text-secondary" style={{ fontSize: '0.8125rem' }}>
             到達: {formatTime(obs.arrivalTime).slice(0, 5)}{obs.initial ? `（${obs.initial}）` : ''}
           </span>
         )}
       </div>
       {obs.height && (
-        <span className="text-secondary flex-shrink-0" style={{ fontSize: '16px' }}>
+        <span className="text-secondary flex-shrink-0" style={{ fontSize: '1rem' }}>
           {obs.height.description}
         </span>
       )}
@@ -444,24 +444,24 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
           <div className="px-3 py-2 roomy:px-4 roomy:py-3"
             style={{ background: isCancelledDisplay ? 'rgba(75,85,99,0.18)' : `${topStyle.cardBorder}18` }}>
             <div className="flex items-center justify-between gap-2">
-              <div className="font-bold" style={{ fontSize: '14px', color: isCancelledDisplay ? '#9ca3af' : topStyle.headerColor }}>
+              <div className="font-bold" style={{ fontSize: '0.875rem', color: isCancelledDisplay ? '#9ca3af' : topStyle.headerColor }}>
                 {isCancelledDisplay ? cancelInfo.title : `${GRADE_LABEL[topGrade]} 発令中`}
               </div>
               {latestTime && (
-                <div className="text-right flex-shrink-0" style={{ fontSize: '11px', color: isCancelledDisplay ? '#6b7280' : topStyle.arrivalColor, opacity: 0.8 }}>
+                <div className="text-right flex-shrink-0" style={{ fontSize: '0.6875rem', color: isCancelledDisplay ? '#6b7280' : topStyle.arrivalColor, opacity: 0.8 }}>
                   {formatDateTimeMin(latestTime)} 更新
                 </div>
               )}
             </div>
-            <div className="mt-1" style={{ fontSize: '11px', color: isCancelledDisplay ? '#6b7280' : topStyle.headerColor, opacity: 0.8 }}>
+            <div className="mt-1" style={{ fontSize: '0.6875rem', color: isCancelledDisplay ? '#6b7280' : topStyle.headerColor, opacity: 0.8 }}>
               {isCancelledDisplay ? cancelInfo.desc : topGrade === 'Forecast' ? '若干の海面変動があるかもしれません' : '海岸・河川から直ちに離れてください'}
             </div>
             {!isCancelledDisplay && sourceEarthquake && (
-              <div className="mt-1.5 pt-1.5" style={{ fontSize: '11px', color: topStyle.arrivalColor, opacity: 0.9, borderTop: `1px solid ${topStyle.cardBorder}40` }}>
+              <div className="mt-1.5 pt-1.5" style={{ fontSize: '0.6875rem', color: topStyle.arrivalColor, opacity: 0.9, borderTop: `1px solid ${topStyle.cardBorder}40` }}>
                 震源: {sourceEarthquake.hypocenterName}
                 {sourceEarthquake.magnitude !== undefined && `　M${sourceEarthquake.magnitude}`}
                 {sourceEarthquake.originTime && `　${formatTime(sourceEarthquake.originTime).slice(0, 5)}発生`}
-                {linkedQuake && <span style={{ marginLeft: '6px', fontSize: '10px', opacity: 0.7 }}>▶ 地震情報</span>}
+                {linkedQuake && <span style={{ marginLeft: '0.375rem', fontSize: '0.625rem', opacity: 0.7 }}>▶ 地震情報</span>}
               </div>
             )}
           </div>
@@ -475,8 +475,8 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
         return (
           <div key={t.id} className="flex flex-col gap-3 relative">
             {t.cancelledAt && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg" style={{ minHeight: '80px' }}>
-                <span className="font-black text-white" style={{ fontSize: '40px', lineHeight: 1.1 }}>{cancelInfo.badge}</span>
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg" style={{ minHeight: '5rem' }}>
+                <span className="font-black text-white" style={{ fontSize: '2.5rem', lineHeight: 1.1 }}>{cancelInfo.badge}</span>
                 <span className="text-sm font-bold text-white/90 mt-1">{cancelInfo.desc}</span>
               </div>
             )}
@@ -506,7 +506,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
             )}
             {t.warningComment && !t.cancelledAt && (
               <div className="bg-card rounded-lg overflow-hidden" style={{ border: '1px solid #374151' }}>
-                <div className="text-secondary" style={{ fontSize: '12px', lineHeight: '1.7', whiteSpace: 'pre-line', padding: '12px 16px' }}>
+                <div className="text-secondary" style={{ fontSize: '0.75rem', lineHeight: '1.7', whiteSpace: 'pre-line', padding: '0.75rem 1rem' }}>
                   {t.warningComment}
                 </div>
               </div>

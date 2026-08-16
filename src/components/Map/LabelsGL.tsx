@@ -28,6 +28,13 @@ const LABEL_MIN_ZOOM = 4.5
 const REGION_MAX_ZOOM = 6.5
 const CITY_LABEL_MIN_ZOOM = 8
 
+// 各粒度の基準 text-size（px）。実描画は iconScale（地図アイコンの倍率）を掛けた値。
+// 震度バッジ側も同じ iconScale で拡縮するため、両者を同倍率で動かすことで
+// 「バッジとラベルの相対的な間隔」（下の text-offset の em 指定）が倍率によらず保たれる。
+const REGION_TEXT_SIZE = 17
+const PREF_TEXT_SIZE = 14
+const SUB_TEXT_SIZE = 13
+
 // symbol レイヤーの text-font。フォントスタック名は gl/fontStack.ts が単一情報源
 // （build-glyphs.mjs の出力ディレクトリ名と本値の一致はビルド時に照合される。詳細は fontStack.ts）。
 const JP_TEXT_FONT = [JP_FONT_STACK]
@@ -51,10 +58,17 @@ interface Props {
    * 変化しないようにする（位置が変わらない限り重なりの有無自体は変わらないため）。
    */
   overlapSignature: string
+  /** 地図アイコンの倍率（設定値）。震度バッジ等と揃えてラベルも拡縮する。 */
+  iconScale: number
 }
 
-export function LabelsGL({ overlapSignature }: Props) {
+export function LabelsGL({ overlapSignature, iconScale }: Props) {
   const map = useMapGL()
+  // レイヤー構築は [map] 依存の useEffect 内で行い、県名・区域名は非同期ロード後に追加される。
+  // その追加が倍率変更より後になることがあるため、構築時は ref 経由で最新の倍率を読む
+  // （クロージャが握った初期値のままだと、後から出るラベルだけ旧倍率になる）。
+  const iconScaleRef = useRef(iconScale)
+  iconScaleRef.current = iconScale
   // 各ラベルの生データ（重なり判定の再計算に使う）。ロード完了後に確定する。
   const targetsRef = useRef<LabelOverlapTarget[]>([])
   // 重なり判定のスケジュール関数（下のトリガー用 useEffect が設定する）。県名・区域名の
@@ -80,7 +94,7 @@ export function LabelsGL({ overlapSignature }: Props) {
       id: i,
       lngLat: [r.lng, r.lat],
       text: r.name,
-      textSize: 17,
+      textSize: REGION_TEXT_SIZE,
     }))
     map.addSource(REGION_SRC, { type: 'geojson', data: regionFC })
     addOrderedLayer(map, {
@@ -92,7 +106,7 @@ export function LabelsGL({ overlapSignature }: Props) {
       layout: {
         'text-field': ['get', 'name'],
         'text-font': JP_TEXT_FONT,
-        'text-size': 17,
+        'text-size': REGION_TEXT_SIZE * iconScaleRef.current,
         'text-letter-spacing': 0.05,
       },
       paint: {
@@ -142,7 +156,7 @@ export function LabelsGL({ overlapSignature }: Props) {
             id: i,
             lngLat: [shape.label[1], shape.label[0]] as [number, number],
             text: name,
-            textSize: 14,
+            textSize: PREF_TEXT_SIZE,
             offsetEm: 1.5,
             dir: shape.dir,
           })),
@@ -157,7 +171,7 @@ export function LabelsGL({ overlapSignature }: Props) {
           layout: {
             'text-field': ['get', 'name'],
             'text-font': JP_TEXT_FONT,
-            'text-size': 14,
+            'text-size': PREF_TEXT_SIZE * iconScaleRef.current,
             'text-offset': ['case', ['==', ['get', 'dir'], 'up'], ['literal', [0, -1.5]], ['literal', [0, 1.5]]],
           },
           paint: {
@@ -175,6 +189,8 @@ export function LabelsGL({ overlapSignature }: Props) {
       // 震度7バッジの実描画半径は約20px（intensityIcons.ts の INTENSITY_ICON_BASE_RADIUS=32 と
       // getScaleRadius の比率換算）に対し、text-size 13px の 1.5em（県名と同値）だとぎりぎり干渉しうる
       // ため、区域名は 2.2em とやや広めに取る。
+      // この「約20px 対 2.2em」の関係は倍率 100% での値だが、退避量は em 指定（text-size 比）であり
+      // text-size とバッジ半径の双方に同じ iconScale が掛かるため、倍率を変えても比率は崩れない。
       const subs = subRes.status === 'fulfilled' ? subRes.value : null
       if (subs) {
         const subFC: FeatureCollection<Point> = {
@@ -193,7 +209,7 @@ export function LabelsGL({ overlapSignature }: Props) {
             id: i,
             lngLat: [sr.label[1], sr.label[0]] as [number, number],
             text: sr.name,
-            textSize: 13,
+            textSize: SUB_TEXT_SIZE,
             offsetEm: 2.2,
             dir: sr.dir,
             // 自分の区域の塗り（当然重なる）は無視し、隣接する別区域の塗りとだけ重なりを判定する。
@@ -209,7 +225,7 @@ export function LabelsGL({ overlapSignature }: Props) {
           layout: {
             'text-field': ['get', 'name'],
             'text-font': JP_TEXT_FONT,
-            'text-size': 13,
+            'text-size': SUB_TEXT_SIZE * iconScaleRef.current,
             'text-offset': ['case', ['==', ['get', 'dir'], 'up'], ['literal', [0, -2.2]], ['literal', [0, 2.2]]],
           },
           paint: {
@@ -233,6 +249,26 @@ export function LabelsGL({ overlapSignature }: Props) {
     }
   }, [map])
 
+  // 倍率変更を既存レイヤーへ反映する（レイヤーの作り直しは伴わない）。ラベルの実サイズが変われば
+  // 重なり判定に使う矩形も変わるため、反映後に再評価をかける。
+  //
+  // この effect は上下の effect と宣言順で噛み合っている: 構築（[map]）→ 本 effect → 重なり判定（下）。
+  // マウント時点では scheduleOverlapCheckRef がまだ未設定（no-op）のため、ここからの再評価要求は
+  // 空振りする。初回の判定は下の effect が自前で schedule() を呼ぶことで成立している。
+  // 3 つの順序を入れ替えるときは、この噛み合わせが崩れていないか確認すること。
+  useEffect(() => {
+    if (!map) return
+    const sizes: [string, number][] = [
+      [REGION_SRC, REGION_TEXT_SIZE],
+      [PREF_SRC, PREF_TEXT_SIZE],
+      [SUB_SRC, SUB_TEXT_SIZE],
+    ]
+    for (const [id, base] of sizes) {
+      if (map.getLayer(id)) map.setLayoutProperty(id, 'text-size', base * iconScale)
+    }
+    scheduleOverlapCheckRef.current()
+  }, [map, iconScale])
+
   // 重なり判定の再評価。地図の移動完了時（moveend）と、マーカー側の位置情報が変わったとき
   // （overlapSignature の変化）の両方をトリガーにする。デバウンスして連続操作中の負荷を抑える。
   useEffect(() => {
@@ -241,7 +277,7 @@ export function LabelsGL({ overlapSignature }: Props) {
 
     const run = () => {
       if (!map.getSource(REGION_SRC)) return
-      updateLabelOverlap(map, targetsRef.current)
+      updateLabelOverlap(map, targetsRef.current, iconScaleRef.current)
     }
     const schedule = () => {
       if (timeoutId != null) clearTimeout(timeoutId)
