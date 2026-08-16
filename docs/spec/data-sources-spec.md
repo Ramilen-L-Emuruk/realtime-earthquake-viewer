@@ -91,22 +91,56 @@ Basic 認証（`Authorization: Basic base64(apiKey:)`）。API キーはユー�
 | 552 | JMA 津波情報 | 津波タブ |
 | 556 | 緊急地震速報 | EEW |
 
-### convertEvent の日本語化
+### convertEvent の検証と日本語化
 
-P2PQuake の生 JSON は英語の enum で来るフィールドがあるため、`src/services/p2pquake.ts` の
-`convertEvent` で日本語化する:
+`src/services/p2pquake.ts` の `convertEvent` が、受信した生 JSON を検証しながら内部型へ組み立てる。
+**内部型に宣言されたフィールドだけを明示的に詰め直す**ため、API 固有のフィールド
+（`comments` / `earthquake.foreignTsunami` / `hypocenter.reduceName` / `timestamp` 等）は落ちる。
+生データは電文ログ（`TelegramLogEntry.rawBody`）に残るので調査には困らない。
+
+英語の enum で来るフィールドは日本語化する:
 
 - `issue.type`: `ScalePrompt` → `震度速報` 等
 - `issue.correct`: `None` → `なし`、`Unknown` → `訂正`、`ScaleOnly` → `震度のみ訂正`、`DestinationOnly` → `震源を訂正`、`ScaleAndDestination` → `震度・震源を訂正`（`Correction` というキーは存在しない）
-- `earthquake.domesticTsunami`: `None` → `なし`、`Watch` → `注意報`、`Warning` → `警報等` 等（`src/services/p2pquake.ts:22-26` の `DOMESTIC_TSUNAMI_MAP` が扱う値ドメインは `None` / `Unknown` / `Checking` / `SeaFloor`（`海面変動の可能性`） / `NonEffective`（`若干の海面変動`） / `Watch`（`注意報`） / `Warning`（`警報等`） の 7 種。**`MajorWarning` は含まれない**。津波の大津波警報は code=552（`JMATsunami`）の `areas[].grade` 側で扱われ、こちらは英語のまま内部型に流れる）
+- `earthquake.domesticTsunami`: `None` → `なし`、`Watch` → `注意報`、`Warning` → `警報等` 等（`DOMESTIC_TSUNAMI_MAP` が扱う値ドメインは `None` / `Unknown` / `Checking` / `SeaFloor`（`海面変動の可能性`） / `NonEffective`（`若干の海面変動`） / `Watch`（`注意報`） / `Warning`（`警報等`） / `MajorWarning`（`警報等`） の 8 種。津波電文 code=552 側の等級（`areas[].grade`）はこのマップを通さず別扱い）
+
+いずれのマップも、未知の値は既定値に格下げしたうえで警告を残す（`issue.type` → `その他`、
+`issue.correct` → `なし`、`domesticTsunami` → `不明`）。
+
+**不正値の扱い**: 基本はフィールド単位で既定値・センチネルに落として通し、電文ごと捨てるのは
+同一性が壊れる場合だけに限る。
+
+| 対象 | 挙動 |
+|---|---|
+| `code` が 551/552/556 以外・ペイロードが非オブジェクト | 電文を破棄（設計どおりの読み飛ばし） |
+| `id` の欠落、`time` / `earthquake.time`（551）の欠落 | 電文を破棄。イベントの同一性キー・キューの並び順キーになるため |
+| `points[]` / `areas[]` の壊れた要素 | その要素だけ落とし、電文は残す |
+| 震度が階級外の値 | `-1`（不明）へ格下げ |
+| 座標・深さ・規模が数値でない | P2PQuake が「不明」に使うセンチネル（座標 `-200` / 深さ `-1` / 規模 `-1`）へ。座標と深さは DMDATA 経路とも同じ値だが、規模だけは異なる（DMDATA 経路は `NaN`）。いずれも `hasMagnitude()` が「不明」として弾く |
+| 津波の `areas[].grade` が未知 | `Unknown` へ格下げ |
+
+**震度値の正規化**: API 仕様の値域は内部型 `IntensityScale` より広いため、以下を寄せる。
+いずれも API 上は正規値なので警告は出さない。
+
+| API の値 | 意味 | 内部での扱い |
+|---|---|---|
+| `46` | 震度 5 弱以上と推定されるが震度情報を入手していない | `45`（5 弱） |
+| `0` | 震度 0 | `-1`（不明）。EEW のレベル判定はどちらでも結果が変わらない |
+| `99` | 〜程度以上 | 同じ地域の `scaleFrom` |
+
+`46` と `0` の読み替えは震度を持つ全フィールド（`points[].scale` / `earthquake.maxScale` /
+`areas[].scaleFrom` / `areas[].scaleTo`）に共通で適用する。仕様上 `46` は `points[].scale` に、
+`0` は EEW の `scaleFrom` / `scaleTo` にしか現れないが、どのフィールドに来ても同じ意味に読める値なので
+区別していない。`99` は `areas[].scaleTo` 専用（`scaleFrom` とセットで初めて意味を成すため）。
+
+`scaleTo = 99` をそのまま通すと階級外の値になり、`eewMaxScale()` の実行時ガードがその地域を
+丸ごと無視する。最も強い「震度 7 程度以上」が特別警報に上がらなくなるため、下限の `scaleFrom` を
+上限として採用する。
 
 **severity の付与**: code=556（EEW）は P2PQuake API v2 のペイロードに severity フィールドを持たないが、
 JMA 仕様上ここで配信される 556 は全て警報級であるため `convertEvent` が `severity: 'Warning'` を
 明示付与する（付与しないと後段の `computeSingleEEWLevel` が予報扱いに落とし警報音・特別警報表示が
 発火しない）。
-
-**既知の欠落**:
-- `points[].scale=46`（震度 5 弱以上推定）が既知震度マップにない
 
 **既知の情報粒度制約（QUAKE-6・TSU-5A）**: 実データ検証で確認済み。DMDSS の DMDATA と比較して以下が API 仕様
 上の制約として存在する（詳細は [`quake-spec.md`](quake-spec.md) §4・[`tsunami-spec.md`](tsunami-spec.md) §3）:
@@ -303,7 +337,9 @@ DMDSS 版のアーカイブ取得（目録の構造・取りこぼしの扱い�
 センチネル値:
 - `-1` — 震度算出不能・不明
 - `-200` — 位置不明（震度速報の震源座標フォールバック）
-- `99` — （実装上は使われない・`eew.ts:170` にコメントとガードが残るがデッドコード）
+
+内部型 `IntensityScale` は上表と `-1` だけを取る。P2PQuake API はこれより広い値域（`0` / `46` / `99`）を
+返すため、`convertEvent` が受け口で上表の値に寄せる。読み替えの一覧は §3「震度値の正規化」を参照。
 
 ## 9. 環境による制約
 
@@ -317,7 +353,8 @@ DMDSS 版のアーカイブ取得（目録の構造・取りこぼしの扱い�
 - `src/services/dmdata.ts` — DMDATA WebSocket + 認証
 - `src/services/dmdataParser.ts` — DMDATA JSON/XML パース
 - `src/services/dmdataReplay.ts` — DMDATA archive リプレイ
-- `src/services/p2pquake.ts` — P2PQuake クライアント
+- `src/services/p2pquake.ts` — P2PQuake クライアント + レスポンス検証
+- `src/services/parseHelpers.ts` — 外部レスポンスの値取り出しヘルパ（DMDATA・P2PQuake 共用）
 - `src/services/kyoshin.ts` — Yahoo リアルタイム震度 + クロック同期
 - `src/utils/clock.ts` — サーバー同期時刻 `serverNow`
 - `src/utils/tarParser.ts` — DMDATA archive の tar 展開
@@ -328,3 +365,6 @@ DMDSS 版のアーカイブ取得（目録の構造・取りこぼしの扱い�
 ## 11. 改訂履歴
 
 - 2026-08-10: 仕様書構造の再編にあわせて新規作成
+- 2026-08-16: 標準版（P2PQuake）のレスポンスを無検証で内部型として扱っていたのをやめ、
+  `convertEvent` に検証を入れた（§3）。あわせて公式仕様と突き合わせて §8 のセンチネル表を訂正。
+  `46` が未対応だった件（旧「既知の欠落」）と、`99` を「デッドコード」と書いていた誤りを解消した

@@ -244,7 +244,8 @@ realtime-earthquake-viewer/
 │   │   ├── dmdata.ts          # DMDATA.JP WebSocket + REST
 │   │   ├── dmdataParser.ts    # DMDATA JSON/XML パース
 │   │   ├── dmdataReplay.ts    # 実地震シナリオリプレイ（archive 取得）
-│   │   ├── p2pquake.ts        # P2PQuake（標準版）
+│   │   ├── p2pquake.ts        # P2PQuake（標準版）＋レスポンス検証
+│   │   ├── parseHelpers.ts    # 外部レスポンスの値取り出しヘルパ（DMDATA・P2PQuake 共用）
 │   │   └── kyoshin.ts         # Yahoo リアルタイム震度・クロック同期
 │   ├── utils/                 # 純粋関数群
 │   │   ├── eew.ts             # EEW レベル判定・自動解除 → eew-spec.md

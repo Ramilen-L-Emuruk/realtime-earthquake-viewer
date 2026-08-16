@@ -111,7 +111,11 @@ P2PQuake API 仕様上 `validDateTime` が届かないため、通常の TSU-1 �
 ### P2PQuake（`convertEvent`）
 - `src/services/p2pquake.ts` の code=552 分岐
 - `JMATsunami` 型に変換（`InfoType` / `ValidDateTime` は付与されない）
-- 津波の等級（`areas[].grade`）は英語のまま（`MajorWarning` / `Warning` / `Watch` / `Forecast`）で内部型に流れ、`useLiveEventHandler.ts` 等の分岐で直接 `grade === 'MajorWarning'` として判定される（`DOMESTIC_TSUNAMI_MAP` は地震情報 code=551 の `earthquake.domesticTsunami` 用で、津波の等級には使われない）
+- 津波の等級（`areas[].grade`）は英語のまま（`MajorWarning` / `Warning` / `Watch` / `Forecast`）で内部型に流れ、`useLiveEventHandler.ts` 等の分岐で直接 `grade === 'MajorWarning'` として判定される（`DOMESTIC_TSUNAMI_MAP` は地震情報 code=551 の `earthquake.domesticTsunami` 用で、津波の等級には使われない）。`TsunamiGrade` にない値は `Unknown` に格下げして警告を残す
+- 予想波高（`areas[].maxHeight`）は「巨大」「高い」のとき数値表現が付かない。`value` を持たなくても
+  `description` だけで区域行を描けるよう、`maxHeight` ごと落とすことはしない
+- 区域名（`areas[].name`）が無い要素はその区域だけ落とす（海岸線データとの突き合わせキーのため）。
+  解除電文は `cancelled: true` かつ `areas` が空配列で届くので、空自体は正常として通す
 
 ## 5. 状態管理（`useEarthquakes.ts` の tsunami ケース）
 
