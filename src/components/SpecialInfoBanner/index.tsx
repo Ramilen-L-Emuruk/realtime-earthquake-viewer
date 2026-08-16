@@ -45,7 +45,11 @@ export function SpecialInfoBanner({ nankai, kohatsu }: Props) {
   return (
     // z-[99999]: 区域集約震度バッジ（QuakeRegionFillGL）は scale（JMA震度階級の数値コード、震度7=70）
     // × 1000 で最大 zIndex 70000 まで積むため、それより確実に高い値にして常に最前面に出す。
-    <div className="absolute bottom-0 left-0 right-0 z-[99999] pointer-events-none">
+    // side 限定の padding-bottom は下端の safe-area 対策。左右分割時は地図が画面全高を占めるため
+    // この bottom-0 が画面下端そのものになり、押せるバナーがホームインジケータに重なる。
+    // 縦積み時は地図の下につまみ・パネル・ナビが続くので下端には届かず、余白を入れると
+    // 地図の中に不要な隙間ができる（env() は要素の位置に関わらず値を返すため条件が要る）。
+    <div className="absolute bottom-0 left-0 right-0 z-[99999] pointer-events-none side:[padding-bottom:env(safe-area-inset-bottom,0px)]">
       {/* max-h で高さが制約されるためこの要素自身がスクロール領域になる。overflow-y だけを auto に
           すると overflow-x も auto に格上げされ横スクロールしてしまうため、明示的に塞ぐ。 */}
       <div className="pointer-events-auto max-h-[40vh] overflow-y-auto overflow-x-hidden overscroll-x-none">
