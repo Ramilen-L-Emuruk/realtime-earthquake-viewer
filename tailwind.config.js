@@ -23,6 +23,16 @@ export default {
         // roomy:=従来サイズ」の向きで指定する。
         roomy: { raw: '(min-width: 640px) and (min-height: 601px)' },
       },
+      // 左右分割時の情報パネル幅（App.tsx が side:/sideNarrow: で使う）。
+      // 素の 26rem/22rem ではなく画面幅から上限を掛けているのは、UI 倍率（uiScale）が
+      // ルートの font-size を変える設計のため。倍率を上げると rem 指定のパネルもアイコンナビも
+      // 一緒に伸びるが、左右分割の下限幅（1024px）は CSS px で固定されているので、
+      // 高倍率ではパネル＋ナビの合計が画面幅を超えてナビが画面外へ押し出される。
+      // 差し引く 4rem はアイコンナビの実測幅（約 3.5rem）に余白を見た値。
+      width: {
+        panel: 'min(26rem, calc(100vw - 4rem))',
+        'panel-narrow': 'min(22rem, calc(100vw - 4rem))',
+      },
       colors: {
         app: '#0a0c10',
         panel: '#12151a',
