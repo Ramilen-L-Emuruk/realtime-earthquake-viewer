@@ -88,7 +88,12 @@ interface Props {
 export const IconNav = memo(function IconNav({ activeTab, onTabChange, panelCollapsed, tsunamiGrade, eewLevel }: Props) {
   return (
     <nav
-      className="flex flex-row side:flex-col items-center justify-center side:justify-start gap-1 p-1.5 bg-panel border-t side:border-t-0 side:border-l border-border flex-shrink-0"
+      // 上端の safe-area だけ side 限定で確保する。左右分割時のナビは右端の縦並び・上詰めのため
+      // 先頭ボタンが画面最上部（iPad のステータスバー等）へ入り込むが、縦積み時のナビは最下部に
+      // あるので上端の余白は不要。env() は要素の位置に関係なく値を返すため、無条件に入れると
+      // 縦積み時にナビ上部へ数十 px の空白が生まれる。条件が必要な top だけ side: バリアントで
+      // 書き、位置によらず常に要る bottom / right は下の style に置いている。
+      className="flex flex-row side:flex-col items-center justify-center side:justify-start gap-1 p-1.5 bg-panel border-t side:border-t-0 side:border-l border-border flex-shrink-0 side:[padding-top:max(0.375rem,env(safe-area-inset-top,0px))]"
       // 縦積み時は下端、左右分割時は右端に来るため、両方の safe-area を確保する
       // （横向き時の inset-bottom / 縦向き時の inset-right はいずれも 0 になるので相互に干渉しない）。
       style={{
