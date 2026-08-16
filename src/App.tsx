@@ -811,9 +811,12 @@ export function App() {
         {/* パネル（タブに応じて内容を切替）。縦積み時は --panel-ratio 由来の高さ + スクロール。
             折りたたみ時は縦積みなら高さ（--panel-ratio=0）、左右分割なら幅が 0 になり地図が全画面になる。
             各タブを absolute で重ねて visibility で切り替えることで、スクロール位置をタブごとに独立管理する。
-            折りたたみを含め display:none（hidden クラス）を使わないのは、scrollTop がリセットされるため。 */}
+            折りたたみを含め display:none（hidden クラス）を使わないのは、scrollTop がリセットされるため。
+            左右分割時の幅は `w-panel` / `w-panel-narrow`（tailwind.config.js で定義）。24rem/20rem から
+            2rem ずつ広げてある。地震カードの震度バッジを正方形（従来 80px 幅 → カード高さと同じ
+            約 112px）にした分、本文カラムが痩せないようにするため。 */}
         <div className={`flex-shrink-0 h-[calc(var(--panel-ratio)*100%)] overflow-hidden side:h-auto side:flex-none border-border relative ${
-          panelCollapsed ? 'side:w-0 side:border-l-0' : 'side:w-96 sideNarrow:w-80 side:border-l'
+          panelCollapsed ? 'side:w-0 side:border-l-0' : 'side:w-panel sideNarrow:w-panel-narrow side:border-l'
         }`}>
           <div className={`${TAB_SCROLLER_CLASS}${activeTab !== 'earthquake' ? ' invisible pointer-events-none' : ''}`}>
             <EarthquakeTab

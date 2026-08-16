@@ -386,9 +386,15 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
         </div>
       )}
       <div className="flex items-stretch gap-3">
-        {/* 震度バッジ */}
+        {/* 震度バッジ。7rem 角の正方形に固定する。右カラム（通常は 4 行）の高さとほぼ同じ寸法で、
+            カードの高さいっぱいに見える。
+            高さを右カラムに追従させる（`aspect-square` + stretch）方式は採らない。この行は高さが
+            兄弟の内容次第で決まるため、幅を確定する時点では高さが未定で、aspect-ratio が幅を
+            導けずコンテンツ幅（実測 60px）に潰れる。高さを固定した親の中でなら成立する手だが、
+            ここでは使えない。
+            寸法を固定した結果、右カラムが何行になってもバッジは正方形のまま保たれる。 */}
         <div
-          className="flex-shrink-0 w-20 rounded-lg flex flex-col items-center justify-center px-1"
+          className="flex-shrink-0 self-center w-28 h-28 rounded-lg flex flex-col items-center justify-center px-1"
           style={{
             backgroundColor: getIntensityBgColor(maxScale),
             border: `2px solid ${getIntensityColor(maxScale)}`,
@@ -398,7 +404,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
             最大震度
           </span>
           <span
-            className="text-4xl font-black leading-tight"
+            className="text-5xl font-black leading-tight"
             style={{ color: getIntensityColor(maxScale) }}
           >
             {maxScale === -1 ? '?' : getIntensityLabel(maxScale)}
@@ -407,22 +413,24 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
 
         {/* 地震詳細 */}
         <div className="flex-1 min-w-0">
-          {/* 地域名 + 発表種別。
-              震源地名は縮小を許す（min-w-0）。flex-shrink-0 だと max-content 幅を保ったまま
-              折り返さないため、「メキシコ、チアパス州沿岸」級の長い名前がパネル幅を押し広げ、
-              幅の最も狭いスマホ横（sideNarrow・320px）で横スクロールが発生していた。 */}
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-white font-bold text-lg leading-tight min-w-0">
-              {hasLocation ? hypocenter.name : '震源調査中'}
-            </span>
+          {/* 震源地名。1 行に固定し、収まらない分は末尾を省略する。
+              「熊本県天草・芦北地方」級の名前が折り返すとカードだけが縦に伸びて一覧の行が
+              揃わなくなるため、ここは伸ばさない。発表種別は日時の行へ逃がし、地名に幅を明け渡している。 */}
+          <div className="text-white font-bold text-lg leading-tight truncate mb-1">
+            {hasLocation ? hypocenter.name : '震源調査中'}
+          </div>
+
+          {/* 日時 + 発表種別 + 訂正情報。
+              発表種別だけは末尾を省略して詰められるが、日時と訂正情報は縮まない。収まらない
+              ときは折り返して 2 行にする。訂正報（`issue.correct !== 'なし'`）で 3 つ並ぶ場合の
+              ほか、パネルが狭いときや種別名が長いとき（「顕著な地震の震源要素更新のお知らせ」）は
+              2 つでも折り返す。詰め切って情報を欠けさせるより、カードが 1 行分高くなる方を
+              選んでいる（震度バッジは寸法固定なので正方形は崩れない）。 */}
+          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+            <span className="text-base text-secondary flex-shrink-0">{formatQuakeTime(earthquake.time)}</span>
             <span className={`text-xs px-1.5 py-0.5 rounded min-w-0 truncate ${issueTypeBadgeClass(issue.type)}`}>
               {formatIssueType(issue.type)}
             </span>
-          </div>
-
-          {/* 日時 */}
-          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-            <span className="text-base text-secondary">{formatQuakeTime(earthquake.time)}</span>
             {issue.correct !== 'なし' && (
               <span className="text-xs bg-yellow-900 text-yellow-300 px-1.5 py-0.5 rounded font-medium flex-shrink-0">
                 {formatCorrectType(issue.correct)}
