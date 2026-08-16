@@ -19,6 +19,7 @@ import type {
 } from '../types/earthquake'
 import { isValidLpgmClass } from '../utils/lpgm'
 import { log } from '../utils/logger'
+import { arr, obj, parseNum, str } from './parseHelpers'
 
 // EEW: "1","2","3","4","5-","5+","6-","6+","7","不明" 等
 // 地震情報: "1","2","3","4","5弱","5強","6弱","6強","7","不明" 等
@@ -33,25 +34,6 @@ function parseIntensityStr(s: string | undefined | null): IntensityScale {
     '7': 70, 'over': 70,
   }
   return map[s] ?? -1
-}
-
-function parseNum(v: unknown): number {
-  if (v === null || v === undefined) return NaN
-  return Number(v)
-}
-
-function str(v: unknown): string {
-  return typeof v === 'string' ? v : ''
-}
-
-function obj(v: unknown): Record<string, unknown> {
-  return (typeof v === 'object' && v !== null && !Array.isArray(v))
-    ? (v as Record<string, unknown>)
-    : {}
-}
-
-function arr(v: unknown): unknown[] {
-  return Array.isArray(v) ? v : []
 }
 
 // DMDATA の震源座標から緯度・経度・深さを取得する。

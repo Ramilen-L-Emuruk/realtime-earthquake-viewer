@@ -89,6 +89,11 @@ standard 版では `eewMaxLpgmClass` が常に 0 になり震度のみでレベ�
 （単独観測点処理では地域別の詳細予想が発表されないため `forecastMaxScale` を使わない・
 `eewMaxScale()` / `eewMaxLpgmClass()` の `condition === '仮定震源要素'` 分岐を参照）。
 
+`eewMaxScale` は `scaleTo` が震度階級（`IntensityScale`）の値でない地域を最大値の計算から除外する。
+そのため P2PQuake の `scaleTo = 99`（「〜程度以上」）は、この判定に届く前に
+`convertEvent` が同じ地域の `scaleFrom` へ置き換えている（[`data-sources-spec.md`](data-sources-spec.md) §3）。
+置き換えないと「震度 7 程度以上」という最も強い予想が丸ごと無視され、警報止まりになる。
+
 ### 想定外の値に対する実行時ガード
 
 `eewMaxScale` は震度スケール外の値を、`eewMaxLpgmClass` は 1〜4 以外の階級を採用しない

@@ -101,7 +101,9 @@ export interface TsunamiArea {
   }
   maxHeight?: {
     description: string
-    value: number
+    // 数値表現[m]。「巨大」「高い」のように数値化されない予想波高では欠落する
+    // （P2PQuake の仕様どおりの挙動。表示・読み上げはいずれも description しか見ない）。
+    value?: number
   }
   stations?: TsunamiStation[]
 }
