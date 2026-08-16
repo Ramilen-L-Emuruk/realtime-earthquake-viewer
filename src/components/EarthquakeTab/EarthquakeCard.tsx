@@ -175,7 +175,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
       >
         {quake.cancelledAt && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg">
-            <span className="font-black text-white" style={{ fontSize: '48px', lineHeight: 1.1 }}>キャンセル</span>
+            <span className="font-black text-white" style={{ fontSize: '3rem', lineHeight: 1.1 }}>キャンセル</span>
             <span className="text-sm font-bold text-white/90 mt-1">この地震情報は取り消されました</span>
           </div>
         )}
@@ -206,7 +206,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
               最大震度
             </span>
             <span
-              className="font-black leading-none text-[52px] roomy:text-[88px]"
+              className="font-black leading-none text-[3.25rem] roomy:text-[5.5rem]"
               style={{ color: '#ffffff' }}
             >
               {maxScale === -1 ? '?' : getIntensityLabel(maxScale)}
@@ -224,6 +224,8 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
               className="w-full rounded-lg py-1 px-3 flex items-center justify-center gap-2 hover:opacity-80 transition-opacity cursor-pointer roomy:py-2 roomy:px-4 roomy:gap-4"
               style={{
                 backgroundColor: getLpgmClassBgColor(lpgm.maxClass),
+                // 枠線・アウトラインは装飾のヘアラインのため px 据え置き（UI 倍率に連動させない）。
+                // 文字・余白側は rem で書いてあり倍率に追従する。
                 border: `2px solid ${getLpgmClassColor(lpgm.maxClass)}`,
                 outline: activeLpgmEventId === lpgm.eventId
                   ? `2px solid ${getLpgmClassColor(lpgm.maxClass)}`
@@ -253,7 +255,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
           </div>
 
           {/* 震源地 */}
-          <div className="font-bold text-white leading-tight text-[22px] roomy:text-[30px]">
+          <div className="font-bold text-white leading-tight text-[1.375rem] roomy:text-[1.875rem]">
             {hasLocation ? hypocenter.name : '震源調査中'}
           </div>
 
@@ -270,7 +272,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                 <span className="text-xs font-medium tracking-wide" style={{ color: magColor }}>
                   マグニチュード
                 </span>
-                <span className="font-black leading-none text-[22px] roomy:text-[28px]" style={{ color: '#ffffff' }}>
+                <span className="font-black leading-none text-[1.375rem] roomy:text-[1.75rem]" style={{ color: '#ffffff' }}>
                   {/* 規模不明（-1／NaN）を toFixed に通すと "-1.0"／"NaN" と表示される。深さ側の formatDepth と揃える */}
                   {hasMagnitude(hypocenter.magnitude) ? hypocenter.magnitude.toFixed(1) : '不明'}
                 </span>
@@ -285,7 +287,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                 <span className="text-xs font-medium tracking-wide" style={{ color: depthColor }}>
                   深さ
                 </span>
-                <span className="font-black leading-none text-[22px] roomy:text-[28px]" style={{ color: '#ffffff' }}>
+                <span className="font-black leading-none text-[1.375rem] roomy:text-[1.75rem]" style={{ color: '#ffffff' }}>
                   {formatDepth(hypocenter.depth)}
                 </span>
               </div>
@@ -325,12 +327,12 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                       style={{ backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent' }}
                     >
                       <span
-                        className="font-bold flex-shrink-0 whitespace-nowrap text-[15px] roomy:text-[18px]"
+                        className="font-bold flex-shrink-0 whitespace-nowrap text-[0.9375rem] roomy:text-[1.125rem]"
                         style={{ color: getLpgmClassColor(maxLgInt) }}
                       >
                         長周期 {getLpgmClassLabel(maxLgInt)}
                       </span>
-                      <span className="text-white text-[15px] roomy:text-[18px]">{name}</span>
+                      <span className="text-white text-[0.9375rem] roomy:text-[1.125rem]">{name}</span>
                     </div>
                   ))}
                 </div>
@@ -346,12 +348,12 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                     style={{ backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent' }}
                   >
                     <span
-                      className="font-bold flex-shrink-0 whitespace-nowrap text-[15px] roomy:text-[18px]"
+                      className="font-bold flex-shrink-0 whitespace-nowrap text-[0.9375rem] roomy:text-[1.125rem]"
                       style={{ color: getIntensityColor(scale) }}
                     >
                       震度{getIntensityLabel(scale)}
                     </span>
-                    <span className="text-white text-[15px] roomy:text-[18px]">{pref}</span>
+                    <span className="text-white text-[0.9375rem] roomy:text-[1.125rem]">{pref}</span>
                   </div>
                 ))}
               </div>
@@ -379,7 +381,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
     >
       {quake.cancelledAt && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg">
-          <span className="font-black text-white" style={{ fontSize: '28px', lineHeight: 1.1 }}>キャンセル</span>
+          <span className="font-black text-white" style={{ fontSize: '1.75rem', lineHeight: 1.1 }}>キャンセル</span>
           <span className="text-xs font-bold text-white/90 mt-1">この地震情報は取り消されました</span>
         </div>
       )}

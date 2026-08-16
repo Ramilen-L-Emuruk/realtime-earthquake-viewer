@@ -217,7 +217,7 @@ export function JapanMapGL({
           {/* 後続フェーズのレイヤーコンポーネントはここに置く（map を Context で購読） */}
           <BaseMapGL showBathymetry={showBathymetry} />
           {/* 地名ラベル（地方/県/区域名・最前面）。 */}
-          <LabelsGL overlapSignature={overlapSignature} />
+          <LabelsGL overlapSignature={overlapSignature} iconScale={iconScale} />
           {/* 活断層・プレート境界（quake/kyoshin モード）。kyoshin ドット群の下に敷く。 */}
           {/* 地震活動ヒートマップ（quake/kyoshin モードで heatPoints があるとき・区域塗りより背面）。
               GeoJSON source を持つレイヤーは mode に関わらず常時マウントし visible だけで切り替える
@@ -225,6 +225,7 @@ export function JapanMapGL({
               タブ切替直後の数フレームが空白になるフリッカーの原因になるため）。 */}
           <QuakeHeatmapGL
             points={heatPoints ?? []}
+            iconScale={iconScale}
             visible={(mode === 'quake' || mode === 'kyoshin') && !!heatPoints && heatPoints.length > 0}
           />
           <PlateBoundariesGL plateBoundaries={plateBoundaries} visible={showOverlayLines && showPlateBoundaries} />
@@ -334,7 +335,9 @@ export function JapanMapGL({
           {/* 津波観測棒: 津波モードで波高バーを立てる。HTML Marker ベースで GeoJSON source の
               非同期タイル化を伴わないため、タブ切替時のマウント/アンマウント自体は実害が薄い
               （観測点名キーの差分更新で、更新のたびの全マーカー作り直しは別途解消済み）。 */}
-          {mode === 'tsunami' && observationBars.length > 0 && <TsunamiObsBarsGL bars={observationBars} />}
+          {mode === 'tsunami' && observationBars.length > 0 && (
+            <TsunamiObsBarsGL bars={observationBars} iconScale={iconScale} />
+          )}
           {/* 津波カメラ追従・観測フォーカス（モード切替をまたいで ref 保持するため常時マウント）。 */}
           <TsunamiFitGL
             mode={mode}

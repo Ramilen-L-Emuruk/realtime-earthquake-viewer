@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import type { GeoJSONSource, MapGeoJSONFeature } from 'maplibre-gl'
+import type { ExpressionSpecification, GeoJSONSource, MapGeoJSONFeature } from 'maplibre-gl'
 import type { Feature, FeatureCollection, Point } from 'geojson'
 import { useMapGL } from './mapGLContext'
 import type { HeatPoint } from '../../utils/quakeHeatmap'
@@ -26,13 +26,34 @@ const HIT_LYR = 'quake-heat-hit'
 // MapLibre 基準（512px タイル）なので Leaflet 版の 8 から 1 段引いた値＝同じ縮尺（gl/camera.ts の MAX_ZOOM 参照）。
 const HEAT_MAX_ZOOM = 7
 // 当たり判定の円半径(px)。見た目には出ないので、指で押しやすい大きさにする。
+// 地図アイコンの倍率は掛けない——これは「押しやすさ」の値であって見た目の大きさではなく、
+// 倍率に連れて広げると密集地域で隣の震源を拾いやすくなるため。
 const HIT_RADIUS_PX = 9
 const HIT_TOL_PX = 4
 
+// ヒートマップの拡散半径(px・iconScale 適用前の基準値)。ズームに応じて補間する。
+const HEAT_RADIUS_MIN = 14
+const HEAT_RADIUS_MAX = 30
+
 const EMPTY_FC: FeatureCollection<Point> = { type: 'FeatureCollection', features: [] }
+
+/** 拡散半径のズーム補間式。地図アイコンの倍率を掛けた値で組む。 */
+function heatRadiusExpr(iconScale: number): ExpressionSpecification {
+  return [
+    'interpolate',
+    ['linear'],
+    ['zoom'],
+    0,
+    HEAT_RADIUS_MIN * iconScale,
+    HEAT_MAX_ZOOM,
+    HEAT_RADIUS_MAX * iconScale,
+  ]
+}
 
 interface Props {
   points: HeatPoint[]
+  /** 地図アイコンの倍率（設定値）。震度マーカー等と揃えて拡散半径を拡縮する。 */
+  iconScale: number
   visible: boolean
 }
 
@@ -81,10 +102,14 @@ function clickHtml(f: MapGeoJSONFeature): string {
   )
 }
 
-export function QuakeHeatmapGL({ points, visible }: Props) {
+export function QuakeHeatmapGL({ points, iconScale, visible }: Props) {
   const map = useMapGL()
   const addedRef = useRef(false)
   const popupRef = useRef<PopupHandle | null>(null)
+  // レイヤー構築は [map] 依存のため、構築時は ref 経由で最新の倍率を読む
+  // （クロージャが握った初期値のままだと、構築前に倍率を変えた場合に旧値で組まれる）。
+  const iconScaleRef = useRef(iconScale)
+  iconScaleRef.current = iconScale
 
   useEffect(() => {
     if (!map) return
@@ -112,7 +137,7 @@ export function QuakeHeatmapGL({ points, visible }: Props) {
           0.8, 'rgba(255,238,0,0.8)',
           1, 'rgba(255,0,0,0.9)',
         ],
-        'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 0, 14, HEAT_MAX_ZOOM, 30],
+        'heatmap-radius': heatRadiusExpr(iconScaleRef.current),
         'heatmap-opacity': 0.85,
       },
     })
@@ -147,6 +172,12 @@ export function QuakeHeatmapGL({ points, visible }: Props) {
       addedRef.current = false
     }
   }, [map])
+
+  // 倍率変更を既存レイヤーへ反映する（レイヤーの作り直しは伴わない）。
+  useEffect(() => {
+    if (!map || !addedRef.current) return
+    if (map.getLayer(LYR)) map.setPaintProperty(LYR, 'heatmap-radius', heatRadiusExpr(iconScale))
+  }, [map, iconScale])
 
   useEffect(() => {
     if (!map || !addedRef.current) return
