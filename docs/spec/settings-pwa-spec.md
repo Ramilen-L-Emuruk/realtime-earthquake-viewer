@@ -314,10 +314,12 @@ archive の目録（各アーカイブ内の `telegrams.json`）は、**同じ�
 > これらのフィールドは `IntensityScale` 型（`src/types/earthquake.ts`）で宣言してあるため、
 > **手書きの中間値は `tsc` が弾く**。震度未確定は `-1` で表す
 > （EEW のレベル判定での扱いは [`eew-spec.md`](eew-spec.md) §4）。
-> DMDATA 経路（`dmdataParser.ts` の `parseIntensityStr()`）と Yahoo 経路
-> （`kyoshin.ts` の `calcintensityToScale()`）は上記の値しか生成しない。
-> ただし型検査が及ばない経路もあり、EEW ではそれを実行時にも弾いている
-> （詳細は [`eew-spec.md`](eew-spec.md) §4）。
+> 3 つのデータ経路はいずれも上記の値しか生成しない — DMDATA は `dmdataParser.ts` の
+> `parseIntensityStr()`、Yahoo は `kyoshin.ts` の `calcintensityToScale()`、
+> P2PQuake は `p2pquake.ts` の `convertEvent()`（詳細は
+> [`data-sources-spec.md`](data-sources-spec.md) §3）。
+> それでも型検査が届かない経路（実地震シナリオ JSON など）は残るため、EEW では
+> 実行時にも不正値を弾いている（詳細は [`eew-spec.md`](eew-spec.md) §4）。
 
 | ボタン | 実装関数 | 最大 scaleTo | 生成イベント |
 |---|---|---|---|

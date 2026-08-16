@@ -275,7 +275,12 @@ export function useEarthquakes(
   // WebSocket 受信時のエントリポイント: event.time を基準にキューへ挿入する
   // live モードでは event.time ≈ now なので次のティック（最大 100ms 後）に即時発火する
   const enqueueEvent = useCallback((event: AppEvent, overrideTime?: Date) => {
-    const raw = overrideTime ?? new Date((event as { time?: string }).time ?? serverNow())
+    const parsed = overrideTime ?? new Date((event as { time?: string }).time ?? serverNow())
+    // Invalid Date を 1 件でも積むとキューが恒久停止する。ディスパッチャは先頭ブロッキング
+    // （`q[0].eventTime <= now` が偽なら以降を処理しない）で、NaN 比較は常に偽になるため
+    // その後ろに積まれたイベントが二度と発火しない。パーサ側でも弾いているが、
+    // 単一の壊れた時刻でライブ更新が全停止する事故は入口でも防いでおく。
+    const raw = Number.isFinite(parsed.getTime()) ? parsed : serverDate()
     const eventTime = clampToNow(raw)
     insertSorted(eventQueueRef.current, { eventTime, payload: { kind: 'event', event } })
   }, [clampToNow])
