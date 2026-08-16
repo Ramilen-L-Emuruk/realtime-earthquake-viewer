@@ -311,11 +311,13 @@ archive の目録（各アーカイブ内の `telegrams.json`）は、**同じ�
 > `INTENSITY_LABELS` が持つ値（`-1`/`10`/`20`/`30`/`40`/`45`/`50`/`55`/`60`/`70`）だけを使う。
 > 中間値（`25` 等）を書くと `getIntensityLabel()` が「不明」・`getIntensityColor()` が灰色を返し、
 > 震度表示と地図の区域塗りが同時に壊れる。
-> **`EEWRegion` の `scaleFrom` / `scaleTo` は `number` 型のため型検査では防げない**
-> （`EarthquakePoint.scale` と `JMAQuake.earthquake.maxScale` は `IntensityScale` 型で守られる）。
-> 実データ側では、DMDATA 経路（`dmdataParser.ts` の `parseIntensityStr()`）が上記の値しか生成しない。
-> 一方 standard 版の EEW（P2PQuake code=556）は API のレスポンスを検証せずそのまま流すため
-> （`p2pquake.ts` の `convertEvent()`）、同じ保証は無い。
+> これらのフィールドは `IntensityScale` 型（`src/types/earthquake.ts`）で宣言してあるため、
+> **手書きの中間値は `tsc` が弾く**。震度未確定は `-1` で表す
+> （EEW のレベル判定での扱いは [`eew-spec.md`](eew-spec.md) §4）。
+> DMDATA 経路（`dmdataParser.ts` の `parseIntensityStr()`）と Yahoo 経路
+> （`kyoshin.ts` の `calcintensityToScale()`）は上記の値しか生成しない。
+> ただし型検査が及ばない経路もあり、EEW ではそれを実行時にも弾いている
+> （詳細は [`eew-spec.md`](eew-spec.md) §4）。
 
 | ボタン | 実装関数 | 最大 scaleTo | 生成イベント |
 |---|---|---|---|
@@ -436,6 +438,10 @@ Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認した�
   （`25 → 20`）。あわせて表示に現れていなかった `scaleFrom` の中間値 2 件も直した
   （予報テスト `15 → 10`・警報テスト `35 → 30`）。同じミスを繰り返さないよう、震度値に使える値の
   制約を §7 冒頭に明記した
+- 2026-08-16: 上記の中間値混入を型で防げるようにした（§7 の注記を更新）。`EEWRegion.scaleFrom` /
+  `scaleTo` が素の `number` 型だったため `tsc` をすり抜けていたので、`IntensityScale` 型に変更した。
+  型検査が及ばない経路（standard 版の `as` キャスト・実地震シナリオ JSON）向けに、EEW では
+  実行時にも不正値を弾くようにした（詳細は [`eew-spec.md`](eew-spec.md) §4）
 - 2026-08-16: UI 倍率・地図アイコン倍率が効いていなかった箇所を塞いだ（§2）。UI 側は px 直書きのままだった
   文字・ナビのアイコンを rem に寄せ、地図側は地名ラベル・津波の観測バー・地震活動ヒートマップにも倍率を
   渡すようにした。あわせて §2 の説明を実際の適用範囲に合わせて書き直した（枠線・影・アウトラインは

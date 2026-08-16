@@ -2,8 +2,8 @@
 // 「〇時〇分」はローカルタイムゾーン依存のため、時刻の数値そのものではなく
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect } from 'vitest'
-import { earthquakeToText } from './ttsText'
-import type { JMAQuake, IssueType, DomesticTsunami, IntensityScale } from '../types/earthquake'
+import { earthquakeToText, eewToText } from './ttsText'
+import type { JMAQuake, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass } from '../types/earthquake'
 
 const TTS_OPTS = { intensityLevels: 0, maxRegions: 0 }
 
@@ -133,5 +133,42 @@ describe('earthquakeToText: 顕著な地震の震源要素更新のお知らせ'
   it('深さ・規模が揃っていれば両方読む', () => {
     const text = earthquakeToText(makeQuake({ type, name: '石川県能登地方', depth: 16, magnitude: 7.6 }), TTS_OPTS, true)
     expect(text).toContain('震源の深さ16キロメートル、マグニチュード7.6に更新されました。')
+  })
+})
+
+describe('eewToText: 長周期地震動階級の読み上げ', () => {
+  function makeEEW(forecastMaxLpgmClass?: LpgmClass): EEWAlert {
+    return {
+      kind: 'eew',
+      id: 'test-eew',
+      time: '2026-01-01T12:00:00Z',
+      test: false,
+      earthquake: {
+        originTime: '2026-01-01T12:00:00Z',
+        arrivalTime: '2026-01-01T12:00:20Z',
+        condition: '以上',
+        hypocenter: { name: '三陸沖', latitude: 38.1, longitude: 142.9, depth: 24, magnitude: 7.2 },
+      },
+      severity: 'Warning',
+      cancelled: false,
+      forecastMaxLpgmClass,
+      issue: { eventId: 'e1', serial: '1', time: '2026-01-01T12:00:00Z' },
+      areas: [],
+    }
+  }
+
+  it('階級 1〜4 は読み上げる', () => {
+    expect(eewToText(makeEEW(4))).toContain('予想最大階級4。')
+  })
+
+  it('階級が無ければ読み上げない', () => {
+    expect(eewToText(makeEEW(undefined))).not.toContain('予想最大階級')
+  })
+
+  // 読み上げは地図の色フォールバックのような逃げ場が無く、不正値がそのまま音声で出てしまう。
+  it('範囲外の階級は読み上げない（「予想最大階級99」を声に出さない）', () => {
+    const text = eewToText(makeEEW(99 as unknown as LpgmClass))
+    expect(text).not.toContain('予想最大階級')
+    expect(text).not.toContain('99')
   })
 })
