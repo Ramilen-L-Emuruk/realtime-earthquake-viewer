@@ -63,13 +63,33 @@ function Row({ label, description, children }: {
   description?: string
   children?: React.ReactNode
 }) {
+  // ラベル側に最低幅（basis-32 = 8rem）を与えたうえで折り返しを許可する。右のコントロールは
+  // 幅を譲らない（select の選択肢や URL 入力は縮めると読めなくなる）ため、両方を 1 行に詰めると
+  // パネル幅が最も狭いスマホ横（sideNarrow = w-80）でラベルが数文字幅まで潰れ、1 文字ずつ改行される。
+  // flex-wrap なら収まらない行だけがラベル上・コントロール下の 2 段に落ち、トグルのような
+  // 細いコントロールの行は 1 行のまま保たれる（スマホ横は画面高が狭く、一律の縦積みは割に合わない）。
+  // 最低幅は「2 段に落とす行」を選ぶ閾値でもある。w-80・UI 倍率 100%・既定の表示状態での実測では、
+  // コントロール幅が 113px を超える行だけが 2 段になり、対象は入力欄・スライダー・幅広 select の
+  // 6 行に収まる（寸法はすべて rem なので倍率を変えても比率は保たれる。VOICEVOX 設定のように
+  // 条件付きで現れる行はこの数に含めていない）。
+  // 広げすぎると通知種別の行（コントロール 63〜98px）まで巻き込んで画面高を浪費する。
+  // 伸長指定に flex-1 を使わないこと: flex ショートハンドが flex-basis を 0% で上書きし、
+  // 最低幅が効かなくなる（Tailwind は flex-basis より flex を後に出力する）。
   return (
-    <div className="flex items-center justify-between gap-4 px-4 py-3">
-      <div className="min-w-0">
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
+      <div className="min-w-0 grow basis-32">
         <p className="text-white text-sm">{label}</p>
         {description && <p className="text-secondary text-xs mt-0.5">{description}</p>}
       </div>
-      <div className="flex-shrink-0">{children}</div>
+      {/* ml-auto は 2 段に落ちた行のためにある。折り返した 2 行目はコントロール 1 個だけの行になり、
+          アイテムが 1 個の行では justify-between が flex-start にフォールバックして左寄せになる
+          （コントロール側が自前で持つ justify-end は中身の並びにしか効かない）。
+          1 行に収まる行では先にラベルの grow が余白を使い切るので、この ml-auto は何もしない。
+          max-w-full は行幅を超える中身への歯止め。flex-shrink-0 は「余白が足りないとき縮まない」
+          という指定でしかなく、中身が行より広い場合ははみ出して Section の overflow-hidden に
+          切り取られる（データ出典の一行がこれに当たった）。max-width なら shrink とは別の制約
+          として効くので、幅を譲らせたくない select や入力欄はそのままに、超過分だけ折り返せる。 */}
+      <div className="flex-shrink-0 ml-auto max-w-full">{children}</div>
     </div>
   )
 }
