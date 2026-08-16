@@ -1,3 +1,4 @@
+import type { IntensityScale } from '../types/earthquake'
 import { hasDepth, hasMagnitude } from './formatters'
 
 export const INTENSITY_LABELS: Record<number, string> = {
@@ -37,6 +38,21 @@ export const INTENSITY_BG_COLORS: Record<number, string> = {
   55: '#2a0000',
   60: '#1a0007',
   70: '#1a0020',
+}
+
+/**
+ * 気象庁の震度階級に対応する値かどうか（`-1` = 不明を含む）。
+ *
+ * `IntensityScale` 型はコンパイル時にしか効かないため、型検査を通らない経路
+ * （実地震シナリオ JSON・`as` キャストで通す P2PQuake レスポンス）から来た値は
+ * これで弾く。中間値（`25` 等）や範囲外の値をそのまま比較に使うと、
+ * 震度表示が「不明」になったり特別警報へ誤って昇格したりする。
+ */
+export function isValidIntensityScale(scale: number): scale is IntensityScale {
+  // 型が効かない経路を守るための関数なので、自分自身は引数の型を当てにしない。
+  // `in` 演算子や添字アクセスは継承プロパティも拾うため（`'toString' in INTENSITY_LABELS` は true）、
+  // 実行時に文字列が紛れ込んでも誤って通さないよう hasOwnProperty で判定する。
+  return typeof scale === 'number' && Object.prototype.hasOwnProperty.call(INTENSITY_LABELS, scale)
 }
 
 export function getIntensityLabel(scale: number): string {

@@ -4,6 +4,8 @@ import type { LatLng } from '../utils/stationCoords'
 import { useSubRegions } from './useSubRegions'
 import type { SubRegion } from '../utils/subregions'
 import { eewAreas, eewMaxScale } from '../utils/eew'
+import { isValidIntensityScale } from '../utils/intensity'
+import { isValidLpgmClass } from '../utils/lpgm'
 import { normalizeEpicenterLng } from '../utils/geo'
 
 // EEW（緊急地震速報）の描画に必要な派生データ（対象地域の予想震度塗り／予想長周期地震動塗り／
@@ -97,6 +99,8 @@ export function useEewLayerData(
             }
           : null
       for (const a of eewAreas(eew)) {
+        // 震度スケール外の値は塗りに使わない（eewMaxScale と同じ理由。詳細は docs/spec/eew-spec.md §4）。
+        if (!isValidIntensityScale(a.scaleTo)) continue
         const cur = maxByName.get(a.name)
         if (cur == null || a.scaleTo > cur) {
           maxByName.set(a.name, a.scaleTo)
@@ -132,7 +136,9 @@ export function useEewLayerData(
     if (!eewLpgmEventId || !subregions) return []
     const eew = eews.find((e) => (e.issue?.eventId ?? e.id) === eewLpgmEventId)
     if (!eew) return []
-    const areas = eewAreas(eew).filter((a) => (a.lgIntTo ?? 0) >= 1)
+    // 階級 1〜4 以外は塗りに使わない。getLpgmClassLabel() はフォールバックを持たないため、
+    // 弾かないと「階級99」のような値がそのまま地図ラベルに出る。
+    const areas = eewAreas(eew).filter((a) => a.lgIntTo != null && isValidLpgmClass(a.lgIntTo))
     if (areas.length === 0) return []
     const maxByName = new Map(areas.map((a) => [a.name, a.lgIntTo!]))
     return subregions

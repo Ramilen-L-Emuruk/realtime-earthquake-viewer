@@ -74,7 +74,8 @@ enriched オブジェクトを渡して `useLiveEventHandler` 側の音・通知
 3. 上記に該当しない（severity === 'Warning' かつ特別警報の条件を満たさない）→ `1`（警報）
 
 **特別警報の判定条件**（OR）:
-- `eewMaxScale(eew) >= 55`（震度 6 弱以上・ただし `scale < 99` の範囲で判定）
+- `eewMaxScale(eew) >= 55`（震度 6 弱以上。震度が取れないときは `0` になるため自然に対象外になる。
+  値の決まり方は下記のフォールバック規則を参照）
 - `eewMaxLpgmClass(eew) >= 4`（長周期地震動階級 4 以上）
 
 気象庁の実基準に合わせた OR 条件。長周期地震動階級は DMDATA 電文（VXSE43/44/45）にのみ載るため、
@@ -82,9 +83,27 @@ standard 版では `eewMaxLpgmClass` が常に 0 になり震度のみでレベ�
 
 `eewMaxScale`・`eewMaxLpgmClass` は**地域別 `areas[].scaleTo` / `areas[].lgIntTo` の最大を優先**し、
 **`areas` が空または最大が 0 のときのみ**電文全体の `forecastMaxScale` / `forecastMaxLpgmClass` に
-フォールバックする（大きい方を取るのではない）。さらに `condition === '仮定震源要素'` かつ
-`areas` の最大が 0（実質空）のときは 0 を返す（単独観測点処理では地域別の詳細予想が発表されないため
-`forecastMaxScale` を使わない・`src/utils/eew.ts:140-159` 参照）。
+フォールバックする（大きい方を取るのではない）。震度未確定の `-1`（`IntensityScale` のセンチネル）は
+`Math.max` の初期値 0 に丸められるため、全地域が未確定の場合もこのフォールバック経路に入る。
+さらに `condition === '仮定震源要素'` かつ `areas` の最大が 0（実質空）のときは 0 を返す
+（単独観測点処理では地域別の詳細予想が発表されないため `forecastMaxScale` を使わない・
+`eewMaxScale()` / `eewMaxLpgmClass()` の `condition === '仮定震源要素'` 分岐を参照）。
+
+### 想定外の値に対する実行時ガード
+
+`eewMaxScale` は震度スケール外の値を、`eewMaxLpgmClass` は 1〜4 以外の階級を採用しない
+（`isValidIntensityScale()` / `isValidLpgmClass()`）。型（`IntensityScale` / `LpgmClass`）で
+宣言してはいるが、実地震シナリオ JSON のように型検査が及ばない経路があるため実行時にも弾く。
+これが無いと、壊れた入力の値がそのまま `>= 55` / `>= 4` の比較を通って特別警報へ誤昇格する。
+**特別警報は震度と長周期地震動階級の OR 判定なので、片方だけ守っても誤昇格は防げない。**
+
+両関数を経由しない参照経路にも同じガードを通している:
+
+- **地図の区域塗り**（`useEewLayerData`）は `areas[]` を直接集計する（震度区域・長周期区域の両方）。
+  とくに長周期側は `getLpgmClassLabel()` がフォールバックを持たなかったため、弾かないと
+  「階級99」のような値がそのまま地図ラベルに出ていた（現在は同関数も「階級不明」へ落とす）。
+- **読み上げ**（`ttsText.ts`）は `forecastMaxLpgmClass` を直接参照する。音声には色のフォールバックの
+  ような逃げ場が無く、不正値がそのまま声に出てしまうため、階級 1〜4 以外は読み上げない。
 
 ## 5. 仮定震源要素（単独観測点処理）の扱い
 
@@ -228,3 +247,13 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
 ## 13. 改訂履歴
 
 - 2026-08-10: 仕様書構造の再編にあわせて新規作成。既存の CLAUDE.md・README.md から EEW 関連の記述を集約
+- 2026-08-16: 特別警報の判定条件から `scale < 99` の但し書きを削除（§4）。`99` は「震度算出不能コード」と
+  説明されていたが、DMDATA 経路（`parseIntensityStr()`）も Yahoo 経路（`calcintensityToScale()`）も
+  不明時は `-1` を返しており、99 を生成する実装は存在しなかった。あわせて
+  `EEWRegion.scaleFrom` / `scaleTo` を `IntensityScale` 型にし、`eewMaxScale()` が震度スケール外の
+  値を採らないようにした。旧ガードは「99 以上を特別警報から除外する上限キャップ」としても
+  働いていたため、型検査が及ばない経路（実地震シナリオ JSON）から不正値が来たときの防御は
+  実行時にも残している。長周期地震動階級（`lgIntTo` / `forecastMaxLpgmClass`）にも同じ穴が
+  あったため、`LpgmClass` 型と `isValidLpgmClass()` を追加して両方を塞いだ（理由は §4 参照）。
+  あわせて、両関数を経由しない参照経路（地図の区域塗り・読み上げ）にも同じガードを通し、
+  フォールバックの無かった `getLpgmClassLabel()` を「階級不明」へ落とすようにした
