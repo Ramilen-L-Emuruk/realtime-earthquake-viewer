@@ -124,8 +124,11 @@ export function JapanMapGL({
     observations,
     obsUpdateStatus,
   )
-  // EEW の派生データ（予想震度塗り／予想長周期塗り／震源）。
-  const { eewAreaFills, eewLpgmRegionAggregates, eewEpicenters } = useEewLayerData(eews, eewLpgmEventId)
+  // EEW の派生データ（予想震度塗り／予想長周期塗り／震源／カメラ追従に含める区域の範囲）。
+  const { eewAreaFills, eewLpgmRegionAggregates, eewEpicenters, eewFitPositions } = useEewLayerData(
+    eews,
+    eewLpgmEventId,
+  )
 
   // 地名ラベル（LabelsGL）の重なり判定の再評価トリガー。震度バッジ・観測点・検知点等
   // 「マーカー」側の**位置情報**が変わったときだけ値が変わるようにする（区域塗りは判定対象外・
@@ -292,7 +295,15 @@ export function JapanMapGL({
             <>
               {/* リアルタイム震度モードのカメラ追従（検知点/候補クラスタ/タブ入室）。EEW 追従は Camera-2。
                   カメラ移動という副作用そのものがモード入室時にのみ起きてほしいため、レイヤーとは
-                  異なり条件付きマウントのままにする（常時マウントすると非表示タブでも発火しうる）。 */}
+                  異なり条件付きマウントのままにする（常時マウントすると非表示タブでも発火しうる）。
+
+                  **この 4 つの記述順には意味がある。FitToEEWGL を必ず最後に置くこと。**
+                  effect はコンポーネントツリー順に走るため、同一コミット内で最後に flyTo を呼ぶのは
+                  最後にマウントされたものになる。EEW 解除と確定検知の消失が同時に起きた場合、
+                  FitToEEWGL の帰還先の判断（検知点 → 候補クラスタ → 日本全体）が他の判断を上書きして
+                  勝つ設計にしている。順序を入れ替えると、EEW 発報中に FitToCandidateGL /
+                  FitToDetectionGL が委譲した先（FitToEEWGL）の帰還が他方の fitJapan に潰され、
+                  「EEW 中に立った候補クラスタが一度も画面に入らない」という境界ケースだけが静かに壊れる。 */}
               <FitJapanOnEnterGL hasEew={eews.length > 0} hasDetection={detectedPoints.length > 0 || candidatePoints.length > 0} />
               <FitToCandidateGL
                 points={candidatePoints}
@@ -307,7 +318,14 @@ export function JapanMapGL({
                   帰還未実装等の副作用が広範で、正しい対応には大規模リファクタが必要と判明したため
                   revert。kyoshin モード限定のままとし、他モード滞在中の EEW 追従中断は既知の限界
                   として仕様書に明記する。 */}
-              <FitToEEWGL eews={eews} psWave={kyoshinPsWave} idleRevertSec={idleRevertSec} detectedPoints={detectedPoints} />
+              <FitToEEWGL
+                eews={eews}
+                psWave={kyoshinPsWave}
+                idleRevertSec={idleRevertSec}
+                detectedPoints={detectedPoints}
+                candidatePoints={candidatePoints}
+                forecastAreaPositions={eewFitPositions}
+              />
             </>
           )}
           {/* EEW 予想震度塗り（kyoshin モード・EEW LPGM 表示中は隠す）と予想長周期塗り。
