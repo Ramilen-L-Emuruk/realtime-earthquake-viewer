@@ -170,10 +170,16 @@ export function FitJapanOnEnterGL({ hasEew, hasDetection }: { hasEew: boolean; h
 export function FitToDetectionGL({
   points,
   hasEew,
+  hasCandidate = false,
   idleRevertSec = DEFAULT_IDLE_REVERT_SEC,
 }: {
   points: DetectedPoint[]
   hasEew: boolean
+  /**
+   * 確定検知に育っていない候補クラスタが残っているか（`FitToCandidateGL` がフィットする対象があるか）。
+   * 検知終了時に日本全体へ戻すかどうかの判断にのみ使う。
+   */
+  hasCandidate?: boolean
   idleRevertSec?: number
 }) {
   const map = useMapGL()
@@ -184,6 +190,19 @@ export function FitToDetectionGL({
     if (points.length === 0) {
       if (fittedRef.current) {
         fittedRef.current = false
+        // 候補クラスタが残っているなら日本全体へは戻さず、そちらへのフィットに任せる
+        // （`FitToCandidateGL` の候補失効分岐が `hasDetection` で守られているのと対称）。
+        // これが無いと、確定検知の終了と同じコミットで候補クラスタが立っている場合に、
+        // 直前の候補へのフィットを日本全体で上書きして一瞬ちらつく。
+        // 委譲先が動くことが前提なので、`FitToCandidateGL` は検知終了の瞬間にフィット済みの印を
+        // 落として寄り直す（同コンポーネントの detectionJustEnded 参照）。片方だけ変えると
+        // 「どちらもカメラを動かさず、終了した検知の位置に取り残される」状態になる。
+        // なお検知終了と候補失効が同一コミットで重なると、あちらの失効分岐とここの下の fitJapan が
+        // 両方走る。どちらも日本全体という同じ目標なので見た目は変わらない（排他制御はしていない）。
+        if (hasCandidate) {
+          log.debug('[mapGL] fitJapan スキップ (揺れ検知終了・候補クラスタ継続中)')
+          return
+        }
         if (!hasEew && !isUserInteracting) {
           log.debug('[mapGL] fitJapan (揺れ検知終了)')
           fitJapan(map, 1.0)
@@ -220,7 +239,9 @@ export function FitToDetectionGL({
     if (!bounds || mapContainsBounds(map, bounds)) return
     log.debug(`[mapGL] 揺れ検知 成長フォロー (${points.length}点)`)
     flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
-  }, [map, points, hasEew, isUserInteracting])
+    // hasCandidate を参照するのは上の検知終了分岐だけだが、古い値を掴まないよう deps には含める
+    // （成長フォロー分岐が余分に再評価されるが、mapContainsBounds が収まっていれば何もしない）。
+  }, [map, points, hasEew, hasCandidate, isUserInteracting])
   return null
 }
 
@@ -240,10 +261,21 @@ export function FitToCandidateGL({
 }) {
   const map = useMapGL()
   const fittedIdRef = useRef<number | null>(null)
+  const prevHasDetectionRef = useRef(hasDetection)
   const [isUserInteracting] = useUserInteractionGuard(map, idleRevertSec)
   useEffect(() => {
     if (!map) return
+    // 確定検知が出ている間、この効果は下の early return で何もしない。その間に候補クラスタが立っても
+    // fittedIdRef は更新されないため、確定検知が終わった時点では「フィット済み」の古い印だけが残る。
+    // その印が今の candidateId と一致していると再フィットが起きず、しかも FitToDetectionGL 側は
+    // hasCandidate を見て fitJapan を見送るので、カメラが終了した検知の位置に取り残される。
+    // 検知が終わった瞬間に印を落として、生き残っている候補へ寄り直せるようにする。
+    // （candidateId が null のときは落とさない。落とすと下の失効分岐が「フィット済みだった」判定を
+    //   失い、日本全体への帰還を FitToDetectionGL 側だけに依存させることになる）
+    const detectionJustEnded = prevHasDetectionRef.current && !hasDetection
+    prevHasDetectionRef.current = hasDetection
     if (hasDetection) return
+    if (detectionJustEnded && candidateId !== null) fittedIdRef.current = null
     if (candidateId === null) {
       if (fittedIdRef.current !== null) {
         fittedIdRef.current = null
