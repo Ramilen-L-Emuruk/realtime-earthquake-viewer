@@ -127,11 +127,14 @@ function buildRegionText(
     }
     names.forEach(n => mentioned.add(n))
     const omittedSuffix = omittedCount > 0 ? `、ほか${omittedCount}地域` : ''
-    parts.push(`${parts.length === 0 ? '最大' : ''}震度${intensityText(scale)}を${names.join('、')}${omittedSuffix}で`)
+    parts.push(`${parts.length === 0 ? '最大' : ''}震度${intensityText(scale)}を${names.join('、')}${omittedSuffix}`)
   }
 
   if (parts.length === 0) return ''
-  return parts.join('、') + '観測しました。'
+  // 助詞「で」は末尾（述語の直前）にだけ置く。階級ごとの句末に付けると
+  // 「〜福島県で、震度3を〜」と一文字が読点で挟まれ、読み上げがぶつ切りに聞こえる。
+  // 複数階級のときは前の句が末尾の「で」を共有する形（並列句の格助詞の共有）になる。
+  return parts.join('、') + 'で観測しました。'
 }
 
 function magnitudeText(mag: number): string {
@@ -583,11 +586,12 @@ function buildLpgmRegionText(lpgm: JMALpgm, opts: TtsRegionOptions): string {
     }
     names.forEach(n => mentioned.add(n))
     const omittedSuffix = omittedCount > 0 ? `、ほか${omittedCount}地域` : ''
-    parts.push(`階級${cls}を${names.join('、')}${omittedSuffix}で`)
+    parts.push(`階級${cls}を${names.join('、')}${omittedSuffix}`)
   }
 
   if (parts.length === 0) return ''
-  return parts.join('、') + '観測しました。'
+  // 助詞「で」の置き方は buildRegionText と同じ（末尾のみ）
+  return parts.join('、') + 'で観測しました。'
 }
 
 /** VXSE62 長周期地震動情報の読み上げテキストを生成する。isNew=false のとき更新報として冒頭に通知する。 */
