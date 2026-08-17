@@ -312,7 +312,12 @@ export function JapanMapGL({
                 hasDetection={detectedPoints.length > 0}
                 idleRevertSec={idleRevertSec}
               />
-              <FitToDetectionGL points={detectedPoints} hasEew={eews.length > 0} idleRevertSec={idleRevertSec} />
+              <FitToDetectionGL
+                points={detectedPoints}
+                hasEew={eews.length > 0}
+                hasCandidate={candidateId !== null && candidatePoints.length > 0}
+                idleRevertSec={idleRevertSec}
+              />
               {/* EEW 追従（idle 抑制つき）。
                   MAP-5 の常時マウント化は QuakeFitGL/TsunamiFitGL との flyTo 争い・EEW 解除後の
                   帰還未実装等の副作用が広範で、正しい対応には大規模リファクタが必要と判明したため
