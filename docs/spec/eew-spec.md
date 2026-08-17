@@ -159,7 +159,8 @@ standard 版で Yahoo hypoInfo が先に単独観測点処理の EEW を検知�
 
 **明示的な取消電文が来ない限り**、EEW は一定時間経過後に**無音・即消去**される（キャンセルオーバーレイなし）。
 計算式は**司・翠川式**（震源からの距離に応じて震度がどれだけ減衰するかを近似する経験式・地震工学で広く使われる）
-から**有感半径**を二分探索で逆算し、そこまで S 波が届く時間 + 30 秒を自動解除時刻とする。最終報から最低
+から**有感半径**（震度 1 以上が届くと推定される距離）を二分探索で逆算し、そこまで S 波が届く時間 + 30 秒を
+自動解除時刻とする。最終報から最低
 60 秒（`MIN_CANCEL_SEC`）は表示を保つ。詳細は `src/utils/eew.ts` の `calcEEWCancelTime` /
 `calcEEWAutoCancelSec` / `calcFeltRadiusKm`（二分探索）参照。
 
@@ -193,7 +194,10 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
   津波情報・長周期地震動情報のいずれかで非 realtime タブへ切り替わっていれば、EEW 続報は
   realtime へ戻らない。**特別警報級 EEW（level=2）発表中は tsunami 側からタブが奪われない**
   優先度ルールと対称（詳細は [`tsunami-spec.md`](tsunami-spec.md) §11 参照）
-- **カメラフィット**: `useEewLayerData` 経由で `FitToEEWGL` が発火（kyoshin モード限定。詳細は [`map-rendering-spec.md`](map-rendering-spec.md) §6「既知の限界（MAP-5）」参照）
+- **カメラフィット**: `FitToEEWGL` が発火。第一報は S 波円（円が無ければ震源）へ寄り、以降は
+  予想の区域塗りまで含めた範囲を追う。追従の主な起点は EEW 電文と予報円の更新で、区域塗りの範囲
+  （`useEewLayerData` の `eewFitPositions`）は発報中の追従にのみ加わる。kyoshin モード限定。
+  詳細・モード限定の理由は [`map-rendering-spec.md`](map-rendering-spec.md) §6（後段「既知の限界（MAP-5）」）参照
 
 **音種別の優先順位**（`selectEEWSoundType` の判定順）:
 1. **新規発報またはレベル格上げ**（`isNew || levelUpgraded`）→ `currentLevel` に応じて

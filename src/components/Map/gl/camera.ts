@@ -4,7 +4,6 @@ import {
   boundsContains,
   boundsForLiveFollowTuple,
   boundsFromEewCircles,
-  boundsFromEewCirclesAndHypocenters,
   boundsFromPositionsTuple,
   JAPAN_BOUNDS,
   type BoundsTuple,
@@ -213,23 +212,16 @@ export function boundsFromCirclesForEewFollow(circles: EewFollowCircle[]): mapli
   return b ? toLngLatBounds(b) : null
 }
 
-/** EEW 予報円 ∪ 震源座標の追従 bounds（EEW 数/波円数減少時、残り全体へのフィット先）。
- * 円が無い（仮定震源要素等の）EEW が残っていても震源座標だけは含める。算出根拠は gl/bounds.ts。 */
-export function boundsFromCirclesAndHypocentersForEewFollow(
-  circles: EewFollowCircle[],
-  hypocenters: LatLng[],
-): maplibregl.LngLatBounds | null {
-  const b = boundsFromEewCirclesAndHypocenters(circles, hypocenters)
-  return b ? toLngLatBounds(b) : null
-}
-
-/** EEW 発報中のライブ追従 bounds（有感半径 ∪ 震源座標 ∪ 検知点）。合成する理由は gl/bounds.ts を参照。 */
+/** EEW 発報中のライブ追従 bounds（有感半径 ∪ 震源座標 ∪ 検知点 ∪ 予想の区域塗り）。
+ * EEW 数/波円数の減少時に残り全体へ再フィットする先も同じ目標を使う（目標が食い違うと、再フィットの
+ * 直後に成長フォローが引き直して二段のカメラ移動になる）。合成する理由は gl/bounds.ts を参照。 */
 export function boundsForLiveFollow(
   circles: EewFollowCircle[],
   hypocenters: LatLng[],
   detectedPositions: LatLng[],
+  forecastAreaPositions: LatLng[] = [],
 ): maplibregl.LngLatBounds | null {
-  const b = boundsForLiveFollowTuple(circles, hypocenters, detectedPositions)
+  const b = boundsForLiveFollowTuple(circles, hypocenters, detectedPositions, forecastAreaPositions)
   return b ? toLngLatBounds(b) : null
 }
 
