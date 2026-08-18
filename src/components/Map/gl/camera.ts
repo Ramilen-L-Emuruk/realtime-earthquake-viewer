@@ -109,13 +109,18 @@ export function isProgrammaticFlight(map: maplibregl.Map): boolean {
   return true
 }
 
-/** useUserInteractionGuard の idleRevertSec 既定値（秒）。設定タブ「自動復帰までの時間」の既定と揃える。 */
-export const DEFAULT_IDLE_REVERT_SEC = 30
+// 地図を手動操作したあと、自動フィットを再開するまでの待ち時間。
+//
+// 設定「自動復帰までの時間」（タブの自動復帰）とは**切り離している**。以前はその設定値をそのまま
+// 使っていたが、「無効」を選ぶと解除タイマーを張らないため、地図を一度触ると自動フィットが永久に
+// 止まっていた。設定の意図（タブを勝手に切り替えさせない）と実際の副作用（地図も二度と動かない）が
+// 食い違ううえ、明示的な解除を持たない追従（揺れ検知・津波）には復帰の手立てが無かった。
+// 固定値にすることで、どの追従も必ずこの時間で復帰する（解除経路の有無に依存しなくなる）。
+export const INTERACTION_HOLD_SEC = 30
 
 interface UserInteractionState {
   interacting: boolean
   timer: number | undefined
-  idleRevertSec: number
   listeners: Set<(interacting: boolean) => void>
 }
 
@@ -137,7 +142,6 @@ function ensureUserInteractionState(map: maplibregl.Map): UserInteractionState {
   const state: UserInteractionState = {
     interacting: false,
     timer: undefined,
-    idleRevertSec: DEFAULT_IDLE_REVERT_SEC,
     listeners: new Set(),
   }
   // このファイルの fit 系関数自身が起こした zoomstart/dragstart は eventData の印で除外する
@@ -145,16 +149,14 @@ function ensureUserInteractionState(map: maplibregl.Map): UserInteractionState {
   //
   // 以前は「飛行中フラグ」（isProgrammaticFlight）で除外していたが、自動フィットが重なるとフラグが
   // 早期に落ちるため、自分のフィットが起こした zoomstart をユーザー操作と誤認していた。実地震では
-  // EEW の直前に揺れ検知フィットが走るので必ず踏み、EEW のカメラ追従が idleRevertSec 秒ぶん丸ごと
+  // EEW の直前に揺れ検知フィットが走るので必ず踏み、EEW のカメラ追従が抑制の保持時間ぶん丸ごと
   // 止まっていた（予想の区域塗りが画面外のまま放置される）。
   // 印はイベント自身が運ぶためフラグの状態に依存せず、自動フィット中のユーザー割り込みも取りこぼさない。
   const onInteraction = (e: unknown) => {
     if (isAutoCameraEvent(e)) return
     notifyInteraction(state, true)
     window.clearTimeout(state.timer)
-    if (state.idleRevertSec > 0) {
-      state.timer = window.setTimeout(() => notifyInteraction(state, false), state.idleRevertSec * 1000)
-    }
+    state.timer = window.setTimeout(() => notifyInteraction(state, false), INTERACTION_HOLD_SEC * 1000)
   }
   map.on('zoomstart', onInteraction)
   map.on('dragstart', onInteraction)
@@ -163,18 +165,15 @@ function ensureUserInteractionState(map: maplibregl.Map): UserInteractionState {
 }
 
 /**
- * map 単位のユーザー操作状態を購読する。idleRevertSec は購読者間で共有され、最後に呼ばれた値が使われる
- * （本アプリでは全 Fit* コンポーネントに同じユーザー設定値を渡す想定のため競合しない）。
+ * map 単位のユーザー操作状態を購読する。抑制は `INTERACTION_HOLD_SEC` 経過で自動的に解ける。
  * 戻り値の isInteracting は購読開始時点のスナップショット、reset は EEW 新規受信時のような
  * 強制解除に使う。interacting の変化は listener 呼び出しで通知する（購読側で再レンダリングを誘発する）。
  */
 export function subscribeUserInteraction(
   map: maplibregl.Map,
-  idleRevertSec: number,
   listener: (interacting: boolean) => void,
 ): { isInteracting: boolean; unsubscribe: () => void; reset: () => void } {
   const state = ensureUserInteractionState(map)
-  state.idleRevertSec = idleRevertSec
   state.listeners.add(listener)
   return {
     isInteracting: state.interacting,

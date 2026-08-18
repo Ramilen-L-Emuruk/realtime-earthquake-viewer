@@ -794,7 +794,6 @@ export function App() {
             detectedPoints={kyoshinView.detectedPoints}
             candidatePoints={kyoshinView.candidatePoints}
             candidateId={kyoshinView.candidateId}
-            idleRevertSec={settings.idleRevertSec}
             eewLpgmEventId={activeLpgmSource === 'eew' ? activeLpgmEventId : null}
             focusObsName={focusedObsName}
             obsUpdateStatus={obsUpdateStatus}
