@@ -419,6 +419,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | P2PQuake レスポンスの検証規則（不正値の扱い・破棄条件・震度値の正規化 `46`→`45` / `scaleTo:99`→`scaleFrom`） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §3 |
 | DMDATA 震源カタログの欠測項目の扱い（震源未決定の項目を 1 件ずつ除外・件数は警告に出す・全滅は例外）・座標が 0.1 度刻みである前提 | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §2（震源カタログ） |
 | 地震活動ヒートマップの色ランプ・拡散半径・不透明度の決め方（対数配置・高ズームは地理的距離に追従・寄るほど薄く） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §14 |
+| バッジの文字色（塗り色から白/黒を自動選択・気象庁配色は変更不可）と地図バッジの半径テーブル・アイコン倍率とぼやけの関係 | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §15 |
 | 地震の同一性判定（`eventKey`・統合/選択/通知の共通キー・取消のマッチング・P2PQuake で分離できない限界） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §6.1・§6.2 |
 | 遠地地震の識別（VXSE53・`Head/Title`）・付加文コードと `forecastText` | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §3（遠地地震に関する情報） |
 | `KyoshinSubThreshold` の対象範囲（index 1〜6）・慢性ノイズ床フィルタ | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) |

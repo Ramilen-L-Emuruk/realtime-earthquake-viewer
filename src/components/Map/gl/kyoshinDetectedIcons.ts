@@ -1,6 +1,7 @@
 import type { Map as MapLibreMap } from 'maplibre-gl'
 import { getIntensityColor } from '../../../utils/intensity'
 import { SHINDO0_COLOR } from '../../../utils/kyoshinIntensity'
+import { readableTextColor } from '../../../utils/contrast'
 
 // 揺れ検知点（KyoshinDetectedPointsGL の confirmed=確定／likely=候補）の丸バッジ（震度ラベル込み）を
 // Canvas2D で事前ラスタライズし、symbol レイヤーの icon-image として登録する。
@@ -39,10 +40,12 @@ function drawBadge(rank: number, confirmed: boolean): ImageData {
   const cx = size / 2
   const cy = size / 2
 
+  const fill = rankColor(rank)
+
   ctx.save()
   ctx.shadowColor = 'rgba(0,0,0,0.7)'
   ctx.shadowBlur = 3
-  ctx.fillStyle = rankColor(rank)
+  ctx.fillStyle = fill
   ctx.beginPath()
   ctx.arc(cx, cy, r, 0, Math.PI * 2)
   ctx.fill()
@@ -58,7 +61,8 @@ function drawBadge(rank: number, confirmed: boolean): ImageData {
   ctx.globalAlpha = 1
 
   const label = RANK_LABELS[rank] ?? '?'
-  ctx.fillStyle = '#ffffff'
+  // 文字色は丸の塗り色から決める（白固定だと震度4 の黄で 1.30:1 まで落ちる。intensityIcons.ts と同様）。
+  ctx.fillStyle = readableTextColor(fill)
   // "Noto Sans JP" は @font-face 未登録で効いておらず、同梱も撤去済み（理由は intensityIcons.ts 参照）。
   ctx.font = `700 ${label.length > 1 ? r * 0.85 : r * 1.15}px sans-serif`
   ctx.textAlign = 'center'
