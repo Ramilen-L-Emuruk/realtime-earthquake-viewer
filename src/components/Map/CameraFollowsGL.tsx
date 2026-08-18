@@ -524,6 +524,10 @@ export function TsunamiFitGL({
   idleRevertSec?: number
 }) {
   const map = useMapGL()
+  // 最後にカメラへ反映した海岸線 signature。津波が消えたとき（全解除・有効期間の満了・
+  // リプレイのリセットなど）に津波モード以外にいた場合は、ここに古い値が残る。同じ内容の津波が再来したときに「変化なし」と
+  // 判定されるが、そのぶんは入室時・アイドル復帰・消滅時の帰還が寄せ直すため実害は無い
+  // （帰還経路を消すとこの前提も崩れるので、経路を減らすときは併せて見直すこと）。
   const lastTsunamiSigRef = useRef<string>('')
   const prevObsMapRef = useRef<Map<string, number>>(new Map())
   const pendingObsPositionsRef = useRef<LatLng[]>([])
@@ -591,6 +595,10 @@ export function TsunamiFitGL({
     for (const b of observationBars) newMap.set(b.name, b.height.value)
     prevObsMapRef.current = newMap
     if (updatedBars.length > 0) {
+      // 持ち越しは「最後に届いたぶん」で置き換える（溜めて合成しない）。フィットを見送っている間に
+      // 複数の電文が届いた場合、全部を束ねると離れた観測点の和で引きの画になり、どこで新しく
+      // 観測されたのかが読めなくなる。取りこぼすのは枠の選び方だけで、観測値はカードにも
+      // 波高バーにも残る。
       pendingObsPositionsRef.current = updatedBars.map((b) => [b.lat, b.lng] as LatLng)
       lastTsunamiSigRef.current = tsunamiSignature
     }
