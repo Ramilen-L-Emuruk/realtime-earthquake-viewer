@@ -402,6 +402,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 項目 | 単一情報源となる仕様書 |
 |---|---|
 | テストデータと UI 説明文（テストボタンの `scaleTo` 値等） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §7 |
+| 読み上げの範囲（`ttsIntensityLevels` / `ttsAlwaysReadScale` / `ttsMaxRegions` / `ttsRegionTolerance` の組み合わせ方・階数は観測がある階級のみを数える・`ttsAlwaysReadScale` は長周期に適用しない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
 | 設定タブのセクション構成・並び順の方針（`Section` の出現順・重大度は軽い順・カテゴリ順は両テストセクションと通知設定の種別トグルで共通） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §2 |
 | 津波の解除経路（`cancelReason` 3 種・DMDSS 限定・standard 版フォールバック） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §3 |
 | EEW P/S 波予報円の計算・仮定震源要素の連動箇所 | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §5-§6 |
@@ -409,6 +410,8 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 地図レイヤー描画順・EEW 予想レイヤーの kyoshin 限定・`maplibregl.Marker` の opacity | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §2・§3・§7・§10 |
 | EEW 予想の区域塗りとカメラ追従対象の一致（`useEewLayerData` の `eewFitPositions` と `JapanMapGL` の塗り分けが、同じ「予想長周期を優先する」判定を使っていること） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6 |
 | ズーム値の基準（MapLibre 512px タイル vs Leaflet 256px タイル）・`MAX_ZOOM` に揃える閾値群 | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §4・§6 |
+| 地図の傾き（pitch）・回転（bearing）をユーザー操作から無効化している理由と、それに依存する描画物の前提（予報円の半径計算・カメラ自動フィット）。有効に戻すなら何を先に直すか | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6「地図の傾きと回転」 |
+| カメラ追従の抑制時間・津波の俯瞰帰還の猶予が `INTERACTION_HOLD_SEC` 固定であること（設定「自動復帰までの時間」＝ `idleRevertSec` と結合していないこと。結合すると「無効」の端末で追従・帰還が永久に止まる） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6「ユーザー操作の尊重」「津波追従の目標範囲」 |
 | ラベルのフォントスタック名の一致・グリフ収録文字の網羅性・フォント適用範囲（ラベル限定） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §5 |
 | 倍率の適用範囲（UI は rem で書く／地図の描画物には `iconScale` を渡す。枠線・影・アウトラインは倍率に連動させない） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §2「主な項目の補足」 |
 | 画面サイズ別レイアウトの分岐条件（`side` / `sideNarrow` / `roomy`）・パネル比率・折りたたみ | [`docs/spec/architecture-spec.md`](docs/spec/architecture-spec.md) §4「画面サイズ別のレイアウト」 |
@@ -417,9 +420,11 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | P2PQuake レスポンスの検証規則（不正値の扱い・破棄条件・震度値の正規化 `46`→`45` / `scaleTo:99`→`scaleFrom`） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §3 |
 | DMDATA 震源カタログの欠測項目の扱い（震源未決定の項目を 1 件ずつ除外・件数は警告に出す・全滅は例外）・座標が 0.1 度刻みである前提 | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §2（震源カタログ） |
 | 地震活動ヒートマップの色ランプ・拡散半径・不透明度の決め方（対数配置・高ズームは地理的距離に追従・寄るほど薄く） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §14 |
+| バッジの文字色（塗り色から白/黒を自動選択・気象庁配色は変更不可）と地図バッジの半径テーブル・アイコン倍率とぼやけの関係 | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §15 |
 | 地震の同一性判定（`eventKey`・統合/選択/通知の共通キー・取消のマッチング・P2PQuake で分離できない限界） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §6.1・§6.2 |
 | 遠地地震の識別（VXSE53・`Head/Title`）・付加文コードと `forecastText` | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §3（遠地地震に関する情報） |
 | `KyoshinSubThreshold` の対象範囲（index 1〜6）・慢性ノイズ床フィルタ | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) |
+| 検知点マーカー（地図）と検知カード（リアルタイムタブ）が数える点集合・下限の一致（対象イベントは `weak` 以外の全件／下限は震度0以上） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) §8 |
 | 実地震テストシナリオの時刻シフト・ID 再採番・利用規約制約 | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6 |
 | 生成データ（`public/data/*.json`）の取得タイムアウト値・失敗時の扱い（TTS 辞書のみ別値） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §6 |
 | テスト時刻設定のバリアント差（standard は時計のみ／DMDSS はアーカイブ取得） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定（強震モニタ）」 |

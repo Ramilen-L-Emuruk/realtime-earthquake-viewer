@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { GeoJSONSource, MapGeoJSONFeature } from 'maplibre-gl'
 import type { Feature, FeatureCollection, Point } from 'geojson'
 import { useMapGL } from './mapGLContext'
-import { getLpgmClassColor, getLpgmClassLabel } from '../../utils/lpgm'
+import { getLpgmClassColor, getLpgmClassLabel, getLpgmClassRadius } from '../../utils/lpgm'
 import type { LpgmMarker } from '../../hooks/useQuakeLayerData'
 import { addOrderedLayer } from './gl/layerOrder'
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
@@ -20,7 +20,8 @@ import { ensureLpgmIcons, lpgmIconId, LPGM_ICON_BASE_RADIUS } from './gl/lpgmIco
 
 const SRC = 'quake-lpgm-points'
 const LYR = 'quake-lpgm-points'
-const BASE_RADIUS = 8
+// 観測点バッジは階級連動（getLpgmClassRadius: 8〜14 ＝ 一辺 16〜28px）。
+// 区域バッジ（LpgmRegionFillGL）はここに下駄を履かせて一回り大きくする。
 const HIT_TOL_PX = 8
 
 const EMPTY_FC: FeatureCollection<Point> = { type: 'FeatureCollection', features: [] }
@@ -36,7 +37,7 @@ function buildFC(markers: LpgmMarker[], iconScale: number): FeatureCollection<Po
     type: 'Feature',
     properties: {
       iconId: lpgmIconId(m.lgInt),
-      iconSizeRatio: (BASE_RADIUS * iconScale) / LPGM_ICON_BASE_RADIUS,
+      iconSizeRatio: (getLpgmClassRadius(m.lgInt) * iconScale) / LPGM_ICON_BASE_RADIUS,
       lgInt: m.lgInt,
       name: m.name,
       pref: m.pref,

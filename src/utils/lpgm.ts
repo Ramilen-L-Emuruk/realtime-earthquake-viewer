@@ -34,6 +34,19 @@ export function getLpgmClassColor(cls: number): string {
   return LPGM_COLORS[cls] ?? '#9ca3af'
 }
 
+/**
+ * 地図バッジの半径（正方形バッジの一辺の半分・px）。震度の `getScaleRadius()` と同じ役割で、
+ * 階級が上がるほど大きくする。
+ *
+ * 以前は階級によらず固定サイズだった（旧 HTML Marker 版からの移植の名残）ため、
+ * 最も重い階級4 が階級1 と同じ大きさで描かれ、重大さが大きさに出ていなかった。
+ * 階級不明は最小に倒す。
+ */
+export function getLpgmClassRadius(cls: number): number {
+  const radiusMap: Record<number, number> = { 1: 8, 2: 10, 3: 12, 4: 14 }
+  return radiusMap[cls] ?? 8
+}
+
 export function getLpgmClassBgColor(cls: number): string {
   return LPGM_BG_COLORS[cls] ?? 'transparent'
 }

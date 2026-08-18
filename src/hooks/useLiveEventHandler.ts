@@ -13,9 +13,19 @@ import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade } from '../uti
 import { matchesArea, sortAreasForCardDisplay } from '../components/TsunamiTab'
 import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox } from '../utils/voicevox'
-import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, tsunamiArrivalToText, nankaiToText, kohatsuToText, lpgmToText } from '../utils/ttsText'
+import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, tsunamiArrivalToText, nankaiToText, kohatsuToText, lpgmToText, type TtsRegionOptions } from '../utils/ttsText'
 import { log } from '../utils/logger'
 import { extractQuakeEventIdFromId, quakeEventKey, sameQuakeEntry } from '../utils/quakeMerge'
+
+/** 設定から読み上げの地域列挙オプションを組み立てる（震度・長周期地震動で共通）。 */
+function ttsRegionOptions(settings: AppSettings): TtsRegionOptions {
+  return {
+    intensityLevels: settings.ttsIntensityLevels,
+    maxRegions: settings.ttsMaxRegions,
+    alwaysReadScale: settings.ttsAlwaysReadScale,
+    regionTolerance: settings.ttsRegionTolerance,
+  }
+}
 
 // 音・タブ切替の「新規地震か続報か」を判定するためのキー。
 // 生電文だけから作り、earthquakesRef（統合済みカード）には依存させない。ref は App の
@@ -459,7 +469,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         const lpgm = lpgmEvent
         const isNewLpgm = !seenLpgmEventIdsRef.current.has(lpgm.eventId)
         setTimeout(() => {
-          speakWithVoicevox(settings.voicevoxUrl, lpgmToText(lpgm, { intensityLevels: settings.ttsIntensityLevels, maxRegions: settings.ttsMaxRegions }, isNewLpgm), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+          speakWithVoicevox(settings.voicevoxUrl, lpgmToText(lpgm, ttsRegionOptions(settings), isNewLpgm), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
         }, 1000)
       }
       // voicevox 有効/無効に関わらず追跡する（次回の isNewLpgm 判定に使用）
@@ -560,7 +570,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
       let ttsText: string | null = null
       if (event.kind === 'quake' && !event.cancelled) {
-        ttsText = earthquakeToText(event, { intensityLevels: settings.ttsIntensityLevels, maxRegions: settings.ttsMaxRegions }, isNewQuake)
+        ttsText = earthquakeToText(event, ttsRegionOptions(settings), isNewQuake)
       } else if (event.kind === 'tsunami') {
         const GRADE_RANK = { MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0 } as const
         type GradeKey = keyof typeof GRADE_RANK
