@@ -66,18 +66,6 @@ export function isTsunamiGradeUpgrade(next: JMATsunami, current: JMATsunami | un
 }
 
 /**
- * 現在アクティブな EEW のうち特別警報級（level=2）が存在するかを判定する。
- * 特別警報級 EEW 中は津波の新規発報でもタブを奪わない（バッジのみに留める）
- * 優先度ルールで useLiveEventHandler が使う。
- */
-export function hasActiveSpecialEEW(activeEEWLevels: ReadonlyMap<string, 0 | 1 | 2>): boolean {
-  for (const level of activeEEWLevels.values()) {
-    if (level === 2) return true
-  }
-  return false
-}
-
-/**
  * 前回・今回の観測情報をマージする。VTSE51②/VTSE52（観測のみ電文）が届くたびに
  * 全観測点が再送されるとは限らないため、区域コード+観測点名をキーに upsert し、
  * 今回の電文に含まれない観測点は前回の値を保持する。

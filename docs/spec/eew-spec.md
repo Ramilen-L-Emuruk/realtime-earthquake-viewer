@@ -192,8 +192,9 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
   `setActiveTabRealtimeOnUpdate()` で抑制タイマーを尊重する。抑制タイマーは
   `setActiveTabNonRealtime` 呼び出し全般で共有されるため、直前 15 秒以内に地震情報・
   津波情報・長周期地震動情報のいずれかで非 realtime タブへ切り替わっていれば、EEW 続報は
-  realtime へ戻らない。**特別警報級 EEW（level=2）発表中は tsunami 側からタブが奪われない**
-  優先度ルールと対称（詳細は [`tsunami-spec.md`](tsunami-spec.md) §11 参照）
+  realtime へ戻らない。ただし新規・レベルアップはこの抑制を無視するため、津波にタブを奪われても
+  次の新規発報・レベルアップで realtime を取り戻す。**逆に、EEW のレベル（特別警報級を含む）が
+  津波側のタブ切替を止めることはない**（詳細は [`tsunami-spec.md`](tsunami-spec.md) §11 参照）
 - **カメラフィット**: `FitToEEWGL` が発火。第一報は S 波円（円が無ければ震源）へ寄り、以降は
   予想の区域塗りまで含めた範囲を追う。追従の主な起点は EEW 電文と予報円の更新で、区域塗りの範囲
   （`useEewLayerData` の `eewFitPositions`）は発報中の追従にのみ加わる。kyoshin モード限定。
@@ -266,3 +267,8 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
   あったため、`LpgmClass` 型と `isValidLpgmClass()` を追加して両方を塞いだ（理由は §4 参照）。
   あわせて、両関数を経由しない参照経路（地図の区域塗り・読み上げ）にも同じガードを通し、
   フォールバックの無かった `getLpgmClassLabel()` を「階級不明」へ落とすようにした
+- 2026-08-18: 「特別警報級 EEW（level=2）発表中は津波側からタブが奪われない」という優先度ルールを
+  撤去（§9）。EEW のレベルはタブの奪い合いに関与しなくなり、逆方向（EEW の新規発報・レベルアップが
+  15 秒抑制を無視して realtime を取り戻す）だけが残る。特別警報級の区別は音（`eewSpecial`）・
+  表示（ラベル・配色・バッジ）・通知文言には引き続き残している。詳細は
+  [`tsunami-spec.md`](tsunami-spec.md) §14 の同日エントリを参照
