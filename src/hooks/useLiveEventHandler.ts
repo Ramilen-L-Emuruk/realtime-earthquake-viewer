@@ -9,7 +9,7 @@ import { formatMagnitude, hasMagnitude } from '../utils/formatters'
 import { eewMaxScale, computeSingleEEWLevel, selectEEWSoundType } from '../utils/eew'
 import { haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
-import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, hasActiveSpecialEEW } from '../utils/tsunami'
+import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade } from '../utils/tsunami'
 import { matchesArea, sortAreasForCardDisplay } from '../components/TsunamiTab'
 import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox } from '../utils/voicevox'
@@ -194,23 +194,20 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       //   - 続報（同一 eventId の観測点更新等）は setActiveTabNonRealtime を呼ばず抑制タイマー
       //     をリセットしない（毎回 15 秒抑制が再セットされて EEW 続報が realtime へ戻れなく
       //     なる事象を回避）
-      //   - 特別警報級 EEW（level=2）発表中は津波の新規発報でもタブを奪わずバッジ扱いに留める
+      //   - EEW の発表状況はここでは見ない。津波は EEW のレベルに関わらずタブを奪う
       const current = tsunamisRef.current[0]
       const isNew = isTsunamiNewFire(event, current)
       const upgraded = isTsunamiGradeUpgrade(event, current)
-      const specialEEWActive = hasActiveSpecialEEW(activeEEWLevelsRef.current)
-      const canGrabTab = (isNew || upgraded) && !specialEEWActive
-      if (canGrabTab) {
+      if (isNew || upgraded) {
         log.info(`[tab] → tsunami (${isNew ? '新規発報' : 'グレード格上げ'})`)
         setActiveTabNonRealtime('tsunami')
       } else {
-        log.debug(`[tab] tsunami タブ強制切替スキップ (isNew=${isNew}, upgraded=${upgraded}, specialEEW=${specialEEWActive})`)
+        log.debug('[tab] tsunami タブ強制切替スキップ (同一イベント扱い・grade 不変)')
       }
       title.showTsunamiTitle()
     } else if (event.kind === 'tsunami' && event.cancelled) {
       // 「津波解除検出」effect はレンダー後の非同期発火のため、受信直後の即時反映用にここでもタイマーをリセットする。
-      // 特別警報級 EEW 発表中は取消電文でもタブを奪わない（新規発報側の canGrabTab ルールと対称）。
-      // タイトル・状態リセットは従来通り行い、通知漏れは起こさない。
+      // EEW の発表状況はここでは見ない（新規発報側と対称）。
       // 音・TTS・タブ切替は eventId 単位で 1 回だけ発火する（TSU-1/3/4 経路で同一 eventId の
       // expired が複数キューに積まれても 2 回目以降を握り潰す）。
       // ページリロード後の初回解除は Set に無いため正常に発火する（HIGH-1 対応: 「未追跡」と
@@ -225,9 +222,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         spokenTsunamiCancelEventIdsRef.current.clear()
       }
       const alreadySpoken = spokenTsunamiCancelEventIdsRef.current.has(cancelId)
-      if (hasActiveSpecialEEW(activeEEWLevelsRef.current)) {
-        log.debug('[tab] tsunami 取消タブ切替スキップ (specialEEW 発表中)')
-      } else if (!alreadySpoken) {
+      if (!alreadySpoken) {
         log.info('[tab] → tsunami (津波情報取消)')
         setActiveTabNonRealtime('tsunami')
       }

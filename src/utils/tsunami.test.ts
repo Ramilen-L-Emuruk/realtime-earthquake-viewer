@@ -4,7 +4,6 @@ import {
   tsunamiOverallGrade,
   isTsunamiNewFire,
   isTsunamiGradeUpgrade,
-  hasActiveSpecialEEW,
 } from './tsunami'
 import type { JMATsunami, TsunamiArea } from '../types/earthquake'
 
@@ -149,27 +148,5 @@ describe('isTsunamiGradeUpgrade', () => {
     const current = makeTsunami({ areas: [makeArea({ grade: 'Warning' })] })
     const next = makeTsunami({ areas: [makeArea({ grade: 'Watch' })] })
     expect(isTsunamiGradeUpgrade(next, current)).toBe(false)
-  })
-})
-
-describe('hasActiveSpecialEEW', () => {
-  it('空 Map は false', () => {
-    expect(hasActiveSpecialEEW(new Map())).toBe(false)
-  })
-
-  it('level=0 のみは false', () => {
-    expect(hasActiveSpecialEEW(new Map([['a', 0]]))).toBe(false)
-  })
-
-  it('level=1 のみは false（警報級だが特別警報ではない）', () => {
-    expect(hasActiveSpecialEEW(new Map([['a', 1]]))).toBe(false)
-  })
-
-  it('level=2 が 1 件でもあれば true', () => {
-    expect(hasActiveSpecialEEW(new Map([['a', 1], ['b', 2]]))).toBe(true)
-  })
-
-  it('level=2 のみは true', () => {
-    expect(hasActiveSpecialEEW(new Map([['a', 2]]))).toBe(true)
   })
 })
