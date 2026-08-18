@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { escapeHtml, twoLinePopupHtml, badgeHtml } from './popupHtml'
+import { contrastRatio } from '../../../utils/contrast'
+import { INTENSITY_COLORS } from '../../../utils/intensity'
 
 describe('escapeHtml', () => {
   it('& を &amp; に変換する', () => {
@@ -46,5 +48,18 @@ describe('badgeHtml', () => {
     const html = badgeHtml('7"', '#f00')
     expect(html).toContain('7&quot;')
     expect(html).toContain('background:#f00')
+  })
+
+  // 白固定だと震度4（黄）で 1.30:1 まで落ちるため、文字色は塗り色から決めている。
+  it('明るい塗りでは黒文字、暗い塗りでは白文字になる', () => {
+    expect(badgeHtml('4', '#f5e600')).toContain('color:#000000')
+    expect(badgeHtml('7', '#9d0099')).toContain('color:#ffffff')
+  })
+
+  it('全震度で AA（4.5:1）を満たす文字色が選ばれる', () => {
+    for (const bg of Object.values(INTENSITY_COLORS)) {
+      const fg = badgeHtml('x', bg).match(/color:(#[0-9a-f]{6})/)![1]
+      expect(contrastRatio(bg, fg)!).toBeGreaterThanOrEqual(4.5)
+    }
   })
 })
