@@ -56,6 +56,20 @@ function dlog(...args: unknown[]): void {
   log.info('[DMDSS]', ...args)
 }
 
+/**
+ * REST 取得の失敗を記録する。401/403（契約スコープ不足・キー不正）はリトライしても直らないため
+ * error に上げ、確認先を添える。それ以外（500・429 等）は一時的な失敗として warn に留める。
+ * WebSocket チケット取得（`fetchTicketUrl`）が 401/403 を特別扱いしているのと同じ切り分けを、
+ * REST 取得側にも揃えるためのヘルパー。
+ */
+function logRestFailure(what: string, status: number): void {
+  if (status === 401 || status === 403) {
+    log.error(`[DMDSS] ${what}: 認証エラー (${status})。APIキーの契約スコープを確認してください（再試行では解消しません）`)
+  } else {
+    log.warn(`[DMDSS] ${what}: 取得失敗 (${status})`)
+  }
+}
+
 // base64 文字列をバイト列にデコードする。
 function base64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64)
@@ -666,7 +680,8 @@ export async function fetchDmdataTsunamis(
 }
 
 // DMDATA REST API で南海トラフ地震臨時情報（VYSE50/51）の最新1件を取得する。
-// 取得失敗時は null を返す（補助情報なのでアプリを壊さない）。
+// 取得失敗時は null を返す（補助情報なのでアプリを壊さない）が、失敗した事実はログに残す。
+// 「発表なし」と「取得できていない」は同じ null になるため、記録が無いと区別できなくなる。
 //
 // VYSE52（関連解説情報）は補足解説電文であり InfoKind にステータスキーワードが入らないため
 // 発令中/調査終了の判定に使えない。VYSE51（臨時情報の更新）と VYSE50（初報・調査中）のみで判定する。
@@ -677,40 +692,45 @@ export async function fetchDmdataNankai(apiKey: string): Promise<JMANankai | nul
     // VYSE51 がなければ VYSE50（調査中）が発令中。
     for (const type of ['VYSE51', 'VYSE50']) {
       const res = await fetch(`${API_BASE}/telegram?type=${type}&limit=1`, { headers })
-      if (!res.ok) continue
+      if (!res.ok) { logRestFailure(`南海トラフ地震臨時情報 (${type}) の一覧`, res.status); continue }
       const json = await res.json() as { items?: Array<{ id: string; url: string }> }
       const item = (json.items ?? [])[0]
       if (!item) continue
       const xmlRes = await fetch(item.url, { headers })
-      if (!xmlRes.ok) continue
+      if (!xmlRes.ok) { logRestFailure(`南海トラフ地震臨時情報 (${type}) の電文本体`, xmlRes.status); continue }
       const xml = await xmlRes.text()
       const nankai = parseVyse5xFromXml(xml)
       if (nankai && !nankai.cancelled) return nankai
       if (nankai?.cancelled) return null
     }
-  } catch { /* 取得失敗は無視 */ }
+  } catch (err) {
+    log.error('[DMDSS] 南海トラフ地震臨時情報の取得に失敗', err)
+  }
   return null
 }
 
 // DMDATA REST API で北海道・三陸沖後発地震注意情報（VYSE60）の最新1件を取得する。
-// 取得失敗時は null を返す。
+// 取得失敗時は null を返すが、失敗した事実はログに残す（理由は fetchDmdataNankai と同じ）。
 export async function fetchDmdataKohatsu(apiKey: string): Promise<JMAKohatsu | null> {
   const headers = { Authorization: authHeader(apiKey) }
   try {
     const res = await fetch(`${API_BASE}/telegram?type=VYSE60&limit=1`, { headers })
-    if (!res.ok) return null
+    if (!res.ok) { logRestFailure('後発地震注意情報 (VYSE60) の一覧', res.status); return null }
     const json = await res.json() as { items?: Array<{ id: string; url: string; head: { type: string } }> }
     const item = (json.items ?? [])[0]
     if (!item) return null
     const xmlRes = await fetch(item.url, { headers })
-    if (!xmlRes.ok) return null
+    if (!xmlRes.ok) { logRestFailure('後発地震注意情報 (VYSE60) の電文本体', xmlRes.status); return null }
     const xml = await xmlRes.text()
     const kohatsu = parseVyse60FromXml(xml)
     if (!kohatsu || kohatsu.cancelled) return null
     // 有効期限チェック: expireAt が過去なら null
     if (new Date(kohatsu.expireAt) <= serverDate()) return null
     return kohatsu
-  } catch { return null }
+  } catch (err) {
+    log.error('[DMDSS] 後発地震注意情報の取得に失敗', err)
+    return null
+  }
 }
 
 // DMDATA REST API で長周期地震動観測情報（VXSE62）を取得する。
@@ -773,6 +793,7 @@ export interface GdEarthquakeItem {
   originTime: string
   latitude: number
   longitude: number
+  /** マグニチュード。値なし・数値化できない（「不明」等）場合は -1。 */
   magnitude: number
   /** 震源地名。レスポンスに含まれない場合は空文字。 */
   name: string
@@ -792,51 +813,112 @@ const GD_EARTHQUAKE_MAX_PAGES = 20
 
 // DMDATA REST API で震源カタログ（GD Earthquake List）を取得し、直近 `days` 日分に絞って返す。
 // 通常版の fetchJmaQuakeHistory に相当するヒートマップ用データ源。
+// 震源または発生時刻が決まっていない項目は地図に置けないため、その1件だけ除いて取得を続ける。
+// 通常版（P2PQuake）も震源未確定を落とすが、判定は別物。あちらは欠測を -200 等のセンチネル値で
+// 受け取るため `hasValidHypocenter` が値域で判定する。DMDATA はフィールドごと欠けるので、
+// ここでは「数値として読めるか」で判定する（同じ関数を使い回すと判定の根拠が入れ替わる）。
+// 新しい順（降順）で返る前提で、cutoff に達した時点で全ページの探索を打ち切る。
+// ただし走査できる範囲を読み切っても 1 件も残らなかった場合は例外を投げる（理由は関数末尾のコメント）。
 // gd.earthquake スコープが契約に含まれない場合は 403 で例外を投げる。
 export async function fetchDmdataGdEarthquakes(apiKey: string, days: number): Promise<GdEarthquakeItem[]> {
   const headers = { Authorization: authHeader(apiKey) }
   const cutoffMs = serverNow() - days * 24 * 60 * 60 * 1000
   const collected: GdEarthquakeItem[] = []
   let cursorToken: string | undefined
+  // 捨てた件数。取得後に 1 行だけ出す（P2PQuake 側の warnField/warnMissing と同じく、
+  // 既定の扱いに落とすこと自体は許すが黙っては通さない）。理由を分けて数えるのは、
+  // 障害時に「震源未確定が急増した」のか「API のフィールドが変わった」のかを切り分けるため。
+  let skippedNoTime = 0
+  let skippedNoCoord = 0
+  // 期間の端まで到達したか。ページを跨いで保持する（末尾の全滅判定が読む）。
+  let reachedCutoff = false
 
   for (let page = 0; page < GD_EARTHQUAKE_MAX_PAGES; page++) {
     const qs = cursorToken ? `&cursorToken=${cursorToken}` : ''
     const res = await fetch(`${API_BASE}/gd/earthquake?limit=100${qs}`, { headers })
-    if (!res.ok) throw new Error(`gd/earthquake: ${res.status}`)
+    if (!res.ok) {
+      // 呼び出し側は失敗の中身で挙動を変えないため、恒久（スコープ不足）と一時（500 等）の
+      // 区別はここでログに残す。例外自体は従来どおり投げて取得を止める。
+      logRestFailure('震源カタログ (gd/earthquake)', res.status)
+      throw new Error(`gd/earthquake: ${res.status}`)
+    }
     const json = await res.json() as {
       items?: Array<{
         eventId: string
-        originTime: string
-        hypocenter: {
+        // 震源が未決定の地震（震度速報だけが出て震源・震度情報がまだ発表されていない等）は、
+        // originTime も hypocenter も持たない項目として返る（eventId・arrivalTime・maxInt のみ）。
+        // 実データに合わせて optional とし、読む側で必ず存在を確かめる。必須と宣言すると
+        // 「あるはず」の思い込みのまま参照して例外になり、1件の欠測で全ページ分を失う。
+        originTime?: string
+        hypocenter?: {
           // 震源地名・深さはヒートマップのポップアップ表示に使う。契約や電文の種別によっては
           // 欠けることがあるため optional として扱い、欠測時は空文字 / -1 に倒す。
           name?: string
-          coordinate: { latitude: { value: string }; longitude: { value: string } }
+          coordinate?: { latitude?: { value?: string }; longitude?: { value?: string } }
           depth?: { value?: string | null }
         }
-        magnitude?: { value: string }
+        magnitude?: { value?: string }
       }>
       nextToken?: string
     }
     const items = json.items ?? []
     if (items.length === 0) break
 
-    let reachedCutoff = false
     for (const it of items) {
-      if (new Date(it.originTime).getTime() < cutoffMs) { reachedCutoff = true; break }
+      // 期間の打ち切りは発生時刻を持つ項目だけで判断する。震源未決定の項目は時刻も持たないため、
+      // ここで打ち切ると以降のページを取り逃がす（新しい側に1件混ざるだけで1ヶ月分が欠ける）。
+      const originTime = it.originTime
+      const originMs = originTime ? new Date(originTime).getTime() : NaN
+      if (Number.isFinite(originMs) && originMs < cutoffMs) { reachedCutoff = true; break }
+      const latitude = parseFloat(it.hypocenter?.coordinate?.latitude?.value ?? '')
+      const longitude = parseFloat(it.hypocenter?.coordinate?.longitude?.value ?? '')
+      // 置く場所（震源）と時刻のどちらかが無ければヒートマップに載せられない。この1件だけ捨てる。
+      if (!originTime || !Number.isFinite(originMs)) { skippedNoTime++; continue }
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) { skippedNoCoord++; continue }
+      const magnitude = parseFloat(it.magnitude?.value ?? '')
       collected.push({
         eventId: it.eventId,
-        originTime: it.originTime,
-        latitude: parseFloat(it.hypocenter.coordinate.latitude.value),
-        longitude: parseFloat(it.hypocenter.coordinate.longitude.value),
-        magnitude: it.magnitude ? parseFloat(it.magnitude.value) : -1,
-        name: it.hypocenter.name ?? '',
-        depth: gdDepthKm(it.hypocenter.depth),
+        originTime,
+        latitude,
+        longitude,
+        // 深さと同じく、値なし・数値化できない場合は -1（不明）に倒す。NaN のまま流すと
+        // 重みの計算結果も NaN になり、ヒートマップの描画が壊れる。
+        magnitude: Number.isFinite(magnitude) ? magnitude : -1,
+        name: it.hypocenter?.name ?? '',
+        depth: gdDepthKm(it.hypocenter?.depth),
       })
     }
     if (reachedCutoff || !json.nextToken) break
+    // 1 ページ丸ごと捨てて 1 件も残らなかったなら、応答の形が変わった可能性が高い。残りのページを
+    // 取りに行っても同じことになるので、ここで打ち切って末尾の全滅判定に落とす。
+    // （震源未決定の項目は cutoff 判定を素通りするため、この打ち切りが無いと GD_EARTHQUAKE_MAX_PAGES
+    //   ぶんのリクエストを空振りに費やしてから例外になる。）
+    if (collected.length === 0) break
     cursorToken = json.nextToken
   }
 
+  const skipped = skippedNoTime + skippedNoCoord
+  if (skipped > 0) {
+    log.warn(
+      `[DMDSS] GD Earthquake List: ${collected.length + skipped} 件中 ${skipped} 件をスキップしました` +
+        `（発生時刻なし ${skippedNoTime} 件 / 震源座標なし ${skippedNoCoord} 件）`,
+    )
+  }
+  // 走査できる範囲を読み切っても 1 件も地図に置けなかったときは、応答の形が変わった可能性が高い。
+  // ここで空配列を「正常な結果」として返すと、呼び出し側（useQuakeHeatmap）がそれをキャッシュし、
+  // 直前まで出ていたヒートマップを消したうえで TTL の間そのままにしてしまう。例外にして、既存の
+  // 失敗経路（前回のキャッシュを使い続ける）へ倒す。
+  // 判定に付いている 3 つの条件はそれぞれ別の正常系を除けるためのもの。
+  //   - skipped > 0 …… 期間内に地震が本当に無くて 0 件だった場合を異常としない
+  //   - !reachedCutoff … 期間の端まで正常に読み切った結果 0 件だった場合を異常としない
+  //     （直近の数件が偶然すべて震源未決定で、その次が期間外だった、という並びで起こりうる）
+  // 割合ではなく「全滅」だけを異常とみなすのは、大地震の直後は震源未確定の項目が一時的に増える
+  // ため。割合で切ると、最も見たいときにヒートマップを消すことになる。
+  if (collected.length === 0 && skipped > 0 && !reachedCutoff) {
+    throw new Error(
+      `gd/earthquake: 走査した ${skipped} 件すべてを除外（発生時刻なし ${skippedNoTime} 件 / ` +
+        `震源座標なし ${skippedNoCoord} 件）。地図に置ける項目がありません`,
+    )
+  }
   return collected
 }
