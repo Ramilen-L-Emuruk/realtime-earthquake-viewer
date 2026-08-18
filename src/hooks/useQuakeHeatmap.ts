@@ -33,7 +33,10 @@ function loadCache(): CacheEntry | null {
     const raw = localStorage.getItem(CACHE_KEY)
     if (!raw) return null
     return JSON.parse(raw) as CacheEntry
-  } catch {
+  } catch (e) {
+    // 壊れた JSON・localStorage 利用不可。取得し直せば済むので処理は続けるが、
+    // 毎回キャッシュが効かない状態に気づけるよう記録は残す。
+    log.warn('[data] 地震活動ヒートマップのキャッシュ読み込みに失敗（取得し直します）', e)
     return null
   }
 }
@@ -41,8 +44,9 @@ function loadCache(): CacheEntry | null {
 function saveCache(points: KeyedHeatPoint[]): void {
   try {
     localStorage.setItem(CACHE_KEY, JSON.stringify({ fetchedAt: serverNow(), points }))
-  } catch {
-    // ストレージ容量超過は無視（次回また取得を試みる）
+  } catch (e) {
+    // 容量超過等。次回また取得を試みるので致命的ではないが、黙って毎回取り直す状態になるため残す。
+    log.warn('[data] 地震活動ヒートマップのキャッシュ保存に失敗（次回も取得し直します）', e)
   }
 }
 
@@ -114,7 +118,13 @@ export function useQuakeHeatmap(
         saveCache(result)
       })
       .catch(err => {
-        if (cancelled) return
+        // ログは cancelled と無関係に必ず出す。状態更新を止めることと、失敗を記録しないことは
+        // 別の話。ここを cancelled で早期 return すると、設定変更で effect が張り直された経路
+        // （APIキー入力欄は 1 文字ごとに更新するため高頻度に起きる）で失敗が完全に消える。
+        if (cancelled) {
+          log.debug('[data] 地震活動ヒートマップ取得失敗（この取得は破棄済み）', err)
+          return
+        }
         log.warn('[data] 地震活動ヒートマップ取得失敗', err)
         // 失敗時は古いキャッシュがあればそれで継続する
         setBasePoints(cached?.points ?? null)

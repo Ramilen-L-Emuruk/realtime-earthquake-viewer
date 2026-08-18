@@ -246,4 +246,29 @@ describe('fetchDmdataGdEarthquakes', () => {
 
     await expect(fetchDmdataGdEarthquakes('dummy-key', 30)).rejects.toThrow('gd/earthquake: 403')
   })
+
+  // 401/403 は契約スコープ不足やキー誤りで、再試行しても直らない。500 等の一時的な失敗と
+  // 同じ重さで流すと、コンソールを見た人が「待てば直る」と誤解する。
+  it('認証エラー (401/403) は error として記録する', async () => {
+    for (const status of [401, 403]) {
+      vi.clearAllMocks()
+      vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status }) as unknown as Response))
+
+      await expect(fetchDmdataGdEarthquakes('dummy-key', 30)).rejects.toThrow()
+
+      expect(log.error).toHaveBeenCalledTimes(1)
+      expect(String(vi.mocked(log.error).mock.calls[0][0])).toContain('認証エラー')
+      expect(log.warn).not.toHaveBeenCalled()
+    }
+  })
+
+  it('一時的な失敗 (500 等) は warn に留める', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 500 }) as unknown as Response))
+
+    await expect(fetchDmdataGdEarthquakes('dummy-key', 30)).rejects.toThrow()
+
+    expect(log.warn).toHaveBeenCalledTimes(1)
+    expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('取得失敗')
+    expect(log.error).not.toHaveBeenCalled()
+  })
 })

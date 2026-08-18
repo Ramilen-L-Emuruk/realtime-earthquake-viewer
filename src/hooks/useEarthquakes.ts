@@ -634,8 +634,17 @@ export function useEarthquakes(
       Promise.all([
         fetchDmdataEarthquakes(dmdataApiKey, MAX_HISTORY_RETAINED),
         fetchDmdataTsunamis(dmdataApiKey, 10),
-        fetchDmdataNankai(dmdataApiKey).catch(() => null),
-        fetchDmdataKohatsu(dmdataApiKey).catch(() => null),
+        // 取得側で失敗はすべて捕まえて null を返すため、ここへは届かない想定。
+        // 万一漏れた場合に地震・津波の履歴取得まで巻き込まないための保険なので、
+        // 素通しにせず記録を残す（この 2 つは補助情報のため、失敗しても続行してよい）。
+        fetchDmdataNankai(dmdataApiKey).catch(err => {
+          log.error('[data] 南海トラフ地震臨時情報の取得で想定外の失敗', err)
+          return null
+        }),
+        fetchDmdataKohatsu(dmdataApiKey).catch(err => {
+          log.error('[data] 後発地震注意情報の取得で想定外の失敗', err)
+          return null
+        }),
       ])
         .then(async ([quakeResult, tsunamiEvents, nankaiData, kohatsuData]) => {
           if (cancelled) return
@@ -934,7 +943,10 @@ export function useEarthquakes(
           hasMore: events.length === LOAD_MORE_BATCH,
         }))
       }
-    } catch {
+    } catch (err) {
+      // 追加読み込みの失敗は画面では「増えなかった」だけに見える（初回ロード用の error state は
+      // 触らない）。ユーザーが再度押せる状態に戻すだけなので、理由はログに残す。
+      log.error('[data] 地震履歴の追加読み込みに失敗', err)
       setState(prev => ({ ...prev, isLoadingMore: false }))
     }
   }, [])
