@@ -2,6 +2,7 @@ import { memo, useState, useCallback, useEffect } from 'react'
 import type { AppSettings } from '../../hooks/useSettings'
 import type { ConnectionStatus } from '../../types/earthquake'
 import { getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
+import { readableTextColor } from '../../utils/contrast'
 import { playAlertSound, playKyoshinUpdateSound, unlockAudio } from '../../utils/alertSound'
 import { checkVoicevoxAvailable, fetchVoicevoxSpeakers, speakWithVoicevox, type VoicevoxSpeaker } from '../../utils/voicevox'
 import { serverDate, getServerClockOffsetMs } from '../../utils/clock'
@@ -138,10 +139,11 @@ function ScaleSelect({ value, onChange, noneLabel = 'すべて表示' }: {
 
 function IntensityBadge({ scale }: { scale: number }) {
   if (scale === -1) return null
+  const fill = getIntensityColor(scale)
   return (
     <span
       className="inline-block text-xs font-bold px-1.5 py-0.5 rounded"
-      style={{ backgroundColor: getIntensityColor(scale), color: '#fff' }}
+      style={{ backgroundColor: fill, color: readableTextColor(fill) }}
     >
       震度{getIntensityLabel(scale)}
     </span>
@@ -150,13 +152,16 @@ function IntensityBadge({ scale }: { scale: number }) {
 
 type ButtonColor = 'red' | 'orange' | 'yellow' | 'purple' | 'blue' | 'green'
 
+// 白文字（text-white）を載せるため、通常時・ホバー時とも WCAG AA（4.5:1）を満たす濃さにする。
+// orange / yellow / green は従来の色だとホバー時に 3.56 / 1.92 / 3.30 まで落ちていたため、
+// 一段ずつ暗い側へずらした（従来の通常時の色がホバー時の色に来る形）。最小は yellow のホバー 4.92。
 const BUTTON_CLASSES: Record<ButtonColor, string> = {
   red:    'bg-red-700 hover:bg-red-600',
-  orange: 'bg-orange-700 hover:bg-orange-600',
-  yellow: 'bg-yellow-600 hover:bg-yellow-500',
+  orange: 'bg-orange-800 hover:bg-orange-700',
+  yellow: 'bg-yellow-800 hover:bg-yellow-700',
   purple: 'bg-purple-700 hover:bg-purple-600',
   blue:   'bg-blue-700 hover:bg-blue-600',
-  green:  'bg-green-700 hover:bg-green-600',
+  green:  'bg-green-800 hover:bg-green-700',
 }
 
 function TestButton({ color, onClick, children, disabled }: {
@@ -205,12 +210,13 @@ function IntensityPlayButton({ scale, kyoshinIndex }: { scale: number; kyoshinIn
     setActive(true)
     setTimeout(() => setActive(false), 600)
   }
+  const fill = getIntensityColor(scale)
   return (
     <button
       onClick={handle}
       title={`震度${getIntensityLabel(scale)} の更新音を試聴`}
-      className={`text-xs font-bold text-white px-2 py-1 rounded transition-opacity ${active ? 'opacity-40' : 'hover:opacity-75'}`}
-      style={{ backgroundColor: getIntensityColor(scale) }}
+      className={`text-xs font-bold px-2 py-1 rounded transition-opacity ${active ? 'opacity-40' : 'hover:opacity-75'}`}
+      style={{ backgroundColor: fill, color: readableTextColor(fill) }}
     >
       {getIntensityLabel(scale)}
     </button>
@@ -619,16 +625,26 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
                 </Row>
               </>
             )}
-            <Row label="読み上げ震度階数" description="最大震度から何階級分の地域名を読み上げるか（0 = 最大震度のみ）">
+            <Row label="読み上げ震度階数" description="最大震度に加えて何階級下まで地域名を読み上げるか（0 = 最大震度のみ）">
               <select
                 value={settings.ttsIntensityLevels}
                 onChange={e => onUpdate('ttsIntensityLevels', Number(e.target.value))}
                 className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
               >
                 {[0, 1, 2, 3, 4].map(n => (
-                  <option key={n} value={n}>{n === 0 ? '最大震度のみ' : `最大から${n}階級`}</option>
+                  <option key={n} value={n}>{n === 0 ? '最大震度のみ' : `最大＋${n}階級`}</option>
                 ))}
               </select>
+            </Row>
+            <Row label="必ず読み上げる震度" description="階数の設定を超えても、この震度以上の階級は地域名を読み上げます（長周期地震動には適用されません）">
+              <div className="flex items-center gap-2">
+                <IntensityBadge scale={settings.ttsAlwaysReadScale} />
+                <ScaleSelect
+                  value={settings.ttsAlwaysReadScale}
+                  onChange={v => onUpdate('ttsAlwaysReadScale', v)}
+                  noneLabel="階数の設定どおり"
+                />
+              </div>
             </Row>
             <Row label="読み上げ最大地域数" description="1階級あたりに読み上げる地域名の上限（0 = 無制限）">
               <select
@@ -641,6 +657,19 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
                 ))}
               </select>
             </Row>
+            {settings.ttsMaxRegions > 0 && (
+              <Row label="地域数の許容超過" description="上限をこの数まで超えるだけなら「ほかN地域」とせず全地域を読み上げます">
+                <select
+                  value={settings.ttsRegionTolerance}
+                  onChange={e => onUpdate('ttsRegionTolerance', Number(e.target.value))}
+                  className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+                >
+                  {[0, 1, 2, 3, 5].map(n => (
+                    <option key={n} value={n}>{n === 0 ? '許容しない' : `+${n}地域まで`}</option>
+                  ))}
+                </select>
+              </Row>
+            )}
           </>
         )}
         <Row label="ブラウザ通知" description="地震発生時にブラウザ通知を表示します">
@@ -930,17 +959,20 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         <div className="px-4 py-3 flex flex-wrap gap-2">
           {Object.entries(INTENSITY_LABELS)
             .filter(([k]) => k !== '-1')
-            .map(([scale, label]) => (
-              <div key={scale} className="flex items-center gap-1.5">
-                <span
-                  className="w-6 h-6 rounded flex items-center justify-center text-xs font-bold text-white"
-                  style={{ backgroundColor: getIntensityColor(Number(scale)) }}
-                >
-                  {label}
-                </span>
-                <span className="text-xs text-secondary">震度{label}</span>
-              </div>
-            ))}
+            .map(([scale, label]) => {
+              const fill = getIntensityColor(Number(scale))
+              return (
+                <div key={scale} className="flex items-center gap-1.5">
+                  <span
+                    className="w-6 h-6 rounded flex items-center justify-center text-xs font-bold"
+                    style={{ backgroundColor: fill, color: readableTextColor(fill) }}
+                  >
+                    {label}
+                  </span>
+                  <span className="text-xs text-secondary">震度{label}</span>
+                </div>
+              )
+            })}
         </div>
       </Section>
 

@@ -121,7 +121,7 @@ export function createTestEEWWarning(eventId?: string, serial = 1): EEWAlert {
     issue: { eventId: eid, serial: String(serial), time: now.toISOString() },
     areas: [
       { pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null, lgIntTo: 3 },
-      { pref: '宮崎県', name: '宮崎県南部', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: null, lgIntTo: 2 },
+      { pref: '宮崎県', name: '宮崎県南部平野部', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: null, lgIntTo: 2 },
       { pref: '大分県', name: '大分県南部', scaleFrom: 30, scaleTo: 40, kindCode: '10', arrivalTime: null, lgIntTo: 1 },
     ],
   }
@@ -359,7 +359,7 @@ export function createTestTsunami(): JMATsunami {
     observations: [
       { name: '宮古',   districtCode: '030', districtName: '岩手県',           height: { value: 8.5, description: '8.5m以上', over: true }, arrivalTime: nowIso, initial: '押し' },
       { name: '石巻港', districtCode: '040', districtName: '宮城県',           height: { value: 7.2, description: '7.2m' }, arrivalTime: nowIso, initial: '押し' },
-      { name: '八戸',   districtCode: '060', districtName: '青森県太平洋沿岸', height: { value: 1.8, description: '1.8m' }, arrivalTime: nowIso, initial: '引き' },
+      { name: '八戸港', districtCode: '060', districtName: '青森県太平洋沿岸', height: { value: 1.8, description: '1.8m' }, arrivalTime: nowIso, initial: '引き' },
       { name: '沖合40km', height: { value: 3.0, description: '3.0m以上', over: true }, arrivalTime: nowIso },
     ],
   }

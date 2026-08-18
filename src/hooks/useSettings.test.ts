@@ -64,6 +64,53 @@ describe('sanitize', () => {
     expect(sanitize({ ttsIntensityLevels: 999 }).ttsIntensityLevels).toBe(10)
   })
 
+  // 震度を取る 3 項目（minDisplayScale / notifyMinScale / ttsAlwaysReadScale）は
+  // 気象庁の階級値と無効値 -1 のみを受け付ける。範囲内でも階級値でなければ既定値に落とす
+  // （中間値を通すと設定画面の震度バッジが「不明」表示になる）。
+  it('震度項目は無効値(-1)を保持する', () => {
+    expect(sanitize({ ttsAlwaysReadScale: -1 }).ttsAlwaysReadScale).toBe(-1)
+    expect(sanitize({ minDisplayScale: -1 }).minDisplayScale).toBe(-1)
+    expect(sanitize({ notifyMinScale: -1 }).notifyMinScale).toBe(-1)
+  })
+
+  it('震度項目は階級値をそのまま通す', () => {
+    expect(sanitize({ ttsAlwaysReadScale: 45 }).ttsAlwaysReadScale).toBe(45)
+    expect(sanitize({ minDisplayScale: 70 }).minDisplayScale).toBe(70)
+    expect(sanitize({ notifyMinScale: 10 }).notifyMinScale).toBe(10)
+  })
+
+  it('震度項目は範囲内でも階級値でない中間値(35)を既定値に落とす', () => {
+    expect(sanitize({ ttsAlwaysReadScale: 35 }).ttsAlwaysReadScale).toBe(30)
+    expect(sanitize({ minDisplayScale: 35 }).minDisplayScale).toBe(-1)
+    expect(sanitize({ notifyMinScale: 35 }).notifyMinScale).toBe(-1)
+  })
+
+  it('震度項目は範囲外の値を既定値に落とす（クランプしない）', () => {
+    expect(sanitize({ ttsAlwaysReadScale: 999 }).ttsAlwaysReadScale).toBe(30)
+    expect(sanitize({ minDisplayScale: -999 }).minDisplayScale).toBe(-1)
+  })
+
+  it('震度項目は数値以外を既定値に落とす', () => {
+    expect(sanitize({ notifyMinScale: '30' as unknown as number }).notifyMinScale).toBe(-1)
+  })
+
+  // typeof が number でも階級値でない特殊値（isValidIntensityScale の実装が変わったときの回帰検知）
+  it('震度項目は NaN・Infinity を既定値に落とす', () => {
+    expect(sanitize({ minDisplayScale: NaN }).minDisplayScale).toBe(-1)
+    expect(sanitize({ notifyMinScale: Infinity }).notifyMinScale).toBe(-1)
+    expect(sanitize({ ttsAlwaysReadScale: -Infinity }).ttsAlwaysReadScale).toBe(30)
+  })
+
+  it('ttsRegionTolerance=-3 → 0 にクランプ', () => {
+    expect(sanitize({ ttsRegionTolerance: -3 }).ttsRegionTolerance).toBe(0)
+  })
+
+  it('読み上げの階数・地域数の既定値（未保存時）', () => {
+    const d = sanitize({})
+    expect(d.ttsAlwaysReadScale).toBe(30)
+    expect(d.ttsRegionTolerance).toBe(2)
+  })
+
   it('homeLat が数値以外 → null', () => {
     expect(sanitize({ homeLat: 'invalid' as unknown as number }).homeLat).toBeNull()
   })

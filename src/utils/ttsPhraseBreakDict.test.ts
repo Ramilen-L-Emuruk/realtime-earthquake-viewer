@@ -35,7 +35,8 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-describe('loadTtsPhraseBreakDict', () => {
+// resetModules ＋動的 import の再評価コストで既定タイムアウトを割ることがある（理由は prefectures.test.ts）。
+describe('loadTtsPhraseBreakDict', { timeout: 15_000 }, () => {
   it('取得に成功すると _comment / _terms を除いた辞書を返す', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => okResponse(SAMPLE)))
     const { loadTtsPhraseBreakDict, isPlaceNameKey } = await freshModule()

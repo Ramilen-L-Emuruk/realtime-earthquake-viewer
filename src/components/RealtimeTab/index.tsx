@@ -3,7 +3,7 @@
 import { memo, useMemo, useRef } from 'react'
 import type { EEWAlert } from '../../types/earthquake'
 import type { DetectionEvent, Confidence } from '../../utils/kyoshinDetector'
-import { MIN_DETECTION_INDEX, buildSiteIndex, resolveMembers, type DetectedPoint } from '../../utils/kyoshinDetectionView'
+import { buildSiteIndex, resolveMembers, type DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { SiteCoords } from '../../services/kyoshin'
 import type { SWaveArrival } from '../../hooks/useSWaveCountdown'
 import { formatDateTime, formatTime } from '../../utils/formatters'
@@ -11,6 +11,7 @@ import { getIntensityColor, getIntensityLabel, getIntensityBgColor, getMagnitude
 import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
 import { eewAreas, eewMaxScale, eewMaxLpgmClass, eewSerial, computeSingleEEWLevel } from '../../utils/eew'
 import { kyoshinIndexToJma, kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
+import { readableTextColor } from '../../utils/contrast'
 
 // 凡例は地図と同じ気象庁の震度配色（getIntensityColor）を使う。scale=0 は震度0（灰色）。
 const SCALE_LEGEND: { label: string; scale: number }[] = [
@@ -293,9 +294,18 @@ function SWaveArrivalCard({ arrival }: { arrival: SWaveArrival }) {
 }
 
 // 検知エンジンの確信度別スタイル。confirmed=赤・likely=橙・faint=淡青(震度0級・無音)・weak=灰。
+// 反応が収まっている間の確信度チップの背景。主張を持たない灰で、白文字とのコントラストは約 7.6:1。
+// 確信度の色を消しつつラベルは読める濃さを保つ（経緯は KyoshinDetectionSummary 内のコメント）。
+// V2_TIER.weak.border と同値だが別概念のため独立に持つ（weak の配色を変えてもここは追従しない）。
+const SETTLED_CHIP_BG = '#4b5563'
+
+// `border` はチップの背景色として使う。白文字（12px 太字＝WCAG の Large Text 緩和に該当しない）を
+// 載せるため 4.5:1 が要る。confirmed の #ef4444 は 3.76:1・likely の #d97706 は 3.19:1 で足りず、
+// 一段暗い赤・橙へ落として白文字のまま 4.83:1 / 5.02:1 を確保している（気象庁配色ではないため
+// 色自体を変えてよい）。カード背景（#0a0c10 相当）に対しても 4.05:1 / 3.90:1 あり沈まない。
 const V2_TIER: Record<Confidence, { label: string; color: string; bg: string; border: string }> = {
-  confirmed: { label: '検知', color: '#f87171', bg: '#450a0a', border: '#ef4444' },
-  likely: { label: '可能性', color: '#fcd34d', bg: '#451a03', border: '#d97706' },
+  confirmed: { label: '検知', color: '#f87171', bg: '#450a0a', border: '#dc2626' },
+  likely: { label: '可能性', color: '#fcd34d', bg: '#451a03', border: '#b45309' },
   faint: { label: '微弱', color: '#93c5fd', bg: 'rgba(30,41,59,0.55)', border: '#3b5b80' },
   weak: { label: '検出', color: '#9ca3af', bg: 'rgba(42,42,42,0.6)', border: '#4b5563' },
 }
@@ -325,14 +335,17 @@ function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent
   const earliestMs = events.reduce((m, e) => Math.min(m, e.originTimeMs), Infinity)
   const time = new Date(earliestMs).toLocaleTimeString('ja-JP', { hour12: false })
 
-  // 全イベントのメンバー観測点を和集合（重複除去）で集約し、震度分布・最大震度を集計する
+  // 全イベントのメンバー観測点を和集合（重複除去）で集約し、震度分布・最大震度を集計する。
+  // 数える対象は「現在震度0以上（計測震度 0.0 以上）の点」だけで、判定は kyoshinIndexToLabel が
+  // 震度階級を返すかどうかに委ねる（震度0未満・欠測は null）。地図の検知点マーカー
+  // （gl/kyoshinDetectedFeatures.ts の buildFeatures）も同じ判定で描くかどうかを決めており、
+  // ここと基準を分けると表示点数が食い違う。
   const memberKeys = [...new Set(events.flatMap(e => e.memberKeys))]
   const points = resolveMembers(memberKeys, siteIndex)
   const counts = new Map<string, { color: string; count: number }>()
   let maxIndex = 0
   let activeCount = 0
   for (const p of points) {
-    if (p.index < MIN_DETECTION_INDEX) continue
     const label = kyoshinIndexToLabel(p.index)
     if (!label) continue
     if (!counts.has(label)) counts.set(label, { color: kyoshinIntensityColor(p.index) ?? '#9ca3af', count: 0 })
@@ -353,7 +366,11 @@ function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent
   history.push({ t: now, v: rawMaxCount })
   while (history.length > 0 && history[0] && now - history[0].t > SCALE_PEAK_WINDOW_MS) history.shift()
   const maxCount = history.reduce((m, h) => Math.max(m, h.v), 1)
-  const totalActive = activeCount || events.reduce((s, e) => s + e.lastSize, 0)
+  // 反応点数は activeCount（現在震度0以上の点）をそのまま出す。以前は 0 のとき検知エンジンの
+  // lastSize（点ごとのノイズ床を超えて継続中の数。絶対震度の下限とは別基準）へフォールバック
+  // していたが、それだと「地図には検知点が 1 つも無いのにカードだけ N 観測点で反応と出る」
+  // 局面が生まれる（イベント自体は HOLD_MS / LIKELY_HOLD_MS の間ラッチで生き続けるため）。
+  // 揺れが収まったことは点数ではなく文言で伝える。
 
   // カードの枠・背景は最大震度の気象庁配色に合わせる（地図マーカー・EEW カードと一貫）。
   // 確信度（検知/可能性/微弱）は枠色ではなく左上のチップで示す。枠色にティア（確信度）を
@@ -365,14 +382,42 @@ function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent
   const frameBorder = hasIntensity ? getIntensityColor(maxJma.scale) : SHINDO0_COLOR
   const frameBg = hasIntensity ? getIntensityBgColor(maxJma.scale) : 'rgba(42,42,42,0.6)'
 
+  // 反応中の観測点が無くなった状態（イベントは HOLD_MS / LIKELY_HOLD_MS のラッチで生き残るが、
+  // 現在震度0以上の点は 1 つも無い）。ここでヘッダーを通常の強さで出したままにすると、
+  // 「検知」の赤チップと本文の「観測点の反応は収まりました」が同じカードに並んで矛盾して見える。
+  // ティアのラベルは確信度の判定結果なので変えず、色だけ主張の弱いものへ差し替えて現在の
+  // 活動度を示す（枠色を最大震度に追従させているのと同じ考え方）。
+  //
+  // 弱め方は opacity ではなく**色の置き換え**で行う。CSS の opacity は要素を背景と合成するため、
+  // 文字と背景の関係まで一緒に薄まって読みにくくなる。実測（カード背景 rgba(42,42,42,0.6) の上）:
+  //   見出し   confirmed #f87171: 5.5:1 → α0.55 で 2.6:1
+  //   チップ   confirmed #ef4444 上の白文字: 3.8:1 → α0.55 で 2.7:1
+  // 置き換え後は見出し（text-secondary #94a3b8）が約 6.5:1、チップ（SETTLED_CHIP_BG 上の白文字）が
+  // 約 7:1 で、いずれも読める濃さを保ったまま赤の主張だけが消える。
+  //
+  // なお activeCount は毎秒の生インデックスから算出するため、終息期に 0 と非 0 を往復すれば
+  // 表示も往復する。猶予（ヒステリシス）は入れていない。猶予中の本文をどうするかで
+  // 「activeCount が 0 なのに 0観測点で反応と出す」「本文とヘッダーで別条件を使い、今回揃えた
+  // 『両者が同じ基準を見る』性質を壊す」「中間状態の文言を新設する」のいずれかになり、
+  // 前 2 つは不整合、3 つ目は状態が 3 つに増える割に、往復自体が実地震のリプレイ検証
+  // （2026-08-18・50 サンプル超）では観測されていないため見合わないと判断した。
+  const settled = activeCount === 0
+
   return (
     <div className="rounded-lg overflow-hidden" style={{ border: `1px solid ${frameBorder}`, backgroundColor: frameBg }}>
-      {/* ヘッダー: 確信度チップ・広域バッジ・時刻。枠色は最大震度、チップ色は確信度で 2 軸を分離。 */}
+      {/* ヘッダー: 確信度チップ・広域バッジ・時刻。枠色は最大震度、チップ色は確信度で 2 軸を分離。
+          反応が収まっている間（settled）はチップ・見出しの色を灰へ置き換えて本文と印象を揃える。 */}
       <div className="flex items-center gap-2 px-3 py-1.5" style={{ borderBottom: `1px solid ${frameBorder}55` }}>
-        <span className="text-xs font-bold px-1.5 py-0.5 rounded flex-shrink-0" style={{ backgroundColor: tier.border, color: '#fff' }}>
+        <span
+          className="text-xs font-bold px-1.5 py-0.5 rounded flex-shrink-0"
+          style={{ backgroundColor: settled ? SETTLED_CHIP_BG : tier.border, color: '#fff' }}
+        >
           {tier.label}
         </span>
-        <span className="text-xs" style={{ color: tier.color }}>
+        <span
+          className={settled ? 'text-xs text-secondary' : 'text-xs'}
+          style={settled ? undefined : { color: tier.color }}
+        >
           {regionCount >= 2 ? `${heading}（広域・${regionCount}地域）` : heading}
         </span>
         <span className="text-xs text-secondary ml-auto font-mono">{time}</span>
@@ -391,7 +436,7 @@ function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent
             <div className="flex flex-col gap-1">
               {groups.map(g => (
                 <div key={g.label} className="flex items-center gap-2">
-                  <span className="w-6 text-center text-xs font-bold rounded flex-shrink-0" style={{ backgroundColor: g.color, color: '#fff' }}>
+                  <span className="w-6 text-center text-xs font-bold rounded flex-shrink-0" style={{ backgroundColor: g.color, color: readableTextColor(g.color) }}>
                     {g.label}
                   </span>
                   <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.08)' }}>
@@ -403,7 +448,9 @@ function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent
             </div>
           )}
           <span className="text-xs text-secondary">
-            {totalActive}観測点で反応{regionCount >= 2 ? ` ・ ${regionCount}地域` : ''} ・ 推定値
+            {activeCount > 0
+              ? `${activeCount}観測点で反応${regionCount >= 2 ? ` ・ ${regionCount}地域` : ''} ・ 推定値`
+              : `観測点の反応は収まりました${regionCount >= 2 ? ` ・ ${regionCount}地域` : ''}`}
           </span>
         </div>
       </div>

@@ -144,7 +144,8 @@ describe('fetchJsonWithTimeout', () => {
   })
 })
 
-describe('取得状況の集約', () => {
+// resetModules ＋動的 import の再評価コストで既定タイムアウトを割ることがある（理由は prefectures.test.ts）。
+describe('取得状況の集約', { timeout: 15_000 }, () => {
   // 取得状況はモジュールスコープに溜まるため、テストごとに読み直して独立させる
   async function freshModule() {
     vi.resetModules()

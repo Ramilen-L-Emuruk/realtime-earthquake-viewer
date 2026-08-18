@@ -18,8 +18,10 @@ import {
   mapContainsBounds,
   isProgrammaticFlight,
   subscribeUserInteraction,
+  INTERACTION_HOLD_SEC,
   MAX_ZOOM,
 } from './gl/camera'
+import { decideTsunamiFit } from './gl/tsunamiFit'
 import { log } from '../../utils/logger'
 
 // MapLibre 版のカメラ自動追従群（Leaflet 版 JapanMap 内の Fit* コンポーネント相当）。
@@ -28,6 +30,14 @@ import { log } from '../../utils/logger'
 // EEW 追従（idle 抑制つき・最も複雑）と津波追従は別ファイル（Camera-2）で扱う。
 
 const dp2ll = (p: DetectedPoint): LatLng => [p.lat, p.lng]
+
+// 観測行クリックの対象が地図に立っているか。座標未収録の観測点（tsunami-spec §8）は観測棒が無く、
+// カメラを動かせない。FocusObsGL（寄せる側）と TsunamiFitGL（俯瞰へ帰る猶予を数え直す側）が
+// 同じ判定を見る必要があるため、条件はここ 1 箇所に置く——別々に持つと、片方だけ変えたときに
+// 「猶予は延びたのにカメラは動かない」という無言の食い違いが生まれる。
+function findObsBar<T extends { name: string }>(bars: T[], name: string | undefined): T | undefined {
+  return name === undefined ? undefined : bars.find((b) => b.name === name)
+}
 
 // アクティブな EEW から震源座標（有効なものだけ）を抽出する。円がまだ無い EEW（仮定震源要素・
 // 震源未確定・タイミング上まだ psWave に反映されていない新規 EEW）でも、追従 bounds に震源だけは
@@ -421,14 +431,22 @@ export function FitToEEWGL({
     const psWaveDecreased = psWave.length < prevPsCount
     if (!eewDecreased && !psWaveDecreased) return
     if (eews.length === 0) return
-    if (isUserInteracting) return
+    // 以下 2 つの見送りは、いずれも「その回の寄り直しを永久に失う」（件数の記録は上で更新済みなので
+    // 同じ減少が後から再検出されることはない）。無言で失うと実地震のあとに「抑制が働いたのか
+    // 不具合なのか」を切り分けられないため、他のスキップ分岐と同じくログに残す。
+    if (isUserInteracting) {
+      log.debug('[mapGL] EEW数減少の再フィット スキップ (userInteracting)')
+      return
+    }
     // 第一報のフォーカスを見せている間は寄り直さない（成長フォローと同じ抑制を効かせる）。
     // 抑制中にここが発火すると、抑制が防いでいる「一瞬寄って即ズームアウト」を別のトリガーで
-    // 再現してしまう。見送るぶん、その回の寄り直し（狭い範囲へのズームイン）は永久に失う
-    // ——件数の記録は上で更新済みなので、同じ減少が後から再検出されることはない。
+    // 再現してしまう。
     // ただし残りが画面外にはみ出していれば、抑制が明けた直後に成長フォローの収まり判定が拾って
     // 引き直す（最大で抑制時間ぶん遅れる）。
-    if (Date.now() < suppressGrowthUntilRef.current) return
+    if (Date.now() < suppressGrowthUntilRef.current) {
+      log.debug('[mapGL] EEW数減少の再フィット スキップ (第一報直後の抑制中)')
+      return
+    }
 
     // 円のある EEW は円の box、円が無い（仮定震源要素等の）EEW も震源座標一点は必ず含める
     // （円だけを見ると、その EEW が画面から取り残される）。
@@ -486,69 +504,146 @@ export function FitToEEWGL({
   return null
 }
 
-// ── 津波モードのフィット（観測点更新優先・海岸線フォールバック） ──────────────────
+// ── 津波モードのフィット（観測点更新優先・アイドルで俯瞰へ復帰） ──────────────────
+// 優先順位の取り決めは gl/tsunamiFit.ts の decideTsunamiFit（純関数・テストで固定）。
+// ここは「持ち越しの管理」と「アイドル復帰タイマー」だけを担う。
+//
+// 観測点へ寄ったままにしないのが要点。観測情報は電文のたびに寄り直すため、寄った先に留まると
+// 発表中の対象海域全体が二度と画面に入らない（海岸線 signature は寄った時点で消費するので、
+// 区域・等級が変わらない限り海岸線フィットは再発火しない）。無操作・無更新が INTERACTION_HOLD_SEC 秒
+// 続いたら俯瞰へ帰し、津波が消えたら日本全体へ帰す。
 export function TsunamiFitGL({
   mode,
   tsunamiSignature,
   tsunamiFitPositions,
   observationBars,
+  focusObsName = null,
 }: {
   mode: string
   tsunamiSignature: string
   tsunamiFitPositions: LatLng[]
   observationBars: { name: string; lat: number; lng: number; height: { value: number } }[]
+  /** 観測行クリックで FocusObsGL が寄せた観測点。猶予を数え直すためだけに見る（フィットはしない）。 */
+  focusObsName?: { name: string; ts: number } | null
 }) {
   const map = useMapGL()
+  // 最後にカメラへ反映した海岸線 signature。津波が消えたとき（全解除・有効期間の満了・
+  // リプレイのリセットなど）に津波モード以外にいた場合は、ここに古い値が残る。同じ内容の津波が再来したときに「変化なし」と
+  // 判定されるが、そのぶんは入室時・アイドル復帰・消滅時の帰還が寄せ直すため実害は無い
+  // （帰還経路を消すとこの前提も崩れるので、経路を減らすときは併せて見直すこと）。
   const lastTsunamiSigRef = useRef<string>('')
   const prevObsMapRef = useRef<Map<string, number>>(new Map())
   const pendingObsPositionsRef = useRef<LatLng[]>([])
   const prevModeRef = useRef<string>(mode)
+  const prevInteractingRef = useRef(false)
+  const idleReturnDueRef = useRef(false)
+  const idleTimerRef = useRef<number | undefined>(undefined)
+  // タイマー満了は React の外で起きるため、effect を再評価させる契機として state を 1 つ持つ。
+  const [idleReturnTick, setIdleReturnTick] = useState(0)
   const [isUserInteracting] = useUserInteractionGuard(map)
+
+  const clearIdleReturnTimer = useCallback(() => {
+    window.clearTimeout(idleTimerRef.current)
+    idleTimerRef.current = undefined
+  }, [])
+
+  // 観測点へ寄った状態から俯瞰へ帰るまでの猶予。操作ガードの保持時間と同じ固定値を使う
+  // （設定「自動復帰までの時間」から切り離した理由は gl/camera.ts の INTERACTION_HOLD_SEC）。
+  // 設定を「無効」にしても帰還は止めない。止めると、この関数が解除だけして終わり、
+  // 観測点へ寄ったまま取り残される経路が復活する（それが帰還を足した動機そのもの）。
+  const armIdleReturnTimer = useCallback(() => {
+    clearIdleReturnTimer()
+    idleTimerRef.current = window.setTimeout(() => {
+      idleReturnDueRef.current = true
+      setIdleReturnTick((t) => t + 1)
+    }, INTERACTION_HOLD_SEC * 1000)
+  }, [clearIdleReturnTimer])
+
+  useEffect(() => clearIdleReturnTimer, [clearIdleReturnTimer])
+
+  // 観測行クリックで特定の観測点へ寄せた直後は、猶予を最初から数え直す。
+  // クリックは地図のイベントを経由しない（FocusObsGL の flyTo は自分のカメラ操作を操作ガードから
+  // 除外する）ため、これが無いと「直前の観測点フィットで張った猶予」の残り時間だけで
+  // ユーザーが選んだ表示が巻き戻される。俯瞰へ帰る動き自体は残す（手動のズーム・パンと同じ扱い）。
+  const focusObsTs = focusObsName?.ts ?? 0
+  const lastFocusObsTsRef = useRef(0)
+  useEffect(() => {
+    if (focusObsTs === 0 || focusObsTs === lastFocusObsTsRef.current) return
+    // 実際に寄せられるクリックだけを数え直しの対象にする。カメラが動かないクリックで猶予を
+    // 延ばすと、何も起きていないのに俯瞰への復帰が遅れる（判定は findObsBar に集約）。
+    if (!findObsBar(observationBars, focusObsName?.name)) return
+    lastFocusObsTsRef.current = focusObsTs
+    idleReturnDueRef.current = false
+    armIdleReturnTimer()
+  }, [focusObsTs, focusObsName, observationBars, armIdleReturnTimer])
 
   useEffect(() => {
     if (!map) return
-    const enteredTsunamiTab = mode === 'tsunami' && prevModeRef.current !== 'tsunami'
+    const enteredTsunamiMode = mode === 'tsunami' && prevModeRef.current !== 'tsunami'
     prevModeRef.current = mode
 
-    // Step 1: 更新された観測バーを検出しフラグへ。
+    // 更新された観測バーを検出して持ち越しに積む。海岸線 sig はここで消費して競合を防ぐ
+    // （寄り先が観測点と海岸線で二重に決まると、直後に引き直しが起きて二段のカメラ移動になる）。
+    // モードを問わず記録するため、津波タブを離れている間の更新も入室時に反映される。
     const prevMap = prevObsMapRef.current
     const updatedBars = observationBars.filter((b) => prevMap.get(b.name) !== b.height.value)
     const newMap = new Map<string, number>()
     for (const b of observationBars) newMap.set(b.name, b.height.value)
     prevObsMapRef.current = newMap
     if (updatedBars.length > 0) {
+      // 持ち越しは「最後に届いたぶん」で置き換える（溜めて合成しない）。フィットを見送っている間に
+      // 複数の電文が届いた場合、全部を束ねると離れた観測点の和で引きの画になり、どこで新しく
+      // 観測されたのかが読めなくなる。取りこぼすのは枠の選び方だけで、観測値はカードにも
+      // 波高バーにも残る。
       pendingObsPositionsRef.current = updatedBars.map((b) => [b.lat, b.lng] as LatLng)
-      lastTsunamiSigRef.current = tsunamiSignature // 海岸線 sig を消費して競合防止。
+      lastTsunamiSigRef.current = tsunamiSignature
     }
 
-    // Step 2: 津波タブのときだけフィット。
-    if (mode !== 'tsunami') return
-    if (isUserInteracting) return
+    // 操作ガードが解けた瞬間は「INTERACTION_HOLD_SEC 秒の無操作が確定した」ことなので、そのまま
+    // アイドル復帰の期限として扱う（手動で動かした後も俯瞰へ帰す）。true→false の遷移だけを見る。
+    if (prevInteractingRef.current && !isUserInteracting) idleReturnDueRef.current = true
+    prevInteractingRef.current = isUserInteracting
 
-    if (pendingObsPositionsRef.current.length > 0) {
+    // 津波モードを離れている間は猶予を持たない（入室時に改めて俯瞰へ寄せ直すため）。
+    if (mode !== 'tsunami') clearIdleReturnTimer()
+
+    const action = decideTsunamiFit({
+      isTsunamiMode: mode === 'tsunami',
+      isUserInteracting,
+      hasPendingObs: pendingObsPositionsRef.current.length > 0,
+      signature: tsunamiSignature,
+      lastSignature: lastTsunamiSigRef.current,
+      hasCoastPositions: tsunamiFitPositions.length > 0,
+      enteredTsunamiMode,
+      isIdleReturnDue: idleReturnDueRef.current,
+    })
+    if (action === 'none') return
+
+    // 実行したら持ち越しは使い切る（未消費のまま残すと、次の評価で同じフィットが再発火する）。
+    idleReturnDueRef.current = false
+    lastTsunamiSigRef.current = tsunamiSignature
+
+    if (action === 'obs') {
       const positions = pendingObsPositionsRef.current
       pendingObsPositionsRef.current = []
       log.debug(`[mapGL] 津波フィット 観測点 ${positions.length}点`)
       fitToPositions(map, positions, { padding: 48, maxZoom: MAX_ZOOM, durationSec: 1.0 })
+      armIdleReturnTimer()
       return
     }
-    if (tsunamiSignature && tsunamiSignature !== lastTsunamiSigRef.current && tsunamiFitPositions.length > 0) {
-      lastTsunamiSigRef.current = tsunamiSignature
+    // 俯瞰へ帰ったら猶予タイマーは不要。
+    clearIdleReturnTimer()
+    if (action === 'coast') {
       log.debug(`[mapGL] 津波フィット 海岸線 ${tsunamiFitPositions.length}点`)
       fitToPositions(map, tsunamiFitPositions, { padding: 48, maxZoom: MAX_ZOOM, durationSec: 1.0 })
       return
     }
-    // Step 3: 入室時に変化なし → フォールバック（海岸線 or 日本全体）。
-    if (enteredTsunamiTab) {
-      if (tsunamiFitPositions.length > 0) {
-        log.debug('[mapGL] 津波フィット 入室・変化なし 海岸線')
-        fitToPositions(map, tsunamiFitPositions, { padding: 48, maxZoom: MAX_ZOOM, durationSec: 1.0 })
-      } else {
-        log.debug('[mapGL] fitJapan (津波入室・変化なし・海岸線なし)')
-        fitJapan(map, 1.0)
-      }
-    }
-  }, [map, mode, tsunamiSignature, tsunamiFitPositions, observationBars, isUserInteracting])
+    log.debug('[mapGL] fitJapan (津波の帰還: 海岸線なし or 発表終了)')
+    fitJapan(map, 1.0)
+  }, [
+    map, mode, tsunamiSignature, tsunamiFitPositions, observationBars, isUserInteracting,
+    idleReturnTick, armIdleReturnTimer, clearIdleReturnTimer,
+  ])
 
   return null
 }
@@ -562,10 +657,17 @@ export function FocusObsGL({
   observationBars: { name: string; lat: number; lng: number }[]
 }) {
   const map = useMapGL()
+  const handledTsRef = useRef(0)
   useEffect(() => {
     if (!map || !focusObsName) return
-    const bar = observationBars.find((b) => b.name === focusObsName.name)
+    // クリック 1 回につき 1 度だけ寄せる。観測棒の配列は電文のたびに作り直されるため、
+    // 配列の変化で寄せ直すと、以後の電文が来るたびに古いクリック先へカメラが引き戻され、
+    // 値が更新された観測点へのフィット（TsunamiFitGL）まで上書きしてしまう。
+    if (focusObsName.ts === handledTsRef.current) return
+    const bar = findObsBar(observationBars, focusObsName.name)
+    // 観測棒がまだ無い（座標データの取得前など）ときは ts を消費しない。棒が現れた時点で寄せる。
     if (!bar) return
+    handledTsRef.current = focusObsName.ts
     log.debug(`[mapGL] 観測点フォーカス flyTo ${bar.name}`)
     flyToPoint(map, [bar.lat, bar.lng], MAX_ZOOM, 1.0)
   }, [map, focusObsName, observationBars])

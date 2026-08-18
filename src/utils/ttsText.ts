@@ -83,8 +83,10 @@ function coordForName(name: string): [number, number] | null {
 }
 
 export interface TtsRegionOptions {
-  intensityLevels: number  // 最大震度から何階級分読むか（0 = 最大のみ）
-  maxRegions: number       // 読み上げる最大地域数（0 = 無制限）
+  intensityLevels: number   // 最大震度に加えて何階級下まで読むか（0 = 最大のみ。観測がある階級だけを数える）
+  maxRegions: number        // 読み上げる最大地域数（0 = 無制限）
+  alwaysReadScale: number   // 階数を超えても読み上げる下限震度（-1 = 無効。長周期地震動には適用しない）
+  regionTolerance: number   // maxRegions をこの数まで超える場合は省略せず全地域を読む（0 = 無効）
 }
 
 function buildRegionText(
@@ -102,12 +104,26 @@ function buildRegionText(
   const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
   const stationPrefIndex = stationData ? buildStationPrefIndex(stationData) : null
 
+  // 最大震度以下で実際に観測がある階級だけを降順に集める。震度スケール上の位置ではなく
+  // この配列の添字を「最大から何階級目か」として数えるため、観測 0 地域の階級が読み上げ枠を
+  // 空費して下の階級に届かなくなることがない（長周期地震動側の数え方と揃えている）。
+  const observed: { scale: IntensityScale; names: string[] }[] = []
+  for (let i = maxIdx; i < SCALE_DESCENDING.length; i++) {
+    const scale = SCALE_DESCENDING[i]
+    const names = regionNamesForScale(points, scale, prefAreaNames, areaPrefIndex, stationPrefIndex)
+    if (names.length > 0) observed.push({ scale, names })
+  }
+
   const parts: string[] = []
   const mentioned = new Set<string>()  // 上位階で読み上げ済みの地域名
-  for (let i = 0; i <= opts.intensityLevels; i++) {
-    const scale = SCALE_DESCENDING[maxIdx + i]
-    if (scale == null) break
-    let names = regionNamesForScale(points, scale, prefAreaNames, areaPrefIndex, stationPrefIndex).filter(n => !mentioned.has(n))
+  for (let rank = 0; rank < observed.length; rank++) {
+    const { scale, names: observedNames } = observed[rank]
+    // 設定した階数以内、または「必ず読み上げる震度」以上の階級を読む。どちらの条件も上位の
+    // 階級ほど成立しやすいため、両方を外れた時点で以降の階級も必ず外れる（break で打ち切れる）。
+    const withinLevels = rank <= opts.intensityLevels
+    const withinAlwaysRead = opts.alwaysReadScale >= 0 && scale >= opts.alwaysReadScale
+    if (!withinLevels && !withinAlwaysRead) break
+    let names = observedNames.filter(n => !mentioned.has(n))
     if (names.length === 0) continue
     if (hasEpicenter) {
       names = [...names].sort((a, b) => {
@@ -120,8 +136,10 @@ function buildRegionText(
              - distSq(hypocenter!.latitude, hypocenter!.longitude, cb[0], cb[1])
       })
     }
+    // 上限をわずかに超えるだけなら、省いた地域名より「ほかN地域」の方が長くなる。許容超過
+    // (regionTolerance) の範囲内は省略せず全地域を読む。超えた場合に切る位置は上限ちょうど。
     let omittedCount = 0
-    if (opts.maxRegions > 0 && names.length > opts.maxRegions) {
+    if (opts.maxRegions > 0 && names.length > opts.maxRegions + opts.regionTolerance) {
       omittedCount = names.length - opts.maxRegions
       names = names.slice(0, opts.maxRegions)
     }
@@ -573,14 +591,17 @@ function buildLpgmRegionText(lpgm: JMALpgm, opts: TtsRegionOptions): string {
 
   const parts: string[] = []
   const mentioned = new Set<string>()
+  // 長周期地震動階級（1〜4）は震度スケールと別軸のため、opts.alwaysReadScale（震度の下限）は
+  // ここでは適用しない。使い忘れではないので、必要になったら階級側の下限を別に設けること。
   for (let i = 0; i <= opts.intensityLevels; i++) {
     const cls = classes[i]
     if (cls == null) break
     let names = aggregateLpgmNamesByPref((byClass.get(cls) ?? []), areaPrefIndex, prefAreaNames)
       .filter(n => !mentioned.has(n))
     if (names.length === 0) continue
+    // 地域数の打ち切りは buildRegionText と同じ（許容超過の範囲内は省略せず全地域を読む）
     let omittedCount = 0
-    if (opts.maxRegions > 0 && names.length > opts.maxRegions) {
+    if (opts.maxRegions > 0 && names.length > opts.maxRegions + opts.regionTolerance) {
       omittedCount = names.length - opts.maxRegions
       names = names.slice(0, opts.maxRegions)
     }
