@@ -261,7 +261,8 @@ mode を全 Fit*GL に配って優先度で調停する大規模リファクタ�
 - `BaseMapGL`
 - `KyoshinSubThresholdGL`（震度 0 以下ドット・カスタムレイヤー）
 - `KyoshinPointsGL`（震度 1+ 観測点）
-- `KyoshinDetectedPointsGL`（揺れ検知点ハイライト）
+- `KyoshinDetectedPointsGL`（揺れ検知点ハイライト。描く点集合と下限はリアルタイムタブの検知カードと揃える。
+  [`kyoshin-detection-spec.md`](kyoshin-detection-spec.md) §8）
 - `KyoshinMaxEffectGL`（最大震度エフェクト・rAF アニメ）
 - `EewRegionFillGL`（EEW 予想震度塗り・kyoshin 限定）
 - `EewLpgmRegionFillGL`（EEW 予想長周期塗り・kyoshin 限定）
