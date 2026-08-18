@@ -1,36 +1,52 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest'
 import type * as maplibregl from 'maplibre-gl'
-import { subscribeUserInteraction, isProgrammaticFlight, fitJapan } from './camera'
+import { subscribeUserInteraction, isProgrammaticFlight, fitJapan, fitToPositions } from './camera'
+
+type FakeHandler = (e?: unknown) => void
 
 // maplibregl.Map を模したフェイク。on/off/once の登録・fire による発火のみを再現する
 // （subscribeUserInteraction / isProgrammaticFlight が実際に使うイベント API はこれで足りる）。
+// fire は eventData を受ける: MapLibre は fly/fit へ渡した eventData をイベントへマージするため、
+// 「アプリ起点のカメラ操作か」の判別がこれに依存している。
 function createFakeMap() {
-  const handlers = new Map<string, Set<() => void>>()
-  const onceHandlers = new Map<string, Set<() => void>>()
+  const handlers = new Map<string, Set<FakeHandler>>()
+  const onceHandlers = new Map<string, Set<FakeHandler>>()
   const fake = {
-    on(event: string, handler: () => void) {
+    on(event: string, handler: FakeHandler) {
       if (!handlers.has(event)) handlers.set(event, new Set())
       handlers.get(event)!.add(handler)
     },
-    off(event: string, handler: () => void) {
+    off(event: string, handler: FakeHandler) {
       handlers.get(event)?.delete(handler)
     },
-    once(event: string, handler: () => void) {
+    once(event: string, handler: FakeHandler) {
       if (!onceHandlers.has(event)) onceHandlers.set(event, new Set())
       onceHandlers.get(event)!.add(handler)
     },
-    fire(event: string) {
-      for (const h of handlers.get(event) ?? []) h()
+    fire(event: string, eventData?: unknown) {
+      for (const h of handlers.get(event) ?? []) h(eventData)
       const once = onceHandlers.get(event)
       if (once) {
-        for (const h of once) h()
+        for (const h of once) h(eventData)
         once.clear()
       }
     },
     fitBounds: vi.fn(),
     flyTo: vi.fn(),
   }
-  return fake as unknown as maplibregl.Map & { fire: (event: string) => void }
+  return fake as unknown as maplibregl.Map & {
+    fire: (event: string, eventData?: unknown) => void
+    fitBounds: Mock
+    flyTo: Mock
+  }
+}
+
+/**
+ * 実装が `fitBounds` へ渡した eventData（アプリ起点の印）を取り出す。印の形をテストに固定しないため。
+ * 1 点だけを渡した `fitToPositions` や `flyToPoint` は内部で `flyTo` を使うので、こちらでは取れない。
+ */
+function fitBoundsEventDataOf(map: maplibregl.Map & { fitBounds: Mock }, callIndex = 0): unknown {
+  return map.fitBounds.mock.calls[callIndex][2]
 }
 
 describe('subscribeUserInteraction', () => {
@@ -81,20 +97,72 @@ describe('subscribeUserInteraction', () => {
     sub.unsubscribe()
   })
 
-  it('isProgrammaticFlight 中のイベントはユーザー操作と誤認しない', () => {
+  it('アプリ起点のカメラ操作が起こすイベントはユーザー操作と誤認しない', () => {
     const map = createFakeMap()
     const events: boolean[] = []
     const sub = subscribeUserInteraction(map, 30, (v) => events.push(v))
 
-    fitJapan(map, 1.0) // beginProgrammaticFlight を起動する（camera.ts の fit 系関数はすべて同様）
+    fitJapan(map, 1.0) // camera.ts の fit 系関数はすべてアプリ起点の印を付ける
     expect(isProgrammaticFlight(map)).toBe(true)
+    const eventData = fitBoundsEventDataOf(map)
 
-    map.fire('zoomstart') // プログラムによる fitBounds が起こす zoomstart を模す
+    map.fire('zoomstart', eventData) // プログラムによる fitBounds が起こす zoomstart を模す
     expect(events).toEqual([])
 
-    map.fire('moveend') // fitJapan 完了 → isProgrammaticFlight が終了する
+    map.fire('moveend', eventData) // fitJapan 完了 → isProgrammaticFlight が終了する
     expect(isProgrammaticFlight(map)).toBe(false)
     sub.unsubscribe()
+  })
+
+  it('自動フィットが重なっても、アプリ起点のイベントをユーザー操作と誤認しない', () => {
+    // 実地震では EEW の直前に候補クラスタ→揺れ検知のフィットが連続し、飛行が重なる。
+    // 飛行を数え上げるカウンタで「自分の操作か」を判定していた頃は、重なった飛行の
+    // once('moveend') が 1 回の moveend で一斉に発火してカウンタが 0 まで落ち、直後に自分の
+    // フィットが起こす zoomstart をユーザー操作と誤認していた。結果、誰も地図を触っていないのに
+    // EEW のカメラ追従が idleRevertSec 秒ぶん止まり、予想の区域塗りが画面外に取り残されていた。
+    const map = createFakeMap()
+    const events: boolean[] = []
+    const sub = subscribeUserInteraction(map, 30, (v) => events.push(v))
+
+    fitJapan(map, 1.0)
+    fitToPositions(map, [[35, 139], [36, 140]], { durationSec: 1.0 }) // 1 本目を中断して開始
+    const firstFlight = fitBoundsEventDataOf(map, 0)
+    const secondFlight = fitBoundsEventDataOf(map, 1)
+
+    // 中断で起きる moveend は「中断された側」の印を運ぶ。2 本目はまだ飛行中。
+    map.fire('moveend', firstFlight)
+    expect(isProgrammaticFlight(map)).toBe(true)
+
+    map.fire('zoomstart', secondFlight)
+    expect(events).toEqual([])
+
+    map.fire('moveend', secondFlight)
+    expect(isProgrammaticFlight(map)).toBe(false)
+    sub.unsubscribe()
+  })
+
+  it('自動フィット中でも、印の無いイベントはユーザー操作として扱う', () => {
+    // ホイールやドラッグでの割り込み。MapLibre はホイール起点の zoomstart に originalEvent を
+    // 載せないため、アプリ起点の印の有無だけが判別材料になる。
+    const map = createFakeMap()
+    const events: boolean[] = []
+    const sub = subscribeUserInteraction(map, 30, (v) => events.push(v))
+
+    fitJapan(map, 1.0)
+    map.fire('zoomstart') // eventData 無し = ユーザー操作
+    expect(events).toEqual([true])
+    sub.unsubscribe()
+  })
+
+  it('moveend が来なくても、飛行の所要時間を過ぎれば飛行中とみなさない', () => {
+    // タブ非表示などでアニメーションが進まないと moveend が来ない。期限が無いと「飛行中」が
+    // 張り付き、EEW の成長フォローが永久に次のフィットを待ち続ける。
+    const map = createFakeMap()
+    fitJapan(map, 1.0)
+    expect(isProgrammaticFlight(map)).toBe(true)
+
+    vi.advanceTimersByTime(1_000 + 2_000 + 1) // duration + FLIGHT_EXPIRY_MARGIN_MS
+    expect(isProgrammaticFlight(map)).toBe(false)
   })
 
   it('reset() は即座に false を通知しタイマーを解除する', () => {
