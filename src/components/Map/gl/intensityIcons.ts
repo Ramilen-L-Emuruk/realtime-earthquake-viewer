@@ -1,5 +1,6 @@
 import type { Map as MapLibreMap } from 'maplibre-gl'
 import { getIntensityColor, getIntensityLabel } from '../../../utils/intensity'
+import { readableTextColor } from '../../../utils/contrast'
 
 // 震度観測点の丸バッジを Canvas2D で事前ラスタライズし、symbol レイヤーの icon-image として登録する。
 //
@@ -33,10 +34,12 @@ function drawBadge(scale: number): ImageData {
   const cx = size / 2
   const cy = size / 2
 
+  const fill = getIntensityColor(scale)
+
   ctx.save()
   ctx.shadowColor = 'rgba(0,0,0,0.7)'
   ctx.shadowBlur = 3
-  ctx.fillStyle = getIntensityColor(scale)
+  ctx.fillStyle = fill
   ctx.beginPath()
   ctx.arc(cx, cy, r, 0, Math.PI * 2)
   ctx.fill()
@@ -49,7 +52,8 @@ function drawBadge(scale: number): ImageData {
   ctx.stroke()
 
   const label = getIntensityLabel(scale)
-  ctx.fillStyle = '#ffffff'
+  // 文字色は丸の塗り色から決める。白固定だと震度4（黄 #f5e600）で 1.30:1 まで落ちて読めない。
+  ctx.fillStyle = readableTextColor(fill)
   // 以前は "Noto Sans JP" を先頭に指定していたが、@font-face 登録は一度も無く、同名フォントの同梱も
   // 撤去済みのため実態どおり sans-serif のみにする。通常の閲覧環境では描画は変わらない（ただし OS に
   // 同名フォントを手動インストールしている端末では、これまでそちらが使われていたぶん字形が変わる）。

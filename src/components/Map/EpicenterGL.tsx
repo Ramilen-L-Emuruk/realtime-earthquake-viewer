@@ -4,6 +4,7 @@ import { useMapGL } from './mapGLContext'
 import type { JMAQuake } from '../../types/earthquake'
 import type { LatLng } from '../../utils/stationCoords'
 import { getIntensityColor, getIntensityLabel } from '../../utils/intensity'
+import { readableTextColor } from '../../utils/contrast'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
 import { attachMarkerClaim } from './gl/popupRegistry'
 
@@ -40,7 +41,7 @@ function buildPopupHtml(quake: JMAQuake, prefIntensities: [string, number][]): s
       return (
         `<div style="display:flex;align-items:center;gap:8px;font-size:12px">` +
         `<span style="display:inline-block;width:20px;text-align:center;font-weight:700;border-radius:3px;` +
-        `color:#fff;font-size:10px;background:${color}">${esc(label)}</span>` +
+        `color:${readableTextColor(color)};font-size:10px;background:${color}">${esc(label)}</span>` +
         `<span style="color:#cbd5e1">${esc(pref)}</span></div>`
       )
     })

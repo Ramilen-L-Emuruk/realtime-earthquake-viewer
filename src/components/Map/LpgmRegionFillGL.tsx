@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { GeoJSONSource, MapGeoJSONFeature } from 'maplibre-gl'
 import type { Feature, FeatureCollection, Point, Polygon } from 'geojson'
 import { useMapGL } from './mapGLContext'
-import { getLpgmClassColor, getLpgmClassLabel } from '../../utils/lpgm'
+import { getLpgmClassColor, getLpgmClassLabel, getLpgmClassRadius } from '../../utils/lpgm'
 import type { LpgmRegionAggregate } from '../../hooks/useQuakeLayerData'
 import { ringToLngLat } from './gl/geojson'
 import { addOrderedLayer } from './gl/layerOrder'
@@ -22,8 +22,13 @@ const LINE_LYR = 'quake-lpgm-region-fill-line'
 const LABEL_SRC = 'quake-lpgm-region-label'
 const LABEL_LYR = 'quake-lpgm-region-label'
 const HIT_TOL_PX = 10
-// 旧 HTML Marker 版（buildLpgmBadgeEl）のバッジサイズ(32px固定・階級によらない)を踏襲。
-const BASE_RADIUS = 16
+// 区域バッジは観測点バッジ（LpgmPointsGL）より一回り大きくする分の下駄。
+// 震度側が観測点 `getScaleRadius()+3`／区域 `+4` と使い分けているのと同じ考え方。
+//
+// 以前は階級によらず 32px 固定だった（旧 HTML Marker 版 buildLpgmBadgeEl からの移植の名残）。
+// 最も重い階級4 が階級1 と同じ大きさで、重大さが大きさに出ていなかったため階級連動にした。
+// 下駄を 8 にすることで階級1 は従来どおり 32px のまま、階級4 が 44px まで育つ（縮小はしない）。
+const REGION_RADIUS_BONUS = 8
 
 const EMPTY_FILL_FC: FeatureCollection<Polygon> = { type: 'FeatureCollection', features: [] }
 const EMPTY_LABEL_FC: FeatureCollection<Point> = { type: 'FeatureCollection', features: [] }
@@ -54,7 +59,7 @@ function buildLabelFC(regions: LpgmRegionAggregate[], iconScale: number): Featur
     type: 'Feature',
     properties: {
       iconId: lpgmIconId(r.maxLgInt),
-      iconSizeRatio: (BASE_RADIUS * iconScale) / LPGM_ICON_BASE_RADIUS,
+      iconSizeRatio: ((getLpgmClassRadius(r.maxLgInt) + REGION_RADIUS_BONUS) * iconScale) / LPGM_ICON_BASE_RADIUS,
       lgInt: r.maxLgInt,
       name: r.name,
     },
