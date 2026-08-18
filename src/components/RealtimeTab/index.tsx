@@ -11,6 +11,7 @@ import { getIntensityColor, getIntensityLabel, getIntensityBgColor, getMagnitude
 import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
 import { eewAreas, eewMaxScale, eewMaxLpgmClass, eewSerial, computeSingleEEWLevel } from '../../utils/eew'
 import { kyoshinIndexToJma, kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
+import { readableTextColor } from '../../utils/contrast'
 
 // 凡例は地図と同じ気象庁の震度配色（getIntensityColor）を使う。scale=0 は震度0（灰色）。
 const SCALE_LEGEND: { label: string; scale: number }[] = [
@@ -293,9 +294,13 @@ function SWaveArrivalCard({ arrival }: { arrival: SWaveArrival }) {
 }
 
 // 検知エンジンの確信度別スタイル。confirmed=赤・likely=橙・faint=淡青(震度0級・無音)・weak=灰。
+// `border` はチップの背景色として使う。白文字（12px 太字＝WCAG の Large Text 緩和に該当しない）を
+// 載せるため 4.5:1 が要る。confirmed の #ef4444 は 3.76:1・likely の #d97706 は 3.19:1 で足りず、
+// 一段暗い赤・橙へ落として白文字のまま 4.83:1 / 5.02:1 を確保している（気象庁配色ではないため
+// 色自体を変えてよい）。カード背景（#0a0c10 相当）に対しても 4.05:1 / 3.90:1 あり沈まない。
 const V2_TIER: Record<Confidence, { label: string; color: string; bg: string; border: string }> = {
-  confirmed: { label: '検知', color: '#f87171', bg: '#450a0a', border: '#ef4444' },
-  likely: { label: '可能性', color: '#fcd34d', bg: '#451a03', border: '#d97706' },
+  confirmed: { label: '検知', color: '#f87171', bg: '#450a0a', border: '#dc2626' },
+  likely: { label: '可能性', color: '#fcd34d', bg: '#451a03', border: '#b45309' },
   faint: { label: '微弱', color: '#93c5fd', bg: 'rgba(30,41,59,0.55)', border: '#3b5b80' },
   weak: { label: '検出', color: '#9ca3af', bg: 'rgba(42,42,42,0.6)', border: '#4b5563' },
 }
@@ -391,7 +396,7 @@ function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent
             <div className="flex flex-col gap-1">
               {groups.map(g => (
                 <div key={g.label} className="flex items-center gap-2">
-                  <span className="w-6 text-center text-xs font-bold rounded flex-shrink-0" style={{ backgroundColor: g.color, color: '#fff' }}>
+                  <span className="w-6 text-center text-xs font-bold rounded flex-shrink-0" style={{ backgroundColor: g.color, color: readableTextColor(g.color) }}>
                     {g.label}
                   </span>
                   <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.08)' }}>
