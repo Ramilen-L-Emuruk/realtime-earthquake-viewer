@@ -14,7 +14,15 @@
     <meta name="theme-color" content="#12151a" />
     <meta name="description" content="気象庁の地震情報・緊急地震速報・津波情報をリアルタイムに表示します。" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!--
+      ステータスバーは black（不透明）にする。black-translucent にしてはならない。
+      iOS のホーム画面から起動した PWA で black-translucent を使うと、レイアウトの基準となる
+      ビューポートの高さだけが上端セーフエリア分だけ縮むのに、原点は画面最上端のまま置かれる。
+      結果、画面下端にページからは描画できない帯が残り、body の背景色だけが露出する。
+      実測値・影響範囲・判定手順は docs/spec/architecture-spec.md の
+      「画面いっぱいへの広がりとセーフエリア」規則 4 に集約している。
+    -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
     <meta name="apple-mobile-web-app-title" content="地震ビューアー" />
     <link rel="icon" type="image/svg+xml" href="./icons/icon.svg" />
     <!--

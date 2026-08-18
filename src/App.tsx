@@ -745,13 +745,12 @@ export function App() {
     mapTab === 'realtime' ? kyoshin.error : connectionStatus === 'disconnected'
 
   return (
-    // 画面全体への広がりは fixed + inset-0 で取る（高さ単位に依存させない）。
-    // 以前は h-dvh（100dvh）だったが、iOS の PWA（standalone・viewport-fit=cover）では
-    // 100dvh が safe-area を除いた高さを返すことがあり、画面下端に届かず body の背景が
-    // 帯状に露出していた。fixed の包含ブロックはビューポートそのものなので、この解釈差の
-    // 影響を受けない。※ height を併記すると over-constrained で bottom:0 が無視されるため、
-    // 高さのユーティリティは付けないこと。
-    <div className="fixed inset-0 flex flex-col bg-app text-white overflow-hidden">
+    // 画面いっぱいの高さは h-dvh（100dvh）で取る。dvh はブラウザ UI の出入りに追従するため、
+    // iOS Safari でツールバーが出ている間もナビが画面外へ押し出されない。
+    // 画面端の safe-area は端に接する要素が各自で避ける（root では扱わない）。
+    // 規則と端ごとの担当は docs/spec/architecture-spec.md
+    // 「画面いっぱいへの広がりとセーフエリア」に集約している。
+    <div className="flex flex-col h-dvh bg-app text-white overflow-hidden">
       {/* 地図(左) | パネル | アイコンナビ(右端)。
           side ブレークポイント未満（スマホ縦など）は縦積み(地図上・つまみ・パネル・ナビ下)になり、
           パネルの高さは --panel-ratio（つまみのドラッグで可変・折りたたみ時 0）で決まる。
