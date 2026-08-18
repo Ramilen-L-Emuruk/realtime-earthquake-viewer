@@ -246,12 +246,33 @@ Yahoo RealTimeData (1Hz JSON)
 
 `DetectionEvent[]` を UI 向けの `KyoshinView` に変換する:
 - `confirmed` / `candidate`: confirmed / likely イベントが1件以上あるか
-- `detectedPoints`: confirmed 全イベントのメンバー観測点の和集合（自動フィット対象）
-- `candidatePoints`: 主 likely イベント（最大震度が最大の1件）のメンバー観測点
+- `detectedPoints`: confirmed 全イベントのメンバー観測点の和集合（自動フィット＋検知点マーカー）
+- `candidatePoints`: 主 likely イベント（最大震度が最大の1件）のメンバー観測点。**候補カメラフィット専用**
+- `unconfirmedPoints`: likely / faint 全イベントのメンバー観測点の和集合から `detectedPoints` の分を除いた差集合。
+  **検知点マーカー専用**（フィットには使わない。複数 likely の和集合に寄せると境界が飛び跳ねるため）
 - `confirmedShocks`: confirmed 各イベント（＝地域）の代表点（重心）＋メンバー最大震度。地域単位発報の入力
 
 自動フィットは常にメンバー観測点のフットプリントを対象とし、`epicenter`（推定震央）へは飛ばさない
 （深発・沖合で `epicenter` の誤差が大きくても地図が誤った場所へ飛ばないようにするため）。
+
+### 検知点マーカーとカードの点数の一致
+
+地図の検知点マーカー（`KyoshinDetectedPointsGL`）とリアルタイムタブの検知カードは、**同じ点集合・同じ下限**で
+数える。どちらかだけを変えると表示が食い違う。
+
+| 揃えるもの | 内容 |
+|---|---|
+| 対象イベント | `weak` 以外の全イベント（confirmed ＋ likely ＋ faint）。地図は `detectedPoints` ＋ `unconfirmedPoints` の 2 本で覆う |
+| 下限 | 現在**震度0以上**（計測震度 0.0 以上）の点だけ。判定は `kyoshinIndexToJma` / `kyoshinIndexToLabel`（`src/utils/kyoshinIntensity.ts`）が震度階級を返すかどうかに委ねる。震度0未満（`index` 0〜5。値は非負だが計測震度は負）と欠測（`index` が負のセンチネル）はどちらも階級が取れないため、数えず描かない |
+
+**メンバー観測点は一度入るとイベント解除まで縮まない**（`memberKeys` は和集合で単調増加。現在揺れている
+数は `lastSize` が別に持つ）。そのため「メンバー全件」を描いてしまうと、揺れが収まるほど地図が
+「もう揺れていない点」で埋まり、震度0以上だけを数えるカードと桁違いにずれる。2026-08-18 まで地図側が
+これに該当していた（階級が取れない点を震度0として描いていた。計測値は `gl/kyoshinDetectedFeatures.ts` のコメント）。
+
+メンバーが全員震度0未満まで下がると、地図の検知点マーカーは 0 件になる。イベント自体は `HOLD_MS` /
+`LIKELY_HOLD_MS` の間ラッチで生き残るためカードは残るが、点数の代わりに「観測点の反応は収まりました」と
+表示して地図と矛盾しないようにしている。
 
 ### 発報ロジック（`useKyoshinAlerts`）
 
