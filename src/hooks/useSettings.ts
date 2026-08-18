@@ -34,6 +34,8 @@ export interface AppSettings {
   voicevoxSpeakerId: number        // VOICEVOX 話者 ID
   ttsIntensityLevels: number       // 読み上げる震度階数（最大震度から何階級分。0 = 最大震度のみ）
   ttsMaxRegions: number            // 読み上げる最大地域数（0 = 無制限）
+  ttsAlwaysReadScale: number       // 階数の設定を超えても読み上げる下限震度 (-1 = 無効)
+  ttsRegionTolerance: number       // 最大地域数をこの数まで超える場合は省略せず全地域を読む (0 = 無効)
   panelRatio: number               // 縦積みレイアウト（スマホ縦など）でのパネル高さ比率（0.2〜0.8）
 }
 
@@ -76,6 +78,8 @@ const DEFAULTS: AppSettings = {
   voicevoxSpeakerId: 0,
   ttsIntensityLevels: 2,
   ttsMaxRegions: 10,
+  ttsAlwaysReadScale: 30,
+  ttsRegionTolerance: 2,
   panelRatio: 0.45,
 }
 
@@ -135,6 +139,8 @@ export function sanitize(partial: Partial<AppSettings>): AppSettings {
     voicevoxSpeakerId: clampNumber(partial.voicevoxSpeakerId, 0, 100000, DEFAULTS.voicevoxSpeakerId),
     ttsIntensityLevels: clampNumber(partial.ttsIntensityLevels, 0, 10, DEFAULTS.ttsIntensityLevels),
     ttsMaxRegions: clampNumber(partial.ttsMaxRegions, 0, 100, DEFAULTS.ttsMaxRegions),
+    ttsAlwaysReadScale: clampNumber(partial.ttsAlwaysReadScale, -1, 70, DEFAULTS.ttsAlwaysReadScale),
+    ttsRegionTolerance: clampNumber(partial.ttsRegionTolerance, 0, 100, DEFAULTS.ttsRegionTolerance),
     panelRatio: clampNumber(partial.panelRatio, PANEL_RATIO_MIN, PANEL_RATIO_MAX, DEFAULTS.panelRatio),
   }
 }

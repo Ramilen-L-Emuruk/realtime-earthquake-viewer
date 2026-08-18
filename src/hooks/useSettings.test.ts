@@ -64,6 +64,21 @@ describe('sanitize', () => {
     expect(sanitize({ ttsIntensityLevels: 999 }).ttsIntensityLevels).toBe(10)
   })
 
+  it('ttsAlwaysReadScale の無効値(-1)は保持し、範囲外は 70 にクランプ', () => {
+    expect(sanitize({ ttsAlwaysReadScale: -1 }).ttsAlwaysReadScale).toBe(-1)
+    expect(sanitize({ ttsAlwaysReadScale: 999 }).ttsAlwaysReadScale).toBe(70)
+  })
+
+  it('ttsRegionTolerance=-3 → 0 にクランプ', () => {
+    expect(sanitize({ ttsRegionTolerance: -3 }).ttsRegionTolerance).toBe(0)
+  })
+
+  it('読み上げの階数・地域数の既定値（未保存時）', () => {
+    const d = sanitize({})
+    expect(d.ttsAlwaysReadScale).toBe(30)
+    expect(d.ttsRegionTolerance).toBe(2)
+  })
+
   it('homeLat が数値以外 → null', () => {
     expect(sanitize({ homeLat: 'invalid' as unknown as number }).homeLat).toBeNull()
   })
