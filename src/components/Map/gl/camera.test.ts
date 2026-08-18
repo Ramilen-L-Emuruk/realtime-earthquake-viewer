@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest'
 import type * as maplibregl from 'maplibre-gl'
-import { subscribeUserInteraction, isProgrammaticFlight, fitJapan, fitToPositions } from './camera'
+import {
+  subscribeUserInteraction,
+  isProgrammaticFlight,
+  fitJapan,
+  fitToPositions,
+  INTERACTION_HOLD_SEC,
+} from './camera'
 
 type FakeHandler = (e?: unknown) => void
 
@@ -63,7 +69,7 @@ describe('subscribeUserInteraction', () => {
 
   it('初期状態は isInteracting: false', () => {
     const map = createFakeMap()
-    const sub = subscribeUserInteraction(map, 30, () => {})
+    const sub = subscribeUserInteraction(map, () => {})
     expect(sub.isInteracting).toBe(false)
     sub.unsubscribe()
   })
@@ -71,36 +77,41 @@ describe('subscribeUserInteraction', () => {
   it('zoomstart/dragstart を検知するとリスナーへ true を通知する', () => {
     const map = createFakeMap()
     const events: boolean[] = []
-    const sub = subscribeUserInteraction(map, 30, (v) => events.push(v))
+    const sub = subscribeUserInteraction(map, (v) => events.push(v))
     map.fire('dragstart')
     expect(events).toEqual([true])
     sub.unsubscribe()
   })
 
-  it('idleRevertSec 経過後に自動的に false を通知する', () => {
+  it('一定時間の経過で自動的に false を通知する', () => {
     const map = createFakeMap()
     const events: boolean[] = []
-    const sub = subscribeUserInteraction(map, 30, (v) => events.push(v))
+    const sub = subscribeUserInteraction(map, (v) => events.push(v))
     map.fire('zoomstart')
-    vi.advanceTimersByTime(30_000)
+    vi.advanceTimersByTime(INTERACTION_HOLD_SEC * 1000)
     expect(events).toEqual([true, false])
     sub.unsubscribe()
   })
 
-  it('idleRevertSec=0 のときはタイマーで自動解除しない（無期限保持）', () => {
+  it('抑制は必ず解ける（設定タブ「自動復帰までの時間」からは切り離されている）', () => {
+    // かつてはその設定値をそのまま使っており、「無効」を選ぶと解除タイマーを張らないため、地図を
+    // 一度触ると明示的な解除が来るまで自動フィットが永久に止まっていた。購読側が秒数を渡せない形に
+    // することで、設定に関わらず必ず復帰することを固定する。
     const map = createFakeMap()
     const events: boolean[] = []
-    const sub = subscribeUserInteraction(map, 0, (v) => events.push(v))
+    const sub = subscribeUserInteraction(map, (v) => events.push(v))
     map.fire('dragstart')
-    vi.advanceTimersByTime(600_000)
     expect(events).toEqual([true])
+
+    vi.advanceTimersByTime(INTERACTION_HOLD_SEC * 1000)
+    expect(events).toEqual([true, false])
     sub.unsubscribe()
   })
 
   it('アプリ起点のカメラ操作が起こすイベントはユーザー操作と誤認しない', () => {
     const map = createFakeMap()
     const events: boolean[] = []
-    const sub = subscribeUserInteraction(map, 30, (v) => events.push(v))
+    const sub = subscribeUserInteraction(map, (v) => events.push(v))
 
     fitJapan(map, 1.0) // camera.ts の fit 系関数はすべてアプリ起点の印を付ける
     expect(isProgrammaticFlight(map)).toBe(true)
@@ -119,10 +130,10 @@ describe('subscribeUserInteraction', () => {
     // 飛行を数え上げるカウンタで「自分の操作か」を判定していた頃は、重なった飛行の
     // once('moveend') が 1 回の moveend で一斉に発火してカウンタが 0 まで落ち、直後に自分の
     // フィットが起こす zoomstart をユーザー操作と誤認していた。結果、誰も地図を触っていないのに
-    // EEW のカメラ追従が idleRevertSec 秒ぶん止まり、予想の区域塗りが画面外に取り残されていた。
+    // EEW のカメラ追従が抑制の保持時間ぶん止まり、予想の区域塗りが画面外に取り残されていた。
     const map = createFakeMap()
     const events: boolean[] = []
-    const sub = subscribeUserInteraction(map, 30, (v) => events.push(v))
+    const sub = subscribeUserInteraction(map, (v) => events.push(v))
 
     fitJapan(map, 1.0)
     fitToPositions(map, [[35, 139], [36, 140]], { durationSec: 1.0 }) // 1 本目を中断して開始
@@ -146,7 +157,7 @@ describe('subscribeUserInteraction', () => {
     // 載せないため、アプリ起点の印の有無だけが判別材料になる。
     const map = createFakeMap()
     const events: boolean[] = []
-    const sub = subscribeUserInteraction(map, 30, (v) => events.push(v))
+    const sub = subscribeUserInteraction(map, (v) => events.push(v))
 
     fitJapan(map, 1.0)
     map.fire('zoomstart') // eventData 無し = ユーザー操作
@@ -168,12 +179,12 @@ describe('subscribeUserInteraction', () => {
   it('reset() は即座に false を通知しタイマーを解除する', () => {
     const map = createFakeMap()
     const events: boolean[] = []
-    const sub = subscribeUserInteraction(map, 30, (v) => events.push(v))
+    const sub = subscribeUserInteraction(map, (v) => events.push(v))
     map.fire('dragstart')
     sub.reset()
     expect(events).toEqual([true, false])
 
-    vi.advanceTimersByTime(30_000)
+    vi.advanceTimersByTime(INTERACTION_HOLD_SEC * 1000)
     expect(events).toEqual([true, false]) // reset 済みのため、元のタイマー失効による二重通知は来ない
     sub.unsubscribe()
   })
@@ -182,8 +193,8 @@ describe('subscribeUserInteraction', () => {
     const map = createFakeMap()
     const eventsA: boolean[] = []
     const eventsB: boolean[] = []
-    const subA = subscribeUserInteraction(map, 30, (v) => eventsA.push(v))
-    const subB = subscribeUserInteraction(map, 30, (v) => eventsB.push(v))
+    const subA = subscribeUserInteraction(map, (v) => eventsA.push(v))
+    const subB = subscribeUserInteraction(map, (v) => eventsB.push(v))
 
     map.fire('dragstart')
     expect(eventsA).toEqual([true])
@@ -196,7 +207,7 @@ describe('subscribeUserInteraction', () => {
   it('unsubscribe 後は通知が届かない', () => {
     const map = createFakeMap()
     const events: boolean[] = []
-    const sub = subscribeUserInteraction(map, 30, (v) => events.push(v))
+    const sub = subscribeUserInteraction(map, (v) => events.push(v))
     sub.unsubscribe()
     map.fire('dragstart')
     expect(events).toEqual([])

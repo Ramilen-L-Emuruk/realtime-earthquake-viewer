@@ -32,7 +32,6 @@ export interface JapanMapProps {
   detectedPoints?: DetectedPoint[]
   candidatePoints?: DetectedPoint[]
   candidateId?: number | null
-  idleRevertSec?: number
   eewLpgmEventId?: string | null
   focusObsName?: { name: string; ts: number } | null
   obsUpdateStatus?: Map<string, 'new' | 'updated'>
