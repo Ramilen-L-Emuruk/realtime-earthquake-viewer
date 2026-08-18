@@ -773,6 +773,7 @@ export interface GdEarthquakeItem {
   originTime: string
   latitude: number
   longitude: number
+  /** マグニチュード。値なし・数値化できない（「不明」等）場合は -1。 */
   magnitude: number
   /** 震源地名。レスポンスに含まれない場合は空文字。 */
   name: string
@@ -792,12 +793,25 @@ const GD_EARTHQUAKE_MAX_PAGES = 20
 
 // DMDATA REST API で震源カタログ（GD Earthquake List）を取得し、直近 `days` 日分に絞って返す。
 // 通常版の fetchJmaQuakeHistory に相当するヒートマップ用データ源。
+// 震源または発生時刻が決まっていない項目は地図に置けないため、その1件だけ除いて取得を続ける。
+// 通常版（P2PQuake）も震源未確定を落とすが、判定は別物。あちらは欠測を -200 等のセンチネル値で
+// 受け取るため `hasValidHypocenter` が値域で判定する。DMDATA はフィールドごと欠けるので、
+// ここでは「数値として読めるか」で判定する（同じ関数を使い回すと判定の根拠が入れ替わる）。
+// 新しい順（降順）で返る前提で、cutoff に達した時点で全ページの探索を打ち切る。
+// ただし走査できる範囲を読み切っても 1 件も残らなかった場合は例外を投げる（理由は関数末尾のコメント）。
 // gd.earthquake スコープが契約に含まれない場合は 403 で例外を投げる。
 export async function fetchDmdataGdEarthquakes(apiKey: string, days: number): Promise<GdEarthquakeItem[]> {
   const headers = { Authorization: authHeader(apiKey) }
   const cutoffMs = serverNow() - days * 24 * 60 * 60 * 1000
   const collected: GdEarthquakeItem[] = []
   let cursorToken: string | undefined
+  // 捨てた件数。取得後に 1 行だけ出す（P2PQuake 側の warnField/warnMissing と同じく、
+  // 既定の扱いに落とすこと自体は許すが黙っては通さない）。理由を分けて数えるのは、
+  // 障害時に「震源未確定が急増した」のか「API のフィールドが変わった」のかを切り分けるため。
+  let skippedNoTime = 0
+  let skippedNoCoord = 0
+  // 期間の端まで到達したか。ページを跨いで保持する（末尾の全滅判定が読む）。
+  let reachedCutoff = false
 
   for (let page = 0; page < GD_EARTHQUAKE_MAX_PAGES; page++) {
     const qs = cursorToken ? `&cursorToken=${cursorToken}` : ''
@@ -806,37 +820,80 @@ export async function fetchDmdataGdEarthquakes(apiKey: string, days: number): Pr
     const json = await res.json() as {
       items?: Array<{
         eventId: string
-        originTime: string
-        hypocenter: {
+        // 震源が未決定の地震（震度速報だけが出て震源・震度情報がまだ発表されていない等）は、
+        // originTime も hypocenter も持たない項目として返る（eventId・arrivalTime・maxInt のみ）。
+        // 実データに合わせて optional とし、読む側で必ず存在を確かめる。必須と宣言すると
+        // 「あるはず」の思い込みのまま参照して例外になり、1件の欠測で全ページ分を失う。
+        originTime?: string
+        hypocenter?: {
           // 震源地名・深さはヒートマップのポップアップ表示に使う。契約や電文の種別によっては
           // 欠けることがあるため optional として扱い、欠測時は空文字 / -1 に倒す。
           name?: string
-          coordinate: { latitude: { value: string }; longitude: { value: string } }
+          coordinate?: { latitude?: { value?: string }; longitude?: { value?: string } }
           depth?: { value?: string | null }
         }
-        magnitude?: { value: string }
+        magnitude?: { value?: string }
       }>
       nextToken?: string
     }
     const items = json.items ?? []
     if (items.length === 0) break
 
-    let reachedCutoff = false
     for (const it of items) {
-      if (new Date(it.originTime).getTime() < cutoffMs) { reachedCutoff = true; break }
+      // 期間の打ち切りは発生時刻を持つ項目だけで判断する。震源未決定の項目は時刻も持たないため、
+      // ここで打ち切ると以降のページを取り逃がす（新しい側に1件混ざるだけで1ヶ月分が欠ける）。
+      const originTime = it.originTime
+      const originMs = originTime ? new Date(originTime).getTime() : NaN
+      if (Number.isFinite(originMs) && originMs < cutoffMs) { reachedCutoff = true; break }
+      const latitude = parseFloat(it.hypocenter?.coordinate?.latitude?.value ?? '')
+      const longitude = parseFloat(it.hypocenter?.coordinate?.longitude?.value ?? '')
+      // 置く場所（震源）と時刻のどちらかが無ければヒートマップに載せられない。この1件だけ捨てる。
+      if (!originTime || !Number.isFinite(originMs)) { skippedNoTime++; continue }
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) { skippedNoCoord++; continue }
+      const magnitude = parseFloat(it.magnitude?.value ?? '')
       collected.push({
         eventId: it.eventId,
-        originTime: it.originTime,
-        latitude: parseFloat(it.hypocenter.coordinate.latitude.value),
-        longitude: parseFloat(it.hypocenter.coordinate.longitude.value),
-        magnitude: it.magnitude ? parseFloat(it.magnitude.value) : -1,
-        name: it.hypocenter.name ?? '',
-        depth: gdDepthKm(it.hypocenter.depth),
+        originTime,
+        latitude,
+        longitude,
+        // 深さと同じく、値なし・数値化できない場合は -1（不明）に倒す。NaN のまま流すと
+        // 重みの計算結果も NaN になり、ヒートマップの描画が壊れる。
+        magnitude: Number.isFinite(magnitude) ? magnitude : -1,
+        name: it.hypocenter?.name ?? '',
+        depth: gdDepthKm(it.hypocenter?.depth),
       })
     }
     if (reachedCutoff || !json.nextToken) break
+    // 1 ページ丸ごと捨てて 1 件も残らなかったなら、応答の形が変わった可能性が高い。残りのページを
+    // 取りに行っても同じことになるので、ここで打ち切って末尾の全滅判定に落とす。
+    // （震源未決定の項目は cutoff 判定を素通りするため、この打ち切りが無いと GD_EARTHQUAKE_MAX_PAGES
+    //   ぶんのリクエストを空振りに費やしてから例外になる。）
+    if (collected.length === 0) break
     cursorToken = json.nextToken
   }
 
+  const skipped = skippedNoTime + skippedNoCoord
+  if (skipped > 0) {
+    log.warn(
+      `[DMDSS] GD Earthquake List: ${collected.length + skipped} 件中 ${skipped} 件をスキップしました` +
+        `（発生時刻なし ${skippedNoTime} 件 / 震源座標なし ${skippedNoCoord} 件）`,
+    )
+  }
+  // 走査できる範囲を読み切っても 1 件も地図に置けなかったときは、応答の形が変わった可能性が高い。
+  // ここで空配列を「正常な結果」として返すと、呼び出し側（useQuakeHeatmap）がそれをキャッシュし、
+  // 直前まで出ていたヒートマップを消したうえで TTL の間そのままにしてしまう。例外にして、既存の
+  // 失敗経路（前回のキャッシュを使い続ける）へ倒す。
+  // 判定に付いている 3 つの条件はそれぞれ別の正常系を除けるためのもの。
+  //   - skipped > 0 …… 期間内に地震が本当に無くて 0 件だった場合を異常としない
+  //   - !reachedCutoff … 期間の端まで正常に読み切った結果 0 件だった場合を異常としない
+  //     （直近の数件が偶然すべて震源未決定で、その次が期間外だった、という並びで起こりうる）
+  // 割合ではなく「全滅」だけを異常とみなすのは、大地震の直後は震源未確定の項目が一時的に増える
+  // ため。割合で切ると、最も見たいときにヒートマップを消すことになる。
+  if (collected.length === 0 && skipped > 0 && !reachedCutoff) {
+    throw new Error(
+      `gd/earthquake: 走査した ${skipped} 件すべてを除外（発生時刻なし ${skippedNoTime} 件 / ` +
+        `震源座標なし ${skippedNoCoord} 件）。地図に置ける項目がありません`,
+    )
+  }
   return collected
 }

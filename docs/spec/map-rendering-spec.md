@@ -150,7 +150,8 @@ MapLibre GL JS のズームは 512px タイル基準で数えるため、Leaflet
 - ラベル粒度の切替帯（§5・値は `LabelsGL.tsx` の定数）
 - 細線を消す下限ズーム（§4。`gl/zoomLevels.ts` の `DETAIL_MIN_ZOOM`）
 - 震度の区域集約の閾値（[quake-spec.md](quake-spec.md) §7。`MAX_ZOOM` から導出しており独自の値を持たない）
-- ヒートマップの収束ズーム（`QuakeHeatmapGL` の `HEAT_MAX_ZOOM`）
+- ヒートマップの収束ズーム（`QuakeHeatmapGL` の `HEAT_MAX_ZOOM`）。拡散半径と密度強度の補間の上端で
+  あって**表示の上限ではない**（レイヤーに `maxzoom` は付けない。理由はコード側コメント）
 - 地形先読みの最大タイル z（§4。タイル座標系なので `MAX_ZOOM` そのものではない）
 - 海底地形の高解像度層の下限ズーム（§4 の `GEBCO_HIRES_MIN_ZOOM`。マップズーム基準。自動フィットの
   寄り上限で必ず高解像度が出るよう `MAX_ZOOM` より小さく保つ）
@@ -330,3 +331,6 @@ MapLibre v6 の `_contextRestored` は `setStyle(..., {diff:false})` を呼ん�
   倍率の外にあり、バッジを大きくするとラベルとの間隔の前提（震度7バッジ約20px に対する退避量）が
   崩れていた。退避量は `text-offset` の em 指定なので、文字とバッジの双方に同じ倍率が掛かることで
   比率が保たれる
+- 2026-08-18: ヒートマップのレイヤーから `maxzoom`（表示上限）を撤去（§6）。移植元 `leaflet.heat` の
+  `maxZoom` は補間の上端を指す設定であり表示を止めるものではないのに、MapLibre の `layer.maxzoom` に
+  流用していたため、ズーム 8 以上でヒートマップとポップアップが揃って消えていた

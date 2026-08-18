@@ -22,8 +22,12 @@ const SRC = 'quake-heat'
 const LYR = 'quake-heat'
 const HIT_LYR = 'quake-heat-hit'
 
-// Leaflet 版と揃えた見え方の基準ズーム（この付近以下で全域が均される）。
+// 拡散半径と密度強度がここまで上がりきる基準ズーム（これ以上寄っても値は変わらない）。
 // MapLibre 基準（512px タイル）なので Leaflet 版の 8 から 1 段引いた値＝同じ縮尺（gl/camera.ts の MAX_ZOOM 参照）。
+// **レイヤーの表示上限（maxzoom）には使わない。** 移植元 leaflet.heat の `maxZoom` は「点の強度が
+// 最大に達するズーム」を指す設定で表示を止めるものではなく、Leaflet 版は寄っても消えなかった。
+// これを layer.maxzoom に流用していた間は、手で 1 段寄せただけでヒートマップとポップアップが
+// 揃って消えていた（自動フィットの寄り上限が MAX_ZOOM=7 のため、自動追従では気づけない）。
 const HEAT_MAX_ZOOM = 7
 // 当たり判定の円半径(px)。見た目には出ないので、指で押しやすい大きさにする。
 // 地図アイコンの倍率は掛けない——これは「押しやすさ」の値であって見た目の大きさではなく、
@@ -118,7 +122,6 @@ export function QuakeHeatmapGL({ points, iconScale, visible }: Props) {
       id: LYR,
       type: 'heatmap',
       source: SRC,
-      maxzoom: HEAT_MAX_ZOOM + 1,
       layout: { visibility: visible ? 'visible' : 'none' },
       paint: {
         // 各点の重み（quakeHeatmap 側で 0〜1 に正規化済み）。
@@ -141,12 +144,11 @@ export function QuakeHeatmapGL({ points, iconScale, visible }: Props) {
         'heatmap-opacity': 0.85,
       },
     })
-    // 当たり判定専用の透明レイヤー。ヒートマップが消える倍率では判定も消えるよう maxzoom を揃える。
+    // 当たり判定専用の透明レイヤー。ヒートマップ本体と同じズーム範囲で出す（どちらもズーム上限を持たない）。
     addOrderedLayer(map, {
       id: HIT_LYR,
       type: 'circle',
       source: SRC,
-      maxzoom: HEAT_MAX_ZOOM + 1,
       layout: { visibility: visible ? 'visible' : 'none' },
       paint: {
         'circle-radius': HIT_RADIUS_PX,
