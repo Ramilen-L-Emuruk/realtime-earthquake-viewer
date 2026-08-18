@@ -133,20 +133,31 @@ export function boundsFromEewCirclesAndHypocenters(
 }
 
 /**
- * EEW 発報中のライブ追従の目標 bounds（タプル）。EEW の有感半径 bounds・震源座標と揺れ検知点の
- * 外接矩形を合成する。
+ * EEW 発報中のライブ追従の目標 bounds（タプル）。EEW の有感半径 bounds・震源座標・揺れ検知点・
+ * 予想の区域塗り（`useEewLayerData` の `eewFitPositions`）の外接矩形を合成する。
  *
  * 合成する理由: どれか一つだけを追うと、他が画面外へ取り残される。かといって別々の追従を
  * 持たせると目標が複数になり、互いに相手をはみ出させ合って振動する。目標を1つに束ねることで
  * 「EEW の予想範囲・震源・実際に揺れている観測点のすべてが必ず入る」画を単一の判定で維持できる。
  *
- * 検知点側には日本全体クランプをかけない。JAPAN_BOUNDS は本州〜北海道を囲う枠で沖縄を含まないため、
- * 沖縄の観測点が反応した場合に切り捨ててしまう。ハードキャップは円側にのみ効かせる。
+ * 区域塗りを含める理由: 有感半径クランプは距離減衰式による推定だが、区域塗りは気象庁が発表した
+ * 予想震度そのもの。塗ってあるものが画面外にあると読めないため、実際に描いている範囲を目標に含める。
+ * S波がまだ到達していない遠方の区域も入るので、円だけを追う場合より早めに引きの画へ移る。
+ *
+ * 検知点側と区域側には日本全体クランプをかけない。JAPAN_BOUNDS は本州〜北海道を囲う枠で沖縄を
+ * 含まないため、沖縄の観測点や区域が反応した場合に切り捨ててしまう。ハードキャップは円側にのみ効かせる。
  */
 export function boundsForLiveFollowTuple(
   circles: EewFollowCircle[],
   hypocenters: LatLng[],
   detectedPositions: LatLng[],
+  forecastAreaPositions: LatLng[] = [],
 ): BoundsTuple | null {
-  return mergeBounds(boundsFromEewCirclesAndHypocenters(circles, hypocenters), boundsFromPositionsTuple(detectedPositions))
+  return mergeBounds(
+    mergeBounds(
+      boundsFromEewCirclesAndHypocenters(circles, hypocenters),
+      boundsFromPositionsTuple(detectedPositions),
+    ),
+    boundsFromPositionsTuple(forecastAreaPositions),
+  )
 }

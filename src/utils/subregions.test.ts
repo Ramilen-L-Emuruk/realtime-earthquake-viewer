@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import type { SubRegion } from './subregions'
+// ringsBounds は純関数でモジュール状態（cache / inflight）に依存しないため静的 import で使う。
+import { ringsBounds, type SubRegion } from './subregions'
 import { DATA_FETCH_TIMEOUT_MS } from './fetchJson'
 
 // subregions.ts はモジュールスコープに cache / inflight / 購読者を持つため、
@@ -29,6 +30,37 @@ function hangingFetch(init?: { signal?: AbortSignal }) {
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.useRealTimers()
+})
+
+// 区域塗りのカメラフィット（useQuakeLayerData の quakeFitPositions・useEewLayerData の
+// eewFitPositions）と、区域集約の点内包判定の前段フィルタが同じ矩形を見るための共通計算。
+describe('ringsBounds', () => {
+  it('全リングの頂点を囲む矩形を返す', () => {
+    // Arrange: 外周＋内側の穴。穴の頂点は外周に包含されるので矩形は外周で決まる。
+    const rings: [number, number][][] = [
+      [
+        [37.0, 136.5],
+        [37.5, 137.2],
+        [37.2, 136.6],
+      ],
+      [
+        [37.1, 136.8],
+        [37.2, 136.9],
+      ],
+    ]
+
+    // Act
+    const bounds = ringsBounds(rings)
+
+    // Assert
+    expect(bounds).toEqual({ minLat: 37.0, maxLat: 37.5, minLng: 136.5, maxLng: 137.2 })
+  })
+
+  it('頂点が無ければ null（Infinity を矩形として返さない）', () => {
+    // Infinity を含む矩形を返すと、フィット対象へ混ぜた瞬間に目標が壊れる（地球全体になる）。
+    expect(ringsBounds([])).toBeNull()
+    expect(ringsBounds([[]])).toBeNull()
+  })
 })
 
 describe('loadSubRegions', () => {

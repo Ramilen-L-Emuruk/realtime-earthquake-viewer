@@ -407,6 +407,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | EEW P/S 波予報円の計算・仮定震源要素の連動箇所 | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §5-§6 |
 | EEW レベル判定（特別警報の条件・長周期の DMDATA 限定） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
 | 地図レイヤー描画順・EEW 予想レイヤーの kyoshin 限定・`maplibregl.Marker` の opacity | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §2・§3・§7・§10 |
+| EEW 予想の区域塗りとカメラ追従対象の一致（`useEewLayerData` の `eewFitPositions` と `JapanMapGL` の塗り分けが、同じ「予想長周期を優先する」判定を使っていること） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6 |
 | ズーム値の基準（MapLibre 512px タイル vs Leaflet 256px タイル）・`MAX_ZOOM` に揃える閾値群 | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §4・§6 |
 | ラベルのフォントスタック名の一致・グリフ収録文字の網羅性・フォント適用範囲（ラベル限定） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §5 |
 | 倍率の適用範囲（UI は rem で書く／地図の描画物には `iconScale` を渡す。枠線・影・アウトラインは倍率に連動させない） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §2「主な項目の補足」 |

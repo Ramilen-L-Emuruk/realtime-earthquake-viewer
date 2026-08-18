@@ -276,6 +276,63 @@ describe('boundsForLiveFollowTuple', () => {
     expect(bounds[0]).toBeCloseTo(127.68, 5)
     expect(boundsContains(bounds, [127.68, 26.21, 127.68, 26.21])).toBe(true)
   })
+
+  // 以下 4 件は「予想の区域塗り」（useEewLayerData の eewFitPositions・区域 bbox の南西/北東 2 点）を
+  // 目標へ合成する引数の検証。予想震度は気象庁の発表値で、S波がまだ届いていない遠方の区域も含む。
+  it('予想の区域塗りが円をはみ出す場合、両方が入る矩形になる', () => {
+    // Arrange: 円（有感半径クランプ後 ≒ lng 140.4〜143.1）の西側へ区域がはみ出すケース。
+    const circles: EewFollowCircle[] = [
+      { lat: 37.35, lng: 141.75, pRadius: 100, sRadius: 80, depth: 60, magnitude: 4.0 },
+    ]
+    const areas: [number, number][] = [
+      [35.2, 139.0],
+      [36.5, 140.2],
+    ]
+    const circleBounds = boundsFromEewCircles(circles)!
+
+    // Act
+    const bounds = boundsForLiveFollowTuple(circles, [], [], areas)!
+
+    // Assert: 西端は区域が、北端は円が決める
+    expect(bounds[0]).toBeCloseTo(139.0, 5)
+    expect(bounds[3]).toBeCloseTo(circleBounds[3], 5)
+    expect(boundsContains(bounds, circleBounds)).toBe(true)
+    expect(boundsContains(bounds, boundsFromPositionsTuple(areas)!)).toBe(true)
+  })
+
+  it('円も震源も検知点も無く区域塗りだけがあれば、区域だけで追従する', () => {
+    const areas: [number, number][] = [
+      [33.0, 130.0],
+      [34.0, 131.5],
+    ]
+    expect(boundsForLiveFollowTuple([], [], [], areas)).toEqual([130.0, 33.0, 131.5, 34.0])
+  })
+
+  it('沖縄の予想区域を日本全体クランプで切り捨てない', () => {
+    // Arrange: 検知点と同じ理由（JAPAN_BOUNDS は沖縄を含まない）で、区域側にもキャップをかけない。
+    const circles: EewFollowCircle[] = [{ lat: 30, lng: 130, pRadius: 3000, sRadius: 3000, depth: 10 }]
+    const okinawaArea: [number, number][] = [
+      [26.05, 127.6],
+      [26.9, 128.3],
+    ]
+
+    // Act
+    const bounds = boundsForLiveFollowTuple(circles, [], [], okinawaArea)!
+
+    // Assert
+    expect(bounds[1]).toBeCloseTo(26.05, 5)
+    expect(bounds[0]).toBeCloseTo(127.6, 5)
+  })
+
+  it('区域塗りを省略した場合は従来の目標（円 ∪ 震源 ∪ 検知点）と一致する', () => {
+    const circles: EewFollowCircle[] = [
+      { lat: 37.35, lng: 141.75, pRadius: 100, sRadius: 80, depth: 60, magnitude: 4.0 },
+    ]
+    const points: [number, number][] = [[38.6, 140.9]]
+    expect(boundsForLiveFollowTuple(circles, [], points)).toEqual(
+      boundsForLiveFollowTuple(circles, [], points, []),
+    )
+  })
 })
 
 // 遠地地震のカメラフィット（useQuakeLayerData の quakeFitPositions）は、この枠の南西・北東 2 隅を
