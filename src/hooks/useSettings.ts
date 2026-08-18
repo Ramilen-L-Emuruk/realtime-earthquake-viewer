@@ -33,7 +33,7 @@ export interface AppSettings {
   voicevoxEnabled: boolean         // VOICEVOX 読み上げを有効にする
   voicevoxUrl: string              // VOICEVOX の HTTP API ベース URL
   voicevoxSpeakerId: number        // VOICEVOX 話者 ID
-  ttsIntensityLevels: number       // 読み上げる震度階数（最大震度から何階級分。0 = 最大震度のみ）
+  ttsIntensityLevels: number       // 読み上げる震度階数（最大震度に加えて何階級下まで。0 = 最大震度のみ）
   ttsMaxRegions: number            // 読み上げる最大地域数（0 = 無制限）
   ttsAlwaysReadScale: number       // 階数の設定を超えても読み上げる下限震度 (-1 = 無効)
   ttsRegionTolerance: number       // 最大地域数をこの数まで超える場合は省略せず全地域を読む (0 = 無効)
