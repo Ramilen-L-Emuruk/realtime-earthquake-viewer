@@ -1,9 +1,10 @@
-// earthquakeToText（地震情報の読み上げ文生成）のテスト。
+// earthquakeToText / lpgmToText（読み上げ文生成）のテスト。
 // 「〇時〇分」はローカルタイムゾーン依存のため、時刻の数値そのものではなく
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect } from 'vitest'
-import { earthquakeToText, eewToText } from './ttsText'
-import type { JMAQuake, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass } from '../types/earthquake'
+import { earthquakeToText, eewToText, lpgmToText } from './ttsText'
+import { getStationCoordsCache } from './stationCoords'
+import type { JMAQuake, JMALpgm, EarthquakePoint, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass } from '../types/earthquake'
 
 const TTS_OPTS = { intensityLevels: 0, maxRegions: 0 }
 
@@ -170,5 +171,83 @@ describe('eewToText: 長周期地震動階級の読み上げ', () => {
     const text = eewToText(makeEEW(99 as unknown as LpgmClass))
     expect(text).not.toContain('予想最大階級')
     expect(text).not.toContain('99')
+  })
+})
+
+// 助詞「で」は末尾（述語の直前）にだけ置く。階級ごとの句末に付けると一文字の「で」が
+// 読点で挟まれ、読み上げがぶつ切りに聞こえるため（ttsText.ts の buildRegionText 参照）。
+// 観測点座標（station-coords.json）は未読み込みのため、区域名は県単位にまとめられず
+// points の addr がそのまま列挙される。
+describe('earthquakeToText: 震度階級ごとの地域列挙', () => {
+  const points: EarthquakePoint[] = [
+    { pref: '宮城県', addr: '宮城県北部', isArea: true, scale: 40 as IntensityScale },
+    { pref: '福島県', addr: '福島県中通り', isArea: true, scale: 40 as IntensityScale },
+    { pref: '岩手県', addr: '岩手県内陸南部', isArea: true, scale: 30 as IntensityScale },
+  ]
+
+  // 震源座標を 0 にして震源距離での並べ替えを通さず、列挙順を points の順に固定する
+  // （並べ替えの検証はこのテストの対象ではない）。
+  function makeScaleQuake(): JMAQuake {
+    const base = makeQuake({ type: '震度速報', maxScale: 40 as IntensityScale })
+    return {
+      ...base,
+      earthquake: {
+        ...base.earthquake,
+        hypocenter: { ...base.earthquake.hypocenter, name: '宮城県沖', latitude: 0, longitude: 0 },
+      },
+      points,
+    }
+  }
+
+  it('複数階級を跨いでも「で」は末尾だけに置く', () => {
+    // 区域名がそのまま並ぶ前提（県単位への集約が働かないこと）を明示する
+    expect(getStationCoordsCache()).toBeNull()
+    const text = earthquakeToText(makeScaleQuake(), { intensityLevels: 1, maxRegions: 0 }, true)
+    expect(text).toBe('震度速報。最大震度4を宮城県北部、福島県中通り、震度3を岩手県内陸南部で観測しました。')
+    expect(text).not.toContain('で、')
+  })
+
+  it('最大震度のみ読み上げる設定では文が変わらない', () => {
+    const text = earthquakeToText(makeScaleQuake(), { intensityLevels: 0, maxRegions: 0 }, true)
+    expect(text).toBe('震度速報。最大震度4を宮城県北部、福島県中通りで観測しました。')
+  })
+
+  it('地域数を絞って「ほか N 地域」が付く場合も末尾だけに置く', () => {
+    const text = earthquakeToText(makeScaleQuake(), { intensityLevels: 1, maxRegions: 1 }, true)
+    expect(text).toBe('震度速報。最大震度4を宮城県北部、ほか1地域、震度3を岩手県内陸南部で観測しました。')
+    expect(text).not.toContain('で、')
+  })
+
+  it('観測点が無ければ地域を列挙せず最大震度だけ伝える', () => {
+    const text = earthquakeToText(makeQuake({ type: '震度速報', maxScale: 40 as IntensityScale }), { intensityLevels: 1, maxRegions: 0 }, true)
+    expect(text).toBe('震度速報。最大震度4を観測しました。')
+  })
+})
+
+describe('lpgmToText: 階級ごとの地域列挙', () => {
+  function makeLpgm(): JMALpgm {
+    return {
+      id: 'dmdata-lpgm-20260817230900-1',
+      eventId: '20260817230900',
+      time: '2026-08-17T23:12:00+09:00',
+      originTime: '2026-08-17T23:09:00+09:00',
+      maxClass: 3,
+      cancelled: false,
+      regions: [
+        { code: '130', name: '東京都23区', maxLgInt: 3 },
+        { code: '140', name: '神奈川県東部', maxLgInt: 2 },
+      ],
+    }
+  }
+
+  it('複数階級を跨いでも「で」は末尾だけに置く', () => {
+    const text = lpgmToText(makeLpgm(), { intensityLevels: 1, maxRegions: 0 }, true)
+    expect(text).toContain('長周期地震動階級3を東京都23区、階級2を神奈川県東部で観測しました。')
+    expect(text).not.toContain('東京都23区で、')
+  })
+
+  it('最大階級のみ読み上げる設定では文が変わらない', () => {
+    const text = lpgmToText(makeLpgm(), { intensityLevels: 0, maxRegions: 0 }, true)
+    expect(text).toContain('長周期地震動階級3を東京都23区で観測しました。')
   })
 })
