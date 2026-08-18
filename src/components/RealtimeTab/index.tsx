@@ -293,6 +293,11 @@ function SWaveArrivalCard({ arrival }: { arrival: SWaveArrival }) {
 }
 
 // 検知エンジンの確信度別スタイル。confirmed=赤・likely=橙・faint=淡青(震度0級・無音)・weak=灰。
+// 反応が収まっている間の確信度チップの背景。主張を持たない灰で、白文字とのコントラストは約 7.6:1。
+// 確信度の色を消しつつラベルは読める濃さを保つ（経緯は KyoshinDetectionSummary 内のコメント）。
+// V2_TIER.weak.border と同値だが別概念のため独立に持つ（weak の配色を変えてもここは追従しない）。
+const SETTLED_CHIP_BG = '#4b5563'
+
 const V2_TIER: Record<Confidence, { label: string; color: string; bg: string; border: string }> = {
   confirmed: { label: '検知', color: '#f87171', bg: '#450a0a', border: '#ef4444' },
   likely: { label: '可能性', color: '#fcd34d', bg: '#451a03', border: '#d97706' },
@@ -372,14 +377,42 @@ function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent
   const frameBorder = hasIntensity ? getIntensityColor(maxJma.scale) : SHINDO0_COLOR
   const frameBg = hasIntensity ? getIntensityBgColor(maxJma.scale) : 'rgba(42,42,42,0.6)'
 
+  // 反応中の観測点が無くなった状態（イベントは HOLD_MS / LIKELY_HOLD_MS のラッチで生き残るが、
+  // 現在震度0以上の点は 1 つも無い）。ここでヘッダーを通常の強さで出したままにすると、
+  // 「検知」の赤チップと本文の「観測点の反応は収まりました」が同じカードに並んで矛盾して見える。
+  // ティアのラベルは確信度の判定結果なので変えず、色だけ主張の弱いものへ差し替えて現在の
+  // 活動度を示す（枠色を最大震度に追従させているのと同じ考え方）。
+  //
+  // 弱め方は opacity ではなく**色の置き換え**で行う。CSS の opacity は要素を背景と合成するため、
+  // 文字と背景の関係まで一緒に薄まって読みにくくなる。実測（カード背景 rgba(42,42,42,0.6) の上）:
+  //   見出し   confirmed #f87171: 5.5:1 → α0.55 で 2.6:1
+  //   チップ   confirmed #ef4444 上の白文字: 3.8:1 → α0.55 で 2.7:1
+  // 置き換え後は見出し（text-secondary #94a3b8）が約 6.5:1、チップ（SETTLED_CHIP_BG 上の白文字）が
+  // 約 7:1 で、いずれも読める濃さを保ったまま赤の主張だけが消える。
+  //
+  // なお activeCount は毎秒の生インデックスから算出するため、終息期に 0 と非 0 を往復すれば
+  // 表示も往復する。猶予（ヒステリシス）は入れていない。猶予中の本文をどうするかで
+  // 「activeCount が 0 なのに 0観測点で反応と出す」「本文とヘッダーで別条件を使い、今回揃えた
+  // 『両者が同じ基準を見る』性質を壊す」「中間状態の文言を新設する」のいずれかになり、
+  // 前 2 つは不整合、3 つ目は状態が 3 つに増える割に、往復自体が実地震のリプレイ検証
+  // （2026-08-18・50 サンプル超）では観測されていないため見合わないと判断した。
+  const settled = activeCount === 0
+
   return (
     <div className="rounded-lg overflow-hidden" style={{ border: `1px solid ${frameBorder}`, backgroundColor: frameBg }}>
-      {/* ヘッダー: 確信度チップ・広域バッジ・時刻。枠色は最大震度、チップ色は確信度で 2 軸を分離。 */}
+      {/* ヘッダー: 確信度チップ・広域バッジ・時刻。枠色は最大震度、チップ色は確信度で 2 軸を分離。
+          反応が収まっている間（settled）はチップ・見出しの色を灰へ置き換えて本文と印象を揃える。 */}
       <div className="flex items-center gap-2 px-3 py-1.5" style={{ borderBottom: `1px solid ${frameBorder}55` }}>
-        <span className="text-xs font-bold px-1.5 py-0.5 rounded flex-shrink-0" style={{ backgroundColor: tier.border, color: '#fff' }}>
+        <span
+          className="text-xs font-bold px-1.5 py-0.5 rounded flex-shrink-0"
+          style={{ backgroundColor: settled ? SETTLED_CHIP_BG : tier.border, color: '#fff' }}
+        >
           {tier.label}
         </span>
-        <span className="text-xs" style={{ color: tier.color }}>
+        <span
+          className={settled ? 'text-xs text-secondary' : 'text-xs'}
+          style={settled ? undefined : { color: tier.color }}
+        >
           {regionCount >= 2 ? `${heading}（広域・${regionCount}地域）` : heading}
         </span>
         <span className="text-xs text-secondary ml-auto font-mono">{time}</span>
