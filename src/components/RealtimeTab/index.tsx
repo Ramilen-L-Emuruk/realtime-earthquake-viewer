@@ -3,7 +3,7 @@
 import { memo, useMemo, useRef } from 'react'
 import type { EEWAlert } from '../../types/earthquake'
 import type { DetectionEvent, Confidence } from '../../utils/kyoshinDetector'
-import { MIN_DETECTION_INDEX, buildSiteIndex, resolveMembers, type DetectedPoint } from '../../utils/kyoshinDetectionView'
+import { buildSiteIndex, resolveMembers, type DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { SiteCoords } from '../../services/kyoshin'
 import type { SWaveArrival } from '../../hooks/useSWaveCountdown'
 import { formatDateTime, formatTime } from '../../utils/formatters'
@@ -325,14 +325,17 @@ function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent
   const earliestMs = events.reduce((m, e) => Math.min(m, e.originTimeMs), Infinity)
   const time = new Date(earliestMs).toLocaleTimeString('ja-JP', { hour12: false })
 
-  // 全イベントのメンバー観測点を和集合（重複除去）で集約し、震度分布・最大震度を集計する
+  // 全イベントのメンバー観測点を和集合（重複除去）で集約し、震度分布・最大震度を集計する。
+  // 数える対象は「現在震度0以上（計測震度 0.0 以上）の点」だけで、判定は kyoshinIndexToLabel が
+  // 震度階級を返すかどうかに委ねる（震度0未満・欠測は null）。地図の検知点マーカー
+  // （gl/kyoshinDetectedFeatures.ts の buildFeatures）も同じ判定で描くかどうかを決めており、
+  // ここと基準を分けると表示点数が食い違う。
   const memberKeys = [...new Set(events.flatMap(e => e.memberKeys))]
   const points = resolveMembers(memberKeys, siteIndex)
   const counts = new Map<string, { color: string; count: number }>()
   let maxIndex = 0
   let activeCount = 0
   for (const p of points) {
-    if (p.index < MIN_DETECTION_INDEX) continue
     const label = kyoshinIndexToLabel(p.index)
     if (!label) continue
     if (!counts.has(label)) counts.set(label, { color: kyoshinIntensityColor(p.index) ?? '#9ca3af', count: 0 })
@@ -353,7 +356,11 @@ function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent
   history.push({ t: now, v: rawMaxCount })
   while (history.length > 0 && history[0] && now - history[0].t > SCALE_PEAK_WINDOW_MS) history.shift()
   const maxCount = history.reduce((m, h) => Math.max(m, h.v), 1)
-  const totalActive = activeCount || events.reduce((s, e) => s + e.lastSize, 0)
+  // 反応点数は activeCount（現在震度0以上の点）をそのまま出す。以前は 0 のとき検知エンジンの
+  // lastSize（点ごとのノイズ床を超えて継続中の数。絶対震度の下限とは別基準）へフォールバック
+  // していたが、それだと「地図には検知点が 1 つも無いのにカードだけ N 観測点で反応と出る」
+  // 局面が生まれる（イベント自体は HOLD_MS / LIKELY_HOLD_MS の間ラッチで生き続けるため）。
+  // 揺れが収まったことは点数ではなく文言で伝える。
 
   // カードの枠・背景は最大震度の気象庁配色に合わせる（地図マーカー・EEW カードと一貫）。
   // 確信度（検知/可能性/微弱）は枠色ではなく左上のチップで示す。枠色にティア（確信度）を
@@ -403,7 +410,9 @@ function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent
             </div>
           )}
           <span className="text-xs text-secondary">
-            {totalActive}観測点で反応{regionCount >= 2 ? ` ・ ${regionCount}地域` : ''} ・ 推定値
+            {activeCount > 0
+              ? `${activeCount}観測点で反応${regionCount >= 2 ? ` ・ ${regionCount}地域` : ''} ・ 推定値`
+              : `観測点の反応は収まりました${regionCount >= 2 ? ` ・ ${regionCount}地域` : ''}`}
           </span>
         </div>
       </div>

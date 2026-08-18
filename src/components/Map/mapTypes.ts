@@ -30,7 +30,10 @@ export interface JapanMapProps {
   kyoshinPsWave?: PsWaveCircle[]
   eews?: EEWAlert[]
   detectedPoints?: DetectedPoint[]
+  /** 主 likely イベント 1 件のメンバー観測点。**候補カメラフィット専用**（検知点マーカーは unconfirmedPoints を使う）。 */
   candidatePoints?: DetectedPoint[]
+  /** likely / faint 全イベントのメンバー観測点。**検知点マーカー専用**（フィットには使わない）。 */
+  unconfirmedPoints?: DetectedPoint[]
   candidateId?: number | null
   idleRevertSec?: number
   eewLpgmEventId?: string | null

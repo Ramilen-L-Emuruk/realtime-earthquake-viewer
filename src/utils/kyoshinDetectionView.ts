@@ -13,12 +13,6 @@ export interface DetectedPoint {
   index: number
 }
 
-/**
- * 全観測点表示・サマリ用の最低インデックス（震度-1相当: 計測震度 -0.5 以上 = index 5）。
- * ヒストグラム集計と実効最大インデックスの下限に使う。
- */
-export const MIN_DETECTION_INDEX = 5
-
 /** 検知の表示状態（音・自動タブ切替・自動フィットの駆動元）。 */
 export interface KyoshinView {
   /** confirmed イベントが1件以上あるか（＝V1 の detected 相当） */
@@ -29,6 +23,13 @@ export interface KyoshinView {
   detectedPoints: DetectedPoint[]
   /** 主 likely イベント（score 最大）のメンバー観測点（候補フィット用） */
   candidatePoints: DetectedPoint[]
+  /**
+   * confirmed 以外（likely / faint）の全イベントのメンバー観測点（検知点マーカー用）。
+   * リアルタイムタブの検知カードが集計する集合（weak 以外の全イベント）と一致させるため、
+   * detectedPoints とこの 2 本で全体を覆う。**カメラフィットには使わない**
+   * （候補フィットは主 likely 1 件の candidatePoints を使う。理由は deriveKyoshinView 参照）。
+   */
+  unconfirmedPoints: DetectedPoint[]
   /** 主 likely イベントの安定 ID（FitToCandidate の再フィット判定用）。無ければ null。 */
   candidateId: number | null
   /** 主 likely イベントのメンバー観測点の最大インデックス（likely 中の音レベル追跡に使う）。無ければ0。 */
@@ -80,6 +81,8 @@ function eventIdNum(id: string): number | null {
  * - detectedPoints: confirmed 全イベントのメンバー観測点の和集合（フットプリント全体にフィット）。
  * - candidatePoints: 主 likely イベント（最大震度が最大）1件のメンバー観測点（主候補フィットに対応）。
  *   複数 likely の和集合にすると境界が飛び跳ねるため、常に1件へ絞る。
+ * - unconfirmedPoints: likely / faint 全イベントのメンバー観測点の和集合（検知点マーカー用）。
+ *   カードの集計対象と揃えるため絞り込まない。フィットに使うと境界が飛び跳ねるため用途を分ける。
  * - 震央には**フィットしない**（メンバー観測点にフィットする）。不確実な震央へ
  *   地図が飛ぶ事故を構造的に避けるため。
  */
@@ -95,6 +98,17 @@ export function deriveKyoshinView(
 
   const detectedKeys = new Set<string>()
   for (const e of confirmedEvents) for (const k of e.memberKeys) detectedKeys.add(k)
+
+  // confirmed 以外（likely / faint）の全イベント。weak は検知カードでも除外されるため含めない。
+  // confirmed にも属する観測点はここから除き、detectedPoints との差集合にする（同じ観測点が
+  // confirmed と likely の両方のメンバーになりうる）。除去を観測点キーで行うのが要点で、
+  // 描画側で座標を見て弾くと、同一座標に複数の実体がある観測点（buildSiteIndex 参照）を
+  // 取り違えて落としてしまう。
+  const unconfirmedKeys = new Set<string>()
+  for (const e of detections) {
+    if (e.confidence === 'confirmed' || e.confidence === 'weak') continue
+    for (const k of e.memberKeys) if (!detectedKeys.has(k)) unconfirmedKeys.add(k)
+  }
 
   const primaryLikely = likelyEvents.reduce<DetectionEvent | null>(
     (best, e) => (!best || e.maxIntensity > best.maxIntensity ? e : best),
@@ -126,6 +140,7 @@ export function deriveKyoshinView(
     candidate: likelyEvents.length > 0,
     detectedPoints: resolveMembers([...detectedKeys], byKey),
     candidatePoints: primaryLikely ? resolveMembers(primaryLikely.memberKeys, byKey) : [],
+    unconfirmedPoints: resolveMembers([...unconfirmedKeys], byKey),
     candidateId: primaryLikely ? eventIdNum(primaryLikely.id) : null,
     candidateMaxIndex,
     confirmedShocks,

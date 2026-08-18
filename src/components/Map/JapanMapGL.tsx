@@ -81,6 +81,7 @@ export function JapanMapGL({
   kyoshinSubIndices,
   detectedPoints = [],
   candidatePoints = [],
+  unconfirmedPoints = [],
   candidateId = null,
   iconScale = 1,
   showActiveFaults = true,
@@ -143,7 +144,10 @@ export function JapanMapGL({
       !aggregateByRegion && lpgmActive ? lpgmMarkers.map((m) => `${m.position[0]},${m.position[1]}`).join(';') : '',
       mode === 'kyoshin' ? kyoshinSites.length : 0,
       mode === 'kyoshin' ? detectedPoints.map((p) => `${p.lat},${p.lng}`).join(';') : '',
-      mode === 'kyoshin' ? candidatePoints.map((p) => `${p.lat},${p.lng}`).join(';') : '',
+      // 検知点マーカーとして実際に描かれるのは detectedPoints と unconfirmedPoints の 2 本。
+      // candidatePoints はカメラフィット専用のため含めない（その各点は detectedPoints か
+      // unconfirmedPoints のどちらかに必ず入るので、この signature から座標が欠落することはない）。
+      mode === 'kyoshin' ? unconfirmedPoints.map((p) => `${p.lat},${p.lng}`).join(';') : '',
     ]
     return parts.join('|')
   }, [
@@ -156,7 +160,7 @@ export function JapanMapGL({
     mode,
     kyoshinSites,
     detectedPoints,
-    candidatePoints,
+    unconfirmedPoints,
   ])
 
   useEffect(() => {
@@ -271,7 +275,7 @@ export function JapanMapGL({
           <KyoshinPointsGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} visible={mode === 'kyoshin'} />
           <KyoshinDetectedPointsGL
             confirmedPoints={detectedPoints}
-            candidatePoints={candidatePoints}
+            unconfirmedPoints={unconfirmedPoints}
             iconScale={iconScale}
             visible={mode === 'kyoshin'}
           />

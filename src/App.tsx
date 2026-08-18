@@ -793,6 +793,7 @@ export function App() {
             eews={eewsForMap}
             detectedPoints={kyoshinView.detectedPoints}
             candidatePoints={kyoshinView.candidatePoints}
+            unconfirmedPoints={kyoshinView.unconfirmedPoints}
             candidateId={kyoshinView.candidateId}
             idleRevertSec={settings.idleRevertSec}
             eewLpgmEventId={activeLpgmSource === 'eew' ? activeLpgmEventId : null}
