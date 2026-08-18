@@ -29,9 +29,11 @@ export default {
       // 一緒に伸びるが、左右分割の下限幅（1024px）は CSS px で固定されているので、
       // 高倍率ではパネル＋ナビの合計が画面幅を超えてナビが画面外へ押し出される。
       // 差し引く 4rem はアイコンナビの実測幅（約 3.5rem）に余白を見た値。
+      // 単位は vw ではなく dvw。ビューポート単位は d 付きに揃える規約による
+      // （docs/spec/architecture-spec.md「画面いっぱいへの広がりとセーフエリア」規則 3）。
       width: {
-        panel: 'min(26rem, calc(100vw - 4rem))',
-        'panel-narrow': 'min(22rem, calc(100vw - 4rem))',
+        panel: 'min(26rem, calc(100dvw - 4rem))',
+        'panel-narrow': 'min(22rem, calc(100dvw - 4rem))',
       },
       colors: {
         app: '#0a0c10',
