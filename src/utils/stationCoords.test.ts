@@ -22,7 +22,8 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('loadStationCoords', () => {
+// resetModules ＋動的 import の再評価コストで既定タイムアウトを割ることがある（理由は prefectures.test.ts）。
+describe('loadStationCoords', { timeout: 15_000 }, () => {
   it('取得に成功するとデータを返し、以降はキャッシュを使う（fetchは1回のみ）', async () => {
     const fetchMock = vi.fn(async () => okResponse(SAMPLE))
     vi.stubGlobal('fetch', fetchMock)

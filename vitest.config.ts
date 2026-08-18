@@ -7,5 +7,8 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts'],
+    // テストのタイムアウトは既定（5 秒）のまま。混雑時に 5 秒を割りうる生成データローダの
+    // テストだけが個別に延長している（理由は prefectures.test.ts のコメント）。
+    // ここを全体で緩めると、無関係なテストに入り込んだ性能劣化を見逃す網になる。
   },
 })
