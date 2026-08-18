@@ -194,15 +194,16 @@ P2PQuake API 仕様上 `validDateTime` が届かないため、通常の TSU-1 �
 
 ## 11. 自動タブ切替
 
-tsunami タブへの強制切替は「**新規発報／grade 格上げ／かつ特別警報級 EEW 発表中でない**」
-場合のみ発火する（`useLiveEventHandler.ts` の tsunami 分岐）。判定は `src/utils/tsunami.ts` の
-純関数 3 つに分離してテスト可能にしている:
+tsunami タブへの強制切替は「**新規発報／grade 格上げ**」のときのみ発火する
+（`useLiveEventHandler.ts` の tsunami 分岐）。判定は `src/utils/tsunami.ts` の
+純関数 2 つに分離してテスト可能にしている:
 
 | 判定 | 定義 | true の条件 |
 |---|---|---|
 | `isTsunamiNewFire(next, current)` | 新規発報か | `current` 無し／取消済み／`eventId` 相違、または `eventId` 欠落時に `sourceEarthquake.originTime` 相違（DMDATA XML の Earthquake 要素経由のフォールバック） |
 | `isTsunamiGradeUpgrade(next, current)` | grade 格上げか | `MajorWarning > Warning > Watch > Forecast > Unknown` の順で `next > current` |
-| `hasActiveSpecialEEW(activeEEWLevels)` | 特別警報級 EEW 発表中か | `useLiveEventHandler.ts` 内の `activeEEWLevelsRef`（`Map<eventId, 0\|1\|2>`）に `level=2` が 1 件以上（`eew-spec.md §10` の `activeEEWs` とは別オブジェクト） |
+
+EEW の発表状況は判定に入れない（下記「優先度ルール」参照）。
 
 **バリアント差**: DMDSS 版（DMDATA）は電文に 14 桁 `eventId` が常に付与されるため厳密判定が可能。
 標準版（P2PQuake）の `code=552` は生 JSON に `eventId` を持たず、`earthquake` 相当のフィールド自体が
@@ -210,21 +211,27 @@ tsunami タブへの強制切替は「**新規発報／grade 格上げ／かつ�
 **標準版では事実上常に不成立**し、保守的な続報扱い（別地震の新規津波でもタブが奪われない）が
 デフォルト挙動になる。ユーザーは grade 格上げ検知か手動タブ切替で対応する必要がある。
 
-タブ強制切替（`setActiveTabNonRealtime('tsunami')`）は `(isNew || upgraded) && !specialEEWActive`
-のときのみ呼ぶ。呼ばれた瞬間に `realtimeTabSuppressedUntilRef = Date.now() + 15000` がセットされ、
+タブ強制切替（`setActiveTabNonRealtime('tsunami')`）は `isNew || upgraded` のときのみ呼ぶ。
+呼ばれた瞬間に `realtimeTabSuppressedUntilRef = Date.now() + 15000` がセットされ、
 以後 15 秒は EEW 続報での realtime タブへの自動切替を抑制する。
+ただし EEW の新規発報・レベルアップはこの抑制を無視して realtime を取り戻す
+（`eew-spec.md` §9）。
 
 続報（同一 eventId の観測点更新等）は `setActiveTabNonRealtime` を呼ばず抑制タイマーを触らない。
 `title.showTsunamiTitle()` は続報でも呼ぶのでタイトルバッジは維持される。
 
 **優先度ルール**（tsunami × EEW の同時発報時）:
 
-- 通常時: tsunami 新規発報・grade 格上げは realtime を奪って tsunami タブを表示
-- 特別警報級 EEW 発表中: tsunami はタブを奪わずタイトル通知のみ（S 波カウントダウン等の
-  realtime タブが最優先。ユーザー手動でタブ切替可能）
-- 誤報取消・自動解除は 10 秒間 tsunami タブに強制切替（従来通り）。
-  ただし特別警報級 EEW 発表中は取消でもタブを奪わない（新規発報側のルールと対称）。
-  タイトルの `endTsunamiTitleWindow()`・解除音・状態リセットは常に実行される（通知漏れ無し）
+- tsunami 新規発報・grade 格上げは、EEW のレベル（予報／警報／特別警報）を問わず realtime を
+  奪って tsunami タブを表示する
+- 解除・取消・失効も同様にタブを奪う。**タブ切替・解除音・読み上げ**は `alreadySpoken`
+  （eventId 単位の重複抑止）を条件とし、**タイトルの `endTsunamiTitleWindow()` と状態リセット**
+  （観測バッジ・保持していた最大波高・スクロール位置）は無条件に実行する
+- ただし無操作が続くと、自動復帰（設定の「自動復帰までの時間」= `idleRevertSec`。
+  [`settings-pwa-spec.md`](settings-pwa-spec.md) §2）が働く。これはタブの種類を問わない共通の
+  仕組みで、EEW 発報中・揺れ検知中であれば realtime タブを維持する（tsunami タブも例外ではなく、
+  津波発表中でも realtime へ移る）。**津波受信の瞬間に tsunami を見せることと、その後どのタブに
+  落ち着くかは別の仕組みが決めている**
 
 ## 12. 関連実装ファイル
 
@@ -246,3 +253,12 @@ tsunami タブへの強制切替は「**新規発報／grade 格上げ／かつ�
 ## 14. 改訂履歴
 
 - 2026-08-10: 仕様書構造の再編にあわせて新規作成。既存の CLAUDE.md から津波関連の記述を集約
+- 2026-08-18: 「特別警報級 EEW（level=2）発表中は津波がタブを奪わない」優先度ルールを撤去（§11）。
+  津波は EEW のレベルを問わず tsunami タブを奪う。このルールは 2026-08-11 の CRIT-4 修正
+  （続報がタブを奪い続けて EEW 続報が realtime へ戻れない問題）に付随して入ったもので、
+  「特別警報だけを別扱いする」根拠は当時も記録されていなかった。撤去にあわせて判定用の
+  `hasActiveSpecialEEW()` も削除した。**「新規発報／grade 格上げのみがタブを奪う」ルールと
+  15 秒の realtime 抑制は CRIT-4 の本体なので維持している**（これを外すと元の不具合が再発する）。
+  なお解除・取消の経路では、旧実装は「タブ切替だけを止め、重複抑止セットへの記録と解除音は
+  素通りさせる」非対称があり、同一 eventId の解除が複数経路から再到達してもタブが切り替わらない
+  状態になり得た。ゲートが `alreadySpoken` 一本に統合されたことでこれも解消している
