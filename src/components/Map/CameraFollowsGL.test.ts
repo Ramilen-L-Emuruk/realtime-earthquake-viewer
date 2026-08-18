@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
-import { describe, it, expect, afterEach, vi, type Mock } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach, vi, type Mock } from 'vitest'
 import { createElement as h } from 'react'
-import { render, cleanup } from '@testing-library/react'
+import { render, cleanup, act } from '@testing-library/react'
 import type * as maplibregl from 'maplibre-gl'
 import { MapGLContext } from './mapGLContext'
-import { FitToCandidateGL, FitToDetectionGL } from './CameraFollowsGL'
+import { FitToCandidateGL, FitToDetectionGL, TsunamiFitGL, FocusObsGL } from './CameraFollowsGL'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
+import type { LatLng } from '../../utils/stationCoords'
 
 // 「確定検知の終了」と「候補クラスタの継続」が重なる遷移を固定する回帰テスト。
 // この組み合わせはタイミング依存で、実機（Playwright）では再現が難しい。過去に 2 度作り込んでいる:
@@ -162,5 +163,232 @@ describe('確定検知の終了と候補クラスタの協調', () => {
 
     // Assert: 日本全体へ戻る（候補を待たない）。
     expect(fitPaddings(map).slice(before)).toContain(JAPAN_PADDING)
+  })
+})
+
+// ── 津波モードの帰還（TsunamiFitGL） ───────────────────────────────────────────
+// 観測点へ寄った後、猶予（idleRevertSec）の満了で対象海域全体へ帰す仕掛けの回帰テスト。
+// 猶予はコンポーネント内の setTimeout で数えるため、実機（Playwright）では 1 ケースにつき
+// 30 秒以上待つことになり条件の組み合わせを網羅できない。ここはフェイクタイマーで固定する。
+
+/** 津波の観測棒（TsunamiFitGL が見るのは名前・座標・波高値だけ）。 */
+const bar = (name: string, lat: number, lng: number, value: number) => ({ name, lat, lng, height: { value } })
+
+// 観測点は九州沖、海岸線は三陸沖に置き、fitBounds に渡った矩形の西端で寄り先を判別する。
+const OBS_BARS = [bar('A', 33.0, 130.0, 1.0), bar('B', 34.0, 131.0, 2.0)]
+const COAST: LatLng[] = [[38.0, 141.0], [41.0, 143.0]]
+const OBS_WEST = 130.0
+const COAST_WEST = 141.0
+const SIG = '岩手県:MajorWarning'
+
+/** カメラ操作の時系列。日本全体は -1、点群へのフィットは矩形の西端で表す。 */
+function fitTargets(map: maplibregl.Map): number[] {
+  return (map.fitBounds as unknown as Mock).mock.calls.map((call) =>
+    call[1]?.padding === JAPAN_PADDING ? -1 : (call[0] as maplibregl.LngLatBounds).getWest(),
+  )
+}
+
+interface TsunamiProps {
+  mode?: string
+  signature?: string
+  coast?: LatLng[]
+  bars?: typeof OBS_BARS
+  focus?: { name: string; ts: number } | null
+  idleRevertSec?: number
+}
+
+function tsunamiHarness(map: maplibregl.Map, props: TsunamiProps = {}) {
+  return h(
+    MapGLContext.Provider,
+    { value: map },
+    h(TsunamiFitGL, {
+      mode: props.mode ?? 'tsunami',
+      tsunamiSignature: props.signature ?? SIG,
+      tsunamiFitPositions: props.coast ?? COAST,
+      observationBars: props.bars ?? [],
+      focusObsName: props.focus ?? null,
+      idleRevertSec: props.idleRevertSec ?? 30,
+    }),
+  )
+}
+
+describe('津波モードの帰還（観測点 → 俯瞰）', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('観測点へ寄った後、猶予が満了すると対象海域全体へ帰る', () => {
+    // Arrange: 発表直後の海岸線フィットまで進んだ状態。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map))
+    expect(fitTargets(map)).toEqual([COAST_WEST])
+
+    // Act 1: 観測情報が届いて観測点へ寄る。
+    view.rerender(tsunamiHarness(map, { bars: OBS_BARS }))
+    expect(fitTargets(map)).toEqual([COAST_WEST, OBS_WEST])
+
+    // Act 2: 以後何も起きないまま猶予が満了する。
+    act(() => {
+      vi.advanceTimersByTime(30_000)
+    })
+
+    // Assert: 対象海域全体へ帰る（観測点に張り付いたままにしない）。
+    expect(fitTargets(map)).toEqual([COAST_WEST, OBS_WEST, COAST_WEST])
+  })
+
+  it('猶予の満了前に観測行がクリックされたら、クリック時点から数え直す', () => {
+    // Arrange: 観測点へ寄った状態。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { bars: OBS_BARS }))
+    const before = fitTargets(map).length
+
+    // Act 1: 猶予の途中でユーザーが観測行をクリックする（FocusObsGL がその観測点へ寄せる）。
+    act(() => {
+      vi.advanceTimersByTime(20_000)
+    })
+    view.rerender(tsunamiHarness(map, { bars: OBS_BARS, focus: { name: 'A', ts: 1 } }))
+
+    // Act 2: 元の猶予なら満了しているはずの時間まで進める。
+    act(() => {
+      vi.advanceTimersByTime(20_000)
+    })
+
+    // Assert: まだ帰らない（ユーザーが選んだ表示を巻き戻さない）。
+    expect(fitTargets(map).length).toBe(before)
+
+    // Act 3: クリックから数えた猶予が満了する。
+    act(() => {
+      vi.advanceTimersByTime(15_000)
+    })
+
+    // Assert: ここで初めて対象海域全体へ帰る。
+    expect(fitTargets(map).slice(before)).toEqual([COAST_WEST])
+  })
+
+  it('津波モードを離れたら猶予タイマーを解除する（裏に浮かせない）', () => {
+    // Arrange: 観測点へ寄って猶予を待っている状態。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { bars: OBS_BARS }))
+    const before = fitTargets(map).length
+    expect(vi.getTimerCount()).toBeGreaterThan(0)
+
+    // Act: 別タブへ移る。
+    view.rerender(tsunamiHarness(map, { mode: 'kyoshin', bars: OBS_BARS }))
+
+    // Assert: 猶予タイマーが残らない（津波タブへ戻れば入室時のフィットで寄せ直すため、
+    // 裏で満了させる意味がない）。カメラを動かさないことは decideTsunamiFit の
+    // isTsunamiMode ガードが別に保証している。
+    expect(vi.getTimerCount()).toBe(0)
+    act(() => {
+      vi.advanceTimersByTime(120_000)
+    })
+    expect(fitTargets(map).length).toBe(before)
+  })
+
+  it('座標が無い観測点のクリックでは猶予を数え直さない', () => {
+    // Arrange: 観測点へ寄った状態（猶予は 30 秒）。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { bars: OBS_BARS }))
+    const before = fitTargets(map).length
+
+    // Act: 猶予の途中で、観測棒が無い観測点（座標未収録）の行をクリックする。
+    act(() => {
+      vi.advanceTimersByTime(20_000)
+    })
+    view.rerender(tsunamiHarness(map, { bars: OBS_BARS, focus: { name: '座標なし観測点', ts: 1 } }))
+    act(() => {
+      vi.advanceTimersByTime(15_000)
+    })
+
+    // Assert: カメラが動かないクリックで猶予は延びない（元の 30 秒で俯瞰へ帰る）。
+    expect(fitTargets(map).slice(before)).toEqual([COAST_WEST])
+  })
+
+  it('自動復帰を無効（0 秒）に変えたら、待っていた猶予も取り消す', () => {
+    // Arrange: 観測点へ寄って猶予を待っている状態。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { bars: OBS_BARS }))
+    const before = fitTargets(map).length
+
+    // Act: 待っている最中に設定を 0（自動復帰なし）へ変える。
+    act(() => {
+      vi.advanceTimersByTime(10_000)
+    })
+    view.rerender(tsunamiHarness(map, { bars: OBS_BARS, idleRevertSec: 0 }))
+    act(() => {
+      vi.advanceTimersByTime(120_000)
+    })
+
+    // Assert: 帰らない（古い秒数のタイマーが 1 回だけ生き残ることもない）。
+    expect(fitTargets(map).length).toBe(before)
+  })
+
+  it('発表中だった津波が消えたら日本全体へ帰る', () => {
+    // Arrange: 観測点へ寄った状態。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { bars: OBS_BARS }))
+    const before = fitTargets(map).length
+
+    // Act: 解除表示の 10 秒後の purge で津波が消える（海岸線も観測棒も無くなる）。
+    view.rerender(tsunamiHarness(map, { signature: '', coast: [], bars: [] }))
+
+    // Assert: 日本全体へ帰る（寄ったまま取り残されない）。
+    expect(fitTargets(map).slice(before)).toEqual([-1])
+  })
+})
+
+// ── 観測行クリックによるフォーカス（FocusObsGL） ────────────────────────────────
+// 観測棒の配列は電文のたびに作り直される。その変化で寄せ直してしまうと、以後の電文が
+// 来るたびに古いクリック先へカメラが戻り続ける（更新された観測点への追従も上書きされる）。
+
+function focusHarness(map: maplibregl.Map, focus: { name: string; ts: number } | null, bars: typeof OBS_BARS) {
+  return h(
+    MapGLContext.Provider,
+    { value: map },
+    h(FocusObsGL, { focusObsName: focus, observationBars: bars }),
+  )
+}
+
+/** flyTo に渡された中心座標（クリック先の判別に使う）。 */
+function flyCenters(map: maplibregl.Map): [number, number][] {
+  return (map.flyTo as unknown as Mock).mock.calls.map((call) => call[0].center)
+}
+
+describe('観測行クリックのフォーカス', () => {
+  it('クリック 1 回につき 1 度だけ寄せる（観測棒の更新では寄せ直さない）', () => {
+    // Arrange: クリックで石巻港（配列2件目）へ寄せた状態。
+    const map = createFakeMap()
+    const view = render(focusHarness(map, { name: 'B', ts: 1 }, OBS_BARS))
+    expect(flyCenters(map)).toEqual([[131.0, 34.0]])
+
+    // Act: 続報で観測棒が作り直される（値は同じでも配列は別インスタンス）。
+    view.rerender(focusHarness(map, { name: 'B', ts: 1 }, [...OBS_BARS]))
+
+    // Assert: 寄せ直さない（クリック先へカメラを引き戻し続けない）。
+    expect(flyCenters(map)).toHaveLength(1)
+  })
+
+  it('別の行をクリックしたら、そちらへ寄せる', () => {
+    const map = createFakeMap()
+    const view = render(focusHarness(map, { name: 'B', ts: 1 }, OBS_BARS))
+    view.rerender(focusHarness(map, { name: 'A', ts: 2 }, OBS_BARS))
+    expect(flyCenters(map)).toEqual([[131.0, 34.0], [130.0, 33.0]])
+  })
+
+  it('観測棒がまだ無いクリックは、棒が現れた時点で寄せる', () => {
+    // Arrange: 座標データ未取得などで観測棒が 1 本も無い状態でクリックされた。
+    const map = createFakeMap()
+    const view = render(focusHarness(map, { name: 'A', ts: 1 }, []))
+    expect(flyCenters(map)).toHaveLength(0)
+
+    // Act: 観測棒が揃う。
+    view.rerender(focusHarness(map, { name: 'A', ts: 1 }, OBS_BARS))
+
+    // Assert: 取りこぼさずに寄せる。
+    expect(flyCenters(map)).toEqual([[130.0, 33.0]])
   })
 })

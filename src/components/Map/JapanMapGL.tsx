@@ -394,6 +394,7 @@ export function JapanMapGL({
             tsunamiSignature={tsunamiSignature}
             tsunamiFitPositions={tsunamiFitPositions}
             observationBars={observationBars}
+            focusObsName={focusObsName}
             idleRevertSec={idleRevertSec}
           />
           <FocusObsGL focusObsName={focusObsName} observationBars={observationBars} />
