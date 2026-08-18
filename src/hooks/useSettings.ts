@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
 import { log } from '../utils/logger'
 import { isDmdss } from '../utils/env'
+import { isValidIntensityScale } from '../utils/intensity'
 
 // アイドル復帰時に戻すデフォルトタブの選択肢（津波情報・設定は対象外）
 export type DefaultTabSetting = 'earthquake' | 'realtime'
@@ -32,8 +33,10 @@ export interface AppSettings {
   voicevoxEnabled: boolean         // VOICEVOX 読み上げを有効にする
   voicevoxUrl: string              // VOICEVOX の HTTP API ベース URL
   voicevoxSpeakerId: number        // VOICEVOX 話者 ID
-  ttsIntensityLevels: number       // 読み上げる震度階数（最大震度から何階級分。0 = 最大震度のみ）
+  ttsIntensityLevels: number       // 読み上げる震度階数（最大震度に加えて何階級下まで。0 = 最大震度のみ）
   ttsMaxRegions: number            // 読み上げる最大地域数（0 = 無制限）
+  ttsAlwaysReadScale: number       // 階数の設定を超えても読み上げる下限震度 (-1 = 無効)
+  ttsRegionTolerance: number       // 最大地域数をこの数まで超える場合は省略せず全地域を読む (0 = 無効)
   panelRatio: number               // 縦積みレイアウト（スマホ縦など）でのパネル高さ比率（0.2〜0.8）
 }
 
@@ -76,6 +79,8 @@ const DEFAULTS: AppSettings = {
   voicevoxSpeakerId: 0,
   ttsIntensityLevels: 2,
   ttsMaxRegions: 10,
+  ttsAlwaysReadScale: 30,
+  ttsRegionTolerance: 2,
   panelRatio: 0.45,
 }
 
@@ -96,6 +101,22 @@ function ensureDefaultTab(value: unknown, fallback: DefaultTabSetting): DefaultT
   return value === 'earthquake' || value === 'realtime' ? value : fallback
 }
 
+// 震度は気象庁の階級値（10/20/30/40/45/50/55/60/70）と、無効を表す -1 しか取らない。
+// 範囲だけを見ると 35 のような中間値が通り、設定画面の震度バッジが「不明」になる
+// （getIntensityLabel が該当ラベルを持たないため）。判定自体は数値比較で動き続けるので
+// 表示だけが壊れて原因を追えない。階級値でなければ既定値へ落とす。
+//
+// 範囲外の値をクランプせず既定値へ落とすため、notifyMinScale では「震度7以上のみ通知」ではなく
+// 「通知しない」（既定 -1）に倒れる。無言で通知が止まると原因を追えないので、値があるのに弾いた
+// ときだけログに残す（未設定は初回起動・項目追加時に必ず通るため対象外）。
+function ensureIntensityScale(value: unknown, fallback: number, key: string): number {
+  if (typeof value === 'number' && isValidIntensityScale(value)) return value
+  if (value !== undefined) {
+    log.warn(`[settings] ${key} が気象庁の震度階級値でないため既定値（${fallback}）に戻した`, value)
+  }
+  return fallback
+}
+
 function clampNumberOrNull(value: unknown, min: number, max: number): number | null {
   if (value === null) return null
   if (typeof value !== 'number' || !Number.isFinite(value)) return null
@@ -103,12 +124,12 @@ function clampNumberOrNull(value: unknown, min: number, max: number): number | n
 }
 
 // 壊れた JSON・型不一致・範囲外の値は既定値に落とす（不正な localStorage で App がクラッシュしない
-// ようにするための境界防御。ここでは意味的な妥当性までは検証せず、型と範囲だけを担保する）。
+// ようにするための境界防御。基本は型と範囲だけを担保し、震度を取る項目のみ階級値かどうかまで見る）。
 // export はテスト向け（ランタイムからは load() 経由でのみ使う）。
 export function sanitize(partial: Partial<AppSettings>): AppSettings {
   return {
-    minDisplayScale: clampNumber(partial.minDisplayScale, -1, 70, DEFAULTS.minDisplayScale),
-    notifyMinScale: clampNumber(partial.notifyMinScale, -1, 70, DEFAULTS.notifyMinScale),
+    minDisplayScale: ensureIntensityScale(partial.minDisplayScale, DEFAULTS.minDisplayScale, 'minDisplayScale'),
+    notifyMinScale: ensureIntensityScale(partial.notifyMinScale, DEFAULTS.notifyMinScale, 'notifyMinScale'),
     soundEnabled: ensureBool(partial.soundEnabled, DEFAULTS.soundEnabled),
     soundVolume: clampNumber(partial.soundVolume, 0, 1, DEFAULTS.soundVolume),
     uiScale: clampNumber(partial.uiScale, 0.5, 3, DEFAULTS.uiScale),
@@ -134,7 +155,11 @@ export function sanitize(partial: Partial<AppSettings>): AppSettings {
     voicevoxUrl: ensureString(partial.voicevoxUrl, DEFAULTS.voicevoxUrl),
     voicevoxSpeakerId: clampNumber(partial.voicevoxSpeakerId, 0, 100000, DEFAULTS.voicevoxSpeakerId),
     ttsIntensityLevels: clampNumber(partial.ttsIntensityLevels, 0, 10, DEFAULTS.ttsIntensityLevels),
+    // 地域数は連続量なので、UI の選択肢（最大 20 / 許容 5）を超える値でも表示は破綻しない。
+    // sanitize の上限を UI に合わせると選択肢を増やすたび両方直す必要があるため、緩いままにする。
     ttsMaxRegions: clampNumber(partial.ttsMaxRegions, 0, 100, DEFAULTS.ttsMaxRegions),
+    ttsAlwaysReadScale: ensureIntensityScale(partial.ttsAlwaysReadScale, DEFAULTS.ttsAlwaysReadScale, 'ttsAlwaysReadScale'),
+    ttsRegionTolerance: clampNumber(partial.ttsRegionTolerance, 0, 100, DEFAULTS.ttsRegionTolerance),
     panelRatio: clampNumber(partial.panelRatio, PANEL_RATIO_MIN, PANEL_RATIO_MAX, DEFAULTS.panelRatio),
   }
 }
@@ -161,6 +186,9 @@ export function useSettings() {
 
   // useCallback で参照を安定化する（React.memo 化された SettingsTab へ props として
   // 渡されるため、毎レンダー新関数だと memo が破られる）。
+  // UI から来る値は、選択肢が限定されているか、型チェックだけで足りる自由入力（URL・API キー）の
+  // どちらかなので sanitize を通さない（設定 1 つの変更で全項目を検証し直す必要がない）。
+  // localStorage を直接書き換えられた場合は次回起動の load() で正される。
   const updateSetting = useCallback(<K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     setSettings(prev => {
       const next = { ...prev, [key]: value }

@@ -619,16 +619,26 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
                 </Row>
               </>
             )}
-            <Row label="読み上げ震度階数" description="最大震度から何階級分の地域名を読み上げるか（0 = 最大震度のみ）">
+            <Row label="読み上げ震度階数" description="最大震度に加えて何階級下まで地域名を読み上げるか（0 = 最大震度のみ）">
               <select
                 value={settings.ttsIntensityLevels}
                 onChange={e => onUpdate('ttsIntensityLevels', Number(e.target.value))}
                 className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
               >
                 {[0, 1, 2, 3, 4].map(n => (
-                  <option key={n} value={n}>{n === 0 ? '最大震度のみ' : `最大から${n}階級`}</option>
+                  <option key={n} value={n}>{n === 0 ? '最大震度のみ' : `最大＋${n}階級`}</option>
                 ))}
               </select>
+            </Row>
+            <Row label="必ず読み上げる震度" description="階数の設定を超えても、この震度以上の階級は地域名を読み上げます（長周期地震動には適用されません）">
+              <div className="flex items-center gap-2">
+                <IntensityBadge scale={settings.ttsAlwaysReadScale} />
+                <ScaleSelect
+                  value={settings.ttsAlwaysReadScale}
+                  onChange={v => onUpdate('ttsAlwaysReadScale', v)}
+                  noneLabel="階数の設定どおり"
+                />
+              </div>
             </Row>
             <Row label="読み上げ最大地域数" description="1階級あたりに読み上げる地域名の上限（0 = 無制限）">
               <select
@@ -641,6 +651,19 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
                 ))}
               </select>
             </Row>
+            {settings.ttsMaxRegions > 0 && (
+              <Row label="地域数の許容超過" description="上限をこの数まで超えるだけなら「ほかN地域」とせず全地域を読み上げます">
+                <select
+                  value={settings.ttsRegionTolerance}
+                  onChange={e => onUpdate('ttsRegionTolerance', Number(e.target.value))}
+                  className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+                >
+                  {[0, 1, 2, 3, 5].map(n => (
+                    <option key={n} value={n}>{n === 0 ? '許容しない' : `+${n}地域まで`}</option>
+                  ))}
+                </select>
+              </Row>
+            )}
           </>
         )}
         <Row label="ブラウザ通知" description="地震発生時にブラウザ通知を表示します">
