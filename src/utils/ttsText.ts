@@ -83,7 +83,7 @@ function coordForName(name: string): [number, number] | null {
 }
 
 export interface TtsRegionOptions {
-  intensityLevels: number   // 最大震度から何階級分読むか（0 = 最大のみ）
+  intensityLevels: number   // 最大震度に加えて何階級下まで読むか（0 = 最大のみ。観測がある階級だけを数える）
   maxRegions: number        // 読み上げる最大地域数（0 = 無制限）
   alwaysReadScale: number   // 階数を超えても読み上げる下限震度（-1 = 無効。長周期地震動には適用しない）
   regionTolerance: number   // maxRegions をこの数まで超える場合は省略せず全地域を読む（0 = 無効）
