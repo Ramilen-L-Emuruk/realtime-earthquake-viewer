@@ -36,21 +36,43 @@ const HIT_RADIUS_PX = 9
 const HIT_TOL_PX = 4
 
 // ヒートマップの拡散半径(px・iconScale 適用前の基準値)。ズームに応じて補間する。
+// 引きの画では「見やすい大きさ」を優先して px で決め打ちする（HEAT_MAX_ZOOM まで）。
 const HEAT_RADIUS_MIN = 14
+const HEAT_RADIUS_MID = 22
+const HEAT_RADIUS_MID_ZOOM = 4
 const HEAT_RADIUS_MAX = 30
+
+// HEAT_MAX_ZOOM より寄ったときは、半径を「ズーム 1 段で 2 倍」＝地理的な距離が一定になるよう
+// 伸ばす。**取得できる震源の座標が 0.1 度（約 11km）刻みのため**（実データで 696 点のうち 695 点が
+// 0.1 度グリッド上・ユニークな座標は 139 個だけ）、それより細かく描くと 11km 格子の点描になり、
+// 配信された座標より細かい位置が分かっているように見えてしまう。データの粒度に合わせてぼかす方が
+// 正直で、格子も埋まる。
+// なお 0.1 度は気象庁の決定精度ではなく公表時の丸め（精密な値が別電文にある事情は
+// docs/spec/data-sources-spec.md §2 を参照）。カタログ API から取れるのが 0.1 度まで、という制約。
+const HEAT_GEO_ZOOM = 11
+const HEAT_GEO_RADIUS = HEAT_RADIUS_MAX * 2 ** (HEAT_GEO_ZOOM - HEAT_MAX_ZOOM)
 
 const EMPTY_FC: FeatureCollection<Point> = { type: 'FeatureCollection', features: [] }
 
-/** 拡散半径のズーム補間式。地図アイコンの倍率を掛けた値で組む。 */
+/**
+ * 拡散半径のズーム補間式。地図アイコンの倍率を掛けた値で組む。
+ * 補間は `exponential` の base 2。この基数だと「ズームが 1 段上がると値が 2 倍」に正確に一致するため、
+ * HEAT_MAX_ZOOM 以降で地理的な距離を保てる。低ズーム側は曲線が下に凸になって細くなりすぎるので、
+ * 日本全体の縮尺付近（HEAT_RADIUS_MID_ZOOM）にストップを 1 つ挟んで持ち上げる。
+ */
 function heatRadiusExpr(iconScale: number): ExpressionSpecification {
   return [
     'interpolate',
-    ['linear'],
+    ['exponential', 2],
     ['zoom'],
     0,
     HEAT_RADIUS_MIN * iconScale,
+    HEAT_RADIUS_MID_ZOOM,
+    HEAT_RADIUS_MID * iconScale,
     HEAT_MAX_ZOOM,
     HEAT_RADIUS_MAX * iconScale,
+    HEAT_GEO_ZOOM,
+    HEAT_GEO_RADIUS * iconScale,
   ]
 }
 
@@ -126,22 +148,35 @@ export function QuakeHeatmapGL({ points, iconScale, visible }: Props) {
       paint: {
         // 各点の重み（quakeHeatmap 側で 0〜1 に正規化済み）。
         'heatmap-weight': ['coalesce', ['get', 'weight'], 0.5],
-        // ズームで密度強度を上げる（leaflet.heat の見た目に近づける）。
-        'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 0, 0.6, HEAT_MAX_ZOOM, 1.4],
-        // 密度→色（leaflet.heat 既定グラデーション相当。density0 は透明）。
+        // 密度強度。ズームで上げるが、値そのものは低く抑える。理由は下の色ランプのコメント参照。
+        'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 0, 0.04, HEAT_MAX_ZOOM, 0.09],
+        // 密度→色。**折れ点を対数的に配置する**（等間隔にしない）。
+        // 地震活動は場所によって桁で違う。実データでは 0.1 度メッシュあたりの重み合計が
+        // 中央値 0.15 に対し最大 16.6 と 100 倍以上開く。これを等間隔のランプで写すと、
+        // 濃い側は上限に張り付いて一様な赤（境界のはっきりした塊）になり、薄い側は透明に
+        // 潰れて、結局どちらの濃淡も読めなくなる。低い側を引き延ばして高い側を圧縮する。
         'heatmap-color': [
           'interpolate',
           ['linear'],
           ['heatmap-density'],
           0, 'rgba(0,0,255,0)',
-          0.2, 'rgba(0,0,255,0.4)',
-          0.4, 'rgba(0,170,255,0.6)',
-          0.6, 'rgba(0,255,128,0.7)',
-          0.8, 'rgba(255,238,0,0.8)',
-          1, 'rgba(255,0,0,0.9)',
+          0.005, 'rgba(0,0,255,0.45)',
+          0.02, 'rgba(0,170,255,0.6)',
+          0.08, 'rgba(0,255,128,0.7)',
+          0.3, 'rgba(255,238,0,0.8)',
+          0.9, 'rgba(255,0,0,0.9)',
         ],
         'heatmap-radius': heatRadiusExpr(iconScaleRef.current),
-        'heatmap-opacity': 0.85,
+        // 寄るほど薄くする。半径を地理的な距離に合わせて伸ばす（heatRadiusExpr 参照）ため、
+        // 濃さを保ったままだと高ズームでは画面全体が塗り潰されて地図が読めなくなる。
+        // 引きの画は従来の濃さのまま、寄ったら下地に沈む「背景の情報」として残す。
+        'heatmap-opacity': [
+          'interpolate',
+          ['linear'],
+          ['zoom'],
+          HEAT_MAX_ZOOM, 0.85,
+          HEAT_GEO_ZOOM, 0.3,
+        ],
       },
     })
     // 当たり判定専用の透明レイヤー。ヒートマップ本体と同じズーム範囲で出す（どちらもズーム上限を持たない）。

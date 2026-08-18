@@ -56,6 +56,20 @@ function dlog(...args: unknown[]): void {
   log.info('[DMDSS]', ...args)
 }
 
+/**
+ * REST 取得の失敗を記録する。401/403（契約スコープ不足・キー不正）はリトライしても直らないため
+ * error に上げ、確認先を添える。それ以外（500・429 等）は一時的な失敗として warn に留める。
+ * WebSocket チケット取得（`fetchTicketUrl`）が 401/403 を特別扱いしているのと同じ切り分けを、
+ * REST 取得側にも揃えるためのヘルパー。
+ */
+function logRestFailure(what: string, status: number): void {
+  if (status === 401 || status === 403) {
+    log.error(`[DMDSS] ${what}: 認証エラー (${status})。APIキーの契約スコープを確認してください（再試行では解消しません）`)
+  } else {
+    log.warn(`[DMDSS] ${what}: 取得失敗 (${status})`)
+  }
+}
+
 // base64 文字列をバイト列にデコードする。
 function base64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64)
@@ -666,7 +680,8 @@ export async function fetchDmdataTsunamis(
 }
 
 // DMDATA REST API で南海トラフ地震臨時情報（VYSE50/51）の最新1件を取得する。
-// 取得失敗時は null を返す（補助情報なのでアプリを壊さない）。
+// 取得失敗時は null を返す（補助情報なのでアプリを壊さない）が、失敗した事実はログに残す。
+// 「発表なし」と「取得できていない」は同じ null になるため、記録が無いと区別できなくなる。
 //
 // VYSE52（関連解説情報）は補足解説電文であり InfoKind にステータスキーワードが入らないため
 // 発令中/調査終了の判定に使えない。VYSE51（臨時情報の更新）と VYSE50（初報・調査中）のみで判定する。
@@ -677,40 +692,45 @@ export async function fetchDmdataNankai(apiKey: string): Promise<JMANankai | nul
     // VYSE51 がなければ VYSE50（調査中）が発令中。
     for (const type of ['VYSE51', 'VYSE50']) {
       const res = await fetch(`${API_BASE}/telegram?type=${type}&limit=1`, { headers })
-      if (!res.ok) continue
+      if (!res.ok) { logRestFailure(`南海トラフ地震臨時情報 (${type}) の一覧`, res.status); continue }
       const json = await res.json() as { items?: Array<{ id: string; url: string }> }
       const item = (json.items ?? [])[0]
       if (!item) continue
       const xmlRes = await fetch(item.url, { headers })
-      if (!xmlRes.ok) continue
+      if (!xmlRes.ok) { logRestFailure(`南海トラフ地震臨時情報 (${type}) の電文本体`, xmlRes.status); continue }
       const xml = await xmlRes.text()
       const nankai = parseVyse5xFromXml(xml)
       if (nankai && !nankai.cancelled) return nankai
       if (nankai?.cancelled) return null
     }
-  } catch { /* 取得失敗は無視 */ }
+  } catch (err) {
+    log.error('[DMDSS] 南海トラフ地震臨時情報の取得に失敗', err)
+  }
   return null
 }
 
 // DMDATA REST API で北海道・三陸沖後発地震注意情報（VYSE60）の最新1件を取得する。
-// 取得失敗時は null を返す。
+// 取得失敗時は null を返すが、失敗した事実はログに残す（理由は fetchDmdataNankai と同じ）。
 export async function fetchDmdataKohatsu(apiKey: string): Promise<JMAKohatsu | null> {
   const headers = { Authorization: authHeader(apiKey) }
   try {
     const res = await fetch(`${API_BASE}/telegram?type=VYSE60&limit=1`, { headers })
-    if (!res.ok) return null
+    if (!res.ok) { logRestFailure('後発地震注意情報 (VYSE60) の一覧', res.status); return null }
     const json = await res.json() as { items?: Array<{ id: string; url: string; head: { type: string } }> }
     const item = (json.items ?? [])[0]
     if (!item) return null
     const xmlRes = await fetch(item.url, { headers })
-    if (!xmlRes.ok) return null
+    if (!xmlRes.ok) { logRestFailure('後発地震注意情報 (VYSE60) の電文本体', xmlRes.status); return null }
     const xml = await xmlRes.text()
     const kohatsu = parseVyse60FromXml(xml)
     if (!kohatsu || kohatsu.cancelled) return null
     // 有効期限チェック: expireAt が過去なら null
     if (new Date(kohatsu.expireAt) <= serverDate()) return null
     return kohatsu
-  } catch { return null }
+  } catch (err) {
+    log.error('[DMDSS] 後発地震注意情報の取得に失敗', err)
+    return null
+  }
 }
 
 // DMDATA REST API で長周期地震動観測情報（VXSE62）を取得する。
@@ -816,7 +836,12 @@ export async function fetchDmdataGdEarthquakes(apiKey: string, days: number): Pr
   for (let page = 0; page < GD_EARTHQUAKE_MAX_PAGES; page++) {
     const qs = cursorToken ? `&cursorToken=${cursorToken}` : ''
     const res = await fetch(`${API_BASE}/gd/earthquake?limit=100${qs}`, { headers })
-    if (!res.ok) throw new Error(`gd/earthquake: ${res.status}`)
+    if (!res.ok) {
+      // 呼び出し側は失敗の中身で挙動を変えないため、恒久（スコープ不足）と一時（500 等）の
+      // 区別はここでログに残す。例外自体は従来どおり投げて取得を止める。
+      logRestFailure('震源カタログ (gd/earthquake)', res.status)
+      throw new Error(`gd/earthquake: ${res.status}`)
+    }
     const json = await res.json() as {
       items?: Array<{
         eventId: string
