@@ -23,6 +23,7 @@ import { filterSubThresholdIndices } from './utils/kyoshinSubThresholdFilter'
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
 import { usePsWaveCalc } from './hooks/usePsWaveCalc'
 import { useQuakeHeatmap } from './hooks/useQuakeHeatmap'
+import { useDebouncedValue } from './hooks/useDebouncedValue'
 import { getIntensityLabel } from './utils/intensity'
 import { formatMagnitude, formatDateTimeLocal } from './utils/formatters'
 import { computeEEWLevel, eewMaxLpgmClass } from './utils/eew'
@@ -47,6 +48,10 @@ const DEFAULT_TITLE = isDmdss
 // 空配列を freeze せず可変配列として扱っているのは既存 SiteCoords 型定義が可変配列のため。
 const EMPTY_SITES: [number, number][] = []
 const EMPTY_INDICES: number[] = []
+
+// APIキーの入力が落ち着いたと見なすまでの待ち時間(ms)。手入力の打鍵間隔より長く、
+// 貼り付け後の接続開始が待たされたと感じない程度に短く。
+const API_KEY_DEBOUNCE_MS = 800
 
 // 各タブのスクロール領域に共通で当てるクラス。パネルは縦一列の表示で横スクロールを想定しない。
 // overflow-y だけを auto にすると CSS 仕様で overflow-x の visible も auto に格上げされるため、
@@ -199,6 +204,12 @@ export function App() {
 
   const [replayTimeOffset, setReplayTimeOffset] = useState<number | null>(null)
 
+  // 通信を起こす側へ渡す APIキーは、入力が落ち着くまで待つ。設定欄は 1 文字ごとに保存するため、
+  // 生の値を effect 依存に渡すと手入力・修正のたびに未完成のキーで接続と履歴取得をやり直し、
+  // そのすべてが 401/403 で失敗してコンソールを埋める（無駄なリクエストとレート消費も伴う）。
+  // 保存と画面表示は即座に反映したいので、遅らせるのはここだけにする。
+  const debouncedApiKey = useDebouncedValue(settings.dmdataApiKey, API_KEY_DEBOUNCE_MS)
+
   const {
     earthquakes, tsunamis, activeEEWs, lpgmByEventId, nankai, kohatsu, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
     telegramLog, clearTelegramLog,
@@ -208,7 +219,7 @@ export function App() {
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateKohatsu,
     resetState, loadReplayEvents,
-  } = useEarthquakes(handleLiveEvent, settings.dmdataApiKey, settings.dmdataTestDelivery, replayTimeOffset)
+  } = useEarthquakes(handleLiveEvent, debouncedApiKey, settings.dmdataTestDelivery, replayTimeOffset)
   earthquakesRef.current = earthquakes
   tsunamisRef.current = tsunamis
 
@@ -299,7 +310,7 @@ export function App() {
 
   const scenarioTest = useTestScenarios(loadReplayEvents)
 
-  const { points: quakeHeatPoints } = useQuakeHeatmap(settings.showQuakeHeatmap, settings.dmdataApiKey, earthquakes)
+  const { points: quakeHeatPoints } = useQuakeHeatmap(settings.showQuakeHeatmap, debouncedApiKey, earthquakes)
 
   // 最新の非解除津波電文から観測データを収集（地図バー描画用）
   const latestTsunamiObservations = useMemo(() => {
@@ -631,6 +642,8 @@ export function App() {
   // リプレイの取得・世代管理は useReplayController に集約している（非同期の完了順序に
   // 依存する状態機械のため、単体でテストできる形に切り出した）。
   // 時計への反映（setClockReplayOffset）は上の useEffect が replayTimeOffset を見て行う。
+  // ここだけ生のキーを渡す。リプレイはユーザーがボタンを押した時点でしか通信せず、キー入力に
+  // 連動して自動で走ることがないため、遅らせる必要がない（むしろ押した瞬間の最新値を使いたい）。
   const replay = useReplayController({
     apiKey: settings.dmdataApiKey,
     timeOffset: replayTimeOffset,
