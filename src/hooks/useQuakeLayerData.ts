@@ -10,6 +10,7 @@ import {
   type LatLng,
 } from '../utils/stationCoords'
 import { pointInRings, normalizeEpicenterLng } from '../utils/geo'
+import { ringsBounds, type SubRegion } from '../utils/subregions'
 import { extractQuakeEventId } from '../utils/quakeMerge'
 import { japanWideCornersLatLng } from '../components/Map/gl/bounds'
 import { MAX_ZOOM } from '../components/Map/gl/camera'
@@ -167,23 +168,19 @@ export function useQuakeLayerData(
     mode === 'quake' && !!quake && !subregionsFailed &&
     (zoom <= QUAKE_MAX_ZOOM || (!lpgmActive && stationMarkers.length === 0))
 
-  // 一次細分区域に bbox を付与（点内包判定の前段フィルタ用）。
+  // 一次細分区域に bbox を付与（点内包判定の前段フィルタ用・フィット対象の矩形）。
+  // 境界を持たない区域は点内包判定も区域塗りもできないため索引から外す（生成データが正常なら発生しない）。
+  // 旧実装は空リングの区域を Infinity の bbox のまま索引に残していたため、その区域名が電文側に
+  // 現れると quakeFitPositions へ Infinity 座標が混入しうる穴があった（ringsBounds の null 除外で解消）。
   const subregionIndex = useMemo(() => {
     if (!subregions) return []
-    return subregions.map((sr) => {
-      let minLat = Infinity,
-        maxLat = -Infinity,
-        minLng = Infinity,
-        maxLng = -Infinity
-      for (const ring of sr.rings)
-        for (const [la, ln] of ring) {
-          if (la < minLat) minLat = la
-          if (la > maxLat) maxLat = la
-          if (ln < minLng) minLng = ln
-          if (ln > maxLng) maxLng = ln
-        }
-      return { sr, minLat, maxLat, minLng, maxLng }
-    })
+    const list: { sr: SubRegion; minLat: number; maxLat: number; minLng: number; maxLng: number }[] = []
+    for (const sr of subregions) {
+      const b = ringsBounds(sr.rings)
+      if (!b) continue
+      list.push({ sr, ...b })
+    }
+    return list
   }, [subregions])
 
   // 区域名 → 最大震度。aggregateByRegion（現在ズーム依存）とは無関係に常に計算する。

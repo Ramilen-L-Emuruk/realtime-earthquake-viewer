@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import type { EEWAlert } from '../types/earthquake'
 import type { LatLng } from '../utils/stationCoords'
 import { useSubRegions } from './useSubRegions'
-import type { SubRegion } from '../utils/subregions'
+import { ringsBounds, type SubRegion } from '../utils/subregions'
 import { eewAreas, eewMaxScale } from '../utils/eew'
 import { isValidIntensityScale } from '../utils/intensity'
 import { isValidLpgmClass } from '../utils/lpgm'
@@ -65,6 +65,7 @@ export function useEewLayerData(
   eewAreaFills: EewAreaFill[]
   eewLpgmRegionAggregates: EewLpgmRegionAggregate[]
   eewEpicenters: EewEpicenter[]
+  eewFitPositions: LatLng[]
 } {
   // EEW の予想震度・予想長周期は一次細分区域単位でしか表現できないため、区域データの取得に
   // 失敗した場合の代替表示は無い（塗りが出ないまま。失敗自体は useSubRegions が error ログを出す）。
@@ -172,5 +173,27 @@ export function useEewLayerData(
     return list
   }, [eews])
 
-  return { eewAreaFills, eewLpgmRegionAggregates, eewEpicenters }
+  // EEW のカメラ追従に加える「予想の塗り」の範囲。区域ポリゴンの外接矩形の南西・北東 2 点を並べる。
+  // 地震情報タブの `quakeFitPositions`（useQuakeLayerData）と同じ流儀で、区域の代表点（label）ではなく
+  // bbox を使う——区域が代表点よりはみ出た形のとき、代表点だけではフレームから溢れるため。
+  //
+  // 予想長周期地震動を表示中は予想震度塗りが隠れる（JapanMapGL の EewRegionFillGL / EewLpgmRegionFillGL の
+  // visible）ので、フィット対象も LPGM 区域へ切り替える。**この「LPGM を優先する」分岐は描画側の visible と
+  // 同じ条件でなければならない**（片方だけ変えると、表示していない塗りへカメラが寄る）。
+  //
+  // リング全点ではなく区域あたり 2 点に畳んでおくのは、これを消費する EEW 成長フォローが 100ms ごとに
+  // 走るため（CameraFollowsGL の FitToEEWGL）。全区域でも最大 2 点 × 区域数で収まる。
+  const eewFitPositions = useMemo<LatLng[]>(() => {
+    const source: (EewAreaFill | EewLpgmRegionAggregate)[] =
+      eewLpgmRegionAggregates.length > 0 ? eewLpgmRegionAggregates : eewAreaFills
+    const positions: LatLng[] = []
+    for (const area of source) {
+      const b = ringsBounds(area.rings)
+      if (!b) continue
+      positions.push([b.minLat, b.minLng], [b.maxLat, b.maxLng])
+    }
+    return positions
+  }, [eewAreaFills, eewLpgmRegionAggregates])
+
+  return { eewAreaFills, eewLpgmRegionAggregates, eewEpicenters, eewFitPositions }
 }

@@ -1,5 +1,6 @@
 // 一次細分区域（地震情報・緊急地震速報の「地域」区分）の境界（public/data/subregions.json）
-// を読み込むユーティリティ。ベースマップの細分境界線＋区域名ラベルに使う。
+// を読み込むユーティリティ。ベースマップの細分境界線＋区域名ラベル、震度・EEW 予想の区域塗りと
+// そのカメラフィットに使う。
 //
 // データは scripts/build-subregions.mjs で生成・更新する。
 
@@ -15,6 +16,39 @@ export interface SubRegion {
   dir: 'up' | 'down'
   /** 区域の境界リング */
   rings: LatLng[][]
+}
+
+/** 区域ポリゴンの外接矩形（bbox）。 */
+export interface RingsBounds {
+  minLat: number
+  maxLat: number
+  minLng: number
+  maxLng: number
+}
+
+/**
+ * 境界リング群の外接矩形を返す。頂点が 1 つも無ければ null。
+ *
+ * 区域を「代表点（label）」ではなく bbox で扱うための共通計算。カメラフィットでは、区域が代表点より
+ * はみ出た形のときにフレームから溢れるのを防ぐために使い（`useQuakeLayerData` の `quakeFitPositions`・
+ * `useEewLayerData` の `eewFitPositions`）、区域集約では点内包判定（`pointInRings`）の前段フィルタと
+ * して使う。両者が同じ矩形を指していないと「塗られるのにフィット対象から漏れる区域」が生まれるため、
+ * 導出をここ一箇所に置く。
+ */
+export function ringsBounds(rings: LatLng[][]): RingsBounds | null {
+  let minLat = Infinity
+  let maxLat = -Infinity
+  let minLng = Infinity
+  let maxLng = -Infinity
+  for (const ring of rings)
+    for (const [lat, lng] of ring) {
+      if (lat < minLat) minLat = lat
+      if (lat > maxLat) maxLat = lat
+      if (lng < minLng) minLng = lng
+      if (lng > maxLng) maxLng = lng
+    }
+  if (minLat === Infinity) return null
+  return { minLat, maxLat, minLng, maxLng }
 }
 
 const DATA_URL = `${import.meta.env.BASE_URL}data/subregions.json`

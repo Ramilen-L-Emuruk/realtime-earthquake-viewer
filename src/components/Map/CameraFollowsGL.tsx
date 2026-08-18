@@ -13,7 +13,6 @@ import {
   flyToPoint,
   flyToBoundsSnapped,
   boundsFromCirclesForEewFollow,
-  boundsFromCirclesAndHypocentersForEewFollow,
   boundsForLiveFollow,
   boundsFromPositions,
   mapContainsBounds,
@@ -171,10 +170,16 @@ export function FitJapanOnEnterGL({ hasEew, hasDetection }: { hasEew: boolean; h
 export function FitToDetectionGL({
   points,
   hasEew,
+  hasCandidate = false,
   idleRevertSec = DEFAULT_IDLE_REVERT_SEC,
 }: {
   points: DetectedPoint[]
   hasEew: boolean
+  /**
+   * 確定検知に育っていない候補クラスタが残っているか（`FitToCandidateGL` がフィットする対象があるか）。
+   * 検知終了時に日本全体へ戻すかどうかの判断にのみ使う。
+   */
+  hasCandidate?: boolean
   idleRevertSec?: number
 }) {
   const map = useMapGL()
@@ -185,6 +190,19 @@ export function FitToDetectionGL({
     if (points.length === 0) {
       if (fittedRef.current) {
         fittedRef.current = false
+        // 候補クラスタが残っているなら日本全体へは戻さず、そちらへのフィットに任せる
+        // （`FitToCandidateGL` の候補失効分岐が `hasDetection` で守られているのと対称）。
+        // これが無いと、確定検知の終了と同じコミットで候補クラスタが立っている場合に、
+        // 直前の候補へのフィットを日本全体で上書きして一瞬ちらつく。
+        // 委譲先が動くことが前提なので、`FitToCandidateGL` は検知終了の瞬間にフィット済みの印を
+        // 落として寄り直す（同コンポーネントの detectionJustEnded 参照）。片方だけ変えると
+        // 「どちらもカメラを動かさず、終了した検知の位置に取り残される」状態になる。
+        // なお検知終了と候補失効が同一コミットで重なると、あちらの失効分岐とここの下の fitJapan が
+        // 両方走る。どちらも日本全体という同じ目標なので見た目は変わらない（排他制御はしていない）。
+        if (hasCandidate) {
+          log.debug('[mapGL] fitJapan スキップ (揺れ検知終了・候補クラスタ継続中)')
+          return
+        }
         if (!hasEew && !isUserInteracting) {
           log.debug('[mapGL] fitJapan (揺れ検知終了)')
           fitJapan(map, 1.0)
@@ -221,7 +239,9 @@ export function FitToDetectionGL({
     if (!bounds || mapContainsBounds(map, bounds)) return
     log.debug(`[mapGL] 揺れ検知 成長フォロー (${points.length}点)`)
     flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
-  }, [map, points, hasEew, isUserInteracting])
+    // hasCandidate を参照するのは上の検知終了分岐だけだが、古い値を掴まないよう deps には含める
+    // （成長フォロー分岐が余分に再評価されるが、mapContainsBounds が収まっていれば何もしない）。
+  }, [map, points, hasEew, hasCandidate, isUserInteracting])
   return null
 }
 
@@ -241,10 +261,21 @@ export function FitToCandidateGL({
 }) {
   const map = useMapGL()
   const fittedIdRef = useRef<number | null>(null)
+  const prevHasDetectionRef = useRef(hasDetection)
   const [isUserInteracting] = useUserInteractionGuard(map, idleRevertSec)
   useEffect(() => {
     if (!map) return
+    // 確定検知が出ている間、この効果は下の early return で何もしない。その間に候補クラスタが立っても
+    // fittedIdRef は更新されないため、確定検知が終わった時点では「フィット済み」の古い印だけが残る。
+    // その印が今の candidateId と一致していると再フィットが起きず、しかも FitToDetectionGL 側は
+    // hasCandidate を見て fitJapan を見送るので、カメラが終了した検知の位置に取り残される。
+    // 検知が終わった瞬間に印を落として、生き残っている候補へ寄り直せるようにする。
+    // （candidateId が null のときは落とさない。落とすと下の失効分岐が「フィット済みだった」判定を
+    //   失い、日本全体への帰還を FitToDetectionGL 側だけに依存させることになる）
+    const detectionJustEnded = prevHasDetectionRef.current && !hasDetection
+    prevHasDetectionRef.current = hasDetection
     if (hasDetection) return
+    if (detectionJustEnded && candidateId !== null) fittedIdRef.current = null
     if (candidateId === null) {
       if (fittedIdRef.current !== null) {
         fittedIdRef.current = null
@@ -262,6 +293,18 @@ export function FitToCandidateGL({
     // セルフヒール手段が無く、操作中に来た候補が永久にフィットされなくなる）。
     if (isUserInteracting) {
       log.debug(`[mapGL] 候補クラスタフィット スキップ (userInteracting, id=${candidateId})`)
+      return
+    }
+    // EEW 発報中は FitToEEWGL に一任する（FitToDetectionGL の MAP-4 対応と同形）。候補点群の狭い範囲へ
+    // 寄せても、EEW 側の追従は予想の区域塗りまで含む広い目標を持つため、次の判定で即座に引き直されて
+    // 二段のカメラ移動になる。fittedIdRef だけ立てて実際の flyTo は見送る。
+    //
+    // 見送った候補は、EEW 解除時に FitToEEWGL の帰還先（検知点が無ければ候補点）が引き受ける。
+    // ここは fittedIdRef を立てるため、同じ candidateId のままでは二度と発火しない（上の早期 return）。
+    // 委譲した先に帰還経路が無いと、その候補クラスタは一度も画面に入らないまま終わる。
+    if (hasEew) {
+      log.debug(`[mapGL] 候補クラスタフィット スキップ (EEW発報中・FitToEEW に委譲, id=${candidateId})`)
+      fittedIdRef.current = candidateId
       return
     }
     fittedIdRef.current = candidateId
@@ -282,19 +325,33 @@ export function FitToCandidateGL({
 const GROWTH_FOLLOW_SUPPRESS_MS = 3000
 
 // ── EEW 追従（idle 抑制つき・最も複雑） ──────────────────────────────────────────
-// 新規 EEW: 震源中心→予報円へフィット。解除: 検知中なら検知点、無ければ日本全体へ。
+// 新規 EEW: 震源中心→予報円へフィット（第一報は震源近傍の寄りを見せたいため、予想の区域塗りは
+// ここでは含めない）。解除: 検知中なら検知点、無ければ日本全体へ。
 // ユーザーが手動でズーム/パンしたら idleRevertSec 秒間追従を停止（0=EEW更新まで）。
-// 予報円の成長で表示に収まらなくなったらズームアウト追従する。
+// 予報円の成長・予想の区域塗りの広がりで表示に収まらなくなったらズームアウト追従する。
 export function FitToEEWGL({
   eews,
   psWave,
   idleRevertSec = DEFAULT_IDLE_REVERT_SEC,
   detectedPoints = [],
+  candidatePoints = [],
+  forecastAreaPositions = [],
 }: {
   eews: EEWAlert[]
   psWave: PsWaveCircle[]
   idleRevertSec?: number
   detectedPoints?: DetectedPoint[]
+  /**
+   * 確定検知に育っていない候補クラスタの点群。EEW 解除時の帰還先としてのみ使う（検知点が無い場合）。
+   * 発報中の追従（成長フォロー）には含めない——未確定の候補まで追うと、ノイズで立った候補のたびに
+   * 画が広がってしまうため。
+   */
+  candidatePoints?: DetectedPoint[]
+  /**
+   * 予想の区域塗りが占める範囲（区域 bbox の南西・北東 2 点の列・`useEewLayerData` の `eewFitPositions`）。
+   * 予想長周期地震動を表示中はそちらの区域に切り替わっている（描画側の visible と同じ分岐）。
+   */
+  forecastAreaPositions?: LatLng[]
 }) {
   const map = useMapGL()
   const lastEewIdRef = useRef<string | null>(null)
@@ -323,6 +380,13 @@ export function FitToEEWGL({
         } else if (detectedPoints.length > 0) {
           log.debug(`[mapGL] EEW解除・揺れ検知中 ${detectedPoints.length}点へフィット`)
           fitToPositions(map, detectedPoints.map(dp2ll), { padding: 60, maxZoom: MAX_ZOOM, durationSec: 1.0 })
+        } else if (candidatePoints.length > 0) {
+          // 確定検知には育っていない候補クラスタが残っている場合はそこへ帰る。EEW 発報中は
+          // FitToCandidateGL がフィットを見送って（hasEew ガード）こちらに委譲しているため、
+          // ここで受けないと「EEW 中に立った候補クラスタが一度も画面に入らない」穴になる。
+          // FitToCandidateGL 側は candidateId ごとに一度しか発火しないので、あちらでは取り戻せない。
+          log.debug(`[mapGL] EEW解除・候補クラスタ ${candidatePoints.length}点へフィット`)
+          fitToPositions(map, candidatePoints.map(dp2ll), { padding: 60, maxZoom: MAX_ZOOM, durationSec: 1.0 })
         } else {
           log.debug('[mapGL] fitJapan (EEW解除)')
           fitJapan(map, 1.0)
@@ -350,10 +414,11 @@ export function FitToEEWGL({
     }
     log.debug('[mapGL] EEW新規 震源へフィット')
     flyToPoint(map, [latitude, longitude], MAX_ZOOM, 0.8)
-    // psWave/detectedPoints は意図的に依存配列から外している。この effect は「新規 EEW を検知した
-    // 瞬間」だけに反応させたく、psWave/detectedPoints の変化では再実行させない
-    // （lastEewIdRef の実質的な等値チェックで弾かれるため deps に入れても害はないが、
+    // psWave/detectedPoints/candidatePoints は意図的に依存配列から外している。この effect は
+    // 「新規 EEW を検知した瞬間」と「最後の EEW が消えた瞬間」だけに反応させたく、点群の変化では
+    // 再実行させない（lastEewIdRef の実質的な等値チェックで弾かれるため deps に入れても害はないが、
     // 「latest（新規判定）に反応する effect」であることを deps だけで誤読させないための明示）。
+    // 解除時の帰還先に使う点群は「latest が null になったレンダー時点の値」で十分。
   }, [latest, map, isUserInteracting, resetUserInteraction])
 
   // EEW 数 or 波円数が減少かつ残りがある場合: 残りへ強制再フィット。
@@ -371,7 +436,14 @@ export function FitToEEWGL({
 
     // 円のある EEW は円の box、円が無い（仮定震源要素等の）EEW も震源座標一点は必ず含める
     // （円だけを見ると、その EEW が画面から取り残される）。
-    const bounds = boundsFromCirclesAndHypocentersForEewFollow(psWave, eewHypocenters(eews))
+    // 目標は成長フォロー（下の useEffect）と同一にする。食い違わせると、ここで寄せた直後に成長フォローが
+    // 引き直して二段のカメラ移動になる（予想の区域塗りは円より広いことが多く、差が常態化する）。
+    const bounds = boundsForLiveFollow(
+      psWave,
+      eewHypocenters(eews),
+      detectedPoints.map(dp2ll),
+      forecastAreaPositions,
+    )
     if (!bounds) {
       if (latest) {
         const { latitude, longitude } = latest.earthquake.hypocenter
@@ -384,13 +456,13 @@ export function FitToEEWGL({
     }
     log.debug(`[mapGL] EEW数減少・残り${eews.length}件へ再フィット`)
     flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
-  }, [eews, psWave, latest, map, isUserInteracting])
+  }, [eews, psWave, latest, map, isUserInteracting, detectedPoints, forecastAreaPositions])
 
-  // 予報円・震源座標・揺れ検知点の広がりに追従（表示に収まらなくなった時のみズームアウト）。
-  // 目標は「有感半径 bounds ∪ 震源座標 ∪ 検知点」の単一 bounds。EEW 発報中の追従はこの効果が一手に
-  // 引き受け、FitToDetectionGL 側は hasEew で止まる（目標を2つにすると振動するため。boundsForLiveFollow
-  // 参照）。円が無い（仮定震源要素・M不明・自動解除直後等の）EEW も震源座標一点は必ず含める。
-  // 円だけを見ると、その EEW の震源が画面から取り残される穴になるため。
+  // 予報円・震源座標・揺れ検知点・予想の区域塗りの広がりに追従（表示に収まらなくなった時のみズームアウト）。
+  // 目標は「有感半径 bounds ∪ 震源座標 ∪ 検知点 ∪ 予想の区域塗り」の単一 bounds。EEW 発報中の追従はこの
+  // 効果が一手に引き受け、FitToDetectionGL・FitToCandidateGL 側は hasEew で止まる（目標を2つにすると
+  // 振動するため。boundsForLiveFollow 参照）。円が無い（仮定震源要素・M不明・自動解除直後等の）EEW も
+  // 震源座標一点は必ず含める。円だけを見ると、その EEW の震源が画面から取り残される穴になるため。
   // isProgrammaticFlight(map) により、他コンポーネントの自動フィットが進行中の間もこの効果は
   // 再フィットを待つ（同時に複数のカメラアニメーションが競合するのを避ける）。
   // 新規 EEW 受信直後は GROWTH_FOLLOW_SUPPRESS_MS の間、この効果自体を止める（上の useEffect 参照）。
@@ -399,12 +471,21 @@ export function FitToEEWGL({
     if (eews.length === 0) return
     if (isUserInteracting || isProgrammaticFlight(map)) return
     if (Date.now() < suppressGrowthUntilRef.current) return
-    const bounds = boundsForLiveFollow(psWave, eewHypocenters(eews), detectedPoints.map(dp2ll))
+    const bounds = boundsForLiveFollow(
+      psWave,
+      eewHypocenters(eews),
+      detectedPoints.map(dp2ll),
+      forecastAreaPositions,
+    )
     if (bounds && !mapContainsBounds(map, bounds)) {
-      log.debug(`[mapGL] EEW成長フォロー 波円${psWave.length}個+震源${eews.length}件+検知${detectedPoints.length}点`)
+      // 区域数は 2 で割って求める（forecastAreaPositions は区域あたり bbox の 2 点。useEewLayerData 参照）。
+      log.debug(
+        `[mapGL] EEW成長フォロー 波円${psWave.length}個+震源${eews.length}件+検知${detectedPoints.length}点` +
+          `+予想区域${forecastAreaPositions.length / 2}件`,
+      )
       flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
     }
-  }, [eews, psWave, detectedPoints, map, isUserInteracting])
+  }, [eews, psWave, detectedPoints, forecastAreaPositions, map, isUserInteracting])
 
   return null
 }
