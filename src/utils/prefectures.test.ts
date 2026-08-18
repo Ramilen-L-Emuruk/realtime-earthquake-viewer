@@ -34,7 +34,23 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-describe('loadPrefectures', () => {
+// 各ケースは `vi.resetModules()` ＋動的 import でモジュール内キャッシュを白紙に戻すため、
+// そのたびに Vite の変換とモジュールグラフの再評価が走る。所要時間はマシンの混み具合に左右され、
+// 既定のタイムアウト（5 秒）を割ることがあるので、このファイル群だけ上限を上げる。
+//
+// 2026-08-18 の実測（テスト 8 連続実行＋dev サーバー稼働という混んだ状態）:
+//   既定 5 秒: 本ファイルが 3/8、stationCoords が 1/8 で失敗。所要は 3,129〜5,023ms に散らばり、
+//              5,000ms を超えた回だけ落ちていた（通った回も 4,473・4,634ms と閾値際）
+//   15 秒:     8/8 成功。所要は 3,658〜5,832ms で分布は変わらず
+// 「解決しない Promise で固まっている」なら上限を伸ばしても新しい上限で落ちるはずで、5,832ms で
+// 完走している以上、上限が実測分布に対して低すぎただけと言える（アサーション失敗も出ていない）。
+//
+// 同じ操作をする他のテスト（stationCoords / subregions / tsunamiZones / fetchJson の「取得状況の集約」/
+// ttsPhraseBreakDict）にも同じ上限を置いている。実測では本ファイルと stationCoords 以外は 2.5 秒未満に
+// 収まっていたが、速い理由は構造ではなく実行順（コールドスタートのコストを最初のファイルが負う）で
+// 説明できてしまうため、同じ操作をするものは揃えておく。
+// プロジェクト全体の testTimeout（vitest.config.ts）は既定のままにして、性能劣化の検出網は緩めない。
+describe('loadPrefectures', { timeout: 15_000 }, () => {
   it('取得に成功するとデータを返し、以降はキャッシュを使う（fetchは1回のみ）', async () => {
     const fetchMock = vi.fn(async () => okResponse(SAMPLE))
     vi.stubGlobal('fetch', fetchMock)
