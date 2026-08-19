@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import type { TestScenarioFile, TestScenarioIndex } from '../types/testScenario'
-import type { ReplayEntry } from '../services/dmdataReplay'
+import type { ReplayEntry } from '../types/replay'
 import { instantiateScenario } from '../utils/testScenarioReplay'
 import { serverDate } from '../utils/clock'
 import { log } from '../utils/logger'

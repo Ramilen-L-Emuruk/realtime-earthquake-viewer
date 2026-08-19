@@ -14,7 +14,7 @@ const API_BASE = 'https://api.p2pquake.net/v2'
 const WS_URL = 'wss://api.p2pquake.net/v2/ws'
 
 // P2PQuake API はイベント種別を数値 code で返すため、内部の kind 識別子に変換する
-type RawP2PEvent = { code: number; [key: string]: unknown }
+export type RawP2PEvent = { code: number; [key: string]: unknown }
 
 function codeToLogKind(code: number): TelegramLogEntry['kind'] {
   if (code === 551) return 'quake'
@@ -456,14 +456,63 @@ export async function fetchHistory(
   return raws.flatMap(r => { const e = convertEvent(r); return e ? [e] : [] })
 }
 
-// /v2/history より大幅に深い履歴（2015年〜）を持つ地震情報専用エンドポイント
-export async function fetchJmaQuake(limit = 50, offset = 0): Promise<JMAQuake[]> {
-  const params = new URLSearchParams({ limit: String(limit) })
-  if (offset > 0) params.set('offset', String(offset))
-  const res = await fetch(`${API_BASE}/jma/quake?${params.toString()}`)
-  if (!res.ok) throw new Error(`P2PQuake jma/quake error: ${res.status}`)
-  const raws = await res.json() as RawP2PEvent[]
+/**
+ * `/jma/quake`・`/jma/tsunami` の共通クエリ。
+ *
+ * `sinceDate`・`untilDate` は yyyyMMdd（JST 日付）で、**時刻までは絞れない**。
+ * 特定の時刻前後だけが欲しい場合も日単位で取得し、呼び出し側で絞ることになる。
+ */
+export interface JmaArchiveQuery {
+  /** 返却件数（1〜100、API 側の上限は 100）。 */
+  limit?: number
+  /** 読み飛ばす件数。 */
+  offset?: number
+  /** 指定日かそれ以降（yyyyMMdd）。 */
+  sinceDate?: string
+  /** 指定日かそれ以前（yyyyMMdd）。 */
+  untilDate?: string
+  /** 1 = 古い順、-1 = 新しい順（省略時は API 既定の新しい順）。 */
+  order?: 1 | -1
+}
+
+/**
+ * `/jma/*` の生レスポンスを取得する。
+ *
+ * 変換前の配列を返すのは、呼び出し側が「取得できた件数」と「内部型へ変換できた件数」の差を
+ * 取りこぼしとして数えられるようにするため（リプレイは欠落を UI に出す）。
+ */
+export async function fetchJmaArchiveRaw(
+  resource: 'quake' | 'tsunami',
+  query: JmaArchiveQuery = {},
+): Promise<RawP2PEvent[]> {
+  const params = new URLSearchParams({ limit: String(query.limit ?? 50) })
+  if (query.offset) params.set('offset', String(query.offset))
+  if (query.sinceDate) params.set('since_date', query.sinceDate)
+  if (query.untilDate) params.set('until_date', query.untilDate)
+  if (query.order) params.set('order', String(query.order))
+  const res = await fetch(`${API_BASE}/jma/${resource}?${params.toString()}`)
+  // 429 は原因も対処もはっきりしている（叩きすぎ・待てば直る）ので、番号だけ出さず言葉にする。
+  // これは UI にそのまま出るメッセージで、読むのは開発者とは限らない。
+  if (res.status === 429) {
+    throw new Error(`P2PQuake の取得制限に達しました（jma/${resource}）。しばらく待ってから再試行してください`)
+  }
+  if (!res.ok) throw new Error(`P2PQuake jma/${resource} error: ${res.status}`)
+  const json = await res.json()
+  // 配列以外が返ると呼び出し側の走査が TypeError になり、原因が API 応答だと分からなくなる。
+  if (!Array.isArray(json)) throw new Error(`P2PQuake jma/${resource} の応答が配列ではありません`)
+  return json as RawP2PEvent[]
+}
+
+// /v2/history より大幅に深い履歴（地震情報は 2015-01-10 〜）を持つ地震情報専用エンドポイント
+export async function fetchJmaQuake(query: JmaArchiveQuery = {}): Promise<JMAQuake[]> {
+  const raws = await fetchJmaArchiveRaw('quake', query)
   return raws.flatMap(r => { const e = convertEvent(r); return e && e.kind === 'quake' ? [e] : [] })
+}
+
+// 津波予報の履歴（2016-11-22 〜）。地震情報と同じクエリで引ける。
+export async function fetchJmaTsunami(query: JmaArchiveQuery = {}): Promise<JMATsunami[]> {
+  const raws = await fetchJmaArchiveRaw('tsunami', query)
+  return raws.flatMap(r => { const e = convertEvent(r); return e && e.kind === 'tsunami' ? [e] : [] })
 }
 
 // jma/quake のレート制限は 10リクエスト/分（IPごと）。ヒートマップ用の遡り取得では
@@ -477,7 +526,7 @@ export async function fetchJmaQuakeHistory(days: number): Promise<JMAQuake[]> {
   const collected: JMAQuake[] = []
   let offset = 0
   for (let page = 0; page < JMA_QUAKE_HISTORY_MAX_PAGES; page++) {
-    const batch = await fetchJmaQuake(100, offset)
+    const batch = await fetchJmaQuake({ limit: 100, offset })
     if (batch.length === 0) break
     collected.push(...batch)
     const oldestTime = new Date(batch[batch.length - 1].earthquake.time).getTime()

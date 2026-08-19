@@ -119,8 +119,21 @@ Basic 認証（`Authorization: Basic base64(apiKey:)`）。API キーはユー�
 
 ### エンドポイント
 
-- WebSocket: `wss://api.p2pquake.net/v2/ws`
-- REST: `https://api.p2pquake.net/v2/history`
+| 用途 | エンドポイント |
+|---|---|
+| リアルタイム受信 | `wss://api.p2pquake.net/v2/ws` |
+| 直近の履歴 | `https://api.p2pquake.net/v2/history` |
+| 地震情報の履歴（2015-01-10 〜） | `https://api.p2pquake.net/v2/jma/quake` |
+| 津波予報の履歴（2016-11-22 〜） | `https://api.p2pquake.net/v2/jma/tsunami` |
+
+`/jma/*` だけが日付（`since_date`・`until_date`、yyyyMMdd 単位）で絞れる。地震活動ヒートマップの
+遡り取得と、リプレイの過去取得はこちらを使う。
+
+以下は公式 OpenAPI 仕様（[json-api-v2.yaml](https://github.com/p2pquake/epsp-specifications/blob/master/json-api-v2.yaml)）
+の記載で、実測での裏付けは取っていない。
+
+- レート制限は `/history` が 60 リクエスト/分、`/jma` が 10 リクエスト/分（いずれも IP 毎）
+- `/history` は `offset` で遡れるが、1 週間以上古い情報は取得できない場合がある
 
 ### 認証
 
@@ -367,20 +380,19 @@ Yahoo の `hypoInfo.items` を EEW 型に変換して P2PQuake（標準版）や
 
 ## 7. リプレイ機能
 
-### 「テスト時刻設定（強震モニタ）」
+### 「テスト時刻設定」
 
-設定タブで日時を指定して過去を再生する機能。**同じボタンがバリアントによって別の動きをする**。
+設定タブで日時を指定して過去を再生する機能。再生の仕組みは共通で、**当時の電文をどこから
+取ってくるかがバリアントで変わる**。
 
-| バリアント | 動き |
-|---|---|
-| standard | アプリの時計をずらすだけ。Yahoo リアルタイム震度が過去の時刻から再生される |
-| DMDSS | 上記に加えて、DMDATA アーカイブから当時の電文（地震・津波・EEW 等）も取得して流す |
+バリアント別に何が再生されるか、取得の詳細（日付単位の取得・キャッシュ・取りこぼしの扱い）、
+再生中にライブ接続を止める理由は [`settings-pwa-spec.md`](settings-pwa-spec.md) §6
+「テスト時刻設定」に集約している。
 
-DMDSS 版のアーカイブ取得（目録の構造・取りこぼしの扱い）は
-[`settings-pwa-spec.md`](settings-pwa-spec.md) §6「テスト時刻設定（強震モニタ）」を参照。
-
-**既知の課題**: 実装が useEarthquakes.ts の接続 useEffect の先頭で `replayTimeOffset !== null` の
-早期 return を行うため、standard 版の P2PQuake WS 接続まで停止する副作用がある（HIGH 課題）。
+本書が受け持つのはデータ源としての制約だけ。**standard 版のリプレイで EEW を取得できないのは、
+P2PQuake に緊急地震速報（code 556）を過去日付で引く口が無いため**（`/jma` 配下に無く、
+`/history` は日付指定できないうえ 1 週間以上前を辿れない）。強震モニタの震源情報から EEW を
+検出する経路はリプレイ中も働くため、当時発表された EEW 自体は画面に出る。
 
 ### 実地震テストシナリオ
 
