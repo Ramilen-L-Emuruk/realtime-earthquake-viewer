@@ -81,6 +81,13 @@ enriched オブジェクトを渡して `useLiveEventHandler` 側の音・通知
 気象庁の実基準に合わせた OR 条件。長周期地震動階級は DMDATA 電文（VXSE43/44/45）にのみ載るため、
 standard 版では `eewMaxLpgmClass` が常に 0 になり震度のみでレベルが決まる。
 
+> **「特別警報」は表示に使い、読み上げには使わない。** 位置づけ自体は公式で、気象庁は震度 6 弱以上
+> または長周期地震動階級 4 以上を予想した緊急地震速報（警報）を特別警報としている。ただし
+> 「これらの特別警報は名称に『特別警報』は用いず、従来どおりの名称で発表します」とも明示している
+> （[津波・火山・地震（地震動）に関する特別警報の発表基準](https://www.jma.go.jp/jma/kishou/know/tokubetsu-keiho/kizyun-jikazan.html)）。
+> そのためレベル 2 は色分け・ブラウザ通知のタイトル・通知音の選択には使うが、**音声では「警報」と読む**
+> （[audio-tts-spec.md](audio-tts-spec.md) §6）。重さは値そのもの（「予想最大震度6弱。」）で伝える。
+
 `eewMaxScale`・`eewMaxLpgmClass` は**地域別 `areas[].scaleTo` / `areas[].lgIntTo` の最大を優先**し、
 **`areas` が空または最大が 0 のときのみ**電文全体の `forecastMaxScale` / `forecastMaxLpgmClass` に
 フォールバックする（大きい方を取るのではない）。震度未確定の `-1`（`IntensityScale` のセンチネル）は

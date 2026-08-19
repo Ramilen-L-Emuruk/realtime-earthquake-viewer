@@ -2,6 +2,7 @@
 
 > 本書は**現在の実装が津波情報をどう処理するか**をまとめた仕様書。実コードと食い違う場合は実コードを正とする。
 > 関連: [`data-sources-spec.md`](data-sources-spec.md) の津波電文受信、[`audio-tts-spec.md`](audio-tts-spec.md) の津波音・読み上げ。
+> 読み上げは緊急地震速報が優先されるため、EEW の発報中は津波の読み上げが遅れる（[`audio-tts-spec.md`](audio-tts-spec.md) §6）。
 
 ## 1. 概要
 
