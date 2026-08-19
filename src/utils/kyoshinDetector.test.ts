@@ -887,3 +887,44 @@ describe('chronicNoiseFloor（震度0ドット表示専用の慢性ノイズ床�
     expect(chronicNoiseFloor(site(0, 0))).toBeCloseTo(0)
   })
 })
+
+// 表示側（kyoshinDetectionView.dropIsolatedZeroPoints）が「今まさに揺れ始めた点」と
+// 「揺れが去った後の残り」を区別するために使う。窓はイベントのメンバー判定と同じ TRIG_ACTIVE_MS。
+describe('step: recentOnsetKeys（直近に立ち上がった観測点）', () => {
+  const defs = grid3x3(35.0, 139.0)
+  const meta = buildStationMeta(sitesOf(defs))
+
+  /** 静穏を積んでから揺らし、揺れ最終フレームの step 結果を返す。 */
+  function shakeThenQuiet(quietAfter: number): ReturnType<typeof step> {
+    const frames = quietThenShake(defs, { quietCount: 5, shakeCount: 2, shakeValue: 2.0 })
+    let t = frames[frames.length - 1].dataTimeMs
+    for (let i = 0; i < quietAfter; i++) {
+      t += 1000
+      frames.push(uniformFrame(defs, t, 0))
+    }
+    let state = initState(frames[0].dataTimeMs - 1000)
+    let last: ReturnType<typeof step> | null = null
+    for (const f of frames) {
+      last = step(state, f, meta)
+      state = last.state
+    }
+    return last!
+  }
+
+  it('揺れた直後は立ち上がった点を返す', () => {
+    expect(shakeThenQuiet(0).recentOnsetKeys.length).toBe(defs.length)
+  })
+
+  it('TRIG_ACTIVE_MS を過ぎたら外れる', () => {
+    const withinWindow = shakeThenQuiet(PARAMS.TRIG_ACTIVE_MS / 1000 - 1)
+    expect(withinWindow.recentOnsetKeys.length).toBe(defs.length)
+    const afterWindow = shakeThenQuiet(PARAMS.TRIG_ACTIVE_MS / 1000 + 1)
+    expect(afterWindow.recentOnsetKeys).toEqual([])
+  })
+
+  it('不連続（時刻ジャンプ）で状態を作り直したフレームでは空', () => {
+    const state = initState(0)
+    const jumped = step(state, uniformFrame(defs, PARAMS.MAX_DT_GAP_MS + 5000, 2.0), meta)
+    expect(jumped.recentOnsetKeys).toEqual([])
+  })
+})

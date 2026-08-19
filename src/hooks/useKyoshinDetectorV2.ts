@@ -70,6 +70,11 @@ export interface KyoshinDetectorV2Result {
   detections: DetectionEvent[]
   /** 今フレームのトリガー点 */
   triggers: TriggerResult[]
+  /**
+   * 直近に立ち上がった観測点キー（`step()` の `recentOnsetKeys`）。検知点マーカー・検知カードが
+   * 「揺れが去った後に残る孤立した震度0点」を落とす判定に使う（kyoshinDetectionView.dropIsolatedZeroPoints）。
+   */
+  recentOnsetKeys: ReadonlySet<string>
   /** 対象データ時刻 */
   dataTime: string
   /**
@@ -79,15 +84,47 @@ export interface KyoshinDetectorV2Result {
   floors: Record<string, number>
 }
 
-const EMPTY: KyoshinDetectorV2Result = { detections: [], triggers: [], dataTime: '', floors: {} }
-
-/** 観測点集合の簡易シグネチャ（点数＋先頭・末尾座標）。これが変わったら近傍メタを組み直す。 */
-function siteSignature(sites: SiteCoords): string {
-  if (sites.length === 0) return ''
-  const first = sites[0]
-  const last = sites[sites.length - 1]
-  return `${sites.length}|${siteKey(first[0], first[1])}|${siteKey(last[0], last[1])}`
+const EMPTY: KyoshinDetectorV2Result = {
+  detections: [],
+  triggers: [],
+  recentOnsetKeys: new Set<string>(),
+  dataTime: '',
+  floors: {},
 }
+
+/**
+ * 観測点集合のシグネチャ。これが変わったら近傍メタ（`buildStationMeta`）を組み直す。
+ *
+ * **全点を見る**。以前は「点数＋先頭・末尾座標」だけで判定していたが、それでは配列の中間だけが
+ * 差し替わった更新を検知できず、古い近傍メタ（＝`StationMeta.keys`）を使い続ける。`keys` は
+ * `computeSiteKeys` が座標の重複点に出現順で `#2`, `#3` を割り当てた結果で、Yahoo の観測点リストでは
+ * 全1725点中431点が座標重複に該当する。一方で表示側の `buildSiteIndex` は毎回キーを作り直すため、
+ * 両者のキーがずれ、`recentOnsetKeys` を使う判定（孤立した震度0点の間引きの救済）が静かに効かなくなる。
+ *
+ * 全点の走査は O(点数) だが、呼ぶのは `sites` の**参照が変わったとき**だけに絞っている（呼び出し側参照）。
+ * 同一 `siteConfigId` の観測点リストは `fetchSiteList` がキャッシュした同じ配列を返すため、
+ * 通常運用では毎秒走らない。
+ *
+ * export しているのはテストから直接呼ぶため（フック外から使う想定はない）。
+ */
+export function siteSignature(sites: SiteCoords): string {
+  if (sites.length === 0) return ''
+  const parts: string[] = [String(sites.length)]
+  for (const s of sites) parts.push(siteKey(s[0], s[1]))
+  return parts.join('|')
+}
+
+/**
+ * `step()` の連続失敗をこの回数だけ許し、超えたら検知結果を空にする。
+ *
+ * 例外時は `setResult` を呼ばずに抜けるため、結果（`detections` と `recentOnsetKeys`）は前フレームの値で
+ * 凍結する。一方で表示側が使う現在震度は生きたまま更新され続けるので、放置すると「古いメンバーを
+ * 現在の震度で描き続ける」状態になり、孤立した震度0点の間引きも古い `recentOnsetKeys` で判定される。
+ * 数フレームの一過性なら保持した方が明滅しないが、恒常的に壊れているなら表示を止める方が安全。
+ *
+ * export しているのはテストが閾値を参照するため（フック外から使う想定はない）。
+ */
+export const STEP_FAIL_RESET_FRAMES = 5
 
 /**
  * 強震モニタ検知エンジン（純粋コア step・V3 近傍一致型）の React ラッパー。
@@ -118,8 +155,11 @@ export function useKyoshinDetectorV2(
   hasActiveNonAssumedEEW: boolean,
 ): KyoshinDetectorV2Result {
   const stateRef = useRef<DetectorState>(loadInitialState())
-  const metaRef = useRef<{ sig: string; meta: StationMeta } | null>(null)
+  // sites の参照も保持する。参照が同じなら中身は同じ（fetchSiteList が同一 siteConfigId に対して
+  // 同じ配列を返す）ため、全点シグネチャの計算まで省ける。
+  const metaRef = useRef<{ sites: SiteCoords; sig: string; meta: StationMeta } | null>(null)
   const lastSaveRef = useRef(0)
+  const stepFailRef = useRef(0)
   // dataTime 更新時のみ step() を進める設計（下記 useEffect の deps 参照）に合わせ、EEW 状態は
   // ref で最新値を持ち回す（deps に含めると EEW 変化のたびに同一フレームへ再度 step() してしまう）。
   const hasActiveNonAssumedEEWRef = useRef(hasActiveNonAssumedEEW)
@@ -142,10 +182,16 @@ export function useKyoshinDetectorV2(
     if (sitesSiteConfigId !== indicesSiteConfigId) return
     if (sites.length !== indices.length) return
 
-    // 観測点集合が変わったときだけ近傍メタを構築（フレーム毎の O(点数²) を避ける）
-    const sig = siteSignature(sites)
-    if (!metaRef.current || metaRef.current.sig !== sig) {
-      metaRef.current = { sig, meta: buildStationMeta(sites as [number, number][]) }
+    // 観測点集合が変わったときだけ近傍メタを構築（フレーム毎の O(点数²) を避ける）。
+    // 二段構え: まず参照で弾き（毎秒はここで終わる）、参照が変わったときだけ全点シグネチャを比べる。
+    // 内容が同じなら近傍メタを再利用し、参照だけ差し替える（同内容の別配列で O(点数²) を走らせない）。
+    if (!metaRef.current || metaRef.current.sites !== sites) {
+      const sig = siteSignature(sites)
+      if (!metaRef.current || metaRef.current.sig !== sig) {
+        metaRef.current = { sites, sig, meta: buildStationMeta(sites as [number, number][]) }
+      } else {
+        metaRef.current.sites = sites
+      }
     }
 
     let stepResult: ReturnType<typeof step>
@@ -167,16 +213,25 @@ export function useKyoshinDetectorV2(
       // step 内部で予期せぬ例外（sites/indices の長さ不整合を潜り抜けたケース等）が
       // 発生した場合、stateRef を破損させずログして次フレームで再試行する。
       // 例外を握り潰さないと useEffect のクリーンアップが走らず検知エンジンが恒久停止する。
-      log.error('[kyoshinV2] step() threw:', err)
+      stepFailRef.current++
+      log.error(`[kyoshinV2] step() threw (${stepFailRef.current}フレーム連続):`, err)
+      // 連続で壊れているなら結果を空にする。保持し続けると、凍結した memberKeys /
+      // recentOnsetKeys を現在の震度に当てて描き続ける（詳細は STEP_FAIL_RESET_FRAMES）。
+      // 学習資産（点別床・セル慢性活性）は stateRef に残すので、復帰時に学び直しにならない。
+      if (stepFailRef.current === STEP_FAIL_RESET_FRAMES) {
+        log.error('[kyoshinV2] step() の連続失敗が続くため検知結果を空にします')
+        setResult(EMPTY)
+      }
       return
     }
-    const { state, detections, triggers } = stepResult
+    stepFailRef.current = 0
+    const { state, detections, triggers, recentOnsetKeys } = stepResult
     stateRef.current = state
 
     const floors: Record<string, number> = {}
     for (const [key, s] of Object.entries(state.sites)) floors[key] = chronicNoiseFloor(s)
 
-    setResult({ detections, triggers, dataTime, floors })
+    setResult({ detections, triggers, recentOnsetKeys: new Set(recentOnsetKeys), dataTime, floors })
 
     // 学習資産（点別床・セル慢性活性）を定期的に永続化する（再読込・5時リロード後も学習を保つ）
     if (dataTimeMs - lastSaveRef.current >= SAVE_INTERVAL_MS) {
@@ -188,6 +243,9 @@ export function useKyoshinDetectorV2(
     ;(window as unknown as Record<string, unknown>).__kyoshinV2 = {
       detections,
       triggers: triggers.length,
+      // 孤立した震度0点の間引き（kyoshinDetectionView.dropIsolatedZeroPoints）が効いているかを
+      // 実運用で追えるようにする。間引きは静かに点を消す処理で、失敗しても例外が出ない。
+      recentOnsetKeys: recentOnsetKeys.length,
       dataTime,
       eewActive: hasActiveNonAssumedEEWRef.current,
     }

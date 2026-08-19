@@ -100,7 +100,7 @@ function createFakeMap() {
   return fake as unknown as maplibregl.Map & { fire: (event: string) => void }
 }
 
-const dp = (lat: number, lng: number): DetectedPoint => ({ lat, lng, index: 20 })
+const dp = (lat: number, lng: number): DetectedPoint => ({ key: `${lat},${lng}`, lat, lng, index: 20 })
 
 /** fitBounds の呼び出しごとの padding。どの経路が呼ばれたかの判別に使う。 */
 function fitPaddings(map: maplibregl.Map): number[] {
