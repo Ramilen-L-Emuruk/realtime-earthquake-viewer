@@ -1,7 +1,6 @@
 import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
-import { eewMaxScale } from './eew'
+import { eewMaxScale, eewMaxLpgmClass } from './eew'
 import { getIntensityLabel } from './intensity'
-import { isValidLpgmClass } from './lpgm'
 import { tsunamiMaxGrade } from './tsunami'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
@@ -273,10 +272,14 @@ export function eewIntensityToText(event: EEWAlert): string {
       text += '予想震度なし。'
     }
   }
-  // 階級 1〜4 以外は読み上げない。読み上げは地図の色フォールバックのような逃げ場が無く、
-  // 「予想最大階級99」のような文言がそのまま音声で出てしまうため（詳細は docs/spec/eew-spec.md §4）。
-  if (event.forecastMaxLpgmClass != null && isValidLpgmClass(event.forecastMaxLpgmClass)) {
-    text += `予想最大階級${event.forecastMaxLpgmClass}。`
+  // 階級も震度と同じく集約関数を通す（判定条件は eewMaxLpgmClass の JSDoc 参照）。0 のときは
+  // 句ごと省く。音声には地図の色フォールバックのような逃げ場が無く、不正値がそのまま声に出るため。
+  // ただし同関数が 0 を返すのは仮定震源要素のときだけで、上の depth > 150（深発地震）の分岐とは
+  // 連動しない。深発地震で震度だけ出ない場合は「予想震度なし」と階級の断言が同居しうる
+  // （未対応の既知の限界。docs/spec/eew-spec.md §4）。
+  const lpgmClass = eewMaxLpgmClass(event)
+  if (lpgmClass > 0) {
+    text += `予想最大階級${lpgmClass}。`
   }
   return text
 }
@@ -289,10 +292,11 @@ export function eewToText(event: EEWAlert): string {
   if (scale > 0) {
     text += `予想最大震度${intensityText(scale)}。`
   }
-  // 階級 1〜4 以外は読み上げない。読み上げは地図の色フォールバックのような逃げ場が無く、
-  // 「予想最大階級99」のような文言がそのまま音声で出てしまうため（詳細は docs/spec/eew-spec.md §4）。
-  if (event.forecastMaxLpgmClass != null && isValidLpgmClass(event.forecastMaxLpgmClass)) {
-    text += `予想最大階級${event.forecastMaxLpgmClass}。`
+  // 階級も震度と同じく集約関数を通す（判定条件は eewMaxLpgmClass の JSDoc 参照）。0 のときは
+  // 句ごと省く。音声には地図の色フォールバックのような逃げ場が無く、不正値がそのまま声に出るため。
+  const lpgmClass = eewMaxLpgmClass(event)
+  if (lpgmClass > 0) {
+    text += `予想最大階級${lpgmClass}。`
   }
   return text
 }
