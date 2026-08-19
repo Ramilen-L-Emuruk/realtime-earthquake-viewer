@@ -250,7 +250,15 @@ export interface JMAKohatsu {
   expireAt: string  // reportDateTime + 7日
 }
 
-export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected'
+/**
+ * データ受信の状態。
+ *
+ * `replay` は「テスト時刻設定（強震モニタ）で過去を再生しているため、ライブ受信を意図的に止めている」
+ * 状態。`disconnected`（＝繋がるべきなのに繋がっていない）と区別する必要がある——混ぜると地図に
+ * 切断警告が出てしまうし、逆に更新しないままにすると直前の値（多くは `connected`）が残って
+ * 「受信していないのに接続中」と表示され続ける。
+ */
+export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'replay'
 
 export interface TelegramLogEntry {
   id: string

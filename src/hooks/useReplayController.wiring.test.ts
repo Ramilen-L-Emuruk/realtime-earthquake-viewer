@@ -209,7 +209,7 @@ describe('useReplayController の start', () => {
     expect(h.ranges.map(r => r.apiKey)).toEqual(['test-key', 'test-key'])
   })
 
-  it('取得に失敗すると、エラーを出して時計を巻き戻す', async () => {
+  it('取得に失敗しても時計は戻さない（強震モニタの再生は続ける）', async () => {
     const h = setup()
     const started = h.start(quietTarget())
 
@@ -220,10 +220,26 @@ describe('useReplayController の start', () => {
     // どちらの取得で失敗したかが分かること
     expect(h.current.error).toMatch(/本編/)
     expect(h.current.error).toMatch(/boom/)
-    // 「再生中」表示が残ると赤字と矛盾するため、オフセットも戻す
-    expect(h.deps.setTimeOffset).toHaveBeenLastCalledWith(null)
+    // 電文が取れないことと、強震モニタは続くことの両方を伝える
+    expect(h.current.error).toMatch(/強震モニタの再生は継続/)
+    // 強震モニタは timeOffset だけで過去フレームへ切り替わる別経路なので、DMDATA の
+    // アーカイブが読めなくても再生は成立する。戻すと API キーが無い環境で検証できなくなる。
+    expect(h.deps.setTimeOffset).toHaveBeenLastCalledWith(expect.any(Number))
     expect(h.deps.loadReplayEvents).not.toHaveBeenCalled()
     expect(h.current.isFetching).toBe(false)
+  })
+
+  it('取得に失敗した後もリセット（stop）で時計を戻せる', async () => {
+    const h = setup()
+    const started = h.start(quietTarget())
+    h.fetches[0].reject(new Error('boom'))
+    h.fetches[1].resolve(fetched([]))
+    await h.flush(started)
+
+    h.stop()
+
+    expect(h.deps.setTimeOffset).toHaveBeenLastCalledWith(null)
+    expect(h.current.error).toBeNull()
   })
 
   it('取りこぼしがあれば、再生が始まっていても知らせる', async () => {
