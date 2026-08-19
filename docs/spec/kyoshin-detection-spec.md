@@ -74,6 +74,12 @@ Yahoo RealTimeData (1Hz JSON)
 - `avail[key]`: `R_KM` 以内に実在する近傍数（疎地域救済の分母に使う）
 - `cellOf[key]`: 各点が属する固定格子セル（`CELL_DEG` 度の等間隔ビン）
 
+再構築するのは**観測点集合が変わったときだけ**。判定は二段構えで、まず `sites` の**参照**を見て（同一
+`siteConfigId` なら `fetchSiteList` が同じ配列を返すため通常運用はここで終わる）、参照が変わったときだけ
+**全点**のシグネチャを比べる。内容が同じなら O(点数²) の再構築を省いて参照だけ差し替える。
+全点を見るのは、配列の中間だけが差し替わる更新を取りこぼすと古い観測点キーを使い続け、表示側が毎回
+作り直すキーとずれるため（そのとき §8 の `recentOnsetKeys` を使う判定が静かに効かなくなる。経緯は設計書 §23）。
+
 ### L1 点トリガー（観測点ごと）
 
 各観測点について、点別のノイズ床（`floorMean`・`floorDev` の長時定数 EWMA）と現在値を比較する。
@@ -229,7 +235,7 @@ Yahoo RealTimeData (1Hz JSON)
 `weak` のイベントも内部状態としては保持されるが、`step()` が返す `detections` 配列・UI 側の判定
 （`confirmed`/`candidate`）には `weak` は現れない（表示は confirmed/likely/faint のみ）。
 
-## 7. 永続化（`useKyoshinDetectorV2`）
+## 7. 永続化と異常系（`useKyoshinDetectorV2`）
 
 学習資産（点別ノイズ床 `floorMean`/`floorDev`・セル慢性活性 `cellActivity`）は座標キー／セルキー基準で
 `localStorage['kyoshin-v3-learned']` に保存する（`siteConfigId` の版差に非依存）。一過性の状態
@@ -241,6 +247,13 @@ Yahoo RealTimeData (1Hz JSON)
 **フレーム内の点別欠測**（`frame.missing[i]===true`）については、当該点の `SiteState` を丸ごと
 消失させず前フレームの学習資産を保持する。以前は消失→次フレームで `initSiteState` から再学習に
 入るため慢性ノイズ点の `floorDev` が 0 リセットされ検知閾値を崩す問題があった（KYO-1）。
+
+### `step()` が例外を投げたとき
+
+ログして次フレームで再試行する（`stateRef` は壊さない）。**`STEP_FAIL_RESET_FRAMES`(5) フレーム連続で
+失敗したら検知結果（`detections` / `recentOnsetKeys`）を空にする**。学習資産は保持するため、復帰時に
+学び直しにはならない。前フレームの結果を保持し続けると、凍結したメンバーを現在の震度に当てて描き続ける
+ことになる（理由の詳細は設計書 §23）。
 
 ## 8. UI 連携
 
@@ -302,6 +315,8 @@ Yahoo RealTimeData (1Hz JSON)
   「微弱な揺れの兆候」カードと地図が食い違う。
 - **条件 2 の判定材料には対象外の点も使う**（confirmed の震度0点の隣にある likely の震度1点を見落とさない
   ため）。
+- 条件 3 が拠る `recentOnsetKeys` の生成と、そのキーが表示側とずれないための仕組みは §4 の L0 と
+  §7「`step()` が例外を投げたとき」を参照。
 
 このフィルタは**表示だけを整えるもので、検知の判定には触れない**。`confirmed` / `candidate` /
 `candidateMaxIndex` / `confirmedShocks`（音・自動タブ切替・地域単位発報の入力）と、カメラフィットに使う
