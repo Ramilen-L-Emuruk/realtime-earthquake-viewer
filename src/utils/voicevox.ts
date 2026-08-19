@@ -23,8 +23,8 @@ let currentAbortController: AbortController | null = null
 const phraseBreakCache = new Map<string, AccentPhrase[]>()
 
 // 辞書該当「地名」の直後に挿入する短いポーズ（VOICEVOX が読点「、」に対して付与する pause_mora を参考にした値）。
-// 該当語は前後を独立に取得して結合するため continuation の抑揚が不連続になりがちだが、
-// 直後にポーズを挟むことで「区切って言い直した」ような自然な間として聞こえ、不連続感を目立たなくする。
+// 抑揚の不連続そのものは {@link refineProsody} が引き直して解消するが、地名の切れ目には短い間があった方が
+// 「区切って言い直した」ように聞こえて自然なため残している。
 // 「深発地震」「遠地地震」等の一般用語（isPlaceNameKey が false を返すもの）は文中に自然に溶け込む語なので対象外。
 const DICT_TRAILING_PAUSE = {
   text: '、',
@@ -43,19 +43,23 @@ function withTrailingPause(phrases: AccentPhrase[]): AccentPhrase[] {
 }
 
 /**
- * 結合した accent_phrases の音素長を、繋ぎ目を含めた文脈で再推定する（POST /mora_length）。
+ * 結合した accent_phrases の音素長と音高を、繋ぎ目を含めた文脈で再推定する（POST /mora_data）。
  *
  * {@link buildAccentPhrases} は辞書キーの前後を「独立した 1 文」として /audio_query にかけるため、
- * 前半の末尾モーラが文末と解釈されて伸びる。「震度5弱を」＋「宮崎県北部平野部」のように
- * 助詞で切れる場合に助詞が間延びして聞こえるのはこれが原因（実測: 「を」の母音長が
- * 単独取得で 0.202 秒、通しで取得すると 0.109 秒）。結合後にこのエンドポイントへ通すと
- * 全体の文脈で長さが引き直され、通しで合成した場合と同じ値になる。
+ * 前半の末尾が文末と解釈され、母音が伸びたうえ音高も下がりきってしまう。「震度5弱を」＋
+ * 「宮崎県北部平野部」のように助詞で切れる場合、その助詞が間延びして聞こえたり、言い切ってから
+ * 地名を言い直したように聞こえるのはこれが原因。結合後にこのエンドポイントへ通すと、
+ * 全体の文脈で長さと音高が引き直され、通しで合成した場合とほぼ同じ値になる。
  *
- * 長さのみを再計算するため、辞書で指定したアクセント核（各モーラの pitch）は変化しない。
- * 失敗時は null を返し、呼び出し側は再計算前の accent_phrases をそのまま使う
- * （助詞が伸びたままになるだけで読み上げ自体は成立する）。
+ * 実測（四国めたん・ツンツン。「震度5弱を宮崎県北部平野部…」の「を」の母音長と音高）:
+ * 単独取得 0.164 秒 / 212 Hz、通し取得 0.099 秒 / 271 Hz、このエンドポイントを通すと
+ * 0.099 秒 / 267 Hz。通し取得にほぼ一致する。
+ *
+ * 音高はアクセント句の `accent`（アクセント核の位置）から引き直されるため、辞書がカナ表記で
+ * 指定した読みとアクセント核は保たれる。失敗時は null を返し、呼び出し側は再推定前の
+ * accent_phrases をそのまま使う（繋ぎ目が不自然なままになるだけで読み上げ自体は成立する）。
  */
-async function refineMoraLength(
+async function refineProsody(
   baseUrl: string,
   phrases: AccentPhrase[],
   speakerId: number,
@@ -64,7 +68,7 @@ async function refineMoraLength(
   if (phrases.length === 0) return phrases
   try {
     const res = await fetch(
-      `${baseUrl}/mora_length?speaker=${speakerId}`,
+      `${baseUrl}/mora_data?speaker=${speakerId}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -73,29 +77,29 @@ async function refineMoraLength(
       },
     )
     if (!res.ok) {
-      log.debug('[VoiceVox] mora_length が非 200 応答（長さの補正なしで続行）', res.status)
+      log.debug('[VoiceVox] mora_data が非 200 応答（繋ぎ目の補正なしで続行）', res.status)
       return null
     }
     const refined = await res.json() as AccentPhrase[]
     // 句数が変わるはずはないが、変わっていれば pause_mora の対応が取れないため捨てる
     if (refined.length !== phrases.length) {
-      log.debug('[VoiceVox] mora_length の句数が不一致（長さの補正なしで続行）', {
+      log.debug('[VoiceVox] mora_data の句数が不一致（繋ぎ目の補正なしで続行）', {
         expected: phrases.length, actual: refined.length,
       })
       return null
     }
     // pause_mora は辞書由来・読点由来を問わずまとめて元の値へ戻す。再推定に任せると
     // DICT_TRAILING_PAUSE の短い間（0.12 秒）が読点相当まで伸ばされ、意図した長さでなくなる
-    // （実測: 辞書語が文中なら 0.368 秒、チャンク末尾なら 0.783 秒）。
+    // （実測: 辞書語が文中なら 0.349 秒、チャンク末尾なら 0.968 秒）。
     return refined.map((ap, i) => ({ ...ap, pause_mora: phrases[i].pause_mora }))
   } catch (err) {
     // abort は割り込みの正常系。後続の /synthesis も同じ signal で中断されてチャンクごと
-    // 破棄されるため、再計算前のものに戻して進んでも影響はなく、記録もしない。
+    // 破棄されるため、再推定前のものに戻して進んでも影響はなく、記録もしない。
     // それ以外（接続断・エンドポイント不在・応答形式の異常）は残す。ここが黙って失敗すると
-    // 補正前と同じ「助詞が間延びした読み上げ」に戻るだけなので、記録が無いと
+    // 補正前と同じ「助詞が間延びして繋ぎ目が途切れた読み上げ」に戻るだけなので、記録が無いと
     // 「直っていない」という報告から原因を切り分けられない。
     if (!(err instanceof DOMException && err.name === 'AbortError')) {
-      log.debug('[VoiceVox] mora_length の再推定に失敗（長さの補正なしで続行）', err)
+      log.debug('[VoiceVox] mora_data の再推定に失敗（繋ぎ目の補正なしで続行）', err)
     }
     return null
   }
@@ -194,10 +198,9 @@ async function fetchAccentPhrasesForKey(
  * テキストを accent_phrases の配列に変換する。句区切り辞書のキーを含む場合は、
  * その部分だけ /accent_phrases(is_kana=true) で処理し、前後の通常テキストと結合する
  * （キーを含まない後続部分にさらに別のキーが含まれる場合は再帰的に処理する）。
- * 前後を独立に取得するため継ぎ目の抑揚は不連続になり得るが、該当語の直後に短いポーズ
- * （DICT_TRAILING_PAUSE）を挟むことで区切りとして自然に聞こえるようにしている。
- * ただし音素長は独立取得のままだと繋ぎ目の直前が文末扱いで伸びるため、呼び出し側が
- * {@link refineMoraLength} で引き直す（この関数自体は長さを補正しない）。
+ * 該当語の直後には短いポーズ（DICT_TRAILING_PAUSE）を挟み、区切りとして自然に聞こえるようにする。
+ * **この関数が返す時点では、繋ぎ目の音素長と音高はまだ独立取得のまま**（前半の末尾が文末扱いで
+ * 伸び、音高も下がりきっている）。呼び出し側が {@link refineProsody} で引き直すこと。
  * 失敗時は null。
  */
 async function buildAccentPhrases(
@@ -248,10 +251,10 @@ async function synthesizeChunk(
     const phraseBreakDict = getTtsPhraseBreakDictCache()
     if (phraseBreakDict && findPhraseBreakMatch(chunk, phraseBreakDict)) {
       const phrases = await buildAccentPhrases(baseUrl, chunk, speakerId, phraseBreakDict, signal)
-      // 結合したままだと繋ぎ目の直前（多くは助詞）が文末扱いで伸びるため、長さを引き直す。
+      // 結合したままだと繋ぎ目の直前（多くは助詞）が文末扱いになるため、長さと音高を引き直す。
       // signal は下の /synthesis と必ず共有すること。共有していれば、割り込みで中断された場合に
-      // 補正前の accent_phrases がそのまま合成まで進むことがない（refineMoraLength の catch 参照）。
-      if (phrases) query.accent_phrases = await refineMoraLength(baseUrl, phrases, speakerId, signal) ?? phrases
+      // 補正前の accent_phrases がそのまま合成まで進むことがない（refineProsody の catch 参照）。
+      if (phrases) query.accent_phrases = await refineProsody(baseUrl, phrases, speakerId, signal) ?? phrases
     }
 
     query.speedScale = 1.2
