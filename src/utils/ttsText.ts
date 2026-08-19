@@ -255,7 +255,34 @@ export function eewAlertToText(event: EEWAlert, isHypocenterUpdate = false): str
   return `${prefix}${event.earthquake.hypocenter.name}で地震。`
 }
 
-/** EEW 第2フェーズ（デバウンス後）: 「予想最大震度〇〇。」scale なし時は理由付き「予想震度なし。」 */
+/**
+ * EEW のレベルが上がったときの前置き。予想値の読み上げの手前に付ける。
+ * 予想震度・階級が据え置きのまま severity だけ確定する続報があり、値の差分だけでは
+ * 「予報から警報へ変わった」という最も重い変化が声に出ないため、区分そのものを述べる。
+ */
+export function eewLevelUpgradeToText(level: 1 | 2): string {
+  return level === 2 ? '特別警報に切り替わりました。' : '警報に切り替わりました。'
+}
+
+/**
+ * EEW 続報で予想が引き上がったときの短句。「震度6弱に引き上げ。」「長周期階級3に引き上げ。」
+ * 震度・階級それぞれを直前に読み上げた値と比べ、上がった方だけを述べる（両方なら 1 文にまとめる）。
+ * どちらも上がっていなければ空文字を返す（呼び出し側は空なら発話しない）。
+ *
+ * 引き下げは追わない。EEW の続報は上振れの伝達が主目的であり、上下に振れるたびに読むと
+ * 耳障りなうえ、最終的な値は次の続報で上書きされるため。
+ */
+export function eewUpgradeToText(event: EEWAlert, prevScale: number, prevLpgmClass: number): string {
+  const scale = eewMaxScale(event)
+  const lpgmClass = eewMaxLpgmClass(event)
+  const parts: string[] = []
+  if (scale > prevScale && scale > 0) parts.push(`震度${intensityText(scale)}`)
+  if (lpgmClass > prevLpgmClass && lpgmClass > 0) parts.push(`長周期階級${lpgmClass}`)
+  if (parts.length === 0) return ''
+  return `${parts.join('、')}に引き上げ。`
+}
+
+/** EEW 第2フェーズ（初報・震源更新時）: 「予想最大震度〇〇。」scale なし時は理由付き「予想震度なし。」 */
 export function eewIntensityToText(event: EEWAlert): string {
   const scale = eewMaxScale(event)
   let text = ''
