@@ -378,7 +378,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | `npm run dev` | 開発サーバー |
 | `npm run build` | 地名ラベル用グリフの検証 + 型チェック + 本番ビルド |
 | `npm run preview` | 本番ビルドのプレビュー（サブパス配信） |
-| `node scripts/build-station-coords.mjs` | 観測点座標テーブル（`public/data/station-coords.json`）の再生成 |
+| `node scripts/build-station-coords.mjs` | 観測点座標テーブル（`public/data/station-coords.json`）の再生成。**実行後は `npm test` を通すこと**（このファイルのキー順が読み上げの地域順の情報源のため、上流データの並びが変わると読み上げ順だけが静かに崩れる。`stationCoords.test.ts` がその前提を検証する） |
 | `node scripts/build-tsunami-zones.mjs` | 津波予報区 海岸線データ（`public/data/tsunami-zones.json`）の再生成 |
 | `node scripts/build-prefectures.mjs` | 都道府県境界データ（`public/data/prefectures.json`）の再生成（ベースマップ用） |
 | `node scripts/build-subregions.mjs` | 一次細分区域境界データ（`public/data/subregions.json`）の再生成 |
@@ -403,6 +403,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 |---|---|
 | テストデータと UI 説明文（テストボタンの `scaleTo` 値等） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §7 |
 | 読み上げの範囲（`ttsIntensityLevels` / `ttsAlwaysReadScale` / `ttsMaxRegions` / `ttsRegionTolerance` の組み合わせ方・階数は観測がある階級のみを数える・`ttsAlwaysReadScale` は長周期に適用しない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
+| 読み上げの地域名の並び順（気象庁の標準順・順序の実体は `station-coords.json` の区域キー順・上限で切るときの選抜だけは震源距離で行う・震源を持たない電文（震度速報・長周期）は距離で選ばない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
 | EEW 読み上げ第 2 フェーズの発火条件（値の確定で読む・`EEW_PHASE2_MAX_WAIT_MS` の上限・引き上げは差分の短句を `EEW_UPGRADE_DEBOUNCE_MS` でデバウンス・レベルのみの格上げは区分（警報／特別警報）を前置きして読み直す） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
 | 通知音の内容と説明文の一致（`PLAYERS` の周波数・`COUNTDOWN_PULSES` のパルス数と、設定タブ「通知音テスト」の説明文・仕様書の記述） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §2 |
 | 通知音の長さと読み上げ遅延の連動（音を作り変えたら `TTS_DELAY_MS` かテーブル外の個別指定を必ず見直す。リバーブを効かせた音は乾音の長さでは足りない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
