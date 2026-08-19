@@ -191,6 +191,7 @@ done
 
 - **型チェック（必須）**: `npx tsc -b`。エラー0を確認する。
   - `npm run build` でも型チェックは走るが、その前段に**地名ラベル用グリフの検証**（`build-glyphs.mjs --check`）が入る。ここで落ちた場合は型エラーではなく「グリフの焼き直し忘れ」なので、メッセージを読んで切り分けること（下記「補助コマンド」参照）。
+- **ユニットテスト**: テストを持つコード（`src/utils/` / `src/hooks/` / `src/services/` / コンポーネント配下の `*.test.ts` が対応する箇所）を変更した場合は `npm test`。**main への push 時に CI（`.github/workflows/deploy.yml`）がビルドより先に同じテストを走らせ、失敗するとビルドもデプロイも実行されない**ため、`ready/` へ改名する前に通しておく。
 - **アプリ起動（デフォルト: DMDSS 版）**: **特にバリアントの指定がない場合は `npm run dev:dmdss` を使用する**。
   - DMDSS 版 URL: `http://localhost:5173/realtime-earthquake-viewer/dmdss/`
   - standard 版が明示的に必要な場合のみ `npm run dev` → `http://localhost:5173/realtime-earthquake-viewer/`
@@ -378,6 +379,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | `npm run dev` | 開発サーバー |
 | `npm run build` | 地名ラベル用グリフの検証 + 型チェック + 本番ビルド |
 | `npm run preview` | 本番ビルドのプレビュー（サブパス配信） |
+| `npm test` | ユニットテスト（Vitest）を 1 回実行（CI との関係は上記「検証」節） |
 | `node scripts/build-station-coords.mjs` | 観測点座標テーブル（`public/data/station-coords.json`）の再生成 |
 | `node scripts/build-tsunami-zones.mjs` | 津波予報区 海岸線データ（`public/data/tsunami-zones.json`）の再生成 |
 | `node scripts/build-prefectures.mjs` | 都道府県境界データ（`public/data/prefectures.json`）の再生成（ベースマップ用） |
