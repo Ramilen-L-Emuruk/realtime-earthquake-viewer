@@ -239,14 +239,18 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       title.endTsunamiTitleWindow()
       title.applyPriority()
       // 津波解除・取消・失効の通知音（AUD-6）。cancelReason の 3 種を区別せず単一音で伝える。
-      // TTS は eewCancel と同じく音の後ろへずらして音響重複を避ける。
+      // TTS は eewCancel と同じく音の後ろへずらして音響重複を避ける。遅延は音長に合わせること
+      // （tsunamiCancel は終止形 2 音で乾音が約 2.0 秒。eewCancel の約 1.25 秒より長い）。
+      // tsunamiCancel はリバーブ（wet）を効かせているため、乾音が止まったあとも残響が尾を引く。
+      // 乾音の長さちょうどでは足りないので 0.4 秒ぶん余白を足している（eewCancel は wet=0 で
+      // 残響が無いため、同じ 1200ms でも重ならない）。
       if (!alreadySpoken) {
         spokenTsunamiCancelEventIdsRef.current.add(cancelId)
         if (settings.soundEnabled) playAlertSound('tsunamiCancel')
         if (settings.voicevoxEnabled) {
           setTimeout(() => {
             speakWithVoicevox(settings.voicevoxUrl, tsunamiCancelToText(event.cancelReason), settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
-          }, 1200)
+          }, 2400)
         }
       }
       lastTsunamiGradeRef.current = null
