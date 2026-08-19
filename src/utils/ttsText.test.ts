@@ -2,7 +2,7 @@
 // 「〇時〇分」はローカルタイムゾーン依存のため、時刻の数値そのものではなく
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect } from 'vitest'
-import { earthquakeToText, eewToText, lpgmToText, type TtsRegionOptions } from './ttsText'
+import { earthquakeToText, eewToText, eewIntensityToText, lpgmToText, type TtsRegionOptions } from './ttsText'
 import { getStationCoordsCache } from './stationCoords'
 import type { JMAQuake, JMALpgm, EarthquakePoint, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass } from '../types/earthquake'
 
@@ -137,8 +137,11 @@ describe('earthquakeToText: 顕著な地震の震源要素更新のお知らせ'
   })
 })
 
-describe('eewToText: 長周期地震動階級の読み上げ', () => {
-  function makeEEW(forecastMaxLpgmClass?: LpgmClass): EEWAlert {
+describe('eewToText / eewIntensityToText: 長周期地震動階級の読み上げ', () => {
+  function makeEEW(
+    forecastMaxLpgmClass?: LpgmClass,
+    over: { condition?: EEWAlert['earthquake']['condition']; areas?: EEWAlert['areas'] } = {},
+  ): EEWAlert {
     return {
       kind: 'eew',
       id: 'test-eew',
@@ -147,14 +150,14 @@ describe('eewToText: 長周期地震動階級の読み上げ', () => {
       earthquake: {
         originTime: '2026-01-01T12:00:00Z',
         arrivalTime: '2026-01-01T12:00:20Z',
-        condition: '以上',
+        condition: over.condition ?? '以上',
         hypocenter: { name: '三陸沖', latitude: 38.1, longitude: 142.9, depth: 24, magnitude: 7.2 },
       },
       severity: 'Warning',
       cancelled: false,
       forecastMaxLpgmClass,
       issue: { eventId: 'e1', serial: '1', time: '2026-01-01T12:00:00Z' },
-      areas: [],
+      areas: over.areas ?? [],
     }
   }
 
@@ -171,6 +174,31 @@ describe('eewToText: 長周期地震動階級の読み上げ', () => {
     const text = eewToText(makeEEW(99 as unknown as LpgmClass))
     expect(text).not.toContain('予想最大階級')
     expect(text).not.toContain('99')
+  })
+
+  // 以下 3 件は、読み上げが電文全体の forecastMaxLpgmClass を直読みしていた頃の回帰テスト。
+  // 震度は eewMaxScale を通していたのに階級だけ生フィールドを見ており、集約関数が持つ
+  // 「地域別優先」「仮定震源要素の除外」の 2 つのガードが読み上げにだけ効いていなかった。
+  it('地域別 lgIntTo があれば電文全体の forecastMaxLpgmClass より地域別の最大を優先する', () => {
+    const eew = makeEEW(1, {
+      areas: [
+        { pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null, lgIntTo: 3 },
+        { pref: '大分県', name: '大分県南部', scaleFrom: 30, scaleTo: 40, kindCode: '10', arrivalTime: null, lgIntTo: 2 },
+      ],
+    })
+    expect(eewToText(eew)).toContain('予想最大階級3。')
+    expect(eewIntensityToText(eew)).toContain('予想最大階級3。')
+  })
+
+  it('仮定震源要素（単独点処理）では地域別予想が無いため階級を読み上げない', () => {
+    expect(eewToText(makeEEW(3, { condition: '仮定震源要素' }))).not.toContain('予想最大階級')
+  })
+
+  // 震度側が「予想震度なし」と読む状況で階級だけ断言すると矛盾した発話になる。
+  it('仮定震源要素では「予想震度なし」と読み、階級句を付けない', () => {
+    const text = eewIntensityToText(makeEEW(3, { condition: '仮定震源要素' }))
+    expect(text).toContain('単独点処理のため、予想震度なし。')
+    expect(text).not.toContain('予想最大階級')
   })
 })
 
