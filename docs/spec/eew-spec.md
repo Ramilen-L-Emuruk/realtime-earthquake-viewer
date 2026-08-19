@@ -175,6 +175,10 @@ standard 版で Yahoo hypoInfo が先に単独観測点処理の EEW を検知�
 60 秒（`MIN_CANCEL_SEC`）は表示を保つ。詳細は `src/utils/eew.ts` の `calcEEWCancelTime` /
 `calcEEWAutoCancelSec` / `calcFeltRadiusKm`（二分探索）参照。
 
+再生（テスト時刻設定 →
+[`settings-pwa-spec.md`](settings-pwa-spec.md) §6）中も同じ猶予が効く。解除の予約は再生時計の
+時間軸で評価するため、最終報を受けた直後に消えることはない（→ 同 §6「再生中も予約は発火時刻を待つ」）。
+
 ## 8. 誤報取消（明示的な取消電文）
 
 DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` 無し）が来た場合、自動解除と異なり
@@ -283,3 +287,7 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
   15 秒抑制を無視して realtime を取り戻す）だけが残る。特別警報級の区別は音（`eewSpecial`）・
   表示（ラベル・配色・バッジ）・通知文言には引き続き残している。詳細は
   [`tsunami-spec.md`](tsunami-spec.md) §14 の同日エントリを参照
+- 2026-08-20: §7 に「再生（テスト時刻設定）中も同じ猶予が効く」を追記した。再生中だけ予約の発火時刻が
+  「いま」へ潰されており、最終報の 9 ミリ秒後に自動解除が走って猶予（`MIN_CANCEL_SEC`=60 秒）が
+  消えていた。潰していた処理の撤去と経緯は
+  [`settings-pwa-spec.md`](settings-pwa-spec.md) §6「再生中も予約は発火時刻を待つ」を参照
