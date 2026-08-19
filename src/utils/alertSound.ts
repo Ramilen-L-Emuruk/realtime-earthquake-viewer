@@ -484,13 +484,16 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
     ding(ctx, 555, base + 0.28, 0.55, 0.11)
   },
 
-  // 津波解除・取消・失効: ding 高音 → 中音 → 低音 降下3音（穏やかな解除通知）。
-  // eewCancel と同じ「降下」パターンで統一する（津波系の tsunamiWatch/tsunami/tsunamiMajor は
-  // 上昇スイープで緊迫感を出しているため、逆向きの下降で「解除」の情報を対比させる）。
+  // 津波解除・取消・失効: ピアノ G4 → C4 の終止形（下行完全 5 度）。
+  // ドミナント→トニックの解決で「終わった」を音楽的に言い切る。津波系の
+  // tsunamiWatch/tsunami/tsunamiMajor が上昇スイープで緊迫感を出しているのに対し、
+  // 解除だけは調性のある 2 音で対比させる。
+  // 旧実装は ding の降下 3 音（700→520→380Hz）だったが、音程比が半端で下降グリッサンドの
+  // 「ずっこけ」に近い軽さがあり、解除の知らせとして品位を欠いていた。
+  // eewCancel（ダークピアノの降下 3 音）と紛れないよう、音色は明るいピアノを使う。
   tsunamiCancel: (ctx, base) => {
-    ding(ctx, 700, base + 0.00, 0.55, 0.14)
-    ding(ctx, 520, base + 0.22, 0.55, 0.12)
-    ding(ctx, 380, base + 0.44, 0.55, 0.10)
+    pianoNote(ctx, 392.0, base + 0.00, 0.55, 0.24, 0.12)
+    pianoNote(ctx, 261.6, base + 0.26, 1.70, 0.26, 0.20)
   },
 
   // 南海トラフ臨時情報・後発地震注意情報: ピアノA4×2連打 → D5（情報発表の穏やかな緊張感）
@@ -548,22 +551,43 @@ export function playAlertSound(type: AlertSoundType): void {
   PLAYERS[type](ctx, ctx.currentTime + 0.02)
 }
 
+// S波到着カウントダウンの段階ごとのパルス数。ゲート周波数（下記 gateHzMap）と揃えて
+// 秒が減るほど「速く・多く」鳴るようにする。
+//
+// パルス数を鳴動長から割り出す（旧実装の `Math.floor(totalDur / period)`）と、totalDur が
+// 固定のためゲート周波数を上げても商が伸びず、5段階が 1・1・2・2・5 に潰れて
+// 秒5⇔秒4・秒3⇔秒2 が同じ音になっていた。段階ごとに明示して 5 段階を実際に作る。
+const COUNTDOWN_PULSES: Record<number, number> = { 5: 2, 4: 3, 3: 4, 2: 5, 1: 6 }
+
 /** S波到着カウントダウン音（残り1〜5秒）を鳴らす。
- *  ゲート変調パルスアラーム: カウントが進むほどゲート周波数が上がり焦燥感が増す。
+ *  ゲート変調パルスアラーム: カウントが進むほどゲート周波数とパルス数が増え焦燥感が増す。
  *  残り1秒はサブ低音＋高音トーンを重ねて衝突感を演出。
  */
 export function playCountdownBeep(second: number): void {
   const ctx = getCtx()
-  if (!ctx) return
+  if (!ctx) {
+    log.debug(`[sound] playCountdownBeep スキップ (AudioContext なし) second=${second}`)
+    return
+  }
   if (ctx.state === 'suspended') void ctx.resume()
 
   const t0 = ctx.currentTime + 0.02
   const gateHzMap: Record<number, number> = { 5: 8, 4: 10, 3: 13, 2: 16, 1: 20 }
-  const gateHz   = gateHzMap[second] ?? 8
-  const totalDur = second === 1 ? 0.30 : 0.18
+  // 想定は残り 1〜5 秒の整数のみ（App.tsx の S 波カウントダウンがこの範囲でしか呼ばない）。
+  // 範囲外は最も緩い段階へ丸めるが、黙って別の段階の音を鳴らすと耳で気づくまで誰も分からない。
+  // 5 段階が 2 段階に潰れていた不具合を長く見逃したのと同じ轍を踏まないよう、警告を残す。
+  if (COUNTDOWN_PULSES[second] === undefined) {
+    log.warn(`[sound] playCountdownBeep: 想定外の second=${second}（1〜5 の整数のみ対応）。最も緩い段階で鳴らす`)
+  }
+  // フォールバックは両方とも「最も緩い段階」＝残り 5 秒の値で揃える。
+  // 片方だけ既定値を直書きすると、どの段階とも違う音が鳴って警告文と食い違う。
+  const gateHz   = gateHzMap[second] ?? gateHzMap[5]
   const period   = 1 / gateHz
   const pulseW   = period * 0.45
-  const steps    = Math.floor(totalDur / period)
+  const steps    = COUNTDOWN_PULSES[second] ?? COUNTDOWN_PULSES[5]
+  // 残り1秒の重ね音はパルス列と鳴り終わりを揃える（どの段階でも 0.25〜0.32 秒に収まり、
+  // カウントダウンの 1 秒間隔を圧迫しない）。
+  const totalDur = steps * period
 
   for (let i = 0; i < steps; i++) {
     const pt  = t0 + i * period
@@ -583,18 +607,18 @@ export function playCountdownBeep(second: number): void {
     sub.connect(sg); sg.connect(getMasterInput(ctx))
     sg.gain.setValueAtTime(0, t0)
     sg.gain.linearRampToValueAtTime(0.30 * globalVolume, t0 + 0.010)
-    sg.gain.setValueAtTime(0.30 * globalVolume, t0 + 0.24)
-    sg.gain.linearRampToValueAtTime(0, t0 + 0.30)
-    sub.start(t0); sub.stop(t0 + 0.32)
+    sg.gain.setValueAtTime(0.30 * globalVolume, t0 + totalDur - 0.06)
+    sg.gain.linearRampToValueAtTime(0, t0 + totalDur)
+    sub.start(t0); sub.stop(t0 + totalDur + 0.02)
 
     const hi = ctx.createOscillator(); const hg = ctx.createGain()
     hi.type = 'sine'; hi.frequency.value = 1320
     hi.connect(hg); hg.connect(getMasterInput(ctx))
     hg.gain.setValueAtTime(0, t0)
     hg.gain.linearRampToValueAtTime(0.16 * globalVolume, t0 + 0.005)
-    hg.gain.setValueAtTime(0.16 * globalVolume, t0 + 0.24)
-    hg.gain.linearRampToValueAtTime(0, t0 + 0.30)
-    hi.start(t0); hi.stop(t0 + 0.32)
+    hg.gain.setValueAtTime(0.16 * globalVolume, t0 + totalDur - 0.06)
+    hg.gain.linearRampToValueAtTime(0, t0 + totalDur)
+    hi.start(t0); hi.stop(t0 + totalDur + 0.02)
   }
 }
 

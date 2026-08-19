@@ -3,7 +3,7 @@ import type { AppSettings } from '../../hooks/useSettings'
 import type { ConnectionStatus } from '../../types/earthquake'
 import { getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
 import { readableTextColor } from '../../utils/contrast'
-import { playAlertSound, playKyoshinUpdateSound, unlockAudio } from '../../utils/alertSound'
+import { playAlertSound, playCountdownBeep, playKyoshinUpdateSound, unlockAudio } from '../../utils/alertSound'
 import { checkVoicevoxAvailable, fetchVoicevoxSpeakers, speakWithVoicevox, type VoicevoxSpeaker } from '../../utils/voicevox'
 import { serverDate, getServerClockOffsetMs } from '../../utils/clock'
 import type { UseTestScenariosResult } from '../../hooks/useTestScenarios'
@@ -219,6 +219,33 @@ function IntensityPlayButton({ scale, kyoshinIndex }: { scale: number; kyoshinIn
       style={{ backgroundColor: fill, color: readableTextColor(fill) }}
     >
       {getIntensityLabel(scale)}
+    </button>
+  )
+}
+
+/**
+ * S 波到達カウントダウン音（残り 5〜1 秒）を 1 段階だけ試聴する小ボタン。
+ * 実運用ではホーム位置を設定したうえで S 波到達が残り 5 秒を切らないと鳴らないため、
+ * 段階ごとの差（ゲート周波数の上昇・残り 1 秒の重ね音）はここでしか聞き分けられない。
+ */
+function CountdownPlayButton({ second }: { second: number }) {
+  const [active, setActive] = useState(false)
+  const handle = () => {
+    unlockAudio()
+    playCountdownBeep(second)
+    setActive(true)
+    setTimeout(() => setActive(false), 600)
+  }
+  // 残り 1 秒だけ音の構成が変わる（サブ低音とトーンを重ねる）ため、色でも区別する。
+  return (
+    <button
+      onClick={handle}
+      title={`S 波到達まで残り ${second} 秒の音を試聴`}
+      className={`text-xs font-bold text-white px-2 py-1 rounded transition-opacity ${
+        active ? 'opacity-40' : ''
+      } ${second === 1 ? BUTTON_CLASSES.red : BUTTON_CLASSES.blue}`}
+    >
+      {second}
     </button>
   )
 }
@@ -748,6 +775,16 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         <Row label="EEW キャンセル" description="ダークピアノ A4→F4→C4 降下3音">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('eewCancel') }}>▶ 試聴</TestButton>
         </Row>
+        {/* S 波到達カウントダウンは重大度の系列とは別軸の補助音のため EEW の末尾に置く */}
+        <Row label="S 波到達カウントダウン" description="残り秒数をタップして試聴（秒が減るほど速く・多く鳴る。残り 1 秒はサブ低音とトーンを重ねる）">
+          <div className="flex flex-wrap gap-1.5 justify-end">
+            <CountdownPlayButton second={5} />
+            <CountdownPlayButton second={4} />
+            <CountdownPlayButton second={3} />
+            <CountdownPlayButton second={2} />
+            <CountdownPlayButton second={1} />
+          </div>
+        </Row>
         {/* ── 地震情報 ── */}
         <Row label="地震情報（震度速報）" description="ピアノ上昇3音 G#4→B4→E5">
           <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('earthquakePrompt') }}>▶ 試聴</TestButton>
@@ -773,6 +810,9 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         </Row>
         <Row label="津波情報更新（グレード不変）" description="ding 低音 → 高音（穏やかな通知）">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('tsunamiUpdate') }}>▶ 試聴</TestButton>
+        </Row>
+        <Row label="津波解除・取消・期限切れ" description="ピアノ G4→C4 の終止形（3 つの理由を単一音で伝える）">
+          <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('tsunamiCancel') }}>▶ 試聴</TestButton>
         </Row>
         {/* ── 臨時情報・後発地震 ── */}
         {isDmdss && (
