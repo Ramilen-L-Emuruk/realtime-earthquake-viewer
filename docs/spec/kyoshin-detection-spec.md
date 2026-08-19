@@ -37,7 +37,7 @@ Yahoo RealTimeData (1Hz JSON)
 ```
 
 検知コア（`kyoshinDetector.ts`）は React・DOM・現在時刻に依存しない純粋関数として実装されている
-（`step(state, frame, meta)` → `{ state, detections, triggers }`）。時刻はすべて `frame.dataTimeMs`
+（`step(state, frame, meta)` → `{ state, detections, triggers, recentOnsetKeys }`）。時刻はすべて `frame.dataTimeMs`
 から供給されるため、決定的でユニットテスト・オフラインリプレイの両方が可能。
 
 ## 3. 入力データ
@@ -73,6 +73,12 @@ Yahoo RealTimeData (1Hz JSON)
 - `neighbors[key]`: 各点の K 近傍（`R_KM` 以内で近い順に `K` 点）
 - `avail[key]`: `R_KM` 以内に実在する近傍数（疎地域救済の分母に使う）
 - `cellOf[key]`: 各点が属する固定格子セル（`CELL_DEG` 度の等間隔ビン）
+
+再構築するのは**観測点集合が変わったときだけ**。判定は二段構えで、まず `sites` の**参照**を見て（同一
+`siteConfigId` なら `fetchSiteList` が同じ配列を返すため通常運用はここで終わる）、参照が変わったときだけ
+**全点**のシグネチャを比べる。内容が同じなら O(点数²) の再構築を省いて参照だけ差し替える。
+全点を見るのは、配列の中間だけが差し替わる更新を取りこぼすと古い観測点キーを使い続け、表示側が毎回
+作り直すキーとずれるため（そのとき §8 の `recentOnsetKeys` を使う判定が静かに効かなくなる。経緯は設計書 §23）。
 
 ### L1 点トリガー（観測点ごと）
 
@@ -229,7 +235,7 @@ Yahoo RealTimeData (1Hz JSON)
 `weak` のイベントも内部状態としては保持されるが、`step()` が返す `detections` 配列・UI 側の判定
 （`confirmed`/`candidate`）には `weak` は現れない（表示は confirmed/likely/faint のみ）。
 
-## 7. 永続化（`useKyoshinDetectorV2`）
+## 7. 永続化と異常系（`useKyoshinDetectorV2`）
 
 学習資産（点別ノイズ床 `floorMean`/`floorDev`・セル慢性活性 `cellActivity`）は座標キー／セルキー基準で
 `localStorage['kyoshin-v3-learned']` に保存する（`siteConfigId` の版差に非依存）。一過性の状態
@@ -242,35 +248,82 @@ Yahoo RealTimeData (1Hz JSON)
 消失させず前フレームの学習資産を保持する。以前は消失→次フレームで `initSiteState` から再学習に
 入るため慢性ノイズ点の `floorDev` が 0 リセットされ検知閾値を崩す問題があった（KYO-1）。
 
+### `step()` が例外を投げたとき
+
+ログして次フレームで再試行する（`stateRef` は壊さない）。**`STEP_FAIL_RESET_FRAMES`(5) フレーム連続で
+失敗したら検知結果（`detections` / `recentOnsetKeys`）を空にする**。学習資産は保持するため、復帰時に
+学び直しにはならない。前フレームの結果を保持し続けると、凍結したメンバーを現在の震度に当てて描き続ける
+ことになる（理由の詳細は設計書 §23）。
+
 ## 8. UI 連携
 
 ### 表示状態への変換（`deriveKyoshinView`）
 
 `DetectionEvent[]` を UI 向けの `KyoshinView` に変換する:
 - `confirmed` / `candidate`: confirmed / likely イベントが1件以上あるか
-- `detectedPoints`: confirmed 全イベントのメンバー観測点の和集合（自動フィット＋検知点マーカー）
+- `detectedPoints`: confirmed 全イベントのメンバー観測点の和集合。**自動フィットと「検知が続いているか」の
+  判定専用**
+- `detectedMarkerPoints`: 上記から孤立した震度0点を除いたもの。**検知点マーカーに描く分**
 - `candidatePoints`: 主 likely イベント（最大震度が最大の1件）のメンバー観測点。**候補カメラフィット専用**
-- `unconfirmedPoints`: likely / faint 全イベントのメンバー観測点の和集合から `detectedPoints` の分を除いた差集合。
+- `unconfirmedPoints`: likely / faint 全イベントのメンバー観測点の和集合から confirmed の分を除いた差集合。
   **検知点マーカー専用**（フィットには使わない。複数 likely の和集合に寄せると境界が飛び跳ねるため）
 - `confirmedShocks`: confirmed 各イベント（＝地域）の代表点（重心）＋メンバー最大震度。地域単位発報の入力
 
 自動フィットは常にメンバー観測点のフットプリントを対象とし、`epicenter`（推定震央）へは飛ばさない
 （深発・沖合で `epicenter` の誤差が大きくても地図が誤った場所へ飛ばないようにするため）。
 
+**カメラ用（`detectedPoints` / `candidatePoints`）と描画用（`detectedMarkerPoints`）を分けているのは、
+カメラ追従が「点列が空になった」ことを検知終了のシグナルに使っているため。** 描画のために点を間引いた配列を
+そのままカメラへ渡すと、検知が続いている最中に地図が日本全体へ戻ってしまう（設計書 §22）。
+
 ### 検知点マーカーとカードの点数の一致
 
 地図の検知点マーカー（`KyoshinDetectedPointsGL`）とリアルタイムタブの検知カードは、**同じ点集合・同じ下限**で
 数える。どちらかだけを変えると表示が食い違う。
 
+**点集合は `App` が用意した 1 本を両者で共有する**（`detectedMarkerPoints` ＋ `unconfirmedPoints`。カードへは
+`RealtimeTab` の `kyoshinDetectedPoints` として渡る）。以前はカード側でも同じ入力から同じ計算を組み立てて
+いたが、「同じ結果になること」に頼ると片方の実装を変えた時点で黙って食い違うため、計算を 1 箇所に寄せた。
+
 | 揃えるもの | 内容 |
 |---|---|
-| 対象イベント | `weak` 以外の全イベント（confirmed ＋ likely ＋ faint）。地図は `detectedPoints` ＋ `unconfirmedPoints` の 2 本で覆う |
+| 対象イベント | `weak` 以外の全イベント（confirmed ＋ likely ＋ faint） |
 | 下限 | 現在**震度0以上**（計測震度 0.0 以上）の点だけ。判定は `kyoshinIndexToJma` / `kyoshinIndexToLabel`（`src/utils/kyoshinIntensity.ts`）が震度階級を返すかどうかに委ねる。震度0未満（`index` 0〜5。値は非負だが計測震度は負）と欠測（`index` が負のセンチネル）はどちらも階級が取れないため、数えず描かない |
+| 孤立した震度0点の除外 | 共有する点列の時点で除かれている（下記 `dropIsolatedZeroPoints`） |
 
 **メンバー観測点は一度入るとイベント解除まで縮まない**（`memberKeys` は和集合で単調増加。現在揺れている
 数は `lastSize` が別に持つ）。そのため「メンバー全件」を描いてしまうと、揺れが収まるほど地図が
 「もう揺れていない点」で埋まり、震度0以上だけを数えるカードと桁違いにずれる。2026-08-18 まで地図側が
 これに該当していた（階級が取れない点を震度0として描いていた。計測値は `gl/kyoshinDetectedFeatures.ts` のコメント）。
+
+### 孤立した震度0点を落とす（`dropIsolatedZeroPoints`）
+
+震度0以上に絞ってもなお、大地震のあと各地に震度0のバッジが点々と居座る。表面波が抜けた後も値が震度0
+付近をうろつく点はメンバーに残り続けるためで、**残るのは主に confirmed イベントの「もう揺れていない点」**。
+
+そこで、**confirmed イベントのメンバー**のうち次の 3 条件をすべて満たす点を、地図の検知点マーカーと
+検知カードの双方から落とす:
+
+1. 現在の震度が 0（震度1以上・震度0未満/欠測は対象外）
+2. `ISOLATED_ZERO_RADIUS_KM`（30km）以内に震度1以上の検知点が無い
+3. 直近に立ち上がっていない（`step()` が返す `recentOnsetKeys` に含まれない。窓は `TRIG_ACTIVE_MS`）
+
+- **条件 3 が要る理由**: 空間条件だけで落とすと、揺れが広がっていく最初の数分で「まだ震度0だが直後に
+  震度1以上へ育つ点」＝到達先端まで消える。
+- **対象を confirmed に限る理由**: 残骸を溜めるのは長寿命の confirmed。likely / faint は短命で、faint は
+  定義上メンバー全員が震度0のため、対象に含めるとイベントが生きている間に点だけが消えて
+  「微弱な揺れの兆候」カードと地図が食い違う。
+- **条件 2 の判定材料には対象外の点も使う**（confirmed の震度0点の隣にある likely の震度1点を見落とさない
+  ため）。
+- 条件 3 が拠る `recentOnsetKeys` の生成と、そのキーが表示側とずれないための仕組みは §4 の L0 と
+  §7「`step()` が例外を投げたとき」を参照。
+
+このフィルタは**表示だけを整えるもので、検知の判定には触れない**。`confirmed` / `candidate` /
+`candidateMaxIndex` / `confirmedShocks`（音・自動タブ切替・地域単位発報の入力）と、カメラフィットに使う
+`detectedPoints` / `candidatePoints` はフィルタ前の集合から算出する。
+
+半径 30km・8 秒という値の選定根拠、実データでの計測値、カメラ追従との分離に至った経緯は
+**設計書 §22**（[kyoshin-detection-v3-design.md](kyoshin-detection-v3-design.md)）にまとめている。
 
 メンバーが全員震度0未満まで下がると、地図の検知点マーカーは 0 件になる。イベント自体は `HOLD_MS` /
 `LIKELY_HOLD_MS` の間ラッチで生き残るためカードは残るが、点数の代わりに「観測点の反応は収まりました」と

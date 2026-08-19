@@ -428,11 +428,12 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 遠地地震の識別（VXSE53・`Head/Title`）・付加文コードと `forecastText` | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §3（遠地地震に関する情報） |
 | 強震モニタの取得と再生の分離（供給元 → 時刻順キュー → 反映の 3 段・放出は到来分の最新 1 件のみ・反映はデータ時刻順に限る・新しい供給元を足すときの入口） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §4「取得と再生の分離」 |
 | `KyoshinSubThreshold` の対象範囲（index 1〜6）・慢性ノイズ床フィルタ | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) |
-| 検知点マーカー（地図）と検知カード（リアルタイムタブ）が数える点集合・下限の一致（対象イベントは `weak` 以外の全件／下限は震度0以上） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) §8 |
+| 検知点マーカー（地図）と検知カード（リアルタイムタブ）が数える点集合・下限の一致（対象イベントは `weak` 以外の全件／下限は震度0以上／点列は App が用意した 1 本を共有する） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) §8 |
 | 実地震テストシナリオの時刻シフト・ID 再採番・利用規約制約 | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6 |
 | 生成データ（`public/data/*.json`）の取得タイムアウト値・失敗時の扱い（TTS 辞書のみ別値） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §6 |
 | テスト時刻設定のバリアント差（standard は P2PQuake の日付クエリ、DMDSS は DMDATA アーカイブ／ただし EEW はどちらも取得元が異なり、standard では強震モニタ側の検知に頼る） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」 |
-| archive リプレイの重複排除（XML 版／JSON 版どちらを採用するか）・失敗の封じ込め範囲 | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」配下 |
+| archive リプレイの重複排除（XML 版／JSON 版どちらを採用するか）・失敗の封じ込め範囲（アーカイブが全滅しても強震モニタの再生は止めない） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」配下 |
+| `ConnectionStatus` の `replay`（再生中はライブ接続を切るため専用表示にする。`disconnected` と混ぜると地図に切断警告が出る） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「再生中はライブ接続を止める（接続状態の表示）」 |
 
 各仕様書は冒頭で「食い違う場合は実コードを正とする」と宣言している。放置すると即座に嘘になる文書なので、実装変更時に必ず追従させる。
 

@@ -1,10 +1,9 @@
 // リアルタイムタブの右パネル。地図エリアは JapanMap が強震モニタ（観測点）と
 // 予報円を描画し、ここでは EEW 情報カード・強震モニタ検知(V2)カード・震度スケール凡例・注記を表示する。
-import { memo, useMemo, useRef } from 'react'
+import { memo, useRef } from 'react'
 import type { EEWAlert } from '../../types/earthquake'
 import type { DetectionEvent, Confidence } from '../../utils/kyoshinDetector'
-import { buildSiteIndex, resolveMembers, type DetectedPoint } from '../../utils/kyoshinDetectionView'
-import type { SiteCoords } from '../../services/kyoshin'
+import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { SWaveArrival } from '../../hooks/useSWaveCountdown'
 import { formatDateTime, formatTime } from '../../utils/formatters'
 import { getIntensityColor, getIntensityLabel, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
@@ -29,11 +28,14 @@ const SCALE_LEGEND: { label: string; scale: number }[] = [
 
 interface Props {
   eews: EEWAlert[]
-  kyoshinSites: SiteCoords
-  kyoshinIndices: number[]
   swaveArrival: SWaveArrival | null
   /** V2 検知エンジンの検知イベント（音・自動タブ切替・自動フィット・カード表示を駆動）。 */
   kyoshinV2Detections: DetectionEvent[]
+  /**
+   * 検知カードが集計する観測点。**地図の検知点マーカーが描くのと同一の点列**を受け取る
+   * （`deriveKyoshinView` が孤立した震度0点を除いて用意する。両者で別々に計算すると黙って食い違う）。
+   */
+  kyoshinDetectedPoints: DetectedPoint[]
   activeLpgmEventId?: string | null
   onToggleLpgm?: (eventId: string) => void
   onDeactivateLpgm?: () => void
@@ -320,7 +322,11 @@ const V2_TIER: Record<Confidence, { label: string; color: string; bg: string; bo
 // 新しい地震の実際の点数がスケールに対して過小表示され続ける。両者のバランスを取る値。
 const SCALE_PEAK_WINDOW_MS = 15_000
 
-function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent[]; siteIndex: Map<string, DetectedPoint> }) {
+function KyoshinDetectionSummary({ events, points }: {
+  events: DetectionEvent[]
+  /** 地図の検知点マーカーが描くのと同一の点列（`deriveKyoshinView` が用意する）。 */
+  points: DetectedPoint[]
+}) {
   const scaleHistoryRef = useRef<{ t: number; v: number }[]>([])
   // 最上位ティア（confirmed > likely > faint）。faint のみ＝震度0級のコヒーレント揺れ（無音・控えめ表示）。
   const topTier: Confidence = events.some(e => e.confidence === 'confirmed')
@@ -335,13 +341,13 @@ function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent
   const earliestMs = events.reduce((m, e) => Math.min(m, e.originTimeMs), Infinity)
   const time = new Date(earliestMs).toLocaleTimeString('ja-JP', { hour12: false })
 
-  // 全イベントのメンバー観測点を和集合（重複除去）で集約し、震度分布・最大震度を集計する。
+  // 点列は地図の検知点マーカーと**同一のもの**を props で受け取る（`deriveKyoshinView` が
+  // 孤立した震度0点を除いて用意する）。以前はここでも同じ計算を組み立てていたが、同じ入力から
+  // 同じ結果になることに頼ると、片方の実装を変えたときに黙って食い違う。
   // 数える対象は「現在震度0以上（計測震度 0.0 以上）の点」だけで、判定は kyoshinIndexToLabel が
   // 震度階級を返すかどうかに委ねる（震度0未満・欠測は null）。地図の検知点マーカー
   // （gl/kyoshinDetectedFeatures.ts の buildFeatures）も同じ判定で描くかどうかを決めており、
   // ここと基準を分けると表示点数が食い違う。
-  const memberKeys = [...new Set(events.flatMap(e => e.memberKeys))]
-  const points = resolveMembers(memberKeys, siteIndex)
   const counts = new Map<string, { color: string; count: number }>()
   let maxIndex = 0
   let activeCount = 0
@@ -459,9 +465,7 @@ function KyoshinDetectionSummary({ events, siteIndex }: { events: DetectionEvent
 }
 
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const RealtimeTab = memo(function RealtimeTab({ eews, kyoshinSites, kyoshinIndices, kyoshinV2Detections, swaveArrival, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: Props) {
-  // メンバー観測点キー → 現在の座標＋インデックスの索引（各カードの震度分布集計に使う）
-  const siteIndex = useMemo(() => buildSiteIndex(kyoshinSites, kyoshinIndices), [kyoshinSites, kyoshinIndices])
+export const RealtimeTab = memo(function RealtimeTab({ eews, kyoshinV2Detections, kyoshinDetectedPoints, swaveArrival, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: Props) {
   return (
     <div className="flex flex-col min-h-full p-2 gap-2 roomy:p-3 roomy:gap-3">
       {/* データカード */}
@@ -487,7 +491,7 @@ export const RealtimeTab = memo(function RealtimeTab({ eews, kyoshinSites, kyosh
         if (events.length === 0) return null
         return (
           <div className="flex flex-col gap-2">
-            <KyoshinDetectionSummary events={events} siteIndex={siteIndex} />
+            <KyoshinDetectionSummary events={events} points={kyoshinDetectedPoints} />
             <p className="text-xs text-secondary">※強震モニタによる推定値。気象庁発表とは異なる場合があります。</p>
           </div>
         )

@@ -692,8 +692,21 @@ export function App() {
     ? kyoshin.indices : EMPTY_INDICES
   // V2 検知イベント → 表示状態（confirmed/candidate・検知点・候補点）へ変換する
   const kyoshinView = useMemo(
-    () => deriveKyoshinView(kyoshinV2.detections, kyoshinSitesGated, kyoshinIndicesGated),
-    [kyoshinV2.detections, kyoshinSitesGated, kyoshinIndicesGated],
+    () =>
+      deriveKyoshinView(
+        kyoshinV2.detections,
+        kyoshinSitesGated,
+        kyoshinIndicesGated,
+        kyoshinV2.recentOnsetKeys,
+      ),
+    [kyoshinV2.detections, kyoshinSitesGated, kyoshinIndicesGated, kyoshinV2.recentOnsetKeys],
+  )
+  // 検知点マーカーが描く点列そのものを検知カードにも渡す（地図とカードで数える集合を構造的に揃える。
+  // 以前はカード側でも同じ計算を組み立てていたが、同一の結果になることに頼ると片方の変更で黙って
+  // 食い違う。詳細は docs/spec/kyoshin-detection-spec.md §8）。
+  const kyoshinDetectedPoints = useMemo(
+    () => [...kyoshinView.detectedMarkerPoints, ...kyoshinView.unconfirmedPoints],
+    [kyoshinView],
   )
   // 震度0ドット表示専用: 検知エンジンが学習した慢性ノイズ床でフィルタする（震度1+表示には手を入れない）
   // PERF-1: kyoshin モード以外では KyoshinSubThreshold レイヤーが表示されないため、
@@ -810,6 +823,7 @@ export function App() {
             kyoshinPsWave={psWave}
             eews={eewsForMap}
             detectedPoints={kyoshinView.detectedPoints}
+            detectedMarkerPoints={kyoshinView.detectedMarkerPoints}
             candidatePoints={kyoshinView.candidatePoints}
             unconfirmedPoints={kyoshinView.unconfirmedPoints}
             candidateId={kyoshinView.candidateId}
@@ -872,9 +886,8 @@ export function App() {
           <div className={`${TAB_SCROLLER_CLASS}${activeTab !== 'realtime' ? ' invisible pointer-events-none' : ''}`}>
             <RealtimeTab
               eews={eewsForPanel}
-              kyoshinSites={kyoshinSitesGated}
-              kyoshinIndices={kyoshinIndicesGated}
               kyoshinV2Detections={kyoshinV2.detections}
+              kyoshinDetectedPoints={kyoshinDetectedPoints}
               swaveArrival={swaveArrival}
               activeLpgmEventId={activeLpgmEventId}
               onToggleLpgm={toggleLpgmFromEew}

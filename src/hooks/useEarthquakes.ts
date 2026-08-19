@@ -639,14 +639,25 @@ export function useEarthquakes(
     // 過ぎず、地震・津波は何も流れなかったため）。現在は standard 版も当時の地震情報・津波を
     // 取得して流すので、DMDSS 版と同じ扱いにする。
     if (replayTimeOffset !== null) {
-      // ライブ接続の状態表示だけは畳んでおく。ページを開いた直後（初回履歴の取得中・取得失敗直後）に
+      // 状態表示を再生中のものへ畳む。
+      //
+      // ひとつは `connectionStatus`。ここで更新せずに抜けると直前の値（多くは 'connected'）が
+      // 残り、実際にはライブ接続を切っているのに「接続中」と表示され続ける。再生は分〜時間の
+      // 単位で続くため、その間ずっと実態と食い違う。'disconnected' ではなく専用の 'replay' に
+      // するのは、地図の切断警告（App の overlayError）を出さないため——意図して止めているものを
+      // 異常として見せない。
+      //
+      // もうひとつは `isLoading` と `error`。ページを開いた直後（初回履歴の取得中・取得失敗直後）に
       // リプレイを始めると、その取得は cleanup で破棄され、以後この effect は早期 return するため、
-      // isLoading と error を戻す経路がどこにも無くなる。地震タブは isLoading → error の順に
-      // 優先して表示するので、放置すると再生した電文が「データを取得中...」や
-      // 「データの取得に失敗しました」の裏に隠れたままになる。
+      // これらを戻す経路がどこにも無くなる。地震タブは isLoading → error の順に優先して表示するので、
+      // 放置すると再生した電文が「データを取得中...」や「データの取得に失敗しました」の裏に
+      // 隠れたままになる。
+      //
       // 同じ参照を返す分岐を挟んで、無関係な再レンダーは起こさない。
       setState(prev => (
-        prev.isLoading || prev.error ? { ...prev, isLoading: false, error: null } : prev
+        prev.connectionStatus === 'replay' && !prev.isLoading && !prev.error
+          ? prev
+          : { ...prev, connectionStatus: 'replay', isLoading: false, error: null }
       ))
       return
     }
@@ -824,6 +835,11 @@ export function useEarthquakes(
     }
 
     // --- 通常版: P2PQuake ---
+    // 取得に入る前に読み込み中へ戻す（DMDSS 分岐と対称）。これが無いと、リプレイを「リセット」で
+    // 終えた直後に地震一覧が一瞬「地震情報はありません」と出る——再生中は上の早期 return で
+    // isLoading を畳んでおり、stop() が state を空にした状態でこの分岐へ入るため、未取得なのに
+    // 「0 件」として表示されてしまう（EarthquakeTab は isLoading → error → 0件 の順に見る）。
+    setState(prev => (prev.isLoading && !prev.error ? prev : { ...prev, isLoading: true, error: null }))
     Promise.all([
       fetchJmaQuake({ limit: MAX_HISTORY_RETAINED }),
       fetchHistory([552], 10),

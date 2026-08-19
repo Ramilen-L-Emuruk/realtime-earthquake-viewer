@@ -29,7 +29,13 @@ export interface JapanMapProps {
   kyoshinSubIndices?: number[]
   kyoshinPsWave?: PsWaveCircle[]
   eews?: EEWAlert[]
+  /**
+   * confirmed 全イベントのメンバー観測点。**カメラフィットと「検知が続いているか」の判定専用**
+   * （空になったことを検知終了の合図として扱う）。地図に描く分は detectedMarkerPoints を使う。
+   */
   detectedPoints?: DetectedPoint[]
+  /** confirmed のメンバーのうち実際に描くもの（孤立した震度0点を除いた集合）。**検知点マーカー専用**。 */
+  detectedMarkerPoints?: DetectedPoint[]
   /** 主 likely イベント 1 件のメンバー観測点。**候補カメラフィット専用**（検知点マーカーは unconfirmedPoints を使う）。 */
   candidatePoints?: DetectedPoint[]
   /** likely / faint 全イベントのメンバー観測点。**検知点マーカー専用**（フィットには使わない）。 */
