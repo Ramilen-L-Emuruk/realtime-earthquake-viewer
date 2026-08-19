@@ -222,11 +222,33 @@ JMA 仕様上ここで配信される 556 は全て警報級であるため `con
 非空の文字列であることを検証する（フィールド欠落・型不一致・空文字は次エッジ／リトライへフォールバック）。
 `calcintensityToScale` は「空文字・null/undefined」（震度未確定の想定内）以外の未知コードで `log.warn` を出す
 （silent に severity=Forecast 格下げを防ぐ）。
-`useKyoshinRealtime.processResult` は try/catch で例外を隔離し、ローカルバグと fetch 失敗を分けて扱う。
+`useKyoshinRealtime` の `applyFrame` は try/catch で例外を隔離し、ローカルバグと fetch 失敗を分けて扱う。
+
+### 取得と再生の分離
+
+1 時点ぶんの観測データ（1 秒ぶんの全観測点の震度＋データ時刻＋hypoInfo）を **フレーム** と呼ぶ。
+フレームは「供給元 → 時刻順キュー → 画面反映」の 3 段で流れる。
+
+| 段 | 実装 | 役割 |
+|---|---|---|
+| 供給元 | [`src/services/kyoshinSource.ts`](../../src/services/kyoshinSource.ts) | どこからデータを持ってくるか。Yahoo のライブ／過去リプレイの 2 実装。リトライ・スケジューリングと、クロック同期の起動／停止（ライブ限定）もここ |
+| キュー | [`src/utils/kyoshinFrameQueue.ts`](../../src/utils/kyoshinFrameQueue.ts) | フレームをデータ時刻順に並べ、アプリ時計が追いついた時点で放出する |
+| 反映 | [`src/hooks/useKyoshinRealtime.ts`](../../src/hooks/useKyoshinRealtime.ts) | 放出されたフレームを画面の状態へ入れる。観測点リストの追随取得と hypoInfo 差分もここ |
+
+分離の目的は取得ペースと表示ペースを切り離すこと。Yahoo は 1 秒 1 リクエストなので両者が一致するが、
+「フレーム列が一度にまとまって手に入る」供給元（防災科研 K-NET のアーカイブ等）を足す場合は、
+まとめて投入して時刻に沿って流す必要がある。`KyoshinSource` を実装すれば下流は変更なしで載る。
+
+放出は**到来した最新 1 件のみ**を採り、間は捨てて `log.warn` に残す（1Hz の観測フレームは最新の状態だけが
+意味を持つため。到来分を全件処理する電文側のキューとは意味論が逆）。反映は**データ時刻の順に限る**
+（`applyFrame` の単調性ガード）。供給元が時計の後退をまたぐと古いデータ時刻のフレームを積みうるため、
+そのまま入れると表示が巻き戻り、検知エンジンにも後退したデータ時刻が渡る。順序の判定に使うのは
+取得を要求した時刻であり、表示に使う `dataTime` 文字列とは独立（応答のパースに依存させないため）。
 
 `siteConfigId` 切替時（年数回）: `fetchSiteList` は Promise キャッシュを持つが、失敗した Promise は
-キャッシュから削除して再試行可能にする。`useKyoshinRealtime` は `currentSiteConfigIdRef` の更新を
-fetch 成功後に行い、失敗時は ref を据え置いて次 tick で再試行させる（失敗は `log.warn` で通知）。
+キャッシュから削除して再試行可能にする。`useKyoshinRealtime` は `currentSitesKeyRef` の更新を
+取得成功後に行い、失敗時は ref を据え置いて次のフレームで再試行させる（失敗は `log.warn` で通知。
+毎フレーム再試行するため、記録は観測点集合ごとに一度に絞る）。
 `sites`／`indices` の状態にはそれぞれの `siteConfigId` を紐付けて公開し、`useKyoshinDetectorV2` は
 `sitesSiteConfigId !== indicesSiteConfigId` のフレームを step() 呼び出しからスキップする（切替直後の
 「新 indices・旧 sites」で `frame.sites[i]` アクセスが `TypeError` になる恒久停止と、点数が偶然一致
@@ -241,7 +263,8 @@ step 内例外も try/catch でログ出力の上、次フレームへ復帰す�
 - 並行 `fetchSiteList` 呼び出しの順序保証がない（1 回目の応答が 2 回目より遅れると `sites`／`sitesSiteConfigId`
   を古い内容へ巻き戻す可能性）
 - sitelist 取得失敗時のリトライに上限・バックオフがない（Yahoo 側で `siteConfigId` の URL が恒久的に
-  無効になった場合、毎 tick 無制限に再試行する）
+  無効になった場合、毎フレーム無制限に再試行する）。恒久的に失敗しても「更新停止」の表示は出ない
+  （震度と時刻は更新され続けるため、エラー無しのまま観測点が地図に出ない状態になりうる）
 
 ### index → 震度の変換
 
@@ -251,7 +274,8 @@ step 内例外も try/catch でログ出力の上、次フレームへ復帰す�
 ### クロック同期（`startClockSync`）
 
 Yahoo は未登録秒には 403 を返す（登録遅延約 1.5 秒）。この 403 → 200 遷移を捉えて時刻を較正する
-（`src/services/kyoshin.ts` の `syncClockOnce`）。
+（`src/services/kyoshin.ts` の `syncClockOnce`）。起動と停止はライブの供給元の開始・終了に紐づく
+（リプレイ中は起動しない。アーカイブの時刻とサーバーの現在時刻は無関係なため）。
 
 - 30 秒毎に実行
 - guessSec の前後 `[-4, +2]` の探索窓で 200 になる境界を検出
@@ -398,10 +422,12 @@ DMDSS 版のアーカイブ取得（目録の構造・取りこぼしの扱い�
 - `src/services/dmdataReplay.ts` — DMDATA archive リプレイ
 - `src/services/p2pquake.ts` — P2PQuake クライアント + レスポンス検証
 - `src/services/parseHelpers.ts` — 外部レスポンスの値取り出しヘルパ（DMDATA・P2PQuake 共用）
-- `src/services/kyoshin.ts` — Yahoo リアルタイム震度 + クロック同期
+- `src/services/kyoshin.ts` — Yahoo リアルタイム震度の取得 + クロック同期
+- `src/services/kyoshinSource.ts` — 強震モニタのフレーム供給元（Yahoo のライブ／過去リプレイ）
+- `src/utils/kyoshinFrameQueue.ts` — フレームのデータ時刻順キュー
 - `src/utils/clock.ts` — サーバー同期時刻 `serverNow`
 - `src/utils/tarParser.ts` — DMDATA archive の tar 展開
-- `src/hooks/useKyoshinRealtime.ts` — Yahoo ポーリング
+- `src/hooks/useKyoshinRealtime.ts` — 強震モニタのフレームを画面状態へ反映
 - `src/utils/fetchJson.ts` — 生成データ取得の共通処理（タイムアウト・取得状況の集約）
 - `src/components/MapDataStatus.tsx` — 取得状況の表示
 
@@ -420,3 +446,8 @@ DMDSS 版のアーカイブ取得（目録の構造・取りこぼしの扱い�
   ログレベルで切り分ける共通ヘルパーを入れ、震源カタログ（`gd/earthquake`）にも適用した。
   あわせて APIキーの入力をデバウンスしてから通信側へ渡すようにした（§2 認証）。従来は 1 文字ごとに
   接続と履歴取得をやり直しており、上記のログ追加でそれが 401/403 のログとして表面化したため
+- 2026-08-19: 強震モニタの取得を「供給元 → データ時刻順キュー → 反映」の 3 段へ分離した（§4
+  「取得と再生の分離」）。従来は取得したその場で画面へ入れており、取得ペースと表示ペースが結合して
+  いたため、フレーム列がまとめて手に入る供給元（K-NET のアーカイブ等）を載せる余地が無かった。
+  あわせて、キューを挟んだことで順序が入れ替わる余地が生まれたため、反映をデータ時刻順に限る
+  ガードを追加した

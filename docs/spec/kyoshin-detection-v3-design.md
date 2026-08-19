@@ -549,6 +549,7 @@ localStorage 永続化で活性が高いセルが生じた場合の挙動は今�
 - KYO-2: `calcintensityToScale` 未知コードで `log.warn`（空文字/null/undefined は震度未確定として抑制）
 - KYO-3: `fetchRealtimeIntensity` で `realTimeData.intensity` の欠落・空文字を明示的な失敗として扱い次エッジへ
 - KYO-4: `useKyoshinRealtime.processResult` を try/catch で隔離しローカルバグを fetch 失敗と誤集計しない
+  （`processResult` は後に取得経路を供給元・キュー・反映の 3 段へ分離した際、反映側の `applyFrame` へ改称）
 
 ## 22. 孤立した震度0の検知点を描かない（2026-08-19・大地震後に各地へ点々と残る残骸を消す）
 

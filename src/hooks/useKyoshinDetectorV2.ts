@@ -221,10 +221,14 @@ export function useKyoshinDetectorV2(
     // 例外として siteConfigId 切替時は sites が非同期に遅れて更新されるが、その期間は上の
     // sitesSiteConfigId/indicesSiteConfigId ガードで step() をスキップするため deps に加える
     // 必要はない（次の dataTime tick で両者が揃った時点で再評価される）。
-    // この最適化は React 18 の自動バッチングによって useKyoshinRealtime の processResult 内で
+    // この最適化は React 18 の自動バッチングによって useKyoshinRealtime の applyFrame 内で
     // setIndices/setDataTime/setIndicesSiteConfigId が単一レンダーにまとまることを前提にしている。
-    // 将来 processResult のリファクタでこの前提が崩れると、dataTime だけ先に更新されて古い
-    // siteConfigId でガードを誤って通過するリスクがあるため、リファクタ時はここも要見直し。
+    // applyFrame の呼び出し元は 2 つ（フレーム投入時の同期ドレインと、時刻到来を待つ巡回
+    // ドレイン）あり、**どちらも applyFrame を同期で呼ぶ**ことがこの前提を支えている。
+    // 呼び出し経路に await や queueMicrotask を挟む・applyFrame 内で setState を分割する等で
+    // 前提が崩れると、dataTime だけ先に更新されて古い siteConfigId でガードを誤って通過し、
+    // 座標と震度が誤ペアリングされる。リファクタ時はここも要見直し
+    // （この前提は useKyoshinRealtime.wiring.test.ts が回帰テストで固定している）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataTime, enabled])
 

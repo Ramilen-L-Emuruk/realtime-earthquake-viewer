@@ -426,6 +426,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | バッジの文字色（塗り色から白/黒を自動選択・気象庁配色は変更不可）と地図バッジの半径テーブル・アイコン倍率とぼやけの関係 | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §15 |
 | 地震の同一性判定（`eventKey`・統合/選択/通知の共通キー・取消のマッチング・P2PQuake で分離できない限界） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §6.1・§6.2 |
 | 遠地地震の識別（VXSE53・`Head/Title`）・付加文コードと `forecastText` | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §3（遠地地震に関する情報） |
+| 強震モニタの取得と再生の分離（供給元 → 時刻順キュー → 反映の 3 段・放出は到来分の最新 1 件のみ・反映はデータ時刻順に限る・新しい供給元を足すときの入口） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §4「取得と再生の分離」 |
 | `KyoshinSubThreshold` の対象範囲（index 1〜6）・慢性ノイズ床フィルタ | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) |
 | 検知点マーカー（地図）と検知カード（リアルタイムタブ）が数える点集合・下限の一致（対象イベントは `weak` 以外の全件／下限は震度0以上／点列は App が用意した 1 本を共有する） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) §8 |
 | 実地震テストシナリオの時刻シフト・ID 再採番・利用規約制約 | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6 |
