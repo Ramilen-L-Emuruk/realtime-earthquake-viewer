@@ -21,17 +21,19 @@ Yahoo!天気・災害「リアルタイム震度」（防災科研 強震モニ�
 ```
 Yahoo RealTimeData (1Hz JSON)
   └─ src/services/kyoshin.ts: fetchRealtimeIntensity() / fetchSiteList()
-       └─ src/hooks/useKyoshinRealtime.ts: ポーリング → sites, indices, dataTime
-            └─ src/hooks/useKyoshinDetectorV2.ts: step() を毎フレーム呼ぶ Reactラッパー
-                 │    (localStorage 'kyoshin-v3-learned' から学習資産を復元・定期保存)
-                 └─ src/utils/kyoshinDetector.ts: step(state, frame, meta) ← 検知コア本体
-                      └─ DetectionEvent[] (confidence, memberKeys, maxIntensity, epicenter, ...)
-                           ├─ src/utils/kyoshinDetectionView.ts: deriveKyoshinView()
-                           │    → confirmed/candidate フラグ、地図フィット用の点列、confirmedShocks
-                           │         ├─ src/hooks/useKyoshinAlerts.ts: タブ切替・音・通知・地域単位発報
-                           │         └─ 地図レイヤー（KyoshinDetectedPointsGL 等）
-                           └─ src/utils/kyoshinSubThresholdFilter.ts: chronicNoiseFloor を使った
-                                震度0ドット表示（KyoshinSubThresholdGL）専用フィルタ
+       └─ src/services/kyoshinSource.ts: 供給元（ライブ／過去リプレイ）→ フレームを投入
+            └─ src/utils/kyoshinFrameQueue.ts: データ時刻順に並べ、到来分の最新1件を放出
+                 └─ src/hooks/useKyoshinRealtime.ts: 反映 → sites, indices, dataTime
+                      └─ src/hooks/useKyoshinDetectorV2.ts: step() を毎フレーム呼ぶ Reactラッパー
+                           │    (localStorage 'kyoshin-v3-learned' から学習資産を復元・定期保存)
+                           └─ src/utils/kyoshinDetector.ts: step(state, frame, meta) ← 検知コア本体
+                                └─ DetectionEvent[] (confidence, memberKeys, maxIntensity, epicenter, ...)
+                                     ├─ src/utils/kyoshinDetectionView.ts: deriveKyoshinView()
+                                     │    → confirmed/candidate フラグ、地図フィット用の点列、confirmedShocks
+                                     │         ├─ src/hooks/useKyoshinAlerts.ts: タブ切替・音・通知・地域単位発報
+                                     │         └─ 地図レイヤー（KyoshinDetectedPointsGL 等）
+                                     └─ src/utils/kyoshinSubThresholdFilter.ts: chronicNoiseFloor を使った
+                                          震度0ドット表示（KyoshinSubThresholdGL）専用フィルタ
 ```
 
 検知コア（`kyoshinDetector.ts`）は React・DOM・現在時刻に依存しない純粋関数として実装されている
