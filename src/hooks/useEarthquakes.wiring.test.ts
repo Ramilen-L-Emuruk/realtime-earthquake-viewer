@@ -1,18 +1,21 @@
 // @vitest-environment jsdom
 //
-// useEarthquakes の「接続状態の結線」のテスト。
+// useEarthquakes の「再生中の結線」のテスト。
 //
 // このフックは WebSocket 接続・REST 履歴取得・イベントキュー・接続状態を一手に担うが、
-// これまでテストが 1 本も無かった。全部を覆うのは現実的でないため、ここでは
-// **`connectionStatus` がライブ受信の実態とずれないこと**だけに絞る。
+// 全部を覆うのは現実的でないため、**画面を見ても気づけない結線**に絞る:
 //
-// 絞る理由: 再生中は WebSocket を意図的に切るため、`connectionStatus` を更新し忘れると
-// 直前の値（多くは 'connected'）が残り、受信していないのに「接続中」と表示され続ける。
-// 型でも例外でも捕まらず、画面を見ても「繋がっているように見える」だけなので気づけない。
+//   - `connectionStatus` がライブ受信の実態とずれないこと。再生中は WebSocket を意図的に
+//     切るため、更新し忘れると直前の値（多くは 'connected'）が残り、受信していないのに
+//     「接続中」と表示され続ける。型でも例外でも捕まらず、画面上は繋がって見える
+//   - 再生中もキューの予約が発火時刻を待つこと。潰すと EEW が最終報の直後に自動解除され、
+//     最低 60 秒の猶予が消える
 //
 // 差し替えるのは外部 I/O（WebSocket・REST・観測点座標）だけ。時計や純粋関数は本物を使う。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, cleanup, act } from '@testing-library/react'
+import type { EEWAlert, JMATsunami } from '../types/earthquake'
+import { serverDate, setReplayOffset } from '../utils/clock'
 
 // isDmdss はモジュールスコープの定数。テストごとに切り替えるため getter で公開する。
 let mockIsDmdss = true
@@ -223,5 +226,91 @@ describe('standard 版も再生中はライブ受信を止める（VAR-1）', ()
     h.setOffset(-3600_000)
     expect(h.current.isLoading).toBe(false)
     expect(h.current.error).toBeNull()
+  })
+})
+
+describe('再生中もキューの予約は発火時刻を待つ', () => {
+  // かつては再生中だけ予約の発火時刻を `now` へ潰していた（VAR-1 の緩和策）。その結果、
+  // EEW 最終報を受けた次のティック（10ms 後）に自動解除が走り、EEW が出た瞬間に消えていた。
+  // 猶予の長さ自体は `calcEEWCancelTime` の責務（最終報から最低 60 秒）なので、ここでは
+  // 「再生中もその猶予がキューに残ること」だけを見る。
+  const OFFSET_MS = -3600_000
+
+  /** 最終報の EEW。規模を小さく取り、猶予が下限（60 秒）で決まるようにする。 */
+  function finalEEW(at: Date): EEWAlert {
+    const iso = at.toISOString()
+    return {
+      kind: 'eew',
+      id: 'replay-final',
+      time: iso,
+      test: false,
+      earthquake: {
+        originTime: iso,
+        arrivalTime: iso,
+        condition: '',
+        hypocenter: { name: 'テスト沖', latitude: 35, longitude: 140, depth: 10, magnitude: 4.0 },
+      },
+      severity: 'Forecast',
+      cancelled: false,
+      isFinal: true,
+      issue: { eventId: 'replay-final-event', serial: '2', time: iso },
+      areas: [],
+    }
+  }
+
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => {
+    vi.useRealTimers()
+    setReplayOffset(null)
+  })
+
+  it('EEW 最終報を受けても猶予の内は解除せず、猶予を過ぎたら解除する', () => {
+    // 時計も再生側へ寄せる（実装は getTimeRef=serverDate 経由で再生時刻を読む）
+    setReplayOffset(OFFSET_MS)
+    const h = setup({ offset: OFFSET_MS })
+
+    act(() => { h.current.injectEvent(finalEEW(serverDate())) })
+    expect(h.current.activeEEWs.size).toBe(1)
+
+    // キューのディスパッチャは 10ms 間隔。回しても猶予の内は消えない
+    act(() => { vi.advanceTimersByTime(30_000) })
+    expect(h.current.activeEEWs.size).toBe(1)
+
+    act(() => { vi.advanceTimersByTime(31_000) })
+    expect(h.current.activeEEWs.size).toBe(0)
+  })
+
+  /** 有効期限を持つ津波予報（DMDSS 版の「若干の海面変動」相当。解除電文が来ず期限だけで終わる）。 */
+  function tsunamiWithValidDateTime(at: Date, validForMs: number): JMATsunami {
+    const iso = at.toISOString()
+    return {
+      kind: 'tsunami',
+      id: 'replay-tsunami',
+      eventId: 'replay-tsunami-event',
+      time: iso,
+      cancelled: false,
+      validDateTime: new Date(at.getTime() + validForMs).toISOString(),
+      issue: { source: '気象庁', time: iso, type: 'Focus' },
+      areas: [{ grade: 'Forecast', immediate: false, name: 'テスト沿岸' }],
+    }
+  }
+
+  // EEW と同じ理由で、津波の有効期限（`validDateTime`）も潰されていた。しかも症状は逆で、
+  // 予約時刻が `now` 以下に潰れると `alreadyExpired` が常に真になり、本編再生分（非サイレント）は
+  // 失効予約が積まれないまま残り続けていた。EEW 側だけ直してもこちらは守られない。
+  it('津波の有効期限も前倒しされず、期限を過ぎてから失効する', () => {
+    setReplayOffset(OFFSET_MS)
+    const h = setup({ offset: OFFSET_MS })
+
+    act(() => { h.current.injectEvent(tsunamiWithValidDateTime(serverDate(), 60_000)) })
+    expect(h.current.tsunamis.length).toBe(1)
+    expect(h.current.tsunamis[0].cancelledAt).toBeUndefined()
+
+    act(() => { vi.advanceTimersByTime(30_000) })
+    expect(h.current.tsunamis[0].cancelledAt).toBeUndefined()
+
+    act(() => { vi.advanceTimersByTime(31_000) })
+    expect(h.current.tsunamis[0].cancelledAt).toBeInstanceOf(Date)
+    expect(h.current.tsunamis[0].cancelReason).toBe('expired')
   })
 })
