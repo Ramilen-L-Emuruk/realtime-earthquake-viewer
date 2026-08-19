@@ -33,6 +33,8 @@ import { playCountdownBeep, unlockAudio, setSoundVolume } from './utils/alertSou
 import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
 import type { EEWAlert, JMAQuake, JMATsunami } from './types/earthquake'
 import { useReplayController } from './hooks/useReplayController'
+import { fetchDmdataReplayEvents, clearReplayCache } from './services/dmdataReplay'
+import { fetchP2PReplayEvents, clearP2PReplayCache } from './services/p2pquakeReplay'
 import { log } from './utils/logger'
 import { setReplayOffset as setClockReplayOffset, serverDate } from './utils/clock'
 import { isDmdss } from './utils/env'
@@ -642,10 +644,26 @@ export function App() {
   // リプレイの取得・世代管理は useReplayController に集約している（非同期の完了順序に
   // 依存する状態機械のため、単体でテストできる形に切り出した）。
   // 時計への反映（setClockReplayOffset）は上の useEffect が replayTimeOffset を見て行う。
-  // ここだけ生のキーを渡す。リプレイはユーザーがボタンを押した時点でしか通信せず、キー入力に
-  // 連動して自動で走ることがないため、遅らせる必要がない（むしろ押した瞬間の最新値を使いたい）。
+  // 取得元はバリアントで変わる。DMDSS 版は DMDATA のアーカイブから当時の電文をまとめて取り、
+  // standard 版は P2PQuake の日付指定クエリで地震情報・津波を取る（P2PQuake には EEW を
+  // 過去日付で引く口が無いため、standard 版のリプレイ中の EEW は強震モニタ由来の検出が担う）。
+  //
+  // API キーはここだけ生の値を渡す。リプレイはユーザーがボタンを押した時点でしか通信せず、
+  // キー入力に連動して自動で走ることがないため、遅らせる必要がない
+  //（むしろ押した瞬間の最新値を使いたい）。
+  const fetchReplayEvents = useCallback(
+    (from: Date, to: Date) => isDmdss
+      ? fetchDmdataReplayEvents(settings.dmdataApiKey, from, to)
+      : fetchP2PReplayEvents(from, to),
+    [settings.dmdataApiKey],
+  )
+  const clearReplayCacheForVariant = useCallback(
+    () => { if (isDmdss) clearReplayCache(); else clearP2PReplayCache() },
+    [],
+  )
   const replay = useReplayController({
-    apiKey: settings.dmdataApiKey,
+    fetchEvents: fetchReplayEvents,
+    clearCache: clearReplayCacheForVariant,
     timeOffset: replayTimeOffset,
     setTimeOffset: setReplayTimeOffset,
     resetState,
@@ -883,13 +901,12 @@ export function App() {
               dmdataConnectionStatus={connectionStatus}
               onTest={testHandlers}
               kyoshinTimeOffset={replayTimeOffset}
-              onSetKyoshinTimeOffset={isDmdss ? undefined : setReplayTimeOffset}
               kyoshinInputDateTime={kyoshinInputDateTime}
               onSetKyoshinInputDateTime={setKyoshinInputDateTime}
               replayIsFetching={replay.isFetching}
               replayError={replay.error}
-              onStartReplay={isDmdss ? replay.start : undefined}
-              onStopReplay={isDmdss ? replay.stop : undefined}
+              onStartReplay={replay.start}
+              onStopReplay={replay.stop}
               scenarioTest={scenarioTest}
             />
           </div>

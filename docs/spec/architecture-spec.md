@@ -405,7 +405,7 @@ Redux 等のグローバルストアは使わず、React のフック（`useStat
 
 - 地図の Leaflet 版は v4.0.0 で完全撤去、MapLibre GL に一本化された（`docs/archive/webgl-migration/` 参照）
 - 予報円は震源要素（lat/lng/depth/magnitude）と `originTime` を入力とする自前計算（`usePsWaveCalc`）に統一（両バリアント共通）。**以前は Yahoo `psWave.items` を使っていたが、現在は入力として一切参照しない**（詳細は [`eew-spec.md`](eew-spec.md) §6 参照）
-- 「テスト時刻設定（強震モニタ）」の replayTimeOffset は現状 P2PQuake WS も止める副作用がある（既知の HIGH 課題）
+- 「テスト時刻設定」の再生中はライブ接続を止める（両バリアント。理由は [`settings-pwa-spec.md`](settings-pwa-spec.md) §6）
 
 ## 10. 改訂履歴
 
