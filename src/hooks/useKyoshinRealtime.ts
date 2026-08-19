@@ -1,53 +1,42 @@
 import { useEffect, useRef, useState } from 'react'
+import type { SiteCoords, YahooHypoInfoItem } from '../services/kyoshin'
 import {
-  fetchSiteList,
-  fetchRealtimeIntensity,
-  startClockSync,
-  type SiteCoords,
-  type YahooHypoInfoItem,
-} from '../services/kyoshin'
+  createYahooLiveSource,
+  createYahooArchiveSource,
+  type KyoshinFrame,
+} from '../services/kyoshinSource'
+import { createFrameQueue } from '../utils/kyoshinFrameQueue'
 import type { EEWAlert } from '../types/earthquake'
 import { diffHypoInfoEvents, type HypoInfoPendingMissing } from '../utils/eew'
-import { serverNow } from '../utils/clock'
-import { log } from '../utils/logger'
+import { serverDate } from '../utils/clock'
+import { createLogThrottle, log } from '../utils/logger'
 
 export interface KyoshinRealtime {
   sites: SiteCoords
   indices: number[]
   dataTime: string
-  /** sites がどの `siteConfigId` に属するか（fetchSiteList 成功時にセット）。
+  /** sites がどの観測点集合（`KyoshinFrame.sitesKey`。Yahoo では `siteConfigId`）に属するか。
    *  検知エンジン側で「sites と indices が同じ観測点集合か」を判定するのに使う。 */
   sitesSiteConfigId: string | null
-  /** indices が属する `siteConfigId`（毎フレーム RealTimeData JSON に含まれる値）。
-   *  `sitesSiteConfigId` と一致しないフレームは、`siteConfigId` 切替直後の一時的な
+  /** indices が属する観測点集合の識別子（フレームごとに付いてくる値）。
+   *  `sitesSiteConfigId` と一致しないフレームは、観測点リスト切替直後の一時的な
    *  「新 indices・旧 sites」状態のため、下流の検知エンジン等は処理をスキップする。 */
   indicesSiteConfigId: string | null
   /** 連続して取得に失敗し、更新が停止している場合 true */
   error: boolean
 }
 
-// この回数連続で取得に失敗したら「更新停止（エラー）」とみなす
-const ERROR_THRESHOLD = 5
-// 同一タイムスタンプの受信失敗時リトライ間隔 (ms)
-const RETRY_MS = 200
-// リプレイ時: 同一 target への最大リトライ回数（超過したら諦めて次 target へ進む）
-const REPLAY_MAX_RETRY_COUNT = 5
-// 成功後に次タイムスタンプへ進むまでの待機時間 (ms)
-const POLL_MS = 1000
-// Yahoo サーバーがデータを公開するまでの遅延を考慮したオフセット (ms)。
-// 秒ファイルは「その秒が終わってから約0.5秒後（＝秒頭から約1.5秒後）」に登録される実測結果に基づき、
-// クロック同期後の serverNow() から登録済み秒を確実に引けるよう登録遅延+マージンを見込む。
-// （従来の 500ms は壁時計が遅れている環境での偶然の帳尻合わせに依存しており、
-//  クロックを正確に同期すると未登録秒(403)を叩いてしまうため引き上げた。）
-const FETCH_OFFSET_MS = 1800
-// 同一 target の取得に失敗し続けたとき現在時刻ベースへリセットするまでの許容時間 (ms)。
-// REALTIME_MAX_RETRY_COUNT の算出に用いる。
-// （成功時の遅れは nextTarget をフロンティアへ再アンカーすることで抑えるため、
-//  ここでの lag 判定は行わない。）
-const MAX_LAG_MS = 5000
-// リアルタイム時: 同一 target への最大リトライ回数（超過したら諦めて現在時刻ベースにリセットする）。
-// CDN 側で特定タイムスタンプの公開が恒久的に遅延・失敗するケースで無限リトライに張り付くのを防ぐ。
-const REALTIME_MAX_RETRY_COUNT = MAX_LAG_MS / RETRY_MS
+/**
+ * データ時刻が未来のフレームを放出するための巡回間隔 (ms)。
+ *
+ * Yahoo の 2 つのソースは常に「すでに過ぎた時刻」のフレームを渡すため、実際の放出は投入時の
+ * 同期ドレインで済み、この巡回は使われない。フレーム列をまとめて投入する供給元
+ * （アーカイブ再生）を足したときに、時刻の到来で 1 件ずつ流すのがこの巡回の役目。
+ */
+const DRAIN_INTERVAL_MS = 100
+
+/** 同種の失敗を記録し直す最小間隔 (ms)。1Hz で再発する失敗を間引きつつ、継続を見失わない幅。 */
+const LOG_THROTTLE_MS = 60_000
 
 interface UseKyoshinRealtimeOptions {
   /** EEW の新規発報・更新・解除を検知したときに呼ばれるコールバック。 */
@@ -57,14 +46,16 @@ interface UseKyoshinRealtimeOptions {
 }
 
 /**
- * Yahoo 強震モニタのリアルタイム震度を取得するフック。
- * enabled が true の間のみ観測点リストを取得し、1秒ごとに震度を更新する。
- * 受信失敗時は同一タイムスタンプで RETRY_MS 間隔でリトライし、受信できたらその遅延で結果を反映する。
- * リアルタイム時は REALTIME_MAX_RETRY_COUNT 回を超えたら諦めて現在時刻ベースの target にリセットする
- * （特定タイムスタンプが CDN 側で恒久的に取得できないケースで無限リトライに張り付くのを防ぐ）。
- * リプレイ時（timeOffset 指定時）はリトライで消費した実時間を累積して次の待機時間から差し引き、
- * かつ REPLAY_MAX_RETRY_COUNT 回を超えたら諦めて次 target へ進める（再生時刻からの遅れが蓄積しないようにする）。
- * hypoInfo の差分検出により EEW 発報・更新・解除を onEEWEvent で通知する。
+ * 強震モニタのリアルタイム震度を画面へ供給するフック。
+ *
+ * 取得そのものは行わない。供給元（`services/kyoshinSource`）が渡してきたフレームを時刻順の
+ * キュー（`utils/kyoshinFrameQueue`）で受け、データ時刻が来たものを state へ反映する。
+ * この分離により、1 秒ずつ取りに行く Yahoo と、まとめて手に入るアーカイブを同じ経路に載せられる。
+ *
+ * `timeOffset` を渡すと過去を再生するソースへ切り替わる（現状は Yahoo が秒ファイルを保持して
+ * いる期間のみ遡れる）。
+ *
+ * hypoInfo の差分検出により EEW 発報・更新・解除を onEEWEvent で通知する（Yahoo 固有）。
  */
 export function useKyoshinRealtime(
   enabled: boolean,
@@ -76,166 +67,158 @@ export function useKyoshinRealtime(
   const [sitesSiteConfigId, setSitesSiteConfigId] = useState<string | null>(null)
   const [indicesSiteConfigId, setIndicesSiteConfigId] = useState<string | null>(null)
   const [error, setError] = useState(false)
-  const currentSiteConfigIdRef = useRef<string | null>(null)
-  const failCountRef = useRef(0)
+  // 現在 sites に反映済みの観測点集合の識別子（Yahoo では siteConfigId）。
+  const currentSitesKeyRef = useRef<string | null>(null)
   const prevHypoInfoRef = useRef<YahooHypoInfoItem[]>([])
   // hypoInfo 消滅の連続検出回数（reportId ごと）。瞬間的な欠測を確定解除にしないための猶予状態。
   const pendingMissingRef = useRef<Map<string, HypoInfoPendingMissing>>(new Map())
-  // コールバックを ref で保持し tick クロージャから安定参照する
+  // コールバックを ref で保持し、放出処理のクロージャから安定参照する
   const onEEWEventRef = useRef(options?.onEEWEvent)
   onEEWEventRef.current = options?.onEEWEvent
   // timeOffset は deps に含めてエフェクトを再起動させるため、ref ではなく直接使う
   const timeOffset = options?.timeOffset ?? null
 
-  // リアルタイム震度をポーリング（enabled の間のみ）。
-  // 各 tick は明示的な target タイムスタンプを取得する。
-  // 成功後の次 target は、ライブ時は「target + POLL_MS」とフロンティア(serverNow - FETCH_OFFSET_MS)の
-  // 大きい方（遅延蓄積を防ぐ再アンカー）、リプレイ時は「target + POLL_MS」で等速に辿る。
-  // 失敗時は同一 target で RETRY_MS 後にリトライする（リプレイ時は REPLAY_MAX_RETRY_COUNT 回で打ち切り）。
-  // siteConfigId が変化したとき（リプレイ日付切替など）に対応する sitelist を自動で取得する。
   useEffect(() => {
     if (!enabled) return
     let active = true
-    failCountRef.current = 0
     setError(false)
     // ライブ/リプレイ切替（timeOffset 変化）でエフェクトが再起動したとき、旧セッションの
     // hypoInfo 追跡状態を持ち越さない。持ち越すと、切替直後に旧セッションのアイテムが
     // 「消滅」と誤判定され、猶予後に古い震源データの幽霊キャンセルイベントが発火してしまう。
     prevHypoInfoRef.current = []
     pendingMissingRef.current = new Map()
-    let timer: ReturnType<typeof setTimeout> | null = null
 
-    const processResult = (rt: Awaited<ReturnType<typeof fetchRealtimeIntensity>>) => {
-      failCountRef.current = 0
-      setError(false)
-      setIndices(rt.indices)
-      setDataTime(rt.dataTime)
-      // indices が属する siteConfigId を記録（下流で sites 側の siteConfigId と突合する）。
-      setIndicesSiteConfigId(rt.siteConfigId ?? null)
+    const queue = createFrameQueue<KyoshinFrame>()
+    const source = timeOffset != null
+      ? createYahooArchiveSource(timeOffset)
+      : createYahooLiveSource()
 
-      // siteConfigId が変わった場合のみ対応する sitelist を取得して反映する。
-      // currentSiteConfigIdRef の更新は fetch 成功後に行う（失敗時に ref を先行更新
-      // していると、次 tick で「siteConfigId が同じ」と判定されて再試行しなくなり、
-      // sites が旧 siteConfigId のまま更新されず indices と長さ不整合になる。
-      // fetchSiteList 側も失敗 Promise をキャッシュから削除して再試行可能にしている）。
-      if (rt.siteConfigId && rt.siteConfigId !== currentSiteConfigIdRef.current) {
-        const nextId = rt.siteConfigId
-        fetchSiteList(nextId)
+    // 直前に画面へ反映したフレームのデータ時刻。これ以前のフレームは捨てる（下記参照）。
+    let lastAppliedTimeMs = -Infinity
+    // どの失敗も毎フレーム再発しうるため、記録は種類ごとに間引く。一度きりにしないのは、
+    // 継続している障害が「一度失敗して直った」ように見えるのを避けるため。
+    const throttledStaleFrame = createLogThrottle(LOG_THROTTLE_MS)
+    const throttledApplyError = createLogThrottle(LOG_THROTTLE_MS)
+    const throttledSitesError = createLogThrottle(LOG_THROTTLE_MS)
+    const throttledEEWError = createLogThrottle(LOG_THROTTLE_MS)
+
+    const applyFrame = (frame: KyoshinFrame) => {
+      // 反映は必ずデータ時刻の順に進める。キューからの取り出しは時刻順だが、供給側が時計の
+      // 後退をまたぐと「前より古いデータ時刻」のフレームを積みうる（ライブの再試行が上限に
+      // 達して現在時刻へ戻す経路は、進行方向を保証していない）。そのまま反映すると表示が
+      // 巻き戻り、検知エンジンにも後退したデータ時刻が渡る。
+      // 取得したその場で反映していた頃は順序が入れ替わる余地が無かったため、キューを挟んだ
+      // ことで新しく必要になったガード。
+      const frameMs = frame.time.getTime()
+      if (frameMs <= lastAppliedTimeMs) {
+        throttledStaleFrame(() => log.warn('[kyoshin] データ時刻が巻き戻ったフレームを破棄した'))
+        return
+      }
+      lastAppliedTimeMs = frameMs
+
+      setIndices(frame.indices)
+      setDataTime(frame.dataTime)
+      // indices が属する観測点集合を記録（下流で sites 側と突合する）。
+      setIndicesSiteConfigId(frame.sitesKey)
+
+      // 観測点集合が変わった場合のみ対応するリストを取得して反映する。
+      // currentSitesKeyRef の更新は取得成功後に行う（失敗時に ref を先行更新していると、
+      // 次のフレームで「同じ観測点集合」と判定されて再試行しなくなり、sites が旧いまま
+      // 更新されず indices と長さ不整合になる。取得側も失敗した Promise をキャッシュから
+      // 削除して再試行可能にしている）。
+      if (frame.sitesKey && frame.sitesKey !== currentSitesKeyRef.current) {
+        const nextKey = frame.sitesKey
+        source.resolveSites(nextKey)
           .then((s) => {
             if (active) {
-              currentSiteConfigIdRef.current = nextId
+              currentSitesKeyRef.current = nextKey
               setSites(s)
-              setSitesSiteConfigId(nextId)
+              setSitesSiteConfigId(nextKey)
             }
           })
           .catch((err) => {
-            // 失敗は次 tick で再試行される（ref は据え置き）。恒久的に失敗し続けた場合に
-            // 気付けるよう最低限の警告ログを残す。無音で握り潰さない。
-            log.warn('[kyoshin] sitelist fetch failed, will retry next tick', err)
+            // 失敗は次のフレームで再試行される（ref は据え置き）。恒久的に失敗し続けた場合に
+            // 気付けるよう警告を残し続ける。無音で握り潰さない。
+            // この失敗は「更新停止」の表示には出ない（震度と時刻は更新され続けるため）ので、
+            // ログが唯一の観測手段になる。だから一度きりにはせず、間引きつつ出し続ける。
+            throttledSitesError(() => log.warn(
+              `[kyoshin] 観測点リスト（${nextKey}）の取得に失敗（次のフレームで再試行）`, err,
+            ))
           })
       }
 
-      const prev = prevHypoInfoRef.current
-      const curr = rt.hypoInfo
+      const hypoInfo = frame.hypoInfo ?? []
       const onEEW = onEEWEventRef.current
       if (onEEW) {
-        const { events, pendingMissing } = diffHypoInfoEvents(prev, curr, pendingMissingRef.current)
+        const { events, pendingMissing } = diffHypoInfoEvents(
+          prevHypoInfoRef.current,
+          hypoInfo,
+          pendingMissingRef.current,
+        )
         pendingMissingRef.current = pendingMissing
-        for (const ev of events) onEEW(ev)
-      }
-      prevHypoInfoRef.current = curr
-    }
-
-    const isReplay = timeOffset != null
-
-    // live モードのみクロック同期を起動し serverNow() をサーバー時刻へ較正する
-    // （リプレイ中はアーカイブ時刻を使うため不要）
-    const stopClockSync = isReplay ? null : startClockSync()
-
-    // 初回 target: リアルタイム時のみ FETCH_OFFSET_MS 分だけ過去から開始し秒境界直後の失敗を抑制する
-    const initialTarget = isReplay
-      ? new Date(Date.now() + timeOffset)
-      : new Date(serverNow() - FETCH_OFFSET_MS)
-
-    // リプレイ時: (アンカー実時刻, アンカー target 時刻) の組を基準に、各 target の発火予定
-    // 実時刻を絶対値で計算する。setTimeout は指定時間ぴったりには発火しないため、待機時間を
-    // 「前回からの経過分を引く」相対計算にすると発火遅延がtickごとに積み重なり、再生時刻が
-    // 壁時計からどんどん遅れていく。絶対時刻を基準にすることで各tickの遅延がリセットされ、
-    // 蓄積しない。
-    const anchorRealMs = Date.now()
-    const anchorTargetMs = initialTarget.getTime()
-    const scheduledWaitMs = (nextTarget: Date): number =>
-      Math.max(0, anchorRealMs + (nextTarget.getTime() - anchorTargetMs) - Date.now())
-
-    // target: 今回 fetch するタイムスタンプ。retryCount: 同一 target への再試行回数。
-    const tick = (target: Date, retryCount = 0) => {
-      const fetchStart = Date.now()
-      fetchRealtimeIntensity(target)
-        .then((rt) => {
-          if (!active) return
-          // KYO-4: processResult 内の例外を fetch 失敗と誤集計しないよう独立の try/catch で
-          // 隔離する。失敗しても次 tick のスケジュールは通常経路で継続する。
+        // 差分の基準は配信の前に進める。進めずに抜けると、通知側の一時的な失敗のたびに同じ
+        // 発報が再送され、音と通知が二重に出る。
+        prevHypoInfoRef.current = hypoInfo
+        // 失敗はこのフレームぶんをまとめて 1 行に残す。1 件ずつ間引くと、同じフレーム内で
+        // 起きた 2 件目以降の失敗が同一時刻ゆえに間引かれて消えてしまう。
+        const failures: { eventId: string; err: unknown }[] = []
+        for (const ev of events) {
+          // 1 件の通知が例外を投げても残りの配信は続ける。ここで打ち切ると、上で基準を
+          // 進めているぶん未配信のイベントが恒久的に失われる（1 つのフレームで新規発報と
+          // 別の速報の解除が同時に起きるため、これは「警報が鳴らない」に直結する）。
           try {
-            processResult(rt)
+            onEEW(ev)
           } catch (err) {
-            log.error('[kyoshin] processResult 内例外（ローカルバグ・ネットワーク失敗とは別）', err)
+            failures.push({ eventId: ev.issue?.eventId ?? ev.id, err })
           }
-          if (!isReplay) {
-            // ライブ: 次ターゲットは「前回 + POLL_MS」と「フロンティア(serverNow - FETCH_OFFSET_MS)」の
-            // 大きい方。通常は両者がほぼ一致しコマ飛びしないが、描画負荷などで tick の発火が遅延した場合は
-            // 最新へジャンプして遅れを溜め込まない。前回 + POLL_MS で這うだけだと発火遅延が毎 tick 蓄積し、
-            // fetch が高速でも表示が数秒遅れていく（相対スケジュールの弱点）。この再アンカーにより lag は
-            // 常に FETCH_OFFSET_MS 以下に張り付く。
-            const nextTarget = new Date(Math.max(target.getTime() + POLL_MS, serverNow() - FETCH_OFFSET_MS))
-            // fetch にかかった時間を待機時間から引いて POLL_MS ごとの一定間隔を維持する
-            const elapsed = Date.now() - fetchStart
-            timer = setTimeout(() => tick(nextTarget), Math.max(0, POLL_MS - elapsed))
-            return
-          }
-          // リプレイ時: アーカイブを等速で辿るため crawl (+POLL_MS)。
-          // アンカーからの絶対時刻で次 tick の発火時刻を計算し、発火遅延を蓄積させない。
-          const nextTarget = new Date(target.getTime() + POLL_MS)
-          timer = setTimeout(() => tick(nextTarget), scheduledWaitMs(nextTarget))
-        })
-        .catch((err) => {
-          if (!active) return
-          if (!isReplay) {
-            // リアルタイム時のみ: 連続失敗カウントを更新しエラー状態を通知する
-            if (retryCount === 0) {
-              failCountRef.current += 1
-              if (failCountRef.current >= ERROR_THRESHOLD) {
-                log.warn(`[kyoshin] 連続取得失敗 (${failCountRef.current}回) → エラー表示`, err)
-                setError(true)
-              }
-            }
-            // 同一 target への失敗が続き上限回数を超えたら、その target を諦めて
-            // 現在時刻ベースにリセットする（特定タイムスタンプが CDN 側で恒久的に
-            // 取得できないケースで無限リトライに張り付き続けるのを防ぐ）
-            if (retryCount + 1 >= REALTIME_MAX_RETRY_COUNT) {
-              log.warn(`[kyoshin] target への取得が ${retryCount + 1} 回失敗 → 現在時刻ベースにリセット`, err)
-              timer = setTimeout(() => tick(new Date(serverNow() - FETCH_OFFSET_MS)), RETRY_MS)
-              return
-            }
-            // 同一 target で RETRY_MS 後にリトライ
-            timer = setTimeout(() => tick(target, retryCount + 1), RETRY_MS)
-            return
-          }
-          // リプレイ時: 上限回数を超えたら諦めて次 target へ進める
-          // （アーカイブ側の恒久的な欠損による無限リトライを防ぐ）
-          if (retryCount + 1 >= REPLAY_MAX_RETRY_COUNT) {
-            const nextTarget = new Date(target.getTime() + POLL_MS)
-            timer = setTimeout(() => tick(nextTarget), scheduledWaitMs(nextTarget))
-            return
-          }
-          timer = setTimeout(() => tick(target, retryCount + 1), RETRY_MS)
-        })
+        }
+        if (failures.length > 0) {
+          throttledEEWError(() => log.error(
+            `[kyoshin] 緊急地震速報の通知中に例外（${failures.length} 件。残りの通知は継続した）`,
+            failures,
+          ))
+        }
+      } else {
+        // onEEWEvent が無い場合も基準は進める。後から有効化されたときに、溜まった差分を
+        // 一度に流さないため。
+        prevHypoInfoRef.current = hypoInfo
+      }
     }
 
-    tick(initialTarget)
+    const drain = () => {
+      if (!active) return
+      const frame = queue.drainLatest(serverDate())
+      if (frame === null) return
+      try {
+        applyFrame(frame)
+      } catch (err) {
+        // 反映処理の中のバグを取得失敗と混同しないよう隔離する。次のフレームで再試行される。
+        throttledApplyError(() => log.error(
+          '[kyoshin] フレーム反映中の例外（ローカルバグ・取得の失敗とは別）', err,
+        ))
+      }
+    }
+
+    source.start({
+      enqueue: (frame) => {
+        queue.enqueue(frame)
+        // Yahoo のフレームは常にデータ時刻が過去なので、ここで即座に放出される。
+        // 巡回（DRAIN_INTERVAL_MS）を待たせないことで、従来と同じ即時性を保つ。
+        drain()
+      },
+      setStalled: (stalled) => {
+        if (active) setError(stalled)
+      },
+    })
+
+    // データ時刻がまだ来ていないフレームを、時刻の到来で放出するための巡回。
+    const drainTimer = setInterval(drain, DRAIN_INTERVAL_MS)
+
     return () => {
       active = false
-      if (timer !== null) clearTimeout(timer)
-      if (stopClockSync !== null) stopClockSync()
+      clearInterval(drainTimer)
+      source.stop()
+      queue.clear()
     }
   }, [enabled, timeOffset])
 
