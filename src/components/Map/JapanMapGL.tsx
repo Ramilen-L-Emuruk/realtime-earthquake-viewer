@@ -35,7 +35,7 @@ import {
   TsunamiFitGL,
   FocusObsGL,
 } from './CameraFollowsGL'
-import { JAPAN_CENTER, fitJapan, DEFAULT_IDLE_REVERT_SEC } from './gl/camera'
+import { JAPAN_CENTER, fitJapan } from './gl/camera'
 import { useActiveFaults } from '../../hooks/useActiveFaults'
 import { usePlateBoundaries } from '../../hooks/usePlateBoundaries'
 import { useQuakeLayerData } from '../../hooks/useQuakeLayerData'
@@ -72,7 +72,6 @@ export function JapanMapGL({
   eews = [],
   eewLpgmEventId = null,
   kyoshinPsWave = [],
-  idleRevertSec = DEFAULT_IDLE_REVERT_SEC,
   focusObsName = null,
   heatPoints,
   showBathymetry = true,
@@ -314,7 +313,6 @@ export function JapanMapGL({
                 positions={quakeFitPositions}
                 selectionTick={quakeSelectionTick}
                 lastConsumedTickRef={lastConsumedQuakeTickRef}
-                idleRevertSec={idleRevertSec}
               />
             </>
           )}
@@ -337,13 +335,11 @@ export function JapanMapGL({
                 candidateId={candidateId}
                 hasEew={eews.length > 0}
                 hasDetection={detectedPoints.length > 0}
-                idleRevertSec={idleRevertSec}
               />
               <FitToDetectionGL
                 points={detectedPoints}
                 hasEew={eews.length > 0}
                 hasCandidate={candidateId !== null && candidatePoints.length > 0}
-                idleRevertSec={idleRevertSec}
               />
               {/* EEW 追従（idle 抑制つき）。
                   MAP-5 の常時マウント化は QuakeFitGL/TsunamiFitGL との flyTo 争い・EEW 解除後の
@@ -353,7 +349,6 @@ export function JapanMapGL({
               <FitToEEWGL
                 eews={eews}
                 psWave={kyoshinPsWave}
-                idleRevertSec={idleRevertSec}
                 detectedPoints={detectedPoints}
                 candidatePoints={candidatePoints}
                 forecastAreaPositions={eewFitPositions}
@@ -395,7 +390,6 @@ export function JapanMapGL({
             tsunamiFitPositions={tsunamiFitPositions}
             observationBars={observationBars}
             focusObsName={focusObsName}
-            idleRevertSec={idleRevertSec}
           />
           <FocusObsGL focusObsName={focusObsName} observationBars={observationBars} />
         </MapGLContext.Provider>

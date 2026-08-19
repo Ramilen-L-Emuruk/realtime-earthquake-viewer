@@ -35,7 +35,6 @@ export interface JapanMapProps {
   /** likely / faint 全イベントのメンバー観測点。**検知点マーカー専用**（フィットには使わない）。 */
   unconfirmedPoints?: DetectedPoint[]
   candidateId?: number | null
-  idleRevertSec?: number
   eewLpgmEventId?: string | null
   focusObsName?: { name: string; ts: number } | null
   obsUpdateStatus?: Map<string, 'new' | 'updated'>
