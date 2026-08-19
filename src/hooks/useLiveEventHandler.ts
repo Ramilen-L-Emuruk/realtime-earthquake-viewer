@@ -14,7 +14,7 @@ import { matchesArea, sortAreasForCardDisplay } from '../components/TsunamiTab'
 import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox } from '../utils/voicevox'
 import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, tsunamiArrivalToText, nankaiToText, kohatsuToText, lpgmToText, type TtsRegionOptions } from '../utils/ttsText'
-import { log } from '../utils/logger'
+import { log, createLogThrottle } from '../utils/logger'
 import { extractQuakeEventIdFromId, quakeEventKey, sameQuakeEntry } from '../utils/quakeMerge'
 
 // EEW 読み上げ第 2 フェーズ（予想値）のタイミング。
@@ -25,10 +25,40 @@ const EEW_PHASE2_MAX_WAIT_MS = 6000
 // タイムアウトが無いため、応答が返らないまま待ち続けると後続の EEW が永久に読まれなくなる。
 // 打ち切って次へ進む（止まっていた側は次の発話開始時に abort される）。
 const EEW_SPEECH_CHAIN_MAX_WAIT_MS = 8000
-// 非 EEW の読み上げ（地震情報・津波・長周期・南海トラフ）が、EEW の読み上げが途切れるのを
-// 待つ上限。本震の続報は数十秒続くことがあり、無制限に待つとこれらが永久に読まれない。
-// 上限に達したら諦めて読む（その場合は従来どおり EEW に切られうる）。
-const NON_EEW_SPEECH_MAX_WAIT_MS = 20000
+
+/**
+ * 非 EEW の読み上げの優先度。**割り込みを許すのは「自分の優先度が読み上げ中のものと同じか
+ * 高いとき」だけ**。`speakWithVoicevox` は待ち行列ではなく割り込みなので、優先度を持たせないと
+ * 緊急度の低い情報が重い情報を途中で消す（2024/1/1 能登の再生では、大津波警報の読み上げが
+ * 30 秒後に始まった地震情報に消されていた）。
+ *
+ * **同格どうしは新しい方が勝つ。** 震度速報の更新が古い震度速報を置き換えるのは正しい挙動で、
+ * ここを待ち行列にすると古い内容を読み終わるまで最新の震度が出てこない。
+ *
+ * EEW はこの尺度の外にあり、常に最優先（`eewSpeechPendingRef` で別に管理する）。
+ */
+const SPEECH_PRIORITY = {
+  /** 長周期地震動情報。地震のあとに出る事後情報なので、地震情報より軽く扱う */
+  low: 0,
+  /** 地震情報（震度速報・震源情報・地震情報・遠地地震・取消） */
+  normal: 1,
+  /**
+   * 津波（発表・更新・解除）と南海トラフ臨時情報・後発地震注意情報。
+   * 後者を津波と同格にしているのは、発表頻度が極端に低く聞き逃したときの損失が大きいため。
+   */
+  high: 2,
+} as const
+type SpeechPriority = typeof SPEECH_PRIORITY[keyof typeof SPEECH_PRIORITY]
+
+// 優先度の高い読み上げ（EEW を含む）の完了を待つ上限。津波の本文は 60 秒近くに達することが
+// あるため、EEW チェーンの刻み（EEW_SPEECH_CHAIN_MAX_WAIT_MS）を流用すると読み上げを途中で
+// 切ってしまう。この上限が効くのは VOICEVOX が無応答のときだけで、その状況ではそもそも何も
+// 聞こえないため、長めに取っても失うものは無い。
+const HIGHER_PRIORITY_SPEECH_MAX_WAIT_MS = 90000
+
+// 待ちきれずに割り込むことを選んだときの警告。VOICEVOX が無応答だと読み上げごとに起こりうるため
+// 間引くが、優先度の高い読み上げを消す判断なので必ず残す（黙って消すと事後に追えない）。
+const warnSpeechWaitGiveUp = createLogThrottle(30000)
 
 /**
  * 発話の完了を待つ（上限付き）。EEW の読み上げは 1 本のチェーンで直列化するため、
@@ -171,6 +201,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const eewSpeechChainRef = useRef<Promise<void>>(Promise.resolve())
   // チェーンに積まれている EEW 発話の数（0 なら EEW は静か）。非 EEW の読み上げがこれを見て待つ。
   const eewSpeechPendingRef = useRef(0)
+  // 読み上げ中の非 EEW の優先度とその完了。優先度の低い読み上げがこれを見て待つ。
+  const activeNonEewSpeechRef = useRef<{ priority: SpeechPriority; done: Promise<void> } | null>(null)
   const eewPhase2TokensRef = useRef<Map<string, object>>(new Map())
   const eewTtsMaxTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   // 第 2 フェーズ（予想値）を一度でも発話した eventId。まだ読んでいない間は、値が上がって
@@ -216,49 +248,96 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   }
 
   /**
-   * EEW の読み上げが途切れるのを待つ（上限付き）。EEW が無ければ待たない。
+   * いま自分より優先度の高い読み上げが進行中なら、その完了 Promise を返す（無ければ null）。
    *
-   * 待っている間に次の EEW が積まれることがあるため、静かになるまで繰り返し待つ。
-   *
-   * 打ち切りは**経過時間**で判定する。反復ごとに一定量を足す数え方にすると、チェーンが即座に
-   * resolve する状態で `eewSpeechPendingRef` だけが残っていた場合に、マイクロタスクを高速に
-   * 回り切って「上限まで待った」ことになり、上限が実時間として意味を失う。あわせて反復回数にも
-   * 歯止めを置き、時間が進まない環境（テストの fake timers）でも回り続けないようにしている。
-   *
-   * **1 回の待ちには「残り時間」を渡すこと。** 既定の 8 秒刻みのままにすると、20 秒の上限を
-   * 跨ぐ判定が 3 周目（24 秒経過時点）まで行われず、上限として書いた数値が実態とずれる。
+   * EEW は優先度の尺度の外にあり、**予約済みのぶんも含めて**常に最優先とする。予約を数えるのは、
+   * EEW の続報が立て続けに届くとき、発話の切れ目に非 EEW が滑り込んで次の EEW に切られるのを
+   * 防ぐため。
    */
-  const waitForEEWSpeechQuiet = async () => {
-    const deadline = Date.now() + NON_EEW_SPEECH_MAX_WAIT_MS
-    for (let i = 0; eewSpeechPendingRef.current > 0 && i < 100; i++) {
-      const remaining = deadline - Date.now()
-      if (remaining <= 0) break
-      // チェーンが reject しても待ちを続ける（EEW 側の失敗で非 EEW の読み上げを道連れにしない）
-      await capSpeechWait(
-        eewSpeechChainRef.current,
-        Math.min(EEW_SPEECH_CHAIN_MAX_WAIT_MS, remaining),
-      ).catch(() => {})
-    }
+  const higherPrioritySpeechInProgress = (priority: SpeechPriority): Promise<void> | null => {
+    if (eewSpeechPendingRef.current > 0) return eewSpeechChainRef.current
+    const active = activeNonEewSpeechRef.current
+    if (active !== null && active.priority > priority) return active.done
+    return null
   }
 
   /**
-   * 非 EEW の読み上げ。EEW の読み上げが途切れるのを待ってから話す。
+   * 自分より優先度の高い読み上げが終わるのを待つ（上限付き）。
    *
-   * speakWithVoicevox は待ち行列ではなく割り込み（既存の再生を stop し進行中の合成を abort する）
-   * なので、待たずに投げると緊急度の低い情報が EEW の発話を途中で消す。実例: 2024/1/1 能登の
+   * **毎周回で条件を作り直すこと。** 一度きりの判定にすると、待っている間に始まった読み上げを
+   * 見落とす。とくに EEW は、待ち明けに読み始めた非 EEW が後ろから EEW を切るという、
+   * 「EEW は常に最優先」の前提を崩す形の事故になる。
+   *
+   * 打ち切りは**経過時間**で判定する。反復ごとに一定量を足す数え方にすると、待つ対象が即座に
+   * resolve する状態（進行カウンタだけが残った場合など）でマイクロタスクを高速に回り切って
+   * 「上限まで待った」ことになり、上限が実時間として意味を失う。あわせて反復回数にも歯止めを
+   * 置き、時間が進まない環境（テストの fake timers）でも回り続けないようにしている。
+   *
+   * @returns `true` なら順番が来た。`false` なら待ちきれず、割り込むことを選んだ。
+   *   **呼び出し側はこの 2 つを区別すること。** 区別せずに待ち直すと、諦める判定が無効になって
+   *   上限が効かなくなる。
+   */
+  const waitForSpeechSlot = async (priority: SpeechPriority): Promise<boolean> => {
+    const deadline = Date.now() + HIGHER_PRIORITY_SPEECH_MAX_WAIT_MS
+    for (let i = 0; i < 200; i++) {
+      const busy = higherPrioritySpeechInProgress(priority)
+      if (busy === null) return true
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) {
+        // 待ちきれずに割り込むことを選んだ。優先度の高い読み上げを消すため必ず記録する
+        // （VOICEVOX が無応答のときに繰り返し起こりうるので間引く）
+        warnSpeechWaitGiveUp(() => log.warn(
+          `[tts] 優先度の高い読み上げを待ちきれず、割り込んで読み上げる priority=${priority}`,
+        ))
+        return false
+      }
+      // 待つ対象が reject しても待ちを続ける（相手の失敗で自分を道連れにしない）。
+      // 相手側の speakNonEEW / chainEEWSpeech が独立に記録するため、ここは debug に留める
+      await capSpeechWait(busy, remaining).catch(err => log.debug('[tts] 待っていた読み上げが異常終了', err))
+    }
+    warnSpeechWaitGiveUp(() => log.warn(
+      `[tts] 待ち合わせの反復上限に達したため割り込んで読み上げる priority=${priority}`,
+    ))
+    return false
+  }
+
+  /**
+   * 非 EEW の読み上げ。自分より優先度の高い読み上げが終わるのを待ってから話す。
+   *
+   * `speakWithVoicevox` は待ち行列ではなく割り込み（既存の再生を stop し進行中の合成を abort
+   * する）なので、待たずに投げると緊急度の低い情報が重い情報を途中で消す。実例: 2024/1/1 能登の
    * 16:08 の EEW 第 1 報が、その 0.36 秒後に読み上げの始まった震源情報に潰されていた
    * （震源情報の電文自体は EEW より先に届いており、TTS_DELAY_MS を経て読み上げが始まる。
-   * 割り込みは電文の到来順では決まらない）。
+   * **割り込みは電文の到来順では決まらない**）。同じ再生では、大津波警報の読み上げが 30 秒後に
+   * 始まった地震情報に消されていた。
    *
-   * 逆向き（EEW が地震情報の読み上げを切る）は許す。緊急度どおりであり、また地震情報の本文は
-   * 数千文字に達することがあって、その後ろに EEW を並べると致命的に遅れるため。
+   * 逆向き（優先度の高い側が低い側を切る）は許す。緊急度どおりであり、また地震情報の本文は
+   * 数千文字に達することがあって、その後ろに EEW や津波を並べると致命的に遅れるため。
    */
-  const speakNonEEW = (text: string) => {
-    void waitForEEWSpeechQuiet()
-      .then(() => speakWithVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume))
-      // 発話できなかったことは必ず記録する。黙って落ちると「読み上げられなかった」という
-      // 報告から原因を切り分けられない
-      .catch(err => log.warn('[tts] 読み上げに失敗', err))
+  const speakNonEEW = (text: string, priority: SpeechPriority) => {
+    void (async () => {
+      // `await` はマイクロタスクの境界を作るため、待ちが明けてからこの続きが走るまでの間に
+      // 別の待機者の続きが走りうる。両者が「誰も読んでいない」を見て同時に解放されると、
+      // 低い側が後から読み始めて高い側を切ることがある。読み始める直前に同期的に見直し、
+      // 変わっていたら待ち直す（回数に歯止めを置き、取り合いで永久に読めなくなるのを防ぐ）。
+      for (let attempt = 0; attempt < 10; attempt++) {
+        // 待ちきれずに割り込むことを選んだ場合は待ち直さない（諦める判定が無効になる）
+        if (!await waitForSpeechSlot(priority)) break
+        if (higherPrioritySpeechInProgress(priority) === null) break
+      }
+      const done = speakWithVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume)
+      activeNonEewSpeechRef.current = { priority, done }
+      try {
+        await done
+      } finally {
+        // 自分より後に始まった読み上げに置き換わっている場合は触らない（消すと待ち側が
+        // 「誰も読んでいない」と誤認し、進行中の読み上げに割り込む）
+        if (activeNonEewSpeechRef.current?.done === done) activeNonEewSpeechRef.current = null
+      }
+    })()
+      // ここに届くのは同期的な異常だけ。VOICEVOX 未起動・ネットワーク断のような日常的な失敗は
+      // speakWithVoicevox が無音のまま正常終了させるため到達しない（記録は同関数側で行う）
+      .catch(err => log.warn('[tts] 読み上げの進行に失敗', err))
   }
 
   const handleLiveEvent = (event: AppEvent) => {
@@ -281,7 +360,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           ? earthquakesRef.current.find(e => extractQuakeEventIdFromId(e.id) === cancelEventId)
           : undefined
         setTimeout(() => {
-          speakNonEEW(earthquakeCancelToText(original?.time ?? null))
+          speakNonEEW(earthquakeCancelToText(original?.time ?? null), SPEECH_PRIORITY.normal)
         }, 1200)
       }
     } else if (event.kind === 'quake') {
@@ -365,7 +444,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         if (settings.soundEnabled) playAlertSound('tsunamiCancel')
         if (settings.voicevoxEnabled) {
           setTimeout(() => {
-            speakNonEEW(tsunamiCancelToText(event.cancelReason))
+            speakNonEEW(tsunamiCancelToText(event.cancelReason), SPEECH_PRIORITY.high)
           }, 2400)
         }
       }
@@ -624,7 +703,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         const lpgm = lpgmEvent
         const isNewLpgm = !seenLpgmEventIdsRef.current.has(lpgm.eventId)
         setTimeout(() => {
-          speakNonEEW(lpgmToText(lpgm, ttsRegionOptions(settings), isNewLpgm))
+          speakNonEEW(lpgmToText(lpgm, ttsRegionOptions(settings), isNewLpgm), SPEECH_PRIORITY.low)
         }, 1000)
       }
       // voicevox 有効/無効に関わらず追跡する（次回の isNewLpgm 判定に使用）
@@ -645,7 +724,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             ? nankaiToText(specialEvent.data as Parameters<typeof nankaiToText>[0])
             : kohatsuToText(specialEvent.data as Parameters<typeof kohatsuToText>[0])
           setTimeout(() => {
-            speakNonEEW(ttsText)
+            speakNonEEW(ttsText, SPEECH_PRIORITY.high)
           }, 1500)
         }
         // タイトル更新
@@ -659,7 +738,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         title.clearTitleTimer('specialInfo')
         title.applyPriority()
         if (specialEvent.kind === 'nankai' && settings.voicevoxEnabled) {
-          speakNonEEW(nankaiToText(specialEvent.data as Parameters<typeof nankaiToText>[0]))
+          speakNonEEW(nankaiToText(specialEvent.data as Parameters<typeof nankaiToText>[0]), SPEECH_PRIORITY.high)
         }
       }
       return
@@ -762,7 +841,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       if (ttsText && type) {
         const delay = TTS_DELAY_MS[type] ?? 0
         setTimeout(() => {
-          speakNonEEW(ttsText!)
+          speakNonEEW(ttsText!, event.kind === 'tsunami' ? SPEECH_PRIORITY.high : SPEECH_PRIORITY.normal)
         }, delay)
       }
     }
@@ -848,6 +927,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     return () => {
       for (const timer of eewTtsMaxTimersRef.current.values()) clearTimeout(timer)
       eewSpeechPendingRef.current = 0
+      activeNonEewSpeechRef.current = null
       window.clearTimeout(obsStatusClearTimerRef.current)
     }
   }, [])
@@ -868,6 +948,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     eewSpeechChainRef.current = Promise.resolve()
     // カウンタも戻す。残したままだとリプレイを切り替えても非 EEW の読み上げが待たされ続ける
     eewSpeechPendingRef.current = 0
+    activeNonEewSpeechRef.current = null
     eewPhase2DoneRef.current.clear()
     lastTsunamiGradeRef.current = null
     lastMaxObsHeightRef.current.clear()
