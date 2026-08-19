@@ -18,7 +18,7 @@ import {
   mapContainsBounds,
   isProgrammaticFlight,
   subscribeUserInteraction,
-  DEFAULT_IDLE_REVERT_SEC,
+  INTERACTION_HOLD_SEC,
   MAX_ZOOM,
 } from './gl/camera'
 import { decideTsunamiFit } from './gl/tsunamiFit'
@@ -53,32 +53,30 @@ function eewHypocenters(eews: EEWAlert[]): LatLng[] {
 }
 
 // ── ユーザー操作中判定の共有フック ───────────────────────────────────────────────
-// zoomstart/dragstart を起点に「ユーザーが手動操作した」とみなし、idleRevertSec 秒間
-// 操作が無ければ自動的に解除する。実体（リスナー登録・タイマー・isProgrammaticFlight 除外）は
+// zoomstart/dragstart を起点に「ユーザーが手動操作した」とみなし、一定時間
+// 操作が無ければ自動的に解除する。実体（リスナー登録・タイマー・アプリ起点イベントの除外）は
 // gl/camera.ts の subscribeUserInteraction が map 単位で一元管理し、複数の Fit* コンポーネントが
-// 同じ map を購読しても zoomstart/dragstart の登録は 1 組だけになる。
-// 戻り値は boolean の state（ref ではない）にしているのが要点: idleRevertSec 経過で
+// 同じ map を購読しても zoomstart/dragstart の登録は 1 組だけになる。保持時間は設定タブの
+// 「自動復帰までの時間」とは切り離した固定値（理由は gl/camera.ts の INTERACTION_HOLD_SEC）。
+// 戻り値は boolean の state（ref ではない）にしているのが要点: 保持時間の経過で
 // interacting が false に戻った瞬間、これを deps に含む呼び出し側の useEffect が再実行される。
 // ref 版だと「操作終了」を検知する再トリガーが無く、操作中に来た更新が再レンダリングの
 // 機会を得られないまま永久にスキップされ続けてしまう（成長フォロー等のセルフヒール手段を
 // 持たない QuakeFitGL/FitToCandidateGL で実際に問題になった）。
-function useUserInteractionGuard(
-  map: maplibregl.Map | null,
-  idleRevertSec = DEFAULT_IDLE_REVERT_SEC,
-): [boolean, () => void] {
+function useUserInteractionGuard(map: maplibregl.Map | null): [boolean, () => void] {
   const [isInteracting, setIsInteracting] = useState(false)
   const resetRef = useRef<() => void>(() => {})
 
   useEffect(() => {
     if (!map) return
-    const sub = subscribeUserInteraction(map, idleRevertSec, setIsInteracting)
+    const sub = subscribeUserInteraction(map, setIsInteracting)
     resetRef.current = sub.reset
     setIsInteracting(sub.isInteracting)
     return () => {
       sub.unsubscribe()
       resetRef.current = () => {}
     }
-  }, [map, idleRevertSec])
+  }, [map])
 
   const reset = useCallback(() => resetRef.current(), [])
 
@@ -110,17 +108,15 @@ export function QuakeFitGL({
   positions,
   selectionTick = 0,
   lastConsumedTickRef,
-  idleRevertSec = DEFAULT_IDLE_REVERT_SEC,
 }: {
   signature: string
   positions: LatLng[]
   selectionTick?: number
   lastConsumedTickRef: React.MutableRefObject<number>
-  idleRevertSec?: number
 }) {
   const map = useMapGL()
   const lastFitRef = useRef<string>('')
-  const [isUserInteracting, resetUserInteraction] = useUserInteractionGuard(map, idleRevertSec)
+  const [isUserInteracting, resetUserInteraction] = useUserInteractionGuard(map)
   useEffect(() => {
     if (!map || !signature || positions.length === 0) return
     // ユーザーが明示的にカードを選んだか（selectionTick が進んだか）。tick が同じなら
@@ -180,7 +176,6 @@ export function FitToDetectionGL({
   points,
   hasEew,
   hasCandidate = false,
-  idleRevertSec = DEFAULT_IDLE_REVERT_SEC,
 }: {
   points: DetectedPoint[]
   hasEew: boolean
@@ -189,11 +184,10 @@ export function FitToDetectionGL({
    * 検知終了時に日本全体へ戻すかどうかの判断にのみ使う。
    */
   hasCandidate?: boolean
-  idleRevertSec?: number
 }) {
   const map = useMapGL()
   const fittedRef = useRef(false)
-  const [isUserInteracting] = useUserInteractionGuard(map, idleRevertSec)
+  const [isUserInteracting] = useUserInteractionGuard(map)
   useEffect(() => {
     if (!map) return
     if (points.length === 0) {
@@ -260,18 +254,16 @@ export function FitToCandidateGL({
   candidateId,
   hasEew,
   hasDetection,
-  idleRevertSec = DEFAULT_IDLE_REVERT_SEC,
 }: {
   points: DetectedPoint[]
   candidateId: number | null
   hasEew: boolean
   hasDetection: boolean
-  idleRevertSec?: number
 }) {
   const map = useMapGL()
   const fittedIdRef = useRef<number | null>(null)
   const prevHasDetectionRef = useRef(hasDetection)
-  const [isUserInteracting] = useUserInteractionGuard(map, idleRevertSec)
+  const [isUserInteracting] = useUserInteractionGuard(map)
   useEffect(() => {
     if (!map) return
     // 確定検知が出ている間、この効果は下の early return で何もしない。その間に候補クラスタが立っても
@@ -336,19 +328,17 @@ const GROWTH_FOLLOW_SUPPRESS_MS = 3000
 // ── EEW 追従（idle 抑制つき・最も複雑） ──────────────────────────────────────────
 // 新規 EEW: 震源中心→予報円へフィット（第一報は震源近傍の寄りを見せたいため、予想の区域塗りは
 // ここでは含めない）。解除: 検知中なら検知点、無ければ日本全体へ。
-// ユーザーが手動でズーム/パンしたら idleRevertSec 秒間追従を停止（0=EEW更新まで）。
+// ユーザーが手動でズーム/パンしたら一定時間追従を停止する（新規 EEW の受信でも解除される）。
 // 予報円の成長・予想の区域塗りの広がりで表示に収まらなくなったらズームアウト追従する。
 export function FitToEEWGL({
   eews,
   psWave,
-  idleRevertSec = DEFAULT_IDLE_REVERT_SEC,
   detectedPoints = [],
   candidatePoints = [],
   forecastAreaPositions = [],
 }: {
   eews: EEWAlert[]
   psWave: PsWaveCircle[]
-  idleRevertSec?: number
   detectedPoints?: DetectedPoint[]
   /**
    * 確定検知に育っていない候補クラスタの点群。EEW 解除時の帰還先としてのみ使う（検知点が無い場合）。
@@ -364,7 +354,7 @@ export function FitToEEWGL({
 }) {
   const map = useMapGL()
   const lastEewIdRef = useRef<string | null>(null)
-  const [isUserInteracting, resetUserInteraction] = useUserInteractionGuard(map, idleRevertSec)
+  const [isUserInteracting, resetUserInteraction] = useUserInteractionGuard(map)
   const prevEewsCountRef = useRef<number>(0)
   const prevPsWaveCountRef = useRef<number>(0)
   const suppressGrowthUntilRef = useRef<number>(0)
@@ -441,7 +431,22 @@ export function FitToEEWGL({
     const psWaveDecreased = psWave.length < prevPsCount
     if (!eewDecreased && !psWaveDecreased) return
     if (eews.length === 0) return
-    if (isUserInteracting) return
+    // 以下 2 つの見送りは、いずれも「その回の寄り直しを永久に失う」（件数の記録は上で更新済みなので
+    // 同じ減少が後から再検出されることはない）。無言で失うと実地震のあとに「抑制が働いたのか
+    // 不具合なのか」を切り分けられないため、他のスキップ分岐と同じくログに残す。
+    if (isUserInteracting) {
+      log.debug('[mapGL] EEW数減少の再フィット スキップ (userInteracting)')
+      return
+    }
+    // 第一報のフォーカスを見せている間は寄り直さない（成長フォローと同じ抑制を効かせる）。
+    // 抑制中にここが発火すると、抑制が防いでいる「一瞬寄って即ズームアウト」を別のトリガーで
+    // 再現してしまう。
+    // ただし残りが画面外にはみ出していれば、抑制が明けた直後に成長フォローの収まり判定が拾って
+    // 引き直す（最大で抑制時間ぶん遅れる）。
+    if (Date.now() < suppressGrowthUntilRef.current) {
+      log.debug('[mapGL] EEW数減少の再フィット スキップ (第一報直後の抑制中)')
+      return
+    }
 
     // 円のある EEW は円の box、円が無い（仮定震源要素等の）EEW も震源座標一点は必ず含める
     // （円だけを見ると、その EEW が画面から取り残される）。
@@ -505,7 +510,7 @@ export function FitToEEWGL({
 //
 // 観測点へ寄ったままにしないのが要点。観測情報は電文のたびに寄り直すため、寄った先に留まると
 // 発表中の対象海域全体が二度と画面に入らない（海岸線 signature は寄った時点で消費するので、
-// 区域・等級が変わらない限り海岸線フィットは再発火しない）。無操作・無更新が idleRevertSec 秒
+// 区域・等級が変わらない限り海岸線フィットは再発火しない）。無操作・無更新が INTERACTION_HOLD_SEC 秒
 // 続いたら俯瞰へ帰し、津波が消えたら日本全体へ帰す。
 export function TsunamiFitGL({
   mode,
@@ -513,7 +518,6 @@ export function TsunamiFitGL({
   tsunamiFitPositions,
   observationBars,
   focusObsName = null,
-  idleRevertSec = DEFAULT_IDLE_REVERT_SEC,
 }: {
   mode: string
   tsunamiSignature: string
@@ -521,7 +525,6 @@ export function TsunamiFitGL({
   observationBars: { name: string; lat: number; lng: number; height: { value: number } }[]
   /** 観測行クリックで FocusObsGL が寄せた観測点。猶予を数え直すためだけに見る（フィットはしない）。 */
   focusObsName?: { name: string; ts: number } | null
-  idleRevertSec?: number
 }) {
   const map = useMapGL()
   // 最後にカメラへ反映した海岸線 signature。津波が消えたとき（全解除・有効期間の満了・
@@ -537,23 +540,24 @@ export function TsunamiFitGL({
   const idleTimerRef = useRef<number | undefined>(undefined)
   // タイマー満了は React の外で起きるため、effect を再評価させる契機として state を 1 つ持つ。
   const [idleReturnTick, setIdleReturnTick] = useState(0)
-  const [isUserInteracting] = useUserInteractionGuard(map, idleRevertSec)
+  const [isUserInteracting] = useUserInteractionGuard(map)
 
   const clearIdleReturnTimer = useCallback(() => {
     window.clearTimeout(idleTimerRef.current)
     idleTimerRef.current = undefined
   }, [])
 
-  // 観測点へ寄った状態から俯瞰へ帰るまでの猶予。idleRevertSec=0（自動復帰なし）では張らない
-  // ——操作ガードを無期限保持する設定と足並みを揃える。
+  // 観測点へ寄った状態から俯瞰へ帰るまでの猶予。操作ガードの保持時間と同じ固定値を使う
+  // （設定「自動復帰までの時間」から切り離した理由は gl/camera.ts の INTERACTION_HOLD_SEC）。
+  // 設定を「無効」にしても帰還は止めない。止めると、この関数が解除だけして終わり、
+  // 観測点へ寄ったまま取り残される経路が復活する（それが帰還を足した動機そのもの）。
   const armIdleReturnTimer = useCallback(() => {
     clearIdleReturnTimer()
-    if (idleRevertSec <= 0) return
     idleTimerRef.current = window.setTimeout(() => {
       idleReturnDueRef.current = true
       setIdleReturnTick((t) => t + 1)
-    }, idleRevertSec * 1000)
-  }, [clearIdleReturnTimer, idleRevertSec])
+    }, INTERACTION_HOLD_SEC * 1000)
+  }, [clearIdleReturnTimer])
 
   useEffect(() => clearIdleReturnTimer, [clearIdleReturnTimer])
 
@@ -572,14 +576,6 @@ export function TsunamiFitGL({
     idleReturnDueRef.current = false
     armIdleReturnTimer()
   }, [focusObsTs, focusObsName, observationBars, armIdleReturnTimer])
-
-  // 「自動復帰までの時間」を待っている最中に設定が変わったら、最新の秒数で張り直す
-  // （0 に変えた場合は armIdleReturnTimer が解除だけして終わるので、期限も下げておく）。
-  useEffect(() => {
-    if (idleTimerRef.current === undefined) return
-    armIdleReturnTimer()
-    if (idleRevertSec <= 0) idleReturnDueRef.current = false
-  }, [idleRevertSec, armIdleReturnTimer])
 
   useEffect(() => {
     if (!map) return
@@ -603,7 +599,7 @@ export function TsunamiFitGL({
       lastTsunamiSigRef.current = tsunamiSignature
     }
 
-    // 操作ガードが解けた瞬間は「idleRevertSec 秒の無操作が確定した」ことなので、そのまま
+    // 操作ガードが解けた瞬間は「INTERACTION_HOLD_SEC 秒の無操作が確定した」ことなので、そのまま
     // アイドル復帰の期限として扱う（手動で動かした後も俯瞰へ帰す）。true→false の遷移だけを見る。
     if (prevInteractingRef.current && !isUserInteracting) idleReturnDueRef.current = true
     prevInteractingRef.current = isUserInteracting

@@ -30,34 +30,97 @@ export const MAX_ZOOM = 7
 // JapanMap.tsx の JAPAN_CENTER [lat,lng] を [lng,lat] へ。
 export const JAPAN_CENTER: [number, number] = [137.7, 38.25]
 
-// 「プログラムによるカメラ操作が進行中か」の共有状態。kyoshin モードでは FitJapanOnEnter／
-// FitToCandidate／FitToDetection／FitToEEW が同じ map インスタンスを別々のコンポーネントから
-// 操作するが、MapLibre の flyTo/fitBounds はプログラム操作でも zoomstart/dragstart を発火する。
-// FitToEEW はこれらのイベントで「ユーザーが手動操作したか」を判定するため、各コンポーネントが
-// 私有の ref で自分の操作だけを除外していると、他コンポーネントの自動フィットをユーザー操作と
-// 誤認してしまう（実際の地震では EEW と揺れ検知が同時に動くため起きやすい）。ここに一元化し、
-// このファイルの fit 系関数を呼ぶたびに立てることで、発生源を問わず判定できるようにする。
-const programmaticFlights = new WeakMap<maplibregl.Map, number>()
-
-function beginProgrammaticFlight(map: maplibregl.Map): void {
-  programmaticFlights.set(map, (programmaticFlights.get(map) ?? 0) + 1)
-  map.once('moveend', () => {
-    programmaticFlights.set(map, Math.max(0, (programmaticFlights.get(map) ?? 1) - 1))
-  })
+// アプリ起点のカメラ操作（このファイルの fit 系関数）に付ける印。MapLibre は fly/fit へ渡した
+// eventData を movestart/zoomstart/dragstart/moveend へそのままマージするため、受け手は
+// 「自分たちが起こした動きか」をイベント自身から判別できる。
+//
+// kyoshin モードでは FitJapanOnEnter／FitToCandidate／FitToDetection／FitToEEW が同じ map を
+// 別々のコンポーネントから操作し、MapLibre はプログラム操作でも zoomstart/dragstart を発火する。
+// FitToEEW はこれらのイベントで「ユーザーが手動操作したか」を判定するため、自分たちのフィットを
+// 確実に除外できないと、誰も触っていないのに追従が止まる。
+interface AutoCameraEventData {
+  /** アプリ起点である印。ユーザー操作との判別に使う。 */
+  appAutoCamera: true
+  /** 飛行ごとの通し番号。どの飛行が起こしたイベントかを見分ける。 */
+  flightId: number
 }
 
-/** 現在 map 上でこのファイルの fit 系関数によるカメラ操作が進行中か。 */
+/** カメラ操作イベントがアプリ起点（このファイルの fit 系関数）のものか。 */
+function isAutoCameraEvent(e: unknown): boolean {
+  return (e as Partial<AutoCameraEventData> | null | undefined)?.appAutoCamera === true
+}
+
+// 飛行の完了は moveend で検出するが、タブ非表示などでアニメーションが進まないと moveend が来ず
+// 「飛行中」が張り付く。duration にこの余裕を足した時刻を過ぎたら、moveend を待たず終了とみなす。
+const FLIGHT_EXPIRY_MARGIN_MS = 2000
+
+interface ProgrammaticFlightState {
+  /** 最後に開始した飛行の通し番号。この番号を持つ moveend だけを「完了」とみなす。 */
+  currentFlightId: number
+  /** 飛行中とみなす期限（Date.now() 基準）。0 は飛行していない。 */
+  activeUntil: number
+  /** moveend リスナを登録済みか（map ごとに 1 本だけ張る）。 */
+  listening: boolean
+}
+
+// 「プログラムによるカメラ操作が進行中か」の共有状態。上記のとおり複数のコンポーネントが同じ map を
+// 操作するため、発生源を問わず 1 箇所で持つ。EEW の成長フォローが「飛行が終わるまで次のフィットを
+// 待つ」判定に使う（同時に複数のカメラアニメーションが競合するのを避けるため）。
+const programmaticFlights = new WeakMap<maplibregl.Map, ProgrammaticFlightState>()
+
+/**
+ * アプリ起点のカメラ操作を開始したことを記録し、fly/fit へ渡す eventData を返す。
+ * 呼び出し側は必ずこの戻り値を MapLibre の fly/fit の eventData 引数に渡すこと
+ * （渡し忘れると、その操作が起こす zoomstart がユーザー操作として扱われる）。
+ */
+function beginProgrammaticFlight(map: maplibregl.Map, durationMs: number): AutoCameraEventData {
+  const state = programmaticFlights.get(map) ?? { currentFlightId: 0, activeUntil: 0, listening: false }
+  programmaticFlights.set(map, state)
+  const flightId = ++state.currentFlightId
+  state.activeUntil = Date.now() + durationMs + FLIGHT_EXPIRY_MARGIN_MS
+  if (!state.listening) {
+    state.listening = true
+    // 飛行が重なると、後発の fly/fit が先行の飛行を中断して moveend を起こす。その moveend は
+    // 中断された側（＝古い flightId）を運ぶため、最新の飛行の完了とは区別できる。
+    // 飛行ごとに once('moveend') を張ってカウンタを増減する方式では、1 回の moveend で溜まった
+    // リスナが一斉に発火してカウンタが 0 まで落ち、まだ飛んでいるのに「終わった」と見えていた。
+    map.on('moveend', (e: unknown) => {
+      if ((e as Partial<AutoCameraEventData> | null | undefined)?.flightId !== state.currentFlightId) return
+      state.activeUntil = 0
+    })
+  }
+  return { appAutoCamera: true, flightId }
+}
+
+/**
+ * 現在 map 上でこのファイルの fit 系関数によるカメラ操作が進行中か。
+ *
+ * 期限切れの判定は問い合わせ時に行うため、**この関数は期限を過ぎた飛行の状態を書き戻す**
+ * （タイマーを別に持たず、参照された時点で遅延評価する）。呼び出し側から見た戻り値は
+ * 何度呼んでも同じで、順序にも依存しない。
+ */
 export function isProgrammaticFlight(map: maplibregl.Map): boolean {
-  return (programmaticFlights.get(map) ?? 0) > 0
+  const state = programmaticFlights.get(map)
+  if (!state || state.activeUntil === 0) return false
+  if (Date.now() > state.activeUntil) {
+    state.activeUntil = 0
+    return false
+  }
+  return true
 }
 
-/** useUserInteractionGuard の idleRevertSec 既定値（秒）。設定タブ「自動復帰までの時間」の既定と揃える。 */
-export const DEFAULT_IDLE_REVERT_SEC = 30
+// 地図を手動操作したあと、自動フィットを再開するまでの待ち時間。
+//
+// 設定「自動復帰までの時間」（タブの自動復帰）とは**切り離している**。以前はその設定値をそのまま
+// 使っていたが、「無効」を選ぶと解除タイマーを張らないため、地図を一度触ると自動フィットが永久に
+// 止まっていた。設定の意図（タブを勝手に切り替えさせない）と実際の副作用（地図も二度と動かない）が
+// 食い違ううえ、明示的な解除を持たない追従（揺れ検知・津波）には復帰の手立てが無かった。
+// 固定値にすることで、どの追従も必ずこの時間で復帰する（解除経路の有無に依存しなくなる）。
+export const INTERACTION_HOLD_SEC = 30
 
 interface UserInteractionState {
   interacting: boolean
   timer: number | undefined
-  idleRevertSec: number
   listeners: Set<(interacting: boolean) => void>
 }
 
@@ -79,19 +142,21 @@ function ensureUserInteractionState(map: maplibregl.Map): UserInteractionState {
   const state: UserInteractionState = {
     interacting: false,
     timer: undefined,
-    idleRevertSec: DEFAULT_IDLE_REVERT_SEC,
     listeners: new Set(),
   }
-  // isProgrammaticFlight(map) で、このファイルの fit 系関数自身が起こした zoomstart/dragstart を除外する
-  // （プログラムによる flyTo/fitBounds も同名イベントを発火するため、私有 ref では自分の呼び出ししか
-  // 除外できず、他コンポーネントの自動フィットをユーザー操作と誤認してしまう）。
-  const onInteraction = () => {
-    if (isProgrammaticFlight(map)) return
+  // このファイルの fit 系関数自身が起こした zoomstart/dragstart は eventData の印で除外する
+  // （プログラムによる flyTo/fitBounds も同名イベントを発火するため）。
+  //
+  // 以前は「飛行中フラグ」（isProgrammaticFlight）で除外していたが、自動フィットが重なるとフラグが
+  // 早期に落ちるため、自分のフィットが起こした zoomstart をユーザー操作と誤認していた。実地震では
+  // EEW の直前に揺れ検知フィットが走るので必ず踏み、EEW のカメラ追従が抑制の保持時間ぶん丸ごと
+  // 止まっていた（予想の区域塗りが画面外のまま放置される）。
+  // 印はイベント自身が運ぶためフラグの状態に依存せず、自動フィット中のユーザー割り込みも取りこぼさない。
+  const onInteraction = (e: unknown) => {
+    if (isAutoCameraEvent(e)) return
     notifyInteraction(state, true)
     window.clearTimeout(state.timer)
-    if (state.idleRevertSec > 0) {
-      state.timer = window.setTimeout(() => notifyInteraction(state, false), state.idleRevertSec * 1000)
-    }
+    state.timer = window.setTimeout(() => notifyInteraction(state, false), INTERACTION_HOLD_SEC * 1000)
   }
   map.on('zoomstart', onInteraction)
   map.on('dragstart', onInteraction)
@@ -100,18 +165,15 @@ function ensureUserInteractionState(map: maplibregl.Map): UserInteractionState {
 }
 
 /**
- * map 単位のユーザー操作状態を購読する。idleRevertSec は購読者間で共有され、最後に呼ばれた値が使われる
- * （本アプリでは全 Fit* コンポーネントに同じユーザー設定値を渡す想定のため競合しない）。
+ * map 単位のユーザー操作状態を購読する。抑制は `INTERACTION_HOLD_SEC` 経過で自動的に解ける。
  * 戻り値の isInteracting は購読開始時点のスナップショット、reset は EEW 新規受信時のような
  * 強制解除に使う。interacting の変化は listener 呼び出しで通知する（購読側で再レンダリングを誘発する）。
  */
 export function subscribeUserInteraction(
   map: maplibregl.Map,
-  idleRevertSec: number,
   listener: (interacting: boolean) => void,
 ): { isInteracting: boolean; unsubscribe: () => void; reset: () => void } {
   const state = ensureUserInteractionState(map)
-  state.idleRevertSec = idleRevertSec
   state.listeners.add(listener)
   return {
     isInteracting: state.interacting,
@@ -125,14 +187,14 @@ export function subscribeUserInteraction(
 
 /** 日本全体にフィットする（本アプリの既定フレーミング・padding 20）。 */
 export function fitJapan(map: maplibregl.Map, durationSec = 1.0): void {
-  beginProgrammaticFlight(map)
-  map.fitBounds(JAPAN_BOUNDS, { padding: 20, duration: durationSec * 1000 })
+  const duration = durationSec * 1000
+  map.fitBounds(JAPAN_BOUNDS, { padding: 20, duration }, beginProgrammaticFlight(map, duration))
 }
 
 /** 1 点へ flyTo する（[lat,lng] で受ける）。 */
 export function flyToPoint(map: maplibregl.Map, [lat, lng]: LatLng, zoom = MAX_ZOOM, durationSec = 1.0): void {
-  beginProgrammaticFlight(map)
-  map.flyTo({ center: [lng, lat], zoom, duration: durationSec * 1000 })
+  const duration = durationSec * 1000
+  map.flyTo({ center: [lng, lat], zoom, duration }, beginProgrammaticFlight(map, duration))
 }
 
 /** 座標群にフィットする（1 点なら flyTo）。padding は Leaflet の [px,px] 相当を一律 px で受ける。 */
@@ -149,8 +211,8 @@ export function fitToPositions(
   }
   const bounds = new maplibregl.LngLatBounds()
   for (const [lat, lng] of positions) bounds.extend([lng, lat])
-  beginProgrammaticFlight(map)
-  map.fitBounds(bounds, { padding, maxZoom, duration: durationSec * 1000 })
+  const duration = durationSec * 1000
+  map.fitBounds(bounds, { padding, maxZoom, duration }, beginProgrammaticFlight(map, duration))
 }
 
 /** bounds へ fitBounds する（duration 秒→ms）。 */
@@ -160,8 +222,8 @@ export function flyToBounds(
   opts: { padding?: number; maxZoom?: number; durationSec?: number } = {},
 ): void {
   const { padding = 48, maxZoom = MAX_ZOOM, durationSec = 1.0 } = opts
-  beginProgrammaticFlight(map)
-  map.fitBounds(bounds, { padding, maxZoom, duration: durationSec * 1000 })
+  const duration = durationSec * 1000
+  map.fitBounds(bounds, { padding, maxZoom, duration }, beginProgrammaticFlight(map, duration))
 }
 
 // 旧 Leaflet 版の MapContainer は zoomSnap=0.5（da119cc JapanMap.tsx:950）で、fitBounds/flyToBounds の
@@ -181,18 +243,17 @@ export function flyToBoundsSnapped(
   opts: { padding?: number; maxZoom?: number; durationSec?: number; zoomStep?: number } = {},
 ): void {
   const { padding = 48, maxZoom = MAX_ZOOM, durationSec = 1.0, zoomStep = EEW_ZOOM_SNAP } = opts
+  const duration = durationSec * 1000
   const cam = map.cameraForBounds(bounds, { padding, maxZoom })
   if (!cam || cam.zoom == null) {
     // cameraForBounds が算出不可なときは通常 fitBounds にフォールバック（分数ズーム）。
-    beginProgrammaticFlight(map)
-    map.fitBounds(bounds, { padding, maxZoom, duration: durationSec * 1000 })
+    map.fitBounds(bounds, { padding, maxZoom, duration }, beginProgrammaticFlight(map, duration))
     return
   }
   // 円が収まる最大ズームを zoomStep 段階へ切り下げる。浮動小数の 6.9999… が 6.5 に落ちるのを防ぐため
   // わずかなイプシロンを足してから floor する。
   const snappedZoom = Math.floor((cam.zoom + 1e-6) / zoomStep) * zoomStep
-  beginProgrammaticFlight(map)
-  map.flyTo({ center: cam.center, zoom: snappedZoom, duration: durationSec * 1000 })
+  map.flyTo({ center: cam.center, zoom: snappedZoom, duration }, beginProgrammaticFlight(map, duration))
 }
 
 /** BoundsTuple を maplibre の LngLatBounds へ。 */

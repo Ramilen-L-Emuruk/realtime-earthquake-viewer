@@ -61,6 +61,10 @@ vi.mock('maplibre-gl', () => {
 const JAPAN_PADDING = 20
 const POINTS_PADDING = 60
 
+// 津波の俯瞰へ帰る猶予の長さ。gl/camera.ts の INTERACTION_HOLD_SEC と同値を独立に持つ
+// （上の padding と同じ方針。実装側を変えたらこのテストが落ちて気づける）。
+const INTERACTION_HOLD_SEC = 30
+
 // maplibregl.Map を模したフェイク（gl/camera.test.ts と同じ方針）。カメラ操作系は spy にして
 // 呼び出しを観測し、イベント API は登録と発火だけを再現する。
 function createFakeMap() {
@@ -167,7 +171,7 @@ describe('確定検知の終了と候補クラスタの協調', () => {
 })
 
 // ── 津波モードの帰還（TsunamiFitGL） ───────────────────────────────────────────
-// 観測点へ寄った後、猶予（idleRevertSec）の満了で対象海域全体へ帰す仕掛けの回帰テスト。
+// 観測点へ寄った後、猶予（INTERACTION_HOLD_SEC）の満了で対象海域全体へ帰す仕掛けの回帰テスト。
 // 猶予はコンポーネント内の setTimeout で数えるため、実機（Playwright）では 1 ケースにつき
 // 30 秒以上待つことになり条件の組み合わせを網羅できない。ここはフェイクタイマーで固定する。
 
@@ -194,7 +198,6 @@ interface TsunamiProps {
   coast?: LatLng[]
   bars?: typeof OBS_BARS
   focus?: { name: string; ts: number } | null
-  idleRevertSec?: number
 }
 
 function tsunamiHarness(map: maplibregl.Map, props: TsunamiProps = {}) {
@@ -207,7 +210,6 @@ function tsunamiHarness(map: maplibregl.Map, props: TsunamiProps = {}) {
       tsunamiFitPositions: props.coast ?? COAST,
       observationBars: props.bars ?? [],
       focusObsName: props.focus ?? null,
-      idleRevertSec: props.idleRevertSec ?? 30,
     }),
   )
 }
@@ -308,23 +310,27 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
     expect(fitTargets(map).slice(before)).toEqual([COAST_WEST])
   })
 
-  it('自動復帰を無効（0 秒）に変えたら、待っていた猶予も取り消す', () => {
-    // Arrange: 観測点へ寄って猶予を待っている状態。
+  it('猶予は INTERACTION_HOLD_SEC の固定時間で、設定「自動復帰までの時間」に左右されない', () => {
+    // Arrange: 観測点へ寄って猶予を待っている状態。TsunamiFitGL は設定値を受け取らないため、
+    // ここで固定できるのは「固定時間で帰る」ことだけ。設定と結合させようとすると props が
+    // 増えて型が変わるので、その回帰は型検査が止める。
     const map = createFakeMap()
-    const view = render(tsunamiHarness(map, { bars: OBS_BARS }))
+    render(tsunamiHarness(map, { bars: OBS_BARS }))
     const before = fitTargets(map).length
 
-    // Act: 待っている最中に設定を 0（自動復帰なし）へ変える。
+    // Act: 固定時間の直前までは帰らない。
     act(() => {
-      vi.advanceTimersByTime(10_000)
+      vi.advanceTimersByTime(INTERACTION_HOLD_SEC * 1000 - 1)
     })
-    view.rerender(tsunamiHarness(map, { bars: OBS_BARS, idleRevertSec: 0 }))
+    expect(fitTargets(map).length).toBe(before)
+
+    // Act: 満了した瞬間に帰る。
     act(() => {
-      vi.advanceTimersByTime(120_000)
+      vi.advanceTimersByTime(1)
     })
 
-    // Assert: 帰らない（古い秒数のタイマーが 1 回だけ生き残ることもない）。
-    expect(fitTargets(map).length).toBe(before)
+    // Assert: 対象海域全体へ帰る（設定が「無効」でもこの経路は生きている）。
+    expect(fitTargets(map).slice(before)).toEqual([COAST_WEST])
   })
 
   it('発表中だった津波が消えたら日本全体へ帰る', () => {
