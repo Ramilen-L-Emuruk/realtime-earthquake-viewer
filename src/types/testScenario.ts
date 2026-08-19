@@ -1,4 +1,4 @@
-import type { ReplayPayload } from '../services/dmdataReplay'
+import type { ReplayPayload } from './replay'
 
 // UI表示のグルーピング・ボタン色分けに使う分類
 export type ScenarioCategory =
