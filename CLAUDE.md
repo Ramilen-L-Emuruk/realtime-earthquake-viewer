@@ -432,7 +432,8 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 実地震テストシナリオの時刻シフト・ID 再採番・利用規約制約 | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6 |
 | 生成データ（`public/data/*.json`）の取得タイムアウト値・失敗時の扱い（TTS 辞書のみ別値） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §6 |
 | テスト時刻設定のバリアント差（standard は時計のみ／DMDSS はアーカイブ取得） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定（強震モニタ）」 |
-| archive リプレイの重複排除（XML 版／JSON 版どちらを採用するか）・失敗の封じ込め範囲 | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定（強震モニタ）」配下 |
+| archive リプレイの重複排除（XML 版／JSON 版どちらを採用するか）・失敗の封じ込め範囲（アーカイブが全滅しても強震モニタの再生は止めない） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定（強震モニタ）」配下 |
+| `ConnectionStatus` の `replay`（再生中は DMDATA の WebSocket を切るため専用表示にする。`disconnected` と混ぜると地図に切断警告が出る） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「再生中は DMDATA の WebSocket を止める（接続状態の表示）」 |
 
 各仕様書は冒頭で「食い違う場合は実コードを正とする」と宣言している。放置すると即座に嘘になる文書なので、実装変更時に必ず追従させる。
 

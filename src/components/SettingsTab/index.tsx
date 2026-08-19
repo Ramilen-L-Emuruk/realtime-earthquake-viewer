@@ -419,6 +419,10 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
               <span className="text-xs text-green-400 font-medium">接続中</span>
             ) : dmdataConnectionStatus === 'connecting' ? (
               <span className="text-xs text-blue-400">接続試行中...</span>
+            ) : dmdataConnectionStatus === 'replay' ? (
+              // 過去再生中はライブ受信を意図的に止めている。「切断」と出すと異常のように見え、
+              // 更新しないままだと「接続中」が残って実態と食い違うため、専用の文言にする。
+              <span className="text-xs text-blue-400">再生中（ライブ受信は停止）</span>
             ) : (
               <span className="text-xs text-secondary">
                 {settings.dmdataApiKey ? '切断' : 'APIキー未設定'}

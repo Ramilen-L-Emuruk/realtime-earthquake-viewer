@@ -619,7 +619,22 @@ export function useEarthquakes(
     // VAR-1: リプレイ中は DMDSS の DMDATA WS のみ止め、standard 版の P2PQuake WS は稼働継続する。
     // replayTimeOffset は現状 kyoshin のテスト時刻設定でのみ使う。DMDSS 版はアーカイブ再生と混じる
     // ため live 停止が必要だが、standard 版では kyoshin リプレイ中も地震・津波のライブ更新は継続すべき。
-    if (isDmdss && replayTimeOffset !== null) return
+    //
+    // このとき `connectionStatus` を **必ず 'replay' へ移す**。更新せずに抜けると直前の値
+    // （多くは 'connected'）が残り、実際には WS を切っているのに「接続中」と表示され続ける。
+    // リプレイは分〜時間の単位で続くため、その間ずっと実態と食い違う。
+    // 'disconnected' ではなく専用の状態にするのは、地図の切断警告（App の overlayError）を
+    // 出さないため——意図して止めているものを異常として見せない。
+    // `isLoading` も条件に入れて比較する。`connectionStatus` だけを見ると、将来 `isLoading` を
+    // 触る分岐が増えたときに「replay のまま読み込み中表示が残る」状態を見逃す。
+    if (isDmdss && replayTimeOffset !== null) {
+      setState(prev => (
+        prev.connectionStatus === 'replay' && !prev.isLoading
+          ? prev
+          : { ...prev, connectionStatus: 'replay', isLoading: false }
+      ))
+      return
+    }
 
     if (isDmdss) {
       // --- DMDSS版: APIキー未設定なら接続しない ---
