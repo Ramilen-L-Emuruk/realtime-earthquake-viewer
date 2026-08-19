@@ -118,6 +118,47 @@ export function buildPrefAreaNamesIndex(data: StationCoordsData): Map<string, Se
   return index
 }
 
+/** 地域名 -> 気象庁の標準順（北から南）の順位。区域名と県名は別の Map に持つ。 */
+export interface RegionOrderIndex {
+  /** 一次細分区域名 -> 順位 */
+  areas: Map<string, number>
+  /** 都道府県名 -> その県の先頭区域の順位 */
+  prefs: Map<string, number>
+}
+
+/**
+ * 地域名から気象庁の標準順の順位を引く索引を構築する。読み上げの並べ替えに使う。
+ *
+ * 順位の実体は `areas` のキー順。生成元の気象庁 震度観測点一覧の並びをそのまま引き継いでおり、
+ * 結果として北海道 → 沖縄・県内も慣用順（北部 → 南部 など）になっている。
+ * 同じ県の区域はキー順の上で必ず連続しているため、県名にその県の先頭区域の順位を与えれば、
+ * 区域名と県名が混在するリスト（県内全区域が揃うと「〇〇県」1件に集約されるため混在しうる）
+ * でも県ごとにまとまった並びになる。この 2 つの前提は `stationCoords.test.ts` が実データで検証する。
+ *
+ * 区域名と県名を別の Map に分けているのは、両者が同じ名前になったとき（現行データでは
+ * 「奈良県」＝県内唯一の区域名）に順位を取り違えないため。呼び出し側は区域名を先に引くこと。
+ *
+ * 収録が無い地域名（北方領土や沖縄の埋立地など、震度観測点を持たない区域）はこの索引に載らない。
+ * 呼び出し側は引けなかった名前を末尾へ回すこと（気象庁の標準順でもこれらは末尾に置かれるため、
+ * 末尾送りは標準順と矛盾しない）。
+ */
+export function buildRegionOrderIndex(data: StationCoordsData): RegionOrderIndex {
+  const areas = new Map<string, number>()
+  const prefs = new Map<string, number>()
+  let order = 0
+  for (const key of Object.keys(data.areas)) {
+    const sep = key.indexOf('|')
+    if (sep < 0) continue
+    const pref = key.slice(0, sep)
+    const name = key.slice(sep + 1)
+    if (!name) continue
+    if (!prefs.has(pref)) prefs.set(pref, order)
+    areas.set(name, order)
+    order++
+  }
+  return { areas, prefs }
+}
+
 /**
  * 細分区域名 -> 都道府県名 の逆引きインデックスを構築する。
  * areas のキー "都道府県|細分区域名" を分解して name -> pref の Map を作る（初出優先）。

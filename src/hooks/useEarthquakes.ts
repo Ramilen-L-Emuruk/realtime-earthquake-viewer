@@ -775,7 +775,7 @@ export function useEarthquakes(
       })
       loadStationCoords()
         .catch(err => {
-          log.warn('[data] station-coords 取得失敗（EEW 予想震度の都道府県名が補完されない）', err)
+          log.warn('[data] station-coords 取得失敗（EEW 予想震度の都道府県名が補完されない。読み上げの地域順も気象庁順に並ばない）', err)
         })
 
       // DMDSS WebSocket 接続（dmdataTestDelivery 有効時は試験報・訓練報も受信）
