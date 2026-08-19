@@ -10,7 +10,7 @@ import type { DetectedPoint } from '../../../utils/kyoshinDetectionView'
 // 震度階級への変換失敗を rank 0（震度0）へフォールバックしていたこと。
 // カードは震度0以上だけを数えるため、揺れが収まるほど桁違いにずれていた。
 
-const P = (lat: number, lng: number, index: number): DetectedPoint => ({ lat, lng, index })
+const P = (lat: number, lng: number, index: number): DetectedPoint => ({ key: `${lat},${lng}`, lat, lng, index })
 
 /** index → 計測震度は value = -3.0 + index * 0.5。6=震度0(0.0) / 7=震度1(0.5) / 5=震度0未満(-0.5)。 */
 const IDX_SHINDO0 = 6

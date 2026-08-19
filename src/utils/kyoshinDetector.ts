@@ -616,12 +616,20 @@ interface FramePoint {
  * @param state 前状態
  * @param frame 現フレーム
  * @param meta 静的観測点メタ（未指定ならフレーム座標から都度構築。テスト・小規模用）
+ * @returns `recentOnsetKeys` は直近 TRIG_ACTIVE_MS に立ち上がった観測点キー。表示側が
+ *   「今まさに揺れ始めた点」と「揺れが去った後の残り」を区別するために使う
+ *   （kyoshinDetectionView.dropIsolatedZeroPoints）。
  */
 export function step(
   state: DetectorState,
   frame: Frame,
   meta?: StationMeta,
-): { state: DetectorState; detections: DetectionEvent[]; triggers: TriggerResult[] } {
+): {
+  state: DetectorState
+  detections: DetectionEvent[]
+  triggers: TriggerResult[]
+  recentOnsetKeys: string[]
+} {
   const now = frame.dataTimeMs
   const dtMs = now - state.lastDataTimeMs
   const m = meta ?? buildStationMeta(frame.sites)
@@ -633,7 +641,7 @@ export function step(
     const seed = initState(now)
     seed.cellActivity = { ...state.cellActivity }
     const rebuilt = ingest(seed, frame, m, state)
-    return { state: rebuilt, detections: [], triggers: [] }
+    return { state: rebuilt, detections: [], triggers: [], recentOnsetKeys: [] }
   }
 
   // ---- L1 点トリガー ----
@@ -762,7 +770,14 @@ export function step(
   }
   // detections はアクティブな全イベント。最大震度降順（強い順）。
   const detections = [...events].sort((x, y) => y.maxIntensity - x.maxIntensity)
-  return { state: nextState, detections, triggers }
+  // 直近 TRIG_ACTIVE_MS に立ち上がった点。イベントのメンバー判定（updateEventMetrics の
+  // recentOnset）と同じ窓を使い、表示側でも「今揺れ始めた点」の基準を揃える。
+  const recentOnsetKeys: string[] = []
+  for (const p of points) {
+    const t = triggeredAt[p.key]
+    if (t != null && now - t <= PARAMS.TRIG_ACTIVE_MS) recentOnsetKeys.push(p.key)
+  }
+  return { state: nextState, detections, triggers, recentOnsetKeys }
 }
 
 /**

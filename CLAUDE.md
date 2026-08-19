@@ -427,7 +427,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 地震の同一性判定（`eventKey`・統合/選択/通知の共通キー・取消のマッチング・P2PQuake で分離できない限界） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §6.1・§6.2 |
 | 遠地地震の識別（VXSE53・`Head/Title`）・付加文コードと `forecastText` | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §3（遠地地震に関する情報） |
 | `KyoshinSubThreshold` の対象範囲（index 1〜6）・慢性ノイズ床フィルタ | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) |
-| 検知点マーカー（地図）と検知カード（リアルタイムタブ）が数える点集合・下限の一致（対象イベントは `weak` 以外の全件／下限は震度0以上） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) §8 |
+| 検知点マーカー（地図）と検知カード（リアルタイムタブ）が数える点集合・下限の一致（対象イベントは `weak` 以外の全件／下限は震度0以上／点列は App が用意した 1 本を共有する） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) §8 |
 | 実地震テストシナリオの時刻シフト・ID 再採番・利用規約制約 | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6 |
 | 生成データ（`public/data/*.json`）の取得タイムアウト値・失敗時の扱い（TTS 辞書のみ別値） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §6 |
 | テスト時刻設定のバリアント差（standard は時計のみ／DMDSS はアーカイブ取得） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定（強震モニタ）」 |
