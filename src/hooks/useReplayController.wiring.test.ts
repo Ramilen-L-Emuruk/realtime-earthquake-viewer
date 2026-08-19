@@ -14,15 +14,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, cleanup } from '@testing-library/react'
 import { useReplayController, WINDOW_MS, PRE_WINDOW_MS, PREFETCH_MARGIN_MS } from './useReplayController'
-import { fetchDmdataReplayEvents, clearReplayCache } from '../services/dmdataReplay'
-import type { ReplayEntry, ReplayFetchResult } from '../services/dmdataReplay'
+import type { ReplayEntry, ReplayFetchResult } from '../types/replay'
 
-// 差し替えるのは外部 I/O（取得）とキャッシュ破棄だけ。filterPreWindowEvents は本物のまま使う
-// （後述の長周期地震動電文は無加工で素通しされるため、結線の観察を邪魔しない）。
-vi.mock('../services/dmdataReplay', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../services/dmdataReplay')>()
-  return { ...actual, fetchDmdataReplayEvents: vi.fn(), clearReplayCache: vi.fn() }
-})
+// 外部 I/O（取得）とキャッシュ破棄は deps 経由で注入されるため、ここでは偽物を渡すだけでよい。
+// Hook が内部で使う filterPreWindowEvents は本物のまま動く（後述の長周期地震動電文は
+// 無加工で素通しされるため、結線の観察を邪魔しない）。
 
 // フックは進行状況を逐一ログに出す。これを黙らせるのに console を潰すと、React が
 // console.error に出す act 警告まで隠れてしまう（本物の異常が見えなくなる）。
@@ -31,8 +27,6 @@ vi.mock('../utils/logger', () => ({
   log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
 
-const mockFetch = vi.mocked(fetchDmdataReplayEvents)
-const mockClearReplayCache = vi.mocked(clearReplayCache)
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -98,27 +92,25 @@ function setup() {
   const order: string[] = []
   const fetches: Deferred<ReplayFetchResult>[] = []
   // 取得に渡された引数。どちらの呼び出しが本編でどちらが初期状態かを日付範囲で確かめる。
-  const ranges: { apiKey: string; from: Date; to: Date }[] = []
+  const ranges: { from: Date; to: Date }[] = []
   // App が持つ state の代役。Hook は setTimeOffset で書き、次のレンダーで読む。
   let timeOffset: number | null = null
 
   const deps = {
-    apiKey: 'test-key',
+    fetchEvents: vi.fn((fromTime: Date, toTime: Date) => {
+      order.push('fetch')
+      ranges.push({ from: fromTime, to: toTime })
+      const d = createDeferred<ReplayFetchResult>()
+      fetches.push(d)
+      return d.promise
+    }),
+    clearCache: vi.fn(() => { order.push('clearReplayCache') }),
     setTimeOffset: vi.fn((value: number | null) => { order.push('setTimeOffset'); timeOffset = value }),
     resetState: vi.fn(() => { order.push('resetState') }),
     resetTracking: vi.fn(() => { order.push('resetTracking') }),
     restorePreWindowTracking: vi.fn((_entries: ReplayEntry[]) => { order.push('restorePreWindowTracking') }),
     loadReplayEvents: vi.fn((_entries: ReplayEntry[]) => { order.push('loadReplayEvents') }),
   }
-
-  mockClearReplayCache.mockImplementation(() => { order.push('clearReplayCache') })
-  mockFetch.mockImplementation((apiKey, fromTime, toTime) => {
-    order.push('fetch')
-    ranges.push({ apiKey, from: fromTime, to: toTime })
-    const d = createDeferred<ReplayFetchResult>()
-    fetches.push(d)
-    return d.promise
-  })
 
   // deps を毎レンダー新しいオブジェクトで渡すのは実際の App と同じ（Hook 側は ref 経由で読む）。
   const view = renderHook(() => useReplayController({ ...deps, timeOffset }))
@@ -206,7 +198,6 @@ describe('useReplayController の start', () => {
     expect(h.ranges[0].to.getTime()).toBe(target.getTime() + WINDOW_MS)
     expect(h.ranges[1].from.getTime()).toBe(target.getTime() - PRE_WINDOW_MS)
     expect(h.ranges[1].to.getTime()).toBe(target.getTime())
-    expect(h.ranges.map(r => r.apiKey)).toEqual(['test-key', 'test-key'])
   })
 
   it('取得に失敗しても時計は戻さない（強震モニタの再生は続ける）', async () => {
@@ -431,6 +422,20 @@ describe('useReplayController の先読み', () => {
     await h.flush()
 
     expect(h.current.error).toBeNull()
+  })
+
+  // 失敗した区間は読み直さない作りなので、記録が残らないと欠落を知る手段が無くなる。
+  // 原因（回復しうる情報）だけを出す形にすると、次の先読みが成功した時点で警告ごと消え、
+  // 黙って減った電文がそのまま埋もれる。確定した損失として別に数えるのはそのため
+  //（成功時に損失を維持することは addLoss / addFailedPrefetch の単体テストが担保する）。
+  it('先読みが失敗したら、原因とあわせて欠落を確定した損失として記録する', async () => {
+    const h = await startUntilPrefetching()
+
+    h.fetches[2].reject(new Error('boom'))
+    await h.flush()
+
+    expect(h.current.error).toMatch(/再生されません/)
+    expect(h.current.error).toMatch(/1 区間ぶんの先読み/)
   })
 
   it('先読みが成功すれば、続きの電文を積んで取得中表示を戻す', async () => {

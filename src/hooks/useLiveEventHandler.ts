@@ -3,7 +3,7 @@ import type { AppEvent, EEWAlert, JMAQuake, JMATsunami } from '../types/earthqua
 import type { TabId } from '../components/IconNav'
 import type { AppSettings } from './useSettings'
 import type { AlertTitleApi } from './useAlertTitle'
-import type { ReplayEntry } from '../services/dmdataReplay'
+import type { ReplayEntry } from '../types/replay'
 import { getIntensityLabel } from '../utils/intensity'
 import { formatMagnitude, hasMagnitude } from '../utils/formatters'
 import { eewMaxScale, eewMaxLpgmClass, computeSingleEEWLevel, selectEEWSoundType } from '../utils/eew'

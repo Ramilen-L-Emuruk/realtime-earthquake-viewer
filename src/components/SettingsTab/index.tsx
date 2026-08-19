@@ -33,16 +33,16 @@ interface Props {
   settings: AppSettings
   onUpdate: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void
   onTest: TestFunctions
+  /** リプレイ中なら再生時刻と実時刻の差（null = 再生していない）。「再生中」表示の判定に使う。 */
   kyoshinTimeOffset: number | null
-  onSetKyoshinTimeOffset: ((offset: number | null) => void) | undefined
   kyoshinInputDateTime: string
   onSetKyoshinInputDateTime: (value: string) => void
   dmdataConnectionStatus?: ConnectionStatus
   replayIsFetching?: boolean
   /** 直近のリプレイ取得エラー（null = 正常）。ボタン下に赤字で表示する。 */
   replayError?: string | null
-  onStartReplay?: (date: Date) => void
-  onStopReplay?: () => void
+  onStartReplay: (date: Date) => void
+  onStopReplay: () => void
   scenarioTest: UseTestScenariosResult
 }
 
@@ -364,7 +364,7 @@ function HomeLocationSection({
 }
 
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, onSetKyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus, replayIsFetching, replayError, onStartReplay, onStopReplay, scenarioTest }: Props) {
+export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus, replayIsFetching, replayError, onStartReplay, onStopReplay, scenarioTest }: Props) {
   const [voicevoxStatus, setVoicevoxStatus] = useState<'idle' | 'checking' | 'available' | 'unavailable'>('idle')
   const [voicevoxSpeakers, setVoicevoxSpeakers] = useState<VoicevoxSpeaker[]>([])
 
@@ -392,11 +392,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
     if (!kyoshinInputDateTime) return
     const specified = new Date(kyoshinInputDateTime)
     if (isNaN(specified.getTime())) return
-    if (onStartReplay) {
-      onStartReplay(specified)
-    } else {
-      onSetKyoshinTimeOffset?.(specified.getTime() - Date.now())
-    }
+    onStartReplay(specified)
   }
 
   const replayStartLabel = kyoshinTimeOffset != null
@@ -924,9 +920,9 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         })}
       </Section>
 
-      <Section title="テスト時刻設定（強震モニタ）">
+      <Section title="テスト時刻設定">
         <div className="px-4 py-2 bg-blue-900/30 border-b border-blue-700/40">
-          <p className="text-blue-300 text-xs">指定した時刻から強震モニタのデータを再生します。2020年以降のデータを参照できます。</p>
+          <p className="text-blue-300 text-xs">指定した時刻の当時のデータ（リアルタイム震度・地震情報・津波）を再生します。2020年以降を指定できます。</p>
         </div>
         <Row label="開始時刻" description="確定すると指定時刻から1秒ずつ進みます">
           <div className="flex gap-2 items-center flex-wrap justify-end">
@@ -958,7 +954,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             <div className="flex gap-2 items-center">
               <span className="text-xs text-green-400">{replayStartLabel} から</span>
               <button
-                onClick={() => onStopReplay ? onStopReplay() : onSetKyoshinTimeOffset?.(null)}
+                onClick={onStopReplay}
                 className="text-xs bg-gray-600 hover:bg-gray-500 text-white px-3 py-1.5 rounded transition-colors"
               >
                 リセット

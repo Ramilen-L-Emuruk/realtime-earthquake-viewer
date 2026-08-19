@@ -11,8 +11,8 @@
 // 「現在時刻」はアプリ全体の広範囲に効くため、この Hook の内側に隠すと影響範囲が見えにくくなる。
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchDmdataReplayEvents, filterPreWindowEvents, clearReplayCache } from '../services/dmdataReplay'
-import type { ReplayEntry } from '../services/dmdataReplay'
+import { filterPreWindowEvents } from '../services/dmdataReplay'
+import type { ReplayEntry, ReplayFetchResult } from '../types/replay'
 import { serverNow, serverDate } from '../utils/clock'
 import { log } from '../utils/logger'
 
@@ -27,7 +27,13 @@ export const PRE_WINDOW_MS = 24 * 3600_000
 export const PREFETCH_MARGIN_MS = 10 * 60_000
 
 export interface ReplayControllerDeps {
-  apiKey: string
+  /**
+   * 指定範囲の電文を取得する。バリアントごとの取得元をここで差し替える
+   * （DMDSS 版は DMDATA アーカイブ、standard 版は P2PQuake の日付指定クエリ）。
+   */
+  fetchEvents: (fromTime: Date, toTime: Date) => Promise<ReplayFetchResult>
+  /** 取得キャッシュを破棄する（開始・停止のたびに呼ぶ）。 */
+  clearCache: () => void
   /** リプレイ時刻のオフセットを適用する（null で解除）。App 側で時計と state に反映する。 */
   setTimeOffset: (offsetMs: number | null) => void
   /** 現在のオフセット。null ならリプレイしていない。 */
@@ -87,17 +93,31 @@ export interface ReplayLoss {
   skippedTelegrams: number
   /** 読めなかったアーカイブの URL。同じアーカイブを複数回読むため集合で持つ。 */
   failedArchives: Set<string>
+  /**
+   * 先読みに失敗した区間の数。
+   *
+   * 先読みは取得を始める前に「ここまで読んだ」印（prefetchEnd）を先へ進めるため、失敗しても
+   * その区間を読み直さない。読み直す作りにすると、恒久的な失敗（レート制限・認証切れ）のときに
+   * 同じ区間へ延々と再要求を投げ続けることになるため、あえて進めたままにしている。
+   * 代わりに欠けた事実をここへ確定として残す（後続の先読みが成功しても消さない）。
+   */
+  failedPrefetches: number
 }
 
 export function createEmptyLoss(): ReplayLoss {
-  return { skippedTelegrams: 0, failedArchives: new Set() }
+  return { skippedTelegrams: 0, failedArchives: new Set(), failedPrefetches: 0 }
 }
 
 /** 取得結果を損失に足し込む（URL は集合なので二重計上されない）。 */
 export function addLoss(loss: ReplayLoss, skipped: number, failedArchiveUrls: string[]): ReplayLoss {
   const failedArchives = new Set(loss.failedArchives)
   for (const url of failedArchiveUrls) failedArchives.add(url)
-  return { skippedTelegrams: loss.skippedTelegrams + skipped, failedArchives }
+  return { ...loss, skippedTelegrams: loss.skippedTelegrams + skipped, failedArchives }
+}
+
+/** 先読み 1 区間ぶんの失敗を損失に足し込む。 */
+export function addFailedPrefetch(loss: ReplayLoss): ReplayLoss {
+  return { ...loss, failedPrefetches: loss.failedPrefetches + 1 }
 }
 
 /**
@@ -114,6 +134,7 @@ export function formatLossNotice(loss: ReplayLoss): string | null {
   const parts: string[] = []
   if (loss.failedArchives.size > 0) parts.push(`${loss.failedArchives.size} 件のアーカイブ`)
   if (loss.skippedTelegrams > 0) parts.push(`${loss.skippedTelegrams} 件の電文`)
+  if (loss.failedPrefetches > 0) parts.push(`${loss.failedPrefetches} 区間ぶんの先読み`)
   if (parts.length === 0) return null
   return `${parts.join('・')}を取り込めませんでした（再生は継続中。詳細はコンソール）`
 }
@@ -121,7 +142,7 @@ export function formatLossNotice(loss: ReplayLoss): string | null {
 export function useReplayController(deps: ReplayControllerDeps): ReplayController {
   // start/stop の内側は depsRef 経由で最新の deps を読む（下記参照）。
   // ここで取り出すのは、effect の依存として直接必要なものだけ。
-  const { apiKey, timeOffset } = deps
+  const { fetchEvents, timeOffset } = deps
 
   const [isFetching, setIsFetching] = useState(false)
   // 回復しうる失敗（取得エラー）。次の取得が成功したら消してよい。
@@ -141,10 +162,11 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
   // deps は毎レンダー変わり得るため ref 経由で最新を参照する。これをしないと
   // start/stop の参照が毎レンダー変わり、これらを props で受け取る側の memo が効かなくなる。
   //
-  // apiKey だけは start 内（depsRef 経由）と先読み effect（上の分割代入を直接参照し依存配列にも記載）で
+  // fetchEvents だけは start 内（depsRef 経由）と先読み effect（上の分割代入を直接参照し依存配列にも記載）で
   // 参照経路が違うが、これは意図的。コールバックは「呼ばれた時点の最新」でよいのに対し、
-  // effect は値が変わったら再評価される必要がある（依存配列に入れないと古いキーで先読みし続ける）。
-  // 片方に揃えると、start が古いキーを掴むか、effect がキー変更に反応しなくなる。
+  // effect は値が変わったら再評価される必要がある（依存配列に入れないと、API キーを直した後も
+  // 古い取得関数で先読みし続ける）。片方に揃えると、start が古い関数を掴むか、
+  // effect が差し替えに反応しなくなる。
   const depsRef = useRef(deps)
   depsRef.current = deps
 
@@ -158,7 +180,7 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
 
     d.resetState()
     d.resetTracking()
-    clearReplayCache()
+    d.clearCache()
     d.setTimeOffset(offset)
     prefetchEndRef.current = toTime
     setIsFetching(true)
@@ -171,10 +193,10 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
       // （初期状態が欠けたまま再生すると、地震が起きていない状態から始まって
       //   実際の状況と食い違うため）。どちらで失敗したかはメッセージに含める。
       const [normal, pre] = await Promise.all([
-        fetchDmdataReplayEvents(d.apiKey, targetDate, toTime).catch((e) => {
+        d.fetchEvents(targetDate, toTime).catch((e) => {
           throw new Error(`本編（${fmt(targetDate)} 以降）の取得に失敗: ${msgOf(e)}`)
         }),
-        fetchDmdataReplayEvents(d.apiKey, preFrom, targetDate).catch((e) => {
+        d.fetchEvents(preFrom, targetDate).catch((e) => {
           throw new Error(`初期状態（過去 24 時間）の取得に失敗: ${msgOf(e)}`)
         }),
       ])
@@ -235,7 +257,7 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
     prefetchEndRef.current = null
     d.resetState()
     d.resetTracking()
-    clearReplayCache()
+    d.clearCache()
     setFetchError(null)
     // 損失は「このセッションで失われた量」なので、停止と同時に数え直す。
     setLoss(createEmptyLoss())
@@ -257,7 +279,7 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
     setIsFetching(true)
     // 先読みも本編と同じく中断できないため、完了時に世代を照合する。
     const session = guard.current()
-    fetchDmdataReplayEvents(apiKey, nextFrom, nextTo)
+    fetchEvents(nextFrom, nextTo)
       .then((result) => {
         if (!guard.isCurrent(session)) {
           log.info('[replay] 先読み完了時に別セッションへ切り替わっていたため結果を破棄')
@@ -275,14 +297,16 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
           log.info('[replay] 先読み失敗時に別セッションへ切り替わっていたためエラー表示を抑制')
           return
         }
-        // 先読み失敗は再生を止めないが、以後電文が来なくなるため理由を出す。
-        // 「再生中」のまま出るので、止まったと誤読されないよう状況も添える。
-        setFetchError(`先読みに失敗したため、以後の電文が届きません: ${msgOf(e)}`)
+        // 失敗した区間は読み直さない（理由は ReplayLoss.failedPrefetches の注記）。欠けた事実は
+        // 損失として確定させ、次の先読みが成功しても消えないようにする。原因の文言は回復しうる
+        // 情報なので fetchError 側に出す（次の成功で消えてよい）。
+        setLoss(addFailedPrefetch)
+        setFetchError(`先読みに失敗しました。${fmt(nextFrom)} からの 1 時間ぶんは再生されません: ${msgOf(e)}`)
       })
       .finally(() => {
         if (guard.isCurrent(session)) setIsFetching(false)
       })
-  }, [replayCurrentTime, timeOffset, isFetching, apiKey])
+  }, [replayCurrentTime, timeOffset, isFetching, fetchEvents])
 
   // 取得エラーと確定した損失は別の事実なので、両方あるなら両方出す。
   // 片方を優先して隠すと「先読みが失敗した」表示の裏で、既に確定していた

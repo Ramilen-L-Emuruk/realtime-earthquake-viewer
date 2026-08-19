@@ -1,10 +1,11 @@
 import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseVyse5xFromXml, parseVyse60FromXml } from './dmdataParser'
 import { parseTar } from '../utils/tarParser'
-import type { AppEvent, JMAQuake, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, JMATsunami } from '../types/earthquake'
+import type { JMAQuake, EEWAlert, JMATsunami } from '../types/earthquake'
 import { calcEEWCancelTime } from '../utils/eew'
 import { gunzip } from '../utils/gzip'
 import { log } from '../utils/logger'
 import { extractQuakeEventIdFromId } from '../utils/quakeMerge'
+import type { ReplayEntry, ReplayPayload, ReplayFetchResult } from '../types/replay'
 
 const QUAKE_TYPES = new Set(['VXSE51', 'VXSE52', 'VXSE53', 'VXSE61'])
 const TSUNAMI_TYPES = new Set(['VTSE41', 'VTSE51', 'VTSE52'])
@@ -82,37 +83,6 @@ async function downloadArchive(url: string, apiKey: string): Promise<Map<string,
 
 export function clearReplayCache(): void {
   archiveCache.clear()
-}
-
-export type ReplayPayload =
-  | { kind: 'event'; event: AppEvent }
-  | { kind: 'lpgm'; data: JMALpgm }
-  | { kind: 'nankai'; data: JMANankai }
-  | { kind: 'kohatsu'; data: JMAKohatsu }
-
-export interface ReplayEntry {
-  payload: ReplayPayload
-  replayTime: Date
-  silent?: boolean
-}
-
-/**
- * 取得結果。取りこぼしの件数を呼び出し元へ返すため、電文の配列だけでなく
- * 「読めなかったもの」の数も添える。ログにしか出さないと、UI 上は
- * 「静かな時間帯だった」のか「取りこぼした」のかを区別できない。
- */
-export interface ReplayFetchResult {
-  entries: ReplayEntry[]
-  /** 取り込めなかった電文の数（目録エントリの異常・本体の破損・パース失敗の合計）。 */
-  skipped: number
-  /**
-   * 取り込めなかったアーカイブの URL（1 件でも成功していれば例外にはしない）。
-   *
-   * 件数ではなく URL を返すのは、呼び出し元が重複を除けるようにするため。本編と初期状態は
-   * 日付範囲が重なるので同じアーカイブを両方が読む。取得自体は `archiveCache` により 1 回だが、
-   * 件数で返すと呼び出し元が単純合算して実数の 2 倍を表示してしまう。
-   */
-  failedArchiveUrls: string[]
 }
 
 export async function fetchDmdataReplayEvents(

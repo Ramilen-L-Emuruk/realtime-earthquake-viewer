@@ -118,7 +118,7 @@ function setup(opts: { apiKey?: string; offset?: number | null } = {}) {
   }
 }
 
-describe('DMDSS 版: 再生中は接続状態を replay にする', () => {
+describe('DMDSS 版: 再生中は接続状態を replay にする（ライブ接続は切る）', () => {
   it('replayTimeOffset が入ると replay へ移り、読み込み中も降りる', async () => {
     const h = setup({ offset: null })
     // 再生前の初回履歴取得を流し切ってから見る（取得の失敗が state へ届くのを待つ）
@@ -171,36 +171,57 @@ describe('DMDSS 版: 再生中は接続状態を replay にする', () => {
   })
 })
 
-describe('standard 版: 再生中もライブ受信を続ける（VAR-1）', () => {
+describe('standard 版も再生中はライブ受信を止める（VAR-1）', () => {
   beforeEach(() => { mockIsDmdss = false })
 
-  it('replayTimeOffset が入っても replay へは移らない', () => {
+  // かつては standard 版だけ P2PQuake の受信を続けていた（リプレイが強震モニタの時計ずらしに
+  // 過ぎず、地震・津波は何も流れなかったため）。standard 版も当時の電文を流すようになった今は
+  // DMDSS 版と同じ扱いで、再生中はライブ接続を切る。
+  it('replayTimeOffset が入ると replay へ移る', () => {
     const h = setup({ offset: null })
     act(() => { sockets[0].onStatusChange?.('connected') })
+    expect(h.current.connectionStatus).toBe('connected')
 
     h.setOffset(-3600_000)
-    // standard 版は P2PQuake のライブ受信を止めないため、実態のまま
-    expect(h.current.connectionStatus).toBe('connected')
+    expect(h.current.connectionStatus).toBe('replay')
   })
 
-  // 状態の文字列だけを見ても足りない。standard 分岐に「再生中は早期 return する」という
-  // 回帰（VAR-1 を壊すバグ）が入っても、その経路は setState を呼ばないため
-  // connectionStatus は 'connected' のまま変わらず、上のテストは緑のままになる。
-  // 受信経路そのものが生きていることを socket で確かめる。
-  it('再生に入っても受信用の接続を張り直して維持する（早期 return されていない）', async () => {
+  it('再生中はライブ接続を張らない（張ったものは切る）', () => {
     const h = setup({ offset: null })
     expect(sockets.length).toBe(1)
+    expect(sockets[0].connected).toBe(true)
 
     h.setOffset(-3600_000)
-    // 依存配列に replayTimeOffset が入っているため張り替えは起きるが、
-    // 「新しい接続が張られて connect 済み」であることが継続の証拠になる
-    expect(sockets.length).toBe(2)
-    expect(sockets[1].connected).toBe(true)
-    // 張り替えのとき古い接続は必ず閉じる。ここを見ないと、cleanup が disconnect を
-    // 呼び忘れる回帰（接続が二重に生き残り、同じ電文を二度受ける）を通してしまう。
+    // 前の effect の cleanup で切られ、新しい接続は張られない
     expect(sockets[0].connected).toBe(false)
+    expect(sockets.length).toBe(1)
+  })
+
+  it('再生を終えるとライブ接続を張り直し、読み込み中へ戻す', async () => {
+    const h = setup({ offset: -3600_000 })
+    expect(h.current.connectionStatus).toBe('replay')
+
+    h.setOffset(null)
+    expect(sockets.length).toBe(1)
+    expect(sockets[0].connected).toBe(true)
+    // 取得前に読み込み中へ戻すこと。ここを見ないと、リセット直後の未取得の状態が
+    // 「地震情報はありません」（0 件）として表示される回帰を通してしまう。
+    expect(h.current.isLoading).toBe(true)
 
     await h.flush()
+    expect(h.current.error).toBeNull()
+    expect(h.current.isLoading).toBe(false)
+  })
+
+  // 再生開始時に読み込み中・エラー表示を畳むこと。畳まないと、初回履歴の取得中や失敗直後に
+  // 再生を始めた場合、その取得は cleanup で破棄される一方で表示を戻す経路が無くなり、
+  // 再生した電文が「データを取得中...」や取得失敗の文言の裏に隠れ続ける。
+  it('再生開始時に読み込み中・エラー表示を畳む', () => {
+    const h = setup({ offset: null })
+    expect(h.current.isLoading).toBe(true)
+
+    h.setOffset(-3600_000)
+    expect(h.current.isLoading).toBe(false)
     expect(h.current.error).toBeNull()
   })
 })

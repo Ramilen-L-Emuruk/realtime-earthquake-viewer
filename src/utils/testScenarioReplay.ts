@@ -1,5 +1,5 @@
 import type { AppEvent, EEWRegion } from '../types/earthquake'
-import type { ReplayEntry, ReplayPayload } from '../services/dmdataReplay'
+import type { ReplayEntry, ReplayPayload } from '../types/replay'
 import type { TestScenarioFile } from '../types/testScenario'
 
 function shiftIso(iso: string, deltaMs: number): string {
