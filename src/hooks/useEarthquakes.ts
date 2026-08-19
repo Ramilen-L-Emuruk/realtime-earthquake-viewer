@@ -345,7 +345,14 @@ export function useEarthquakes(
           expireTime = new Date(tsunami.validDateTime)
         } else if (!isDmdss) {
           const FAILSAFE_MS = 24 * 60 * 60 * 1000
-          expireTime = new Date(now.getTime() + FAILSAFE_MS)
+          // 初期状態の再現（silent 注入）では、過去に発表された電文をまとめて「いま」流し直す。
+          // 受信時刻を基準にすると、20 時間前に出ていた津波が再生開始からさらに 24 時間残り、
+          // 実際の失効タイミングとずれる。この経路だけは発表時刻を基準にする。
+          const issuedAt = new Date(tsunami.time)
+          const baseMs = isSilentRef.current && Number.isFinite(issuedAt.getTime())
+            ? issuedAt.getTime()
+            : now.getTime()
+          expireTime = new Date(baseMs + FAILSAFE_MS)
         }
       }
       const shouldModifyQueue = tsunami.cancelled || expireTime !== null
@@ -361,15 +368,25 @@ export function useEarthquakes(
           const evAny = ev as JMATsunami
           return evAny.cancelReason !== 'expired'
         })
-        if (expireTime && expireTime > now) {
-          // clampToNow は「電文由来の絶対時刻」（TSU-1 の validDateTime）にのみ適用する。
-          // TSU-5A の 24h フェイルセーフは `now + 24h` の相対時刻で既に getTimeRef 時間軸に
-          // 揃っているため、clampToNow に通すとリプレイ中は必ず now に潰されて即発火する。
+        if (expireTime) {
+          // clampToNow は「実時刻で書かれた絶対時刻」（TSU-1 の validDateTime）にのみ適用する。
+          // ライブ受信の電文はリプレイ時計から見ると遠い未来を指すため、潰さないとキューに
+          // 永久滞留する。逆に TSU-5A の 24h フェイルセーフは再生時刻を起点に組み立てており
+          // （初期状態の再現では電文の発表時刻を起点にする。いずれも既にリプレイ時間軸の上）、
+          // clampToNow に通すと必ず now に潰れて即発火してしまう。
           const eventTime = tsunami.validDateTime ? clampToNow(expireTime) : expireTime
-          insertSorted(eventQueueRef.current, {
-            eventTime,
-            payload: { kind: 'event', event: { ...tsunami, cancelled: true, cancelReason: 'expired' } as AppEvent },
-          })
+          // 初期状態の再現では、遡り幅（24 時間）の境目ぶんだけ「発表から 24 時間を過ぎた」
+          // 電文が紛れうる。未来の予約しか積まないと、そういう津波は失効予約を持たないまま
+          // 画面に残り、リプレイ中はライブ更新も止まっているので消す手段が無くなる。
+          // その場で失効させる（silent 注入なので音は鳴らない）。
+          const alreadyExpired = eventTime <= now
+          if (!alreadyExpired || isSilentRef.current) {
+            insertSorted(eventQueueRef.current, {
+              eventTime: alreadyExpired ? now : eventTime,
+              silent: alreadyExpired ? true : undefined,
+              payload: { kind: 'event', event: { ...tsunami, cancelled: true, cancelReason: 'expired' } as AppEvent },
+            })
+          }
         }
       }
     }
@@ -616,10 +633,23 @@ export function useEarthquakes(
   useEffect(() => {
     let cancelled = false
 
-    // VAR-1: リプレイ中は DMDSS の DMDATA WS のみ止め、standard 版の P2PQuake WS は稼働継続する。
-    // replayTimeOffset は現状 kyoshin のテスト時刻設定でのみ使う。DMDSS 版はアーカイブ再生と混じる
-    // ため live 停止が必要だが、standard 版では kyoshin リプレイ中も地震・津波のライブ更新は継続すべき。
-    if (isDmdss && replayTimeOffset !== null) return
+    // VAR-1: リプレイ中はライブ接続を止める（両バリアント共通）。過去の電文を流している最中に
+    // 現在時刻のライブ更新が混ざると、再生時刻より未来の地震がカードに並んで実際の経過を追えない。
+    // かつては standard 版だけ P2PQuake WS を継続していた（リプレイが強震モニタの時計ずらしに
+    // 過ぎず、地震・津波は何も流れなかったため）。現在は standard 版も当時の地震情報・津波を
+    // 取得して流すので、DMDSS 版と同じ扱いにする。
+    if (replayTimeOffset !== null) {
+      // ライブ接続の状態表示だけは畳んでおく。ページを開いた直後（初回履歴の取得中・取得失敗直後）に
+      // リプレイを始めると、その取得は cleanup で破棄され、以後この effect は早期 return するため、
+      // isLoading と error を戻す経路がどこにも無くなる。地震タブは isLoading → error の順に
+      // 優先して表示するので、放置すると再生した電文が「データを取得中...」や
+      // 「データの取得に失敗しました」の裏に隠れたままになる。
+      // 同じ参照を返す分岐を挟んで、無関係な再レンダーは起こさない。
+      setState(prev => (
+        prev.isLoading || prev.error ? { ...prev, isLoading: false, error: null } : prev
+      ))
+      return
+    }
 
     if (isDmdss) {
       // --- DMDSS版: APIキー未設定なら接続しない ---
@@ -795,7 +825,7 @@ export function useEarthquakes(
 
     // --- 通常版: P2PQuake ---
     Promise.all([
-      fetchJmaQuake(MAX_HISTORY_RETAINED),
+      fetchJmaQuake({ limit: MAX_HISTORY_RETAINED }),
       fetchHistory([552], 10),
     ])
       .then(([quakeEvents, tsunamiEvents]) => {
@@ -932,7 +962,7 @@ export function useEarthquakes(
         }
       } else {
         const offset = p2pRawOffsetRef.current
-        const events = await fetchJmaQuake(LOAD_MORE_BATCH, offset)
+        const events = await fetchJmaQuake({ limit: LOAD_MORE_BATCH, offset })
         p2pRawOffsetRef.current += events.length
         // 既存カード群を base に新バッチを統合する（DMDSS 版と同じ扱い）。
         // バッチ跨ぎで同一イベントの続報が届いた場合もリアルタイムと同一結果になる。
@@ -1061,7 +1091,7 @@ export function useEarthquakes(
     }
   }, [])
 
-  const loadReplayEvents = useCallback((entries: import('../services/dmdataReplay').ReplayEntry[]) => {
+  const loadReplayEvents = useCallback((entries: import('../types/replay').ReplayEntry[]) => {
     for (const { payload, replayTime, silent } of entries) {
       insertSorted(eventQueueRef.current, { eventTime: replayTime, payload, silent })
     }

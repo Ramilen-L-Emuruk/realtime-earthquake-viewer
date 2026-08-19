@@ -8,7 +8,7 @@
 // で見ている。あちらは React を動かすため jsdom 環境で走るので、DOM 非依存のこちらとは
 // ファイルを分けている（同居させると、この純粋関数のテストまで jsdom に引きずられる）。
 import { describe, it, expect } from 'vitest'
-import { createSessionGuard, createEmptyLoss, addLoss, formatLossNotice } from './useReplayController'
+import { createSessionGuard, createEmptyLoss, addLoss, addFailedPrefetch, formatLossNotice } from './useReplayController'
 
 describe('createSessionGuard', () => {
   it('開始した直後のセッションは現役', () => {
@@ -140,5 +140,24 @@ describe('formatLossNotice', () => {
     const msg = formatLossNotice(addLoss(createEmptyLoss(), 5, ['https://x/a']))
     expect(msg).toMatch(/1 件のアーカイブ/)
     expect(msg).toMatch(/5 件の電文/)
+  })
+
+  // 先読みは失敗した区間を読み直さない（同上の理由）。件数を出さないと、その 1 時間ぶんが
+  // 欠けたまま「静かな時間帯だった」ようにしか見えなくなる。
+  it('先読みの失敗も区間数で知らせる', () => {
+    const msg = formatLossNotice(addFailedPrefetch(createEmptyLoss()))
+    expect(msg).toMatch(/1 区間ぶんの先読み/)
+    expect(msg).toMatch(/継続中/)
+  })
+})
+
+describe('addFailedPrefetch', () => {
+  it('区間ごとに積み上げ、他の損失には触れない', () => {
+    let loss = addLoss(createEmptyLoss(), 2, ['https://x/a'])
+    loss = addFailedPrefetch(loss)
+    loss = addFailedPrefetch(loss)
+    expect(loss.failedPrefetches).toBe(2)
+    expect(loss.skippedTelegrams).toBe(2)
+    expect(loss.failedArchives.size).toBe(1)
   })
 })
