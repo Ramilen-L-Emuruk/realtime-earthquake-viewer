@@ -70,6 +70,11 @@ export interface KyoshinDetectorV2Result {
   detections: DetectionEvent[]
   /** 今フレームのトリガー点 */
   triggers: TriggerResult[]
+  /**
+   * 直近に立ち上がった観測点キー（`step()` の `recentOnsetKeys`）。検知点マーカー・検知カードが
+   * 「揺れが去った後に残る孤立した震度0点」を落とす判定に使う（kyoshinDetectionView.dropIsolatedZeroPoints）。
+   */
+  recentOnsetKeys: ReadonlySet<string>
   /** 対象データ時刻 */
   dataTime: string
   /**
@@ -79,7 +84,13 @@ export interface KyoshinDetectorV2Result {
   floors: Record<string, number>
 }
 
-const EMPTY: KyoshinDetectorV2Result = { detections: [], triggers: [], dataTime: '', floors: {} }
+const EMPTY: KyoshinDetectorV2Result = {
+  detections: [],
+  triggers: [],
+  recentOnsetKeys: new Set<string>(),
+  dataTime: '',
+  floors: {},
+}
 
 /** 観測点集合の簡易シグネチャ（点数＋先頭・末尾座標）。これが変わったら近傍メタを組み直す。 */
 function siteSignature(sites: SiteCoords): string {
@@ -170,13 +181,13 @@ export function useKyoshinDetectorV2(
       log.error('[kyoshinV2] step() threw:', err)
       return
     }
-    const { state, detections, triggers } = stepResult
+    const { state, detections, triggers, recentOnsetKeys } = stepResult
     stateRef.current = state
 
     const floors: Record<string, number> = {}
     for (const [key, s] of Object.entries(state.sites)) floors[key] = chronicNoiseFloor(s)
 
-    setResult({ detections, triggers, dataTime, floors })
+    setResult({ detections, triggers, recentOnsetKeys: new Set(recentOnsetKeys), dataTime, floors })
 
     // 学習資産（点別床・セル慢性活性）を定期的に永続化する（再読込・5時リロード後も学習を保つ）
     if (dataTimeMs - lastSaveRef.current >= SAVE_INTERVAL_MS) {
@@ -188,6 +199,9 @@ export function useKyoshinDetectorV2(
     ;(window as unknown as Record<string, unknown>).__kyoshinV2 = {
       detections,
       triggers: triggers.length,
+      // 孤立した震度0点の間引き（kyoshinDetectionView.dropIsolatedZeroPoints）が効いているかを
+      // 実運用で追えるようにする。間引きは静かに点を消す処理で、失敗しても例外が出ない。
+      recentOnsetKeys: recentOnsetKeys.length,
       dataTime,
       eewActive: hasActiveNonAssumedEEWRef.current,
     }

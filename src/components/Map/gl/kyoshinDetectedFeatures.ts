@@ -57,7 +57,8 @@ function buildFeatures(points: DetectedPoint[], iconScale: number, confirmed: bo
  * ここで座標を見て重複を弾くことはしない——同一座標に複数の実体がある観測点が実在するため
  * （`buildSiteIndex` 参照）、座標で弾くと別の観測点を取り違えて落としてしまう。
  *
- * @param confirmedPoints confirmed 全イベントのメンバー観測点
+ * @param confirmedPoints confirmed のメンバーのうち実際に描く分（`deriveKyoshinView` の
+ *   `detectedMarkerPoints`。孤立した震度0点は事前に除かれている）
  * @param unconfirmedPoints likely / faint 全イベントのメンバー観測点（confirmed に属する点は除かれている）
  * @param iconScale 地図アイコン倍率
  */
