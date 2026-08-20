@@ -201,6 +201,13 @@ done
 - `__APP_VERSION__` はビルド時に `vite.config.ts` の `define` が `package.json` の `version` から注入する定数のため、dev サーバーは `package.json` の `version` を変更したあと**再起動しないと新しい値を反映しない**（HMR では拾えない）。
 - **本番ビルド確認（大きめの変更時は必須）**: `npm run build` でビルドが通ることを確認するだけでなく、**`npm run preview`（本番ビルドのサブパス配信）を起動し Playwright MCP でブラウザ確認まで行う**。
   - preview URL: standard は `http://localhost:4173/realtime-earthquake-viewer/`／DMDSS は `npm run build:dmdss` → `npm run preview:dmdss`。
+  - **preview は PWA の Service Worker が前回のビルドをキャッシュから配信する。** リビルドしてリロードしても古いバンドルが動き続けるため、**「確認したつもり」で通ってしまう**。確認の前に必ずキャッシュを捨てること（`registration.unregister()` ＋ `caches.delete()` を実行してからリロード）。読み込まれた実体が期待どおりかは、`dist/index.html` が参照するバンドル名と、ブラウザの `document.querySelectorAll('script[src]')` を突き合わせて確かめる。
+    ```js
+    // Playwright の browser_evaluate で実行する
+    for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister()
+    for (const n of await caches.keys()) await caches.delete(n)
+    ```
+    > 2026-08-20: この罠を踏み、削除済みのはずの旧実装のログが preview に出ていた。バンドル名を突き合わせて初めて別物を見ていたと分かった。dev サーバー（HMR）とは別の経路で「古い実装を見てしまう」事故が起きる。
   - 地図系の変更では `map.isSourceLoaded(id)`・`queryRenderedFeatures` で **geojson ソースが実際にタイル化・描画されているか**まで確認する（ラスタ地形だけ出ていても油断しない）。
   - **理由（2026-07-28 v4.0.0→v4.0.1 の本番限定バグ）**: dev サーバー（`vite dev`）は未バンドルでモジュールを解決するため、**本番ビルド（rollup バンドル）でのみ壊れる不具合が dev では再現しない**。実例＝MapLibre GL v6 の `setWorkerUrl()` 欠落で geojson ワーカーのパスが本番だけ解決できず、地図のベクタ（県境・一次細分区域・震度点・活断層等）が全滅した（全ソース `isSourceLoaded=false`・ラスタ地形だけ描画）。dev のみで検証し preview を飛ばしたため見逃し、GitHub Pages で初めて発覚した。**worker/asset のパス解決・コード分割・minify 起因の壊れは dev では出ない**ため、大きな変更は必ず本番ビルドをブラウザで確認する。
 - **ブラウザ確認（修正時は必須）**: **Playwright MCP**（`mcp__playwright__*` ツール群）で上記 URL を開き、`browser_take_screenshot`・`browser_evaluate` で表示や DOM を確認する。**`preview_start` / `preview_*` ツール（Claude Preview MCP）は使用しない。**
@@ -208,7 +215,7 @@ done
 - **修正後の確認は徹底する**。型チェック・ブラウザ動作など複数の手段で確実に修正されたことを確認する。「たぶん直っているだろう」でコミットしない。
   - コンソールエラーが0件であることを確認する（以下は良性で無視してよい）。
     - リロード時の P2P WebSocket 再接続 warning。
-    - 強震モニタのクロック同期（`kyoshin.ts` の `startClockSync`）が 30 秒ごとに出す `RealTimeData/...?_=...` への 403（未登録秒を叩いて 403→200 境界を捉える較正の正常動作。ネットワーク層の 403 は JS から抑制不可）。
+    - 強震モニタのクロック同期のフォールバック経路が出す `RealTimeData/...?_=...` への 403（未登録秒を叩いて 403→200 境界を捉える較正の正常動作。ネットワーク層の 403 は JS から抑制不可）。**ただし通常は出ない。** 較正の主経路は外部の時刻サービス（`akamaiClock.ts`）で、そちらが取れている間は 1 周期 1 リクエストで済む。**この 403 が 30 秒ごとに出ていたら「主経路が失敗し続けている」印**なので、良性として流さず原因を見ること。主経路の失敗理由（`[time] サーバー時刻を取得できず: ...`）は**5 分間隔に間引かれる**ため 403 と同じ頻度では出ない。403 が続いている間、直近 5 分をさかのぼれば 1 回は見つかる。
   - 自動解除や時間経過で発火する挙動（自動タブ切替・アイドル復帰など）は、`localStorage` の書き換え＋リロードや DOM 検査で確認する。
   - **確認後も開発サーバーは停止しない**（セッション中は起動したまま残す）。`Stop-Process -Name node` のような一括停止は MCP サーバーまで巻き込むため使わない。
   - 検証用スクリーンショットはリポジトリ直下に出力されるが**一時ファイル。コミット前に必ず削除する**（コミットしない）。`.playwright-mcp/` の出力も同様に Git 管理対象外（`.gitignore` 済み）。
@@ -440,6 +447,8 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 地震の同一性判定（`eventKey`・統合/選択/通知の共通キー・取消のマッチング・P2PQuake で分離できない限界） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §6.1・§6.2 |
 | 遠地地震の識別（VXSE53・`Head/Title`）・付加文コードと `forecastText` | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §3（遠地地震に関する情報） |
 | 強震モニタの取得と再生の分離（供給元 → 時刻順キュー → 反映の 3 段・放出は到来分の最新 1 件のみ・反映はデータ時刻順に限る・新しい供給元を足すときの入口） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §4「取得と再生の分離」 |
+| クロック同期の主経路・フォールバックの順序（**主経路が失敗したときだけ Yahoo 経路を走らせる**。両方を `feedServerSample` へ供給すると精度の良い側にバイアスが混ざる。「見送り」は失敗ではないのでフォールバックへ落とさない） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §4「クロック同期」 |
+| 外部時刻サービスの換算基準（返る時刻は応答生成時刻。**中点で換算すると -RTT/2 の系統誤差が乗る**）・`?ms` を落とすと精度が秒単位に静かに劣化すること | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §4「主経路: 外部の時刻サービス」 |
 | `KyoshinSubThreshold` の対象範囲（index 1〜6）・慢性ノイズ床フィルタ | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) |
 | 欠測の瞬断を直前値で保持する範囲（表示・カード・音は保持値／検知エンジンは生値・保持時間・保持中の見せ方） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) §8 |
 | 検知点マーカー（地図）と検知カード（リアルタイムタブ）が数える点集合・下限の一致（対象イベントは `weak` 以外の全件／下限は震度0以上／点列は App が用意した 1 本を共有する） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) §8 |
