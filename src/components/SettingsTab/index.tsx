@@ -827,7 +827,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
           <p className="text-yellow-400 text-xs">⚠️ 動作確認用です。実際のデータは変更されません。</p>
         </div>
         {/* ── 緊急地震速報（EEW）: 軽 → 重、取消は末尾 ── */}
-        <Row label="緊急地震速報（予報）" description="震度2程度 – eewForecast 音 / 10秒以内に再度押すと続報、押さなければ最終報確定→無音で自動解除（数分後）">
+        <Row label="緊急地震速報（予報）" description="震度4程度（予報域） – eewForecast 音 / 10秒以内に再度押すと続報、押さなければ最終報確定→無音で自動解除（数分後）">
           <TestButton color="yellow" onClick={onTest.eewForecast}>予報テスト</TestButton>
         </Row>
         <Row label="緊急地震速報（警報）" description="震度5強相当 – eew 音 / 10秒以内に再度押すと続報、押さなければ最終報確定→無音で自動解除（数分後）">
@@ -847,7 +847,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
           <TestButton color="purple" onClick={onTest.foreignQuake}>遠地地震テスト</TestButton>
         </Row>
         {/* ── 津波情報: 軽 → 重、取消は末尾 ── */}
-        <Row label="津波予報（若干の海面変動）" description="北海道沿岸 – tsunamiForecast 音 / 90秒後に有効期間終了">
+        <Row label="津波予報（若干の海面変動）" description={`北海道沿岸 – tsunamiForecast 音 / 90秒後に${isDmdss ? '有効期間終了' : '解除（standard 版は有効期限を持たないため解除電文で消える）'}`}>
           <TestButton color="blue" onClick={onTest.tsunamiForecast}>予報テスト</TestButton>
         </Row>
         <Row label="津波警報（注意報）" description="北海道沿岸 – tsunamiWatch 音 / 90秒後に解除">
@@ -859,7 +859,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         <Row label="津波警報（大津波警報）" description="岩手・宮城・福島等 – tsunamiMajor 音 / 90秒後に解除">
           <TestButton color="purple" onClick={onTest.tsunami}>大警報テスト</TestButton>
         </Row>
-        <Row label="津波警報（誤報取消）" description="青森・北海道等 – tsunami 音 / 90秒後に誤報として取消">
+        <Row label="津波警報（誤報取消）" description={`青森・北海道等 – tsunami 音 / 90秒後に${isDmdss ? '誤報として取消' : '解除（standard 版は取消と解除を区別できないため「解除」表示）'}`}>
           <TestButton color="red" onClick={onTest.tsunamiRetraction}>誤報取消テスト</TestButton>
         </Row>
         {/* ── 臨時情報・後発地震 ── */}

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import {
+  createTestEarthquake,
   createTestEEW,
   createTestEEWForecast,
   createTestEEWWarning,
@@ -62,11 +63,105 @@ describe('テスト津波の観測点名', () => {
     // 「`height` があり、名前から座標が引ける」観測点にだけ棒を作り、予報区への紐づけ
     // （`districtCode`）は見ない。ここで `districtCode` の有無で絞ると、予報区に紐づかない
     // 観測点の名前の誤りを取りこぼす。
-    const targets = (createTestTsunami().observations ?? []).filter(
+    // 観測点はバリアントに依存しない（差は eventId・validDateTime のみ）ので DMDSS 版で見る。
+    const targets = (createTestTsunami(true).observations ?? []).filter(
       (o) => o.height && !KNOWN_COORDLESS_OBSERVATIONS.has(o.name),
     )
     const names = targets.map((o) => o.name)
     expect(names.length).toBeGreaterThan(0)
     expect(names.filter((name) => !obsCoordNames.has(name))).toEqual([])
+  })
+})
+
+// 地震情報テストの points 形状。バリアントで実電文の形が違う（quake-spec.md §4 の識別規則）。
+// 元データは P2PQuake 形状（観測点に pref が入る）なので、DMDSS でそのまま流すと
+// 実電文では起こり得ない組み合わせになり、都道府県別表示の分岐がテストで一度も通らない。
+describe('地震情報テストの points 形状', () => {
+  it('DMDSS 版は観測点・区域を pref 空で積み、都道府県ロールアップを別に持つ', () => {
+    const quake = createTestEarthquake(true)
+
+    const stations = quake.points.filter((p) => !p.isArea)
+    expect(stations.length).toBeGreaterThan(0)
+    expect(stations.every((p) => p.pref === '')).toBe(true)
+
+    // 一次細分区域は pref 空のまま残る
+    expect(quake.points.some((p) => p.isArea && p.pref === '')).toBe(true)
+
+    // 都道府県は pref に名前が入ったロールアップ点として別に立つ
+    const rollups = quake.points.filter((p) => p.isArea && p.pref !== '')
+    expect(rollups.length).toBeGreaterThan(0)
+    expect(rollups.every((p) => p.pref === p.addr)).toBe(true)
+
+    expect(quake.issue.type).toBe('震源・震度情報')
+  })
+
+  it('standard 版は P2PQuake 形状（観測点自体に pref が入り、区域点は混ざらない）', () => {
+    const quake = createTestEarthquake(false)
+    expect(quake.points.some((p) => !p.isArea && p.pref !== '')).toBe(true)
+    // DetailScale（各地の震度情報）に区域点は混ざらない（→ quake-spec.md §4）
+    expect(quake.points.some((p) => p.isArea)).toBe(false)
+    expect(quake.issue.type).toBe('各地の震度情報')
+  })
+
+  it('都道府県ロールアップの震度は、その県の観測点の最大震度と一致する（震度不明は数えない）', () => {
+    const expected = new Map<string, number>()
+    for (const p of createTestEarthquake(false).points) {
+      if (p.isArea || !p.pref || p.scale < 0) continue
+      const cur = expected.get(p.pref)
+      if (cur === undefined || p.scale > cur) expected.set(p.pref, p.scale)
+    }
+    // ロールアップは震度不明（-1）を持たない
+    expect(createTestEarthquake(true).points.every((p) => !(p.isArea && p.pref !== '') || p.scale >= 0)).toBe(true)
+
+    const rollups = createTestEarthquake(true).points.filter((p) => p.isArea && p.pref !== '')
+    expect(rollups.length).toBe(expected.size)
+    for (const r of rollups) expect(r.scale).toBe(expected.get(r.pref))
+  })
+})
+
+// EEW の kindCode は気象庁コード表12（緊急地震速報種別）: 00/01/09 が予報、10/11/19 が警報。
+// 警報は予想震度5弱（scaleTo 45）以上の区域に発表されるため、震度4以下の区域に警報コードが
+// 付いていると「予報なのに警報表示」という実運用では起こらない状態になる。
+describe('テスト EEW の kindCode と予想震度の整合', () => {
+  const WARNING_CODES = new Set(['10', '11', '19'])
+  const cases = [
+    ['createTestEEW（特別警報・三陸沖）', createTestEEW()],
+    ['createTestEEWWarning（警報・日向灘）', createTestEEWWarning()],
+    ['createTestEEWForecast（予報・宮城県沖）', createTestEEWForecast()],
+  ] as const
+
+  it.each(cases)('%s: 警報コードの区域は予想震度5弱以上', (_label, eew) => {
+    for (const area of eewAreas(eew)) {
+      if (WARNING_CODES.has(area.kindCode)) expect(area.scaleTo).toBeGreaterThanOrEqual(45)
+    }
+  })
+
+  it.each(cases)('%s: 区域はすべてコード表12 の値', (_label, eew) => {
+    for (const area of eewAreas(eew)) {
+      expect(['00', '01', '09', '10', '11', '19']).toContain(area.kindCode)
+    }
+  })
+
+  // 実運用の電文に区域が載る条件は「最大予測震度4以上または最大予測長周期地震動階級3以上」
+  // （eew-information スキーマ）。震度3以下の区域はそもそも電文に現れない。
+  it.each(cases)('%s: 区域は予想震度4以上（電文に載る条件）', (_label, eew) => {
+    for (const area of eewAreas(eew)) {
+      expect(area.scaleTo).toBeGreaterThanOrEqual(40)
+    }
+  })
+
+  it('予報の電文は警報コードの区域を含まない', () => {
+    const forecast = createTestEEWForecast()
+    expect(forecast.severity).not.toBe('Warning')
+    expect(eewAreas(forecast).some((a) => WARNING_CODES.has(a.kindCode))).toBe(false)
+  })
+
+  // kindCode 11/19 は「主要動が既に到達（または到達予想なし）」。到達予想時刻とは両立しない。
+  it.each(cases)('%s: 既到達コードの区域は到達予想時刻を持たない', (_label, eew) => {
+    for (const area of eewAreas(eew)) {
+      if (area.kindCode === '01' || area.kindCode === '11' || area.kindCode === '09' || area.kindCode === '19') {
+        expect(area.arrivalTime).toBeNull()
+      }
+    }
   })
 })
