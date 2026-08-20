@@ -20,6 +20,15 @@ const EMA_ALPHA = 0.2
 /** live モードで performance.now() をサーバーepoch(ms)へ変換する定数。未較正時は null。 */
 let kEpochMs: number | null = null
 
+/**
+ * 最後に K を更新した時点の performance.now()。未較正なら null。
+ *
+ * K は最後に成功したサンプルを保持し続けるため、値だけを見ても「30 秒前に較正した新しい K」と
+ * 「較正が止まって何時間も前のまま残っている K」を区別できない。古い K を現在の推定器の性能と
+ * みなすと診断を誤るため、鮮度を併せて持つ。
+ */
+let lastSampleAtPerfMs: number | null = null
+
 /** リプレイ/手動時刻のオフセット(ms)。null のとき live モード。 */
 let replayOffsetMs: number | null = null
 
@@ -67,6 +76,18 @@ export function feedServerSample(trueServerEpochMs: number): void {
   if (!Number.isFinite(trueServerEpochMs)) return
   const sample = trueServerEpochMs - performance.now()
   kEpochMs = kEpochMs === null ? sample : kEpochMs * (1 - EMA_ALPHA) + sample * EMA_ALPHA
+  lastSampleAtPerfMs = performance.now()
+}
+
+/**
+ * 最後にサーバー時刻で較正してからの経過時間 (ms)。未較正なら null。
+ *
+ * 較正が止まっていないかの診断に使う。`getServerClockOffsetMs()` の値と併せて見ることで、
+ * 「オフセットは出ているが更新は止まっている」状態を見分けられる。
+ */
+export function getServerClockSampleAgeMs(): number | null {
+  if (lastSampleAtPerfMs === null) return null
+  return Math.round(performance.now() - lastSampleAtPerfMs)
 }
 
 /**
@@ -92,6 +113,8 @@ if (typeof document !== 'undefined') {
     if (document.visibilityState === 'visible' && replayOffsetMs === null && kEpochMs !== null) {
       log.info('[clock] タブ復帰: K を破棄して次のサーバーサンプルで再較正')
       kEpochMs = null
+      // 鮮度も一緒に捨てる。残すと「未較正なのに直近で較正済み」と読める矛盾した診断になる。
+      lastSampleAtPerfMs = null
     }
   })
 }
