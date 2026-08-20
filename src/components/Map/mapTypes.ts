@@ -25,6 +25,11 @@ export interface JapanMapProps {
   showPlateBoundaries?: boolean
   kyoshinSites?: SiteCoords
   kyoshinIndices?: number[]
+  /**
+   * `kyoshinIndices` のうち、欠測ホールドで直前値を保持している点のフラグ（同順）。
+   * 該当点は薄く描く（`utils/kyoshinMissingHold.ts`）。
+   */
+  kyoshinStale?: boolean[]
   /** 震度0ドット（KyoshinSubThresholdGL）専用の慢性ノイズ床フィルタ適用済みインデックス。未指定時は kyoshinIndices をそのまま使う。 */
   kyoshinSubIndices?: number[]
   kyoshinPsWave?: PsWaveCircle[]
