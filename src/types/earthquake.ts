@@ -225,7 +225,11 @@ export interface JMALpgm {
 
 export type AppEvent = JMAQuake | JMATsunami | EEWAlert
 
-// 南海トラフ地震臨時情報 (VYSE50/51/52)
+// 南海トラフ地震臨時情報 (VYSE50)
+// 段階（調査中 → 巨大地震注意／巨大地震警戒 → 調査終了）はすべてこの 1 種別で配信される。
+// 段階の判別は電文の Head/Title（情報名）に入る括弧内キーワードで行う。Head/InfoKind は
+// 段階に関わらず「南海トラフ地震に関連する情報」で固定されており判別に使えない
+// （実電文 14 通で確認。詳細は docs/spec/data-sources-spec.md）。
 export interface JMANankai {
   id: string
   time: string
@@ -236,6 +240,26 @@ export interface JMANankai {
   body: string
   cancelled: boolean // kindName === '調査終了'
   reportDateTime: string
+}
+
+// 南海トラフ地震関連解説情報 (VYSE51=臨時解説 / VYSE52=定例解説)
+// 臨時情報（JMANankai）とは別物で、段階を持たない。想定震源域の地震活動・地殻変動の状況を
+// 解説する電文で、臨時情報の発表期間中は VYSE51 が毎日、平常時は VYSE52 が毎月届く。
+// 臨時情報と同じスロットに入れると段階の表示を上書きしてしまうため、型ごと分けている。
+export interface JMANankaiCommentary {
+  id: string
+  time: string
+  eventId: string
+  serialCode: string // '210'=臨時解説 '200'=定例解説
+  serialName: string // '臨時解説' | '定例解説'
+  headline: string   // Head/Title 例: '南海トラフ地震関連解説情報（第１号）'
+  summary: string    // Head/Headline/Text の一文要約。バナーの見出しに使う
+  body: string       // Body/EarthquakeInfo/Text の本文（1000 字を超えることがある）
+  // 取消電文（InfoType=取消）。解説情報に「解除」の概念は無く実電文でも未発表だが、
+  // 来たときに帯を消せるようにしておく（取消を無視すると古い帯を出し続けることになる）
+  cancelled: boolean
+  reportDateTime: string
+  expireAt: string   // reportDateTime + 7日。定例解説は月 1 回来て自然に消えないため期限で畳む
 }
 
 // 北海道・三陸沖後発地震注意情報 (VYSE60)
@@ -267,7 +291,7 @@ export interface TelegramLogEntry {
   headType: string
   isTest: boolean
   status: 'parsed' | 'filtered' | 'error'
-  kind?: 'eew' | 'quake' | 'tsunami' | 'lpgm' | 'nankai' | 'kohatsu'
+  kind?: 'eew' | 'quake' | 'tsunami' | 'lpgm' | 'nankai' | 'nankaiCommentary' | 'kohatsu'
   rawHead?: unknown
   rawBody: unknown
   errorMessage?: string
