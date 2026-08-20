@@ -10,9 +10,9 @@
 //     （2026-07-29 実データ・公式サイトのCSS調査で確認。全観測点の約3%が該当）。
 
 import type { EEWAlert, IntensityScale } from '../types/earthquake'
-import { feedServerSample, getServerClockOffsetMs, getServerClockSampleAgeMs, serverNow } from '../utils/clock'
+import { feedServerSample, getServerClockSampleAgeMs, serverNow } from '../utils/clock'
 import { createLogThrottle, log } from '../utils/logger'
-import { fetchServerTime } from './akamaiClock'
+import { fetchServerTime, SERVER_TIME_SKIPPED } from './akamaiClock'
 
 /** 観測点座標の配列（[緯度, 経度]）。インデックスが intensity 文字列の位置に対応。 */
 export type SiteCoords = [number, number][]
@@ -403,75 +403,96 @@ async function syncClockOnce(): Promise<void> {
 }
 
 /**
- * Yahoo 較正と外部の時刻サービスの差分を 1 回記録する（並走計測。アプリ時計へは供給しない）。
+ * 外部の時刻サービスから 1 回較正する。較正できたら true。
  *
- * 目的は現行推定器（Yahoo の 403→200 境界 ＋ `REG_DELAY_MS`）のずれの実測。ここで得た差が
- * `FETCH_OFFSET_MS`（`kyoshinSource.ts`）のマージンを削らないかを確認したうえで、較正の主経路を
- * 外部の時刻サービスへ切り替える判断材料にする。
+ * **これが較正の主経路。** Yahoo の 403→200 境界を挟む方式（`syncClockOnce`）は、ここが失敗した
+ * ときだけ使うフォールバックに降りた。理由は 2 つ。
+ *   - Yahoo 方式は `REG_DELAY_MS`（登録遅延の実測 p50）に精度が依存し、実際の遅延が CDN の応答で
+ *     変わるため**セッションごとに数百 ms ずれる**。定数の調整では消せない（実測は
+ *     `docs/spec/data-sources-spec.md` §11 の 2026-08-20）
+ *   - Yahoo 方式は 1 回の較正に十数リクエストを要し、うち数件は意図的な 403。こちらは 1 リクエスト
  *
- * 出力は次の 2 つ。
- *   - `壁時計-server`  : 端末時計のずれ。較正の有無に関わらず常に出す
- *   - `yahoo較正-server`: 現行の推定器のずれ。未較正のときは「未」と出す
+ * **2 つの推定器を同じ EMA に混ぜてはいけない。** 混ぜると精度の良い側にもう一方のバイアスが
+ * 割り込み、どちらか単独より悪くなる。そのため「取れたら Yahoo 側は走らせない」形にしている
+ * （呼び出し側のループを参照）。
  *
- * `age` は最後に較正してからの経過時間。K は最後に成功したサンプルを保持し続けるため、
- * これを併記しないと「30 秒前に較正した新しい K」と「較正が止まったまま残っている古い K」を
- * 区別できず、古い値との差を現行推定器のずれとして記録してしまう。
- *
- * @param isStopped 停止済みかを返す。取得中に較正ループが止められたら記録を捨てる
- *   （取得は中断できないため。ライブ⇄リプレイの切替を繰り返すと、停止済みインスタンスの
- *   記録が新しいインスタンスの記録に混ざって読み手を惑わせる）
+ * @param isStopped 停止済みかを返す。取得中に較正ループが止められたら供給しない
+ *   （取得は中断できないため。ライブ⇄リプレイの切替直後に、止めたはずのインスタンスが
+ *   アプリ時計を書き換えるのを防ぐ）
+ * @returns 較正できたか（`'skipped'` は別の取得と重なって見送った状態。**失敗ではない**）
  */
-async function probeServerTimeOnce(isStopped: () => boolean): Promise<void> {
-  const sample = await fetchServerTime()
-  if (sample === null || isStopped()) return
-  // サーバー基準の「今」。サンプルが指す瞬間からの経過分を足して現在時刻へ換算する。
-  const serverTimeNow = sample.serverEpochMs + (performance.now() - sample.perfRefMs)
-  const wallDiff = Date.now() - serverTimeNow
-  // getServerClockOffsetMs() は serverNow() - Date.now()。serverNow() を直接呼ぶと
-  // 未較正時にフォールバック警告を発生させてしまうため、オフセット経由で組み立てる。
-  const offset = getServerClockOffsetMs()
-  const ageMs = getServerClockSampleAgeMs()
-  const calibrated = offset === null
-    ? 'yahoo較正=未'
-    : `yahoo較正-server=${signed(wallDiff + offset)}ms(age=${ageMs === null ? '?' : Math.round(ageMs / 1000)}s)`
-  log.info(
-    `[clock-probe] 壁時計-server=${signed(wallDiff)}ms ${calibrated}`
-    + ` (rtt=${Math.round(sample.rttMs)}ms)`,
-  )
+async function calibrateFromServerTime(
+  isStopped: () => boolean,
+): Promise<'calibrated' | 'skipped' | 'failed'> {
+  const outcome = await fetchServerTime()
+  if (outcome === SERVER_TIME_SKIPPED) return 'skipped'
+  if (outcome === null) return 'failed'
+  // 停止済みなら供給しない。取得は中断できないため、ここまで来てから捨てる。
+  if (isStopped()) return 'skipped'
+  // サンプルが指す瞬間からの経過分を足して現在時刻へ換算する。
+  feedServerSample(outcome.serverEpochMs + (performance.now() - outcome.perfRefMs))
+  return 'calibrated'
 }
 
-/** 符号付きで丸めた ms 表記。差の向きが一目で分かるようにする。 */
-function signed(ms: number): string {
-  const rounded = Math.round(ms)
-  return rounded >= 0 ? `+${rounded}` : String(rounded)
+/**
+ * 較正が止まっていないかを見張る猶予 (ms)。
+ *
+ * K は最後に成功したサンプルを保持し続けるため、両経路が失敗し続けても `serverNow()` は
+ * 古い値を返し、未較正警告（`clock.ts`・K が null のときだけ出る）も鳴らない。**成功したことが
+ * ある分だけ、止まったときに気づけない。** 周期 30 秒の 10 回分を超えたら記録に残す。
+ */
+const STALE_CALIBRATION_MS = 300_000
+
+const throttledStaleLog = createLogThrottle(STALE_CALIBRATION_MS)
+
+/** 較正が古びていないかを確かめ、古ければ記録する。 */
+function warnIfCalibrationStale(): void {
+  const ageMs = getServerClockSampleAgeMs()
+  if (ageMs === null || ageMs <= STALE_CALIBRATION_MS) return
+  throttledStaleLog(() =>
+    log.warn(
+      `[clock] 較正が ${Math.round(ageMs / 1000)} 秒前から更新されていない`
+      + '（外部時刻サービスと Yahoo の両経路が失敗している）',
+    ),
+  )
 }
 
 /**
  * クロック同期ループを開始する。返り値の関数で停止する。
  * ライブモードでのみ呼ぶこと（リプレイ時は clock 側でサンプルが無視される）。
  * 強震モニタは両バリアントで動くため、この較正も standard / DMDSS の双方で走る。
+ *
+ * 1 周期の流れ:
+ *   1. 外部の時刻サービスで較正する（1 リクエスト・実測 40ms 前後）
+ *   2. **取れなかったときだけ** Yahoo の 403→200 境界で較正する（到達不能環境のフォールバック）
+ *   3. どちらも失敗し続けていれば記録に残す
+ *
+ * 順序が逆だと意味が変わる。Yahoo を先に走らせて両方を供給すると、精度の良い側に Yahoo の
+ * バイアスが混ざる。加えて Yahoo 方式は毎周期十数リクエスト（うち数件は意図的な 403）を撃つため、
+ * 外部サービスが使える環境ではそれを避けたい。
  */
 export function startClockSync(): () => void {
   let stopped = false
   let timer: ReturnType<typeof setTimeout> | null = null
   const loop = async () => {
     if (stopped) return
+    let outcome: 'calibrated' | 'skipped' | 'failed' = 'failed'
     try {
-      await syncClockOnce()
-    } catch {
-      // 較正失敗は無視し次周期で再試行
+      outcome = await calibrateFromServerTime(() => stopped)
+    } catch (err) {
+      // 想定外の例外は黙って捨てず、フォールバックへ進む。
+      log.warn('[clock] 外部時刻サービスでの較正中に例外（Yahoo 経路へ切り替える）', err)
     }
-    // 並走計測は較正とは独立に封じ込める。例外はここで止める（黙って捨てはしない。計測の
-    // 想定外は診断できる形で残す）。
-    //
-    // **待たない**のが要点。時刻サービスが到達不能な環境では打ち切りまで 3 秒かかり、await すると
-    // 較正の周期が 30 秒 → 33 秒へ静かに延びる。計測のために既存の較正を遅くするのは本末転倒。
-    // 3 秒は周期 30 秒より短いので、次の周回と重なることもない。
-    if (!stopped) {
-      void probeServerTimeOnce(() => stopped).catch((err) => {
-        log.warn('[clock-probe] 計測中の例外（較正には影響しない）', err)
-      })
+    // **フォールバックへ落ちるのは `failed` のときだけ。** `skipped`（別の取得と重なった・
+    // 停止済み）でも落とすと、重なっただけで Yahoo の未登録秒を撃つことになる。
+    if (!stopped && outcome === 'failed') {
+      try {
+        await syncClockOnce()
+      } catch {
+        // 較正失敗は無視し次周期で再試行（見送りの理由は syncClockOnce 側で記録している）
+      }
     }
+    if (!stopped) warnIfCalibrationStale()
     if (!stopped) timer = setTimeout(loop, CLOCK_SYNC_INTERVAL_MS)
   }
   void loop()

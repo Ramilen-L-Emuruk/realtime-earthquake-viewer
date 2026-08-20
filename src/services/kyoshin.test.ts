@@ -2,9 +2,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { isRegistered, startClockSync } from './kyoshin'
 import { fetchServerTime, type ServerTimeSample } from './akamaiClock'
 import { log } from '../utils/logger'
+import { serverNow, setReplayOffset } from '../utils/clock'
 
 // 時刻サービスの取得は結線の検証では外部 I/O。解決タイミングをテスト側で握るためモックする。
-vi.mock('./akamaiClock', () => ({ fetchServerTime: vi.fn() }))
+// **番兵も一緒に出すこと。** 欠けていると参照した時点で例外になり、呼び出し側の catch に
+// 飲まれて「サービスが失敗した」と誤認する（テストは緑にならないが原因が見えにくい）。
+vi.mock('./akamaiClock', () => ({
+  fetchServerTime: vi.fn(),
+  SERVER_TIME_SKIPPED: 'skipped',
+}))
 
 // 較正の見送りは警告を出す。console を潰すと本物の異常が見えなくなるのでロガー側を差し替える
 // （createLogThrottle は実物を使う。全置換にすると logger の export 追加で落ちる）。
@@ -72,18 +78,26 @@ describe('isRegistered', () => {
   })
 })
 
-// 較正ループと並走計測の結線。ここで見るのは「計測が既存の較正を妨げないこと」だけ。
-// 較正そのものの精度や取得の詳細は別（akamaiClock.test.ts・実地のブラウザ確認）で見ている。
-describe('startClockSync と並走計測の結線', () => {
+// 較正ループの結線。主経路（外部時刻サービス）とフォールバック（Yahoo の 403→200 境界）の
+// 切り替わりを見る。較正の精度や取得の詳細は別（akamaiClock.test.ts・実地のブラウザ確認）で見ている。
+describe('startClockSync の主経路とフォールバック', () => {
   const originalFetch = globalThis.fetch
+  let fetchMock: ReturnType<typeof vi.fn>
   let stop: (() => void) | null = null
+
+  const sample = (): ServerTimeSample => ({
+    serverEpochMs: Date.now(),
+    rttMs: 40,
+    perfRefMs: performance.now(),
+  })
 
   beforeEach(() => {
     vi.useFakeTimers()
     timeMock.mockReset()
-    // 常に登録済み（200）を返す。フロンティアは即見つかり、flip は挟めないため較正は
-    // 1 周あたり 2 リクエストで即座に見送られる（内部の待機を挟まないので結線だけが見える）。
-    globalThis.fetch = vi.fn().mockResolvedValue({ status: 200 } as Response) as unknown as typeof fetch
+    setReplayOffset(null)
+    // Yahoo 側は常に登録済み（200）を返す。フォールバックが走ったかどうかは呼ばれた事実で見る。
+    fetchMock = vi.fn().mockResolvedValue({ status: 200 } as Response)
+    globalThis.fetch = fetchMock as unknown as typeof fetch
   })
 
   afterEach(() => {
@@ -91,27 +105,64 @@ describe('startClockSync と並走計測の結線', () => {
     stop = null
     vi.useRealTimers()
     globalThis.fetch = originalFetch
+    setReplayOffset(null)
   })
 
-  it('計測が終わらなくても次の周期の較正が走る（計測を await しない）', async () => {
-    // 永遠に解決しない。await していれば 2 周目は永久に来ない。
-    timeMock.mockReturnValue(new Promise(() => {}))
+  // ここが今回の主眼。取れている限り Yahoo は撃たない（意図的な 403 を出さない）。
+  it('外部時刻サービスで較正できたら Yahoo 経路は走らせない', async () => {
+    timeMock.mockResolvedValue(sample())
 
     stop = startClockSync()
     await vi.advanceTimersByTimeAsync(0)
-    expect(timeMock).toHaveBeenCalledTimes(1)
 
-    await vi.advanceTimersByTimeAsync(30_000)
-    expect(timeMock).toHaveBeenCalledTimes(2)
+    expect(timeMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('計測が例外で落ちても較正ループは止まらない', async () => {
+  it('外部時刻サービスのサンプルをアプリ時計へ供給する', async () => {
+    // 壁時計より 5 秒進んだサーバー時刻を返す。較正されれば serverNow がそちらへ寄る。
+    const before = serverNow() - Date.now()
+    timeMock.mockResolvedValue({
+      serverEpochMs: Date.now() + 5000,
+      rttMs: 40,
+      perfRefMs: performance.now(),
+    })
+
+    stop = startClockSync()
+    await vi.advanceTimersByTimeAsync(0)
+
+    // EMA（α = 0.2）を通すため 1 回では届かないが、供給されていればサーバー時刻の側へ動く。
+    // 絶対値で見ないのは、K がテスト間で持ち越されて初回サンプル扱いにならないことがあるため。
+    expect(serverNow() - Date.now()).toBeGreaterThan(before + 500)
+  })
+
+  // 見送り（別の取得と重なった）は失敗ではない。落とすと、重なっただけで Yahoo の未登録秒を撃つ。
+  it('見送りのときは Yahoo 経路へ落ちない', async () => {
+    timeMock.mockResolvedValue('skipped' as never)
+
+    stop = startClockSync()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('外部時刻サービスが取れなければ Yahoo 経路へ落ちる', async () => {
+    timeMock.mockResolvedValue(null)
+
+    stop = startClockSync()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(fetchMock).toHaveBeenCalled()
+  })
+
+  it('外部時刻サービスが例外で落ちても Yahoo 経路へ落ちる（ループは止まらない）', async () => {
     timeMock.mockRejectedValue(new Error('boom'))
 
     stop = startClockSync()
     await vi.advanceTimersByTimeAsync(0)
-    await vi.advanceTimersByTimeAsync(30_000)
+    expect(fetchMock).toHaveBeenCalled()
 
+    await vi.advanceTimersByTimeAsync(30_000)
     expect(timeMock).toHaveBeenCalledTimes(2)
   })
 
@@ -128,21 +179,54 @@ describe('startClockSync と並走計測の結線', () => {
     expect(timeMock).toHaveBeenCalledTimes(1)
   })
 
-  it('停止後に届いた計測結果は記録しない（旧インスタンスのログが混ざらない）', async () => {
+  // 較正済みの基準値は最後に成功したサンプルを保持し続けるため、両経路が失敗し続けても
+  // serverNow() は古い値を返し、未較正警告も鳴らない。**一度成功していると止まったことに
+  // 気づけない**ので、この警告が最後の砦になる。
+  it('両経路が失敗し続けたら、較正が止まっていることを記録する', async () => {
+    vi.mocked(log.warn).mockClear()
+    // まず 1 回成功させて「較正済み」の状態を作る（未較正なら別の警告が受け持つ）。
+    timeMock.mockResolvedValue(sample())
+    stop = startClockSync()
+    await vi.advanceTimersByTimeAsync(0)
+
+    // 以降は主経路も Yahoo 側も失敗させる。
+    timeMock.mockResolvedValue(null)
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'))
+
+    // 猶予（5 分）を越えるまで周期を進める。
+    await vi.advanceTimersByTimeAsync(330_000)
+
+    const stale = vi.mocked(log.warn).mock.calls.filter(([m]) => String(m).includes('更新されていない'))
+    expect(stale.length).toBeGreaterThan(0)
+  })
+
+  it('較正できている間は停滞の警告を出さない', async () => {
+    vi.mocked(log.warn).mockClear()
+    timeMock.mockResolvedValue(sample())
+
+    stop = startClockSync()
+    await vi.advanceTimersByTimeAsync(330_000)
+
+    const stale = vi.mocked(log.warn).mock.calls.filter(([m]) => String(m).includes('更新されていない'))
+    expect(stale).toHaveLength(0)
+  })
+
+  // 取得は中断できない。停止済みインスタンスの応答でアプリ時計を書き換えてはならない。
+  it('停止後に届いたサンプルはアプリ時計へ供給しない', async () => {
     let resolveSample: ((v: ServerTimeSample) => void) | null = null
     timeMock.mockReturnValue(new Promise((r) => { resolveSample = r }))
 
     stop = startClockSync()
     await vi.advanceTimersByTimeAsync(0)
-    vi.mocked(log.info).mockClear()
+    const before = serverNow() - Date.now()
 
-    // 較正を止めたあとで取得が完了する（取得自体は中断できない）。
     stop()
     stop = null
-    resolveSample!({ serverEpochMs: Date.now(), rttMs: 50, perfRefMs: performance.now() })
+    // 壁時計より 1 時間進んだ値。供給されてしまえば serverNow が大きく動くので一目で分かる。
+    resolveSample!({ serverEpochMs: Date.now() + 3600_000, rttMs: 40, perfRefMs: performance.now() })
     await vi.advanceTimersByTimeAsync(0)
 
-    expect(vi.mocked(log.info).mock.calls.filter(([m]) => String(m).includes('clock-probe'))).toHaveLength(0)
+    expect(Math.abs((serverNow() - Date.now()) - before)).toBeLessThan(100)
   })
 })
 

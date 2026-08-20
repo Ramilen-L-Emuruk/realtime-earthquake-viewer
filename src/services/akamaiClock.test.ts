@@ -15,6 +15,16 @@ async function loadModule() {
   return await import('./akamaiClock')
 }
 
+/** 見送りの番兵。モジュールを作り直しても値は同じ文字列なので直接比べられる。 */
+const SERVER_TIME_SKIPPED = 'skipped'
+
+/** 戻り値は「サンプル／見送り／失敗」の 3 状態。サンプルであることを確かめて取り出す。 */
+function sampleOf(outcome: unknown): { serverEpochMs: number; rttMs: number; perfRefMs: number } {
+  expect(outcome).not.toBeNull()
+  expect(outcome).not.toBe(SERVER_TIME_SKIPPED)
+  return outcome as { serverEpochMs: number; rttMs: number; perfRefMs: number }
+}
+
 /** `?iso&ms` の応答（ISO8601 の平文 1 行）を模す。 */
 function textResponse(body: string): Response {
   return { ok: true, text: async () => body } as unknown as Response
@@ -44,12 +54,12 @@ describe('fetchServerTime', () => {
     const sample = await fetchServerTime()
     const after = performance.now()
 
-    expect(sample).not.toBeNull()
-    expect(sample!.serverEpochMs).toBe(NOW_MS)
-    expect(sample!.rttMs).toBeGreaterThanOrEqual(0)
+    const got = sampleOf(sample)
+    expect(got.serverEpochMs).toBe(NOW_MS)
+    expect(got.rttMs).toBeGreaterThanOrEqual(0)
     // 基準時点は取得の実行区間に収まる。
-    expect(sample!.perfRefMs).toBeGreaterThanOrEqual(before)
-    expect(sample!.perfRefMs).toBeLessThanOrEqual(after)
+    expect(got.perfRefMs).toBeGreaterThanOrEqual(before)
+    expect(got.perfRefMs).toBeLessThanOrEqual(after)
   })
 
   it('ミリ秒付きの時刻をミリ秒まで保持する（秒に丸めない）', async () => {
@@ -59,14 +69,14 @@ describe('fetchServerTime', () => {
     const sample = await fetchServerTime()
 
     // .659 が落ちていれば較正の精度が秒単位まで劣化する。
-    expect(sample!.serverEpochMs % 1000).toBe(659)
+    expect(sampleOf(sample).serverEpochMs % 1000).toBe(659)
   })
 
   it('前後の空白を含む応答も読める', async () => {
     const { fetchServerTime } = await loadModule()
     fetchMock.mockResolvedValue(textResponse(`  ${NOW_ISO}\n`))
 
-    expect((await fetchServerTime())!.serverEpochMs).toBe(NOW_MS)
+    expect(sampleOf(await fetchServerTime()).serverEpochMs).toBe(NOW_MS)
   })
 
   it('ミリ秒とキャッシュ無効を指定して取得する', async () => {
@@ -98,8 +108,9 @@ describe('fetchServerTime', () => {
 
     const sample = await fetchServerTime()
 
-    expect(sample!.perfRefMs).toBeLessThan(perfAtRead)
-    expect(sample!.rttMs).toBeLessThan(30)
+    const got = sampleOf(sample)
+    expect(got.perfRefMs).toBeLessThan(perfAtRead)
+    expect(got.rttMs).toBeLessThan(30)
   })
 
   it('時刻として読めない応答は棄却し、理由を記録する', async () => {
@@ -191,7 +202,7 @@ describe('fetchServerTime', () => {
     const { fetchServerTime } = await loadModule()
     fetchMock.mockResolvedValue(textResponse('2026-08-20T16:23:52.659+09:00'))
 
-    expect(await fetchServerTime()!).not.toBeNull()
+    expect(sampleOf(await fetchServerTime()).serverEpochMs).toBe(Date.parse('2026-08-20T16:23:52.659+09:00'))
   })
 
   // lastAccepted はモジュール単位で持つため、取得が重なると応答の到着順が入れ替わり、正当な応答を
@@ -208,8 +219,11 @@ describe('fetchServerTime', () => {
     // 1 本目が進行中のまま 2 本目を投げる。
     const second = await fetchServerTime()
 
-    expect(second).toBeNull()
-    expect(String(warnMock.mock.calls[0][0])).toContain('in-flight')
+    // **null（失敗）ではなく見送りを返すこと。** 混ぜると呼び出し側が「サービスが落ちた」と
+    // 誤認してフォールバック経路へ落ちる。
+    expect(second).toBe(SERVER_TIME_SKIPPED)
+    // 見送りは正常な動作なので記録しない（毎周期出ると本物の失敗が埋もれる）。
+    expect(warnMock).not.toHaveBeenCalled()
     // fetch は 1 回しか呼ばれない（重なった側は通信すらしない）。
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
@@ -226,6 +240,24 @@ describe('fetchServerTime', () => {
     await fetchServerTime()
 
     expect(warnMock).toHaveBeenCalledTimes(1)
+  })
+
+  // 1 個のスロットルを共有すると、最初に鳴った理由が残りを 5 分間隠して原因を取り違える。
+  it('理由ごとに独立して記録する（先に鳴った理由が他を隠さない）', async () => {
+    const { fetchServerTime } = await loadModule()
+
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'))
+    await fetchServerTime()
+    expect(warnMock.mock.calls.filter(([m]) => String(m).includes('network'))).toHaveLength(1)
+
+    // 間隔（5 分）の内側で別の理由に転じる。共有していれば隠れる。
+    fetchMock.mockReset()
+    fetchMock.mockResolvedValue(textResponse('2026-08-20T07:23:52Z'))
+    await fetchServerTime()
+
+    expect(warnMock.mock.calls.filter(([m]) => String(m).includes('imprecise-format'))).toHaveLength(1)
+    // 同じ理由は間引かれたまま（スロットル自体は効いている）。
+    expect(warnMock.mock.calls.filter(([m]) => String(m).includes('network'))).toHaveLength(1)
   })
 
   it('成功した回は記録を残さない', async () => {

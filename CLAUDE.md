@@ -215,7 +215,7 @@ done
 - **修正後の確認は徹底する**。型チェック・ブラウザ動作など複数の手段で確実に修正されたことを確認する。「たぶん直っているだろう」でコミットしない。
   - コンソールエラーが0件であることを確認する（以下は良性で無視してよい）。
     - リロード時の P2P WebSocket 再接続 warning。
-    - 強震モニタのクロック同期（`kyoshin.ts` の `startClockSync`）が 30 秒ごとに出す `RealTimeData/...?_=...` への 403（未登録秒を叩いて 403→200 境界を捉える較正の正常動作。ネットワーク層の 403 は JS から抑制不可）。
+    - 強震モニタのクロック同期のフォールバック経路が出す `RealTimeData/...?_=...` への 403（未登録秒を叩いて 403→200 境界を捉える較正の正常動作。ネットワーク層の 403 は JS から抑制不可）。**ただし通常は出ない。** 較正の主経路は外部の時刻サービス（`akamaiClock.ts`）で、そちらが取れている間は 1 周期 1 リクエストで済む。**この 403 が 30 秒ごとに出ていたら「主経路が失敗し続けている」印**なので、良性として流さず原因を見ること。主経路の失敗理由（`[time] サーバー時刻を取得できず: ...`）は**5 分間隔に間引かれる**ため 403 と同じ頻度では出ない。403 が続いている間、直近 5 分をさかのぼれば 1 回は見つかる。
   - 自動解除や時間経過で発火する挙動（自動タブ切替・アイドル復帰など）は、`localStorage` の書き換え＋リロードや DOM 検査で確認する。
   - **確認後も開発サーバーは停止しない**（セッション中は起動したまま残す）。`Stop-Process -Name node` のような一括停止は MCP サーバーまで巻き込むため使わない。
   - 検証用スクリーンショットはリポジトリ直下に出力されるが**一時ファイル。コミット前に必ず削除する**（コミットしない）。`.playwright-mcp/` の出力も同様に Git 管理対象外（`.gitignore` 済み）。
@@ -444,7 +444,8 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 地震の同一性判定（`eventKey`・統合/選択/通知の共通キー・取消のマッチング・P2PQuake で分離できない限界） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §6.1・§6.2 |
 | 遠地地震の識別（VXSE53・`Head/Title`）・付加文コードと `forecastText` | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §3（遠地地震に関する情報） |
 | 強震モニタの取得と再生の分離（供給元 → 時刻順キュー → 反映の 3 段・放出は到来分の最新 1 件のみ・反映はデータ時刻順に限る・新しい供給元を足すときの入口） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §4「取得と再生の分離」 |
-| 外部時刻サービスの換算基準（返る時刻は応答生成時刻。**中点で換算すると -RTT/2 の系統誤差が乗る**）・`?ms` を落とすと精度が秒単位に静かに劣化すること | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §4「外部時刻サービスとの並走計測」 |
+| クロック同期の主経路・フォールバックの順序（**主経路が失敗したときだけ Yahoo 経路を走らせる**。両方を `feedServerSample` へ供給すると精度の良い側にバイアスが混ざる。「見送り」は失敗ではないのでフォールバックへ落とさない） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §4「クロック同期」 |
+| 外部時刻サービスの換算基準（返る時刻は応答生成時刻。**中点で換算すると -RTT/2 の系統誤差が乗る**）・`?ms` を落とすと精度が秒単位に静かに劣化すること | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §4「主経路: 外部の時刻サービス」 |
 | `KyoshinSubThreshold` の対象範囲（index 1〜6）・慢性ノイズ床フィルタ | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) |
 | 欠測の瞬断を直前値で保持する範囲（表示・カード・音は保持値／検知エンジンは生値・保持時間・保持中の見せ方） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) §8 |
 | 検知点マーカー（地図）と検知カード（リアルタイムタブ）が数える点集合・下限の一致（対象イベントは `weak` 以外の全件／下限は震度0以上／点列は App が用意した 1 本を共有する） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) §8 |

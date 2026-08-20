@@ -64,8 +64,10 @@ P2PQuake の 556 で severity が付与される仕組みは [`data-sources-spec
 **Yahoo hypoInfo を DMDSS 版で使わない仕組み**: `src/App.tsx` が `useKyoshinRealtime` に渡す
 `onEEWEvent` を DMDSS 版では `undefined` にしている。通知先が無いとき `useKyoshinRealtime` は
 差分の基準（直前の hypoInfo）だけ進めてイベントを捨てるため、DMDSS 版では Yahoo 由来の EEW が
-状態へ入る経路そのものが存在しない。**リアルタイム震度とクロック較正には両バリアントとも Yahoo を
-使う**（強震モニタのフレームに hypoInfo は載ってくるが、EEW としては読まない）という点に注意。
+状態へ入る経路そのものが存在しない。**リアルタイム震度は両バリアントとも Yahoo を使う**
+（強震モニタのフレームに hypoInfo は載ってくるが、EEW としては読まない）という点に注意。
+クロック較正の主経路は別の時刻サービスに移っており、Yahoo は取得に失敗した周期のフォールバックとして
+両バリアントで使う（[`data-sources-spec.md`](data-sources-spec.md) §4「クロック同期」）。
 
 **enrichEEW（`useEarthquakes.ts`・standard 版のみ）**: Yahoo hypoInfo で先に検知した EEW に、後着の P2PQuake で
 より正確な `areas` / `condition` / `hypocenter` を上書きする。severity は upgrade only（既存 `'Warning'` は

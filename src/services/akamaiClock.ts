@@ -54,7 +54,21 @@ const BACKWARDS_TOLERANCE_MS = 2000
 /** 失敗の記録を間引く間隔 (ms)。到達不能な環境で毎周期同じ行を出さない。 */
 const FAILURE_LOG_INTERVAL_MS = 300_000
 
-const throttledFailureLog = createLogThrottle(FAILURE_LOG_INTERVAL_MS)
+/**
+ * **理由ごとに独立したスロットルを持つ。** 1 個で共有すると、最初に鳴った理由が残りを 5 分間隠す。
+ *
+ * 主経路になったことでこれが効いてくる。たとえば `network` で 1 回出たあとサービス側の応答形式が
+ * 変わって `imprecise-format` に転じても、共有していると 5 分間そちらが見えず、原因を取り違える
+ * （フォールバック側の `throttledMissLog` と同じ考え方）。
+ */
+const throttledFailureLog: Record<Exclude<RejectReason, 'in-flight'>, (emit: () => void) => void> = {
+  'network': createLogThrottle(FAILURE_LOG_INTERVAL_MS),
+  'http-error': createLogThrottle(FAILURE_LOG_INTERVAL_MS),
+  'parse-invalid': createLogThrottle(FAILURE_LOG_INTERVAL_MS),
+  'imprecise-format': createLogThrottle(FAILURE_LOG_INTERVAL_MS),
+  'out-of-range': createLogThrottle(FAILURE_LOG_INTERVAL_MS),
+  'went-backwards': createLogThrottle(FAILURE_LOG_INTERVAL_MS),
+}
 
 /**
  * 応答が満たすべき形。**小数秒とタイムゾーンの両方を必須にする。**
@@ -178,23 +192,40 @@ async function fetchOnce(): Promise<Attempt> {
 }
 
 /**
- * サーバー時刻のサンプルを 1 つ得る。失敗したら null を返す。
+ * 別の取得が進行中で今回は投げなかったことを表す番兵。
+ *
+ * **サービスの失敗ではない。** 進行中の方が較正するので、呼び出し側はフォールバック経路へ
+ * 落ちてはいけない（落ちると Yahoo の未登録秒を無駄に撃つことになる）。
+ */
+export const SERVER_TIME_SKIPPED = 'skipped'
+
+/** `fetchServerTime` の結果。サンプル／見送り／失敗の 3 状態。 */
+export type ServerTimeOutcome = ServerTimeSample | typeof SERVER_TIME_SKIPPED | null
+
+/**
+ * サーバー時刻のサンプルを 1 つ得る。
+ *
+ * 戻り値は 3 状態。取得できたらサンプル、別の取得と重なったら `SERVER_TIME_SKIPPED`、
+ * 失敗したら null。**見送りと失敗を混ぜないこと**（混ぜると、重なっただけでフォールバックへ
+ * 落ちる）。
  *
  * 例外は投げない。時刻較正は「取れたら精度が上がる」性質の処理であり、取得失敗で呼び出し側の
  * 処理を止めるべきではないため。記録に失敗しても同じ扱いにする。
  */
-export async function fetchServerTime(): Promise<ServerTimeSample | null> {
+export async function fetchServerTime(): Promise<ServerTimeOutcome> {
   const attempt = await fetchOnce()
   if (attempt.ok) return attempt.sample
+  // 見送りは正常な動作なので記録しない（毎周期出ると本物の失敗が埋もれる）。
+  if (attempt.reason === 'in-flight') return SERVER_TIME_SKIPPED
   try {
     // 理由を必ず添える。`network` なら回線の問題（待てば直る）、`parse-invalid` などが出ていれば
     // サービス側の形式変更（実装を直すしかない）と読み分けられる。
-    throttledFailureLog(() =>
+    throttledFailureLog[attempt.reason](() =>
       log.warn(`[time] サーバー時刻を取得できず: ${attempt.reason}`),
     )
   } catch {
     // 記録そのものの失敗で「例外を投げない」契約を破らない。ここが最後の砦であり、これ以上
-    // 報告できる先が無いため飲み込む（呼び出し側は null を受けて計測を見送る）。
+    // 報告できる先が無いため飲み込む（呼び出し側は null を受けて較正を見送る）。
   }
   return null
 }
