@@ -130,8 +130,9 @@ function setup() {
     tsunamisRef: { current: [] as JMATsunami[] },
     kyoshinDetectedRef: { current: false },
     defaultTabRef: { current: 'earthquake' },
-    setActiveTab: vi.fn(), setActiveTabNonRealtime: vi.fn(),
-    setActiveTabRealtimeOnUpdate: vi.fn(), revertToDefaultTab: vi.fn(),
+    setActiveTabRealtimeForKyoshin: vi.fn(), setActiveTabNonRealtime: vi.fn(),
+    setActiveTabRealtimeOnUpdate: vi.fn(),
+    setActiveTabRealtimeUrgent: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(), setActiveLpgmEventId: vi.fn(),
   }))
   return result.current.handleLiveEvent

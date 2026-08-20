@@ -210,13 +210,12 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
   `playAlertSound(type)`。種別: `eewSpecial` / `eew` / `eewForecast` / `eewUpdate` / `eewFinal` / `eewCancel`
 - **通知**: `showBrowserNotification(...)` で OS 通知
 - **読み上げ**: `speakWithVoicevox(eewAlertToText(...))`
-- **自動タブ切替**: 新規・レベルアップ時に `setActiveTab('realtime')` 強制。続報は
-  `setActiveTabRealtimeOnUpdate()` で抑制タイマーを尊重する。抑制タイマーは
-  `setActiveTabNonRealtime` 呼び出し全般で共有されるため、直前 15 秒以内に地震情報・
-  津波情報・長周期地震動情報のいずれかで非 realtime タブへ切り替わっていれば、EEW 続報は
-  realtime へ戻らない。ただし新規・レベルアップはこの抑制を無視するため、津波にタブを奪われても
-  次の新規発報・レベルアップで realtime を取り戻す。**逆に、EEW のレベル（特別警報級を含む）が
-  津波側のタブ切替を止めることはない**（詳細は [`tsunami-spec.md`](tsunami-spec.md) §11 参照）
+- **自動タブ切替**: 新規・レベルアップ・誤報取消は最上位の優先度で realtime を確保し、続報は
+  それより 1 段低い優先度で要求する。**確保している 15 秒間は、地震情報・長周期地震動情報・津波が
+  タブを奪えない**（優先順位の全体像は [`audio-tts-spec.md`](audio-tts-spec.md) §6「自動タブ切替の
+  優先順位」）。続報は手動選択より弱いため、ユーザーが自分で別タブを選んだ直後は realtime へ
+  戻らない。ただし新規・レベルアップは手動選択より強く、必ず realtime を取り戻す。
+  EEW のレベル（特別警報級か否か）はタブの奪い合いに関与しない
 - **カメラフィット**: `FitToEEWGL` が発火。第一報は S 波円（円が無ければ震源）へ寄り、以降は
   予想の区域塗りまで含めた範囲を追う。追従の主な起点は EEW 電文と予報円の更新で、区域塗りの範囲
   （`useEewLayerData` の `eewFitPositions`）は発報中の追従にのみ加わる。kyoshin モード限定。
@@ -298,3 +297,6 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
   「いま」へ潰されており、最終報の 9 ミリ秒後に自動解除が走って猶予（`MIN_CANCEL_SEC`=60 秒）が
   消えていた。潰していた処理の撤去と経緯は
   [`settings-pwa-spec.md`](settings-pwa-spec.md) §6「再生中も予約は発火時刻を待つ」を参照
+- 2026-08-20: 自動タブ切替に優先度を入れた（§9）。従来は EEW が realtime を確保した直後に地震情報・
+  津波が無条件にタブを奪えたため、読み上げが EEW を守るようになった後も画面から EEW が消えていた。
+  優先順位の全体像は [`audio-tts-spec.md`](audio-tts-spec.md) §6
