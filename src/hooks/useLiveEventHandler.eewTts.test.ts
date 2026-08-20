@@ -7,10 +7,10 @@
 //      「震度5強に引き上げ。」という差分の短句で追っていたが、基準にした値を実際に
 //      発話したかどうかに依存するため、割り込みで消えた発話を基準にすると「一度も
 //      声に出していない値からの引き上げ」を語ることになる。
-//   2. 区分は「警報」に統一し、初報でも前置きする。気象庁は震度6弱以上を予想した
-//      緊急地震速報（警報）を特別警報に位置づけるが、発表時に「特別警報」の名称は
-//      用いない。「〜に切り替わりました」も、前の区分を声に出していない場面では
-//      何から変わったのか伝わらないため使わない。
+//   2. 区分は「警報」に統一し、**その EEW で初めて伝えるときだけ**前置きする。気象庁は
+//      震度6弱以上を予想した緊急地震速報（警報）を特別警報に位置づけるが、発表時に
+//      「特別警報」の名称は用いない。「〜に切り替わりました」も、前の区分を声に出していない
+//      場面では何から変わったのか伝わらないため使わない。
 //   3. 発話は 1 本のチェーンで直列化する。speakWithVoicevox は待ち行列ではなく割り込み
 //      （既存の再生を stop し進行中の合成を abort する）なので、繋がずに投げると前の
 //      発話が途中で消える。とくに EEW が同時多発すると互いを消し合う（2024/1/1 能登）。
@@ -186,7 +186,7 @@ describe('EEW 読み上げの文言と発話順序', () => {
 
     handle(makeEEW({ serial: 2, scaleTo: 50 }))
     await flushMicrotasks()
-    expect(spokenTexts()).toEqual(['警報。予想最大震度5強。'])
+    expect(spokenTexts()).toEqual(['予想最大震度5強。'])
   })
 
   // かつてはここで 2 秒のトレーリングデバウンスを張っており、続報が 2 秒以内に連投される
@@ -204,7 +204,7 @@ describe('EEW 読み上げの文言と発話順序', () => {
     }
     await flushMicrotasks()
     // 途中の 4・5弱 は読まず、最新の 5強 を 1 回だけ読む（時間は進めていない）
-    expect(spokenTexts()).toEqual(['警報。予想最大震度5強。'])
+    expect(spokenTexts()).toEqual(['予想最大震度5強。'])
   })
 
   // 階級だけが上がる続報は、震度にもレベル（特別警報の条件は階級 4 以上）にも現れないため、
@@ -217,7 +217,7 @@ describe('EEW 読み上げの文言と発話順序', () => {
 
     handle(makeEEW({ serial: 2, scaleTo: 50, lgIntTo: 3 }))
     await flushMicrotasks()
-    expect(spokenTexts()).toEqual(['警報。予想最大震度5強。予想最大階級3。'])
+    expect(spokenTexts()).toEqual(['予想最大震度5強。予想最大階級3。'])
   })
 
   it('変化のない続報では発話しない', async () => {
@@ -275,6 +275,44 @@ describe('EEW 読み上げの文言と発話順序', () => {
       expect(spokenTexts()).toEqual(['警報。予想最大震度5強。'])
     })
 
+    // 続報のたびに前置きすると、値を読み直すだけの報でも毎回「警報」が挟まって耳に障る
+    // （能登の再生では本震の 5 発話すべてに付いていた）。初回だけ言えば区分は伝わる。
+    it('「警報。」は 1 度だけ。続く引き上げでは言い直さない', async () => {
+      const handle = setup()
+      handle(makeEEW({ scaleTo: 50 }))
+      await flushMicrotasks()
+      expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '警報。予想最大震度5強。'])
+
+      handle(makeEEW({ serial: 2, scaleTo: 55 }))
+      await flushMicrotasks()
+      handle(makeEEW({ serial: 3, scaleTo: 70 }))
+      await flushMicrotasks()
+      expect(spokenTexts()).toEqual([
+        '緊急地震速報、日向灘で地震。',
+        '警報。予想最大震度5強。',
+        '予想最大震度6弱。',
+        '予想最大震度7。',
+      ])
+      expect(spokenTexts().filter(t => t.startsWith('警報。'))).toHaveLength(1)
+    })
+
+    // 取消（誤報取消・自動解除）で追跡を消すため、同じ eventId が再利用されれば新規発報として
+    // 扱われる。ここで区分を伝え直さないと、再発報が警報でも「警報」と言われないまま終わる。
+    it('取消後に同じ eventId で再発報したら、「警報。」をもう一度前置きする', async () => {
+      const handle = setup()
+      handle(makeEEW({ scaleTo: 50 }))
+      await flushMicrotasks()
+      expect(spokenTexts().filter(t => t.startsWith('警報。'))).toHaveLength(1)
+
+      handle(makeEEW({ serial: 2, cancelled: true }))
+      await vi.advanceTimersByTimeAsync(1500)
+      await flushMicrotasks()
+
+      handle(makeEEW({ serial: 3, scaleTo: 50 }))
+      await flushMicrotasks()
+      expect(spokenTexts().filter(t => t.startsWith('警報。'))).toHaveLength(2)
+    })
+
     // 気象庁は震度6弱以上（または長周期地震動階級4以上）を予想した緊急地震速報（警報）を
     // 特別警報に位置づけているが、発表時に「特別警報」の名称は用いない。表示・通知・通知音は
     // 2 段階を保つが、音声では区分を「警報」に統一する。
@@ -288,7 +326,7 @@ describe('EEW 読み上げの文言と発話順序', () => {
       expect(texts.some(t => t.includes('特別警報'))).toBe(false)
     })
 
-    it('警報から特別警報の条件へ跨ぐ格上げでも、区分は「警報」のまま値で伝える', async () => {
+    it('警報から特別警報の条件へ跨ぐ格上げは、値だけで伝える（「警報」を言い直さない）', async () => {
       const handle = setup()
       handle(makeEEW({ scaleTo: 50 }))          // 5強 → 警報
       await flushMicrotasks()
@@ -296,7 +334,7 @@ describe('EEW 読み上げの文言と発話順序', () => {
 
       handle(makeEEW({ serial: 2, scaleTo: 55 }))   // 6弱 → 特別警報の条件
       await flushMicrotasks()
-      expect(spokenTexts()).toEqual(['警報。予想最大震度6弱。'])
+      expect(spokenTexts()).toEqual(['予想最大震度6弱。'])
     })
 
     // 「〜に切り替わりました」を使わない理由がここに出る。予想値を一度も読んでいない
@@ -312,9 +350,10 @@ describe('EEW 読み上げの文言と発話順序', () => {
       expect(spokenTexts()).toEqual(['警報。単独点処理のため、予想震度なし。'])
     })
 
-    // 区分は引き下げない。一度「警報」と読んだ EEW は以後も警報として読む
-    // （activeEEWLevelsRef が Math.max で保持するのと同じ方針）。
-    it('一度「警報」と読んだ後に severity が落ちても、区分は下げない', async () => {
+    // 区分は引き下げない。一度「警報」と伝えた EEW は、以後 severity が落ちても「伝え済み」と
+    // して扱う（activeEEWLevelsRef が Math.max で保持するのと同じ方針）。落とすと、severity が
+    // 揺れ戻すたびに「警報」を言い直すことになる。
+    it('一度「警報」と伝えた後に severity が落ちても、前置きを言い直さない', async () => {
       const handle = setup()
       handle(makeEEW({ scaleTo: 50, severity: 'Warning' }))
       await flushMicrotasks()
@@ -322,7 +361,7 @@ describe('EEW 読み上げの文言と発話順序', () => {
 
       handle(makeEEW({ serial: 2, scaleTo: 55, severity: 'Forecast' }))
       await flushMicrotasks()
-      expect(spokenTexts()).toEqual(['警報。予想最大震度6弱。'])
+      expect(spokenTexts()).toEqual(['予想最大震度6弱。'])
     })
   })
 
@@ -338,7 +377,7 @@ describe('EEW 読み上げの文言と発話順序', () => {
 
       handle(makeEEW({ serial: 2, scaleTo: 45, hypocenter: FAR_HYPO }))
       await flushMicrotasks()
-      expect(spokenTexts()).toEqual(['震源を更新、安芸灘で地震。', '警報。予想最大震度5弱。'])
+      expect(spokenTexts()).toEqual(['震源を更新、安芸灘で地震。', '予想最大震度5弱。'])
     })
 
     // 旧震源での値を既読として残すと、新震源で確定した値が旧値を超えたときだけ報じられ、
@@ -351,7 +390,7 @@ describe('EEW 読み上げの文言と発話順序', () => {
 
       handle(makeEEW({ serial: 2, scaleTo: 40, hypocenter: FAR_HYPO }))
       await flushMicrotasks()
-      expect(spokenTexts()).toEqual(['震源を更新、安芸灘で地震。', '警報。予想最大震度4。'])
+      expect(spokenTexts()).toEqual(['震源を更新、安芸灘で地震。', '予想最大震度4。'])
     })
   })
 
@@ -389,7 +428,7 @@ describe('EEW 読み上げの文言と発話順序', () => {
       await flushMicrotasks()
 
       // A だけが読み直され、B は据え置きなので黙る
-      expect(spokenTexts()).toEqual(['警報。予想最大震度6弱。'])
+      expect(spokenTexts()).toEqual(['予想最大震度6弱。'])
     })
 
     // チェーンに reject を残すと、次の発話が待つ対象が rejected promise になり、以降の EEW が
