@@ -1,4 +1,4 @@
-import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseVyse5xFromXml, parseVyse60FromXml } from './dmdataParser'
+import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml } from './dmdataParser'
 import { parseTar } from '../utils/tarParser'
 import type { JMAQuake, EEWAlert, JMATsunami } from '../types/earthquake'
 import { calcEEWCancelTime } from '../utils/eew'
@@ -13,13 +13,16 @@ const TSUNAMI_TYPES = new Set(['VTSE41', 'VTSE51', 'VTSE52'])
 // 捨てられ、実地震シナリオ収録の警報経路が完全に欠落していた。
 const EEW_TYPES = new Set(['VXSE43', 'VXSE45'])
 const LPGM_TYPES = new Set(['VXSE62'])
-const NANKAI_TYPES = new Set(['VYSE50', 'VYSE51'])
+// VYSE50=臨時情報（段階あり）、VYSE51/52=関連解説情報（段階なし）。別の型に読むため分ける。
+const NANKAI_TYPES = new Set(['VYSE50'])
+const COMMENTARY_TYPES = new Set(['VYSE51', 'VYSE52'])
 const KOHATSU_TYPES = new Set(['VYSE60'])
 // このモジュールが取り込む電文種別の全体。archive の classification には対象外の種別も
 // 多数含まれるため、まずこれで絞ってから欠落を警告する（絞る前に警告すると、正常動作で
 // ログが埋まって本当の異常が見えなくなる）。
 const HANDLED_TYPES = new Set([
-  ...QUAKE_TYPES, ...TSUNAMI_TYPES, ...EEW_TYPES, ...LPGM_TYPES, ...NANKAI_TYPES, ...KOHATSU_TYPES,
+  ...QUAKE_TYPES, ...TSUNAMI_TYPES, ...EEW_TYPES, ...LPGM_TYPES,
+  ...NANKAI_TYPES, ...COMMENTARY_TYPES, ...KOHATSU_TYPES,
 ])
 
 function authHeader(apiKey: string): string {
@@ -203,9 +206,10 @@ export async function fetchDmdataReplayEvents(
         try {
           const idPrefix = entry.id.slice(0, 7)
 
-          if (NANKAI_TYPES.has(headType) || KOHATSU_TYPES.has(headType)) {
-            // XML 形式電文（VYSE50/51/60）。これらは XML パーサ（parseVyse5xFromXml /
-            // parseVyse60FromXml）でしか読めないため、XML 版エントリ（originalId 無し）だけを拾う。
+          if (NANKAI_TYPES.has(headType) || COMMENTARY_TYPES.has(headType) || KOHATSU_TYPES.has(headType)) {
+            // XML 形式電文（VYSE50/51/52/60）。これらは XML パーサ（parseNankaiFromXml /
+            // parseNankaiCommentaryFromXml / parseVyse60FromXml）でしか読めないため、
+            // XML 版エントリ（originalId 無し）だけを拾う。
             // 実アーカイブでは確認できた全種別が XML 版と JSON 版の 2 エントリで載っていたため、
             // VYSE 系にも JSON 版が現れうる。それをここで弾かないと、JSON 版の id で .xml を
             // 探して見つからず「本体が見つからず」警告を出し続けることになる。
@@ -223,8 +227,11 @@ export async function fetchDmdataReplayEvents(
 
             let payload: ReplayPayload | null = null
             if (NANKAI_TYPES.has(headType)) {
-              const nankai = parseVyse5xFromXml(xmlText)
+              const nankai = parseNankaiFromXml(xmlText)
               if (nankai) payload = { kind: 'nankai', data: nankai }
+            } else if (COMMENTARY_TYPES.has(headType)) {
+              const commentary = parseNankaiCommentaryFromXml(xmlText)
+              if (commentary) payload = { kind: 'nankaiCommentary', data: commentary }
             } else {
               const kohatsu = parseVyse60FromXml(xmlText)
               if (kohatsu) payload = { kind: 'kohatsu', data: kohatsu }

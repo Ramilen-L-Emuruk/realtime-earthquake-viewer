@@ -1,4 +1,4 @@
-import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
+import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
 import { eewMaxScale, eewMaxLpgmClass, eewNoForecastReason } from './eew'
 import { getIntensityLabel } from './intensity'
 import { tsunamiMaxGrade } from './tsunami'
@@ -594,6 +594,22 @@ export function nankaiToText(event: JMANankai): string {
     return '南海トラフ地震臨時情報、巨大地震注意。南海トラフ地震の想定震源域内で地震が発生しました。防災対応の確認をしてください。'
   }
   return '南海トラフ地震臨時情報。南海トラフ地震に関する臨時情報が発表されました。最新情報に注意してください。'
+}
+
+/**
+ * 南海トラフ地震関連解説情報（VYSE51=臨時解説 / VYSE52=定例解説）の読み上げテキストを生成する。
+ *
+ * 本文（body）は 1000 字を超えることがあるため読み上げない。何が発表されたかだけを伝え、
+ * 詳細は画面のバナーに委ねる。段階（調査中・巨大地震注意等）を持つ電文ではないので、
+ * 臨時情報（nankaiToText）のような防災対応の呼びかけも付けない。
+ */
+export function nankaiCommentaryToText(event: JMANankaiCommentary): string {
+  if (event.serialName === '定例解説') {
+    return '南海トラフ地震関連解説情報。南海トラフ沿いの地震に関する評価検討会の定例会合による調査結果が発表されました。'
+  }
+  // 臨時解説の情報名には「（第１号）」のように号数が入る。読み手が経過を追えるので拾う
+  const serial = event.headline.match(/（第(.+?)号）/)?.[1]
+  return `南海トラフ地震関連解説情報${serial ? `、第${serial}号` : ''}。南海トラフ地震の想定震源域の状況について解説情報が発表されました。`
 }
 
 /** 北海道・三陸沖後発地震注意情報（VYSE60）の読み上げテキストを生成する。 */

@@ -44,12 +44,12 @@ export function validateScenarioIndex(v: unknown): { valid: TestScenarioIndex; s
 
 // ReplayPayload の判別子。testScenarioReplay.remapPayload の switch と一致させる
 // （破損 payload が instantiateScenario で TypeError を投げる HIGH #1 対策）。
-const PAYLOAD_KINDS = new Set(['event', 'lpgm', 'nankai', 'kohatsu'])
+const PAYLOAD_KINDS = new Set(['event', 'lpgm', 'nankai', 'nankaiCommentary', 'kohatsu'])
 
 /**
  * payload の kind と対応する必須サブフィールドを検証する。
  * - kind: 'event' → event が Record
- * - kind: 'lpgm' | 'nankai' | 'kohatsu' → data が Record
+ * - kind: 'lpgm' | 'nankai' | 'nankaiCommentary' | 'kohatsu' → data が Record
  * これを通さないと `remapPayload` 内で `switch (payload.kind)` の分岐に入った直後に
  * `payload.event.kind` や `payload.data.???` を読んで TypeError で map 全体が中断し、
  * そのシナリオの全エントリが再生キューに積まれなくなる（HIGH #1）。
