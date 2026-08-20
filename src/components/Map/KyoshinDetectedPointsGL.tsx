@@ -6,6 +6,7 @@ import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import { addOrderedLayer } from './gl/layerOrder'
 import { ensureKyoshinDetectedIcons } from './gl/kyoshinDetectedIcons'
 import { buildDetectedFC } from './gl/kyoshinDetectedFeatures'
+import { MISSING_HOLD_OPACITY } from '../../utils/kyoshinMissingHold'
 
 // 揺れ検知点（confirmed＝確定／likely・faint＝未確定）を描画する MapLibre 版（Leaflet の KyoshinDetectedPoints 相当）。
 // 丸背景・色・フチ・震度ラベルを Canvas2D で事前ラスタライズした1枚の画像（gl/kyoshinDetectedIcons.ts）を
@@ -68,6 +69,13 @@ export function KyoshinDetectedPointsGL({ confirmedPoints, unconfirmedPoints, ic
         'symbol-sort-key': ['get', 'index'],
         visibility: visible ? 'visible' : 'none',
       },
+      paint: {
+        // 欠測ホールド中（直前値を描いている）点は薄く描き、値が生きている点と区別する。
+        'icon-opacity': ['case', ['get', 'stale'], MISSING_HOLD_OPACITY, 1],
+        // 既定（約300ms）のトランジションを切る。残すと復帰の瞬間に不透明度が補間され、
+        // 抑えようとしている明滅が「薄くなりかけて戻る」形で残る。
+        'icon-opacity-transition': { duration: 0, delay: 0 },
+      },
     })
     addedRef.current = true
     return () => {
@@ -89,10 +97,12 @@ export function KyoshinDetectedPointsGL({ confirmedPoints, unconfirmedPoints, ic
   useEffect(() => {
     if (!map || !addedRef.current || !visible) return
     // 軽量 signature: 点数と iconScale と各点の識別情報。JSON より 10x 以上高速。
+    // 欠測ホールドの保持フラグ（stale）も署名に含める。保持中は index が直前値のまま変わらないため、
+    // stale を外すと「値が生きている → 保持中」の遷移で署名が一致し、半透明が反映されないまま残る。
     const lightSig = `${confirmedPoints.length}|${unconfirmedPoints.length}|${iconScale}|`
-      + confirmedPoints.map((p) => `${p.lat},${p.lng},${p.index}`).join(';')
+      + confirmedPoints.map((p) => `${p.lat},${p.lng},${p.index},${p.stale ? 1 : 0}`).join(';')
       + '#'
-      + unconfirmedPoints.map((p) => `${p.lat},${p.lng},${p.index}`).join(';')
+      + unconfirmedPoints.map((p) => `${p.lat},${p.lng},${p.index},${p.stale ? 1 : 0}`).join(';')
     if (lightSig === lastSigRef.current) return
     lastSigRef.current = lightSig
     const fc = buildDetectedFC(confirmedPoints, unconfirmedPoints, iconScale)

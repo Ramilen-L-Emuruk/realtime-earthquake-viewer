@@ -352,6 +352,12 @@ Yahoo リアルタイム震度は 1 秒毎に更新される。以下のレイ�
 毎秒更新するレイヤーで painter の値が動く場合、`-transition: { duration: 0 }` を明示的に設定して
 アニメーション残像・点滅を防ぐ。過去に津波点滅（v4.1.1）と強震モニタ（v4.2.2）で 2 回踏んだ実績あり。
 
+**欠測中の点は薄く描く**: 強震モニタの秒データは 1〜2 秒の欠測（瞬断）を頻繁に含む。表示に使う値は
+欠測点を直前値で短時間保持しており（[`kyoshin-detection-spec.md`](kyoshin-detection-spec.md) §8）、
+保持中の点は `KyoshinDetectedPointsGL`（`icon-opacity` のデータ駆動式）と `KyoshinPointsGL`
+（feature-state の不透明度）で 0.35 倍に落として描く。どちらもトランジションを 0 にする——
+既定の 300ms を残すと、抑えたい明滅が「薄くなりかけて戻る」形で残ってしまう。
+
 ## 9. パフォーマンス上の要点
 
 ### setData churn 対策

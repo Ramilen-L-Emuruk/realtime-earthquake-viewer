@@ -19,6 +19,7 @@ import { useLiveEventHandler } from './hooks/useLiveEventHandler'
 import { useKyoshinAlerts } from './hooks/useKyoshinAlerts'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
 import { useKyoshinDetectorV2 } from './hooks/useKyoshinDetectorV2'
+import { useKyoshinMissingHold } from './hooks/useKyoshinMissingHold'
 import { deriveKyoshinView } from './utils/kyoshinDetectionView'
 import { filterSubThresholdIndices } from './utils/kyoshinSubThresholdFilter'
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
@@ -750,16 +751,26 @@ export function App() {
   const kyoshinIndicesGated = kyoshin.sitesSiteConfigId != null
     && kyoshin.sitesSiteConfigId === kyoshin.indicesSiteConfigId
     ? kyoshin.indices : EMPTY_INDICES
+  // 表示用インデックス: 1〜2 秒で復帰する欠測（瞬断）を直前値で埋め、保持中の点を stale で示す。
+  // Yahoo の秒データは強く揺れている観測点でも単発で欠測を返すため、素通しすると震度6強級の
+  // バッジが 1 秒だけ消えて次の秒で戻る明滅になる（実測は utils/kyoshinMissingHold.ts 冒頭）。
+  // **検知エンジン（上の useKyoshinDetectorV2）には生の kyoshin.indices を渡し続ける**——欠測判定・
+  // 慢性ノイズ床の学習を保持値で汚さない。一方で、下の deriveKyoshinView を通す表示状態には保持値を
+  // 使う。そのため音・通知・地域単位発報の入力（candidateMaxIndex / confirmedShocks）も保持値を見る
+  // ことになるが、これは意図した設計（欠測を素通しすると最大震度を担う点の 1 秒欠測が「揺れが弱まった」
+  // と解釈され、復帰時に更新音が誤って鳴る）。範囲の詳細は utils/kyoshinMissingHold.ts 冒頭。
+  const kyoshinHeld = useKyoshinMissingHold(kyoshinIndicesGated, kyoshin.dataTime, kyoshin.sitesSiteConfigId)
   // V2 検知イベント → 表示状態（confirmed/candidate・検知点・候補点）へ変換する
   const kyoshinView = useMemo(
     () =>
       deriveKyoshinView(
         kyoshinV2.detections,
         kyoshinSitesGated,
-        kyoshinIndicesGated,
+        kyoshinHeld.indices,
         kyoshinV2.recentOnsetKeys,
+        kyoshinHeld.stale,
       ),
-    [kyoshinV2.detections, kyoshinSitesGated, kyoshinIndicesGated, kyoshinV2.recentOnsetKeys],
+    [kyoshinV2.detections, kyoshinSitesGated, kyoshinHeld, kyoshinV2.recentOnsetKeys],
   )
   // 検知点マーカーが描く点列そのものを検知カードにも渡す（地図とカードで数える集合を構造的に揃える。
   // 以前はカード側でも同じ計算を組み立てていたが、同一の結果になることに頼ると片方の変更で黙って
@@ -774,9 +785,9 @@ export function App() {
   // （`undefined` を返せば JapanMapGL 側で kyoshinIndices にフォールバックする）。
   const kyoshinSubIndices = useMemo(
     () => (mapMode === 'kyoshin'
-      ? filterSubThresholdIndices(kyoshinSitesGated, kyoshinIndicesGated, kyoshinV2.floors)
+      ? filterSubThresholdIndices(kyoshinSitesGated, kyoshinHeld.indices, kyoshinV2.floors)
       : undefined),
-    [mapMode, kyoshinSitesGated, kyoshinIndicesGated, kyoshinV2.floors],
+    [mapMode, kyoshinSitesGated, kyoshinHeld, kyoshinV2.floors],
   )
   // タイマーコールバック内から最新の confirmed 値を参照する ref（宣言はコンポーネント冒頭・代入はここ）
   kyoshinDetectedRef.current = kyoshinView.confirmed
@@ -880,7 +891,8 @@ export function App() {
             heatPoints={quakeHeatPoints}
             showPlateBoundaries={settings.showPlateBoundaries}
             kyoshinSites={kyoshinSitesGated}
-            kyoshinIndices={kyoshinIndicesGated}
+            kyoshinIndices={kyoshinHeld.indices}
+            kyoshinStale={kyoshinHeld.stale}
             kyoshinSubIndices={kyoshinSubIndices}
             kyoshinPsWave={psWave}
             eews={eewsForMap}

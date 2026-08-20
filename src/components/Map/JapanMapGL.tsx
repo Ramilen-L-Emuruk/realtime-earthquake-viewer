@@ -77,6 +77,7 @@ export function JapanMapGL({
   showBathymetry = true,
   kyoshinSites = [],
   kyoshinIndices = [],
+  kyoshinStale,
   kyoshinSubIndices,
   detectedPoints = [],
   detectedMarkerPoints = [],
@@ -294,7 +295,7 @@ export function JapanMapGL({
             iconScale={iconScale}
             visible={mode === 'kyoshin'}
           />
-          <KyoshinPointsGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} visible={mode === 'kyoshin'} />
+          <KyoshinPointsGL sites={kyoshinSites} indices={kyoshinIndices} stale={kyoshinStale} iconScale={iconScale} visible={mode === 'kyoshin'} />
           <KyoshinDetectedPointsGL
             confirmedPoints={detectedMarkerPoints}
             unconfirmedPoints={unconfirmedPoints}
