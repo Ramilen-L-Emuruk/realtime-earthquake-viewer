@@ -431,6 +431,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 強震モニタの取得と再生の分離（供給元 → 時刻順キュー → 反映の 3 段・放出は到来分の最新 1 件のみ・反映はデータ時刻順に限る・新しい供給元を足すときの入口） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §4「取得と再生の分離」 |
 | `KyoshinSubThreshold` の対象範囲（index 1〜6）・慢性ノイズ床フィルタ | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) |
 | 検知点マーカー（地図）と検知カード（リアルタイムタブ）が数える点集合・下限の一致（対象イベントは `weak` 以外の全件／下限は震度0以上／点列は App が用意した 1 本を共有する） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) §8 |
+| 「別地点で揺れ検知」の抑制条件（EEW 吸収の記憶・エピソード起点・距離の上限・震度の下限・発報済みの扱い） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md)「別地点」判定の動的距離閾値 |
 | 実地震テストシナリオの時刻シフト・ID 再採番・利用規約制約 | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6 |
 | 生成データ（`public/data/*.json`）の取得タイムアウト値・失敗時の扱い（TTS 辞書のみ別値） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §6 |
 | テスト時刻設定のバリアント差（standard は P2PQuake の日付クエリ、DMDSS は DMDATA アーカイブ／ただし EEW はどちらも取得元が異なり、standard では強震モニタ側の検知に頼る） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」 |
