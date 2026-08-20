@@ -406,6 +406,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | テストデータと UI 説明文（テストボタンの `scaleTo` 値等） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §7 |
 | 読み上げの範囲（`ttsIntensityLevels` / `ttsAlwaysReadScale` / `ttsMaxRegions` / `ttsRegionTolerance` の組み合わせ方・階数は観測がある階級のみを数える・`ttsAlwaysReadScale` は長周期に適用しない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
 | 読み上げの地域名の並び順（気象庁の標準順・順序の実体は `station-coords.json` の区域キー順・上限で切るときの選抜だけは震源距離で行う・震源を持たない電文（震度速報・長周期）は距離で選ばない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
+| 読み上げ文で名前を並べるときの書き方（区切りは読点・中黒は音にならず合成の区切りにもならない・場所の助詞「で」は文末のみ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
 | EEW 読み上げ第 2 フェーズの発火条件（値の確定で読む・`EEW_PHASE2_MAX_WAIT_MS` の上限・引き上げも初報と同じ形で言い直す・警報以上は「警報。」を前置き） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
 | EEW 読み上げの直列化（全 EEW で 1 本のチェーン・既読値の更新は発話直前だけ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げの優先順位」 |
 | 読み上げの優先順位（EEW ＞ 津波・南海トラフ ＞ 地震情報 ＞ 長周期／同格は新しい方が勝つ／待ちの条件は毎周回で作り直す／上限到達時は記録を残す） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げの優先順位」 |
