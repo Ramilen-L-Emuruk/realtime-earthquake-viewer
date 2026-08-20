@@ -57,11 +57,6 @@ export function setReplayOffset(offsetMs: number | null): void {
   replayOffsetMs = offsetMs
 }
 
-/** リプレイ/手動時刻モードかどうか。 */
-export function isReplayClock(): boolean {
-  return replayOffsetMs !== null
-}
-
 /**
  * サーバー由来の「現在時刻」サンプルで K を較正する（live モード用）。
  * リプレイ中は K を更新しない（アーカイブ時刻とサーバー現在時刻は無関係なため）。

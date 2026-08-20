@@ -7,7 +7,7 @@ import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex } from '..
 import { calcEEWCancelTime } from '../utils/eew'
 import { mergeTsunamiObservations } from '../utils/tsunami'
 import { log } from '../utils/logger'
-import { serverNow, serverDate, isReplayClock } from '../utils/clock'
+import { serverNow, serverDate } from '../utils/clock'
 
 import { isDmdss } from '../utils/env'
 import {
@@ -257,20 +257,21 @@ export function useEarthquakes(
     }
   }, [])
 
-  // VAR-1: standard 版で kyoshin テスト時刻設定中はキューの time base（getTimeRef=擬似過去時刻）が
-  // 実時刻から乖離するため、実時刻ベースの絶対時刻を持つ予約が「発火時刻 > 現在」で永久滞留し、
-  // リプレイ解除時に一斉発火する。**リプレイ中のみ**、実時刻ベースの eventTime を now 以下にクランプ
-  // して即発火させる。
+  // 予約の発火時刻は、リプレイ中でもそのまま使う。キューへ入るものはすべて再生時計の
+  // 時間軸に乗っているため:
+  //   - 過去の電文は loadReplayEvents が電文時刻で直接積む
+  //   - 解除・失効の予約（EEW 最終報からの自動解除・津波の有効期限）は電文時刻か
+  //     getTimeRef（=再生時刻）を起点に組み立てる
+  //   - リプレイ中はライブ接続を張らないので、実時刻のイベントは入ってこない
+  //     （下の接続 effect が replayTimeOffset !== null で早期 return する）
+  //   - リプレイの開始・停止では resetState がキューを空にするため、ライブ中に積んだ
+  //     予約が再生へ持ち越されることもない
   //
-  // TSU-5A のレビューで判明した既存バグ修正: 以前は live 中も一律クランプしていたため、
-  // 意図的な未来時刻（validDateTime=数分〜数時間後・EEW cancel time・TSU-5A の 24h フェイルセーフ）
-  // まで now に潰されて受信直後に発火していた（TSU-1 の validDateTime 経路・EEW 最終報自動解除・
-  // 初回ロード津波期限切れ・TSU-5A が全て影響）。live 中は素通しにする。
-  const clampToNow = useCallback((raw: Date): Date => {
-    if (!isReplayClock()) return raw
-    const now = getTimeRef.current()
-    return raw > now ? now : raw
-  }, [])
+  // かつては「実時刻ベースの予約が擬似過去の now から見て未来になり永久滞留する」対策として、
+  // リプレイ中だけ発火時刻を now へ潰していた（VAR-1）。ライブ接続を止める根治が入った後も
+  // 潰しだけが残り、再生時間軸の予約まで受信直後に発火させていた（EEW は最終報の 9ms 後に
+  // 自動解除され猶予が消える・津波は validDateTime を待たず即失効する）。リプレイ中もライブ
+  // 接続を張る方針に戻すなら、一律で潰すのではなく予約ごとに時間軸を持たせること。
 
   // WebSocket 受信時のエントリポイント: event.time を基準にキューへ挿入する
   // live モードでは event.time ≈ now なので次のティック（最大 100ms 後）に即時発火する
@@ -280,10 +281,9 @@ export function useEarthquakes(
     // （`q[0].eventTime <= now` が偽なら以降を処理しない）で、NaN 比較は常に偽になるため
     // その後ろに積まれたイベントが二度と発火しない。パーサ側でも弾いているが、
     // 単一の壊れた時刻でライブ更新が全停止する事故は入口でも防いでおく。
-    const raw = Number.isFinite(parsed.getTime()) ? parsed : serverDate()
-    const eventTime = clampToNow(raw)
+    const eventTime = Number.isFinite(parsed.getTime()) ? parsed : serverDate()
     insertSorted(eventQueueRef.current, { eventTime, payload: { kind: 'event', event } })
-  }, [clampToNow])
+  }, [])
 
   // 時刻ソースはアプリ時計(serverDate)に一元化。ライブ時はサーバー同期、
   // リプレイ時は clock.setReplayOffset により再生時刻を返すため差し替え不要。
@@ -303,8 +303,7 @@ export function useEarthquakes(
       if (!eew.cancelled && !eew.test && eew.isFinal) {
         const cancelTime = calcEEWCancelTime(eew, new Date(eew.time))
         insertSorted(eventQueueRef.current, {
-          // VAR-1: kyoshin リプレイ中の real-time 予約が永久滞留するのを防ぐため clampToNow を適用。
-          eventTime: clampToNow(cancelTime),
+          eventTime: cancelTime,
           payload: { kind: 'event', event: { ...eew, cancelled: true, expired: true } as AppEvent },
         })
       }
@@ -369,20 +368,14 @@ export function useEarthquakes(
           return evAny.cancelReason !== 'expired'
         })
         if (expireTime) {
-          // clampToNow は「実時刻で書かれた絶対時刻」（TSU-1 の validDateTime）にのみ適用する。
-          // ライブ受信の電文はリプレイ時計から見ると遠い未来を指すため、潰さないとキューに
-          // 永久滞留する。逆に TSU-5A の 24h フェイルセーフは再生時刻を起点に組み立てており
-          // （初期状態の再現では電文の発表時刻を起点にする。いずれも既にリプレイ時間軸の上）、
-          // clampToNow に通すと必ず now に潰れて即発火してしまう。
-          const eventTime = tsunami.validDateTime ? clampToNow(expireTime) : expireTime
           // 初期状態の再現では、遡り幅（24 時間）の境目ぶんだけ「発表から 24 時間を過ぎた」
           // 電文が紛れうる。未来の予約しか積まないと、そういう津波は失効予約を持たないまま
           // 画面に残り、リプレイ中はライブ更新も止まっているので消す手段が無くなる。
           // その場で失効させる（silent 注入なので音は鳴らない）。
-          const alreadyExpired = eventTime <= now
+          const alreadyExpired = expireTime <= now
           if (!alreadyExpired || isSilentRef.current) {
             insertSorted(eventQueueRef.current, {
-              eventTime: alreadyExpired ? now : eventTime,
+              eventTime: alreadyExpired ? now : expireTime,
               silent: alreadyExpired ? true : undefined,
               payload: { kind: 'event', event: { ...tsunami, cancelled: true, cancelReason: 'expired' } as AppEvent },
             })
@@ -745,13 +738,11 @@ export function useEarthquakes(
             error: null,
           }))
           // 初回ロードで津波が有効（validDateTime未来）の場合、キューへ解除イベントを挿入する。
-          // DMDSS 版はリプレイ中この effect 自体が return されるため clampToNow は不要だが、
-          // 将来リプレイ許可時への安全弁として適用しておく。
           if (tsunamis.length > 0 && latestTsunami?.validDateTime) {
             const expireTime = new Date(latestTsunami.validDateTime)
             if (expireTime > serverDate()) {
               insertSorted(eventQueueRef.current, {
-                eventTime: clampToNow(expireTime),
+                eventTime: expireTime,
                 payload: { kind: 'event', event: { ...latestTsunami, cancelled: true, cancelReason: 'expired' } as AppEvent },
               })
             }
@@ -885,8 +876,7 @@ export function useEarthquakes(
           const expireTime = new Date(latestTsunami.validDateTime)
           if (expireTime > serverDate()) {
             insertSorted(eventQueueRef.current, {
-              // VAR-1: kyoshin リプレイ中の real-time 予約が永久滞留するのを防ぐため clampToNow を適用。
-              eventTime: clampToNow(expireTime),
+              eventTime: expireTime,
               payload: { kind: 'event', event: { ...latestTsunami, cancelled: true, cancelReason: 'expired' } as AppEvent },
             })
           }

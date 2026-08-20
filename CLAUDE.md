@@ -436,6 +436,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | テスト時刻設定のバリアント差（standard は P2PQuake の日付クエリ、DMDSS は DMDATA アーカイブ／ただし EEW はどちらも取得元が異なり、standard では強震モニタ側の検知に頼る） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」 |
 | archive リプレイの重複排除（XML 版／JSON 版どちらを採用するか）・失敗の封じ込め範囲（アーカイブが全滅しても強震モニタの再生は止めない） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」配下 |
 | `ConnectionStatus` の `replay`（再生中はライブ接続を切るため専用表示にする。`disconnected` と混ぜると地図に切断警告が出る） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「再生中はライブ接続を止める（接続状態の表示）」 |
+| 再生中の予約の時刻軸（EEW の自動解除・津波の失効を再生時計の「いま」へ潰さない。潰すと最終報の直後に EEW が消え、猶予が無くなる） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「再生中も予約は発火時刻を待つ」 |
 
 各仕様書は冒頭で「食い違う場合は実コードを正とする」と宣言している。放置すると即座に嘘になる文書なので、実装変更時に必ず追従させる。
 
