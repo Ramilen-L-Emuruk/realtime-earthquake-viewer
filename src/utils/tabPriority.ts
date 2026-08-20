@@ -73,7 +73,29 @@ export function shouldAcceptAutoTab(
   source: TabHoldSource = 'hold',
 ): boolean {
   if (hold.until - now <= 0) return true
-  if (source === 'speech' && hold.source === 'speech') return true
+  // **EEW の続報は、他の情報が確保している画面を奪わない。** 従来からある片方向の抑制で、
+  // 「非 realtime タブへ移ったあとは EEW の続報で realtime へ引き戻さない」もの。
+  // 抑制が無いと、津波や地震情報を読み上げて画面を移した直後に続報が来て realtime に戻り、
+  // 数秒ごとに画面が往復する（読み上げは続いているのに画面だけが行き来する）。
+  // 同じ系列で realtime を確保している間（保持が EEW 由来）は素通りさせる。
+  // 新規発報・レベルアップ・誤報取消は `eewUrgent` で要求されるため、この抑制に掛からない。
+  if (priority === TAB_PRIORITY.eewUpdate
+    && hold.priority !== TAB_PRIORITY.eewUpdate
+    && hold.priority !== TAB_PRIORITY.eewUrgent) {
+    return false
+  }
+  if (source === 'speech') {
+    // 追従どうしは順序が保証されているので保持を見ない。
+    if (hold.source === 'speech') return true
+    // **揺れ検知の保持だけは追従を妨げない。** 揺れ検知は読み上げを持たないため順序を決める
+    // 仕組みに参加しておらず、これを尊重すると「地震情報を喋っているのに画面が揺れ検知のまま」
+    // という、この修正が解こうとした形の問題が別の場所で再発する。
+    //
+    // **ここを「手動選択以外は全部突破する」まで広げてはいけない。** 広げると、
+    // 区域を持たない津波電文で受信時要求に落としたフォールバック（`tsunami`）を長周期（`lpgm`）が
+    // 即座に奪い、アイドル復帰が EEW 中に張った保持（`eewUpdate`）も地震情報だけで外れる。
+    if (hold.priority === TAB_PRIORITY.kyoshin) return true
+  }
   return priority >= hold.priority
 }
 

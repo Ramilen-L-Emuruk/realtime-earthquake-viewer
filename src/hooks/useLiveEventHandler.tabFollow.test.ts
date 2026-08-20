@@ -87,6 +87,40 @@ function makeTsunami(): JMATsunami {
   } as unknown as JMATsunami
 }
 
+/**
+ * 区域を持たない津波電文（観測情報のみの続報）。
+ *
+ * 進行中の津波の途中でページを読み直すと直前の状態が分からず、この電文が「新規発報」と
+ * 判定される。区域が無いので読み上げ文が組めず、追従が発火しない経路になる。
+ */
+function makeTsunamiObsOnly(): JMATsunami {
+  return {
+    kind: 'tsunami',
+    id: 'tsunami-obs-1',
+    eventId: 'tsunami-evt',
+    time: '2026-01-01T12:10:00Z',
+    cancelled: false,
+    issue: { source: 'JMA', time: '2026-01-01T12:10:00Z', type: 'Focus' },
+    areas: [],
+    // 波高が既に確定している観測点だけを含む（到達確認の文も組めない）
+    observations: [{ name: '輪島港', height: { value: 1.2, over: false, description: '1.2m' }, time: '2026-01-01T12:08:00Z' }],
+  } as unknown as JMATsunami
+}
+
+/** 同一イベントの観測点更新（grade は変わらず、観測点の波高だけが伸びた続報）。 */
+function makeTsunamiObsUpdate(): JMATsunami {
+  return {
+    kind: 'tsunami',
+    id: 'tsunami-2',
+    eventId: 'tsunami-evt',
+    time: '2026-01-01T12:05:00Z',
+    cancelled: false,
+    issue: { source: 'JMA', time: '2026-01-01T12:05:00Z', type: 'Focus' },
+    areas: [{ grade: 'MajorWarning', immediate: true, name: '石川県能登', maxHeight: { description: '5m', value: 5 } }],
+    observations: [{ name: '輪島港', height: { value: 3.4, over: false, description: '3.4m' }, time: '2026-01-01T12:04:00Z' }],
+  } as unknown as JMATsunami
+}
+
 function makeEEW(over: { serial?: string } = {}): EEWAlert {
   return {
     kind: 'eew',
@@ -110,6 +144,7 @@ function makeEEW(over: { serial?: string } = {}): EEWAlert {
 function setup(over: { voicevoxEnabled?: boolean } = {}) {
   const spies = {
     followSpeechTab: vi.fn(),
+    expandPanelForSpecialInfo: vi.fn(),
     setActiveTabNonRealtime: vi.fn(),
     setActiveTabRealtimeOnUpdate: vi.fn(),
     setActiveTabRealtimeUrgent: vi.fn(),
@@ -125,10 +160,14 @@ function setup(over: { voicevoxEnabled?: boolean } = {}) {
   const title = new Proxy({ alertTitle: null } as Record<string, unknown>, {
     get: (t, k) => (k in t ? t[k as string] : vi.fn()),
   })
+  // 津波の「新規発報か続報か」は App が持つ現在の津波リストを見て判定される
+  // （`isTsunamiNewFire`）。続報を模すテストでは、App が state を更新した状態を
+  // ここへ書き込んでから次の電文を渡す。
+  const tsunamisRef = { current: [] as JMATsunami[] }
   const { result } = renderHook(() => useLiveEventHandler({
     settings, title: title as never,
     earthquakesRef: { current: [] as JMAQuake[] },
-    tsunamisRef: { current: [] as JMATsunami[] },
+    tsunamisRef,
     kyoshinDetectedRef: { current: false },
     defaultTabRef: { current: 'earthquake' },
     setActiveTabRealtimeForKyoshin: vi.fn(),
@@ -136,7 +175,7 @@ function setup(over: { voicevoxEnabled?: boolean } = {}) {
     selectQuake: vi.fn(), setActiveLpgmEventId: vi.fn(),
     ...spies,
   }))
-  return { handle: result.current.handleLiveEvent, spies }
+  return { handle: result.current.handleLiveEvent, spies, tsunamisRef }
 }
 
 beforeEach(() => {
@@ -172,10 +211,12 @@ describe('読み上げとタブ切替の同調', () => {
   })
 
   it('EEW の発話が始まると realtime へ追従する', async () => {
+    // 新規発報の追従は eewUrgent。手動選択より強い側の通知なので、発話の直前に手動で
+    // 別タブへ移られていても画面を取り戻す（受信時要求の使い分けと揃えてある）。
     const { handle, spies } = setup()
     handle(makeEEW())
     await settle()
-    expect(spies.followSpeechTab).toHaveBeenCalledWith('realtime', TAB_PRIORITY.eewUpdate)
+    expect(spies.followSpeechTab).toHaveBeenCalledWith('realtime', TAB_PRIORITY.eewUrgent)
   })
 
   it('EEW を読み上げている間に届いた地震情報は、読み終わるまで earthquake を取らない', async () => {
@@ -184,7 +225,7 @@ describe('読み上げとタブ切替の同調', () => {
     const { handle, spies } = setup()
     handle(makeEEW())
     await advance(2000)
-    expect(spies.followSpeechTab).toHaveBeenCalledWith('realtime', TAB_PRIORITY.eewUpdate)
+    expect(spies.followSpeechTab).toHaveBeenCalledWith('realtime', TAB_PRIORITY.eewUrgent)
     spies.followSpeechTab.mockClear()
 
     // EEW の発話が進行中（明示的に終わらせていない）のまま地震情報を入れる。
@@ -208,6 +249,32 @@ describe('読み上げとタブ切替の同調', () => {
     handle(makeEEW({ serial: '2' }))
     await settle()
     expect(spies.setActiveTabRealtimeOnUpdate).toHaveBeenCalled()
+  })
+
+  it('津波の観測点更新（grade 不変の続報）でも、読み上げが起きるなら画面が動く', async () => {
+    // 従来は続報でタブを奪わなかった（CRIT-4）。その理由は「毎回 15 秒の抑制が再セットされて
+    // EEW 続報が realtime へ戻れなくなる」ことだったが、EEW 続報の抑制は
+    // `shouldAcceptAutoTab` 側で明示的に扱うようにしたので、ここは声に合わせて動かす。
+    const { handle, spies, tsunamisRef } = setup()
+    handle(makeTsunami())
+    await settle()
+    spies.followSpeechTab.mockClear()
+
+    // App が受信済みの津波を保持している状態にする（これが無いと続報も新規発報と判定される）
+    tsunamisRef.current = [makeTsunami()]
+    handle(makeTsunamiObsUpdate())
+    await settle()
+    expect(spies.followSpeechTab).toHaveBeenCalledWith('tsunami', TAB_PRIORITY.tsunami)
+  })
+
+  it('区域を持たない津波電文（観測情報のみ）でも、新規発報ならタブが動く', async () => {
+    // 読み上げ文が組めない＝追従が発火しない経路。受信時要求へ落ちる保険が要る。
+    // 保険が無いと、津波の途中でページを読み直した端末が tsunami タブへ一度も移らない。
+    const { handle, spies } = setup()
+    handle(makeTsunamiObsOnly())
+    await settle()
+    expect(spies.setActiveTabNonRealtime).toHaveBeenCalledWith('tsunami')
+    expect(spies.followSpeechTab).not.toHaveBeenCalled()
   })
 
   it('津波の新規発報も、受信時ではなく発話の番で tsunami を取る', async () => {
