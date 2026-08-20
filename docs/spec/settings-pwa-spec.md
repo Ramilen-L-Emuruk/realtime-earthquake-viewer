@@ -65,6 +65,10 @@
 - **地図レイヤー**: 地形（海底地形）→ 地質構造（プレート境界線・活断層線）→ 観測データ（地震活動ヒートマップ）の順。「活断層線の濃さ」は活断層線トグルに従属し、OFF のときは無効化される
 - **ブラウザ通知**: 種別ごとに独立トグル 3 種（`notifyDetection` / `notifyEEW` / `notifyTsunami`）＋ 通知する最低震度（`notifyMinScale`。`震度1以上`〜`震度7`から選択）
 - **音量**: 通知音と VOICEVOX 読み上げに共通適用（0〜1）
+- **解説情報の音・読み上げ**（`nankaiCommentaryAlerts`。既定 ON・DMDSS 版のみ）: 南海トラフ関連解説情報の
+  通知音と読み上げを行うか。**平常時にも定期的に届く**電文なので、煩わしいときに個別に切れるように
+  している（発表頻度は [`data-sources-spec.md`](data-sources-spec.md) §2）。臨時情報（段階の発表）は
+  この設定に関わらず鳴る。OFF にしてもバナーの表示は残る（音と読み上げだけを止める設定）
 - **VOICEVOX 読み上げの範囲**: 次の 4 項目で決まる。組み合わせ方は
   [`audio-tts-spec.md`](audio-tts-spec.md) §4「地域列挙の範囲」を参照。
   - **読み上げ震度階数**（既定 最大＋2 階級）
@@ -190,11 +194,12 @@ type TestScenarioFile = {
   baseTime: string   // ISO
   entries: Array<{
     offsetMs: number
-    // ReplayPayload は 4 バリアント（実装: dmdataReplay.ts）
+    // ReplayPayload は 5 バリアント（実装: dmdataReplay.ts）
     payload:
       | { kind: 'event'; event: AppEvent }         // quake / eew / tsunami
       | { kind: 'lpgm'; data: JMALpgm }            // 長周期地震動観測情報（VXSE62）
-      | { kind: 'nankai'; data: JMANankai }        // 南海トラフ地震関連情報（VYSE50/51）
+      | { kind: 'nankai'; data: JMANankai }        // 南海トラフ地震臨時情報（VYSE50）
+      | { kind: 'nankaiCommentary'; data: JMANankaiCommentary } // 南海トラフ地震関連解説情報（VYSE51/52）
       | { kind: 'kohatsu'; data: JMAKohatsu }      // 後発地震注意情報（VYSE60）
     silent?: boolean                                // true のとき音・通知・読み上げを抑制（続報の連投で多重発火を避けたい場合等）
   }>
@@ -232,7 +237,7 @@ DMDATA リプレイ機能の `setReplayOffset` は使わない（ライブ接続
 
 - DMDATA archive API から実電文を取得
 - パース済みの内部型として JSON に保存（生電文は保存しない）
-- 南海トラフ・後発地震（VYSE50/51/60）の XML パースは `jsdom` でグローバル `DOMParser` を代替
+- 南海トラフ・後発地震（VYSE50/51/52/60）の XML パースは `jsdom` でグローバル `DOMParser` を代替
 - 要 DMDATA.JP API キー
 
 **API キーの置き場所**: リポジトリ直下の `.env.local` に `DMDATA_API_KEY` を書けば、`npm run capture-scenario`
@@ -306,7 +311,7 @@ archive の目録（各アーカイブ内の `telegrams.json`）は、**同じ�
 | 電文の種類 | 採用するエントリ | 理由 |
 |---|---|---|
 | 地震・津波・EEW・長周期（VXSE 系・VTSE 系） | JSON 版（`originalId` あり） | JSON パーサで読むため |
-| 南海トラフ・後発地震（VYSE50/51/60） | XML 版（`originalId` なし） | XML パーサでしか読めないため |
+| 南海トラフ・後発地震（VYSE50/51/52/60） | XML 版（`originalId` なし） | XML パーサでしか読めないため |
 
 採用しなかった側は正常な重複排除としてログ無しで捨てる。ここに警告を出すと、通常のリプレイ
 1 回で数十件のログが出て本当の異常が埋もれる。
@@ -315,8 +320,11 @@ archive の目録（各アーカイブ内の `telegrams.json`）は、**同じ�
 
 - XML 版と JSON 版が半々で並ぶことを確認できたのは VXSE42/44/45/51/52/53。うち本実装が取り込むのは
   VXSE45/51/52/53 で、VXSE42（配信テスト）・VXSE44（廃止予定）は対象外の種別
-- **VYSE 系（南海トラフ・後発地震）は未確認**。実測した期間のアーカイブに 1 件も無かった。表の
-  2 行目は「他の全種別が同じ構造だったこと」からの推定で、実データでの裏付けはまだ無い
+- **VYSE 系も 2 エントリ構造であることを確認済み**（2026-08-20 に 2024 年 8 月の日向灘 M7.1 前後の
+  アーカイブを実測）。臨時情報 VYSE50・臨時解説 VYSE51 のいずれも `.xml` と `.json` が並んで格納
+  されていた。本実装は XML 版を採用し、JSON 版（`originalId` あり）はログ無しで捨てる
+  - 定例解説 VYSE52 は平常時の電文で、実測した期間（本震前後の 9 日間）には含まれていなかった。
+    VYSE51 と同じ構造であることからの推定にとどまる
 
 #### 取りこぼしの扱い
 
@@ -438,6 +446,7 @@ DMDSS 版は DMDATA の WebSocket、standard 版は P2PQuake の WebSocket が�
 | 津波予報テスト | `createTestTsunamiForecast(withDmdssFields)` | - | 津波予報。DMDSS は 90 秒（`TEST_AUTO_DISMISS_MS`）後に `expired` 経路で解除。standard は `validDateTime` を持たないため解除電文で消す（後述「実電文の形に合わせる」） |
 | 津波誤報取消テスト | `createTestTsunamiRetraction(withDmdssFields)` + 90 秒後に取消電文 | - | 警報・注意報混在の発表 → 90 秒後に電文全体が取り消される（DMDSS は `retracted` 経路。standard は理由を判別できないため「解除」表示） |
 | 南海トラフ臨時情報テスト 3 種（DMDSS 版のみ） | `createTestNankai('調査中'／'巨大地震注意'／'巨大地震警戒')` | - | バナー表示 + `specialInfo` 音。バナー消去ボタンは無く、再テストで上書きされる |
+| 南海トラフ関連解説情報テスト 2 種（DMDSS 版のみ） | `createTestNankaiCommentary('臨時解説'／'定例解説')` | - | 臨時情報とは別の帯（teal）に表示 + `specialInfoCommentary` 音。**閉じるボタンあり**・発表から 7 日で自動消去。読み上げ・音は「解説情報の音・読み上げ」設定で切れる |
 | 後発地震テスト（DMDSS 版のみ） | `createTestKohatsu()` | - | 北海道・三陸沖後発地震注意情報のバナー表示 + `specialInfo` 音 |
 | 通知テスト | `App.tsx` の `onTest.notification`（インライン。`testData.ts` には無い） | - | 通知許可が必要（未許可なら案内ダイアログを出して送信しない）。許可状況は「通知設定」の「通知許可」行で確認できる |
 

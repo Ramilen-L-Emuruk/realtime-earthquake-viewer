@@ -6,8 +6,8 @@
 // （仕様: data.encoding="base64" / data.compression="gzip"）。
 // クライアント側で「base64 デコード → gunzip → JSON.parse」を行う必要がある。
 
-import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
-import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml, parseVyse5xFromXml, parseVyse60FromXml } from './dmdataParser'
+import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, EEWAlert, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
+import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml } from './dmdataParser'
 import { serverNow, serverDate } from '../utils/clock'
 import { gunzip } from '../utils/gzip'
 import { log } from '../utils/logger'
@@ -20,10 +20,16 @@ const CLASSIFICATIONS = ['eew.forecast', 'eew.warning', 'telegram.earthquake']
 // VXSE44（予報）は廃止予定のため除外。VXSE45 で同等情報＋長周期地震動が得られる。
 // VXSE42（配信テスト）は震源データを持たず EEW として表示できないため別途処理する。
 const EEW_TYPES = new Set(['VXSE43', 'VXSE45'])
-// VYSE50/51/52=南海トラフ地震臨時情報、VYSE60=北海道・三陸沖後発地震注意情報
-// これらは XML 電文（format: "xml"）として配信されるため REST API 経由で取得する
-// VYSE52（関連解説情報）は補足解説電文でステータス判定に使えないため除外する
-const VYSE_NANKAI_TYPES = new Set(['VYSE50', 'VYSE51'])
+// VYSE50=南海トラフ地震臨時情報、VYSE51/52=南海トラフ地震関連解説情報、
+// VYSE60=北海道・三陸沖後発地震注意情報。
+// これらは XML 電文（format: "xml"）として配信されるため REST API 経由で取得する。
+//
+// 臨時情報（VYSE50）と解説情報（VYSE51/52）は別物として扱う。段階（調査中・巨大地震注意等）を
+// 持つのは臨時情報だけで、解説情報は状況の解説にとどまる。同じスロットに入れると解説情報が
+// 段階の表示を上書きしてしまう（VYSE51 は臨時情報の発表期間中、毎日届く）。
+// VYSE51=臨時解説（臨時情報の期間中）、VYSE52=定例解説（平常時に毎月）。
+const VYSE_NANKAI_TYPES = new Set(['VYSE50'])
+const VYSE_COMMENTARY_TYPES = new Set(['VYSE51', 'VYSE52'])
 const VYSE_KOHATSU_TYPES = new Set(['VYSE60'])
 const RECONNECT_BASE_MS = 3000
 const RECONNECT_MAX_MS = 30000
@@ -167,6 +173,7 @@ export type DmdataEvent =
   | { kind: 'tsunami'; data: JMATsunami }
   | { kind: 'lpgm'; data: JMALpgm }
   | { kind: 'nankai'; data: JMANankai }
+  | { kind: 'nankaiCommentary'; data: JMANankaiCommentary }
   | { kind: 'kohatsu'; data: JMAKohatsu }
 
 export class DmdataWebSocket {
@@ -382,9 +389,9 @@ export class DmdataWebSocket {
     }
     if (!headType) return
 
-    // VYSE50/51/52（南海トラフ）・VYSE60（後発地震）は format:"xml" で配信される。
-    // WebSocket メッセージの body.uri から XML を取得してパースする。
-    if (VYSE_NANKAI_TYPES.has(headType) || VYSE_KOHATSU_TYPES.has(headType)) {
+    // VYSE50（南海トラフ臨時情報）・VYSE51/52（同 関連解説情報）・VYSE60（後発地震）は
+    // format:"xml" で配信される。WebSocket メッセージの body.uri から XML を取得してパースする。
+    if (VYSE_NANKAI_TYPES.has(headType) || VYSE_COMMENTARY_TYPES.has(headType) || VYSE_KOHATSU_TYPES.has(headType)) {
       const uri = (msg as { body?: { uri?: string } }).body?.uri
       if (!uri) {
         if (this.debug) dlog('VYSE 電文に uri がない', { headType })
@@ -396,12 +403,27 @@ export class DmdataWebSocket {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const xml = await res.text()
         if (VYSE_NANKAI_TYPES.has(headType)) {
-          const nankai = parseVyse5xFromXml(xml)
+          const nankai = parseNankaiFromXml(xml)
           if (nankai) {
             if (this.debug) dlog('南海トラフ臨時情報受信', { headType, kindName: nankai.kindName })
             this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'nankai'))
             this.onEvent?.({ kind: 'nankai', data: nankai })
           } else {
+            // VYSE50 は必ず段階（調査中・巨大地震注意等）を持つ電文なので、読めないのは書式が
+            // 変わった等の異常。電文ログ（設定タブ）だけに残すと開かないと気づけないため、
+            // debug フラグに関わらずコンソールへ出す。
+            log.warn(`[DMDSS] 南海トラフ臨時情報 (${headType}) の段階を解析できませんでした`)
+            this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
+          }
+        } else if (VYSE_COMMENTARY_TYPES.has(headType)) {
+          const commentary = parseNankaiCommentaryFromXml(xml)
+          if (commentary) {
+            if (this.debug) dlog('南海トラフ関連解説情報受信', { headType, serialName: commentary.serialName })
+            this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'nankaiCommentary'))
+            this.onEvent?.({ kind: 'nankaiCommentary', data: commentary })
+          } else {
+            // 取消電文は cancelled を立てて返るためここには来ない。null は書式の異常だけ
+            log.warn(`[DMDSS] 南海トラフ関連解説情報 (${headType}) を解析できませんでした`)
             this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
           }
         } else {
@@ -679,34 +701,78 @@ export async function fetchDmdataTsunamis(
     .filter((v): v is JMATsunami => v !== null && 'kind' in (v as object) && (v as JMATsunami).kind === 'tsunami')
 }
 
-// DMDATA REST API で南海トラフ地震臨時情報（VYSE50/51）の最新1件を取得する。
+// DMDATA REST API で南海トラフ地震臨時情報（VYSE50）の最新1件を取得する。
 // 取得失敗時は null を返す（補助情報なのでアプリを壊さない）が、失敗した事実はログに残す。
 // 「発表なし」と「取得できていない」は同じ null になるため、記録が無いと区別できなくなる。
 //
-// VYSE52（関連解説情報）は補足解説電文であり InfoKind にステータスキーワードが入らないため
-// 発令中/調査終了の判定に使えない。VYSE51（臨時情報の更新）と VYSE50（初報・調査中）のみで判定する。
+// 段階（調査中／巨大地震注意／巨大地震警戒／調査終了）はすべて VYSE50 で配信されるため、
+// 発令中かどうかはこの 1 種別だけで判定できる。解説情報（VYSE51/52）は段階を持たないので
+// ここでは見ない（以前は VYSE51 を優先して見ており、解説情報が段階を騙る原因になっていた）。
 export async function fetchDmdataNankai(apiKey: string): Promise<JMANankai | null> {
   const headers = { Authorization: authHeader(apiKey) }
   try {
-    // VYSE51 が最終状態（調査終了/巨大地震注意/巨大地震警戒）を決定する。
-    // VYSE51 がなければ VYSE50（調査中）が発令中。
-    for (const type of ['VYSE51', 'VYSE50']) {
-      const res = await fetch(`${API_BASE}/telegram?type=${type}&limit=1`, { headers })
-      if (!res.ok) { logRestFailure(`南海トラフ地震臨時情報 (${type}) の一覧`, res.status); continue }
-      const json = await res.json() as { items?: Array<{ id: string; url: string }> }
-      const item = (json.items ?? [])[0]
-      if (!item) continue
-      const xmlRes = await fetch(item.url, { headers })
-      if (!xmlRes.ok) { logRestFailure(`南海トラフ地震臨時情報 (${type}) の電文本体`, xmlRes.status); continue }
-      const xml = await xmlRes.text()
-      const nankai = parseVyse5xFromXml(xml)
-      if (nankai && !nankai.cancelled) return nankai
-      if (nankai?.cancelled) return null
+    const res = await fetch(`${API_BASE}/telegram?type=VYSE50&limit=1`, { headers })
+    if (!res.ok) { logRestFailure('南海トラフ地震臨時情報 (VYSE50) の一覧', res.status); return null }
+    const json = await res.json() as { items?: Array<{ id: string; url: string }> }
+    const item = (json.items ?? [])[0]
+    if (!item) return null
+    const xmlRes = await fetch(item.url, { headers })
+    if (!xmlRes.ok) { logRestFailure('南海トラフ地震臨時情報 (VYSE50) の電文本体', xmlRes.status); return null }
+    const nankai = parseNankaiFromXml(await xmlRes.text())
+    // 取得はできたのに読めなかった場合を黙って「発表なし」に混ぜない。VYSE50 は必ず段階を持つため、
+    // ここが null になるのは書式が変わった等の異常であり、記録が無いと追跡できなくなる。
+    if (!nankai) {
+      log.warn('[DMDSS] 南海トラフ地震臨時情報 (VYSE50) の段階を解析できませんでした')
+      return null
     }
+    // 調査終了・取消は「発令中ではない」ので表示しない
+    if (!nankai.cancelled) return nankai
   } catch (err) {
     log.error('[DMDSS] 南海トラフ地震臨時情報の取得に失敗', err)
   }
   return null
+}
+
+// DMDATA REST API で南海トラフ地震関連解説情報（VYSE51/52）の最新1件を取得する。
+// 取得失敗時の扱いは fetchDmdataNankai と同じ。
+//
+// 臨時解説（VYSE51）と定例解説（VYSE52）のうち、発表が新しい方を採る。臨時情報の発表期間中は
+// 毎日 VYSE51 が出るためそちらが勝ち、平常時は毎月の VYSE52 が残る。
+// 期限切れ（発表から 7 日）のものは初期表示に出さない。定例解説は月 1 回しか来ないため、
+// これを見ないと「先月の解説」が起動時に毎回出てしまう。
+export async function fetchDmdataNankaiCommentary(apiKey: string): Promise<JMANankaiCommentary | null> {
+  const headers = { Authorization: authHeader(apiKey) }
+  let newest: JMANankaiCommentary | null = null
+  // try は種別ごとに分ける。1 つの try でループ全体を包むと、VYSE51 側の例外（ネットワーク断・
+  // JSON 破損など !res.ok で捕まらない失敗）でループが中断し、取得できたはずの VYSE52 まで
+  // 諦めることになる。平常時は VYSE52 しか存在しないため、そちらを守る必要がある。
+  for (const type of ['VYSE51', 'VYSE52']) {
+    try {
+      const res = await fetch(`${API_BASE}/telegram?type=${type}&limit=1`, { headers })
+      if (!res.ok) { logRestFailure(`南海トラフ地震関連解説情報 (${type}) の一覧`, res.status); continue }
+      const json = await res.json() as { items?: Array<{ id: string; url: string }> }
+      const item = (json.items ?? [])[0]
+      if (!item) continue
+      const xmlRes = await fetch(item.url, { headers })
+      if (!xmlRes.ok) { logRestFailure(`南海トラフ地震関連解説情報 (${type}) の電文本体`, xmlRes.status); continue }
+      const commentary = parseNankaiCommentaryFromXml(await xmlRes.text())
+      // 取得はできたのに読めなかった場合を黙って「発表なし」に混ぜない
+      if (!commentary) {
+        log.warn(`[DMDSS] 南海トラフ地震関連解説情報 (${type}) を解析できませんでした`)
+        continue
+      }
+      // 取消済みのものは起動時の表示対象にしない
+      if (commentary.cancelled) continue
+      if (new Date(commentary.expireAt).getTime() <= serverNow()) continue
+      // 文字列比較にしないこと。ISO 文字列のタイムゾーン表記が揃っている保証はない
+      if (!newest || new Date(commentary.reportDateTime).getTime() > new Date(newest.reportDateTime).getTime()) {
+        newest = commentary
+      }
+    } catch (err) {
+      log.error(`[DMDSS] 南海トラフ地震関連解説情報 (${type}) の取得に失敗`, err)
+    }
+  }
+  return newest
 }
 
 // DMDATA REST API で北海道・三陸沖後発地震注意情報（VYSE60）の最新1件を取得する。
