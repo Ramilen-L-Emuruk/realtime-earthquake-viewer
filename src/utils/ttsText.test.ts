@@ -2,9 +2,9 @@
 // 「〇時〇分」はローカルタイムゾーン依存のため、時刻の数値そのものではなく
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect } from 'vitest'
-import { earthquakeToText, eewToText, eewIntensityToText, lpgmToText, type TtsRegionOptions } from './ttsText'
+import { earthquakeToText, eewToText, eewIntensityToText, lpgmToText, tsunamiToText, tsunamiArrivalToText, type TtsRegionOptions } from './ttsText'
 import { getStationCoordsCache } from './stationCoords'
-import type { JMAQuake, JMALpgm, EarthquakePoint, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass } from '../types/earthquake'
+import type { JMAQuake, JMALpgm, EarthquakePoint, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass, JMATsunami, TsunamiArea, TsunamiObservation } from '../types/earthquake'
 
 const TTS_OPTS: TtsRegionOptions = { intensityLevels: 0, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0 }
 
@@ -421,5 +421,73 @@ describe('lpgmToText: 地域数の許容超過', () => {
   it('許容超過を 0 にすると従来どおり上限で打ち切る', () => {
     const text = lpgmToText(makeLpgm(), { ...TTS_OPTS, maxRegions: 2, regionTolerance: 0 }, true)
     expect(text).toContain('長周期地震動階級3を東京都23区、神奈川県東部、ほか1地域で観測しました。')
+  })
+})
+
+// 津波の区域名・地点名は読点（、）で連結する。中黒（・）は VOICEVOX が音として鳴らさず、
+// splitIntoChunks（voicevox.ts）のチャンク境界にもならないため、並べた区域名が一続きに
+// 聞こえてしまう（例:「山形県新潟県上中下越」）。句区切り辞書のポーズは辞書に載っている
+// 地名の直後にしか入らないので、区切りをそれに頼ることはできない。
+describe('津波の読み上げ: 区域名・地点名の区切り', () => {
+  function makeTsunami(areas: TsunamiArea[]): JMATsunami {
+    const now = '2026-01-01T00:00:00Z'
+    return {
+      kind: 'tsunami',
+      id: 'test-tsunami',
+      time: now,
+      cancelled: false,
+      issue: { source: 'テスト', time: now, type: 'Focus' },
+      areas,
+    }
+  }
+
+  // 2024-01-01 能登半島地震で津波警報の対象になった区域構成を模したもの
+  const notoAreas: TsunamiArea[] = [
+    { grade: 'MajorWarning', immediate: true, name: '石川県能登', maxHeight: { description: '５ｍ', value: 5 } },
+    { grade: 'Warning', immediate: true, name: '山形県', maxHeight: { description: '３ｍ', value: 3 } },
+    { grade: 'Warning', immediate: true, name: '新潟県上中下越', maxHeight: { description: '３ｍ', value: 3 } },
+    { grade: 'Watch', immediate: false, name: '北海道日本海沿岸南部', maxHeight: { description: '１ｍ', value: 1 } },
+    { grade: 'Watch', immediate: false, name: '青森県日本海沿岸', maxHeight: { description: '１ｍ', value: 1 } },
+  ]
+
+  it('下位グレードの区域名を読点で区切る', () => {
+    const text = tsunamiToText(makeTsunami(notoAreas))
+    expect(text).toContain('山形県、新潟県上中下越に津波警報')
+    expect(text).toContain('北海道日本海沿岸南部、青森県日本海沿岸に津波注意報')
+  })
+
+  it('予想最大波高が同じ区域をまとめるときも読点で区切る', () => {
+    const text = tsunamiToText(makeTsunami([
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', maxHeight: { description: '１０ｍ以上', value: 10 } },
+      { grade: 'MajorWarning', immediate: true, name: '宮城県', maxHeight: { description: '１０ｍ以上', value: 10 } },
+      { grade: 'MajorWarning', immediate: true, name: '福島県', maxHeight: { description: '６ｍ', value: 6 } },
+    ]))
+    expect(text).toContain('予想最大波高は、岩手県、宮城県で10メートル以上、福島県で6メートルです。')
+  })
+
+  it('到達確認の地点名を読点で区切る', () => {
+    const obs: TsunamiObservation[] = [
+      { name: '佐渡市鷲崎', districtName: '佐渡' },
+      { name: '小木', districtName: '佐渡' },
+      { name: '柏崎', districtName: '新潟県上中下越' },
+    ]
+    const text = tsunamiArrivalToText(obs)
+    expect(text).toContain('佐渡、佐渡市鷲崎、小木')
+    expect(text).toContain('新潟県上中下越、柏崎')
+  })
+
+  // 津波予報区名そのものに中黒を含むものが実データに 9 件ある（「伊勢・三河湾」「壱岐・対馬」など。
+  // tsunami-zones.json 参照）。区域名の中の中黒は名前の一部なのでそのまま残し、
+  // 区域名どうしを繋ぐ位置にだけ読点を使う。「中黒を一切含まない」を条件にはできない。
+  it('区域名に含まれる中黒は残し、区域名どうしの連結にだけ読点を使う', () => {
+    const text = tsunamiToText(makeTsunami([
+      { grade: 'Warning', immediate: true, name: '伊勢・三河湾', maxHeight: { description: '３ｍ', value: 3 } },
+      { grade: 'Warning', immediate: true, name: '愛知県外海', maxHeight: { description: '３ｍ', value: 3 } },
+      { grade: 'Watch', immediate: false, name: '壱岐・対馬', maxHeight: { description: '１ｍ', value: 1 } },
+      { grade: 'Watch', immediate: false, name: '有明・八代海', maxHeight: { description: '１ｍ', value: 1 } },
+    ]))
+    expect(text).toContain('伊勢・三河湾、愛知県外海に津波警報が発表されました。')
+    expect(text).toContain('予想最大波高は、伊勢・三河湾、愛知県外海で3メートルです。')
+    expect(text).toContain('壱岐・対馬、有明・八代海に津波注意報')
   })
 })
