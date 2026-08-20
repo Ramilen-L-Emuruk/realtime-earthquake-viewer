@@ -4,7 +4,7 @@ import { getIntensityLabel } from './intensity'
 import { tsunamiMaxGrade } from './tsunami'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
-import { getStationCoordsCache, buildAreaPrefIndex, buildStationPrefIndex, buildPrefAreaNamesIndex } from './stationCoords'
+import { getStationCoordsCache, buildAreaPrefIndex, buildStationPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, type RegionOrderIndex } from './stationCoords'
 import { hasMagnitude, hasDepth } from './formatters'
 
 const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch', 'Forecast']
@@ -81,6 +81,22 @@ function coordForName(name: string): [number, number] | null {
   return null
 }
 
+/**
+ * 地域名を気象庁の標準順（北から南。同じ県の区域は隣り合う）に並べ替える。
+ * 震源からの距離順だと同じ県の同じ震度でも間に他県が挟まり、聞いて位置を掴みにくいため。
+ *
+ * 索引に載っていない名前（震度観測点を持たない区域など）は元の順序を保ったまま末尾へ回す。
+ * 索引そのものが無い（座標テーブル未読み込み）ときは並べ替えず、呼び出し元が作った順を通す。
+ */
+function sortByRegionOrder(names: string[], order: RegionOrderIndex | null): string[] {
+  if (!order) return names
+  // 区域名を先に引く（県名と同名の区域があっても、より具体的な区域の順位を採る）。
+  // 未知の名前どうしの比較で NaN を出さないよう、番兵は減算可能な有限値にする。
+  const rank = (name: string) =>
+    order.areas.get(name) ?? order.prefs.get(name) ?? Number.MAX_SAFE_INTEGER
+  return [...names].sort((a, b) => rank(a) - rank(b))
+}
+
 export interface TtsRegionOptions {
   intensityLevels: number   // 最大震度に加えて何階級下まで読むか（0 = 最大のみ。観測がある階級だけを数える）
   maxRegions: number        // 読み上げる最大地域数（0 = 無制限）
@@ -97,11 +113,17 @@ function buildRegionText(
   const maxIdx = SCALE_DESCENDING.indexOf(maxScale)
   if (maxIdx < 0) return ''
 
-  const hasEpicenter = hypocenter != null && (hypocenter.latitude !== 0 || hypocenter.longitude !== 0)
+  // 震源位置が使えるか。0 は座標未設定、-200 は「位置不明」センチネル（震度速報のように震源を
+  // 持たない電文で入る。p2pquake.ts / dmdataParser.ts 参照）。どちらも距離の基準にはできない。
+  // -200 を弾かないと、地球上に存在しない点からの距離で地域を選ぶことになる。
+  const hasEpicenter = hypocenter != null
+    && hypocenter.latitude > -200 && hypocenter.longitude > -200
+    && (hypocenter.latitude !== 0 || hypocenter.longitude !== 0)
   const stationData = getStationCoordsCache()
   const prefAreaNames = stationData ? buildPrefAreaNamesIndex(stationData) : null
   const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
   const stationPrefIndex = stationData ? buildStationPrefIndex(stationData) : null
+  const regionOrder = stationData ? buildRegionOrderIndex(stationData) : null
 
   // 最大震度以下で実際に観測がある階級だけを降順に集める。震度スケール上の位置ではなく
   // この配列の添字を「最大から何階級目か」として数えるため、観測 0 地域の階級が読み上げ枠を
@@ -124,6 +146,9 @@ function buildRegionText(
     if (!withinLevels && !withinAlwaysRead) break
     let names = observedNames.filter(n => !mentioned.has(n))
     if (names.length === 0) continue
+    // 上限で切るときに残す地域は震源に近い順で選ぶ（読み上げる順序ではなく「どれを読むか」の選抜）。
+    // 地理順のまま先頭から切ると、震源から遠い北側の地域が枠を占め、震源直近が「ほかN地域」に
+    // 潰されうる。
     if (hasEpicenter) {
       names = [...names].sort((a, b) => {
         const ca = coordForName(a)
@@ -134,6 +159,10 @@ function buildRegionText(
         return distSq(hypocenter!.latitude, hypocenter!.longitude, ca[0], ca[1])
              - distSq(hypocenter!.latitude, hypocenter!.longitude, cb[0], cb[1])
       })
+    } else {
+      // 震源が無い電文（震度速報）では距離で選べない。先に地理順へ整えてから切り、
+      // 「北から上限まで」という説明できる選抜にする（電文の並びに結果を委ねない）。
+      names = sortByRegionOrder(names, regionOrder)
     }
     // 上限をわずかに超えるだけなら、省いた地域名より「ほかN地域」の方が長くなる。許容超過
     // (regionTolerance) の範囲内は省略せず全地域を読む。超えた場合に切る位置は上限ちょうど。
@@ -142,6 +171,9 @@ function buildRegionText(
       omittedCount = names.length - opts.maxRegions
       names = names.slice(0, opts.maxRegions)
     }
+    // 選抜が済んでから読み上げ順（地理順）に組み直す。震源が無い経路では上で既に地理順に
+    // 整っているため、ここは何も動かさない（安定ソートなので通しても順序は変わらない）。
+    names = sortByRegionOrder(names, regionOrder)
     names.forEach(n => mentioned.add(n))
     const omittedSuffix = omittedCount > 0 ? `、ほか${omittedCount}地域` : ''
     parts.push(`${parts.length === 0 ? '最大' : ''}震度${intensityText(scale)}を${names.join('、')}${omittedSuffix}`)
@@ -608,6 +640,7 @@ function buildLpgmRegionText(lpgm: JMALpgm, opts: TtsRegionOptions): string {
   const stationData = getStationCoordsCache()
   const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
   const prefAreaNames = stationData ? buildPrefAreaNamesIndex(stationData) : null
+  const regionOrder = stationData ? buildRegionOrderIndex(stationData) : null
 
   const parts: string[] = []
   const mentioned = new Set<string>()
@@ -625,6 +658,9 @@ function buildLpgmRegionText(lpgm: JMALpgm, opts: TtsRegionOptions): string {
       omittedCount = names.length - opts.maxRegions
       names = names.slice(0, opts.maxRegions)
     }
+    // 読み上げ順は震度側と同じ地理順（北から・県ごと）。長周期地震動の電文には震源座標が無いため、
+    // 上限で切るときの選抜は電文の並び順のまま（震度側のような震源距離での選抜は行わない）。
+    names = sortByRegionOrder(names, regionOrder)
     names.forEach(n => mentioned.add(n))
     const omittedSuffix = omittedCount > 0 ? `、ほか${omittedCount}地域` : ''
     parts.push(`階級${cls}を${names.join('、')}${omittedSuffix}`)
