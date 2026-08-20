@@ -18,6 +18,7 @@ import {
   type StationMeta,
   type SiteState,
 } from './kyoshinDetector'
+import { haversineKm } from './geo'
 
 // ============================================================
 // テスト用ヘルパー
@@ -926,5 +927,211 @@ describe('step: recentOnsetKeys（直近に立ち上がった観測点）', () =
     const state = initState(0)
     const jumped = step(state, uniformFrame(defs, PARAMS.MAX_DT_GAP_MS + 5000, 2.0), meta)
     expect(jumped.recentOnsetKeys).toEqual([])
+  })
+})
+
+// ============================================================
+// 密網の連結（K 近傍が足りないと本物の揺れの面が途切れる）
+//
+// 2026-07-22 05:49 の福岡県筑後地方 M2.4 震度1 が K=7 で非検知だった件（設計書§17）の回帰。
+// 実データそのものは持ち込めないため、取りこぼしの「仕組み」を最小構成で再現する。
+// ============================================================
+
+/** 揺れる点を経度方向に並べる間隔（度）。lat35 で約 22.8km ＝ R_KM(40km) 内で隣と繋がる。 */
+const CHAIN_LNG_PITCH = 0.25
+/** 各揺れる点の周りに置く静穏点の緯度オフセット（度）。1.1〜4.5km の至近距離に 8 点。 */
+const CROWD_LAT_OFFSETS = [0.01, -0.01, 0.02, -0.02, 0.03, -0.03, 0.04, -0.04]
+
+/**
+ * 密な観測網に「橋渡しが必要な揺れ」を作る配置。
+ *
+ * 揺れる点を経度方向へ等間隔に 3 つ並べ、各点の周りに静穏点を**緯度方向だけ**に置く。
+ * 緯度へ直交にずらすと、その静穏点は隣の揺れる点から見て必ず「隣の揺れる点自身より遠い」
+ * （直角の分だけ距離が伸びる）ため、近傍リストの順位が
+ *   1〜8 番: 自分の周りの静穏点（至近） → 9 番以降: 隣の揺れる点
+ * に固定される。つまり K が 8 以下だと隣の揺れる点が近傍から溢れ、揺れの面が繋がらない。
+ * 実際の福岡は、床を超えて立ち上がった点が 20〜30km 間隔で並び、その間を埋める点が
+ * 震度0（床下）で脱落したため、K=7 では連結経路が断たれて非検知になった。
+ */
+function denseChainLayout(): { defs: StationDef[]; shakeIdx: number[] } {
+  const defs: StationDef[] = []
+  const shakeIdx: number[] = []
+  for (let c = 0; c < 3; c++) {
+    const lng = 139.0 + c * CHAIN_LNG_PITCH
+    shakeIdx.push(defs.length)
+    defs.push({ lat: 35.0, lng })
+    for (const d of CROWD_LAT_OFFSETS) defs.push({ lat: 35.0 + d, lng })
+  }
+  return { defs, shakeIdx }
+}
+
+describe('buildStationMeta: 密網でも離れた点へ橋を架ける（K）', () => {
+  it('至近の静穏点が 8 点あっても隣の揺れる点を近傍に含める（K=7 なら溢れる配置）', () => {
+    const { defs, shakeIdx } = denseChainLayout()
+    const meta = buildStationMeta(sitesOf(defs))
+    const left = defs[shakeIdx[0]!]!
+    const mid = defs[shakeIdx[1]!]!
+    const right = defs[shakeIdx[2]!]!
+    const midKey = siteKey(mid.lat, mid.lng)
+    const leftKey = siteKey(left.lat, left.lng)
+    const rightKey = siteKey(right.lat, right.lng)
+
+    // 中央の点から見て「隣の揺れる点より近い点」がいくつあるか。8 点あるので K=7 では
+    // 隣が近傍リストに載らず、この配置の揺れは連結できない（＝福岡の非検知の再現条件）。
+    const dToLeft = haversineKm(mid.lat, mid.lng, left.lat, left.lng)
+    const closer = defs.filter(
+      (d) =>
+        !(d.lat === mid.lat && d.lng === mid.lng) &&
+        haversineKm(mid.lat, mid.lng, d.lat, d.lng) < dToLeft,
+    ).length
+    expect(closer).toBeGreaterThanOrEqual(8)
+    expect(dToLeft).toBeLessThan(PARAMS.R_KM)
+
+    // 現行の K なら両隣が近傍に入り、鎖状に繋がる
+    expect(meta.neighbors[midKey]).toContain(leftKey)
+    expect(meta.neighbors[midKey]).toContain(rightKey)
+    expect(meta.neighbors[leftKey]).toContain(midKey)
+    // 1 つ飛ばし（約 45km）は R_KM の外なので繋がらない＝橋は隣どうしだけ
+    expect(meta.neighbors[leftKey]).not.toContain(rightKey)
+  })
+
+  it('K に余裕があっても近傍は R_KM 以内に限る（遠い点を引き込まない）', () => {
+    // R_KM(40km) 内に 3 点だけの疎な配置＋約 47km 先に 1 点。K の枠は空いているが距離で切る。
+    const defs: StationDef[] = [
+      { lat: 35.0, lng: 139.0 },
+      { lat: 35.1, lng: 139.0 },
+      { lat: 35.2, lng: 139.0 },
+      { lat: 35.3, lng: 139.0 },
+      { lat: 35.42, lng: 139.0 },
+    ]
+    const meta = buildStationMeta(sitesOf(defs))
+    const key = siteKey(35.0, 139.0)
+    expect(haversineKm(35.0, 139.0, 35.42, 139.0)).toBeGreaterThan(PARAMS.R_KM)
+    expect(meta.neighbors[key]).toHaveLength(3)
+    expect(meta.neighbors[key]).not.toContain(siteKey(35.42, 139.0))
+    expect(meta.avail[key]).toBe(3)
+  })
+})
+
+describe('step: 密網で間隔のある揺れ（福岡型）', () => {
+  it('20〜30km 間隔の 3 点だけが立ち上がっても連結して likely になる', () => {
+    const { defs, shakeIdx } = denseChainLayout()
+    const meta = buildStationMeta(sitesOf(defs))
+    const shake = new Set(shakeIdx)
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 6; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
+    // 3 点が震度1(value 0.5)へ。間を埋める静穏点は床下のまま動かない（実データと同じ形）
+    for (let i = 0; i < 4; i++, t += 1000) {
+      frames.push(frameWith(defs, t, (idx) => (shake.has(idx) ? 0.5 : 0)))
+    }
+    const { detections } = drive(frames, meta)
+
+    expect(detections.some((d) => d.confidence === 'likely')).toBe(true)
+    // 密な網では確定点数（CONFIRM_POINTS）に届かないので confirmed には上げない。
+    // 実際の福岡も likely 止まりで、これが妥当な確信度（音は鳴らさず画面には出す）。
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+
+  it('網が密で全点が相互に近傍でも、立ち上がりが 2 点なら検知しない（K では救えない限界）', () => {
+    // 3×3・間隔 0.1° は隣どうしが 9〜11km。立ち上がる 2 点は互いに近傍で、連結自体はしている。
+    // それでも検知しないのは近傍の数が足りないからではなく「立ち上がった点数が MIN_CLUSTER に
+    // 届かない」ため。つまり K をいくら増やしても救えない型の非検知（滋賀 M2.5・福島会津 M2.4）。
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const firstKey = siteKey(defs[0]!.lat, defs[0]!.lng)
+    const secondKey = siteKey(defs[1]!.lat, defs[1]!.lng)
+    expect(meta.neighbors[firstKey]).toContain(secondKey)
+
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 6; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
+    for (let i = 0; i < 4; i++, t += 1000) {
+      frames.push(frameWith(defs, t, (idx) => (idx < PARAMS.MIN_CLUSTER - 1 ? 0.5 : 0)))
+    }
+    const { state, detections } = drive(frames, meta)
+
+    expect(state.events).toHaveLength(0)
+    expect(detections).toHaveLength(0)
+  })
+})
+
+describe('step: likely/faint のティア保持（LIKELY_HOLD_MS・設計書§16）', () => {
+  /** 先頭 shakeCount 点だけを value へ動かし、残りを quiet に置くフレームを作る。 */
+  function partialShake(
+    defs: StationDef[],
+    t: number,
+    value: number,
+    quiet: number,
+    shakeCount: number,
+  ): Frame {
+    return frameWith(defs, t, (idx) => (idx < shakeCount ? value : quiet))
+  }
+
+  it('faint も広がりを失った後 LIKELY_HOLD_MS は維持され、過ぎるとイベントは生きたまま weak へ落ちる', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    // 静穏 value -0.5 → 3 点だけ震度0(value 0.0)へ。震度1 未満なので faint（無音の可視化）
+    for (let i = 0; i < 6; i++, t += 1000) state = step(state, uniformFrame(defs, t, -0.5), meta).state
+    for (let i = 0; i < 2; i++, t += 1000) {
+      state = step(state, partialShake(defs, t, 0.0, -0.5, PARAMS.MIN_CLUSTER), meta).state
+    }
+    expect(state.events[0]?.confidence).toBe('faint')
+
+    // ここから 1 点だけを床下と震度0 の間で振動させ続ける。onset が続くので size>0 が保たれ
+    // （＝`lastOnsetAtMs` が更新され続け）イベントは HOLD_MS では消えない。一方 onset が 1 点では
+    // 広がり（MIN_CLUSTER）に届かないので、**イベントの生存とティア保持を切り離して**
+    // LIKELY_HOLD_MS だけを見られる。震度0級は床＋SUSTAIN_MARGIN に届かず sustained になれない
+    // （値は 0.5 刻みなので実質震度1 が必要）ため、この形でしかこの状態を作れない。
+    // 2 フレームずつ床下→震度0 を繰り返す。`windowRate` の起点は「now − RATE_DT_MS(＋0.5s 許容)
+    // 以前の直近サンプル」＝ now−2000 付近なので、1 秒交互では起点が同じ位相の値を拾って
+    // 上昇量が 0 になり onset しない。2 フレーム周期にすると起点が必ず床下側に落ちる。
+    const flicker = (tt: number, phase: number): Frame =>
+      frameWith(defs, tt, (idx) => (idx === 0 && phase % 4 >= 2 ? 0.0 : -0.5))
+    const samples: { dt: number; tier: string; alive: boolean }[] = []
+    let spreadLostAt: number | null = null
+    for (let i = 0; i < 40; i++, t += 1000) {
+      state = step(state, flicker(t, i), meta).state
+      const ev = state.events[0]
+      if (spreadLostAt === null && ev && ev.lastSize < PARAMS.MIN_LIKELY_POINTS) spreadLostAt = t
+      if (spreadLostAt !== null) {
+        samples.push({ dt: t - spreadLostAt, tier: ev?.confidence ?? 'none', alive: state.events.length > 0 })
+      }
+    }
+    const at = (dt: number) => samples.find((s) => s.dt === dt)
+
+    // 広がりを失った直後も、その 5 秒後もまだ faint（保持が効いている）
+    expect(at(0)?.tier).toBe('faint')
+    expect(at(5_000)?.tier).toBe('faint')
+    // 保持を過ぎれば weak へ。ただしイベント自体は生きている＝これはティア保持の期限切れであり、
+    // HOLD_MS によるイベント解除ではない（両者を混同しないための対照）。
+    expect(at(15_000)?.tier).toBe('weak')
+    expect(at(15_000)?.alive).toBe(true)
+  })
+
+  it('likely はラッチしないので、保持中に震度0級まで弱まれば faint に下がる（confirmed との対比）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    for (let i = 0; i < 6; i++, t += 1000) state = step(state, uniformFrame(defs, t, 0), meta).state
+    // 3 点が震度1(0.5) → likely（密網なので確定点数には届かない）
+    for (let i = 0; i < 3; i++, t += 1000) {
+      state = step(state, partialShake(defs, t, 0.5, 0, PARAMS.MIN_CLUSTER), meta).state
+    }
+    expect(state.events[0]?.confidence).toBe('likely')
+    expect(state.events[0]?.everConfirmed).toBe(false)
+
+    // 震度0級(0.0)まで弱まったまま継続。confirmed は everConfirmed でラッチされるが
+    // likely にラッチは無く、保持中のティアはその時点の最大震度で決まる。
+    for (let i = 0; i < 12; i++, t += 1000) {
+      state = step(state, partialShake(defs, t, 0.0, 0, PARAMS.MIN_CLUSTER), meta).state
+    }
+    // 12 フレーム後は面が縮み（震度0級は sustained にならず直近 onset も切れる）、
+    // LIKELY_HOLD_MS の保持だけで生きている状態。ここが weak なら保持が効いていない。
+    expect(state.events[0]?.lastSize).toBeLessThan(PARAMS.MIN_LIKELY_POINTS)
+    expect(state.events[0]?.confidence).toBe('faint')
   })
 })
