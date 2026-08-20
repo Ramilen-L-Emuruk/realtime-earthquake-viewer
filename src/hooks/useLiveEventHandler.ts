@@ -12,7 +12,7 @@ import { showBrowserNotification } from '../utils/notifications'
 import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade } from '../utils/tsunami'
 import { matchesArea, sortAreasForCardDisplay } from '../components/TsunamiTab'
 import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
-import { speakWithVoicevox } from '../utils/voicevox'
+import { speakWithVoicevox, type ShouldStillPlay } from '../utils/voicevox'
 import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, tsunamiArrivalToText, nankaiToText, kohatsuToText, lpgmToText, type TtsRegionOptions } from '../utils/ttsText'
 import { log, createLogThrottle } from '../utils/logger'
 import { extractQuakeEventIdFromId, quakeEventKey, sameQuakeEntry } from '../utils/quakeMerge'
@@ -185,9 +185,15 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // EEW の eventId ごとにレベルを追跡（複数EEW対応）
   // key = issue.eventId ?? id、value = 0=低震度予報 / 1=警報（severity=Warning または予想震度5弱以上） / 2=特別警報
   const activeEEWLevelsRef = useRef<Map<string, 0 | 1 | 2>>(new Map())
-  // ここから 3 つは「実際に読み上げた値」を eventId 別に保持する。受信値ではなく発話した値を
+  // ここから 3 つは「読み上げに送り出した値」を eventId 別に保持する。受信値ではなく発話した値を
   // 持つのが要点。受信のたびに更新すると、割り込みや取消で声に出なかった値まで既読になり、
   // 「一度も言っていない値からの引き上げ」を語ることになる。更新は発話の直前だけで行う。
+  //
+  // 厳密には「鳴った値」ではない。発話の途中でも上位の続報が届けばそこから先は鳴らさないため
+  // （`shouldStillPlay`）、送り出したのに声にならなかった値が残りうる。それでも取りこぼしに
+  // ならないのは、読み上げ文が毎回**最新値から作り直される**（差分を語らない）ため。取り下げた
+  // 原因である「より高い値」は必ず別途予約され、そちらが読まれる。
+
   const spokenEEWScalesRef = useRef<Map<string, number>>(new Map())
   // 階級だけが上がる続報（震度据え置きで 2→3 等）は震度にもレベルにも現れないため専用に持つ。
   const spokenEEWLpgmClassesRef = useRef<Map<string, number>>(new Map())
@@ -227,6 +233,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const eewPhase2DoneRef = useRef<Set<string>>(new Set())
   // 予約の解決時にテキストを生成するため、eventId ごとに最新イベントを保持する（変化なし続報も含め常に最新で上書き）
   const eewTtsEventsRef = useRef<Map<string, EEWAlert>>(new Map())
+  // 誤報取消（訂正）を受けた eventId。**鳴っている途中の読み上げを打ち切ってよいのはこれだけ。**
+  // 自動解除（expired）と区別するために別に持つ（どちらも eewTtsEventsRef からは消えるため、
+  // 消えたことだけでは理由が分からない）。発表が終わった EEW の内容は誤りではないので、
+  // 自動解除では鳴っているものを切らない（切ると代わりに読むものが無く、尻切れで終わる）。
+  const eewRetractedKeysRef = useRef<Set<string>>(new Set())
   // EEW の eventId ごとに最後に Phase 1 を発話したときの震源情報を保持する（震源地名変化+座標移動の再発話判定用）
   const activeEEWAnnouncedHypocentersRef = useRef<Map<string, { name: string; lat: number; lng: number }>>(new Map())
   // 長周期地震動情報の更新検出: 受信済み eventId を追跡する
@@ -246,18 +257,23 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    * EEW の読み上げをチェーンの末尾に繋ぐ。`speak` が null を返した場合は何も発話しない
    * （発話の直前に対象がまだ発表中かを判定させるため、テキストは遅延生成にしている）。
    *
+   * `shouldStillPlay` を添えると、**音を出す直前**（チャンクごと）にもう一度確かめる。
+   * テキストを作ってから音が出るまでには合成の往復があり、鳴らしている間も続報は届くため、
+   * 生成時点の判定だけでは古い値を鳴らし切ってしまう（詳細は `voicevox.ts` の同名の型）。
+   *
    * **チェーンに reject を残さないこと。** `eewSpeechChainRef` は次の発話が待つ対象なので、
    * ここで reject させると以降の EEW の読み上げが連鎖的に落ち、**その端末では二度と
    * 緊急地震速報が読まれなくなる**。テキスト生成の例外まで含めて必ず catch する。
    */
-  const chainEEWSpeech = (speak: () => string | null) => {
+  const chainEEWSpeech = (speak: () => string | { text: string; shouldStillPlay?: ShouldStillPlay } | null) => {
     eewSpeechPendingRef.current++
     const prev = eewSpeechChainRef.current
     eewSpeechChainRef.current = capSpeechWait(prev).then(() => {
-      const text = speak()
-      if (text === null) return
+      const spoken = speak()
+      if (spoken === null) return
+      const { text, shouldStillPlay } = typeof spoken === 'string' ? { text: spoken, shouldStillPlay: undefined } : spoken
       return capSpeechWait(
-        speakWithVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume),
+        speakWithVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume, shouldStillPlay),
       )
     })
       .catch(err => log.warn('[eew] 読み上げに失敗', err))
@@ -514,6 +530,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             )
           }
         }
+        // 誤報取消（訂正）だけは、鳴っている途中の読み上げも打ち切る対象として覚えておく。
+        // 自動解除（expired）は「発表が終わった」だけで内容が誤りだったわけではなく、
+        // 途中で切っても代わりに読むものが無い（取消の読み上げは誤報取消のみ）。
+        if (!event.expired) eewRetractedKeysRef.current.add(key)
         // EEW 解除時は当該 eventId の読み上げ待ちを取り下げる。
         // eewTtsEventsRef を消すことで、既にチェーンに繋がっている予約も解決時に自ら黙る
         // （取り消された地震の予想震度を読み上げないための最終ガード）。
@@ -609,6 +629,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 読み上げは soundEnabled と独立に voicevoxEnabled のみで判定する（AUD-7）。
       if (settings.voicevoxEnabled) {
         eewTtsEventsRef.current.set(key, event)
+        // 同じ eventId で発表が再開することはないが、取消の記録を持ち越すと以後の読み上げが
+        // 鳴らせなくなるため、報を受けた時点で必ず落とす
+        eewRetractedKeysRef.current.delete(key)
 
         const clearPhase2MaxTimer = () => {
           const maxTimer = eewTtsMaxTimersRef.current.get(key)
@@ -659,7 +682,29 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             spokenEEWLpgmClassesRef.current.set(key, latestLpgmClass)
             spokenEEWLevelsRef.current.set(key, level)
             eewPhase2DoneRef.current.add(key)
-            return text
+            return {
+              text,
+              /**
+               * この文面を作ったときの値より新しいものが届いていたら、そこから先は鳴らさない。
+               *
+               * 予想震度は数秒で書き換わる（2024/1/1 能登の本震では 5弱 → 7 まで 7.5 秒）。
+               * 合成の往復と発話そのもので数秒かかるため、生成時点の判定だけでは**もう違う値を
+               * 鳴らし切ってしまう**。取り下げても取りこぼしにはならない: 上がった続報を受けた
+               * 時点で次の第 2 フェーズが予約済みで、そちらが最新値を読む。
+               *
+               * ここで「上がったときだけ」に限るのは、引き下げを追わない方針（黙る）と揃えるため。
+               * 下がったことを理由に取り下げると、代わりに読むものが無く無音で終わる。
+               */
+              shouldStillPlay: () => {
+                if (eewRetractedKeysRef.current.has(key)) return false  // 誤報取消（訂正）
+                const now = eewTtsEventsRef.current.get(key)
+                // 自動解除で消えた場合は鳴らし続ける。発表は終わったが、読んでいる値は誤りではない
+                if (!now) return true
+                return eewMaxScale(now) <= latestScale
+                  && eewMaxLpgmClass(now) <= latestLpgmClass
+                  && computeSingleEEWLevel(now) <= level
+              },
+            }
           })
         }
 
@@ -693,8 +738,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           if (!hypoFarMoved && currentLevel >= 1) {
             spokenEEWLevelsRef.current.set(key, currentLevel)
           }
-          // 待っている間に取消・自動解除が届いていたら震源も読まない
-          chainEEWSpeech(() => eewTtsEventsRef.current.has(key) ? phase1Text : null)
+          // 待っている間に取消・自動解除が届いていたら震源も読まない。鳴らし始めてから届いた
+          // 場合に残りを落とすのは**誤報取消のときだけ**（理由は eewRetractedKeysRef の宣言箇所）
+          chainEEWSpeech(() => eewTtsEventsRef.current.has(key)
+            ? { text: phase1Text, shouldStillPlay: () => !eewRetractedKeysRef.current.has(key) }
+            : null)
           // 発話した震源情報を記録する
           if (Number.isFinite(hypo.latitude) && Number.isFinite(hypo.longitude)) {
             activeEEWAnnouncedHypocentersRef.current.set(key, { name: hypo.name, lat: hypo.latitude, lng: hypo.longitude })
@@ -995,6 +1043,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     eewSpeechPendingRef.current = 0
     activeNonEewSpeechRef.current = null
     eewPhase2DoneRef.current.clear()
+    eewRetractedKeysRef.current.clear()
     lastTsunamiGradeRef.current = null
     lastMaxObsHeightRef.current.clear()
     seenObsNamesRef.current.clear()

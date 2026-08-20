@@ -136,8 +136,11 @@ export async function fetchVoicevoxSpeakers(baseUrl: string): Promise<VoicevoxSp
 /**
  * テキストを句読点で分割してチャンクのリストを返す。
  * 短すぎるチャンクは次と結合して自然さを保つ。
+ *
+ * export しているのはテストのため。読み上げの偽物を作る側が同じ分割を手書きすると、
+ * ここの条件を変えたときにテストだけが古い境界を前提に通り続ける。
  */
-function splitIntoChunks(text: string): string[] {
+export function splitIntoChunks(text: string): string[] {
   // 句点・読点・感嘆符・疑問符の後ろで分割
   const raw = text.split(/(?<=[。、！？])/)
     .map(s => s.trim())
@@ -283,16 +286,36 @@ async function synthesizeChunk(
 }
 
 /**
+ * 発話を鳴らす直前に呼ばれる妥当性の判定。`false` を返すと、そのチャンク以降を鳴らさない。
+ *
+ * **文面を作った時刻と、音が出る時刻はずれる。** 合成（VOICEVOX への往復）を待つ間にも、
+ * 鳴らしている間にも新しい電文は届く。緊急地震速報の予想震度のように数秒で書き換わる値は、
+ * 1 回の発話が終わる前に古くなりうるため、鳴らす側で見直せるようにしている。
+ *
+ * 呼ばれるのは**チャンクごと**（句読点区切り。`splitIntoChunks`）で、鳴っている途中の
+ * チャンクは打ち切らない。語の途中で切ると聞き取りを壊すため。
+ */
+export type ShouldStillPlay = () => boolean
+
+// 予約したチャンクが鳴り始める何秒前に {@link ShouldStillPlay} を見直すか。
+// チャンクは切れ目を作らないよう前のチャンクの終わりに合わせて**先に**予約するため、
+// 予約した時点だけで判定すると 1 チャンク分（実測 1 秒強）先の未来を判定してしまう。
+const PRE_START_CHECK_LEAD_SEC = 0.05
+
+/**
  * テキストを VOICEVOX で合成して再生する（パイプライン方式）。
  * テキストを句読点で分割し、最初のチャンクが合成できた時点で再生を開始する。
  * 再生中の音声があれば割り込み停止して新しいものを再生する。
  * VOICEVOX 未起動・ネットワーク失敗時は無音で終了する（例外スローなし）。
+ *
+ * @param shouldStillPlay 各チャンクを鳴らす直前に呼ぶ妥当性の判定（省略時は常に鳴らす）
  */
 export async function speakWithVoicevox(
   baseUrl: string,
   text: string,
   speakerId: number,
   volume: number,
+  shouldStillPlay?: ShouldStillPlay,
 ): Promise<void> {
   log.debug(`[VoiceVox] 読み上げ: ${text}`, { speakerId, volume })
 
@@ -352,13 +375,79 @@ export async function speakWithVoicevox(
   // 全チャンクの再生完了を待つための Promise（呼び出し元が await できる）
   let completionResolve!: () => void
   const completionPromise = new Promise<void>(r => { completionResolve = r })
-  let lastSource: AudioBufferSourceNode | null = null
+
+  // 予約したチャンクと、その開始時刻（AudioContext の時間軸）。`dropped` は鳴らすのを
+  // 取り下げた印、`ended` は再生が終わった印。完了を待つ対象を選ぶためにも使う。
+  const scheduled: { source: AudioBufferSourceNode; startAt: number; dropped: boolean; ended: boolean }[] = []
+  // 妥当性を失ったと判断したか。以降は合成も予約もしない
+  let abandoned = false
+
+  /**
+   * 妥当性の判定を呼ぶ。**判定自体が失敗したときは鳴らす側に倒す。**
+   * 黙る判断を例外に委ねると、緊急地震速報が無音のまま消える方に転ぶため。
+   */
+  const stillPlayable = (): boolean => {
+    if (!shouldStillPlay) return true
+    try {
+      return shouldStillPlay()
+    } catch (err) {
+      log.warn('[VoiceVox] 発話直前の判定に失敗したため、そのまま読み上げる', err)
+      return true
+    }
+  }
+
+  /**
+   * 完了（呼び出し元が待っている Promise）を、**最後まで鳴るチャンクの終わり**に合わせる。
+   *
+   * 取り下げのたびに呼び直すこと。合成は再生より速く終わることが多く、ループは実際の再生を
+   * 追い越して全チャンクを予約し終える。そのため予約し終えた時点の「最後のチャンク」を
+   * 掴んだままにすると、取り下げでそれを落としたときに完了が**鳴っている途中のチャンクより
+   * 早く**訪れ、次の発話が割り込んで末尾を削ってしまう。
+   *
+   * 呼び直しの結果、同じチャンクにリスナーが二重に付くことはある（取り下げが起きた直後に
+   * ループ側からも呼ばれる経路）。`completionResolve` は 2 回目以降が無効なので害はない。
+   */
+  const resolveWhenLastPlayingEnds = () => {
+    const playing = scheduled.filter(s => !s.dropped)
+    if (playing.length === 0) { completionResolve(); return }
+    const last = playing[playing.length - 1]
+    // **もう鳴り終わっているチャンクに 'ended' を張っても二度と発火しない。**
+    // 先行合成が前のチャンクの残り時間より長くかかると、取り下げの判断はその「鳴り終わった
+    // あと」に届く。ここを見落とすと完了が来ず、次の発話が上限（8 秒）まで足止めされる。
+    if (last.ended) { completionResolve(); return }
+    // **取り下げられたチャンクの 'ended' では完了させない。** リスナーは外せる形で持っていない
+    // ため、付け替えても古いリスナーは残る。`stop()` は 'ended' を即座に発火させるので、
+    // 残ったリスナーをそのまま通すと、まだ鳴っているチャンクより早く完了してしまう
+    // （早まったぶん、次の発話の冒頭の一括 stop() が鳴っている末尾を削る）。
+    last.source.addEventListener('ended', () => { if (!last.dropped) completionResolve() })
+  }
+
+  /**
+   * まだ鳴り始めていない予約を落とし、以降の合成も止める。
+   * **鳴っている途中のチャンクは最後まで鳴らす**（語の途中で切ると聞き取りを壊すため）。
+   */
+  const abandonRemaining = (reason: string) => {
+    abandoned = true
+    log.debug(`[VoiceVox] 以降のチャンクを取り下げた（${reason}）: ${text}`)
+    for (const s of scheduled) {
+      if (s.startAt <= ctx.currentTime) continue  // 鳴り始めている分はそのまま
+      s.dropped = true
+      try { s.source.stop() } catch { /* already stopped */ }
+    }
+    // 進行中の合成も打ち切る（**自分のセッションのものだけ**。新しい発話のものは触らない）
+    if (currentSessionId === sessionId && currentAbortController) {
+      try { currentAbortController.abort() } catch { /* 二重 abort は無視 */ }
+    }
+    // 完了の待ち先を鳴り続けるチャンクへ付け替える（落としたチャンクを待つと早すぎる）
+    resolveWhenLastPlayingEnds()
+  }
 
   for (let i = 0; i < chunks.length; i++) {
     if (currentSessionId !== sessionId) { completionResolve(); return }  // 割り込みされた
 
     const buffer = await nextBufferPromise
     if (currentSessionId !== sessionId) { completionResolve(); return }  // await 中に割り込み
+    if (abandoned) break  // 鳴り始めの直前の判定で取り下げられた
 
     // 次チャンクの合成を先行開始（現在のチャンクの再生と並行）
     if (i + 1 < chunks.length) {
@@ -367,14 +456,13 @@ export async function speakWithVoicevox(
 
     if (!buffer) continue  // 合成失敗したチャンクはスキップ
 
+    // 合成を待つ間に古くなっていたら、このチャンクは予約しない
+    if (!stillPlayable()) { abandonRemaining('合成を待つ間に情報が新しくなった'); break }
+
     const source = ctx.createBufferSource()
     source.buffer = buffer
     source.connect(gainNode)
-    source.onended = () => {
-      activeSources = activeSources.filter(s => s !== source)
-    }
     activeSources.push(source)
-    lastSource = source
 
     if (scheduleAt < 0) {
       // 最初のチャンク: 即時再生
@@ -383,13 +471,40 @@ export async function speakWithVoicevox(
     // scheduleAt が過去になっている場合（合成が再生より遅れた）は現時刻にフォールバック
     if (scheduleAt < ctx.currentTime) scheduleAt = ctx.currentTime
 
-    source.start(scheduleAt)
+    const startAt = scheduleAt
+    const entry = { source, startAt, dropped: false, ended: false }
+    scheduled.push(entry)
+    source.onended = () => {
+      entry.ended = true
+      activeSources = activeSources.filter(s => s !== source)
+    }
+    source.start(startAt)
     scheduleAt += buffer.duration
+
+    // 鳴り始めが先なら、その直前にもう一度確かめる（予約時点の判定では 1 チャンク分先の
+    // 未来を判定してしまう）。stop() は開始時刻より前に呼べば 1 音も鳴らさずに落ちる。
+    if (shouldStillPlay) {
+      const waitMs = (startAt - PRE_START_CHECK_LEAD_SEC - ctx.currentTime) * 1000
+      if (waitMs > 0) {
+        setTimeout(() => {
+          if (currentSessionId !== sessionId || abandoned || entry.dropped) return
+          if (stillPlayable()) return
+          abandonRemaining('鳴り始める直前に情報が新しくなった')
+        }, waitMs)
+      }
+    }
   }
 
-  // 最後のチャンクの再生終了で resolve（合成失敗等でソースが0個なら即時 resolve）
-  if (lastSource) {
-    lastSource.addEventListener('ended', () => completionResolve())
+  // 最後まで鳴るチャンクの再生終了で resolve（合成失敗等でソースが0個なら即時 resolve）
+  const anyPlaying = scheduled.some(s => !s.dropped)
+  if (anyPlaying) {
+    resolveWhenLastPlayingEnds()
+  } else if (abandoned) {
+    // 1 音も鳴らさずに取り下げた（多くは合成を待つ間に情報が新しくなった場合）。異常ではないので
+    // 無音の警告は出さないが、**部分的に鳴った取り下げとは水準を分ける**。判定側の不具合で
+    // 本来鳴らすべきものまで落としていると、この経路だけが繰り返し起こるため。
+    log.info(`[VoiceVox] 1 音も鳴らさずに取り下げた: ${text}`)
+    completionResolve()
   } else {
     // 1 チャンクも鳴らせなかった。この関数は例外を投げない設計なので、記録しないと
     // 呼び出し側からは「読み上げが正常に完了した」と区別できず、**無音だったことが
