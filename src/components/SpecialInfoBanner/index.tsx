@@ -1,16 +1,40 @@
 import { useState } from 'react'
-import type { JMANankai, JMAKohatsu } from '../../types/earthquake'
+import type { JMANankai, JMANankaiCommentary, JMAKohatsu } from '../../types/earthquake'
+import { log } from '../../utils/logger'
 
 interface Props {
   nankai: JMANankai | null
+  nankaiCommentary: JMANankaiCommentary | null
   kohatsu: JMAKohatsu | null
 }
+
+// 閉じた解説情報の電文 id を覚えておくキー。解説情報には解除電文が無く、定例解説は平常時にも
+// 毎月届くため、読み終えた帯を手で閉じられるようにしている。リロードで復活しないよう永続化する。
+// 保持するのは 1 件だけでよい（表示するのは常に最新の 1 通のみ）。
+const COMMENTARY_DISMISSED_KEY = 'nankai-commentary-dismissed'
 
 function NankaiIcon() {
   return (
     <svg className="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
         d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+    </svg>
+  )
+}
+
+function CommentaryIcon() {
+  return (
+    <svg className="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+        d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+    </svg>
+  )
+}
+
+function CloseIcon() {
+  return (
+    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
     </svg>
   )
 }
@@ -50,8 +74,8 @@ function formatExpire(isoTime: string): string {
 //   （env() は要素の位置に関わらず値を返すため条件が要る）。
 const SAFE_BOTTOM = 'side:last:[padding-bottom:env(safe-area-inset-bottom,0px)]'
 
-export function SpecialInfoBanner({ nankai, kohatsu }: Props) {
-  if (!nankai && !kohatsu) return null
+export function SpecialInfoBanner({ nankai, nankaiCommentary, kohatsu }: Props) {
+  if (!nankai && !nankaiCommentary && !kohatsu) return null
 
   return (
     // z-[99999]: 区域集約震度バッジ（QuakeRegionFillGL）は scale（JMA震度階級の数値コード、震度7=70）
@@ -64,6 +88,8 @@ export function SpecialInfoBanner({ nankai, kohatsu }: Props) {
       <div className="pointer-events-auto max-h-[40dvh] overflow-y-auto overflow-x-hidden overscroll-x-none">
         {nankai && <NankaiBanner nankai={nankai} />}
         {kohatsu && <KohatsuBanner kohatsu={kohatsu} />}
+        {/* 解説情報は段階の発表ではないので、重い順に並べて最後に置く */}
+        {nankaiCommentary && <CommentaryBanner commentary={nankaiCommentary} />}
       </div>
     </div>
   )
@@ -139,6 +165,82 @@ function KohatsuBanner({ kohatsu }: { kohatsu: JMAKohatsu }) {
           <p className="text-white/60 text-xs">
             発表: {new Date(kohatsu.reportDateTime).toLocaleString('ja-JP')}
             {' · '}{formatExpire(kohatsu.expireAt)}
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// 南海トラフ地震関連解説情報の帯。
+//
+// 臨時情報（NankaiBanner）とは色もバッジも分けている。あちらの黄／橙／赤は段階の重さを表すが、
+// 解説情報は段階を持たないため、警戒度を読み取られない情報色（teal）にしている。
+//
+// 有効期限は出さない。内部では発表から 7 日で畳んでいるが、それは帯を常駐させないための
+// 表示上の都合であって、気象庁が期限を定めているわけではない（後発地震注意情報の 7 日とは違う）。
+function CommentaryBanner({ commentary }: { commentary: JMANankaiCommentary }) {
+  const [open, setOpen] = useState(false)
+  // 閉じた電文 id。マウント時に一度だけ読む。別の解説情報に入れ替わっても id が違うので
+  // 下の判定を通り、新しい電文はきちんと表示される。
+  const [dismissedId, setDismissedId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(COMMENTARY_DISMISSED_KEY)
+    } catch (e) {
+      log.debug('[nankai] 解説情報の既読状態を読めません', e)
+      return null
+    }
+  })
+
+  if (dismissedId === commentary.id) return null
+
+  const dismiss = () => {
+    // 永続化できない環境（プライベートモード等・容量超過）でも、この場で閉じる動作は止めない。
+    // ただし黙って諦めると「閉じてもリロードで復活する」問い合わせを追跡できないため記録する。
+    try {
+      localStorage.setItem(COMMENTARY_DISMISSED_KEY, commentary.id)
+    } catch (e) {
+      log.debug('[nankai] 解説情報の既読状態を保存できません', e)
+    }
+    setDismissedId(commentary.id)
+  }
+
+  return (
+    <div className={`bg-teal-900/95 border-t-2 border-teal-400 ${SAFE_BOTTOM}`}>
+      {/* 展開トグルと閉じるボタンを横に並べる。button の入れ子は不正な HTML になるため、
+          他の帯のように全体を 1 つの button で覆うことはできない */}
+      <div className="w-full px-3 py-2 flex items-center gap-2">
+        <button
+          className="min-w-0 flex-1 flex items-center gap-2 text-left"
+          onClick={() => setOpen(v => !v)}
+        >
+          <CommentaryIcon />
+          <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-bold text-white px-1.5 py-0.5 rounded bg-teal-500 flex-shrink-0">
+              {commentary.serialName}
+            </span>
+            <span className="text-white text-sm font-bold leading-tight truncate">{commentary.headline}</span>
+          </div>
+          <ChevronIcon open={open} />
+        </button>
+        <button
+          className="flex-shrink-0 p-1 text-white/70 hover:text-white"
+          onClick={dismiss}
+          aria-label="解説情報を閉じる"
+        >
+          <CloseIcon />
+        </button>
+      </div>
+      {open && (
+        <div className="px-3 pb-2">
+          {commentary.summary && (
+            <p className="text-white text-xs font-medium leading-relaxed whitespace-pre-wrap mb-1">{commentary.summary}</p>
+          )}
+          {commentary.body && (
+            <p className="text-white/90 text-xs leading-relaxed whitespace-pre-wrap mb-1">{commentary.body}</p>
+          )}
+          <p className="text-white/60 text-xs">
+            発表: {new Date(commentary.reportDateTime).toLocaleString('ja-JP')}
           </p>
         </div>
       )}

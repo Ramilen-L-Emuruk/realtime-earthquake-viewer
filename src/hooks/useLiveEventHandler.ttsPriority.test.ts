@@ -115,6 +115,8 @@ function setup() {
     notifyEEW: false, notifyTsunami: false, notifyDetection: false,
     ttsIntensityLevels: [], ttsMaxRegions: 0, ttsAlwaysReadScale: 0, ttsRegionTolerance: 0,
     minDisplayScale: -1,
+    // 解説情報の読み上げはこの設定で切れるため、優先度を見るテストでは明示的に有効にする
+    nankaiCommentaryAlerts: true,
   } as unknown as AppSettings
   // title API は多数のメソッドを持つため、未知のプロパティも関数として返す Proxy で代替する
   const title = new Proxy({ alertTitle: null } as Record<string, unknown>, {
@@ -195,6 +197,81 @@ describe('非 EEW の読み上げの優先度', () => {
 
     finishSpeech(0)
     await flush()
+    expect(spokenTexts()).toHaveLength(2)
+    expect(spokenTexts()[1]).toContain('長周期')
+  })
+
+  // 南海トラフ関連解説情報は最下位。臨時情報の発表期間中は毎日届くため、既存のどの層と同格に
+  // しても何かを切ってしまう（同格は待たずに割り込む規則のため）。「解説情報は何も切らない」を
+  // 両方向から固定する。
+  function handleCommentary(handle: ReturnType<typeof setup>) {
+    handle({
+      kind: 'nankaiCommentary',
+      data: {
+        id: 'commentary-1', time: '2026-01-01T12:00:00Z', eventId: 'commentary-evt',
+        serialCode: '210', serialName: '臨時解説',
+        headline: '南海トラフ地震関連解説情報（第１号）', summary: '要約', body: '本文',
+        cancelled: false, reportDateTime: '2026-01-01T12:00:00Z',
+        expireAt: '2026-01-08T12:00:00Z',
+      },
+    } as never)
+  }
+
+  it('解説情報は、地震情報の読み上げが終わるまで待つ', async () => {
+    const handle = setup()
+    handle(makeQuake())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+
+    handleCommentary(handle)
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)   // 地震情報を切らない
+
+    finishSpeech(0)
+    await flush()
+    expect(spokenTexts()).toHaveLength(2)
+    expect(spokenTexts()[1]).toContain('解説情報')
+  })
+
+  it('解説情報は、長周期地震動の読み上げが終わるまで待つ（最下位なので何も切らない）', async () => {
+    const handle = setup()
+    handle({
+      kind: 'lpgm',
+      data: {
+        eventId: 'lpgm-1', cancelled: false, time: '2026-01-01T12:00:00Z',
+        areas: [{ pref: '石川県', name: '石川県能登', lpgmClass: 4 }],
+      },
+    } as never)
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+    expect(spokenTexts()[0]).toContain('長周期')
+
+    handleCommentary(handle)
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)   // 長周期を切らない
+
+    finishSpeech(0)
+    await flush()
+    expect(spokenTexts()).toHaveLength(2)
+    expect(spokenTexts()[1]).toContain('解説情報')
+  })
+
+  it('長周期地震動は、解説情報の読み上げを待たずに割り込む', async () => {
+    const handle = setup()
+    handleCommentary(handle)
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+    expect(spokenTexts()[0]).toContain('解説情報')
+
+    handle({
+      kind: 'lpgm',
+      data: {
+        eventId: 'lpgm-1', cancelled: false, time: '2026-01-01T12:00:00Z',
+        areas: [{ pref: '石川県', name: '石川県能登', lpgmClass: 4 }],
+      },
+    } as never)
+    await settle()
+    // 解説情報より上なので待たない
     expect(spokenTexts()).toHaveLength(2)
     expect(spokenTexts()[1]).toContain('長周期')
   })

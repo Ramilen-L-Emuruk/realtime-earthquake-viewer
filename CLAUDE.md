@@ -415,6 +415,9 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 通知音の内容と説明文の一致（`PLAYERS` の周波数・`COUNTDOWN_PULSES` のパルス数と、設定タブ「通知音テスト」の説明文・仕様書の記述） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §2 |
 | 通知音の長さと読み上げ遅延の連動（音を作り変えたら `TTS_DELAY_MS` かテーブル外の個別指定を必ず見直す。リバーブを効かせた音は乾音の長さでは足りない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
 | 設定タブのセクション構成・並び順の方針（`Section` の出現順・重大度は軽い順・カテゴリ順は両テストセクションと通知設定の種別トグルで共通） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §2 |
+| 南海トラフ電文 3 種別の役割（VYSE50=臨時情報／VYSE51=臨時解説／VYSE52=定例解説）・段階判定は `Head/Title` を見ること（`Head/InfoKind` は段階に関わらず固定で判定に使えない）・電文の識別は `EventID` と `Serial` の組で行うこと（臨時解説は `EventID` が固定で `Serial` が号数） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §2 |
+| 特別情報バナー 3 枚の並び順・色の意味・消え方（解説情報は 7 日失効＋閉じるボタン・閉じた id は永続化）・下端の余白は `:last-child` に任せること | [`docs/spec/architecture-spec.md`](docs/spec/architecture-spec.md) §4 |
+| 南海トラフ関連解説情報の読み上げ優先度（独立した層に置くこと。臨時情報と同格にすると臨時情報を追い出し、地震情報と同格にすると地震情報を切る） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
 | 津波の解除経路（`cancelReason` 3 種・DMDSS 限定・standard 版フォールバック） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §3 |
 | EEW P/S 波予報円の計算・仮定震源要素の連動箇所 | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §5-§6 |
 | EEW レベル判定（特別警報の条件・長周期の DMDATA 限定） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |

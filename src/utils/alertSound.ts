@@ -11,7 +11,7 @@ export type AlertSoundType =
   | 'eew' | 'eewUpdate' | 'eewFinal' | 'eewCancel' | 'eewSpecial' | 'eewForecast'
   | 'tsunami' | 'tsunamiMajor' | 'tsunamiWatch' | 'tsunamiForecast' | 'tsunamiUpdate' | 'tsunamiCancel'
   | 'kyoshin' | 'kyoshinCandidate'
-  | 'specialInfo'
+  | 'specialInfo' | 'specialInfoCommentary'
 
 let audioCtx: AudioContext | null = null
 
@@ -501,6 +501,15 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
     pianoNote(ctx, 440.0, base + 0.00, 0.15, 0.26)
     pianoNote(ctx, 440.0, base + 0.16, 0.15, 0.26)
     pianoNote(ctx, 587.3, base + 0.38, 1.20, 0.22)
+  },
+
+  // 南海トラフ関連解説情報: ピアノ下降2音 D5→A4（控えめ）。全体で約1.3秒。
+  // **臨時情報（specialInfo）と同じ音にしないこと。** 解説情報は定例解説が平常時にも毎月届く。
+  // 段階の発表と同じ音が毎月鳴れば、実際に「巨大地震注意」が出たときに音で区別できなくなる。
+  // specialInfo が上昇（A4→D5）なのに対しこちらは下降にして、向きで聞き分けられるようにしている。
+  specialInfoCommentary: (ctx, base) => {
+    pianoNote(ctx, 587.3, base + 0.00, 0.90, 0.16)
+    pianoNote(ctx, 440.0, base + 0.20, 1.10, 0.14)
   },
 }
 
