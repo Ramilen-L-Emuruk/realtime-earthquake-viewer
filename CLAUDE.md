@@ -404,6 +404,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 項目 | 単一情報源となる仕様書 |
 |---|---|
 | テストデータと UI 説明文（テストボタンの `scaleTo` 値等） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §7 |
+| テストデータが実電文の形に沿っていること（報番号・発表時刻・`id` は報ごとに進める／震源時刻は固定／取消・解除は対象地域を空にする／区域コードは気象庁コード表 12／経路に無い項目を作らない） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §7「実電文の形に合わせる」 |
 | 読み上げの範囲（`ttsIntensityLevels` / `ttsAlwaysReadScale` / `ttsMaxRegions` / `ttsRegionTolerance` の組み合わせ方・階数は観測がある階級のみを数える・`ttsAlwaysReadScale` は長周期に適用しない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
 | 読み上げの地域名の並び順（気象庁の標準順・順序の実体は `station-coords.json` の区域キー順・上限で切るときの選抜だけは震源距離で行う・震源を持たない電文（震度速報・長周期）は距離で選ばない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
 | EEW 読み上げ第 2 フェーズの発火条件（値の確定で読む・`EEW_PHASE2_MAX_WAIT_MS` の上限・引き上げも初報と同じ形で言い直す・警報以上は「警報。」を前置き） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
