@@ -2,7 +2,7 @@
 // parseEarthquakeFromXml（REST 履歴経路）のテスト。
 // DOMParser を使うためこのファイルだけ jsdom 環境で動かす（既定は node）。
 import { describe, it, expect } from 'vitest'
-import { parseEarthquake, parseEarthquakeFromXml, parseEEW, parseTsunami, parseLpgmFromXml } from './dmdataParser'
+import { parseEarthquake, parseEarthquakeFromXml, parseEEW, parseTsunami, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml } from './dmdataParser'
 
 // 震度速報（VXSE51）。震源が未確定の段階で出るため Earthquake 要素を持たず、
 // 震度は Pref > Area（一次細分区域）までしか無い。
@@ -606,5 +606,256 @@ describe('parseLpgmFromXml: xmlChild が Area 直下の値を拾い、配下 Cit
   it('MaxLgInt が 0 のときは null（対象階級外）', () => {
     const noClassXml = VXSE62_XML.replace('<MaxLgInt>3</MaxLgInt>\n        <Pref>', '<MaxLgInt>0</MaxLgInt>\n        <Pref>')
     expect(parseLpgmFromXml(noClassXml)).toBeNull()
+  })
+})
+
+// ─── 南海トラフ関連（VYSE50 臨時情報 / VYSE51・VYSE52 関連解説情報）───────────────
+//
+// 実電文 14 通（2024年8月の臨時情報・臨時解説、2026年3〜8月の定例解説）で確認した構造に
+// 合わせている。要点は **段階のキーワードが Head/Title にしか現れないこと**。
+// Head/InfoKind は段階に関わらず「南海トラフ地震に関連する情報」で固定されており、
+// そこを判定に使うと全電文が既定値の「調査中」に落ちる（実際にそうなっていた）。
+
+function nankaiXml(opts: {
+  title: string
+  infoType?: string
+  reportDateTime?: string
+  body?: string
+}): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/">
+  <Control>
+    <Title>南海トラフ地震臨時情報</Title>
+    <PublishingOffice>気象庁</PublishingOffice>
+  </Control>
+  <Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+    <Title>${opts.title}</Title>
+    <ReportDateTime>${opts.reportDateTime ?? '2026-08-20T17:00:00+09:00'}</ReportDateTime>
+    <EventID>20260820170000</EventID>
+    <InfoType>${opts.infoType ?? '発表'}</InfoType>
+    <Serial>1</Serial>
+    <InfoKind>南海トラフ地震に関連する情報</InfoKind>
+  </Head>
+  <Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
+    <EarthquakeInfo>
+      <InfoKind>南海トラフ地震臨時情報</InfoKind>
+      <Text>${opts.body ?? '想定震源域内でマグニチュード7.0以上の地震が発生しました。'}</Text>
+    </EarthquakeInfo>
+  </Body>
+</Report>`
+}
+
+function commentaryXml(opts: {
+  title: string
+  serialName: string
+  serialCode: string
+  reportDateTime?: string
+  summary?: string
+  body?: string
+}): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/">
+  <Control>
+    <Title>南海トラフ地震関連解説情報</Title>
+    <PublishingOffice>気象庁</PublishingOffice>
+  </Control>
+  <Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+    <Title>${opts.title}</Title>
+    <ReportDateTime>${opts.reportDateTime ?? '2026-08-20T17:00:00+09:00'}</ReportDateTime>
+    <EventID>20260820170000</EventID>
+    <InfoType>発表</InfoType>
+    <Serial></Serial>
+    <InfoKind>南海トラフ地震に関連する情報</InfoKind>
+    <Headline>
+      <Text>${opts.summary ?? '評価検討会で南海トラフ周辺の地殻活動を評価しました。'}</Text>
+    </Headline>
+  </Head>
+  <Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
+    <EarthquakeInfo>
+      <InfoKind>南海トラフ地震関連解説情報</InfoKind>
+      <InfoSerial codeType="地震関連情報番号コード">
+        <Name>${opts.serialName}</Name>
+        <Code>${opts.serialCode}</Code>
+      </InfoSerial>
+      <Text>${opts.body ?? '特段の変化は観測されていません。'}</Text>
+      <Appendix>情報発表条件の解説（表示・読み上げの対象外）</Appendix>
+    </EarthquakeInfo>
+  </Body>
+</Report>`
+}
+
+describe('parseNankaiFromXml（VYSE50 南海トラフ地震臨時情報）', () => {
+  it('巨大地震注意を Head/Title から判定する（Head/InfoKind には現れない）', () => {
+    const nankai = parseNankaiFromXml(nankaiXml({ title: '南海トラフ地震臨時情報（巨大地震注意）' }))
+    if (!nankai) throw new Error('parseNankaiFromXml returned null unexpectedly')
+    expect(nankai.kindName).toBe('巨大地震注意')
+    expect(nankai.kindCode).toBe('0202')
+    expect(nankai.cancelled).toBe(false)
+  })
+
+  it('調査中を判定する', () => {
+    const nankai = parseNankaiFromXml(nankaiXml({ title: '南海トラフ地震臨時情報（調査中）' }))
+    expect(nankai?.kindName).toBe('調査中')
+    expect(nankai?.kindCode).toBe('0201')
+  })
+
+  it('巨大地震警戒を判定する', () => {
+    const nankai = parseNankaiFromXml(nankaiXml({ title: '南海トラフ地震臨時情報（巨大地震警戒）' }))
+    expect(nankai?.kindName).toBe('巨大地震警戒')
+    expect(nankai?.kindCode).toBe('0203')
+  })
+
+  it('調査終了は cancelled=true（帯を消す条件）', () => {
+    const nankai = parseNankaiFromXml(nankaiXml({ title: '南海トラフ地震臨時情報（調査終了）' }))
+    expect(nankai?.kindName).toBe('調査終了')
+    expect(nankai?.kindCode).toBe('0204')
+    expect(nankai?.cancelled).toBe(true)
+  })
+
+  it('取消電文は調査終了相当として cancelled=true', () => {
+    const nankai = parseNankaiFromXml(nankaiXml({
+      title: '南海トラフ地震臨時情報（巨大地震注意）',
+      infoType: '取消',
+    }))
+    expect(nankai?.cancelled).toBe(true)
+    expect(nankai?.kindName).toBe('調査終了')
+  })
+
+  it('本文（Body/Text）を body に取り込む', () => {
+    const nankai = parseNankaiFromXml(nankaiXml({
+      title: '南海トラフ地震臨時情報（調査中）',
+      body: 'テスト本文',
+    }))
+    expect(nankai?.body).toBe('テスト本文')
+  })
+
+  it('解説情報を渡すと null（段階を「調査中」と騙らない）', () => {
+    const xml = commentaryXml({
+      title: '南海トラフ地震関連解説情報（第１号）',
+      serialName: '臨時解説',
+      serialCode: '210',
+    })
+    expect(parseNankaiFromXml(xml)).toBeNull()
+  })
+})
+
+describe('parseNankaiCommentaryFromXml（VYSE51/52 南海トラフ地震関連解説情報）', () => {
+  it('臨時解説を InfoSerial から判定し、要約と本文を分けて取る', () => {
+    const commentary = parseNankaiCommentaryFromXml(commentaryXml({
+      title: '南海トラフ地震関連解説情報（第１号）',
+      serialName: '臨時解説',
+      serialCode: '210',
+      summary: '要約テキスト',
+      body: '本文テキスト',
+    }))
+    if (!commentary) throw new Error('parseNankaiCommentaryFromXml returned null unexpectedly')
+    expect(commentary.serialName).toBe('臨時解説')
+    expect(commentary.serialCode).toBe('210')
+    expect(commentary.headline).toBe('南海トラフ地震関連解説情報（第１号）')
+    expect(commentary.summary).toBe('要約テキスト')
+    // Appendix（情報発表条件の定型解説）を本文に巻き込まないこと
+    expect(commentary.body).toBe('本文テキスト')
+  })
+
+  it('定例解説を判定する', () => {
+    const commentary = parseNankaiCommentaryFromXml(commentaryXml({
+      title: '南海トラフ地震関連解説情報',
+      serialName: '定例解説',
+      serialCode: '200',
+    }))
+    expect(commentary?.serialName).toBe('定例解説')
+    expect(commentary?.serialCode).toBe('200')
+  })
+
+  it('expireAt は発表から7日後', () => {
+    const commentary = parseNankaiCommentaryFromXml(commentaryXml({
+      title: '南海トラフ地震関連解説情報',
+      serialName: '定例解説',
+      serialCode: '200',
+      reportDateTime: '2026-08-20T17:00:00+09:00',
+    }))
+    // 2026-08-20T17:00+09:00 = 08-20T08:00Z なので +7日は 08-27T08:00Z
+    expect(commentary?.expireAt).toBe('2026-08-27T08:00:00.000Z')
+  })
+
+  it('Serial が空でも id を組み立てられる（実電文の定例解説は空）', () => {
+    const commentary = parseNankaiCommentaryFromXml(commentaryXml({
+      title: '南海トラフ地震関連解説情報',
+      serialName: '定例解説',
+      serialCode: '200',
+    }))
+    expect(commentary?.id).toBe('dmdata-xml-nankai-commentary-20260820170000-1')
+  })
+
+  it('臨時情報を渡すと null（段階を持つ電文はこちらで扱わない）', () => {
+    const xml = nankaiXml({ title: '南海トラフ地震臨時情報（巨大地震注意）' })
+    expect(parseNankaiCommentaryFromXml(xml)).toBeNull()
+  })
+
+  it('発表日時が日時として読めなければ null（期限計算が壊れるため）', () => {
+    const xml = commentaryXml({
+      title: '南海トラフ地震関連解説情報',
+      serialName: '定例解説',
+      serialCode: '200',
+      reportDateTime: 'not-a-date',
+    })
+    expect(parseNankaiCommentaryFromXml(xml)).toBeNull()
+  })
+
+  it('InfoSerial/Name が無ければ既定名「解説情報」で通す（コード表は非公開のため）', () => {
+    const xml = commentaryXml({
+      title: '南海トラフ地震関連解説情報',
+      serialName: '',
+      serialCode: '',
+    })
+    expect(parseNankaiCommentaryFromXml(xml)?.serialName).toBe('解説情報')
+  })
+
+  it('取消電文は cancelled=true で返す（null にすると解析失敗と区別できない）', () => {
+    const xml = commentaryXml({
+      title: '南海トラフ地震関連解説情報',
+      serialName: '定例解説',
+      serialCode: '200',
+    }).replace('<InfoType>発表</InfoType>', '<InfoType>取消</InfoType>')
+    const commentary = parseNankaiCommentaryFromXml(xml)
+    if (!commentary) throw new Error('parseNankaiCommentaryFromXml returned null unexpectedly')
+    expect(commentary.cancelled).toBe(true)
+  })
+
+  it('発表電文は cancelled=false', () => {
+    const commentary = parseNankaiCommentaryFromXml(commentaryXml({
+      title: '南海トラフ地震関連解説情報',
+      serialName: '定例解説',
+      serialCode: '200',
+    }))
+    expect(commentary?.cancelled).toBe(false)
+  })
+
+  // 実電文では Appendix は本文 Text より後ろに来る。文書順で本文が先に当たるため、
+  // このテストは本文抽出を EarthquakeInfo 直下に絞る前の実装でも通る（回帰検出力は無い）。
+  // 構造が変わって Appendix が Text 要素を持ったときに本文が壊れないことの確認として残す。
+  // 抽出範囲を絞ったこと自体は次の「EarthquakeInfo より前に別の Text がある構造」で検証する。
+  it('Appendix が Text 要素を持つ構造でも本文を取れる', () => {
+    const xml = commentaryXml({
+      title: '南海トラフ地震関連解説情報',
+      serialName: '定例解説',
+      serialCode: '200',
+      body: '本文テキスト',
+    }).replace(
+      '<Appendix>情報発表条件の解説（表示・読み上げの対象外）</Appendix>',
+      '<Appendix><Text>付録の定型解説</Text></Appendix>',
+    )
+    expect(parseNankaiCommentaryFromXml(xml)?.body).toBe('本文テキスト')
+  })
+
+  it('EarthquakeInfo より前に別の Text がある構造でも本文を取り違えない', () => {
+    // Body 全体から最初の Text を拾う実装だと、ここで別セクションの文を本文として掴む
+    const xml = commentaryXml({
+      title: '南海トラフ地震関連解説情報',
+      serialName: '定例解説',
+      serialCode: '200',
+      body: '本文テキスト',
+    }).replace('<EarthquakeInfo>', '<Comments><Text>別セクションの文</Text></Comments><EarthquakeInfo>')
+    expect(parseNankaiCommentaryFromXml(xml)?.body).toBe('本文テキスト')
   })
 })

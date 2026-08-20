@@ -6,6 +6,7 @@ import type {
   JMATsunami,
   JMALpgm,
   JMANankai,
+  JMANankaiCommentary,
   JMAKohatsu,
   EEWAlert,
   EEWRegion,
@@ -962,8 +963,24 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   return { id, eventId, time: reportDateTime, originTime, maxClass, cancelled: false, points, regions }
 }
 
-// REST API 経由の JMA XML（VYSE50/51/52: 南海トラフ地震臨時情報）を JMANankai にパース
-export function parseVyse5xFromXml(xml: string): JMANankai | null {
+// 臨時情報の段階。Head/Title（情報名）の括弧内に現れるキーワードで判別する。
+// 「調査終了」と「調査中」は互いに部分文字列にならないため、並び順に依存しない。
+const NANKAI_STAGES: ReadonlyArray<{ keyword: string; code: string }> = [
+  { keyword: '巨大地震警戒', code: '0203' },
+  { keyword: '巨大地震注意', code: '0202' },
+  { keyword: '調査終了',     code: '0204' },
+  { keyword: '調査中',       code: '0201' },
+]
+
+// REST API 経由の JMA XML（VYSE50: 南海トラフ地震臨時情報）を JMANankai にパース。
+// 段階を判別できない電文（= 解説情報 VYSE51/52）は null を返す。解説情報は
+// parseNankaiCommentaryFromXml で別の型に読む。
+//
+// 段階の情報源は Head/Title（例「南海トラフ地震臨時情報（巨大地震注意）」）。
+// **Head/InfoKind は使えない。** 実電文 14 通すべてで「南海トラフ地震に関連する情報」で
+// 固定されており、段階のキーワードを含まないため、以前はどの電文も既定値の「調査中」に
+// 落ちていた（「巨大地震注意」が「調査中」と表示される不具合）。
+export function parseNankaiFromXml(xml: string): JMANankai | null {
   let doc: Document
   try {
     doc = new DOMParser().parseFromString(xml, 'application/xml')
@@ -986,32 +1003,92 @@ export function parseVyse5xFromXml(xml: string): JMANankai | null {
     }
   }
 
-  // Head > Title がヘッドライン
-  const headEl  = xmlQ(doc, 'Head')
+  // Head > Title が情報名（ヘッドライン兼、段階の判定元）
+  const headEl   = xmlQ(doc, 'Head')
   const headline = headEl ? xmlText(xmlQ(headEl, 'Title')) : ''
 
-  // Body > Comment > Text or Body > Text が本文
-  const bodyEl   = xmlQ(doc, 'Body')
-  const commentEl = bodyEl ? xmlQ(bodyEl, 'Comment') : null
+  const stage = NANKAI_STAGES.find(s => headline.includes(s.keyword))
+  // 段階が読めない電文は臨時情報ではない（解説情報など）。既定値で「調査中」を騙るより
+  // 呼び出し側に判断を返す。
+  if (!stage) return null
+
+  // 本文は EarthquakeInfo 直下の Text（解説情報側の parseNankaiCommentaryFromXml と揃える）。
+  // 実電文の VYSE50 に Comment 要素は無いが、他の地震電文と同じ形が来たときの保険として先に見る。
+  // Body 直下のフォールバックは、EarthquakeInfo を持たない電文形のため。
+  const bodyEl      = xmlQ(doc, 'Body')
+  const commentEl   = bodyEl ? xmlQ(bodyEl, 'Comment') : null
+  const quakeInfoEl = bodyEl ? xmlQ(bodyEl, 'EarthquakeInfo') : null
   const bodyText  = (commentEl ? xmlText(xmlQ(commentEl, 'Text')) : '')
+    || (quakeInfoEl ? xmlText(xmlQ(quakeInfoEl, 'Text')) : '')
     || (bodyEl ? xmlText(xmlQ(bodyEl, 'Text')) : '')
 
-  // Head > InfoKind から kindName を判定
-  // 「南海トラフ地震臨時情報（調査中）」などのように括弧内にキーワードが入る
-  const infoKind = headEl ? xmlText(xmlQ(headEl, 'InfoKind')) : ''
-  let kindCode = '0201'
-  let kindName = '調査中'
-  if (infoKind.includes('巨大地震警戒')) {
-    kindCode = '0203'; kindName = '巨大地震警戒'
-  } else if (infoKind.includes('巨大地震注意')) {
-    kindCode = '0202'; kindName = '巨大地震注意'
-  } else if (infoKind.includes('調査終了')) {
-    kindCode = '0204'; kindName = '調査終了'
+  return {
+    id, time: reportDateTime, eventId,
+    kindCode: stage.code, kindName: stage.keyword,
+    headline, body: bodyText,
+    cancelled: stage.code === '0204', reportDateTime,
   }
+}
 
-  const cancelled = kindName === '調査終了'
+// REST API 経由の JMA XML（VYSE51/52: 南海トラフ地震関連解説情報）を JMANankaiCommentary に
+// パース。段階を持つ電文（= 臨時情報 VYSE50）は null を返す。
+//
+// 種別は Body/EarthquakeInfo/InfoSerial（地震関連情報番号コード）で判別する。実電文で
+// 確認できたのは臨時解説 210 と定例解説 200 の 2 値のみ。コード表は非公開のため、
+// 未知のコードでも解説情報として通し、名称はそのまま表示に使う。
+export function parseNankaiCommentaryFromXml(xml: string): JMANankaiCommentary | null {
+  let doc: Document
+  try {
+    doc = new DOMParser().parseFromString(xml, 'application/xml')
+    if (doc.querySelector('parsererror')) return null
+  } catch { return null }
 
-  return { id, time: reportDateTime, eventId, kindCode, kindName, headline, body: bodyText, cancelled, reportDateTime }
+  const headEl   = xmlQ(doc, 'Head')
+  const headline = headEl ? xmlText(xmlQ(headEl, 'Title')) : ''
+
+  // 段階キーワードを持つのは臨時情報。呼び出し側（dmdata.ts / dmdataReplay.ts）が電文種別で
+  // 振り分けているため通常は発火しない二重防御。単体で呼んだときに臨時情報を取り違えないための
+  // 保険であり、相互排他は dmdataParser.test.ts で固定している。
+  if (NANKAI_STAGES.some(s => headline.includes(s.keyword))) return null
+
+  const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
+  // 期限（expireAt）の計算に使うため、日時として解釈できることをここで確かめる。
+  // 不正な文字列のまま進むと new Date(...).toISOString() が RangeError を投げる。
+  const reportMs = new Date(reportDateTime).getTime()
+  if (!Number.isFinite(reportMs)) return null
+  const eventId = xmlText(xmlQ(doc, 'EventID'))
+  const serial  = xmlText(xmlQ(doc, 'Serial')) || '1'
+
+  // Head 内の Text は Headline/Text（一文要約）
+  const summary = headEl ? xmlText(xmlQ(headEl, 'Text')) : ''
+
+  // 本文は EarthquakeInfo 直下の Text。Body 全体から最初の Text を拾うと、将来 Body の構造が
+  // 変わったとき（EarthquakeInfo より前に別の節が入る等）に別の文を本文として掴む。
+  // 実電文では今のところ Body 配下の Text は 1 つだけだが、「たまたま当たっている」状態に
+  // 依存しないよう対象を絞る（臨時情報側の parseNankaiFromXml も同じ形に揃えている）。
+  const bodyEl     = xmlQ(doc, 'Body')
+  const quakeInfoEl = bodyEl ? xmlQ(bodyEl, 'EarthquakeInfo') : null
+  const bodyText   = (quakeInfoEl ? xmlText(xmlQ(quakeInfoEl, 'Text')) : '')
+    || (bodyEl ? xmlText(xmlQ(bodyEl, 'Text')) : '')
+  const serialEl   = bodyEl ? xmlQ(bodyEl, 'InfoSerial') : null
+  const serialName = serialEl ? xmlText(xmlQ(serialEl, 'Name')) : ''
+  const serialCode = serialEl ? xmlText(xmlQ(serialEl, 'Code')) : ''
+
+  const expireAt = new Date(reportMs + 7 * 24 * 3600 * 1000).toISOString()
+
+  // 取消電文は null にせず cancelled で返す。null にすると呼び出し側から「解析できなかった」と
+  // 区別できず、正常な取消のたびに異常と同じ警告が出る。cancelled なら帯を消す経路にも乗せられる。
+  // 実電文（2024年8月の臨時解説6通・直近の定例解説6通）はすべて InfoType=発表 で、解説情報の
+  // 取消は一度も発表されていない。
+  const cancelled = xmlText(xmlQ(doc, 'InfoType')) === '取消'
+
+  return {
+    id: `dmdata-xml-nankai-commentary-${eventId}-${serial}`,
+    time: reportDateTime, eventId,
+    serialCode, serialName: serialName || '解説情報',
+    headline, summary, body: bodyText,
+    cancelled, reportDateTime, expireAt,
+  }
 }
 
 // REST API 経由の JMA XML（VYSE60: 北海道・三陸沖後発地震注意情報）を JMAKohatsu にパース

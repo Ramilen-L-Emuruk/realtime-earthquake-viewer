@@ -37,7 +37,7 @@ try {
   }
 }
 
-// dmdataParser.ts の南海トラフ・後発地震(VYSE50/51/60)XMLパースが `new DOMParser()` を
+// dmdataParser.ts の南海トラフ・後発地震(VYSE50/51/52/60)XMLパースが `new DOMParser()` を
 // ブラウザグローバルとして参照するため、Node.js環境ではjsdomで代替する。
 const { window } = new JSDOM('')
 globalThis.DOMParser = window.DOMParser as unknown as typeof DOMParser
