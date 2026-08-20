@@ -1,5 +1,5 @@
 import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
-import { eewMaxScale, eewMaxLpgmClass } from './eew'
+import { eewMaxScale, eewMaxLpgmClass, eewNoForecastReason } from './eew'
 import { getIntensityLabel } from './intensity'
 import { tsunamiMaxGrade } from './tsunami'
 import { getSubRegionsCache } from './subregions'
@@ -304,6 +304,18 @@ export function eewAlertToText(event: EEWAlert, kind: 'forecast' | 'warning' | '
 }
 
 /**
+ * 予想震度が付いていないときの句。理由の判定は `eewNoForecastReason` に委ねる
+ * （待たずに読むかどうかの判断と同じ判定を使うため。二重に持つと食い違う）。
+ */
+function noForecastText(event: EEWAlert): string {
+  switch (eewNoForecastReason(event)) {
+    case 'assumed': return '単独点処理のため、予想震度なし。'
+    case 'deep':    return '深発地震のため、予想震度なし。'
+    case 'unknown': return '予想震度なし。'
+  }
+}
+
+/**
  * EEW 第2フェーズ（予想値）の読み上げテキストを生成する。初報・続報の区別なく同じ形で読む。
  * 予想震度が取れないときは理由付きで「予想震度なし。」。
  *
@@ -331,19 +343,11 @@ export function eewIntensityToText(event: EEWAlert, announceUpgrade = false): st
   if (scale > 0) {
     text += `予想最大震度${intensityText(scale)}。`
   } else {
-    const condition = event.earthquake.condition
-    const depth = event.earthquake.hypocenter.depth
-    if (condition === '仮定震源要素') {
-      text += '単独点処理のため、予想震度なし。'
-    } else if (depth > 150) {
-      text += '深発地震のため、予想震度なし。'
-    } else {
-      text += '予想震度なし。'
-    }
+    text += noForecastText(event)
   }
   // 階級も震度と同じく集約関数を通す（判定条件は eewMaxLpgmClass の JSDoc 参照）。0 のときは
   // 句ごと省く。音声には地図の色フォールバックのような逃げ場が無く、不正値がそのまま声に出るため。
-  // ただし同関数が 0 を返すのは仮定震源要素のときだけで、上の depth > 150（深発地震）の分岐とは
+  // ただし同関数が 0 を返すのは仮定震源要素のときだけで、noForecastText の 'deep'（深発地震）とは
   // 連動しない。深発地震で震度だけ出ない場合は「予想震度なし」と階級の断言が同居しうる
   // （未対応の既知の限界。docs/spec/eew-spec.md §4）。
   const lpgmClass = eewMaxLpgmClass(event)
