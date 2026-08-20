@@ -26,7 +26,10 @@ vi.mock('../utils/env', () => ({
   get isDmdss() { return mockIsDmdss },
 }))
 
-vi.mock('../utils/logger', () => ({
+// log だけを差し替え、それ以外（createLogThrottle 等）は実物を使う。全置換にすると
+// logger に export が増えるたびに、無関係な import グラフの都合でこのテストが落ちる。
+vi.mock('../utils/logger', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/logger')>()),
   log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
 
