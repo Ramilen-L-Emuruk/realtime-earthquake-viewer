@@ -429,6 +429,8 @@ DMDSS 版は DMDATA の WebSocket、standard 版は P2PQuake の WebSocket が�
 | EEW 特別警報テスト | `createTestEEW()` | 60 | 震度 6 強・特別警報（三陸沖 M7.2）※長周期地震動階級 4 |
 | EEW 警報テスト | `createTestEEWWarning()` | 50 | 震度 5 強相当・警報（日向灘 M6.5）。震度 4 の区域を 1 つ含み、同一電文内の予報域も確認できる |
 | EEW 予報テスト | `createTestEEWForecast()` | 40 | 震度 4 程度・予報（宮城県沖 M4.5） |
+| EEW 単独点処理テスト | `createTestEEWAssumed()` | 初報 なし → 続報 50 | 震度予想なし・予報（単独点処理＝`condition: '仮定震源要素'`・区域なし。日向灘・仮定値 M5.0 深さ 10km）。続報で震源が確定し震度 5 強予想の警報へ格上げされる（再クリックしなくても最終報で同じ格上げが起きる。後述「実電文の形に合わせる」）。「単独点処理のため、予想震度なし。」を待たずに読み、続報で言い直す経路を確かめる（[`audio-tts-spec.md`](audio-tts-spec.md) §6）。**震源名は報をまたいで変えない**（変えると「震源を更新」の経路に入る） |
+| EEW 深発地震テスト | `createTestEEWDeep()` | なし | 震度予想なし・予報（深発地震・深さ 450km。小笠原諸島西方沖 M6.5）。区域なし。「深発地震のため、予想震度なし。」を待たずに読む経路を確かめる。続報も予報級のまま（理由は後述「実電文の形に合わせる」） |
 | EEW 誤報取消テスト | `createTestEEWWarning()` + `EEW_RETRACTION_CANCEL_MS`(10s) 後に取消 | 50→取消 | 10 秒後に `cancelled:true` 電文で `eewCancel` 音・通知・読み上げを検証 |
 | 地震テスト | `createTestEarthquake(useDmdataShape)` | - | 令和 6 年能登半島地震の実データベース（`src/data/noto-honshin-2024-*.json`）を採用。`points` の形と情報種別はバリアントで切り替える（後述「実電文の形に合わせる」） |
 | 遠地地震テスト | `createTestForeignQuake(includeForecastText)` | - | メキシコ・チアパス州沿岸 M7.4（2026-07-17）の実電文ベース。深さ不明・付加文 `0226`＋`0230` の報を採り、「深さ句の省略」「付加文原文の読み上げ」「`0230` 由来の津波区分（`domesticTsunami: 'なし'`）」を一度に確認できる。付加文は DMDATA 経由でのみ配信されるため、呼び出し側は `isDmdss` を渡して DMDSS 版でのみ `forecastText` を注入する |
@@ -472,6 +474,11 @@ DMDSS 版は DMDATA の WebSocket、standard 版は P2PQuake の WebSocket が�
 [`eew-spec.md`](eew-spec.md) §4「区域の種別コード」が単一情報源。テストデータもそれに従い、
 警報のコードは予想震度 5 弱（`scaleTo` 45）以上の区域にのみ使う。
 
+**区域を持たない報もある。** 単独点処理（`condition: '仮定震源要素'`）の初期報と深さ 150km 超の
+深発地震では地域別予想が発表されないため、区域は空にする。さらに深発地震は**続報も予報級に固定する**
+— 気象庁は深さ 150km を超える地震に緊急地震速報（警報）を発表しないため、警報級の深発 EEW は
+実電文として存在しない。
+
 **バリアント差**: 経路にない項目を作らない
 
 | 項目 | DMDSS（DMDATA） | standard（P2PQuake） |
@@ -492,10 +499,10 @@ DMDSS 版は DMDATA の WebSocket、standard 版は P2PQuake の WebSocket が�
 
 - `eewSpecial` — EEW 特別警報テスト
 - `eew` — EEW 警報テスト
-- `eewForecast` — EEW 予報テスト
+- `eewForecast` — EEW 予報テスト・単独点処理テスト（初報）・深発地震テスト
 - `eewCancel` — EEW 誤報取消テスト（10 秒後の取消電文で発火）
 - `eewUpdate` — 続報時（`isNew:false`）
-- `eewFinal` — 最終報（無音の自動消去ではなく明示的な最終報用）
+- `eewFinal` — 最終報（無音の自動消去ではなく明示的な最終報用）。ただし**最終報で区分・震度が上がるときは新規・格上げの判定が先に立つ**ため `eew` 等が鳴る（`selectEEWSoundType`）。単独点処理テストの自動最終報がこれに当たる
 - `tsunamiMajor` — 大津波警報テスト
 - `tsunami` — 津波警報テスト
 - `tsunamiWatch` — 津波注意報テスト
@@ -508,7 +515,7 @@ DMDSS 版は DMDATA の WebSocket、standard 版は P2PQuake の WebSocket が�
 ### 自動解除・自動確定のタイミング
 
 - **EEW 誤報取消**: `EEW_RETRACTION_CANCEL_MS`（10 秒）後に明示取消電文が届き、カードに「誤報として取り消されました」を 10 秒表示 → 消去
-- **EEW 続報の受付**: `EEW_FINAL_SILENCE_MS`（10 秒）以内に再度テストボタンを押すと続報として発報。押さなければ `isFinal:true` として自動確定 → 無音消去
+- **EEW 続報の受付**: `EEW_FINAL_SILENCE_MS`（10 秒）以内に再度テストボタンを押すと続報として発報。押さなければ `isFinal:true` として自動確定 → 無音消去（単独点処理テストだけは自動確定の報で警報へ格上げされるため、ここで `eew` 音・読み上げが入る）
 - **津波予報の期限切れ**: DMDSS は `TEST_AUTO_DISMISS_MS`（90 秒）で `validDateTime` に到達し `expired` 経路で解除。
   standard は `validDateTime` を持たないため、同じ 90 秒後に解除電文で消える
 - **津波誤報取消**: `TEST_AUTO_DISMISS_MS`（90 秒）後に取消電文が届き 10 秒間の解除表示（DMDSS は `retracted` で「取消」表示、standard は理由なしで「解除」表示）
