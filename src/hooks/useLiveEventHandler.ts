@@ -157,9 +157,16 @@ export interface LiveEventHandlerDeps {
   kyoshinDetectedRef: React.MutableRefObject<boolean>
   /** アイドル復帰で戻すデフォルトタブ（App 所有・毎レンダー更新。デバッグログ用） */
   defaultTabRef: React.MutableRefObject<TabId>
-  setActiveTab: (tab: TabId) => void
+  /**
+   * EEW が全て解除されたあと、揺れ検知が続いているために realtime を維持する経路。
+   * 揺れ検知の優先度で要求する（App 側で付与）。生の `setActiveTab` は渡さないこと
+   * （保持が張られず、直後の地震情報に画面を奪われる）。
+   */
+  setActiveTabRealtimeForKyoshin: () => void
   setActiveTabNonRealtime: (tab: Exclude<TabId, 'realtime'>) => void
   setActiveTabRealtimeOnUpdate: () => void
+  /** EEW の新規発報・レベルアップ・誤報取消による realtime 移動（手動選択より強い） */
+  setActiveTabRealtimeUrgent: () => void
   revertToDefaultTab: () => void
   selectQuake: (id: string | null) => void
   setActiveLpgmEventId: (id: string | null) => void
@@ -168,8 +175,8 @@ export interface LiveEventHandlerDeps {
 export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const {
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
-    setActiveTab, setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate,
-    revertToDefaultTab, selectQuake, setActiveLpgmEventId,
+    setActiveTabRealtimeForKyoshin, setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate,
+    setActiveTabRealtimeUrgent, revertToDefaultTab, selectQuake, setActiveLpgmEventId,
   } = deps
 
   // 直近に「新規地震」として注目を移したキー（`eventKey:issue.type`）。
@@ -363,7 +370,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     if (event.kind === 'quake' && event.cancelled) {
       // 地震情報取消: カード削除は useEarthquakes reducer が担う。通知音・読み上げのみここで処理する。
       if (settings.soundEnabled) playAlertSound('eewCancel')
-      log.info('[tab] → earthquake (地震情報取消)')
+      log.info('[tab] earthquake を要求 (地震情報取消)')
       setActiveTabNonRealtime('earthquake')
       title.clearTitleTimer('earthquake')
       title.applyPriority()
@@ -379,7 +386,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         }, 1200)
       }
     } else if (event.kind === 'quake') {
-      log.info('[tab] → earthquake (地震情報 VXSE51/52/53/61)')
+      log.info('[tab] earthquake を要求 (地震情報 VXSE51/52/53/61)')
       setActiveTabNonRealtime('earthquake')
       const incomingQuake = event as import('../types/earthquake').JMAQuake
       const incomingKey = newQuakeTrackingKey(incomingQuake)
@@ -419,7 +426,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       const isNew = isTsunamiNewFire(event, current)
       const upgraded = isTsunamiGradeUpgrade(event, current)
       if (isNew || upgraded) {
-        log.info(`[tab] → tsunami (${isNew ? '新規発報' : 'グレード格上げ'})`)
+        log.info(`[tab] tsunami を要求 (${isNew ? '新規発報' : 'グレード格上げ'})`)
         setActiveTabNonRealtime('tsunami')
       } else {
         log.debug('[tab] tsunami タブ強制切替スキップ (同一イベント扱い・grade 不変)')
@@ -443,7 +450,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
       const alreadySpoken = spokenTsunamiCancelEventIdsRef.current.has(cancelId)
       if (!alreadySpoken) {
-        log.info('[tab] → tsunami (津波情報取消)')
+        log.info('[tab] tsunami を要求 (津波情報取消)')
         setActiveTabNonRealtime('tsunami')
       }
       title.endTsunamiTitleWindow()
@@ -518,8 +525,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         spokenEEWLevelsRef.current.delete(key)
         if (!event.expired && hadKey) {
           // 誤報取消（10秒キャンセル表示中）: 他に発表中のEEWがあってもリアルタイムタブでオーバーレイを見せる
-          log.info('[tab] → realtime (EEW誤報取消・キャンセル表示)')
-          setActiveTab('realtime')
+          log.info('[tab] realtime を要求 (EEW誤報取消・キャンセル表示)')
+          setActiveTabRealtimeUrgent()
         }
         if (activeEEWLevelsRef.current.size === 0) {
           title.clearTitleTimer('eew')
@@ -529,8 +536,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // 2発目（hadKey=false・expired=true）でタブが動かないよう expired を明示的に除外する。
           if (!hadKey && !event.expired) {
             if (kyoshinDetectedRef.current) {
-              log.info('[tab] → realtime (EEW全解除・揺れ検知中)')
-              setActiveTab('realtime')
+              log.info('[tab] realtime を要求 (EEW全解除・揺れ検知中)')
+              setActiveTabRealtimeForKyoshin()
             } else {
               log.info(`[tab] → ${defaultTabRef.current} (EEW全解除)`)
               revertToDefaultTab()
@@ -552,8 +559,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
 
       // 新規発報・レベルアップは抑制なしで即時移動。続報は抑制タイマーを確認する。
       if (isNew || levelUpgraded) {
-        log.info(`[tab] → realtime (EEW${isNew ? '新規発報' : 'レベルアップ'} key=${key})`)
-        setActiveTab('realtime')
+        log.info(`[tab] realtime を要求 (EEW${isNew ? '新規発報' : 'レベルアップ'} key=${key})`)
+        setActiveTabRealtimeUrgent()
       } else {
         setActiveTabRealtimeOnUpdate()
       }
@@ -707,7 +714,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
 
     // 長周期地震動情報（DMDSS版のみ）
     if ((event as unknown as { kind?: string }).kind === 'lpgm') {
-      log.info('[tab] → earthquake (長周期地震動)')
+      log.info('[tab] earthquake を要求 (長周期地震動)')
       setActiveTabNonRealtime('earthquake')
       const lpgmEvent = (event as unknown as { kind: string; data: import('../types/earthquake').JMALpgm }).data
       if (!lpgmEvent.cancelled) {
