@@ -56,6 +56,16 @@ type SpeechPriority = typeof SPEECH_PRIORITY[keyof typeof SPEECH_PRIORITY]
 // 聞こえないため、長めに取っても失うものは無い。
 const HIGHER_PRIORITY_SPEECH_MAX_WAIT_MS = 90000
 
+// 予想震度が付くのを待っている EEW があるとき、非 EEW 側が状況を見直す間隔。
+// この待機中は「これから話す」状態で、待つ相手の Promise がまだ存在しないため、
+// 短く眠って作り直す（`EEW_PHASE2_MAX_WAIT_MS` の 6 秒に対して十分細かい刻み）。
+const EEW_PHASE2_PENDING_POLL_MS = 500
+
+/** 指定時間だけ待つ（優先度の待ち合わせで、待つ相手の Promise がまだ無いときに使う）。 */
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => { setTimeout(resolve, ms) })
+}
+
 // 待ちきれずに割り込むことを選んだときの警告。VOICEVOX が無応答だと読み上げごとに起こりうるため
 // 間引くが、優先度の高い読み上げを消す判断なので必ず残す（黙って消すと事後に追えない）。
 const warnSpeechWaitGiveUp = createLogThrottle(30000)
@@ -256,6 +266,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    */
   const higherPrioritySpeechInProgress = (priority: SpeechPriority): Promise<void> | null => {
     if (eewSpeechPendingRef.current > 0) return eewSpeechChainRef.current
+    // 予想震度が付くのを待っている EEW がある間も、EEW は「これから話す」状態にある。
+    // ここを空きと見なすと、震源を読み終えた直後の数秒に地震情報が滑り込み、最大 6 秒後の
+    // 第 2 フェーズに**必ず**切られる（2024/1/1 能登 16:08 の震源情報が残り 5.7 秒で消えていた）。
+    // 待つ相手の Promise はまだ無いので、短く眠って見直す。
+    if (eewTtsMaxTimersRef.current.size > 0) return sleep(EEW_PHASE2_PENDING_POLL_MS)
     const active = activeNonEewSpeechRef.current
     if (active !== null && active.priority > priority) return active.done
     return null
@@ -609,8 +624,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             if (!latest) return null
             const latestScale = eewMaxScale(latest)
             const latestLpgmClass = eewMaxLpgmClass(latest)
-            // 区分は引き下げない。一度「警報」と読んだ EEW は、以後の続報で severity が落ちても
-            // 警報として読み続ける（activeEEWLevelsRef の Math.max と同じ方針）。
+            // 区分は引き下げない。一度「警報」と伝えた EEW は、以後 severity が落ちても
+            // 「伝え済み」として扱う（前置きを言い直さない。activeEEWLevelsRef の Math.max と同じ方針）。
             const spokenLevel = spokenEEWLevelsRef.current.get(key) ?? 0
             const level = Math.max(computeSingleEEWLevel(latest), spokenLevel) as 0 | 1 | 2
             // まだ一度も予想値を読んでいなければ無条件に読む（初報・震源更新の読み直し）。
@@ -619,7 +634,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               && latestScale <= (spokenEEWScalesRef.current.get(key) ?? 0)
               && latestLpgmClass <= (spokenEEWLpgmClassesRef.current.get(key) ?? 0)
               && level <= spokenLevel) return null
-            const text = eewIntensityToText(latest, level)
+            // 「警報。」はその EEW で初めて伝えるときだけ前置きする。続報のたびに付けると、
+            // 値を読み直すだけの報でも毎回挟まって耳に障る（実地震の再生で 5 発話中 5 回）。
+            const announceWarning = level >= 1 && spokenLevel < 1
+            const text = eewIntensityToText(latest, announceWarning)
             if (!text) return null
             // 既読の更新は発話の直前だけで行う。予約した時点で更新すると、取消で捨てられた発話や
             // 割り込みで消えた発話まで既読になり、一度も声に出していない値が基準になってしまう。
@@ -647,6 +665,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           eewPhase2DoneRef.current.delete(key)
           spokenEEWScalesRef.current.delete(key)
           spokenEEWLpgmClassesRef.current.delete(key)
+          // spokenEEWLevelsRef は**消さない**。同じ EEW である以上、区分は伝え済みで、
+          // 震源が動くたびに「警報。」を言い直す必要はない（消すと言い直しになる）。
           const phase1Text = eewAlertToText(event, hypoFarMoved)
           // 待っている間に取消・自動解除が届いていたら震源も読まない
           chainEEWSpeech(() => eewTtsEventsRef.current.has(key) ? phase1Text : null)
