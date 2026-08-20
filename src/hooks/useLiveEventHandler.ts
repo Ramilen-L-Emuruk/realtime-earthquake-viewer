@@ -12,7 +12,7 @@ import { showBrowserNotification } from '../utils/notifications'
 import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly } from '../utils/tsunami'
 import { matchesArea, sortAreasForCardDisplay } from '../components/TsunamiTab'
 import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
-import { speakWithVoicevox } from '../utils/voicevox'
+import { speakWithVoicevox, prewarmVoicevox, type PrewarmedSpeech } from '../utils/voicevox'
 import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, tsunamiArrivalToText, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, type TtsRegionOptions } from '../utils/ttsText'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
@@ -263,6 +263,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const eewSpeechPendingRef = useRef(0)
   // 読み上げ中の非 EEW の優先度とその完了。優先度の低い読み上げがこれを見て待つ。
   const activeNonEewSpeechRef = useRef<{ priority: SpeechPriority; done: Promise<void> } | null>(null)
+  // 間を置いてからの読み上げの予約（`scheduleSpeech`）。アンマウント・リプレイ切替で取り消す。
+  const pendingSpeechRef = useRef<Set<{ id: number; onCancel?: () => void }>>(new Set())
   const eewPhase2TokensRef = useRef<Map<string, object>>(new Map())
   const eewTtsMaxTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   // 第 2 フェーズ（予想値）を一度でも発話した eventId。まだ読んでいない間は、値が上がって
@@ -398,7 +400,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    * 逆向き（優先度の高い側が低い側を切る）は許す。緊急度どおりであり、また地震情報の本文は
    * 数千文字に達することがあって、その後ろに EEW や津波を並べると致命的に遅れるため。
    */
-  const speakNonEEW = (text: string, priority: SpeechPriority, follow?: () => void) => {
+  const speakNonEEW = (
+    text: string,
+    priority: SpeechPriority,
+    follow?: () => void,
+    /** 間を置いている最中に合成しておいた音声（`speakNonEEWDelayed` 経由のときだけ渡る）。 */
+    prewarmed?: PrewarmedSpeech | null,
+  ) => {
     void (async () => {
       // `await` はマイクロタスクの境界を作るため、待ちが明けてからこの続きが走るまでの間に
       // 別の待機者の続きが走りうる。両者が「誰も読んでいない」を見て同時に解放されると、
@@ -412,7 +420,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 自分の番が来た（これから声に出す）瞬間に画面を合わせる。待ち行列の後なので、
       // 重い電文の読み上げ中に届いた軽い電文は、その後になって初めてタブを取る。
       follow?.()
-      const done = speakWithVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume)
+      const done = speakWithVoicevox(
+        settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume, prewarmed,
+      )
       activeNonEewSpeechRef.current = { priority, done }
       try {
         await done
@@ -426,6 +436,38 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // speakWithVoicevox が無音のまま正常終了させるため到達しない（記録は同関数側で行う）
       .catch(err => log.warn('[tts] 読み上げの進行に失敗', err))
   }
+
+  /**
+   * 間を置いてからの読み上げを予約する（追跡付き）。
+   *
+   * **予約は必ずここを通すこと。** 追跡していない `setTimeout` は、アンマウントやリプレイの
+   * 開始で取り消せない。取り消せないと、状態をリセットした直後に古い予約が発火し、
+   * 「リプレイを始めたのに本物の警報が読まれる」「その逆」といった食い違いを起こす。
+   * しかも記録が残らないため、後から原因を追えない。
+   *
+   * @param onCancel 予約が取り消されたときの後始末（先行合成の打ち切りなど）
+   */
+  const scheduleSpeech = (delay: number, run: () => void, onCancel?: () => void) => {
+    const entry: { id: number; onCancel?: () => void } = { id: 0, onCancel }
+    entry.id = window.setTimeout(() => {
+      pendingSpeechRef.current.delete(entry)
+      run()
+    }, delay)
+    pendingSpeechRef.current.add(entry)
+  }
+
+  /** 予約済みの読み上げをすべて取り消す（アンマウント・リプレイの切り替え）。 */
+  const cancelPendingSpeech = useCallback(() => {
+    const count = pendingSpeechRef.current.size
+    for (const entry of pendingSpeechRef.current) {
+      window.clearTimeout(entry.id)
+      entry.onCancel?.()
+    }
+    pendingSpeechRef.current.clear()
+    // 取り消した事実を残す。黙って消すと「鳴るはずの読み上げが鳴らなかった」ときに
+    // 取り消しが原因なのか合成の失敗なのか切り分けられない。
+    if (count > 0) log.debug(`[tts] 予約していた読み上げを取り消した (${count} 件)`)
+  }, [])
 
   /**
    * 通知音との重なりを避ける間（`delay`）を置いてから非 EEW の読み上げを始める。
@@ -443,21 +485,32 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     text: string,
     priority: SpeechPriority,
     delay: number,
-    followTab: TabId,
-    followPriority: TabPriority,
+    /** 読み上げに同調して動かすタブ。**タブを持たない情報（南海トラフ系）では省略する。** */
+    follow?: { readonly tab: Exclude<TabId, 'realtime'>; readonly priority: TabPriority },
   ) => {
-    const blocker = speechBlocker(priority)
-    if (blocker === null) {
-      log.info(`[tab] ${followTab} を要求 (通知音と同時・読み上げの待ちなし)`)
-      preSpeechTab(followTab, followPriority)
-    } else {
-      // 見送った理由を残す。「音は鳴ったのに画面がすぐ動かなかった」を後から追うのに必要
-      // （動いたかどうかは `requestAutoTab` の記録で分かるが、なぜ待ったかは分からない）。
-      log.debug(`[tab] ${followTab} の先出しを見送り (${blocker})`)
+    if (follow) {
+      const blocker = speechBlocker(priority)
+      if (blocker === null) {
+        log.info(`[tab] ${follow.tab} を要求 (通知音と同時・読み上げの待ちなし)`)
+        preSpeechTab(follow.tab, follow.priority)
+      } else {
+        // 見送った理由を残す。「音は鳴ったのに画面がすぐ動かなかった」を後から追うのに必要
+        // （動いたかどうかは `requestAutoTab` の記録で分かるが、なぜ待ったかは分からない）。
+        log.debug(`[tab] ${follow.tab} の先出しを見送り (${blocker})`)
+      }
     }
-    setTimeout(
-      () => speakNonEEW(text, priority, () => followSpeechTab(followTab, followPriority)),
+    // 間を置いている最中に合成を済ませておく。通知音が鳴り終わってから声が出るまでの空白は、
+    // ほぼこの合成時間だった（実測: LAN 越しの VOICEVOX で 150〜350ms）。
+    const prewarmed = prewarmVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId)
+    scheduleSpeech(
       delay,
+      () => speakNonEEW(
+        text,
+        priority,
+        follow ? () => followSpeechTab(follow.tab, follow.priority) : undefined,
+        prewarmed,
+      ),
+      () => prewarmed?.abort(),
     )
   }
 
@@ -493,8 +546,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           earthquakeCancelToText(original?.time ?? null),
           SPEECH_PRIORITY.normal,
           1200,
-          'earthquake',
-          TAB_PRIORITY.quake,
+          { tab: 'earthquake', priority: TAB_PRIORITY.quake },
         )
       }
     } else if (event.kind === 'quake') {
@@ -595,8 +647,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             tsunamiCancelToText(event.cancelReason),
             SPEECH_PRIORITY.high,
             2400,
-            'tsunami',
-            TAB_PRIORITY.tsunami,
+            { tab: 'tsunami', priority: TAB_PRIORITY.tsunami },
           )
         }
       }
@@ -631,11 +682,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           if (hadKey) {
             if (settings.soundEnabled) playAlertSound('eewCancel')
             if (settings.voicevoxEnabled) {
-              setTimeout(() => {
-                // 誤報取消は「手動選択より強い」側の通知なので、追従も eewUrgent で出す
-                // （eewUpdate だと、取消を読み上げる直前に手動で別タブへ移られた場合に弾かれる）。
-                chainEEWSpeech(() => eewCancelToText(event), () => followSpeechTab('realtime', TAB_PRIORITY.eewUrgent))
-              }, 1200)
+              // 誤報取消は「手動選択より強い」側の通知なので、追従も eewUrgent で出す
+              // （eewUpdate だと、取消を読み上げる直前に手動で別タブへ移られた場合に弾かれる）。
+              scheduleSpeech(1200, () => chainEEWSpeech(
+                () => eewCancelToText(event),
+                () => followSpeechTab('realtime', TAB_PRIORITY.eewUrgent),
+              ))
             }
           }
           if (settings.notifyMinScale >= 0 && settings.notifyEEW) {
@@ -890,7 +942,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         playAlertSound('earthquake')
       }
       if (lpgmSpeech) {
-        speakNonEEWDelayed(lpgmSpeech, SPEECH_PRIORITY.normal, 1000, 'earthquake', TAB_PRIORITY.quake)
+        speakNonEEWDelayed(
+          lpgmSpeech, SPEECH_PRIORITY.normal, 1000, { tab: 'earthquake', priority: TAB_PRIORITY.quake },
+        )
       }
       // voicevox 有効/無効に関わらず追跡する（次回の isNewLpgm 判定に使用）
       seenLpgmEventIdsRef.current.add(lpgmEvent.eventId)
@@ -911,10 +965,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
       // 読み上げは soundEnabled と独立に voicevoxEnabled のみで判定する（AUD-7）。
       if (settings.voicevoxEnabled) {
-        setTimeout(() => {
-          // 最下位の専用層を使う（理由は SPEECH_PRIORITY の commentary の注記）
-          speakNonEEW(nankaiCommentaryToText(commentary), SPEECH_PRIORITY.commentary)
-        }, NANKAI_COMMENTARY_TTS_DELAY_MS)
+        // 最下位の専用層を使う（理由は SPEECH_PRIORITY の commentary の注記）。
+        // 帯で伝える情報なのでタブは動かさない（パネルの展開は expandPanelForSpecialInfo が担う）。
+        speakNonEEWDelayed(
+          nankaiCommentaryToText(commentary), SPEECH_PRIORITY.commentary, NANKAI_COMMENTARY_TTS_DELAY_MS,
+        )
       }
       return
     }
@@ -934,9 +989,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           const ttsText = specialEvent.kind === 'nankai'
             ? nankaiToText(specialEvent.data as Parameters<typeof nankaiToText>[0])
             : kohatsuToText(specialEvent.data as Parameters<typeof kohatsuToText>[0])
-          setTimeout(() => {
-            speakNonEEW(ttsText, SPEECH_PRIORITY.high)
-          }, 1500)
+          // 帯で伝える情報なのでタブは動かさない（理由は関連解説情報と同じ）
+          speakNonEEWDelayed(ttsText, SPEECH_PRIORITY.high, 1500)
         }
         // タイトル更新
         const specialTitle = specialEvent.kind === 'nankai'
@@ -1078,8 +1132,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           ttsText,
           event.kind === 'tsunami' ? SPEECH_PRIORITY.high : SPEECH_PRIORITY.normal,
           TTS_DELAY_MS[type] ?? 0,
-          followTab,
-          event.kind === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake,
+          { tab: followTab, priority: event.kind === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake },
         )
       } else if (event.kind === 'tsunami' && tsunamiIsNewOrUpgraded) {
         // 読み上げ文が組めなかった津波の新規発報・格上げ（保険。理由は宣言箇所）
@@ -1183,8 +1236,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       eewSpeechPendingRef.current = 0
       activeNonEewSpeechRef.current = null
       window.clearTimeout(obsStatusClearTimerRef.current)
+      // 間を置いている最中の読み上げも捨てる（`resetTracking` と対称）
+      cancelPendingSpeech()
     }
-  }, [])
+  }, [cancelPendingSpeech])
 
   // リプレイ開始・終了時に追跡 ref を初期化する。
   // handleStartReplay の useCallback deps を壊さないよう安定参照（deps なし）にする。
@@ -1211,7 +1266,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 60秒 obs バッジ自動消去タイマーもリプレイ切替時に持ち越さない（アンマウント経路と対称）
     window.clearTimeout(obsStatusClearTimerRef.current)
     obsStatusClearTimerRef.current = 0
-  }, [])
+    // 間を置いてからの読み上げの予約も捨てる。残すと、リプレイを始めた直後に切り替え前の
+    // 電文が読まれる（状態はリセット済みなので待ち合わせにも掛からず、そのまま割り込む）。
+    cancelPendingSpeech()
+  }, [cancelPendingSpeech])
 
   // pre-window イベントから T 時点の追跡 ref を復元する（サイレント注入後の正確な音判定に必要）
   const restorePreWindowTracking = useCallback((preFiltered: ReplayEntry[]) => {

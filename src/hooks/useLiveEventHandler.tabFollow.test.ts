@@ -31,8 +31,15 @@ const speakMock = vi.fn((_url: string, text: string) => {
   speeches.push({ text, finish, done: false })
   return p
 })
+// 先行合成の持ち手。`first` は null（合成できなかった扱い）にして、本再生側の
+// 合成し直しの経路を通す。ここで見たいのは「先に始めたか」と「取り消したか」だけ。
+const prewarmAbort = vi.fn()
+const prewarmMock = vi.fn((_url: string, text: string) => ({
+  text, first: Promise.resolve(null), abort: prewarmAbort,
+}))
 vi.mock('../utils/voicevox', () => ({
   speakWithVoicevox: (...args: unknown[]) => speakMock(...(args as [string, string])),
+  prewarmVoicevox: (...args: unknown[]) => prewarmMock(...(args as [string, string])),
 }))
 vi.mock('../utils/alertSound', () => ({ playAlertSound: vi.fn() }))
 vi.mock('../utils/notifications', () => ({ showBrowserNotification: vi.fn() }))
@@ -178,13 +185,19 @@ function setup(over: { voicevoxEnabled?: boolean } = {}) {
     selectQuake: vi.fn(), setActiveLpgmEventId: vi.fn(),
     ...spies,
   }))
-  return { handle: result.current.handleLiveEvent, spies, tsunamisRef }
+  return {
+    handle: result.current.handleLiveEvent,
+    resetTracking: result.current.resetTracking,
+    spies, tsunamisRef,
+  }
 }
 
 beforeEach(() => {
   vi.useFakeTimers()
   speeches.length = 0
   speakMock.mockClear()
+  prewarmMock.mockClear()
+  prewarmAbort.mockClear()
 })
 
 afterEach(() => {
@@ -313,6 +326,28 @@ describe('読み上げとタブ切替の同調', () => {
     const { handle, spies } = setup()
     handle(makeQuake())
     expect(spies.preSpeechTab).toHaveBeenCalledWith('earthquake', TAB_PRIORITY.quake)
+  })
+
+  it('通知音との間を置いている最中に、読み上げの合成を先に始める', () => {
+    // 間（震度速報は 500ms）を合成の時間に充てる。従来はこの間に何もせず、間が明けてから
+    // 合成していたため、音が鳴り終わってから声が出るまで合成時間ぶんの空白があった。
+    const { handle } = setup()
+    handle(makeQuake())
+    expect(prewarmMock).toHaveBeenCalled()
+    // まだ再生はしていない（間が明けるまで待つ）
+    expect(speakMock).not.toHaveBeenCalled()
+  })
+
+  it('リプレイの開始で、間を置いている最中の読み上げと先行合成を取り消す', async () => {
+    // 取り消さないと、状態をリセットした後に古い予約が発火する。リセット済みなので待ち合わせ
+    // にも掛からず、リプレイの読み上げへそのまま割り込む（しかも記録が残らない）。
+    const { handle, resetTracking } = setup()
+    handle(makeQuake())
+    expect(prewarmMock).toHaveBeenCalled()
+    resetTracking()
+    expect(prewarmAbort).toHaveBeenCalled()
+    await settle()
+    expect(speakMock).not.toHaveBeenCalled()
   })
 
   it('先出しは最小滞留時間の床を消費しない（後から声が出る側の追従を弾かない）', async () => {
