@@ -74,16 +74,49 @@ describe('shouldAcceptAutoTab（読み上げ追従）', () => {
     expect(shouldAcceptAutoTab(held(TAB_PRIORITY.tsunami, 'speech'), TAB_PRIORITY.lpgm, NOW, 'speech')).toBe(true)
   })
 
-  it('追従でも、読み上げを持たない経路の保持（揺れ検知）には従来どおり譲る', () => {
-    // 揺れ検知は読み上げが無いため、順序を決める仕組みを他に持たない。
-    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.kyoshin), TAB_PRIORITY.quake, NOW, 'speech')).toBe(false)
-    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.kyoshin), TAB_PRIORITY.tsunami, NOW, 'speech')).toBe(true)
+  it('追従は、揺れ検知の保持には妨げられない', () => {
+    // 揺れ検知は読み上げを持たないため、順序を決める仕組みに参加していない。
+    // 声が地震情報を読んでいるのに画面が揺れ検知のまま留まると、この修正の目的自体が損なわれる。
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.kyoshin), TAB_PRIORITY.quake, NOW, 'speech')).toBe(true)
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.kyoshin), TAB_PRIORITY.lpgm, NOW, 'speech')).toBe(true)
   })
 
-  it('手動選択の保持中は、追従でも奪わない', () => {
+  it('追従でも、揺れ検知以外の保持機構の保持は優先度で判定する', () => {
+    // ここを「手動選択以外は全部突破」まで広げると、津波の受信時フォールバックを長周期が奪い、
+    // アイドル復帰が EEW 中に張った保持も地震情報だけで外れる。
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.tsunami), TAB_PRIORITY.lpgm, NOW, 'speech')).toBe(false)
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.tsunami), TAB_PRIORITY.quake, NOW, 'speech')).toBe(false)
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.eewUpdate), TAB_PRIORITY.quake, NOW, 'speech')).toBe(false)
+    // 同格以上なら通る（従来の規則どおり）
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.tsunami), TAB_PRIORITY.tsunami, NOW, 'speech')).toBe(true)
+  })
+
+  it('保持機構どうしでは従来の優先度比較が生きている', () => {
+    // 読み上げ無効の端末はこちらだけを通る。挙動を変えていないことの確認。
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.kyoshin), TAB_PRIORITY.quake, NOW, 'hold')).toBe(false)
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.kyoshin), TAB_PRIORITY.tsunami, NOW, 'hold')).toBe(true)
+  })
+
+  it('手動選択の保持中は、追従でも奪わない（EEW の緊急側だけが突破する）', () => {
+    // ユーザーが自分で選んだタブだけは、読み上げ追従より強いままにしてある。
     expect(shouldAcceptAutoTab(held(TAB_PRIORITY.manual), TAB_PRIORITY.tsunami, NOW, 'speech')).toBe(false)
-    // EEW の新規発報相当だけは従来どおり突破する（受信時の要求が担う）。
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.manual), TAB_PRIORITY.quake, NOW, 'speech')).toBe(false)
+    // 新規発報・レベルアップ・誤報取消（eewUrgent）は追従でも突破する。
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.manual), TAB_PRIORITY.eewUrgent, NOW, 'speech')).toBe(true)
     expect(shouldAcceptAutoTab(held(TAB_PRIORITY.manual), TAB_PRIORITY.eewUrgent, NOW, 'hold')).toBe(true)
+  })
+
+  it('EEW の続報は、他の情報が確保している画面を奪わない', () => {
+    // 従来からある片方向の抑制。これが無いと、津波や地震情報を読み上げて画面を移した直後に
+    // EEW の続報が来て realtime へ引き戻し、数秒ごとに画面が往復する。
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.tsunami, 'speech'), TAB_PRIORITY.eewUpdate, NOW, 'speech')).toBe(false)
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.quake, 'speech'), TAB_PRIORITY.eewUpdate, NOW, 'speech')).toBe(false)
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.kyoshin), TAB_PRIORITY.eewUpdate, NOW, 'hold')).toBe(false)
+    // 同じ系列で realtime を確保している間は素通りさせる（続報のたびに保持を延ばす）
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.eewUrgent, 'speech'), TAB_PRIORITY.eewUpdate, NOW, 'speech')).toBe(true)
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.eewUpdate, 'speech'), TAB_PRIORITY.eewUpdate, NOW, 'speech')).toBe(true)
+    // 新規発報・レベルアップ・誤報取消は eewUrgent なので抑制に掛からない
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.tsunami, 'speech'), TAB_PRIORITY.eewUrgent, NOW, 'speech')).toBe(true)
   })
 
   it('長周期地震動は地震情報より軽い（専用の段を持つ）', () => {

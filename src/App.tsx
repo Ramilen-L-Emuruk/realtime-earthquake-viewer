@@ -76,6 +76,15 @@ export function App() {
   // 縦積みレイアウト（スマホ縦など）でのパネル高さ比率。ドラッグ中は毎フレームここだけを
   // 更新し、指を離した時点で設定（localStorage）へ保存する。
   const [panelRatio, setPanelRatio] = useState(settings.panelRatio)
+  // 特別情報（南海トラフ臨時情報・後発地震注意情報・関連解説情報）の受信でパネルを一時的に
+  // 開いたときの「元の状態」。null = 追跡していない／true = 元は畳んでいた（戻すとき畳む）／
+  // false = 元から開いていた（戻すときは何もしない）。
+  const [specialInfoPanelHold, setSpecialInfoPanelHold] = useState<boolean | null>(null)
+  // タイマー・イベントリスナーのコールバックから最新値を読むための同期（値の代入は毎レンダー）。
+  const panelCollapsedRef = useRef(panelCollapsed)
+  panelCollapsedRef.current = panelCollapsed
+  const specialInfoPanelHoldRef = useRef<boolean | null>(specialInfoPanelHold)
+  specialInfoPanelHoldRef.current = specialInfoPanelHold
 
   // タブ切替は「その内容をユーザーに見せる」意図なので、パネルが折りたたまれていれば必ず展開する。
   // ラッパーにしているのは、activeTab の変化を監視する useEffect では拾えない経路があるため。
@@ -188,10 +197,15 @@ export function App() {
     tab: TabId,
     priority: TabPriority,
     source: TabHoldSource = 'hold',
+    // 最小滞留時間の床を掛けるか。**発話に同調した追従（`followSpeechTab`）だけ true にする。**
+    // 受信の瞬間に出す要求（EEW の新規発報・続報）に掛けると、続報が 1.5 秒未満で連投された
+    // ときに保持の張り直しを落とす。床の目的は「無音のまま追従が連打されるのを抑える」ことで、
+    // 受信時要求はそもそも連打の原因ではない。
+    opts?: { dwell?: boolean },
   ): boolean => {
     const hold = tabHoldRef.current
     const now = Date.now()
-    if (source === 'speech' && !shouldFollowNow(lastFollowRef.current, priority, now)) {
+    if (opts?.dwell && !shouldFollowNow(lastFollowRef.current, priority, now)) {
       log.debug(`[tab] → ${tab} 追従を間引き (直前の追従から${now - (lastFollowRef.current?.at ?? 0)}ms)`)
       setPanelCollapsed(false)
       return false
@@ -206,9 +220,41 @@ export function App() {
     // 読み上げ系の移動は呼び出し元が名前付きの記録を持たないものがあるため、ここで成立を残す。
     // 拒否だけが記録されて成立が残らないと、ログから「動いたのか何も起きなかったのか」を区別できない。
     log.debug(`[tab] → ${tab} 移動 (優先度${priority}・駆動${source})`)
+    // 特別情報のためにパネルを開いていた場合、**ここでは畳まないが追跡も捨てない。**
+    // 畳まないのは、タブ移動が「その内容を見せる」ための展開であり、打ち消すと移動の意味が
+    // 無くなるため。追跡を捨てないのは、捨てると畳んだ状態へ戻す機会が二度と来ないため
+    // （実際に「畳んで地図を見ている最中に特別情報 → 揺れ検知で自動移動」の順で踏むと、
+    // 以後ユーザー操作でもアイドル復帰でも畳めなくなっていた）。
     setActiveTab(tab)
     return true
   }, [setActiveTab])
+
+  /**
+   * 特別情報（南海トラフ臨時情報・後発地震注意情報・関連解説情報）の受信でパネルを開く。
+   *
+   * これらは地図に重ねた帯（`SpecialInfoBanner`）で伝える情報で、パネル側に居場所がない。
+   * パネルを畳んで地図だけを見ている状態でも気づけるよう、いったん通常の表示に戻す。
+   * **元の状態は覚えておき**、ユーザーが何か操作したときとアイドル復帰のときに戻す
+   * （戻す実体は `restoreSpecialInfoPanel`）。
+   */
+  const expandPanelForSpecialInfo = useCallback(() => {
+    // **ref の読み取りは updater の外で行う。** updater の中で読むと、React が更新関数を
+    // 再実行する場面（開発時の二重呼び出しなど）で「展開後の値」を読んでしまい、
+    // 元が畳んだ状態だったことを取り違える（実測: 常に「元から開いていた」と記録されていた）。
+    const wasCollapsed = panelCollapsedRef.current
+    log.debug(`[panel] 特別情報で展開 (元は${wasCollapsed ? '畳んでいた' : '開いていた'})`)
+    // 追跡中に続報が来ても最初の状態を上書きしない（`??` は false を保つ）。
+    setSpecialInfoPanelHold(prev => prev ?? wasCollapsed)
+    setPanelCollapsed(false)
+  }, [])
+
+  /** 特別情報のために開いたパネルを元の状態へ戻す（追跡していなければ何もしない）。 */
+  const restoreSpecialInfoPanel = useCallback(() => {
+    if (specialInfoPanelHoldRef.current === null) return
+    log.debug(`[panel] 特別情報の展開を解除 (${specialInfoPanelHoldRef.current ? '畳む' : 'そのまま'})`)
+    if (specialInfoPanelHoldRef.current) setPanelCollapsed(true)
+    setSpecialInfoPanelHold(null)
+  }, [])
 
   /**
    * **拒否されない**タブ移動。保持を捨ててから指定の優先度で張り直す。
@@ -285,7 +331,7 @@ export function App() {
    * 「音が鳴り始めた瞬間」を呼び出し側から観測できないため、掴めるのは合成を投入した時点まで。
    */
   const followSpeechTab = useCallback((tab: TabId, priority: TabPriority) => {
-    requestAutoTab(tab, priority, 'speech')
+    requestAutoTab(tab, priority, 'speech', { dwell: true })
   }, [requestAutoTab])
 
   // useLiveEventHandler が返す resetTsunamiScrollToTop を revertToDefaultTab から呼べるようにする ref。
@@ -310,7 +356,7 @@ export function App() {
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate, setActiveTabRealtimeUrgent,
     setActiveTabRealtimeForKyoshin: () => requestTabForKyoshin('realtime'),
-    followSpeechTab,
+    followSpeechTab, expandPanelForSpecialInfo,
     revertToDefaultTab, selectQuake, setActiveLpgmEventId,
   })
   resetTsunamiScrollRef.current = resetTsunamiScrollToTop
@@ -703,6 +749,11 @@ export function App() {
     const ms = settings.idleRevertSec * 1000
     // EEW 発報中または揺れ検知中はリアルタイムタブを維持する。それ以外はデフォルトタブへ戻す。
     const revert = () => {
+      // 特別情報のために一時的に開いたパネルも、ここで平常へ戻す（アイドル復帰は既定の状態へ
+      // 戻す操作なので、パネルの畳みも元に戻すのが筋）。**判定はタブ移動の前に取る**。
+      // 移動が追跡を消すため（`requestAutoTab`）、後から見ると常に「追跡なし」になる。
+      // 畳むのは移動の後。タブ移動は必ずパネルを開くので、先に畳んでも打ち消される。
+      const collapseAfterRevert = specialInfoPanelHoldRef.current === true
       if (activeEEWsRef.current.size > 0 || kyoshinDetectedRef.current) {
         const hasActiveEew = activeEEWsRef.current.size > 0
         log.info(`[tab] → realtime (アイドル復帰・${hasActiveEew ? 'EEW中' : '揺れ検知中'} idleRevertSec=${settings.idleRevertSec})`)
@@ -719,6 +770,8 @@ export function App() {
           title.setTitle(null)
         }
       }
+      if (collapseAfterRevert) setPanelCollapsed(true)
+      setSpecialInfoPanelHold(null)
     }
     let timer = window.setTimeout(revert, ms)
     const reset = () => {
@@ -751,6 +804,26 @@ export function App() {
       window.removeEventListener('scroll', reset, true)
     }
   }, [activeTab, lastUpdate, settings.idleRevertSec])
+
+  // 特別情報のために開いたパネルを、ユーザーが何か操作した時点で元へ戻す。
+  // 「気づかせる」ための一時的な展開なので、気づいた合図（操作）があれば役目は終わり。
+  // バナー自身の閉じるボタンを押した場合もクリックとして拾える。
+  // 追跡していないときはリスナーを張らない（常時購読を増やさない）。
+  useEffect(() => {
+    if (specialInfoPanelHold === null) return
+    const opts = { passive: true, capture: true } as const
+    const restore = () => restoreSpecialInfoPanel()
+    window.addEventListener('pointerdown', restore, opts)
+    window.addEventListener('keydown', restore, opts)
+    window.addEventListener('wheel', restore, opts)
+    window.addEventListener('touchmove', restore, opts)
+    return () => {
+      window.removeEventListener('pointerdown', restore, true)
+      window.removeEventListener('keydown', restore, true)
+      window.removeEventListener('wheel', restore, true)
+      window.removeEventListener('touchmove', restore, true)
+    }
+  }, [specialInfoPanelHold, restoreSpecialInfoPanel])
 
   // 強震モニタ（常時ポーリング: タブ非表示中も揺れ検知を継続する）
   // Yahoo hypoInfo の EEW を injectEvent で状態に注入する（音・タブ切替も発火）
