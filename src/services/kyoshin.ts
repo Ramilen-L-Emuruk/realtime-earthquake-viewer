@@ -10,8 +10,9 @@
 //     （2026-07-29 実データ・公式サイトのCSS調査で確認。全観測点の約3%が該当）。
 
 import type { EEWAlert, IntensityScale } from '../types/earthquake'
-import { feedServerSample, serverNow } from '../utils/clock'
-import { log } from '../utils/logger'
+import { feedServerSample, getServerClockOffsetMs, getServerClockSampleAgeMs, serverNow } from '../utils/clock'
+import { createLogThrottle, log } from '../utils/logger'
+import { fetchServerTime } from './akamaiClock'
 
 /** 観測点座標の配列（[緯度, 経度]）。インデックスが intensity 文字列の位置に対応。 */
 export type SiteCoords = [number, number][]
@@ -305,6 +306,31 @@ function searchRange(consecutiveFail: number): { above: number; below: number } 
 let syncConsecutiveFail = 0
 
 /**
+ * flip を観測できずに較正を見送った記録を間引く間隔 (ms)。
+ *
+ * 較正は 30 秒ごとに走るため素通しにすると同じ行で埋まる。一方で一度きりに絞ると、恒久的に
+ * 較正できていない状態が「一度失敗して直った」ように見えてしまう（`logger.ts` の考え方と同じ）。
+ */
+const FLIP_MISS_LOG_INTERVAL_MS = 300_000
+
+/**
+ * 見送りの理由ごとに独立したスロットルを持つ。
+ *
+ * **1 個を共有してはいけない。** `createLogThrottle` はメッセージを区別せず経過時間だけを見るため、
+ * 共有すると最初に鳴った理由が残りを 5 分間隠す。低レイテンシ環境で起きやすい「既に登録済み」が
+ * 先に鳴ると、その間に本当の通信障害が起きても無警告のまま較正が止まり続ける
+ * （＝「無音経路に警告を足す」という目的が半分無効になる）。
+ */
+const throttledMissLog = {
+  /** 判定の取得そのものが失敗した。 */
+  fetchFailed: createLogThrottle(FLIP_MISS_LOG_INTERVAL_MS),
+  /** 探索開始時点で既に登録済みで、403→200 の境界を挟めなかった。 */
+  alreadyRegistered: createLogThrottle(FLIP_MISS_LOG_INTERVAL_MS),
+  /** 打ち切り時間内に境界が来なかった。 */
+  timedOut: createLogThrottle(FLIP_MISS_LOG_INTERVAL_MS),
+}
+
+/**
  * フロンティア(403->200 境界)を1回較正し、サーバー現在時刻を clock へ供給する。
  * 失敗時（境界を挟めない等）は何もせず次周期に委ねる。連続失敗のたびに探索窓を指数拡張する。
  */
@@ -338,12 +364,20 @@ async function syncClockOnce(): Promise<void> {
     try {
       registered = await isRegistered(SYNC_EDGE, target)
     } catch {
+      throttledMissLog.fetchFailed(() =>
+        log.warn('[kyoshin] clock sync: 判定の取得に失敗し較正を見送った'),
+      )
       return
     }
     const pMid = (p0 + performance.now()) / 2
     if (registered === true) {
       // flip を挟めていない（開始時点で既に登録済み）場合は今回は見送る
-      if (last403Perf === null) return
+      if (last403Perf === null) {
+        throttledMissLog.alreadyRegistered(() =>
+          log.warn('[kyoshin] clock sync: 開始時点で既に登録済みのため flip を挟めず較正を見送った'),
+        )
+        return
+      }
       const flipPerf = (last403Perf + pMid) / 2
       // 秒 target の登録時刻 ≈ (target+1)*1000 + REG_DELAY_MS。その瞬間の perf=flipPerf。
       // 現在時刻へ換算して供給する（feedServerSample が performance.now() との差で K を更新）。
@@ -361,11 +395,61 @@ async function syncClockOnce(): Promise<void> {
     // registered === null は較正基準として使わず次ポーリングへ進む
     await new Promise((r) => setTimeout(r, SYNC_POLL_MS))
   }
+  // 打ち切り時間内に flip を観測できなかった。フロンティア探索の失敗（上で警告済み）と違い
+  // ここは無音だったため、較正が止まっていても K の古い値が残り続けて気づけなかった。
+  throttledMissLog.timedOut(() =>
+    log.warn(`[kyoshin] clock sync: ${SYNC_FLIP_TIMEOUT_MS}ms 以内に flip を観測できず較正を見送った`),
+  )
+}
+
+/**
+ * Yahoo 較正と外部の時刻サービスの差分を 1 回記録する（並走計測。アプリ時計へは供給しない）。
+ *
+ * 目的は現行推定器（Yahoo の 403→200 境界 ＋ `REG_DELAY_MS`）のずれの実測。ここで得た差が
+ * `FETCH_OFFSET_MS`（`kyoshinSource.ts`）のマージンを削らないかを確認したうえで、較正の主経路を
+ * 外部の時刻サービスへ切り替える判断材料にする。
+ *
+ * 出力は次の 2 つ。
+ *   - `壁時計-server`  : 端末時計のずれ。較正の有無に関わらず常に出す
+ *   - `yahoo較正-server`: 現行の推定器のずれ。未較正のときは「未」と出す
+ *
+ * `age` は最後に較正してからの経過時間。K は最後に成功したサンプルを保持し続けるため、
+ * これを併記しないと「30 秒前に較正した新しい K」と「較正が止まったまま残っている古い K」を
+ * 区別できず、古い値との差を現行推定器のずれとして記録してしまう。
+ *
+ * @param isStopped 停止済みかを返す。取得中に較正ループが止められたら記録を捨てる
+ *   （取得は中断できないため。ライブ⇄リプレイの切替を繰り返すと、停止済みインスタンスの
+ *   記録が新しいインスタンスの記録に混ざって読み手を惑わせる）
+ */
+async function probeServerTimeOnce(isStopped: () => boolean): Promise<void> {
+  const sample = await fetchServerTime()
+  if (sample === null || isStopped()) return
+  // サーバー基準の「今」。サンプルが指す瞬間からの経過分を足して現在時刻へ換算する。
+  const serverTimeNow = sample.serverEpochMs + (performance.now() - sample.perfRefMs)
+  const wallDiff = Date.now() - serverTimeNow
+  // getServerClockOffsetMs() は serverNow() - Date.now()。serverNow() を直接呼ぶと
+  // 未較正時にフォールバック警告を発生させてしまうため、オフセット経由で組み立てる。
+  const offset = getServerClockOffsetMs()
+  const ageMs = getServerClockSampleAgeMs()
+  const calibrated = offset === null
+    ? 'yahoo較正=未'
+    : `yahoo較正-server=${signed(wallDiff + offset)}ms(age=${ageMs === null ? '?' : Math.round(ageMs / 1000)}s)`
+  log.info(
+    `[clock-probe] 壁時計-server=${signed(wallDiff)}ms ${calibrated}`
+    + ` (rtt=${Math.round(sample.rttMs)}ms)`,
+  )
+}
+
+/** 符号付きで丸めた ms 表記。差の向きが一目で分かるようにする。 */
+function signed(ms: number): string {
+  const rounded = Math.round(ms)
+  return rounded >= 0 ? `+${rounded}` : String(rounded)
 }
 
 /**
  * クロック同期ループを開始する。返り値の関数で停止する。
- * DMDSS の live モードでのみ呼ぶこと（リプレイ時は clock 側でサンプルが無視される）。
+ * ライブモードでのみ呼ぶこと（リプレイ時は clock 側でサンプルが無視される）。
+ * 強震モニタは両バリアントで動くため、この較正も standard / DMDSS の双方で走る。
  */
 export function startClockSync(): () => void {
   let stopped = false
@@ -376,6 +460,17 @@ export function startClockSync(): () => void {
       await syncClockOnce()
     } catch {
       // 較正失敗は無視し次周期で再試行
+    }
+    // 並走計測は較正とは独立に封じ込める。例外はここで止める（黙って捨てはしない。計測の
+    // 想定外は診断できる形で残す）。
+    //
+    // **待たない**のが要点。時刻サービスが到達不能な環境では打ち切りまで 3 秒かかり、await すると
+    // 較正の周期が 30 秒 → 33 秒へ静かに延びる。計測のために既存の較正を遅くするのは本末転倒。
+    // 3 秒は周期 30 秒より短いので、次の周回と重なることもない。
+    if (!stopped) {
+      void probeServerTimeOnce(() => stopped).catch((err) => {
+        log.warn('[clock-probe] 計測中の例外（較正には影響しない）', err)
+      })
     }
     if (!stopped) timer = setTimeout(loop, CLOCK_SYNC_INTERVAL_MS)
   }
