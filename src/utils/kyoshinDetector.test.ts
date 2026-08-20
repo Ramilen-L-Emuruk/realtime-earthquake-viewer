@@ -880,6 +880,120 @@ describe('step: 大きな揺れ直後のノイズ床フリーズ（群発地震�
   })
 })
 
+describe('step: ノイズ床フリーズの副作用と境界（群発地震対策の周辺）', () => {
+  /**
+   * 1Hz で frames 個ぶん床学習が進んだときの、EWMA の理論上の到達割合（0〜1）。
+   * 床が動いた／動いていないの判定を FLOOR_TAU_MS から導出するために使う。
+   */
+  function learnedPull(frames: number): number {
+    return 1 - Math.exp(-(frames * 1000) / PARAMS.FLOOR_TAU_MS)
+  }
+
+  /** 3x3 グリッドの一部だけを揺らし、残りは静穏値に据えたフレームを作る。 */
+  function partialShake(
+    defs: StationDef[],
+    t: number,
+    shakenIdx: number[],
+    shakeValue: number,
+    calmValue: number,
+  ): Frame {
+    return frameWith(defs, t, (i) => (shakenIdx.includes(i) ? shakeValue : calmValue))
+  }
+
+  it('onset していない観測点はフリーズの対象外で、慢性ノイズ床の学習を続ける', () => {
+    const defs = grid3x3(32.6, 130.7, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    // 全点を -2.0 に揃えて床を -2.0 に確定させる
+    for (let i = 0; i < 5; i++, t += 1000) state = step(state, uniformFrame(defs, t, -2.0), meta).state
+
+    // index 0〜5 の 6 点だけ震度4級で揺れて onset する（＝フリーズ対象）。残る index 6〜8 は -1.0 に
+    // 据える（実効床 0 を下回るので levelActive にならず onset しない＝フリーズ対象外）。
+    // grid3x3 は緯度の小さい行から詰めるので index 0〜5 は南側 2 行・6〜8 は北側 1 行。方位に
+    // 依存した読み方をしなくて済むよう、揺らす点は index で書く。
+    for (let i = 0; i < 5; i++, t += 1000) {
+      state = step(state, partialShake(defs, t, [0, 1, 2, 3, 4, 5], 4.0, -1.0), meta).state
+    }
+    // このテストに必要な前提は「揺れた点が onset したこと」だけ（フリーズは triggeredAtMs を見る）。
+    // confirmed 到達を前提にすると CONFIRM_POINTS 系の調整で意図と無関係に落ちるので onset で判定する。
+    expect(state.sites[siteKey(defs[0].lat, defs[0].lng)].triggeredAtMs).not.toBeNull()
+    expect(state.sites[siteKey(defs[8].lat, defs[8].lng)].triggeredAtMs).toBeNull()
+
+    // 揺れが収まり、揺れた点も -1.0 まで下がる（levelActive ではない＝本来なら床学習の対象）
+    const calmFrames = 120
+    for (let i = 0; i < calmFrames; i++, t += 1000) {
+      state = step(state, uniformFrame(defs, t, -1.0), meta).state
+    }
+
+    // onset した点はフリーズ中なので床が動かない
+    expect(state.sites[siteKey(defs[0].lat, defs[0].lng)].floorMean).toBeCloseTo(-2.0)
+    // onset していない点は -1.0 を学習し続けて床が上がる。慢性的にノイジーな観測点を
+    // FLOOR_CAP まで鈍くする本来の役目が、フリーズ導入後も損なわれていないことの確認。
+    // 期待値は時定数から導く（FLOOR_TAU_MS を将来調整しても偽陽性で落ちないように、
+    // 理論上の到達量の半分を下限にする）。床は -2.0 から -1.0 へ向かうので可動域は 1.0。
+    expect(state.sites[siteKey(defs[8].lat, defs[8].lng)].floorMean).toBeGreaterThan(
+      -2.0 + learnedPull(calmFrames) * 0.5,
+    )
+  })
+
+  it('群発地震で onset を繰り返すと、そのたびにフリーズ起点が更新され床が守られ続ける', () => {
+    const defs = grid3x3(32.6, 130.7, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    // データ時刻は必ず 1 秒ずつ厳密に進める。同じ時刻のフレームを 2 度渡すと dtMs <= 0 が
+    // 不連続とみなされ、検証したい onset 時刻の更新そのものが消えてしまう。
+    const feed = (v: number): void => {
+      t += 1000
+      state = step(state, uniformFrame(defs, t, v), meta).state
+    }
+    for (let i = 0; i < 5; i++) feed(-2.0)
+
+    const key = siteKey(defs[4].lat, defs[4].lng)
+    // フリーズ期間の 6 割ずつ挟むので、1 回目の onset からの経過は FLOOR_FREEZE_MS を超えるが、
+    // 2 回目の onset からは超えない。起点が更新されなければ途中で学習が再開してしまう。
+    const segmentMs = PARAMS.FLOOR_FREEZE_MS * 0.6
+
+    for (let round = 0; round < 2; round++) {
+      for (let i = 0; i < 5; i++) feed(4.0)
+      const until = t + segmentMs
+      while (t < until) feed(-1.0)
+    }
+
+    expect(state.sites[key].floorMean).toBeCloseTo(-2.0)
+  })
+
+  it('データ時刻が巻き戻ると onset 時刻を破棄し、フリーズに閉じ込められない', () => {
+    const defs = grid3x3(32.6, 130.7, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) state = step(state, uniformFrame(defs, t, -2.0), meta).state
+    for (let i = 0; i < 5; i++, t += 1000) state = step(state, uniformFrame(defs, t, 4.0), meta).state
+
+    const key = siteKey(defs[4].lat, defs[4].lng)
+    expect(state.sites[key].triggeredAtMs).not.toBeNull()
+
+    // アーカイブ再生などでデータ時刻が過去へ跳ぶと dtMs <= 0 が不連続とみなされ、一過性の状態
+    // （triggeredAtMs）が作り直される。これが無いと now − triggeredAtMs が負になり、
+    // フリーズ条件が永久に真のままになって床学習が二度と再開しない。
+    let t2 = t - 3_600_000
+    state = step(state, uniformFrame(defs, t2, -1.0), meta).state
+    expect(state.sites[key].triggeredAtMs).toBeNull()
+    // 学習資産（床）は不連続をまたいでも引き継がれる
+    expect(state.sites[key].floorMean).toBeCloseTo(-2.0)
+
+    // 巻き戻し後も床学習が進む（フリーズが解けないままになっていない）
+    const resumedFrames = 120
+    for (let i = 0; i < resumedFrames; i++) {
+      t2 += 1000
+      state = step(state, uniformFrame(defs, t2, -1.0), meta).state
+    }
+    expect(state.sites[key].floorMean).toBeGreaterThan(-2.0 + learnedPull(resumedFrames) * 0.5)
+  })
+})
+
 describe('step: 特異度の第2軸（セル慢性活性ガード）', () => {
   it('慢性活性セルでは震度1のコヒーレント同時多発を confirmed にしない', () => {
     const defs = grid3x3(36.1, 140.3, 0.1) // 北関東型
