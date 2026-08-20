@@ -10,8 +10,9 @@
 //     （2026-07-29 実データ・公式サイトのCSS調査で確認。全観測点の約3%が該当）。
 
 import type { EEWAlert, IntensityScale } from '../types/earthquake'
-import { feedServerSample, serverNow } from '../utils/clock'
-import { log } from '../utils/logger'
+import { feedServerSample, getServerClockSampleAgeMs, serverNow } from '../utils/clock'
+import { createLogThrottle, log } from '../utils/logger'
+import { fetchServerTime, SERVER_TIME_SKIPPED } from './akamaiClock'
 
 /** 観測点座標の配列（[緯度, 経度]）。インデックスが intensity 文字列の位置に対応。 */
 export type SiteCoords = [number, number][]
@@ -305,6 +306,31 @@ function searchRange(consecutiveFail: number): { above: number; below: number } 
 let syncConsecutiveFail = 0
 
 /**
+ * flip を観測できずに較正を見送った記録を間引く間隔 (ms)。
+ *
+ * 較正は 30 秒ごとに走るため素通しにすると同じ行で埋まる。一方で一度きりに絞ると、恒久的に
+ * 較正できていない状態が「一度失敗して直った」ように見えてしまう（`logger.ts` の考え方と同じ）。
+ */
+const FLIP_MISS_LOG_INTERVAL_MS = 300_000
+
+/**
+ * 見送りの理由ごとに独立したスロットルを持つ。
+ *
+ * **1 個を共有してはいけない。** `createLogThrottle` はメッセージを区別せず経過時間だけを見るため、
+ * 共有すると最初に鳴った理由が残りを 5 分間隠す。低レイテンシ環境で起きやすい「既に登録済み」が
+ * 先に鳴ると、その間に本当の通信障害が起きても無警告のまま較正が止まり続ける
+ * （＝「無音経路に警告を足す」という目的が半分無効になる）。
+ */
+const throttledMissLog = {
+  /** 判定の取得そのものが失敗した。 */
+  fetchFailed: createLogThrottle(FLIP_MISS_LOG_INTERVAL_MS),
+  /** 探索開始時点で既に登録済みで、403→200 の境界を挟めなかった。 */
+  alreadyRegistered: createLogThrottle(FLIP_MISS_LOG_INTERVAL_MS),
+  /** 打ち切り時間内に境界が来なかった。 */
+  timedOut: createLogThrottle(FLIP_MISS_LOG_INTERVAL_MS),
+}
+
+/**
  * フロンティア(403->200 境界)を1回較正し、サーバー現在時刻を clock へ供給する。
  * 失敗時（境界を挟めない等）は何もせず次周期に委ねる。連続失敗のたびに探索窓を指数拡張する。
  */
@@ -338,12 +364,20 @@ async function syncClockOnce(): Promise<void> {
     try {
       registered = await isRegistered(SYNC_EDGE, target)
     } catch {
+      throttledMissLog.fetchFailed(() =>
+        log.warn('[kyoshin] clock sync: 判定の取得に失敗し較正を見送った'),
+      )
       return
     }
     const pMid = (p0 + performance.now()) / 2
     if (registered === true) {
       // flip を挟めていない（開始時点で既に登録済み）場合は今回は見送る
-      if (last403Perf === null) return
+      if (last403Perf === null) {
+        throttledMissLog.alreadyRegistered(() =>
+          log.warn('[kyoshin] clock sync: 開始時点で既に登録済みのため flip を挟めず較正を見送った'),
+        )
+        return
+      }
       const flipPerf = (last403Perf + pMid) / 2
       // 秒 target の登録時刻 ≈ (target+1)*1000 + REG_DELAY_MS。その瞬間の perf=flipPerf。
       // 現在時刻へ換算して供給する（feedServerSample が performance.now() との差で K を更新）。
@@ -361,22 +395,104 @@ async function syncClockOnce(): Promise<void> {
     // registered === null は較正基準として使わず次ポーリングへ進む
     await new Promise((r) => setTimeout(r, SYNC_POLL_MS))
   }
+  // 打ち切り時間内に flip を観測できなかった。フロンティア探索の失敗（上で警告済み）と違い
+  // ここは無音だったため、較正が止まっていても K の古い値が残り続けて気づけなかった。
+  throttledMissLog.timedOut(() =>
+    log.warn(`[kyoshin] clock sync: ${SYNC_FLIP_TIMEOUT_MS}ms 以内に flip を観測できず較正を見送った`),
+  )
+}
+
+/**
+ * 外部の時刻サービスから 1 回較正する。較正できたら true。
+ *
+ * **これが較正の主経路。** Yahoo の 403→200 境界を挟む方式（`syncClockOnce`）は、ここが失敗した
+ * ときだけ使うフォールバックに降りた。理由は 2 つ。
+ *   - Yahoo 方式は `REG_DELAY_MS`（登録遅延の実測 p50）に精度が依存し、実際の遅延が CDN の応答で
+ *     変わるため**セッションごとに数百 ms ずれる**。定数の調整では消せない（実測は
+ *     `docs/spec/data-sources-spec.md` §11 の 2026-08-20）
+ *   - Yahoo 方式は 1 回の較正に十数リクエストを要し、うち数件は意図的な 403。こちらは 1 リクエスト
+ *
+ * **2 つの推定器を同じ EMA に混ぜてはいけない。** 混ぜると精度の良い側にもう一方のバイアスが
+ * 割り込み、どちらか単独より悪くなる。そのため「取れたら Yahoo 側は走らせない」形にしている
+ * （呼び出し側のループを参照）。
+ *
+ * @param isStopped 停止済みかを返す。取得中に較正ループが止められたら供給しない
+ *   （取得は中断できないため。ライブ⇄リプレイの切替直後に、止めたはずのインスタンスが
+ *   アプリ時計を書き換えるのを防ぐ）
+ * @returns 較正できたか（`'skipped'` は別の取得と重なって見送った状態。**失敗ではない**）
+ */
+async function calibrateFromServerTime(
+  isStopped: () => boolean,
+): Promise<'calibrated' | 'skipped' | 'failed'> {
+  const outcome = await fetchServerTime()
+  if (outcome === SERVER_TIME_SKIPPED) return 'skipped'
+  if (outcome === null) return 'failed'
+  // 停止済みなら供給しない。取得は中断できないため、ここまで来てから捨てる。
+  if (isStopped()) return 'skipped'
+  // サンプルが指す瞬間からの経過分を足して現在時刻へ換算する。
+  feedServerSample(outcome.serverEpochMs + (performance.now() - outcome.perfRefMs))
+  return 'calibrated'
+}
+
+/**
+ * 較正が止まっていないかを見張る猶予 (ms)。
+ *
+ * K は最後に成功したサンプルを保持し続けるため、両経路が失敗し続けても `serverNow()` は
+ * 古い値を返し、未較正警告（`clock.ts`・K が null のときだけ出る）も鳴らない。**成功したことが
+ * ある分だけ、止まったときに気づけない。** 周期 30 秒の 10 回分を超えたら記録に残す。
+ */
+const STALE_CALIBRATION_MS = 300_000
+
+const throttledStaleLog = createLogThrottle(STALE_CALIBRATION_MS)
+
+/** 較正が古びていないかを確かめ、古ければ記録する。 */
+function warnIfCalibrationStale(): void {
+  const ageMs = getServerClockSampleAgeMs()
+  if (ageMs === null || ageMs <= STALE_CALIBRATION_MS) return
+  throttledStaleLog(() =>
+    log.warn(
+      `[clock] 較正が ${Math.round(ageMs / 1000)} 秒前から更新されていない`
+      + '（外部時刻サービスと Yahoo の両経路が失敗している）',
+    ),
+  )
 }
 
 /**
  * クロック同期ループを開始する。返り値の関数で停止する。
- * DMDSS の live モードでのみ呼ぶこと（リプレイ時は clock 側でサンプルが無視される）。
+ * ライブモードでのみ呼ぶこと（リプレイ時は clock 側でサンプルが無視される）。
+ * 強震モニタは両バリアントで動くため、この較正も standard / DMDSS の双方で走る。
+ *
+ * 1 周期の流れ:
+ *   1. 外部の時刻サービスで較正する（1 リクエスト・実測 40ms 前後）
+ *   2. **取れなかったときだけ** Yahoo の 403→200 境界で較正する（到達不能環境のフォールバック）
+ *   3. どちらも失敗し続けていれば記録に残す
+ *
+ * 順序が逆だと意味が変わる。Yahoo を先に走らせて両方を供給すると、精度の良い側に Yahoo の
+ * バイアスが混ざる。加えて Yahoo 方式は毎周期十数リクエスト（うち数件は意図的な 403）を撃つため、
+ * 外部サービスが使える環境ではそれを避けたい。
  */
 export function startClockSync(): () => void {
   let stopped = false
   let timer: ReturnType<typeof setTimeout> | null = null
   const loop = async () => {
     if (stopped) return
+    let outcome: 'calibrated' | 'skipped' | 'failed' = 'failed'
     try {
-      await syncClockOnce()
-    } catch {
-      // 較正失敗は無視し次周期で再試行
+      outcome = await calibrateFromServerTime(() => stopped)
+    } catch (err) {
+      // 想定外の例外は黙って捨てず、フォールバックへ進む。
+      log.warn('[clock] 外部時刻サービスでの較正中に例外（Yahoo 経路へ切り替える）', err)
     }
+    // **フォールバックへ落ちるのは `failed` のときだけ。** `skipped`（別の取得と重なった・
+    // 停止済み）でも落とすと、重なっただけで Yahoo の未登録秒を撃つことになる。
+    if (!stopped && outcome === 'failed') {
+      try {
+        await syncClockOnce()
+      } catch {
+        // 較正失敗は無視し次周期で再試行（見送りの理由は syncClockOnce 側で記録している）
+      }
+    }
+    if (!stopped) warnIfCalibrationStale()
     if (!stopped) timer = setTimeout(loop, CLOCK_SYNC_INTERVAL_MS)
   }
   void loop()

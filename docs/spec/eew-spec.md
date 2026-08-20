@@ -64,8 +64,10 @@ P2PQuake の 556 で severity が付与される仕組みは [`data-sources-spec
 **Yahoo hypoInfo を DMDSS 版で使わない仕組み**: `src/App.tsx` が `useKyoshinRealtime` に渡す
 `onEEWEvent` を DMDSS 版では `undefined` にしている。通知先が無いとき `useKyoshinRealtime` は
 差分の基準（直前の hypoInfo）だけ進めてイベントを捨てるため、DMDSS 版では Yahoo 由来の EEW が
-状態へ入る経路そのものが存在しない。**リアルタイム震度とクロック較正には両バリアントとも Yahoo を
-使う**（強震モニタのフレームに hypoInfo は載ってくるが、EEW としては読まない）という点に注意。
+状態へ入る経路そのものが存在しない。**リアルタイム震度は両バリアントとも Yahoo を使う**
+（強震モニタのフレームに hypoInfo は載ってくるが、EEW としては読まない）という点に注意。
+クロック較正の主経路は別の時刻サービスに移っており、Yahoo は取得に失敗した周期のフォールバックとして
+両バリアントで使う（[`data-sources-spec.md`](data-sources-spec.md) §4「クロック同期」）。
 
 **enrichEEW（`useEarthquakes.ts`・standard 版のみ）**: Yahoo hypoInfo で先に検知した EEW に、後着の P2PQuake で
 より正確な `areas` / `condition` / `hypocenter` を上書きする。severity は upgrade only（既存 `'Warning'` は
@@ -194,8 +196,8 @@ standard 版では `eewMaxLpgmClass` が常に 0 になり震度のみでレベ�
 > 初期報で震度を否定した直後に階級だけを断言する矛盾した発話が出ていた。
 > **同種の値を扱う経路は、片方だけ生フィールドを読まないこと。**
 
-**既知の限界**: これで解消したのは仮定震源要素の経路だけ。`eewIntensityToText` は深発地震
-（深さ 150km 超）でも「予想震度なし」と読む分岐を持つが、`eewMaxLpgmClass` は深さを見ないため、
+**既知の限界**: これで解消したのは仮定震源要素の経路だけ。読み上げは深発地震（深さ 150km 超）でも
+「予想震度なし」と読む（判定は `eewNoForecastReason`）が、`eewMaxLpgmClass` は深さを見ないため、
 階級だけ値を持てば同じ形の矛盾が残る。震度予想の出ない深発地震で長周期階級だけが載る電文が
 実在するかは未確認のため手を付けていない（実発報時の確認をユーザーに委ねる）。
 
@@ -214,7 +216,11 @@ standard 版では `eewMaxLpgmClass` が常に 0 になり震度のみでレベ�
   `src/components/Map/EewEpicentersGL.tsx` の `ASSUMED_OPACITY_RATIO` で不透明度を下げる
 - **検知エンジンの EEW 連動緩和判定** — `src/App.tsx` の `hasActiveNonAssumedEEW`
 - **揺れ検知の基準震源選定** — `src/hooks/useKyoshinAlerts.ts` の `extractEewInfo`
-- **読み上げテキスト生成** — `src/utils/ttsText.ts`（EEW 読み上げ関数群で `condition` を参照）
+- **予想震度が出ない理由の判定** — `src/utils/eew.ts` の `eewNoForecastReason`。読み上げの文言
+  （`src/utils/ttsText.ts` の `noForecastText`）と、予想震度の確定を待つかどうかの判断
+  （`src/hooks/useLiveEventHandler.ts` の第 2 フェーズ）はどちらもこれを通す。分類と待ちの決まりは
+  [audio-tts-spec.md](audio-tts-spec.md) §4・§6 が単一情報源。**読み上げ側が `condition` を直接見るのは
+  やめたので、この関数だけを直せばよい**
 - **`condition`/`hypocenter` の明示マージ** — `src/hooks/useEarthquakes.ts` の `enrichEEW`（§3 参照。standard 版で、後着の P2PQuake が明示的に上書きし、Yahoo 由来の誤った `condition` が残り続けないようにする。ここが崩れると下流の全判定が破綻する）
 
 **バリアント差の非対称**: Yahoo hypoInfo は `condition` に相当するフィールドを持たず常に `'以上'` を返すため、
@@ -380,6 +386,9 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
 - 2026-08-20: 自動タブ切替に優先度を入れた（§9）。従来は EEW が realtime を確保した直後に地震情報・
   津波が無条件にタブを奪えたため、読み上げが EEW を守るようになった後も画面から EEW が消えていた。
   優先順位の全体像は [`audio-tts-spec.md`](audio-tts-spec.md) §6
+- 2026-08-20: 予想震度が出ない理由の判定を `eewNoForecastReason`（§5）に切り出した。読み上げの文言と
+  「値の確定を待つかどうか」が別々に `condition` を見ていたため、判定が食い違いうる状態だった。
+  読み上げ側の挙動は [`audio-tts-spec.md`](audio-tts-spec.md) §6
 - 2026-08-20: 予報級の表示を電文の名称（VXSE45「緊急地震速報（地震動予報）」）に合わせ、
   「予報」→「地震動予報」に統一した（§3「電文の名称と表示・読み上げ」）。読み上げも切り出しの語で
   区分を分ける（[`audio-tts-spec.md`](audio-tts-spec.md) §6）

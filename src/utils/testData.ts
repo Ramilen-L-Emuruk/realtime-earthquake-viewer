@@ -208,6 +208,73 @@ export function createTestEEWForecast(eventId?: string, serial = 1, baseTime?: D
   }
 }
 
+// 単独点処理（仮定震源要素）の初期報 → 続報で震源確定・警報へ格上げ。
+// 初報は 1 観測点でしか捉えられておらず、地域別予想が発表されない（areas が空・condition が
+// 「仮定震源要素」）。読み上げは待たずに「単独点処理のため、予想震度なし。」と伝え、続報で値が
+// 付いた時点で言い直す（docs/spec/audio-tts-spec.md §6）。
+//
+// **震源名は報をまたいで変えない。** 名前が変わって 50km 超動くと「震源を更新、〇〇で地震。」の
+// 経路（useLiveEventHandler の hypoFarMoved）に入り、確かめたい格上げの言い方が出てこない。
+// 単独点処理の仮定値（深さ 10km・M5.0）から確定値（深さ 30km・M6.5）へ更新する形にしてある。
+export function createTestEEWAssumed(eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
+  const origin = baseTime ?? serverDate()
+  const report = serverDate().toISOString()
+  const eid = eventId ?? `test-assumed-${Date.now()}`
+  const isAssumed = serial === 1
+  return {
+    kind: 'eew',
+    id: `test-eew-assumed-${eid}-${serial}`,
+    time: report,
+    test: false,
+    earthquake: {
+      originTime: origin.toISOString(),
+      arrivalTime: new Date(origin.getTime() + 20000).toISOString(),
+      condition: isAssumed ? '仮定震源要素' : '以上',
+      // 単独点処理では震源要素そのものが仮定値。カード・地図側もこれを見て M・深さを隠す
+      // （docs/spec/eew-spec.md §5）
+      hypocenter: isAssumed
+        ? { name: '日向灘', latitude: 32.0, longitude: 132.0, depth: 10, magnitude: 5.0 }
+        : { name: '日向灘', latitude: 32.0, longitude: 132.0, depth: 30, magnitude: 6.5 },
+    },
+    severity: isAssumed ? 'Forecast' : 'Warning',
+    cancelled: false,
+    issue: { eventId: eid, serial: String(serial), time: report },
+    // 初報に区域は載らない。続報で震源が確定して初めて地域別予想が付く
+    areas: isAssumed ? [] : [
+      { pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null },
+    ],
+  }
+}
+
+// 深発地震（深さ 150km 超）。震源は確定しているが地域別予想が発表されないため、読み上げは
+// 待たずに「深発地震のため、予想震度なし。」と伝える。
+//
+// **severity は続報も含めて予報級に固定する。** 気象庁は深さ 150km を超える地震に緊急地震速報
+// （警報）を発表しないため、警報級の深発 EEW は実電文として存在しない。
+export function createTestEEWDeep(eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
+  const origin = baseTime ?? serverDate()
+  const report = serverDate().toISOString()
+  const eid = eventId ?? `test-deep-${Date.now()}`
+  return {
+    kind: 'eew',
+    id: `test-eew-deep-${eid}-${serial}`,
+    time: report,
+    test: false,
+    earthquake: {
+      originTime: origin.toISOString(),
+      arrivalTime: new Date(origin.getTime() + 60000).toISOString(),
+      condition: '以上',
+      // 2015/05/30 小笠原諸島西方沖（深さ 682km）を参考にした深発地震のパラメータ
+      hypocenter: { name: '小笠原諸島西方沖', latitude: 27.9, longitude: 140.5, depth: 450, magnitude: 6.5 },
+    },
+    severity: 'Forecast',
+    cancelled: false,
+    issue: { eventId: eid, serial: String(serial), time: report },
+    // 深発地震では地域別の震度予想が発表されない
+    areas: [],
+  }
+}
+
 export function createTestEEW(eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
   const origin = baseTime ?? serverDate()
   const report = serverDate().toISOString()

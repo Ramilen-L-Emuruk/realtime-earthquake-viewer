@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewMaxScale, eewSerial, selectEEWSoundType, type HypoInfoPendingMissing } from './eew'
+import { calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewMaxScale, eewNoForecastReason, eewSerial, selectEEWSoundType, type HypoInfoPendingMissing } from './eew'
 import type { YahooHypoInfoItem } from '../services/kyoshin'
 import type { EEWAlert, IntensityScale, LpgmClass } from '../types/earthquake'
 
@@ -481,5 +481,64 @@ describe('eewSerial', () => {
     const eew = makeEEW()
     // issue プロパティが未定義（optional chain で null を返すルート）
     expect(eewSerial(eew)).toBeNull()
+  })
+})
+
+// 予想震度が出ない理由の判定。読み上げ文と「値の確定を待つかどうか」の両方が同じ判定を使う
+// （utils/ttsText.ts の noForecastText / hooks/useLiveEventHandler.ts の第 2 フェーズ）。
+// 'unknown' だけは値が遅れて付く可能性が残る＝待つ意味がある、という切り分けが要点。
+describe('eewNoForecastReason', () => {
+  it('仮定震源要素なら assumed', () => {
+    const eew = makeEEW({
+      earthquake: {
+        originTime: '2026-01-01T12:00:00Z',
+        arrivalTime: '2026-01-01T12:00:20Z',
+        condition: '仮定震源要素',
+        hypocenter: { name: 'テスト震源', latitude: 35.0, longitude: 135.0, depth: 10, magnitude: 6.0 },
+      },
+    })
+    expect(eewNoForecastReason(eew)).toBe('assumed')
+  })
+
+  it('深さが 150km を超えれば deep', () => {
+    const eew = makeEEW({
+      earthquake: {
+        originTime: '2026-01-01T12:00:00Z',
+        arrivalTime: '2026-01-01T12:00:20Z',
+        condition: '以上',
+        hypocenter: { name: 'テスト震源', latitude: 35.0, longitude: 135.0, depth: 151, magnitude: 6.0 },
+      },
+    })
+    expect(eewNoForecastReason(eew)).toBe('deep')
+  })
+
+  it('深さ 150km ちょうどは deep にしない（境界は含めない）', () => {
+    const eew = makeEEW({
+      earthquake: {
+        originTime: '2026-01-01T12:00:00Z',
+        arrivalTime: '2026-01-01T12:00:20Z',
+        condition: '以上',
+        hypocenter: { name: 'テスト震源', latitude: 35.0, longitude: 135.0, depth: 150, magnitude: 6.0 },
+      },
+    })
+    expect(eewNoForecastReason(eew)).toBe('unknown')
+  })
+
+  // 仮定震源要素の判定を先に置いている。単独点処理で深い震源が仮定されることがあり、
+  // そのとき読み上げるべき理由は「単独点処理のため」（震源そのものが未確定）。
+  it('仮定震源要素かつ深発なら assumed を優先する', () => {
+    const eew = makeEEW({
+      earthquake: {
+        originTime: '2026-01-01T12:00:00Z',
+        arrivalTime: '2026-01-01T12:00:20Z',
+        condition: '仮定震源要素',
+        hypocenter: { name: 'テスト震源', latitude: 35.0, longitude: 135.0, depth: 400, magnitude: 6.0 },
+      },
+    })
+    expect(eewNoForecastReason(eew)).toBe('assumed')
+  })
+
+  it('浅い通常の震源なら unknown（値が遅れて付く可能性が残る）', () => {
+    expect(eewNoForecastReason(makeEEW())).toBe('unknown')
   })
 })
