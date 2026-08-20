@@ -369,7 +369,7 @@ describe('step: EEW 発表中の確定緩和（§19）', () => {
   })
 })
 
-describe('step: 高震度 fast path（§20）', () => {
+describe('step: 高震度 fast path（§20・§26）', () => {
   /**
    * 9点グリッドのうち3点だけを onset させて連結成分（MIN_CLUSTER=3）を作る。
    * size=3 は effectiveConfirmReq（密な網では CONFIRM_POINTS=5）に届かないため、通常経路では
@@ -404,11 +404,15 @@ describe('step: 高震度 fast path（§20）', () => {
     expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
   })
 
-  it('震度3が1点だけでは fast path が発火しない（HIGH_CONFIRM_POINTS の対照）', () => {
+  it('成分が揃っていれば震度3が1点だけでも confirmed になる（HIGH_CONFIRM_POINTS=1・§26）', () => {
     const defs = grid3x3(35.0, 139.0, 0.1)
     const meta = buildStationMeta(sitesOf(defs))
     const { detections } = drive(shakeThree(defs, 2.5, 1), meta)
-    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+    const confirmed = detections.filter((d) => d.confidence === 'confirmed')
+    expect(confirmed.length).toBe(1)
+    // 点数ゲート（CONFIRM_POINTS=5）を免除して確定したことの確認
+    expect(confirmed[0].lastSize).toBeLessThan(PARAMS.CONFIRM_POINTS)
+    expect(confirmed[0].maxIntensity).toBeCloseTo(2.5)
   })
 
   it('fast path でも CONFIRM_FRAMES は免除しない（単フレームの跳ね値では確定しない）', () => {
@@ -423,6 +427,242 @@ describe('step: 高震度 fast path（§20）', () => {
     for (let i = 0; i < 3; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
     const { detections } = drive(frames, meta)
     expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+})
+
+describe('PARAMS: 成分点数の段階付けの不変条件（§26）', () => {
+  // requiredClusterSize は if の順序に依存するため、値を動かすと分岐の意味が静かに反転しうる。
+  // 型チェックでは捕まらないので、段階の前提をここで固定する。
+  it('SOLO_CLUSTER_INTENSITY は HIGH_CONFIRM_INTENSITY 以上（震度の段階が逆転しない）', () => {
+    expect(PARAMS.SOLO_CLUSTER_INTENSITY).toBeGreaterThanOrEqual(PARAMS.HIGH_CONFIRM_INTENSITY)
+  })
+
+  it('HIGH_CLUSTER_POINTS は MIN_CLUSTER 以下（震度が高いほど点数要求が緩む）', () => {
+    expect(PARAMS.HIGH_CLUSTER_POINTS).toBeLessThanOrEqual(PARAMS.MIN_CLUSTER)
+  })
+
+  it('HIGH_CLUSTER_POINTS は 2 以上（震度3の単点は信じない・§18 の思想を維持）', () => {
+    expect(PARAMS.HIGH_CLUSTER_POINTS).toBeGreaterThanOrEqual(2)
+  })
+})
+
+describe('step: 成分点数の震度連動（§26）', () => {
+  /**
+   * 先頭 count 点だけを value にし、残りは静穏（value 0）に保つ。揺れる点が count 点しか無いので
+   * L2 連結成分のサイズがそのまま count になり、`requiredClusterSize` が成分内の最大震度で点数要求を
+   * 変えることの対照実験ができる。
+   */
+  function shakeFew(defs: StationDef[], count: number, value: number, shakeCount = 4): Frame[] {
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
+    for (let i = 0; i < shakeCount; i++, t += 1000) {
+      frames.push(frameWith(defs, t, (idx) => (idx < count ? value : 0)))
+    }
+    return frames
+  }
+
+  it('震度4(3.5)の単点は成分1点でも confirmed になる（SOLO_CLUSTER_INTENSITY）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const { detections } = drive(shakeFew(defs, 1, 3.5), meta)
+    const confirmed = detections.filter((d) => d.confidence === 'confirmed')
+    expect(confirmed.length).toBe(1)
+    expect(confirmed[0].lastSize).toBe(1)
+    expect(confirmed[0].maxIntensity).toBeCloseTo(3.5)
+  })
+
+  it('震度3(2.5)の単点では confirmed にならない（震度4未満に単点を許さない）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const { detections } = drive(shakeFew(defs, 1, 2.5), meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+
+  it('震度3(2.5)が2点あれば confirmed になる（HIGH_CLUSTER_POINTS）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const { detections } = drive(shakeFew(defs, 2, 2.5), meta)
+    const confirmed = detections.filter((d) => d.confidence === 'confirmed')
+    expect(confirmed.length).toBe(1)
+    expect(confirmed[0].lastSize).toBe(2)
+  })
+
+  it('震度2(1.5)が2点ではイベントすら生まれない（MIN_CLUSTER は緩めない）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const { detections } = drive(shakeFew(defs, 2, 1.5), meta)
+    expect(detections.length).toBe(0)
+  })
+
+  it('単点でも CONFIRM_FRAMES は免除しない（単フレームの跳ね値では確定しない）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
+    // 1 フレームだけ震度4に跳ねて静穏へ戻る（落雷起因の電磁誘導ノイズを模す）
+    frames.push(frameWith(defs, t, (idx) => (idx === 0 ? 3.5 : 0)))
+    t += 1000
+    for (let i = 0; i < 3; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
+    const { detections } = drive(frames, meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+
+  it('高震度の単点は確定前 weak にとどまる（面が足りず likely/faint にはならない）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    // 揺れフレームを 1 つだけ流し、CONFIRM_FRAMES を満たす前の状態を見る
+    const { detections } = drive(shakeFew(defs, 1, 3.5, 1), meta)
+    expect(detections.length).toBe(1)
+    expect(detections[0].confidence).toBe('weak')
+  })
+
+  /**
+   * 面（`MIN_CLUSTER` 点）は成立しているが、確定震度（震度1）に達しているのは高震度の 1 点だけ、という
+   * 分布を作る。静穏を value -1.0 に置くことで、companion が震度0（value 0.0）へ上がる動きを onset として
+   * 拾わせている（静穏を 0 にすると companion に変化が無く onset しない）。
+   */
+  function shakeOneStrong(defs: StationDef[], peak: number, companion: number): Frame[] {
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(defs, t, -1.0))
+    for (let i = 0; i < 4; i++, t += 1000) {
+      frames.push(frameWith(defs, t, (idx) => (idx === 0 ? peak : idx < 3 ? companion : -1.0)))
+    }
+    return frames
+  }
+
+  it('面が成立していても「1点だけ震度3・周囲は震度0」なら confirmed にならない（§18 の防御を維持）', () => {
+    // 2026-07-27 13:35 茨城県北部の誤 confirmed と構造的に同一の分布（§18）。震度のバーを 2.5 に
+    // 上げただけでこれを通すと、fast path が第3ゲート `CONFIRM_INTENSE_POINTS` を迂回してしまう。
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const { detections } = drive(shakeOneStrong(defs, 2.6, 0.0), meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+
+  it('同じ面で周囲が震度1に達していれば震度3が1点でも confirmed になる', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const { detections } = drive(shakeOneStrong(defs, 2.6, 0.5), meta)
+    const confirmed = detections.filter((d) => d.confidence === 'confirmed')
+    expect(confirmed.length).toBe(1)
+    expect(confirmed[0].lastSize).toBeLessThan(PARAMS.CONFIRM_POINTS)
+  })
+
+  it('イベントが減衰して揺れているメンバーが居なくなった後、メンバー1点が跳ねても confirmed にならない', () => {
+    // 第3ゲートを免除する条件に `lastSize`（揺れているメンバー数）を使うと、TRIG_ACTIVE_MS(8s) の
+    // onset 途絶で size が 0 に落ちてから HOLD_MS でイベントが消えるまでの間、あらゆる減衰中の
+    // イベントが免除対象になる。その窓でメンバーの 1 点が震度3へ跳ねると、周囲が完全に静穏でも
+    // confirmed に達してしまう（§18 が塞いだ分布と同型）。判定は「今フレームに帰属した成分の点数」で
+    // 行う必要がある——単点の震度3はそもそも成分にならないので、この経路は塞がる。
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) {
+      state = step(state, uniformFrame(defs, t, -1.0), meta).state
+    }
+    // 3 点が震度0級で立ち上がり、MIN_CLUSTER を満たす弱いイベント（faint）ができる
+    for (let i = 0; i < 3; i++, t += 1000) {
+      state = step(state, frameWith(defs, t, (idx) => (idx < 3 ? 0.0 : -1.0)), meta).state
+    }
+    // onset が途絶え、揺れているメンバーが居なくなる（イベント自体は HOLD 中で生存）
+    for (let i = 0; i < 10; i++, t += 1000) {
+      state = step(state, frameWith(defs, t, () => -0.5), meta).state
+    }
+    const decayed = step(state, frameWith(defs, t, () => -0.5), meta)
+    expect(decayed.detections.length).toBeGreaterThan(0) // まだ生存している
+    expect(decayed.detections[0].lastSize).toBe(0) // 揺れているメンバーは居ない
+    state = decayed.state
+    t += 1000
+    // メンバーの 1 点だけが震度3へ跳ねる（周囲は静穏のまま）
+    for (let i = 0; i < 3; i++, t += 1000) {
+      const r = step(state, frameWith(defs, t, (idx) => (idx === 0 ? 2.6 : -0.5)), meta)
+      state = r.state
+      expect(r.detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+    }
+  })
+
+  it('単点の震度が閾値付近で1フレーム沈むと確定が遅れる（受容した挙動）', () => {
+    // 単点・2点の成分は毎フレーム requiredClusterSize を満たし直さないと成分にならないため、値が
+    // 沈んだフレームでは免除が切れて confirmStreak がリセットされる。実データは 0.5 刻み・1Hz なので
+    // 震度3〜4 の帯ではこの沈み込みが起こりうる。
+    //
+    // イベント全体に時間保持を持たせて救う実装を試したが、「免除の根拠になった小さな成分の構成点」と
+    // 「免除が適用される高震度メンバー」が別人でも通る穴を作ったため撤回した（設計書§26）。実データ
+    // 34 窓では保持の有無で結果が一切変わらず、効く場面が観測されなかったことも判断の材料。
+    // 変更前は単点では永久に確定しなかったので、遅れても劣化ではない。
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) {
+      state = step(state, uniformFrame(defs, t, -1.0), meta).state
+    }
+    const solo = [3.5, 3.0, 3.5, 4.0] // 震度4 → 震度3 へ沈んで戻る
+    const confirmedAt: number[] = []
+    for (let i = 0; i < solo.length; i++, t += 1000) {
+      const r = step(state, frameWith(defs, t, (idx) => (idx === 0 ? solo[i] : -1.0)), meta)
+      state = r.state
+      if (r.detections.some((d) => d.confidence === 'confirmed')) confirmedAt.push(i)
+    }
+    // i=0 で streak=1 → i=1 の沈み込みでリセット → i=2 で streak=1 → i=3 で確定。
+    // 沈み込みが無ければ i=1 で確定していた（2 フレームの遅れ）。
+    expect(confirmedAt[0]).toBe(3)
+  })
+
+  it('小さな成分の直後に別メンバーが単独で跳ねても confirmed にならない（免除は今フレームの成分に閉じる）', () => {
+    // イベント全体に免除の時間保持を持たせると、idx0 が付けた免除で idx1 の単独スパイクが確定して
+    // しまう（§18 の「単点だけ強く・周囲は震度0」が「4 秒以内の 2 回の別々のスパイク」という形で
+    // 再現する）。免除を今フレームの成分に閉じることでこの経路を塞いでいる。
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) {
+      state = step(state, uniformFrame(defs, t, -1.0), meta).state
+    }
+    // 3 点が同時に立ち上がり、MIN_CLUSTER 経由の正規のイベントを作る（メンバーが蓄積される）
+    for (let i = 0; i < 3; i++, t += 1000) {
+      state = step(state, frameWith(defs, t, (idx) => (idx < 3 ? 1.0 : -1.0)), meta).state
+    }
+    // idx0 が震度4 へ 1 フレームだけ跳ねる。単点成分としては認められるが CONFIRM_FRAMES(2) には
+    // 届かないので、この時点では確定しない
+    const spike0 = step(state, frameWith(defs, t, (idx) => (idx === 0 ? 3.6 : -0.5)), meta)
+    state = spike0.state
+    t += 1000
+    expect(spike0.detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+    // idx0 は静まり、代わりに別メンバー idx1 が単独で震度3 へ跳ねる。免除がイベント全体に保持されて
+    // いると、idx0 が付けた免除で idx1 のスパイクが確定してしまう
+    for (let i = 0; i < 3; i++, t += 1000) {
+      const r = step(state, frameWith(defs, t, (idx) => (idx === 1 ? 2.6 : -0.5)), meta)
+      state = r.state
+      expect(r.detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+    }
+  })
+
+  it('震源最近傍の単点が先行する立ち上がりで、震度4到達の翌フレームに確定する', () => {
+    // 能登半島地震 本震（2024-01-01 16:10）の Yahoo 実データの形。震源最近傍の 1 点が
+    // 震度3→4→5→6弱 と上がる一方、隣の点（20〜30km 先）には S 波がまだ届かず静穏のままという
+    // 4 秒間が実在する（実測: 16:10:13 に震度3 の時点で近傍の value は 0 / -0.5 / -1）。
+    // MIN_CLUSTER(3) 据え置きでは、この 4 秒間はイベントすら生まれず検知が動かない。
+    const defs = grid3x3(37.5, 137.3, 0.2)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) state = step(state, uniformFrame(defs, t, 0), meta).state
+    const solo = [3.0, 4.5, 5.0, 6.0] // 実データの単点 value（16:10:13〜16:10:16）
+    const confirmedAt: number[] = []
+    for (let i = 0; i < solo.length; i++, t += 1000) {
+      const r = step(state, frameWith(defs, t, (idx) => (idx === 0 ? solo[i] : 0)), meta)
+      state = r.state
+      if (r.detections.some((d) => d.confidence === 'confirmed')) confirmedAt.push(i)
+    }
+    // i=0 は震度3 なので単点では成分にならない。i=1 で震度4 に達して成分成立＋fast path 成立、
+    // CONFIRM_FRAMES(2) の連続要求により確定は i=2。
+    expect(confirmedAt[0]).toBe(2)
   })
 })
 

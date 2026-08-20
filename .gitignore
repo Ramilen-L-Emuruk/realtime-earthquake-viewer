@@ -29,6 +29,9 @@ logs/
 # Test / verification artifacts
 .playwright-mcp/
 coverage/
+# 強震モニタ実データ検証（npm run probe-kyoshin）が取得した Yahoo の過去フレーム。
+# 1 窓 180 秒で数 MB になるうえ、いつでも取り直せるためコミットしない
+.probe-cache/
 verify-*.png
 verify-*.jpg
 
