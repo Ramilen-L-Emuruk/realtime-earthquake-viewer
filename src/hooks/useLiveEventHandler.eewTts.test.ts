@@ -24,11 +24,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
+import { splitIntoChunks } from '../utils/voicevox'
 import type { AppSettings } from './useSettings'
 import type { EEWAlert, EEWRegion, IntensityScale, LpgmClass, JMAQuake, JMATsunami } from '../types/earthquake'
 
 const speakMock = vi.fn(() => Promise.resolve())
-vi.mock('../utils/voicevox', () => ({
+vi.mock('../utils/voicevox', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/voicevox')>()),
   speakWithVoicevox: (...args: unknown[]) => speakMock(...(args as [])),
 }))
 vi.mock('../utils/alertSound', () => ({ playAlertSound: vi.fn() }))
@@ -464,5 +466,151 @@ describe('EEW 読み上げの文言と発話順序', () => {
       // A の予想値（5弱）は取消後なので読まれない
       expect(texts).not.toContain('予想最大震度5弱。')
     })
+  })
+
+  // 文面を作った瞬間と、音が出る瞬間はずれる（合成の往復＋発話そのもの）。予想震度は
+  // 2024/1/1 能登の本震で 5弱 → 7 まで 7.5 秒しかかからなかったため、1 回の発話が終わる前に
+  // 古くなる。鳴らす直前に見直して、古い値を鳴らし続けないことを固定する。
+  describe('鳴らす直前の見直し', () => {
+    // VOICEVOX の合成待ち（最初の音が出るまで）と、1 チャンクの再生時間。
+    const SYNTH_MS = 400
+    const CHUNK_MS = 1200
+
+    /**
+     * `speakWithVoicevox` の代役。合成待ちのあと、チャンクごとに「鳴らす直前の判定」を通し、
+     * 通ったものだけを `heard` に積む（voicevox.ts と同じ順序: 判定 → 再生 → 次のチャンク）。
+     * チャンクの割り方は本体の `splitIntoChunks` をそのまま使う（手書きで真似ると、本体の
+     * 分割条件を変えたときにこのテストだけが古い境界を前提に通り続ける）。
+     */
+    function installChunkedSpeak(heard: string[]) {
+      speakMock.mockImplementation(((...args: unknown[]) => {
+        const text = args[1] as string
+        const shouldStillPlay = args[4] as (() => boolean) | undefined
+        const chunks = splitIntoChunks(text)
+        return (async () => {
+          await new Promise<void>(r => { setTimeout(r, SYNTH_MS) })
+          for (const chunk of chunks) {
+            if (shouldStillPlay && !shouldStillPlay()) return
+            heard.push(chunk)
+            await new Promise<void>(r => { setTimeout(r, CHUNK_MS) })
+          }
+        })()
+      }))
+    }
+
+    /** 時間を進めつつ、進めるたびに保留中のマイクロタスクを流し切る。 */
+    async function advance(ms: number) {
+      await vi.advanceTimersByTimeAsync(ms)
+      await flushMicrotasks()
+    }
+
+    it('合成を待つ間に予想が上がったら、古い値は 1 音も鳴らさない', async () => {
+      const heard: string[] = []
+      installChunkedSpeak(heard)
+      const handle = setup()
+
+      handle(makeEEW({ scaleTo: 45, lgIntTo: 1 }))
+      await flushMicrotasks()
+      // 第1フェーズ（合成待ち + 2 チャンク）を鳴らし切る
+      await advance(SYNTH_MS + CHUNK_MS * 2)
+      expect(heard).toEqual(['緊急地震速報、', '日向灘で地震。'])
+
+      // 第2フェーズは 5弱 で文面が作られ、いまは合成待ち。その間に 6弱 の続報が届く
+      await advance(SYNTH_MS / 2)
+      handle(makeEEW({ serial: 2, scaleTo: 55, lgIntTo: 2 }))
+      await advance(SYNTH_MS / 2)
+
+      // 5弱 は鳴らずに取り下げられ、6弱 だけが鳴る
+      await advance(SYNTH_MS + CHUNK_MS * 2)
+      expect(heard.filter(c => c.includes('5弱'))).toEqual([])
+      expect(heard).toContain('予想最大震度6弱。')
+      expect(heard).toContain('予想最大階級2。')
+    })
+
+    it('鳴っている途中に予想が上がったら、そこから先のチャンクを鳴らさない', async () => {
+      const heard: string[] = []
+      installChunkedSpeak(heard)
+      const handle = setup()
+
+      handle(makeEEW({ scaleTo: 45, lgIntTo: 1 }))
+      await flushMicrotasks()
+      await advance(SYNTH_MS + CHUNK_MS * 2)   // 第1フェーズ
+      await advance(SYNTH_MS)                  // 第2フェーズの合成待ち
+      expect(heard[heard.length - 1]).toBe('予想最大震度5弱。')
+
+      // 「予想最大震度5弱。」を鳴らしている途中で 6弱 が届く
+      await advance(CHUNK_MS / 2)
+      handle(makeEEW({ serial: 2, scaleTo: 55, lgIntTo: 2 }))
+      await advance(CHUNK_MS)
+
+      // 続きの「予想最大階級1。」は鳴らさず、6弱 の読み直しへ移る
+      expect(heard).not.toContain('予想最大階級1。')
+      await advance(SYNTH_MS + CHUNK_MS * 2)
+      expect(heard).toEqual([
+        '緊急地震速報、', '日向灘で地震。',
+        '予想最大震度5弱。',
+        '予想最大震度6弱。', '予想最大階級2。',
+      ])
+    })
+
+    it('値が変わらない続報では取り下げず、最後まで鳴らす', async () => {
+      const heard: string[] = []
+      installChunkedSpeak(heard)
+      const handle = setup()
+
+      handle(makeEEW({ scaleTo: 45, lgIntTo: 1 }))
+      await flushMicrotasks()
+      await advance(SYNTH_MS + CHUNK_MS * 2)
+      await advance(SYNTH_MS)
+
+      // 同じ値の続報（据え置き）が発話中に届く
+      await advance(CHUNK_MS / 2)
+      handle(makeEEW({ serial: 2, scaleTo: 45, lgIntTo: 1 }))
+      await advance(CHUNK_MS * 2)
+
+      expect(heard).toEqual([
+        '緊急地震速報、', '日向灘で地震。',
+        '予想最大震度5弱。', '予想最大階級1。',
+      ])
+    })
+
+    it('鳴っている途中に誤報取消が届いたら、そこから先のチャンクを鳴らさない', async () => {
+      const heard: string[] = []
+      installChunkedSpeak(heard)
+      const handle = setup()
+
+      handle(makeEEW({ scaleTo: 45, lgIntTo: 1 }))
+      await flushMicrotasks()
+      await advance(SYNTH_MS + CHUNK_MS * 2)
+      await advance(SYNTH_MS)
+      expect(heard[heard.length - 1]).toBe('予想最大震度5弱。')
+
+      await advance(CHUNK_MS / 2)
+      handle(makeEEW({ serial: 2, cancelled: true }))
+      await advance(CHUNK_MS * 3)
+
+      expect(heard).not.toContain('予想最大階級1。')
+    })
+    // 自動解除（最終報から時間が経ってアプリが自ら消すもの）は、誤報取消とは扱いを分ける。
+    // 発表が終わっただけで読んでいる内容が誤りだったわけではなく、途中で切ると代わりに読むものも
+    // 無い（取消の読み上げは誤報取消のときだけ）。尻切れで終わらせない。
+    it('鳴っている途中に自動解除が届いても、最後まで鳴らす', async () => {
+      const heard: string[] = []
+      installChunkedSpeak(heard)
+      const handle = setup()
+
+      handle(makeEEW({ scaleTo: 45, lgIntTo: 1 }))
+      await flushMicrotasks()
+      await advance(SYNTH_MS + CHUNK_MS * 2)
+      await advance(SYNTH_MS)
+      expect(heard[heard.length - 1]).toBe('予想最大震度5弱。')
+
+      await advance(CHUNK_MS / 2)
+      handle({ ...makeEEW({ serial: 2, cancelled: true }), expired: true })
+      await advance(CHUNK_MS * 2)
+
+      expect(heard).toContain('予想最大階級1。')
+    })
+
   })
 })
