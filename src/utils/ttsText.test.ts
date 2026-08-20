@@ -2,7 +2,7 @@
 // 「〇時〇分」はローカルタイムゾーン依存のため、時刻の数値そのものではなく
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect } from 'vitest'
-import { earthquakeToText, eewToText, eewIntensityToText, lpgmToText, tsunamiToText, tsunamiArrivalToText, type TtsRegionOptions } from './ttsText'
+import { earthquakeToText, eewIntensityToText, lpgmToText, tsunamiToText, tsunamiArrivalToText, type TtsRegionOptions } from './ttsText'
 import { getStationCoordsCache } from './stationCoords'
 import type { JMAQuake, JMALpgm, EarthquakePoint, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass, JMATsunami, TsunamiArea, TsunamiObservation } from '../types/earthquake'
 
@@ -137,7 +137,7 @@ describe('earthquakeToText: 顕著な地震の震源要素更新のお知らせ'
   })
 })
 
-describe('eewToText / eewIntensityToText: 長周期地震動階級の読み上げ', () => {
+describe('eewIntensityToText: 長周期地震動階級の読み上げ', () => {
   function makeEEW(
     forecastMaxLpgmClass?: LpgmClass,
     over: { condition?: EEWAlert['earthquake']['condition']; areas?: EEWAlert['areas'] } = {},
@@ -162,16 +162,16 @@ describe('eewToText / eewIntensityToText: 長周期地震動階級の読み上�
   }
 
   it('階級 1〜4 は読み上げる', () => {
-    expect(eewToText(makeEEW(4))).toContain('予想最大階級4。')
+    expect(eewIntensityToText(makeEEW(4))).toContain('予想最大階級4。')
   })
 
   it('階級が無ければ読み上げない', () => {
-    expect(eewToText(makeEEW(undefined))).not.toContain('予想最大階級')
+    expect(eewIntensityToText(makeEEW(undefined))).not.toContain('予想最大階級')
   })
 
   // 読み上げは地図の色フォールバックのような逃げ場が無く、不正値がそのまま音声で出てしまう。
   it('範囲外の階級は読み上げない（「予想最大階級99」を声に出さない）', () => {
-    const text = eewToText(makeEEW(99 as unknown as LpgmClass))
+    const text = eewIntensityToText(makeEEW(99 as unknown as LpgmClass))
     expect(text).not.toContain('予想最大階級')
     expect(text).not.toContain('99')
   })
@@ -186,12 +186,7 @@ describe('eewToText / eewIntensityToText: 長周期地震動階級の読み上�
         { pref: '大分県', name: '大分県南部', scaleFrom: 30, scaleTo: 40, kindCode: '10', arrivalTime: null, lgIntTo: 2 },
       ],
     })
-    expect(eewToText(eew)).toContain('予想最大階級3。')
     expect(eewIntensityToText(eew)).toContain('予想最大階級3。')
-  })
-
-  it('仮定震源要素（単独点処理）では地域別予想が無いため階級を読み上げない', () => {
-    expect(eewToText(makeEEW(3, { condition: '仮定震源要素' }))).not.toContain('予想最大階級')
   })
 
   // 震度側が「予想震度なし」と読む状況で階級だけ断言すると矛盾した発話になる。
@@ -201,43 +196,43 @@ describe('eewToText / eewIntensityToText: 長周期地震動階級の読み上�
     expect(text).not.toContain('予想最大階級')
   })
 
-  describe('eewIntensityToText: 区分の前置き', () => {
+  describe('eewIntensityToText: 格上げの前置き', () => {
     function areasWith(scaleTo: IntensityScale, lgIntTo?: LpgmClass): EEWAlert['areas'] {
       return [{ pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 40, scaleTo, kindCode: '10', arrivalTime: null, lgIntTo }]
     }
 
-    it('予報（level 0）では区分を前置きしない', () => {
+    it('前置きしない指定では格上げを述べない', () => {
       const eew = makeEEW(undefined, { areas: areasWith(45) })
-      expect(eewIntensityToText(eew, 0)).toBe('予想最大震度5弱。')
+      expect(eewIntensityToText(eew, false)).toBe('予想最大震度5弱。')
     })
 
-    it('警報（level 1）では「警報。」を前置きする', () => {
+    it('前置きする指定では遷移の言い方を付ける', () => {
       const eew = makeEEW(undefined, { areas: areasWith(50) })
-      expect(eewIntensityToText(eew, 1)).toBe('警報。予想最大震度5強。')
+      expect(eewIntensityToText(eew, true)).toBe('緊急地震速報に切り替わりました。予想最大震度5強。')
     })
 
     // 気象庁は震度6弱以上（または長周期地震動階級4以上）を予想した緊急地震速報（警報）を
-    // 特別警報に位置づけるが、発表時に「特別警報」の名称は用いない。音声も「警報」で統一する。
-    it('特別警報の条件を満たす（level 2）でも「特別警報」とは読まない', () => {
+    // 特別警報に位置づけるが、発表時に「特別警報」の名称は用いない。音声でも使わない。
+    it('特別警報の条件を満たしても「特別警報」とは読まない', () => {
       const eew = makeEEW(undefined, { areas: areasWith(55) })
-      const text = eewIntensityToText(eew, 2)
-      expect(text).toBe('警報。予想最大震度6弱。')
+      const text = eewIntensityToText(eew, true)
+      expect(text).toBe('緊急地震速報に切り替わりました。予想最大震度6弱。')
       expect(text).not.toContain('特別警報')
     })
 
-    it('level を省略すると前置きなし（既定は予報扱い）', () => {
+    it('引数を省略すると前置きなし（既定は付けない）', () => {
       const eew = makeEEW(undefined, { areas: areasWith(45) })
       expect(eewIntensityToText(eew)).toBe('予想最大震度5弱。')
     })
 
     it('前置きは予想震度が取れない場合にも付く', () => {
       const eew = makeEEW(undefined, { condition: '仮定震源要素' })
-      expect(eewIntensityToText(eew, 1)).toBe('警報。単独点処理のため、予想震度なし。')
+      expect(eewIntensityToText(eew, true)).toBe('緊急地震速報に切り替わりました。単独点処理のため、予想震度なし。')
     })
 
     it('階級句は前置きの後ろ・震度句の後に続く', () => {
       const eew = makeEEW(undefined, { areas: areasWith(55, 4) })
-      expect(eewIntensityToText(eew, 2)).toBe('警報。予想最大震度6弱。予想最大階級4。')
+      expect(eewIntensityToText(eew, true)).toBe('緊急地震速報に切り替わりました。予想最大震度6弱。予想最大階級4。')
     })
   })
 })
