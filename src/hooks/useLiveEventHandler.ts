@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AppEvent, EEWAlert, JMAQuake, JMATsunami } from '../types/earthquake'
+import type { AppEvent, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary } from '../types/earthquake'
 import type { TabId } from '../components/IconNav'
 import type { AppSettings } from './useSettings'
 import type { AlertTitleApi } from './useAlertTitle'
@@ -13,7 +13,7 @@ import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade } from '../uti
 import { matchesArea, sortAreasForCardDisplay } from '../components/TsunamiTab'
 import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox } from '../utils/voicevox'
-import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, tsunamiArrivalToText, nankaiToText, kohatsuToText, lpgmToText, type TtsRegionOptions } from '../utils/ttsText'
+import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, tsunamiArrivalToText, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, type TtsRegionOptions } from '../utils/ttsText'
 import { log, createLogThrottle } from '../utils/logger'
 import { extractQuakeEventIdFromId, quakeEventKey, sameQuakeEntry } from '../utils/quakeMerge'
 
@@ -38,17 +38,31 @@ const EEW_SPEECH_CHAIN_MAX_WAIT_MS = 8000
  * EEW はこの尺度の外にあり、常に最優先（`eewSpeechPendingRef` で別に管理する）。
  */
 const SPEECH_PRIORITY = {
+  /**
+   * 南海トラフ関連解説情報。段階の発表ではなく状況の解説で、臨時情報の発表期間中は毎日届く。
+   *
+   * **最下位に置く。** 割り込みの判定は「自分より高い優先度が読み上げ中か」（厳密不等号）なので、
+   * 同格どうしは待たずに割り込む。地震情報と同格にすると数千文字に達しうる地震情報の読み上げを
+   * 毎日切り、長周期と同格にすると長周期の実測値を切る。どこかと同格にすれば必ず何かを切るため、
+   * 単独の最下位に置いて「解説情報は何も切らない」ことを保証する。
+   * 定型文が大半の情報なので、待たされて上限で諦めても損失は小さい。
+   */
+  commentary: 0,
   /** 長周期地震動情報。地震のあとに出る事後情報なので、地震情報より軽く扱う */
-  low: 0,
+  low: 1,
   /** 地震情報（震度速報・震源情報・地震情報・遠地地震・取消） */
-  normal: 1,
+  normal: 2,
   /**
    * 津波（発表・更新・解除）と南海トラフ臨時情報・後発地震注意情報。
    * 後者を津波と同格にしているのは、発表頻度が極端に低く聞き逃したときの損失が大きいため。
    */
-  high: 2,
+  high: 3,
 } as const
 type SpeechPriority = typeof SPEECH_PRIORITY[keyof typeof SPEECH_PRIORITY]
+
+// 南海トラフ関連解説情報の通知音（specialInfoCommentary）は約 1.3 秒。鳴り終わってから読み上げる。
+// 音を作り変えたらこの値も見直すこと（docs/spec/audio-tts-spec.md §6）。
+const NANKAI_COMMENTARY_TTS_DELAY_MS = 1500
 
 // 優先度の高い読み上げ（EEW を含む）の完了を待つ上限。津波の本文は 60 秒近くに達することが
 // あるため、EEW チェーンの刻み（EEW_SPEECH_CHAIN_MAX_WAIT_MS）を流用すると読み上げを途中で
@@ -753,6 +767,26 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
       // voicevox 有効/無効に関わらず追跡する（次回の isNewLpgm 判定に使用）
       seenLpgmEventIdsRef.current.add(lpgmEvent.eventId)
+      return
+    }
+
+    // 南海トラフ関連解説情報（DMDSS版のみ）。臨時情報とは別の帯に出るため、ここでも別扱いにする。
+    //
+    // **ウィンドウタイトルは書き換えない。** 臨時情報の発表期間中は解説情報が毎日届くため、
+    // 書き換えると「南海トラフ臨時情報（巨大地震注意）」のタイトル表示を毎日上書きしてしまう。
+    if ((event as unknown as { kind?: string }).kind === 'nankaiCommentary') {
+      if (!settings.nankaiCommentaryAlerts) return
+      const commentary = (event as unknown as { data: JMANankaiCommentary }).data
+      if (settings.soundEnabled) {
+        playAlertSound('specialInfoCommentary')
+      }
+      // 読み上げは soundEnabled と独立に voicevoxEnabled のみで判定する（AUD-7）。
+      if (settings.voicevoxEnabled) {
+        setTimeout(() => {
+          // 最下位の専用層を使う（理由は SPEECH_PRIORITY の commentary の注記）
+          speakNonEEW(nankaiCommentaryToText(commentary), SPEECH_PRIORITY.commentary)
+        }, NANKAI_COMMENTARY_TTS_DELAY_MS)
+      }
       return
     }
 

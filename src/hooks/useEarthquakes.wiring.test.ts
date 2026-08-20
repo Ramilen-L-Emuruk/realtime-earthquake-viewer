@@ -17,7 +17,7 @@
 // 差し替えるのは外部 I/O（WebSocket・REST・観測点座標）だけ。時計や純粋関数は本物を使う。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, cleanup, act } from '@testing-library/react'
-import type { AppEvent, EEWAlert, JMATsunami } from '../types/earthquake'
+import type { AppEvent, EEWAlert, JMATsunami, JMANankaiCommentary } from '../types/earthquake'
 import { serverDate, setReplayOffset } from '../utils/clock'
 
 // isDmdss はモジュールスコープの定数。テストごとに切り替えるため getter で公開する。
@@ -66,6 +66,7 @@ vi.mock('../services/dmdata', () => ({
   fetchDmdataTsunamis: vi.fn(),
   fetchDmdataLpgms: vi.fn(),
   fetchDmdataNankai: vi.fn(),
+  fetchDmdataNankaiCommentary: vi.fn(),
   fetchDmdataKohatsu: vi.fn(),
 }))
 
@@ -77,7 +78,7 @@ vi.mock('../services/p2pquake', () => ({
 
 const {
   fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms,
-  fetchDmdataNankai, fetchDmdataKohatsu,
+  fetchDmdataNankai, fetchDmdataNankaiCommentary, fetchDmdataKohatsu,
 } = await import('../services/dmdata')
 const { fetchHistory, fetchJmaQuake } = await import('../services/p2pquake')
 
@@ -91,6 +92,7 @@ beforeEach(() => {
   vi.mocked(fetchDmdataTsunamis).mockResolvedValue([])
   vi.mocked(fetchDmdataLpgms).mockResolvedValue([])
   vi.mocked(fetchDmdataNankai).mockResolvedValue(null)
+  vi.mocked(fetchDmdataNankaiCommentary).mockResolvedValue(null)
   vi.mocked(fetchDmdataKohatsu).mockResolvedValue(null)
   vi.mocked(fetchHistory).mockResolvedValue([])
   vi.mocked(fetchJmaQuake).mockResolvedValue([])
@@ -559,5 +561,81 @@ describe('津波テストの解除電文', () => {
       })
     })
     expect(h.current.tsunamis[0]?.cancelledAt).toBeUndefined()
+  })
+})
+
+describe('南海トラフ関連解説情報の帯は期限で畳む', () => {
+  // 解説情報には解除電文が無く、定例解説（VYSE52）は平常時にも毎月届く。期限で畳まないと
+  // 帯が常駐する。逆に期限切れを載せてしまうと「先月の解説」が起動のたびに出る。
+  // どちらも画面を見ただけでは「そういう仕様」と区別がつかないため、ここで固定する。
+
+  /** expireInMs 後に期限が切れる解説情報。 */
+  function commentary(id: string, expireInMs: number): JMANankaiCommentary {
+    const now = serverDate()
+    return {
+      id,
+      time: now.toISOString(),
+      eventId: `${id}-event`,
+      serialCode: '200',
+      serialName: '定例解説',
+      headline: '南海トラフ地震関連解説情報',
+      summary: '要約',
+      body: '本文',
+      cancelled: false,
+      reportDateTime: now.toISOString(),
+      expireAt: new Date(now.getTime() + expireInMs).toISOString(),
+    }
+  }
+
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('初回取得で期限内の解説情報を帯に載せる', async () => {
+    vi.mocked(fetchDmdataNankaiCommentary).mockResolvedValue(commentary('c-fresh', 60_000))
+    const h = setup()
+    await h.flush()
+    expect(h.current.nankaiCommentary?.id).toBe('c-fresh')
+  })
+
+  it('期限切れの解説情報は載せない（先月の定例解説が起動時に出ないこと）', async () => {
+    vi.mocked(fetchDmdataNankaiCommentary).mockResolvedValue(commentary('c-stale', -1_000))
+    const h = setup()
+    await h.flush()
+    expect(h.current.nankaiCommentary).toBeNull()
+  })
+
+  it('期限が来たら帯を畳む', async () => {
+    vi.mocked(fetchDmdataNankaiCommentary).mockResolvedValue(commentary('c-expiring', 5_000))
+    const h = setup()
+    await h.flush()
+    expect(h.current.nankaiCommentary?.id).toBe('c-expiring')
+
+    act(() => { vi.advanceTimersByTime(5_001) })
+    expect(h.current.nankaiCommentary).toBeNull()
+  })
+
+  it('期限日時が壊れていれば載せない（期限計算が破綻した状態で帯を出さない）', async () => {
+    const broken = { ...commentary('c-broken', 60_000), expireAt: 'not-a-date' }
+    vi.mocked(fetchDmdataNankaiCommentary).mockResolvedValue(broken)
+    const h = setup()
+    await h.flush()
+    expect(h.current.nankaiCommentary).toBeNull()
+  })
+
+  it('取消電文で帯を消す（期限を待たずに畳む）', async () => {
+    vi.mocked(fetchDmdataNankaiCommentary).mockResolvedValue(commentary('c-live', 60_000))
+    const h = setup()
+    await h.flush()
+    expect(h.current.nankaiCommentary?.id).toBe('c-live')
+
+    // 取消はライブ受信経路（injectEvent は AppEvent 専用なので、キュー経由の payload を使う）
+    act(() => {
+      h.current.loadReplayEvents([{
+        payload: { kind: 'nankaiCommentary', data: { ...commentary('c-cancel', 60_000), cancelled: true } },
+        replayTime: serverDate(),
+      }])
+    })
+    act(() => { vi.advanceTimersByTime(50) })
+    expect(h.current.nankaiCommentary).toBeNull()
   })
 })

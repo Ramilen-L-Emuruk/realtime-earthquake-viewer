@@ -141,6 +141,22 @@ function remapPayload(payload: ReplayPayload, deltaMs: number, remapId: IdRemapp
         },
       }
     }
+    case 'nankaiCommentary': {
+      const newEventId = remapId(payload.data.eventId) ?? payload.data.eventId
+      return {
+        kind: 'nankaiCommentary',
+        data: {
+          ...payload.data,
+          eventId: newEventId,
+          id: replaceEventIdInId(payload.data.id, payload.data.eventId, newEventId),
+          time: shiftIso(payload.data.time, deltaMs),
+          reportDateTime: shiftIso(payload.data.reportDateTime, deltaMs),
+          // 期限も一緒にずらす。ずらさないと収録時点の期限が「いま」より過去になり、
+          // 再生しても帯が一度も出ない
+          expireAt: shiftIso(payload.data.expireAt, deltaMs),
+        },
+      }
+    }
     case 'kohatsu': {
       const newEventId = remapId(payload.data.eventId) ?? payload.data.eventId
       return {
