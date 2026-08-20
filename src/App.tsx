@@ -213,13 +213,13 @@ export function App() {
   const debouncedApiKey = useDebouncedValue(settings.dmdataApiKey, API_KEY_DEBOUNCE_MS)
 
   const {
-    earthquakes, tsunamis, activeEEWs, lpgmByEventId, nankai, kohatsu, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
+    earthquakes, tsunamis, activeEEWs, lpgmByEventId, nankai, nankaiCommentary, kohatsu, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
     telegramLog, clearTelegramLog,
     injectEvent, loadMoreEarthquakes,
     simulateEarthquake, simulateForeignQuake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
-    simulateNankai, simulateKohatsu,
+    simulateNankai, simulateNankaiCommentary, simulateKohatsu,
     resetState, loadReplayEvents,
   } = useEarthquakes(handleLiveEvent, debouncedApiKey, settings.dmdataTestDelivery, replayTimeOffset)
   earthquakesRef.current = earthquakes
@@ -260,6 +260,8 @@ export function App() {
     nankaiChecking:    () => simulateNankai('調査中'),
     nankaiWatch:       () => simulateNankai('巨大地震注意'),
     nankaiWarning:     () => simulateNankai('巨大地震警戒'),
+    nankaiCommentaryAdHoc:   () => simulateNankaiCommentary('臨時解説'),
+    nankaiCommentaryRoutine: () => simulateNankaiCommentary('定例解説'),
     kohatsu:           simulateKohatsu,
     notification:      () => {
       if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
@@ -276,7 +278,7 @@ export function App() {
     simulateEarthquake, simulateForeignQuake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
-    simulateNankai, simulateKohatsu,
+    simulateNankai, simulateNankaiCommentary, simulateKohatsu,
   ])
   // IconNav の onTabChange。手動タブ切替は抑制タイマーをリセットして即時反映する。
   // 表示中のタブをもう一度押した場合はタブ切替ではなく、パネルの折りたたみをトグルする
@@ -846,7 +848,7 @@ export function App() {
             <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
             <MapDataStatus />
           </div>
-          <SpecialInfoBanner nankai={nankai} kohatsu={kohatsu} />
+          <SpecialInfoBanner nankai={nankai} nankaiCommentary={nankaiCommentary} kohatsu={kohatsu} />
         </div>
 
         {/* 地図とパネルの境界（縦積み時のみ）。ドラッグで高さ比率を変え、タップで折りたたむ。 */}

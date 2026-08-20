@@ -1,4 +1,4 @@
-import type { JMAQuake, JMATsunami, EEWAlert, JMANankai, JMAKohatsu, EarthquakePoint, IntensityScale, JMALpgm } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, EEWAlert, JMANankai, JMANankaiCommentary, JMAKohatsu, EarthquakePoint, IntensityScale, JMALpgm } from '../types/earthquake'
 import { serverNow, serverDate } from './clock'
 import notoHonshinPoints from '../data/noto-honshin-2024-points.json'
 import notoHonshinLpgm from '../data/noto-honshin-2024-lpgm.json'
@@ -261,6 +261,34 @@ export function createTestNankai(kindName: '調査中' | '巨大地震注意' | 
     body: bodyMap[kindName] ?? '',
     cancelled: false,
     reportDateTime: now,
+  }
+}
+
+// 南海トラフ地震関連解説情報のテストデータ。実電文の構成に合わせている:
+//   - headline は Head/Title 相当。臨時解説は「（第○号）」が付き、定例解説は付かない
+//   - summary は Head/Headline/Text 相当の一文要約（バナーの見出しに出る）
+//   - body は Body/EarthquakeInfo/Text 相当の本文（開いたときに出る）
+//   - serialCode は地震関連情報番号コード。実電文で確認できた値は臨時解説 210・定例解説 200
+export function createTestNankaiCommentary(serialName: '臨時解説' | '定例解説'): JMANankaiCommentary {
+  const now = serverDate().toISOString()
+  const expireAt = new Date(serverNow() + 7 * 24 * 3600 * 1000).toISOString()
+  const isAdHoc = serialName === '臨時解説'
+  return {
+    id: `test-nankai-commentary-${Date.now()}`,
+    time: now,
+    eventId: `test-nankai-commentary-event-${Date.now()}`,
+    serialCode: isAdHoc ? '210' : '200',
+    serialName,
+    headline: isAdHoc ? '南海トラフ地震関連解説情報（第１号）' : '南海トラフ地震関連解説情報',
+    summary: isAdHoc
+      ? '南海トラフ地震臨時情報（巨大地震注意）の発表後の状況をお知らせします。引き続き防災対応をとってください。'
+      : '南海トラフ沿いの地震に関する評価検討会の定例会合で、南海トラフ周辺の地殻活動を評価しました。',
+    body: isAdHoc
+      ? '想定震源域内の地震活動および地殻変動の観測状況について、現在のところ新たな変化は認められません。引き続き、政府や自治体などからの呼びかけ等に応じた防災対応をとってください。'
+      : '現在のところ、南海トラフ沿いの大規模地震の発生の可能性が平常時と比べて相対的に高まったと考えられる特段の変化は観測されていません。',
+    cancelled: false,
+    reportDateTime: now,
+    expireAt,
   }
 }
 
