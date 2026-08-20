@@ -25,16 +25,27 @@ export interface JapanMapProps {
   showPlateBoundaries?: boolean
   kyoshinSites?: SiteCoords
   kyoshinIndices?: number[]
+  /**
+   * `kyoshinIndices` のうち、欠測ホールドで直前値を保持している点のフラグ（同順）。
+   * 該当点は薄く描く（`utils/kyoshinMissingHold.ts`）。
+   */
+  kyoshinStale?: boolean[]
   /** 震度0ドット（KyoshinSubThresholdGL）専用の慢性ノイズ床フィルタ適用済みインデックス。未指定時は kyoshinIndices をそのまま使う。 */
   kyoshinSubIndices?: number[]
   kyoshinPsWave?: PsWaveCircle[]
   eews?: EEWAlert[]
   /**
-   * confirmed 全イベントのメンバー観測点。**カメラフィットと「検知が続いているか」の判定専用**
-   * （空になったことを検知終了の合図として扱う）。地図に描く分は detectedMarkerPoints を使う。
+   * confirmed 全イベントのメンバー観測点。**「検知が続いているか」の判定専用**
+   * （空になったことを検知終了の合図として扱う）。この集合はメンバーの和集合で単調増加し
+   * 揺れが収まっても縮まないため、**カメラフィットの目標には使わない**
+   * （`JapanMapGL` が detectedMarkerPoints から寄り先を作る。理由は同ファイルの detectedFitPoints）。
+   * 地図に描く分は detectedMarkerPoints を使う。
    */
   detectedPoints?: DetectedPoint[]
-  /** confirmed のメンバーのうち実際に描くもの（孤立した震度0点を除いた集合）。**検知点マーカー専用**。 */
+  /**
+   * confirmed のメンバーのうち実際に描くもの（孤立した震度0点を除いた集合）。
+   * **検知点マーカーと、そこから作るカメラの寄り先**に使う。
+   */
   detectedMarkerPoints?: DetectedPoint[]
   /** 主 likely イベント 1 件のメンバー観測点。**候補カメラフィット専用**（検知点マーカーは unconfirmedPoints を使う）。 */
   candidatePoints?: DetectedPoint[]

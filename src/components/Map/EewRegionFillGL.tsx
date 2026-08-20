@@ -93,7 +93,8 @@ function arrivalRowHtml(sArrivalMs: number): string {
 function clickHtml(f: MapGeoJSONFeature): string {
   const scale = Number(f.properties?.scale ?? 0)
   const isWarning = Boolean(f.properties?.isWarning)
-  const kind = isWarning ? '警報' : '予報'
+  // 予報級の電文は VXSE45「緊急地震速報（地震動予報）」。表示も実態に合わせる
+  const kind = isWarning ? '警報' : '地震動予報'
   const kindColor = isWarning ? '#f87171' : '#fbbf24'
   return (
     `<div style="min-width:160px">` +

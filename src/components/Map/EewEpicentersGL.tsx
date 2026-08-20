@@ -58,7 +58,8 @@ function buildCrossEl(iconScale: number, isAssumed: boolean): HTMLDivElement {
 function buildPopupHtml(ep: EewEpicenter): string {
   const isWarning = ep.severity === 'Warning'
   const kindColor = isWarning ? '#f87171' : '#fbbf24'
-  const kind = isWarning ? '警報' : '予報'
+  // 予報級の電文は VXSE45「緊急地震速報（地震動予報）」。表示も実態に合わせる
+  const kind = isWarning ? '警報' : '地震動予報'
   // 報番号は電文由来。最終報なら第N報より「最終報」の方が状態が伝わる。
   const serialText = ep.isFinal ? '最終報' : ep.serial ? `第${escapeHtml(ep.serial)}報` : ''
   // 単独観測点処理の初期報は震源が確定していない。数値を鵜呑みにしないよう明示する

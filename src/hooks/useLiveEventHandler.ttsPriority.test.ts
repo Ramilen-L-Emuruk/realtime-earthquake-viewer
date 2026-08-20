@@ -89,7 +89,7 @@ function makeTsunami(over: { id?: string } = {}): JMATsunami {
   } as unknown as JMATsunami
 }
 
-function makeEEW(): EEWAlert {
+function makeEEW(over: { noAreas?: boolean } = {}): EEWAlert {
   return {
     kind: 'eew',
     id: 'eew-1',
@@ -104,8 +104,12 @@ function makeEEW(): EEWAlert {
     severity: 'Warning',
     cancelled: false,
     issue: { eventId: 'eew-evt', serial: '1', time: '2026-01-01T12:00:00Z' },
-    areas: [{ pref: '石川県', name: '石川県能登', scaleFrom: 45, scaleTo: 55, kindCode: '10', arrivalTime: null }],
-  } as EEWAlert
+    // 予想震度が取れない初報（仮定震源要素）を作れるようにする。第 2 フェーズが最大 6 秒待つ
+    condition: over.noAreas ? '仮定震源要素' : '',
+    areas: over.noAreas
+      ? []
+      : [{ pref: '石川県', name: '石川県能登', scaleFrom: 45, scaleTo: 55, kindCode: '10', arrivalTime: null }],
+  } as unknown as EEWAlert
 }
 
 function setup() {
@@ -128,8 +132,9 @@ function setup() {
     tsunamisRef: { current: [] as JMATsunami[] },
     kyoshinDetectedRef: { current: false },
     defaultTabRef: { current: 'earthquake' },
-    setActiveTab: vi.fn(), setActiveTabNonRealtime: vi.fn(),
-    setActiveTabRealtimeOnUpdate: vi.fn(), revertToDefaultTab: vi.fn(),
+    setActiveTabRealtimeForKyoshin: vi.fn(), setActiveTabNonRealtime: vi.fn(),
+    setActiveTabRealtimeOnUpdate: vi.fn(),
+    setActiveTabRealtimeUrgent: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(), setActiveLpgmEventId: vi.fn(),
   }))
   return result.current.handleLiveEvent
@@ -318,6 +323,34 @@ describe('非 EEW の読み上げの優先度', () => {
     await flush()
     expect(spokenTexts()).toHaveLength(afterEew)
     expect(spokenTexts().some(t => t.includes('震度速報'))).toBe(false)
+  })
+
+  // 初報に予想震度が無い EEW は、値が付くのを最大 6 秒待つ。その待機中は EEW の発話が途切れて
+  // 見えるため、進行中かどうかだけを見ていると地震情報が滑り込み、6 秒後の第 2 フェーズに
+  // **必ず**切られる（2024/1/1 能登 16:08 の震源情報が残り 5.7 秒で消えていた）。
+  it('EEW が予想震度の確定を待っている間も、地震情報は待つ', async () => {
+    const handle = setup()
+    handle(makeEEW({ noAreas: true }))
+    await flush()
+    expect(spokenTexts()).toHaveLength(1)
+    expect(spokenTexts()[0]).toContain('緊急地震速報')
+
+    // 震源の読み上げが終わる。第 2 フェーズは値を待っている状態
+    finishSpeech(0)
+    await flush()
+
+    handle(makeQuake())
+    await vi.advanceTimersByTimeAsync(1000)   // 地震情報の通知音の遅延
+    await flush()
+    expect(spokenTexts()).toHaveLength(1)     // 滑り込まない
+
+    // 上限で第 2 フェーズが読まれ、そのあとに地震情報が続く
+    await vi.advanceTimersByTimeAsync(6000)
+    await flush()
+    expect(spokenTexts()[1]).toContain('予想震度なし')
+    finishSpeech(1)
+    await flush()
+    expect(spokenTexts()[2]).toContain('震度速報')
   })
 
   // 待ち行列にしてはいけない側。新しい震度速報が古い震度速報を置き換えるのは正しい挙動で、

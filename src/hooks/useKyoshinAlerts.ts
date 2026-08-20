@@ -432,6 +432,11 @@ export interface KyoshinAlertsDeps {
   activeEEWsRef: React.MutableRefObject<ReadonlyMap<string, EEWAlert>>
   /** アイドル復帰で戻すデフォルトタブ（App 所有・毎レンダー更新。デバッグログ用） */
   defaultTabRef: React.MutableRefObject<TabId>
+  /**
+   * realtime タブへの移動要求。**App 側で揺れ検知の優先度（`TAB_PRIORITY.kyoshin`）を付けて
+   * 渡される**ため、地震情報・長周期地震動情報には奪われず、津波・EEW には譲る。
+   * 生の `setActiveTab` を渡してはいけない（保持が張られず、直後の地震情報に画面を奪われる）。
+   */
   setActiveTab: (tab: TabId) => void
   revertToDefaultTab: () => void
 }

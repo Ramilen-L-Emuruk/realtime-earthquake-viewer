@@ -5,7 +5,7 @@ import { isDmdss } from '../../utils/env'
 
 const HEAD_TYPE_LABEL: Record<string, string> = {
   VXSE43: 'EEW警報',
-  VXSE45: 'EEW予報',
+  VXSE45: 'EEW地震動予報',
   VXSE51: '震度速報',
   VXSE52: '震源情報',
   VXSE53: '震源・震度',

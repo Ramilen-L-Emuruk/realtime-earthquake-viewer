@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { EEWAlert } from '../types/earthquake'
-import { eewMaxScale } from '../utils/eew'
+import { eewMaxScale, eewKindLabel, computeSingleEEWLevel } from '../utils/eew'
 import { getIntensityLabel } from '../utils/intensity'
 
 // ウィンドウタイトル（情報タイトル）管理フック。
@@ -11,10 +11,20 @@ import { getIntensityLabel } from '../utils/intensity'
 // から読む。スケジュール時に値をキャプチャする実装に変えると、タイマー発火まで
 // の間に EEW が解除された場合などに古いタイトルへ戻るリグレッションになる。
 
-function computeEEWTitle(eews: ReadonlyMap<string, EEWAlert>): string {
+/**
+ * EEW 発表中のウィンドウタイトルを組み立てる（純粋関数）。
+ * 区分の名前をどの軸で決めるかを取り違えやすいため、テストできるように公開している。
+ */
+export function computeEEWTitle(eews: ReadonlyMap<string, EEWAlert>): string {
   const primary = Array.from(eews.values()).sort((a, b) => eewMaxScale(b) - eewMaxScale(a))[0]
   const scale = eewMaxScale(primary)
-  return `🚨 緊急地震速報 ${primary.earthquake.hypocenter.name}` +
+  // **区分の名前は「発表中の EEW すべての最大レベル」から決める。** primary（最大震度）の区分で
+  // 決めてはいけない。`eewMaxScale` は仮定震源要素で 0 を返すため、震度未確定の警報級が
+  // 震度の付いた予報級に primary を奪われ、タイトルが「地震動予報」になって警報級が「他N件」に
+  // 埋もれる。地名と震度は primary から、区分の名前は最大レベルから取り、軸を分ける。
+  const maxLevel = Array.from(eews.values())
+    .reduce<0 | 1 | 2>((m, e) => Math.max(m, computeSingleEEWLevel(e)) as 0 | 1 | 2, 0)
+  return `🚨 ${eewKindLabel(maxLevel)} ${primary.earthquake.hypocenter.name}` +
     (scale > 0 ? ` 最大震度${getIntensityLabel(scale)}予想` : '') +
     (eews.size > 1 ? ` 他${eews.size - 1}件` : '')
 }

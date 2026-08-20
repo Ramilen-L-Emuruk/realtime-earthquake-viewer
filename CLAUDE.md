@@ -408,9 +408,11 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 読み上げの範囲（`ttsIntensityLevels` / `ttsAlwaysReadScale` / `ttsMaxRegions` / `ttsRegionTolerance` の組み合わせ方・階数は観測がある階級のみを数える・`ttsAlwaysReadScale` は長周期に適用しない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
 | 読み上げの地域名の並び順（気象庁の標準順・順序の実体は `station-coords.json` の区域キー順・上限で切るときの選抜だけは震源距離で行う・震源を持たない電文（震度速報・長周期）は距離で選ばない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
 | 読み上げ文で名前を並べるときの書き方（区切りは読点・中黒は音にならず合成の区切りにもならない・場所の助詞「で」は文末のみ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
-| EEW 読み上げ第 2 フェーズの発火条件（値の確定で読む・`EEW_PHASE2_MAX_WAIT_MS` の上限・引き上げも初報と同じ形で言い直す・警報以上は「警報。」を前置き） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
+| EEW 読み上げ第 2 フェーズの発火条件（値の確定で読む・`EEW_PHASE2_MAX_WAIT_MS` の上限・引き上げも初報と同じ形で言い直す・「警報。」の前置きはその EEW で初めて伝えるときだけ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
 | EEW 読み上げの直列化（全 EEW で 1 本のチェーン・既読値の更新は発話直前だけ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げの優先順位」 |
-| 読み上げの優先順位（EEW ＞ 津波・南海トラフ ＞ 地震情報 ＞ 長周期／同格は新しい方が勝つ／待ちの条件は毎周回で作り直す／上限到達時は記録を残す） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げの優先順位」 |
+| 自動タブ切替の優先順位（読み上げと同じ並び。生の `setActiveTab` を使わないこと） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
+| 読み上げの優先順位（EEW ＞ 津波・南海トラフ ＞ 地震情報 ＞ 長周期／同格は新しい方が勝つ／待ちの条件は毎周回で作り直す／上限到達時は記録を残す／EEW の予想震度の確定待ち中も EEW を最優先とする） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げの優先順位」 |
+| EEW の区分の呼び方（電文の名称に合わせる。予報級＝地震動予報／警報級＝緊急地震速報（警報）。表示・読み上げの対応表と `eewKindLabel`。ウィンドウタイトルも対象＝外部監視への破壊的変更） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §3「電文の名称と表示・読み上げ」 |
 | 「特別警報」を音声で読まないこと（表示・通知・通知音は 2 段階を保つ） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
 | 通知音の内容と説明文の一致（`PLAYERS` の周波数・`COUNTDOWN_PULSES` のパルス数と、設定タブ「通知音テスト」の説明文・仕様書の記述） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §2 |
 | 通知音の長さと読み上げ遅延の連動（音を作り変えたら `TTS_DELAY_MS` かテーブル外の個別指定を必ず見直す。リバーブを効かせた音は乾音の長さでは足りない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
@@ -439,6 +441,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 遠地地震の識別（VXSE53・`Head/Title`）・付加文コードと `forecastText` | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §3（遠地地震に関する情報） |
 | 強震モニタの取得と再生の分離（供給元 → 時刻順キュー → 反映の 3 段・放出は到来分の最新 1 件のみ・反映はデータ時刻順に限る・新しい供給元を足すときの入口） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §4「取得と再生の分離」 |
 | `KyoshinSubThreshold` の対象範囲（index 1〜6）・慢性ノイズ床フィルタ | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) |
+| 欠測の瞬断を直前値で保持する範囲（表示・カード・音は保持値／検知エンジンは生値・保持時間・保持中の見せ方） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) §8 |
 | 検知点マーカー（地図）と検知カード（リアルタイムタブ）が数える点集合・下限の一致（対象イベントは `weak` 以外の全件／下限は震度0以上／点列は App が用意した 1 本を共有する） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) §8 |
 | 「別地点で揺れ検知」の抑制条件（EEW 吸収の記憶・エピソード起点・距離の上限・震度の下限・発報済みの扱い） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md)「別地点」判定の動的距離閾値 |
 | 実地震テストシナリオの時刻シフト・ID 再採番・利用規約制約 | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6 |
