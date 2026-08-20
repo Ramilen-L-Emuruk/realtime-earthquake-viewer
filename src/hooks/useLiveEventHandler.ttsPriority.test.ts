@@ -91,7 +91,7 @@ function makeTsunami(over: { id?: string } = {}): JMATsunami {
   } as unknown as JMATsunami
 }
 
-function makeEEW(over: { noAreas?: boolean } = {}): EEWAlert {
+function makeEEW(over: { noAreas?: boolean; condition?: string } = {}): EEWAlert {
   return {
     kind: 'eew',
     id: 'eew-1',
@@ -100,14 +100,15 @@ function makeEEW(over: { noAreas?: boolean } = {}): EEWAlert {
     earthquake: {
       originTime: '2026-01-01T12:00:00Z',
       arrivalTime: '2026-01-01T12:00:20Z',
-      condition: '',
+      // 予想震度が付かない理由はここが持つ（`eewNoForecastReason`）。**earthquake の外に置くと
+      // 実装が見る場所と食い違い、意図した経路を通らない**。以前ここを外に置いていたため、
+      // 仮定震源要素のつもりのケースが実際には「理由不明」として扱われていた。
+      condition: over.condition ?? '',
       hypocenter: { name: '能登半島沖', latitude: 37.5, longitude: 137.2, depth: 10, magnitude: 7.6 },
     },
     severity: 'Warning',
     cancelled: false,
     issue: { eventId: 'eew-evt', serial: '1', time: '2026-01-01T12:00:00Z' },
-    // 予想震度が取れない初報（仮定震源要素）を作れるようにする。第 2 フェーズが最大 6 秒待つ
-    condition: over.noAreas ? '仮定震源要素' : '',
     areas: over.noAreas
       ? []
       : [{ pref: '石川県', name: '石川県能登', scaleFrom: 45, scaleTo: 55, kindCode: '10', arrivalTime: null }],
@@ -326,9 +327,10 @@ describe('非 EEW の読み上げの優先度', () => {
     expect(spokenTexts().some(t => t.includes('震度速報'))).toBe(false)
   })
 
-  // 初報に予想震度が無い EEW は、値が付くのを最大 6 秒待つ。その待機中は EEW の発話が途切れて
-  // 見えるため、進行中かどうかだけを見ていると地震情報が滑り込み、6 秒後の第 2 フェーズに
-  // **必ず**切られる（2024/1/1 能登 16:08 の震源情報が残り 5.7 秒で消えていた）。
+  // 初報に予想震度が無く**付かない理由も判らない**EEW は、値が付くのを最大 3 秒待つ
+  // （`EEW_PHASE2_MAX_WAIT_MS`）。その待機中は EEW の発話が途切れて見えるため、進行中かどうか
+  // だけを見ていると地震情報が滑り込み、待ち明けの第 2 フェーズに**必ず**切られる
+  // （2024/1/1 能登 16:08 の震源情報が残り 5.7 秒で消えていた）。
   it('EEW が予想震度の確定を待っている間も、地震情報は待つ', async () => {
     const handle = setup()
     handle(makeEEW({ noAreas: true }))
@@ -346,9 +348,34 @@ describe('非 EEW の読み上げの優先度', () => {
     expect(spokenTexts()).toHaveLength(1)     // 滑り込まない
 
     // 上限で第 2 フェーズが読まれ、そのあとに地震情報が続く
-    await vi.advanceTimersByTimeAsync(6000)
+    await vi.advanceTimersByTimeAsync(3000)
     await flush()
     expect(spokenTexts()[1]).toContain('予想震度なし')
+    finishSpeech(1)
+    await flush()
+    expect(spokenTexts()[2]).toContain('震度速報')
+  })
+
+  // 仮定震源要素（単独点処理）は予想震度が載らないと判っているため待たずに読む。ここで固定するのは
+  // **第 1 フェーズが終わった瞬間の隙間を、予約済みの第 2 フェーズが取る**こと（3 番目の assert）。
+  // 予約が第 1 フェーズの完了後まで遅れると、待たされていた地震情報がこの隙間に入り、震源と予想値の
+  // 間に別の情報が挟まる。
+  it('待たずに読む第 2 フェーズも、地震情報に追い越されない', async () => {
+    const handle = setup()
+    handle(makeEEW({ noAreas: true, condition: '仮定震源要素' }))
+    await flush()
+    expect(spokenTexts()).toHaveLength(1)     // 第 1 フェーズが再生中
+    expect(spokenTexts()[0]).toContain('緊急地震速報')
+
+    handle(makeQuake())
+    await vi.advanceTimersByTimeAsync(5000)   // 地震情報の通知音の遅延を消化しても
+    await flush()
+    expect(spokenTexts()).toHaveLength(1)     // 予約済みの第 2 フェーズを追い越さない
+
+    finishSpeech(0)
+    await flush()
+    expect(spokenTexts()[1]).toContain('単独点処理のため、予想震度なし。')
+
     finishSpeech(1)
     await flush()
     expect(spokenTexts()[2]).toContain('震度速報')

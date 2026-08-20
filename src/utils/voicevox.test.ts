@@ -1,210 +1,175 @@
 // @vitest-environment jsdom
 //
-// 先行合成（`prewarmVoicevox`）のテスト。
+// 「鳴らす直前の見直し」（`shouldStillPlay`）の動作を、合成と再生のタイミングを操って検証する。
 //
-// 通知音と声が重ならないよう電文ごとに 0.5〜4.2 秒の間を置いているため、その間に最初の
-// ひと区切りを合成しておく。ここで固定したいのは 3 つ。
-//   1. 先行合成は**進行中の再生を止めない**（止めると、間を置いている最中に前の声が切れる）
-//   2. 使わなかった先行合成は次の読み上げが始まるときに打ち切る（VOICEVOX の直列処理を明け渡す）
-//   3. 打ち切られていた・失敗していたら再生側で合成し直す（**無音にしない**）
+// ここを直接テストする理由は 2 つ。
+//   1. チャンクは切れ目を作らないため**前のチャンクの終わりに合わせて先に予約する**。予約した
+//      瞬間と鳴り始める瞬間がずれるので、判定を 2 段（予約直前・鳴り始めの直前）に置いている。
+//      この 2 段はタイミングでしか区別できない。
+//   2. 完了の通知を「最後まで鳴るチャンクの終わり」に合わせている。先行合成が前のチャンクの
+//      残り時間より長くかかると、取り下げの判断は**鳴り終わったあと**に届く。もう終わった音源に
+//      'ended' を張っても発火しないため、ここを誤ると次の発話が上限まで足止めされる。
+//
+// AudioContext は偽物に差し替える。fake timers の時間軸に `currentTime` を合わせ、再生の終わりも
+// タイマーで起こすことで、本物の音声グラフと同じ順序で 'ended' が届く。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { prewarmVoicevox, speakWithVoicevox } from './voicevox'
+import { speakWithVoicevox } from './voicevox'
 
-// ---- AudioContext の代役 ----------------------------------------------------
-// 再生した AudioBufferSourceNode を記録して「鳴ったか」「止められたか」を観測する。
-const started: { stopped: boolean }[] = []
-
-function makeFakeCtx() {
-  return {
-    state: 'running' as AudioContextState,
-    currentTime: 0,
-    resume: vi.fn(async () => {}),
-    decodeAudioData: vi.fn(async () => ({ duration: 0.4 }) as unknown as AudioBuffer),
-    createGain: () => ({ gain: { value: 0 }, connect: vi.fn() }),
-    createBufferSource: () => {
-      const rec = { stopped: false }
-      return {
-        buffer: null as AudioBuffer | null,
-        connect: vi.fn(),
-        onended: null,
-        start: vi.fn(() => { started.push(rec) }),
-        stop: vi.fn(() => { rec.stopped = true }),
-        // 最後のチャンクの完了待ちを即座に解決させる（実際の再生時間は待たない）
-        addEventListener: vi.fn((_ev: string, cb: () => void) => { cb() }),
-      }
-    },
-  }
-}
-
-let fakeCtx = makeFakeCtx()
-vi.mock('./alertSound', () => ({
-  getAudioContext: () => fakeCtx,
-  getMasterInput: () => ({ connect: vi.fn() }),
-}))
-
-// 句区切り辞書は先行合成の対象外の話なので、常に「未取得」にして経路を通さない
+// 句区切り辞書は使わない（この検証の対象外。読みの補正が挟まると合成回数が増えて筋が追いにくい）
 vi.mock('./ttsPhraseBreakDict', () => ({
-  loadTtsPhraseBreakDict: async () => null,
+  loadTtsPhraseBreakDict: () => Promise.resolve(null),
   getTtsPhraseBreakDictCache: () => null,
   findPhraseBreakMatch: () => null,
   isPlaceNameKey: () => false,
 }))
 
-// ---- fetch の代役 ----------------------------------------------------------
-const fetched: string[] = []
-let synthesisDelay = 0
+const DUR_SEC = 1
+/** チャンクごとの /synthesis の応答遅延（ms）。テストごとに差し替える。 */
+let synthDelaysMs: number[] = []
+let synthCallCount = 0
 
-function installFetch() {
-  fetched.length = 0
-  global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input)
-    const signal = init?.signal
-    if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
-    fetched.push(url.replace(/^.*?\/(audio_query|synthesis).*$/, '$1'))
-    if (/audio_query/.test(url)) {
-      return { ok: true, json: async () => ({ accent_phrases: [] }) } as unknown as Response
-    }
-    // 合成には時間がかかる。abort されたらそこで失敗させる（実装と同じ扱いにする）
-    if (synthesisDelay > 0) {
-      await new Promise<void>((resolve, reject) => {
-        const t = setTimeout(resolve, synthesisDelay)
-        signal?.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('aborted', 'AbortError')) })
-      })
-    }
-    return { ok: true, arrayBuffer: async () => new ArrayBuffer(8) } as unknown as Response
-  }) as unknown as typeof fetch
-}
-
-/** audio_query / synthesis が何回走ったか。 */
-function counts() {
-  return {
-    query: fetched.filter(f => f === 'audio_query').length,
-    synth: fetched.filter(f => f === 'synthesis').length,
+class FakeSource {
+  buffer: { duration: number } | null = null
+  onended: (() => void) | null = null
+  startAt: number | null = null
+  stoppedAtSec: number | null = null
+  private listeners: (() => void)[] = []
+  private endTimer: ReturnType<typeof setTimeout> | undefined
+  connect() { /* 出力先は検証しない */ }
+  addEventListener(_type: string, cb: () => void) { this.listeners.push(cb) }
+  start(when: number) {
+    this.startAt = when
+    const remainMs = (when + (this.buffer?.duration ?? 0) - ctx.currentTime) * 1000
+    this.endTimer = setTimeout(() => this.fireEnded(), Math.max(0, remainMs))
+  }
+  stop() {
+    this.stoppedAtSec = ctx.currentTime
+    clearTimeout(this.endTimer)
+    // 本物のブラウザは、開始時刻より前に stop() したソースでも 'ended' を発火する
+    this.fireEnded()
+  }
+  /** 1 音も鳴らずに落とされたか（開始時刻より前に stop された）。 */
+  get droppedBeforeSound() { return this.stoppedAtSec !== null && this.startAt !== null && this.stoppedAtSec < this.startAt }
+  private fireEnded() {
+    this.onended?.()
+    for (const l of this.listeners) l()
   }
 }
 
+let sources: FakeSource[] = []
+let baseMs = 0
+const ctx = {
+  get currentTime() { return (Date.now() - baseMs) / 1000 },
+  state: 'running',
+  resume: () => Promise.resolve(),
+  createGain: () => ({ gain: { value: 0 }, connect: () => {} }),
+  createBufferSource: () => { const s = new FakeSource(); sources.push(s); return s },
+  decodeAudioData: () => Promise.resolve({ duration: DUR_SEC }),
+}
+vi.mock('./alertSound', () => ({
+  getAudioContext: () => ctx,
+  getMasterInput: () => ({}),
+}))
+
+/** /audio_query は即答、/synthesis はチャンクごとに指定の遅延で答える。 */
+function installFetch() {
+  vi.stubGlobal('fetch', (url: string) => {
+    if (String(url).includes('/synthesis')) {
+      const delay = synthDelaysMs[synthCallCount] ?? 0
+      synthCallCount++
+      return new Promise(resolve => {
+        setTimeout(() => resolve({ ok: true, arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)) }), delay)
+      })
+    }
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({ accent_phrases: [] }) })
+  })
+}
+
+/** 保留中のマイクロタスクを流し切る（発話は Promise チェーンで進むため）。 */
+async function flush() {
+  for (let i = 0; i < 100; i++) await Promise.resolve()
+}
+async function advance(ms: number) {
+  await vi.advanceTimersByTimeAsync(ms)
+  await flush()
+}
+
+// 2 チャンクに割れる文（句点の直後で切れ、どちらも 5 文字以上）
+const TWO_CHUNKS = '予想最大震度5弱。予想最大階級1。'
+
 beforeEach(() => {
-  started.length = 0
-  synthesisDelay = 0
-  fakeCtx = makeFakeCtx()
+  vi.useFakeTimers()
+  baseMs = Date.now()
+  sources = []
+  synthDelaysMs = []
+  synthCallCount = 0
   installFetch()
 })
-
 afterEach(() => {
-  vi.restoreAllMocks()
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
 })
 
-describe('先行合成', () => {
-  it('最初のひと区切りだけを合成する（残りは再生側に任せる）', async () => {
-    const pre = prewarmVoicevox('http://x', '地震情報。石川県能登地方で地震。深さは十キロメートル。', 1)
-    expect(pre).not.toBeNull()
-    await pre!.first
-    // 1 チャンク分（audio_query → synthesis）だけで止まる
-    expect(counts()).toEqual({ query: 1, synth: 1 })
+describe('speakWithVoicevox の鳴らす直前の見直し', () => {
+  it('判定を渡さなければ全チャンクを鳴らし、最後のチャンクの終わりで完了する', async () => {
+    synthDelaysMs = [100, 100]
+    let done = false
+    void speakWithVoicevox('http://vv', TWO_CHUNKS, 1, 1).then(() => { done = true })
+
+    await advance(300)
+    expect(sources).toHaveLength(2)
+    expect(done).toBe(false)      // まだ鳴っている（2 チャンクで 2 秒）
+    await advance(2000)
+    expect(done).toBe(true)
+    expect(sources.every(s => !s.droppedBeforeSound)).toBe(true)
   })
 
-  it('進行中の再生を止めない', async () => {
-    // 先に鳴らしておく
-    await speakWithVoicevox('http://x', '大津波警報。', 1, 1)
-    expect(started).toHaveLength(1)
-    expect(started[0].stopped).toBe(false)
+  it('合成を待つ間に判定が外れたら 1 音も鳴らさず、待たせずに完了する', async () => {
+    synthDelaysMs = [500]
+    let done = false
+    void speakWithVoicevox('http://vv', TWO_CHUNKS, 1, 1, () => false).then(() => { done = true })
 
-    // 間を置いている最中の先行合成では、鳴っているものに触らない
-    const pre = prewarmVoicevox('http://x', '地震情報。', 1)
-    await pre!.first
-    expect(started[0].stopped).toBe(false)
+    await advance(600)
+    expect(sources).toHaveLength(0)  // 予約すらしない
+    expect(done).toBe(true)
   })
 
-  it('先行合成した音声を使うので、再生時に合成し直さない', async () => {
-    const text = '地震情報。'
-    const pre = prewarmVoicevox('http://x', text, 1)
-    await pre!.first
-    expect(counts()).toEqual({ query: 1, synth: 1 })
+  it('鳴っている途中で判定が外れたら、次のチャンクは 1 音も鳴らさない', async () => {
+    synthDelaysMs = [100, 100]
+    let valid = true
+    let done = false
+    void speakWithVoicevox('http://vv', TWO_CHUNKS, 1, 1, () => valid).then(() => { done = true })
 
-    await speakWithVoicevox('http://x', text, 1, 1, pre)
-    // 1 チャンクのテキストなので、再生時の合成は増えない
-    expect(counts()).toEqual({ query: 1, synth: 1 })
-    expect(started).toHaveLength(1)
+    await advance(300)
+    expect(sources).toHaveLength(2)  // 2 チャンク目は 1 チャンク目の終わりに予約済み
+    valid = false                    // 1 チャンク目を鳴らしている途中で新しい情報が届いた
+
+    // 2 チャンク目の鳴り始めの直前（1.05 秒）に判定が走り、落とされる。
+    // 1 チャンク目はまだ 1.1 秒まで鳴っているので、**ここで完了してはいけない**
+    // （早く完了すると、次の発話の冒頭の一括停止が鳴っている末尾を削る）。
+    await advance(760)
+    expect(sources[1].droppedBeforeSound).toBe(true)   // 続きは鳴らさない
+    expect(done).toBe(false)
+
+    await advance(100)
+    expect(sources[0].droppedBeforeSound).toBe(false)  // 鳴り始めた分は最後まで鳴らす
+    expect(done).toBe(true)                            // 上限を待たずに完了する
   })
 
-  it('合成の途中で打ち切られたら、再生側で作り直す（無音にしない）', async () => {
-    synthesisDelay = 5_000
-    const text = '地震情報。'
-    const pre = prewarmVoicevox('http://x', text, 1)
-    // 合成が始まるのを待ってから打ち切る（実際に打ち切られるのはこの状態）
-    await vi.waitFor(() => expect(counts().synth).toBe(1))
-    pre!.abort()
-    await expect(pre!.first).resolves.toBeNull()
+  it('直前のチャンクが鳴り終わったあとに判定が外れても、完了を待たせない', async () => {
+    // 2 チャンク目の合成（3 秒）が 1 チャンク目の再生（1 秒）より長くかかる状況。
+    // 取り下げの判断は「1 チャンク目が鳴り終わったあと」に届く。
+    synthDelaysMs = [100, 3000]
+    let valid = true
+    let done = false
+    void speakWithVoicevox('http://vv', TWO_CHUNKS, 1, 1, () => valid).then(() => { done = true })
 
-    synthesisDelay = 0
-    await speakWithVoicevox('http://x', text, 1, 1, pre)
-    // 作り直したぶんが増え、ちゃんと鳴っている
-    expect(counts().synth).toBe(2)
-    expect(started).toHaveLength(1)
-  })
+    await advance(1300)               // 1 チャンク目は鳴り終わっている
+    expect(sources).toHaveLength(1)
+    valid = false
 
-  it('合成が始まる前に打ち切られても、再生側で作り直す', async () => {
-    const text = '地震情報。'
-    const pre = prewarmVoicevox('http://x', text, 1)
-    pre!.abort()  // 辞書の待ちが明ける前なので、最初の要求すら飛んでいない
-    await expect(pre!.first).resolves.toBeNull()
-
-    await speakWithVoicevox('http://x', text, 1, 1, pre)
-    expect(counts()).toEqual({ query: 1, synth: 1 })
-    expect(started).toHaveLength(1)
-  })
-
-  it('テキストが違う先行合成は使わない', async () => {
-    const pre = prewarmVoicevox('http://x', '津波警報。', 1)
-    await pre!.first
-    const before = counts().synth
-
-    await speakWithVoicevox('http://x', '地震情報。', 1, 1, pre)
-    expect(counts().synth).toBeGreaterThan(before)
-    expect(started).toHaveLength(1)
-  })
-
-  it('使わなかった先行合成は、次の読み上げが始まるときに打ち切る', async () => {
-    // 打ち切りを観測するため、合成が終わらないうちに別の読み上げを始める
-    synthesisDelay = 10_000
-    const orphan = prewarmVoicevox('http://x', '長周期地震動情報。', 1)
-
-    synthesisDelay = 0
-    await speakWithVoicevox('http://x', '大津波警報。', 1, 1)
-
-    // 打ち切られた側は null に解決する（待たされ続けない）
-    await expect(orphan!.first).resolves.toBeNull()
-  })
-
-  it('自分の先行合成は打ち切らない', async () => {
-    const text = '大津波警報。'
-    const pre = prewarmVoicevox('http://x', text, 1)
-    await speakWithVoicevox('http://x', text, 1, 1, pre)
-    // 打ち切られていれば作り直しで synthesis が 2 回になる。1 回なら使えている
-    expect(counts()).toEqual({ query: 1, synth: 1 })
-    expect(started).toHaveLength(1)
-  })
-
-  it('ほぼ同時に 2 件届いても、先に始まった側の先行合成を後から始まった側が打ち切らない', async () => {
-    // 地震情報と長周期地震動はほぼ同時に届く。実測（本番ビルド）で「最初の音まで 2820ms」と
-    // なる回があり、後から始まった読み上げが、先に始まった側がこれから使う先行合成を
-    // 打ち切っていた。打ち切られた側は作り直すので無音にはならないが、先に合成した意味が
-    // 失われ、待ちが先行合成の無かった頃より長くなる。
-    // 合成がまだ終わっていない（＝ activePrewarms に残っている）状況を作る
-    synthesisDelay = 300
-    const quake = prewarmVoicevox('http://x', '地震情報。', 1)
-    const lpgm = prewarmVoicevox('http://x', '長周期地震動情報。', 1)
-    await vi.waitFor(() => expect(counts().synth).toBe(2))
-
-    // 地震情報の再生が始まる（この時点で長周期の先行合成は打ち切られてよい）
-    const quakePlay = speakWithVoicevox('http://x', '地震情報。', 1, 1, quake)
-    // 直後に長周期の再生が始まっても、地震情報がこれから使うものは残す
-    const lpgmPlay = speakWithVoicevox('http://x', '長周期地震動情報。', 1, 1, lpgm)
-    await Promise.all([quakePlay, lpgmPlay])
-
-    // 使われた側は打ち切られず、作り直しにもなっていない
-    await expect(quake!.first).resolves.not.toBeNull()
-    // 使われなかった側（長周期の先行合成）は打ち切られ、再生側で作り直している
-    await expect(lpgm!.first).resolves.toBeNull()
+    await advance(2000)               // 2 チャンク目の合成が返る
+    expect(sources).toHaveLength(1)   // 予約されない
+    expect(done).toBe(true)           // ここが false だと呼び出し側が 8 秒足止めされる
   })
 })

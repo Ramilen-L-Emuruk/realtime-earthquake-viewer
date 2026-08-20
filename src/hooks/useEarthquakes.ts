@@ -17,6 +17,8 @@ import {
   createTestEEW,
   createTestEEWWarning,
   createTestEEWForecast,
+  createTestEEWAssumed,
+  createTestEEWDeep,
   createTestTsunami,
   createTestTsunamiWarning,
   createTestTsunamiWatch,
@@ -66,7 +68,7 @@ function enrichEEWPref(eew: EEWAlert, index: Map<string, string> | null): EEWAle
   return { ...eew, areas }
 }
 
-type TestEEWKind = 'special' | 'warning' | 'forecast'
+type TestEEWKind = 'special' | 'warning' | 'forecast' | 'assumed' | 'deep'
 // originTime は同一イベントで不変なので初報の基準時刻（baseTime）を続報・最終報まで持ち回る。
 type TestEEWEntry = { eventId: string; serial: number; baseTime: Date; finalizeTimer: number }
 type TestEEWRetractionEntry = { eventId: string; serial: number; baseTime: Date; cancelTimer: number }
@@ -1151,6 +1153,16 @@ export function useEarthquakes(
     [handleEvent],
   )
 
+  const simulateEEWAssumed = useCallback(
+    () => runSimulateEEW('assumed', createTestEEWAssumed, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent),
+    [handleEvent],
+  )
+
+  const simulateEEWDeep = useCallback(
+    () => runSimulateEEW('deep', createTestEEWDeep, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent),
+    [handleEvent],
+  )
+
   const simulateEEWRetraction = useCallback(
     () => runSimulateEEWRetraction(createTestEEWWarning, EEW_RETRACTION_CANCEL_MS, testEEWRetractionRef, handleEvent),
     [handleEvent],
@@ -1257,7 +1269,7 @@ export function useEarthquakes(
     clearTelegramLog,
     simulateEarthquake,
     simulateForeignQuake,
-    simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWRetraction,
+    simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiCommentary, simulateKohatsu,
     resetState,

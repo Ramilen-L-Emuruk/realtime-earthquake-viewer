@@ -235,6 +235,21 @@ describe('読み上げとタブ切替の同調', () => {
     expect(spies.followSpeechTab).toHaveBeenCalledWith('realtime', TAB_PRIORITY.eewUrgent)
   })
 
+  it('EEW が消えていたら震源を読まず、画面も動かさない', async () => {
+    // `chainEEWSpeech` に渡す文面の生成が null を返す経路（取消・自動解除で発表が消えた）。
+    // **黙る予約では追従を呼ばないこと。** 呼ぶと「声が出ないのにタブが移る」になる。
+    const { handle, spies } = setup()
+    handle(makeEEW())
+    // 発話の予約が解決する前に発表が消える（誤報取消）
+    handle({ ...makeEEW(), cancelled: true } as EEWAlert)
+    spies.followSpeechTab.mockClear()
+    await settle()
+    // 震源（第 1 フェーズ）は読まれない。取消の読み上げだけが残る
+    const spoken = speeches.map(s => s.text).join('')
+    expect(spoken).not.toContain('能登半島沖で地震')
+    expect(spoken).toContain('キャンセルされました')
+  })
+
   it('EEW を読み上げている間に届いた地震情報は、読み終わるまで earthquake を取らない', async () => {
     // これが報告された不具合の回帰テスト。従来は受信の瞬間に earthquake を要求し、
     // 保持に弾かれて捨てられていた（声は EEW → 地震情報の順に読むのに画面が付いてこない）。

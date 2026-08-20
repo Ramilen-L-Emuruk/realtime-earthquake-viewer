@@ -424,9 +424,9 @@ Redux 等のグローバルストアは使わず、React のフック（`useStat
 - Yahoo 強震モニタの取得ラグ計算
 - 実地震テストシナリオの時刻シフト
 
-実装は `src/utils/clock.ts` の `serverNow()` に統一されている。較正は Yahoo 強震モニタの登録済み秒・
-未登録秒の境界（403 → 200 遷移）を捉える方式で 30 秒ごとに行う。詳細は
-[`data-sources-spec.md`](data-sources-spec.md) の「クロック同期」節。
+実装は `src/utils/clock.ts` の `serverNow()` に統一されている。較正は 30 秒ごとに外部の時刻サービスへ
+問い合わせて行う（取れなかった周期のみ Yahoo 強震モニタの応答から推定する）。手段と優先順位の詳細は
+[`data-sources-spec.md`](data-sources-spec.md) の「クロック同期」節を単一情報源とする。
 
 ## 7. 生成データ（`public/data/`）
 

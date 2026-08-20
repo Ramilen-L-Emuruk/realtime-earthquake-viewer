@@ -390,7 +390,7 @@ export function App() {
     telegramLog, clearTelegramLog,
     injectEvent, loadMoreEarthquakes,
     simulateEarthquake, simulateForeignQuake,
-    simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWRetraction,
+    simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiCommentary, simulateKohatsu,
     resetState, loadReplayEvents,
@@ -424,6 +424,8 @@ export function App() {
     eew:               simulateEEW,
     eewWarning:        simulateEEWWarning,
     eewForecast:       simulateEEWForecast,
+    eewAssumed:        simulateEEWAssumed,
+    eewDeep:           simulateEEWDeep,
     eewRetraction:     simulateEEWRetraction,
     tsunami:           simulateTsunami,
     tsunamiWarning:    simulateTsunamiWarning,
@@ -449,7 +451,7 @@ export function App() {
     },
   }), [
     simulateEarthquake, simulateForeignQuake,
-    simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWRetraction,
+    simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiCommentary, simulateKohatsu,
   ])
