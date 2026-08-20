@@ -6,22 +6,24 @@ import type { AlertTitleApi } from './useAlertTitle'
 import type { ReplayEntry } from '../types/replay'
 import { getIntensityLabel } from '../utils/intensity'
 import { formatMagnitude, hasMagnitude } from '../utils/formatters'
-import { eewMaxScale, eewMaxLpgmClass, computeSingleEEWLevel, selectEEWSoundType, eewKindLabel } from '../utils/eew'
+import { eewMaxScale, eewMaxLpgmClass, eewNoForecastReason, computeSingleEEWLevel, selectEEWSoundType, eewKindLabel } from '../utils/eew'
 import { haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
 import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly } from '../utils/tsunami'
 import { matchesArea, sortAreasForCardDisplay } from '../components/TsunamiTab'
 import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
-import { speakWithVoicevox, prewarmVoicevox, type PrewarmedSpeech } from '../utils/voicevox'
+import { speakWithVoicevox, prewarmVoicevox, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
 import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, tsunamiArrivalToText, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, type TtsRegionOptions } from '../utils/ttsText'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
 import { extractQuakeEventIdFromId, quakeEventKey, sameQuakeEntry } from '../utils/quakeMerge'
 
 // EEW 読み上げ第 2 フェーズ（予想値）のタイミング。
-// 初報で予想震度が付いていない場合に待つ上限。仮定震源要素（単独点処理）や深発地震では
-// 予想震度が最後まで付かないことがあるため、待ちきらずに「予想震度なし」を読んで打ち切る。
-const EEW_PHASE2_MAX_WAIT_MS = 6000
+// 初報で予想震度が付いておらず、かつ**付かない理由がはっきりしない**場合に待つ上限。
+// 仮定震源要素（単独点処理）・深発地震はその報に予想震度が載らないと判っているので待たない
+// （判定は eewNoForecastReason）。ここで待つのは「値が遅れて付くかもしれない」場合だけなので、
+// 上限は短く取る。長く取ると、結局は理由不明の「予想震度なし」を読むまで無言になる。
+const EEW_PHASE2_MAX_WAIT_MS = 3000
 // 直列化した EEW 読み上げで、発話の完了を待つ上限。VOICEVOX への合成リクエストには
 // タイムアウトが無いため、応答が返らないまま待ち続けると後続の EEW が永久に読まれなくなる。
 // 打ち切って次へ進む（止まっていた側は次の発話開始時に abort される）。
@@ -78,7 +80,7 @@ const HIGHER_PRIORITY_SPEECH_MAX_WAIT_MS = 90000
 
 // 予想震度が付くのを待っている EEW があるとき、非 EEW 側が状況を見直す間隔。
 // この待機中は「これから話す」状態で、待つ相手の Promise がまだ存在しないため、
-// 短く眠って作り直す（`EEW_PHASE2_MAX_WAIT_MS` の 6 秒に対して十分細かい刻み）。
+// 短く眠って作り直す（`EEW_PHASE2_MAX_WAIT_MS` の 3 秒に対して十分細かい刻み）。
 const EEW_PHASE2_PENDING_POLL_MS = 500
 
 /** 指定時間だけ待つ（優先度の待ち合わせで、待つ相手の Promise がまだ無いときに使う）。 */
@@ -228,9 +230,15 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // EEW の eventId ごとにレベルを追跡（複数EEW対応）
   // key = issue.eventId ?? id、value = 0=低震度予報 / 1=警報（severity=Warning または予想震度5弱以上） / 2=特別警報
   const activeEEWLevelsRef = useRef<Map<string, 0 | 1 | 2>>(new Map())
-  // ここから 3 つは「実際に読み上げた値」を eventId 別に保持する。受信値ではなく発話した値を
+  // ここから 3 つは「読み上げに送り出した値」を eventId 別に保持する。受信値ではなく発話した値を
   // 持つのが要点。受信のたびに更新すると、割り込みや取消で声に出なかった値まで既読になり、
   // 「一度も言っていない値からの引き上げ」を語ることになる。更新は発話の直前だけで行う。
+  //
+  // 厳密には「鳴った値」ではない。発話の途中でも上位の続報が届けばそこから先は鳴らさないため
+  // （`shouldStillPlay`）、送り出したのに声にならなかった値が残りうる。それでも取りこぼしに
+  // ならないのは、読み上げ文が毎回**最新値から作り直される**（差分を語らない）ため。取り下げた
+  // 原因である「より高い値」は必ず別途予約され、そちらが読まれる。
+
   const spokenEEWScalesRef = useRef<Map<string, number>>(new Map())
   // 階級だけが上がる続報（震度据え置きで 2→3 等）は震度にもレベルにも現れないため専用に持つ。
   const spokenEEWLpgmClassesRef = useRef<Map<string, number>>(new Map())
@@ -272,6 +280,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const eewPhase2DoneRef = useRef<Set<string>>(new Set())
   // 予約の解決時にテキストを生成するため、eventId ごとに最新イベントを保持する（変化なし続報も含め常に最新で上書き）
   const eewTtsEventsRef = useRef<Map<string, EEWAlert>>(new Map())
+  // 誤報取消（訂正）を受けた eventId。**鳴っている途中の読み上げを打ち切ってよいのはこれだけ。**
+  // 自動解除（expired）と区別するために別に持つ（どちらも eewTtsEventsRef からは消えるため、
+  // 消えたことだけでは理由が分からない）。発表が終わった EEW の内容は誤りではないので、
+  // 自動解除では鳴っているものを切らない（切ると代わりに読むものが無く、尻切れで終わる）。
+  const eewRetractedKeysRef = useRef<Set<string>>(new Set())
   // EEW の eventId ごとに最後に Phase 1 を発話したときの震源情報を保持する（震源地名変化+座標移動の再発話判定用）
   const activeEEWAnnouncedHypocentersRef = useRef<Map<string, { name: string; lat: number; lng: number }>>(new Map())
   // 長周期地震動情報の更新検出: 受信済み eventId を追跡する
@@ -291,6 +304,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    * EEW の読み上げをチェーンの末尾に繋ぐ。`speak` が null を返した場合は何も発話しない
    * （発話の直前に対象がまだ発表中かを判定させるため、テキストは遅延生成にしている）。
    *
+   * `shouldStillPlay` を添えると、**音を出す直前**（チャンクごと）にもう一度確かめる。
+   * テキストを作ってから音が出るまでには合成の往復があり、鳴らしている間も続報は届くため、
+   * 生成時点の判定だけでは古い値を鳴らし切ってしまう（詳細は `voicevox.ts` の同名の型）。
+   *
    * **チェーンに reject を残さないこと。** `eewSpeechChainRef` は次の発話が待つ対象なので、
    * ここで reject させると以降の EEW の読み上げが連鎖的に落ち、**その端末では二度と
    * 緊急地震速報が読まれなくなる**。テキスト生成の例外まで含めて必ず catch する。
@@ -298,16 +315,20 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    * @param follow 発話を投入する直前に呼ばれる（画面を声に合わせる用途）。
    *   `speak` が null を返して黙るときは呼ばれない。
    */
-  const chainEEWSpeech = (speak: () => string | null, follow?: () => void) => {
+  const chainEEWSpeech = (
+    speak: () => string | { text: string; shouldStillPlay?: ShouldStillPlay } | null,
+    follow?: () => void,
+  ) => {
     eewSpeechPendingRef.current++
     const prev = eewSpeechChainRef.current
     eewSpeechChainRef.current = capSpeechWait(prev).then(() => {
-      const text = speak()
-      if (text === null) return
-      // 声に出すものが決まった瞬間に画面も合わせる。黙る予約（text === null）では動かさない。
+      const spoken = speak()
+      if (spoken === null) return
+      const { text, shouldStillPlay } = typeof spoken === 'string' ? { text: spoken, shouldStillPlay: undefined } : spoken
+      // 声に出すものが決まった瞬間に画面も合わせる。黙る予約（spoken === null）では動かさない。
       follow?.()
       return capSpeechWait(
-        speakWithVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume),
+        speakWithVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume, shouldStillPlay),
       )
     })
       .catch(err => log.warn('[eew] 読み上げに失敗', err))
@@ -328,8 +349,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const speechBlocker = (priority: SpeechPriority): 'eewChain' | 'eewPhase2' | 'higher' | null => {
     if (eewSpeechPendingRef.current > 0) return 'eewChain'
     // 予想震度が付くのを待っている EEW がある間も、EEW は「これから話す」状態にある。
-    // ここを空きと見なすと、震源を読み終えた直後の数秒に地震情報が滑り込み、最大 6 秒後の
-    // 第 2 フェーズに**必ず**切られる（2024/1/1 能登 16:08 の震源情報が残り 5.7 秒で消えていた）。
+    // ここを空きと見なすと、震源を読み終えた直後の数秒に地震情報が滑り込み、待ち明け
+    // （`EEW_PHASE2_MAX_WAIT_MS`）の第 2 フェーズに**必ず**切られる
+    // （2024/1/1 能登 16:08 の震源情報が残り 5.7 秒で消えていた）。
     if (eewTtsMaxTimersRef.current.size > 0) return 'eewPhase2'
     const active = activeNonEewSpeechRef.current
     if (active !== null && active.priority > priority) return 'higher'
@@ -420,8 +442,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 自分の番が来た（これから声に出す）瞬間に画面を合わせる。待ち行列の後なので、
       // 重い電文の読み上げ中に届いた軽い電文は、その後になって初めてタブを取る。
       follow?.()
+      // 第 5 引数（鳴らす直前の見直し）は非 EEW では使わない。予想震度のように数秒で
+      // 書き換わる値を持たないため、読み始めた文面を最後まで読んでよい。
       const done = speakWithVoicevox(
-        settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume, prewarmed,
+        settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume, undefined, prewarmed,
       )
       activeNonEewSpeechRef.current = { priority, done }
       try {
@@ -698,6 +722,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             )
           }
         }
+        // 誤報取消（訂正）だけは、鳴っている途中の読み上げも打ち切る対象として覚えておく。
+        // 自動解除（expired）は「発表が終わった」だけで内容が誤りだったわけではなく、
+        // 途中で切っても代わりに読むものが無い（取消の読み上げは誤報取消のみ）。
+        if (!event.expired) eewRetractedKeysRef.current.add(key)
         // EEW 解除時は当該 eventId の読み上げ待ちを取り下げる。
         // eewTtsEventsRef を消すことで、既にチェーンに繋がっている予約も解決時に自ら黙る
         // （取り消された地震の予想震度を読み上げないための最終ガード）。
@@ -793,6 +821,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 読み上げは soundEnabled と独立に voicevoxEnabled のみで判定する（AUD-7）。
       if (settings.voicevoxEnabled) {
         eewTtsEventsRef.current.set(key, event)
+        // 同じ eventId で発表が再開することはないが、取消の記録を持ち越すと以後の読み上げが
+        // 鳴らせなくなるため、報を受けた時点で必ず落とす
+        eewRetractedKeysRef.current.delete(key)
 
         const clearPhase2MaxTimer = () => {
           const maxTimer = eewTtsMaxTimersRef.current.get(key)
@@ -843,7 +874,29 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             spokenEEWLpgmClassesRef.current.set(key, latestLpgmClass)
             spokenEEWLevelsRef.current.set(key, level)
             eewPhase2DoneRef.current.add(key)
-            return text
+            return {
+              text,
+              /**
+               * この文面を作ったときの値より新しいものが届いていたら、そこから先は鳴らさない。
+               *
+               * 予想震度は数秒で書き換わる（2024/1/1 能登の本震では 5弱 → 7 まで 7.5 秒）。
+               * 合成の往復と発話そのもので数秒かかるため、生成時点の判定だけでは**もう違う値を
+               * 鳴らし切ってしまう**。取り下げても取りこぼしにはならない: 上がった続報を受けた
+               * 時点で次の第 2 フェーズが予約済みで、そちらが最新値を読む。
+               *
+               * ここで「上がったときだけ」に限るのは、引き下げを追わない方針（黙る）と揃えるため。
+               * 下がったことを理由に取り下げると、代わりに読むものが無く無音で終わる。
+               */
+              shouldStillPlay: () => {
+                if (eewRetractedKeysRef.current.has(key)) return false  // 誤報取消（訂正）
+                const now = eewTtsEventsRef.current.get(key)
+                // 自動解除で消えた場合は鳴らし続ける。発表は終わったが、読んでいる値は誤りではない
+                if (!now) return true
+                return eewMaxScale(now) <= latestScale
+                  && eewMaxLpgmClass(now) <= latestLpgmClass
+                  && computeSingleEEWLevel(now) <= level
+              },
+            }
           }, () => followSpeechTab('realtime', TAB_PRIORITY.eewUpdate))
         }
 
@@ -877,23 +930,30 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           if (!hypoFarMoved && currentLevel >= 1) {
             spokenEEWLevelsRef.current.set(key, currentLevel)
           }
-          // 待っている間に取消・自動解除が届いていたら震源も読まない
+          // 待っている間に取消・自動解除が届いていたら震源も読まない。鳴らし始めてから届いた
+          // 場合に残りを落とすのは**誤報取消のときだけ**（理由は eewRetractedKeysRef の宣言箇所）
+          //
           // 新規発報は「手動選択より強い」側なので追従も eewUrgent。震源の大幅更新は既に発表中の
           // EEW の言い直しなので eewUpdate（受信時要求の使い分けと揃える）。
           chainEEWSpeech(
-            () => eewTtsEventsRef.current.has(key) ? phase1Text : null,
+            () => eewTtsEventsRef.current.has(key)
+              ? { text: phase1Text, shouldStillPlay: () => !eewRetractedKeysRef.current.has(key) }
+              : null,
             () => followSpeechTab('realtime', isNew ? TAB_PRIORITY.eewUrgent : TAB_PRIORITY.eewUpdate),
           )
           // 発話した震源情報を記録する
           if (Number.isFinite(hypo.latitude) && Number.isFinite(hypo.longitude)) {
             activeEEWAnnouncedHypocentersRef.current.set(key, { name: hypo.name, lat: hypo.latitude, lng: hypo.longitude })
           }
-          if (scale > 0) {
-            // 予想震度が既に確定している。待たずに予約する（続報の連投で沈黙しないための要）
+          // 待つのは「予想震度が遅れて付くかもしれない」ときだけ。既に確定しているか、
+          // 付かない理由がはっきりしている（仮定震源要素・深発地震）なら待たずに予約する。
+          // 後者を待っても結論は理由付きの「予想震度なし」で変わらず、その分だけ無言になる。
+          // 待たずに読んだ後で続報に値が付いたら、通常の引き上げとして同じ形で言い直す。
+          if (scale > 0 || eewNoForecastReason(event) !== 'unknown') {
             enqueuePhase2()
           } else {
-            // 予想震度がまだ無い（仮定震源要素の初期報など）。値が付いた続報で読むが、
-            // 最後まで付かないこともあるため上限で打ち切り、理由付きの「予想震度なし」を読む。
+            // 予想震度がまだ無く、付かない理由も判らない。値が付いた続報で読むが、
+            // 最後まで付かないこともあるため上限で打ち切り、「予想震度なし」を読む。
             const maxTimer = setTimeout(() => {
               eewTtsMaxTimersRef.current.delete(key)
               enqueuePhase2()
@@ -902,9 +962,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           }
         } else if (!eewPhase2DoneRef.current.has(key)) {
           // 予想震度が付くのを待っている最中の続報。値が確定した時点で読む。
-          // 値が付かないままでも、警報への格上げは上限を待たずに知らせる
-          // （仮定震源要素のまま警報が確定する地震では、待つと最大 6 秒無言になる）
-          if (scale > 0 || levelUpgraded) {
+          // 値が付かないままでも、次の 2 つは上限を待たずに知らせる。
+          //   - 警報への格上げ … 区分が上がったことは予想震度より重い
+          //   - 付かない理由の判明 … 続報で深さが 150km 超に改められる等。待っても結論は
+          //     変わらないので、初報で理由が判っていた場合と同じく待たない
+          if (scale > 0 || levelUpgraded || eewNoForecastReason(event) !== 'unknown') {
             clearPhase2MaxTimer()
             enqueuePhase2()
           }
@@ -1259,6 +1321,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     eewSpeechPendingRef.current = 0
     activeNonEewSpeechRef.current = null
     eewPhase2DoneRef.current.clear()
+    eewRetractedKeysRef.current.clear()
     lastTsunamiGradeRef.current = null
     lastMaxObsHeightRef.current.clear()
     seenObsNamesRef.current.clear()

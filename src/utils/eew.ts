@@ -173,6 +173,31 @@ export function eewMaxLpgmClass(eew: EEWAlert): number {
   return forecast != null && isValidLpgmClass(forecast) ? forecast : 0
 }
 
+/**
+ * 深発地震とみなす深さ [km]。これより深い地震では気象庁が予想震度を発表しないことがある
+ * （震源が深いと地表の揺れを予測しきれず、地域別予想の付かない報になる）。
+ */
+const DEEP_QUAKE_DEPTH_KM = 150
+
+/**
+ * 予想震度が付いていない EEW について、その理由を返す。
+ *
+ * 読み上げ文（`eewIntensityToText`）と、予想震度の確定を待つかどうかの判断
+ * （`useLiveEventHandler` の第 2 フェーズ）が同じ判定を使うため、ここに一本化する。
+ * 二重に持つと「待たずに読む条件」と「読み上げる理由」が食い違いうる。
+ *
+ * - `assumed` … 仮定震源要素（単独点処理）。1 観測点でしか捉えられておらず、その報に地域別予想は載らない
+ * - `deep` … 深発地震（深さ `DEEP_QUAKE_DEPTH_KM` km 超）
+ * - `unknown` … 上記以外。**この理由だけは値が遅れて付く可能性が残る**ため、待つ意味があるのはここだけ
+ *
+ * 予想震度がある EEW への呼び出しは想定しない（呼び出し側が `eewMaxScale` を先に見る）。
+ */
+export function eewNoForecastReason(eew: EEWAlert): 'assumed' | 'deep' | 'unknown' {
+  if (eew.earthquake.condition === '仮定震源要素') return 'assumed'
+  if (eew.earthquake.hypocenter.depth > DEEP_QUAKE_DEPTH_KM) return 'deep'
+  return 'unknown'
+}
+
 /** 情報番号（第N報）。取得できなければ null。 */
 export function eewSerial(eew: EEWAlert): number | null {
   const n = Number(eew.issue?.serial)
