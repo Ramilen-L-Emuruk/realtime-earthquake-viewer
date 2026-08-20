@@ -216,7 +216,12 @@ export function App() {
       return false
     }
     tabHoldRef.current = { until: now + TAB_HOLD_MS, priority, source }
-    if (source === 'speech') lastFollowRef.current = { at: now, priority }
+    // **床の読み書きは同じ条件で行うこと**（上の間引き判定と同じ `opts?.dwell`）。書き込みだけを
+    // 広く取ると、床を使わない要求（先出し・EEW の受信時要求）が床を進め、後から実際に声が出る
+    // 側の追従を弾く。それは「声は出ているのに画面が動かない」という、この仕組みで直したかった
+    // 症状そのもの。実際に踏んだ形: EEW の新規発報が受信時に床を進める → 1.5 秒以内に順番が来た
+    // 津波の追従が弾かれ、津波を読んでいるのに画面が realtime に留まる。
+    if (opts?.dwell) lastFollowRef.current = { at: now, priority }
     // 読み上げ系の移動は呼び出し元が名前付きの記録を持たないものがあるため、ここで成立を残す。
     // 拒否だけが記録されて成立が残らないと、ログから「動いたのか何も起きなかったのか」を区別できない。
     log.debug(`[tab] → ${tab} 移動 (優先度${priority}・駆動${source})`)
@@ -288,14 +293,9 @@ export function App() {
   }, [forceTab])
 
   // 地震情報・長周期地震動情報・津波の受信によるタブ移動（`useLiveEventHandler` から呼ぶ）。
-  // 優先度は移動先から決める（earthquake=地震情報／tsunami=津波）。
-  // 長周期地震動情報は earthquake タブへ行くが重みが違う（`TAB_PRIORITY.lpgm`）ため、
-  // 呼び出し側から優先度を渡せる。省略時は移動先から導く（従来の挙動）。
-  const setActiveTabNonRealtime = useCallback((
-    tab: Exclude<TabId, 'realtime'>,
-    priority?: TabPriority,
-  ) => {
-    requestAutoTab(tab, priority ?? (tab === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake))
+  // 優先度は移動先から決める（earthquake=地震情報・長周期／tsunami=津波）。
+  const setActiveTabNonRealtime = useCallback((tab: Exclude<TabId, 'realtime'>) => {
+    requestAutoTab(tab, tab === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake)
   }, [requestAutoTab])
 
   // EEW の受信による realtime タブ移動。
@@ -334,6 +334,22 @@ export function App() {
     requestAutoTab(tab, priority, 'speech', { dwell: true })
   }, [requestAutoTab])
 
+  /**
+   * 通知音と同時に出す**先出し**の追従（`speakNonEEWDelayed` が、待たされずに読めると判断したとき）。
+   *
+   * **最小滞留時間の床を使わない。** 床は「無音のまま追従が連打されるのを抑える」ためのもので、
+   * 先出しは「これから読む予定」にすぎない。予定で床を消費すると、先に届いた重い電文の先出しが、
+   * 後から実際に声が出る軽い電文の追従を弾く。
+   *
+   * 具体的に踏んだ形（大津波警報は間が 4.2 秒、震度速報は 0.5 秒）:
+   * 津波を受信して tsunami を先出し → 直後に届いた地震情報は床で弾かれる → 0.5 秒後に地震情報の
+   * **声が始まっても**床が明けておらず画面は tsunami のまま → 津波の声が出るのは 4.2 秒後。
+   * 地震情報を読んでいる 3.7 秒間、声と画面が食い違っていた（まさに直したかった症状）。
+   */
+  const preSpeechTab = useCallback((tab: TabId, priority: TabPriority) => {
+    requestAutoTab(tab, priority, 'speech')
+  }, [requestAutoTab])
+
   // useLiveEventHandler が返す resetTsunamiScrollToTop を revertToDefaultTab から呼べるようにする ref。
   // revertToDefaultTab はフック呼び出しより前に定義されるため、defaultTabRef と同様に
   // ref 経由で後から実体を代入する（呼び出されるのは常にレンダー後のためタイミング上問題ない）。
@@ -356,7 +372,7 @@ export function App() {
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate, setActiveTabRealtimeUrgent,
     setActiveTabRealtimeForKyoshin: () => requestTabForKyoshin('realtime'),
-    followSpeechTab, expandPanelForSpecialInfo,
+    followSpeechTab, preSpeechTab, expandPanelForSpecialInfo,
     revertToDefaultTab, selectQuake, setActiveLpgmEventId,
   })
   resetTsunamiScrollRef.current = resetTsunamiScrollToTop

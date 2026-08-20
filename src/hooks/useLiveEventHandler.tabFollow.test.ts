@@ -6,9 +6,11 @@
 // 受信の瞬間に出した要求が保持（読み終えた EEW の残り）に弾かれ、そのまま捨てられていた。
 // 実測ログ: `[tab] → tsunami スキップ (優先度3 < 保持中6・残り12870ms)`。
 //
-// ここで固定するのは 2 つ。
+// ここで固定するのは 3 つ。
 //   1. 読み上げがある経路は、**発話の番が来たときに**画面を取る（受信の瞬間ではない）
-//   2. 読み上げを持たない経路（読み上げ無効の端末）は従来どおり受信時に取る
+//   2. ただし待たされずに読めそうなら、通知音と同じ瞬間に先出しする（遅延は最大 4.2 秒あり、
+//      その間画面が留まると「音が鳴ったのに変わらない」ように見えるため）
+//   3. 読み上げを持たない経路（読み上げ無効の端末）は従来どおり受信時に取る
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
@@ -144,6 +146,7 @@ function makeEEW(over: { serial?: string } = {}): EEWAlert {
 function setup(over: { voicevoxEnabled?: boolean } = {}) {
   const spies = {
     followSpeechTab: vi.fn(),
+    preSpeechTab: vi.fn(),
     expandPanelForSpecialInfo: vi.fn(),
     setActiveTabNonRealtime: vi.fn(),
     setActiveTabRealtimeOnUpdate: vi.fn(),
@@ -267,14 +270,80 @@ describe('読み上げとタブ切替の同調', () => {
     expect(spies.followSpeechTab).toHaveBeenCalledWith('tsunami', TAB_PRIORITY.tsunami)
   })
 
-  it('区域を持たない津波電文（観測情報のみ）でも、新規発報ならタブが動く', async () => {
-    // 読み上げ文が組めない＝追従が発火しない経路。受信時要求へ落ちる保険が要る。
-    // 保険が無いと、津波の途中でページを読み直した端末が tsunami タブへ一度も移らない。
+  it('読み上げが無効でも、津波の観測点更新でタブを要求する', async () => {
+    // 判定は UI 更新側（obsUpdateStatus / focusedDistrict）の「観測が動いたか」を再利用している。
+    // 変化のない再送では動かない（同じ判定の else 節へ行く）。
+    const { handle, spies, tsunamisRef } = setup({ voicevoxEnabled: false })
+    handle(makeTsunami())
+    spies.setActiveTabNonRealtime.mockClear()
+    tsunamisRef.current = [makeTsunami()]
+    handle(makeTsunamiObsUpdate())
+    await settle()
+    expect(spies.setActiveTabNonRealtime).toHaveBeenCalledWith('tsunami')
+  })
+
+  it('区域を持たない津波電文（観測情報のみ）は観測点更新として読み、追従で tsunami を取る', async () => {
+    // 区域が無い電文は等級を伝えていないだけで、観測値は載っている。
+    // 等級の比較から外して観測点更新として扱う（`isTsunamiObservationOnly`）。
     const { handle, spies } = setup()
     handle(makeTsunamiObsOnly())
     await settle()
-    expect(spies.setActiveTabNonRealtime).toHaveBeenCalledWith('tsunami')
+    expect(spies.followSpeechTab).toHaveBeenCalledWith('tsunami', TAB_PRIORITY.tsunami)
+    expect(speeches.map(s => s.text).join('')).toContain('輪島港')
+  })
+
+  it('津波警報の発表中に区域を持たない続報が来ても、全解除の文言を読まない', async () => {
+    // 区域が空だと最大等級が Unknown（最下位）になり、発表中の警報と比べて必ず「降格」に
+    // 見える。降格の読み上げは区域が空だと全解除の文言へフォールバックするため、
+    // 警報の発表中に「津波警報等は全て解除されました」と読み上げていた。
+    const { handle, tsunamisRef } = setup()
+    handle(makeTsunami())
+    await settle()
+    tsunamisRef.current = [makeTsunami()]
+    handle(makeTsunamiObsOnly())
+    await settle()
+    const spoken = speeches.map(s => s.text).join('')
+    expect(spoken).not.toContain('解除')
+    expect(spoken).toContain('輪島港')
+  })
+
+  it('待ちが無ければ、通知音と同じ瞬間にタブが移る', async () => {
+    // 遅延（震度速報は 500ms）を待たずに画面を合わせる。待たされずに読めると分かっている
+    // ときに画面だけ遅れると「音が鳴ったのに何も変わらない」ように見えるため。
+    const { handle, spies } = setup()
+    handle(makeQuake())
+    expect(spies.preSpeechTab).toHaveBeenCalledWith('earthquake', TAB_PRIORITY.quake)
+  })
+
+  it('先出しは最小滞留時間の床を消費しない（後から声が出る側の追従を弾かない）', async () => {
+    // 先出しで床を消費すると、こうなっていた:
+    //   大津波警報を受信 → tsunami を先出し（声が出るのは 4.2 秒後）
+    //   → 直後の震度速報（0.5 秒後に声）が床で弾かれ、声が始まっても画面は tsunami のまま
+    // 先出しは「これから読む予定」にすぎないので、実際に声が出る側の追従を妨げてはいけない。
+    const { handle, spies } = setup()
+    handle(makeTsunami())
+    // 先出しは起きるが、床は消費しない
+    expect(spies.preSpeechTab).toHaveBeenCalledWith('tsunami', TAB_PRIORITY.tsunami)
+    handle(makeQuake())
+    // 震度速報の声（0.5 秒）は大津波警報の声（4.2 秒）より先に始まる
+    await advance(1000)
+    expect(spies.followSpeechTab).toHaveBeenCalledWith('earthquake', TAB_PRIORITY.quake)
+  })
+
+  it('高い優先度の読み上げ中は先出しせず、自分の番が来てから移る', async () => {
+    const { handle, spies } = setup()
+    handle(makeTsunami())
+    await settle()
+    spies.followSpeechTab.mockClear()
+    spies.preSpeechTab.mockClear()
+    // 津波（high）を読んでいる最中なので、地震情報（normal）は待たされる
+    handle(makeQuake())
+    expect(spies.preSpeechTab).not.toHaveBeenCalled()
     expect(spies.followSpeechTab).not.toHaveBeenCalled()
+    // 津波の発話が終われば順番が来る
+    for (const s of speeches) { if (!s.done) { s.done = true; s.finish() } }
+    await settle()
+    expect(spies.followSpeechTab).toHaveBeenCalledWith('earthquake', TAB_PRIORITY.quake)
   })
 
   it('津波の新規発報も、受信時ではなく発話の番で tsunami を取る', async () => {

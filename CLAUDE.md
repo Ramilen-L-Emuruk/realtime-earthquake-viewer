@@ -412,8 +412,8 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | EEW 読み上げの直列化（全 EEW で 1 本のチェーン・既読値の更新は発話直前だけ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げの優先順位」 |
 | 自動タブ切替の 2 系統（読み上げ追従／保持機構）と競合の判定順序・優先度表 | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
 | EEW 続報の片方向抑制・追従の最小滞留時間・アイドル復帰の重み（`idleRevertPriority`）・生の `setActiveTab` を使わないこと | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
-| 読み上げがある経路では受信の瞬間にタブを動かさないこと（読み上げが無効・読み上げ文が空になる場合だけ受信時要求へ落とす。落とし忘れるとそのタブへ永久に移らない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
-| 読み上げの優先順位（EEW ＞ 津波・南海トラフ ＞ 地震情報 ＞ 長周期／同格は新しい方が勝つ／待ちの条件は毎周回で作り直す／上限到達時は記録を残す／EEW の予想震度の確定待ち中も EEW を最優先とする） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げの優先順位」 |
+| 読み上げがある経路のタブ移動（順序の判断は読み上げ側に預ける／待たされずに読めるなら通知音と同時に先出しし、その判定は待ち合わせと条件を共有する／読み上げが無効・読み上げ文が空になる場合だけ受信時要求へ落とす。落とし忘れるとそのタブへ永久に移らない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
+| 読み上げの優先順位（EEW ＞ 津波・南海トラフ ＞ 地震情報・長周期（同格）／同格は新しい方が勝つ／待ちの条件は毎周回で作り直す／上限到達時は記録を残す／EEW の予想震度の確定待ち中も EEW を最優先とする） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げの優先順位」 |
 | EEW の区分の呼び方（電文の名称に合わせる。予報級＝地震動予報／警報級＝緊急地震速報（警報）。表示・読み上げの対応表と `eewKindLabel`。ウィンドウタイトルも対象＝外部監視への破壊的変更） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §3「電文の名称と表示・読み上げ」 |
 | 「特別警報」を音声で読まないこと（表示・通知・通知音は 2 段階を保つ） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
 | 通知音の内容と説明文の一致（`PLAYERS` の周波数・`COUNTDOWN_PULSES` のパルス数と、設定タブ「通知音テスト」の説明文・仕様書の記述） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §2 |
@@ -424,6 +424,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 特別情報の受信でパネルを一時的に開くこと（バナーはタブを持たないため）・元の状態へ戻す契機（ユーザー操作とアイドル復帰）・自動タブ移動では畳まないが記録も捨てないこと | [`docs/spec/architecture-spec.md`](docs/spec/architecture-spec.md) §4 |
 | 南海トラフ関連解説情報の読み上げ優先度（独立した層に置くこと。臨時情報と同格にすると臨時情報を追い出し、地震情報と同格にすると地震情報を切る） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
 | 津波の解除経路（`cancelReason` 3 種・DMDSS 限定・standard 版フォールバック） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §3 |
+| 津波の「等級を伝えていない電文」（区域が空の続報）の扱い（等級比較から外して観測点更新にする・音／読み上げ／観測の追跡の 3 箇所で判定を揃える。降格として扱うと警報の発表中に全解除を読み上げる） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §10「等級を伝えていない電文」 |
 | EEW P/S 波予報円の計算・仮定震源要素の連動箇所 | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §5-§6 |
 | EEW レベル判定（特別警報の条件・長周期の DMDATA 限定） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
 | 地図レイヤー描画順・EEW 予想レイヤーの kyoshin 限定・`maplibregl.Marker` の opacity | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §2・§3・§7・§10 |
