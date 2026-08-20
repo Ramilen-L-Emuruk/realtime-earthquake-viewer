@@ -57,7 +57,12 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
   const { hypocenter } = eew.earthquake
   const prefAreas = areas.filter(a => a.pref)
 
-  const typeLabel = isSpecial ? '特別警報' : isWarning ? '警報' : '予報'
+  // 実際の電文が別物なので名前も分ける。予報級は VXSE45「緊急地震速報（地震動予報）」、
+  // 警報級は VXSE43「緊急地震速報（警報）」。予報級を「緊急地震速報（〜）」の器に入れると
+  // 「緊急地震速報（地震動予報）」と二重になるため、器ごと分ける。
+  const headerLabel = isSpecial ? '緊急地震速報（特別警報）'
+    : isWarning ? '緊急地震速報（警報）'
+    : '地震動予報'
   const headerBg = isSpecial ? '#4c0519' : isWarning ? '#450a0a' : '#451a03'
   const headerColor = isSpecial ? '#fca5a5' : isWarning ? '#f87171' : '#fcd34d'
   const headerBorder = isSpecial ? '#dc2626' : isWarning ? '#ef4444' : '#d97706'
@@ -96,7 +101,7 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
           borderBottom: `1px solid ${headerBorder}`,
         }}
       >
-        緊急地震速報（{typeLabel}）
+        {headerLabel}
         {serial != null && (
           <span className="ml-2 font-normal opacity-75">
             #{serial}{eew.isFinal ? ' 最終報' : ''}
@@ -448,7 +453,13 @@ function KyoshinDetectionSummary({ events, points }: {
                   <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.08)' }}>
                     <div style={{ width: `${(g.count / maxCount) * 100}%`, height: '100%', background: g.color }} />
                   </div>
-                  <span className="text-xs text-white w-8 text-right">{g.count}点</span>
+                  {/* バーの右端を揃えるため固定幅にするが、幅は 3 桁ではなく 4 桁に合わせる。強震モニタの
+                      観測点は約 1700 点（Yahoo の SiteList 由来・年により変動）あり、震度0・1 の階級は
+                      4 桁に届く。2rem では「1520点」が収まらず、CJK の「点」は直前で改行できてしまうため
+                      「1520」と「点」に割れて行の高さが倍になる。`whitespace-nowrap` だけでは箱幅は
+                      指定値のままで文字が溢れる（伸びる方向に min-content は効かない）ため、幅も一段
+                      広げる。`flex-shrink-0` は縮まないことを明示する保険。 */}
+                  <span className="text-xs text-white w-10 text-right whitespace-nowrap flex-shrink-0">{g.count}点</span>
                 </div>
               ))}
             </div>

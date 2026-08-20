@@ -427,16 +427,16 @@ DMDSS 版は DMDATA の WebSocket、standard 版は P2PQuake の WebSocket が�
 | ボタン | 実装関数 | 最大 scaleTo | 生成イベント |
 |---|---|---|---|
 | EEW 特別警報テスト | `createTestEEW()` | 60 | 震度 6 強・特別警報（三陸沖 M7.2）※長周期地震動階級 4 |
-| EEW 警報テスト | `createTestEEWWarning()` | 50 | 震度 5 強相当・警報（日向灘 M6.5） |
-| EEW 予報テスト | `createTestEEWForecast()` | 20 | 震度 2 程度・予報（宮城県沖 M4.5） |
+| EEW 警報テスト | `createTestEEWWarning()` | 50 | 震度 5 強相当・警報（日向灘 M6.5）。震度 4 の区域を 1 つ含み、同一電文内の予報域も確認できる |
+| EEW 予報テスト | `createTestEEWForecast()` | 40 | 震度 4 程度・予報（宮城県沖 M4.5） |
 | EEW 誤報取消テスト | `createTestEEWWarning()` + `EEW_RETRACTION_CANCEL_MS`(10s) 後に取消 | 50→取消 | 10 秒後に `cancelled:true` 電文で `eewCancel` 音・通知・読み上げを検証 |
-| 地震テスト | `createTestEarthquake()` | - | 令和 6 年能登半島地震の実データベース（`src/data/noto-honshin-2024-*.json`）を採用 |
+| 地震テスト | `createTestEarthquake(useDmdataShape)` | - | 令和 6 年能登半島地震の実データベース（`src/data/noto-honshin-2024-*.json`）を採用。`points` の形と情報種別はバリアントで切り替える（後述「実電文の形に合わせる」） |
 | 遠地地震テスト | `createTestForeignQuake(includeForecastText)` | - | メキシコ・チアパス州沿岸 M7.4（2026-07-17）の実電文ベース。深さ不明・付加文 `0226`＋`0230` の報を採り、「深さ句の省略」「付加文原文の読み上げ」「`0230` 由来の津波区分（`domesticTsunami: 'なし'`）」を一度に確認できる。付加文は DMDATA 経由でのみ配信されるため、呼び出し側は `isDmdss` を渡して DMDSS 版でのみ `forecastText` を注入する |
-| 大津波警報テスト | `createTestTsunami()` | - | 大津波警報（無引数で MajorWarning） |
-| 津波警報テスト | `createTestTsunamiWarning()` | - | 津波警報 |
-| 津波注意報テスト | `createTestTsunamiWatch()` | - | 津波注意報 |
-| 津波予報テスト | `createTestTsunamiForecast()` | - | 津波予報（`TEST_AUTO_DISMISS_MS`=90 秒後に `expired` 経路で解除） |
-| 津波誤報取消テスト | `createTestTsunamiRetraction()` + 90 秒後に取消電文 | - | 警報・注意報混在の発表 → 90 秒後に電文全体が取り消される（`retracted` 経路） |
+| 大津波警報テスト | `createTestTsunami(withDmdssFields)` | - | 大津波警報（MajorWarning） |
+| 津波警報テスト | `createTestTsunamiWarning(withDmdssFields)` | - | 津波警報 |
+| 津波注意報テスト | `createTestTsunamiWatch(withDmdssFields)` | - | 津波注意報 |
+| 津波予報テスト | `createTestTsunamiForecast(withDmdssFields)` | - | 津波予報。DMDSS は 90 秒（`TEST_AUTO_DISMISS_MS`）後に `expired` 経路で解除。standard は `validDateTime` を持たないため解除電文で消す（後述「実電文の形に合わせる」） |
+| 津波誤報取消テスト | `createTestTsunamiRetraction(withDmdssFields)` + 90 秒後に取消電文 | - | 警報・注意報混在の発表 → 90 秒後に電文全体が取り消される（DMDSS は `retracted` 経路。standard は理由を判別できないため「解除」表示） |
 | 南海トラフ臨時情報テスト 3 種（DMDSS 版のみ） | `createTestNankai('調査中'／'巨大地震注意'／'巨大地震警戒')` | - | バナー表示 + `specialInfo` 音。バナー消去ボタンは無く、再テストで上書きされる |
 | 後発地震テスト（DMDSS 版のみ） | `createTestKohatsu()` | - | 北海道・三陸沖後発地震注意情報のバナー表示 + `specialInfo` 音 |
 | 通知テスト | `App.tsx` の `onTest.notification`（インライン。`testData.ts` には無い） | - | 通知許可が必要（未許可なら案内ダイアログを出して送信しない）。許可状況は「通知設定」の「通知許可」行で確認できる |
@@ -447,6 +447,46 @@ DMDSS 版は DMDATA の WebSocket、standard 版は P2PQuake の WebSocket が�
 
 「10 秒以内に再クリックで続報」「押さなければ自動確定」（`EEW_FINAL_SILENCE_MS`=10 秒）等の
 ロジックは `useEarthquakes.ts` の `runSimulateEEW` 系で実装。
+
+### 実電文の形に合わせる
+
+テストデータは**実運用の電文で起こり得る形だけを作る**。実運用にない形を作ると、テストで正常に
+見えるものが実際には起こらない（逆に実バグを踏めない）状態になる。以下は実装が守っている取り決め。
+
+**報は 1 通ごとに独立している**（`runSimulateEEW` / `runSimulateEEWRetraction` / `runSimulateTsunami`）
+
+| 報ごとに進むもの | 同一イベントで変わらないもの |
+|---|---|
+| 報番号（`issue.serial`）・`id`・発表時刻（`time` / `issue.time`） | 震源時刻（`earthquake.originTime`）・到達予想時刻 |
+
+- **最終報も独立した 1 報**。直前の電文に `isFinal` を立てて送るのではなく、報番号を 1 つ進めて
+  作り直す（実運用では同じ報番号が 2 度発表されることはない）。EEW 誤報取消・津波の解除も同じ扱い。
+- 震源時刻を固定するため、EEW の生成関数は基準時刻（`baseTime`）を引数で受け取る。ここを固定しないと
+  続報のたびに震源時刻が現在時刻へ張り替わり、**予報円が押すたび中心に戻る**（実運用では起きない）。
+- **取消・解除の電文は予想を持たない**。EEW 取消の形は [`eew-spec.md`](eew-spec.md) §8、
+  津波の解除・取消は [`tsunami-spec.md`](tsunami-spec.md) §3 が単一情報源。
+
+**EEW の区域は電文の規則に従う**
+
+区域の種別コード（警報／予報の別・主要動の到達）と、区域が電文に載る条件は
+[`eew-spec.md`](eew-spec.md) §4「区域の種別コード」が単一情報源。テストデータもそれに従い、
+警報のコードは予想震度 5 弱（`scaleTo` 45）以上の区域にのみ使う。
+
+**バリアント差**: 経路にない項目を作らない
+
+| 項目 | DMDSS（DMDATA） | standard（P2PQuake） |
+|---|---|---|
+| 津波の `eventId` | 14 桁タイムスタンプを持つ | 持たない（電文に無い） |
+| 津波予報の `validDateTime` | 持つ（90 秒後に `expired` で失効） | 持たない（解除電文で消す） |
+| 津波の解除理由（`cancelReason`） | `lifted` / `retracted` を出し分ける | 付けない（判別できないため「解除」表示） |
+| 地震情報の `points` | 観測点・区域は `pref` 空、都道府県は別のロールアップ点 | 観測点のみ（`pref` 付き）。区域は混ざらない |
+| 地震情報の `issue.type` | `震源・震度情報` | `各地の震度情報` |
+
+`points` の形の違いは [`quake-spec.md`](quake-spec.md) §4 の識別規則が単一情報源。DMDSS 用の形は
+`testData.ts` の `toDmdataPoints()` が元データ（P2PQuake 形状）から組み替えて作る。
+
+これらは `src/utils/testData.test.ts` と `src/hooks/useEarthquakes.wiring.test.ts` で固定してある
+（報番号の推移・震源時刻の固定・取消電文の形・区域コードと予想震度の整合・`points` の形）。
 
 ### 通知音の対応
 
@@ -469,8 +509,9 @@ DMDSS 版は DMDATA の WebSocket、standard 版は P2PQuake の WebSocket が�
 
 - **EEW 誤報取消**: `EEW_RETRACTION_CANCEL_MS`（10 秒）後に明示取消電文が届き、カードに「誤報として取り消されました」を 10 秒表示 → 消去
 - **EEW 続報の受付**: `EEW_FINAL_SILENCE_MS`（10 秒）以内に再度テストボタンを押すと続報として発報。押さなければ `isFinal:true` として自動確定 → 無音消去
-- **津波予報の期限切れ**: `TEST_AUTO_DISMISS_MS`（90 秒）で `validDateTime` に到達し `expired` 経路で解除
-- **津波誤報取消**: `TEST_AUTO_DISMISS_MS`（90 秒）後に取消電文が届き `retracted` 経路で 10 秒間「取消」表示
+- **津波予報の期限切れ**: DMDSS は `TEST_AUTO_DISMISS_MS`（90 秒）で `validDateTime` に到達し `expired` 経路で解除。
+  standard は `validDateTime` を持たないため、同じ 90 秒後に解除電文で消える
+- **津波誤報取消**: `TEST_AUTO_DISMISS_MS`（90 秒）後に取消電文が届き 10 秒間の解除表示（DMDSS は `retracted` で「取消」表示、standard は理由なしで「解除」表示）
 
 ### DOM 検証テクニック（動作確認用）
 

@@ -122,7 +122,13 @@ P2PQuake（標準版）では `undefined` となり従来どおり区分から�
 「点の役割」を識別する。P2PQuake 経路は上記の通り常に `pref` 非空で届くため、この規則の対象外。
 - 区域は必ず `pref: ''` で積む（`isArea: true`）
 - 観測点も `pref: ''` で積む（`isArea: false`）。DMDSS の JSON 経路と XML 経路の両方で統一（QUAKE-2）
-- JSON 経路のみ、`prefectures[]` 由来の**都道府県ロールアップ点**を `pref: '<都道府県名>', isArea: false` で追加する
+- JSON 経路のみ、`prefectures[]` 由来の**都道府県ロールアップ点**を
+  `pref: '<都道府県名>', addr: '<都道府県名>', isArea: true` で追加する（`dmdataParser.ts` の
+  `intensity.prefectures` ループ）。`EarthquakeCard.prefGroups` は `pref` が非空かどうかだけを見るため
+  `isArea` の値は表示には影響しないが、点の役割は「区域や観測点ではない集約値」なので `true` で積む
+
+合成テストデータ（地震テストボタン）も DMDSS ではこの形を作る
+（→ [`settings-pwa-spec.md`](settings-pwa-spec.md) §7「実電文の形に合わせる」）。
 
 **QUAKE-2 の対応（2026-08-13）**: 以前は XML 経路（`parseEarthquakeFromXml`）が観測点に `pref: prefName` を
 積んでおり JSON 経路と非対称だった。`EarthquakeCard.prefGroups` は「pref 非空＝都道府県ロールアップ点」

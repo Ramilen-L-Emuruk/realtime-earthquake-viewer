@@ -10,11 +10,14 @@
 //     「接続中」と表示され続ける。型でも例外でも捕まらず、画面上は繋がって見える
 //   - 再生中もキューの予約が発火時刻を待つこと。潰すと EEW が最終報の直後に自動解除され、
 //     最低 60 秒の猶予が消える
+//   - EEW 発報テストの報の推移が実運用と揃っていること。報番号・発表時刻が進まず、逆に
+//     震源時刻が続報のたびに進んでしまう形は、画面上は「動いているように見える」ため
+//     テストで固定しないと気づけない
 //
 // 差し替えるのは外部 I/O（WebSocket・REST・観測点座標）だけ。時計や純粋関数は本物を使う。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, cleanup, act } from '@testing-library/react'
-import type { EEWAlert, JMATsunami } from '../types/earthquake'
+import type { AppEvent, EEWAlert, JMATsunami } from '../types/earthquake'
 import { serverDate, setReplayOffset } from '../utils/clock'
 
 // isDmdss はモジュールスコープの定数。テストごとに切り替えるため getter で公開する。
@@ -95,11 +98,11 @@ beforeEach(() => {
 
 afterEach(cleanup)
 
-/** replayTimeOffset を差し替えられるハーネス。 */
-function setup(opts: { apiKey?: string; offset?: number | null } = {}) {
+/** replayTimeOffset を差し替えられるハーネス。onLiveEvent は生の電文を覗きたいときだけ渡す。 */
+function setup(opts: { apiKey?: string; offset?: number | null; onLiveEvent?: (event: AppEvent) => void } = {}) {
   const view = renderHook(
     ({ offset }: { offset: number | null }) =>
-      useEarthquakes(undefined, opts.apiKey ?? 'test-key', false, offset),
+      useEarthquakes(opts.onLiveEvent, opts.apiKey ?? 'test-key', false, offset),
     { initialProps: { offset: opts.offset ?? null } },
   )
   return {
@@ -315,5 +318,246 @@ describe('再生中もキューの予約は発火時刻を待つ', () => {
     act(() => { vi.advanceTimersByTime(31_000) })
     expect(h.current.tsunamis[0].cancelledAt).toBeInstanceOf(Date)
     expect(h.current.tsunamis[0].cancelReason).toBe('expired')
+  })
+})
+
+// EEW 発報テスト（設定タブのテストボタン）が作る「報の推移」。
+//
+// 実運用（dmdataParser.parseEEW）では 1 報ごとに報番号・id・発表時刻が進み、震源時刻は
+// 同一イベントで不変。テスト側がここを取り違えると、
+//   - 最終報の報番号が進まない → 「#1 → #1 最終報」という実運用ではあり得ない推移になる
+//   - 続報で震源時刻が現在時刻へ張り替わる → 予報円が押すたび中心に戻り、発生時刻表示も動く
+// のどちらも画面上は「それらしく」見えてしまうため、値そのものを固定して守る。
+describe('EEW 発報テストの報の推移', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  /** activeEEWs の唯一の要素を取り出す（テストボタンは 1 イベントしか作らない）。 */
+  function onlyEEW(h: ReturnType<typeof setup>): EEWAlert {
+    const list = [...h.current.activeEEWs.values()]
+    expect(list.length).toBe(1)
+    return list[0]
+  }
+
+  it('続報は報番号と発表時刻だけを進め、震源時刻は初報のまま保つ', () => {
+    const h = setup()
+
+    act(() => { h.current.simulateEEWForecast() })
+    const first = onlyEEW(h)
+    expect(first.issue?.serial).toBe('1')
+    expect(first.isFinal).toBeFalsy()
+
+    // 沈黙時間（10 秒）より短い間隔なら続報になる
+    act(() => { vi.advanceTimersByTime(3_000) })
+    act(() => { h.current.simulateEEWForecast() })
+    const second = onlyEEW(h)
+
+    expect(second.issue?.serial).toBe('2')
+    expect(second.isFinal).toBeFalsy()
+    // 震源時刻・到達予想時刻は動かない
+    expect(second.earthquake.originTime).toBe(first.earthquake.originTime)
+    expect(second.earthquake.arrivalTime).toBe(first.earthquake.arrivalTime)
+    // 発表時刻と id は報ごとに変わる（issue.time は型上 optional なので解釈可能かも見る）
+    const firstIssued = Date.parse(first.issue?.time ?? '')
+    const secondIssued = Date.parse(second.issue?.time ?? '')
+    expect(Number.isNaN(firstIssued)).toBe(false)
+    expect(secondIssued).toBeGreaterThan(firstIssued)
+    expect(second.id).not.toBe(first.id)
+  })
+
+  it('最終報も独立した 1 報として報番号を進める', () => {
+    const h = setup()
+
+    act(() => { h.current.simulateEEWForecast() })
+    const first = onlyEEW(h)
+
+    // 再クリックが無いまま沈黙時間が過ぎると最終報が確定する
+    act(() => { vi.advanceTimersByTime(10_000) })
+    const final = onlyEEW(h)
+
+    expect(final.isFinal).toBe(true)
+    expect(final.issue?.serial).toBe('2')
+    expect(final.earthquake.originTime).toBe(first.earthquake.originTime)
+  })
+
+  // activeEEWs は取消を受けても直前の確定状態を保つ（表示を空にしないための実装）ため、
+  // 取消電文そのものの形は state からは見えない。onLiveEvent に届く生の電文で確かめる。
+  it('誤報取消も独立した 1 報として報番号を進め、対象地域を持たない', () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+
+    act(() => { h.current.simulateEEWRetraction() })
+    act(() => { vi.advanceTimersByTime(10_000) })
+
+    const eews = events.filter((e): e is EEWAlert => e.kind === 'eew')
+    expect(eews.length).toBe(2)
+    const [report, cancel] = eews
+
+    expect(report.issue?.serial).toBe('1')
+    expect(report.areas?.length).toBeGreaterThan(0)
+
+    expect(cancel.cancelled).toBe(true)
+    expect(cancel.issue?.serial).toBe('2')
+    expect(cancel.areas).toEqual([])
+    // 実運用の取消電文は震源座標を持たない（0）。震源名は通知文・読み上げが使うので残す
+    expect(cancel.earthquake.hypocenter.latitude).toBe(0)
+    expect(cancel.earthquake.hypocenter.longitude).toBe(0)
+    expect(cancel.earthquake.hypocenter.name).toBe(report.earthquake.hypocenter.name)
+    // 予想も持たない（実運用の取消電文は forecastMaxScale / forecastMaxLpgmClass が入らない）
+    expect(cancel.forecastMaxScale).toBeUndefined()
+    expect(cancel.forecastMaxLpgmClass).toBeUndefined()
+    // 取消は最終報ではない（自動解除と区別され、音・通知・読み上げを伴う）
+    expect(cancel.isFinal).toBeFalsy()
+    expect(h.current.activeEEWs.size).toBe(1)
+  })
+})
+
+// 津波テストの解除電文。EEW の最終報と同じ「直前の電文を流用して据え置く」形になっていた。
+// 実運用（dmdataParser / p2pquake の 552）はどちらの経路も区域を空にして送るため、
+// 区域が残ったままの解除は実運用では起こらない。解除理由はバリアントで持つ/持たないが分かれる。
+describe('津波テストの解除電文', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  /** 発表 → 解除の 2 通を取り出す。 */
+  function tsunamiPair(events: AppEvent[]): [JMATsunami, JMATsunami] {
+    const list = events.filter((e): e is JMATsunami => e.kind === 'tsunami')
+    expect(list.length).toBe(2)
+    return [list[0], list[1]]
+  }
+
+  it('DMDSS 版: 解除は区域を空にし、発表時刻を解除時点へ進める', () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+
+    act(() => { h.current.simulateTsunamiWatch() })
+    act(() => { vi.advanceTimersByTime(90_000) })
+
+    const [first, cancel] = tsunamiPair(events)
+    expect(first.areas.length).toBeGreaterThan(0)
+    // DMDATA の電文は常に eventId を持つ
+    expect(first.eventId).toBeTruthy()
+
+    expect(cancel.cancelled).toBe(true)
+    expect(cancel.areas).toEqual([])
+    expect(cancel.cancelReason).toBe('lifted')
+    expect(new Date(cancel.time).getTime()).toBeGreaterThan(new Date(first.time).getTime())
+    expect(cancel.id).not.toBe(first.id)
+
+    // 電文の形だけでなく、state が実際に解除されたことまで見る。onLiveEvent は reducer の
+    // 成否に関わらず呼ばれるため、ここを見ないと「音は鳴るがカードは残る」状態を通してしまう。
+    expect(h.current.tsunamis[0]?.cancelledAt).toBeInstanceOf(Date)
+    expect(h.current.tsunamis[0]?.cancelReason).toBe('lifted')
+  })
+
+  it('standard 版: 解除理由と eventId を持たない（P2PQuake では判別できない項目）', () => {
+    mockIsDmdss = false
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+
+    act(() => { h.current.simulateTsunamiRetraction() })
+    act(() => { vi.advanceTimersByTime(90_000) })
+
+    const [first, cancel] = tsunamiPair(events)
+    expect(first.eventId).toBeUndefined()
+    expect(cancel.cancelled).toBe(true)
+    expect(cancel.areas).toEqual([])
+    // 誤報取消でも standard 版は「取消」と判別できないため理由を付けない
+    expect(cancel.cancelReason).toBeUndefined()
+
+    // eventId が無く id も別物（実運用の P2PQuake と同じ形）でも解除が state へ届くこと。
+    // ここを id 照合で捨てていたのが standard 版の「カードが消えない」不具合だった。
+    expect(h.current.tsunamis[0]?.cancelledAt).toBeInstanceOf(Date)
+    expect(h.current.tsunamis[0]?.cancelReason).toBeUndefined()
+  })
+
+  // 上の 2 件はテストボタン経由。こちらは reducer の解除照合そのものを、実運用の
+  // P2PQuake 相当の電文（eventId 無し・発表と解除で id が別）で直接確かめる。
+  it('eventId を持たない経路では、id が違っても解除を受け入れる（P2PQuake 相当）', () => {
+    mockIsDmdss = false
+    const h = setup()
+
+    const base = serverDate().toISOString()
+    const announce: JMATsunami = {
+      kind: 'tsunami',
+      id: 'p2p-552-announce',
+      time: base,
+      cancelled: false,
+      issue: { source: '気象庁', time: base, type: 'Focus' },
+      areas: [{ grade: 'Watch', immediate: false, name: 'テスト沿岸' }],
+    }
+    act(() => { h.current.injectEvent(announce) })
+    expect(h.current.tsunamis.length).toBe(1)
+
+    // 解除は別電文なので id が異なる（P2PQuake の id は電文ごとの文書 ID）
+    act(() => {
+      h.current.injectEvent({
+        ...announce,
+        id: 'p2p-552-cancel',
+        time: new Date(Date.parse(base) + 60_000).toISOString(),
+        cancelled: true,
+        areas: [],
+      })
+    })
+    expect(h.current.tsunamis[0]?.cancelledAt).toBeInstanceOf(Date)
+  })
+
+  // ただし照合できないからといって何でも受け入れるわけではない。表示中より古い発表時刻の解除は
+  // 「別イベントの遅延到達」として捨てる（1 件スロットのため、受け入れると別の津波が消える）。
+  it('eventId が無い経路でも、表示中より古い発表時刻の解除は受け入れない', () => {
+    mockIsDmdss = false
+    const h = setup()
+
+    const older = new Date(Date.now() - 600_000).toISOString()
+    const newer = new Date().toISOString()
+
+    // 先に古いイベント A を出し、続いて新しいイベント B に置き換わった状態を作る
+    const eventA: JMATsunami = {
+      kind: 'tsunami',
+      id: 'p2p-552-A',
+      time: older,
+      cancelled: false,
+      issue: { source: '気象庁', time: older, type: 'Focus' },
+      areas: [{ grade: 'Watch', immediate: false, name: 'テスト沿岸' }],
+    }
+    act(() => { h.current.injectEvent(eventA) })
+    act(() => {
+      h.current.injectEvent({ ...eventA, id: 'p2p-552-B', time: newer, issue: { source: '気象庁', time: newer, type: 'Focus' } })
+    })
+
+    // A の解除が遅れて届く（発表時刻は B より古い）
+    act(() => {
+      h.current.injectEvent({ ...eventA, id: 'p2p-552-A-cancel', cancelled: true, areas: [] })
+    })
+    expect(h.current.tsunamis[0]?.cancelledAt).toBeUndefined()
+    expect(h.current.tsunamis[0]?.id).toBe('p2p-552-B')
+  })
+
+  // 一方、双方が eventId を持つ DMDSS 経路では別イベントの解除に巻き込まれないこと。
+  it('双方が eventId を持つ場合は、別イベントの解除では消えない', () => {
+    const h = setup()
+
+    const base = serverDate().toISOString()
+    const announce: JMATsunami = {
+      kind: 'tsunami',
+      id: 'dmdata-tsunami-A-1',
+      eventId: '20260820100000',
+      time: base,
+      cancelled: false,
+      issue: { source: '気象庁', time: base, type: 'Focus' },
+      areas: [{ grade: 'Watch', immediate: false, name: 'テスト沿岸' }],
+    }
+    act(() => { h.current.injectEvent(announce) })
+
+    act(() => {
+      h.current.injectEvent({
+        ...announce,
+        id: 'dmdata-tsunami-B-1',
+        eventId: '20260820110000',
+        cancelled: true,
+        areas: [],
+      })
+    })
+    expect(h.current.tsunamis[0]?.cancelledAt).toBeUndefined()
   })
 })

@@ -44,6 +44,9 @@ function buildFeatures(points: DetectedPoint[], iconScale: number, confirmed: bo
         index: p.index,
         iconId: kyoshinDetectedIconId(jma.rank, confirmed),
         iconSizeRatio: radius / KYOSHIN_DETECTED_ICON_BASE_RADIUS,
+        // 欠測ホールドで直前値を描いている点。レイヤー側が icon-opacity を落として
+        // 「そこに点はあるが今は値が無い」と示す（utils/kyoshinMissingHold.ts）。
+        stale: p.stale === true,
       },
       geometry: { type: 'Point' as const, coordinates: [p.lng, p.lat] },
     }]

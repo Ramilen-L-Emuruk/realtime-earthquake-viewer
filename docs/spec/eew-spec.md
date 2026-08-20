@@ -20,10 +20,11 @@
 ```
 [電文経路]
   DMDATA WebSocket / REST 履歴 (VXSE43/44/45) ──┐
-  P2PQuake WebSocket (code=556)  ────────────────┼── enqueueEvent
-  Yahoo hypoInfo（1Hz ポーリング）───────────────┘         │
+  P2PQuake WebSocket (code=556)  ────────────────┴── enqueueEvent（eventQueue へ時刻順に積む）
+  Yahoo hypoInfo（1Hz ポーリング・standard 版のみ）── handleEvent を直接呼ぶ（キュー非経由）
+                                                            │
                                                             ↓
-        [useEarthquakes] handleEvent (eventQueue で時刻順ディスパッチ)
+        [useEarthquakes] handleEvent (eventQueue から時刻順にディスパッチ)
                                                             ↓
                                           activeEEWs: Map<eventId, EEWAlert>
                                                             ↓
@@ -43,7 +44,11 @@
                                                    カード表示（見出し・震度・M・深さ等）
 ```
 
-## 3. 電文経路とバリアント差
+図の 3 経路が揃って動くことはない。DMDATA と、それ以外の 2 経路（P2PQuake・Yahoo hypoInfo）が
+バリアントで排他的に入れ替わる（内訳は次節の表）。Yahoo hypoInfo の直接呼び出しは
+`src/App.tsx` が `onEEWEvent` に渡す `injectEvent`（実体は `handleEvent`）による。
+
+## 3. 電文経路・バリアント差・名称
 
 3 系統の電文源がある:
 
@@ -51,12 +56,18 @@
 |---|---|---|---|---|---|
 | DMDATA WS/REST | DMDSS | 電文値（Warning/Forecast） | 電文値（`'仮定震源要素'` あり） | あり | 主系 |
 | P2PQuake WS | standard | 電文に無いが `convertEvent` で一律 `'Warning'` 付与 | 数値/文字列 | なし | 主系（DMDSS 版は不使用） |
-| Yahoo hypoInfo | 両バリアント | 震度からの推定（`>= 5弱 ? 'Warning' : 'Forecast'`） | 常に `'以上'` 固定 | なし | standard 版で補完的に検知 |
+| Yahoo hypoInfo | standard | 震度からの推定（`>= 5弱 ? 'Warning' : 'Forecast'`） | 常に `'以上'` 固定 | なし | 補完的に検知（DMDSS 版は不使用） |
 
 P2PQuake の 556 で severity が付与される仕組みは [`data-sources-spec.md`](data-sources-spec.md) §3
 を参照（電文仕様と付与ロジックはそちらに一本化）。
 
-**enrichEEW（`useEarthquakes.ts`）**: Yahoo hypoInfo で先に検知した EEW に、後着の P2PQuake / DMDATA で
+**Yahoo hypoInfo を DMDSS 版で使わない仕組み**: `src/App.tsx` が `useKyoshinRealtime` に渡す
+`onEEWEvent` を DMDSS 版では `undefined` にしている。通知先が無いとき `useKyoshinRealtime` は
+差分の基準（直前の hypoInfo）だけ進めてイベントを捨てるため、DMDSS 版では Yahoo 由来の EEW が
+状態へ入る経路そのものが存在しない。**リアルタイム震度とクロック較正には両バリアントとも Yahoo を
+使う**（強震モニタのフレームに hypoInfo は載ってくるが、EEW としては読まない）という点に注意。
+
+**enrichEEW（`useEarthquakes.ts`・standard 版のみ）**: Yahoo hypoInfo で先に検知した EEW に、後着の P2PQuake で
 より正確な `areas` / `condition` / `hypocenter` を上書きする。severity は upgrade only（既存 `'Warning'` は
 維持、`Forecast/Unknown` から `'Warning'` への格上げのみ許可）。Warning への格上げ時は `onLiveEvent` に
 enriched オブジェクトを渡して `useLiveEventHandler` 側の音・通知・タブ切替のレベル再評価をトリガーする
@@ -64,6 +75,46 @@ enriched オブジェクトを渡して `useLiveEventHandler` 側の音・通知
 - Yahoo 続報が「新しい報」として `activeEEWs` を丸ごと上書きすると、enrichEEW で入れた `areas` /
   `earthquake.condition` / `earthquake.hypocenter` が揮発する（`case 'eew'` のマージ側では severity だけを
   upgrade only で保持）
+
+### 電文の名称と表示・読み上げ
+
+DMDATA 経路で受けるのは次の 2 種類。
+
+| 電文種別 | `Control/Title` | 備考 |
+|---|---|---|
+| VXSE43 | 緊急地震速報（警報） | 常に警報 |
+| VXSE45 | 緊急地震速報（地震動予報） | 長周期地震動階級を含む（[DMDATA の電文一覧](https://dmdata.jp/docs/telegrams/ew09040/)）。**警報に該当するかは電文内の `isWarning` が示す**ため、VXSE45 でも警報相当になりうる |
+
+旧形式の VXSE44 を扱わない理由は [`data-sources-spec.md`](data-sources-spec.md) の受信する電文種別を参照。
+
+> **区分を決めているのは severity（`computeSingleEEWLevel`）で、電文種別ではない。**
+> `severity` は `headType === 'VXSE43' || body.isWarning === true` から導く（`dmdataParser.ts`）。
+> 「電文種別＝区分」と読み替えると、`isWarning` が立った VXSE45 を予報級と誤って扱うことになる。
+
+**呼び方は電文の名称から借りる。** 予報級を「地震動予報」と呼ぶのは、その内容を運ぶ VXSE45 の名称が
+「緊急地震速報（地震動予報）」だから。予報級を「緊急地震速報（〜）」の器に入れると
+「緊急地震速報（地震動予報）」と二重になるため、器ごと分ける。区分の名前は `eewKindLabel`
+（`src/utils/eew.ts`）が単一情報源。
+
+| 表示箇所 | 予報級 | 警報級 | 特別警報の条件を満たす場合 |
+|---|---|---|---|
+| リアルタイムタブのカード見出し | 地震動予報 | 緊急地震速報（警報） | 緊急地震速報（特別警報） |
+| 地図のポップアップ（震源・区域） | 地震動予報 | 警報 | 警報 |
+| ブラウザ通知の見出し | 地震動予報 | 緊急地震速報 警報 | 緊急地震速報 特別警報 |
+| ウィンドウタイトル | 🚨 地震動予報 … | 🚨 緊急地震速報 … | 🚨 緊急地震速報 … |
+| 電文ログ | EEW地震動予報 | EEW警報 | EEW警報 |
+
+電文ログの列だけは**電文種別（`headType`）から引く**（`TelegramTab` の `HEAD_TYPE_LABEL`）。
+電文そのものの記録なのでそれが正しい。ただし `isWarning` が立った VXSE45 は severity では警報相当
+なのに、ログには `EEW地震動予報` と出る。**ログの列と他の列は別の軸で決まっている**ことに注意。
+
+> **ウィンドウタイトルの変更は外部への破壊的変更。** タイトルは AutoHotKey 等の外部監視向けの
+> 文字列（[`audio-tts-spec.md`](audio-tts-spec.md) §1・§5）なので、「緊急地震速報」で文字一致
+> させている仕組みは予報級を拾えなくなる。予報級も拾うなら監視側に「地震動予報」を足すこと。
+
+**「緊急地震速報（予報）」も気象庁の公式な用語**（情報の名称としての呼び方）だが、電文の名称に
+合わせる方を採っている。ここに書いたのは**表示**の理由。読み上げには「音声だけで区分が判別できる
+ようにする」という固有の理由が加わるため、そちらは [`audio-tts-spec.md`](audio-tts-spec.md) §6 にある。
 
 ## 4. レベル判定（`computeSingleEEWLevel`）
 
@@ -100,6 +151,26 @@ standard 版では `eewMaxLpgmClass` が常に 0 になり震度のみでレベ�
 そのため P2PQuake の `scaleTo = 99`（「〜程度以上」）は、この判定に届く前に
 `convertEvent` が同じ地域の `scaleFrom` へ置き換えている（[`data-sources-spec.md`](data-sources-spec.md) §3）。
 置き換えないと「震度 7 程度以上」という最も強い予想が丸ごと無視され、警報止まりになる。
+
+### 区域の種別コード（`areas[].kindCode`）
+
+電文の区域が持つ種別。気象庁「地震火山関連コード表」の表 12（緊急地震速報種別）の値をそのまま使う
+（DMDATA の `regions[].kind.code`）。**レベル判定には使わない**（`computeSingleEEWLevel` は
+`severity` と予想震度・長周期階級だけを見る）。区域の話なのでこの節に置くが、判定には関与しない。
+使うのは「警報域か予報域か」の表示の出し分け。
+
+| コード | 種別 | 主要動 |
+|---|---|---|
+| `00` / `01` / `09` | 緊急地震速報（**予報**） | 未到達と予測 / 既に到達と予測 / 到達予想なし（PLUM 法。→ §5） |
+| `10` / `11` / `19` | 緊急地震速報（**警報**） | 同順 |
+
+- 警報域の判定は `10` / `11` / `19` の 3 値。使う側は `RealtimeTab` の「警報:」「予報:」欄の振り分けと、
+  区域塗りの濃さ（`EewRegionFillGL` が警報域を `fillOpacity` 0.55・予報域を 0.3 で塗る）
+- 警報が発表されるのは予想震度 5 弱以上の区域。震度 4 以下の区域は同じ電文の中でも予報域になる
+- `kindCode` が空の電文もある（`RealtimeTab` は全区域が空なら「警報/予報」に分けず「対象:」表示へ落ちる）
+- **区域が電文に載る条件**: 最大予測震度 4 以上**または**最大予測長周期地震動階級 3 以上
+  （eew-information スキーマ）。震度 3 以下で長周期も 3 未満の区域は電文に現れない
+- 合成テストデータもこの節の規則に従う（→ [`settings-pwa-spec.md`](settings-pwa-spec.md) §7「実電文の形に合わせる」）
 
 ### 想定外の値に対する実行時ガード
 
@@ -144,10 +215,10 @@ standard 版では `eewMaxLpgmClass` が常に 0 になり震度のみでレベ�
 - **検知エンジンの EEW 連動緩和判定** — `src/App.tsx` の `hasActiveNonAssumedEEW`
 - **揺れ検知の基準震源選定** — `src/hooks/useKyoshinAlerts.ts` の `extractEewInfo`
 - **読み上げテキスト生成** — `src/utils/ttsText.ts`（EEW 読み上げ関数群で `condition` を参照）
-- **`condition`/`hypocenter` の明示マージ** — `src/hooks/useEarthquakes.ts` の `enrichEEW`（§3 参照。後着の P2PQuake / DMDATA で明示的に上書きし、Yahoo 由来の誤った `condition` が残り続けないようにする。ここが崩れると下流の全判定が破綻する）
+- **`condition`/`hypocenter` の明示マージ** — `src/hooks/useEarthquakes.ts` の `enrichEEW`（§3 参照。standard 版で、後着の P2PQuake が明示的に上書きし、Yahoo 由来の誤った `condition` が残り続けないようにする。ここが崩れると下流の全判定が破綻する）
 
 **バリアント差の非対称**: Yahoo hypoInfo は `condition` に相当するフィールドを持たず常に `'以上'` を返すため、
-standard 版で Yahoo hypoInfo が先に単独観測点処理の EEW を検知した場合、後続の P2PQuake / DMDATA で
+standard 版で Yahoo hypoInfo が先に単独観測点処理の EEW を検知した場合、後続の P2PQuake で
 上書きされるまでの間は「確定震源として表示」される。既知の限界（実運用時の確認をユーザーに委ねる）。
 
 ## 6. 予報円（P 波・S 波）
@@ -202,6 +273,12 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
 - **hadKey=true**: 画面に表示中の EEW を取り消す通常経路 → 音・通知・読み上げの全てを発火
 - **hadKey=false**: 既に自動解除済みの後に本物の誤報取消が遅延到達したケース、または P2PQuake WS と Yahoo の両方から cancel が来た場合の 2 回目 → 通知のみ発火（音・読み上げは二重鳴り防止のためスキップ）
 
+**取消電文は予想を持たない**: `dmdataParser` は取消（`isCanceled`）のとき震源座標を 0 にし、
+`forecastMaxScale` / `forecastMaxLpgmClass` を入れない。区域も空。表示側は `activeEEWs` の
+直前の確定状態を保つため取消電文の中身を使わないが、通知文・読み上げは `hypocenter.name` と
+`issue.time` を読むのでこの 2 つは残る。合成テストデータも同じ形を作る
+（→ [`settings-pwa-spec.md`](settings-pwa-spec.md) §7「実電文の形に合わせる」）。
+
 ## 9. 音・タブ切替・通知の連動
 
 `useLiveEventHandler.ts` の EEW 分岐が主。以下を発火する:
@@ -210,13 +287,12 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
   `playAlertSound(type)`。種別: `eewSpecial` / `eew` / `eewForecast` / `eewUpdate` / `eewFinal` / `eewCancel`
 - **通知**: `showBrowserNotification(...)` で OS 通知
 - **読み上げ**: `speakWithVoicevox(eewAlertToText(...))`
-- **自動タブ切替**: 新規・レベルアップ時に `setActiveTab('realtime')` 強制。続報は
-  `setActiveTabRealtimeOnUpdate()` で抑制タイマーを尊重する。抑制タイマーは
-  `setActiveTabNonRealtime` 呼び出し全般で共有されるため、直前 15 秒以内に地震情報・
-  津波情報・長周期地震動情報のいずれかで非 realtime タブへ切り替わっていれば、EEW 続報は
-  realtime へ戻らない。ただし新規・レベルアップはこの抑制を無視するため、津波にタブを奪われても
-  次の新規発報・レベルアップで realtime を取り戻す。**逆に、EEW のレベル（特別警報級を含む）が
-  津波側のタブ切替を止めることはない**（詳細は [`tsunami-spec.md`](tsunami-spec.md) §11 参照）
+- **自動タブ切替**: 新規・レベルアップ・誤報取消は最上位の優先度で realtime を確保し、続報は
+  それより 1 段低い優先度で要求する。**確保している 15 秒間は、地震情報・長周期地震動情報・津波が
+  タブを奪えない**（優先順位の全体像は [`audio-tts-spec.md`](audio-tts-spec.md) §6「自動タブ切替の
+  優先順位」）。続報は手動選択より弱いため、ユーザーが自分で別タブを選んだ直後は realtime へ
+  戻らない。ただし新規・レベルアップは手動選択より強く、必ず realtime を取り戻す。
+  EEW のレベル（特別警報級か否か）はタブの奪い合いに関与しない
 - **カメラフィット**: `FitToEEWGL` が発火。第一報は S 波円（円が無ければ震源）へ寄り、以降は
   予想の区域塗りまで含めた範囲を追う。追従の主な起点は EEW 電文と予報円の更新で、区域塗りの範囲
   （`useEewLayerData` の `eewFitPositions`）は発報中の追従にのみ加わる。kyoshin モード限定。
@@ -298,3 +374,12 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
   「いま」へ潰されており、最終報の 9 ミリ秒後に自動解除が走って猶予（`MIN_CANCEL_SEC`=60 秒）が
   消えていた。潰していた処理の撤去と経緯は
   [`settings-pwa-spec.md`](settings-pwa-spec.md) §6「再生中も予約は発火時刻を待つ」を参照
+- 2026-08-20: §4 に区域の種別コード（気象庁コード表 12）の表を追加し、§8 に「取消電文は予想を持たない」
+  ことを明記した。合成テストデータ側が予報の電文に警報のコードを使っていて、予報テストの区域が
+  「警報:」欄に出ていた（→ [`settings-pwa-spec.md`](settings-pwa-spec.md) §7「実電文の形に合わせる」）
+- 2026-08-20: 自動タブ切替に優先度を入れた（§9）。従来は EEW が realtime を確保した直後に地震情報・
+  津波が無条件にタブを奪えたため、読み上げが EEW を守るようになった後も画面から EEW が消えていた。
+  優先順位の全体像は [`audio-tts-spec.md`](audio-tts-spec.md) §6
+- 2026-08-20: 予報級の表示を電文の名称（VXSE45「緊急地震速報（地震動予報）」）に合わせ、
+  「予報」→「地震動予報」に統一した（§3「電文の名称と表示・読み上げ」）。読み上げも切り出しの語で
+  区分を分ける（[`audio-tts-spec.md`](audio-tts-spec.md) §6）
