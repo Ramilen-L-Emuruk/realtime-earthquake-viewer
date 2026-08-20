@@ -9,7 +9,7 @@
 
 - **DMDATA.JP**（DMDSS 版・要 API キー） — 地震情報・EEW・津波情報の主系
 - **P2PQuake API v2**（標準版・認証不要） — 地震情報・EEW・津波情報の主系
-- **Yahoo!天気・災害 リアルタイム震度**（両バリアント共通） — 強震モニタデータ、EEW 補完
+- **Yahoo!天気・災害 リアルタイム震度**（両バリアント共通） — 強震モニタデータ。EEW 補完は標準版のみ
 
 さらに以下も外部・準外部データとして扱う:
 
@@ -305,7 +305,9 @@ Yahoo は未登録秒には 403 を返す（登録遅延約 1.5 秒）。この 
 
 ### EEW 補完（`hypoInfoItemToEEW`）
 
-Yahoo の `hypoInfo.items` を EEW 型に変換して P2PQuake（標準版）や DMDATA（DMDSS 版）と統合する。
+Yahoo の `hypoInfo.items` を EEW 型に変換して P2PQuake と統合する。**この経路は標準版のみ**
+（DMDSS 版は DMDATA の EEW 電文を主系とし、Yahoo 由来の EEW は使わない。詳細は
+[`eew-spec.md`](eew-spec.md) §3）。
 `condition` に相当するフィールドが無いため常に `'以上'` を返す（single-point PLUM 検知の判別不能・
 既知の限界。**PLUM 法** の詳細は [`eew-spec.md`](eew-spec.md) §5 参照）。severity は震度からの
 ヒューリスティック推定（`scaleNum >= 45 ? 'Warning' : 'Forecast'`）。
