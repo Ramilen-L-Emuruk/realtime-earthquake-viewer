@@ -6,7 +6,7 @@ import type { AlertTitleApi } from './useAlertTitle'
 import type { ReplayEntry } from '../types/replay'
 import { getIntensityLabel } from '../utils/intensity'
 import { formatMagnitude, hasMagnitude } from '../utils/formatters'
-import { eewMaxScale, eewMaxLpgmClass, computeSingleEEWLevel, selectEEWSoundType } from '../utils/eew'
+import { eewMaxScale, eewMaxLpgmClass, computeSingleEEWLevel, selectEEWSoundType, eewKindLabel } from '../utils/eew'
 import { haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
 import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade } from '../utils/tsunami'
@@ -576,8 +576,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         playAlertSound(eewSoundType)
       }
       if (settings.notifyMinScale >= 0 && settings.notifyEEW && (isNew || levelUpgraded)) {
+        // 予報級の電文は VXSE45「緊急地震速報（地震動予報）」。通知の見出しも実態に合わせる
         const eewNotifyTitle = currentLevel === 2 ? '緊急地震速報 特別警報'
-          : currentLevel === 1 ? '緊急地震速報 警報' : '緊急地震速報 予報'
+          : currentLevel === 1 ? '緊急地震速報 警報' : eewKindLabel(0)
         showBrowserNotification(
           eewNotifyTitle,
           `${event.earthquake.hypocenter.name}${scale > 0 ? ` 最大震度${getIntensityLabel(scale)}予想` : ''}`,
@@ -587,7 +588,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
       // EEW タイトルをイベントデータから構築（state は未更新のため event 直接参照）
       const newCount = activeEEWLevelsRef.current.size
-      const eewTitle = `🚨 緊急地震速報 ${event.earthquake.hypocenter.name}` +
+      // 区分の名前は「発表中の EEW すべての最大レベル」から決める（受信したこの報の区分では
+      // 決めない）。予報級の報を受けた瞬間に、別に発表中の警報級が隠れてしまうため。
+      // useAlertTitle の computeEEWTitle と同じ `eewKindLabel` を使い、文言がずれないようにする。
+      const titleLevel = Array.from(activeEEWLevelsRef.current.values())
+        .reduce<0 | 1 | 2>((m, l) => Math.max(m, l) as 0 | 1 | 2, 0)
+      const eewTitle = `🚨 ${eewKindLabel(titleLevel)} ${event.earthquake.hypocenter.name}` +
         (scale > 0 ? ` 最大震度${getIntensityLabel(scale)}予想` : '') +
         (newCount > 1 ? ` 他${newCount - 1}件` : '')
       title.setTitle(eewTitle)
@@ -641,10 +647,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               && latestScale <= (spokenEEWScalesRef.current.get(key) ?? 0)
               && latestLpgmClass <= (spokenEEWLpgmClassesRef.current.get(key) ?? 0)
               && level <= spokenLevel) return null
-            // 「警報。」はその EEW で初めて伝えるときだけ前置きする。続報のたびに付けると、
-            // 値を読み直すだけの報でも毎回挟まって耳に障る（実地震の再生で 5 発話中 5 回）。
-            const announceWarning = level >= 1 && spokenLevel < 1
-            const text = eewIntensityToText(latest, announceWarning)
+            // 「緊急地震速報に切り替わりました。」は、予報として発報されたものが警報へ
+            // 上がったときだけ。初報から警報なら第 1 フェーズが「緊急地震速報、〇〇で地震。」と
+            // 伝えており（そのとき spokenEEWLevelsRef を埋めている）、重ねて言う意味がない。
+            const announceUpgrade = level >= 1 && spokenLevel < 1
+            const text = eewIntensityToText(latest, announceUpgrade)
             if (!text) return null
             // 既読の更新は発話の直前だけで行う。予約した時点で更新すると、取消で捨てられた発話や
             // 割り込みで消えた発話まで既読になり、一度も声に出していない値が基準になってしまう。
@@ -674,7 +681,18 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           spokenEEWLpgmClassesRef.current.delete(key)
           // spokenEEWLevelsRef は**消さない**。同じ EEW である以上、区分は伝え済みで、
           // 震源が動くたびに「警報。」を言い直す必要はない（消すと言い直しになる）。
-          const phase1Text = eewAlertToText(event, hypoFarMoved)
+          // 切り出しの語で区分を伝える（予報＝地震動予報／警報＝緊急地震速報）。
+          // 震源更新では区分に触れない（既に伝えてあり、変わったのは震源だから）。
+          const phase1Text = eewAlertToText(
+            event,
+            hypoFarMoved ? 'hypocenterUpdate' : currentLevel >= 1 ? 'warning' : 'forecast',
+          )
+          // 「緊急地震速報」と切り出した時点で警報だと伝えている。第 2 フェーズで格上げを
+          // 読み直さないよう、ここで既読の区分として記録する。記録しないと初報から警報だった
+          // EEW でも「切り替わりました」と言ってしまう。
+          if (!hypoFarMoved && currentLevel >= 1) {
+            spokenEEWLevelsRef.current.set(key, currentLevel)
+          }
           // 待っている間に取消・自動解除が届いていたら震源も読まない
           chainEEWSpeech(() => eewTtsEventsRef.current.has(key) ? phase1Text : null)
           // 発話した震源情報を記録する

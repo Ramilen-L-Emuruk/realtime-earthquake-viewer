@@ -410,6 +410,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | EEW 読み上げの直列化（全 EEW で 1 本のチェーン・既読値の更新は発話直前だけ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げの優先順位」 |
 | 自動タブ切替の優先順位（読み上げと同じ並び。生の `setActiveTab` を使わないこと） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
 | 読み上げの優先順位（EEW ＞ 津波・南海トラフ ＞ 地震情報 ＞ 長周期／同格は新しい方が勝つ／待ちの条件は毎周回で作り直す／上限到達時は記録を残す／EEW の予想震度の確定待ち中も EEW を最優先とする） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げの優先順位」 |
+| EEW の区分の呼び方（電文の名称に合わせる。予報級＝地震動予報／警報級＝緊急地震速報（警報）。表示・読み上げの対応表と `eewKindLabel`。ウィンドウタイトルも対象＝外部監視への破壊的変更） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §3「電文の名称と表示・読み上げ」 |
 | 「特別警報」を音声で読まないこと（表示・通知・通知音は 2 段階を保つ） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
 | 通知音の内容と説明文の一致（`PLAYERS` の周波数・`COUNTDOWN_PULSES` のパルス数と、設定タブ「通知音テスト」の説明文・仕様書の記述） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §2 |
 | 通知音の長さと読み上げ遅延の連動（音を作り変えたら `TTS_DELAY_MS` かテーブル外の個別指定を必ず見直す。リバーブを効かせた音は乾音の長さでは足りない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |

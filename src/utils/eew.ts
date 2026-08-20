@@ -185,6 +185,17 @@ export function eewSerial(eew: EEWAlert): number | null {
 // 震度が取れないケース（地域別予想なし・全地域が震度未確定の -1・仮定震源要素）では eewMaxScale が
 // 0 を返すため、55 との比較だけで自然に特別警報から外れる。専用のガードは要らない。
 // レベル1・2ともに severity（isWarning）必須。予報級電文（severity=Forecast）は震度だけ高くても常にレベル0とする。
+/**
+ * ウィンドウタイトル・ブラウザ通知の見出しに使う区分の名前。
+ *
+ * 予報級と警報級は**別の電文**なので名前も分ける（VXSE45 緊急地震速報（地震動予報）／
+ * VXSE43 緊急地震速報（警報））。呼び出し箇所が複数あるため、文言がずれないようここに置く。
+ * 対応表は docs/spec/eew-spec.md §3「電文の名称と表示・読み上げ」。
+ */
+export function eewKindLabel(level: 0 | 1 | 2): string {
+  return level >= 1 ? '緊急地震速報' : '地震動予報'
+}
+
 export function computeSingleEEWLevel(eew: EEWAlert): 0 | 1 | 2 {
   if (eew.severity !== 'Warning') return 0
   const isSpecialByIntensity = eewMaxScale(eew) >= 55

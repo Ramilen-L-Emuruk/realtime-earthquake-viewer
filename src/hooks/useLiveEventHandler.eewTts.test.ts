@@ -7,10 +7,11 @@
 //      「震度5強に引き上げ。」という差分の短句で追っていたが、基準にした値を実際に
 //      発話したかどうかに依存するため、割り込みで消えた発話を基準にすると「一度も
 //      声に出していない値からの引き上げ」を語ることになる。
-//   2. 区分は「警報」に統一し、**その EEW で初めて伝えるときだけ**前置きする。気象庁は
-//      震度6弱以上を予想した緊急地震速報（警報）を特別警報に位置づけるが、発表時に
-//      「特別警報」の名称は用いない。「〜に切り替わりました」も、前の区分を声に出していない
-//      場面では何から変わったのか伝わらないため使わない。
+//   2. 区分は**切り出しの語**で伝える（予報＝「地震動予報、〇〇で地震。」／警報＝「緊急地震速報、
+//      〇〇で地震。」）。実際の電文が別物（VXSE45／VXSE43）なので名前も分ける。予報から警報へ
+//      上がったときだけ「緊急地震速報に切り替わりました。」と遷移を述べる。初報から警報なら
+//      切り出しで伝わっているので重ねて言わない。「特別警報」は音声で使わない（気象庁が発表時に
+//      この名称を用いないため）。
 //   3. 発話は 1 本のチェーンで直列化する。speakWithVoicevox は待ち行列ではなく割り込み
 //      （既存の再生を stop し進行中の合成を abort する）なので、繋がずに投げると前の
 //      発話が途中で消える。とくに EEW が同時多発すると互いを消し合う（2024/1/1 能登）。
@@ -143,7 +144,7 @@ describe('EEW 読み上げの文言と発話順序', () => {
     await flushMicrotasks()
 
     // 時間を一切進めずに、震源名（第1フェーズ）と予想値（第2フェーズ）の両方が出ている
-    expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '警報。予想最大震度5強。'])
+    expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度5強。'])
   })
 
   it('初報に予想震度が無ければ待ち、値が付いた続報の時点で読む（上限を待たない）', async () => {
@@ -156,7 +157,7 @@ describe('EEW 読み上げの文言と発話順序', () => {
     await vi.advanceTimersByTimeAsync(2000)
     handle(makeEEW({ serial: 2, scaleTo: 45 }))
     await flushMicrotasks()
-    expect(spokenTexts()).toContain('警報。予想最大震度5弱。')
+    expect(spokenTexts()).toContain('予想最大震度5弱。')
 
     // 上限（6秒）を過ぎても二重に読まない
     await vi.advanceTimersByTimeAsync(10000)
@@ -175,7 +176,7 @@ describe('EEW 読み上げの文言と発話順序', () => {
 
     await vi.advanceTimersByTimeAsync(1)
     await flushMicrotasks()
-    expect(spokenTexts()).toContain('警報。単独点処理のため、予想震度なし。')
+    expect(spokenTexts()).toContain('単独点処理のため、予想震度なし。')
   })
 
   // 差分の短句（「震度5強に引き上げ。」）は廃止した。初報と同じ形で言い直す。
@@ -256,16 +257,18 @@ describe('EEW 読み上げの文言と発話順序', () => {
   })
 
   describe('区分（警報）の読み上げ', () => {
-    it('予報の初報では区分を前置きしない', async () => {
+    // 実際の電文が別物（VXSE45 緊急地震速報（地震動予報）／VXSE43 緊急地震速報（警報））なので、
+    // 切り出しの語で区別する。予報級まで「緊急地震速報」と読むと実際より重く伝わる。
+    it('予報は「地震動予報」と切り出す', async () => {
       const handle = setup()
       handle(makeEEW({ scaleTo: 30, severity: 'Forecast' }))
       await flushMicrotasks()
-      expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度3。'])
+      expect(spokenTexts()).toEqual(['地震動予報、日向灘で地震。', '予想最大震度3。'])
     })
 
     // 予報→警報のように severity だけが変わる続報では震度・階級に差が無い。
     // 値だけを見ていると、最も重い区分の変化が無言になる。
-    it('震度据え置きでレベルだけ上がった続報は、区分を前置きして読み直す', async () => {
+    it('震度据え置きでレベルだけ上がった続報は、格上げを述べて読み直す', async () => {
       const handle = setup()
       handle(makeEEW({ scaleTo: 50, severity: 'Forecast' }))
       await flushMicrotasks()
@@ -273,16 +276,16 @@ describe('EEW 読み上げの文言と発話順序', () => {
 
       handle(makeEEW({ serial: 2, scaleTo: 50, severity: 'Warning' }))
       await flushMicrotasks()
-      expect(spokenTexts()).toEqual(['警報。予想最大震度5強。'])
+      expect(spokenTexts()).toEqual(['緊急地震速報に切り替わりました。予想最大震度5強。'])
     })
 
-    // 続報のたびに前置きすると、値を読み直すだけの報でも毎回「警報」が挟まって耳に障る
-    // （能登の再生では本震の 5 発話すべてに付いていた）。初回だけ言えば区分は伝わる。
-    it('「警報。」は 1 度だけ。続く引き上げでは言い直さない', async () => {
+    // 初報から警報なら、区分は切り出しの「緊急地震速報、〇〇で地震。」で伝わっている。
+    // 以降の引き上げは値だけを読む。前置きを重ねると、値を読み直すだけの報でも毎回
+    // 区分が挟まって耳に障る（初期の実装では本震の 5 発話すべてに付いていた）。
+    it('初報から警報なら、格上げの言い方は一度も使わない', async () => {
       const handle = setup()
       handle(makeEEW({ scaleTo: 50 }))
       await flushMicrotasks()
-      expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '警報。予想最大震度5強。'])
 
       handle(makeEEW({ serial: 2, scaleTo: 55 }))
       await flushMicrotasks()
@@ -290,20 +293,20 @@ describe('EEW 読み上げの文言と発話順序', () => {
       await flushMicrotasks()
       expect(spokenTexts()).toEqual([
         '緊急地震速報、日向灘で地震。',
-        '警報。予想最大震度5強。',
+        '予想最大震度5強。',
         '予想最大震度6弱。',
         '予想最大震度7。',
       ])
-      expect(spokenTexts().filter(t => t.startsWith('警報。'))).toHaveLength(1)
+      expect(spokenTexts().some(t => t.includes('切り替わりました'))).toBe(false)
     })
 
     // 取消（誤報取消・自動解除）で追跡を消すため、同じ eventId が再利用されれば新規発報として
-    // 扱われる。ここで区分を伝え直さないと、再発報が警報でも「警報」と言われないまま終わる。
-    it('取消後に同じ eventId で再発報したら、「警報。」をもう一度前置きする', async () => {
+    // 扱われる。区分は切り出しで伝え直される（伝え直さないと、再発報が警報でも区分が声に出ない）。
+    it('取消後に同じ eventId で再発報したら、区分を切り出しで伝え直す', async () => {
       const handle = setup()
       handle(makeEEW({ scaleTo: 50 }))
       await flushMicrotasks()
-      expect(spokenTexts().filter(t => t.startsWith('警報。'))).toHaveLength(1)
+      expect(spokenTexts().filter(t => t === '緊急地震速報、日向灘で地震。')).toHaveLength(1)
 
       handle(makeEEW({ serial: 2, cancelled: true }))
       await vi.advanceTimersByTimeAsync(1500)
@@ -311,7 +314,9 @@ describe('EEW 読み上げの文言と発話順序', () => {
 
       handle(makeEEW({ serial: 3, scaleTo: 50 }))
       await flushMicrotasks()
-      expect(spokenTexts().filter(t => t.startsWith('警報。'))).toHaveLength(2)
+      expect(spokenTexts().filter(t => t === '緊急地震速報、日向灘で地震。')).toHaveLength(2)
+      // 同じ地震の格上げではないので、遷移の言い方は使わない
+      expect(spokenTexts().some(t => t.includes('切り替わりました'))).toBe(false)
     })
 
     // 気象庁は震度6弱以上（または長周期地震動階級4以上）を予想した緊急地震速報（警報）を
@@ -323,7 +328,7 @@ describe('EEW 読み上げの文言と発話順序', () => {
       await flushMicrotasks()
 
       const texts = spokenTexts()
-      expect(texts).toEqual(['緊急地震速報、日向灘で地震。', '警報。予想最大震度7。予想最大階級4。'])
+      expect(texts).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度7。予想最大階級4。'])
       expect(texts.some(t => t.includes('特別警報'))).toBe(false)
     })
 
@@ -338,9 +343,9 @@ describe('EEW 読み上げの文言と発話順序', () => {
       expect(spokenTexts()).toEqual(['予想最大震度6弱。'])
     })
 
-    // 「〜に切り替わりました」を使わない理由がここに出る。予想値を一度も読んでいない
-    // 段階での格上げでは、何から変わったのかを聞き手が知らない。
-    it('予想震度待ちの最中にレベルが上がったら、上限を待たず区分を告げる', async () => {
+    // 予想値を一度も読んでいない段階の格上げでも、第 1 フェーズで「地震動予報、〇〇で地震。」と
+    // 伝えてあるので遷移の言い方が通じる。上限（6 秒）を待たずに知らせる。
+    it('予想震度待ちの最中にレベルが上がったら、上限を待たず格上げを告げる', async () => {
       const handle = setup()
       handle(makeEEW({ noAreas: true, condition: '仮定震源要素', severity: 'Forecast' }))
       await flushMicrotasks()
@@ -348,7 +353,7 @@ describe('EEW 読み上げの文言と発話順序', () => {
 
       handle(makeEEW({ serial: 2, noAreas: true, condition: '仮定震源要素', severity: 'Warning' }))
       await flushMicrotasks()
-      expect(spokenTexts()).toEqual(['警報。単独点処理のため、予想震度なし。'])
+      expect(spokenTexts()).toEqual(['緊急地震速報に切り替わりました。単独点処理のため、予想震度なし。'])
     })
 
     // 区分は引き下げない。一度「警報」と伝えた EEW は、以後 severity が落ちても「伝え済み」と
@@ -409,10 +414,10 @@ describe('EEW 読み上げの文言と発話順序', () => {
       await flushMicrotasks()
 
       expect(spokenTexts()).toEqual([
-        '緊急地震速報、日向灘で地震。',
+        '地震動予報、日向灘で地震。',
         '予想最大震度3。',
         '緊急地震速報、石川県能登地方で地震。',
-        '警報。予想最大震度5強。',
+        '予想最大震度5強。',
       ])
     })
 
@@ -443,7 +448,7 @@ describe('EEW 読み上げの文言と発話順序', () => {
       handle(makeEEW({ eventId: 'B', scaleTo: 50, hypocenter: NOTO }))
       await flushMicrotasks()
       expect(spokenTexts()).toContain('緊急地震速報、石川県能登地方で地震。')
-      expect(spokenTexts()).toContain('警報。予想最大震度5強。')
+      expect(spokenTexts()).toContain('予想最大震度5強。')
     })
 
     it('片方が取り消されても、他方の読み上げは続く', async () => {
@@ -455,9 +460,9 @@ describe('EEW 読み上げの文言と発話順序', () => {
 
       const texts = spokenTexts()
       expect(texts).toContain('緊急地震速報、石川県能登地方で地震。')
-      expect(texts).toContain('警報。予想最大震度5強。')
+      expect(texts).toContain('予想最大震度5強。')
       // A の予想値（5弱）は取消後なので読まれない
-      expect(texts).not.toContain('警報。予想最大震度5弱。')
+      expect(texts).not.toContain('予想最大震度5弱。')
     })
   })
 })
