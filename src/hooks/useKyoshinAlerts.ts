@@ -459,7 +459,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
   const prevConfirmedRef = useRef(false)
   useEffect(() => {
     if (confirmed && !prevConfirmedRef.current) {
-      log.info('[tab] → realtime (揺れ検知開始 V3 confirmed)')
+      log.info('[tab] realtime を要求 (揺れ検知開始 V3 confirmed)')
       setActiveTab('realtime')
       title.setTitle('📈 揺れ検知')
       if (settings.soundEnabled) {
@@ -486,7 +486,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
   const prevCandidateRef = useRef(false)
   useEffect(() => {
     if (candidate && !prevCandidateRef.current && !confirmed) {
-      log.info('[tab] → realtime (揺れの可能性 V3 likely)')
+      log.info('[tab] realtime を要求 (揺れの可能性 V3 likely)')
       setActiveTab('realtime')
       title.setTitle('🔍 揺れの可能性')
       if (settings.soundEnabled) {
@@ -528,7 +528,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
       maxSoundLevelRef.current = currLevel
       postPeakMinLevelRef.current = currLevel
       if (prevMaxLevel >= 0) {
-        log.info(`[tab] → realtime (揺れ検知レベルアップ level=${prevMaxLevel}→${currLevel} confirmed=${confirmed})`)
+        log.info(`[tab] realtime を要求 (揺れ検知レベルアップ level=${prevMaxLevel}→${currLevel} confirmed=${confirmed})`)
         setActiveTab('realtime')
         if (settings.soundEnabled) {
           playKyoshinUpdateSound(effectiveKyoshinMaxIndex, gainScale)
@@ -540,7 +540,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
       const prevMinLevel = postPeakMinLevelRef.current
       maxSoundLevelRef.current = currLevel
       postPeakMinLevelRef.current = currLevel
-      log.info(`[tab] → realtime (揺れ検知再エスカレーション level=${prevMinLevel}→${currLevel} confirmed=${confirmed})`)
+      log.info(`[tab] realtime を要求 (揺れ検知再エスカレーション level=${prevMinLevel}→${currLevel} confirmed=${confirmed})`)
       setActiveTab('realtime')
       if (settings.soundEnabled) {
         playKyoshinUpdateSound(effectiveKyoshinMaxIndex, gainScale)
@@ -559,7 +559,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
     const nowMs = new Date(dataTime).getTime()
     const alert = stepAlertRegions(regionStateRef.current, confirmedShocks, nowMs, activeEEWsRef.current)
     if (!alert) return
-    log.info('[tab] → realtime (別地点で揺れ検知 V3)')
+    log.info('[tab] realtime を要求 (別地点で揺れ検知 V3)')
     setActiveTab('realtime')
     if (settings.soundEnabled) playAlertSound('kyoshin')
     if (settings.notifyMinScale >= 0 && settings.notifyDetection) {

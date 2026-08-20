@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef, useMemo, useCallback, type CSSProperties } from 'react'
 import { IconNav, type TabId } from './components/IconNav'
-import { TAB_PRIORITY, TAB_HOLD_MS, shouldAcceptAutoTab, type TabHold, type TabPriority } from './utils/tabPriority'
+import {
+  TAB_PRIORITY, TAB_HOLD_MS, shouldAcceptAutoTab, shouldFollowNow, idleRevertPriority,
+  type TabHold, type TabPriority, type TabHoldSource, type TabFollowMark,
+} from './utils/tabPriority'
 import { PanelResizeHandle } from './components/PanelResizeHandle'
 import { MapView, type MapMode } from './components/Map/MapView'
 import { MapUpdateTime } from './components/MapUpdateTime'
@@ -160,7 +163,9 @@ export function App() {
   // 従来は「非 realtime へ移ったあと 15 秒は EEW 続報に realtime を奪わせない」という
   // 片方向の抑制しか無く、**EEW が確保した realtime を地震情報が即座に奪えていた**
   // （声は EEW を守るのに画面だけ取られる）。優先度付きの保持に一般化してある。
-  const tabHoldRef = useRef<TabHold>({ until: 0, priority: TAB_PRIORITY.quake })
+  const tabHoldRef = useRef<TabHold>({ until: 0, priority: TAB_PRIORITY.quake, source: 'hold' })
+  // 直前の読み上げ追従の記録。追従が立て続けに走るときの間引きに使う（理由は shouldFollowNow）。
+  const lastFollowRef = useRef<TabFollowMark | null>(null)
 
   /**
    * 自動タブ切替の要求。保持中の優先度より低ければ拒否する（同格以上は移動できる。
@@ -179,15 +184,28 @@ export function App() {
    * 「→ タブ名」ではなく「タブ名を要求」と書いてもらっている。ログの 1 行目だけを読んで
    * 「移動した」と誤読しないように。
    */
-  const requestAutoTab = useCallback((tab: TabId, priority: TabPriority): boolean => {
+  const requestAutoTab = useCallback((
+    tab: TabId,
+    priority: TabPriority,
+    source: TabHoldSource = 'hold',
+  ): boolean => {
     const hold = tabHoldRef.current
     const now = Date.now()
-    if (!shouldAcceptAutoTab(hold, priority, now)) {
-      log.debug(`[tab] → ${tab} スキップ (優先度${priority} < 保持中${hold.priority}・残り${hold.until - now}ms)`)
+    if (source === 'speech' && !shouldFollowNow(lastFollowRef.current, priority, now)) {
+      log.debug(`[tab] → ${tab} 追従を間引き (直前の追従から${now - (lastFollowRef.current?.at ?? 0)}ms)`)
       setPanelCollapsed(false)
       return false
     }
-    tabHoldRef.current = { until: now + TAB_HOLD_MS, priority }
+    if (!shouldAcceptAutoTab(hold, priority, now, source)) {
+      log.debug(`[tab] → ${tab} スキップ (優先度${priority} < 保持中${hold.priority}・残り${hold.until - now}ms・駆動${source})`)
+      setPanelCollapsed(false)
+      return false
+    }
+    tabHoldRef.current = { until: now + TAB_HOLD_MS, priority, source }
+    if (source === 'speech') lastFollowRef.current = { at: now, priority }
+    // 読み上げ系の移動は呼び出し元が名前付きの記録を持たないものがあるため、ここで成立を残す。
+    // 拒否だけが記録されて成立が残らないと、ログから「動いたのか何も起きなかったのか」を区別できない。
+    log.debug(`[tab] → ${tab} 移動 (優先度${priority}・駆動${source})`)
     setActiveTab(tab)
     return true
   }, [setActiveTab])
@@ -205,7 +223,7 @@ export function App() {
    *   一致するため、直前の手動操作と必ず衝突する
    */
   const forceTab = useCallback((tab: TabId, priority: TabPriority) => {
-    tabHoldRef.current = { until: 0, priority: TAB_PRIORITY.quake }
+    tabHoldRef.current = { until: 0, priority: TAB_PRIORITY.quake, source: 'hold' }
     requestAutoTab(tab, priority)
   }, [requestAutoTab])
 
@@ -225,19 +243,49 @@ export function App() {
 
   // 地震情報・長周期地震動情報・津波の受信によるタブ移動（`useLiveEventHandler` から呼ぶ）。
   // 優先度は移動先から決める（earthquake=地震情報／tsunami=津波）。
-  const setActiveTabNonRealtime = useCallback((tab: Exclude<TabId, 'realtime'>) => {
-    requestAutoTab(tab, tab === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake)
+  // 長周期地震動情報は earthquake タブへ行くが重みが違う（`TAB_PRIORITY.lpgm`）ため、
+  // 呼び出し側から優先度を渡せる。省略時は移動先から導く（従来の挙動）。
+  const setActiveTabNonRealtime = useCallback((
+    tab: Exclude<TabId, 'realtime'>,
+    priority?: TabPriority,
+  ) => {
+    requestAutoTab(tab, priority ?? (tab === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake))
   }, [requestAutoTab])
 
-  // EEW の続報による realtime タブ移動。手動選択より弱く、地震情報・津波より強い。
+  // EEW の受信による realtime タブ移動。
+  //
+  // **読み上げ系（`'speech'`）として出す。** EEW は必ず読み上げを持つ情報で、この要求は
+  // その系列の一部だから。保持機構系（`'hold'`）で張ると、直後に読み上げの番が来た
+  // 津波・地震情報の追従を優先度比較で弾いてしまい、声と画面が食い違う元の不具合に戻る
+  // （実測: 読み終えた EEW の保持に大津波警報が弾かれていた）。
+  //
+  // 読み上げが無効な端末でも `'speech'` で張るが、その場合は追従が一切起きないため
+  // 他の要求（すべて `'hold'`）は従来どおり優先度で弾かれる。挙動は変わらない。
+
+  // 続報。手動選択より弱く、地震情報・津波より強い。
   // 動いたときだけ記録する（拒否は requestAutoTab 側が debug で残す）。
   const setActiveTabRealtimeOnUpdate = useCallback(() => {
-    if (requestAutoTab('realtime', TAB_PRIORITY.eewUpdate)) log.info('[tab] → realtime (EEW続報)')
+    if (requestAutoTab('realtime', TAB_PRIORITY.eewUpdate, 'speech')) log.info('[tab] → realtime (EEW続報)')
   }, [requestAutoTab])
 
-  // EEW の新規発報・レベルアップ・誤報取消による realtime タブ移動。手動選択より強い。
+  // 新規発報・レベルアップ・誤報取消。手動選択より強い。
   const setActiveTabRealtimeUrgent = useCallback(() => {
-    requestAutoTab('realtime', TAB_PRIORITY.eewUrgent)
+    requestAutoTab('realtime', TAB_PRIORITY.eewUrgent, 'speech')
+  }, [requestAutoTab])
+
+  /**
+   * 読み上げの発話に同調したタブ移動（`useLiveEventHandler` が発話を投入する直前に呼ぶ）。
+   *
+   * 読み上げは「重いものが先」を待ち行列で保証している（`waitForSpeechSlot` /
+   * `chainEEWSpeech`）。その順番が来た＝いま声に出すものが決まった瞬間に画面も合わせる。
+   * 追従どうしでは保持を見ない（理由は `shouldAcceptAutoTab`）が、読み上げを持たない経路
+   * （揺れ検知・手動選択・アイドル復帰）の保持には従来どおり譲る。
+   *
+   * **画面は声よりわずかに先に出る。** `speakWithVoicevox` は再生完了で解決する作りで、
+   * 「音が鳴り始めた瞬間」を呼び出し側から観測できないため、掴めるのは合成を投入した時点まで。
+   */
+  const followSpeechTab = useCallback((tab: TabId, priority: TabPriority) => {
+    requestAutoTab(tab, priority, 'speech')
   }, [requestAutoTab])
 
   // useLiveEventHandler が返す resetTsunamiScrollToTop を revertToDefaultTab から呼べるようにする ref。
@@ -262,6 +310,7 @@ export function App() {
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate, setActiveTabRealtimeUrgent,
     setActiveTabRealtimeForKyoshin: () => requestTabForKyoshin('realtime'),
+    followSpeechTab,
     revertToDefaultTab, selectQuake, setActiveLpgmEventId,
   })
   resetTsunamiScrollRef.current = resetTsunamiScrollToTop
@@ -653,12 +702,14 @@ export function App() {
     // EEW 発報中または揺れ検知中はリアルタイムタブを維持する。それ以外はデフォルトタブへ戻す。
     const revert = () => {
       if (activeEEWsRef.current.size > 0 || kyoshinDetectedRef.current) {
-        log.info(`[tab] → realtime (アイドル復帰・EEW中または揺れ検知中 idleRevertSec=${settings.idleRevertSec})`)
+        const hasActiveEew = activeEEWsRef.current.size > 0
+        log.info(`[tab] → realtime (アイドル復帰・${hasActiveEew ? 'EEW中' : '揺れ検知中'} idleRevertSec=${settings.idleRevertSec})`)
         // 必ず通したうえで保持も張る。優先度判定に任せると、直前の手動操作の保持（manual）に
         // 負けて拒否され、一発限りのタイマーは再スケジュールされないため二度と復帰しない。
         // 保持を張るのは、戻したはずの realtime を直後の地震情報に奪われないため
         // （実測: 復帰の 20 秒後に届いた地震情報が realtime を取っていた）。
-        forceTab('realtime', TAB_PRIORITY.eewUpdate)
+        // 重みは張る理由に合わせる（揺れ検知だけのときに EEW 相当を張らない。理由は idleRevertPriority）。
+        forceTab('realtime', idleRevertPriority(hasActiveEew))
       } else {
         log.info(`[tab] → ${defaultTabRef.current} (アイドル復帰 idleRevertSec=${settings.idleRevertSec})`)
         revertToDefaultTab()
