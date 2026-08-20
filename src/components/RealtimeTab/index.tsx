@@ -57,7 +57,12 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
   const { hypocenter } = eew.earthquake
   const prefAreas = areas.filter(a => a.pref)
 
-  const typeLabel = isSpecial ? '特別警報' : isWarning ? '警報' : '予報'
+  // 実際の電文が別物なので名前も分ける。予報級は VXSE45「緊急地震速報（地震動予報）」、
+  // 警報級は VXSE43「緊急地震速報（警報）」。予報級を「緊急地震速報（〜）」の器に入れると
+  // 「緊急地震速報（地震動予報）」と二重になるため、器ごと分ける。
+  const headerLabel = isSpecial ? '緊急地震速報（特別警報）'
+    : isWarning ? '緊急地震速報（警報）'
+    : '地震動予報'
   const headerBg = isSpecial ? '#4c0519' : isWarning ? '#450a0a' : '#451a03'
   const headerColor = isSpecial ? '#fca5a5' : isWarning ? '#f87171' : '#fcd34d'
   const headerBorder = isSpecial ? '#dc2626' : isWarning ? '#ef4444' : '#d97706'
@@ -96,7 +101,7 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
           borderBottom: `1px solid ${headerBorder}`,
         }}
       >
-        緊急地震速報（{typeLabel}）
+        {headerLabel}
         {serial != null && (
           <span className="ml-2 font-normal opacity-75">
             #{serial}{eew.isFinal ? ' 最終報' : ''}

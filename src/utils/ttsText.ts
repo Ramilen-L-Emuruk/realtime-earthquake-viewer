@@ -279,11 +279,27 @@ export function earthquakeCancelToText(time: string | null): string {
 }
 
 /**
- * EEW 第1フェーズ（isNew 即時、または続報での震源更新時）の読み上げテキストを生成する。
- * isHypocenterUpdate=true のとき「震源を更新、〇〇で地震。」（続報で震源名が大きく変わったケース向け）。
+ * EEW 第1フェーズ（新規発報の即時、または続報での震源更新時）の読み上げテキストを生成する。
+ *
+ * **切り出しの語で区分を伝える。** 実際の電文が別物なので、名前も分ける。
+ *
+ * | `kind` | 読み上げ | 対応する電文 |
+ * |---|---|---|
+ * | `forecast` | 「地震動予報、〇〇で地震。」 | VXSE45 緊急地震速報（地震動予報） |
+ * | `warning` | 「緊急地震速報、〇〇で地震。」 | VXSE43 緊急地震速報（警報） |
+ * | `hypocenterUpdate` | 「震源を更新、〇〇で地震。」 | 続報で震源名が大きく変わったケース |
+ *
+ * **これは気象庁の用語法からの意図的な逸脱。** 気象庁は「緊急地震速報」を警報と予報の両方を
+ * 含む上位の名前として使う。ここでは音声で区別が付くことを優先し、警報級だけを
+ * 「緊急地震速報」と読む。予報級まで「緊急地震速報」と読むと、一般に流れるのが警報だけである
+ * ことから「警報が出た」と聞こえてしまい、実際より重く伝わる。
+ *
+ * 震源更新では区分に触れない。すでに伝えてあるうえ、変わったのは震源だから。
  */
-export function eewAlertToText(event: EEWAlert, isHypocenterUpdate = false): string {
-  const prefix = isHypocenterUpdate ? '震源を更新、' : '緊急地震速報、'
+export function eewAlertToText(event: EEWAlert, kind: 'forecast' | 'warning' | 'hypocenterUpdate'): string {
+  const prefix = kind === 'hypocenterUpdate' ? '震源を更新、'
+    : kind === 'warning' ? '緊急地震速報、'
+    : '地震動予報、'
   return `${prefix}${event.earthquake.hypocenter.name}で地震。`
 }
 
@@ -291,21 +307,26 @@ export function eewAlertToText(event: EEWAlert, isHypocenterUpdate = false): str
  * EEW 第2フェーズ（予想値）の読み上げテキストを生成する。初報・続報の区別なく同じ形で読む。
  * 予想震度が取れないときは理由付きで「予想震度なし。」。
  *
- * `level` が 1 以上（警報・特別警報の条件を満たす）のときは「警報。」を前置きする。初報でも
- * 続報でも同じ形にする。「〜に切り替わりました」のような差分の言い方は、前の区分を一度も
- * 声に出していない場面（初報から警報だった場合・予想値を読む前に格上げが届いた場合）で
- * 何から変わったのか伝わらないため使わない。
+ * `announceUpgrade` が真のとき「緊急地震速報に切り替わりました。」を前置きする。
+ * **予報として発報された EEW が警報へ格上げされたときだけ真にすること**（判定は呼び出し側）。
  *
- * **「特別警報」は読み上げない。** `level` が 2（特別警報の条件を満たす）でも「警報。」と読む。
- * 気象庁が発表時にこの名称を用いないため（根拠と条件は docs/spec/eew-spec.md §4）。
- * 画面表示・ブラウザ通知・通知音は内部の重大度区分として 2 段階を保つ。
+ * 遷移の言い方にしているのは、第 1 フェーズで「地震動予報、〇〇で地震。」と伝えてあるため。
+ * 聞き手は前の区分を知っているので「何から何に変わったか」が通じる。ここを「警報。」のような
+ * 区分名だけにすると、値の読み上げの前に単語が挟まるだけで変化が伝わらない。
+ *
+ * 逆に、初報から警報だった場合はここでは何も前置きしない。第 1 フェーズが既に
+ * 「緊急地震速報、〇〇で地震。」と伝えており、重ねて言う意味がないため。
+ *
+ * **「特別警報」は読み上げない。** 特別警報の条件を満たしていても、格上げとして読み上げるのは
+ * 予報→警報のときだけ。気象庁が発表時にこの名称を用いないため（根拠と条件は
+ * docs/spec/eew-spec.md §4）。画面表示・ブラウザ通知・通知音は内部の重大度区分として 2 段階を保つ。
  *
  * 引き上げ専用の短句（「震度6弱に引き上げ。」）は持たない。同じ形で言い直せば足りるうえ、
  * 差分の言い方は「基準にした値を実際に発話したか」に依存し、割り込みで消えた発話を基準に
  * すると一度も声に出していない値からの引き上げを語ることになるため。
  */
-export function eewIntensityToText(event: EEWAlert, level: 0 | 1 | 2 = 0): string {
-  let text = level >= 1 ? '警報。' : ''
+export function eewIntensityToText(event: EEWAlert, announceUpgrade = false): string {
+  let text = announceUpgrade ? '緊急地震速報に切り替わりました。' : ''
   const scale = eewMaxScale(event)
   if (scale > 0) {
     text += `予想最大震度${intensityText(scale)}。`
@@ -325,23 +346,6 @@ export function eewIntensityToText(event: EEWAlert, level: 0 | 1 | 2 = 0): strin
   // ただし同関数が 0 を返すのは仮定震源要素のときだけで、上の depth > 150（深発地震）の分岐とは
   // 連動しない。深発地震で震度だけ出ない場合は「予想震度なし」と階級の断言が同居しうる
   // （未対応の既知の限界。docs/spec/eew-spec.md §4）。
-  const lpgmClass = eewMaxLpgmClass(event)
-  if (lpgmClass > 0) {
-    text += `予想最大階級${lpgmClass}。`
-  }
-  return text
-}
-
-/** VXSE43/45 EEW の読み上げテキストを生成する。 */
-export function eewToText(event: EEWAlert): string {
-  const { hypocenter } = event.earthquake
-  const scale = eewMaxScale(event)
-  let text = `緊急地震速報。${hypocenter.name}を震源とするマグニチュード${magnitudeText(hypocenter.magnitude)}の地震が発生しました。`
-  if (scale > 0) {
-    text += `予想最大震度${intensityText(scale)}。`
-  }
-  // 階級も震度と同じく集約関数を通す（判定条件は eewMaxLpgmClass の JSDoc 参照）。0 のときは
-  // 句ごと省く。音声には地図の色フォールバックのような逃げ場が無く、不正値がそのまま声に出るため。
   const lpgmClass = eewMaxLpgmClass(event)
   if (lpgmClass > 0) {
     text += `予想最大階級${lpgmClass}。`
