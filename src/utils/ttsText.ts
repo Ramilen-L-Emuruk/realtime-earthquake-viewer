@@ -427,7 +427,7 @@ function tsunamiHeightToSpeech(description: string): string {
     .replace(/ｍ/g, 'メートル')
 }
 
-// 同じ波高の区域をグループ化し「岩手県・宮城県で10メートル以上、福島県で6メートル」のような文を生成する
+// 同じ波高の区域をグループ化し「岩手県、宮城県で10メートル以上、福島県で6メートル」のような文を生成する
 function tsunamiHeightSentence(areas: import('../types/earthquake').TsunamiArea[]): string {
   const withHeight = areas.filter(a => a.maxHeight)
   if (withHeight.length === 0) return ''
@@ -441,7 +441,7 @@ function tsunamiHeightSentence(areas: import('../types/earthquake').TsunamiArea[
   }
 
   const parts = [...groups.entries()].map(([desc, names]) =>
-    `${names.join('・')}で${tsunamiHeightToSpeech(desc)}`
+    `${names.join('、')}で${tsunamiHeightToSpeech(desc)}`
   )
 
   return `予想最大波高は、${parts.join('、')}です。`
@@ -454,7 +454,7 @@ function lowerGradeSentence(areas: import('../types/earthquake').TsunamiArea[], 
     .map(g => {
       const matched = areas.filter(a => a.grade === g)
       if (matched.length === 0) return ''
-      return `${matched.map(a => a.name).join('・')}に${tsunamiGradeLabel(g)}`
+      return `${matched.map(a => a.name).join('、')}に${tsunamiGradeLabel(g)}`
     })
     .filter(Boolean)
   return parts.length > 0 ? `また、${parts.join('、')}が発表されています。` : ''
@@ -551,7 +551,7 @@ function tsunamiArrivalDetailText(items: TsunamiObservation[]): string {
     else groups.push({ districtName: key, items: [o] })
   }
   return groups.map(g => {
-    const stations = g.items.map(o => o.name).join('・')
+    const stations = g.items.map(o => o.name).join('、')
     return g.districtName ? `${g.districtName}、${stations}` : stations
   }).join('、')
 }
