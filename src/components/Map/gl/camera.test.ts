@@ -5,6 +5,9 @@ import {
   isProgrammaticFlight,
   fitJapan,
   fitToPositions,
+  snapZoomDown,
+  zoomGainForBounds,
+  EEW_ZOOM_SNAP,
   INTERACTION_HOLD_SEC,
 } from './camera'
 
@@ -211,5 +214,54 @@ describe('subscribeUserInteraction', () => {
     sub.unsubscribe()
     map.fire('dragstart')
     expect(events).toEqual([])
+  })
+})
+
+// 縮小フォロー（`FitToDetectionGL`）の発火判定に使う 2 つ。着地ズームの計算と「寄り直して
+// 得られる段数」が同じ式を通っていることが要点で、ずれると着地後も発火し続ける。
+describe('snapZoomDown', () => {
+  it('zoomStep 段階へ切り下げる', () => {
+    expect(snapZoomDown(6.7, 0.5)).toBe(6.5)
+    expect(snapZoomDown(6.4, 0.5)).toBe(6.0)
+  })
+
+  it('段階の境目にある値を 1 段下へ落とさない（浮動小数の 6.9999… 対策）', () => {
+    // Arrange: 7.0 を 0.5 で割ると浮動小数の丸めで 13.999… になりうる。
+    // Act & Assert: 6.5 ではなく 7.0 のままであること。
+    expect(snapZoomDown(7.0, 0.5)).toBe(7.0)
+    expect(snapZoomDown(6.5, 0.5)).toBe(6.5)
+  })
+
+  it('既定の zoomStep は EEW_ZOOM_SNAP', () => {
+    expect(snapZoomDown(6.7)).toBe(snapZoomDown(6.7, EEW_ZOOM_SNAP))
+  })
+})
+
+describe('zoomGainForBounds', () => {
+  /** cameraForBounds が指定ズームを返し、現在ズームが cur のフェイク。 */
+  function mapWithZooms(fitZoom: number | null, cur: number): maplibregl.Map {
+    return {
+      cameraForBounds: () => (fitZoom === null ? undefined : { center: [138, 38], zoom: fitZoom }),
+      getZoom: () => cur,
+    } as unknown as maplibregl.Map
+  }
+  const bounds = {} as maplibregl.LngLatBounds
+
+  it('着地ズーム（切り下げ後）と現在ズームの差を返す', () => {
+    // Arrange: 日本全体（z4）から、狭い点群へは z6.7 まで寄れる状況。
+    // Act & Assert: 着地は 6.5 なので利得は 2.5 段。
+    expect(zoomGainForBounds(mapWithZooms(6.7, 4), bounds)).toBe(2.5)
+  })
+
+  it('すでに着地ズームにいれば 0 を返す（寄り直し後に再発火しない根拠）', () => {
+    expect(zoomGainForBounds(mapWithZooms(6.5, 6.5), bounds)).toBe(0)
+  })
+
+  it('目標より寄っている（画からはみ出している）ときは負を返す', () => {
+    expect(zoomGainForBounds(mapWithZooms(4.0, 6.0), bounds)).toBe(-2)
+  })
+
+  it('cameraForBounds が算出できなければ null を返す', () => {
+    expect(zoomGainForBounds(mapWithZooms(null, 4), bounds)).toBeNull()
   })
 })

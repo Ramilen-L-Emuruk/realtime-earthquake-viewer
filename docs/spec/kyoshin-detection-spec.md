@@ -261,9 +261,9 @@ Yahoo RealTimeData (1Hz JSON)
 
 `DetectionEvent[]` を UI 向けの `KyoshinView` に変換する:
 - `confirmed` / `candidate`: confirmed / likely イベントが1件以上あるか
-- `detectedPoints`: confirmed 全イベントのメンバー観測点の和集合。**自動フィットと「検知が続いているか」の
-  判定専用**
-- `detectedMarkerPoints`: 上記から孤立した震度0点を除いたもの。**検知点マーカーに描く分**
+- `detectedPoints`: confirmed 全イベントのメンバー観測点の和集合。**「検知が続いているか」の判定専用**
+- `detectedMarkerPoints`: 上記から孤立した震度0点を除いたもの。**検知点マーカーに描く分と、
+  そこから作るカメラの寄り先**
 - `candidatePoints`: 主 likely イベント（最大震度が最大の1件）のメンバー観測点。**候補カメラフィット専用**
 - `unconfirmedPoints`: likely / faint 全イベントのメンバー観測点の和集合から confirmed の分を除いた差集合。
   **検知点マーカー専用**（フィットには使わない。複数 likely の和集合に寄せると境界が飛び跳ねるため）
@@ -272,9 +272,11 @@ Yahoo RealTimeData (1Hz JSON)
 自動フィットは常にメンバー観測点のフットプリントを対象とし、`epicenter`（推定震央）へは飛ばさない
 （深発・沖合で `epicenter` の誤差が大きくても地図が誤った場所へ飛ばないようにするため）。
 
-**カメラ用（`detectedPoints` / `candidatePoints`）と描画用（`detectedMarkerPoints`）を分けているのは、
-カメラ追従が「点列が空になった」ことを検知終了のシグナルに使っているため。** 描画のために点を間引いた配列を
-そのままカメラへ渡すと、検知が続いている最中に地図が日本全体へ戻ってしまう（設計書 §22）。
+カメラは**描かれている点**を寄り先にし、**検知が続いているかはメンバーの和集合で**判定する
+（`FitToDetectionGL` の `points` と `hasDetection`）。この 2 つを兼ねさせてはならない——描ける点が
+一時的にゼロになること（全メンバーが震度0未満・欠測になる、孤立した震度0として落ちる）は検知中にも
+起きるため、それを検知終了と扱うと画が日本全体へ戻り、点が返った瞬間に寄り直す明滅になる（設計書 §22）。
+分ける理由と縮小の追従は [`map-rendering-spec.md`](map-rendering-spec.md) §6「揺れ検知追従の目標範囲」。
 
 ### 検知点マーカーとカードの点数の一致
 

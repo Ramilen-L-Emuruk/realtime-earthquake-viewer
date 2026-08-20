@@ -70,6 +70,8 @@ const INTERACTION_HOLD_SEC = 30
 function createFakeMap() {
   const handlers = new Map<string, Set<() => void>>()
   const onceHandlers = new Map<string, Set<() => void>>()
+  // 日本全体を見ている状態から始める（fitJapan 相当のズーム）。flyTo で書き換わる。
+  let zoom = 4
   const fake = {
     on(event: string, handler: () => void) {
       if (!handlers.has(event)) handlers.set(event, new Set())
@@ -91,10 +93,19 @@ function createFakeMap() {
       }
     },
     fitBounds: vi.fn(),
-    flyTo: vi.fn(),
+    // 縮小フォローは「寄り直して何段ズームが深くなるか」で発火を決める（zoomGainForBounds）。
+    // 着地後に利得が 0 になって発火が止まることまで検証したいので、flyTo でズームを実際に動かす。
+    // spy のままだと地図の状態が変わらず、実装が往復していても気づけない。
+    flyTo: vi.fn((opts?: { zoom?: number }) => {
+      if (typeof opts?.zoom === 'number') zoom = opts.zoom
+    }),
+    getZoom: () => zoom,
     // 成長フォローの「収まっているか」判定用。広い視野を返して常に収まっている扱いにする
-    // （このテストの関心は検知終了の分岐であり、成長フォローを誘発させたくない）。
+    // （検知終了の分岐を見るテストで成長フォローを誘発させないため）。縮小フォローの判定は
+    // getBounds ではなく cameraForBounds の結果を見るので、こちらは固定でよい。
     getBounds: () => ({ getWest: () => 100, getSouth: () => 10, getEast: () => 160, getNorth: () => 60 }),
+    // 実物は bounds・padding・ビューポート寸法から算出する。ここでは「狭い点群なら MAX_ZOOM まで
+    // 寄れる」という一点だけを模す（縮小フォローの利得は 7 - 現在ズーム になる）。
     cameraForBounds: () => ({ center: [138, 38] as [number, number], zoom: 7 }),
   }
   return fake as unknown as maplibregl.Map & { fire: (event: string) => void }
@@ -107,8 +118,26 @@ function fitPaddings(map: maplibregl.Map): number[] {
   return (map.fitBounds as unknown as Mock).mock.calls.map((call) => call[1]?.padding)
 }
 
+/**
+ * flyTo の呼び出し回数。成長フォロー・縮小フォロー（`flyToBoundsSnapped`）は
+ * cameraForBounds でズームを求めてから flyTo するため、fitBounds には現れない。
+ */
+function flyCount(map: maplibregl.Map): number {
+  return (map.flyTo as unknown as Mock).mock.calls.length
+}
+
 // JapanMapGL と同じ順序で置く（effect はツリー順に走るため、順序に意味がある）。
-function harness(map: maplibregl.Map, detected: DetectedPoint[], candidate: DetectedPoint[], candidateId: number | null) {
+// hasDetection は既定で「寄り先の点があるか」から導くが、JapanMapGL では別の集合から来る
+// （寄り先＝描かれている点／hasDetection＝メンバーの和集合）。両者が食い違う状態を作れるよう
+// 明示的に上書きできるようにしている。
+function harness(
+  map: maplibregl.Map,
+  detected: DetectedPoint[],
+  candidate: DetectedPoint[],
+  candidateId: number | null,
+  opts: { hasDetection?: boolean } = {},
+) {
+  const hasDetection = opts.hasDetection ?? detected.length > 0
   return h(
     MapGLContext.Provider,
     { value: map },
@@ -116,10 +145,11 @@ function harness(map: maplibregl.Map, detected: DetectedPoint[], candidate: Dete
       points: candidate,
       candidateId,
       hasEew: false,
-      hasDetection: detected.length > 0,
+      hasDetection,
     }),
     h(FitToDetectionGL, {
       points: detected,
+      hasDetection,
       hasEew: false,
       hasCandidate: candidateId !== null && candidate.length > 0,
     }),
@@ -167,6 +197,157 @@ describe('確定検知の終了と候補クラスタの協調', () => {
 
     // Assert: 日本全体へ戻る（候補を待たない）。
     expect(fitPaddings(map).slice(before)).toContain(JAPAN_PADDING)
+  })
+})
+
+// ── 縮小フォロー（揺れが収まって検知の範囲が狭まったら寄り直す） ────────────────────
+// 成長フォローは「はみ出したら引く」しか持たないため、これが無いと大地震のあと画が引いたまま
+// 戻らない（2024-01-01 能登の再生で実測: 地図に描かれている検知点が 872→70 に減っても、画は
+// 8 分以上 z4 の全国のままで寄り直しは一度も起きなかった）。
+//
+// フェイク Map の getBounds は日本全体より広い固定値を返すため、狭い点群を渡せば常に「ゆるい」側になる。
+// 保持時間はコンポーネント内で Date.now() の差分として数えるため、フェイクタイマーで進める。
+describe('揺れ検知の縮小フォロー', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  // 能登半島付近に収まる狭い点群（フェイク Map の視野 100-160E / 10-60N に対して十分小さい）。
+  const NARROW = [dp(37.0, 137.0), dp(37.1, 137.2)]
+  // 初回フィットの飛行が「進行中」でなくなるまでの待ち（durationSec 1.0 ＋ 飛行期限マージン 2 秒）。
+  const AFTER_FLIGHT_MS = 4000
+
+  it('ゆるい状態が保持時間だけ続いたら、狭まった検知点へ寄り直す', () => {
+    // Arrange: 検知が立って初回フィットまで進んだ状態（初回は fitBounds 経路）。
+    const map = createFakeMap()
+    const view = render(harness(map, NARROW, [], null))
+    expect(fitPaddings(map)).toEqual([POINTS_PADDING])
+    expect(flyCount(map)).toBe(0)
+
+    // Act 1: 観測値の更新（＝毎秒の再評価）で「ゆるい」と判定させる。最初の 1 回は時刻を記録するだけ。
+    act(() => {
+      vi.advanceTimersByTime(AFTER_FLIGHT_MS)
+    })
+    view.rerender(harness(map, [...NARROW], [], null))
+    expect(flyCount(map)).toBe(0)
+
+    // Act 2: ゆるいまま保持時間を超える。
+    act(() => {
+      vi.advanceTimersByTime(9000)
+    })
+    view.rerender(harness(map, [...NARROW], [], null))
+
+    // Assert: 点群へ寄り直す（成長／縮小フォローはどちらも flyToBoundsSnapped 経路）。
+    // 日本全体へ戻す fitBounds は増えていない。
+    expect(flyCount(map)).toBe(1)
+    expect(fitPaddings(map)).toEqual([POINTS_PADDING])
+  })
+
+  it('一瞬ゆるくなっただけでは寄り直さない', () => {
+    // Arrange: 上と同じ状態から始める。
+    const map = createFakeMap()
+    const view = render(harness(map, NARROW, [], null))
+    act(() => {
+      vi.advanceTimersByTime(AFTER_FLIGHT_MS)
+    })
+    view.rerender(harness(map, [...NARROW], [], null))
+
+    // Act: 保持時間に届かないうちに再評価する。
+    act(() => {
+      vi.advanceTimersByTime(3000)
+    })
+    view.rerender(harness(map, [...NARROW], [], null))
+
+    // Assert: 寄り直しは起きない（余震や表面波の再来で範囲は数秒単位で上下するため、
+    // 一瞬の狭まりに追従するとカメラが落ち着かない）。
+    expect(flyCount(map)).toBe(0)
+  })
+
+  it('ユーザー操作を挟んだら待ち時間を数え直す（抑制が明けた瞬間にスナップしない）', () => {
+    // Arrange: ゆるさの待ちが始まったところ。
+    const map = createFakeMap()
+    const view = render(harness(map, NARROW, [], null))
+    act(() => {
+      vi.advanceTimersByTime(AFTER_FLIGHT_MS)
+    })
+    view.rerender(harness(map, [...NARROW], [], null))
+
+    // Act 1: ユーザーが地図を触る（抑制は INTERACTION_HOLD_SEC で自動的に明ける）。
+    act(() => {
+      map.fire('zoomstart')
+    })
+    act(() => {
+      vi.advanceTimersByTime(INTERACTION_HOLD_SEC * 1000)
+    })
+    view.rerender(harness(map, [...NARROW], [], null))
+
+    // Assert: 抑制が明けた直後には寄り直さない。操作前の待ちを持ち越すと、ユーザーが手を離した
+    // 瞬間にカメラがスナップする（待ち時間を入れた意図が消える）。
+    expect(flyCount(map)).toBe(0)
+
+    // Act 2: あらためて待ち時間ぶん経過する。
+    act(() => {
+      vi.advanceTimersByTime(9000)
+    })
+    view.rerender(harness(map, [...NARROW], [], null))
+
+    // Assert: ここで初めて寄り直す。
+    expect(flyCount(map)).toBe(1)
+  })
+
+  it('寄り直した後は、同じ目標のままなら二度と発火しない（往復しない）', () => {
+    // Arrange: 一度寄り直したところまで進める。
+    const map = createFakeMap()
+    const view = render(harness(map, NARROW, [], null))
+    act(() => {
+      vi.advanceTimersByTime(AFTER_FLIGHT_MS)
+    })
+    view.rerender(harness(map, [...NARROW], [], null))
+    act(() => {
+      vi.advanceTimersByTime(9000)
+    })
+    view.rerender(harness(map, [...NARROW], [], null))
+    expect(flyCount(map)).toBe(1)
+
+    // Act: 目標が変わらないまま、観測値の更新（毎秒の再評価）を何度も繰り返す。
+    for (let i = 0; i < 5; i++) {
+      act(() => {
+        vi.advanceTimersByTime(9000)
+      })
+      view.rerender(harness(map, [...NARROW], [], null))
+    }
+
+    // Assert: 発火は 1 回だけ。着地後は寄り直しの利得が無くなるため、判定が自然に止まる
+    // （矩形の広さの比で判定していると、padding とビューポート寸法によっては着地後も
+    //   閾値を超えたままになり、ここで撃ち続ける）。
+    expect(flyCount(map)).toBe(1)
+  })
+
+  it('検知は続いているのに描ける点が無くなった場合、日本全体へ戻さない', () => {
+    // Arrange: 初回フィットまで進んだ状態。
+    const map = createFakeMap()
+    const view = render(harness(map, NARROW, [], null))
+    const before = fitPaddings(map).length
+
+    // Act: 全メンバーが震度0未満・欠測になって描ける点が消える（検知そのものは続いている）。
+    act(() => {
+      vi.advanceTimersByTime(AFTER_FLIGHT_MS)
+    })
+    view.rerender(harness(map, [], [], null, { hasDetection: true }))
+
+    // Assert: カメラは動かない。ここで戻すと、点が返ってきた瞬間に寄り直す往復になる。
+    expect(fitPaddings(map).length).toBe(before)
+    expect(flyCount(map)).toBe(0)
+
+    // Act 2: 検知そのものが終わる。
+    view.rerender(harness(map, [], [], null, { hasDetection: false }))
+
+    // Assert: このときは日本全体へ戻る（「描けない」と「終わった」を分けている根拠）。
+    expect(fitPaddings(map).slice(before)).toEqual([JAPAN_PADDING])
   })
 })
 

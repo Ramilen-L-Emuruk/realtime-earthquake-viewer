@@ -42,6 +42,7 @@ import { useQuakeLayerData } from '../../hooks/useQuakeLayerData'
 import { useTsunamiLayerData } from '../../hooks/useTsunamiLayerData'
 import { useEewLayerData } from '../../hooks/useEewLayerData'
 import type { JapanMapProps } from './mapTypes'
+import { kyoshinIndexToJma } from '../../utils/kyoshinIntensity'
 import { log } from '../../utils/logger'
 
 // MapLibre GL JS 版の地図コンポーネント（Leaflet 版 JapanMap と同一 Props）。
@@ -124,6 +125,18 @@ export function JapanMapGL({
     tsunamis,
     observations,
     obsUpdateStatus,
+  )
+  // カメラが追う検知点。**実際に地図へ描かれているものだけ**に揃える。
+  // detectedPoints（confirmed イベントのメンバーの和集合）は単調増加し、揺れが収まっても縮まない
+  // （`kyoshinDetector` の memberKeys）。一方マーカー側は現在の震度で二段に絞られる
+  // （震度0未満・欠測を描かない `gl/kyoshinDetectedFeatures.ts` ＋ 孤立した震度0を落とす
+  // `dropIsolatedZeroPoints`）。この差をカメラが引き継ぐと、大地震のあと画が全国に張り付いたまま
+  // 戻らない（2024-01-01 能登の再生で実測: 描かれている 70 点に対しフィット目標が 887 点）。
+  // 「検知が続いているか」の判定にはこのフィルタを通さない生の detectedPoints を使う
+  // （表示を整えるフィルタで検知の有無を書き換えないため。FitToDetectionGL の hasDetection 参照）。
+  const detectedFitPoints = useMemo(
+    () => detectedMarkerPoints.filter((p) => kyoshinIndexToJma(p.index) !== null),
+    [detectedMarkerPoints],
   )
   // EEW の派生データ（予想震度塗り／予想長周期塗り／震源／カメラ追従に含める区域の範囲）。
   const { eewAreaFills, eewLpgmRegionAggregates, eewEpicenters, eewFitPositions } = useEewLayerData(
@@ -337,7 +350,8 @@ export function JapanMapGL({
                 hasDetection={detectedPoints.length > 0}
               />
               <FitToDetectionGL
-                points={detectedPoints}
+                points={detectedFitPoints}
+                hasDetection={detectedPoints.length > 0}
                 hasEew={eews.length > 0}
                 hasCandidate={candidateId !== null && candidatePoints.length > 0}
               />
@@ -349,7 +363,8 @@ export function JapanMapGL({
               <FitToEEWGL
                 eews={eews}
                 psWave={kyoshinPsWave}
-                detectedPoints={detectedPoints}
+                detectedPoints={detectedFitPoints}
+                hasDetection={detectedPoints.length > 0}
                 candidatePoints={candidatePoints}
                 forecastAreaPositions={eewFitPositions}
               />

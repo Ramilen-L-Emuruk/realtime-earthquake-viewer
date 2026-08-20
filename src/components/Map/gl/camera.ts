@@ -234,6 +234,18 @@ export function flyToBounds(
 export const EEW_ZOOM_SNAP = 0.5
 
 /**
+ * ズームを zoomStep 段階へ切り下げる（＝わずかにズームアウトして余白を残す）。
+ * 浮動小数の 6.9999… が 6.5 に落ちるのを防ぐため、わずかなイプシロンを足してから floor する。
+ *
+ * `flyToBoundsSnapped` の着地ズームと、`zoomGainForBounds`（寄り直して得られる段数）の双方が
+ * この式を使う。片方だけ変えると「得られると計算した段数」と「実際の着地」がずれ、
+ * 寄り直しの発火判定が着地後も成立し続けて無駄な fly を撃ち続ける。
+ */
+export function snapZoomDown(zoom: number, zoomStep: number = EEW_ZOOM_SNAP): number {
+  return Math.floor((zoom + 1e-6) / zoomStep) * zoomStep
+}
+
+/**
  * bounds に合うズームを算出し zoomStep 段階へ切り下げて（＝わずかにズームアウトして余白を残して）fly する。
  * 旧 Leaflet の `getBoundsZoom(inside=false)`＋`zoomSnap` 相当のヒステリシスを再現する。
  */
@@ -250,10 +262,28 @@ export function flyToBoundsSnapped(
     map.fitBounds(bounds, { padding, maxZoom, duration }, beginProgrammaticFlight(map, duration))
     return
   }
-  // 円が収まる最大ズームを zoomStep 段階へ切り下げる。浮動小数の 6.9999… が 6.5 に落ちるのを防ぐため
-  // わずかなイプシロンを足してから floor する。
-  const snappedZoom = Math.floor((cam.zoom + 1e-6) / zoomStep) * zoomStep
-  map.flyTo({ center: cam.center, zoom: snappedZoom, duration }, beginProgrammaticFlight(map, duration))
+  map.flyTo({ center: cam.center, zoom: snapZoomDown(cam.zoom, zoomStep), duration }, beginProgrammaticFlight(map, duration))
+}
+
+/**
+ * いま `flyToBoundsSnapped` で bounds へ寄り直したら、ズームが何段深くなるか（現在ズームとの差）。
+ * 算出できない場合は null。
+ *
+ * 「画が目標よりゆるいか」をこの差で測るのが要点。矩形の広さの比で測ると padding（px）と
+ * ビューポートのアスペクト比の影響が入り、地図ペインが小さい端末（スマホの上下分割など）では
+ * 着地後にも「まだゆるい」と判定され続けて、無駄な fly を繰り返す。ズームの利得で測れば
+ * 着地後の利得は必ず 0 になるため、その往復が構造的に起きない。
+ * 着地ズームの計算は `flyToBoundsSnapped` と同じ `snapZoomDown` を通す。
+ */
+export function zoomGainForBounds(
+  map: maplibregl.Map,
+  bounds: maplibregl.LngLatBounds,
+  opts: { padding?: number; maxZoom?: number; zoomStep?: number } = {},
+): number | null {
+  const { padding = 48, maxZoom = MAX_ZOOM, zoomStep = EEW_ZOOM_SNAP } = opts
+  const cam = map.cameraForBounds(bounds, { padding, maxZoom })
+  if (!cam || cam.zoom == null) return null
+  return snapZoomDown(cam.zoom, zoomStep) - map.getZoom()
 }
 
 /** BoundsTuple を maplibre の LngLatBounds へ。 */
@@ -294,3 +324,4 @@ export function mapContainsBounds(map: maplibregl.Map, target: maplibregl.LngLat
     [target.getWest(), target.getSouth(), target.getEast(), target.getNorth()],
   )
 }
+
