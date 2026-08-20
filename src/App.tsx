@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback, type CSSProperties } from 'react'
 import { IconNav, type TabId } from './components/IconNav'
+import { TAB_PRIORITY, TAB_HOLD_MS, shouldAcceptAutoTab, type TabHold, type TabPriority } from './utils/tabPriority'
 import { PanelResizeHandle } from './components/PanelResizeHandle'
 import { MapView, type MapMode } from './components/Map/MapView'
 import { MapUpdateTime } from './components/MapUpdateTime'
@@ -18,6 +19,7 @@ import { useLiveEventHandler } from './hooks/useLiveEventHandler'
 import { useKyoshinAlerts } from './hooks/useKyoshinAlerts'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
 import { useKyoshinDetectorV2 } from './hooks/useKyoshinDetectorV2'
+import { useKyoshinMissingHold } from './hooks/useKyoshinMissingHold'
 import { deriveKyoshinView } from './utils/kyoshinDetectionView'
 import { filterSubThresholdIndices } from './utils/kyoshinSubThresholdFilter'
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
@@ -61,6 +63,7 @@ const API_KEY_DEBOUNCE_MS = 800
 // 顕在化する）。overflow-x-hidden で塞ぎ、overscroll-x-none で iOS の横ラバーバンドも止める。
 const TAB_SCROLLER_CLASS = 'absolute inset-0 overflow-y-auto overflow-x-hidden overscroll-x-none'
 
+
 export function App() {
   const { settings, updateSetting } = useSettings()
   const [activeTab, setActiveTabState] = useState<TabId>(settings.defaultTab)
@@ -76,6 +79,11 @@ export function App() {
   // EEW のレベルアップ・揺れ検知の続報・津波の続報はいずれも「既に表示中のタブ」へ
   // setActiveTab を呼ぶ（値が変わらない）ため、監視型だと畳んだまま気付けない。
   // 以降 App 内の全てのタブ切替（フックへ props で渡すものも含む）はこのラッパーを通す。
+  //
+  // **この関数を直接呼べるのは `requestAutoTab` だけ**（不変条件）。他から呼ぶと優先度の保持
+  // （`tabHoldRef`）を通らず、張るべき保持を張らないまま動いてしまう。実際に配り忘れを 3 箇所
+  // 作り、いずれも「画面が別の情報に奪われる」「アイドル復帰が二度と効かない」という
+  // 再現しにくい不具合になった。外部フックへ渡すときも必ず優先度を付けた関数を渡すこと。
   const setActiveTab = useCallback((tab: TabId) => {
     setPanelCollapsed(false)
     setActiveTabState(tab)
@@ -148,34 +156,89 @@ export function App() {
   // DMDSS版: WS接続中は現在時刻を毎秒更新して地図上の更新時刻をリアルタイム表示する
   const [nowTick, setNowTick] = useState<Date | null>(null)
 
-  // リアルタイムタブ以外へ移動した後 15 秒間、EEW 続報による realtime タブへの
-  // 強制移動を抑制するタイムスタンプ（0 = 抑制なし）
-  const realtimeTabSuppressedUntilRef = useRef<number>(0)
+  // 自動タブ切替の保持状態。「いつまで」「どの優先度で」確保しているかを持つ。
+  // 従来は「非 realtime へ移ったあと 15 秒は EEW 続報に realtime を奪わせない」という
+  // 片方向の抑制しか無く、**EEW が確保した realtime を地震情報が即座に奪えていた**
+  // （声は EEW を守るのに画面だけ取られる）。優先度付きの保持に一般化してある。
+  const tabHoldRef = useRef<TabHold>({ until: 0, priority: TAB_PRIORITY.quake })
 
-  // リアルタイム以外のタブへ移動するときに呼ぶ。抑制タイマーをリセットする。
-  // 子タブ・useLiveEventHandler へ props として渡すため useCallback で参照を安定化する
-  // （React.memo 化した子タブが親レンダーで無駄に再レンダーされないようにする）。
-  const setActiveTabNonRealtime = useCallback((tab: Exclude<TabId, 'realtime'>) => {
-    realtimeTabSuppressedUntilRef.current = Date.now() + 15000
-    setActiveTab(tab)
-  }, [])
-
-  // EEW 続報（新規発報・レベルアップ以外）による realtime タブ移動。
-  // 抑制タイマー発動中はスキップする。
-  const setActiveTabRealtimeOnUpdate = useCallback(() => {
-    const remaining = realtimeTabSuppressedUntilRef.current - Date.now()
-    if (remaining > 0) {
-      log.debug(`[tab] → realtime スキップ (EEW続報・抑制中 残り${remaining}ms)`)
-      // タブは動かさないが、折りたたみだけは解除する。抑制は「ユーザーが自分で選んだタブを
-      // 勝手に切り替えない」ための仕組みであって、情報を隠したままにするためのものではない。
-      // これを入れないと「手動で別タブへ移動 → 折りたたむ → 抑制中に続報が届く」経路で、
-      // 抑制が切れるまで（最大 15 秒）パネルが畳まれたままになる。
+  /**
+   * 自動タブ切替の要求。保持中の優先度より低ければ拒否する（同格以上は移動できる。
+   * 新しい情報が勝つという点は読み上げと同じ）。
+   *
+   * 拒否したときもパネルの折りたたみだけは解除する。保持は「今見せるべきものを守る」ための
+   * 仕組みであって、情報を隠したままにするためのものではない。
+   *
+   * 拒否した切替は後で実行しない。読み上げと違い、画面は「今どこを見せるか」だけの問題で、
+   * 遅れて出てきても意味が薄いため（読み上げは待ち行列に載せる）。
+   *
+   * @returns 実際に移動したか。呼び出し側が「動いたときだけ記録する」ために使う
+   *   （拒否のログは本関数が出す。両方で出すと二重になる）。
+   *
+   * 呼び出し側（`useLiveEventHandler`）は移動の**要求**としてログを出す。ここで拒否されうるため、
+   * 「→ タブ名」ではなく「タブ名を要求」と書いてもらっている。ログの 1 行目だけを読んで
+   * 「移動した」と誤読しないように。
+   */
+  const requestAutoTab = useCallback((tab: TabId, priority: TabPriority): boolean => {
+    const hold = tabHoldRef.current
+    const now = Date.now()
+    if (!shouldAcceptAutoTab(hold, priority, now)) {
+      log.debug(`[tab] → ${tab} スキップ (優先度${priority} < 保持中${hold.priority}・残り${hold.until - now}ms)`)
       setPanelCollapsed(false)
-      return
+      return false
     }
-    log.info('[tab] → realtime (EEW続報)')
-    setActiveTab('realtime')
-  }, [])
+    tabHoldRef.current = { until: now + TAB_HOLD_MS, priority }
+    setActiveTab(tab)
+    return true
+  }, [setActiveTab])
+
+  /**
+   * **拒否されない**タブ移動。保持を捨ててから指定の優先度で張り直す。
+   *
+   * 拒否されてはいけない経路が 2 種類ある。どちらも 1 つの実装に寄せておくこと。
+   * 別々に書くと、片方だけ保持の破棄を忘れて「操作しても切り替わらない」という
+   * 再現しにくい不具合になる（実際に一度作り込んだ）。
+   *
+   * - **ユーザー操作**（ナビの選択・津波カードから地震情報へのリンク）。押したのだから必ず動く
+   * - **アイドル復帰**。既定の状態へ戻す操作で、拒否されると一発限りのタイマーが再スケジュール
+   *   されないため二度と復帰しない。とくに設定「自動復帰までの時間」の 15 秒は `TAB_HOLD_MS` と
+   *   一致するため、直前の手動操作と必ず衝突する
+   */
+  const forceTab = useCallback((tab: TabId, priority: TabPriority) => {
+    tabHoldRef.current = { until: 0, priority: TAB_PRIORITY.quake }
+    requestAutoTab(tab, priority)
+  }, [requestAutoTab])
+
+  /**
+   * 揺れ検知（強震モニタ）による realtime 移動。地震情報・長周期地震動情報には奪われず、
+   * 津波・EEW には譲る。`useKyoshinAlerts` と `useLiveEventHandler`（EEW 全解除後に揺れ検知が
+   * 続いている経路）の両方がここを通る。**生の `setActiveTab` を渡してはいけない**。
+   */
+  const requestTabForKyoshin = useCallback((tab: TabId) => {
+    requestAutoTab(tab, TAB_PRIORITY.kyoshin)
+  }, [requestAutoTab])
+
+  /** ユーザー操作によるタブ移動。以後 TAB_HOLD_MS は自動切替に奪わせない。 */
+  const setActiveTabByUser = useCallback((tab: TabId) => {
+    forceTab(tab, TAB_PRIORITY.manual)
+  }, [forceTab])
+
+  // 地震情報・長周期地震動情報・津波の受信によるタブ移動（`useLiveEventHandler` から呼ぶ）。
+  // 優先度は移動先から決める（earthquake=地震情報／tsunami=津波）。
+  const setActiveTabNonRealtime = useCallback((tab: Exclude<TabId, 'realtime'>) => {
+    requestAutoTab(tab, tab === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake)
+  }, [requestAutoTab])
+
+  // EEW の続報による realtime タブ移動。手動選択より弱く、地震情報・津波より強い。
+  // 動いたときだけ記録する（拒否は requestAutoTab 側が debug で残す）。
+  const setActiveTabRealtimeOnUpdate = useCallback(() => {
+    if (requestAutoTab('realtime', TAB_PRIORITY.eewUpdate)) log.info('[tab] → realtime (EEW続報)')
+  }, [requestAutoTab])
+
+  // EEW の新規発報・レベルアップ・誤報取消による realtime タブ移動。手動選択より強い。
+  const setActiveTabRealtimeUrgent = useCallback(() => {
+    requestAutoTab('realtime', TAB_PRIORITY.eewUrgent)
+  }, [requestAutoTab])
 
   // useLiveEventHandler が返す resetTsunamiScrollToTop を revertToDefaultTab から呼べるようにする ref。
   // revertToDefaultTab はフック呼び出しより前に定義されるため、defaultTabRef と同様に
@@ -188,18 +251,17 @@ export function App() {
   // 津波イベントを経由しない復帰で津波タブに切り替わる場合は、スクロール位置も一番上へ戻す。
   const revertToDefaultTab = () => {
     const tab = defaultTabRef.current
-    if (tab === 'realtime') {
-      setActiveTab('realtime')
-    } else {
-      setActiveTabNonRealtime(tab)
-    }
+    // 既定の状態へ戻す操作なので必ず動かす（理由は forceTab）。呼び出し元は EEW 発報中・
+    // 揺れ検知中を除外しているため、警報級の表示を消すことはない。
+    forceTab(tab, TAB_PRIORITY.quake)
     if (tab === 'tsunami') resetTsunamiScrollRef.current()
   }
 
   // ライブイベント受信処理（通知音・タイトル・タブ切替・読み上げ・ブラウザ通知）
   const { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, focusedDistrict, resetTsunamiScrollToTop } = useLiveEventHandler({
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
-    setActiveTab, setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate,
+    setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate, setActiveTabRealtimeUrgent,
+    setActiveTabRealtimeForKyoshin: () => requestTabForKyoshin('realtime'),
     revertToDefaultTab, selectQuake, setActiveLpgmEventId,
   })
   resetTsunamiScrollRef.current = resetTsunamiScrollToTop
@@ -232,13 +294,13 @@ export function App() {
   }, [selectQuake])
 
   // 津波タブから地震情報カードへのリンク（地震タブへ移動して該当カードを選択する）。
-  // selectQuake は上で useCallback 化、setActiveTabNonRealtime も useCallback 化済み。
+  // selectQuake は上で useCallback 化、setActiveTabByUser も useCallback 化済み。
   // ユーザーが自らリンクをクリックした挙動なので explicit=true で明示選択扱いにし、
   // モード切替（tsunami→quake）で QuakeFitGL がリマウントされた直後でも強制フィットさせる。
   const linkTsunamiToEarthquake = useCallback((quakeKey: string) => {
     selectQuake(quakeKey, { explicit: true })
-    setActiveTabNonRealtime('earthquake')
-  }, [selectQuake, setActiveTabNonRealtime])
+    setActiveTabByUser('earthquake')
+  }, [selectQuake, setActiveTabByUser])
   // SettingsTab の onTest オブジェクトはメモ化して同一参照を保つ（毎レンダー再生成すると
   // React.memo 化された SettingsTab が無駄に再レンダーされる）。
   // WARNING: 新規テストハンドラーを追加するときは、対応する simulate* 関数を必ず
@@ -280,7 +342,8 @@ export function App() {
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiCommentary, simulateKohatsu,
   ])
-  // IconNav の onTabChange。手動タブ切替は抑制タイマーをリセットして即時反映する。
+  // IconNav の onTabChange。手動選択は必ず即時反映し、以後 TAB_HOLD_MS の間は自動切替に
+  // 奪わせない（EEW の新規発報・レベルアップ・誤報取消だけはこれより強い）。
   // 表示中のタブをもう一度押した場合はタブ切替ではなく、パネルの折りたたみをトグルする
   // （地図を全画面で見るための操作。特に画面の狭いスマホ向け）。
   const handleTabChange = useCallback((tab: TabId) => {
@@ -288,15 +351,9 @@ export function App() {
       setPanelCollapsed(c => !c)
       return
     }
-    if (tab === 'realtime') {
-      realtimeTabSuppressedUntilRef.current = 0
-      log.info('[tab] → realtime (手動選択)')
-      setActiveTab('realtime')
-    } else {
-      log.info(`[tab] → ${tab} (手動選択)`)
-      setActiveTabNonRealtime(tab)
-    }
-  }, [setActiveTabNonRealtime])
+    log.info(`[tab] → ${tab} (手動選択)`)
+    setActiveTabByUser(tab)
+  }, [setActiveTabByUser])
 
   // パネル境界のつまみ操作。ドラッグ中（Change）は state だけを更新して追従性を保ち、
   // 指を離した時点（Commit）で設定へ保存する。折りたたみ中にドラッグされた場合は
@@ -599,7 +656,11 @@ export function App() {
     const revert = () => {
       if (activeEEWsRef.current.size > 0 || kyoshinDetectedRef.current) {
         log.info(`[tab] → realtime (アイドル復帰・EEW中または揺れ検知中 idleRevertSec=${settings.idleRevertSec})`)
-        setActiveTab('realtime')
+        // 必ず通したうえで保持も張る。優先度判定に任せると、直前の手動操作の保持（manual）に
+        // 負けて拒否され、一発限りのタイマーは再スケジュールされないため二度と復帰しない。
+        // 保持を張るのは、戻したはずの realtime を直後の地震情報に奪われないため
+        // （実測: 復帰の 20 秒後に届いた地震情報が realtime を取っていた）。
+        forceTab('realtime', TAB_PRIORITY.eewUpdate)
       } else {
         log.info(`[tab] → ${defaultTabRef.current} (アイドル復帰 idleRevertSec=${settings.idleRevertSec})`)
         revertToDefaultTab()
@@ -692,16 +753,26 @@ export function App() {
   const kyoshinIndicesGated = kyoshin.sitesSiteConfigId != null
     && kyoshin.sitesSiteConfigId === kyoshin.indicesSiteConfigId
     ? kyoshin.indices : EMPTY_INDICES
+  // 表示用インデックス: 1〜2 秒で復帰する欠測（瞬断）を直前値で埋め、保持中の点を stale で示す。
+  // Yahoo の秒データは強く揺れている観測点でも単発で欠測を返すため、素通しすると震度6強級の
+  // バッジが 1 秒だけ消えて次の秒で戻る明滅になる（実測は utils/kyoshinMissingHold.ts 冒頭）。
+  // **検知エンジン（上の useKyoshinDetectorV2）には生の kyoshin.indices を渡し続ける**——欠測判定・
+  // 慢性ノイズ床の学習を保持値で汚さない。一方で、下の deriveKyoshinView を通す表示状態には保持値を
+  // 使う。そのため音・通知・地域単位発報の入力（candidateMaxIndex / confirmedShocks）も保持値を見る
+  // ことになるが、これは意図した設計（欠測を素通しすると最大震度を担う点の 1 秒欠測が「揺れが弱まった」
+  // と解釈され、復帰時に更新音が誤って鳴る）。範囲の詳細は utils/kyoshinMissingHold.ts 冒頭。
+  const kyoshinHeld = useKyoshinMissingHold(kyoshinIndicesGated, kyoshin.dataTime, kyoshin.sitesSiteConfigId)
   // V2 検知イベント → 表示状態（confirmed/candidate・検知点・候補点）へ変換する
   const kyoshinView = useMemo(
     () =>
       deriveKyoshinView(
         kyoshinV2.detections,
         kyoshinSitesGated,
-        kyoshinIndicesGated,
+        kyoshinHeld.indices,
         kyoshinV2.recentOnsetKeys,
+        kyoshinHeld.stale,
       ),
-    [kyoshinV2.detections, kyoshinSitesGated, kyoshinIndicesGated, kyoshinV2.recentOnsetKeys],
+    [kyoshinV2.detections, kyoshinSitesGated, kyoshinHeld, kyoshinV2.recentOnsetKeys],
   )
   // 検知点マーカーが描く点列そのものを検知カードにも渡す（地図とカードで数える集合を構造的に揃える。
   // 以前はカード側でも同じ計算を組み立てていたが、同一の結果になることに頼ると片方の変更で黙って
@@ -716,16 +787,16 @@ export function App() {
   // （`undefined` を返せば JapanMapGL 側で kyoshinIndices にフォールバックする）。
   const kyoshinSubIndices = useMemo(
     () => (mapMode === 'kyoshin'
-      ? filterSubThresholdIndices(kyoshinSitesGated, kyoshinIndicesGated, kyoshinV2.floors)
+      ? filterSubThresholdIndices(kyoshinSitesGated, kyoshinHeld.indices, kyoshinV2.floors)
       : undefined),
-    [mapMode, kyoshinSitesGated, kyoshinIndicesGated, kyoshinV2.floors],
+    [mapMode, kyoshinSitesGated, kyoshinHeld, kyoshinV2.floors],
   )
   // タイマーコールバック内から最新の confirmed 値を参照する ref（宣言はコンポーネント冒頭・代入はここ）
   kyoshinDetectedRef.current = kyoshinView.confirmed
 
   // 警報級の状況（EEW 発報中・津波発表中・揺れ検知中）が立ち上がったときの保険。
-  // 通常はタブ切替（setActiveTab ラッパー）が展開を担うが、リアルタイムタブへの自動移動が
-  // 抑制されている間（realtimeTabSuppressedUntilRef）はタブ切替自体が起きないため、
+  // 通常はタブ切替（setActiveTab ラッパー）が展開を担うが、優先度の保持（tabHoldRef）で
+  // 自動移動が拒否されている間はタブ切替自体が起きないため、
   // 状況の変化そのものからも展開できるようにしておく。
   const alertActive = hasActiveEEW || tsunamiActive || kyoshinView.confirmed
   useEffect(() => {
@@ -770,7 +841,9 @@ export function App() {
     title,
     activeEEWsRef,
     defaultTabRef,
-    setActiveTab,
+    // 揺れ検知の優先度を付けて渡す（生の setActiveTab を渡すと保持が張られず、直後の
+    // 地震情報に画面を奪われる）
+    setActiveTab: requestTabForKyoshin,
     revertToDefaultTab,
   })
 
@@ -820,7 +893,8 @@ export function App() {
             heatPoints={quakeHeatPoints}
             showPlateBoundaries={settings.showPlateBoundaries}
             kyoshinSites={kyoshinSitesGated}
-            kyoshinIndices={kyoshinIndicesGated}
+            kyoshinIndices={kyoshinHeld.indices}
+            kyoshinStale={kyoshinHeld.stale}
             kyoshinSubIndices={kyoshinSubIndices}
             kyoshinPsWave={psWave}
             eews={eewsForMap}
