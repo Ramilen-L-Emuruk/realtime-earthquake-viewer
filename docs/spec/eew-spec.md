@@ -20,10 +20,11 @@
 ```
 [電文経路]
   DMDATA WebSocket / REST 履歴 (VXSE43/44/45) ──┐
-  P2PQuake WebSocket (code=556)  ────────────────┼── enqueueEvent
-  Yahoo hypoInfo（1Hz ポーリング）───────────────┘         │
+  P2PQuake WebSocket (code=556)  ────────────────┴── enqueueEvent（eventQueue へ時刻順に積む）
+  Yahoo hypoInfo（1Hz ポーリング・standard 版のみ）── handleEvent を直接呼ぶ（キュー非経由）
+                                                            │
                                                             ↓
-        [useEarthquakes] handleEvent (eventQueue で時刻順ディスパッチ)
+        [useEarthquakes] handleEvent (eventQueue から時刻順にディスパッチ)
                                                             ↓
                                           activeEEWs: Map<eventId, EEWAlert>
                                                             ↓
@@ -43,6 +44,10 @@
                                                    カード表示（見出し・震度・M・深さ等）
 ```
 
+図の 3 経路が揃って動くことはない。DMDATA と、それ以外の 2 経路（P2PQuake・Yahoo hypoInfo）が
+バリアントで排他的に入れ替わる（内訳は次節の表）。Yahoo hypoInfo の直接呼び出しは
+`src/App.tsx` が `onEEWEvent` に渡す `injectEvent`（実体は `handleEvent`）による。
+
 ## 3. 電文経路とバリアント差
 
 3 系統の電文源がある:
@@ -51,12 +56,18 @@
 |---|---|---|---|---|---|
 | DMDATA WS/REST | DMDSS | 電文値（Warning/Forecast） | 電文値（`'仮定震源要素'` あり） | あり | 主系 |
 | P2PQuake WS | standard | 電文に無いが `convertEvent` で一律 `'Warning'` 付与 | 数値/文字列 | なし | 主系（DMDSS 版は不使用） |
-| Yahoo hypoInfo | 両バリアント | 震度からの推定（`>= 5弱 ? 'Warning' : 'Forecast'`） | 常に `'以上'` 固定 | なし | standard 版で補完的に検知 |
+| Yahoo hypoInfo | standard | 震度からの推定（`>= 5弱 ? 'Warning' : 'Forecast'`） | 常に `'以上'` 固定 | なし | 補完的に検知（DMDSS 版は不使用） |
 
 P2PQuake の 556 で severity が付与される仕組みは [`data-sources-spec.md`](data-sources-spec.md) §3
 を参照（電文仕様と付与ロジックはそちらに一本化）。
 
-**enrichEEW（`useEarthquakes.ts`）**: Yahoo hypoInfo で先に検知した EEW に、後着の P2PQuake / DMDATA で
+**Yahoo hypoInfo を DMDSS 版で使わない仕組み**: `src/App.tsx` が `useKyoshinRealtime` に渡す
+`onEEWEvent` を DMDSS 版では `undefined` にしている。通知先が無いとき `useKyoshinRealtime` は
+差分の基準（直前の hypoInfo）だけ進めてイベントを捨てるため、DMDSS 版では Yahoo 由来の EEW が
+状態へ入る経路そのものが存在しない。**リアルタイム震度とクロック較正には両バリアントとも Yahoo を
+使う**（強震モニタのフレームに hypoInfo は載ってくるが、EEW としては読まない）という点に注意。
+
+**enrichEEW（`useEarthquakes.ts`・standard 版のみ）**: Yahoo hypoInfo で先に検知した EEW に、後着の P2PQuake で
 より正確な `areas` / `condition` / `hypocenter` を上書きする。severity は upgrade only（既存 `'Warning'` は
 維持、`Forecast/Unknown` から `'Warning'` への格上げのみ許可）。Warning への格上げ時は `onLiveEvent` に
 enriched オブジェクトを渡して `useLiveEventHandler` 側の音・通知・タブ切替のレベル再評価をトリガーする
@@ -144,10 +155,10 @@ standard 版では `eewMaxLpgmClass` が常に 0 になり震度のみでレベ�
 - **検知エンジンの EEW 連動緩和判定** — `src/App.tsx` の `hasActiveNonAssumedEEW`
 - **揺れ検知の基準震源選定** — `src/hooks/useKyoshinAlerts.ts` の `extractEewInfo`
 - **読み上げテキスト生成** — `src/utils/ttsText.ts`（EEW 読み上げ関数群で `condition` を参照）
-- **`condition`/`hypocenter` の明示マージ** — `src/hooks/useEarthquakes.ts` の `enrichEEW`（§3 参照。後着の P2PQuake / DMDATA で明示的に上書きし、Yahoo 由来の誤った `condition` が残り続けないようにする。ここが崩れると下流の全判定が破綻する）
+- **`condition`/`hypocenter` の明示マージ** — `src/hooks/useEarthquakes.ts` の `enrichEEW`（§3 参照。standard 版で、後着の P2PQuake が明示的に上書きし、Yahoo 由来の誤った `condition` が残り続けないようにする。ここが崩れると下流の全判定が破綻する）
 
 **バリアント差の非対称**: Yahoo hypoInfo は `condition` に相当するフィールドを持たず常に `'以上'` を返すため、
-standard 版で Yahoo hypoInfo が先に単独観測点処理の EEW を検知した場合、後続の P2PQuake / DMDATA で
+standard 版で Yahoo hypoInfo が先に単独観測点処理の EEW を検知した場合、後続の P2PQuake で
 上書きされるまでの間は「確定震源として表示」される。既知の限界（実運用時の確認をユーザーに委ねる）。
 
 ## 6. 予報円（P 波・S 波）
