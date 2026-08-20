@@ -108,3 +108,83 @@ describe('検知カードは渡された点列をそのまま集計する', () =
     expect(screen.getByText(/1観測点で反応 ・ 2地域/)).toBeTruthy()
   })
 })
+
+// ============================================================
+// カードの枠色は最大震度で決まる（確信度ではない）
+//
+// 枠＝震度・チップ＝確信度の 2 軸分離。期待値はソースの色定数を参照せず 16 進数で直接書く
+// （色が変わったら気づけるように）。震度1 以上は気象庁の震度配色そのもので変更の余地が無い。
+// 震度0 の灰色（SHINDO0_COLOR）は気象庁配色に震度0 が無いためのプロジェクト独自の選択で、
+// 気象庁配色だから固定というわけではない。
+//
+// 枠色を決めるのは **points（地図の検知点と同じ点列）の最大インデックス**で、イベント側の
+// maxIntensity ではない。そのためイベントは id と確信度だけを与える。
+// ============================================================
+
+/** '#rrggbb' と 'rgb(r, g, b)' を同じ表記に揃える（jsdom が正規化する場合があるため）。 */
+function toRgb(color: string): string {
+  const hex = color.trim().match(/^#([0-9a-fA-F]{6})$/)
+  if (!hex) return color.trim()
+  const n = parseInt(hex[1]!, 16)
+  return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`
+}
+
+/** 検知カードのルート要素（枠線を持つ要素）。本文から親へ辿る。 */
+function cardRoot(): HTMLElement {
+  const anchor = screen.getByText(/観測点で反応|観測点の反応は収まりました/)
+  let el: HTMLElement | null = anchor as HTMLElement
+  while (el && !(el.classList.contains('rounded-lg') && el.classList.contains('overflow-hidden'))) {
+    el = el.parentElement
+  }
+  if (!el) throw new Error('検知カードのルート要素が見つからない')
+  return el
+}
+
+/** カードの枠色を rgb 表記で取り出す。 */
+function cardBorderColor(): string {
+  const el = cardRoot()
+  const decl =
+    el.style.borderColor ||
+    el.style.border ||
+    (el.getAttribute('style') ?? '').match(/border(?:-color)?\s*:\s*([^;]+)/)?.[1] ||
+    ''
+  const m = decl.match(/#[0-9a-fA-F]{6}|rgba?\([^)]*\)/)
+  if (!m) throw new Error(`枠色が読めない: ${el.getAttribute('style')}`)
+  return toRgb(m[0])
+}
+
+describe('検知カードの枠色は最大震度で決まる（確信度ではない）', () => {
+  it('震度7 の点があれば枠は震度7 の色', () => {
+    // index 20 = 計測震度 7.0 = 震度7
+    renderTab([fakeEvent({ id: 'evt-1', confidence: 'confirmed' })], [P('a', 20)])
+    expect(cardBorderColor()).toBe(toRgb('#9d0099'))
+  })
+
+  it('震度1 なら枠は震度1 の色', () => {
+    renderTab([fakeEvent({ id: 'evt-1', confidence: 'confirmed' })], [P('a', 7)])
+    expect(cardBorderColor()).toBe(toRgb('#7bb4c8'))
+  })
+
+  it('震度1未満（震度0級）は震度0の灰色へフォールバックする', () => {
+    // 震度色が定まらないので震度0の灰色を使う。ティアの色は使わない（confirmed でも同じ色）。
+    // ティア色を混ぜると、確信度のラッチで震度が下がった後も赤枠が残る不整合が起きる。
+    renderTab([fakeEvent({ id: 'evt-1', confidence: 'faint' })], [P('a', 6)])
+    const faintBorder = cardBorderColor()
+    expect(faintBorder).toBe(toRgb('#9ca3af'))
+    cleanup()
+
+    renderTab([fakeEvent({ id: 'evt-2', confidence: 'confirmed' })], [P('a', 6)])
+    expect(cardBorderColor()).toBe(faintBorder)
+  })
+
+  it('同じ点列なら確信度が変わっても枠色は同じ（枠=震度・チップ=確信度）', () => {
+    renderTab([fakeEvent({ id: 'evt-1', confidence: 'confirmed' })], [P('a', 7)])
+    const confirmedBorder = cardBorderColor()
+    expect(screen.getByText('検知')).toBeTruthy()
+    cleanup()
+
+    renderTab([fakeEvent({ id: 'evt-2', confidence: 'likely' })], [P('a', 7)])
+    expect(cardBorderColor()).toBe(confirmedBorder) // 枠は震度1 の色のまま
+    expect(screen.getByText('可能性')).toBeTruthy() // 確信度はチップ側だけが変わる
+  })
+})

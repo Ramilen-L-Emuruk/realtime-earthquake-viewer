@@ -18,6 +18,7 @@ import {
   type StationMeta,
   type SiteState,
 } from './kyoshinDetector'
+import { haversineKm } from './geo'
 
 // ============================================================
 // テスト用ヘルパー
@@ -295,6 +296,135 @@ describe('step: 近傍同時の揺れを confirmed 検知', () => {
   })
 })
 
+describe('step: 単点強震ノイズの排除（§18・CONFIRM_INTENSE_POINTS）', () => {
+  /**
+   * 「連結成分は育つが、確定震度に達したのは1点だけ」というノイズ分布を作る。
+   *
+   * 静穏期を value=-0.5 に置くのは、揺れ期に全点を onset させるための下準備。
+   * 静穏 -0.5 が続くと点別床は FLOOR_MIN(0.0) でクランプされ、震度0(0.0) でも levelActive になる。
+   * そこから baseValue への立ち上がりで周囲の点も onset し、連結成分（面）が育つ
+   * （既定の baseValue=0.0 なら rise 0.5 = RATE_MIN ちょうど。baseValue を上げた場合は rise が
+   * RATE_MIN を上回るだけで、onset が成立することは変わらない）。intenseValue まで上げる点を
+   * intenseCount 点に絞ることで、「面はあるが確定震度に達した点の数」だけを変えた対照実験ができる。
+   *
+   * @param defs 観測点定義
+   * @param intenseCount 確定震度（intenseValue）まで上げる点数。残りは baseValue に留める
+   * @param intenseValue 確定震度とみなす値（通常セルは MIN_CONFIRM_INTENSITY、慢性活性セルは CHRONIC_CONFIRM_INTENSITY）
+   * @param baseValue 確定震度に達しない点の揺れ期の値
+   */
+  function shakeWithIntensePoints(
+    defs: StationDef[],
+    intenseCount: number,
+    intenseValue = 0.5,
+    baseValue = 0.0,
+  ): Frame[] {
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(defs, t, -0.5))
+    for (let i = 0; i < 5; i++, t += 1000) {
+      frames.push(frameWith(defs, t, (idx) => (idx < intenseCount ? intenseValue : baseValue)))
+    }
+    return frames
+  }
+
+  it('「1点だけ震度1・周囲は震度0」は面が育っても confirmed にならない（茨城県北部 2026-07-27 の誤検知）', () => {
+    const defs = grid3x3(36.7, 140.5, 0.1) // 9点・全点相互近傍（誤検知が起きた茨城県北部を模す）
+    const meta = buildStationMeta(sitesOf(defs))
+    const { detections } = drive(shakeWithIntensePoints(defs, 1), meta)
+
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+    // 点数・最大震度だけなら確定条件を満たしていたことを示す（落ちた理由が第3軸であることの確認）
+    const ev = detections[0]
+    expect(ev.lastSize).toBeGreaterThanOrEqual(PARAMS.CONFIRM_POINTS)
+    expect(ev.maxIntensity).toBeGreaterThanOrEqual(PARAMS.MIN_CONFIRM_INTENSITY)
+  })
+
+  it('confirmed を阻まれても likely には留まる（弱い実地震を取りこぼさないため likely には課さない）', () => {
+    const defs = grid3x3(36.7, 140.5, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const { detections } = drive(shakeWithIntensePoints(defs, 1), meta)
+
+    expect(detections.some((d) => d.confidence === 'likely')).toBe(true)
+  })
+
+  it('確定震度に達した点が CONFIRM_INTENSE_POINTS(2) あれば confirmed になる（対照）', () => {
+    const defs = grid3x3(36.7, 140.5, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const { detections } = drive(shakeWithIntensePoints(defs, PARAMS.CONFIRM_INTENSE_POINTS), meta)
+
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(true)
+  })
+
+  /** 疎地域（離島・過疎網）。密度正規化で確定点数が下がっても第3軸は緩まないことを確かめる。 */
+  const sparseDefs: StationDef[] = [
+    { lat: 28.3, lng: 129.4 },
+    { lat: 28.35, lng: 129.45 },
+    { lat: 28.4, lng: 129.4 },
+    { lat: 28.35, lng: 129.35 },
+  ]
+
+  it('疎地域でも「1点だけ震度1」は confirmed にならない（密度正規化は第3軸を緩めない）', () => {
+    const meta = buildStationMeta(sitesOf(sparseDefs))
+    const { detections } = drive(shakeWithIntensePoints(sparseDefs, 1), meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+
+  it('疎地域で震度1が2点あれば confirmed になる（奄美型の実地震を取りこぼさない）', () => {
+    const meta = buildStationMeta(sitesOf(sparseDefs))
+    const { detections } = drive(
+      shakeWithIntensePoints(sparseDefs, PARAMS.CONFIRM_INTENSE_POINTS),
+      meta,
+    )
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(true)
+  })
+
+  /** 慢性活性セルを作る（第2軸）。揺れ前に cellActivity を閾値超えへ書き換える。 */
+  function driveChronic(defs: StationDef[], frames: Frame[]): DetectorState {
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(frames[0].dataTimeMs - 1000)
+    frames.forEach((f, i) => {
+      // 静穏期（前半5フレーム）を終えた時点で慢性活性セルに仕立てる
+      if (i === 5) {
+        for (const d of defs) state.cellActivity[meta.cellOf[siteKey(d.lat, d.lng)]] = 0.9
+      }
+      state = step(state, f, meta).state
+    })
+    return state
+  }
+
+  it('慢性活性セルでは震度2に達した点で数える（最大震度は足りても震度2が1点なら confirmed にしない）', () => {
+    const defs = grid3x3(36.1, 140.3, 0.1) // 北関東型
+    // 1点だけ震度2・残り8点は震度1。maxIntensity は CHRONIC_CONFIRM_INTENSITY を満たすが
+    // 「震度2に達した点」は1点しかない構成。
+    const state = driveChronic(
+      defs,
+      shakeWithIntensePoints(defs, 1, PARAMS.CHRONIC_CONFIRM_INTENSITY, PARAMS.MIN_CONFIRM_INTENSITY),
+    )
+
+    expect(state.events.some((e) => e.confidence === 'confirmed')).toBe(false)
+    // 落ちた理由が第3軸であり、点数ゲートへのすり替わりでないことを確認する。
+    // 実効要求点数は「慢性活性で引き上げた値」と「密度正規化した値」の小さい方なので、
+    // 引き上げ後の値を満たしていれば点数ゲートは必ず通っている。
+    const ev = state.events[0]
+    expect(ev.lastSize).toBeGreaterThanOrEqual(PARAMS.CONFIRM_POINTS + PARAMS.CHRONIC_POINT_BUMP)
+    expect(ev.maxIntensity).toBeGreaterThanOrEqual(PARAMS.CHRONIC_CONFIRM_INTENSITY)
+  })
+
+  it('慢性活性セルでも震度2が2点あれば confirmed になる（地域ガードは実地震まで潰さない）', () => {
+    const defs = grid3x3(36.1, 140.3, 0.1)
+    const state = driveChronic(
+      defs,
+      shakeWithIntensePoints(
+        defs,
+        PARAMS.CONFIRM_INTENSE_POINTS,
+        PARAMS.CHRONIC_CONFIRM_INTENSITY,
+        PARAMS.MIN_CONFIRM_INTENSITY,
+      ),
+    )
+    expect(state.events.some((e) => e.confidence === 'confirmed')).toBe(true)
+  })
+})
+
 describe('step: EEW 発表中の確定緩和（§19）', () => {
   it('EEW 発表中は密な網でも CONFIRM_POINTS(5) 未満・EEW_CONFIRM_POINTS(3) で confirmed になる', () => {
     const defs = grid3x3(35.0, 139.0, 0.1) // 9点・全点相互近傍（avail=8・密度正規化の影響を受けない）
@@ -369,7 +499,7 @@ describe('step: EEW 発表中の確定緩和（§19）', () => {
   })
 })
 
-describe('step: 高震度 fast path（§20・§26）', () => {
+describe('step: 高震度 fast path（§20・§29）', () => {
   /**
    * 9点グリッドのうち3点だけを onset させて連結成分（MIN_CLUSTER=3）を作る。
    * size=3 は effectiveConfirmReq（密な網では CONFIRM_POINTS=5）に届かないため、通常経路では
@@ -404,7 +534,7 @@ describe('step: 高震度 fast path（§20・§26）', () => {
     expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
   })
 
-  it('成分が揃っていれば震度3が1点だけでも confirmed になる（HIGH_CONFIRM_POINTS=1・§26）', () => {
+  it('成分が揃っていれば震度3が1点だけでも confirmed になる（HIGH_CONFIRM_POINTS=1・§29）', () => {
     const defs = grid3x3(35.0, 139.0, 0.1)
     const meta = buildStationMeta(sitesOf(defs))
     const { detections } = drive(shakeThree(defs, 2.5, 1), meta)
@@ -430,7 +560,7 @@ describe('step: 高震度 fast path（§20・§26）', () => {
   })
 })
 
-describe('PARAMS: 成分点数の段階付けの不変条件（§26）', () => {
+describe('PARAMS: 成分点数の段階付けの不変条件（§29）', () => {
   // requiredClusterSize は if の順序に依存するため、値を動かすと分岐の意味が静かに反転しうる。
   // 型チェックでは捕まらないので、段階の前提をここで固定する。
   it('SOLO_CLUSTER_INTENSITY は HIGH_CONFIRM_INTENSITY 以上（震度の段階が逆転しない）', () => {
@@ -446,7 +576,7 @@ describe('PARAMS: 成分点数の段階付けの不変条件（§26）', () => {
   })
 })
 
-describe('step: 成分点数の震度連動（§26）', () => {
+describe('step: 成分点数の震度連動（§29）', () => {
   /**
    * 先頭 count 点だけを value にし、残りは静穏（value 0）に保つ。揺れる点が count 点しか無いので
    * L2 連結成分のサイズがそのまま count になり、`requiredClusterSize` が成分内の最大震度で点数要求を
@@ -591,7 +721,7 @@ describe('step: 成分点数の震度連動（§26）', () => {
     // 震度3〜4 の帯ではこの沈み込みが起こりうる。
     //
     // イベント全体に時間保持を持たせて救う実装を試したが、「免除の根拠になった小さな成分の構成点」と
-    // 「免除が適用される高震度メンバー」が別人でも通る穴を作ったため撤回した（設計書§26）。実データ
+    // 「免除が適用される高震度メンバー」が別人でも通る穴を作ったため撤回した（設計書§29）。実データ
     // 34 窓では保持の有無で結果が一切変わらず、効く場面が観測されなかったことも判断の材料。
     // 変更前は単点では永久に確定しなかったので、遅れても劣化ではない。
     const defs = grid3x3(35.0, 139.0, 0.1)
@@ -990,6 +1120,120 @@ describe('step: 大きな揺れ直後のノイズ床フリーズ（群発地震�
   })
 })
 
+describe('step: ノイズ床フリーズの副作用と境界（群発地震対策の周辺）', () => {
+  /**
+   * 1Hz で frames 個ぶん床学習が進んだときの、EWMA の理論上の到達割合（0〜1）。
+   * 床が動いた／動いていないの判定を FLOOR_TAU_MS から導出するために使う。
+   */
+  function learnedPull(frames: number): number {
+    return 1 - Math.exp(-(frames * 1000) / PARAMS.FLOOR_TAU_MS)
+  }
+
+  /** 3x3 グリッドの一部だけを揺らし、残りは静穏値に据えたフレームを作る。 */
+  function partialShake(
+    defs: StationDef[],
+    t: number,
+    shakenIdx: number[],
+    shakeValue: number,
+    calmValue: number,
+  ): Frame {
+    return frameWith(defs, t, (i) => (shakenIdx.includes(i) ? shakeValue : calmValue))
+  }
+
+  it('onset していない観測点はフリーズの対象外で、慢性ノイズ床の学習を続ける', () => {
+    const defs = grid3x3(32.6, 130.7, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    // 全点を -2.0 に揃えて床を -2.0 に確定させる
+    for (let i = 0; i < 5; i++, t += 1000) state = step(state, uniformFrame(defs, t, -2.0), meta).state
+
+    // index 0〜5 の 6 点だけ震度4級で揺れて onset する（＝フリーズ対象）。残る index 6〜8 は -1.0 に
+    // 据える（実効床 0 を下回るので levelActive にならず onset しない＝フリーズ対象外）。
+    // grid3x3 は緯度の小さい行から詰めるので index 0〜5 は南側 2 行・6〜8 は北側 1 行。方位に
+    // 依存した読み方をしなくて済むよう、揺らす点は index で書く。
+    for (let i = 0; i < 5; i++, t += 1000) {
+      state = step(state, partialShake(defs, t, [0, 1, 2, 3, 4, 5], 4.0, -1.0), meta).state
+    }
+    // このテストに必要な前提は「揺れた点が onset したこと」だけ（フリーズは triggeredAtMs を見る）。
+    // confirmed 到達を前提にすると CONFIRM_POINTS 系の調整で意図と無関係に落ちるので onset で判定する。
+    expect(state.sites[siteKey(defs[0].lat, defs[0].lng)].triggeredAtMs).not.toBeNull()
+    expect(state.sites[siteKey(defs[8].lat, defs[8].lng)].triggeredAtMs).toBeNull()
+
+    // 揺れが収まり、揺れた点も -1.0 まで下がる（levelActive ではない＝本来なら床学習の対象）
+    const calmFrames = 120
+    for (let i = 0; i < calmFrames; i++, t += 1000) {
+      state = step(state, uniformFrame(defs, t, -1.0), meta).state
+    }
+
+    // onset した点はフリーズ中なので床が動かない
+    expect(state.sites[siteKey(defs[0].lat, defs[0].lng)].floorMean).toBeCloseTo(-2.0)
+    // onset していない点は -1.0 を学習し続けて床が上がる。慢性的にノイジーな観測点を
+    // FLOOR_CAP まで鈍くする本来の役目が、フリーズ導入後も損なわれていないことの確認。
+    // 期待値は時定数から導く（FLOOR_TAU_MS を将来調整しても偽陽性で落ちないように、
+    // 理論上の到達量の半分を下限にする）。床は -2.0 から -1.0 へ向かうので可動域は 1.0。
+    expect(state.sites[siteKey(defs[8].lat, defs[8].lng)].floorMean).toBeGreaterThan(
+      -2.0 + learnedPull(calmFrames) * 0.5,
+    )
+  })
+
+  it('群発地震で onset を繰り返すと、そのたびにフリーズ起点が更新され床が守られ続ける', () => {
+    const defs = grid3x3(32.6, 130.7, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    // データ時刻は必ず 1 秒ずつ厳密に進める。同じ時刻のフレームを 2 度渡すと dtMs <= 0 が
+    // 不連続とみなされ、検証したい onset 時刻の更新そのものが消えてしまう。
+    const feed = (v: number): void => {
+      t += 1000
+      state = step(state, uniformFrame(defs, t, v), meta).state
+    }
+    for (let i = 0; i < 5; i++) feed(-2.0)
+
+    const key = siteKey(defs[4].lat, defs[4].lng)
+    // フリーズ期間の 6 割ずつ挟むので、1 回目の onset からの経過は FLOOR_FREEZE_MS を超えるが、
+    // 2 回目の onset からは超えない。起点が更新されなければ途中で学習が再開してしまう。
+    const segmentMs = PARAMS.FLOOR_FREEZE_MS * 0.6
+
+    for (let round = 0; round < 2; round++) {
+      for (let i = 0; i < 5; i++) feed(4.0)
+      const until = t + segmentMs
+      while (t < until) feed(-1.0)
+    }
+
+    expect(state.sites[key].floorMean).toBeCloseTo(-2.0)
+  })
+
+  it('データ時刻が巻き戻ると onset 時刻を破棄し、フリーズに閉じ込められない', () => {
+    const defs = grid3x3(32.6, 130.7, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) state = step(state, uniformFrame(defs, t, -2.0), meta).state
+    for (let i = 0; i < 5; i++, t += 1000) state = step(state, uniformFrame(defs, t, 4.0), meta).state
+
+    const key = siteKey(defs[4].lat, defs[4].lng)
+    expect(state.sites[key].triggeredAtMs).not.toBeNull()
+
+    // アーカイブ再生などでデータ時刻が過去へ跳ぶと dtMs <= 0 が不連続とみなされ、一過性の状態
+    // （triggeredAtMs）が作り直される。これが無いと now − triggeredAtMs が負になり、
+    // フリーズ条件が永久に真のままになって床学習が二度と再開しない。
+    let t2 = t - 3_600_000
+    state = step(state, uniformFrame(defs, t2, -1.0), meta).state
+    expect(state.sites[key].triggeredAtMs).toBeNull()
+    // 学習資産（床）は不連続をまたいでも引き継がれる
+    expect(state.sites[key].floorMean).toBeCloseTo(-2.0)
+
+    // 巻き戻し後も床学習が進む（フリーズが解けないままになっていない）
+    const resumedFrames = 120
+    for (let i = 0; i < resumedFrames; i++) {
+      t2 += 1000
+      state = step(state, uniformFrame(defs, t2, -1.0), meta).state
+    }
+    expect(state.sites[key].floorMean).toBeGreaterThan(-2.0 + learnedPull(resumedFrames) * 0.5)
+  })
+})
+
 describe('step: 特異度の第2軸（セル慢性活性ガード）', () => {
   it('慢性活性セルでは震度1のコヒーレント同時多発を confirmed にしない', () => {
     const defs = grid3x3(36.1, 140.3, 0.1) // 北関東型
@@ -1166,5 +1410,211 @@ describe('step: recentOnsetKeys（直近に立ち上がった観測点）', () =
     const state = initState(0)
     const jumped = step(state, uniformFrame(defs, PARAMS.MAX_DT_GAP_MS + 5000, 2.0), meta)
     expect(jumped.recentOnsetKeys).toEqual([])
+  })
+})
+
+// ============================================================
+// 密網の連結（K 近傍が足りないと本物の揺れの面が途切れる）
+//
+// 2026-07-22 05:49 の福岡県筑後地方 M2.4 震度1 が K=7 で非検知だった件（設計書§17）の回帰。
+// 実データそのものは持ち込めないため、取りこぼしの「仕組み」を最小構成で再現する。
+// ============================================================
+
+/** 揺れる点を経度方向に並べる間隔（度）。lat35 で約 22.8km ＝ R_KM(40km) 内で隣と繋がる。 */
+const CHAIN_LNG_PITCH = 0.25
+/** 各揺れる点の周りに置く静穏点の緯度オフセット（度）。1.1〜4.5km の至近距離に 8 点。 */
+const CROWD_LAT_OFFSETS = [0.01, -0.01, 0.02, -0.02, 0.03, -0.03, 0.04, -0.04]
+
+/**
+ * 密な観測網に「橋渡しが必要な揺れ」を作る配置。
+ *
+ * 揺れる点を経度方向へ等間隔に 3 つ並べ、各点の周りに静穏点を**緯度方向だけ**に置く。
+ * 緯度へ直交にずらすと、その静穏点は隣の揺れる点から見て必ず「隣の揺れる点自身より遠い」
+ * （直角の分だけ距離が伸びる）ため、近傍リストの順位が
+ *   1〜8 番: 自分の周りの静穏点（至近） → 9 番以降: 隣の揺れる点
+ * に固定される。つまり K が 8 以下だと隣の揺れる点が近傍から溢れ、揺れの面が繋がらない。
+ * 実際の福岡は、床を超えて立ち上がった点が 20〜30km 間隔で並び、その間を埋める点が
+ * 震度0（床下）で脱落したため、K=7 では連結経路が断たれて非検知になった。
+ */
+function denseChainLayout(): { defs: StationDef[]; shakeIdx: number[] } {
+  const defs: StationDef[] = []
+  const shakeIdx: number[] = []
+  for (let c = 0; c < 3; c++) {
+    const lng = 139.0 + c * CHAIN_LNG_PITCH
+    shakeIdx.push(defs.length)
+    defs.push({ lat: 35.0, lng })
+    for (const d of CROWD_LAT_OFFSETS) defs.push({ lat: 35.0 + d, lng })
+  }
+  return { defs, shakeIdx }
+}
+
+describe('buildStationMeta: 密網でも離れた点へ橋を架ける（K）', () => {
+  it('至近の静穏点が 8 点あっても隣の揺れる点を近傍に含める（K=7 なら溢れる配置）', () => {
+    const { defs, shakeIdx } = denseChainLayout()
+    const meta = buildStationMeta(sitesOf(defs))
+    const left = defs[shakeIdx[0]!]!
+    const mid = defs[shakeIdx[1]!]!
+    const right = defs[shakeIdx[2]!]!
+    const midKey = siteKey(mid.lat, mid.lng)
+    const leftKey = siteKey(left.lat, left.lng)
+    const rightKey = siteKey(right.lat, right.lng)
+
+    // 中央の点から見て「隣の揺れる点より近い点」がいくつあるか。8 点あるので K=7 では
+    // 隣が近傍リストに載らず、この配置の揺れは連結できない（＝福岡の非検知の再現条件）。
+    const dToLeft = haversineKm(mid.lat, mid.lng, left.lat, left.lng)
+    const closer = defs.filter(
+      (d) =>
+        !(d.lat === mid.lat && d.lng === mid.lng) &&
+        haversineKm(mid.lat, mid.lng, d.lat, d.lng) < dToLeft,
+    ).length
+    expect(closer).toBeGreaterThanOrEqual(8)
+    expect(dToLeft).toBeLessThan(PARAMS.R_KM)
+
+    // 現行の K なら両隣が近傍に入り、鎖状に繋がる
+    expect(meta.neighbors[midKey]).toContain(leftKey)
+    expect(meta.neighbors[midKey]).toContain(rightKey)
+    expect(meta.neighbors[leftKey]).toContain(midKey)
+    // 1 つ飛ばし（約 45km）は R_KM の外なので繋がらない＝橋は隣どうしだけ
+    expect(meta.neighbors[leftKey]).not.toContain(rightKey)
+  })
+
+  it('K に余裕があっても近傍は R_KM 以内に限る（遠い点を引き込まない）', () => {
+    // R_KM(40km) 内に 3 点だけの疎な配置＋約 47km 先に 1 点。K の枠は空いているが距離で切る。
+    const defs: StationDef[] = [
+      { lat: 35.0, lng: 139.0 },
+      { lat: 35.1, lng: 139.0 },
+      { lat: 35.2, lng: 139.0 },
+      { lat: 35.3, lng: 139.0 },
+      { lat: 35.42, lng: 139.0 },
+    ]
+    const meta = buildStationMeta(sitesOf(defs))
+    const key = siteKey(35.0, 139.0)
+    expect(haversineKm(35.0, 139.0, 35.42, 139.0)).toBeGreaterThan(PARAMS.R_KM)
+    expect(meta.neighbors[key]).toHaveLength(3)
+    expect(meta.neighbors[key]).not.toContain(siteKey(35.42, 139.0))
+    expect(meta.avail[key]).toBe(3)
+  })
+})
+
+describe('step: 密網で間隔のある揺れ（福岡型）', () => {
+  it('20〜30km 間隔の 3 点だけが立ち上がっても連結して likely になる', () => {
+    const { defs, shakeIdx } = denseChainLayout()
+    const meta = buildStationMeta(sitesOf(defs))
+    const shake = new Set(shakeIdx)
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 6; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
+    // 3 点が震度1(value 0.5)へ。間を埋める静穏点は床下のまま動かない（実データと同じ形）
+    for (let i = 0; i < 4; i++, t += 1000) {
+      frames.push(frameWith(defs, t, (idx) => (shake.has(idx) ? 0.5 : 0)))
+    }
+    const { detections } = drive(frames, meta)
+
+    expect(detections.some((d) => d.confidence === 'likely')).toBe(true)
+    // 密な網では確定点数（CONFIRM_POINTS）に届かないので confirmed には上げない。
+    // 実際の福岡も likely 止まりで、これが妥当な確信度（音は鳴らさず画面には出す）。
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+
+  it('網が密で全点が相互に近傍でも、立ち上がりが 2 点なら検知しない（K では救えない限界）', () => {
+    // 3×3・間隔 0.1° は隣どうしが 9〜11km。立ち上がる 2 点は互いに近傍で、連結自体はしている。
+    // それでも検知しないのは近傍の数が足りないからではなく「立ち上がった点数が MIN_CLUSTER に
+    // 届かない」ため。つまり K をいくら増やしても救えない型の非検知（滋賀 M2.5・福島会津 M2.4）。
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const firstKey = siteKey(defs[0]!.lat, defs[0]!.lng)
+    const secondKey = siteKey(defs[1]!.lat, defs[1]!.lng)
+    expect(meta.neighbors[firstKey]).toContain(secondKey)
+
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 6; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
+    for (let i = 0; i < 4; i++, t += 1000) {
+      frames.push(frameWith(defs, t, (idx) => (idx < PARAMS.MIN_CLUSTER - 1 ? 0.5 : 0)))
+    }
+    const { state, detections } = drive(frames, meta)
+
+    expect(state.events).toHaveLength(0)
+    expect(detections).toHaveLength(0)
+  })
+})
+
+describe('step: likely/faint のティア保持（LIKELY_HOLD_MS・設計書§16）', () => {
+  /** 先頭 shakeCount 点だけを value へ動かし、残りを quiet に置くフレームを作る。 */
+  function partialShake(
+    defs: StationDef[],
+    t: number,
+    value: number,
+    quiet: number,
+    shakeCount: number,
+  ): Frame {
+    return frameWith(defs, t, (idx) => (idx < shakeCount ? value : quiet))
+  }
+
+  it('faint も広がりを失った後 LIKELY_HOLD_MS は維持され、過ぎるとイベントは生きたまま weak へ落ちる', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    // 静穏 value -0.5 → 3 点だけ震度0(value 0.0)へ。震度1 未満なので faint（無音の可視化）
+    for (let i = 0; i < 6; i++, t += 1000) state = step(state, uniformFrame(defs, t, -0.5), meta).state
+    for (let i = 0; i < 2; i++, t += 1000) {
+      state = step(state, partialShake(defs, t, 0.0, -0.5, PARAMS.MIN_CLUSTER), meta).state
+    }
+    expect(state.events[0]?.confidence).toBe('faint')
+
+    // ここから 1 点だけを床下と震度0 の間で振動させ続ける。onset が続くので size>0 が保たれ
+    // （＝`lastOnsetAtMs` が更新され続け）イベントは HOLD_MS では消えない。一方 onset が 1 点では
+    // 広がり（MIN_CLUSTER）に届かないので、**イベントの生存とティア保持を切り離して**
+    // LIKELY_HOLD_MS だけを見られる。震度0級は床＋SUSTAIN_MARGIN に届かず sustained になれない
+    // （値は 0.5 刻みなので実質震度1 が必要）ため、この形でしかこの状態を作れない。
+    // 2 フレームずつ床下→震度0 を繰り返す。`windowRate` の起点は「now − RATE_DT_MS(＋0.5s 許容)
+    // 以前の直近サンプル」＝ now−2000 付近なので、1 秒交互では起点が同じ位相の値を拾って
+    // 上昇量が 0 になり onset しない。2 フレーム周期にすると起点が必ず床下側に落ちる。
+    const flicker = (tt: number, phase: number): Frame =>
+      frameWith(defs, tt, (idx) => (idx === 0 && phase % 4 >= 2 ? 0.0 : -0.5))
+    const samples: { dt: number; tier: string; alive: boolean }[] = []
+    let spreadLostAt: number | null = null
+    for (let i = 0; i < 40; i++, t += 1000) {
+      state = step(state, flicker(t, i), meta).state
+      const ev = state.events[0]
+      if (spreadLostAt === null && ev && ev.lastSize < PARAMS.MIN_LIKELY_POINTS) spreadLostAt = t
+      if (spreadLostAt !== null) {
+        samples.push({ dt: t - spreadLostAt, tier: ev?.confidence ?? 'none', alive: state.events.length > 0 })
+      }
+    }
+    const at = (dt: number) => samples.find((s) => s.dt === dt)
+
+    // 広がりを失った直後も、その 5 秒後もまだ faint（保持が効いている）
+    expect(at(0)?.tier).toBe('faint')
+    expect(at(5_000)?.tier).toBe('faint')
+    // 保持を過ぎれば weak へ。ただしイベント自体は生きている＝これはティア保持の期限切れであり、
+    // HOLD_MS によるイベント解除ではない（両者を混同しないための対照）。
+    expect(at(15_000)?.tier).toBe('weak')
+    expect(at(15_000)?.alive).toBe(true)
+  })
+
+  it('likely はラッチしないので、保持中に震度0級まで弱まれば faint に下がる（confirmed との対比）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(-1000)
+    let t = 0
+    for (let i = 0; i < 6; i++, t += 1000) state = step(state, uniformFrame(defs, t, 0), meta).state
+    // 3 点が震度1(0.5) → likely（密網なので確定点数には届かない）
+    for (let i = 0; i < 3; i++, t += 1000) {
+      state = step(state, partialShake(defs, t, 0.5, 0, PARAMS.MIN_CLUSTER), meta).state
+    }
+    expect(state.events[0]?.confidence).toBe('likely')
+    expect(state.events[0]?.everConfirmed).toBe(false)
+
+    // 震度0級(0.0)まで弱まったまま継続。confirmed は everConfirmed でラッチされるが
+    // likely にラッチは無く、保持中のティアはその時点の最大震度で決まる。
+    for (let i = 0; i < 12; i++, t += 1000) {
+      state = step(state, partialShake(defs, t, 0.0, 0, PARAMS.MIN_CLUSTER), meta).state
+    }
+    // 12 フレーム後は面が縮み（震度0級は sustained にならず直近 onset も切れる）、
+    // LIKELY_HOLD_MS の保持だけで生きている状態。ここが weak なら保持が効いていない。
+    expect(state.events[0]?.lastSize).toBeLessThan(PARAMS.MIN_LIKELY_POINTS)
+    expect(state.events[0]?.confidence).toBe('faint')
   })
 })
