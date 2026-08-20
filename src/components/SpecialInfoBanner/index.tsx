@@ -86,10 +86,12 @@ export function SpecialInfoBanner({ nankai, nankaiCommentary, kohatsu }: Props) 
           単位は vh ではなく dvh。vh は iOS の PWA だとビューポートではなく画面全体の高さを指すため。
           SAFE_BOTTOM の last: がここの直接の子を数えるので、バナー以外をこの中に足さないこと。 */}
       <div className="pointer-events-auto max-h-[40dvh] overflow-y-auto overflow-x-hidden overscroll-x-none">
+        {/* 南海トラフの 2 枚（臨時情報とその解説情報）を隣り合わせる。臨時情報の発表期間中は
+            解説情報が毎日届いて両方が同時に出るため、間に別の事象（後発地震＝北海道・三陸沖）を
+            挟むと同じ事象の話が分断されて読みにくい。重さの順よりこちらを優先する。 */}
         {nankai && <NankaiBanner nankai={nankai} />}
-        {kohatsu && <KohatsuBanner kohatsu={kohatsu} />}
-        {/* 解説情報は段階の発表ではないので、重い順に並べて最後に置く */}
         {nankaiCommentary && <CommentaryBanner commentary={nankaiCommentary} />}
+        {kohatsu && <KohatsuBanner kohatsu={kohatsu} />}
       </div>
     </div>
   )
