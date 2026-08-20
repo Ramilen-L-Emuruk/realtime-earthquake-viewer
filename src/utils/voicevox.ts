@@ -1,6 +1,6 @@
 import { getAudioContext, getMasterInput } from './alertSound'
 import { findPhraseBreakMatch, getTtsPhraseBreakDictCache, isPlaceNameKey, loadTtsPhraseBreakDict } from './ttsPhraseBreakDict'
-import { log } from './logger'
+import { log, createLogThrottle } from './logger'
 
 export type VoicevoxStyle = { name: string; id: number }
 export type VoicevoxSpeaker = { name: string; speaker_uuid: string; styles: VoicevoxStyle[] }
@@ -17,6 +17,10 @@ let currentSessionId = 0
 // 完走してしまい、VOICEVOX 側の直列処理を占有して新規発話が待たされる。新セッション開始時に
 // abort() することで旧セッションのリクエストを即座に打ち切る。
 let currentAbortController: AbortController | null = null
+
+// 1 チャンクも合成できなかったときの警告の間引き。VOICEVOX が落ちていると読み上げのたびに
+// 起こるため、素通しにするとログが埋まって他の異常が見えなくなる。
+const warnNoAudio = createLogThrottle(30000)
 
 // 句区切り辞書エントリの accent_phrases 取得結果キャッシュ（"speakerId:キー" -> AccentPhrase[]）。
 // 同じ地名・同じ話者の組み合わせで毎回 /accent_phrases を叩き直さないようにする。
@@ -387,6 +391,14 @@ export async function speakWithVoicevox(
   if (lastSource) {
     lastSource.addEventListener('ended', () => completionResolve())
   } else {
+    // 1 チャンクも鳴らせなかった。この関数は例外を投げない設計なので、記録しないと
+    // 呼び出し側からは「読み上げが正常に完了した」と区別できず、**無音だったことが
+    // どこにも残らない**（VOICEVOX 未起動・ネットワーク断・話者 ID 不正などで起こる）。
+    // 同じ失敗が読み上げのたびに繰り返されうるため間引く。
+    warnNoAudio(() => log.warn(
+      `[VoiceVox] 音声を 1 つも合成できなかったため無音で終了した（chunks=${chunks.length}）`,
+      { baseUrl, speakerId },
+    ))
     completionResolve()
   }
   await completionPromise

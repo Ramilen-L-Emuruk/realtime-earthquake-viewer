@@ -256,36 +256,25 @@ export function eewAlertToText(event: EEWAlert, isHypocenterUpdate = false): str
 }
 
 /**
- * EEW のレベルが上がったときの前置き。予想値の読み上げの手前に付ける。
- * 予想震度・階級が据え置きのまま severity だけ確定する続報があり、値の差分だけでは
- * 「予報から警報へ変わった」という最も重い変化が声に出ないため、区分そのものを述べる。
- */
-export function eewLevelUpgradeToText(level: 1 | 2): string {
-  return level === 2 ? '特別警報に切り替わりました。' : '警報に切り替わりました。'
-}
-
-/**
- * EEW 続報で予想が引き上がったときの短句。「震度6弱に引き上げ。」「長周期階級3に引き上げ。」
- * 震度・階級それぞれを直前に読み上げた値と比べ、上がった方だけを述べる（両方なら 1 文にまとめる）。
- * どちらも上がっていなければ空文字を返す（呼び出し側は空なら発話しない）。
+ * EEW 第2フェーズ（予想値）の読み上げテキストを生成する。初報・続報の区別なく同じ形で読む。
+ * 予想震度が取れないときは理由付きで「予想震度なし。」。
  *
- * 引き下げは追わない。EEW の続報は上振れの伝達が主目的であり、上下に振れるたびに読むと
- * 耳障りなうえ、最終的な値は次の続報で上書きされるため。
+ * `level` が 1 以上（警報・特別警報の条件を満たす）のときは「警報。」を前置きする。初報でも
+ * 続報でも同じ形にする。「〜に切り替わりました」のような差分の言い方は、前の区分を一度も
+ * 声に出していない場面（初報から警報だった場合・予想値を読む前に格上げが届いた場合）で
+ * 何から変わったのか伝わらないため使わない。
+ *
+ * **「特別警報」は読み上げない。** `level` が 2（特別警報の条件を満たす）でも「警報。」と読む。
+ * 気象庁が発表時にこの名称を用いないため（根拠と条件は docs/spec/eew-spec.md §4）。
+ * 画面表示・ブラウザ通知・通知音は内部の重大度区分として 2 段階を保つ。
+ *
+ * 引き上げ専用の短句（「震度6弱に引き上げ。」）は持たない。同じ形で言い直せば足りるうえ、
+ * 差分の言い方は「基準にした値を実際に発話したか」に依存し、割り込みで消えた発話を基準に
+ * すると一度も声に出していない値からの引き上げを語ることになるため。
  */
-export function eewUpgradeToText(event: EEWAlert, prevScale: number, prevLpgmClass: number): string {
+export function eewIntensityToText(event: EEWAlert, level: 0 | 1 | 2 = 0): string {
+  let text = level >= 1 ? '警報。' : ''
   const scale = eewMaxScale(event)
-  const lpgmClass = eewMaxLpgmClass(event)
-  const parts: string[] = []
-  if (scale > prevScale && scale > 0) parts.push(`震度${intensityText(scale)}`)
-  if (lpgmClass > prevLpgmClass && lpgmClass > 0) parts.push(`長周期階級${lpgmClass}`)
-  if (parts.length === 0) return ''
-  return `${parts.join('、')}に引き上げ。`
-}
-
-/** EEW 第2フェーズ（初報・震源更新時）: 「予想最大震度〇〇。」scale なし時は理由付き「予想震度なし。」 */
-export function eewIntensityToText(event: EEWAlert): string {
-  const scale = eewMaxScale(event)
-  let text = ''
   if (scale > 0) {
     text += `予想最大震度${intensityText(scale)}。`
   } else {
