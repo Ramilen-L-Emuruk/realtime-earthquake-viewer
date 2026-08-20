@@ -30,6 +30,8 @@ import type { EEWAlert, EEWRegion, IntensityScale, LpgmClass, JMAQuake, JMATsuna
 const speakMock = vi.fn(() => Promise.resolve())
 vi.mock('../utils/voicevox', () => ({
   speakWithVoicevox: (...args: unknown[]) => speakMock(...(args as [])),
+  // 先行合成は「使えなかった」扱いにして、本再生側で合成し直す経路を通す
+  prewarmVoicevox: () => null,
 }))
 vi.mock('../utils/alertSound', () => ({ playAlertSound: vi.fn() }))
 vi.mock('../utils/notifications', () => ({ showBrowserNotification: vi.fn() }))
