@@ -1,4 +1,4 @@
-import type { JMAQuake, JMATsunami, EEWAlert, JMANankai, JMAKohatsu, EarthquakePoint, JMALpgm } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, EEWAlert, JMANankai, JMAKohatsu, EarthquakePoint, IntensityScale, JMALpgm } from '../types/earthquake'
 import { serverNow, serverDate } from './clock'
 import notoHonshinPoints from '../data/noto-honshin-2024-points.json'
 import notoHonshinLpgm from '../data/noto-honshin-2024-lpgm.json'
@@ -53,7 +53,42 @@ export function createTestForeignQuake(includeForecastText: boolean): JMAQuake {
   }
 }
 
-export function createTestEarthquake(): JMAQuake {
+/**
+ * 観測点別震度を DMDATA（DMDSS）経路の points 形状へ変換する。
+ *
+ * 実運用の `dmdataParser` は JSON スキーマが観測点に親都道府県を持たないため、
+ * 観測点・一次細分区域はいずれも `pref: ''` で積み、都道府県は `pref` に名前を入れた
+ * ロールアップ点（`isArea: true`）として別に追加する。元データは P2PQuake 形状
+ * （観測点自体に `pref` が入る）なので、そのまま DMDSS で流すと実電文では起こり得ない
+ * 組み合わせ（`isArea: false` かつ `pref` 非空）になり、都道府県別表示の分岐が
+ * テストでは一度も通らない。
+ */
+function toDmdataPoints(points: EarthquakePoint[]): EarthquakePoint[] {
+  const converted: EarthquakePoint[] = []
+  const prefMax = new Map<string, IntensityScale>()
+  for (const p of points) {
+    // 都道府県ごとの最大震度を集計する（実電文の prefectures[] に相当）。
+    // 震度不明（-1）は数えない。実電文の prefectures[] も震度が取れない都道府県は項目自体を
+    // 載せないため、-1 のロールアップ点は実運用では現れない。
+    if (!p.isArea && p.pref && p.scale >= 0) {
+      const cur = prefMax.get(p.pref)
+      if (cur === undefined || p.scale > cur) prefMax.set(p.pref, p.scale)
+    }
+    converted.push({ ...p, pref: '' })
+  }
+  for (const [pref, scale] of prefMax) {
+    converted.push({ pref, addr: pref, isArea: true, scale })
+  }
+  return converted
+}
+
+/**
+ * 地震情報のテストデータ（令和6年能登半島地震・本震）。
+ *
+ * @param useDmdataShape DMDSS 版のとき true。points 形状と情報種別を DMDATA 経路のものに
+ *   合わせる（standard 版は P2PQuake 形状のまま）。
+ */
+export function createTestEarthquake(useDmdataShape: boolean): JMAQuake {
   const nowDate = serverDate()
   const now = nowDate.toISOString()
   const eventId = toEventIdTimestamp(nowDate)
@@ -61,7 +96,9 @@ export function createTestEarthquake(): JMAQuake {
     kind: 'quake',
     id: `dmdata-quake-${eventId}-1`,
     time: now,
-    issue: { source: 'テスト', time: now, type: '各地の震度情報', correct: 'なし' },
+    // 同じ内容（震源＋各地の震度）に付く情報種別はバリアントで異なる。
+    // DMDATA は VXSE53 の「震源・震度情報」、P2PQuake は DetailScale の「各地の震度情報」。
+    issue: { source: 'テスト', time: now, type: useDmdataShape ? '震源・震度情報' : '各地の震度情報', correct: 'なし' },
     earthquake: {
       time: now,
       // 令和6年能登半島地震の本震（2024/1/1 16:10発生）の実データを元にしたパラメータ。
@@ -81,7 +118,12 @@ export function createTestEarthquake(): JMAQuake {
     // 輪島市門前町走出（震度7）のみ例外的に手動追加: 本震直後は停電・通信障害で観測データが
     // 未着で電文に反映されず、気象庁が2024/1/25の報道発表で「震度追加」として震度7
     // （計測震度6.5）を確定させたもの（電文形式では取得不可、気象庁公式発表を典拠とする）。
-    points: notoHonshinPoints as EarthquakePoint[],
+    points: useDmdataShape
+      ? toDmdataPoints(notoHonshinPoints as EarthquakePoint[])
+      // P2PQuake は観測点電文（DetailScale）と区域速報電文（ScalePrompt）を別々に送るため、
+      // 1 電文に両方が混ざることはない（→ quake-spec.md §4）。`各地の震度情報` として送る以上、
+      // 区域点は落とす。
+      : (notoHonshinPoints as EarthquakePoint[]).filter((p) => !p.isArea),
   }
 }
 
@@ -101,67 +143,84 @@ export function createTestLpgm(eventId: string): JMALpgm {
   }
 }
 
-export function createTestEEWWarning(eventId?: string, serial = 1): EEWAlert {
-  const now = serverDate()
+// EEW テストの kindCode は気象庁コード表12（緊急地震速報種別）に従う。
+//   00 / 01 / 09 = 予報（未到達 / 既に到達 / PLUM法で到達予想なし）
+//   10 / 11 / 19 = 警報（同順）
+// 警報は予想震度5弱（scaleTo 45）以上の区域に発表されるため、震度4以下の区域には
+// 予報側のコードを使う（`isWarning` 判定は 10/11/19 のみを警報として扱う）。
+//
+// @param baseTime 震源時刻の基準。同一イベントの続報・最終報では初報の値を渡して固定する
+//   （実運用の続報は originTime を変えない）。発表時刻（time / issue.time）は常に呼び出し時点。
+export function createTestEEWWarning(eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
+  const origin = baseTime ?? serverDate()
+  const report = serverDate().toISOString()
   const eid = eventId ?? `test-warn-${Date.now()}`
   return {
     kind: 'eew',
-    id: `test-eew-warn-${Date.now()}`,
-    time: now.toISOString(),
+    // 実運用の id は eventId と報番号で構成される（dmdataParser: `dmdata-eew-${eventId}-${serial}`）
+    id: `test-eew-warn-${eid}-${serial}`,
+    time: report,
     test: false,
     earthquake: {
-      originTime: now.toISOString(),
-      arrivalTime: new Date(now.getTime() + 20000).toISOString(),
+      originTime: origin.toISOString(),
+      arrivalTime: new Date(origin.getTime() + 20000).toISOString(),
       condition: '以上',
       hypocenter: { name: '日向灘', latitude: 32.0, longitude: 132.0, depth: 30, magnitude: 6.5 },
     },
     severity: 'Warning',
     cancelled: false,
     forecastMaxLpgmClass: 3,
-    issue: { eventId: eid, serial: String(serial), time: now.toISOString() },
+    issue: { eventId: eid, serial: String(serial), time: report },
     areas: [
       { pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null, lgIntTo: 3 },
       { pref: '宮崎県', name: '宮崎県南部平野部', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: null, lgIntTo: 2 },
-      { pref: '大分県', name: '大分県南部', scaleFrom: 30, scaleTo: 40, kindCode: '10', arrivalTime: null, lgIntTo: 1 },
+      // 予想震度4（5弱未満）は警報の対象外。同一電文内の予報域として送る
+      { pref: '大分県', name: '大分県南部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: null, lgIntTo: 1 },
     ],
   }
 }
 
-export function createTestEEWForecast(eventId?: string, serial = 1): EEWAlert {
-  const now = serverDate()
+// 予報（警報未満）の EEW。区域は予想震度4 とする: 実運用の電文に区域が載る条件は
+// 「最大予測震度4以上または最大予測長周期地震動階級3以上」であり、震度3以下の区域は
+// そもそも電文に現れない（eew-information スキーマ）。
+export function createTestEEWForecast(eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
+  const origin = baseTime ?? serverDate()
+  const report = serverDate().toISOString()
   const eid = eventId ?? `test-forecast-${Date.now()}`
   return {
     kind: 'eew',
-    id: `test-eew-forecast-${Date.now()}`,
-    time: now.toISOString(),
+    id: `test-eew-forecast-${eid}-${serial}`,
+    time: report,
     test: false,
     earthquake: {
-      originTime: now.toISOString(),
-      arrivalTime: new Date(now.getTime() + 20000).toISOString(),
+      originTime: origin.toISOString(),
+      arrivalTime: new Date(origin.getTime() + 20000).toISOString(),
       condition: '以上',
       hypocenter: { name: '宮城県沖', latitude: 38.3, longitude: 141.8, depth: 60, magnitude: 4.5 },
     },
     severity: 'Forecast',
     cancelled: false,
-    issue: { eventId: eid, serial: String(serial), time: now.toISOString() },
+    issue: { eventId: eid, serial: String(serial), time: report },
     areas: [
-      { pref: '宮城県', name: '宮城県北部', scaleFrom: 20, scaleTo: 20, kindCode: '10', arrivalTime: null },
-      { pref: '宮城県', name: '宮城県中部', scaleFrom: 10, scaleTo: 20, kindCode: '10', arrivalTime: null },
+      { pref: '宮城県', name: '宮城県北部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: null },
+      { pref: '宮城県', name: '宮城県中部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: null },
     ],
   }
 }
 
-export function createTestEEW(eventId?: string, serial = 1): EEWAlert {
-  const now = serverDate()
+export function createTestEEW(eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
+  const origin = baseTime ?? serverDate()
+  const report = serverDate().toISOString()
   const eid = eventId ?? `test-${Date.now()}`
+  const at = (offsetMs: number) => new Date(origin.getTime() + offsetMs).toISOString()
   return {
     kind: 'eew',
-    id: `test-eew-${Date.now()}`,
-    time: now.toISOString(),
+    id: `test-eew-${eid}-${serial}`,
+    time: report,
     test: false,
     earthquake: {
-      originTime: now.toISOString(),
-      arrivalTime: new Date(now.getTime() + 20000).toISOString(),
+      originTime: origin.toISOString(),
+      arrivalTime: at(20000),
       condition: '以上',
       // 2011年東北地方太平洋沖地震を参考にしたパラメータ（EEW初報はM7.2前後だった）
       hypocenter: { name: '三陸沖', latitude: 38.1, longitude: 142.9, depth: 24, magnitude: 7.2 },
@@ -169,14 +228,15 @@ export function createTestEEW(eventId?: string, serial = 1): EEWAlert {
     severity: 'Warning',
     cancelled: false,
     forecastMaxLpgmClass: 4,
-    issue: { eventId: eid, serial: String(serial), time: now.toISOString() },
+    issue: { eventId: eid, serial: String(serial), time: report },
     // 実データに合わせ areas を使用（参照は utils/eew.ts の eewAreas() で吸収）
     areas: [
-      { pref: '宮城県', name: '宮城県北部', scaleFrom: 55, scaleTo: 60, kindCode: '10', arrivalTime: new Date(now.getTime() + 15000).toISOString(), lgIntTo: 4 },
-      { pref: '宮城県', name: '宮城県中部', scaleFrom: 50, scaleTo: 55, kindCode: '10', arrivalTime: new Date(now.getTime() + 18000).toISOString(), lgIntTo: 3 },
-      { pref: '岩手県', name: '岩手県沿岸南部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: new Date(now.getTime() + 22000).toISOString(), lgIntTo: 2 },
-      { pref: '福島県', name: '福島県浜通り', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: new Date(now.getTime() + 25000).toISOString(), lgIntTo: 2 },
-      { pref: '茨城県', name: '茨城県北部', scaleFrom: 40, scaleTo: 45, kindCode: '11', arrivalTime: new Date(now.getTime() + 30000).toISOString(), lgIntTo: 1 },
+      { pref: '宮城県', name: '宮城県北部', scaleFrom: 55, scaleTo: 60, kindCode: '10', arrivalTime: at(15000), lgIntTo: 4 },
+      { pref: '宮城県', name: '宮城県中部', scaleFrom: 50, scaleTo: 55, kindCode: '10', arrivalTime: at(18000), lgIntTo: 3 },
+      { pref: '岩手県', name: '岩手県沿岸南部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(22000), lgIntTo: 2 },
+      { pref: '福島県', name: '福島県浜通り', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(25000), lgIntTo: 2 },
+      // kindCode 11 は「主要動が既に到達と予測」。到達予想時刻は持たない（未来時刻とは両立しない）
+      { pref: '茨城県', name: '茨城県北部', scaleFrom: 40, scaleTo: 45, kindCode: '11', arrivalTime: null, lgIntTo: 1 },
     ],
   }
 }
@@ -219,17 +279,24 @@ export function createTestKohatsu(): JMAKohatsu {
   }
 }
 
-// 予報は実運用でも明示的な解除電文を伴わず ValidDateTime の期限切れで消えるため、
-// テストデータにも validDateTime を持たせ、期限切れ経路（cancelReason: 'expired'）を再現する。
-export function createTestTsunamiForecast(): JMATsunami {
+// 津波テストデータのバリアント差。DMDSS（DMDATA）経路の電文だけが持つ項目を切り替える。
+//   - eventId: DMDATA は常に14桁タイムスタンプを持つ。P2PQuake の 552 は持たない
+//   - validDateTime: 同上（P2PQuake には有効期限の概念が無い）
+// standard 版でこれらを持たせると、実運用では通らない経路（eventId による同一性判定・
+// 期限切れ失効）をテストだけが通ってしまうため、バリアントに合わせて省く。
+// @param withDmdssFields DMDSS 版のとき true
+export function createTestTsunamiForecast(withDmdssFields: boolean): JMATsunami {
   const now = serverDate()
   const nowIso = now.toISOString()
   return {
     kind: 'tsunami',
     id: `test-tsunami-forecast-${Date.now()}`,
+    eventId: withDmdssFields ? toEventIdTimestamp(now) : undefined,
     time: nowIso,
     cancelled: false,
-    validDateTime: new Date(now.getTime() + TEST_AUTO_DISMISS_MS).toISOString(),
+    // 予報は DMDSS の実運用でも明示的な解除電文を伴わず ValidDateTime の期限切れで消えるため、
+    // 期限切れ経路（cancelReason: 'expired'）を再現する。standard 版はこの項目自体が来ない。
+    validDateTime: withDmdssFields ? new Date(now.getTime() + TEST_AUTO_DISMISS_MS).toISOString() : undefined,
     issue: { source: 'テスト', time: nowIso, type: 'Focus' },
     areas: [
       { grade: 'Forecast', immediate: false, name: '北海道太平洋沿岸東部' },
@@ -240,11 +307,13 @@ export function createTestTsunamiForecast(): JMATsunami {
 }
 
 // 誤報取消（InfoType=取消 相当）のテスト。警報・注意報混在の発表後、90秒後に電文全体が取り消される。
-export function createTestTsunamiRetraction(): JMATsunami {
-  const now = serverDate().toISOString()
+export function createTestTsunamiRetraction(withDmdssFields: boolean): JMATsunami {
+  const nowDate = serverDate()
+  const now = nowDate.toISOString()
   return {
     kind: 'tsunami',
     id: `test-tsunami-retraction-${Date.now()}`,
+    eventId: withDmdssFields ? toEventIdTimestamp(nowDate) : undefined,
     time: now,
     cancelled: false,
     issue: { source: 'テスト', time: now, type: 'Focus' },
@@ -255,11 +324,13 @@ export function createTestTsunamiRetraction(): JMATsunami {
   }
 }
 
-export function createTestTsunamiWatch(): JMATsunami {
-  const now = serverDate().toISOString()
+export function createTestTsunamiWatch(withDmdssFields: boolean): JMATsunami {
+  const nowDate = serverDate()
+  const now = nowDate.toISOString()
   return {
     kind: 'tsunami',
     id: `test-tsunami-watch-${Date.now()}`,
+    eventId: withDmdssFields ? toEventIdTimestamp(nowDate) : undefined,
     time: now,
     cancelled: false,
     issue: { source: 'テスト', time: now, type: 'Focus' },
@@ -270,11 +341,13 @@ export function createTestTsunamiWatch(): JMATsunami {
   }
 }
 
-export function createTestTsunamiWarning(): JMATsunami {
-  const now = serverDate().toISOString()
+export function createTestTsunamiWarning(withDmdssFields: boolean): JMATsunami {
+  const nowDate = serverDate()
+  const now = nowDate.toISOString()
   return {
     kind: 'tsunami',
     id: `test-tsunami-warning-${Date.now()}`,
+    eventId: withDmdssFields ? toEventIdTimestamp(nowDate) : undefined,
     time: now,
     cancelled: false,
     issue: { source: 'テスト', time: now, type: 'Focus' },
@@ -286,14 +359,14 @@ export function createTestTsunamiWarning(): JMATsunami {
   }
 }
 
-export function createTestTsunami(): JMATsunami {
+export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
   const now = serverDate()
   const nowIso = now.toISOString()
   const t = (offsetMin: number) => new Date(now.getTime() + offsetMin * 60000).toISOString()
   return {
     kind: 'tsunami',
     id: `test-tsunami-${Date.now()}`,
-    eventId: 'test-tsunami-2011',
+    eventId: withDmdssFields ? toEventIdTimestamp(now) : undefined,
     time: nowIso,
     cancelled: false,
     issue: { source: 'テスト', time: nowIso, type: 'Focus' },

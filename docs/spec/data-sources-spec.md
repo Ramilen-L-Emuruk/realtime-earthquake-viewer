@@ -9,7 +9,7 @@
 
 - **DMDATA.JP**（DMDSS 版・要 API キー） — 地震情報・EEW・津波情報の主系
 - **P2PQuake API v2**（標準版・認証不要） — 地震情報・EEW・津波情報の主系
-- **Yahoo!天気・災害 リアルタイム震度**（両バリアント共通） — 強震モニタデータ、EEW 補完
+- **Yahoo!天気・災害 リアルタイム震度**（両バリアント共通） — 強震モニタデータ。EEW 補完は標準版のみ
 
 さらに以下も外部・準外部データとして扱う:
 
@@ -41,7 +41,7 @@ Basic 認証（`Authorization: Basic base64(apiKey:)`）。API キーはユー�
 |---|---|---|
 | VXSE43 | 緊急地震速報（警報） | EEW 警報表示 |
 | VXSE44 | 緊急地震速報（予報） | **受信対象外**（廃止予定・VXSE45 で代替。`EEW_TYPES` から除外済み） |
-| VXSE45 | 地震動予報 | EEW 詳細（長周期地震動階級を含む） |
+| VXSE45 | 緊急地震速報（地震動予報） | EEW 詳細（長周期地震動階級を含む）。表示・読み上げでの呼び方は [`eew-spec.md`](eew-spec.md) §3 |
 | VXSE51 | 震度速報 | 地震カード（速報） |
 | VXSE52 | 震源に関する情報 | 地震カード（震源） |
 | VXSE53 | 震源・震度に関する情報／遠地地震に関する情報 | 地震カード（詳細報／遠地地震）。両者は同じ種別コードで届き `Head/Title` で識別する（[quake-spec.md](quake-spec.md) §3） |
@@ -284,6 +284,11 @@ step 内例外も try/catch でログ出力の上、次フレームへ復帰す�
 `indexToValue(index) = -3.0 + index * 0.5`（0.5 刻み量子化、index 6 = 震度 0 = value 0.0）。
 `index = -1` は欠測センチネル（公式 CSS が裏付け）。
 
+**欠測は 1〜2 秒で復帰する瞬断が多く、強く揺れている観測点でも起きる。** 表示側は欠測を描かないため、
+そのままでは強い揺れのバッジが 1 秒だけ消える。このため**表示に使うインデックスだけ**、欠測点を直前値で
+短時間保持する（保持の範囲・時間・見せ方は
+[`kyoshin-detection-spec.md`](kyoshin-detection-spec.md) §8。検知エンジンには生値を渡す）。
+
 ### クロック同期（`startClockSync`）
 
 Yahoo は未登録秒には 403 を返す（登録遅延約 1.5 秒）。この 403 → 200 遷移を捉えて時刻を較正する
@@ -342,7 +347,9 @@ Yahoo は未登録秒には 403 を返す（登録遅延約 1.5 秒）。この 
 
 ### EEW 補完（`hypoInfoItemToEEW`）
 
-Yahoo の `hypoInfo.items` を EEW 型に変換して P2PQuake（標準版）や DMDATA（DMDSS 版）と統合する。
+Yahoo の `hypoInfo.items` を EEW 型に変換して P2PQuake と統合する。**この経路は標準版のみ**
+（DMDSS 版は DMDATA の EEW 電文を主系とし、Yahoo 由来の EEW は使わない。詳細は
+[`eew-spec.md`](eew-spec.md) §3）。
 `condition` に相当するフィールドが無いため常に `'以上'` を返す（single-point PLUM 検知の判別不能・
 既知の限界。**PLUM 法** の詳細は [`eew-spec.md`](eew-spec.md) §5 参照）。severity は震度からの
 ヒューリスティック推定（`scaleNum >= 45 ? 'Warning' : 'Forecast'`）。

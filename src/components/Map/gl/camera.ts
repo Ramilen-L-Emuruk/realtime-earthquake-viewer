@@ -234,6 +234,18 @@ export function flyToBounds(
 export const EEW_ZOOM_SNAP = 0.5
 
 /**
+ * ズームを zoomStep 段階へ切り下げる（＝わずかにズームアウトして余白を残す）。
+ * 浮動小数の 6.9999… が 6.5 に落ちるのを防ぐため、わずかなイプシロンを足してから floor する。
+ *
+ * `flyToBoundsSnapped` の着地ズームと、`refitDeltaForBounds`（寄り直して得られる段数）の双方が
+ * この式を使う。片方だけ変えると「得られると計算した段数」と「実際の着地」がずれ、
+ * 寄り直しの発火判定が着地後も成立し続けて無駄な fly を撃ち続ける。
+ */
+export function snapZoomDown(zoom: number, zoomStep: number = EEW_ZOOM_SNAP): number {
+  return Math.floor((zoom + 1e-6) / zoomStep) * zoomStep
+}
+
+/**
  * bounds に合うズームを算出し zoomStep 段階へ切り下げて（＝わずかにズームアウトして余白を残して）fly する。
  * 旧 Leaflet の `getBoundsZoom(inside=false)`＋`zoomSnap` 相当のヒステリシスを再現する。
  */
@@ -250,10 +262,58 @@ export function flyToBoundsSnapped(
     map.fitBounds(bounds, { padding, maxZoom, duration }, beginProgrammaticFlight(map, duration))
     return
   }
-  // 円が収まる最大ズームを zoomStep 段階へ切り下げる。浮動小数の 6.9999… が 6.5 に落ちるのを防ぐため
-  // わずかなイプシロンを足してから floor する。
-  const snappedZoom = Math.floor((cam.zoom + 1e-6) / zoomStep) * zoomStep
-  map.flyTo({ center: cam.center, zoom: snappedZoom, duration }, beginProgrammaticFlight(map, duration))
+  map.flyTo({ center: cam.center, zoom: snapZoomDown(cam.zoom, zoomStep), duration }, beginProgrammaticFlight(map, duration))
+}
+
+/** いま bounds へ寄り直したら画がどれだけ変わるか（`refitDeltaForBounds` の戻り値）。 */
+export interface RefitDelta {
+  /** 寄り直したときのズームの深まり（段）。すでに着地ズームにいれば 0、目標が画からはみ出していれば負。 */
+  zoomGain: number
+  /** 寄り直したときの中心の移動量。地図ペインの短辺に対する比（0＝動かない、0.5＝短辺の半分ぶん動く）。 */
+  centerShiftRatio: number
+}
+
+/**
+ * いま `flyToBoundsSnapped` で bounds へ寄り直したら、画がどれだけ変わるか。算出できない場合は null。
+ *
+ * **どちらも「寄り直したあとは必ず 0 になる量」で測るのが要点。** 矩形の広さの比で測ると
+ * padding（px）とビューポートのアスペクト比の影響が入り、地図ペインが小さい端末（スマホの
+ * 上下分割など）では着地後にも「まだゆるい」と判定され続けて、無駄な fly を繰り返す。
+ * ズームの利得も中心の移動量も、着地後は定義上 0 になるため、その往復が構造的に起きない。
+ *
+ * 2 つを返すのは、片方だけでは「画の変わり方」を測り切れないため。
+ * - `zoomGain` は縮尺の差しか見ない。寄り上限（`MAX_ZOOM`）に張り付いている状態では、目標が
+ *   どこへ動いても利得は 0 前後に留まる（現在ズームと着地ズームの双方がクランプに当たる）。
+ *   実測: 2026-07-17 大隅半島東方沖 M5.2 の再生で、ズーム 7 のまま約 2 分カメラが動かず、
+ *   目標中心のずれだけが 42px → 247px（ペイン短辺の 31%）まで育った
+ * - `centerShiftRatio` は位置のずれしか見ない。目標がその場で縮んだ場合は中心が動かないため 0 になる
+ *
+ * ズームの利得は `flyToBoundsSnapped` と同じ `snapZoomDown` を通す（着地ズームの式が食い違うと、
+ * 「得られると計算した段数」と実際の着地がずれ、着地後も発火し続ける）。中心の移動量は
+ * **現在のカメラの縮尺で** 測る（`map.project`）——いま見えている画がどれだけ飛ぶかを知りたいため。
+ */
+export function refitDeltaForBounds(
+  map: maplibregl.Map,
+  bounds: maplibregl.LngLatBounds,
+  opts: { padding?: number; maxZoom?: number; zoomStep?: number } = {},
+): RefitDelta | null {
+  const { padding = 48, maxZoom = MAX_ZOOM, zoomStep = EEW_ZOOM_SNAP } = opts
+  const cam = map.cameraForBounds(bounds, { padding, maxZoom })
+  if (!cam || !Number.isFinite(cam.zoom) || !cam.center) return null
+  // ペインの実寸が取れない（レイアウト前・非表示）間は判定材料が揃わないので測らない。
+  // ズームの利得も cameraForBounds がコンテナ寸法から逆算した値なので、片方だけ信じる根拠が無い。
+  const container = map.getContainer()
+  const minSide = Math.min(container.clientWidth, container.clientHeight)
+  if (!(minSide > 0)) return null
+  const from = map.project(map.getCenter())
+  const to = map.project(cam.center)
+  // 上流の座標が壊れていると（欠測値の混入等）ここまで NaN が伝わる。NaN は比較が常に false に
+  // なるため、そのまま返すと閾値判定が「寄り直す価値あり」側へ倒れて無意味な飛行を繰り返す。
+  if (![from.x, from.y, to.x, to.y].every(Number.isFinite)) return null
+  return {
+    zoomGain: snapZoomDown(cam.zoom as number, zoomStep) - map.getZoom(),
+    centerShiftRatio: Math.hypot(to.x - from.x, to.y - from.y) / minSide,
+  }
 }
 
 /** BoundsTuple を maplibre の LngLatBounds へ。 */
@@ -286,11 +346,52 @@ export function boundsForLiveFollow(
   return b ? toLngLatBounds(b) : null
 }
 
-// 現在の表示範囲が target bounds を完全に含むか（成長フォローの「収まっているか」判定）。
-export function mapContainsBounds(map: maplibregl.Map, target: maplibregl.LngLatBounds): boolean {
-  const view = map.getBounds()
-  return boundsContains(
-    [view.getWest(), view.getSouth(), view.getEast(), view.getNorth()],
-    [target.getWest(), target.getSouth(), target.getEast(), target.getNorth()],
-  )
+/**
+ * 現在の表示範囲が target bounds を完全に含むか（成長フォローの「収まっているか」判定）。
+ *
+ * `marginPx` を渡すと、画面の縁からその幅だけ内側に入っていることを要求する。バッジで描く目標
+ * （揺れ検知点）では、点が縁のちょうど上にあると丸が半分切れた状態で「収まっている」と判定されて
+ * しまうため（2026-07-17 大隅半島東方沖の再生で実際に最上段のバッジが切れていた）。
+ * 渡す値はフィットの padding に合わせること——フィット後は必ず padding ぶん内側に入るので、
+ * 同じ値なら「寄り直した直後に再び収まっていないと判定される」往復が起きない。
+ *
+ * 目標が円や区域塗り（EEW 追従）の場合は縁に接していても切れて見えないため、既定の 0 で使う。
+ */
+export function mapContainsBounds(
+  map: maplibregl.Map,
+  target: maplibregl.LngLatBounds,
+  marginPx = 0,
+): boolean {
+  const view = viewBoundsTuple(map, marginPx)
+  return boundsContains(view, [
+    target.getWest(),
+    target.getSouth(),
+    target.getEast(),
+    target.getNorth(),
+  ])
 }
+
+/**
+ * 判定に使う表示範囲。`marginPx` が 0 なら `getBounds()` そのまま、正なら画面四隅から
+ * その幅だけ内側の点を逆投影して縮めた範囲を返す。
+ *
+ * 余白がペインに対して大きすぎると（パネルを広げて地図が細くなった状態）内側の範囲が反転して
+ * 常に「収まっていない」になり、毎秒フィットが走る。短辺の 2 割を上限に切り詰めて防ぐ。
+ */
+function viewBoundsTuple(map: maplibregl.Map, marginPx: number): BoundsTuple {
+  const container = map.getContainer()
+  const width = container.clientWidth
+  const height = container.clientHeight
+  // ペインの実寸が取れない（レイアウト前・非表示）間は内側へ詰めない。詰めると範囲が 1 点へ潰れて
+  // 何を渡しても「収まっていない」になり、毎秒フィットが走る（`refitDeltaForBounds` が同じ条件で
+  // 判定を見送るのと同じ考え方で、判定材料が揃わないときは動かさない側に倒す）。
+  if (marginPx <= 0 || !(Math.min(width, height) > 0)) {
+    const view = map.getBounds()
+    return [view.getWest(), view.getSouth(), view.getEast(), view.getNorth()]
+  }
+  const margin = Math.min(marginPx, Math.floor(Math.min(width, height) * 0.2))
+  const nw = map.unproject([margin, margin])
+  const se = map.unproject([width - margin, height - margin])
+  return [nw.lng, se.lat, se.lng, nw.lat]
+}
+
