@@ -6,7 +6,7 @@ import type { AlertTitleApi } from './useAlertTitle'
 import type { ReplayEntry } from '../types/replay'
 import { getIntensityLabel } from '../utils/intensity'
 import { formatMagnitude, hasMagnitude } from '../utils/formatters'
-import { eewMaxScale, eewMaxLpgmClass, computeSingleEEWLevel, selectEEWSoundType, eewKindLabel } from '../utils/eew'
+import { eewMaxScale, eewMaxLpgmClass, eewNoForecastReason, computeSingleEEWLevel, selectEEWSoundType, eewKindLabel } from '../utils/eew'
 import { haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
 import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade } from '../utils/tsunami'
@@ -18,9 +18,11 @@ import { log, createLogThrottle } from '../utils/logger'
 import { extractQuakeEventIdFromId, quakeEventKey, sameQuakeEntry } from '../utils/quakeMerge'
 
 // EEW 読み上げ第 2 フェーズ（予想値）のタイミング。
-// 初報で予想震度が付いていない場合に待つ上限。仮定震源要素（単独点処理）や深発地震では
-// 予想震度が最後まで付かないことがあるため、待ちきらずに「予想震度なし」を読んで打ち切る。
-const EEW_PHASE2_MAX_WAIT_MS = 6000
+// 初報で予想震度が付いておらず、かつ**付かない理由がはっきりしない**場合に待つ上限。
+// 仮定震源要素（単独点処理）・深発地震はその報に予想震度が載らないと判っているので待たない
+// （判定は eewNoForecastReason）。ここで待つのは「値が遅れて付くかもしれない」場合だけなので、
+// 上限は短く取る。長く取ると、結局は理由不明の「予想震度なし」を読むまで無言になる。
+const EEW_PHASE2_MAX_WAIT_MS = 3000
 // 直列化した EEW 読み上げで、発話の完了を待つ上限。VOICEVOX への合成リクエストには
 // タイムアウトが無いため、応答が返らないまま待ち続けると後続の EEW が永久に読まれなくなる。
 // 打ち切って次へ進む（止まっていた側は次の発話開始時に abort される）。
@@ -58,7 +60,7 @@ const HIGHER_PRIORITY_SPEECH_MAX_WAIT_MS = 90000
 
 // 予想震度が付くのを待っている EEW があるとき、非 EEW 側が状況を見直す間隔。
 // この待機中は「これから話す」状態で、待つ相手の Promise がまだ存在しないため、
-// 短く眠って作り直す（`EEW_PHASE2_MAX_WAIT_MS` の 6 秒に対して十分細かい刻み）。
+// 短く眠って作り直す（`EEW_PHASE2_MAX_WAIT_MS` の 3 秒に対して十分細かい刻み）。
 const EEW_PHASE2_PENDING_POLL_MS = 500
 
 /** 指定時間だけ待つ（優先度の待ち合わせで、待つ相手の Promise がまだ無いときに使う）。 */
@@ -274,8 +276,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const higherPrioritySpeechInProgress = (priority: SpeechPriority): Promise<void> | null => {
     if (eewSpeechPendingRef.current > 0) return eewSpeechChainRef.current
     // 予想震度が付くのを待っている EEW がある間も、EEW は「これから話す」状態にある。
-    // ここを空きと見なすと、震源を読み終えた直後の数秒に地震情報が滑り込み、最大 6 秒後の
-    // 第 2 フェーズに**必ず**切られる（2024/1/1 能登 16:08 の震源情報が残り 5.7 秒で消えていた）。
+    // ここを空きと見なすと、震源を読み終えた直後の数秒に地震情報が滑り込み、待ち明け
+    // （`EEW_PHASE2_MAX_WAIT_MS`）の第 2 フェーズに**必ず**切られる
+    // （2024/1/1 能登 16:08 の震源情報が残り 5.7 秒で消えていた）。
     // 待つ相手の Promise はまだ無いので、短く眠って見直す。
     if (eewTtsMaxTimersRef.current.size > 0) return sleep(EEW_PHASE2_PENDING_POLL_MS)
     const active = activeNonEewSpeechRef.current
@@ -699,12 +702,15 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           if (Number.isFinite(hypo.latitude) && Number.isFinite(hypo.longitude)) {
             activeEEWAnnouncedHypocentersRef.current.set(key, { name: hypo.name, lat: hypo.latitude, lng: hypo.longitude })
           }
-          if (scale > 0) {
-            // 予想震度が既に確定している。待たずに予約する（続報の連投で沈黙しないための要）
+          // 待つのは「予想震度が遅れて付くかもしれない」ときだけ。既に確定しているか、
+          // 付かない理由がはっきりしている（仮定震源要素・深発地震）なら待たずに予約する。
+          // 後者を待っても結論は理由付きの「予想震度なし」で変わらず、その分だけ無言になる。
+          // 待たずに読んだ後で続報に値が付いたら、通常の引き上げとして同じ形で言い直す。
+          if (scale > 0 || eewNoForecastReason(event) !== 'unknown') {
             enqueuePhase2()
           } else {
-            // 予想震度がまだ無い（仮定震源要素の初期報など）。値が付いた続報で読むが、
-            // 最後まで付かないこともあるため上限で打ち切り、理由付きの「予想震度なし」を読む。
+            // 予想震度がまだ無く、付かない理由も判らない。値が付いた続報で読むが、
+            // 最後まで付かないこともあるため上限で打ち切り、「予想震度なし」を読む。
             const maxTimer = setTimeout(() => {
               eewTtsMaxTimersRef.current.delete(key)
               enqueuePhase2()
@@ -713,9 +719,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           }
         } else if (!eewPhase2DoneRef.current.has(key)) {
           // 予想震度が付くのを待っている最中の続報。値が確定した時点で読む。
-          // 値が付かないままでも、警報への格上げは上限を待たずに知らせる
-          // （仮定震源要素のまま警報が確定する地震では、待つと最大 6 秒無言になる）
-          if (scale > 0 || levelUpgraded) {
+          // 値が付かないままでも、次の 2 つは上限を待たずに知らせる。
+          //   - 警報への格上げ … 区分が上がったことは予想震度より重い
+          //   - 付かない理由の判明 … 続報で深さが 150km 超に改められる等。待っても結論は
+          //     変わらないので、初報で理由が判っていた場合と同じく待たない
+          if (scale > 0 || levelUpgraded || eewNoForecastReason(event) !== 'unknown') {
             clearPhase2MaxTimer()
             enqueuePhase2()
           }
