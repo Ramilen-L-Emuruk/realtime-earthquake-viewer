@@ -121,7 +121,7 @@ function setup() {
     setActiveTabNonRealtime: vi.fn(),
     setActiveTabRealtimeOnUpdate: vi.fn(),
     setActiveTabRealtimeUrgent: vi.fn(),
-    followSpeechTab: vi.fn(), expandPanelForSpecialInfo: vi.fn(),
+    followSpeechTab: vi.fn(), preSpeechTab: vi.fn(), expandPanelForSpecialInfo: vi.fn(),
     revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(),
     setActiveLpgmEventId: vi.fn(),

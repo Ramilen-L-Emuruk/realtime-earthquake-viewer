@@ -9,23 +9,23 @@
  */
 export const TAB_PRIORITY = {
   /**
-   * 長周期地震動情報。地震のあとに出る事後情報で、地震情報よりさらに軽い。
-   * 読み上げ側は当初から分けていた（`SPEECH_PRIORITY.low`）が、タブ側は地震情報と同格で
-   * 優劣が付かなかった。
+   * 地震情報と長周期地震動情報。すでに起きた地震の事後情報。
+   *
+   * **長周期を地震情報と同格にしている**のは読み上げ側と揃えるため（`SPEECH_PRIORITY.normal`）。
+   * 長周期は地震情報より新しい情報なので、待たせるのではなく割り込ませる。どちらも移動先は
+   * 地震情報タブなので、同格にしてもタブの奪い合いは起きない。
    */
-  lpgm: 1,
-  /** 地震情報。すでに起きた地震の事後情報 */
-  quake: 2,
+  quake: 1,
   /** 強震モニタの揺れ検知。「いま揺れている」を示すので地震情報より重い */
-  kyoshin: 3,
+  kyoshin: 2,
   /** 津波。避難行動を促すため揺れ検知より重い */
-  tsunami: 4,
+  tsunami: 3,
   /** EEW の続報 */
-  eewUpdate: 5,
+  eewUpdate: 4,
   /** ユーザーの手動選択 */
-  manual: 6,
+  manual: 5,
   /** EEW の新規発報・レベルアップ・誤報取消 */
-  eewUrgent: 7,
+  eewUrgent: 6,
 } as const
 
 export type TabPriority = typeof TAB_PRIORITY[keyof typeof TAB_PRIORITY]
@@ -63,8 +63,9 @@ export interface TabHold {
  * 保持（優先度 6・残り 12.8 秒）に大津波警報（3）と震度速報（1）が弾かれ、声だけが喋って
  * 画面が動かない状態になっていた（2026-08-20）。
  *
- * 逆に、読み上げを持たない経路（揺れ検知・手動選択・アイドル復帰・読み上げ無効時の受信）が
- * 絡む組み合わせでは従来の優先度比較を残す。これらは順序を決める仕組みを他に持たないため。
+ * 逆に、読み上げを持たない経路（手動選択・アイドル復帰・読み上げ無効時の受信）が絡む
+ * 組み合わせでは従来の優先度比較を残す。これらは順序を決める仕組みを他に持たないため。
+ * 例外は揺れ検知の保持で、こちらは読み上げの有無に関わらず他の移動を妨げない（下記）。
  */
 export function shouldAcceptAutoTab(
   hold: TabHold,
@@ -73,6 +74,11 @@ export function shouldAcceptAutoTab(
   source: TabHoldSource = 'hold',
 ): boolean {
   if (hold.until - now <= 0) return true
+  // **揺れ検知の保持は、他の情報の移動を妨げない。** 揺れ検知は「いま揺れている」を realtime で
+  // 見せるための移動だが、そこに地震情報が届いたなら地震情報を見せてよい（実際に起きた順序どおり
+  // なので、画面が留まる方が不自然）。読み上げの有無に関わらず同じ扱いにする。
+  // 揺れ検知の続き（レベルアップ・別地点）は自分で要求を出し直すため、必要なら realtime へ戻る。
+  if (hold.priority === TAB_PRIORITY.kyoshin) return true
   // **EEW の続報は、他の情報が確保している画面を奪わない。** 従来からある片方向の抑制で、
   // 「非 realtime タブへ移ったあとは EEW の続報で realtime へ引き戻さない」もの。
   // 抑制が無いと、津波や地震情報を読み上げて画面を移した直後に続報が来て realtime に戻り、
@@ -84,18 +90,12 @@ export function shouldAcceptAutoTab(
     && hold.priority !== TAB_PRIORITY.eewUrgent) {
     return false
   }
-  if (source === 'speech') {
-    // 追従どうしは順序が保証されているので保持を見ない。
-    if (hold.source === 'speech') return true
-    // **揺れ検知の保持だけは追従を妨げない。** 揺れ検知は読み上げを持たないため順序を決める
-    // 仕組みに参加しておらず、これを尊重すると「地震情報を喋っているのに画面が揺れ検知のまま」
-    // という、この修正が解こうとした形の問題が別の場所で再発する。
-    //
-    // **ここを「手動選択以外は全部突破する」まで広げてはいけない。** 広げると、
-    // 区域を持たない津波電文で受信時要求に落としたフォールバック（`tsunami`）を長周期（`lpgm`）が
-    // 即座に奪い、アイドル復帰が EEW 中に張った保持（`eewUpdate`）も地震情報だけで外れる。
-    if (hold.priority === TAB_PRIORITY.kyoshin) return true
-  }
+  // 追従どうしは順序が保証されているので保持を見ない。
+  //
+  // **ここを「手動選択以外は全部突破する」まで広げてはいけない。** 広げると、区域を持たない
+  // 津波電文で受信時要求に落としたフォールバック（`tsunami`）を地震情報・長周期（`quake`）が即座に奪い、
+  // アイドル復帰が EEW 中に張った保持（`eewUpdate`）も地震情報だけで外れる。
+  if (source === 'speech' && hold.source === 'speech') return true
   return priority >= hold.priority
 }
 
@@ -119,6 +119,10 @@ export interface TabFollowMark {
  *
  * 直前の追従より**重い情報は待たせない**（EEW が津波の読み上げに割り込んだ場合など、
  * 声が切り替わっているのに画面が遅れるのを防ぐ）。同格以下の連続だけを床で間引く。
+ *
+ * **床を読む要求と、床（`TabFollowMark`）を進める要求は同じ集合に保つこと。** 進める側だけを
+ * 広く取ると、床を読まない要求（通知音と同時の先出し・EEW の受信時要求）が床を押し上げ、
+ * 後から実際に声が出る側の追従を弾く。呼び出し側の条件は `App.tsx` の `requestAutoTab` にある。
  */
 export function shouldFollowNow(
   last: TabFollowMark | null,

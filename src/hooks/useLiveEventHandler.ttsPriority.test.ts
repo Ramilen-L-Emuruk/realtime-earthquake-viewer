@@ -134,7 +134,7 @@ function setup() {
     defaultTabRef: { current: 'earthquake' },
     setActiveTabRealtimeForKyoshin: vi.fn(), setActiveTabNonRealtime: vi.fn(),
     setActiveTabRealtimeOnUpdate: vi.fn(),
-    setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
+    setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(), expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(), setActiveLpgmEventId: vi.fn(),
   }))
   return result.current.handleLiveEvent
@@ -184,7 +184,10 @@ describe('非 EEW の読み上げの優先度', () => {
     expect(spokenTexts()[1]).toContain('大津波警報')
   })
 
-  it('長周期地震動情報は、地震情報の読み上げが終わるまで待つ', async () => {
+  // 長周期地震動は地震情報と同格（2026-08-20 に変更）。同格どうしは新しい方が勝つ規則なので、
+  // 地震情報の読み上げ中に届けば割り込んで読む。軽い段に分けていた頃は、各地の震度
+  // （数千文字・読み切りに 2 分近く）の後ろへ回されて大幅に遅れていた。
+  it('長周期地震動情報は、地震情報の読み上げに割り込んで読まれる', async () => {
     const handle = setup()
     handle(makeQuake())
     await settle()
@@ -198,10 +201,6 @@ describe('非 EEW の読み上げの優先度', () => {
       },
     } as never)
     await settle()
-    expect(spokenTexts()).toHaveLength(1)   // 地震情報を切らない
-
-    finishSpeech(0)
-    await flush()
     expect(spokenTexts()).toHaveLength(2)
     expect(spokenTexts()[1]).toContain('長周期')
   })
