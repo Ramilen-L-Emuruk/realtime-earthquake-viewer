@@ -33,6 +33,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # ビルドより先に走らせる。失敗するとこのジョブが止まり、deploy まで到達しない。
+      # npm run build に含まれる型チェック・グリフ検証では挙動の回帰は捕まらない。
+      - name: Run tests
+        run: npm test
+
       - name: Build standard
         run: npm run build
 

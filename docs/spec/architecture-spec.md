@@ -85,9 +85,10 @@ React 18 + TypeScript + Vite 6 で作られた PWA（Progressive Web App）。�
 | VOICEVOX 読み上げ | ○ | ○ |
 | ヒートマップ | ○ | ○ |
 
-**GitHub Pages デプロイ**: `.github/workflows/deploy.yml` が `main` へ push されるたびに両バリアントをビルドし、
-`dist-dmdss/` の内容を `dist/dmdss/` にマージしてから公開する。Service Worker のスコープは配信パスで自然に
-分離されるため、独立した PWA として動作する。
+**GitHub Pages デプロイ**: `.github/workflows/deploy.yml` が `main` へ push されるたびに、まずユニットテスト
+（`npm test`）を実行し、通ってから両バリアントをビルドして `dist-dmdss/` の内容を `dist/dmdss/` にマージし、
+公開する。テストが失敗した時点でジョブが止まるので、公開中の内容は差し替わらない。Service Worker の
+スコープは配信パスで自然に分離されるため、独立した PWA として動作する。
 
 ## 4. 主要コンポーネント
 
