@@ -1,11 +1,23 @@
 // @vitest-environment jsdom
 //
-// EEW 読み上げ第 2 フェーズ（予想震度・長周期階級）の発話タイミングのテスト。
+// EEW 読み上げ（震源・予想値）の文言と発話順序のテスト。
 //
-// ここで守りたいのは「初報から予想値を読むまでの間」。かつては第 2 フェーズを 3 秒デバウンスし、
-// 続報のたびに張り直していたため、続報が立て続けに届く大地震ほど読み上げが遅れ、上限の 15 秒まで
-// 引っ張られていた（2024/08/08 日向灘 M7.1 で実際に発生）。値が確定した時点で読み、以降の
-// 引き上げは差分の短句で追う方式に変えたので、その挙動を固定する。
+// ここで守りたいことは 3 つ。
+//   1. 予想値は初報・続報とも同じ形で読む（引き上げ専用の短句を持たない）。かつては
+//      「震度5強に引き上げ。」という差分の短句で追っていたが、基準にした値を実際に
+//      発話したかどうかに依存するため、割り込みで消えた発話を基準にすると「一度も
+//      声に出していない値からの引き上げ」を語ることになる。
+//   2. 区分は「警報」に統一し、初報でも前置きする。気象庁は震度6弱以上を予想した
+//      緊急地震速報（警報）を特別警報に位置づけるが、発表時に「特別警報」の名称は
+//      用いない。「〜に切り替わりました」も、前の区分を声に出していない場面では
+//      何から変わったのか伝わらないため使わない。
+//   3. 発話は 1 本のチェーンで直列化する。speakWithVoicevox は待ち行列ではなく割り込み
+//      （既存の再生を stop し進行中の合成を abort する）なので、繋がずに投げると前の
+//      発話が途中で消える。とくに EEW が同時多発すると互いを消し合う（2024/1/1 能登）。
+//
+// かつては第 2 フェーズを時間でデバウンスしており、続報が立て続けに届く大地震ほど読み上げが
+// 遅れていた（2024/08/08 日向灘 M7.1 で実際に発生）。待つ対象は時間ではなく値の確定・
+// 前の発話の完了であることを、以下のテストで固定する。
 //
 // タイマー制御はブラウザでの目視確認が難しいため、fake timers で検証する。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -27,11 +39,16 @@ function spokenTexts(): string[] {
 }
 
 /**
- * Phase 1 の完了 Promise は `.then()` で繋がっているため、fake timers を進めるだけでは
- * Phase 2 の発話まで到達しない。保留中のマイクロタスクを流し切る。
+ * 発話は Promise チェーン（`Promise.race` → `finally` → `then` → `catch` → `finally`）で
+ * 繋がっているため、fake timers を進めるだけでは発話まで到達しない。保留中のマイクロタスクを
+ * 流し切る。
+ *
+ * **回数には余裕を持たせること。** 1 発話あたり 10 ティック弱を要し、複数 EEW が連なると
+ * 積み上がる。足りないと「まだ発話が届いていないだけ」の状態で assert してしまい、
+ * 落ちたり通ったりするフレーキーなテストになる（実際に一度そうなった）。
  */
 async function flushMicrotasks() {
-  for (let i = 0; i < 5; i++) await Promise.resolve()
+  for (let i = 0; i < 400; i++) await Promise.resolve()
 }
 
 function makeEEW(over: {
@@ -118,14 +135,14 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-describe('EEW 読み上げ第2フェーズの発話タイミング', () => {
-  it('初報に予想震度があれば、デバウンスを挟まず第1フェーズの直後に読む', async () => {
+describe('EEW 読み上げの文言と発話順序', () => {
+  it('初報に予想震度があれば、待たずに第1フェーズの直後に読む', async () => {
     const handle = setup()
     handle(makeEEW({ scaleTo: 50 }))
     await flushMicrotasks()
 
     // 時間を一切進めずに、震源名（第1フェーズ）と予想値（第2フェーズ）の両方が出ている
-    expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度5強。'])
+    expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '警報。予想最大震度5強。'])
   })
 
   it('初報に予想震度が無ければ待ち、値が付いた続報の時点で読む（上限を待たない）', async () => {
@@ -138,12 +155,12 @@ describe('EEW 読み上げ第2フェーズの発話タイミング', () => {
     await vi.advanceTimersByTimeAsync(2000)
     handle(makeEEW({ serial: 2, scaleTo: 45 }))
     await flushMicrotasks()
-    expect(spokenTexts()).toContain('予想最大震度5弱。')
+    expect(spokenTexts()).toContain('警報。予想最大震度5弱。')
 
     // 上限（6秒）を過ぎても二重に読まない
     await vi.advanceTimersByTimeAsync(10000)
     await flushMicrotasks()
-    expect(spokenTexts().filter(t => t.startsWith('予想最大震度'))).toHaveLength(1)
+    expect(spokenTexts().filter(t => t.includes('予想最大震度'))).toHaveLength(1)
   })
 
   it('予想震度が最後まで付かない場合は上限で打ち切り、理由付きで読む', async () => {
@@ -157,43 +174,40 @@ describe('EEW 読み上げ第2フェーズの発話タイミング', () => {
 
     await vi.advanceTimersByTimeAsync(1)
     await flushMicrotasks()
-    expect(spokenTexts()).toContain('単独点処理のため、予想震度なし。')
+    expect(spokenTexts()).toContain('警報。単独点処理のため、予想震度なし。')
   })
 
-  // 震度 6 弱（55）以上はレベルが特別警報へ上がるため、ここでは 5弱→5強 の範囲で確かめる
-  // （レベルが動く格上げは下の専用ケースで扱う）
-  it('続報で震度が上がったら差分の短句で追う', async () => {
+  // 差分の短句（「震度5強に引き上げ。」）は廃止した。初報と同じ形で言い直す。
+  it('続報で震度が上がったら、同じ形で言い直す', async () => {
     const handle = setup()
     handle(makeEEW({ scaleTo: 45 }))
     await flushMicrotasks()
     speakMock.mockClear()
 
     handle(makeEEW({ serial: 2, scaleTo: 50 }))
-    await vi.advanceTimersByTimeAsync(2000)
     await flushMicrotasks()
-    expect(spokenTexts()).toEqual(['震度5強に引き上げ。'])
+    expect(spokenTexts()).toEqual(['警報。予想最大震度5強。'])
   })
 
-  it('引き上げが連投されても、静まってから最新値だけを 1 回読む', async () => {
+  // かつてはここで 2 秒のトレーリングデバウンスを張っており、続報が 2 秒以内に連投される
+  // 大地震では最終報まで沈黙していた。前の発話の完了を待つ方式なら、待っている間に届いた
+  // 続報は最新値へ畳まれ、発話の切れ目で 1 回だけ読まれる。
+  it('引き上げが連投されても、待たずに最新値だけを 1 回読む', async () => {
     const handle = setup()
     handle(makeEEW({ scaleTo: 30 }))
     await flushMicrotasks()
     speakMock.mockClear()
 
-    // 1 秒間隔で 3 回引き上がる（デバウンスが張り直され続ける）
+    // 発話の合間に 3 報が立て続けに届く
     for (const [i, s] of [40, 45, 50].entries()) {
       handle(makeEEW({ serial: i + 2, scaleTo: s as IntensityScale }))
-      await vi.advanceTimersByTimeAsync(1000)
-      await flushMicrotasks()
     }
-    expect(spokenTexts()).toHaveLength(0)   // 連投中は読まない
-
-    await vi.advanceTimersByTimeAsync(2000)
     await flushMicrotasks()
-    expect(spokenTexts()).toEqual(['震度5強に引き上げ。'])   // 途中の 4・5弱 は読まない
+    // 途中の 4・5弱 は読まず、最新の 5強 を 1 回だけ読む（時間は進めていない）
+    expect(spokenTexts()).toEqual(['警報。予想最大震度5強。'])
   })
 
-  // 階級だけが上がる続報は、震度にもレベル（特別警報は階級 4 以上）にも現れないため、
+  // 階級だけが上がる続報は、震度にもレベル（特別警報の条件は階級 4 以上）にも現れないため、
   // 専用の追跡を持たないと検出できず、従来は無言のまま取りこぼしていた。
   it('震度据え置きで長周期階級だけ上がった続報も読む', async () => {
     const handle = setup()
@@ -202,88 +216,19 @@ describe('EEW 読み上げ第2フェーズの発話タイミング', () => {
     speakMock.mockClear()
 
     handle(makeEEW({ serial: 2, scaleTo: 50, lgIntTo: 3 }))
-    await vi.advanceTimersByTimeAsync(2000)
     await flushMicrotasks()
-    expect(spokenTexts()).toEqual(['長周期階級3に引き上げ。'])
+    expect(spokenTexts()).toEqual(['警報。予想最大震度5強。予想最大階級3。'])
   })
 
-  // 第2フェーズは第1フェーズの再生完了を待って発話する。従来はその手前に 3 秒デバウンスがあり、
-  // 取消が来ればタイマーを消して止められたが、即時化でその防御が無くなった。Promise は途中で
-  // 止められないため、発話の直前に対象がまだ発表中かを見る必要がある。
-  it('第1フェーズの再生中に誤報取消が届いたら、取り消された予想震度を読み上げない', async () => {
+  it('変化のない続報では発話しない', async () => {
     const handle = setup()
     handle(makeEEW({ scaleTo: 50 }))
-    // マイクロタスクを流す前＝第1フェーズの再生中に相当する時点で取消が届く
-    handle(makeEEW({ serial: 2, cancelled: true }))
-    await flushMicrotasks()
-
-    expect(spokenTexts()).not.toContain('予想最大震度5強。')
-  })
-
-  // 予報→警報のように severity だけが変わる続報では、震度・階級に差が無く差分の短句が空になる。
-  // 値の差分だけを追うと最も重い区分変化が無言になるため、区分を述べてから予想値を読み直す。
-  it('震度据え置きでレベルだけ上がった続報は、区分の変化を述べて読み直す', async () => {
-    const handle = setup()
-    handle(makeEEW({ scaleTo: 50, severity: 'Forecast' }))
     await flushMicrotasks()
     speakMock.mockClear()
 
-    handle(makeEEW({ serial: 2, scaleTo: 50, severity: 'Warning' }))
+    handle(makeEEW({ serial: 2, scaleTo: 50 }))
     await flushMicrotasks()
-    expect(spokenTexts()).toEqual(['警報に切り替わりました。予想最大震度5強。'])
-  })
-
-  // 震度が伸びて特別警報の条件（震度6弱以上）を跨ぐ形の格上げが、実運用でもっとも起きやすい。
-  // 「震度も上がっているのだから差分で足りる」と扱うと、まさにこの一番重い場面で
-  // 「特別警報に切り替わった」ことだけが声から抜け落ちる。
-  it('震度とレベルが同時に上がった続報でも、区分の変化を述べる', async () => {
-    const handle = setup()
-    handle(makeEEW({ scaleTo: 50 }))          // 5強 → 警報
-    await flushMicrotasks()
-    speakMock.mockClear()
-
-    handle(makeEEW({ serial: 2, scaleTo: 55 }))   // 6弱 → 特別警報
-    await flushMicrotasks()
-    expect(spokenTexts()).toEqual(['特別警報に切り替わりました。予想最大震度6弱。'])
-  })
-
-  // 仮定震源要素のまま severity だけ確定する地震では、予想震度が付くのを待つと最大 6 秒無言になる。
-  it('予想震度待ちの最中にレベルが上がったら、上限を待たず知らせる', async () => {
-    const handle = setup()
-    handle(makeEEW({ noAreas: true, condition: '仮定震源要素', severity: 'Forecast' }))
-    await flushMicrotasks()
-    speakMock.mockClear()
-
-    handle(makeEEW({ serial: 2, noAreas: true, condition: '仮定震源要素', severity: 'Warning' }))
-    await flushMicrotasks()
-    expect(spokenTexts()).toEqual(['警報に切り替わりました。単独点処理のため、予想震度なし。'])
-  })
-
-  // 震源が大きく動いた続報（地名が変わり 50km 超移動）は第1フェーズから読み直す。
-  // 以下 2 件は、この既存経路と今回追加した分岐との組み合わせを確かめるもの。
-  // 分岐ごとに前置きを付け外ししていた頃は、この組み合わせで区分の格上げが脱落していた。
-  const FAR_HYPO = { name: '安芸灘', latitude: 34.0, longitude: 132.5 }   // 日向灘から約 230km
-
-  it('震源が大きく動いた続報は、新しい震源で読み直す', async () => {
-    const handle = setup()
-    handle(makeEEW({ scaleTo: 45 }))
-    await flushMicrotasks()
-    speakMock.mockClear()
-
-    handle(makeEEW({ serial: 2, scaleTo: 45, hypocenter: FAR_HYPO }))
-    await flushMicrotasks()
-    expect(spokenTexts()).toEqual(['震源を更新、安芸灘で地震。', '予想最大震度5弱。'])
-  })
-
-  it('震源更新とレベル格上げが重なっても、区分の変化を述べる', async () => {
-    const handle = setup()
-    handle(makeEEW({ scaleTo: 50 }))          // 5強 → 警報
-    await flushMicrotasks()
-    speakMock.mockClear()
-
-    handle(makeEEW({ serial: 2, scaleTo: 55, hypocenter: FAR_HYPO }))   // 6弱 → 特別警報
-    await flushMicrotasks()
-    expect(spokenTexts()).toEqual(['震源を更新、安芸灘で地震。', '特別警報に切り替わりました。予想最大震度6弱。'])
+    expect(spokenTexts()).toHaveLength(0)
   })
 
   it('引き下げの続報では発話しない', async () => {
@@ -296,5 +241,183 @@ describe('EEW 読み上げ第2フェーズの発話タイミング', () => {
     await vi.advanceTimersByTimeAsync(5000)
     await flushMicrotasks()
     expect(spokenTexts()).toHaveLength(0)
+  })
+
+  // 発話は Promise で繋がっており途中で止められないため、発話の直前に対象がまだ発表中かを見る。
+  it('第1フェーズの再生中に誤報取消が届いたら、取り消された予想震度を読み上げない', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50 }))
+    // マイクロタスクを流す前＝第1フェーズの再生中に相当する時点で取消が届く
+    handle(makeEEW({ serial: 2, cancelled: true }))
+    await flushMicrotasks()
+
+    expect(spokenTexts().some(t => t.includes('予想最大震度'))).toBe(false)
+  })
+
+  describe('区分（警報）の読み上げ', () => {
+    it('予報の初報では区分を前置きしない', async () => {
+      const handle = setup()
+      handle(makeEEW({ scaleTo: 30, severity: 'Forecast' }))
+      await flushMicrotasks()
+      expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度3。'])
+    })
+
+    // 予報→警報のように severity だけが変わる続報では震度・階級に差が無い。
+    // 値だけを見ていると、最も重い区分の変化が無言になる。
+    it('震度据え置きでレベルだけ上がった続報は、区分を前置きして読み直す', async () => {
+      const handle = setup()
+      handle(makeEEW({ scaleTo: 50, severity: 'Forecast' }))
+      await flushMicrotasks()
+      speakMock.mockClear()
+
+      handle(makeEEW({ serial: 2, scaleTo: 50, severity: 'Warning' }))
+      await flushMicrotasks()
+      expect(spokenTexts()).toEqual(['警報。予想最大震度5強。'])
+    })
+
+    // 気象庁は震度6弱以上（または長周期地震動階級4以上）を予想した緊急地震速報（警報）を
+    // 特別警報に位置づけているが、発表時に「特別警報」の名称は用いない。表示・通知・通知音は
+    // 2 段階を保つが、音声では区分を「警報」に統一する。
+    it('特別警報の条件を満たしても「特別警報」とは読まない', async () => {
+      const handle = setup()
+      handle(makeEEW({ scaleTo: 70, lgIntTo: 4 }))
+      await flushMicrotasks()
+
+      const texts = spokenTexts()
+      expect(texts).toEqual(['緊急地震速報、日向灘で地震。', '警報。予想最大震度7。予想最大階級4。'])
+      expect(texts.some(t => t.includes('特別警報'))).toBe(false)
+    })
+
+    it('警報から特別警報の条件へ跨ぐ格上げでも、区分は「警報」のまま値で伝える', async () => {
+      const handle = setup()
+      handle(makeEEW({ scaleTo: 50 }))          // 5強 → 警報
+      await flushMicrotasks()
+      speakMock.mockClear()
+
+      handle(makeEEW({ serial: 2, scaleTo: 55 }))   // 6弱 → 特別警報の条件
+      await flushMicrotasks()
+      expect(spokenTexts()).toEqual(['警報。予想最大震度6弱。'])
+    })
+
+    // 「〜に切り替わりました」を使わない理由がここに出る。予想値を一度も読んでいない
+    // 段階での格上げでは、何から変わったのかを聞き手が知らない。
+    it('予想震度待ちの最中にレベルが上がったら、上限を待たず区分を告げる', async () => {
+      const handle = setup()
+      handle(makeEEW({ noAreas: true, condition: '仮定震源要素', severity: 'Forecast' }))
+      await flushMicrotasks()
+      speakMock.mockClear()
+
+      handle(makeEEW({ serial: 2, noAreas: true, condition: '仮定震源要素', severity: 'Warning' }))
+      await flushMicrotasks()
+      expect(spokenTexts()).toEqual(['警報。単独点処理のため、予想震度なし。'])
+    })
+
+    // 区分は引き下げない。一度「警報」と読んだ EEW は以後も警報として読む
+    // （activeEEWLevelsRef が Math.max で保持するのと同じ方針）。
+    it('一度「警報」と読んだ後に severity が落ちても、区分は下げない', async () => {
+      const handle = setup()
+      handle(makeEEW({ scaleTo: 50, severity: 'Warning' }))
+      await flushMicrotasks()
+      speakMock.mockClear()
+
+      handle(makeEEW({ serial: 2, scaleTo: 55, severity: 'Forecast' }))
+      await flushMicrotasks()
+      expect(spokenTexts()).toEqual(['警報。予想最大震度6弱。'])
+    })
+  })
+
+  describe('震源の大幅更新', () => {
+    // 震源が大きく動いた続報（地名が変わり 50km 超移動）は第1フェーズから読み直す。
+    const FAR_HYPO = { name: '安芸灘', latitude: 34.0, longitude: 132.5 }   // 日向灘から約 230km
+
+    it('新しい震源で読み直す', async () => {
+      const handle = setup()
+      handle(makeEEW({ scaleTo: 45 }))
+      await flushMicrotasks()
+      speakMock.mockClear()
+
+      handle(makeEEW({ serial: 2, scaleTo: 45, hypocenter: FAR_HYPO }))
+      await flushMicrotasks()
+      expect(spokenTexts()).toEqual(['震源を更新、安芸灘で地震。', '警報。予想最大震度5弱。'])
+    })
+
+    // 旧震源での値を既読として残すと、新震源で確定した値が旧値を超えたときだけ報じられ、
+    // 震源が変わったことに触れないまま終わる。
+    it('旧震源より低い値でも読み直す', async () => {
+      const handle = setup()
+      handle(makeEEW({ scaleTo: 55 }))
+      await flushMicrotasks()
+      speakMock.mockClear()
+
+      handle(makeEEW({ serial: 2, scaleTo: 40, hypocenter: FAR_HYPO }))
+      await flushMicrotasks()
+      expect(spokenTexts()).toEqual(['震源を更新、安芸灘で地震。', '警報。予想最大震度4。'])
+    })
+  })
+
+  // 2024/1/1 能登半島地震のように EEW が同時多発する状況。状態を eventId 別に持つだけでは
+  // 足りず、発話そのものを 1 本に直列化しないと互いを途中で消し合う（speakWithVoicevox は
+  // 待ち行列ではなく割り込み）。
+  describe('複数 EEW の同時進行', () => {
+    const NOTO = { name: '石川県能登地方', latitude: 37.5, longitude: 137.2 }
+
+    it('別の EEW が割り込んでも、双方の震源と予想値が順に読まれる', async () => {
+      const handle = setup()
+      handle(makeEEW({ eventId: 'A', scaleTo: 30, severity: 'Forecast' }))
+      // A の第1フェーズが再生中に相当する時点で、別の地震が発報する
+      handle(makeEEW({ eventId: 'B', scaleTo: 50, hypocenter: NOTO }))
+      await flushMicrotasks()
+
+      expect(spokenTexts()).toEqual([
+        '緊急地震速報、日向灘で地震。',
+        '予想最大震度3。',
+        '緊急地震速報、石川県能登地方で地震。',
+        '警報。予想最大震度5強。',
+      ])
+    })
+
+    it('片方の続報が他方の既読値を横取りしない', async () => {
+      const handle = setup()
+      handle(makeEEW({ eventId: 'A', scaleTo: 45 }))
+      handle(makeEEW({ eventId: 'B', scaleTo: 30, severity: 'Forecast', hypocenter: NOTO }))
+      await flushMicrotasks()
+      speakMock.mockClear()
+
+      // A は 5弱→6弱、B は 3 のまま据え置き
+      handle(makeEEW({ eventId: 'A', serial: 2, scaleTo: 55 }))
+      handle(makeEEW({ eventId: 'B', serial: 2, scaleTo: 30, severity: 'Forecast', hypocenter: NOTO }))
+      await flushMicrotasks()
+
+      // A だけが読み直され、B は据え置きなので黙る
+      expect(spokenTexts()).toEqual(['警報。予想最大震度6弱。'])
+    })
+
+    // チェーンに reject を残すと、次の発話が待つ対象が rejected promise になり、以降の EEW が
+    // 連鎖的に落ちる。その端末では二度と緊急地震速報が読まれなくなるため、必ず捕まえる。
+    it('読み上げが失敗しても、後続の EEW は読み上げられる', async () => {
+      const handle = setup()
+      speakMock.mockImplementationOnce(() => Promise.reject(new Error('VOICEVOX が起動していない')))
+      handle(makeEEW({ eventId: 'A', scaleTo: 45 }))
+      await flushMicrotasks()
+
+      handle(makeEEW({ eventId: 'B', scaleTo: 50, hypocenter: NOTO }))
+      await flushMicrotasks()
+      expect(spokenTexts()).toContain('緊急地震速報、石川県能登地方で地震。')
+      expect(spokenTexts()).toContain('警報。予想最大震度5強。')
+    })
+
+    it('片方が取り消されても、他方の読み上げは続く', async () => {
+      const handle = setup()
+      handle(makeEEW({ eventId: 'A', scaleTo: 45 }))
+      handle(makeEEW({ eventId: 'B', scaleTo: 50, hypocenter: NOTO }))
+      handle(makeEEW({ eventId: 'A', serial: 2, cancelled: true }))
+      await flushMicrotasks()
+
+      const texts = spokenTexts()
+      expect(texts).toContain('緊急地震速報、石川県能登地方で地震。')
+      expect(texts).toContain('警報。予想最大震度5強。')
+      // A の予想値（5弱）は取消後なので読まれない
+      expect(texts).not.toContain('警報。予想最大震度5弱。')
+    })
   })
 })
