@@ -295,6 +295,135 @@ describe('step: 近傍同時の揺れを confirmed 検知', () => {
   })
 })
 
+describe('step: 単点強震ノイズの排除（§18・CONFIRM_INTENSE_POINTS）', () => {
+  /**
+   * 「連結成分は育つが、確定震度に達したのは1点だけ」というノイズ分布を作る。
+   *
+   * 静穏期を value=-0.5 に置くのは、揺れ期に全点を onset させるための下準備。
+   * 静穏 -0.5 が続くと点別床は FLOOR_MIN(0.0) でクランプされ、震度0(0.0) でも levelActive になる。
+   * そこから baseValue への立ち上がりで周囲の点も onset し、連結成分（面）が育つ
+   * （既定の baseValue=0.0 なら rise 0.5 = RATE_MIN ちょうど。baseValue を上げた場合は rise が
+   * RATE_MIN を上回るだけで、onset が成立することは変わらない）。intenseValue まで上げる点を
+   * intenseCount 点に絞ることで、「面はあるが確定震度に達した点の数」だけを変えた対照実験ができる。
+   *
+   * @param defs 観測点定義
+   * @param intenseCount 確定震度（intenseValue）まで上げる点数。残りは baseValue に留める
+   * @param intenseValue 確定震度とみなす値（通常セルは MIN_CONFIRM_INTENSITY、慢性活性セルは CHRONIC_CONFIRM_INTENSITY）
+   * @param baseValue 確定震度に達しない点の揺れ期の値
+   */
+  function shakeWithIntensePoints(
+    defs: StationDef[],
+    intenseCount: number,
+    intenseValue = 0.5,
+    baseValue = 0.0,
+  ): Frame[] {
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(defs, t, -0.5))
+    for (let i = 0; i < 5; i++, t += 1000) {
+      frames.push(frameWith(defs, t, (idx) => (idx < intenseCount ? intenseValue : baseValue)))
+    }
+    return frames
+  }
+
+  it('「1点だけ震度1・周囲は震度0」は面が育っても confirmed にならない（茨城県北部 2026-07-27 の誤検知）', () => {
+    const defs = grid3x3(36.7, 140.5, 0.1) // 9点・全点相互近傍（誤検知が起きた茨城県北部を模す）
+    const meta = buildStationMeta(sitesOf(defs))
+    const { detections } = drive(shakeWithIntensePoints(defs, 1), meta)
+
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+    // 点数・最大震度だけなら確定条件を満たしていたことを示す（落ちた理由が第3軸であることの確認）
+    const ev = detections[0]
+    expect(ev.lastSize).toBeGreaterThanOrEqual(PARAMS.CONFIRM_POINTS)
+    expect(ev.maxIntensity).toBeGreaterThanOrEqual(PARAMS.MIN_CONFIRM_INTENSITY)
+  })
+
+  it('confirmed を阻まれても likely には留まる（弱い実地震を取りこぼさないため likely には課さない）', () => {
+    const defs = grid3x3(36.7, 140.5, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const { detections } = drive(shakeWithIntensePoints(defs, 1), meta)
+
+    expect(detections.some((d) => d.confidence === 'likely')).toBe(true)
+  })
+
+  it('確定震度に達した点が CONFIRM_INTENSE_POINTS(2) あれば confirmed になる（対照）', () => {
+    const defs = grid3x3(36.7, 140.5, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const { detections } = drive(shakeWithIntensePoints(defs, PARAMS.CONFIRM_INTENSE_POINTS), meta)
+
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(true)
+  })
+
+  /** 疎地域（離島・過疎網）。密度正規化で確定点数が下がっても第3軸は緩まないことを確かめる。 */
+  const sparseDefs: StationDef[] = [
+    { lat: 28.3, lng: 129.4 },
+    { lat: 28.35, lng: 129.45 },
+    { lat: 28.4, lng: 129.4 },
+    { lat: 28.35, lng: 129.35 },
+  ]
+
+  it('疎地域でも「1点だけ震度1」は confirmed にならない（密度正規化は第3軸を緩めない）', () => {
+    const meta = buildStationMeta(sitesOf(sparseDefs))
+    const { detections } = drive(shakeWithIntensePoints(sparseDefs, 1), meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+
+  it('疎地域で震度1が2点あれば confirmed になる（奄美型の実地震を取りこぼさない）', () => {
+    const meta = buildStationMeta(sitesOf(sparseDefs))
+    const { detections } = drive(
+      shakeWithIntensePoints(sparseDefs, PARAMS.CONFIRM_INTENSE_POINTS),
+      meta,
+    )
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(true)
+  })
+
+  /** 慢性活性セルを作る（第2軸）。揺れ前に cellActivity を閾値超えへ書き換える。 */
+  function driveChronic(defs: StationDef[], frames: Frame[]): DetectorState {
+    const meta = buildStationMeta(sitesOf(defs))
+    let state = initState(frames[0].dataTimeMs - 1000)
+    frames.forEach((f, i) => {
+      // 静穏期（前半5フレーム）を終えた時点で慢性活性セルに仕立てる
+      if (i === 5) {
+        for (const d of defs) state.cellActivity[meta.cellOf[siteKey(d.lat, d.lng)]] = 0.9
+      }
+      state = step(state, f, meta).state
+    })
+    return state
+  }
+
+  it('慢性活性セルでは震度2に達した点で数える（最大震度は足りても震度2が1点なら confirmed にしない）', () => {
+    const defs = grid3x3(36.1, 140.3, 0.1) // 北関東型
+    // 1点だけ震度2・残り8点は震度1。maxIntensity は CHRONIC_CONFIRM_INTENSITY を満たすが
+    // 「震度2に達した点」は1点しかない構成。
+    const state = driveChronic(
+      defs,
+      shakeWithIntensePoints(defs, 1, PARAMS.CHRONIC_CONFIRM_INTENSITY, PARAMS.MIN_CONFIRM_INTENSITY),
+    )
+
+    expect(state.events.some((e) => e.confidence === 'confirmed')).toBe(false)
+    // 落ちた理由が第3軸であり、点数ゲートへのすり替わりでないことを確認する。
+    // 実効要求点数は「慢性活性で引き上げた値」と「密度正規化した値」の小さい方なので、
+    // 引き上げ後の値を満たしていれば点数ゲートは必ず通っている。
+    const ev = state.events[0]
+    expect(ev.lastSize).toBeGreaterThanOrEqual(PARAMS.CONFIRM_POINTS + PARAMS.CHRONIC_POINT_BUMP)
+    expect(ev.maxIntensity).toBeGreaterThanOrEqual(PARAMS.CHRONIC_CONFIRM_INTENSITY)
+  })
+
+  it('慢性活性セルでも震度2が2点あれば confirmed になる（地域ガードは実地震まで潰さない）', () => {
+    const defs = grid3x3(36.1, 140.3, 0.1)
+    const state = driveChronic(
+      defs,
+      shakeWithIntensePoints(
+        defs,
+        PARAMS.CONFIRM_INTENSE_POINTS,
+        PARAMS.CHRONIC_CONFIRM_INTENSITY,
+        PARAMS.MIN_CONFIRM_INTENSITY,
+      ),
+    )
+    expect(state.events.some((e) => e.confidence === 'confirmed')).toBe(true)
+  })
+})
+
 describe('step: EEW 発表中の確定緩和（§19）', () => {
   it('EEW 発表中は密な網でも CONFIRM_POINTS(5) 未満・EEW_CONFIRM_POINTS(3) で confirmed になる', () => {
     const defs = grid3x3(35.0, 139.0, 0.1) // 9点・全点相互近傍（avail=8・密度正規化の影響を受けない）
