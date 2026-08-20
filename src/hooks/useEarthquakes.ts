@@ -65,11 +65,19 @@ function enrichEEWPref(eew: EEWAlert, index: Map<string, string> | null): EEWAle
 }
 
 type TestEEWKind = 'special' | 'warning' | 'forecast'
-type TestEEWEntry = { eventId: string; serial: number; finalizeTimer: number }
-type TestEEWRetractionEntry = { eventId: string; serial: number; cancelTimer: number }
+// originTime は同一イベントで不変なので初報の基準時刻（baseTime）を続報・最終報まで持ち回る。
+type TestEEWEntry = { eventId: string; serial: number; baseTime: Date; finalizeTimer: number }
+type TestEEWRetractionEntry = { eventId: string; serial: number; baseTime: Date; cancelTimer: number }
 
 type TestTsunamiRef = React.MutableRefObject<{ cancelTimer: number; tsunami: JMATsunami } | null>
 
+// 津波テスト: 発表 → cancelMs 後に解除（または誤報取消）。
+//
+// 解除電文は実運用（dmdataParser / p2pquake の 552）に合わせる:
+//   - 区域は空。実運用の解除・取消はどちらも areas を持たない（残っている区域が解除の意味）。
+//   - 発表時刻・id は解除電文自身のもの（直前の発表を流用しない）。
+//   - 解除理由は DMDSS 限定。standard 版（P2PQuake）は判別できないため付けない
+//     （p2pquake.ts の 552 パースと同じ扱い）。
 function runSimulateTsunami(
   createFn: () => JMATsunami,
   cancelMs: number,
@@ -81,20 +89,35 @@ function runSimulateTsunami(
   const tsunami = createFn()
   handleEvent(tsunami)
   const cancelTimer = window.setTimeout(() => {
-    handleEvent({ ...tsunami, cancelled: true, cancelReason })
+    const now = serverDate().toISOString()
+    handleEvent({
+      ...tsunami,
+      id: `${tsunami.id}-cancel`,
+      time: now,
+      issue: { ...tsunami.issue, time: now },
+      cancelled: true,
+      cancelReason: isDmdss ? cancelReason : undefined,
+      areas: [],
+    })
     ref.current = null
   }, cancelMs)
   ref.current = { cancelTimer, tsunami }
 }
 
 // EEW発報テスト（特別警報・警報・予報）: クリックのたびに続報（isFinal未設定）を送る。
-// silenceMs 経過しても再クリックが無ければ、その時点のイベントを isFinal:true で確定送信する。
+// silenceMs 経過しても再クリックが無ければ、最終報（isFinal:true）を確定送信する。
 // 確定後は本番と全く同じ calcEEWCancelTime ベースの自動解除（無音・即消去）がそのままかかる
 // （DMDSS版の実運用と同一経路。Standard版は実データに isFinal が来ないため、この検知経路
 // 自体は実運用で通らないが、解除後の共有ロジックはバリアント共通のため検証できる）。
+//
+// 報の推移は実運用（dmdataParser.parseEEW）に合わせる:
+//   - 報番号（issue.serial）・id・発表時刻（time / issue.time）は報ごとに進める。
+//     最終報も独立した 1 報なので、直前の電文を流用せず serial を 1 つ進めて作り直す。
+//   - 震源時刻（originTime）と到達予想時刻は同一イベントで不変。baseTime を持ち回って固定する
+//     （作り直すと予報円が続報ごとに中心へ戻り、実運用では起きない挙動になる）。
 function runSimulateEEW(
   kind: TestEEWKind,
-  createFn: (eventId: string, serial: number) => EEWAlert,
+  createFn: (eventId: string, serial: number, baseTime: Date) => EEWAlert,
   silenceMs: number,
   timers: Map<TestEEWKind, TestEEWEntry>,
   handleEvent: (event: AppEvent) => void,
@@ -103,20 +126,25 @@ function runSimulateEEW(
   const isContinuation = prev !== undefined
   const eventId = isContinuation ? prev.eventId : `test-${kind}-${Date.now()}`
   const serial = isContinuation ? prev.serial + 1 : 1
+  const baseTime = isContinuation ? prev.baseTime : serverDate()
   if (prev) window.clearTimeout(prev.finalizeTimer)
-  const eew = createFn(eventId, serial)
-  handleEvent(eew)
+  handleEvent(createFn(eventId, serial, baseTime))
   const finalizeTimer = window.setTimeout(() => {
-    handleEvent({ ...eew, isFinal: true })
+    handleEvent({ ...createFn(eventId, serial + 1, baseTime), isFinal: true })
     timers.delete(kind)
   }, silenceMs)
-  timers.set(kind, { eventId, serial, finalizeTimer })
+  timers.set(kind, { eventId, serial, baseTime, finalizeTimer })
 }
 
 // EEW誤報取消テスト: 通常発報のまま cancelMs 後に明示的な取消電文（cancelled:true、isFinal無し）
 // を送る。誤報取消は音・ブラウザ通知・読み上げを伴う（自動解除との対比用）。
+//
+// 取消電文も実運用（dmdataParser.parseEEW の isCanceled 分岐）に合わせる:
+//   - 独立した 1 報なので報番号・id・発表時刻を進める。
+//   - 対象地域は空、震源座標は 0、予想最大震度・予想最大長周期階級も持たない
+//     （取消電文は予想を持たない）。震源名は残す（通知文・読み上げが hypocenter.name を使うため）。
 function runSimulateEEWRetraction(
-  createFn: (eventId: string, serial: number) => EEWAlert,
+  createFn: (eventId: string, serial: number, baseTime: Date) => EEWAlert,
   cancelMs: number,
   ref: React.MutableRefObject<TestEEWRetractionEntry | null>,
   handleEvent: (event: AppEvent) => void,
@@ -124,14 +152,25 @@ function runSimulateEEWRetraction(
   const prev = ref.current
   const eventId = prev ? prev.eventId : `test-eew-retraction-${Date.now()}`
   const serial = prev ? prev.serial + 1 : 1
+  const baseTime = prev ? prev.baseTime : serverDate()
   if (prev) window.clearTimeout(prev.cancelTimer)
-  const eew = createFn(eventId, serial)
-  handleEvent(eew)
+  handleEvent(createFn(eventId, serial, baseTime))
   const cancelTimer = window.setTimeout(() => {
-    handleEvent({ ...eew, cancelled: true })
+    const report = createFn(eventId, serial + 1, baseTime)
+    handleEvent({
+      ...report,
+      cancelled: true,
+      areas: [],
+      forecastMaxScale: undefined,
+      forecastMaxLpgmClass: undefined,
+      earthquake: {
+        ...report.earthquake,
+        hypocenter: { ...report.earthquake.hypocenter, latitude: 0, longitude: 0 },
+      },
+    })
     ref.current = null
   }, cancelMs)
-  ref.current = { eventId, serial, cancelTimer }
+  ref.current = { eventId, serial, baseTime, cancelTimer }
 }
 
 export interface EarthquakeState {
@@ -449,14 +488,29 @@ export function useEarthquakes(
         case 'tsunami': {
           const tsunami = event as JMATsunami
           if (tsunami.cancelled) {
-            // eventId が一致するものだけ解除する（serialNo が異なっても同一イベントを解除できるよう id 全体ではなく eventId で照合）
+            // 双方が eventId を持つときだけ厳密に照合し、別イベントの解除は無視する
+            // （serialNo が異なっても同一イベントを解除できるよう id 全体ではなく eventId で見る）。
+            //
+            // どちらかが eventId を持たない場合は照合せず受け入れる。かつては id の完全一致を
+            // 求めていたが、P2PQuake（standard 版）の 552 は eventId を持たず、`id` は電文ごとの
+            // 文書 ID（`str(raw.id)`）なので発表電文と解除電文で必ず異なる。つまり id 照合では
+            // standard 版の解除が常に捨てられ、音と読み上げだけが「解除」と伝えてカードは
+            // 24h フェイルセーフまで残っていた。standard 版は津波を 1 件しか保持しないため、
+            // 照合できないときは受け入れる方が実態に合う。
             if (prev.tsunamis.length > 0) {
               const current = prev.tsunamis[0]
               const cancelEventId = tsunami.eventId
               const currentEventId = current.eventId
               if (cancelEventId && currentEventId && cancelEventId !== currentEventId) return prev
-              // eventId がない場合は従来通り id 全体で照合（フォールバック）
-              if ((!cancelEventId || !currentEventId) && current.id !== tsunami.id) return prev
+              // eventId が無い経路は同一イベントか判定できないが、発表時刻の前後だけは見る。
+              // 表示中の津波より古い解除は「別イベントの遅延到達」とみなして捨てる
+              // （1 件スロットなので、これが無いと A の遅い解除で B が消える）。
+              // 時刻が読めないときは足切りしない（解除を落とす方が害が大きい）。
+              if (!cancelEventId || !currentEventId) {
+                const cancelAt = new Date(tsunami.time).getTime()
+                const currentAt = new Date(current.time).getTime()
+                if (Number.isFinite(cancelAt) && Number.isFinite(currentAt) && cancelAt < currentAt) return prev
+              }
             }
             // 解除・取消・期限切れのいずれも同じ10秒表示を経る。表示内容は cancelReason で出し分ける（TsunamiTab側）。
             if (prev.tsunamis.length > 0 && !prev.tsunamis[0].cancelledAt) {
@@ -988,7 +1042,9 @@ export function useEarthquakes(
   }, [])
 
   const simulateEarthquake = useCallback(() => {
-    const quake = createTestEarthquake()
+    // points の形状・情報種別は経路で異なる（DMDATA は観測点が pref 空＋都道府県ロールアップ、
+    // P2PQuake は観測点に pref が入る）。バリアントに合わせて実電文の形を再現する。
+    const quake = createTestEarthquake(isDmdss)
     handleEvent(quake)
     // VAR-2: 長周期地震動観測情報（VXSE62）は DMDATA 経由でのみ配信される。standard 版で
     // 「地震テスト」ボタンから LPGM を注入すると、実データでは絶対に届かないバッジ表示が
@@ -1028,32 +1084,37 @@ export function useEarthquakes(
   )
 
   const simulateTsunami = useCallback(
-    () => runSimulateTsunami(createTestTsunami, TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent),
+    () => runSimulateTsunami(() => createTestTsunami(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent),
     [handleEvent],
   )
 
   const simulateTsunamiWarning = useCallback(
-    () => runSimulateTsunami(createTestTsunamiWarning, TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent),
+    () => runSimulateTsunami(() => createTestTsunamiWarning(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent),
     [handleEvent],
   )
 
   const simulateTsunamiWatch = useCallback(
-    () => runSimulateTsunami(createTestTsunamiWatch, TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent),
+    () => runSimulateTsunami(() => createTestTsunamiWatch(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent),
     [handleEvent],
   )
 
-  // 予報のみは実運用でも ValidDateTime の期限切れで静かに消えるため（明示的な解除電文を伴わない）、
-  // 他の津波テストと違い runSimulateTsunami（明示的キャンセル）は使わず、通常の期限切れ経路に任せる。
+  // 予報のみは DMDSS の実運用では ValidDateTime の期限切れで静かに消える（明示的な解除電文を
+  // 伴わない）ため、DMDSS では runSimulateTsunami（明示的キャンセル）を使わず期限切れ経路に任せる。
+  // standard 版（P2PQuake）は validDateTime を持たないため、実運用と同じく解除電文で消す。
   const simulateTsunamiForecast = useCallback(() => {
+    if (!isDmdss) {
+      runSimulateTsunami(() => createTestTsunamiForecast(false), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent)
+      return
+    }
     if (testTsunamiRef.current) {
       window.clearTimeout(testTsunamiRef.current.cancelTimer)
       testTsunamiRef.current = null
     }
-    handleEvent(createTestTsunamiForecast())
+    handleEvent(createTestTsunamiForecast(true))
   }, [handleEvent])
 
   const simulateTsunamiRetraction = useCallback(
-    () => runSimulateTsunami(createTestTsunamiRetraction, TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent, 'retracted'),
+    () => runSimulateTsunami(() => createTestTsunamiRetraction(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent, 'retracted'),
     [handleEvent],
   )
 

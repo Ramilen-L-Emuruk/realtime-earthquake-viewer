@@ -101,6 +101,26 @@ standard 版では `eewMaxLpgmClass` が常に 0 になり震度のみでレベ�
 `convertEvent` が同じ地域の `scaleFrom` へ置き換えている（[`data-sources-spec.md`](data-sources-spec.md) §3）。
 置き換えないと「震度 7 程度以上」という最も強い予想が丸ごと無視され、警報止まりになる。
 
+### 区域の種別コード（`areas[].kindCode`）
+
+電文の区域が持つ種別。気象庁「地震火山関連コード表」の表 12（緊急地震速報種別）の値をそのまま使う
+（DMDATA の `regions[].kind.code`）。**レベル判定には使わない**（`computeSingleEEWLevel` は
+`severity` と予想震度・長周期階級だけを見る）。区域の話なのでこの節に置くが、判定には関与しない。
+使うのは「警報域か予報域か」の表示の出し分け。
+
+| コード | 種別 | 主要動 |
+|---|---|---|
+| `00` / `01` / `09` | 緊急地震速報（**予報**） | 未到達と予測 / 既に到達と予測 / 到達予想なし（PLUM 法。→ §5） |
+| `10` / `11` / `19` | 緊急地震速報（**警報**） | 同順 |
+
+- 警報域の判定は `10` / `11` / `19` の 3 値。使う側は `RealtimeTab` の「警報:」「予報:」欄の振り分けと、
+  区域塗りの濃さ（`EewRegionFillGL` が警報域を `fillOpacity` 0.55・予報域を 0.3 で塗る）
+- 警報が発表されるのは予想震度 5 弱以上の区域。震度 4 以下の区域は同じ電文の中でも予報域になる
+- `kindCode` が空の電文もある（`RealtimeTab` は全区域が空なら「警報/予報」に分けず「対象:」表示へ落ちる）
+- **区域が電文に載る条件**: 最大予測震度 4 以上**または**最大予測長周期地震動階級 3 以上
+  （eew-information スキーマ）。震度 3 以下で長周期も 3 未満の区域は電文に現れない
+- 合成テストデータもこの節の規則に従う（→ [`settings-pwa-spec.md`](settings-pwa-spec.md) §7「実電文の形に合わせる」）
+
 ### 想定外の値に対する実行時ガード
 
 `eewMaxScale` は震度スケール外の値を、`eewMaxLpgmClass` は 1〜4 以外の階級を採用しない
@@ -202,6 +222,12 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
 - **hadKey=true**: 画面に表示中の EEW を取り消す通常経路 → 音・通知・読み上げの全てを発火
 - **hadKey=false**: 既に自動解除済みの後に本物の誤報取消が遅延到達したケース、または P2PQuake WS と Yahoo の両方から cancel が来た場合の 2 回目 → 通知のみ発火（音・読み上げは二重鳴り防止のためスキップ）
 
+**取消電文は予想を持たない**: `dmdataParser` は取消（`isCanceled`）のとき震源座標を 0 にし、
+`forecastMaxScale` / `forecastMaxLpgmClass` を入れない。区域も空。表示側は `activeEEWs` の
+直前の確定状態を保つため取消電文の中身を使わないが、通知文・読み上げは `hypocenter.name` と
+`issue.time` を読むのでこの 2 つは残る。合成テストデータも同じ形を作る
+（→ [`settings-pwa-spec.md`](settings-pwa-spec.md) §7「実電文の形に合わせる」）。
+
 ## 9. 音・タブ切替・通知の連動
 
 `useLiveEventHandler.ts` の EEW 分岐が主。以下を発火する:
@@ -298,3 +324,6 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
   「いま」へ潰されており、最終報の 9 ミリ秒後に自動解除が走って猶予（`MIN_CANCEL_SEC`=60 秒）が
   消えていた。潰していた処理の撤去と経緯は
   [`settings-pwa-spec.md`](settings-pwa-spec.md) §6「再生中も予約は発火時刻を待つ」を参照
+- 2026-08-20: §4 に区域の種別コード（気象庁コード表 12）の表を追加し、§8 に「取消電文は予想を持たない」
+  ことを明記した。合成テストデータ側が予報の電文に警報のコードを使っていて、予報テストの区域が
+  「警報:」欄に出ていた（→ [`settings-pwa-spec.md`](settings-pwa-spec.md) §7「実電文の形に合わせる」）
