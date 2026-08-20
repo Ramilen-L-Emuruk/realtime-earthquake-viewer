@@ -3,6 +3,7 @@ import type { FeatureCollection, Point } from 'geojson'
 import { useMapGL } from './mapGLContext'
 import type { SiteCoords } from '../../services/kyoshin'
 import { kyoshinIntensityColor } from '../../utils/kyoshinIntensity'
+import { MISSING_HOLD_OPACITY } from '../../utils/kyoshinMissingHold'
 import { addOrderedLayer } from './gl/layerOrder'
 
 // 強震モニタの観測点（約1725点）のうち index 7+（震度1以上）を気象庁配色の circle で描画する
@@ -22,14 +23,19 @@ const LYR = 'kyoshin-points'
 interface Props {
   sites: SiteCoords
   indices: number[]
+  /** 欠測ホールドで直前値を描いている点のフラグ（`indices` と同順）。該当点は薄く描く。 */
+  stale?: boolean[]
   iconScale: number
   visible: boolean
 }
 
-export function KyoshinPointsGL({ sites, indices, iconScale, visible }: Props) {
+export function KyoshinPointsGL({ sites, indices, stale, iconScale, visible }: Props) {
   const map = useMapGL()
   // 各点に前回適用した表示レベル（0 = 不可視、7+ = 可視）。差分更新用。
   const prevLevelsRef = useRef<Int8Array>(new Int8Array(0))
+  // 各点に前回適用した「保持中か」（0/1）。レベルは保持中も直前値のまま変わらないため、
+  // 不透明度の切替を取りこぼさないよう別に持つ。
+  const prevStaleRef = useRef<Uint8Array>(new Uint8Array(0))
   const addedRef = useRef(false)
 
   // 観測点が揃ったら一度だけ source + layer を作る。feature-state 用に id を付与する。
@@ -63,12 +69,14 @@ export function KyoshinPointsGL({ sites, indices, iconScale, visible }: Props) {
       },
     })
     prevLevelsRef.current = new Int8Array(sites.length)
+    prevStaleRef.current = new Uint8Array(sites.length)
     addedRef.current = true
     return () => {
       if (map.getLayer(LYR)) map.removeLayer(LYR)
       if (map.getSource(SRC)) map.removeSource(SRC)
       addedRef.current = false
       prevLevelsRef.current = new Int8Array(0)
+      prevStaleRef.current = new Uint8Array(0)
     }
   }, [map, sites])
 
@@ -78,18 +86,22 @@ export function KyoshinPointsGL({ sites, indices, iconScale, visible }: Props) {
   useEffect(() => {
     if (!map || !addedRef.current || !visible) return
     const prev = prevLevelsRef.current
+    const prevStale = prevStaleRef.current
     for (let i = 0; i < sites.length; i++) {
       const idx = indices[i]
       const level = idx != null && idx >= 7 ? idx : 0
-      if (level === prev[i]) continue
+      const staleNow = level !== 0 && stale?.[i] === true ? 1 : 0
+      if (level === prev[i] && staleNow === prevStale[i]) continue
       prev[i] = level
+      prevStale[i] = staleNow
       const color = kyoshinIntensityColor(level)
+      const opacity = staleNow ? VISIBLE_OPACITY * MISSING_HOLD_OPACITY : VISIBLE_OPACITY
       map.setFeatureState(
         { source: SRC, id: i },
-        { color: color ?? '#000000', opacity: color ? VISIBLE_OPACITY : 0 },
+        { color: color ?? '#000000', opacity: color ? opacity : 0 },
       )
     }
-  }, [map, indices, sites, visible])
+  }, [map, indices, stale, sites, visible])
 
   // UI 倍率の変化で半径を更新（震度によらず一律のため paint プロパティ一括更新）。
   useEffect(() => {

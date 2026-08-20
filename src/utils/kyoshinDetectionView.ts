@@ -18,6 +18,12 @@ export interface DetectedPoint {
   lat: number
   lng: number
   index: number
+  /**
+   * `index` が「現フレームは欠測で、直前の有効値を保持している」値かどうか
+   * （`utils/kyoshinMissingHold.ts`）。描画側は保持中の点を半透明で描く。
+   * 保持を通していない経路（テスト・保持前の生値）では undefined。
+   */
+  stale?: boolean
 }
 
 /**
@@ -77,8 +83,14 @@ export interface KyoshinView {
  * 座標キー → 観測点（座標＋現在インデックス）の索引を作る。memberKeys 解決に使う。
  * キーは kyoshinDetector 側と同じ computeSiteKeys で構築する（座標衝突時の別実体化を検知エンジンと
  * 一致させる。同じ sites 配列を同じ順序で渡す前提のため、ずれると memberKeys の解決が食い違う）。
+ *
+ * @param stale 欠測ホールドで直前値を保持している点のフラグ（`indices` と同順・省略可）。
  */
-export function buildSiteIndex(sites: SiteCoords, indices: number[]): Map<string, DetectedPoint> {
+export function buildSiteIndex(
+  sites: SiteCoords,
+  indices: number[],
+  stale?: readonly boolean[],
+): Map<string, DetectedPoint> {
   const byKey = new Map<string, DetectedPoint>()
   const keys = computeSiteKeys(sites as [number, number][])
   for (let i = 0; i < sites.length; i++) {
@@ -86,7 +98,7 @@ export function buildSiteIndex(sites: SiteCoords, indices: number[]): Map<string
     if (!s) continue
     const idx = indices[i]
     if (idx === undefined) continue
-    byKey.set(keys[i], { key: keys[i], lat: s[0], lng: s[1], index: idx })
+    byKey.set(keys[i], { key: keys[i], lat: s[0], lng: s[1], index: idx, stale: stale?.[i] === true })
   }
   return byKey
 }
@@ -171,6 +183,9 @@ function eventIdNum(id: string): number | null {
  *   地図が飛ぶ事故を構造的に避けるため。
  *
  * **孤立した震度0点の間引き（`dropIsolatedZeroPoints`）を通すのは `detectedMarkerPoints` だけ。**
+ * `stale`（欠測ホールドで直前値を保持している点のフラグ）を渡すと、各 `DetectedPoint` に引き継がれる。
+ * 描画側はそれを見て半透明で描く（`utils/kyoshinMissingHold.ts`）。
+ *
  * カメラフィットに使う `detectedPoints` / `candidatePoints`、および確信度・音の駆動に使う値
  * （confirmed / candidate / candidateMaxIndex / confirmedShocks）はフィルタの影響を受けない——表示を
  * 整えるためのフィルタが「検知したかどうか」を書き換えると、地図から点が消えるのに合わせてカメラが
@@ -181,8 +196,9 @@ export function deriveKyoshinView(
   sites: SiteCoords,
   indices: number[],
   recentOnsetKeys: ReadonlySet<string>,
+  stale?: readonly boolean[],
 ): KyoshinView {
-  const byKey = buildSiteIndex(sites, indices)
+  const byKey = buildSiteIndex(sites, indices, stale)
 
   const confirmedEvents = detections.filter((d) => d.confidence === 'confirmed')
   const likelyEvents = detections.filter((d) => d.confidence === 'likely')

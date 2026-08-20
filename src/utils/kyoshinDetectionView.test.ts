@@ -281,3 +281,52 @@ describe('deriveKyoshinView: 孤立した震度0点の除外', () => {
     expect(view.confirmedShocks).toEqual([{ lat: 40.0, lng: 139.0, index: 6 }])
   })
 })
+
+// 欠測ホールド（utils/kyoshinMissingHold.ts）で作った保持値を渡したときの振る舞い。
+// 保持は「表示の補完」だが、地域の最大震度（音・通知・地域単位発報の入力）にも意図的に効かせている。
+// 欠測を素通しすると、最大震度を担う観測点が 1 秒欠測した瞬間に「揺れが弱まった」と解釈され、
+// 復帰時に更新音が誤って鳴る（useKyoshinAlerts の postPeakMinLevel）。
+describe('deriveKyoshinView: 欠測ホールドの保持値と stale フラグ', () => {
+  const holdSites: SiteCoords = [
+    [35.0, 139.0],
+    [35.1, 139.1],
+  ]
+  const hKeyA = siteKey(35.0, 139.0)
+  const hKeyB = siteKey(35.1, 139.1)
+  const confirmedEvent = fakeEvent({
+    id: 'evt-1',
+    confidence: 'confirmed',
+    memberKeys: [hKeyA, hKeyB],
+    maxIntensity: 5.0,
+    epicenter: [35.05, 139.05],
+  })
+
+  it('保持中フラグが DetectedPoint へ伝わる（描画側が薄く描くため）', () => {
+    // hKeyA が欠測 → 直前値 17 を保持中。hKeyB は生きている。
+    const view = deriveKyoshinView([confirmedEvent], holdSites, [17, 15], new Set(), [true, false])
+    const byKey = new Map(view.detectedMarkerPoints.map((p) => [p.key, p]))
+    expect(byKey.get(hKeyA)?.stale).toBe(true)
+    expect(byKey.get(hKeyB)?.stale).toBe(false)
+  })
+
+  it('最大震度を担う点が欠測しても、保持値なら confirmedShocks の index が落ちない', () => {
+    const held = deriveKyoshinView([confirmedEvent], holdSites, [17, 15], new Set(), [true, false])
+    expect(held.confirmedShocks).toEqual([{ lat: 35.05, lng: 139.05, index: 17 }])
+    // 保持しない場合（欠測を素通し）は次点の 15 まで落ちる＝揺れが弱まったように見える
+    const raw = deriveKyoshinView([confirmedEvent], holdSites, [-1, 15], new Set())
+    expect(raw.confirmedShocks).toEqual([{ lat: 35.05, lng: 139.05, index: 15 }])
+  })
+
+  it('likely 中の音レベルの基準（candidateMaxIndex）も保持値で落ちない', () => {
+    const likely = fakeEvent({ id: 'evt-2', confidence: 'likely', memberKeys: [hKeyA, hKeyB], maxIntensity: 4.0 })
+    const held = deriveKyoshinView([likely], holdSites, [15, 11], new Set(), [true, false])
+    expect(held.candidateMaxIndex).toBe(15)
+    const raw = deriveKyoshinView([likely], holdSites, [-1, 11], new Set())
+    expect(raw.candidateMaxIndex).toBe(11)
+  })
+
+  it('stale を渡さない経路では stale=false になる（保持を通さない呼び出し）', () => {
+    const view = derive([confirmedEvent], holdSites, [17, 15])
+    expect(view.detectedMarkerPoints.every((p) => p.stale === false)).toBe(true)
+  })
+})
