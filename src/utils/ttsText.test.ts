@@ -140,7 +140,7 @@ describe('earthquakeToText: 顕著な地震の震源要素更新のお知らせ'
 describe('eewIntensityToText: 長周期地震動階級の読み上げ', () => {
   function makeEEW(
     forecastMaxLpgmClass?: LpgmClass,
-    over: { condition?: EEWAlert['earthquake']['condition']; areas?: EEWAlert['areas'] } = {},
+    over: { condition?: EEWAlert['earthquake']['condition']; areas?: EEWAlert['areas']; depth?: number } = {},
   ): EEWAlert {
     return {
       kind: 'eew',
@@ -151,7 +151,7 @@ describe('eewIntensityToText: 長周期地震動階級の読み上げ', () => {
         originTime: '2026-01-01T12:00:00Z',
         arrivalTime: '2026-01-01T12:00:20Z',
         condition: over.condition ?? '以上',
-        hypocenter: { name: '三陸沖', latitude: 38.1, longitude: 142.9, depth: 24, magnitude: 7.2 },
+        hypocenter: { name: '三陸沖', latitude: 38.1, longitude: 142.9, depth: over.depth ?? 24, magnitude: 7.2 },
       },
       severity: 'Warning',
       cancelled: false,
@@ -194,6 +194,13 @@ describe('eewIntensityToText: 長周期地震動階級の読み上げ', () => {
     const text = eewIntensityToText(makeEEW(3, { condition: '仮定震源要素' }))
     expect(text).toContain('単独点処理のため、予想震度なし。')
     expect(text).not.toContain('予想最大階級')
+  })
+
+  // 深発地震は震源が確定していても地域別予想が付かないことがある。理由の判定は
+  // eewNoForecastReason に一本化してあり、ここではその文言への写し取りを見る。
+  it('深発地震では理由を添えて「予想震度なし」と読む', () => {
+    expect(eewIntensityToText(makeEEW(undefined, { depth: 400 })))
+      .toContain('深発地震のため、予想震度なし。')
   })
 
   describe('eewIntensityToText: 格上げの前置き', () => {
