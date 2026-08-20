@@ -32,7 +32,7 @@ export function useStationCoords(): StationCoordsData | null {
       if (!failureLogged) {
         failureLogged = true
         log.error(
-          '[data] station-coords 取得失敗（観測点ドットは描けない。区域を持たない電文＝標準版の詳細報は地図に震度が出ない）',
+          '[data] station-coords 取得失敗（観測点ドットは描けない。区域を持たない電文＝標準版の詳細報は地図に震度が出ない。読み上げの地域順も気象庁順に並ばない）',
           err,
         )
       }
