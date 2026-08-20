@@ -16,7 +16,7 @@ import {
   boundsForLiveFollow,
   boundsFromPositions,
   mapContainsBounds,
-  zoomGainForBounds,
+  refitDeltaForBounds,
   isProgrammaticFlight,
   subscribeUserInteraction,
   INTERACTION_HOLD_SEC,
@@ -168,31 +168,45 @@ export function FitJapanOnEnterGL({ hasEew, hasDetection }: { hasEew: boolean; h
   return null
 }
 
-// 縮小フォロー（揺れが収まって検知の範囲が狭まったときに寄り直す）の条件。
+// 収め直しフォロー（画に収まってはいるが目標に対して合っていないときに寄り直す）の条件。
+// 揺れが収まって範囲が狭まった場合と、範囲が別の場所へ移った場合の両方を拾う。
 //
-// ZOOM_GAIN: 寄り直して何段ズームが深くなるなら動かす価値があるか（`zoomGainForBounds`）。
-//   「画が目標の何倍ゆるいか」という矩形の比では測らない。比で測ると padding（px 固定）と
-//   ビューポートのアスペクト比が効いてしまい、地図ペインが小さい端末（スマホの上下分割で
-//   短辺が 300px を割る状態）では着地後にも閾値を超えたままになり、8 秒ごとに無駄な fly を
-//   撃ち続ける。ズームの利得なら着地後は必ず 0 になるため、その往復が構造的に起きない。
+// MIN_ZOOM_GAIN: 寄り直して何段ズームが深くなるなら動かす価値があるか（`refitDeltaForBounds`）。
 //   1.0 段＝縮尺 2 倍。これ未満の寄り直しはカメラを動かすほどの見え方の差にならない。
+// MIN_SHIFT_RATIO: 寄り直しで中心がどれだけ動くなら価値があるか（ペイン短辺に対する比）。
+//   **ズームの利得だけでは測れないため必要。** 寄り上限（`MAX_ZOOM`）の近くでは現在ズームと
+//   着地ズームの双方がクランプに当たるため、目標がどこへ移動しても利得は 1.0 段に届かず
+//   （利得の上限は `MAX_ZOOM` − 現在ズーム。着地ズームは 0.5 刻みなので、ズーム 6.5 以上では
+//   構造的に届かない）、揺れの位置が動いても画が固まる。実測: 2026-07-17 大隅半島東方沖 M5.2 の
+//   再生で、ズーム 7 のままカメラが約 2 分動かず、目標中心のずれが 42px → 247px（短辺の 31%）
+//   まで育った。0.2＝短辺の 2 割。同じ再生で発火は 2 分あたり 1〜3 回、能登（M7.6・全国規模で
+//   ズーム 5 に留まる局面）では 0 回。
 // HOLD: その状態が続くべき時間。揺れの減衰は数秒単位で上下する（余震・表面波の再来・
-//   欠測の出入り）ため、一瞬狭まっただけで寄せるとカメラが落ち着かない。
+//   欠測の出入り）ため、一瞬変わっただけで寄せるとカメラが落ち着かない。
 //   専用のタイマーは張らない——検知が生きている間は観測点の値が毎秒更新されて points の
 //   識別子が変わり、この effect 自身が毎秒走るため、経過時間の比較だけで足りる。
 //   **裏を返すと、強震モニタの取得が止まって観測値の更新が途絶えると、この待ちは進まない**
 //   （`useKyoshinDetectorV2` は dataTime が進まない限り検知を再計算しないため）。その状況では
 //   観測点も検知カードも同じく凍結しているので、カメラだけ動かす意味が無い。待ちに入ったことは
 //   下でログに残し、「待っている」のか「更新が来ていない」のかを事後に切り分けられるようにする。
-const SHRINK_MIN_ZOOM_GAIN = 1.0
-const SHRINK_HOLD_MS = 8000
+//
+// どちらの量も「寄り直したあとは必ず 0 になる」ことが往復しない根拠（`refitDeltaForBounds`）。
+const REFIT_MIN_ZOOM_GAIN = 1.0
+const REFIT_MIN_SHIFT_RATIO = 0.2
+const REFIT_HOLD_MS = 8000
+
+// 成長フォローの「収まっているか」に持たせる余白。検知点はバッジで描くため、点が画面の縁に
+// あると丸が半分切れる。フィットの padding と同じ値にしておくと、寄り直した直後は必ず
+// この余白の内側に入るので往復しない（`mapContainsBounds` の marginPx 参照）。
+const DETECTION_FIT_PADDING = 60
 
 // ── 揺れ検知点にフィットし、検知終了時は日本全体に戻す（EEW 中は戻さない） ──────────
 // MAP-4 対応: 初回フィットも hasEew 時は FitToEEWGL に委譲してスキップする（従来は初回のみ
 // hasEew を無視して検知点へ寄せていたが、EEW と同じコミットで発生する二段ジャンプを回避）。
-// 以降は検知点が画面からはみ出したとき（成長フォロー）と、画が目標よりゆるくなりすぎたとき
-// （縮小フォロー）に追い直す。どちらも 1 点の増減でカメラが動かないよう、
-// flyToBoundsSnapped のズーム段階と上記 SHRINK_* をヒステリシスに使う。
+// 以降は検知点が画面からはみ出したとき（成長フォロー）と、収まってはいるが画が目標に合って
+// いないとき（収め直しフォロー＝範囲が狭まった／別の場所へ移った）に追い直す。どちらも
+// 1 点の増減でカメラが動かないよう、flyToBoundsSnapped のズーム段階と上記 REFIT_* を
+// ヒステリシスに使う。
 export function FitToDetectionGL({
   points,
   hasDetection,
@@ -221,17 +235,20 @@ export function FitToDetectionGL({
 }) {
   const map = useMapGL()
   const fittedRef = useRef(false)
-  // 画が目標よりゆるい状態が続き始めた時刻（0 = ゆるくない）。縮小フォローの HOLD 判定に使う。
-  const looseSinceRef = useRef(0)
+  // 画が目標に合っていない状態が続き始めた時刻（0 = 合っている）。収め直しフォローの HOLD 判定に使う。
+  const refitSinceRef = useRef(0)
   // 「検知は続いているが描ける点が 0」の状態にいるか。ログを状態の変わり目だけに絞るために持つ。
   const noFitTargetRef = useRef(false)
+  // 収め直しの判定自体ができない状態にいるか（同じくログを変わり目だけに絞るために持つ）。
+  const refitBlindRef = useRef(false)
   const [isUserInteracting] = useUserInteractionGuard(map)
   useEffect(() => {
     if (!map) return
     if (!hasDetection) {
-      looseSinceRef.current = 0
-      // 次の検知サイクルへ持ち越さない。持ち越すと「寄り先なし」に入った初回のログが出ない。
+      refitSinceRef.current = 0
+      // 次の検知サイクルへ持ち越さない。持ち越すと「寄り先なし」「判定不可」に入った初回のログが出ない。
       noFitTargetRef.current = false
+      refitBlindRef.current = false
       if (fittedRef.current) {
         fittedRef.current = false
         // 候補クラスタが残っているなら日本全体へは戻さず、そちらへのフィットに任せる
@@ -262,7 +279,10 @@ export function FitToDetectionGL({
     // 見た目・ログが「収まって待っているだけ」と区別できなくなる。入った瞬間だけ記録を残す
     // （毎周回では出さない。この分岐は揺れが引くたびに秒単位で通るため）。
     if (points.length === 0) {
-      looseSinceRef.current = 0
+      refitSinceRef.current = 0
+      // 「判定不可」の記録もここで落とす（`noFitTargetRef` と同じ寿命で扱う。状態が入れ替わった
+      // ときに、それぞれの初回ログが必ず出るようにするため）。
+      refitBlindRef.current = false
       if (!noFitTargetRef.current) {
         noFitTargetRef.current = true
         log.debug('[mapGL] 揺れ検知 寄り先なし (検知は継続中・描ける点が0)')
@@ -293,43 +313,63 @@ export function FitToDetectionGL({
     // 検知範囲の成長追従。EEW 発報中は FitToEEWGL が「有感半径 ∪ 検知点」を追うため、ここでは追わない。
     // 両方が「自分の bounds がはみ出したら引く」を持つと目標が2つになり、互いに相手をはみ出させ合って
     // 振動する（ズーム段階のヒステリシスでは止まらない。目標同士が排他のため）。hasEew で持ち主を分ける。
-    // 自分が追わない状況（EEW 側に委譲・飛行中・ユーザー操作中）では、縮小フォローの待ちを
+    // 自分が追わない状況（EEW 側に委譲・飛行中・ユーザー操作中）では、収め直しフォローの待ちを
     // 積ませない。ここでリセットしないと、抑制が明けた瞬間に「ゆるい状態が続いた」と誤認して
     // 待ち時間ゼロで寄り直してしまう（ユーザーが操作をやめた直後にカメラがスナップする）。
     if (hasEew || isProgrammaticFlight(map) || isUserInteracting) {
-      looseSinceRef.current = 0
+      refitSinceRef.current = 0
+      // 判定そのものをしていないので「判定不可」の記録も落とす（この状態を挟んで再び判定不可へ
+      // 入ったときに、初回として記録されるようにするため。以降の分岐も同じ扱い）。
+      refitBlindRef.current = false
       return
     }
     const bounds = boundsFromPositions(points.map(dp2ll))
     if (!bounds) return
-    if (!mapContainsBounds(map, bounds)) {
-      looseSinceRef.current = 0
+    const fitOpts = { padding: DETECTION_FIT_PADDING, maxZoom: MAX_ZOOM }
+    if (!mapContainsBounds(map, bounds, DETECTION_FIT_PADDING)) {
+      refitSinceRef.current = 0
+      refitBlindRef.current = false
       log.debug(`[mapGL] 揺れ検知 成長フォロー (${points.length}点)`)
-      flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
+      flyToBoundsSnapped(map, bounds, { ...fitOpts, durationSec: 0.8 })
       return
     }
-    // 縮小フォロー: 揺れが収まって検知の範囲が狭まると、成長フォローだけでは画が引いたままになる
-    // （収まっている限り何もしないため）。寄り直しの利得が SHRINK_MIN_ZOOM_GAIN 段以上ある状態が
-    // SHRINK_HOLD_MS 続いたら寄り直す。
-    const gain = zoomGainForBounds(map, bounds, { padding: 60, maxZoom: MAX_ZOOM })
-    if (gain === null || gain < SHRINK_MIN_ZOOM_GAIN) {
-      looseSinceRef.current = 0
+    // 収め直しフォロー: 画に収まっていても、範囲が狭まったり別の場所へ移ったりすると、成長
+    // フォローだけでは画がずれたまま固まる（収まっている限り何もしないため）。寄り直しの利得が
+    // REFIT_MIN_ZOOM_GAIN 段以上か、中心の移動が REFIT_MIN_SHIFT_RATIO 以上ある状態が
+    // REFIT_HOLD_MS 続いたら寄り直す。
+    const delta = refitDeltaForBounds(map, bounds, fitOpts)
+    if (delta === null) {
+      // 寄り直し先を算出できない（地図のコンテナ寸法が取れない・座標が壊れている）。
+      // 成長フォローはすでに「収まっている」と判断して通り過ぎているため、この状態が続くと
+      // どちらのフォローも動かない。黙って止まると原因を追えないので、入った瞬間だけ記録する
+      // （毎周回では出さない。「寄り先なし」と同じ方針）。
+      refitSinceRef.current = 0
+      if (!refitBlindRef.current) {
+        refitBlindRef.current = true
+        log.debug('[mapGL] 揺れ検知 収め直しフォロー 判定不可 (寄り直し先を算出できない)')
+      }
       return
     }
+    refitBlindRef.current = false
+    if (delta.zoomGain < REFIT_MIN_ZOOM_GAIN && delta.centerShiftRatio < REFIT_MIN_SHIFT_RATIO) {
+      refitSinceRef.current = 0
+      return
+    }
+    const reason = `${delta.zoomGain.toFixed(1)}段・中心${(delta.centerShiftRatio * 100).toFixed(0)}%`
     const now = Date.now()
-    if (looseSinceRef.current === 0) {
-      looseSinceRef.current = now
+    if (refitSinceRef.current === 0) {
+      refitSinceRef.current = now
       // 待ちに入ったことを残す。この待ちは観測値の更新で進むため、更新が途絶えると無言で止まる。
       // 記録が無いと「待機中」と「更新が来ていない」を事後に区別できない（上の HOLD の注記参照）。
-      log.debug(`[mapGL] 揺れ検知 縮小フォロー 待機開始 (${points.length}点・${gain.toFixed(1)}段ぶん寄れる)`)
+      log.debug(`[mapGL] 揺れ検知 収め直しフォロー 待機開始 (${points.length}点・${reason})`)
       return
     }
-    if (now - looseSinceRef.current < SHRINK_HOLD_MS) return
-    looseSinceRef.current = 0
-    log.debug(`[mapGL] 揺れ検知 縮小フォロー (${points.length}点・${gain.toFixed(1)}段)`)
-    flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
+    if (now - refitSinceRef.current < REFIT_HOLD_MS) return
+    refitSinceRef.current = 0
+    log.debug(`[mapGL] 揺れ検知 収め直しフォロー (${points.length}点・${reason})`)
+    flyToBoundsSnapped(map, bounds, { ...fitOpts, durationSec: 0.8 })
     // hasCandidate を参照するのは上の検知終了分岐だけだが、古い値を掴まないよう deps には含める
-    // （成長・縮小フォローの分岐が余分に再評価されるが、収まっていてゆるくもなければ何もしない）。
+    // （成長・収め直しフォローの分岐が余分に再評価されるが、収まっていてずれてもいなければ何もしない）。
   }, [map, points, hasDetection, hasEew, hasCandidate, isUserInteracting])
   return null
 }
@@ -478,7 +518,7 @@ export function FitToEEWGL({
         } else if (hasDetection) {
           // 検知は続いているが、いま描ける点が無い（`FitToDetectionGL` の同名の分岐と同じ状態）。
           // 帰る先が無いだけなので EEW の画に留める。候補クラスタや日本全体へ落とすと、
-          // 生きている確定検知を差し置いて画が飛ぶ（描ける点が戻った時点で成長／縮小フォローが拾う）。
+          // 生きている確定検知を差し置いて画が飛ぶ（描ける点が戻った時点で成長／収め直しフォローが拾う）。
           log.debug('[mapGL] EEW解除 フィットスキップ (揺れ検知は継続中・描ける点が0)')
         } else if (candidatePoints.length > 0) {
           // 確定検知には育っていない候補クラスタが残っている場合はそこへ帰る。EEW 発報中は
