@@ -132,7 +132,7 @@ function setup() {
     defaultTabRef: { current: 'earthquake' },
     setActiveTabRealtimeForKyoshin: vi.fn(), setActiveTabNonRealtime: vi.fn(),
     setActiveTabRealtimeOnUpdate: vi.fn(),
-    setActiveTabRealtimeUrgent: vi.fn(), revertToDefaultTab: vi.fn(),
+    setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(), setActiveLpgmEventId: vi.fn(),
   }))
   return result.current.handleLiveEvent
