@@ -402,7 +402,7 @@ EEW や津波を並べると致命的に遅れる。
 
 ### 解消済み
 
-- **AUD-2**: EEW キャンセル電文が P2PQuake WS と Yahoo の両方から届いた場合の二重鳴り防止。`hadKey=true`（このセッションで表示中の EEW）のみで音・通知・読み上げを発火（`useLiveEventHandler.ts`）
+- **AUD-2**: EEW キャンセル電文が P2PQuake WS と Yahoo の両方から届いた場合の二重鳴り防止。`hadKey=true`（このセッションで表示中の EEW）のみで音・通知・読み上げを発火（`useLiveEventHandler.ts`）。2 経路が重なるのは standard 版限定だが、`hadKey` ガード自体は両バリアントで働く（[`eew-spec.md`](eew-spec.md) §3）
 - **AUD-4**: 新しい読み上げの開始時に旧セッションの合成リクエストを `AbortController` で打ち切るようにした。セッション ID の更新だけでは in-flight のリクエストが完走して VOICEVOX を占有し、新規発話が待たされていた
 - **AUD-6**: 津波の解除/取消/期限切れの通知音を追加（`playAlertSound('tsunamiCancel')`。音の内容は §2 の表を参照）
 - **AUD-7**: 読み上げは常に `voicevoxEnabled` 単独で判定するように統一。`soundEnabled` はアラート音のみに影響し、`voicevoxEnabled` の可否とは独立に動く

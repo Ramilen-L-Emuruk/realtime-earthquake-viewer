@@ -72,7 +72,7 @@ React 18 + TypeScript + Vite 6 で作られた PWA（Progressive Web App）。�
 | 機能 | standard | DMDSS |
 |---|---|---|
 | 地震情報のリアルタイム受信 | ○（P2PQuake WS） | ○（DMDATA WS） |
-| 緊急地震速報（EEW） | ○（P2PQuake + Yahoo） | ○（DMDATA + Yahoo） |
+| 緊急地震速報（EEW） | ○（P2PQuake + Yahoo） | ○（DMDATA のみ） |
 | 津波情報 | ○（P2PQuake） | ○（DMDATA） |
 | リアルタイム震度 | ○（Yahoo 共通） | ○（Yahoo 共通） |
 | 揺れ検知エンジン | ○ | ○ |
@@ -84,6 +84,11 @@ React 18 + TypeScript + Vite 6 で作られた PWA（Progressive Web App）。�
 | 実地震テスト再生 | ○ | ○ |
 | VOICEVOX 読み上げ | ○ | ○ |
 | ヒートマップ | ○ | ○ |
+
+上の表で Yahoo が現れる 2 行は用途が違う。リアルタイム震度は両バリアントとも Yahoo を使うが、
+EEW に Yahoo を使うのは standard 版だけで、DMDSS 版の EEW は DMDATA だけを見る
+（詳細は [`eew-spec.md`](eew-spec.md) §3）。本節冒頭のバリアント表で DMDSS の主データソースを
+「DMDATA + Yahoo」と書いているのは、この強震モニタぶんを含めた総体を指す。
 
 **GitHub Pages デプロイ**: `.github/workflows/deploy.yml` が `main` へ push されるたびに、まずユニットテスト
 （`npm test`）を実行し、通ってから両バリアントをビルドして `dist-dmdss/` の内容を `dist/dmdss/` にマージし、
