@@ -11,6 +11,11 @@ export interface AppSettings {
   notifyMinScale: number    // 通知最低震度 (-1 = 通知しない)
   soundEnabled: boolean     // 地震・EEW・津波の受信時に音を鳴らす
   soundVolume: number       // 通知音・VOICEVOX 読み上げ共通の全体音量 (0.0 〜 1.0)
+  // 南海トラフ地震関連解説情報（VYSE51/52）の通知音と読み上げを行う。
+  // 平常時でも毎月1回は必ず届く電文なので、煩わしいときに個別に切れるようにしている
+  // （臨時情報＝段階の発表はこの設定に関わらず鳴る）。soundEnabled / voicevoxEnabled が
+  // 無効ならそちらが優先される。
+  nankaiCommentaryAlerts: boolean
   uiScale: number           // UI 倍率 (1 = 100%)
   mapIconScale: number      // 地図アイコンの倍率 (1 = 100%、UI 倍率とは独立)
   showBathymetry: boolean   // 背景に海底地形（ESRI Ocean）を表示する
@@ -55,6 +60,7 @@ const DEFAULTS: AppSettings = {
   notifyMinScale: -1,
   soundEnabled: true,
   soundVolume: 1.0,
+  nankaiCommentaryAlerts: true,
   uiScale: 1,
   mapIconScale: 1,
   showBathymetry: true,
@@ -132,6 +138,7 @@ export function sanitize(partial: Partial<AppSettings>): AppSettings {
     notifyMinScale: ensureIntensityScale(partial.notifyMinScale, DEFAULTS.notifyMinScale, 'notifyMinScale'),
     soundEnabled: ensureBool(partial.soundEnabled, DEFAULTS.soundEnabled),
     soundVolume: clampNumber(partial.soundVolume, 0, 1, DEFAULTS.soundVolume),
+    nankaiCommentaryAlerts: ensureBool(partial.nankaiCommentaryAlerts, DEFAULTS.nankaiCommentaryAlerts),
     uiScale: clampNumber(partial.uiScale, 0.5, 3, DEFAULTS.uiScale),
     mapIconScale: clampNumber(partial.mapIconScale, 0.5, 3, DEFAULTS.mapIconScale),
     showBathymetry: ensureBool(partial.showBathymetry, DEFAULTS.showBathymetry),

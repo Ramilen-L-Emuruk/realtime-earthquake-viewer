@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMAKohatsu, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
-import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataKohatsu } from '../services/dmdata'
+import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataNankaiCommentary, fetchDmdataKohatsu } from '../services/dmdata'
 import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey } from '../utils/quakeMerge'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex } from '../utils/stationCoords'
 import { calcEEWCancelTime } from '../utils/eew'
@@ -23,6 +23,7 @@ import {
   createTestTsunamiForecast,
   createTestTsunamiRetraction,
   createTestNankai,
+  createTestNankaiCommentary,
   createTestKohatsu,
   TEST_AUTO_DISMISS_MS,
 } from '../utils/testData'
@@ -37,6 +38,7 @@ type QueuePayload =
   | { kind: 'event'; event: AppEvent }
   | { kind: 'lpgm'; data: JMALpgm }
   | { kind: 'nankai'; data: JMANankai }
+  | { kind: 'nankaiCommentary'; data: JMANankaiCommentary }
   | { kind: 'kohatsu'; data: JMAKohatsu }
   | { kind: 'purge-cancelled-quake'; id: string }
   | { kind: 'purge-cancelled-eew'; key: string }
@@ -179,6 +181,7 @@ export interface EarthquakeState {
   activeEEWs: ReadonlyMap<string, EEWAlert>
   lpgmByEventId: ReadonlyMap<string, JMALpgm>
   nankai: JMANankai | null
+  nankaiCommentary: JMANankaiCommentary | null
   kohatsu: JMAKohatsu | null
   connectionStatus: ConnectionStatus
   lastUpdate: Date | null
@@ -201,6 +204,7 @@ export function useEarthquakes(
     activeEEWs: new Map(),
     lpgmByEventId: new Map(),
     nankai: null,
+    nankaiCommentary: null,
     kohatsu: null,
     connectionStatus: (isDmdss && !dmdataApiKey) ? 'disconnected' : 'connecting',
     lastUpdate: null,
@@ -244,6 +248,9 @@ export function useEarthquakes(
   const quakeIntensityCacheRef = useRef<Map<string, { maxScale: IntensityScale; points: EarthquakePoint[] }>>(new Map())
   // 後発地震注意情報（VYSE60）の7日間有効期限タイマー
   const kohatsuExpireTimerRef = useRef<number | undefined>(undefined)
+  // 南海トラフ地震関連解説情報（VYSE51/52）の7日間有効期限タイマー。
+  // 解説情報には解除電文が無く、定例解説は平常時にも毎月届く。期限で畳まないと帯が常駐する。
+  const nankaiCommentaryExpireTimerRef = useRef<number | undefined>(undefined)
   // イベントキュー: eventTime 昇順でソート済み。ディスパッチャーが 100ms ごとに先頭から処理する。
   // リプレイ時は eventTime と再生時刻を比較して発火制御する。
   const eventQueueRef = useRef<QueueEntry[]>([])
@@ -327,6 +334,50 @@ export function useEarthquakes(
   // 時刻ソースはアプリ時計(serverDate)に一元化。ライブ時はサーバー同期、
   // リプレイ時は clock.setReplayOffset により再生時刻を返すため差し替え不要。
   const getTimeRef = useRef<() => Date>(serverDate)
+
+  // 南海トラフ地震関連解説情報を反映し、期限（発表から7日）で自動的に畳むタイマーを張り替える。
+  // 反映できたら true を返す。
+  //
+  // 期限の判定に使う「いま」は getTimeRef（= clock の serverDate）。clock 側で再生オフセットを
+  // 織り込んでいるため、過去日のアーカイブ再生でも「発表から7日」が再生時計の上で評価される
+  // （serverNow() も同じオフセットを見るので両者に機能差はない。この hook 内の他のタイマーと
+  // 時刻源を揃える意図でこちらを使う）。
+  // 期限切れの電文を弾くのは、アーカイブ再生で流れてきた古い解説が帯として残らないようにするため。
+  // 畳むときに id を照合するのは、待っている間に新しい解説へ入れ替わっていた場合に
+  // そちらを消してしまわないため。
+  const applyNankaiCommentary = useCallback((commentary: JMANankaiCommentary): boolean => {
+    // 取消電文は帯を消す。false を返すので音・読み上げも起こさない（取消を告げる必要のある
+    // 重さの情報ではないため。臨時情報の取消とは扱いが違う）
+    if (commentary.cancelled) {
+      if (nankaiCommentaryExpireTimerRef.current !== undefined) {
+        window.clearTimeout(nankaiCommentaryExpireTimerRef.current)
+        nankaiCommentaryExpireTimerRef.current = undefined
+      }
+      setState(prev => ({ ...prev, nankaiCommentary: null }))
+      return false
+    }
+
+    const remainMs = new Date(commentary.expireAt).getTime() - getTimeRef.current().getTime()
+    // 「日時が壊れている」と「正当に期限切れ」を同じ無言の false に潰さない。前者はパーサや
+    // 時刻シフト（testScenarioReplay）のバグを示すため記録を残す。
+    if (!Number.isFinite(remainMs)) {
+      log.warn('[data] 南海トラフ関連解説情報の期限を計算できません', commentary.expireAt)
+      return false
+    }
+    if (remainMs <= 0) return false
+
+    if (nankaiCommentaryExpireTimerRef.current !== undefined) {
+      window.clearTimeout(nankaiCommentaryExpireTimerRef.current)
+    }
+    setState(prev => ({ ...prev, nankaiCommentary: commentary }))
+    nankaiCommentaryExpireTimerRef.current = window.setTimeout(() => {
+      nankaiCommentaryExpireTimerRef.current = undefined
+      setState(prev => (
+        prev.nankaiCommentary?.id === commentary.id ? { ...prev, nankaiCommentary: null } : prev
+      ))
+    }, remainMs)
+    return true
+  }, [])
 
   const handleEvent = useCallback((event: AppEvent) => {
     // ライブ受信／テスト送信のイベントを通知（サイレントモード中は抑制）
@@ -618,6 +669,12 @@ export function useEarthquakes(
           const nankai = payload.data
           setState(prev => ({ ...prev, nankai: nankai.cancelled ? null : nankai }))
           if (!silent) onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as AppEvent)
+        } else if (payload.kind === 'nankaiCommentary') {
+          const commentary = payload.data
+          // 期限切れなら反映も通知もしない（画面に出ないものを読み上げても意味がない）
+          if (applyNankaiCommentary(commentary) && !silent) {
+            onLiveEventRef.current?.({ kind: 'nankaiCommentary', data: commentary } as unknown as AppEvent)
+          }
         } else if (payload.kind === 'purge-cancelled-quake') {
           const { id } = payload
           setState(prev => ({
@@ -667,11 +724,16 @@ export function useEarthquakes(
     return () => clearInterval(id)
   }, [handleEvent])
 
-  // アンマウント時にタイマーとキューをクリア
+  // アンマウント時にタイマーとキューをクリア。
+  // 7日タイマーは 2 つある（後発地震・南海トラフ関連解説情報）。片方だけをクリアすると、
+  // 残った側が最大7日後にアンマウント済みのクロージャの setState を呼ぶ。
   useEffect(() => {
     return () => {
       if (kohatsuExpireTimerRef.current !== undefined) {
         window.clearTimeout(kohatsuExpireTimerRef.current)
+      }
+      if (nankaiCommentaryExpireTimerRef.current !== undefined) {
+        window.clearTimeout(nankaiCommentaryExpireTimerRef.current)
       }
       eventQueueRef.current = []
     }
@@ -733,8 +795,12 @@ export function useEarthquakes(
           log.error('[data] 後発地震注意情報の取得で想定外の失敗', err)
           return null
         }),
+        fetchDmdataNankaiCommentary(dmdataApiKey).catch(err => {
+          log.error('[data] 南海トラフ地震関連解説情報の取得で想定外の失敗', err)
+          return null
+        }),
       ])
-        .then(async ([quakeResult, tsunamiEvents, nankaiData, kohatsuData]) => {
+        .then(async ([quakeResult, tsunamiEvents, nankaiData, kohatsuData, commentaryData]) => {
           if (cancelled) return
           const { quakes: quakeEvents, nextToken } = quakeResult
           dmdataCursorRef.current = nextToken
@@ -791,6 +857,8 @@ export function useEarthquakes(
             hasMore: !!nextToken,
             error: null,
           }))
+          // 解説情報は期限タイマーの張り替えを伴うためヘルパ経由で入れる（期限切れは入らない）
+          if (commentaryData) applyNankaiCommentary(commentaryData)
           // 初回ロードで津波が有効（validDateTime未来）の場合、キューへ解除イベントを挿入する。
           if (tsunamis.length > 0 && latestTsunami?.validDateTime) {
             const expireTime = new Date(latestTsunami.validDateTime)
@@ -842,6 +910,11 @@ export function useEarthquakes(
           const nankai = ev.data
           setState(prev => ({ ...prev, nankai: nankai.cancelled ? null : nankai }))
           onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as AppEvent)
+        } else if (ev.kind === 'nankaiCommentary') {
+          const commentary = ev.data
+          if (applyNankaiCommentary(commentary)) {
+            onLiveEventRef.current?.({ kind: 'nankaiCommentary', data: commentary } as unknown as AppEvent)
+          }
         } else if (ev.kind === 'kohatsu') {
           const kohatsu = ev.data
           if (kohatsuExpireTimerRef.current !== undefined) {
@@ -1124,6 +1197,13 @@ export function useEarthquakes(
     onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as AppEvent)
   }, [])
 
+  const simulateNankaiCommentary = useCallback((serialName: '臨時解説' | '定例解説') => {
+    const commentary = createTestNankaiCommentary(serialName)
+    if (applyNankaiCommentary(commentary)) {
+      onLiveEventRef.current?.({ kind: 'nankaiCommentary', data: commentary } as unknown as AppEvent)
+    }
+  }, [applyNankaiCommentary])
+
   const simulateKohatsu = useCallback(() => {
     const kohatsu = createTestKohatsu()
     if (kohatsuExpireTimerRef.current !== undefined) window.clearTimeout(kohatsuExpireTimerRef.current)
@@ -1146,6 +1226,7 @@ export function useEarthquakes(
       activeEEWs: new Map(),
       lpgmByEventId: new Map(),
       nankai: null,
+      nankaiCommentary: null,
       kohatsu: null,
     }))
     eventQueueRef.current = []
@@ -1155,6 +1236,11 @@ export function useEarthquakes(
     if (kohatsuExpireTimerRef.current !== undefined) {
       window.clearTimeout(kohatsuExpireTimerRef.current)
       kohatsuExpireTimerRef.current = undefined
+    }
+    // 解説情報の7日タイマーも同じ理由でリセットする
+    if (nankaiCommentaryExpireTimerRef.current !== undefined) {
+      window.clearTimeout(nankaiCommentaryExpireTimerRef.current)
+      nankaiCommentaryExpireTimerRef.current = undefined
     }
   }, [])
 
@@ -1173,7 +1259,7 @@ export function useEarthquakes(
     simulateForeignQuake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
-    simulateNankai, simulateKohatsu,
+    simulateNankai, simulateNankaiCommentary, simulateKohatsu,
     resetState,
     loadReplayEvents,
   }

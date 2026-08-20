@@ -25,6 +25,8 @@ export interface TestFunctions {
   nankaiChecking?: () => void
   nankaiWatch?: () => void
   nankaiWarning?: () => void
+  nankaiCommentaryAdHoc?: () => void
+  nankaiCommentaryRoutine?: () => void
   kohatsu?: () => void
   notification: () => void
 }
@@ -150,7 +152,7 @@ function IntensityBadge({ scale }: { scale: number }) {
   )
 }
 
-type ButtonColor = 'red' | 'orange' | 'yellow' | 'purple' | 'blue' | 'green'
+type ButtonColor = 'red' | 'orange' | 'yellow' | 'purple' | 'blue' | 'green' | 'teal'
 
 // 白文字（text-white）を載せるため、通常時・ホバー時とも WCAG AA（4.5:1）を満たす濃さにする。
 // orange / yellow / green は従来の色だとホバー時に 3.56 / 1.92 / 3.30 まで落ちていたため、
@@ -162,6 +164,8 @@ const BUTTON_CLASSES: Record<ButtonColor, string> = {
   purple: 'bg-purple-700 hover:bg-purple-600',
   blue:   'bg-blue-700 hover:bg-blue-600',
   green:  'bg-green-800 hover:bg-green-700',
+  // 解説情報バナー（teal）に合わせた色。green と同じ理由で一段暗い側を使う（ホバー時 5.4:1）
+  teal:   'bg-teal-800 hover:bg-teal-700',
 }
 
 function TestButton({ color, onClick, children, disabled }: {
@@ -699,6 +703,19 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             )}
           </>
         )}
+        {/* 解説情報は平常時でも毎月1回は必ず届くため、音と読み上げを個別に切れるようにしている。
+            臨時情報（段階の発表）はこの設定に関わらず鳴る。 */}
+        {isDmdss && (
+          <Row
+            label="解説情報の音・読み上げ"
+            description="南海トラフ関連解説情報（平常時も毎月届く）の通知音と読み上げを行います"
+          >
+            <Toggle
+              checked={settings.nankaiCommentaryAlerts}
+              onChange={v => onUpdate('nankaiCommentaryAlerts', v)}
+            />
+          </Row>
+        )}
         <Row label="ブラウザ通知" description="地震発生時にブラウザ通知を表示します">
           <Toggle
             checked={settings.notifyMinScale >= 0}
@@ -814,10 +831,15 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         <Row label="津波解除・取消・期限切れ" description="ピアノ G4→C4 の終止形（3 つの理由を単一音で伝える）">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('tsunamiCancel') }}>▶ 試聴</TestButton>
         </Row>
-        {/* ── 臨時情報・後発地震 ── */}
+        {/* ── 臨時情報・関連解説情報・後発地震 ── */}
         {isDmdss && (
           <Row label="南海トラフ臨時情報・後発地震注意情報" description="ピアノA4×2連打 → D5">
             <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('specialInfo') }}>▶ 試聴</TestButton>
+          </Row>
+        )}
+        {isDmdss && (
+          <Row label="南海トラフ関連解説情報" description="ピアノ下降2音 D5→A4（臨時情報の上昇と向きで区別）">
+            <TestButton color="teal" onClick={() => { unlockAudio(); playAlertSound('specialInfoCommentary') }}>▶ 試聴</TestButton>
           </Row>
         )}
       </Section>
@@ -862,7 +884,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         <Row label="津波警報（誤報取消）" description={`青森・北海道等 – tsunami 音 / 90秒後に${isDmdss ? '誤報として取消' : '解除（standard 版は取消と解除を区別できないため「解除」表示）'}`}>
           <TestButton color="red" onClick={onTest.tsunamiRetraction}>誤報取消テスト</TestButton>
         </Row>
-        {/* ── 臨時情報・後発地震 ── */}
+        {/* ── 臨時情報・関連解説情報・後発地震 ── */}
         {isDmdss && onTest.nankaiChecking && (
           <Row label="南海トラフ臨時情報（調査中）" description="バナー表示 + specialInfo 音（バナー消去ボタンなし・再テストで上書き）">
             <TestButton color="yellow" onClick={onTest.nankaiChecking}>調査中テスト</TestButton>
@@ -876,6 +898,16 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         {isDmdss && onTest.nankaiWarning && (
           <Row label="南海トラフ臨時情報（巨大地震警戒）" description="バナー表示 + specialInfo 音">
             <TestButton color="red" onClick={onTest.nankaiWarning}>警戒テスト</TestButton>
+          </Row>
+        )}
+        {isDmdss && onTest.nankaiCommentaryAdHoc && (
+          <Row label="南海トラフ関連解説情報（臨時解説）" description="バナー表示 + specialInfoCommentary 音（閉じるボタンあり・7日で自動消去）">
+            <TestButton color="teal" onClick={onTest.nankaiCommentaryAdHoc}>臨時解説テスト</TestButton>
+          </Row>
+        )}
+        {isDmdss && onTest.nankaiCommentaryRoutine && (
+          <Row label="南海トラフ関連解説情報（定例解説）" description="平常時に毎月届く電文。バナー表示 + specialInfoCommentary 音（閉じるボタンあり・7日で自動消去）">
+            <TestButton color="teal" onClick={onTest.nankaiCommentaryRoutine}>定例解説テスト</TestButton>
           </Row>
         )}
         {isDmdss && onTest.kohatsu && (
