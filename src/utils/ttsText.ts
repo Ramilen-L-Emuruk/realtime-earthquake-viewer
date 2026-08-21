@@ -297,11 +297,34 @@ export function earthquakeCancelToText(time: string | null): string {
  * 震源更新では区分に触れない。すでに伝えてあるうえ、変わったのは震源だから。
  */
 export function eewAlertToText(event: EEWAlert, kind: 'forecast' | 'warning' | 'hypocenterUpdate'): string {
-  const prefix = kind === 'hypocenterUpdate' ? '震源を更新、'
-    : kind === 'warning' ? '緊急地震速報、'
-    : '地震動予報、'
-  return `${prefix}${event.earthquake.hypocenter.name}で地震。`
+  return `${EEW_LEAD_PHRASE[kind]}${event.earthquake.hypocenter.name}で地震。`
 }
+
+/**
+ * EEW 第 1 フェーズの切り出し語。区分ごとに 1 つずつ、**全部で 3 通りしかない**。
+ *
+ * 震源名にも予想震度にも依存しないので、起動時に合成して持っておける
+ * （`warmFixedPhrases`）。EEW は間を置かずに読み始める都合で先行合成（`prewarmVoicevox`）が
+ * 使えず、合成の往復がそのまま「声が出るまでの空白」になっていた。実測で 238〜697ms
+ * （2024/1/1 能登のリプレイ。地震情報を切って割り込んだ場面で 479ms）。
+ * 作り置きが当たれば、最初のチャンクはこの往復を丸ごと省ける。
+ *
+ * **句読点で終わること。** `splitIntoChunks` は句読点の後ろで切るため、ここが単独のチャンクに
+ * ならないと作り置きと照合できない（5 文字未満だと次のチャンクに結合される点にも注意）。
+ *
+ * この一致が崩れても**何も起きない**——作り置きは正常に作られ、ただ一度も引かれなくなるだけで、
+ * 症状は「第 1 報の声がわずかに遅い」、ログは無言。文言を変えるときも分割条件を変えるときも
+ * 気づけないので、`voicevox.test.ts` の「読み上げ文の 1 チャンク目が、作り置きの対象と一致する」
+ * が実物どうしを突き合わせて固定している。
+ */
+const EEW_LEAD_PHRASE = {
+  forecast: '地震動予報、',
+  warning: '緊急地震速報、',
+  hypocenterUpdate: '震源を更新、',
+} as const
+
+/** {@link EEW_LEAD_PHRASE} の全パターン。作り置きの対象として渡す。 */
+export const EEW_LEAD_PHRASES: readonly string[] = Object.values(EEW_LEAD_PHRASE)
 
 /**
  * 予想震度が付いていないときの句。理由の判定は `eewNoForecastReason` に委ねる
