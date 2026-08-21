@@ -446,6 +446,174 @@ export function prewarmVoicevox(baseUrl: string, text: string, speakerId: number
   return entry
 }
 
+// ─── 切り出し語の作り置き ────────────────────────────────────────
+
+/**
+ * 作り置きの 1 件。
+ *
+ * **`buffer` は「もう手元にあるか」だけを表し、待ち合わせには使わない。** 合成中は null の
+ * ままで、その間に読み上げが来たら普通に合成する（下記「待たない」を参照）。
+ *
+ * 保持するのは `AudioBuffer`。`getAudioContext()` は 1 つの AudioContext を使い回すので、
+ * 一度デコードしたものを何度でも別の `AudioBufferSourceNode` に繋げる（AudioBuffer は不変）。
+ */
+type FixedPhrase = {
+  /** 合成済みの音声。まだなら null */
+  buffer: AudioBuffer | null
+  /** 進行中の合成を打ち切る（作り直すとき・接続先が変わったとき） */
+  abort: () => void
+}
+
+/** 合成済みの切り出し語。キーは句そのもの。 */
+const fixedPhrases = new Map<string, FixedPhrase>()
+
+/**
+ * 作り置きの合成を諦めるまでの時間。
+ *
+ * **VOICEVOX への合成要求にはタイムアウトが無く、応答が返らないまま止まることがある**
+ * （LAN 越しの機器がスリープに入る・経路が黙って捨てる等）。他の経路はいずれも中断手段を
+ * 持っている——先行合成は次の読み上げの冒頭で `abort()` され、通常のチャンクは
+ * `currentAbortController` で打ち切られる。作り置きだけが中断されないまま残ると、
+ * 使われないリクエストが VOICEVOX の直列処理を占有し続ける。
+ *
+ * 合成の実測は 238〜697ms。作り置きは急ぐものではないので、正常な遅延を切らない幅を取る。
+ */
+const FIXED_PHRASE_SYNTH_TIMEOUT_MS = 10000
+
+// 作り置きの合成が失敗したときの記録の間引き。VOICEVOX 未起動・話者 ID 誤りなどでは
+// 設定を触るたびに全件失敗しうるため、素通しにするとログが埋まる。
+const warnFixedPhraseFailed = createLogThrottle(30000)
+
+/** 作り置きが通用する合成条件（接続先と話者）。変わったら作り直す。 */
+let fixedPhraseScope = ''
+
+/** 作り置きの対象として登録された句。手元に無かったときに埋め直す判断へ使う。 */
+let fixedPhraseTargets: readonly string[] = []
+
+// 接続先と話者の組。境界が曖昧にならないよう JSON にする
+// （素朴な文字列連結だと、URL の末尾と話者 ID の切れ目が読み取れない組み合わせが作れる）。
+const phraseScopeOf = (baseUrl: string, speakerId: number) => JSON.stringify([baseUrl, speakerId])
+
+/**
+ * 内容に依存しない切り出し語をあらかじめ合成しておく（**再生はしない**）。
+ *
+ * {@link prewarmVoicevox} と目的は同じだが、当てにするものが違う。あちらは「通知音との間を
+ * 合成に充てる」ので**間がある経路にしか使えない**。緊急地震速報は間を置かずに読み始めるため
+ * その手が使えず、合成の往復がそのまま声の出遅れになっていた（実測 238〜697ms）。
+ * 切り出し語は震源名にも予想震度にも依存しない数通りの固定句なので、先に作っておける。
+ *
+ * **セッションには関与しない。** 進行中の再生を止めず、`currentSessionId` も動かさない。
+ *
+ * @param phrases 作り置きする句。`splitIntoChunks` が単独のチャンクとして切り出せる形
+ *   （句読点で終わり、5 文字以上）でなければ照合されない
+ */
+export function warmFixedPhrases(baseUrl: string, speakerId: number, phrases: readonly string[]): void {
+  const scope = phraseScopeOf(baseUrl, speakerId)
+  if (scope !== fixedPhraseScope) {
+    // 接続先か話者が変わった。前の声のまま鳴らさないよう捨て、進行中の合成も打ち切る
+    // （放っておくと、もう使わない声の合成が VOICEVOX を占有して次の読み上げを待たせる）。
+    for (const entry of fixedPhrases.values()) entry.abort()
+    fixedPhrases.clear()
+    fixedPhraseScope = scope
+  }
+  fixedPhraseTargets = phrases
+
+  const ctx = getAudioContext()
+  if (!ctx) {
+    // 実質 window の無い環境でしか起きない。黙って戻ると「作り置きが一度も効かない」
+    // 原因が追えなくなるので、他の早期 return と同じく記録は残す。
+    log.debug('[VoiceVox] 切り出し語の作り置きをスキップ (AudioContext なし)')
+    return
+  }
+
+  const pending = phrases.filter(p => !fixedPhrases.has(p))
+  if (pending.length === 0) return
+
+  // 先に全件を登録してから合成する。登録しておけば、この後の呼び出しが同じ句を二重に投げない。
+  const queued = pending.map(phrase => {
+    const ctrl = new AbortController()
+    const entry: FixedPhrase = {
+      buffer: null,
+      abort: () => { try { ctrl.abort() } catch { /* 二重 abort は無視 */ } },
+    }
+    fixedPhrases.set(phrase, entry)
+    return { phrase, entry, ctrl }
+  })
+
+  /** 1 件を合成して作り置きへ収める。 */
+  const synthesizeOne = async ({ phrase, entry, ctrl }: typeof queued[number]) => {
+    // 順番待ちの間に捨てられた・張り替えられたなら、もう要らない
+    if (fixedPhrases.get(phrase) !== entry) return
+    // タイムアウトは順番が回ってきてから張る（待ち時間を持ち時間に数えない）
+    const timer = setTimeout(() => ctrl.abort(), FIXED_PHRASE_SYNTH_TIMEOUT_MS)
+    try {
+      // hasNextChunk は必ず true。作り置きの対象（`EEW_LEAD_PHRASES`）はすべて読点で終わる
+      // 読み上げ文の 1 チャンク目で、後ろに震源名が続く。既定の false で焼くと、**作り置きが
+      // 当たったときだけ末尾の間が消える**（合成し直した経路は `chunks.length > 1` を渡すため)。
+      // どちらの経路が先にキャッシュを埋めたかで間が変わる、非決定的な不揃いになる。
+      const buf = await synthesizeChunk(baseUrl, phrase, speakerId, ctx, ctrl.signal, true)
+      // 張り替えられていたら触らない（新しい方を消してしまわないため）
+      if (fixedPhrases.get(phrase) !== entry) return
+      if (buf) { entry.buffer = buf; return }
+      // 失敗は覚えない。VOICEVOX を後から起動することがあるため、作り直す余地を残す。
+      fixedPhrases.delete(phrase)
+      // 記録しないと「作り置きが一度も効いていない」ことに誰も気づけない。読み上げ本体と違い、
+      // 失敗しても無音にはならず**ただ遅いだけ**なので、症状から原因へ辿る手がかりがここしかない。
+      warnFixedPhraseFailed(() => log.warn(
+        '[VoiceVox] 切り出し語の作り置きに失敗（緊急地震速報の読み上げが合成の往復ぶん遅れる）',
+        { baseUrl, speakerId },
+      ))
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  // **1 件ずつ順に投げる。** VOICEVOX は合成を直列に捌くため、まとめて投げると起動直後の
+  // 数百 ms を占有する。ちょうどその窓に緊急地震速報が届くと、切り出し語は作り置き（または
+  // フォールバック）で鳴らせても、続く 2 チャンク目（震源名）の合成が後ろに並んで遅れる。
+  // 逐次なら占有はその 1 件ぶんに収まり、間に本物の読み上げが割り込める。
+  void (async () => { for (const item of queued) await synthesizeOne(item) })()
+
+  log.debug(`[VoiceVox] 切り出し語の作り置き: ${pending.join(' / ')}`)
+}
+
+/**
+ * 作り置きから引く。**待たない。**
+ *
+ * まだ合成できていなければ null を返し、呼び出し側は普通に合成する。ここで合成中のものを
+ * 待つ設計にすると、応答が返らない要求を掴んだときに**その句を使う読み上げが軒並み無音になる**
+ * （外側の待ち合わせが上限で諦めるため、記録も残らずに消える）。作り置きは「間に合っていれば
+ * 速い」ための仕掛けであって、間に合っていないなら待つ理由がない。
+ */
+function takeFixedPhrase(baseUrl: string, speakerId: number, chunk: string): AudioBuffer | null {
+  if (phraseScopeOf(baseUrl, speakerId) !== fixedPhraseScope) return null
+  return fixedPhrases.get(chunk)?.buffer ?? null
+}
+
+/**
+ * 作り置きの対象なのに手元に無かった句を、いま合成したもので埋める。
+ * 起動時の作り置きが失敗していても（VOICEVOX が後から起動した場合など）次回から効く。
+ */
+function rememberFixedPhrase(baseUrl: string, speakerId: number, chunk: string, buffer: AudioBuffer): void {
+  if (phraseScopeOf(baseUrl, speakerId) !== fixedPhraseScope) return
+  if (!fixedPhraseTargets.includes(chunk)) return
+  const existing = fixedPhrases.get(chunk)
+  if (existing?.buffer) return
+  // 合成中のものがあっても、同じ音をいま作れたのだから待つ必要はない。**打ち切って置き換える。**
+  // ここで「登録済みなら何もしない」にすると、応答の返らない合成が居座っている間は
+  // 二度と埋まらず、作り置きが永久に効かなくなる。
+  existing?.abort()
+  fixedPhrases.set(chunk, { buffer, abort: () => { /* 合成済み。打ち切るものがない */ } })
+}
+
+/** テスト用に作り置きを捨てる（本番経路では呼ばない）。 */
+export function __resetFixedPhrasesForTest(): void {
+  for (const entry of fixedPhrases.values()) entry.abort()
+  fixedPhrases.clear()
+  fixedPhraseScope = ''
+  fixedPhraseTargets = []
+}
+
 /**
  * 発話を鳴らす直前に呼ばれる妥当性の判定。`false` を返すと、そのチャンク以降を鳴らさない。
  *
@@ -554,9 +722,24 @@ export async function speakWithVoicevox(
       if (buffered) return buffered
       log.debug('[VoiceVox] 先行合成が使えなかったため作り直す')
     }
-    // hasNextChunk は先行合成（prewarmVoicevox）と必ず同じ判定にすること。食い違うと、
-    // 先に合成したものを使えたときと作り直したときで末尾の間が変わる。
-    return synthesizeChunk(baseUrl, chunks[0], speakerId, ctx, signal, chunks.length > 1)
+    // 切り出し語（緊急地震速報の第 1 フェーズ）は起動時に作り置きしてある。
+    // 当たれば合成の往復を丸ごと省けるので、間を置かない経路でも待たずに鳴らせる。
+    // 間に合っていなければ待たずに普通の合成へ落ちる（`takeFixedPhrase` の注記を参照）。
+    const fixed = takeFixedPhrase(baseUrl, speakerId, chunks[0])
+    if (fixed) return fixed
+
+    // hasNextChunk は先行合成（prewarmVoicevox）・作り置き（warmFixedPhrases）と必ず同じ判定に
+    // すること。食い違うと、合成済みのものを使えたときと作り直したときで末尾の間が変わる。
+    const built = await synthesizeChunk(baseUrl, chunks[0], speakerId, ctx, signal, chunks.length > 1)
+    // 作り置きの更新に失敗しても読み上げ自体は成立させる（この関数は例外を投げない約束）
+    if (built) {
+      try {
+        rememberFixedPhrase(baseUrl, speakerId, chunks[0], built)
+      } catch (err) {
+        log.debug('[VoiceVox] 作り置きの更新に失敗（読み上げは続行）', err)
+      }
+    }
+    return built
   })()
 
   // 次のチャンクを再生開始する予定時刻（AudioContext の時間軸）
