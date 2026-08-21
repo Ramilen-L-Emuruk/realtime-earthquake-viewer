@@ -447,6 +447,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 「特別警報」を音声で読まないこと（表示・通知・通知音は 2 段階を保つ） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
 | 通知音の内容と説明文の一致（`PLAYERS` の周波数・`COUNTDOWN_PULSES` のパルス数と、設定タブ「通知音テスト」の説明文・仕様書の記述） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §2 |
 | 通知音の質感の分け方（情報系＝`pianoNote` は全音に残響を載せる・EEW は予報だけ弱く持ち警報級と津波警報は乾いたまま・減衰の終端は `decayTone` に集約し種別ごとに分岐させない・アタックに広帯域ノイズを戻さない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §2「質感の分け方 — 警報は乾き、情報は濡れ」 |
+| VOICEVOX 接続先の確認（`VOICEVOX_URL_DEBOUNCE_MS` で入力が落ち着くまで待つ・`isValidVoicevoxUrl` で通信前に検分・`apiBase` で末尾スラッシュを落とす・試聴も確認済み URL へ送る。検分は入力途中の値を弾く役割を持たない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「接続先の確認」 |
 | 通知音の長さと読み上げ遅延の連動（音を作り変えたら `TTS_DELAY_MS` かテーブル外の個別指定を必ず見直す。リバーブを効かせた音は乾音の長さでは足りない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
 | 通知音と声の間に合成を先行させること（`prewarmVoicevox`。進行中の読み上げを止めない・使われなかったものは打ち切る・失敗時は再生側で作り直す。対象は非 EEW の遅延経路） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「間を合成の時間に充てる（先行合成）」 |
 | 間を置く読み上げの予約を追跡すること（`scheduleSpeech`。画面を閉じたときとリプレイ開始で取り消す。対象は EEW 誤報取消を含む全経路） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「間を置く読み上げの予約は追跡する」 |
