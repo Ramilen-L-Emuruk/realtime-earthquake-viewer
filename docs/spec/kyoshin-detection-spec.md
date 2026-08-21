@@ -120,8 +120,15 @@ Yahoo RealTimeData (1Hz JSON)
 
 ### L3 グループ化・イベント帰属
 
+- **値が下がりきったメンバーを外す**（`pruneFadedMembers`）。levelActive を最後に満たしてから
+  `MEMBER_DROP_MS` を超えた点をメンバーから落とす。今フレームに値が届いていない点（欠測・初出）は
+  判定材料が無いので残す。占有セル（`cells`）は落とさない——同じ場所の再 onset を同一イベントへ戻す
+  錨だから
 - 各連結成分（クラスタ）を既存の `DetectionEvent` に帰属させる。判定は「メンバー重複率 `MERGE_MEMBER_FRAC`
   以上」または「格子セルの共有」のいずれか。該当が無ければ新規イベントを生成する
+  - 重複率の分母は**成分側**（＝「この成分の何割が既存メンバーか」）。小さな成分が大きなイベントへ
+    帰属する向きは分子＝分母で 1.0 になり従来どおり通るが、メンバーの少ないイベントが大きな成分を
+    飲み込む向きは通らない
 - イベントの指標（`lastSize`・`maxIntensity`・`epicenter`）を `updateEventMetrics` で再計算する
   - `lastSize`: 現在「揺れているメンバー数」＝ sustained なメンバー、または直近 `TRIG_ACTIVE_MS` 以内に
     onset したメンバー
@@ -225,6 +232,7 @@ Yahoo RealTimeData (1Hz JSON)
 | `CELL_DEG` | 固定格子セルの寸法 | 0.2°（≒20km） |
 | `MERGE_MEMBER_FRAC` | イベント帰属のメンバー重複率下限 | 0.34 |
 | `MERGE_EVENT_KM` | イベント併合距離 | 100 km |
+| `MEMBER_DROP_MS` | メンバーを外すまでの猶予（設計書§30） | 20,000 ms |
 | `MIN_LIKELY_POINTS` | likely に要する点数 | 3 |
 | `MIN_LIKELY_INTENSITY` | likely の最大震度下限 | 0.5（震度1） |
 | `CONFIRM_POINTS` | confirmed 点数（密な網の基準値） | 5 |
@@ -250,7 +258,7 @@ Yahoo RealTimeData (1Hz JSON)
 |---|---|
 | `id` | 安定 ID（`evt-N`）。帰属が続く限り同一 ID を維持 |
 | `confidence` | `confirmed` \| `likely` \| `faint` \| `weak` |
-| `memberKeys` | 参加した確定揺れ点の座標キー（累積和集合） |
+| `memberKeys` | 参加した確定揺れ点の座標キー。増える側は累積和集合だが、値が下がりきった点は `MEMBER_DROP_MS` の猶予を過ぎると外れる（§4 L3）。**イベントが生存している間に空にはならない**（猶予の下限がそれを保証する。設計書§30） |
 | `cells` | 占有する固定格子セル |
 | `maxIntensity` | 推定最大震度（value）。カード・音レベルの入力 |
 | `lastSize` | 直近フレームのアクティブメンバー数 |
@@ -318,8 +326,8 @@ Yahoo RealTimeData (1Hz JSON)
 | 下限 | 現在**震度0以上**（計測震度 0.0 以上）の点だけ。判定は `kyoshinIndexToJma` / `kyoshinIndexToLabel`（`src/utils/kyoshinIntensity.ts`）が震度階級を返すかどうかに委ねる。震度0未満（`index` 0〜5。値は非負だが計測震度は負）と欠測（`index` が負のセンチネル）はどちらも階級が取れないため、数えず描かない |
 | 孤立した震度0点の除外 | 共有する点列の時点で除かれている（下記 `dropIsolatedZeroPoints`） |
 
-**メンバー観測点は一度入るとイベント解除まで縮まない**（`memberKeys` は和集合で単調増加。現在揺れている
-数は `lastSize` が別に持つ）。そのため「メンバー全件」を描いてしまうと、揺れが収まるほど地図が
+**メンバー観測点は値が下がりきってから `MEMBER_DROP_MS` を過ぎるまで残る**（`pruneFadedMembers`。現在
+揺れている数は `lastSize` が別に持つ）。そのため「メンバー全件」を描いてしまうと、揺れが収まるほど地図が
 「もう揺れていない点」で埋まり、震度0以上だけを数えるカードと桁違いにずれる。2026-08-18 まで地図側が
 これに該当していた（階級が取れない点を震度0として描いていた。計測値は `gl/kyoshinDetectedFeatures.ts` のコメント）。
 

@@ -145,9 +145,19 @@ describe('memberOverlapFrac', () => {
     expect(memberOverlapFrac(new Set<string>(), ['a'])).toBe(0)
     expect(memberOverlapFrac(new Set(['a']), [])).toBe(0)
   })
-  it('|a∩b| / min(|a|,|b|)', () => {
-    expect(memberOverlapFrac(new Set(['a', 'b', 'c']), ['a', 'b'])).toBeCloseTo(1.0)
+  // 分母は成分側に固定した（旧実装は min(|a|,|b|) で、1件目は 1.0 になっていた）。
+  it('|a∩b| / |a|（分母は成分側）', () => {
+    expect(memberOverlapFrac(new Set(['a', 'b', 'c']), ['a', 'b'])).toBeCloseTo(2 / 3)
     expect(memberOverlapFrac(new Set(['a', 'x']), ['a', 'y'])).toBeCloseTo(0.5)
+  })
+  it('小さな成分は大きなイベントへ帰属できる（分子=分母で 1.0）', () => {
+    const big = Array.from({ length: 30 }, (_, i) => `p${i}`)
+    expect(memberOverlapFrac(new Set(['p0']), big)).toBeCloseTo(1.0)
+  })
+  it('痩せたイベントは大きな成分を飲み込まない（min 分母だった頃の穴）', () => {
+    const comp = new Set(Array.from({ length: 30 }, (_, i) => `q${i}`))
+    // メンバー2点のうち1点だけ共通。旧実装は 1/min(30,2)=0.5 で MERGE_MEMBER_FRAC を超えていた
+    expect(memberOverlapFrac(comp, ['q0', 'z'])).toBeLessThan(PARAMS.MERGE_MEMBER_FRAC)
   })
 })
 
@@ -1304,7 +1314,7 @@ describe('step: 不連続リセット', () => {
     let t = 0
     for (let i = 0; i < 5; i++, t += 1000) state = step(state, uniformFrame(defs, t, 0), meta).state
     // 学習資産を手で仕込む
-    state.sites[k] = { hist: [], floorMean: 0.8, floorDev: 0.3, triggeredAtMs: null }
+    state.sites[k] = { hist: [], floorMean: 0.8, floorDev: 0.3, triggeredAtMs: null, lastLevelActiveAtMs: null }
     state.cellActivity[cell] = 0.7
     // 不連続ジャンプ
     const r = step(state, uniformFrame(defs, t + PARAMS.MAX_DT_GAP_MS + 5000, 0.0), meta)
@@ -1317,8 +1327,8 @@ describe('step: 不連続リセット', () => {
 describe('永続化: extractLearned / hydrateLearned', () => {
   it('学習した床とセル活性を抽出→復元できる（既定床の静穏点は省略）', () => {
     const state = initState(0)
-    state.sites['a'] = { hist: [], floorMean: 0.9, floorDev: 0.4, triggeredAtMs: null } // 学習済み
-    state.sites['b'] = { hist: [], floorMean: 0.0, floorDev: 0.0, triggeredAtMs: null } // 静穏（省略対象）
+    state.sites['a'] = { hist: [], floorMean: 0.9, floorDev: 0.4, triggeredAtMs: null, lastLevelActiveAtMs: null } // 学習済み
+    state.sites['b'] = { hist: [], floorMean: 0.0, floorDev: 0.0, triggeredAtMs: null, lastLevelActiveAtMs: null } // 静穏（省略対象）
     state.cellActivity['c1'] = 0.6
 
     const learned = extractLearned(state)
@@ -1355,6 +1365,7 @@ describe('chronicNoiseFloor（震度0ドット表示専用の慢性ノイズ床�
     floorMean,
     floorDev,
     triggeredAtMs: null,
+    lastLevelActiveAtMs: null,
   })
 
   it('effectiveFloor と異なり下限(FLOOR_MIN=0.0)でクランプしない（静かな点はマイナスのまま）', () => {
@@ -1616,5 +1627,116 @@ describe('step: likely/faint のティア保持（LIKELY_HOLD_MS・設計書§16
     // LIKELY_HOLD_MS の保持だけで生きている状態。ここが weak なら保持が効いていない。
     expect(state.events[0]?.lastSize).toBeLessThan(PARAMS.MIN_LIKELY_POINTS)
     expect(state.events[0]?.confidence).toBe('faint')
+  })
+})
+
+describe('メンバーの刈り取り（pruneFadedMembers）', () => {
+  const defs = grid3x3(35.0, 139.0)
+  const meta = buildStationMeta(sitesOf(defs))
+  const keys = defs.map((d) => siteKey(d.lat, d.lng))
+
+  /**
+   * 全点で揺らして confirmed にした後、点0 だけ揺れ続け残りを床下（value -1.0）へ落とし、
+   * `fadeMs` だけ経過させる。`missing` を true にすると残りを欠測として送る。
+   */
+  function fade(fadeMs: number, opts: { missing?: boolean } = {}) {
+    const frames = quietThenShake(defs, { quietCount: 5, shakeCount: 4, shakeValue: 2.0 })
+    let t = frames[frames.length - 1].dataTimeMs
+    for (let elapsed = 0; elapsed < fadeMs; elapsed += 1000) {
+      t += 1000
+      frames.push({
+        dataTimeMs: t,
+        sites: sitesOf(defs),
+        values: defs.map((_, i) => valueToIndex(i === 0 ? 2.0 : -1.0)),
+        missing: opts.missing ? defs.map((_, i) => i !== 0) : undefined,
+      })
+    }
+    return drive(frames, meta)
+  }
+
+  it('正: levelActive を割ってから MEMBER_DROP_MS を超えた点はメンバーから外れる', () => {
+    const { detections } = fade(PARAMS.MEMBER_DROP_MS + 2000)
+    const e = detections.find((d) => d.confidence === 'confirmed')
+    expect(e).toBeDefined()
+    expect(e!.memberKeys).toEqual([keys[0]])
+  })
+
+  it('対照: 猶予の手前（MEMBER_DROP_MS 未満）では外さない', () => {
+    const { detections } = fade(PARAMS.MEMBER_DROP_MS - 2000)
+    const e = detections.find((d) => d.confidence === 'confirmed')
+    expect(e!.memberKeys).toHaveLength(defs.length)
+  })
+
+  it('安全弁: 刈り取りは点数・最大震度を変えない（外れる点はどちらにも寄与していない）', () => {
+    const before = fade(PARAMS.MEMBER_DROP_MS - 2000).detections.find(
+      (d) => d.confidence === 'confirmed',
+    )!
+    const after = fade(PARAMS.MEMBER_DROP_MS + 2000).detections.find(
+      (d) => d.confidence === 'confirmed',
+    )!
+    expect(before.memberKeys.length).not.toBe(after.memberKeys.length) // 刈り取りは起きている
+    expect(after.lastSize).toBe(before.lastSize)
+    expect(after.maxIntensity).toBeCloseTo(before.maxIntensity)
+  })
+
+  it('安全弁: 欠測では刈らない（1秒の瞬断でメンバーが落ちない）', () => {
+    const { detections } = fade(PARAMS.MEMBER_DROP_MS + 2000, { missing: true })
+    const e = detections.find((d) => d.confidence === 'confirmed')
+    expect(e!.memberKeys).toHaveLength(defs.length)
+  })
+
+  it('安全弁: イベントが生存している間はメンバーが空にならない', () => {
+    // 全点を一斉に床下へ落とすと、size は「直近 TRIG_ACTIVE_MS の onset」で数えるため onset の
+    // 8 秒後まで 0 にならず、イベントはさらに HOLD_MS 生き延びる。一方メンバーの刈り取りは
+    // levelActive を最後に満たした時刻から数えるので、猶予が短いと**イベントが生きているのに
+    // メンバーだけ空になる**窓ができる。その窓では `deriveKyoshinView` の `detectedPoints` が
+    // 空になり、地図側の `hasDetection` が false へ落ちてカメラが全国表示へ戻る
+    // （CameraFollowsGL の FitToDetectionGL）。検知中に画が戻るという逆の不整合になる。
+    const frames = quietThenShake(defs, { quietCount: 5, shakeCount: 4, shakeValue: 2.0 })
+    let t = frames[frames.length - 1].dataTimeMs
+    let state = initState(frames[0].dataTimeMs - 1000)
+    for (const f of frames) state = step(state, f, meta).state
+    // 全点を床下へ落として、イベントが消えるまで観察する
+    const observed: { conf: number; members: number }[] = []
+    for (let i = 0; i < 30; i++) {
+      t += 1000
+      const r = step(state, uniformFrame(defs, t, -1.0), meta)
+      state = r.state
+      const conf = r.detections.filter((d) => d.confidence === 'confirmed')
+      if (conf.length === 0) break
+      observed.push({ conf: conf.length, members: Math.max(...conf.map((d) => d.memberKeys.length)) })
+    }
+    expect(observed.length).toBeGreaterThan(0) // confirmed が生存する窓は存在する
+    expect(observed.every((o) => o.members > 0)).toBe(true)
+  })
+
+  it('安全弁: MEMBER_DROP_MS は TRIG_ACTIVE_MS + HOLD_MS 以上', () => {
+    // 下限の根拠: ある点が onset した直後に沈んだ場合、その点は onset から TRIG_ACTIVE_MS の間
+    // size に寄与し続け、イベントはそこから HOLD_MS 生存する。刈り取りの猶予がこの和より短いと、
+    // イベント生存中にメンバーが空になる（上のテストが落ちる）。
+    expect(PARAMS.MEMBER_DROP_MS).toBeGreaterThanOrEqual(PARAMS.TRIG_ACTIVE_MS + PARAMS.HOLD_MS)
+  })
+
+  it('刈られた点が単独で震度0まで立ち上がり直しても、成分にならずメンバーに戻らない', () => {
+    // 2024-01-01 能登本震の再生で観測した現象の再現: 本震から数分後、値が -0.5 で居座っていた
+    // 平戸の点が量子化1段（-0.5 → 0.0）上がっただけで onset 判定になり、震度0が1点だけ
+    // 地図に描かれてカメラフィットを引っ張った。メンバーから外れていれば単点・震度0では
+    // requiredClusterSize(MIN_CLUSTER=3) を満たさず成分にならない。
+    const frames = quietThenShake(defs, { quietCount: 5, shakeCount: 4, shakeValue: 2.0 })
+    let t = frames[frames.length - 1].dataTimeMs
+    const fadeFrame = (v4: number): Frame => ({
+      dataTimeMs: (t += 1000),
+      sites: sitesOf(defs),
+      values: defs.map((_, i) => valueToIndex(i === 0 ? 2.0 : i === 4 ? v4 : -1.0)),
+    })
+    for (let elapsed = 0; elapsed < PARAMS.MEMBER_DROP_MS + 2000; elapsed += 1000) {
+      frames.push(fadeFrame(-0.5))
+    }
+    const pruned = drive(frames, meta).detections.find((d) => d.confidence === 'confirmed')!
+    expect(pruned.memberKeys).toEqual([keys[0]]) // 点4 は刈られている
+    // 点4 が -0.5 → 0.0 へ1段上がる（rate 0.5 = RATE_MIN・levelActive も同時に成立）
+    frames.push(fadeFrame(0.0), fadeFrame(0.0))
+    const after = drive(frames, meta).detections.find((d) => d.confidence === 'confirmed')!
+    expect(after.memberKeys).not.toContain(keys[4])
   })
 })

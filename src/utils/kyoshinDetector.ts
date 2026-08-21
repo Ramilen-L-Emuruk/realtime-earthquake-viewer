@@ -50,13 +50,22 @@ export interface SiteState {
   floorDev: number
   /** 最後にオンセット・トリガーした dataTime(ms)。未トリガーは null */
   triggeredAtMs: number | null
+  /**
+   * 最後に levelActive（床 + LEVEL_MARGIN を超えていた）だった dataTime(ms)。一度も無ければ null。
+   * イベントのメンバーを「値が下がりきったら外す」判定（`pruneFadedMembers`）に使う。
+   */
+  lastLevelActiveAtMs: number | null
 }
 
 /** 検知イベント（多重地震・余震を同時に保持できる）。 */
 export interface DetectionEvent {
   id: string
   confidence: Confidence
-  /** 参加した確定揺れ点の座標キー（累積和集合。UI の震度分布・自動フィットに使う） */
+  /**
+   * 参加した確定揺れ点の座標キー。増える側は和集合だが、値が下がりきった点は `pruneFadedMembers` で
+   * 外れる（UI の震度分布・自動フィットに使う）。**イベントが生存している間に空にはならない**
+   * （`MEMBER_DROP_MS` の下限がそれを保証する）。
+   */
   memberKeys: string[]
   /** 占有する固定格子セル（安定 ID の錨・セル慢性活性の更新対象） */
   cells: string[]
@@ -247,6 +256,35 @@ export const PARAMS = {
    * 根室沖 78km で実観測）。同一地震の分裂を 1 本化する。離れた別地震（数百km 級）は併合しない。
    */
   MERGE_EVENT_KM: 100,
+  /**
+   * メンバーを外すまでの猶予(ms)。イベントのメンバーが「levelActive を最後に満たしてから」これを
+   * 超えたら、そのイベントのメンバーから外す（`pruneFadedMembers`）。
+   *
+   * 【なぜ必要か】`memberKeys` は和集合で単調増加し、揺れが収まっても縮まなかった。表示・カメラ
+   * フィットはこのメンバーを見るため、大地震のあと「値が下がりきった点」が全国に居残り、画が
+   * 日本全域に張り付いたまま戻らない。2024-01-01 能登本震の実データでは、本震から 12 分後の本震
+   * イベントのメンバー 870 点のうち 658 点（76%）が震度0未満（＝地図に描かれない帯）だった。
+   *
+   * 【なぜ判定を壊さないか】確定ゲートが数える対象は、この猶予より短い窓で絞られている。
+   * `lastSize` は sustained（levelActive より一段高い床）か直近 TRIG_ACTIVE_MS の onset、
+   * `maxIntensity`・`epicenter`・確定震度到達点数は levelActive のメンバーのみ。外れる点はどの
+   * 指標にも寄与していない。
+   *
+   * 【なぜ TRIG_ACTIVE_MS + HOLD_MS 以上でなければならないか】メンバーが空になるより先に
+   * **イベント自体が必ず消えている**ことを保証するため。ある点が onset した直後に値が沈むと、
+   * その点は onset から TRIG_ACTIVE_MS(8s) の間 `lastSize` に寄与し続ける（`recentOnset` は
+   * 現在の値を見ない）一方、`lastLevelActiveAtMs` は onset の瞬間で止まる。イベントは
+   * 「size が 0 になってから HOLD_MS(10s)」で解除されるので、猶予がこの和(18s)を下回ると
+   * **イベントが confirmed のまま生存しているのにメンバーだけ空になる窓**ができる。その窓では
+   * `deriveKyoshinView` の `detectedPoints` が空になり、地図側の `hasDetection` が false へ落ちて
+   * カメラが全国表示へ戻る（`CameraFollowsGL` の `FitToDetectionGL`）。この機構が直そうとしている
+   * 「画が全国に張り付く」の裏返し（検知中に画が戻る）を作ってしまう。不変条件はテストで固定して
+   * あり、窓が実際に作れないことも別のテストで確かめている。
+   *
+   * 【なぜ 20 秒か】下限 18 秒（TRIG_ACTIVE_MS + HOLD_MS）に余裕を 2 秒足した。刈り取りを遅らせる
+   * ぶん「下がりきった点」が長く残るが、狙いは分オーダーで居残る点を消すことなので影響しない。
+   */
+  MEMBER_DROP_MS: 20_000,
 
   // ---- L4 確信度・発報 ----
   /** likely（可能性）に要する確定揺れ点数 */
@@ -482,6 +520,7 @@ function initSiteState(value: number, t: number): SiteState {
     floorMean: value,
     floorDev: 0,
     triggeredAtMs: null,
+    lastLevelActiveAtMs: null,
   }
 }
 
@@ -579,12 +618,21 @@ function connectedComponents(keys: string[], neighbors: Record<string, string[]>
   return components
 }
 
-/** クラスタ(a)とイベント(bKeys)のメンバー重複率 = |a∩b| / min(|a|,|b|)。 */
+/**
+ * クラスタ(a)とイベント(bKeys)のメンバー重複率 = |a∩b| / |a|（＝「この成分の何割が既存メンバーか」）。
+ *
+ * 分母を成分側に固定するのが要点。かつては `min(|a|,|b|)` だったが、これはメンバーの少ないイベントに
+ * 大きな成分が吸い込まれる向きに甘い（メンバー2点のイベントに 30 点の成分が 1 点だけ共通していると
+ * 1/2 = 0.5 で帰属が成立してしまう）。`pruneFadedMembers` でメンバーが縮むようになったため、痩せた
+ * 古いイベントが新しい地震を飲み込み、`everConfirmed` のラッチで初検知の発報が鳴らなくなる経路が
+ * 現実的になった。成分側を分母にすれば「小さな成分が大きなイベントへ帰属する」向き（分子=分母で
+ * 1.0）は保たれたまま、この向きだけが締まる。
+ */
 export function memberOverlapFrac(a: Set<string>, bKeys: string[]): number {
   if (a.size === 0 || bKeys.length === 0) return 0
   let common = 0
   for (const k of bKeys) if (a.has(k)) common++
-  return common / Math.min(a.size, bKeys.length)
+  return common / a.size
 }
 
 // ============================================================
@@ -630,7 +678,7 @@ export function extractLearned(state: DetectorState): LearnedState {
 export function hydrateLearned(state: DetectorState, learned: LearnedState): DetectorState {
   const sites: Record<string, SiteState> = { ...state.sites }
   for (const [k, fd] of Object.entries(learned.floors)) {
-    sites[k] = { hist: [], floorMean: fd[0], floorDev: fd[1], triggeredAtMs: null }
+    sites[k] = { hist: [], floorMean: fd[0], floorDev: fd[1], triggeredAtMs: null, lastLevelActiveAtMs: null }
   }
   return { ...state, sites, cellActivity: { ...learned.cellActivity } }
 }
@@ -670,6 +718,12 @@ export function step(
   detections: DetectionEvent[]
   triggers: TriggerResult[]
   recentOnsetKeys: string[]
+  /**
+   * 今フレームでイベントのメンバーから外した延べ点数（`pruneFadedMembers`）。刈り取りは点を静かに
+   * 消す処理で失敗しても例外が出ないため、実運用で効き具合を追えるように件数だけ返す
+   * （`dropIsolatedZeroPoints` を `recentOnsetKeys` の件数で追っているのと同じ趣旨）。
+   */
+  prunedMembers: number
 } {
   const now = frame.dataTimeMs
   const dtMs = now - state.lastDataTimeMs
@@ -682,7 +736,7 @@ export function step(
     const seed = initState(now)
     seed.cellActivity = { ...state.cellActivity }
     const rebuilt = ingest(seed, frame, m, state)
-    return { state: rebuilt, detections: [], triggers: [], recentOnsetKeys: [] }
+    return { state: rebuilt, detections: [], triggers: [], recentOnsetKeys: [], prunedMembers: 0 }
   }
 
   // ---- L1 点トリガー ----
@@ -729,6 +783,7 @@ export function step(
       floorMean: prev.floorMean,
       floorDev: prev.floorDev,
       triggeredAtMs: onset ? now : prev.triggeredAtMs,
+      lastLevelActiveAtMs: levelActive ? now : prev.lastLevelActiveAtMs,
     }
     sites[key] = s
     triggeredAt[key] = s.triggeredAtMs
@@ -774,12 +829,13 @@ export function step(
     }))
 
   // ---- L3 イベント帰属（クラスタ＝広がりのある成分をイベントへ）----
-  const { events, nextEventId } = associate(
+  const { events, nextEventId, prunedMembers } = associate(
     state.events,
     state.nextEventId,
     clusters,
     cur,
     triggeredAt,
+    sites,
     state.cellActivity,
     m.cellOf,
     m.avail,
@@ -828,7 +884,39 @@ export function step(
     const t = triggeredAt[p.key]
     if (t != null && now - t <= PARAMS.TRIG_ACTIVE_MS) recentOnsetKeys.push(p.key)
   }
-  return { state: nextState, detections, triggers, recentOnsetKeys }
+  return { state: nextState, detections, triggers, recentOnsetKeys, prunedMembers }
+}
+
+/**
+ * 値が下がりきったメンバーをイベントから外す。
+ *
+ * 対象は「今フレームに値が届いている点」だけ。欠測・初出の点は判定材料が無いので残す（1 秒の瞬断で
+ * メンバーが落ちると、地図の点とカードの点数が明滅する。欠測の穴埋めは表示側の保持機構の担当）。
+ *
+ * @param memberKeys イベントの現メンバー
+ * @param cur 今フレームの点（欠測・初出は含まない）
+ * @param sites 更新後の観測点状態（`lastLevelActiveAtMs` を見る）
+ * @param now 現フレームの dataTime(ms)
+ * @returns 残すメンバー
+ */
+export function pruneFadedMembers(
+  memberKeys: string[],
+  cur: Map<string, FramePoint>,
+  sites: Record<string, SiteState>,
+  now: number,
+): string[] {
+  return memberKeys.filter((k) => {
+    if (!cur.has(k)) return true
+    const s = sites[k]
+    // 状態が無いのは想定外（`cur` に居る点は同じループで `sites` にも入る）。判定材料が無いので
+    // 保持側に倒す。ここで外すと、リファクタで両者の構築が分かれた瞬間に「揺れている点を静かに
+    // 落とす」側へ倒れる。
+    if (!s) return true
+    // 一度も levelActive になっていない点はメンバーになりえない（メンバーは onset 由来で、
+    // onset は levelActive を含む）。状態リセット後の残骸なので外す。
+    if (s.lastLevelActiveAtMs == null) return false
+    return now - s.lastLevelActiveAtMs <= PARAMS.MEMBER_DROP_MS
+  })
 }
 
 /**
@@ -840,17 +928,23 @@ function associate(
   components: string[][],
   cur: Map<string, FramePoint>,
   triggeredAt: Record<string, number | null>,
+  sites: Record<string, SiteState>,
   cellActivity: Record<string, number>,
   cellOf: Record<string, string>,
   avail: Record<string, number>,
   now: number,
   eewActive: boolean,
-): { events: DetectionEvent[]; nextEventId: number } {
-  const events = prevEvents.map((e) => ({
-    ...e,
-    memberKeys: [...e.memberKeys],
-    cells: [...e.cells],
-  }))
+): { events: DetectionEvent[]; nextEventId: number; prunedMembers: number } {
+  // 値が下がりきったメンバーを外す。成分の帰属より先に行うことで、痩せたメンバーに対する重複率で
+  // 帰属を判断させる（成分ごとに刈り取ると、同じフレーム内で順番によって結果が変わる）。
+  // `cells` は刈らない——同じ場所の再 onset を同一イベントへ戻す錨で、これを失うと新規イベントが
+  // 乱立する。
+  let prunedMembers = 0
+  const events = prevEvents.map((e) => {
+    const memberKeys = pruneFadedMembers(e.memberKeys, cur, sites, now)
+    prunedMembers += e.memberKeys.length - memberKeys.length
+    return { ...e, memberKeys, cells: [...e.cells] }
+  })
   const updated = new Set<string>()
   let idCounter = nextEventId
 
@@ -927,7 +1021,7 @@ function associate(
     if (now - e.lastOnsetAtMs <= PARAMS.HOLD_MS) survivors.push(e)
   }
 
-  return { events: mergeAdjacentEvents(survivors), nextEventId: idCounter }
+  return { events: mergeAdjacentEvents(survivors), nextEventId: idCounter, prunedMembers }
 }
 
 /**
@@ -1168,7 +1262,7 @@ function ingest(state: DetectorState, frame: Frame, meta: StationMeta, prev?: De
     const value = indexToValue(frame.values[i])
     const prior = prev?.sites[key]
     sites[key] = prior
-      ? { hist: [{ t: frame.dataTimeMs, v: value }], floorMean: prior.floorMean, floorDev: prior.floorDev, triggeredAtMs: null }
+      ? { hist: [{ t: frame.dataTimeMs, v: value }], floorMean: prior.floorMean, floorDev: prior.floorDev, triggeredAtMs: null, lastLevelActiveAtMs: null }
       : initSiteState(value, frame.dataTimeMs)
   }
   return { ...state, sites, lastDataTimeMs: frame.dataTimeMs }
