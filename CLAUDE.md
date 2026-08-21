@@ -468,6 +468,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 震度集約の単位（一次細分区域）・観測点 0 件時の集約維持 | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §7 |
 | 地震電文の `points` 構造（バリアント経路差・`pref` 空の識別規則） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §4 |
 | P2PQuake レスポンスの検証規則（不正値の扱い・破棄条件・震度値の正規化 `46`→`45` / `scaleTo:99`→`scaleFrom`） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §3 |
+| APIキーに使える文字の判定（印字可能 ASCII のみ・キーの書式は当てにいかない）と、通信前に弾く 3 経路（履歴取得・ヒートマップ・WebSocket）で判定を揃えること（事前に弾かない経路もある） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §2（認証） |
 | DMDATA 震源カタログの欠測項目の扱い（震源未決定の項目を 1 件ずつ除外・件数は警告に出す・全滅は例外）・座標が 0.1 度刻みである前提 | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §2（震源カタログ） |
 | 地震活動ヒートマップの色ランプ・拡散半径・不透明度の決め方（対数配置・高ズームは地理的距離に追従・寄るほど薄く） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §14 |
 | バッジの文字色（塗り色から白/黒を自動選択・気象庁配色は変更不可）と地図バッジの半径テーブル・アイコン倍率とぼやけの関係 | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §15 |
