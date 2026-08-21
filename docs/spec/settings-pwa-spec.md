@@ -105,7 +105,8 @@
 
 **API キーの保存**: DMDSS 版で `dmdataApiKey` フィールドを平文で localStorage に保存する（BYOK 方式）。
 XSS が発生した場合に盗まれるリスクは残るが、静的 PWA（サーバーレス）ではこれ以上の防御は難しい。
-README・CLAUDE.md にも明記されている運用。
+README・CLAUDE.md にも明記されている運用。開発時は入力欄に手で入れる代わりに `.env.local` の値が
+初期値として入る（→ §6「dev サーバーでの API キー自動投入」。この値は保存しない）。
 
 ## 4. デフォルト値と読み込み時の防御
 
@@ -243,13 +244,47 @@ DMDATA リプレイ機能の `setReplayOffset` は使わない（ライブ接続
 **API キーの置き場所**: リポジトリ直下の `.env.local` に `DMDATA_API_KEY` を書けば、`npm run capture-scenario`
 が起動時に読み込む（雛形は `.env.example`）。シェルの種類（PowerShell / Git Bash）を問わない。
 優先順位は `--api-key` 引数 ＞ 実行時の環境変数 ＞ `.env.local` で、`--api-key` はコマンド履歴・プロセス一覧に
-残るため常用しない。アプリ画面で使うキー（設定タブ入力・localStorage 保存）とは別物で、互いに影響しない。
+残るため常用しない。アプリ画面で使うキー（設定タブ入力・localStorage 保存）とは入力経路が別だが、
+DMDSS 版の dev サーバーではこの `.env.local` の値が設定タブの初期値として自動で入る（下記「dev サーバーでの
+API キー自動投入」）。
 
 `.env.local` は **BOM なし UTF-8** で保存する。BOM 付きだと変数名の先頭に BOM が混ざって別名の変数として
 読まれ、キーが未設定として扱われる（BOM はエディタで不可視のため、その場合はキー未設定エラーに続けて
 BOM の可能性を警告する）。PowerShell のリダイレクトや `Out-File` は BOM 付き（UTF-16 になることもある）で
 書き出すため、`.env.example` をコピーして編集するのが確実。読み込みに `process.loadEnvFile()` を使うため
 Node.js 20.12 以上が必要（満たさない場合はその旨を表示して停止する）。
+
+### dev サーバーでの API キー自動投入
+
+開発者向け。DMDSS 版をブラウザで検証するとき、設定タブへ API キーを貼り直す代わりに `.env.local` の
+`DMDATA_API_KEY` が初期値として入る。入るのは次を**すべて**満たすときだけ。
+
+| 条件 | 理由 |
+|---|---|
+| dev サーバー（`npm run dev:dmdss`） | 本番ビルドには値を渡さない。`vite preview` も対象外 |
+| DMDSS 版 | standard 版はこのキーを使わないため、バンドルに値を配らない |
+| `--host` を付けていない | dev サーバーは認証を持たないので、LAN 公開時に実キーを配らない |
+| 設定タブのキーが未入力 | 手入力した値は上書きしない |
+
+覚えておくとよい挙動:
+
+- **保存はされない。** 他の設定を変えても、この値だけは `localStorage` に書き出さない。
+  `.env.local` を書き換えれば次の起動から反映される
+- **`.env.local` が無い・空のときは何も起きない**（設定タブは「APIキー未設定」のまま）。自動投入を
+  当てにしていると原因が見えにくいので、繋がらないときはまず `.env.local` を疑う。
+  **ワークツリーには引き継がれない**（Git 管理外）ため、メインリポジトリ直下からコピーする
+- **BOM 付きでも自動投入は動く。** 読み込みに Vite の `loadEnv` を使うため、上記の BOM の注意
+  （`capture-scenario` が壊れる話）はこちらには当てはまらない。逆に言えば、**自動投入が効いていても
+  `capture-scenario` が動くとは限らない**
+- **値が不正だと、何も入力していないのに「APIキーが不正」と表示される**
+- **入力欄を手で空にしてもリロードで戻る。** 「未設定」の見え方を確かめたいときは standard 版を使うか、
+  `.env.local` を一時的に退避する（空にした状態は「未入力」と区別していないため）
+- **dev サーバーを何台も同時に起動すると DMDATA の同時接続上限に当たる**（`/v2/socket` が 409）。
+  自動投入は起動したサーバーすべてに効くため、手入力していた頃より遭遇しやすい
+
+実装は `vite.config.ts` の `devApiKeyDefine`（値を渡す側）・`scripts/dev-api-key-gate.ts` の
+`shouldInjectDevApiKey`（渡してよいかの判定）・`src/hooks/useSettings.ts` の
+`resolveDevApiKey` / `injectDevApiKey` / `stripDevApiKey`（受け取る側）。
 
 ### P2PQuake からシナリオを作る手順（DMDATA 契約なし）
 
@@ -570,7 +605,8 @@ Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認した�
 - `src/utils/testScenarioReplay.ts` — 時刻シフト・ID 再採番
 - `src/types/testScenario.ts` — シナリオデータ型
 - `scripts/capture-test-scenario.ts` — シナリオキャプチャ CLI
-- `vite.config.ts` — PWA・バリアント切替設定
+- `scripts/dev-api-key-gate.ts` — dev サーバーへ API キーを渡してよいかの判定
+- `vite.config.ts` — PWA・バリアント切替設定・dev サーバーへの API キー注入
 
 ## 12. 改訂履歴
 
@@ -645,3 +681,10 @@ Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認した�
   変えた。撤去前の再生では EEW が最終報の 9 ミリ秒後に消え、津波は `validDateTime` を待たず失効して
   いた（潰しは「再生中もライブ受信を続けていた」時代の緩和策で、ライブ接続を止める方式に変わった
   時点で不要になっていた）
+- 2026-08-21: DMDSS 版の dev サーバーに限り `.env.local` の API キーを設定タブの初期値として使う
+  仕組みを追加し、§6 に「dev サーバーでの API キー自動投入」を新設した。検証のたびにキーを貼り直す
+  作業を無くすのが目的。あわせて「`.env.local` のキーはアプリ画面のキーと互いに影響しない」という
+  従来の記述を訂正した（影響するようになったため）。値を渡すのは dev サーバー・DMDSS 版・`--host`
+  なしのときだけで、`--host` を除いたのは実機計測フローが LAN 公開を使い、その dev サーバーが認証を
+  持たないため。注入した値は `localStorage` に保存しない（保存すると手入力と区別できなくなり、
+  `.env.local` を書き換えても反映されないブラウザが残る）

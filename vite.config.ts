@@ -1,9 +1,10 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv, type ConfigEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { perfReportPlugin } from './scripts/perf/vite-plugin-perf-report'
+import { shouldInjectDevApiKey } from './scripts/dev-api-key-gate'
 
 const variant = process.env.VITE_VARIANT ?? 'standard'
 const isDmdss = variant === 'dmdss'
@@ -36,7 +37,27 @@ const APP_STRINGS = {
 
 const strings = isDmdss ? APP_STRINGS.dmdss : APP_STRINGS.standard
 
-export default defineConfig({
+/**
+ * dev サーバー限定で `.env.local` の DMDATA_API_KEY を import.meta.env へ注入する。
+ * DMDSS 版の検証のたびに設定タブへ API キーを貼り直す手間を省くための措置。
+ *
+ * 露出を最小にするため、envPrefix は既定（VITE_ のみ）から広げず、このキー 1 本だけを
+ * define で渡す。接頭辞を開放すると、将来 `.env.local` に置かれた別の DMDATA_ 系の秘密が
+ * レビューを経ずにクライアントへ載ってしまう。
+ *
+ * 渡してよい状況の判定は `scripts/dev-api-key-gate.ts` の `shouldInjectDevApiKey`（build・preview・
+ * standard 版・`--host` を除く）。ユニットテストで固定するため別ファイルに置いている。
+ *
+ * `server.host` を本ファイルで設定するようになったら、argv だけでは LAN 公開を判定できなく
+ * なるので判定側も見直すこと。
+ */
+function devApiKeyDefine(configEnv: ConfigEnv): Record<string, string> {
+  if (!shouldInjectDevApiKey(configEnv, isDmdss, process.argv)) return {}
+  const key = loadEnv(configEnv.mode, process.cwd(), 'DMDATA_').DMDATA_API_KEY
+  return key ? { 'import.meta.env.DMDATA_API_KEY': JSON.stringify(key) } : {}
+}
+
+export default defineConfig(configEnv => ({
   base,
   build: {
     outDir: isDmdss ? 'dist-dmdss' : 'dist',
@@ -48,6 +69,7 @@ export default defineConfig({
   define: {
     'import.meta.env.VITE_VARIANT': JSON.stringify(variant),
     __APP_VERSION__: JSON.stringify(pkg.version),
+    ...devApiKeyDefine(configEnv),
   },
   plugins: [
     react(),
@@ -147,4 +169,4 @@ export default defineConfig({
       },
     }),
   ],
-})
+}))

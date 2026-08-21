@@ -30,6 +30,10 @@
 Basic 認証（`Authorization: Basic base64(apiKey:)`）。API キーはユーザーが設定タブで入力し、
 `localStorage` に平文保存する（BYOK / Bring Your Own Key 方式）。ビルド時にキーが埋め込まれることはない。
 
+例外は開発時のみ。DMDSS 版の dev サーバーではリポジトリ直下の `.env.local` の値が設定タブの初期値として
+入る（本番ビルドには渡らず、`localStorage` にも保存しない）。条件は
+[`settings-pwa-spec.md`](settings-pwa-spec.md) §6「dev サーバーでの API キー自動投入」を参照。
+
 設定欄は 1 文字ごとに保存するが、**通信を起こす側へ渡す値は 800ms のデバウンスを挟む**
 （`App.tsx` の `API_KEY_DEBOUNCE_MS`）。手入力・修正のたびに未完成のキーで接続と履歴取得を
 やり直すと、そのすべてが 401/403 で失敗して無駄なリクエストとログを生むため。リプレイ機能だけは
