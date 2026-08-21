@@ -441,6 +441,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | EEW 読み上げの直列化（全 EEW で 1 本のチェーン・既読値の更新は発話直前だけ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げの優先順位」 |
 | 自動タブ切替の 2 系統（読み上げ追従／保持機構）と競合の判定順序・優先度表 | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
 | EEW 続報の片方向抑制・追従の最小滞留時間・アイドル復帰の重み（`idleRevertPriority`）・生の `setActiveTab` を使わないこと | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
+| 既定の状態へ戻す操作の保持は読み上げ追従に譲ること（上の行の重み `idleRevertPriority` とは別の話。`forceTab` に駆動源 `idleRevert` を渡す。渡し忘れると「喋っているのに画面が動かない」が復活する） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
 | 読み上げがある経路のタブ移動（順序の判断は読み上げ側に預ける／待たされずに読めるなら通知音と同時に先出しし、その判定は待ち合わせと条件を共有する／読み上げが無効・読み上げ文が空になる場合だけ受信時要求へ落とす。落とし忘れるとそのタブへ永久に移らない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
 | 読み上げの優先順位（EEW ＞ 津波・南海トラフ ＞ 地震情報・長周期（同格）／同格は新しい方が勝つ／待ちの条件は毎周回で作り直す／上限到達時は記録を残す／EEW の予想震度の確定待ち中も EEW を最優先とする） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げの優先順位」 |
 | 到来順を守ること（予約より後に届いた重い読み上げに追い越されたら取り下げる・優先度に例外を設けない・既に読み始めていた場合は割り込みの側の話） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「到来順を守る — 追い越されたら取り下げる」 |
