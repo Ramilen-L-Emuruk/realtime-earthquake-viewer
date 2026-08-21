@@ -434,6 +434,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 読み上げの範囲（`ttsIntensityLevels` / `ttsAlwaysReadScale` / `ttsMaxRegions` / `ttsRegionTolerance` の組み合わせ方・階数は観測がある階級のみを数える・`ttsAlwaysReadScale` は長周期に適用しない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
 | 読み上げの地域名の並び順（気象庁の標準順・順序の実体は `station-coords.json` の区域キー順・上限で切るときの選抜だけは震源距離で行う・震源を持たない電文（震度速報・長周期）は距離で選ばない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
 | 読み上げ文で名前を並べるときの書き方（区切りは読点・中黒は音にならず合成の区切りにもならない・場所の助詞「で」は文末のみ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
+| チャンク末尾の句読点に間を足すこと（VOICEVOX は後ろに何も続かない句読点に間を付けない・チャンクは隙間なく詰めて鳴らす・**最後のチャンクには足さない**・足すかどうかは合成の入口 3 つで揃える。読点で名前を並べても間が入らない症状はここが原因） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「チャンク末尾の句読点には間を足す」 |
 | EEW 読み上げ第 2 フェーズの発火条件（値の確定で読む・予想震度が付かない理由が判っているなら待たない・`EEW_PHASE2_MAX_WAIT_MS` の上限・引き上げも初報と同じ形で言い直す・「警報。」の前置きはその EEW で初めて伝えるときだけ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
 | 読み上げを鳴らす直前の見直し（`shouldStillPlay`。渡しているのは EEW だけ・判定はチャンク単位・鳴っている途中のチャンクは切らない・第 2 フェーズは誤報取消と値の引き上げで打ち切り、第 1 フェーズは誤報取消のみ・自動解除と値の引き下げでは止めない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「鳴らす直前の見直し」・§6 |
 | EEW 読み上げの直列化（全 EEW で 1 本のチェーン・既読値の更新は発話直前だけ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げの優先順位」 |
