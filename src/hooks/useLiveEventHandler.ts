@@ -68,6 +68,30 @@ const SPEECH_PRIORITY = {
 } as const
 type SpeechPriority = typeof SPEECH_PRIORITY[keyof typeof SPEECH_PRIORITY]
 
+/**
+ * 読み上げの主題。**同じ主題の後発だけが先発を取り下げられる**（`overtakenByLaterArrival`）。
+ *
+ * 主題で区切るのは、優先度が同格でも**内容が重なるとは限らない**ため。`high` には津波・南海トラフ
+ * 臨時情報・後発地震注意情報が同居しているが、これは「発表頻度が極端に低く聞き逃したときの損失が
+ * 大きい」から同格に置いているのであって（`SPEECH_PRIORITY.high` の注記）、互いに言い換えでは
+ * ない。主題を見ずに取り下げると、**聞き逃しを防ぐために作った層でまるごと聞き逃す**ことになる。
+ *
+ * 同じ主題の中では優先度は常に等しいため、取り下げの判定に優先度は要らない（到来順だけで足りる）。
+ *
+ * **地震と長周期はイベントごとに分ける。** 別の地震は別のイベントで、内容が重ならない（同分に 2 つの地震が
+ * 起きることは実際にある）。種別軸だけでまとめると、後から処理された地震だけが読まれ、その前に
+ * 届いた別の地震の読み上げが一言も鳴らずに消える。津波・南海トラフ系は常に 1 件だけを追う作りなので
+ * イベントで分ける必要がない。
+ *
+ * なお P2PQuake（standard 版）は続報ごとにキーが変わりうるため、既存カードを引けなかった初報同士
+ * では同じ地震でも別主題になる。そのとき取り下げは働かず、先に読み始めた側が後発に切られる従来の
+ * 挙動に戻るだけで、情報が消える方向には倒れない。
+ */
+type SpeechTopic =
+  | `quake:${string}`
+  | `lpgm:${string}`
+  | 'tsunami' | 'nankai' | 'kohatsu' | 'nankaiCommentary'
+
 // 南海トラフ関連解説情報の通知音（specialInfoCommentary）は約 1.3 秒。鳴り終わってから読み上げる。
 // 音を作り変えたらこの値も見直すこと（docs/spec/audio-tts-spec.md §6）。
 const NANKAI_COMMENTARY_TTS_DELAY_MS = 1500
@@ -82,6 +106,21 @@ const HIGHER_PRIORITY_SPEECH_MAX_WAIT_MS = 90000
 // この待機中は「これから話す」状態で、待つ相手の Promise がまだ存在しないため、
 // 短く眠って作り直す（`EEW_PHASE2_MAX_WAIT_MS` の 3 秒に対して十分細かい刻み）。
 const EEW_PHASE2_PENDING_POLL_MS = 500
+
+// 「この報は既に見た」の記憶を保つ件数の上限（超えたらまとめて捨てる）。1 地震で覚えるのは
+// 種別の数（震度速報・震源情報・各地の震度・遠地地震・震源要素更新）だけなので、この深さは
+// 数十件の地震ぶんに相当する。長期セッションで無制限に増えるのを防ぐためだけの歯止め。
+// 捨てた直後の続報は「初めて見た」扱いになり、読み上げの冒頭が「更新されました」ではなく初報の
+// 言い方に戻る（それだけで、音・画面・タイトルには影響しない）。到達しやすいのはリプレイの復元
+// （`restorePreWindowTracking`）で、群発が続いた期間を遡ると 1 回の復元で多数を積む。
+const SEEN_QUAKE_REPORT_KEYS_MAX = 200
+
+// 主題ごとの「最後に予約された連番」を保つ件数の上限（超えたらまとめて捨てる）。主題は地震ごとに
+// 増える（`quake:<キー>` / `lpgm:<キー>`）一方、読み上げが正常に終わった主題を消す自然な契機が
+// 無いため、歯止めが無いと長期セッションで増え続ける。
+// 同時に予約が進行するのは多くて数件なので、上限に達して捨てても取り下げの判定に実害は出ない
+// （その回だけ従来どおり割り込みで裁かれる）。
+const LATEST_SPEECH_TOPIC_MAX = 200
 
 /** 指定時間だけ待つ（優先度の待ち合わせで、待つ相手の Promise がまだ無いときに使う）。 */
 function sleep(ms: number): Promise<void> {
@@ -129,6 +168,18 @@ function newQuakeTrackingKey(q: JMAQuake): string {
   const base = extractQuakeEventIdFromId(q.id)
     ?? `${q.earthquake.time}|${q.earthquake.hypocenter.name}`
   return `${base}:${q.issue.type}`
+}
+
+// 「この報は見た」と記録する。ライブ受信とリプレイの復元で同じ歯止め（上限）を通すために
+// 関数にしている（上限の意味は `SEEN_QUAKE_REPORT_KEYS_MAX` の注釈）。
+function markQuakeReportSeen(seen: Set<string>, key: string): void {
+  if (seen.size >= SEEN_QUAKE_REPORT_KEYS_MAX) {
+    // 捨てた事実を残す。黙って消すと「続報なのに新規として読まれた」ときに、上限に当たったのか
+    // キーの作り方がずれたのかを切り分けられない（`cancelPendingSpeech` と同じ流儀）。
+    log.debug(`[quake] 既読の報の記憶が上限に達したため捨てた (${seen.size} 件)`)
+    seen.clear()
+  }
+  seen.add(key)
 }
 
 // 観測点リストから、属する予報区（districtCode/districtName）を重複なく列挙する
@@ -224,9 +275,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     revertToDefaultTab, selectQuake, setActiveLpgmEventId,
   } = deps
 
-  // 直近に「新規地震」として注目を移したキー（`eventKey:issue.type`）。
-  // 同一イベント・同一種別の続報では新規扱いにせず、音・タブ切替を再発火させない。
-  const lastNewQuakeKeyRef = useRef<string | null>(null)
+  // 「新規地震」として注目を移した報のキー（`eventKey:issue.type`）。
+  // 同一イベント・同一種別の続報では新規扱いにせず、読み上げの冒頭を「更新されました」にする。
+  //
+  // **直近 1 件ではなく見た報を全部覚えること。** キーには種別が入るため、直近 1 件だと
+  // 種別の異なる報が交互に届いたときに互いの記憶を上書きし、2 度目の震度速報が「初めて見た」
+  // 扱いに戻る（震度速報 → 震源情報 → 震度速報 で「震度速報。」を 2 回読んでいた）。
+  const seenQuakeReportKeysRef = useRef<Set<string>>(new Set())
   // EEW の eventId ごとにレベルを追跡（複数EEW対応）
   // key = issue.eventId ?? id、value = 0=低震度予報 / 1=警報（severity=Warning または予想震度5弱以上） / 2=特別警報
   const activeEEWLevelsRef = useRef<Map<string, 0 | 1 | 2>>(new Map())
@@ -273,6 +328,17 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const activeNonEewSpeechRef = useRef<{ priority: SpeechPriority; done: Promise<void> } | null>(null)
   // 間を置いてからの読み上げの予約（`scheduleSpeech`）。アンマウント・リプレイ切替で取り消す。
   const pendingSpeechRef = useRef<Set<{ id: number; onCancel?: () => void }>>(new Set())
+  // 非 EEW の読み上げに振る到来順の連番と、主題ごとの「最後に予約された連番」。
+  // **同格どうしの追い越し**を裁くために持つ（優先度だけでは同格を区別できず、`speechBlocker` は
+  // 厳密不等号で見るため）。詳細は `overtakenByLaterArrival`。
+  //
+  // **主題ごとに分けて持つこと。** 単一の枠に「最後に予約されたもの」だけを置くと、主題違いの
+  // 予約が枠を奪った隙に同じ主題の後先が比べられなくなり、古い報が新しい報を切れてしまう。
+  //
+  // 連番はリプレイ切替でも戻さない（意図的）。単調に増えていれば後先の比較は成り立ち、0 へ戻すと
+  // 切替前の値と混ざる。取り消しは Map 側の clear で足りる。
+  const nonEewSpeechSeqRef = useRef(0)
+  const latestScheduledSeqByTopicRef = useRef<Map<SpeechTopic, number>>(new Map())
   const eewPhase2TokensRef = useRef<Map<string, object>>(new Map())
   const eewTtsMaxTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   // 第 2 フェーズ（予想値）を一度でも発話した eventId。まだ読んでいない間は、値が上がって
@@ -357,6 +423,38 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     const active = activeNonEewSpeechRef.current
     if (active !== null && active.priority > priority) return 'higher'
     return null
+  }
+
+  /**
+   * 自分より**後に到来した**同格以上の読み上げに追い越されているか。
+   *
+   * `speechBlocker` では捉えられない逆転がこれ。あちらは「いま塞がっているか」を厳密不等号で
+   * 見るため、**同格どうしの追い越しが素通りする**。通知音との間は種別ごとに 0.5〜4.2 秒と
+   * 幅があるので、先に届いた電文の方が遅く喋り始めることがあり、そのとき古い側が新しい側の
+   * 声を切っていた（震源情報の 1.2 秒以内に震度速報が届くと、震度速報が途中で切られる）。
+   * 「同格どうしは新しい方が勝つ」という原則が逆向きに破れる形なので、到来順で裁く。
+   *
+   * **優先度だけでなく到来順も見ること。** 優先度だけで判断すると、自分より後に届いた
+   * **軽い**読み上げでも取り下げてしまう。
+   */
+  const overtakenByLaterArrival = (seq: number, topic: SpeechTopic): boolean => {
+    const latest = latestScheduledSeqByTopicRef.current.get(topic)
+    return latest !== undefined && latest > seq
+  }
+
+  /**
+   * 取り下げが決まった予約を「最後に予約されたもの」から降ろす。
+   *
+   * **降ろさないと取り下げが連鎖する。** 自分が一度も喋らずに消えたのに枠に残り続けると、自分より
+   * 前に予約されていた読み上げが「後発に追い越された」と誤認して取り下がり、**どちらも読まれない**。
+   *
+   * 逆に、**読み終わった予約は降ろさない**（意図的）。後発を聞いたあとで先発を読めば、聞いている
+   * 側には順序が入れ替わって聞こえる。到来順を守る規則はそれを避けるためのもの。
+   */
+  const releaseLatestSchedule = (seq: number, topic: SpeechTopic): void => {
+    if (latestScheduledSeqByTopicRef.current.get(topic) === seq) {
+      latestScheduledSeqByTopicRef.current.delete(topic)
+    }
   }
 
   /** いま自分より優先度の高い読み上げが進行中なら、その完了 Promise を返す（無ければ null）。 */
@@ -510,12 +608,25 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     text: string,
     priority: SpeechPriority,
     delay: number,
+    /** 読み上げの主題（取り下げは同じ主題どうしに限る。理由は `SpeechTopic`）。 */
+    topic: SpeechTopic,
     /** 読み上げに同調して動かすタブ。**タブを持たない情報（南海トラフ系）では省略する。** */
     follow?: { readonly tab: Exclude<TabId, 'realtime'>; readonly priority: TabPriority },
   ) => {
     // 予約した時点で、自分より重い読み上げが走っていたか。**発話の番でもう一度取って比べる**
     // （下の「追い越し」の判定）。
     const blockedAtSchedule = speechBlocker(priority)
+    // 到来順の連番を振り、自分をその主題の「最後に予約されたもの」として登録する。同格どうしの
+    // 追い越しは優先度では区別できないため、この連番で後先を比べる（`overtakenByLaterArrival`）。
+    const seq = ++nonEewSpeechSeqRef.current
+    if (latestScheduledSeqByTopicRef.current.size >= LATEST_SPEECH_TOPIC_MAX
+      && !latestScheduledSeqByTopicRef.current.has(topic)) {
+      // 捨てた事実を残す（`markQuakeReportSeen` と同じ流儀）。黙って消すと「取り下げが働かなかった」
+      // ときに上限に当たったのか主題の付け方がずれたのかを切り分けられない。
+      log.debug(`[tts] 主題ごとの予約の記憶が上限に達したため捨てた (${latestScheduledSeqByTopicRef.current.size} 件)`)
+      latestScheduledSeqByTopicRef.current.clear()
+    }
+    latestScheduledSeqByTopicRef.current.set(topic, seq)
     if (follow) {
       if (blockedAtSchedule === null) {
         log.info(`[tab] ${follow.tab} を要求 (通知音と同時・読み上げの待ちなし)`)
@@ -539,10 +650,19 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 予約した時点で既に塞がっていたなら取り下げない（`speakNonEEW` の `waitForSpeechSlot`
         // が待つ）。そちらは「重いものが先に来て、後から軽いものが届いた」形で到来順どおりなので、
         // 待って読むのが正しい。
+        // 同じ主題の読み上げが自分より後に予約されていたら取り下げる。**予約時に塞がっていたかを
+        // 問わない**（相手はまだ喋り始めていないことも多く、`speechBlocker` には映らない）。
+        if (overtakenByLaterArrival(seq, topic)) {
+          log.info(`[tts] 同じ主題の新しい読み上げに追い越されたため取り下げる topic=${topic}`)
+          releaseLatestSchedule(seq, topic)
+          prewarmed?.abort()
+          return
+        }
         if (blockedAtSchedule === null) {
           const overtakenBy = speechBlocker(priority)
           if (overtakenBy !== null) {
             log.info(`[tts] 後から届いた読み上げに追い越されたため取り下げる (${overtakenBy}) priority=${priority}`)
+            releaseLatestSchedule(seq, topic)
             prewarmed?.abort()
             return
           }
@@ -554,7 +674,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           prewarmed,
         )
       },
-      () => prewarmed?.abort(),
+      () => {
+        releaseLatestSchedule(seq, topic)
+        prewarmed?.abort()
+      },
     )
   }
 
@@ -563,6 +686,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // （地震情報・津波情報・緊急地震速報）。
     // isNewQuake は UI ブロックと TTS ブロックの両方で参照するためここで宣言する
     let isNewQuake = true
+    // 地震情報の読み上げの主題（イベント単位）。UI ブロックで決めて TTS ブロックで使う。
+    // 取消は TTS ブロックを通らない（音の種別が決まらず早期 return する）ので、自分の分岐で組み立てる。
+    let quakeSpeechTopic: SpeechTopic = 'quake:unknown'
     // 津波が新規発報か grade 格上げか（UI ブロックで立て、TTS ブロックで消費する）。
     // **観測点更新（grade 不変の続報）ではタブを動かさない**ための判定に使う。
     // 続報のたびに画面を持って行くと、EEW を見ている最中に何度も津波タブへ引っ張られる
@@ -590,6 +716,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           earthquakeCancelToText(original?.time ?? null),
           SPEECH_PRIORITY.normal,
           1200,
+          `quake:${quakeEventKey(event as import('../types/earthquake').JMAQuake)}`,
           { tab: 'earthquake', priority: TAB_PRIORITY.quake },
         )
       }
@@ -603,9 +730,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
       const incomingQuake = event as import('../types/earthquake').JMAQuake
       const incomingKey = newQuakeTrackingKey(incomingQuake)
-      isNewQuake = incomingKey !== lastNewQuakeKeyRef.current
+      isNewQuake = !seenQuakeReportKeysRef.current.has(incomingKey)
       if (isNewQuake) {
-        lastNewQuakeKeyRef.current = incomingKey
+        markQuakeReportSeen(seenQuakeReportKeysRef.current, incomingKey)
       }
       // 新規・続報いずれも、受信した地震カードを選択状態にする。
       // 選択 ID はカードと照合するため eventKey で渡す。P2PQuake は続報ごとにレコード id が
@@ -614,13 +741,30 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 同一 tick に複数電文が捌けて ref が追いつかない場合はキーが実カードと一致せず、
       // 選択は「取消でない最新カード」へフォールバックする（App.tsx の selectedQuake 導出）。
       const existingCard = earthquakesRef.current.find(q => sameQuakeEntry(q, incomingQuake))
-      selectQuake(quakeEventKey(existingCard ?? incomingQuake))
+      // 選択と読み上げの主題は同じキーで揃える（どちらも「どの地震か」を指すもの）。
+      const incomingEventKey = quakeEventKey(existingCard ?? incomingQuake)
+      quakeSpeechTopic = `quake:${incomingEventKey}`
+      selectQuake(incomingEventKey)
       const { hypocenter, maxScale } = event.earthquake
       const isForeignQuake = event.issue.type === '遠地地震'
-      // 震度なし続報（VXSE52 等）ではタイトルを更新しない（直前の VXSE51 表示を維持する）。
-      // ただし遠地地震は maxScale が常に -1 で、続報も同じ eventId・種別のため isNewQuake も
-      // false になる。この条件のままだと規模が確定した続報がタイトルに一切反映されないため除外する。
-      if (maxScale >= 0 || isNewQuake || isForeignQuake) {
+      // 震度を伝えない電文（VXSE52 等）では、同一イベントのカードが既に出している震度を消さない
+      // （直前の VXSE51 表示を維持する）。
+      //
+      // **判定に isNewQuake を使ってはいけない。** キーには種別が入るため、震源情報は「その種別
+      // としての初報」＝新規になる。以前はここが `isNewQuake` を含んでいたため歯止めが一度も効かず、
+      // 震度速報のあとに震源情報が届くとタイトルが「最大震度不明」へ落ちていた。
+      //
+      // 既存カードが震度を持たない（震源情報が先に届いた・カードがまだ無い）ときは、出せる情報が
+      // 他に無いので従来どおり「最大震度不明」で出す。遠地地震も maxScale は常に -1 だが、同一
+      // イベントのカードは国内震度を持たないためこの歯止めに掛からず、規模が確定した続報はタイトルに
+      // 反映される（`isForeignQuake` をここで除外する必要はない）。
+      const keepsKnownScale = maxScale < 0 && (existingCard?.earthquake.maxScale ?? -1) >= 0
+      if (keepsKnownScale) {
+        // 残した事実を記録する。逆に「残すべきだったのに落ちた」ときも、この行が出ていないことで
+        // 既存カードを引けなかった（同一 tick に複数電文が捌けて `earthquakesRef` が追いつかない）
+        // と切り分けられる。
+        log.debug(`[title] 震度なしの電文なのでタイトルを更新しない (既存の最大震度=${existingCard?.earthquake.maxScale})`)
+      } else {
         // 遠地地震は国内で震度を観測しない（maxScale は常に -1）。「最大震度不明」と出すと
         // 震度が判明していないだけに読めてしまうため、規模を出す別書式にする。
         title.setTitle(isForeignQuake
@@ -691,6 +835,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             tsunamiCancelToText(event.cancelReason),
             SPEECH_PRIORITY.high,
             2400,
+            'tsunami',
             { tab: 'tsunami', priority: TAB_PRIORITY.tsunami },
           )
         }
@@ -1024,8 +1169,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         playAlertSound('earthquake')
       }
       if (lpgmSpeech) {
+        // 主題は地震情報と分ける。内容が別軸（震度と長周期地震動階級）なので、片方が
+        // もう片方の言い換えにはならない（割り込みは従来どおり許す）。
         speakNonEEWDelayed(
-          lpgmSpeech, SPEECH_PRIORITY.normal, 1000, { tab: 'earthquake', priority: TAB_PRIORITY.quake },
+          lpgmSpeech, SPEECH_PRIORITY.normal, 1000, `lpgm:${lpgmEvent.eventId}`,
+          { tab: 'earthquake', priority: TAB_PRIORITY.quake },
         )
       }
       // voicevox 有効/無効に関わらず追跡する（次回の isNewLpgm 判定に使用）
@@ -1051,6 +1199,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 帯で伝える情報なのでタブは動かさない（パネルの展開は expandPanelForSpecialInfo が担う）。
         speakNonEEWDelayed(
           nankaiCommentaryToText(commentary), SPEECH_PRIORITY.commentary, NANKAI_COMMENTARY_TTS_DELAY_MS,
+          'nankaiCommentary',
         )
       }
       return
@@ -1072,7 +1221,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             ? nankaiToText(specialEvent.data as Parameters<typeof nankaiToText>[0])
             : kohatsuToText(specialEvent.data as Parameters<typeof kohatsuToText>[0])
           // 帯で伝える情報なのでタブは動かさない（理由は関連解説情報と同じ）
-          speakNonEEWDelayed(ttsText, SPEECH_PRIORITY.high, 1500)
+          // 臨時情報と後発地震注意情報は主題を分ける。どちらも `high` だが互いに言い換えでは
+          // ないため、まとめると一方の発表がもう一方を無音のまま消す。
+          speakNonEEWDelayed(ttsText, SPEECH_PRIORITY.high, 1500, specialEvent.kind === 'nankai' ? 'nankai' : 'kohatsu')
         }
         // タイトル更新
         const specialTitle = specialEvent.kind === 'nankai'
@@ -1214,6 +1365,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           ttsText,
           event.kind === 'tsunami' ? SPEECH_PRIORITY.high : SPEECH_PRIORITY.normal,
           TTS_DELAY_MS[type] ?? 0,
+          event.kind === 'tsunami' ? 'tsunami' : quakeSpeechTopic,
           { tab: followTab, priority: event.kind === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake },
         )
       } else if (event.kind === 'tsunami' && tsunamiIsNewOrUpgraded) {
@@ -1317,6 +1469,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       for (const timer of eewTtsMaxTimersRef.current.values()) clearTimeout(timer)
       eewSpeechPendingRef.current = 0
       activeNonEewSpeechRef.current = null
+      latestScheduledSeqByTopicRef.current.clear()
       window.clearTimeout(obsStatusClearTimerRef.current)
       // 間を置いている最中の読み上げも捨てる（`resetTracking` と対称）
       cancelPendingSpeech()
@@ -1326,7 +1479,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // リプレイ開始・終了時に追跡 ref を初期化する。
   // handleStartReplay の useCallback deps を壊さないよう安定参照（deps なし）にする。
   const resetTracking = useCallback(() => {
-    lastNewQuakeKeyRef.current = null
+    seenQuakeReportKeysRef.current.clear()
     activeEEWLevelsRef.current.clear()
     spokenEEWScalesRef.current.clear()
     spokenEEWLpgmClassesRef.current.clear()
@@ -1340,6 +1493,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // カウンタも戻す。残したままだとリプレイを切り替えても非 EEW の読み上げが待たされ続ける
     eewSpeechPendingRef.current = 0
     activeNonEewSpeechRef.current = null
+    latestScheduledSeqByTopicRef.current.clear()
     eewPhase2DoneRef.current.clear()
     eewRetractedKeysRef.current.clear()
     lastTsunamiGradeRef.current = null
@@ -1363,7 +1517,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // ライブ経路（上の handleLiveEvent）と同じキーの組み立て方にそろえる。
           // なおこの復元は DMDATA archive の再生専用で、standard 版からは呼ばれない
           // （`App.tsx` が onStartReplay を isDmdss のときだけ配線している）。
-          lastNewQuakeKeyRef.current = newQuakeTrackingKey(ev as JMAQuake)
+          markQuakeReportSeen(seenQuakeReportKeysRef.current, newQuakeTrackingKey(ev as JMAQuake))
         } else if (ev.kind === 'eew') {
           const eew = ev as EEWAlert
           const key = eew.issue?.eventId ?? eew.id
