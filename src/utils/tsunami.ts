@@ -1,4 +1,4 @@
-import type { JMATsunami, TsunamiGrade, TsunamiObservation } from '../types/earthquake'
+import type { JMATsunami, TsunamiArea, TsunamiGrade, TsunamiObservation } from '../types/earthquake'
 
 const GRADE_PRIORITY: Record<TsunamiGrade, number> = {
   MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0,
@@ -96,4 +96,114 @@ export function mergeTsunamiObservations(
   for (const o of prev) merged.set(key(o), o)
   for (const o of next) merged.set(key(o), o)
   return Array.from(merged.values())
+}
+
+// ============================================================
+// カード表示順（区域の並べ替え）
+//
+// 読み上げ（`ttsText.ts`）とカード（`TsunamiTab`）は**同じ並び順を使う**。
+// 食い違うと、読み上げに合わせたカードの追従スクロールが上下交互に往復する
+// （詳細は docs/spec/audio-tts-spec.md §4）。そのためカード専用ではなく
+// ここに置き、双方から参照する。
+// ============================================================
+
+/**
+ * 観測情報が属する津波予報区（districtCode/districtName）を発表区域（area.code/area.name）に紐づける。
+ * code が双方にあれば code を優先。無ければ name で照合する。
+ */
+export function matchesArea(obs: TsunamiObservation, area: TsunamiArea): boolean {
+  if (obs.districtCode && area.code) return obs.districtCode === area.code
+  return !!obs.districtName && obs.districtName === area.name
+}
+
+/** 予想波高ごとの区域グループ（カードの波高見出しの単位）。 */
+export interface TsunamiHeightGroup {
+  heightLabel: string | null
+  areas: TsunamiArea[]
+}
+
+/**
+ * 同一階級内で、予想波高（maxHeight.description）が連続して一致する区域を1グループにまとめる。
+ * 電文内の区域順序は維持し、離れた位置にある同じ波高の区域まではまとめない。
+ */
+function groupAreasByHeight(areas: TsunamiArea[]): TsunamiHeightGroup[] {
+  const groups: { heightLabel: string | null; areas: TsunamiArea[] }[] = []
+  for (const area of areas) {
+    const label = area.maxHeight?.description || null
+    const last = groups[groups.length - 1]
+    if (label && last && last.heightLabel === label) {
+      last.areas.push(area)
+    } else {
+      groups.push({ heightLabel: label, areas: [area] })
+    }
+  }
+  return groups
+}
+
+// 区域に紐づく観測点のうち、実測値（height）が最も高いものを返す。
+// value が同点の場合は over（「以上」）を優先する。実測値を持つ観測点が無ければ null。
+function maxObservedHeight(area: TsunamiArea, observations: TsunamiObservation[]): { value: number; over: boolean } | null {
+  let max: { value: number; over: boolean } | null = null
+  for (const obs of observations) {
+    if (!obs.height || !matchesArea(obs, area)) continue
+    const candidate = { value: obs.height.value, over: !!obs.height.over }
+    if (!max || candidate.value > max.value || (candidate.value === max.value && candidate.over && !max.over)) {
+      max = candidate
+    }
+  }
+  return max
+}
+
+// 波高グループ内で、観測データ（実測値）がある区域を上に、無い区域を下にまとめる。
+// 観測データがある区域同士は実測波高（最大値・同点なら「以上」優先）の降順で並べ、
+// 実測値未確定（到達時刻のみ等）の区域は観測データありの中で最下位に置く。
+// いずれも同点の場合・観測データが無い区域同士は電文順（安定ソート）を維持する。
+function sortAreasByObservation(areas: TsunamiArea[], observations: TsunamiObservation[]): TsunamiArea[] {
+  const withObservation: TsunamiArea[] = []
+  const withoutObservation: TsunamiArea[] = []
+  for (const area of areas) {
+    if (observations.some(o => matchesArea(o, area))) withObservation.push(area)
+    else withoutObservation.push(area)
+  }
+
+  const sortedWithObservation = withObservation
+    .map((area, index) => ({ area, index, height: maxObservedHeight(area, observations) }))
+    .sort((a, b) => {
+      if (a.height && b.height) {
+        if (a.height.value !== b.height.value) return b.height.value - a.height.value
+        if (a.height.over !== b.height.over) return a.height.over ? -1 : 1
+        return a.index - b.index
+      }
+      if (a.height && !b.height) return -1
+      if (!a.height && b.height) return 1
+      return a.index - b.index
+    })
+    .map(({ area }) => area)
+
+  return [...sortedWithObservation, ...withoutObservation]
+}
+
+/**
+ * カードが描画する区域の並び順を、波高グループの構造を保ったまま返す。
+ * カードは波高ごとに見出しを挟むため、平坦化していない形が必要。
+ */
+export function groupAreasForCardDisplay(
+  areas: TsunamiArea[],
+  observations: TsunamiObservation[],
+): TsunamiHeightGroup[] {
+  return groupAreasByHeight(areas).map(group => ({
+    ...group,
+    areas: sortAreasByObservation(group.areas, observations),
+  }))
+}
+
+/**
+ * カードが実際に描画する区域の並び順（波高グループ化＋グループ内の観測順）を平坦に返す。
+ *
+ * **読み上げの区域列挙もこの順に揃える**（`ttsText.ts`）。観測が入り始めた続報では
+ * 電文順（気象庁の地理順）とこの順が乖離するため、読み上げが電文順のままだと
+ * 追従スクロールが 1 チャンクごとに上下へ往復する。
+ */
+export function sortAreasForCardDisplay(areas: TsunamiArea[], observations: TsunamiObservation[]): TsunamiArea[] {
+  return groupAreasForCardDisplay(areas, observations).flatMap(group => group.areas)
 }

@@ -209,6 +209,26 @@ P2PQuake API 仕様上 `validDateTime` が届かないため、通常の TSU-1 �
 3. 観測情報（区域コードが一致する観測点は該当区域の直下に、それ以外は別カードにフォールバック）
 4. キャンセル時は `cancelReason` に応じた見出しに切り替え（10 秒間）
 
+### 区域の並び順
+
+並べ替えは `tsunami.ts` の `groupAreasForCardDisplay` / `sortAreasForCardDisplay`。予想波高が
+**連続して一致する**区域を 1 グループにまとめ（離れた位置にある同じ波高は別グループ）、グループの
+中を実測波高の降順に並べる。実測を持たない区域はグループ内の後ろへ回す。
+
+**この並びは読み上げの区域列挙とも共有する**（揃える理由は
+[`audio-tts-spec.md`](audio-tts-spec.md) §4「津波の区域の並び順」）。カード専用の関数ではないので
+`TsunamiTab` ではなく `tsunami.ts` に置いている。
+
+### スクロールの自動制御
+
+2 つの駆動がある。**読み上げが受け持っている間は受信時のものを見送る**（声と画面が一致している側を
+優先する）。
+
+| 駆動 | いつ動くか | 動き |
+|---|---|---|
+| 受信時（`focusedDistrict`） | 電文の受信時に 1 回 | 変更区域が視野に収まればまとめて見せ、収まらなければ波高最大の区域を視野の上端へ。対象が特定できない受信（区域のみの発表・実質変化なしの続報・解除）は一番上へ戻す |
+| 読み上げ追従 | 読み上げの進行に合わせて | 読んでいる箇所が視野内なら動かさず、外に出たときだけ送る（詳細は [`audio-tts-spec.md`](audio-tts-spec.md) §6「読み上げに合わせたカードの追従」） |
+
 ## 10. 音・通知・読み上げの連動
 
 `useLiveEventHandler.ts` の tsunami 分岐で発火する。
@@ -302,7 +322,8 @@ EEW の発表状況は判定に入れない（下記「優先度ルール」参�
 
 - `src/services/dmdataParser.ts` — DMDATA JSON/XML パース（tsunami 分岐）
 - `src/services/p2pquake.ts` — P2PQuake 経路の convertEvent
-- `src/utils/tsunami.ts` — 等級算出・観測情報マージ
+- `src/utils/tsunami.ts` — 等級算出・観測情報マージ・区域の並べ替え（カードと読み上げの単一情報源）
+- `src/utils/ttsFollow.ts` — 読み上げ追従スクロールの計算・追従セッションの世代管理
 - `src/utils/tsunamiStyle.ts` — 等級ごとの色・線幅定義
 - `src/hooks/useEarthquakes.ts` — 状態管理（tsunami ケース）
 - `src/hooks/useTsunamiLayerData.ts` — 描画データ生成
@@ -350,3 +371,7 @@ EEW の発表状況は判定に入れない（下記「優先度ルール」参�
   使っている「観測が動いたか」を流用している。あわせて、EEW が realtime を確保していても津波の
   読み上げの番が来れば tsunami へ移り、移ったあとは EEW の続報で引き戻されなくなった。
   理由と全体像は [`audio-tts-spec.md`](audio-tts-spec.md) §6
+- 2026-08-21: 区域の並べ替えを `TsunamiTab` から `tsunami.ts` へ移し、**読み上げの区域列挙と
+  同じ並びを使う**単一情報源にした（§9「区域の並び順」）。あわせて読み上げの進行に合わせて
+  カードをスクロールさせる追従を追加（§9「スクロールの自動制御」）。詳細は
+  [`audio-tts-spec.md`](audio-tts-spec.md) §6
