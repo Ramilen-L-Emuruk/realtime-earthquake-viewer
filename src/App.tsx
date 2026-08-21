@@ -23,6 +23,7 @@ import { useKyoshinAlerts } from './hooks/useKyoshinAlerts'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
 import { useKyoshinDetectorV2 } from './hooks/useKyoshinDetectorV2'
 import { useKyoshinMissingHold } from './hooks/useKyoshinMissingHold'
+import { createSpeechFollowController, type SpeechFollowSession } from './utils/ttsFollow'
 import { deriveKyoshinView } from './utils/kyoshinDetectionView'
 import { filterSubThresholdIndices } from './utils/kyoshinSubThresholdFilter'
 import { useSWaveCountdown } from './hooks/useSWaveCountdown'
@@ -367,12 +368,21 @@ export function App() {
     if (tab === 'tsunami') resetTsunamiScrollRef.current()
   }
 
+  // 読み上げの進行を津波カードへ伝える（追従スクロール）。
+  //
+  // **状態を更新するのは読み上げの開始と終了だけ。** チャンクの境界ごとに更新すると、
+  // ここから全タブが再描画される（非表示タブの描画を 0 回に保つ設計。architecture-spec.md）。
+  // 途中で届く予約の通知はセッションのオブジェクトへ直接積み、読む側は rAF で拾う。
+  // 世代の管理は `createSpeechFollowController` に閉じてある（そちらでテストしている）。
+  const [speechFollowSession, setSpeechFollowSession] = useState<SpeechFollowSession | null>(null)
+  const speechFollow = useMemo(() => createSpeechFollowController(setSpeechFollowSession), [])
+
   // ライブイベント受信処理（通知音・タイトル・タブ切替・読み上げ・ブラウザ通知）
   const { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, focusedDistrict, resetTsunamiScrollToTop } = useLiveEventHandler({
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate, setActiveTabRealtimeUrgent,
     setActiveTabRealtimeForKyoshin: () => requestTabForKyoshin('realtime'),
-    followSpeechTab, preSpeechTab, expandPanelForSpecialInfo,
+    followSpeechTab, preSpeechTab, speechFollow, expandPanelForSpecialInfo,
     revertToDefaultTab, selectQuake, setActiveLpgmEventId,
   })
   resetTsunamiScrollRef.current = resetTsunamiScrollToTop
@@ -1120,6 +1130,11 @@ export function App() {
               onObservationClick={focusTsunamiObs}
               focusedDistrict={focusedDistrict}
               obsUpdateStatus={obsUpdateStatus}
+              speechSession={speechFollowSession}
+              /* 読み上げ追従の可否。タブは invisible で隠すだけなので**非表示でもスクロールは
+                 効いてしまう**（戻ってきたら知らない位置にいる）。折りたたみ時はさらに幅か
+                 高さが 0 になり、視野の高さが取れない。 */
+              isVisible={activeTab === 'tsunami' && !panelCollapsed}
             />
           </div>
           <div className={`${TAB_SCROLLER_CLASS}${activeTab !== 'telegrams' ? ' invisible pointer-events-none' : ''}`}>

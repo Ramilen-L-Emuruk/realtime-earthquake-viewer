@@ -4,8 +4,11 @@ import {
   tsunamiOverallGrade,
   isTsunamiNewFire,
   isTsunamiGradeUpgrade,
+  matchesArea,
+  groupAreasForCardDisplay,
+  sortAreasForCardDisplay,
 } from './tsunami'
-import type { JMATsunami, TsunamiArea } from '../types/earthquake'
+import type { JMATsunami, TsunamiArea, TsunamiObservation } from '../types/earthquake'
 
 function makeArea(overrides: Partial<TsunamiArea> = {}): TsunamiArea {
   return {
@@ -148,5 +151,85 @@ describe('isTsunamiGradeUpgrade', () => {
     const current = makeTsunami({ areas: [makeArea({ grade: 'Warning' })] })
     const next = makeTsunami({ areas: [makeArea({ grade: 'Watch' })] })
     expect(isTsunamiGradeUpgrade(next, current)).toBe(false)
+  })
+})
+
+// カードの表示順は読み上げの区域列挙とも共有する（docs/spec/audio-tts-spec.md §4）。
+// 片方だけ変えると、読み上げに追従するスクロールが上下へ往復する。
+describe('matchesArea', () => {
+  const obs = (o: Partial<TsunamiObservation>): TsunamiObservation => ({ name: '観測点', ...o })
+
+  it('双方に code があれば code で照合する（名前が違っても一致する）', () => {
+    expect(matchesArea(
+      obs({ districtCode: '040', districtName: '別名' }),
+      makeArea({ code: '040', name: '宮城県' }),
+    )).toBe(true)
+  })
+
+  it('code が一致しなければ名前が同じでも一致しない', () => {
+    expect(matchesArea(
+      obs({ districtCode: '040', districtName: '宮城県' }),
+      makeArea({ code: '050', name: '宮城県' }),
+    )).toBe(false)
+  })
+
+  it('片方に code が無ければ名前で照合する', () => {
+    expect(matchesArea(
+      obs({ districtName: '宮城県' }),
+      makeArea({ code: '040', name: '宮城県' }),
+    )).toBe(true)
+    expect(matchesArea(
+      obs({ districtCode: '040', districtName: '宮城県' }),
+      makeArea({ code: undefined, name: '宮城県' }),
+    )).toBe(true)
+  })
+
+  it('名前も code も無い観測は一致しない', () => {
+    expect(matchesArea(obs({}), makeArea({ code: undefined, name: '宮城県' }))).toBe(false)
+  })
+})
+
+describe('groupAreasForCardDisplay / sortAreasForCardDisplay', () => {
+  const area = (name: string, code: string, height?: string): TsunamiArea =>
+    makeArea({ name, code, grade: 'MajorWarning', maxHeight: height ? { description: height, value: 0 } : undefined })
+  const height = (name: string, code: string, value: number, over = false): TsunamiObservation =>
+    ({ name, districtCode: code, districtName: name, height: { value, description: `${value}m`, over } })
+
+  it('予想波高が連続して一致する区域だけをまとめる（離れた同じ波高は別グループ）', () => {
+    const groups = groupAreasForCardDisplay([
+      area('岩手県', '030', '3m'),
+      area('宮城県', '040', '6m'),
+      area('福島県', '050', '3m'),
+    ], [])
+    expect(groups.map(g => [g.heightLabel, g.areas.map(a => a.name)]))
+      .toEqual([['3m', ['岩手県']], ['6m', ['宮城県']], ['3m', ['福島県']]])
+  })
+
+  it('観測が無ければ電文順を維持する', () => {
+    const areas = [area('岩手県', '030', '3m'), area('宮城県', '040', '3m')]
+    expect(sortAreasForCardDisplay(areas, []).map(a => a.name)).toEqual(['岩手県', '宮城県'])
+  })
+
+  it('グループ内は実測波高の降順に並べ、実測が無い区域は後ろへ回す', () => {
+    const areas = [area('岩手県', '030', '3m'), area('宮城県', '040', '3m'), area('福島県', '050', '3m')]
+    const sorted = sortAreasForCardDisplay(areas, [height('福島県', '050', 1.2), height('宮城県', '040', 2.4)])
+    expect(sorted.map(a => a.name)).toEqual(['宮城県', '福島県', '岩手県'])
+  })
+
+  it('実測が同値なら「以上」を優先し、それも同じなら電文順を保つ', () => {
+    const areas = [area('岩手県', '030', '3m'), area('宮城県', '040', '3m')]
+    expect(sortAreasForCardDisplay(areas, [
+      height('岩手県', '030', 2.0),
+      height('宮城県', '040', 2.0, true),
+    ]).map(a => a.name)).toEqual(['宮城県', '岩手県'])
+    expect(sortAreasForCardDisplay(areas, [
+      height('岩手県', '030', 2.0),
+      height('宮城県', '040', 2.0),
+    ]).map(a => a.name)).toEqual(['岩手県', '宮城県'])
+  })
+
+  it('波高を持たない区域は独立したグループになる', () => {
+    const groups = groupAreasForCardDisplay([area('岩手県', '030'), area('宮城県', '040')], [])
+    expect(groups.map(g => g.heightLabel)).toEqual([null, null])
   })
 })

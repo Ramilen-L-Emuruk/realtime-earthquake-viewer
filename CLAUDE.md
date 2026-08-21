@@ -432,7 +432,9 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | テストデータと UI 説明文（テストボタンの `scaleTo` 値等） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §7 |
 | テストデータが実電文の形に沿っていること（報番号・発表時刻・`id` は報ごとに進める／震源時刻は固定／取消・解除は対象地域を空にする／区域コードは気象庁コード表 12／経路に無い項目を作らない） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §7「実電文の形に合わせる」 |
 | 読み上げの範囲（`ttsIntensityLevels` / `ttsAlwaysReadScale` / `ttsMaxRegions` / `ttsRegionTolerance` の組み合わせ方・階数は観測がある階級のみを数える・`ttsAlwaysReadScale` は長周期に適用しない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
-| 読み上げの地域名の並び順（気象庁の標準順・順序の実体は `station-coords.json` の区域キー順・上限で切るときの選抜だけは震源距離で行う・震源を持たない電文（震度速報・長周期）は距離で選ばない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
+| 読み上げの地域名の並び順（**地震・長周期のみ**。気象庁の標準順・順序の実体は `station-coords.json` の区域キー順・上限で切るときの選抜だけは震源距離で行う・震源を持たない電文（震度速報・長周期）は距離で選ばない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
+| 津波の区域の並び順（読み上げとカードで**同じ並びを使う**こと・実体は `tsunami.ts` の `sortAreasForCardDisplay`・予想最大波高の文もカードの波高見出しと同じ区切りで読む。片方だけ変えると追従スクロールが上下へ往復する） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「津波の区域の並び順」 |
+| 読み上げに合わせた津波カードの追従（視野内なら動かさない・送り先にこれから読む箇所を含める・一度出した箇所は読み直されても追わない・追わない 4 条件（非表示／折りたたみ／手動操作 30 秒／引き当て前）・現在位置は rAF で解決し `setTimeout` を張らない・通知の例外で読み上げを止めない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げに合わせたカードの追従」 |
 | 読み上げ文で名前を並べるときの書き方（区切りは読点・中黒は音にならず合成の区切りにもならない・場所の助詞「で」は文末のみ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
 | EEW 読み上げ第 2 フェーズの発火条件（値の確定で読む・予想震度が付かない理由が判っているなら待たない・`EEW_PHASE2_MAX_WAIT_MS` の上限・引き上げも初報と同じ形で言い直す・「警報。」の前置きはその EEW で初めて伝えるときだけ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
 | 読み上げを鳴らす直前の見直し（`shouldStillPlay`。渡しているのは EEW だけ・判定はチャンク単位・鳴っている途中のチャンクは切らない・第 2 フェーズは誤報取消と値の引き上げで打ち切り、第 1 フェーズは誤報取消のみ・自動解除と値の引き下げでは止めない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「鳴らす直前の見直し」・§6 |
