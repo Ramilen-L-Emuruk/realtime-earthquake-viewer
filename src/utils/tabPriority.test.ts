@@ -89,11 +89,38 @@ describe('shouldAcceptAutoTab（読み上げ追従）', () => {
     expect(shouldAcceptAutoTab(held(TAB_PRIORITY.kyoshin), TAB_PRIORITY.quake, NOW, 'hold')).toBe(true)
   })
 
-  it('追従でも、揺れ検知以外の保持機構の保持は優先度で判定する', () => {
+  // アイドル復帰の保持も追従を妨げない（2026-08-21 に変更）。
+  //
+  // 直したかった症状: EEW 発表中の復帰は `eewUpdate`（4）で張るため、電文が 30 秒途切れて
+  // 復帰が発火した直後に届いた地震情報が、声だけ喋って画面が動かなかった
+  // （2024/8/8 日向灘 M7.1 のリプレイで実測。16:46:22 の復帰が 16:46:26 の震源・震度情報を弾いた）。
+  it('アイドル復帰の保持は、読み上げ追従には画面を渡す', () => {
+    const idleHold = held(TAB_PRIORITY.eewUpdate, 'idleRevert')
+    expect(shouldAcceptAutoTab(idleHold, TAB_PRIORITY.quake, NOW, 'speech')).toBe(true)
+    expect(shouldAcceptAutoTab(idleHold, TAB_PRIORITY.tsunami, NOW, 'speech')).toBe(true)
+  })
+
+  // 対照: 読み上げを持たない要求には従来どおり効く（緩めたのは追従に対してだけ）。
+  it('アイドル復帰の保持は、読み上げを持たない要求を従来どおり弾く', () => {
+    const idleHold = held(TAB_PRIORITY.eewUpdate, 'idleRevert')
+    expect(shouldAcceptAutoTab(idleHold, TAB_PRIORITY.quake, NOW, 'hold')).toBe(false)
+    expect(shouldAcceptAutoTab(idleHold, TAB_PRIORITY.tsunami, NOW, 'hold')).toBe(false)
+  })
+
+  // 安全弁: EEW 続報の片方向抑制はアイドル復帰の保持でも効く。復帰が既定タブ（非 realtime）へ
+  // 戻した直後に続報で realtime へ引き戻すと、画面が数秒ごとに往復する。
+  it('アイドル復帰が非 realtime へ戻した保持を、EEW 続報は奪わない', () => {
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.quake, 'idleRevert'), TAB_PRIORITY.eewUpdate, NOW, 'speech')).toBe(false)
+  })
+
+  it('追従でも、揺れ検知・アイドル復帰以外の保持機構の保持は優先度で判定する', () => {
     // ここを「手動選択以外は全部突破」まで広げると、津波の受信時フォールバックを地震情報や
-    // 長周期が奪い、アイドル復帰が EEW 中に張った保持も地震情報だけで外れる。
+    // 長周期が奪う。譲らせる相手は駆動源で名指しすること。
     expect(shouldAcceptAutoTab(held(TAB_PRIORITY.tsunami), TAB_PRIORITY.quake, NOW, 'speech')).toBe(false)
     expect(shouldAcceptAutoTab(held(TAB_PRIORITY.eewUpdate), TAB_PRIORITY.quake, NOW, 'speech')).toBe(false)
+    // 安全弁: 手動選択は緩めていない。押したタブは読み上げ追従にも渡さない。
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.manual), TAB_PRIORITY.quake, NOW, 'speech')).toBe(false)
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.manual), TAB_PRIORITY.tsunami, NOW, 'speech')).toBe(false)
     // 同格以上なら通る（従来の規則どおり）
     expect(shouldAcceptAutoTab(held(TAB_PRIORITY.tsunami), TAB_PRIORITY.tsunami, NOW, 'speech')).toBe(true)
   })
