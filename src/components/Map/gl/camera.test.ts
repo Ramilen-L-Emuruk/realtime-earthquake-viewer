@@ -11,6 +11,15 @@ import {
   EEW_ZOOM_SNAP,
   INTERACTION_HOLD_SEC,
 } from './camera'
+import { log } from '../../../utils/logger'
+
+// 記録の内容を検証したいので `log` だけ差し替える（`createLogThrottle` は本物を使う。
+// 間引きの挙動ごと差し替えると、記録が出る条件そのものがテストの外に出てしまう）。
+// 本物のままだとテスト実行時に警告が素通しで混ざり、他の障害ログと見分けにくくなる。
+vi.mock('../../../utils/logger', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../utils/logger')>()
+  return { ...actual, log: { ...actual.log, warn: vi.fn() } }
+})
 
 type FakeHandler = (e?: unknown) => void
 
@@ -43,20 +52,31 @@ function createFakeMap() {
     },
     fitBounds: vi.fn(),
     flyTo: vi.fn(),
+    // 段階へ切り下げて寄る経路（`flyToBoundsSnapped` / `fitToPositions`）が使う。切り下げの検証が
+    // 目的なので、段階に乗っていないズームを返す（6.7 → 6.5 へ落ちることを見る）。
+    cameraForBounds: vi.fn(() => ({ center: [138, 38] as [number, number], zoom: 6.7 })),
+    // 算出不可でフォールバックしたときの記録がペインの実寸を添えるため、寸法だけ持たせる。
+    getContainer: () => ({ clientWidth: 800, clientHeight: 600 }),
   }
   return fake as unknown as maplibregl.Map & {
     fire: (event: string, eventData?: unknown) => void
     fitBounds: Mock
     flyTo: Mock
+    cameraForBounds: Mock
   }
 }
 
 /**
  * 実装が `fitBounds` へ渡した eventData（アプリ起点の印）を取り出す。印の形をテストに固定しないため。
- * 1 点だけを渡した `fitToPositions` や `flyToPoint` は内部で `flyTo` を使うので、こちらでは取れない。
+ * `flyTo` を使う経路（`fitToPositions` / `flyToPoint` / `flyToBoundsSnapped`）はこちらでは取れない。
  */
 function fitBoundsEventDataOf(map: maplibregl.Map & { fitBounds: Mock }, callIndex = 0): unknown {
   return map.fitBounds.mock.calls[callIndex][2]
+}
+
+/** 同じく `flyTo` へ渡した eventData を取り出す。 */
+function flyToEventDataOf(map: maplibregl.Map & { flyTo: Mock }, callIndex = 0): unknown {
+  return map.flyTo.mock.calls[callIndex][1]
 }
 
 describe('subscribeUserInteraction', () => {
@@ -142,7 +162,7 @@ describe('subscribeUserInteraction', () => {
     fitJapan(map, 1.0)
     fitToPositions(map, [[35, 139], [36, 140]], { durationSec: 1.0 }) // 1 本目を中断して開始
     const firstFlight = fitBoundsEventDataOf(map, 0)
-    const secondFlight = fitBoundsEventDataOf(map, 1)
+    const secondFlight = flyToEventDataOf(map, 0) // 点群フィットは切り下げた着地ズームへ flyTo する
 
     // 中断で起きる moveend は「中断された側」の印を運ぶ。2 本目はまだ飛行中。
     map.fire('moveend', firstFlight)
@@ -215,6 +235,63 @@ describe('subscribeUserInteraction', () => {
     sub.unsubscribe()
     map.fire('dragstart')
     expect(events).toEqual([])
+  })
+})
+
+describe('fitToPositions', () => {
+  it('2 点以上は着地ズームを段階へ切り下げる（分数ズームでぴったり寄せない）', () => {
+    // ぴったり寄せると目標の縁が判定の余白のちょうど上に乗り、着地直後に成長フォローが
+    // 1 段引き直す（寄りすぎた後にちょっと引く二段の動き）。切り下げれば必ず余白が残る。
+    const map = createFakeMap()
+
+    fitToPositions(map, [[35, 139], [36, 140]], { padding: 60, durationSec: 1.0 })
+
+    expect(map.fitBounds).not.toHaveBeenCalled()
+    expect(map.flyTo).toHaveBeenCalledTimes(1)
+    expect(map.flyTo.mock.calls[0][0].zoom).toBe(6.5) // フェイクの cameraForBounds は 6.7 を返す
+  })
+
+  it('1 点は寄り上限へ直行する（退化した矩形を cameraForBounds へ渡さない）', () => {
+    const map = createFakeMap()
+
+    fitToPositions(map, [[35, 139]], { padding: 60, maxZoom: 7, durationSec: 1.0 })
+
+    expect(map.cameraForBounds).not.toHaveBeenCalled()
+    expect(map.flyTo).toHaveBeenCalledTimes(1)
+    expect(map.flyTo.mock.calls[0][0]).toMatchObject({ zoom: 7, center: [139, 35] })
+  })
+
+  it('着地ズームが算出できないときは fitBounds へフォールバックする（切り下げを経ない）', () => {
+    // MapLibre の cameraForBounds は padding が地図ペインの実寸を超えると undefined を返す
+    // （ブラウザで実測）。この経路では切り下げが効かないため、着地直後に成長フォローが引き直す
+    // 二段の動きが再発する。**修正が無効化される唯一の道**なので、経路の存在を固定しておく。
+    const map = createFakeMap()
+    map.cameraForBounds.mockReturnValueOnce(undefined)
+
+    fitToPositions(map, [[35, 139], [36, 140]], { padding: 60, durationSec: 1.0 })
+
+    expect(map.flyTo).not.toHaveBeenCalled()
+    expect(map.fitBounds).toHaveBeenCalledTimes(1)
+    expect(map.fitBounds.mock.calls[0][1]).toMatchObject({ padding: 60 })
+    // 記録にはペインの実寸を添える（padding だけでは「レイアウト前で 0×0 だった」のか
+    // 「パネルを広げて地図が細くなった」のかを事後に区別できない）。
+    //
+    // **このファイルでフォールバックを踏むテストはここだけにすること。** 間引きは壁時計で
+    // 60 秒（`camera.ts` の `FALLBACK_LOG_INTERVAL_MS`）、しかもモジュールスコープなので、
+    // 2 つ目を足すと後から走った側は黙って間引かれてこのアサーションが落ちる。
+    expect(log.warn as Mock).toHaveBeenCalledTimes(1)
+    expect((log.warn as Mock).mock.calls[0][1]).toMatchObject({
+      padding: 60, maxZoom: 7, paneWidth: 800, paneHeight: 600,
+    })
+  })
+
+  it('空の座標群では何もしない', () => {
+    const map = createFakeMap()
+
+    fitToPositions(map, [], { durationSec: 1.0 })
+
+    expect(map.flyTo).not.toHaveBeenCalled()
+    expect(map.fitBounds).not.toHaveBeenCalled()
   })
 })
 
