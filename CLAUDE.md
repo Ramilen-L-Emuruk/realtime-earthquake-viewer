@@ -437,17 +437,23 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | EEW 読み上げ第 2 フェーズの発火条件（値の確定で読む・予想震度が付かない理由が判っているなら待たない・`EEW_PHASE2_MAX_WAIT_MS` の上限・引き上げも初報と同じ形で言い直す・「警報。」の前置きはその EEW で初めて伝えるときだけ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
 | 読み上げを鳴らす直前の見直し（`shouldStillPlay`。渡しているのは EEW だけ・判定はチャンク単位・鳴っている途中のチャンクは切らない・第 2 フェーズは誤報取消と値の引き上げで打ち切り、第 1 フェーズは誤報取消のみ・自動解除と値の引き下げでは止めない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「鳴らす直前の見直し」・§6 |
 | EEW 読み上げの直列化（全 EEW で 1 本のチェーン・既読値の更新は発話直前だけ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げの優先順位」 |
-| 自動タブ切替の優先順位（読み上げと同じ並び。生の `setActiveTab` を使わないこと） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
-| 読み上げの優先順位（EEW ＞ 津波・南海トラフ ＞ 地震情報 ＞ 長周期／同格は新しい方が勝つ／待ちの条件は毎周回で作り直す／上限到達時は記録を残す／EEW の予想震度の確定待ち中も EEW を最優先とする） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げの優先順位」 |
+| 自動タブ切替の 2 系統（読み上げ追従／保持機構）と競合の判定順序・優先度表 | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
+| EEW 続報の片方向抑制・追従の最小滞留時間・アイドル復帰の重み（`idleRevertPriority`）・生の `setActiveTab` を使わないこと | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
+| 読み上げがある経路のタブ移動（順序の判断は読み上げ側に預ける／待たされずに読めるなら通知音と同時に先出しし、その判定は待ち合わせと条件を共有する／読み上げが無効・読み上げ文が空になる場合だけ受信時要求へ落とす。落とし忘れるとそのタブへ永久に移らない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
+| 読み上げの優先順位（EEW ＞ 津波・南海トラフ ＞ 地震情報・長周期（同格）／同格は新しい方が勝つ／待ちの条件は毎周回で作り直す／上限到達時は記録を残す／EEW の予想震度の確定待ち中も EEW を最優先とする） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げの優先順位」 |
 | EEW の区分の呼び方（電文の名称に合わせる。予報級＝地震動予報／警報級＝緊急地震速報（警報）。表示・読み上げの対応表と `eewKindLabel`。ウィンドウタイトルも対象＝外部監視への破壊的変更） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §3「電文の名称と表示・読み上げ」 |
 | 「特別警報」を音声で読まないこと（表示・通知・通知音は 2 段階を保つ） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
 | 通知音の内容と説明文の一致（`PLAYERS` の周波数・`COUNTDOWN_PULSES` のパルス数と、設定タブ「通知音テスト」の説明文・仕様書の記述） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §2 |
 | 通知音の長さと読み上げ遅延の連動（音を作り変えたら `TTS_DELAY_MS` かテーブル外の個別指定を必ず見直す。リバーブを効かせた音は乾音の長さでは足りない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
+| 通知音と声の間に合成を先行させること（`prewarmVoicevox`。進行中の読み上げを止めない・使われなかったものは打ち切る・失敗時は再生側で作り直す。対象は非 EEW の遅延経路） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「間を合成の時間に充てる（先行合成）」 |
+| 間を置く読み上げの予約を追跡すること（`scheduleSpeech`。画面を閉じたときとリプレイ開始で取り消す。対象は EEW 誤報取消を含む全経路） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「間を置く読み上げの予約は追跡する」 |
 | 設定タブのセクション構成・並び順の方針（`Section` の出現順・重大度は軽い順・カテゴリ順は両テストセクションと通知設定の種別トグルで共通） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §2 |
 | 南海トラフ電文 3 種別の役割（VYSE50=臨時情報／VYSE51=臨時解説／VYSE52=定例解説）・段階判定は `Head/Title` を見ること（`Head/InfoKind` は段階に関わらず固定で判定に使えない）・電文の識別は `EventID` と `Serial` の組で行うこと（臨時解説は `EventID` が固定で `Serial` が号数） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §2 |
 | 特別情報バナー 3 枚の並び順（重さの順ではなく**同じ事象を隣り合わせる**順）・色の意味・消え方（解説情報は 7 日失効＋閉じるボタン・閉じた id は永続化）・下端の余白は `:last-child` に任せること | [`docs/spec/architecture-spec.md`](docs/spec/architecture-spec.md) §4 |
+| 特別情報の受信でパネルを一時的に開くこと（バナーはタブを持たないため）・元の状態へ戻す契機（ユーザー操作とアイドル復帰）・自動タブ移動では畳まないが記録も捨てないこと | [`docs/spec/architecture-spec.md`](docs/spec/architecture-spec.md) §4 |
 | 南海トラフ関連解説情報の読み上げ優先度（独立した層に置くこと。臨時情報と同格にすると臨時情報を追い出し、地震情報と同格にすると地震情報を切る） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
 | 津波の解除経路（`cancelReason` 3 種・DMDSS 限定・standard 版フォールバック） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §3 |
+| 津波の「等級を伝えていない電文」（区域が空の続報）の扱い（等級比較から外して観測点更新にする・音／読み上げ／観測の追跡の 3 箇所で判定を揃える。降格として扱うと警報の発表中に全解除を読み上げる） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §10「等級を伝えていない電文」 |
 | EEW P/S 波予報円の計算・仮定震源要素の連動箇所 | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §5-§6 |
 | EEW レベル判定（特別警報の条件・長周期の DMDATA 限定） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
 | 地図レイヤー描画順・EEW 予想レイヤーの kyoshin 限定・`maplibregl.Marker` の opacity | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §2・§3・§7・§10 |
