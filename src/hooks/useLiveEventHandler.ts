@@ -342,9 +342,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    * EEW の続報が立て続けに届くとき、発話の切れ目に非 EEW が滑り込んで次の EEW に切られるのを
    * 防ぐため。
    *
-   * **待ち合わせ（`higherPrioritySpeechInProgress`）と先出しの判定（`speakNonEEWDelayed`）で
-   * この関数を共有すること。** 条件を二重に書くと、片方だけ直したときに「待たされないと
-   * 踏んで画面を先に動かしたのに、実際には待たされる」形の食い違いになる。
+   * **この関数を 3 箇所で共有すること**——待ち合わせ（`higherPrioritySpeechInProgress`）、
+   * 先出しの判定、追い越しの判定（後の 2 つは `speakNonEEWDelayed`）。条件を書き分けると、
+   * 片方だけ直したときに「待たされないと踏んで画面を先に動かしたのに、実際には待たされる」
+   * 形の食い違いになる。
    */
   const speechBlocker = (priority: SpeechPriority): 'eewChain' | 'eewPhase2' | 'higher' | null => {
     if (eewSpeechPendingRef.current > 0) return 'eewChain'
@@ -512,15 +513,17 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     /** 読み上げに同調して動かすタブ。**タブを持たない情報（南海トラフ系）では省略する。** */
     follow?: { readonly tab: Exclude<TabId, 'realtime'>; readonly priority: TabPriority },
   ) => {
+    // 予約した時点で、自分より重い読み上げが走っていたか。**発話の番でもう一度取って比べる**
+    // （下の「追い越し」の判定）。
+    const blockedAtSchedule = speechBlocker(priority)
     if (follow) {
-      const blocker = speechBlocker(priority)
-      if (blocker === null) {
+      if (blockedAtSchedule === null) {
         log.info(`[tab] ${follow.tab} を要求 (通知音と同時・読み上げの待ちなし)`)
         preSpeechTab(follow.tab, follow.priority)
       } else {
         // 見送った理由を残す。「音は鳴ったのに画面がすぐ動かなかった」を後から追うのに必要
         // （動いたかどうかは `requestAutoTab` の記録で分かるが、なぜ待ったかは分からない）。
-        log.debug(`[tab] ${follow.tab} の先出しを見送り (${blocker})`)
+        log.debug(`[tab] ${follow.tab} の先出しを見送り (${blockedAtSchedule})`)
       }
     }
     // 間を置いている最中に合成を済ませておく。通知音が鳴り終わってから声が出るまでの空白は、
@@ -528,12 +531,29 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     const prewarmed = prewarmVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId)
     scheduleSpeech(
       delay,
-      () => speakNonEEW(
-        text,
-        priority,
-        follow ? () => followSpeechTab(follow.tab, follow.priority) : undefined,
-        prewarmed,
-      ),
+      () => {
+        // **後から届いたものに追い越されたら取り下げる。** 予約した時点では空いていたのに、
+        // 間を置いているうちに重い読み上げが始まった場合がこれ。待って読むと、到来順とは逆に
+        // 「後から来た方が先、先に来た方が後」と喋ることになる。
+        //
+        // 予約した時点で既に塞がっていたなら取り下げない（`speakNonEEW` の `waitForSpeechSlot`
+        // が待つ）。そちらは「重いものが先に来て、後から軽いものが届いた」形で到来順どおりなので、
+        // 待って読むのが正しい。
+        if (blockedAtSchedule === null) {
+          const overtakenBy = speechBlocker(priority)
+          if (overtakenBy !== null) {
+            log.info(`[tts] 後から届いた読み上げに追い越されたため取り下げる (${overtakenBy}) priority=${priority}`)
+            prewarmed?.abort()
+            return
+          }
+        }
+        speakNonEEW(
+          text,
+          priority,
+          follow ? () => followSpeechTab(follow.tab, follow.priority) : undefined,
+          prewarmed,
+        )
+      },
       () => prewarmed?.abort(),
     )
   }

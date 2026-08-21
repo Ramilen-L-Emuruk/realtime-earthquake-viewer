@@ -235,6 +235,52 @@ describe('読み上げとタブ切替の同調', () => {
     expect(spies.followSpeechTab).toHaveBeenCalledWith('realtime', TAB_PRIORITY.eewUrgent)
   })
 
+  it('先に来た地震情報は、後から届いた EEW に追い越されたら取り下げる', async () => {
+    // 到来順を守る。待って読むと「後から来た EEW が先、先に来た地震情報が後」と喋ることになる。
+    // 実測（先出しの実装当初）: 地震情報の 8 秒後に「地震情報。4時54分頃…」が読まれていた。
+    const { handle, spies } = setup()
+    handle(makeQuake())                       // まだ読み始めていない（間は 500ms）
+    handle(makeEEW())                         // 後から EEW が届いて追い越す
+    await settle()
+    const spoken = speeches.map(s => s.text).join('')
+    expect(spoken).toContain('緊急地震速報')  // EEW は読まれる
+    // フィクスチャは震度速報なので本文は「震度速報。」で始まる（EEW の文面には現れない）
+    expect(spoken).not.toContain('震度速報。')
+    // 取り下げた側のタブ追従も呼ばない（画面は追い越した側に留まる）
+    expect(spies.followSpeechTab).not.toHaveBeenCalledWith('earthquake', TAB_PRIORITY.quake)
+  })
+
+  it('後から来た地震情報は取り下げず、EEW の後に読む', async () => {
+    // 到来順どおり（重いものが先）なので待って読むのが正しい。取り下げてはいけない。
+    const { handle, spies } = setup()
+    handle(makeEEW())                         // EEW が先
+    await advance(1500)
+    handle(makeQuake())                       // 後から地震情報
+    await settle()
+    // EEW の発話を終わらせると、待っていた地震情報の番が来る
+    for (const s of speeches) { if (!s.done) { s.done = true; s.finish() } }
+    await settle()
+    const spoken = speeches.map(s => s.text).join('')
+    expect(spoken).toContain('震度速報。')    // 地震情報（震度速報）が読まれる
+    expect(spies.followSpeechTab).toHaveBeenCalledWith('earthquake', TAB_PRIORITY.quake)
+  })
+
+  it('順番を待っている間に重い読み上げが増えても、取り下げず待ち続ける', async () => {
+    // 「予約した時点で既に塞がっていた」経路は取り下げの対象外。待ち時間が延びるだけで、
+    // 先に届いた重いものの後に読まれる（順序は守られる）。取り下げの規則が及ぶのは
+    // 「間が明けて判定を通るまでの一度だけ」であることの裏付け。
+    const { handle } = setup()
+    handle(makeEEW())                   // EEW が先
+    await advance(1500)
+    handle(makeQuake())                 // 後から地震情報（待ち行列へ）
+    await advance(1000)
+    handle(makeEEW({ serial: '2' }))    // 待っている間にもう 1 本 EEW 続報が積まれる
+    await settle()
+    for (const s of speeches) { if (!s.done) { s.done = true; s.finish() } }
+    await settle()
+    expect(speeches.map(s => s.text).join('')).toContain('震度速報。')
+  })
+
   it('EEW が消えていたら震源を読まず、画面も動かさない', async () => {
     // `chainEEWSpeech` に渡す文面の生成が null を返す経路（取消・自動解除で発表が消えた）。
     // **黙る予約では追従を呼ばないこと。** 呼ぶと「声が出ないのにタブが移る」になる。
