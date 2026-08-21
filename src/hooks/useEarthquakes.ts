@@ -10,6 +10,7 @@ import { log } from '../utils/logger'
 import { serverNow, serverDate } from '../utils/clock'
 
 import { isDmdss } from '../utils/env'
+import { isValidDmdataApiKey, DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
 import {
   createTestEarthquake,
   createTestForeignQuake,
@@ -208,9 +209,9 @@ export function useEarthquakes(
     nankai: null,
     nankaiCommentary: null,
     kohatsu: null,
-    connectionStatus: (isDmdss && !dmdataApiKey) ? 'disconnected' : 'connecting',
+    connectionStatus: (isDmdss && !isValidDmdataApiKey(dmdataApiKey)) ? 'disconnected' : 'connecting',
     lastUpdate: null,
-    isLoading: !(isDmdss && !dmdataApiKey),
+    isLoading: !(isDmdss && !isValidDmdataApiKey(dmdataApiKey)),
     isLoadingMore: false,
     hasMore: false,
     error: null,
@@ -780,6 +781,21 @@ export function useEarthquakes(
         return
       }
 
+      // 通信へ載せられない文字（全角・日本語入力の変換途中の値など）を含むキーでも接続しない。
+      // 素通しにすると Basic 認証ヘッダを組む時点で例外になり、履歴取得は英語の DOMException を
+      // そのまま画面に出し、WebSocket は理由を伏せたまま永久に再接続を繰り返す。
+      // 未設定と違って「入れたのに繋がらない」状態なので、理由を error に載せて画面へ出す。
+      if (!isValidDmdataApiKey(dmdataApiKey)) {
+        log.warn(`[data] ${DMDATA_API_KEY_INVALID_MESSAGE}`)
+        setState(prev => ({
+          ...prev,
+          connectionStatus: 'disconnected',
+          isLoading: false,
+          error: DMDATA_API_KEY_INVALID_MESSAGE,
+        }))
+        return
+      }
+
       setState(prev => ({ ...prev, isLoading: true, connectionStatus: 'connecting', error: null }))
 
       // DMDATA REST API で履歴取得
@@ -874,6 +890,10 @@ export function useEarthquakes(
         })
         .catch((err: unknown) => {
           if (cancelled) return
+          // 記録を残すのは state と別の話。standard 版側の同じ .catch と揃える。
+          // ここへ来るのはキーの形が正しい場合の失敗（ネットワーク断・401・500 等）で、
+          // 画面には理由の分からないメッセージしか出ないため、手がかりを残さないと追えない。
+          log.error('[data] DMDATA 履歴取得失敗', err)
           const msg = err instanceof Error ? err.message : '取得失敗'
           setState(prev => ({ ...prev, isLoading: false, error: msg }))
         })

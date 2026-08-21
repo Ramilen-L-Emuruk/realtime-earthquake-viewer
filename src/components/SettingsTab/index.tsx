@@ -9,6 +9,7 @@ import { serverDate, getServerClockOffsetMs } from '../../utils/clock'
 import type { UseTestScenariosResult } from '../../hooks/useTestScenarios'
 import type { ScenarioCategory } from '../../types/testScenario'
 import { isDmdss } from '../../utils/env'
+import { isValidDmdataApiKey, DMDATA_API_KEY_INVALID_MESSAGE } from '../../utils/dmdataApiKey'
 
 export interface TestFunctions {
   earthquake: () => void
@@ -405,6 +406,10 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
     ? serverDate().toLocaleString('ja-JP')
     : null
 
+  // 入力済みのキーが通信に載せられない文字を含んでいるか。空欄は「未設定」として別に扱うため
+  // ここには含めない（入力途中に赤字が出続けるのを避ける）。
+  const isApiKeyInvalid = settings.dmdataApiKey !== '' && !isValidDmdataApiKey(settings.dmdataApiKey)
+
   // 現状は親が flex コンテナでないため flex-1 が効かず、実スクロールは App.tsx 側のタブ領域が担う。
   // ただし親に flex が付けばこの要素自身がスクロール領域に変わるため、横スクロールの抑止は
   // 先に付けておく（overflow-y だけだと overflow-x も auto に格上げされる）。
@@ -426,20 +431,30 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
               // 更新しないままだと「接続中」が残って実態と食い違うため、専用の文言にする。
               <span className="text-xs text-blue-400">再生中（ライブ受信は停止）</span>
             ) : (
-              <span className="text-xs text-secondary">
-                {settings.dmdataApiKey ? '切断' : 'APIキー未設定'}
+              // キーが不正なときは接続を試みていない。「切断」だと通信の失敗に見えるため区別する。
+              <span className={`text-xs ${isApiKeyInvalid ? 'text-red-400' : 'text-secondary'}`}>
+                {!settings.dmdataApiKey ? 'APIキー未設定' : isApiKeyInvalid ? 'APIキーが不正' : '切断'}
               </span>
             )}
           </Row>
           <Row label="APIキー" description="DMDATA.JP のAPIキーを入力してください">
-            <input
-              type="password"
-              value={settings.dmdataApiKey}
-              onChange={e => onUpdate('dmdataApiKey', e.target.value)}
-              placeholder="APIキーを入力"
-              autoComplete="off"
-              className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500 w-48"
-            />
+            {/* 不正な文字は入力時に弾かず、入ったことを見せて本人に直させる。入力欄から黙って
+                取り除くと、貼り付けたキーが勝手に変わって「合っているのに繋がらない」状態になる。 */}
+            <div className="flex flex-col items-end gap-1">
+              <input
+                type="password"
+                value={settings.dmdataApiKey}
+                onChange={e => onUpdate('dmdataApiKey', e.target.value)}
+                placeholder="APIキーを入力"
+                autoComplete="off"
+                className={`bg-panel border text-white text-xs rounded px-2 py-1.5 focus:outline-none w-48 ${
+                  isApiKeyInvalid ? 'border-red-500 focus:border-red-500' : 'border-border focus:border-blue-500'
+                }`}
+              />
+              {isApiKeyInvalid && (
+                <p className="text-xs text-red-400 w-48 text-left leading-snug">{DMDATA_API_KEY_INVALID_MESSAGE}</p>
+              )}
+            </div>
           </Row>
           <Row label="試験報を受信（検証用）" description="試験報・訓練報を受信します（VXSE42は疎通確認のみ・VXSE43/45は表示されます）">
             <Toggle
