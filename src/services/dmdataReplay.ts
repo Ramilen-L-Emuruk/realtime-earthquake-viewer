@@ -4,6 +4,7 @@ import type { JMAQuake, EEWAlert, JMATsunami } from '../types/earthquake'
 import { calcEEWCancelTime } from '../utils/eew'
 import { gunzip } from '../utils/gzip'
 import { log } from '../utils/logger'
+import { authHeader } from '../utils/dmdataApiKey'
 import { extractQuakeEventIdFromId } from '../utils/quakeMerge'
 import type { ReplayEntry, ReplayPayload, ReplayFetchResult } from '../types/replay'
 
@@ -24,10 +25,6 @@ const HANDLED_TYPES = new Set([
   ...QUAKE_TYPES, ...TSUNAMI_TYPES, ...EEW_TYPES, ...LPGM_TYPES,
   ...NANKAI_TYPES, ...COMMENTARY_TYPES, ...KOHATSU_TYPES,
 ])
-
-function authHeader(apiKey: string): string {
-  return 'Basic ' + btoa(apiKey + ':')
-}
 
 function toDateStr(d: Date): string {
   return d.toISOString().slice(0, 10)

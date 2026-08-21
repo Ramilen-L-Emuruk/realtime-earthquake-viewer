@@ -11,6 +11,7 @@ import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseEarthquakeFrom
 import { serverNow, serverDate } from '../utils/clock'
 import { gunzip } from '../utils/gzip'
 import { log } from '../utils/logger'
+import { authHeader, isValidDmdataApiKey, DMDATA_API_KEY_INVALID_MESSAGE, DmdataApiKeyError } from '../utils/dmdataApiKey'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
 // DMDATA WebSocket 購読分類。telegram.earthquake は地震・津波両方の電文を配信する。
@@ -43,10 +44,6 @@ const PING_WATCHDOG_CHECK_MS = 15000
 // バックオフが効かず高頻度でチケット再取得を叩き続ける状態になるため、健全性を確認してからリセットする。
 const STABLE_CONNECTION_MS = 15000
 
-function authHeader(apiKey: string): string {
-  return 'Basic ' + btoa(apiKey + ':')
-}
-
 // 検証用デバッグログ。includeTest（試験報受信）が有効、または localStorage['dmdss-debug']='1'
 // のときに有効化する。APIキー等の機密値は出力しない。
 function isDebugEnabled(includeTest: boolean): boolean {
@@ -74,6 +71,23 @@ function logRestFailure(what: string, status: number): void {
   } else {
     log.warn(`[DMDSS] ${what}: 取得失敗 (${status})`)
   }
+}
+
+/**
+ * 補助取得（失敗しても続行してよい経路）の入口で、APIキーが通信に使える形か確かめる。
+ * 使えない場合はその事実を記録して false を返す。
+ *
+ * 呼び出し側（`useEarthquakes`）が通信前に弾いているため通常ここへは来ないが、
+ * これらの関数は「失敗時は null / 空配列を返す」と約束している。約束を例外で破ると
+ * `Promise.all` の外まで飛んで履歴取得全体を落とすため、保険として門を置く。
+ *
+ * この門を通ったあとの `authHeader` は同じ判定を再度行うが、そちらの throw へは到達しない。
+ * 二重に見えるのは意図で、`authHeader` 側の判定は門を持たない経路（主系の取得・リプレイ）を守る。
+ */
+function isApiKeyUsable(apiKey: string, what: string): boolean {
+  if (isValidDmdataApiKey(apiKey)) return true
+  log.error(`[DMDSS] ${what}: ${DMDATA_API_KEY_INVALID_MESSAGE}`)
+  return false
 }
 
 // base64 文字列をバイト列にデコードする。
@@ -215,6 +229,14 @@ export class DmdataWebSocket {
     } catch (err) {
       if (this.stopped) return
       const reason = err instanceof Error ? err.message : String(err)
+      // キーの文字が不正な場合は再試行しても直らない。素通しにすると 30 秒間隔の再接続を
+      // 永久に繰り返し、しかもその失敗ログは debug 配下（下の dlog）なので無音になる。
+      if (err instanceof DmdataApiKeyError) {
+        log.error('[DMDSS] APIキーが不正なため接続しない', { reason })
+        this.authError = true
+        this.onStatusChange?.('disconnected')
+        return
+      }
       // 認証エラーは再試行しない
       if (err instanceof Error && err.message === 'auth') {
         // APIキー不正・契約スコープ不足は復旧不能の実エラーのため常に出力する。
@@ -709,6 +731,7 @@ export async function fetchDmdataTsunamis(
 // 発令中かどうかはこの 1 種別だけで判定できる。解説情報（VYSE51/52）は段階を持たないので
 // ここでは見ない（以前は VYSE51 を優先して見ており、解説情報が段階を騙る原因になっていた）。
 export async function fetchDmdataNankai(apiKey: string): Promise<JMANankai | null> {
+  if (!isApiKeyUsable(apiKey, '南海トラフ地震臨時情報 (VYSE50)')) return null
   const headers = { Authorization: authHeader(apiKey) }
   try {
     const res = await fetch(`${API_BASE}/telegram?type=VYSE50&limit=1`, { headers })
@@ -741,6 +764,7 @@ export async function fetchDmdataNankai(apiKey: string): Promise<JMANankai | nul
 // 期限切れ（発表から 7 日）のものは初期表示に出さない。定例解説は月 1 回しか来ないため、
 // これを見ないと「先月の解説」が起動時に毎回出てしまう。
 export async function fetchDmdataNankaiCommentary(apiKey: string): Promise<JMANankaiCommentary | null> {
+  if (!isApiKeyUsable(apiKey, '南海トラフ地震関連解説情報 (VYSE51/52)')) return null
   const headers = { Authorization: authHeader(apiKey) }
   let newest: JMANankaiCommentary | null = null
   // try は種別ごとに分ける。1 つの try でループ全体を包むと、VYSE51 側の例外（ネットワーク断・
@@ -778,6 +802,7 @@ export async function fetchDmdataNankaiCommentary(apiKey: string): Promise<JMANa
 // DMDATA REST API で北海道・三陸沖後発地震注意情報（VYSE60）の最新1件を取得する。
 // 取得失敗時は null を返すが、失敗した事実はログに残す（理由は fetchDmdataNankai と同じ）。
 export async function fetchDmdataKohatsu(apiKey: string): Promise<JMAKohatsu | null> {
+  if (!isApiKeyUsable(apiKey, '後発地震注意情報 (VYSE60)')) return null
   const headers = { Authorization: authHeader(apiKey) }
   try {
     const res = await fetch(`${API_BASE}/telegram?type=VYSE60&limit=1`, { headers })
@@ -806,6 +831,7 @@ export async function fetchDmdataLpgms(
   apiKey: string,
   oldestOriginTime: string,
 ): Promise<JMALpgm[]> {
+  if (!isApiKeyUsable(apiKey, '長周期地震動観測情報 (VXSE62)')) return []
   const headers  = { Authorization: authHeader(apiKey) }
   const collected: JMALpgm[] = []
   let nextToken: string | undefined

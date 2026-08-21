@@ -19,6 +19,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, cleanup, act } from '@testing-library/react'
 import type { AppEvent, EEWAlert, JMATsunami, JMANankaiCommentary } from '../types/earthquake'
 import { serverDate, setReplayOffset } from '../utils/clock'
+import { DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
 
 // isDmdss はモジュールスコープの定数。テストごとに切り替えるため getter で公開する。
 let mockIsDmdss = true
@@ -637,5 +638,62 @@ describe('南海トラフ関連解説情報の帯は期限で畳む', () => {
     })
     act(() => { vi.advanceTimersByTime(50) })
     expect(h.current.nankaiCommentary).toBeNull()
+  })
+})
+
+// キーが不正なとき、通信を起こす前に止まること。ここが「呼ぶかどうか」を決める最上流のゲートで、
+// 下流（dmdataApiKey.test.ts・dmdata.test.ts）をいくら固めてもここが外れれば全部素通りになる。
+// エフェクトの依存配列やゲートの位置が動いたときに気づけるよう、取得関数が呼ばれないことまで見る。
+describe('DMDSS 版: APIキーが不正なら通信しない', () => {
+  // このファイルの beforeEach は戻り値を再設定するだけで呼び出し履歴は消さない。
+  // 履歴を消さずに「呼ばれないこと」を見ると、他のテストの呼び出しを拾って落ちる。
+  // 逆に「呼ばれること」の側は履歴が残っているせいで常に通り、検証にならない。
+  beforeEach(() => {
+    for (const fn of [fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataNankai]) {
+      vi.mocked(fn).mockClear()
+    }
+  })
+
+  it('disconnected へ落ち、理由を error に載せ、取得を一度も呼ばない', async () => {
+    const h = setup({ apiKey: 'abc123あ' })
+    await h.flush()
+
+    expect(h.current.connectionStatus).toBe('disconnected')
+    expect(h.current.isLoading).toBe(false)
+    expect(h.current.error).toBe(DMDATA_API_KEY_INVALID_MESSAGE)
+    expect(fetchDmdataEarthquakes).not.toHaveBeenCalled()
+    expect(fetchDmdataTsunamis).not.toHaveBeenCalled()
+    expect(fetchDmdataNankai).not.toHaveBeenCalled()
+    // WebSocket も張らない（張ると 30 秒間隔の再接続が無音で回り続ける）
+    expect(sockets.length).toBe(0)
+  })
+
+  // 対照: 形が正しいキーなら従来どおり接続と取得へ進む。ゲートを広げすぎていないことの確認。
+  it('形が正しいキー（ピリオド入り）は従来どおり接続へ進む', async () => {
+    const h = setup({ apiKey: 'dummy.key.with-period_123' })
+    await h.flush()
+
+    expect(h.current.error).toBeNull()
+    expect(fetchDmdataEarthquakes).toHaveBeenCalled()
+    expect(sockets.length).toBe(1)
+    expect(sockets[0].connected).toBe(true)
+  })
+
+  // 安全弁: キーを直したら error が残らずに接続へ復帰すること。
+  it('キーを直すと error が消えて接続へ復帰する', async () => {
+    const view = renderHook(
+      ({ apiKey }: { apiKey: string }) => useEarthquakes(undefined, apiKey, false, null),
+      { initialProps: { apiKey: 'abc123あ' } },
+    )
+    await act(async () => { await Promise.resolve() })
+    expect(view.result.current.error).toBe(DMDATA_API_KEY_INVALID_MESSAGE)
+
+    await act(async () => {
+      view.rerender({ apiKey: 'dummy.key.with-period_123' })
+      await Promise.resolve()
+    })
+
+    expect(view.result.current.error).toBeNull()
+    expect(view.result.current.connectionStatus).not.toBe('disconnected')
   })
 })
