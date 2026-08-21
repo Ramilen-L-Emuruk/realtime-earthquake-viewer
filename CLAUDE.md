@@ -463,6 +463,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 地図の傾き（pitch）・回転（bearing）をユーザー操作から無効化している理由と、それに依存する描画物の前提（予報円の半径計算・カメラ自動フィット）。有効に戻すなら何を先に直すか | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6「地図の傾きと回転」 |
 | カメラ追従の抑制時間・津波の俯瞰帰還の猶予が `INTERACTION_HOLD_SEC` 固定であること（設定「自動復帰までの時間」＝ `idleRevertSec` と結合していないこと。結合すると「無効」の端末で追従・帰還が永久に止まる） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6「ユーザー操作の尊重」「津波追従の目標範囲」 |
 | ラベルのフォントスタック名の一致・グリフ収録文字の網羅性・フォント適用範囲（ラベル限定） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §5 |
+| symbol レイヤーの出入りが即時であること（`fadeDuration: 0`。paint トランジションとは別系統で、地図全体にしか設定できない）と、対象レイヤーの列挙。**symbol レイヤーを新設・削除したら列挙を見直す** | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §8「symbol の配置フェード」 |
 | 倍率の適用範囲（UI は rem で書く／地図の描画物には `iconScale` を渡す。枠線・影・アウトラインは倍率に連動させない） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §2「主な項目の補足」 |
 | 画面サイズ別レイアウトの分岐条件（`side` / `sideNarrow` / `roomy`）・パネル比率・折りたたみ | [`docs/spec/architecture-spec.md`](docs/spec/architecture-spec.md) §4「画面サイズ別のレイアウト」 |
 | 震度集約の単位（一次細分区域）・観測点 0 件時の集約維持 | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §7 |
