@@ -9,12 +9,13 @@ import { formatMagnitude, hasMagnitude } from '../utils/formatters'
 import { eewMaxScale, eewMaxLpgmClass, eewNoForecastReason, computeSingleEEWLevel, selectEEWSoundType, eewKindLabel } from '../utils/eew'
 import { haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
-import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade } from '../utils/tsunami'
+import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly } from '../utils/tsunami'
 import { matchesArea, sortAreasForCardDisplay } from '../components/TsunamiTab'
 import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
-import { speakWithVoicevox, type ShouldStillPlay } from '../utils/voicevox'
+import { speakWithVoicevox, prewarmVoicevox, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
 import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, tsunamiArrivalToText, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, type TtsRegionOptions } from '../utils/ttsText'
 import { log, createLogThrottle } from '../utils/logger'
+import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
 import { extractQuakeEventIdFromId, quakeEventKey, sameQuakeEntry } from '../utils/quakeMerge'
 
 // EEW 読み上げ第 2 フェーズ（予想値）のタイミング。
@@ -50,15 +51,20 @@ const SPEECH_PRIORITY = {
    * 定型文が大半の情報なので、待たされて上限で諦めても損失は小さい。
    */
   commentary: 0,
-  /** 長周期地震動情報。地震のあとに出る事後情報なので、地震情報より軽く扱う */
-  low: 1,
-  /** 地震情報（震度速報・震源情報・地震情報・遠地地震・取消） */
-  normal: 2,
+  /**
+   * 地震情報（震度速報・震源情報・地震情報・遠地地震・取消）と長周期地震動情報。
+   *
+   * **長周期を地震情報と同格にしているのは、長周期の方が新しい情報だから。** 同格どうしは
+   * 新しい方が勝つ規則なので、地震情報を読んでいる最中に長周期が届けば割り込んで読める。
+   * 軽い段に分けていた頃は、各地の震度（数千文字・読み切りに 2 分近く）の後ろに回されて
+   * 大幅に遅れていた。
+   */
+  normal: 1,
   /**
    * 津波（発表・更新・解除）と南海トラフ臨時情報・後発地震注意情報。
    * 後者を津波と同格にしているのは、発表頻度が極端に低く聞き逃したときの損失が大きいため。
    */
-  high: 3,
+  high: 2,
 } as const
 type SpeechPriority = typeof SPEECH_PRIORITY[keyof typeof SPEECH_PRIORITY]
 
@@ -183,6 +189,28 @@ export interface LiveEventHandlerDeps {
   setActiveTabRealtimeOnUpdate: () => void
   /** EEW の新規発報・レベルアップ・誤報取消による realtime 移動（手動選択より強い） */
   setActiveTabRealtimeUrgent: () => void
+  /**
+   * 読み上げの発話を投入する直前に呼んで、画面を声に合わせる。
+   *
+   * 受信時の要求（`setActiveTab*`）との違いは、**読み上げの順番待ちを経ている**こと。
+   * 重い電文の読み上げ中に届いた軽い電文は、その読み上げが終わって自分の番が来たときに
+   * 初めて画面を取る（従来は受信の瞬間に要求して保持に弾かれ、そのまま捨てられていた）。
+   */
+  followSpeechTab: (tab: TabId, priority: TabPriority) => void
+  /**
+   * 通知音と同時に出す**先出し**の追従（待たされずに読めると判断したときだけ）。
+   *
+   * `followSpeechTab` と分けているのは、**先出しに最小滞留時間の床を掛けないため**。
+   * 予定の段階で床を消費すると、後から実際に声が出る側の追従を弾く（理由は App 側の宣言箇所）。
+   */
+  preSpeechTab: (tab: TabId, priority: TabPriority) => void
+  /**
+   * 特別情報（南海トラフ臨時情報・後発地震注意情報・関連解説情報）の受信でパネルを開く。
+   *
+   * これらは地図に重ねた帯で伝える情報で、パネル側に居場所がない（切り替えるタブが無い）。
+   * パネルを畳んで地図だけを見ている状態でも気づけるように開く。元の状態へ戻す判断は App 側。
+   */
+  expandPanelForSpecialInfo: () => void
   revertToDefaultTab: () => void
   selectQuake: (id: string | null) => void
   setActiveLpgmEventId: (id: string | null) => void
@@ -192,7 +220,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const {
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabRealtimeForKyoshin, setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate,
-    setActiveTabRealtimeUrgent, revertToDefaultTab, selectQuake, setActiveLpgmEventId,
+    setActiveTabRealtimeUrgent, followSpeechTab, preSpeechTab, expandPanelForSpecialInfo,
+    revertToDefaultTab, selectQuake, setActiveLpgmEventId,
   } = deps
 
   // 直近に「新規地震」として注目を移したキー（`eventKey:issue.type`）。
@@ -242,6 +271,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const eewSpeechPendingRef = useRef(0)
   // 読み上げ中の非 EEW の優先度とその完了。優先度の低い読み上げがこれを見て待つ。
   const activeNonEewSpeechRef = useRef<{ priority: SpeechPriority; done: Promise<void> } | null>(null)
+  // 間を置いてからの読み上げの予約（`scheduleSpeech`）。アンマウント・リプレイ切替で取り消す。
+  const pendingSpeechRef = useRef<Set<{ id: number; onCancel?: () => void }>>(new Set())
   const eewPhase2TokensRef = useRef<Map<string, object>>(new Map())
   const eewTtsMaxTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   // 第 2 フェーズ（予想値）を一度でも発話した eventId。まだ読んでいない間は、値が上がって
@@ -280,14 +311,22 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    * **チェーンに reject を残さないこと。** `eewSpeechChainRef` は次の発話が待つ対象なので、
    * ここで reject させると以降の EEW の読み上げが連鎖的に落ち、**その端末では二度と
    * 緊急地震速報が読まれなくなる**。テキスト生成の例外まで含めて必ず catch する。
+   *
+   * @param follow 発話を投入する直前に呼ばれる（画面を声に合わせる用途）。
+   *   `speak` が null を返して黙るときは呼ばれない。
    */
-  const chainEEWSpeech = (speak: () => string | { text: string; shouldStillPlay?: ShouldStillPlay } | null) => {
+  const chainEEWSpeech = (
+    speak: () => string | { text: string; shouldStillPlay?: ShouldStillPlay } | null,
+    follow?: () => void,
+  ) => {
     eewSpeechPendingRef.current++
     const prev = eewSpeechChainRef.current
     eewSpeechChainRef.current = capSpeechWait(prev).then(() => {
       const spoken = speak()
       if (spoken === null) return
       const { text, shouldStillPlay } = typeof spoken === 'string' ? { text: spoken, shouldStillPlay: undefined } : spoken
+      // 声に出すものが決まった瞬間に画面も合わせる。黙る予約（spoken === null）では動かさない。
+      follow?.()
       return capSpeechWait(
         speakWithVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume, shouldStillPlay),
       )
@@ -297,23 +336,37 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   }
 
   /**
-   * いま自分より優先度の高い読み上げが進行中なら、その完了 Promise を返す（無ければ null）。
+   * いま読み上げを始められない理由（待たされずに始められるなら null）。
    *
    * EEW は優先度の尺度の外にあり、**予約済みのぶんも含めて**常に最優先とする。予約を数えるのは、
    * EEW の続報が立て続けに届くとき、発話の切れ目に非 EEW が滑り込んで次の EEW に切られるのを
    * 防ぐため。
+   *
+   * **待ち合わせ（`higherPrioritySpeechInProgress`）と先出しの判定（`speakNonEEWDelayed`）で
+   * この関数を共有すること。** 条件を二重に書くと、片方だけ直したときに「待たされないと
+   * 踏んで画面を先に動かしたのに、実際には待たされる」形の食い違いになる。
    */
-  const higherPrioritySpeechInProgress = (priority: SpeechPriority): Promise<void> | null => {
-    if (eewSpeechPendingRef.current > 0) return eewSpeechChainRef.current
+  const speechBlocker = (priority: SpeechPriority): 'eewChain' | 'eewPhase2' | 'higher' | null => {
+    if (eewSpeechPendingRef.current > 0) return 'eewChain'
     // 予想震度が付くのを待っている EEW がある間も、EEW は「これから話す」状態にある。
     // ここを空きと見なすと、震源を読み終えた直後の数秒に地震情報が滑り込み、待ち明け
     // （`EEW_PHASE2_MAX_WAIT_MS`）の第 2 フェーズに**必ず**切られる
     // （2024/1/1 能登 16:08 の震源情報が残り 5.7 秒で消えていた）。
-    // 待つ相手の Promise はまだ無いので、短く眠って見直す。
-    if (eewTtsMaxTimersRef.current.size > 0) return sleep(EEW_PHASE2_PENDING_POLL_MS)
+    if (eewTtsMaxTimersRef.current.size > 0) return 'eewPhase2'
     const active = activeNonEewSpeechRef.current
-    if (active !== null && active.priority > priority) return active.done
+    if (active !== null && active.priority > priority) return 'higher'
     return null
+  }
+
+  /** いま自分より優先度の高い読み上げが進行中なら、その完了 Promise を返す（無ければ null）。 */
+  const higherPrioritySpeechInProgress = (priority: SpeechPriority): Promise<void> | null => {
+    switch (speechBlocker(priority)) {
+      case 'eewChain': return eewSpeechChainRef.current
+      // 待つ相手の Promise はまだ無いので、短く眠って見直す。
+      case 'eewPhase2': return sleep(EEW_PHASE2_PENDING_POLL_MS)
+      case 'higher': return activeNonEewSpeechRef.current?.done ?? null
+      default: return null
+    }
   }
 
   /**
@@ -369,7 +422,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    * 逆向き（優先度の高い側が低い側を切る）は許す。緊急度どおりであり、また地震情報の本文は
    * 数千文字に達することがあって、その後ろに EEW や津波を並べると致命的に遅れるため。
    */
-  const speakNonEEW = (text: string, priority: SpeechPriority) => {
+  const speakNonEEW = (
+    text: string,
+    priority: SpeechPriority,
+    follow?: () => void,
+    /** 間を置いている最中に合成しておいた音声（`speakNonEEWDelayed` 経由のときだけ渡る）。 */
+    prewarmed?: PrewarmedSpeech | null,
+  ) => {
     void (async () => {
       // `await` はマイクロタスクの境界を作るため、待ちが明けてからこの続きが走るまでの間に
       // 別の待機者の続きが走りうる。両者が「誰も読んでいない」を見て同時に解放されると、
@@ -380,7 +439,14 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         if (!await waitForSpeechSlot(priority)) break
         if (higherPrioritySpeechInProgress(priority) === null) break
       }
-      const done = speakWithVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume)
+      // 自分の番が来た（これから声に出す）瞬間に画面を合わせる。待ち行列の後なので、
+      // 重い電文の読み上げ中に届いた軽い電文は、その後になって初めてタブを取る。
+      follow?.()
+      // 第 5 引数（鳴らす直前の見直し）は非 EEW では使わない。予想震度のように数秒で
+      // 書き換わる値を持たないため、読み始めた文面を最後まで読んでよい。
+      const done = speakWithVoicevox(
+        settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume, undefined, prewarmed,
+      )
       activeNonEewSpeechRef.current = { priority, done }
       try {
         await done
@@ -395,16 +461,102 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       .catch(err => log.warn('[tts] 読み上げの進行に失敗', err))
   }
 
+  /**
+   * 間を置いてからの読み上げを予約する（追跡付き）。
+   *
+   * **予約は必ずここを通すこと。** 追跡していない `setTimeout` は、アンマウントやリプレイの
+   * 開始で取り消せない。取り消せないと、状態をリセットした直後に古い予約が発火し、
+   * 「リプレイを始めたのに本物の警報が読まれる」「その逆」といった食い違いを起こす。
+   * しかも記録が残らないため、後から原因を追えない。
+   *
+   * @param onCancel 予約が取り消されたときの後始末（先行合成の打ち切りなど）
+   */
+  const scheduleSpeech = (delay: number, run: () => void, onCancel?: () => void) => {
+    const entry: { id: number; onCancel?: () => void } = { id: 0, onCancel }
+    entry.id = window.setTimeout(() => {
+      pendingSpeechRef.current.delete(entry)
+      run()
+    }, delay)
+    pendingSpeechRef.current.add(entry)
+  }
+
+  /** 予約済みの読み上げをすべて取り消す（アンマウント・リプレイの切り替え）。 */
+  const cancelPendingSpeech = useCallback(() => {
+    const count = pendingSpeechRef.current.size
+    for (const entry of pendingSpeechRef.current) {
+      window.clearTimeout(entry.id)
+      entry.onCancel?.()
+    }
+    pendingSpeechRef.current.clear()
+    // 取り消した事実を残す。黙って消すと「鳴るはずの読み上げが鳴らなかった」ときに
+    // 取り消しが原因なのか合成の失敗なのか切り分けられない。
+    if (count > 0) log.debug(`[tts] 予約していた読み上げを取り消した (${count} 件)`)
+  }, [])
+
+  /**
+   * 通知音との重なりを避ける間（`delay`）を置いてから非 EEW の読み上げを始める。
+   * あわせて、読み上げに同調したタブ移動を仕込む。
+   *
+   * **待たされずに読めそうなら、通知音と同じ瞬間に画面も合わせる。** 遅延は電文の種別ごとに
+   * 0.5〜4.2 秒あり、その間ずっと前のタブに留まると「音が鳴ったのに画面が変わらない」ように
+   * 見える。読み上げの直前にも同じ追従を呼ぶため、待っている間に別の情報が画面を取っていれば、
+   * 自分の番が来た時点で取り戻せる。
+   *
+   * 先出しの判断が外れること（遅延の最中に EEW や津波が割り込む）はある。**巻き戻さない。**
+   * 割り込んだ側が自分で画面を取るため、放っておけば正しい方へ落ち着く。
+   */
+  const speakNonEEWDelayed = (
+    text: string,
+    priority: SpeechPriority,
+    delay: number,
+    /** 読み上げに同調して動かすタブ。**タブを持たない情報（南海トラフ系）では省略する。** */
+    follow?: { readonly tab: Exclude<TabId, 'realtime'>; readonly priority: TabPriority },
+  ) => {
+    if (follow) {
+      const blocker = speechBlocker(priority)
+      if (blocker === null) {
+        log.info(`[tab] ${follow.tab} を要求 (通知音と同時・読み上げの待ちなし)`)
+        preSpeechTab(follow.tab, follow.priority)
+      } else {
+        // 見送った理由を残す。「音は鳴ったのに画面がすぐ動かなかった」を後から追うのに必要
+        // （動いたかどうかは `requestAutoTab` の記録で分かるが、なぜ待ったかは分からない）。
+        log.debug(`[tab] ${follow.tab} の先出しを見送り (${blocker})`)
+      }
+    }
+    // 間を置いている最中に合成を済ませておく。通知音が鳴り終わってから声が出るまでの空白は、
+    // ほぼこの合成時間だった（実測: LAN 越しの VOICEVOX で 150〜350ms）。
+    const prewarmed = prewarmVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId)
+    scheduleSpeech(
+      delay,
+      () => speakNonEEW(
+        text,
+        priority,
+        follow ? () => followSpeechTab(follow.tab, follow.priority) : undefined,
+        prewarmed,
+      ),
+      () => prewarmed?.abort(),
+    )
+  }
+
   const handleLiveEvent = (event: AppEvent) => {
     // 受信時に該当タブを自動表示し、ウィンドウタイトルを更新する
     // （地震情報・津波情報・緊急地震速報）。
     // isNewQuake は UI ブロックと TTS ブロックの両方で参照するためここで宣言する
     let isNewQuake = true
+    // 津波が新規発報か grade 格上げか（UI ブロックで立て、TTS ブロックで消費する）。
+    // **観測点更新（grade 不変の続報）ではタブを動かさない**ための判定に使う。
+    // 続報のたびに画面を持って行くと、EEW を見ている最中に何度も津波タブへ引っ張られる
+    // （従来 CRIT-4 として抑制していた挙動を、追従の側でも踏襲する）。
+    let tsunamiIsNewOrUpgraded = false
     if (event.kind === 'quake' && event.cancelled) {
       // 地震情報取消: カード削除は useEarthquakes reducer が担う。通知音・読み上げのみここで処理する。
       if (settings.soundEnabled) playAlertSound('eewCancel')
-      log.info('[tab] earthquake を要求 (地震情報取消)')
-      setActiveTabNonRealtime('earthquake')
+      // 読み上げがあるならタブ移動は読み上げに任せる（下の speakNonEEW に渡す follow）。
+      // 取消の読み上げ文は常に非空なので、voicevoxEnabled だけで分岐できる。
+      if (!settings.voicevoxEnabled) {
+        log.info('[tab] earthquake を要求 (地震情報取消・読み上げ無効)')
+        setActiveTabNonRealtime('earthquake')
+      }
       title.clearTitleTimer('earthquake')
       title.applyPriority()
       if (settings.voicevoxEnabled) {
@@ -414,13 +566,21 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         const original = cancelEventId
           ? earthquakesRef.current.find(e => extractQuakeEventIdFromId(e.id) === cancelEventId)
           : undefined
-        setTimeout(() => {
-          speakNonEEW(earthquakeCancelToText(original?.time ?? null), SPEECH_PRIORITY.normal)
-        }, 1200)
+        speakNonEEWDelayed(
+          earthquakeCancelToText(original?.time ?? null),
+          SPEECH_PRIORITY.normal,
+          1200,
+          { tab: 'earthquake', priority: TAB_PRIORITY.quake },
+        )
       }
     } else if (event.kind === 'quake') {
-      log.info('[tab] earthquake を要求 (地震情報 VXSE51/52/53/61)')
-      setActiveTabNonRealtime('earthquake')
+      // 読み上げがあるならタブ移動は読み上げに任せる（共通の TTS ブロックが follow を渡す）。
+      // 重い電文（EEW・津波）の読み上げ中に届いた地震情報は、その読み上げが終わって
+      // 自分の番が来たときに画面を取る。地震情報の読み上げ文は常に非空。
+      if (!settings.voicevoxEnabled) {
+        log.info('[tab] earthquake を要求 (地震情報 VXSE51/52/53/61・読み上げ無効)')
+        setActiveTabNonRealtime('earthquake')
+      }
       const incomingQuake = event as import('../types/earthquake').JMAQuake
       const incomingKey = newQuakeTrackingKey(incomingQuake)
       isNewQuake = incomingKey !== lastNewQuakeKeyRef.current
@@ -449,20 +609,28 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
       title.scheduleTitleRevert('earthquake')
     } else if (event.kind === 'tsunami' && !event.cancelled) {
-      // タブ強制切替の優先度ルール（CRIT-4 対応）:
-      //   - 新規発報（別 eventId or 前回取消済み）と grade 格上げのみが tsunami タブを奪える
-      //   - 続報（同一 eventId の観測点更新等）は setActiveTabNonRealtime を呼ばず抑制タイマー
-      //     をリセットしない（毎回 15 秒抑制が再セットされて EEW 続報が realtime へ戻れなく
-      //     なる事象を回避）
-      //   - EEW の発表状況はここでは見ない。津波は EEW のレベルに関わらずタブを奪う
+      // タブ移動の規則:
+      //   - 読み上げがあるなら**読み上げに任せる**（共通の TTS ブロックが follow を渡す）。
+      //     観測点更新（grade 不変の続報）も、読み上げが発生するときだけ画面が動く。
+      //     変化が無い続報は読み上げも無いので画面も動かない（フィルタは TTS ブロック側）
+      //   - 読み上げが無い端末（voicevoxEnabled=false）は従来どおり、**新規発報と grade 格上げだけ**が
+      //     tsunami タブを奪う。続報では奪わない
+      //   - EEW の発表状況はここでは見ない（重み付けは `TAB_PRIORITY` に任せる）
+      //
+      // 従来は「続報でタブを奪わない」理由を「毎回 15 秒の抑制が再セットされて EEW 続報が
+      // realtime へ戻れなくなる」としていた（CRIT-4）が、追従として出す保持は追従どうしでは
+      // 見ないため（`shouldAcceptAutoTab`）、この閘は消えている。
       const current = tsunamisRef.current[0]
       const isNew = isTsunamiNewFire(event, current)
       const upgraded = isTsunamiGradeUpgrade(event, current)
-      if (isNew || upgraded) {
-        log.info(`[tab] tsunami を要求 (${isNew ? '新規発報' : 'グレード格上げ'})`)
-        setActiveTabNonRealtime('tsunami')
-      } else {
-        log.debug('[tab] tsunami タブ強制切替スキップ (同一イベント扱い・grade 不変)')
+      tsunamiIsNewOrUpgraded = isNew || upgraded
+      if (!settings.voicevoxEnabled) {
+        if (tsunamiIsNewOrUpgraded) {
+          log.info(`[tab] tsunami を要求 (${isNew ? '新規発報' : 'グレード格上げ'}・読み上げ無効)`)
+          setActiveTabNonRealtime('tsunami')
+        } else {
+          log.debug('[tab] tsunami タブ切替スキップ (同一イベント扱い・grade 不変・読み上げ無効)')
+        }
       }
       title.showTsunamiTitle()
     } else if (event.kind === 'tsunami' && event.cancelled) {
@@ -482,8 +650,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         spokenTsunamiCancelEventIdsRef.current.clear()
       }
       const alreadySpoken = spokenTsunamiCancelEventIdsRef.current.has(cancelId)
-      if (!alreadySpoken) {
-        log.info('[tab] tsunami を要求 (津波情報取消)')
+      // 読み上げがあるなら追従に任せる（下の speakNonEEW に渡す follow）。
+      if (!alreadySpoken && !settings.voicevoxEnabled) {
+        log.info('[tab] tsunami を要求 (津波情報取消・読み上げ無効)')
         setActiveTabNonRealtime('tsunami')
       }
       title.endTsunamiTitleWindow()
@@ -498,9 +667,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         spokenTsunamiCancelEventIdsRef.current.add(cancelId)
         if (settings.soundEnabled) playAlertSound('tsunamiCancel')
         if (settings.voicevoxEnabled) {
-          setTimeout(() => {
-            speakNonEEW(tsunamiCancelToText(event.cancelReason), SPEECH_PRIORITY.high)
-          }, 2400)
+          speakNonEEWDelayed(
+            tsunamiCancelToText(event.cancelReason),
+            SPEECH_PRIORITY.high,
+            2400,
+            { tab: 'tsunami', priority: TAB_PRIORITY.tsunami },
+          )
         }
       }
       lastTsunamiGradeRef.current = null
@@ -534,9 +706,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           if (hadKey) {
             if (settings.soundEnabled) playAlertSound('eewCancel')
             if (settings.voicevoxEnabled) {
-              setTimeout(() => {
-                chainEEWSpeech(() => eewCancelToText(event))
-              }, 1200)
+              // 誤報取消は「手動選択より強い」側の通知なので、追従も eewUrgent で出す
+              // （eewUpdate だと、取消を読み上げる直前に手動で別タブへ移られた場合に弾かれる）。
+              scheduleSpeech(1200, () => chainEEWSpeech(
+                () => eewCancelToText(event),
+                () => followSpeechTab('realtime', TAB_PRIORITY.eewUrgent),
+              ))
             }
           }
           if (settings.notifyMinScale >= 0 && settings.notifyEEW) {
@@ -722,7 +897,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
                   && computeSingleEEWLevel(now) <= level
               },
             }
-          })
+          }, () => followSpeechTab('realtime', TAB_PRIORITY.eewUpdate))
         }
 
         // 続報での震源地名変化+座標移動の検出（B-3: 名前変化かつ50km超移動で再発話）
@@ -757,9 +932,15 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           }
           // 待っている間に取消・自動解除が届いていたら震源も読まない。鳴らし始めてから届いた
           // 場合に残りを落とすのは**誤報取消のときだけ**（理由は eewRetractedKeysRef の宣言箇所）
-          chainEEWSpeech(() => eewTtsEventsRef.current.has(key)
-            ? { text: phase1Text, shouldStillPlay: () => !eewRetractedKeysRef.current.has(key) }
-            : null)
+          //
+          // 新規発報は「手動選択より強い」側なので追従も eewUrgent。震源の大幅更新は既に発表中の
+          // EEW の言い直しなので eewUpdate（受信時要求の使い分けと揃える）。
+          chainEEWSpeech(
+            () => eewTtsEventsRef.current.has(key)
+              ? { text: phase1Text, shouldStillPlay: () => !eewRetractedKeysRef.current.has(key) }
+              : null,
+            () => followSpeechTab('realtime', isNew ? TAB_PRIORITY.eewUrgent : TAB_PRIORITY.eewUpdate),
+          )
           // 発話した震源情報を記録する
           if (Number.isFinite(hypo.latitude) && Number.isFinite(hypo.longitude)) {
             activeEEWAnnouncedHypocentersRef.current.set(key, { name: hypo.name, lat: hypo.latitude, lng: hypo.longitude })
@@ -802,9 +983,17 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
 
     // 長周期地震動情報（DMDSS版のみ）
     if ((event as unknown as { kind?: string }).kind === 'lpgm') {
-      log.info('[tab] earthquake を要求 (長周期地震動)')
-      setActiveTabNonRealtime('earthquake')
       const lpgmEvent = (event as unknown as { kind: string; data: import('../types/earthquake').JMALpgm }).data
+      // 読み上げ文を先に作る。長周期は読み上げの範囲設定によって空になり（= 声が出ない）、
+      // その場合は追従でタブが動かない。受信時に要求してフォールバックする。
+      const isNewLpgm = !seenLpgmEventIdsRef.current.has(lpgmEvent.eventId)
+      const lpgmSpeech = settings.voicevoxEnabled
+        ? lpgmToText(lpgmEvent, ttsRegionOptions(settings), isNewLpgm)
+        : ''
+      if (!lpgmSpeech) {
+        log.info('[tab] earthquake を要求 (長周期地震動・読み上げ無し)')
+        setActiveTabNonRealtime('earthquake')
+      }
       if (!lpgmEvent.cancelled) {
         // 紐づく地震カードを選択し、自動的に LPGM 表示をオンにする
         const matchedQuake = earthquakesRef.current.find(q => extractQuakeEventIdFromId(q.id) === lpgmEvent.eventId)
@@ -814,12 +1003,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       if (settings.soundEnabled) {
         playAlertSound('earthquake')
       }
-      if (settings.voicevoxEnabled) {
-        const lpgm = lpgmEvent
-        const isNewLpgm = !seenLpgmEventIdsRef.current.has(lpgm.eventId)
-        setTimeout(() => {
-          speakNonEEW(lpgmToText(lpgm, ttsRegionOptions(settings), isNewLpgm), SPEECH_PRIORITY.low)
-        }, 1000)
+      if (lpgmSpeech) {
+        speakNonEEWDelayed(
+          lpgmSpeech, SPEECH_PRIORITY.normal, 1000, { tab: 'earthquake', priority: TAB_PRIORITY.quake },
+        )
       }
       // voicevox 有効/無効に関わらず追跡する（次回の isNewLpgm 判定に使用）
       seenLpgmEventIdsRef.current.add(lpgmEvent.eventId)
@@ -833,15 +1020,18 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     if ((event as unknown as { kind?: string }).kind === 'nankaiCommentary') {
       if (!settings.nankaiCommentaryAlerts) return
       const commentary = (event as unknown as { data: JMANankaiCommentary }).data
+      // 帯は地図に重なって出るため、パネルを畳んでいると気づきにくい。いったん開く（戻す判断は App 側）。
+      expandPanelForSpecialInfo()
       if (settings.soundEnabled) {
         playAlertSound('specialInfoCommentary')
       }
       // 読み上げは soundEnabled と独立に voicevoxEnabled のみで判定する（AUD-7）。
       if (settings.voicevoxEnabled) {
-        setTimeout(() => {
-          // 最下位の専用層を使う（理由は SPEECH_PRIORITY の commentary の注記）
-          speakNonEEW(nankaiCommentaryToText(commentary), SPEECH_PRIORITY.commentary)
-        }, NANKAI_COMMENTARY_TTS_DELAY_MS)
+        // 最下位の専用層を使う（理由は SPEECH_PRIORITY の commentary の注記）。
+        // 帯で伝える情報なのでタブは動かさない（パネルの展開は expandPanelForSpecialInfo が担う）。
+        speakNonEEWDelayed(
+          nankaiCommentaryToText(commentary), SPEECH_PRIORITY.commentary, NANKAI_COMMENTARY_TTS_DELAY_MS,
+        )
       }
       return
     }
@@ -850,6 +1040,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     if ((event as unknown as { kind?: string }).kind === 'nankai' || (event as unknown as { kind?: string }).kind === 'kohatsu') {
       const specialEvent = event as unknown as { kind: string; data: { cancelled?: boolean; kindName?: string } }
       if (!specialEvent.data.cancelled) {
+        // 帯は地図に重なって出るため、パネルを畳んでいると気づきにくい。いったん開く（戻す判断は App 側）。
+        // 取消・終了では呼ばない（帯が消えるので、開いて見せるものが無い）。
+        expandPanelForSpecialInfo()
         if (settings.soundEnabled) {
           playAlertSound('specialInfo')
         }
@@ -858,9 +1051,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           const ttsText = specialEvent.kind === 'nankai'
             ? nankaiToText(specialEvent.data as Parameters<typeof nankaiToText>[0])
             : kohatsuToText(specialEvent.data as Parameters<typeof kohatsuToText>[0])
-          setTimeout(() => {
-            speakNonEEW(ttsText, SPEECH_PRIORITY.high)
-          }, 1500)
+          // 帯で伝える情報なのでタブは動かさない（理由は関連解説情報と同じ）
+          speakNonEEWDelayed(ttsText, SPEECH_PRIORITY.high, 1500)
         }
         // タイトル更新
         const specialTitle = specialEvent.kind === 'nankai'
@@ -879,8 +1071,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       return
     }
 
-    // ブラウザ通知（津波）— 音が無効でも送る
-    if (event.kind === 'tsunami' && !event.cancelled && settings.notifyMinScale >= 0 && settings.notifyTsunami) {
+    // ブラウザ通知（津波）— 音が無効でも送る。
+    // 等級を伝えていない電文（区域が空）は通知しない。見出しは等級から決め、本文は区域名を並べる
+    // ため、この形の電文では「本文が空の津波注意報」という実態と違う通知になる
+    // （`isTsunamiObservationOnly`。観測値の更新そのものは津波タブのカードで伝わる）。
+    if (event.kind === 'tsunami' && !event.cancelled && !isTsunamiObservationOnly(event)
+      && settings.notifyMinScale >= 0 && settings.notifyTsunami) {
       const grade = tsunamiMaxGrade(event)
       const tsunamiNotifyTitle = grade === 'MajorWarning' ? '大津波警報'
         : grade === 'Warning' ? '津波警報'
@@ -902,8 +1098,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         const GRADE_RANK_SOUND = { MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0 } as const
         type GradeSoundKey = keyof typeof GRADE_RANK_SOUND
         const prevGradeForSound = lastTsunamiGradeRef.current
-        const gradeUnchanged = prevGradeForSound !== null && GRADE_RANK_SOUND[grade as GradeSoundKey] === GRADE_RANK_SOUND[prevGradeForSound as GradeSoundKey]
-        const isDowngradeSound = prevGradeForSound !== null && GRADE_RANK_SOUND[grade as GradeSoundKey] < GRADE_RANK_SOUND[prevGradeForSound as GradeSoundKey]
+        // 等級を伝えていない電文は比較から外す（理由は `isTsunamiObservationOnly`）。
+        // 観測値だけが載っているので「更新」の扱いにする。
+        const obsOnly = isTsunamiObservationOnly(event)
+        const gradeUnchanged = obsOnly
+          || (prevGradeForSound !== null && GRADE_RANK_SOUND[grade as GradeSoundKey] === GRADE_RANK_SOUND[prevGradeForSound as GradeSoundKey])
+        const isDowngradeSound = !obsOnly && prevGradeForSound !== null && GRADE_RANK_SOUND[grade as GradeSoundKey] < GRADE_RANK_SOUND[prevGradeForSound as GradeSoundKey]
         if (gradeUnchanged || isDowngradeSound) {
           type = 'tsunamiUpdate'
         } else if (grade === 'MajorWarning') type = 'tsunamiMajor'
@@ -917,7 +1117,17 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
            : (it === '震源情報' || it === '遠地地震' || it === 'その他') ? 'earthquakeInfo'
            : 'earthquake'  // 震源・震度情報 / 各地の震度情報
     }
-    if (!type) return
+    if (!type) {
+      // 音の種別が決まらない電文。津波では「区域はあるのに等級がすべて Unknown」という
+      // 異常な形だけが残る（区域が空の観測情報のみ電文は上で更新扱いにしている）。
+      // 読み上げもここでは起きないため、新規発報・格上げなら受信時要求へ落とす。
+      // 落とさないと tsunami タブへ一度も移らない。
+      if (settings.voicevoxEnabled && tsunamiIsNewOrUpgraded) {
+        log.info('[tab] tsunami を要求 (新規発報・読み上げなし)')
+        setActiveTabNonRealtime('tsunami')
+      }
+      return
+    }
     if (settings.soundEnabled) playAlertSound(type)
 
     // VOICEVOX 読み上げ（新しい情報が来たら再生中を割り込み停止して読み直す）
@@ -941,7 +1151,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         const currentGrade = tsunamiMaxGrade(event)
         const prevGrade = lastTsunamiGradeRef.current
 
-        if (prevGrade !== null && GRADE_RANK[currentGrade as GradeKey] === GRADE_RANK[prevGrade as GradeKey]) {
+        // 等級を伝えていない電文（区域が空）も観測点更新として扱う。降格の側へ流すと、
+        // 警報の発表中に全解除の文言を読み上げる（理由は `isTsunamiObservationOnly`）。
+        if (isTsunamiObservationOnly(event)
+          || (prevGrade !== null && GRADE_RANK[currentGrade as GradeKey] === GRADE_RANK[prevGrade as GradeKey])) {
           // グレード不変: 観測点ごとに最大波高を追跡し、更新があった観測点のみ読み上げ
           const prevMap = lastMaxObsHeightRef.current
           const updatedObs = (event.observations ?? []).filter(o => {
@@ -974,10 +1187,19 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         }
       }
       if (ttsText && type) {
-        const delay = TTS_DELAY_MS[type] ?? 0
-        setTimeout(() => {
-          speakNonEEW(ttsText!, event.kind === 'tsunami' ? SPEECH_PRIORITY.high : SPEECH_PRIORITY.normal)
-        }, delay)
+        // 読み上げに同調して画面を合わせる。津波は観測点更新（grade 不変）でもここを通るため、
+        // 読み上げが発生する続報だけが tsunami タブを持ち出す（変化のない続報は ttsText が空）。
+        const followTab: Exclude<TabId, 'realtime'> = event.kind === 'tsunami' ? 'tsunami' : 'earthquake'
+        speakNonEEWDelayed(
+          ttsText,
+          event.kind === 'tsunami' ? SPEECH_PRIORITY.high : SPEECH_PRIORITY.normal,
+          TTS_DELAY_MS[type] ?? 0,
+          { tab: followTab, priority: event.kind === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake },
+        )
+      } else if (event.kind === 'tsunami' && tsunamiIsNewOrUpgraded) {
+        // 読み上げ文が組めなかった津波の新規発報・格上げ（保険。理由は宣言箇所）
+        log.info('[tab] tsunami を要求 (新規発報・読み上げ文なし)')
+        setActiveTabNonRealtime('tsunami')
       }
     }
     // grade・観測波高トラッキング・UI更新: voicevox 有効/無効に関わらず実行する。
@@ -993,7 +1215,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       const prevMap552 = lastMaxObsHeightRef.current
       const newStatusEntries: [string, 'new' | 'updated'][] = []
 
-      if (prevGrade552 !== null && GRADE_RANK_552[grade as GradeKey552] === GRADE_RANK_552[prevGrade552 as GradeKey552]) {
+      // 等級を伝えていない電文（区域が空）も観測点更新として扱う。読み上げ側と同じ判定に
+      // 揃えること。片方だけずらすと「読み上げはするのに画面が動かない」が生まれる。
+      if (isTsunamiObservationOnly(event)
+        || (prevGrade552 !== null && GRADE_RANK_552[grade as GradeKey552] === GRADE_RANK_552[prevGrade552 as GradeKey552])) {
         const updatedObs552 = (event.observations ?? []).filter(o => {
           if (!o.height) return false
           const prev = prevMap552.get(o.name)
@@ -1005,6 +1230,15 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 波高未確定（観測中）のまま新規到達した観測点もスクロール・バッジ表示の対象にする
         const newlyArrivedObs552 = (event.observations ?? []).filter(o => !o.height && !seenObsNamesRef.current.has(o.name))
         if (updatedObs552.length > 0 || newlyArrivedObs552.length > 0) {
+          // **読み上げが無い端末のタブ移動もここで出す。** 観測が動いたかどうかを知る判定は
+          // ここにしかないため（読み上げが有効なら、同じ契機で TTS ブロックの追従が動くので
+          // ここでは呼ばない）。変化のない再送では下の else 節へ行くので画面も動かない。
+          // 新規発報・格上げは UI ブロックが既に要求しているので、ここでは出さない
+          // （同じタブ・同じ優先度で無害だが、ログが二重になって経路を追いにくくなる）。
+          if (!settings.voicevoxEnabled && !tsunamiIsNewOrUpgraded) {
+            log.info('[tab] tsunami を要求 (観測点更新・読み上げ無効)')
+            setActiveTabNonRealtime('tsunami')
+          }
           const topObs = updatedObs552.length > 0 ? updatedObs552.reduce((a, b) => (b.height!.value > a.height!.value ? b : a)) : null
           setFocusedDistrict({
             districts: uniqueDistricts([...updatedObs552, ...newlyArrivedObs552]),
@@ -1064,8 +1298,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       eewSpeechPendingRef.current = 0
       activeNonEewSpeechRef.current = null
       window.clearTimeout(obsStatusClearTimerRef.current)
+      // 間を置いている最中の読み上げも捨てる（`resetTracking` と対称）
+      cancelPendingSpeech()
     }
-  }, [])
+  }, [cancelPendingSpeech])
 
   // リプレイ開始・終了時に追跡 ref を初期化する。
   // handleStartReplay の useCallback deps を壊さないよう安定参照（deps なし）にする。
@@ -1093,7 +1329,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 60秒 obs バッジ自動消去タイマーもリプレイ切替時に持ち越さない（アンマウント経路と対称）
     window.clearTimeout(obsStatusClearTimerRef.current)
     obsStatusClearTimerRef.current = 0
-  }, [])
+    // 間を置いてからの読み上げの予約も捨てる。残すと、リプレイを始めた直後に切り替え前の
+    // 電文が読まれる（状態はリセット済みなので待ち合わせにも掛からず、そのまま割り込む）。
+    cancelPendingSpeech()
+  }, [cancelPendingSpeech])
 
   // pre-window イベントから T 時点の追跡 ref を復元する（サイレント注入後の正確な音判定に必要）
   const restorePreWindowTracking = useCallback((preFiltered: ReplayEntry[]) => {
