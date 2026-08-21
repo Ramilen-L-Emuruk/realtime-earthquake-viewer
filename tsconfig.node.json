@@ -17,5 +17,10 @@
     "noUncheckedSideEffectImports": true,
     "types": ["node"]
   },
-  "include": ["vite.config.ts", "scripts/capture-test-scenario.ts"]
+  "include": [
+    "vite.config.ts",
+    "scripts/capture-test-scenario.ts",
+    "scripts/dev-api-key-gate.ts",
+    "scripts/dev-api-key-gate.test.ts"
+  ]
 }

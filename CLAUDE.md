@@ -198,6 +198,7 @@ done
   - （5173 が使用中なら 5174 等にフォールバックするため、起動ログで実ポートを確認する）
   - **必ず `run_in_background: true` でバックグラウンドタスクとして起動する**（ユーザー指示）。フォアグラウンドで起動するとプロセスが応答を返さずハングするため。
   - **検証用に起動した dev サーバーは Claude のセッション中は停止せず起動したままにする**（ユーザー指示）。次の検証では新規起動せず、稼働中のサーバー（既定 5173）へ Playwright で接続して再利用する。セッションをまたぐ必要は無い。
+  - **DMDSS 版の dev サーバーでは DMDATA の APIキーが自動で入る**。リポジトリ直下の `.env.local` に `DMDATA_API_KEY` があれば、設定タブへ貼り直さずに接続できる（条件・例外・`.env.local` の引き継ぎは [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「dev サーバーでの API キー自動投入」）。`--host` を付けた起動では意図的に投入しない（dev サーバーは認証を持たないため）。
 - `__APP_VERSION__` はビルド時に `vite.config.ts` の `define` が `package.json` の `version` から注入する定数のため、dev サーバーは `package.json` の `version` を変更したあと**再起動しないと新しい値を反映しない**（HMR では拾えない）。
 - **本番ビルド確認（大きめの変更時は必須）**: `npm run build` でビルドが通ることを確認するだけでなく、**`npm run preview`（本番ビルドのサブパス配信）を起動し Playwright MCP でブラウザ確認まで行う**。
   - preview URL: standard は `http://localhost:4173/realtime-earthquake-viewer/`／DMDSS は `npm run build:dmdss` → `npm run preview:dmdss`。
@@ -470,6 +471,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 地震電文の `points` 構造（バリアント経路差・`pref` 空の識別規則） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §4 |
 | P2PQuake レスポンスの検証規則（不正値の扱い・破棄条件・震度値の正規化 `46`→`45` / `scaleTo:99`→`scaleFrom`） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §3 |
 | APIキーに使える文字の判定（印字可能 ASCII のみ・キーの書式は当てにいかない）と、通信前に弾く 3 経路（履歴取得・ヒートマップ・WebSocket）で判定を揃えること（事前に弾かない経路もある） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §2（認証） |
+| dev サーバーでの APIキー自動投入の条件（dev・DMDSS 版・`--host` なし・未入力のときだけ／注入値は localStorage に保存しない／値を渡す側と受け取る側で条件を重ねる） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「dev サーバーでの API キー自動投入」 |
 | DMDATA 震源カタログの欠測項目の扱い（震源未決定の項目を 1 件ずつ除外・件数は警告に出す・全滅は例外）・座標が 0.1 度刻みである前提 | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §2（震源カタログ） |
 | 地震活動ヒートマップの色ランプ・拡散半径・不透明度の決め方（対数配置・高ズームは地理的距離に追従・寄るほど薄く） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §14 |
 | バッジの文字色（塗り色から白/黒を自動選択・気象庁配色は変更不可）と地図バッジの半径テーブル・アイコン倍率とぼやけの関係 | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §15 |
