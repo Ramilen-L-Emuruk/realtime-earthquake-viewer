@@ -105,10 +105,18 @@ Yahoo RealTimeData (1Hz JSON)
 
 1. 直近 `COINCIDENCE_MS` 以内に onset した観測点を集める（`recentOnset`）
 2. `recentOnset` を K 近傍グラフ（`neighbors`）で連結成分に分解する
-3. 成分サイズが `MIN_CLUSTER` 以上の成分だけを「確定揺れ点（confirmed-shaking）」とする
+3. 成分サイズが `requiredClusterSize`（成分内の最大震度で決まる下限）以上の成分だけを「確定揺れ点
+   （confirmed-shaking）」とする。通常は `MIN_CLUSTER`、震度3以上（`HIGH_CONFIRM_INTENSITY`）を含むなら
+   `HIGH_CLUSTER_POINTS`、震度4以上（`SOLO_CLUSTER_INTENSITY`）を含むなら 1 点で認める（設計書§29）
 
 散在する単発ノイズは近傍が揃わず成分が育たないため脱落する。時間差で onset した観測点（初期微動→
 主要動など）も同一成分として束ねられる。
+
+震度で点数要求を緩めるのは、**震源最近傍の1点だけが先に立ち上がる状態が実地震の初動として正常に
+起こる**ため。隣の観測点（20〜30km 先）には S 波がまだ届いていないので、この数秒間は「単点だけ高震度・
+周囲は静穏」という分布になり、機器故障と区別できない。点数では見分けられないので、震度がノイズ床
+（`FLOOR_CAP`=1.5）からどれだけ離れているかで信頼度を決めている。判定は成分ごとに閉じているため、
+他所のノイズの有無で本物の判定が変わることはない。
 
 ### L3 グループ化・イベント帰属
 
@@ -132,9 +140,22 @@ Yahoo RealTimeData (1Hz JSON)
    ラッチが立つ。一度立つと `HOLD_MS` の間は（揺れが弱まっても）`confirmed` を維持する（明滅防止）
    - **(a) 通常経路**: `lastSize ≥ effectiveConfirmReq` かつ `maxIntensity ≥ confirmIntensityReq` かつ
      `intenseCount ≥ CONFIRM_INTENSE_POINTS`
-   - **(b) 高震度 fast path（設計書§20）**: `HIGH_CONFIRM_INTENSITY`（震度3）以上に達した levelActive メンバーが
-     `HIGH_CONFIRM_POINTS` 点以上。点数ゲート（`effectiveConfirmReq`・慢性活性セルの引き上げ幅を含む）を
-     免除する。`confirmFramesReq` の連続要求は (a) (b) 共通で免除しない（単フレームの跳ね値を弾く安全弁）
+   - **(b) 高震度 fast path（設計書§20・§29）**: `HIGH_CONFIRM_INTENSITY`（震度3）以上に達した levelActive
+     メンバーが `HIGH_CONFIRM_POINTS`（=1）点以上あり、**かつ** 次のどちらかを満たすとき成立する。
+     - `intenseCount ≥ CONFIRM_INTENSE_POINTS`（§18 の第3ゲートを満たしている）
+     - **今フレームにこのイベントへ L2 成分が帰属しており**、かつその点数が `MIN_CLUSTER` 未満
+       （成分点数の緩和で認められた小さな成分。点数が足りず第3ゲートを課せないので震度の高さで代替する）。
+       **帰属が無いフレーム（0 点）はこの条件に含めない**——含めると、揺れが収まって成分が来なくなった
+       イベントすべてが免除対象になる。
+       この判定に**時間の保持を持たせていない**（今フレームの成分だけで決める）。そのため単点・2点の
+       イベントは値が 1 フレーム沈むと免除が切れ、`confirmStreak` がリセットされて確定が 2 フレーム遅れる。
+       これは受容した挙動で、保持を持たせると別の誤確定経路が開くため（設計書§29）
+
+     免除するのは点数ゲート（`effectiveConfirmReq`・慢性活性セルの引き上げ幅）だけで、**§18 の第3ゲートは
+     成分の点数が足りる場面では必ず課す**（「1点だけ強く・周囲は震度0」という局所ノイズの分布を、震度3の
+     バーで再び通さないため）。判定に `lastSize` を使わないのは、これが時間で減衰する量（`TRIG_ACTIVE_MS`
+     の onset 途絶で 0 になる）で、成分の出自を表さないため。`confirmFramesReq` の連続要求は (a) (b) 共通で
+     免除しない（単フレームの跳ね値を弾く安全弁）
    - `effectiveConfirmReq` は密度正規化済み: `max(MIN_LIKELY_POINTS, min(confirmPointsBase(+慢性活性なら
      CHRONIC_POINT_BUMP), ceil((局所実在近傍数+1) × CONFIRM_DENSITY_FRAC)))`。疎地域（離島等）は
      点数要件を自動的に下げる
@@ -142,7 +163,8 @@ Yahoo RealTimeData (1Hz JSON)
      （単独点処理=仮定震源要素でない）EEW が発表中か」を渡す。severity は推定震度の大小を示す軸に
      過ぎず判定に使わない）が true の間、`CONFIRM_POINTS`/`CONFIRM_FRAMES` の代わりに緩和値
      `EEW_CONFIRM_POINTS`/`EEW_CONFIRM_FRAMES` を使う（震源座標・距離は見ない＝震源非依存を維持したまま
-     確定を早める）。単点ノイズを弾く `CONFIRM_INTENSE_POINTS`・`MIN_CONFIRM_INTENSITY`・`MIN_CLUSTER`・
+     確定を早める）。単点ノイズを弾く `CONFIRM_INTENSE_POINTS`・`MIN_CONFIRM_INTENSITY`・
+     `requiredClusterSize`（`MIN_CLUSTER`／`HIGH_CLUSTER_POINTS`／`SOLO_CLUSTER_INTENSITY`）・
      慢性活性の引き上げ幅は EEW 中でも変えない
    - `confirmIntensityReq` は通常 `MIN_CONFIRM_INTENSITY`、慢性活性セルでは `CHRONIC_CONFIRM_INTENSITY`
      （後述の第2軸）
@@ -169,9 +191,10 @@ Yahoo RealTimeData (1Hz JSON)
 
 高震度 fast path（設計書§20）だけは第2軸（慢性活性セルの確定バー引き上げ）も併せて免除する。慢性ノイズの学習床は
 `FLOOR_CAP`=1.5（震度2相当）で頭打ちになるため `HIGH_CONFIRM_INTENSITY`=2.5 はその外側にあり、平常時2時間
-（全国1725点）の実データでも value≥2.5 の出現が皆無だったことを確認している。第1軸（点別床）と `MIN_CLUSTER`
-（空間コヒーレンス）は fast path でも維持される——fast path が数えるのは同一イベントのメンバーだけなので、
-遠く離れた点が偶然同時に高震度でも別イベントとして扱われ発火しない。
+（全国1725点）の実データでも value≥2.5 の出現が皆無だったことを確認している。第1軸（点別床）は fast path でも
+維持される。第3軸（`CONFIRM_INTENSE_POINTS`）は成分の点数が足りる場面では維持され、成分点数の緩和で認められた
+小さな成分（点数が足りず課せない場合）だけ震度の高さで代替する（条件の詳細は §4 の L4 (b)）。空間コヒーレンス
+（L2 の `requiredClusterSize`）は震度に応じて段階的に緩む（理由は §4 の L2）。
 
 `cellActivity` は `CELL_FREEZE_INTENSITY`（震度3相当）以上の高震度イベントが属するセルでは学習を凍結し、
 実地震で地域軸を汚さないようにしている。この閾値は `HIGH_CONFIRM_INTENSITY` と同値であり、どちらも
@@ -195,6 +218,8 @@ Yahoo RealTimeData (1Hz JSON)
 | `K` | 近傍点数 | 12 |
 | `R_KM` | 近傍半径 | 40 km |
 | `MIN_CLUSTER` | 揺れクラスタの連結成分サイズ下限 | 3 |
+| `HIGH_CLUSTER_POINTS` | 震度3以上を含む成分に要する点数（設計書§29） | 2 |
+| `SOLO_CLUSTER_INTENSITY` | 単独の点でも成分として認める震度下限（設計書§29） | 3.5（震度4） |
 | `COINCIDENCE_MS` | 同期とみなす時間窓 | 4,000 ms |
 | `TRIG_ACTIVE_MS` | トリガー継続とみなす窓 | 8,000 ms |
 | `CELL_DEG` | 固定格子セルの寸法 | 0.2°（≒20km） |
@@ -208,7 +233,7 @@ Yahoo RealTimeData (1Hz JSON)
 | `CONFIRM_INTENSE_POINTS` | confirmed に要する確定震度到達点数（単点ノイズ除去の第3軸） | 2 |
 | `CONFIRM_FRAMES` | confirmed 連続フレーム数 | 2 |
 | `HIGH_CONFIRM_INTENSITY` | 高震度 fast path の震度下限（点数ゲートを免除・設計書§20） | 2.5（震度3） |
-| `HIGH_CONFIRM_POINTS` | 高震度 fast path に要する高震度到達点数 | 2 |
+| `HIGH_CONFIRM_POINTS` | 高震度 fast path に要する高震度到達点数（設計書§29） | 1 |
 | `EEW_CONFIRM_POINTS` | EEW（震源要素確定）発表中に CONFIRM_POINTS の代わりに使う確定点数 | 3 |
 | `EEW_CONFIRM_FRAMES` | EEW 発表中に CONFIRM_FRAMES の代わりに使う確定連続フレーム数 | 1 |
 | `HOLD_MS` | confirmed イベントの保持 | 10,000 ms |
@@ -421,8 +446,10 @@ Yahoo RealTimeData (1Hz JSON)
 
 - **単点微小地震の非検知**: 近傍同時性（L2）は本質的に「複数の近傍観測点が同時に反応すること」を
   要求する。震源近くに観測点が1点しかない・観測点間隔が広い地域で起きる微小地震（M2〜3程度）は、
-  そもそも `MIN_CLUSTER` を満たす面が育たず検知できない。これは「散在ノイズを弾く」特異度の裏面であり、
-  観測網の密度に依存する原理的な限界（震源を使わない設計そのものの帰結）
+  そもそも `requiredClusterSize` を満たす面が育たず検知できない。これは「散在ノイズを弾く」特異度の裏面であり、
+  観測網の密度に依存する原理的な限界（震源を使わない設計そのものの帰結）。
+  ただし単点でも**震度4以上**に達すれば検知する（`SOLO_CLUSTER_INTENSITY`・設計書§29）。非検知が残るのは
+  震度3以下の単点で、そこは「機器故障と区別できない」という理由で意図的に検知しない
 - **広域分裂**: 震度5以上の巨大地震は有感域が数百km に及び、山地・海洋のギャップで近傍グラフが複数の
   連結成分に割れることがある（`MERGE_EVENT_KM` で近い成分は統合するが、実際に離れた有感域は統合しない）。
   UI 側（`RealtimeTab`）で「広域・N地域」として集約表示することで対応している
