@@ -447,6 +447,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 通知音の内容と説明文の一致（`PLAYERS` の周波数・`COUNTDOWN_PULSES` のパルス数と、設定タブ「通知音テスト」の説明文・仕様書の記述） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §2 |
 | 通知音の長さと読み上げ遅延の連動（音を作り変えたら `TTS_DELAY_MS` かテーブル外の個別指定を必ず見直す。リバーブを効かせた音は乾音の長さでは足りない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
 | 通知音と声の間に合成を先行させること（`prewarmVoicevox`。進行中の読み上げを止めない・使われなかったものは打ち切る・失敗時は再生側で作り直す。対象は非 EEW の遅延経路） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「間を合成の時間に充てる（先行合成）」 |
+| EEW の切り出し語を作り置きすること（`warmFixedPhrases`。**合成中のものは待たない**・切り出し語と `splitIntoChunks` の分割条件が噛み合わないと黙って効かなくなる） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「間が無い経路には作り置きを用意する（切り出し語）」 |
 | 間を置く読み上げの予約を追跡すること（`scheduleSpeech`。画面を閉じたときとリプレイ開始で取り消す。対象は EEW 誤報取消を含む全経路） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「間を置く読み上げの予約は追跡する」 |
 | 設定タブのセクション構成・並び順の方針（`Section` の出現順・重大度は軽い順・カテゴリ順は両テストセクションと通知設定の種別トグルで共通） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §2 |
 | 南海トラフ電文 3 種別の役割（VYSE50=臨時情報／VYSE51=臨時解説／VYSE52=定例解説）・段階判定は `Head/Title` を見ること（`Head/InfoKind` は段階に関わらず固定で判定に使えない）・電文の識別は `EventID` と `Serial` の組で行うこと（臨時解説は `EventID` が固定で `Serial` が号数） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §2 |
