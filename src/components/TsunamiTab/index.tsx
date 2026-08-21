@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation } from '../../types/earthquake'
 import { formatDateTimeMin, formatTime } from '../../utils/formatters'
 import { quakeEventKey } from '../../utils/quakeMerge'
@@ -30,10 +30,44 @@ interface Props {
    * タブは `invisible` で隠すだけなので、非表示でもスクロールは効いてしまう。
    */
   isVisible?: boolean
+  /**
+   * 読み上げが有効か。**有効なら受信時スクロールを行わず、読み上げ追従に任せる。**
+   *
+   * 受信時スクロールは電文が届いた瞬間に「変わった区域」へ寄せるが、読み上げが始まるのは
+   * その 0.8〜4.2 秒後（通知音との間隔）。両方が働くと、先に区域へ寄ってから追従が等級カードの
+   * 頭へ引き戻す、という逆向きの動きが見える。読み上げがあるなら声と画面を一致させる側に
+   * 任せる（読み上げがある経路は順序の判断を読み上げ側に預ける、という既存の方針に揃える）。
+   */
+  speechFollowEnabled?: boolean
+  /**
+   * 津波タブを自動で見せた回数。**増えるたびにスクロールを先頭へ戻す。**
+   *
+   * 別のタブへ移ったあと続報やアイドル復帰で連れ戻されると、前に見ていた途中の位置が
+   * 残ったまま表示される。自動で見せる以上は先頭（最も重い等級のカード）から見せる。
+   * 手動で開いたときは増えないので、自分でスクロールした位置は保たれる。
+   *
+   * **これは最も弱い層。** 同じ受信で受信時スクロールや読み上げ追従が動くならそちらが
+   * 上書きする（先頭へ戻すのは `useLayoutEffect`、他は `useEffect` と rAF なので必ず後）。
+   */
+  autoShowTick?: number
 }
+
+/**
+ * 読み上げが有効なとき、受信時スクロールが追従を待つ時間。
+ *
+ * 声が出るまでには「通知音を鳴らし終える間隔」（`TTS_DELAY_MS`。大津波警報は 4.2 秒）に
+ * 読み上げの待ち行列と合成の時間が積み上がる。**実測では受信から 13 秒後**に最初の追従が
+ * 動いた（大津波警報テスト）ので、それより余裕を持たせる。短すぎると、正常に読み上げられる
+ * 場面でも受信時スクロールが先に動いて往復が見える ―― この機能で消したかったものそのもの。
+ *
+ * 長く取ることの代償は「読み上げが成立しなかったときに待たされる時間」だけ。塞いでしまう
+ * （永久に待つ）のに比べれば軽い。
+ */
+const SPEECH_FOLLOW_GRACE_MS = 20000
 
 /** 追従用の行の登録キー。区域は code を優先し、無ければ名前で引く（`matchesArea` と同じ順序）。 */
 function speechRowKeys(ref: SpeechRef): string[] {
+  if (ref.kind === 'grade') return [`grade:${ref.grade}`]
   if (ref.kind === 'station') return [`station:${ref.name}`]
   return ref.code ? [`area:code:${ref.code}`, `area:name:${ref.name}`] : [`area:name:${ref.name}`]
 }
@@ -234,14 +268,24 @@ function TsunamiObservationRow({ obs, onObservationClick }: { obs: TsunamiObserv
   )
 }
 
-function TsunamiGradeCard({ grade, areas, observations, onObservationClick, focusedDistrict, registerRow, registerSpeechRow, obsUpdateStatus }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[]; onObservationClick?: (name: string) => void; focusedDistrict?: FocusedDistrict | null; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, 'new' | 'updated'> }) {
+function TsunamiGradeCard({ grade, areas, observations, onObservationClick, focusedDistrict, registerRow, registerSpeechRow, registerSpeechAnchor, obsUpdateStatus }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[]; onObservationClick?: (name: string) => void; focusedDistrict?: FocusedDistrict | null; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; registerSpeechAnchor?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, 'new' | 'updated'> }) {
   if (areas.length === 0) return null
   const style = getGradeStyle(grade)
   const groups = groupAreasForCardDisplay(areas, observations)
   return (
-    <div className="bg-card rounded-lg overflow-hidden"
+    /* 等級を告げたときの合わせ先は**カード全体**。帯だけを見ると、帯が視野の下端に映って
+       いるだけで「収まっている」と判定して動かない ―― それでは等級を言った時点でカードの頭に
+       来ない。全体を範囲にすれば視野に収まらない限り送られ、上端（＝帯）に揃う。 */
+    <div ref={el => registerSpeechRow?.(speechRowKeys({ kind: 'grade', grade }), el)}
+      className="bg-card rounded-lg overflow-hidden"
       style={{ border: `2px solid ${style.cardBorder}`, boxShadow: `0 0 0 1px ${style.cardBorder}40` }}>
-      <div className="w-full py-1.5 px-4 text-center text-xs font-bold tracking-widest"
+      {/* 区域を読むときの合わせ先はこの帯（どの等級の話かが視野から消えないように） */}
+      <div ref={el => {
+        for (const area of areas) {
+          registerSpeechAnchor?.(speechRowKeys({ kind: 'area', code: area.code, name: area.name }), el)
+        }
+      }}
+        className="w-full py-1.5 px-4 text-center text-xs font-bold tracking-widest"
         style={{ backgroundColor: style.headerBg, color: style.headerColor, borderBottom: `1px solid ${style.headerBorder}` }}>
         {GRADE_LABEL[grade]}
       </div>
@@ -276,7 +320,7 @@ function getTopGrade(tsunamis: JMATsunami[]): TsunamiGrade {
 }
 
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservationClick, focusedDistrict, obsUpdateStatus, speechSession, isVisible }: Props) {
+export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservationClick, focusedDistrict, obsUpdateStatus, speechSession, isVisible, speechFollowEnabled, autoShowTick }: Props) {
   // cancelledAt がある = 10秒表示中なので active に含める
   const active = tsunamis.filter(t => !t.cancelled || t.cancelledAt)
 
@@ -322,6 +366,19 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
     }
   }, [])
 
+  // 区域キー → その区域が属する**等級カードの頭**（「大津波警報」の帯）。
+  //
+  // 区域を読んで動くときの行き先をここに揃える。区域行だけを基準にすると、その区域が
+  // 画面の上端に来るように送られ、**どの等級の話をしているのかが視野から消える**。カードの頭を
+  // 範囲に含めれば上端がそこになり、等級・波高見出し・区域が上から順に収まる。
+  const speechAnchorElsRef = useRef<Map<string, HTMLElement>>(new Map())
+  const registerSpeechAnchor = useCallback((keys: string[], el: HTMLElement | null) => {
+    for (const key of keys) {
+      if (el) speechAnchorElsRef.current.set(key, el)
+      else speechAnchorElsRef.current.delete(key)
+    }
+  }, [])
+
   // 手で動かしたあとは追従を止める。地図の自動フィットと同じ考え方で、同じ保持時間を使う。
   //
   // 拾うのは `wheel` と `touchstart` の 2 つだけ。`scroll` は自分の `scrollTo` が撒くので
@@ -333,6 +390,10 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
   // ref ではなく state で持つのは、保持が明けた瞬間に追従側の effect を起こし直すため
   // （CameraFollowsGL の useUserInteractionGuard と同じ理由）。
   const [userScrollHold, setUserScrollHold] = useState(false)
+  // 先頭復帰（`autoShowTick`）からも読む。あちらは保持の明けで動き直してはいけないので
+  // （明けた瞬間に画面が飛ぶ）、state を依存に取らず ref で今の値だけを見る。
+  const userScrollHoldRef = useRef(false)
+  userScrollHoldRef.current = userScrollHold
   const userHoldTimerRef = useRef<number | undefined>(undefined)
   const hasCards = active.length > 0
   useEffect(() => {
@@ -352,20 +413,30 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
   }, [hasCards])
   useEffect(() => () => window.clearTimeout(userHoldTimerRef.current), [])
 
-  // 読み上げ追従が動いている間は受信時スクロールを見送るための印（下の effect が読む）
-  const followActiveRef = useRef(false)
+  /**
+   * 追従が最後に「読んでいる箇所を引き当てた」時刻（受信時スクロールが読む）。
+   *
+   * **真偽値ではなく時刻で持つ。** 真偽値だと読み上げが終わった時点で落ちるため、そのあと
+   * 受信時スクロールの猶予が明けたときに「追従は働かなかった」と誤って判断し、読み終えた
+   * カードを区域へ寄せ直してしまう。受信（`focusedDistrict.ts`）より後に追従が動いていれば
+   * その受信は追従が受け持ったと見なせる。
+   */
+  const followHandledAtRef = useRef(0)
 
   // 追従の進み具合。**読み上げ 1 本（`token`）に紐づけて持つ。** 追従の effect は
   // `isVisible` などの変化でも作り直されるため、ここに置かないと途中で記憶が失われる。
   const followProgressRef = useRef<{
     token: number
-    /** 一度画面に出した箇所（読み直されても追わないための記録） */
-    shownKeys: Set<string>
     lastIndex: number
     /** smooth スクロールの行き先。着くまでは判定の基準をこちらにする */
     targetScrollTop: number | null
+    /**
+     * 区域・観測点の行を一度でも引き当てられたか（診断用）。
+     * **等級は数えない。** 理由は下の `sawRowRef` を立てている箇所のコメント。
+     */
     resolvedAny: boolean
-    sawChunk: boolean
+    /** 区域・観測点を指すチャンクが一度でもあったか（診断用。無ければ引けなくて当然） */
+    sawRowRef: boolean
   } | null>(null)
 
   /**
@@ -379,10 +450,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
    */
   useEffect(() => {
     const session = speechSession
-    if (!session || !isVisible || userScrollHold) {
-      followActiveRef.current = false
-      return
-    }
+    if (!session || !isVisible || userScrollHold) return
 
     // **進み具合はセッション単位で持つ（effect のローカルにしない）。** この effect は
     // `isVisible` / `userScrollHold` / `bannerHeight` の変化でも作り直される。ローカルに
@@ -391,11 +459,10 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
     if (followProgressRef.current?.token !== session.token) {
       followProgressRef.current = {
         token: session.token,
-        shownKeys: new Set<string>(),
         lastIndex: -1,
         targetScrollTop: null,
         resolvedAny: false,
-        sawChunk: false,
+        sawRowRef: false,
       }
     }
     const progress = followProgressRef.current
@@ -404,19 +471,41 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
     let refsPerChunk: SpeechRef[][] | null = null
     let mappedChunks: readonly string[] | null = null
 
-    const rowFor = (ref: SpeechRef): HTMLElement | null => {
+    const lookup = (table: Map<string, HTMLElement>, ref: SpeechRef): HTMLElement | null => {
       for (const key of speechRowKeys(ref)) {
-        const el = speechRowElsRef.current.get(key)
+        const el = table.get(key)
         if (el) return el
       }
       return null
     }
 
+    /**
+     * 読んでいる箇所そのものが占める要素。
+     * 等級はカードの頭、観測点は区域行の内側なので、いずれも 1 つで足りる。
+     */
+    const rowElementFor = (ref: SpeechRef): HTMLElement | null =>
+      lookup(speechRowElsRef.current, ref)
+
+    /**
+     * 併せて視野に入れたい前置き。区域では**その等級カードの頭**。
+     *
+     * 区域行だけを上端に合わせると、どの等級の話をしているのかが視野から消える。ただし
+     * これを「読んでいる箇所」に混ぜてはいけない。混ぜると送り先の上端が常にカードの頭に
+     * なり、等級のところで一度寄せた後は区域行がどれだけ見切れていても動かなくなる
+     * （`planFollowScroll` の JSDoc 参照）。前置きとして別に渡し、収まるときだけ含める。
+     */
+    const contextElementFor = (ref: SpeechRef): HTMLElement | null =>
+      ref.kind === 'area' ? lookup(speechAnchorElsRef.current, ref) : null
+
     // 差し替えで DOM から外れた要素は矩形が全 0 になる。そのまま使うと巨大なスクロールになる
-    const rectsFor = (refs: readonly SpeechRef[], offset: number): FollowRect[] => {
+    const rectsFor = (
+      refs: readonly SpeechRef[],
+      offset: number,
+      pick: (ref: SpeechRef) => HTMLElement | null,
+    ): FollowRect[] => {
       const rects: FollowRect[] = []
       for (const ref of refs) {
-        const el = rowFor(ref)
+        const el = pick(ref)
         if (!el || !el.isConnected) continue
         const r = el.getBoundingClientRect()
         if (r.height <= 0) continue
@@ -446,7 +535,6 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
         currentIndex = entry.index
       }
       if (currentIndex < 0) return
-      progress.sawChunk = true
 
       // 行き先に着いたら基準を現在位置へ戻す
       if (progress.targetScrollTop !== null
@@ -459,14 +547,12 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
       const currentRefs = refsPerChunk[currentIndex] ?? []
       if (currentRefs.length === 0) return
 
-      // **一度出した箇所は読み直されても追わない。** 発表・引き上げ・引き下げの読み上げは
-      // 「区域を列挙 → 予想最大波高で同じ区域をもう一周」の形で、同じ区域を 1 回の読み上げで
-      // 2 回読む（`tsunamiHeightSentence`）。2 周目に付き合うと、1 周目で見せた場所へ戻って
-      // すぐ下がる往復になる（実測: 大津波警報テストで 1.5 秒のうちに 654→74→654）。
-      // 1 周目で見せているので、追わなくても伝わっていないものは無い。
-      const firstSeen = currentRefs.filter(ref => !progress.shownKeys.has(speechRowKeys(ref)[0]))
-      for (const ref of currentRefs) progress.shownKeys.add(speechRowKeys(ref)[0])
-      if (firstSeen.length === 0) return
+      // **同じ箇所を読み直す文は無い前提に立っている。** 読み上げは区域名を 1 回だけ出す
+      // （区域と波高を 1 文で言い切る。→ `ttsText` の `areaHeightSentence`）。かつては
+      // 「区域を列挙 → 予想最大波高でもう一周」の形で同じ区域を 2 回読んでいて、2 周目に
+      // 付き合うと 1 周目で見せた場所へ戻ってすぐ下がる往復になったため、出した箇所を
+      // 記録して追わない仕掛けを置いていた。文面を変えて重複が無くなったので外してある。
+      // **読み上げ文を「同じ区域を 2 回読む」形に戻すなら、ここも戻すこと。**
 
       // これから読む箇所（この先のチャンクを読み上げ順に）
       const upcomingRefs: SpeechRef[] = []
@@ -479,19 +565,31 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
       // 進む量ぶん引く（コンテナ自身は動かないので視野はそのまま）。
       const base = progress.targetScrollTop ?? container.scrollTop
       const offset = base - container.scrollTop
-      const currentRects = rectsFor(currentRefs, offset)
+      const currentRects = rectsFor(currentRefs, offset, rowElementFor)
+
+      // 診断の集計。**等級（`grade`）は数えない。**
+      //
+      // 等級のカードは全等級ぶん常に登録されていて、電文の中身に依らず必ず引ける。読み上げ文は
+      // 必ず等級の宣言から始まるので、これを成功に数えると `resolvedAny` が毎回 true になり、
+      // 続く区域・観測点が 1 件も引けなくても下の警告が出なくなる。区域コードの食い違いを
+      // 見つけるために置いた診断が、静かに死ぬ。前置き（カードの頭）を数えないのも同じ理由。
+      if (currentRefs.some(r => r.kind !== 'grade')) {
+        progress.sawRowRef = true
+        if (currentRects.length > 0) progress.resolvedAny = true
+      }
+
       // **行を引き当てられないうちは受け持ったことにしない。** 区域コードや観測点名が
       // 食い違って一度も引けない読み上げでも、無条件に印を立てると受信時スクロール
       // （変更区域へ寄せるフォールバック）まで道連れで止まり、画面が一切動かなくなる。
       if (currentRects.length === 0) return
-      followActiveRef.current = true
-      progress.resolvedAny = true
+      followHandledAtRef.current = Date.now()
 
       const next = planFollowScroll({
         viewTop: containerRect.top + bannerHeight,
         viewBottom: containerRect.bottom,
         currentRects,
-        upcomingRects: rectsFor(upcomingRefs, offset),
+        contextRects: rectsFor(currentRefs, offset, contextElementFor),
+        upcomingRects: rectsFor(upcomingRefs, offset, rowElementFor),
         currentScrollTop: base,
         maxScrollTop: Math.max(0, container.scrollHeight - container.clientHeight),
       })
@@ -502,10 +600,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
     }
 
     raf = requestAnimationFrame(tick)
-    return () => {
-      cancelAnimationFrame(raf)
-      followActiveRef.current = false
-    }
+    return () => cancelAnimationFrame(raf)
   }, [speechSession, isVisible, userScrollHold, bannerHeight])
 
   // 読み上げが終わったところで、追従が仕事をできたかを振り返る。
@@ -517,57 +612,108 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
     if (speechSession) return
     const last = followProgressRef.current
     followProgressRef.current = null
-    // チャンクは鳴ったのに引き当てが 0 件だったときだけ残す。読み上げは出ているのに画面が
-    // 動かない状態で、症状（動かない）からは追従の不具合と表示の不具合を区別できない。
-    // 区域コード・観測点名の食い違い（`matchesArea` が想定している経路）を疑う手がかり。
-    if (last?.sawChunk && !last.resolvedAny) {
-      log.warn('[tsunami] 読み上げ追従: 対象の行を一度も引き当てられなかった')
+    // **区域・観測点を読んだのに、その行を一度も引き当てられなかったときだけ残す。**
+    //
+    // 読み始めた直後にタブを離れると、追従の rAF が止まって以降のチャンクを見ないため、
+    // 引き当ての失敗と区別できずに出ることがある（ログのノイズに留まる既知の限界）。
+    // 読み上げは出ているのに画面が動かない状態で、症状（動かない）からは追従の不具合と表示の
+    // 不具合を区別できない。区域コード・観測点名の食い違い（`matchesArea` が想定している経路）
+    // を疑う手がかり。等級しか読まなかった読み上げでは引けなくて当然なので黙る。
+    if (last?.sawRowRef && !last.resolvedAny) {
+      log.warn('[tsunami] 読み上げ追従: 区域・観測点の行を一度も引き当てられなかった')
     }
   }, [speechSession])
 
+  // 自動で見せられたときは先頭へ戻す（`autoShowTick` の JSDoc 参照）。
+  //
+  // **`useLayoutEffect` で行うのは順序のため。** 同じ受信で受信時スクロール（`useEffect`）や
+  // 読み上げ追従（rAF）が動くなら、そちらに上書きさせたい。先頭へ戻すのは「他に行き先が
+  // 決まらなかったとき」の既定でしかない。
+  //
+  // 一瞬で移す（`behavior: 'smooth'` にしない）。移動してきた直後で、まだ何も見せていない
+  // 場所からの滑走を見せる意味が無いうえ、続く追従のスクロールと重なって二重に動く。
+  useLayoutEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    // 手で動かした直後は動かさない。他の 2 つの駆動（受信時スクロール・読み上げ追従）も
+    // 同じ保持を尊重するので、ここだけ無条件に走ると「触った直後に飛ぶ」のが残る。
+    //
+    // **保持が明けたときに埋め合わせはしない**（既知の限界）。手でスクロール中に他タブへ移り、
+    // 保持が明ける前に自動で連れ戻された場合は、前の位置のまま表示される。埋め合わせるには
+    // 保持の明けを待って一度だけ実行する仕掛けが要るが、それは「何もしていないのに画面が飛ぶ」
+    // という、この保持で防いでいるものを作り直すことになる。触った位置を残す方を採る。
+    if (userScrollHoldRef.current) return
+    container.scrollTop = 0
+    // 追従が持っている「行き先」も捨てる。残すと、この先頭復帰を追従が知らないまま
+    // 矩形を補正し、まだ動く前の位置を基準に判定してしまう。
+    const progress = followProgressRef.current
+    if (progress) progress.targetScrollTop = null
+  }, [autoShowTick])
+
   // 変更区域が画面に収まるならまとめて見えるように、収まらなければ波高最大の区域が
-  // ヘッダー直下に来るようにスクロールする
+  // ヘッダー直下に来るようにスクロールする（読み上げが無効な端末の唯一の自動スクロール）
   useEffect(() => {
     if (!focusedDistrict) return
     const container = containerRef.current
     if (!container) return
-    // 読み上げ追従が動いている間は見送る。**読み上げは数十秒続く**（区域が多い大津波警報で
-    // 30 チャンク超）ため、その最中に届いた続報でここが動くと、いま読んでいる箇所から
-    // 引き剥がしたうえで、次のチャンクで追従が引き戻す。声と画面が一致している側を優先する。
-    if (followActiveRef.current) return
-    // 対象区域が特定できない受信（区域のみの発表・実質変化なしの続報・解除）は一番上へ戻す
-    if (focusedDistrict.districts.length === 0) {
-      container.scrollTo({ top: 0, behavior: 'smooth' })
-      return
+
+    const run = () => {
+      // この受信より後に追従が動いていれば、その受信は追従が受け持ったと見なして見送る。
+      // **読み上げは数十秒続く**ため、その最中にここが動くと、いま読んでいる箇所から引き剥がした
+      // うえで次のチャンクで追従が引き戻す。
+      if (followHandledAtRef.current >= focusedDistrict.ts) return
+      // 対象区域が特定できない受信（区域のみの発表・実質変化なしの続報・解除）は一番上へ戻す
+      if (focusedDistrict.districts.length === 0) {
+        container.scrollTo({ top: 0, behavior: 'smooth' })
+        return
+      }
+      const changedEls = Array.from(changedRowElsRef.current.values())
+      if (changedEls.length === 0) return
+
+      const containerRect = container.getBoundingClientRect()
+      const viewTop = containerRect.top + bannerHeight
+      const viewBottom = containerRect.bottom
+      const availableHeight = viewBottom - viewTop
+
+      const tops = changedEls.map(el => el.getBoundingClientRect().top)
+      const bottoms = changedEls.map(el => el.getBoundingClientRect().bottom)
+      const spanTop = Math.min(...tops)
+      const spanBottom = Math.max(...bottoms)
+      const spanHeight = spanBottom - spanTop
+
+      let delta = 0
+      if (spanHeight <= availableHeight) {
+        if (spanTop < viewTop) delta = spanTop - viewTop
+        else if (spanBottom > viewBottom) delta = spanBottom - viewBottom
+      } else if (topRowElRef.current) {
+        delta = topRowElRef.current.getBoundingClientRect().top - viewTop
+      }
+
+      if (Math.abs(delta) > 1) {
+        container.scrollTo({ top: container.scrollTop + delta, behavior: 'smooth' })
+      }
     }
-    const changedEls = Array.from(changedRowElsRef.current.values())
-    if (changedEls.length === 0) return
 
-    const containerRect = container.getBoundingClientRect()
-    const viewTop = containerRect.top + bannerHeight
-    const viewBottom = containerRect.bottom
-    const availableHeight = viewBottom - viewTop
-
-    const tops = changedEls.map(el => el.getBoundingClientRect().top)
-    const bottoms = changedEls.map(el => el.getBoundingClientRect().bottom)
-    const spanTop = Math.min(...tops)
-    const spanBottom = Math.max(...bottoms)
-    const spanHeight = spanBottom - spanTop
-
-    let delta = 0
-    if (spanHeight <= availableHeight) {
-      if (spanTop < viewTop) delta = spanTop - viewTop
-      else if (spanBottom > viewBottom) delta = spanBottom - viewBottom
-    } else if (topRowElRef.current) {
-      delta = topRowElRef.current.getBoundingClientRect().top - viewTop
+    // **寄せる先がある受信だけ、追従が受け持つのを待つ。** 電文が届いた瞬間に変更区域へ寄せても、
+    // 0.8〜4.2 秒後（通知音との間隔）に読み上げが始まって等級カードの頭へ引き戻すことになり、
+    // 逆向きの動きが見える。声と画面を一致させる側に任せる。
+    //
+    // **区域が特定できない受信（`districts` が空）は待たない。** 解除・実質変化なしの続報・
+    // 復帰による先頭戻しがここに来るが、いずれも追従の対象になる読み上げを持たない
+    // （解除の読み上げは区域名を含まないので参照が無い）。待たせても追従は永久に来ず、
+    // 猶予のあいだ解除前の位置に留まるだけ。**解除で待たされるのが一番まずい。**
+    //
+    // 待つ場合も**待ちっぱなしにはしない。** 「有効」は端末の設定値にすぎず、その電文で実際に
+    // 読み上げが成立するかは別（VOICEVOX が未起動・到達不能でも `speakWithVoicevox` は無音の
+    // まま正常終了する契約）。待って何も起きなければ、ここが唯一の自動スクロールになる。
+    if (speechFollowEnabled && focusedDistrict.districts.length > 0) {
+      const timer = window.setTimeout(run, SPEECH_FOLLOW_GRACE_MS)
+      return () => window.clearTimeout(timer)
     }
-
-    if (Math.abs(delta) > 1) {
-      container.scrollTo({ top: container.scrollTop + delta, behavior: 'smooth' })
-    }
+    run()
   // focusedDistrict.ts を依存にすることで同一区域の再フォーカスも発火する
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusedDistrict?.ts, bannerHeight])
+  }, [focusedDistrict?.ts, bannerHeight, speechFollowEnabled])
 
   if (active.length === 0) {
     return (
@@ -659,6 +805,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                 focusedDistrict={focusedDistrict}
                 registerRow={registerRow}
                 registerSpeechRow={registerSpeechRow}
+                registerSpeechAnchor={registerSpeechAnchor}
                 obsUpdateStatus={obsUpdateStatus}
               />
             ))}
