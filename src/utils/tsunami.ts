@@ -13,6 +13,20 @@ export function tsunamiMaxGrade(tsunami: JMATsunami): TsunamiGrade {
   return max
 }
 
+/**
+ * 等級を伝えていない電文か（区域が空 = 観測情報のみの続報。DMDATA の VTSE51②・VTSE52）。
+ *
+ * **この形の電文を等級の比較に混ぜないこと。** 区域が無いので `tsunamiMaxGrade` は
+ * `Unknown`（最下位）を返し、発表中の警報と比べると必ず「降格」と判定される。降格の
+ * 読み上げ（`tsunamiDowngradeToText`）は区域が空だと全解除の文言へフォールバックするため、
+ * 警報の発表中に「津波警報等は全て解除されました」と読み上げる事故になる。
+ *
+ * 等級を伝えていないだけで、観測値は載っている。**観測点更新として扱うのが正しい。**
+ */
+export function isTsunamiObservationOnly(tsunami: JMATsunami): boolean {
+  return tsunami.areas.length === 0
+}
+
 /** 複数の津波イベントを横断して最大グレードを返す。解除済み（10秒表示中のcancelledAtも含む）・Unknown は除外。なければ null。 */
 export function tsunamiOverallGrade(tsunamis: JMATsunami[]): 'MajorWarning' | 'Warning' | 'Watch' | null {
   let max: TsunamiGrade | null = null

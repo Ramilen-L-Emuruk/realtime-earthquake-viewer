@@ -285,6 +285,56 @@ async function synthesizeChunk(
   }
 }
 
+/** 先に合成しておいた読み上げの持ち手（{@link prewarmVoicevox} が返す）。 */
+export type PrewarmedSpeech = {
+  /** 合成したテキスト。取り違え防止に、再生時に照合する */
+  readonly text: string
+  /** 最初のチャンクの音声（合成できなければ null） */
+  readonly first: Promise<AudioBuffer | null>
+  /** 合成を打ち切る（使わないと決まったとき） */
+  readonly abort: () => void
+}
+
+// 進行中の先行合成。新しい読み上げが始まるとき、使われないものを打ち切るために持つ。
+const activePrewarms = new Set<PrewarmedSpeech>()
+
+/**
+ * 最初のチャンクだけを先に合成しておく（**再生はしない**）。
+ *
+ * 通知音と声が重ならないよう電文ごとに間を置いているので（`TTS_DELAY_MS`。0.5〜4.2 秒）、
+ * その間に合成を済ませておけば、間が明けた瞬間に鳴らせる。合成は LAN 越しの VOICEVOX で
+ * 150〜350ms かかり、そのぶん「音が鳴り終わってから声が出るまで」の空白になっていた。
+ *
+ * **セッションには関与しない。** 進行中の再生を止めず、`currentSessionId` も動かさない
+ * （動かすと、間を置いている最中に前の読み上げが切れてしまう）。実際に鳴らすときは、
+ * 結果を {@link speakWithVoicevox} に渡すこと。渡さなければ捨てられる。
+ *
+ * @returns AudioContext が未確立（ユーザー操作前）なら null。その場合は先行合成なしで進む
+ */
+export function prewarmVoicevox(baseUrl: string, text: string, speakerId: number): PrewarmedSpeech | null {
+  const ctx = getAudioContext()
+  if (!ctx) return null
+  const chunks = splitIntoChunks(text)
+  if (chunks.length === 0) return null
+
+  const ctrl = new AbortController()
+  const first = (async () => {
+    // 辞書は句区切りにしか使わないので、取れなくても合成は続ける（本再生と同じ扱い）
+    await loadTtsPhraseBreakDict().catch(() => { /* 区切りなしで合成する */ })
+    return synthesizeChunk(baseUrl, chunks[0], speakerId, ctx, ctrl.signal)
+  })()
+  const entry: PrewarmedSpeech = {
+    text,
+    first,
+    abort: () => { try { ctrl.abort() } catch { /* 二重 abort は無視 */ } },
+  }
+  activePrewarms.add(entry)
+  // 完了・失敗どちらでも登録を外す（打ち切り対象の集合に死んだ持ち手を残さない）
+  void first.catch(() => null).finally(() => activePrewarms.delete(entry))
+  log.debug(`[VoiceVox] 先行合成: ${chunks[0]}`)
+  return entry
+}
+
 /**
  * 発話を鳴らす直前に呼ばれる妥当性の判定。`false` を返すと、そのチャンク以降を鳴らさない。
  *
@@ -316,14 +366,32 @@ export async function speakWithVoicevox(
   speakerId: number,
   volume: number,
   shouldStillPlay?: ShouldStillPlay,
+  /**
+   * {@link prewarmVoicevox} で先に合成しておいた音声。最初のチャンクをこれで置き換えて、
+   * 合成待ちの分だけ声を早める。テキストが違う・合成に失敗していた場合はここで作り直す。
+   *
+   * EEW の読み上げでは使わない（間を置かずに読み始めるため、先に合成しておく余地がない）。
+   */
+  prewarmed?: PrewarmedSpeech | null,
 ): Promise<void> {
-  log.debug(`[VoiceVox] 読み上げ: ${text}`, { speakerId, volume })
+  const startedAt = performance.now()
+  log.debug(`[VoiceVox] 読み上げ: ${text}`, { speakerId, volume, prewarmed: !!prewarmed })
 
   // 既存の再生を全て停止
   for (const src of activeSources) {
     try { src.stop() } catch { /* already stopped */ }
   }
   activeSources = []
+
+  // 使われない先行合成を打ち切る。放っておくと VOICEVOX 側の直列処理を占有して、これから
+  // 読む方が待たされる（旧セッションの fetch を abort するのと同じ理由。AUD-4）。
+  //
+  // **自分が使うものは先に対象から外すこと。** 外さないと、地震情報と長周期のように電文が
+  // ほぼ同時に届いたとき、**後から始まった読み上げが、先に始まった側がこれから使う先行合成を
+  // 打ち切る**。消された側は作り直すので無音にはならないが、間に合わせるために先に合成した
+  // 意味が失われ、待ち時間は先行合成が無かった頃より長くなる。
+  if (prewarmed) activePrewarms.delete(prewarmed)
+  for (const p of activePrewarms) p.abort()
 
   // 旧セッションの in-flight fetch を打ち切る（AUD-4）。abort() は同期完了なので
   // ここから先の await は新しいコントローラーの signal を使う。
@@ -366,8 +434,17 @@ export async function speakWithVoicevox(
 
   const chunks = splitIntoChunks(text)
 
-  // 次チャンクを先行合成するためのキュー
-  let nextBufferPromise: Promise<AudioBuffer | null> = synthesizeChunk(baseUrl, chunks[0], speakerId, ctx, signal)
+  // 次チャンクを先行合成するためのキュー。
+  // 最初のチャンクは、間を置いている最中に合成しておいたものがあればそれを使う
+  // （`prewarmVoicevox`）。打ち切られていた・失敗していた場合はここで作り直す。
+  let nextBufferPromise: Promise<AudioBuffer | null> = (async () => {
+    if (prewarmed && prewarmed.text === text) {
+      const buffered = await prewarmed.first
+      if (buffered) return buffered
+      log.debug('[VoiceVox] 先行合成が使えなかったため作り直す')
+    }
+    return synthesizeChunk(baseUrl, chunks[0], speakerId, ctx, signal)
+  })()
 
   // 次のチャンクを再生開始する予定時刻（AudioContext の時間軸）
   let scheduleAt = -1
@@ -467,6 +544,9 @@ export async function speakWithVoicevox(
     if (scheduleAt < 0) {
       // 最初のチャンク: 即時再生
       scheduleAt = ctx.currentTime
+      // 声が出るまでの実測。**先行合成（`prewarmVoicevox`）が効いているかの確認に使う。**
+      // 効いていれば 1 桁 ms、効いていなければ合成の分（LAN 越しで 150〜350ms）が乗る。
+      log.debug(`[VoiceVox] 最初の音まで ${Math.round(performance.now() - startedAt)}ms`)
     }
     // scheduleAt が過去になっている場合（合成が再生より遅れた）は現時刻にフォールバック
     if (scheduleAt < ctx.currentTime) scheduleAt = ctx.currentTime
