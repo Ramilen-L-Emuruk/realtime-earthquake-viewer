@@ -22,27 +22,63 @@ let currentAbortController: AbortController | null = null
 // 起こるため、素通しにするとログが埋まって他の異常が見えなくなる。
 const warnNoAudio = createLogThrottle(30000)
 
+// チャンク末尾の間を付けられなかったときの記録の間引き。応答形式が変わっていれば読み上げの
+// たびに全チャンクで起こるため、素通しにするとログが埋まる。
+const warnNoChunkBreak = createLogThrottle(30000)
+
 // 句区切り辞書エントリの accent_phrases 取得結果キャッシュ（"speakerId:キー" -> AccentPhrase[]）。
 // 同じ地名・同じ話者の組み合わせで毎回 /accent_phrases を叩き直さないようにする。
 const phraseBreakCache = new Map<string, AccentPhrase[]>()
 
-// 辞書該当「地名」の直後に挿入する短いポーズ（VOICEVOX が読点「、」に対して付与する pause_mora を参考にした値）。
+/**
+ * アクセント句の後ろに置く無音（`pause_mora`）を作る。
+ * 長さは合成時に `speedScale` で割られるため、**実際に聞こえる秒数は値 ÷ 1.2**（→ 話速の節）。
+ */
+function pauseMora(vowelLength: number): AccentPhrase {
+  return {
+    text: '、',
+    consonant: null,
+    consonant_length: null,
+    vowel: 'pau',
+    vowel_length: vowelLength,
+    pitch: 0,
+  }
+}
+
+// 辞書該当「地名」の直後に挿入する短いポーズ。
 // 抑揚の不連続そのものは {@link refineProsody} が引き直して解消するが、地名の切れ目には短い間があった方が
 // 「区切って言い直した」ように聞こえて自然なため残している。
 // 「深発地震」「遠地地震」等の一般用語（isPlaceNameKey が false を返すもの）は文中に自然に溶け込む語なので対象外。
-const DICT_TRAILING_PAUSE = {
-  text: '、',
-  consonant: null,
-  consonant_length: null,
-  vowel: 'pau',
-  vowel_length: 0.12,
-  pitch: 0,
-}
+const DICT_TRAILING_PAUSE = pauseMora(0.12)
 
-/** フレーズ配列の最後の要素に辞書語用の短いポーズを付与したコピーを返す（キャッシュされた元配列は変更しない）。 */
-function withTrailingPause(phrases: AccentPhrase[]): AccentPhrase[] {
+/**
+ * チャンク末尾の句読点に与える無音。
+ *
+ * {@link splitIntoChunks} は句読点の**後ろ**で割るため、句読点は必ずチャンクの末尾に来る。
+ * この位置の句読点に `/audio_query` は `pause_mora` を付けない（後ろに何も続かないため。
+ * 実測: 話者 0・2・3 のいずれでも最後のアクセント句は `null`。読点だけの `"、"` は
+ * `accent_phrases` が空配列で返る）。そしてチャンクは隙間なく詰めて鳴らすので
+ * （{@link speakWithVoicevox} の `scheduleAt += buffer.duration`）、補わないと句読点が音にならない。
+ *
+ * 値はチャンク境界に元からある無音（`prePhonemeLength` + `postPhonemeLength` = 0.1 + 0.1）を
+ * 差し引いて、文中の読点と同じ間になるよう決めた。実測（speedScale 1.2 適用後）:
+ * 境界の既存無音 0.18 秒／文中の読点 0.27 秒／差 0.09 秒 → speedScale を掛け戻した 0.107 を 0.11 に丸めた。
+ * {@link DICT_TRAILING_PAUSE} と近い値になるのは偶然で、あちらは「無音の全量」、こちらは
+ * 「既にある無音への足し分」を表す別の量。
+ *
+ * 句点と読点で値を変えていないのは、VOICEVOX 自身が文中でどちらにもほぼ同じ長さを与えるため
+ * （実測: 読点 0.30〜0.38・句点 0.32）。
+ */
+const CHUNK_BREAK_PAUSE = pauseMora(0.11)
+
+/**
+ * フレーズ配列の最後の要素に指定の無音を付与したコピーを返す（キャッシュされた元配列は変更しない）。
+ * 既に `pause_mora` が入っていても置き換える（足さない）。辞書地名がチャンク末尾に来た場合に
+ * 辞書側の間と句読点の間が二重にならないようにするため。
+ */
+function withTrailingPause(phrases: AccentPhrase[], pause: AccentPhrase): AccentPhrase[] {
   if (phrases.length === 0) return phrases
-  const last = { ...phrases[phrases.length - 1], pause_mora: DICT_TRAILING_PAUSE }
+  const last = { ...phrases[phrases.length - 1], pause_mora: pause }
   return [...phrases.slice(0, -1), last]
 }
 
@@ -133,6 +169,13 @@ export async function fetchVoicevoxSpeakers(baseUrl: string): Promise<VoicevoxSp
   }
 }
 
+// チャンクの区切りに使う句読点。**分割位置の判定（{@link splitIntoChunks}）と、チャンク末尾に
+// 間を持たせる判定（{@link CHUNK_BREAK_PAUSE}）で同じ集合を使うこと。** 片方だけ増やすと、
+// 増やした文字で割れたのに間が入らないチャンクができる。
+const CHUNK_BREAK_PUNCTUATION = '。、！？'
+const CHUNK_SPLIT_RE = new RegExp(`(?<=[${CHUNK_BREAK_PUNCTUATION}])`)
+const CHUNK_TAIL_RE = new RegExp(`[${CHUNK_BREAK_PUNCTUATION}]$`)
+
 /**
  * テキストを句読点で分割してチャンクのリストを返す。
  * 短すぎるチャンクは次と結合して自然さを保つ。
@@ -142,7 +185,7 @@ export async function fetchVoicevoxSpeakers(baseUrl: string): Promise<VoicevoxSp
  */
 export function splitIntoChunks(text: string): string[] {
   // 句点・読点・感嘆符・疑問符の後ろで分割
-  const raw = text.split(/(?<=[。、！？])/)
+  const raw = text.split(CHUNK_SPLIT_RE)
     .map(s => s.trim())
     .filter(s => s.length > 0)
 
@@ -232,18 +275,27 @@ async function buildAccentPhrases(
   ])
   if (!prePhrases || !matchedPhrasesRaw || !postPhrases) return null
 
-  const matchedPhrases = isPlaceNameKey(match.key) ? withTrailingPause(matchedPhrasesRaw) : matchedPhrasesRaw
+  const matchedPhrases = isPlaceNameKey(match.key)
+    ? withTrailingPause(matchedPhrasesRaw, DICT_TRAILING_PAUSE)
+    : matchedPhrasesRaw
 
   return [...prePhrases, ...matchedPhrases, ...postPhrases]
 }
 
-/** 1チャンクを audio_query → synthesis して AudioBuffer を返す。失敗時は null。 */
+/**
+ * 1チャンクを audio_query → synthesis して AudioBuffer を返す。失敗時は null。
+ *
+ * @param hasNextChunk 後続のチャンクがあるか。真のとき、末尾の句読点に間を持たせる
+ *   （{@link CHUNK_BREAK_PAUSE}）。**最後のチャンクには渡さないこと。** 読み終わりに無音が伸び、
+ *   再生完了を待っている次の読み上げがその分遅れる。
+ */
 async function synthesizeChunk(
   baseUrl: string,
   chunk: string,
   speakerId: number,
   ctx: AudioContext,
   signal?: AbortSignal,
+  hasNextChunk = false,
 ): Promise<AudioBuffer | null> {
   try {
     const queryRes = await fetch(
@@ -262,6 +314,24 @@ async function synthesizeChunk(
       // signal は下の /synthesis と必ず共有すること。共有していれば、割り込みで中断された場合に
       // 補正前の accent_phrases がそのまま合成まで進むことがない（refineProsody の catch 参照）。
       if (phrases) query.accent_phrases = await refineProsody(baseUrl, phrases, speakerId, signal) ?? phrases
+    }
+
+    // チャンク末尾の句読点は /audio_query では音にならないため、ここで間を持たせる（理由は
+    // CHUNK_BREAK_PAUSE）。**辞書の組み直しと引き直しの後に置くこと。** refineProsody は
+    // pause_mora を引き直し前の値へ戻すので、先に付けても消えはしないが、辞書地名が末尾に
+    // 来たときにどちらの間が残るかが読み取りづらくなる。
+    if (hasNextChunk && CHUNK_TAIL_RE.test(chunk)) {
+      const phrases = query.accent_phrases
+      if (Array.isArray(phrases)) {
+        query.accent_phrases = withTrailingPause(phrases as AccentPhrase[], CHUNK_BREAK_PAUSE)
+      } else {
+        // 応答形式が想定と違う。**音は鳴るので気づけない**が、句読点の間が入らないまま合成が
+        // 続き、地名を読点で並べても一続きに聞こえる状態（この処理を入れた理由そのもの）へ
+        // 静かに戻る。全チャンク失敗の警告（warnNoAudio）にも引っかからないため、ここで残す。
+        warnNoChunkBreak(() => log.debug(
+          '[VoiceVox] accent_phrases が配列でないため句読点の間を付けられない', { chunk },
+        ))
+      }
     }
 
     query.speedScale = 1.2
@@ -321,7 +391,7 @@ export function prewarmVoicevox(baseUrl: string, text: string, speakerId: number
   const first = (async () => {
     // 辞書は句区切りにしか使わないので、取れなくても合成は続ける（本再生と同じ扱い）
     await loadTtsPhraseBreakDict().catch(() => { /* 区切りなしで合成する */ })
-    return synthesizeChunk(baseUrl, chunks[0], speakerId, ctx, ctrl.signal)
+    return synthesizeChunk(baseUrl, chunks[0], speakerId, ctx, ctrl.signal, chunks.length > 1)
   })()
   const entry: PrewarmedSpeech = {
     text,
@@ -443,7 +513,9 @@ export async function speakWithVoicevox(
       if (buffered) return buffered
       log.debug('[VoiceVox] 先行合成が使えなかったため作り直す')
     }
-    return synthesizeChunk(baseUrl, chunks[0], speakerId, ctx, signal)
+    // hasNextChunk は先行合成（prewarmVoicevox）と必ず同じ判定にすること。食い違うと、
+    // 先に合成したものを使えたときと作り直したときで末尾の間が変わる。
+    return synthesizeChunk(baseUrl, chunks[0], speakerId, ctx, signal, chunks.length > 1)
   })()
 
   // 次のチャンクを再生開始する予定時刻（AudioContext の時間軸）
@@ -528,7 +600,7 @@ export async function speakWithVoicevox(
 
     // 次チャンクの合成を先行開始（現在のチャンクの再生と並行）
     if (i + 1 < chunks.length) {
-      nextBufferPromise = synthesizeChunk(baseUrl, chunks[i + 1], speakerId, ctx, signal)
+      nextBufferPromise = synthesizeChunk(baseUrl, chunks[i + 1], speakerId, ctx, signal, i + 2 < chunks.length)
     }
 
     if (!buffer) continue  // 合成失敗したチャンクはスキップ
