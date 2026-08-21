@@ -2,7 +2,18 @@
 // WebSocket そのものは jsdom でもモックしないため、ここではモジュール公開の
 // ユーティリティ（close code 判定）と、fetch をモックできる REST 取得を対象にする。
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { isNonRecoverableCloseCode, fetchDmdataGdEarthquakes } from './dmdata'
+import {
+  isNonRecoverableCloseCode,
+  fetchDmdataGdEarthquakes,
+  fetchDmdataEarthquakes,
+  fetchDmdataTsunamis,
+  fetchDmdataLpgms,
+  fetchDmdataNankai,
+  fetchDmdataNankaiCommentary,
+  fetchDmdataKohatsu,
+  DmdataWebSocket,
+} from './dmdata'
+import { DmdataApiKeyError, DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
 import { log } from '../utils/logger'
 import { serverNow } from '../utils/clock'
 
@@ -270,5 +281,98 @@ describe('fetchDmdataGdEarthquakes', () => {
     expect(log.warn).toHaveBeenCalledTimes(1)
     expect(String(vi.mocked(log.warn).mock.calls[0][0])).toContain('取得失敗')
     expect(log.error).not.toHaveBeenCalled()
+  })
+})
+// 通信に載せられない文字（日本語入力の変換途中の値など）を含むキーが渡ったときの契約。
+// 呼び出し側（useEarthquakes）が通信前に弾くのが本筋だが、そこが漏れても
+// 「補助情報の取得は null / 空配列」「主系の取得は理由の分かる例外」という約束を守る。
+describe('APIキーが不正なときの取得の振る舞い', () => {
+  const INVALID_KEY = 'abc123あ'
+
+  /** 呼ばれたら失敗する fetch。1 度も通信を試みないことを確かめる。 */
+  function stubForbiddenFetch() {
+    const spy = vi.fn(async () => { throw new Error('通信してはいけない') })
+    vi.stubGlobal('fetch', spy)
+    return spy
+  }
+
+  // 補助情報の 3 経路。以前はヘッダを組む行が try の外にあったため、ここの例外が
+  // Promise.all の .catch まで飛び「想定外の失敗」として記録されていた。
+  it.each([
+    ['南海トラフ地震臨時情報', () => fetchDmdataNankai(INVALID_KEY)],
+    ['後発地震注意情報', () => fetchDmdataKohatsu(INVALID_KEY)],
+    ['南海トラフ地震関連解説情報', () => fetchDmdataNankaiCommentary(INVALID_KEY)],
+  ])('%s は null を返し、例外を漏らさない', async (_name, call) => {
+    const fetchSpy = stubForbiddenFetch()
+
+    await expect(call()).resolves.toBeNull()
+
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(log.error).toHaveBeenCalledTimes(1)
+    expect(String(vi.mocked(log.error).mock.calls[0][0])).toContain(DMDATA_API_KEY_INVALID_MESSAGE)
+  })
+
+  it('長周期地震動観測情報は空配列を返し、例外を漏らさない', async () => {
+    const fetchSpy = stubForbiddenFetch()
+
+    await expect(fetchDmdataLpgms(INVALID_KEY, new Date().toISOString())).resolves.toEqual([])
+
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(log.error).toHaveBeenCalledTimes(1)
+  })
+
+  // 主系（地震・津波・震源カタログ）は失敗を隠さず例外にする契約のまま。
+  // 変えるのはメッセージだけで、DOMException ではなく理由の分かる型を投げる。
+  it.each([
+    ['地震履歴', () => fetchDmdataEarthquakes(INVALID_KEY, 10)],
+    ['津波履歴', () => fetchDmdataTsunamis(INVALID_KEY, 10)],
+    ['震源カタログ', () => fetchDmdataGdEarthquakes(INVALID_KEY, 30)],
+  ])('%s は DmdataApiKeyError を投げる', async (_name, call) => {
+    const fetchSpy = stubForbiddenFetch()
+
+    await expect(call()).rejects.toThrow(DmdataApiKeyError)
+
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+})
+
+// 今回の修正の背景そのもの。以前は btoa の DOMException が `err.message === 'auth'` に一致せず、
+// 30 秒間隔のバックオフで永久に再接続し続け、しかも失敗ログは debug 配下なので無音だった。
+//
+// authHeader はチケット取得の fetch より先に投げるため `new WebSocket()` へ到達しない。
+// よって WebSocket をモックしなくてもこの分岐だけを検証できる。
+describe('DmdataWebSocket: APIキーが不正なとき', () => {
+  /** tryConnect は async。catch へ到達するまでマイクロタスクを流す。 */
+  async function drain() {
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+  }
+
+  it('再接続せず停止し、理由を error として記録する', async () => {
+    vi.useFakeTimers()
+    const fetchSpy = vi.fn(async () => { throw new Error('通信してはいけない') })
+    vi.stubGlobal('fetch', fetchSpy)
+    const ws = new DmdataWebSocket('abc123あ')
+    const statuses: string[] = []
+    ws.onStatusChange = (s) => { statuses.push(s) }
+
+    try {
+      ws.connect()
+      await drain()
+
+      expect(statuses).toEqual(['connecting', 'disconnected'])
+      expect(fetchSpy).not.toHaveBeenCalled()
+      expect(log.error).toHaveBeenCalledTimes(1)
+      expect(String(vi.mocked(log.error).mock.calls[0][0])).toContain('APIキーが不正')
+
+      // バックオフの上限（RECONNECT_MAX_MS = 30 秒）を大きく超えて進めても再接続しない。
+      // ここが効いていないと、無音のまま延々とチケット取得を叩き続ける状態に戻る。
+      await vi.advanceTimersByTimeAsync(120_000)
+
+      expect(statuses).toEqual(['connecting', 'disconnected'])
+      expect(fetchSpy).not.toHaveBeenCalled()
+    } finally {
+      ws.disconnect()
+      vi.useRealTimers()
+    }
   })
 })

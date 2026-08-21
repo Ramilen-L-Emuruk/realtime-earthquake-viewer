@@ -6,6 +6,7 @@
 // 捨てられ、「電文 0 件だが成功」に化けて原因が追えなかった。
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { fetchDmdataReplayEvents, clearReplayCache } from './dmdataReplay'
+import { DmdataApiKeyError } from '../utils/dmdataApiKey'
 
 const HEADER = 512
 const enc = new TextEncoder()
@@ -501,5 +502,25 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     // clearReplayCache を挟まずに再試行しても、失敗はキャッシュされていないので回復する
     const { entries } = await fetchDmdataReplayEvents('key', FROM, TO)
     expect(entries).toHaveLength(1)
+  })
+})
+
+// リプレイは設定タブのボタンで起動し、デバウンス前の生のキーをそのまま使う（App.tsx の意図的な設計）。
+// ライブ経路と違って事前ゲートが無いため、ここが最後の防壁になる。
+// 投げるのが DOMException ではなく DmdataApiKeyError であることを固定する
+//（呼び出し側の useReplayController はメッセージをそのまま replayError として画面に出すため、
+//  英語の DOMException に戻ると利用者に理由が伝わらなくなる）。
+describe('APIキーが不正なとき', () => {
+  // fetch を直接差し替えるため、この describe でも後始末をする。
+  // 上の describe の afterEach は届かない（兄弟のため）。
+  const originalFetch = globalThis.fetch
+  afterEach(() => { globalThis.fetch = originalFetch })
+
+  it('通信を試みず DmdataApiKeyError を投げる', async () => {
+    const fetchSpy = vi.fn(async () => { throw new Error('通信してはいけない') })
+    globalThis.fetch = fetchSpy as unknown as typeof fetch
+
+    await expect(fetchDmdataReplayEvents('abc123あ', FROM, TO)).rejects.toThrow(DmdataApiKeyError)
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 })

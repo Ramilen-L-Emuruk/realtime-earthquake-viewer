@@ -7,6 +7,7 @@ import { log } from '../utils/logger'
 import { serverNow } from '../utils/clock'
 
 import { isDmdss } from '../utils/env'
+import { isValidDmdataApiKey, DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
 const HEATMAP_DAYS = 30
 // 1ヶ月分の再取得は API 呼び出しコストがあるため、一定時間は localStorage のキャッシュを再利用する。
 // キャッシュ取得後にライブ受信した地震は earthquakes とのマージで別途反映するため、
@@ -71,6 +72,19 @@ export function useQuakeHeatmap(
     // DMDSS版は gd.earthquake スコープ付きの APIキーが要るため、未設定なら取得しない。
     if (isDmdss && !dmdataApiKey) {
       setBasePoints(null)
+      return
+    }
+    // 通信へ載せられない文字を含むキーも取得しないが、こちらは記録を残す。
+    // 未設定は利用者が選んだ状態なので黙って出さなくてよいが、入れたキーが使えないのは異常であり、
+    // 手がかりが無いと「ヒートマップだけ出ない」理由に辿り着けない。
+    // この経路は画面にエラーを出さない仕様のため、記録を落とすと完全に無音になる。
+    if (isDmdss && !isValidDmdataApiKey(dmdataApiKey)) {
+      log.warn(`[data] 地震活動ヒートマップを取得しない: ${DMDATA_API_KEY_INVALID_MESSAGE}`)
+      // 取れないだけで、既に持っているものが無効になったわけではない。下の .catch と同じく
+      // キャッシュがあれば表示を保つ。キー入力中はデバウンス（800ms）でここを一時的に通るため、
+      // 捨てると「直している最中に、見えていたヒートマップが消える」ことになる。
+      // 変換途中の値こそこの判定を入れた理由なので、まさに直そうとしている人にだけ起きる。
+      setBasePoints(loadCache()?.points ?? null)
       return
     }
 
