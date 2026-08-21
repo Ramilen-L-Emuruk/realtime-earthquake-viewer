@@ -206,12 +206,14 @@ export function App() {
     const hold = tabHoldRef.current
     const now = Date.now()
     if (opts?.dwell && !shouldFollowNow(lastFollowRef.current, priority, now)) {
-      log.debug(`[tab] → ${tab} 追従を間引き (直前の追従から${now - (lastFollowRef.current?.at ?? 0)}ms)`)
+      log.debug(`[tab] → ${tab} 追従を間引き (直前の追従から${now - (lastFollowRef.current?.at ?? 0)}ms・駆動${source})`)
       setPanelCollapsed(false)
       return false
     }
     if (!shouldAcceptAutoTab(hold, priority, now, source)) {
-      log.debug(`[tab] → ${tab} スキップ (優先度${priority} < 保持中${hold.priority}・残り${hold.until - now}ms・駆動${source})`)
+      // **保持の側の駆動源も出すこと。** どの優先度に負けたかだけでは「何がその保持を張ったか」が
+      // 分からず、拒否の原因（受信時要求か・手動選択か・アイドル復帰か）を突き合わせられない。
+      log.debug(`[tab] → ${tab} スキップ (優先度${priority}・駆動${source} < 保持中${hold.priority}・駆動${hold.source}・残り${hold.until - now}ms)`)
       setPanelCollapsed(false)
       return false
     }
@@ -272,10 +274,15 @@ export function App() {
    * - **アイドル復帰**。既定の状態へ戻す操作で、拒否されると一発限りのタイマーが再スケジュール
    *   されないため二度と復帰しない。とくに設定「自動復帰までの時間」の 15 秒は `TAB_HOLD_MS` と
    *   一致するため、直前の手動操作と必ず衝突する
+   *
+   * @param source 移動後に張る保持の駆動源。**既定値を置かず必須にしてある。** 既定の状態へ戻す
+   *   経路で `'idleRevert'` を渡し忘れると読み上げ追従を弾く保持になり、「喋っているのに画面が
+   *   動かない」が復活する（理由は `shouldAcceptAutoTab`）。省略できる形にすると、次に復帰経路を
+   *   足す人が既定値のまま通してしまい、型でも実行時でも気づけない
    */
-  const forceTab = useCallback((tab: TabId, priority: TabPriority) => {
+  const forceTab = useCallback((tab: TabId, priority: TabPriority, source: TabHoldSource) => {
     tabHoldRef.current = { until: 0, priority: TAB_PRIORITY.quake, source: 'hold' }
-    requestAutoTab(tab, priority)
+    requestAutoTab(tab, priority, source)
   }, [requestAutoTab])
 
   /**
@@ -289,7 +296,7 @@ export function App() {
 
   /** ユーザー操作によるタブ移動。以後 TAB_HOLD_MS は自動切替に奪わせない。 */
   const setActiveTabByUser = useCallback((tab: TabId) => {
-    forceTab(tab, TAB_PRIORITY.manual)
+    forceTab(tab, TAB_PRIORITY.manual, 'hold')
   }, [forceTab])
 
   // 地震情報・長周期地震動情報・津波の受信によるタブ移動（`useLiveEventHandler` から呼ぶ）。
@@ -324,8 +331,8 @@ export function App() {
    *
    * 読み上げは「重いものが先」を待ち行列で保証している（`waitForSpeechSlot` /
    * `chainEEWSpeech`）。その順番が来た＝いま声に出すものが決まった瞬間に画面も合わせる。
-   * 追従どうしでは保持を見ない（理由は `shouldAcceptAutoTab`）が、読み上げを持たない経路
-   * （揺れ検知・手動選択・アイドル復帰）の保持には従来どおり譲る。
+   * 追従どうしでは保持を見ない（理由は `shouldAcceptAutoTab`）。手動選択の保持には従来どおり
+   * 譲るが、揺れ検知とアイドル復帰の保持は追従を妨げない（同じく `shouldAcceptAutoTab`）。
    *
    * **画面は声よりわずかに先に出る。** `speakWithVoicevox` は再生完了で解決する作りで、
    * 「音が鳴り始めた瞬間」を呼び出し側から観測できないため、掴めるのは合成を投入した時点まで。
@@ -363,7 +370,11 @@ export function App() {
     const tab = defaultTabRef.current
     // 既定の状態へ戻す操作なので必ず動かす（理由は forceTab）。呼び出し元は EEW 発報中・
     // 揺れ検知中を除外しているため、警報級の表示を消すことはない。
-    forceTab(tab, TAB_PRIORITY.quake)
+    // 呼び出し元はここだけで 4 つある（アイドル復帰・EEW 全解除・揺れ検知終了・揺れの可能性の失効）。
+    // `'idleRevert'` は**この呼び出しでは実質的な差を生まない**（張る重みが最低の 1 なので、
+    // 追従は優先度比較だけで通る）。それでも渡すのは、復帰という理由に駆動源を一致させておくため。
+    // 将来ここが 1 以外の重みを使うようになったとき、渡し忘れに気づく手立てが無くなる。
+    forceTab(tab, TAB_PRIORITY.quake, 'idleRevert')
     if (tab === 'tsunami') resetTsunamiScrollRef.current()
   }
 
@@ -780,7 +791,8 @@ export function App() {
         // 保持を張るのは、戻したはずの realtime を直後の地震情報に奪われないため
         // （実測: 復帰の 20 秒後に届いた地震情報が realtime を取っていた）。
         // 重みは張る理由に合わせる（揺れ検知だけのときに EEW 相当を張らない。理由は idleRevertPriority）。
-        forceTab('realtime', idleRevertPriority(hasActiveEew))
+        // 駆動源は `'idleRevert'`。読み上げ追従には譲る保持になる（理由は shouldAcceptAutoTab）。
+        forceTab('realtime', idleRevertPriority(hasActiveEew), 'idleRevert')
       } else {
         log.info(`[tab] → ${defaultTabRef.current} (アイドル復帰 idleRevertSec=${settings.idleRevertSec})`)
         revertToDefaultTab()
