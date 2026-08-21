@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { sanitize, load } from './useSettings'
+import { sanitize, load, injectDevApiKey, resolveDevApiKey, stripDevApiKey } from './useSettings'
 
 const STORAGE_KEY = 'quake-viewer-settings'
 
@@ -218,5 +218,81 @@ describe('load', () => {
     expect(result.uiScale).toBe(1) // DEFAULTS
     expect(result.notifyEEW).toBe(false) // 正常値保持
     expect(result.homeLat).toBeNull() // null 落ち
+  })
+
+  // dev サーバーでは `.env.local` の DMDATA_API_KEY が初期値に入る経路がある。テスト実行時に
+  // それが起きないことを固定する。守っているのは 3 つ（vitest が vite.config.ts を読まない・
+  // MODE === 'test'・VITE_VARIANT 未設定で isDmdss が false）で、どれが効いているかは問わない。
+  // 個々のガードは resolveDevApiKey のテストで直接押さえている。
+  it('テスト実行時は dev の APIキーを注入しない', () => {
+    expect(load().dmdataApiKey).toBe('')
+  })
+})
+
+describe('resolveDevApiKey', () => {
+  // dev サーバーで API キーを自動投入してよい条件。実行環境に左右されないよう、判定材料は
+  // すべて引数で渡す（本番ビルド・テスト・standard 版のどれでも投入しないことを個別に固定する）。
+  const devEnv = { DEV: true, MODE: 'development', DMDATA_API_KEY: 'env-key' }
+
+  it('dev・DMDSS 版・キーありなら投入する', () => {
+    expect(resolveDevApiKey(devEnv, true)).toBe('env-key')
+  })
+
+  it('本番ビルド（DEV=false）では投入しない', () => {
+    expect(resolveDevApiKey({ ...devEnv, DEV: false }, true)).toBeUndefined()
+  })
+
+  it("テスト実行時（MODE='test'）は投入しない", () => {
+    expect(resolveDevApiKey({ ...devEnv, MODE: 'test' }, true)).toBeUndefined()
+  })
+
+  it('standard 版では投入しない', () => {
+    expect(resolveDevApiKey(devEnv, false)).toBeUndefined()
+  })
+
+  it('キーが渡っていなければ undefined', () => {
+    expect(resolveDevApiKey({ DEV: true, MODE: 'development' }, true)).toBeUndefined()
+  })
+})
+
+describe('stripDevApiKey', () => {
+  // 注入した値を localStorage に残さないための除外。手入力した値は保存する。
+  it('注入値と一致するキーは保存対象から外す', () => {
+    const s = sanitize({ dmdataApiKey: 'env-key' })
+    expect(stripDevApiKey(s, 'env-key').dmdataApiKey).toBe('')
+  })
+
+  it('手入力した別の値はそのまま保存する', () => {
+    const s = sanitize({ dmdataApiKey: 'typed-by-hand' })
+    expect(stripDevApiKey(s, 'env-key').dmdataApiKey).toBe('typed-by-hand')
+  })
+
+  it('注入していなければ元のオブジェクトをそのまま返す', () => {
+    const s = sanitize({ dmdataApiKey: 'typed-by-hand' })
+    expect(stripDevApiKey(s, undefined)).toBe(s)
+  })
+
+  it('API キー以外の項目は変えない', () => {
+    const s = sanitize({ dmdataApiKey: 'env-key', soundVolume: 0.5, notifyEEW: false })
+    const result = stripDevApiKey(s, 'env-key')
+    expect(result.soundVolume).toBe(0.5)
+    expect(result.notifyEEW).toBe(false)
+  })
+})
+
+describe('injectDevApiKey', () => {
+  it('未設定なら dev のキーを差し込む', () => {
+    expect(injectDevApiKey(sanitize({ dmdataApiKey: '' }), 'dev-key').dmdataApiKey).toBe('dev-key')
+  })
+
+  it('手入力済みのキーは上書きしない', () => {
+    const result = injectDevApiKey(sanitize({ dmdataApiKey: 'typed-by-hand' }), 'dev-key')
+    expect(result.dmdataApiKey).toBe('typed-by-hand')
+  })
+
+  it('dev のキーが無ければ元のオブジェクトをそのまま返す', () => {
+    const base = sanitize({ dmdataApiKey: '' })
+    expect(injectDevApiKey(base, undefined)).toBe(base)
+    expect(injectDevApiKey(base, '')).toBe(base)
   })
 })

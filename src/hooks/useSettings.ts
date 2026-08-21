@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { log } from '../utils/logger'
 import { isDmdss } from '../utils/env'
 import { isValidIntensityScale } from '../utils/intensity'
@@ -171,8 +171,62 @@ export function sanitize(partial: Partial<AppSettings>): AppSettings {
   }
 }
 
+/**
+ * dev サーバーで自動投入する API キーを決める（検証のたびに設定タブへ貼り直す手間を省く経路）。
+ *
+ * 値を渡しているのは vite.config.ts の devApiKeyDefine で、dev サーバー・DMDSS 版・`--host` なし
+ * のときだけ define する。ここで重ねて見るのは本番ビルドとテストの 2 つ。
+ *   - 本番ビルドでは `DEV` が false に畳まれ、この分岐ごと消える。
+ *   - テスト（`MODE === 'test'`）では、vitest が vite.config.ts を読まない独立設定
+ *     （vitest.config.ts）なので値がそもそも届かない。届くようになっても `.env.local` を持つ
+ *     手元だけテストが落ちないようにする。
+ *
+ * 判定材料を引数で受けるのはテストのため（実行時は下の devApiKey が実際の値を渡す）。
+ */
+export function resolveDevApiKey(
+  env: { DEV: boolean; MODE: string; DMDATA_API_KEY?: string },
+  isDmdssVariant: boolean,
+): string | undefined {
+  if (!env.DEV || env.MODE === 'test') return undefined
+  if (!isDmdssVariant) return undefined
+  return env.DMDATA_API_KEY
+}
+
+function devApiKey(): string | undefined {
+  return resolveDevApiKey(import.meta.env, isDmdss)
+}
+
+/**
+ * 未設定のときだけ dev の API キーを差し込む。設定タブで手入力した値は踏み潰さない。
+ * 差し込むのは state の初期値だけで、localStorage には保存しない（保存側は stripDevApiKey）。
+ *
+ * export はテスト向け（ランタイムからは load 内でのみ使う）。
+ */
+export function injectDevApiKey(settings: AppSettings, key: string | undefined): AppSettings {
+  if (!key || settings.dmdataApiKey !== '') return settings
+  return { ...settings, dmdataApiKey: key }
+}
+
+/**
+ * localStorage へ書き出す形に整える。dev で自動投入したキーは保存しない。
+ *
+ * updateSetting は変更対象以外も含めた全項目を毎回保存するため、素通しにすると API キー欄に
+ * 触れていなくても注入値が永続化される。そうなると以降は手入力と区別できず（injectDevApiKey は
+ * 空でない値を上書きしないため）、`.env.local` を書き換えても反映されないブラウザが残る。
+ *
+ * export はテスト向け（ランタイムからは useSettings 内でのみ使う）。
+ */
+export function stripDevApiKey(settings: AppSettings, injectedKey: string | undefined): AppSettings {
+  if (!injectedKey || settings.dmdataApiKey !== injectedKey) return settings
+  return { ...settings, dmdataApiKey: '' }
+}
+
 // export はテスト向け（ランタイムからは useSettings 内でのみ使う）。
 export function load(): AppSettings {
+  return injectDevApiKey(loadStored(), devApiKey())
+}
+
+function loadStored(): AppSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return DEFAULTS
@@ -190,6 +244,8 @@ export function load(): AppSettings {
 
 export function useSettings() {
   const [settings, setSettings] = useState<AppSettings>(load)
+  // dev で自動投入した値を保存対象から外すために覚えておく（理由は stripDevApiKey）。
+  const injectedApiKey = useRef(devApiKey())
 
   // useCallback で参照を安定化する（React.memo 化された SettingsTab へ props として
   // 渡されるため、毎レンダー新関数だと memo が破られる）。
@@ -200,7 +256,7 @@ export function useSettings() {
     setSettings(prev => {
       const next = { ...prev, [key]: value }
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(stripDevApiKey(next, injectedApiKey.current)))
       } catch (e) {
         // 容量超過・プライベートブラウジング等で保存できないケース。state には反映するので
         // 操作自体は効くが、次回の起動時には既定値へ戻る。無言だと「設定が勝手に戻る」
