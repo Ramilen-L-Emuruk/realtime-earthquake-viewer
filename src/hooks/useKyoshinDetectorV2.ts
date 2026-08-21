@@ -225,7 +225,7 @@ export function useKyoshinDetectorV2(
       return
     }
     stepFailRef.current = 0
-    const { state, detections, triggers, recentOnsetKeys } = stepResult
+    const { state, detections, triggers, recentOnsetKeys, prunedMembers } = stepResult
     stateRef.current = state
 
     const floors: Record<string, number> = {}
@@ -246,6 +246,9 @@ export function useKyoshinDetectorV2(
       // 孤立した震度0点の間引き（kyoshinDetectionView.dropIsolatedZeroPoints）が効いているかを
       // 実運用で追えるようにする。間引きは静かに点を消す処理で、失敗しても例外が出ない。
       recentOnsetKeys: recentOnsetKeys.length,
+      // 値が下がりきったメンバーの刈り取り（kyoshinDetector.pruneFadedMembers）も同じく静かに
+      // 点を消す処理。今フレームで外した延べ点数を出す。
+      prunedMembers,
       dataTime,
       eewActive: hasActiveNonAssumedEEWRef.current,
     }

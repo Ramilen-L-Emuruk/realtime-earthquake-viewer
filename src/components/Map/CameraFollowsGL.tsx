@@ -218,8 +218,8 @@ export function FitToDetectionGL({
 }: {
   /**
    * カメラが追う検知点。**実際に地図へ描かれている点だけ**を渡すこと（`JapanMapGL` の
-   * `detectedFitPoints`）。イベントのメンバーの和集合（`detectedPoints`）は揺れが収まっても
-   * 縮まないため、それを追うと大地震のあと画が全国に張り付いたまま戻らない。
+   * `detectedFitPoints`）。イベントのメンバーの和集合（`detectedPoints`）は現在の震度で
+   * 絞られていないため、それを追うと大地震のあと画が全国に張り付いたまま戻らない。
    */
   points: DetectedPoint[]
   /**
@@ -227,6 +227,11 @@ export function FitToDetectionGL({
    * 検知終了とみなさないために分けている——描画側のフィルタ（震度0未満・欠測・孤立した震度0）で
    * 一時的に描ける点が無くなることは検知中にも起きる。ここを `points.length` で兼ねると、
    * そのたびに日本全体へ戻して寄り直す明滅になる。
+   *
+   * メンバー自体も値が下がりきれば外れる（`kyoshinDetector` の `pruneFadedMembers`）が、
+   * **イベントが生存している間に空になることはない**——猶予 `MEMBER_DROP_MS` が
+   * `TRIG_ACTIVE_MS + HOLD_MS` 以上であることがそれを保証している。この下限を崩すと、
+   * 確定検知が続いている最中にここが false へ落ちて、同じ明滅が戻る。
    */
   hasDetection: boolean
   hasEew: boolean
