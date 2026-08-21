@@ -1,12 +1,13 @@
 import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, TsunamiArea, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
 import { eewMaxScale, eewMaxLpgmClass, eewNoForecastReason } from './eew'
 import { getIntensityLabel } from './intensity'
-import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay } from './tsunami'
+import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight } from './tsunami'
 import { joinSegments, plain, type SpeechSegment } from './ttsFollow'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
 import { getStationCoordsCache, buildAreaPrefIndex, buildStationPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, type RegionOrderIndex } from './stationCoords'
 import { hasMagnitude, hasDepth } from './formatters'
+import { log } from './logger'
 
 const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch', 'Forecast']
 
@@ -427,13 +428,80 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
   return text
 }
 
-/** VTSE41/51/52 津波情報の読み上げテキストを生成する（新規発表・引き上げ時）。 */
+/**
+ * 波高の表記を読める形にする。"３ｍ" → "3メートル"、"10m以上" → "10メートル以上"、
+ * "０．５ｍ" → "0.5メートル" など。
+ *
+ * **全角と半角の両方が来る。** 経路によって表記が違う（XML 履歴は全角、JSON は半角）ため、
+ * どちらか片方だけを変換すると素通りした側が「えむ」と読まれる。
+ *
+ * 単位を置き換えるのは**数字の直後だけ**。この関数は `headline`（電文の文章）にも通すので、
+ * 無条件に m を置き換えると文中の語を壊す。大文字の M を対象にしないのも同じ理由で、
+ * 数字の直後の M はマグニチュード（「M7.6」）を指す。
+ */
 function tsunamiHeightToSpeech(description: string): string {
-  // "３ｍ" → "3メートル"、"１０ｍ以上" → "10メートル以上"、"０．５ｍ" → "0.5メートル" など
   return description
     .replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
     .replace(/．/g, '.')
-    .replace(/ｍ/g, 'メートル')
+    .replace(/(\d)\s*[mｍ]/g, '$1メートル')
+}
+
+/**
+ * 数値で表せない予想波高（気象庁の「巨大」「高い」）を、文に馴染む言い方に直す。
+ *
+ * この 2 つは規模が大きく数値化できないときの定型表記で、そのまま並べると
+ * 「岩手県で巨大が予想されています」と崩れる。活用が違う（「巨大」は形容動詞、「高い」は
+ * 形容詞）ので機械的に語尾を足せず、表記ごとに持つ。
+ *
+ * 表になければそのまま通す。知らない表記を無理に加工して壊すより、少しぎこちない方がまし。
+ */
+const NON_NUMERIC_HEIGHT_PHRASE: Record<string, string> = {
+  巨大: '巨大な津波',
+  高い: '高い津波',
+}
+
+function heightPhrase(description: string): string {
+  const spoken = tsunamiHeightToSpeech(description)
+  if (/\d/.test(spoken)) return spoken
+  const phrase = NON_NUMERIC_HEIGHT_PHRASE[spoken.trim()]
+  // 素通しした表記は記録に残す。読み上げは崩れた文のまま流れるので、聞くまで気づけない
+  if (!phrase) log.debug('[tts] 予想波高の表記が表に無い（そのまま読む）', spoken)
+  return phrase ?? spoken
+}
+
+/**
+ * 予想波高が付いていない区域を「〇〇にも津波警報が発表されています。」で補う。
+ *
+ * 区域名を波高の文でだけ挙げる作りなので、**波高を持たない区域はそのままだと読み上げから
+ * 落ちる**。予想波高が数値で来ない電文は実際にある（「巨大」「高い」の表記は DMDATA 経路で
+ * `maxHeight` ごと落ちる。→ `dmdataParser`）ほか、警報が先に出て波高が後続報で付くこともある。
+ * 発表されている区域を黙って省くわけにはいかない。
+ *
+ * **判定は `hasForecastHeight` に任せる**（カードの波高見出しと同じ述語）。`maxHeight` の有無で
+ * 見ると、値が 0 で条件も無い区域が波高の文にもここにも入らず、どこにも現れなくなる。
+ */
+function areasWithoutHeightSentence(
+  areas: readonly TsunamiArea[],
+  observations: readonly TsunamiObservation[],
+  gradeLabel: string,
+): SpeechSegment[] {
+  const without = areas.filter(a => !hasForecastHeight(a))
+  if (without.length === 0) return []
+  return [
+    ...areaNameSegments(orderAreasForSpeech(without, observations)),
+    plain(`にも${gradeLabel}が発表されています。`),
+  ]
+}
+
+/**
+ * 等級を告げる断片。**その等級のカードを指す参照を持たせる。**
+ *
+ * 追従スクロールが「また、次の地域に津波警報が発表されています」を読んだ時点でカードの頭へ
+ * 移れるようにするため。区域名を読み始めてから動くと、等級の見出しが視野の上に切れたまま
+ * 区域だけが見える形になる。
+ */
+function gradeSegment(text: string, grade: TsunamiGrade): SpeechSegment {
+  return { text, refs: [{ kind: 'grade', grade }] }
 }
 
 /** 区域名を読点で連結した断片列を作る（各区域名が自分を指す参照を持つ）。 */
@@ -447,56 +515,82 @@ function areaNameSegments(areas: readonly TsunamiArea[]): SpeechSegment[] {
 }
 
 /**
- * 同じ波高の区域をまとめ「岩手県、宮城県で10メートル以上、福島県で6メートル」の形の文を作る。
+ * 「岩手県、宮城県で10メートル以上、福島県で6メートルが予想されています。」の形の文を作る。
  *
- * **区切りはカードの波高見出しに合わせる**（`groupAreasForCardDisplay`）。波高の文字列だけを
- * キーにまとめると、間に別の波高の区域が挟まっていても飛び越えて 1 つの句にしてしまい、
- * カードの見出し分割と食い違う。たとえば電文順が A(10m以上)・B(5m)・C(10m以上) のとき、
- * 「A、Cで10メートル以上、Bで5メートル」と読むと A と C が同じ句に入り、追従スクロールが
- * その間にある B の行を跨いだ範囲を対象にしてしまう。
+ * **区域名と波高を 1 文で言い切る。** 区域を挙げる文と波高を伝える文を分けると、同じ区域名を
+ * 2 回読むことになる（予報区が数十に及ぶ大規模警報では、それだけで読み上げが倍近く伸びる）。
+ * 読み上げが長引くと、優先度の低い電文が待ちの上限に達して割り込み、津波の読み上げが途中で
+ * 切られる（`HIGHER_PRIORITY_SPEECH_MAX_WAIT_MS`）。冗長さは聞き心地だけの問題ではない。
  *
+ * **渡すのは 1 つの等級の区域だけ。** 等級をまたいで 1 文にまとめない ―― カードは等級ごとに
+ * 分かれているので、まとめると読み上げの句がカードを跨ぎ、追従スクロールがその間の行を
+ * 含んだ範囲を対象にする。
+ *
+ * **句の区切りはカードの波高見出しに合わせる**（`groupAreasForCardDisplay`）。波高の文字列だけを
+ * キーにまとめると、間に別の波高の区域が挟まっていても飛び越えて 1 つの句にしてしまう。
+ * たとえば電文順が A(3m)・B(6m)・C(3m) のとき「A、Cで3メートル、Bで6メートル」と読むと
+ * A と C が同じ句に入り、追従がその間の B の行を跨いだ範囲を対象にする。
+ *
+ * 波高を持つ区域が 1 つも無ければ空を返す（呼び出し側が区域名だけを挙げる文に切り替える）。
  * `areas` は**並べ替える前**のものを渡すこと（グループの境界は電文順で決まる）。
  */
-function tsunamiHeightSentence(
+function areaHeightSentence(
   areas: readonly TsunamiArea[],
   observations: readonly TsunamiObservation[],
 ): SpeechSegment[] {
   const groups = groupAreasForCardDisplay([...areas], [...observations])
-    .map(g => ({ heightLabel: g.heightLabel, areas: g.areas.filter(a => a.maxHeight) }))
+    // 判定は `hasForecastHeight` に揃える（`maxHeight` の有無で見ると、グループ分けの側と
+    // 基準が食い違って区域が落ちる。理由は `areasWithoutHeightSentence` の JSDoc）
+    .map(g => ({ heightLabel: g.heightLabel, areas: g.areas.filter(hasForecastHeight) }))
     .filter(g => g.heightLabel !== null && g.areas.length > 0)
   if (groups.length === 0) return []
 
-  const segments: SpeechSegment[] = [plain('予想最大波高は、')]
+  const segments: SpeechSegment[] = []
   groups.forEach((g, i) => {
     if (i > 0) segments.push(plain('、'))
     segments.push(...areaNameSegments(g.areas))
-    segments.push(plain(`で${tsunamiHeightToSpeech(g.heightLabel!)}`))
+    segments.push(plain(`で${heightPhrase(g.heightLabel!)}`))
   })
-  segments.push(plain('です。'))
+  segments.push(plain('が予想されています。'))
   return segments
 }
 
-// 下位グレード区域を1文にまとめる。例:「また、〇〇に津波警報、××に津波注意報が発表されています。」
+/**
+ * 上位の等級より下の区域を、等級ごとに読む。
+ * 例:「また、次の地域に津波警報が発表されています。青森県太平洋沿岸、茨城県で3メートルが
+ * 予想されています。また、次の地域に津波注意報が発表されています。北海道太平洋沿岸東部で
+ * 1メートルが予想されています。」
+ *
+ * 高さを等級ごとに添えるのは、**その区域にいる人へ高さを伝えるため**（上位の警報の高さだけを
+ * 読むと、注意報の区域には何も伝わらない）。
+ *
+ * **「次の地域に」で等級を先に言い切り、区域名は次の文で波高と一緒に挙げる。** 区域を挙げる
+ * 文と波高の文を分けると同じ区域名を 2 回読むことになる（→ `areaHeightSentence`）。
+ * 波高がまだ付いていない区域だけの等級では挙げる先が無くなるので、その場合に限り
+ * 「〇〇に津波警報が発表されています」と区域名を直接続ける形に落とす。
+ */
 function lowerGradeSentence(
   areas: readonly TsunamiArea[],
   topGrade: string,
   observations: readonly TsunamiObservation[],
 ): SpeechSegment[] {
-  const perGrade: SpeechSegment[][] = []
+  const segments: SpeechSegment[] = []
   for (const g of GRADE_ORDER) {
     if (g === topGrade) continue
-    const matched = orderAreasForSpeech(areas.filter(a => a.grade === g), observations)
-    if (matched.length === 0) continue
-    perGrade.push([...areaNameSegments(matched), plain(`に${tsunamiGradeLabel(g)}`)])
+    const inGrade = areas.filter(a => a.grade === g)
+    if (inGrade.length === 0) continue
+    const heights = areaHeightSentence(inGrade, observations)
+    // 等級ごとに「また、」で始める。文が切れる位置が耳で分かるようにするため
+    segments.push(plain('また、'))
+    if (heights.length > 0) {
+      segments.push(gradeSegment(`次の地域に${tsunamiGradeLabel(g)}が発表されています。`, g))
+      segments.push(...heights)
+      segments.push(...areasWithoutHeightSentence(inGrade, observations, tsunamiGradeLabel(g)))
+    } else {
+      segments.push(...areaNameSegments(orderAreasForSpeech(inGrade, observations)))
+      segments.push(plain(`に${tsunamiGradeLabel(g)}が発表されています。`))
+    }
   }
-  if (perGrade.length === 0) return []
-
-  const segments: SpeechSegment[] = [plain('また、')]
-  perGrade.forEach((part, i) => {
-    if (i > 0) segments.push(plain('、'))
-    segments.push(...part)
-  })
-  segments.push(plain('が発表されています。'))
   return segments
 }
 
@@ -522,17 +616,27 @@ export function tsunamiToSegments(event: JMATsunami): SpeechSegment[] {
   const observations = event.observations ?? []
   // 波高の文はグループの境界が電文順で決まるため、並べ替える前のものを渡す
   const rawTopAreas = event.areas.filter(a => a.grade === topGrade)
-  const topAreas = orderAreasForSpeech(rawTopAreas, observations)
   const gradeLabel = tsunamiGradeLabel(topGrade)
   const action = topGrade === 'MajorWarning' ? 'ただちに高台へ避難してください。'
     : topGrade === 'Warning' ? '海岸から離れてください。'
     : topGrade === 'Forecast' ? '若干の海面変動が予想されますが、被害の心配はありません。' : ''
+  const heights = areaHeightSentence(rawTopAreas, observations)
 
+  // **等級と行動を先に言い切る。** 区域を全部読んでから避難を促すと、予報区が多いほど行動指示が
+  // 遅れる。区域名は次の文で波高と一緒に挙げるので、聞き手が待たされるのは高さの情報だけ。
+  if (heights.length > 0) {
+    return [
+      gradeSegment(`${gradeLabel}が発表されました。${action}`, topGrade),
+      ...heights,
+      ...areasWithoutHeightSentence(rawTopAreas, observations, gradeLabel),
+      ...lowerGradeSentence(event.areas, topGrade, observations),
+    ]
+  }
+  // 波高がまだ付いていない（続報で後から付く）場合は、区域名を直接挙げる
   return [
     plain(`${gradeLabel}。`),
-    ...areaNameSegments(topAreas),
+    ...areaNameSegments(orderAreasForSpeech(rawTopAreas, observations)),
     plain(`に${gradeLabel}が発表されました。${action}`),
-    ...tsunamiHeightSentence(rawTopAreas, observations),
     ...lowerGradeSentence(event.areas, topGrade, observations),
   ]
 }
@@ -548,14 +652,21 @@ export function tsunamiDowngradeToSegments(event: JMATsunami): SpeechSegment[] {
 
   const observations = event.observations ?? []
   const rawTopAreas = event.areas.filter(a => a.grade === topGrade)
-  const topAreas = orderAreasForSpeech(rawTopAreas, observations)
   const gradeLabel = tsunamiGradeLabel(topGrade)
+  const heights = areaHeightSentence(rawTopAreas, observations)
 
+  if (heights.length > 0) {
+    return [
+      gradeSegment(`${gradeLabel}に切り替えられました。現在、次の地域に${gradeLabel}が発表されています。`, topGrade),
+      ...heights,
+      ...areasWithoutHeightSentence(rawTopAreas, observations, gradeLabel),
+      ...lowerGradeSentence(event.areas, topGrade, observations),
+    ]
+  }
   return [
     plain(`${gradeLabel}に切り替えられました。現在、`),
-    ...areaNameSegments(topAreas),
+    ...areaNameSegments(orderAreasForSpeech(rawTopAreas, observations)),
     plain(`に${gradeLabel}が発表されています。`),
-    ...tsunamiHeightSentence(rawTopAreas, observations),
     ...lowerGradeSentence(event.areas, topGrade, observations),
   ]
 }
@@ -614,9 +725,10 @@ function observationDetailSegments(
   return segments
 }
 
-// 波高つきの 1 地点ぶん（地点名は呼び出し側が断片にするので、それに続く部分だけを返す）
+// 波高つきの 1 地点ぶん（地点名は呼び出し側が断片にするので、それに続く部分だけを返す）。
+// 単位の読み替えは予想波高と同じ関数に通す（全角・半角の扱いを 2 か所に分けない）。
 function observedHeightSuffix(o: TsunamiObservation): string {
-  return `で${o.height!.description.replace(/m(?=以上|$)/i, 'メートル')}`
+  return `で${tsunamiHeightToSpeech(o.height!.description)}`
 }
 
 function tsunamiObservationDetailText(items: TsunamiObservation[]): string {

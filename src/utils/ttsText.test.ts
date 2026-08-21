@@ -2,7 +2,7 @@
 // 「〇時〇分」はローカルタイムゾーン依存のため、時刻の数値そのものではなく
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect } from 'vitest'
-import { earthquakeToText, eewIntensityToText, lpgmToText, tsunamiToText, tsunamiArrivalToText, type TtsRegionOptions } from './ttsText'
+import { earthquakeToText, eewIntensityToText, lpgmToText, tsunamiToText, tsunamiArrivalToText, tsunamiObservationUpdateToText, type TtsRegionOptions } from './ttsText'
 import { getStationCoordsCache } from './stationCoords'
 import type { JMAQuake, JMALpgm, EarthquakePoint, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass, JMATsunami, TsunamiArea, TsunamiObservation } from '../types/earthquake'
 
@@ -454,17 +454,17 @@ describe('津波の読み上げ: 区域名・地点名の区切り', () => {
 
   it('下位グレードの区域名を読点で区切る', () => {
     const text = tsunamiToText(makeTsunami(notoAreas))
-    expect(text).toContain('山形県、新潟県上中下越に津波警報')
-    expect(text).toContain('北海道日本海沿岸南部、青森県日本海沿岸に津波注意報')
+    expect(text).toContain('山形県、新潟県上中下越で3メートル')
+    expect(text).toContain('北海道日本海沿岸南部、青森県日本海沿岸で1メートル')
   })
 
-  it('予想最大波高が同じ区域をまとめるときも読点で区切る', () => {
+  it('予想波高が同じ区域をまとめるときも読点で区切る', () => {
     const text = tsunamiToText(makeTsunami([
       { grade: 'MajorWarning', immediate: true, name: '岩手県', maxHeight: { description: '１０ｍ以上', value: 10 } },
       { grade: 'MajorWarning', immediate: true, name: '宮城県', maxHeight: { description: '１０ｍ以上', value: 10 } },
       { grade: 'MajorWarning', immediate: true, name: '福島県', maxHeight: { description: '６ｍ', value: 6 } },
     ]))
-    expect(text).toContain('予想最大波高は、岩手県、宮城県で10メートル以上、福島県で6メートルです。')
+    expect(text).toContain('岩手県、宮城県で10メートル以上、福島県で6メートルが予想されています。')
   })
 
   it('到達確認の地点名を読点で区切る', () => {
@@ -488,9 +488,8 @@ describe('津波の読み上げ: 区域名・地点名の区切り', () => {
       { grade: 'Watch', immediate: false, name: '壱岐・対馬', maxHeight: { description: '１ｍ', value: 1 } },
       { grade: 'Watch', immediate: false, name: '有明・八代海', maxHeight: { description: '１ｍ', value: 1 } },
     ]))
-    expect(text).toContain('伊勢・三河湾、愛知県外海に津波警報が発表されました。')
-    expect(text).toContain('予想最大波高は、伊勢・三河湾、愛知県外海で3メートルです。')
-    expect(text).toContain('壱岐・対馬、有明・八代海に津波注意報')
+    expect(text).toContain('伊勢・三河湾、愛知県外海で3メートルが予想されています。')
+    expect(text).toContain('壱岐・対馬、有明・八代海で1メートル')
   })
 })
 
@@ -526,13 +525,13 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
     const text = tsunamiToText(makeTsunamiWithObs(sameHeightAreas, [
       { name: '石巻港', districtCode: '040', districtName: '宮城県', height: { value: 7.2, description: '7.2m' } },
     ]))
-    expect(text).toContain('宮城県、岩手県、福島県に大津波警報が発表されました。')
+    expect(text).toContain('宮城県、岩手県、福島県で10メートル以上が予想されています。')
   })
 
   // 対照: 観測が無ければ電文順のまま（気象庁の地理順を崩さない）
   it('観測が無ければ電文順のまま読む', () => {
     const text = tsunamiToText(makeTsunamiWithObs(sameHeightAreas, []))
-    expect(text).toContain('岩手県、宮城県、福島県に大津波警報が発表されました。')
+    expect(text).toContain('岩手県、宮城県、福島県で10メートル以上が予想されています。')
   })
 
   // 正: 実測が複数あれば波高の降順に読む
@@ -541,7 +540,7 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
       { name: '小名浜', districtCode: '050', districtName: '福島県', height: { value: 3.1, description: '3.1m' } },
       { name: '石巻港', districtCode: '040', districtName: '宮城県', height: { value: 7.2, description: '7.2m' } },
     ]))
-    expect(text).toContain('宮城県、福島県、岩手県に大津波警報が発表されました。')
+    expect(text).toContain('宮城県、福島県、岩手県で10メートル以上が予想されています。')
   })
 
   // 安全弁: 並べ替えは波高グループの中だけ。グループの順序（電文順）は動かさない
@@ -552,7 +551,7 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
     ], [
       { name: '石巻港', districtCode: '040', districtName: '宮城県', height: { value: 5.5, description: '5.5m' } },
     ]))
-    expect(text).toContain('岩手県、宮城県に大津波警報が発表されました。')
+    expect(text).toContain('岩手県で10メートル以上、宮城県で6メートルが予想されています。')
   })
 
   // 安全弁: 予想最大波高の文はカードの波高見出しと同じ区切りで読む。
@@ -568,7 +567,7 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
       { grade: 'MajorWarning', immediate: true, name: '福島県', code: '050', maxHeight: { description: '３ｍ', value: 3 } },
     ], []))
     // 「岩手県、福島県で3メートル、宮城県で6メートル」とまとめない
-    expect(text).toContain('予想最大波高は、岩手県で3メートル、宮城県で6メートル、福島県で3メートルです。')
+    expect(text).toContain('岩手県で3メートル、宮城県で6メートル、福島県で3メートルが予想されています。')
   })
 
   // 対照: 隣り合う同じ波高はこれまでどおり 1 つの句にまとめる
@@ -578,7 +577,146 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
       { grade: 'MajorWarning', immediate: true, name: '宮城県', code: '040', maxHeight: { description: '１０ｍ以上', value: 10 } },
       { grade: 'MajorWarning', immediate: true, name: '福島県', code: '050', maxHeight: { description: '６ｍ', value: 6 } },
     ], []))
-    expect(text).toContain('予想最大波高は、岩手県、宮城県で10メートル以上、福島県で6メートルです。')
+    expect(text).toContain('岩手県、宮城県で10メートル以上、福島県で6メートルが予想されています。')
+  })
+
+  // 正: 上位の警報と同時に出ている下位等級でも、その区域の波高を読む。
+  // 読まないと、注意報の区域にいる人へ高さが伝わらない。
+  it('下位等級の波高も読む', () => {
+    const text = tsunamiToText(makeTsunamiWithObs([
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '１０ｍ以上', value: 10 } },
+      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '060', maxHeight: { description: '３ｍ', value: 3 } },
+      { grade: 'Watch', immediate: false, name: '北海道太平洋沿岸東部', code: '080', maxHeight: { description: '１ｍ', value: 1 } },
+    ], []))
+    expect(text).toContain('また、次の地域に津波警報が発表されています。青森県太平洋沿岸で3メートルが予想されています。')
+    expect(text).toContain('また、次の地域に津波注意報が発表されています。北海道太平洋沿岸東部で1メートルが予想されています。')
+  })
+
+  // 安全弁: 区域名は読み上げ文に **1 回だけ** 出す。区域を挙げる文と波高の文に分けると、
+  // 予報区が数十に及ぶ大規模警報で読み上げが倍近く伸び、優先度の低い電文の待ち上限
+  // （HIGHER_PRIORITY_SPEECH_MAX_WAIT_MS）に達して津波の読み上げが途中で切られうる。
+  // 追従スクロールの側も「同じ箇所を読み直さない」前提に立っており、2 周読む形に戻すなら
+  // 一度出した箇所を追わない仕掛けを併せて戻す必要がある（`TsunamiTab` のコメント参照）。
+  it('区域名を 2 回読まない', () => {
+    const text = tsunamiToText(makeTsunamiWithObs([
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '１０ｍ以上', value: 10 } },
+      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '060', maxHeight: { description: '３ｍ', value: 3 } },
+    ], []))
+    expect(text.match(/岩手県/g)?.length).toBe(1)
+    expect(text.match(/青森県太平洋沿岸/g)?.length).toBe(1)
+  })
+
+  // 安全弁: 等級ごとに文を閉じる。等級をまたいで波高を 1 文にまとめると、カードは等級ごとに
+  // 分かれているので読み上げの句がカードを跨ぎ、追従がその間の行を含んだ範囲を対象にする。
+  it('等級をまたいで波高を 1 文にまとめない', () => {
+    const text = tsunamiToText(makeTsunamiWithObs([
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '１０ｍ以上', value: 10 } },
+      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '060', maxHeight: { description: '３ｍ', value: 3 } },
+    ], []))
+    expect(text).toContain('岩手県で10メートル以上が予想されています。')
+    expect(text).not.toContain('岩手県で10メートル以上、青森県太平洋沿岸で3メートル')
+  })
+
+  // 正: 予想波高が付いていない区域も読み上げから落とさない。区域名を波高の文でだけ挙げる作りなので、
+  // 補う文が無いと発表されている区域を黙って省くことになる（「巨大」「高い」は DMDATA 経路で
+  // maxHeight ごと落ちるほか、警報が先に出て波高が後続報で付くこともある）。
+  it('波高が付いていない区域は別の文で挙げる', () => {
+    const text = tsunamiToText(makeTsunamiWithObs([
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '１０ｍ以上', value: 10 } },
+      { grade: 'MajorWarning', immediate: true, name: '宮城県', code: '040' },
+      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '060', maxHeight: { description: '３ｍ', value: 3 } },
+      { grade: 'Warning', immediate: true, name: '茨城県', code: '070' },
+    ], []))
+    expect(text).toContain('岩手県で10メートル以上が予想されています。宮城県にも大津波警報が発表されています。')
+    expect(text).toContain('青森県太平洋沿岸で3メートルが予想されています。茨城県にも津波警報が発表されています。')
+  })
+
+  // 安全弁: 波高の判定は **`maxHeight` の有無ではなく `description` の中身**で行う
+  // （`hasForecastHeight`）。電文の解析は値が取れれば `maxHeight` を作るので、値 0 で条件も
+  // 無いときに `description` が空文字のオブジェクトが残る。オブジェクトの有無で判定すると、
+  // カードは波高なしとして扱うのに読み上げは波高ありとして扱い、**どちらの文にも出ない**。
+  it('波高の説明が空文字の区域も落とさない', () => {
+    const text = tsunamiToText(makeTsunamiWithObs([
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '１０ｍ以上', value: 10 } },
+      { grade: 'MajorWarning', immediate: true, name: '宮城県', code: '040', maxHeight: { description: '', value: 0 } },
+    ], []))
+    expect(text).toContain('宮城県にも大津波警報が発表されています。')
+    // 空文字を波高として読まないこと（「宮城県でが予想されています」にならない）
+    expect(text).not.toMatch(/宮城県で[^0-9]*が予想/)
+  })
+
+  // 対照: 波高がどの区域にも無ければ、区域名を直接挙げる形に落とす
+  // （「次の地域に」と言ったのに挙げる先が無い、という文にしない）
+  it('波高がまったく無ければ区域名を直接挙げる', () => {
+    const text = tsunamiToText(makeTsunamiWithObs([
+      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '060' },
+      { grade: 'Watch', immediate: false, name: '北海道太平洋沿岸東部', code: '080' },
+    ], []))
+    expect(text).toContain('青森県太平洋沿岸に津波警報が発表されました。')
+    expect(text).toContain('また、北海道太平洋沿岸東部に津波注意報が発表されています。')
+    expect(text).not.toContain('次の地域に')
+  })
+
+  // 気象庁は規模が数値化できないとき「巨大」「高い」と表記する。そのまま並べると
+  // 「岩手県で巨大が予想されています」と崩れるので語を補う（活用が違うので表記ごとに持つ）。
+  it('数値で表せない波高は語を補って読む', () => {
+    const text = tsunamiToText(makeTsunamiWithObs([
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '巨大', value: undefined as unknown as number } },
+      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '060', maxHeight: { description: '高い', value: undefined as unknown as number } },
+    ], []))
+    expect(text).toContain('岩手県で巨大な津波が予想されています。')
+    expect(text).toContain('青森県太平洋沿岸で高い津波が予想されています。')
+  })
+
+  // 下位等級はそれぞれ「また、」で始める（文の切れ目が耳で分かるように）
+  it('下位等級はどれも「また、」で始める', () => {
+    const text = tsunamiToText(makeTsunamiWithObs([
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '１０ｍ以上', value: 10 } },
+      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '060', maxHeight: { description: '３ｍ', value: 3 } },
+      { grade: 'Watch', immediate: false, name: '北海道太平洋沿岸東部', code: '080', maxHeight: { description: '１ｍ', value: 1 } },
+    ], []))
+    expect(text.match(/また、/g)?.length).toBe(2)
+  })
+
+  // 波高の単位は全角・半角のどちらでも読み替える。経路によって表記が違い（XML 履歴は全角、
+  // JSON は半角）、片方だけ変換すると素通りした側が「えむ」と読まれる。
+  it('半角の m も全角の ｍ も「メートル」と読む', () => {
+    const halfWidth = tsunamiToText(makeTsunamiWithObs([
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '10m以上', value: 10 } },
+    ], []))
+    expect(halfWidth).toContain('岩手県で10メートル以上が予想されています。')
+
+    const fullWidth = tsunamiToText(makeTsunamiWithObs([
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '０．５ｍ', value: 0.5 } },
+    ], []))
+    expect(fullWidth).toContain('岩手県で0.5メートルが予想されています。')
+  })
+
+  // 安全弁: 数字の直後だけを置き換える。cm のように数字と m の間に別の英字が挟まる表記を壊さない
+  it('数字に直接続かない m は読み替えない', () => {
+    const text = tsunamiObservationUpdateToText(
+      [{ name: '宮古', districtCode: '030', districtName: '岩手県', height: { value: 1.2, description: '1.2m' } }],
+      '50cm程度の潮位変化を観測しています。',
+    )
+    expect(text).toContain('50cm程度の潮位変化を観測しています。')
+  })
+
+  it('観測点の波高も同じ規則で読む', () => {
+    const text = tsunamiObservationUpdateToText([
+      { name: '宮古', districtCode: '030', districtName: '岩手県', height: { value: 8.5, description: '8.5m以上', over: true } },
+    ])
+    expect(text).toContain('宮古で8.5メートル以上')
+  })
+
+  // 安全弁: 数字の直後だけを置き換える。headline は電文の文章なので、無条件に m を替えると
+  // 文中の語を壊す。大文字の M を対象にしないのはマグニチュード（「M7.6」）と衝突するため。
+  it('文章に含まれるマグニチュード表記は壊さない', () => {
+    const text = tsunamiObservationUpdateToText(
+      [{ name: '宮古', districtCode: '030', districtName: '岩手県', height: { value: 1.2, description: '1.2m' } }],
+      'M7.6の地震による津波を観測しています。',
+    )
+    expect(text).toContain('M7.6の地震による津波を観測しています。')
+    expect(text).toContain('宮古で1.2メートル')
   })
 
   // 安全弁: 下位等級の列挙にも同じ並び順が効く（別カードだが同じ規則で並ぶ）
@@ -590,6 +728,6 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
     ], [
       { name: '大洗', districtCode: '070', districtName: '茨城県', height: { value: 1.9, description: '1.9m' } },
     ]))
-    expect(text).toContain('茨城県、青森県太平洋沿岸に津波警報')
+    expect(text).toContain('茨城県、青森県太平洋沿岸で3メートルが予想されています。')
   })
 })

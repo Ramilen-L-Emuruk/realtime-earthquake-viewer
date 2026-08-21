@@ -19,8 +19,14 @@
 
 import { log } from './logger'
 
-/** 読み上げの語が指す対象。カードの行を引くためのキー。 */
+/**
+ * 読み上げの語が指す対象。カードの行を引くためのキー。
+ *
+ * `grade` は等級のカードそのもの（「大津波警報」「津波警報」の見出し）を指す。等級を言った
+ * 時点でそのカードの頭に合わせられるようにするためで、区域名を読み始める前に画面が整う。
+ */
 export type SpeechRef =
+  | { kind: 'grade'; grade: string }
   | { kind: 'area'; code?: string; name: string }
   | { kind: 'station'; name: string }
 
@@ -46,11 +52,13 @@ export function joinSegments(segments: readonly SpeechSegment[]): string {
 /** 同一の対象を指す参照か。 */
 function sameRef(a: SpeechRef, b: SpeechRef): boolean {
   if (a.kind !== b.kind) return false
+  if (a.kind === 'grade' && b.kind === 'grade') return a.grade === b.grade
   if (a.kind === 'area' && b.kind === 'area') {
     if (a.code && b.code) return a.code === b.code
     return a.name === b.name
   }
-  return a.name === b.name
+  if (a.kind === 'station' && b.kind === 'station') return a.name === b.name
+  return false
 }
 
 /**
@@ -60,11 +68,12 @@ function sameRef(a: SpeechRef, b: SpeechRef): boolean {
  * チャンクの位置は全文からの検索で確定する。`splitIntoChunks` は分割後に trim するため、
  * 断片の文字数を単純に積み上げても境界が合わない。
  *
- * **区域と観測点が同じチャンクに入ったときは観測点だけを返す。** 5 文字未満のチャンクを
- * 前と結合する規則（`MIN_CHUNK`）により「岩手県、宮古で1.2メートル、」のような形が
- * 生まれるが、カード上の区域行は観測点の行を内側に抱えていて背が高い。両方を対象にすると
- * 範囲が視野の高さを超えて {@link planFollowScroll} が区域の先頭へ揃え直すだけになり、
- * 読んでいる観測点が画面に出てこない。
+ * **種類が混ざったチャンクでは、より具体的な対象だけを返す**（観測点 ＞ 区域 ＞ 等級）。
+ * 5 文字未満のチャンクを前と結合する規則（`MIN_CHUNK`）により「岩手県、宮古で1.2メートル、」
+ * のような形が生まれるが、カード上の区域行は観測点の行を内側に抱えていて背が高い。両方を
+ * 対象にすると範囲が視野の高さを超えて {@link planFollowScroll} が区域の先頭へ揃え直すだけに
+ * なり、読んでいる観測点が画面に出てこない。等級のカードは区域行をすべて抱えているので、
+ * 同じ理由で区域より優先度が低い。
  */
 export function mapChunksToRefs(
   segments: readonly SpeechSegment[],
@@ -104,7 +113,8 @@ export function mapChunksToRefs(
     }
 
     const stations = refs.filter(r => r.kind === 'station')
-    result.push(stations.length > 0 ? stations : refs)
+    const areas = refs.filter(r => r.kind === 'area')
+    result.push(stations.length > 0 ? stations : areas.length > 0 ? areas : refs)
   }
   return result
 }
@@ -221,6 +231,13 @@ export interface FollowScrollInput {
   currentRects: readonly FollowRect[]
   /** これから読む箇所の矩形（読み上げ順） */
   upcomingRects: readonly FollowRect[]
+  /**
+   * いま読んでいる箇所と併せて視野に入れたい前置きの矩形（等級カードの帯など）。
+   *
+   * **動かすかどうかの判定には使わない。** 読んでいる箇所ではないので、これが視野の外に
+   * あることを理由に送ってはいけない。送り先を決めるときだけ、収まる限り含める。
+   */
+  contextRects?: readonly FollowRect[]
   /** 判定の基準にする scrollTop（smooth スクロール中は「行き先」を渡す） */
   currentScrollTop: number
   /** 到達できる scrollTop の上限（`scrollHeight - clientHeight`） */
@@ -229,6 +246,14 @@ export interface FollowScrollInput {
 
 // これ未満の移動は動かさない（丸め誤差で毎チャンク scrollTo を呼ばないため）。
 const MIN_DELTA_PX = 1
+
+/**
+ * 送り先の上に残す余白。
+ *
+ * 合わせ先を視野の上端にぴったり貼り付けると、カードの縁が切り取られたように見えて窮屈。
+ * 少し下げておくと、その上にある見出しや帯との間に息が入る。
+ */
+const FOLLOW_TOP_MARGIN_PX = 24
 
 /** 矩形が視野に収まっているか。 */
 function isInside(rect: FollowRect, viewTop: number, viewBottom: number): boolean {
@@ -241,17 +266,23 @@ function isInside(rect: FollowRect, viewTop: number, viewBottom: number): boolea
  * 判定は 3 段。
  *
  * 1. いま読んでいる箇所がすべて視野に収まっていれば**動かさない**。これが「1 行ずつ
- *    細かく送られる」のを防ぐ主要な歯止めで、続く区域が同じ画面に見えている間は一歩も動かない
- * 2. 視野から外れていれば送る。送り先は、いま読んでいる箇所に**これから読む箇所を
- *    読み上げ順に足していき、視野の高さに収まる限り広げた範囲**の上端
+ *    細かく送られる」のを防ぐ主要な歯止めで、続く区域が同じ画面に見えている間は一歩も動かない。
+ *    **収まりの判定には送り先と同じ余白を見込む**（`FOLLOW_TOP_MARGIN_PX`）。判定を厳しく
+ *    したまま送り先だけ下げると、余白のぶん足りないだけで毎チャンク送り直すことになる
+ * 2. 視野から外れていれば送る。送り先は、いま読んでいる箇所に**前置き（`contextRects`）と
+ *    これから読む箇所を足していき、視野の高さに収まる限り広げた範囲**の上端（＋余白）
  * 3. いま読んでいる箇所だけで視野の高さを超えるときは、その上端を視野の上端に合わせる
  *    （観測点を多く抱えた区域の行がこれに当たる）
+ *
+ * **前置きは `currentRects` へ混ぜてはいけない。** 混ぜると範囲の上端が常に前置きになり、
+ * 等級のところで一度寄せた後は `desired` が現在位置と一致してしまう。区域行がどれだけ
+ * 見切れていても動かなくなる（この形で一度作って実地震のリプレイで破綻した）。
+ * 前置きは**これから読む箇所より先に**試す。後回しにすると、区域が多い等級カードでは
+ * 続きの区域で視野が埋まり、等級の帯が入る余地が残らない。
  *
  * **2 で「まとめて送る」効果は、範囲の上端を視野の上端に置くことから来る**（最小移動で
  * 収める形にしない理由）。下に置いた分だけ視野の余地が続きの箇所で埋まり、次の数チャンクは
  * 1 の判定で動かないまま済む。したがって**下方にある未読は範囲の上端を変えない**。
- * 足し込みが実際に効くのは、読み上げ順では後なのに画面では上にある箇所を取り込むとき
- * ＝同じ区域を読み直す文（列挙 → 予想最大波高）で、ここで戻るスクロールが消える。
  *
  * **行き先は到達できる範囲へ丸めてから返す。** `scrollTo` はブラウザ側で丸められるので、
  * 理論値を呼び出し側に持たせると「行き先に着いたか」の判定が永久に成立せず、補正が
@@ -262,18 +293,29 @@ export function planFollowScroll(input: FollowScrollInput): number | null {
   const { viewTop, viewBottom, currentRects, upcomingRects, currentScrollTop, maxScrollTop } = input
   if (currentRects.length === 0) return null
 
-  const availableHeight = viewBottom - viewTop
+  // **余白を除いた高さで収まりを測る。** 送り先は上に余白を残す（`FOLLOW_TOP_MARGIN_PX`）ので、
+  // 余白抜きの高さで「収まる」と判断すると、範囲の下端がその余白ぶん視野の外へはみ出す。
+  const availableHeight = viewBottom - viewTop - FOLLOW_TOP_MARGIN_PX
   if (availableHeight <= 0) return null
 
-  if (currentRects.every(r => isInside(r, viewTop, viewBottom))) return null
+  // 送り先が余白を取る分、収まりの判定もその位置を基準にする（判定と送り先を揃える）
+  if (currentRects.every(r => isInside(r, viewTop + FOLLOW_TOP_MARGIN_PX, viewBottom))) return null
 
   let spanTop = Math.min(...currentRects.map(r => r.top))
   let spanBottom = Math.max(...currentRects.map(r => r.bottom))
 
-  // 2: これから読む箇所を読み上げ順に足していく。入らないものが出たらそこで打ち切る
-  //    （順序を飛ばして先の箇所を含めると、間の箇所が画面外のまま読まれる）。
-  //    3: いま読んでいる箇所だけで収まらないときは足し込まず、その上端に揃えるだけ
+  // 3: いま読んでいる箇所だけで収まらないときは足し込まず、その上端に揃えるだけ
   if (spanBottom - spanTop <= availableHeight) {
+    // 前置きを先に試す。互いに独立なので、入らないものは飛ばすだけでよい
+    for (const rect of input.contextRects ?? []) {
+      const nextTop = Math.min(spanTop, rect.top)
+      const nextBottom = Math.max(spanBottom, rect.bottom)
+      if (nextBottom - nextTop > availableHeight) continue
+      spanTop = nextTop
+      spanBottom = nextBottom
+    }
+    // 2: これから読む箇所を読み上げ順に足していく。入らないものが出たらそこで打ち切る
+    //    （順序を飛ばして先の箇所を含めると、間の箇所が画面外のまま読まれる）
     for (const rect of upcomingRects) {
       const nextTop = Math.min(spanTop, rect.top)
       const nextBottom = Math.max(spanBottom, rect.bottom)
@@ -283,7 +325,7 @@ export function planFollowScroll(input: FollowScrollInput): number | null {
     }
   }
 
-  const desired = currentScrollTop + (spanTop - viewTop)
+  const desired = currentScrollTop + (spanTop - viewTop) - FOLLOW_TOP_MARGIN_PX
   const next = Math.min(Math.max(0, desired), Math.max(0, maxScrollTop))
   return Math.abs(next - currentScrollTop) > MIN_DELTA_PX ? next : null
 }

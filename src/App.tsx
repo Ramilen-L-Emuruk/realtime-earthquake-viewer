@@ -71,6 +71,9 @@ const TAB_SCROLLER_CLASS = 'absolute inset-0 overflow-y-auto overflow-x-hidden o
 export function App() {
   const { settings, updateSetting } = useSettings()
   const [activeTab, setActiveTabState] = useState<TabId>(settings.defaultTab)
+  // 津波タブを自動で見せた回数。増えるたびに津波カードのスクロールを先頭へ戻す
+  // （増やす条件と理由は `requestAutoTab`）。
+  const [tsunamiAutoShowTick, setTsunamiAutoShowTick] = useState(0)
   // パネルの折りたたみ状態。地図を全画面で見るための一時的な状態なので、意図的に設定へ
   // 保存しない（起動直後に情報が見えない状態を作らないため、リロードで必ず展開に戻る）。
   const [panelCollapsed, setPanelCollapsed] = useState(false)
@@ -231,6 +234,17 @@ export function App() {
     // 無くなるため。追跡を捨てないのは、捨てると畳んだ状態へ戻す機会が二度と来ないため
     // （実際に「畳んで地図を見ている最中に特別情報 → 揺れ検知で自動移動」の順で踏むと、
     // 以後ユーザー操作でもアイドル復帰でも畳めなくなっていた）。
+    // **他のタブから自動で連れてきたときだけ、津波カードを先頭から見せる。** 一度スクロール
+    // したあと別のタブへ移り、続報や復帰で連れ戻されると、前に見ていた途中の位置から始まって
+    // しまうため。除外する条件が 2 つある。
+    //
+    // - 手動選択（`manual`）: 自分で開いたのだから読んでいた場所を保つ
+    // - **既に津波タブを表示している場合**: この関数は「値が変わらない切替」でも呼ばれる
+    //   （読み上げの追従は電文ごとに `followSpeechTab('tsunami', ...)` を通す）。タブが
+    //   変わらないのに先頭へ戻すと、**開いたまま読み進めている最中に続報が来るたび画面が飛ぶ**
+    if (tab === 'tsunami' && priority !== TAB_PRIORITY.manual && activeTabRef.current !== tab) {
+      setTsunamiAutoShowTick(t => t + 1)
+    }
     setActiveTab(tab)
     return true
   }, [setActiveTab])
@@ -359,7 +373,10 @@ export function App() {
   // デフォルトタブへ復帰する。デフォルトタブが realtime の場合は
   // 抑制タイマーをセットせずそのまま移動する（realtime への強制移動を
   // 抑制する意味がないため）。
-  // 津波イベントを経由しない復帰で津波タブに切り替わる場合は、スクロール位置も一番上へ戻す。
+  // 津波イベントを経由しない復帰で津波タブに切り替わる場合は、変更区域の強調も落とす
+  // （そのまま残すと、いつのものか分からない強調が付いたカードを見せることになる）。
+  // **スクロールを先頭へ戻すのは `requestAutoTab` の `tsunamiAutoShowTick` が担う。**
+  // こちらは読み上げが有効なとき受信時スクロールごと見送られるため、それだけには頼れない。
   const revertToDefaultTab = () => {
     const tab = defaultTabRef.current
     // 既定の状態へ戻す操作なので必ず動かす（理由は forceTab）。呼び出し元は EEW 発報中・
@@ -1135,6 +1152,10 @@ export function App() {
                  効いてしまう**（戻ってきたら知らない位置にいる）。折りたたみ時はさらに幅か
                  高さが 0 になり、視野の高さが取れない。 */
               isVisible={activeTab === 'tsunami' && !panelCollapsed}
+              /* 読み上げが有効なら受信時スクロールを止め、追従に任せる（逆向きの動きを消す） */
+              speechFollowEnabled={settings.voicevoxEnabled}
+              /* 自動で見せたときは先頭から見せる（手動選択では位置を保つ） */
+              autoShowTick={tsunamiAutoShowTick}
             />
           </div>
           <div className={`${TAB_SCROLLER_CLASS}${activeTab !== 'telegrams' ? ' invisible pointer-events-none' : ''}`}>

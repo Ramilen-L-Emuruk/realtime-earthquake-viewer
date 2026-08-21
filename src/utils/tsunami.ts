@@ -123,13 +123,25 @@ export interface TsunamiHeightGroup {
 }
 
 /**
+ * 読み上げ・表示に使える予想波高を持つか。
+ *
+ * **`maxHeight` の有無では判定しない。** 電文の解析（`dmdataParser`）は数値が取れれば
+ * `maxHeight` を作るが、値が 0 で条件（「巨大」等）も無いときは `description` が空文字になる。
+ * オブジェクトの有無で見ると、カードは波高なしとして扱うのに読み上げは波高ありとして扱い、
+ * **その区域がどちらの文にも現れない**（黙って落ちる）。判定はここに一本化する。
+ */
+export function hasForecastHeight(area: TsunamiArea): boolean {
+  return !!area.maxHeight?.description
+}
+
+/**
  * 同一階級内で、予想波高（maxHeight.description）が連続して一致する区域を1グループにまとめる。
  * 電文内の区域順序は維持し、離れた位置にある同じ波高の区域まではまとめない。
  */
 function groupAreasByHeight(areas: TsunamiArea[]): TsunamiHeightGroup[] {
   const groups: { heightLabel: string | null; areas: TsunamiArea[] }[] = []
   for (const area of areas) {
-    const label = area.maxHeight?.description || null
+    const label = hasForecastHeight(area) ? area.maxHeight!.description : null
     const last = groups[groups.length - 1]
     if (label && last && last.heightLabel === label) {
       last.areas.push(area)
