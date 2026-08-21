@@ -72,7 +72,7 @@ async function refineProsody(
   if (phrases.length === 0) return phrases
   try {
     const res = await fetch(
-      `${baseUrl}/mora_data?speaker=${speakerId}`,
+      `${apiBase(baseUrl)}/mora_data?speaker=${speakerId}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -109,12 +109,53 @@ async function refineProsody(
   }
 }
 
+/**
+ * 末尾のスラッシュを落とした基準 URL を返す。
+ *
+ * 入力欄には `http://localhost:50021/` のように末尾スラッシュ付きの値が入りうる
+ * （ブラウザのアドレス欄からの貼り付けで普通に起こる）。そのまま連結すると
+ * `http://localhost:50021//version` の二重スラッシュになり、VOICEVOX は 404 を返す。URL としては
+ * 正しいので {@link isValidVoicevoxUrl} は通り、接続状態だけが「起動していません」に
+ * なって**起動しているのに繋がらない**という誤診になる。連結する側で吸収する。
+ */
+function apiBase(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, '')
+}
+
+/**
+ * 接続確認に使える形の URL かを判定する。
+ *
+ * 見るのは「HTTP で叩ける URL として成立しているか」だけ。解析できることと、スキームが
+ * http/https であること。ホスト名の中身には踏み込まない（LAN のホスト名・IPv4・IPv6 の
+ * いずれも来る）。**ホスト名の有無を別途見る必要はない。** http/https は URL 標準の
+ * 特殊スキームで、ホストを伴わない `http://` は解析の時点で例外になる。
+ * スキームを書き忘れた `192.168.0.64:50021` も同様（数字はスキームの先頭に置けない）。
+ *
+ * **入力途中の値をここで弾き切ることは期待できない。** `http://1` も `http://192.`
+ * も URL としては正常に解析でき（後者は末尾の空ラベルが落ちて `0.0.0.192` になる）、
+ * ブラウザは実際に接続を試みる。入力途中のリクエストを止めるのは呼び出し側の
+ * デバウンスの役目。ここが担うのは、スキームの書き忘れのような直らない誤りを
+ * 「起動していません」と誤診しないこと。
+ *
+ * @param baseUrl 設定タブに入力された値
+ * @returns http/https の URL として解析できるなら true
+ */
+export function isValidVoicevoxUrl(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    // URL として解析できない（スキームが無い・ホストが無い・空欄 等）。
+    return false
+  }
+}
+
 /** VOICEVOX が起動中かどうかを確認する（2秒タイムアウト）。 */
 export async function checkVoicevoxAvailable(baseUrl: string): Promise<boolean> {
   try {
     const ctrl = new AbortController()
     const tid = setTimeout(() => ctrl.abort(), 2000)
-    const res = await fetch(`${baseUrl}/version`, { signal: ctrl.signal })
+    const res = await fetch(`${apiBase(baseUrl)}/version`, { signal: ctrl.signal })
     clearTimeout(tid)
     return res.ok
   } catch {
@@ -125,7 +166,7 @@ export async function checkVoicevoxAvailable(baseUrl: string): Promise<boolean> 
 /** 利用可能な話者一覧を取得する。失敗時は空配列を返す。 */
 export async function fetchVoicevoxSpeakers(baseUrl: string): Promise<VoicevoxSpeaker[]> {
   try {
-    const res = await fetch(`${baseUrl}/speakers`)
+    const res = await fetch(`${apiBase(baseUrl)}/speakers`)
     if (!res.ok) return []
     return res.json() as Promise<VoicevoxSpeaker[]>
   } catch {
@@ -167,7 +208,7 @@ async function fetchAccentPhrasesForText(
   signal?: AbortSignal,
 ): Promise<AccentPhrase[] | null> {
   const res = await fetch(
-    `${baseUrl}/audio_query?text=${encodeURIComponent(text)}&speaker=${speakerId}`,
+    `${apiBase(baseUrl)}/audio_query?text=${encodeURIComponent(text)}&speaker=${speakerId}`,
     { method: 'POST', signal },
   )
   if (!res.ok) return null
@@ -192,7 +233,7 @@ async function fetchAccentPhrasesForKey(
   if (cached) return cached
 
   const res = await fetch(
-    `${baseUrl}/accent_phrases?text=${encodeURIComponent(kanaReading)}&speaker=${speakerId}&is_kana=true`,
+    `${apiBase(baseUrl)}/accent_phrases?text=${encodeURIComponent(kanaReading)}&speaker=${speakerId}&is_kana=true`,
     { method: 'POST', signal },
   )
   if (!res.ok) return null
@@ -247,7 +288,7 @@ async function synthesizeChunk(
 ): Promise<AudioBuffer | null> {
   try {
     const queryRes = await fetch(
-      `${baseUrl}/audio_query?text=${encodeURIComponent(chunk)}&speaker=${speakerId}`,
+      `${apiBase(baseUrl)}/audio_query?text=${encodeURIComponent(chunk)}&speaker=${speakerId}`,
       { method: 'POST', signal },
     )
     if (!queryRes.ok) return null
@@ -267,7 +308,7 @@ async function synthesizeChunk(
     query.speedScale = 1.2
 
     const synthRes = await fetch(
-      `${baseUrl}/synthesis?speaker=${speakerId}`,
+      `${apiBase(baseUrl)}/synthesis?speaker=${speakerId}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
