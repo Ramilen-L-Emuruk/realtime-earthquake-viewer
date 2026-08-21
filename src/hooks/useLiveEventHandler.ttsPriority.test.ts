@@ -6,9 +6,13 @@
 // する）。優先度を持たせないと緊急度の低い情報が重い情報を途中で消す。2024/1/1 能登の実電文を
 // 再生したとき、大津波警報の読み上げがその 30 秒後に始まった地震情報に消されていた。
 //
-// ここで固定するのは 1 つの規則だけ。**割り込みを許すのは「自分の優先度が読み上げ中のものと
+// ここで固定するのは 2 つの規則。**割り込みを許すのは「自分の優先度が読み上げ中のものと
 // 同じか高いとき」だけ**。同格どうしは新しい方が勝つ（震度速報の更新が古い震度速報を置き換える
 // のは正しい挙動で、ここを待ち行列にすると最新の震度がいつまでも出てこない）。
+//
+// もう 1 つは**到来順**。「新しい方が勝つ」は割り込みだけでは足りない。通知音との間は種別ごとに
+// 0.5〜4.2 秒と幅があるため、先に届いた電文の方が遅く喋り始めることがあり、そのとき古い側が
+// 新しい側の声を切っていた（原則が逆向きに破れる）。後から同格以上が予約されたら取り下げる。
 //
 // 読み上げの完了を任意の時点で起こせるよう、モックは解決関数を外に出して保持する。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -394,5 +398,122 @@ describe('非 EEW の読み上げの優先度', () => {
     // 1 件目は解決させていない。それでも 2 件目が読まれるので待っていない
     expect(spokenTexts()).toHaveLength(2)
     expect(spokenTexts()[1]).toContain('富山県東部')
+  })
+
+  // 到来順の規則。震源情報は声までの間が 1.7 秒、震度速報は 0.5 秒。震源情報の直後に震度速報が
+  // 届くと震度速報の方が先に喋り始めるため、優先度だけで裁いていた頃は**古い震源情報が新しい
+  // 震度速報を途中で切っていた**。「同格どうしは新しい方が勝つ」の逆で、聞こえ方も順序が
+  // 入れ替わる。後から同格以上が予約されていたら、先に届いた側を取り下げる。
+  it('先に届いた同格の読み上げは、後から届いた方に追い越されたら取り下げる', async () => {
+    const handle = setup()
+    handle(makeQuake({ type: '震源情報' }))
+    await vi.advanceTimersByTimeAsync(600)      // 震源情報の間（1.7 秒）が明ける前に
+    await flush()
+    handle(makeQuake({ type: '震度速報' }))
+    await settle()
+    // 震源情報は読まれない（取り下げ）。新しい震度速報だけが最後まで読まれる
+    expect(spokenTexts()).toHaveLength(1)
+    expect(spokenTexts()[0]).toContain('震度速報')
+  })
+
+  // 対照。取り下げるのは「間が明ける前に追い越された」ときだけで、順に読み切れる間隔なら
+  // どちらも読まれる（実運用の震度速報 → 震源情報は数十秒あく）。
+  it('間隔が十分あれば、震源情報と震度速報は両方読まれる', async () => {
+    const handle = setup()
+    handle(makeQuake({ type: '震源情報' }))
+    await settle()
+    finishSpeech(0)
+    await flush()
+    handle(makeQuake({ type: '震度速報' }))
+    await settle()
+    expect(spokenTexts()).toHaveLength(2)
+    expect(spokenTexts()[0]).toContain('震源情報')
+    expect(spokenTexts()[1]).toContain('震度速報')
+  })
+
+  // 安全弁。追い越しの判定は到来順と優先度の**両方**を見る。到来順だけで判断すると、後から
+  // 届いた軽い読み上げのために重い側を取り下げてしまう（津波が読まれなくなる）。
+  it('後から届いたのが軽い読み上げなら、先に届いた重い方を取り下げない', async () => {
+    const handle = setup()
+    handle(makeTsunami())                       // 声までの間 4.2 秒
+    await vi.advanceTimersByTimeAsync(600)
+    await flush()
+    handle(makeQuake())                         // 声までの間 0.5 秒
+    await settle()
+    expect(spokenTexts().some(t => t.includes('大津波警報'))).toBe(true)
+  })
+
+  // 取り下げるのは**同じ主題**の後発に追い越されたときだけ。`high` には津波・南海トラフ臨時情報・
+  // 後発地震注意情報が同居しているが、これは「聞き逃したときの損失が大きいから」同格に置いている
+  // のであって互いの言い換えではない。主題を見ずに取り下げると、聞き逃し防止のための層で
+  // まるごと聞き逃す（後発地震注意情報が一言も鳴らずに消える）。
+  it('主題が違えば、同格の後発が届いても取り下げない', async () => {
+    const handle = setup()
+    handle({
+      kind: 'kohatsu',
+      data: {
+        id: 'kohatsu-1', time: '2026-01-01T12:00:00Z', eventId: 'kohatsu-evt',
+        headline: '北海道・三陸沖後発地震注意情報', cancelled: false,
+      },
+    } as never)
+    await vi.advanceTimersByTimeAsync(200)     // 後発地震の間（1.5 秒）が明ける前に
+    await flush()
+    handle(makeTsunami())                      // 同格（high）だが別の主題
+    await settle()
+
+    // どちらも鳴る（後発地震が先に読まれ、津波が割り込んで読む）
+    expect(spokenTexts().some(t => t.includes('後発地震注意情報'))).toBe(true)
+    expect(spokenTexts().some(t => t.includes('大津波警報'))).toBe(true)
+  })
+
+  // 取り下げが決まった予約は「最後に予約されたもの」から降りる。降りないと、自分より前に
+  // 予約されていた読み上げが「後発に追い越された」と誤認して連鎖的に取り下がり、**追い越した側も
+  // 追い越された側も鳴らない**。
+  it('後発が取り下げられたら、先に届いていた読み上げは読まれる', async () => {
+    const handle = setup()
+    handle(makeQuake({ type: '震源情報' }))    // 声までの間 1.7 秒
+    await vi.advanceTimersByTimeAsync(100)
+    await flush()
+    handle(makeQuake({ type: '震度速報' }))    // 声までの間 0.5 秒
+    await vi.advanceTimersByTimeAsync(100)
+    await flush()
+
+    // 震度速報の間が明ける前に EEW が発報する（EEW は間を置かず即座に読む）
+    handle(makeEEW())
+    await flush()
+    expect(spokenTexts()[0]).toContain('緊急地震速報')
+
+    // 震度速報は EEW に追い越されて取り下げられる
+    await vi.advanceTimersByTimeAsync(500)
+    await flush()
+    expect(spokenTexts()).toHaveLength(1)
+
+    // EEW の読み上げ（震源 → 予想震度の 2 フェーズ）を読み切らせる。残っていると EEW が最優先の
+    // ままなので、震源情報が読まれない理由が「連鎖」か「EEW 待ち」か切り分けられない。
+    for (let i = 0; i < 5; i++) {
+      speeches.forEach((_, idx) => finishSpeech(idx))
+      await flush()
+    }
+
+    // 震源情報の間（1.7 秒）が明ける。取り下げが連鎖していなければ読まれる
+    await vi.advanceTimersByTimeAsync(2000)
+    await flush()
+    expect(spokenTexts().some(t => t.includes('震源情報'))).toBe(true)
+  })
+
+  // 主題はイベントごとに分ける。別の地震は別のイベントで内容が重ならないため、種別だけでまとめると
+  // 後から処理された地震だけが読まれ、その前に届いた別の地震が一言も鳴らずに消える
+  // （同分に 2 つの地震が起きることは実際にある）。
+  it('別の地震の読み上げは、同じ種別でも取り下げない', async () => {
+    const handle = setup()
+    handle(makeQuake({ id: 'quake-1', type: '震源情報' }))    // 声までの間 1.7 秒
+    await vi.advanceTimersByTimeAsync(200)
+    await flush()
+    handle(makeQuake({ id: 'quake-2', type: '震度速報', addr: '富山県東部' }))   // 間 0.5 秒
+    await settle()
+
+    // 別の地震なので、先に届いた震源情報は取り下げられない（読み始めてから切られる）
+    expect(spokenTexts().some(t => t.includes('震度速報'))).toBe(true)
+    expect(spokenTexts().some(t => t.includes('震源情報'))).toBe(true)
   })
 })
