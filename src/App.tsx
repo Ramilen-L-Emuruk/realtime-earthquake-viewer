@@ -1107,6 +1107,7 @@ export function App() {
               kyoshinV2Detections={kyoshinV2.detections}
               kyoshinDetectedPoints={kyoshinDetectedPoints}
               swaveArrival={swaveArrival}
+              visible={activeTab === 'realtime' && !panelCollapsed}
               activeLpgmEventId={activeLpgmEventId}
               onToggleLpgm={toggleLpgmFromEew}
               onDeactivateLpgm={deactivateLpgm}

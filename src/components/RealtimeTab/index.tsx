@@ -5,6 +5,7 @@ import type { EEWAlert } from '../../types/earthquake'
 import type { DetectionEvent, Confidence } from '../../utils/kyoshinDetector'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { SWaveArrival } from '../../hooks/useSWaveCountdown'
+import { usePageVisible } from '../../hooks/usePageVisible'
 import { formatDateTime, formatTime } from '../../utils/formatters'
 import { getIntensityColor, getIntensityLabel, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
 import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
@@ -36,6 +37,13 @@ interface Props {
    * （`deriveKyoshinView` が孤立した震度0点を除いて用意する。両者で別々に計算すると黙って食い違う）。
    */
   kyoshinDetectedPoints: DetectedPoint[]
+  /**
+   * このタブがユーザーの目に入っているか（リアルタイムタブが選ばれていて、かつパネルが
+   * 畳まれていない）。タブは選ばれていなくてもマウントされたまま描画が走るため、可視性は
+   * props で受け取るしかない。ブラウザのタブ・ウィンドウ側の可視性は App では判らないので、
+   * `usePageVisible` で合成する。用途は検知カードのバー幅スケールの張り直し判定。
+   */
+  visible: boolean
   activeLpgmEventId?: string | null
   onToggleLpgm?: (eventId: string) => void
   onDeactivateLpgm?: () => void
@@ -322,17 +330,14 @@ const V2_TIER: Record<Confidence, { label: string; color: string; bg: string; bo
 // 複数の confirmed/likely イベントを同時に返す。これを「1 つの揺れ」として 1 枚に集約表示する
 // （震源を推定しないため、揺れている地域数と全体の震度分布・推定最大震度を主情報とする）。
 // 複数地域にまたがる場合は「広域」を示し、N 件の別地震のように見えるのを防ぐ。
-// バー幅スケールの直近ピーク保持時間。短すぎると通常の点数変動でも他の震度のバーが
-// 伸びて見える誤解が残り、長すぎると前の地震が収まりきる前に次の地震が来た場合に
-// 新しい地震の実際の点数がスケールに対して過小表示され続ける。両者のバランスを取る値。
-const SCALE_PEAK_WINDOW_MS = 15_000
-
-function KyoshinDetectionSummary({ events, points }: {
+function KyoshinDetectionSummary({ events, points, visible }: {
   events: DetectionEvent[]
   /** 地図の検知点マーカーが描くのと同一の点列（`deriveKyoshinView` が用意する）。 */
   points: DetectedPoint[]
+  /** カードがユーザーの目に入っているか。バー幅スケールの張り直しの可否に使う。 */
+  visible: boolean
 }) {
-  const scaleHistoryRef = useRef<{ t: number; v: number }[]>([])
+  const scalePeakRef = useRef(0)
   // 最上位ティア（confirmed > likely > faint）。faint のみ＝震度0級のコヒーレント揺れ（無音・控えめ表示）。
   const topTier: Confidence = events.some(e => e.confidence === 'confirmed')
     ? 'confirmed'
@@ -368,15 +373,28 @@ function KyoshinDetectionSummary({ events, points }: {
   const maxColor = kyoshinIntensityColor(maxIndex) ?? '#9ca3af'
   const groups = LABEL_ORDER.filter(l => counts.has(l)).map(l => ({ label: l, ...counts.get(l)! }))
   const rawMaxCount = groups.reduce((m, g) => Math.max(m, g.count), 1)
-  // バー幅のスケール（分母）は直近 SCALE_PEAK_WINDOW_MS 内のピークを使う。単純な瞬間値だと、
-  // 無関係な震度の点数が変わらなくても、最大値だった震度の点数が減っただけで他のバーが
-  // 伸びて見えてしまう。かといって無期限に保持すると、前の揺れが収まりきる前に次の地震が
-  // 来た場合に新しい地震の点数がスケールに対して過小表示され続けるため、短い時間窓で減衰させる。
-  const now = Date.now()
-  const history = scaleHistoryRef.current
-  history.push({ t: now, v: rawMaxCount })
-  while (history.length > 0 && history[0] && now - history[0].t > SCALE_PEAK_WINDOW_MS) history.shift()
-  const maxCount = history.reduce((m, h) => Math.max(m, h.v), 1)
+  // バー幅のスケール（分母）は、カードが見えている間は**下げない**。瞬間値を分母にすると、
+  // 最大だった震度の点数が減っただけで他のバーが伸び、揺れが収まっている最中に「増えた」と
+  // 見えてしまう（分母が動いただけで点数は減っている）。上げるのは点数が増えたときだけなので、
+  // 見ている間のバーの伸びは必ず実際の点数の増加を意味する。
+  //
+  // 代わりに、見えていない間は毎回いまの点数へ張り直す。跳ねても誰の目にも入らないうえ、
+  // 次に見えた瞬間は必ず「いまの点数」基準になるので、前の揺れのピークを引きずらない。
+  // 張り直しの契機は 3 つ（タブ移動・アプリのバックグラウンド・パネル折りたたみ）で、
+  // 判定は `visible` に集約して App とカード側のフックで組み立てている。
+  //
+  // 副作用として、大地震の長い減衰期にこのタブを見続けるとバーは細いまま張り直らない。
+  // 点数は各行の右端に数値で出ているので情報は失われず、タブを一度離れて戻れば張り直る。
+  // 検知イベントが全て消えればこのカード自体がアンマウントされるため、地震と地震の間で
+  // ピークが持ち越されることもない。
+  //
+  // 更新を描画中に行うのは、分母を**同じ描画で**使うため。effect へ移すと 1 描画分（＝1 秒）
+  // 遅れた分母でバーを描くことになる。この書き込みは同じ入力に対して冪等なので StrictMode の
+  // 二重描画では結果が変わらない。並行描画（`startTransition` / `Suspense`）を導入すると
+  // 「破棄された描画の書き込みだけが残る」形になり得るため、その時はここを見直すこと
+  // （現時点でこのプロジェクトはどちらも使っていない）。
+  if (!visible || rawMaxCount > scalePeakRef.current) scalePeakRef.current = rawMaxCount
+  const maxCount = Math.max(scalePeakRef.current, 1)
   // 反応点数は activeCount（現在震度0以上の点）をそのまま出す。以前は 0 のとき検知エンジンの
   // lastSize（点ごとのノイズ床を超えて継続中の数。絶対震度の下限とは別基準）へフォールバック
   // していたが、それだと「地図には検知点が 1 つも無いのにカードだけ N 観測点で反応と出る」
@@ -476,7 +494,9 @@ function KyoshinDetectionSummary({ events, points }: {
 }
 
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const RealtimeTab = memo(function RealtimeTab({ eews, kyoshinV2Detections, kyoshinDetectedPoints, swaveArrival, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: Props) {
+export const RealtimeTab = memo(function RealtimeTab({ eews, kyoshinV2Detections, kyoshinDetectedPoints, swaveArrival, visible, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: Props) {
+  // ブラウザのタブ・ウィンドウ側の可視性は App では判らないため、ここで合成する。
+  const pageVisible = usePageVisible()
   return (
     <div className="flex flex-col min-h-full p-2 gap-2 roomy:p-3 roomy:gap-3">
       {/* データカード */}
@@ -502,7 +522,7 @@ export const RealtimeTab = memo(function RealtimeTab({ eews, kyoshinV2Detections
         if (events.length === 0) return null
         return (
           <div className="flex flex-col gap-2">
-            <KyoshinDetectionSummary events={events} points={kyoshinDetectedPoints} />
+            <KyoshinDetectionSummary events={events} points={kyoshinDetectedPoints} visible={visible && pageVisible} />
             <p className="text-xs text-secondary">※強震モニタによる推定値。気象庁発表とは異なる場合があります。</p>
           </div>
         )

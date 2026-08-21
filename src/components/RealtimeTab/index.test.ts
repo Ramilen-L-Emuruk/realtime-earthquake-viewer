@@ -13,14 +13,17 @@
 //
 // JSX を使わず createElement で書くのは、このプロジェクトのテストが `src/**/*.test.ts` のみを
 // 対象にしているため（拡張子を .tsx にすると拾われない）。
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { createElement } from 'react'
-import { render, cleanup, screen } from '@testing-library/react'
+import { render, cleanup, screen, act } from '@testing-library/react'
 import { RealtimeTab } from './index'
 import type { DetectionEvent } from '../../utils/kyoshinDetector'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 
 afterEach(cleanup)
+// `document.visibilityState` を差し替えるテストがあるため、モックはテストごとに戻す
+// （個々のテストで後始末を書き忘れても後続へ漏れないようにする。`clock.test.ts` と同じ作法）。
+afterEach(() => vi.restoreAllMocks())
 
 /** テスト用の最小 DetectionEvent。カードはティアの判定と地域数にしかこれを使わない。 */
 function fakeEvent(
@@ -43,15 +46,26 @@ function fakeEvent(
 
 const P = (key: string, index: number): DetectedPoint => ({ key, lat: 35, lng: 139, index })
 
-function renderTab(detections: DetectionEvent[], points: DetectedPoint[]) {
-  render(
-    createElement(RealtimeTab, {
-      eews: [],
-      swaveArrival: null,
-      kyoshinV2Detections: detections,
-      kyoshinDetectedPoints: points,
-    }),
-  )
+function tabElement(detections: DetectionEvent[], points: DetectedPoint[], visible: boolean) {
+  return createElement(RealtimeTab, {
+    eews: [],
+    swaveArrival: null,
+    kyoshinV2Detections: detections,
+    kyoshinDetectedPoints: points,
+    visible,
+  })
+}
+
+/**
+ * 点列を差し替えて再描画できる形で描く。バー幅スケールはカードが持つ ref なので、
+ * 同じツリー位置で rerender しないと（＝描き直すと）保持が検証できない。
+ */
+function renderTab(detections: DetectionEvent[], points: DetectedPoint[], visible = true) {
+  const r = render(tabElement(detections, points, visible))
+  return {
+    update: (nextPoints: DetectedPoint[], nextVisible = true) =>
+      r.rerender(tabElement(detections, nextPoints, nextVisible)),
+  }
 }
 
 describe('検知カードは渡された点列をそのまま集計する', () => {
@@ -186,5 +200,94 @@ describe('検知カードの枠色は最大震度で決まる（確信度では�
     renderTab([fakeEvent({ id: 'evt-2', confidence: 'likely' })], [P('a', 7)])
     expect(cardBorderColor()).toBe(confirmedBorder) // 枠は震度1 の色のまま
     expect(screen.getByText('可能性')).toBeTruthy() // 確信度はチップ側だけが変わる
+  })
+})
+
+// ============================================================
+// 震度分布バーの幅スケール（分母）
+//
+// 見えている間は分母を下げない。下げると、点数が減っている最中にバーが伸びて「増えた」ように
+// 見える（分母が動いただけで実際の点数は減っている）。張り直しは見えていない間だけに行う。
+
+/**
+ * 「N点」の行のバー（塗り）の幅を返す。行の構造は
+ * span(震度ラベル) / div(トラック) > div(塗り) / span(件数)。トラックを class から引いて
+ * その子を取るのは、行内の div をインデックスで数えるとラッパーが 1 つ増えただけで
+ * 別の要素の幅を検証し始めるため。
+ */
+function barWidth(countLabel: string): string {
+  const row = screen.getByText(countLabel).parentElement
+  if (!row) throw new Error(`行が見つからない: ${countLabel}`)
+  const fill = row.querySelector('div.overflow-hidden')?.firstElementChild
+  if (!fill) throw new Error(`バーの塗りが見つからない: ${countLabel}`)
+  return (fill as HTMLElement).style.width
+}
+
+/** ブラウザのタブ・ウィンドウの可視性を切り替える（`usePageVisible` が拾う）。 */
+function setPageVisibility(state: 'visible' | 'hidden') {
+  vi.spyOn(document, 'visibilityState', 'get').mockReturnValue(state)
+  act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+}
+
+describe('震度分布バーの幅スケール', () => {
+  const confirmed = [fakeEvent({ id: 'evt-1', confidence: 'confirmed' })]
+  /** 震度0（index 6）の点を n 個。バーが 1 本だけになるので分母の動きがそのまま幅に出る。 */
+  const shindo0 = (n: number) => Array.from({ length: n }, (_, i) => P(`p${i}`, 6))
+
+  it('見えている間は時間が経っても分母が下がらない（点数が減ってもバーが太らない）', () => {
+    // 時計を進めるのは、以前の実装が「直近 15 秒のピーク」を分母にしていて、窓から外れた
+    // 瞬間にバーが一斉に太る挙動だったため。時間で減衰する仕組みを再導入したら落ちる。
+    vi.useFakeTimers()
+    try {
+      const { update } = renderTab(confirmed, shindo0(4))
+      expect(barWidth('4点')).toBe('100%')
+
+      vi.setSystemTime(Date.now() + 20_000)
+      update(shindo0(2))
+      // 分母が 4 のままなので半分。ここで 100% に戻ると「点数が減ったのに増えた」と見える
+      expect(barWidth('2点')).toBe('50%')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('点数が増えたら分母は追従する', () => {
+    const { update } = renderTab(confirmed, shindo0(2))
+    expect(barWidth('2点')).toBe('100%')
+
+    update(shindo0(8))
+    expect(barWidth('8点')).toBe('100%')
+  })
+
+  it('見えていない間に張り直し、次に見えたときは現在の点数が基準になる', () => {
+    const { update } = renderTab(confirmed, shindo0(8))
+    expect(barWidth('8点')).toBe('100%')
+
+    // 不可視のまま減る（タブ移動・パネル折りたたみ・アプリのバックグラウンド）
+    update(shindo0(2), false)
+    // 可視へ戻すと、前の揺れのピーク 8 ではなく現在の 2 が分母になる
+    update(shindo0(2), true)
+    expect(barWidth('2点')).toBe('100%')
+  })
+
+  it('不可視でも点数が増えている間は現在値に追従する（分母が過大にならない）', () => {
+    const { update } = renderTab(confirmed, shindo0(2), false)
+    update(shindo0(6), false)
+    update(shindo0(6), true)
+    expect(barWidth('6点')).toBe('100%')
+  })
+
+  it('ブラウザのタブが裏に回っている間も張り直す（可視判定の 3 つ目）', () => {
+    // タブ・パネルの可視性（`visible` prop）は true のまま、ページ側だけを裏に回す。
+    // 実装は `visible && pageVisible` で合成しており、この AND が崩れる（`||` にする・
+    // `usePageVisible()` の呼び出しを落とす）と、ここだけが落ちる。
+    const { update } = renderTab(confirmed, shindo0(8))
+    expect(barWidth('8点')).toBe('100%')
+
+    setPageVisibility('hidden')
+    update(shindo0(2))
+    setPageVisibility('visible')
+
+    expect(barWidth('2点')).toBe('100%')
   })
 })
