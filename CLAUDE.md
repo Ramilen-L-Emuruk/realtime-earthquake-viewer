@@ -446,6 +446,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | EEW の区分の呼び方（電文の名称に合わせる。予報級＝地震動予報／警報級＝緊急地震速報（警報）。表示・読み上げの対応表と `eewKindLabel`。ウィンドウタイトルも対象＝外部監視への破壊的変更） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §3「電文の名称と表示・読み上げ」 |
 | 「特別警報」を音声で読まないこと（表示・通知・通知音は 2 段階を保つ） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
 | 通知音の内容と説明文の一致（`PLAYERS` の周波数・`COUNTDOWN_PULSES` のパルス数と、設定タブ「通知音テスト」の説明文・仕様書の記述） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §2 |
+| 通知音の質感の分け方（情報系＝`pianoNote` は全音に残響を載せる・EEW は予報だけ弱く持ち警報級と津波警報は乾いたまま・減衰の終端は `decayTone` に集約し種別ごとに分岐させない・アタックに広帯域ノイズを戻さない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §2「質感の分け方 — 警報は乾き、情報は濡れ」 |
 | 通知音の長さと読み上げ遅延の連動（音を作り変えたら `TTS_DELAY_MS` かテーブル外の個別指定を必ず見直す。リバーブを効かせた音は乾音の長さでは足りない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
 | 通知音と声の間に合成を先行させること（`prewarmVoicevox`。進行中の読み上げを止めない・使われなかったものは打ち切る・失敗時は再生側で作り直す。対象は非 EEW の遅延経路） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「間を合成の時間に充てる（先行合成）」 |
 | 間を置く読み上げの予約を追跡すること（`scheduleSpeech`。画面を閉じたときとリプレイ開始で取り消す。対象は EEW 誤報取消を含む全経路） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「間を置く読み上げの予約は追跡する」 |

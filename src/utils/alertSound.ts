@@ -35,10 +35,30 @@ function getCtx(): AudioContext | null {
   return audioCtx
 }
 
-/** ユーザー操作時に呼び、サスペンド中の AudioContext を再開する。 */
+/**
+ * ユーザー操作時に呼び、サスペンド中の AudioContext を再開する。
+ *
+ * あわせてマスターチェーンを先に作っておく。DynamicsCompressor は生成から
+ * 0.4 秒ほどアタックを強く潰すため、最初の音を鳴らす瞬間に作ると **その 1 発だけ
+ * 約 8 dB 小さく鳴る**（EEW の初報がそれに当たると、いちばん聞かせたい音が鈍る）。
+ * ここで作れば操作から発報までの間に定常へ落ち着く。
+ */
 export function unlockAudio(): void {
   const ctx = getCtx()
-  if (ctx && ctx.state === 'suspended') void ctx.resume()
+  if (!ctx) return
+  if (ctx.state === 'suspended') {
+    // resume の失敗は「以後ずっと無音」を意味する。黙って捨てると原因が追えない
+    ctx.resume().catch(err => log.warn(`[sound] AudioContext の再開に失敗: ${String(err)}`))
+  }
+  try {
+    getMasterInput(ctx)
+    // 残響も同格の共有リソースとして先に作る。情報系の通知音（pianoNote）は
+    // すべて残響を通るため、最初の地震情報の発報時に 1.8 秒ぶんのバッファ生成が
+    // 走ることになる。ここで済ませておけば、鳴らす瞬間の処理を軽くできる。
+    getReverb(ctx)
+  } catch (err) {
+    log.error(`[sound] マスターチェーンの事前生成に失敗: ${String(err)}`)
+  }
 }
 
 /** VOICEVOX 等の外部モジュールが AudioContext を共有するための getter。 */
@@ -53,25 +73,39 @@ export function getAudioContext(): AudioContext | null {
 // ノイズに埋もれるため、compressor で合成音圧の暴走を抑制する（CRIT-3 対応）。
 // 単独再生時の音色はほぼ変わらず（threshold 以下は素通し）、複数音が重なったときだけ
 // リミッター的に働く。パラメータは音楽制作でリミッターとして使うときの標準的な値。
+// _reverb と同じく ctx とペアで保持する。将来 getCtx() が AudioContext を作り直す
+// 実装になったとき、古い ctx のノードを掴んだまま無音になるのを防ぐ（getReverb 側だけ
+// 対策があって master に無い、という非対称を残さない）。
 let _master: GainNode | null = null
-let _compressor: DynamicsCompressorNode | null = null
+let _masterCtx: AudioContext | null = null
 /**
  * 全ての音源が最終的に流れ込む master 入力ノード。VOICEVOX 読み上げも含めて
  * このモジュール外の音源もここへ接続することで、合成音圧の暴走を防ぐ。
  */
 export function getMasterInput(ctx: AudioContext): AudioNode {
-  if (_master) return _master
-  _master = ctx.createGain()
-  _master.gain.value = 1.0
-  _compressor = ctx.createDynamicsCompressor()
-  _compressor.threshold.value = -6
-  _compressor.knee.value = 6
-  _compressor.ratio.value = 4
-  _compressor.attack.value = 0.003
-  _compressor.release.value = 0.25
-  _master.connect(_compressor)
-  _compressor.connect(ctx.destination)
-  return _master
+  if (_master && _masterCtx === ctx) return _master
+  // 途中で失敗したときに「生成済みだが destination まで繋がっていない _master」を
+  // 掴んだままにしない。残すと以後の全ての音と VOICEVOX 読み上げが、例外もログも
+  // 出さないまま恒久的に無音になる。破棄して次回やり直せるようにする。
+  try {
+    const master = ctx.createGain()
+    master.gain.value = 1.0
+    const compressor = ctx.createDynamicsCompressor()
+    compressor.threshold.value = -6
+    compressor.knee.value = 6
+    compressor.ratio.value = 4
+    compressor.attack.value = 0.003
+    compressor.release.value = 0.25
+    master.connect(compressor)
+    compressor.connect(ctx.destination)
+    _master = master
+    _masterCtx = ctx
+    return master
+  } catch (err) {
+    _master = null
+    _masterCtx = null
+    throw err
+  }
 }
 
 // LOW-B2: _reverb を ctx とペアで保持する。現状は getCtx() が audioCtx を再生成しないため
@@ -95,105 +129,118 @@ function getReverb(ctx: AudioContext): ConvolverNode {
   return convolver
 }
 
-// ピアノ風トーン: triangle 攻撃 + sine 余韻 + 第2倍音 + ノイズ鍵盤感（地震情報系に使用）
-function pianoNote(ctx: AudioContext, freq: number, t: number, dur: number, gain: number, wet = 0): void {
-  const p = gain * globalVolume
-
-  const sin = ctx.createOscillator(); const sinG = ctx.createGain()
-  sin.type = 'sine'; sin.frequency.value = freq
-  sin.connect(sinG); sinG.connect(getMasterInput(ctx))
-  sinG.gain.setValueAtTime(0, t)
-  sinG.gain.linearRampToValueAtTime(p, t + 0.005)
-  sinG.gain.exponentialRampToValueAtTime(0.001, t + dur)
-  sin.start(t); sin.stop(t + dur + 0.05)
-
-  const tri = ctx.createOscillator(); const triG = ctx.createGain()
-  tri.type = 'triangle'; tri.frequency.value = freq
-  tri.connect(triG); triG.connect(getMasterInput(ctx))
-  triG.gain.setValueAtTime(0, t)
-  triG.gain.linearRampToValueAtTime(p * 0.50, t + 0.005)
-  triG.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.18)
-  tri.start(t); tri.stop(t + dur + 0.05)
-
-  const h2 = ctx.createOscillator(); const h2G = ctx.createGain()
-  h2.type = 'sine'; h2.frequency.value = freq * 2
-  h2.connect(h2G); h2G.connect(getMasterInput(ctx))
-  h2G.gain.setValueAtTime(0, t)
-  h2G.gain.linearRampToValueAtTime(p * 0.18, t + 0.005)
-  h2G.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.25)
-  h2.start(t); h2.stop(t + dur + 0.05)
-
-  const nlen = Math.floor(ctx.sampleRate * 0.008)
-  const nbuf = ctx.createBuffer(1, nlen, ctx.sampleRate)
-  const nd = nbuf.getChannelData(0)
-  for (let i = 0; i < nlen; i++) nd[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / nlen, 1.5)
-  const ns = ctx.createBufferSource(); const ng = ctx.createGain()
-  ns.buffer = nbuf
-  ng.gain.setValueAtTime(p * 0.28, t)
-  ng.gain.exponentialRampToValueAtTime(0.001, t + 0.008)
-  ns.connect(ng); ng.connect(getMasterInput(ctx))
-  ns.start(t); ns.stop(t + 0.010)
-
-  if (wet > 0) {
-    const rev = getReverb(ctx)
-    const wo = ctx.createOscillator(); const wg = ctx.createGain()
-    wo.type = 'sine'; wo.frequency.value = freq
-    wo.connect(wg); wg.connect(rev)
-    wg.gain.setValueAtTime(0, t)
-    wg.gain.linearRampToValueAtTime(p * wet, t + 0.005)
-    wg.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.80)
-    wo.start(t); wo.stop(t + dur + 0.05)
+/**
+ * 残響を取れなければ諦める版。**残響の失敗で直接音まで落とさないために使う。**
+ *
+ * `pianoNote` は全音が残響を通るため、`getReverb` が投げると引数評価の時点で
+ * 呼び出し元へ例外が伝わり、`earthquake` のような複数音の音は残りの音が丸ごと
+ * 鳴らなくなる（直接音は先にスケジュール済みでも、次の音までは届かない）。
+ */
+function tryGetReverb(ctx: AudioContext): ConvolverNode | null {
+  try {
+    return getReverb(ctx)
+  } catch (err) {
+    log.warn(`[sound] 残響の生成に失敗したため直接音のみで鳴らす: ${String(err)}`)
+    return null
   }
 }
 
-// ダークピアノ: 純正弦波系 3倍音構成 + 微量ノイズ（EEW 系統に使用）
+// 減衰トーンの終わり方。指数減衰は 0 に到達できないため TAIL_FLOOR まで落とすが、
+// そこで停止すると TAIL_FLOOR ぶんの段差が残り、無音区間にティックとして聞こえる
+// （1 つの音で 2〜6 本のオシレータが同時に切れるため -50 dBFS 前後まで積み上がる）。
+// 停止の直前に 0 まで落とし切ってから止める。
+const TAIL_FLOOR = 0.001
+const TAIL_FADE_SEC = 0.008
+const STOP_MARGIN_SEC = 0.012
+
+/**
+ * 立ち上がって指数減衰する 1 本のトーンを鳴らす。
+ *
+ * 通知音のプリミティブ（pianoNote / darkPiano / impact / ding）が共通で使う。
+ * 終端の落とし方をここへ集約しているため、各プリミティブは倍音構成だけを持つ。
+ * 終端が 0 まで落ちない形に戻すとティックが再発するので、ここを分岐させないこと。
+ *
+ * @param dest 接続先。通常はマスター入力、残響成分のときは convolver
+ * @param t 発音開始時刻（AudioContext 時間）
+ * @param attack 0 から peak に達するまでの秒数
+ * @param peak 到達する gain（globalVolume は呼び出し側で適用済み）。
+ *   0 以下なら何も鳴らさない（音量 0 の設定で無駄なノードを作らないため）
+ * @param end 減衰が TAIL_FLOOR に達する時刻。`t + attack` より前を渡した場合は
+ *   自動化の順序が壊れるため後ろへ丸める（丸めたことは警告に残す）
+ */
+function decayTone(
+  ctx: AudioContext, dest: AudioNode, type: OscillatorType,
+  freq: number, t: number, attack: number, peak: number, end: number,
+): void {
+  // 音量 0（設定スライダーを絞り切った状態）では TAIL_FLOOR ぶんの残留すら鳴らさない。
+  // NaN もここで弾く（放置すると以後の自動化が全滅し、無音の原因が追えなくなる）。
+  if (!Number.isFinite(peak) || peak <= 0) {
+    if (!Number.isFinite(peak)) log.warn(`[sound] decayTone: peak が不正 (${peak}) freq=${freq}`)
+    return
+  }
+  const osc = ctx.createOscillator()
+  const g = ctx.createGain()
+  osc.type = type
+  osc.frequency.value = freq
+  osc.connect(g)
+  g.connect(dest)
+  // 減衰の終わりが立ち上がりより前に来ると gain 自動化の順序が壊れる。
+  // 極端に短い dur を渡されても成立するよう下限を設ける。現状の呼び出し元は
+  // すべて 2.7 倍以上の余裕があるため到達しないが、丸めが起きたら音の長さが
+  // 意図と変わるので黙って通さない（`playCountdownBeep` の警告と同じ流儀）。
+  const floor = t + attack + 0.001
+  const decayEnd = Math.max(end, floor)
+  if (decayEnd > end) {
+    log.warn(`[sound] decayTone: 減衰長が短すぎるため丸めた freq=${freq} end=${end} → ${decayEnd}`)
+  }
+  g.gain.setValueAtTime(0, t)
+  g.gain.linearRampToValueAtTime(peak, t + attack)
+  g.gain.exponentialRampToValueAtTime(TAIL_FLOOR, decayEnd)
+  g.gain.linearRampToValueAtTime(0, decayEnd + TAIL_FADE_SEC)
+  osc.start(t)
+  osc.stop(decayEnd + TAIL_FADE_SEC + STOP_MARGIN_SEC)
+}
+
+// 情報系（pianoNote）の全音に載せるわずかな残響。呼び出し側の wet に加算する。
+// アタックのノイズを廃した分の質感をここで補う。EEW 系（darkPiano）には足さない
+// ——警報として硬い質感を保つため、濡らすのは情報系だけに限る。
+const PIANO_ROOM_WET = 0.10
+
+// ピアノ風トーン: sine 基音 + triangle 攻撃 + 上部倍音（地震情報・南海トラフ・津波解除に使用）。
+//
+// かつては頭に 8ms の広帯域ノイズを重ねて「鍵盤を叩いた感じ」を出していたが、
+// これが小型スピーカーで「プチ」と聞こえる正体だった。連続して鳴る音
+// （地震情報は 0.16 秒間隔の 4 音）では粒が並んで「プチプチ」になる。
+// ノイズは廃し、失ったアタックの厚みは上部倍音と PIANO_ROOM_WET で補っている。
+function pianoNote(ctx: AudioContext, freq: number, t: number, dur: number, gain: number, wet = 0): void {
+  const p = gain * globalVolume
+  const dest = getMasterInput(ctx)
+  const A = 0.005
+  decayTone(ctx, dest, 'sine',     freq,     t, A, p,        t + dur)
+  decayTone(ctx, dest, 'triangle', freq,     t, A, p * 0.45, t + dur * 0.18)
+  decayTone(ctx, dest, 'sine',     freq * 2, t, A, p * 0.38, t + dur * 0.30)
+  decayTone(ctx, dest, 'sine',     freq * 3, t, A, p * 0.18, t + dur * 0.22)
+  decayTone(ctx, dest, 'sine',     freq * 4, t, A, p * 0.09, t + dur * 0.16)
+  const rev = tryGetReverb(ctx)
+  if (rev) decayTone(ctx, rev, 'sine', freq, t, A, p * (wet + PIANO_ROOM_WET), t + dur * 0.80)
+}
+
+// ダークピアノ: 純正弦波系 3倍音構成（EEW 系統に使用）。
+//
+// pianoNote と同じ理由で頭のノイズを廃した。**倍音構成と残響は変えていない**
+// ——EEW は警報として硬い質感を保つ判断のため、情報系（pianoNote）のように
+// 倍音を厚くしたり残響を足したりしない。ここを情報系に寄せると、EEW 5 系統と
+// 特別警報で揃っている「乾いた」質感が崩れる。
 function darkPiano(ctx: AudioContext, freq: number, t: number, dur: number, gain: number, wet = 0): void {
   const p = gain * globalVolume
-
-  const s1 = ctx.createOscillator(); const g1 = ctx.createGain()
-  s1.type = 'sine'; s1.frequency.value = freq
-  s1.connect(g1); g1.connect(getMasterInput(ctx))
-  g1.gain.setValueAtTime(0, t)
-  g1.gain.linearRampToValueAtTime(p, t + 0.008)
-  g1.gain.exponentialRampToValueAtTime(0.001, t + dur)
-  s1.start(t); s1.stop(t + dur + 0.05)
-
-  const s2 = ctx.createOscillator(); const g2 = ctx.createGain()
-  s2.type = 'sine'; s2.frequency.value = freq * 2
-  s2.connect(g2); g2.connect(getMasterInput(ctx))
-  g2.gain.setValueAtTime(0, t)
-  g2.gain.linearRampToValueAtTime(p * 0.25, t + 0.008)
-  g2.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.35)
-  s2.start(t); s2.stop(t + dur + 0.05)
-
-  const s3 = ctx.createOscillator(); const g3 = ctx.createGain()
-  s3.type = 'sine'; s3.frequency.value = freq * 3
-  s3.connect(g3); g3.connect(getMasterInput(ctx))
-  g3.gain.setValueAtTime(0, t)
-  g3.gain.linearRampToValueAtTime(p * 0.08, t + 0.008)
-  g3.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.20)
-  s3.start(t); s3.stop(t + dur + 0.05)
-
-  const nlen = Math.floor(ctx.sampleRate * 0.006)
-  const nbuf = ctx.createBuffer(1, nlen, ctx.sampleRate)
-  const nd = nbuf.getChannelData(0)
-  for (let i = 0; i < nlen; i++) nd[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / nlen, 1.5)
-  const ns = ctx.createBufferSource(); const ng = ctx.createGain()
-  ns.buffer = nbuf
-  ng.gain.setValueAtTime(p * 0.14, t)
-  ng.gain.exponentialRampToValueAtTime(0.001, t + 0.006)
-  ns.connect(ng); ng.connect(getMasterInput(ctx))
-  ns.start(t); ns.stop(t + 0.008)
-
+  const dest = getMasterInput(ctx)
+  const A = 0.008
+  decayTone(ctx, dest, 'sine', freq,     t, A, p,        t + dur)
+  decayTone(ctx, dest, 'sine', freq * 2, t, A, p * 0.25, t + dur * 0.35)
+  decayTone(ctx, dest, 'sine', freq * 3, t, A, p * 0.08, t + dur * 0.20)
   if (wet > 0) {
-    const rev = getReverb(ctx)
-    const wo = ctx.createOscillator(); const wg = ctx.createGain()
-    wo.type = 'sine'; wo.frequency.value = freq
-    wo.connect(wg); wg.connect(rev)
-    wg.gain.setValueAtTime(0, t)
-    wg.gain.linearRampToValueAtTime(p * wet, t + 0.008)
-    wg.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.80)
-    wo.start(t); wo.stop(t + dur + 0.05)
+    const rev = tryGetReverb(ctx)
+    if (rev) decayTone(ctx, rev, 'sine', freq, t, A, p * wet, t + dur * 0.80)
   }
 }
 
@@ -277,79 +324,31 @@ function sweep(ctx: AudioContext, type: OscillatorType, freqStart: number, freqE
   osc.stop(startAt + duration + 0.05)
 }
 
-// 打撃音: sine + triangle + sub + ノイズ（強震モニタ揺れ検知に使用）
-function impact(ctx: AudioContext, freq: number, t: number, dur: number, gain: number, noiseMix = 0.20): void {
+// 打撃音: sine + triangle + サブオクターブ（強震モニタ揺れ検知に使用）。
+// 頭のノイズは pianoNote / darkPiano と同じ理由で廃した。打撃感は triangle の
+// 3ms 立ち上がりとサブオクターブで出す（リアルタイム系は残響を足さない）。
+function impact(ctx: AudioContext, freq: number, t: number, dur: number, gain: number): void {
   const p = gain * globalVolume
-
-  const so = ctx.createOscillator(); const sg = ctx.createGain()
-  so.type = 'sine'; so.frequency.value = freq
-  so.connect(sg); sg.connect(getMasterInput(ctx))
-  sg.gain.setValueAtTime(0, t)
-  sg.gain.linearRampToValueAtTime(p, t + 0.003)
-  sg.gain.exponentialRampToValueAtTime(0.001, t + dur)
-  so.start(t); so.stop(t + dur + 0.05)
-
-  const to = ctx.createOscillator(); const tg = ctx.createGain()
-  to.type = 'triangle'; to.frequency.value = freq
-  to.connect(tg); tg.connect(getMasterInput(ctx))
-  tg.gain.setValueAtTime(0, t)
-  tg.gain.linearRampToValueAtTime(p * 0.45, t + 0.003)
-  tg.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.18)
-  to.start(t); to.stop(t + dur + 0.05)
-
-  const subO = ctx.createOscillator(); const subG = ctx.createGain()
-  subO.type = 'sine'; subO.frequency.value = freq * 0.5
-  subO.connect(subG); subG.connect(getMasterInput(ctx))
-  subG.gain.setValueAtTime(0, t)
-  subG.gain.linearRampToValueAtTime(p * 0.35, t + 0.004)
-  subG.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.45)
-  subO.start(t); subO.stop(t + dur + 0.05)
-
-  const nlen = Math.floor(ctx.sampleRate * 0.007)
-  const nbuf = ctx.createBuffer(1, nlen, ctx.sampleRate)
-  const nd = nbuf.getChannelData(0)
-  for (let i = 0; i < nlen; i++) nd[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / nlen, 1.5)
-  const ns = ctx.createBufferSource(); const ngn = ctx.createGain()
-  ns.buffer = nbuf
-  ngn.gain.setValueAtTime(p * noiseMix, t)
-  ngn.gain.exponentialRampToValueAtTime(0.001, t + 0.007)
-  ns.connect(ngn); ngn.connect(getMasterInput(ctx))
-  ns.start(t); ns.stop(t + 0.009)
+  const dest = getMasterInput(ctx)
+  decayTone(ctx, dest, 'sine',     freq,       t, 0.003, p,        t + dur)
+  decayTone(ctx, dest, 'triangle', freq,       t, 0.003, p * 0.45, t + dur * 0.18)
+  decayTone(ctx, dest, 'sine',     freq * 0.5, t, 0.004, p * 0.35, t + dur * 0.45)
 }
 
-// 純音トーン: sine + 第2倍音（強震モニタ更新音に使用）
+// 純音トーン: sine + 第2倍音（強震モニタ更新音・津波情報更新に使用）。
+// 元からノイズを持たないため、変わったのは終端の落とし方だけ。
 function ding(ctx: AudioContext, freq: number, t: number, dur: number, gain: number): void {
   const p = gain * globalVolume
-
-  const so = ctx.createOscillator(); const sg = ctx.createGain()
-  so.type = 'sine'; so.frequency.value = freq
-  so.connect(sg); sg.connect(getMasterInput(ctx))
-  sg.gain.setValueAtTime(0, t)
-  sg.gain.linearRampToValueAtTime(p, t + 0.006)
-  sg.gain.exponentialRampToValueAtTime(0.001, t + dur)
-  so.start(t); so.stop(t + dur + 0.05)
-
-  const ho = ctx.createOscillator(); const hg = ctx.createGain()
-  ho.type = 'sine'; ho.frequency.value = freq * 2
-  ho.connect(hg); hg.connect(getMasterInput(ctx))
-  hg.gain.setValueAtTime(0, t)
-  hg.gain.linearRampToValueAtTime(p * 0.20, t + 0.006)
-  hg.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.22)
-  ho.start(t); ho.stop(t + dur + 0.05)
+  const dest = getMasterInput(ctx)
+  decayTone(ctx, dest, 'sine', freq,     t, 0.006, p,        t + dur)
+  decayTone(ctx, dest, 'sine', freq * 2, t, 0.006, p * 0.20, t + dur * 0.22)
 }
 
 // 低音補強トーン: ding + サブオクターブ（高震度更新音に使用）
 function dingDeep(ctx: AudioContext, freq: number, t: number, dur: number, gain: number): void {
   ding(ctx, freq, t, dur, gain)
-
-  const so = ctx.createOscillator(); const sg = ctx.createGain()
-  so.type = 'sine'; so.frequency.value = freq * 0.5
-  so.connect(sg); sg.connect(getMasterInput(ctx))
   const p = gain * globalVolume
-  sg.gain.setValueAtTime(0, t)
-  sg.gain.linearRampToValueAtTime(p * 0.50, t + 0.008)
-  sg.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.55)
-  so.start(t); so.stop(t + dur + 0.05)
+  decayTone(ctx, getMasterInput(ctx), 'sine', freq * 0.5, t, 0.008, p * 0.50, t + dur * 0.55)
 }
 
 // ─── サウンドプレーヤー ───────────────────────────────────────────
@@ -437,17 +436,14 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
     darkPiano(ctx, 261.6, base + 2 * 0.10, 1.00, 0.24)
   },
 
-  // 揺れ検知（強震モニタ first contact）: 打撃2音 + シマー高周波
+  // 揺れ検知（強震モニタ first contact）: 打撃2音 + シマー高周波。
+  // シマーも decayTone を通す。ここだけ直に書いていたため終端が 0.001 のまま切れ、
+  // 打撃音の後ろで 2637Hz のティックが残っていた（他のプリミティブと揃える）。
   kyoshin: (ctx, base) => {
-    impact(ctx, 1318, base + 0.00, 0.30, 0.28, 0.28)
-    const sh = ctx.createOscillator(); const shg = ctx.createGain()
-    sh.type = 'sine'; sh.frequency.value = 2637
-    sh.connect(shg); shg.connect(getMasterInput(ctx))
-    shg.gain.setValueAtTime(0, base + 0.02)
-    shg.gain.linearRampToValueAtTime(0.28 * globalVolume * 0.10, base + 0.025)
-    shg.gain.exponentialRampToValueAtTime(0.001, base + 0.18)
-    sh.start(base + 0.02); sh.stop(base + 0.20)
-    impact(ctx, 1047, base + 0.24, 0.42, 0.26, 0.18)
+    impact(ctx, 1318, base + 0.00, 0.30, 0.28)
+    decayTone(ctx, getMasterInput(ctx), 'sine', 2637,
+      base + 0.02, 0.005, 0.28 * globalVolume * 0.10, base + 0.18)
+    impact(ctx, 1047, base + 0.24, 0.42, 0.26)
   },
 
   // 揺れ検知（候補・未確定）: 控えめな単発チャイム（確定音の1/4以下の音量）
@@ -548,6 +544,26 @@ const DING_PATTERNS: DingPattern[] = [
 
 // ─── 公開 API ───────────────────────────────────────────────────
 
+/**
+ * 音の合成で例外が出ても外へ投げない。**通知音の失敗でアプリを落とさないため。**
+ *
+ * 呼び出し元（`useKyoshinAlerts` の useEffect・`useLiveEventHandler` のイベント処理・
+ * `App` の S 波カウントダウン）はいずれも try/catch を持たず、このアプリには
+ * Error Boundary が無い。React 18 は捕捉されない例外でツリー全体をアンマウントする
+ * ため、音の不具合ひとつで地図もカードも読み上げも消える。
+ *
+ * また `useLiveEventHandler` は通知音を鳴らした**後**にブラウザ通知と読み上げを
+ * 出すので、ここで throw すると「音も声も通知も出なかった」という形になる。
+ * 音だけを諦めて後続を通す。無音は気づけないので必ず error で残す。
+ */
+function playGuarded(label: string, play: () => void): void {
+  try {
+    play()
+  } catch (err) {
+    log.error(`[sound] ${label} の再生に失敗: ${String(err)}`)
+  }
+}
+
 /** 指定した種別の通知音を鳴らす。 */
 export function playAlertSound(type: AlertSoundType): void {
   const ctx = getCtx()
@@ -557,7 +573,7 @@ export function playAlertSound(type: AlertSoundType): void {
   }
   log.debug(`[sound] playAlertSound type=${type} ctxState=${ctx.state}`)
   if (ctx.state === 'suspended') void ctx.resume()
-  PLAYERS[type](ctx, ctx.currentTime + 0.02)
+  playGuarded(`playAlertSound(${type})`, () => PLAYERS[type](ctx, ctx.currentTime + 0.02))
 }
 
 // S波到着カウントダウンの段階ごとのパルス数。ゲート周波数（下記 gateHzMap）と揃えて
@@ -598,37 +614,39 @@ export function playCountdownBeep(second: number): void {
   // カウントダウンの 1 秒間隔を圧迫しない）。
   const totalDur = steps * period
 
-  for (let i = 0; i < steps; i++) {
-    const pt  = t0 + i * period
-    const osc = ctx.createOscillator(); const env = ctx.createGain()
-    osc.type = 'square'; osc.frequency.value = 440
-    osc.connect(env); env.connect(getMasterInput(ctx))
-    env.gain.setValueAtTime(0, pt)
-    env.gain.linearRampToValueAtTime(0.22 * globalVolume, pt + 0.003)
-    env.gain.setValueAtTime(0.22 * globalVolume, pt + pulseW - 0.003)
-    env.gain.linearRampToValueAtTime(0, pt + pulseW)
-    osc.start(pt); osc.stop(pt + pulseW + 0.005)
-  }
+  playGuarded(`playCountdownBeep(${second})`, () => {
+    for (let i = 0; i < steps; i++) {
+      const pt  = t0 + i * period
+      const osc = ctx.createOscillator(); const env = ctx.createGain()
+      osc.type = 'square'; osc.frequency.value = 440
+      osc.connect(env); env.connect(getMasterInput(ctx))
+      env.gain.setValueAtTime(0, pt)
+      env.gain.linearRampToValueAtTime(0.22 * globalVolume, pt + 0.003)
+      env.gain.setValueAtTime(0.22 * globalVolume, pt + pulseW - 0.003)
+      env.gain.linearRampToValueAtTime(0, pt + pulseW)
+      osc.start(pt); osc.stop(pt + pulseW + 0.005)
+    }
 
-  if (second === 1) {
-    const sub = ctx.createOscillator(); const sg = ctx.createGain()
-    sub.type = 'sine'; sub.frequency.value = 110
-    sub.connect(sg); sg.connect(getMasterInput(ctx))
-    sg.gain.setValueAtTime(0, t0)
-    sg.gain.linearRampToValueAtTime(0.30 * globalVolume, t0 + 0.010)
-    sg.gain.setValueAtTime(0.30 * globalVolume, t0 + totalDur - 0.06)
-    sg.gain.linearRampToValueAtTime(0, t0 + totalDur)
-    sub.start(t0); sub.stop(t0 + totalDur + 0.02)
+    if (second === 1) {
+      const sub = ctx.createOscillator(); const sg = ctx.createGain()
+      sub.type = 'sine'; sub.frequency.value = 110
+      sub.connect(sg); sg.connect(getMasterInput(ctx))
+      sg.gain.setValueAtTime(0, t0)
+      sg.gain.linearRampToValueAtTime(0.30 * globalVolume, t0 + 0.010)
+      sg.gain.setValueAtTime(0.30 * globalVolume, t0 + totalDur - 0.06)
+      sg.gain.linearRampToValueAtTime(0, t0 + totalDur)
+      sub.start(t0); sub.stop(t0 + totalDur + 0.02)
 
-    const hi = ctx.createOscillator(); const hg = ctx.createGain()
-    hi.type = 'sine'; hi.frequency.value = 1320
-    hi.connect(hg); hg.connect(getMasterInput(ctx))
-    hg.gain.setValueAtTime(0, t0)
-    hg.gain.linearRampToValueAtTime(0.16 * globalVolume, t0 + 0.005)
-    hg.gain.setValueAtTime(0.16 * globalVolume, t0 + totalDur - 0.06)
-    hg.gain.linearRampToValueAtTime(0, t0 + totalDur)
-    hi.start(t0); hi.stop(t0 + totalDur + 0.02)
-  }
+      const hi = ctx.createOscillator(); const hg = ctx.createGain()
+      hi.type = 'sine'; hi.frequency.value = 1320
+      hi.connect(hg); hg.connect(getMasterInput(ctx))
+      hg.gain.setValueAtTime(0, t0)
+      hg.gain.linearRampToValueAtTime(0.16 * globalVolume, t0 + 0.005)
+      hg.gain.setValueAtTime(0.16 * globalVolume, t0 + totalDur - 0.06)
+      hg.gain.linearRampToValueAtTime(0, t0 + totalDur)
+      hi.start(t0); hi.stop(t0 + totalDur + 0.02)
+    }
+  })
 }
 
 /**
@@ -647,5 +665,7 @@ export function playKyoshinUpdateSound(maxIndex: number, gainScale = 1): void {
   const p = DING_PATTERNS[kyoshinLevel(maxIndex)]
   const base = ctx.currentTime + 0.02
   const fn = p.deep ? dingDeep : ding
-  p.freqs.forEach((freq, i) => fn(ctx, freq, base + i * p.interval, p.duration, p.gain * gainScale))
+  playGuarded(`playKyoshinUpdateSound(${maxIndex})`, () => {
+    p.freqs.forEach((freq, i) => fn(ctx, freq, base + i * p.interval, p.duration, p.gain * gainScale))
+  })
 }
