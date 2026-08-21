@@ -36,6 +36,8 @@ import { quakeEventKey } from './utils/quakeMerge'
 import { tsunamiOverallGrade } from './utils/tsunami'
 import { playCountdownBeep, unlockAudio, setSoundVolume } from './utils/alertSound'
 import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
+import { warmFixedPhrases } from './utils/voicevox'
+import { EEW_LEAD_PHRASES } from './utils/ttsText'
 import type { EEWAlert, JMAQuake, JMATsunami } from './types/earthquake'
 import { useReplayController } from './hooks/useReplayController'
 import { fetchDmdataReplayEvents, clearReplayCache } from './services/dmdataReplay'
@@ -514,6 +516,15 @@ export function App() {
       log.warn('[data] tts-phrase-break-dict 事前ロード失敗（読み上げの句区切りが効かない）', err)
     })
   }, [])
+
+  // 緊急地震速報の切り出し語をあらかじめ合成しておく。
+  // EEW は通知音との間を置かずに読み始めるため先行合成（prewarmVoicevox）が使えず、合成の
+  // 往復がそのまま声の出遅れになる。切り出し語は 3 通りの固定句なので先に作っておける。
+  // 接続先・話者が変われば作り直す（別の声のまま鳴らさないため）。
+  useEffect(() => {
+    if (!settings.voicevoxEnabled) return
+    warmFixedPhrases(settings.voicevoxUrl, settings.voicevoxSpeakerId, EEW_LEAD_PHRASES)
+  }, [settings.voicevoxEnabled, settings.voicevoxUrl, settings.voicevoxSpeakerId])
 
   // ブラウザの自動再生制限に対応: 初回のユーザー操作で音声を有効化する
   useEffect(() => {
