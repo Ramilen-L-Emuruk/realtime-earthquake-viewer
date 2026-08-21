@@ -9,11 +9,11 @@ import { formatMagnitude, hasMagnitude } from '../utils/formatters'
 import { eewMaxScale, eewMaxLpgmClass, eewNoForecastReason, computeSingleEEWLevel, selectEEWSoundType, eewKindLabel } from '../utils/eew'
 import { haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
-import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly } from '../utils/tsunami'
-import { matchesArea, sortAreasForCardDisplay } from '../components/TsunamiTab'
+import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, matchesArea, sortAreasForCardDisplay } from '../utils/tsunami'
 import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
-import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToText, tsunamiDowngradeToText, tsunamiCancelToText, tsunamiObservationUpdateToText, tsunamiArrivalToText, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, type TtsRegionOptions } from '../utils/ttsText'
+import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, tsunamiArrivalToSegments, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, type TtsRegionOptions } from '../utils/ttsText'
+import { joinSegments, plain, type SpeechFollowApi, type SpeechSegment } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
 import { extractQuakeEventIdFromId, quakeEventKey, sameQuakeEntry } from '../utils/quakeMerge'
@@ -256,6 +256,14 @@ export interface LiveEventHandlerDeps {
    */
   preSpeechTab: (tab: TabId, priority: TabPriority) => void
   /**
+   * 読み上げの進行を画面へ伝える（津波カードの追従スクロール）。
+   *
+   * 渡すのは**津波の読み上げだけ**。地震情報の本文は数千文字（数百チャンク）になり、
+   * 追従の対象を持たない通知が大量に流れる。渡さなければ追従しないだけで、読み上げ自体は
+   * 変わらない。
+   */
+  speechFollow?: SpeechFollowApi
+  /**
    * 特別情報（南海トラフ臨時情報・後発地震注意情報・関連解説情報）の受信でパネルを開く。
    *
    * これらは地図に重ねた帯で伝える情報で、パネル側に居場所がない（切り替えるタブが無い）。
@@ -271,7 +279,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const {
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabRealtimeForKyoshin, setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate,
-    setActiveTabRealtimeUrgent, followSpeechTab, preSpeechTab, expandPanelForSpecialInfo,
+    setActiveTabRealtimeUrgent, followSpeechTab, preSpeechTab, speechFollow, expandPanelForSpecialInfo,
     revertToDefaultTab, selectQuake, setActiveLpgmEventId,
   } = deps
 
@@ -527,6 +535,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     follow?: () => void,
     /** 間を置いている最中に合成しておいた音声（`speakNonEEWDelayed` 経由のときだけ渡る）。 */
     prewarmed?: PrewarmedSpeech | null,
+    /** 読み上げ文の断片列。渡すと画面が読み上げに追従する（津波のみ）。 */
+    segments?: SpeechSegment[],
   ) => {
     void (async () => {
       // `await` はマイクロタスクの境界を作るため、待ちが明けてからこの続きが走るまでの間に
@@ -541,15 +551,27 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 自分の番が来た（これから声に出す）瞬間に画面を合わせる。待ち行列の後なので、
       // 重い電文の読み上げ中に届いた軽い電文は、その後になって初めてタブを取る。
       follow?.()
+      // 追従は「これから声に出す」ここで開始する。予約の段階で始めると、間を置いている
+      // 最中に追い越されて鳴らなかった読み上げに画面が付いていく。
+      //
+      // **どこも指していない文面では始めない。** 区域名も観測点名も含まない文（等級を判定
+      // できなかったときの全解除の文言など）で始めると、追従は空振りしたまま終わり、
+      // 「一度も引き当てられなかった」の記録だけが毎回残って診断の役に立たなくなる。
+      const followable = segments?.some(s => s.refs.length > 0) ?? false
+      const followToken = followable ? speechFollow?.begin(segments!) : undefined
       // 第 5 引数（鳴らす直前の見直し）は非 EEW では使わない。予想震度のように数秒で
       // 書き換わる値を持たないため、読み始めた文面を最後まで読んでよい。
       const done = speakWithVoicevox(
         settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume, undefined, prewarmed,
+        followToken === undefined
+          ? undefined
+          : (index, startAt, chunks) => speechFollow?.schedule(followToken, index, startAt, chunks),
       )
       activeNonEewSpeechRef.current = { priority, done }
       try {
         await done
       } finally {
+        if (followToken !== undefined) speechFollow?.end(followToken)
         // 自分より後に始まった読み上げに置き換わっている場合は触らない（消すと待ち側が
         // 「誰も読んでいない」と誤認し、進行中の読み上げに割り込む）
         if (activeNonEewSpeechRef.current?.done === done) activeNonEewSpeechRef.current = null
@@ -612,6 +634,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     topic: SpeechTopic,
     /** 読み上げに同調して動かすタブ。**タブを持たない情報（南海トラフ系）では省略する。** */
     follow?: { readonly tab: Exclude<TabId, 'realtime'>; readonly priority: TabPriority },
+    /** 読み上げ文の断片列。渡すとカードが読み上げに追従する（津波のみ）。 */
+    segments?: SpeechSegment[],
   ) => {
     // 予約した時点で、自分より重い読み上げが走っていたか。**発話の番でもう一度取って比べる**
     // （下の「追い越し」の判定）。
@@ -672,6 +696,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           priority,
           follow ? () => followSpeechTab(follow.tab, follow.priority) : undefined,
           prewarmed,
+          segments,
         )
       },
       () => {
@@ -1314,6 +1339,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         tsunamiUpdate:     800,
       }
       let ttsText: string | null = null
+      // 津波だけは読み上げ文を断片列でも作る。カードを読み上げに追従させるのに、どの語が
+      // どの区域・観測点を指すかが必要になる（`ttsFollow`）。地震情報は追従の対象を持たない
+      // ため文字列だけで済ませる（本文が数千文字＝数百チャンクになり、通知だけが増える）。
+      let ttsSegments: SpeechSegment[] | null = null
       if (event.kind === 'quake' && !event.cancelled) {
         ttsText = earthquakeToText(event, ttsRegionOptions(settings), isNewQuake)
       } else if (event.kind === 'tsunami') {
@@ -1340,22 +1369,24 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // 波高未確定（観測中）のまま新規に到達が確認された観測点は「到達確認」として読み上げる
           const newlyArrivedObs = (event.observations ?? [])
             .filter(o => !o.height && !seenObsNamesRef.current.has(o.name))
-          const updateText = updatedObs.length > 0 ? tsunamiObservationUpdateToText(updatedObs, event.headline) : ''
-          const arrivalText = tsunamiArrivalToText(newlyArrivedObs)
-          if (updateText) {
-            ttsText = arrivalText ? `${updateText}${arrivalText}` : updateText
-          } else if (arrivalText) {
-            ttsText = `津波観測情報。${arrivalText}`
+          const updateSegments = updatedObs.length > 0
+            ? tsunamiObservationUpdateToSegments(updatedObs, event.headline)
+            : []
+          const arrivalSegments = tsunamiArrivalToSegments(newlyArrivedObs)
+          if (updateSegments.length > 0) {
+            ttsSegments = [...updateSegments, ...arrivalSegments]
+          } else if (arrivalSegments.length > 0) {
+            ttsSegments = [plain('津波観測情報。'), ...arrivalSegments]
           }
         } else {
           const isDowngrade = prevGrade !== null && GRADE_RANK[currentGrade as GradeKey] < GRADE_RANK[prevGrade as GradeKey]
-          ttsText = isDowngrade ? tsunamiDowngradeToText(event) : tsunamiToText(event)
+          ttsSegments = isDowngrade ? tsunamiDowngradeToSegments(event) : tsunamiToSegments(event)
           // グレード変化と同時に観測中（波高未確定）で新規到達した観測点も読み上げに含める
           const newlyArrivedObsOnGradeChange = (event.observations ?? [])
             .filter(o => !o.height && !seenObsNamesRef.current.has(o.name))
-          const arrivalTextOnGradeChange = tsunamiArrivalToText(newlyArrivedObsOnGradeChange)
-          if (arrivalTextOnGradeChange) ttsText += arrivalTextOnGradeChange
+          ttsSegments = [...ttsSegments, ...tsunamiArrivalToSegments(newlyArrivedObsOnGradeChange)]
         }
+        if (ttsSegments) ttsText = joinSegments(ttsSegments)
       }
       if (ttsText && type) {
         // 読み上げに同調して画面を合わせる。津波は観測点更新（grade 不変）でもここを通るため、
@@ -1367,6 +1398,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           TTS_DELAY_MS[type] ?? 0,
           event.kind === 'tsunami' ? 'tsunami' : quakeSpeechTopic,
           { tab: followTab, priority: event.kind === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake },
+          ttsSegments ?? undefined,
         )
       } else if (event.kind === 'tsunami' && tsunamiIsNewOrUpgraded) {
         // 読み上げ文が組めなかった津波の新規発報・格上げ（保険。理由は宣言箇所）
@@ -1477,7 +1509,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   }, [cancelPendingSpeech])
 
   // リプレイ開始・終了時に追跡 ref を初期化する。
-  // handleStartReplay の useCallback deps を壊さないよう安定参照（deps なし）にする。
+  // handleStartReplay の useCallback deps を壊さないよう参照を安定させる
+  // （deps に取るのは呼び出し側で安定させてあるものだけ）。
   const resetTracking = useCallback(() => {
     seenQuakeReportKeysRef.current.clear()
     activeEEWLevelsRef.current.clear()
@@ -1506,7 +1539,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 間を置いてからの読み上げの予約も捨てる。残すと、リプレイを始めた直後に切り替え前の
     // 電文が読まれる（状態はリセット済みなので待ち合わせにも掛からず、そのまま割り込む）。
     cancelPendingSpeech()
-  }, [cancelPendingSpeech])
+    // カードの追従も打ち切る。**鳴っている読み上げはここでは止まらない**ので、追従だけを
+    // 残すと、切り替え前の読み上げの進行に合わせて新しく表示されたカードを動かし続ける
+    // （区域名や観測点名が新旧で重なれば、実在する別の行を掴む）。
+    speechFollow?.reset()
+  }, [cancelPendingSpeech, speechFollow])
 
   // pre-window イベントから T 時点の追跡 ref を復元する（サイレント注入後の正確な音判定に必要）
   const restorePreWindowTracking = useCallback((preFiltered: ReplayEntry[]) => {
