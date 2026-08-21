@@ -626,6 +626,32 @@ export function __resetFixedPhrasesForTest(): void {
  */
 export type ShouldStillPlay = () => boolean
 
+/**
+ * チャンクの再生を予約したときの通知。画面を読み上げに追従させる側が受け取る。
+ *
+ * **渡されるのは「予約」であって「鳴り始め」ではない。** `startAt` は AudioContext の
+ * 時間軸（{@link getSpeechClock} と同じ基準）での再生開始時刻で、2 番目以降のチャンクでは
+ * 未来を指す。受け取る側は `startAt` と現在時刻を突き合わせて「いま鳴っているチャンク」を決める。
+ *
+ * **ここでチャンクごとに `setTimeout` を張る形にはしていない。** バックグラウンドのタブでは
+ * タイマーが 1 秒以上に間引かれる一方で**音は実時間で鳴り続けて正常に終わる**ため、滞留した
+ * タイマーが読み上げの終了後に発火して追従の状態が残る。`ctx.suspend()`（システムスリープ）
+ * では逆方向にずれる。時刻の解決は受け取る側に委ね、こちらは予約を報告するだけにする。
+ *
+ * `index` は `chunks` の添字。**連番になるとは限らない**（合成に失敗したチャンクは
+ * 鳴らさずに飛ばすため、その分が欠ける）。
+ */
+export type ChunkScheduledListener = (index: number, startAt: number, chunks: readonly string[]) => void
+
+/**
+ * 読み上げの再生時刻（AudioContext の時間軸）。
+ * {@link ChunkScheduledListener} の `startAt` と同じ基準で比較できる。
+ * 音声がまだ使えない（ユーザー操作前）ときは null。
+ */
+export function getSpeechClock(): number | null {
+  return getAudioContext()?.currentTime ?? null
+}
+
 // 予約したチャンクが鳴り始める何秒前に {@link ShouldStillPlay} を見直すか。
 // チャンクは切れ目を作らないよう前のチャンクの終わりに合わせて**先に**予約するため、
 // 予約した時点だけで判定すると 1 チャンク分（実測 1 秒強）先の未来を判定してしまう。
@@ -652,6 +678,11 @@ export async function speakWithVoicevox(
    * EEW の読み上げでは使わない（間を置かずに読み始めるため、先に合成しておく余地がない）。
    */
   prewarmed?: PrewarmedSpeech | null,
+  /**
+   * チャンクの再生を予約したときに呼ぶ（{@link ChunkScheduledListener}）。
+   * 画面を読み上げに追従させる側がこれを受け取る。
+   */
+  onChunkScheduled?: ChunkScheduledListener,
 ): Promise<void> {
   const startedAt = performance.now()
   log.debug(`[VoiceVox] 読み上げ: ${text}`, { speakerId, volume, prewarmed: !!prewarmed })
@@ -855,6 +886,15 @@ export async function speakWithVoicevox(
       activeSources = activeSources.filter(s => s !== source)
     }
     source.start(startAt)
+    // **追従の通知で読み上げを壊さない。** この関数は例外を投げない契約（VOICEVOX 未起動・
+    // 通信失敗でも無音で正常終了する）で、ここから throw が抜けるとループが中断し、以降の
+    // チャンクは合成も予約もされない ―― 画面が動かないどころか、警報の本文が途中で切れる。
+    // 判定の失敗を「鳴らす側」に倒す `stillPlayable` と同じ方針で、記録だけ残して続行する。
+    try {
+      onChunkScheduled?.(i, startAt, chunks)
+    } catch (err) {
+      log.warn('[VoiceVox] 予約の通知に失敗（読み上げは続行）', err)
+    }
     scheduleAt += buffer.duration
 
     // 鳴り始めが先なら、その直前にもう一度確かめる（予約時点の判定では 1 チャンク分先の

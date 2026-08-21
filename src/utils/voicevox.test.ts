@@ -397,3 +397,94 @@ describe('切り出し語の作り置き', () => {
     expect(sources).toHaveLength(1)   // 2 回目は待たずに鳴る
   })
 })
+
+// 画面を読み上げに追従させる側へ渡す予約の通知（`onChunkScheduled`）。
+//
+// 「鳴り始め」ではなく「予約」を報告する契約なので、通知はチャンクを予約した時点で届き、
+// `startAt` は未来を指す。受け取る側がその時刻と `getSpeechClock()` を突き合わせて
+// 現在位置を決める（voicevox 側にタイマーを持たせない理由は型の説明を参照）。
+describe('speakWithVoicevox の予約の通知', () => {
+  it('鳴らすチャンクごとに、添字と再生開始時刻を渡す', async () => {
+    synthDelaysMs = [100, 100]
+    const seen: { index: number; startAt: number; chunkCount: number }[] = []
+
+    void speakWithVoicevox('http://vv', TWO_CHUNKS, 1, 1, undefined, null,
+      (index, startAt, chunks) => seen.push({ index, startAt, chunkCount: chunks.length }))
+
+    await advance(150)
+    // 1 チャンク目は即時再生。予約と同時に通知が来る
+    expect(seen).toHaveLength(1)
+    expect(seen[0].index).toBe(0)
+    expect(seen[0].chunkCount).toBe(2)
+    const firstStart = seen[0].startAt
+
+    await advance(150)
+    // 2 チャンク目は「1 チャンク目の終わり」に予約される。鳴る前に通知が届く
+    expect(seen).toHaveLength(2)
+    expect(seen[1].index).toBe(1)
+    expect(seen[1].startAt).toBeCloseTo(firstStart + DUR_SEC, 2)
+    // まだ鳴っていない時刻を指している（これが「予約」である証拠）
+    expect(seen[1].startAt).toBeGreaterThan(ctx.currentTime)
+  })
+
+  it('割り込みで取り下げたチャンクは通知しない', async () => {
+    // 2 チャンク目の合成を待っている間に判定が外れる状況（既存の取り下げ経路と同じ条件）
+    synthDelaysMs = [100, 3000]
+    let valid = true
+    const seen: number[] = []
+
+    void speakWithVoicevox('http://vv', TWO_CHUNKS, 1, 1, () => valid, null,
+      index => seen.push(index))
+
+    await advance(150)
+    expect(seen).toEqual([0])
+
+    valid = false
+    await advance(3000)
+    // 予約されなかったチャンクは通知も来ない（画面が読まれていない箇所へ動かないこと）
+    expect(seen).toEqual([0])
+  })
+
+  // この関数は「例外を投げない」契約（未起動・通信失敗でも無音で正常終了する）。追従の通知から
+  // throw が抜けると再生ループが中断し、**警報の本文が途中で切れる**。画面が動かないより重い。
+  it('通知が例外を投げても、読み上げは最後まで続ける', async () => {
+    synthDelaysMs = [100, 100]
+    const seen: number[] = []
+    let done = false
+
+    void speakWithVoicevox('http://vv', TWO_CHUNKS, 1, 1, undefined, null, index => {
+      seen.push(index)
+      throw new Error('追従側の不具合')
+    }).then(() => { done = true })
+
+    await advance(150)
+    expect(sources).toHaveLength(1)
+
+    await advance(150)
+    // 1 チャンク目の通知で例外が出ても 2 チャンク目は予約される
+    expect(sources).toHaveLength(2)
+    expect(seen).toEqual([0, 1])
+
+    await advance(2000)
+    expect(done).toBe(true)
+  })
+
+  it('合成に失敗したチャンクは飛ばすので、添字は連番にならない', async () => {
+    // 1 チャンク目の /synthesis だけ失敗させる
+    let synthCalls = 0
+    vi.stubGlobal('fetch', (url: string) => {
+      if (String(url).includes('/synthesis')) {
+        synthCalls++
+        if (synthCalls === 1) return Promise.resolve({ ok: false })
+        return Promise.resolve({ ok: true, arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)) })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ accent_phrases: [] }) })
+    })
+    const seen: number[] = []
+
+    void speakWithVoicevox('http://vv', TWO_CHUNKS, 1, 1, undefined, null, index => seen.push(index))
+
+    await advance(200)
+    expect(seen).toEqual([1])
+  })
+})
