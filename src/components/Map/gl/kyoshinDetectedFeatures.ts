@@ -23,8 +23,8 @@ function detectedRadius(jma: KyoshinJma, iconScale: number, bonus: number): numb
 /**
  * 点列 → バッジ feature 列。**震度0未満・欠測（`kyoshinIndexToJma` が null）の点は描かない。**
  *
- * イベントのメンバー観測点は一度入るとイベント解除まで残る（kyoshinDetector の memberKeys は
- * 和集合で単調増加し、揺れが収まっても縮まない。現在揺れている数は lastSize が別に持つ）。
+ * イベントのメンバー観測点は、値が下がりきってから `MEMBER_DROP_MS` を過ぎるまで残る
+ * （kyoshinDetector の `pruneFadedMembers`。現在揺れている数は lastSize が別に持つ）。
  * これらを震度0のバッジで描くと、揺れが収まるほど「もう揺れていない点」で地図が埋まり、
  * 震度0以上だけを数えるリアルタイムタブの検知カードの震度別点数と桁違いにずれる
  * （2026-08-18 の実測: カードが震度0を24点と出している時点で地図には361個のバッジがあり、

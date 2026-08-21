@@ -36,8 +36,9 @@ export interface JapanMapProps {
   eews?: EEWAlert[]
   /**
    * confirmed 全イベントのメンバー観測点。**「検知が続いているか」の判定専用**
-   * （空になったことを検知終了の合図として扱う）。この集合はメンバーの和集合で単調増加し
-   * 揺れが収まっても縮まないため、**カメラフィットの目標には使わない**
+   * （空になったことを検知終了の合図として扱う。イベントが生存している間ここが空にならないことは
+   * `MEMBER_DROP_MS` の下限が保証している）。この集合は現在の震度で絞られていないため、
+   * **カメラフィットの目標には使わない**
    * （`JapanMapGL` が detectedMarkerPoints から寄り先を作る。理由は同ファイルの detectedFitPoints）。
    * 地図に描く分は detectedMarkerPoints を使う。
    */
