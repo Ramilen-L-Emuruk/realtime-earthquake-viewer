@@ -210,6 +210,27 @@ export const PARAMS = {
    * 成分が育たず脱落する（平常25分・全国で成分≥3 は 0 回を実測）。時間差 onset も成分で束ねる。
    */
   MIN_CLUSTER: 3,
+  /**
+   * 高震度（HIGH_CONFIRM_INTENSITY 以上）に達した点を含む成分に要する点数。MIN_CLUSTER より緩い
+   * この段を挟むのは、震源最近傍の点が先に立ち上がる実地震の初動を MIN_CLUSTER(3) が取りこぼす
+   * ためで、2 に留めるのは「震度3の単点は信じない」（§18）を維持するため。§29。
+   */
+  HIGH_CLUSTER_POINTS: 2,
+  /**
+   * 単独の点でも成分として認める震度下限(value)。3.5 = 震度4。
+   *
+   * 震源最近傍の1点だけが先に高震度へ達し、隣の点（20〜30km 先）にはまだ波が届いていない、という
+   * 状態は実地震の初動として正常に起こる（能登半島地震 本震・2023 の両方で、震源近傍の単点が
+   * 高震度に達してから周囲が反応するまで4〜5秒あることを Yahoo 実データで確認した）。この間は
+   * 「単点だけ高震度・周囲は静穏」という分布が機器故障と区別できないため、点数ではなく**震度の
+   * 高さ**で信頼するしかない。§29。
+   *
+   * 3.5 の根拠: 点別ノイズ床の学習上限 FLOOR_CAP=1.5（震度2相当）から 2 段階離れており、
+   * HIGH_CONFIRM_INTENSITY(2.5) よりさらに外側にある。実データでは平常時に value >= 2.5 の出現が
+   * 0 点であり、3.5 はその更に上。震度3（2.5〜3.4）は HIGH_CLUSTER_POINTS(2) 点を要求して単点を
+   * 弾き、震度4以上でのみ単点を認めるという二段構えにしている。
+   */
+  SOLO_CLUSTER_INTENSITY: 3.5,
   /** 同期とみなす時間窓(ms)。この窓内に onset した点を連結対象にする */
   COINCIDENCE_MS: 4_000,
   /** トリガー継続窓(ms)。最終トリガーからこの間「継続中（＝アクティブメンバー）」とみなす */
@@ -274,18 +295,22 @@ export const PARAMS = {
    */
   HIGH_CONFIRM_INTENSITY: 2.5,
   /**
-   * 高震度 fast path に要する点数。CONFIRM_INTENSE_POINTS と同値にする＝「単点は信じない」という
-   * §18 の思想は高震度でも維持したまま、震度のバーだけ 0.5 → 2.5 に上げて点数待ちを外す対称的な拡張。
+   * 高震度 fast path に要する点数。1＝「震度3に達した点が1つでもあれば確定する」。
    *
-   * 2 である根拠（3 では機能しない）: 2026-08-07 10:02 の福井の地震（最大震度3）を Yahoo 実データで
-   * 追うと、全国で value >= 2.5 に達した観測点はピークでも **2 点**（相互距離 13km）しかなかった。
-   * 3 にすると本ケースのような「震度3が数点だけ」の地震を一切救えず、パラメータとして死ぬ。
+   * 当初は CONFIRM_INTENSE_POINTS と同値の 2 だった（§18 の「単点は信じない」思想を高震度でも
+   * 維持する意図）。2026-08-21 に能登半島地震 本震（2024-01-01 16:10）の実データで測り直したところ、
+   * **2 では実質的に無効**だと分かった。震度3が2点に達する時点では L2 連結成分（MIN_CLUSTER=3）も
+   * ほぼ同時に成立するため、点数ゲートの免除が確定を早める余地が残らない（実測: 2→1 の単独変更では
+   * 初回 confirmed が 1 秒も動かない）。§29。
    *
-   * なおこの 2 点は必ず同一イベントのメンバー＝L2 連結成分の由来であることが構造的に保証される
-   * （updateEventMetrics は e.memberKeys しか走査しない）。遠く離れた 2 点がたまたま同時に高震度でも
-   * 別イベントとして扱われるため fast path は発火せず、空間コヒーレンスの要求は温存される。
+   * 1 にする安全性の根拠:
+   *  - 平常時（深夜・日中の各窓・全国1725点）で value >= 2.5 の出現は 0 点。ノイズ床の学習上限
+   *    FLOOR_CAP=1.5 の外側にあり、単点でも震度3はノイズとして現れない。
+   *  - CONFIRM_FRAMES(2) の連続要求は免除しないため、単フレームの跳ね値では確定しない。
+   *  - fast path が数えるのは e.memberKeys＝同一イベントのメンバーだけなので、遠く離れた点が
+   *    偶然同時に高震度でも別イベントとして扱われる（空間コヒーレンスの要求は温存）。
    */
-  HIGH_CONFIRM_POINTS: 2,
+  HIGH_CONFIRM_POINTS: 1,
   /** confirmed 連続フレーム数（積分待ちなしで V1 相当の速さ） */
   CONFIRM_FRAMES: 2,
   /** 確定保持(ms)。確定揺れ点が途切れてもこの間はイベントを保持（明滅防止・V1 相当の保持） */
@@ -495,6 +520,22 @@ function windowRate(hist: { t: number; v: number }[], now: number): number | nul
  * を事前構築して O(n·K) 全体に落とす。keys が大規模な同時 onset（大地震・多点ノイズ）
  * のときの探索コストがボトルネックだったのを解消する。
  */
+/**
+ * 連結成分をイベント候補として認める最小点数。成分内の最大震度が高いほど緩める（§29）。
+ *
+ * 通常は MIN_CLUSTER(3) の面を要求する。震度3以上を含むなら HIGH_CLUSTER_POINTS(2)、震度4以上を
+ * 含むなら 1 点で認める。震源最近傍の単点が先行する実地震の初動を取りこぼさないための段階付けで、
+ * 高い震度ほどノイズ床（FLOOR_CAP=1.5）から離れていることが根拠。判定は成分ごとに閉じているため、
+ * 他所のノイズの有無で本物の判定が変わることはない。
+ *
+ * @param maxValue 成分内メンバーの現在 value の最大
+ */
+function requiredClusterSize(maxValue: number): number {
+  if (maxValue >= PARAMS.SOLO_CLUSTER_INTENSITY) return 1
+  if (maxValue >= PARAMS.HIGH_CONFIRM_INTENSITY) return PARAMS.HIGH_CLUSTER_POINTS
+  return PARAMS.MIN_CLUSTER
+}
+
 function connectedComponents(keys: string[], neighbors: Record<string, string[]>): string[][] {
   const inSet = new Set(keys)
   const visited = new Set<string>()
@@ -707,9 +748,19 @@ export function step(
     const trigAt = triggeredAt[p.key]
     if (trigAt != null && now - trigAt <= PARAMS.COINCIDENCE_MS) recentOnset.push(p.key)
   }
-  const clusters = connectedComponents(recentOnset, m.neighbors).filter(
-    (c) => c.length >= PARAMS.MIN_CLUSTER,
-  )
+  // 成分をイベント候補として認める点数は、成分内の最大震度で緩める（§29）。
+  // 成分メンバーは必ず `cur` に登録済み（`connectedComponents` に渡す `recentOnset` は `points` 由来で、
+  // `points` は欠測点と初出の点を除いた「今フレームで `cur` に入った点」だけを含む）。最大値の取り方は
+  // updateEventMetrics と同じ手動比較に揃える（`Math.max` は引数に NaN が混ざると結果が NaN に固定され、
+  // 同じ成分にいる他メンバーの震度を握り潰して fast path を静かに無効化する）。
+  const clusters = connectedComponents(recentOnset, m.neighbors).filter((c) => {
+    let maxV = -Infinity
+    for (const k of c) {
+      const v = cur.get(k)?.value
+      if (v != null && v > maxV) maxV = v
+    }
+    return c.length >= requiredClusterSize(maxV)
+  })
   const confirmedShaking = clusters.flat()
   const shakingSet = new Set(confirmedShaking)
   const triggers: TriggerResult[] = points
@@ -823,7 +874,17 @@ function associate(
       target.memberKeys = [...new Set([...target.memberKeys, ...comp])]
       target.cells = [...new Set([...target.cells, ...compCells])]
       target.lastOnsetAtMs = now
-      updateEventMetrics(target, cur, triggeredAt, cellActivity, cellOf, avail, now, eewActive)
+      updateEventMetrics(
+        target,
+        cur,
+        triggeredAt,
+        cellActivity,
+        cellOf,
+        avail,
+        now,
+        eewActive,
+        comp.length,
+      )
       updated.add(target.id)
     } else {
       const ev: DetectionEvent = {
@@ -840,17 +901,28 @@ function associate(
         everConfirmed: false,
         lastSpreadAtMs: 0,
       }
-      updateEventMetrics(ev, cur, triggeredAt, cellActivity, cellOf, avail, now, eewActive)
+      updateEventMetrics(
+        ev,
+        cur,
+        triggeredAt,
+        cellActivity,
+        cellOf,
+        avail,
+        now,
+        eewActive,
+        comp.length,
+      )
       events.push(ev)
       updated.add(ev.id)
     }
   }
 
   // 今フレームで確定揺れ点を伴わなかったイベント: 指標を再評価し、HOLD 経過で解除する。
+  // 成分が帰属していないので compSize は 0 を渡す（高震度 fast path の点数免除を効かせない）。
   const survivors: DetectionEvent[] = []
   for (const e of events) {
     if (!updated.has(e.id)) {
-      updateEventMetrics(e, cur, triggeredAt, cellActivity, cellOf, avail, now, eewActive)
+      updateEventMetrics(e, cur, triggeredAt, cellActivity, cellOf, avail, now, eewActive, 0)
     }
     if (now - e.lastOnsetAtMs <= PARAMS.HOLD_MS) survivors.push(e)
   }
@@ -928,6 +1000,7 @@ function updateEventMetrics(
   avail: Record<string, number>,
   now: number,
   eewActive: boolean,
+  compSize: number,
 ): void {
   let size = 0
   let maxV = -Infinity
@@ -978,14 +1051,35 @@ function updateEventMetrics(
     : PARAMS.MIN_CONFIRM_INTENSITY
   // 確定震度レベル以上に達した点数。「単点だけ強く・周囲は震度0」というノイズ分布を弾く第3ゲート。
   const intenseCount = activeVals.filter((v) => v >= confirmIntensityReq).length
-  // 高震度 fast path（§20）: HIGH_CONFIRM_INTENSITY(震度3) 以上に達したメンバーが
+  // 高震度 fast path（§20・§29）: HIGH_CONFIRM_INTENSITY(震度3) 以上に達したメンバーが
   // HIGH_CONFIRM_POINTS 点以上あれば、点数（size）ゲートを免除して確定する。震度3級はノイズ床の
-  // 学習上限 FLOOR_CAP の外側にあり、かつ同一の連結成分内で複数点が同時に到達しているため、
-  // 周辺へ揺れが伝播して CONFIRM_POINTS(5点) が揃うのを待つ必要がない。
-  // 免除するのは点数ゲート（size・慢性活性セルの引き上げ幅を含む）だけで、CONFIRM_FRAMES による
-  // 連続フレーム要求は残す（単フレームの跳ね値・落雷起因の瞬間ノイズを弾く安全弁）。
+  // 学習上限 FLOOR_CAP の外側にあるため、周辺へ揺れが伝播して CONFIRM_POINTS(5点) が揃うのを
+  // 待つ必要がない。
+  //
+  // 免除するのは点数ゲート（size・慢性活性セルの引き上げ幅を含む）だけで、次の2つは免除しない。
+  //  - CONFIRM_FRAMES の連続フレーム要求（単フレームの跳ね値・落雷起因の瞬間ノイズを弾く安全弁）
+  //  - CONFIRM_INTENSE_POINTS の第3ゲート（§18）。「1点だけ強く・周囲は震度0」という局所ノイズの
+  //    分布を、震度3のバーで再び通さないため。ただし成分点数の緩和（§29）で認められた小さな成分
+  //    （compSize < MIN_CLUSTER）が今フレームに帰属したときは、そもそも点数が足りず課せないので
+  //    震度の高さで代替する（震源最近傍の1点が先行する初動は、周囲がまだ静穏でも実地震の正常な姿）。
+  //
+  // この判定に lastSize（＝揺れているメンバー数）を使ってはいけない。lastSize は時間で減衰し、
+  // TRIG_ACTIVE_MS(8s) の onset 途絶で 0 まで落ちる一方、イベントは HOLD_MS(10s) まで生存するため、
+  // **確定に至らず消えていくイベントは必ず「size < MIN_CLUSTER だが生存中」を通過する**。そこで
+  // 免除すると、その窓でメンバーの1点が震度3へ跳ねただけで confirmed になる（§18 が塞いだ分布と
+  // 同型。実測で再現済み）。compSize は「今フレームに帰属した L2 成分の点数」で、成分が帰属して
+  // いなければ 0 が渡る＝免除は効かない。
+  // 免除は「今フレームに帰属した成分」だけで決める。時間保持を持たせてはいけない——イベント全体に
+  // 保持フラグを持たせる実装を試したところ、「免除の根拠になった小さな成分の構成点」と「免除が適用
+  // される高震度メンバー」が別人でも通る穴ができた（4 秒以内に別々のメンバーが 2 回スパイクすれば
+  // 成立する。§29）。単点・2点の成分は毎フレーム requiredClusterSize を満たし直す必要があるため、
+  // 値が閾値付近で 1 フレーム沈むと確定が遅れるが、それは受容している（変更前は単点では永久に
+  // 確定しなかったので劣化ではない。実データ 34 窓では保持の有無で結果が一切変わらなかった）。
+  const smallCluster = compSize > 0 && compSize < PARAMS.MIN_CLUSTER
   const highIntenseCount = activeVals.filter((v) => v >= PARAMS.HIGH_CONFIRM_INTENSITY).length
-  const meetsHighFastPath = highIntenseCount >= PARAMS.HIGH_CONFIRM_POINTS
+  const meetsHighFastPath =
+    highIntenseCount >= PARAMS.HIGH_CONFIRM_POINTS &&
+    (smallCluster || intenseCount >= PARAMS.CONFIRM_INTENSE_POINTS)
   const meetsConfirm =
     meetsHighFastPath ||
     (size >= effectiveConfirmReq &&
