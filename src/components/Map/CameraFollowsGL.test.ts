@@ -4,9 +4,10 @@ import { createElement as h } from 'react'
 import { render, cleanup, act } from '@testing-library/react'
 import type * as maplibregl from 'maplibre-gl'
 import { MapGLContext } from './mapGLContext'
-import { FitToCandidateGL, FitToDetectionGL, TsunamiFitGL, FocusObsGL } from './CameraFollowsGL'
+import { FitToCandidateGL, FitToDetectionGL, FitToEEWGL, TsunamiFitGL, FocusObsGL } from './CameraFollowsGL'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { LatLng } from '../../utils/stationCoords'
+import type { EEWAlert } from '../../types/earthquake'
 
 // 「確定検知の終了」と「候補クラスタの継続」が重なる遷移を固定する回帰テスト。
 // この組み合わせはタイミング依存で、実機（Playwright）では再現が難しい。過去に 2 度作り込んでいる:
@@ -56,8 +57,8 @@ vi.mock('maplibre-gl', () => {
   return { LngLatBounds: FakeLngLatBounds, default: { LngLatBounds: FakeLngLatBounds } }
 })
 
-// fitJapan は padding 20、点群へのフィット（fitToPositions）は padding 60 で呼ばれる
-// （gl/camera.ts の各既定値）。「日本全体へ戻した」のか「点群へ寄せた」のかの区別にこれを使う。
+// fitJapan は padding 20、点群へのフィット（fitToPositions / flyToBoundsSnapped）は padding 60 で
+// 呼ばれる（gl/camera.ts の各既定値）。「日本全体へ戻した」のか「点群へ寄せた」のかの区別に使う。
 const JAPAN_PADDING = 20
 const POINTS_PADDING = 60
 
@@ -80,11 +81,16 @@ const PX_PER_DEG = 100
 const PANE_WIDTH = 800
 const PANE_HEIGHT = 600
 
-function createFakeMap({ zoom: initialZoom = 4 }: { zoom?: number } = {}) {
+// `fitZoom` は「いまの目標へ寄り直したら着地するズーム」。本物は矩形の広さとビューポート寸法から
+// 逆算するが、フェイクの投影はズームに依らない（下記 PX_PER_DEG）ので、独立した数値として持つ。
+// テストは検知範囲の広さの代わりにこの値を動かす——**範囲が狭まった** = 寄り直せば深く寄れる、を
+// 表すのがこの値の役目（`setFitZoom`）。既定は寄り上限（MAX_ZOOM=7）。
+function createFakeMap({ zoom: initialZoom = 4, fitZoom: initialFitZoom = 7 }: { zoom?: number; fitZoom?: number } = {}) {
   const handlers = new Map<string, Set<() => void>>()
   const onceHandlers = new Map<string, Set<() => void>>()
   // 日本全体を見ている状態から始める（fitJapan 相当のズームと中心）。fit/fly で書き換わる。
   let zoom = initialZoom
+  let fitZoom = initialFitZoom
   let center = { lng: 138, lat: 38 }
   /** フェイクの投影モデルにおける、いまの表示範囲（west, south, east, north）。 */
   const viewSpan = () => ({
@@ -104,6 +110,19 @@ function createFakeMap({ zoom: initialZoom = 4 }: { zoom?: number } = {}) {
       : [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]
     return [(west + east) / 2, (south + north) / 2]
   }
+  const boundsWest = (b: FakeBoundsLike): number => (Array.isArray(b) ? b[0][0] : b.getWest())
+  /**
+   * カメラ操作の時系列。寄せ方は経路で違う——日本全体は `fitBounds`、点群は `cameraForBounds` で
+   * 着地ズームを解いてから `flyTo`（`flyToBoundsSnapped`）、1 点は `flyTo` 直行。テストからは
+   * 「いつ・どこへ・どの余白で寄せたか」の 1 本の列として見たいので、経路を問わずここへ積む。
+   * `flyTo` からは目標の矩形が読めないため、直前に問われた矩形を受け渡して記録する。
+   *
+   * 受け渡しは中心の一致で照合する。`cameraForBounds` は寄り直しの**判定**（`refitDeltaForBounds`）
+   * でも呼ばれ、そのときカメラは動かない。素朴に「直前の問い合わせ」を使うと、動かなかった判定の
+   * 残骸を後続の別経路の `flyTo`（1 点への直行など）が拾って寄り先を偽る。
+   */
+  const moves: { padding?: number; west?: number }[] = []
+  let pendingFit: { padding?: number; west: number; center: [number, number] } | null = null
   const fake = {
     on(event: string, handler: () => void) {
       if (!handlers.has(event)) handlers.set(event, new Set())
@@ -126,15 +145,23 @@ function createFakeMap({ zoom: initialZoom = 4 }: { zoom?: number } = {}) {
     },
     // 着地ズームは本物のように算出できない（ビューポート寸法と padding から逆算する処理を
     // フェイクに持たせても、それは実装の再実装になる）。中心だけ目標に合わせ、ズームは据え置く。
-    fitBounds: vi.fn((bounds?: FakeBoundsLike) => {
+    fitBounds: vi.fn((bounds?: FakeBoundsLike, opts?: { padding?: number }) => {
       if (bounds) {
         const [lng, lat] = boundsCenter(bounds)
         center = { lng, lat }
+        moves.push({ padding: opts?.padding, west: boundsWest(bounds) })
       }
     }),
     flyTo: vi.fn((opts?: { zoom?: number; center?: [number, number] }) => {
       if (typeof opts?.zoom === 'number') zoom = opts.zoom
       if (opts?.center) center = { lng: opts.center[0], lat: opts.center[1] }
+      const fit =
+        pendingFit && opts?.center
+        && pendingFit.center[0] === opts.center[0] && pendingFit.center[1] === opts.center[1]
+          ? { padding: pendingFit.padding, west: pendingFit.west }
+          : {}
+      pendingFit = null
+      moves.push(fit)
     }),
     getZoom: () => zoom,
     getCenter: () => center,
@@ -160,29 +187,41 @@ function createFakeMap({ zoom: initialZoom = 4 }: { zoom?: number } = {}) {
         getNorth: () => center.lat + halfLat,
       }
     },
-    // 狭い点群なら寄り上限（MAX_ZOOM=7）まで寄れる、という一点だけを模す。中心は本物と同じく
-    // 目標の中心を返す（収め直しフォローの「中心の移動量」がこれで決まる）。
-    cameraForBounds: (bounds: FakeBoundsLike) => ({
-      center: boundsCenter(bounds),
-      zoom: 7,
-    }),
+    // 着地ズームは `fitZoom`（上記）を返す。中心は本物と同じく目標の中心を返す
+    // （収め直しフォローの「中心の移動量」がこれで決まる）。
+    cameraForBounds: (bounds: FakeBoundsLike, opts?: { padding?: number }) => {
+      const target = boundsCenter(bounds)
+      pendingFit = { padding: opts?.padding, west: boundsWest(bounds), center: target }
+      return { center: target, zoom: fitZoom }
+    },
+    moves,
+    /** 検知範囲が狭まって（広がって）、寄り直しの着地が深く（浅く）なった状況を作る。 */
+    setFitZoom: (z: number) => {
+      fitZoom = z
+    },
   }
-  return fake as unknown as maplibregl.Map & { fire: (event: string) => void }
+  return fake as unknown as maplibregl.Map & {
+    fire: (event: string) => void
+    moves: { padding?: number; west?: number }[]
+    setFitZoom: (z: number) => void
+  }
 }
 
 const dp = (lat: number, lng: number): DetectedPoint => ({ key: `${lat},${lng}`, lat, lng, index: 20 })
 
-/** fitBounds の呼び出しごとの padding。どの経路が呼ばれたかの判別に使う。 */
-function fitPaddings(map: maplibregl.Map): number[] {
-  return (map.fitBounds as unknown as Mock).mock.calls.map((call) => call[1]?.padding)
-}
+type FakeMap = maplibregl.Map & { moves: { padding?: number; west?: number }[] }
 
 /**
- * flyTo の呼び出し回数。成長フォロー・収め直しフォロー（`flyToBoundsSnapped`）は
- * cameraForBounds でズームを求めてから flyTo するため、fitBounds には現れない。
+ * カメラ操作ごとの padding。どの経路が呼ばれたかの判別に使う（日本全体＝20 / 点群＝60）。
+ * 経路（fitBounds / flyTo）に依らず操作の順に並ぶ（フェイクの `moves` 参照）。
  */
-function flyCount(map: maplibregl.Map): number {
-  return (map.flyTo as unknown as Mock).mock.calls.length
+function fitPaddings(map: maplibregl.Map): (number | undefined)[] {
+  return (map as FakeMap).moves.map((m) => m.padding)
+}
+
+/** カメラ操作の回数（初回フィットもフォローも数える）。 */
+function moveCount(map: maplibregl.Map): number {
+  return (map as FakeMap).moves.length
 }
 
 // JapanMapGL と同じ順序で置く（effect はツリー順に走るため、順序に意味がある）。
@@ -287,18 +326,19 @@ describe('揺れ検知の収め直しフォロー', () => {
   const AFTER_FLIGHT_MS = 4000
 
   it('ゆるい状態が保持時間だけ続いたら、狭まった検知点へ寄り直す', () => {
-    // Arrange: 検知が立って初回フィットまで進んだ状態（初回は fitBounds 経路）。
-    const map = createFakeMap()
+    // Arrange: 揺れが広範囲に出て、全国規模の画（z4）へフィットしたところ。
+    const map = createFakeMap({ fitZoom: 4 })
     const view = render(harness(map, NARROW, [], null))
     expect(fitPaddings(map)).toEqual([POINTS_PADDING])
-    expect(flyCount(map)).toBe(0)
 
-    // Act 1: 観測値の更新（＝毎秒の再評価）で「ゆるい」と判定させる。最初の 1 回は時刻を記録するだけ。
+    // Act 1: 揺れが収まって範囲が狭まり、寄り直せば 3 段深く寄れる状態になる。観測値の更新
+    // （＝毎秒の再評価）で「ゆるい」と判定させる。最初の 1 回は時刻を記録するだけ。
+    map.setFitZoom(7)
     act(() => {
       vi.advanceTimersByTime(AFTER_FLIGHT_MS)
     })
     view.rerender(harness(map, [...NARROW], [], null))
-    expect(flyCount(map)).toBe(0)
+    expect(moveCount(map)).toBe(1)
 
     // Act 2: ゆるいまま保持時間を超える。
     act(() => {
@@ -306,16 +346,15 @@ describe('揺れ検知の収め直しフォロー', () => {
     })
     view.rerender(harness(map, [...NARROW], [], null))
 
-    // Assert: 点群へ寄り直す（成長／収め直しフォローはどちらも flyToBoundsSnapped 経路）。
-    // 日本全体へ戻す fitBounds は増えていない。
-    expect(flyCount(map)).toBe(1)
-    expect(fitPaddings(map)).toEqual([POINTS_PADDING])
+    // Assert: 点群へ寄り直す（日本全体へは戻さない）。
+    expect(fitPaddings(map)).toEqual([POINTS_PADDING, POINTS_PADDING])
   })
 
   it('一瞬ゆるくなっただけでは寄り直さない', () => {
-    // Arrange: 上と同じ状態から始める。
-    const map = createFakeMap()
+    // Arrange: 上と同じ状態から始める（広い画へフィット後、範囲が狭まってゆるくなる）。
+    const map = createFakeMap({ fitZoom: 4 })
     const view = render(harness(map, NARROW, [], null))
+    map.setFitZoom(7)
     act(() => {
       vi.advanceTimersByTime(AFTER_FLIGHT_MS)
     })
@@ -328,14 +367,15 @@ describe('揺れ検知の収め直しフォロー', () => {
     view.rerender(harness(map, [...NARROW], [], null))
 
     // Assert: 寄り直しは起きない（余震や表面波の再来で範囲は数秒単位で上下するため、
-    // 一瞬の狭まりに追従するとカメラが落ち着かない）。
-    expect(flyCount(map)).toBe(0)
+    // 一瞬の狭まりに追従するとカメラが落ち着かない）。初回フィットの 1 回から増えない。
+    expect(moveCount(map)).toBe(1)
   })
 
   it('ユーザー操作を挟んだら待ち時間を数え直す（抑制が明けた瞬間にスナップしない）', () => {
     // Arrange: ゆるさの待ちが始まったところ。
-    const map = createFakeMap()
+    const map = createFakeMap({ fitZoom: 4 })
     const view = render(harness(map, NARROW, [], null))
+    map.setFitZoom(7)
     act(() => {
       vi.advanceTimersByTime(AFTER_FLIGHT_MS)
     })
@@ -352,7 +392,7 @@ describe('揺れ検知の収め直しフォロー', () => {
 
     // Assert: 抑制が明けた直後には寄り直さない。操作前の待ちを持ち越すと、ユーザーが手を離した
     // 瞬間にカメラがスナップする（待ち時間を入れた意図が消える）。
-    expect(flyCount(map)).toBe(0)
+    expect(moveCount(map)).toBe(1)
 
     // Act 2: あらためて待ち時間ぶん経過する。
     act(() => {
@@ -361,13 +401,14 @@ describe('揺れ検知の収め直しフォロー', () => {
     view.rerender(harness(map, [...NARROW], [], null))
 
     // Assert: ここで初めて寄り直す。
-    expect(flyCount(map)).toBe(1)
+    expect(moveCount(map)).toBe(2)
   })
 
   it('寄り直した後は、同じ目標のままなら二度と発火しない（往復しない）', () => {
     // Arrange: 一度寄り直したところまで進める。
-    const map = createFakeMap()
+    const map = createFakeMap({ fitZoom: 4 })
     const view = render(harness(map, NARROW, [], null))
+    map.setFitZoom(7)
     act(() => {
       vi.advanceTimersByTime(AFTER_FLIGHT_MS)
     })
@@ -376,7 +417,7 @@ describe('揺れ検知の収め直しフォロー', () => {
       vi.advanceTimersByTime(9000)
     })
     view.rerender(harness(map, [...NARROW], [], null))
-    expect(flyCount(map)).toBe(1)
+    expect(moveCount(map)).toBe(2)
 
     // Act: 目標が変わらないまま、観測値の更新（毎秒の再評価）を何度も繰り返す。
     for (let i = 0; i < 5; i++) {
@@ -386,10 +427,10 @@ describe('揺れ検知の収め直しフォロー', () => {
       view.rerender(harness(map, [...NARROW], [], null))
     }
 
-    // Assert: 発火は 1 回だけ。着地後は寄り直しの利得が無くなるため、判定が自然に止まる
-    // （矩形の広さの比で判定していると、padding とビューポート寸法によっては着地後も
-    //   閾値を超えたままになり、ここで撃ち続ける）。
-    expect(flyCount(map)).toBe(1)
+    // Assert: 寄り直しは 1 回だけ（初回フィットと合わせて 2 回）。着地後は寄り直しの利得が
+    // 無くなるため、判定が自然に止まる（矩形の広さの比で判定していると、padding とビューポート
+    // 寸法によっては着地後も閾値を超えたままになり、ここで撃ち続ける）。
+    expect(moveCount(map)).toBe(2)
   })
 
   it('寄り上限に張り付いていても、目標が別の場所へ移ったら寄り直す', () => {
@@ -403,15 +444,15 @@ describe('揺れ検知の収め直しフォロー', () => {
 
     // Act: 揺れている場所が東へ移る（画には収まったまま。中心はペイン短辺の 33% ぶんずれる）。
     view.rerender(harness(map, MOVED, [], null))
-    expect(flyCount(map)).toBe(0)
+    expect(moveCount(map)).toBe(1)
     act(() => {
       vi.advanceTimersByTime(9000)
     })
     view.rerender(harness(map, [...MOVED], [], null))
 
     // Assert: 移った先の中心へ寄り直す。
-    expect(flyCount(map)).toBe(1)
-    expect((map.flyTo as unknown as Mock).mock.calls[0][0].center).toEqual([139.1, 37.05])
+    expect(moveCount(map)).toBe(2)
+    expect((map.flyTo as unknown as Mock).mock.calls[1][0].center).toEqual([139.1, 37.05])
   })
 
   it('中心のずれが小さいだけなら寄り直さない', () => {
@@ -429,8 +470,9 @@ describe('揺れ検知の収め直しフォロー', () => {
     })
     view.rerender(harness(map, [...NUDGED], [], null))
 
-    // Assert: カメラは動かない。これで動かすと、揺れの重心が揺らぐたびに画が漂う。
-    expect(flyCount(map)).toBe(0)
+    // Assert: カメラは動かない（初回フィットの 1 回から増えない）。これで動かすと、揺れの重心が
+    // 揺らぐたびに画が漂う。
+    expect(moveCount(map)).toBe(1)
   })
 
   it('点が画面の縁の余白に入り込んだら引く（バッジが切れたまま放置しない）', () => {
@@ -446,7 +488,7 @@ describe('揺れ検知の収め直しフォロー', () => {
     view.rerender(harness(map, [...NARROW, dp(37.0, 140.8)], [], null))
 
     // Assert: 保持時間を待たず、その場で引く（成長フォローの経路）。
-    expect(flyCount(map)).toBe(1)
+    expect(moveCount(map)).toBe(2)
   })
 
   it('検知は続いているのに描ける点が無くなった場合、日本全体へ戻さない', () => {
@@ -463,13 +505,59 @@ describe('揺れ検知の収め直しフォロー', () => {
 
     // Assert: カメラは動かない。ここで戻すと、点が返ってきた瞬間に寄り直す往復になる。
     expect(fitPaddings(map).length).toBe(before)
-    expect(flyCount(map)).toBe(0)
 
     // Act 2: 検知そのものが終わる。
     view.rerender(harness(map, [], [], null, { hasDetection: false }))
 
     // Assert: このときは日本全体へ戻る（「描けない」と「終わった」を分けている根拠）。
     expect(fitPaddings(map).slice(before)).toEqual([JAPAN_PADDING])
+  })
+})
+
+// ── EEW 解除後の帰還（FitToEEWGL） ─────────────────────────────────────────────
+// 解除して揺れ検知点へ帰るとき、着地がズーム段階に乗っていること。分数ズームでぴったり寄せると
+// 目標の縁が成長フォローの余白のちょうど上に乗り、着地直後に引き直されて「寄りすぎた後に
+// ちょっと引く」二段の動きになる（実測: 5°×4° の点群で余白の余裕が 0px・判定は「はみ出している」）。
+describe('EEW 解除後の帰還', () => {
+  /** FitToEEWGL が参照するのは originTime・震源座標・id だけ。 */
+  const eew = {
+    id: 'eew-1',
+    earthquake: {
+      originTime: '2026-08-21T05:00:00+09:00',
+      hypocenter: { latitude: 37.5, longitude: 137.2, depth: 10 },
+    },
+  } as unknown as EEWAlert
+
+  const eewHarness = (map: maplibregl.Map, eews: EEWAlert[], detected: DetectedPoint[]) =>
+    h(
+      MapGLContext.Provider,
+      { value: map },
+      h(FitToEEWGL, {
+        eews,
+        psWave: [],
+        detectedPoints: detected,
+        hasDetection: detected.length > 0,
+        candidatePoints: [],
+        forecastAreaPositions: [],
+      }),
+    )
+
+  it('検知点が残っていれば、ズーム段階に乗せて帰る（着地直後に引き直さない）', () => {
+    // Arrange: EEW 発報中。検知点は広範囲に出ている。
+    const map = createFakeMap({ fitZoom: 4 })
+    const detected = [dp(35.0, 136.0), dp(38.0, 140.0)]
+    // 1 本目は EEW 自身へのフィット（この fixture は円を持たないため震源へ直行する）。
+    const view = render(eewHarness(map, [eew], detected))
+    expect(moveCount(map)).toBe(1)
+
+    // Act: EEW が解除される。寄り直せば z6.7 まで寄れる広さの検知点が残っている状態。
+    map.setFitZoom(6.7)
+    view.rerender(eewHarness(map, [], detected))
+
+    // Assert: 検知点へ帰り、着地は 0.5 段階へ切り下がった 6.5。分数ズームで寄せる経路
+    // （fitBounds）を通っていれば、フェイクはズームを据え置くので 6.5 にはならない。
+    expect(fitPaddings(map).slice(1)).toEqual([POINTS_PADDING])
+    expect(map.getZoom()).toBe(6.5)
   })
 })
 
@@ -489,10 +577,8 @@ const COAST_WEST = 141.0
 const SIG = '岩手県:MajorWarning'
 
 /** カメラ操作の時系列。日本全体は -1、点群へのフィットは矩形の西端で表す。 */
-function fitTargets(map: maplibregl.Map): number[] {
-  return (map.fitBounds as unknown as Mock).mock.calls.map((call) =>
-    call[1]?.padding === JAPAN_PADDING ? -1 : (call[0] as maplibregl.LngLatBounds).getWest(),
-  )
+function fitTargets(map: maplibregl.Map): (number | undefined)[] {
+  return (map as FakeMap).moves.map((m) => (m.padding === JAPAN_PADDING ? -1 : m.west))
 }
 
 interface TsunamiProps {

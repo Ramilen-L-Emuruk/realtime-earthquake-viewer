@@ -9,6 +9,7 @@ import {
   type BoundsTuple,
   type EewFollowCircle,
 } from './bounds'
+import { createLogThrottle, log } from '../../../utils/logger'
 
 // カメラ操作の共通ヘルパ（MapLibre 版）。Leaflet の flyToLite/flyToBoundsLite 相当だが、
 // flyTo 中のペイン非表示最適化（flyToLite.ts）は MapLibre では不要のため素の camera API を使う。
@@ -197,7 +198,20 @@ export function flyToPoint(map: maplibregl.Map, [lat, lng]: LatLng, zoom = MAX_Z
   map.flyTo({ center: [lng, lat], zoom, duration }, beginProgrammaticFlight(map, duration))
 }
 
-/** 座標群にフィットする（1 点なら flyTo）。padding は Leaflet の [px,px] 相当を一律 px で受ける。 */
+/**
+ * 座標群にフィットする（1 点なら flyTo）。padding は Leaflet の [px,px] 相当を一律 px で受ける。
+ *
+ * 着地ズームは `flyToBoundsSnapped` と同じく段階へ切り下げる（＝わずかにズームアウトして余白を残す）。
+ * **分数ズームでぴったり寄せてはならない。** ぴったり寄せると目標の縁が画面の縁からちょうど
+ * padding の位置に着地するため、同じ余白で「収まっているか」を見る成長フォロー
+ * （`mapContainsBounds`）の判定が境界のちょうど上に乗る。境界一致は本来「収まっている」側だが
+ * （`boundsContains` は `<=`）、着地ズームを解く経路（`cameraForBounds`）と判定側の逆投影
+ * （`unproject`）は別々の浮動小数演算なので、境界では結果が保証されない。
+ * 2026-08-21 にブラウザで実測したところ、寄り上限にクランプされない広さの点群（5°×4°・5°×5°・
+ * 12°×11°）はいずれも余白の余裕が 0px で判定は「はみ出している」に転び、着地直後に必ず 1 段
+ * 引き直されていた（寄りすぎた後にちょっと引く、二段のカメラ移動）。切り下げれば同じ 3 ケースで
+ * 104〜110px の余裕が残る。
+ */
 export function fitToPositions(
   map: maplibregl.Map,
   positions: LatLng[],
@@ -206,13 +220,14 @@ export function fitToPositions(
   if (positions.length === 0) return
   const { padding = 48, maxZoom = MAX_ZOOM, durationSec = 1.0 } = opts
   if (positions.length === 1) {
+    // 1 点は退化した矩形（幅・高さ 0）で、着地は maxZoom へのクランプになる。段階へ切り下げる
+    // 意味が無く、`cameraForBounds` に退化矩形を渡す必要も無いので flyTo で直接寄せる。
     flyToPoint(map, positions[0], maxZoom, durationSec)
     return
   }
   const bounds = new maplibregl.LngLatBounds()
   for (const [lat, lng] of positions) bounds.extend([lng, lat])
-  const duration = durationSec * 1000
-  map.fitBounds(bounds, { padding, maxZoom, duration }, beginProgrammaticFlight(map, duration))
+  flyToBoundsSnapped(map, bounds, { padding, maxZoom, durationSec })
 }
 
 /** bounds へ fitBounds する（duration 秒→ms）。 */
@@ -245,6 +260,13 @@ export function snapZoomDown(zoom: number, zoomStep: number = EEW_ZOOM_SNAP): nu
   return Math.floor((zoom + 1e-6) / zoomStep) * zoomStep
 }
 
+// 切り下げ不能でフォールバックしたことの記録は間引く（下記フォールバック分岐の注記を参照）。
+// フィットは繰り返し走るため素通しにするとログが埋まる。一度きりに絞らないのは、狭いペインが
+// 直らない限り落ち続ける＝継続している障害なのに「一度失敗して直った」ように見えるため
+// （`createLogThrottle` の方針そのもの）。間隔は他の 60 秒勢に揃える。
+const FALLBACK_LOG_INTERVAL_MS = 60_000
+const throttledSnapFallbackWarn = createLogThrottle(FALLBACK_LOG_INTERVAL_MS)
+
 /**
  * bounds に合うズームを算出し zoomStep 段階へ切り下げて（＝わずかにズームアウトして余白を残して）fly する。
  * 旧 Leaflet の `getBoundsZoom(inside=false)`＋`zoomSnap` 相当のヒステリシスを再現する。
@@ -259,6 +281,19 @@ export function flyToBoundsSnapped(
   const cam = map.cameraForBounds(bounds, { padding, maxZoom })
   if (!cam || cam.zoom == null) {
     // cameraForBounds が算出不可なときは通常 fitBounds にフォールバック（分数ズーム）。
+    // 実測: 算出を諦めるのは padding が地図ペインの実寸を超えたときだけ（MapLibre は判定用の
+    // 縮尺が負になった場合のみ undefined を返す）。この経路では切り下げが効かないため、着地直後に
+    // 成長フォローが「はみ出している」と読んで 1 段引き直す二段の動きが再発する。
+    // 黙って落ちると原因を追えないので記録する。**ペインの実寸も添える**——発火条件はペインの
+    // 実寸と padding の関係で決まり、padding だけでは「レイアウト前で 0×0 だった」のか
+    // 「ユーザーがパネルを広げて地図が細くなった」のかを事後に区別できない。
+    throttledSnapFallbackWarn(() => {
+      const container = map.getContainer()
+      log.warn(
+        '[camera] 着地ズームを算出できずフィットにフォールバック（切り下げが効かない）',
+        { padding, maxZoom, paneWidth: container.clientWidth, paneHeight: container.clientHeight },
+      )
+    })
     map.fitBounds(bounds, { padding, maxZoom, duration }, beginProgrammaticFlight(map, duration))
     return
   }
