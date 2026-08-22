@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 // parseEarthquakeFromXml（REST 履歴経路）のテスト。
 // DOMParser を使うためこのファイルだけ jsdom 環境で動かす（既定は node）。
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { parseEarthquake, parseEarthquakeFromXml, parseEEW, parseTsunami, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml } from './dmdataParser'
+import { log } from '../utils/logger'
 
 // 震度速報（VXSE51）。震源が未確定の段階で出るため Earthquake 要素を持たず、
 // 震度は Pref > Area（一次細分区域）までしか無い。
@@ -540,6 +541,65 @@ describe('parseTsunami: JSON 電文の発表・取消・sourceEarthquake', () =>
     expect(t!.cancelled).toBe(true)
     expect(t!.cancelReason).toBe('lifted')
     expect(t!.areas).toEqual([])
+  })
+
+  // 観測波高の「以上」（観測可能範囲の超過）。この 3 件が、カード・地図・読み上げで
+  // 「以上」を優先して扱う仕組み（`compareObservedHeightDesc`）の土台になる。
+  // → docs/spec/tsunami-spec.md §6「観測波高の「以上」」
+  describe('観測波高の over フラグ', () => {
+    const withStations = (station: Record<string, unknown>) => ({
+      ...baseTsunamiJson,
+      body: {
+        ...baseTsunamiJson.body,
+        tsunami: {
+          ...baseTsunamiJson.body.tsunami,
+          observations: [{ code: '030', name: '岩手県', stations: [{ name: '宮古', ...station }] }],
+        },
+      },
+    })
+
+    // 正: over=true が読み取られ、description にも「以上」が入る
+    it('over=true は over と「以上」付きの description になる', () => {
+      const t = parseTsunami('VTSE51', withStations({ maxHeight: { height: { value: '8.5', over: true } } }))
+      expect(t!.observations?.[0].height).toEqual({ value: 8.5, description: '8.5m以上', over: true })
+    })
+
+    // 対照: over が無い観測点は従来どおり（false ではなく undefined に落ちる）
+    it('over 省略時は over が undefined・description に「以上」を付けない', () => {
+      const t = parseTsunami('VTSE51', withStations({ maxHeight: { height: { value: '7.2' } } }))
+      expect(t!.observations?.[0].height).toEqual({ value: 7.2, description: '7.2m', over: undefined })
+    })
+
+    // 安全弁: condition があると description はそちらで確定する（「以上」が落ちうる形）。
+    // `overSuffixedHeight`（src/utils/tsunami.ts）がこの形を前提に「数字を含まないなら足さない」判定をしている
+    it('condition があれば description はその文字列になる（over は残る）', () => {
+      const t = parseTsunami('VTSE51', withStations({ maxHeight: { height: { value: '8.5', condition: '巨大', over: true } } }))
+      expect(t!.observations?.[0].height).toEqual({ value: 8.5, description: '巨大', over: true })
+    })
+
+    // 安全弁: 波高が数値として読めなければ height ごと落ちる（over も一緒に消える）。
+    // 表示・並び順・読み上げのどこにも痕跡が残らないため、警告だけは出ることを固定する
+    it('波高が読めなければ height は undefined・over が立っていたら警告を出す', () => {
+      const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+      try {
+        const t = parseTsunami('VTSE51', withStations({ maxHeight: { height: { value: '', over: true } } }))
+        expect(t!.observations?.[0].height).toBeUndefined()
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('宮古'))
+      } finally {
+        warn.mockRestore()
+      }
+    })
+
+    // 対照: over が立っていなければ（単なる欠測）警告は出さない
+    it('波高が読めず over も無ければ警告を出さない', () => {
+      const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+      try {
+        parseTsunami('VTSE51', withStations({ maxHeight: { height: { value: '' } } }))
+        expect(warn).not.toHaveBeenCalled()
+      } finally {
+        warn.mockRestore()
+      }
+    })
   })
 })
 

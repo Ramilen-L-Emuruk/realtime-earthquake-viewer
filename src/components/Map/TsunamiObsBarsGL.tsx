@@ -3,6 +3,7 @@ import * as maplibregl from 'maplibre-gl'
 import { useMapGL } from './mapGLContext'
 import type { TsunamiObsBar } from '../../hooks/useTsunamiLayerData'
 import { barMetrics, popupOffset, BAR_RADIUS } from './gl/tsunamiObsBar'
+import { overSuffixedHeight } from '../../utils/tsunami'
 
 // 津波観測棒（波高バー）を描画する MapLibre 版（Leaflet の tsunami-obs-bars 相当）。
 // 各観測点に、波高に比例した高さの縦バーを HTML マーカー（底辺アンカー）で立てる。
@@ -14,7 +15,7 @@ import { barMetrics, popupOffset, BAR_RADIUS } from './gl/tsunamiObsBar'
 
 function tooltipHtml(bar: TsunamiObsBar): string {
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  const desc = `${bar.height.over ? '>' : ''}${bar.height.description}`
+  const desc = overSuffixedHeight(bar.height)
   return (
     `<div class="text-sm"><div class="font-bold">${esc(bar.name)}</div>` +
     `<div class="text-xs" style="color:${bar.color}">${esc(desc)}</div></div>`
