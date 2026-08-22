@@ -33,10 +33,15 @@ const warnNoRegionNames = createLogThrottle(NO_REGION_LOG_THROTTLE_MS)
 // 通る）。DMDATA JSON 電文由来の区域点は pref が空文字（dmdataParser.ts 参照）のため、
 // areaPrefIndex（区域名→県名の逆引き）で補完してからグルーピングする。
 // prefAreaNames が引けない（未読み込み）場合はまとめず区域名をそのまま返す。
+//
+// **上位の階級で区域名を出した県はまとめない**（`prefsWithAreaShown`）。まとめ判定は階級ごとに
+// 独立して走るので、上と下で粒度が食い違うと県の震度を過小に伝える。例: 5強で「福井県嶺北」を
+// 出した後、4 で嶺北・嶺南が揃って「福井県」とまとめると、福井県は 5強 なのに 4 に聞こえる。
 function aggregateAreaNamesByPref(
   areaNames: { pref: string; addr: string }[],
   prefAreaNames: Map<string, Set<string>> | null,
   areaPrefIndex: Map<string, string> | null,
+  prefsWithAreaShown: ReadonlySet<string>,
 ): string[] {
   const byPref = new Map<string, Set<string>>()
   for (const { pref, addr } of areaNames) {
@@ -50,6 +55,7 @@ function aggregateAreaNamesByPref(
     const fullSet = prefAreaNames?.get(pref)
     const isWholePref = pref !== '' && fullSet != null && fullSet.size > 0
       && names.size === fullSet.size && [...names].every(n => fullSet.has(n))
+      && !prefsWithAreaShown.has(pref)
     if (isWholePref) result.push(pref)
     else result.push(...names)
   }
@@ -75,6 +81,8 @@ function regionNamesForScale(
   points: EarthquakePoint[],
   scale: IntensityScale,
   idx: RegionNameIndexes,
+  /** 上位の階級で区域名を出した県。ここに載る県はこの階級で県名へまとめない */
+  prefsWithAreaShown: ReadonlySet<string>,
 ): string[] {
   const matched = points.filter(p => p.scale === scale)
   // 区域の点があれば電文自身が示した粒度を使う。
@@ -85,7 +93,7 @@ function regionNamesForScale(
   // 前提が崩れた場合は、その県の震度が読み上げから静かに落ちる（他の区域で地域名が作れてしまうため
   // 下の「地域名 0 件」の記録にも掛からない）。狭めるなら「区域点を持つ県だけ観測点経路を飛ばす」形。
   const areaPoints = matched.filter(p => p.isArea && p.addr !== p.pref)
-  if (areaPoints.length > 0) return aggregateAreaNamesByPref(areaPoints, idx.prefAreaNames, idx.areaPrefIndex)
+  if (areaPoints.length > 0) return aggregateAreaNamesByPref(areaPoints, idx.prefAreaNames, idx.areaPrefIndex, prefsWithAreaShown)
 
   // 区域の点を持たない電文では観測点の所属区域を逆引きし、区域粒度で読む。P2PQuake の詳細報が
   // 常にこの経路（区域は別電文で届くため。→ docs/spec/quake-spec.md §4）。
@@ -123,7 +131,7 @@ function regionNamesForScale(
       resolved.push({ pref: p.pref, addr: p.pref })
       prefsWithoutRegion.add(p.pref)
     }
-    if (resolved.length > 0) return aggregateAreaNamesByPref(resolved, idx.prefAreaNames, idx.areaPrefIndex)
+    if (resolved.length > 0) return aggregateAreaNamesByPref(resolved, idx.prefAreaNames, idx.areaPrefIndex, prefsWithAreaShown)
   }
 
   // 観測点を持たない電文（都道府県ロールアップ点だけが残る場合）は県名で読む。
@@ -256,10 +264,21 @@ function buildRegionSegments(
   // この配列の添字を「最大から何階級目か」として数えるため、観測 0 地域の階級が読み上げ枠を
   // 空費して下の階級に届かなくなることがない（長周期地震動側の数え方と揃えている）。
   const observed: { scale: IntensityScale; names: string[] }[] = []
+  // 上位の階級で区域名を出した県。下位でその県を丸ごとまとめると県の震度を過小に伝えるため、
+  // 持ち回って `aggregateAreaNamesByPref` のまとめ判定から外す（理由は同関数のコメント）。
+  // 打ち切られるのは必ず下位の階級なので、上から順に積むこの持ち回りで整合する。
+  const prefsWithAreaShown = new Set<string>()
   for (let i = maxIdx; i < SCALE_DESCENDING.length; i++) {
     const scale = SCALE_DESCENDING[i]
-    const names = regionNamesForScale(points, scale, idx)
+    const names = regionNamesForScale(points, scale, idx, prefsWithAreaShown)
     if (names.length > 0) observed.push({ scale, names })
+    // 区域名だけを数える。県名でまとめた結果は areaPrefIndex から引けないので入らない。
+    // これは**多区域の県が県名と同じ表記の区域を持たない**ことに依存する（stationCoords.test.ts が
+    // 検証）。奈良県だけは県名と同名の区域を持つが単一区域なので、どちらに数えても出力は変わらない。
+    for (const name of names) {
+      const pref = idx.areaPrefIndex?.get(name)
+      if (pref) prefsWithAreaShown.add(pref)
+    }
   }
 
   const parts: SpeechSegment[][] = []
@@ -1241,10 +1260,14 @@ export function kohatsuToText(event: JMAKohatsu): string {
 
 // 一次細分区域名のリストのうち、県内全区域が同じ階級で揃っているものを「〇〇県」1件にまとめる。
 // areaPrefIndex / prefAreaNames が引けない（未読み込み）場合はまとめず区域名をそのまま返す。
+//
+// **上位の階級で区域名を出した県はまとめない**（`prefsWithAreaShown`）。震度側の
+// `aggregateAreaNamesByPref` と同じ理由（上下の階級で粒度が食い違うと県の階級を過小に伝える）。
 function aggregateLpgmNamesByPref(
   names: string[],
   areaPrefIndex: Map<string, string> | null,
   prefAreaNames: Map<string, Set<string>> | null,
+  prefsWithAreaShown: ReadonlySet<string>,
 ): string[] {
   if (!areaPrefIndex) return names
   const byPref = new Map<string, Set<string>>()
@@ -1261,6 +1284,7 @@ function aggregateLpgmNamesByPref(
     const fullSet = prefAreaNames?.get(pref)
     const isWholePref = fullSet != null && fullSet.size > 0
       && regionNames.size === fullSet.size && [...regionNames].every(n => fullSet.has(n))
+      && !prefsWithAreaShown.has(pref)
     if (isWholePref) result.push(pref)
     else result.push(...regionNames)
   }
@@ -1289,13 +1313,22 @@ function buildLpgmRegionText(lpgm: JMALpgm, opts: TtsRegionOptions): string {
 
   const parts: string[] = []
   const mentioned = new Set<string>()
+  // 上位の階級で区域名を出した県（震度側と同じ持ち回り。理由は aggregateLpgmNamesByPref のコメント）。
+  const prefsWithAreaShown = new Set<string>()
   // 長周期地震動階級（1〜4）は震度スケールと別軸のため、opts.alwaysReadScale（震度の下限）は
   // ここでは適用しない。使い忘れではないので、必要になったら階級側の下限を別に設けること。
   for (let i = 0; i <= opts.intensityLevels; i++) {
     const cls = classes[i]
     if (cls == null) break
-    let names = aggregateLpgmNamesByPref((byClass.get(cls) ?? []), areaPrefIndex, prefAreaNames)
-      .filter(n => !mentioned.has(n))
+    const aggregated = aggregateLpgmNamesByPref((byClass.get(cls) ?? []), areaPrefIndex, prefAreaNames, prefsWithAreaShown)
+    // 区域名を出した県を次の階級へ持ち回る。`mentioned` で落とす前に数えるのは、あちらが
+    // 「同じ名前を二度読まない」ための仕組みで、粒度の判断とは別の関心事だから。
+    // 区域名と県名の見分けが areaPrefIndex 頼みである点は震度側と同じ（前提も同じ）。
+    for (const name of aggregated) {
+      const pref = areaPrefIndex?.get(name)
+      if (pref) prefsWithAreaShown.add(pref)
+    }
+    let names = aggregated.filter(n => !mentioned.has(n))
     if (names.length === 0) continue
     // 地域数の打ち切りは buildRegionText と同じ（許容超過の範囲内は省略せず全地域を読む）
     let omittedCount = 0
