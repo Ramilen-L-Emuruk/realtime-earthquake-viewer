@@ -5,9 +5,9 @@ import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, has
 import { joinSegments, plain, type SpeechSegment } from './ttsFollow'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
-import { getStationCoordsCache, buildAreaPrefIndex, buildStationPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, type RegionOrderIndex } from './stationCoords'
+import { getStationCoordsCache, buildAreaPrefIndex, buildStationPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, lookupStationRegion, type RegionOrderIndex, type StationCoordsData } from './stationCoords'
 import { hasMagnitude, hasDepth } from './formatters'
-import { log } from './logger'
+import { createLogThrottle, log } from './logger'
 
 const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch', 'Forecast']
 
@@ -24,8 +24,13 @@ function tsunamiGradeLabel(grade: TsunamiGrade): string {
 // 震度スケールの降順リスト
 const SCALE_DESCENDING: IntensityScale[] = [70, 60, 55, 50, 45, 40, 30, 20, 10] as IntensityScale[]
 
+/** 地域名を作れなかった記録を出す間隔。続いている障害を「一度きり」に見せないための間引き。 */
+const NO_REGION_LOG_THROTTLE_MS = 5 * 60_000
+const warnNoRegionNames = createLogThrottle(NO_REGION_LOG_THROTTLE_MS)
+
 // 県内の一次細分区域が全部同じ階級で揃っている場合、区域名の列挙を「〇〇県」1件にまとめる。
-// DMDATA JSON 電文由来の区域点は pref が空文字（dmdataParser.ts 参照）のため、
+// 入力の出自は問わない（電文の区域点／観測点から逆引きした区域名／都道府県ロールアップ名のどれでも
+// 通る）。DMDATA JSON 電文由来の区域点は pref が空文字（dmdataParser.ts 参照）のため、
 // areaPrefIndex（区域名→県名の逆引き）で補完してからグルーピングする。
 // prefAreaNames が引けない（未読み込み）場合はまとめず区域名をそのまま返す。
 function aggregateAreaNamesByPref(
@@ -51,19 +56,80 @@ function aggregateAreaNamesByPref(
   return result
 }
 
+/**
+ * 地点名を地域名へ解決するための逆引き索引。3 つが同じ型（観測点名/区域名 -> 名前）なので、
+ * 位置引数で並べると渡し違いを型チェックが捕まえられない。キー名で渡すためにまとめている。
+ */
+interface RegionNameIndexes {
+  /** 都道府県名 -> その県に属する一次細分区域名の集合 */
+  prefAreaNames: Map<string, Set<string>> | null
+  /** 一次細分区域名 -> 都道府県名 */
+  areaPrefIndex: Map<string, string> | null
+  /** 観測点名 -> 都道府県名 */
+  stationPrefIndex: Map<string, string> | null
+  /** 座標テーブル本体。観測点 -> 一次細分区域は地図と同じ `lookupStationRegion` で引く */
+  stationData: StationCoordsData | null
+}
+
 function regionNamesForScale(
   points: EarthquakePoint[],
   scale: IntensityScale,
-  prefAreaNames: Map<string, Set<string>> | null,
-  areaPrefIndex: Map<string, string> | null,
-  stationPrefIndex: Map<string, string> | null,
+  idx: RegionNameIndexes,
 ): string[] {
   const matched = points.filter(p => p.scale === scale)
+  // 区域の点があれば電文自身が示した粒度を使う。
+  // **この打ち切りは同じ階級の観測点経路をまるごと止める**（都道府県ロールアップ点の救済も含む）。
+  // 気象庁の電文では県の最大震度が配下区域の最大震度なので、区域に出ずに県や観測点だけが出ることは
+  // 無い、という前提に乗っている。加えて座標テーブルが未読み込みだと区域名から県を引けず「どの県を
+  // 拾えたか」が判らないため、ここでロールアップ点を足すと区域名と県名が二重に並ぶ。
+  // 前提が崩れた場合は、その県の震度が読み上げから静かに落ちる（他の区域で地域名が作れてしまうため
+  // 下の「地域名 0 件」の記録にも掛からない）。狭めるなら「区域点を持つ県だけ観測点経路を飛ばす」形。
   const areaPoints = matched.filter(p => p.isArea && p.addr !== p.pref)
-  if (areaPoints.length > 0) return aggregateAreaNamesByPref(areaPoints, prefAreaNames, areaPrefIndex)
-  // QUAKE-2 で XML 経路の観測点も pref: '' になったため、pref が空でも observation の
-  // addr から都道府県を逆引きしてフォールバックする（既存の areaPrefIndex 相当を観測点にも適用）。
-  const prefs = matched.map(p => p.pref || stationPrefIndex?.get(p.addr) || '')
+  if (areaPoints.length > 0) return aggregateAreaNamesByPref(areaPoints, idx.prefAreaNames, idx.areaPrefIndex)
+
+  // 区域の点を持たない電文では観測点の所属区域を逆引きし、区域粒度で読む。P2PQuake の詳細報が
+  // 常にこの経路（区域は別電文で届くため。→ docs/spec/quake-spec.md §4）。
+  const observations = matched.filter(p => !p.isArea)
+  if (observations.length > 0) {
+    const resolved: { pref: string; addr: string }[] = []
+    const prefsWithRegion = new Set<string>()
+    const prefsWithoutRegion = new Set<string>()
+    for (const p of observations) {
+      // QUAKE-2 で XML 経路の観測点も pref: '' になったため、pref が空なら addr から逆引きする。
+      const pref = p.pref || idx.stationPrefIndex?.get(p.addr) || ''
+      // 区域は**地図の区域塗りと同じ関数**で引く。都道府県付きのキーしか持たないので、同名の
+      // 観測点が別の県にあっても取り違えない。都道府県を引けなかった観測点は区域も引けないので、
+      // 下の県名フォールバックに回る（そこでも拾えなければその点は読み上げから落ちる）。
+      const region = pref && idx.stationData
+        ? lookupStationRegion(idx.stationData, pref, p.addr)
+        : null
+      if (region) {
+        resolved.push({ pref, addr: region })
+        prefsWithRegion.add(pref)
+      } else if (pref) {
+        prefsWithoutRegion.add(pref)
+      }
+    }
+    // 区域が引けなかった観測点は県名で読む。ただしその県に区域が 1 つでも立っているなら捨てる。
+    // 混ぜると同じ県が「〇〇県北部」と「〇〇県」の二重で並ぶ。
+    for (const pref of prefsWithoutRegion) {
+      if (!prefsWithRegion.has(pref)) resolved.push({ pref, addr: pref })
+    }
+    // 観測点を 1 つも持たない県は都道府県ロールアップ点から拾う。観測点が取れた時点で打ち切ると、
+    // その県が読み上げから黙って消える（DMDATA JSON 経路は区域・観測点・県の 3 種が同時に届く）。
+    for (const p of matched) {
+      if (!p.isArea || !p.pref || p.addr !== p.pref) continue
+      if (prefsWithRegion.has(p.pref) || prefsWithoutRegion.has(p.pref)) continue
+      resolved.push({ pref: p.pref, addr: p.pref })
+      prefsWithoutRegion.add(p.pref)
+    }
+    if (resolved.length > 0) return aggregateAreaNamesByPref(resolved, idx.prefAreaNames, idx.areaPrefIndex)
+  }
+
+  // 観測点を持たない電文（都道府県ロールアップ点だけが残る場合）は県名で読む。
+  // 上の観測点経路から抜けてきた場合はここも必ず空になる（同じ式で都道府県を引いていて、
+  // それが解決できなかったから何も積めなかった、という状態なので）。追加の救済ではない。
+  const prefs = matched.map(p => p.pref || idx.stationPrefIndex?.get(p.addr) || '')
   return [...new Set(prefs.filter(Boolean))]
 }
 
@@ -122,9 +188,12 @@ function buildRegionText(
     && hypocenter.latitude > -200 && hypocenter.longitude > -200
     && (hypocenter.latitude !== 0 || hypocenter.longitude !== 0)
   const stationData = getStationCoordsCache()
-  const prefAreaNames = stationData ? buildPrefAreaNamesIndex(stationData) : null
-  const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
-  const stationPrefIndex = stationData ? buildStationPrefIndex(stationData) : null
+  const idx: RegionNameIndexes = {
+    prefAreaNames: stationData ? buildPrefAreaNamesIndex(stationData) : null,
+    areaPrefIndex: stationData ? buildAreaPrefIndex(stationData) : null,
+    stationPrefIndex: stationData ? buildStationPrefIndex(stationData) : null,
+    stationData,
+  }
   const regionOrder = stationData ? buildRegionOrderIndex(stationData) : null
 
   // 最大震度以下で実際に観測がある階級だけを降順に集める。震度スケール上の位置ではなく
@@ -133,7 +202,7 @@ function buildRegionText(
   const observed: { scale: IntensityScale; names: string[] }[] = []
   for (let i = maxIdx; i < SCALE_DESCENDING.length; i++) {
     const scale = SCALE_DESCENDING[i]
-    const names = regionNamesForScale(points, scale, prefAreaNames, areaPrefIndex, stationPrefIndex)
+    const names = regionNamesForScale(points, scale, idx)
     if (names.length > 0) observed.push({ scale, names })
   }
 
@@ -181,7 +250,17 @@ function buildRegionText(
     parts.push(`${parts.length === 0 ? '最大' : ''}震度${intensityText(scale)}を${names.join('、')}${omittedSuffix}`)
   }
 
-  if (parts.length === 0) return ''
+  if (parts.length === 0) {
+    // 震度点があるのに地域名を 1 件も作れないのは、電文の観測点が座標テーブルに載っていない状態
+    // （DMDATA は観測点を pref: '' で積むので、テーブルが引けないと手がかりが何も残らない）。
+    // 呼び出し側が最大震度だけの一文へ落とすので読み上げは成立するが、地域が丸ごと消えたことは
+    // 記録に残す。読み上げごとに出すと同じ行でログが埋まるため間引く。
+    // 座標テーブルの読み込み前は引けないのが当たり前なので黙る（起動直後の正常な過渡状態）。
+    if (points.length > 0 && stationData) {
+      warnNoRegionNames(() => log.warn('[tts] 震度点があるのに地域名を作れなかった（電文の観測点が座標テーブルに無い）'))
+    }
+    return ''
+  }
   // 助詞「で」は末尾（述語の直前）にだけ置く。階級ごとの句末に付けると
   // 「〜福島県で、震度3を〜」と一文字が読点で挟まれ、読み上げがぶつ切りに聞こえる。
   // 複数階級のときは前の句が末尾の「で」を共有する形（並列句の格助詞の共有）になる。
@@ -244,6 +323,17 @@ function depthAmendPhrase(depth: number): string {
 function intensityText(scale: IntensityScale | number): string {
   if (scale <= 0) return ''
   return getIntensityLabel(scale as IntensityScale)
+}
+
+/**
+ * 地域名を 1 件も作れなかったときに添える一文。震度が判っていればそれだけを伝え、
+ * 判らなければ何も返さない。`intensityText` は震度不明で空文字を返すので、確かめずに埋めると
+ * 「最大震度を観測しました」という助詞だけの文になる（`maxScale` は無いのが正常な経路もある。
+ * → docs/spec/data-sources-spec.md §3）。
+ */
+function maxScaleOnlySentence(maxScale: IntensityScale): string {
+  const label = intensityText(maxScale)
+  return label ? `最大震度${label}を観測しました。` : ''
 }
 
 function formatTime(isoTime: string): string {
@@ -402,7 +492,7 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
   if (type === '震度速報') {
     const prefix = isNew ? '震度速報。' : '震度速報が更新されました。'
     const regionText = buildRegionText(event.points, maxScale, opts, hypocenter)
-    return `${prefix}${regionText || `最大震度${intensityText(maxScale)}を観測しました。`}`
+    return `${prefix}${regionText || maxScaleOnlySentence(maxScale)}`
   }
 
   const time = formatTime(event.earthquake.time)
@@ -443,10 +533,10 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
 
   text += domesticTsunamiText(domesticTsunami)
 
+  // 地域名を作れなかった場合も、震度が判っていれば最大震度だけは伝える（震度速報と同じ扱い）。
+  // 揃えないと、この電文だけ震度に一切触れずに終わる。
   const regionText = buildRegionText(event.points, maxScale, opts, hypocenter)
-  if (regionText) {
-    text += regionText
-  }
+  text += regionText || maxScaleOnlySentence(maxScale)
 
   return text
 }

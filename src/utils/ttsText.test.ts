@@ -731,3 +731,72 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
     expect(text).toContain('茨城県、青森県太平洋沿岸で3メートルが予想されています。')
   })
 })
+
+// 観測点から一次細分区域を逆引きするには座標テーブル（station-coords.json）が要る。読み込みが
+// 済む前に地震が来ても地域名を黙って落とさず、都道府県名まで下げて読むことを確かめる。
+// 逆引きが効いた場合の粒度は ttsRegionOrder.test.ts が実データで受け持つ。
+describe('earthquakeToText: 座標テーブルが無いときの地域名', () => {
+  /** 震源を国内に置いた震度電文。type と maxScale・points を差し替えて使う。 */
+  function makeLocalQuake(
+    type: IssueType,
+    maxScale: IntensityScale,
+    points: EarthquakePoint[],
+  ): JMAQuake {
+    const base = makeQuake({ type, name: '新潟県中越地方', maxScale })
+    return {
+      ...base,
+      earthquake: {
+        ...base.earthquake,
+        hypocenter: { ...base.earthquake.hypocenter, latitude: 0, longitude: 0, depth: 10, magnitude: 5.0 },
+      },
+      points,
+    }
+  }
+
+  it('観測点しか持たない電文では都道府県名で読む', () => {
+    expect(getStationCoordsCache()).toBeNull()
+    const quake = makeLocalQuake('各地の震度情報', 40 as IntensityScale, [
+      { pref: '新潟県', addr: '糸魚川市一の宮', isArea: false, scale: 40 as IntensityScale },
+      { pref: '新潟県', addr: '長岡市幸町', isArea: false, scale: 40 as IntensityScale },
+    ])
+    expect(earthquakeToText(quake, TTS_OPTS, true)).toContain('最大震度4を新潟県で観測しました。')
+  })
+
+  // DMDATA は観測点を pref: '' で積む（→ docs/spec/quake-spec.md §4）。座標テーブルが未読み込みだと
+  // 都道府県も区域も引けず地域名が 1 件も作れない。震度に触れずに終わる読み上げにしない。
+  it('地域名を 1 件も作れなくても最大震度は伝える', () => {
+    expect(getStationCoordsCache()).toBeNull()
+    const quake = makeLocalQuake('各地の震度情報', 40 as IntensityScale, [
+      { pref: '', addr: '糸魚川市一の宮', isArea: false, scale: 40 as IntensityScale },
+    ])
+    expect(earthquakeToText(quake, TTS_OPTS, true)).toContain('最大震度4を観測しました。')
+  })
+
+  // 安全弁: 地域名が読めているときはフォールバックの一文を重ねない（`||` の短絡に依存している）。
+  it('地域名が読めていれば最大震度だけの一文は足さない', () => {
+    const quake = makeLocalQuake('各地の震度情報', 40 as IntensityScale, [
+      { pref: '新潟県', addr: '糸魚川市一の宮', isArea: false, scale: 40 as IntensityScale },
+    ])
+    const text = earthquakeToText(quake, TTS_OPTS, true)
+    expect(text).toContain('最大震度4を新潟県で観測しました。')
+    expect(text).not.toContain('最大震度4を観測しました。')
+  })
+
+  // 対照: 震度が判っていないなら足すものが無い。震度の値が欠けた文にしない
+  // （P2PQuake の maxScale は「無いのが正常」なケースがある。→ docs/spec/data-sources-spec.md §3）
+  it('震度が判らない電文では言いかけの一文を足さない（地震情報）', () => {
+    const quake = makeLocalQuake('各地の震度情報', -1 as IntensityScale, [
+      { pref: '', addr: '糸魚川市一の宮', isArea: false, scale: -1 as IntensityScale },
+    ])
+    expect(earthquakeToText(quake, TTS_OPTS, true)).not.toContain('最大震度を観測しました')
+  })
+
+  it('震度が判らない電文では言いかけの一文を足さない（震度速報）', () => {
+    const quake = makeLocalQuake('震度速報', -1 as IntensityScale, [
+      { pref: '', addr: '糸魚川市一の宮', isArea: false, scale: -1 as IntensityScale },
+    ])
+    const text = earthquakeToText(quake, TTS_OPTS, true)
+    expect(text).not.toContain('最大震度を観測しました')
+    expect(text).toBe('震度速報。')
+  })
+})
