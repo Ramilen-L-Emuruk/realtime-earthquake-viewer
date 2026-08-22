@@ -3,7 +3,7 @@ import type { EEWAlert } from '../types/earthquake'
 import type { LatLng } from '../utils/stationCoords'
 import { useSubRegions } from './useSubRegions'
 import { ringsBounds, type SubRegion } from '../utils/subregions'
-import { eewAreas, eewMaxScale } from '../utils/eew'
+import { eewAreas, eewMaxScaleInfo } from '../utils/eew'
 import { isValidIntensityScale } from '../utils/intensity'
 import { isValidLpgmClass } from '../utils/lpgm'
 import { normalizeEpicenterLng } from '../utils/geo'
@@ -25,6 +25,11 @@ export interface EewOrigin {
 export interface EewAreaFill {
   name: string
   scale: number
+  /**
+   * `scale` が「〜以上」の下限か（`EEWRegion.scaleToOrAbove` 由来）。
+   * 塗り色は 1 色しか選べないので色には効かせず、ポップアップの文言で語を補う。
+   */
+  scaleOrAbove: boolean
   isWarning: boolean
   rings: LatLng[][]
   /** 区域の代表点。この点までの距離からS波到達を推定する。 */
@@ -55,6 +60,8 @@ export interface EewEpicenter {
   serial: string
   severity: EEWAlert['severity']
   maxScale: number
+  /** `maxScale` が「〜以上」の下限か。ポップアップで語を補うために持つ（→ docs/spec/eew-spec.md §4）。 */
+  maxScaleOrAbove: boolean
   isFinal: boolean
 }
 
@@ -85,13 +92,18 @@ export function useEewLayerData(
   const eewAreaFills = useMemo<EewAreaFill[]>(() => {
     if (eews.length === 0) return []
     const maxByName = new Map<string, number>()
+    // 最大値を与えた区域が「〜以上」表現だったか（同じ階級で片方だけ「以上」なら「以上」を採る）。
+    const orAboveByName = new Map<string, boolean>()
     // 予想震度の最大値を与えた EEW の震源を、区域ごとに覚えておく（S波到達の推定に使う）。
     const originByName = new Map<string, EewOrigin | null>()
     const warningNames = new Set<string>()
     for (const eew of eews) {
       const hc = eew.earthquake.hypocenter
+      // 仮定震源要素（単独観測点処理）の震源は使わない。M・深さが仮定値のため、これで走時を
+      // 解くと根拠のない到達秒数になる。予報円を出さない・カードで M/深さを隠す・
+      // useKyoshinAlerts が震源に採らないのと同じ扱いを、S波到達の推定にも与える。
       const origin: EewOrigin | null =
-        hc.latitude > -200 && hc.longitude > -200
+        hc.latitude > -200 && hc.longitude > -200 && eew.earthquake.condition !== '仮定震源要素'
           ? {
               lat: hc.latitude,
               lng: normalizeEpicenterLng(hc.longitude, JAPAN_CENTER_LNG),
@@ -105,7 +117,13 @@ export function useEewLayerData(
         const cur = maxByName.get(a.name)
         if (cur == null || a.scaleTo > cur) {
           maxByName.set(a.name, a.scaleTo)
+          orAboveByName.set(a.name, a.scaleToOrAbove === true)
           originByName.set(a.name, origin)
+        } else if (a.scaleTo === cur) {
+          if (a.scaleToOrAbove) orAboveByName.set(a.name, true)
+          // 同じ階級を与える報が複数あるとき、先着が仮定震源要素で origin を持たなければ
+          // 確定震源の側で埋める（到達秒数を出せる根拠があるならそれを使う）。
+          if (origin && !originByName.get(a.name)) originByName.set(a.name, origin)
         }
         if (a.kindCode === '10' || a.kindCode === '11' || a.kindCode === '19') warningNames.add(a.name)
       }
@@ -117,6 +135,7 @@ export function useEewLayerData(
         list.push({
           name,
           scale,
+          scaleOrAbove: orAboveByName.get(name) === true,
           isWarning: warningNames.has(name),
           rings: sr.rings,
           label: sr.label,
@@ -154,6 +173,7 @@ export function useEewLayerData(
     for (const eew of eews) {
       const hc = eew.earthquake.hypocenter
       if (hc.latitude > -200 && hc.longitude > -200) {
+        const { scale, orAbove } = eewMaxScaleInfo(eew)
         list.push({
           id: eew.id,
           position: [hc.latitude, normalizeEpicenterLng(hc.longitude, JAPAN_CENTER_LNG)],
@@ -165,7 +185,8 @@ export function useEewLayerData(
           depth: hc.depth,
           serial: eew.issue?.serial ?? '',
           severity: eew.severity,
-          maxScale: eewMaxScale(eew),
+          maxScale: scale,
+          maxScaleOrAbove: orAbove,
           isFinal: eew.isFinal ?? false,
         })
       }

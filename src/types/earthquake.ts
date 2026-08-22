@@ -161,6 +161,13 @@ export interface EEWRegion {
   scaleFrom: IntensityScale
   /** 予想震度の上限。地域別の最大予想震度として `eewMaxScale()` が参照する */
   scaleTo: IntensityScale
+  /**
+   * 予想震度の上限が定まっていない（`scaleTo` は「〜以上」の下限）ことを表す。
+   * DMDATA の `to: "over"`・P2PQuake の `scaleTo: 99` がこれに当たる。どちらも
+   * `scaleTo` には下限側の値（= `scaleFrom`）を入れ、「以上」はこのフラグで持つ。
+   * 詳細は docs/spec/data-sources-spec.md §8「上限を定めない予想震度」。
+   */
+  scaleToOrAbove?: boolean
   kindCode: string
   arrivalTime: string | null
   lgIntTo?: LpgmClass  // 地域別予想長周期地震動階級。電文に含まれない場合は undefined
@@ -195,6 +202,9 @@ export interface EEWAlert {
   // Yahoo 強震モニタ由来の calcintensity から変換した最大予想震度。
   // areas が空の場合のフォールバックとして eewMaxScale() が使用する。
   forecastMaxScale?: IntensityScale
+  // `forecastMaxScale` の上限が定まっていない（「〜以上」）ことを表す。
+  // 意味と扱いは `EEWRegion.scaleToOrAbove` と同じ。
+  forecastMaxScaleOrAbove?: boolean
   // DMDATA EEW 電文 body.intensity.forecastMaxLpgmInt から取得した推定最大長周期地震動階級（1〜4）。
   forecastMaxLpgmClass?: LpgmClass
 }

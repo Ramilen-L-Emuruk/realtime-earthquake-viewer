@@ -203,6 +203,30 @@ describe('eewIntensityToText: 長周期地震動階級の読み上げ', () => {
       .toContain('深発地震のため、予想震度なし。')
   })
 
+  // 上限が定まらない報（DMDATA の to='over' / P2PQuake の scaleTo=99）は下限側の階級を持つ。
+  // 語を落とすと「震度4以上」を「震度4」と断定した放送になる。
+  describe('eewIntensityToText: 「〜以上」の読み上げ', () => {
+    it('上限が定まらない予想は「以上」を付けて読む', () => {
+      const eew = makeEEW(undefined, {
+        areas: [{ pref: '石川県', name: '石川県能登', scaleFrom: 40, scaleTo: 40, scaleToOrAbove: true, kindCode: '09', arrivalTime: null }],
+      })
+      expect(eewIntensityToText(eew)).toBe('予想最大震度4以上。')
+    })
+
+    it('上限が定まっている予想には付けない（境界の手前）', () => {
+      const eew = makeEEW(undefined, {
+        areas: [{ pref: '石川県', name: '石川県能登', scaleFrom: 40, scaleTo: 45, kindCode: '11', arrivalTime: null }],
+      })
+      expect(eewIntensityToText(eew)).toBe('予想最大震度5弱。')
+    })
+
+    it('「以上」でも「予想震度なし」の経路は変えない（仮定震源要素で areas が空のとき）', () => {
+      const text = eewIntensityToText(makeEEW(undefined, { condition: '仮定震源要素' }))
+      expect(text).toContain('予想震度なし。')
+      expect(text).not.toContain('以上。')
+    })
+  })
+
   describe('eewIntensityToText: 格上げの前置き', () => {
     function areasWith(scaleTo: IntensityScale, lgIntTo?: LpgmClass): EEWAlert['areas'] {
       return [{ pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 40, scaleTo, kindCode: '10', arrivalTime: null, lgIntTo }]

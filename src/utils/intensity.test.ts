@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isValidIntensityScale, INTENSITY_LABELS, getIntensityLabel, getIntensityColor } from './intensity'
+import { isValidIntensityScale, INTENSITY_LABELS, getIntensityLabel, getIntensityLabelWithOrAbove, getIntensityColor } from './intensity'
 
 describe('isValidIntensityScale', () => {
   it('震度階級に対応する値をすべて受け入れる', () => {
@@ -52,5 +52,28 @@ describe('getIntensityLabel / getIntensityColor のフォールバック', () =>
 
   it('未確定の -1 も「不明」表示になる', () => {
     expect(getIntensityLabel(-1)).toBe('不明')
+  })
+})
+
+// 上限を定めない予想震度（EEW の `to: "over"` / `scaleTo: 99`）に語を足す共有ヘルパー。
+// 表示・読み上げが同じ形になるよう、付ける/付けないの境界はここだけで決める。
+describe('getIntensityLabelWithOrAbove', () => {
+  it('階級に「以上」を足す', () => {
+    expect(getIntensityLabelWithOrAbove(40, true)).toBe('4以上')
+    expect(getIntensityLabelWithOrAbove(55, true)).toBe('6弱以上')
+  })
+
+  it('フラグが立っていなければ足さない', () => {
+    expect(getIntensityLabelWithOrAbove(40, false)).toBe('4')
+  })
+
+  it('未確定（-1）には足さない（「不明以上」を作らない）', () => {
+    expect(getIntensityLabelWithOrAbove(-1, true)).toBe('不明')
+  })
+
+  it('震度スケール外の値にも足さない', () => {
+    expect(getIntensityLabelWithOrAbove(25, true)).toBe('不明')
+    // 0 は震度階級として持たない値。ラベルは「不明」で、語も付けない
+    expect(getIntensityLabelWithOrAbove(0, true)).toBe('不明')
   })
 })

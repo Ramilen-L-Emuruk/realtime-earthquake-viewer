@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import * as maplibregl from 'maplibre-gl'
 import { useMapGL } from './mapGLContext'
 import type { EewEpicenter } from '../../hooks/useEewLayerData'
-import { getIntensityColor, getIntensityLabel } from '../../utils/intensity'
+import { getIntensityColor, getIntensityLabelWithOrAbove } from '../../utils/intensity'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
 import { attachMarkerClaim, type PopupHandle } from './gl/popupRegistry'
 import { badgeHtml, escapeHtml } from './gl/popupHtml'
@@ -65,6 +65,7 @@ function buildPopupHtml(ep: EewEpicenter): string {
   // 単独観測点処理の初期報は震源が確定していない。数値を鵜呑みにしないよう明示する
   // （×印を薄く描く判定と同じ isAssumed を使い、判定を二重に持たない）。
   const provisional = ep.isAssumed
+  const scaleLabel = getIntensityLabelWithOrAbove(ep.maxScale, ep.maxScaleOrAbove)
   return (
     `<div style="min-width:170px">` +
     `<div style="display:flex;align-items:baseline;gap:8px">` +
@@ -79,9 +80,11 @@ function buildPopupHtml(ep: EewEpicenter): string {
       : `${escapeHtml(formatMagnitude(ep.magnitude))} / 深さ ${escapeHtml(formatDepth(ep.depth))}`) +
     `</div>` +
     `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:12px">` +
-    `${badgeHtml(getIntensityLabel(ep.maxScale), getIntensityColor(ep.maxScale))}` +
-    `<span style="color:#cbd5e1">予想最大震度 ${escapeHtml(getIntensityLabel(ep.maxScale))}</span>` +
-    `<span style="color:${kindColor};font-weight:700">${kind}</span></div>` +
+    // 上限が定まらない報は「4以上」と出す。値だけにすると下限を断定した表示になる
+    // （語を出す箇所の一覧は docs/spec/eew-spec.md §4）。
+    `${badgeHtml(scaleLabel, getIntensityColor(ep.maxScale))}` +
+    `<span style="color:#cbd5e1;white-space:nowrap">予想最大震度 ${escapeHtml(scaleLabel)}</span>` +
+    `<span style="color:${kindColor};font-weight:700;white-space:nowrap">${kind}</span></div>` +
     (provisional
       ? `<div style="margin-top:4px;font-size:11px;color:#fbbf24">仮定震源要素（単独観測点処理・震源未確定）</div>`
       : '') +
@@ -135,9 +138,14 @@ export function EewEpicentersGL({ epicenters, iconScale, fullOpacity }: Props) {
         entries.delete(ep.id)
       }
       const el = buildCrossEl(iconScale, ep.isAssumed)
-      const popup = new maplibregl.Popup({ closeButton: true, offset: Math.round(32 * iconScale) * 0.4 }).setHTML(
-        buildPopupHtml(ep),
-      )
+      // maxWidth は既定（240px）だと 1 行に「バッジ・予想最大震度・区分」を並べたとき折り返す
+      // （「予想最大震度 4以上」＋「地震動予報」で溢れる）。区域塗りのポップアップ
+      // （gl/popupRegistry.ts の clickPopup）と同じ 280px に揃える。
+      const popup = new maplibregl.Popup({
+        closeButton: true,
+        offset: Math.round(32 * iconScale) * 0.4,
+        maxWidth: '280px',
+      }).setHTML(buildPopupHtml(ep))
       // opacityWhenCovered は指定しない。このアプリは terrain（3D地形）を使っておらず
       // 「覆われたとき」が起きないため効果が無い一方、指定すると Marker がオクルージョン判定の
       // 経路に入り、ポップアップのクリックが効かなくなる（外すと開くことを実測で確認）。

@@ -59,6 +59,19 @@ export function getIntensityLabel(scale: number): string {
   return INTENSITY_LABELS[scale] ?? '不明'
 }
 
+/**
+ * 震度ラベルに「以上」を補う（`orAbove` のとき）。
+ *
+ * EEW の予想震度は上限が定まらないことがあり、その報は下限側の階級を持つ
+ * （`EEWRegion.scaleToOrAbove` / `eewMaxScaleInfo`）。値だけを見せると
+ * 「震度4以上」を「震度4」と断定してしまうため、表示・読み上げはこの語を通す。
+ * 「不明」（階級外）に語を足しても意味を成さないので、その場合は付けない。
+ */
+export function getIntensityLabelWithOrAbove(scale: number, orAbove: boolean): string {
+  const label = getIntensityLabel(scale)
+  return orAbove && isValidIntensityScale(scale) && scale > 0 ? `${label}以上` : label
+}
+
 export function getIntensityColor(scale: number): string {
   return INTENSITY_COLORS[scale] ?? '#666666'
 }
