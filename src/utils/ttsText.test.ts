@@ -478,6 +478,18 @@ describe('津波の読み上げ: 区域名・地点名の区切り', () => {
     expect(text).toContain('新潟県上中下越、柏崎')
   })
 
+  // 安全弁: 到達確認も観測波高と同じ `omittedSuffix` で打ち切り件数を言う（文言を共有している）。
+  // 実装を共有関数へ寄せたので、どちらか一方だけ文言が変わったらここで落ちる
+  it('到達確認も maxPoints で外した地点数を読み上げる', () => {
+    const obs: TsunamiObservation[] = [
+      { name: '佐渡市鷲崎', districtName: '佐渡' },
+      { name: '小木', districtName: '佐渡' },
+      { name: '柏崎', districtName: '新潟県上中下越' },
+    ]
+    expect(tsunamiArrivalToText(obs, 1)).toContain('、ほか2地点で到達を確認しました。')
+    expect(tsunamiArrivalToText(obs, 5)).not.toContain('ほか')
+  })
+
   // 津波予報区名そのものに中黒を含むものが実データに 9 件ある（「伊勢・三河湾」「壱岐・対馬」など。
   // tsunami-zones.json 参照）。区域名の中の中黒は名前の一部なのでそのまま残し、
   // 区域名どうしを繋ぐ位置にだけ読点を使う。「中黒を一切含まない」を条件にはできない。
@@ -706,6 +718,47 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
       { name: '宮古', districtCode: '030', districtName: '岩手県', height: { value: 8.5, description: '8.5m以上', over: true } },
     ])
     expect(text).toContain('宮古で8.5メートル以上')
+  })
+
+  // 正: maxPoints で打ち切る選抜が「○m以上」を確定値の下に置かない（音は落ちたら気づけない）
+  it('「以上」の観測点は maxPoints の打ち切りで落とさない', () => {
+    const obs: TsunamiObservation[] = [
+      { name: '大船渡', districtCode: '030', districtName: '岩手県', height: { value: 3.0, description: '3.0m' } },
+      { name: '釜石', districtCode: '030', districtName: '岩手県', height: { value: 2.8, description: '2.8m' } },
+      { name: '宮古', districtCode: '030', districtName: '岩手県', height: { value: 1.5, description: '1.5m以上', over: true } },
+    ]
+    const text = tsunamiObservationUpdateToText(obs, undefined, 1)
+    expect(text).toContain('宮古で1.5メートル以上')
+    expect(text).not.toContain('大船渡')
+  })
+
+  // 正: 上限で外した地点数を言う（黙って捨てない）。「以上」が複数あって上限を超える場面が本番
+  it('maxPoints で外した地点数を読み上げる', () => {
+    const obs: TsunamiObservation[] = [
+      { name: '宮古', districtCode: '030', districtName: '岩手県', height: { value: 8.5, description: '8.5m以上', over: true } },
+      { name: '釜石', districtCode: '030', districtName: '岩手県', height: { value: 5.0, description: '5.0m以上', over: true } },
+      { name: '大船渡', districtCode: '030', districtName: '岩手県', height: { value: 3.0, description: '3.0m' } },
+    ]
+    expect(tsunamiObservationUpdateToText(obs, undefined, 1)).toContain('、ほか2地点を観測しました。')
+  })
+
+  // 対照: 上限に掛からなければ余計な句を足さない
+  it('上限に掛からなければ地点数の句を足さない', () => {
+    const obs: TsunamiObservation[] = [
+      { name: '宮古', districtCode: '030', districtName: '岩手県', height: { value: 8.5, description: '8.5m以上', over: true } },
+    ]
+    expect(tsunamiObservationUpdateToText(obs, undefined, 5)).not.toContain('ほか')
+  })
+
+  // 対照: 「以上」が無ければ従来どおり値の大きい観測点が選ばれる
+  it('「以上」が無ければ値の大きい観測点を選ぶ', () => {
+    const obs: TsunamiObservation[] = [
+      { name: '釜石', districtCode: '030', districtName: '岩手県', height: { value: 2.8, description: '2.8m' } },
+      { name: '大船渡', districtCode: '030', districtName: '岩手県', height: { value: 3.0, description: '3.0m' } },
+    ]
+    const text = tsunamiObservationUpdateToText(obs, undefined, 1)
+    expect(text).toContain('大船渡で3.0メートル')
+    expect(text).not.toContain('釜石')
   })
 
   // 安全弁: 数字の直後だけを置き換える。headline は電文の文章なので、無条件に m を替えると
