@@ -441,7 +441,8 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 読み上げ追従の引き当て失敗を記録する条件（**等級は数えない**。等級のカードは常に登録済みで必ず引けるため、数えると診断が二度と発火しない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「対象の特定」 |
 | 津波の予想波高「あり／なし」の判定（`hasForecastHeight`。`maxHeight` の有無ではなく `description` の中身で見る。食い違うと値 0 の区域がカードにも読み上げにも出ない。DMDATA と P2PQuake で波高の有無が変わる非対称性も同節） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §9「予想波高の有無」 |
 | 読み上げ文で名前を並べるときの書き方（区切りは読点・中黒は音にならず合成の区切りにもならない・場所の助詞「で」は文末のみ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
-| チャンク末尾の句読点に間を足すこと（VOICEVOX は後ろに何も続かない句読点に間を付けない・チャンクは隙間なく詰めて鳴らす・**最後のチャンクには足さない**・足すかどうかは合成の入口 3 つで揃える。読点で名前を並べても間が入らない症状はここが原因） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「チャンク末尾の句読点には間を足す」 |
+| チャンク末尾の句読点に間を足すこと（VOICEVOX は後ろに何も続かない句読点に間を付けない・チャンクは隙間なく詰めて鳴らす・**最後のチャンクには足さない**・足すかどうかは合成の入口 3 つで揃える。読点で名前を並べても間が入らない症状の原因のひとつ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「チャンク末尾の句読点には間を足す」 |
+| 辞書での分割によって落ちた句読点を戻すこと（**チャンク末尾とは別の穴**で、同じ症状に原因が 2 つある／落ちた位置に種を置き、長さは `/mora_data` の引き直しに決めさせる・引き直しは「間が無い位置に間を作る」ことはしない・種を置かない位置が 2 つある（チャンク末尾は `CHUNK_BREAK_PAUSE` の担当／掛ける先の句が無い場合。後者は現状起きない）・**置いた後にも歯止めがある**（種が句の並びの末尾に来たら引き直し値を採らない）・引き直しが間を返さなかったときは種へ倒して記録する） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「分割で落ちた句読点を戻す」 |
 | EEW 読み上げ第 2 フェーズの発火条件（値の確定で読む・予想震度が付かない理由が判っているなら待たない・`EEW_PHASE2_MAX_WAIT_MS` の上限・引き上げも初報と同じ形で言い直す・「警報。」の前置きはその EEW で初めて伝えるときだけ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
 | 読み上げを鳴らす直前の見直し（`shouldStillPlay`。渡しているのは EEW だけ・判定はチャンク単位・鳴っている途中のチャンクは切らない・第 2 フェーズは誤報取消と値の引き上げで打ち切り、第 1 フェーズは誤報取消のみ・自動解除と値の引き下げでは止めない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「鳴らす直前の見直し」・§6 |
 | EEW 読み上げの直列化（全 EEW で 1 本のチェーン・既読値の更新は発話直前だけ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げの優先順位」 |
