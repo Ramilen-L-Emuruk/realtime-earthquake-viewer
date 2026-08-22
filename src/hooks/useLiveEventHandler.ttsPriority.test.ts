@@ -124,6 +124,39 @@ function makeTsunamiObs(
   } as unknown as JMATsunami
 }
 
+/**
+ * 波高未確定（観測中）の観測点を持つ津波。到達だけが確認された状態を表す
+ * （`height` を持たせないのが要点。持たせると波高更新の側になる）。
+ */
+function makeTsunamiArrival(over: { id?: string; name?: string } = {}): JMATsunami {
+  return {
+    kind: 'tsunami',
+    id: over.id ?? 'tsunami-arr-1',
+    time: '2026-01-01T12:00:00Z',
+    cancelled: false,
+    issue: { source: 'JMA', time: '2026-01-01T12:00:00Z', type: 'Focus' },
+    areas: [],
+    observations: [{
+      name: over.name ?? '輪島港',
+      districtCode: '390', districtName: '石川県能登',
+    }],
+  } as unknown as JMATsunami
+}
+
+/** 津波の解除。 */
+function makeTsunamiCancel(over: { id?: string } = {}): JMATsunami {
+  return {
+    kind: 'tsunami',
+    id: over.id ?? 'tsunami-cancel-1',
+    eventId: over.id ?? 'tsunami-cancel-1',
+    time: '2026-01-01T12:00:00Z',
+    cancelled: true,
+    cancelReason: 'lifted',
+    issue: { source: 'JMA', time: '2026-01-01T12:00:00Z', type: 'Focus' },
+    areas: [],
+  } as unknown as JMATsunami
+}
+
 function makeEEW(over: { noAreas?: boolean; condition?: string } = {}): EEWAlert {
   return {
     kind: 'eew',
@@ -834,6 +867,46 @@ describe('読み上げた観測点の既読', () => {
     await settle()
     expect(spokenTexts()).toHaveLength(2)
     expect(spokenTexts()[1]).toContain('輪島港')
+  })
+
+  // 解除では観測点の記憶（波高・名前）をすべて落とす。名前を残すと、前の津波で「観測中」の
+  // まま終わった観測点は次の津波で「新規到達」と見なされず、到達を一度も伝えられない。
+  it('解除を挟めば、同じ観測点の到達確認をもう一度読む', async () => {
+    const handle = setup()
+    handle(makeTsunamiArrival())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+    expect(spokenTexts()[0]).toContain('到達を確認しました')
+    finishSpeech(0)
+    await flush()
+
+    handle(makeTsunamiCancel())
+    await settle()
+    expect(spokenTexts()).toHaveLength(2)
+    expect(spokenTexts()[1]).toContain('解除')
+    finishSpeech(1)
+    await flush()
+
+    // 別の津波で同じ観測点に再び到達（記憶が落ちているので読み直す）
+    handle(makeTsunamiArrival({ id: 'tsunami-arr-2' }))
+    await settle()
+    expect(spokenTexts()).toHaveLength(3)
+    expect(spokenTexts()[2]).toContain('到達を確認しました')
+  })
+
+  // 対照。解除を挟まなければ既読が効いたままで、同じ到達を読み直さない
+  // （読み直すと、観測が続く間ずっと「到達を確認しました」を繰り返す）。
+  it('解除を挟まなければ、同じ観測点の到達確認は読み直さない', async () => {
+    const handle = setup()
+    handle(makeTsunamiArrival())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+    finishSpeech(0)
+    await flush()
+
+    handle(makeTsunamiArrival({ id: 'tsunami-arr-2' }))
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)   // 読み上げ文が組まれない
   })
 
   // 安全弁。波高が上がった観測点は、一度読んでいても読み直す（既読は「読んだ値」を持つ）。

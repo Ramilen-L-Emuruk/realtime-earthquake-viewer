@@ -472,7 +472,8 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 南海トラフ関連解説情報の読み上げ優先度（独立した層に置くこと。臨時情報と同格にすると臨時情報を追い出し、地震情報と同格にすると地震情報を切る） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
 | 津波の解除経路（`cancelReason` 3 種・DMDSS 限定・standard 版フォールバック） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §3 |
 | 津波の「等級を伝えていない電文」（区域が空の続報）の扱い（等級比較から外して観測点更新にする・音／読み上げ／観測の追跡の 3 箇所で判定を揃える（実装は音の判定で 1 度だけ立てて共有する）。降格として扱うと警報の発表中に全解除を読み上げる） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §10「等級を伝えていない電文」 |
-| 読み上げた観測点の記憶を画面用と分けること（画面用＝受信時に進める／読み上げ用＝**声に出す瞬間**に進める。共有すると、待たされて鳴らなかった観測値が既読になり二度と読まれない。リセット・リプレイ復元では両方を揃えて扱う。**既読にするのは実際に読んだ分だけ**＝件数上限で落ちた観測点と、等級の発表に同梱された実測値（読むのは区域の予想波高）は含めない） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §10「読み上げた観測点の記憶は画面用と分ける」 |
+| 読み上げた観測点の記憶を画面用と分けること（画面用＝受信時に進める／読み上げ用＝**声に出す瞬間**に進める。共有すると、鳴らなかった観測値が既読になり二度と読まれない。**既読にするのは実際に読んだ分だけ**＝件数上限で落ちた観測点と、等級の発表に同梱された実測値は含めない） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §10「読み上げた観測点の記憶は画面用と分ける」 |
+| 津波の解除で観測点の記憶を落とす条件（**表示中の津波に向けた解除のときだけ**落とす・判定は `isCancelForCurrentTsunami` に集約しカードの状態更新と共有する・落とすのは記憶と画面の状態だけで**音と読み上げは判定を経ない**・リセットとリプレイ復元でも同じ範囲を揃える） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §5「解除電文と表示中の津波の照合」 |
 | EEW P/S 波予報円の計算・仮定震源要素の連動箇所 | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §5-§6 |
 | EEW レベル判定（特別警報の条件・長周期の DMDATA 限定） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
 | 地図レイヤー描画順・EEW 予想レイヤーの kyoshin 限定・`maplibregl.Marker` の opacity | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §2・§3・§7・§10 |

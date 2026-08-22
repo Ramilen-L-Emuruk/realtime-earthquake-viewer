@@ -4,6 +4,7 @@ import {
   tsunamiOverallGrade,
   isTsunamiNewFire,
   isTsunamiGradeUpgrade,
+  isCancelForCurrentTsunami,
   matchesArea,
   groupAreasForCardDisplay,
   sortAreasForCardDisplay,
@@ -114,6 +115,54 @@ describe('isTsunamiNewFire', () => {
     const current = makeTsunami({})
     const next = makeTsunami({})
     expect(isTsunamiNewFire(next, current)).toBe(false)
+  })
+})
+
+// 津波は 1 件スロットで持つため、別イベントの遅延到達した解除で進行中の津波を消してはいけない。
+// カードの状態更新（`useEarthquakes`）と、読み上げ・画面の記憶を落とす判断（`useLiveEventHandler`）
+// の両方がこの関数を使う。
+describe('isCancelForCurrentTsunami', () => {
+  it('表示中の津波が無ければ受け入れる', () => {
+    expect(isCancelForCurrentTsunami(makeTsunami({ cancelled: true }), undefined)).toBe(true)
+  })
+
+  it('eventId が一致すれば受け入れる', () => {
+    const current = makeTsunami({ eventId: 'evt-1' })
+    const cancel = makeTsunami({ eventId: 'evt-1', cancelled: true, time: '2026-01-01T12:30:00Z' })
+    expect(isCancelForCurrentTsunami(cancel, current)).toBe(true)
+  })
+
+  it('eventId が違えば別イベントの解除として弾く', () => {
+    const current = makeTsunami({ eventId: 'evt-2' })
+    const cancel = makeTsunami({ eventId: 'evt-1', cancelled: true, time: '2026-01-01T12:30:00Z' })
+    expect(isCancelForCurrentTsunami(cancel, current)).toBe(false)
+  })
+
+  // eventId を持たない経路（P2PQuake の 552）は同一イベントか判定できないので時刻で見る。
+  it('eventId が無いときは、表示中より古い解除を弾く', () => {
+    const current = makeTsunami({ time: '2026-01-01T12:10:00Z' })
+    const cancel = makeTsunami({ cancelled: true, time: '2026-01-01T12:00:00Z' })
+    expect(isCancelForCurrentTsunami(cancel, current)).toBe(false)
+  })
+
+  it('eventId が無くても、表示中より新しい解除は受け入れる', () => {
+    const current = makeTsunami({ time: '2026-01-01T12:00:00Z' })
+    const cancel = makeTsunami({ cancelled: true, time: '2026-01-01T12:10:00Z' })
+    expect(isCancelForCurrentTsunami(cancel, current)).toBe(true)
+  })
+
+  // 安全弁。判定できないときは受け入れる（解除を落とす方が害が大きい）。
+  it('時刻が読めないときは受け入れる', () => {
+    const current = makeTsunami({ time: 'invalid' })
+    const cancel = makeTsunami({ cancelled: true, time: 'invalid' })
+    expect(isCancelForCurrentTsunami(cancel, current)).toBe(true)
+  })
+
+  // 片側にしか eventId が無い場合も「判定できない」側に落ちる（時刻で見る）。
+  it('片側にしか eventId が無ければ時刻で判断する', () => {
+    const current = makeTsunami({ eventId: 'evt-1', time: '2026-01-01T12:10:00Z' })
+    const cancel = makeTsunami({ cancelled: true, time: '2026-01-01T12:00:00Z' })
+    expect(isCancelForCurrentTsunami(cancel, current)).toBe(false)
   })
 })
 
