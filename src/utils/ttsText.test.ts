@@ -1065,4 +1065,84 @@ describe('earthquakeToText: 座標テーブルが無いときの地域名', () =
     expect(text).not.toContain('最大震度を観測しました')
     expect(text).toBe('震度速報。')
   })
+
+  // 観測点が座標テーブルで解決できない状態は、その地震の続報でも続く。差分の経路に保険が
+  // 無いと、初報の 1 回しか震度を伝えられない（震源要素だけで「何か伝えた」と見なされ、
+  // 以降は区域も差分も空のまま黙る）。
+  describe('続報でも地域名を作れないとき', () => {
+    const unresolved = (scale: number): EarthquakePoint[] =>
+      [{ pref: '', addr: '座標テーブルに無い観測点', isArea: false, scale: scale as IntensityScale }]
+
+    /** 初報を読ませて既読状態を作る。 */
+    function speakFirst(state: QuakeSpokenState, scale: number): string {
+      const segs = earthquakeToSegments(
+        makeLocalQuake('各地の震度情報', scale as IntensityScale, unresolved(scale)), TTS_OPTS, true, state)
+      applySpokenRefs(state, segs.flatMap(s => s.refs))
+      return joinSegments(segs)
+    }
+
+    it('正: 震度が上がれば続報でも伝える', () => {
+      const state = createQuakeSpokenState()
+      expect(speakFirst(state, 40)).toContain('最大震度4を観測しました。')
+
+      // 45 = 震度5弱（50 は 5 強）。→ src/utils/intensity.ts
+      const segs = earthquakeToSegments(
+        makeLocalQuake('各地の震度情報', 45 as IntensityScale, unresolved(45)), TTS_OPTS, false, state)
+      expect(joinSegments(segs)).toContain('最大震度5弱を観測しました。')
+    })
+
+    it('対照: 震度が同じなら続報では言い直さない', () => {
+      const state = createQuakeSpokenState()
+      speakFirst(state, 40)
+
+      const segs = earthquakeToSegments(
+        makeLocalQuake('各地の震度情報', 40 as IntensityScale, unresolved(40)), TTS_OPTS, false, state)
+      expect(segs).toEqual([])
+    })
+
+    // 震度が下がった続報も伝える。区域側（isUnspokenRegion）は上がったときしか読み直さないが、
+    // 地域名を引けない地震ではこれが震度を伝える唯一の経路なので、下方修正も落とさない。
+    it('正: 震度が下がっても続報で伝える（区域側とは非対称）', () => {
+      const state = createQuakeSpokenState()
+      speakFirst(state, 40)
+
+      const segs = earthquakeToSegments(
+        makeLocalQuake('各地の震度情報', 30 as IntensityScale, unresolved(30)), TTS_OPTS, false, state)
+      expect(joinSegments(segs)).toContain('最大震度3を観測しました。')
+    })
+
+    // 震度速報の分岐にも同じ条件を置いてある。地震情報側のテストでは通らない経路なので別に固定する。
+    it('正・対照: 震度速報でも同じ扱いをする', () => {
+      const state = createQuakeSpokenState()
+      const first = earthquakeToSegments(
+        makeLocalQuake('震度速報', 40 as IntensityScale, unresolved(40)), TTS_OPTS, true, state)
+      applySpokenRefs(state, first.flatMap(s => s.refs))
+      expect(joinSegments(first)).toBe('震度速報。最大震度4を観測しました。')
+
+      const same = earthquakeToSegments(
+        makeLocalQuake('震度速報', 40 as IntensityScale, unresolved(40)), TTS_OPTS, false, state)
+      expect(same).toEqual([])
+
+      const raised = earthquakeToSegments(
+        makeLocalQuake('震度速報', 45 as IntensityScale, unresolved(45)), TTS_OPTS, false, state)
+      expect(joinSegments(raised)).toBe('震度速報が更新されました。最大震度5弱を観測しました。')
+    })
+
+    it('安全弁: 地域名を読めた地震では代替を使わない（差分の経路を壊さない）', () => {
+      const state = createQuakeSpokenState()
+      // 区域の点を持つ電文なら座標テーブルが無くても地域名を作れる。
+      const points: EarthquakePoint[] = [{ pref: '', addr: '宮城県北部', isArea: true, scale: 40 as IntensityScale }]
+      const first = earthquakeToSegments(
+        makeLocalQuake('各地の震度情報', 40 as IntensityScale, points), TTS_OPTS, true, state)
+      applySpokenRefs(state, first.flatMap(s => s.refs))
+
+      expect(joinSegments(first)).toContain('最大震度4を宮城県北部で観測しました。')
+      // 代替は記録に残らない。残ると、後で地域名が作れなくなったときに「既に伝えた」と誤判定する。
+      expect(state.facts.has('maxScaleOnly')).toBe(false)
+      // 同じ内容の続報は差分が無いので黙る（従来どおり）。
+      const second = earthquakeToSegments(
+        makeLocalQuake('各地の震度情報', 40 as IntensityScale, points), TTS_OPTS, false, state)
+      expect(second).toEqual([])
+    })
+  })
 })

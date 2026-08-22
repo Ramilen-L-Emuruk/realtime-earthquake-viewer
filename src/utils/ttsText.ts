@@ -393,6 +393,20 @@ function maxScaleOnlySentence(maxScale: IntensityScale): string {
   return label ? `最大震度${label}を観測しました。` : ''
 }
 
+/**
+ * 上の一文を断片にしたもの。**伝えたことを `maxScaleOnly` として覚える**ので、続報で
+ * 地域名が作れないままでも、同じ震度なら言い直さず、震度が変わったときだけ読み直す。
+ *
+ * `spoken` を渡さない経路（全文を組み立てる `earthquakeToText`）では既読を見ずに必ず返す。
+ */
+function maxScaleOnlySegments(maxScale: IntensityScale, spoken?: QuakeSpokenState): SpeechSegment[] {
+  const sentence = maxScaleOnlySentence(maxScale)
+  if (!sentence) return []
+  const value = String(maxScale)
+  if (spoken?.facts.get('maxScaleOnly') === value) return []
+  return [{ text: sentence, refs: [{ kind: 'quakeFact', fact: 'maxScaleOnly', value }] }]
+}
+
 function formatTime(isoTime: string): string {
   const d = new Date(isoTime)
   // 分をゼロ埋めすると VOICEVOX が「06分」を「ぜろろくふん」と桁読みしてしまうため、
@@ -607,7 +621,13 @@ function tellableHypocenterFacts(hypocenter: Hypocenter): Set<QuakeFact> {
   return facts
 }
 
-/** 上に津波区分を足した、この電文が声にしうる事実の全体。 */
+/**
+ * 上に津波区分を足した、この電文が声にしうる事実の全体。
+ *
+ * **`maxScaleOnly` はここに載せない。** これは「地域名を作れなかったときの代替」であって
+ * 電文が普通に伝える事実ではない。載せると `hasUnspokenFact` が常に真を返し、地域名を作れる
+ * 正常な地震でも差分の経路に入らなくなる（毎報が全文になる）。
+ */
 function tellableFacts(event: JMAQuake): Set<QuakeFact> {
   const facts = tellableHypocenterFacts(event.earthquake.hypocenter)
   if (domesticTsunamiText(event.earthquake.domesticTsunami)) facts.add('domesticTsunami')
@@ -691,11 +711,16 @@ export function earthquakeToSegments(
     const prefix = isNew ? '震度速報。' : '震度速報が更新されました。'
     const regionSegs = buildRegionSegments(event.points, maxScale, opts, hypocenter, spoken)
     if (regionSegs.length > 0) return [plain(prefix), ...regionSegs]
-    // 区域を挙げられないとき（差分なし・区域を持たない異常な電文）。まだ何も伝えていなければ
-    // 最大震度だけでも伝え、そうでなければ黙る。震度も判らなければ名乗るだけに留める
-    // （`maxScaleOnlySentence` が空を返す。震度の値が欠けた文を作らないため）。
-    if (saidSomething) return []
-    return [plain(`${prefix}${maxScaleOnlySentence(maxScale)}`)]
+    // 区域を挙げられないとき（差分なし・区域を持たない異常な電文）は最大震度だけでも伝える。
+    // **区域を一度も読めていない地震に限る**（判定は下の地震情報の経路と揃える。揃えないと
+    // 区域を読めている地震の据え置きの続報でも最大震度を言い直す）。
+    // 同じ震度を既に伝えていれば `maxScaleOnlySegments` が空を返す。震度も判らないときも空になるが、
+    // 初報なら名乗りだけは返す（「震度速報。」で終わる。震度の値が欠けた文は作らない）。
+    const fallback = spoken == null || spoken.regions.size === 0
+      ? maxScaleOnlySegments(maxScale, spoken)
+      : []
+    if (fallback.length === 0 && saidSomething) return []
+    return [plain(prefix), ...fallback]
   }
 
   const time = formatTime(event.earthquake.time)
@@ -752,8 +777,17 @@ export function earthquakeToSegments(
     const regionSegs = isEpicenterOnly
       ? []
       : buildRegionSegments(event.points, maxScale, opts, hypocenter, spoken)
-    if (facts.length === 0 && regionSegs.length === 0) return []
-    return [plain(`${label}が更新されました。`), ...facts, ...regionSegs]
+    // 地域名を作れないまま続報が来ても震度は伝える。ここに保険が無いと、観測点が座標テーブルで
+    // 解決できない状態が続く地震で、初報の 1 回しか震度を伝えられない（以降はこの経路に入り、
+    // 区域も差分も空のまま黙る）。
+    // **区域を一度も読めていない地震に限る**（`spoken.regions` が空）。`regionSegs` が空かどうかで
+    // 判定すると、区域を読めている地震の据え置きの続報でも最大震度を言い直す。
+    // 同じ震度を既に伝えていれば `maxScaleOnlySegments` が空を返す。
+    const fallback = !isEpicenterOnly && regionSegs.length === 0 && spoken.regions.size === 0
+      ? maxScaleOnlySegments(maxScale, spoken)
+      : []
+    if (facts.length === 0 && regionSegs.length === 0 && fallback.length === 0) return []
+    return [plain(`${label}が更新されました。`), ...facts, ...regionSegs, ...fallback]
   }
 
   const prefix = isNew ? `${label}。` : `${label}が更新されました。`
@@ -764,13 +798,12 @@ export function earthquakeToSegments(
   ]
   if (!isEpicenterOnly) {
     const regionSegs = buildRegionSegments(event.points, maxScale, opts, hypocenter, spoken)
+    // 地域名を作れなかった場合も、震度が判っていれば最大震度だけは伝える（震度速報と同じ扱い）。
+    // 揃えないと、この電文だけ震度に一切触れずに終わる。
+    // ここも区域を一度も読めていない地震に限る。上の差分の経路と判定を揃えないと、震源要素だけが
+    // 変わった続報（区域は据え置き）で最大震度を言い直す。
     if (regionSegs.length > 0) segments.push(...regionSegs)
-    else if (!saidSomething) {
-      // 地域名を作れなかった場合も、震度が判っていれば最大震度だけは伝える（震度速報と同じ扱い）。
-      // 揃えないと、この電文だけ震度に一切触れずに終わる。既に何か伝えている続報では言い直さない。
-      const only = maxScaleOnlySentence(maxScale)
-      if (only) segments.push(plain(only))
-    }
+    else if (!spoken || spoken.regions.size === 0) segments.push(...maxScaleOnlySegments(maxScale, spoken))
   }
   return segments
 }
