@@ -797,6 +797,9 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
         const hObj = obj(mh.height)
         const heightVal = parseFloat(str(hObj.value))
         const over = hObj.over === true
+        // 数値が読めないと height ごと落ちるため、over（観測可能範囲の超過）の情報も一緒に消える。
+        // 表示・並び順・読み上げのどこにも痕跡が残らないので、記録だけは残す。
+        if (isNaN(heightVal) && over) log.warn(`[tsunami] 「以上」の観測値だが波高が数値として読めません: ${name}`)
         observations.push({
           name,
           height: !isNaN(heightVal)
@@ -832,6 +835,9 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
         const hObj = obj(mh.height)
         const heightVal = parseFloat(str(hObj.value))
         const over = hObj.over === true
+        // 数値が読めないと height ごと落ちるため、over（観測可能範囲の超過）の情報も一緒に消える。
+        // 表示・並び順・読み上げのどこにも痕跡が残らないので、記録だけは残す。
+        if (isNaN(heightVal) && over) log.warn(`[tsunami] 「以上」の観測値だが波高が数値として読めません: ${name}`)
         observations.push({
           name,
           height: !isNaN(heightVal)
