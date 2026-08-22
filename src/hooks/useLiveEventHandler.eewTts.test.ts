@@ -53,6 +53,8 @@ vi.mock('../utils/voicevox', async (importOriginal) => ({
   speakWithVoicevox: (...args: unknown[]) => speakMock(...(args as [])),
   // 先行合成は「使えなかった」扱いにして、本再生側で合成し直す経路を通す
   prewarmVoicevox: () => null,
+  // 鳴ったチャンクの判定に使う（このモックはチャンクの通知を出さないので常に null で足りる）
+  getSpeechClock: () => null,
   stopSpeech: () => releaseCurrentSpeech(),
 }))
 vi.mock('../utils/alertSound', () => ({ playAlertSound: vi.fn() }))

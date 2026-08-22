@@ -20,15 +20,34 @@
 import { log } from './logger'
 
 /**
- * 読み上げの語が指す対象。カードの行を引くためのキー。
+ * 読み上げの語が指す対象。
+ *
+ * 用途は 2 つあり、**どの対象がどちらに使われるかは決まっている**。
+ *
+ * | 種別 | 用途 |
+ * |---|---|
+ * | `grade` / `area` / `station` | 津波カードの行を引く（追従スクロール） |
+ * | `quakeRegion` / `quakeFact` | 地震情報で「実際に声になった内容」を記録する（続報の差分） |
  *
  * `grade` は等級のカードそのもの（「大津波警報」「津波警報」の見出し）を指す。等級を言った
  * 時点でそのカードの頭に合わせられるようにするためで、区域名を読み始める前に画面が整う。
+ *
+ * 地震側の 2 つは画面を動かさない。**追従を始めるかどうかの判定には
+ * {@link hasFollowTarget} を使うこと**（`refs` が空でないことで判定すると、地震情報の
+ * 読み上げが津波カードの追従を起動する）。
  */
 export type SpeechRef =
   | { kind: 'grade'; grade: string }
   | { kind: 'area'; code?: string; name: string }
   | { kind: 'station'; name: string }
+  | { kind: 'quakeRegion'; name: string; scale: number }
+  | { kind: 'quakeFact'; fact: QuakeFact; value: string }
+
+/**
+ * 地震情報が伝える「震度の地域以外の事実」。続報で変化したものだけを読むための単位。
+ * 値そのものではなく何についての事実かを表すので、`magnitude` は 7.4 でも 7.6 でも同じキー。
+ */
+export type QuakeFact = 'hypocenterName' | 'magnitude' | 'depth' | 'domesticTsunami'
 
 /**
  * 読み上げ文の断片と、その断片が指す対象。
@@ -58,7 +77,23 @@ function sameRef(a: SpeechRef, b: SpeechRef): boolean {
     return a.name === b.name
   }
   if (a.kind === 'station' && b.kind === 'station') return a.name === b.name
+  // 地震の区域は震度も含めて比べる。同じ区域を別の階級で挙げることは 1 つの文の中では
+  // 起きないが、名前だけで同一とみなすと将来そうなったときに階級の低い側へ丸められる。
+  if (a.kind === 'quakeRegion' && b.kind === 'quakeRegion') return a.name === b.name && a.scale === b.scale
+  if (a.kind === 'quakeFact' && b.kind === 'quakeFact') return a.fact === b.fact && a.value === b.value
   return false
+}
+
+/**
+ * 追従（カードのスクロール）の対象になる参照を含むか。
+ *
+ * 対象は津波カードの行を引ける 3 種だけ。地震情報の参照（`quakeRegion` / `quakeFact`）は
+ * 「声になったか」の記録用で、引き当てるカードを持たない。**`refs.length > 0` で判定しては
+ * いけない**——地震情報の読み上げが津波カードの追従セッションを起こし、区域名が偶然一致した
+ * 行を掴んで画面を動かす。
+ */
+export function hasFollowTarget(segments: readonly SpeechSegment[] | undefined): boolean {
+  return segments?.some(s => s.refs.some(r => r.kind === 'grade' || r.kind === 'area' || r.kind === 'station')) ?? false
 }
 
 /**
@@ -117,6 +152,38 @@ export function mapChunksToRefs(
     result.push(stations.length > 0 ? stations : areas.length > 0 ? areas : refs)
   }
   return result
+}
+
+/**
+ * 予約したチャンクのうち、**実際に声になった**ものの添字を返す。
+ *
+ * 読み上げは割り込まれる（`speakWithVoicevox` は入口で既存の再生を止める）。合成は再生より
+ * 先へ進むので、**予約が通ったことは鳴ったことを意味しない** ―― 長い文では全チャンクの予約が
+ * 済んだ数秒後まで音は序盤を鳴らしている。予約時刻（`startAt`）を読み上げ終了時点の時計と
+ * 比べることで、どこまで音になったかが分かる。
+ *
+ * **鳴り始めた最後のチャンクは数えない**（完走した場合を除く）。そのチャンクは途中で切られた
+ * 可能性があり、区域名を言い終えたか判らない。数えないことの代償は「次の続報で 1 地域を
+ * 読み直す」だけで、逆に数えてしまうと**その地域は二度と読まれない**。
+ *
+ * @param scheduled 予約の通知（`ChunkScheduledListener`）で受け取った添字と開始時刻
+ * @param chunkCount チャンクの総数。最後まで鳴ったかの判定に使う
+ * @param clock 読み上げが終わった時点の再生時計（`getSpeechClock`）。null なら何も鳴っていない
+ */
+export function spokenChunkIndices(
+  scheduled: readonly { index: number; startAt: number }[],
+  chunkCount: number,
+  clock: number | null,
+): number[] {
+  // 時計が無い＝AudioContext が作られていない（合成が全滅した・VOICEVOX 未起動）。
+  if (clock === null) return []
+  const started = scheduled.filter(s => s.startAt <= clock).map(s => s.index)
+  if (started.length === 0) return []
+  const last = Math.max(...started)
+  // 最後のチャンクが鳴り始めていれば完走とみなす（読み上げの完了は最終チャンクの再生終了で
+  // 解決するため）。それ以外は、鳴り始めた最後の 1 つを落とす。
+  if (last === chunkCount - 1) return started
+  return started.filter(i => i !== last)
 }
 
 /**

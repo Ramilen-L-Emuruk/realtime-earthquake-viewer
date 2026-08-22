@@ -65,10 +65,17 @@ interface Props {
  */
 const SPEECH_FOLLOW_GRACE_MS = 20000
 
-/** 追従用の行の登録キー。区域は code を優先し、無ければ名前で引く（`matchesArea` と同じ順序）。 */
+/**
+ * 追従用の行の登録キー。区域は code を優先し、無ければ名前で引く（`matchesArea` と同じ順序）。
+ *
+ * 津波カードの行を指さない参照（地震情報の `quakeRegion` / `quakeFact`）は空を返す。
+ * ここへ来ることは無い（`hasFollowTarget` が地震情報の読み上げで追従を始めさせない）が、
+ * 引き当てられない参照を無理に区域名として扱うと、名前が偶然一致した行を掴む。
+ */
 function speechRowKeys(ref: SpeechRef): string[] {
   if (ref.kind === 'grade') return [`grade:${ref.grade}`]
   if (ref.kind === 'station') return [`station:${ref.name}`]
+  if (ref.kind !== 'area') return []
   return ref.code ? [`area:code:${ref.code}`, `area:name:${ref.name}`] : [`area:name:${ref.name}`]
 }
 
