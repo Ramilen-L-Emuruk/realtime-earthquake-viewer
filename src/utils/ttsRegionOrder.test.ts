@@ -1,4 +1,6 @@
-// 読み上げの地域名の並び順（気象庁の標準順＝北から南・県ごとにまとまる）のテスト。
+// 読み上げの地域名を「どの粒度で挙げるか」と「どの順に並べるか」のテスト。
+// 並び順は気象庁の標準順（北から南・県ごとにまとまる）。粒度は一次細分区域で、電文が区域を
+// 持たない経路では観測点から逆引きする。
 //
 // ttsText.ts の並べ替えは station-coords.json のキャッシュが埋まってはじめて効くため、
 // 実配信データを fetch スタブ経由で読み込ませてから検証する（テスト専用の小さな
@@ -64,6 +66,19 @@ afterAll(() => {
 function area(addr: string, scale: number): EarthquakePoint {
   // pref を空にして、区域名から県を逆引きする実運用の経路（DMDATA JSON 電文）を通す。
   return { pref: '', addr, isArea: true, scale: scale as IntensityScale }
+}
+
+/**
+ * 観測点の点。pref は経路によって入り方が違う（P2PQuake は非空・DMDATA は空）ため引数で受ける。
+ * → docs/spec/quake-spec.md §4
+ */
+function station(pref: string, addr: string, scale: number): EarthquakePoint {
+  return { pref, addr, isArea: false, scale: scale as IntensityScale }
+}
+
+/** 都道府県ロールアップ点（DMDATA JSON 経路の prefectures[] 由来）。→ docs/spec/quake-spec.md §4 */
+function prefRollup(pref: string, scale: number): EarthquakePoint {
+  return { pref, addr: pref, isArea: true, scale: scale as IntensityScale }
 }
 
 /** 震源を指定した震度速報を作る。 */
@@ -208,5 +223,117 @@ describe('長周期地震動の地域列挙', () => {
   it('震度側と同じ標準順で読む', () => {
     const text = lpgmToText(makeLpgm(['神奈川県東部', '東京都２３区', '岩手県内陸南部']), OPTS, true)
     expect(text).toContain('階級3を岩手県内陸南部、東京都２３区、神奈川県東部で観測しました。')
+  })
+})
+
+// P2PQuake の詳細報は区域の点を持たず観測点だけで届く（→ docs/spec/quake-spec.md §4）。
+// 観測点の所属区域を座標テーブルから逆引きし、区域粒度で読む。
+describe('震度の地域列挙: 観測点しか持たない電文（P2PQuake の詳細報）', () => {
+  // 期待値は実データの観測点の帰属に依存する。観測点の改廃で帰属が変わると実装が正しくても
+  // 期待値が外れるため、前提そのものを先に検証しておく（上の「実データの区域構成」と同じ趣旨）。
+  it('前提: テストで使う観測点の所属区域', () => {
+    const data = JSON.parse(readFileSync('public/data/station-coords.json', 'utf8')) as {
+      stations: Record<string, [number, number, number?]>
+      regionNames: string[]
+    }
+    const regionOf = (key: string) => {
+      const idx = data.stations[key]?.[2]
+      return idx == null ? null : data.regionNames[idx]
+    }
+    expect(regionOf('新潟県|糸魚川市一の宮')).toBe('新潟県上越')
+    expect(regionOf('新潟県|長岡市幸町')).toBe('新潟県中越')
+    expect(regionOf('埼玉県|熊谷市桜町')).toBe('埼玉県北部')
+    expect(regionOf('埼玉県|さいたま北区宮原')).toBe('埼玉県南部')
+    expect(regionOf('埼玉県|秩父市上町')).toBe('埼玉県秩父')
+    expect(regionOf('新潟県|存在しない観測点')).toBeNull()
+  })
+
+  it('観測点の所属区域を読む（都道府県名で潰さない）', () => {
+    // 新潟県は 4 区域なので、2 区域だけでは県名への集約は起きない。
+    const quake = makeQuake(
+      [station('新潟県', '糸魚川市一の宮', 40), station('新潟県', '長岡市幸町', 40)],
+      SOUTH_HYPO,
+    )
+    const text = earthquakeToText(quake, OPTS, true)
+    expect(text).toContain('最大震度4を新潟県上越、新潟県中越で観測しました。')
+  })
+
+  it('県内全区域に観測点があれば県名にまとめる', () => {
+    const quake = makeQuake(
+      [
+        station('埼玉県', '熊谷市桜町', 40),
+        station('埼玉県', 'さいたま北区宮原', 40),
+        station('埼玉県', '秩父市上町', 40),
+      ],
+      SOUTH_HYPO,
+    )
+    const text = earthquakeToText(quake, OPTS, true)
+    expect(text).toContain('最大震度4を埼玉県で観測しました。')
+  })
+
+  it('pref が空の観測点でも区域を引ける（DMDATA の XML 経路）', () => {
+    const quake = makeQuake(
+      [station('', '糸魚川市一の宮', 40), station('', '長岡市幸町', 40)],
+      SOUTH_HYPO,
+    )
+    const text = earthquakeToText(quake, OPTS, true)
+    expect(text).toContain('最大震度4を新潟県上越、新潟県中越で観測しました。')
+  })
+
+  it('区域の点がある電文では観測点から逆引きしない', () => {
+    // 区域と観測点が両方来る経路（DMDATA の詳細報）。区域は電文自身が示した粒度なので、
+    // 観測点からの逆引きより優先する。ここで両方を混ぜると同じ県が二重に並ぶ。
+    const quake = makeQuake(
+      [area('新潟県上越', 40), station('新潟県', '長岡市幸町', 40)],
+      SOUTH_HYPO,
+    )
+    const text = earthquakeToText(quake, OPTS, true)
+    expect(text).toContain('最大震度4を新潟県上越で観測しました。')
+  })
+
+  it('座標テーブルに無い観測点は都道府県名で読む', () => {
+    const quake = makeQuake([station('新潟県', '存在しない観測点', 40)], SOUTH_HYPO)
+    const text = earthquakeToText(quake, OPTS, true)
+    expect(text).toContain('最大震度4を新潟県で観測しました。')
+  })
+
+  // 安全弁: 都道府県が判っているときは県付きの鍵だけで引き、観測点名単独の鍵へは落とさない。
+  // 落とすと別の県の同名観測点にヒットして、地図が塗る区域と読み上げが食い違う。
+  it('都道府県が判っているとき、その県に無い観測点は他県の区域に解決しない', () => {
+    // 「糸魚川市一の宮」は新潟県の観測点。岩手県として届けば県付きの鍵は引けないので、
+    // 単独の鍵へ落ちれば「新潟県上越」、落ちなければ県名の「岩手県」になる。
+    const quake = makeQuake([station('岩手県', '糸魚川市一の宮', 40)], SOUTH_HYPO)
+    const text = earthquakeToText(quake, OPTS, true)
+    expect(text).toContain('最大震度4を岩手県で観測しました。')
+    expect(text).not.toContain('上越')
+  })
+
+  it('同じ県に区域を引けた点と引けない点が混ざっても県名を重ねない', () => {
+    const quake = makeQuake(
+      [station('新潟県', '糸魚川市一の宮', 40), station('新潟県', '存在しない観測点', 40)],
+      SOUTH_HYPO,
+    )
+    const text = earthquakeToText(quake, OPTS, true)
+    expect(text).toContain('最大震度4を新潟県上越で観測しました。')
+  })
+
+  // 安全弁: 観測点が取れた時点で打ち切ると、観測点を持たない県が黙って消える。
+  // DMDATA の JSON 経路は区域・観測点・都道府県ロールアップ点の 3 種が同じ電文で届く。
+  it('観測点を持たない県は都道府県ロールアップ点から拾う', () => {
+    const quake = makeQuake(
+      [station('新潟県', '糸魚川市一の宮', 40), prefRollup('岩手県', 40)],
+      SOUTH_HYPO,
+    )
+    const text = earthquakeToText(quake, OPTS, true)
+    expect(text).toContain('最大震度4を岩手県、新潟県上越で観測しました。')
+  })
+
+  it('観測点で区域が取れた県のロールアップ点は重ねない', () => {
+    const quake = makeQuake(
+      [station('新潟県', '糸魚川市一の宮', 40), prefRollup('新潟県', 40)],
+      SOUTH_HYPO,
+    )
+    const text = earthquakeToText(quake, OPTS, true)
+    expect(text).toContain('最大震度4を新潟県上越で観測しました。')
   })
 })

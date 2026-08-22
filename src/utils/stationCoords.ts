@@ -5,6 +5,7 @@
 // scripts/build-station-coords.mjs で生成・更新する。
 
 import { fetchJsonWithTimeout } from './fetchJson'
+import { log } from './logger'
 
 export type LatLng = [number, number]
 
@@ -76,6 +77,12 @@ export function loadStationCoords(): Promise<StationCoordsData> {
           Object.keys(data.areas).length === 0
         ) {
           throw new Error('station-coords fetch returned no data (empty or malformed)')
+        }
+        // 区域の一覧を持たない旧形式でも地図の震度点は描けるので、失敗にはしない。ただし
+        // 観測点から一次細分区域を引けなくなり、読み上げの地域名が都道府県粒度へ静かに戻る。
+        // 配信を更新した直後、PWA が古いデータをキャッシュしたまま新しいバンドルを動かすと起きうる。
+        if (!data.regionNames?.length) {
+          log.warn('[stationCoords] 区域の一覧が無い（旧形式の station-coords.json）。読み上げの地域名は都道府県粒度になる')
         }
         cache = data
         for (const fn of waiters) fn(data)
