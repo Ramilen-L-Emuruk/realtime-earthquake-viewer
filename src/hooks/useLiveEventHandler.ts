@@ -179,6 +179,17 @@ const MUTUAL_YIELD_SPEECH_MAX_WAIT_MS = 180000
 // 短く眠って作り直す（`EEW_PHASE2_MAX_WAIT_MS` の 3 秒に対して十分細かい刻み）。
 const EEW_PHASE2_PENDING_POLL_MS = 500
 
+/**
+ * 震源も震度も伴う「確定情報」か。
+ *
+ * 震度速報（VXSE51）は区域だけの速報で、震源・規模を伴わない。これらの種別が届いて初めて、
+ * その地震の観測が確定した形で揃う。**その地震で最初に届いた 1 通だけ**、地域を差分にせず
+ * 通しで読む（`earthquakeToSegments` の `readAllRegions`）。
+ */
+function isAuthoritativeQuakeReport(q: JMAQuake): boolean {
+  return q.issue.type === '震源・震度情報' || q.issue.type === '各地の震度情報'
+}
+
 // 「この報は既に見た」の記憶を保つ件数の上限（超えたらまとめて捨てる）。1 地震で覚えるのは
 // 種別の数（震度速報・震源情報・各地の震度・遠地地震・震源要素更新）だけなので、この深さは
 // 数十件の地震ぶんに相当する。長期セッションで無制限に増えるのを防ぐためだけの歯止め。
@@ -411,6 +422,15 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // **情報種別を跨いで共有する**（震度速報で読んだ区域を震源・震度情報で読み直さない）ので、
   // キーには種別を含めない（`seenQuakeReportKeysRef` のキーとは別物）。
   const spokenQuakeStatesRef = useRef<Map<string, QuakeSpokenState>>(new Map())
+  /**
+   * 確定情報を通しで読んだ地震（`eventKey`）。2 通目以降は差分に戻すために持つ。
+   *
+   * **記録するのは読み上げ文を組んだ時点**で、`spokenQuakeStatesRef`（声になった分だけ）とは
+   * 基準が違う。通しで読んだ分が割り込みで鳴らなかった場合、その区域は既読にならないので
+   * 次の報が差分として読み直す ―― 情報は落ちないため、ここは受信時の記録で足りる。
+   * 上限と捨て方は `spokenQuakeStatesRef` に合わせる（同じ地震の記憶なので歩調を揃える）。
+   */
+  const authoritativeReadQuakesRef = useRef<Set<string>>(new Set())
   // EEW の eventId ごとにレベルを追跡（複数EEW対応）
   // key = issue.eventId ?? id、value = 0=低震度予報 / 1=警報（severity=Warning または予想震度5弱以上） / 2=特別警報
   const activeEEWLevelsRef = useRef<Map<string, 0 | 1 | 2>>(new Map())
@@ -1830,7 +1850,18 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // その更新は読み上げの完了時（下の `onSpokenRefs`）に行う。受信時に更新すると、
         // 割り込みで鳴らなかった地域が既読になり、二度と読まれない。
         quakeSpokenState = quakeSpokenStateFor(spokenQuakeStatesRef.current, quakeSpeechTopic)
-        ttsSegments = earthquakeToSegments(event, ttsRegionOptions(settings), isNewQuake, quakeSpokenState)
+        // **その地震で最初の確定情報だけは地域を通しで読む。** 速報を細切れに聞いた耳へ、
+        // 確定した観測を 1 度だけまとめて示すため（理由は `earthquakeToSegments` の引数）。
+        const readAllRegions = isAuthoritativeQuakeReport(event)
+          && !authoritativeReadQuakesRef.current.has(quakeSpeechTopic)
+        if (readAllRegions) {
+          if (authoritativeReadQuakesRef.current.size >= SPOKEN_QUAKE_STATES_MAX) {
+            log.debug(`[quake] 確定情報の通し読みの記憶が上限に達したため捨てた (${authoritativeReadQuakesRef.current.size} 件)`)
+            authoritativeReadQuakesRef.current.clear()
+          }
+          authoritativeReadQuakesRef.current.add(quakeSpeechTopic)
+        }
+        ttsSegments = earthquakeToSegments(event, ttsRegionOptions(settings), isNewQuake, quakeSpokenState, readAllRegions)
         ttsText = joinSegments(ttsSegments)
       } else if (event.kind === 'tsunami') {
         const GRADE_RANK = { MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0 } as const
@@ -1924,9 +1955,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         log.info('[tab] tsunami を要求 (新規発報・読み上げ文なし)')
         setActiveTabNonRealtime('tsunami')
       } else if (event.kind === 'quake' && !event.cancelled) {
-        // 差分が空だった地震の続報（変化なし）。**読み上げに任せていたタブ移動を引き取る。**
+        // **現状は到達しない。** 地震情報は変化が無い続報でも名乗りだけは読むため、読み上げ文が
+        // 空にならない（`earthquakeToSegments`）。タブ移動は読み上げ追従が担う。
+        // 残してあるのは、将来 `earthquakeToSegments` が空を返すようになったときの受け皿として。
         // 落とすと earthquake タブへ永久に移らない（カードと地図だけが更新される）。
-        log.info('[tab] earthquake を要求 (続報に変化なし・読み上げなし)')
+        log.info('[tab] earthquake を要求 (読み上げ文なし)')
         setActiveTabNonRealtime('earthquake')
       }
     }
@@ -2033,6 +2066,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const resetTracking = useCallback(() => {
     seenQuakeReportKeysRef.current.clear()
     spokenQuakeStatesRef.current.clear()
+    authoritativeReadQuakesRef.current.clear()
     activeEEWLevelsRef.current.clear()
     spokenEEWScalesRef.current.clear()
     spokenEEWLpgmClassesRef.current.clear()
