@@ -442,7 +442,7 @@ ratio=4 / attack=3ms / release=250ms（音楽制作のリミッター標準的�
 
 #### 観測点の選抜も同じ規則で行う
 
-観測情報の読み上げ（`tsunamiObservationToText` / `tsunamiObservationUpdateToSegments`）は
+観測情報の読み上げ（`tsunamiObservationUpdateToSegments`）は
 波高の深刻な順に上位 `maxPoints` 件だけを読む。**この並べ替えにもカードと同じ
 `compareObservedHeightDesc` を使う**（「○m以上」を値の大小より上に置く規則。→
 [`tsunami-spec.md`](tsunami-spec.md) §6「観測波高の「以上」」）。
@@ -1393,3 +1393,5 @@ return
 - 2026-08-22: 観測点の読み上げの選抜を波高の深刻な順に変えた（§4「観測点の選抜も同じ規則で行う」）。
   値の大小だけで並べていたため `maxPoints` の打ち切りで「○m以上」の観測点が落ちうる状態だった。
   併せて打ち切った地点数を「、ほか○地点」で言うようにした（黙って捨てていた）
+- 2026-08-22: 観測情報の読み上げ文を丸ごと組む `tsunamiObservationToText` を削除した。2026-07-01 に
+  更新点のみを読む `tsunamiObservationUpdateToSegments` へ置き換わって以降、呼び出し元が無かった

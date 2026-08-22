@@ -771,27 +771,6 @@ function observedHeightSuffix(o: TsunamiObservation): string {
   return `で${tsunamiHeightToSpeech(overSuffixedHeight(o.height!))}`
 }
 
-function tsunamiObservationDetailText(items: TsunamiObservation[]): string {
-  return joinSegments(observationDetailSegments(items, observedHeightSuffix))
-}
-
-/** VTSE41/51/52 津波観測情報 読み上げテキストを生成する（波高の大きい順に上位 maxPoints 件）。 */
-export function tsunamiObservationToText(event: JMATsunami, maxPoints = 5): string {
-  const obs = (event.observations ?? []).filter(o => o.height !== undefined)
-  if (obs.length === 0) return ''
-  // 深刻な順に選抜する（規則はカードの並びと同じ compareObservedHeightDesc）。**値の大小だけで
-  // 切らないこと。** maxPoints で打ち切るため、値の大小で並べると「○m以上」の観測点が上位から
-  // 押し出されて読み上げから丸ごと落ちる。カードなら下の方でも残るが、音は落ちたら気づけない。
-  const sorted = [...obs].sort((a, b) => compareObservedHeightDesc(a.height!, b.height!)).slice(0, maxPoints)
-  const total = obs.length
-  // headline の全角数字・全角ｍ・全角ピリオドを半角に変換して VOICEVOX の誤読を防ぐ
-  const rawHeadline = event.headline ? event.headline.trim() : ''
-  const headline = tsunamiHeightToSpeech(rawHeadline)
-  const headlinePart = headline ? `${headline}` : `${total}か所で津波を観測しています。`
-  const detail = tsunamiObservationDetailText(sorted)
-  return `津波観測情報。${headlinePart}${detail}${omittedSuffix(total, sorted.length)}。`
-}
-
 /**
  * VTSE41/51/52 津波観測情報 更新点のみ読み上げテキストを生成する。
  * updatedObs は最大波高が更新された観測点のみを渡す（波高降順で最大 maxPoints 件）。
@@ -803,7 +782,9 @@ export function tsunamiObservationUpdateToSegments(
 ): SpeechSegment[] {
   const obs = updatedObs.filter(o => o.height !== undefined)
   if (obs.length === 0) return []
-  // 選抜の規則は tsunamiObservationToText と同じ（理由はそちらのコメント）。
+  // 深刻な順に選抜する（規則はカードの並びと同じ compareObservedHeightDesc）。**値の大小だけで
+  // 切らないこと。** maxPoints で打ち切るため、値の大小で並べると「○m以上」の観測点が上位から
+  // 押し出されて読み上げから丸ごと落ちる。カードなら下の方でも残るが、音は落ちたら気づけない。
   const sorted = [...obs].sort((a, b) => compareObservedHeightDesc(a.height!, b.height!)).slice(0, maxPoints)
   // headline の全角数字・全角ｍ・全角ピリオドを半角に変換して VOICEVOX の誤読を防ぐ
   const headlinePart = headline?.trim() ? tsunamiHeightToSpeech(headline.trim()) : ''
