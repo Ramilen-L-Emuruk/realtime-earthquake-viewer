@@ -60,6 +60,7 @@ function makeEEW(over: {
   eventId?: string
   serial?: number
   scaleTo?: IntensityScale
+  scaleToOrAbove?: boolean
   lgIntTo?: LpgmClass
   condition?: string
   noAreas?: boolean
@@ -74,6 +75,7 @@ function makeEEW(over: {
     name: '宮崎県北部平野部',
     scaleFrom: 30,
     scaleTo: over.scaleTo ?? 45,
+    scaleToOrAbove: over.scaleToOrAbove,
     kindCode: '10',
     arrivalTime: null,
     lgIntTo: over.lgIntTo,
@@ -277,6 +279,43 @@ describe('EEW 読み上げの文言と発話順序', () => {
     handle(makeEEW({ serial: 2, scaleTo: 50, lgIntTo: 3 }))
     await flushMicrotasks()
     expect(spokenTexts()).toEqual(['予想最大震度5強。予想最大階級3。'])
+  })
+
+  // 「以上」は階級値に現れない。既読を階級だけで覚えていると、上限が定まらなくなった変化を
+  // 「据え置き」と見て黙ってしまう（判定は isForecastScaleHigher）。
+  it('震度据え置きで上限が定まらなくなった続報も読む', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 40 }))
+    await flushMicrotasks()
+    speakMock.mockClear()
+
+    handle(makeEEW({ serial: 2, scaleTo: 40, scaleToOrAbove: true }))
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual(['予想最大震度4以上。'])
+  })
+
+  it('逆に上限が確定しただけの続報では発話しない（引き下げと同じ扱い）', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 40, scaleToOrAbove: true }))
+    await flushMicrotasks()
+    speakMock.mockClear()
+
+    handle(makeEEW({ serial: 2, scaleTo: 40 }))
+    await vi.advanceTimersByTimeAsync(5000)
+    await flushMicrotasks()
+    expect(spokenTexts()).toHaveLength(0)
+  })
+
+  it('「以上」が据え置きの続報でも発話しない（安全弁）', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 40, scaleToOrAbove: true }))
+    await flushMicrotasks()
+    speakMock.mockClear()
+
+    handle(makeEEW({ serial: 2, scaleTo: 40, scaleToOrAbove: true }))
+    await vi.advanceTimersByTimeAsync(5000)
+    await flushMicrotasks()
+    expect(spokenTexts()).toHaveLength(0)
   })
 
   it('変化のない続報では発話しない', async () => {

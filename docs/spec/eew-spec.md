@@ -106,6 +106,11 @@ DMDATA 経路で受けるのは次の 2 種類。
 | ウィンドウタイトル | 🚨 地震動予報 … | 🚨 緊急地震速報 … | 🚨 緊急地震速報 … |
 | 電文ログ | EEW地震動予報 | EEW警報 | EEW警報 |
 
+**地図のポップアップの行は、震源と区域で判定の軸が違う。** 震源×印（`EewEpicentersGL`）は電文の
+`severity` を見るが、区域塗り（`EewRegionFillGL`）は**区域ごとの `kindCode`** を見る（下の
+§4「区域の種別コード」）。同じ警報級の電文でも、予想震度 5 弱未満の区域は予報域なので、
+その区域のポップアップだけ「地震動予報」と出る。表は 1 行にまとめているが同じ基準ではない。
+
 電文ログの列だけは**電文種別（`headType`）から引く**（`TelegramTab` の `HEAD_TYPE_LABEL`）。
 電文そのものの記録なのでそれが正しい。ただし `isWarning` が立った VXSE45 は severity では警報相当
 なのに、ログには `EEW地震動予報` と出る。**ログの列と他の列は別の軸で決まっている**ことに注意。
@@ -153,6 +158,29 @@ standard 版では `eewMaxLpgmClass` が常に 0 になり震度のみでレベ�
 そのため P2PQuake の `scaleTo = 99`（「〜程度以上」）は、この判定に届く前に
 `convertEvent` が同じ地域の `scaleFrom` へ置き換えている（[`data-sources-spec.md`](data-sources-spec.md) §3）。
 置き換えないと「震度 7 程度以上」という最も強い予想が丸ごと無視され、警報止まりになる。
+
+### 上限を定めない予想震度の扱い
+
+予想震度は上限が定まらないことがある（DMDATA は `to: "over"`・P2PQuake は `scaleTo: 99`）。
+受け口で下限側の階級へ寄せ、「以上」であることをフラグで持ち越す。**電文上の表れと寄せ方は
+[`data-sources-spec.md`](data-sources-spec.md) §8 が単一情報源。**
+ここではその値を EEW 側がどう使うかだけを書く。
+
+- **判定は下限で行う。** `computeSingleEEWLevel`（特別警報）・区域塗りの色・地図のカメラ追従は
+  すべて階級値だけを見る。フラグを判定に混ぜない
+- **表示と読み上げは語を補う。** 集約は `src/utils/eew.ts` の `eewMaxScaleInfo()` が
+  `{ scale, orAbove }` で返し、`eewMaxScale()` はその `scale` を返す薄いラッパ。語の付け方は
+  `src/utils/intensity.ts` の `getIntensityLabelWithOrAbove()` に集約する
+  （**カードのバナーだけは例外**で、「以上」を本体より小さく添えるため自前で組む）
+- 語を出す箇所: EEW カードのバナー・ウィンドウタイトル・ブラウザ通知・読み上げ・区域塗りの
+  ポップアップ（ホバー時のバッジを含む）・**震源×印のポップアップ**。
+  **新たに予想震度を出す箇所を作ったらここに追記する**
+- **読み上げの「上がったか」の比較にも入れる。** 階級値だけで比べると、同じ階級のまま上限が
+  定まらなくなった変化（「震度4」→「震度4以上」）を据え置きと見て黙ってしまう。判定は
+  `src/utils/eew.ts` の `isForecastScaleHigher()` に集約する
+  （[`audio-tts-spec.md`](audio-tts-spec.md) §6）
+- 「以上」の集約規則: 最大の階級を与えた区域を基準にする。同じ階級の区域が複数あって片方だけが
+  「以上」なら「以上」を採る（強い側の表現を残す）。最大でない区域の「以上」は拾わない
 
 ### 区域の種別コード（`areas[].kindCode`）
 
@@ -215,6 +243,11 @@ standard 版では `eewMaxLpgmClass` が常に 0 になり震度のみでレベ�
 - **地図の震源×印を薄く描く** — `src/hooks/useEewLayerData.ts` で `EewEpicenter.isAssumed` フラグ生成 →
   `src/components/Map/EewEpicentersGL.tsx` の `ASSUMED_OPACITY_RATIO` で不透明度を下げる
 - **検知エンジンの EEW 連動緩和判定** — `src/App.tsx` の `hasActiveNonAssumedEEW`
+- **区域への S 波到達推定の震源に採らない** — `src/hooks/useEewLayerData.ts` の `eewAreaFills` が
+  `EewAreaFill.origin` を作るときに除外する。M・深さが仮定値（実データでは M1・深さ 10km 固定）なので
+  走時を解いても根拠のない秒数になる。除外の結果 `origin` が null になった区域では、区域塗りの
+  ポップアップが S 波到達の行を出さない（`EewRegionFillGL` の `arrivalRowHtml`）。
+  ただし**同じ階級を確定震源の EEW も与えているなら、そちらの震源で埋める**（出せる根拠があるなら使う）
 - **揺れ検知の基準震源選定** — `src/hooks/useKyoshinAlerts.ts` の `extractEewInfo`
 - **予想震度が出ない理由の判定** — `src/utils/eew.ts` の `eewNoForecastReason`。読み上げの文言
   （`src/utils/ttsText.ts` の `noForecastText`）と、予想震度の確定を待つかどうかの判断
@@ -392,3 +425,8 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
 - 2026-08-20: 予報級の表示を電文の名称（VXSE45「緊急地震速報（地震動予報）」）に合わせ、
   「予報」→「地震動予報」に統一した（§3「電文の名称と表示・読み上げ」）。読み上げも切り出しの語で
   区分を分ける（[`audio-tts-spec.md`](audio-tts-spec.md) §6）
+- 2026-08-22: 上限を定めない予想震度（DMDATA の `to: "over"`）を震度7として扱っていたのを、下限へ寄せて
+  「以上」をフラグで持つ形に直した（§4「上限を定めない予想震度の扱い」・実害の詳細と電文上の表れは
+  [`data-sources-spec.md`](data-sources-spec.md) §8）。あわせて区域への S 波到達推定の震源から
+  仮定震源要素を除外した（§5）。仮定値の M・深さで走時を解いていたため、根拠のない到達秒数が
+  出ていた

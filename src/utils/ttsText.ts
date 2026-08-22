@@ -1,6 +1,6 @@
 import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, TsunamiArea, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
-import { eewMaxScale, eewMaxLpgmClass, eewNoForecastReason } from './eew'
-import { getIntensityLabel } from './intensity'
+import { eewMaxScaleInfo, eewMaxLpgmClass, eewNoForecastReason } from './eew'
+import { getIntensityLabel, getIntensityLabelWithOrAbove } from './intensity'
 import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight } from './tsunami'
 import { joinSegments, plain, type SpeechSegment } from './ttsFollow'
 import { getSubRegionsCache } from './subregions'
@@ -364,9 +364,11 @@ function noForecastText(event: EEWAlert): string {
  */
 export function eewIntensityToText(event: EEWAlert, announceUpgrade = false): string {
   let text = announceUpgrade ? '緊急地震速報に切り替わりました。' : ''
-  const scale = eewMaxScale(event)
+  // 上限が定まらない報（単独観測点処理の初報など）は「震度4以上」と読む。値だけ読むと
+  // 下限を断定した放送になる（判定は eewMaxScaleInfo・語の付け方は表示と共通）。
+  const { scale, orAbove } = eewMaxScaleInfo(event)
   if (scale > 0) {
-    text += `予想最大震度${intensityText(scale)}。`
+    text += `予想最大震度${getIntensityLabelWithOrAbove(scale, orAbove)}。`
   } else {
     text += noForecastText(event)
   }
