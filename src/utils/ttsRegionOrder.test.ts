@@ -9,11 +9,15 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import type { EarthquakePoint, IntensityScale, JMAQuake, JMALpgm } from '../types/earthquake'
 import type { TtsRegionOptions } from './ttsText'
+import { joinSegments } from './ttsFollow'
 
 type TtsModule = typeof import('./ttsText')
 
 let earthquakeToText: TtsModule['earthquakeToText']
 let lpgmToText: TtsModule['lpgmToText']
+let earthquakeToSegments: TtsModule['earthquakeToSegments']
+let createQuakeSpokenState: TtsModule['createQuakeSpokenState']
+let applySpokenRefs: TtsModule['applySpokenRefs']
 
 const OPTS: TtsRegionOptions = { intensityLevels: 0, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0 }
 
@@ -55,6 +59,9 @@ beforeAll(async () => {
   const ttsText = await import('./ttsText')
   earthquakeToText = ttsText.earthquakeToText
   lpgmToText = ttsText.lpgmToText
+  earthquakeToSegments = ttsText.earthquakeToSegments
+  createQuakeSpokenState = ttsText.createQuakeSpokenState
+  applySpokenRefs = ttsText.applySpokenRefs
   // 配信データ 3 本の parse と resetModules 後の再評価は、全テストファイルを並列実行すると
   // 既定の 10 秒を割ることがある（理由は prefectures.test.ts と同じ）。
 }, 30_000)
@@ -335,5 +342,134 @@ describe('震度の地域列挙: 観測点しか持たない電文（P2PQuake �
     )
     const text = earthquakeToText(quake, OPTS, true)
     expect(text).toContain('最大震度4を新潟県上越で観測しました。')
+  })
+})
+
+// 県名へのまとめ判定は階級ごとに独立して走る。上の階級で区域名を出した県を下の階級で丸ごと
+// まとめると、県の震度を過小に伝える。能登半島地震の本震の実データがこの形をそのまま含む。
+describe('震度の地域列挙: 階級をまたぐ県名まとめ', () => {
+  const notoPoints = (
+    JSON.parse(readFileSync('src/data/noto-honshin-2024-points.json', 'utf8')) as EarthquakePoint[]
+  ).filter(p => !p.isArea)
+
+  /** 全階級を読ませる（上限なし）。まとめ判定そのものを見たいので選抜と打ち切りは効かせない。 */
+  const ALL: TtsRegionOptions = { intensityLevels: 8, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0 }
+  /** 本震の最大震度は 7。共有ヘルパーは 4 固定なので上書きする（ここから下の階級を辿るため）。 */
+  function notoQuake(): JMAQuake {
+    const base = makeQuake(notoPoints, { lat: 37.5, lon: 137.2 })
+    return { ...base, earthquake: { ...base.earthquake, maxScale: 70 as IntensityScale } }
+  }
+
+  // 期待値は実データの震度分布に依存する。観測点の改廃や区域再編で崩れたとき、実装の誤りと
+  // 取り違えないよう前提を先に検証しておく。
+  it('前提: 福井県は 2 区域。5強は嶺北のみ・4 で嶺北と嶺南が揃う', () => {
+    const data = JSON.parse(readFileSync('public/data/station-coords.json', 'utf8')) as {
+      stations: Record<string, [number, number, number?]>
+      areas: Record<string, unknown>
+      regionNames: string[]
+    }
+    const fukuiAreas = Object.keys(data.areas)
+      .filter(k => k.startsWith('福井県|')).map(k => k.slice(k.indexOf('|') + 1))
+    expect(fukuiAreas).toEqual(['福井県嶺北', '福井県嶺南'])
+
+    const regionsAt = (scale: number) => new Set(
+      notoPoints.filter(p => p.pref === '福井県' && p.scale === scale)
+        .map(p => data.regionNames[data.stations[`福井県|${p.addr}`]![2]!]))
+    expect([...regionsAt(50)]).toEqual(['福井県嶺北'])
+    expect([...regionsAt(40)].sort()).toEqual(['福井県嶺北', '福井県嶺南'])
+  })
+
+  it('正: 上位階級で区域名を出した県は、下位階級でも県名にまとめない', () => {
+    const text = earthquakeToText(notoQuake(), ALL, true)
+    expect(text).toContain('福井県嶺北')
+    // 「福井県」単独では出ない（嶺北・嶺南に続く形だけ許す）。
+    expect(text).not.toMatch(/福井県(?!嶺)/)
+  })
+
+  it('対照: 上位階級に区域名が出ていない県は従来どおりまとめる', () => {
+    const text = earthquakeToText(notoQuake(), ALL, true)
+    // 宮城県・秋田県は震度3 で全区域が揃い、それより上の階級には現れない。
+    expect(text).toMatch(/震度3を[^。]*宮城県[、で]/)
+    expect(text).toMatch(/震度3を[^。]*秋田県[、で]/)
+  })
+
+  it('安全弁: 同じ階級の中のまとめは従来どおり働く', () => {
+    const text = earthquakeToText(notoQuake(), ALL, true)
+    // 富山県は 5強 で東部・西部が揃い、それより上の階級には出ない。1 件にまとまる。
+    expect(text).toMatch(/震度5強を[^。]*富山県[、で]/)
+    expect(text).not.toContain('富山県東部')
+  })
+})
+
+describe('長周期地震動の地域列挙: 階級をまたぐ県名まとめ', () => {
+  /** 階級ごとに区域を指定して電文を作る。 */
+  function makeLpgmByClass(byClass: Record<number, string[]>): JMALpgm {
+    const regions = Object.entries(byClass).flatMap(([cls, names]) =>
+      names.map((name, i) => ({ code: `${cls}${i}`, name, maxLgInt: Number(cls) })))
+    return {
+      id: 'dmdata-lpgm-20260820120000',
+      eventId: '20260820120000',
+      time: '2026-08-20T12:03:00+09:00',
+      originTime: '2026-08-20T12:00:00+09:00',
+      maxClass: Math.max(...Object.keys(byClass).map(Number)),
+      cancelled: false,
+      regions,
+    }
+  }
+  const ALL: TtsRegionOptions = { intensityLevels: 8, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0 }
+
+  it('正: 上位階級で区域名を出した県は、下位階級でも県名にまとめない', () => {
+    // 福井県は嶺北・嶺南の 2 区域。階級3 で嶺北だけ、階級2 で両方が揃う形。
+    const text = lpgmToText(makeLpgmByClass({ 3: ['福井県嶺北'], 2: ['福井県嶺北', '福井県嶺南'] }), ALL, true)
+    expect(text).toContain('福井県嶺北')
+    expect(text).not.toMatch(/福井県(?!嶺)/)
+  })
+
+  // このテストは「同じ階級の中で全区域が揃えばまとめる」という元々の規則（震度側では安全弁として
+  // 独立させているもの）も同時に守っている。片方だけ壊れても落ちるので 1 本で兼ねる。
+  it('対照: 上位階級に区域名が出ていない県は従来どおりまとめる', () => {
+    const text = lpgmToText(makeLpgmByClass({ 3: ['石川県能登'], 2: ['福井県嶺北', '福井県嶺南'] }), ALL, true)
+    expect(text).toMatch(/階級2を[^。]*福井県[、で]/)
+    expect(text).not.toContain('福井県嶺北')
+  })
+})
+
+// 続報（差分読み上げ）とまとめ抑止の相互作用。**上位階級の区域を数えるのは差分で落とす前**で
+// なければならない。落とした後で数えると、既出の区域が「今回は声にならない」ために県の全区域が
+// 揃って見え、県名へまとめてしまう ＝ このコミットが直したはずの過小伝達が続報でだけ復活する。
+describe('震度の地域列挙: 続報でも階級をまたぐまとめを抑える', () => {
+  const OPTS_ALL: TtsRegionOptions = { intensityLevels: 8, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0 }
+  const FUKUI_HYPO = { lat: 36.0, lon: 136.2 }
+
+  function quakeOf(points: EarthquakePoint[], maxScale: number): JMAQuake {
+    const base = makeQuake(points, FUKUI_HYPO)
+    return {
+      ...base,
+      issue: { ...base.issue, type: '各地の震度情報' },
+      earthquake: { ...base.earthquake, maxScale: maxScale as IntensityScale },
+    }
+  }
+
+  it('正: 既出の区域が差分で落ちても、その県を県名へまとめない', () => {
+    const state = createQuakeSpokenState()
+
+    // 初報: 嶺北だけが 5強。
+    const first = earthquakeToSegments(
+      quakeOf([station('福井県', '福井市豊島', 50)], 50), OPTS_ALL, true, state)
+    applySpokenRefs(state, first.flatMap(s => s.refs))
+    expect(joinSegments(first)).toContain('福井県嶺北')
+
+    // 続報: 嶺北は据え置き（差分で落ちる）、嶺北の別点と嶺南が 4 で加わり県内 2 区域が揃う。
+    const second = earthquakeToSegments(
+      quakeOf([
+        station('福井県', '福井市豊島', 50),
+        station('福井県', '福井市蒲生町', 40),
+        station('福井県', '敦賀市松栄町', 40),
+      ], 50), OPTS_ALL, false, state)
+
+    const text = joinSegments(second)
+    expect(text).toContain('福井県嶺南')
+    // 「福井県」単独では出ない（嶺北・嶺南に続く形だけ許す）。
+    expect(text).not.toMatch(/福井県(?!嶺)/)
   })
 })

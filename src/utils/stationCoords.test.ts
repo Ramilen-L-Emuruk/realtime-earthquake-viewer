@@ -235,6 +235,26 @@ describe('観測点 → 一次細分区域の逆引き（lookupStationRegion）'
     expect(lookupStationRegion(data, '新潟県', '区域の無い観測点')).toBeNull()
   })
 
+  // 読み上げの「上位階級で区域名を出した県はまとめない」判定は、名前が区域名の索引で引けるかどうかで
+  // 区域名と（まとめた）県名を見分ける（ttsText.ts の prefsWithAreaShown）。多区域の県が県名と同じ
+  // 表記の区域を持つと、まとめた県名を「区域名を出した」と誤って数え、以降その県のまとめが不必要に
+  // 止まる。奈良県は県名と同名の区域を持つが単一区域なので、どちらに数えても出力は変わらない。
+  it('多区域の県に、県名と同じ表記の区域は無い', async () => {
+    const data = JSON.parse(readFileSync('public/data/station-coords.json', 'utf8')) as StationCoordsData
+    const byPref = new Map<string, string[]>()
+    for (const key of Object.keys(data.areas)) {
+      const sep = key.indexOf('|')
+      const pref = key.slice(0, sep)
+      byPref.set(pref, [...(byPref.get(pref) ?? []), key.slice(sep + 1)])
+    }
+    const collides = [...byPref].filter(([pref, areas]) => areas.length > 1 && areas.includes(pref))
+    expect(collides.map(([pref]) => pref)).toEqual([])
+
+    // 単一区域で県名と同名のもの（現状は奈良県だけ）は無害だが、増減したら上の前提を見直す。
+    const singles = [...byPref].filter(([pref, areas]) => areas.length === 1 && areas[0] === pref)
+    expect(singles.map(([pref]) => pref)).toEqual(['奈良県'])
+  })
+
   it('実データでは全観測点が区域を持ち、観測点名は都道府県を跨いで重複しない', async () => {
     const { lookupStationRegion } = await import('./stationCoords')
     const data = JSON.parse(readFileSync('public/data/station-coords.json', 'utf8')) as StationCoordsData
