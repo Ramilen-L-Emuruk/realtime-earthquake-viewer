@@ -8,24 +8,34 @@ import { addOrderedLayer } from './gl/layerOrder'
 import { JP_FONT_STACK } from './gl/fontStack'
 import { log } from '../../utils/logger'
 import { LABEL_TEXT_OPACITY_EXPR, updateLabelOverlap, type LabelOverlapTarget } from './gl/labelOverlap'
+import { bindDynamicZoomRange, clampMinZoom } from './gl/viewSpan'
+import { labelMinZoom } from './gl/zoomLevels'
 
 // 地名ラベル（地方名／県名／区域名）を MapLibre の symbol レイヤーで描画する（Leaflet 版 BaseMap の
 // basemap-labels 相当）。日本語は事前生成した SDF グリフ（public/fonts/M PLUS Rounded 1c/・JapanMapGL の
 // style.glyphs と localIdeographFontFamily:false 設定を参照）を GPU 描画する。
 //
 // ズームによる粒度切替は各レイヤーの minzoom/maxzoom で宣言的に行う（Leaflet 版の zoomend ハンドラ相当）:
-//   4.5 <= zoom < 6.5 : 地方ラベル（引きの画。日本全体フィットはこの帯に入る）
-//   6.5 <= zoom < 8   : 県名ラベル
-//   8   <= zoom       : 一次細分区域名ラベル（寄り。自動フィットは MAX_ZOOM=7 でキャップされるため
-//                       手動でさらに寄ったときだけ出る）
+//   下限〜6.5 : 地方ラベル（引きの画。日本全体フィットはこの帯に入る）
+//   6.5 〜 8  : 県名ラベル
+//   8 以上    : 一次細分区域名ラベル（寄り。自動フィットの寄り上限より深いため、手動でさらに
+//               寄ったときだけ出る）
 //
-// 値は MapLibre 基準（512px タイル）。Leaflet 版 BaseMap.tsx の 5.5/7.5/9 は 256px タイル基準なので
-// 同じ縮尺は 1 段引いた値になる（gl/camera.ts の MAX_ZOOM 参照）。移行時に旧値をそのまま持ち込んで
-// いたため、日本全体フィット（MapLibre 基準で約 5.1）が LABEL_MIN_ZOOM=5.5 に届かず地名が
-// 一切出ない状態になっていた。
+// **下限だけが視野の実距離基準で、粒度の切替はズーム値のまま。** 地方名を出し始める下限は
+// 「日本全体が画に収まっているか」で決まるため視野の広さで持つ（ズーム値で固定すると、狭いペインの
+// 日本全体表示が閾値に届かず地名が一切出ない。移行直後に実際に起きている）。一方 地方名 → 県名 →
+// 区域名 の切替は「文字が何 px 間隔で並ぶか」＝密度の問題で、これは m/px だけで決まりペインの
+// 大きさに依らない。視野基準へ移すと逆に狭いペインで 47 県が潰し合う。判断の詳細は gl/viewSpan.ts。
+//
+// ズーム値は MapLibre 基準（512px タイル）。Leaflet 版 BaseMap.tsx の 7.5/9 は 256px タイル基準なので
+// 同じ縮尺は 1 段引いた値になる（gl/viewSpan.ts 参照）。
 
-const LABEL_MIN_ZOOM = 4.5
-const REGION_MAX_ZOOM = 6.5
+// 地方名の下限（視野の実距離基準）は gl/zoomLevels.ts が持つ。ここに置くのは粒度の切替だけ。
+//
+// REGION_MAX_ZOOM を export しているのは、地方名の帯（可変の下限 〜 この固定の上限）が潰れない
+// ことを回帰テストで固定するため（gl/zoomConstants.test.ts）。可変の下限と固定の上限が同じ帯に
+// 同居しているのはここだけで、崩れ方が無症状（どのズームでもラベルが出ない）なので外から見張る。
+export const REGION_MAX_ZOOM = 6.5
 const CITY_LABEL_MIN_ZOOM = 8
 
 // 各粒度の基準 text-size（px）。実描画は iconScale（地図アイコンの倍率）を掛けた値。
@@ -101,7 +111,7 @@ export function LabelsGL({ overlapSignature, iconScale }: Props) {
       id: REGION_SRC,
       type: 'symbol',
       source: REGION_SRC,
-      minzoom: LABEL_MIN_ZOOM,
+      minzoom: clampMinZoom(labelMinZoom(map), REGION_MAX_ZOOM),
       maxzoom: REGION_MAX_ZOOM,
       layout: {
         'text-field': ['get', 'name'],
@@ -117,6 +127,12 @@ export function LabelsGL({ overlapSignature, iconScale }: Props) {
         'text-opacity': LABEL_TEXT_OPACITY_EXPR,
       },
     })
+
+    // 地方名の下限は視野の実距離で決まるため、ペインの寸法が変わるたび張り替える（上の初期値と
+    // 同じ関数）。県名・区域名の帯はズーム値固定なので張り替え不要。
+    const unbindZoomRange = bindDynamicZoomRange(map, [
+      { layerId: REGION_SRC, minZoom: labelMinZoom, maxZoom: REGION_MAX_ZOOM },
+    ])
 
     // 県名・区域名は境界データ（label 座標・dir）に依存するため取得後に追加する。
     Promise.allSettled([loadPrefectures(), loadSubRegions()]).then(([prefRes, subRes]) => {
@@ -242,6 +258,7 @@ export function LabelsGL({ overlapSignature, iconScale }: Props) {
 
     return () => {
       cancelled = true
+      unbindZoomRange()
       for (const id of [REGION_SRC, PREF_SRC, SUB_SRC]) {
         if (map.getLayer(id)) map.removeLayer(id)
         if (map.getSource(id)) map.removeSource(id)
