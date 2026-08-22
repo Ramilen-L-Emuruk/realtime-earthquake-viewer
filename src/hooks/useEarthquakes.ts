@@ -5,7 +5,7 @@ import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmda
 import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey } from '../utils/quakeMerge'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex } from '../utils/stationCoords'
 import { calcEEWCancelTime } from '../utils/eew'
-import { mergeTsunamiObservations } from '../utils/tsunami'
+import { mergeTsunamiObservations, isCancelForCurrentTsunami } from '../utils/tsunami'
 import { log } from '../utils/logger'
 import { serverNow, serverDate } from '../utils/clock'
 
@@ -542,30 +542,9 @@ export function useEarthquakes(
         case 'tsunami': {
           const tsunami = event as JMATsunami
           if (tsunami.cancelled) {
-            // 双方が eventId を持つときだけ厳密に照合し、別イベントの解除は無視する
-            // （serialNo が異なっても同一イベントを解除できるよう id 全体ではなく eventId で見る）。
-            //
-            // どちらかが eventId を持たない場合は照合せず受け入れる。かつては id の完全一致を
-            // 求めていたが、P2PQuake（standard 版）の 552 は eventId を持たず、`id` は電文ごとの
-            // 文書 ID（`str(raw.id)`）なので発表電文と解除電文で必ず異なる。つまり id 照合では
-            // standard 版の解除が常に捨てられ、音と読み上げだけが「解除」と伝えてカードは
-            // 24h フェイルセーフまで残っていた。standard 版は津波を 1 件しか保持しないため、
-            // 照合できないときは受け入れる方が実態に合う。
-            if (prev.tsunamis.length > 0) {
-              const current = prev.tsunamis[0]
-              const cancelEventId = tsunami.eventId
-              const currentEventId = current.eventId
-              if (cancelEventId && currentEventId && cancelEventId !== currentEventId) return prev
-              // eventId が無い経路は同一イベントか判定できないが、発表時刻の前後だけは見る。
-              // 表示中の津波より古い解除は「別イベントの遅延到達」とみなして捨てる
-              // （1 件スロットなので、これが無いと A の遅い解除で B が消える）。
-              // 時刻が読めないときは足切りしない（解除を落とす方が害が大きい）。
-              if (!cancelEventId || !currentEventId) {
-                const cancelAt = new Date(tsunami.time).getTime()
-                const currentAt = new Date(current.time).getTime()
-                if (Number.isFinite(cancelAt) && Number.isFinite(currentAt) && cancelAt < currentAt) return prev
-              }
-            }
+            // 別イベントの遅延到達した解除で、表示中の津波を消さない。判定の中身と理由は
+            // `isCancelForCurrentTsunami`（読み上げ・画面の記憶を落とす側と共有する）。
+            if (prev.tsunamis.length > 0 && !isCancelForCurrentTsunami(tsunami, prev.tsunamis[0])) return prev
             // 解除・取消・期限切れのいずれも同じ10秒表示を経る。表示内容は cancelReason で出し分ける（TsunamiTab側）。
             if (prev.tsunamis.length > 0 && !prev.tsunamis[0].cancelledAt) {
               // TSU-4: purge 予約に対象 id を持たせ、他イベントが後で置換した場合に誤って

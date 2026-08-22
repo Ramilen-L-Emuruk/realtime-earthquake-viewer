@@ -39,6 +39,37 @@ export function tsunamiOverallGrade(tsunamis: JMATsunami[]): 'MajorWarning' | 'W
 }
 
 /**
+ * 解除電文が「いま表示している津波」に向けたものかを判定する。
+ *
+ * 津波は 1 件スロットで持つため、**別イベントの遅延到達した解除で進行中の津波を消してはいけない**。
+ * 判定は 2 段。
+ *
+ * 1. 双方が `eventId` を持つなら一致で見る（`serial` が違っても同一イベントを解除できるよう、
+ *    `id` 全体ではなく `eventId` で照合する）
+ * 2. どちらかが欠けていれば同一イベントかは判定できないので、発表時刻の前後だけを見る。
+ *    表示中より古い解除は別イベントの遅延到達とみなす（これが無いと A の遅い解除で B が消える）
+ *
+ * **時刻も読めないときは受け入れる**（`true`）。かつて `id` の完全一致を求めていた頃は、
+ * P2PQuake（standard 版）の 552 が `eventId` を持たず `id` は電文ごとの文書 ID なので、発表と
+ * 解除で必ず異なり standard 版の解除が常に捨てられていた（音と読み上げだけが「解除」と伝え、
+ * カードは 24 時間のフェイルセーフまで残る）。解除を落とす方が害が大きい。
+ *
+ * **カードの状態更新（`useEarthquakes`）と、読み上げ・画面の記憶を落とす判断
+ * （`useLiveEventHandler`）の両方でこの関数を使うこと。** 片方だけが照合すると、カードは
+ * 残っているのに観測点の既読だけが消える（進行中の観測点が「新規」として読み直される）。
+ */
+export function isCancelForCurrentTsunami(cancel: JMATsunami, current: JMATsunami | undefined): boolean {
+  if (!current) return true
+  const cancelEventId = cancel.eventId
+  const currentEventId = current.eventId
+  if (cancelEventId && currentEventId) return cancelEventId === currentEventId
+  const cancelAt = new Date(cancel.time).getTime()
+  const currentAt = new Date(current.time).getTime()
+  if (Number.isFinite(cancelAt) && Number.isFinite(currentAt) && cancelAt < currentAt) return false
+  return true
+}
+
+/**
  * 新報がタブ強制切替を発火すべき「新規発報」に当たるかを判定する。
  * `current` は現在アクティブな津波（`tsunamis[0]`、無ければ undefined）。
  * 続報（同一 eventId の観測点更新等）でタブが毎回奪われるのを防ぐため、

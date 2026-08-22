@@ -773,6 +773,27 @@ function observedHeightSuffix(o: TsunamiObservation): string {
   return `で${tsunamiHeightToSpeech(overSuffixedHeight(o.height!))}`
 }
 
+/** 観測点更新で読み上げる件数の上限（多いときは波高の大きい順に絞る）。 */
+export const OBS_UPDATE_SPEAK_MAX_POINTS = 5
+
+/**
+ * 観測点更新のうち**実際に読み上げる分**を選ぶ（波高を持つものだけ・降順・上限まで）。
+ *
+ * **読み上げた観測点を既読として記録する側も、必ずこの関数で絞ること**
+ * （`useLiveEventHandler` の `spokenObsHeightRef`）。絞り方を別々に書くと、上限で読まなかった
+ * 観測点まで既読になり、その値は二度と読まれない（波高がさらに上がるまで差分に出てこない）。
+ */
+export function selectObservationUpdatesToSpeak(
+  updatedObs: readonly TsunamiObservation[],
+  maxPoints = OBS_UPDATE_SPEAK_MAX_POINTS,
+): TsunamiObservation[] {
+  const obs = updatedObs.filter(o => o.height !== undefined)
+  // 深刻な順に選抜する（規則はカードの並びと同じ compareObservedHeightDesc）。**値の大小だけで
+  // 切らないこと。** maxPoints で打ち切るため、値の大小で並べると「○m以上」の観測点が上位から
+  // 押し出されて読み上げから丸ごと落ちる。カードなら下の方でも残るが、音は落ちたら気づけない。
+  return [...obs].sort((a, b) => compareObservedHeightDesc(a.height!, b.height!)).slice(0, maxPoints)
+}
+
 /**
  * VTSE41/51/52 津波観測情報 更新点のみ読み上げテキストを生成する。
  * updatedObs は最大波高が更新された観測点のみを渡す（波高降順で最大 maxPoints 件）。
@@ -780,14 +801,13 @@ function observedHeightSuffix(o: TsunamiObservation): string {
 export function tsunamiObservationUpdateToSegments(
   updatedObs: TsunamiObservation[],
   headline?: string,
-  maxPoints = 5,
+  maxPoints = OBS_UPDATE_SPEAK_MAX_POINTS,
 ): SpeechSegment[] {
+  // 選抜は selectObservationUpdatesToSpeak に集約する（既読を記録する側と同じ絞り方にするため）。
+  // obs は「波高を持つ総数」で、読み上げなかった件数（omittedSuffix）を数えるのに要る。
   const obs = updatedObs.filter(o => o.height !== undefined)
-  if (obs.length === 0) return []
-  // 深刻な順に選抜する（規則はカードの並びと同じ compareObservedHeightDesc）。**値の大小だけで
-  // 切らないこと。** maxPoints で打ち切るため、値の大小で並べると「○m以上」の観測点が上位から
-  // 押し出されて読み上げから丸ごと落ちる。カードなら下の方でも残るが、音は落ちたら気づけない。
-  const sorted = [...obs].sort((a, b) => compareObservedHeightDesc(a.height!, b.height!)).slice(0, maxPoints)
+  const sorted = selectObservationUpdatesToSpeak(updatedObs, maxPoints)
+  if (sorted.length === 0) return []
   // headline の全角数字・全角ｍ・全角ピリオドを半角に変換して VOICEVOX の誤読を防ぐ
   const headlinePart = headline?.trim() ? tsunamiHeightToSpeech(headline.trim()) : ''
   return [
