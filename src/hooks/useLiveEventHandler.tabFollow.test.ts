@@ -48,6 +48,12 @@ async function flush() {
   for (let i = 0; i < 400; i++) await Promise.resolve()
 }
 
+/** 明示的に読み上げを終わらせる（割り込みではなく自然終了を模擬する） */
+function finishSpeech(index: number) {
+  const s = speeches[index]
+  if (s && !s.done) { s.done = true; s.finish() }
+}
+
 /** 通知音の遅延（最大 4200ms）と第 2 フェーズの待ち（6000ms）を消化して発話へ到達させる */
 async function settle() {
   await vi.advanceTimersByTimeAsync(8000)
@@ -341,6 +347,13 @@ describe('読み上げとタブ切替の同調', () => {
     tsunamisRef.current = [makeTsunami()]
     handle(makeTsunamiObsUpdate())
     await settle()
+    // 観測情報は等級の発表より下の格なので、警報の読み上げが終わるまで待つ。声に合わせて
+    // 動かす作りなので、画面もその間は動かない（待たせずに読むと、警報の読み上げが観測値
+    // 1 点の更新で途中から消える）
+    expect(spies.followSpeechTab).not.toHaveBeenCalled()
+
+    finishSpeech(0)
+    await flush()
     expect(spies.followSpeechTab).toHaveBeenCalledWith('tsunami', TAB_PRIORITY.tsunami)
   })
 
@@ -376,6 +389,9 @@ describe('読み上げとタブ切替の同調', () => {
     tsunamisRef.current = [makeTsunami()]
     handle(makeTsunamiObsOnly())
     await settle()
+    // 観測情報は警報の読み上げが終わってから読まれる（格が下がったため）
+    finishSpeech(0)
+    await flush()
     const spoken = speeches.map(s => s.text).join('')
     expect(spoken).not.toContain('解除')
     expect(spoken).toContain('輪島港')

@@ -772,6 +772,24 @@ export function tsunamiObservationToText(event: JMATsunami, maxPoints = 5): stri
   return `津波観測情報。${headlinePart}${detail}。`
 }
 
+/** 観測点更新で読み上げる件数の上限（多いときは波高の大きい順に絞る）。 */
+export const OBS_UPDATE_SPEAK_MAX_POINTS = 5
+
+/**
+ * 観測点更新のうち**実際に読み上げる分**を選ぶ（波高を持つものだけ・降順・上限まで）。
+ *
+ * **読み上げた観測点を既読として記録する側も、必ずこの関数で絞ること**
+ * （`useLiveEventHandler` の `spokenObsHeightRef`）。絞り方を別々に書くと、上限で読まなかった
+ * 観測点まで既読になり、その値は二度と読まれない（波高がさらに上がるまで差分に出てこない）。
+ */
+export function selectObservationUpdatesToSpeak(
+  updatedObs: readonly TsunamiObservation[],
+  maxPoints = OBS_UPDATE_SPEAK_MAX_POINTS,
+): TsunamiObservation[] {
+  const obs = updatedObs.filter(o => o.height !== undefined)
+  return [...obs].sort((a, b) => b.height!.value - a.height!.value).slice(0, maxPoints)
+}
+
 /**
  * VTSE41/51/52 津波観測情報 更新点のみ読み上げテキストを生成する。
  * updatedObs は最大波高が更新された観測点のみを渡す（波高降順で最大 maxPoints 件）。
@@ -779,11 +797,10 @@ export function tsunamiObservationToText(event: JMATsunami, maxPoints = 5): stri
 export function tsunamiObservationUpdateToSegments(
   updatedObs: TsunamiObservation[],
   headline?: string,
-  maxPoints = 5,
+  maxPoints = OBS_UPDATE_SPEAK_MAX_POINTS,
 ): SpeechSegment[] {
-  const obs = updatedObs.filter(o => o.height !== undefined)
-  if (obs.length === 0) return []
-  const sorted = [...obs].sort((a, b) => b.height!.value - a.height!.value).slice(0, maxPoints)
+  const sorted = selectObservationUpdatesToSpeak(updatedObs, maxPoints)
+  if (sorted.length === 0) return []
   // headline の全角数字・全角ｍ・全角ピリオドを半角に変換して VOICEVOX の誤読を防ぐ
   const headlinePart = headline?.trim() ? tsunamiHeightToSpeech(headline.trim()) : ''
   return [
