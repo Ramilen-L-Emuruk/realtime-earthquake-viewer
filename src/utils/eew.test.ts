@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewMaxScale, eewNoForecastReason, eewSerial, selectEEWSoundType, type HypoInfoPendingMissing } from './eew'
+import { calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewMaxScale, eewMaxScaleInfo, isForecastScaleHigher, eewNoForecastReason, eewSerial, selectEEWSoundType, type HypoInfoPendingMissing } from './eew'
 import type { YahooHypoInfoItem } from '../services/kyoshin'
-import type { EEWAlert, IntensityScale, LpgmClass } from '../types/earthquake'
+import type { EEWAlert, EEWRegion, IntensityScale, LpgmClass } from '../types/earthquake'
 
 function makeEEW(overrides: Partial<EEWAlert> = {}): EEWAlert {
   return {
@@ -296,6 +296,121 @@ describe('selectEEWSoundType', () => {
 
   it('通常続報（最終でも新規でも格上げでもない）は eewUpdate', () => {
     expect(selectEEWSoundType(false, false, 1, false)).toBe('eewUpdate')
+  })
+})
+
+describe('eewMaxScaleInfo: 「〜以上」の集約', () => {
+  function area(overrides: Partial<EEWRegion>): EEWRegion {
+    return { pref: 'A県', name: 'A地域', scaleFrom: 40, scaleTo: 40, kindCode: '10', arrivalTime: null, ...overrides }
+  }
+
+  it('「以上」の区域が最大なら orAbove を立てる', () => {
+    // 2024/1/1 16:18 の余震の初報に相当（石川県能登 震度4以上・単独観測点処理）。
+    const eew = makeEEW({ areas: [area({ scaleFrom: 40, scaleTo: 40, scaleToOrAbove: true })] })
+    expect(eewMaxScaleInfo(eew)).toEqual({ scale: 40, orAbove: true })
+    expect(eewMaxScale(eew)).toBe(40)
+  })
+
+  it('上限が定まっている区域だけなら orAbove は false', () => {
+    const eew = makeEEW({ areas: [area({ scaleFrom: 40, scaleTo: 50 })] })
+    expect(eewMaxScaleInfo(eew)).toEqual({ scale: 50, orAbove: false })
+  })
+
+  it('最大でない区域の「以上」は拾わない（低い階級の以上に引きずられない）', () => {
+    const eew = makeEEW({
+      areas: [
+        area({ name: 'A地域', scaleFrom: 40, scaleTo: 40, scaleToOrAbove: true }),
+        area({ name: 'B地域', scaleFrom: 55, scaleTo: 60 }),
+      ],
+    })
+    expect(eewMaxScaleInfo(eew)).toEqual({ scale: 60, orAbove: false })
+  })
+
+  it('同じ階級で片方だけ「以上」なら「以上」を採る（強い側の表現を残す）', () => {
+    const eew = makeEEW({
+      areas: [
+        area({ name: 'A地域', scaleFrom: 55, scaleTo: 55 }),
+        area({ name: 'B地域', scaleFrom: 55, scaleTo: 55, scaleToOrAbove: true }),
+      ],
+    })
+    expect(eewMaxScaleInfo(eew)).toEqual({ scale: 55, orAbove: true })
+  })
+
+  it('areas が空なら電文全体の forecastMaxScale とそのフラグを見る', () => {
+    const eew = makeEEW({ forecastMaxScale: 40, forecastMaxScaleOrAbove: true })
+    expect(eewMaxScaleInfo(eew)).toEqual({ scale: 40, orAbove: true })
+  })
+
+  it('仮定震源要素で areas が空なら scale=0・orAbove=false（フラグが残っていても採らない）', () => {
+    const eew = makeEEW({
+      earthquake: { ...makeEEW().earthquake, condition: '仮定震源要素' },
+      forecastMaxScale: 70,
+      forecastMaxScaleOrAbove: true,
+    })
+    expect(eewMaxScaleInfo(eew)).toEqual({ scale: 0, orAbove: false })
+  })
+
+  it('震度が取れないときは orAbove を立てない（「不明以上」を作らない）', () => {
+    const eew = makeEEW({ areas: [area({ scaleFrom: -1, scaleTo: -1, scaleToOrAbove: true })] })
+    expect(eewMaxScaleInfo(eew)).toEqual({ scale: 0, orAbove: false })
+  })
+
+  // ここは**この変更で判定結果が変わる**境界。従来は to='over' を震度7として読んでいたため、
+  // 「震度5強以上」の警報級が特別警報（レベル2）へ上がっていた。下限で判定する現在は警報
+  // （レベル1）に留まる。危険度が下がる向きの変化なので、意図であることを明示して固定する。
+  it('「震度5強以上」の警報級は特別警報にしない（下限で判定する）', () => {
+    const eew = makeEEW({ areas: [area({ scaleFrom: 50, scaleTo: 50, scaleToOrAbove: true })] })
+    expect(eewMaxScaleInfo(eew)).toEqual({ scale: 50, orAbove: true })
+    expect(computeSingleEEWLevel(eew)).toBe(1)
+  })
+
+  it('「震度6弱以上」なら特別警報のまま（境界の向こう側）', () => {
+    const eew = makeEEW({ areas: [area({ scaleFrom: 55, scaleTo: 55, scaleToOrAbove: true })] })
+    expect(computeSingleEEWLevel(eew)).toBe(2)
+  })
+
+  it('「以上」でも特別警報の判定は据え置き（震度6弱以上 かつ 警報級）', () => {
+    // 「6弱以上」は下限が 6弱 なので特別警報のまま。以上フラグは表現だけに効かせる。
+    const eew = makeEEW({ areas: [area({ scaleFrom: 55, scaleTo: 55, scaleToOrAbove: true })] })
+    expect(computeSingleEEWLevel(eew)).toBe(2)
+    // 「震度4以上」の予報級は据え置きでレベル0（severity 必須の既存規則）。
+    const forecast = makeEEW({
+      severity: 'Forecast',
+      areas: [area({ scaleFrom: 40, scaleTo: 40, scaleToOrAbove: true })],
+    })
+    expect(computeSingleEEWLevel(forecast)).toBe(0)
+  })
+})
+
+// 読み上げは引き上げだけを追う。階級値だけで比べると「震度4」→「震度4以上」の変化を
+// 捉えられず、上限が消えたことを一度も声に出さないまま終わる。
+describe('isForecastScaleHigher', () => {
+  it('同じ階級で「以上」が付いたら警戒側とみなす', () => {
+    expect(isForecastScaleHigher({ scale: 40, orAbove: true }, { scale: 40, orAbove: false })).toBe(true)
+  })
+
+  it('同じ階級で「以上」が外れたら追わない（上限が確定した＝引き下げと同じ扱い）', () => {
+    expect(isForecastScaleHigher({ scale: 40, orAbove: false }, { scale: 40, orAbove: true })).toBe(false)
+  })
+
+  it('同じ階級・同じ「以上」なら動いていない', () => {
+    expect(isForecastScaleHigher({ scale: 40, orAbove: true }, { scale: 40, orAbove: true })).toBe(false)
+    expect(isForecastScaleHigher({ scale: 40, orAbove: false }, { scale: 40, orAbove: false })).toBe(false)
+  })
+
+  it('階級が上がれば「以上」の有無に関わらず警戒側', () => {
+    expect(isForecastScaleHigher({ scale: 45, orAbove: false }, { scale: 40, orAbove: true })).toBe(true)
+  })
+
+  it('階級が下がれば「以上」が付いても追わない（階級を先に見る）', () => {
+    expect(isForecastScaleHigher({ scale: 40, orAbove: true }, { scale: 55, orAbove: false })).toBe(false)
+  })
+
+  it('まだ何も読んでいないなら、読む値があるときだけ真', () => {
+    expect(isForecastScaleHigher({ scale: 40, orAbove: false }, undefined)).toBe(true)
+    // 震度が取れない報（scale=0）では読む値が無い。「以上」が立っていても真にしない
+    expect(isForecastScaleHigher({ scale: 0, orAbove: false }, undefined)).toBe(false)
+    expect(isForecastScaleHigher({ scale: 0, orAbove: true }, undefined)).toBe(false)
   })
 })
 

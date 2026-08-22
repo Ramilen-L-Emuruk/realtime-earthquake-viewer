@@ -305,12 +305,27 @@ describe('convertEvent', () => {
       return (convert({ ...REAL_EEW, areas: raw }) as EEWAlert).areas
     }
 
-    it('scaleTo=99（〜程度以上）は scaleFrom を上限として採用する', () => {
+    it('scaleTo=99（〜程度以上）は scaleFrom を上限として採用し、「以上」をフラグで残す', () => {
       // scaleFrom=70/scaleTo=99 は「震度7程度以上」。99 をそのまま通すと eewMaxScale() の
       // 実行時ガードがこの地域を無視し、最強クラスの EEW が特別警報に上がらなくなる。
+      // 上限に寄せたことで失われる「以上」は scaleToOrAbove で持ち越す（DMDATA の "over" と同じ）。
       expect(areas([{ pref: '宮城', name: '宮城県北部', scaleFrom: 70, scaleTo: 99, kindCode: '10', arrivalTime: null }]))
-        .toEqual([{ pref: '宮城', name: '宮城県北部', scaleFrom: 70, scaleTo: 70, kindCode: '10', arrivalTime: null }])
+        .toEqual([{ pref: '宮城', name: '宮城県北部', scaleFrom: 70, scaleTo: 70, scaleToOrAbove: true, kindCode: '10', arrivalTime: null }])
       expect(warnSpy).not.toHaveBeenCalled()
+    })
+
+    it('scaleTo=99 でも scaleFrom が不明なら「以上」を立てない（「不明以上」は意味を成さない）', () => {
+      const [a] = areas([{ pref: '宮城', name: '宮城県北部', scaleFrom: 0, scaleTo: 99, kindCode: '10', arrivalTime: null }])!
+      // scaleFrom=0（震度0）は内部では -1（不明）へ寄せる既存規則。
+      expect(a.scaleFrom).toBe(-1)
+      expect(a.scaleTo).toBe(-1)
+      expect(a.scaleToOrAbove).toBeUndefined()
+    })
+
+    it('通常の scaleTo には「以上」を立てない', () => {
+      const [a] = areas([{ pref: '宮城', name: '宮城県北部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null }])!
+      expect(a.scaleTo).toBe(50)
+      expect(a.scaleToOrAbove).toBeUndefined()
     })
 
     it('scaleTo が配列など非数値なら「〜程度以上」と誤認せず -1 に落として警告する', () => {

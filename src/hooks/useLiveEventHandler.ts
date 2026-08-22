@@ -4,9 +4,9 @@ import type { TabId } from '../components/IconNav'
 import type { AppSettings } from './useSettings'
 import type { AlertTitleApi } from './useAlertTitle'
 import type { ReplayEntry } from '../types/replay'
-import { getIntensityLabel } from '../utils/intensity'
+import { getIntensityLabel, getIntensityLabelWithOrAbove } from '../utils/intensity'
 import { formatMagnitude, hasMagnitude } from '../utils/formatters'
-import { eewMaxScale, eewMaxLpgmClass, eewNoForecastReason, computeSingleEEWLevel, selectEEWSoundType, eewKindLabel } from '../utils/eew'
+import { eewMaxScaleInfo, isForecastScaleHigher, eewMaxLpgmClass, eewNoForecastReason, computeSingleEEWLevel, selectEEWSoundType, eewKindLabel, type EewMaxScaleInfo } from '../utils/eew'
 import { haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
 import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, matchesArea, sortAreasForCardDisplay } from '../utils/tsunami'
@@ -302,7 +302,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // ならないのは、読み上げ文が毎回**最新値から作り直される**（差分を語らない）ため。取り下げた
   // 原因である「より高い値」は必ず別途予約され、そちらが読まれる。
 
-  const spokenEEWScalesRef = useRef<Map<string, number>>(new Map())
+  // 階級だけでなく「以上」も持つ。同じ階級のまま上限が定まらなくなる変化（「4」→「4以上」）は
+  // 階級値では捉えられず、値だけを覚えていると一度も声に出さないまま終わる（比較は
+  // `isForecastScaleHigher`）。
+  const spokenEEWScalesRef = useRef<Map<string, EewMaxScaleInfo>>(new Map())
   // 階級だけが上がる続報（震度据え置きで 2→3 等）は震度にもレベルにも現れないため専用に持つ。
   const spokenEEWLpgmClassesRef = useRef<Map<string, number>>(new Map())
   // 読み上げた区分（0=予報 / 1 以上=警報）。予想震度・階級が据え置きのまま severity だけ
@@ -950,7 +953,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
 
       const currentLevel = computeSingleEEWLevel(event)
-      const scale = eewMaxScale(event)
+      // 上限が定まらない報は通知・タイトルでも「以上」を添える（値だけでは下限の断定になる）。
+      const { scale, orAbove: scaleOrAbove } = eewMaxScaleInfo(event)
 
       // 新規発報か続報かを判定し、レベルの格上げを検出する。
       // 震度・長周期階級の引き上げはここでは見ない。読み上げ側は「実際に発話した値」と
@@ -983,7 +987,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           : currentLevel === 1 ? '緊急地震速報 警報' : eewKindLabel(0)
         showBrowserNotification(
           eewNotifyTitle,
-          `${event.earthquake.hypocenter.name}${scale > 0 ? ` 最大震度${getIntensityLabel(scale)}予想` : ''}`,
+          `${event.earthquake.hypocenter.name}${scale > 0 ? ` 最大震度${getIntensityLabelWithOrAbove(scale, scaleOrAbove)}予想` : ''}`,
           `eew-${key}`,
           true,
         )
@@ -996,7 +1000,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       const titleLevel = Array.from(activeEEWLevelsRef.current.values())
         .reduce<0 | 1 | 2>((m, l) => Math.max(m, l) as 0 | 1 | 2, 0)
       const eewTitle = `🚨 ${eewKindLabel(titleLevel)} ${event.earthquake.hypocenter.name}` +
-        (scale > 0 ? ` 最大震度${getIntensityLabel(scale)}予想` : '') +
+        (scale > 0 ? ` 最大震度${getIntensityLabelWithOrAbove(scale, scaleOrAbove)}予想` : '') +
         (newCount > 1 ? ` 他${newCount - 1}件` : '')
       title.setTitle(eewTitle)
       title.scheduleTitleRevert('eew')
@@ -1040,7 +1044,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // 地震の予想震度をキャンセル通知の直後に読み上げてしまう。
             const latest = eewTtsEventsRef.current.get(key)
             if (!latest) return null
-            const latestScale = eewMaxScale(latest)
+            const latestScaleInfo = eewMaxScaleInfo(latest)
             const latestLpgmClass = eewMaxLpgmClass(latest)
             // 区分は引き下げない。一度「警報」と伝えた EEW は、以後 severity が落ちても
             // 「伝え済み」として扱う（前置きを言い直さない。activeEEWLevelsRef の Math.max と同じ方針）。
@@ -1049,7 +1053,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // まだ一度も予想値を読んでいなければ無条件に読む（初報・震源更新の読み直し）。
             // 読んだ後は、実際に発話した値より上がったものが一つも無ければ黙る（引き下げは追わない）。
             if (eewPhase2DoneRef.current.has(key)
-              && latestScale <= (spokenEEWScalesRef.current.get(key) ?? 0)
+              && !isForecastScaleHigher(latestScaleInfo, spokenEEWScalesRef.current.get(key))
               && latestLpgmClass <= (spokenEEWLpgmClassesRef.current.get(key) ?? 0)
               && level <= spokenLevel) return null
             // 「緊急地震速報に切り替わりました。」は、予報として発報されたものが警報へ
@@ -1060,7 +1064,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             if (!text) return null
             // 既読の更新は発話の直前だけで行う。予約した時点で更新すると、取消で捨てられた発話や
             // 割り込みで消えた発話まで既読になり、一度も声に出していない値が基準になってしまう。
-            spokenEEWScalesRef.current.set(key, latestScale)
+            spokenEEWScalesRef.current.set(key, latestScaleInfo)
             spokenEEWLpgmClassesRef.current.set(key, latestLpgmClass)
             spokenEEWLevelsRef.current.set(key, level)
             eewPhase2DoneRef.current.add(key)
@@ -1082,7 +1086,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
                 const now = eewTtsEventsRef.current.get(key)
                 // 自動解除で消えた場合は鳴らし続ける。発表は終わったが、読んでいる値は誤りではない
                 if (!now) return true
-                return eewMaxScale(now) <= latestScale
+                return !isForecastScaleHigher(eewMaxScaleInfo(now), latestScaleInfo)
                   && eewMaxLpgmClass(now) <= latestLpgmClass
                   && computeSingleEEWLevel(now) <= level
               },
@@ -1560,7 +1564,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           const key = eew.issue?.eventId ?? eew.id
           const restoredLevel = computeSingleEEWLevel(eew)
           activeEEWLevelsRef.current.set(key, restoredLevel)
-          spokenEEWScalesRef.current.set(key, eewMaxScale(eew))
+          spokenEEWScalesRef.current.set(key, eewMaxScaleInfo(eew))
           spokenEEWLpgmClassesRef.current.set(key, eewMaxLpgmClass(eew))
           // 区分も復元する。落とすと注入後の最初の続報で「警報。」が付き直し、
           // 途中から再生を始めた地震がその場で警報化したように聞こえる。

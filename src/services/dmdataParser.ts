@@ -24,6 +24,9 @@ import { arr, obj, parseNum, str } from './parseHelpers'
 
 // EEW: "1","2","3","4","5-","5+","6-","6+","7","不明" 等
 // 地震情報: "1","2","3","4","5弱","5強","6弱","6強","7","不明" 等
+//
+// `"over"` は**震度7ではない**。「上限を定めない（下限以上）」を表す値なので、ここでは
+// 階級に写さず -1（不明）を返し、範囲として読む parseForecastInt() 側で下限に寄せる。
 function parseIntensityStr(s: string | undefined | null): IntensityScale {
   if (!s) return -1
   const map: Record<string, IntensityScale> = {
@@ -32,9 +35,34 @@ function parseIntensityStr(s: string | undefined | null): IntensityScale {
     '5+': 50, '5強': 50,
     '6-': 55, '6弱': 55,
     '6+': 60, '6強': 60,
-    '7': 70, 'over': 70,
+    '7': 70,
   }
   return map[s] ?? -1
+}
+
+/** 上限を定めない予想震度を表す DMDATA の値。P2PQuake の `scaleTo: 99` と同じ意味。 */
+const DMDATA_INTENSITY_OVER = 'over'
+
+/**
+ * EEW の予想震度の範囲（`{ from, to }`）を、階級 1 つと「以上」フラグに畳む。
+ *
+ * `to: "over"` は上限を定めない表現（例: `from: "4", to: "over"` = 「震度4以上」）。
+ * これを震度7と読むと、単独観測点処理の初報のように下限しか決まっていない報が
+ * 最大震度7として塗られ・読み上げられる。上限には下限側の値を採り、「以上」は
+ * フラグで持ち越して表示・読み上げで語を補う（P2PQuake の `scaleTo: 99` と同じ扱い）。
+ */
+function parseForecastInt(range: Record<string, unknown>): { scale: IntensityScale; orAbove: boolean } {
+  const fromStr = str(range.from)
+  const toStr = str(range.to)
+  if (toStr === DMDATA_INTENSITY_OVER) {
+    const from = parseIntensityStr(fromStr)
+    // 下限が読めなければ「以上」も意味を成さない（「不明以上」を作らない）。
+    return { scale: from, orAbove: from > 0 }
+  }
+  // over 以外は従来どおり「to があれば to・空なら from」。**`"不明"` のような読めない値でも
+  // to があれば to を採る**（不明のまま返す）。ここで from へ落とすと、上限が不明な報の震度が
+  // 下限の値で出るようになり、over 以外の挙動を静かに変えてしまう。
+  return { scale: parseIntensityStr(toStr || fromStr), orAbove: false }
 }
 
 // DMDATA の震源座標から緯度・経度・深さを取得する。
@@ -67,7 +95,7 @@ function parseEEWRegions(intensity: Record<string, unknown>): EEWRegion[] {
     const name = str(r.name)
     if (!name) continue
     const fm = obj(r.forecastMaxInt)
-    const scaleTo = parseIntensityStr(str(fm.to) || str(fm.from))
+    const { scale: scaleTo, orAbove } = parseForecastInt(fm)
     const scaleFrom = parseIntensityStr(str(fm.from))
     const lgRaw = obj(r.forecastMaxLgInt)
     const lgVal = parseInt(str(lgRaw.to) || str(lgRaw.from), 10)
@@ -77,6 +105,7 @@ function parseEEWRegions(intensity: Record<string, unknown>): EEWRegion[] {
       name,
       scaleFrom,
       scaleTo,
+      ...(orAbove && { scaleToOrAbove: true }),
       kindCode: str(obj(r.kind).code),
       arrivalTime: str(r.arrivalTime) || null,
       lgIntTo,
@@ -101,8 +130,9 @@ export function parseEEW(headType: string, data: Record<string, unknown>): EEWAl
 
   const intensity = obj(body.intensity)
   const forecastMaxInt = obj(intensity.forecastMaxInt)
-  // to がより厳しい上限値。取れない場合は from を使う
-  const forecastScale = parseIntensityStr(str(forecastMaxInt.to) || str(forecastMaxInt.from))
+  // 電文全体の予想最大震度。to が上限値だが、"over"（上限なし）なら from に寄せて
+  // 「以上」をフラグで持つ（地域別と同じ扱い。parseForecastInt の JSDoc 参照）。
+  const { scale: forecastScale, orAbove: forecastOrAbove } = parseForecastInt(forecastMaxInt)
   // 各地の予想震度（地域別）。キャンセル時は空にする。
   const areas = isCanceled ? [] : parseEEWRegions(intensity)
 
@@ -133,6 +163,7 @@ export function parseEEW(headType: string, data: Record<string, unknown>): EEWAl
     cancelled: isCanceled,
     isFinal: body.isLastInfo === true,
     forecastMaxScale: (!isCanceled && forecastScale >= 0) ? forecastScale as IntensityScale : undefined,
+    ...(!isCanceled && forecastScale > 0 && forecastOrAbove && { forecastMaxScaleOrAbove: true }),
     forecastMaxLpgmClass,
     issue: { eventId, serial, time: reportTime },
     areas,

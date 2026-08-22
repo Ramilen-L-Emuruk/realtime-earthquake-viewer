@@ -454,6 +454,8 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 地震情報の続報判定（キーは「地震を指すキー」と情報種別の組。前者は DMDATA が `eventId`／P2PQuake は発生時刻＋震源名・**見た報は全部覚える**。直近 1 件だと種別の違う報が交互に届いたときに互いの記憶を上書きし、2 度目が初報のように読まれる） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「特殊な扱い」 |
 | 震度を伝えない電文（震源情報等）でウィンドウタイトルの震度を消さないこと（判定は既存カードが震度を持つかどうかで行う。**その報が初報かどうかで判定しない**。種別ごとに初報になるため歯止めが効かない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §5 |
 | EEW の区分の呼び方（電文の名称に合わせる。予報級＝地震動予報／警報級＝緊急地震速報（警報）。表示・読み上げの対応表と `eewKindLabel`。ウィンドウタイトルも対象＝外部監視への破壊的変更） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §3「電文の名称と表示・読み上げ」 |
+| 上限を定めない予想震度（**`over` / `99` を階級値に写さない**。下限へ寄せ「以上」はフラグで持ち越して表示・読み上げで語を補う。判定には混ぜない） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §8（電文上の表れ）・[`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4（使い方・語を出す箇所）・[`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6（既読の覚え方＝比較にも「以上」を入れる） |
+| 仮定震源要素で連動して隠す・採らない箇所の列挙（**新たに `condition` を参照したら必ず追記する**。区域への S 波到達推定の震源もここに含む） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §5 |
 | 「特別警報」を音声で読まないこと（表示・通知・通知音は 2 段階を保つ） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
 | 通知音の内容と説明文の一致（`PLAYERS` の周波数・`COUNTDOWN_PULSES` のパルス数と、設定タブ「通知音テスト」の説明文・仕様書の記述） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §2 |
 | 通知音の質感の分け方（情報系＝`pianoNote` は全音に残響を載せる・EEW は予報だけ弱く持ち警報級と津波警報は乾いたまま・減衰の終端は `decayTone` に集約し種別ごとに分岐させない・アタックに広帯域ノイズを戻さない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §2「質感の分け方 — 警報は乾き、情報は濡れ」 |

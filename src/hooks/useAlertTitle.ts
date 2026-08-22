@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { EEWAlert } from '../types/earthquake'
-import { eewMaxScale, eewKindLabel, computeSingleEEWLevel } from '../utils/eew'
-import { getIntensityLabel } from '../utils/intensity'
+import { eewMaxScale, eewMaxScaleInfo, eewKindLabel, computeSingleEEWLevel } from '../utils/eew'
+import { getIntensityLabelWithOrAbove } from '../utils/intensity'
 
 // ウィンドウタイトル（情報タイトル）管理フック。
 //
@@ -17,7 +17,8 @@ import { getIntensityLabel } from '../utils/intensity'
  */
 export function computeEEWTitle(eews: ReadonlyMap<string, EEWAlert>): string {
   const primary = Array.from(eews.values()).sort((a, b) => eewMaxScale(b) - eewMaxScale(a))[0]
-  const scale = eewMaxScale(primary)
+  // 上限が定まらない報は「震度4以上予想」と出す（値だけにすると下限を断定してしまう）。
+  const { scale, orAbove } = eewMaxScaleInfo(primary)
   // **区分の名前は「発表中の EEW すべての最大レベル」から決める。** primary（最大震度）の区分で
   // 決めてはいけない。`eewMaxScale` は仮定震源要素で 0 を返すため、震度未確定の警報級が
   // 震度の付いた予報級に primary を奪われ、タイトルが「地震動予報」になって警報級が「他N件」に
@@ -25,7 +26,7 @@ export function computeEEWTitle(eews: ReadonlyMap<string, EEWAlert>): string {
   const maxLevel = Array.from(eews.values())
     .reduce<0 | 1 | 2>((m, e) => Math.max(m, computeSingleEEWLevel(e)) as 0 | 1 | 2, 0)
   return `🚨 ${eewKindLabel(maxLevel)} ${primary.earthquake.hypocenter.name}` +
-    (scale > 0 ? ` 最大震度${getIntensityLabel(scale)}予想` : '') +
+    (scale > 0 ? ` 最大震度${getIntensityLabelWithOrAbove(scale, orAbove)}予想` : '') +
     (eews.size > 1 ? ` 他${eews.size - 1}件` : '')
 }
 
