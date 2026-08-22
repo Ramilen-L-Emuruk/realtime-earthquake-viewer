@@ -850,7 +850,7 @@ function observationDetailSegments(
  * 観測波高の読み上げと到達確認の読み上げ（`tsunamiArrivalToSegments`）で共有する。文言を手で
  * 複製すると、片方だけ変えたときに黙って乖離する。
  */
-function omittedSuffix(total: number, shown: number): string {
+function omittedPointsSuffix(total: number, shown: number): string {
   const omitted = total - shown
   return omitted > 0 ? `、ほか${omitted}地点` : ''
 }
@@ -894,7 +894,7 @@ export function tsunamiObservationUpdateToSegments(
   maxPoints = OBS_UPDATE_SPEAK_MAX_POINTS,
 ): SpeechSegment[] {
   // 選抜は selectObservationUpdatesToSpeak に集約する（既読を記録する側と同じ絞り方にするため）。
-  // obs は「波高を持つ総数」で、読み上げなかった件数（omittedSuffix）を数えるのに要る。
+  // obs は「波高を持つ総数」で、読み上げなかった件数（omittedPointsSuffix）を数えるのに要る。
   const obs = updatedObs.filter(o => o.height !== undefined)
   const sorted = selectObservationUpdatesToSpeak(updatedObs, maxPoints)
   if (sorted.length === 0) return []
@@ -903,7 +903,7 @@ export function tsunamiObservationUpdateToSegments(
   return [
     plain(`津波観測情報。${headlinePart}`),
     ...observationDetailSegments(sorted, observedHeightSuffix),
-    plain(`${omittedSuffix(obs.length, sorted.length)}を観測しました。`),
+    plain(`${omittedPointsSuffix(obs.length, sorted.length)}を観測しました。`),
   ]
 }
 
@@ -922,7 +922,7 @@ export function tsunamiArrivalToSegments(obs: TsunamiObservation[], maxPoints = 
   const shown = obs.slice(0, maxPoints)
   return [
     ...observationDetailSegments(shown, () => ''),
-    plain(`${omittedSuffix(obs.length, shown.length)}で到達を確認しました。最大波高は観測中です。`),
+    plain(`${omittedPointsSuffix(obs.length, shown.length)}で到達を確認しました。最大波高は観測中です。`),
   ]
 }
 
@@ -1037,8 +1037,8 @@ function buildLpgmRegionText(lpgm: JMALpgm, opts: TtsRegionOptions): string {
     // 上限で切るときの選抜は電文の並び順のまま（震度側のような震源距離での選抜は行わない）。
     names = sortByRegionOrder(names, regionOrder)
     names.forEach(n => mentioned.add(n))
-    const omittedSuffix = omittedCount > 0 ? `、ほか${omittedCount}地域` : ''
-    parts.push(`階級${cls}を${names.join('、')}${omittedSuffix}`)
+    const omittedRegionSuffix = omittedCount > 0 ? `、ほか${omittedCount}地域` : ''
+    parts.push(`階級${cls}を${names.join('、')}${omittedRegionSuffix}`)
   }
 
   if (parts.length === 0) return ''

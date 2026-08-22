@@ -502,7 +502,7 @@ describe('津波の読み上げ: 区域名・地点名の区切り', () => {
     expect(text).toContain('新潟県上中下越、柏崎')
   })
 
-  // 安全弁: 到達確認も観測波高と同じ `omittedSuffix` で打ち切り件数を言う（文言を共有している）。
+  // 安全弁: 到達確認も観測波高と同じ `omittedPointsSuffix` で打ち切り件数を言う（文言を共有している）。
   // 実装を共有関数へ寄せたので、どちらか一方だけ文言が変わったらここで落ちる
   it('到達確認も maxPoints で外した地点数を読み上げる', () => {
     const obs: TsunamiObservation[] = [
