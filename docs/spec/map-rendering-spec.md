@@ -401,7 +401,9 @@ mode を全 Fit*GL に配って優先度で調停する大規模リファクタ�
 - `KyoshinDetectedPointsGL`（揺れ検知点ハイライト。描く点集合と下限はリアルタイムタブの検知カードと揃える。
   [`kyoshin-detection-spec.md`](kyoshin-detection-spec.md) §8）
 - `KyoshinMaxEffectGL`（最大震度エフェクト・rAF アニメ）
-- `EewRegionFillGL`（EEW 予想震度塗り・kyoshin 限定）
+- `EewRegionFillGL`（EEW 予想震度塗り・kyoshin 限定。塗り色は予想震度の階級だけで決まり、
+  「〜以上」の報でも色は下限の階級色。語はポップアップとバッジの文言で補う。
+  S 波到達の行は震源が確定している EEW のときだけ出る → [`eew-spec.md`](eew-spec.md) §4・§5）
 - `EewLpgmRegionFillGL`（EEW 予想長周期塗り・kyoshin 限定）
 - `PsWaveGL`（P/S 波予報円・カスタムレイヤー・100ms 更新）
 - `EewEpicentersGL`（EEW 震源×印）
@@ -577,6 +579,11 @@ MapLibre v6 の `_contextRestored` は `setStyle(..., {diff:false})` を呼ん�
 対象は震度・長周期地震動階級を色で示すバッジ全般。地図の Canvas アイコン（`gl/intensityIcons.ts`・
 `gl/lpgmIcons.ts`・`gl/kyoshinDetectedIcons.ts`）、ポップアップのバッジ（`gl/popupHtml.ts` の
 `badgeHtml`・`EpicenterGL.tsx` の県別震度）、UI 側のバッジ（`SettingsTab`・`RealtimeTab` の震度分布）。
+
+ポップアップのバッジ（`badgeHtml`）は**ラベルを折り返さない**（`white-space:nowrap`）。幅は中身に
+合わせて伸びるが、狭い親の中では折り返して「4以」「上」と縦に割れる。EEW の上限を定めない予想震度
+（→ [`eew-spec.md`](eew-spec.md) §4）で 2 文字を超えるラベルが入るようになったため必要になった。
+同じ理由で EEW 震源のポップアップは幅の上限を 280px に取る（既定の 240px では 1 行に収まらない）。
 
 気象庁の震度配色・長周期地震動階級の配色は仕様として定まっているため**色そのものは変えられない**。
 一方このパレットは明度の幅が広く（震度4 の黄 〜 震度7 の紫）、文字色を白か黒の一方に固定すると
