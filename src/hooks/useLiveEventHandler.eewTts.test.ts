@@ -28,12 +28,32 @@ import { splitIntoChunks } from '../utils/voicevox'
 import type { AppSettings } from './useSettings'
 import type { EEWAlert, EEWRegion, IntensityScale, LpgmClass, JMAQuake, JMATsunami } from '../types/earthquake'
 
-const speakMock = vi.fn(() => Promise.resolve())
+// 「鳴っている最中」を再現するための保留。`holdNextSpeech()` で次の 1 回だけ保留にする。
+let holdNextCall = false
+let releaseHeld: (() => void) | null = null
+/** 鳴っているものを止める（実物の `activeSources.stop()` / `stopSpeech()` に相当）。 */
+function releaseCurrentSpeech() {
+  releaseHeld?.()
+  releaseHeld = null
+}
+
+// **実物の割り込みの仕組みまで模す。** `speakWithVoicevox` は待ち行列ではなく割り込みで、
+// 呼ばれた瞬間に鳴っている音を止め、止められた側の再生 Promise はセッション不一致の検知で
+// すぐ解決する。モックを単純な即時解決にするとこの相互作用が消え、「割り込みが後ろに並んで
+// いた別 EEW の予約を巻き込む」形の回帰を見逃す（実際に一度その穴を作り、レビューで
+// 見つかった）。`stopSpeech` も同じ役を持たせないと、言い直しの待ちが明けない。
+const speakMock = vi.fn((..._args: unknown[]) => {
+  releaseCurrentSpeech()
+  if (!holdNextCall) return Promise.resolve()
+  holdNextCall = false
+  return new Promise<void>(resolve => { releaseHeld = resolve })
+})
 vi.mock('../utils/voicevox', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/voicevox')>()),
   speakWithVoicevox: (...args: unknown[]) => speakMock(...(args as [])),
   // 先行合成は「使えなかった」扱いにして、本再生側で合成し直す経路を通す
   prewarmVoicevox: () => null,
+  stopSpeech: () => releaseCurrentSpeech(),
 }))
 vi.mock('../utils/alertSound', () => ({ playAlertSound: vi.fn() }))
 vi.mock('../utils/notifications', () => ({ showBrowserNotification: vi.fn() }))
@@ -54,6 +74,19 @@ function spokenTexts(): string[] {
  */
 async function flushMicrotasks() {
   for (let i = 0; i < 400; i++) await Promise.resolve()
+}
+
+/**
+ * 次の 1 発話を「鳴っている最中」の状態で止める。返り値を呼ぶまで解決しない。
+ *
+ * 予報から警報への言い直しは**鳴っている相手がいるときだけ**起きるため、既定の
+ * 「即座に解決するモック」では再現できない（発話が一瞬で終わり、格上げが届く前に
+ * 読み終えてしまう）。逆に「切らないこと」を確かめる側でも、止めておかないと
+ * 切る余地そのものが無く、テストが何も守らない。
+ */
+function holdNextSpeech(): () => void {
+  holdNextCall = true
+  return () => releaseCurrentSpeech()
 }
 
 function makeEEW(over: {
@@ -137,6 +170,9 @@ function setup() {
 beforeEach(() => {
   vi.useFakeTimers()
   speakMock.mockClear()
+  // 保留を持ち越すと、次のテストの 1 発話目が解決しないまま止まる
+  holdNextCall = false
+  releaseHeld = null
 })
 
 afterEach(() => {
@@ -334,6 +370,227 @@ describe('EEW 読み上げの文言と発話順序', () => {
       handle(makeEEW({ serial: 2, scaleTo: 50, severity: 'Warning' }))
       await flushMicrotasks()
       expect(spokenTexts()).toEqual(['緊急地震速報に切り替わりました。予想最大震度5強。'])
+    })
+
+    // 上のテストは第 1 フェーズを**読み終えてから**格上げが届いた場合。読み上げている最中なら
+    // 話が変わる。読み切るのを待つと区分の告知が第 1 フェーズの長さ（実測 5.5 秒）だけ遅れる
+    // ため、割り込んで頭から言い直す。語の途中で切れても文の頭からやり直すので、地名を
+    // 聞き違えたまま残ることはない。
+    it('予報を読み上げている最中に警報へ上がったら、待たずに警報として言い直す', async () => {
+      const handle = setup()
+      const release = holdNextSpeech()
+      handle(makeEEW({ scaleTo: 50, severity: 'Forecast' }))
+      await flushMicrotasks()
+      // 第 1 フェーズが鳴り続けている間、第 2 フェーズはその完了を待っている
+      expect(spokenTexts()).toEqual(['地震動予報、日向灘で地震。'])
+
+      handle(makeEEW({ serial: 2, scaleTo: 50, severity: 'Warning' }))
+      await flushMicrotasks()
+
+      expect(spokenTexts()).toEqual([
+        '地震動予報、日向灘で地震。',
+        '緊急地震速報、日向灘で地震。',
+        '予想最大震度5強。',
+      ])
+      // 切り出しの語で区分を伝え直しているので、遷移の言い方は重ねない
+      expect(spokenTexts().some(t => t.includes('切り替わりました'))).toBe(false)
+      release()
+      await flushMicrotasks()
+    })
+
+    // まだ声になっていない予約は差し替えるだけで足りる。言い直しより早く、切れ目も生まれない。
+    // 「地震動予報、」を一度も口にしない点が要点（実際より軽い区分を伝えずに済む）。
+    it('声になる前に警報へ上がったら、言い直さず最初から警報として読む', async () => {
+      const handle = setup()
+      handle(makeEEW({ scaleTo: 50, severity: 'Forecast' }))
+      // マイクロタスクを流す前＝予約はしたが合成に入っていない時点で格上げが届く
+      handle(makeEEW({ serial: 2, scaleTo: 50, severity: 'Warning' }))
+      await flushMicrotasks()
+
+      expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度5強。'])
+    })
+
+    // 打ち切ってよいのは区分の格上げだけ。予想震度は数秒ごとに書き換わる（2024/1/1 能登の
+    // 本震では 5弱 → 7 まで 7.5 秒）ため、値が動くたびに切っていると読み終わらない。
+    it('予想震度の引き上げでは、鳴っている第1フェーズを切らない', async () => {
+      const handle = setup()
+      const release = holdNextSpeech()
+      handle(makeEEW({ scaleTo: 40, severity: 'Warning' }))
+      await flushMicrotasks()
+      expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。'])
+
+      handle(makeEEW({ serial: 2, scaleTo: 70, severity: 'Warning' }))
+      await flushMicrotasks()
+      // 言い直しは起きない（鳴り終わるのを待つ）
+      expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。'])
+
+      release()
+      await flushMicrotasks()
+      expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度7。'])
+    })
+
+    // 警報 → 特別警報（震度6弱以上の予想）は受信レベルとしては上がるが、区分は既に
+    // 「緊急地震速報」と伝えてあり、「特別警報」は音声で使わない方針（docs/spec/eew-spec.md §4）。
+    // 言い直す中身が無いので切らない。判定に受信レベルの上昇を使うとここで誤って切る。
+    it('警報から特別警報への格上げでは、鳴っている第1フェーズを切らない', async () => {
+      const handle = setup()
+      const release = holdNextSpeech()
+      handle(makeEEW({ scaleTo: 50, severity: 'Warning' }))
+      await flushMicrotasks()
+      expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。'])
+
+      handle(makeEEW({ serial: 2, scaleTo: 55, severity: 'Warning' }))
+      await flushMicrotasks()
+      expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。'])
+
+      release()
+      await flushMicrotasks()
+      expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度6弱。'])
+    })
+
+    // 割り込みは**順番を崩さない**。鳴っている音だけを止め、自分はチェーンの順序どおりに並ぶ。
+    // 前の発話を待たずに投入する形にすると、待ち行列にいた別 EEW の予約が「止めた」ことで
+    // 解放され、始まったばかりの言い直しを後ろから消す（仕組みは voicevox.ts の `stopSpeech`）。
+    // 症状は「警報の言い直しが聞こえない」だけでログに何も残らないため、ここで固定する。
+    it('言い直しの割り込みが、後ろに並んでいた別 EEW の読み上げを巻き込まない', async () => {
+      const handle = setup()
+      const release = holdNextSpeech()
+      handle(makeEEW({ scaleTo: 50, severity: 'Forecast' }))
+      await flushMicrotasks()
+      expect(spokenTexts()).toEqual(['地震動予報、日向灘で地震。'])
+
+      // A が鳴っている間に別地震 B が発報され、A の完了待ちでチェーンに積まれる
+      handle(makeEEW({
+        eventId: 'B', scaleTo: 40, severity: 'Warning',
+        hypocenter: { name: '能登半島沖', latitude: 37.5, longitude: 137.2 },
+      }))
+      await flushMicrotasks()
+      expect(spokenTexts()).toEqual(['地震動予報、日向灘で地震。'])
+
+      // ここで A が警報へ格上げ。A の言い直しと B の読み上げが互いを消し合ってはならない
+      handle(makeEEW({ serial: 2, scaleTo: 50, severity: 'Warning' }))
+      await flushMicrotasks()
+      release()
+      await flushMicrotasks()
+
+      // 5 発話すべてが残る。**A の言い直しは B の後ろ**——順番を守る代償として区分の告知は
+      // B の読み上げの分だけ遅れるが、待ち行列の到来順は保たれる。消し合って両方が尻切れに
+      // なるより良い（順番を飛ばすと、まさにその尻切れが起きる）。
+      expect(spokenTexts()).toEqual([
+        '地震動予報、日向灘で地震。',
+        '緊急地震速報、能登半島沖で地震。',
+        '予想最大震度4。',
+        '緊急地震速報、日向灘で地震。',
+        '予想最大震度5強。',
+      ])
+    })
+
+    // 続報は密集する（能登の本震では 0.3〜2 秒間隔）。最初の言い直しが声になる前に次の格上げが
+    // 届くが、区分の既読は発話の直前まで更新されないため、印を持たないと**完全に同一の文言を
+    // 重ねて積む**。警報を早く伝えたい場面でこそ連投されるので、そこで二重読みになる。
+    it('格上げの続報が連投されても、言い直しは 1 回だけ', async () => {
+      const handle = setup()
+      const release = holdNextSpeech()
+      handle(makeEEW({ scaleTo: 50, severity: 'Forecast' }))
+      await flushMicrotasks()
+      expect(spokenTexts()).toEqual(['地震動予報、日向灘で地震。'])
+
+      // 3 通を立て続けに受ける（間でマイクロタスクを流さない＝どれも実行前）
+      handle(makeEEW({ serial: 2, scaleTo: 50, severity: 'Warning' }))
+      handle(makeEEW({ serial: 3, scaleTo: 55, severity: 'Warning' }))
+      handle(makeEEW({ serial: 4, scaleTo: 60, severity: 'Warning' }))
+      await flushMicrotasks()
+      release()
+      await flushMicrotasks()
+
+      expect(spokenTexts().filter(t => t === '緊急地震速報、日向灘で地震。')).toHaveLength(1)
+      // 予想値は最新の 1 回だけ（引き上げの読み直しは第 2 フェーズの既存の仕組みが畳む）
+      expect(spokenTexts()).toEqual([
+        '地震動予報、日向灘で地震。',
+        '緊急地震速報、日向灘で地震。',
+        '予想最大震度6強。',
+      ])
+    })
+
+    // 震源の大幅更新は古い音を止めずに予約を積み直す（文面が「震源を更新、」で区分に触れない
+    // ため、止める価値がない）。そのとき「鳴っている」という記録まで落としてしまうと、直後の
+    // 格上げで言い直しが発火せず、区分の告知が第 2 フェーズの前置きまで遅れる。
+    it('震源の大幅更新を挟んでも、鳴っている最中の格上げは言い直しになる', async () => {
+      const moved = { name: '種子島近海', latitude: 30.5, longitude: 131.0 }
+      const handle = setup()
+      const release = holdNextSpeech()
+      handle(makeEEW({ scaleTo: 50, severity: 'Forecast' }))
+      await flushMicrotasks()
+      expect(spokenTexts()).toEqual(['地震動予報、日向灘で地震。'])
+
+      // 震源が 50km 超動いた続報。まだ予報級のまま
+      handle(makeEEW({ serial: 2, scaleTo: 50, severity: 'Forecast', hypocenter: moved }))
+      await flushMicrotasks()
+
+      // 続いて警報へ格上げ（震源はもう動かない）
+      handle(makeEEW({ serial: 3, scaleTo: 50, severity: 'Warning', hypocenter: moved }))
+      await flushMicrotasks()
+      release()
+      await flushMicrotasks()
+
+      // 震源更新を伝えたうえで、格上げは言い直しで伝わる（前置きへ落ちない）
+      expect(spokenTexts()).toEqual([
+        '地震動予報、日向灘で地震。',
+        '震源を更新、種子島近海で地震。',
+        '緊急地震速報、種子島近海で地震。',
+        '予想最大震度5強。',
+      ])
+      expect(spokenTexts().some(t => t.includes('切り替わりました'))).toBe(false)
+    })
+
+    // 同じ EEW でも予約は積み直される（震源の大幅更新は古い音を止めずに積む）ので、同一 eventId に
+    // 複数の予約が並ぶ。**記録を消すときに「自分が置いた分か」を見ないと、震源更新の予約が
+    // 言い直しの予約の印まで落とし**、二重読みが復活する。
+    it('震源更新の予約が先に順番を迎えても、言い直しの予約は消されない', async () => {
+      const moved = { name: '種子島近海', latitude: 30.5, longitude: 131.0 }
+      const handle = setup()
+      const release1 = holdNextSpeech()
+      handle(makeEEW({ scaleTo: 50, severity: 'Forecast' }))
+      await flushMicrotasks()
+      expect(spokenTexts()).toEqual(['地震動予報、日向灘で地震。'])
+
+      // 震源が動いた続報（まだ予報）。古い音は止めずにチェーンへ積む
+      handle(makeEEW({ serial: 2, scaleTo: 50, severity: 'Forecast', hypocenter: moved }))
+      // 次に鳴るもの（震源更新）を保留にして、その実行後に続報を差し込めるようにする
+      const release2 = holdNextSpeech()
+      // 警報へ格上げ。ここで言い直しが予約され、鳴っていた予報が止まる
+      handle(makeEEW({ serial: 3, scaleTo: 50, severity: 'Warning', hypocenter: moved }))
+      await flushMicrotasks()
+
+      // 震源更新が鳴っている最中に、さらに警報の続報。印が残っていれば重ねない
+      handle(makeEEW({ serial: 4, scaleTo: 55, severity: 'Warning', hypocenter: moved }))
+      await flushMicrotasks()
+      release1()
+      release2()
+      await flushMicrotasks()
+
+      expect(spokenTexts().filter(t => t === '緊急地震速報、種子島近海で地震。')).toHaveLength(1)
+    })
+
+    // 発話の完了待ちには上限（`EEW_SPEECH_CHAIN_MAX_WAIT_MS`）がある。VOICEVOX が極端に遅いと
+    // **まだ鳴っているのに「鳴っている」記録が先に消える**ため、言い直しは発火しない。既知の
+    // 限界だが、そのときは第 2 フェーズの前置きが伝える ―― **区分が声にならない方には倒れない**。
+    it('発話の完了待ちが上限に達した後の格上げは、前置きで伝わる', async () => {
+      const handle = setup()
+      holdNextSpeech()
+      handle(makeEEW({ scaleTo: 50, severity: 'Forecast' }))
+      await flushMicrotasks()
+      expect(spokenTexts()).toEqual(['地震動予報、日向灘で地震。'])
+
+      // 上限を越えさせる（ここで「鳴っている」記録が降りる）
+      await vi.advanceTimersByTimeAsync(8000)
+      await flushMicrotasks()
+
+      handle(makeEEW({ serial: 2, scaleTo: 50, severity: 'Warning' }))
+      await flushMicrotasks()
+
+      expect(spokenTexts().filter(t => t === '緊急地震速報、日向灘で地震。')).toHaveLength(0)
+      expect(spokenTexts().some(t => t.includes('切り替わりました'))).toBe(true)
     })
 
     // 初報から警報なら、区分は切り出しの「緊急地震速報、〇〇で地震。」で伝わっている。

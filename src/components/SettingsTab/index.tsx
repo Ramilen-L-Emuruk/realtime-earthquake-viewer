@@ -907,7 +907,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         <Row label="地震動予報" description="震度4程度（予報域） – eewForecast 音 / 10秒以内に再度押すと続報、押さなければ最終報確定→無音で自動解除（数分後）">
           <TestButton color="yellow" onClick={onTest.eewForecast}>予報テスト</TestButton>
         </Row>
-        <Row label="地震動予報（単独点処理）" description="1観測点のみで検知した震源未確定の初報（日向灘・仮定値 M5.0 深さ10km） – eewForecast 音 / 地域別予想が載らないため「単独点処理のため、予想震度なし。」を待たずに読み上げ。10秒以内に再度押すと震源確定＋震度5強予想の警報へ格上げ（eew 音・「緊急地震速報に切り替わりました。」）。押さなくても最終報が確定震源になるため同じ格上げが起きる→無音で自動解除（数分後）">
+        <Row label="地震動予報（単独点処理）" description="1観測点のみで検知した震源未確定の初報（日向灘・仮定値 M5.0 深さ10km） – eewForecast 音 / 地域別予想が載らないため「単独点処理のため、予想震度なし。」を待たずに読み上げ。10秒以内に再度押すと震源確定＋震度5強予想の警報へ格上げ（eew 音）。格上げの伝え方は押すタイミングで変わる（読み上げ中に押すと割り込んで言い直し）。押さなくても最終報が確定震源になるため同じ格上げが起きる→無音で自動解除（数分後）">
           <TestButton color="yellow" onClick={onTest.eewAssumed}>単独点処理テスト</TestButton>
         </Row>
         <Row label="地震動予報（深発地震）" description="深さ450km（小笠原諸島西方沖 M6.5） – eewForecast 音 / 深発地震には地域別の震度予想が発表されないため「深発地震のため、予想震度なし。」を待たずに読み上げ。気象庁は深さ150km超に警報を出さないため続報も予報級のまま / 10秒以内に再度押すと続報、押さなければ最終報確定→無音で自動解除（数分後）">

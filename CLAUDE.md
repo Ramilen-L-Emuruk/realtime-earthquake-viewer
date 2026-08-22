@@ -443,7 +443,8 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 読み上げ文で名前を並べるときの書き方（区切りは読点・中黒は音にならず合成の区切りにもならない・場所の助詞「で」は文末のみ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
 | チャンク末尾の句読点に間を足すこと（VOICEVOX は後ろに何も続かない句読点に間を付けない・チャンクは隙間なく詰めて鳴らす・**最後のチャンクには足さない**・足すかどうかは合成の入口 3 つで揃える。読点で名前を並べても間が入らない症状はここが原因） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「チャンク末尾の句読点には間を足す」 |
 | EEW 読み上げ第 2 フェーズの発火条件（値の確定で読む・予想震度が付かない理由が判っているなら待たない・`EEW_PHASE2_MAX_WAIT_MS` の上限・引き上げも初報と同じ形で言い直す・「警報。」の前置きはその EEW で初めて伝えるときだけ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
-| 読み上げを鳴らす直前の見直し（`shouldStillPlay`。渡しているのは EEW だけ・判定はチャンク単位・鳴っている途中のチャンクは切らない・第 2 フェーズは誤報取消と値の引き上げで打ち切り、第 1 フェーズは誤報取消のみ・自動解除と値の引き下げでは止めない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「鳴らす直前の見直し」・§6 |
+| 読み上げを鳴らす直前の見直し（`shouldStillPlay`。渡しているのは EEW だけ・判定はチャンク単位・鳴っている途中のチャンクは切らない・第 2 フェーズは誤報取消と値の引き上げで打ち切り、第 1 フェーズは誤報取消のみ・自動解除と値の引き下げでは止めない。**区分の格上げだけは別経路**で音を直接止める＝次行） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「鳴らす直前の見直し」・§6 |
+| 予報から警報へ上がったときの伝え方（第 1 フェーズの進み具合で 3 通り・どの経路でも「緊急地震速報」の語は必ず声になる・**止めるのは音だけで発話の順番は崩さない**・**言い直しは 1 回だけ**・**進み具合の記録は自分が置いた分だけ消す**（書き換えは `updatePhase1Progress` に集約）・震源の大幅更新と予想値の引き上げでは割り込まない。後ろの 3 つはいずれも外すと別 EEW を巻き込むか同じ文言を重ねる） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「予報から警報へ上がったとき — 進み具合で 3 通り」 |
 | EEW 読み上げの直列化（全 EEW で 1 本のチェーン・既読値の更新は発話直前だけ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げの優先順位」 |
 | 自動タブ切替の 2 系統（読み上げ追従／保持機構）と競合の判定順序・優先度表 | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
 | EEW 続報の片方向抑制・追従の最小滞留時間・アイドル復帰の重み（`idleRevertPriority`）・生の `setActiveTab` を使わないこと | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
