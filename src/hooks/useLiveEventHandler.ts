@@ -11,7 +11,7 @@ import { haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
 import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, matchesArea, sortAreasForCardDisplay } from '../utils/tsunami'
 import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
-import { speakWithVoicevox, prewarmVoicevox, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
+import { speakWithVoicevox, prewarmVoicevox, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
 import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, type TtsRegionOptions } from '../utils/ttsText'
 import { joinSegments, plain, type SpeechFollowApi, type SpeechSegment } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
@@ -141,6 +141,19 @@ const MUTUAL_YIELD_TOPICS: ReadonlySet<SpeechTopic> = new Set<SpeechTopic>([
  * `HIGHER_PRIORITY_SPEECH_MAX_WAIT_MS`）。
  */
 type SpeechBlocker = 'eewChain' | 'eewPhase2' | 'higher' | 'mutualYield'
+
+/**
+ * EEW 第 1 フェーズ（震源の読み上げ）の進み具合。詳細は `eewPhase1ProgressRef` の宣言箇所。
+ *
+ * 入れる値は識別子（`{}`）で、中身は見ず**同一性だけを見る**。同じ eventId に複数の予約が
+ * 並ぶため、「この記録を置いたのは自分か」を判別できないと他の予約の記録を消してしまう。
+ */
+type EEWPhase1Progress = {
+  /** いま声になっている予約。null なら何も鳴っていない。 */
+  speakingToken: object | null
+  /** 予約済みでまだ声になっていない言い直し。null なら重ねてよい。 */
+  restateToken: object | null
+}
 
 // 南海トラフ関連解説情報の通知音（specialInfoCommentary）は約 1.3 秒。鳴り終わってから読み上げる。
 // 音を作り変えたらこの値も見直すこと（docs/spec/audio-tts-spec.md §6）。
@@ -461,11 +474,41 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const eewPhase2DoneRef = useRef<Set<string>>(new Set())
   // 予約の解決時にテキストを生成するため、eventId ごとに最新イベントを保持する（変化なし続報も含め常に最新で上書き）
   const eewTtsEventsRef = useRef<Map<string, EEWAlert>>(new Map())
-  // 誤報取消（訂正）を受けた eventId。**鳴っている途中の読み上げを打ち切ってよいのはこれだけ。**
+  // 誤報取消（訂正）を受けた eventId。**`shouldStillPlay` で鳴っているものを落としてよいのは
+  // これだけ**（もう 1 つの打ち切りは予報から警報への言い直しだが、あちらは新しい発話を
+  // 割り込ませる形で止める。`eewPhase1ProgressRef` を参照）。
   // 自動解除（expired）と区別するために別に持つ（どちらも eewTtsEventsRef からは消えるため、
   // 消えたことだけでは理由が分からない）。発表が終わった EEW の内容は誤りではないので、
   // 自動解除では鳴っているものを切らない（切ると代わりに読むものが無く、尻切れで終わる）。
   const eewRetractedKeysRef = useRef<Set<string>>(new Set())
+  // 第 1 フェーズ（震源の読み上げ）の進み具合。eventId 別。
+  // **予報から警報へ上がったときに、言い直すかどうか・何回言い直すかをこれ 1 つで決める。**
+  //
+  // 持つのは 2 つの識別子（`{}` で作る値。「どの予約か」を指すだけで中身は見ない）。
+  //
+  //   speakingToken … いま声になっている予約。null なら**何も鳴っていない**
+  //   restateToken  … 予約済みでまだ声になっていない**言い直し**。null なら重ねてよい
+  //
+  // 判定はこの 2 つで足りる。鳴っていれば割り込んで頭から言い直し、鳴っていなければ放って
+  // おく（区分は発話の直前に決めるので、そのまま警報として読まれる）。読み終えていれば
+  // 第 2 フェーズが「緊急地震速報に切り替わりました。」と前置きする。
+  // **どの経路でも「緊急地震速報」の語は必ず声になる。**
+  //
+  // 言い直しの側を別に持つのは、続報が密集する（2024/1/1 能登の本震では 0.3〜2 秒間隔）ため。
+  // 区分の既読（`spokenEEWLevelsRef`）は発話の直前まで更新されないので、印が無いと 2 通目・
+  // 3 通目も「まだ警報を伝えていない」と判定し、**完全に同一の文を重ねて積む**。既読の側を
+  // 予約時点で更新する形では直せない——取消で声にならなかった区分まで「伝え済み」になり、
+  // 以後その EEW では言い直しも前置きも発火しなくなる。
+  //
+  // **書き換えは `updatePhase1Progress` に集約し、自分の識別子が入っている欄だけを消すこと。**
+  // 予約は積み直される（震源の大幅更新は古い音を止めずに積む）ため、同じ eventId に複数の予約が
+  // 並ぶ。無条件に消す形にすると、他の予約が置いた記録まで落として二重読みや誤った割り込みを
+  // 招く（実際にその穴を 2 度作った）。
+  //
+  // 「鳴っている」の追跡は完全ではない。発話の完了待ちには上限（`EEW_SPEECH_CHAIN_MAX_WAIT_MS`）
+  // があり、VOICEVOX が極端に遅いと**まだ鳴っているのに記録が消える**。そのときは言い直しの
+  // 代わりに第 2 フェーズの前置きが伝えるので、区分が声にならない方には倒れない。
+  const eewPhase1ProgressRef = useRef<Map<string, EEWPhase1Progress>>(new Map())
   // EEW の eventId ごとに最後に Phase 1 を発話したときの震源情報を保持する（震源地名変化+座標移動の再発話判定用）
   const activeEEWAnnouncedHypocentersRef = useRef<Map<string, { name: string; lat: number; lng: number }>>(new Map())
   // 長周期地震動情報の更新検出: 受信済み eventId を追跡する
@@ -493,27 +536,66 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    * ここで reject させると以降の EEW の読み上げが連鎖的に落ち、**その端末では二度と
    * 緊急地震速報が読まれなくなる**。テキスト生成の例外まで含めて必ず catch する。
    *
+   * `speak` が返す `onSettled` は、発話が終わった（または黙る判断で降りた）ときに必ず呼ばれる。
+   * 「いま鳴っているか」を呼び出し側が持つために使う。
+   *
    * @param follow 発話を投入する直前に呼ばれる（画面を声に合わせる用途）。
    *   `speak` が null を返して黙るときは呼ばれない。
+   * @param cutCurrent 鳴っている音を先に止める（`stopSpeech`）。**順番は崩さない**——自分は
+   *   これまでどおり `prev` の完了を待って並ぶ。止めれば `prev` はすぐ完了するので、待ちは
+   *   実質そのぶん短くなる。使うのは予報から警報への言い直しだけで、区分が上がったことは
+   *   読み上げの途中を守るより重い（第 1 フェーズは実測 5.5 秒あり、鳴り終わるまで待てば
+   *   そのぶん警報の告知が遅れる）。**予想震度の引き上げには使わない。** 数秒ごとに書き換わる
+   *   ため、そのたびに切っていると読み終わらない。
+   *
+   *   **「待たずに投入する」形にしてはいけない。** `prev` を飛ばして先に鳴らすと、待ち行列に
+   *   いた別 EEW の予約が `prev` の完了で解放され、始まったばかりのこちらを後ろから消す
+   *   （止める行為そのものが解放のスイッチになる）。詳細は `stopSpeech` の JSDoc。
    */
+  /**
+   * 第 1 フェーズの進み具合を部分更新する（{@link EEWPhase1Progress}）。
+   *
+   * **書き換えはすべてここを通すこと。** 直接 `set` すると、指定しなかった欄を既定値で
+   * 上書きしてしまう（同じ eventId に複数の予約が並ぶため、それは他の予約の記録を消すのと
+   * 同じになる）。両方の欄が空になったらエントリごと落とす。
+   */
+  const updatePhase1Progress = (key: string, patch: Partial<EEWPhase1Progress>) => {
+    const current = eewPhase1ProgressRef.current.get(key)
+      ?? { speakingToken: null, restateToken: null }
+    const next = { ...current, ...patch }
+    if (next.speakingToken === null && next.restateToken === null) {
+      eewPhase1ProgressRef.current.delete(key)
+    } else {
+      eewPhase1ProgressRef.current.set(key, next)
+    }
+  }
+
   const chainEEWSpeech = (
-    speak: () => string | { text: string; shouldStillPlay?: ShouldStillPlay } | null,
+    speak: () => string | { text: string; shouldStillPlay?: ShouldStillPlay; onSettled?: () => void } | null,
     follow?: () => void,
+    cutCurrent = false,
   ) => {
     eewSpeechPendingRef.current++
     const prev = eewSpeechChainRef.current
+    if (cutCurrent) stopSpeech()
+    let settled: (() => void) | undefined
     eewSpeechChainRef.current = capSpeechWait(prev).then(() => {
       const spoken = speak()
       if (spoken === null) return
-      const { text, shouldStillPlay } = typeof spoken === 'string' ? { text: spoken, shouldStillPlay: undefined } : spoken
+      const { text, shouldStillPlay, onSettled } = typeof spoken === 'string'
+        ? { text: spoken, shouldStillPlay: undefined, onSettled: undefined }
+        : spoken
+      settled = onSettled
       // 声に出すものが決まった瞬間に画面も合わせる。黙る予約（spoken === null）では動かさない。
-      follow?.()
+      // **追従の失敗で読み上げを落とさない。** ここから例外が抜けると本文が鳴らないまま catch に
+      // 落ち、警報が声にならない（`voicevox.ts` の `onChunkScheduled` と同じ方針）。
+      try { follow?.() } catch (err) { log.warn('[eew] 読み上げ追従に失敗（読み上げは続行）', err) }
       return capSpeechWait(
         speakWithVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume, shouldStillPlay),
       )
     })
       .catch(err => log.warn('[eew] 読み上げに失敗', err))
-      .finally(() => { eewSpeechPendingRef.current-- })
+      .finally(() => { eewSpeechPendingRef.current--; settled?.() })
   }
 
   /**
@@ -1164,6 +1246,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         eewPhase2TokensRef.current.delete(key)
         eewPhase2DoneRef.current.delete(key)
         spokenEEWLevelsRef.current.delete(key)
+        // 発表が終わった EEW を「鳴っている最中」と見なさないため（言い直しの判定に使う）。
+        // 予約が黙って降りるときにも消えるが、そちらは発話の順番が来てからになる。
+        eewPhase1ProgressRef.current.delete(key)
         if (!event.expired && hadKey) {
           // 誤報取消（10秒キャンセル表示中）: 他に発表中のEEWがあってもリアルタイムタブでオーバーレイを見せる
           log.info('[tab] realtime を要求 (EEW誤報取消・キャンセル表示)')
@@ -1242,10 +1327,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       title.scheduleTitleRevert('eew')
 
       // VOICEVOX: 2フェーズ読み上げ
-      // 第1フェーズ（isNew 即時、または続報での震源の大幅更新時）:
-      //   「緊急地震速報、〇〇で地震。」/「震源を更新、〇〇で地震。」
+      // 第1フェーズ（isNew 即時／続報での震源の大幅更新／予報から警報への言い直し）:
+      //   「地震動予報、〇〇で地震。」/「緊急地震速報、〇〇で地震。」/「震源を更新、〇〇で地震。」
       // 第2フェーズ（第1フェーズの完了後。以降の続報も直前の発話の完了後）:
-      //   「（警報。）予想最大震度〇〇。（予想最大階級〇。）」
+      //   「（緊急地震速報に切り替わりました。）予想最大震度〇〇。（予想最大階級〇。）」
       // 続報で予想が上がったときも同じ形で言い直す（引き上げ専用の短句は持たない。
       // 理由は eewIntensityToText の JSDoc）。
       // 読み上げは soundEnabled と独立に voicevoxEnabled のみで判定する（AUD-7）。
@@ -1336,7 +1421,31 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         const hypoNameChanged = !isNew && prevHypo !== undefined && hypo.name !== prevHypo.name
         const hypoFarMoved = hypoNameChanged && Number.isFinite(hypo.latitude) && Number.isFinite(hypo.longitude)
           && haversineKm(hypo.latitude, hypo.longitude, prevHypo.lat, prevHypo.lng) > 50
-        const firePhase1 = isNew || hypoFarMoved
+        // 予報として**読み上げている最中に**警報へ上がった。読み切るのを待たず、警報として
+        // 頭から言い直す（待つと区分の告知が実測 5.5 秒遅れる）。語の途中で切れても文の頭から
+        // やり直すため、地名を聞き違えたまま残ることはない。
+        //
+        // まだ声になっていないときと、読み終えているときは何もしない。前者は発話の直前に区分を
+        // 決め直すので、そのまま**発話直前の最新値**で読まれる（下限は伝え済みの区分で維持
+        // されるが、上がることは保証されない。声になる前に severity が戻る続報が届けば予報として
+        // 読む）。後者は第 2 フェーズが「緊急地震速報に切り替わりました。」と前置きして伝える。
+        //
+        // 見るのは**読み上げた区分**（spokenEEWLevelsRef）で、受信レベルの上昇（levelUpgraded）
+        // ではない。後者だと警報 → 特別警報の格上げでも言い直すが、区分は既に伝えてあり、
+        // 「特別警報」は音声では読まない方針（docs/spec/eew-spec.md §4）なので言い直す中身が無い。
+        //
+        // 震源の大幅更新と重なったときは**そちらに譲る**（`!hypoFarMoved`）。読む文面は
+        // 「震源を更新、〇〇で地震。」で区分に触れないため、割り込んでも警報は伝わらない
+        // （区分は続く第 2 フェーズの前置きが伝える）。鳴っているものを止める価値がない。
+        //
+        // 予約済みでまだ声になっていない言い直しがあれば重ねない（`restateToken`）。続報は
+        // 密集するため、これが無いと同じ文言を何度も積む。
+        const phase1Progress = eewPhase1ProgressRef.current.get(key)
+        const restateAsWarning = !isNew && !hypoFarMoved && currentLevel >= 1
+          && (spokenEEWLevelsRef.current.get(key) ?? 0) < 1
+          && phase1Progress?.restateToken == null
+          && phase1Progress?.speakingToken != null
+        const firePhase1 = isNew || hypoFarMoved || restateAsWarning
 
         if (firePhase1) {
           // 第1フェーズ。震源が大きく動いた場合は旧震源での値を基準に残さない。残すと新震源で
@@ -1348,28 +1457,72 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           spokenEEWLpgmClassesRef.current.delete(key)
           // spokenEEWLevelsRef は**消さない**。同じ EEW である以上、区分は伝え済みで、
           // 震源が動くたびに「警報。」を言い直す必要はない（消すと言い直しになる）。
-          // 切り出しの語で区分を伝える（予報＝地震動予報／警報＝緊急地震速報）。
-          // 震源更新では区分に触れない（既に伝えてあり、変わったのは震源だから）。
-          const phase1Text = eewAlertToText(
-            event,
-            hypoFarMoved ? 'hypocenterUpdate' : currentLevel >= 1 ? 'warning' : 'forecast',
-          )
-          // 「緊急地震速報」と切り出した時点で警報だと伝えている。第 2 フェーズで格上げを
-          // 読み直さないよう、ここで既読の区分として記録する。記録しないと初報から警報だった
-          // EEW でも「切り替わりました」と言ってしまう。
-          if (!hypoFarMoved && currentLevel >= 1) {
-            spokenEEWLevelsRef.current.set(key, currentLevel)
+          const phase1Token = {}
+          // **`speakingToken` には触らない。** 鳴っているかどうかは予約を積み直しても変わらない
+          // （震源の大幅更新は古い音を止めずに積む）。ここで消すと「鳴っていない」と誤認し、
+          // 直後に警報へ上がっても言い直しが発火せず、告知が第 2 フェーズの前置きまで遅れる。
+          if (restateAsWarning) updatePhase1Progress(key, { restateToken: phase1Token })
+          // 後始末は**自分が置いた分だけ**。予約は積み直されるので、無条件に消すと他の予約の
+          // 記録まで落ちる（言い直しの予約が消えれば二重読み、鳴っている記録が消えれば
+          // 鳴っていない相手への割り込みになる）。
+          const forgetSpeaking = () => {
+            if (eewPhase1ProgressRef.current.get(key)?.speakingToken === phase1Token) {
+              updatePhase1Progress(key, { speakingToken: null })
+            }
           }
-          // 待っている間に取消・自動解除が届いていたら震源も読まない。鳴らし始めてから届いた
-          // 場合に残りを落とすのは**誤報取消のときだけ**（理由は eewRetractedKeysRef の宣言箇所）
-          //
-          // 新規発報は「手動選択より強い」側なので追従も eewUrgent。震源の大幅更新は既に発表中の
-          // EEW の言い直しなので eewUpdate（受信時要求の使い分けと揃える）。
+          const forgetOwnRestate = () => {
+            if (eewPhase1ProgressRef.current.get(key)?.restateToken === phase1Token) {
+              updatePhase1Progress(key, { restateToken: null })
+            }
+          }
+          // 新規発報は「手動選択より強い」側なので追従も eewUrgent。震源の大幅更新・警報への
+          // 言い直しは既に発表中の EEW の言い直しなので eewUpdate（受信時要求の使い分けと揃える）。
           chainEEWSpeech(
-            () => eewTtsEventsRef.current.has(key)
-              ? { text: phase1Text, shouldStillPlay: () => !eewRetractedKeysRef.current.has(key) }
-              : null,
+            () => {
+              // 自分が言い直しとして積まれていたなら、その予約はここで消化される。以後の格上げは
+              // 改めて言い直せる（警報を読めば下で既読の区分が入るので既読側で弾かれ、取消で
+              // 降りたなら言い直せる状態に戻るのが正しい）。**自分の分だけ降ろすこと**——
+              // 無条件に消すと、他の予約が置いた言い直しの印まで落として二重読みに戻る。
+              forgetOwnRestate()
+              // 待っている間に取消・自動解除が届いていたら震源も読まない。鳴らし始めてから届いた
+              // 場合に残りを落とすのは**誤報取消のときだけ**（理由は eewRetractedKeysRef の宣言箇所）。
+              // ここでは `speakingToken` に触らない（鳴っているのは自分ではない別の予約）。
+              const latest = eewTtsEventsRef.current.get(key)
+              if (!latest) return null
+              // **区分は発話の直前に決める。** 予約から声になるまでには前の発話の完了待ちと
+              // 合成の往復（実測 238〜697ms）があり、その間にも続報は届く。受信時点で決めると、
+              // 待っている間に警報へ上がっていても予報として読み、直後に「切り替わりました」を
+              // 言う羽目になる。区分は引き下げない（spokenEEWLevelsRef の Math.max と同じ方針）。
+              const level = Math.max(
+                computeSingleEEWLevel(latest),
+                spokenEEWLevelsRef.current.get(key) ?? 0,
+              ) as 0 | 1 | 2
+              // 切り出しの語で区分を伝える（予報＝地震動予報／警報＝緊急地震速報）。
+              // 震源更新では区分に触れない（既に伝えてあり、変わったのは震源だから）。
+              const kind = hypoFarMoved ? 'hypocenterUpdate' : level >= 1 ? 'warning' : 'forecast'
+              // 震源名は**受信した報のもの**を使う（最新へ取り直さない）。下で記録する
+              // 「発話した震源」と食い違うと、次の続報での移動量の判定が狂う。
+              //
+              // **読み上げ文を先に作り、成功してから状態を書き換えること**（第 2 フェーズと同じ
+              // 順序）。先に書き換えると、生成で例外が出たときに `onSettled` へ到達しないまま
+              // catch へ落ち、「警報を伝えた」記録と「鳴っている」記録が残る。以後この EEW では
+              // 言い直しも前置きも二度と成立せず、警報が永久に声にならない。
+              const text = eewAlertToText(event, kind)
+              // 「緊急地震速報」と切り出した時点で警報だと伝えている。第 2 フェーズで格上げを
+              // 読み直さないよう、既読の区分として記録する。記録しないと初報から警報だった
+              // EEW でも「切り替わりました」と言ってしまう。**記録は発話の直前だけで行う**——
+              // 予約の時点で記録すると、取消で声にならなかった区分まで伝え済みになり、以後
+              // 格上げが一度も声にならない（第 2 フェーズが既読値の更新を発話直前に限るのと同じ理由）。
+              if (!hypoFarMoved && level >= 1) spokenEEWLevelsRef.current.set(key, level)
+              updatePhase1Progress(key, { speakingToken: phase1Token })
+              return {
+                text,
+                shouldStillPlay: () => !eewRetractedKeysRef.current.has(key),
+                onSettled: forgetSpeaking,
+              }
+            },
             () => followSpeechTab('realtime', isNew ? TAB_PRIORITY.eewUrgent : TAB_PRIORITY.eewUpdate),
+            restateAsWarning,
           )
           // 発話した震源情報を記録する
           if (Number.isFinite(hypo.latitude) && Number.isFinite(hypo.longitude)) {
@@ -1807,6 +1960,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     latestScheduledSeqByTopicRef.current.clear()
     eewPhase2DoneRef.current.clear()
     eewRetractedKeysRef.current.clear()
+    eewPhase1ProgressRef.current.clear()
     lastTsunamiGradeRef.current = null
     // 解除の照合に使う直前の津波も落とす（残すと、リプレイ後の解除を切替前の津波と照合する）
     lastTsunamiRef.current = null
