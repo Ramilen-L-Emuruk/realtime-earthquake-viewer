@@ -216,14 +216,23 @@ export function applySpokenRefs(state: QuakeSpokenState, refs: readonly SpeechRe
 }
 
 /**
- * 区域を読み上げの対象にするか。**判定は「その震度をまだ声にしていないか」**。
+ * 続報で区域を読むかどうかと、読むならどちらの群に入れるか。
  *
- * 未記録（初出）と、記録済みより高い震度になった場合が対象。据え置きは読まない。
+ * | 値 | 意味 | 読み方 |
+ * |---|---|---|
+ * | `fresh` | まだ一度も挙げていない区域 | 「新たに震度○を〜」 |
+ * | `upgraded` | 既に挙げたが、伝えた震度より高くなった | 「震度○を〜」（先に読む） |
+ * | `null` | 据え置き（または下がった） | 読まない |
+ *
+ * **2 つを混ぜて「新たに」で括ってはいけない。** 震度が上がった区域は初めて揺れた場所ではないし、
+ * 「上がった」ことの方が重い報せなので先に伝える（docs/spec/audio-tts-spec.md §4）。
  */
-function isUnspokenRegion(spoken: QuakeSpokenState | undefined, name: string, scale: IntensityScale): boolean {
-  if (!spoken) return true
+type RegionDiffKind = 'fresh' | 'upgraded'
+
+function regionDiffKind(spoken: QuakeSpokenState, name: string, scale: IntensityScale): RegionDiffKind | null {
   const said = spoken.regions.get(name)
-  return said === undefined || said < scale
+  if (said === undefined) return 'fresh'
+  return said < scale ? 'upgraded' : null
 }
 
 function buildRegionSegments(
@@ -262,89 +271,141 @@ function buildRegionSegments(
     if (names.length > 0) observed.push({ scale, names })
   }
 
-  const parts: SpeechSegment[][] = []
   const mentioned = new Set<string>()  // 上位階で読み上げ済みの地域名
-  for (let rank = 0; rank < observed.length; rank++) {
-    const { scale, names: observedNames } = observed[rank]
-    // 設定した階数以内、または「必ず読み上げる震度」以上の階級を読む。どちらの条件も上位の
-    // 階級ほど成立しやすいため、両方を外れた時点で以降の階級も必ず外れる（break で打ち切れる）。
-    //
-    // **打ち切りの判定に差分を混ぜないこと。** 階数（rank）は「観測がある階級」の並びで数えるため、
-    // 差分で残った区域だけを見て数えると、上位の階級が据え置きだった続報で下位の階級が繰り上がり、
-    // 普段は読まない震度まで読み始める。
-    const withinLevels = rank <= opts.intensityLevels
-    const withinAlwaysRead = opts.alwaysReadScale >= 0 && scale >= opts.alwaysReadScale
-    if (!withinLevels && !withinAlwaysRead) break
-    // 同じ文の中で上位階に出した区域を落とし、さらに（続報なら）既に声になった区域も落とす。
-    let names = observedNames.filter(n => !mentioned.has(n) && isUnspokenRegion(spoken, n, scale))
-    if (names.length === 0) continue
-    // 上限で切るときに残す地域は震源に近い順で選ぶ（読み上げる順序ではなく「どれを読むか」の選抜）。
-    // 地理順のまま先頭から切ると、震源から遠い北側の地域が枠を占め、震源直近が「ほかN地域」に
-    // 潰されうる。
-    if (hasEpicenter) {
-      names = [...names].sort((a, b) => {
-        const ca = coordForName(a)
-        const cb = coordForName(b)
-        if (!ca && !cb) return 0
-        if (!ca) return 1
-        if (!cb) return -1
-        return distSq(hypocenter!.latitude, hypocenter!.longitude, ca[0], ca[1])
-             - distSq(hypocenter!.latitude, hypocenter!.longitude, cb[0], cb[1])
-      })
-    } else {
-      // 震源が無い電文（震度速報）では距離で選べない。先に地理順へ整えてから切り、
-      // 「北から上限まで」という説明できる選抜にする（電文の並びに結果を委ねない）。
+
+  /**
+   * 階級ごとの句を組む。`accept` に通った区域だけを対象にする。
+   *
+   * **`mentioned` は群をまたいで共有する。** 県単位に丸めた名前は複数の階級に現れうるので
+   * （`aggregateAreaNamesByPref`）、群を分けても「上位で挙げた区域は下位で繰り返さない」を
+   * 保つ必要がある。上がった群を先に回すこと。
+   *
+   * @param withMax その階級が電文の最大震度と一致するとき「最大」を冠するか
+   */
+  const collectParts = (
+    accept: (name: string, scale: IntensityScale) => boolean,
+    withMax: boolean,
+  ): SpeechSegment[][] => {
+    const parts: SpeechSegment[][] = []
+    for (let rank = 0; rank < observed.length; rank++) {
+      const { scale, names: observedNames } = observed[rank]
+      // 設定した階数以内、または「必ず読み上げる震度」以上の階級を読む。どちらの条件も上位の
+      // 階級ほど成立しやすいため、両方を外れた時点で以降の階級も必ず外れる（break で打ち切れる）。
+      //
+      // **打ち切りの判定に差分を混ぜないこと。** 階数（rank）は「観測がある階級」の並びで数えるため、
+      // 差分で残った区域だけを見て数えると、上位の階級が据え置きだった続報で下位の階級が繰り上がり、
+      // 普段は読まない震度まで読み始める。
+      const withinLevels = rank <= opts.intensityLevels
+      const withinAlwaysRead = opts.alwaysReadScale >= 0 && scale >= opts.alwaysReadScale
+      if (!withinLevels && !withinAlwaysRead) break
+      // 同じ文の中で上位階に出した区域を落とし、さらにこの群の条件に通ったものだけを残す。
+      let names = observedNames.filter(n => !mentioned.has(n) && accept(n, scale))
+      if (names.length === 0) continue
+      // 上限で切るときに残す地域は震源に近い順で選ぶ（読み上げる順序ではなく「どれを読むか」の選抜）。
+      // 地理順のまま先頭から切ると、震源から遠い北側の地域が枠を占め、震源直近が「ほかN地域」に
+      // 潰されうる。
+      if (hasEpicenter) {
+        names = [...names].sort((a, b) => {
+          const ca = coordForName(a)
+          const cb = coordForName(b)
+          if (!ca && !cb) return 0
+          if (!ca) return 1
+          if (!cb) return -1
+          return distSq(hypocenter!.latitude, hypocenter!.longitude, ca[0], ca[1])
+               - distSq(hypocenter!.latitude, hypocenter!.longitude, cb[0], cb[1])
+        })
+      } else {
+        // 震源が無い電文（震度速報）では距離で選べない。先に地理順へ整えてから切り、
+        // 「北から上限まで」という説明できる選抜にする（電文の並びに結果を委ねない）。
+        names = sortByRegionOrder(names, regionOrder)
+      }
+      // 上限をわずかに超えるだけなら、省いた地域名より「ほかN地域」の方が長くなる。許容超過
+      // (regionTolerance) の範囲内は省略せず全地域を読む。超えた場合に切る位置は上限ちょうど。
+      let omittedCount = 0
+      if (opts.maxRegions > 0 && names.length > opts.maxRegions + opts.regionTolerance) {
+        omittedCount = names.length - opts.maxRegions
+        names = names.slice(0, opts.maxRegions)
+      }
+      // 選抜が済んでから読み上げ順（地理順）に組み直す。震源が無い経路では上で既に地理順に
+      // 整っているため、ここは何も動かさない（安定ソートなので通しても順序は変わらない）。
       names = sortByRegionOrder(names, regionOrder)
+      names.forEach(n => mentioned.add(n))
+      // 「最大」を冠せるのは、その階級がこの電文の最大震度に一致するときだけ。
+      // **句の並び順で決めてはいけない**——差分では最大震度の区域が据え置きで落ちることがあり、
+      // 先頭の句に無条件で付けると「最大震度4を…」と、電文が伝えていない最大震度を語る。
+      // 初出の群では冠しない（`withMax`）。「新たに最大震度7を」は据わりが悪く、最大震度は
+      // 地震全体の値なので「新たに」と並べる語ではない。
+      const head = withMax && scale === maxScale ? '最大' : ''
+      const segments: SpeechSegment[] = [plain(`${head}震度${intensityText(scale)}を`)]
+      names.forEach((name, i) => {
+        if (i > 0) segments.push(plain('、'))
+        // 区域名だけを参照付きの断片にする。読点を含めると、チャンク（読点で切られる）と
+        // 断片の境界がずれて引き当てが鈍る。
+        segments.push({ text: name, refs: [{ kind: 'quakeRegion', name, scale }] })
+      })
+      if (omittedCount > 0) segments.push(plain(`、ほか${omittedCount}地域`))
+      parts.push(segments)
     }
-    // 上限をわずかに超えるだけなら、省いた地域名より「ほかN地域」の方が長くなる。許容超過
-    // (regionTolerance) の範囲内は省略せず全地域を読む。超えた場合に切る位置は上限ちょうど。
-    let omittedCount = 0
-    if (opts.maxRegions > 0 && names.length > opts.maxRegions + opts.regionTolerance) {
-      omittedCount = names.length - opts.maxRegions
-      names = names.slice(0, opts.maxRegions)
-    }
-    // 選抜が済んでから読み上げ順（地理順）に組み直す。震源が無い経路では上で既に地理順に
-    // 整っているため、ここは何も動かさない（安定ソートなので通しても順序は変わらない）。
-    names = sortByRegionOrder(names, regionOrder)
-    names.forEach(n => mentioned.add(n))
-    // 「最大」を冠せるのは、その階級がこの電文の最大震度に一致するときだけ。
-    // **句の並び順で決めてはいけない**——差分では最大震度の区域が据え置きで落ちることがあり、
-    // 先頭の句に無条件で付けると「最大震度4を…」と、電文が伝えていない最大震度を語る。
-    const head = scale === maxScale ? '最大' : ''
-    const segments: SpeechSegment[] = [plain(`${head}震度${intensityText(scale)}を`)]
-    names.forEach((name, i) => {
-      if (i > 0) segments.push(plain('、'))
-      // 区域名だけを参照付きの断片にする。読点を含めると、チャンク（読点で切られる）と
-      // 断片の境界がずれて引き当てが鈍る。
-      segments.push({ text: name, refs: [{ kind: 'quakeRegion', name, scale }] })
-    })
-    if (omittedCount > 0) segments.push(plain(`、ほか${omittedCount}地域`))
-    parts.push(segments)
+    return parts
   }
 
-  if (parts.length === 0) {
-    // 震度点があるのに地域名を 1 件も作れないのは、電文の観測点が座標テーブルに載っていない状態
-    // （DMDATA は観測点を pref: '' で積むので、テーブルが引けないと手がかりが何も残らない）。
-    // 呼び出し側が最大震度だけの一文へ落とすので読み上げは成立するが、地域が丸ごと消えたことは
-    // 記録に残す。読み上げごとに出すと同じ行でログが埋まるため間引く。
-    // 座標テーブルの読み込み前は引けないのが当たり前なので黙る（起動直後の正常な過渡状態）。
-    // **数えるのは `observed`。** `parts` が空になる理由には「続報で読む差分が無い」も含まれ、
-    // そちらは正常なので、`parts` で判定すると続報のたびに警告が鳴る。
+  /**
+   * 階級ごとの句を 1 文にまとめる。
+   *
+   * 助詞「で」は末尾（述語の直前）にだけ置く。階級ごとの句末に付けると
+   * 「〜福島県で、震度3を〜」と一文字が読点で挟まれ、読み上げがぶつ切りに聞こえる。
+   * 複数階級のときは前の句が末尾の「で」を共有する形（並列句の格助詞の共有）になる。
+   */
+  const toSentence = (parts: SpeechSegment[][], lead: string): SpeechSegment[] => {
+    if (parts.length === 0) return []
+    const joined: SpeechSegment[] = lead ? [plain(lead)] : []
+    parts.forEach((part, i) => {
+      if (i > 0) joined.push(plain('、'))
+      joined.push(...part)
+    })
+    joined.push(plain('で観測しました。'))
+    return joined
+  }
+
+  /**
+   * 震度点があるのに地域名を 1 件も作れなかったことを記録する。電文の観測点が座標テーブルに
+   * 載っていない状態（DMDATA は観測点を pref: '' で積むので、テーブルが引けないと手がかりが
+   * 何も残らない）。呼び出し側が最大震度だけの一文へ落とすので読み上げは成立するが、地域が
+   * 丸ごと消えたことは記録に残す。読み上げごとに出すと同じ行でログが埋まるため間引く。
+   *
+   * **数えるのは `observed`。** 文が空になる理由には「続報で読む差分が無い」も含まれ、そちらは
+   * 正常なので、組み上がった文の有無で判定すると続報のたびに警告が鳴る。
+   * 座標テーブルの読み込み前は引けないのが当たり前なので黙る（起動直後の正常な過渡状態）。
+   */
+  const warnIfNoRegionNames = (): void => {
     if (observed.length === 0 && points.length > 0 && stationData) {
       warnNoRegionNames(() => log.warn('[tts] 震度点があるのに地域名を作れなかった（電文の観測点が座標テーブルに無い）'))
     }
+  }
+
+  // 差分を取らない読み（初報・別イベント・確定情報の通し読み）は 1 群のまま。
+  //
+  // **群分けと「新たに」は差分のときだけ。** 初報で「新たに」と言っても、何と比べて新しいのかが無い。
+  // 判定は `spoken` の有無ではなく**区域を一度でも声にしたか**で行う。記録は地震の初報でも
+  // 渡ってくる（空の状態で）ので、有無で見ると初報から「新たに」が付く。
+  if (!spoken || spoken.regions.size === 0) {
+    const all = toSentence(collectParts(() => true, true), '')
+    if (all.length === 0) warnIfNoRegionNames()
+    return all
+  }
+
+  // 差分は 2 群に分け、**上がった分を先に**読む。境目の「また、」で耳が切り替わり、
+  // 「新たに」が後半だけに掛かることが伝わる。
+  const upgraded = toSentence(collectParts((n, sc) => regionDiffKind(spoken, n, sc) === 'upgraded', true), '')
+  const fresh = toSentence(
+    collectParts((n, sc) => regionDiffKind(spoken, n, sc) === 'fresh', false),
+    upgraded.length > 0 ? 'また、新たに' : '新たに',
+  )
+  if (upgraded.length === 0 && fresh.length === 0) {
+    warnIfNoRegionNames()
     return []
   }
-  // 助詞「で」は末尾（述語の直前）にだけ置く。階級ごとの句末に付けると
-  // 「〜福島県で、震度3を〜」と一文字が読点で挟まれ、読み上げがぶつ切りに聞こえる。
-  // 複数階級のときは前の句が末尾の「で」を共有する形（並列句の格助詞の共有）になる。
-  const joined: SpeechSegment[] = []
-  parts.forEach((part, i) => {
-    if (i > 0) joined.push(plain('、'))
-    joined.push(...part)
-  })
-  joined.push(plain('で観測しました。'))
-  return joined
+  return [...upgraded, ...fresh]
 }
 
 function magnitudeText(mag: number): string {
@@ -701,6 +762,16 @@ export function earthquakeToSegments(
   opts: TtsRegionOptions,
   isNew: boolean,
   spoken?: QuakeSpokenState,
+  /**
+   * 区域を差分にせず**通しで読む**。その地震で最初に届いた確定情報（震源・震度情報／各地の
+   * 震度情報）にだけ真を渡す（判定は `useLiveEventHandler`）。
+   *
+   * 速報を細切れに聞いた耳へ、確定した観測を 1 度だけまとめて示すため。震源要素が「その種別の
+   * 初報では通しで言う」のと規則を揃える意味もある（従来は同じ報の中で震源要素は通し・地域は
+   * 差分と割れていた）。**2 回目以降は差分に戻す** ―― 種別ごとに通しで読むと、確定情報が
+   * 2 種類届く経路で全文を 2 度聞くことになる。
+   */
+  readAllRegions = false,
 ): SpeechSegment[] {
   const { hypocenter, maxScale, domesticTsunami } = event.earthquake
   const type = event.issue.type
@@ -719,7 +790,9 @@ export function earthquakeToSegments(
     const fallback = spoken == null || spoken.regions.size === 0
       ? maxScaleOnlySegments(maxScale, spoken)
       : []
-    if (fallback.length === 0 && saidSomething) return []
+    // **伝えることが無くても名乗りは読む。** 黙ると「電文が来たのに何も起きなかった」ようにしか
+    // 聞こえない。「更新されました」だけで終われば、変化が無かったことが対比で伝わる
+    // （docs/spec/audio-tts-spec.md §4）。
     return [plain(prefix), ...fallback]
   }
 
@@ -770,13 +843,13 @@ export function earthquakeToSegments(
   const label = isEpicenterOnly ? '震源情報' : '地震情報'
 
   // 続報は変化したところだけを読む。震源要素・津波区分・震度の地域のいずれにも変化が
-  // 無ければ何も読まない（`useLiveEventHandler` が空の読み上げ文を見てタブ移動へ切り替える）。
+  // 無ければ**名乗りだけで終える**（黙らない。理由は下の `return` のコメント）。
   // まだ声にしていない震源要素があるなら差分にしない（理由は `hasUnspokenFact`）。
   if (!isNew && spoken && saidSomething && !hasUnspokenFact(event, spoken)) {
     const facts = changedFactSegments(event, spoken)
     const regionSegs = isEpicenterOnly
       ? []
-      : buildRegionSegments(event.points, maxScale, opts, hypocenter, spoken)
+      : buildRegionSegments(event.points, maxScale, opts, hypocenter, readAllRegions ? undefined : spoken)
     // 地域名を作れないまま続報が来ても震度は伝える。ここに保険が無いと、観測点が座標テーブルで
     // 解決できない状態が続く地震で、初報の 1 回しか震度を伝えられない（以降はこの経路に入り、
     // 区域も差分も空のまま黙る）。
@@ -786,7 +859,7 @@ export function earthquakeToSegments(
     const fallback = !isEpicenterOnly && regionSegs.length === 0 && spoken.regions.size === 0
       ? maxScaleOnlySegments(maxScale, spoken)
       : []
-    if (facts.length === 0 && regionSegs.length === 0 && fallback.length === 0) return []
+    // 伝えることが無くても名乗りは読む（理由は震度速報の同じ箇所）。
     return [plain(`${label}が更新されました。`), ...facts, ...regionSegs, ...fallback]
   }
 
@@ -797,7 +870,7 @@ export function earthquakeToSegments(
     domesticTsunamiSegment(domesticTsunami),
   ]
   if (!isEpicenterOnly) {
-    const regionSegs = buildRegionSegments(event.points, maxScale, opts, hypocenter, spoken)
+    const regionSegs = buildRegionSegments(event.points, maxScale, opts, hypocenter, readAllRegions ? undefined : spoken)
     // 地域名を作れなかった場合も、震度が判っていれば最大震度だけは伝える（震度速報と同じ扱い）。
     // 揃えないと、この電文だけ震度に一切触れずに終わる。
     // ここも区域を一度も読めていない地震に限る。上の差分の経路と判定を揃えないと、震源要素だけが

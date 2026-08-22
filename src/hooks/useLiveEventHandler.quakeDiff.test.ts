@@ -114,6 +114,7 @@ function makeQuake(points: EarthquakePoint[], over: { type?: IssueType; maxScale
 }
 
 const setActiveTabNonRealtime = vi.fn()
+const followSpeechTab = vi.fn()
 
 function setup() {
   const settings = {
@@ -134,7 +135,7 @@ function setup() {
     defaultTabRef: { current: 'earthquake' },
     setActiveTabRealtimeForKyoshin: vi.fn(), setActiveTabNonRealtime,
     setActiveTabRealtimeOnUpdate: vi.fn(),
-    setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(),
+    setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab, preSpeechTab: vi.fn(),
     expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(), setActiveLpgmEventId: vi.fn(),
   }))
@@ -146,6 +147,7 @@ beforeEach(() => {
   speeches.length = 0
   clock = null
   setActiveTabNonRealtime.mockClear()
+  followSpeechTab.mockClear()
 })
 
 afterEach(() => {
@@ -159,7 +161,8 @@ describe('地震情報の続報: 既読は声になった分だけ進む', () =>
     area('富山県', '富山県東部', 40),
   ]
 
-  it('正: 最後まで鳴ったら、変化のない続報は読まない', async () => {
+  // 2026-08-22 に反転: 変化のない続報でも**名乗りだけは読む**（黙ると電文が来たことが伝わらない）。
+  it('正: 最後まで鳴ったら、変化のない続報は名乗りだけで終える', async () => {
     const handle = setup()
     handle(makeQuake(threeAreas))
     await settle()
@@ -168,20 +171,21 @@ describe('地震情報の続報: 既読は声になった分だけ進む', () =>
 
     handle(makeQuake(threeAreas))
     await settle()
-    // 差分が空なので読み上げは増えない
-    expect(spokenTexts()).toHaveLength(1)
+    expect(spokenTexts()[1]).toBe('震度速報が更新されました。')
   })
 
-  it('正: 差分が空でも earthquake タブは要求する（読み上げに任せた移動を引き取る）', async () => {
+  // 差分が空でも読み上げ文は非空（名乗りが残る）ため、タブ移動は**読み上げ追従が担う**。
+  // 受信時要求へ落とす経路は、読み上げが無効なときだけ通る（`useLiveEventHandler` の UI ブロック）。
+  it('正: 差分が空でも読み上げ経由で earthquake タブへ移る', async () => {
     const handle = setup()
     handle(makeQuake(threeAreas))
     await settle()
     await playSpeech(0, speeches[0].chunks.length)
-    setActiveTabNonRealtime.mockClear()
+    followSpeechTab.mockClear()
 
     handle(makeQuake(threeAreas))
     await settle()
-    expect(setActiveTabNonRealtime).toHaveBeenCalledWith('earthquake')
+    expect(followSpeechTab).toHaveBeenCalledWith('earthquake', expect.anything())
   })
 
   it('正: 途中で切られたら、鳴った区域だけが既読になる', async () => {
@@ -195,7 +199,8 @@ describe('地震情報の続報: 既読は声になった分だけ進む', () =>
 
     handle(makeQuake(threeAreas))
     await settle()
-    expect(spokenTexts()[1]).toBe('震度速報が更新されました。最大震度4を石川県加賀、富山県東部で観測しました。')
+    // 石川県加賀・富山県東部はまだ一度も声にしていない＝初出の群（「新たに」が付き「最大」は冠さない）
+    expect(spokenTexts()[1]).toBe('震度速報が更新されました。新たに震度4を石川県加賀、富山県東部で観測しました。')
   })
 
   it('安全弁: 1 チャンクも鳴らなければ、続報は全文を読み直す', async () => {
@@ -225,7 +230,9 @@ describe('地震情報の続報: 既読は声になった分だけ進む', () =>
     expect(spokenTexts()[1]).toContain('石川県能登')
   })
 
-  it('正: 既読は情報種別を跨いで共有する（震度速報で読んだ区域を地震情報で読み直さない）', async () => {
+  // **確定情報だけは例外**。その地震で最初の 1 通は地域も通しで読む（速報を細切れに聞いた耳へ、
+  // 確定した観測を 1 度だけまとめて示す）。2 通目以降は差分に戻る。
+  it('正: その地震で最初の確定情報は、既読の区域も通しで読む', async () => {
     const handle = setup()
     handle(makeQuake(threeAreas, { type: '震度速報' }))
     await settle()
@@ -233,9 +240,16 @@ describe('地震情報の続報: 既読は声になった分だけ進む', () =>
 
     handle(makeQuake(threeAreas, { type: '震源・震度情報', serial: 2 }))
     await settle()
-    // 種別としては初報なので震源・規模・津波は読むが、区域は読み直さない
     expect(spokenTexts()[1]).toContain('マグニチュード5.2')
-    expect(spokenTexts()[1]).not.toContain('石川県能登、')
-    expect(spokenTexts()[1]).not.toContain('観測しました')
+    expect(spokenTexts()[1]).toContain('最大震度4を石川県能登、石川県加賀、富山県東部で観測しました。')
+    expect(spokenTexts()[1]).not.toContain('新たに')
+    await playSpeech(1, speeches[1].chunks.length)
+
+    // 2 通目の確定情報では**地域を通しで読まない**（差分に戻る＝変化が無いので地域は挙げない）。
+    // 震源要素はその種別として初めてなので通しで言う（種別ごとの初報の扱い。従来どおり）。
+    handle(makeQuake(threeAreas, { type: '各地の震度情報', serial: 3 }))
+    await settle()
+    expect(spokenTexts()[2]).toContain('マグニチュード5.2')
+    expect(spokenTexts()[2]).not.toContain('観測しました')
   })
 })
