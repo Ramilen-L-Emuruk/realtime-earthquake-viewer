@@ -95,6 +95,68 @@ function makeTsunami(over: { id?: string } = {}): JMATsunami {
   } as unknown as JMATsunami
 }
 
+/**
+ * 津波の**観測情報**（等級を伝えない続報）。`areas` を空にすると
+ * `isTsunamiObservationOnly` が真になり、等級の発表とは別の格・別の主題で読まれる。
+ */
+function makeTsunamiObs(
+  over: {
+    id?: string
+    name?: string
+    value?: number
+    /** 観測点を累積で並べる（実電文は既報の観測点も載せ続ける）。 */
+    points?: { name: string; value: number }[]
+  } = {},
+): JMATsunami {
+  const points = over.points ?? [{ name: over.name ?? '輪島港', value: over.value ?? 0.3 }]
+  return {
+    kind: 'tsunami',
+    id: over.id ?? 'tsunami-obs-1',
+    time: '2026-01-01T12:00:00Z',
+    cancelled: false,
+    issue: { source: 'JMA', time: '2026-01-01T12:00:00Z', type: 'Focus' },
+    areas: [],
+    observations: points.map(p => ({
+      name: p.name,
+      height: { value: p.value, description: `${p.value}m` },
+      districtCode: '390', districtName: '石川県能登',
+    })),
+  } as unknown as JMATsunami
+}
+
+/**
+ * 波高未確定（観測中）の観測点を持つ津波。到達だけが確認された状態を表す
+ * （`height` を持たせないのが要点。持たせると波高更新の側になる）。
+ */
+function makeTsunamiArrival(over: { id?: string; name?: string } = {}): JMATsunami {
+  return {
+    kind: 'tsunami',
+    id: over.id ?? 'tsunami-arr-1',
+    time: '2026-01-01T12:00:00Z',
+    cancelled: false,
+    issue: { source: 'JMA', time: '2026-01-01T12:00:00Z', type: 'Focus' },
+    areas: [],
+    observations: [{
+      name: over.name ?? '輪島港',
+      districtCode: '390', districtName: '石川県能登',
+    }],
+  } as unknown as JMATsunami
+}
+
+/** 津波の解除。 */
+function makeTsunamiCancel(over: { id?: string } = {}): JMATsunami {
+  return {
+    kind: 'tsunami',
+    id: over.id ?? 'tsunami-cancel-1',
+    eventId: over.id ?? 'tsunami-cancel-1',
+    time: '2026-01-01T12:00:00Z',
+    cancelled: true,
+    cancelReason: 'lifted',
+    issue: { source: 'JMA', time: '2026-01-01T12:00:00Z', type: 'Focus' },
+    areas: [],
+  } as unknown as JMATsunami
+}
+
 function makeEEW(over: { noAreas?: boolean; condition?: string } = {}): EEWAlert {
   return {
     kind: 'eew',
@@ -145,6 +207,20 @@ function setup() {
     selectQuake: vi.fn(), setActiveLpgmEventId: vi.fn(),
   }))
   return result.current.handleLiveEvent
+}
+
+/** 南海トラフ関連解説情報（最下位の層）。複数の describe から使うためトップレベルに置く。 */
+function handleCommentary(handle: ReturnType<typeof setup>) {
+  handle({
+    kind: 'nankaiCommentary',
+    data: {
+      id: 'commentary-1', time: '2026-01-01T12:00:00Z', eventId: 'commentary-evt',
+      serialCode: '210', serialName: '臨時解説',
+      headline: '南海トラフ地震関連解説情報（第１号）', summary: '要約', body: '本文',
+      cancelled: false, reportDateTime: '2026-01-01T12:00:00Z',
+      expireAt: '2026-01-08T12:00:00Z',
+    },
+  } as never)
 }
 
 beforeEach(() => {
@@ -214,20 +290,7 @@ describe('非 EEW の読み上げの優先度', () => {
 
   // 南海トラフ関連解説情報は最下位。臨時情報の発表期間中は毎日届くため、既存のどの層と同格に
   // しても何かを切ってしまう（同格は待たずに割り込む規則のため）。「解説情報は何も切らない」を
-  // 両方向から固定する。
-  function handleCommentary(handle: ReturnType<typeof setup>) {
-    handle({
-      kind: 'nankaiCommentary',
-      data: {
-        id: 'commentary-1', time: '2026-01-01T12:00:00Z', eventId: 'commentary-evt',
-        serialCode: '210', serialName: '臨時解説',
-        headline: '南海トラフ地震関連解説情報（第１号）', summary: '要約', body: '本文',
-        cancelled: false, reportDateTime: '2026-01-01T12:00:00Z',
-        expireAt: '2026-01-08T12:00:00Z',
-      },
-    } as never)
-  }
-
+  // 両方向から固定する（ヘルパーは `handleCommentary`）。
   it('解説情報は、地震情報の読み上げが終わるまで待つ', async () => {
     const handle = setup()
     handle(makeQuake())
@@ -447,7 +510,11 @@ describe('非 EEW の読み上げの優先度', () => {
   // 後発地震注意情報が同居しているが、これは「聞き逃したときの損失が大きいから」同格に置いている
   // のであって互いの言い換えではない。主題を見ずに取り下げると、聞き逃し防止のための層で
   // まるごと聞き逃す（後発地震注意情報が一言も鳴らずに消える）。
-  it('主題が違えば、同格の後発が届いても取り下げない', async () => {
+  //
+  // **かつては後発が割り込んで読んでいた**（2 件目が 1 件目を途中で消す）。この 3 者は相互譲りの
+  // 対象になったため、いまは待って読む（`MUTUAL_YIELD_TOPICS`）。取り下げないことが要点なのは
+  // 変わらない——取り下げていたら、待っても二度と鳴らない。
+  it('主題が違えば、同格の後発が届いても取り下げない（待って読む）', async () => {
     const handle = setup()
     handle({
       kind: 'kohatsu',
@@ -461,8 +528,13 @@ describe('非 EEW の読み上げの優先度', () => {
     handle(makeTsunami())                      // 同格（high）だが別の主題
     await settle()
 
-    // どちらも鳴る（後発地震が先に読まれ、津波が割り込んで読む）
-    expect(spokenTexts().some(t => t.includes('後発地震注意情報'))).toBe(true)
+    // 先に届いた後発地震が読まれ、津波は取り下げられていない
+    expect(spokenTexts()).toHaveLength(1)
+    expect(spokenTexts()[0]).toContain('後発地震注意情報')
+
+    // 待って読む（どちらも相互譲りの対象なので、割り込みで消し合わない）
+    finishSpeech(0)
+    await flush()
     expect(spokenTexts().some(t => t.includes('大津波警報'))).toBe(true)
   })
 
@@ -515,5 +587,339 @@ describe('非 EEW の読み上げの優先度', () => {
     // 別の地震なので、先に届いた震源情報は取り下げられない（読み始めてから切られる）
     expect(spokenTexts().some(t => t.includes('震度速報'))).toBe(true)
     expect(spokenTexts().some(t => t.includes('震源情報'))).toBe(true)
+  })
+})
+
+// 優先度は一次元の尺度なので「上が下を切る」一方向しか作れない。ところが同格の中には逆向きの
+// 要求が同居している——同じ地震の続報は割り込むべき（言い換え）、長周期と地震情報も割り込むべき
+// （新しい方が重い）、しかし津波の観測情報と地震情報はどちらも読みたい（内容が重ならない）。
+// 主題で切り分けるのがこの層（実装は `MUTUAL_YIELD_TOPICS`）。
+//
+// 直した誤りはこれ。観測点の波高が 1 つ更新されるたびに、津波の観測情報が地震情報の読み上げを
+// 途中で消していた（等級の発表と同じ `high` で読んでいたため）。
+describe('内容が重ならない同格どうしは互いに待つ', () => {
+  function handleNankai(handle: ReturnType<typeof setup>, kindName = '調査中') {
+    handle({
+      kind: 'nankai',
+      data: {
+        id: 'nankai-1', time: '2026-01-01T12:00:00Z', eventId: 'nankai-evt',
+        kindName, cancelled: false,
+      },
+    } as never)
+  }
+
+  it('地震情報の読み上げ中に津波の観測情報が届いても、地震情報を切らない', async () => {
+    const handle = setup()
+    handle(makeQuake())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+
+    handle(makeTsunamiObs())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)   // 観測情報は待つ
+
+    finishSpeech(0)
+    await flush()
+    expect(spokenTexts()).toHaveLength(2)
+    expect(spokenTexts()[1]).toContain('津波観測情報')
+  })
+
+  it('津波の観測情報の読み上げ中に地震情報が届いても、観測情報を切らない', async () => {
+    const handle = setup()
+    handle(makeTsunamiObs())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+    expect(spokenTexts()[0]).toContain('津波観測情報')
+
+    handle(makeQuake())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)   // 地震情報も待つ（格を下げるだけでは切っていた）
+
+    finishSpeech(0)
+    await flush()
+    expect(spokenTexts()).toHaveLength(2)
+    expect(spokenTexts()[1]).toContain('震度速報')
+  })
+
+  // 安全弁。相互譲りは同格どうしの話で、上位には従来どおり切られる。ここを緩めると、
+  // 警報の引き上げが観測値の読み上げの後ろに回る。
+  it('津波の観測情報は、等級の発表には切られる', async () => {
+    const handle = setup()
+    handle(makeTsunamiObs())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+
+    handle(makeTsunami())
+    await settle()
+    expect(spokenTexts()).toHaveLength(2)   // 待たずに割り込む
+    expect(spokenTexts()[1]).toContain('大津波警報')
+  })
+
+  // 対照。同主題は相互譲りの対象外（言い換えなので、古い観測値を読み切るより最新に置き換える）。
+  it('津波の観測情報どうしは、新しい方が割り込む', async () => {
+    const handle = setup()
+    handle(makeTsunamiObs({ name: '輪島港', value: 0.3 }))
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+
+    handle(makeTsunamiObs({ id: 'tsunami-obs-2', name: '富山', value: 0.8 }))
+    await settle()
+    expect(spokenTexts()).toHaveLength(2)
+  })
+
+  // 主題を分けたことの安全弁。取り下げの判定は優先度を見ずに到来順だけで裁くため、等級の発表と
+  // 観測情報を同じ主題にすると**警報の予約が観測情報に「追い越された」と判定されて取り下がる**。
+  it('津波警報の予約は、後から届いた観測情報には取り下げられない', async () => {
+    const handle = setup()
+    handle(makeTsunami())              // 声までの間 4.2 秒
+    await vi.advanceTimersByTimeAsync(500)
+    await flush()
+    handle(makeTsunamiObs())           // 間 0.8 秒。先に喋り始める
+    await settle()
+
+    expect(spokenTexts().some(t => t.includes('大津波警報'))).toBe(true)
+  })
+
+  it('津波の読み上げ中に南海トラフ臨時情報が届いても、互いに切らない', async () => {
+    const handle = setup()
+    handle(makeTsunami())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+
+    handleNankai(handle)
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)   // 同格・別主題なので待つ
+
+    finishSpeech(0)
+    await flush()
+    expect(spokenTexts()).toHaveLength(2)
+    expect(spokenTexts()[1]).toContain('南海トラフ')
+  })
+
+  it('南海トラフ臨時情報の読み上げ中に津波が届いても、臨時情報を切らない', async () => {
+    const handle = setup()
+    handleNankai(handle)
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+    expect(spokenTexts()[0]).toContain('南海トラフ')
+
+    handle(makeTsunami())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+
+    finishSpeech(0)
+    await flush()
+    expect(spokenTexts()).toHaveLength(2)
+    expect(spokenTexts()[1]).toContain('大津波警報')
+  })
+
+  // 待つ理由が変わったら計時をやり直す。相互譲りの上限（180 秒）まで待てる側が、上限の短い相手
+  // （上位・EEW は 90 秒）へ切り替わった瞬間に「もう十分待った」と誤認すると、**始まったばかりの
+  // EEW を切って読み始める**。「EEW は常に最優先」が破れる経路なので、時間を持ち越さない。
+  it('相互譲りを 90 秒より長く待っていても、そのあと始まった EEW は切らない', async () => {
+    const handle = setup()
+    handle(makeQuake())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+
+    handle(makeTsunamiObs())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)   // 相互譲りで待つ
+
+    // 上位を待つ上限（90 秒）は超え、相互譲りの上限（180 秒）には届かない時間だけ待たせる
+    await vi.advanceTimersByTimeAsync(100000)
+    await flush()
+    expect(spokenTexts()).toHaveLength(1)
+
+    // EEW が地震情報を切って読み始める（ここで観測情報の待ちが次の周回に入る）
+    handle(makeEEW())
+    await settle()
+    expect(spokenTexts().some(t => t.includes('緊急地震速報'))).toBe(true)
+    // 観測情報は EEW を切らない（EEW は終わっていないので鳴らない）
+    expect(spokenTexts().some(t => t.includes('津波観測情報'))).toBe(false)
+  })
+
+  // 対照。相互譲りを持たない同格どうし（地震情報と長周期）は従来どおり割り込む。
+  // ここが待ちに変わると、各地の震度（読み切りに 2 分近い）の後ろに長周期が回される。
+  it('長周期は、津波の観測情報より後でも地震情報に割り込む', async () => {
+    const handle = setup()
+    handle(makeQuake())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+
+    handle({
+      kind: 'lpgm',
+      data: {
+        eventId: 'lpgm-1', cancelled: false, time: '2026-01-01T12:00:00Z',
+        areas: [{ pref: '石川県', name: '石川県能登', lpgmClass: 4 }],
+      },
+    } as never)
+    await settle()
+    expect(spokenTexts()).toHaveLength(2)
+    expect(spokenTexts()[1]).toContain('長周期')
+  })
+
+  // 「何も切らない」を層で宣言している解説情報は、待ちの上限に達しても割り込まない。
+  // 割り込みを許すと、各地の震度（2 分近く）の読み上げが 90 秒で切られてその宣言が破れる。
+  //
+  // **相互譲りの相手を待つときは上限が別**（`MUTUAL_YIELD_SPEECH_MAX_WAIT_MS` = 180 秒）なので、
+  // 90 秒では割り込まない。ここは `commentary`（上限 90 秒）を使って上限側の挙動を見ている。
+  it('解説情報は、待ちきれなくても割り込まずに黙る', async () => {
+    const handle = setup()
+    handle(makeQuake())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+
+    handleCommentary(handle)
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+
+    // 地震情報の読み上げは終わらせない（VOICEVOX の無応答を模擬）
+    await vi.advanceTimersByTimeAsync(90000)
+    await flush()
+    expect(spokenTexts()).toHaveLength(1)   // 見送る
+  })
+})
+
+// 津波観測点の「既読」は 2 つある。画面（バッジ・スクロール）用は受信時に進み、読み上げ用は
+// **声に出す瞬間**に進む。分けているのは、待たされて鳴らなかった観測値まで既読になると、その
+// 観測点が二度と読まれないため。相互譲りで待つようになったぶん、この取りこぼしは起きやすい。
+describe('読み上げた観測点の既読', () => {
+  it('鳴らなかった観測点は既読にならず、次の電文でもう一度読まれる', async () => {
+    const handle = setup()
+    // 観測情報 A（輪島港）を予約させ、間が明ける前に累積した B を届けて取り下げさせる
+    handle(makeTsunamiObs({ points: [{ name: '輪島港', value: 0.3 }] }))
+    await vi.advanceTimersByTimeAsync(200)
+    await flush()
+    handle(makeTsunamiObs({
+      id: 'tsunami-obs-2',
+      points: [{ name: '輪島港', value: 0.3 }, { name: '富山', value: 0.5 }],
+    }))
+    await settle()
+
+    // A は取り下げられて一言も鳴っていない。よって輪島港は既読になっておらず、B で読まれる
+    const spoken = spokenTexts().join('')
+    expect(spoken).toContain('富山')
+    expect(spoken).toContain('輪島港')
+  })
+
+  // 対照。鳴った観測点は既読になるので、累積した次の電文では読み直さない
+  // （ここが効かないと、観測が続く間ずっと同じ観測点を読み続ける）。
+  it('鳴った観測点は、累積した次の電文では読まれない', async () => {
+    const handle = setup()
+    handle(makeTsunamiObs({ points: [{ name: '輪島港', value: 0.3 }] }))
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+    expect(spokenTexts()[0]).toContain('輪島港')
+
+    finishSpeech(0)
+    await flush()
+    handle(makeTsunamiObs({
+      id: 'tsunami-obs-2',
+      points: [{ name: '輪島港', value: 0.3 }, { name: '富山', value: 0.5 }],
+    }))
+    await settle()
+    expect(spokenTexts()).toHaveLength(2)
+    expect(spokenTexts()[1]).toContain('富山')
+    expect(spokenTexts()[1]).not.toContain('輪島港')
+  })
+
+  // 件数上限（`OBS_UPDATE_SPEAK_MAX_POINTS` = 5）で読まれなかった観測点は既読にしない。
+  // 既読にすると、波高がさらに上がるまでその観測点は差分に出てこない。
+  it('件数上限で読まれなかった観測点は既読にならない', async () => {
+    const handle = setup()
+    const many = [1, 2, 3, 4, 5, 6].map(i => ({ name: `観測点${i}`, value: i / 10 }))
+    handle(makeTsunamiObs({ points: many }))
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+    expect(spokenTexts()[0]).toContain('観測点6')      // 波高の大きい順に 5 件
+    expect(spokenTexts()[0]).not.toContain('観測点1')  // 最小の 1 件は上限で落ちる
+
+    finishSpeech(0)
+    await flush()
+    // 同じ内容の続報でも、まだ読んでいない観測点1は読み上げ対象に残っている
+    handle(makeTsunamiObs({ id: 'tsunami-obs-2', points: many }))
+    await settle()
+    expect(spokenTexts()).toHaveLength(2)
+    expect(spokenTexts()[1]).toContain('観測点1')
+  })
+
+  // 等級の発表で読むのは**区域の予想波高**で、観測点の実測値は読まない。読んでいないものを
+  // 既読にすると、直後の観測情報でその実測値が読まれなくなる。
+  it('等級の発表に同梱された観測点の実測値は、既読にならない', async () => {
+    const handle = setup()
+    const withObs = {
+      ...makeTsunami(),
+      observations: [{
+        name: '輪島港',
+        height: { value: 0.3, description: '0.3m' },
+        districtCode: '390', districtName: '石川県能登',
+      }],
+    } as unknown as JMATsunami
+    handle(withObs)
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+    expect(spokenTexts()[0]).toContain('大津波警報')
+
+    finishSpeech(0)
+    await flush()
+    handle(makeTsunamiObs({ id: 'tsunami-obs-2', points: [{ name: '輪島港', value: 0.3 }] }))
+    await settle()
+    expect(spokenTexts()).toHaveLength(2)
+    expect(spokenTexts()[1]).toContain('輪島港')
+  })
+
+  // 解除では観測点の記憶（波高・名前）をすべて落とす。名前を残すと、前の津波で「観測中」の
+  // まま終わった観測点は次の津波で「新規到達」と見なされず、到達を一度も伝えられない。
+  it('解除を挟めば、同じ観測点の到達確認をもう一度読む', async () => {
+    const handle = setup()
+    handle(makeTsunamiArrival())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+    expect(spokenTexts()[0]).toContain('到達を確認しました')
+    finishSpeech(0)
+    await flush()
+
+    handle(makeTsunamiCancel())
+    await settle()
+    expect(spokenTexts()).toHaveLength(2)
+    expect(spokenTexts()[1]).toContain('解除')
+    finishSpeech(1)
+    await flush()
+
+    // 別の津波で同じ観測点に再び到達（記憶が落ちているので読み直す）
+    handle(makeTsunamiArrival({ id: 'tsunami-arr-2' }))
+    await settle()
+    expect(spokenTexts()).toHaveLength(3)
+    expect(spokenTexts()[2]).toContain('到達を確認しました')
+  })
+
+  // 対照。解除を挟まなければ既読が効いたままで、同じ到達を読み直さない
+  // （読み直すと、観測が続く間ずっと「到達を確認しました」を繰り返す）。
+  it('解除を挟まなければ、同じ観測点の到達確認は読み直さない', async () => {
+    const handle = setup()
+    handle(makeTsunamiArrival())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+    finishSpeech(0)
+    await flush()
+
+    handle(makeTsunamiArrival({ id: 'tsunami-arr-2' }))
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)   // 読み上げ文が組まれない
+  })
+
+  // 安全弁。波高が上がった観測点は、一度読んでいても読み直す（既読は「読んだ値」を持つ）。
+  it('一度読んだ観測点でも、波高が上がれば読み直す', async () => {
+    const handle = setup()
+    handle(makeTsunamiObs({ points: [{ name: '輪島港', value: 0.3 }] }))
+    await settle()
+    finishSpeech(0)
+    await flush()
+
+    handle(makeTsunamiObs({ id: 'tsunami-obs-2', points: [{ name: '輪島港', value: 1.2 }] }))
+    await settle()
+    expect(spokenTexts()).toHaveLength(2)
+    expect(spokenTexts()[1]).toContain('輪島港')
   })
 })

@@ -48,6 +48,12 @@ async function flush() {
   for (let i = 0; i < 400; i++) await Promise.resolve()
 }
 
+/** 明示的に読み上げを終わらせる（割り込みではなく自然終了を模擬する） */
+function finishSpeech(index: number) {
+  const s = speeches[index]
+  if (s && !s.done) { s.done = true; s.finish() }
+}
+
 /** 通知音の遅延（最大 4200ms）と第 2 フェーズの待ち（6000ms）を消化して発話へ到達させる */
 async function settle() {
   await vi.advanceTimersByTimeAsync(8000)
@@ -113,6 +119,38 @@ function makeTsunamiObsOnly(): JMATsunami {
     areas: [],
     // 波高が既に確定している観測点だけを含む（到達確認の文も組めない）
     observations: [{ name: '輪島港', height: { value: 1.2, over: false, description: '1.2m' }, time: '2026-01-01T12:08:00Z' }],
+  } as unknown as JMATsunami
+}
+
+/** 波高未確定（観測中）の観測点だけを持つ電文。到達だけが確認された状態。 */
+function makeTsunamiArrivalOnly(over: { id?: string } = {}): JMATsunami {
+  return {
+    kind: 'tsunami',
+    id: over.id ?? 'tsunami-arr-1',
+    eventId: over.id ?? 'tsunami-arr-1',
+    time: '2026-01-01T12:10:00Z',
+    cancelled: false,
+    issue: { source: 'JMA', time: '2026-01-01T12:10:00Z', type: 'Focus' },
+    areas: [],
+    observations: [{ name: '輪島港', districtCode: '390', districtName: '石川県能登' }],
+  } as unknown as JMATsunami
+}
+
+/**
+ * 津波の解除。**`eventId` は解除する対象の津波と揃える**（実電文と同じ形）。
+ * 揃えないと「別イベントの遅延到達した解除」と判定されて状態が落ちない
+ * （`isCancelForCurrentTsunami`）。
+ */
+function makeTsunamiCancelEvent(over: { eventId?: string } = {}): JMATsunami {
+  return {
+    kind: 'tsunami',
+    id: 'tsunami-cancel-1',
+    eventId: over.eventId ?? 'tsunami-evt',
+    time: '2026-01-01T12:20:00Z',
+    cancelled: true,
+    cancelReason: 'lifted',
+    issue: { source: 'JMA', time: '2026-01-01T12:20:00Z', type: 'Focus' },
+    areas: [],
   } as unknown as JMATsunami
 }
 
@@ -188,6 +226,9 @@ function setup(over: { voicevoxEnabled?: boolean } = {}) {
   return {
     handle: result.current.handleLiveEvent,
     resetTracking: result.current.resetTracking,
+    // 画面側（観測点バッジ）を見るテストのために、フックの戻り値そのものも渡す。
+    // `result.current` は常に最新のレンダー結果を返すので、state の更新後も追える。
+    result,
     spies, tsunamisRef,
   }
 }
@@ -341,6 +382,13 @@ describe('読み上げとタブ切替の同調', () => {
     tsunamisRef.current = [makeTsunami()]
     handle(makeTsunamiObsUpdate())
     await settle()
+    // 観測情報は等級の発表より下の格なので、警報の読み上げが終わるまで待つ。声に合わせて
+    // 動かす作りなので、画面もその間は動かない（待たせずに読むと、警報の読み上げが観測値
+    // 1 点の更新で途中から消える）
+    expect(spies.followSpeechTab).not.toHaveBeenCalled()
+
+    finishSpeech(0)
+    await flush()
     expect(spies.followSpeechTab).toHaveBeenCalledWith('tsunami', TAB_PRIORITY.tsunami)
   })
 
@@ -354,6 +402,61 @@ describe('読み上げとタブ切替の同調', () => {
     handle(makeTsunamiObsUpdate())
     await settle()
     expect(spies.setActiveTabNonRealtime).toHaveBeenCalledWith('tsunami')
+  })
+
+  // 解除では観測点の記憶を落とす。**画面用も読み上げ用と揃えて落とすこと。** 片方だけ残すと
+  // 「声は到達を伝えるのにバッジが付かない」（またはその逆）になる。ここは画面側だけを見るため
+  // 読み上げを無効にして、観測が動いたと判定されるか（＝タブを要求するか）で確かめる。
+  it('解除を挟めば、同じ観測点の到達確認でもバッジが付き直す', async () => {
+    // タブ要求では確かめられない（解除後の電文は必ず「新規発報」と判定され、観測点の記憶とは
+    // 無関係にタブを取る）。観測が動いたかどうかが出るのはバッジの側。
+    const { handle, result } = setup({ voicevoxEnabled: false })
+    handle(makeTsunamiArrivalOnly())
+    await settle()
+    expect(result.current.obsUpdateStatus.get('輪島港')).toBe('new')
+
+    // 直前に受信した津波に向けた解除（`eventId` を揃える）
+    handle(makeTsunamiCancelEvent({ eventId: 'tsunami-arr-1' }))
+    await settle()
+
+    // 別の津波で同じ観測点に再び到達（画面用の記憶も落ちているので新規として扱われる）
+    handle(makeTsunamiArrivalOnly({ id: 'tsunami-arr-2' }))
+    await settle()
+    expect(result.current.obsUpdateStatus.get('輪島港')).toBe('new')
+  })
+
+  // 安全弁。津波は 1 件スロットなので、別イベントの遅延到達した解除で進行中の津波の記憶を
+  // 消してはいけない。カードの状態更新（`useEarthquakes`）は同じ判定で弾いているが、こちらは
+  // `handleEvent` が状態更新の成否に関わらず先に呼ばれるため、自分で照合する必要がある。
+  it('別イベントの遅延解除では、進行中の津波の記憶を落とさない', async () => {
+    const { handle, result } = setup({ voicevoxEnabled: false })
+    handle(makeTsunamiArrivalOnly())
+    await settle()
+    expect(result.current.obsUpdateStatus.get('輪島港')).toBe('new')
+
+    // 別イベントの解除が遅れて届く
+    handle(makeTsunamiCancelEvent({ eventId: 'other-evt' }))
+    await settle()
+
+    // 記憶は落ちていないので、同じ観測点の到達は「新規」として出てこない
+    handle(makeTsunamiArrivalOnly({ id: 'tsunami-arr-2' }))
+    await settle()
+    expect(result.current.obsUpdateStatus.get('輪島港')).toBeUndefined()
+  })
+
+  // 安全弁。照合は**記憶と画面の状態**にしか掛けない。音と読み上げは従来どおり無条件に出す
+  // （「解除を落とす方が害が大きい」という既存方針。理由は `isCancelForCurrentTsunami`）。
+  // ここを揃えてしまうと、照合できない経路の解除が声にも出なくなる。
+  it('別イベントの遅延解除でも、解除の読み上げは出る', async () => {
+    const { handle } = setup()
+    handle(makeTsunamiArrivalOnly())
+    await settle()
+    const before = speeches.length
+
+    handle(makeTsunamiCancelEvent({ eventId: 'other-evt' }))
+    await settle()
+    expect(speeches.length).toBeGreaterThan(before)
+    expect(speeches.map(s => s.text).join('')).toContain('解除')
   })
 
   it('区域を持たない津波電文（観測情報のみ）は観測点更新として読み、追従で tsunami を取る', async () => {
@@ -376,6 +479,9 @@ describe('読み上げとタブ切替の同調', () => {
     tsunamisRef.current = [makeTsunami()]
     handle(makeTsunamiObsOnly())
     await settle()
+    // 観測情報は警報の読み上げが終わってから読まれる（格が下がったため）
+    finishSpeech(0)
+    await flush()
     const spoken = speeches.map(s => s.text).join('')
     expect(spoken).not.toContain('解除')
     expect(spoken).toContain('輪島港')
