@@ -791,6 +791,35 @@ export function getSpeechClock(): number | null {
 const PRE_START_CHECK_LEAD_SEC = 0.05
 
 /**
+ * 鳴っている読み上げを止め、進行中の合成を打ち切る。**語の途中でも止まる。**
+ *
+ * {@link speakWithVoicevox} の冒頭が行う割り込みのうち、「止める」部分だけを次の発話を
+ * 伴わずに実行する。使うのは予報から警報への言い直し（`useLiveEventHandler` の
+ * `chainEEWSpeech`）で、狙いは**発話の順番を崩さずに待ちを短くすること**。
+ *
+ * 言い直しを「前の発話を待たずに投入する」形で実装すると、待ち行列に並んでいた別の EEW の
+ * 予約が前の発話の完了で解放され、**始まったばかりの言い直しを後ろから消してしまう**
+ * （止める行為そのものが解放のスイッチになる）。先に音だけ止めて自分は順番どおりに並べば、
+ * 1 本のチェーンで直列化する前提を壊さずに済む。
+ *
+ * **これ自体は無音を作る。** 呼ぶ側は続けて読むものを用意しておくこと。止めてから次を読むまでの
+ * 間に対象が取り消されて読むものが無くなることはあるが、そのときは誤報取消の読み上げが別途
+ * 流れるため情報は欠けない。
+ */
+export function stopSpeech(): void {
+  for (const src of activeSources) {
+    try { src.stop() } catch { /* already stopped */ }
+  }
+  activeSources = []
+  if (currentAbortController) {
+    try { currentAbortController.abort() } catch { /* 二重 abort は無視 */ }
+  }
+  // 進行中のパイプライン（合成 → 予約のループ）も降ろす。これが無いと、止めた後に残りの
+  // チャンクが予約され直して鳴り続ける（ループは `currentSessionId` の一致で自分の世代を見る）。
+  currentSessionId++
+}
+
+/**
  * テキストを VOICEVOX で合成して再生する（パイプライン方式）。
  * テキストを句読点で分割し、最初のチャンクが合成できた時点で再生を開始する。
  * 再生中の音声があれば割り込み停止して新しいものを再生する。
