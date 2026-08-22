@@ -66,20 +66,30 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
-function Row({ label, description, children }: {
+function Row({ label, description, hint, children }: {
   label: string
   description?: string
+  /**
+   * 常時表示する前置き。説明文（`description`）はホバー・タップまで隠れるため、
+   * **隠すと失敗の原因が辿れなくなる前提条件**だけをここに置く。
+   * 例: VOICEVOX 読み上げは別アプリの起動が要る。それを知らないまま ON にすると
+   * 「接続状態: 起動していません」だけが出て、何を起動すべきか分からない。
+   */
+  hint?: string
   children?: React.ReactNode
 }) {
   // ラベル側に最低幅（basis-32 = 8rem）を与えたうえで折り返しを許可する。右のコントロールは
   // 幅を譲らない（select の選択肢や URL 入力は縮めると読めなくなる）ため、両方を 1 行に詰めると
-  // パネル幅が最も狭いスマホ横（sideNarrow = w-80）でラベルが数文字幅まで潰れ、1 文字ずつ改行される。
+  // パネル幅が最も狭いスマホ横（sideNarrow = w-panel-narrow）でラベルが数文字幅まで潰れ、
+  // 1 文字ずつ改行される。
   // flex-wrap なら収まらない行だけがラベル上・コントロール下の 2 段に落ち、トグルのような
   // 細いコントロールの行は 1 行のまま保たれる（スマホ横は画面高が狭く、一律の縦積みは割に合わない）。
-  // 最低幅は「2 段に落とす行」を選ぶ閾値でもある。w-80・UI 倍率 100%・既定の表示状態での実測では、
-  // コントロール幅が 113px を超える行だけが 2 段になり、対象は入力欄・スライダー・幅広 select の
-  // 6 行に収まる（寸法はすべて rem なので倍率を変えても比率は保たれる。VOICEVOX 設定のように
-  // 条件付きで現れる行はこの数に含めていない）。
+  // 最低幅は「2 段に落とす行」を選ぶ閾値でもある。sideNarrow・UI 倍率 100%・既定の表示状態での
+  // 実測では行の内寸が 289px で、閾値は 289 -（最低幅 128 + gap 16）= 145px。これを超える
+  // コントロールだけが 2 段になり、対象は APIキーの入力欄（192px）・震度更新の試聴ボタン列
+  // （231px）・開始時刻の入力（206px）の 3 行。1 段に留まる最大は活断層線の濃さのスライダー
+  // （136px）。寸法はすべて rem なので倍率を変えても比率は保たれる。VOICEVOX 設定のように
+  // 条件付きで現れる行はこの数に含めていない。
   // 広げすぎると通知種別の行（コントロール 63〜98px）まで巻き込んで画面高を浪費する。
   // 伸長指定に flex-1 を使わないこと: flex ショートハンドが flex-basis を 0% で上書きし、
   // 最低幅が効かなくなる（Tailwind は flex-basis より flex を後に出力する）。
@@ -93,6 +103,7 @@ function Row({ label, description, children }: {
         {description
           ? <DescriptionTip label={label} description={description} />
           : <p className="text-white text-sm">{label}</p>}
+        {hint && <p className="text-secondary text-xs mt-0.5">{hint}</p>}
       </div>
       {/* ml-auto は 2 段に落ちた行のためにある。折り返した 2 行目はコントロール 1 個だけの行になり、
           アイテムが 1 個の行では justify-between が flex-start にフォールバックして左寄せになる
@@ -100,9 +111,38 @@ function Row({ label, description, children }: {
           1 行に収まる行では先にラベルの grow が余白を使い切るので、この ml-auto は何もしない。
           max-w-full は行幅を超える中身への歯止め。flex-shrink-0 は「余白が足りないとき縮まない」
           という指定でしかなく、中身が行より広い場合ははみ出して Section の overflow-hidden に
-          切り取られる（データ出典の一行がこれに当たった）。max-width なら shrink とは別の制約
-          として効くので、幅を譲らせたくない select や入力欄はそのままに、超過分だけ折り返せる。 */}
+          切り取られる（データ出典の一行がこれに当たった。その行は現在 CreditRow へ移している）。
+          max-width なら shrink とは別の制約として効くので、幅を譲らせたくない select や
+          入力欄はそのままに、超過分だけ折り返せる。 */}
       <div className="flex-shrink-0 ml-auto max-w-full">{children}</div>
+    </div>
+  )
+}
+
+/**
+ * 出典表記の行。`Row` の「ラベルに最低幅を与える」規則をあえて使わない。
+ *
+ * `Row` はラベルに最低幅 8rem（128px）を確保するが、出典行はラベルが短く値が長いため
+ * この規則と噛み合わない。「地図」は 2 文字でも 128px を取り、値（実測 285px）と間隔を
+ * 足すと 429px になって行の内寸（PC 幅で 353px）を超え、ラベル上・値下の 2 段に
+ * 折り返してしまう。ラベルを自然幅にすれば 325px で 1 行に収まる。
+ *
+ * 値は折り返せるテキスト（出典・リンク）に限るため、幅が足りないときは 2 段に落とすのではなく
+ * 右側で折り返させる（`min-w-0`）。ラベル側は潰さない（`flex-shrink-0`）。
+ *
+ * 値側に `grow` が要る。付けないと値の枠が中身の最大幅ちょうどで確定し、1px 未満の
+ * 端数で折り返してしまう（余白は残っているのに 2 行になる）。余った幅を吸わせて回避する。
+ * 右寄せは `grow` と `text-right` で成立するので `justify-between` は置かない
+ * （2 要素の一方が余白を吸い切る配置では `justify-content` は何もしない）。
+ */
+function CreditRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    // data-settings-row は Row と同じ目印。この行は今のところ説明文を持たないため吹き出しは
+    // 出ないが、後から説明を足したときに基準が行全体になるよう先に付けておく（付け忘れると
+    // ラベル 1 個分の矩形が基準になり、値を覆わないための設計が効かなくなる）。
+    <div data-settings-row className="flex items-baseline gap-x-4 px-4 py-3">
+      <p className="text-white text-sm flex-shrink-0">{label}</p>
+      <div className="min-w-0 grow text-right">{children}</div>
     </div>
   )
 }
@@ -651,7 +691,13 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             </div>
           </Row>
         )}
-        <Row label="VOICEVOX 読み上げ" description="地震・EEW・津波情報をVOICEVOXで読み上げます（要：VOICEVOXアプリ起動）">
+        {/* 「要：VOICEVOXアプリ起動」は hint に置いて常時見せる。説明文に混ぜて隠すと、
+            ON にしたとき「接続状態: 起動していません」だけが見えて原因に辿り着けない。 */}
+        <Row
+          label="VOICEVOX 読み上げ"
+          description="地震・EEW・津波情報をVOICEVOXで読み上げます"
+          hint="要：VOICEVOXアプリ起動"
+        >
           <Toggle checked={settings.voicevoxEnabled} onChange={v => onUpdate('voicevoxEnabled', v)} />
         </Row>
         {settings.voicevoxEnabled && (
@@ -1065,7 +1111,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
 
       <Section title="このアプリについて">
         <Row label="バージョン"><span className="text-xs text-secondary">{__APP_VERSION__}</span></Row>
-        <Row label="地震・津波データ">
+        <CreditRow label="地震・津波データ">
           {isDmdss ? (
             <a href="https://dmdata.jp/" target="_blank" rel="noopener noreferrer"
               className="text-xs text-blue-400 hover:text-blue-300">
@@ -1077,18 +1123,18 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
               P2PQuake API v2
             </a>
           )}
-        </Row>
-        <Row label="リアルタイム震度">
+        </CreditRow>
+        <CreditRow label="リアルタイム震度">
           <a href="https://www.kmoni.bosai.go.jp/" target="_blank" rel="noopener noreferrer"
             className="text-xs text-blue-400 hover:text-blue-300">
             防災科研 強震モニタ
           </a>
-        </Row>
-        <Row label="地図">
-          <span className="text-xs text-secondary text-right">
+        </CreditRow>
+        <CreditRow label="地図">
+          <span className="text-xs text-secondary">
             国土数値情報（行政区域）国土交通省 / Natural Earth
           </span>
-        </Row>
+        </CreditRow>
         <Row label="サーバー時刻オフセット" description="Yahoo 強震モニタ経由でサーバー時刻に較正した際の壁時計との差分（診断用）。「未較正」は Yahoo 到達不能などで較正が動いていないことを示す">
           <ServerClockOffsetDisplay />
         </Row>
