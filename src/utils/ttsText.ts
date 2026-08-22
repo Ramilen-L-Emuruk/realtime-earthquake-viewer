@@ -2,7 +2,7 @@ import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JM
 import { eewMaxScaleInfo, eewMaxLpgmClass, eewNoForecastReason } from './eew'
 import { getIntensityLabel, getIntensityLabelWithOrAbove } from './intensity'
 import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight } from './tsunami'
-import { joinSegments, plain, type SpeechSegment } from './ttsFollow'
+import { joinSegments, plain, type SpeechSegment, type SpeechRef, type QuakeFact } from './ttsFollow'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
 import { getStationCoordsCache, buildAreaPrefIndex, buildStationPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, lookupStationRegion, type RegionOrderIndex, type StationCoordsData } from './stationCoords'
@@ -172,14 +172,70 @@ export interface TtsRegionOptions {
   regionTolerance: number   // maxRegions をこの数まで超える場合は省略せず全地域を読む（0 = 無効）
 }
 
-function buildRegionText(
+/**
+ * 1 つの地震について「声になった内容」の記録。続報で差分だけを読むために持つ。
+ *
+ * **受信した内容ではなく、実際に鳴った内容を入れること。** 更新するのは
+ * `useLiveEventHandler` が読み上げの進行（チャンクの再生）を見てからで、文を作る側
+ * （このファイル）は読むだけ。理由は docs/spec/audio-tts-spec.md §4「続報は差分だけ読む」。
+ *
+ * 地震ごとに 1 つ持ち、**情報種別を跨いで共有する**。震度速報で読んだ区域を
+ * 震源・震度情報でもう一度読まないため（種別ごとに分けると、同じ地震の同じ地域名を
+ * 電文の種別が変わるたびに読み直す）。
+ */
+export interface QuakeSpokenState {
+  /** 声になった区域名 → その時に伝えた震度。これより高い震度になったときだけ読み直す */
+  readonly regions: Map<string, IntensityScale>
+  /** 声になった震源要素・津波区分。キーごとに最後に伝えた値を持つ */
+  readonly facts: Map<QuakeFact, string>
+}
+
+/** 空の {@link QuakeSpokenState} を作る。 */
+export function createQuakeSpokenState(): QuakeSpokenState {
+  return { regions: new Map(), facts: new Map() }
+}
+
+/**
+ * 声になった参照を記録へ反映する。
+ *
+ * 区域は**震度が上がったときだけ**書き換える（同じ区域を下位の震度で挙げ直す電文があっても、
+ * 既に伝えた震度を下げない）。事実は最後に伝えた値で上書きする。
+ *
+ * `useLiveEventHandler` が読み上げの完了時に呼ぶ。**記録を進める規則はここ 1 か所に置くこと**
+ * ―― テストが同じ規則を書き写すと、実装だけ変えたときにテストが古い規則のまま緑で残る。
+ */
+export function applySpokenRefs(state: QuakeSpokenState, refs: readonly SpeechRef[]): void {
+  for (const ref of refs) {
+    if (ref.kind === 'quakeRegion') {
+      const said = state.regions.get(ref.name)
+      if (said === undefined || said < ref.scale) state.regions.set(ref.name, ref.scale as IntensityScale)
+    } else if (ref.kind === 'quakeFact') {
+      state.facts.set(ref.fact, ref.value)
+    }
+  }
+}
+
+/**
+ * 区域を読み上げの対象にするか。**判定は「その震度をまだ声にしていないか」**。
+ *
+ * 未記録（初出）と、記録済みより高い震度になった場合が対象。据え置きは読まない。
+ */
+function isUnspokenRegion(spoken: QuakeSpokenState | undefined, name: string, scale: IntensityScale): boolean {
+  if (!spoken) return true
+  const said = spoken.regions.get(name)
+  return said === undefined || said < scale
+}
+
+function buildRegionSegments(
   points: EarthquakePoint[],
   maxScale: IntensityScale,
   opts: TtsRegionOptions,
   hypocenter?: { latitude: number; longitude: number },
-): string {
+  /** 渡すと、まだ声になっていない区域だけを読む（続報の差分）。省略すると全区域を読む */
+  spoken?: QuakeSpokenState,
+): SpeechSegment[] {
   const maxIdx = SCALE_DESCENDING.indexOf(maxScale)
-  if (maxIdx < 0) return ''
+  if (maxIdx < 0) return []
 
   // 震源位置が使えるか。0 は座標未設定、-200 は「位置不明」センチネル（震度速報のように震源を
   // 持たない電文で入る。p2pquake.ts / dmdataParser.ts 参照）。どちらも距離の基準にはできない。
@@ -206,16 +262,21 @@ function buildRegionText(
     if (names.length > 0) observed.push({ scale, names })
   }
 
-  const parts: string[] = []
+  const parts: SpeechSegment[][] = []
   const mentioned = new Set<string>()  // 上位階で読み上げ済みの地域名
   for (let rank = 0; rank < observed.length; rank++) {
     const { scale, names: observedNames } = observed[rank]
     // 設定した階数以内、または「必ず読み上げる震度」以上の階級を読む。どちらの条件も上位の
     // 階級ほど成立しやすいため、両方を外れた時点で以降の階級も必ず外れる（break で打ち切れる）。
+    //
+    // **打ち切りの判定に差分を混ぜないこと。** 階数（rank）は「観測がある階級」の並びで数えるため、
+    // 差分で残った区域だけを見て数えると、上位の階級が据え置きだった続報で下位の階級が繰り上がり、
+    // 普段は読まない震度まで読み始める。
     const withinLevels = rank <= opts.intensityLevels
     const withinAlwaysRead = opts.alwaysReadScale >= 0 && scale >= opts.alwaysReadScale
     if (!withinLevels && !withinAlwaysRead) break
-    let names = observedNames.filter(n => !mentioned.has(n))
+    // 同じ文の中で上位階に出した区域を落とし、さらに（続報なら）既に声になった区域も落とす。
+    let names = observedNames.filter(n => !mentioned.has(n) && isUnspokenRegion(spoken, n, scale))
     if (names.length === 0) continue
     // 上限で切るときに残す地域は震源に近い順で選ぶ（読み上げる順序ではなく「どれを読むか」の選抜）。
     // 地理順のまま先頭から切ると、震源から遠い北側の地域が枠を占め、震源直近が「ほかN地域」に
@@ -246,8 +307,19 @@ function buildRegionText(
     // 整っているため、ここは何も動かさない（安定ソートなので通しても順序は変わらない）。
     names = sortByRegionOrder(names, regionOrder)
     names.forEach(n => mentioned.add(n))
-    const omittedSuffix = omittedCount > 0 ? `、ほか${omittedCount}地域` : ''
-    parts.push(`${parts.length === 0 ? '最大' : ''}震度${intensityText(scale)}を${names.join('、')}${omittedSuffix}`)
+    // 「最大」を冠せるのは、その階級がこの電文の最大震度に一致するときだけ。
+    // **句の並び順で決めてはいけない**——差分では最大震度の区域が据え置きで落ちることがあり、
+    // 先頭の句に無条件で付けると「最大震度4を…」と、電文が伝えていない最大震度を語る。
+    const head = scale === maxScale ? '最大' : ''
+    const segments: SpeechSegment[] = [plain(`${head}震度${intensityText(scale)}を`)]
+    names.forEach((name, i) => {
+      if (i > 0) segments.push(plain('、'))
+      // 区域名だけを参照付きの断片にする。読点を含めると、チャンク（読点で切られる）と
+      // 断片の境界がずれて引き当てが鈍る。
+      segments.push({ text: name, refs: [{ kind: 'quakeRegion', name, scale }] })
+    })
+    if (omittedCount > 0) segments.push(plain(`、ほか${omittedCount}地域`))
+    parts.push(segments)
   }
 
   if (parts.length === 0) {
@@ -256,15 +328,23 @@ function buildRegionText(
     // 呼び出し側が最大震度だけの一文へ落とすので読み上げは成立するが、地域が丸ごと消えたことは
     // 記録に残す。読み上げごとに出すと同じ行でログが埋まるため間引く。
     // 座標テーブルの読み込み前は引けないのが当たり前なので黙る（起動直後の正常な過渡状態）。
-    if (points.length > 0 && stationData) {
+    // **数えるのは `observed`。** `parts` が空になる理由には「続報で読む差分が無い」も含まれ、
+    // そちらは正常なので、`parts` で判定すると続報のたびに警告が鳴る。
+    if (observed.length === 0 && points.length > 0 && stationData) {
       warnNoRegionNames(() => log.warn('[tts] 震度点があるのに地域名を作れなかった（電文の観測点が座標テーブルに無い）'))
     }
-    return ''
+    return []
   }
   // 助詞「で」は末尾（述語の直前）にだけ置く。階級ごとの句末に付けると
   // 「〜福島県で、震度3を〜」と一文字が読点で挟まれ、読み上げがぶつ切りに聞こえる。
   // 複数階級のときは前の句が末尾の「で」を共有する形（並列句の格助詞の共有）になる。
-  return parts.join('、') + 'で観測しました。'
+  const joined: SpeechSegment[] = []
+  parts.forEach((part, i) => {
+    if (i > 0) joined.push(plain('、'))
+    joined.push(...part)
+  })
+  joined.push(plain('で観測しました。'))
+  return joined
 }
 
 function magnitudeText(mag: number): string {
@@ -278,29 +358,6 @@ function magnitudeText(mag: number): string {
  */
 function magnitudePhrase(mag: number): string {
   return hasMagnitude(mag) ? `マグニチュード${magnitudeText(mag)}の` : ''
-}
-
-/**
- * 「〇〇、深さ120キロメートル」のように震源名と深さを繋いだ句を返す（「〜を震源とする」に続ける）。
- * 深さ不明のときは深さ句ごと省いて震源名だけを返す。震源名が無ければ空文字。
- */
-function hypocenterPhrase(hypocenter: { name: string; depth: number }): string {
-  const depth = depthSourcePhrase(hypocenter.depth)
-  if (!hypocenter.name) return ''
-  return depth ? `${hypocenter.name}、${depth}` : hypocenter.name
-}
-
-/**
- * 「〇〇、深さ120キロメートルを震源とするマグニチュード7.1の地震が発生しました。」を組み立てる。
- * 震源名・深さ・規模のいずれが欠けても文が破綻しないよう、欠けた要素は句ごと省く。
- * 震源名が取れない電文（パース異常）では震源に触れず規模だけを伝える文になる。
- */
-function quakeOccurrenceText(hypocenter: Hypocenter): string {
-  const source = hypocenterPhrase(hypocenter)
-  const mag = magnitudePhrase(hypocenter.magnitude)
-  return source
-    ? `${source}を震源とする${mag}地震が発生しました。`
-    : `${mag}地震が発生しました。`
 }
 
 /**
@@ -486,15 +543,159 @@ function domesticTsunamiText(t: DomesticTsunami): string {
   }
 }
 
-/** VXSE51/52/53/61 地震情報の読み上げテキストを生成する。isNew=false のとき更新報として冒頭に通知する。 */
-export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew: boolean): string {
+/**
+ * 震源要素を伝える句を、要素ごとに参照付きの断片へ分ける。
+ * 連結すると「〇〇、深さ120キロメートルを震源とするマグニチュード7.1の地震が発生しました。」になる。
+ * 震源名・深さ・規模のいずれが欠けても文が破綻しないよう、欠けた要素は句ごと省く（震源名が取れない
+ * 電文では震源に触れず規模だけを伝える文になる）。
+ *
+ * 要素ごとに分けるのは、**チャンクが読点で切られる**ため。震源名と深さの間には読点が入るので、
+ * ひとつの断片にまとめると「震源名しか鳴っていないのに深さも規模も声になった」と記録される。
+ */
+function quakeOccurrenceSegments(hypocenter: Hypocenter): SpeechSegment[] {
+  const tellable = tellableHypocenterFacts(hypocenter)
+  const segments: SpeechSegment[] = []
+  if (tellable.has('hypocenterName')) {
+    segments.push({ text: hypocenter.name, refs: [{ kind: 'quakeFact', fact: 'hypocenterName', value: hypocenter.name }] })
+    if (tellable.has('depth')) {
+      segments.push(plain('、'))
+      segments.push({ text: depthSourcePhrase(hypocenter.depth), refs: [{ kind: 'quakeFact', fact: 'depth', value: String(hypocenter.depth) }] })
+    }
+    segments.push(plain('を震源とする'))
+  }
+  if (tellable.has('magnitude')) {
+    segments.push({ text: magnitudePhrase(hypocenter.magnitude), refs: [{ kind: 'quakeFact', fact: 'magnitude', value: magnitudeText(hypocenter.magnitude) }] })
+  }
+  segments.push(plain('地震が発生しました。'))
+  return segments
+}
+
+/** 津波区分の文を参照付きの断片にする（続報で区分が変わったときだけ読み直すため）。 */
+function domesticTsunamiSegment(t: DomesticTsunami): SpeechSegment {
+  return { text: domesticTsunamiText(t), refs: [{ kind: 'quakeFact', fact: 'domesticTsunami', value: t }] }
+}
+
+/**
+ * 「震源の深さは〇〇に更新されました。」の〇〇部分。
+ *
+ * {@link depthSourcePhrase} は「深さ10キロメートル」を返すため、この文には使えない
+ * （「震源の深さは深さ10キロメートルに」と重なる）。深さ不明では空文字。
+ */
+function depthUpdateValue(depth: number): string {
+  if (!hasDepth(depth)) return ''
+  return depth === 0 ? 'ごく浅い場所' : `${depth}キロメートル`
+}
+
+/**
+ * この震源要素のうち、**声にしうるもの**（＝記録されうるもの）。
+ *
+ * **読む側（{@link quakeOccurrenceSegments} / {@link changedFactSegments}）と、記録を待つ側
+ * （{@link hasUnspokenFact}）は必ずこれを使うこと。** 条件を各所に書くと必ずずれる ―― 実際、
+ * 深さの条件が生成側とだけ食い違い、記録される機会の無い事実を待って**その地震だけ永久に
+ * 全文読みへ戻る**不具合を作った（docs/spec/audio-tts-spec.md §4）。
+ *
+ * **深さは震源名の句の中でしか読まれない。** 震源名が空の電文では「〇〇、深さ10キロメートルを
+ * 震源とする」の句ごと落ちるため、深さが判っていても声にならない。
+ */
+function tellableHypocenterFacts(hypocenter: Hypocenter): Set<QuakeFact> {
+  const facts = new Set<QuakeFact>()
+  if (hypocenter.name) {
+    facts.add('hypocenterName')
+    if (depthSourcePhrase(hypocenter.depth)) facts.add('depth')
+  }
+  if (magnitudePhrase(hypocenter.magnitude)) facts.add('magnitude')
+  return facts
+}
+
+/** 上に津波区分を足した、この電文が声にしうる事実の全体。 */
+function tellableFacts(event: JMAQuake): Set<QuakeFact> {
+  const facts = tellableHypocenterFacts(event.earthquake.hypocenter)
+  if (domesticTsunamiText(event.earthquake.domesticTsunami)) facts.add('domesticTsunami')
+  return facts
+}
+
+/**
+ * この電文が伝える震源要素・津波区分のうち、**まだ一度も声にしていないもの**があるか。
+ *
+ * あるなら続報でも差分にせず、初報と同じ形（時刻・震源・規模・津波を通しで言う文）へ回す。
+ * 未記録には理由が 2 つあり、**どちらも「更新されました」と言うのは正しくない**。
+ *
+ * - 初報の時点では値が不明だった（深さ・規模は後の報で確定することがある）
+ * - 初報の該当箇所が割り込みで鳴らなかった（→ docs/spec/audio-tts-spec.md §4
+ *   「既読になるのは「声になった分」だけ」）
+ *
+ * **未記録を「変化なし」として省いてはいけない。** 省くと、その要素はその地震の続報が続く限り
+ * 二度と声にならない（同じ種別の報が来る限り初報の経路にも戻らない）。区域側の
+ * {@link isUnspokenRegion} が「未記録＝読む」としているのと、意味を揃えるための判定。
+ */
+function hasUnspokenFact(event: JMAQuake, spoken: QuakeSpokenState): boolean {
+  return [...tellableFacts(event)].some(fact => !spoken.facts.has(fact))
+}
+
+/**
+ * 続報で「値が変わった震源要素」だけを言い直す断片列を作る。変化が無ければ空。
+ *
+ * **震度速報では呼ばないこと。** 震度速報は震源要素も津波区分も伝えない電文で、
+ * `hypocenter` はセンチネル（`-200` / `-1`）、`domesticTsunami` は「調査中」が入る。
+ * 素直に比べると、震源情報で伝えた「津波の心配はありません」から変化したと誤検出し、
+ * 続報のたびに「津波の有無を調査中です」と言い出す。
+ */
+function changedFactSegments(event: JMAQuake, spoken: QuakeSpokenState): SpeechSegment[] {
+  const { hypocenter, domesticTsunami } = event.earthquake
+  const tellable = tellableFacts(event)
+  const segments: SpeechSegment[] = []
+  // 声にしうる事実のうち、記録と値が違うものだけ。未記録がここへ来ることは無い
+  // （呼び出し前に {@link hasUnspokenFact} で弾き、初報と同じ形で言い直す側へ回している）。
+  // `has` の判定はその保証が崩れたときの安全弁として残す。
+  const changed = (fact: QuakeFact, value: string): boolean =>
+    tellable.has(fact) && spoken.facts.has(fact) && spoken.facts.get(fact) !== value
+
+  if (changed('hypocenterName', hypocenter.name)) {
+    segments.push({ text: `震源は${hypocenter.name}に更新されました。`, refs: [{ kind: 'quakeFact', fact: 'hypocenterName', value: hypocenter.name }] })
+  }
+  if (changed('magnitude', magnitudeText(hypocenter.magnitude))) {
+    const value = magnitudeText(hypocenter.magnitude)
+    segments.push({ text: `マグニチュードは${value}に更新されました。`, refs: [{ kind: 'quakeFact', fact: 'magnitude', value }] })
+  }
+  if (changed('depth', String(hypocenter.depth))) {
+    segments.push({ text: `震源の深さは${depthUpdateValue(hypocenter.depth)}に更新されました。`, refs: [{ kind: 'quakeFact', fact: 'depth', value: String(hypocenter.depth) }] })
+  }
+  if (changed('domesticTsunami', domesticTsunami)) {
+    segments.push(domesticTsunamiSegment(domesticTsunami))
+  }
+  return segments
+}
+
+/**
+ * VXSE51/52/53/61 地震情報の読み上げを断片列で生成する。
+ * isNew=false のとき更新報として冒頭に通知する。
+ *
+ * `spoken` を渡すと**続報は差分だけを読む**（既に声になった区域・震源要素を省く）。
+ * 省略すると全文を組み立てる（{@link earthquakeToText} 経由の呼び出し）。
+ *
+ * 差分が空になったときは**空配列を返す＝読み上げない**。ただしその地震について一度も何も
+ * 声にしていない場合は黙らない（最大震度だけでも伝える）。
+ */
+export function earthquakeToSegments(
+  event: JMAQuake,
+  opts: TtsRegionOptions,
+  isNew: boolean,
+  spoken?: QuakeSpokenState,
+): SpeechSegment[] {
   const { hypocenter, maxScale, domesticTsunami } = event.earthquake
   const type = event.issue.type
+  // その地震について何かを声にしたことがあるか。差分が空でも、まだ何も伝えていないなら黙らない。
+  const saidSomething = spoken != null && (spoken.regions.size > 0 || spoken.facts.size > 0)
 
   if (type === '震度速報') {
     const prefix = isNew ? '震度速報。' : '震度速報が更新されました。'
-    const regionText = buildRegionText(event.points, maxScale, opts, hypocenter)
-    return `${prefix}${regionText || maxScaleOnlySentence(maxScale)}`
+    const regionSegs = buildRegionSegments(event.points, maxScale, opts, hypocenter, spoken)
+    if (regionSegs.length > 0) return [plain(prefix), ...regionSegs]
+    // 区域を挙げられないとき（差分なし・区域を持たない異常な電文）。まだ何も伝えていなければ
+    // 最大震度だけでも伝え、そうでなければ黙る。震度も判らなければ名乗るだけに留める
+    // （`maxScaleOnlySentence` が空を返す。震度の値が欠けた文を作らないため）。
+    if (saidSomething) return []
+    return [plain(`${prefix}${maxScaleOnlySentence(maxScale)}`)]
   }
 
   const time = formatTime(event.earthquake.time)
@@ -502,45 +703,81 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
   if (type === '顕著な地震の震源要素更新のお知らせ') {
     // この電文（VXSE61）は震源要素の更新のみを伝え、津波の有無は含まない。
     // 津波情報は別電文（VTSE41/51/52）で発表されるため、ここでは読み上げない。
-    const amended = [
-      depthAmendPhrase(hypocenter.depth),
-      hasMagnitude(hypocenter.magnitude) ? `マグニチュード${magnitudeText(hypocenter.magnitude)}` : '',
-    ].filter(Boolean).join('、')
-    const head = `顕著な地震の震源要素更新のお知らせ。${time}頃発生した${hypocenter.name}の地震について、`
+    //
+    // **差分を取らない。** 「更新されたこと」自体が電文の主旨なので、値が既に声になっていても
+    // 省かない。ただし読んだ値は記録する（記録しないと、後続の続報が同じ値を「更新」と言い直す）。
+    const amended: SpeechSegment[] = []
+    const depth = depthAmendPhrase(hypocenter.depth)
+    if (depth) amended.push({ text: depth, refs: [{ kind: 'quakeFact', fact: 'depth', value: String(hypocenter.depth) }] })
+    if (hasMagnitude(hypocenter.magnitude)) {
+      const value = magnitudeText(hypocenter.magnitude)
+      if (amended.length > 0) amended.push(plain('、'))
+      amended.push({ text: `マグニチュード${value}`, refs: [{ kind: 'quakeFact', fact: 'magnitude', value }] })
+    }
+    const head = plain(`顕著な地震の震源要素更新のお知らせ。${time}頃発生した${hypocenter.name}の地震について、`)
     // 深さ・規模とも不明なら要素を並べられないため、更新があった事実だけを伝える。
-    return amended ? `${head}${amended}に更新されました。` : `${head}震源要素が更新されました。`
+    return amended.length > 0
+      ? [head, ...amended, plain('に更新されました。')]
+      : [head, plain('震源要素が更新されました。')]
   }
 
   if (type === '遠地地震') {
     // 気象庁「遠地地震に関する情報」（VXSE53・Head/Title で識別）。国外の規模の大きな地震を
     // 日本への津波影響とあわせて伝える電文で、国内震度は伴わない（maxScale は常に -1）。
+    //
+    // **差分を取らない。** 付加文（`forecastText`）が本文の主体で、区分の値だけを比べても
+    // 何が変わったか分からない。発表自体が稀で、続報も数報にとどまる。
     const prefix = isNew ? '遠地地震に関する情報。' : '遠地地震に関する情報が更新されました。'
-    const text = `${prefix}${formatDayTime(event.earthquake.time)}頃、${quakeOccurrenceText(hypocenter)}`
     // 付加文の原文を優先する。遠地地震は 022x/023x 系の付加文を併用するため、
     // domesticTsunami（021x 系の区分）へ丸めると意味が落ちる。
     // 原文を持たない経路（P2PQuake）は従来どおり区分から文を起こす。
-    return text + (event.forecastText || domesticTsunamiText(domesticTsunami))
+    const tail = event.forecastText
+      ? plain(event.forecastText)
+      : domesticTsunamiSegment(domesticTsunami)
+    return [
+      plain(`${prefix}${formatDayTime(event.earthquake.time)}頃、`),
+      ...quakeOccurrenceSegments(hypocenter),
+      tail,
+    ]
   }
 
-  if (type === '震源情報' || type === 'その他') {
-    const prefix = isNew ? '震源情報。' : '震源情報が更新されました。'
-    let text = `${prefix}${time}頃、${quakeOccurrenceText(hypocenter)}`
-    text += domesticTsunamiText(domesticTsunami)
-    return text
+  const isEpicenterOnly = type === '震源情報' || type === 'その他'
+  const label = isEpicenterOnly ? '震源情報' : '地震情報'
+
+  // 続報は変化したところだけを読む。震源要素・津波区分・震度の地域のいずれにも変化が
+  // 無ければ何も読まない（`useLiveEventHandler` が空の読み上げ文を見てタブ移動へ切り替える）。
+  // まだ声にしていない震源要素があるなら差分にしない（理由は `hasUnspokenFact`）。
+  if (!isNew && spoken && saidSomething && !hasUnspokenFact(event, spoken)) {
+    const facts = changedFactSegments(event, spoken)
+    const regionSegs = isEpicenterOnly
+      ? []
+      : buildRegionSegments(event.points, maxScale, opts, hypocenter, spoken)
+    if (facts.length === 0 && regionSegs.length === 0) return []
+    return [plain(`${label}が更新されました。`), ...facts, ...regionSegs]
   }
 
-  // ScaleAndDestination / DetailScale
-  const prefix = isNew ? '地震情報。' : '地震情報が更新されました。'
-  let text = `${prefix}${time}頃、${quakeOccurrenceText(hypocenter)}`
+  const prefix = isNew ? `${label}。` : `${label}が更新されました。`
+  const segments: SpeechSegment[] = [
+    plain(`${prefix}${time}頃、`),
+    ...quakeOccurrenceSegments(hypocenter),
+    domesticTsunamiSegment(domesticTsunami),
+  ]
+  if (!isEpicenterOnly) {
+    const regionSegs = buildRegionSegments(event.points, maxScale, opts, hypocenter, spoken)
+    if (regionSegs.length > 0) segments.push(...regionSegs)
+    else if (!saidSomething) {
+      // 地域名を作れなかった場合も、震度が判っていれば最大震度だけは伝える（震度速報と同じ扱い）。
+      // 揃えないと、この電文だけ震度に一切触れずに終わる。既に何か伝えている続報では言い直さない。
+      const only = maxScaleOnlySentence(maxScale)
+      if (only) segments.push(plain(only))
+    }
+  }
+  return segments
+}
 
-  text += domesticTsunamiText(domesticTsunami)
-
-  // 地域名を作れなかった場合も、震度が判っていれば最大震度だけは伝える（震度速報と同じ扱い）。
-  // 揃えないと、この電文だけ震度に一切触れずに終わる。
-  const regionText = buildRegionText(event.points, maxScale, opts, hypocenter)
-  text += regionText || maxScaleOnlySentence(maxScale)
-
-  return text
+/** VXSE51/52/53/61 地震情報の読み上げテキストを生成する。isNew=false のとき更新報として冒頭に通知する。 */
+export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew: boolean): string {
+  return joinSegments(earthquakeToSegments(event, opts, isNew))
 }
 
 /**
