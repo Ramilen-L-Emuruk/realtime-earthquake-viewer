@@ -2,7 +2,8 @@
 // 「〇時〇分」はローカルタイムゾーン依存のため、時刻の数値そのものではなく
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect } from 'vitest'
-import { earthquakeToText, eewIntensityToText, lpgmToText, tsunamiToText, tsunamiArrivalToText, tsunamiObservationUpdateToText, type TtsRegionOptions } from './ttsText'
+import { earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityToText, lpgmToText, tsunamiToText, tsunamiArrivalToText, tsunamiObservationUpdateToText, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
+import { joinSegments, type SpeechSegment } from './ttsFollow'
 import { getStationCoordsCache } from './stationCoords'
 import type { JMAQuake, JMALpgm, EarthquakePoint, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass, JMATsunami, TsunamiArea, TsunamiObservation } from '../types/earthquake'
 
@@ -729,5 +730,193 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
       { name: '大洗', districtCode: '070', districtName: '茨城県', height: { value: 1.9, description: '1.9m' } },
     ]))
     expect(text).toContain('茨城県、青森県太平洋沿岸で3メートルが予想されています。')
+  })
+})
+
+describe('earthquakeToSegments: 続報は差分だけ読む', () => {
+  function area(pref: string, addr: string, scale: number): EarthquakePoint {
+    return { pref, addr, isArea: true, scale: scale as IntensityScale }
+  }
+
+  // 震源座標を 0 にして震源距離での並べ替えを通さず、列挙順を points の順に固定する。
+  function quakeOf(points: EarthquakePoint[], maxScale: number, over: Parameters<typeof makeQuake>[0] = {}): JMAQuake {
+    const base = makeQuake({ type: '震度速報', maxScale: maxScale as IntensityScale, ...over })
+    return {
+      ...base,
+      earthquake: {
+        ...base.earthquake,
+        hypocenter: { ...base.earthquake.hypocenter, name: over.name ?? '宮城県沖', latitude: 0, longitude: 0 },
+      },
+      points,
+    }
+  }
+
+  const OPTS: TtsRegionOptions = { intensityLevels: 2, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0 }
+
+  /**
+   * 読み上げた内容を記録へ反映する。**規則は本番と同じものを使う**（`applySpokenRefs`）。
+   * 書き写すと、実装だけ変えたときにテストが古い規則のまま緑で残る。
+   */
+  function markSpoken(state: QuakeSpokenState, segments: SpeechSegment[]): void {
+    applySpokenRefs(state, segments.flatMap(seg => seg.refs))
+  }
+
+  it('正: 新しく現れた区域だけを読む', () => {
+    const state = createQuakeSpokenState()
+    const first = earthquakeToSegments(quakeOf([area('宮城県', '宮城県北部', 40)], 40), OPTS, true, state)
+    expect(joinSegments(first)).toBe('震度速報。最大震度4を宮城県北部で観測しました。')
+    markSpoken(state, first)
+
+    const second = earthquakeToSegments(
+      quakeOf([area('宮城県', '宮城県北部', 40), area('福島県', '福島県中通り', 30)], 40),
+      OPTS, false, state,
+    )
+    expect(joinSegments(second)).toBe('震度速報が更新されました。震度3を福島県中通りで観測しました。')
+  })
+
+  it('正: 震度が上がった区域は読み直す', () => {
+    const state = createQuakeSpokenState()
+    markSpoken(state, earthquakeToSegments(quakeOf([area('石川県', '石川県能登', 60)], 60), OPTS, true, state))
+    const upgraded = earthquakeToSegments(quakeOf([area('石川県', '石川県能登', 70)], 70), OPTS, false, state)
+    expect(joinSegments(upgraded)).toBe('震度速報が更新されました。最大震度7を石川県能登で観測しました。')
+  })
+
+  it('対照: 据え置きの続報は何も読まない（空配列）', () => {
+    const state = createQuakeSpokenState()
+    const points = [area('宮城県', '宮城県北部', 40)]
+    markSpoken(state, earthquakeToSegments(quakeOf(points, 40), OPTS, true, state))
+    expect(earthquakeToSegments(quakeOf(points, 40), OPTS, false, state)).toEqual([])
+  })
+
+  it('対照: 震度が下がった区域は読み直さない', () => {
+    const state = createQuakeSpokenState()
+    markSpoken(state, earthquakeToSegments(quakeOf([area('石川県', '石川県能登', 60)], 60), OPTS, true, state))
+    // 訂正で震度が下がるケース。既に伝えた値より低いので読まない
+    expect(earthquakeToSegments(quakeOf([area('石川県', '石川県能登', 50)], 50), OPTS, false, state)).toEqual([])
+  })
+
+  it('安全弁: 記録を渡さなければ全区域を読む（既存の全文経路が変わらない）', () => {
+    const points = [area('宮城県', '宮城県北部', 40), area('福島県', '福島県中通り', 30)]
+    expect(earthquakeToText(quakeOf(points, 40), OPTS, false))
+      .toBe('震度速報が更新されました。最大震度4を宮城県北部、震度3を福島県中通りで観測しました。')
+  })
+
+  it('安全弁: まだ何も声にしていなければ、差分が空でも黙らない', () => {
+    const state = createQuakeSpokenState()
+    // 区域を持たない電文（異常系）。記録が空なので最大震度だけでも伝える
+    const segments = earthquakeToSegments(quakeOf([], 40), OPTS, true, state)
+    expect(joinSegments(segments)).toBe('震度速報。最大震度4を観測しました。')
+  })
+
+  it('安全弁: 「ほかN地域」に切られた区域には参照が付かない（既読にならない）', () => {
+    const state = createQuakeSpokenState()
+    const points = [area('宮城県', '宮城県北部', 40), area('福島県', '福島県中通り', 40)]
+    const first = earthquakeToSegments(quakeOf(points, 40), { ...OPTS, maxRegions: 1 }, true, state)
+    expect(joinSegments(first)).toBe('震度速報。最大震度4を宮城県北部、ほか1地域で観測しました。')
+    markSpoken(state, first)
+    expect(state.regions.has('福島県中通り')).toBe(false)
+    // 切られた区域は次の報で読まれる
+    const second = earthquakeToSegments(quakeOf(points, 40), { ...OPTS, maxRegions: 1 }, false, state)
+    expect(joinSegments(second)).toBe('震度速報が更新されました。最大震度4を福島県中通りで観測しました。')
+  })
+
+  it('「最大」を冠せるのは最大震度に一致する階級だけ', () => {
+    const state = createQuakeSpokenState()
+    const points = [area('石川県', '石川県能登', 60), area('富山県', '富山県東部', 40)]
+    markSpoken(state, earthquakeToSegments(quakeOf(points, 60), OPTS, true, state))
+    // 最大震度の区域は据え置き。残る震度4の句に「最大」を付けてはいけない
+    const second = earthquakeToSegments(
+      quakeOf([...points, area('新潟県', '新潟県中越', 40)], 60), OPTS, false, state,
+    )
+    expect(joinSegments(second)).toBe('震度速報が更新されました。震度4を新潟県中越で観測しました。')
+  })
+
+  it('階数の打ち切りに差分を混ぜない（上位が据え置きでも下位が繰り上がらない）', () => {
+    const state = createQuakeSpokenState()
+    const points = [
+      area('宮城県', '宮城県北部', 50),
+      area('福島県', '福島県中通り', 40),
+      area('岩手県', '岩手県内陸南部', 30),
+    ]
+    const opts = { ...OPTS, intensityLevels: 1 }
+    markSpoken(state, earthquakeToSegments(quakeOf(points, 50), opts, true, state))
+    // 震度3は初報でも読まれていない（階数 1 の外）。据え置きの続報でも繰り上げて読まない
+    expect(earthquakeToSegments(quakeOf(points, 50), opts, false, state)).toEqual([])
+  })
+
+  it('続報でマグニチュードが変われば、震度に変化が無くても読む', () => {
+    const state = createQuakeSpokenState()
+    const first = quakeOf([area('石川県', '石川県能登', 70)], 70, { type: '震源・震度情報', name: '石川県能登地方', depth: 10, magnitude: 7.4, domesticTsunami: '警報等' })
+    markSpoken(state, earthquakeToSegments(first, OPTS, true, state))
+    const second = quakeOf([area('石川県', '石川県能登', 70)], 70, { type: '震源・震度情報', name: '石川県能登地方', depth: 10, magnitude: 7.6, domesticTsunami: '警報等' })
+    expect(joinSegments(earthquakeToSegments(second, OPTS, false, state)))
+      .toBe('地震情報が更新されました。マグニチュードは7.6に更新されました。')
+  })
+
+  it('正: 初報で不明だった深さが確定したら、続報でも初報と同じ形で読む', () => {
+    const state = createQuakeSpokenState()
+    // 深さ不明（-1）の震源情報。深さの句は出ないので記録にも残らない
+    const first = quakeOf([], -1, { type: '震源情報', name: '日向灘', depth: -1, magnitude: 5.2, domesticTsunami: 'なし' })
+    markSpoken(state, earthquakeToSegments(first, OPTS, true, state))
+    expect(state.facts.has('depth')).toBe(false)
+
+    // 続報で深さが確定。「まだ声にしていない事実」があるので通しの文で言い直す
+    const second = quakeOf([], -1, { type: '震源情報', name: '日向灘', depth: 30, magnitude: 5.2, domesticTsunami: 'なし' })
+    const text = joinSegments(earthquakeToSegments(second, OPTS, false, state))
+    expect(text).toContain('深さ30キロメートルを震源とする')
+    expect(text).toContain('震源情報が更新されました。')
+  })
+
+  it('正: 声にならなかった事実は続報で言い直す（記録が空なら差分にしない）', () => {
+    const state = createQuakeSpokenState()
+    const first = quakeOf([area('石川県', '石川県能登', 40)], 40, { type: '震源・震度情報', name: '石川県能登地方', depth: 10, magnitude: 5.7, domesticTsunami: 'なし' })
+    const segments = earthquakeToSegments(first, OPTS, true, state)
+    // 区域だけが声になり、震源要素の断片は鳴らなかった（割り込み）状況を作る
+    markSpoken(state, segments.filter(seg => seg.refs.some(r => r.kind === 'quakeRegion')))
+    expect(state.regions.has('石川県能登')).toBe(true)
+    expect(state.facts.size).toBe(0)
+
+    const second = quakeOf([area('石川県', '石川県能登', 40)], 40, { type: '震源・震度情報', name: '石川県能登地方', depth: 10, magnitude: 5.7, domesticTsunami: 'なし' })
+    const text = joinSegments(earthquakeToSegments(second, OPTS, false, state))
+    expect(text).toContain('マグニチュード5.7')
+    expect(text).toContain('津波の心配はありません')
+  })
+
+  it('安全弁: 震源名が空の電文でも差分に入れる（声にしようのない深さを待たない）', () => {
+    const state = createQuakeSpokenState()
+    // 震源名が取れない電文。深さは判っているが「〇〇、深さ10キロメートルを震源とする」の句ごと
+    // 落ちるため、深さは声にならない＝記録される機会が無い
+    const first = quakeOf([], -1, { type: '震源情報', name: '', depth: 10, magnitude: 5.2, domesticTsunami: 'なし' })
+    const firstText = joinSegments(earthquakeToSegments(first, OPTS, true, state))
+    expect(firstText).not.toContain('キロメートル')
+    markSpoken(state, earthquakeToSegments(first, OPTS, true, state))
+    expect(state.facts.has('depth')).toBe(false)
+
+    // 値に変化が無い続報。記録できない深さを待って全文へ戻ってはいけない
+    const second = quakeOf([], -1, { type: '震源情報', name: '', depth: 10, magnitude: 5.2, domesticTsunami: 'なし' })
+    expect(earthquakeToSegments(second, OPTS, false, state)).toEqual([])
+  })
+
+  it('深さの更新文で「深さ」が重ならない', () => {
+    const state = createQuakeSpokenState()
+    const first = quakeOf([], -1, { type: '震源情報', name: '日向灘', depth: 30, magnitude: 5.2, domesticTsunami: 'なし' })
+    markSpoken(state, earthquakeToSegments(first, OPTS, true, state))
+    const second = quakeOf([], -1, { type: '震源情報', name: '日向灘', depth: 50, magnitude: 5.2, domesticTsunami: 'なし' })
+    const text = joinSegments(earthquakeToSegments(second, OPTS, false, state))
+    expect(text).toBe('震源情報が更新されました。震源の深さは50キロメートルに更新されました。')
+    expect(text).not.toContain('深さは深さ')
+  })
+
+  it('震度速報を津波区分の変化とみなさない（震源情報の直後でも読み直さない）', () => {
+    const state = createQuakeSpokenState()
+    // 震源情報が「津波の心配はありません」を伝える
+    const focus = quakeOf([], -1, { type: '震源情報', name: '石川県能登地方', depth: 10, magnitude: 5.7, domesticTsunami: 'なし' })
+    markSpoken(state, earthquakeToSegments(focus, OPTS, true, state))
+    expect(state.facts.get('domesticTsunami')).toBe('なし')
+    // 続く震度速報の domesticTsunami は「調査中」だが、津波を伝える電文ではない
+    const prompt = quakeOf([area('石川県', '石川県能登', 50)], 50, { domesticTsunami: '調査中' })
+    const text = joinSegments(earthquakeToSegments(prompt, OPTS, false, state))
+    expect(text).toBe('震度速報が更新されました。最大震度5強を石川県能登で観測しました。')
+    expect(text).not.toContain('調査中')
   })
 })

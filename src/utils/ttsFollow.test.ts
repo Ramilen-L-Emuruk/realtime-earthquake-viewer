@@ -10,6 +10,8 @@ import {
   mapChunksToRefs,
   plain,
   planFollowScroll,
+  hasFollowTarget,
+  spokenChunkIndices,
   type SpeechFollowSession,
   type SpeechRef,
   type SpeechSegment,
@@ -23,7 +25,7 @@ const seg = (text: string, ...refs: SpeechRef[]): SpeechSegment => ({ text, refs
 function refNames(segments: SpeechSegment[]): string[][] {
   const chunks = splitIntoChunks(joinSegments(segments))
   return mapChunksToRefs(segments, chunks)
-    .map(refs => refs.map(r => (r.kind === 'grade' ? r.grade : r.name)))
+    .map(refs => refs.map(r => (r.kind === 'grade' ? r.grade : r.kind === 'quakeFact' ? r.value : r.name)))
 }
 
 describe('mapChunksToRefs', () => {
@@ -501,5 +503,64 @@ describe('createSpeechFollowController', () => {
     c.reset()
     c.end(999)
     expect(changes).toEqual([])
+  })
+})
+
+describe('hasFollowTarget', () => {
+  it('津波の対象（区域・観測点・等級）を含めば true', () => {
+    expect(hasFollowTarget([plain('岩手県'), seg('宮古', station('宮古'))])).toBe(true)
+    expect(hasFollowTarget([seg('岩手県', area('岩手県', '210'))])).toBe(true)
+    expect(hasFollowTarget([seg('大津波警報', { kind: 'grade', grade: 'MajorWarning' })])).toBe(true)
+  })
+
+  it('地震情報の参照だけなら false（津波カードの追従を起こさない）', () => {
+    const segments: SpeechSegment[] = [
+      plain('最大震度4を'),
+      seg('宮城県北部', { kind: 'quakeRegion', name: '宮城県北部', scale: 40 }),
+      seg('マグニチュード7.6の', { kind: 'quakeFact', fact: 'magnitude', value: '7.6' }),
+    ]
+    expect(hasFollowTarget(segments)).toBe(false)
+  })
+
+  it('断片が無い・参照が無いときも false', () => {
+    expect(hasFollowTarget(undefined)).toBe(false)
+    expect(hasFollowTarget([plain('津波警報を解除しました。')])).toBe(false)
+  })
+})
+
+describe('spokenChunkIndices', () => {
+  // startAt は AudioContext の時間軸（秒）。1 チャンク 1 秒として並べる。
+  const scheduled = [
+    { index: 0, startAt: 10 },
+    { index: 1, startAt: 11 },
+    { index: 2, startAt: 12 },
+    { index: 3, startAt: 13 },
+  ]
+
+  it('最後まで鳴ったら全チャンクを数える', () => {
+    expect(spokenChunkIndices(scheduled, 4, 14)).toEqual([0, 1, 2, 3])
+  })
+
+  it('途中で切られたら、鳴り始めた最後のチャンクは数えない', () => {
+    // 12.5 秒時点で割り込まれた: 0〜2 が鳴り始めていたが、2 は言い終えたか判らない
+    expect(spokenChunkIndices(scheduled, 4, 12.5)).toEqual([0, 1])
+  })
+
+  it('予約が全チャンクに届いていても、鳴っていなければ数えない', () => {
+    // 合成が再生を追い越して 4 件すべて予約済み。しかし音は 1 つ目の途中
+    expect(spokenChunkIndices(scheduled, 4, 10.5)).toEqual([])
+  })
+
+  it('再生時計が無い（合成が全滅・VOICEVOX 未起動）ときは何も数えない', () => {
+    expect(spokenChunkIndices(scheduled, 4, null)).toEqual([])
+  })
+
+  it('予約が 1 件も無ければ空', () => {
+    expect(spokenChunkIndices([], 0, 100)).toEqual([])
+  })
+
+  it('合成に失敗して添字が飛んでいても、鳴った分だけ数える', () => {
+    const withGap = [{ index: 0, startAt: 10 }, { index: 2, startAt: 11 }, { index: 3, startAt: 12 }]
+    expect(spokenChunkIndices(withGap, 4, 13)).toEqual([0, 2, 3])
   })
 })

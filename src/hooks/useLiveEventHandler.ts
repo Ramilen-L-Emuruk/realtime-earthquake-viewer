@@ -11,9 +11,9 @@ import { haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
 import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, matchesArea, sortAreasForCardDisplay } from '../utils/tsunami'
 import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
-import { speakWithVoicevox, prewarmVoicevox, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
-import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, tsunamiArrivalToSegments, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, type TtsRegionOptions } from '../utils/ttsText'
-import { joinSegments, plain, type SpeechFollowApi, type SpeechSegment } from '../utils/ttsFollow'
+import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
+import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, tsunamiArrivalToSegments, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
+import { joinSegments, plain, hasFollowTarget, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
 import { extractQuakeEventIdFromId, quakeEventKey, sameQuakeEntry } from '../utils/quakeMerge'
@@ -111,7 +111,9 @@ const EEW_PHASE2_PENDING_POLL_MS = 500
 // 種別の数（震度速報・震源情報・各地の震度・遠地地震・震源要素更新）だけなので、この深さは
 // 数十件の地震ぶんに相当する。長期セッションで無制限に増えるのを防ぐためだけの歯止め。
 // 捨てた直後の続報は「初めて見た」扱いになり、読み上げの冒頭が「更新されました」ではなく初報の
-// 言い方に戻る（それだけで、音・画面・タイトルには影響しない）。到達しやすいのはリプレイの復元
+// 言い方に戻る。**言い方だけの問題ではない。** 続報の差分は初報扱いの報には効かないため、その報は
+// 全文で読まれる（`earthquakeToSegments`）。声の長さが変わるだけで情報は落ちないが、
+// 「それだけで音には影響しない」ではない。到達しやすいのはリプレイの復元
 // （`restorePreWindowTracking`）で、群発が続いた期間を遡ると 1 回の復元で多数を積む。
 const SEEN_QUAKE_REPORT_KEYS_MAX = 200
 
@@ -180,6 +182,27 @@ function markQuakeReportSeen(seen: Set<string>, key: string): void {
     seen.clear()
   }
   seen.add(key)
+}
+
+/**
+ * 「声になった内容」を覚えておく地震の数の上限。
+ *
+ * 上限の意味は `SEEN_QUAKE_REPORT_KEYS_MAX` と同じ（無制限に増やさないための歯止め）。
+ * 溢れたら丸ごと捨てる ―― 捨てた地震の続報は全文で読まれるだけで、情報は落ちない。
+ */
+const SPOKEN_QUAKE_STATES_MAX = 100
+
+/** 地震ごとの「声になった内容」を引く。無ければ作る（上限に達していたら丸ごと捨ててから）。 */
+function quakeSpokenStateFor(states: Map<string, QuakeSpokenState>, eventKey: string): QuakeSpokenState {
+  const found = states.get(eventKey)
+  if (found) return found
+  if (states.size >= SPOKEN_QUAKE_STATES_MAX) {
+    log.debug(`[quake] 読み上げ済みの記憶が上限に達したため捨てた (${states.size} 件)`)
+    states.clear()
+  }
+  const created = createQuakeSpokenState()
+  states.set(eventKey, created)
+  return created
 }
 
 // 観測点リストから、属する予報区（districtCode/districtName）を重複なく列挙する
@@ -290,6 +313,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // 種別の異なる報が交互に届いたときに互いの記憶を上書きし、2 度目の震度速報が「初めて見た」
   // 扱いに戻る（震度速報 → 震源情報 → 震度速報 で「震度速報。」を 2 回読んでいた）。
   const seenQuakeReportKeysRef = useRef<Set<string>>(new Set())
+  // 地震ごとの「声になった内容」（`eventKey` → 記録）。続報で差分だけを読むために持つ。
+  // **情報種別を跨いで共有する**（震度速報で読んだ区域を震源・震度情報で読み直さない）ので、
+  // キーには種別を含めない（`seenQuakeReportKeysRef` のキーとは別物）。
+  const spokenQuakeStatesRef = useRef<Map<string, QuakeSpokenState>>(new Map())
   // EEW の eventId ごとにレベルを追跡（複数EEW対応）
   // key = issue.eventId ?? id、value = 0=低震度予報 / 1=警報（severity=Warning または予想震度5弱以上） / 2=特別警報
   const activeEEWLevelsRef = useRef<Map<string, 0 | 1 | 2>>(new Map())
@@ -535,8 +562,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     follow?: () => void,
     /** 間を置いている最中に合成しておいた音声（`speakNonEEWDelayed` 経由のときだけ渡る）。 */
     prewarmed?: PrewarmedSpeech | null,
-    /** 読み上げ文の断片列。渡すと画面が読み上げに追従する（津波のみ）。 */
+    /**
+     * 読み上げ文の断片列。津波では画面の追従に使い、地震情報では「声になった内容」の記録に使う。
+     * どちらに使うかは断片が持つ参照の種類で決まる（`hasFollowTarget`）。
+     */
     segments?: SpeechSegment[],
+    /** 声になった断片の参照を渡す先（地震情報の続報の差分。読み上げの完了時に 1 回だけ呼ぶ）。 */
+    onSpokenRefs?: (refs: readonly SpeechRef[]) => void,
   ) => {
     void (async () => {
       // `await` はマイクロタスクの境界を作るため、待ちが明けてからこの続きが走るまでの間に
@@ -557,21 +589,50 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // **どこも指していない文面では始めない。** 区域名も観測点名も含まない文（等級を判定
       // できなかったときの全解除の文言など）で始めると、追従は空振りしたまま終わり、
       // 「一度も引き当てられなかった」の記録だけが毎回残って診断の役に立たなくなる。
-      const followable = segments?.some(s => s.refs.length > 0) ?? false
-      const followToken = followable ? speechFollow?.begin(segments!) : undefined
+      // **追従を始めるかは参照の種類で決める。** `refs` が空でないことで判定すると、
+      // 地震情報の読み上げ（区域と震源要素の参照を持つ）が津波カードの追従を起こす。
+      const followToken = hasFollowTarget(segments) ? speechFollow?.begin(segments!) : undefined
+      // 予約の通知を溜めておき、読み上げが終わってから「実際に鳴った範囲」を割り出す
+      // （`spokenChunkIndices`）。合成は再生より先へ進むため、予約が通っただけでは鳴った
+      // ことにならない。
+      const scheduledChunks: { index: number; startAt: number }[] = []
+      let chunkRefs: SpeechRef[][] | null = null
+      let chunkCount = 0
+      const notifyChunk = (index: number, startAt: number, chunks: readonly string[]) => {
+        if (followToken !== undefined) speechFollow?.schedule(followToken, index, startAt, chunks)
+        if (onSpokenRefs && segments) {
+          chunkRefs ??= mapChunksToRefs(segments, chunks)
+          chunkCount = chunks.length
+          scheduledChunks.push({ index, startAt })
+        }
+      }
       // 第 5 引数（鳴らす直前の見直し）は非 EEW では使わない。予想震度のように数秒で
       // 書き換わる値を持たないため、読み始めた文面を最後まで読んでよい。
       const done = speakWithVoicevox(
         settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume, undefined, prewarmed,
-        followToken === undefined
-          ? undefined
-          : (index, startAt, chunks) => speechFollow?.schedule(followToken, index, startAt, chunks),
+        followToken === undefined && !onSpokenRefs ? undefined : notifyChunk,
       )
       activeNonEewSpeechRef.current = { priority, done }
       try {
         await done
       } finally {
         if (followToken !== undefined) speechFollow?.end(followToken)
+        if (onSpokenRefs && chunkRefs) {
+          const spoken = spokenChunkIndices(scheduledChunks, chunkCount, getSpeechClock())
+          const refs = spoken.flatMap(i => chunkRefs?.[i] ?? [])
+          // 1 チャンクも鳴らなかった（合成の全滅・鳴り出す前の割り込み）ときは記録しない。
+          // 記録してしまうと、声になっていない内容が続報で省かれる。
+          if (refs.length > 0) {
+            onSpokenRefs(refs)
+          } else if (spoken.length > 0) {
+            // 音は鳴ったのに参照が 1 つも引けなかった。**症状は「うるさいまま」**（差分が
+            // 効かず常に全文）で、黙って劣化する側の失敗なので、鳴らなかった場合と区別して残す。
+            // 原因は断片列とチャンクの食い違い（`mapChunksToRefs` が警告を出しているはず）。
+            log.warn(`[tts] 声にはなったが読み上げ済みの参照を引けなかった (${spoken.length} チャンク)`)
+          } else {
+            log.debug('[tts] 声になったチャンクが無いため読み上げ済みの記録を更新しない')
+          }
+        }
         // 自分より後に始まった読み上げに置き換わっている場合は触らない（消すと待ち側が
         // 「誰も読んでいない」と誤認し、進行中の読み上げに割り込む）
         if (activeNonEewSpeechRef.current?.done === done) activeNonEewSpeechRef.current = null
@@ -634,8 +695,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     topic: SpeechTopic,
     /** 読み上げに同調して動かすタブ。**タブを持たない情報（南海トラフ系）では省略する。** */
     follow?: { readonly tab: Exclude<TabId, 'realtime'>; readonly priority: TabPriority },
-    /** 読み上げ文の断片列。渡すとカードが読み上げに追従する（津波のみ）。 */
+    /**
+     * 読み上げ文の断片列。津波ではカードの追従に使い、地震情報では「声になった内容」の記録に使う
+     * （`speakNonEEW` と同じ扱い）。
+     */
     segments?: SpeechSegment[],
+    /** 声になった断片の参照を渡す先（地震情報の続報の差分）。 */
+    onSpokenRefs?: (refs: readonly SpeechRef[]) => void,
   ) => {
     // 予約した時点で、自分より重い読み上げが走っていたか。**発話の番でもう一度取って比べる**
     // （下の「追い越し」の判定）。
@@ -697,6 +763,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           follow ? () => followSpeechTab(follow.tab, follow.priority) : undefined,
           prewarmed,
           segments,
+          onSpokenRefs,
         )
       },
       () => {
@@ -1339,12 +1406,20 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         tsunamiUpdate:     800,
       }
       let ttsText: string | null = null
-      // 津波だけは読み上げ文を断片列でも作る。カードを読み上げに追従させるのに、どの語が
-      // どの区域・観測点を指すかが必要になる（`ttsFollow`）。地震情報は追従の対象を持たない
-      // ため文字列だけで済ませる（本文が数千文字＝数百チャンクになり、通知だけが増える）。
+      // 読み上げ文は断片列でも作る。**用途は種別で違う。**
+      //   津波 … カードを読み上げに追従させる（どの語がどの区域・観測点を指すか。`ttsFollow`）
+      //   地震 … 続報の差分の基準になる「声になった内容」を記録する
+      // 地震は追従の対象を持たないため、画面が動くことはない（`hasFollowTarget` が false）。
       let ttsSegments: SpeechSegment[] | null = null
+      // 声になった内容を書き戻す先（地震情報のときだけ立つ）。
+      let quakeSpokenState: QuakeSpokenState | null = null
       if (event.kind === 'quake' && !event.cancelled) {
-        ttsText = earthquakeToText(event, ttsRegionOptions(settings), isNewQuake)
+        // **続報は変化したところだけを読む。** 基準は受信内容ではなく「声になった内容」で、
+        // その更新は読み上げの完了時（下の `onSpokenRefs`）に行う。受信時に更新すると、
+        // 割り込みで鳴らなかった地域が既読になり、二度と読まれない。
+        quakeSpokenState = quakeSpokenStateFor(spokenQuakeStatesRef.current, quakeSpeechTopic)
+        ttsSegments = earthquakeToSegments(event, ttsRegionOptions(settings), isNewQuake, quakeSpokenState)
+        ttsText = joinSegments(ttsSegments)
       } else if (event.kind === 'tsunami') {
         const GRADE_RANK = { MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0 } as const
         type GradeKey = keyof typeof GRADE_RANK
@@ -1392,6 +1467,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 読み上げに同調して画面を合わせる。津波は観測点更新（grade 不変）でもここを通るため、
         // 読み上げが発生する続報だけが tsunami タブを持ち出す（変化のない続報は ttsText が空）。
         const followTab: Exclude<TabId, 'realtime'> = event.kind === 'tsunami' ? 'tsunami' : 'earthquake'
+        const spokenState = quakeSpokenState
         speakNonEEWDelayed(
           ttsText,
           event.kind === 'tsunami' ? SPEECH_PRIORITY.high : SPEECH_PRIORITY.normal,
@@ -1399,11 +1475,17 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           event.kind === 'tsunami' ? 'tsunami' : quakeSpeechTopic,
           { tab: followTab, priority: event.kind === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake },
           ttsSegments ?? undefined,
+          spokenState ? refs => applySpokenRefs(spokenState, refs) : undefined,
         )
       } else if (event.kind === 'tsunami' && tsunamiIsNewOrUpgraded) {
         // 読み上げ文が組めなかった津波の新規発報・格上げ（保険。理由は宣言箇所）
         log.info('[tab] tsunami を要求 (新規発報・読み上げ文なし)')
         setActiveTabNonRealtime('tsunami')
+      } else if (event.kind === 'quake' && !event.cancelled) {
+        // 差分が空だった地震の続報（変化なし）。**読み上げに任せていたタブ移動を引き取る。**
+        // 落とすと earthquake タブへ永久に移らない（カードと地図だけが更新される）。
+        log.info('[tab] earthquake を要求 (続報に変化なし・読み上げなし)')
+        setActiveTabNonRealtime('earthquake')
       }
     }
     // grade・観測波高トラッキング・UI更新: voicevox 有効/無効に関わらず実行する。
@@ -1513,6 +1595,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // （deps に取るのは呼び出し側で安定させてあるものだけ）。
   const resetTracking = useCallback(() => {
     seenQuakeReportKeysRef.current.clear()
+    spokenQuakeStatesRef.current.clear()
     activeEEWLevelsRef.current.clear()
     spokenEEWScalesRef.current.clear()
     spokenEEWLpgmClassesRef.current.clear()
@@ -1554,6 +1637,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // ライブ経路（上の handleLiveEvent）と同じキーの組み立て方にそろえる。
           // なおこの復元は DMDATA archive の再生専用で、standard 版からは呼ばれない
           // （`App.tsx` が onStartReplay を isDmdss のときだけ配線している）。
+          //
+          // **「声にした内容」（`spokenQuakeStatesRef`）は復元しない。意図的。** 窓の手前の報は
+          // 再生されておらず、聞き手は一度も聞いていない。既読として積むと、再生開始直後の
+          // 続報が「聞いたことのない地域」を省いて読む。復元しない結果その報は全文で読まれるが、
+          // それが窓から聞き始めた人にとって正しい（冒頭は「更新されました」になる）。
           markQuakeReportSeen(seenQuakeReportKeysRef.current, newQuakeTrackingKey(ev as JMAQuake))
         } else if (ev.kind === 'eew') {
           const eew = ev as EEWAlert
