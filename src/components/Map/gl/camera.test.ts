@@ -6,6 +6,7 @@ import {
   fitJapan,
   fitToPositions,
   snapZoomDown,
+  fitMaxZoomForPane,
   refitDeltaForBounds,
   mapContainsBounds,
   EEW_ZOOM_SNAP,
@@ -280,8 +281,10 @@ describe('fitToPositions', () => {
     // 60 秒（`camera.ts` の `FALLBACK_LOG_INTERVAL_MS`）、しかもモジュールスコープなので、
     // 2 つ目を足すと後から走った側は黙って間引かれてこのアサーションが落ちる。
     expect(log.warn as Mock).toHaveBeenCalledTimes(1)
+    // maxZoom を渡していないので既定＝この端末の寄り上限が入る。フェイクのペインは 800×600 なので
+    // 短辺 600 での値。リテラルで書くと視野基準の換算を変えたときに意味を失うため導出する。
     expect((log.warn as Mock).mock.calls[0][1]).toMatchObject({
-      padding: 60, maxZoom: 7, paneWidth: 800, paneHeight: 600,
+      padding: 60, maxZoom: fitMaxZoomForPane(600), paneWidth: 800, paneHeight: 600,
     })
   })
 

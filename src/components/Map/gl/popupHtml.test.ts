@@ -50,6 +50,12 @@ describe('badgeHtml', () => {
     expect(html).toContain('background:#f00')
   })
 
+  // EEW の「上限を定めない予想震度」で 2 文字を超えるラベルが入るようになった。
+  // 折り返すと狭い親の中で「4以」「上」と縦に割れる（実機で確認済み）。
+  it('ラベルを折り返さない', () => {
+    expect(badgeHtml('4以上', '#f5e600')).toContain('white-space:nowrap')
+  })
+
   // 白固定だと震度4（黄）で 1.30:1 まで落ちるため、文字色は塗り色から決めている。
   it('明るい塗りでは黒文字、暗い塗りでは白文字になる', () => {
     expect(badgeHtml('4', '#f5e600')).toContain('color:#000000')

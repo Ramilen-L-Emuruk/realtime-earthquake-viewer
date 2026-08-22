@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation } from '../../types/earthquake'
 import { formatDateTimeMin, formatTime } from '../../utils/formatters'
 import { quakeEventKey } from '../../utils/quakeMerge'
-import { groupAreasForCardDisplay, matchesArea } from '../../utils/tsunami'
+import { groupAreasForCardDisplay, matchesArea, overSuffixedHeight } from '../../utils/tsunami'
 import { mapChunksToRefs, planFollowScroll, type FollowRect, type SpeechFollowSession, type SpeechRef } from '../../utils/ttsFollow'
 import { getSpeechClock } from '../../utils/voicevox'
 import { INTERACTION_HOLD_SEC } from '../Map/gl/camera'
@@ -212,7 +212,7 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, isChang
                     </div>
                   </div>
                   {obs.height ? (
-                    <span className="font-bold flex-shrink-0" style={{ fontSize: '1.25rem', color: style.heightColor }}>{obs.height.description}</span>
+                    <span className="font-bold flex-shrink-0" style={{ fontSize: '1.25rem', color: style.heightColor }}>{overSuffixedHeight(obs.height)}</span>
                   ) : (
                     <span className="flex-shrink-0" style={{ fontSize: '0.8125rem', color: '#9ca3af' }}>観測中</span>
                   )}
@@ -261,7 +261,7 @@ function TsunamiObservationRow({ obs, onObservationClick }: { obs: TsunamiObserv
       </div>
       {obs.height && (
         <span className="text-secondary flex-shrink-0" style={{ fontSize: '1rem' }}>
-          {obs.height.description}
+          {overSuffixedHeight(obs.height)}
         </span>
       )}
     </div>

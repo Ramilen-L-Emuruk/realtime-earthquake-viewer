@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { GeoJSONSource, MapGeoJSONFeature } from 'maplibre-gl'
 import type { Feature, FeatureCollection, Polygon } from 'geojson'
 import { useMapGL } from './mapGLContext'
-import { getIntensityColor, getIntensityLabel } from '../../utils/intensity'
+import { getIntensityColor, getIntensityLabelWithOrAbove } from '../../utils/intensity'
 import type { EewAreaFill } from '../../hooks/useEewLayerData'
 import { haversineKm } from '../../utils/geo'
 import { serverNow } from '../../utils/clock'
@@ -62,6 +62,7 @@ function buildFC(areaFills: EewAreaFill[]): FeatureCollection<Polygon> {
           lineWidth: a.isWarning ? 2 : 1,
           name: a.name,
           scale: a.scale,
+          scaleOrAbove: a.scaleOrAbove,
           isWarning: a.isWarning,
           sArrivalMs,
         },
@@ -72,11 +73,20 @@ function buildFC(areaFills: EewAreaFill[]): FeatureCollection<Polygon> {
   return { type: 'FeatureCollection', features }
 }
 
+// 上限が定まらない区域（「震度4以上」）はバッジにも語を出す。塗り色は下限の階級色のままで、
+// 色を変える手立ては無いため、断定に見えないよう文字側で補う。
+function scaleLabelOf(f: MapGeoJSONFeature): string {
+  return getIntensityLabelWithOrAbove(
+    Number(f.properties?.scale ?? 0),
+    Boolean(f.properties?.scaleOrAbove),
+  )
+}
+
 function hoverHtml(f: MapGeoJSONFeature): string {
   const scale = Number(f.properties?.scale ?? 0)
   return (
     `<div style="display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap">` +
-    `${badgeHtml(getIntensityLabel(scale), getIntensityColor(scale))}` +
+    `${badgeHtml(scaleLabelOf(f), getIntensityColor(scale))}` +
     `<span style="font-weight:600">${escapeHtml(String(f.properties?.name ?? ''))}</span></div>`
   )
 }
@@ -100,8 +110,8 @@ function clickHtml(f: MapGeoJSONFeature): string {
     `<div style="min-width:160px">` +
     `<div style="font-weight:700;font-size:13px">${escapeHtml(String(f.properties?.name ?? ''))}</div>` +
     `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:12px">` +
-    `${badgeHtml(getIntensityLabel(scale), getIntensityColor(scale))}` +
-    `<span style="color:#cbd5e1">予想震度 ${escapeHtml(getIntensityLabel(scale))}</span>` +
+    `${badgeHtml(scaleLabelOf(f), getIntensityColor(scale))}` +
+    `<span style="color:#cbd5e1">予想震度 ${escapeHtml(scaleLabelOf(f))}</span>` +
     `<span style="color:${kindColor};font-weight:700">${kind}</span></div>` +
     arrivalRowHtml(Number(f.properties?.sArrivalMs ?? -1)) +
     `</div>`

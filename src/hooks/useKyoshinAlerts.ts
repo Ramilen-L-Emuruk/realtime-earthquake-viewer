@@ -37,19 +37,30 @@ const CANDIDATE_SOUND_GAIN_SCALE = 0.25
  */
 export const REGION_MATCH_KM = 300
 /**
- * 別地点発報の最小間隔（フレーム）。分裂した確定が短時間に多発しても鳴らしすぎない。
+ * 別地点発報の最小間隔(ms)。分裂した確定が短時間に多発しても鳴らしすぎない。
  *
- * 2026-08-20 の連発調査で 30 へ延ばす案を試したが**据え置いた**。能登半島地震の実データでは、
+ * 2026-08-20 の連発調査で 30 秒へ延ばす案を試したが**据え置いた**。能登半島地震の実データでは、
  * 延ばしても発報数が変わらなかったため（EEW なし条件でどちらも 2 回。間隔だけが 6 秒から 30 秒に
- * 広がる）。延ばすと、クールダウン中に揺れが収まった地域が `REGION_PRUNE_TICKS`(3) で破棄されて
+ * 広がる）。延ばすと、クールダウン中に揺れが収まった地域が `REGION_PRUNE_MS`(3 秒) で破棄されて
  * 発報の機会を失う窓が広がる——数を減らせないなら、その代償だけを負うことになる。
  *
  * 連発を止めているのは `absorbedByEew`・エピソード起点（`AlertRegionState.outbreakAtMs`）・
  * `PROPAGATION_MAX_KM`・`NEW_REGION_MIN_INDEX` の 4 つ（設計書§24）。
  */
-export const NEW_REGION_COOLDOWN_TICKS = 5
-/** 別地点として発報する前に地域が持続すべきフレーム数（一過性フラグメント除去）。 */
-const REGION_PERSIST_TICKS = 3
+export const NEW_REGION_COOLDOWN_MS = 5_000
+/**
+ * 別地点として発報する前に地域が持続すべき時間(ms)。一過性の分裂フラグメントを除く。
+ *
+ * 起点は地域の初検知（`AlertRegion.firstSeenAtMs`）。登録フレームでは 0 なので、1 秒間隔の
+ * フレームに**途切れず**現れるなら「3 フレーム目で満たす」という以前の数え方と一致する。
+ *
+ * **数えるのは観測の回数ではなくデータ時刻の幅。** 途中の観測が欠けても幅が足りれば満たすため、
+ * 最短では登録＋再観測の 2 回で通る（以前は 3 回の実観測が要件だった）。欠落の長さに上限を与えて
+ * いるのは `REGION_PRUNE_MS` だけで、この判定自身は連続性を検証しない。**欠測やコマ飛びを挟む
+ * ときだけ 1 観測分ぶん緩くなる**が、回数で数え直すとライブとリプレイで長さが変わる問題が戻る。
+ * 緩さは承知の上で、長さの一貫性を取っている（設計書§31）。
+ */
+const REGION_PERSIST_MS = 2_000
 /**
  * 別地点として発報する最小の計測震度インデックス（11 = 震度3の下端。`kyoshinLevel` と同じ境界）。
  *
@@ -63,8 +74,18 @@ const REGION_PERSIST_TICKS = 3
  * これを下回る地域も検知カードと地図には出る（音を鳴らさないだけ）。
  */
 export const NEW_REGION_MIN_INDEX = 11
-/** confirmed から外れて地域を破棄するまでの猶予（フレーム）。 */
-const REGION_PRUNE_TICKS = 3
+/**
+ * confirmed から外れて地域を破棄するまでの猶予(ms)。最後に現れてからこれを超えたフレーム末で捨てる。
+ *
+ * 破棄はフレームの**末尾**で行う。そのため照合の対象として残る時間はこれより長く、1 秒間隔なら
+ * 1 フレーム分（「猶予 3 フレーム」という以前の数え方と一致する）、コマ飛びが起きたときはその
+ * 飛び幅ぶん伸びる。
+ *
+ * **末尾に置いているのは意図。** 冒頭で捨てると、飛びが猶予を超えた瞬間に現存する地域が
+ * `fired`・`absorbedByEew` ごと登録し直され、発報済みの地域や震源近傍の地域が別地点として
+ * 鳴り直す。古い地域が 1 度だけ照合されるより重い（設計書§31）。
+ */
+const REGION_PRUNE_MS = 3_000
 /**
  * EEW（震源要素確定済み）が無い状態で地域を検知した場合に使う仮想震源深さ(km)。実際の震源深さは
  * 分からないため、日本の内陸地震で典型的な深さの近似値を使う。usePsWaveCalc の EEW 円描画とは
@@ -74,7 +95,7 @@ export const DEFAULT_VIRTUAL_DEPTH_KM = 15
 /**
  * 動的距離閾値（S波伝播半径）に掛ける安全マージン係数。地域が新規登録された瞬間の判定は
  * 「今この瞬間の動的閾値」で行うが、実際に別地点として発報されるのは持続判定
- * （REGION_PERSIST_TICKS）を経た数秒後になる。2026-08-10 の能登半島地震リプレイ検証では、
+ * （`REGION_PERSIST_MS`）を経た数秒後になる。2026-08-10 の能登半島地震リプレイ検証では、
  * 登録時点で動的閾値にわずかに届いていなかった地域（328km地点、閾値約324km）が、数秒後には
  * 本来閾値内（約337km）に収まっていたにもかかわらず、登録時の判定のみで「別地点」として
  * 誤発報された。この数秒のタイムラグ分を先取りして吸収するための係数。
@@ -110,13 +131,15 @@ export const PROPAGATION_MAX_KM = 800
 export interface AlertRegion {
   lat: number
   lng: number
-  /** 連続して現れたフレーム数（持続判定） */
-  seen: number
   /** すでに別地点発報したか（初検知フレームで生成された地域は true＝初検知エフェクトが担当） */
   fired: boolean
-  /** 最後に confirmedShocks に現れたフレーム */
-  lastTick: number
-  /** 地域が最初に確定した dataTimeMs。動的距離閾値（EEW が無い場合）の経過時間の起点に使う。 */
+  /** 最後に confirmedShocks に現れたフレームの dataTimeMs（破棄猶予の起点）。 */
+  lastSeenAtMs: number
+  /**
+   * 地域が最初に確定した dataTimeMs。動的距離閾値（EEW が無い場合）の経過時間の起点と、
+   * 持続判定（`REGION_PERSIST_MS`）の起点を兼ねる。**片方の都合で起点をずらすと、もう片方の
+   * タイミングも動く。**
+   */
   firstSeenAtMs: number
   /**
    * 一度でも EEW の伝播範囲内に入ったか。**EEW が解除された後も発報を抑え続けるために記憶する。**
@@ -264,17 +287,15 @@ export function isRegionWithinAnyEew(
 /** 別地点発報の判定が持ち越す状態（フックの ref 群をまとめたもの）。 */
 export interface AlertRegionState {
   regions: AlertRegion[]
-  /** 取り込んだフレーム数。持続・クールダウンの単位。 */
-  tick: number
-  /** 最後に別地点発報したフレーム。 */
-  lastNewRegionTick: number
+  /** 最後に別地点発報したフレームの dataTimeMs。まだ発報していなければ null。 */
+  lastNewRegionAtMs: number | null
   /** 前フレームに confirmed があったか（初検知フレームの二重発報を避けるために見る）。 */
   anyConfirmedPrev: boolean
   /**
    * この検知エピソードの起点（最初に確定した地域の初検知時刻）。confirmed が途切れるまで保持する。
    *
    * **個々の地域の生存とは切り離して持つ。** 毎フレーム「現存する最も古い地域」から計算し直すと、
-   * 震源近傍の地域が先に収束して `REGION_PRUNE_TICKS` で刈られた時点で起点が新しい方へ繰り上がり、
+   * 震源近傍の地域が先に収束して `REGION_PRUNE_MS` で刈られた時点で起点が新しい方へ繰り上がり、
    * 距離閾値が突然縮む。震源近傍が収まって遠方がまだ伝播中というのは、まさにこの閾値が要る場面。
    */
   outbreakAtMs: number | null
@@ -283,7 +304,7 @@ export interface AlertRegionState {
 }
 
 export function createAlertRegionState(): AlertRegionState {
-  return { regions: [], tick: 0, lastNewRegionTick: -999, anyConfirmedPrev: false, outbreakAtMs: null, lastNowMs: null }
+  return { regions: [], lastNewRegionAtMs: null, anyConfirmedPrev: false, outbreakAtMs: null, lastNowMs: null }
 }
 
 /** 別地点として発報すべき地域。通知の「推定最大震度」はこの地域の値を使う（全体の最大ではない）。 */
@@ -294,11 +315,11 @@ export interface NewRegionAlert {
   index: number
 }
 
-/** 検知エピソードに紐づく状態を捨てる（検知の終了・時刻の巻き戻り時）。tick は通し番号なので残す。 */
+/** 検知エピソードに紐づく状態を捨てる（検知の終了・時刻の巻き戻り時）。 */
 function resetEpisode(state: AlertRegionState): void {
   state.regions = []
   state.outbreakAtMs = null
-  state.lastNewRegionTick = -999
+  state.lastNewRegionAtMs = null
 }
 
 /**
@@ -312,8 +333,11 @@ function resetEpisode(state: AlertRegionState): void {
  *  - まだ発報しておらず、EEW の伝播範囲に入ったこともない（`absorbedByEew`）
  *  - 前フレームにも confirmed があった（＝進行中の検知に後から加わった地域である）
  *  - その地域の最大震度が `NEW_REGION_MIN_INDEX` 以上（遠地へ届いた弱い揺れを除く）
- *  - `REGION_PERSIST_TICKS` 以上のフレームに連続して現れた（一過性の分裂フラグメントを除く）
- *  - 前回の発報から `NEW_REGION_COOLDOWN_TICKS` 以上空いている
+ *  - 初検知から `REGION_PERSIST_MS` 以上のデータ時刻が経った（一過性の分裂フラグメントを除く）
+ *  - 前回の発報から `NEW_REGION_COOLDOWN_MS` 以上空いている
+ *
+ * **持続・クールダウン・破棄猶予はいずれもフレームの到来回数ではなくデータ時刻で測る。** そう決めた
+ * 理由と、それぞれの測り方の癖は各定数の宣言に書いてある（設計書§31）。
  *
  * **既知の限界**: 一度発報した地域は二度と鳴らない（`fired`）。その地域の閾値の内側で後から本当に
  * 別の地震が起きても、既存地域へのマッチとして扱われ音も通知も出ない（地図と検知カードには出る）。
@@ -344,8 +368,6 @@ export function stepAlertRegions(
   if (state.lastNowMs != null && nowMs < state.lastNowMs) resetEpisode(state)
   state.lastNowMs = nowMs
 
-  const tick = ++state.tick
-
   // EEW の伝播範囲に入ったことを記憶する（EEW 解除後の一斉発報を防ぐ）。判定は毎フレーム行うが、
   // 一度立った印は下ろさない。
   for (const r of state.regions) {
@@ -374,7 +396,7 @@ export function stepAlertRegions(
     if (!reg) {
       // 初検知フレームで生成された地域は初検知エフェクトが鳴らすため fired=true にして抑制する。
       const created: AlertRegion = {
-        lat: s.lat, lng: s.lng, seen: 1, fired: !state.anyConfirmedPrev, lastTick: tick,
+        lat: s.lat, lng: s.lng, fired: !state.anyConfirmedPrev, lastSeenAtMs: nowMs,
         firstSeenAtMs: nowMs,
         absorbedByEew: false,
       }
@@ -387,13 +409,12 @@ export function stepAlertRegions(
     } else {
       reg.lat = s.lat
       reg.lng = s.lng
-      reg.lastTick = tick
-      reg.seen++
+      reg.lastSeenAtMs = nowMs
       if (
         !reg.fired && !reg.absorbedByEew && state.anyConfirmedPrev
         && s.index >= NEW_REGION_MIN_INDEX
-        && reg.seen >= REGION_PERSIST_TICKS
-        && tick - state.lastNewRegionTick >= NEW_REGION_COOLDOWN_TICKS
+        && nowMs - reg.firstSeenAtMs >= REGION_PERSIST_MS
+        && (state.lastNewRegionAtMs == null || nowMs - state.lastNewRegionAtMs >= NEW_REGION_COOLDOWN_MS)
       ) {
         // 座標を更新した後の位置で EEW の範囲をもう一度見る。地域の代表点は毎フレーム動くため、
         // フレーム冒頭の一括判定は 1 フレーム前の位置に対する結果になっている。
@@ -401,14 +422,14 @@ export function stepAlertRegions(
           reg.absorbedByEew = true
         } else {
           reg.fired = true
-          state.lastNewRegionTick = tick
+          state.lastNewRegionAtMs = nowMs
           alert = { lat: s.lat, lng: s.lng, index: s.index }
         }
       }
     }
   }
 
-  state.regions = state.regions.filter((r) => tick - r.lastTick <= REGION_PRUNE_TICKS)
+  state.regions = state.regions.filter((r) => nowMs - r.lastSeenAtMs <= REGION_PRUNE_MS)
   if (!anyConfirmed) resetEpisode(state)
   state.anyConfirmedPrev = anyConfirmed
   return alert

@@ -5,7 +5,8 @@ import { loadPrefectures } from '../../utils/prefectures'
 import { loadSubRegions } from '../../utils/subregions'
 import { ringsToPolygonFC, ringsToLineFC } from './gl/geojson'
 import { addOrderedLayer } from './gl/layerOrder'
-import { DETAIL_MIN_ZOOM } from './gl/zoomLevels'
+import { detailMinZoom } from './gl/zoomLevels'
+import { bindDynamicZoomRange, clampMinZoom } from './gl/viewSpan'
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
 import { twoLinePopupHtml } from './gl/popupHtml'
 import { log } from '../../utils/logger'
@@ -90,10 +91,18 @@ export function BaseMapGL({ showBathymetry }: Props) {
     if (!map) return
     let cancelled = false
     const prefetchAbort = new AbortController()
+    // 細線の下限ズームは視野の実距離で決まるため、ペインの寸法が変わるたび張り替える
+    // （下の addOrderedLayer に渡す初期値と同じ関数を使う）。レイヤーは生成データの到着後に
+    // 追加されるので、購読はここで先に張ってよい（無い間は飛ばされる）。
+    const unbindZoomRange = bindDynamicZoomRange(map, [
+      { layerId: LYR_SUB, minZoom: detailMinZoom },
+      { layerId: LYR_SUB_HIT, minZoom: detailMinZoom },
+      { layerId: LYR_PREF, minZoom: detailMinZoom },
+    ])
 
     // 海底地形ラスタ（陸地塗りの下）は 2 層構成にする。showBathymetry の初期値で可視を決める。
     // GEBCO_SOURCE_MAX_ZOOM / GEBCO_OVERVIEW_MAX_ZOOM はタイル座標側の z（Leaflet 版の
-    // maxNativeZoom={10} 相当）で、マップズーム基準の閾値（gl/camera.ts の MAX_ZOOM や下記の
+    // maxNativeZoom={10} 相当）で、マップズーム基準の閾値（下記の
     // GEBCO_HIRES_MIN_ZOOM）とは別の座標系。両者を混同しないこと。いずれも先読み
     // （gebcoPrefetch.ts）と関係する値のため同ファイルが持つ。
     //
@@ -146,7 +155,7 @@ export function BaseMapGL({ showBathymetry }: Props) {
         addOrderedLayer(map, { id: LYR_LAND, type: 'fill', source: SRC_LAND, paint: { 'fill-color': LAND_FILL } })
       }
       // 2) 一次細分区域の細い境界線（陸地塗りより前面）
-      // 区域線・県境は引いた画で網目が潰れるため minzoom を設ける（gl/zoomLevels.ts）。
+      // 区域線・県境は引いた画で網目が潰れるため下限を設ける（視野の実距離基準・gl/zoomLevels.ts）。
       // 陸地塗りには設けない（列島のシルエットは低ズームでも位置の手掛かりになるため）。
       if (subs) {
         const rings = subs.map((sr) => sr.rings)
@@ -155,7 +164,7 @@ export function BaseMapGL({ showBathymetry }: Props) {
           id: LYR_SUB,
           type: 'line',
           source: SRC_SUB,
-          minzoom: DETAIL_MIN_ZOOM,
+          minzoom: clampMinZoom(detailMinZoom(map)),
           paint: { 'line-color': SUBREGION_BORDER, 'line-width': 0.5 },
         })
         // 区域名ポップアップの当たり判定。塗りは完全透明で見た目に出さず、区域名だけを載せる。
@@ -170,7 +179,7 @@ export function BaseMapGL({ showBathymetry }: Props) {
           id: LYR_SUB_HIT,
           type: 'fill',
           source: SRC_SUB_HIT,
-          minzoom: DETAIL_MIN_ZOOM,
+          minzoom: clampMinZoom(detailMinZoom(map)),
           paint: { 'fill-color': '#000000', 'fill-opacity': 0 },
         })
         popupRef.current = registerPopupSource(map, {
@@ -190,7 +199,7 @@ export function BaseMapGL({ showBathymetry }: Props) {
           id: LYR_PREF,
           type: 'line',
           source: SRC_PREF,
-          minzoom: DETAIL_MIN_ZOOM,
+          minzoom: clampMinZoom(detailMinZoom(map)),
           paint: { 'line-color': PREF_BORDER, 'line-width': 1 },
         })
       }
@@ -199,6 +208,7 @@ export function BaseMapGL({ showBathymetry }: Props) {
     return () => {
       cancelled = true
       prefetchAbort.abort()
+      unbindZoomRange()
       popupRef.current?.remove()
       popupRef.current = null
       for (const id of [LYR_PREF, LYR_SUB, LYR_SUB_HIT, LYR_LAND, LYR_GEBCO, LYR_GEBCO_OVERVIEW]) {
