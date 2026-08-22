@@ -36,6 +36,23 @@ describe('loadStationCoords', { timeout: 15_000 }, () => {
     expect(getStationCoordsCache()).toEqual(SAMPLE)
   })
 
+  // 区域の一覧を持たない旧形式でも地図の震度点は描けるので失敗にはしない。ただし観測点から
+  // 一次細分区域が引けず、読み上げの地域名が都道府県粒度へ静かに戻るため記録に残す。
+  it('区域の一覧が無い旧形式でも失敗させず、警告だけ出す', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn(async () => okResponse({
+      stations: { '新潟県|長岡市幸町': [37.4, 138.8] },
+      areas: { '新潟県|新潟県中越': [37.4, 138.8] },
+    })))
+    const { loadStationCoords, getStationCoordsCache } = await freshModule()
+
+    await expect(loadStationCoords()).resolves.toBeTruthy()
+    expect(getStationCoordsCache()).not.toBeNull()
+    expect(warn.mock.calls.filter(call => call.some(arg => String(arg).includes('旧形式'))).length).toBe(1)
+
+    warn.mockRestore()
+  })
+
   it('HTTPエラーのときは例外になり、キャッシュは空のまま', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404 }) as unknown as Response))
     const { loadStationCoords, getStationCoordsCache } = await freshModule()
@@ -192,5 +209,47 @@ describe('buildRegionOrderIndex', () => {
     expect(index.areas.get('新潟県中越')!).toBeLessThan(index.areas.get('新潟県下越')!)
     // 奈良県は県内唯一の区域名が県名と同一。区域用と県用で索引を分けているため取り違えない。
     expect(index.areas.get('奈良県')).toBe(index.prefs.get('奈良県'))
+  })
+})
+
+// 読み上げは電文が区域を持たないとき観測点から一次細分区域を逆引きして地域名を作る
+// （→ docs/spec/audio-tts-spec.md §4）。引くのは地図の区域塗りと同じ `lookupStationRegion`。
+describe('観測点 → 一次細分区域の逆引き（lookupStationRegion）', () => {
+  it('都道府県付きで引くので、同名の観測点が別の県にあっても取り違えない', async () => {
+    const { lookupStationRegion } = await import('./stationCoords')
+    const data: StationCoordsData = {
+      stations: {
+        '新潟県|同名町': [37.4, 138.8, 0],
+        '岩手県|同名町': [39.5, 141.0, 1],
+        '新潟県|区域の無い観測点': [37.5, 138.9],
+      },
+      areas: {},
+      regionNames: ['新潟県中越', '岩手県内陸南部'],
+    }
+
+    expect(lookupStationRegion(data, '新潟県', '同名町')).toBe('新潟県中越')
+    expect(lookupStationRegion(data, '岩手県', '同名町')).toBe('岩手県内陸南部')
+    // 県が違えば引けない。読み上げ側はこのとき都道府県名へ落とす。
+    expect(lookupStationRegion(data, '富山県', '同名町')).toBeNull()
+    // 区域を持たない観測点も引けない（元データが 2 要素）。
+    expect(lookupStationRegion(data, '新潟県', '区域の無い観測点')).toBeNull()
+  })
+
+  it('実データでは全観測点が区域を持ち、観測点名は都道府県を跨いで重複しない', async () => {
+    const { lookupStationRegion } = await import('./stationCoords')
+    const data = JSON.parse(readFileSync('public/data/station-coords.json', 'utf8')) as StationCoordsData
+    const keys = Object.keys(data.stations)
+
+    // 1 件でも区域を欠くと、読み上げの粒度がその点だけ都道府県に落ちて不揃いになる。
+    const unresolved = keys.filter(key => {
+      const sep = key.indexOf('|')
+      return lookupStationRegion(data, key.slice(0, sep), key.slice(sep + 1)) == null
+    })
+    expect(unresolved).toEqual([])
+
+    // 観測点名の重複が無いことは、都道府県を観測点名から逆引きする経路（`buildStationPrefIndex`
+    // は初出優先）が正しい県を返す前提。崩れると読み上げも地図も隣県の区域を指しうる。
+    const names = keys.map(key => key.slice(key.indexOf('|') + 1))
+    expect(new Set(names).size).toBe(names.length)
   })
 })
