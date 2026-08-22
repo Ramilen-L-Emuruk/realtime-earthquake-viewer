@@ -11,6 +11,7 @@ import type { ScenarioCategory } from '../../types/testScenario'
 import { isDmdss } from '../../utils/env'
 import { isValidDmdataApiKey, DMDATA_API_KEY_INVALID_MESSAGE } from '../../utils/dmdataApiKey'
 import { useDebouncedValue } from '../../hooks/useDebouncedValue'
+import { DescriptionTip } from './DescriptionTip'
 
 export interface TestFunctions {
   earthquake: () => void
@@ -83,10 +84,15 @@ function Row({ label, description, children }: {
   // 伸長指定に flex-1 を使わないこと: flex ショートハンドが flex-basis を 0% で上書きし、
   // 最低幅が効かなくなる（Tailwind は flex-basis より flex を後に出力する）。
   return (
-    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
+    // data-settings-row は説明の吹き出しが基準にする矩形の目印。ラベルではなく行を基準に
+    // することで、2 段に折り返した行でコントロールを覆わない（DescriptionTip 参照）。
+    <div data-settings-row className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
       <div className="min-w-0 grow basis-32">
-        <p className="text-white text-sm">{label}</p>
-        {description && <p className="text-secondary text-xs mt-0.5">{description}</p>}
+        {/* 説明文は常時表示せず、ラベルをホバー・タップしたときだけ吹き出しで出す。
+            設定タブは行数が多く、全行に説明文を敷くと縦が 3 割伸びる（4804px→6310px）。 */}
+        {description
+          ? <DescriptionTip label={label} description={description} />
+          : <p className="text-white text-sm">{label}</p>}
       </div>
       {/* ml-auto は 2 段に落ちた行のためにある。折り返した 2 行目はコントロール 1 個だけの行になり、
           アイテムが 1 個の行では justify-between が flex-start にフォールバックして左寄せになる
