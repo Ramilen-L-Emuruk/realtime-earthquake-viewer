@@ -46,8 +46,14 @@ export type SpeechRef =
 /**
  * 地震情報が伝える「震度の地域以外の事実」。続報で変化したものだけを読むための単位。
  * 値そのものではなく何についての事実かを表すので、`magnitude` は 7.4 でも 7.6 でも同じキー。
+ *
+ * `maxScaleOnly` だけは毛色が違う。**地域名を 1 件も作れなかったときの代替**として
+ * 最大震度を伝えたことを覚える枠で、値は震度そのもの。**値が変われば読み直す — 上がるときも
+ * 下がるときも。** 区域側（`isUnspokenRegion`）は上がったときだけ読み直すので非対称だが、
+ * 地域名を引けない状況ではこれが震度を伝える唯一の経路なので、下方修正も黙って捨てられない。
+ * 他の 4 つと違い `tellableFacts` には載せない（理由は `ttsText.ts` の同関数のコメント）。
  */
-export type QuakeFact = 'hypocenterName' | 'magnitude' | 'depth' | 'domesticTsunami'
+export type QuakeFact = 'hypocenterName' | 'magnitude' | 'depth' | 'domesticTsunami' | 'maxScaleOnly'
 
 /**
  * 読み上げ文の断片と、その断片が指す対象。
