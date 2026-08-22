@@ -5,7 +5,8 @@ import { segmentsToMultiLineFC } from './gl/geojson'
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
 import { twoLinePopupHtml } from './gl/popupHtml'
 import { addOrderedLayer } from './gl/layerOrder'
-import { DETAIL_MIN_ZOOM } from './gl/zoomLevels'
+import { detailMinZoom } from './gl/zoomLevels'
+import { bindDynamicZoomRange, clampMinZoom } from './gl/viewSpan'
 
 // 全国活断層線（産総研 活断層データベース）を描画する MapLibre 版（Leaflet の ActiveFaultsLayer 相当）。
 // セグメント1件=MultiLineString feature 1件（約580件）にまとめ、1枚の line レイヤーで描く。
@@ -41,7 +42,7 @@ export function ActiveFaultsGL({ activeFaults, visible, opacity }: Props) {
       type: 'line',
       source: SRC,
       // 引いた画では線が潰れて列島が塗り潰された塊になるため描画しない（gl/zoomLevels.ts）。
-      minzoom: DETAIL_MIN_ZOOM,
+      minzoom: clampMinZoom(detailMinZoom(map)),
       layout: {
         'line-join': 'round',
         'line-cap': 'round',
@@ -55,6 +56,8 @@ export function ActiveFaultsGL({ activeFaults, visible, opacity }: Props) {
         'line-opacity-transition': { duration: 0, delay: 0 },
       },
     })
+    // 下限ズームは視野の実距離で決まるため、ペインの寸法が変わるたび張り替える（上の初期値と同じ関数）。
+    const unbindZoomRange = bindDynamicZoomRange(map, [{ layerId: LYR, minZoom: detailMinZoom }])
     popupRef.current = registerPopupSource(map, {
       layerId: LYR,
       priority: 'line',
@@ -63,6 +66,7 @@ export function ActiveFaultsGL({ activeFaults, visible, opacity }: Props) {
         twoLinePopupHtml(String(f.properties?.name ?? ''), '活断層（産総研 活断層データベース）'),
     })
     return () => {
+      unbindZoomRange()
       popupRef.current?.remove()
       popupRef.current = null
       if (map.getLayer(LYR)) map.removeLayer(LYR)
