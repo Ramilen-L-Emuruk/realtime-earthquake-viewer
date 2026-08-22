@@ -9,7 +9,7 @@ import { formatMagnitude, hasMagnitude } from '../utils/formatters'
 import { eewMaxScale, eewMaxLpgmClass, eewNoForecastReason, computeSingleEEWLevel, selectEEWSoundType, eewKindLabel } from '../utils/eew'
 import { haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
-import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, matchesArea, sortAreasForCardDisplay } from '../utils/tsunami'
+import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, matchesArea, sortAreasForCardDisplay } from '../utils/tsunami'
 import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
 import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToText, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, type TtsRegionOptions } from '../utils/ttsText'
@@ -391,6 +391,17 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const spokenEEWLevelsRef = useRef<Map<string, 0 | 1 | 2>>(new Map())
   // 直前に読み上げた津波グレード（引き下げ検出・重複読み上げ抑制に使用）
   const lastTsunamiGradeRef = useRef<'MajorWarning' | 'Warning' | 'Watch' | 'Forecast' | null>(null)
+  // 直前に受信した津波（解除がこの津波に向けたものかの照合に使う。`isCancelForCurrentTsunami`）。
+  //
+  // **App が持つ表示中の津波（`tsunamisRef`）ではなく、自分が受信したものを見ること。**
+  // あちらは App の render 本体で代入されるため、同一 tick に複数の電文が捌けると（アーカイブ
+  // 再生の追いつき・長時間バックグラウンド後の復帰）tick 開始前の値に取り残される。その値と
+  // 照合すると、届いたばかりの津波に対する解除を「別イベントの解除」と誤判定し、記憶を落とさない。
+  //
+  // ここで管理している記憶（波高・観測点名）は、いずれも自分が受信した電文で進めている。
+  // 照合の基準も揃えるのが筋が通る（`useEarthquakes` 側は state の整合のために `prev.tsunamis[0]`
+  // を見る。基準が違っても、判定そのものは同じ関数を共有している）。
+  const lastTsunamiRef = useRef<JMATsunami | null>(null)
   // 観測点ごとに受信済みの最大波高。**画面（バッジ・スクロール）用**で、読み上げの有無に関わらず
   // 受信時に進める。
   const lastMaxObsHeightRef = useRef<Map<string, { value: number; over?: boolean }>>(new Map())
@@ -1003,6 +1014,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       const isNew = isTsunamiNewFire(event, current)
       const upgraded = isTsunamiGradeUpgrade(event, current)
       tsunamiIsNewOrUpgraded = isNew || upgraded
+      // 解除の照合に使うので、受信した順で覚える（理由は宣言箇所）。タブ切替の判定が
+      // `tsunamisRef` を見ているのは従来どおり（あちらは「画面がいま何を出しているか」の話）。
+      lastTsunamiRef.current = event
       if (!settings.voicevoxEnabled) {
         if (tsunamiIsNewOrUpgraded) {
           log.info(`[tab] tsunami を要求 (${isNew ? '新規発報' : 'グレード格上げ'}・読み上げ無効)`)
@@ -1055,14 +1069,43 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           )
         }
       }
-      lastTsunamiGradeRef.current = null
-      // 画面用と読み上げ用の両方を落とす。片方だけ残すと、次の津波で同じ観測点の同じ波高が
-      // 「更新なし」と見なされて読まれない（あるいは逆に画面だけ更新扱いになる）。
-      lastMaxObsHeightRef.current.clear()
-      spokenObsHeightRef.current.clear()
-      window.clearTimeout(obsStatusClearTimerRef.current)
-      setObsUpdateStatus(new Map())
-      setFocusedDistrict({ districts: [], top: null, ts: Date.now() })
+      // **表示中の津波に向けた解除でなければ、状態は何も落とさない。**
+      //
+      // 津波は 1 件スロットで持つため、別イベントの遅延到達した解除（複数経路の解除・再送・
+      // 失効タイマー）が、進行中の別の津波の記憶を消してしまう。カードの状態更新
+      // （`useEarthquakes`）は同じ判定で弾いているのに、こちら（音・読み上げ・画面の記憶）は
+      // `handleEvent` が状態更新の成否に関わらず先に呼ぶため、照合を自分で行う必要がある。
+      // 判定は `isCancelForCurrentTsunami` に集約して両側で共有する。
+      //
+      // 音と読み上げは従来どおり照合せずに鳴らす（この分岐の上）。「カードは残っているのに
+      // 解除を読み上げる」食い違いは既知の性質で、解除を落とす方が害が大きいという判断
+      // （理由は `isCancelForCurrentTsunami`）。ここで揃えているのは**記憶と画面の状態**だけ。
+      //
+      // 照合の相手は自分が受信した直前の津波（`lastTsunamiRef`）。`tsunamisRef` を見ると、
+      // 同一 tick に複数の電文が捌けたときに取り残された値と比べてしまう（宣言箇所に理由）。
+      if (isCancelForCurrentTsunami(event, lastTsunamiRef.current ?? undefined)) {
+        lastTsunamiGradeRef.current = null
+        lastTsunamiRef.current = null
+        // 観測点の記憶は**波高と名前の両方**を、**画面用と読み上げ用の両方**で落とす。
+        //
+        // 波高だけ落として名前を残すと、前の津波で「観測中」（波高未確定）のまま終わった観測点は、
+        // 次の津波で再び到達が確認されても「新規到達」と見なされず、到達を一度も伝えられない
+        // （名前は波高の有無に関わらず記録されるため。`rememberObservations`）。常時起動する
+        // 使い方では 1 セッションで複数の津波をまたぐので、実際に起こりうる。
+        //
+        // 画面用と読み上げ用のどちらか片方だけ落とすと、「声は到達を伝えるのにバッジが付かない」
+        // （またはその逆）になる。判定は同じ観測点集合を見るので、揃えて落とすこと。
+        lastMaxObsHeightRef.current.clear()
+        seenObsNamesRef.current.clear()
+        spokenObsHeightRef.current.clear()
+        spokenObsNamesRef.current.clear()
+        window.clearTimeout(obsStatusClearTimerRef.current)
+        setObsUpdateStatus(new Map())
+        setFocusedDistrict({ districts: [], top: null, ts: Date.now() })
+      } else {
+        // 捨てた事実を残す。黙って通すと「解除を受けたのにバッジが消えない」を追えない。
+        log.info('[tsunami] 表示中の津波と一致しない解除のため、観測点の記憶は落とさない')
+      }
     } else if (event.kind === 'eew') {
       if (event.test) return
 
@@ -1761,6 +1804,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     eewPhase2DoneRef.current.clear()
     eewRetractedKeysRef.current.clear()
     lastTsunamiGradeRef.current = null
+    // 解除の照合に使う直前の津波も落とす（残すと、リプレイ後の解除を切替前の津波と照合する）
+    lastTsunamiRef.current = null
     lastMaxObsHeightRef.current.clear()
     seenObsNamesRef.current.clear()
     // 読み上げ用の既読も落とす（画面用と対称。残すとリプレイ後の観測情報が「更新なし」になる）
@@ -1804,13 +1849,26 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           eewPhase2DoneRef.current.add(key)
         } else if (ev.kind === 'tsunami') {
           const tsunami = ev as JMATsunami
-          const grade = tsunamiMaxGrade(tsunami)
-          if (grade !== 'Unknown') lastTsunamiGradeRef.current = grade
-          // T 時点までの観測点は「もう伝えた」ものとして扱う。**読み上げ用も埋めること。**
-          // 埋め忘れると、注入後の最初の観測情報でそれまでの全観測点が読み直され、途中から
-          // 再生を始めたのに津波の到達をいまさら読み上げることになる。
-          rememberObservations(tsunami.observations ?? [], seenObsNamesRef.current, lastMaxObsHeightRef.current)
-          rememberObservations(tsunami.observations ?? [], spokenObsNamesRef.current, spokenObsHeightRef.current)
+          // **ライブ経路と同じ形で進めること**（電文は時系列順に渡ってくる）。片方だけずらすと、
+          // リプレイを途中から始めたときだけ「解除で終わった津波の観測点が既読のまま残る」
+          // （＝次の津波で到達を伝えられない）という、ライブでは起きない食い違いになる。
+          if (tsunami.cancelled) {
+            lastTsunamiGradeRef.current = null
+            lastTsunamiRef.current = null
+            lastMaxObsHeightRef.current.clear()
+            seenObsNamesRef.current.clear()
+            spokenObsHeightRef.current.clear()
+            spokenObsNamesRef.current.clear()
+          } else {
+            const grade = tsunamiMaxGrade(tsunami)
+            if (grade !== 'Unknown') lastTsunamiGradeRef.current = grade
+            lastTsunamiRef.current = tsunami
+            // T 時点までの観測点は「もう伝えた」ものとして扱う。**読み上げ用も埋めること。**
+            // 埋め忘れると、注入後の最初の観測情報でそれまでの全観測点が読み直され、途中から
+            // 再生を始めたのに津波の到達をいまさら読み上げることになる。
+            rememberObservations(tsunami.observations ?? [], seenObsNamesRef.current, lastMaxObsHeightRef.current)
+            rememberObservations(tsunami.observations ?? [], spokenObsNamesRef.current, spokenObsHeightRef.current)
+          }
         }
       } else if (payload.kind === 'lpgm' && !payload.data.cancelled) {
         seenLpgmEventIdsRef.current.add(payload.data.eventId)
