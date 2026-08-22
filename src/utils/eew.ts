@@ -135,24 +135,69 @@ export function eewAreas(eew: EEWAlert): EEWRegion[] {
   return eew.areas ?? eew.regions ?? []
 }
 
-/** 対象地域の最大予想震度（scale 値）。震度が取れないときは 0 を返す。
+/** 最大予想震度と、その上限が定まっていないか（「〜以上」）の対。 */
+export interface EewMaxScaleInfo {
+  /** 階級値。震度が取れないときは 0（`eewMaxScale` と同じ） */
+  scale: number
+  /**
+   * 採用した階級が「〜以上」の下限であるか。DMDATA の `to: "over"`・P2PQuake の
+   * `scaleTo: 99` 由来（`EEWRegion.scaleToOrAbove`）。表示・読み上げで語を補うために使う。
+   */
+  orAbove: boolean
+}
+
+/** 対象地域の最大予想震度と「以上」表現の有無。震度が取れないときは scale=0 を返す。
  * condition=仮定震源要素（単独点処理）かつ areas が空の場合は forecastMaxScale を使わず 0 を返す。
  * 単独点PLUM検知では forecastMaxInt が設定されても地域別予想は発表されないため。
+ * （**areas が付く単独点処理の報は実在する**。2024/1/1 16:18 の余震の初報が
+ * 「石川県能登 震度4以上」の 1 区域を持っていた。areas を優先する順序はそのままでよい）
  *
  * 震度スケール外の値（`IntensityScale` に無い中間値・範囲外値）は採用しない。
  * `EEWRegion` は型で守られているが、実地震シナリオ JSON のように型検査を通らない経路から
  * 値が来るため、実行時にも弾く。これが無いと、壊れた入力の scaleTo がそのまま 55 との比較を
- * 通って特別警報へ誤昇格しうる。未確定の -1 は Math.max の初期値 0 に丸められる。
+ * 通って特別警報へ誤昇格しうる。未確定の -1 は初期値 0 に丸められる。
+ *
+ * 同じ階級の区域が複数あり片方だけが「以上」のときは「以上」を採る（強い側の表現を残す）。
  */
-export function eewMaxScale(eew: EEWAlert): number {
-  const areasMax = eewAreas(eew).reduce(
-    (max, r) => (isValidIntensityScale(r.scaleTo) ? Math.max(max, r.scaleTo) : max),
-    0,
-  )
-  if (areasMax > 0) return areasMax
-  if (eew.earthquake.condition === '仮定震源要素') return 0
+export function eewMaxScaleInfo(eew: EEWAlert): EewMaxScaleInfo {
+  let areasMax = 0
+  let areasOrAbove = false
+  for (const r of eewAreas(eew)) {
+    if (!isValidIntensityScale(r.scaleTo)) continue
+    if (r.scaleTo > areasMax) {
+      areasMax = r.scaleTo
+      areasOrAbove = r.scaleToOrAbove === true
+    } else if (r.scaleTo === areasMax && r.scaleToOrAbove) {
+      areasOrAbove = true
+    }
+  }
+  if (areasMax > 0) return { scale: areasMax, orAbove: areasOrAbove }
+  if (eew.earthquake.condition === '仮定震源要素') return { scale: 0, orAbove: false }
   const forecast = eew.forecastMaxScale
-  return forecast != null && isValidIntensityScale(forecast) ? forecast : 0
+  const scale = forecast != null && isValidIntensityScale(forecast) ? forecast : 0
+  return { scale, orAbove: scale > 0 && eew.forecastMaxScaleOrAbove === true }
+}
+
+/** 対象地域の最大予想震度（scale 値）。震度が取れないときは 0 を返す。判定は `eewMaxScaleInfo`。 */
+export function eewMaxScale(eew: EEWAlert): number {
+  return eewMaxScaleInfo(eew).scale
+}
+
+/**
+ * 予想震度が `spoken`（既に読み上げた値）より警戒側へ動いたか。
+ *
+ * 読み上げは引き上げだけを追い、引き下げでは黙る（`useLiveEventHandler` の第 2 フェーズ）。
+ * その比較に階級値だけを使うと、**同じ階級のまま上限が定まらなくなった変化**（「震度4」→
+ * 「震度4以上」）を捉えられず、一度も声に出さないまま終わる。上限が消えるのは警戒側への
+ * 変化なので、同じ階級では「以上」を上に置く。
+ *
+ * 逆向き（「震度4以上」→「震度4」＝上限が確定した）は引き下げと同じ扱いで黙る。
+ * `spoken` が無い（まだ何も読んでいない）ときは、読む値があるなら真。
+ */
+export function isForecastScaleHigher(latest: EewMaxScaleInfo, spoken: EewMaxScaleInfo | undefined): boolean {
+  if (!spoken) return latest.scale > 0
+  if (latest.scale !== spoken.scale) return latest.scale > spoken.scale
+  return latest.orAbove && !spoken.orAbove
 }
 
 /** 対象地域の最大予想長周期地震動階級（1〜4）。データが無ければ0。

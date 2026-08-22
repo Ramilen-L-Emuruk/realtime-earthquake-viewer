@@ -35,7 +35,7 @@ import {
   TsunamiFitGL,
   FocusObsGL,
 } from './CameraFollowsGL'
-import { JAPAN_CENTER, fitJapan } from './gl/camera'
+import { JAPAN_CENTER, fitJapan, fitMaxZoom, REFERENCE_FIT_MAX_ZOOM } from './gl/camera'
 import { useActiveFaults } from '../../hooks/useActiveFaults'
 import { usePlateBoundaries } from '../../hooks/usePlateBoundaries'
 import { useQuakeLayerData } from '../../hooks/useQuakeLayerData'
@@ -94,8 +94,13 @@ export function JapanMapGL({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const [map, setMap] = useState<maplibregl.Map | null>(null)
-  // 集約切替（zoom <= MAX_ZOOM で一次細分区域集約）判定のため現在ズームを追跡する。
+  // 集約切替（zoom <= 寄り上限 で一次細分区域集約）判定のため現在ズームを追跡する。
   const [zoom, setZoom] = useState(INITIAL_ZOOM)
+  // 集約切替の閾値。カメラの寄り上限と同値にすることで「自動フィット着地後は必ず区域集約＝震度塗り」
+  // が成り立つ（useQuakeLayerData の aggregateMaxZoom の注記）。寄り上限は地図ペインの短辺で決まるため
+  // 定数にできず、ペインが変わるたび取り直す必要がある（パネル境界のつまみ・画面回転・リサイズ）。
+  // 地図の生成前は基準ペインの値を置く。
+  const [aggregateMaxZoom, setAggregateMaxZoom] = useState(REFERENCE_FIT_MAX_ZOOM)
   // QuakeFitGL が「最後に処理した quakeSelectionTick の値」を保持する ref。
   // ここ（JapanMapGL は常時マウント）で保有し、QuakeFitGL に props で渡すことで
   // タブ切替による QuakeFitGL のリマウントをまたいでも「明示選択で tick が進んだ最初の
@@ -120,7 +125,7 @@ export function JapanMapGL({
     lpgmRegionAggregates,
     quakeFitPositions,
     quakeSignature,
-  } = useQuakeLayerData(mode, quake, zoom, lpgm)
+  } = useQuakeLayerData(mode, quake, { zoom, aggregateMaxZoom }, lpgm)
   // 津波の派生データ（海岸線＋観測棒）。発報中は全モードで海岸線を描くため常時計算する。
   const { tsunamiLines, observationBars, tsunamiFitPositions, tsunamiSignature } = useTsunamiLayerData(
     tsunamis,
@@ -258,13 +263,19 @@ export function JapanMapGL({
       // 本アプリの既定フレーミング（日本全体・padding 20）へ即時に合わせる。
       fitJapan(m, 0)
       setZoom(m.getZoom())
+      setAggregateMaxZoom(fitMaxZoom(m))
       setMap(m)
     })
     // ズーム確定ごとに zoom state を更新（集約切替の再評価用）。
     const onZoomEnd = () => setZoom(m.getZoom())
     m.on('zoomend', onZoomEnd)
+    // ペインの寸法が変わると寄り上限＝集約閾値も変わる。MapLibre はコンテナを ResizeObserver で
+    // 監視するため、window のリサイズだけでなくパネル境界のつまみの操作でもここへ届く。
+    const onResize = () => setAggregateMaxZoom(fitMaxZoom(m))
+    m.on('resize', onResize)
     return () => {
       m.off('zoomend', onZoomEnd)
+      m.off('resize', onResize)
       mapRef.current = null
       setMap(null)
       m.remove()

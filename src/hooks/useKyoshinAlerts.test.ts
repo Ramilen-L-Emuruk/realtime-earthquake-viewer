@@ -3,7 +3,7 @@ import {
   dynamicRegionThresholdKm, isSameEarthquake, isRegionWithinAnyEew,
   createAlertRegionState, stepAlertRegions,
   REGION_MATCH_KM, DEFAULT_VIRTUAL_DEPTH_KM, DYNAMIC_THRESHOLD_SAFETY_FACTOR,
-  OUTBREAK_PROPAGATION_WINDOW_MS, NEW_REGION_COOLDOWN_TICKS, NEW_REGION_MIN_INDEX,
+  OUTBREAK_PROPAGATION_WINDOW_MS, NEW_REGION_COOLDOWN_MS, NEW_REGION_MIN_INDEX,
   PROPAGATION_MAX_KM, type AlertRegion,
 } from './useKyoshinAlerts'
 import { computeSWaveRadiusAtTime } from './usePsWaveCalc'
@@ -13,9 +13,8 @@ function fakeRegion(overrides: Partial<AlertRegion> = {}): AlertRegion {
   return {
     lat: 37.5,
     lng: 137.0, // 能登半島付近
-    seen: 1,
     fired: false,
-    lastTick: 0,
+    lastSeenAtMs: 0,
     firstSeenAtMs: 0,
     absorbedByEew: false,
     ...overrides,
@@ -146,6 +145,13 @@ describe('isRegionWithinAnyEew', () => {
 
 // 能登(37.5,137.0) から福岡(33.6,130.4) までは約 738km。EEW が無いときの下限 300km を超えるため、
 // 「地震全体の起点」を渡さない限り別地震と判定される距離関係にある。
+/**
+ * テストは 1 秒刻みでフレームを流すため、クールダウンの秒数がそのままフレーム数になる。
+ * `NEW_REGION_COOLDOWN_MS` を 1000 の倍数でない値に変えるとここが小数になり、フレーム数として
+ * 使っているループが黙って境界をずれる。値を変えるときはこの換算も見直すこと。
+ */
+const COOLDOWN_FRAMES = NEW_REGION_COOLDOWN_MS / 1000
+
 const NOTO = { lat: 37.5, lng: 137.0, index: 20 }
 const FUKUOKA = { lat: 33.6, lng: 130.4, index: 12 }
 const OKINAWA = { lat: 26.2, lng: 127.7, index: 12 }
@@ -186,10 +192,9 @@ describe('stepAlertRegions', () => {
   function ongoingState(nowMs: number, farRegion: Partial<AlertRegion>) {
     const state = createAlertRegionState()
     state.anyConfirmedPrev = true
-    state.tick = 100
     state.regions = [
-      fakeRegion({ lat: NOTO.lat, lng: NOTO.lng, seen: 50, fired: true, lastTick: 100, firstSeenAtMs: nowMs - 60_000 }),
-      fakeRegion({ lat: FUKUOKA.lat, lng: FUKUOKA.lng, seen: 50, fired: false, lastTick: 100, firstSeenAtMs: nowMs - 10_000, ...farRegion }),
+      fakeRegion({ lat: NOTO.lat, lng: NOTO.lng, fired: true, lastSeenAtMs: nowMs, firstSeenAtMs: nowMs - 60_000 }),
+      fakeRegion({ lat: FUKUOKA.lat, lng: FUKUOKA.lng, fired: false, lastSeenAtMs: nowMs, firstSeenAtMs: nowMs - 10_000, ...farRegion }),
     ]
     return state
   }
@@ -210,7 +215,7 @@ describe('stepAlertRegions', () => {
     const state = createAlertRegionState()
     stepAlertRegions(state, [NOTO], t, new Map())
     let fired: unknown = null
-    for (let i = 1; i <= NEW_REGION_COOLDOWN_TICKS + 5; i++) {
+    for (let i = 1; i <= COOLDOWN_FRAMES + 5; i++) {
       fired = stepAlertRegions(state, [NOTO, weakFar], t + i * 1000, new Map()) ?? fired
     }
     expect(fired).toBeNull()
@@ -221,7 +226,7 @@ describe('stepAlertRegions', () => {
     const state = ongoingState(t, { absorbedByEew: true })
     let fired: unknown = null
     // EEW は解除済み（空の Map）。クールダウンを超えるフレーム数を流しても鳴らない
-    for (let i = 1; i <= NEW_REGION_COOLDOWN_TICKS + 10; i++) {
+    for (let i = 1; i <= COOLDOWN_FRAMES + 10; i++) {
       fired = stepAlertRegions(state, [NOTO, FUKUOKA], t + i * 1000, new Map()) ?? fired
     }
     expect(fired).toBeNull()
@@ -237,11 +242,11 @@ describe('stepAlertRegions', () => {
     const t = 1_000_000
     const state = ongoingState(t, { absorbedByEew: false })
     state.regions.push(
-      fakeRegion({ lat: OKINAWA.lat, lng: OKINAWA.lng, seen: 50, fired: false, lastTick: 100, firstSeenAtMs: t - 10_000 }),
+      fakeRegion({ lat: OKINAWA.lat, lng: OKINAWA.lng, fired: false, lastSeenAtMs: t, firstSeenAtMs: t - 10_000 }),
     )
     expect(stepAlertRegions(state, [NOTO, FUKUOKA, OKINAWA], t + 1000, new Map())).not.toBeNull()
     let again: unknown = null
-    for (let i = 2; i <= NEW_REGION_COOLDOWN_TICKS; i++) {
+    for (let i = 2; i <= COOLDOWN_FRAMES; i++) {
       again = stepAlertRegions(state, [NOTO, FUKUOKA, OKINAWA], t + i * 1000, new Map()) ?? again
     }
     expect(again).toBeNull()
@@ -251,13 +256,13 @@ describe('stepAlertRegions', () => {
     const t = 1_000_000
     const state = ongoingState(t, { absorbedByEew: false })
     state.regions.push(
-      fakeRegion({ lat: OKINAWA.lat, lng: OKINAWA.lng, seen: 50, fired: false, lastTick: 100, firstSeenAtMs: t - 10_000 }),
+      fakeRegion({ lat: OKINAWA.lat, lng: OKINAWA.lng, fired: false, lastSeenAtMs: t, firstSeenAtMs: t - 10_000 }),
     )
     const first = stepAlertRegions(state, [NOTO, FUKUOKA, OKINAWA], t + 1000, new Map())
     expect(first).not.toBeNull()
     // 揺れが続いている限り、クールダウン明けにもう一方が鳴る
     let second: unknown = null
-    for (let i = 2; i <= NEW_REGION_COOLDOWN_TICKS + 2 && second == null; i++) {
+    for (let i = 2; i <= COOLDOWN_FRAMES + 2 && second == null; i++) {
       second = stepAlertRegions(state, [NOTO, FUKUOKA, OKINAWA], t + i * 1000, new Map())
     }
     expect(second).not.toBeNull()
@@ -274,7 +279,7 @@ describe('stepAlertRegions', () => {
     const t = t0 + 170_000
     stepAlertRegions(state, [NOTO], t, eews)
     let fired: unknown = null
-    for (let i = 1; i <= NEW_REGION_COOLDOWN_TICKS + 5; i++) {
+    for (let i = 1; i <= COOLDOWN_FRAMES + 5; i++) {
       fired = stepAlertRegions(state, [NOTO, FUKUOKA], t + i * 1000, eews) ?? fired
     }
     expect(fired).toBeNull()
@@ -319,6 +324,98 @@ describe('stepAlertRegions', () => {
     // 再生をやり直して過去の時刻が来た
     stepAlertRegions(state, [NOTO], t - 600_000, new Map())
     expect(state.regions.every((r) => !r.absorbedByEew)).toBe(true)
-    expect(state.lastNewRegionTick).toBe(-999)
+    expect(state.lastNewRegionAtMs).toBeNull()
+  })
+
+  // --- コマ飛び（ライブで取得が遅れたときのデータ時刻のジャンプ）に対する固定 ---
+  // ライブは取得が遅れると次のデータ時刻へジャンプしてコマを飛ばす（kyoshinSource.ts の
+  // ライブ分岐）。リプレイは常に 1 秒ずつ進むため、この状況はリプレイでも
+  // `npm run probe-kyoshin` でも再現できない。合成フレームで固定する。
+
+  /** 福岡で 1 度発報を済ませ、沖縄が持続待ちに入った状態まで進める。 */
+  function firedOnceThenPending(t: number) {
+    const state = createAlertRegionState()
+    stepAlertRegions(state, [NOTO], t, new Map())
+    stepAlertRegions(state, [NOTO, FUKUOKA], t + 1000, new Map())
+    stepAlertRegions(state, [NOTO, FUKUOKA], t + 2000, new Map())
+    expect(stepAlertRegions(state, [NOTO, FUKUOKA], t + 3000, new Map())).toEqual(FUKUOKA)
+    stepAlertRegions(state, [NOTO, FUKUOKA, OKINAWA], t + 4000, new Map()) // 沖縄を登録
+    expect(stepAlertRegions(state, [NOTO, FUKUOKA, OKINAWA], t + 5000, new Map())).toBeNull() // 持続待ち
+    return state
+  }
+
+  it('[正・クールダウン] コマ飛びでデータ時刻が進めば、フレームが 1 つしか進まなくても明ける', () => {
+    const t = 1_000_000
+    const state = firedOnceThenPending(t)
+    // 前回発報（t+3000）からデータ時刻で 5 秒。フレーム数では 1 つしか進んでいない
+    expect(stepAlertRegions(state, [NOTO, FUKUOKA, OKINAWA], t + 8000, new Map())).toEqual(OKINAWA)
+  })
+
+  it('[正・持続] コマ飛びでデータ時刻が進めば、出現フレーム数が足りなくても持続を満たす', () => {
+    const t = 1_000_000
+    const state = createAlertRegionState()
+    stepAlertRegions(state, [NOTO], t, new Map())
+    stepAlertRegions(state, [NOTO, FUKUOKA], t + 1000, new Map()) // 福岡を登録
+    // 3 秒のコマ飛び。福岡が現れたのは 2 フレームだが、データ時刻では 3 秒続いている
+    expect(stepAlertRegions(state, [NOTO, FUKUOKA], t + 4000, new Map())).toEqual(FUKUOKA)
+  })
+
+  it('[正・破棄猶予] コマ飛びで猶予を超えた地域は、次のフレームまで残らず破棄される', () => {
+    const t = 1_000_000
+    const state = createAlertRegionState()
+    stepAlertRegions(state, [NOTO], t, new Map())
+    stepAlertRegions(state, [NOTO, FUKUOKA], t + 1000, new Map())
+    expect(state.regions).toHaveLength(2)
+    // 4 秒のコマ飛び。福岡は現れないまま猶予（3 秒）を超えた
+    stepAlertRegions(state, [NOTO], t + 5000, new Map())
+    expect(state.regions).toHaveLength(1)
+  })
+
+  it('[正・持続] 観測が 1 フレーム欠けても、データ時刻の幅が足りれば持続を満たす', () => {
+    const t = 1_000_000
+    const state = createAlertRegionState()
+    stepAlertRegions(state, [NOTO], t, new Map())
+    stepAlertRegions(state, [NOTO, FUKUOKA], t + 1000, new Map()) // 福岡を登録（1 回目）
+    stepAlertRegions(state, [NOTO], t + 2000, new Map())          // 福岡が現れない（猶予内なので残る）
+    // 実観測は 2 回だけ。数えているのは回数ではなく初検知からの幅
+    expect(stepAlertRegions(state, [NOTO, FUKUOKA], t + 3000, new Map())).toEqual(FUKUOKA)
+  })
+
+  it('[対照] 欠落が破棄猶予を超えたら地域は捨てられ、持続はやり直しになる', () => {
+    const t = 1_000_000
+    const state = createAlertRegionState()
+    stepAlertRegions(state, [NOTO], t, new Map())
+    stepAlertRegions(state, [NOTO, FUKUOKA], t + 1000, new Map())
+    stepAlertRegions(state, [NOTO], t + 5000, new Map()) // 4 秒現れず（猶予 3 秒を超過）
+    expect(state.regions).toHaveLength(1)
+    // 登録し直しになるため、幅を貯め直すまで鳴らない
+    expect(stepAlertRegions(state, [NOTO, FUKUOKA], t + 6000, new Map())).toBeNull()
+    expect(stepAlertRegions(state, [NOTO, FUKUOKA], t + 7000, new Map())).toBeNull()
+    expect(stepAlertRegions(state, [NOTO, FUKUOKA], t + 8000, new Map())).toEqual(FUKUOKA)
+  })
+
+  it('[対照] 1 秒刻みのフレームではクールダウンの境界が動かない', () => {
+    const t = 1_000_000
+    const state = firedOnceThenPending(t)
+    expect(stepAlertRegions(state, [NOTO, FUKUOKA, OKINAWA], t + 6000, new Map())).toBeNull()  // 3 秒
+    expect(stepAlertRegions(state, [NOTO, FUKUOKA, OKINAWA], t + 7000, new Map())).toBeNull()  // 4 秒
+    expect(stepAlertRegions(state, [NOTO, FUKUOKA, OKINAWA], t + 8000, new Map())).toEqual(OKINAWA) // 5 秒
+  })
+
+  it('[安全弁] コマ飛びを挟んでも発報済みの記録は保たれ、同じ地域が二度鳴らない', () => {
+    const t = 1_000_000
+    const state = firedOnceThenPending(t)
+    // 1 分のコマ飛び。現れている地域は照合されて生き延び、発報済みの印を持ち越す
+    expect(stepAlertRegions(state, [NOTO, FUKUOKA], t + 60_000, new Map())).toBeNull()
+    expect(state.regions.filter((r) => r.fired)).toHaveLength(2)
+  })
+
+  it('[正・破棄猶予] コマ飛びの後、現れなかった地域はデータ時刻で猶予を測って捨てられる', () => {
+    const t = 1_000_000
+    const state = firedOnceThenPending(t)
+    expect(state.regions).toHaveLength(3) // 能登・福岡・沖縄
+    // 沖縄は現れない。フレームは 1 つしか進まないが、データ時刻では 55 秒が過ぎている
+    stepAlertRegions(state, [NOTO, FUKUOKA], t + 60_000, new Map())
+    expect(state.regions).toHaveLength(2)
   })
 })

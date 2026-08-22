@@ -16,6 +16,7 @@ function makeEEW(over: {
   name: string
   severity: 'Forecast' | 'Warning'
   scaleTo?: IntensityScale
+  scaleToOrAbove?: boolean
   condition?: string
 }): EEWAlert {
   return {
@@ -34,7 +35,7 @@ function makeEEW(over: {
     issue: { eventId: over.id, serial: '1', time: '2026-01-01T12:00:00Z' },
     areas: over.scaleTo === undefined
       ? []
-      : [{ pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 30, scaleTo: over.scaleTo, kindCode: '10', arrivalTime: null }],
+      : [{ pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: over.scaleTo, scaleTo: over.scaleTo, scaleToOrAbove: over.scaleToOrAbove, kindCode: '10', arrivalTime: null }],
   } as unknown as EEWAlert
 }
 
@@ -62,6 +63,18 @@ describe('computeEEWTitle', () => {
     // 地名と震度は primary（最大震度）から取るので、予報級の方が出るのは正しい
     expect(title).toContain('宮城県沖')
     expect(title).toContain('他1件')
+  })
+
+  // 上限が定まらない報は「震度4以上予想」と出す。タイトルは外部監視も読む文字列なので、
+  // 下限を断定した「最大震度4予想」にすると実際の危険度より低く見える。
+  it('上限が定まらない予想は「以上」を添える', () => {
+    const eews = new Map([['a', makeEEW({ id: 'a', name: '能登半島沖', severity: 'Forecast', scaleTo: 40, scaleToOrAbove: true })]])
+    expect(computeEEWTitle(eews)).toBe('🚨 地震動予報 能登半島沖 最大震度4以上予想')
+  })
+
+  it('上限が定まっている予想には添えない（境界の手前）', () => {
+    const eews = new Map([['a', makeEEW({ id: 'a', name: '能登半島沖', severity: 'Forecast', scaleTo: 40 })]])
+    expect(computeEEWTitle(eews)).toBe('🚨 地震動予報 能登半島沖 最大震度4予想')
   })
 
   it('予想震度が無ければ震度句を省く', () => {

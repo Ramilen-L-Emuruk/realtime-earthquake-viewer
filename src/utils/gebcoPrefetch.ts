@@ -1,4 +1,4 @@
-import { MAX_ZOOM } from '../components/Map/gl/camera'
+import { REFERENCE_FIT_MAX_ZOOM } from '../components/Map/gl/camera'
 import { JAPAN_WIDE_BOUNDS } from '../components/Map/gl/bounds'
 
 // GEBCO 海底地形タイル（BaseMapGL.tsx の背景ラスタソースと同一 URL）の先読み。
@@ -76,11 +76,17 @@ export function lngLatToTile(lng: number, lat: number, z: number): [number, numb
 
 // 先読みする最大タイルズーム。GEBCO_TILE_SIZE が MapLibre 基準の 512px より小さいため、MapLibre は
 // 「マップズーム z のとき タイル z+1」を要求する（実測: マップ zoom 8 で /tile/9/... を取得）。
-// MAX_ZOOM（マップズーム基準）をそのままタイル z として使うと、自動フィットの上限で実際に使う
-// タイルが先読み対象から 1 段漏れる。タイルセットに実在しない z を叩いても意味が無いので
-// GEBCO_SOURCE_MAX_ZOOM でクランプする（fetch 失敗は握りつぶすため、超過しても無症状で
-// 先読みだけが空回りする。テストで境界を固定している）。
-export const MAX_TILE_ZOOM = Math.min(MAX_ZOOM + 1, GEBCO_SOURCE_MAX_ZOOM)
+// マップズーム基準の値をそのままタイル z として使うと、自動フィットの上限で実際に使うタイルが
+// 先読み対象から 1 段漏れるため desiredTileZoom を通す。タイルセットに実在しない z を叩いても
+// 意味が無いので GEBCO_SOURCE_MAX_ZOOM でクランプする（fetch 失敗は握りつぶすため、超過しても
+// 無症状で先読みだけが空回りする。テストで境界を固定している）。
+//
+// 基準にするのは**基準ペインでの寄り上限**（REFERENCE_FIT_MAX_ZOOM）で、実際の端末の寄り上限では
+// ない。寄り上限は画面が大きいほど深くなるため、大画面ではこの範囲より 1 段深いタイルを使う局面が
+// ある。そこを追って上限を上げると先読みのタイル数が 4 倍に増える一方、寄った画のタイルは飛行後に
+// 通常取得され、その間も低ズームの下地層（BaseMapGL の 2 層構成）が暗転を防ぐ。費用に対して得るものが
+// 小さいため追わない。
+export const MAX_TILE_ZOOM = Math.min(desiredTileZoom(REFERENCE_FIT_MAX_ZOOM), GEBCO_SOURCE_MAX_ZOOM)
 
 /** 先読み対象範囲・ズームのタイル一覧を、低ズーム優先（0→maxTileZoom）で並べて返す。 */
 export function buildPrefetchTiles(maxTileZoom: number = MAX_TILE_ZOOM): TileXYZ[] {

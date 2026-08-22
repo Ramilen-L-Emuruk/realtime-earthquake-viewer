@@ -10,6 +10,7 @@ import {
   type EewFollowCircle,
 } from './bounds'
 import { createLogThrottle, log } from '../../../utils/logger'
+import { ABSOLUTE_MAX_ZOOM, paneShortSidePx, REFERENCE_SHORT_SIDE_PX, zoomForSpanKm } from './viewSpan'
 
 // カメラ操作の共通ヘルパ（MapLibre 版）。Leaflet の flyToLite/flyToBoundsLite 相当だが、
 // flyTo 中のペイン非表示最適化（flyToLite.ts）は MapLibre では不要のため素の camera API を使う。
@@ -20,14 +21,53 @@ import { createLogThrottle, log } from '../../../utils/logger'
 // 追従の目標範囲そのものの計算（矩形の合成・包含・有感半径クランプ）は maplibre 非依存の
 // gl/bounds.ts が担い、ここはその結果を LngLatBounds へ変換して地図を動かす層に徹する。
 
-// 自動フィットが寄る上限ズーム。
-// Leaflet は 256px タイル基準、MapLibre GL JS は 512px タイル基準でズームレベルを数えるため、
-// 同じ数値でも縮尺が 2 倍ずれる（MapLibre の z は Leaflet の z+1 相当）。移行時に Leaflet 版の
-// MAX_ZOOM=8 をそのまま持ち込んでいたため、実際には旧 zoom 9 相当（緯度38で約239m/px）まで
-// 寄っていた。7 が旧 MAX_ZOOM=8（同約478m/px）と同じ縮尺。
-// 以降「マップズーム基準の閾値」は全てこの MapLibre 基準（512px タイル）で書く
-// ＝ Leaflet 版から値を持ち込む際は 1 段引くこと（LabelsGL・useQuakeLayerData・QuakeHeatmapGL も同様）。
-export const MAX_ZOOM = 7
+// 旧 Leaflet 版の MapContainer は zoomSnap=0.5（da119cc JapanMap.tsx:950）で、fitBounds/flyToBounds の
+// 着地ズームは常に 0.5 段階へ丸められていた。この「段階」がヒステリシスとなり、EEW 予報円が連続成長
+// （実発報時 ~10/s）しても、再フィットは円が 0.5 レベルぶん育つまで発火せず頻発しなかった。
+// MapLibre の fitBounds は分数ズームで円へぴったり合わせるため余白が無く、少しの成長で毎回はみ出し→
+// 再フィットが頻発する（移行で失われたのは zoomSnap だけ・成長フォローの contains 判定は現行と同一）。
+export const EEW_ZOOM_SNAP = 0.5
+
+// 自動フィットが寄り切ったときに残す視野の広さ（短辺・km）。
+//
+// かつては上限をズーム値（`MAX_ZOOM = 7`）で持っていた。しかしズーム値は 1px あたりの実距離しか
+// 表さないため、「震源の周りをどれだけ見せるか」が画面の大きさで変わってしまっていた（同じ単点の
+// 地震でスマホは 181km・2K は 578km ＝ 震源が画に占める割合が 3 倍違う）。見せたいのは範囲そのもの
+// なので視野の実距離で持ち、その端末での等価ズームは `fitMaxZoom` が返す（gl/viewSpan.ts）。
+//
+// 400km は基準ペイン（短辺 800px）で旧 `MAX_ZOOM = 7`（緯度 38 で約 482m/px・視野 385km）と
+// ほぼ同じ画になる値。デスクトップの見え方を変えないことを基準に決めた。
+export const FIT_MIN_SPAN_KM = 400
+
+/**
+ * この端末での自動フィットの寄り上限ズーム。ペインが大きいほど深くなる（＝画面の大きさに関わらず
+ * `FIT_MIN_SPAN_KM` 相当の範囲が見える）。深すぎる寄りは `ABSOLUTE_MAX_ZOOM` でクランプする。
+ *
+ * **0.5 刻みへ丸めてから返す。** 上限そのものが刻みから外れていると、上限にクランプされた着地を
+ * `snapZoomDown` がさらに 1 段引き下げてしまう（6.95 → 6.5 ＝ 意図より 36% 広い画）。刻みに乗せて
+ * おけば切り下げが恒等になり、基準ペインでは従来どおり丸い 7.0 へ着地する。
+ *
+ * ペイン寸法に依存するため定数にできない。**評価は呼び出しごとに行うこと**（パネル境界のつまみ・
+ * 画面回転・ウィンドウリサイズでペインは変わる）。
+ * （`EEW_ZOOM_SNAP` と `snapZoomNearest` は下で定義。呼び出し時にしか読まないため順序は問題ない）
+ */
+export function fitMaxZoom(map: maplibregl.Map): number {
+  return fitMaxZoomForPane(paneShortSidePx(map))
+}
+
+/** 短辺 shortSidePx のペインでの寄り上限ズーム。`fitMaxZoom` の実体（ペイン寸法を直接渡す形）。 */
+export function fitMaxZoomForPane(shortSidePx: number): number {
+  return Math.min(snapZoomNearest(zoomForSpanKm(FIT_MIN_SPAN_KM, shortSidePx), EEW_ZOOM_SNAP), ABSOLUTE_MAX_ZOOM)
+}
+
+/**
+ * 基準ペイン（`REFERENCE_SHORT_SIDE_PX`）での寄り上限。
+ *
+ * 実際の判定には使わない（それは常に実ペイン寸法で換算する `fitMaxZoom`）。**端末に依らない
+ * 代表値が必要な箇所だけ**が参照する——海底地形タイルの先読み範囲、地図がまだ生成されていない
+ * 時点の既定値、定数どうしの関係を固定する回帰テスト（gl/zoomConstants.test.ts）。
+ */
+export const REFERENCE_FIT_MAX_ZOOM = fitMaxZoomForPane(REFERENCE_SHORT_SIDE_PX)
 // JapanMap.tsx の JAPAN_CENTER [lat,lng] を [lng,lat] へ。
 export const JAPAN_CENTER: [number, number] = [137.7, 38.25]
 
@@ -193,7 +233,7 @@ export function fitJapan(map: maplibregl.Map, durationSec = 1.0): void {
 }
 
 /** 1 点へ flyTo する（[lat,lng] で受ける）。 */
-export function flyToPoint(map: maplibregl.Map, [lat, lng]: LatLng, zoom = MAX_ZOOM, durationSec = 1.0): void {
+export function flyToPoint(map: maplibregl.Map, [lat, lng]: LatLng, zoom = fitMaxZoom(map), durationSec = 1.0): void {
   const duration = durationSec * 1000
   map.flyTo({ center: [lng, lat], zoom, duration }, beginProgrammaticFlight(map, duration))
 }
@@ -218,7 +258,7 @@ export function fitToPositions(
   opts: { padding?: number; maxZoom?: number; durationSec?: number } = {},
 ): void {
   if (positions.length === 0) return
-  const { padding = 48, maxZoom = MAX_ZOOM, durationSec = 1.0 } = opts
+  const { padding = 48, maxZoom = fitMaxZoom(map), durationSec = 1.0 } = opts
   if (positions.length === 1) {
     // 1 点は退化した矩形（幅・高さ 0）で、着地は maxZoom へのクランプになる。段階へ切り下げる
     // 意味が無く、`cameraForBounds` に退化矩形を渡す必要も無いので flyTo で直接寄せる。
@@ -236,17 +276,10 @@ export function flyToBounds(
   bounds: maplibregl.LngLatBounds,
   opts: { padding?: number; maxZoom?: number; durationSec?: number } = {},
 ): void {
-  const { padding = 48, maxZoom = MAX_ZOOM, durationSec = 1.0 } = opts
+  const { padding = 48, maxZoom = fitMaxZoom(map), durationSec = 1.0 } = opts
   const duration = durationSec * 1000
   map.fitBounds(bounds, { padding, maxZoom, duration }, beginProgrammaticFlight(map, duration))
 }
-
-// 旧 Leaflet 版の MapContainer は zoomSnap=0.5（da119cc JapanMap.tsx:950）で、fitBounds/flyToBounds の
-// 着地ズームは常に 0.5 段階へ丸められていた。この「段階」がヒステリシスとなり、EEW 予報円が連続成長
-// （実発報時 ~10/s）しても、再フィットは円が 0.5 レベルぶん育つまで発火せず頻発しなかった。
-// MapLibre の fitBounds は分数ズームで円へぴったり合わせるため余白が無く、少しの成長で毎回はみ出し→
-// 再フィットが頻発する（移行で失われたのは zoomSnap だけ・成長フォローの contains 判定は現行と同一）。
-export const EEW_ZOOM_SNAP = 0.5
 
 /**
  * ズームを zoomStep 段階へ切り下げる（＝わずかにズームアウトして余白を残す）。
@@ -258,6 +291,15 @@ export const EEW_ZOOM_SNAP = 0.5
  */
 export function snapZoomDown(zoom: number, zoomStep: number = EEW_ZOOM_SNAP): number {
   return Math.floor((zoom + 1e-6) / zoomStep) * zoomStep
+}
+
+/**
+ * ズームを zoomStep 段階の最も近い値へ丸める。視野基準で算出した寄り上限（`fitMaxZoom`）を
+ * 刻みに乗せるためのもの。切り下げ（`snapZoomDown`）ではなく最近傍を使うのは、上限が刻みの
+ * すぐ上にあるときに丸ごと 1 段損をしないため（基準ペインの 6.95 は 6.5 ではなく 7.0 が近い）。
+ */
+export function snapZoomNearest(zoom: number, zoomStep: number = EEW_ZOOM_SNAP): number {
+  return Math.round(zoom / zoomStep) * zoomStep
 }
 
 // 切り下げ不能でフォールバックしたことの記録は間引く（下記フォールバック分岐の注記を参照）。
@@ -276,7 +318,7 @@ export function flyToBoundsSnapped(
   bounds: maplibregl.LngLatBounds,
   opts: { padding?: number; maxZoom?: number; durationSec?: number; zoomStep?: number } = {},
 ): void {
-  const { padding = 48, maxZoom = MAX_ZOOM, durationSec = 1.0, zoomStep = EEW_ZOOM_SNAP } = opts
+  const { padding = 48, maxZoom = fitMaxZoom(map), durationSec = 1.0, zoomStep = EEW_ZOOM_SNAP } = opts
   const duration = durationSec * 1000
   const cam = map.cameraForBounds(bounds, { padding, maxZoom })
   if (!cam || cam.zoom == null) {
@@ -317,7 +359,7 @@ export interface RefitDelta {
  * ズームの利得も中心の移動量も、着地後は定義上 0 になるため、その往復が構造的に起きない。
  *
  * 2 つを返すのは、片方だけでは「画の変わり方」を測り切れないため。
- * - `zoomGain` は縮尺の差しか見ない。寄り上限（`MAX_ZOOM`）に張り付いている状態では、目標が
+ * - `zoomGain` は縮尺の差しか見ない。寄り上限（`fitMaxZoom`）に張り付いている状態では、目標が
  *   どこへ動いても利得は 0 前後に留まる（現在ズームと着地ズームの双方がクランプに当たる）。
  *   実測: 2026-07-17 大隅半島東方沖 M5.2 の再生で、ズーム 7 のまま約 2 分カメラが動かず、
  *   目標中心のずれだけが 42px → 247px（ペイン短辺の 31%）まで育った
@@ -332,7 +374,7 @@ export function refitDeltaForBounds(
   bounds: maplibregl.LngLatBounds,
   opts: { padding?: number; maxZoom?: number; zoomStep?: number } = {},
 ): RefitDelta | null {
-  const { padding = 48, maxZoom = MAX_ZOOM, zoomStep = EEW_ZOOM_SNAP } = opts
+  const { padding = 48, maxZoom = fitMaxZoom(map), zoomStep = EEW_ZOOM_SNAP } = opts
   const cam = map.cameraForBounds(bounds, { padding, maxZoom })
   if (!cam || !Number.isFinite(cam.zoom) || !cam.center) return null
   // ペインの実寸が取れない（レイアウト前・非表示）間は判定材料が揃わないので測らない。

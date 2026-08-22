@@ -20,7 +20,7 @@ import {
   isProgrammaticFlight,
   subscribeUserInteraction,
   INTERACTION_HOLD_SEC,
-  MAX_ZOOM,
+  fitMaxZoom,
 } from './gl/camera'
 import { decideTsunamiFit } from './gl/tsunamiFit'
 import { log } from '../../utils/logger'
@@ -138,7 +138,7 @@ export function QuakeFitGL({
     if (explicit) resetUserInteraction()
     lastFitRef.current = signature
     log.debug(`[mapGL] quake fit (${positions.length}点${explicit ? ' 明示選択' : ''})`)
-    fitToPositions(map, positions, { padding: 48, maxZoom: MAX_ZOOM, durationSec: 1.0 })
+    fitToPositions(map, positions, { padding: 48, durationSec: 1.0 })
     // lastConsumedTickRef は ref なので依存配列に入れない（参照の同一性は保たれる）。
   }, [map, signature, positions, selectionTick, isUserInteracting, resetUserInteraction])
   return null
@@ -174,9 +174,9 @@ export function FitJapanOnEnterGL({ hasEew, hasDetection }: { hasEew: boolean; h
 // MIN_ZOOM_GAIN: 寄り直して何段ズームが深くなるなら動かす価値があるか（`refitDeltaForBounds`）。
 //   1.0 段＝縮尺 2 倍。これ未満の寄り直しはカメラを動かすほどの見え方の差にならない。
 // MIN_SHIFT_RATIO: 寄り直しで中心がどれだけ動くなら価値があるか（ペイン短辺に対する比）。
-//   **ズームの利得だけでは測れないため必要。** 寄り上限（`MAX_ZOOM`）の近くでは現在ズームと
+//   **ズームの利得だけでは測れないため必要。** 寄り上限（`fitMaxZoom`）の近くでは現在ズームと
 //   着地ズームの双方がクランプに当たるため、目標がどこへ移動しても利得は 1.0 段に届かず
-//   （利得の上限は `MAX_ZOOM` − 現在ズーム。着地ズームは 0.5 刻みなので、ズーム 6.5 以上では
+//   （利得の上限は寄り上限 − 現在ズーム。着地ズームは 0.5 刻みなので、上限の 0.5 段下以上では
 //   構造的に届かない）、揺れの位置が動いても画が固まる。実測: 2026-07-17 大隅半島東方沖 M5.2 の
 //   再生で、ズーム 7 のままカメラが約 2 分動かず、目標中心のずれが 42px → 247px（短辺の 31%）
 //   まで育った。0.2＝短辺の 2 割。同じ再生で発火は 2 分あたり 1〜3 回、能登（M7.6・全国規模で
@@ -315,7 +315,7 @@ export function FitToDetectionGL({
       }
       fittedRef.current = true
       log.debug(`[mapGL] 揺れ検知フィット (${points.length}点)`)
-      fitToPositions(map, points.map(dp2ll), { padding: 60, maxZoom: MAX_ZOOM, durationSec: 1.0 })
+      fitToPositions(map, points.map(dp2ll), { padding: 60, durationSec: 1.0 })
       return
     }
     // 検知範囲の成長追従。EEW 発報中は FitToEEWGL が「有感半径 ∪ 検知点」を追うため、ここでは追わない。
@@ -333,7 +333,7 @@ export function FitToDetectionGL({
     }
     const bounds = boundsFromPositions(points.map(dp2ll))
     if (!bounds) return
-    const fitOpts = { padding: DETECTION_FIT_PADDING, maxZoom: MAX_ZOOM }
+    const fitOpts = { padding: DETECTION_FIT_PADDING, maxZoom: fitMaxZoom(map) }
     if (!mapContainsBounds(map, bounds, DETECTION_FIT_PADDING)) {
       refitSinceRef.current = 0
       refitBlindRef.current = false
@@ -445,10 +445,10 @@ export function FitToCandidateGL({
     fittedIdRef.current = candidateId
     log.debug(`[mapGL] 候補クラスタフィット (${points.length}点 id=${candidateId})`)
     if (points.length === 1) {
-      flyToPoint(map, dp2ll(points[0]), MAX_ZOOM, 1.0)
+      flyToPoint(map, dp2ll(points[0]), fitMaxZoom(map), 1.0)
       return
     }
-    fitToPositions(map, points.map(dp2ll), { padding: 60, maxZoom: MAX_ZOOM, durationSec: 1.0 })
+    fitToPositions(map, points.map(dp2ll), { padding: 60, durationSec: 1.0 })
   }, [map, points, candidateId, hasEew, hasDetection, isUserInteracting])
   return null
 }
@@ -522,7 +522,7 @@ export function FitToEEWGL({
           log.debug('[mapGL] EEW解除 フィットスキップ (userInteracted)')
         } else if (detectedPoints.length > 0) {
           log.debug(`[mapGL] EEW解除・揺れ検知中 ${detectedPoints.length}点へフィット`)
-          fitToPositions(map, detectedPoints.map(dp2ll), { padding: 60, maxZoom: MAX_ZOOM, durationSec: 1.0 })
+          fitToPositions(map, detectedPoints.map(dp2ll), { padding: 60, durationSec: 1.0 })
         } else if (hasDetection) {
           // 検知は続いているが、いま描ける点が無い（`FitToDetectionGL` の同名の分岐と同じ状態）。
           // 帰る先が無いだけなので EEW の画に留める。候補クラスタや日本全体へ落とすと、
@@ -534,7 +534,7 @@ export function FitToEEWGL({
           // ここで受けないと「EEW 中に立った候補クラスタが一度も画面に入らない」穴になる。
           // FitToCandidateGL 側は candidateId ごとに一度しか発火しないので、あちらでは取り戻せない。
           log.debug(`[mapGL] EEW解除・候補クラスタ ${candidatePoints.length}点へフィット`)
-          fitToPositions(map, candidatePoints.map(dp2ll), { padding: 60, maxZoom: MAX_ZOOM, durationSec: 1.0 })
+          fitToPositions(map, candidatePoints.map(dp2ll), { padding: 60, durationSec: 1.0 })
         } else {
           log.debug('[mapGL] fitJapan (EEW解除)')
           fitJapan(map, 1.0)
@@ -557,11 +557,11 @@ export function FitToEEWGL({
     const bounds = ownCircle ? boundsFromCirclesForEewFollow([ownCircle]) : null
     if (bounds) {
       log.debug('[mapGL] EEW新規 自身の波円へフィット')
-      flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
+      flyToBoundsSnapped(map, bounds, { padding: 60, durationSec: 0.8 })
       return
     }
     log.debug('[mapGL] EEW新規 震源へフィット')
-    flyToPoint(map, [latitude, longitude], MAX_ZOOM, 0.8)
+    flyToPoint(map, [latitude, longitude], fitMaxZoom(map), 0.8)
     // psWave/detectedPoints/candidatePoints/hasDetection は意図的に依存配列から外している。この effect は
     // 「新規 EEW を検知した瞬間」と「最後の EEW が消えた瞬間」だけに反応させたく、点群の変化では
     // 再実行させない（lastEewIdRef の実質的な等値チェックで弾かれるため deps に入れても害はないが、
@@ -612,13 +612,13 @@ export function FitToEEWGL({
         const { latitude, longitude } = latest.earthquake.hypocenter
         if (latitude > -200 && longitude > -200) {
           log.debug('[mapGL] EEW数減少・座標なし 震源へ再フィット')
-          flyToPoint(map, [latitude, longitude], MAX_ZOOM, 0.8)
+          flyToPoint(map, [latitude, longitude], fitMaxZoom(map), 0.8)
         }
       }
       return
     }
     log.debug(`[mapGL] EEW数減少・残り${eews.length}件へ再フィット`)
-    flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
+    flyToBoundsSnapped(map, bounds, { padding: 60, durationSec: 0.8 })
   }, [eews, psWave, latest, map, isUserInteracting, detectedPoints, forecastAreaPositions])
 
   // 予報円・震源座標・揺れ検知点・予想の区域塗りの広がりに追従（表示に収まらなくなった時のみズームアウト）。
@@ -646,7 +646,7 @@ export function FitToEEWGL({
         `[mapGL] EEW成長フォロー 波円${psWave.length}個+震源${eews.length}件+検知${detectedPoints.length}点` +
           `+予想区域${forecastAreaPositions.length / 2}件`,
       )
-      flyToBoundsSnapped(map, bounds, { padding: 60, maxZoom: MAX_ZOOM, durationSec: 0.8 })
+      flyToBoundsSnapped(map, bounds, { padding: 60, durationSec: 0.8 })
     }
   }, [eews, psWave, detectedPoints, forecastAreaPositions, map, isUserInteracting])
 
@@ -776,7 +776,7 @@ export function TsunamiFitGL({
       const positions = pendingObsPositionsRef.current
       pendingObsPositionsRef.current = []
       log.debug(`[mapGL] 津波フィット 観測点 ${positions.length}点`)
-      fitToPositions(map, positions, { padding: 48, maxZoom: MAX_ZOOM, durationSec: 1.0 })
+      fitToPositions(map, positions, { padding: 48, durationSec: 1.0 })
       armIdleReturnTimer()
       return
     }
@@ -784,7 +784,7 @@ export function TsunamiFitGL({
     clearIdleReturnTimer()
     if (action === 'coast') {
       log.debug(`[mapGL] 津波フィット 海岸線 ${tsunamiFitPositions.length}点`)
-      fitToPositions(map, tsunamiFitPositions, { padding: 48, maxZoom: MAX_ZOOM, durationSec: 1.0 })
+      fitToPositions(map, tsunamiFitPositions, { padding: 48, durationSec: 1.0 })
       return
     }
     log.debug('[mapGL] fitJapan (津波の帰還: 海岸線なし or 発表終了)')
@@ -818,7 +818,7 @@ export function FocusObsGL({
     if (!bar) return
     handledTsRef.current = focusObsName.ts
     log.debug(`[mapGL] 観測点フォーカス flyTo ${bar.name}`)
-    flyToPoint(map, [bar.lat, bar.lng], MAX_ZOOM, 1.0)
+    flyToPoint(map, [bar.lat, bar.lng], fitMaxZoom(map), 1.0)
   }, [map, focusObsName, observationBars])
   return null
 }
