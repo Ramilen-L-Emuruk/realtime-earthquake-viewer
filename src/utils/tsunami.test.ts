@@ -4,9 +4,12 @@ import {
   tsunamiOverallGrade,
   isTsunamiNewFire,
   isTsunamiGradeUpgrade,
+  isCancelForCurrentTsunami,
   matchesArea,
   groupAreasForCardDisplay,
   sortAreasForCardDisplay,
+  compareObservedHeightDesc,
+  overSuffixedHeight,
 } from './tsunami'
 import type { JMATsunami, TsunamiArea, TsunamiObservation } from '../types/earthquake'
 
@@ -114,6 +117,54 @@ describe('isTsunamiNewFire', () => {
     const current = makeTsunami({})
     const next = makeTsunami({})
     expect(isTsunamiNewFire(next, current)).toBe(false)
+  })
+})
+
+// 津波は 1 件スロットで持つため、別イベントの遅延到達した解除で進行中の津波を消してはいけない。
+// カードの状態更新（`useEarthquakes`）と、読み上げ・画面の記憶を落とす判断（`useLiveEventHandler`）
+// の両方がこの関数を使う。
+describe('isCancelForCurrentTsunami', () => {
+  it('表示中の津波が無ければ受け入れる', () => {
+    expect(isCancelForCurrentTsunami(makeTsunami({ cancelled: true }), undefined)).toBe(true)
+  })
+
+  it('eventId が一致すれば受け入れる', () => {
+    const current = makeTsunami({ eventId: 'evt-1' })
+    const cancel = makeTsunami({ eventId: 'evt-1', cancelled: true, time: '2026-01-01T12:30:00Z' })
+    expect(isCancelForCurrentTsunami(cancel, current)).toBe(true)
+  })
+
+  it('eventId が違えば別イベントの解除として弾く', () => {
+    const current = makeTsunami({ eventId: 'evt-2' })
+    const cancel = makeTsunami({ eventId: 'evt-1', cancelled: true, time: '2026-01-01T12:30:00Z' })
+    expect(isCancelForCurrentTsunami(cancel, current)).toBe(false)
+  })
+
+  // eventId を持たない経路（P2PQuake の 552）は同一イベントか判定できないので時刻で見る。
+  it('eventId が無いときは、表示中より古い解除を弾く', () => {
+    const current = makeTsunami({ time: '2026-01-01T12:10:00Z' })
+    const cancel = makeTsunami({ cancelled: true, time: '2026-01-01T12:00:00Z' })
+    expect(isCancelForCurrentTsunami(cancel, current)).toBe(false)
+  })
+
+  it('eventId が無くても、表示中より新しい解除は受け入れる', () => {
+    const current = makeTsunami({ time: '2026-01-01T12:00:00Z' })
+    const cancel = makeTsunami({ cancelled: true, time: '2026-01-01T12:10:00Z' })
+    expect(isCancelForCurrentTsunami(cancel, current)).toBe(true)
+  })
+
+  // 安全弁。判定できないときは受け入れる（解除を落とす方が害が大きい）。
+  it('時刻が読めないときは受け入れる', () => {
+    const current = makeTsunami({ time: 'invalid' })
+    const cancel = makeTsunami({ cancelled: true, time: 'invalid' })
+    expect(isCancelForCurrentTsunami(cancel, current)).toBe(true)
+  })
+
+  // 片側にしか eventId が無い場合も「判定できない」側に落ちる（時刻で見る）。
+  it('片側にしか eventId が無ければ時刻で判断する', () => {
+    const current = makeTsunami({ eventId: 'evt-1', time: '2026-01-01T12:10:00Z' })
+    const cancel = makeTsunami({ cancelled: true, time: '2026-01-01T12:00:00Z' })
+    expect(isCancelForCurrentTsunami(cancel, current)).toBe(false)
   })
 })
 
@@ -228,8 +279,90 @@ describe('groupAreasForCardDisplay / sortAreasForCardDisplay', () => {
     ]).map(a => a.name)).toEqual(['岩手県', '宮城県'])
   })
 
+  // 正: 「以上」は真の波高の下限しか示さない（上限が無い）ため、値が下でも確定値より上に置く
+  it('「以上」は値が確定値より低くても上に並ぶ', () => {
+    const areas = [area('岩手県', '030', '3m'), area('宮城県', '040', '3m')]
+    expect(sortAreasForCardDisplay(areas, [
+      height('岩手県', '030', 9.0),
+      height('宮城県', '040', 8.5, true),
+    ]).map(a => a.name)).toEqual(['宮城県', '岩手県'])
+  })
+
+  // 対照: 「以上」を優先するのは確定値との比較だけ。「以上」どうしは値の大小で並ぶ
+  it('「以上」どうしは値の降順に並ぶ', () => {
+    const areas = [area('岩手県', '030', '3m'), area('宮城県', '040', '3m')]
+    expect(sortAreasForCardDisplay(areas, [
+      height('岩手県', '030', 1.5, true),
+      height('宮城県', '040', 8.5, true),
+    ]).map(a => a.name)).toEqual(['宮城県', '岩手県'])
+  })
+
+  // 安全弁: 「以上」優先が「実測が無い区域を後ろへ回す」という上位の規則を追い越さない
+  it('「以上」があっても実測の無い区域は後ろのまま', () => {
+    const areas = [area('岩手県', '030', '3m'), area('宮城県', '040', '3m')]
+    expect(sortAreasForCardDisplay(areas, [
+      height('宮城県', '040', 1.5, true),
+    ]).map(a => a.name)).toEqual(['宮城県', '岩手県'])
+  })
+
   it('波高を持たない区域は独立したグループになる', () => {
     const groups = groupAreasForCardDisplay([area('岩手県', '030'), area('宮城県', '040')], [])
     expect(groups.map(g => g.heightLabel)).toEqual([null, null])
+  })
+})
+
+describe('compareObservedHeightDesc', () => {
+  // 正: over が値の大小より先に効く
+  it('over が立つ方を上に置く（値の大小より先）', () => {
+    expect(compareObservedHeightDesc({ value: 8.5, over: true }, { value: 9.0 })).toBeLessThan(0)
+    expect(compareObservedHeightDesc({ value: 9.0 }, { value: 8.5, over: true })).toBeGreaterThan(0)
+  })
+
+  // 対照: over 区分が同じなら値の降順
+  it('over の有無が同じなら値の降順', () => {
+    expect(compareObservedHeightDesc({ value: 9.0 }, { value: 8.5})).toBeLessThan(0)
+    expect(compareObservedHeightDesc({ value: 1.5, over: true }, { value: 8.5, over: true })).toBeGreaterThan(0)
+  })
+
+  // 安全弁: 同値・同区分は 0（呼び出し側の安定ソートで電文順を保つため、符号を付けてはいけない）
+  it('同値・同区分は 0 を返す', () => {
+    expect(compareObservedHeightDesc({ value: 2.0 }, { value: 2.0 })).toBe(0)
+    expect(compareObservedHeightDesc({ value: 2.0, over: true }, { value: 2.0, over: true })).toBe(0)
+  })
+
+  // 安全弁: over は undefined と false を同じ扱いにする（パーサは `over || undefined` で落とす）
+  it('over の undefined と false を同じ扱いにする', () => {
+    expect(compareObservedHeightDesc({ value: 2.0, over: false }, { value: 2.0 })).toBe(0)
+    expect(compareObservedHeightDesc({ value: 2.0, over: undefined }, { value: 2.0, over: false })).toBe(0)
+  })
+})
+
+// 観測波高の「以上」表記。→ docs/spec/tsunami-spec.md §6「観測波高の「以上」」
+describe('overSuffixedHeight', () => {
+  // 正: description が「以上」を落としている形（condition 経路）では補う
+  it('over で「以上」を含まない数値表記には補う', () => {
+    expect(overSuffixedHeight({ description: '8.5m', over: true })).toBe('8.5m以上')
+  })
+
+  // 対照: 既に「以上」を含むなら足さない（`>8.5m以上` のような二重表記を作らない）
+  it('既に「以上」を含むならそのまま', () => {
+    expect(overSuffixedHeight({ description: '8.5m以上', over: true })).toBe('8.5m以上')
+  })
+
+  // 対照: over が立っていなければ触らない
+  it('over が無ければそのまま', () => {
+    expect(overSuffixedHeight({ description: '7.2m' })).toBe('7.2m')
+    expect(overSuffixedHeight({ description: '7.2m', over: false })).toBe('7.2m')
+  })
+
+  // 安全弁: 全角表記でも補う（XML 履歴経路は全角で来る。ASCII だけ見ると黙って落ちる）
+  it('全角数字の description にも補う', () => {
+    expect(overSuffixedHeight({ description: '８．５ｍ', over: true })).toBe('８．５ｍ以上')
+  })
+
+  // 安全弁: 数値化されない condition（「巨大」「高い」）に繋いで「巨大以上」を作らない
+  it('数字を含まない description には補わない', () => {
+    expect(overSuffixedHeight({ description: '巨大', over: true })).toBe('巨大')
+    expect(overSuffixedHeight({ description: '高い', over: true })).toBe('高い')
   })
 })
