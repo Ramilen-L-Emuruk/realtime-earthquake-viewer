@@ -34,6 +34,8 @@ function finishSpeech(index: number) {
 vi.mock('../utils/voicevox', () => ({
   speakWithVoicevox: (...args: unknown[]) => speakMock(...(args as [string, string])),
   prewarmVoicevox: () => null,
+  // 鳴ったチャンクの判定に使う（このモックはチャンクの通知を出さないので常に null で足りる）
+  getSpeechClock: () => null,
 }))
 vi.mock('../utils/alertSound', () => ({ playAlertSound: vi.fn() }))
 vi.mock('../utils/notifications', () => ({ showBrowserNotification: vi.fn() }))
