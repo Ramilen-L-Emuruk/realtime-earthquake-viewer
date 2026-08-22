@@ -1,7 +1,7 @@
 import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, TsunamiArea, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
 import { eewMaxScaleInfo, eewMaxLpgmClass, eewNoForecastReason } from './eew'
 import { getIntensityLabel, getIntensityLabelWithOrAbove } from './intensity'
-import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight } from './tsunami'
+import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight } from './tsunami'
 import { joinSegments, plain, type SpeechSegment } from './ttsFollow'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
@@ -750,28 +750,27 @@ function observationDetailSegments(
   return segments
 }
 
+/**
+ * `maxPoints` で読み上げから外した地点数を伝える句を返す（外していなければ空文字）。
+ *
+ * **黙って捨てないこと。** 観測点の選抜は深刻な順（`compareObservedHeightDesc`）に上位だけを
+ * 読むため、「○m以上」が複数あって上限を超えたときは、そのうちの一部が読み上げから落ちる。
+ * 落ちたことを言わないと、聞いた人は読まれた地点が最大だと受け取る。
+ *
+ * 観測波高の読み上げと到達確認の読み上げ（`tsunamiArrivalToSegments`）で共有する。文言を手で
+ * 複製すると、片方だけ変えたときに黙って乖離する。
+ */
+function omittedSuffix(total: number, shown: number): string {
+  const omitted = total - shown
+  return omitted > 0 ? `、ほか${omitted}地点` : ''
+}
+
 // 波高つきの 1 地点ぶん（地点名は呼び出し側が断片にするので、それに続く部分だけを返す）。
 // 単位の読み替えは予想波高と同じ関数に通す（全角・半角の扱いを 2 か所に分けない）。
+// 「以上」の補完はカード・地図と同じ `overSuffixedHeight` に通す（補ってから単位を読み替える順）。
+// この 2 つは可換で、どちらを先に通しても同じ文字列になる。順序に意味を持たせていない。
 function observedHeightSuffix(o: TsunamiObservation): string {
-  return `で${tsunamiHeightToSpeech(o.height!.description)}`
-}
-
-function tsunamiObservationDetailText(items: TsunamiObservation[]): string {
-  return joinSegments(observationDetailSegments(items, observedHeightSuffix))
-}
-
-/** VTSE41/51/52 津波観測情報 読み上げテキストを生成する（波高の大きい順に上位 maxPoints 件）。 */
-export function tsunamiObservationToText(event: JMATsunami, maxPoints = 5): string {
-  const obs = (event.observations ?? []).filter(o => o.height !== undefined)
-  if (obs.length === 0) return ''
-  const sorted = [...obs].sort((a, b) => b.height!.value - a.height!.value).slice(0, maxPoints)
-  const total = obs.length
-  // headline の全角数字・全角ｍ・全角ピリオドを半角に変換して VOICEVOX の誤読を防ぐ
-  const rawHeadline = event.headline ? event.headline.trim() : ''
-  const headline = tsunamiHeightToSpeech(rawHeadline)
-  const headlinePart = headline ? `${headline}` : `${total}か所で津波を観測しています。`
-  const detail = tsunamiObservationDetailText(sorted)
-  return `津波観測情報。${headlinePart}${detail}。`
+  return `で${tsunamiHeightToSpeech(overSuffixedHeight(o.height!))}`
 }
 
 /**
@@ -785,13 +784,16 @@ export function tsunamiObservationUpdateToSegments(
 ): SpeechSegment[] {
   const obs = updatedObs.filter(o => o.height !== undefined)
   if (obs.length === 0) return []
-  const sorted = [...obs].sort((a, b) => b.height!.value - a.height!.value).slice(0, maxPoints)
+  // 深刻な順に選抜する（規則はカードの並びと同じ compareObservedHeightDesc）。**値の大小だけで
+  // 切らないこと。** maxPoints で打ち切るため、値の大小で並べると「○m以上」の観測点が上位から
+  // 押し出されて読み上げから丸ごと落ちる。カードなら下の方でも残るが、音は落ちたら気づけない。
+  const sorted = [...obs].sort((a, b) => compareObservedHeightDesc(a.height!, b.height!)).slice(0, maxPoints)
   // headline の全角数字・全角ｍ・全角ピリオドを半角に変換して VOICEVOX の誤読を防ぐ
   const headlinePart = headline?.trim() ? tsunamiHeightToSpeech(headline.trim()) : ''
   return [
     plain(`津波観測情報。${headlinePart}`),
     ...observationDetailSegments(sorted, observedHeightSuffix),
-    plain('を観測しました。'),
+    plain(`${omittedSuffix(obs.length, sorted.length)}を観測しました。`),
   ]
 }
 
@@ -808,11 +810,9 @@ export function tsunamiObservationUpdateToText(updatedObs: TsunamiObservation[],
 export function tsunamiArrivalToSegments(obs: TsunamiObservation[], maxPoints = 5): SpeechSegment[] {
   if (obs.length === 0) return []
   const shown = obs.slice(0, maxPoints)
-  const omitted = obs.length - shown.length
-  const suffix = omitted > 0 ? `、ほか${omitted}地点` : ''
   return [
     ...observationDetailSegments(shown, () => ''),
-    plain(`${suffix}で到達を確認しました。最大波高は観測中です。`),
+    plain(`${omittedSuffix(obs.length, shown.length)}で到達を確認しました。最大波高は観測中です。`),
   ]
 }
 
