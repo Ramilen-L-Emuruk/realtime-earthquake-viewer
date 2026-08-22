@@ -353,12 +353,15 @@ function parseEEWRegions(v: unknown, context: string): EEWRegion[] {
     // scaleTo=99 は「scaleFrom 程度以上」を表す。そのまま通すと IntensityScale に無い値になり、
     // eewMaxScale() の実行時ガードがこの地域を丸ごと無視する。最強クラス（scaleFrom=70 の
     // 「震度7程度以上」）が特別警報に上がらなくなるため、下限の scaleFrom を上限として採用する。
+    // 「以上」であること自体はフラグで持ち越し、表示・読み上げで語を補う（DMDATA の
+    // `to: "over"` と同じ扱い。片方だけ落とすとバリアントで表現が食い違う）。
     const isOrAbove = Math.trunc(readNumber(r.scaleTo)) === P2P_SCALE_TO_OR_ABOVE
     regions.push({
       pref: str(r.pref),
       name,
       scaleFrom,
       scaleTo: isOrAbove ? scaleFrom : toIntensityScale(r.scaleTo, context, 'areas[].scaleTo'),
+      ...(isOrAbove && scaleFrom > 0 && { scaleToOrAbove: true }),
       kindCode: str(r.kindCode),
       // 内部型は「到達予想なし」を null で表す（undefined ではない）
       arrivalTime: str(r.arrivalTime) || null,

@@ -9,7 +9,7 @@ import { usePageVisible } from '../../hooks/usePageVisible'
 import { formatDateTime, formatTime } from '../../utils/formatters'
 import { getIntensityColor, getIntensityLabel, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
 import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
-import { eewAreas, eewMaxScale, eewMaxLpgmClass, eewSerial, computeSingleEEWLevel } from '../../utils/eew'
+import { eewAreas, eewMaxScaleInfo, eewMaxLpgmClass, eewSerial, computeSingleEEWLevel } from '../../utils/eew'
 import { kyoshinIndexToJma, kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
 import { readableTextColor } from '../../utils/contrast'
 
@@ -55,7 +55,7 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
   onToggleLpgm?: (eventId: string) => void
   onDeactivateLpgm?: () => void
 }) {
-  const maxScale = eewMaxScale(eew)
+  const { scale: maxScale, orAbove: maxScaleOrAbove } = eewMaxScaleInfo(eew)
   const lpgmClass = eewMaxLpgmClass(eew)
   const level = computeSingleEEWLevel(eew)
   const isWarning = level >= 1
@@ -132,8 +132,11 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
             <span className="text-sm font-medium" style={{ color: getIntensityColor(maxScale) }}>
               予想最大震度
             </span>
+            {/* 上限が定まらない報（「震度4以上」等）は語を落とさず出す。値だけにすると
+                下限を断定した表示になる。「以上」は本体より小さく添えて桁数の膨らみを抑える。 */}
             <span className="font-black leading-none text-[3rem] roomy:text-[4.5rem]" style={{ color: '#ffffff' }}>
               {getIntensityLabel(maxScale)}
+              {maxScaleOrAbove && <span className="font-bold text-[1.25rem] roomy:text-[1.75rem]">以上</span>}
             </span>
           </div>
         ) : (

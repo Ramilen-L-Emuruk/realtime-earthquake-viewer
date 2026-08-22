@@ -194,7 +194,8 @@ describe('予想震度が付かないテスト EEW', () => {
   })
 
   // 名前が変わって 50km 超動くと「震源を更新、〇〇で地震。」の経路に入り、確かめたい格上げの
-  // 言い方（「緊急地震速報に切り替わりました。」）が出てこなくなる。
+  // 伝え方（「緊急地震速報に切り替わりました。」／警報としての言い直し）がどちらも出てこなくなる。
+  // 震源更新は区分に触れず、割り込みもしないため（audio-tts-spec.md §6「予報から警報へ上がったとき」）。
   it('単独点処理は報をまたいで震源名を変えない', () => {
     expect(createTestEEWAssumed('evt', 2, base).earthquake.hypocenter.name)
       .toBe(createTestEEWAssumed('evt', 1, base).earthquake.hypocenter.name)

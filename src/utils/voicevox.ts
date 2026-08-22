@@ -26,6 +26,15 @@ const warnNoAudio = createLogThrottle(30000)
 // たびに全チャンクで起こるため、素通しにするとログが埋まる。
 const warnNoChunkBreak = createLogThrottle(30000)
 
+// 分割で落ちた句読点の間を mora_data が返さなかったときの記録の間引き。
+// VOICEVOX 側の挙動が変われば読み上げのたびに起こるため間引く。
+const warnNoEstimatedPause = createLogThrottle(30000)
+
+// 句区切り辞書の組み直しに使う取得が失敗したときの記録の間引き。**辞書の読みだけでなく、
+// 分割で落ちた句読点の補いもこの取得の上に乗っている**（失敗するとチャンク全体の
+// /audio_query 結果へ落ちるので、間は残るが読みが崩れる）。記録が無いと切り分けられない。
+const warnAccentPhrasesFailed = createLogThrottle(30000)
+
 // 句区切り辞書エントリの accent_phrases 取得結果キャッシュ（"speakerId:キー" -> AccentPhrase[]）。
 // 同じ地名・同じ話者の組み合わせで毎回 /accent_phrases を叩き直さないようにする。
 const phraseBreakCache = new Map<string, AccentPhrase[]>()
@@ -72,6 +81,23 @@ const DICT_TRAILING_PAUSE = pauseMora(0.12)
 const CHUNK_BREAK_PAUSE = pauseMora(0.11)
 
 /**
+ * 辞書キーでの分割によって落ちた句読点の位置に置く「種」の無音。
+ *
+ * {@link buildAccentPhrases} は辞書キーの前後を別々に `/audio_query` にかけるため、**断片の端に
+ * 来た句読点は音にならない**。チャンク末尾で起きるのと同じことが、チャンクの内側でも起きる。
+ * 実測（話者 6）: `audio_query("山形県、")` の `pause_mora` は `null`、`audio_query("、")` は
+ * `accent_phrases` が空配列。分割せず `audio_query("山形県、新潟県上中下越、")` なら 0.432 が付く。
+ * つまり「山形県、新潟県上中下越」は**間ゼロで一続きに**聞こえていた。
+ *
+ * ここで種を置いておくと {@link refineProsody} が文脈から正しい長さへ引き直す（実測: 種を 0.01 に
+ * しても 0.11 にしても、引き直し後は分割なしと同じ 0.432 になる）。**値そのものは通常使われない。**
+ * 引き直しに失敗したときだけ残るので、文中の読点の実測幅（0.32〜0.54）の**短い側**から採った。
+ * 中ほどを採らないのは、失敗した回だけ間が伸びて次のチャンクを待たせるより、やや短い方が害が
+ * 小さいため。{@link CHUNK_BREAK_PAUSE} のように「既にある無音への足し分」ではなく、無音の全量を表す量。
+ */
+const SPLIT_PUNCT_PAUSE = pauseMora(0.35)
+
+/**
  * フレーズ配列の最後の要素に指定の無音を付与したコピーを返す（キャッシュされた元配列は変更しない）。
  * 既に `pause_mora` が入っていても置き換える（足さない）。辞書地名がチャンク末尾に来た場合に
  * 辞書側の間と句読点の間が二重にならないようにするため。
@@ -98,12 +124,17 @@ function withTrailingPause(phrases: AccentPhrase[], pause: AccentPhrase): Accent
  * 音高はアクセント句の `accent`（アクセント核の位置）から引き直されるため、辞書がカナ表記で
  * 指定した読みとアクセント核は保たれる。失敗時は null を返し、呼び出し側は再推定前の
  * accent_phrases をそのまま使う（繋ぎ目が不自然なままになるだけで読み上げ自体は成立する）。
+ *
+ * @param keepEstimatedPauseAt 再推定された `pause_mora` を**採用する**句の位置。分割で落ちた
+ *   句読点の位置（{@link SPLIT_PUNCT_PAUSE} を種として置いた場所）を渡す。ここだけは引き直された
+ *   値こそが欲しい値で、種の値に戻してしまうと元の症状（間が入らない）に戻る。
  */
 async function refineProsody(
   baseUrl: string,
   phrases: AccentPhrase[],
   speakerId: number,
   signal?: AbortSignal,
+  keepEstimatedPauseAt?: ReadonlySet<number>,
 ): Promise<AccentPhrase[] | null> {
   if (phrases.length === 0) return phrases
   try {
@@ -128,10 +159,30 @@ async function refineProsody(
       })
       return null
     }
-    // pause_mora は辞書由来・読点由来を問わずまとめて元の値へ戻す。再推定に任せると
-    // DICT_TRAILING_PAUSE の短い間（0.12 秒）が読点相当まで伸ばされ、意図した長さでなくなる
-    // （実測: 辞書語が文中なら 0.349 秒、チャンク末尾なら 0.968 秒）。
-    return refined.map((ap, i) => ({ ...ap, pause_mora: phrases[i].pause_mora }))
+    // pause_mora は原則まとめて元の値へ戻す。再推定に任せると DICT_TRAILING_PAUSE の短い間
+    // （0.12 秒）が読点相当まで伸ばされ、意図した長さでなくなる（実測: 辞書語が文中なら
+    // 0.349 秒、チャンク末尾なら 0.968 秒）。
+    // 例外は `keepEstimatedPauseAt`（分割で落ちた句読点の位置）。そこは「文中の読点として
+    // どれだけの間が要るか」を mora_data に決めてもらう場所なので、引き直した値を採る。
+    const last = refined.length - 1
+    return refined.map((ap, i) => {
+      // **末尾では引き直し値を採らない。** チャンク末尾の間は CHUNK_BREAK_PAUSE の担当で、
+      // ここで採ると 0.968 秒（実測）が乗り、最後のチャンクでは読み終わりがその分伸びて
+      // 次の読み上げを待たせる。種を置いた位置が末尾に来るのは、後続の句が 1 つも返らなかった
+      // 場合に限る（通常は起きないが、起きたときに黙って長い無音を作らせない）。
+      if (!keepEstimatedPauseAt?.has(i) || i === last) {
+        return { ...ap, pause_mora: phrases[i].pause_mora }
+      }
+      // 200 応答・句数一致でも `pause_mora` が落ちて返ることは原理的にありうる。そのまま採ると
+      // **間が消えて元の症状（地名が一続きに聞こえる）へ静かに戻る**ので、種の値へ倒して記録する。
+      if (ap.pause_mora == null) {
+        warnNoEstimatedPause(() => log.debug(
+          '[VoiceVox] mora_data が句読点の間を返さなかったため種の値を使う', { index: i },
+        ))
+        return { ...ap, pause_mora: phrases[i].pause_mora }
+      }
+      return ap
+    })
   } catch (err) {
     // abort は割り込みの正常系。後続の /synthesis も同じ signal で中断されてチャンクごと
     // 破棄されるため、再推定前のものに戻して進んでも影響はなく、記録もしない。
@@ -216,6 +267,18 @@ export async function fetchVoicevoxSpeakers(baseUrl: string): Promise<VoicevoxSp
 const CHUNK_BREAK_PUNCTUATION = '。、！？'
 const CHUNK_SPLIT_RE = new RegExp(`(?<=[${CHUNK_BREAK_PUNCTUATION}])`)
 const CHUNK_TAIL_RE = new RegExp(`[${CHUNK_BREAK_PUNCTUATION}]$`)
+const PUNCT_HEAD_RUN_RE = new RegExp(`^[${CHUNK_BREAK_PUNCTUATION}]+`)
+
+/**
+ * 断片の先頭の句読点が「内側」か（＝後ろにまだ読む文字が続くか）を返す。
+ *
+ * 句読点しか無い断片はチャンクの末尾を意味する。そこは {@link CHUNK_BREAK_PAUSE} の担当なので
+ * {@link buildAccentPhrases} は種を置かない。置くと**最後のチャンクでだけ**引き直された長い無音
+ * （実測 0.968 秒）が残り、読み終わりが伸びて次の読み上げがその分待たされる。
+ */
+function hasInnerLeadingPunct(text: string): boolean {
+  return PUNCT_HEAD_RUN_RE.test(text) && text.replace(PUNCT_HEAD_RUN_RE, '') !== ''
+}
 
 /**
  * テキストを句読点で分割してチャンクのリストを返す。
@@ -254,7 +317,12 @@ async function fetchAccentPhrasesForText(
     `${apiBase(baseUrl)}/audio_query?text=${encodeURIComponent(text)}&speaker=${speakerId}`,
     { method: 'POST', signal },
   )
-  if (!res.ok) return null
+  if (!res.ok) {
+    warnAccentPhrasesFailed(() => log.debug(
+      '[VoiceVox] 句区切りの断片の取得が非 200 応答（辞書の組み直しを諦める）', { status: res.status, text },
+    ))
+    return null
+  }
   const query = await res.json() as { accent_phrases: AccentPhrase[] }
   return query.accent_phrases
 }
@@ -279,7 +347,12 @@ async function fetchAccentPhrasesForKey(
     `${apiBase(baseUrl)}/accent_phrases?text=${encodeURIComponent(kanaReading)}&speaker=${speakerId}&is_kana=true`,
     { method: 'POST', signal },
   )
-  if (!res.ok) return null
+  if (!res.ok) {
+    warnAccentPhrasesFailed(() => log.debug(
+      '[VoiceVox] 辞書エントリの取得が非 200 応答（辞書の組み直しを諦める）', { status: res.status, key },
+    ))
+    return null
+  }
   const phrases = await res.json() as AccentPhrase[]
   phraseBreakCache.set(cacheKey, phrases)
   return phrases
@@ -293,34 +366,77 @@ async function fetchAccentPhrasesForKey(
  * **この関数が返す時点では、繋ぎ目の音素長と音高はまだ独立取得のまま**（前半の末尾が文末扱いで
  * 伸び、音高も下がりきっている）。呼び出し側が {@link refineProsody} で引き直すこと。
  * 失敗時は null。
+ *
+ * **分割の切れ目に来た句読点は音にならない**（理由は {@link SPLIT_PUNCT_PAUSE}）。その位置には種の
+ * 無音を置き、`punctAt` でどこに置いたかを返す。呼び出し側はそれを {@link refineProsody} の
+ * `keepEstimatedPauseAt` へ渡すこと。渡さないと種の値がそのまま残り、間の長さが文脈に合わなくなる。
  */
+type BuiltPhrases = {
+  phrases: AccentPhrase[]
+  /** 分割で落ちた句読点を補った句の位置（`phrases` 内の添字）。 */
+  punctAt: readonly number[]
+}
+
 async function buildAccentPhrases(
   baseUrl: string,
   text: string,
   speakerId: number,
   phraseBreakDict: Record<string, string>,
   signal?: AbortSignal,
-): Promise<AccentPhrase[] | null> {
-  if (text === '') return []
+): Promise<BuiltPhrases | null> {
+  if (text === '') return { phrases: [], punctAt: [] }
 
   const match = findPhraseBreakMatch(text, phraseBreakDict)
-  if (!match) return fetchAccentPhrasesForText(baseUrl, text, speakerId, signal)
+  if (!match) {
+    const phrases = await fetchAccentPhrasesForText(baseUrl, text, speakerId, signal)
+    return phrases ? { phrases, punctAt: [] } : null
+  }
 
   const pre = text.slice(0, match.index)
   const post = text.slice(match.index + match.key.length)
 
-  const [prePhrases, matchedPhrasesRaw, postPhrases] = await Promise.all([
+  const [preBuilt, matchedPhrasesRaw, postBuilt] = await Promise.all([
     buildAccentPhrases(baseUrl, pre, speakerId, phraseBreakDict, signal),
     fetchAccentPhrasesForKey(baseUrl, match.key, phraseBreakDict[match.key], speakerId, signal),
     buildAccentPhrases(baseUrl, post, speakerId, phraseBreakDict, signal),
   ])
-  if (!prePhrases || !matchedPhrasesRaw || !postPhrases) return null
+  if (!preBuilt || !matchedPhrasesRaw || !postBuilt) return null
 
-  const matchedPhrases = isPlaceNameKey(match.key)
-    ? withTrailingPause(matchedPhrasesRaw, DICT_TRAILING_PAUSE)
-    : matchedPhrasesRaw
+  // pre 側の位置もそのまま引き継ぐ。**`findPhraseBreakMatch` が最左一致を返すので pre は普通は
+  // 辞書キーを含まないが、「含まない」と決めてはいけない。** 単独語キーは前後の文字で一致を弾く
+  // 判定を持つため、切り出しでその文字が落ちると一致に転じる（→ ttsPhraseBreakDict の
+  // `indexOfStandalone` の注記。あちらは直前の文字、ここでは直後の文字が落ちる形）。
+  const punctAt = [...preBuilt.punctAt]
 
-  return [...prePhrases, ...matchedPhrases, ...postPhrases]
+  // pre の末尾の句読点。辞書キーがこの直後に続くので、この句読点は必ず「内側」。
+  //
+  // pre が句読点だけなら句が 0 個で掛ける先が無い。**それでもこの句読点は失われない。**
+  // その状況は「親が post の先頭の句読点ごとこの再帰へ渡した」ときにだけ起こり、親は既に
+  // 下の `postLeadsWithPunct` で辞書キー側へ間を置いている。掛ける先が無いのは
+  // **チャンクそのものが句読点で始まる**ときだけで、`splitIntoChunks` は句読点の後ろで割るため
+  // それには読み上げ文に句読点が連続している必要がある。テストデータと実シナリオの読み上げ文を
+  // 機械的に走査した限り、連続句読点・句読点だけのチャンクはいずれも生じていない。
+  let prePhrases = preBuilt.phrases
+  if (CHUNK_TAIL_RE.test(pre) && prePhrases.length > 0) {
+    prePhrases = withTrailingPause(prePhrases, SPLIT_PUNCT_PAUSE)
+    punctAt.push(prePhrases.length - 1)
+  }
+
+  // post の先頭の句読点。落ちるのは post 側だが、間を掛けられるのは辞書キーの最後の句。
+  // 句読点しか無い post（＝チャンク末尾）は CHUNK_BREAK_PAUSE の担当なので触らない。
+  const postLeadsWithPunct = hasInnerLeadingPunct(post)
+  const matchedPhrases = postLeadsWithPunct
+    ? withTrailingPause(matchedPhrasesRaw, SPLIT_PUNCT_PAUSE)
+    // 一般用語（「深発地震」等）は文中に自然に溶け込む語なので、句読点が無ければ間を入れない
+    : isPlaceNameKey(match.key)
+      ? withTrailingPause(matchedPhrasesRaw, DICT_TRAILING_PAUSE)
+      : matchedPhrasesRaw
+  if (postLeadsWithPunct) punctAt.push(prePhrases.length + matchedPhrases.length - 1)
+
+  const offset = prePhrases.length + matchedPhrases.length
+  for (const i of postBuilt.punctAt) punctAt.push(offset + i)
+
+  return { phrases: [...prePhrases, ...matchedPhrases, ...postBuilt.phrases], punctAt }
 }
 
 /**
@@ -350,11 +466,17 @@ async function synthesizeChunk(
     // 句区切り辞書にマッチする地名を含む場合は、accent_phrases を句区切り指定通りに組み直す
     const phraseBreakDict = getTtsPhraseBreakDictCache()
     if (phraseBreakDict && findPhraseBreakMatch(chunk, phraseBreakDict)) {
-      const phrases = await buildAccentPhrases(baseUrl, chunk, speakerId, phraseBreakDict, signal)
+      const built = await buildAccentPhrases(baseUrl, chunk, speakerId, phraseBreakDict, signal)
       // 結合したままだと繋ぎ目の直前（多くは助詞）が文末扱いになるため、長さと音高を引き直す。
+      // 分割で落ちた句読点（`punctAt`）の間の長さも、ここで文脈から決めてもらう。
       // signal は下の /synthesis と必ず共有すること。共有していれば、割り込みで中断された場合に
       // 補正前の accent_phrases がそのまま合成まで進むことがない（refineProsody の catch 参照）。
-      if (phrases) query.accent_phrases = await refineProsody(baseUrl, phrases, speakerId, signal) ?? phrases
+      if (built) {
+        const refined = await refineProsody(
+          baseUrl, built.phrases, speakerId, signal, new Set(built.punctAt),
+        )
+        query.accent_phrases = refined ?? built.phrases
+      }
     }
 
     // チャンク末尾の句読点は /audio_query では音にならないため、ここで間を持たせる（理由は
@@ -615,6 +737,17 @@ export function __resetFixedPhrasesForTest(): void {
 }
 
 /**
+ * テスト用に辞書エントリのキャッシュを捨てる（本番経路では呼ばない）。
+ *
+ * {@link phraseBreakCache} はモジュールに居座るため、同じファイル内の別のテストが**同じ辞書キーを
+ * 別の句数で使うと、先に走ったテストの結果を掴む**。実行順に依存する不安定なテストになるので、
+ * 代役の応答を差し替えるテストは毎回これで捨てること。
+ */
+export function __resetPhraseBreakCacheForTest(): void {
+  phraseBreakCache.clear()
+}
+
+/**
  * 発話を鳴らす直前に呼ばれる妥当性の判定。`false` を返すと、そのチャンク以降を鳴らさない。
  *
  * **文面を作った時刻と、音が出る時刻はずれる。** 合成（VOICEVOX への往復）を待つ間にも、
@@ -656,6 +789,35 @@ export function getSpeechClock(): number | null {
 // チャンクは切れ目を作らないよう前のチャンクの終わりに合わせて**先に**予約するため、
 // 予約した時点だけで判定すると 1 チャンク分（実測 1 秒強）先の未来を判定してしまう。
 const PRE_START_CHECK_LEAD_SEC = 0.05
+
+/**
+ * 鳴っている読み上げを止め、進行中の合成を打ち切る。**語の途中でも止まる。**
+ *
+ * {@link speakWithVoicevox} の冒頭が行う割り込みのうち、「止める」部分だけを次の発話を
+ * 伴わずに実行する。使うのは予報から警報への言い直し（`useLiveEventHandler` の
+ * `chainEEWSpeech`）で、狙いは**発話の順番を崩さずに待ちを短くすること**。
+ *
+ * 言い直しを「前の発話を待たずに投入する」形で実装すると、待ち行列に並んでいた別の EEW の
+ * 予約が前の発話の完了で解放され、**始まったばかりの言い直しを後ろから消してしまう**
+ * （止める行為そのものが解放のスイッチになる）。先に音だけ止めて自分は順番どおりに並べば、
+ * 1 本のチェーンで直列化する前提を壊さずに済む。
+ *
+ * **これ自体は無音を作る。** 呼ぶ側は続けて読むものを用意しておくこと。止めてから次を読むまでの
+ * 間に対象が取り消されて読むものが無くなることはあるが、そのときは誤報取消の読み上げが別途
+ * 流れるため情報は欠けない。
+ */
+export function stopSpeech(): void {
+  for (const src of activeSources) {
+    try { src.stop() } catch { /* already stopped */ }
+  }
+  activeSources = []
+  if (currentAbortController) {
+    try { currentAbortController.abort() } catch { /* 二重 abort は無視 */ }
+  }
+  // 進行中のパイプライン（合成 → 予約のループ）も降ろす。これが無いと、止めた後に残りの
+  // チャンクが予約され直して鳴り続ける（ループは `currentSessionId` の一致で自分の世代を見る）。
+  currentSessionId++
+}
 
 /**
  * テキストを VOICEVOX で合成して再生する（パイプライン方式）。

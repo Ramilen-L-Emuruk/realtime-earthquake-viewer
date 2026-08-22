@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 // parseEarthquakeFromXml（REST 履歴経路）のテスト。
 // DOMParser を使うためこのファイルだけ jsdom 環境で動かす（既定は node）。
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { parseEarthquake, parseEarthquakeFromXml, parseEEW, parseTsunami, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml } from './dmdataParser'
+import { log } from '../utils/logger'
 
 // 震度速報（VXSE51）。震源が未確定の段階で出るため Earthquake 要素を持たず、
 // 震度は Pref > Area（一次細分区域）までしか無い。
@@ -426,6 +427,86 @@ describe('parseEEW: JSON 電文の severity・cancel・LPGM', () => {
     expect(parseEEW('VXSE45', outOfRange)!.forecastMaxScale).toBeUndefined()
   })
 
+  // to='over' は「上限を定めない」。震度7と読むと、下限しか決まっていない報（単独観測点処理の
+  // 初報など）が最大震度7として塗られ・読み上げられる。2024/1/1 16:18 の余震の初報が
+  // 実際にこの形（石川県能登 from='4' / to='over'）で、震度7の警戒色が能登一帯に出ていた。
+  describe("予想震度の to='over'（上限なし）", () => {
+    function withIntensity(intensity: Record<string, unknown>) {
+      return parseEEW('VXSE45', { ...baseEEWJson, body: { ...baseEEWJson.body, intensity } })!
+    }
+
+    it('電文全体は from に寄せ、「以上」をフラグで持つ', () => {
+      const eew = withIntensity({ forecastMaxInt: { from: '4', to: 'over' } })
+      expect(eew.forecastMaxScale).toBe(40)
+      expect(eew.forecastMaxScaleOrAbove).toBe(true)
+    })
+
+    it('地域別も from に寄せ、「以上」をフラグで持つ', () => {
+      const eew = withIntensity({
+        forecastMaxInt: { from: '4', to: 'over' },
+        regions: [{ code: '390', name: '石川県能登', forecastMaxInt: { from: '4', to: 'over' }, kind: { code: '09' } }],
+      })
+      expect(eew.areas).toEqual([
+        { pref: '', name: '石川県能登', scaleFrom: 40, scaleTo: 40, scaleToOrAbove: true, kindCode: '09', arrivalTime: null, lgIntTo: undefined },
+      ])
+    })
+
+    it('上限が定まっている報には「以上」を立てない（境界の手前）', () => {
+      const eew = withIntensity({
+        forecastMaxInt: { from: '6-', to: '7' },
+        regions: [{ code: '390', name: '石川県能登', forecastMaxInt: { from: '6-', to: '7' }, kind: { code: '11' } }],
+      })
+      expect(eew.forecastMaxScale).toBe(70)
+      expect(eew.forecastMaxScaleOrAbove).toBeUndefined()
+      expect(eew.areas![0].scaleTo).toBe(70)
+      expect(eew.areas![0].scaleToOrAbove).toBeUndefined()
+    })
+
+    it('from が無い over は「以上」を立てない（「不明以上」は意味を成さない）', () => {
+      const eew = withIntensity({
+        forecastMaxInt: { to: 'over' },
+        regions: [{ code: '390', name: '石川県能登', forecastMaxInt: { to: 'over' }, kind: { code: '09' } }],
+      })
+      expect(eew.forecastMaxScale).toBeUndefined()
+      expect(eew.forecastMaxScaleOrAbove).toBeUndefined()
+      expect(eew.areas![0].scaleTo).toBe(-1)
+      expect(eew.areas![0].scaleToOrAbove).toBeUndefined()
+    })
+
+    // over 以外の値の扱いは変えない。ここを from へ落とすと、上限が不明な報の震度が
+    // 下限の値で出るようになる（over の修正に紛れて別の挙動が変わる）。
+    it('to が読めない値なら from があっても不明のまま（over 以外の挙動は据え置き）', () => {
+      const eew = withIntensity({
+        forecastMaxInt: { from: '4', to: '不明' },
+        regions: [{ code: '390', name: '石川県能登', forecastMaxInt: { from: '4', to: '不明' }, kind: { code: '09' } }],
+      })
+      expect(eew.forecastMaxScale).toBeUndefined()
+      expect(eew.areas![0].scaleTo).toBe(-1)
+      expect(eew.areas![0].scaleFrom).toBe(40)
+      expect(eew.areas![0].scaleToOrAbove).toBeUndefined()
+    })
+
+    it('to が空なら from を上限として採る（従来どおり）', () => {
+      const eew = withIntensity({
+        forecastMaxInt: { from: '5+' },
+        regions: [{ code: '390', name: '石川県能登', forecastMaxInt: { from: '5+' }, kind: { code: '11' } }],
+      })
+      expect(eew.forecastMaxScale).toBe(50)
+      expect(eew.areas![0].scaleTo).toBe(50)
+      expect(eew.areas![0].scaleToOrAbove).toBeUndefined()
+    })
+
+    it('取消電文では「以上」を残さない（areas も空になる）', () => {
+      const eew = parseEEW('VXSE43', {
+        ...baseEEWJson,
+        body: { ...baseEEWJson.body, isCanceled: true, intensity: { forecastMaxInt: { from: '4', to: 'over' } } },
+      })!
+      expect(eew.forecastMaxScale).toBeUndefined()
+      expect(eew.forecastMaxScaleOrAbove).toBeUndefined()
+      expect(eew.areas).toEqual([])
+    })
+  })
+
   it('forecastMaxLpgmClass は to 優先、範囲外は undefined', () => {
     const eew = parseEEW('VXSE45', baseEEWJson)
     expect(eew!.forecastMaxLpgmClass).toBe(3)
@@ -540,6 +621,65 @@ describe('parseTsunami: JSON 電文の発表・取消・sourceEarthquake', () =>
     expect(t!.cancelled).toBe(true)
     expect(t!.cancelReason).toBe('lifted')
     expect(t!.areas).toEqual([])
+  })
+
+  // 観測波高の「以上」（観測可能範囲の超過）。この 3 件が、カード・地図・読み上げで
+  // 「以上」を優先して扱う仕組み（`compareObservedHeightDesc`）の土台になる。
+  // → docs/spec/tsunami-spec.md §6「観測波高の「以上」」
+  describe('観測波高の over フラグ', () => {
+    const withStations = (station: Record<string, unknown>) => ({
+      ...baseTsunamiJson,
+      body: {
+        ...baseTsunamiJson.body,
+        tsunami: {
+          ...baseTsunamiJson.body.tsunami,
+          observations: [{ code: '030', name: '岩手県', stations: [{ name: '宮古', ...station }] }],
+        },
+      },
+    })
+
+    // 正: over=true が読み取られ、description にも「以上」が入る
+    it('over=true は over と「以上」付きの description になる', () => {
+      const t = parseTsunami('VTSE51', withStations({ maxHeight: { height: { value: '8.5', over: true } } }))
+      expect(t!.observations?.[0].height).toEqual({ value: 8.5, description: '8.5m以上', over: true })
+    })
+
+    // 対照: over が無い観測点は従来どおり（false ではなく undefined に落ちる）
+    it('over 省略時は over が undefined・description に「以上」を付けない', () => {
+      const t = parseTsunami('VTSE51', withStations({ maxHeight: { height: { value: '7.2' } } }))
+      expect(t!.observations?.[0].height).toEqual({ value: 7.2, description: '7.2m', over: undefined })
+    })
+
+    // 安全弁: condition があると description はそちらで確定する（「以上」が落ちうる形）。
+    // `overSuffixedHeight`（src/utils/tsunami.ts）がこの形を前提に「数字を含まないなら足さない」判定をしている
+    it('condition があれば description はその文字列になる（over は残る）', () => {
+      const t = parseTsunami('VTSE51', withStations({ maxHeight: { height: { value: '8.5', condition: '巨大', over: true } } }))
+      expect(t!.observations?.[0].height).toEqual({ value: 8.5, description: '巨大', over: true })
+    })
+
+    // 安全弁: 波高が数値として読めなければ height ごと落ちる（over も一緒に消える）。
+    // 表示・並び順・読み上げのどこにも痕跡が残らないため、警告だけは出ることを固定する
+    it('波高が読めなければ height は undefined・over が立っていたら警告を出す', () => {
+      const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+      try {
+        const t = parseTsunami('VTSE51', withStations({ maxHeight: { height: { value: '', over: true } } }))
+        expect(t!.observations?.[0].height).toBeUndefined()
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('宮古'))
+      } finally {
+        warn.mockRestore()
+      }
+    })
+
+    // 対照: over が立っていなければ（単なる欠測）警告は出さない
+    it('波高が読めず over も無ければ警告を出さない', () => {
+      const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+      try {
+        parseTsunami('VTSE51', withStations({ maxHeight: { height: { value: '' } } }))
+        expect(warn).not.toHaveBeenCalled()
+      } finally {
+        warn.mockRestore()
+      }
+    })
   })
 })
 

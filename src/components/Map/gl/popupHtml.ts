@@ -30,11 +30,14 @@ export function twoLinePopupHtml(title: string, subtitle: string): string {
 /**
  * 震度・長周期地震動階級を示す色付きバッジ（震源ポップアップの県別震度と同じ見た目）。
  * 文字色は塗り色から自動で決める（気象庁配色は明度の幅が広く、白固定だと黄・橙系で読めないため）。
+ *
+ * `white-space:nowrap` は必須。幅は中身に合わせて伸びるが、狭い親の中では折り返してしまい、
+ * 「4以上」のような 2 文字を超えるラベル（EEW の上限を定めない予想震度）が縦に割れる。
  */
 export function badgeHtml(label: string, color: string): string {
   return (
     `<span style="display:inline-block;min-width:20px;padding:0 5px;text-align:center;font-weight:700;` +
     `border-radius:3px;color:${readableTextColor(color)};font-size:10px;line-height:16px;` +
-    `background:${color}">${escapeHtml(label)}</span>`
+    `white-space:nowrap;background:${color}">${escapeHtml(label)}</span>`
   )
 }

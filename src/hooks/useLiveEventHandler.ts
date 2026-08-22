@@ -4,15 +4,15 @@ import type { TabId } from '../components/IconNav'
 import type { AppSettings } from './useSettings'
 import type { AlertTitleApi } from './useAlertTitle'
 import type { ReplayEntry } from '../types/replay'
-import { getIntensityLabel } from '../utils/intensity'
+import { getIntensityLabel, getIntensityLabelWithOrAbove } from '../utils/intensity'
 import { formatMagnitude, hasMagnitude } from '../utils/formatters'
-import { eewMaxScale, eewMaxLpgmClass, eewNoForecastReason, computeSingleEEWLevel, selectEEWSoundType, eewKindLabel } from '../utils/eew'
+import { eewMaxScaleInfo, isForecastScaleHigher, eewMaxLpgmClass, eewNoForecastReason, computeSingleEEWLevel, selectEEWSoundType, eewKindLabel, type EewMaxScaleInfo } from '../utils/eew'
 import { haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
-import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, matchesArea, sortAreasForCardDisplay } from '../utils/tsunami'
+import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, matchesArea, sortAreasForCardDisplay } from '../utils/tsunami'
 import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
-import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
-import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, tsunamiArrivalToSegments, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
+import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
+import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
 import { joinSegments, plain, hasFollowTarget, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
@@ -37,6 +37,7 @@ const EEW_SPEECH_CHAIN_MAX_WAIT_MS = 8000
  *
  * **同格どうしは新しい方が勝つ。** 震度速報の更新が古い震度速報を置き換えるのは正しい挙動で、
  * ここを待ち行列にすると古い内容を読み終わるまで最新の震度が出てこない。
+ * ただし**内容が重ならない同格どうしは互いに待つ**（`MUTUAL_YIELD_TOPICS`）。
  *
  * EEW はこの尺度の外にあり、常に最優先（`eewSpeechPendingRef` で別に管理する）。
  */
@@ -48,21 +49,33 @@ const SPEECH_PRIORITY = {
    * 同格どうしは待たずに割り込む。地震情報と同格にすると数千文字に達しうる地震情報の読み上げを
    * 毎日切り、長周期と同格にすると長周期の実測値を切る。どこかと同格にすれば必ず何かを切るため、
    * 単独の最下位に置いて「解説情報は何も切らない」ことを保証する。
-   * 定型文が大半の情報なので、待たされて上限で諦めても損失は小さい。
+   *
+   * **待ちきれなかったときは割り込まず黙る**（`speakNonEEW`）。層で「何も切らない」と宣言して
+   * いても、待ちの上限（`HIGHER_PRIORITY_SPEECH_MAX_WAIT_MS`）で割り込めばその宣言は破れる。
+   * 各地の震度は読み切りに 2 分近く達するため、これは実際に起こりうる経路。
+   * 定型文が大半の情報なので、諦めて一度読まないことの損失は小さい。
    */
   commentary: 0,
   /**
-   * 地震情報（震度速報・震源情報・地震情報・遠地地震・取消）と長周期地震動情報。
+   * 地震情報（震度速報・震源情報・地震情報・遠地地震・取消）と長周期地震動情報、
+   * および**津波の観測情報**（観測点の波高更新・到達確認）。
    *
    * **長周期を地震情報と同格にしているのは、長周期の方が新しい情報だから。** 同格どうしは
    * 新しい方が勝つ規則なので、地震情報を読んでいる最中に長周期が届けば割り込んで読める。
    * 軽い段に分けていた頃は、各地の震度（数千文字・読み切りに 2 分近く）の後ろに回されて
    * 大幅に遅れていた。
+   *
+   * **津波の観測情報をここに置くのは、地震情報を切らせないため。** 等級の発表と同じ `high` に
+   * 置いていた頃は、観測点の波高が 1 つ更新されるたびに地震情報の読み上げを途中で消していた。
+   * ただし単に格を下げるだけでは足りない（同格は待たずに割り込む規則なので、向きが変わるだけ
+   * で切ることは変わらない）。あわせて `MUTUAL_YIELD_TOPICS` に載せ、双方が待つようにしている。
    */
   normal: 1,
   /**
-   * 津波（発表・更新・解除）と南海トラフ臨時情報・後発地震注意情報。
+   * 津波の等級の発表（新規・格上げ・引き下げ・解除）と南海トラフ臨時情報・後発地震注意情報。
    * 後者を津波と同格にしているのは、発表頻度が極端に低く聞き逃したときの損失が大きいため。
+   *
+   * **観測情報はここに含めない**（`normal` の注記）。等級が動いたかどうかで格が変わる。
    */
   high: 2,
 } as const
@@ -83,6 +96,11 @@ type SpeechPriority = typeof SPEECH_PRIORITY[keyof typeof SPEECH_PRIORITY]
  * 届いた別の地震の読み上げが一言も鳴らずに消える。津波・南海トラフ系は常に 1 件だけを追う作りなので
  * イベントで分ける必要がない。
  *
+ * **津波は等級の発表と観測情報を分ける**（`tsunami` / `tsunamiObs`）。優先度が違うため、
+ * まとめると「同じ主題の中では優先度が等しい」という上の前提が崩れる。取り下げの判定は優先度を
+ * 見ずに到来順だけで裁くので、崩れたまま放つと**警報の予約が、後から届いた観測情報に
+ * 「追い越された」と判定されて取り下がる**（聞き逃してはいけない側が消える）。
+ *
  * なお P2PQuake（standard 版）は続報ごとにキーが変わりうるため、既存カードを引けなかった初報同士
  * では同じ地震でも別主題になる。そのとき取り下げは働かず、先に読み始めた側が後発に切られる従来の
  * 挙動に戻るだけで、情報が消える方向には倒れない。
@@ -90,17 +108,71 @@ type SpeechPriority = typeof SPEECH_PRIORITY[keyof typeof SPEECH_PRIORITY]
 type SpeechTopic =
   | `quake:${string}`
   | `lpgm:${string}`
-  | 'tsunami' | 'nankai' | 'kohatsu' | 'nankaiCommentary'
+  | 'tsunami' | 'tsunamiObs' | 'nankai' | 'kohatsu' | 'nankaiCommentary'
+
+/**
+ * **互いの読み上げを切らない主題**（相互譲り）。同格の別主題が鳴っている間は待ち、自分が鳴って
+ * いる間は同格の別主題を待たせる。
+ *
+ * 優先度は一次元の尺度なので、「上が下を切る」一方向の関係しか作れない。ところが同格の中には
+ * 逆向きの要求が同居している——同じ地震の続報は**割り込むべき**（言い換えなので最新だけ読めば
+ * よい）、長周期と地震情報も**割り込むべき**（新しい方が重い）、しかし津波の観測情報と地震情報は
+ * **どちらも読みたい**（内容が重ならない）。主題でしか切り分けられないため、ここに列挙する。
+ *
+ * **同主題どうしは対象外**（言い換えなので割り込む）。判定は `speechBlocker` にある。
+ *
+ * **片方が載っていれば両方向で待つ。** 地震情報は相互譲りを持たないが、観測情報が載っていれば
+ * 「観測情報は地震情報を切らない」と「地震情報は観測情報を切らない」の両方が成り立つ。
+ * 両方に載っていることを求めると、載せていない側（地震情報・長周期）を切りたくないときに
+ * それらまで列挙する必要が生じ、上の 3 つの要求を同時に満たせなくなる。
+ *
+ * **上位には切られる**（優先度差があるときはこの表を見ない）。津波の格上げが観測情報を切るのは
+ * 正しい——待たせると、警報の引き上げが観測値の読み上げの後ろに回る。
+ */
+const MUTUAL_YIELD_TOPICS: ReadonlySet<SpeechTopic> = new Set<SpeechTopic>([
+  'tsunami', 'tsunamiObs', 'nankai', 'kohatsu',
+])
+
+/**
+ * いま読み上げを始められない理由（`speechBlocker`）。
+ *
+ * 待つ上限が理由によって変わるため、Promise だけでなく理由そのものを持ち回る
+ * （`mutualYield` は `MUTUAL_YIELD_SPEECH_MAX_WAIT_MS`、それ以外は
+ * `HIGHER_PRIORITY_SPEECH_MAX_WAIT_MS`）。
+ */
+type SpeechBlocker = 'eewChain' | 'eewPhase2' | 'higher' | 'mutualYield'
+
+/**
+ * EEW 第 1 フェーズ（震源の読み上げ）の進み具合。詳細は `eewPhase1ProgressRef` の宣言箇所。
+ *
+ * 入れる値は識別子（`{}`）で、中身は見ず**同一性だけを見る**。同じ eventId に複数の予約が
+ * 並ぶため、「この記録を置いたのは自分か」を判別できないと他の予約の記録を消してしまう。
+ */
+type EEWPhase1Progress = {
+  /** いま声になっている予約。null なら何も鳴っていない。 */
+  speakingToken: object | null
+  /** 予約済みでまだ声になっていない言い直し。null なら重ねてよい。 */
+  restateToken: object | null
+}
 
 // 南海トラフ関連解説情報の通知音（specialInfoCommentary）は約 1.3 秒。鳴り終わってから読み上げる。
 // 音を作り変えたらこの値も見直すこと（docs/spec/audio-tts-spec.md §6）。
 const NANKAI_COMMENTARY_TTS_DELAY_MS = 1500
 
-// 優先度の高い読み上げ（EEW を含む）の完了を待つ上限。津波の本文は 60 秒近くに達することが
+// 先に鳴っている読み上げ（EEW を含む）の完了を待つ上限。津波の本文は 60 秒近くに達することが
 // あるため、EEW チェーンの刻み（EEW_SPEECH_CHAIN_MAX_WAIT_MS）を流用すると読み上げを途中で
-// 切ってしまう。この上限が効くのは VOICEVOX が無応答のときだけで、その状況ではそもそも何も
-// 聞こえないため、長めに取っても失うものは無い。
+// 切ってしまう。
+//
+// この上限が効くのは VOICEVOX が無応答のときだけで、その状況ではそもそも何も聞こえないため、
+// 長めに取っても失うものは無い。
 const HIGHER_PRIORITY_SPEECH_MAX_WAIT_MS = 90000
+
+// 相互譲り（`MUTUAL_YIELD_TOPICS`）の相手を待つ上限。**上の値より長く取ること。**
+// 地震情報の「各地の震度」は読み切りに 2 分近く達するため、90 秒では上限に達した側が割り込み、
+// 「内容が重ならない同格どうしは互いに切らない」という宣言がそこで破れる（相互譲りを入れた
+// 意味が無くなる）。上位を待つ場合の上限とは別に持つのは、あちらを延ばすと VOICEVOX 無応答の
+// 保険が緩むため。
+const MUTUAL_YIELD_SPEECH_MAX_WAIT_MS = 180000
 
 // 予想震度が付くのを待っている EEW があるとき、非 EEW 側が状況を見直す間隔。
 // この待機中は「これから話す」状態で、待つ相手の Promise がまだ存在しないため、
@@ -232,6 +304,28 @@ function pickTopFromCardOrder(
   return { code: newlyArrivedObs[0].districtCode, name: newlyArrivedObs[0].districtName }
 }
 
+/**
+ * 観測点の到達と最大波高を記録する。
+ *
+ * **記憶が 2 つあるので、どちらに書くかは呼び出し側が決める。** 画面（バッジ・スクロール）用は
+ * 受信時に、読み上げ用は発話を始める瞬間に進める（理由は `spokenObsHeightRef` の宣言箇所）。
+ * 同じ手順を 2 度書くと、片方だけ「同値でも over への昇格は記録する」といった条件を取り落とす。
+ */
+function rememberObservations(
+  obs: readonly import('../types/earthquake').TsunamiObservation[],
+  names: Set<string>,
+  heights: Map<string, { value: number; over?: boolean }>,
+): void {
+  for (const o of obs) {
+    names.add(o.name)
+    if (!o.height) continue
+    const prev = heights.get(o.name)
+    if (prev === undefined || o.height.value > prev.value || (o.height.over && !prev.over)) {
+      heights.set(o.name, { value: o.height.value, over: o.height.over })
+    }
+  }
+}
+
 // ライブイベント（地震・津波・EEW・長周期地震動・南海トラフ/後発地震）受信時の
 // 通知音・ウィンドウタイトル・タブ切替・VOICEVOX 読み上げ・ブラウザ通知を担うフック。
 // イベント種別ごとの続報判定・重複抑制に使う追跡 ref 群もこのフックが所有する。
@@ -329,7 +423,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // ならないのは、読み上げ文が毎回**最新値から作り直される**（差分を語らない）ため。取り下げた
   // 原因である「より高い値」は必ず別途予約され、そちらが読まれる。
 
-  const spokenEEWScalesRef = useRef<Map<string, number>>(new Map())
+  // 階級だけでなく「以上」も持つ。同じ階級のまま上限が定まらなくなる変化（「4」→「4以上」）は
+  // 階級値では捉えられず、値だけを覚えていると一度も声に出さないまま終わる（比較は
+  // `isForecastScaleHigher`）。
+  const spokenEEWScalesRef = useRef<Map<string, EewMaxScaleInfo>>(new Map())
   // 階級だけが上がる続報（震度据え置きで 2→3 等）は震度にもレベルにも現れないため専用に持つ。
   const spokenEEWLpgmClassesRef = useRef<Map<string, number>>(new Map())
   // 読み上げた区分（0=予報 / 1 以上=警報）。予想震度・階級が据え置きのまま severity だけ
@@ -337,10 +434,32 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const spokenEEWLevelsRef = useRef<Map<string, 0 | 1 | 2>>(new Map())
   // 直前に読み上げた津波グレード（引き下げ検出・重複読み上げ抑制に使用）
   const lastTsunamiGradeRef = useRef<'MajorWarning' | 'Warning' | 'Watch' | 'Forecast' | null>(null)
-  // 観測点ごとの読み上げ済み最大波高（更新があった観測点のみ TTS 発話するための比較用）
+  // 直前に受信した津波（解除がこの津波に向けたものかの照合に使う。`isCancelForCurrentTsunami`）。
+  //
+  // **App が持つ表示中の津波（`tsunamisRef`）ではなく、自分が受信したものを見ること。**
+  // あちらは App の render 本体で代入されるため、同一 tick に複数の電文が捌けると（アーカイブ
+  // 再生の追いつき・長時間バックグラウンド後の復帰）tick 開始前の値に取り残される。その値と
+  // 照合すると、届いたばかりの津波に対する解除を「別イベントの解除」と誤判定し、記憶を落とさない。
+  //
+  // ここで管理している記憶（波高・観測点名）は、いずれも自分が受信した電文で進めている。
+  // 照合の基準も揃えるのが筋が通る（`useEarthquakes` 側は state の整合のために `prev.tsunamis[0]`
+  // を見る。基準が違っても、判定そのものは同じ関数を共有している）。
+  const lastTsunamiRef = useRef<JMATsunami | null>(null)
+  // 観測点ごとに受信済みの最大波高。**画面（バッジ・スクロール）用**で、読み上げの有無に関わらず
+  // 受信時に進める。
   const lastMaxObsHeightRef = useRef<Map<string, { value: number; over?: boolean }>>(new Map())
-  // これまでに一度でも登場した観測点名（波高未確定＝観測中のまま新規到達した観測点を検出するための比較用）
+  // これまでに一度でも受信した観測点名（波高未確定＝観測中のまま新規到達した観測点の検出用）。上と同じく画面用。
   const seenObsNamesRef = useRef<Set<string>>(new Set())
+  // 同じものを**読み上げ用**に別で持つ。こちらは受信時ではなく**発話を始める瞬間**に進める
+  // （EEW の `spokenEEWScalesRef` と同じ流儀）。
+  //
+  // **画面用と共有してはいけない。** 画面用は受信時に進むため、読み上げが待たされている間に
+  // 消えた（後発に置き換えられた・上位に切られた）観測値まで既読になり、その観測点は二度と
+  // 読まれない。相互譲り（`MUTUAL_YIELD_TOPICS`）で待つようになったぶん、この取りこぼしは
+  // 起きやすくなっている。分けておけば、鳴らなかった観測値は次の電文でもう一度読み上げ対象に
+  // 入る（読み上げ文は「読み上げた値からの差分」で作るため）。
+  const spokenObsHeightRef = useRef<Map<string, { value: number; over?: boolean }>>(new Map())
+  const spokenObsNamesRef = useRef<Set<string>>(new Set())
   // VOICEVOX EEW 読み上げの進行管理。
   //
   //   eewSpeechChainRef   … EEW の読み上げを直列化するチェーン（**全 EEW で 1 本**）。
@@ -359,8 +478,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const eewSpeechChainRef = useRef<Promise<void>>(Promise.resolve())
   // チェーンに積まれている EEW 発話の数（0 なら EEW は静か）。非 EEW の読み上げがこれを見て待つ。
   const eewSpeechPendingRef = useRef(0)
-  // 読み上げ中の非 EEW の優先度とその完了。優先度の低い読み上げがこれを見て待つ。
-  const activeNonEewSpeechRef = useRef<{ priority: SpeechPriority; done: Promise<void> } | null>(null)
+  // 読み上げ中の非 EEW の優先度・主題とその完了。優先度の低い読み上げがこれを見て待つ。
+  // **主題も持つこと。** 同格どうしが互いを切ってよいかは主題で決まる（`MUTUAL_YIELD_TOPICS`）。
+  const activeNonEewSpeechRef = useRef<{ priority: SpeechPriority; topic: SpeechTopic; done: Promise<void> } | null>(null)
   // 間を置いてからの読み上げの予約（`scheduleSpeech`）。アンマウント・リプレイ切替で取り消す。
   const pendingSpeechRef = useRef<Set<{ id: number; onCancel?: () => void }>>(new Set())
   // 非 EEW の読み上げに振る到来順の連番と、主題ごとの「最後に予約された連番」。
@@ -381,11 +501,41 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const eewPhase2DoneRef = useRef<Set<string>>(new Set())
   // 予約の解決時にテキストを生成するため、eventId ごとに最新イベントを保持する（変化なし続報も含め常に最新で上書き）
   const eewTtsEventsRef = useRef<Map<string, EEWAlert>>(new Map())
-  // 誤報取消（訂正）を受けた eventId。**鳴っている途中の読み上げを打ち切ってよいのはこれだけ。**
+  // 誤報取消（訂正）を受けた eventId。**`shouldStillPlay` で鳴っているものを落としてよいのは
+  // これだけ**（もう 1 つの打ち切りは予報から警報への言い直しだが、あちらは新しい発話を
+  // 割り込ませる形で止める。`eewPhase1ProgressRef` を参照）。
   // 自動解除（expired）と区別するために別に持つ（どちらも eewTtsEventsRef からは消えるため、
   // 消えたことだけでは理由が分からない）。発表が終わった EEW の内容は誤りではないので、
   // 自動解除では鳴っているものを切らない（切ると代わりに読むものが無く、尻切れで終わる）。
   const eewRetractedKeysRef = useRef<Set<string>>(new Set())
+  // 第 1 フェーズ（震源の読み上げ）の進み具合。eventId 別。
+  // **予報から警報へ上がったときに、言い直すかどうか・何回言い直すかをこれ 1 つで決める。**
+  //
+  // 持つのは 2 つの識別子（`{}` で作る値。「どの予約か」を指すだけで中身は見ない）。
+  //
+  //   speakingToken … いま声になっている予約。null なら**何も鳴っていない**
+  //   restateToken  … 予約済みでまだ声になっていない**言い直し**。null なら重ねてよい
+  //
+  // 判定はこの 2 つで足りる。鳴っていれば割り込んで頭から言い直し、鳴っていなければ放って
+  // おく（区分は発話の直前に決めるので、そのまま警報として読まれる）。読み終えていれば
+  // 第 2 フェーズが「緊急地震速報に切り替わりました。」と前置きする。
+  // **どの経路でも「緊急地震速報」の語は必ず声になる。**
+  //
+  // 言い直しの側を別に持つのは、続報が密集する（2024/1/1 能登の本震では 0.3〜2 秒間隔）ため。
+  // 区分の既読（`spokenEEWLevelsRef`）は発話の直前まで更新されないので、印が無いと 2 通目・
+  // 3 通目も「まだ警報を伝えていない」と判定し、**完全に同一の文を重ねて積む**。既読の側を
+  // 予約時点で更新する形では直せない——取消で声にならなかった区分まで「伝え済み」になり、
+  // 以後その EEW では言い直しも前置きも発火しなくなる。
+  //
+  // **書き換えは `updatePhase1Progress` に集約し、自分の識別子が入っている欄だけを消すこと。**
+  // 予約は積み直される（震源の大幅更新は古い音を止めずに積む）ため、同じ eventId に複数の予約が
+  // 並ぶ。無条件に消す形にすると、他の予約が置いた記録まで落として二重読みや誤った割り込みを
+  // 招く（実際にその穴を 2 度作った）。
+  //
+  // 「鳴っている」の追跡は完全ではない。発話の完了待ちには上限（`EEW_SPEECH_CHAIN_MAX_WAIT_MS`）
+  // があり、VOICEVOX が極端に遅いと**まだ鳴っているのに記録が消える**。そのときは言い直しの
+  // 代わりに第 2 フェーズの前置きが伝えるので、区分が声にならない方には倒れない。
+  const eewPhase1ProgressRef = useRef<Map<string, EEWPhase1Progress>>(new Map())
   // EEW の eventId ごとに最後に Phase 1 を発話したときの震源情報を保持する（震源地名変化+座標移動の再発話判定用）
   const activeEEWAnnouncedHypocentersRef = useRef<Map<string, { name: string; lat: number; lng: number }>>(new Map())
   // 長周期地震動情報の更新検出: 受信済み eventId を追跡する
@@ -413,27 +563,66 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    * ここで reject させると以降の EEW の読み上げが連鎖的に落ち、**その端末では二度と
    * 緊急地震速報が読まれなくなる**。テキスト生成の例外まで含めて必ず catch する。
    *
+   * `speak` が返す `onSettled` は、発話が終わった（または黙る判断で降りた）ときに必ず呼ばれる。
+   * 「いま鳴っているか」を呼び出し側が持つために使う。
+   *
    * @param follow 発話を投入する直前に呼ばれる（画面を声に合わせる用途）。
    *   `speak` が null を返して黙るときは呼ばれない。
+   * @param cutCurrent 鳴っている音を先に止める（`stopSpeech`）。**順番は崩さない**——自分は
+   *   これまでどおり `prev` の完了を待って並ぶ。止めれば `prev` はすぐ完了するので、待ちは
+   *   実質そのぶん短くなる。使うのは予報から警報への言い直しだけで、区分が上がったことは
+   *   読み上げの途中を守るより重い（第 1 フェーズは実測 5.5 秒あり、鳴り終わるまで待てば
+   *   そのぶん警報の告知が遅れる）。**予想震度の引き上げには使わない。** 数秒ごとに書き換わる
+   *   ため、そのたびに切っていると読み終わらない。
+   *
+   *   **「待たずに投入する」形にしてはいけない。** `prev` を飛ばして先に鳴らすと、待ち行列に
+   *   いた別 EEW の予約が `prev` の完了で解放され、始まったばかりのこちらを後ろから消す
+   *   （止める行為そのものが解放のスイッチになる）。詳細は `stopSpeech` の JSDoc。
    */
+  /**
+   * 第 1 フェーズの進み具合を部分更新する（{@link EEWPhase1Progress}）。
+   *
+   * **書き換えはすべてここを通すこと。** 直接 `set` すると、指定しなかった欄を既定値で
+   * 上書きしてしまう（同じ eventId に複数の予約が並ぶため、それは他の予約の記録を消すのと
+   * 同じになる）。両方の欄が空になったらエントリごと落とす。
+   */
+  const updatePhase1Progress = (key: string, patch: Partial<EEWPhase1Progress>) => {
+    const current = eewPhase1ProgressRef.current.get(key)
+      ?? { speakingToken: null, restateToken: null }
+    const next = { ...current, ...patch }
+    if (next.speakingToken === null && next.restateToken === null) {
+      eewPhase1ProgressRef.current.delete(key)
+    } else {
+      eewPhase1ProgressRef.current.set(key, next)
+    }
+  }
+
   const chainEEWSpeech = (
-    speak: () => string | { text: string; shouldStillPlay?: ShouldStillPlay } | null,
+    speak: () => string | { text: string; shouldStillPlay?: ShouldStillPlay; onSettled?: () => void } | null,
     follow?: () => void,
+    cutCurrent = false,
   ) => {
     eewSpeechPendingRef.current++
     const prev = eewSpeechChainRef.current
+    if (cutCurrent) stopSpeech()
+    let settled: (() => void) | undefined
     eewSpeechChainRef.current = capSpeechWait(prev).then(() => {
       const spoken = speak()
       if (spoken === null) return
-      const { text, shouldStillPlay } = typeof spoken === 'string' ? { text: spoken, shouldStillPlay: undefined } : spoken
+      const { text, shouldStillPlay, onSettled } = typeof spoken === 'string'
+        ? { text: spoken, shouldStillPlay: undefined, onSettled: undefined }
+        : spoken
+      settled = onSettled
       // 声に出すものが決まった瞬間に画面も合わせる。黙る予約（spoken === null）では動かさない。
-      follow?.()
+      // **追従の失敗で読み上げを落とさない。** ここから例外が抜けると本文が鳴らないまま catch に
+      // 落ち、警報が声にならない（`voicevox.ts` の `onChunkScheduled` と同じ方針）。
+      try { follow?.() } catch (err) { log.warn('[eew] 読み上げ追従に失敗（読み上げは続行）', err) }
       return capSpeechWait(
         speakWithVoicevox(settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume, shouldStillPlay),
       )
     })
       .catch(err => log.warn('[eew] 読み上げに失敗', err))
-      .finally(() => { eewSpeechPendingRef.current-- })
+      .finally(() => { eewSpeechPendingRef.current--; settled?.() })
   }
 
   /**
@@ -447,8 +636,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    * 先出しの判定、追い越しの判定（後の 2 つは `speakNonEEWDelayed`）。条件を書き分けると、
    * 片方だけ直したときに「待たされないと踏んで画面を先に動かしたのに、実際には待たされる」
    * 形の食い違いになる。
+   *
+   * @param topic 自分の主題。同格どうしで待つかを決めるのに使う（`MUTUAL_YIELD_TOPICS`）。
    */
-  const speechBlocker = (priority: SpeechPriority): 'eewChain' | 'eewPhase2' | 'higher' | null => {
+  const speechBlocker = (
+    priority: SpeechPriority,
+    topic: SpeechTopic,
+  ): SpeechBlocker | null => {
     if (eewSpeechPendingRef.current > 0) return 'eewChain'
     // 予想震度が付くのを待っている EEW がある間も、EEW は「これから話す」状態にある。
     // ここを空きと見なすと、震源を読み終えた直後の数秒に地震情報が滑り込み、待ち明け
@@ -456,7 +650,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // （2024/1/1 能登 16:08 の震源情報が残り 5.7 秒で消えていた）。
     if (eewTtsMaxTimersRef.current.size > 0) return 'eewPhase2'
     const active = activeNonEewSpeechRef.current
-    if (active !== null && active.priority > priority) return 'higher'
+    if (active === null) return null
+    if (active.priority > priority) return 'higher'
+    // 同格でも、内容が重ならない相手は切らずに待つ。**同主題は対象外**（言い換えなので、
+    // 古い内容を読み切るより最新に置き換えるのが正しい）。片方が載っていれば両方向で待つ
+    // （理由は `MUTUAL_YIELD_TOPICS`）。
+    if (active.priority === priority && active.topic !== topic
+      && (MUTUAL_YIELD_TOPICS.has(topic) || MUTUAL_YIELD_TOPICS.has(active.topic))) return 'mutualYield'
     return null
   }
 
@@ -492,23 +692,30 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     }
   }
 
-  /** いま自分より優先度の高い読み上げが進行中なら、その完了 Promise を返す（無ければ null）。 */
-  const higherPrioritySpeechInProgress = (priority: SpeechPriority): Promise<void> | null => {
-    switch (speechBlocker(priority)) {
+  /**
+   * ブロッカーから「待つ対象」の Promise を引く（待つものが無ければ null）。
+   *
+   * 待たせる相手は 2 種類ある——**自分より優先度が高いもの**と、**同格でも内容が重ならないもの**
+   * （`MUTUAL_YIELD_TOPICS`）。上限が違うので、理由の判定（`speechBlocker`）とは分けている。
+   */
+  const speechBlockerPromise = (blocker: SpeechBlocker): Promise<void> | null => {
+    switch (blocker) {
       case 'eewChain': return eewSpeechChainRef.current
       // 待つ相手の Promise はまだ無いので、短く眠って見直す。
       case 'eewPhase2': return sleep(EEW_PHASE2_PENDING_POLL_MS)
-      case 'higher': return activeNonEewSpeechRef.current?.done ?? null
-      default: return null
+      case 'higher': case 'mutualYield': return activeNonEewSpeechRef.current?.done ?? null
     }
   }
 
   /**
-   * 自分より優先度の高い読み上げが終わるのを待つ（上限付き）。
+   * 自分を待たせている読み上げが終わるのを待つ（上限付き。相手は `speechBlockerPromise`）。
    *
    * **毎周回で条件を作り直すこと。** 一度きりの判定にすると、待っている間に始まった読み上げを
    * 見落とす。とくに EEW は、待ち明けに読み始めた非 EEW が後ろから EEW を切るという、
    * 「EEW は常に最優先」の前提を崩す形の事故になる。
+   *
+   * **上限は待つ理由ごとに変わる**（相互譲りは長め。理由は `MUTUAL_YIELD_SPEECH_MAX_WAIT_MS`）。
+   * 待っている間に相手が入れ替われば上限も切り替わるため、毎周回で引き直す。
    *
    * 打ち切りは**経過時間**で判定する。反復ごとに一定量を足す数え方にすると、待つ対象が即座に
    * resolve する状態（進行カウンタだけが残った場合など）でマイクロタスクを高速に回り切って
@@ -519,17 +726,35 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    *   **呼び出し側はこの 2 つを区別すること。** 区別せずに待ち直すと、諦める判定が無効になって
    *   上限が効かなくなる。
    */
-  const waitForSpeechSlot = async (priority: SpeechPriority): Promise<boolean> => {
-    const deadline = Date.now() + HIGHER_PRIORITY_SPEECH_MAX_WAIT_MS
+  const waitForSpeechSlot = async (priority: SpeechPriority, topic: SpeechTopic): Promise<boolean> => {
+    let waitingSince = Date.now()
+    let waitingFor: SpeechBlocker | null = null
     for (let i = 0; i < 200; i++) {
-      const busy = higherPrioritySpeechInProgress(priority)
+      const blocker = speechBlocker(priority, topic)
+      if (blocker === null) return true
+      const busy = speechBlockerPromise(blocker)
       if (busy === null) return true
-      const remaining = deadline - Date.now()
+      // **待つ理由が変わったら計時をやり直す。** 上限は理由ごとに違うため、別の理由で消費した
+      // 時間を持ち越すと、上限の短い相手を「もう十分待った」と誤認してその場で割り込む。
+      // 相互譲りを 100 秒待った直後に EEW が始まると、EEW 側の上限（90 秒）を既に超えている
+      // ことになり、**始まったばかりの EEW を切って読み始める**（「EEW は常に最優先」が破れる）。
+      // 理由が入れ替わり続ける場合は反復上限（200 回）が歯止めになる。
+      if (blocker !== waitingFor) {
+        waitingFor = blocker
+        waitingSince = Date.now()
+      }
+      // 上限は待つ理由で決まる。相互譲りの相手（同格・内容が重ならない）は長く待つ。
+      const limit = blocker === 'mutualYield'
+        ? MUTUAL_YIELD_SPEECH_MAX_WAIT_MS
+        : HIGHER_PRIORITY_SPEECH_MAX_WAIT_MS
+      const remaining = waitingSince + limit - Date.now()
       if (remaining <= 0) {
         // 待ちきれずに割り込むことを選んだ。優先度の高い読み上げを消すため必ず記録する
         // （VOICEVOX が無応答のときに繰り返し起こりうるので間引く）
+        // **主題も残すこと。** 相互譲りで同時に待つ相手が増えたため、priority だけでは
+        // どの読み上げが諦めたのかを切り分けられない（記録は 30 秒に間引かれる）。
         warnSpeechWaitGiveUp(() => log.warn(
-          `[tts] 優先度の高い読み上げを待ちきれず、割り込んで読み上げる priority=${priority}`,
+          `[tts] 先に鳴っている読み上げを待ちきれず、割り込んで読み上げる priority=${priority} topic=${topic}`,
         ))
         return false
       }
@@ -538,7 +763,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       await capSpeechWait(busy, remaining).catch(err => log.debug('[tts] 待っていた読み上げが異常終了', err))
     }
     warnSpeechWaitGiveUp(() => log.warn(
-      `[tts] 待ち合わせの反復上限に達したため割り込んで読み上げる priority=${priority}`,
+      `[tts] 待ち合わせの反復上限に達したため割り込んで読み上げる priority=${priority} topic=${topic}`,
     ))
     return false
   }
@@ -555,11 +780,21 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    *
    * 逆向き（優先度の高い側が低い側を切る）は許す。緊急度どおりであり、また地震情報の本文は
    * 数千文字に達することがあって、その後ろに EEW や津波を並べると致命的に遅れるため。
+   * **ただし同格で内容が重ならない相手は、逆向きでも切らない**（`MUTUAL_YIELD_TOPICS`）。
+   * ここで「切らない」のは待ちの上限（`MUTUAL_YIELD_SPEECH_MAX_WAIT_MS`）までの話で、
+   * 上限に達したら割り込む（相互譲りの相手も含む）。上限まで待って諦めるとき割り込まないのは
+   * `SPEECH_PRIORITY.commentary` だけ。
    */
   const speakNonEEW = (
     text: string,
     priority: SpeechPriority,
-    follow?: () => void,
+    /** 読み上げの主題。同格どうしで待つかの判定に使う（`MUTUAL_YIELD_TOPICS`）。 */
+    topic: SpeechTopic,
+    /**
+     * 待ちが明けて**これから声に出す**瞬間に呼ばれる（画面を合わせる・読み上げた値を既読へ移す）。
+     * 待ちきれず見送った場合（`onSilentGiveUp`）は呼ばれない。
+     */
+    onSpeakStart?: () => void,
     /** 間を置いている最中に合成しておいた音声（`speakNonEEWDelayed` 経由のときだけ渡る）。 */
     prewarmed?: PrewarmedSpeech | null,
     /**
@@ -567,22 +802,56 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
      * どちらに使うかは断片が持つ参照の種類で決まる（`hasFollowTarget`）。
      */
     segments?: SpeechSegment[],
-    /** 声になった断片の参照を渡す先（地震情報の続報の差分。読み上げの完了時に 1 回だけ呼ぶ）。 */
+    /**
+     * 声になった断片の参照を渡す先（地震情報の続報の差分。読み上げの完了時に 1 回だけ呼ぶ）。
+     *
+     * `onSpeakStart` との違いは**渡す時点**。あちらは「これから声に出す」瞬間で、こちらは
+     * 読み終えたあと（割り込みで切られた分を除いて数えるため。`spokenChunkIndices`）。
+     */
     onSpokenRefs?: (refs: readonly SpeechRef[]) => void,
+    /**
+     * 待ちきれず「黙る」ことを選んだときの後始末（`speakNonEEWDelayed` 経由のときだけ渡る）。
+     *
+     * **予約の枠から降りるために要る。** ここは `seq` を持たないので `releaseLatestSchedule` を
+     * 自分では呼べない。降りずに終わると、自分より前に予約されていた同じ主題の読み上げが
+     * 「後発に追い越された」と誤認して取り下がり、**どちらも読まれない**
+     * （`releaseLatestSchedule` の注記）。
+     */
+    onSilentGiveUp?: () => void,
   ) => {
     void (async () => {
+      /**
+       * 割り込まずに見送る。「何も切らない」ことを層で宣言している優先度だけがここへ来る
+       * （宣言は `SPEECH_PRIORITY.commentary`）。待ちの上限で割り込むとその保証が破れる——
+       * 各地の震度は読み切りに 2 分近く達し、上限（90 秒）を実際に超える。
+       */
+      const giveUpSilently = () => {
+        log.info(`[tts] 待ちきれなかったため読み上げを見送る（何も切らない層） topic=${topic}`)
+        prewarmed?.abort()
+        onSilentGiveUp?.()
+      }
       // `await` はマイクロタスクの境界を作るため、待ちが明けてからこの続きが走るまでの間に
       // 別の待機者の続きが走りうる。両者が「誰も読んでいない」を見て同時に解放されると、
       // 低い側が後から読み始めて高い側を切ることがある。読み始める直前に同期的に見直し、
       // 変わっていたら待ち直す（回数に歯止めを置き、取り合いで永久に読めなくなるのを防ぐ）。
       for (let attempt = 0; attempt < 10; attempt++) {
         // 待ちきれずに割り込むことを選んだ場合は待ち直さない（諦める判定が無効になる）
-        if (!await waitForSpeechSlot(priority)) break
-        if (higherPrioritySpeechInProgress(priority) === null) break
+        if (!await waitForSpeechSlot(priority, topic)) {
+          if (priority === SPEECH_PRIORITY.commentary) { giveUpSilently(); return }
+          break
+        }
+        if (speechBlocker(priority, topic) === null) break
       }
-      // 自分の番が来た（これから声に出す）瞬間に画面を合わせる。待ち行列の後なので、
-      // 重い電文の読み上げ中に届いた軽い電文は、その後になって初めてタブを取る。
-      follow?.()
+      // **反復上限で抜けた場合もここへ来る。** 上の `return` は「上限まで待って諦めた」ときしか
+      // 通らないので、取り合いが 10 回続いて抜けた経路では黙る層の保証が素通りする。
+      // 相互譲りで同時に待つ相手が増えたぶん、この取り合いは起こりやすくなっている。
+      if (priority === SPEECH_PRIORITY.commentary && speechBlocker(priority, topic) !== null) {
+        giveUpSilently()
+        return
+      }
+      // 自分の番が来た（これから声に出す）瞬間に画面を合わせ、読み上げた値を既読へ移す。
+      // 待ち行列の後なので、重い電文の読み上げ中に届いた軽い電文は、その後になって初めてタブを取る。
+      onSpeakStart?.()
       // 追従は「これから声に出す」ここで開始する。予約の段階で始めると、間を置いている
       // 最中に追い越されて鳴らなかった読み上げに画面が付いていく。
       //
@@ -612,7 +881,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume, undefined, prewarmed,
         followToken === undefined && !onSpokenRefs ? undefined : notifyChunk,
       )
-      activeNonEewSpeechRef.current = { priority, done }
+      activeNonEewSpeechRef.current = { priority, topic, done }
       try {
         await done
       } finally {
@@ -700,12 +969,17 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
      * （`speakNonEEW` と同じ扱い）。
      */
     segments?: SpeechSegment[],
-    /** 声になった断片の参照を渡す先（地震情報の続報の差分）。 */
+    /** 声になった断片の参照を渡す先（地震情報の続報の差分。渡す時点の違いは `speakNonEEW` の注記）。 */
     onSpokenRefs?: (refs: readonly SpeechRef[]) => void,
+    /**
+     * **これから声に出す**瞬間に呼ばれる（津波の観測点を既読へ移すのに使う）。
+     * 待たされて見送られた場合は呼ばれないので、「鳴らなかったものを既読にしない」が保てる。
+     */
+    onSpeakStart?: () => void,
   ) => {
     // 予約した時点で、自分より重い読み上げが走っていたか。**発話の番でもう一度取って比べる**
     // （下の「追い越し」の判定）。
-    const blockedAtSchedule = speechBlocker(priority)
+    const blockedAtSchedule = speechBlocker(priority, topic)
     // 到来順の連番を振り、自分をその主題の「最後に予約されたもの」として登録する。同格どうしの
     // 追い越しは優先度では区別できないため、この連番で後先を比べる（`overtakenByLaterArrival`）。
     const seq = ++nonEewSpeechSeqRef.current
@@ -749,8 +1023,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           return
         }
         if (blockedAtSchedule === null) {
-          const overtakenBy = speechBlocker(priority)
-          if (overtakenBy !== null) {
+          const overtakenBy = speechBlocker(priority, topic)
+          // **相互譲りで塞がっているだけなら取り下げない。** 取り下げる理由は「後から届いた
+          // *重い* 読み上げに追い越され、待って読むと到来順が逆に聞こえる」ことなので、
+          // 内容が重ならない同格（`MUTUAL_YIELD_TOPICS`）は当てはまらない——どちらも読みたい
+          // 相手であり、順序が入れ替わって聞こえる不利より、片方が消える不利の方が重い。
+          // ここで取り下げると「主題が違う同格は取り下げない」という原則そのものが破れる。
+          if (overtakenBy !== null && overtakenBy !== 'mutualYield') {
             log.info(`[tts] 後から届いた読み上げに追い越されたため取り下げる (${overtakenBy}) priority=${priority}`)
             releaseLatestSchedule(seq, topic)
             prewarmed?.abort()
@@ -760,10 +1039,17 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         speakNonEEW(
           text,
           priority,
-          follow ? () => followSpeechTab(follow.tab, follow.priority) : undefined,
+          topic,
+          // 声に出す瞬間にまとめて行う（画面を合わせる・読み上げた値を既読へ移す）
+          () => {
+            onSpeakStart?.()
+            if (follow) followSpeechTab(follow.tab, follow.priority)
+          },
           prewarmed,
           segments,
           onSpokenRefs,
+          // 黙って見送るときも枠から降りる（降りないと前の予約を巻き込む。理由は引数の注記）
+          () => releaseLatestSchedule(seq, topic),
         )
       },
       () => {
@@ -786,6 +1072,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 続報のたびに画面を持って行くと、EEW を見ている最中に何度も津波タブへ引っ張られる
     // （従来 CRIT-4 として抑制していた挙動を、追従の側でも踏襲する）。
     let tsunamiIsNewOrUpgraded = false
+    // 津波の続報が「観測情報」か（等級が動いていない続報。区域が空の電文を含み、引き下げは含めない）。
+    // **音の種別判定で立てて、読み上げの優先度と主題で消費する。** 同じ判定を書き分けると
+    // 「更新音が鳴ったのに、読み上げは発報の重みで地震情報を切る」形の食い違いになる
+    // （実際にそうなっていた。等級が動いていない続報まで `high` で読んでいた）。
+    let tsunamiIsObservationUpdate = false
     if (event.kind === 'quake' && event.cancelled) {
       // 地震情報取消: カード削除は useEarthquakes reducer が担う。通知音・読み上げのみここで処理する。
       if (settings.soundEnabled) playAlertSound('eewCancel')
@@ -880,6 +1171,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       const isNew = isTsunamiNewFire(event, current)
       const upgraded = isTsunamiGradeUpgrade(event, current)
       tsunamiIsNewOrUpgraded = isNew || upgraded
+      // 解除の照合に使うので、受信した順で覚える（理由は宣言箇所）。タブ切替の判定が
+      // `tsunamisRef` を見ているのは従来どおり（あちらは「画面がいま何を出しているか」の話）。
+      lastTsunamiRef.current = event
       if (!settings.voicevoxEnabled) {
         if (tsunamiIsNewOrUpgraded) {
           log.info(`[tab] tsunami を要求 (${isNew ? '新規発報' : 'グレード格上げ'}・読み上げ無効)`)
@@ -932,11 +1226,43 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           )
         }
       }
-      lastTsunamiGradeRef.current = null
-      lastMaxObsHeightRef.current.clear()
-      window.clearTimeout(obsStatusClearTimerRef.current)
-      setObsUpdateStatus(new Map())
-      setFocusedDistrict({ districts: [], top: null, ts: Date.now() })
+      // **表示中の津波に向けた解除でなければ、状態は何も落とさない。**
+      //
+      // 津波は 1 件スロットで持つため、別イベントの遅延到達した解除（複数経路の解除・再送・
+      // 失効タイマー）が、進行中の別の津波の記憶を消してしまう。カードの状態更新
+      // （`useEarthquakes`）は同じ判定で弾いているのに、こちら（音・読み上げ・画面の記憶）は
+      // `handleEvent` が状態更新の成否に関わらず先に呼ぶため、照合を自分で行う必要がある。
+      // 判定は `isCancelForCurrentTsunami` に集約して両側で共有する。
+      //
+      // 音と読み上げは従来どおり照合せずに鳴らす（この分岐の上）。「カードは残っているのに
+      // 解除を読み上げる」食い違いは既知の性質で、解除を落とす方が害が大きいという判断
+      // （理由は `isCancelForCurrentTsunami`）。ここで揃えているのは**記憶と画面の状態**だけ。
+      //
+      // 照合の相手は自分が受信した直前の津波（`lastTsunamiRef`）。`tsunamisRef` を見ると、
+      // 同一 tick に複数の電文が捌けたときに取り残された値と比べてしまう（宣言箇所に理由）。
+      if (isCancelForCurrentTsunami(event, lastTsunamiRef.current ?? undefined)) {
+        lastTsunamiGradeRef.current = null
+        lastTsunamiRef.current = null
+        // 観測点の記憶は**波高と名前の両方**を、**画面用と読み上げ用の両方**で落とす。
+        //
+        // 波高だけ落として名前を残すと、前の津波で「観測中」（波高未確定）のまま終わった観測点は、
+        // 次の津波で再び到達が確認されても「新規到達」と見なされず、到達を一度も伝えられない
+        // （名前は波高の有無に関わらず記録されるため。`rememberObservations`）。常時起動する
+        // 使い方では 1 セッションで複数の津波をまたぐので、実際に起こりうる。
+        //
+        // 画面用と読み上げ用のどちらか片方だけ落とすと、「声は到達を伝えるのにバッジが付かない」
+        // （またはその逆）になる。判定は同じ観測点集合を見るので、揃えて落とすこと。
+        lastMaxObsHeightRef.current.clear()
+        seenObsNamesRef.current.clear()
+        spokenObsHeightRef.current.clear()
+        spokenObsNamesRef.current.clear()
+        window.clearTimeout(obsStatusClearTimerRef.current)
+        setObsUpdateStatus(new Map())
+        setFocusedDistrict({ districts: [], top: null, ts: Date.now() })
+      } else {
+        // 捨てた事実を残す。黙って通すと「解除を受けたのにバッジが消えない」を追えない。
+        log.info('[tsunami] 表示中の津波と一致しない解除のため、観測点の記憶は落とさない')
+      }
     } else if (event.kind === 'eew') {
       if (event.test) return
 
@@ -992,6 +1318,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         eewPhase2TokensRef.current.delete(key)
         eewPhase2DoneRef.current.delete(key)
         spokenEEWLevelsRef.current.delete(key)
+        // 発表が終わった EEW を「鳴っている最中」と見なさないため（言い直しの判定に使う）。
+        // 予約が黙って降りるときにも消えるが、そちらは発話の順番が来てからになる。
+        eewPhase1ProgressRef.current.delete(key)
         if (!event.expired && hadKey) {
           // 誤報取消（10秒キャンセル表示中）: 他に発表中のEEWがあってもリアルタイムタブでオーバーレイを見せる
           log.info('[tab] realtime を要求 (EEW誤報取消・キャンセル表示)')
@@ -1017,7 +1346,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
 
       const currentLevel = computeSingleEEWLevel(event)
-      const scale = eewMaxScale(event)
+      // 上限が定まらない報は通知・タイトルでも「以上」を添える（値だけでは下限の断定になる）。
+      const { scale, orAbove: scaleOrAbove } = eewMaxScaleInfo(event)
 
       // 新規発報か続報かを判定し、レベルの格上げを検出する。
       // 震度・長周期階級の引き上げはここでは見ない。読み上げ側は「実際に発話した値」と
@@ -1050,7 +1380,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           : currentLevel === 1 ? '緊急地震速報 警報' : eewKindLabel(0)
         showBrowserNotification(
           eewNotifyTitle,
-          `${event.earthquake.hypocenter.name}${scale > 0 ? ` 最大震度${getIntensityLabel(scale)}予想` : ''}`,
+          `${event.earthquake.hypocenter.name}${scale > 0 ? ` 最大震度${getIntensityLabelWithOrAbove(scale, scaleOrAbove)}予想` : ''}`,
           `eew-${key}`,
           true,
         )
@@ -1063,16 +1393,16 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       const titleLevel = Array.from(activeEEWLevelsRef.current.values())
         .reduce<0 | 1 | 2>((m, l) => Math.max(m, l) as 0 | 1 | 2, 0)
       const eewTitle = `🚨 ${eewKindLabel(titleLevel)} ${event.earthquake.hypocenter.name}` +
-        (scale > 0 ? ` 最大震度${getIntensityLabel(scale)}予想` : '') +
+        (scale > 0 ? ` 最大震度${getIntensityLabelWithOrAbove(scale, scaleOrAbove)}予想` : '') +
         (newCount > 1 ? ` 他${newCount - 1}件` : '')
       title.setTitle(eewTitle)
       title.scheduleTitleRevert('eew')
 
       // VOICEVOX: 2フェーズ読み上げ
-      // 第1フェーズ（isNew 即時、または続報での震源の大幅更新時）:
-      //   「緊急地震速報、〇〇で地震。」/「震源を更新、〇〇で地震。」
+      // 第1フェーズ（isNew 即時／続報での震源の大幅更新／予報から警報への言い直し）:
+      //   「地震動予報、〇〇で地震。」/「緊急地震速報、〇〇で地震。」/「震源を更新、〇〇で地震。」
       // 第2フェーズ（第1フェーズの完了後。以降の続報も直前の発話の完了後）:
-      //   「（警報。）予想最大震度〇〇。（予想最大階級〇。）」
+      //   「（緊急地震速報に切り替わりました。）予想最大震度〇〇。（予想最大階級〇。）」
       // 続報で予想が上がったときも同じ形で言い直す（引き上げ専用の短句は持たない。
       // 理由は eewIntensityToText の JSDoc）。
       // 読み上げは soundEnabled と独立に voicevoxEnabled のみで判定する（AUD-7）。
@@ -1107,7 +1437,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // 地震の予想震度をキャンセル通知の直後に読み上げてしまう。
             const latest = eewTtsEventsRef.current.get(key)
             if (!latest) return null
-            const latestScale = eewMaxScale(latest)
+            const latestScaleInfo = eewMaxScaleInfo(latest)
             const latestLpgmClass = eewMaxLpgmClass(latest)
             // 区分は引き下げない。一度「警報」と伝えた EEW は、以後 severity が落ちても
             // 「伝え済み」として扱う（前置きを言い直さない。activeEEWLevelsRef の Math.max と同じ方針）。
@@ -1116,7 +1446,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // まだ一度も予想値を読んでいなければ無条件に読む（初報・震源更新の読み直し）。
             // 読んだ後は、実際に発話した値より上がったものが一つも無ければ黙る（引き下げは追わない）。
             if (eewPhase2DoneRef.current.has(key)
-              && latestScale <= (spokenEEWScalesRef.current.get(key) ?? 0)
+              && !isForecastScaleHigher(latestScaleInfo, spokenEEWScalesRef.current.get(key))
               && latestLpgmClass <= (spokenEEWLpgmClassesRef.current.get(key) ?? 0)
               && level <= spokenLevel) return null
             // 「緊急地震速報に切り替わりました。」は、予報として発報されたものが警報へ
@@ -1127,7 +1457,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             if (!text) return null
             // 既読の更新は発話の直前だけで行う。予約した時点で更新すると、取消で捨てられた発話や
             // 割り込みで消えた発話まで既読になり、一度も声に出していない値が基準になってしまう。
-            spokenEEWScalesRef.current.set(key, latestScale)
+            spokenEEWScalesRef.current.set(key, latestScaleInfo)
             spokenEEWLpgmClassesRef.current.set(key, latestLpgmClass)
             spokenEEWLevelsRef.current.set(key, level)
             eewPhase2DoneRef.current.add(key)
@@ -1149,7 +1479,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
                 const now = eewTtsEventsRef.current.get(key)
                 // 自動解除で消えた場合は鳴らし続ける。発表は終わったが、読んでいる値は誤りではない
                 if (!now) return true
-                return eewMaxScale(now) <= latestScale
+                return !isForecastScaleHigher(eewMaxScaleInfo(now), latestScaleInfo)
                   && eewMaxLpgmClass(now) <= latestLpgmClass
                   && computeSingleEEWLevel(now) <= level
               },
@@ -1163,7 +1493,31 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         const hypoNameChanged = !isNew && prevHypo !== undefined && hypo.name !== prevHypo.name
         const hypoFarMoved = hypoNameChanged && Number.isFinite(hypo.latitude) && Number.isFinite(hypo.longitude)
           && haversineKm(hypo.latitude, hypo.longitude, prevHypo.lat, prevHypo.lng) > 50
-        const firePhase1 = isNew || hypoFarMoved
+        // 予報として**読み上げている最中に**警報へ上がった。読み切るのを待たず、警報として
+        // 頭から言い直す（待つと区分の告知が実測 5.5 秒遅れる）。語の途中で切れても文の頭から
+        // やり直すため、地名を聞き違えたまま残ることはない。
+        //
+        // まだ声になっていないときと、読み終えているときは何もしない。前者は発話の直前に区分を
+        // 決め直すので、そのまま**発話直前の最新値**で読まれる（下限は伝え済みの区分で維持
+        // されるが、上がることは保証されない。声になる前に severity が戻る続報が届けば予報として
+        // 読む）。後者は第 2 フェーズが「緊急地震速報に切り替わりました。」と前置きして伝える。
+        //
+        // 見るのは**読み上げた区分**（spokenEEWLevelsRef）で、受信レベルの上昇（levelUpgraded）
+        // ではない。後者だと警報 → 特別警報の格上げでも言い直すが、区分は既に伝えてあり、
+        // 「特別警報」は音声では読まない方針（docs/spec/eew-spec.md §4）なので言い直す中身が無い。
+        //
+        // 震源の大幅更新と重なったときは**そちらに譲る**（`!hypoFarMoved`）。読む文面は
+        // 「震源を更新、〇〇で地震。」で区分に触れないため、割り込んでも警報は伝わらない
+        // （区分は続く第 2 フェーズの前置きが伝える）。鳴っているものを止める価値がない。
+        //
+        // 予約済みでまだ声になっていない言い直しがあれば重ねない（`restateToken`）。続報は
+        // 密集するため、これが無いと同じ文言を何度も積む。
+        const phase1Progress = eewPhase1ProgressRef.current.get(key)
+        const restateAsWarning = !isNew && !hypoFarMoved && currentLevel >= 1
+          && (spokenEEWLevelsRef.current.get(key) ?? 0) < 1
+          && phase1Progress?.restateToken == null
+          && phase1Progress?.speakingToken != null
+        const firePhase1 = isNew || hypoFarMoved || restateAsWarning
 
         if (firePhase1) {
           // 第1フェーズ。震源が大きく動いた場合は旧震源での値を基準に残さない。残すと新震源で
@@ -1175,28 +1529,72 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           spokenEEWLpgmClassesRef.current.delete(key)
           // spokenEEWLevelsRef は**消さない**。同じ EEW である以上、区分は伝え済みで、
           // 震源が動くたびに「警報。」を言い直す必要はない（消すと言い直しになる）。
-          // 切り出しの語で区分を伝える（予報＝地震動予報／警報＝緊急地震速報）。
-          // 震源更新では区分に触れない（既に伝えてあり、変わったのは震源だから）。
-          const phase1Text = eewAlertToText(
-            event,
-            hypoFarMoved ? 'hypocenterUpdate' : currentLevel >= 1 ? 'warning' : 'forecast',
-          )
-          // 「緊急地震速報」と切り出した時点で警報だと伝えている。第 2 フェーズで格上げを
-          // 読み直さないよう、ここで既読の区分として記録する。記録しないと初報から警報だった
-          // EEW でも「切り替わりました」と言ってしまう。
-          if (!hypoFarMoved && currentLevel >= 1) {
-            spokenEEWLevelsRef.current.set(key, currentLevel)
+          const phase1Token = {}
+          // **`speakingToken` には触らない。** 鳴っているかどうかは予約を積み直しても変わらない
+          // （震源の大幅更新は古い音を止めずに積む）。ここで消すと「鳴っていない」と誤認し、
+          // 直後に警報へ上がっても言い直しが発火せず、告知が第 2 フェーズの前置きまで遅れる。
+          if (restateAsWarning) updatePhase1Progress(key, { restateToken: phase1Token })
+          // 後始末は**自分が置いた分だけ**。予約は積み直されるので、無条件に消すと他の予約の
+          // 記録まで落ちる（言い直しの予約が消えれば二重読み、鳴っている記録が消えれば
+          // 鳴っていない相手への割り込みになる）。
+          const forgetSpeaking = () => {
+            if (eewPhase1ProgressRef.current.get(key)?.speakingToken === phase1Token) {
+              updatePhase1Progress(key, { speakingToken: null })
+            }
           }
-          // 待っている間に取消・自動解除が届いていたら震源も読まない。鳴らし始めてから届いた
-          // 場合に残りを落とすのは**誤報取消のときだけ**（理由は eewRetractedKeysRef の宣言箇所）
-          //
-          // 新規発報は「手動選択より強い」側なので追従も eewUrgent。震源の大幅更新は既に発表中の
-          // EEW の言い直しなので eewUpdate（受信時要求の使い分けと揃える）。
+          const forgetOwnRestate = () => {
+            if (eewPhase1ProgressRef.current.get(key)?.restateToken === phase1Token) {
+              updatePhase1Progress(key, { restateToken: null })
+            }
+          }
+          // 新規発報は「手動選択より強い」側なので追従も eewUrgent。震源の大幅更新・警報への
+          // 言い直しは既に発表中の EEW の言い直しなので eewUpdate（受信時要求の使い分けと揃える）。
           chainEEWSpeech(
-            () => eewTtsEventsRef.current.has(key)
-              ? { text: phase1Text, shouldStillPlay: () => !eewRetractedKeysRef.current.has(key) }
-              : null,
+            () => {
+              // 自分が言い直しとして積まれていたなら、その予約はここで消化される。以後の格上げは
+              // 改めて言い直せる（警報を読めば下で既読の区分が入るので既読側で弾かれ、取消で
+              // 降りたなら言い直せる状態に戻るのが正しい）。**自分の分だけ降ろすこと**——
+              // 無条件に消すと、他の予約が置いた言い直しの印まで落として二重読みに戻る。
+              forgetOwnRestate()
+              // 待っている間に取消・自動解除が届いていたら震源も読まない。鳴らし始めてから届いた
+              // 場合に残りを落とすのは**誤報取消のときだけ**（理由は eewRetractedKeysRef の宣言箇所）。
+              // ここでは `speakingToken` に触らない（鳴っているのは自分ではない別の予約）。
+              const latest = eewTtsEventsRef.current.get(key)
+              if (!latest) return null
+              // **区分は発話の直前に決める。** 予約から声になるまでには前の発話の完了待ちと
+              // 合成の往復（実測 238〜697ms）があり、その間にも続報は届く。受信時点で決めると、
+              // 待っている間に警報へ上がっていても予報として読み、直後に「切り替わりました」を
+              // 言う羽目になる。区分は引き下げない（spokenEEWLevelsRef の Math.max と同じ方針）。
+              const level = Math.max(
+                computeSingleEEWLevel(latest),
+                spokenEEWLevelsRef.current.get(key) ?? 0,
+              ) as 0 | 1 | 2
+              // 切り出しの語で区分を伝える（予報＝地震動予報／警報＝緊急地震速報）。
+              // 震源更新では区分に触れない（既に伝えてあり、変わったのは震源だから）。
+              const kind = hypoFarMoved ? 'hypocenterUpdate' : level >= 1 ? 'warning' : 'forecast'
+              // 震源名は**受信した報のもの**を使う（最新へ取り直さない）。下で記録する
+              // 「発話した震源」と食い違うと、次の続報での移動量の判定が狂う。
+              //
+              // **読み上げ文を先に作り、成功してから状態を書き換えること**（第 2 フェーズと同じ
+              // 順序）。先に書き換えると、生成で例外が出たときに `onSettled` へ到達しないまま
+              // catch へ落ち、「警報を伝えた」記録と「鳴っている」記録が残る。以後この EEW では
+              // 言い直しも前置きも二度と成立せず、警報が永久に声にならない。
+              const text = eewAlertToText(event, kind)
+              // 「緊急地震速報」と切り出した時点で警報だと伝えている。第 2 フェーズで格上げを
+              // 読み直さないよう、既読の区分として記録する。記録しないと初報から警報だった
+              // EEW でも「切り替わりました」と言ってしまう。**記録は発話の直前だけで行う**——
+              // 予約の時点で記録すると、取消で声にならなかった区分まで伝え済みになり、以後
+              // 格上げが一度も声にならない（第 2 フェーズが既読値の更新を発話直前に限るのと同じ理由）。
+              if (!hypoFarMoved && level >= 1) spokenEEWLevelsRef.current.set(key, level)
+              updatePhase1Progress(key, { speakingToken: phase1Token })
+              return {
+                text,
+                shouldStillPlay: () => !eewRetractedKeysRef.current.has(key),
+                onSettled: forgetSpeaking,
+              }
+            },
             () => followSpeechTab('realtime', isNew ? TAB_PRIORITY.eewUrgent : TAB_PRIORITY.eewUpdate),
+            restateAsWarning,
           )
           // 発話した震源情報を記録する
           if (Number.isFinite(hypo.latitude) && Number.isFinite(hypo.longitude)) {
@@ -1328,7 +1726,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         title.clearTitleTimer('specialInfo')
         title.applyPriority()
         if (specialEvent.kind === 'nankai' && settings.voicevoxEnabled) {
-          speakNonEEW(nankaiToText(specialEvent.data as Parameters<typeof nankaiToText>[0]), SPEECH_PRIORITY.high)
+          // 取消・終了も発表と同じ主題で予約する（間は置かない）。**主題を渡さないと到来順の枠に
+          // 載らず**、発表の予約が待っている最中に取消が届いても取り下げられない
+          // （取り消されたはずの臨時情報を、そのあと読み上げてしまう）。
+          speakNonEEWDelayed(
+            nankaiToText(specialEvent.data as Parameters<typeof nankaiToText>[0]),
+            SPEECH_PRIORITY.high, 0, 'nankai',
+          )
         }
       }
       return
@@ -1367,6 +1771,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         const gradeUnchanged = obsOnly
           || (prevGradeForSound !== null && GRADE_RANK_SOUND[grade as GradeSoundKey] === GRADE_RANK_SOUND[prevGradeForSound as GradeSoundKey])
         const isDowngradeSound = !obsOnly && prevGradeForSound !== null && GRADE_RANK_SOUND[grade as GradeSoundKey] < GRADE_RANK_SOUND[prevGradeForSound as GradeSoundKey]
+        // 読み上げの優先度・主題もこの判定に従う（宣言箇所に理由）。**引き下げは入らない**——
+        // `isDowngradeSound` は `gradeUnchanged` と排他なので（等級が動いていない報と、下がった報）、
+        // ここで除く必要はない。引き下げは等級が動いた報として新規・格上げと同じ重さで扱う
+        // （音だけは同じ更新音を鳴らす）。
+        tsunamiIsObservationUpdate = gradeUnchanged
         if (gradeUnchanged || isDowngradeSound) {
           type = 'tsunamiUpdate'
         } else if (grade === 'MajorWarning') type = 'tsunamiMajor'
@@ -1413,6 +1822,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       let ttsSegments: SpeechSegment[] | null = null
       // 声になった内容を書き戻す先（地震情報のときだけ立つ）。
       let quakeSpokenState: QuakeSpokenState | null = null
+      // 読み上げ文に含めた観測点。**発話を始める瞬間に既読へ移す**（`spokenObsHeightRef`）。
+      // 受信時に移すと、待たされて鳴らなかった観測値まで既読になり二度と読まれない。
+      let spokenObs: import('../types/earthquake').TsunamiObservation[] | null = null
       if (event.kind === 'quake' && !event.cancelled) {
         // **続報は変化したところだけを読む。** 基準は受信内容ではなく「声になった内容」で、
         // その更新は読み上げの完了時（下の `onSpokenRefs`）に行う。受信時に更新すると、
@@ -1426,12 +1838,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         const currentGrade = tsunamiMaxGrade(event)
         const prevGrade = lastTsunamiGradeRef.current
 
-        // 等級を伝えていない電文（区域が空）も観測点更新として扱う。降格の側へ流すと、
+        // 等級が動いていない続報（区域が空の電文を含む）は観測点更新として扱う。降格の側へ流すと、
         // 警報の発表中に全解除の文言を読み上げる（理由は `isTsunamiObservationOnly`）。
-        if (isTsunamiObservationOnly(event)
-          || (prevGrade !== null && GRADE_RANK[currentGrade as GradeKey] === GRADE_RANK[prevGrade as GradeKey])) {
-          // グレード不変: 観測点ごとに最大波高を追跡し、更新があった観測点のみ読み上げ
-          const prevMap = lastMaxObsHeightRef.current
+        // 判定は音の種別と共有する（`tsunamiIsObservationUpdate` の宣言箇所）。
+        if (tsunamiIsObservationUpdate) {
+          // グレード不変: 観測点ごとに最大波高を追跡し、更新があった観測点のみ読み上げ。
+          // 比較の基準は**読み上げた値**（`spokenObsHeightRef`）で、受信値ではない（宣言箇所に理由）。
+          const prevMap = spokenObsHeightRef.current
           const updatedObs = (event.observations ?? []).filter(o => {
             if (!o.height) return false
             const prev = prevMap.get(o.name)
@@ -1443,7 +1856,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           })
           // 波高未確定（観測中）のまま新規に到達が確認された観測点は「到達確認」として読み上げる
           const newlyArrivedObs = (event.observations ?? [])
-            .filter(o => !o.height && !seenObsNamesRef.current.has(o.name))
+            .filter(o => !o.height && !spokenObsNamesRef.current.has(o.name))
           const updateSegments = updatedObs.length > 0
             ? tsunamiObservationUpdateToSegments(updatedObs, event.headline)
             : []
@@ -1453,13 +1866,24 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           } else if (arrivalSegments.length > 0) {
             ttsSegments = [plain('津波観測情報。'), ...arrivalSegments]
           }
+          // **既読にするのは実際に読み上げた分だけ。** 更新点は件数上限で絞られるため、
+          // `updatedObs` を丸ごと既読にすると、読まれなかった観測点の値が二度と読まれない
+          // （絞り込みは読み上げ文の生成と同じ関数を使う）。
+          if (ttsSegments) {
+            spokenObs = [...selectObservationUpdatesToSpeak(updatedObs), ...newlyArrivedObs]
+          }
         } else {
           const isDowngrade = prevGrade !== null && GRADE_RANK[currentGrade as GradeKey] < GRADE_RANK[prevGrade as GradeKey]
           ttsSegments = isDowngrade ? tsunamiDowngradeToSegments(event) : tsunamiToSegments(event)
           // グレード変化と同時に観測中（波高未確定）で新規到達した観測点も読み上げに含める
           const newlyArrivedObsOnGradeChange = (event.observations ?? [])
-            .filter(o => !o.height && !seenObsNamesRef.current.has(o.name))
+            .filter(o => !o.height && !spokenObsNamesRef.current.has(o.name))
           ttsSegments = [...ttsSegments, ...tsunamiArrivalToSegments(newlyArrivedObsOnGradeChange)]
+          // **等級の発表では観測点の実測値を読まない。** 読むのは区域の予想波高
+          // （`tsunamiToSegments` → `areaHeightSentence`）で、観測点は区域の並べ替えにしか
+          // 使わない。ここで観測点を既読にすると、一度も声に出していない実測値が既読になり、
+          // 直後の観測情報で読まれなくなる。既読にするのは到達確認だけ。
+          spokenObs = newlyArrivedObsOnGradeChange
         }
         if (ttsSegments) ttsText = joinSegments(ttsSegments)
       }
@@ -1467,15 +1891,33 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 読み上げに同調して画面を合わせる。津波は観測点更新（grade 不変）でもここを通るため、
         // 読み上げが発生する続報だけが tsunami タブを持ち出す（変化のない続報は ttsText が空）。
         const followTab: Exclude<TabId, 'realtime'> = event.kind === 'tsunami' ? 'tsunami' : 'earthquake'
+        // 津波は**等級が動いた報と観測情報で格と主題が変わる**。観測情報を `high` で読むと、
+        // 観測点の波高が 1 つ更新されるたびに地震情報の読み上げを途中で消す。格を下げるだけでは
+        // 向きが変わるだけなので（同格は待たずに割り込む）、主題を分けて相互譲りに載せている
+        // （`MUTUAL_YIELD_TOPICS`・`tsunamiIsObservationUpdate`）。
+        const speechPriority = event.kind === 'tsunami' && !tsunamiIsObservationUpdate
+          ? SPEECH_PRIORITY.high
+          : SPEECH_PRIORITY.normal
+        const speechTopic: SpeechTopic = event.kind !== 'tsunami'
+          ? quakeSpeechTopic
+          : tsunamiIsObservationUpdate ? 'tsunamiObs' : 'tsunami'
+        // クロージャで掴むため const に写す（`let` のままでは絞り込みが効かない）
+        const obsToMark = spokenObs
         const spokenState = quakeSpokenState
         speakNonEEWDelayed(
           ttsText,
-          event.kind === 'tsunami' ? SPEECH_PRIORITY.high : SPEECH_PRIORITY.normal,
+          speechPriority,
           TTS_DELAY_MS[type] ?? 0,
-          event.kind === 'tsunami' ? 'tsunami' : quakeSpeechTopic,
+          speechTopic,
           { tab: followTab, priority: event.kind === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake },
           ttsSegments ?? undefined,
+          // 地震情報は**読み終えたあと**に、実際に声になった分だけを記録する。
           spokenState ? refs => applySpokenRefs(spokenState, refs) : undefined,
+          // 読み上げた観測点を既読へ移すのは**声に出す瞬間**（宣言は `spokenObsHeightRef`）。
+          // 待たされた末に見送られた分は既読にならず、次の電文でもう一度読み上げ対象に入る。
+          obsToMark
+            ? () => rememberObservations(obsToMark, spokenObsNamesRef.current, spokenObsHeightRef.current)
+            : undefined,
         )
       } else if (event.kind === 'tsunami' && tsunamiIsNewOrUpgraded) {
         // 読み上げ文が組めなかった津波の新規発報・格上げ（保険。理由は宣言箇所）
@@ -1566,14 +2008,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       window.clearTimeout(obsStatusClearTimerRef.current)
       obsStatusClearTimerRef.current = window.setTimeout(() => setObsUpdateStatus(new Map()), 60000)
 
-      for (const o of event.observations ?? []) {
-        seenObsNamesRef.current.add(o.name)
-        if (!o.height) continue
-        const prev = lastMaxObsHeightRef.current.get(o.name)
-        if (prev === undefined || o.height.value > prev.value || (o.height.over && !prev.over)) {
-          lastMaxObsHeightRef.current.set(o.name, { value: o.height.value, over: o.height.over })
-        }
-      }
+      // 画面用の記憶だけをここで進める。読み上げ用（`spokenObsHeightRef`）は発話を始める瞬間まで
+      // 待つ（受信時に進めると、鳴らなかった観測値まで既読になり二度と読まれない）。
+      rememberObservations(event.observations ?? [], seenObsNamesRef.current, lastMaxObsHeightRef.current)
     }
   }
 
@@ -1612,9 +2049,15 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     latestScheduledSeqByTopicRef.current.clear()
     eewPhase2DoneRef.current.clear()
     eewRetractedKeysRef.current.clear()
+    eewPhase1ProgressRef.current.clear()
     lastTsunamiGradeRef.current = null
+    // 解除の照合に使う直前の津波も落とす（残すと、リプレイ後の解除を切替前の津波と照合する）
+    lastTsunamiRef.current = null
     lastMaxObsHeightRef.current.clear()
     seenObsNamesRef.current.clear()
+    // 読み上げ用の既読も落とす（画面用と対称。残すとリプレイ後の観測情報が「更新なし」になる）
+    spokenObsHeightRef.current.clear()
+    spokenObsNamesRef.current.clear()
     seenLpgmEventIdsRef.current.clear()
     // 60秒 obs バッジ自動消去タイマーもリプレイ切替時に持ち越さない（アンマウント経路と対称）
     window.clearTimeout(obsStatusClearTimerRef.current)
@@ -1648,7 +2091,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           const key = eew.issue?.eventId ?? eew.id
           const restoredLevel = computeSingleEEWLevel(eew)
           activeEEWLevelsRef.current.set(key, restoredLevel)
-          spokenEEWScalesRef.current.set(key, eewMaxScale(eew))
+          spokenEEWScalesRef.current.set(key, eewMaxScaleInfo(eew))
           spokenEEWLpgmClassesRef.current.set(key, eewMaxLpgmClass(eew))
           // 区分も復元する。落とすと注入後の最初の続報で「警報。」が付き直し、
           // 途中から再生を始めた地震がその場で警報化したように聞こえる。
@@ -1658,11 +2101,25 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           eewPhase2DoneRef.current.add(key)
         } else if (ev.kind === 'tsunami') {
           const tsunami = ev as JMATsunami
-          const grade = tsunamiMaxGrade(tsunami)
-          if (grade !== 'Unknown') lastTsunamiGradeRef.current = grade
-          for (const o of tsunami.observations ?? []) {
-            seenObsNamesRef.current.add(o.name)
-            if (o.height?.value != null) lastMaxObsHeightRef.current.set(o.name, { value: o.height.value, over: o.height.over })
+          // **ライブ経路と同じ形で進めること**（電文は時系列順に渡ってくる）。片方だけずらすと、
+          // リプレイを途中から始めたときだけ「解除で終わった津波の観測点が既読のまま残る」
+          // （＝次の津波で到達を伝えられない）という、ライブでは起きない食い違いになる。
+          if (tsunami.cancelled) {
+            lastTsunamiGradeRef.current = null
+            lastTsunamiRef.current = null
+            lastMaxObsHeightRef.current.clear()
+            seenObsNamesRef.current.clear()
+            spokenObsHeightRef.current.clear()
+            spokenObsNamesRef.current.clear()
+          } else {
+            const grade = tsunamiMaxGrade(tsunami)
+            if (grade !== 'Unknown') lastTsunamiGradeRef.current = grade
+            lastTsunamiRef.current = tsunami
+            // T 時点までの観測点は「もう伝えた」ものとして扱う。**読み上げ用も埋めること。**
+            // 埋め忘れると、注入後の最初の観測情報でそれまでの全観測点が読み直され、途中から
+            // 再生を始めたのに津波の到達をいまさら読み上げることになる。
+            rememberObservations(tsunami.observations ?? [], seenObsNamesRef.current, lastMaxObsHeightRef.current)
+            rememberObservations(tsunami.observations ?? [], spokenObsNamesRef.current, spokenObsHeightRef.current)
           }
         }
       } else if (payload.kind === 'lpgm' && !payload.data.cancelled) {

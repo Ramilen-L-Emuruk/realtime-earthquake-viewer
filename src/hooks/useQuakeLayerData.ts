@@ -13,20 +13,19 @@ import { pointInRings, normalizeEpicenterLng } from '../utils/geo'
 import { ringsBounds, type SubRegion } from '../utils/subregions'
 import { extractQuakeEventId } from '../utils/quakeMerge'
 import { japanWideCornersLatLng } from '../components/Map/gl/bounds'
-import { MAX_ZOOM } from '../components/Map/gl/camera'
 
 // 地震モードの描画に必要な派生データ（観測点ごとの震度点／一次細分区域集約／震源）を
 // 一箇所で計算する共有フック。Leaflet 版 JapanMap 内の同名 memo 群と同じ導出を行う
 // （MapLibre 版 JapanMapGL と Leaflet 版の描画一致を保証するため単一の情報源に集約）。
 //
-// zoom は地図の現在ズーム。MAX_ZOOM 以下では観測点個別ではなく一次細分区域ごとの最大震度へ
-// 集約する（aggregateByRegion）。zoom は動的なので呼び出し側（各エンジンの地図）が観測して渡す。
-
-// 集約切替のズーム閾値。カメラの寄り上限（gl/camera.ts の MAX_ZOOM）と必ず同値でなければならない
-// ——「自動フィット着地後は必ず区域集約になる」という前提に regionMaxByName の常時計算が依存している
-// （下の regionMaxByName のコメント参照）。値を独自に持たず MAX_ZOOM から導出することで、片方だけ
-// 変更されて前提が静かに崩れる事故を構造的に防ぐ。
-export const QUAKE_MAX_ZOOM = MAX_ZOOM
+// zoom は地図の現在ズーム。aggregateMaxZoom 以下では観測点個別ではなく一次細分区域ごとの最大震度へ
+// 集約する（aggregateByRegion）。どちらも動的なので呼び出し側（各エンジンの地図）が観測して渡す。
+//
+// aggregateMaxZoom には**カメラの寄り上限をそのまま渡すこと**（gl/camera.ts の fitMaxZoom）。
+// 「自動フィット着地後は必ず区域集約になる」という前提に regionMaxByName の常時計算が依存している
+// （下の regionMaxByName のコメント参照）。寄り上限は地図ペインの寸法で変わるため定数にできず、
+// かつて MAX_ZOOM から導出していたようにこのファイル側で持つことができない。独自の値を置くと、
+// 大きな画面で「フィットしたのに区域集約にならない＝震度塗りが出ない」が静かに起きる。
 // 震源経度の正規化に使う日本中心の経度（Leaflet 版 JAPAN_CENTER[1] と一致）。
 const JAPAN_CENTER_LNG = 137.7
 
@@ -65,6 +64,23 @@ export interface LpgmRegionAggregate {
   label: LatLng
 }
 
+/**
+ * 集約切替の判定に使う地図の状態。
+ *
+ * どちらも `number` なので位置引数で並べると取り違えを型が検出できない。入れ替わると集約の判定が
+ * 反転し、「フィットしても震度塗りにならない」「常に塗りになる」という劣化が型検査もテストも
+ * 素通りする（この判定を直接検証するユニットテストは無い）。名前で渡す形にして構造的に防ぐ。
+ */
+export interface QuakeAggregateView {
+  /** 地図の現在ズーム。 */
+  zoom: number
+  /**
+   * 区域集約へ切り替える上限ズーム。**カメラの寄り上限を渡すこと**（gl/camera.ts の `fitMaxZoom`）。
+   * 理由は下の `aggregateMaxZoom` の注記。
+   */
+  aggregateMaxZoom: number
+}
+
 export interface QuakeLayerData {
   /**
    * 電文の震度点すべて（震度の弱い順）。区域の代表点（isArea:true）を含むため、
@@ -74,7 +90,7 @@ export interface QuakeLayerData {
   /** 観測点だけの震度点（震度の弱い順＝強い震度を前面に描画する想定）。 */
   stationMarkers: IntensityMarker[]
   /**
-   * true のとき一次細分区域へ集約して塗る（zoom <= QUAKE_MAX_ZOOM）。
+   * true のとき一次細分区域へ集約して塗る（zoom <= aggregateMaxZoom）。
    * 区域データ（subregions.json）の取得に失敗したときは、集約しても塗るポリゴンが無いため false。
    */
   aggregateByRegion: boolean
@@ -101,9 +117,10 @@ export interface QuakeLayerData {
 export function useQuakeLayerData(
   mode: string,
   quake: JMAQuake | null | undefined,
-  zoom: number,
+  view: QuakeAggregateView,
   lpgm?: JMALpgm | null,
 ): QuakeLayerData {
+  const { zoom, aggregateMaxZoom } = view
   const stationCoords = useStationCoords()
   const { data: subregions, failed: subregionsFailed } = useSubRegions()
 
@@ -154,7 +171,7 @@ export function useQuakeLayerData(
   // 区域データ（subregions.json）の取得が失敗で確定したときは集約しない。塗る区域ポリゴンが
   // 1件も作れない（regionAggregates が空）のに、JapanMapGL は区域塗りと観測点ドットを排他で
   // 切り替えるため、集約を維持したままだと地図から震度が完全に消えるため。自動フィットの
-  // 着地ズームは常に QUAKE_MAX_ZOOM でキャップされる（gl/camera.ts）ので、この経路は
+  // 着地ズームは常に寄り上限でキャップされる（gl/camera.ts）ので、この経路は
   // 「たまたま拡大していれば助かる」ものではなく必ず踏む。
   // 読み込み中（failed=false・data=null）は集約を維持する——データ到着の瞬間にドットから
   // 区域塗りへ切り替わるちらつきを避けるため（regionAggregates を常時計算しているのと同じ理由）。
@@ -166,7 +183,7 @@ export function useQuakeLayerData(
   // 区域名で引くため座標テーブルに依存しない）。詳細は docs/spec/quake-spec.md §7.3。
   const aggregateByRegion =
     mode === 'quake' && !!quake && !subregionsFailed &&
-    (zoom <= QUAKE_MAX_ZOOM || (!lpgmActive && stationMarkers.length === 0))
+    (zoom <= aggregateMaxZoom || (!lpgmActive && stationMarkers.length === 0))
 
   // 一次細分区域に bbox を付与（点内包判定の前段フィルタ用・フィット対象の矩形）。
   // 境界を持たない区域は点内包判定も区域塗りもできないため索引から外す（生成データが正常なら発生しない）。
@@ -185,8 +202,8 @@ export function useQuakeLayerData(
 
   // 区域名 → 最大震度。aggregateByRegion（現在ズーム依存）とは無関係に常に計算する。
   // quakeFitPositions が「実際に塗られる区域」を zoom の変化を待たずに参照するために必要
-  // （QuakeFitGL のフィットは常に maxZoom=MAX_ZOOM でキャップされるため、フィット着地後は
-  // 必ず aggregateByRegion=true になる。フィット計算時点の現在 zoom がたまたま > MAX_ZOOM でも
+  // （QuakeFitGL のフィットは常に寄り上限でキャップされるため、フィット着地後は
+  // 必ず aggregateByRegion=true になる。フィット計算時点の現在 zoom がたまたま上限より深くても
   // 着地後の状態を先取りして区域マッチングする必要がある）。
   const regionMaxByName = useMemo<Map<string, number>>(() => {
     const maxByName = new Map<string, number>()

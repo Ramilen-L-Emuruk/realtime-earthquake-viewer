@@ -39,6 +39,37 @@ export function tsunamiOverallGrade(tsunamis: JMATsunami[]): 'MajorWarning' | 'W
 }
 
 /**
+ * 解除電文が「いま表示している津波」に向けたものかを判定する。
+ *
+ * 津波は 1 件スロットで持つため、**別イベントの遅延到達した解除で進行中の津波を消してはいけない**。
+ * 判定は 2 段。
+ *
+ * 1. 双方が `eventId` を持つなら一致で見る（`serial` が違っても同一イベントを解除できるよう、
+ *    `id` 全体ではなく `eventId` で照合する）
+ * 2. どちらかが欠けていれば同一イベントかは判定できないので、発表時刻の前後だけを見る。
+ *    表示中より古い解除は別イベントの遅延到達とみなす（これが無いと A の遅い解除で B が消える）
+ *
+ * **時刻も読めないときは受け入れる**（`true`）。かつて `id` の完全一致を求めていた頃は、
+ * P2PQuake（standard 版）の 552 が `eventId` を持たず `id` は電文ごとの文書 ID なので、発表と
+ * 解除で必ず異なり standard 版の解除が常に捨てられていた（音と読み上げだけが「解除」と伝え、
+ * カードは 24 時間のフェイルセーフまで残る）。解除を落とす方が害が大きい。
+ *
+ * **カードの状態更新（`useEarthquakes`）と、読み上げ・画面の記憶を落とす判断
+ * （`useLiveEventHandler`）の両方でこの関数を使うこと。** 片方だけが照合すると、カードは
+ * 残っているのに観測点の既読だけが消える（進行中の観測点が「新規」として読み直される）。
+ */
+export function isCancelForCurrentTsunami(cancel: JMATsunami, current: JMATsunami | undefined): boolean {
+  if (!current) return true
+  const cancelEventId = cancel.eventId
+  const currentEventId = current.eventId
+  if (cancelEventId && currentEventId) return cancelEventId === currentEventId
+  const cancelAt = new Date(cancel.time).getTime()
+  const currentAt = new Date(current.time).getTime()
+  if (Number.isFinite(cancelAt) && Number.isFinite(currentAt) && cancelAt < currentAt) return false
+  return true
+}
+
+/**
  * 新報がタブ強制切替を発火すべき「新規発報」に当たるかを判定する。
  * `current` は現在アクティブな津波（`tsunamis[0]`、無ければ undefined）。
  * 続報（同一 eventId の観測点更新等）でタブが毎回奪われるのを防ぐため、
@@ -152,22 +183,73 @@ function groupAreasByHeight(areas: TsunamiArea[]): TsunamiHeightGroup[] {
   return groups
 }
 
-// 区域に紐づく観測点のうち、実測値（height）が最も高いものを返す。
-// value が同点の場合は over（「以上」）を優先する。実測値を持つ観測点が無ければ null。
-function maxObservedHeight(area: TsunamiArea, observations: TsunamiObservation[]): { value: number; over: boolean } | null {
-  let max: { value: number; over: boolean } | null = null
+/** 観測波高の深刻さを比べるのに必要な部分だけを抜いた形。 */
+export interface ObservedHeightRank {
+  value: number
+  /** 気象庁が「○m以上」と発表した観測値（観測施設の観測可能範囲の超過・機器の被災）。 */
+  over?: boolean
+}
+
+/**
+ * 観測波高を「深刻な順」に比べる。降順ソートの比較関数として使う（負なら a が先）。
+ *
+ * **`over`（「○m以上」）は値の大小より先に見る。** 「○m以上」が示すのは真の波高の
+ * *下限* だけで、上限は無い。確定値と大小で並べると 8.5m以上 が 9.0m の下に来るが、
+ * 真値は 8.5m以上 の方が高いことも十分あり（2011年の潮位計はこの形で飽和・被災した）、
+ * 防災情報の並びとしては過小評価の側に倒れる。上限が無いものを上に置く。
+ *
+ * この規則は、値が小さい `over` を確定値の大きな観測より上に置く（0.2m以上 が 5.0m より
+ * 上に来る）。観測可能範囲が 0.2m の潮位計は実在しないため実用上は起きないが、
+ * 上流データが想定外の形で来たときはこの並びになる。
+ *
+ * 同じ区分・同値なら 0 を返す（呼び出し側の安定ソートで元の順序＝電文順を保つ）。
+ */
+export function compareObservedHeightDesc(a: ObservedHeightRank, b: ObservedHeightRank): number {
+  if (!!a.over !== !!b.over) return a.over ? -1 : 1
+  return b.value - a.value
+}
+
+/**
+ * 観測波高の表示文字列に「以上」（観測可能範囲の超過）を必要なだけ補う。
+ *
+ * `description` は over のとき既に「以上」を含む（`dmdataParser` が `${value}m以上` を組む）ため、
+ * 記号や語を重ねると「>8.5m以上」のような二重表記になる。一方で電文が `height.condition` を
+ * 持つ経路では `description` がその文字列に置き換わって「以上」が落ちうるので、含まないときだけ補う。
+ *
+ * **数字を含まない `description` には足さない。** `condition` には「巨大」のような数値化されない語が
+ * 入りうる（`dmdataParser.test.ts` の実電文相当フィクスチャにある形）ので、機械的に繋ぐと
+ * 「巨大以上」という読めない語になる。その場合は語自体が確定していないことを伝えているため、
+ * `over` の印を落としてでも文字列を壊さない方を採る。
+ *
+ * 数字の判定は**全角も数える**。`over` が立つのは JSON 経路だけで、そこが自前で組む表記
+ * （`${value}m以上`）は半角だが、`condition` は電文由来の文字列がそのまま入るため全角が来うる
+ * （`ttsText.ts` の `tsunamiHeightToSpeech` が同じ理由で両方を扱う）。ASCII だけを見ると
+ * 「８．５ｍ」のような表記で「以上」が黙って落ちる。
+ *
+ * **観測波高を人に見せる・読み上げる経路はすべてこれを通すこと。** 片方だけ通すと、地図には
+ * 「以上」が出てカードと読み上げには出ない、という食い違いになる。
+ */
+export function overSuffixedHeight(height: { description: string; over?: boolean }): string {
+  if (!height.over) return height.description
+  if (height.description.includes('以上')) return height.description
+  if (!/[\d０-９]/.test(height.description)) return height.description
+  return `${height.description}以上`
+}
+
+// 区域に紐づく観測点のうち、最も深刻な実測値（height）を返す。実測値を持つ観測点が無ければ null。
+// 深刻さの規則は compareObservedHeightDesc に集約する（並び順と代表値の選び方を食い違わせない）。
+function maxObservedHeight(area: TsunamiArea, observations: TsunamiObservation[]): ObservedHeightRank | null {
+  let max: ObservedHeightRank | null = null
   for (const obs of observations) {
     if (!obs.height || !matchesArea(obs, area)) continue
-    const candidate = { value: obs.height.value, over: !!obs.height.over }
-    if (!max || candidate.value > max.value || (candidate.value === max.value && candidate.over && !max.over)) {
-      max = candidate
-    }
+    const candidate: ObservedHeightRank = { value: obs.height.value, over: obs.height.over }
+    if (!max || compareObservedHeightDesc(candidate, max) < 0) max = candidate
   }
   return max
 }
 
 // 波高グループ内で、観測データ（実測値）がある区域を上に、無い区域を下にまとめる。
-// 観測データがある区域同士は実測波高（最大値・同点なら「以上」優先）の降順で並べ、
+// 観測データがある区域同士は実測波高の深刻な順（compareObservedHeightDesc）に並べ、
 // 実測値未確定（到達時刻のみ等）の区域は観測データありの中で最下位に置く。
 // いずれも同点の場合・観測データが無い区域同士は電文順（安定ソート）を維持する。
 function sortAreasByObservation(areas: TsunamiArea[], observations: TsunamiObservation[]): TsunamiArea[] {
@@ -182,8 +264,8 @@ function sortAreasByObservation(areas: TsunamiArea[], observations: TsunamiObser
     .map((area, index) => ({ area, index, height: maxObservedHeight(area, observations) }))
     .sort((a, b) => {
       if (a.height && b.height) {
-        if (a.height.value !== b.height.value) return b.height.value - a.height.value
-        if (a.height.over !== b.height.over) return a.height.over ? -1 : 1
+        const byHeight = compareObservedHeightDesc(a.height, b.height)
+        if (byHeight !== 0) return byHeight
         return a.index - b.index
       }
       if (a.height && !b.height) return -1

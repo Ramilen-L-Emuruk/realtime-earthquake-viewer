@@ -84,7 +84,7 @@ const PANE_HEIGHT = 600
 // `fitZoom` は「いまの目標へ寄り直したら着地するズーム」。本物は矩形の広さとビューポート寸法から
 // 逆算するが、フェイクの投影はズームに依らない（下記 PX_PER_DEG）ので、独立した数値として持つ。
 // テストは検知範囲の広さの代わりにこの値を動かす——**範囲が狭まった** = 寄り直せば深く寄れる、を
-// 表すのがこの値の役目（`setFitZoom`）。既定は寄り上限（MAX_ZOOM=7）。
+// 表すのがこの値の役目（`setFitZoom`）。既定の 7 は基準ペインでの寄り上限に相当する値。
 function createFakeMap({ zoom: initialZoom = 4, fitZoom: initialFitZoom = 7 }: { zoom?: number; fitZoom?: number } = {}) {
   const handlers = new Map<string, Set<() => void>>()
   const onceHandlers = new Map<string, Set<() => void>>()
@@ -434,7 +434,7 @@ describe('揺れ検知の収め直しフォロー', () => {
   })
 
   it('寄り上限に張り付いていても、目標が別の場所へ移ったら寄り直す', () => {
-    // Arrange: すでに寄り上限（MAX_ZOOM=7）にいる状態で狭い点群へフィットしている。
+    // Arrange: すでに寄り上限（基準ペインで 7）にいる状態で狭い点群へフィットしている。
     // この状態ではズームの利得は 0 のままなので、利得だけを見ていると永久に発火しない。
     const map = createFakeMap({ zoom: 7 })
     const view = render(harness(map, NARROW, [], null))
