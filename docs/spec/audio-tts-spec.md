@@ -520,7 +520,7 @@ ratio=4 / attack=3ms / release=250ms（音楽制作のリミッター標準的�
 
 **並べ替えだけでは足りない。** 「○m以上」が上限より多く出れば、そのうちの一部は依然として落ちる
 （広域で複数の潮位計が同時に飽和する場面がまさにそれ）。外した地点数は「、ほか○地点」の形で
-必ず言う（`omittedSuffix`）。文言は到達確認の読み上げ（`tsunamiArrivalToSegments`）と揃える。
+必ず言う（`omittedPointsSuffix`）。文言は到達確認の読み上げ（`tsunamiArrivalToSegments`）と揃える。
 
 ### 区域名は 1 回だけ。等級ごとに「区域と波高」を 1 文で言い切る
 
