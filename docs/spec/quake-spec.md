@@ -107,9 +107,13 @@ P2PQuake（標準版）では `undefined` となり従来どおり区分から�
 - **ScalePrompt**（震度速報・区域別）: `points[].isArea: true` のみ（観測点なし）
 
 いずれも `pref` は非空で届く（P2PQuake の JSON 構造上の仕様）。`EarthquakeCard` は「pref 非空を都道府県
-ロールアップ点として扱う」設計なので、DetailScale 時に「都道府県別最大震度」だけが表示され、DMDSS 版のように
-「県内の一次細分区域ごとに震度が割れている場合の内訳」は原理的に出せない（区域粒度データが電文に含まれていない）。
-これはバグではなく **P2PQuake API 仕様と DMDATA との情報粒度差**。区域粒度を必要な用途では DMDSS 版を使う。
+ロールアップ点として扱う」設計なので、DetailScale 時のカードは「都道府県別最大震度」だけを並べる。
+
+**電文に区域が無くても、観測点から所属区域は逆引きできる。** 座標テーブル（`station-coords.json`）が
+観測点ごとに一次細分区域を持つため。地図の区域塗り（`useQuakeLayerData`）と読み上げ
+（→ [audio-tts-spec.md](audio-tts-spec.md) §4「地域名の粒度」）はこの逆引きで、標準版でも区域粒度を出す。
+**カードだけが都道府県粒度に留まっている**のは、区域にすると行数が倍以上に増えて縦に伸びすぎるため
+（2026-08 時点の実測で、能登半島地震の本震が 45 行 → 107 行）。情報が取れないからではなく、表示量の判断。
 
 **P2PQuake 経路の points 検証**: `convertEvent` は `addr`（観測点名・区域名）が空の要素だけを落とし、
 地震そのものは残す。`addr` は一覧・地図いずれの表示にも要る識別子だが、1 点の欠陥で地震全体を
@@ -139,7 +143,9 @@ P2PQuake（標準版）では `undefined` となり従来どおり区分から�
 `buildStationPrefIndex`）で都道府県は復元可能。以下の派生データは pref が空でも都道府県を再構築する:
 - `useQuakeLayerData.intensityMarkers` — 地図に置く観測点マーカーの色・位置
 - `useQuakeLayerData.prefIntensities` — 震源ポップアップの都道府県別最大震度
-- `ttsText.regionNamesForScale` — 読み上げの都道府県名フォールバック
+- `ttsText.regionNamesForScale` — 読み上げの地域名。区域の点が無い電文では観測点から
+  一次細分区域を逆引きし（`lookupStationRegion`。地図の区域塗りと同じ関数）、区域が引けないときだけ
+  都道府県名へ落とす（→ [audio-tts-spec.md](audio-tts-spec.md) §4「地域名の粒度」）
 
 ## 5. 震源未確定（震度速報）の扱い
 
