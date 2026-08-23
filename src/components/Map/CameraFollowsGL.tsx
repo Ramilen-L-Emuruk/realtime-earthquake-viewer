@@ -642,9 +642,14 @@ export function FitToEEWGL({
     )
     if (bounds && !mapContainsBounds(map, bounds)) {
       // 区域数は 2 で割って求める（forecastAreaPositions は区域あたり bbox の 2 点。useEewLayerData 参照）。
+      // 目標の南北幅も添える。円の半径は引き上限（`EEW_FOLLOW_MAX_RADIUS_KM`）で頭打ちになるが、
+      // 頭打ちになった事実そのものはどこにも残らない。実地震のあとに「これ以上広がらなかったのは
+      // 仕様（上限）か、目標の計算が壊れたのか」を切り分ける手掛かりとして幅を記録する
+      // （上限の 2 倍で止まっていれば仕様どおり）。
+      const spanNsKm = Math.round((bounds.getNorth() - bounds.getSouth()) * 111.32)
       log.debug(
         `[mapGL] EEW成長フォロー 波円${psWave.length}個+震源${eews.length}件+検知${detectedPoints.length}点` +
-          `+予想区域${forecastAreaPositions.length / 2}件`,
+          `+予想区域${forecastAreaPositions.length / 2}件 南北${spanNsKm}km`,
       )
       flyToBoundsSnapped(map, bounds, { padding: 60, durationSec: 0.8 })
     }

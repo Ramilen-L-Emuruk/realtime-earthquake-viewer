@@ -4,8 +4,9 @@ import {
   boundsForLiveFollowTuple,
   boundsFromEewCircles,
   boundsFromPositionsTuple,
-  clampBoundsToJapan,
   mergeBounds,
+  EEW_FOLLOW_LOOSE,
+  EEW_FOLLOW_MAX_RADIUS_KM,
   JAPAN_BOUNDS,
   JAPAN_WIDE_BOUNDS,
   japanWideCornersLatLng,
@@ -91,32 +92,6 @@ describe('boundsFromPositionsTuple', () => {
   })
 })
 
-describe('clampBoundsToJapan', () => {
-  it('日本の枠内ならそのまま返す', () => {
-    const b: BoundsTuple = [139, 35, 141, 37]
-    expect(clampBoundsToJapan(b)).toEqual(b)
-  })
-
-  it('枠を超える辺を内側へ詰める', () => {
-    // Arrange: 四方すべて日本の枠外へはみ出した矩形
-    const b: BoundsTuple = [120, 20, 160, 50]
-
-    // Act
-    const clamped = clampBoundsToJapan(b)
-
-    // Assert
-    expect(clamped).toEqual([JAPAN_W, JAPAN_S, JAPAN_E, JAPAN_N])
-  })
-
-  it('日本と交差しない矩形は詰めずに元のまま返す', () => {
-    // Arrange: 完全に日本の西側（大陸方向）にある矩形
-    const b: BoundsTuple = [110, 20, 120, 25]
-
-    // Act / Assert: 詰めると west > east の不正な矩形になるため元を返す
-    expect(clampBoundsToJapan(b)).toEqual(b)
-  })
-})
-
 describe('boundsFromEewCircles', () => {
   it('円が無ければ null', () => {
     expect(boundsFromEewCircles([])).toBeNull()
@@ -166,7 +141,7 @@ describe('boundsFromEewCircles', () => {
     expect((bounds[3] - bounds[1]) / 2).toBeCloseTo((30 * 1.2) / 111.32, 2)
   })
 
-  it('magnitude 不明なら有感半径クランプを外し日本全体キャップのみ効かせる', () => {
+  it('magnitude 不明なら有感半径クランプを外し引き上限のみ効かせる', () => {
     // Arrange: M 不明・S波円が日本を覆う大きさ
     const circles: EewFollowCircle[] = [
       { lat: 37, lng: 141, pRadius: 3000, sRadius: 3000, depth: 10 },
@@ -175,8 +150,114 @@ describe('boundsFromEewCircles', () => {
     // Act
     const bounds = boundsFromEewCircles(circles)!
 
-    // Assert: 日本全体の枠まで（それ以上は広がらない）
-    expect(bounds).toEqual([JAPAN_W, JAPAN_S, JAPAN_E, JAPAN_N])
+    // Assert: 引き上限の半径まで（それ以上は広がらない）・中心は震源のまま
+    expect((bounds[3] - bounds[1]) / 2).toBeCloseTo(EEW_FOLLOW_MAX_RADIUS_KM / 111.32, 5)
+    expect((bounds[1] + bounds[3]) / 2).toBeCloseTo(37, 10)
+    expect((bounds[0] + bounds[2]) / 2).toBeCloseTo(141, 10)
+  })
+
+  // 以下 4 件は引き上限（EEW_FOLLOW_MAX_RADIUS_KM）の検証。旧実装は日本の枠との交差で矩形の辺を
+  // 別々に詰めていたため、枠の外に震源がある地震で震源が箱から外れていた（2026-08-19 奄美大島北西沖）。
+  it('引き上限を超えて育った円は上限で頭打ちになり、中心は震源のまま', () => {
+    // Arrange: M9 相当・有感半径 1968km がさらにルーズ余白で膨らむ状態
+    const circles: EewFollowCircle[] = [
+      { lat: 38.1, lng: 142.9, pRadius: 5000, sRadius: 5000, depth: 24, magnitude: 9.0 },
+    ]
+
+    // Act
+    const bounds = boundsFromEewCircles(circles)!
+
+    // Assert: 半径は上限ちょうど・箱は震源中心
+    expect((bounds[3] - bounds[1]) / 2).toBeCloseTo(EEW_FOLLOW_MAX_RADIUS_KM / 111.32, 5)
+    expect((bounds[1] + bounds[3]) / 2).toBeCloseTo(38.1, 10)
+    expect((bounds[0] + bounds[2]) / 2).toBeCloseTo(142.9, 10)
+  })
+
+  it('日本の枠の外に震源があっても中心は震源のまま（旧クランプの回帰）', () => {
+    // Arrange: 2026-08-19 20:44 奄美大島北西沖 M5.2・深さ200km。S波が地表に届かず pRadius へ
+    // フォールバックした状態。震源(28.9N/128.0E)は JAPAN_BOUNDS の南西外にある。
+    // 旧実装ではこの円が枠に触れた瞬間、震源を含まない箱（W129.43 S30.99 E130.99 N31.43）に化けていた。
+    const circles: EewFollowCircle[] = [
+      { lat: 28.9, lng: 128.0, pRadius: 235, sRadius: 0, depth: 200, magnitude: 5.1 },
+    ]
+
+    // Act
+    const bounds = boundsFromEewCircles(circles)!
+
+    // Assert: 震源が箱の中心にあり、箱は震源を含む
+    expect((bounds[1] + bounds[3]) / 2).toBeCloseTo(28.9, 10)
+    expect((bounds[0] + bounds[2]) / 2).toBeCloseTo(128.0, 10)
+    expect(boundsContains(bounds, [128.0, 28.9, 128.0, 28.9])).toBe(true)
+  })
+
+  it('引き上限を入れても有感半径クランプは免除しない', () => {
+    // Arrange: M4.0/深さ60km の有感半径は約103km。上限 800km よりはるかに小さい
+    const circles: EewFollowCircle[] = [
+      { lat: 37.35, lng: 141.75, pRadius: 2000, sRadius: 2000, depth: 60, magnitude: 4.0 },
+    ]
+
+    // Act
+    const bounds = boundsFromEewCircles(circles)!
+
+    // Assert: 上限ではなく有感半径で止まっている
+    const halfSpanKm = ((bounds[3] - bounds[1]) / 2) * 111.32
+    expect(halfSpanKm).toBeLessThan(200)
+  })
+
+  it('ルーズ余白を掛けた後に上限をかける（上限が 1.2 倍に膨らまない）', () => {
+    // Arrange: 有感半径が上限を超える大地震。先に上限をかけると 800×1.2=960km になってしまう
+    const circles: EewFollowCircle[] = [
+      { lat: 37, lng: 141, pRadius: 5000, sRadius: 5000, depth: 20, magnitude: 8.0 },
+    ]
+
+    // Act
+    const bounds = boundsFromEewCircles(circles)!
+
+    // Assert: 上限そのもの（ルーズ余白は乗らない）
+    const halfSpanKm = ((bounds[3] - bounds[1]) / 2) * 111.32
+    expect(halfSpanKm).toBeCloseTo(EEW_FOLLOW_MAX_RADIUS_KM, 5)
+    expect(halfSpanKm).toBeLessThan(EEW_FOLLOW_MAX_RADIUS_KM * EEW_FOLLOW_LOOSE)
+  })
+
+  // 以下 3 件は壊れた入力の隔離。NaN は比較が常に false になるため `<= 0` では弾けず、素通りすると
+  // Math.min / mergeBounds を通って合成後の矩形全体を NaN で汚染する（上限も NaN はクランプできない）。
+  it('半径が NaN の円は無視する', () => {
+    const circles: EewFollowCircle[] = [
+      { lat: 37, lng: 141, pRadius: NaN, sRadius: NaN, depth: 10, magnitude: 5 },
+    ]
+    expect(boundsFromEewCircles(circles)).toBeNull()
+  })
+
+  it('座標が NaN の円は無視する', () => {
+    const circles: EewFollowCircle[] = [
+      { lat: NaN, lng: 141, pRadius: 100, sRadius: 80, depth: 10, magnitude: 5 },
+    ]
+    expect(boundsFromEewCircles(circles)).toBeNull()
+  })
+
+  it('壊れた円が混ざっても健全な円だけで矩形を作る（NaN で汚染しない）', () => {
+    // Arrange: 1 件目が壊れている（複数 EEW 同時発報で片方の値が壊れた状態）
+    const broken: EewFollowCircle[] = [
+      { lat: NaN, lng: NaN, pRadius: NaN, sRadius: NaN, depth: NaN, magnitude: NaN },
+      { lat: 37, lng: 141, pRadius: 50, sRadius: 30, depth: 10, magnitude: 4.0 },
+    ]
+
+    // Act
+    const bounds = boundsFromEewCircles(broken)!
+
+    // Assert: 健全な円だけの結果と一致し、どの辺も有限
+    expect(bounds).toEqual(boundsFromEewCircles([broken[1]]))
+    expect(bounds.every(Number.isFinite)).toBe(true)
+  })
+
+  it('深さが NaN でも有感半径クランプが働く（深さ 0 として扱う）', () => {
+    const nanDepth: EewFollowCircle[] = [
+      { lat: 37, lng: 141, pRadius: 2000, sRadius: 2000, depth: NaN, magnitude: 4.0 },
+    ]
+    const zeroDepth: EewFollowCircle[] = [
+      { lat: 37, lng: 141, pRadius: 2000, sRadius: 2000, depth: 0, magnitude: 4.0 },
+    ]
+    expect(boundsFromEewCircles(nanDepth)).toEqual(boundsFromEewCircles(zeroDepth))
   })
 
   it('複数の円を1つの外接矩形にまとめる', () => {
@@ -260,11 +341,11 @@ describe('boundsForLiveFollowTuple', () => {
     expect(boundsContains(bounds, boundsFromPositionsTuple(points)!)).toBe(true)
   })
 
-  it('沖縄の検知点を日本全体クランプで切り捨てない', () => {
-    // Arrange: JAPAN_BOUNDS は本州〜北海道の枠で沖縄(lat 26 付近)を含まない。
-    // 円側にだけキャップを効かせ、検知点にはかけないことを担保する。
+  it('引き上限の外にある検知点を切り捨てない', () => {
+    // Arrange: 円は上限（半径 800km）で頭打ち。震源を東北沖に置くと沖縄(lat 26 付近)は
+    // その箱の外に出る。円側にだけ上限を効かせ、検知点にはかけないことを担保する。
     const circles: EewFollowCircle[] = [
-      { lat: 30, lng: 130, pRadius: 3000, sRadius: 3000, depth: 10 },
+      { lat: 40, lng: 140, pRadius: 3000, sRadius: 3000, depth: 10 },
     ]
     const okinawa: [number, number][] = [[26.21, 127.68]]
 
@@ -308,9 +389,9 @@ describe('boundsForLiveFollowTuple', () => {
     expect(boundsForLiveFollowTuple([], [], [], areas)).toEqual([130.0, 33.0, 131.5, 34.0])
   })
 
-  it('沖縄の予想区域を日本全体クランプで切り捨てない', () => {
-    // Arrange: 検知点と同じ理由（JAPAN_BOUNDS は沖縄を含まない）で、区域側にもキャップをかけない。
-    const circles: EewFollowCircle[] = [{ lat: 30, lng: 130, pRadius: 3000, sRadius: 3000, depth: 10 }]
+  it('引き上限の外にある予想区域を切り捨てない', () => {
+    // Arrange: 検知点と同じ理由（上限は円が際限なく育つのを止めるためのもの）で、区域側にもかけない。
+    const circles: EewFollowCircle[] = [{ lat: 40, lng: 140, pRadius: 3000, sRadius: 3000, depth: 10 }]
     const okinawaArea: [number, number][] = [
       [26.05, 127.6],
       [26.9, 128.3],
