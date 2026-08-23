@@ -64,7 +64,7 @@ interface Props {
 // （地形に隠れたときの制御のため）毎フレーム上書きするので、Marker のオプションで渡す。
 // style.cssText の丸ごと代入は Marker がポジショニングに使う transform を消してしまうため、
 // 更新時は個別プロパティだけ触る。
-function updateCrossEl(el: HTMLDivElement, iconScale: number, isAssumed: boolean): void {
+export function updateCrossEl(el: HTMLDivElement, iconScale: number, isAssumed: boolean): void {
   const s = Math.round(32 * iconScale)
   el.style.width = `${s}px`
   el.style.height = `${s}px`
@@ -74,6 +74,12 @@ function updateCrossEl(el: HTMLDivElement, iconScale: number, isAssumed: boolean
   // eew-blink クラスで点滅（Leaflet 版 getEpicenterIcon(blink=true) と同じ CSS）。
   // 仮定震源要素は振幅の浅い eew-blink-assumed を使う（Marker 側の不透明度と乗算されても谷で消えない）。
   const blinkClass = isAssumed ? 'eew-blink-assumed' : 'eew-blink'
+  // **寸法と点滅クラスが同じなら SVG を作り直さない。** 作り直すと点滅が頭から始まり、続報が
+  // 続く間は止まって見える（→ docs/spec/map-rendering-spec.md §10）。
+  // **SVG の中身が isAssumed / iconScale 以外に依存するようになったら、この比較対象を広げること。**
+  // 例えば線の色や太さを確信度で分けると、width と class が同じままで新しい見た目が反映されない。
+  const svg = el.firstElementChild
+  if (svg && svg.getAttribute('width') === String(s) && svg.getAttribute('class') === blinkClass) return
   el.innerHTML =
     `<svg viewBox="0 0 32 32" width="${s}" height="${s}" class="${blinkClass}" xmlns="http://www.w3.org/2000/svg">` +
     `<line x1="4" y1="4" x2="28" y2="28" stroke="#ff2222" stroke-width="4" stroke-linecap="round"/>` +
