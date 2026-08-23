@@ -31,7 +31,10 @@ import {
   TEST_AUTO_DISMISS_MS,
 } from '../utils/testData'
 
-const MAX_HISTORY_RETAINED = 50   // 初回取得件数（設定の最大選択値に合わせる）
+// 初回取得件数（設定の最大選択値に合わせる）。リプレイ開始時の履歴復元（useReplayController の
+// QUAKE_HISTORY_EVENTS）もこの値をそのまま目標にするため export している。片方だけ動かすと、
+// ライブと再生でカードの厚みが黙って食い違う。
+export const MAX_HISTORY_RETAINED = 50
 const LOAD_MORE_BATCH = 50        // 「もっと見る」1回あたりの取得件数
 const MAX_TELEGRAM_LOG = 200      // 電文ログの最大保持件数
 const EEW_FINAL_SILENCE_MS = 10000 // EEW発報テスト（特別警報・警報・予報）: この間隔クリックが無ければ最終報として確定する
@@ -1239,6 +1242,10 @@ export function useEarthquakes(
       nankai: null,
       nankaiCommentary: null,
       kohatsu: null,
+      // 「もっと見る」を畳む。カードを空にしても hasMore を残すと、リプレイ中にボタンが出たまま
+      // になり、押すと `loadMoreEarthquakes` が**ライブの最新履歴**を取りに行って、再生時刻より
+      // 未来の地震がカードに並ぶ。ライブへ戻る側は履歴の取得完了時に立て直すので落としてよい。
+      hasMore: false,
     }))
     eventQueueRef.current = []
     quakeIntensityCacheRef.current.clear()
@@ -1253,6 +1260,19 @@ export function useEarthquakes(
       window.clearTimeout(nankaiCommentaryExpireTimerRef.current)
       nankaiCommentaryExpireTimerRef.current = undefined
     }
+  }, [])
+
+  /**
+   * リプレイ開始時に、指定時刻より前の地震カードを一覧へ流し込む（音・読み上げは経由しない）。
+   *
+   * 統合を `mergeQuakeHistory` に任せるのはライブの履歴取得・「もっと見る」と同じ理由で、
+   * 経路ごとに畳み込み方が分かれると同じ電文から違うカードができる。既存のカードを base に
+   * 置くのは、この復元が pre-window の注入や本編の再生より後に完了しうるため
+   *（先に出来ていたカードを消さず、同じイベントなら統合する）。
+   */
+  const restoreQuakeHistory = useCallback((quakes: JMAQuake[]) => {
+    if (quakes.length === 0) return
+    setState(prev => ({ ...prev, earthquakes: mergeQuakeHistory(quakes, prev.earthquakes) }))
   }, [])
 
   const loadReplayEvents = useCallback((entries: import('../types/replay').ReplayEntry[]) => {
@@ -1273,5 +1293,6 @@ export function useEarthquakes(
     simulateNankai, simulateNankaiCommentary, simulateKohatsu,
     resetState,
     loadReplayEvents,
+    restoreQuakeHistory,
   }
 }

@@ -41,8 +41,8 @@ import { warmFixedPhrases } from './utils/voicevox'
 import { EEW_LEAD_PHRASES } from './utils/ttsText'
 import type { EEWAlert, JMAQuake, JMATsunami } from './types/earthquake'
 import { useReplayController } from './hooks/useReplayController'
-import { fetchDmdataReplayEvents, clearReplayCache } from './services/dmdataReplay'
-import { fetchP2PReplayEvents, clearP2PReplayCache } from './services/p2pquakeReplay'
+import { fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache } from './services/dmdataReplay'
+import { fetchP2PReplayEvents, fetchP2PQuakeHistory, clearP2PReplayCache } from './services/p2pquakeReplay'
 import { log } from './utils/logger'
 import { setReplayOffset as setClockReplayOffset, serverDate } from './utils/clock'
 import { isDmdss } from './utils/env'
@@ -433,7 +433,7 @@ export function App() {
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiCommentary, simulateKohatsu,
-    resetState, loadReplayEvents,
+    resetState, loadReplayEvents, restoreQuakeHistory,
   } = useEarthquakes(handleLiveEvent, debouncedApiKey, settings.dmdataTestDelivery, replayTimeOffset)
   earthquakesRef.current = earthquakes
   tsunamisRef.current = tsunamis
@@ -916,8 +916,19 @@ export function App() {
     () => { if (isDmdss) clearReplayCache(); else clearP2PReplayCache() },
     [],
   )
+  // 地震カードの履歴（再生開始時刻より前の地震）。取得元は再生用と同じくバリアントで変わるが、
+  // 引き方が違う。DMDSS 版は日次アーカイブを必要な日数だけ遡り、standard 版は P2PQuake の
+  // クエリを 1 回引いて件数で切る（`maxDays` はアーカイブ経路にしか意味が無いため渡さない）。
+  const fetchReplayQuakeHistory = useCallback(
+    (before: Date, targetEvents: number, maxDays: number) => isDmdss
+      ? fetchDmdataQuakeHistory(settings.dmdataApiKey, before, targetEvents, maxDays)
+      : fetchP2PQuakeHistory(before, targetEvents),
+    [settings.dmdataApiKey],
+  )
   const replay = useReplayController({
     fetchEvents: fetchReplayEvents,
+    fetchQuakeHistory: fetchReplayQuakeHistory,
+    restoreQuakeHistory,
     clearCache: clearReplayCacheForVariant,
     timeOffset: replayTimeOffset,
     setTimeOffset: setReplayTimeOffset,
