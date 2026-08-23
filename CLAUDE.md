@@ -485,7 +485,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 津波の解除で観測点の記憶を落とす条件（**表示中の津波に向けた解除のときだけ**落とす・判定は `isCancelForCurrentTsunami` に集約しカードの状態更新と共有する・落とすのは記憶と画面の状態だけで**音と読み上げは判定を経ない**・リセットとリプレイ復元でも同じ範囲を揃える） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §5「解除電文と表示中の津波の照合」 |
 | EEW P/S 波予報円の計算・仮定震源要素の連動箇所 | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §5-§6 |
 | EEW レベル判定（特別警報の条件・長周期の DMDATA 限定） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
-| 地図レイヤー描画順・EEW 予想レイヤーの kyoshin 限定・`maplibregl.Marker` の opacity | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §2・§3・§7・§10 |
+| 地図レイヤー描画順・EEW 予想レイヤーの kyoshin 限定・`maplibregl.Marker` の opacity（**中の要素の CSS アニメーションと乗算される**。点滅する描画物を弱めるときは振幅も併せて決める） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §2・§3・§7・§10 |
 | EEW 予想の区域塗りとカメラ追従対象の一致（`useEewLayerData` の `eewFitPositions` と `JapanMapGL` の塗り分けが、同じ「予想長周期を優先する」判定を使っていること） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6 |
 | 表示閾値の単位の使い分け（対象がどれだけ画に収まるかは**視野の実距離**／文字と点の混み具合は**ズーム値**／タイルは**タイル z**）・ズーム値の基準（MapLibre 512px タイル vs Leaflet 256px タイル）・寄り上限に揃える閾値群 | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §4・§6 |
 | 視野基準の閾値が可変であること（寄り上限は 0.5 刻みへ丸める・大画面には絶対上限を置く・上限が固定の帯では可変の下限を追い越させない。`minzoom > maxzoom` は MapLibre が検証せず、どのズームでも描かれないレイヤーが黙って出来上がる） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6「寄り上限と閾値の単位」 |
