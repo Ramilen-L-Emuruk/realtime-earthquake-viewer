@@ -40,6 +40,7 @@ function fakeEvent(
     confirmStreak: 0,
     everConfirmed: overrides.confidence === 'confirmed',
     lastSpreadAtMs: 0,
+    everNeighborRise: overrides.confidence === 'likely' || overrides.confidence === 'confirmed',
     ...overrides,
   }
 }
