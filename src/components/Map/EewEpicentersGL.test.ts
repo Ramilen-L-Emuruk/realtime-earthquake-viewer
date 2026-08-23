@@ -1,6 +1,10 @@
+// @vitest-environment jsdom
+//
+// updateCrossEl が DOM を触るため、このファイルだけ jsdom 環境で実行する（既定の node は変えない）。
+// maplibre-gl の実体は下で差し替えるので WebGL・Worker には触らない。
 import { describe, it, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { crossOpacity } from './EewEpicentersGL'
+import { crossOpacity, updateCrossEl } from './EewEpicentersGL'
 
 // 仮定震源要素（単独観測点処理）の×印の見え方は、2 ファイルに分かれた値の積で決まる。
 //   1. マーカーの不透明度 … EewEpicentersGL.tsx の crossOpacity
@@ -116,5 +120,43 @@ describe('EEW 震源×印の不透明度と点滅の組み合わせ', () => {
   it('確定震源のマーカー不透明度は kyoshin で 1・その他モードで 0.4', () => {
     expect(crossOpacity(false, true)).toBe(1)
     expect(crossOpacity(false, false)).toBe(0.4)
+  })
+})
+
+// 続報が来るたびに SVG を作り直すと、CSS アニメーションが 0% から始まり直す。実際の EEW の
+// 続報間隔（1 秒前後）は点滅周期（1.2 秒）より短いため、濃い側に留まったまま＝点滅が止まって
+// 見える。作り直しを避けているかを要素の同一性で見る（アニメーションの経過時間は jsdom では
+// 進まないので、ここでは測れない）。
+describe('updateCrossEl: 続報で SVG を作り直さない', () => {
+  // 正: 同じ条件で呼び直しても SVG は同一インスタンスのまま。
+  it('寸法と確信度が同じなら作り直さない', () => {
+    const el = document.createElement('div')
+    updateCrossEl(el, 1, true)
+    const first = el.firstElementChild
+    expect(first).not.toBeNull()
+    updateCrossEl(el, 1, true)
+    expect(el.firstElementChild).toBe(first)
+  })
+
+  // 対照: アイコン倍率が変わったら作り直す（寸法を反映しないと表示が合わない）。
+  it('アイコン倍率が変われば作り直す', () => {
+    const el = document.createElement('div')
+    updateCrossEl(el, 1, true)
+    const first = el.firstElementChild
+    updateCrossEl(el, 1.5, true)
+    expect(el.firstElementChild).not.toBe(first)
+    expect(el.firstElementChild?.getAttribute('width')).toBe('48')
+  })
+
+  // 安全弁: 確定/未確定が変わったら作り直す（点滅クラスを差し替えるため）。
+  // ここを「作り直さない」に倒すと、震源が確定しても穏やかな点滅のままになる。
+  it('確定/未確定が変われば作り直して点滅クラスを差し替える', () => {
+    const el = document.createElement('div')
+    updateCrossEl(el, 1, true)
+    expect(el.firstElementChild?.getAttribute('class')).toBe('eew-blink-assumed')
+    const first = el.firstElementChild
+    updateCrossEl(el, 1, false)
+    expect(el.firstElementChild).not.toBe(first)
+    expect(el.firstElementChild?.getAttribute('class')).toBe('eew-blink')
   })
 })

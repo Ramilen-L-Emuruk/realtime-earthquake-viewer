@@ -35,6 +35,9 @@ function area(overrides: Partial<EEWRegion> = {}): EEWRegion {
 
 function makeEEW(over: {
   id: string
+  /** 省略時は id と同じ。続報（id は変わるが同じ地震）を作るときに分ける。 */
+  eventId?: string
+  serial?: string
   condition?: string
   areas: EEWRegion[]
   magnitude?: number
@@ -59,7 +62,11 @@ function makeEEW(over: {
     },
     severity: 'Warning',
     cancelled: false,
-    issue: { eventId: over.id, serial: '1', time: '2024-01-01T16:18:51+09:00' },
+    issue: {
+      eventId: over.eventId ?? over.id,
+      serial: over.serial ?? '1',
+      time: '2024-01-01T16:18:51+09:00',
+    },
     areas: over.areas,
   }
 }
@@ -148,5 +155,44 @@ describe('useEewLayerData: eewAreaFills', () => {
     ])
     expect(fills).toHaveLength(1)
     expect(fills[0].name).toBe('石川県能登')
+  })
+})
+
+// 震源×印の差分更新キー。`eew.id` は `dmdata-eew-<eventId>-<serial>` で続報ごとに変わるため、
+// そのまま使うと描画側（EewEpicentersGL）がマーカーを作り直し、点滅アニメーションが 0% から
+// 始まり直す。実際の続報間隔（1 秒前後）は点滅周期（1.2 秒）より短いので、濃い側に留まった
+// まま＝点滅が止まって見える。ポップアップが続報で閉じるのも同じ原因だった。
+describe('useEewLayerData: eewEpicenters の差分更新キー', () => {
+  // 正: 続報でキーが変わらない。
+  it('同じ地震の続報では id が変わらない（報番号を含めない）', () => {
+    const [first] = epicentersOf([
+      makeEEW({ id: 'dmdata-eew-ev1-1', eventId: 'ev1', serial: '1', areas: [area()] }),
+    ])
+    const [second] = epicentersOf([
+      makeEEW({ id: 'dmdata-eew-ev1-2', eventId: 'ev1', serial: '2', areas: [area()] }),
+    ])
+    expect(first.id).toBe('ev1')
+    expect(second.id).toBe('ev1')
+    // 報番号そのものは別フィールドで運ぶ（ポップアップの「第N報」表示に使う）。
+    expect(first.serial).toBe('1')
+    expect(second.serial).toBe('2')
+  })
+
+  // 対照: 別の地震は別のキー。ここが同じになると 2 本の EEW が 1 つのマーカーを奪い合う。
+  it('別の地震は別の id になる', () => {
+    const list = epicentersOf([
+      makeEEW({ id: 'dmdata-eew-ev1-1', eventId: 'ev1', areas: [area()] }),
+      makeEEW({ id: 'dmdata-eew-ev2-1', eventId: 'ev2', areas: [area()] }),
+    ])
+    expect(list).toHaveLength(2)
+    expect(new Set(list.map((e) => e.id)).size).toBe(2)
+  })
+
+  // 安全弁: eventId が欠けたときのフォールバック。**実データでは通らない**
+  // （DMDATA・P2PQuake・Yahoo のいずれの経路も eventId を持つ）。欠けても一意性を失わないことだけ固定する。
+  it('eventId が無ければ eew.id を使う', () => {
+    const base = makeEEW({ id: 'no-issue', areas: [area()] })
+    const [ep] = epicentersOf([{ ...base, issue: undefined }])
+    expect(ep.id).toBe('no-issue')
   })
 })

@@ -365,9 +365,15 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
   └─ 自動解除      →  時刻到達で activeEEWs.delete(key)（無音）
 ```
 
-キーは `eew.issue?.eventId ?? eew.id` を統一パターンで使う。ただし `EewEpicentersGL` の `id` 生成は
-`eew.id` を直接使っており（serial 込みで続報のたびに変わる）、Marker がリマウントしてポップアップが
-強制で閉じる問題がある（既知の HIGH 課題）。
+キーは `eew.issue?.eventId ?? eew.id` を統一パターンで使う。**地図の震源×印の差分更新キー
+（`EewEpicenter.id`）も同じ式を使う。** `eew.id` は報番号込み（DMDATA は
+`dmdata-eew-<eventId>-<serial>`・P2PQuake は報ごとに変わるレコード ID）なので、これを直接キーに
+すると続報ごとにマーカーを作り直し、点滅が止まってポップアップも閉じる
+（理由と対策は [`map-rendering-spec.md`](map-rendering-spec.md) §10）。
+
+`issue.eventId` は DMDATA・P2PQuake のどちらの経路も持つ。Yahoo 強震モニタの hypoInfo 経路
+（standard 版の補完）も持ち、`id` 自体にも報番号を含まない。**つまりフォールバックの `?? eew.id` は
+防御用で、実データでは通らない。**
 
 ## 11. パラメータ一覧
 
