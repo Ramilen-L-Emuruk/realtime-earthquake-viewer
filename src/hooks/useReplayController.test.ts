@@ -132,13 +132,13 @@ describe('formatLossNotice', () => {
   // 黙らせると「1 日分まるごと欠けた再生」を成功と見分けられなくなる。
   it('アーカイブ単位の失敗も知らせる', () => {
     const msg = formatLossNotice(addLoss(createEmptyLoss(), 0, ['https://x/a', 'https://x/b']))
-    expect(msg).toMatch(/2 件のアーカイブ/)
+    expect(msg).toMatch(/2 件の取得元/)
     expect(msg).toMatch(/継続中/)
   })
 
   it('両方欠けたときは両方を並べる', () => {
     const msg = formatLossNotice(addLoss(createEmptyLoss(), 5, ['https://x/a']))
-    expect(msg).toMatch(/1 件のアーカイブ/)
+    expect(msg).toMatch(/1 件の取得元/)
     expect(msg).toMatch(/5 件の電文/)
   })
 

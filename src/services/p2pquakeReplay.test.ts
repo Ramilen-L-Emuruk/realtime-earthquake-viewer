@@ -4,7 +4,7 @@
 // 解釈（convertEvent）は本物を通す。ここを偽物にすると、時刻を読めない電文を弾く経路まで
 // テスト側の都合で作った形になってしまい、実データとの食い違いを検出できなくなる。
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fetchP2PReplayEvents, clearP2PReplayCache } from './p2pquakeReplay'
+import { fetchP2PReplayEvents, fetchP2PQuakeHistory, clearP2PReplayCache } from './p2pquakeReplay'
 import { fetchJmaArchiveRaw } from './p2pquake'
 import type { RawP2PEvent } from './p2pquake'
 
@@ -178,5 +178,110 @@ describe('fetchP2PReplayEvents', () => {
 
     await expect(fetchP2PReplayEvents(T, new Date(T.getTime() + 3600_000))).rejects.toThrow('boom')
     await expect(fetchP2PReplayEvents(T, new Date(T.getTime() + 3600_000))).resolves.toMatchObject({ entries: [] })
+  })
+})
+
+// 地震カードの履歴取得。再生窓の取得と違い件数基準で、1 リクエストに収める
+// （`/jma` のレート制限は 10 リクエスト/分）。
+describe('fetchP2PQuakeHistory', () => {
+  it('指定時刻の日付までを、新しい順に 1 リクエストで引く', async () => {
+    respondWith({ quake: [[quake('a', new Date(2024, 0, 1, 10, 0, 0))]] })
+
+    const result = await fetchP2PQuakeHistory(T, 50)
+
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    const [resource, query] = mockFetch.mock.calls[0]
+    expect(resource).toBe('quake')
+    expect(query?.untilDate).toBe('20240101')
+    expect(query?.order).toBe(-1)
+    expect(result.quakes).toHaveLength(1)
+  })
+
+  // until_date は日単位なので、同じ日の「まだ発表されていない」電文が必ず混ざる。
+  // 落とさないと、再生開始前の一覧に未来の地震が並ぶ。
+  it('指定時刻より後に発表された電文は採らない', async () => {
+    respondWith({
+      quake: [[
+        quake('past', new Date(2024, 0, 1, 15, 0, 0)),
+        quake('future', new Date(2024, 0, 1, 17, 0, 0)),
+      ]],
+    })
+
+    const result = await fetchP2PQuakeHistory(T, 50)
+
+    expect(result.quakes.map(q => q.id)).toEqual(['past'])
+  })
+
+  it('種別を読めない電文は取りこぼしとして数える', async () => {
+    respondWith({ quake: [[{ id: 'broken' } as unknown as RawP2PEvent]] })
+
+    const result = await fetchP2PQuakeHistory(T, 50)
+
+    expect(result.quakes).toHaveLength(0)
+    expect(result.skipped).toBe(1)
+  })
+
+  // 取得は 1 リクエストで完結するため、途中まで読めた状態が無い。
+  // 部分的な成功を装わず、そのまま呼び出し元へ投げる。
+  it('取得に失敗したら例外をそのまま返す', async () => {
+    mockFetch.mockRejectedValue(new Error('P2PQuake の取得制限に達しました（jma/quake）'))
+
+    await expect(fetchP2PQuakeHistory(T, 50)).rejects.toThrow(/取得制限/)
+  })
+})
+
+// 打ち切りが無いと、API のページング単位（電文 100 件）がそのまま一覧の厚みになり、
+// 地震の多い期間ほどカードが増えて DMDSS 版と枚数が食い違う。
+describe('fetchP2PQuakeHistory の打ち切り', () => {
+  it('目標のイベント数に達したら、それより古い地震は採らない', async () => {
+    respondWith({
+      quake: [[
+        quake('a', new Date(2024, 0, 1, 11, 0, 0)),
+        quake('b', new Date(2024, 0, 1, 10, 0, 0)),
+        quake('c', new Date(2024, 0, 1, 9, 0, 0)),
+      ]],
+    })
+
+    const result = await fetchP2PQuakeHistory(T, 2)
+
+    expect(result.quakes.map(q => q.id)).toEqual(['a', 'b'])
+  })
+
+  // 続報を別イベントとして数えると目標に早く達し、しかも打ち切りで前の報だけが落ちて
+  // 「震度速報のまま止まったカード」が最古に残る。
+  it('同じ地震の続報は目標に数えず、打ち切りの後でも採る', async () => {
+    const first = new Date(2024, 0, 1, 11, 0, 0)
+    respondWith({
+      quake: [[
+        quake('a-2', first),                             // 新しい報
+        quake('b', new Date(2024, 0, 1, 10, 0, 0)),      // 別の地震（ここで目標 2 件に到達）
+        quake('a-1', first),                             // a と同じ地震の前の報
+        quake('c', new Date(2024, 0, 1, 9, 0, 0)),       // 3 件目の地震 → 採らない
+      ]],
+    })
+
+    const result = await fetchP2PQuakeHistory(T, 2)
+
+    // 返す順は発表時刻の降順（取得側で並べ直すため、応答の並びとは一致しない）。
+    // カードの並びは呼び出し先の mergeQuakeHistory が決めるので、ここでは採否だけが意味を持つ。
+    expect(result.quakes.map(q => q.id)).toEqual(['a-2', 'a-1', 'b'])
+  })
+})
+
+// 打ち切りは「どこで切るか」の判断なので、応答の並びに委ねない。
+// order=-1 を渡していても、並びが崩れれば古い地震で目標に達して新しい地震を落としうる。
+describe('fetchP2PQuakeHistory は応答の並び順に依存しない', () => {
+  it('応答が新しい順でなくても、新しい地震から目標件数を採る', async () => {
+    respondWith({
+      quake: [[
+        quake('old', new Date(2024, 0, 1, 9, 0, 0)),
+        quake('newest', new Date(2024, 0, 1, 11, 0, 0)),
+        quake('middle', new Date(2024, 0, 1, 10, 0, 0)),
+      ]],
+    })
+
+    const result = await fetchP2PQuakeHistory(T, 2)
+
+    expect(result.quakes.map(q => q.id)).toEqual(['newest', 'middle'])
   })
 })
