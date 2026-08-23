@@ -52,8 +52,33 @@ export function japanWideCornersLatLng(): [LatLng, LatLng] {
 }
 
 // EEW フォローの「引きの画（ルーズ）」余白係数。有感半径を囲む際に外側へ少し余白を持たせる。
-// 日本全体ハードキャップがあるため大地震（有感半径が日本超え）では効かず、中小地震の見え方だけを整える。
+// 引き上限（`EEW_FOLLOW_MAX_RADIUS_KM`）に達した大地震では効かず、中小地震の見え方だけを整える。
 export const EEW_FOLLOW_LOOSE = 1.2
+
+/**
+ * EEW 追従の引き上限（円の半径・km）。円を囲む箱は 1600km 四方になる
+ * （実際に見える視野は余白のぶんもう少し広い。下記の 930km の話はそのため）。
+ *
+ * **上限は「半径」に置く。矩形の辺を枠で切り詰めてはならない。** かつては日本の枠
+ * （`JAPAN_BOUNDS`）との交差で辺ごとに詰めていたが、辺を別々に動かすため震源が箱の中心から
+ * 外れる——枠の外に震源がある地震（南西諸島・小笠原・千島・大陸寄り）では、円が枠に触れた
+ * 瞬間に切り詰めが発動し、震源を含まない箱に化けていた。
+ * 2026-08-19 20:44 の奄美大島北西沖 M5.2（震源 28.9N/128.0E＝枠の南西外）で、円が半径 230km
+ * から 250km に育った 1 段で中心のずれが 0 → 177km へ跳び、最終報では 249km に達した。
+ * 半径で持てば箱は常に震源中心の正方形になり、位置に依存した不連続が構造的に起きない。
+ *
+ * 800km の根拠: 旧キャップ（日本の枠）が実際に作っていた画は短辺 1443〜1617km で、その半分。
+ * **見え方を変えないこと**を基準に選んだ。着地ズームが旧キャップと一致することは
+ * `gl/zoomConstants.test.ts` が代表ペインで固定している。
+ *
+ * **この値を上げるときは地方名ラベルの閾値（`gl/zoomLevels.ts` の `LABEL_MAX_SPAN_KM` = 2200km）
+ * との関係を確認すること。** 視野の短辺は余白（padding）のぶん半径の 2 倍より広くなるため、
+ * 基準ペイン（短辺 800px）では半径 930km あたりが境目で、それを超えると大地震で地名が落ちる
+ * （テストが固定しているのは 800km で出る・1000km で落ちるという両側の点）。
+ * なお短辺が狭いペイン（上下分割など）では 800km でも閾値を超えて地名が消えるが、これは旧キャップ
+ * でも同じ（同じ段へ着地するため）で、半径で持つことによる劣化ではない。
+ */
+export const EEW_FOLLOW_MAX_RADIUS_KM = 800
 
 /** 2つの矩形の外接矩形。片方が null ならもう片方をそのまま返す。 */
 export function mergeBounds(a: BoundsTuple | null, b: BoundsTuple | null): BoundsTuple | null {
@@ -83,40 +108,37 @@ export function boundsFromPositionsTuple(positions: LatLng[]): BoundsTuple | nul
   return [west, south, east, north]
 }
 
-// bounds が日本全体（JAPAN_BOUNDS）より広がらないよう各辺を内側へ詰める（大地震で有感半径が日本を
-// 超えても海だけの画にしないためのハードキャップ）。日本と交差しない（完全に日本外の）場合は元のまま返す。
-export function clampBoundsToJapan(b: BoundsTuple): BoundsTuple {
-  const [[jw, js], [je, jn]] = JAPAN_BOUNDS
-  const west = Math.max(b[0], jw)
-  const south = Math.max(b[1], js)
-  const east = Math.min(b[2], je)
-  const north = Math.min(b[3], jn)
-  if (west < east && south < north) return [west, south, east, north]
-  return b
-}
-
 // EEW 予報円を追従するための bounds を算出する。追従基準は「揺れが実際に届く前線」＝S波円（sRadius・
 // 無ければ pRadius）とし、速い P波円は追わない（P波を追うとカメラが揺れの到達より先へ際限なく広がるため）。
 // 各波円の半径を「S波が届くと思われる範囲」＝有感半径（calcFeltRadiusKm・震度1+ が届く距離）でクランプし、
-// ルーズ余白を掛け、最後に日本全体（JAPAN_BOUNDS）を超えないようクランプする。これにより S波前線を追い、
-// 有感半径を余裕を持って囲んだところ（大地震では日本全体）でズームアウトが止まる。magnitude 不明時は
-// 有感半径クランプを外し日本全体キャップのみ効かせる。
+// ルーズ余白を掛け、最後に引き上限（EEW_FOLLOW_MAX_RADIUS_KM）で頭打ちにする。これにより S波前線を追い、
+// 有感半径を余裕を持って囲んだところ（大地震では引き上限）でズームアウトが止まる。magnitude 不明時は
+// 有感半径クランプを外し引き上限のみ効かせる。
 // 各円は中心 ± 半径ぶんの箱として加える（Leaflet の L.latLng(c).toBounds(radius*2*1000) と同じく半径=箱の半幅）。
+// **上限は半径にかける（箱の辺を枠で切らない）**。理由は EEW_FOLLOW_MAX_RADIUS_KM の説明。
 export function boundsFromEewCircles(circles: EewFollowCircle[]): BoundsTuple | null {
   let bounds: BoundsTuple | null = null
   for (const c of circles) {
     // 揺れの前線＝S波円を基準に追従する（sRadius 優先・無ければ pRadius へフォールバック）。
     const waveRadiusKm = c.sRadius > 0 ? c.sRadius : c.pRadius
-    if (waveRadiusKm <= 0) continue
+    // 半径・座標のいずれかが有限でない円は捨てる。**`<= 0` では NaN を弾けない**（NaN を含む比較は
+    // 常に false になるため素通りする）。素通りさせると Math.min が NaN を返し、mergeBounds の
+    // Math.min/Math.max を通って**合成後の矩形全体**が NaN になる——他の EEW の円・震源・検知点・
+    // 予想区域まで巻き込むうえ、上限（EEW_FOLLOW_MAX_RADIUS_KM）も NaN はクランプできないため
+    // 「必ず頭打ちになる」保証が静かに破れる。
+    if (!(waveRadiusKm > 0) || !Number.isFinite(c.lat) || !Number.isFinite(c.lng)) continue
     // S波が届くと思われる範囲でクランプ。magnitude が有効な値のときのみ有感半径を算出する。
+    // 深さも同様に有限でなければ 0 へ倒す（`?? 0` は null/undefined しか捕まえず NaN は通す）。
     const hasMag = c.magnitude != null && Number.isFinite(c.magnitude) && c.magnitude > 0
-    const feltRadiusKm = hasMag ? calcFeltRadiusKm(c.magnitude as number, c.depth ?? 0) : Infinity
-    const radiusKm = Math.min(waveRadiusKm, feltRadiusKm) * EEW_FOLLOW_LOOSE
+    const depthKm = Number.isFinite(c.depth) ? (c.depth as number) : 0
+    const feltRadiusKm = hasMag ? calcFeltRadiusKm(c.magnitude as number, depthKm) : Infinity
+    // ルーズ余白を掛けた**後**に引き上限をかける（先に上限をかけると 1.2 倍で上限を超えてしまう）。
+    const radiusKm = Math.min(Math.min(waveRadiusKm, feltRadiusKm) * EEW_FOLLOW_LOOSE, EEW_FOLLOW_MAX_RADIUS_KM)
     const latDelta = radiusKm / 111.32
     const lngDelta = radiusKm / (111.32 * Math.cos((c.lat * Math.PI) / 180))
     bounds = mergeBounds(bounds, [c.lng - lngDelta, c.lat - latDelta, c.lng + lngDelta, c.lat + latDelta])
   }
-  return bounds ? clampBoundsToJapan(bounds) : null
+  return bounds
 }
 
 /**
@@ -144,8 +166,10 @@ export function boundsFromEewCirclesAndHypocenters(
  * 予想震度そのもの。塗ってあるものが画面外にあると読めないため、実際に描いている範囲を目標に含める。
  * S波がまだ到達していない遠方の区域も入るので、円だけを追う場合より早めに引きの画へ移る。
  *
- * 検知点側と区域側には日本全体クランプをかけない。JAPAN_BOUNDS は本州〜北海道を囲う枠で沖縄を
- * 含まないため、沖縄の観測点や区域が反応した場合に切り捨ててしまう。ハードキャップは円側にのみ効かせる。
+ * 検知点側と区域側には引き上限をかけない。上限（`EEW_FOLLOW_MAX_RADIUS_KM`）は円が際限なく育つのを
+ * 止めるためのもので、実際に反応した観測点や気象庁が塗った区域は「そこにある事実」なので切らない。
+ * そのため合成後の箱は震源中心にならないことがある——これは画に入れるべきものを入れた結果であり、
+ * 円側の上限が中心を保つのとは別の話。
  */
 export function boundsForLiveFollowTuple(
   circles: EewFollowCircle[],

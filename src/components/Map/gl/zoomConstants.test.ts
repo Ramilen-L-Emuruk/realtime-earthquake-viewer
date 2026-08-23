@@ -11,7 +11,7 @@ import {
 import { detailMinZoomForPane, labelMinZoomForPane } from './zoomLevels'
 import { ABSOLUTE_MAX_ZOOM, clampMinZoom } from './viewSpan'
 import { REGION_MAX_ZOOM } from '../LabelsGL'
-import { JAPAN_BOUNDS } from './bounds'
+import { JAPAN_BOUNDS, EEW_FOLLOW_MAX_RADIUS_KM } from './bounds'
 
 // 複数モジュールに散らばるズーム閾値の「相互関係」を固定する回帰テスト。
 //
@@ -55,7 +55,15 @@ const FIT_JAPAN_PADDING_PX = 20
  * MapLibre と同じ正規化 Mercator 座標で厳密に解く。
  */
 function fitJapanZoom(pane: Pane): number {
-  const [[west, south], [east, north]] = JAPAN_BOUNDS
+  return landingZoom(pane, JAPAN_BOUNDS, FIT_JAPAN_PADDING_PX)
+}
+
+/** 矩形 `[[west,south],[east,north]]` が padding を除いたペインへ収まる最大ズーム（切り下げ前）。 */
+function landingZoom(
+  pane: Pane,
+  [[west, south], [east, north]]: [[number, number], [number, number]],
+  paddingPx: number,
+): number {
   const mercY = (lat: number) => {
     const rad = (lat * Math.PI) / 180
     return 0.5 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / (2 * Math.PI)
@@ -64,9 +72,38 @@ function fitJapanZoom(pane: Pane): number {
   const worldPx = 512
   const spanX = ((east - west) / 360) * worldPx
   const spanY = (mercY(south) - mercY(north)) * worldPx
-  const usableW = pane.width - FIT_JAPAN_PADDING_PX * 2
-  const usableH = pane.height - FIT_JAPAN_PADDING_PX * 2
+  const usableW = pane.width - paddingPx * 2
+  const usableH = pane.height - paddingPx * 2
   return Math.min(Math.log2(usableW / spanX), Math.log2(usableH / spanY))
+}
+
+// EEW 追従（`flyToBoundsSnapped` の呼び出し・`CameraFollowsGL.tsx`）で使う padding。
+const EEW_FOLLOW_PADDING_PX = 60
+
+/**
+ * 震源中心・半径 radiusKm の箱へ EEW 追従が着地するズーム。
+ *
+ * 実装が通る経路（`flyToBoundsSnapped` → `cameraForBounds(bounds, { padding, maxZoom })` →
+ * `snapZoomDown`）と同じ順序で解く。**寄り上限（`fitMaxZoom`）のクランプも入れる**——引き上限に
+ * 達する規模の箱では上限側の制約は効かないが、それはいまの値でそうなっているだけ。省くと
+ * `EEW_FOLLOW_MAX_RADIUS_KM` を小さくしたときにテストが「クランプ前の理論値」を検証し続ける。
+ */
+function eewFollowLandingZoom(pane: Pane, radiusKm: number, centerLat: number, centerLng: number): number {
+  const dLat = radiusKm / 111.32
+  const dLng = radiusKm / (111.32 * Math.cos((centerLat * Math.PI) / 180))
+  return eewFollowLandingZoomForBox(pane, [
+    [centerLng - dLng, centerLat - dLat],
+    [centerLng + dLng, centerLat + dLat],
+  ])
+}
+
+/** 任意の箱に対する EEW 追従の着地ズーム（旧キャップとの比較にも使う）。 */
+function eewFollowLandingZoomForBox(pane: Pane, box: [[number, number], [number, number]]): number {
+  const raw = Math.min(
+    landingZoom(pane, box, EEW_FOLLOW_PADDING_PX),
+    fitMaxZoomForPane(shortSideOf(pane)),
+  )
+  return snapZoomDown(raw, EEW_ZOOM_SNAP)
 }
 
 describe('ズーム閾値の相互関係', () => {
@@ -116,6 +153,32 @@ describe('ズーム閾値の相互関係', () => {
     // なる。追い越すと MapLibre は minzoom > maxzoom をそのまま受け取り、どのズームでも描かれない
     // レイヤーになる（例外もログも出ない）。実際にレイヤーへ渡す値でこれを固定する。
     expect(clampMinZoom(labelMinZoomForPane(shortSideOf(pane)), REGION_MAX_ZOOM)).toBeLessThan(REGION_MAX_ZOOM)
+  })
+
+  // 以下 3 件は EEW 追従の引き上限（`EEW_FOLLOW_MAX_RADIUS_KM`）と地方名ラベルの閾値の関係。
+  // 上限は「旧キャップ（日本の枠で矩形の辺を切り詰める方式）と同じ見え方」を基準に選んだ値なので、
+  // その前提が崩れたことを検知できるようにしておく。崩れても型チェックには一切現れない。
+  it.each(PANES)('$name: 引き上限に達した EEW 追従が、旧キャップと同じ段へ着地する', (pane) => {
+    // 旧実装は円の外接矩形を日本の枠へ切り詰めていた（枠いっぱいが最大ケース）。
+    // 新実装は震源中心 ±上限 の箱。同じ段へ着地するなら、見え方は変わっていない。
+    const old = eewFollowLandingZoomForBox(pane, JAPAN_BOUNDS)
+    const capped = eewFollowLandingZoom(pane, EEW_FOLLOW_MAX_RADIUS_KM, 37.5, 137.2)
+    expect(capped).toBe(old)
+  })
+
+  it('基準ペインでは引き上限に達した画でも地方名ラベルが出る', () => {
+    // 上限を選ぶときの制約。視野は padding のぶん半径の 2 倍より広くなるため、上げすぎると
+    // 大地震の引きの画で地名が落ちる。
+    const pane: Pane = { name: '基準', width: 900, height: 800 }
+    const landed = eewFollowLandingZoom(pane, EEW_FOLLOW_MAX_RADIUS_KM, 37.5, 137.2)
+    expect(landed).toBeGreaterThan(labelMinZoomForPane(shortSideOf(pane)))
+  })
+
+  it('基準ペインでも半径 1000km まで上げると地方名ラベルが落ちる（上限に余裕が無いことの確認）', () => {
+    // 上のテストが「たまたま通っている」のではなく、境目が近いことを示す。
+    // 境目は 930km あたり。ここが動いたら `EEW_FOLLOW_MAX_RADIUS_KM` の docstring も見直す。
+    const pane: Pane = { name: '基準', width: 900, height: 800 }
+    expect(eewFollowLandingZoom(pane, 1000, 37.5, 137.2)).toBeLessThan(labelMinZoomForPane(shortSideOf(pane)))
   })
 
   it('大きなペインではラベル下限のクランプが実際に効いている（ガードが飾りでないことの確認）', () => {
