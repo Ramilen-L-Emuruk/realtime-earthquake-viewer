@@ -546,6 +546,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | リプレイ開始時の地震カードの厚み（一覧は**件数基準**で別途復元し、初期状態の 24 時間とは目的も遡り幅も分ける・再生中は「もっと見る」を出さない（押すとライブの最新履歴が混ざる）・履歴の取得が失敗しても再生は始める） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「地震カードの履歴は件数で遡る」 |
 | 実地震テストシナリオの時刻シフト・ID 再採番・利用規約制約 | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6 |
 | 生成データ（`public/data/*.json`）の取得タイムアウト値・失敗時の扱い（TTS 辞書のみ別値） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §6 |
+| 生成データの中身の検分（200 でも空・想定外の形なら失敗として扱う）を**取得の中**（`fetchJsonWithTimeout` の `validate`）で行うこと。取得後に呼び出し側で確かめると、その時点で成功として数え終わっているため「データの一部を取得できませんでした」に計上されず、`console` にしか残らない。**新しいローダーを足すときも同じ場所へ渡す** | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §6 |
 | テスト時刻設定のバリアント差（standard は P2PQuake の日付クエリ、DMDSS は DMDATA アーカイブ＋当日ぶんの別経路／ただし EEW はどちらも取得元が異なり、standard では強震モニタ側の検知に頼る） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」 |
 | archive リプレイの重複排除（XML 版／JSON 版どちらを採用するか）・失敗の封じ込め範囲（アーカイブが全滅しても強震モニタの再生は止めない） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」配下 |
 | アーカイブが無い日を埋める当日経路（**日付の基準が API ごとに違う**＝アーカイブの `date` は JST 日／`/v2/telegram`・`/v2/gd/eew` の `datetime` は UTC の半開区間・担当日の排他は `resolveLiveDates` の 1 箇所に集約・EEW だけ `/v2/gd/eew` を辿るのは電文一覧が EEW を保持しないため・**VXSE43 は取り込まない**（アーカイブ経路も取り込んでおらず、対応する VXSE45 の警報報と同一内容の複製で報番号だけが独立している）） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「当日ぶんの取得元」 |
