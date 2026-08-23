@@ -3,6 +3,7 @@ import type * as maplibregl from 'maplibre-gl'
 import { useMapGL } from './mapGLContext'
 import type { LatLng } from '../../utils/stationCoords'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
+import type { ShakeFocus } from './mapTypes'
 import type { EEWAlert } from '../../types/earthquake'
 import type { PsWaveCircle } from '../../services/kyoshin'
 import { computeEewCircle } from '../../hooks/usePsWaveCalc'
@@ -206,6 +207,18 @@ const REFIT_HOLD_MS = 8000
 // 引き直される（`fitToPositions` / `flyToBoundsSnapped` の切り下げの説明を参照）。
 const DETECTION_FIT_PADDING = 60
 
+// 揺れフォーカス（`ShakeFocus`）で 1 点へ寄せたあと、成長・収め直しフォローを止めておく時間。
+// 止めないと、次の観測点更新（最大 1 秒後）で「検知点全体が画に収まっていない」と判定され、
+// 寄せた画が即座に引き戻される。EEW 新規の `GROWTH_FOLLOW_SUPPRESS_MS` と役割・長さは同じだが、
+// 止める対象が違う（あちらは EEW 追従・こちらは検知追従）ため別に持つ。
+const SHAKE_FOCUS_SUPPRESS_MS = 3000
+
+// 揺れフォーカスの要求を受け付ける鮮度。揺れ検知はタブ移動も同時に要求するが、タブの保持
+// （優先度）で realtime へ移れないことがある（EEW・津波が出ている間）。その場合に要求だけが残り、
+// 後から手動で入室したときに「もう収まった揺れの点」へ寄ってしまうのを防ぐ。
+// EEW の `NEW_EEW_FOCUS_WINDOW_MS`（10 秒）より短いのは、揺れの強まりが数秒で移り変わるため。
+const SHAKE_FOCUS_WINDOW_MS = 5000
+
 // ── 揺れ検知点にフィットし、検知終了時は日本全体に戻す（EEW 中は戻さない） ──────────
 // MAP-4 対応: 初回フィットも hasEew 時は FitToEEWGL に委譲してスキップする（従来は初回のみ
 // hasEew を無視して検知点へ寄せていたが、EEW と同じコミットで発生する二段ジャンプを回避）。
@@ -218,6 +231,8 @@ export function FitToDetectionGL({
   hasDetection,
   hasEew,
   hasCandidate = false,
+  shakeFocus = null,
+  lastConsumedFocusTickRef,
 }: {
   /**
    * カメラが追う検知点。**実際に地図へ描かれている点だけ**を渡すこと（`JapanMapGL` の
@@ -243,6 +258,17 @@ export function FitToDetectionGL({
    * 検知終了時に日本全体へ戻すかどうかの判断にのみ使う。
    */
   hasCandidate?: boolean
+  /**
+   * 「この 1 点を見せたい」という要求（`useKyoshinAlerts` が通知音と同じ判定で出す。揺れの強まりと
+   * 別地点発報）。消費すると `SHAKE_FOCUS_SUPPRESS_MS` の間、下の成長・収め直しフォローを止める。
+   */
+  shakeFocus?: ShakeFocus | null
+  /**
+   * 消費済みの `shakeFocus.tick`。**親（`JapanMapGL`）が保有する ref を渡すこと**——このコンポーネントは
+   * kyoshin モード限定マウントのため、内部に持つとタブを離れるたびに記録が消え、直前に見せた要求を
+   * 未消費と読んで同じ点へ寄り直す。
+   */
+  lastConsumedFocusTickRef: React.MutableRefObject<number>
 }) {
   const map = useMapGL()
   const fittedRef = useRef(false)
@@ -252,11 +278,27 @@ export function FitToDetectionGL({
   const noFitTargetRef = useRef(false)
   // 収め直しの判定自体ができない状態にいるか（同じくログを変わり目だけに絞るために持つ）。
   const refitBlindRef = useRef(false)
+  // 揺れフォーカスを見せている間、成長・収め直しフォローを止める期限（0 = 抑制なし）。
+  const suppressFollowUntilRef = useRef(0)
   const [isUserInteracting] = useUserInteractionGuard(map)
   useEffect(() => {
     if (!map) return
+    // 揺れフォーカスの要求を「寄らずに」消費する。**見送りは必ず記録に残す**——黙って捨てると
+    // 「音は鳴ったのに画が動かない」の原因を事後に追えない。
+    //
+    // 下の早期 return（検知終了・寄り先なし）でもこれを通すのが要点。消費せずに残すと、要求が
+    // 次に評価される機会まで持ち越され、**検知が切れてすぐ次の検知が始まった場合に「前の検知の点」へ
+    // 寄る**（鮮度の窓 5 秒はその間の再開を弾けない）。
+    const dropShakeFocus = (why: string) => {
+      if (!shakeFocus || shakeFocus.tick === lastConsumedFocusTickRef.current) return
+      lastConsumedFocusTickRef.current = shakeFocus.tick
+      log.debug(`[mapGL] 揺れフォーカス スキップ (${why})`)
+    }
     if (!hasDetection) {
       refitSinceRef.current = 0
+      dropShakeFocus('検知終了')
+      // 次の検知サイクルへ抑制を持ち越さない（検知が終われば見せていたフォーカスも意味を失う）。
+      suppressFollowUntilRef.current = 0
       // 次の検知サイクルへ持ち越さない。持ち越すと「寄り先なし」「判定不可」に入った初回のログが出ない。
       noFitTargetRef.current = false
       refitBlindRef.current = false
@@ -291,6 +333,11 @@ export function FitToDetectionGL({
     // （毎周回では出さない。この分岐は揺れが引くたびに秒単位で通るため）。
     if (points.length === 0) {
       refitSinceRef.current = 0
+      // 描ける点が無い間に来た要求も消費する。**寄り先そのものは代表点なので描画に依らず飛べる**が、
+      // 画に何も無い場所へ寄っても見せるものが無い。なおレベルアップ・別地点発報はどちらも震度3以上を
+      // 要件にしているため（`useKyoshinAlerts` の `NEW_REGION_MIN_INDEX` と音レベルの境界）、この状態と
+      // 同時に成立することは実際には起きにくい。
+      dropShakeFocus('寄り先なし・検知は継続中')
       // 「判定不可」の記録もここで落とす（`noFitTargetRef` と同じ寿命で扱う。状態が入れ替わった
       // ときに、それぞれの初回ログが必ず出るようにするため）。
       refitBlindRef.current = false
@@ -321,12 +368,51 @@ export function FitToDetectionGL({
       fitToPositions(map, points.map(dp2ll), { padding: 60, durationSec: 1.0 })
       return
     }
+    // 揺れフォーカスの消費。揺れが強まったとき（通知音が鳴るとき）と別地点発報のときに、その 1 点へ
+    // 短く寄せる。初回フィットより後に置いているのは、同じコミットで両方が立った場合に「まず全体を
+    // 見せてから寄る」順にするため。**ここは要求を保留する唯一の経路**で、次の観測点更新（毎秒）で
+    // 拾われる——初回フィットの直後なら鮮度の窓に十分収まる。
+    //
+    // 見送る条件は 3 つ。**どの場合も連番は消費する**——この要求は「その瞬間を見せたい」ものなので、
+    // 抑制が明けてから蒸し返す価値が無い（取り戻す経路も意図的に持たない）。
+    //  - 古い要求: タブの保持で realtime へ移れなかった分（`SHAKE_FOCUS_WINDOW_MS`）。
+    //  - EEW 発報中: EEW 優先。そもそも下の追従も EEW 中は FitToEEWGL へ委譲している。
+    //  - ユーザー操作中: 震度の上昇は警報の第一報ではないので、EEW のように操作の保持を解除して
+    //    まで画を奪わない（他の Fit* と同じく `isUserInteracting` を尊重する）。
+    if (shakeFocus && shakeFocus.tick !== lastConsumedFocusTickRef.current) {
+      const ageMs = Date.now() - shakeFocus.atMs
+      if (ageMs >= SHAKE_FOCUS_WINDOW_MS) {
+        dropShakeFocus(`古い要求 ${Math.round(ageMs / 1000)}秒前`)
+      } else if (hasEew) {
+        dropShakeFocus('EEW発報中・FitToEEW に委譲')
+      } else if (isUserInteracting) {
+        dropShakeFocus('userInteracting')
+      } else {
+        lastConsumedFocusTickRef.current = shakeFocus.tick
+        // 抑制の間は下の待ちを積ませない（抑制明けに「ゆるい状態が続いた」と誤認させないため。
+        // EEW 側へ委譲するときに refitSince を寝かせているのと同じ理由）。
+        refitSinceRef.current = 0
+        refitBlindRef.current = false
+        suppressFollowUntilRef.current = Date.now() + SHAKE_FOCUS_SUPPRESS_MS
+        log.debug(`[mapGL] 揺れフォーカス (${shakeFocus.lat.toFixed(2)},${shakeFocus.lng.toFixed(2)})`)
+        flyToPoint(map, [shakeFocus.lat, shakeFocus.lng], fitMaxZoom(map), 0.8)
+        return
+      }
+    }
     // 検知範囲の成長追従。EEW 発報中は FitToEEWGL が「有感半径 ∪ 検知点」を追うため、ここでは追わない。
     // 両方が「自分の bounds がはみ出したら引く」を持つと目標が2つになり、互いに相手をはみ出させ合って
     // 振動する（ズーム段階のヒステリシスでは止まらない。目標同士が排他のため）。hasEew で持ち主を分ける。
     // 自分が追わない状況（EEW 側に委譲・飛行中・ユーザー操作中）では、収め直しフォローの待ちを
     // 積ませない。ここでリセットしないと、抑制が明けた瞬間に「ゆるい状態が続いた」と誤認して
     // 待ち時間ゼロで寄り直してしまう（ユーザーが操作をやめた直後にカメラがスナップする）。
+    // 揺れフォーカスを見せている間は追従しない（引き戻したらフォーカスの意味が無くなる）。
+    // 抑制が明けたあとは観測点の更新（毎秒）でこの effect が再評価され、収まっていなければ
+    // 成長フォローが全体像へ戻す（戻す経路を別に持たないのはこのため）。
+    if (Date.now() < suppressFollowUntilRef.current) {
+      refitSinceRef.current = 0
+      refitBlindRef.current = false
+      return
+    }
     if (hasEew || isProgrammaticFlight(map) || isUserInteracting) {
       refitSinceRef.current = 0
       // 判定そのものをしていないので「判定不可」の記録も落とす（この状態を挟んで再び判定不可へ
@@ -381,7 +467,8 @@ export function FitToDetectionGL({
     flyToBoundsSnapped(map, bounds, { ...fitOpts, durationSec: 0.8 })
     // hasCandidate を参照するのは上の検知終了分岐だけだが、古い値を掴まないよう deps には含める
     // （成長・収め直しフォローの分岐が余分に再評価されるが、収まっていてずれてもいなければ何もしない）。
-  }, [map, points, hasDetection, hasEew, hasCandidate, isUserInteracting])
+    // lastConsumedFocusTickRef は ref なので依存配列に入れない（QuakeFitGL と同じ流儀）。
+  }, [map, points, hasDetection, hasEew, hasCandidate, isUserInteracting, shakeFocus])
   return null
 }
 

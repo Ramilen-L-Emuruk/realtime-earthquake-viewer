@@ -6,6 +6,7 @@ import {
 } from './utils/tabPriority'
 import { PanelResizeHandle } from './components/PanelResizeHandle'
 import { MapView, type MapMode } from './components/Map/MapView'
+import type { ShakeFocus } from './components/Map/mapTypes'
 import { MapUpdateTime } from './components/MapUpdateTime'
 import { MapDataStatus } from './components/MapDataStatus'
 import { EarthquakeTab } from './components/EarthquakeTab'
@@ -1033,6 +1034,19 @@ export function App() {
     prevEtaRef.current = eta
   }, [swaveArrival?.etaSec, settings.soundEnabled])
 
+  // 揺れの強まり（レベルアップ・再エスカレーション）と別地点発報で、その 1 点へ一時的に寄せる合図。
+  // 通知音を鳴らすのと同じ判定で useKyoshinAlerts が出し、地図（FitToDetectionGL）が消費する。
+  const [shakeFocus, setShakeFocus] = useState<ShakeFocus | null>(null)
+  const handleShakeFocus = useCallback((point: { lat: number; lng: number }) => {
+    setShakeFocus((prev) => ({
+      lat: point.lat,
+      lng: point.lng,
+      // 同じ座標が続いても寄り直せるよう連番で進める（座標の等値では「さらに強まった」を表せない）。
+      tick: (prev?.tick ?? 0) + 1,
+      atMs: Date.now(),
+    }))
+  }, [])
+
   // 揺れ検知の開始/終了・レベル変化に応じたタブ切替・タイトル・通知音・ブラウザ通知
   useKyoshinAlerts({
     confirmed: kyoshinView.confirmed,
@@ -1048,6 +1062,7 @@ export function App() {
     // 地震情報に画面を奪われる）
     setActiveTab: requestTabForKyoshin,
     revertToDefaultTab,
+    onShakeFocus: handleShakeFocus,
   })
 
   const mapQuake = mapTab === 'earthquake' ? selectedQuake : latest
@@ -1106,6 +1121,7 @@ export function App() {
             candidatePoints={kyoshinView.candidatePoints}
             unconfirmedPoints={kyoshinView.unconfirmedPoints}
             candidateId={kyoshinView.candidateId}
+            shakeFocus={shakeFocus}
             eewLpgmEventId={activeLpgmSource === 'eew' ? activeLpgmEventId : null}
             focusObsName={focusedObsName}
             obsUpdateStatus={obsUpdateStatus}
