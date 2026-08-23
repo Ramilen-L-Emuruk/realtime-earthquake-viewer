@@ -67,17 +67,12 @@ export function loadStationCoords(): Promise<StationCoordsData> {
       // 「データの一部を取得できませんでした」にも計上されるため（`.then()` では計上されない）。
       // areas も必須。欠けたまま通すと buildAreaPrefIndex・lookupPointCoords が
       // Object.keys(undefined) で TypeError を投げ、レンダー中の例外になる（ErrorBoundary は無い）。
+      // `stations` と `areas` は同じ厳しさで見る。`typeof` を落とすと、文字列が入っていたときに
+      // `Object.keys('abc')` が `['0','1','2']` を返して非空チェックをすり抜ける。
       validate: (raw) => {
         const data = raw as StationCoordsData | null
-        if (
-          !data ||
-          typeof data !== 'object' ||
-          !data.stations ||
-          Object.keys(data.stations).length === 0 ||
-          !data.areas ||
-          typeof data.areas !== 'object' ||
-          Object.keys(data.areas).length === 0
-        ) {
+        const filled = (v: unknown) => !!v && typeof v === 'object' && Object.keys(v).length > 0
+        if (!data || typeof data !== 'object' || !filled(data.stations) || !filled(data.areas)) {
           throw new Error('station-coords fetch returned no data (empty or malformed)')
         }
       },
