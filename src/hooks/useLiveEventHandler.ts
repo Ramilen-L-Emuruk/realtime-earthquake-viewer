@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AppEvent, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary } from '../types/earthquake'
+import type { AppEvent, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary, TsunamiArea, TsunamiObservation } from '../types/earthquake'
 import type { TabId } from '../components/IconNav'
 import type { AppSettings } from './useSettings'
 import type { AlertTitleApi } from './useAlertTitle'
@@ -9,10 +9,10 @@ import { formatMagnitude, hasMagnitude } from '../utils/formatters'
 import { eewMaxScaleInfo, isForecastScaleHigher, eewMaxLpgmClass, eewNoForecastReason, computeSingleEEWLevel, selectEEWSoundType, eewKindLabel, type EewMaxScaleInfo } from '../utils/eew'
 import { haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
-import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, matchesArea, sortAreasForCardDisplay } from '../utils/tsunami'
+import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, matchesArea, sortAreasForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations } from '../utils/tsunami'
 import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
-import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
+import { eewAlertToText, eewIntensityToText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
 import { joinSegments, plain, hasFollowTarget, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
@@ -1833,6 +1833,40 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         ttsSegments = earthquakeToSegments(event, ttsRegionOptions(settings), isNewQuake, quakeSpokenState)
         ttsText = joinSegments(ttsSegments)
       } else if (event.kind === 'tsunami') {
+        /**
+         * 観測点の読み上げ順を引くための「カードが描いている区域」。
+         *
+         * **電文の `areas` だけでは足りない。** 観測情報の続報は区域を持たずに届くため
+         * （`isTsunamiObservationOnly`）、それを渡すと並べ替えが何もしない。カードは前の発表の
+         * 区域を出したまま観測点をその下に足していくので、画面が出している津波の区域を使う。
+         */
+        const areasForCardOrder = (e: JMATsunami): TsunamiArea[] =>
+          e.areas.length > 0 ? e.areas : (tsunamisRef.current[0]?.areas ?? [])
+        /**
+         * 今回の電文が運んできた観測点を、**カードの並び**で返す。
+         *
+         * 並べ替えにはカードが持つ観測点の全体（マージ済み）を渡す。今回の分だけで並べると、
+         * 既報の観測点を載せない続報で「観測を持たない区域」として後ろへ回り、カードの並びと
+         * 逆転する（`sortObservationsForCardDisplay` の宣言箇所）。並びを得たあと、今回の分だけを
+         * オブジェクトの同一性で絞り込む（マージは今回の要素をそのまま持つ）。
+         *
+         * **既知の限界**: `tsunamisRef` は App のレンダーで代入されるため、キューのディスパッチャが
+         * 1 tick で津波電文を 2 件以上さばいたときは 2 件目がバッチ前の値を見る。並びがカードと
+         * 1 件分ずれるだけで、読み上げる観測点も新旧の言い分けも変わらない（言い分けの基準は
+         * `spokenObsHeightRef`）。ここを埋めるにはマージ済み観測点をこのフックでも持つことになり、
+         * 解除・リプレイ復元での落とし忘れという別種の穴を増やすので採らない。
+         */
+        const observationsInCardOrder = (e: JMATsunami): TsunamiObservation[] => {
+          const own = e.observations ?? []
+          if (own.length === 0) return []
+          const areas = areasForCardOrder(e)
+          // 基準が引けないと電文順のまま読む。**黙って落ちないよう記録する** ―― カードの並びと
+          // 食い違えば追従スクロールが往復するので、往復を見たときに原因を辿れるようにする。
+          if (areas.length === 0) log.info('[tsunami] 観測点の並びの基準となる区域が無い（電文順で読み上げる）')
+          const merged = mergeTsunamiObservations(tsunamisRef.current[0]?.observations, own) ?? own
+          const ownSet = new Set(own)
+          return sortObservationsForCardDisplay(merged, areas).filter(o => ownSet.has(o))
+        }
         const GRADE_RANK = { MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0 } as const
         type GradeKey = keyof typeof GRADE_RANK
         const currentGrade = tsunamiMaxGrade(event)
@@ -1845,7 +1879,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // グレード不変: 観測点ごとに最大波高を追跡し、更新があった観測点のみ読み上げ。
           // 比較の基準は**読み上げた値**（`spokenObsHeightRef`）で、受信値ではない（宣言箇所に理由）。
           const prevMap = spokenObsHeightRef.current
-          const updatedObs = (event.observations ?? []).filter(o => {
+          // **カードの並びに揃えてから渡す。** 読み上げの順は渡した並びがそのまま使われる。
+          // 電文順のままだとカード上を飛び回り、追従スクロールが上下に往復する
+          // （→ docs/spec/tsunami-spec.md §9）。
+          const obsInCardOrder = observationsInCardOrder(event)
+          const updatedObs = obsInCardOrder.filter(o => {
             if (!o.height) return false
             const prev = prevMap.get(o.name)
             if (prev === undefined) return true
@@ -1855,10 +1893,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             return false
           })
           // 波高未確定（観測中）のまま新規に到達が確認された観測点は「到達確認」として読み上げる
-          const newlyArrivedObs = (event.observations ?? [])
+          const newlyArrivedObs = obsInCardOrder
             .filter(o => !o.height && !spokenObsNamesRef.current.has(o.name))
+          // 第 4 引数の `prevMap` が「新たに」と「更新」の言い分けを決める（読み上げ用の記憶を
+          // 渡すこと。理由は `SpokenHeightLookup` の宣言箇所）。件数上限は既定のままなので
+          // 第 3 引数は省略の意で undefined を渡す。
           const updateSegments = updatedObs.length > 0
-            ? tsunamiObservationUpdateToSegments(updatedObs, event.headline)
+            ? tsunamiObservationUpdateToSegments(updatedObs, event.headline, undefined, prevMap)
             : []
           const arrivalSegments = tsunamiArrivalToSegments(newlyArrivedObs)
           if (updateSegments.length > 0) {
@@ -1870,20 +1911,23 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // `updatedObs` を丸ごと既読にすると、読まれなかった観測点の値が二度と読まれない
           // （絞り込みは読み上げ文の生成と同じ関数を使う）。
           if (ttsSegments) {
-            spokenObs = [...selectObservationUpdatesToSpeak(updatedObs), ...newlyArrivedObs]
+            // 到達確認も件数上限で落ちる。**落ちた分を既読にしてはいけない**（絞り込みは
+            // 読み上げ文の生成と同じ関数を使う。理由は `selectArrivalsToSpeak` の宣言箇所）。
+            spokenObs = [...selectObservationUpdatesToSpeak(updatedObs), ...selectArrivalsToSpeak(newlyArrivedObs)]
           }
         } else {
           const isDowngrade = prevGrade !== null && GRADE_RANK[currentGrade as GradeKey] < GRADE_RANK[prevGrade as GradeKey]
           ttsSegments = isDowngrade ? tsunamiDowngradeToSegments(event) : tsunamiToSegments(event)
           // グレード変化と同時に観測中（波高未確定）で新規到達した観測点も読み上げに含める
-          const newlyArrivedObsOnGradeChange = (event.observations ?? [])
+          // （こちらもカードの並びに揃える。理由は観測点更新側と同じ）
+          const newlyArrivedObsOnGradeChange = observationsInCardOrder(event)
             .filter(o => !o.height && !spokenObsNamesRef.current.has(o.name))
           ttsSegments = [...ttsSegments, ...tsunamiArrivalToSegments(newlyArrivedObsOnGradeChange)]
           // **等級の発表では観測点の実測値を読まない。** 読むのは区域の予想波高
           // （`tsunamiToSegments` → `areaHeightSentence`）で、観測点は区域の並べ替えにしか
           // 使わない。ここで観測点を既読にすると、一度も声に出していない実測値が既読になり、
           // 直後の観測情報で読まれなくなる。既読にするのは到達確認だけ。
-          spokenObs = newlyArrivedObsOnGradeChange
+          spokenObs = selectArrivalsToSpeak(newlyArrivedObsOnGradeChange)
         }
         if (ttsSegments) ttsText = joinSegments(ttsSegments)
       }

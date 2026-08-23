@@ -4,6 +4,15 @@ const GRADE_PRIORITY: Record<TsunamiGrade, number> = {
   MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0,
 }
 
+/**
+ * カードが等級カードを積む順（重い等級が上）。
+ *
+ * カード・読み上げの双方がこの並びに従う。`GRADE_PRIORITY` の降順そのものなので、等級を
+ * 増やしたときに片方だけ漏れることがない。
+ */
+export const GRADES_IN_CARD_ORDER: TsunamiGrade[] =
+  (Object.keys(GRADE_PRIORITY) as TsunamiGrade[]).sort((a, b) => GRADE_PRIORITY[b] - GRADE_PRIORITY[a])
+
 /** 発表中エリアの最高グレードを返す。エリアが無ければ 'Unknown'。 */
 export function tsunamiMaxGrade(tsunami: JMATsunami): TsunamiGrade {
   let max: TsunamiGrade = 'Unknown'
@@ -300,4 +309,51 @@ export function groupAreasForCardDisplay(
  */
 export function sortAreasForCardDisplay(areas: TsunamiArea[], observations: TsunamiObservation[]): TsunamiArea[] {
   return groupAreasForCardDisplay(areas, observations).flatMap(group => group.areas)
+}
+
+/**
+ * 観測点をカードが描画する順に並べる。
+ *
+ * カードの入れ子をそのまま辿る ―― 等級カード（`GRADES_IN_CARD_ORDER`）→ 予想波高の見出し →
+ * 区域（`sortAreasForCardDisplay`）→ 区域内は電文の並び → 区域に紐づかない観測点（「沖合観測」
+ * のカード）を最後に置く。
+ *
+ * **読み上げの観測点列挙もこの順に揃える**（→ [`ttsText.ts`] の
+ * `tsunamiObservationUpdateToSegments`）。区域の並びで既に踏んでいるのと同じ罠で、読み上げが
+ * 波高の深刻な順に読むとカード上を上下に往復する。**どの観測点を読むかは深刻な順で選び、
+ * どの順で読むかはこの関数で決める** ―― 選抜と並び順は別物として分ける。
+ *
+ * **渡すのはカードが持っている観測点の全体**（`mergeTsunamiObservations` 済みのもの）。
+ * 今回の電文が運んできた分だけを渡してはいけない ―― 区域の並びは「その区域の最大波高」で決まる
+ * ため（`sortAreasForCardDisplay`）、部分再送の電文（既報の観測点を載せない続報）だけで並べると
+ * 観測を持たない区域として後ろへ回り、カードの並びと逆転する。読み上げたい部分集合は、返って
+ * きた並びから呼び出し側が絞り込む。
+ *
+ * 同じ観測点が複数の区域に一致しうる経路ではカードが行を 2 つ描くが、並び順としては最初に
+ * 現れた位置を採る（読み上げは 1 回しか読まないため）。
+ *
+ * 置いたかどうかはオブジェクトの同一性で見るので、**入力に同じ参照が 2 回入っていない前提**。
+ * `mergeTsunamiObservations` は区域と観測点名でキー化するため現状は満たしている。
+ */
+export function sortObservationsForCardDisplay(
+  observations: readonly TsunamiObservation[],
+  areas: readonly TsunamiArea[],
+): TsunamiObservation[] {
+  const all = [...observations]
+  const placed = new Set<TsunamiObservation>()
+  const ordered: TsunamiObservation[] = []
+  for (const grade of GRADES_IN_CARD_ORDER) {
+    const inGrade = areas.filter(a => a.grade === grade)
+    if (inGrade.length === 0) continue
+    for (const area of sortAreasForCardDisplay(inGrade, all)) {
+      for (const obs of observations) {
+        if (placed.has(obs) || !matchesArea(obs, area)) continue
+        placed.add(obs)
+        ordered.push(obs)
+      }
+    }
+  }
+  // どの区域にも紐づかない観測点（沖合の観測点）はカードでも最後に来る。
+  for (const obs of observations) if (!placed.has(obs)) ordered.push(obs)
+  return ordered
 }
