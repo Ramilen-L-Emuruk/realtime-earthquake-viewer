@@ -13,7 +13,7 @@ async function freshModule() {
 }
 
 const SAMPLE: Prefectures = {
-  石川県: { label: [36.6, 136.6], dir: 'up', rings: [[[36.5, 136.5], [36.7, 136.8], [36.6, 136.6]]] },
+  石川県: { label: [36.6, 136.6], room: [0.1, 0.1], rings: [[[36.5, 136.5], [36.7, 136.8], [36.6, 136.6]]] },
 }
 
 function okResponse(body: unknown) {
