@@ -503,15 +503,17 @@ describe('津波の読み上げ: 区域名・地点名の区切り', () => {
     expect(text).toContain('新潟県上中下越、柏崎')
   })
 
-  // 安全弁: 到達確認も観測波高と同じ `omittedPointsSuffix` で打ち切り件数を言う（文言を共有している）。
-  // 実装を共有関数へ寄せたので、どちらか一方だけ文言が変わったらここで落ちる
+  // 安全弁: 到達確認も観測波高と同じ `omittedPointsSentence` で打ち切り件数を言う（地点数の
+  // 言い方を共有している）。どちらか一方だけ文言が変わったらここで落ちる。
+  // 述語への糊付けをやめて独立した一文にしたのは、観測波高側の述語が新規・更新で変わるため
+  // （外した地点を「更新されました」に巻き込まない）
   it('到達確認も maxPoints で外した地点数を読み上げる', () => {
     const obs: TsunamiObservation[] = [
       { name: '佐渡市鷲崎', districtName: '佐渡' },
       { name: '小木', districtName: '佐渡' },
       { name: '柏崎', districtName: '新潟県上中下越' },
     ]
-    expect(tsunamiArrivalToText(obs, 1)).toContain('、ほか2地点で到達を確認しました。')
+    expect(tsunamiArrivalToText(obs, 1)).toContain('ほか2地点でも到達を確認しています。')
     expect(tsunamiArrivalToText(obs, 5)).not.toContain('ほか')
   })
 
@@ -764,7 +766,8 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
       { name: '釜石', districtCode: '030', districtName: '岩手県', height: { value: 5.0, description: '5.0m以上', over: true } },
       { name: '大船渡', districtCode: '030', districtName: '岩手県', height: { value: 3.0, description: '3.0m' } },
     ]
-    expect(tsunamiObservationUpdateToText(obs, undefined, 1)).toContain('、ほか2地点を観測しました。')
+    // 述語（「〜を観測しました」／「〜に更新されました」）に貼り付けず独立した一文にする
+    expect(tsunamiObservationUpdateToText(obs, undefined, 1)).toContain('ほか2地点でも観測しています。')
   })
 
   // 対照: 上限に掛からなければ余計な句を足さない
@@ -807,6 +810,83 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
       { name: '大洗', districtCode: '070', districtName: '茨城県', height: { value: 1.9, description: '1.9m' } },
     ]))
     expect(text).toContain('茨城県、青森県太平洋沿岸で3メートルが予想されています。')
+  })
+})
+
+// 観測情報の続報は「津波が新しい場所に届いた」と「既に届いた場所で波が高くなった」を言い分ける。
+// 新旧の境界は**前に声にした波高があるかどうか**だけで、名前を聞いたことがあるかでは判定しない
+// （→ docs/spec/audio-tts-spec.md §4「新規と更新を言い分ける」）。
+describe('津波観測情報の読み上げ: 新規と更新の言い分け', () => {
+  const OFUNATO: TsunamiObservation = { name: '大船渡', districtCode: '030', districtName: '岩手県', height: { value: 3.0, description: '3.0m' } }
+  const MIYAKO: TsunamiObservation = { name: '宮古', districtCode: '030', districtName: '岩手県', height: { value: 1.2, description: '1.2m' } }
+
+  // 正: 前に声にした波高が無い観測点は「新たに」を冠する
+  it('前値の無い観測点は「新たに」を付けて読む', () => {
+    const text = tsunamiObservationUpdateToText([MIYAKO], undefined, undefined, new Set<string>())
+    expect(text).toContain('新たに岩手県、宮古で1.2メートルを観測しました。')
+    expect(text).not.toContain('更新')
+  })
+
+  // 対照: 前値のある観測点は「更新されました」で、「新たに」を付けない
+  it('前値のある観測点は「更新されました」と読む', () => {
+    const text = tsunamiObservationUpdateToText([OFUNATO], undefined, undefined, new Set(['大船渡']))
+    expect(text).toContain('岩手県、大船渡で3.0メートルに更新されました。')
+    expect(text).not.toContain('新たに')
+  })
+
+  // 正: 両方が混ざったら 2 文に分け、後ろを「また、」で継ぐ。深刻な波高を含む群が先に来る
+  it('深刻な波高を含む群を先に読み、後ろを「また、」で継ぐ', () => {
+    const raisedIsWorse = tsunamiObservationUpdateToText([MIYAKO, OFUNATO], undefined, undefined, new Set(['大船渡']))
+    expect(raisedIsWorse).toContain('津波観測情報。岩手県、大船渡で3.0メートルに更新されました。また、新たに岩手県、宮古で1.2メートルを観測しました。')
+
+    const firstTimeIsWorse = tsunamiObservationUpdateToText([MIYAKO, OFUNATO], undefined, undefined, new Set(['宮古']))
+    expect(firstTimeIsWorse).toContain('津波観測情報。新たに岩手県、大船渡で3.0メートルを観測しました。また、岩手県、宮古で1.2メートルに更新されました。')
+  })
+
+  // 対照: 群が 1 つしかできない電文では「また、」を出さない
+  it('群が 1 つなら「また、」を出さない', () => {
+    expect(tsunamiObservationUpdateToText([MIYAKO, OFUNATO], undefined, undefined, new Set<string>())).not.toContain('また、')
+    expect(tsunamiObservationUpdateToText([MIYAKO, OFUNATO], undefined, undefined, new Set(['宮古', '大船渡']))).not.toContain('また、')
+  })
+
+  // 安全弁: 前値の記憶を渡さない経路（既定）は全件を初出として扱う。初報がこの形になる
+  it('前値の記憶が無ければ全件を初出として読む', () => {
+    const text = tsunamiObservationUpdateToText([MIYAKO, OFUNATO])
+    expect(text).toContain('新たに岩手県、宮古で1.2メートル、大船渡で3.0メートルを観測しました。')
+    expect(text).not.toContain('更新')
+  })
+
+  // 正: 読む順は渡された並び（呼び出し側がカードの並びで渡す）。深刻な順に読み直さない。
+  // 読み直すとカード上を上下に往復する（→ docs/spec/tsunami-spec.md §9）
+  it('読む順は渡された並びのまま（深刻な順に読み直さない）', () => {
+    expect(tsunamiObservationUpdateToText([MIYAKO, OFUNATO])).toContain('宮古で1.2メートル、大船渡で3.0メートル')
+    expect(tsunamiObservationUpdateToText([OFUNATO, MIYAKO])).toContain('大船渡で3.0メートル、宮古で1.2メートル')
+  })
+
+  // 安全弁: 並び順を入力に委ねても、**どれを読むかの選抜は深刻な順**のまま。
+  // 上限に掛かるとき、渡された並びの先頭から切ってはいけない（「以上」の地点が落ちる）
+  it('選抜は深刻な順のまま（並びの先頭から切らない）', () => {
+    const overLimit: TsunamiObservation = { name: '釜石', districtCode: '030', districtName: '岩手県', height: { value: 1.5, description: '1.5m以上', over: true } }
+    // 渡す並びでは宮古が先頭だが、深刻なのは「1.5m以上」の釜石
+    const text = tsunamiObservationUpdateToText([MIYAKO, overLimit], undefined, 1)
+    expect(text).toContain('釜石で1.5メートル以上')
+    expect(text).not.toContain('宮古')
+  })
+
+  // 安全弁: 群に割っても件数上限は合計。群ごとに選抜し直すと上限が実質 2 倍になり、
+  // 既読を記録する側（selectObservationUpdatesToSpeak）と読み上げた集合が食い違う
+  it('群に割っても maxPoints は合計で数える', () => {
+    const obs: TsunamiObservation[] = [
+      OFUNATO,
+      MIYAKO,
+      { name: '釜石', districtCode: '030', districtName: '岩手県', height: { value: 2.8, description: '2.8m' } },
+    ]
+    // 上限 2 件。深刻な順は 大船渡(3.0) → 釜石(2.8) → 宮古(1.2) なので宮古が落ちる
+    const text = tsunamiObservationUpdateToText(obs, undefined, 2, new Set(['釜石']))
+    expect(text).toContain('新たに岩手県、大船渡で3.0メートルを観測しました。')
+    expect(text).toContain('また、岩手県、釜石で2.8メートルに更新されました。')
+    expect(text).not.toContain('宮古')
+    expect(text).toContain('ほか1地点でも観測しています。')
   })
 })
 

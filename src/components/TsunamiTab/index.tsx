@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation } from '../../types/earthquake'
 import { formatDateTimeMin, formatTime } from '../../utils/formatters'
 import { quakeEventKey } from '../../utils/quakeMerge'
-import { groupAreasForCardDisplay, matchesArea, overSuffixedHeight } from '../../utils/tsunami'
+import { groupAreasForCardDisplay, matchesArea, overSuffixedHeight, GRADES_IN_CARD_ORDER } from '../../utils/tsunami'
 import { mapChunksToRefs, planFollowScroll, type FollowRect, type SpeechFollowSession, type SpeechRef } from '../../utils/ttsFollow'
 import { getSpeechClock } from '../../utils/voicevox'
 import { INTERACTION_HOLD_SEC } from '../Map/gl/camera'
@@ -113,7 +113,9 @@ const GRADE_LABEL: Record<TsunamiGrade, string> = {
   Unknown:      '不明',
 }
 
-const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch', 'Forecast', 'Unknown']
+// 等級カードを積む順は読み上げと共有する（`GRADES_IN_CARD_ORDER`）。ここに独自の配列を置くと、
+// 読み上げの並びとカードの並びが片方だけ変わって追従スクロールが往復する。
+const GRADE_ORDER = GRADES_IN_CARD_ORDER
 
 // 解除表示（cancelledAt セット中）の見出し・説明文・オーバーレイ短文を cancelReason ごとに出し分ける。
 // 気象庁の運用上、警報・注意報は「解除」、誤発表は「取消」、予報は解除電文を伴わず「有効期間終了」で
@@ -246,10 +248,14 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, isChang
   )
 }
 
-function TsunamiObservationRow({ obs, onObservationClick }: { obs: TsunamiObservation; onObservationClick?: (name: string) => void }) {
+function TsunamiObservationRow({ obs, onObservationClick, registerSpeechRow }: { obs: TsunamiObservation; onObservationClick?: (name: string) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void }) {
   const clickable = !!obs.height && !!onObservationClick
   return (
     <div
+      /* 追従スクロールの引き当て用。この行は区域に紐づかない観測点（沖合）で、読み上げは
+         区域の下の観測点と同じように読む。登録しないとその観測点を読んでいる間だけカードが
+         動かず、引き当て失敗の診断も鳴る */
+      ref={el => registerSpeechRow?.([`station:${obs.name}`], el)}
       className={`flex items-center gap-2 px-3 py-2 border-b border-white/5 last:border-0 roomy:gap-3 roomy:px-4 roomy:py-3${clickable ? ' cursor-pointer hover:brightness-125 transition-[filter]' : ''}`}
       onClick={clickable ? () => onObservationClick!(obs.name) : undefined}
       role={clickable ? 'button' : undefined}
@@ -824,7 +830,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                   沖合観測
                 </div>
                 {unmatched.map((obs, i) => (
-                  <TsunamiObservationRow key={i} obs={obs} onObservationClick={onObservationClick} />
+                  <TsunamiObservationRow key={i} obs={obs} onObservationClick={onObservationClick} registerSpeechRow={registerSpeechRow} />
                 ))}
               </div>
             )}
