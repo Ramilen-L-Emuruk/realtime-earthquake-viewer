@@ -7,6 +7,7 @@ import type { EEWAlert } from '../../types/earthquake'
 import type { PsWaveCircle } from '../../services/kyoshin'
 import { computeEewCircle } from '../../hooks/usePsWaveCalc'
 import { eewEventKey } from '../../utils/eew'
+import { hasKnownEpicenter } from '../../utils/geo'
 import { serverNow } from '../../utils/clock'
 import {
   fitToPositions,
@@ -48,7 +49,7 @@ function eewHypocenters(eews: EEWAlert[]): LatLng[] {
   const positions: LatLng[] = []
   for (const eew of eews) {
     const { latitude, longitude } = eew.earthquake.hypocenter
-    if (latitude <= -200 || longitude <= -200) continue
+    if (!hasKnownEpicenter(latitude, longitude)) continue
     positions.push([latitude, longitude])
   }
   return positions
@@ -575,7 +576,7 @@ export function FitToEEWGL({
       return
     }
     const { latitude, longitude } = latest.earthquake.hypocenter
-    if (latitude <= -200 || longitude <= -200) {
+    if (!hasKnownEpicenter(latitude, longitude)) {
       // 寄り先が無いので何もしない。他のスキップと同じく記録は残す——黙って止まると
       // 「EEW が出ているのに地図が動かない」の原因を後から追えない。
       log.debug('[mapGL] EEW追従 スキップ (震源座標なし)')
@@ -702,7 +703,7 @@ export function FitToEEWGL({
     if (!bounds) {
       if (latest) {
         const { latitude, longitude } = latest.earthquake.hypocenter
-        if (latitude > -200 && longitude > -200) {
+        if (hasKnownEpicenter(latitude, longitude)) {
           log.debug('[mapGL] EEW数減少・座標なし 震源へ再フィット')
           flyToPoint(map, [latitude, longitude], fitMaxZoom(map), 0.8)
         }

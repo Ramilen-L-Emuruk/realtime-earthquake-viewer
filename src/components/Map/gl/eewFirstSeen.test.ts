@@ -84,6 +84,19 @@ describe('syncEewFirstSeen', () => {
     expect(seen.get('a')).toBe(30_000)
   })
 
+  it('座標が NaN の EEW も記録しない', () => {
+    // Arrange: 標準版（Yahoo 強震モニタ）は座標の文字列が空だと NaN になる。**否定形の判定
+    // （`lat <= -200`）では弾けない**ので、記録側もセンチネルと同じ扱いにしておく必要がある。
+    const seen = new Map<string, number>()
+    const focused = { current: null as string | null }
+
+    // Act
+    syncEewFirstSeen(seen, focused, [eew('a', NaN, NaN)], 1000)
+
+    // Assert: 記録しない（＝寄れるようになった時点を初出として数え直せる）。
+    expect(seen.size).toBe(0)
+  })
+
   it('eventId は issue.eventId を優先し、無ければ id で代用する', () => {
     // Arrange: 実電文はどの経路でも issue.eventId を持つ。id での代用は欠けていた場合の保険。
     const seen = new Map<string, number>()

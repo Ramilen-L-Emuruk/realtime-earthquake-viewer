@@ -673,6 +673,29 @@ describe('EEW の初期フレーミング', () => {
     expect(refs.focusedEewIdRef.current).toBe(NOTO.issue!.eventId)
   })
 
+  it('震源の位置が判らない EEW を寄り先にしない', () => {
+    // Arrange: 標準版（Yahoo 強震モニタ）は座標の文字列が空だと NaN になる。NaN はどの比較でも
+    // false になるため、否定形（`lat <= -200`）の判定では弾けず、そのまま寄り先として渡ると
+    // MapLibre が例外を投げる（このアプリに ErrorBoundary は無い）。
+    const map = createFakeMap({ fitZoom: 5 })
+    const noCoords = {
+      id: 'eew-nan-report-1',
+      issue: { eventId: 'ev-nan' },
+      earthquake: { originTime: '2026-08-21T05:00:00+09:00', hypocenter: { latitude: NaN, longitude: NaN } },
+    } as unknown as EEWAlert
+    const refs = refsFor([noCoords], 0)
+
+    // Act
+    render(eewFrame(map, [noCoords], WEST_POINTS, refs))
+
+    // Assert: 震源へは寄らない。矩形を持たない 1 点への直行（`{}`）が記録されていれば NaN を
+    // 寄り先に渡したということで、実機では MapLibre が例外を投げる。カメラを動かすのは成長フォロー
+    // だけで、目標は震源を除いた材料（ここでは検知点）になる。
+    expect((map as FakeMap).moves).toEqual([{ padding: POINTS_PADDING, west: UNION_WEST }])
+    // 第一報のフォーカスも与えない（位置が判ってから改めて新規発報として扱う）。
+    expect(refs.focusedEewIdRef.current).toBeNull()
+  })
+
   it('新規発報なら震源へ寄り、3 秒間は合成範囲へ引き直さない', () => {
     // Arrange: いま初めて見た EEW。
     const map = createFakeMap({ fitZoom: 5 })
