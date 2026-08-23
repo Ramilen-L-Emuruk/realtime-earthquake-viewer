@@ -464,9 +464,14 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | テストデータが実電文の形に沿っていること（報番号・発表時刻・`id` は報ごとに進める／震源時刻は固定／取消・解除は対象地域を空にする／区域コードは気象庁コード表 12／経路に無い項目を作らない） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §7「実電文の形に合わせる」 |
 | 読み上げの範囲（`ttsIntensityLevels` / `ttsAlwaysReadScale` / `ttsMaxRegions` / `ttsRegionTolerance` の組み合わせ方・階数は観測がある階級のみを数える・`ttsAlwaysReadScale` は長周期に適用しない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
 | 読み上げの地域名の粒度（一次細分区域・区域の点を持たない電文は観測点から逆引きする・引くのは**地図と同じ** `lookupStationRegion` で都道府県名と観測点名の組でしか引かない・`pref` が空の経路は観測点名から県を先に補う（この補完は初出優先なので同名観測点があれば誤る）・区域が引けない観測点だけ都道府県名へ落とし同じ県で区域が取れていれば県名は捨てる・区域の点がある電文では都道府県ロールアップ点を見ず、観測点経路でだけ観測点を持たない県の救済に使う） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「地域名の粒度」 |
+| 階級をまたぐ県名まとめの抑止（上位の階級で区域名を出した県は下位の階級でまとめない・地震と長周期の両方に同じ規則を置く・数えるのは**続報で差分に落とす前**の区域（落とした後だと既出の区域が消えて県の全区域が揃って見える。**差分を持つのは地震の経路だけ**で長周期は毎回全区域を読み直す）・区域名と県名の見分けは区域名の索引に頼るので「多区域の県に県名と同名の区域が無い」ことが前提） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「地域名の粒度」 |
 | 読み上げで地域名を 1 件も作れなかったときの扱い（最大震度だけを伝える・**震度も判らなければ何も足さない**（`intensityText` は震度不明で空を返すので確かめずに埋めると助詞だけの文になる）・地震情報と震度速報で同じ一文（`maxScaleOnlySentence`）を使う・地域が消えたことは間引いて記録する） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「地域名の粒度」 |
 | 読み上げの地域名の並び順（**地震・長周期のみ**。気象庁の標準順・順序の実体は `station-coords.json` の区域キー順・上限で切るときの選抜だけは震源距離で行う・震源を持たない電文（震度速報・長周期）は距離で選ばない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
 | 津波の区域の並び順（読み上げとカードで**同じ並びを使う**こと・実体は `tsunami.ts` の `sortAreasForCardDisplay`・予想最大波高の文もカードの波高見出しと同じ区切りで読む。片方だけ変えると追従スクロールが上下へ往復する） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「津波の区域の並び順」 |
+| 津波の観測点の並び順（区域と同じくカードに揃える・実体は `tsunami.ts` の `sortObservationsForCardDisplay`・等級カードの順を並べる定数もカードと共有する・**選抜（深刻な順）と並び（カード順）は別物**・並べ替えに渡すのは**マージ済みの全観測点**（今回の電文の分だけで並べると部分再送の続報で区域の順位が逆転する）・続報は区域を持たないため基準は画面が出している津波から引く） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §9「観測点の並び順」 |
+| 津波観測情報で新規と更新を言い分けること（境界は**前に声にした波高があるか**だけで、名前を聞いたことがあるかでは判定しない・到達確認だけ読んだ観測点に初値が付いたら「新たに」側・渡すのは読み上げ用の記憶・深刻な波高を含む群を先に読み「また、」で継ぐ・群に割っても件数上限は合計） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「新規と更新を言い分ける」 |
+| 上限で読まなかった到達確認を既読にしないこと（絞り込みは読み上げ文の生成と共有する＝`selectArrivalsToSpeak`） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §10「読み上げた観測点の記憶は画面用と分ける」 |
+| 読み上げから外した地点数の句を述語に貼り付けないこと（`omittedPointsSentence`。新規と更新で述語が変わるため、貼り付けると外した地点が更新扱いになる。地点数の言い方は到達確認と共有する） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「観測点は「選抜」と「並び」を分ける」 |
 | 津波の読み上げの組み立て（**区域名は 1 回だけ**・等級ごとに「区域と波高」を 1 文で言い切る・等級と行動を先に言う・下位等級の波高も読む・等級をまたいで波高をまとめない・波高が付いていない区域は別の文で挙げる・数値で表せない波高（「巨大」「高い」）は語を補う） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「区域名は 1 回だけ。等級ごとに「区域と波高」を 1 文で言い切る」 |
 | 読み上げに合わせた津波カードの追従（視野内なら動かさない・送り先にこれから読む箇所を含める・等級カードの頭は「前置き」として扱い**読んでいる箇所に混ぜない**（混ぜると等級ごとにしか動かなくなる）・追わない 4 条件（非表示／折りたたみ／手動操作 30 秒／引き当て前）・現在位置は rAF で解決し `setTimeout` を張らない・通知の例外で読み上げを止めない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げに合わせたカードの追従」 |
 | 津波カードのスクロールを動かす 3 駆動の関係（自動で見せたときの先頭復帰＝最も弱い・**タブが実際に変わったときだけ**・手操作の保持は尊重／受信時スクロールは読み上げが有効なら追従を待つが、**待ちに上限を置き、区域が特定できない受信（解除等）は待たない**。上限を外すと VOICEVOX 未起動・区域コード不一致の端末でカードが一切動かず、解除でも待つと解除前の位置に留まる） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §9「スクロールの自動制御」 |
@@ -474,6 +479,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 観測波高の深刻さの順（「○m以上」は値の大小より**先に**見る・カードの区域の並びと読み上げの観測点の選抜で同じ `compareObservedHeightDesc` を使う・表示文字列に「以上」を二重に付けない・アプリ側で言い換えない） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §6「観測波高の「以上」」 |
 | 津波の予想波高「あり／なし」の判定（`hasForecastHeight`。`maxHeight` の有無ではなく `description` の中身で見る。食い違うと値 0 の区域がカードにも読み上げにも出ない。DMDATA と P2PQuake で波高の有無が変わる非対称性も同節） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §9「予想波高の有無」 |
 | 読み上げ文で名前を並べるときの書き方（区切りは読点・中黒は音にならず合成の区切りにもならない・場所の助詞「で」は文末のみ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
+| 読み仮名辞書に何を収録するか（誤読するものだけ・正しい読みは気象庁コード表のふりがなを正解にする・**誤読は後ろに続く文字で反転するので、単体ではなく読み上げ文が実際に作る形で確かめる**。棚卸しの段取りは [`/tts-reading-audit` スキル](.claude/skills/tts-reading-audit/SKILL.md)） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「何を収録するか」 |
 | チャンク末尾の句読点に間を足すこと（VOICEVOX は後ろに何も続かない句読点に間を付けない・チャンクは隙間なく詰めて鳴らす・**最後のチャンクには足さない**・足すかどうかは合成の入口 3 つで揃える。読点で名前を並べても間が入らない症状の原因のひとつ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「チャンク末尾の句読点には間を足す」 |
 | 辞書での分割によって落ちた句読点を戻すこと（**チャンク末尾とは別の穴**で、同じ症状に原因が 2 つある／落ちた位置に種を置き、長さは `/mora_data` の引き直しに決めさせる・引き直しは「間が無い位置に間を作る」ことはしない・種を置かない位置が 2 つある（チャンク末尾は `CHUNK_BREAK_PAUSE` の担当／掛ける先の句が無い場合。後者は現状起きない）・**置いた後にも歯止めがある**（種が句の並びの末尾に来たら引き直し値を採らない）・引き直しが間を返さなかったときは種へ倒して記録する） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「分割で落ちた句読点を戻す」 |
 | EEW 読み上げ第 2 フェーズの発火条件（値の確定で読む・予想震度が付かない理由が判っているなら待たない・`EEW_PHASE2_MAX_WAIT_MS` の上限・引き上げも初報と同じ形で言い直す・「警報。」の前置きはその EEW で初めて伝えるときだけ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
@@ -488,11 +494,15 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 内容が重ならない同格は互いに待つこと（`MUTUAL_YIELD_TOPICS`。対象は津波・津波の観測情報・南海トラフ臨時情報・後発地震注意情報／**同主題は例外**（言い換えなので割り込む）／片方が対象なら両方向で待つ／上位には切られる／待ち上限は専用の値（`MUTUAL_YIELD_SPEECH_MAX_WAIT_MS`）を使い、上位を待つ 90 秒と混ぜない／**待つ理由が変わったら計時をやり直す**（持ち越すと、始まったばかりの EEW を「もう待った」と見なして切る）／**取り下げの理由にしない**（待たせる）） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「内容が重ならない同格は互いに待つ（相互譲り）」 |
 | 「何も切らない」層は待ちきれなくても割り込まないこと（解説情報のみ。待ち直しループを抜けた経路でも判定する・見送るときは予約の枠から降ろす（降ろさないと前の予約を巻き込む）） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「割り込みを許す条件」 |
 | 到来順を守ること（予約より後に届いた重い読み上げに追い越されたら取り下げる・優先度に例外を設けない・既に読み始めていた場合は割り込みの側の話・**同格どうしは到来順の連番で裁き、主題が同じときだけ取り下げる**（主題は地震・長周期がイベントごと／津波は等級の発表と観測情報で分ける／南海トラフ系は種別で 1 つ・**同じ主題に別の優先度を混ぜない**）。優先度が上の相手には主題を問わず取り下げる・取り下げた予約は枠から降ろす） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「到来順を守る — 追い越されたら取り下げる」 |
-| 地震情報の続報は差分だけ読むこと（初出の区域と震度が上がった区域・変わった震源要素／津波区分だけ／記録は地震ごとで**種別を跨いで共有**（省き方は別で、震源要素はその種別の初報では通しで言う）／**まだ声にしていない事実が残る続報は差分にせず初報と同じ形で言い直す**／変化が無ければ読まずタブ移動だけ／震度速報を震源要素・津波区分の比較に使わない／「最大」を冠せるのは最大震度に一致する階級だけ／階級の打ち切りは差分を取る前の観測で数える） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「続報は差分だけ読む」 |
+| 地震情報の続報は差分だけ読むこと（初出の区域と震度が上がった区域・変わった震源要素／津波区分だけ／記録は地震ごとで**種別を跨いで共有**（省き方は別で、震源要素はその種別の初報では通しで言う）／**まだ声にしていない事実が残る続報は差分にせず初報と同じ形で言い直す**／震度速報を震源要素・津波区分の比較に使わない／「最大」を冠せるのは最大震度に一致する階級だけ／階級の打ち切りは差分を取る前の観測で数える） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「続報は差分だけ読む」 |
+| 続報の区域は**初出と上がりで群を分ける**こと（上がった分を先に読み、初出群を「また、新たに」で繋ぐ・「新たに」は初出にだけ掛かる語・**「最大」は上がりの群だけ**に冠する・上限は群ごとに数える・**群分けと「新たに」は差分のときだけ**で、判定は記録の有無ではなく「区域を一度でも声にしたか」） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「続報は差分だけ読む」 |
+| その地震で**最初の確定情報**（震源・震度情報／各地の震度情報）は地域も通しで読むこと（2 通目以降は差分に戻す・記録は受信時に進める） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「続報は差分だけ読む」 |
+| 変化が無い続報でも**名乗りだけは読む**こと（地震情報の読み上げ文は常に非空になり、タブ移動は読み上げ追従が担う。受信時要求へ落ちるのは読み上げが無効な端末だけ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「続報は差分だけ読む」 |
 | 地震情報の既読は「声になった分」だけ進めること（判定はチャンク単位・**鳴り始めた最後のチャンクは数えない**・1 つも鳴らなければ記録しない＝全文へ倒す。受信時や文の生成時に更新すると、割り込みで鳴らなかった地域が二度と読まれない。EEW の既読値が粗くて済むのは差分を語らないため）。**「声にしうる事実」と「記録を待つ事実」は同じ述語で判定すること**（深さは震源名の句の中でしか読まれない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「既読になるのは「声になった分」だけ」 |
 | 地震情報の続報判定（キーは「地震を指すキー」と情報種別の組。前者は DMDATA が `eventId`／P2PQuake は発生時刻＋震源名・**見た報は全部覚える**。直近 1 件だと種別の違う報が交互に届いたときに互いの記憶を上書きし、2 度目が初報のように読まれる） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「特殊な扱い」 |
 | 震度を伝えない電文（震源情報等）でウィンドウタイトルの震度を消さないこと（判定は既存カードが震度を持つかどうかで行う。**その報が初報かどうかで判定しない**。種別ごとに初報になるため歯止めが効かない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §5 |
 | EEW の区分の呼び方（電文の名称に合わせる。予報級＝地震動予報／警報級＝緊急地震速報（警報）。表示・読み上げの対応表と `eewKindLabel`。ウィンドウタイトルも対象＝外部監視への破壊的変更） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §3「電文の名称と表示・読み上げ」 |
+| 点滅する Marker を作り直さないこと（差分更新キーに**報番号を含めない**／内容が変わらないなら `innerHTML` を触らない。片方だけでは作り直しの経路が残り、点滅が止まってポップアップも閉じる） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §10・[`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §10（キーの取り方） |
 | 上限を定めない予想震度（**`over` / `99` を階級値に写さない**。下限へ寄せ「以上」はフラグで持ち越して表示・読み上げで語を補う。判定には混ぜない） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §8（電文上の表れ）・[`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4（使い方・語を出す箇所）・[`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6（既読の覚え方＝比較にも「以上」を入れる） |
 | 仮定震源要素で連動して隠す・採らない箇所の列挙（**新たに `condition` を参照したら必ず追記する**。区域への S 波到達推定の震源もここに含む） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §5 |
 | 「特別警報」を音声で読まないこと（表示・通知・通知音は 2 段階を保つ） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
@@ -515,14 +525,16 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 津波の解除で観測点の記憶を落とす条件（**表示中の津波に向けた解除のときだけ**落とす・判定は `isCancelForCurrentTsunami` に集約しカードの状態更新と共有する・落とすのは記憶と画面の状態だけで**音と読み上げは判定を経ない**・リセットとリプレイ復元でも同じ範囲を揃える） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §5「解除電文と表示中の津波の照合」 |
 | EEW P/S 波予報円の計算・仮定震源要素の連動箇所 | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §5-§6 |
 | EEW レベル判定（特別警報の条件・長周期の DMDATA 限定） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
-| 地図レイヤー描画順・EEW 予想レイヤーの kyoshin 限定・`maplibregl.Marker` の opacity | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §2・§3・§7・§10 |
+| 地図レイヤー描画順・EEW 予想レイヤーの kyoshin 限定・`maplibregl.Marker` の opacity（**中の要素の CSS アニメーションと乗算される**。点滅する描画物を弱めるときは振幅も併せて決める） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §2・§3・§7・§10 |
 | EEW 予想の区域塗りとカメラ追従対象の一致（`useEewLayerData` の `eewFitPositions` と `JapanMapGL` の塗り分けが、同じ「予想長周期を優先する」判定を使っていること） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6 |
+| EEW 追従の引き上限（**上限は円の半径にかける**。矩形の辺を枠で切り詰めると箱の中心が震源から外れる・検知点と区域塗りには上限をかけない・値を上げるときは地方名ラベルの閾値と併せて見る） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6 |
 | 表示閾値の単位の使い分け（対象がどれだけ画に収まるかは**視野の実距離**／文字と点の混み具合は**ズーム値**／タイルは**タイル z**）・ズーム値の基準（MapLibre 512px タイル vs Leaflet 256px タイル）・寄り上限に揃える閾値群 | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §4・§6 |
 | 視野基準の閾値が可変であること（寄り上限は 0.5 刻みへ丸める・大画面には絶対上限を置く・上限が固定の帯では可変の下限を追い越させない。`minzoom > maxzoom` は MapLibre が検証せず、どのズームでも描かれないレイヤーが黙って出来上がる） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6「寄り上限と閾値の単位」 |
 | 震度の区域集約の閾値が自動フィットの寄り上限と同値であること（ペイン寸法で変わるため定数に置けない。独自の値を置くと大きな画面で震度塗りが出ない） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §7 |
 | 地図の傾き（pitch）・回転（bearing）をユーザー操作から無効化している理由と、それに依存する描画物の前提（予報円の半径計算・カメラ自動フィット）。有効に戻すなら何を先に直すか | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6「地図の傾きと回転」 |
 | カメラ追従の抑制時間・津波の俯瞰帰還の猶予が `INTERACTION_HOLD_SEC` 固定であること（設定「自動復帰までの時間」＝ `idleRevertSec` と結合していないこと。結合すると「無効」の端末で追従・帰還が永久に止まる） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6「ユーザー操作の尊重」「津波追従の目標範囲」 |
 | ラベルのフォントスタック名の一致・グリフ収録文字の網羅性・フォント適用範囲（ラベル限定） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §5 |
+| 地名ラベルとバッジの重なり回避（**退避は重なったときだけ**・平常時は代表点の真上・逃がせる上限は生成データの `room`・避けきれなければ薄くする（消さない）／**代表点の判定で自区域を除外しないこと**（除外すると避けたい相手が消えて退避が発火しない。除外は退避後の判定だけ）／座標と `room` は投影の前に形を確かめること（**1 件の破損が全ラベルの判定を止める**）・`room` は非負まで見ること／判定結果は `feature-state` ではなく `properties` で渡すこと（`text-offset` が layout プロパティで feature-state 式を受け付けない）） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §5「バッジとの重なりを避ける」 |
 | symbol レイヤーの出入りが即時であること（`fadeDuration: 0`。paint トランジションとは別系統で、地図全体にしか設定できない）と、対象レイヤーの列挙。**symbol レイヤーを新設・削除したら列挙を見直す** | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §8「symbol の配置フェード」 |
 | 倍率の適用範囲（UI は rem で書く／地図の描画物には `iconScale` を渡す。枠線・影・アウトラインは倍率に連動させない） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §2「主な項目の補足」 |
 | 画面サイズ別レイアウトの分岐条件（`side` / `sideNarrow` / `roomy`）・パネル比率・折りたたみ | [`docs/spec/architecture-spec.md`](docs/spec/architecture-spec.md) §4「画面サイズ別のレイアウト」 |
@@ -545,10 +557,14 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 検知カードの震度分布バーの幅スケール（見えている間は分母を下げない・見えていない間だけ現在値へ張り直す・可視判定はタブ／パネル折りたたみ／ページ可視性の3つ） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) §8 |
 | 「別地点で揺れ検知」の抑制条件（EEW 吸収の記憶・エピソード起点・距離の上限・震度の下限・発報済みの扱い） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md)「別地点」判定の動的距離閾値 |
 | 「別地点で揺れ検知」の 3 つの窓（持続・クールダウン・破棄猶予）を**フレーム数ではなくデータ時刻で測る**こと・持続は観測回数ではなく初検知からの経過で見ること・破棄をフレーム末尾に置くこと | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md)「別地点」判定の動的距離閾値 |
+| リプレイ開始時の地震カードの厚み（一覧は**件数基準**で別途復元し、初期状態の 24 時間とは目的も遡り幅も分ける・再生中は「もっと見る」を出さない（押すとライブの最新履歴が混ざる）・履歴の取得が失敗しても再生は始める） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「地震カードの履歴は件数で遡る」 |
 | 実地震テストシナリオの時刻シフト・ID 再採番・利用規約制約 | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6 |
 | 生成データ（`public/data/*.json`）の取得タイムアウト値・失敗時の扱い（TTS 辞書のみ別値） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §6 |
-| テスト時刻設定のバリアント差（standard は P2PQuake の日付クエリ、DMDSS は DMDATA アーカイブ／ただし EEW はどちらも取得元が異なり、standard では強震モニタ側の検知に頼る） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」 |
+| 生成データの中身の検分（200 でも空・想定外の形なら失敗として扱う）を**取得の中**（`fetchJsonWithTimeout` の `validate`）で行うこと。取得後に呼び出し側で確かめると、その時点で成功として数え終わっているため「データの一部を取得できませんでした」に計上されず、`console` にしか残らない。**新しいローダーを足すときも同じ場所へ渡す** | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §6 |
+| テスト時刻設定のバリアント差（standard は P2PQuake の日付クエリ、DMDSS は DMDATA アーカイブ＋当日ぶんの別経路／ただし EEW はどちらも取得元が異なり、standard では強震モニタ側の検知に頼る） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」 |
 | archive リプレイの重複排除（XML 版／JSON 版どちらを採用するか）・失敗の封じ込め範囲（アーカイブが全滅しても強震モニタの再生は止めない） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」配下 |
+| アーカイブが無い日を埋める当日経路（**日付の基準が API ごとに違う**＝アーカイブの `date` は JST 日／`/v2/telegram`・`/v2/gd/eew` の `datetime` は UTC の半開区間・担当日の排他は `resolveLiveDates` の 1 箇所に集約・EEW だけ `/v2/gd/eew` を辿るのは電文一覧が EEW を保持しないため・**VXSE43 は取り込まない**（アーカイブ経路も取り込んでおらず、対応する VXSE45 の警報報と同一内容の複製で報番号だけが独立している）） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「当日ぶんの取得元」 |
+| リプレイの取りこぼしの数え方（取得元と電文単位を分ける・取得元は識別子で数える・**「すべて読めない」の分母は取得元の日数**で取る（アーカイブの本数で数えると、取得元が当日経路 1 本しか無い窓で電文 0 件のまま「再生中」になる）・**当日経路の 3 本の一覧は互いに隔離する**（隔離しないと EEW の一覧の一時障害で地震も津波も消え、上の分母と噛み合って再生ごと止まる）） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「取りこぼしの扱い」 |
 | `ConnectionStatus` の `replay`（再生中はライブ接続を切るため専用表示にする。`disconnected` と混ぜると地図に切断警告が出る） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「再生中はライブ接続を止める（接続状態の表示）」 |
 | 再生中の予約の時刻軸（EEW の自動解除・津波の失効を再生時計の「いま」へ潰さない。潰すと最終報の直後に EEW が消え、猶予が無くなる） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「再生中も予約は発火時刻を待つ」 |
 

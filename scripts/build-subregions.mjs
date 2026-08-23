@@ -2,7 +2,7 @@
 // 地図表示用の軽量な境界＋ラベル位置テーブルを生成する。
 //
 // 出力: public/data/subregions.json
-//   [ { "name": "神奈川県東部", "label": [lat, lon], "dir": "up"|"down", "rings": [ [ [lat,lon], ... ], ... ] }, ... ]
+//   [ { "name": "神奈川県東部", "label": [lat, lon], "room": [北, 南], "rings": [ [ [lat,lon], ... ], ... ] }, ... ]
 //
 // データ出典: 気象庁 予報区等 GIS データ（地震情報／細分区域）を GeoJSON 化したもの
 //   https://github.com/Ichihai1415/JMA-GIS-GeoJSON （release ブランチ・AreaForecastLocalE）
@@ -11,6 +11,7 @@
 import { writeFile, mkdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { labelAnchor, shiftRoom } from './lib/labelAnchor.mjs'
 
 // 末尾 `_1` は簡素化の緩い高精細版（原始約142,787頂点）。簡素化のきつい `_01` 版（約1/6.5・粗い行政界で
 // 海岸線が角張る）から切替えた。同じ 194 feature・properties(code/name/namekana)で区域定義は不変。
@@ -78,31 +79,10 @@ function normalizeRings(geometry) {
     .filter((r) => r.length >= 3)
 }
 
-/** label 点がリング内で北寄り/南寄りかを比較し、余白が広い側（ラベルをずらす向き）を返す。
- * build-prefectures.mjs の labelDir と同じロジック（区域中心の震度バッジとラベルが重ならないよう
- * text-offset で退避させるための方向）。 */
-function labelDir(ring, label) {
-  let maxLat = -Infinity
-  let minLat = Infinity
-  for (const [lat] of ring) {
-    if (lat > maxLat) maxLat = lat
-    if (lat < minLat) minLat = lat
-  }
-  const northRoom = maxLat - label[0]
-  const southRoom = label[0] - minLat
-  return northRoom >= southRoom ? 'up' : 'down'
-}
-
-/** 最大リング（点数最多）の頂点平均をラベル代表点とする。dir は退避方向（labelDir 参照）。 */
+/** ラベルの代表点と退避の余地（どちらも lib/labelAnchor.mjs が持つ）。 */
 function labelPoint(rings) {
-  let largest = rings[0]
-  for (const r of rings) if (r.length > largest.length) largest = r
-  const sum = largest.reduce((a, [lat, lon]) => [a[0] + lat, a[1] + lon], [0, 0])
-  const label = [
-    Math.round((sum[0] / largest.length) * 1000) / 1000,
-    Math.round((sum[1] / largest.length) * 1000) / 1000,
-  ]
-  return { label, dir: labelDir(largest, label) }
+  const label = labelAnchor(rings)
+  return { label, room: shiftRoom(rings, label) }
 }
 
 async function main() {
@@ -118,8 +98,8 @@ async function main() {
     if (!name) continue
     const rings = normalizeRings(feature.geometry)
     if (rings.length === 0) continue
-    const { label, dir } = labelPoint(rings)
-    regions.push({ name, label, dir, rings })
+    const { label, room } = labelPoint(rings)
+    regions.push({ name, label, room, rings })
   }
 
   await mkdir(OUT_DIR, { recursive: true })

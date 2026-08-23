@@ -60,24 +60,24 @@ export function onStationCoordsLoaded(fn: (data: StationCoordsData) => void): ()
 export function loadStationCoords(): Promise<StationCoordsData> {
   if (cache) return Promise.resolve(cache)
   if (!inflight) {
-    inflight = fetchJsonWithTimeout<StationCoordsData>(DATA_URL, 'station-coords')
-      .then((data) => {
-        // 中身の形まで見る。ビルドや配信の破損で空の表が 200 で返ると、呼び出し側は
-        // 「取得成功・観測点 0 件」として扱ってしまい、地図に震度が出ない状態が失敗として
-        // 検知されないまま進む。ここで例外にして通信失敗と同じ経路へ載せる。
-        // areas も必須。欠けたまま通すと buildAreaPrefIndex・lookupPointCoords が
-        // Object.keys(undefined) で TypeError を投げ、レンダー中の例外になる（ErrorBoundary は無い）。
-        if (
-          !data ||
-          typeof data !== 'object' ||
-          !data.stations ||
-          Object.keys(data.stations).length === 0 ||
-          !data.areas ||
-          typeof data.areas !== 'object' ||
-          Object.keys(data.areas).length === 0
-        ) {
+    inflight = fetchJsonWithTimeout<StationCoordsData>(DATA_URL, 'station-coords', {
+      // 中身の形まで見る。ビルドや配信の破損で空の表が 200 で返ると、呼び出し側は
+      // 「取得成功・観測点 0 件」として扱ってしまい、地図に震度が出ない状態が失敗として
+      // 検知されないまま進む。取得側の `validate` に渡すのは、ここで投げれば地図の
+      // 「データの一部を取得できませんでした」にも計上されるため（`.then()` では計上されない）。
+      // areas も必須。欠けたまま通すと buildAreaPrefIndex・lookupPointCoords が
+      // Object.keys(undefined) で TypeError を投げ、レンダー中の例外になる（ErrorBoundary は無い）。
+      // `stations` と `areas` は同じ厳しさで見る。`typeof` を落とすと、文字列が入っていたときに
+      // `Object.keys('abc')` が `['0','1','2']` を返して非空チェックをすり抜ける。
+      validate: (raw) => {
+        const data = raw as StationCoordsData | null
+        const filled = (v: unknown) => !!v && typeof v === 'object' && Object.keys(v).length > 0
+        if (!data || typeof data !== 'object' || !filled(data.stations) || !filled(data.areas)) {
           throw new Error('station-coords fetch returned no data (empty or malformed)')
         }
+      },
+    })
+      .then((data) => {
         // 区域の一覧を持たない旧形式でも地図の震度点は描けるので、失敗にはしない。ただし
         // 観測点から一次細分区域を引けなくなり、読み上げの地域名が都道府県粒度へ静かに戻る。
         // 配信を更新した直後、PWA が古いデータをキャッシュしたまま新しいバンドルを動かすと起きうる。

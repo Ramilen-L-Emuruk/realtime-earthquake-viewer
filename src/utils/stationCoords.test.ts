@@ -90,6 +90,19 @@ describe('loadStationCoords', { timeout: 15_000 }, () => {
     await expect(loadStationCoords()).rejects.toThrow(/no data/)
   })
 
+  // 文字列は Object.keys が添字の配列（'abc' → ['0','1','2']）を返すため、非空チェックだけでは
+  // すり抜ける。stations 側にも typeof を掛けていないと通ってしまう。
+  it.each([
+    ['stations', { stations: 'あいう', areas: SAMPLE.areas }],
+    ['areas', { stations: SAMPLE.stations, areas: 'あいう' }],
+  ])('200でも %s が文字列なら失敗として扱う（非空チェックのすり抜けを塞ぐ）', async (_label, body) => {
+    vi.stubGlobal('fetch', vi.fn(async () => okResponse(body)))
+    const { loadStationCoords, getStationCoordsCache } = await freshModule()
+
+    await expect(loadStationCoords()).rejects.toThrow(/no data/)
+    expect(getStationCoordsCache()).toBeNull()
+  })
+
   it('失敗後に呼び直すと再取得する（inflightを破棄してリトライ可能にする）', async () => {
     const fetchMock = vi
       .fn()
@@ -233,6 +246,26 @@ describe('観測点 → 一次細分区域の逆引き（lookupStationRegion）'
     expect(lookupStationRegion(data, '富山県', '同名町')).toBeNull()
     // 区域を持たない観測点も引けない（元データが 2 要素）。
     expect(lookupStationRegion(data, '新潟県', '区域の無い観測点')).toBeNull()
+  })
+
+  // 読み上げの「上位階級で区域名を出した県はまとめない」判定は、名前が区域名の索引で引けるかどうかで
+  // 区域名と（まとめた）県名を見分ける（ttsText.ts の prefsWithAreaShown）。多区域の県が県名と同じ
+  // 表記の区域を持つと、まとめた県名を「区域名を出した」と誤って数え、以降その県のまとめが不必要に
+  // 止まる。奈良県は県名と同名の区域を持つが単一区域なので、どちらに数えても出力は変わらない。
+  it('多区域の県に、県名と同じ表記の区域は無い', async () => {
+    const data = JSON.parse(readFileSync('public/data/station-coords.json', 'utf8')) as StationCoordsData
+    const byPref = new Map<string, string[]>()
+    for (const key of Object.keys(data.areas)) {
+      const sep = key.indexOf('|')
+      const pref = key.slice(0, sep)
+      byPref.set(pref, [...(byPref.get(pref) ?? []), key.slice(sep + 1)])
+    }
+    const collides = [...byPref].filter(([pref, areas]) => areas.length > 1 && areas.includes(pref))
+    expect(collides.map(([pref]) => pref)).toEqual([])
+
+    // 単一区域で県名と同名のもの（現状は奈良県だけ）は無害だが、増減したら上の前提を見直す。
+    const singles = [...byPref].filter(([pref, areas]) => areas.length === 1 && areas[0] === pref)
+    expect(singles.map(([pref]) => pref)).toEqual(['奈良県'])
   })
 
   it('実データでは全観測点が区域を持ち、観測点名は都道府県を跨いで重複しない', async () => {
