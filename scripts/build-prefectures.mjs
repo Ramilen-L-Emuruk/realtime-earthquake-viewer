@@ -2,9 +2,10 @@
 // 都道府県名 -> 境界座標（＋ラベル位置）テーブルを生成する。
 //
 // 出力: public/data/prefectures.json
-//   { "都道府県名": { "label": [lat, lon], "rings": [ [ [lat, lon], ... ], ... ] } }
+//   { "都道府県名": { "label": [lat, lon], "room": [北, 南], "rings": [ [ [lat, lon], ... ], ... ] } }
 //     rings = 外周・離島などのリングの配列（各リングは閉じた境界線）
 //     label = 県名ラベルを置く代表点（最大リングの重心）
+//     room  = 代表点から北・南へラベルを退避させられる余地（緯度差の度数・shiftRoom 参照）
 //
 // 【重要】県境は一次細分区域（build-subregions.mjs）を県ごとに融合(dissolve)して作る。
 //   理由: 県境は必ず一次細分区域の境界でもある（区域は県を細分したもの）。県境ポリゴンと区域ポリゴンを
@@ -22,6 +23,7 @@ import { writeFile, mkdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import mapshaperPkg from 'mapshaper'
+import { shiftRoom } from './lib/labelRoom.mjs'
 
 const mapshaper = mapshaperPkg.default ?? mapshaperPkg
 
@@ -112,22 +114,6 @@ function centroid(ring) {
     Math.round((sum[0] / ring.length) * 1000) / 1000,
     Math.round((sum[1] / ring.length) * 1000) / 1000,
   ]
-}
-
-/**
- * ラベルのオフセット方向。代表点から見て県内に余白が大きい側（北/南）へ寄せる。
- * （上一律にすると県外へはみ出すため、リングの上下の余白を比較して決める。）
- */
-function labelDir(ring, label) {
-  let maxLat = -Infinity
-  let minLat = Infinity
-  for (const [lat] of ring) {
-    if (lat > maxLat) maxLat = lat
-    if (lat < minLat) minLat = lat
-  }
-  const northRoom = maxLat - label[0]
-  const southRoom = label[0] - minLat
-  return northRoom >= southRoom ? 'up' : 'down'
 }
 
 /** GeoJSON feature の代表点（先頭リング頂点の平均・[lon, lat]）。最近傍県の判定に使う。 */
@@ -234,7 +220,7 @@ async function main() {
     if (rings.length === 0) continue
     const mainRing = largestRing(rings)
     const label = centroid(mainRing)
-    prefs[name] = { label, dir: labelDir(mainRing, label), rings }
+    prefs[name] = { label, room: shiftRoom(rings, label), rings }
   }
 
   await mkdir(OUT_DIR, { recursive: true })

@@ -18,7 +18,7 @@ import type { SubRegion } from '../utils/subregions'
 const NOTO: SubRegion = {
   name: '石川県能登',
   label: [37.0, 136.9],
-  dir: 'up',
+  room: [0.2, 0.2],
   rings: [[[37.2, 136.7], [37.2, 137.1], [36.8, 137.1], [36.8, 136.7]]],
 }
 
