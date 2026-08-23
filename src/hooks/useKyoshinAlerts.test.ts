@@ -330,7 +330,7 @@ describe('stepAlertRegions', () => {
   // --- コマ飛び（ライブで取得が遅れたときのデータ時刻のジャンプ）に対する固定 ---
   // ライブは取得が遅れると次のデータ時刻へジャンプしてコマを飛ばす（kyoshinSource.ts の
   // ライブ分岐）。リプレイは常に 1 秒ずつ進むため、この状況はリプレイでも
-  // `npm run probe-kyoshin` でも再現できない。合成フレームで固定する。
+  // `npm run bench-kyoshin` でも再現できない。合成フレームで固定する。
 
   /** 福岡で 1 度発報を済ませ、沖縄が持続待ちに入った状態まで進める。 */
   function firedOnceThenPending(t: number) {
