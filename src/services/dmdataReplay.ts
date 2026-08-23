@@ -1,4 +1,4 @@
-import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml } from './dmdataParser'
+import { parseEarthquake } from './dmdataParser'
 import { parseTar } from '../utils/tarParser'
 import type { JMAQuake, EEWAlert, JMATsunami } from '../types/earthquake'
 import { calcEEWCancelTime } from '../utils/eew'
@@ -6,28 +6,25 @@ import { gunzip } from '../utils/gzip'
 import { log } from '../utils/logger'
 import { authHeader } from '../utils/dmdataApiKey'
 import { extractQuakeEventIdFromId } from '../utils/quakeMerge'
-import type { ReplayEntry, ReplayPayload, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
-
-const QUAKE_TYPES = new Set(['VXSE51', 'VXSE52', 'VXSE53', 'VXSE61'])
-const TSUNAMI_TYPES = new Set(['VTSE41', 'VTSE51', 'VTSE52'])
-// DMD-8: VXSE43（EEW 警報）を追加。従来は archive リプレイ時に警報級 EEW が黙って
-// 捨てられ、実地震シナリオ収録の警報経路が完全に欠落していた。
-const EEW_TYPES = new Set(['VXSE43', 'VXSE45'])
-const LPGM_TYPES = new Set(['VXSE62'])
-// VYSE50=臨時情報（段階あり）、VYSE51/52=関連解説情報（段階なし）。別の型に読むため分ける。
-const NANKAI_TYPES = new Set(['VYSE50'])
-const COMMENTARY_TYPES = new Set(['VYSE51', 'VYSE52'])
-const KOHATSU_TYPES = new Set(['VYSE60'])
-// このモジュールが取り込む電文種別の全体。archive の classification には対象外の種別も
-// 多数含まれるため、まずこれで絞ってから欠落を警告する（絞る前に警告すると、正常動作で
-// ログが埋まって本当の異常が見えなくなる）。
-const HANDLED_TYPES = new Set([
-  ...QUAKE_TYPES, ...TSUNAMI_TYPES, ...EEW_TYPES, ...LPGM_TYPES,
-  ...NANKAI_TYPES, ...COMMENTARY_TYPES, ...KOHATSU_TYPES,
-])
+import type { ReplayEntry, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
+import { HANDLED_TYPES, QUAKE_TYPES, XML_ONLY_TYPES, buildJsonPayload, buildXmlPayload } from './dmdataTelegramPayload'
+import {
+  clearLiveReplayCache, fetchLiveQuakeTelegrams, fetchLiveReplayEntries, resolveLiveDates,
+} from './dmdataReplayLive'
 
 function toDateStr(d: Date): string {
   return d.toISOString().slice(0, 10)
+}
+
+/**
+ * 読めなかった当日経路の日を、アーカイブ URL と同じ枠で数えるための識別子。
+ *
+ * 「読めなかった取得元」を 1 本の集合で持つのは、**全滅判定**（共通原因の検出）を成立させるため。
+ * 当日経路だけ別の枠に置くと、アーカイブが全滅していても当日経路のぶんだけ分母が増えて
+ * 「一部は読めた」に化け、認証切れ・全断のときに例外が上がらなくなる。
+ */
+function liveSourceId(date: string): string {
+  return `live:${date}`
 }
 
 // ファイル名に埋め込まれた17桁タイムスタンプ（YYYYMMDDHHMMSSmmm）を UTC の Date に変換する。
@@ -83,6 +80,7 @@ async function downloadArchive(url: string, apiKey: string): Promise<Map<string,
 
 export function clearReplayCache(): void {
   archiveCache.clear()
+  clearLiveReplayCache()
 }
 
 /**
@@ -230,7 +228,7 @@ export async function fetchDmdataReplayEvents(
         try {
           const idPrefix = entry.id.slice(0, 7)
 
-          if (NANKAI_TYPES.has(headType) || COMMENTARY_TYPES.has(headType) || KOHATSU_TYPES.has(headType)) {
+          if (XML_ONLY_TYPES.has(headType)) {
             // XML 形式電文（VYSE50/51/52/60）。これらは XML パーサ（parseNankaiFromXml /
             // parseNankaiCommentaryFromXml / parseVyse60FromXml）でしか読めないため、
             // XML 版エントリ（originalId 無し）だけを拾う。
@@ -249,17 +247,7 @@ export async function fetchDmdataReplayEvents(
             }
             const xmlText = dec.decode(bodyBytes)
 
-            let payload: ReplayPayload | null = null
-            if (NANKAI_TYPES.has(headType)) {
-              const nankai = parseNankaiFromXml(xmlText)
-              if (nankai) payload = { kind: 'nankai', data: nankai }
-            } else if (COMMENTARY_TYPES.has(headType)) {
-              const commentary = parseNankaiCommentaryFromXml(xmlText)
-              if (commentary) payload = { kind: 'nankaiCommentary', data: commentary }
-            } else {
-              const kohatsu = parseVyse60FromXml(xmlText)
-              if (kohatsu) payload = { kind: 'kohatsu', data: kohatsu }
-            }
+            const payload = buildXmlPayload(headType, xmlText)
             if (payload) {
               entries.push({ payload, replayTime: entryTime })
             } else {
@@ -286,21 +274,7 @@ export async function fetchDmdataReplayEvents(
           const jsonFileName = body.name
           const data = JSON.parse(dec.decode(body.bytes)) as Record<string, unknown>
 
-          let payload: ReplayPayload | null = null
-          if (EEW_TYPES.has(headType)) {
-            const event = parseEEW(headType, data)
-            if (event) payload = { kind: 'event', event }
-          } else if (QUAKE_TYPES.has(headType)) {
-            const event = parseEarthquake(headType, data)
-            if (event) payload = { kind: 'event', event }
-          } else if (TSUNAMI_TYPES.has(headType)) {
-            const event = parseTsunami(headType, data)
-            if (event) payload = { kind: 'event', event }
-          } else if (LPGM_TYPES.has(headType)) {
-            const lpgm = parseLpgm(data)
-            if (lpgm) payload = { kind: 'lpgm', data: lpgm }
-          }
-
+          const payload = buildJsonPayload(headType, data)
           if (payload) {
             // ファイル名の17桁タイムスタンプ（YYYYMMDDHHMMSSmmm）はミリ秒精度の実受信時刻。
             // pressDateTime は秒単位で切り捨てられているため、ファイル名から ms を優先的に取得する。
@@ -324,20 +298,54 @@ export async function fetchDmdataReplayEvents(
   // 全アーカイブが読めなかった場合だけは例外にする。認証エラー・権限不足・ネットワーク全断など、
   // 個別の破損ではなく共通の原因であることがほとんどで、これを握り潰すと UI には
   // 「成功したが電文 0 件」としか見えない。1 件でも読めていれば部分的成功として扱う。
-  if (items.length > 0 && failedArchiveUrls.length === items.length) {
-    throw new Error(`Archive fetch failed: ${items.length} 件のアーカイブすべてを読み取れませんでした`)
+  // ここまでに積まれたのはアーカイブ 1 日ぶんの失敗だけ。全滅判定の分母に使うので、
+  // 当日経路が識別子を足す前に数えておく。
+  let failedSourceDays = failedArchiveUrls.length
+
+  // アーカイブがまだ生成されていない日（当日、および前日ぶんの生成待ち）を別経路で埋める。
+  // 日次アーカイブは JST 日単位で当日ぶんが作られないため、これが無いと今日を指定した
+  // 再生が電文 0 件になり、前日をまたぐ指定では今日側だけが静まり返る。
+  // 担当日はアーカイブ一覧が返した date と重ならないので、同じ電文を二重に取り込むことはない。
+  const liveDates = resolveLiveDates(fromTime, toTime, items.map(i => i.date))
+  if (liveDates.length > 0) {
+    try {
+      const live = await fetchLiveReplayEntries(apiKey, fromTime, toTime, liveDates)
+      entries.push(...live.entries)
+      skippedCount += live.skipped
+      failedArchiveUrls.push(...live.failedSources)
+    } catch (e) {
+      // アーカイブ 1 日ぶんが読めなかったときと同じ扱いにする。ここで素通しすると、当日の
+      // 一覧 API が一度こけただけで、既に読めているアーカイブ側の電文まで巻き添えで捨てられる
+      // （この関数は本編と初期状態の 2 回、`Promise.all` で呼ばれるため再生自体が始まらなくなる）。
+      log.error(`[replay] 当日経路の取得に失敗したためスキップ 日=${liveDates.join(',')}`, e)
+      failedArchiveUrls.push(...liveDates.map(liveSourceId))
+      failedSourceDays += liveDates.length
+    }
   }
+
+  // 取得元がすべて読めなかった場合だけ例外にする。認証エラー・権限不足・ネットワーク全断など、
+  // 個別の破損ではなく共通の原因であることがほとんどで、これを握り潰すと UI には
+  // 「成功したが電文 0 件」としか見えない。1 日ぶんでも読めていれば部分的成功として扱う。
+  //
+  // 分母を「アーカイブの本数」ではなく「取得元の日数」で取るのが要点。当日だけを指す窓
+  //（本編の 1 時間）は取得元が当日経路 1 本しか無く、そこを部分成功に落とすと**電文 0 件のまま
+  // 「再生中」**になってしまう。日数で数えれば、その場合はちゃんと例外になる。
+  const sourceDays = items.length + liveDates.length
+  if (sourceDays > 0 && failedSourceDays === sourceDays) {
+    throw new Error(`Archive fetch failed: ${sourceDays} 件の取得元すべてを読み取れませんでした`)
+  }
+
   if (failedArchiveUrls.length > 0) {
-    log.warn(`[replay] ${items.length} 件中 ${failedArchiveUrls.length} 件のアーカイブをスキップした（残りから取り込みを継続）`)
+    log.warn(`[replay] 取得元 ${sourceDays} 日ぶんのうち ${failedArchiveUrls.length} 件を読めなかった（残りから取り込みを継続）: ${failedArchiveUrls.join(', ')}`)
   }
   if (skippedCount > 0) {
     log.warn(`[replay] ${skippedCount} 件の電文を取り込めなかった（範囲 ${fromTime.toISOString()}〜${toTime.toISOString()}）`)
   }
-  if (items.length > 0 && entries.length === 0) {
-    // アーカイブは取得できたのに 1 件も取り込めなかった状態。指定期間に本当に電文が
+  if (items.length + liveDates.length > 0 && entries.length === 0) {
+    // 取得元は引けたのに 1 件も取り込めなかった状態。指定期間に本当に電文が
     // 無いだけのこともあるため例外にはしないが、UI 側は「成功」としか見えないので
     // 診断の手がかりを残す。
-    log.warn(`[replay] アーカイブ ${items.length} 件を取得したが対象電文は 0 件（範囲 ${fromTime.toISOString()}〜${toTime.toISOString()}）`)
+    log.warn(`[replay] アーカイブ ${items.length} 件・当日経路 ${liveDates.length} 日を取得したが対象電文は 0 件（範囲 ${fromTime.toISOString()}〜${toTime.toISOString()}）`)
   }
 
   entries.sort((a, b) => a.replayTime.getTime() - b.replayTime.getTime())
@@ -458,16 +466,25 @@ export async function fetchDmdataQuakeHistory(
   endObj.setDate(endObj.getDate() + 1)
   const items = await listArchives(apiKey, toDateStr(startObj), toDateStr(endObj), 'telegram.earthquake')
 
-  // 新しい日から使う（カードは新しい順に並ぶため、打ち切りで欠けてよいのは古い側）。
-  const ordered = [...items].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
-  const downloaded = await Promise.all(ordered.map(async (item) => {
+  const downloaded = await Promise.all(items.map(async (item) => {
     try {
-      return { item, files: await downloadArchive(item.url, apiKey) }
+      return { date: item.date, item, files: await downloadArchive(item.url, apiKey) }
     } catch (e) {
       log.error(`[replay] 履歴用アーカイブの取得・展開に失敗 date=${item.date}`, e)
-      return { item, files: null }
+      return { date: item.date, item, files: null }
     }
   }))
+
+  // アーカイブがまだ生成されていない日は当日経路で埋める（`fetchDmdataReplayEvents` と同じ理由）。
+  // これが無いと、今日を指定した再生で「開始時刻より前の今日の地震」がカードに出ない。
+  const liveDays = resolveLiveDates(startObj, new Date(before.getTime() + 1), items.map(i => i.date))
+
+  // 新しい日から使う（カードは新しい順に並ぶため、打ち切りで欠けてよいのは古い側）。
+  // アーカイブの日と当日経路の日は排他なので、日付だけで一本に並べられる。
+  const sources: Array<{ date: string; archive?: typeof downloaded[number] }> = [
+    ...downloaded.map(d => ({ date: d.date, archive: d })),
+    ...liveDays.map(date => ({ date })),
+  ].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
 
   const dec = new TextDecoder()
   const quakes: JMAQuake[] = []
@@ -476,9 +493,29 @@ export async function fetchDmdataQuakeHistory(
   let skipped = 0
   let usedDays = 0
 
-  for (const { item, files } of downloaded) {
+  for (const source of sources) {
     if (eventIds.size >= targetEvents) break
     usedDays++
+
+    if (!source.archive) {
+      // 当日経路。読めなくてもアーカイブ側の成果は活かす（アーカイブ 1 日ぶんが読めなかったときと
+      // 同じ扱い）。ここで例外にすると、当日の一覧 API が一度こけただけで過去数日ぶんの
+      // カードごと消える。
+      try {
+        const live = await fetchLiveQuakeTelegrams(apiKey, source.date, before)
+        for (const quake of live.quakes) {
+          quakes.push(quake)
+          eventIds.add(extractQuakeEventIdFromId(quake.id) ?? quake.id)
+        }
+        skipped += live.skipped
+      } catch (e) {
+        log.error(`[replay] 履歴用の当日経路の取得に失敗 date=${source.date}`, e)
+        failedArchiveUrls.push(liveSourceId(source.date))
+      }
+      continue
+    }
+
+    const { item, files } = source.archive
     if (!files) { failedArchiveUrls.push(item.url); continue }
 
     const manifestBytes = files.get('telegrams.json')
@@ -539,16 +576,15 @@ export async function fetchDmdataQuakeHistory(
   // 使おうとした日がすべて読めなかった場合だけ例外にする（認証エラー・全断などの共通原因が
   // ほとんどで、握り潰すと「履歴 0 件の成功」に化ける）。1 日でも読めていれば部分成功とする。
   if (usedDays > 0 && failedArchiveUrls.length === usedDays) {
-    throw new Error(`Archive fetch failed: ${usedDays} 件のアーカイブすべてを読み取れませんでした`)
+    throw new Error(`Archive fetch failed: ${usedDays} 件の取得元すべてを読み取れませんでした`)
   }
-  // 「アーカイブが 1 つも無い」は取得の失敗として現れないため、例外にも損失にもならない。
-  // 黙って空を返すと「静かな期間だった」と区別が付かないので、手がかりだけは残す
-  //（日次アーカイブは日付が変わってすぐには生成されないことがあり、当日を指定したときに起きうる）。
-  if (items.length === 0) {
-    log.warn(`[replay] 履歴用アーカイブが 1 件も見つからなかった（範囲 ${toDateStr(startObj)}〜${toDateStr(endObj)}）`)
+  // 「取得元が 1 つも無い」は取得の失敗として現れないため、例外にも損失にもならない。
+  // 黙って空を返すと「静かな期間だった」と区別が付かないので、手がかりだけは残す。
+  if (sources.length === 0) {
+    log.warn(`[replay] 履歴用の取得元が 1 件も見つからなかった（範囲 ${toDateStr(startObj)}〜${toDateStr(endObj)}）`)
   } else if (quakes.length === 0) {
-    log.warn(`[replay] 履歴用アーカイブ ${usedDays} 件を読んだが地震電文は 0 件（${before.toISOString()} 以前）`)
+    log.warn(`[replay] 履歴用に ${usedDays} 日ぶんを読んだが地震電文は 0 件（${before.toISOString()} 以前）`)
   }
-  log.info(`[replay] 地震カードの履歴を復元 電文=${quakes.length} イベント=${eventIds.size} 参照日数=${usedDays}`)
+  log.info(`[replay] 地震カードの履歴を復元 電文=${quakes.length} イベント=${eventIds.size} 参照日数=${usedDays}（うち当日経路=${liveDays.length}）`)
   return { quakes, skipped, failedArchiveUrls }
 }

@@ -518,8 +518,10 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | リプレイ開始時の地震カードの厚み（一覧は**件数基準**で別途復元し、初期状態の 24 時間とは目的も遡り幅も分ける・再生中は「もっと見る」を出さない（押すとライブの最新履歴が混ざる）・履歴の取得が失敗しても再生は始める） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「地震カードの履歴は件数で遡る」 |
 | 実地震テストシナリオの時刻シフト・ID 再採番・利用規約制約 | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6 |
 | 生成データ（`public/data/*.json`）の取得タイムアウト値・失敗時の扱い（TTS 辞書のみ別値） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §6 |
-| テスト時刻設定のバリアント差（standard は P2PQuake の日付クエリ、DMDSS は DMDATA アーカイブ／ただし EEW はどちらも取得元が異なり、standard では強震モニタ側の検知に頼る） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」 |
+| テスト時刻設定のバリアント差（standard は P2PQuake の日付クエリ、DMDSS は DMDATA アーカイブ＋当日ぶんの別経路／ただし EEW はどちらも取得元が異なり、standard では強震モニタ側の検知に頼る） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」 |
 | archive リプレイの重複排除（XML 版／JSON 版どちらを採用するか）・失敗の封じ込め範囲（アーカイブが全滅しても強震モニタの再生は止めない） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」配下 |
+| アーカイブが無い日を埋める当日経路（**日付の基準が API ごとに違う**＝アーカイブの `date` は JST 日／`/v2/telegram`・`/v2/gd/eew` の `datetime` は UTC の半開区間・担当日の排他は `resolveLiveDates` の 1 箇所に集約・EEW だけ `/v2/gd/eew` を辿るのは電文一覧が EEW を保持しないため・**VXSE43 は取り込まない**（アーカイブ経路も取り込んでおらず、対応する VXSE45 の警報報と同一内容の複製で報番号だけが独立している）） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「当日ぶんの取得元」 |
+| リプレイの取りこぼしの数え方（取得元と電文単位を分ける・取得元は識別子で数える・**「すべて読めない」の分母は取得元の日数**で取る（アーカイブの本数で数えると、取得元が当日経路 1 本しか無い窓で電文 0 件のまま「再生中」になる）・**当日経路の 3 本の一覧は互いに隔離する**（隔離しないと EEW の一覧の一時障害で地震も津波も消え、上の分母と噛み合って再生ごと止まる）） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「取りこぼしの扱い」 |
 | `ConnectionStatus` の `replay`（再生中はライブ接続を切るため専用表示にする。`disconnected` と混ぜると地図に切断警告が出る） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「再生中はライブ接続を止める（接続状態の表示）」 |
 | 再生中の予約の時刻軸（EEW の自動解除・津波の失効を再生時計の「いま」へ潰さない。潰すと最終報の直後に EEW が消え、猶予が無くなる） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「再生中も予約は発火時刻を待つ」 |
 

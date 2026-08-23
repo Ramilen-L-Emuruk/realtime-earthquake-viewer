@@ -160,7 +160,7 @@ export function addFailedPrefetch(loss: ReplayLoss): ReplayLoss {
  */
 export function formatLossNotice(loss: ReplayLoss): string | null {
   const parts: string[] = []
-  if (loss.failedArchives.size > 0) parts.push(`${loss.failedArchives.size} 件のアーカイブ`)
+  if (loss.failedArchives.size > 0) parts.push(`${loss.failedArchives.size} 件の取得元`)
   if (loss.skippedTelegrams > 0) parts.push(`${loss.skippedTelegrams} 件の電文`)
   if (loss.failedPrefetches > 0) parts.push(`${loss.failedPrefetches} 区間ぶんの先読み`)
   if (parts.length === 0) return null
