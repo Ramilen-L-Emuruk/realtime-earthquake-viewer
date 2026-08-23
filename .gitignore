@@ -54,10 +54,14 @@ verify-*.jpg
 !.claude/agents/doc-objectivity-reviewer.md
 !.claude/agents/meta-reviewer.md
 # .claude/skills/ も同じホワイトリスト方式。スキルは 1 つがディレクトリ単位のため、
-# ディレクトリの再包含（!.claude/skills/<name>/）が必要になる点に注意。
+# ディレクトリを再包含する行（!.claude/skills/<name>/）が要る。
+# ただし ! でディレクトリを再包含すると配下が既定で追跡側に回るので、
+# その直後に <name>/* で再度 ignore してから目的のファイルを ! で拾う。
+# この 1 行を省くと、そのスキルのディレクトリに置いたメモが黙って追跡される。
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/release/
+.claude/skills/release/*
 !.claude/skills/release/SKILL.md
 
 # 実地震テストのシナリオ本体（DMDATA.JP利用規約第15条によりEEWの二次配信は
