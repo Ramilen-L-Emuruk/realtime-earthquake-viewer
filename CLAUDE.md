@@ -517,6 +517,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 「別地点で揺れ検知」の 3 つの窓（持続・クールダウン・破棄猶予）を**フレーム数ではなくデータ時刻で測る**こと・持続は観測回数ではなく初検知からの経過で見ること・破棄をフレーム末尾に置くこと | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md)「別地点」判定の動的距離閾値 |
 | 実地震テストシナリオの時刻シフト・ID 再採番・利用規約制約 | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6 |
 | 生成データ（`public/data/*.json`）の取得タイムアウト値・失敗時の扱い（TTS 辞書のみ別値） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §6 |
+| 生成データの中身の検分（200 でも空・想定外の形なら失敗として扱う）を**取得の中**（`fetchJsonWithTimeout` の `validate`）で行うこと。取得後に呼び出し側で確かめると、その時点で成功として数え終わっているため「データの一部を取得できませんでした」に計上されず、`console` にしか残らない。**新しいローダーを足すときも同じ場所へ渡す** | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §6 |
 | テスト時刻設定のバリアント差（standard は P2PQuake の日付クエリ、DMDSS は DMDATA アーカイブ／ただし EEW はどちらも取得元が異なり、standard では強震モニタ側の検知に頼る） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」 |
 | archive リプレイの重複排除（XML 版／JSON 版どちらを採用するか）・失敗の封じ込め範囲（アーカイブが全滅しても強震モニタの再生は止めない） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」配下 |
 | `ConnectionStatus` の `replay`（再生中はライブ接続を切るため専用表示にする。`disconnected` と混ぜると地図に切断警告が出る） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「再生中はライブ接続を止める（接続状態の表示）」 |
