@@ -131,6 +131,18 @@ export function calcArrivalSafetyMarginSec(distanceKm: number): number {
 
 // EEW の areas が未設定の場合 regions にフォールバックする（旧形式互換）。
 
+/**
+ * EEW の同一性キー（`issue.eventId` があればそれ、無ければ `id`）。
+ *
+ * アプリ各所で使っている `issue?.eventId ?? id` の idiom を、**判定どうしを必ず揃えたい箇所**で
+ * 共有するためのもの。地図のカメラ追従では、初出時刻の台帳（`gl/eewFirstSeen.ts`）と
+ * `FitToEEWGL` の判定がこのキーで結びついており、片方だけ導出を変えると台帳を引けなくなって
+ * 「発報中の EEW への入室」の判定が黙って効かなくなる。
+ */
+export function eewEventKey(eew: EEWAlert): string {
+  return eew.issue?.eventId ?? eew.id
+}
+
 export function eewAreas(eew: EEWAlert): EEWRegion[] {
   return eew.areas ?? eew.regions ?? []
 }
