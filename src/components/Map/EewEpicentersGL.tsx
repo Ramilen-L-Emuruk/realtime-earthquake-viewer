@@ -10,8 +10,11 @@ import { badgeHtml, escapeHtml } from './gl/popupHtml'
 // EEW（緊急地震速報）の震源(×印・点滅)を描画する MapLibre 版（Leaflet 版 JapanMap の
 // EEW 震源マーカー相当）。全モードで表示し、リアルタイム震度モード以外は半透明にする。
 // 複数 EEW 時は全震源を表示する。
-// 仮定震源要素（単独観測点処理）の震源はかなり薄く描いて確定震源と区別する
+// 仮定震源要素（単独観測点処理）の震源は控えめに描いて確定震源と区別する
 // （予報円を出さない・カードで M/深さを隠すのと同じ扱いを地図にも与える）。
+// 区別は「不透明度を下げる」だけでなく「点滅の振幅を浅くする」ことでも付ける。
+// Marker の不透明度と点滅アニメーションは乗算されるため、下げるだけでは
+// 点滅の谷で消えてしまい「たまに薄く見える」状態になる（下記 CSS クラスの出し分け）。
 //
 // クリックで震源名・第何報・M・深さ・予想最大震度・警報種別を出す（地震情報の震源マーカーと対）。
 //
@@ -19,10 +22,36 @@ import { badgeHtml, escapeHtml } from './gl/popupHtml'
 // 全マーカーを作り直すと、EEW発報中にタブを切り替えるだけで震源×印が一瞬消えてしまうため、
 // opacity だけの変化は marker.setOpacity() で済ませ、マーカー自体は作り直さない。
 
-/** 仮定震源要素の×印の不透明度倍率。確定震源に対してかなり薄くする。 */
-const ASSUMED_OPACITY_RATIO = 0.35
-/** 同・下限。地震/津波モードは元が 0.4 のため、倍率だけだと 0.14 まで落ちて事実上見えなくなる。 */
-const ASSUMED_OPACITY_MIN = 0.2
+/**
+ * 仮定震源要素の×印の不透明度倍率。確定震源より控えめにするが、点滅
+ * （`eew-blink-assumed`・谷 0.45）と乗算されるため下げすぎない。
+ * kyoshin モードではこちらが採られる（1 × 0.7）。
+ */
+const ASSUMED_OPACITY_RATIO = 0.7
+/**
+ * 同・下限。**地震/津波モードでは実質こちらが採用される**（元が 0.4 なので倍率だけだと
+ * 0.28 まで落ち、点滅の谷と掛かって 0.13 になる）。このモードでは確定震源との差を
+ * 不透明度ではなく点滅の振幅で付ける。
+ */
+const ASSUMED_OPACITY_MIN = 0.35
+/** kyoshin モード以外の×印の不透明度。 */
+const DIMMED_OPACITY = 0.4
+
+/**
+ * ×印に渡す不透明度。`fullOpacity` は kyoshin モードかどうか（それ以外は半透明）。
+ * 点滅アニメーション（`eew-blink` / `eew-blink-assumed`）の opacity と**乗算される**ので、
+ * 実際の見え方はこの値そのものではない。積の関係は `EewEpicentersGL.test.ts` が固定している。
+ *
+ * 仮定震源が確定震源より薄いのは**濃い側だけ**。確定は谷が深いため（1 → 0.1／0.4 → 0.04）、
+ * **点滅の谷ではどのモードでも仮定の方が濃くなる**（kyoshin 0.315 対 0.1／他 0.158 対 0.04）。
+ * 逆転を消すには、**この 2 軸（不透明度・点滅の振幅）の中では**仮定を「谷で消える」ところまで
+ * 戻すしかない。意図した引き換えとして扱っている。線の色や太さで差を付ければ逆転を避けつつ
+ * 視認性も保てるが、現状は採っていない（区別は不透明度と点滅だけで付ける方針）。
+ */
+export function crossOpacity(isAssumed: boolean, fullOpacity: boolean): number {
+  const base = fullOpacity ? 1 : DIMMED_OPACITY
+  return isAssumed ? Math.max(base * ASSUMED_OPACITY_RATIO, ASSUMED_OPACITY_MIN) : base
+}
 
 interface Props {
   epicenters: EewEpicenter[]
@@ -35,7 +64,7 @@ interface Props {
 // （地形に隠れたときの制御のため）毎フレーム上書きするので、Marker のオプションで渡す。
 // style.cssText の丸ごと代入は Marker がポジショニングに使う transform を消してしまうため、
 // 更新時は個別プロパティだけ触る。
-function updateCrossEl(el: HTMLDivElement, iconScale: number, isAssumed: boolean): void {
+export function updateCrossEl(el: HTMLDivElement, iconScale: number, isAssumed: boolean): void {
   const s = Math.round(32 * iconScale)
   el.style.width = `${s}px`
   el.style.height = `${s}px`
@@ -43,8 +72,16 @@ function updateCrossEl(el: HTMLDivElement, iconScale: number, isAssumed: boolean
   if (isAssumed) el.title = '震源未確定（単独観測点処理）'
   else el.removeAttribute('title')
   // eew-blink クラスで点滅（Leaflet 版 getEpicenterIcon(blink=true) と同じ CSS）。
+  // 仮定震源要素は振幅の浅い eew-blink-assumed を使う（Marker 側の不透明度と乗算されても谷で消えない）。
+  const blinkClass = isAssumed ? 'eew-blink-assumed' : 'eew-blink'
+  // **寸法と点滅クラスが同じなら SVG を作り直さない。** 作り直すと点滅が頭から始まり、続報が
+  // 続く間は止まって見える（→ docs/spec/map-rendering-spec.md §10）。
+  // **SVG の中身が isAssumed / iconScale 以外に依存するようになったら、この比較対象を広げること。**
+  // 例えば線の色や太さを確信度で分けると、width と class が同じままで新しい見た目が反映されない。
+  const svg = el.firstElementChild
+  if (svg && svg.getAttribute('width') === String(s) && svg.getAttribute('class') === blinkClass) return
   el.innerHTML =
-    `<svg viewBox="0 0 32 32" width="${s}" height="${s}" class="eew-blink" xmlns="http://www.w3.org/2000/svg">` +
+    `<svg viewBox="0 0 32 32" width="${s}" height="${s}" class="${blinkClass}" xmlns="http://www.w3.org/2000/svg">` +
     `<line x1="4" y1="4" x2="28" y2="28" stroke="#ff2222" stroke-width="4" stroke-linecap="round"/>` +
     `<line x1="28" y1="4" x2="4" y2="28" stroke="#ff2222" stroke-width="4" stroke-linecap="round"/></svg>`
 }
@@ -107,12 +144,8 @@ export function EewEpicentersGL({ epicenters, iconScale, fullOpacity }: Props) {
   const fullOpacityRef = useRef(fullOpacity)
   fullOpacityRef.current = fullOpacity
 
-  const opacityFor = (isAssumed: boolean): string => {
-    const baseOpacity = fullOpacityRef.current ? 1 : 0.4
-    return String(
-      isAssumed ? Math.max(baseOpacity * ASSUMED_OPACITY_RATIO, ASSUMED_OPACITY_MIN) : baseOpacity,
-    )
-  }
+  const opacityFor = (isAssumed: boolean): string =>
+    String(crossOpacity(isAssumed, fullOpacityRef.current))
 
   // 震源一覧・アイコン倍率の変化で差分更新する。fullOpacity はここでは扱わない
   // （下の別 effect で marker.setOpacity() のみ行う）。

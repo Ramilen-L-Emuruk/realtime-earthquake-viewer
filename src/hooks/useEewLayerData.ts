@@ -46,6 +46,11 @@ export interface EewLpgmRegionAggregate {
 }
 
 export interface EewEpicenter {
+  /**
+   * 同じ地震を指す安定キー（`issue.eventId`。無ければ `eew.id`）。**報番号を含めない。**
+   * 含めると続報ごとにマーカーが作り直され、点滅が止まってポップアップも閉じる
+   * （→ `docs/spec/map-rendering-spec.md` §10）。
+   */
   id: string
   position: LatLng
   /**
@@ -175,7 +180,8 @@ export function useEewLayerData(
       if (hc.latitude > -200 && hc.longitude > -200) {
         const { scale, orAbove } = eewMaxScaleInfo(eew)
         list.push({
-          id: eew.id,
+          // 続報でマーカーを使い回すため、報番号を含まないキーを使う（`activeEEWs` の統合キーと同じ）。
+          id: eew.issue?.eventId ?? eew.id,
           position: [hc.latitude, normalizeEpicenterLng(hc.longitude, JAPAN_CENTER_LNG)],
           // 単独観測点処理の震源は後続報で大きく動く。予報円を出さない・カードで M/深さを
           // 隠すのと同じ扱いを地図の震源にも与えるため、確定/未確定を描画側へ伝える。
