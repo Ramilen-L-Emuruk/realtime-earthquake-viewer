@@ -88,6 +88,19 @@ export interface FetchJsonOptions {
    * 地図上に出て利用者を誤解させる。
    */
   trackStatus?: boolean
+  /**
+   * 取り出した中身を検分する。想定外なら例外を投げること（戻り値は見ない）。
+   *
+   * **通信の成否だけでは配信の破損を捉えられない。** ビルドや配信が壊れて `{}` や `[]` が 200 で
+   * 返ると、呼び出し側は「取得成功・0 件」として扱ってしまい、地図から要素が消えているのに失敗と
+   * して検知されない。
+   *
+   * ここに渡す理由は**失敗の数え方**にある。取得後に呼び出し側で検証しても、この関数は既に
+   * 成功として返した後——失敗の記録（{@link getDataLoadStatus}）は消され、地図の「データの一部を
+   * 取得できませんでした」に出ない。検分をこの中で行えば、下の `catch` が拾って通信失敗と同じ扱いに
+   * なる。**呼び出し側の `.then()` に置くと、console にしか残らない。**
+   */
+  validate?: (data: unknown) => void
 }
 
 /**
@@ -107,7 +120,7 @@ export async function fetchJsonWithTimeout<T>(
   label: string,
   options: FetchJsonOptions = {},
 ): Promise<T> {
-  const { timeoutMs = DATA_FETCH_TIMEOUT_MS, trackStatus = true } = options
+  const { timeoutMs = DATA_FETCH_TIMEOUT_MS, trackStatus = true, validate } = options
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   if (trackStatus) {
@@ -118,6 +131,10 @@ export async function fetchJsonWithTimeout<T>(
     const res = await fetch(url, { signal: controller.signal })
     if (!res.ok) throw new Error(`${label} fetch failed: ${res.status}`)
     const data = (await res.json()) as T
+    // 検分は **この try の中で**呼ぶ。投げた例外を下の catch が拾い、通信失敗と同じく failed に
+    // 計上される（呼び出し側の `.then()` に置くと、この関数は成功として返した後なので計上されない）。
+    // 成功の記録より前に置いてあるのは筋を通すためで、後ろでも catch が add し直すため結果は同じ。
+    validate?.(data)
     // 取り直しに成功したら失敗の記録を消す（フォールバックからの復帰を表示にも反映する）
     if (trackStatus) failedLabels.delete(label)
     return data

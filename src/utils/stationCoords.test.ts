@@ -90,6 +90,19 @@ describe('loadStationCoords', { timeout: 15_000 }, () => {
     await expect(loadStationCoords()).rejects.toThrow(/no data/)
   })
 
+  // 文字列は Object.keys が添字の配列（'abc' → ['0','1','2']）を返すため、非空チェックだけでは
+  // すり抜ける。stations 側にも typeof を掛けていないと通ってしまう。
+  it.each([
+    ['stations', { stations: 'あいう', areas: SAMPLE.areas }],
+    ['areas', { stations: SAMPLE.stations, areas: 'あいう' }],
+  ])('200でも %s が文字列なら失敗として扱う（非空チェックのすり抜けを塞ぐ）', async (_label, body) => {
+    vi.stubGlobal('fetch', vi.fn(async () => okResponse(body)))
+    const { loadStationCoords, getStationCoordsCache } = await freshModule()
+
+    await expect(loadStationCoords()).rejects.toThrow(/no data/)
+    expect(getStationCoordsCache()).toBeNull()
+  })
+
   it('失敗後に呼び直すと再取得する（inflightを破棄してリトライ可能にする）', async () => {
     const fetchMock = vi
       .fn()
