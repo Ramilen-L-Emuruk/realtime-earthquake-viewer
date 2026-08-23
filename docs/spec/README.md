@@ -6,7 +6,7 @@
 過去の設計調査・PoC 記録・移行計画などの完了済みドキュメントは
 [`docs/archive/`](../archive/) に移動されている（現在は WebGL 移行関連のみ）。
 
-**まだ実装していない**機能候補とその可否判断は [`docs/feature-backlog.md`](../feature-backlog.md) にある。
+**まだ実装していない**機能の計画と可否判断は [`docs/implementation-plan.md`](../implementation-plan.md) にある。
 このディレクトリが扱うのは実装済みの仕様だけ。
 
 ## 仕様書一覧
