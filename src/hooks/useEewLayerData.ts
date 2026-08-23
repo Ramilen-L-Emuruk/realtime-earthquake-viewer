@@ -6,7 +6,7 @@ import { ringsBounds, type SubRegion } from '../utils/subregions'
 import { eewAreas, eewMaxScaleInfo } from '../utils/eew'
 import { isValidIntensityScale } from '../utils/intensity'
 import { isValidLpgmClass } from '../utils/lpgm'
-import { normalizeEpicenterLng } from '../utils/geo'
+import { hasKnownEpicenter, normalizeEpicenterLng } from '../utils/geo'
 
 // EEW（緊急地震速報）の描画に必要な派生データ（対象地域の予想震度塗り／予想長周期地震動塗り／
 // 各 EEW の震源）を計算する共有フック。Leaflet 版 JapanMap 内の eewAreaFills /
@@ -46,6 +46,11 @@ export interface EewLpgmRegionAggregate {
 }
 
 export interface EewEpicenter {
+  /**
+   * 同じ地震を指す安定キー（`issue.eventId`。無ければ `eew.id`）。**報番号を含めない。**
+   * 含めると続報ごとにマーカーが作り直され、点滅が止まってポップアップも閉じる
+   * （→ `docs/spec/map-rendering-spec.md` §10）。
+   */
   id: string
   position: LatLng
   /**
@@ -103,7 +108,7 @@ export function useEewLayerData(
       // 解くと根拠のない到達秒数になる。予報円を出さない・カードで M/深さを隠す・
       // useKyoshinAlerts が震源に採らないのと同じ扱いを、S波到達の推定にも与える。
       const origin: EewOrigin | null =
-        hc.latitude > -200 && hc.longitude > -200 && eew.earthquake.condition !== '仮定震源要素'
+        hasKnownEpicenter(hc.latitude, hc.longitude) && eew.earthquake.condition !== '仮定震源要素'
           ? {
               lat: hc.latitude,
               lng: normalizeEpicenterLng(hc.longitude, JAPAN_CENTER_LNG),
@@ -172,10 +177,11 @@ export function useEewLayerData(
     const list: EewEpicenter[] = []
     for (const eew of eews) {
       const hc = eew.earthquake.hypocenter
-      if (hc.latitude > -200 && hc.longitude > -200) {
+      if (hasKnownEpicenter(hc.latitude, hc.longitude)) {
         const { scale, orAbove } = eewMaxScaleInfo(eew)
         list.push({
-          id: eew.id,
+          // 続報でマーカーを使い回すため、報番号を含まないキーを使う（`activeEEWs` の統合キーと同じ）。
+          id: eew.issue?.eventId ?? eew.id,
           position: [hc.latitude, normalizeEpicenterLng(hc.longitude, JAPAN_CENTER_LNG)],
           // 単独観測点処理の震源は後続報で大きく動く。予報円を出さない・カードで M/深さを
           // 隠すのと同じ扱いを地図の震源にも与えるため、確定/未確定を描画側へ伝える。

@@ -4,7 +4,7 @@
 //
 // データは scripts/build-subregions.mjs で生成・更新する。
 
-import type { LatLng } from './prefectures'
+import type { LabelRoom, LatLng } from './prefectures'
 import { fetchJsonWithTimeout } from './fetchJson'
 
 export interface SubRegion {
@@ -12,8 +12,8 @@ export interface SubRegion {
   name: string
   /** 区域名ラベルを置く代表点（最大リングの重心） */
   label: LatLng
-  /** ラベルの退避方向（区域中心の震度バッジと重ならないよう text-offset で up/down にずらす） */
-  dir: 'up' | 'down'
+  /** 代表点からラベルを退避させられる余地（→ `LabelRoom`） */
+  room: LabelRoom
   /** 区域の境界リング */
   rings: LatLng[][]
 }
@@ -95,15 +95,20 @@ export function onSubRegionsLoaded(fn: (data: SubRegion[]) => void): () => void 
 export function loadSubRegions(): Promise<SubRegion[]> {
   if (cache) return Promise.resolve(cache)
   if (!inflight) {
-    inflight = fetchJsonWithTimeout<SubRegion[]>(DATA_URL, 'subregions')
-      .then((data) => {
-        // 中身の形（配列・非空）まで見る。ビルドや配信の破損で `[]` や非配列が 200 で返ると、
-        // 呼び出し側は「取得成功・区域 0 件」として扱ってしまい、区域が描けない状態が
-        // 失敗として検知されないまま進む（useSubRegions の failed が立たずフォールバックも
-        // 効かない）。ここで例外にして、通信失敗と同じ経路へ載せる。
+    inflight = fetchJsonWithTimeout<SubRegion[]>(DATA_URL, 'subregions', {
+      // 中身の形（配列・非空）まで見る。ビルドや配信の破損で `[]` や非配列が 200 で返ると、
+      // 呼び出し側は「取得成功・区域 0 件」として扱ってしまい、区域が描けない状態が
+      // 失敗として検知されないまま進む（useSubRegions の failed が立たずフォールバックも
+      // 効かない）。通信失敗と同じ扱いにするため、取得側の `validate` に渡す——ここで投げれば
+      // 地図の「データの一部を取得できませんでした」にも計上される（`.then()` では計上されない）。
+      // 各区域の中身（`rings` を持つか等）までは見ていない。prefectures 側も同じ粒度。
+      validate: (data) => {
         if (!Array.isArray(data) || data.length === 0) {
           throw new Error('subregions fetch returned no data (empty or malformed)')
         }
+      },
+    })
+      .then((data) => {
         cache = data
         for (const fn of waiters) fn(data)
         waiters.clear()

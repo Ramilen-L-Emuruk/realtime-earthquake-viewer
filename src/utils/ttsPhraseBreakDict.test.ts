@@ -187,6 +187,29 @@ describe('findPhraseBreakMatch（単独語キー）', { timeout: 15_000 }, () =>
     expect(findPhraseBreakMatch('石川県能登地方で震度4', dict)).toEqual({ key: '能登地方', index: 3 })
   })
 
+  // 読み仮名の記法そのものを検証する。**壊れていても静かに効かなくなるだけ**なので、
+  // このテストが無いと気付けない。値が壊れていても取得・一致判定は成功し、VOICEVOX が 400
+  // （ACCENT_NOTFOUND / ACCENT_TWICE / UNKNOWN_TEXT）を返しても `synthesizeChunk` は
+  // 辞書適用前の accent_phrases で合成を続ける。つまり声は出て、誤読が直らないまま残る。
+  it('辞書データの読み仮名は AquesTalk 風カナ記法として成立している', () => {
+    const data = readDictData()
+
+    for (const [key, value] of Object.entries(data)) {
+      // `_comment`（文字列）・`_terms`・`_standalone`（配列）はメタ情報なので読み仮名ではない
+      if (key.startsWith('_') || typeof value !== 'string') continue
+      // 長音記号は is_kana=true で UNKNOWN_TEXT になる。長音は母音を直接書く
+      // （「チョー」ではなく「チョウ」か「チョオ」。どちらも解釈され、辞書には両方の表記が入っている）
+      expect(value.includes('ー'), `「${key}」の読み仮名に長音記号がある: ${value}`).toBe(false)
+      // アクセント核は 1 つのアクセント句にちょうど 1 つ要る。0 個でも 2 個でも解釈できない
+      for (const phrase of value.split('/')) {
+        expect(
+          (phrase.match(/'/g) ?? []).length,
+          `「${key}」のアクセント句「${phrase}」のアクセント核の数`,
+        ).toBe(1)
+      }
+    }
+  })
+
   it('辞書データの _standalone は全て読み仮名エントリを持つ', () => {
     const data = readDictData()
 
@@ -214,6 +237,12 @@ describe('findPhraseBreakMatch（単独語キー）', { timeout: 15_000 }, () =>
       ...Object.keys(readJson('public/data/prefectures.json') as Record<string, unknown>),
       ...Object.keys(readJson('public/data/tsunami-zones.json') as Record<string, unknown>),
       ...Object.keys(readJson('public/data/tsunami-obs-coords.json') as Record<string, unknown>),
+      // 震度観測点名（「県名|観測点名」の後半）。短い単独語キーが最も衝突しやすい相手がここにいる
+      // （「宮古」に対する「宮古市田老」、「鳥羽」に対する「鳥羽市鳥羽」）。読み上げは観測点名を
+      // 区域名へ丸めるため声にはならないが、境界判定の当否をここで固定しておく。
+      ...Object.keys(
+        (readJson('public/data/station-coords.json') as { stations: Record<string, unknown> }).stations,
+      ).map((key) => key.split('|')[1]),
     ])
 
     for (const key of data._standalone ?? []) {

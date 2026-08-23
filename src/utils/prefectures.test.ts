@@ -13,7 +13,7 @@ async function freshModule() {
 }
 
 const SAMPLE: Prefectures = {
-  石川県: { label: [36.6, 136.6], dir: 'up', rings: [[[36.5, 136.5], [36.7, 136.8], [36.6, 136.6]]] },
+  石川県: { label: [36.6, 136.6], room: [0.1, 0.1], rings: [[[36.5, 136.5], [36.7, 136.8], [36.6, 136.6]]] },
 }
 
 function okResponse(body: unknown) {
@@ -68,6 +68,34 @@ describe('loadPrefectures', { timeout: 15_000 }, () => {
 
     await expect(loadPrefectures()).rejects.toThrow(/404/)
     expect(getPrefecturesCache()).toBeNull()
+  })
+
+  // 配信の破損で 200 が返る場合。成功として扱うと「県 0 件」で通ってしまい、陸地塗りも県境も
+  // 県名ラベルも出ないのに BaseMapGL / LabelsGL の警告が出ない（rejected のときだけ警告するため）。
+  it.each([
+    ['空オブジェクト', {}],
+    ['配列', []],
+    ['null', null],
+    ['文字列', 'なにか'],
+  ])('200で%sが返っても失敗として扱う（配信破損を成功と誤認しない）', async (_label, body) => {
+    vi.stubGlobal('fetch', vi.fn(async () => okResponse(body)))
+    const { loadPrefectures, getPrefecturesCache } = await freshModule()
+
+    await expect(loadPrefectures()).rejects.toThrow(/no data/)
+    expect(getPrefecturesCache()).toBeNull()
+  })
+
+  it('破損で失敗した後も、呼び直せば再取得できる（inflight を破棄している）', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(okResponse({}))
+      .mockResolvedValueOnce(okResponse(SAMPLE))
+    vi.stubGlobal('fetch', fetchMock)
+    const { loadPrefectures } = await freshModule()
+
+    await expect(loadPrefectures()).rejects.toThrow(/no data/)
+    expect(await loadPrefectures()).toEqual(SAMPLE)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('応答が返らないときはタイムアウトで失敗確定し、次の要求で再取得できる', async () => {
