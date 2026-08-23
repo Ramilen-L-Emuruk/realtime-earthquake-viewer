@@ -12,7 +12,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { filterPreWindowEvents } from '../services/dmdataReplay'
-import type { ReplayEntry, ReplayFetchResult } from '../types/replay'
+import { MAX_HISTORY_RETAINED } from './useEarthquakes'
+import type { ReplayEntry, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
+import type { JMAQuake } from '../types/earthquake'
 import { serverNow, serverDate } from '../utils/clock'
 import { log } from '../utils/logger'
 
@@ -26,12 +28,38 @@ export const PRE_WINDOW_MS = 24 * 3600_000
 /** 読み込み済みの終端がこれを切ったら次のウィンドウを先読みする。 */
 export const PREFETCH_MARGIN_MS = 10 * 60_000
 
+/**
+ * 地震カードの履歴として集めるイベント数。
+ *
+ * ライブ接続時の初回履歴と同じ枚数にする。初期状態の 24 時間だけでカードを作ると、地震の
+ * 少ない日は一覧が数枚しか並ばず、ライブと見え方が大きく変わる（実測では 1 日あたり 4〜21 件）。
+ *
+ * 値を書かずライブ側から取るのは、同じ意図の数を 2 箇所に置かないため。コメントで結ぶだけだと、
+ * 片方を動かしたときに型検査もテストも黙って通る。
+ */
+export const QUAKE_HISTORY_EVENTS = MAX_HISTORY_RETAINED
+/**
+ * 履歴のために遡ってよい日数の上限（DMDSS 版のアーカイブ経路のみ）。
+ *
+ * 上の件数に届かなくてもここで打ち切る。地震活動が極端に少ない期間で延々と過去を掘らないため。
+ */
+export const QUAKE_HISTORY_MAX_DAYS = 7
+
 export interface ReplayControllerDeps {
   /**
    * 指定範囲の電文を取得する。バリアントごとの取得元をここで差し替える
    * （DMDSS 版は DMDATA アーカイブ、standard 版は P2PQuake の日付指定クエリ）。
    */
   fetchEvents: (fromTime: Date, toTime: Date) => Promise<ReplayFetchResult>
+  /**
+   * 地震カードの履歴を取得する（再生開始時刻より前に発表された電文）。
+   *
+   * 再生される電文の取得（`fetchEvents`）とは目的が別で、こちらはカードの一覧を
+   * ライブ接続時と同じ厚みにするためだけに使う。取得元はバリアントで差し替える。
+   */
+  fetchQuakeHistory: (before: Date, targetEvents: number, maxDays: number) => Promise<QuakeHistoryResult>
+  /** 取得した履歴をカード一覧へ反映する。 */
+  restoreQuakeHistory: (quakes: JMAQuake[]) => void
   /** 取得キャッシュを破棄する（開始・停止のたびに呼ぶ）。 */
   clearCache: () => void
   /** リプレイ時刻のオフセットを適用する（null で解除）。App 側で時計と state に反映する。 */
@@ -147,6 +175,9 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
   const [isFetching, setIsFetching] = useState(false)
   // 回復しうる失敗（取得エラー）。次の取得が成功したら消してよい。
   const [fetchError, setFetchError] = useState<string | null>(null)
+  // 履歴の復元だけが失敗した場合の理由。再生は続くので取得エラーとは分けて持つ
+  // （片方の成功でもう片方の表示を消さないようにする）。
+  const [historyError, setHistoryError] = useState<string | null>(null)
   // 確定した損失。取り込めなかった電文は後続の取得が成功しても戻らないので、
   // 停止するまで積み上げたまま表示し続ける。
   const [loss, setLoss] = useState<ReplayLoss>(createEmptyLoss)
@@ -185,8 +216,35 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
     prefetchEndRef.current = toTime
     setIsFetching(true)
     setFetchError(null)
+    setHistoryError(null)
     // 新しいセッションなので損失も数え直す
     setLoss(createEmptyLoss())
+
+    // 地震カードの履歴。本編・初期状態とは切り離して走らせる。
+    // - 失敗しても再生は成立する（一覧が薄くなるだけ）ので、Promise.all に混ぜて
+    //   リプレイ全体を中止させない
+    // - await しないのは、履歴が揃うまで再生開始を待たせないため。復元は後から届いても
+    //   既存カードへ統合される（`restoreQuakeHistory` 参照）
+    void d.fetchQuakeHistory(targetDate, QUAKE_HISTORY_EVENTS, QUAKE_HISTORY_MAX_DAYS)
+      .then((result) => {
+        if (!guard.isCurrent(session)) {
+          log.info('[replay] 履歴の取得完了時に別セッションへ切り替わっていたため結果を破棄')
+          return
+        }
+        depsRef.current.restoreQuakeHistory(result.quakes)
+        // 取りこぼしは本編・初期状態と同じ枠で申告する。履歴は初期状態と日付範囲が重なるため、
+        // 同じ電文の破損を二重に数えることがある（アーカイブ単位は URL の集合で重複が除かれる）。
+        // 少なく見せて「静かな時間帯だった」と誤読されるより、多めに申告する側へ倒す。
+        setLoss(prev => addLoss(prev, result.skipped, result.failedArchiveUrls))
+      })
+      .catch((e) => {
+        log.error('[replay] 地震カードの履歴取得に失敗', e)
+        if (!guard.isCurrent(session)) {
+          log.info('[replay] 履歴の取得失敗時に別セッションへ切り替わっていたためエラー表示を抑制')
+          return
+        }
+        setHistoryError(`地震カードの履歴を復元できませんでした（再生開始より前の地震が一覧に出ません。再生は継続中）: ${msgOf(e)}`)
+      })
 
     try {
       // 本編と初期状態を同時に取る。どちらかが失敗したらリプレイ全体を中止する
@@ -259,6 +317,7 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
     d.resetTracking()
     d.clearCache()
     setFetchError(null)
+    setHistoryError(null)
     // 損失は「このセッションで失われた量」なので、停止と同時に数え直す。
     setLoss(createEmptyLoss())
     // 取得中に停止された場合、上で世代を進めたことで取得側の finally は false にしない。
@@ -308,11 +367,12 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
       })
   }, [replayCurrentTime, timeOffset, isFetching, fetchEvents])
 
-  // 取得エラーと確定した損失は別の事実なので、両方あるなら両方出す。
+  // 取得エラー・履歴の失敗・確定した損失はそれぞれ別の事実なので、あるものは全部出す。
   // 片方を優先して隠すと「先読みが失敗した」表示の裏で、既に確定していた
   // 取りこぼしがいったん画面から消え、後で復活するという分かりにくい挙動になる。
-  // エラーを先に置くのは、再生が止まっているか以後の電文が届かない状態を示すため。
-  const error = [fetchError, formatLossNotice(loss)].filter(Boolean).join(' / ') || null
+  // 取得エラーを先に置くのは、再生が止まっているか以後の電文が届かない状態を示すため
+  //（履歴の失敗はカードの一覧が薄くなるだけで、再生そのものには影響しない）。
+  const error = [fetchError, historyError, formatLossNotice(loss)].filter(Boolean).join(' / ') || null
 
   return { isFetching, error, start, stop }
 }

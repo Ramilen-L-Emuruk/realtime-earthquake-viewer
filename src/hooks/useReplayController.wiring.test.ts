@@ -13,8 +13,9 @@
 // React を動かすため、このファイルだけ jsdom 環境で実行する（既定の node は変えない）。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, cleanup } from '@testing-library/react'
-import { useReplayController, WINDOW_MS, PRE_WINDOW_MS, PREFETCH_MARGIN_MS } from './useReplayController'
-import type { ReplayEntry, ReplayFetchResult } from '../types/replay'
+import { useReplayController, WINDOW_MS, PRE_WINDOW_MS, PREFETCH_MARGIN_MS, QUAKE_HISTORY_EVENTS, QUAKE_HISTORY_MAX_DAYS } from './useReplayController'
+import type { ReplayEntry, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
+import type { JMAQuake } from '../types/earthquake'
 
 // 外部 I/O（取得）とキャッシュ破棄は deps 経由で注入されるため、ここでは偽物を渡すだけでよい。
 // Hook が内部で使う filterPreWindowEvents は本物のまま動く（後述の長周期地震動電文は
@@ -96,6 +97,10 @@ function setup() {
   const fetches: Deferred<ReplayFetchResult>[] = []
   // 取得に渡された引数。どちらの呼び出しが本編でどちらが初期状態かを日付範囲で確かめる。
   const ranges: { from: Date; to: Date }[] = []
+  // 地震カードの履歴取得。本編・初期状態とは別に完了させられるよう独立に持つ
+  // （履歴が失敗しても再生が続くことを確かめるため）。
+  const histories: Deferred<QuakeHistoryResult>[] = []
+  const historyArgs: { before: Date; targetEvents: number; maxDays: number }[] = []
   // App が持つ state の代役。Hook は setTimeOffset で書き、次のレンダーで読む。
   let timeOffset: number | null = null
 
@@ -107,6 +112,14 @@ function setup() {
       fetches.push(d)
       return d.promise
     }),
+    fetchQuakeHistory: vi.fn((before: Date, targetEvents: number, maxDays: number) => {
+      order.push('fetchQuakeHistory')
+      historyArgs.push({ before, targetEvents, maxDays })
+      const d = createDeferred<QuakeHistoryResult>()
+      histories.push(d)
+      return d.promise
+    }),
+    restoreQuakeHistory: vi.fn((_quakes: JMAQuake[]) => { order.push('restoreQuakeHistory') }),
     clearCache: vi.fn(() => { order.push('clearReplayCache') }),
     setTimeOffset: vi.fn((value: number | null) => { order.push('setTimeOffset'); timeOffset = value }),
     resetState: vi.fn(() => { order.push('resetState') }),
@@ -123,6 +136,8 @@ function setup() {
     order,
     fetches,
     ranges,
+    histories,
+    historyArgs,
     get current() { return view.result.current },
 
     /** start を呼び、その Promise を返す。取得の解決は呼び出し側が fetches 経由で握る。 */
@@ -262,6 +277,9 @@ describe('useReplayController の start', () => {
 
     expect(h.order).toEqual([
       'resetState', 'resetTracking', 'clearReplayCache', 'setTimeOffset',
+      // 履歴は本編・初期状態と並行に走らせる（待たせないため先に投げるだけで、
+      // 反映＝restoreQuakeHistory は取得が返ってから）
+      'fetchQuakeHistory',
       'fetch', 'fetch',
       'resetTracking', 'restorePreWindowTracking', 'loadReplayEvents',
     ])
@@ -450,5 +468,90 @@ describe('useReplayController の先読み', () => {
     expect(h.deps.loadReplayEvents).toHaveBeenCalledTimes(2)
     expect(h.deps.loadReplayEvents.mock.calls[1][0].map(idOf)).toEqual(['prefetched'])
     expect(h.current.isFetching).toBe(false)
+  })
+})
+
+// 地震カードの履歴は「初期状態の再現」とは別の取得。初期状態は指定時刻に発表中だった
+// 津波・EEW を戻すためのもので、遡り幅も目的も違う。ここで見るのは、履歴が
+// **再生の成否と独立している**こと（失敗しても再生は続き、成功しても再生を待たせない）。
+describe('useReplayController の地震カード履歴', () => {
+  /** 履歴の結果。中身の統合は mergeQuakeHistory の担当なので、ここでは件数だけ数える。 */
+  function history(count: number, skipped = 0, failedArchiveUrls: string[] = []): QuakeHistoryResult {
+    const quakes = Array.from({ length: count }, (_, i) => ({ id: `q${i}` } as unknown as JMAQuake))
+    return { quakes, skipped, failedArchiveUrls }
+  }
+
+  it('再生開始時刻を境に、ライブと同じ件数を目標として履歴を取りに行く', async () => {
+    const target = quietTarget()
+    const h = setup()
+    const started = h.start(target)
+    h.fetches[0].resolve(fetched([]))
+    h.fetches[1].resolve(fetched([]))
+    await h.flush(started)
+
+    // 1 回だけ。件数・上限は定数から取る（テスト側に値を写すと、定数を変えても緑のままになる）。
+    expect(h.deps.fetchQuakeHistory).toHaveBeenCalledTimes(1)
+    expect(h.historyArgs[0].before.getTime()).toBe(target.getTime())
+    expect(h.historyArgs[0].targetEvents).toBe(QUAKE_HISTORY_EVENTS)
+    expect(h.historyArgs[0].maxDays).toBe(QUAKE_HISTORY_MAX_DAYS)
+  })
+
+  it('取得できた履歴をカード一覧へ流し込む', async () => {
+    const h = setup()
+    const started = h.start(quietTarget())
+    h.fetches[0].resolve(fetched([]))
+    h.fetches[1].resolve(fetched([]))
+    h.histories[0].resolve(history(3))
+    await h.flush(started)
+
+    expect(h.deps.restoreQuakeHistory).toHaveBeenCalledTimes(1)
+    expect(h.deps.restoreQuakeHistory.mock.calls[0][0]).toHaveLength(3)
+    expect(h.current.error).toBeNull()
+  })
+
+  // 履歴は再生の前提ではない。ここを Promise.all に混ぜると、カードが薄くなるだけの失敗で
+  // リプレイ全体（強震モニタを含む）が始まらなくなる。
+  it('履歴の取得に失敗しても、電文の再生は始まる', async () => {
+    const h = setup()
+    const started = h.start(quietTarget())
+    h.histories[0].reject(new Error('boom'))
+    h.fetches[0].resolve(fetched([entry('normal-1')]))
+    h.fetches[1].resolve(fetched([]))
+    await h.flush(started)
+
+    expect(h.deps.loadReplayEvents).toHaveBeenCalledTimes(1)
+    expect(h.deps.restoreQuakeHistory).not.toHaveBeenCalled()
+    // 失敗の事実は伝える。ただし「再生は継続中」と分かる文言であること
+    expect(h.current.error).toMatch(/履歴/)
+    expect(h.current.error).toMatch(/boom/)
+    expect(h.current.error).toMatch(/再生は継続中/)
+  })
+
+  // 履歴だけが遅れて完了することがある。取得中に別の日で開始し直したら、
+  // 古い履歴を新しいセッションのカード一覧へ混ぜてはならない。
+  it('取得中に別セッションへ切り替わったら、履歴を反映しない', async () => {
+    const h = setup()
+    const started = h.start(quietTarget())
+    h.fetches[0].resolve(fetched([]))
+    h.fetches[1].resolve(fetched([]))
+    await h.flush(started)
+
+    h.stop()
+    h.histories[0].resolve(history(3))
+    await h.flush()
+
+    expect(h.deps.restoreQuakeHistory).not.toHaveBeenCalled()
+  })
+
+  it('履歴の取りこぼしも、確定した損失として申告する', async () => {
+    const h = setup()
+    const started = h.start(quietTarget())
+    h.fetches[0].resolve(fetched([]))
+    h.fetches[1].resolve(fetched([]))
+    h.histories[0].resolve(history(1, 2, ['https://x/a']))
+    await h.flush(started)
+
+    expect(h.current.error).toMatch(/1 件のアーカイブ/)
+    expect(h.current.error).toMatch(/2 件の電文/)
   })
 })

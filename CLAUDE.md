@@ -515,6 +515,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 検知カードの震度分布バーの幅スケール（見えている間は分母を下げない・見えていない間だけ現在値へ張り直す・可視判定はタブ／パネル折りたたみ／ページ可視性の3つ） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) §8 |
 | 「別地点で揺れ検知」の抑制条件（EEW 吸収の記憶・エピソード起点・距離の上限・震度の下限・発報済みの扱い） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md)「別地点」判定の動的距離閾値 |
 | 「別地点で揺れ検知」の 3 つの窓（持続・クールダウン・破棄猶予）を**フレーム数ではなくデータ時刻で測る**こと・持続は観測回数ではなく初検知からの経過で見ること・破棄をフレーム末尾に置くこと | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md)「別地点」判定の動的距離閾値 |
+| リプレイ開始時の地震カードの厚み（一覧は**件数基準**で別途復元し、初期状態の 24 時間とは目的も遡り幅も分ける・再生中は「もっと見る」を出さない（押すとライブの最新履歴が混ざる）・履歴の取得が失敗しても再生は始める） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「地震カードの履歴は件数で遡る」 |
 | 実地震テストシナリオの時刻シフト・ID 再採番・利用規約制約 | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6 |
 | 生成データ（`public/data/*.json`）の取得タイムアウト値・失敗時の扱い（TTS 辞書のみ別値） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §6 |
 | テスト時刻設定のバリアント差（standard は P2PQuake の日付クエリ、DMDSS は DMDATA アーカイブ／ただし EEW はどちらも取得元が異なり、standard では強震モニタ側の検知に頼る） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」 |

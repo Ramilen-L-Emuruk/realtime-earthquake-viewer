@@ -6,7 +6,7 @@ import { gunzip } from '../utils/gzip'
 import { log } from '../utils/logger'
 import { authHeader } from '../utils/dmdataApiKey'
 import { extractQuakeEventIdFromId } from '../utils/quakeMerge'
-import type { ReplayEntry, ReplayPayload, ReplayFetchResult } from '../types/replay'
+import type { ReplayEntry, ReplayPayload, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
 
 const QUAKE_TYPES = new Set(['VXSE51', 'VXSE52', 'VXSE53', 'VXSE61'])
 const TSUNAMI_TYPES = new Set(['VTSE41', 'VTSE51', 'VTSE52'])
@@ -85,6 +85,54 @@ export function clearReplayCache(): void {
   archiveCache.clear()
 }
 
+/**
+ * 指定期間・指定分類のアーカイブ目録を全ページ取得する。
+ *
+ * archive リスト API は 1 回の応答で最大 20 件までしか返さないため、nextToken が尽きるまで
+ * cursorToken で辿る（打ち切ると広い期間の指定で古い側のアーカイブが無言で欠落し、
+ * 本震当日のデータごと消えるという事故につながる）。
+ */
+async function listArchives(
+  apiKey: string,
+  startDate: string,
+  endDate: string,
+  classification: string,
+): Promise<ArchiveItem[]> {
+  const items: ArchiveItem[] = []
+  let cursorToken: string | undefined
+  for (;;) {
+    const params = new URLSearchParams({ datetime: `${startDate}~${endDate}`, classification })
+    if (cursorToken) params.set('cursorToken', cursorToken)
+    const listRes = await fetch(
+      `https://api.dmdata.jp/v2/archive?${params.toString()}`,
+      { headers: { Authorization: authHeader(apiKey) } },
+    )
+    if (!listRes.ok) throw new Error(`Archive list failed: ${listRes.status}`)
+    const listJson = (await listRes.json()) as { status: string; items: ArchiveItem[]; nextToken?: string }
+    if (listJson.status !== 'ok') throw new Error('Archive list error')
+    items.push(...listJson.items)
+    if (!listJson.nextToken) break
+    cursorToken = listJson.nextToken
+  }
+  return items
+}
+
+/**
+ * 目録エントリの id 先頭 7 文字に対応する JSON 本体を探す。
+ *
+ * 目録（telegrams.json）自身も .json なので明示的に除く。
+ */
+function findJsonBody(
+  files: Map<string, Uint8Array>,
+  idPrefix: string,
+): { name: string; bytes: Uint8Array } | null {
+  const name = [...files.keys()].find(
+    (n) => n.endsWith('.json') && n !== 'telegrams.json' && n.includes(idPrefix),
+  )
+  const bytes = name ? files.get(name) : undefined
+  return name && bytes ? { name, bytes } : null
+}
+
 export async function fetchDmdataReplayEvents(
   apiKey: string,
   fromTime: Date,
@@ -99,28 +147,7 @@ export async function fetchDmdataReplayEvents(
   endDateObj.setDate(endDateObj.getDate() + 1)
   const endDate = toDateStr(endDateObj)
 
-  // archiveリストAPIは1回の応答で最大20件までしか返さないため、nextTokenが尽きるまで
-  // cursorTokenで全ページを取得する（打ち切ると広い期間の指定で古い側のアーカイブが
-  // 無言で欠落し、本震当日のデータごと消えるという事故につながる）。
-  const items: ArchiveItem[] = []
-  let cursorToken: string | undefined
-  for (;;) {
-    const params = new URLSearchParams({
-      datetime: `${startDate}~${endDate}`,
-      classification: 'telegram.earthquake,eew.forecast',
-    })
-    if (cursorToken) params.set('cursorToken', cursorToken)
-    const listRes = await fetch(
-      `https://api.dmdata.jp/v2/archive?${params.toString()}`,
-      { headers: { Authorization: authHeader(apiKey) } },
-    )
-    if (!listRes.ok) throw new Error(`Archive list failed: ${listRes.status}`)
-    const listJson = (await listRes.json()) as { status: string; items: ArchiveItem[]; nextToken?: string }
-    if (listJson.status !== 'ok') throw new Error('Archive list error')
-    items.push(...listJson.items)
-    if (!listJson.nextToken) break
-    cursorToken = listJson.nextToken
-  }
+  const items = await listArchives(apiKey, startDate, endDate, 'telegram.earthquake,eew.forecast')
 
   const dec = new TextDecoder()
   const entries: ReplayEntry[] = []
@@ -250,16 +277,14 @@ export async function fetchDmdataReplayEvents(
           // 同一電文の二重取り込みを防ぐ正常な重複排除。実データでは manifest の約半数が
           // これに該当するため、警告は出さない（出すと正常運転でログが埋まる）。
           if (!entry.originalId) continue
-          const jsonFileName = [...files.keys()].find(
-            (n) => n.endsWith('.json') && n !== 'telegrams.json' && n.includes(idPrefix),
-          )
-          const bodyBytes = jsonFileName ? files.get(jsonFileName) : undefined
-          if (!jsonFileName || !bodyBytes) {
+          const body = findJsonBody(files, idPrefix)
+          if (!body) {
             log.warn(`[replay] JSON 電文の本体が見つからずスキップ id=${entry.id} type=${headType}`)
             skippedCount++
             continue
           }
-          const data = JSON.parse(dec.decode(bodyBytes)) as Record<string, unknown>
+          const jsonFileName = body.name
+          const data = JSON.parse(dec.decode(body.bytes)) as Record<string, unknown>
 
           let payload: ReplayPayload | null = null
           if (EEW_TYPES.has(headType)) {
@@ -398,4 +423,132 @@ export function filterPreWindowEvents(
   }
 
   return result
+}
+
+/**
+ * 指定時刻より前に発表された地震電文を、日次アーカイブを遡って集める（地震カードの履歴復元用）。
+ *
+ * 「初期状態」の取得（`fetchDmdataReplayEvents` の pre-window）と分けている理由:
+ * あちらは指定時刻の時点で発表中だった津波・EEW を再現するための 24 時間で、目的も必要な
+ * 遡り幅も違う。カードを厚くするために 24 時間を延ばすと、EEW アーカイブの解析まで
+ * 巻き添えで増える。ここでは `telegram.earthquake` だけを読む。
+ *
+ * 打ち切りは**日単位**で行う。イベント数が目標に届いた時点で、それより古い日は解析しない。
+ * 日の途中で切ると同一イベントの続報が分断され、震度速報だけのカードが残りうる。
+ *
+ * ダウンロード自体は `maxDays` ぶんを並列で走らせる。日次アーカイブは 1 日 10〜70KB と小さく、
+ * 逐次に落として都度判定すると往復のぶんだけ再生開始が遅れるため（ライブの履歴取得が
+ * 電文 1 通ずつ数百リクエストを投げているのに比べれば、余分な数ファイルは誤差）。
+ *
+ * @param before この時刻より後に発表された電文は採らない（＝再生開始時刻）
+ * @param targetEvents 集めたい地震イベント数（続報は 1 件と数える）
+ * @param maxDays 遡ってよい日数の上限
+ */
+export async function fetchDmdataQuakeHistory(
+  apiKey: string,
+  before: Date,
+  targetEvents: number,
+  maxDays: number,
+): Promise<QuakeHistoryResult> {
+  // アーカイブは JST 日付で索引されているため、UTC 日付との差を吸収するよう終端を +1 日する
+  // （`fetchDmdataReplayEvents` と同じ理由）。
+  const startObj = new Date(before)
+  startObj.setDate(startObj.getDate() - maxDays)
+  const endObj = new Date(before)
+  endObj.setDate(endObj.getDate() + 1)
+  const items = await listArchives(apiKey, toDateStr(startObj), toDateStr(endObj), 'telegram.earthquake')
+
+  // 新しい日から使う（カードは新しい順に並ぶため、打ち切りで欠けてよいのは古い側）。
+  const ordered = [...items].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+  const downloaded = await Promise.all(ordered.map(async (item) => {
+    try {
+      return { item, files: await downloadArchive(item.url, apiKey) }
+    } catch (e) {
+      log.error(`[replay] 履歴用アーカイブの取得・展開に失敗 date=${item.date}`, e)
+      return { item, files: null }
+    }
+  }))
+
+  const dec = new TextDecoder()
+  const quakes: JMAQuake[] = []
+  const eventIds = new Set<string>()
+  const failedArchiveUrls: string[] = []
+  let skipped = 0
+  let usedDays = 0
+
+  for (const { item, files } of downloaded) {
+    if (eventIds.size >= targetEvents) break
+    usedDays++
+    if (!files) { failedArchiveUrls.push(item.url); continue }
+
+    const manifestBytes = files.get('telegrams.json')
+    if (!manifestBytes) {
+      log.warn(`[replay] 履歴用アーカイブに telegrams.json が無いためスキップ date=${item.date}`)
+      failedArchiveUrls.push(item.url)
+      continue
+    }
+    let manifest: ManifestEntry[]
+    try {
+      manifest = JSON.parse(dec.decode(manifestBytes))
+    } catch (e) {
+      log.error(`[replay] 履歴用アーカイブの telegrams.json 解析に失敗 date=${item.date}`, e)
+      failedArchiveUrls.push(item.url)
+      continue
+    }
+
+    for (const entry of manifest) {
+      if (!entry?.head || entry.head.test) continue
+      if (!QUAKE_TYPES.has(entry.head.type)) continue
+      // XML 版と JSON 版の 2 エントリで載るうち、JSON パーサで読める方だけを拾う
+      // （`fetchDmdataReplayEvents` と同じ重複排除。正常動作なので警告は出さない）。
+      if (!entry.originalId) continue
+
+      const entryTime = new Date(typeof entry.head.time === 'string' ? entry.head.time : NaN)
+      if (Number.isNaN(entryTime.getTime())) {
+        log.warn(`[replay] 履歴用電文の head.time が不正なためスキップ id=${entry.id}`)
+        skipped++
+        continue
+      }
+      // 再生開始時刻より後に発表された電文は、その時点ではまだ存在しない。
+      // アーカイブは日単位なので、当日ぶんにはこれが必ず混ざる。
+      if (entryTime > before) continue
+
+      try {
+        const body = findJsonBody(files, entry.id.slice(0, 7))
+        if (!body) {
+          log.warn(`[replay] 履歴用電文の本体が見つからずスキップ id=${entry.id} type=${entry.head.type}`)
+          skipped++
+          continue
+        }
+        const data = JSON.parse(dec.decode(body.bytes)) as Record<string, unknown>
+        const quake = parseEarthquake(entry.head.type, data)
+        if (!quake) {
+          log.warn(`[replay] 履歴用電文のパースに失敗しスキップ id=${entry.id} type=${entry.head.type}`)
+          skipped++
+          continue
+        }
+        quakes.push(quake)
+        eventIds.add(extractQuakeEventIdFromId(quake.id) ?? quake.id)
+      } catch (e) {
+        log.error(`[replay] 履歴用電文の取り込みに失敗しスキップ id=${entry.id} type=${entry.head.type}`, e)
+        skipped++
+      }
+    }
+  }
+
+  // 使おうとした日がすべて読めなかった場合だけ例外にする（認証エラー・全断などの共通原因が
+  // ほとんどで、握り潰すと「履歴 0 件の成功」に化ける）。1 日でも読めていれば部分成功とする。
+  if (usedDays > 0 && failedArchiveUrls.length === usedDays) {
+    throw new Error(`Archive fetch failed: ${usedDays} 件のアーカイブすべてを読み取れませんでした`)
+  }
+  // 「アーカイブが 1 つも無い」は取得の失敗として現れないため、例外にも損失にもならない。
+  // 黙って空を返すと「静かな期間だった」と区別が付かないので、手がかりだけは残す
+  //（日次アーカイブは日付が変わってすぐには生成されないことがあり、当日を指定したときに起きうる）。
+  if (items.length === 0) {
+    log.warn(`[replay] 履歴用アーカイブが 1 件も見つからなかった（範囲 ${toDateStr(startObj)}〜${toDateStr(endObj)}）`)
+  } else if (quakes.length === 0) {
+    log.warn(`[replay] 履歴用アーカイブ ${usedDays} 件を読んだが地震電文は 0 件（${before.toISOString()} 以前）`)
+  }
+  log.info(`[replay] 地震カードの履歴を復元 電文=${quakes.length} イベント=${eventIds.size} 参照日数=${usedDays}`)
+  return { quakes, skipped, failedArchiveUrls }
 }
