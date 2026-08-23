@@ -179,8 +179,26 @@ Yahoo RealTimeData (1Hz JSON)
      未満なら confirmed にしない（「単点だけ確定震度・周囲は震度0」という局所ノイズの分布を弾く第3軸）
 2. **likely / faint 判定**: `everConfirmed` でなければ、`lastSize ≥ MIN_LIKELY_POINTS` を一度でも
    満たした（`hasSpread`）イベントは `LIKELY_HOLD_MS` の間ティアを保持する（`spreadHeld`）。保持中は
-   `maxIntensity ≥ MIN_LIKELY_INTENSITY` なら `likely`、それ未満（震度0級）なら `faint`
+   `maxIntensity ≥ MIN_LIKELY_INTENSITY` **かつ周囲の同時上昇（下記）を一度でも満たしていれば** `likely`、
+   そうでなければ `faint`
 3. どちらも満たさなければ `weak`（非表示）
+
+#### 周囲の同時上昇（`hasNeighborRise`・第4軸）
+
+イベント重心から `NEIGHBOR_RADIUS_KM` 内にいる観測点のうち、同じ窓で `RATE_MIN` 以上の上昇があった点の
+割合が `NEIGHBOR_RISE_FRAC` 以上か。**数えるのは床（震度0）を超えたかではなく上昇があったか**で、震度0 に
+届かない点も分子に入る。
+
+実地震は震度0 未満の点まで一斉に持ち上げるが、局所ノイズは周囲を動かさない。L1 の `levelActive` は絶対
+レベルで切るため、床下で一斉に動いている証拠を捨てていた。それを likely の裏付けとして拾い直す
+（設計書§32）。
+
+判定は**イベント単位でラッチする**（`everNeighborRise`）。「上がっている」は波が通り過ぎる 1〜2 秒だけの
+性質で、その後は横ばいになる。毎フレーム評価にすると揺れの最中に条件を割って `faint` へ落ちるため、
+問うのは「いま周囲が上がっているか」ではなく「**周囲が一度でも裏付けたか**」。
+
+`confirmed` には課さない（`everConfirmed` のラッチが先に立つ）。確定は点数・最大震度・確定震度到達点数で
+決まり、周囲の上昇に影響されない。
 
 イベントは「揺れが続く限り」（`lastSize > 0` の間）`lastOnsetAtMs` が毎フレーム更新され、揺れが収まって
 から `HOLD_MS` 経過で配列から除去される。
@@ -192,6 +210,7 @@ Yahoo RealTimeData (1Hz JSON)
 | 第1軸: 点別ノイズ床 | `FLOOR_CAP` を上限に、慢性的にノイジーな点は自動的に鈍くなる | 単一観測点の慢性ノイズ・火山性微動等 |
 | 第2軸: セル別慢性活性 `cellActivity` | 平常時に確定揺れ点をよく出すセルでは確定バー（点数・震度）を引き上げる | 北関東等、複数観測点が間欠的にコヒーレントに反応する地域ノイズ（点別床だけでは防げない） |
 | 第3軸: 確定震度到達点数 `CONFIRM_INTENSE_POINTS` | 確定震度以上に達した levelActive メンバーが一定数未満なら confirmed にしない | 「単点だけ確定震度・周囲は震度0」という局所ノイズの分布（茨城県北部 2026-07-27 の誤 confirmed が実例） |
+| 第4軸: 周囲の同時上昇 `NEIGHBOR_RISE_FRAC` | 重心の周りが床下でも一緒に立ち上がっていなければ `likely` へ上げない（`confirmed` には課さない） | 都市部の常習点が単独で震度1 へ跳ねる誤検知。第3軸と同じ分布を `likely` 側で塞ぐ（設計書§32） |
 
 いずれの軸も EEW（震源要素確定）発表中の確定緩和（`EEW_CONFIRM_POINTS`/`EEW_CONFIRM_FRAMES`）で変わらない。
 緩和されるのは確定点数・確定連続フレーム数のバーのみで、単点ノイズを弾く仕組み自体は EEW 中でも維持される。
@@ -246,6 +265,8 @@ Yahoo RealTimeData (1Hz JSON)
 | `EEW_CONFIRM_FRAMES` | EEW 発表中に CONFIRM_FRAMES の代わりに使う確定連続フレーム数 | 1 |
 | `HOLD_MS` | confirmed イベントの保持 | 10,000 ms |
 | `LIKELY_HOLD_MS` | likely/faint ティアの保持 | 10,000 ms |
+| `NEIGHBOR_RADIUS_KM` | 周囲の同時上昇を見る半径（設計書§32） | 50 km |
+| `NEIGHBOR_RISE_FRAC` | likely に要する「圏内で同時に立ち上がっている点」の割合（同上） | 0.15 |
 | `CELL_ACTIVITY_TAU_MS` | セル慢性活性の学習時定数 | 1,800,000 ms（30分） |
 | `CHRONIC_THRESHOLD` | 慢性活性セルとみなす閾値 | 0.25 |
 | `CHRONIC_POINT_BUMP` | 慢性活性セルでの点数引き上げ幅 | 4 |

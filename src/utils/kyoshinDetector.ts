@@ -84,6 +84,18 @@ export interface DetectionEvent {
   everConfirmed: boolean
   /** 最後に spread（size ≥ MIN_LIKELY_POINTS）を持った dataTime(ms)。LIKELY_HOLD_MS の likely/faint 保持に使う。未達は 0 */
   lastSpreadAtMs: number
+  /**
+   * 一度でも周囲の同時上昇（`NEIGHBOR_RISE_FRAC`）を満たしたか。likely へ上げる条件のラッチ（§32）。
+   *
+   * **ラッチが要るのは「上がっている」が一瞬の性質だから。** 周囲が持ち上がるのは波が通り過ぎる
+   * 1〜2 秒だけで、その後は横ばいになる（`rising` は上昇量で判定するので横ばいは偽）。毎フレーム
+   * 評価にすると、揺れが続いている最中に条件を割って faint へ落ちる。問いたいのは「いま周囲が
+   * 上がっているか」ではなく「**周囲が一度でも裏付けたか**」で、一斉に動いた事実は後から消えない。
+   *
+   * 副次的に、確信度が likely と faint を往復しなくなる。往復すると `useKyoshinAlerts` が候補音の
+   * 立ち上がりを何度も検出して鳴らし直す（`everConfirmed` を確信度のラッチにしているのと同じ事情）。
+   */
+  everNeighborRise: boolean
 }
 
 /** 検知エンジンの全状態。localStorage への永続化を想定（floor・cellActivity が学習資産）。 */
@@ -370,6 +382,26 @@ export const PARAMS = {
    * のを防ぐ。1 局居残りで無限表示にならないよう survival(HOLD_MS)ではなく spread 基準で上限を切る。
    */
   LIKELY_HOLD_MS: 10_000,
+  /**
+   * 周囲の同時上昇を見る半径(km)。イベント重心からこの距離内にいる観測点を分母にする。
+   *
+   * 50km は L2 の近傍半径（`R_KM` 40km）より一回り広い。狙いは「揺れの面そのもの」ではなく
+   * 「その面のまわりが一緒に持ち上がっているか」なので、成分に加わらなかった点まで含める必要がある。
+   */
+  NEIGHBOR_RADIUS_KM: 50,
+  /**
+   * likely に要する「圏内で同時に立ち上がっている点」の割合。
+   *
+   * **数えるのは床（震度0）を超えたかではなく、`RATE_MIN` 以上の上昇があったか。** 実地震は震度0 に
+   * 届かない点まで一斉に持ち上げるが、局所ノイズは周囲を動かさない。L1 の `levelActive` は絶対レベルで
+   * 切るため、床下で一斉に動いている証拠を丸ごと捨てていた。それを likely の裏付けとして拾い直す（§32）。
+   *
+   * 0.15 の根拠（実データ・設計書§32 付録の実測）:
+   *  - 気象庁が発表した地震で likely 止まりだったもの（＝福岡型。音を鳴らしたい弱い実地震）は 22〜26%
+   *  - 都市部の常習点による誤検知は 2〜12%
+   *  - 実地震 735 件で確定検知（confirmed）の到達時刻は 1 件も動かない。likely を失うのは熊本 M2.1 の 1 件
+   */
+  NEIGHBOR_RISE_FRAC: 0.15,
 
   // ---- 特異度・第2軸（セル別慢性活性） ----
   /** セル慢性活性の学習時定数(ms)。長時定数で「その地域が平常時どれだけ点を出すか」を学ぶ */
@@ -695,6 +727,11 @@ interface FramePoint {
   sustained: boolean
   /** 今フレームでオンセット・トリガーしたか（levelActive かつ立ち上がり） */
   onset: boolean
+  /**
+   * 床の上下を問わず、RATE_DT_MS 窓で RATE_MIN 以上の上昇があったか（周囲の同時上昇の判定用）。
+   * `onset` と違い `levelActive` を要求しない＝**震度0 に届かない点の立ち上がりも数える**。
+   */
+  rising: boolean
 }
 
 /**
@@ -788,7 +825,16 @@ export function step(
     sites[key] = s
     triggeredAt[key] = s.triggeredAtMs
 
-    const fp: FramePoint = { key, lat, lng, value, levelActive, sustained, onset }
+    const fp: FramePoint = {
+      key,
+      lat,
+      lng,
+      value,
+      levelActive,
+      sustained,
+      onset,
+      rising: rate != null && rate >= PARAMS.RATE_MIN,
+    }
     points.push(fp)
     cur.set(key, fp)
   }
@@ -833,6 +879,7 @@ export function step(
     state.events,
     state.nextEventId,
     clusters,
+    points,
     cur,
     triggeredAt,
     sites,
@@ -926,6 +973,7 @@ function associate(
   prevEvents: DetectionEvent[],
   nextEventId: number,
   components: string[][],
+  framePoints: FramePoint[],
   cur: Map<string, FramePoint>,
   triggeredAt: Record<string, number | null>,
   sites: Record<string, SiteState>,
@@ -970,6 +1018,7 @@ function associate(
       target.lastOnsetAtMs = now
       updateEventMetrics(
         target,
+        framePoints,
         cur,
         triggeredAt,
         cellActivity,
@@ -994,9 +1043,11 @@ function associate(
         confirmStreak: 0,
         everConfirmed: false,
         lastSpreadAtMs: 0,
+        everNeighborRise: false,
       }
       updateEventMetrics(
         ev,
+        framePoints,
         cur,
         triggeredAt,
         cellActivity,
@@ -1016,7 +1067,7 @@ function associate(
   const survivors: DetectionEvent[] = []
   for (const e of events) {
     if (!updated.has(e.id)) {
-      updateEventMetrics(e, cur, triggeredAt, cellActivity, cellOf, avail, now, eewActive, 0)
+      updateEventMetrics(e, framePoints, cur, triggeredAt, cellActivity, cellOf, avail, now, eewActive, 0)
     }
     if (now - e.lastOnsetAtMs <= PARAMS.HOLD_MS) survivors.push(e)
   }
@@ -1056,6 +1107,8 @@ function mergeAdjacentEvents(events: DetectionEvent[]): DetectionEvent[] {
     host.lastSpreadAtMs = Math.max(host.lastSpreadAtMs, e.lastSpreadAtMs)
     host.confirmStreak = Math.max(host.confirmStreak, e.confirmStreak)
     host.everConfirmed = host.everConfirmed || e.everConfirmed
+    // 併合したどちらかが周囲の裏付けを持っていれば、1 本化した後も持つ（メンバーは和集合になるため）
+    host.everNeighborRise = host.everNeighborRise || e.everNeighborRise
     host.confidence = host.everConfirmed
       ? 'confirmed'
       : host.confidence === 'likely' || e.confidence === 'likely'
@@ -1081,12 +1134,16 @@ function mergeAdjacentEvents(events: DetectionEvent[]): DetectionEvent[] {
  *   する（弱いイベントの「一瞬で消える」防止。震度1到達点数ゲートは confirmed のみで likely には課さない）。
  *   高震度 fast path（§20）: HIGH_CONFIRM_INTENSITY(震度3) 以上に達したメンバーが HIGH_CONFIRM_POINTS 点
  *   以上あれば点数ゲート（慢性活性セルの引き上げ幅を含む）を免除する。CONFIRM_FRAMES の連続要求は残す。
+ *   likely にはもう 1 つ条件があり、**周囲が一緒に立ち上がっていること**（`hasNeighborRise`・§32）を要する。
+ *   単点だけが震度1 へ跳ね、周囲が微動だにしない分布は都市部の局所ノイズの典型で、瞬間の値の並びでは
+ *   弱い実地震と区別が付かない。confirmed には課さない（`everConfirmed` のラッチが先に立つ）。
  * - eewActive    : EEW 発表中は確定点数・確定連続フレーム数を EEW_CONFIRM_POINTS・EEW_CONFIRM_FRAMES に
  *   差し替えて確定を早める。CONFIRM_INTENSE_POINTS・MIN_CONFIRM_INTENSITY・慢性活性の引き上げ幅は
  *   変えないため、単点ノイズを弾く仕組み自体は EEW 中でも維持される（§19）。
  */
 function updateEventMetrics(
   e: DetectionEvent,
+  framePoints: FramePoint[],
   cur: Map<string, FramePoint>,
   triggeredAt: Record<string, number | null>,
   cellActivity: Record<string, number>,
@@ -1193,9 +1250,12 @@ function updateEventMetrics(
   // イベントが数秒で weak（非表示）へ即転落し「検知が一瞬で消える」のを防ぐ。
   const spreadHeld =
     hasSpread || (e.lastSpreadAtMs > 0 && now - e.lastSpreadAtMs <= PARAMS.LIKELY_HOLD_MS)
+  // 周囲の裏付けはラッチする（「上がっている」は波の通過中だけの一瞬の性質。毎フレーム評価だと
+  // 揺れの最中に条件を割って faint へ落ちる。詳細は everNeighborRise のコメント）
+  if (!e.everNeighborRise && hasNeighborRise(e, framePoints)) e.everNeighborRise = true
   if (e.everConfirmed) {
     e.confidence = 'confirmed'
-  } else if (spreadHeld && e.maxIntensity >= PARAMS.MIN_LIKELY_INTENSITY) {
+  } else if (spreadHeld && e.maxIntensity >= PARAMS.MIN_LIKELY_INTENSITY && e.everNeighborRise) {
     e.confidence = 'likely'
   } else if (spreadHeld) {
     e.confidence = 'faint'
@@ -1204,6 +1264,37 @@ function updateEventMetrics(
   }
 
   void cellOf
+}
+
+/**
+ * イベントの周囲が一緒に立ち上がっているか（§32）。
+ *
+ * 重心から `NEIGHBOR_RADIUS_KM` 内にいる観測点のうち、同じ窓で `RATE_MIN` 以上上がっている点の割合が
+ * `NEIGHBOR_RISE_FRAC` 以上なら真。**床（震度0）に届かない点も数える**のが要点で、実地震は震度0 未満の
+ * 点まで一斉に持ち上げるのに対し、局所ノイズは周囲を動かさない。
+ *
+ * **圏内に点が 1 つも無ければ偽**（判定できないものを通さない）。疎地域の救済は入れていない——
+ * 実データ 793 窓で「圏内が数点しか無い」状況は起きず、代わりに大量欠測の瞬間だけ分母が縮んで
+ * 判定を素通しし、ラッチで likely が開きっぱなしになる穴になる。守りたい相手（欠測グリッチ）に
+ * 対して逆を向く緩和は置かない。
+ *
+ * @param framePoints 今フレームで値が届いた点（欠測・初出は含まない＝分母から自然に落ちる）
+ */
+function hasNeighborRise(e: DetectionEvent, framePoints: FramePoint[]): boolean {
+  const ep = e.epicenter
+  if (!ep) return false
+  // 緯度バウンディングボックスで haversine の呼び出しを間引く（buildStationMeta と同じ前段）
+  const latMargin = PARAMS.NEIGHBOR_RADIUS_KM / KM_PER_DEG
+  let total = 0
+  let rising = 0
+  for (const p of framePoints) {
+    if (Math.abs(p.lat - ep[0]) > latMargin) continue
+    if (haversineKm(ep[0], ep[1], p.lat, p.lng) > PARAMS.NEIGHBOR_RADIUS_KM) continue
+    total++
+    if (p.rising) rising++
+  }
+  if (total === 0) return false
+  return rising / total >= PARAMS.NEIGHBOR_RISE_FRAC
 }
 
 /**
