@@ -4,7 +4,7 @@
 //
 // データは scripts/build-subregions.mjs で生成・更新する。
 
-import type { LatLng } from './prefectures'
+import type { LabelRoom, LatLng } from './prefectures'
 import { fetchJsonWithTimeout } from './fetchJson'
 
 export interface SubRegion {
@@ -12,8 +12,8 @@ export interface SubRegion {
   name: string
   /** 区域名ラベルを置く代表点（最大リングの重心） */
   label: LatLng
-  /** ラベルの退避方向（区域中心の震度バッジと重ならないよう text-offset で up/down にずらす） */
-  dir: 'up' | 'down'
+  /** 代表点からラベルを退避させられる余地（→ `LabelRoom`） */
+  room: LabelRoom
   /** 区域の境界リング */
   rings: LatLng[][]
 }
