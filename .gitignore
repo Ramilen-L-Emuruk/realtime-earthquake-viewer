@@ -64,6 +64,7 @@ verify-*.jpg
 .claude/skills/release/*
 !.claude/skills/release/SKILL.md
 !.claude/skills/tts-reading-audit/
+.claude/skills/tts-reading-audit/*
 !.claude/skills/tts-reading-audit/SKILL.md
 
 # 実地震テストのシナリオ本体（DMDATA.JP利用規約第15条によりEEWの二次配信は
