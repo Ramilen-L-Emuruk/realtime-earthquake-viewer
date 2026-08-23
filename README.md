@@ -80,6 +80,7 @@ npm run preview
 - [`CLAUDE.md`](CLAUDE.md) — 開発ワークフロー（Claude Code / 人間 共通）
 
 完了済み PoC・移行記録は [`docs/archive/`](docs/archive/) にまとめています。
+検討中の機能候補とその判定は [`docs/feature-backlog.md`](docs/feature-backlog.md) にまとめています。
 
 ## 注意事項
 
