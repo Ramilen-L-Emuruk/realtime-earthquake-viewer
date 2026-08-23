@@ -44,6 +44,8 @@ import { useEewLayerData } from '../../hooks/useEewLayerData'
 import type { JapanMapProps } from './mapTypes'
 import { kyoshinIndexToJma } from '../../utils/kyoshinIntensity'
 import { log } from '../../utils/logger'
+import { serverNow } from '../../utils/clock'
+import { syncEewFirstSeen } from './gl/eewFirstSeen'
 
 // MapLibre GL JS 版の地図コンポーネント（Leaflet 版 JapanMap と同一 Props）。
 // MapLibre 移行計画 docs/webgl-migration-implementation-plan.md のフェーズ順に、
@@ -108,6 +110,19 @@ export function JapanMapGL({
   // リマウントのたびに初期値へリセットされ、タブ復帰のたびに強制フィットが走る不具合が
   // 出る。CameraFollowsGL.tsx の QuakeFitGL コメント参照）。
   const lastConsumedQuakeTickRef = useRef<number>(0)
+  // FitToEEWGL が「新規発報」と「発報中の EEW のところへ入室した」を見分けるための 2 つの ref。
+  // FitToEEWGL は kyoshin モード限定マウントなので、内部で持つとタブ復帰のたびに初期化され、
+  // 入室しただけで新規発報として震源へ寄ってしまう（上の lastConsumedQuakeTickRef と同じ構図）。
+  // eewFirstSeenAtRef: eventId → その EEW を初めて見た時刻（serverNow）。全モードで記録するため、
+  //   他タブに居る間に届いた EEW でも初出時刻が残る。
+  // focusedEewIdRef: 第一報のフォーカスを与え終えた EEW の eventId。
+  const eewFirstSeenAtRef = useRef<Map<string, number>>(new Map())
+  const focusedEewIdRef = useRef<string | null>(null)
+  // 記録・掃除の中身は純関数（gl/eewFirstSeen.ts）。消滅と再出現の境界がバグを生みやすいので、
+  // そこだけ切り出してテストで固定している。
+  useEffect(() => {
+    syncEewFirstSeen(eewFirstSeenAtRef.current, focusedEewIdRef, eews, serverNow())
+  }, [eews])
   const activeFaults = useActiveFaults()
   const plateBoundaries = usePlateBoundaries()
   // 活断層・プレート境界は地震／リアルタイム震度モードで表示する（Leaflet 版と同条件）。
@@ -400,6 +415,8 @@ export function JapanMapGL({
                 hasDetection={detectedPoints.length > 0}
                 candidatePoints={candidatePoints}
                 forecastAreaPositions={eewFitPositions}
+                firstSeenAtRef={eewFirstSeenAtRef}
+                focusedEewIdRef={focusedEewIdRef}
               />
             </>
           )}
