@@ -262,7 +262,7 @@ describe('useReplayController の start', () => {
 
     expect(h.deps.loadReplayEvents).toHaveBeenCalledTimes(1)
     // URL の集合で重複を除くので、1 件の障害が 2 件に膨らまない
-    expect(h.current.error).toMatch(/1 件のアーカイブ/)
+    expect(h.current.error).toMatch(/1 件の取得元/)
     expect(h.current.error).toMatch(/2 件の電文/)
     expect(h.current.error).toMatch(/継続中/)
   })
@@ -551,7 +551,7 @@ describe('useReplayController の地震カード履歴', () => {
     h.histories[0].resolve(history(1, 2, ['https://x/a']))
     await h.flush(started)
 
-    expect(h.current.error).toMatch(/1 件のアーカイブ/)
+    expect(h.current.error).toMatch(/1 件の取得元/)
     expect(h.current.error).toMatch(/2 件の電文/)
   })
 })

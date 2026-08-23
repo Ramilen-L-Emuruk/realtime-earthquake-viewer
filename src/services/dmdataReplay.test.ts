@@ -214,6 +214,54 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     await expect(fetchDmdataReplayEvents('key', FROM, TO)).rejects.toThrow(/すべてを読み取れませんでした/)
   })
 
+  /**
+   * アーカイブが窓の日（JST 2026-08-10）を覆わないときの応答。
+   * その日は当日経路（/v2/telegram・/v2/gd/eew）へ回る。
+   */
+  function mockArchivesWithLive(
+    archives: Array<{ date: string; url: string; gz: Uint8Array | 'error' }>,
+    live: 'empty' | 'error',
+  ) {
+    const items = archives.map(a => ({ classification: 'telegram.earthquake', date: a.date, url: a.url }))
+    return vi.fn(async (input: string) => {
+      if (input.includes('/v2/archive?')) {
+        return { ok: true, json: async () => ({ status: 'ok', items }) } as unknown as Response
+      }
+      if (input.includes('/v2/telegram?') || input.includes('/v2/gd/eew')) {
+        if (live === 'error') return { ok: false, status: 500 } as unknown as Response
+        return { ok: true, json: async () => ({ status: 'ok', items: [] }) } as unknown as Response
+      }
+      const hit = archives.find(a => input === a.url)
+      if (!hit || hit.gz === 'error') return { ok: false, status: 500 } as unknown as Response
+      return { ok: true, arrayBuffer: async () => hit.gz as unknown as ArrayBuffer } as unknown as Response
+    })
+  }
+
+  // 当日経路の失敗をそのまま投げると、既に読めているアーカイブ側の電文まで巻き添えで捨てられる。
+  // この関数は本編と初期状態の 2 回 Promise.all で呼ばれるため、再生自体が始まらなくなる。
+  it('当日経路が読めなくても、アーカイブから読めた分は残す', async () => {
+    const gz = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('aaaaaaa1')]) },
+      { name: 'aaaaaaa1_20260810120500000_0.json', content: quakeBody('岩手県沖') },
+    ])
+    globalThis.fetch = mockArchivesWithLive([{ date: '2026-08-09', url: 'https://x/d09', gz }], 'error') as unknown as typeof fetch
+
+    const result = await fetchDmdataReplayEvents('key', FROM, TO)
+
+    expect(result.entries).toHaveLength(1)
+    // 読めなかった日は取得元の識別子として数える（無言で消すと「静かな時間帯」と区別が付かない）
+    expect(result.failedArchiveUrls).toContain('live:2026-08-10')
+  })
+
+  // 取得元が当日経路 1 本しか無い窓（＝当日だけを指す本編の 1 時間）でこれを部分成功に落とすと、
+  // 電文 0 件のまま「再生中」になる。全滅判定の分母をアーカイブの本数ではなく取得元の日数で
+  // 取っているのはこのため。
+  it('取得元が当日経路だけで、それが読めなければ例外にする', async () => {
+    globalThis.fetch = mockArchivesWithLive([], 'error') as unknown as typeof fetch
+
+    await expect(fetchDmdataReplayEvents('key', FROM, TO)).rejects.toThrow(/すべてを読み取れませんでした/)
+  })
+
   it('読めなかったアーカイブは URL で返す（呼び出し元が重複を除けるように）', async () => {
     const good = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('iiiiiii9')]) },
@@ -531,12 +579,24 @@ describe('APIキーが不正なとき', () => {
 describe('fetchDmdataQuakeHistory', () => {
   const originalFetch = globalThis.fetch
 
-  /** 履歴用に、日付を明示できる archive リストを組み立てる（新旧の順序が判定に効くため）。 */
-  function mockHistoryArchives(archives: Array<{ date: string; url: string; gz: Uint8Array | 'error' }>) {
+  /**
+   * 履歴用に、日付を明示できる archive リストを組み立てる（新旧の順序が判定に効くため）。
+   *
+   * アーカイブが無い日は当日経路（/v2/telegram）へ回るため、そちらの応答も用意する。
+   * 既定は「電文なし」。全断を再現したいときだけ `live: 'error'` を渡す。
+   */
+  function mockHistoryArchives(
+    archives: Array<{ date: string; url: string; gz: Uint8Array | 'error' }>,
+    live: 'empty' | 'error' = 'empty',
+  ) {
     const items = archives.map(a => ({ classification: 'telegram.earthquake', date: a.date, url: a.url }))
     return vi.fn(async (input: string) => {
       if (input.includes('/v2/archive?')) {
         return { ok: true, json: async () => ({ status: 'ok', items }) } as unknown as Response
+      }
+      if (input.includes('/v2/telegram?')) {
+        if (live === 'error') return { ok: false, status: 500 } as unknown as Response
+        return { ok: true, json: async () => ({ status: 'ok', items: [] }) } as unknown as Response
       }
       const hit = archives.find(a => input === a.url)
       if (!hit || hit.gz === 'error') return { ok: false, status: 500 } as unknown as Response
@@ -662,14 +722,32 @@ describe('fetchDmdataQuakeHistory', () => {
   })
 
   // 全滅は共通原因（認証切れ・全断）のことがほとんど。握り潰すと「履歴 0 件の成功」に化ける。
-  it('読もうとしたアーカイブが全滅したら例外にする', async () => {
+  // アーカイブと当日経路は同じ APIキー・同じホストを叩くため、共通原因なら両方倒れる。
+  it('読もうとした取得元が全滅したら例外にする', async () => {
     globalThis.fetch = mockHistoryArchives([
       { date: '2026-08-10', url: 'https://x/d10', gz: 'error' },
       { date: '2026-08-09', url: 'https://x/d09', gz: 'error' },
-    ]) as unknown as typeof fetch
+    ], 'error') as unknown as typeof fetch
 
     await expect(fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7))
       .rejects.toThrow(/すべてを読み取れませんでした/)
+  })
+
+  // 当日経路だけがこけたときにアーカイブ側の成果まで捨てると、当日の一覧 API が一度
+  // 失敗しただけで過去数日ぶんのカードが消える。
+  it('当日経路が読めなくても、アーカイブから読めた分は残す', async () => {
+    const good = await dayArchive([
+      { id: 'aaaaaaa1', eventId: '20260809010000', time: '2026-08-09T01:05:00+09:00' },
+    ])
+    globalThis.fetch = mockHistoryArchives([
+      { date: '2026-08-09', url: 'https://x/d09', gz: good },
+    ], 'error') as unknown as typeof fetch
+
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7)
+
+    expect(result.quakes).toHaveLength(1)
+    // 読めなかった日は取得元の識別子として数える（無言で消すと「静かな期間」と区別が付かない）
+    expect(result.failedArchiveUrls).toContain('live:2026-08-10')
   })
 
   // 通信前に弾く判定は `listArchives` 経由で本編の取得と共有しているが、共有をやめた
