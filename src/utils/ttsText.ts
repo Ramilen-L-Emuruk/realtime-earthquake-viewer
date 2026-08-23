@@ -1111,18 +1111,22 @@ function observationDetailSegments(
 }
 
 /**
- * `maxPoints` で読み上げから外した地点数を伝える句を返す（外していなければ空文字）。
+ * `maxPoints` で読み上げから外した地点数を伝える一文を返す（外していなければ空の断片列）。
  *
  * **黙って捨てないこと。** 観測点の選抜は深刻な順（`compareObservedHeightDesc`）に上位だけを
  * 読むため、「○m以上」が複数あって上限を超えたときは、そのうちの一部が読み上げから落ちる。
  * 落ちたことを言わないと、聞いた人は読まれた地点が最大だと受け取る。
  *
- * 観測波高の読み上げと到達確認の読み上げ（`tsunamiArrivalToSegments`）で共有する。文言を手で
- * 複製すると、片方だけ変えたときに黙って乖離する。
+ * **述語に貼り付けず独立した一文にする。** 観測波高の読み上げは新規と更新で述語が変わるため
+ * （「〜を観測しました」／「〜に更新されました」）、末尾の句に混ぜると外した地点が更新扱いに
+ * なる。外した地点は新規・更新のどちらでもありうるので、どちらにも寄せない言い方にする。
+ *
+ * 観測波高の読み上げと到達確認の読み上げ（`tsunamiArrivalToSegments`）で共有する。地点数の
+ * 言い方を手で複製すると、片方だけ変えたときに黙って乖離する（続く述語だけを引数で受ける）。
  */
-function omittedPointsSuffix(total: number, shown: number): string {
+function omittedPointsSentence(total: number, shown: number, tail: string): SpeechSegment[] {
   const omitted = total - shown
-  return omitted > 0 ? `、ほか${omitted}地点` : ''
+  return omitted > 0 ? [plain(`ほか${omitted}地点でも${tail}。`)] : []
 }
 
 // 波高つきの 1 地点ぶん（地点名は呼び出し側が断片にするので、それに続く部分だけを返す）。
@@ -1155,30 +1159,98 @@ export function selectObservationUpdatesToSpeak(
 }
 
 /**
+ * 「前に声にした波高がある観測点名」を引ける最小の形（`Set` でも `Map` でもそのまま渡せる）。
+ *
+ * 渡すのは**読み上げ用の記憶**（`useLiveEventHandler` の `spokenObsHeightRef`）。画面用の記憶
+ * （受信時に進む）を渡してはいけない。割り込みで鳴らなかった観測点が「既に伝えた」ことになり、
+ * 一度も声にしていない地点を「更新されました」と言う。
+ */
+type SpokenHeightLookup = { has(name: string): boolean }
+
+/**
  * VTSE41/51/52 津波観測情報 更新点のみ読み上げテキストを生成する。
  * updatedObs は最大波高が更新された観測点のみを渡す（波高降順で最大 maxPoints 件）。
+ *
+ * **「新たに」と「更新」を言い分ける。** 津波が新しい場所に届いたのと、既に届いていた場所で波が
+ * 高くなったのは、聞き手にとって意味が違う（画面のカードも新規＝緑・更新＝黄で区別している）。
+ * 境界は `spokenHeights` に前値があるかどうかだけで、名前を聞いたことがあるかでは判定しない。
+ * 到達確認だけ読んだ観測点（「最大波高は観測中です」まで言った地点）に初めて値が付いた場合は、
+ * 波高としては初出なので「新たに」側に入る ―― 前値が無いのに「更新」と言えば嘘になる。
+ *
+ * 2 群に分かれたら、**深刻な波高を含む群を先に読み、後ろを「また、」で継ぐ**。最悪の値を先に
+ * 伝えるという選抜の方針を、群に割ったあとも崩さないため。
+ *
+ * **群の中を読む順は `updatedObs` の並びをそのまま使う。** 呼び出し側がカードの並び
+ * （`sortObservationsForCardDisplay`）で渡すこと。深刻な順に読み直すとカード上を上下に往復する
+ * （→ [`tsunami-spec.md`](../../docs/spec/tsunami-spec.md) §9）。深刻な順は**どれを読むかの選抜
+ * だけ**に使う ―― 選抜と並び順は別物。
  */
 export function tsunamiObservationUpdateToSegments(
   updatedObs: TsunamiObservation[],
   headline?: string,
   maxPoints = OBS_UPDATE_SPEAK_MAX_POINTS,
+  spokenHeights?: SpokenHeightLookup,
 ): SpeechSegment[] {
   // 選抜は selectObservationUpdatesToSpeak に集約する（既読を記録する側と同じ絞り方にするため）。
-  // obs は「波高を持つ総数」で、読み上げなかった件数（omittedPointsSuffix）を数えるのに要る。
+  // obs は「波高を持つ総数」で、読み上げなかった件数（omittedPointsSentence）を数えるのに要る。
   const obs = updatedObs.filter(o => o.height !== undefined)
-  const sorted = selectObservationUpdatesToSpeak(updatedObs, maxPoints)
-  if (sorted.length === 0) return []
+  const selected = selectObservationUpdatesToSpeak(updatedObs, maxPoints)
+  if (selected.length === 0) return []
+  // 最も深刻な観測点（選抜が深刻な順に返すので先頭）。どちらの群を先に読むかだけに使う。
+  const worst = selected[0]
+  // 選抜した分を**入力の並びに戻して**読む（並びの根拠は上の説明）。
+  const chosen = new Set(selected)
+  const inReadingOrder = obs.filter(o => chosen.has(o))
   // headline の全角数字・全角ｍ・全角ピリオドを半角に変換して VOICEVOX の誤読を防ぐ
   const headlinePart = headline?.trim() ? tsunamiHeightToSpeech(headline.trim()) : ''
+  // **選抜した結果を分けるだけ。** 群ごとに選抜し直すと上限が実質 2 倍になり、既読を記録する側
+  // （`selectObservationUpdatesToSpeak` を使う）と読み上げた集合が食い違う。
+  const raised = inReadingOrder.filter(o => spokenHeights?.has(o.name) ?? false)
+  const firstTime = inReadingOrder.filter(o => !(spokenHeights?.has(o.name) ?? false))
+  const clauseOf = (items: TsunamiObservation[], isRaised: boolean): SpeechSegment[] => {
+    if (items.length === 0) return []
+    return [
+      ...(isRaised ? [] : [plain('新たに')]),
+      ...observationDetailSegments(items, observedHeightSuffix),
+      plain(isRaised ? 'に更新されました。' : 'を観測しました。'),
+    ]
+  }
+  // 深刻な観測点を含む群を先に置く（最も深刻な観測点がどちらの群に入ったかで決まる）。
+  const raisedLeads = raised.includes(worst)
+  const lead = clauseOf(raisedLeads ? raised : firstTime, raisedLeads)
+  const follow = clauseOf(raisedLeads ? firstTime : raised, !raisedLeads)
   return [
     plain(`津波観測情報。${headlinePart}`),
-    ...observationDetailSegments(sorted, observedHeightSuffix),
-    plain(`${omittedPointsSuffix(obs.length, sorted.length)}を観測しました。`),
+    ...lead,
+    ...(follow.length > 0 ? [plain('また、'), ...follow] : []),
+    ...omittedPointsSentence(obs.length, selected.length, '観測しています'),
   ]
 }
 
-export function tsunamiObservationUpdateToText(updatedObs: TsunamiObservation[], headline?: string, maxPoints = 5): string {
-  return joinSegments(tsunamiObservationUpdateToSegments(updatedObs, headline, maxPoints))
+export function tsunamiObservationUpdateToText(
+  updatedObs: TsunamiObservation[],
+  headline?: string,
+  maxPoints = OBS_UPDATE_SPEAK_MAX_POINTS,
+  spokenHeights?: SpokenHeightLookup,
+): string {
+  return joinSegments(tsunamiObservationUpdateToSegments(updatedObs, headline, maxPoints, spokenHeights))
+}
+
+/** 到達確認で読み上げる件数の上限（多いときは渡された並びの先頭から採る）。 */
+export const ARRIVAL_SPEAK_MAX_POINTS = 5
+
+/**
+ * 到達確認のうち**実際に読み上げる分**を選ぶ（渡された並びの先頭から上限まで）。
+ *
+ * **既読として記録する側も必ずこの関数で絞ること**（`useLiveEventHandler` の
+ * `spokenObsNamesRef`）。上限で読まなかった観測点まで既読にすると、その到達確認は二度と
+ * 読まれない（波高更新側の `selectObservationUpdatesToSpeak` と同じ約束）。
+ */
+export function selectArrivalsToSpeak(
+  obs: readonly TsunamiObservation[],
+  maxPoints = ARRIVAL_SPEAK_MAX_POINTS,
+): TsunamiObservation[] {
+  return obs.slice(0, maxPoints)
 }
 
 /**
@@ -1186,13 +1258,18 @@ export function tsunamiObservationUpdateToText(updatedObs: TsunamiObservation[],
  * まだ maxHeight の数値が出ていない観測点（JMA電文で maxHeight.condition = "観測中"）が対象。
  * 波高が未確定であること自体も明示的に読み上げる。件数は maxPoints で絞り、他 tsunami 系読み上げと同様に上限を設ける。
  * 波高読み上げ（observationDetailSegments）と同様に districtName（津波予報区）ごとにグループ化する。
+ *
+ * **読む順は渡された並びのまま。** 波高更新の読み上げと同じく、呼び出し側がカードの並び
+ * （`sortObservationsForCardDisplay`）で渡すこと。上限で落とすのも先頭からなので、並びが
+ * カードと違うとカード上で飛び飛びの地点が読まれる。
  */
-export function tsunamiArrivalToSegments(obs: TsunamiObservation[], maxPoints = 5): SpeechSegment[] {
+export function tsunamiArrivalToSegments(obs: TsunamiObservation[], maxPoints = ARRIVAL_SPEAK_MAX_POINTS): SpeechSegment[] {
   if (obs.length === 0) return []
-  const shown = obs.slice(0, maxPoints)
+  const shown = selectArrivalsToSpeak(obs, maxPoints)
   return [
     ...observationDetailSegments(shown, () => ''),
-    plain(`${omittedPointsSuffix(obs.length, shown.length)}で到達を確認しました。最大波高は観測中です。`),
+    plain('で到達を確認しました。最大波高は観測中です。'),
+    ...omittedPointsSentence(obs.length, shown.length, '到達を確認しています'),
   ]
 }
 
