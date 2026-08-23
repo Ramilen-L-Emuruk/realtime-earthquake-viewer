@@ -15,13 +15,18 @@
 // 日付の境界はローカル時刻で判定する。P2PQuake は日本のサービスで、電文の time も JST 表記の
 // ローカル時刻として解釈している（p2pquake.ts の readTime 参照）ため、アプリ全体の前提に揃える。
 
-import type { ReplayEntry, ReplayFetchResult } from '../types/replay'
+import type { ReplayEntry, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
 import type { RawP2PEvent } from './p2pquake'
+import type { JMAQuake } from '../types/earthquake'
 import { convertEvent, fetchJmaArchiveRaw } from './p2pquake'
+import { sameQuakeEntry } from '../utils/quakeMerge'
 import { log } from '../utils/logger'
 
 /** 1 ページの取得件数（API 側の上限）。 */
 const PAGE_SIZE = 100
+
+/** 履歴復元で 1 回に引く電文数（API 側の上限と同じ）。 */
+const HISTORY_PAGE_SIZE = 100
 
 /**
  * 1 日あたりのページ取得上限。超えたら例外にして再生を始めない。
@@ -202,4 +207,75 @@ function toEntry(raw: RawP2PEvent): ReplayEntry | null {
     return null
   }
   return { payload: { kind: 'event', event }, replayTime }
+}
+
+/**
+ * 指定時刻より前に発表された地震電文を集める（地震カードの履歴復元用）。
+ *
+ * 再生窓の取得（`fetchP2PReplayEvents`）と違い、こちらは**件数基準**で引く。ライブ接続時の
+ * 履歴取得と同じ厚みのカード一覧を作るのが目的で、日単位で遡ると静かな日ほど一覧が痩せる。
+ *
+ * `until_date` は日単位なので、指定時刻と同じ日の「まだ発表されていない」電文が必ず混ざる。
+ * これは呼び出し側ではなくここで落とす（時刻の判定を 1 箇所に閉じる）。
+ *
+ * 1 リクエストで済ませているのはレート制限（`/jma` は 10 リクエスト/分・IP 毎）のため。
+ * 実測では 100 電文で 6 日ぶん前後を遡れる。
+ *
+ * 集めた電文は目標のイベント数で打ち切る。API のページングは電文単位なので、そのまま渡すと
+ * 地震の多い期間ほど一覧が厚くなり、同じ設定でもバリアントで枚数が食い違う（実測では
+ * standard 版だけ 84 枚、DMDSS 版は 50 枚台）。同一イベントの判定にはカードの統合と同じ
+ * `sameQuakeEntry` を使う（別の物差しで数えると、統合後の枚数と合わない）。
+ */
+export async function fetchP2PQuakeHistory(before: Date, targetEvents: number): Promise<QuakeHistoryResult> {
+  const raws = await fetchJmaArchiveRaw('quake', {
+    untilDate: toDateParam(before),
+    order: -1,
+    limit: HISTORY_PAGE_SIZE,
+  })
+
+  // 打ち切りの前に、読める電文だけを集めて発表時刻の新しい順に整える。
+  // `order: -1` を渡しているので応答は既に新しい順のはずだが、**どこで切るかを外部 API の
+  // 並び順に委ねない**（並びが崩れると、古い地震で目標に達して新しい地震を落としうる）。
+  const candidates: { event: JMAQuake; time: number }[] = []
+  let skipped = 0
+  for (const raw of raws) {
+    // 種別そのものが読めない電文は「正常なフィルタ」ではなく破損（fetchAllPages と同じ扱い）。
+    if (typeof raw?.code !== 'number') {
+      log.warn(`[replay] 履歴用電文の code を読めずスキップ until=${toDateParam(before)}`)
+      skipped++
+      continue
+    }
+    // `/jma/quake` は地震情報しか返さないが、想定外の種別が混ざったときに
+    // 正常なフィルタを損失として数えないようにする。
+    if (raw.code !== 551) continue
+    const event = convertEvent(raw)
+    if (!event || event.kind !== 'quake') {
+      skipped++
+      continue
+    }
+    const time = new Date(event.time).getTime()
+    if (!Number.isFinite(time)) {
+      log.warn(`[replay] 履歴用電文の時刻を読めずスキップ id=${event.id} time=${event.time}`)
+      skipped++
+      continue
+    }
+    if (time > before.getTime()) continue
+    candidates.push({ event, time })
+  }
+  candidates.sort((a, b) => b.time - a.time)
+
+  const quakes: JMAQuake[] = []
+  // 目標の数え方に使う「イベントの代表電文」。新しい順に見るので、同じ地震の前の報は
+  // 代表より後に現れる。既知と判定された電文は目標に達した後でも採る（切ると、一覧の
+  // 最も古いカードだけが震度速報のまま残るなど、途中で切れた形になる）。
+  const seenEvents: JMAQuake[] = []
+  for (const { event } of candidates) {
+    if (!seenEvents.some(e => sameQuakeEntry(e, event))) {
+      if (seenEvents.length >= targetEvents) break
+      seenEvents.push(event)
+    }
+    quakes.push(event)
+  }
+
+  return { quakes, skipped, failedArchiveUrls: [] }
 }

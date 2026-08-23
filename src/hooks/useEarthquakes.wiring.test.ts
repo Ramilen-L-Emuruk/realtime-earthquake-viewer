@@ -17,7 +17,7 @@
 // 差し替えるのは外部 I/O（WebSocket・REST・観測点座標）だけ。時計や純粋関数は本物を使う。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, cleanup, act } from '@testing-library/react'
-import type { AppEvent, EEWAlert, JMATsunami, JMANankaiCommentary } from '../types/earthquake'
+import type { AppEvent, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary } from '../types/earthquake'
 import { serverDate, setReplayOffset } from '../utils/clock'
 import { DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
 
@@ -695,5 +695,68 @@ describe('DMDSS 版: APIキーが不正なら通信しない', () => {
 
     expect(view.result.current.error).toBeNull()
     expect(view.result.current.connectionStatus).not.toBe('disconnected')
+  })
+})
+
+// リプレイ開始時の地震カードの扱い。
+//
+// 一覧の厚みはライブと再生で基準が違う（ライブ＝件数・初期状態の再現＝時間）ため、
+// 履歴は専用の口から流し込む。ここで見るのは、その口が既存カードを壊さないことと、
+// 「もっと見る」がライブの最新履歴を引き込む経路を塞いであること。
+describe('リプレイ開始時の地震カード', () => {
+  /** 履歴の 1 通。統合は mergeQuakeHistory（本物）に任せるので最小形でよい。 */
+  function quakeTelegram(eventId: string, time: string): JMAQuake {
+    return {
+      kind: 'quake' as const,
+      id: `dmdata-quake-${eventId}-1`,
+      time,
+      issue: { source: '気象庁', time, type: '各地の震度情報' as const, correct: 'なし' as const },
+      earthquake: {
+        time,
+        hypocenter: { name: '岩手県沖', latitude: 39.9, longitude: 142.2, depth: 50, magnitude: 5.1 },
+        maxScale: 40,
+        domesticTsunami: 'なし' as const,
+      },
+      points: [{ pref: '岩手県', addr: '宮古市', isArea: false, scale: 40 }],
+    }
+  }
+
+  // 押すと `loadMoreEarthquakes` がライブの最新履歴を取りに行き、再生時刻より未来の地震が
+  // カードに並ぶ。カードを空にするだけでボタンを残すと、再生中もこれが押せてしまう。
+  it('表示をリセットすると「もっと見る」を畳む', async () => {
+    vi.mocked(fetchDmdataEarthquakes).mockResolvedValue({ quakes: [], nextToken: 'next-page' })
+    const h = setup({ offset: null })
+    await h.flush()
+    expect(h.current.hasMore).toBe(true)
+
+    act(() => { h.current.resetState() })
+
+    expect(h.current.hasMore).toBe(false)
+  })
+
+  it('履歴を流し込むとカードが並ぶ', async () => {
+    const h = setup({ offset: null })
+    await h.flush()
+
+    act(() => {
+      h.current.restoreQuakeHistory([
+        quakeTelegram('20260810010000', '2026-08-10T01:05:00+09:00'),
+        quakeTelegram('20260810020000', '2026-08-10T02:05:00+09:00'),
+      ])
+    })
+
+    expect(h.current.earthquakes).toHaveLength(2)
+  })
+
+  // 履歴の取得は初期状態の注入や本編の再生より後に終わることがある。既存のカードを
+  // base に統合しないと、先に出来ていたカードを消してしまう。
+  it('履歴が後から届いても、既にあるカードを消さずに統合する', async () => {
+    const h = setup({ offset: null })
+    await h.flush()
+
+    act(() => { h.current.restoreQuakeHistory([quakeTelegram('20260810020000', '2026-08-10T02:05:00+09:00')]) })
+    act(() => { h.current.restoreQuakeHistory([quakeTelegram('20260810010000', '2026-08-10T01:05:00+09:00')]) })
+
+    expect(h.current.earthquakes).toHaveLength(2)
   })
 })
