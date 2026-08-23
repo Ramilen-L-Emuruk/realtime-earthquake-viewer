@@ -6,7 +6,7 @@ import { ringsBounds, type SubRegion } from '../utils/subregions'
 import { eewAreas, eewMaxScaleInfo } from '../utils/eew'
 import { isValidIntensityScale } from '../utils/intensity'
 import { isValidLpgmClass } from '../utils/lpgm'
-import { normalizeEpicenterLng } from '../utils/geo'
+import { hasKnownEpicenter, normalizeEpicenterLng } from '../utils/geo'
 
 // EEW（緊急地震速報）の描画に必要な派生データ（対象地域の予想震度塗り／予想長周期地震動塗り／
 // 各 EEW の震源）を計算する共有フック。Leaflet 版 JapanMap 内の eewAreaFills /
@@ -103,7 +103,7 @@ export function useEewLayerData(
       // 解くと根拠のない到達秒数になる。予報円を出さない・カードで M/深さを隠す・
       // useKyoshinAlerts が震源に採らないのと同じ扱いを、S波到達の推定にも与える。
       const origin: EewOrigin | null =
-        hc.latitude > -200 && hc.longitude > -200 && eew.earthquake.condition !== '仮定震源要素'
+        hasKnownEpicenter(hc.latitude, hc.longitude) && eew.earthquake.condition !== '仮定震源要素'
           ? {
               lat: hc.latitude,
               lng: normalizeEpicenterLng(hc.longitude, JAPAN_CENTER_LNG),
@@ -172,7 +172,7 @@ export function useEewLayerData(
     const list: EewEpicenter[] = []
     for (const eew of eews) {
       const hc = eew.earthquake.hypocenter
-      if (hc.latitude > -200 && hc.longitude > -200) {
+      if (hasKnownEpicenter(hc.latitude, hc.longitude)) {
         const { scale, orAbove } = eewMaxScaleInfo(eew)
         list.push({
           id: eew.id,

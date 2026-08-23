@@ -28,6 +28,22 @@ export function bearingDeg(lat1: number, lng1: number, lat2: number, lng2: numbe
 }
 
 /**
+ * 震源の位置が判っているか。**否定形（`lat <= -200`）で書かないこと。**
+ *
+ * 位置が判らない震源の表れ方は情報源で 2 通りある。DMDATA・P2PQuake は `-200` のセンチネルを
+ * 入れる（震度速報のように震源を伴わない電文・取消電文）。一方 Yahoo 強震モニタ（標準版の EEW）は
+ * 座標の文字列が空だと `NaN` になる（`services/kyoshin.ts` の `parseCoord`）。
+ *
+ * `NaN` はどの比較演算でも false になるため、`lat > -200` と書けば弾けるが、否定形の
+ * `lat <= -200` では**素通りする**。素通りした `NaN` を地図の寄り先に渡すと、MapLibre の `LngLat` が
+ * `isNaN` で例外を投げる（ライブラリのコンストラクタが直接そうしている）。このアプリに
+ * ErrorBoundary は無いので画面ごと落ちる。判定はこの関数に寄せること。
+ */
+export function hasKnownEpicenter(lat: number, lng: number): boolean {
+  return Number.isFinite(lat) && Number.isFinite(lng) && lat > -200 && lng > -200
+}
+
+/**
  * 地図中心経度から見て最も近い側に経度を補正する。
  * 日本中心（137.7°）からベネズエラ（-68.8°）→ 291.2° に補正するケースで使用。
  */
