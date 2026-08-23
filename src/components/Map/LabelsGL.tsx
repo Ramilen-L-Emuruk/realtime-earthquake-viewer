@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { FeatureCollection, Point } from 'geojson'
+import type { GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl'
 import { useMapGL } from './mapGLContext'
 import { loadPrefectures } from '../../utils/prefectures'
 import { loadSubRegions } from '../../utils/subregions'
@@ -7,7 +8,14 @@ import { REGIONS } from '../../utils/regions'
 import { addOrderedLayer } from './gl/layerOrder'
 import { JP_FONT_STACK } from './gl/fontStack'
 import { log } from '../../utils/logger'
-import { LABEL_TEXT_OPACITY_EXPR, updateLabelOverlap, type LabelOverlapTarget } from './gl/labelOverlap'
+import {
+  LABEL_TEXT_OPACITY_EXPR,
+  computeLabelPlacements,
+  isUsableRoom,
+  labelTextOffsetExpr,
+  type LabelOverlapTarget,
+  type LabelPlacement,
+} from './gl/labelOverlap'
 import { bindDynamicZoomRange, clampMinZoom } from './gl/viewSpan'
 import { labelMinZoom } from './gl/zoomLevels'
 
@@ -45,6 +53,19 @@ const REGION_TEXT_SIZE = 17
 const PREF_TEXT_SIZE = 14
 const SUB_TEXT_SIZE = 13
 
+// 震度バッジ等と重なったときに退避する量（em＝text-size に対する比）。**平常時は退避しない**——
+// 重なりを検知したときだけ、この量だけ上下へ逃がす（gl/labelOverlap.ts の判定）。
+// 区域名が県名より広いのは、震度7バッジの実描画半径が約20px（gl/intensityIcons.ts の
+// INTENSITY_ICON_BASE_RADIUS=32 と getScaleRadius の比率換算）で、text-size 13px の 1.5em では
+// ぎりぎり干渉しうるため。倍率 100% での関係だが、退避量は em 指定でバッジ半径にも同じ iconScale が
+// 掛かるので、倍率を変えても比率は崩れない。
+// 逃がせるのは領域（県・区域）の内側に収まる範囲まで。上限は生成データの `room` が決める。
+// なお長周期の区域バッジ（LpgmRegionFillGL）は最大 22px とわずかに大きく、2.2em 逃がしても縁が
+// 重なる。ただし自区域のバッジは退避**後**の判定から外しているため薄くはならない
+// （gl/labelOverlap.ts の `excludeName`）。この 2 つは対で効いている。
+const PREF_SHIFT_EM = 1.5
+const SUB_SHIFT_EM = 2.2
+
 // symbol レイヤーの text-font。フォントスタック名は gl/fontStack.ts が単一情報源
 // （build-glyphs.mjs の出力ディレクトリ名と本値の一致はビルド時に照合される。詳細は fontStack.ts）。
 const JP_TEXT_FONT = [JP_FONT_STACK]
@@ -60,6 +81,77 @@ const SUB_SRC = 'basemap-subregion-labels'
 // moveend 後、重なり判定を実行するまでの待ち時間。連続的なパン/ズーム操作の度に評価が
 // 挟まらないようデバウンスする。
 const OVERLAP_CHECK_DEBOUNCE_MS = 200
+
+/** 退避なし・表示のまま（レイヤー構築時の初期値）。 */
+const DEFAULT_PLACEMENT: LabelPlacement = { shift: 'none', dimmed: false }
+
+/**
+ * ラベルの GeoJSON を組み立てる。判定結果（退避方向・薄くするか）は properties に載せる
+ * （text-offset は layout プロパティで feature-state を受け付けないため。gl/labelOverlap.ts 冒頭）。
+ */
+function labelFeatureCollection(
+  items: { t: LabelOverlapTarget; p: LabelPlacement }[],
+): FeatureCollection<Point> {
+  return {
+    type: 'FeatureCollection',
+    features: items.map(({ t, p }) => ({
+      type: 'Feature',
+      id: t.id,
+      properties: { name: t.text, shift: p.shift, dimmed: p.dimmed },
+      geometry: { type: 'Point', coordinates: t.lngLat },
+    })),
+  }
+}
+
+/** 判定前（レイヤー構築時）の GeoJSON。 */
+function initialFeatureCollection(targets: LabelOverlapTarget[]): FeatureCollection<Point> {
+  return labelFeatureCollection(targets.map((t) => ({ t, p: DEFAULT_PLACEMENT })))
+}
+
+/**
+ * 退避の余地（`room`）を持たないラベルがあれば、**ソース単位で 1 回だけ**警告する。
+ *
+ * `room` が無いラベルは退避を試さず、重なった時点で薄くなる。これは安全側の挙動なので画面上は
+ * 「やや読みにくいラベルがある」程度にしか見えず、生成データが古い（`dir` しか持たない旧スキーマ・
+ * 配信キャッシュの取り残し）のか、本当に重なっているだけなのかを区別できない。その手がかりを残す。
+ *
+ * ラベルごとに出すと 239 行のログになるため件数だけを 1 行にまとめる。
+ */
+function warnIfRoomMissing(targets: LabelOverlapTarget[], file: string, kind: string): void {
+  const broken = targets.filter((t) => !isUsableRoom(t.room)).length
+  if (broken === 0) return
+  log.warn(
+    `[LabelsGL] ${file} の room が ${broken}/${targets.length} 件で使えない形。` +
+      `該当する${kind}ラベルは震度バッジ等と重なっても退避せず、そのまま薄くなる（生成データが古い可能性）`,
+  )
+}
+
+/**
+ * 判定結果を各ソースへ書き戻す。**ソース単位で前回と比べ、変化が無ければ setData しない**——
+ * setData は symbol の再配置を伴い、配置フェードを切ってある（map-rendering-spec §8）本アプリでは
+ * 瞬間的な描き直しとして出るため、無駄な呼び出しを避ける。
+ */
+function applyPlacements(
+  map: MapLibreMap,
+  targets: LabelOverlapTarget[],
+  placements: LabelPlacement[],
+  lastSig: Record<string, string>,
+): void {
+  const bySource = new Map<string, { t: LabelOverlapTarget; p: LabelPlacement }[]>()
+  targets.forEach((t, i) => {
+    const items = bySource.get(t.source)
+    if (items) items.push({ t, p: placements[i] })
+    else bySource.set(t.source, [{ t, p: placements[i] }])
+  })
+  for (const [id, items] of bySource) {
+    const source = map.getSource(id) as GeoJSONSource | undefined
+    if (!source) continue
+    const sig = items.map(({ p }) => (p.dimmed ? 'x' : p.shift)).join(',')
+    if (lastSig[id] === sig) continue
+    lastSig[id] = sig
+    source.setData(labelFeatureCollection(items))
+  }
+}
 
 interface Props {
   /**
@@ -81,6 +173,8 @@ export function LabelsGL({ overlapSignature, iconScale }: Props) {
   iconScaleRef.current = iconScale
   // 各ラベルの生データ（重なり判定の再計算に使う）。ロード完了後に確定する。
   const targetsRef = useRef<LabelOverlapTarget[]>([])
+  // 前回 setData した配置結果のソース別署名（applyPlacements の空振り判定に使う）。
+  const lastSigRef = useRef<Record<string, string>>({})
   // 重なり判定のスケジュール関数（下のトリガー用 useEffect が設定する）。県名・区域名の
   // 非同期ロード完了時にもここから呼べるようにするため ref に持たせる。
   const scheduleOverlapCheckRef = useRef<() => void>(() => {})
@@ -89,16 +183,8 @@ export function LabelsGL({ overlapSignature, iconScale }: Props) {
     if (!map) return
     let cancelled = false
 
-    // 地方ラベルは定数（境界データ非依存）なので即座に用意する。
-    const regionFC: FeatureCollection<Point> = {
-      type: 'FeatureCollection',
-      features: REGIONS.map((r, i) => ({
-        type: 'Feature',
-        id: i,
-        properties: { name: r.name },
-        geometry: { type: 'Point', coordinates: [r.lng, r.lat] },
-      })),
-    }
+    // 地方ラベルは定数（境界データ非依存）なので即座に用意する。退避はさせない（境界データを持たない
+    // ため、逃がした先が地方の内側かを判断できない。重なったときは薄くするだけにとどめる）。
     targetsRef.current = REGIONS.map((r, i) => ({
       source: REGION_SRC,
       id: i,
@@ -106,7 +192,7 @@ export function LabelsGL({ overlapSignature, iconScale }: Props) {
       text: r.name,
       textSize: REGION_TEXT_SIZE,
     }))
-    map.addSource(REGION_SRC, { type: 'geojson', data: regionFC })
+    map.addSource(REGION_SRC, { type: 'geojson', data: initialFeatureCollection(targetsRef.current) })
     addOrderedLayer(map, {
       id: REGION_SRC,
       type: 'symbol',
@@ -134,7 +220,7 @@ export function LabelsGL({ overlapSignature, iconScale }: Props) {
       { layerId: REGION_SRC, minZoom: labelMinZoom, maxZoom: REGION_MAX_ZOOM },
     ])
 
-    // 県名・区域名は境界データ（label 座標・dir）に依存するため取得後に追加する。
+    // 県名・区域名は境界データ（label 座標・退避の余地 room）に依存するため取得後に追加する。
     Promise.allSettled([loadPrefectures(), loadSubRegions()]).then(([prefRes, subRes]) => {
       if (cancelled || !map.getSource(REGION_SRC)) return
       // 失敗ログには「どのズーム帯のラベルが欠けるか」を書く。ラベルはズーム帯ごとに粒度を
@@ -151,33 +237,21 @@ export function LabelsGL({ overlapSignature, iconScale }: Props) {
           subRes.reason,
         )
 
-      // 県名ラベル。県中心の最大震度バッジと重ならないよう dir（up/down）で 1.5em ずらす
-      // （Leaflet 版 base-pref-label--up/down の transform 相当。text-offset の単位は em）。
+      // 県名ラベル。県中心の最大震度バッジと重なったときだけ、県内に収まる範囲で上下へ退避する。
       const prefs = prefRes.status === 'fulfilled' ? prefRes.value : null
       if (prefs) {
-        const prefEntries = Object.entries(prefs)
-        const prefFC: FeatureCollection<Point> = {
-          type: 'FeatureCollection',
-          features: prefEntries.map(([name, shape], i) => ({
-            type: 'Feature',
-            id: i,
-            properties: { name, dir: shape.dir },
-            geometry: { type: 'Point', coordinates: [shape.label[1], shape.label[0]] },
-          })),
-        }
-        targetsRef.current = [
-          ...targetsRef.current,
-          ...prefEntries.map(([name, shape], i) => ({
-            source: PREF_SRC,
-            id: i,
-            lngLat: [shape.label[1], shape.label[0]] as [number, number],
-            text: name,
-            textSize: PREF_TEXT_SIZE,
-            offsetEm: 1.5,
-            dir: shape.dir,
-          })),
-        ]
-        map.addSource(PREF_SRC, { type: 'geojson', data: prefFC })
+        const prefTargets: LabelOverlapTarget[] = Object.entries(prefs).map(([name, shape], i) => ({
+          source: PREF_SRC,
+          id: i,
+          lngLat: [shape.label[1], shape.label[0]],
+          text: name,
+          textSize: PREF_TEXT_SIZE,
+          shiftEm: PREF_SHIFT_EM,
+          room: shape.room,
+        }))
+        warnIfRoomMissing(prefTargets, 'prefectures.json', '県名')
+        targetsRef.current = [...targetsRef.current, ...prefTargets]
+        map.addSource(PREF_SRC, { type: 'geojson', data: initialFeatureCollection(prefTargets) })
         addOrderedLayer(map, {
           id: PREF_SRC,
           type: 'symbol',
@@ -188,7 +262,7 @@ export function LabelsGL({ overlapSignature, iconScale }: Props) {
             'text-field': ['get', 'name'],
             'text-font': JP_TEXT_FONT,
             'text-size': PREF_TEXT_SIZE * iconScaleRef.current,
-            'text-offset': ['case', ['==', ['get', 'dir'], 'up'], ['literal', [0, -1.5]], ['literal', [0, 1.5]]],
+            'text-offset': labelTextOffsetExpr(PREF_SHIFT_EM),
           },
           paint: {
             'text-color': '#e3e9f0',
@@ -201,38 +275,23 @@ export function LabelsGL({ overlapSignature, iconScale }: Props) {
       }
 
       // 区域名ラベル。区域中心の震度バッジ（QuakeRegionFillGL・同じ label 座標にアイコンを置く）と
-      // 重ならないよう、県名ラベルと同じ dir（up/down）で text-offset をかけて退避させる。
-      // 震度7バッジの実描画半径は約20px（intensityIcons.ts の INTENSITY_ICON_BASE_RADIUS=32 と
-      // getScaleRadius の比率換算）に対し、text-size 13px の 1.5em（県名と同値）だとぎりぎり干渉しうる
-      // ため、区域名は 2.2em とやや広めに取る。
-      // この「約20px 対 2.2em」の関係は倍率 100% での値だが、退避量は em 指定（text-size 比）であり
-      // text-size とバッジ半径の双方に同じ iconScale が掛かるため、倍率を変えても比率は崩れない。
+      // 重なったときだけ、区域内に収まる範囲で上下へ退避する（退避量は SUB_SHIFT_EM）。
       const subs = subRes.status === 'fulfilled' ? subRes.value : null
       if (subs) {
-        const subFC: FeatureCollection<Point> = {
-          type: 'FeatureCollection',
-          features: subs.map((sr, i) => ({
-            type: 'Feature',
-            id: i,
-            properties: { name: sr.name, dir: sr.dir },
-            geometry: { type: 'Point', coordinates: [sr.label[1], sr.label[0]] },
-          })),
-        }
-        targetsRef.current = [
-          ...targetsRef.current,
-          ...subs.map((sr, i) => ({
-            source: SUB_SRC,
-            id: i,
-            lngLat: [sr.label[1], sr.label[0]] as [number, number],
-            text: sr.name,
-            textSize: SUB_TEXT_SIZE,
-            offsetEm: 2.2,
-            dir: sr.dir,
-            // 自分の区域の塗り（当然重なる）は無視し、隣接する別区域の塗りとだけ重なりを判定する。
-            excludeName: sr.name,
-          })),
-        ]
-        map.addSource(SUB_SRC, { type: 'geojson', data: subFC })
+        const subTargets: LabelOverlapTarget[] = subs.map((sr, i) => ({
+          source: SUB_SRC,
+          id: i,
+          lngLat: [sr.label[1], sr.label[0]],
+          text: sr.name,
+          textSize: SUB_TEXT_SIZE,
+          shiftEm: SUB_SHIFT_EM,
+          room: sr.room,
+          // 自分の区域の塗り（当然重なる）は無視し、隣接する別区域の塗りとだけ重なりを判定する。
+          excludeName: sr.name,
+        }))
+        warnIfRoomMissing(subTargets, 'subregions.json', '区域名')
+        targetsRef.current = [...targetsRef.current, ...subTargets]
+        map.addSource(SUB_SRC, { type: 'geojson', data: initialFeatureCollection(subTargets) })
         addOrderedLayer(map, {
           id: SUB_SRC,
           type: 'symbol',
@@ -242,7 +301,7 @@ export function LabelsGL({ overlapSignature, iconScale }: Props) {
             'text-field': ['get', 'name'],
             'text-font': JP_TEXT_FONT,
             'text-size': SUB_TEXT_SIZE * iconScaleRef.current,
-            'text-offset': ['case', ['==', ['get', 'dir'], 'up'], ['literal', [0, -2.2]], ['literal', [0, 2.2]]],
+            'text-offset': labelTextOffsetExpr(SUB_SHIFT_EM),
           },
           paint: {
             'text-color': '#b3bece',
@@ -263,6 +322,9 @@ export function LabelsGL({ overlapSignature, iconScale }: Props) {
         if (map.getLayer(id)) map.removeLayer(id)
         if (map.getSource(id)) map.removeSource(id)
       }
+      // ソースごと捨てるので、次に構築したときは必ず書き直させる（残すと初回の setData が空振りする）。
+      targetsRef.current = []
+      lastSigRef.current = {}
     }
   }, [map])
 
@@ -294,7 +356,8 @@ export function LabelsGL({ overlapSignature, iconScale }: Props) {
 
     const run = () => {
       if (!map.getSource(REGION_SRC)) return
-      updateLabelOverlap(map, targetsRef.current, iconScaleRef.current)
+      const targets = targetsRef.current
+      applyPlacements(map, targets, computeLabelPlacements(map, targets, iconScaleRef.current), lastSigRef.current)
     }
     const schedule = () => {
       if (timeoutId != null) clearTimeout(timeoutId)

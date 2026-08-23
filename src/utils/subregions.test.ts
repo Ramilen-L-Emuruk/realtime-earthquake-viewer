@@ -11,7 +11,7 @@ async function freshModule() {
 }
 
 const SAMPLE: SubRegion[] = [
-  { name: '石川県能登', label: [37.3, 136.9], dir: 'up', rings: [[[37.0, 136.5], [37.5, 137.2], [37.2, 136.6]]] },
+  { name: '石川県能登', label: [37.3, 136.9], room: [0.2, 0.3], rings: [[[37.0, 136.5], [37.5, 137.2], [37.2, 136.6]]] },
 ]
 
 function okResponse(body: unknown) {
