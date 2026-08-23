@@ -12,6 +12,8 @@ import { isDmdss } from '../../utils/env'
 import { isValidDmdataApiKey, DMDATA_API_KEY_INVALID_MESSAGE } from '../../utils/dmdataApiKey'
 import { useDebouncedValue } from '../../hooks/useDebouncedValue'
 import { DescriptionTip } from './DescriptionTip'
+import { zipSync } from 'fflate'
+import { countRecords, listRecords, clearRecords, onRecordsChanged, hasStorageError } from '../../utils/detectionDiagnosticsDb'
 
 export interface TestFunctions {
   earthquake: () => void
@@ -63,6 +65,92 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       </div>
       <div className="divide-y divide-border">{children}</div>
     </section>
+  )
+}
+
+/**
+ * 診断ログの件数表示と書き出し・消去。
+ *
+ * 書き出しはブラウザのダウンロードとして行う（許可なくファイルシステムへ書き込む口が無いため、
+ * 自動保存はできない）。1 件あたり 100KB 前後になるので ZIP に固めて出す。
+ */
+function DiagnosticLogRow() {
+  const [count, setCount] = useState<number | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const refresh = useCallback(() => {
+    void countRecords().then(setCount)
+    if (hasStorageError()) setError('この端末では記録を保存できません（プライベートモード・容量不足など）')
+  }, [])
+  // 記録が増減したら読み直す。設定タブは常時マウントされたまま CSS で隠れるだけなので、
+  // 一定間隔で問い合わせる作りにすると、開いていない間も IndexedDB を叩き続けることになる
+  useEffect(() => {
+    refresh()
+    return onRecordsChanged(refresh)
+  }, [refresh])
+
+  const download = useCallback(async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const records = await listRecords()
+      if (records.length === 0) {
+        setError('書き出せる記録がありません')
+        return
+      }
+      const enc = new TextEncoder()
+      const files: Record<string, Uint8Array> = {}
+      for (const r of records) {
+        const ts = new Date(r.dataTimeMs).toISOString().replace(/[-:]/g, '').replace('T', '_').slice(0, 15)
+        files[`${ts}_${r.reachedConfidence}_${r.event.id}.json`] = enc.encode(JSON.stringify(r))
+      }
+      const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '_').slice(0, 15)
+      const blob = new Blob([zipSync(files)], { type: 'application/zip' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${stamp}_kyoshin-diagnostics_${records.length}件.zip`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      // 失敗を黙って飲み込むと、押しても何も起きない理由が利用者に分からない
+      setError(`書き出しに失敗しました（${e instanceof Error ? e.message : String(e)}）`)
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  const clear = useCallback(async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      if (!(await clearRecords())) setError('消去に失敗しました')
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-secondary">{count == null ? '—' : `${count} 件`}</span>
+        <button
+          onClick={() => { void download() }}
+          disabled={busy || !count}
+          className="px-3 py-1.5 rounded text-xs bg-panel border border-border text-white disabled:opacity-40"
+        >
+          書き出す
+        </button>
+        <button
+          onClick={() => { void clear() }}
+          disabled={busy || !count}
+          className="px-3 py-1.5 rounded text-xs bg-panel border border-border text-secondary disabled:opacity-40"
+        >
+          消去
+        </button>
+      </div>
+      {error && <span className="text-xs text-red-400 text-right">{error}</span>}
+    </div>
   )
 }
 
@@ -1107,6 +1195,15 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             </div>
           </Row>
         )}
+      </Section>
+
+      <Section title="診断ログ">
+        <Row
+          label="揺れ検知の記録"
+          description="揺れ検知が走ったとき、その前後 30 秒の観測値・検知の内訳・学習状態を端末内に残します。地震でないのに検知した場合、この記録があれば原因を追えます。書き出すまで端末の外へは出ません。"
+        >
+          <DiagnosticLogRow />
+        </Row>
       </Section>
 
       <Section title="このアプリについて">
