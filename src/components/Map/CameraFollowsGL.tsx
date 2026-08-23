@@ -6,6 +6,7 @@ import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { EEWAlert } from '../../types/earthquake'
 import type { PsWaveCircle } from '../../services/kyoshin'
 import { computeEewCircle } from '../../hooks/usePsWaveCalc'
+import { eewEventKey } from '../../utils/eew'
 import { serverNow } from '../../utils/clock'
 import {
   fitToPositions,
@@ -146,7 +147,8 @@ export function QuakeFitGL({
 
 // ── リアルタイム震度タブ入室時のリセット ────────────────────────────────────────
 // マウント時（タブ入室時）に一度だけ実行する。検知中は FitToDetection に、EEW 中は FitToEEW に
-// フレーミングを委ねてスキップ（FitToEEW はマウント時に必ず発火して波円/震源へ寄せる）。
+// フレーミングを委ねてスキップ（FitToEEW はマウント時に必ずフレーミングする——新規発報なら
+// 波円/震源へ、発報中の EEW への入室なら合成範囲へ）。
 // それ以外（他タブで寄った表示のリセット）は日本全体へ戻す。
 export function FitJapanOnEnterGL({ hasEew, hasDetection }: { hasEew: boolean; hasDetection: boolean }) {
   const map = useMapGL()
@@ -459,9 +461,21 @@ export function FitToCandidateGL({
 // 引き直してしまい「一瞬 EEW にフォーカス→即ズームアウト」というちらつきになる。
 const GROWTH_FOLLOW_SUPPRESS_MS = 3000
 
+// 「新規発報」とみなす鮮度。EEW を初めて見てからこの時間の内に追従が始まったら第一報のフォーカス
+// （自身の波円／震源へ寄る＋上の抑制）を与え、過ぎていたら「発報中の EEW のところへ入室した」として
+// 合成範囲へ寄せる。
+//
+// 自動タブ切替で入室する場合は発報から数百 ms で追従が始まるため、本来はもっと短くて足りる。
+// 10 秒に取っているのは、読み上げ追従やタブの保持機構でタブ移動が数秒ずれることがあるため
+// （audio-tts-spec.md §6「自動タブ切替の優先順位」）。逆にこれ以上長くすると、発報から時間が
+// 経ってから手動でタブへ入ったときに、育った予想区域塗りや検知点を差し置いて震源近傍へ寄ってしまう。
+const NEW_EEW_FOCUS_WINDOW_MS = 10000
+
 // ── EEW 追従（idle 抑制つき・最も複雑） ──────────────────────────────────────────
 // 新規 EEW: 震源中心→予報円へフィット（第一報は震源近傍の寄りを見せたいため、予想の区域塗りは
-// ここでは含めない）。解除: 検知中なら検知点、無ければ日本全体へ。
+// ここでは含めない）。**発報中の EEW のところへ入室した場合は第一報ではない**ので、成長フォローと
+// 同じ合成範囲（波円 ∪ 震源 ∪ 検知点 ∪ 予想の区域塗り）へ 1 回だけ寄せる。
+// 解除: 検知中なら検知点、無ければ日本全体へ。
 // ユーザーが手動でズーム/パンしたら一定時間追従を停止する（新規 EEW の受信でも解除される）。
 // 予報円の成長・予想の区域塗りの広がりで表示に収まらなくなったらズームアウト追従する。
 export function FitToEEWGL({
@@ -471,6 +485,8 @@ export function FitToEEWGL({
   hasDetection = false,
   candidatePoints = [],
   forecastAreaPositions = [],
+  firstSeenAtRef,
+  focusedEewIdRef,
 }: {
   eews: EEWAlert[]
   psWave: PsWaveCircle[]
@@ -495,9 +511,25 @@ export function FitToEEWGL({
    * 予想長周期地震動を表示中はそちらの区域に切り替わっている（描画側の visible と同じ分岐）。
    */
   forecastAreaPositions?: LatLng[]
+  /**
+   * EEW を初めて見た時刻（eventId → `serverNow()` の値）。**親（`JapanMapGL`）が保有する ref を渡すこと。**
+   * この Fit は kyoshin モード限定マウントのため、内部に持つとタブ復帰のたびに初期化され、
+   * 発報中の EEW のところへ入室しただけで「新規発報」と誤判定する（`QuakeFitGL` の
+   * `lastConsumedTickRef` と同じ構図）。親は全モードで記録しているので、他タブに居る間に届いた
+   * EEW でも初出時刻が判る。
+   */
+  firstSeenAtRef: React.MutableRefObject<Map<string, number>>
+  /** 第一報フォーカスを与え終えた EEW の eventId（同じ理由で親が保有する）。 */
+  focusedEewIdRef: React.MutableRefObject<string | null>
 }) {
   const map = useMapGL()
-  const lastEewIdRef = useRef<string | null>(null)
+  // 直前の評価で EEW が出ていたか。解除の帰還を「自分がマウントしている間に消えたとき」だけに
+  // 限るための印なので、こちらは親へ移さない（移すと、EEW が無い状態で入室しただけで帰還が走り、
+  // FitJapanOnEnter／FitToDetection のフレーミングを上書きしてしまう）。
+  const hadEewRef = useRef(false)
+  // この入室（マウント）で初期フレーミングを済ませたか。**マウントごとに落ちるのが正しい**——
+  // 入室のたびに 1 度だけ画を作り直したいため。
+  const entryFittedRef = useRef(false)
   const [isUserInteracting, resetUserInteraction] = useUserInteractionGuard(map)
   const prevEewsCountRef = useRef<number>(0)
   const prevPsWaveCountRef = useRef<number>(0)
@@ -516,8 +548,8 @@ export function FitToEEWGL({
   useEffect(() => {
     if (!map) return
     if (!latest) {
-      if (lastEewIdRef.current !== null) {
-        lastEewIdRef.current = null
+      if (hadEewRef.current) {
+        hadEewRef.current = false
         if (isUserInteracting) {
           log.debug('[mapGL] EEW解除 フィットスキップ (userInteracted)')
         } else if (detectedPoints.length > 0) {
@@ -543,30 +575,90 @@ export function FitToEEWGL({
       return
     }
     const { latitude, longitude } = latest.earthquake.hypocenter
-    if (latitude <= -200 || longitude <= -200) return
-    const eewEventId = latest.issue?.eventId ?? latest.id
-    if (lastEewIdRef.current === eewEventId) return
-    lastEewIdRef.current = eewEventId
-    resetUserInteraction()
-    suppressGrowthUntilRef.current = Date.now() + GROWTH_FOLLOW_SUPPRESS_MS
-    // 波円が既にあれば波円へ直接フィット（震源→波円のギクシャク防止）。他に発報中の EEW があっても
-    // それらの円は含めない。psWave prop は usePsWaveCalc が別 Effect で非同期に更新するため、新規 EEW
-    // 受信直後のこのレンダーではまだ反映されていない（psWave.find に頼ると常に外れて震源フォールバック
-    // に落ちてしまう）。ここでは psWave を待たず、その場で自身の円だけを直接計算する。
-    const ownCircle = computeEewCircle(latest, serverNow())
-    const bounds = ownCircle ? boundsFromCirclesForEewFollow([ownCircle]) : null
-    if (bounds) {
-      log.debug('[mapGL] EEW新規 自身の波円へフィット')
-      flyToBoundsSnapped(map, bounds, { padding: 60, durationSec: 0.8 })
+    if (latitude <= -200 || longitude <= -200) {
+      // 寄り先が無いので何もしない。他のスキップと同じく記録は残す——黙って止まると
+      // 「EEW が出ているのに地図が動かない」の原因を後から追えない。
+      log.debug('[mapGL] EEW追従 スキップ (震源座標なし)')
       return
     }
-    log.debug('[mapGL] EEW新規 震源へフィット')
+    hadEewRef.current = true
+    // キーの導出は初出時刻の台帳（gl/eewFirstSeen.ts）と必ず同じものを使う。食い違うと台帳を
+    // 引けなくなり、すべてが新規発報に倒れて入室フィットが黙って死ぬ。
+    const eewEventId = eewEventKey(latest)
+    // 「新規発報」と「発報中の EEW のところへ入室した」を分ける。マウントの有無では判定できない
+    // （上記 firstSeenAtRef の注記）。初出から NEW_EEW_FOCUS_WINDOW_MS 以内なら新規発報として扱い、
+    // 第一報のフォーカスを与える。
+    //
+    // **初出時刻がまだ無い場合も新規発報として扱う。** 台帳は親が effect で記録するので、EEW が
+    // 現れた最初のコミットでは間に合っていないことがある（React は子の effect を親より先に走らせる）。
+    // 「未記録」＝「このコミットで初めて現れた」なので、新規発報にほかならない——発報中の EEW への
+    // 入室なら、親は別モードに居た間に記録を済ませている。**記録が先に走っていても結論は同じ**
+    // （直前に刻まれた時刻なので鮮度の判定でも新規になる）ため、この判定は effect の順序に依らない。
+    // ここを「未記録なら入室」に倒すと、発報と同時にタブが切り替わった回で入室フィット→続報で
+    // 第一報フォーカス、という二段のカメラ移動になる（実機で確認した）。
+    const firstSeenAt = firstSeenAtRef.current.get(eewEventId)
+    const isNewAlert = firstSeenAt === undefined || serverNow() - firstSeenAt < NEW_EEW_FOCUS_WINDOW_MS
+    if (isNewAlert && focusedEewIdRef.current !== eewEventId) {
+      focusedEewIdRef.current = eewEventId
+      // 第一報のフォーカスで、この入室の初期フレーミングも済んだものとして扱う。立てておかないと、
+      // 続報でこの effect が再実行されたときに下の入室フィットへ落ち、寄せた直後に合成範囲へ
+      // 引き直してしまう（フォーカスを見せる意味が無くなる）。
+      entryFittedRef.current = true
+      resetUserInteraction()
+      suppressGrowthUntilRef.current = Date.now() + GROWTH_FOLLOW_SUPPRESS_MS
+      // 波円が既にあれば波円へ直接フィット（震源→波円のギクシャク防止）。他に発報中の EEW があっても
+      // それらの円は含めない。psWave prop は usePsWaveCalc が別 Effect で非同期に更新するため、新規 EEW
+      // 受信直後のこのレンダーではまだ反映されていない（psWave.find に頼ると常に外れて震源フォールバック
+      // に落ちてしまう）。ここでは psWave を待たず、その場で自身の円だけを直接計算する。
+      const ownCircle = computeEewCircle(latest, serverNow())
+      const bounds = ownCircle ? boundsFromCirclesForEewFollow([ownCircle]) : null
+      if (bounds) {
+        log.debug('[mapGL] EEW新規 自身の波円へフィット')
+        flyToBoundsSnapped(map, bounds, { padding: 60, durationSec: 0.8 })
+        return
+      }
+      log.debug('[mapGL] EEW新規 震源へフィット')
+      flyToPoint(map, [latitude, longitude], fitMaxZoom(map), 0.8)
+      return
+    }
+    // ここから入室フィット（このマウントで 1 回だけ）。目標は成長フォローと同一の合成範囲にする。
+    // **追従対象（latest）が別の EEW へ入れ替わっただけでは寄り直さない。** その画作りは成長フォローと
+    // 件数減少の再フィットが引き受ける（どちらも発報中の全 EEW を束ねた同じ範囲を見るため、ここで
+    // 寄せると同じ場所へ二度動くことになる）。
+    // 第一報と違って「わざと狭い画を見せる」意図が無いので、成長フォローの抑制も
+    // resetUserInteraction も行わない——目標が同じである以上、寄せた直後に引き直されることはない。
+    if (entryFittedRef.current) return
+    if (isUserInteracting) {
+      // 印を立てずに戻る。操作の保持が明けると isUserInteracting の変化でこの effect が再実行され、
+      // 取り戻せる（QuakeFitGL・FitToDetectionGL と同じ流儀）。
+      log.debug('[mapGL] EEW入室フィット スキップ (userInteracting)')
+      return
+    }
+    entryFittedRef.current = true
+    const entryBounds = boundsForLiveFollow(
+      psWave,
+      eewHypocenters(eews),
+      detectedPoints.map(dp2ll),
+      forecastAreaPositions,
+    )
+    if (entryBounds) {
+      log.debug(
+        `[mapGL] EEW入室フィット 波円${psWave.length}個+震源${eews.length}件+検知${detectedPoints.length}点` +
+          `+予想区域${forecastAreaPositions.length / 2}件`,
+      )
+      flyToBoundsSnapped(map, entryBounds, { padding: 60, durationSec: 0.8 })
+      return
+    }
+    // 保険。ここへ来る時点で latest の震源座標は有効（上の早期 return を通っている）なので、
+    // 合成範囲は必ず作れるはず。作れなかったときのために震源 1 点への寄りを残しておく。
+    log.debug('[mapGL] EEW入室フィット 座標なし 震源へフィット')
     flyToPoint(map, [latitude, longitude], fitMaxZoom(map), 0.8)
-    // psWave/detectedPoints/candidatePoints/hasDetection は意図的に依存配列から外している。この effect は
-    // 「新規 EEW を検知した瞬間」と「最後の EEW が消えた瞬間」だけに反応させたく、点群の変化では
-    // 再実行させない（lastEewIdRef の実質的な等値チェックで弾かれるため deps に入れても害はないが、
-    // 「latest（新規判定）に反応する effect」であることを deps だけで誤読させないための明示）。
-    // 解除時の帰還先に使う点群は「latest が null になったレンダー時点の値」で十分。
+    // psWave/eews/detectedPoints/candidatePoints/hasDetection は意図的に依存配列から外している。この
+    // effect は「新規 EEW を検知した瞬間」「発報中の EEW のところへ入室した瞬間」「最後の EEW が消えた
+    // 瞬間」だけに反応させたく、点群の変化では再実行させない（3 つの印——focusedEewIdRef・
+    // entryFittedRef・hadEewRef——が実質的な等値チェックになるため deps に入れても害はないが、
+    // 「latest に反応する effect」であることを deps だけで誤読させないための明示）。
+    // 入室フィットの目標も解除時の帰還先も、その瞬間のレンダーが持つ点群で十分。
   }, [latest, map, isUserInteracting, resetUserInteraction])
 
   // EEW 数 or 波円数が減少かつ残りがある場合: 残りへ強制再フィット。

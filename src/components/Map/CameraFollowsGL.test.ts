@@ -528,6 +528,8 @@ describe('EEW 解除後の帰還', () => {
     },
   } as unknown as EEWAlert
 
+  // 初出時刻が未記録の ref を渡す＝「このコミットで初めて現れた EEW」＝新規発報の扱いになる
+  // （判定の詳細と入室側の固定は下の「EEW の初期フレーミング」）。
   const eewHarness = (map: maplibregl.Map, eews: EEWAlert[], detected: DetectedPoint[]) =>
     h(
       MapGLContext.Provider,
@@ -539,6 +541,8 @@ describe('EEW 解除後の帰還', () => {
         hasDetection: detected.length > 0,
         candidatePoints: [],
         forecastAreaPositions: [],
+        firstSeenAtRef: { current: new Map<string, number>() },
+        focusedEewIdRef: { current: null },
       }),
     )
 
@@ -558,6 +562,200 @@ describe('EEW 解除後の帰還', () => {
     // （fitBounds）を通っていれば、フェイクはズームを据え置くので 6.5 にはならない。
     expect(fitPaddings(map).slice(1)).toEqual([POINTS_PADDING])
     expect(map.getZoom()).toBe(6.5)
+  })
+})
+
+// ── EEW の初期フレーミング（FitToEEWGL） ───────────────────────────────────────
+// 「新規発報」と「発報中の EEW のところへ入室した」を分ける仕掛けの回帰テスト。
+// FitToEEWGL は kyoshin モード限定マウントのため、内部の ref だけでは両者を区別できない
+// （タブ復帰のたびに初期化される）。初出時刻とフォーカス済み id を親から受け取って判定する。
+//
+// 実機（Playwright）では、EEW を出したままタブを往復させる操作を数秒単位のタイミングで
+// 再現する必要があり組み合わせを網羅できない。ここはフェイクタイマーで固定する。
+describe('EEW の初期フレーミング', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /**
+   * 能登沖の EEW。fixture は震源名を持たないため波円が作れず、第一報は震源 1 点へ直行する。
+   * 実電文はどの経路でも `issue.eventId` を持つので、追従が見るキーもそちらになる。
+   */
+  const NOTO = {
+    id: 'eew-noto-report-1',
+    issue: { eventId: 'ev-noto' },
+    earthquake: {
+      originTime: '2026-08-21T05:00:00+09:00',
+      hypocenter: { latitude: 37.5, longitude: 137.2, depth: 10 },
+    },
+  } as unknown as EEWAlert
+  /** 先に出ている別の EEW（九州沖）。合成範囲に含まれると西端が 131.0 になる。 */
+  const KYUSHU = {
+    id: 'eew-kyushu-report-1',
+    issue: { eventId: 'ev-kyushu' },
+    earthquake: {
+      originTime: '2026-08-21T04:59:00+09:00',
+      hypocenter: { latitude: 33.0, longitude: 131.0, depth: 20 },
+    },
+  } as unknown as EEWAlert
+  // 震源より西に置いた検知点。合成範囲へ寄れば矩形の西端が 131.0 になり、震源 1 点への直行
+  // （矩形を持たないので padding も west も記録されない）と区別できる。
+  const WEST_POINTS = [dp(36.0, 131.0), dp(36.5, 131.4)]
+  const UNION_WEST = 131.0
+  // 第一報の抑制（GROWTH_FOLLOW_SUPPRESS_MS = 3000）が明ける前後。飛行の期限（0.8 秒＋
+  // マージン 2 秒）は先に切れるので、抑制だけが残った状態を作れる。
+  const BEFORE_SUPPRESS_END_MS = 2900
+  const AFTER_SUPPRESS_END_MS = 3100
+
+  function eewFrame(
+    map: maplibregl.Map,
+    eews: EEWAlert[],
+    detected: DetectedPoint[],
+    refs: { firstSeenAtRef: { current: Map<string, number> }; focusedEewIdRef: { current: string | null } },
+  ) {
+    return h(
+      MapGLContext.Provider,
+      { value: map },
+      h(FitToEEWGL, {
+        eews,
+        psWave: [],
+        detectedPoints: [...detected],
+        hasDetection: detected.length > 0,
+        candidatePoints: [],
+        forecastAreaPositions: [],
+        ...refs,
+      }),
+    )
+  }
+
+  /** 親（JapanMapGL）が保有する 2 つの ref。ageMs だけ前に初めて見たことにする。 */
+  const refsFor = (eews: EEWAlert[], ageMs: number) => ({
+    firstSeenAtRef: {
+      current: new Map(eews.map((e) => [e.issue?.eventId ?? e.id, Date.now() - ageMs])),
+    },
+    focusedEewIdRef: { current: null as string | null },
+  })
+
+  it('発報中の EEW のところへ入室したら、震源へ寄らず合成範囲へ寄せる', () => {
+    // Arrange: EEW は 1 分前に発表済み。検知点は震源から離れた西側に出ている。
+    const map = createFakeMap({ fitZoom: 5 })
+    const refs = refsFor([NOTO], 60_000)
+
+    // Act: リアルタイムタブへ入室（＝FitToEEWGL のマウント）。
+    render(eewFrame(map, [NOTO], WEST_POINTS, refs))
+
+    // Assert: 検知点まで含んだ矩形へ 1 回だけ寄る。震源 1 点への直行なら矩形が記録されない
+    // （padding・west とも undefined）ので、この期待値では通らない。
+    expect((map as FakeMap).moves).toEqual([{ padding: POINTS_PADDING, west: UNION_WEST }])
+    // 第一報のフォーカスは与えていない（入室は「初めて見た」ではない）。
+    expect(refs.focusedEewIdRef.current).toBeNull()
+  })
+
+  it('初出時刻がまだ無い EEW は新規発報として扱う', () => {
+    // Arrange: 初出時刻の記録は親の effect で行われるが、React は子の effect を先に流すため、
+    // EEW が現れた最初のコミットでは未記録のままこの判定が走る。
+    const map = createFakeMap({ fitZoom: 5 })
+    const refs = {
+      firstSeenAtRef: { current: new Map<string, number>() },
+      focusedEewIdRef: { current: null as string | null },
+    }
+
+    // Act
+    render(eewFrame(map, [NOTO], WEST_POINTS, refs))
+
+    // Assert: 震源へ直行し、フォーカス済みとして記録する。ここを入室扱いに倒すと、発報と同時に
+    // タブが切り替わった回が「合成範囲へ寄る→続報で震源へ寄る」の二段になる（実機で確認した穴）。
+    expect((map as FakeMap).moves).toEqual([{}])
+    expect(refs.focusedEewIdRef.current).toBe(NOTO.issue!.eventId)
+  })
+
+  it('新規発報なら震源へ寄り、3 秒間は合成範囲へ引き直さない', () => {
+    // Arrange: いま初めて見た EEW。
+    const map = createFakeMap({ fitZoom: 5 })
+    const refs = refsFor([NOTO], 0)
+
+    // Act: 発報と同時にタブが切り替わってマウントされる。
+    const view = render(eewFrame(map, [NOTO], WEST_POINTS, refs))
+
+    // Assert: 震源 1 点へ直行する（矩形を持たない経路）。
+    expect((map as FakeMap).moves).toEqual([{}])
+    expect(refs.focusedEewIdRef.current).toBe(NOTO.issue!.eventId)
+
+    // Act 2: 抑制が明ける前に検知点が更新される（毎秒の再評価）。
+    act(() => {
+      vi.advanceTimersByTime(BEFORE_SUPPRESS_END_MS)
+    })
+    view.rerender(eewFrame(map, [NOTO], WEST_POINTS, refs))
+
+    // Assert 2: 引き直さない。ここで動くと「一瞬寄って即ズームアウト」になる。
+    expect(moveCount(map)).toBe(1)
+
+    // Act 3: 抑制が明けてから、もう一度更新が来る。
+    act(() => {
+      vi.advanceTimersByTime(AFTER_SUPPRESS_END_MS - BEFORE_SUPPRESS_END_MS)
+    })
+    view.rerender(eewFrame(map, [NOTO], WEST_POINTS, refs))
+
+    // Assert 3: ここで初めて合成範囲へ引く（成長フォロー）。
+    expect((map as FakeMap).moves.slice(1)).toEqual([{ padding: POINTS_PADDING, west: UNION_WEST }])
+  })
+
+  it('別の EEW が発報中でも、新規発報の抑制は効く', () => {
+    // Arrange: 九州沖の EEW が出ている最中に、能登沖の EEW が届いた瞬間。
+    // 第一報のフィットは自身の震源しか見ないため、抑制が無ければ次の評価で
+    // 「九州沖を含む合成範囲」へ即座に引き戻される（EEW が増えるほど差が開く）。
+    const map = createFakeMap({ fitZoom: 5 })
+    const refs = {
+      firstSeenAtRef: {
+        current: new Map([
+          [KYUSHU.issue!.eventId!, Date.now() - 60_000],
+          [NOTO.issue!.eventId!, Date.now()],
+        ]),
+      },
+      focusedEewIdRef: { current: null as string | null },
+    }
+
+    // Act: 新しい方（能登沖）が追従対象になる。
+    const view = render(eewFrame(map, [KYUSHU, NOTO], [], refs))
+    expect((map as FakeMap).moves).toEqual([{}])
+
+    // Act 2: 抑制中に再評価が走る。
+    act(() => {
+      vi.advanceTimersByTime(BEFORE_SUPPRESS_END_MS)
+    })
+    view.rerender(eewFrame(map, [KYUSHU, NOTO], [], refs))
+
+    // Assert: 九州沖は画面外（フェイクの視野は中心 ±4 度）だが、まだ引かない。
+    expect(moveCount(map)).toBe(1)
+
+    // Act 3: 抑制が明ける。
+    act(() => {
+      vi.advanceTimersByTime(AFTER_SUPPRESS_END_MS - BEFORE_SUPPRESS_END_MS)
+    })
+    view.rerender(eewFrame(map, [KYUSHU, NOTO], [], refs))
+
+    // Assert: 両方の震源を含む範囲へ引く。
+    expect((map as FakeMap).moves.slice(1)).toEqual([{ padding: POINTS_PADDING, west: UNION_WEST }])
+  })
+
+  it('同じ EEW でタブへ戻ったときは、第一報のフォーカスを繰り返さない', () => {
+    // Arrange: 新規発報でフォーカス済み。初出からはまだ 10 秒経っていない。
+    const map = createFakeMap({ fitZoom: 5 })
+    const refs = refsFor([NOTO], 0)
+    const view = render(eewFrame(map, [NOTO], WEST_POINTS, refs))
+    expect((map as FakeMap).moves).toEqual([{}])
+
+    // Act: 別タブへ移って戻る（FitToEEWGL のアンマウント → 再マウント）。親が持つ ref は残る。
+    view.unmount()
+    render(eewFrame(map, [NOTO], WEST_POINTS, refs))
+
+    // Assert: 鮮度が残っていても、フォーカス済みの EEW には二度目の震源寄りを与えない。
+    // 入室として合成範囲へ寄る（ref を内部に持つと、ここが 2 回目の震源直行になる）。
+    expect((map as FakeMap).moves.slice(1)).toEqual([{ padding: POINTS_PADDING, west: UNION_WEST }])
   })
 })
 
