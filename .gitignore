@@ -69,3 +69,17 @@ verify-*.jpg
 # index.json は空配列のテンプレートとしてのみ管理する。
 public/data/test-scenarios/*.json
 !public/data/test-scenarios/index.json
+
+# 検知アルゴリズムの試作・計測に使う使い捨てのスクリプトと、その出力。
+# 手元で捨てられる前提のものなのでコミットしない。
+# probe-*.ts はホワイトリスト方式: 残すものは ! の行を足す
+# （probe-kyoshin.ts は npm run probe-kyoshin で使う正規のもの）。
+# 出力側は先頭 / でリポジトリ直下に限定する。スラッシュを含まないパターンは
+# 任意の階層のベース名に効くため、src/ や docs/ 配下の同名接頭辞まで
+# 巻き込んで静かに追跡から漏らす。
+/.probe-*
+# o3.txt: 何かのコマンドの --version 出力を取り違えて書き出した残骸（1 行だけ）。
+/o3.txt
+scripts/probe-*.ts
+!scripts/probe-kyoshin.ts
+scripts/_*.ts
