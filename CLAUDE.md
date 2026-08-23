@@ -491,6 +491,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 地震情報の続報判定（キーは「地震を指すキー」と情報種別の組。前者は DMDATA が `eventId`／P2PQuake は発生時刻＋震源名・**見た報は全部覚える**。直近 1 件だと種別の違う報が交互に届いたときに互いの記憶を上書きし、2 度目が初報のように読まれる） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「特殊な扱い」 |
 | 震度を伝えない電文（震源情報等）でウィンドウタイトルの震度を消さないこと（判定は既存カードが震度を持つかどうかで行う。**その報が初報かどうかで判定しない**。種別ごとに初報になるため歯止めが効かない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §5 |
 | EEW の区分の呼び方（電文の名称に合わせる。予報級＝地震動予報／警報級＝緊急地震速報（警報）。表示・読み上げの対応表と `eewKindLabel`。ウィンドウタイトルも対象＝外部監視への破壊的変更） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §3「電文の名称と表示・読み上げ」 |
+| 点滅する Marker を作り直さないこと（差分更新キーに**報番号を含めない**／内容が変わらないなら `innerHTML` を触らない。片方だけでは作り直しの経路が残り、点滅が止まってポップアップも閉じる） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §10・[`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §10（キーの取り方） |
 | 上限を定めない予想震度（**`over` / `99` を階級値に写さない**。下限へ寄せ「以上」はフラグで持ち越して表示・読み上げで語を補う。判定には混ぜない） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §8（電文上の表れ）・[`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4（使い方・語を出す箇所）・[`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6（既読の覚え方＝比較にも「以上」を入れる） |
 | 仮定震源要素で連動して隠す・採らない箇所の列挙（**新たに `condition` を参照したら必ず追記する**。区域への S 波到達推定の震源もここに含む） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §5 |
 | 「特別警報」を音声で読まないこと（表示・通知・通知音は 2 段階を保つ） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
@@ -513,7 +514,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 津波の解除で観測点の記憶を落とす条件（**表示中の津波に向けた解除のときだけ**落とす・判定は `isCancelForCurrentTsunami` に集約しカードの状態更新と共有する・落とすのは記憶と画面の状態だけで**音と読み上げは判定を経ない**・リセットとリプレイ復元でも同じ範囲を揃える） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §5「解除電文と表示中の津波の照合」 |
 | EEW P/S 波予報円の計算・仮定震源要素の連動箇所 | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §5-§6 |
 | EEW レベル判定（特別警報の条件・長周期の DMDATA 限定） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
-| 地図レイヤー描画順・EEW 予想レイヤーの kyoshin 限定・`maplibregl.Marker` の opacity | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §2・§3・§7・§10 |
+| 地図レイヤー描画順・EEW 予想レイヤーの kyoshin 限定・`maplibregl.Marker` の opacity（**中の要素の CSS アニメーションと乗算される**。点滅する描画物を弱めるときは振幅も併せて決める） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §2・§3・§7・§10 |
 | EEW 予想の区域塗りとカメラ追従対象の一致（`useEewLayerData` の `eewFitPositions` と `JapanMapGL` の塗り分けが、同じ「予想長周期を優先する」判定を使っていること） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6 |
 | 表示閾値の単位の使い分け（対象がどれだけ画に収まるかは**視野の実距離**／文字と点の混み具合は**ズーム値**／タイルは**タイル z**）・ズーム値の基準（MapLibre 512px タイル vs Leaflet 256px タイル）・寄り上限に揃える閾値群 | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §4・§6 |
 | 視野基準の閾値が可変であること（寄り上限は 0.5 刻みへ丸める・大画面には絶対上限を置く・上限が固定の帯では可変の下限を追い越させない。`minzoom > maxzoom` は MapLibre が検証せず、どのズームでも描かれないレイヤーが黙って出来上がる） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6「寄り上限と閾値の単位」 |
