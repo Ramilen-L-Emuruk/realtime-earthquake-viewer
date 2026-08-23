@@ -23,7 +23,7 @@ import { writeFile, mkdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import mapshaperPkg from 'mapshaper'
-import { shiftRoom } from './lib/labelRoom.mjs'
+import { labelAnchor, shiftRoom } from './lib/labelAnchor.mjs'
 
 const mapshaper = mapshaperPkg.default ?? mapshaperPkg
 
@@ -100,21 +100,6 @@ function normalizeRings(geometry) {
     .filter((r) => r.length >= 3)
 }
 
-/** 最大リング（点数最多）を返す。 */
-function largestRing(rings) {
-  let largest = rings[0]
-  for (const r of rings) if (r.length > largest.length) largest = r
-  return largest
-}
-
-/** リング頂点平均を県名ラベルの代表点とする。 */
-function centroid(ring) {
-  const sum = ring.reduce((a, [lat, lon]) => [a[0] + lat, a[1] + lon], [0, 0])
-  return [
-    Math.round((sum[0] / ring.length) * 1000) / 1000,
-    Math.round((sum[1] / ring.length) * 1000) / 1000,
-  ]
-}
 
 /** GeoJSON feature の代表点（先頭リング頂点の平均・[lon, lat]）。最近傍県の判定に使う。 */
 function repPoint(feature) {
@@ -218,8 +203,7 @@ async function main() {
     if (!name) continue
     const rings = normalizeRings(feature.geometry)
     if (rings.length === 0) continue
-    const mainRing = largestRing(rings)
-    const label = centroid(mainRing)
+    const label = labelAnchor(rings)
     prefs[name] = { label, room: shiftRoom(rings, label), rings }
   }
 

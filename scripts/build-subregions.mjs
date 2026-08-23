@@ -11,7 +11,7 @@
 import { writeFile, mkdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { shiftRoom } from './lib/labelRoom.mjs'
+import { labelAnchor, shiftRoom } from './lib/labelAnchor.mjs'
 
 // 末尾 `_1` は簡素化の緩い高精細版（原始約142,787頂点）。簡素化のきつい `_01` 版（約1/6.5・粗い行政界で
 // 海岸線が角張る）から切替えた。同じ 194 feature・properties(code/name/namekana)で区域定義は不変。
@@ -79,15 +79,9 @@ function normalizeRings(geometry) {
     .filter((r) => r.length >= 3)
 }
 
-/** 最大リング（点数最多）の頂点平均をラベル代表点とする。room は退避の余地（shiftRoom 参照）。 */
+/** ラベルの代表点と退避の余地（どちらも lib/labelAnchor.mjs が持つ）。 */
 function labelPoint(rings) {
-  let largest = rings[0]
-  for (const r of rings) if (r.length > largest.length) largest = r
-  const sum = largest.reduce((a, [lat, lon]) => [a[0] + lat, a[1] + lon], [0, 0])
-  const label = [
-    Math.round((sum[0] / largest.length) * 1000) / 1000,
-    Math.round((sum[1] / largest.length) * 1000) / 1000,
-  ]
+  const label = labelAnchor(rings)
   return { label, room: shiftRoom(rings, label) }
 }
 
