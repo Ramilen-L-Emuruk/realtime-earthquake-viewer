@@ -102,8 +102,10 @@
    "tier": "confirmed",
    "firstLikely": "00:42:42",
    "firstConfirmed": "00:42:44",
-   "unrelated": 0,
-   "unrelatedAt": []
+   "unrelated": 1,
+   "unrelatedAt": [
+    "00:43:00 茨城県|守谷市大柏"
+   ]
   },
   "pc-nagano0730": {
    "tier": "confirmed",
@@ -1048,8 +1050,10 @@
    "tier": "confirmed",
    "firstLikely": "21:02:31",
    "firstConfirmed": "21:02:36",
-   "unrelated": 0,
-   "unrelatedAt": []
+   "unrelated": 1,
+   "unrelatedAt": [
+    "21:04:16 宮城県|登米市津山町"
+   ]
   },
   "jq61-0821-2327": {
    "tier": "confirmed",
@@ -1381,8 +1385,10 @@
    "tier": "confirmed",
    "firstLikely": "09:45:51",
    "firstConfirmed": "09:45:54",
-   "unrelated": 0,
-   "unrelatedAt": []
+   "unrelated": 1,
+   "unrelatedAt": [
+    "09:47:00 北海道|厚真町京町"
+   ]
   },
   "wq45-0802-0948": {
    "tier": "confirmed",
@@ -2058,8 +2064,10 @@
    "tier": "confirmed",
    "firstLikely": "08:08:13",
    "firstConfirmed": "08:08:16",
-   "unrelated": 0,
-   "unrelatedAt": []
+   "unrelated": 1,
+   "unrelatedAt": [
+    "08:08:33 千葉県|酒々井町中央台"
+   ]
   },
   "wq140-0807-1002": {
    "tier": "confirmed",
@@ -2072,8 +2080,10 @@
    "tier": "confirmed",
    "firstLikely": "10:04:39",
    "firstConfirmed": "10:04:43",
-   "unrelated": 0,
-   "unrelatedAt": []
+   "unrelated": 1,
+   "unrelatedAt": [
+    "10:04:48 千葉県|柏市大島田"
+   ]
   },
   "wq142-0807-1318": {
    "tier": "likely",
@@ -2687,10 +2697,8 @@
    "tier": "confirmed",
    "firstLikely": "04:23:03",
    "firstConfirmed": "04:23:04",
-   "unrelated": 1,
-   "unrelatedAt": [
-    "04:23:53 宮城県|気仙沼市本吉町津谷"
-   ]
+   "unrelated": 0,
+   "unrelatedAt": []
   },
   "wq229-0814-0450": {
    "tier": "confirmed",
@@ -3206,8 +3214,11 @@
    "tier": "confirmed",
    "firstLikely": "08:31:25",
    "firstConfirmed": "08:31:27",
-   "unrelated": 0,
-   "unrelatedAt": []
+   "unrelated": 2,
+   "unrelatedAt": [
+    "08:32:28 埼玉県|ふじみ野市大井",
+    "08:32:34 岩手県|九戸村伊保内"
+   ]
   },
   "oq40-0508-1001": {
    "tier": "none",
@@ -3968,8 +3979,10 @@
    "tier": "confirmed",
    "firstLikely": "16:39:18",
    "firstConfirmed": "16:39:24",
-   "unrelated": 0,
-   "unrelatedAt": []
+   "unrelated": 1,
+   "unrelatedAt": [
+    "16:40:03 岩手県|盛岡市薮川"
+   ]
   },
   "oq148-0527-1652": {
    "tier": "none",
@@ -4764,11 +4777,13 @@
    "unrelatedAt": []
   },
   "oq260-0624-1321": {
-   "tier": "likely",
-   "firstLikely": "13:21:23",
+   "tier": "none",
+   "firstLikely": null,
    "firstConfirmed": null,
-   "unrelated": 0,
-   "unrelatedAt": []
+   "unrelated": 1,
+   "unrelatedAt": [
+    "13:21:23 東京都|東京葛飾区立石"
+   ]
   },
   "oq261-0624-1324": {
    "tier": "confirmed",
@@ -4779,10 +4794,12 @@
   },
   "oq262-0624-1328": {
    "tier": "confirmed",
-   "firstLikely": "13:27:50",
+   "firstLikely": "13:28:08",
    "firstConfirmed": "13:28:08",
-   "unrelated": 0,
-   "unrelatedAt": []
+   "unrelated": 1,
+   "unrelatedAt": [
+    "13:27:50 千葉県|木更津市富士見"
+   ]
   },
   "oq263-0624-1331": {
    "tier": "confirmed",
@@ -5173,8 +5190,10 @@
    "tier": "confirmed",
    "firstLikely": "23:02:33",
    "firstConfirmed": "23:02:35",
-   "unrelated": 0,
-   "unrelatedAt": []
+   "unrelated": 1,
+   "unrelatedAt": [
+    "23:03:38 山形県|山辺町緑ケ丘"
+   ]
   },
   "oq319-0701-0002": {
    "tier": "confirmed",
@@ -5382,11 +5401,13 @@
    "unrelatedAt": []
   },
   "oq348-0703-1832": {
-   "tier": "likely",
-   "firstLikely": "18:32:13",
+   "tier": "none",
+   "firstLikely": null,
    "firstConfirmed": null,
-   "unrelated": 0,
-   "unrelatedAt": []
+   "unrelated": 1,
+   "unrelatedAt": [
+    "18:32:13 千葉県|酒々井町中央台"
+   ]
   },
   "oq349-0703-2337": {
    "tier": "confirmed",
@@ -5581,8 +5602,11 @@
    "tier": "confirmed",
    "firstLikely": "21:59:10",
    "firstConfirmed": "21:59:13",
-   "unrelated": 0,
-   "unrelatedAt": []
+   "unrelated": 2,
+   "unrelatedAt": [
+    "22:00:22 鳥取県|伯耆町吉長",
+    "22:00:28 愛知県|新城市東入船"
+   ]
   },
   "oq377-0710-0122": {
    "tier": "none",
