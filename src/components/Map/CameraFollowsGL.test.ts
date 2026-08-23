@@ -8,6 +8,7 @@ import { FitToCandidateGL, FitToDetectionGL, FitToEEWGL, TsunamiFitGL, FocusObsG
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { LatLng } from '../../utils/stationCoords'
 import type { EEWAlert } from '../../types/earthquake'
+import type { ShakeFocus } from './mapTypes'
 
 // 「確定検知の終了」と「候補クラスタの継続」が重なる遷移を固定する回帰テスト。
 // この組み合わせはタイミング依存で、実機（Playwright）では再現が難しい。過去に 2 度作り込んでいる:
@@ -233,23 +234,33 @@ function harness(
   detected: DetectedPoint[],
   candidate: DetectedPoint[],
   candidateId: number | null,
-  opts: { hasDetection?: boolean } = {},
+  opts: {
+    hasDetection?: boolean
+    hasEew?: boolean
+    shakeFocus?: ShakeFocus | null
+    focusTickRef?: { current: number }
+  } = {},
 ) {
   const hasDetection = opts.hasDetection ?? detected.length > 0
+  const hasEew = opts.hasEew ?? false
   return h(
     MapGLContext.Provider,
     { value: map },
     h(FitToCandidateGL, {
       points: candidate,
       candidateId,
-      hasEew: false,
+      hasEew,
       hasDetection,
     }),
     h(FitToDetectionGL, {
       points: detected,
       hasDetection,
-      hasEew: false,
+      hasEew,
       hasCandidate: candidateId !== null && candidate.length > 0,
+      shakeFocus: opts.shakeFocus ?? null,
+      // 消費済み連番の記録は本来 JapanMapGL が持つ（マウントをまたいで残す必要があるため）。
+      // 渡さないテストは要求も出さないので、その場限りの入れ物で足りる。
+      lastConsumedFocusTickRef: opts.focusTickRef ?? { current: 0 },
     }),
   )
 }
@@ -1006,5 +1017,171 @@ describe('観測行クリックのフォーカス', () => {
 
     // Assert: 取りこぼさずに寄せる。
     expect(flyCenters(map)).toEqual([[130.0, 33.0]])
+  })
+})
+
+// ── 揺れフォーカス（揺れの強まり・別地点発報で 1 点へ寄る） ────────────────────────────
+// 通知音が鳴った点を数秒だけ見せる仕掛け（`ShakeFocus`）。EEW 新規の第一報フォーカスと同じ形で、
+// 寄せた直後は自分の追従（成長・収め直しフォロー）を止める。止めないと次の観測点更新（毎秒）で
+// 「検知点全体が収まっていない」と判定され、寄せた画が 1 秒で引き戻される。
+//
+// ここで固定するのは 4 つ。
+//   1. 要求を受けたらその点へ寄る／抑制の間は引き戻さない／抑制が明けたら全体像へ戻る
+//   2. EEW 発報中は寄らない（EEW 優先。追従自体も EEW 側へ委譲している）
+//   3. ユーザー操作中・古い要求では寄らない
+//   4. 見送った要求は連番を消費して蒸し返さない
+describe('揺れフォーカス', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  // フェイクの視野（中心 ±4 度／±3 度）に収まる狭い点群。
+  const POINTS = [dp(37.0, 137.0), dp(37.1, 137.2)]
+  // 点群から十分離れた寄り先（寄った後は POINTS が視野から外れる＝抑制明けに成長フォローが働く）。
+  const FAR = { lat: 33.6, lng: 130.4 }
+  // 初回フィットの飛行が「進行中」でなくなるまでの待ち（収め直しフォローの節と同じ値）。
+  const AFTER_FLIGHT_MS = 4000
+  // フォーカスの飛行だけが終わり、抑制はまだ明けていない時点を狙う。
+  // 内訳: flyToPoint の 0.8 秒 ＋ gl/camera.ts の FLIGHT_EXPIRY_MARGIN_MS（2 秒）= 2.8 秒 < 抑制 3 秒。
+  const FOCUS_FLIGHT_DONE_MS = 2900
+  // 上の時点からさらに進めて抑制（3 秒）を明けさせる残り分。
+  const FOCUS_SUPPRESS_REMAINING_MS = 200
+
+  /** いま出したばかりの要求。 */
+  const focusNow = (tick: number): ShakeFocus => ({ ...FAR, tick, atMs: Date.now() })
+
+  /** 初回フィットを済ませ、飛行も終わった状態にする。 */
+  function settled(focusTickRef: { current: number }) {
+    const map = createFakeMap({ fitZoom: 7 })
+    const view = render(harness(map, POINTS, [], null, { focusTickRef }))
+    act(() => {
+      vi.advanceTimersByTime(AFTER_FLIGHT_MS)
+    })
+    expect(moveCount(map)).toBe(1)
+    return { map, view }
+  }
+
+  it('要求を受けたらその 1 点へ寄り、抑制の間は成長フォローが引き戻さない', () => {
+    // Arrange
+    const focusTickRef = { current: 0 }
+    const { map, view } = settled(focusTickRef)
+    const focus = focusNow(1)
+
+    // Act 1: 揺れが強まって要求が立つ。
+    view.rerender(harness(map, POINTS, [], null, { focusTickRef, shakeFocus: focus }))
+
+    // Assert 1: その点へ直行する（点群へのフィットではないので padding は付かない）。
+    expect(moveCount(map)).toBe(2)
+    expect(fitPaddings(map)[1]).toBeUndefined()
+    expect(map.getCenter()).toEqual({ lng: FAR.lng, lat: FAR.lat })
+
+    // Act 2: 飛行は終わったが抑制は明けていない時点で、観測点が更新される。
+    act(() => {
+      vi.advanceTimersByTime(FOCUS_FLIGHT_DONE_MS)
+    })
+    view.rerender(harness(map, [...POINTS], [], null, { focusTickRef, shakeFocus: focus }))
+
+    // Assert 2: 引き戻さない（この 1 件が「3 秒の抑制」そのもの。無いと寄せた意味が消える）。
+    expect(moveCount(map)).toBe(2)
+
+    // Act 3: 抑制が明けてから、また観測点が更新される。
+    act(() => {
+      vi.advanceTimersByTime(FOCUS_SUPPRESS_REMAINING_MS)
+    })
+    view.rerender(harness(map, [...POINTS], [], null, { focusTickRef, shakeFocus: focus }))
+
+    // Assert 3: 成長フォローが検知点全体へ戻す（戻す経路を別に持たないのはこのため）。
+    expect(moveCount(map)).toBe(3)
+    expect(fitPaddings(map)[2]).toBe(POINTS_PADDING)
+  })
+
+  it('EEW 発報中は寄らない（EEW 優先）', () => {
+    const focusTickRef = { current: 0 }
+    const { map, view } = settled(focusTickRef)
+
+    view.rerender(harness(map, POINTS, [], null, { hasEew: true, focusTickRef, shakeFocus: focusNow(1) }))
+
+    expect(moveCount(map)).toBe(1)
+  })
+
+  it('ユーザーが地図を操作している間は寄らない（震度の上昇で画を奪わない）', () => {
+    const focusTickRef = { current: 0 }
+    const { map, view } = settled(focusTickRef)
+    act(() => {
+      map.fire('zoomstart')
+    })
+
+    view.rerender(harness(map, POINTS, [], null, { focusTickRef, shakeFocus: focusNow(1) }))
+
+    expect(moveCount(map)).toBe(1)
+  })
+
+  it('古い要求では寄らない（タブの保持で移れなかった分を後から蒸し返さない）', () => {
+    const focusTickRef = { current: 0 }
+    const { map, view } = settled(focusTickRef)
+    // 6 秒前の要求（実装の受付は 5 秒）。
+    const stale: ShakeFocus = { ...FAR, tick: 1, atMs: Date.now() - 6000 }
+
+    view.rerender(harness(map, POINTS, [], null, { focusTickRef, shakeFocus: stale }))
+
+    expect(moveCount(map)).toBe(1)
+  })
+
+  it('[安全弁] 検知が終わっている間に来た要求は消費する（次の検知で前の点へ寄らない）', () => {
+    // Arrange: 検知中でフィット済み。
+    const focusTickRef = { current: 0 }
+    const { map, view } = settled(focusTickRef)
+    const focus = focusNow(1)
+
+    // Act 1: 検知の終了と要求が同じコミットで来る（日本全体へ戻る）。
+    view.rerender(harness(map, [], [], null, { focusTickRef, shakeFocus: focus }))
+    expect(fitPaddings(map)).toEqual([POINTS_PADDING, JAPAN_PADDING])
+
+    // Act 2: すぐ次の検知が始まる。要求はまだ鮮度（5 秒）の内側にいる。
+    const before = moveCount(map)
+    view.rerender(harness(map, POINTS, [], null, { focusTickRef, shakeFocus: focus }))
+    view.rerender(harness(map, [...POINTS], [], null, { focusTickRef, shakeFocus: focus }))
+
+    // Assert: 新しい検知の初回フィットだけが起き、前の検知の点へは寄らない。消費せずに残すと、
+    // ここで「終わった揺れの点」へカメラが飛ぶ（鮮度の窓では弾けない）。
+    expect(moveCount(map)).toBe(before + 1)
+    expect(map.getCenter().lng).not.toBe(FAR.lng)
+  })
+
+  it('[安全弁] 描ける点が無い間に来た要求も消費する', () => {
+    // Arrange: 検知中でフィット済み。
+    const focusTickRef = { current: 0 }
+    const { map, view } = settled(focusTickRef)
+    const focus = focusNow(1)
+
+    // Act: 検知は続いているが描ける点が無くなった状態で要求が来る（カメラは動かさない場面）。
+    view.rerender(harness(map, [], [], null, { hasDetection: true, focusTickRef, shakeFocus: focus }))
+    expect(moveCount(map)).toBe(1)
+
+    // 点が戻る。
+    view.rerender(harness(map, POINTS, [], null, { focusTickRef, shakeFocus: focus }))
+
+    // Assert: 寄らない（消費済み）。
+    expect(moveCount(map)).toBe(1)
+  })
+
+  it('見送った要求は連番を消費し、条件が変わっても蒸し返さない', () => {
+    // Arrange: EEW 発報中に要求が来て見送られる。
+    const focusTickRef = { current: 0 }
+    const { map, view } = settled(focusTickRef)
+    const focus = focusNow(1)
+    view.rerender(harness(map, POINTS, [], null, { hasEew: true, focusTickRef, shakeFocus: focus }))
+    expect(moveCount(map)).toBe(1)
+
+    // Act: EEW が解除される（要求はまだ鮮度の内側にある）。
+    view.rerender(harness(map, POINTS, [], null, { focusTickRef, shakeFocus: focus }))
+
+    // Assert: 寄らない。この要求は「その瞬間を見せたい」ものなので、遅れて見せる価値が無い
+    // （取り戻す経路を意図的に持たない）。
+    expect(moveCount(map)).toBe(1)
   })
 })

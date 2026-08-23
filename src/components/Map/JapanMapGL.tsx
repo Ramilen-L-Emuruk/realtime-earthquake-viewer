@@ -87,6 +87,7 @@ export function JapanMapGL({
   candidatePoints = [],
   unconfirmedPoints = [],
   candidateId = null,
+  shakeFocus = null,
   iconScale = 1,
   showActiveFaults = true,
   activeFaultOpacity = 0.4,
@@ -118,6 +119,11 @@ export function JapanMapGL({
   // focusedEewIdRef: 第一報のフォーカスを与え終えた EEW の eventId。
   const eewFirstSeenAtRef = useRef<Map<string, number>>(new Map())
   const focusedEewIdRef = useRef<string | null>(null)
+  // FitToDetectionGL が最後に消費した ShakeFocus の連番。**ここで保有するのが要点**——
+  // FitToDetectionGL は kyoshin モード限定マウントなので、内部に持つとタブを離れるたびに
+  // 初期値へリセットされ、直前に見せたばかりの要求を「まだ消費していない」と読んで同じ点へ
+  // 寄り直してしまう（鮮度の窓 5 秒に入っていれば通る）。上の 2 つと同じ構図。
+  const lastConsumedShakeFocusTickRef = useRef<number>(0)
   // 記録・掃除の中身は純関数（gl/eewFirstSeen.ts）。消滅と再出現の境界がバグを生みやすいので、
   // そこだけ切り出してテストで固定している。
   useEffect(() => {
@@ -402,6 +408,8 @@ export function JapanMapGL({
                 hasDetection={detectedPoints.length > 0}
                 hasEew={eews.length > 0}
                 hasCandidate={candidateId !== null && candidatePoints.length > 0}
+                shakeFocus={shakeFocus}
+                lastConsumedFocusTickRef={lastConsumedShakeFocusTickRef}
               />
               {/* EEW 追従（idle 抑制つき）。
                   MAP-5 の常時マウント化は QuakeFitGL/TsunamiFitGL との flyTo 争い・EEW 解除後の
