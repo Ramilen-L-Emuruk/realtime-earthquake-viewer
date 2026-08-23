@@ -180,6 +180,40 @@ describe('取得状況の集約', { timeout: 15_000 }, () => {
     expect(getDataLoadStatus()).toEqual({ pending: 0, failed: 0 })
   })
 
+  // validate をこの関数の中で呼ぶ理由がここにある。呼び出し側の .then() で検証すると、
+  // 既に「成功」として数え終わった後なので、地図の「データの一部を取得できませんでした」に出ない。
+  it('validate が投げたら通信失敗と同じく failed に数える', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => okResponse({})))
+    const { fetchJsonWithTimeout, getDataLoadStatus } = await freshModule()
+
+    await expect(
+      fetchJsonWithTimeout('/data/x.json', 'x', {
+        validate: (data) => {
+          if (!data || Object.keys(data).length === 0) throw new Error('x fetch returned no data')
+        },
+      }),
+    ).rejects.toThrow(/no data/)
+    expect(getDataLoadStatus()).toEqual({ pending: 0, failed: 1 })
+  })
+
+  it('validate が通れば失敗には数えず、前回の失敗の記録も消す', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(okResponse({}))
+      .mockResolvedValueOnce(okResponse({ a: 1 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { fetchJsonWithTimeout, getDataLoadStatus } = await freshModule()
+    const validate = (data: unknown) => {
+      if (!data || Object.keys(data).length === 0) throw new Error('x fetch returned no data')
+    }
+
+    await expect(fetchJsonWithTimeout('/data/x.json', 'x', { validate })).rejects.toThrow()
+    expect(getDataLoadStatus()).toEqual({ pending: 0, failed: 1 })
+
+    expect(await fetchJsonWithTimeout('/data/x.json', 'x', { validate })).toEqual({ a: 1 })
+    expect(getDataLoadStatus()).toEqual({ pending: 0, failed: 0 })
+  })
+
   it('失敗を failed に数え、取り直しに成功したら消す', async () => {
     const { fetchMock, reject } = controllableFetch()
     vi.stubGlobal('fetch', fetchMock)
