@@ -8,6 +8,8 @@ import {
   matchesArea,
   groupAreasForCardDisplay,
   sortAreasForCardDisplay,
+  sortObservationsForCardDisplay,
+  GRADES_IN_CARD_ORDER,
   compareObservedHeightDesc,
   overSuffixedHeight,
 } from './tsunami'
@@ -308,6 +310,52 @@ describe('groupAreasForCardDisplay / sortAreasForCardDisplay', () => {
   it('波高を持たない区域は独立したグループになる', () => {
     const groups = groupAreasForCardDisplay([area('岩手県', '030'), area('宮城県', '040')], [])
     expect(groups.map(g => g.heightLabel)).toEqual([null, null])
+  })
+})
+
+
+// 観測点の読み上げ順をカードに揃えるための単一情報源（→ docs/spec/tsunami-spec.md §9）。
+// カードの入れ子（等級 → 予想波高の見出し → 区域 → 区域内は電文順 → 沖合観測）をそのまま辿る。
+describe('sortObservationsForCardDisplay', () => {
+  const area = (name: string, code: string, grade: TsunamiArea['grade'], height?: string): TsunamiArea =>
+    makeArea({ name, code, grade, maxHeight: height ? { description: height, value: 0 } : undefined })
+  const obs = (name: string, districtName: string, code: string, value?: number): TsunamiObservation =>
+    ({ name, districtCode: code, districtName, height: value === undefined ? undefined : { value, description: `${value}m` } })
+
+  it('等級カードの順に並べる（重い等級が先）', () => {
+    const areas = [area('青森県太平洋沿岸', '060', 'Watch'), area('岩手県', '030', 'MajorWarning')]
+    const items = [obs('八戸', '青森県太平洋沿岸', '060', 0.4), obs('宮古', '岩手県', '030', 1.2)]
+    expect(sortObservationsForCardDisplay(items, areas).map(o => o.name)).toEqual(['宮古', '八戸'])
+  })
+
+  // 区域の並べ替え（実測の深刻な順）がそのまま観測点の順にも効く
+  it('同じ等級では区域の表示順に従う', () => {
+    const areas = [area('岩手県', '030', 'Warning', '3m'), area('宮城県', '040', 'Warning', '3m')]
+    const items = [obs('宮古', '岩手県', '030', 1.2), obs('鮎川', '宮城県', '040', 2.4)]
+    // 実測が深刻な宮城県の区域が上に来るので、観測点も鮎川が先
+    expect(sortObservationsForCardDisplay(items, areas).map(o => o.name)).toEqual(['鮎川', '宮古'])
+  })
+
+  it('同じ区域の中は電文の並びを保つ', () => {
+    const areas = [area('岩手県', '030', 'Warning')]
+    const items = [obs('宮古', '岩手県', '030', 1.2), obs('大船渡', '岩手県', '030', 3.0)]
+    expect(sortObservationsForCardDisplay(items, areas).map(o => o.name)).toEqual(['宮古', '大船渡'])
+  })
+
+  // 安全弁: 区域に紐づかない観測点はカードでも最後（「沖合観測」）。落としてはいけない
+  it('区域に紐づかない観測点は最後に置き、取り落とさない', () => {
+    const areas = [area('岩手県', '030', 'Warning')]
+    const items = [obs('沖合A', '沖合', '999', 0.5), obs('宮古', '岩手県', '030', 1.2)]
+    expect(sortObservationsForCardDisplay(items, areas).map(o => o.name)).toEqual(['宮古', '沖合A'])
+  })
+
+  it('区域が空でも全件を 電文順で返す', () => {
+    const items = [obs('宮古', '岩手県', '030', 1.2), obs('大船渡', '岩手県', '030', 3.0)]
+    expect(sortObservationsForCardDisplay(items, []).map(o => o.name)).toEqual(['宮古', '大船渡'])
+  })
+
+  it('等級の並びはカードと共有する定数から作る', () => {
+    expect(GRADES_IN_CARD_ORDER).toEqual(['MajorWarning', 'Warning', 'Watch', 'Forecast', 'Unknown'])
   })
 })
 
