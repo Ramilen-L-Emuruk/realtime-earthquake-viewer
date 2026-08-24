@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { formatDepth, formatMagnitude, formatFileStamp } from './formatters'
+import { withTz } from '../test-utils/withTz'
 import { getMagnitudeColor, getDepthColor } from './intensity'
 
 // 規模・深さの色は文字表示（formatMagnitude / formatDepth）と同じ判定で「不明」を弾く必要がある。
@@ -63,24 +64,6 @@ describe('formatMagnitude', () => {
 // 書き出しファイル名の時刻印。UTC で作ると JST の端末では 9 時間ずれた名前が並び、
 // 「この時刻に鳴った」という手元のメモと突き合わせられなくなる（診断ログの用途そのもの）。
 describe('formatFileStamp', () => {
-  /**
-   * 時間帯を切り替えて測る。`process.env.TZ` は Node が実行時に読み直すため、
-   * オフセットだけでなく壁時計（`getHours` 等）も一緒に動く。
-   *
-   * **`getTimezoneOffset` だけを偽装しては駄目。** それだと壁時計が実行環境のままになるので、
-   * UTC で走る CI（`deploy.yml` は `ubuntu-latest`・TZ 指定なし）では、直したかった旧実装
-   * （`toISOString()` ベース）と出力が一致してしまい、回帰を捕まえられない。
-   */
-  function withTz<T>(tz: string, run: () => T): T {
-    const orig = process.env.TZ
-    process.env.TZ = tz
-    try {
-      return run()
-    } finally {
-      if (orig === undefined) delete process.env.TZ
-      else process.env.TZ = orig
-    }
-  }
 
   // 2026-01-15T00:00:00Z。時間帯ごとの規則が現行のものになる年を選ぶ
   // （epoch 直後を使うと、当時と今で刻みが違う地域＝ネパールの +0530→+0545 等を踏む）
