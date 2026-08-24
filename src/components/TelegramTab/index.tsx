@@ -2,6 +2,7 @@ import { memo, useState, useCallback } from 'react'
 import { zipSync } from 'fflate'
 import type { TelegramLogEntry } from '../../types/earthquake'
 import { isDmdss } from '../../utils/env'
+import { formatFileStamp } from '../../utils/formatters'
 
 const HEAD_TYPE_LABEL: Record<string, string> = {
   VXSE43: 'EEW警報',
@@ -111,7 +112,7 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
 
   const handleDownload = useCallback((entry: TelegramLogEntry) => {
     const json = JSON.stringify(buildDownloadPayload(entry), null, 2)
-    const ts = entry.receivedAt.toISOString().replace(/[-:]/g, '').replace('T', '_').slice(0, 15)
+    const ts = formatFileStamp(entry.receivedAt.getTime())
     const source = entry.source === 'dmdss' ? 'DMDSS' : 'P2PQuake'
     triggerDownload(json, `${ts}_${source}_${entry.headType}.json`)
   }, [])
@@ -126,7 +127,7 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
       ...(e.rawHead !== undefined ? { head: e.rawHead, body: e.rawBody } : { body: e.rawBody }),
     }))
     const json = JSON.stringify(payload, null, 2)
-    const ts = new Date().toISOString().replace(/[-:]/g, '').replace('T', '_').slice(0, 15)
+    const ts = formatFileStamp(Date.now())
     triggerDownload(json, `${ts}_telegrams_${entries.length}件.json`)
   }, [telegramLog, selectedIds])
 
@@ -139,7 +140,7 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
     for (const e of entries) {
       const json = JSON.stringify(buildDownloadPayload(e), null, 2)
       const source = e.source === 'dmdss' ? 'DMDSS' : 'P2PQuake'
-      const ts = e.receivedAt.toISOString().replace(/[-:]/g, '').replace('T', '_').slice(0, 15)
+      const ts = formatFileStamp(e.receivedAt.getTime())
       const base = `${ts}_${source}_${e.headType}.json`
       const count = usedNames.get(base) ?? 0
       usedNames.set(base, count + 1)
@@ -147,7 +148,7 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
       files[filename] = enc.encode(json)
     }
     const zipped = zipSync(files)
-    const ts = new Date().toISOString().replace(/[-:]/g, '').replace('T', '_').slice(0, 15)
+    const ts = formatFileStamp(Date.now())
     const blob = new Blob([zipped], { type: 'application/zip' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')

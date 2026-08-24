@@ -24,6 +24,7 @@ import { useKyoshinAlerts } from './hooks/useKyoshinAlerts'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
 import { useKyoshinDetectorV2 } from './hooks/useKyoshinDetectorV2'
 import { useKyoshinMissingHold } from './hooks/useKyoshinMissingHold'
+import { useDetectionDiagnostics } from './hooks/useDetectionDiagnostics'
 import { createSpeechFollowController, type SpeechFollowSession } from './utils/ttsFollow'
 import { deriveKyoshinView } from './utils/kyoshinDetectionView'
 import { filterSubThresholdIndices } from './utils/kyoshinSubThresholdFilter'
@@ -966,6 +967,16 @@ export function App() {
   // ことになるが、これは意図した設計（欠測を素通しすると最大震度を担う点の 1 秒欠測が「揺れが弱まった」
   // と解釈され、復帰時に更新音が誤って鳴る）。範囲の詳細は utils/kyoshinMissingHold.ts 冒頭。
   const kyoshinHeld = useKyoshinMissingHold(kyoshinIndicesGated, kyoshin.dataTime, kyoshin.sitesSiteConfigId)
+  // 検知が走ったとき、その前後の生の観測値を記録する（設定タブから書き出せる）。
+  // 渡すのは表示用の保持値ではなく**検知エンジンと同じ生値**——記録の目的は
+  // 「エンジンが何を見て検知したか」を後から再生することなので、加工前の値でなければ意味がない。
+  useDetectionDiagnostics(
+    kyoshinV2.detections,
+    kyoshinSitesGated,
+    kyoshinIndicesGated,
+    kyoshin.dataTime,
+    kyoshin.indicesSiteConfigId,
+  )
   // V2 検知イベント → 表示状態（confirmed/candidate・検知点・候補点）へ変換する
   const kyoshinView = useMemo(
     () =>
