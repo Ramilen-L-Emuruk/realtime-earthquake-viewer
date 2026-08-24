@@ -4,7 +4,11 @@
 //  1. 正規のキーを弾かないこと（実在のキーはピリオドを含む。英数だけに絞る「改善」を止める杭）
 //  2. 通信に載せられない値が `btoa` へ到達しないこと（DOMException を外へ漏らさない）
 import { describe, it, expect } from 'vitest'
-import { isValidDmdataApiKey, authHeader, DmdataApiKeyError, DMDATA_API_KEY_INVALID_MESSAGE } from './dmdataApiKey'
+import {
+  isValidDmdataApiKey, authHeader, DmdataApiKeyError,
+  dmdataApiKeyProblem, dmdataApiKeyMessage,
+  DMDATA_API_KEY_INVALID_MESSAGE, DMDATA_API_KEY_MISSING_MESSAGE,
+} from './dmdataApiKey'
 
 describe('isValidDmdataApiKey', () => {
   it('英数のみのキーを受け付ける', () => {
@@ -76,12 +80,70 @@ describe('authHeader', () => {
     expect((caught as Error).message).toBe(DMDATA_API_KEY_INVALID_MESSAGE)
   })
 
-  it('空文字も DmdataApiKeyError にする', () => {
-    expect(() => authHeader('')).toThrow(DmdataApiKeyError)
+  // 未設定と不正は別の文言で投げる。この関数を直に叩く経路（リプレイの取得）は手前で未設定を
+  // 弾いていないため、ここの文言がそのままログへ出る。同じ文にすると、一度も入力していない人に
+  // 「使用できない文字が含まれています」と告げることになる（2026-08-24 に実際に起きた）。
+  it('空文字は「未設定」として DmdataApiKeyError にする', () => {
+    let caught: unknown
+    try { authHeader('') } catch (err) { caught = err }
+
+    expect(caught).toBeInstanceOf(DmdataApiKeyError)
+    expect((caught as DmdataApiKeyError).problem).toBe('missing')
+    expect((caught as Error).message).toBe(DMDATA_API_KEY_MISSING_MESSAGE)
   })
 
   // 安全弁: btoa 自体は通る値（非 ASCII だが Latin-1 内）でも、ヘッダに載せる前に止める。
   it('btoa が通る非 ASCII でも DmdataApiKeyError にする', () => {
     expect(() => authHeader('café')).toThrow(DmdataApiKeyError)
+  })
+})
+
+// 未設定と不正の言い分け。文言を選ぶ場所を 1 箇所（dmdataApiKeyMessage）に集約しているので、
+// 「どちらの理由か」を返す判定と、その理由に対応する文言の両方を固定する。
+describe('dmdataApiKeyProblem', () => {
+  it('[正] 空文字は missing', () => {
+    expect(dmdataApiKeyProblem('')).toBe('missing')
+  })
+
+  it('[正] 印字可能 ASCII 以外を含むキーは invalid', () => {
+    expect(dmdataApiKeyProblem('abc123あ')).toBe('invalid')
+    expect(dmdataApiKeyProblem('café')).toBe('invalid')
+  })
+
+  // 空白だけのキーは「未設定」ではなく「不正」。利用者は何かを入力しており（貼り付けの失敗など）、
+  // 入れた値が通信に載せられないことを伝える方が手掛かりになる。
+  it('[対照] 空白だけのキーは invalid（何かを入れた状態なので未設定ではない）', () => {
+    expect(dmdataApiKeyProblem(' ')).toBe('invalid')
+    expect(dmdataApiKeyProblem('   ')).toBe('invalid')
+  })
+
+  it('[正] 使えるキーは null', () => {
+    expect(dmdataApiKeyProblem('a1b2c3.d4e5f6')).toBeNull()
+  })
+
+  // 安全弁: 理由を問わない既存の呼び出し側（7 箇所）の意味を変えていないこと。
+  //
+  // **`dmdataApiKeyProblem` の戻り値と比べてはならない。** 実装がそれへの委譲なので、委譲している
+  // 限り何を変えても真になる（＝何も守らない）。判定の中身をここへ独立して置き、受け付ける集合が
+  // 言い分けの導入前と変わっていないことを確かめる。
+  it('[安全弁] 受け付ける集合は言い分けの導入前と同じ（判定式を独立に置いて突き合わせる）', () => {
+    // `!`〜`~` は 0x21〜0x7E と同じ範囲（実装の正規表現とは別の書き方にして、写し取りを避ける）。
+    const acceptedBefore = (key: string) => /^[!-~]+$/.test(key)
+    const keys = ['', ' ', '   ', 'あ', 'ａｂｃ', 'café', 'a1b2c3.d4e5f6', '!', '~', 'abc123あ', 'abc def', 'abc	def']
+    for (const key of keys) {
+      expect(isValidDmdataApiKey(key)).toBe(acceptedBefore(key))
+    }
+  })
+})
+
+describe('dmdataApiKeyMessage', () => {
+  it('理由ごとに別の文言を返す', () => {
+    expect(dmdataApiKeyMessage('missing')).toBe(DMDATA_API_KEY_MISSING_MESSAGE)
+    expect(dmdataApiKeyMessage('invalid')).toBe(DMDATA_API_KEY_INVALID_MESSAGE)
+  })
+
+  // 文言が同じだと言い分けた意味が消える。取り違えを機械的に止める杭。
+  it('2 つの文言は別物', () => {
+    expect(DMDATA_API_KEY_MISSING_MESSAGE).not.toBe(DMDATA_API_KEY_INVALID_MESSAGE)
   })
 })
