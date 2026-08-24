@@ -527,6 +527,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | EEW レベル判定（特別警報の条件・長周期の DMDATA 限定） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
 | 地図レイヤー描画順・EEW 予想レイヤーの kyoshin 限定・`maplibregl.Marker` の opacity（**中の要素の CSS アニメーションと乗算される**。点滅する描画物を弱めるときは振幅も併せて決める） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §2・§3・§7・§10 |
 | EEW 予想の区域塗りとカメラ追従対象の一致（`useEewLayerData` の `eewFitPositions` と `JapanMapGL` の塗り分けが、同じ「予想長周期を優先する」判定を使っていること） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6 |
+| 揺れフォーカス（揺れが強まった点・別地点へ一時的に寄る）の発火条件と寄り先（**寄るのは最大震度を記録した観測点でメンバー重心ではない**・音と同じ判定で要求を出す・likely では寄せない・担当は EEW の有無で入れ替わる（発報中は EEW 追従の側が寄せ、連番は共有して排他に消費する）・EEW 第一報の直後とユーザー操作中と古い要求は見送る・見送っても連番は消費する（担当しない側は消費しない）・戻す経路は成長フォローに任せる・消費済み連番は常時マウント側で覚える） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6 |
 | EEW 追従の引き上限（**上限は円の半径にかける**。矩形の辺を枠で切り詰めると箱の中心が震源から外れる・検知点と区域塗りには上限をかけない・値を上げるときは地方名ラベルの閾値と併せて見る） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6 |
 | 表示閾値の単位の使い分け（対象がどれだけ画に収まるかは**視野の実距離**／文字と点の混み具合は**ズーム値**／タイルは**タイル z**）・ズーム値の基準（MapLibre 512px タイル vs Leaflet 256px タイル）・寄り上限に揃える閾値群 | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §4・§6 |
 | 視野基準の閾値が可変であること（寄り上限は 0.5 刻みへ丸める・大画面には絶対上限を置く・上限が固定の帯では可変の下限を追い越させない。`minzoom > maxzoom` は MapLibre が検証せず、どのズームでも描かれないレイヤーが黙って出来上がる） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6「寄り上限と閾値の単位」 |
@@ -542,7 +543,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 震度集約の単位（一次細分区域）・観測点 0 件時の集約維持 | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §7 |
 | 地震電文の `points` 構造（バリアント経路差・`pref` 空の識別規則） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §4 |
 | P2PQuake レスポンスの検証規則（不正値の扱い・破棄条件・震度値の正規化 `46`→`45` / `scaleTo:99`→`scaleFrom`） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §3 |
-| APIキーに使える文字の判定（印字可能 ASCII のみ・キーの書式は当てにいかない）と、通信前に弾く 3 経路（履歴取得・ヒートマップ・WebSocket）で判定を揃えること（事前に弾かない経路もある） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §2（認証） |
+| APIキーに使える文字の判定（印字可能 ASCII のみ・キーの書式は当てにいかない）と、通信前に弾く 3 経路（履歴取得・ヒートマップ・WebSocket）で判定を揃えること（事前に弾かない経路もある）・**未設定と「使えない文字」を言い分けること**（文言の選び方は 1 箇所に集約する。事前に弾かない経路はリプレイと履歴の追加読み込みの 2 つで、未設定の文言がユーザーに見えるのはリプレイだけ） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §2（認証） |
 | dev サーバーでの APIキー自動投入の条件（dev・DMDSS 版・`--host` なし・未入力のときだけ／注入値は localStorage に保存しない／値を渡す側と受け取る側で条件を重ねる） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「dev サーバーでの API キー自動投入」 |
 | DMDATA 震源カタログの欠測項目の扱い（震源未決定の項目を 1 件ずつ除外・件数は警告に出す・全滅は例外）・座標が 0.1 度刻みである前提 | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §2（震源カタログ） |
 | 地震活動ヒートマップの色ランプ・拡散半径・不透明度の決め方（対数配置・高ズームは地理的距離に追従・寄るほど薄く） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §14 |

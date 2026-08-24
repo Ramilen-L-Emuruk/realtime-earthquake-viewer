@@ -328,6 +328,13 @@ const V2_TIER: Record<Confidence, { label: string; color: string; bg: string; bo
   weak: { label: '検出', color: '#9ca3af', bg: 'rgba(42,42,42,0.6)', border: '#4b5563' },
 }
 
+/**
+ * faint の見出しを「微弱な揺れの兆候」から「揺れの兆候」へ切り替える計測震度。0.5 = 震度1。
+ * 検知エンジンの `MIN_LIKELY_INTENSITY` と同じ境界（likely へ上げるかの震度の下限）。
+ */
+const KYOSHIN_FAINT_HEADING_INTENSITY = 0.5
+
+
 // 強震モニタ検知の集約カード。
 // 近傍一致型の検知は震度5+ の大地震で有感域が複数の地域（連結成分）に分かれるため、コアは
 // 複数の confirmed/likely イベントを同時に返す。これを「1 つの揺れ」として 1 枚に集約表示する
@@ -341,7 +348,7 @@ function KyoshinDetectionSummary({ events, points, visible }: {
   visible: boolean
 }) {
   const scalePeakRef = useRef(0)
-  // 最上位ティア（confirmed > likely > faint）。faint のみ＝震度0級のコヒーレント揺れ（無音・控えめ表示）。
+  // 最上位ティア（confirmed > likely > faint）。faint は無音・控えめ表示。
   const topTier: Confidence = events.some(e => e.confidence === 'confirmed')
     ? 'confirmed'
     : events.some(e => e.confidence === 'likely')
@@ -349,7 +356,15 @@ function KyoshinDetectionSummary({ events, points, visible }: {
       : 'faint'
   const tier = V2_TIER[topTier]
   const isFaint = topTier === 'faint'
-  const heading = isFaint ? '微弱な揺れの兆候' : '強震モニタ検知'
+  // 見出しは**ティアではなく観測された震度**で選ぶ。faint には 2 種類あり、震度0 級のコヒーレント
+  // 揺れと、震度1 以上に達しているが周囲の裏付けが取れなかったもの（設計書§32）が混ざる。
+  // 後者に「微弱」と冠すると、実際に観測されている震度を過小に伝えることになる。
+  const faintMax = events.reduce((m, e) => Math.max(m, e.maxIntensity), -Infinity)
+  const heading = !isFaint
+    ? '強震モニタ検知'
+    : faintMax >= KYOSHIN_FAINT_HEADING_INTENSITY
+      ? '揺れの兆候'
+      : '微弱な揺れの兆候'
   const regionCount = events.length
   const earliestMs = events.reduce((m, e) => Math.min(m, e.originTimeMs), Infinity)
   const time = new Date(earliestMs).toLocaleTimeString('ja-JP', { hour12: false })
