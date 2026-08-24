@@ -487,7 +487,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 予報から警報へ上がったときの伝え方（第 1 フェーズの進み具合で 3 通り・どの経路でも「緊急地震速報」の語は必ず声になる・**止めるのは音だけで発話の順番は崩さない**・**言い直しは 1 回だけ**・**進み具合の記録は自分が置いた分だけ消す**（書き換えは `updatePhase1Progress` に集約）・震源の大幅更新と予想値の引き上げでは割り込まない。後ろの 3 つはいずれも外すと別 EEW を巻き込むか同じ文言を重ねる） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「予報から警報へ上がったとき — 進み具合で 3 通り」 |
 | EEW 読み上げの直列化（全 EEW で 1 本のチェーン・既読値の更新は発話直前だけ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げの優先順位」 |
 | 自動タブ切替の 2 系統（読み上げ追従／保持機構）と競合の判定順序・優先度表 | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
-| EEW 続報の片方向抑制・追従の最小滞留時間・アイドル復帰の重み（`idleRevertPriority`）・生の `setActiveTab` を使わないこと | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
+| EEW 続報の片方向抑制・**読み上げが無効な端末の受信は続報の保持を越えること**（駆動源 `receipt`。`eewUrgent` は越えない／読み上げ文が空になった電文は `hold` へ回す＝読み上げ中の EEW から画面を奪わない）・追従の最小滞留時間・アイドル復帰の重み（`idleRevertPriority`）・生の `setActiveTab` を使わないこと・**駆動源に既定値を置かないこと** | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
 | 既定の状態へ戻す操作の保持は読み上げ追従に譲ること（上の行の重み `idleRevertPriority` とは別の話。`forceTab` に駆動源 `idleRevert` を渡す。渡し忘れると「喋っているのに画面が動かない」が復活する） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
 | 読み上げがある経路のタブ移動（順序の判断は読み上げ側に預ける／待たされずに読めるなら通知音と同時に先出しし、その判定は待ち合わせと条件を共有する／読み上げが無効・読み上げ文が空になる場合だけ受信時要求へ落とす。落とし忘れるとそのタブへ永久に移らない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「自動タブ切替の優先順位」 |
 | 読み上げの優先順位（EEW ＞ 津波の等級発表・南海トラフ ＞ 地震情報・長周期・**津波の観測情報**（同格）／同格は新しい方が勝つ／待ちの条件は毎周回で作り直す／上限到達時は記録を残す／EEW の予想震度の確定待ち中も EEW を最優先とする） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「読み上げの優先順位」 |
@@ -533,6 +533,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 震度の区域集約の閾値が自動フィットの寄り上限と同値であること（ペイン寸法で変わるため定数に置けない。独自の値を置くと大きな画面で震度塗りが出ない） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §7 |
 | 地図の傾き（pitch）・回転（bearing）をユーザー操作から無効化している理由と、それに依存する描画物の前提（予報円の半径計算・カメラ自動フィット）。有効に戻すなら何を先に直すか | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6「地図の傾きと回転」 |
 | カメラ追従の抑制時間・津波の俯瞰帰還の猶予が `INTERACTION_HOLD_SEC` 固定であること（設定「自動復帰までの時間」＝ `idleRevertSec` と結合していないこと。結合すると「無効」の端末で追従・帰還が永久に止まる） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6「ユーザー操作の尊重」「津波追従の目標範囲」 |
+| 「自動復帰までの時間」（`idleRevertSec`）を計り直す契機が 3 つあること（ユーザー操作・**自動のタブ切替・電文の受信**）。後ろ 2 つがあるため、この設定は「自動で見せたものの最低表示時間」を兼ねる。操作だけで測る形に変えると、据え置きの端末で津波警報が一瞬映って消える | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §2 |
 | ラベルのフォントスタック名の一致・グリフ収録文字の網羅性・フォント適用範囲（ラベル限定） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §5 |
 | 地名ラベルとバッジの重なり回避（**退避は重なったときだけ**・平常時は代表点の真上・逃がせる上限は生成データの `room`・避けきれなければ薄くする（消さない）／**代表点の判定で自区域を除外しないこと**（除外すると避けたい相手が消えて退避が発火しない。除外は退避後の判定だけ）／座標と `room` は投影の前に形を確かめること（**1 件の破損が全ラベルの判定を止める**）・`room` は非負まで見ること／判定結果は `feature-state` ではなく `properties` で渡すこと（`text-offset` が layout プロパティで feature-state 式を受け付けない）） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §5「バッジとの重なりを避ける」 |
 | symbol レイヤーの出入りが即時であること（`fadeDuration: 0`。paint トランジションとは別系統で、地図全体にしか設定できない）と、対象レイヤーの列挙。**symbol レイヤーを新設・削除したら列挙を見直す** | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §8「symbol の配置フェード」 |
