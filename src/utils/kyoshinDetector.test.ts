@@ -1833,3 +1833,220 @@ describe('メンバーの刈り取り（pruneFadedMembers）', () => {
     expect(after.memberKeys).not.toContain(keys[4])
   })
 })
+
+// ============================================================
+// 単点のまま居座る確定を降ろす（§33）
+// ============================================================
+
+describe('単点確定の降格', () => {
+  /**
+   * 1 点だけが `value` に張り付いたまま `holdSec` 秒続くフレーム列。
+   * 上限に張り付いた観測点（センサー故障）の姿を合成で再現する。
+   */
+  function soloStuck(defs: StationDef[], value: number, holdSec: number): Frame[] {
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
+    for (let i = 0; i < holdSec; i++, t += 1000) {
+      frames.push(frameWith(defs, t, (idx) => (idx === 0 ? value : 0)))
+    }
+    return frames
+  }
+
+  // 正: 単点のまま猶予を過ぎたら降りる
+  it('単点のまま SOLO_CONFIRM_GRACE_MS を過ぎたら confirmed を降ろす', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const holdSec = PARAMS.SOLO_CONFIRM_GRACE_MS / 1000 + 5
+    const { detections } = drive(soloStuck(defs, 3.5, holdSec), meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+
+  // 対照: 猶予の手前では降りない（鳴らす条件は変えていない）
+  it('猶予の手前では confirmed のまま（発報を遅らせない）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    // 確定は揺れ始めの 2 フレーム目。猶予の半分だけ持たせる
+    const holdSec = PARAMS.SOLO_CONFIRM_GRACE_MS / 1000 / 2
+    const { detections } = drive(soloStuck(defs, 3.5, holdSec), meta)
+    const confirmed = detections.filter((d) => d.confidence === 'confirmed')
+    expect(confirmed.length).toBe(1)
+    expect(confirmed[0].lastSize).toBe(1)
+  })
+
+  // 対照: 遅れて周囲が続けば降りない（能登型の初動を殺さない）
+  it('猶予内に 2 点目が続けば降ろさない（遅れて伝播する実地震）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
+    // 単点で確定 → 猶予の内側で 2 点目が立ち上がる → その後ずっと 2 点
+    const beforeSec = PARAMS.SOLO_CONFIRM_GRACE_MS / 1000 - 5
+    for (let i = 0; i < beforeSec; i++, t += 1000) frames.push(frameWith(defs, t, (idx) => (idx === 0 ? 3.5 : 0)))
+    for (let i = 0; i < 15; i++, t += 1000) frames.push(frameWith(defs, t, (idx) => (idx < 2 ? 3.5 : 0)))
+    const { detections } = drive(frames, meta)
+    const confirmed = detections.filter((d) => d.confidence === 'confirmed')
+    expect(confirmed.length).toBe(1)
+    expect(confirmed[0].everMultiPoint).toBe(true)
+  })
+
+  // 安全弁: 一度でも単点でなくなれば、その後に痩せても降りない
+  it('2 点になった後で単点へ痩せても降ろさない（本物の余韻を切らない）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
+    // 2 点で確定 → 以後ずっと 1 点だけが張り付く
+    for (let i = 0; i < 4; i++, t += 1000) frames.push(frameWith(defs, t, (idx) => (idx < 2 ? 3.5 : 0)))
+    const holdSec = PARAMS.SOLO_CONFIRM_GRACE_MS / 1000 + 10
+    for (let i = 0; i < holdSec; i++, t += 1000) frames.push(frameWith(defs, t, (idx) => (idx === 0 ? 3.5 : 0)))
+    const { detections } = drive(frames, meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(true)
+  })
+
+  // 安全弁: 降ろした確定が下位ティアへ回り込まない
+  it('降格した確定は faint / likely にも上がらない（鎖状の併合で size が伸びても）', () => {
+    // 併合は「重心間 100km」で greedy に連なるため、互いに 40km 超でも 3 つ以上が 1 本化しうる。
+    // size が MIN_LIKELY_POINTS に届くと spreadHeld が立ち、降ろしたはずのものが faint や
+    // likely として出てくる。likely は候補音を鳴らす
+    // 0.6°（約 55km）間隔。互いに R_KM(40km) の外だが、併合の重心移動を経ても
+    // MERGE_EVENT_KM(100km) に収まるため 1 本化する（間隔を広げると重心が離れて併合しない）
+    const chain: StationDef[] = [
+      ...grid3x3(35.0, 139.0, 0.1),
+      ...grid3x3(35.0, 139.6, 0.1),
+      ...grid3x3(35.0, 140.2, 0.1),
+    ]
+    const meta = buildStationMeta(sitesOf(chain))
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(chain, t, 0))
+    const holdSec = PARAMS.SOLO_CONFIRM_GRACE_MS / 1000 + 10
+    // 各群の代表点だけが張り付く（互いに R_KM の外）
+    for (let i = 0; i < holdSec; i++, t += 1000) {
+      frames.push(frameWith(chain, t, (idx) => (idx === 0 || idx === 9 || idx === 18 ? 3.5 : 0)))
+    }
+    let state = initState(frames[0].dataTimeMs - 1000)
+    const tiers: string[] = []
+    const sizes: number[] = []
+    for (const f of frames) {
+      const r = step(state, f, meta)
+      state = r.state
+      tiers.push(r.detections[0]?.confidence ?? '-')
+      sizes.push(r.detections[0]?.lastSize ?? 0)
+    }
+    const firstDrop = tiers.findIndex((c, i) => i > 0 && tiers[i - 1] === 'confirmed' && c !== 'confirmed')
+    expect(firstDrop).toBeGreaterThan(0)
+    // 併合が実際に起きて size が MIN_LIKELY_POINTS に届いていること
+    // （届かないと spreadHeld が立たず、このテストが何も検証しなくなる）
+    expect(sizes[firstDrop]).toBeGreaterThanOrEqual(PARAMS.MIN_LIKELY_POINTS)
+    // 降りた後は weak だけ（faint / likely / confirmed のいずれも現れない）
+    expect([...new Set(tiers.slice(firstDrop))]).toEqual(['weak'])
+  })
+
+  // 安全弁: 併合が走ったフレームでも復活しない
+  it('併合のフレームで confirmed が付け直されない（判定は 1 箇所に集約する）', () => {
+    // 確信度を書く箇所は updateEventMetrics と mergeAdjacentEvents の 2 つある。後者は
+    // everConfirmed だけを見て付け直すため、判定を前者にしか置かないと、併合が走った
+    // フレームだけ 1 フレーム confirmed へ跳ねる。1 フレームでも立ち上がれば検知音が鳴る
+    const far: StationDef[] = [
+      ...grid3x3(35.0, 139.0, 0.1),
+      ...grid3x3(35.0, 139.8, 0.1), // R_KM の外・MERGE_EVENT_KM の内（併合される）
+    ]
+    const meta = buildStationMeta(sitesOf(far))
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(far, t, 0))
+    // 片方だけで確定させ、猶予を過ぎてからもう片方を立ち上げる（そこで併合が走る）
+    const graceSec = PARAMS.SOLO_CONFIRM_GRACE_MS / 1000
+    for (let i = 0; i < graceSec + 5; i++, t += 1000) frames.push(frameWith(far, t, (idx) => (idx === 0 ? 3.5 : 0)))
+    let state = initState(frames[0].dataTimeMs - 1000)
+    const tiers: string[] = []
+    for (const f of frames) {
+      const r = step(state, f, meta)
+      state = r.state
+      tiers.push(r.detections[0]?.confidence ?? '-')
+    }
+    // 降りた後、離れた点が加わっても confirmed へ戻らないこと
+    const firstDrop = tiers.findIndex((c, i) => i > 0 && tiers[i - 1] === 'confirmed' && c !== 'confirmed')
+    expect(firstDrop).toBeGreaterThan(0)
+    // 併合で 2 点目が加わるフレームを含めて、以後 confirmed が現れない
+    for (let i = 0; i < 10; i++, t += 1000) frames.push(frameWith(far, t, (idx) => (idx === 0 || idx === 9 ? 3.5 : 0)))
+    let s2 = initState(frames[0].dataTimeMs - 1000)
+    const tiers2: string[] = []
+    for (const f of frames) {
+      const r = step(s2, f, meta)
+      s2 = r.state
+      tiers2.push(r.detections[0]?.confidence ?? '-')
+    }
+    const drop2 = tiers2.findIndex((c, i) => i > 0 && tiers2[i - 1] === 'confirmed' && c !== 'confirmed')
+    expect(tiers2.slice(drop2)).not.toContain('confirmed')
+  })
+
+  // 安全弁: 降ろした後で明滅しない（一度降りたら戻らない）
+  it('降格後に confirmed と weak を往復しない（明滅は居座りより悪い）', () => {
+    // everConfirmed を書き換える実装では、降ろした直後に確定条件を満たし直して再確定し、
+    // 猶予の周期で往復した。往復すると useKyoshinAlerts が確定の立ち上がりを検出し直して
+    // 検知音を鳴らす。ここでは「降りたら降りたまま」であることを固定する
+    const far: StationDef[] = [
+      ...grid3x3(35.0, 139.0, 0.1),
+      ...grid3x3(35.0, 139.8, 0.1), // 約 73km 東（R_KM の外・MERGE_EVENT_KM の内）
+    ]
+    const meta = buildStationMeta(sitesOf(far))
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(far, t, 0))
+    // 猶予の 3 倍持たせる。往復する実装なら途中で何度も confirmed へ戻る
+    const holdSec = (PARAMS.SOLO_CONFIRM_GRACE_MS / 1000) * 3
+    for (let i = 0; i < holdSec; i++, t += 1000) {
+      frames.push(frameWith(far, t, (idx) => (idx === 0 || idx === 9 ? 3.5 : 0)))
+    }
+    // 各フレームの確信度を集めて、confirmed から落ちた後に戻っていないことを見る
+    let state = initState(frames[0].dataTimeMs - 1000)
+    const tiers: string[] = []
+    for (const f of frames) {
+      const r = step(state, f, meta)
+      state = r.state
+      tiers.push(r.detections[0]?.confidence ?? '-')
+    }
+    const firstDrop = tiers.findIndex((c, i) => i > 0 && tiers[i - 1] === 'confirmed' && c !== 'confirmed')
+    expect(firstDrop).toBeGreaterThan(0) // 降りていること
+    expect(tiers.slice(firstDrop)).not.toContain('confirmed') // 以後戻らないこと
+  })
+
+  // 安全弁: 離れた 2 点が併合されても「単点でなくなった」とはみなさない
+  it('離れた 2 点が併合されても降格を免れない（隣接性を要求する）', () => {
+    // メンバーは併合（MERGE_EVENT_KM=100km）で和集合になるため、点数だけを見ると
+    // 別々に張り付いた 2 点でも 2 になり、対策が丸ごと素通しになる
+    const far: StationDef[] = [
+      ...grid3x3(35.0, 139.0, 0.1),
+      ...grid3x3(35.0, 139.8, 0.1), // 約 73km 東（R_KM=40km の外・MERGE_EVENT_KM=100km の内）
+    ]
+    const meta = buildStationMeta(sitesOf(far))
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(far, t, 0))
+    // 2 つの群の代表点（index 0 と 9）だけが張り付く
+    const holdSec = PARAMS.SOLO_CONFIRM_GRACE_MS / 1000 + 10
+    for (let i = 0; i < holdSec; i++, t += 1000) {
+      frames.push(frameWith(far, t, (idx) => (idx === 0 || idx === 9 ? 3.5 : 0)))
+    }
+    const { detections } = drive(frames, meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+
+  // 安全弁: 猶予は SOLO_DECAY_SIZE と噛み合っていること
+  it('SOLO_DECAY_SIZE は MIN_CLUSTER 未満（本物の 2 点止まりを巻き込まない）', () => {
+    // 実データでは size 2 で終わる本物（能登・福島の成分）が 4 件あった。MIN_CLUSTER(3) を
+    // 要求すると、それらを降ろしてしまう
+    expect(PARAMS.SOLO_DECAY_SIZE).toBeLessThan(PARAMS.MIN_CLUSTER)
+    expect(PARAMS.SOLO_DECAY_SIZE).toBeGreaterThan(1)
+  })
+
+  // 安全弁: 猶予は確定に要する時間より十分長いこと
+  it('SOLO_CONFIRM_GRACE_MS は確定に要する時間より長い（確定と同時に降ろさない）', () => {
+    expect(PARAMS.SOLO_CONFIRM_GRACE_MS).toBeGreaterThan(PARAMS.CONFIRM_FRAMES * 1000)
+    expect(PARAMS.SOLO_CONFIRM_GRACE_MS).toBeGreaterThan(PARAMS.HOLD_MS)
+  })
+})
