@@ -11,7 +11,7 @@ import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseEarthquakeFrom
 import { serverNow, serverDate } from '../utils/clock'
 import { gunzip } from '../utils/gzip'
 import { log } from '../utils/logger'
-import { authHeader, isValidDmdataApiKey, DMDATA_API_KEY_INVALID_MESSAGE, DmdataApiKeyError } from '../utils/dmdataApiKey'
+import { authHeader, dmdataApiKeyProblem, dmdataApiKeyMessage, DmdataApiKeyError } from '../utils/dmdataApiKey'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
 // DMDATA WebSocket 購読分類。telegram.earthquake は地震・津波両方の電文を配信する。
@@ -85,8 +85,11 @@ function logRestFailure(what: string, status: number): void {
  * 二重に見えるのは意図で、`authHeader` 側の判定は門を持たない経路（主系の取得・リプレイ）を守る。
  */
 function isApiKeyUsable(apiKey: string, what: string): boolean {
-  if (isValidDmdataApiKey(apiKey)) return true
-  log.error(`[DMDSS] ${what}: ${DMDATA_API_KEY_INVALID_MESSAGE}`)
+  const problem = dmdataApiKeyProblem(apiKey)
+  if (!problem) return true
+  // 未設定か不正かを言い分ける。どちらもここへ来るのは呼び出し側が弾き忘れた場合だが、
+  // 記録が理由を取り違えていると、入れた覚えのない文字を探させることになる。
+  log.error(`[DMDSS] ${what}: ${dmdataApiKeyMessage(problem)}`)
   return false
 }
 
@@ -232,7 +235,9 @@ export class DmdataWebSocket {
       // キーの文字が不正な場合は再試行しても直らない。素通しにすると 30 秒間隔の再接続を
       // 永久に繰り返し、しかもその失敗ログは debug 配下（下の dlog）なので無音になる。
       if (err instanceof DmdataApiKeyError) {
-        log.error('[DMDSS] APIキーが不正なため接続しない', { reason })
+        // 理由（未設定／不正な文字）は reason に載っている。ここで言い切ると、未設定のときに
+        // 「不正」と告げることになる。
+        log.error('[DMDSS] APIキーが使えないため接続しない', { reason })
         this.authError = true
         this.onStatusChange?.('disconnected')
         return
