@@ -362,7 +362,12 @@ describe('DmdataWebSocket: APIキーが不正なとき', () => {
       expect(statuses).toEqual(['connecting', 'disconnected'])
       expect(fetchSpy).not.toHaveBeenCalled()
       expect(log.error).toHaveBeenCalledTimes(1)
-      expect(String(vi.mocked(log.error).mock.calls[0][0])).toContain('APIキーが不正')
+      // 理由は第 2 引数（reason）に載る。**固定文の側で「不正」と言い切らないこと**——未設定でも
+      // ここへ来うるため、言い切ると入れた覚えのない文字を探させる（2026-08-24 の言い分け対応）。
+      expect(String(vi.mocked(log.error).mock.calls[0][0])).toContain('APIキーが使えない')
+      expect(vi.mocked(log.error).mock.calls[0][1]).toMatchObject({
+        reason: DMDATA_API_KEY_INVALID_MESSAGE,
+      })
 
       // バックオフの上限（RECONNECT_MAX_MS = 30 秒）を大きく超えて進めても再接続しない。
       // ここが効いていないと、無音のまま延々とチケット取得を叩き続ける状態に戻る。

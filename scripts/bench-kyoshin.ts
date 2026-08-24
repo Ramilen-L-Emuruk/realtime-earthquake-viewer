@@ -79,18 +79,33 @@ const MIN_COVERAGE = 0.9
  *
  * **狭すぎると遠地の本当の揺れを「無関係な検知」に数えてしまい、広すぎると同時刻のノイズを
  * 「その地震を検知できた」に数えてしまう。** 前者は対策の効果を過小に、後者は検知率を過大に見せる。
+ *
+ * 小さい地震にまで広い距離を許していたときは、M2.4 の地震の窓で 185km 離れた常習点のノイズを
+ * 「その地震を検知できた」と数えていた。M2 級の揺れがそこまで届くことはない。
+ *
+ * **深さを見ないと逆向きに間違える。** 深発地震は震央の周りより、スラブに沿った先（太平洋側）が
+ * 強く揺れる（異常震域）。規模だけで距離を決めていたとき、日本海北部 M5.6 深さ350km の窓で
+ * 岩手・宮古市の検知（641km）を、渡島地方東部 M3.9 深さ130km の窓で十勝・豊頃町の検知（246km）を、
+ * それぞれ「無関係」に数えていた。どちらも異常震域として起こって当然の姿だった。
  */
-function relatedKmFor(mag: number): number {
-  if (!Number.isFinite(mag)) return 300
+function relatedKmFor(mag: number, depth: number): number {
+  // 深発地震は震央の周りではなく、スラブに沿った先（太平洋側）が強く揺れる＝異常震域。
+  // 震央からの距離という尺度がそもそも当てはまらないので、規模を問わず広く採る。
+  if (Number.isFinite(depth) && depth >= DEEP_FOCUS_KM) return 800
+  if (!Number.isFinite(mag)) return 250
   if (mag >= 6) return 2000
-  if (mag >= 5) return 800
-  return 300
+  if (mag >= 5) return 500
+  if (mag >= 4) return 250
+  if (mag >= 3) return 150
+  return 100
 }
 /**
  * 地震の発生時刻より前の検知は、その地震のものとみなさない猶予(秒)。
  * 気象庁の発生時刻は分単位までしか無いため、分の頭から遡れる幅をこれだけ許す。
  */
 const BEFORE_ORIGIN_TOLERANCE_SEC = 60
+/** これ以上の深さを深発地震として扱う(km)。異常震域が出るため震央からの距離が当てにならない。 */
+const DEEP_FOCUS_KM = 100
 
 const REALTIME_BASE = (edge: 'west' | 'east') =>
   `https://weather-kyoshin.${edge}.edge.storage-yahoo.jp/RealTimeData`
@@ -305,7 +320,7 @@ function relatedQuake(e: DetectionEvent, w: WindowSpec, nowMs: number, relatedKm
     const originMs = jstToMs(q.time)
     if (Number.isNaN(originMs)) continue
     if (nowMs < originMs - BEFORE_ORIGIN_TOLERANCE_SEC * 1000) continue
-    const km = relatedKm ?? relatedKmFor(q.mag)
+    const km = relatedKm ?? relatedKmFor(q.mag, q.depth)
     if (haversineKm(e.epicenter[0], e.epicenter[1], q.lat, q.lng) <= km) return q
   }
   return null

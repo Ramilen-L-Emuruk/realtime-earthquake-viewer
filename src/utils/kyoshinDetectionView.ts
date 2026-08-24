@@ -76,7 +76,29 @@ export interface KyoshinView {
    * confirmed 各イベント（＝地域）の代表点と最大インデックス。地域単位の発報（新地域の検知・
    * 既存地域の再上昇で鳴らす）に使う。震源ではなくメンバー重心＋メンバー最大震度。
    */
-  confirmedShocks: { lat: number; lng: number; index: number }[]
+  confirmedShocks: ConfirmedShock[]
+}
+
+/** `KyoshinView.confirmedShocks` の 1 件。 */
+export interface ConfirmedShock {
+  /** メンバー重心（地域単位の発報の照合に使う位置）。 */
+  lat: number
+  lng: number
+  /** メンバー観測点の最大計測震度インデックス。 */
+  index: number
+  /**
+   * `index` を記録した観測点そのものの座標。**カメラを寄せる先はこちら**（揺れフォーカス。
+   * `map-rendering-spec.md` §6）。
+   *
+   * 重心と分けているのが要点。広域に広がったイベントでは重心が最も強く揺れている点から
+   * 大きく離れる（2024-01-01 16:08 能登の再生で実測: 石川〜千葉に広がったイベントの重心は
+   * 新潟県境付近で、震度4を記録した能登の観測点から約 140km 離れていた）。照合には重心が要る
+   * （距離の閾値がそれを前提に調整されている）ため、寄り先だけを別に持つ。
+   *
+   * メンバーの座標が 1 つも引けないとき（観測点リストの入れ替え中に `sites` が空へゲートされる）は
+   * 重心と同じ値を入れる。**イベント自体は落とさない**（理由は `deriveKyoshinView` の該当箇所）。
+   */
+  peak: { lat: number; lng: number }
 }
 
 /**
@@ -231,15 +253,30 @@ export function deriveKyoshinView(
     }
   }
 
-  // confirmed 各イベント（地域）の代表点＋メンバー最大インデックス（地域単位発報の入力）
-  const confirmedShocks = confirmedEvents.flatMap((e) => {
+  // confirmed 各イベント（地域）の代表点＋メンバー最大インデックス（地域単位発報の入力）と、
+  // その最大を記録した観測点の座標（揺れフォーカスの寄り先）。
+  const confirmedShocks = confirmedEvents.flatMap<ConfirmedShock>((e) => {
     if (!e.epicenter) return []
-    let maxIdx = 0
+    // 同じ最大値が並んだときは先に現れた観測点を採る（`memberKeys` の並び順＝検知エンジンが
+    // メンバーを束ねた順。どちらも「最も強く揺れている点」なので優劣を付ける根拠が無い）。
+    let peak: DetectedPoint | null = null
     for (const k of e.memberKeys) {
       const p = byKey.get(k)
-      if (p && p.index > maxIdx) maxIdx = p.index
+      if (!p) continue
+      if (peak === null || p.index > peak.index) peak = p
     }
-    return [{ lat: e.epicenter[0], lng: e.epicenter[1], index: maxIdx }]
+    // メンバーが 1 つも索引に無いときは重心へ落とす（観測点リストの入れ替え中に `sites` が空へ
+    // ゲートされると起きる）。**イベントごと落としてはならない**——地域単位の発報
+    // （`stepAlertRegions`）は `confirmedShocks` が空になったことを「確定が消えた」と読み、
+    // 発報済み・EEW 吸収済みの記録を捨てる。捨てると入れ替えの直後に同じ地域が鳴り直す。
+    // 欠測（負のインデックス）は 0 に丸める（従来の `maxIdx` の初期値 0 と同じ扱い）。
+    const [centroidLat, centroidLng] = e.epicenter
+    return [{
+      lat: centroidLat,
+      lng: centroidLng,
+      index: Math.max(0, peak?.index ?? 0),
+      peak: peak ? { lat: peak.lat, lng: peak.lng } : { lat: centroidLat, lng: centroidLng },
+    }]
   })
 
   // 間引きの対象は confirmed のメンバーだが、「近くに震度1以上があるか」の判定材料には unconfirmed も

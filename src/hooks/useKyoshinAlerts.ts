@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import type { EEWAlert } from '../types/earthquake'
 import type { TabId } from '../components/IconNav'
 import type { AppSettings } from './useSettings'
@@ -9,6 +9,7 @@ import { showBrowserNotification } from '../utils/notifications'
 import { haversineKm } from '../utils/geo'
 import { log } from '../utils/logger'
 import { computeSWaveRadiusAtTime } from './usePsWaveCalc'
+import type { ConfirmedShock } from '../utils/kyoshinDetectionView'
 
 // 強震モニタの揺れ検知（V3 エンジン）に応じたタブ切替・ウィンドウタイトル・通知音・ブラウザ通知を担うフック。
 //
@@ -313,6 +314,12 @@ export interface NewRegionAlert {
   lng: number
   /** その地域のメンバー観測点の最大計測震度インデックス。 */
   index: number
+  /**
+   * 上の `index` を記録した観測点の座標（`ConfirmedShock.peak`）。**カメラの寄り先はこちら。**
+   * 照合に使う `lat`/`lng` はメンバー重心で、広域のイベントでは強く揺れている点から大きく
+   * 離れる（理由は `kyoshinDetectionView.ts` の `ConfirmedShock.peak`）。
+   */
+  peak?: { lat: number; lng: number }
 }
 
 /** 検知エピソードに紐づく状態を捨てる（検知の終了・時刻の巻き戻り時）。 */
@@ -350,7 +357,7 @@ function resetEpisode(state: AlertRegionState): void {
  */
 export function stepAlertRegions(
   state: AlertRegionState,
-  shocks: readonly { lat: number; lng: number; index: number }[],
+  shocks: readonly { lat: number; lng: number; index: number; peak?: { lat: number; lng: number } }[],
   nowMs: number,
   activeEEWs: ReadonlyMap<string, EEWAlert>,
 ): NewRegionAlert | null {
@@ -423,7 +430,7 @@ export function stepAlertRegions(
         } else {
           reg.fired = true
           state.lastNewRegionAtMs = nowMs
-          alert = { lat: s.lat, lng: s.lng, index: s.index }
+          alert = { lat: s.lat, lng: s.lng, index: s.index, peak: s.peak }
         }
       }
     }
@@ -442,8 +449,11 @@ export interface KyoshinAlertsDeps {
   candidate: boolean
   /** 主 likely イベントのメンバー観測点の最大インデックス（likely 中の音レベル追跡に使う） */
   candidateMaxIndex: number
-  /** confirmed 各イベント（地域）の代表点＋最大インデックス（別地点発報の入力） */
-  confirmedShocks: { lat: number; lng: number; index: number }[]
+  /**
+   * confirmed 各イベント（地域）の代表点＋最大インデックスと、その最大を記録した観測点
+   * （別地点発報の入力と、揺れフォーカスの寄り先）。
+   */
+  confirmedShocks: ConfirmedShock[]
   /** 現フレームのデータ時刻文字列（毎フレーム更新される別地点発報エフェクトの駆動キー） */
   dataTime: string
   settings: AppSettings
@@ -460,13 +470,67 @@ export interface KyoshinAlertsDeps {
    */
   setActiveTab: (tab: TabId) => void
   revertToDefaultTab: () => void
+  /**
+   * 「この 1 点を一時的に見せたい」という要求。**通知音を鳴らすのと同じ判定で**呼ばれる
+   * （揺れの強まり＝レベルアップ／再エスカレーションと、別地点発報）。地図側（`FitToDetectionGL`）が
+   * その点へ短く寄り、数秒だけ自分の追従を止める。
+   *
+   * **likely 中は呼ばない。** 控えめな音量で知らせるだけに留め、確信度に見合わない大きさで画を
+   * 動かさない（`CANDIDATE_SOUND_GAIN_SCALE` と同じ考え方）。
+   *
+   * **任意ではなく必須にしている。** 渡し忘れても実行時には何も起きないため、任意にすると
+   * 「音は鳴るのに画は動かない」形で機能ごと静かに失われる。
+   */
+  onShakeFocus: (point: { lat: number; lng: number }) => void
 }
 
 export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
   const {
     confirmed, candidate, candidateMaxIndex, confirmedShocks, dataTime, settings, title,
-    activeEEWsRef, defaultTabRef, setActiveTab, revertToDefaultTab,
+    activeEEWsRef, defaultTabRef, setActiveTab, revertToDefaultTab, onShakeFocus,
   } = deps
+
+  // 以下の発報エフェクトは、音の再鳴を安定させるため依存配列を絞ってある（各 effect の
+  // eslint-disable を参照）。そのためコールバックと座標をクロージャで掴むと古い実体を呼び続ける。
+  // 毎レンダー ref へ写し、発報の瞬間に最新だけを読む（`activeEEWsRef` と同じ流儀）。
+  const onShakeFocusRef = useRef(onShakeFocus)
+  onShakeFocusRef.current = onShakeFocus
+  /**
+   * 揺れの強まりで見せる 1 点＝**レベルを担った観測点そのもの**（そのイベントで最大震度を
+   * 記録した点。`ConfirmedShock.peak`）。
+   *
+   * **音のレベル判定と同じ `confirmedShocks` から引く。** 別の集合から引くと、「鳴らした値」と
+   * 「寄る先」が別のイベント由来になりうる。
+   *
+   * **メンバー重心（`lat`/`lng`）へ寄せてはならない。** 重心は地域単位の発報の照合に使う位置で、
+   * 広域に広がったイベントでは最も強く揺れている点から大きく離れる（2024-01-01 16:08 能登の
+   * 再生で実測: 重心は新潟県境付近・震度4の観測点は能登で約 140km のずれ。画の中心に何も無く、
+   * 音が指した点は隅に写る）。
+   *
+   * confirmed でなければ null——likely 中は画を動かさない（`onShakeFocus` の注記）。
+   *
+   * 最大 index が同じイベントが複数あるときは、先に現れた方（配列順）を採る。どちらも「いま最も
+   * 強く揺れている場所」なので優劣を付ける根拠が無く、原因のイベントを追跡する仕掛けを足すほどの
+   * 差ではないと判断している。
+   */
+  const focusPointRef = useRef<{ lat: number; lng: number } | null>(null)
+  const peakShock = confirmed
+    ? confirmedShocks.reduce<ConfirmedShock | null>(
+        (best, s) => (best === null || s.index > best.index ? s : best),
+        null,
+      )
+    : null
+  focusPointRef.current = peakShock?.peak ?? null
+
+  /**
+   * 「この 1 点を見せたい」を通知する。座標を省くと上の `focusPointRef` を使い、それが無ければ
+   * 何もしない（likely 中・確定イベントが代表点を持たない場合）。
+   */
+  const requestShakeFocus = useCallback((point?: { lat: number; lng: number }) => {
+    const p = point ?? focusPointRef.current
+    if (!p) return
+    onShakeFocusRef.current({ lat: p.lat, lng: p.lng })
+  }, [])
 
   // confirmed 中はイベント自身のメンバー最大インデックス、likely 中は主候補イベントの最大インデックス。
   // 非検知時は音を鳴らさないため 0 でよい。
@@ -551,6 +615,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
       if (prevMaxLevel >= 0) {
         log.info(`[tab] realtime を要求 (揺れ検知レベルアップ level=${prevMaxLevel}→${currLevel} confirmed=${confirmed})`)
         setActiveTab('realtime')
+        requestShakeFocus()
         if (settings.soundEnabled) {
           playKyoshinUpdateSound(effectiveKyoshinMaxIndex, gainScale)
         }
@@ -563,6 +628,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
       postPeakMinLevelRef.current = currLevel
       log.info(`[tab] realtime を要求 (揺れ検知再エスカレーション level=${prevMinLevel}→${currLevel} confirmed=${confirmed})`)
       setActiveTab('realtime')
+      requestShakeFocus()
       if (settings.soundEnabled) {
         playKyoshinUpdateSound(effectiveKyoshinMaxIndex, gainScale)
       }
@@ -582,6 +648,16 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
     if (!alert) return
     log.info('[tab] realtime を要求 (別地点で揺れ検知 V3)')
     setActiveTab('realtime')
+    // 発報した地域自身の代表点へ寄せる（全体の最大震度ではなく「別の地点」を見せる報せなので、
+    // 通知の文面と同じくこの地域の座標を使う）。
+    //
+    // **同じフレームで揺れの強まりと別地点発報が両方成立したら、こちらが勝つ**（この effect が
+    // 後に定義されており、React は同じ flush の中で定義順に走らせるため、App 側の state には
+    // 最後の要求だけが残る）。それでよい——別地点は「別の場所でも揺れている」ことをフル音量で
+    // 知らせる報せで、同じ地震の強まりより見せる価値が高い。
+    // ピークが無いのは、`ConfirmedShock` を作らない経路から `stepAlertRegions` を呼んだ場合だけ
+    // （現状の実装には無い）。寄らずに黙って終わるより、旧来どおり重心へ落とす方が害が小さい。
+    requestShakeFocus(alert.peak ?? { lat: alert.lat, lng: alert.lng })
     if (settings.soundEnabled) playAlertSound('kyoshin')
     if (settings.notifyMinScale >= 0 && settings.notifyDetection) {
       // 全体の最大震度ではなく、発報した地域自身の推定震度を出す（「別の地点」の報せなので）
