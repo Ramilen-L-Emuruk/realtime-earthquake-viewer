@@ -554,6 +554,7 @@ describe('EEW 解除後の帰還', () => {
         forecastAreaPositions: [],
         firstSeenAtRef: { current: new Map<string, number>() },
         focusedEewIdRef: { current: null },
+        lastConsumedFocusTickRef: { current: 0 },
       }),
     )
 
@@ -638,6 +639,7 @@ describe('EEW の初期フレーミング', () => {
         hasDetection: detected.length > 0,
         candidatePoints: [],
         forecastAreaPositions: [],
+        lastConsumedFocusTickRef: { current: 0 },
         ...refs,
       }),
     )
@@ -1118,6 +1120,8 @@ describe('揺れフォーカス', () => {
     view.rerender(harness(map, POINTS, [], null, { focusTickRef, shakeFocus: focusNow(1) }))
 
     expect(moveCount(map)).toBe(1)
+    // 見送っても連番は消費する（操作の保持が明けた瞬間にスナップしないための歯止め）。
+    expect(focusTickRef.current).toBe(1)
   })
 
   it('古い要求では寄らない（タブの保持で移れなかった分を後から蒸し返さない）', () => {
@@ -1169,19 +1173,339 @@ describe('揺れフォーカス', () => {
     expect(moveCount(map)).toBe(1)
   })
 
-  it('見送った要求は連番を消費し、条件が変わっても蒸し返さない', () => {
-    // Arrange: EEW 発報中に要求が来て見送られる。
+  // EEW 発報中は消費しない。**寄せる主体が FitToEEWGL へ移る**ため、ここで消費すると EEW 中の要求が
+  // すべて吸われて一度も寄らない（担当の受け渡しは「揺れフォーカス（EEW 発報中）」の describe で固定）。
+  it('[安全弁] EEW 発報中は連番を消費せず、EEW 側へ委譲する', () => {
     const focusTickRef = { current: 0 }
     const { map, view } = settled(focusTickRef)
-    const focus = focusNow(1)
-    view.rerender(harness(map, POINTS, [], null, { hasEew: true, focusTickRef, shakeFocus: focus }))
+
+    view.rerender(harness(map, POINTS, [], null, { hasEew: true, focusTickRef, shakeFocus: focusNow(1) }))
+
+    // 自分では寄せない。連番も残す（同じコミットの後段で FitToEEWGL が拾えるようにするため）。
+    expect(moveCount(map)).toBe(1)
+    expect(focusTickRef.current).toBe(0)
+  })
+})
+
+// ── 揺れフォーカス（EEW 発報中） ────────────────────────────────────────────────
+// EEW 発報中はカメラの持ち主が FitToEEWGL へ移る（FitToDetectionGL の追従は hasEew で止まる）。
+// そのため揺れフォーカスも EEW 側が担当しないと、寄せた直後に EEW の成長フォロー
+// （予報円の再計算＝100ms ごとに評価）が引き戻してしまう。
+//
+// ここで固定するのは 3 つ。
+//   1. EEW 発報中でもその点へ寄る
+//   2. 第一報のフォーカスを見せている間は譲る（EEW は「これから来る」の報せなので震源を先に見せる）
+//   3. 譲った要求も連番を消費する（後から蒸し返さない）
+describe('揺れフォーカス（EEW 発報中）', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  const EEW = {
+    id: 'eew-noto-report-1',
+    issue: { eventId: 'ev-noto' },
+    earthquake: {
+      originTime: '2026-08-24T05:00:00+09:00',
+      hypocenter: { latitude: 37.5, longitude: 137.2, depth: 10 },
+    },
+  } as unknown as EEWAlert
+  // 震源から離れた寄り先（震源へのフィットと区別できる位置）。
+  const FAR = { lat: 33.6, lng: 130.4 }
+  const DETECTED = [dp(37.0, 137.0), dp(37.2, 137.4)]
+
+  function eewFocusFrame(
+    map: maplibregl.Map,
+    opts: {
+      shakeFocus?: ShakeFocus | null
+      focusTickRef: { current: number }
+      firstSeenAtRef: { current: Map<string, number> }
+      focusedEewIdRef: { current: string | null }
+    },
+  ) {
+    return h(
+      MapGLContext.Provider,
+      { value: map },
+      h(FitToEEWGL, {
+        eews: [EEW],
+        psWave: [],
+        detectedPoints: [...DETECTED],
+        hasDetection: true,
+        candidatePoints: [],
+        forecastAreaPositions: [],
+        firstSeenAtRef: opts.firstSeenAtRef,
+        focusedEewIdRef: opts.focusedEewIdRef,
+        shakeFocus: opts.shakeFocus ?? null,
+        lastConsumedFocusTickRef: opts.focusTickRef,
+      }),
+    )
+  }
+
+  /** 発報から時間が経った EEW（第一報のフォーカスは済んでいる）で入室した状態を作る。 */
+  function settledDuringEew(focusTickRef: { current: number }) {
+    const map = createFakeMap({ fitZoom: 7 })
+    const refs = {
+      firstSeenAtRef: { current: new Map([['ev-noto', Date.now() - 60_000]]) },
+      focusedEewIdRef: { current: null as string | null },
+    }
+    const view = render(eewFocusFrame(map, { focusTickRef, ...refs }))
+    // 入室フィット（合成範囲へ 1 回）。飛行を終わらせておく。
+    expect(moveCount(map)).toBe(1)
+    act(() => {
+      vi.advanceTimersByTime(4000)
+    })
+    return { map, view, refs }
+  }
+
+  it('[正] EEW 発報中でも、要求された 1 点へ寄る', () => {
+    const focusTickRef = { current: 0 }
+    const { map, view, refs } = settledDuringEew(focusTickRef)
+
+    view.rerender(eewFocusFrame(map, {
+      focusTickRef, ...refs,
+      shakeFocus: { ...FAR, tick: 1, atMs: Date.now() },
+    }))
+
+    expect(moveCount(map)).toBe(2)
+    expect(map.getCenter()).toEqual({ lng: FAR.lng, lat: FAR.lat })
+  })
+
+  it('[正] 寄せた後は EEW の成長フォローが引き戻さない（抑制が効く）', () => {
+    const focusTickRef = { current: 0 }
+    const { map, view, refs } = settledDuringEew(focusTickRef)
+    const focus: ShakeFocus = { ...FAR, tick: 1, atMs: Date.now() }
+    view.rerender(eewFocusFrame(map, { focusTickRef, ...refs, shakeFocus: focus }))
+    expect(moveCount(map)).toBe(2)
+
+    // 飛行は終わったが抑制（3 秒）は明けていない時点で、検知点が更新される。
+    act(() => {
+      vi.advanceTimersByTime(2900)
+    })
+    view.rerender(eewFocusFrame(map, { focusTickRef, ...refs, shakeFocus: focus }))
+
+    expect(moveCount(map)).toBe(2)
+  })
+
+  // 自分が張った抑制を自分で読むと、3 秒以内に続く上昇が落ちる（震度7へ達する瞬間はまさにここ）。
+  // 抑制の ref を役割で分けていることの杭。
+  it('[正] 3 秒以内に続く上昇でも寄る（自分の抑制で自分を止めない）', () => {
+    const focusTickRef = { current: 0 }
+    const { map, view, refs } = settledDuringEew(focusTickRef)
+    view.rerender(eewFocusFrame(map, {
+      focusTickRef, ...refs,
+      shakeFocus: { ...FAR, tick: 1, atMs: Date.now() },
+    }))
+    expect(moveCount(map)).toBe(2)
+
+    // 1 秒後（＝自分が張った 3 秒の抑制の内側）に、さらに強い点へ上がる。
+    act(() => {
+      vi.advanceTimersByTime(1000)
+    })
+    const NEXT = { lat: 35.0, lng: 135.0 }
+    view.rerender(eewFocusFrame(map, {
+      focusTickRef, ...refs,
+      shakeFocus: { ...NEXT, tick: 2, atMs: Date.now() },
+    }))
+
+    expect(moveCount(map)).toBe(3)
+    expect(map.getCenter()).toEqual({ lng: NEXT.lng, lat: NEXT.lat })
+  })
+
+  it('[対照] 第一報のフォーカスを見せている間は譲る', () => {
+    // Arrange: 初出時刻を記録せずにマウントする（＝新規発報として第一報のフォーカスが走る）。
+    const map = createFakeMap({ fitZoom: 7 })
+    const focusTickRef = { current: 0 }
+    const refs = {
+      firstSeenAtRef: { current: new Map<string, number>() },
+      focusedEewIdRef: { current: null as string | null },
+    }
+    const view = render(eewFocusFrame(map, { focusTickRef, ...refs }))
     expect(moveCount(map)).toBe(1)
 
-    // Act: EEW が解除される（要求はまだ鮮度の内側にある）。
-    view.rerender(harness(map, POINTS, [], null, { focusTickRef, shakeFocus: focus }))
+    // Act: 第一報の抑制（3 秒）が明ける前に揺れの強まりが来る。
+    act(() => {
+      vi.advanceTimersByTime(1000)
+    })
+    view.rerender(eewFocusFrame(map, {
+      focusTickRef, ...refs,
+      shakeFocus: { ...FAR, tick: 1, atMs: Date.now() },
+    }))
 
-    // Assert: 寄らない。この要求は「その瞬間を見せたい」ものなので、遅れて見せる価値が無い
-    // （取り戻す経路を意図的に持たない）。
+    // Assert: 寄らない（第一報の画を守る）。連番は消費するので後から蒸し返さない。
     expect(moveCount(map)).toBe(1)
+    expect(focusTickRef.current).toBe(1)
+  })
+
+  it('[安全弁] 譲った要求は、抑制が明けても蒸し返さない', () => {
+    const map = createFakeMap({ fitZoom: 7 })
+    const focusTickRef = { current: 0 }
+    const refs = {
+      firstSeenAtRef: { current: new Map<string, number>() },
+      focusedEewIdRef: { current: null as string | null },
+    }
+    const view = render(eewFocusFrame(map, { focusTickRef, ...refs }))
+    const focus: ShakeFocus = { ...FAR, tick: 1, atMs: Date.now() }
+    view.rerender(eewFocusFrame(map, { focusTickRef, ...refs, shakeFocus: focus }))
+    const before = moveCount(map)
+
+    // 第一報の抑制が明けてから、同じ要求のまま再評価される。
+    act(() => {
+      vi.advanceTimersByTime(4000)
+    })
+    view.rerender(eewFocusFrame(map, { focusTickRef, ...refs, shakeFocus: focus }))
+
+    // 成長フォローが働くことはあっても、1 点への直行（padding 無し）は起きない。
+    const added = fitPaddings(map).slice(before)
+    expect(added).not.toContain(undefined)
+  })
+})
+
+
+// ── 揺れフォーカスの担当の受け渡し（両方をマウントした結合） ──────────────────────────
+// 「EEW が出ていなければ検知追従・出ていれば EEW 追従が寄せる」という排他は、両者が同じ `eews` から
+// 算出した値（hasEew と eews.length）を見ていることに依っている。単体テストは片方しかマウントしない
+// ため、配線が片方だけ変わっても両方 green のまま「誰も消費しない／両方が消費する」回帰を通してしまう。
+// JapanMapGL と同じ順・同じ ref で並べて、境界の両側で「ちょうど 1 回消費され、実際に寄る」ことを固定する。
+describe('揺れフォーカスの担当の受け渡し', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  const EEW = {
+    id: 'eew-1',
+    issue: { eventId: 'ev-1' },
+    earthquake: {
+      originTime: '2026-08-24T05:00:00+09:00',
+      hypocenter: { latitude: 37.5, longitude: 137.2, depth: 10 },
+    },
+  } as unknown as EEWAlert
+  const DETECTED = [dp(37.0, 137.0), dp(37.2, 137.4)]
+  const FAR = { lat: 33.6, lng: 130.4 }
+
+  function bothFrame(
+    map: maplibregl.Map,
+    opts: {
+      eews: EEWAlert[]
+      shakeFocus?: ShakeFocus | null
+      focusTickRef: { current: number }
+      firstSeenAtRef: { current: Map<string, number> }
+      focusedEewIdRef: { current: string | null }
+      /** 検知が続いているか（描ける点が無い状態を作るために分ける）。 */
+      hasDetection?: boolean
+      /** 地図に描けている検知点（空にすると「寄り先なし」の分岐を通る）。 */
+      points?: DetectedPoint[]
+    },
+  ) {
+    return h(
+      MapGLContext.Provider,
+      { value: map },
+      h(FitToDetectionGL, {
+        points: [...(opts.points ?? DETECTED)],
+        hasDetection: opts.hasDetection ?? true,
+        // JapanMapGL と同じ導出（同じ eews から作る）。ここが実装の排他の根拠。
+        hasEew: opts.eews.length > 0,
+        hasCandidate: false,
+        shakeFocus: opts.shakeFocus ?? null,
+        lastConsumedFocusTickRef: opts.focusTickRef,
+      }),
+      h(FitToEEWGL, {
+        eews: opts.eews,
+        psWave: [],
+        detectedPoints: [...DETECTED],
+        hasDetection: true,
+        candidatePoints: [],
+        forecastAreaPositions: [],
+        firstSeenAtRef: opts.firstSeenAtRef,
+        focusedEewIdRef: opts.focusedEewIdRef,
+        shakeFocus: opts.shakeFocus ?? null,
+        lastConsumedFocusTickRef: opts.focusTickRef,
+      }),
+    )
+  }
+
+  /** 初期フィットの飛行を終わらせた状態を作る（第一報が走らないよう、EEW は 1 分前に初出とする）。 */
+  function settled(eews: EEWAlert[], focusTickRef: { current: number }) {
+    const map = createFakeMap({ fitZoom: 7 })
+    const refs = {
+      firstSeenAtRef: { current: new Map(eews.map((e) => [e.issue?.eventId ?? e.id, Date.now() - 60_000])) },
+      focusedEewIdRef: { current: null as string | null },
+    }
+    const view = render(bothFrame(map, { eews, focusTickRef, ...refs }))
+    act(() => {
+      vi.advanceTimersByTime(4000)
+    })
+    return { map, view, refs }
+  }
+
+  it('[正] EEW 発報中は、ちょうど 1 回消費されてその点へ寄る', () => {
+    const focusTickRef = { current: 0 }
+    const { map, view, refs } = settled([EEW], focusTickRef)
+    const before = moveCount(map)
+
+    view.rerender(bothFrame(map, {
+      eews: [EEW], focusTickRef, ...refs,
+      shakeFocus: { ...FAR, tick: 1, atMs: Date.now() },
+    }))
+
+    // 誰も消費しない（＝寄らない）ことも、両方が消費すること（＝二重に飛ぶ）もない。
+    expect(focusTickRef.current).toBe(1)
+    expect(moveCount(map)).toBe(before + 1)
+    expect(map.getCenter()).toEqual({ lng: FAR.lng, lat: FAR.lat })
+  })
+
+  it('[正] EEW が無ければ、同じくちょうど 1 回消費されてその点へ寄る', () => {
+    const focusTickRef = { current: 0 }
+    const { map, view, refs } = settled([], focusTickRef)
+    const before = moveCount(map)
+
+    view.rerender(bothFrame(map, {
+      eews: [], focusTickRef, ...refs,
+      shakeFocus: { ...FAR, tick: 1, atMs: Date.now() },
+    }))
+
+    expect(focusTickRef.current).toBe(1)
+    expect(moveCount(map)).toBe(before + 1)
+    expect(map.getCenter()).toEqual({ lng: FAR.lng, lat: FAR.lat })
+  })
+
+  // 反証で見つかった穴: EEW 中に「検知が終わっている」「描ける点が無い」状態で要求が来ると、
+  // 検知側の早期 return が消費してしまい、EEW 側が拾えなくなる（担当していない側は消費しない規則）。
+  it.each([
+    ['検知が終わっている', { hasDetection: false, points: [] as DetectedPoint[] }],
+    ['描ける点が無い', { hasDetection: true, points: [] as DetectedPoint[] }],
+  ])('[安全弁] EEW 中に %s 状態で要求が来ても、EEW 側が寄せる', (_name, state) => {
+    const focusTickRef = { current: 0 }
+    const { map, view, refs } = settled([EEW], focusTickRef)
+    const before = moveCount(map)
+
+    view.rerender(bothFrame(map, {
+      eews: [EEW], focusTickRef, ...refs, ...state,
+      shakeFocus: { ...FAR, tick: 1, atMs: Date.now() },
+    }))
+
+    expect(focusTickRef.current).toBe(1)
+    expect(moveCount(map)).toBe(before + 1)
+    expect(map.getCenter()).toEqual({ lng: FAR.lng, lat: FAR.lat })
+  })
+
+  it('[安全弁] EEW が消えたのと同じコミットで要求が来ても、消費されずに残らない', () => {
+    // 解除の帰還（検知点全体へのフィット）が最後に走って画を上書きするが、要求が未消費のまま
+    // 残ると、次の評価で「終わった揺れの点」へ寄り直す余地ができる。
+    const focusTickRef = { current: 0 }
+    const { map, view, refs } = settled([EEW], focusTickRef)
+
+    view.rerender(bothFrame(map, {
+      eews: [], focusTickRef, ...refs,
+      shakeFocus: { ...FAR, tick: 1, atMs: Date.now() },
+    }))
+
+    expect(focusTickRef.current).toBe(1)
   })
 })
