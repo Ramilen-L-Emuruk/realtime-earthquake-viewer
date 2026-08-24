@@ -11,6 +11,23 @@ import type { HeatPoint } from '../../utils/quakeHeatmap'
 // 地図のモード: quake=地震情報 / tsunami=津波海岸線 / kyoshin=リアルタイム震度・予報円。
 export type MapMode = 'quake' | 'tsunami' | 'kyoshin'
 
+/**
+ * 揺れ検知で「今この 1 点を見せたい」という要求。`useKyoshinAlerts` が通知音とまったく同じ判定で
+ * 発行し（揺れの強まり＝レベルアップ／再エスカレーションと、別地点発報）、`FitToDetectionGL` が
+ * 消費して短く寄る。
+ *
+ * `tick` は単調増加の連番。座標の等値では「同じ場所でさらに強まった」を表せないため、寄り直しの
+ * 合図はこの連番で持つ。`atMs` は要求した時刻（`Date.now()`）で、地図側が古い要求を捨てるために使う
+ * ——タブの保持（優先度）で realtime へ移れなかった場合、要求だけが残って後から入室したときに
+ * 蒸し返される。
+ */
+export interface ShakeFocus {
+  lat: number
+  lng: number
+  tick: number
+  atMs: number
+}
+
 export interface JapanMapProps {
   mode: MapMode
   quake: JMAQuake | null
@@ -53,6 +70,12 @@ export interface JapanMapProps {
   /** likely / faint 全イベントのメンバー観測点。**検知点マーカー専用**（フィットには使わない）。 */
   unconfirmedPoints?: DetectedPoint[]
   candidateId?: number | null
+  /**
+   * 揺れの強まり・別地点発報で立った「1 点へ寄せる」要求（`ShakeFocus`）。null は要求なし。
+   * 消費済みの連番は `JapanMapGL` が保有する ref で覚える（理由は同ファイルの
+   * `lastConsumedShakeFocusTickRef`）。
+   */
+  shakeFocus?: ShakeFocus | null
   eewLpgmEventId?: string | null
   focusObsName?: { name: string; ts: number } | null
   obsUpdateStatus?: Map<string, 'new' | 'updated'>
