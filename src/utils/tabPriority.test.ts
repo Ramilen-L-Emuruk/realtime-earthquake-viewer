@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   TAB_PRIORITY, TAB_HOLD_MS, TAB_FOLLOW_MIN_DWELL_MS,
-  shouldAcceptAutoTab, shouldFollowNow, idleRevertPriority,
+  shouldAcceptAutoTab, shouldFollowNow, idleRevertPriority, resolveNonRealtimeTabSource,
   type TabHold,
 } from './tabPriority'
 
@@ -21,6 +21,8 @@ describe('shouldAcceptAutoTab', () => {
   })
 
   // これが本題。EEW が確保している間は地震情報・長周期にタブを渡さない。
+  // **駆動源 `hold`（ユーザー操作・揺れ検知）の話。** 電文の受信は `receipt` で出すため、続報の
+  // 保持は越える（下の「読み上げを持たない受信」の describe）。
   it('EEW が確保している間、地震情報はタブを奪えない', () => {
     expect(shouldAcceptAutoTab(held(TAB_PRIORITY.eewUrgent), TAB_PRIORITY.quake, NOW)).toBe(false)
     expect(shouldAcceptAutoTab(held(TAB_PRIORITY.eewUpdate), TAB_PRIORITY.quake, NOW)).toBe(false)
@@ -100,8 +102,10 @@ describe('shouldAcceptAutoTab（読み上げ追従）', () => {
     expect(shouldAcceptAutoTab(idleHold, TAB_PRIORITY.tsunami, NOW, 'speech')).toBe(true)
   })
 
-  // 対照: 読み上げを持たない要求には従来どおり効く（緩めたのは追従に対してだけ）。
-  it('アイドル復帰の保持は、読み上げを持たない要求を従来どおり弾く', () => {
+  // 対照: ユーザー操作・揺れ検知には従来どおり効く。
+  // **電文の受信（`receipt`）に対しては覆した** ——読み上げが無効な端末で EEW 発表中の復帰が
+  // 15 秒の窓を開け、そこへ落ちた震度速報・津波警報が画面へ出せなかったため（下の describe）。
+  it('アイドル復帰の保持は、ユーザー操作・揺れ検知（hold）を従来どおり弾く', () => {
     const idleHold = held(TAB_PRIORITY.eewUpdate, 'idleRevert')
     expect(shouldAcceptAutoTab(idleHold, TAB_PRIORITY.quake, NOW, 'hold')).toBe(false)
     expect(shouldAcceptAutoTab(idleHold, TAB_PRIORITY.tsunami, NOW, 'hold')).toBe(false)
@@ -157,6 +161,91 @@ describe('shouldAcceptAutoTab（読み上げ追従）', () => {
 
   // 長周期地震動は地震情報と同格（`quake`）。読み上げ側と揃えてある（`SPEECH_PRIORITY.normal`）。
   // どちらも地震情報タブ行きなので、同格にしてもタブの奪い合いは起きない。
+})
+
+// 読み上げを持たない電文の受信（source: 'receipt'）の規則。
+//
+// 直したかった症状: 読み上げが無効な端末では、EEW 発表中に震度速報も津波警報も画面へ出せなかった。
+// 優先度 1・3 が続報の 4 に弾かれ、続報は数秒おきに保持を張り直すので保持が切れない（津波の続報は
+// 数分間隔なので待っても順番が来ない）。優先度の仕組みを入れる前は移動そのものが無条件だった。
+describe('shouldAcceptAutoTab（読み上げを持たない受信）', () => {
+  // 正
+  it('EEW 続報の保持を越えて、地震情報も津波も画面を取れる', () => {
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.eewUpdate, 'speech'), TAB_PRIORITY.quake, NOW, 'receipt')).toBe(true)
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.eewUpdate, 'speech'), TAB_PRIORITY.tsunami, NOW, 'receipt')).toBe(true)
+  })
+
+  // 正: アイドル復帰が EEW 発表中に張る保持（eewUpdate / idleRevert）も同じ判定で越える。
+  // 読み上げ追従に譲る手当て（2026-08-21）が `speech` にしか効いていなかったので、対称に広げた。
+  it('アイドル復帰が EEW 発表中に張った保持も越える', () => {
+    const idleHold = held(TAB_PRIORITY.eewUpdate, 'idleRevert')
+    expect(shouldAcceptAutoTab(idleHold, TAB_PRIORITY.quake, NOW, 'receipt')).toBe(true)
+    expect(shouldAcceptAutoTab(idleHold, TAB_PRIORITY.tsunami, NOW, 'receipt')).toBe(true)
+  })
+
+  // 対照: 越えるのは続報（4）だけ。誤報取消のオーバーレイ表示中に無関係な地震情報で
+  // タブが消える症状を再発させないため。
+  it('EEW の新規発報・レベルアップ・誤報取消の保持は越えない', () => {
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.eewUrgent, 'speech'), TAB_PRIORITY.quake, NOW, 'receipt')).toBe(false)
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.eewUrgent, 'speech'), TAB_PRIORITY.tsunami, NOW, 'receipt')).toBe(false)
+  })
+
+  // 対照: 手動選択は守る。押したタブを電文の受信で奪わない。
+  it('手動選択の保持は越えない', () => {
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.manual), TAB_PRIORITY.quake, NOW, 'receipt')).toBe(false)
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.manual), TAB_PRIORITY.tsunami, NOW, 'receipt')).toBe(false)
+  })
+
+  // 対照: EEW 以外の保持には従来の優先度比較がそのまま効く。
+  it('津波が確保している画面を、地震情報の受信では奪わない', () => {
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.tsunami), TAB_PRIORITY.quake, NOW, 'receipt')).toBe(false)
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.quake), TAB_PRIORITY.tsunami, NOW, 'receipt')).toBe(true)
+  })
+
+  // 安全弁: 駆動源を足しただけで既存の経路を緩めていないこと。
+  // **読み上げが有効な端末の受信もここに含まれる。** 読み上げ文が空になった電文は `receipt` では
+  // なく `hold` で出るため（`setActiveTabNonRealtime`）、EEW を実際に読み上げている最中に画面を
+  // 奪わない。ここを `receipt` に寄せると、優先度の仕組みが最初に直した症状が戻る。
+  it('ユーザー操作・揺れ検知・読み上げ有効時の受信（hold）は EEW 続報の保持を越えない', () => {
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.eewUpdate, 'speech'), TAB_PRIORITY.quake, NOW, 'hold')).toBe(false)
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.eewUpdate, 'speech'), TAB_PRIORITY.tsunami, NOW, 'hold')).toBe(false)
+  })
+
+  // 安全弁: 画面を取ったあとは片方向抑制が 15 秒守る。**この経路は前段が塞がっていたため、
+  // 今回の修正で初めて発火する。** ここが効かないと、津波を表示した直後の続報で realtime へ戻る。
+  it('受信で取った画面を、EEW の続報は奪い返せない', () => {
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.tsunami, 'receipt'), TAB_PRIORITY.eewUpdate, NOW, 'speech')).toBe(false)
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.quake, 'receipt'), TAB_PRIORITY.eewUpdate, NOW, 'speech')).toBe(false)
+    // 新規発報・レベルアップ・誤報取消は従来どおり取り返す
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.tsunami, 'receipt'), TAB_PRIORITY.eewUrgent, NOW, 'speech')).toBe(true)
+  })
+})
+
+// 電文の受信でタブを要求するときの駆動源。
+//
+// この 1 行を取り違えると、症状は「EEW 発表中に画面が動かない」か「読み上げ中の EEW から画面を
+// 奪う」のいずれかで現れる。どちらの値も型として妥当なため型チェックでは気づけない。
+describe('resolveNonRealtimeTabSource', () => {
+  // 正: 声にならない電文は画面が唯一の伝え手なので、EEW 続報の保持を越える側に置く
+  it('読み上げが無効なら receipt', () => {
+    expect(resolveNonRealtimeTabSource(false)).toBe('receipt')
+  })
+
+  // 対照: 読み上げが有効ならここに来るのは「読み上げ文が空になった」電文だけ。越えさせない
+  it('読み上げが有効なら hold', () => {
+    expect(resolveNonRealtimeTabSource(true)).toBe('hold')
+  })
+
+  // 安全弁: **返した駆動源が実際に越える／越えないを分けていること。** 上の 2 件だけだと、
+  // 判定側（`shouldAcceptAutoTab`）の対象が変わったときに「値は正しいが効かない」状態を見逃す。
+  it('返した駆動源が、EEW 続報の保持を越えるかどうかを実際に決める', () => {
+    const eewHold = held(TAB_PRIORITY.eewUpdate, 'speech')
+    expect(shouldAcceptAutoTab(eewHold, TAB_PRIORITY.tsunami, NOW, resolveNonRealtimeTabSource(false))).toBe(true)
+    expect(shouldAcceptAutoTab(eewHold, TAB_PRIORITY.tsunami, NOW, resolveNonRealtimeTabSource(true))).toBe(false)
+    // 地震情報（1）でも同じこと
+    expect(shouldAcceptAutoTab(eewHold, TAB_PRIORITY.quake, NOW, resolveNonRealtimeTabSource(false))).toBe(true)
+    expect(shouldAcceptAutoTab(eewHold, TAB_PRIORITY.quake, NOW, resolveNonRealtimeTabSource(true))).toBe(false)
+  })
 })
 
 describe('shouldFollowNow', () => {
