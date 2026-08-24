@@ -290,6 +290,9 @@ export function FitToDetectionGL({
     // 次に評価される機会まで持ち越され、**検知が切れてすぐ次の検知が始まった場合に「前の検知の点」へ
     // 寄る**（鮮度の窓 5 秒はその間の再開を弾けない）。
     const dropShakeFocus = (why: string) => {
+      // **EEW 発報中は消費しない。** 発報中はカメラの持ち主が `FitToEEWGL` へ移り、あちらが同じ ref で
+      // 消費して寄せる。ここで消費すると、EEW 中の要求がすべてこの早期 return に吸われて一度も寄らない。
+      if (hasEew) return
       if (!shakeFocus || shakeFocus.tick === lastConsumedFocusTickRef.current) return
       lastConsumedFocusTickRef.current = shakeFocus.tick
       log.debug(`[mapGL] 揺れフォーカス スキップ (${why})`)
@@ -380,11 +383,14 @@ export function FitToDetectionGL({
     //  - ユーザー操作中: 震度の上昇は警報の第一報ではないので、EEW のように操作の保持を解除して
     //    まで画を奪わない（他の Fit* と同じく `isUserInteracting` を尊重する）。
     if (shakeFocus && shakeFocus.tick !== lastConsumedFocusTickRef.current) {
+      if (hasEew) {
+        // 消費せずに残す（`FitToEEWGL` がこの後の effect で拾う。記述順がそれを保証している）。
+        log.debug('[mapGL] 揺れフォーカス 委譲 (EEW発報中・FitToEEW が寄せる)')
+        return
+      }
       const ageMs = Date.now() - shakeFocus.atMs
       if (ageMs >= SHAKE_FOCUS_WINDOW_MS) {
         dropShakeFocus(`古い要求 ${Math.round(ageMs / 1000)}秒前`)
-      } else if (hasEew) {
-        dropShakeFocus('EEW発報中・FitToEEW に委譲')
       } else if (isUserInteracting) {
         dropShakeFocus('userInteracting')
       } else {
@@ -575,6 +581,8 @@ export function FitToEEWGL({
   forecastAreaPositions = [],
   firstSeenAtRef,
   focusedEewIdRef,
+  shakeFocus = null,
+  lastConsumedFocusTickRef,
 }: {
   eews: EEWAlert[]
   psWave: PsWaveCircle[]
@@ -609,6 +617,15 @@ export function FitToEEWGL({
   firstSeenAtRef: React.MutableRefObject<Map<string, number>>
   /** 第一報フォーカスを与え終えた EEW の eventId（同じ理由で親が保有する）。 */
   focusedEewIdRef: React.MutableRefObject<string | null>
+  /**
+   * 「この 1 点を見せたい」という要求（`useKyoshinAlerts` が通知音と同じ判定で出す）。
+   * **EEW 発報中はこちらが担当する**——発報中は `FitToDetectionGL` の追従が止まってカメラの持ち主が
+   * ここへ移るため、あちらが寄せても下の成長フォロー（予報円の再計算＝100ms ごとに評価される）が
+   * 即座に引き戻してしまう。
+   */
+  shakeFocus?: ShakeFocus | null
+  /** 消費済みの `shakeFocus.tick`。**`FitToDetectionGL` と同じ ref を渡すこと**（両者で排他に消費する）。 */
+  lastConsumedFocusTickRef: React.MutableRefObject<number>
 }) {
   const map = useMapGL()
   // 直前の評価で EEW が出ていたか。解除の帰還を「自分がマウントしている間に消えたとき」だけに
@@ -621,7 +638,18 @@ export function FitToEEWGL({
   const [isUserInteracting, resetUserInteraction] = useUserInteractionGuard(map)
   const prevEewsCountRef = useRef<number>(0)
   const prevPsWaveCountRef = useRef<number>(0)
+  // 成長フォロー・件数減少の再フィットを止める期限。**第一報と揺れフォーカスの両方が張る**
+  // （どちらも「いま見せている画を数秒保たせたい」ので、止める相手は同じ）。
   const suppressGrowthUntilRef = useRef<number>(0)
+  // 第一報のフォーカスを見せている期限。**揺れフォーカスが「譲るかどうか」を見るのはこちらだけ。**
+  // 上の ref を見ると、自分が直前に張った抑制を読んで 3 秒以内の次の上昇を落としてしまう
+  // （非 EEW 側は連続して寄るため、経路で挙動が変わる。ログも「第一報の直後」と嘘をつく）。
+  //
+  // **EEW が入れ替わっても消さなくてよい。** 持つのは時刻なので、意味を持つのは第一報を飛ばしてから
+  // 3 秒の間だけ。そしてその 3 秒は、他にカメラを動かすものが無い（成長フォローと件数減少は同じ 3 秒で
+  // 止まり、検知追従・候補追従は hasEew で停止、地震・津波の追従は kyoshin モードでマウントされない）
+  // ——画面は実際に第一報のフレーミングを保っている。latest がどの EEW であれ、譲るのが正しい。
+  const firstReportUntilRef = useRef<number>(0)
 
   // 最新 EEW（originTime 降順）を追従対象とする。
   const latest =
@@ -694,6 +722,8 @@ export function FitToEEWGL({
       entryFittedRef.current = true
       resetUserInteraction()
       suppressGrowthUntilRef.current = Date.now() + GROWTH_FOLLOW_SUPPRESS_MS
+      // 揺れフォーカスに譲らせる期限も同じ長さで張る（役割が違うので ref は分ける。上記参照）。
+      firstReportUntilRef.current = suppressGrowthUntilRef.current
       // 波円が既にあれば波円へ直接フィット（震源→波円のギクシャク防止）。他に発報中の EEW があっても
       // それらの円は含めない。psWave prop は usePsWaveCalc が別 Effect で非同期に更新するため、新規 EEW
       // 受信直後のこのレンダーではまだ反映されていない（psWave.find に頼ると常に外れて震源フォールバック
@@ -748,6 +778,40 @@ export function FitToEEWGL({
     // 「latest に反応する effect」であることを deps だけで誤読させないための明示）。
     // 入室フィットの目標も解除時の帰還先も、その瞬間のレンダーが持つ点群で十分。
   }, [latest, map, isUserInteracting, resetUserInteraction])
+
+  // 揺れフォーカス（EEW 発報中の担当）。寄せた後は第一報と同じ抑制を掛け、下の成長フォローと
+  // 件数減少の再フィットを止める。**この effect は第一報の effect より後・件数減少より前に置く。**
+  //   - 第一報より後: 同じコミットで新規 EEW と要求が重なったら、第一報が先に抑制を張る。
+  //     こちらはその抑制を見て譲る（下記）。順序を入れ替えると、第一報の寄りを上書きしてしまう
+  //   - 件数減少より前: 逆に、こちらが張った抑制で件数減少の再フィットを止める。より新しく、
+  //     より具体的な要求（実際に強く揺れている 1 点）を優先する
+  useEffect(() => {
+    if (!map) return
+    // EEW が無い間は `FitToDetectionGL` が担当する（消費もあちら）。
+    if (eews.length === 0) return
+    if (!shakeFocus || shakeFocus.tick === lastConsumedFocusTickRef.current) return
+    lastConsumedFocusTickRef.current = shakeFocus.tick
+    const ageMs = Date.now() - shakeFocus.atMs
+    if (ageMs >= SHAKE_FOCUS_WINDOW_MS) {
+      log.debug(`[mapGL] 揺れフォーカス スキップ (EEW中・古い要求 ${Math.round(ageMs / 1000)}秒前)`)
+      return
+    }
+    if (isUserInteracting) {
+      log.debug('[mapGL] 揺れフォーカス スキップ (EEW中・userInteracting)')
+      return
+    }
+    // 第一報のフォーカスを見せている間は譲る。EEW は「これから来る」の報せで、まず震源を
+    // 見せる意味がある。揺れの強まりは 3 秒後の次の上昇で拾える。
+    // **見るのは第一報の期限だけ**（自分が張った抑制を見ると自己抑制になる。上記 ref の注記）。
+    if (Date.now() < firstReportUntilRef.current) {
+      log.debug('[mapGL] 揺れフォーカス スキップ (EEW第一報の直後)')
+      return
+    }
+    suppressGrowthUntilRef.current = Date.now() + SHAKE_FOCUS_SUPPRESS_MS
+    log.debug(`[mapGL] 揺れフォーカス (EEW中 ${shakeFocus.lat.toFixed(2)},${shakeFocus.lng.toFixed(2)})`)
+    flyToPoint(map, [shakeFocus.lat, shakeFocus.lng], fitMaxZoom(map), 0.8)
+    // lastConsumedFocusTickRef・suppressGrowthUntilRef は ref なので依存配列に入れない。
+  }, [shakeFocus, eews.length, map, isUserInteracting])
 
   // EEW 数 or 波円数が減少かつ残りがある場合: 残りへ強制再フィット。
   useEffect(() => {

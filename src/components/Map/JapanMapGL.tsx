@@ -425,6 +425,8 @@ export function JapanMapGL({
                 forecastAreaPositions={eewFitPositions}
                 firstSeenAtRef={eewFirstSeenAtRef}
                 focusedEewIdRef={focusedEewIdRef}
+                shakeFocus={shakeFocus}
+                lastConsumedFocusTickRef={lastConsumedShakeFocusTickRef}
               />
             </>
           )}
