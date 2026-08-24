@@ -14,6 +14,7 @@ import { useDebouncedValue } from '../../hooks/useDebouncedValue'
 import { DescriptionTip } from './DescriptionTip'
 import { zipSync } from 'fflate'
 import { countRecords, listRecords, clearRecords, onRecordsChanged, hasStorageError } from '../../utils/detectionDiagnosticsDb'
+import { formatFileStamp } from '../../utils/formatters'
 
 export interface TestFunctions {
   earthquake: () => void
@@ -101,10 +102,10 @@ function DiagnosticLogRow() {
       const enc = new TextEncoder()
       const files: Record<string, Uint8Array> = {}
       for (const r of records) {
-        const ts = new Date(r.dataTimeMs).toISOString().replace(/[-:]/g, '').replace('T', '_').slice(0, 15)
+        const ts = formatFileStamp(r.dataTimeMs)
         files[`${ts}_${r.reachedConfidence}_${r.event.id}.json`] = enc.encode(JSON.stringify(r))
       }
-      const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '_').slice(0, 15)
+      const stamp = formatFileStamp(Date.now())
       const blob = new Blob([zipSync(files)], { type: 'application/zip' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')

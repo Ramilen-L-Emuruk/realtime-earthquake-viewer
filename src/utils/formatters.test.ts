@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatDepth, formatMagnitude } from './formatters'
+import { formatDepth, formatMagnitude, formatFileStamp } from './formatters'
 import { getMagnitudeColor, getDepthColor } from './intensity'
 
 // 規模・深さの色は文字表示（formatMagnitude / formatDepth）と同じ判定で「不明」を弾く必要がある。
@@ -57,5 +57,68 @@ describe('formatMagnitude', () => {
   })
   it('Infinity は "不明"', () => {
     expect(formatMagnitude(Number.POSITIVE_INFINITY)).toBe('不明')
+  })
+})
+
+// 書き出しファイル名の時刻印。UTC で作ると JST の端末では 9 時間ずれた名前が並び、
+// 「この時刻に鳴った」という手元のメモと突き合わせられなくなる（診断ログの用途そのもの）。
+describe('formatFileStamp', () => {
+  /**
+   * 時間帯を切り替えて測る。`process.env.TZ` は Node が実行時に読み直すため、
+   * オフセットだけでなく壁時計（`getHours` 等）も一緒に動く。
+   *
+   * **`getTimezoneOffset` だけを偽装しては駄目。** それだと壁時計が実行環境のままになるので、
+   * UTC で走る CI（`deploy.yml` は `ubuntu-latest`・TZ 指定なし）では、直したかった旧実装
+   * （`toISOString()` ベース）と出力が一致してしまい、回帰を捕まえられない。
+   */
+  function withTz<T>(tz: string, run: () => T): T {
+    const orig = process.env.TZ
+    process.env.TZ = tz
+    try {
+      return run()
+    } finally {
+      if (orig === undefined) delete process.env.TZ
+      else process.env.TZ = orig
+    }
+  }
+
+  // 2026-01-15T00:00:00Z。時間帯ごとの規則が現行のものになる年を選ぶ
+  // （epoch 直後を使うと、当時と今で刻みが違う地域＝ネパールの +0530→+0545 等を踏む）
+  const BASE = Date.UTC(2026, 0, 15, 0, 0, 0)
+
+  it('端末のローカル時刻で作る（UTC ではない）', () => {
+    expect(withTz('Asia/Tokyo', () => formatFileStamp(BASE))).toBe('20260115_090000+0900')
+  })
+
+  it('UTC より west の時間帯は負符号になり、日付も繰り下がる', () => {
+    expect(withTz('America/New_York', () => formatFileStamp(BASE))).toBe('20260114_190000-0500')
+  })
+
+  it('30 分・45 分刻みの時間帯でも分が落ちない', () => {
+    expect(withTz('Asia/Kolkata', () => formatFileStamp(BASE))).toBe('20260115_053000+0530')
+    expect(withTz('Asia/Kathmandu', () => formatFileStamp(BASE))).toBe('20260115_054500+0545')
+  })
+
+  it('UTC の端末では +0000', () => {
+    expect(withTz('UTC', () => formatFileStamp(BASE))).toBe('20260115_000000+0000')
+  })
+
+  it('夏時間を持つ地域では、記録した時刻に効いていたオフセットで作る', () => {
+    // 現在時刻のオフセットで全件を作ると、季節をまたいだ記録が 1 時間ずれて並ぶ
+    expect(withTz('America/New_York', () => formatFileStamp(Date.UTC(2026, 6, 1, 12, 0, 0)))).toBe('20260701_080000-0400')
+    expect(withTz('America/New_York', () => formatFileStamp(Date.UTC(2026, 0, 1, 12, 0, 0)))).toBe('20260101_070000-0500')
+  })
+
+  it('桁を必ず埋める（ファイル名が時刻順に並ぶため）', () => {
+    expect(withTz('Asia/Tokyo', () => formatFileStamp(Date.UTC(2026, 0, 1, 18, 4, 5)))).toBe('20260102_030405+0900')
+  })
+
+  // `withTz` が復元することの契約テスト。**同じファイルの後続のテストを守るために置く**
+  // （テストファイルどうしは別プロセスで走るので互いには漏れない）。formatFileStamp 自体は
+  // 時間帯を読むだけなので、漏れうるのはこのヘルパーだけ
+  it('時間帯を元へ戻す（同じファイルの後続を巻き込まない）', () => {
+    const before = process.env.TZ
+    withTz('Asia/Kathmandu', () => formatFileStamp(BASE))
+    expect(process.env.TZ).toBe(before)
   })
 })
