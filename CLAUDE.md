@@ -552,6 +552,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 強震モニタの取得と再生の分離（供給元 → 時刻順キュー → 反映の 3 段・放出は到来分の最新 1 件のみ・反映はデータ時刻順に限る・新しい供給元を足すときの入口） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §4「取得と再生の分離」 |
 | クロック同期の主経路・フォールバックの順序（**主経路が失敗したときだけ Yahoo 経路を走らせる**。両方を `feedServerSample` へ供給すると精度の良い側にバイアスが混ざる。「見送り」は失敗ではないのでフォールバックへ落とさない） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §4「クロック同期」 |
 | 外部時刻サービスの換算基準（返る時刻は応答生成時刻。**中点で換算すると -RTT/2 の系統誤差が乗る**）・`?ms` を落とすと精度が秒単位に静かに劣化すること | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §4「主経路: 外部の時刻サービス」 |
+| 単点のまま居座る確定の降ろし方（**発報の条件は変えない**・数えるのは点数ではなく**隣り合う対があるか**（併合でメンバーは和集合になるため）・**状態を書き換えず述語で覆う**（書き戻すと猶予の周期で明滅し、検知音が鳴り直す）・確信度を書く箇所は `updateEventMetrics` と `mergeAdjacentEvents` の **2 つ**あるので判定を集約する） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) §4 |
 | `KyoshinSubThreshold` の対象範囲（index 1〜6）・慢性ノイズ床フィルタ | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) |
 | 欠測の瞬断を直前値で保持する範囲（表示・カード・音は保持値／検知エンジンは生値・保持時間・保持中の見せ方） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) §8 |
 | 検知点マーカー（地図）と検知カード（リアルタイムタブ）が数える点集合・下限の一致（対象イベントは `weak` 以外の全件／下限は震度0以上／点列は App が用意した 1 本を共有する） | [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) §8 |

@@ -25,6 +25,8 @@ function fakeEvent(overrides: Partial<DetectionEvent> & Pick<DetectionEvent, 'id
     lastSize: overrides.memberKeys.length,
     epicenter: null,
     confirmStreak: 0,
+    firstConfirmedAtMs: 0,
+    everMultiPoint: false,
     everConfirmed: overrides.confidence === 'confirmed',
     lastSpreadAtMs: 0,
     everNeighborRise: overrides.confidence === 'likely' || overrides.confidence === 'confirmed',
