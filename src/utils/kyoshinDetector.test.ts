@@ -1508,23 +1508,116 @@ describe('buildStationMeta: 密網でも離れた点へ橋を架ける（K）', 
 })
 
 describe('step: 密網で間隔のある揺れ（福岡型）', () => {
-  it('20〜30km 間隔の 3 点だけが立ち上がっても連結して likely になる', () => {
-    const { defs, shakeIdx } = denseChainLayout()
-    const meta = buildStationMeta(sitesOf(defs))
-    const shake = new Set(shakeIdx)
+  /**
+   * 揺れる 3 点を震度1(value 0.5)へ上げるフレーム列。
+   *
+   * @param neighborsRise 間を埋める静穏点も床下で一段（-1.0 → -0.5）持ち上げるか。
+   *   実地震は震度0 に届かない点まで一斉に動かすので true が実データの形（§32）。
+   *   false は「1 点だけが跳ね、周囲は微動だにしない」都市部の局所ノイズの形。
+   * @param tailFrames 揺れの後に置く「周囲が静まったフレーム」の数（ラッチの確認用）
+   */
+  function chainFrames(
+    defs: StationDef[],
+    shake: Set<number>,
+    neighborsRise: boolean,
+    tailFrames = 0,
+  ): Frame[] {
     const frames: Frame[] = []
     let t = 0
-    for (let i = 0; i < 6; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
-    // 3 点が震度1(value 0.5)へ。間を埋める静穏点は床下のまま動かない（実データと同じ形）
-    for (let i = 0; i < 4; i++, t += 1000) {
-      frames.push(frameWith(defs, t, (idx) => (shake.has(idx) ? 0.5 : 0)))
+    for (let i = 0; i < 6; i++, t += 1000) {
+      frames.push(frameWith(defs, t, (idx) => (shake.has(idx) ? 0 : -1.0)))
     }
-    const { detections } = drive(frames, meta)
+    for (let i = 0; i < 4; i++, t += 1000) {
+      frames.push(frameWith(defs, t, (idx) => (shake.has(idx) ? 0.5 : neighborsRise ? -0.5 : -1.0)))
+    }
+    // 周囲が上がりきって静まった後（上昇量が 0 になる）。ラッチが無いとここで faint へ落ちる
+    for (let i = 0; i < tailFrames; i++, t += 1000) {
+      frames.push(frameWith(defs, t, (idx) => (shake.has(idx) ? 0.5 : neighborsRise ? -0.5 : -1.0)))
+    }
+    return frames
+  }
+
+  it('20〜30km 間隔の 3 点が立ち上がり、周囲も床下で一緒に上がれば likely になる', () => {
+    const { defs, shakeIdx } = denseChainLayout()
+    const meta = buildStationMeta(sitesOf(defs))
+    const { detections } = drive(chainFrames(defs, new Set(shakeIdx), true), meta)
 
     expect(detections.some((d) => d.confidence === 'likely')).toBe(true)
     // 密な網では確定点数（CONFIRM_POINTS）に届かないので confirmed には上げない。
     // 実際の福岡も likely 止まりで、これが妥当な確信度（音は鳴らさず画面には出す）。
     expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+
+  it('同じ 3 点が立ち上がっても、周囲が微動だにしなければ faint に留まる（§32・対照）', () => {
+    // 立ち上がる点も連結の仕方も上のテストと同一で、違うのは「周囲が一緒に動いたか」だけ。
+    // 瞬間の値の並び（震度1 が 1〜3 点・周囲は床下）では両者を区別できず、ここでしか分かれない。
+    const { defs, shakeIdx } = denseChainLayout()
+    const meta = buildStationMeta(sitesOf(defs))
+    const { detections } = drive(chainFrames(defs, new Set(shakeIdx), false), meta)
+
+    expect(detections.some((d) => d.confidence === 'likely')).toBe(false)
+    expect(detections.some((d) => d.confidence === 'faint')).toBe(true)
+  })
+
+  it('一度 likely に達したら、周囲が静まっても likely を保つ（候補音の鳴り直し防止のラッチ・§32）', () => {
+    // 周囲の上昇は揺れの広がり方で上下する。毎フレーム判定にすると likely と faint を往復し、
+    // useKyoshinAlerts が候補音の立ち上がりを何度も検出して鳴らし直す。
+    const { defs, shakeIdx } = denseChainLayout()
+    const meta = buildStationMeta(sitesOf(defs))
+    const { detections } = drive(chainFrames(defs, new Set(shakeIdx), true, 5), meta)
+
+    expect(detections.some((d) => d.confidence === 'likely')).toBe(true)
+  })
+
+  it('欠測から復帰した点は「上がった」と数えない（欠測グリッチで裏付けが立たない・§32 の安全弁）', () => {
+    // 全国の反応局が急落復帰するグリッチでは、復帰フレームで多数の点が見かけ上そろって上昇する。
+    // 周囲の同時上昇は分母から欠測点を外すため、分母が縮んだところへ復帰点が分子に入ると
+    // 割合が跳ね上がりうる。実際には復帰点は hist を捨てられており上昇量を測れない（rate=null）ので
+    // 数えられない。この不変条件を固定する。
+    const { defs, shakeIdx } = denseChainLayout()
+    const meta = buildStationMeta(sitesOf(defs))
+    const shake = new Set(shakeIdx)
+    const frames: Frame[] = []
+    let t = 0
+    // 静穏（揺れる点は 0、周囲は床下）
+    for (let i = 0; i < 6; i++, t += 1000) {
+      frames.push(frameWith(defs, t, (idx) => (shake.has(idx) ? 0 : -1.0)))
+    }
+    // 周囲だけが 2 秒間まるごと欠測する
+    for (let i = 0; i < 2; i++, t += 1000) {
+      frames.push({
+        dataTimeMs: t,
+        sites: sitesOf(defs),
+        values: defs.map((_, idx) => (shake.has(idx) ? valueToIndex(0) : -1)),
+        missing: defs.map((_, idx) => !shake.has(idx)),
+      })
+    }
+    // 復帰と同時に揺れる 3 点が震度1 へ。周囲は復帰しただけで上昇量を測れない
+    for (let i = 0; i < 4; i++, t += 1000) {
+      frames.push(frameWith(defs, t, (idx) => (shake.has(idx) ? 0.5 : -1.0)))
+    }
+    const { detections } = drive(frames, meta)
+
+    // 復帰点を「上がった」と数えていたら likely になってしまう
+    expect(detections.some((d) => d.confidence === 'likely')).toBe(false)
+  })
+
+  it('周囲が動かなくても、確定の条件を満たせば confirmed になる（周囲の裏付けは likely にだけ課す・§32）', () => {
+    // 7×7・間隔 0.05°（約 5.5km）。5 点が震度1 へ上がり、残り 44 点は床下で静止する。
+    // 周囲の上昇率は 5/49 = 約 10% で likely のバー（NEIGHBOR_RISE_FRAC）を下回るが、
+    // confirmed は点数・最大震度・確定震度到達点数だけで決まるため影響を受けない。
+    const defs: StationDef[] = []
+    for (let i = -3; i <= 3; i++) for (let j = -3; j <= 3; j++) defs.push({ lat: 35.0 + i * 0.05, lng: 139.0 + j * 0.05 })
+    const meta = buildStationMeta(sitesOf(defs))
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 6; i++, t += 1000) frames.push(uniformFrame(defs, t, -1.0))
+    for (let i = 0; i < 5; i++, t += 1000) {
+      frames.push(frameWith(defs, t, (idx) => (idx < PARAMS.CONFIRM_POINTS ? 0.5 : -1.0)))
+    }
+    const { detections } = drive(frames, meta)
+
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(true)
   })
 
   it('網が密で全点が相互に近傍でも、立ち上がりが 2 点なら検知しない（K では救えない限界）', () => {

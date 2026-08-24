@@ -122,3 +122,23 @@ export function formatTsunamiGrade(grade: TsunamiGrade): { text: string; color: 
   }
   return map[grade] ?? { text: grade, color: '#ffffff', bg: '#666666' }
 }
+
+/**
+ * 書き出すファイル名に使う時刻印（`YYYYMMDD_HHMMSS+HHMM`）。
+ *
+ * **端末のローカル時刻で作る。** `toISOString()` は UTC を返すため、JST の端末では 9 時間ずれた
+ * 名前が並ぶ。書き出した記録を手元の観測（「この時刻に鳴った」というメモ）と突き合わせるのが
+ * 用途なので、画面の他の時刻表示と同じ基準に揃える。
+ *
+ * 末尾に UTC からのオフセットを添えるのは、端末の時間帯が JST とは限らないため。名前だけで
+ * どの時間帯の時刻か決まる。30 分・45 分刻みの時間帯があるので分も出す。
+ */
+export function formatFileStamp(ms: number): string {
+  const d = new Date(ms)
+  const p = (n: number, w = 2): string => String(Math.floor(Math.abs(n))).padStart(w, '0')
+  const date = `${p(d.getFullYear(), 4)}${p(d.getMonth() + 1)}${p(d.getDate())}`
+  const time = `${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+  // getTimezoneOffset は「UTC - ローカル」の分を返すので、表記の符号は反転する（JST なら -540 → +0900）
+  const off = -d.getTimezoneOffset()
+  return `${date}_${time}${off < 0 ? '-' : '+'}${p(off / 60)}${p(Math.abs(off) % 60)}`
+}

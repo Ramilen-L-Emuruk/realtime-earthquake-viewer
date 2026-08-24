@@ -27,6 +27,7 @@ function fakeEvent(overrides: Partial<DetectionEvent> & Pick<DetectionEvent, 'id
     confirmStreak: 0,
     everConfirmed: overrides.confidence === 'confirmed',
     lastSpreadAtMs: 0,
+    everNeighborRise: overrides.confidence === 'likely' || overrides.confidence === 'confirmed',
     ...overrides,
   }
 }
