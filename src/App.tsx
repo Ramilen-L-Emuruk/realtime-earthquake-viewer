@@ -6,6 +6,7 @@ import {
 } from './utils/tabPriority'
 import { PanelResizeHandle } from './components/PanelResizeHandle'
 import { MapView, type MapMode } from './components/Map/MapView'
+import type { ShakeFocus } from './components/Map/mapTypes'
 import { MapUpdateTime } from './components/MapUpdateTime'
 import { MapDataStatus } from './components/MapDataStatus'
 import { EarthquakeTab } from './components/EarthquakeTab'
@@ -23,6 +24,7 @@ import { useKyoshinAlerts } from './hooks/useKyoshinAlerts'
 import { useKyoshinRealtime } from './hooks/useKyoshinRealtime'
 import { useKyoshinDetectorV2 } from './hooks/useKyoshinDetectorV2'
 import { useKyoshinMissingHold } from './hooks/useKyoshinMissingHold'
+import { useDetectionDiagnostics } from './hooks/useDetectionDiagnostics'
 import { createSpeechFollowController, type SpeechFollowSession } from './utils/ttsFollow'
 import { deriveKyoshinView } from './utils/kyoshinDetectionView'
 import { filterSubThresholdIndices } from './utils/kyoshinSubThresholdFilter'
@@ -965,6 +967,16 @@ export function App() {
   // ことになるが、これは意図した設計（欠測を素通しすると最大震度を担う点の 1 秒欠測が「揺れが弱まった」
   // と解釈され、復帰時に更新音が誤って鳴る）。範囲の詳細は utils/kyoshinMissingHold.ts 冒頭。
   const kyoshinHeld = useKyoshinMissingHold(kyoshinIndicesGated, kyoshin.dataTime, kyoshin.sitesSiteConfigId)
+  // 検知が走ったとき、その前後の生の観測値を記録する（設定タブから書き出せる）。
+  // 渡すのは表示用の保持値ではなく**検知エンジンと同じ生値**——記録の目的は
+  // 「エンジンが何を見て検知したか」を後から再生することなので、加工前の値でなければ意味がない。
+  useDetectionDiagnostics(
+    kyoshinV2.detections,
+    kyoshinSitesGated,
+    kyoshinIndicesGated,
+    kyoshin.dataTime,
+    kyoshin.indicesSiteConfigId,
+  )
   // V2 検知イベント → 表示状態（confirmed/candidate・検知点・候補点）へ変換する
   const kyoshinView = useMemo(
     () =>
@@ -1033,6 +1045,19 @@ export function App() {
     prevEtaRef.current = eta
   }, [swaveArrival?.etaSec, settings.soundEnabled])
 
+  // 揺れの強まり（レベルアップ・再エスカレーション）と別地点発報で、その 1 点へ一時的に寄せる合図。
+  // 通知音を鳴らすのと同じ判定で useKyoshinAlerts が出し、地図（FitToDetectionGL）が消費する。
+  const [shakeFocus, setShakeFocus] = useState<ShakeFocus | null>(null)
+  const handleShakeFocus = useCallback((point: { lat: number; lng: number }) => {
+    setShakeFocus((prev) => ({
+      lat: point.lat,
+      lng: point.lng,
+      // 同じ座標が続いても寄り直せるよう連番で進める（座標の等値では「さらに強まった」を表せない）。
+      tick: (prev?.tick ?? 0) + 1,
+      atMs: Date.now(),
+    }))
+  }, [])
+
   // 揺れ検知の開始/終了・レベル変化に応じたタブ切替・タイトル・通知音・ブラウザ通知
   useKyoshinAlerts({
     confirmed: kyoshinView.confirmed,
@@ -1048,6 +1073,7 @@ export function App() {
     // 地震情報に画面を奪われる）
     setActiveTab: requestTabForKyoshin,
     revertToDefaultTab,
+    onShakeFocus: handleShakeFocus,
   })
 
   const mapQuake = mapTab === 'earthquake' ? selectedQuake : latest
@@ -1106,6 +1132,7 @@ export function App() {
             candidatePoints={kyoshinView.candidatePoints}
             unconfirmedPoints={kyoshinView.unconfirmedPoints}
             candidateId={kyoshinView.candidateId}
+            shakeFocus={shakeFocus}
             eewLpgmEventId={activeLpgmSource === 'eew' ? activeLpgmEventId : null}
             focusObsName={focusedObsName}
             obsUpdateStatus={obsUpdateStatus}

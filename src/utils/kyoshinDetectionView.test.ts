@@ -27,6 +27,7 @@ function fakeEvent(overrides: Partial<DetectionEvent> & Pick<DetectionEvent, 'id
     confirmStreak: 0,
     everConfirmed: overrides.confidence === 'confirmed',
     lastSpreadAtMs: 0,
+    everNeighborRise: overrides.confidence === 'likely' || overrides.confidence === 'confirmed',
     ...overrides,
   }
 }
@@ -278,7 +279,7 @@ describe('deriveKyoshinView: 孤立した震度0点の除外', () => {
     )
     expect(view.detectedMarkerPoints).toEqual([])
     expect(view.confirmed).toBe(true)
-    expect(view.confirmedShocks).toEqual([{ lat: 40.0, lng: 139.0, index: 6 }])
+    expect(view.confirmedShocks).toEqual([{ lat: 40.0, lng: 139.0, index: 6, peak: { lat: 40.0, lng: 139.0 } }])
   })
 })
 
@@ -311,10 +312,16 @@ describe('deriveKyoshinView: 欠測ホールドの保持値と stale フラグ',
 
   it('最大震度を担う点が欠測しても、保持値なら confirmedShocks の index が落ちない', () => {
     const held = deriveKyoshinView([confirmedEvent], holdSites, [17, 15], new Set(), [true, false])
-    expect(held.confirmedShocks).toEqual([{ lat: 35.05, lng: 139.05, index: 17 }])
-    // 保持しない場合（欠測を素通し）は次点の 15 まで落ちる＝揺れが弱まったように見える
+    // 保持値 17 を持つ hKeyA が最大＝寄り先（peak）もその観測点になる。
+    expect(held.confirmedShocks).toEqual([
+      { lat: 35.05, lng: 139.05, index: 17, peak: { lat: 35.0, lng: 139.0 } },
+    ])
+    // 保持しない場合（欠測を素通し）は次点の 15 まで落ちる＝揺れが弱まったように見える。
+    // 寄り先も次点の観測点（hKeyB）へ移る。
     const raw = deriveKyoshinView([confirmedEvent], holdSites, [-1, 15], new Set())
-    expect(raw.confirmedShocks).toEqual([{ lat: 35.05, lng: 139.05, index: 15 }])
+    expect(raw.confirmedShocks).toEqual([
+      { lat: 35.05, lng: 139.05, index: 15, peak: { lat: 35.1, lng: 139.1 } },
+    ])
   })
 
   it('likely 中の音レベルの基準（candidateMaxIndex）も保持値で落ちない', () => {
@@ -328,5 +335,89 @@ describe('deriveKyoshinView: 欠測ホールドの保持値と stale フラグ',
   it('stale を渡さない経路では stale=false になる（保持を通さない呼び出し）', () => {
     const view = derive([confirmedEvent], holdSites, [17, 15])
     expect(view.detectedMarkerPoints.every((p) => p.stale === false)).toBe(true)
+  })
+})
+
+// 揺れフォーカス（音が鳴った点へカメラを寄せる。map-rendering-spec §6）の寄り先。
+// **重心ではなく「最大震度を記録した観測点」でなければならない。** 広域に広がったイベントでは
+// 重心が強い点から大きく離れ、画の中心に何も無い状態になる（2024-01-01 16:08 能登の再生で実測:
+// 石川〜千葉に広がったイベントの重心は新潟県境付近・震度4の観測点は能登で約 140km のずれ）。
+describe('deriveKyoshinView: confirmedShocks の寄り先（peak）', () => {
+  const wideSites: SiteCoords = [
+    [37.45, 137.15], // 能登（最大震度）
+    [36.5, 138.5], // 長野
+    [35.7, 140.0], // 千葉
+  ]
+  const wideKeys = wideSites.map(([lat, lng]) => siteKey(lat, lng))
+
+  it('[正] 重心ではなく、最大震度を記録した観測点の座標を返す', () => {
+    const view = derive(
+      [fakeEvent({
+        id: 'evt-1',
+        confidence: 'confirmed',
+        memberKeys: wideKeys,
+        maxIntensity: 4.0,
+        // 重心は 3 点の平均（実装が使う値そのもの。ここでは意図的にピークから離れた位置）
+        epicenter: [36.55, 138.55],
+      })],
+      wideSites,
+      [13, 8, 7], // 能登が震度4相当・他は震度1〜2
+    )
+    expect(view.confirmedShocks).toHaveLength(1)
+    const shock = view.confirmedShocks[0]
+    expect(shock.index).toBe(13)
+    expect(shock.peak).toEqual({ lat: 37.45, lng: 137.15 })
+    // 照合に使う重心は従来どおり（別地点判定の距離閾値がこれを前提にしている）
+    expect({ lat: shock.lat, lng: shock.lng }).toEqual({ lat: 36.55, lng: 138.55 })
+  })
+
+  it('[対照] 最大が動けば寄り先も動く', () => {
+    const view = derive(
+      [fakeEvent({
+        id: 'evt-1',
+        confidence: 'confirmed',
+        memberKeys: wideKeys,
+        maxIntensity: 4.0,
+        epicenter: [36.55, 138.55],
+      })],
+      wideSites,
+      [7, 8, 13], // 今度は千葉が最大
+    )
+    expect(view.confirmedShocks[0].peak).toEqual({ lat: 35.7, lng: 140.0 })
+  })
+
+  it('[安全弁] 同じ最大値が並んだら memberKeys の並びで先の観測点を採る（結果が揺れない）', () => {
+    const view = derive(
+      [fakeEvent({
+        id: 'evt-1',
+        confidence: 'confirmed',
+        memberKeys: wideKeys,
+        maxIntensity: 4.0,
+        epicenter: [36.55, 138.55],
+      })],
+      wideSites,
+      [13, 13, 13], // 全点が同じ最大
+    )
+    expect(view.confirmedShocks[0].peak).toEqual({ lat: 37.45, lng: 137.15 })
+  })
+
+  it('[安全弁] メンバーが索引に無くてもイベントは落とさない（重心へ落として残す）', () => {
+    // 観測点リストの入れ替え中は sites が空へゲートされ、メンバーが 1 つも引けなくなる。
+    // ここでイベントごと消すと、地域単位の発報（stepAlertRegions）が「確定が消えた」と読んで
+    // 発報済み・EEW 吸収済みの記録を捨て、入れ替えの直後に同じ地域が鳴り直す。
+    const view = derive(
+      [fakeEvent({
+        id: 'evt-1',
+        confidence: 'confirmed',
+        memberKeys: wideKeys,
+        maxIntensity: 4.0,
+        epicenter: [36.55, 138.55],
+      })],
+      [], // sites が空（＝索引が空）
+      [],
+    )
+    expect(view.confirmedShocks).toEqual([
+      { lat: 36.55, lng: 138.55, index: 0, peak: { lat: 36.55, lng: 138.55 } },
+    ])
   })
 })
