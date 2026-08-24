@@ -13,7 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "capture-scenario": "tsx scripts/capture-test-scenario.ts",
-    "probe-kyoshin": "tsx scripts/probe-kyoshin.ts"
+    "bench-kyoshin": "tsx scripts/bench-kyoshin.ts"
   },
   "dependencies": {
     "fflate": "^0.8.3",
