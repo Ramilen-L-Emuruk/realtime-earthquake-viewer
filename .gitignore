@@ -29,8 +29,8 @@ logs/
 # Test / verification artifacts
 .playwright-mcp/
 coverage/
-# 強震モニタ実データ検証（npm run probe-kyoshin）が取得した Yahoo の過去フレーム。
-# 1 窓 180 秒で数 MB になるうえ、いつでも取り直せるためコミットしない
+# 強震モニタ実データ回帰ベンチ（npm run bench-kyoshin）が取得した Yahoo の過去フレーム。
+# 全 793 窓で 500MB を超えるうえ、窓カタログから何度でも取り直せるためコミットしない
 .probe-cache/
 verify-*.png
 verify-*.jpg
@@ -75,8 +75,7 @@ public/data/test-scenarios/*.json
 
 # 検知アルゴリズムの試作・計測に使う使い捨てのスクリプトと、その出力。
 # 手元で捨てられる前提のものなのでコミットしない。
-# probe-*.ts はホワイトリスト方式: 残すものは ! の行を足す
-# （probe-kyoshin.ts は npm run probe-kyoshin で使う正規のもの）。
+# probe-*.ts はすべて使い捨て（正規の計測は scripts/bench-kyoshin.ts）。
 # 出力側は先頭 / でリポジトリ直下に限定する。スラッシュを含まないパターンは
 # 任意の階層のベース名に効くため、src/ や docs/ 配下の同名接頭辞まで
 # 巻き込んで静かに追跡から漏らす。
@@ -84,5 +83,5 @@ public/data/test-scenarios/*.json
 # o3.txt: 何かのコマンドの --version 出力を取り違えて書き出した残骸（1 行だけ）。
 /o3.txt
 scripts/probe-*.ts
-!scripts/probe-kyoshin.ts
 scripts/_*.ts
+scripts/_*.cjs

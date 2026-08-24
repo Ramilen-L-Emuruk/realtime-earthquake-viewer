@@ -1,0 +1,5653 @@
+{
+ "results": {
+  "pc-fukushimaoki": {
+   "tier": "confirmed",
+   "firstLikely": "20:11:46",
+   "firstConfirmed": "20:11:51",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "pc-chibatoho": {
+   "tier": "confirmed",
+   "firstLikely": "04:45:27",
+   "firstConfirmed": "04:45:29",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "pc-nagano0545": {
+   "tier": "confirmed",
+   "firstLikely": "05:45:37",
+   "firstConfirmed": "05:45:38",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "pc-nemuro": {
+   "tier": "confirmed",
+   "firstLikely": "11:25:39",
+   "firstConfirmed": "11:25:41",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "pc-amami": {
+   "tier": "confirmed",
+   "firstLikely": "18:22:43",
+   "firstConfirmed": "18:22:44",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "pc-osumi": {
+   "tier": "confirmed",
+   "firstLikely": "06:49:57",
+   "firstConfirmed": "06:49:59",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "pc-miyagioki": {
+   "tier": "confirmed",
+   "firstLikely": "23:55:41",
+   "firstConfirmed": "23:55:43",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "pc-yamanashi": {
+   "tier": "confirmed",
+   "firstLikely": "02:23:54",
+   "firstConfirmed": "02:23:57",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "pc-kii": {
+   "tier": "confirmed",
+   "firstLikely": "07:46:38",
+   "firstConfirmed": "07:46:44",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "pc-nakadori": {
+   "tier": "confirmed",
+   "firstLikely": "11:25:59",
+   "firstConfirmed": "11:26:00",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "pc-sanriku": {
+   "tier": "confirmed",
+   "firstLikely": "16:44:50",
+   "firstConfirmed": "16:44:56",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "pc-fukuoka": {
+   "tier": "likely",
+   "firstLikely": "05:49:43",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "pc-ibaraki": {
+   "tier": "confirmed",
+   "firstLikely": "01:10:53",
+   "firstConfirmed": "01:10:55",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "pc-aichitobu": {
+   "tier": "confirmed",
+   "firstLikely": "00:47:53",
+   "firstConfirmed": "00:47:54",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "pc-aichiseibu": {
+   "tier": "confirmed",
+   "firstLikely": "00:42:42",
+   "firstConfirmed": "00:42:44",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "pc-nagano0730": {
+   "tier": "confirmed",
+   "firstLikely": "07:30:38",
+   "firstConfirmed": "07:30:40",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "pc-shimane": {
+   "tier": "confirmed",
+   "firstLikely": "02:30:21",
+   "firstConfirmed": "02:30:24",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "noto": {
+   "tier": "confirmed",
+   "firstLikely": "16:10:15",
+   "firstConfirmed": "16:10:15",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "big-noto2023": {
+   "tier": "confirmed",
+   "firstLikely": "14:42:09",
+   "firstConfirmed": "14:42:09",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "big-fukushima2022": {
+   "tier": "confirmed",
+   "firstLikely": "23:35:35",
+   "firstConfirmed": "23:35:35",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "big-fukushima2021": {
+   "tier": "confirmed",
+   "firstLikely": "23:08:07",
+   "firstConfirmed": "23:08:07",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "big-hyuganada2024": {
+   "tier": "confirmed",
+   "firstLikely": "16:43:05",
+   "firstConfirmed": "16:43:05",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "big-bungo2024": {
+   "tier": "confirmed",
+   "firstLikely": "23:14:56",
+   "firstConfirmed": "23:14:57",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "big-chiba2021": {
+   "tier": "confirmed",
+   "firstLikely": "22:41:35",
+   "firstConfirmed": "22:41:37",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "ng-saitama": {
+   "tier": "likely",
+   "firstLikely": "08:01:20",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "ng-ishikawa": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "ng-kyoto": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "ng-hidaka": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "ng-shiga": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "ng-aizu": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "calm22-03": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "calm22-07": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "calm22-10": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "calm22-12": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "calm22-1430": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "calm22-18": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "calm22-21": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "calm-night": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "calm-day": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "glitch-0724": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "overseas-m74": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "calmx0": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "calmx1": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "calmx2": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "13:38:11 千葉県|我孫子市我孫子"
+   ]
+  },
+  "calmx3": {
+   "tier": "confirmed",
+   "firstLikely": "19:30:32",
+   "firstConfirmed": "19:30:36",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "calmx4": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "calmx5": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "hour-0819-08": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 3,
+   "unrelatedAt": [
+    "08:08:21 北海道|本別町北２丁目",
+    "08:26:52 北海道|本別町向陽町",
+    "08:28:02 千葉県|印西市笠神"
+   ]
+  },
+  "hour-0820-13": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "13:19:44 広島県|三原市久井町"
+   ]
+  },
+  "warm0819-104641": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "warm0820-124329": {
+   "tier": "confirmed",
+   "firstLikely": "12:04:57",
+   "firstConfirmed": "12:05:00",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "warm0821-102901": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "fp0816-080855": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "08:08:55 千葉県|旭市萩園"
+   ]
+  },
+  "fp0817-085052": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "fp0817-120141": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "fp0817-130232": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "13:02:32 石川県|珠洲市正院町"
+   ]
+  },
+  "fp0817-163840": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "16:38:40 福島県|小野町中通"
+   ]
+  },
+  "fp0818-003849": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "00:38:49 福井県|勝山市旭町"
+   ]
+  },
+  "fp0818-095359": {
+   "tier": "confirmed",
+   "firstLikely": "09:54:34",
+   "firstConfirmed": "09:54:40",
+   "unrelated": 1,
+   "unrelatedAt": [
+    "09:53:58 東京都|東京荒川区荒川"
+   ]
+  },
+  "fp0818-140703": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 2,
+   "unrelatedAt": [
+    "14:04:14 千葉県|印西市大森",
+    "14:07:03 茨城県|守谷市大柏"
+   ]
+  },
+  "fp0818-214431": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "21:44:31 長野県|王滝村鈴ヶ沢"
+   ]
+  },
+  "fp0819-054556": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "fp0819-075317": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "07:53:17 千葉県|香取市岩部"
+   ]
+  },
+  "fp0819-082623": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "08:26:52 北海道|本別町向陽町"
+   ]
+  },
+  "fp0819-090512": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "09:05:12 東京都|東京江東区亀戸"
+   ]
+  },
+  "fp0819-104641": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "fp0819-111642": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "fp0819-140337": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "14:03:37 茨城県|坂東市役所"
+   ]
+  },
+  "fp0819-200244": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "20:02:44 東京都|東京墨田区吾妻橋"
+   ]
+  },
+  "fp0820-065824": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "fp0820-103749": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "10:37:49 東京都|東京江東区亀戸"
+   ]
+  },
+  "fp0820-112235": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "11:22:35 茨城県|坂東市役所"
+   ]
+  },
+  "fp0820-115325": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "fp0820-124329": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "fp0820-131944": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "13:19:44 広島県|三原市久井町"
+   ]
+  },
+  "fp0820-154403": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "15:41:50 北海道|釧路市阿寒町中央"
+   ]
+  },
+  "fp0821-054859": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "fp0821-070149": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "07:01:49 北海道|釧路市阿寒町中央"
+   ]
+  },
+  "fp0821-083107": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "fp0821-102901": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "fp0821-162507": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "16:25:07 熊本県|氷川町島地"
+   ]
+  },
+  "fp0821-180601": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "18:06:01 宮崎県|日向市東郷町山陰"
+   ]
+  },
+  "jq0-0816-0103": {
+   "tier": "confirmed",
+   "firstLikely": "01:03:19",
+   "firstConfirmed": "01:03:21",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq1-0816-0112": {
+   "tier": "confirmed",
+   "firstLikely": "01:12:17",
+   "firstConfirmed": "01:12:20",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq2-0816-0259": {
+   "tier": "confirmed",
+   "firstLikely": "02:59:11",
+   "firstConfirmed": "02:59:13",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq3-0816-0425": {
+   "tier": "confirmed",
+   "firstLikely": "04:25:25",
+   "firstConfirmed": "04:25:26",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq4-0816-0433": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq5-0816-0618": {
+   "tier": "confirmed",
+   "firstLikely": "06:18:44",
+   "firstConfirmed": "06:18:48",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq6-0816-0930": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq7-0816-1204": {
+   "tier": "confirmed",
+   "firstLikely": "12:04:20",
+   "firstConfirmed": "12:04:22",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq8-0816-1332": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq9-0816-1337": {
+   "tier": "confirmed",
+   "firstLikely": "13:37:45",
+   "firstConfirmed": "13:37:47",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq10-0816-1403": {
+   "tier": "likely",
+   "firstLikely": "14:03:29",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq11-0816-1419": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq12-0816-1805": {
+   "tier": "confirmed",
+   "firstLikely": "18:05:37",
+   "firstConfirmed": "18:05:39",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq13-0816-2125": {
+   "tier": "confirmed",
+   "firstLikely": "21:25:49",
+   "firstConfirmed": "21:25:51",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq14-0816-2142": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq15-0816-2249": {
+   "tier": "confirmed",
+   "firstLikely": "22:49:24",
+   "firstConfirmed": "22:49:27",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq16-0816-2319": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq17-0817-0022": {
+   "tier": "confirmed",
+   "firstLikely": "00:22:18",
+   "firstConfirmed": "00:22:22",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq18-0817-0637": {
+   "tier": "confirmed",
+   "firstLikely": "06:37:22",
+   "firstConfirmed": "06:37:23",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq19-0817-1206": {
+   "tier": "confirmed",
+   "firstLikely": "12:07:11",
+   "firstConfirmed": "12:07:13",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq20-0817-1355": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq21-0817-1539": {
+   "tier": "confirmed",
+   "firstLikely": "15:39:11",
+   "firstConfirmed": "15:39:12",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq22-0817-1734": {
+   "tier": "confirmed",
+   "firstLikely": "17:34:45",
+   "firstConfirmed": "17:34:48",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq23-0817-1936": {
+   "tier": "confirmed",
+   "firstLikely": "19:36:58",
+   "firstConfirmed": "19:37:00",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq24-0817-2107": {
+   "tier": "confirmed",
+   "firstLikely": "21:07:19",
+   "firstConfirmed": "21:07:24",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq25-0817-2233": {
+   "tier": "confirmed",
+   "firstLikely": "22:33:22",
+   "firstConfirmed": "22:33:24",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq26-0817-2309": {
+   "tier": "confirmed",
+   "firstLikely": "23:09:09",
+   "firstConfirmed": "23:09:11",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq27-0818-0432": {
+   "tier": "likely",
+   "firstLikely": "04:32:17",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq28-0818-0522": {
+   "tier": "likely",
+   "firstLikely": "05:22:50",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq29-0818-0546": {
+   "tier": "confirmed",
+   "firstLikely": "05:46:22",
+   "firstConfirmed": "05:46:28",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq30-0818-0821": {
+   "tier": "confirmed",
+   "firstLikely": "08:21:32",
+   "firstConfirmed": "08:21:34",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq31-0818-0954": {
+   "tier": "confirmed",
+   "firstLikely": "09:54:34",
+   "firstConfirmed": "09:54:40",
+   "unrelated": 2,
+   "unrelatedAt": [
+    "09:53:58 東京都|東京荒川区荒川",
+    "09:55:59 千葉県|君津市久保"
+   ]
+  },
+  "jq32-0818-1242": {
+   "tier": "confirmed",
+   "firstLikely": "12:42:56",
+   "firstConfirmed": "12:42:57",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq33-0818-1505": {
+   "tier": "confirmed",
+   "firstLikely": "15:06:00",
+   "firstConfirmed": "15:06:01",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq34-0818-1709": {
+   "tier": "confirmed",
+   "firstLikely": "17:09:29",
+   "firstConfirmed": "17:09:30",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq35-0818-1756": {
+   "tier": "confirmed",
+   "firstLikely": "17:56:55",
+   "firstConfirmed": "17:56:56",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq36-0818-1836": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq37-0819-0710": {
+   "tier": "confirmed",
+   "firstLikely": "07:10:50",
+   "firstConfirmed": "07:10:52",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq38-0819-0942": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq39-0819-2043": {
+   "tier": "confirmed",
+   "firstLikely": "20:44:33",
+   "firstConfirmed": "20:44:34",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq40-0819-2255": {
+   "tier": "confirmed",
+   "firstLikely": "22:55:57",
+   "firstConfirmed": "22:56:01",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq41-0820-0000": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq42-0820-0050": {
+   "tier": "confirmed",
+   "firstLikely": "00:50:31",
+   "firstConfirmed": "00:50:33",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq43-0820-0055": {
+   "tier": "confirmed",
+   "firstLikely": "00:55:32",
+   "firstConfirmed": "00:55:33",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq44-0820-0429": {
+   "tier": "confirmed",
+   "firstLikely": "04:29:30",
+   "firstConfirmed": "04:29:34",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq45-0820-0838": {
+   "tier": "confirmed",
+   "firstLikely": "08:38:34",
+   "firstConfirmed": "08:38:37",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq46-0820-0848": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq47-0820-0906": {
+   "tier": "confirmed",
+   "firstLikely": "09:06:38",
+   "firstConfirmed": "09:06:46",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq48-0820-0945": {
+   "tier": "likely",
+   "firstLikely": "09:45:55",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq49-0820-1140": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq50-0820-1204": {
+   "tier": "confirmed",
+   "firstLikely": "12:04:57",
+   "firstConfirmed": "12:05:00",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq51-0820-1428": {
+   "tier": "confirmed",
+   "firstLikely": "14:28:47",
+   "firstConfirmed": "14:28:50",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq52-0820-1748": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq53-0821-0046": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq54-0821-0315": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq55-0821-0323": {
+   "tier": "confirmed",
+   "firstLikely": "03:23:50",
+   "firstConfirmed": "03:23:51",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq56-0821-0513": {
+   "tier": "confirmed",
+   "firstLikely": "05:13:28",
+   "firstConfirmed": "05:13:32",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq57-0821-0734": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq58-0821-0901": {
+   "tier": "confirmed",
+   "firstLikely": "09:01:34",
+   "firstConfirmed": "09:01:35",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq59-0821-0911": {
+   "tier": "likely",
+   "firstLikely": "09:11:23",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq60-0821-2102": {
+   "tier": "confirmed",
+   "firstLikely": "21:02:31",
+   "firstConfirmed": "21:02:36",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq61-0821-2327": {
+   "tier": "confirmed",
+   "firstLikely": "23:27:59",
+   "firstConfirmed": "23:28:00",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "jq62-0821-2332": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq0-0801-0005": {
+   "tier": "likely",
+   "firstLikely": "00:05:37",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq1-0801-0057": {
+   "tier": "likely",
+   "firstLikely": "00:57:34",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq2-0801-0148": {
+   "tier": "likely",
+   "firstLikely": "01:48:54",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq3-0801-0520": {
+   "tier": "likely",
+   "firstLikely": "05:20:11",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq4-0801-0523": {
+   "tier": "confirmed",
+   "firstLikely": "05:23:23",
+   "firstConfirmed": "05:23:26",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq5-0801-0625": {
+   "tier": "likely",
+   "firstLikely": "06:25:45",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq6-0801-0642": {
+   "tier": "confirmed",
+   "firstLikely": "06:42:19",
+   "firstConfirmed": "06:42:21",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq7-0801-0648": {
+   "tier": "confirmed",
+   "firstLikely": "06:48:26",
+   "firstConfirmed": "06:48:28",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq8-0801-0751": {
+   "tier": "confirmed",
+   "firstLikely": "07:51:28",
+   "firstConfirmed": "07:51:30",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq9-0801-0838": {
+   "tier": "confirmed",
+   "firstLikely": "08:38:17",
+   "firstConfirmed": "08:38:19",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq10-0801-0851": {
+   "tier": "likely",
+   "firstLikely": "08:51:31",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq11-0801-0932": {
+   "tier": "confirmed",
+   "firstLikely": "09:32:59",
+   "firstConfirmed": "09:33:04",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq12-0801-1000": {
+   "tier": "confirmed",
+   "firstLikely": "10:00:08",
+   "firstConfirmed": "10:00:09",
+   "unrelated": 1,
+   "unrelatedAt": [
+    "10:02:07 東京都|東京葛飾区立石"
+   ]
+  },
+  "wq13-0801-1152": {
+   "tier": "likely",
+   "firstLikely": "11:52:30",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq14-0801-1250": {
+   "tier": "confirmed",
+   "firstLikely": "12:50:15",
+   "firstConfirmed": "12:50:17",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq15-0801-1251": {
+   "tier": "confirmed",
+   "firstLikely": "12:51:36",
+   "firstConfirmed": "12:51:39",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq16-0801-1254": {
+   "tier": "confirmed",
+   "firstLikely": "12:54:27",
+   "firstConfirmed": "12:54:29",
+   "unrelated": 1,
+   "unrelatedAt": [
+    "12:54:00 千葉県|柏市大島田"
+   ]
+  },
+  "wq17-0801-1300": {
+   "tier": "confirmed",
+   "firstLikely": "13:00:30",
+   "firstConfirmed": "13:00:31",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq18-0801-1458": {
+   "tier": "confirmed",
+   "firstLikely": "14:58:03",
+   "firstConfirmed": "14:58:06",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq19-0801-1649": {
+   "tier": "confirmed",
+   "firstLikely": "16:49:02",
+   "firstConfirmed": "16:49:04",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq20-0801-1751": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq21-0801-1822": {
+   "tier": "confirmed",
+   "firstLikely": "18:22:06",
+   "firstConfirmed": "18:22:08",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq22-0801-2101": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq23-0801-2136": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq24-0801-2203": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq25-0801-2213": {
+   "tier": "confirmed",
+   "firstLikely": "22:12:48",
+   "firstConfirmed": "22:12:54",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq26-0801-2239": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq27-0801-2256": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq28-0801-2259": {
+   "tier": "confirmed",
+   "firstLikely": "22:59:06",
+   "firstConfirmed": "22:59:09",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq29-0801-2350": {
+   "tier": "confirmed",
+   "firstLikely": "23:50:08",
+   "firstConfirmed": "23:50:10",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq30-0802-0022": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq31-0802-0040": {
+   "tier": "confirmed",
+   "firstLikely": "00:40:58",
+   "firstConfirmed": "00:41:02",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq32-0802-0054": {
+   "tier": "confirmed",
+   "firstLikely": "00:54:42",
+   "firstConfirmed": "00:54:44",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq33-0802-0119": {
+   "tier": "confirmed",
+   "firstLikely": "01:19:33",
+   "firstConfirmed": "01:19:38",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq34-0802-0139": {
+   "tier": "likely",
+   "firstLikely": "01:39:09",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq35-0802-0322": {
+   "tier": "confirmed",
+   "firstLikely": "03:22:21",
+   "firstConfirmed": "03:22:27",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq36-0802-0434": {
+   "tier": "confirmed",
+   "firstLikely": "04:34:54",
+   "firstConfirmed": "04:34:56",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq37-0802-0452": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq38-0802-0618": {
+   "tier": "likely",
+   "firstLikely": "06:18:09",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq39-0802-0636": {
+   "tier": "likely",
+   "firstLikely": "06:36:45",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq40-0802-0804": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq41-0802-0812": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq42-0802-0817": {
+   "tier": "confirmed",
+   "firstLikely": "08:17:50",
+   "firstConfirmed": "08:17:55",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq43-0802-0919": {
+   "tier": "confirmed",
+   "firstLikely": "09:19:47",
+   "firstConfirmed": "09:19:50",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq44-0802-0945": {
+   "tier": "confirmed",
+   "firstLikely": "09:45:51",
+   "firstConfirmed": "09:45:54",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq45-0802-0948": {
+   "tier": "confirmed",
+   "firstLikely": "09:48:09",
+   "firstConfirmed": "09:48:11",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq46-0802-1038": {
+   "tier": "confirmed",
+   "firstLikely": "10:38:56",
+   "firstConfirmed": "10:38:58",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq47-0802-1229": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq48-0802-1347": {
+   "tier": "likely",
+   "firstLikely": "13:47:49",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq49-0802-1648": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq50-0802-1728": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq51-0802-1755": {
+   "tier": "confirmed",
+   "firstLikely": "17:55:45",
+   "firstConfirmed": "17:55:49",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq52-0802-1905": {
+   "tier": "confirmed",
+   "firstLikely": "19:05:44",
+   "firstConfirmed": "19:05:46",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq53-0802-1910": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq54-0802-1922": {
+   "tier": "confirmed",
+   "firstLikely": "19:22:36",
+   "firstConfirmed": "19:22:37",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq55-0802-1939": {
+   "tier": "confirmed",
+   "firstLikely": "19:39:17",
+   "firstConfirmed": "19:39:18",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq56-0802-2007": {
+   "tier": "confirmed",
+   "firstLikely": "20:07:40",
+   "firstConfirmed": "20:07:43",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq57-0802-2020": {
+   "tier": "confirmed",
+   "firstLikely": "20:20:29",
+   "firstConfirmed": "20:20:31",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq58-0802-2021": {
+   "tier": "confirmed",
+   "firstLikely": "20:20:42",
+   "firstConfirmed": "20:20:47",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq59-0802-2041": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq60-0802-2258": {
+   "tier": "confirmed",
+   "firstLikely": "22:58:19",
+   "firstConfirmed": "22:58:22",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq61-0803-0025": {
+   "tier": "confirmed",
+   "firstLikely": "00:25:18",
+   "firstConfirmed": "00:26:46",
+   "unrelated": 1,
+   "unrelatedAt": [
+    "00:25:40 福島県|檜枝岐村下ノ原"
+   ]
+  },
+  "wq62-0803-0026": {
+   "tier": "confirmed",
+   "firstLikely": "00:26:45",
+   "firstConfirmed": "00:26:47",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq63-0803-0417": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq64-0803-0502": {
+   "tier": "confirmed",
+   "firstLikely": "05:02:52",
+   "firstConfirmed": "05:02:56",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq65-0803-0553": {
+   "tier": "confirmed",
+   "firstLikely": "05:53:46",
+   "firstConfirmed": "05:53:51",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq66-0803-0641": {
+   "tier": "confirmed",
+   "firstLikely": "06:41:30",
+   "firstConfirmed": "06:41:33",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq67-0803-0813": {
+   "tier": "likely",
+   "firstLikely": "08:13:03",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq68-0803-1133": {
+   "tier": "confirmed",
+   "firstLikely": "11:34:02",
+   "firstConfirmed": "11:34:05",
+   "unrelated": 1,
+   "unrelatedAt": [
+    "11:33:23 茨城県|茨城古河市仁連"
+   ]
+  },
+  "wq69-0803-1221": {
+   "tier": "likely",
+   "firstLikely": "12:21:51",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq70-0803-1332": {
+   "tier": "confirmed",
+   "firstLikely": "13:32:59",
+   "firstConfirmed": "13:33:01",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq71-0803-1430": {
+   "tier": "confirmed",
+   "firstLikely": "14:30:33",
+   "firstConfirmed": "14:30:39",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq72-0803-1500": {
+   "tier": "confirmed",
+   "firstLikely": "15:00:45",
+   "firstConfirmed": "15:00:45",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq73-0803-1624": {
+   "tier": "confirmed",
+   "firstLikely": "16:24:53",
+   "firstConfirmed": "16:24:57",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq74-0803-1754": {
+   "tier": "likely",
+   "firstLikely": "17:54:22",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq75-0803-2010": {
+   "tier": "confirmed",
+   "firstLikely": "20:10:25",
+   "firstConfirmed": "20:10:29",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq76-0803-2021": {
+   "tier": "confirmed",
+   "firstLikely": "20:21:36",
+   "firstConfirmed": "20:21:39",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq77-0803-2221": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq78-0803-2340": {
+   "tier": "confirmed",
+   "firstLikely": "23:40:06",
+   "firstConfirmed": "23:40:11",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq79-0804-0013": {
+   "tier": "confirmed",
+   "firstLikely": "00:13:35",
+   "firstConfirmed": "00:13:40",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq80-0804-0218": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq81-0804-0702": {
+   "tier": "likely",
+   "firstLikely": "07:02:55",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq82-0804-0712": {
+   "tier": "confirmed",
+   "firstLikely": "07:12:41",
+   "firstConfirmed": "07:12:43",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq83-0804-0811": {
+   "tier": "confirmed",
+   "firstLikely": "08:11:15",
+   "firstConfirmed": "08:11:20",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq84-0804-1047": {
+   "tier": "confirmed",
+   "firstLikely": "10:47:18",
+   "firstConfirmed": "10:47:24",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq85-0804-1207": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq86-0804-1215": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq87-0804-1246": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq88-0804-1346": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq89-0804-1413": {
+   "tier": "confirmed",
+   "firstLikely": "14:13:11",
+   "firstConfirmed": "14:13:13",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq90-0804-1419": {
+   "tier": "confirmed",
+   "firstLikely": "14:19:55",
+   "firstConfirmed": "14:19:57",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq91-0804-1429": {
+   "tier": "confirmed",
+   "firstLikely": "14:29:44",
+   "firstConfirmed": "14:29:47",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq92-0804-1706": {
+   "tier": "confirmed",
+   "firstLikely": "17:06:27",
+   "firstConfirmed": "17:06:30",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq93-0804-1718": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq94-0804-1757": {
+   "tier": "confirmed",
+   "firstLikely": "17:57:35",
+   "firstConfirmed": "17:57:38",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq95-0804-1923": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq96-0804-2003": {
+   "tier": "confirmed",
+   "firstLikely": "20:03:26",
+   "firstConfirmed": "20:03:27",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq97-0804-2015": {
+   "tier": "confirmed",
+   "firstLikely": "20:16:01",
+   "firstConfirmed": "20:16:03",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq98-0804-2125": {
+   "tier": "likely",
+   "firstLikely": "21:26:01",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq99-0804-2223": {
+   "tier": "confirmed",
+   "firstLikely": "22:23:39",
+   "firstConfirmed": "22:23:41",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq100-0804-2342": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq101-0805-0047": {
+   "tier": "confirmed",
+   "firstLikely": "00:47:31",
+   "firstConfirmed": "00:47:33",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq102-0805-0117": {
+   "tier": "confirmed",
+   "firstLikely": "01:17:26",
+   "firstConfirmed": "01:17:28",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq103-0805-0321": {
+   "tier": "confirmed",
+   "firstLikely": "03:21:57",
+   "firstConfirmed": "03:21:57",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq104-0805-0343": {
+   "tier": "confirmed",
+   "firstLikely": "03:43:08",
+   "firstConfirmed": "03:43:12",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq105-0805-0359": {
+   "tier": "likely",
+   "firstLikely": "03:59:39",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq106-0805-0446": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq107-0805-0457": {
+   "tier": "confirmed",
+   "firstLikely": "04:57:10",
+   "firstConfirmed": "04:57:11",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq108-0805-0552": {
+   "tier": "confirmed",
+   "firstLikely": "05:52:36",
+   "firstConfirmed": "05:52:41",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq109-0805-0704": {
+   "tier": "confirmed",
+   "firstLikely": "07:04:27",
+   "firstConfirmed": "07:04:29",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq110-0805-1004": {
+   "tier": "confirmed",
+   "firstLikely": "10:04:32",
+   "firstConfirmed": "10:04:36",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq111-0805-1037": {
+   "tier": "likely",
+   "firstLikely": "10:37:35",
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "10:39:04 千葉県|白井市復"
+   ]
+  },
+  "wq112-0805-1403": {
+   "tier": "confirmed",
+   "firstLikely": "14:03:55",
+   "firstConfirmed": "14:03:56",
+   "unrelated": 1,
+   "unrelatedAt": [
+    "14:02:47 茨城県|河内町源清田"
+   ]
+  },
+  "wq113-0805-1635": {
+   "tier": "likely",
+   "firstLikely": "16:35:48",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq114-0805-1716": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq115-0805-1724": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq116-0805-1806": {
+   "tier": "confirmed",
+   "firstLikely": "18:06:30",
+   "firstConfirmed": "18:06:31",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq117-0805-2231": {
+   "tier": "confirmed",
+   "firstLikely": "22:31:15",
+   "firstConfirmed": "22:31:17",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq118-0805-2352": {
+   "tier": "confirmed",
+   "firstLikely": "23:52:11",
+   "firstConfirmed": "23:52:12",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq119-0806-0029": {
+   "tier": "confirmed",
+   "firstLikely": "00:29:36",
+   "firstConfirmed": "00:29:38",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq120-0806-0135": {
+   "tier": "confirmed",
+   "firstLikely": "01:35:54",
+   "firstConfirmed": "01:35:55",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq121-0806-0336": {
+   "tier": "confirmed",
+   "firstLikely": "03:36:16",
+   "firstConfirmed": "03:36:22",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq122-0806-0343": {
+   "tier": "likely",
+   "firstLikely": "03:43:31",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq123-0806-0410": {
+   "tier": "likely",
+   "firstLikely": "04:10:54",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq124-0806-0726": {
+   "tier": "confirmed",
+   "firstLikely": "07:26:30",
+   "firstConfirmed": "07:26:33",
+   "unrelated": 1,
+   "unrelatedAt": [
+    "07:27:01 千葉県|印西市笠神"
+   ]
+  },
+  "wq125-0806-0819": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq126-0806-1150": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "11:52:00 茨城県|守谷市大柏"
+   ]
+  },
+  "wq127-0806-1217": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq128-0806-1318": {
+   "tier": "confirmed",
+   "firstLikely": "13:18:45",
+   "firstConfirmed": "13:18:46",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq129-0806-1409": {
+   "tier": "confirmed",
+   "firstLikely": "14:09:34",
+   "firstConfirmed": "14:09:36",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq130-0806-1437": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq131-0806-1821": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq132-0806-1907": {
+   "tier": "confirmed",
+   "firstLikely": "19:07:57",
+   "firstConfirmed": "19:08:00",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq133-0806-1921": {
+   "tier": "confirmed",
+   "firstLikely": "19:21:58",
+   "firstConfirmed": "19:22:04",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq134-0806-1956": {
+   "tier": "confirmed",
+   "firstLikely": "19:56:19",
+   "firstConfirmed": "19:56:22",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq135-0806-2121": {
+   "tier": "likely",
+   "firstLikely": "21:21:27",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq136-0806-2321": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq137-0807-0054": {
+   "tier": "likely",
+   "firstLikely": "00:54:09",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq138-0807-0243": {
+   "tier": "confirmed",
+   "firstLikely": "02:44:12",
+   "firstConfirmed": "02:44:22",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq139-0807-0808": {
+   "tier": "confirmed",
+   "firstLikely": "08:08:13",
+   "firstConfirmed": "08:08:16",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq140-0807-1002": {
+   "tier": "confirmed",
+   "firstLikely": "10:02:37",
+   "firstConfirmed": "10:02:37",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq141-0807-1004": {
+   "tier": "confirmed",
+   "firstLikely": "10:04:39",
+   "firstConfirmed": "10:04:43",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq142-0807-1318": {
+   "tier": "likely",
+   "firstLikely": "13:18:39",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq143-0807-1405": {
+   "tier": "confirmed",
+   "firstLikely": "14:05:21",
+   "firstConfirmed": "14:05:22",
+   "unrelated": 1,
+   "unrelatedAt": [
+    "14:05:30 千葉県|酒々井町中央台"
+   ]
+  },
+  "wq144-0807-1422": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq145-0807-1444": {
+   "tier": "confirmed",
+   "firstLikely": "14:44:50",
+   "firstConfirmed": "14:44:52",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq146-0807-1641": {
+   "tier": "confirmed",
+   "firstLikely": "16:41:06",
+   "firstConfirmed": "16:41:11",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq147-0807-2208": {
+   "tier": "likely",
+   "firstLikely": "22:08:27",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq148-0807-2217": {
+   "tier": "confirmed",
+   "firstLikely": "22:17:21",
+   "firstConfirmed": "22:17:22",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq149-0808-0110": {
+   "tier": "confirmed",
+   "firstLikely": "01:10:18",
+   "firstConfirmed": "01:10:23",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq150-0808-0322": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq151-0808-0629": {
+   "tier": "confirmed",
+   "firstLikely": "06:29:16",
+   "firstConfirmed": "06:29:20",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq152-0808-0917": {
+   "tier": "likely",
+   "firstLikely": "09:17:31",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq153-0808-0928": {
+   "tier": "confirmed",
+   "firstLikely": "09:28:54",
+   "firstConfirmed": "09:28:59",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq154-0808-1005": {
+   "tier": "confirmed",
+   "firstLikely": "10:06:06",
+   "firstConfirmed": "10:06:07",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq155-0808-1032": {
+   "tier": "confirmed",
+   "firstLikely": "10:32:54",
+   "firstConfirmed": "10:32:59",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq156-0808-1107": {
+   "tier": "confirmed",
+   "firstLikely": "11:07:36",
+   "firstConfirmed": "11:07:37",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq157-0808-1232": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq158-0808-1655": {
+   "tier": "confirmed",
+   "firstLikely": "16:55:35",
+   "firstConfirmed": "16:55:37",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq159-0808-1847": {
+   "tier": "confirmed",
+   "firstLikely": "18:47:17",
+   "firstConfirmed": "18:47:21",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq160-0808-2123": {
+   "tier": "confirmed",
+   "firstLikely": "21:23:48",
+   "firstConfirmed": "21:23:52",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq161-0808-2328": {
+   "tier": "confirmed",
+   "firstLikely": "23:28:27",
+   "firstConfirmed": "23:28:29",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq162-0809-0132": {
+   "tier": "confirmed",
+   "firstLikely": "01:32:31",
+   "firstConfirmed": "01:32:33",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq163-0809-0253": {
+   "tier": "confirmed",
+   "firstLikely": "02:53:50",
+   "firstConfirmed": "02:53:52",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq164-0809-0310": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq165-0809-0356": {
+   "tier": "confirmed",
+   "firstLikely": "03:57:02",
+   "firstConfirmed": "03:57:05",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq166-0809-0439": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq167-0809-0518": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq168-0809-0605": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq169-0809-0700": {
+   "tier": "confirmed",
+   "firstLikely": "07:00:45",
+   "firstConfirmed": "07:00:48",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq170-0809-1250": {
+   "tier": "confirmed",
+   "firstLikely": "12:50:41",
+   "firstConfirmed": "12:50:43",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq171-0809-1405": {
+   "tier": "confirmed",
+   "firstLikely": "14:05:25",
+   "firstConfirmed": "14:05:27",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq172-0809-1448": {
+   "tier": "confirmed",
+   "firstLikely": "14:48:17",
+   "firstConfirmed": "14:48:19",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq173-0809-1626": {
+   "tier": "confirmed",
+   "firstLikely": "16:26:56",
+   "firstConfirmed": "16:26:58",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq174-0809-1632": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq175-0809-1859": {
+   "tier": "confirmed",
+   "firstLikely": "18:59:46",
+   "firstConfirmed": "18:59:47",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq176-0810-0223": {
+   "tier": "confirmed",
+   "firstLikely": "02:23:39",
+   "firstConfirmed": "02:23:40",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq177-0810-0733": {
+   "tier": "confirmed",
+   "firstLikely": "07:33:40",
+   "firstConfirmed": "07:33:41",
+   "unrelated": 1,
+   "unrelatedAt": [
+    "07:32:58 茨城県|取手市藤代"
+   ]
+  },
+  "wq178-0810-0833": {
+   "tier": "confirmed",
+   "firstLikely": "08:33:59",
+   "firstConfirmed": "08:34:01",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq179-0810-1222": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq180-0810-1357": {
+   "tier": "likely",
+   "firstLikely": "13:57:28",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq181-0810-1432": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq182-0810-1702": {
+   "tier": "confirmed",
+   "firstLikely": "17:02:13",
+   "firstConfirmed": "17:02:15",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq183-0810-1816": {
+   "tier": "confirmed",
+   "firstLikely": "18:17:04",
+   "firstConfirmed": "18:17:05",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq184-0810-1819": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq185-0810-2013": {
+   "tier": "likely",
+   "firstLikely": "20:13:30",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq186-0810-2025": {
+   "tier": "confirmed",
+   "firstLikely": "20:25:39",
+   "firstConfirmed": "20:25:44",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq187-0810-2314": {
+   "tier": "confirmed",
+   "firstLikely": "23:14:16",
+   "firstConfirmed": "23:14:20",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq188-0810-2355": {
+   "tier": "likely",
+   "firstLikely": "23:55:46",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq189-0811-0055": {
+   "tier": "confirmed",
+   "firstLikely": "00:55:55",
+   "firstConfirmed": "00:55:59",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq190-0811-0115": {
+   "tier": "confirmed",
+   "firstLikely": "01:15:40",
+   "firstConfirmed": "01:15:42",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq191-0811-0611": {
+   "tier": "likely",
+   "firstLikely": "06:11:27",
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "06:11:29 青森県|田子町田子"
+   ]
+  },
+  "wq192-0811-0633": {
+   "tier": "likely",
+   "firstLikely": "06:33:43",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq193-0811-0712": {
+   "tier": "confirmed",
+   "firstLikely": "07:12:18",
+   "firstConfirmed": "07:12:20",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq194-0811-0844": {
+   "tier": "confirmed",
+   "firstLikely": "08:44:59",
+   "firstConfirmed": "08:45:04",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq195-0811-0934": {
+   "tier": "confirmed",
+   "firstLikely": "09:34:18",
+   "firstConfirmed": "09:34:22",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq196-0811-1157": {
+   "tier": "confirmed",
+   "firstLikely": "11:58:01",
+   "firstConfirmed": "11:58:06",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq197-0811-1220": {
+   "tier": "confirmed",
+   "firstLikely": "12:20:57",
+   "firstConfirmed": "12:20:59",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq198-0811-1428": {
+   "tier": "confirmed",
+   "firstLikely": "14:29:03",
+   "firstConfirmed": "14:29:05",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq199-0811-1642": {
+   "tier": "confirmed",
+   "firstLikely": "16:42:34",
+   "firstConfirmed": "16:42:36",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq200-0811-1703": {
+   "tier": "confirmed",
+   "firstLikely": "17:03:56",
+   "firstConfirmed": "17:03:58",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq201-0811-1844": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq202-0811-1917": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq203-0811-2025": {
+   "tier": "confirmed",
+   "firstLikely": "20:25:34",
+   "firstConfirmed": "20:25:42",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq204-0811-2137": {
+   "tier": "confirmed",
+   "firstLikely": "21:37:52",
+   "firstConfirmed": "21:37:54",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq205-0811-2219": {
+   "tier": "confirmed",
+   "firstLikely": "22:19:21",
+   "firstConfirmed": "22:19:24",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq206-0812-0211": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq207-0812-0237": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq208-0812-0429": {
+   "tier": "confirmed",
+   "firstLikely": "04:29:19",
+   "firstConfirmed": "04:29:21",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq209-0812-0547": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq210-0812-0610": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq211-0812-0646": {
+   "tier": "confirmed",
+   "firstLikely": "06:46:11",
+   "firstConfirmed": "06:46:14",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq212-0812-0653": {
+   "tier": "confirmed",
+   "firstLikely": "06:53:16",
+   "firstConfirmed": "06:53:18",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq213-0812-0919": {
+   "tier": "likely",
+   "firstLikely": "09:19:19",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq214-0812-0925": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq215-0812-1157": {
+   "tier": "confirmed",
+   "firstLikely": "11:57:09",
+   "firstConfirmed": "11:57:15",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq216-0812-1541": {
+   "tier": "confirmed",
+   "firstLikely": "15:41:55",
+   "firstConfirmed": "15:41:56",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq217-0812-2103": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq218-0812-2253": {
+   "tier": "likely",
+   "firstLikely": "22:53:16",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq219-0813-0427": {
+   "tier": "confirmed",
+   "firstLikely": "04:27:26",
+   "firstConfirmed": "04:27:28",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq220-0813-0923": {
+   "tier": "likely",
+   "firstLikely": "09:23:52",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq221-0813-1035": {
+   "tier": "likely",
+   "firstLikely": "10:35:11",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq222-0813-1129": {
+   "tier": "confirmed",
+   "firstLikely": "11:29:07",
+   "firstConfirmed": "11:29:08",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq223-0813-1236": {
+   "tier": "confirmed",
+   "firstLikely": "12:36:04",
+   "firstConfirmed": "12:36:05",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq224-0813-1849": {
+   "tier": "likely",
+   "firstLikely": "18:49:21",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq225-0813-2251": {
+   "tier": "confirmed",
+   "firstLikely": "22:51:27",
+   "firstConfirmed": "22:51:30",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq226-0814-0025": {
+   "tier": "confirmed",
+   "firstLikely": "00:25:34",
+   "firstConfirmed": "00:25:36",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq227-0814-0301": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq228-0814-0422": {
+   "tier": "confirmed",
+   "firstLikely": "04:23:03",
+   "firstConfirmed": "04:23:04",
+   "unrelated": 1,
+   "unrelatedAt": [
+    "04:23:53 宮城県|気仙沼市本吉町津谷"
+   ]
+  },
+  "wq229-0814-0450": {
+   "tier": "confirmed",
+   "firstLikely": "04:50:41",
+   "firstConfirmed": "04:50:43",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq230-0814-0452": {
+   "tier": "confirmed",
+   "firstLikely": "04:52:41",
+   "firstConfirmed": "04:52:43",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq231-0814-0458": {
+   "tier": "likely",
+   "firstLikely": "04:58:24",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq232-0814-0520": {
+   "tier": "likely",
+   "firstLikely": "05:20:44",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq233-0814-0531": {
+   "tier": "confirmed",
+   "firstLikely": "05:31:21",
+   "firstConfirmed": "05:31:27",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq234-0814-0539": {
+   "tier": "confirmed",
+   "firstLikely": "05:39:36",
+   "firstConfirmed": "05:39:40",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq235-0814-0750": {
+   "tier": "confirmed",
+   "firstLikely": "07:50:25",
+   "firstConfirmed": "07:50:28",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq236-0814-1242": {
+   "tier": "confirmed",
+   "firstLikely": "12:42:49",
+   "firstConfirmed": "12:42:58",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq237-0814-1354": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq238-0814-1605": {
+   "tier": "confirmed",
+   "firstLikely": "16:05:33",
+   "firstConfirmed": "16:05:35",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq239-0814-1629": {
+   "tier": "confirmed",
+   "firstLikely": "16:29:31",
+   "firstConfirmed": "16:29:34",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq240-0814-1714": {
+   "tier": "likely",
+   "firstLikely": "17:14:13",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq241-0814-1729": {
+   "tier": "confirmed",
+   "firstLikely": "17:29:40",
+   "firstConfirmed": "17:29:43",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq242-0814-1802": {
+   "tier": "confirmed",
+   "firstLikely": "18:02:51",
+   "firstConfirmed": "18:02:54",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq243-0814-1908": {
+   "tier": "confirmed",
+   "firstLikely": "19:08:41",
+   "firstConfirmed": "19:08:45",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq244-0814-2220": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq245-0814-2242": {
+   "tier": "confirmed",
+   "firstLikely": "22:43:21",
+   "firstConfirmed": "22:43:26",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq246-0814-2313": {
+   "tier": "confirmed",
+   "firstLikely": "23:13:50",
+   "firstConfirmed": "23:13:55",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq247-0815-0051": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq248-0815-0421": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq249-0815-0638": {
+   "tier": "confirmed",
+   "firstLikely": "06:38:59",
+   "firstConfirmed": "06:39:02",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq250-0815-0658": {
+   "tier": "confirmed",
+   "firstLikely": "06:58:41",
+   "firstConfirmed": "06:58:42",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq251-0815-0712": {
+   "tier": "confirmed",
+   "firstLikely": "07:12:58",
+   "firstConfirmed": "07:13:00",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq252-0815-0729": {
+   "tier": "confirmed",
+   "firstLikely": "07:29:11",
+   "firstConfirmed": "07:29:14",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq253-0815-0813": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq254-0815-0922": {
+   "tier": "confirmed",
+   "firstLikely": "09:22:57",
+   "firstConfirmed": "09:23:00",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq255-0815-1005": {
+   "tier": "confirmed",
+   "firstLikely": "10:05:34",
+   "firstConfirmed": "10:05:36",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq256-0815-1058": {
+   "tier": "likely",
+   "firstLikely": "10:58:47",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq257-0815-1847": {
+   "tier": "likely",
+   "firstLikely": "18:47:10",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq258-0815-2029": {
+   "tier": "confirmed",
+   "firstLikely": "20:29:29",
+   "firstConfirmed": "20:29:34",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq259-0815-2030": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq260-0815-2103": {
+   "tier": "confirmed",
+   "firstLikely": "21:03:49",
+   "firstConfirmed": "21:03:53",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "wq261-0815-2138": {
+   "tier": "likely",
+   "firstLikely": "21:38:16",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq0-0501-0212": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq1-0501-0315": {
+   "tier": "confirmed",
+   "firstLikely": "03:15:44",
+   "firstConfirmed": "03:15:48",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq2-0501-0647": {
+   "tier": "likely",
+   "firstLikely": "06:47:25",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq3-0501-2140": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq4-0501-2200": {
+   "tier": "confirmed",
+   "firstLikely": "22:01:00",
+   "firstConfirmed": "22:01:03",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq5-0502-0219": {
+   "tier": "confirmed",
+   "firstLikely": "02:19:35",
+   "firstConfirmed": "02:19:37",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq6-0502-0347": {
+   "tier": "likely",
+   "firstLikely": "03:47:29",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq7-0502-0435": {
+   "tier": "confirmed",
+   "firstLikely": "04:35:48",
+   "firstConfirmed": "04:35:48",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq8-0502-1314": {
+   "tier": "likely",
+   "firstLikely": "13:14:32",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq9-0502-1529": {
+   "tier": "confirmed",
+   "firstLikely": "15:29:07",
+   "firstConfirmed": "15:29:13",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq10-0502-1828": {
+   "tier": "confirmed",
+   "firstLikely": "18:28:52",
+   "firstConfirmed": "18:28:53",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq11-0502-1839": {
+   "tier": "likely",
+   "firstLikely": "18:39:44",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq12-0502-2124": {
+   "tier": "confirmed",
+   "firstLikely": "21:24:12",
+   "firstConfirmed": "21:24:14",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq13-0503-0712": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq14-0503-0745": {
+   "tier": "confirmed",
+   "firstLikely": "07:46:09",
+   "firstConfirmed": "07:46:12",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq15-0503-1150": {
+   "tier": "confirmed",
+   "firstLikely": "11:50:40",
+   "firstConfirmed": "11:50:43",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq16-0503-2342": {
+   "tier": "confirmed",
+   "firstLikely": "23:42:23",
+   "firstConfirmed": "23:42:24",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq17-0504-0119": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq18-0504-0414": {
+   "tier": "confirmed",
+   "firstLikely": "04:14:57",
+   "firstConfirmed": "04:14:59",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq19-0504-0514": {
+   "tier": "confirmed",
+   "firstLikely": "05:14:33",
+   "firstConfirmed": "05:14:37",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq20-0504-1351": {
+   "tier": "confirmed",
+   "firstLikely": "13:51:49",
+   "firstConfirmed": "13:51:51",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq21-0504-1637": {
+   "tier": "confirmed",
+   "firstLikely": "16:37:25",
+   "firstConfirmed": "16:37:26",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq22-0505-0642": {
+   "tier": "confirmed",
+   "firstLikely": "06:42:40",
+   "firstConfirmed": "06:42:43",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq23-0505-0854": {
+   "tier": "confirmed",
+   "firstLikely": "08:54:24",
+   "firstConfirmed": "08:54:25",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq24-0505-0914": {
+   "tier": "confirmed",
+   "firstLikely": "09:14:09",
+   "firstConfirmed": "09:14:13",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq25-0505-1223": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq26-0505-1448": {
+   "tier": "confirmed",
+   "firstLikely": "14:48:54",
+   "firstConfirmed": "14:48:55",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq27-0505-1558": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq28-0505-1755": {
+   "tier": "confirmed",
+   "firstLikely": "17:55:26",
+   "firstConfirmed": "17:55:27",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq29-0506-0435": {
+   "tier": "confirmed",
+   "firstLikely": "04:35:20",
+   "firstConfirmed": "04:35:21",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq30-0506-1043": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq31-0506-1700": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq32-0506-1906": {
+   "tier": "confirmed",
+   "firstLikely": "19:06:43",
+   "firstConfirmed": "19:06:44",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq33-0507-0430": {
+   "tier": "confirmed",
+   "firstLikely": "04:30:21",
+   "firstConfirmed": "04:30:25",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq34-0507-0601": {
+   "tier": "confirmed",
+   "firstLikely": "06:01:40",
+   "firstConfirmed": "06:01:41",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq35-0507-0632": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "06:32:15 茨城県|守谷市大柏"
+   ]
+  },
+  "oq36-0507-1539": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "15:39:10 東京都|東京台東区千束"
+   ]
+  },
+  "oq37-0507-1551": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "15:52:08 千葉県|柏市大島田"
+   ]
+  },
+  "oq38-0508-0350": {
+   "tier": "confirmed",
+   "firstLikely": "03:50:14",
+   "firstConfirmed": "03:50:15",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq39-0508-0831": {
+   "tier": "confirmed",
+   "firstLikely": "08:31:25",
+   "firstConfirmed": "08:31:27",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq40-0508-1001": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq41-0508-1236": {
+   "tier": "confirmed",
+   "firstLikely": "12:36:13",
+   "firstConfirmed": "12:36:14",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq42-0508-1901": {
+   "tier": "confirmed",
+   "firstLikely": "19:01:40",
+   "firstConfirmed": "19:01:43",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq43-0509-0210": {
+   "tier": "confirmed",
+   "firstLikely": "02:10:54",
+   "firstConfirmed": "02:10:59",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq44-0509-0804": {
+   "tier": "likely",
+   "firstLikely": "08:04:52",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq45-0509-1027": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq46-0509-1143": {
+   "tier": "confirmed",
+   "firstLikely": "11:43:15",
+   "firstConfirmed": "11:43:16",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq47-0509-1819": {
+   "tier": "confirmed",
+   "firstLikely": "18:20:04",
+   "firstConfirmed": "18:20:08",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq48-0509-2106": {
+   "tier": "confirmed",
+   "firstLikely": "21:06:37",
+   "firstConfirmed": "21:06:38",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq49-0510-0058": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq50-0510-0102": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq51-0510-0118": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq52-0510-0604": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq53-0510-0709": {
+   "tier": "confirmed",
+   "firstLikely": "07:09:47",
+   "firstConfirmed": "07:09:52",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq54-0511-0025": {
+   "tier": "confirmed",
+   "firstLikely": "00:25:36",
+   "firstConfirmed": "00:25:38",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq55-0511-0621": {
+   "tier": "confirmed",
+   "firstLikely": "06:21:27",
+   "firstConfirmed": "06:21:31",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq56-0511-0921": {
+   "tier": "likely",
+   "firstLikely": "09:22:32",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq57-0511-1041": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq58-0511-1127": {
+   "tier": "confirmed",
+   "firstLikely": "11:28:15",
+   "firstConfirmed": "11:28:18",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq59-0511-2050": {
+   "tier": "confirmed",
+   "firstLikely": "20:50:16",
+   "firstConfirmed": "20:50:18",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq60-0512-0146": {
+   "tier": "confirmed",
+   "firstLikely": "01:46:36",
+   "firstConfirmed": "01:46:38",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq61-0512-0330": {
+   "tier": "confirmed",
+   "firstLikely": "03:30:47",
+   "firstConfirmed": "03:30:49",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq62-0512-0736": {
+   "tier": "confirmed",
+   "firstLikely": "07:36:33",
+   "firstConfirmed": "07:36:34",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq63-0512-0902": {
+   "tier": "confirmed",
+   "firstLikely": "09:02:45",
+   "firstConfirmed": "09:02:46",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq64-0512-1932": {
+   "tier": "confirmed",
+   "firstLikely": "19:32:31",
+   "firstConfirmed": "19:32:31",
+   "unrelated": 1,
+   "unrelatedAt": [
+    "19:32:30 北海道|釧路市阿寒町中央"
+   ]
+  },
+  "oq65-0513-0303": {
+   "tier": "confirmed",
+   "firstLikely": "03:03:15",
+   "firstConfirmed": "03:03:18",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq66-0513-0314": {
+   "tier": "likely",
+   "firstLikely": "03:14:41",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq67-0513-1124": {
+   "tier": "confirmed",
+   "firstLikely": "11:25:11",
+   "firstConfirmed": "11:25:14",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq68-0513-1424": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq69-0513-2017": {
+   "tier": "confirmed",
+   "firstLikely": "20:17:44",
+   "firstConfirmed": "20:17:47",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq70-0513-2112": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq71-0513-2119": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq72-0513-2132": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq73-0514-0232": {
+   "tier": "confirmed",
+   "firstLikely": "02:32:45",
+   "firstConfirmed": "02:32:47",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq74-0514-0302": {
+   "tier": "confirmed",
+   "firstLikely": "03:03:00",
+   "firstConfirmed": "03:03:02",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq75-0514-0500": {
+   "tier": "confirmed",
+   "firstLikely": "05:00:06",
+   "firstConfirmed": "05:00:06",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq76-0514-0501": {
+   "tier": "confirmed",
+   "firstLikely": "05:01:41",
+   "firstConfirmed": "05:01:41",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq77-0514-0511": {
+   "tier": "confirmed",
+   "firstLikely": "05:11:30",
+   "firstConfirmed": "05:11:30",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq78-0514-0513": {
+   "tier": "confirmed",
+   "firstLikely": "05:13:09",
+   "firstConfirmed": "05:13:09",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq79-0514-0528": {
+   "tier": "confirmed",
+   "firstLikely": "05:28:22",
+   "firstConfirmed": "05:28:24",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq80-0514-0546": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq81-0514-1055": {
+   "tier": "confirmed",
+   "firstLikely": "10:55:47",
+   "firstConfirmed": "10:55:50",
+   "unrelated": 1,
+   "unrelatedAt": [
+    "10:56:31 大阪府|大阪天王寺区上本町"
+   ]
+  },
+  "oq82-0514-1515": {
+   "tier": "confirmed",
+   "firstLikely": "15:15:07",
+   "firstConfirmed": "15:15:12",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq83-0514-2244": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq84-0515-0034": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq85-0515-0823": {
+   "tier": "confirmed",
+   "firstLikely": "08:23:17",
+   "firstConfirmed": "08:23:22",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq86-0515-1209": {
+   "tier": "confirmed",
+   "firstLikely": "12:09:59",
+   "firstConfirmed": "12:10:01",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq87-0515-1923": {
+   "tier": "confirmed",
+   "firstLikely": "19:23:23",
+   "firstConfirmed": "19:23:27",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq88-0515-2022": {
+   "tier": "confirmed",
+   "firstLikely": "20:22:13",
+   "firstConfirmed": "20:22:14",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq89-0515-2021": {
+   "tier": "confirmed",
+   "firstLikely": "20:22:13",
+   "firstConfirmed": "20:22:14",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq90-0516-0355": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq91-0516-0727": {
+   "tier": "confirmed",
+   "firstLikely": "07:27:37",
+   "firstConfirmed": "07:27:40",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq92-0516-1229": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq93-0517-0109": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq94-0517-0425": {
+   "tier": "confirmed",
+   "firstLikely": "04:25:45",
+   "firstConfirmed": "04:25:47",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq95-0517-0522": {
+   "tier": "likely",
+   "firstLikely": "05:22:53",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq96-0517-0555": {
+   "tier": "confirmed",
+   "firstLikely": "05:55:48",
+   "firstConfirmed": "05:55:54",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq97-0517-0907": {
+   "tier": "confirmed",
+   "firstLikely": "09:07:44",
+   "firstConfirmed": "09:07:46",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq98-0517-1142": {
+   "tier": "confirmed",
+   "firstLikely": "11:42:26",
+   "firstConfirmed": "11:42:30",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq99-0517-1802": {
+   "tier": "confirmed",
+   "firstLikely": "18:02:10",
+   "firstConfirmed": "18:02:12",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq100-0518-0227": {
+   "tier": "likely",
+   "firstLikely": "02:27:31",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq101-0518-0821": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq102-0518-0824": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq103-0518-0836": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq104-0518-1519": {
+   "tier": "confirmed",
+   "firstLikely": "15:19:37",
+   "firstConfirmed": "15:19:41",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq105-0519-0204": {
+   "tier": "confirmed",
+   "firstLikely": "02:05:08",
+   "firstConfirmed": "02:05:12",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq106-0519-0514": {
+   "tier": "confirmed",
+   "firstLikely": "05:14:34",
+   "firstConfirmed": "05:14:36",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq107-0519-1303": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq108-0519-1923": {
+   "tier": "confirmed",
+   "firstLikely": "19:24:03",
+   "firstConfirmed": "19:24:05",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq109-0519-1935": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq110-0520-0229": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq111-0520-0708": {
+   "tier": "confirmed",
+   "firstLikely": "07:08:13",
+   "firstConfirmed": "07:08:17",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq112-0520-1146": {
+   "tier": "confirmed",
+   "firstLikely": "11:46:38",
+   "firstConfirmed": "11:46:38",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq113-0520-1512": {
+   "tier": "confirmed",
+   "firstLikely": "15:13:04",
+   "firstConfirmed": "15:13:07",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq114-0521-0023": {
+   "tier": "confirmed",
+   "firstLikely": "00:23:25",
+   "firstConfirmed": "00:23:28",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq115-0521-0108": {
+   "tier": "confirmed",
+   "firstLikely": "01:08:23",
+   "firstConfirmed": "01:08:28",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq116-0521-0627": {
+   "tier": "confirmed",
+   "firstLikely": "06:27:40",
+   "firstConfirmed": "06:27:45",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq117-0521-1011": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq118-0521-1320": {
+   "tier": "confirmed",
+   "firstLikely": "13:20:53",
+   "firstConfirmed": "13:20:58",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq119-0521-1707": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq120-0522-0023": {
+   "tier": "confirmed",
+   "firstLikely": "00:24:00",
+   "firstConfirmed": "00:24:04",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq121-0522-0133": {
+   "tier": "confirmed",
+   "firstLikely": "01:33:31",
+   "firstConfirmed": "01:33:33",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq122-0522-1522": {
+   "tier": "confirmed",
+   "firstLikely": "15:22:22",
+   "firstConfirmed": "15:22:24",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq123-0522-2140": {
+   "tier": "confirmed",
+   "firstLikely": "21:40:13",
+   "firstConfirmed": "21:40:23",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq124-0523-0154": {
+   "tier": "confirmed",
+   "firstLikely": "01:54:08",
+   "firstConfirmed": "01:54:11",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq125-0523-1520": {
+   "tier": "confirmed",
+   "firstLikely": "15:20:40",
+   "firstConfirmed": "15:20:46",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq126-0523-2231": {
+   "tier": "likely",
+   "firstLikely": "22:31:51",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq127-0523-2319": {
+   "tier": "confirmed",
+   "firstLikely": "23:20:12",
+   "firstConfirmed": "23:20:15",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq128-0524-0009": {
+   "tier": "confirmed",
+   "firstLikely": "00:09:46",
+   "firstConfirmed": "00:09:50",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq129-0524-0415": {
+   "tier": "confirmed",
+   "firstLikely": "04:15:09",
+   "firstConfirmed": "04:15:10",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq130-0524-0706": {
+   "tier": "confirmed",
+   "firstLikely": "07:06:41",
+   "firstConfirmed": "07:06:43",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq131-0524-0719": {
+   "tier": "confirmed",
+   "firstLikely": "07:19:53",
+   "firstConfirmed": "07:19:55",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq132-0524-1508": {
+   "tier": "confirmed",
+   "firstLikely": "15:08:33",
+   "firstConfirmed": "15:08:35",
+   "unrelated": 1,
+   "unrelatedAt": [
+    "15:09:05 北海道|釧路市阿寒町中央"
+   ]
+  },
+  "oq133-0524-1551": {
+   "tier": "confirmed",
+   "firstLikely": "15:52:06",
+   "firstConfirmed": "15:52:08",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq134-0524-1707": {
+   "tier": "confirmed",
+   "firstLikely": "17:08:03",
+   "firstConfirmed": "17:08:07",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq135-0525-1714": {
+   "tier": "confirmed",
+   "firstLikely": "17:14:58",
+   "firstConfirmed": "17:15:00",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq136-0525-2015": {
+   "tier": "confirmed",
+   "firstLikely": "20:15:24",
+   "firstConfirmed": "20:15:26",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq137-0526-0649": {
+   "tier": "confirmed",
+   "firstLikely": "06:50:06",
+   "firstConfirmed": "06:50:07",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq138-0526-0918": {
+   "tier": "confirmed",
+   "firstLikely": "09:18:36",
+   "firstConfirmed": "09:18:37",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq139-0526-1356": {
+   "tier": "confirmed",
+   "firstLikely": "13:56:20",
+   "firstConfirmed": "13:56:29",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq140-0526-1408": {
+   "tier": "confirmed",
+   "firstLikely": "14:08:42",
+   "firstConfirmed": "14:08:46",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq141-0526-1545": {
+   "tier": "confirmed",
+   "firstLikely": "15:45:13",
+   "firstConfirmed": "15:45:14",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq142-0527-0157": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq143-0527-0208": {
+   "tier": "confirmed",
+   "firstLikely": "02:08:35",
+   "firstConfirmed": "02:08:36",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq144-0527-0521": {
+   "tier": "confirmed",
+   "firstLikely": "05:21:11",
+   "firstConfirmed": "05:21:12",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq145-0527-0913": {
+   "tier": "likely",
+   "firstLikely": "09:13:54",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq146-0527-1610": {
+   "tier": "confirmed",
+   "firstLikely": "16:10:32",
+   "firstConfirmed": "16:10:33",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq147-0527-1639": {
+   "tier": "confirmed",
+   "firstLikely": "16:39:18",
+   "firstConfirmed": "16:39:24",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq148-0527-1652": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq149-0528-0159": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq150-0528-0513": {
+   "tier": "confirmed",
+   "firstLikely": "05:13:38",
+   "firstConfirmed": "05:13:40",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq151-0528-1255": {
+   "tier": "confirmed",
+   "firstLikely": "12:55:31",
+   "firstConfirmed": "12:55:33",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq152-0528-1329": {
+   "tier": "confirmed",
+   "firstLikely": "13:29:33",
+   "firstConfirmed": "13:29:35",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq153-0529-1753": {
+   "tier": "confirmed",
+   "firstLikely": "17:54:03",
+   "firstConfirmed": "17:54:05",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq154-0530-0115": {
+   "tier": "confirmed",
+   "firstLikely": "01:15:14",
+   "firstConfirmed": "01:15:17",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq155-0530-0521": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq156-0530-0638": {
+   "tier": "confirmed",
+   "firstLikely": "06:38:37",
+   "firstConfirmed": "06:38:38",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq157-0530-0824": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq158-0530-1649": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq159-0530-2334": {
+   "tier": "confirmed",
+   "firstLikely": "23:34:29",
+   "firstConfirmed": "23:34:31",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq160-0531-1058": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq161-0531-1822": {
+   "tier": "confirmed",
+   "firstLikely": "18:22:28",
+   "firstConfirmed": "18:22:31",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq162-0531-1958": {
+   "tier": "confirmed",
+   "firstLikely": "19:59:02",
+   "firstConfirmed": "19:59:07",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq163-0531-2124": {
+   "tier": "confirmed",
+   "firstLikely": "21:24:25",
+   "firstConfirmed": "21:24:26",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq164-0531-2136": {
+   "tier": "confirmed",
+   "firstLikely": "21:37:02",
+   "firstConfirmed": "21:37:07",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq165-0601-0310": {
+   "tier": "confirmed",
+   "firstLikely": "03:10:39",
+   "firstConfirmed": "03:10:41",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq166-0601-0554": {
+   "tier": "confirmed",
+   "firstLikely": "05:54:49",
+   "firstConfirmed": "05:54:51",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq167-0601-1240": {
+   "tier": "confirmed",
+   "firstLikely": "12:40:39",
+   "firstConfirmed": "12:40:42",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq168-0602-0050": {
+   "tier": "confirmed",
+   "firstLikely": "00:50:36",
+   "firstConfirmed": "00:50:38",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq169-0602-0051": {
+   "tier": "confirmed",
+   "firstLikely": "00:51:34",
+   "firstConfirmed": "00:51:36",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq170-0602-0202": {
+   "tier": "confirmed",
+   "firstLikely": "02:02:17",
+   "firstConfirmed": "02:02:18",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq171-0602-1235": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq172-0603-0405": {
+   "tier": "confirmed",
+   "firstLikely": "04:05:45",
+   "firstConfirmed": "04:05:47",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq173-0603-0558": {
+   "tier": "confirmed",
+   "firstLikely": "05:58:30",
+   "firstConfirmed": "05:58:33",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq174-0603-0850": {
+   "tier": "confirmed",
+   "firstLikely": "08:50:11",
+   "firstConfirmed": "08:50:13",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq175-0603-1045": {
+   "tier": "confirmed",
+   "firstLikely": "10:45:48",
+   "firstConfirmed": "10:45:51",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq176-0603-1327": {
+   "tier": "confirmed",
+   "firstLikely": "13:27:35",
+   "firstConfirmed": "13:27:37",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq177-0604-0403": {
+   "tier": "confirmed",
+   "firstLikely": "04:03:25",
+   "firstConfirmed": "04:03:27",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq178-0604-0600": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq179-0604-0850": {
+   "tier": "confirmed",
+   "firstLikely": "08:50:13",
+   "firstConfirmed": "08:50:16",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq180-0604-1110": {
+   "tier": "confirmed",
+   "firstLikely": "11:10:21",
+   "firstConfirmed": "11:10:22",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq181-0604-1136": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq182-0604-1204": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq183-0604-1234": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq184-0605-0554": {
+   "tier": "confirmed",
+   "firstLikely": "05:54:50",
+   "firstConfirmed": "05:54:51",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq185-0605-2330": {
+   "tier": "confirmed",
+   "firstLikely": "23:30:49",
+   "firstConfirmed": "23:30:51",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq186-0606-0548": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq187-0606-0847": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq188-0606-1020": {
+   "tier": "confirmed",
+   "firstLikely": "10:20:21",
+   "firstConfirmed": "10:20:23",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq189-0606-2029": {
+   "tier": "confirmed",
+   "firstLikely": "20:30:16",
+   "firstConfirmed": "20:30:19",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq190-0607-0352": {
+   "tier": "confirmed",
+   "firstLikely": "03:52:39",
+   "firstConfirmed": "03:52:41",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq191-0607-0515": {
+   "tier": "confirmed",
+   "firstLikely": "05:15:22",
+   "firstConfirmed": "05:15:27",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq192-0607-1146": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq193-0607-1546": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq194-0607-2245": {
+   "tier": "confirmed",
+   "firstLikely": "22:45:38",
+   "firstConfirmed": "22:45:40",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq195-0608-1247": {
+   "tier": "confirmed",
+   "firstLikely": "12:47:10",
+   "firstConfirmed": "12:47:13",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq196-0608-2342": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq197-0609-0304": {
+   "tier": "likely",
+   "firstLikely": "03:05:02",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq198-0609-0547": {
+   "tier": "confirmed",
+   "firstLikely": "05:47:11",
+   "firstConfirmed": "05:47:14",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq199-0609-0726": {
+   "tier": "confirmed",
+   "firstLikely": "07:26:39",
+   "firstConfirmed": "07:26:41",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq200-0609-2215": {
+   "tier": "confirmed",
+   "firstLikely": "22:15:55",
+   "firstConfirmed": "22:15:58",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq201-0610-0929": {
+   "tier": "confirmed",
+   "firstLikely": "09:29:36",
+   "firstConfirmed": "09:29:45",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq202-0610-1253": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq203-0610-1614": {
+   "tier": "confirmed",
+   "firstLikely": "16:15:08",
+   "firstConfirmed": "16:15:10",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq204-0610-1801": {
+   "tier": "confirmed",
+   "firstLikely": "18:01:36",
+   "firstConfirmed": "18:01:37",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq205-0610-1855": {
+   "tier": "confirmed",
+   "firstLikely": "18:56:02",
+   "firstConfirmed": "18:56:04",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq206-0610-1935": {
+   "tier": "likely",
+   "firstLikely": "19:35:52",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq207-0610-2248": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq208-0611-0125": {
+   "tier": "confirmed",
+   "firstLikely": "01:25:11",
+   "firstConfirmed": "01:25:13",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq209-0611-1403": {
+   "tier": "confirmed",
+   "firstLikely": "14:03:22",
+   "firstConfirmed": "14:03:25",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq210-0611-1506": {
+   "tier": "confirmed",
+   "firstLikely": "15:06:58",
+   "firstConfirmed": "15:07:01",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq211-0611-2211": {
+   "tier": "confirmed",
+   "firstLikely": "22:11:26",
+   "firstConfirmed": "22:11:27",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq212-0611-2322": {
+   "tier": "confirmed",
+   "firstLikely": "23:22:45",
+   "firstConfirmed": "23:22:47",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq213-0612-0921": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq214-0612-1540": {
+   "tier": "confirmed",
+   "firstLikely": "15:40:38",
+   "firstConfirmed": "15:40:40",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq215-0613-0411": {
+   "tier": "confirmed",
+   "firstLikely": "04:11:32",
+   "firstConfirmed": "04:11:33",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq216-0613-0449": {
+   "tier": "confirmed",
+   "firstLikely": "04:49:42",
+   "firstConfirmed": "04:49:44",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq217-0613-1959": {
+   "tier": "confirmed",
+   "firstLikely": "20:00:07",
+   "firstConfirmed": "20:00:09",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq218-0613-2251": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq219-0614-0713": {
+   "tier": "confirmed",
+   "firstLikely": "07:13:32",
+   "firstConfirmed": "07:13:34",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq220-0614-0749": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq221-0614-1739": {
+   "tier": "confirmed",
+   "firstLikely": "17:39:42",
+   "firstConfirmed": "17:39:43",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq222-0614-2136": {
+   "tier": "likely",
+   "firstLikely": "21:36:06",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq223-0615-1542": {
+   "tier": "confirmed",
+   "firstLikely": "15:42:29",
+   "firstConfirmed": "15:42:33",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq224-0615-1633": {
+   "tier": "confirmed",
+   "firstLikely": "16:33:25",
+   "firstConfirmed": "16:33:33",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq225-0615-1938": {
+   "tier": "confirmed",
+   "firstLikely": "19:38:14",
+   "firstConfirmed": "19:38:16",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq226-0615-2105": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq227-0616-0411": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq228-0616-0722": {
+   "tier": "confirmed",
+   "firstLikely": "07:22:22",
+   "firstConfirmed": "07:22:26",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq229-0616-1656": {
+   "tier": "confirmed",
+   "firstLikely": "16:56:36",
+   "firstConfirmed": "16:56:40",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq230-0616-1946": {
+   "tier": "confirmed",
+   "firstLikely": "19:46:43",
+   "firstConfirmed": "19:46:44",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq231-0616-1955": {
+   "tier": "confirmed",
+   "firstLikely": "19:55:26",
+   "firstConfirmed": "19:55:28",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq232-0616-2150": {
+   "tier": "confirmed",
+   "firstLikely": "21:50:45",
+   "firstConfirmed": "21:50:47",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq233-0617-0106": {
+   "tier": "confirmed",
+   "firstLikely": "01:06:29",
+   "firstConfirmed": "01:06:30",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq234-0617-0506": {
+   "tier": "confirmed",
+   "firstLikely": "05:06:21",
+   "firstConfirmed": "05:06:23",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq235-0617-1317": {
+   "tier": "confirmed",
+   "firstLikely": "13:17:58",
+   "firstConfirmed": "13:18:03",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq236-0617-2125": {
+   "tier": "confirmed",
+   "firstLikely": "21:25:10",
+   "firstConfirmed": "21:25:14",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq237-0617-2306": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq238-0618-0207": {
+   "tier": "confirmed",
+   "firstLikely": "02:07:28",
+   "firstConfirmed": "02:07:30",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq239-0618-0335": {
+   "tier": "confirmed",
+   "firstLikely": "03:36:07",
+   "firstConfirmed": "03:36:09",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq240-0618-1115": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq241-0618-1306": {
+   "tier": "likely",
+   "firstLikely": "13:06:06",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq242-0619-0344": {
+   "tier": "confirmed",
+   "firstLikely": "03:44:11",
+   "firstConfirmed": "03:44:16",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq243-0619-0733": {
+   "tier": "confirmed",
+   "firstLikely": "07:33:22",
+   "firstConfirmed": "07:33:26",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq244-0619-2017": {
+   "tier": "confirmed",
+   "firstLikely": "20:18:03",
+   "firstConfirmed": "20:18:06",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq245-0620-0317": {
+   "tier": "confirmed",
+   "firstLikely": "03:17:34",
+   "firstConfirmed": "03:17:41",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq246-0620-0539": {
+   "tier": "confirmed",
+   "firstLikely": "05:39:17",
+   "firstConfirmed": "05:39:22",
+   "unrelated": 1,
+   "unrelatedAt": [
+    "05:39:55 千葉県|柏市大島田"
+   ]
+  },
+  "oq247-0621-0457": {
+   "tier": "confirmed",
+   "firstLikely": "04:57:45",
+   "firstConfirmed": "04:57:47",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq248-0621-2207": {
+   "tier": "confirmed",
+   "firstLikely": "22:07:59",
+   "firstConfirmed": "22:08:02",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq249-0622-0505": {
+   "tier": "likely",
+   "firstLikely": "05:05:39",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq250-0622-0719": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq251-0622-1638": {
+   "tier": "confirmed",
+   "firstLikely": "16:38:21",
+   "firstConfirmed": "16:38:23",
+   "unrelated": 1,
+   "unrelatedAt": [
+    "16:39:03 茨城県|つくばみらい市福田"
+   ]
+  },
+  "oq252-0623-0427": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq253-0623-0720": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq254-0623-1149": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 1,
+   "unrelatedAt": [
+    "11:49:03 東京都|東京江東区亀戸"
+   ]
+  },
+  "oq255-0623-2234": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq256-0624-0049": {
+   "tier": "confirmed",
+   "firstLikely": "00:49:12",
+   "firstConfirmed": "00:49:13",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq257-0624-0517": {
+   "tier": "likely",
+   "firstLikely": "05:17:14",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq258-0624-0801": {
+   "tier": "confirmed",
+   "firstLikely": "08:01:11",
+   "firstConfirmed": "08:01:13",
+   "unrelated": 1,
+   "unrelatedAt": [
+    "08:01:06 茨城県|下妻市鬼怒"
+   ]
+  },
+  "oq259-0624-1050": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq260-0624-1321": {
+   "tier": "likely",
+   "firstLikely": "13:21:23",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq261-0624-1324": {
+   "tier": "confirmed",
+   "firstLikely": "13:24:48",
+   "firstConfirmed": "13:24:48",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq262-0624-1328": {
+   "tier": "confirmed",
+   "firstLikely": "13:27:50",
+   "firstConfirmed": "13:28:08",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq263-0624-1331": {
+   "tier": "confirmed",
+   "firstLikely": "13:31:47",
+   "firstConfirmed": "13:31:47",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq264-0624-1332": {
+   "tier": "confirmed",
+   "firstLikely": "13:31:47",
+   "firstConfirmed": "13:31:47",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq265-0624-1334": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq266-0624-1646": {
+   "tier": "confirmed",
+   "firstLikely": "16:46:45",
+   "firstConfirmed": "16:46:47",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq267-0625-0730": {
+   "tier": "confirmed",
+   "firstLikely": "07:30:25",
+   "firstConfirmed": "07:30:26",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq268-0625-0806": {
+   "tier": "confirmed",
+   "firstLikely": "08:06:53",
+   "firstConfirmed": "08:06:55",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq269-0625-0812": {
+   "tier": "confirmed",
+   "firstLikely": "08:12:41",
+   "firstConfirmed": "08:12:46",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq270-0625-0822": {
+   "tier": "confirmed",
+   "firstLikely": "08:22:25",
+   "firstConfirmed": "08:22:29",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq271-0625-0902": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq272-0625-0908": {
+   "tier": "confirmed",
+   "firstLikely": "09:08:45",
+   "firstConfirmed": "09:08:47",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq273-0625-0933": {
+   "tier": "confirmed",
+   "firstLikely": "09:34:05",
+   "firstConfirmed": "09:34:12",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq274-0625-1011": {
+   "tier": "confirmed",
+   "firstLikely": "10:11:12",
+   "firstConfirmed": "10:11:15",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq275-0625-1048": {
+   "tier": "confirmed",
+   "firstLikely": "10:48:45",
+   "firstConfirmed": "10:48:49",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq276-0625-1132": {
+   "tier": "confirmed",
+   "firstLikely": "11:32:47",
+   "firstConfirmed": "11:32:49",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq277-0625-1218": {
+   "tier": "confirmed",
+   "firstLikely": "12:19:15",
+   "firstConfirmed": "12:19:19",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq278-0625-1921": {
+   "tier": "confirmed",
+   "firstLikely": "19:21:56",
+   "firstConfirmed": "19:21:58",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq279-0625-2058": {
+   "tier": "confirmed",
+   "firstLikely": "20:58:42",
+   "firstConfirmed": "20:58:45",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq280-0625-2244": {
+   "tier": "confirmed",
+   "firstLikely": "22:44:27",
+   "firstConfirmed": "22:44:31",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq281-0626-0111": {
+   "tier": "confirmed",
+   "firstLikely": "01:11:54",
+   "firstConfirmed": "01:11:56",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq282-0626-0502": {
+   "tier": "confirmed",
+   "firstLikely": "05:03:02",
+   "firstConfirmed": "05:03:04",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq283-0626-1149": {
+   "tier": "confirmed",
+   "firstLikely": "11:49:07",
+   "firstConfirmed": "11:49:09",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq284-0626-1246": {
+   "tier": "confirmed",
+   "firstLikely": "12:46:45",
+   "firstConfirmed": "12:46:46",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq285-0626-1252": {
+   "tier": "confirmed",
+   "firstLikely": "12:53:04",
+   "firstConfirmed": "12:53:08",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq286-0626-1300": {
+   "tier": "confirmed",
+   "firstLikely": "13:00:17",
+   "firstConfirmed": "13:00:18",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq287-0626-1322": {
+   "tier": "confirmed",
+   "firstLikely": "13:22:38",
+   "firstConfirmed": "13:22:40",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq288-0626-1331": {
+   "tier": "confirmed",
+   "firstLikely": "13:31:42",
+   "firstConfirmed": "13:31:43",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq289-0626-1541": {
+   "tier": "likely",
+   "firstLikely": "15:41:20",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq290-0626-2229": {
+   "tier": "confirmed",
+   "firstLikely": "22:29:04",
+   "firstConfirmed": "22:29:05",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq291-0626-2304": {
+   "tier": "confirmed",
+   "firstLikely": "23:04:38",
+   "firstConfirmed": "23:04:40",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq292-0626-2317": {
+   "tier": "confirmed",
+   "firstLikely": "23:17:48",
+   "firstConfirmed": "23:17:50",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq293-0627-0033": {
+   "tier": "confirmed",
+   "firstLikely": "00:33:20",
+   "firstConfirmed": "00:33:23",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq294-0627-0233": {
+   "tier": "confirmed",
+   "firstLikely": "02:33:04",
+   "firstConfirmed": "02:33:04",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq295-0627-0359": {
+   "tier": "confirmed",
+   "firstLikely": "03:59:50",
+   "firstConfirmed": "03:59:51",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq296-0627-0430": {
+   "tier": "confirmed",
+   "firstLikely": "04:30:09",
+   "firstConfirmed": "04:30:12",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq297-0627-0700": {
+   "tier": "confirmed",
+   "firstLikely": "07:00:59",
+   "firstConfirmed": "07:01:02",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq298-0627-1151": {
+   "tier": "confirmed",
+   "firstLikely": "11:51:10",
+   "firstConfirmed": "11:51:12",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq299-0627-1609": {
+   "tier": "confirmed",
+   "firstLikely": "16:09:46",
+   "firstConfirmed": "16:09:49",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq300-0627-1657": {
+   "tier": "confirmed",
+   "firstLikely": "16:57:43",
+   "firstConfirmed": "16:57:46",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq301-0627-2302": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq302-0628-0243": {
+   "tier": "confirmed",
+   "firstLikely": "02:44:08",
+   "firstConfirmed": "02:44:09",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq303-0628-0521": {
+   "tier": "confirmed",
+   "firstLikely": "05:22:03",
+   "firstConfirmed": "05:22:05",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq304-0628-0912": {
+   "tier": "confirmed",
+   "firstLikely": "09:12:47",
+   "firstConfirmed": "09:12:49",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq305-0628-1439": {
+   "tier": "confirmed",
+   "firstLikely": "14:39:48",
+   "firstConfirmed": "14:39:50",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq306-0628-2334": {
+   "tier": "confirmed",
+   "firstLikely": "23:34:12",
+   "firstConfirmed": "23:34:13",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq307-0628-2349": {
+   "tier": "confirmed",
+   "firstLikely": "23:49:48",
+   "firstConfirmed": "23:49:51",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq308-0629-0019": {
+   "tier": "confirmed",
+   "firstLikely": "00:19:26",
+   "firstConfirmed": "00:19:31",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq309-0629-0104": {
+   "tier": "confirmed",
+   "firstLikely": "01:04:19",
+   "firstConfirmed": "01:04:22",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq310-0629-0206": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq311-0629-0811": {
+   "tier": "confirmed",
+   "firstLikely": "08:11:34",
+   "firstConfirmed": "08:11:37",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq312-0630-0524": {
+   "tier": "confirmed",
+   "firstLikely": "05:24:27",
+   "firstConfirmed": "05:24:29",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq313-0630-0938": {
+   "tier": "confirmed",
+   "firstLikely": "09:38:27",
+   "firstConfirmed": "09:38:32",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq314-0630-1029": {
+   "tier": "confirmed",
+   "firstLikely": "10:29:20",
+   "firstConfirmed": "10:29:24",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq315-0630-1208": {
+   "tier": "confirmed",
+   "firstLikely": "12:08:55",
+   "firstConfirmed": "12:08:57",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq316-0630-1224": {
+   "tier": "confirmed",
+   "firstLikely": "12:24:41",
+   "firstConfirmed": "12:24:43",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq317-0630-1359": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq318-0630-2302": {
+   "tier": "confirmed",
+   "firstLikely": "23:02:33",
+   "firstConfirmed": "23:02:35",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq319-0701-0002": {
+   "tier": "confirmed",
+   "firstLikely": "00:02:49",
+   "firstConfirmed": "00:02:53",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq320-0701-0033": {
+   "tier": "confirmed",
+   "firstLikely": "00:33:14",
+   "firstConfirmed": "00:33:15",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq321-0701-0131": {
+   "tier": "likely",
+   "firstLikely": "01:31:56",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq322-0701-0555": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq323-0701-0840": {
+   "tier": "confirmed",
+   "firstLikely": "08:40:17",
+   "firstConfirmed": "08:40:18",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq324-0701-0844": {
+   "tier": "confirmed",
+   "firstLikely": "08:44:19",
+   "firstConfirmed": "08:44:20",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq325-0701-1022": {
+   "tier": "confirmed",
+   "firstLikely": "10:22:14",
+   "firstConfirmed": "10:22:15",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq326-0701-1036": {
+   "tier": "confirmed",
+   "firstLikely": "10:36:29",
+   "firstConfirmed": "10:36:31",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq327-0701-1957": {
+   "tier": "confirmed",
+   "firstLikely": "19:57:47",
+   "firstConfirmed": "19:57:50",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq328-0701-2108": {
+   "tier": "confirmed",
+   "firstLikely": "21:08:41",
+   "firstConfirmed": "21:08:42",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq329-0701-2223": {
+   "tier": "confirmed",
+   "firstLikely": "22:23:56",
+   "firstConfirmed": "22:23:58",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq330-0701-2352": {
+   "tier": "confirmed",
+   "firstLikely": "23:52:16",
+   "firstConfirmed": "23:52:20",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq331-0702-0115": {
+   "tier": "confirmed",
+   "firstLikely": "01:15:43",
+   "firstConfirmed": "01:15:45",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq332-0702-0332": {
+   "tier": "confirmed",
+   "firstLikely": "03:32:37",
+   "firstConfirmed": "03:32:39",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq333-0702-0555": {
+   "tier": "confirmed",
+   "firstLikely": "05:55:50",
+   "firstConfirmed": "05:55:52",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq334-0702-0610": {
+   "tier": "confirmed",
+   "firstLikely": "06:10:39",
+   "firstConfirmed": "06:10:42",
+   "unrelated": 1,
+   "unrelatedAt": [
+    "06:11:02 茨城県|つくばみらい市加藤"
+   ]
+  },
+  "oq335-0702-1348": {
+   "tier": "confirmed",
+   "firstLikely": "13:48:34",
+   "firstConfirmed": "13:48:36",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq336-0702-1617": {
+   "tier": "confirmed",
+   "firstLikely": "16:17:49",
+   "firstConfirmed": "16:17:51",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq337-0702-2013": {
+   "tier": "confirmed",
+   "firstLikely": "20:13:49",
+   "firstConfirmed": "20:13:50",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq338-0702-2048": {
+   "tier": "confirmed",
+   "firstLikely": "20:48:51",
+   "firstConfirmed": "20:48:53",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq339-0702-2344": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq340-0703-0524": {
+   "tier": "confirmed",
+   "firstLikely": "05:25:04",
+   "firstConfirmed": "05:25:06",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq341-0703-0530": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq342-0703-0705": {
+   "tier": "confirmed",
+   "firstLikely": "07:05:36",
+   "firstConfirmed": "07:05:38",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq343-0703-1044": {
+   "tier": "confirmed",
+   "firstLikely": "10:45:04",
+   "firstConfirmed": "10:45:05",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq344-0703-1253": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq345-0703-1305": {
+   "tier": "confirmed",
+   "firstLikely": "13:05:27",
+   "firstConfirmed": "13:05:30",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq346-0703-1403": {
+   "tier": "confirmed",
+   "firstLikely": "14:03:53",
+   "firstConfirmed": "14:03:54",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq347-0703-1724": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq348-0703-1832": {
+   "tier": "likely",
+   "firstLikely": "18:32:13",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq349-0703-2337": {
+   "tier": "confirmed",
+   "firstLikely": "23:37:39",
+   "firstConfirmed": "23:37:41",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq350-0704-0248": {
+   "tier": "confirmed",
+   "firstLikely": "02:48:18",
+   "firstConfirmed": "02:48:20",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq351-0704-0725": {
+   "tier": "likely",
+   "firstLikely": "07:25:27",
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq352-0704-0829": {
+   "tier": "confirmed",
+   "firstLikely": "08:29:46",
+   "firstConfirmed": "08:29:47",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq353-0704-1017": {
+   "tier": "confirmed",
+   "firstLikely": "10:17:27",
+   "firstConfirmed": "10:17:30",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq354-0704-1724": {
+   "tier": "confirmed",
+   "firstLikely": "17:24:21",
+   "firstConfirmed": "17:24:23",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq355-0705-0203": {
+   "tier": "confirmed",
+   "firstLikely": "02:03:27",
+   "firstConfirmed": "02:03:30",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq356-0705-0206": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq357-0705-1830": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq358-0706-0006": {
+   "tier": "confirmed",
+   "firstLikely": "00:06:57",
+   "firstConfirmed": "00:07:05",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq359-0706-0226": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq360-0706-0255": {
+   "tier": "confirmed",
+   "firstLikely": "02:55:51",
+   "firstConfirmed": "02:55:53",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq361-0706-1228": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq362-0706-1520": {
+   "tier": "confirmed",
+   "firstLikely": "15:20:04",
+   "firstConfirmed": "15:20:06",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq363-0706-2029": {
+   "tier": "confirmed",
+   "firstLikely": "20:29:45",
+   "firstConfirmed": "20:29:46",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq364-0707-0005": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq365-0707-0127": {
+   "tier": "confirmed",
+   "firstLikely": "01:27:58",
+   "firstConfirmed": "01:27:59",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq366-0707-0209": {
+   "tier": "confirmed",
+   "firstLikely": "02:09:13",
+   "firstConfirmed": "02:09:15",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq367-0707-0616": {
+   "tier": "confirmed",
+   "firstLikely": "06:16:52",
+   "firstConfirmed": "06:16:58",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq368-0708-1325": {
+   "tier": "confirmed",
+   "firstLikely": "13:25:48",
+   "firstConfirmed": "13:25:51",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq369-0708-1635": {
+   "tier": "confirmed",
+   "firstLikely": "16:36:00",
+   "firstConfirmed": "16:36:02",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq370-0708-2333": {
+   "tier": "confirmed",
+   "firstLikely": "23:34:01",
+   "firstConfirmed": "23:34:05",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq371-0709-1022": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq372-0709-1405": {
+   "tier": "confirmed",
+   "firstLikely": "14:05:25",
+   "firstConfirmed": "14:05:27",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq373-0709-1737": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq374-0709-1926": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq375-0709-2059": {
+   "tier": "confirmed",
+   "firstLikely": "20:59:41",
+   "firstConfirmed": "20:59:44",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq376-0709-2159": {
+   "tier": "confirmed",
+   "firstLikely": "21:59:10",
+   "firstConfirmed": "21:59:13",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq377-0710-0122": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq378-0710-1516": {
+   "tier": "confirmed",
+   "firstLikely": "15:16:13",
+   "firstConfirmed": "15:16:14",
+   "unrelated": 1,
+   "unrelatedAt": [
+    "15:16:25 千葉県|酒々井町中央台"
+   ]
+  },
+  "oq379-0711-0540": {
+   "tier": "confirmed",
+   "firstLikely": "05:40:40",
+   "firstConfirmed": "05:40:42",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq380-0711-1142": {
+   "tier": "none",
+   "firstLikely": null,
+   "firstConfirmed": null,
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq381-0711-1242": {
+   "tier": "confirmed",
+   "firstLikely": "12:42:41",
+   "firstConfirmed": "12:42:44",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq382-0712-1139": {
+   "tier": "confirmed",
+   "firstLikely": "11:39:23",
+   "firstConfirmed": "11:39:24",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq383-0712-2313": {
+   "tier": "confirmed",
+   "firstLikely": "23:13:09",
+   "firstConfirmed": "23:13:11",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq384-0713-1443": {
+   "tier": "confirmed",
+   "firstLikely": "14:44:02",
+   "firstConfirmed": "14:44:08",
+   "unrelated": 0,
+   "unrelatedAt": []
+  },
+  "oq385-0713-1532": {
+   "tier": "confirmed",
+   "firstLikely": "15:32:13",
+   "firstConfirmed": "15:32:15",
+   "unrelated": 0,
+   "unrelatedAt": []
+  }
+ }
+}

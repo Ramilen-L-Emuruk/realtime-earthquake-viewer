@@ -338,7 +338,9 @@ CRITICAL / HIGH の指摘は **`meta-reviewer` エージェント**で実装か�
 
 既存テストが落ちたときは、**まず「意図的に覆したもの」と「壊したもの」を分ける**。前者は反転させて更新し（何を覆したかをテスト名に書く）、後者は実装を直す。設計書§29 では 3 件落ち、うち 2 件は §18 が置いた防御テスト（離れた点が同時に高震度）で、これを壊さない形に設計を変えた。
 
-**実データでの回帰確認も併せて行う。** ユニットテストは合成フレームなので、実地震の立ち上がり方の変化は捕まえられない。使う窓（正のコントロール 17 件・大地震 7 件・非検知 6 件・特異度 11 窓）とその期待値は [`docs/spec/kyoshin-detection-v3-design.md`](docs/spec/kyoshin-detection-v3-design.md) の**付録A**に一覧してあり、`npm run probe-kyoshin` にそのまま渡せる形で書いてある（下記「補助コマンド」参照）。変更前との比較は、同一ワークツリー内で `git stash push src/utils/kyoshinDetector.ts` のように**対象ファイルを絞って**退避し、同じ窓を測り直すのが最も確実（別チェックアウトを跨がないので取り違えず、ドキュメントやテストの差分も巻き込まない）。測り終えたら退避を戻すのを忘れないこと。
+**実データでの回帰確認も併せて行う。** ユニットテストは合成フレームなので、実地震の立ち上がり方の変化は捕まえられない。`npm run bench-kyoshin` が 793 窓を再生して分類ごとに集計し、**ベースライン（`scripts/kyoshin-bench/baseline.json`）との差分だけを出す**（下記「補助コマンド」参照）。窓の定義は `scripts/kyoshin-bench/windows.json` が単一情報源で、分類の意味と「その地震を検知したか」の判定規則は `scripts/bench-kyoshin.ts` の冒頭にある。
+
+変更を入れる前に一度素の状態で回し、差分が 0 であることを確かめてから実装に入ること（キャッシュや窓カタログの取り違えをここで弾ける）。**差分が出たら 1 件ずつ中身を見る。** 検知の位置が震源から離れていれば、それはその地震の検知ではなく無関係なノイズで、「取りこぼしが増えた」ように見えて実は「誤検知が減った」ことがある（実例: トカラ列島近海の窓で東京の観測点が鳴っていた）。意図した変更なら `-- --update-baseline` で受け入れる。
 
 > 2026-08-21: `HIGH_CONFIRM_POINTS` を下げるだけでは能登本震の確定が 1 秒も早くならないことが実データで判明した（設計書§29）。パラメータ単体の妥当性を論じても、**他のゲートに隠れて効かない**ことがある。ユニットテストと実データ検証を両方要求するのはこのため。
 >
@@ -440,7 +442,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | `node scripts/build-subregions.mjs` | 一次細分区域境界データ（`public/data/subregions.json`）の再生成 |
 | `node scripts/build-glyphs.mjs` | 地名ラベル用 SDF グリフ（`public/fonts/`）の再生成。**地名（地方・県・区域）が増減したら実行する**（`npm run build` が前段で `--check` を走らせ、未生成の文字があればビルドを止める。詳細は [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §5）。県名・区域名は `public/data/*.json` から読むため、**`build-prefectures.mjs`・`build-subregions.mjs` を先に実行すること** |
 | `npm run capture-scenario` | 実地震テストシナリオを DMDATA archive から取得（`scripts/capture-test-scenario.ts`）。**要 DMDATA.JP API キー**（置き場所・渡し方は [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6）。**ワークツリーでの注意**: キーを置く `.env.local` は Git 管理外のため**引き継がれない**。ワークツリー内で使うときはメインリポジトリ直下からコピーする。読めているかは引数なしで `npm run capture-scenario` を実行して確認する（`--from は必須です` なら読めている／`APIキーが必要です` なら読めていない。値をエコーせずに済む）。ただしシェルに `DMDATA_API_KEY` が残っていると `.env.local` が無くても通ってしまうため、事前に残っていないことを確かめる |
-| `npm run probe-kyoshin` | 強震モニタ検知エンジンの実データ回帰検証（`scripts/probe-kyoshin.ts`）。Yahoo の過去フレームを取得・キャッシュして検知エンジンに流し、初 likely／初 confirmed の到達時刻を測る。**API キー不要**。窓は `-- "label:開始時刻:秒数"`（カンマ区切り・JST の `yyyyMMddHHmmss`）で指定し、秒数 0 ならキャッシュ済みの窓を測り直す。検知エンジンを変更したら実行する（上記「特殊ケース: 強震モニタ検知エンジンを変更したとき」） |
+| `npm run bench-kyoshin` | 強震モニタ検知エンジンの実データ回帰ベンチ（`scripts/bench-kyoshin.ts`）。Yahoo の過去フレームを窓ごとに再生し、**気象庁発表の地震を捉えられたか**と**地震が無いのに鳴っていないか**を分類ごとに集計してベースラインと突き合わせる。**API キー不要**。窓は `scripts/kyoshin-bench/windows.json`（単一情報源）。初回は `-- --fetch` で取得する（全 793 窓・500MB 超・数十分）。検知エンジンを変更したら実行する（上記「特殊ケース: 強震モニタ検知エンジンを変更したとき」） |
 | `npm version patch\|minor\|major` | バージョン更新・コミット・git tag 作成（リリース時に 1 回だけ実行。詳細は「リリース」参照） |
 
 ## 構成メモ
