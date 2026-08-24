@@ -1,4 +1,5 @@
 import type { JMAQuake } from '../types/earthquake'
+import { log } from './logger'
 
 // 地震情報の優先度（高いほど優先）。live/履歴/P2P の全経路で共有する単一の情報源。
 // 注: incoming が VXSE61 のときは優先度比較に載らない（VXSE61 は常に「震源だけ更新・震度は保持」の
@@ -67,25 +68,88 @@ function hasConflictingHypocenter(a: JMAQuake, b: JMAQuake): boolean {
   return !allowsHypocenterChange(a) && !allowsHypocenterChange(b)
 }
 
+// 震源が未確定の電文か（＝震度速報。震源名が空であることで見分ける）。
+//
+// **この電文の EventID は同一性の根拠にできない。** 気象庁は震源決定前を検知時刻で採番し、
+// 震源が決まると震源時刻で採り直すため、同じ地震でも ID が変わることがある。
+// 実例: 2026-08-24 04:05 の地震（熊本県天草・芦北地方）で、震度速報が 20260824040519、
+// 震源情報以降が 20260824040526。震度速報は気象庁本庁、震源情報は大阪管区気象台の発表で、
+// 官署の引き継ぎに伴って採り直された。
+function isHypocenterPending(q: JMAQuake): boolean {
+  // **取消電文を除くこと。** 取消はパーサが種別を問わず震源名を空で作るため、
+  // 除かないと「震源未確定」として内容照合へ落ちる。取消は eventId でのみ照合する。
+  return !q.cancelled && !q.earthquake.hypocenter.name
+}
+
+// 一次細分区域の名前の集合。震度速報も、震度を伴う続報も同じ粒度で持つ。
+//
+// **都道府県のロールアップ点を除くこと。** DMDATA の JSON 経路（ライブ）は `intensity.prefectures`
+// を `{ pref: 名前, addr: 名前, isArea: true }` として足すため、`isArea` だけで絞ると県名が混ざる。
+// 県は区域より粗いので、同じ県の別々の区域で起きた 2 つの地震が「重なる」ことになってしまう。
+// 除き方は読み上げ側（`ttsText.ts` の `p.isArea && p.addr !== p.pref`）と揃える。
+function areaNames(q: JMAQuake): Set<string> {
+  return new Set(q.points.filter(p => p.isArea && p.addr !== p.pref).map(p => p.addr))
+}
+
+// 両方が区域別震度を持ち、少なくとも 1 つを共有するか。
+function hasSharedArea(a: JMAQuake, b: JMAQuake): boolean {
+  const sa = areaNames(a)
+  if (sa.size === 0) return false
+  const sb = areaNames(b)
+  if (sb.size === 0) return false
+  for (const name of sa) if (sb.has(name)) return true
+  return false
+}
+
+// 「両方が区域別震度を持つのに 1 つも重ならない」なら、別の地震とみなせる。
+// 片方でも区域を持たなければ判断材料が無いので false（＝引き離せない）を返す。
+function hasDisjointAreas(a: JMAQuake, b: JMAQuake): boolean {
+  return areaNames(a).size > 0 && areaNames(b).size > 0 && !hasSharedArea(a, b)
+}
+
 // 2つの地震カードが同一イベントかどうか。
-// 判定の優先順は「安定キー → eventId → 発生時刻＋震源名」。
-// DMDATA は VXSE51（targetDateTime）→ VXSE52/53（originTime）で earthquake.time が
-// 約1分ずれるため eventId を優先する。P2PQuake は eventId が無いため発生時刻で比較するが、
-// 同時刻は分単位でしか一致しない（P2PQuake の発生時刻は秒が常に 00）ので、
-// 震源名まで見て「同じ分に起きた別の地震」を分離する。
+// 判定の優先順は「安定キー → eventId → 発生時刻＋震源名＋区域の重なり」。
+//
+// DMDATA は震度速報が targetDateTime、以降が arrivalTime を earthquake.time に使い、
+// 同じ地震なら同じ値になる（震源時刻 originTime とは 1 分ずれることがあるため採らない）。
+// P2PQuake は eventId が無いため発生時刻で比較するが、同時刻は分単位でしか一致しない
+// （P2PQuake の発生時刻は秒が常に 00）ので、震源名まで見て「同じ分に起きた別の地震」を分離する。
+//
+// **eventId が食い違っても、それだけで別イベントとはしない。** 震源未確定の電文（震度速報）の
+// EventID は暫定値で採り直されうるため、その場合だけ内容での照合へ落とす。震源が判明している
+// 電文どうしは従来どおり eventId だけで分離する（同じ分の別々の地震を取り違えないため）。
+//
+// **採り直しの照合には「区域が重なる」という積極的な証拠を要求する。** 時刻の一致だけで
+// 合流させると、同じ分に起きた別の地震の震源情報（VXSE52 は区域を持たない）が震度速報の
+// カードを乗っ取り、揺れていない地域の震度が別の震源に貼り付く。eventId が無い経路
+// （P2PQuake）は従来どおり「1 つも重ならなければ別」の緩い基準を使う —— そちらは
+// eventId による分離が最初から無く、厳しくすると通常の続報まで分かれてしまうため。
 //
 // 第1分岐（双方が eventKey を持つ）は、実運用では incoming 側が統合前の生電文なので通らない。
 // 統合済みカードどうしを比較する将来の呼び出し・テストのための分岐。
 //
-// 限界（`docs/spec/quake-spec.md` §6.1）: P2PQuake 経路では、同じ分に起きた別々の地震を
-// 常には分離できない。震源名が同じ場合と、震源が未確定の震度速報が絡む場合がこれにあたる。
+// 限界（`docs/spec/quake-spec.md` §6.1）:
+// - eventId が完全に一致すれば、発生時刻も区域も見ずに同一と判断する
+// - 暫定 ID のカードは、区域を持たない電文（震源情報）とはその場では合流しない
+// - P2PQuake 経路では、同じ分に起きた別々の地震を常には分離できない（震源名が同じ場合など）
 export function sameQuakeEntry(a: JMAQuake, b: JMAQuake): boolean {
   if (a.eventKey && b.eventKey) return a.eventKey === b.eventKey
   const ea = extractQuakeEventId(a)
   const eb = extractQuakeEventId(b)
-  if (ea && eb) return ea === eb
-  if (a.earthquake.time !== b.earthquake.time) return false
-  return !hasConflictingHypocenter(a, b)
+  // eventId が食い違う＝暫定 ID の採り直しの疑い。証拠を厳しく要求する側へ倒す。
+  const requiresSharedArea = Boolean(ea && eb && ea !== eb)
+  if (ea && eb) {
+    if (ea === eb) return true
+    // 暫定 ID の採り直しは「震源未確定の電文 × 震源が判明した電文」の組でしか起きない。
+    // 同じ地震の震度速報どうしは同じ ID を共有する（2026-08-23 22:45 の 2 通で確認）ため、
+    // **両方が震源未確定なら別々の地震**。片方でも震源が判明していなければ救済しない。
+    if (isHypocenterPending(a) === isHypocenterPending(b)) return false
+  }
+  // 発生時刻が空の電文（取消）は内容照合の材料を持たない。空どうしを「一致」と
+  // 数えないよう、値があることまで要求する。
+  if (!a.earthquake.time || a.earthquake.time !== b.earthquake.time) return false
+  if (hasConflictingHypocenter(a, b)) return false
+  return requiresSharedArea ? hasSharedArea(a, b) : !hasDisjointAreas(a, b)
 }
 
 // カードが実際の震度データ（最大震度 or 各地の震度）を持つか。
@@ -176,6 +240,69 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
   return result
 }
 
+/**
+ * 受信した電文に対応する既存カードを選ぶ。
+ *
+ * 通常、一致するカードは 1 枚しかない。ただし暫定 EventID で分かれていたカードが確定 ID の
+ * 電文で合流するときだけ、**2 枚が同時に一致する**（暫定 ID のカードは区域の重なりで、
+ * 確定 ID のカードは eventId で）。ここで後から立った方を選ぶと、統合後のカードの `eventKey`
+ * が入れ替わる。`eventKey` はブラウザ通知の重複抑止・カード選択・読み上げの主題キーに使う値
+ * なので、入れ替わると**同じ地震の通知が二度出る**。
+ *
+ * **先に立ったカード（発表時刻が古い方）を選んでキーを据え置く。**
+ */
+export function findExistingQuakeCard(cards: JMAQuake[], incoming: JMAQuake): JMAQuake | undefined {
+  let found: JMAQuake | undefined
+  for (const card of cards) {
+    if (!sameQuakeEntry(card, incoming)) continue
+    // 発表時刻が同値なら id で決める。配列順（＝到着順）に委ねると、同じ入力でも
+    // ライブと履歴で選ばれる側が変わる。
+    if (!found || card.time < found.time || (card.time === found.time && card.id < found.id)) found = card
+  }
+  return found
+}
+
+/**
+ * 同じ eventId を指すことになったカードどうしを 1 枚に畳む。
+ *
+ * 震度速報は暫定 EventID でカードを作る（§6.1）。そのカードがあとから確定 ID の電文を
+ * 区域の重なりで引き当てて取り込むと、**同じ確定 ID を持つ別のカードが既に居る**ことがある。
+ * 実例は 2026-08-24 04:05 で、震度速報（VXSE51・暫定 519）→ 震源情報（VXSE52・確定 526・
+ * 区域を持たないため合流しない）→ 震源・震度情報（VXSE53・確定 526・区域が重なるので
+ * 震度速報のカードへ入る）と届き、震度を持つカードと「震源情報だけ」のカードが並ぶ。
+ *
+ * **eventKey では気づけない。** 続報で不変にするため既存カードから引き継ぐ値なので、
+ * 2 枚は最後まで別のキーを持ち続ける。ここでは eventId だけを見て畳む。
+ *
+ * eventId を持たない電文（P2PQuake 経路）は対象外 —— そちらの同一性は `sameQuakeEntry` が見る。
+ */
+export function coalesceByEventId(cards: JMAQuake[]): JMAQuake[] {
+  const result: JMAQuake[] = []
+  for (const card of cards) {
+    const eventId = extractQuakeEventId(card)
+    // **取消表示中のカードは畳まない。** `mergeQuakeInto` は置換時に `cancelledAt` を引き継がず
+    // `id` も入れ替わるため、畳むと 10 秒後の purge 予約（`id` で対象を引く）が空振りし、
+    // 取り消したはずのカードが居座る。
+    const index = eventId && !card.cancelledAt
+      ? result.findIndex(e => extractQuakeEventId(e) === eventId && !e.cancelledAt)
+      : -1
+    if (index < 0) {
+      result.push(card)
+      continue
+    }
+    // 先に居る方を既存として扱う。据え置き判定（震度を持つ・高優先度）が働くため、
+    // 完成したカードが震源情報だけのカードに上書きされることはない。
+    const kept = mergeQuakeInto(result[index], card)
+    // 畳んだことは記録に残す。無音だと「畳まれたのか、そもそも重複していないのか」を
+    // 実運用で区別できない（取消の不一致を `useEarthquakes` が warn するのと同じ理由）。
+    log.info('[quake] 同じ eventId のカードを畳んだ', {
+      eventId, keptId: kept.id, droppedId: card.id, keptEventKey: kept.eventKey,
+    })
+    result[index] = kept
+  }
+  return result
+}
+
 // 電文群をイベントごとに時刻順で畳み込み、リアルタイムと同一の統合結果を得る。
 // base は統合済みの既存カード群（「もっと見る」でのバッチ跨ぎ用）。
 //
@@ -202,5 +329,5 @@ export function mergeQuakeHistory(newQuakes: JMAQuake[], base: JMAQuake[] = []):
     else merged.push(mergeQuakeInto(undefined, q))
   }
 
-  return sortQuakes(merged)
+  return sortQuakes(coalesceByEventId(merged))
 }

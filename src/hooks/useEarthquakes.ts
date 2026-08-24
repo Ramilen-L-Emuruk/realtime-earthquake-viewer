@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataNankaiCommentary, fetchDmdataKohatsu } from '../services/dmdata'
-import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey } from '../utils/quakeMerge'
+import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey, coalesceByEventId, findExistingQuakeCard } from '../utils/quakeMerge'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex } from '../utils/stationCoords'
 import { calcEEWCancelTime } from '../utils/eew'
 import { mergeTsunamiObservations, isCancelForCurrentTsunami } from '../utils/tsunami'
@@ -533,12 +533,17 @@ export function useEarthquakes(
           // 同一イベントの既存カードを探し、リアルタイム統合コアで1枚に統合する。
           // 同一性の判定は sameQuakeEntry、VXSE61 の震源マージ・震度保持・優先度判定は
           // mergeQuakeInto に委譲する（いずれも履歴経路と同一ロジック）。
-          const existing = prev.earthquakes.find(e => sameQuakeEntry(e, quake))
+          // 一致するカードが 2 枚あることがある（暫定 ID と確定 ID）。どちらを既存として
+          // 扱うかで統合後の eventKey が変わるため、選び方は findExistingQuakeCard に集約する。
+          const existing = findExistingQuakeCard(prev.earthquakes, quake)
           const merged = mergeQuakeInto(existing, quake)
           if (merged === existing) return prev
+          // 統合の結果、暫定 ID で作られたカードが確定 ID を持つカードと重複することがある。
+          // 履歴経路（mergeQuakeHistory）と同じ畳み込みをここでも通す（理由は coalesceByEventId）。
+          const next = coalesceByEventId([merged, ...prev.earthquakes.filter(e => !sameQuakeEntry(e, quake))])
           return {
             ...prev,
-            earthquakes: sortQuakes([merged, ...prev.earthquakes.filter(e => !sameQuakeEntry(e, quake))]),
+            earthquakes: sortQuakes(next),
             lastUpdate: now,
           }
         }
