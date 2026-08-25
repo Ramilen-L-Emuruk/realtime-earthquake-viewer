@@ -57,6 +57,19 @@ const HEADLINE: Record<ChecklistReason, { scoped: string; global: string }> = {
 const WRAPPER_CLASS =
   'absolute top-12 left-0 right-0 z-[99999] pointer-events-none px-2 flex justify-center'
 
+/**
+ * 震度の表示に確保する幅（「震度5弱」の 4 文字ぶん）。
+ *
+ * 震度ラベルは階級によって 1〜2 文字で揺れる（「7」と「6弱」）。成り行きの幅にすると、揺れが
+ * 強まって階級が上がるたびに帯とボタンの幅が動く。**強震モニタ経路では毎秒変わりうる**ので、
+ * 常に最大幅を確保して動かないようにする。`em` はフォントサイズ基準なので UI 倍率にも追従する。
+ *
+ * バッジ側は `box-sizing: border-box` で左右のパディング（`px-1.5` = 0.75rem）も幅に含まれるため、
+ * その分を足す。
+ */
+const SCALE_WIDTH_BADGE = 'text-center min-w-[calc(4em+0.75rem)]'
+const SCALE_WIDTH_PLAIN = 'inline-block text-center min-w-[4em]'
+
 function CloseIcon() {
   return (
     <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -105,7 +118,9 @@ export function ActionChecklist({ reason, scale, scoped, collapsed, onDismiss, o
           aria-label={`震度${label}の行動チェックリストを開く`}
         >
           <ChecklistIcon />
-          <span className="text-xs font-bold whitespace-nowrap">震度{label} 行動チェック</span>
+          <span className="text-xs font-bold whitespace-nowrap">
+            <span className={SCALE_WIDTH_PLAIN}>震度{label}</span> 行動チェック
+          </span>
         </button>
       </div>
     )
@@ -120,7 +135,7 @@ export function ActionChecklist({ reason, scale, scoped, collapsed, onDismiss, o
           {/* 判定の根拠（全国基準か周辺基準か）はここに書かない。揺れた直後に読むのは行動だけで、
               仕組みの説明は要らない。その説明は設定タブの「出す最低震度」の項目に置いてある。 */}
           <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-bold text-white px-1.5 py-0.5 rounded bg-red-500 flex-shrink-0">
+            <span className={`text-xs font-bold text-white px-1.5 py-0.5 rounded bg-red-500 flex-shrink-0 ${SCALE_WIDTH_BADGE}`}>
               震度{label}
             </span>
             <span className="text-white text-sm font-bold leading-tight">
