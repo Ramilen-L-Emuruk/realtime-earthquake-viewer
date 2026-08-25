@@ -110,15 +110,18 @@ describe('電文ログのダウンロード名', () => {
     // 「名前と揃えよう」と本文までローカル時刻にすると、他のツールでの再解析が壊れる
     const cap = captureDownloads()
     try {
-      withTz('Asia/Tokyo', () => {
+      // 期待値もこの中で作る。`RECEIVED()` は壁時計から Date を組むので、外で呼ぶと実行環境の
+      // 時間帯で解釈される。UTC で走る CI では中身（JST 解釈）と 9 時間ずれて落ちる
+      const expectedIso = withTz('Asia/Tokyo', () => {
         const { container } = render(h(TelegramTab, { telegramLog: [entry(RECEIVED())], onClear: () => {} }))
         const box = container.querySelector('input[type=checkbox]')
         if (!box) throw new Error('選択のチェックボックスが無い')
         fireEvent.click(box)
         click(container, 'JSON')
+        return RECEIVED().toISOString()
       })
       const payload = JSON.parse(await cap.blobs[0].text()) as { receivedAt: string }[]
-      expect(payload[0].receivedAt).toBe(RECEIVED().toISOString())
+      expect(payload[0].receivedAt).toBe(expectedIso)
       expect(payload[0].receivedAt).toMatch(/Z$/)
     } finally {
       cap.restore()
