@@ -38,6 +38,8 @@ function fakeEvent(
     lastSize: 0,
     epicenter: null,
     confirmStreak: 0,
+    firstConfirmedAtMs: 0,
+    everMultiPoint: false,
     everConfirmed: overrides.confidence === 'confirmed',
     lastSpreadAtMs: 0,
     everNeighborRise: overrides.confidence === 'likely' || overrides.confidence === 'confirmed',

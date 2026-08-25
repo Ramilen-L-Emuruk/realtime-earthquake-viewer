@@ -82,6 +82,16 @@ export interface DetectionEvent {
   confirmStreak: number
   /** 一度でも confirmed に達したか（明滅防止のラッチ。HOLD 中は confirmed を維持） */
   everConfirmed: boolean
+  /** 初めて confirmed に達した dataTime(ms)。単点のまま居座る確定を降ろす判定に使う。未達は 0 */
+  firstConfirmedAtMs: number
+  /**
+   * 一度でも単点でなくなった（`lastSize >= SOLO_DECAY_SIZE`）か。
+   *
+   * **これが立たないまま `SOLO_CONFIRM_GRACE_MS` を過ぎた確定は降ろす**（§33）。実データ 793 窓では、
+   * 気象庁発表の地震に紐づく確定検知 823 件すべてがいずれ単点でなくなり、遅れた 6 件も最長 9 秒だった。
+   * 一方、上限に張り付いた観測点は永久に単点のまま居座る。
+   */
+  everMultiPoint: boolean
   /** 最後に spread（size ≥ MIN_LIKELY_POINTS）を持った dataTime(ms)。LIKELY_HOLD_MS の likely/faint 保持に使う。未達は 0 */
   lastSpreadAtMs: number
   /**
@@ -268,6 +278,25 @@ export const PARAMS = {
    * 根室沖 78km で実観測）。同一地震の分裂を 1 本化する。離れた別地震（数百km 級）は併合しない。
    */
   MERGE_EVENT_KM: 100,
+  /**
+   * 単点のまま確定が続くのを許す時間(ms)。これを過ぎても `lastSize` が `SOLO_DECAY_SIZE` に達して
+   * いなければ、`everConfirmed` のラッチを降ろす（§33）。
+   *
+   * **鳴らす条件は変えない。** 震源最近傍の 1 点が先に立ち上がり、遅れて周囲へ伝播するのは実地震の
+   * 正常な姿（能登本震）なので、発報はこれまでどおり即座に行う。問題は「周囲が続かなかったときに
+   * 降りられない」ことのほうで、ここはその出口。
+   *
+   * 値の根拠: 実データ 793 窓で、気象庁発表の地震に紐づく確定検知 823 件のうち 817 件は確定した時点で
+   * 既に単点ではなく、遅れた 6 件も 2/2/4/5/9 秒だった（最長 9 秒）。20 秒はその 2 倍以上の余裕。
+   * 残る 1 件（55 秒）は設計書§30「残る課題」の富山の単独再検知そのもので、降ろしたい側にあたる。
+   */
+  SOLO_CONFIRM_GRACE_MS: 20_000,
+  /**
+   * 「単点ではなくなった」とみなす点数。**2 で十分**で、`MIN_CLUSTER`(3) にすると本物を巻き込む
+   * （実データでは size 2 止まりの本物が 4 件あり、いずれも能登・福島の大地震の成分）。
+   */
+  SOLO_DECAY_SIZE: 2,
+
   /**
    * メンバーを外すまでの猶予(ms)。イベントのメンバーが「levelActive を最後に満たしてから」これを
    * 超えたら、そのイベントのメンバーから外す（`pruneFadedMembers`）。
@@ -1042,6 +1071,8 @@ function associate(
         epicenter: null,
         confirmStreak: 0,
         everConfirmed: false,
+        firstConfirmedAtMs: 0,
+        everMultiPoint: false,
         lastSpreadAtMs: 0,
         everNeighborRise: false,
       }
@@ -1072,7 +1103,7 @@ function associate(
     if (now - e.lastOnsetAtMs <= PARAMS.HOLD_MS) survivors.push(e)
   }
 
-  return { events: mergeAdjacentEvents(survivors), nextEventId: idCounter, prunedMembers }
+  return { events: mergeAdjacentEvents(survivors, now), nextEventId: idCounter, prunedMembers }
 }
 
 /**
@@ -1081,7 +1112,7 @@ function associate(
  * host は発生時刻が早い方（＝ID を継承）。メンバー・セルは和集合、点数は合算、最大震度は max、
  * 確信度は everConfirmed の論理和で再評価する。離れた別地震（>MERGE_EVENT_KM）は併合しない。
  */
-function mergeAdjacentEvents(events: DetectionEvent[]): DetectionEvent[] {
+function mergeAdjacentEvents(events: DetectionEvent[], now: number): DetectionEvent[] {
   if (events.length <= 1) return events
   const ordered = [...events].sort((a, b) => a.originTimeMs - b.originTimeMs)
   const hosts: DetectionEvent[] = []
@@ -1107,13 +1138,23 @@ function mergeAdjacentEvents(events: DetectionEvent[]): DetectionEvent[] {
     host.lastSpreadAtMs = Math.max(host.lastSpreadAtMs, e.lastSpreadAtMs)
     host.confirmStreak = Math.max(host.confirmStreak, e.confirmStreak)
     host.everConfirmed = host.everConfirmed || e.everConfirmed
+    // 確定の計時は早いほうに揃える（遅いほうに合わせると猶予が伸びる）。0 は未確定なので除く
+    const confirmedAts = [host.firstConfirmedAtMs, e.firstConfirmedAtMs].filter((v) => v > 0)
+    host.firstConfirmedAtMs = confirmedAts.length > 0 ? Math.min(...confirmedAts) : 0
+    // メンバーは和集合になるので、どちらかが単点でなくなっていれば 1 本化した後もそう扱う
+    host.everMultiPoint = host.everMultiPoint || e.everMultiPoint
     // 併合したどちらかが周囲の裏付けを持っていれば、1 本化した後も持つ（メンバーは和集合になるため）
     host.everNeighborRise = host.everNeighborRise || e.everNeighborRise
-    host.confidence = host.everConfirmed
+    // 併合した結果に対して単点判定をやり直す（everMultiPoint は論理和・firstConfirmedAtMs は
+    // 早いほうへ揃えた後なので、ここで評価すれば 1 本化した姿での判定になる）
+    const hostStale = isSoloConfirmStale(host, now)
+    host.confidence = host.everConfirmed && !hostStale
       ? 'confirmed'
-      : host.confidence === 'likely' || e.confidence === 'likely'
-        ? 'likely'
-        : host.confidence
+      : hostStale
+        ? 'weak' // 降ろした確定は下位ティアにも上げない（updateEventMetrics と同じ扱い）
+        : host.confidence === 'likely' || e.confidence === 'likely'
+          ? 'likely'
+          : host.confidence
   }
   return hosts
 }
@@ -1159,6 +1200,9 @@ function updateEventMetrics(
   const lats: number[] = []
   const lngs: number[] = []
   const activeVals: number[] = [] // levelActive メンバーの現 value（震度1到達点数ゲート用）
+  // size に数えたメンバーの座標。単点判定の隣接チェックに使う（下記 hasAdjacentPair）
+  const sizeLats: number[] = []
+  const sizeLngs: number[] = []
   for (const k of e.memberKeys) {
     const p = cur.get(k)
     const t = triggeredAt[k]
@@ -1167,6 +1211,11 @@ function updateEventMetrics(
     if ((p && p.sustained) || recentOnset) {
       size++
       availLocal = Math.max(availLocal, avail[k] ?? 0) // 局所に実在する近傍数（密度）
+      // 今フレームに値が届いていない点（欠測）は座標が引けない。隣接判定からは自然に落ちる
+      if (p) {
+        sizeLats.push(p.lat)
+        sizeLngs.push(p.lng)
+      }
     }
     if (p && p.levelActive) {
       if (p.value > maxV) maxV = p.value
@@ -1238,7 +1287,28 @@ function updateEventMetrics(
       intenseCount >= PARAMS.CONFIRM_INTENSE_POINTS)
   e.confirmStreak = meetsConfirm ? e.confirmStreak + 1 : 0
   const confirmFramesReq = eewActive ? PARAMS.EEW_CONFIRM_FRAMES : PARAMS.CONFIRM_FRAMES
-  if (e.confirmStreak >= confirmFramesReq) e.everConfirmed = true
+  if (e.confirmStreak >= confirmFramesReq && !e.everConfirmed) {
+    e.everConfirmed = true
+    e.firstConfirmedAtMs = now
+  }
+
+  // 単点のまま居座る確定を降ろす（§33）。
+  //
+  // **鳴らすのは今までどおり。** 震源最近傍の 1 点が先に立ち上がり、遅れて周囲へ伝播するのは実地震の
+  // 正常な姿なので、発報を遅らせない。ここが直すのは「周囲が続かなかったときに降りられない」ほう。
+  //
+  // **「点数」だけで見てはいけない。** `memberKeys` は併合（`mergeAdjacentEvents`）で和集合になり、
+  // 併合は重心が `MERGE_EVENT_KM`(100km) 以内なら成立する。離れた場所で別々に張り付いた 2 点が
+  // 併合されると点数だけは 2 になり、この判定が丸ごと素通しになる。数えるのは「隣り合う対があるか」
+  // ——L2 が成分を作るときと同じ `R_KM` を使う。
+  // `size` の条件は `hasAdjacentPair` の呼び出しを省くための早期リターン（対が 1 つも無ければ
+  // あちらも偽を返す）。`SOLO_DECAY_SIZE` を 3 以上へ動かしたときに意味を持つ
+  if (!e.everMultiPoint && size >= PARAMS.SOLO_DECAY_SIZE && hasAdjacentPair(sizeLats, sizeLngs)) {
+    e.everMultiPoint = true
+  }
+  // 降ろすのは確信度だけで、状態は書き換えない（理由は `isSoloConfirmStale` のコメント）。
+  // 一度降りたら `everMultiPoint` が立つまで戻らない（遅れて隣接する点が続けば自力で復帰する）。
+  const soloTooLong = isSoloConfirmStale(e, now)
 
   // 確信度: 実在性（広がり size）は L2 で担保済み。ここで点数・最大震度から段階化する。
   //  - confirmed/likely は震度1以上（音を鳴らす重み）。confirmed 到達後は HOLD 中ラッチで維持。
@@ -1253,8 +1323,14 @@ function updateEventMetrics(
   // 周囲の裏付けはラッチする（「上がっている」は波の通過中だけの一瞬の性質。毎フレーム評価だと
   // 揺れの最中に条件を割って faint へ落ちる。詳細は everNeighborRise のコメント）
   if (!e.everNeighborRise && hasNeighborRise(e, framePoints)) e.everNeighborRise = true
-  if (e.everConfirmed) {
+  if (e.everConfirmed && !soloTooLong) {
     e.confidence = 'confirmed'
+  } else if (soloTooLong) {
+    // **降ろした確定を下位ティアへ回り込ませない。** 3 点以上が鎖状に併合されると（併合は重心間
+    // 100km で greedy に連なるため、互いに 40km 超でも成立する）`size` が MIN_LIKELY_POINTS に届き、
+    // `spreadHeld` が立って `faint`、条件次第では `likely` にまで上がる。likely は候補音を鳴らす。
+    // 「本物ではない」と判断して降ろしたものが下から出てくるのでは降ろした意味が無い
+    e.confidence = 'weak'
   } else if (spreadHeld && e.maxIntensity >= PARAMS.MIN_LIKELY_INTENSITY && e.everNeighborRise) {
     e.confidence = 'likely'
   } else if (spreadHeld) {
@@ -1264,6 +1340,45 @@ function updateEventMetrics(
   }
 
   void cellOf
+}
+
+/**
+ * 単点のまま確定が居座っているか（§33）。**確信度を決める箇所すべてでこれを使う。**
+ *
+ * `updateEventMetrics` と `mergeAdjacentEvents` の 2 箇所が確信度を書く。片方だけに置くと、
+ * 併合が走ったフレームだけ `everConfirmed` から `confirmed` が付け直されて 1 フレーム復活する
+ * （実測: 能登の富山イベントが復帰の瞬間に 1 フレームだけ confirmed へ跳ねた）。**1 フレームでも
+ * 立ち上がれば `useKyoshinAlerts` が検知音を鳴らす**ので、判定はここに集約する。
+ *
+ * 状態は書き換えない。書き換えると確定条件を満たし直した瞬間に再確定し、猶予の周期で明滅する。
+ */
+function isSoloConfirmStale(e: DetectionEvent, now: number): boolean {
+  return (
+    e.everConfirmed &&
+    !e.everMultiPoint &&
+    e.firstConfirmedAtMs > 0 &&
+    now - e.firstConfirmedAtMs > PARAMS.SOLO_CONFIRM_GRACE_MS
+  )
+}
+
+/**
+ * 与えられた点の中に、`R_KM` 以内で隣り合う対が 1 つでもあるか。
+ *
+ * 「単点ではなくなった」の判定に使う（§33）。**点数を数えるだけでは足りない**——イベントのメンバーは
+ * 併合で和集合になるため、100km 離れた 2 つの故障点でも点数は 2 になる。実地震の面は L2 が `R_KM` の
+ * 近傍グラフで連結して作るので、同じ尺度で「隣り合っているか」を見る。
+ *
+ * 走査は O(n^2) だが、呼ぶのはラッチが立つまでの間だけで、実地震なら最初の対で即座に成立する。
+ */
+function hasAdjacentPair(lats: readonly number[], lngs: readonly number[]): boolean {
+  const latMargin = PARAMS.R_KM / KM_PER_DEG
+  for (let i = 0; i < lats.length; i++) {
+    for (let j = i + 1; j < lats.length; j++) {
+      if (Math.abs(lats[i] - lats[j]) > latMargin) continue
+      if (haversineKm(lats[i], lngs[i], lats[j], lngs[j]) <= PARAMS.R_KM) return true
+    }
+  }
+  return false
 }
 
 /**
