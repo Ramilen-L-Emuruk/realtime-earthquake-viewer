@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback, type CSSProperties }
 import { IconNav, type TabId } from './components/IconNav'
 import {
   TAB_PRIORITY, TAB_HOLD_MS, shouldAcceptAutoTab, shouldFollowNow, idleRevertPriority,
+  resolveNonRealtimeTabSource,
   type TabHold, type TabPriority, type TabHoldSource, type TabFollowMark,
 } from './utils/tabPriority'
 import { PanelResizeHandle } from './components/PanelResizeHandle'
@@ -204,7 +205,10 @@ export function App() {
   const requestAutoTab = useCallback((
     tab: TabId,
     priority: TabPriority,
-    source: TabHoldSource = 'hold',
+    // **既定値を置かない。** 駆動源の選択を誤ると、症状は例外もログも出さずに戻る
+    // （`'hold'` で出すと EEW 発表中に画面が動かず、`'receipt'` で出すと読み上げ中の EEW から
+    // 画面を奪う）。`forceTab` が既定値を撤廃しているのと同じ理由で、全呼び出しに明示させる。
+    source: TabHoldSource,
     // 最小滞留時間の床を掛けるか。**発話に同調した追従（`followSpeechTab`）だけ true にする。**
     // 受信の瞬間に出す要求（EEW の新規発報・続報）に掛けると、続報が 1.5 秒未満で連投された
     // ときに保持の張り直しを落とす。床の目的は「無音のまま追従が連打されるのを抑える」ことで、
@@ -234,7 +238,14 @@ export function App() {
     if (opts?.dwell) lastFollowRef.current = { at: now, priority }
     // 読み上げ系の移動は呼び出し元が名前付きの記録を持たないものがあるため、ここで成立を残す。
     // 拒否だけが記録されて成立が残らないと、ログから「動いたのか何も起きなかったのか」を区別できない。
-    log.debug(`[tab] → ${tab} 移動 (優先度${priority}・駆動${source})`)
+    //
+    // **越えた保持も残すこと。** 「保持が切れていたから通った」のと「生きている保持を突破した」のは
+    // 意味が違う。突破できるのは駆動源で名指しした例外だけなので（`shouldAcceptAutoTab`）、
+    // 事後にそれが働いたのかを確かめる手掛かりがここに無いと、拒否ログの履歴を遡る作業になる。
+    const heldNote = hold.until - now > 0
+      ? `・保持中${hold.priority}/${hold.source}を突破`
+      : '・保持切れ'
+    log.debug(`[tab] → ${tab} 移動 (優先度${priority}・駆動${source}${heldNote})`)
     // 特別情報のためにパネルを開いていた場合、**ここでは畳まないが追跡も捨てない。**
     // 畳まないのは、タブ移動が「その内容を見せる」ための展開であり、打ち消すと移動の意味が
     // 無くなるため。追跡を捨てないのは、捨てると畳んだ状態へ戻す機会が二度と来ないため
@@ -310,7 +321,9 @@ export function App() {
    * 続いている経路）の両方がここを通る。**生の `setActiveTab` を渡してはいけない**。
    */
   const requestTabForKyoshin = useCallback((tab: TabId) => {
-    requestAutoTab(tab, TAB_PRIORITY.kyoshin)
+    // 駆動源は `'hold'`。**`'receipt'` にしない** ——揺れ検知も読み上げを持たない経路だが、
+    // 移動先が realtime で、EEW の保持中はすでに realtime を出しているため越える必要がない。
+    requestAutoTab(tab, TAB_PRIORITY.kyoshin, 'hold')
   }, [requestAutoTab])
 
   /** ユーザー操作によるタブ移動。以後 TAB_HOLD_MS は自動切替に奪わせない。 */
@@ -320,9 +333,20 @@ export function App() {
 
   // 地震情報・長周期地震動情報・津波の受信によるタブ移動（`useLiveEventHandler` から呼ぶ）。
   // 優先度は移動先から決める（earthquake=地震情報・長周期／tsunami=津波）。
+  //
+  // **駆動源は読み上げの設定で変える。** ここへ来る経路が 2 種類あり、意味が違うため。
+  //
+  // - **読み上げが無効な端末**（`'receipt'`）: この電文はそもそも声にならないので、画面が唯一の
+  //   伝え手になる。EEW 続報が張った保持を越えさせる（理由は `shouldAcceptAutoTab`）。越えないと
+  //   EEW 発表中は震度速報も津波警報も画面へ出せない
+  // - **読み上げが有効な端末**（`'hold'`）: ここへ来るのは「読み上げ文が空になった」ときだけで
+  //   （長周期の読み上げ範囲設定・等級が不明な津波・文が組めなかった保険）、本来は追従で動く電文。
+  //   **越えさせてはいけない** ——EEW を実際に読み上げている最中に画面を奪い、予想震度・予報円が
+  //   見えなくなる（この優先度の仕組みが最初に直した症状そのもの）
   const setActiveTabNonRealtime = useCallback((tab: Exclude<TabId, 'realtime'>) => {
-    requestAutoTab(tab, tab === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake)
-  }, [requestAutoTab])
+    const source = resolveNonRealtimeTabSource(settings.voicevoxEnabled)
+    requestAutoTab(tab, tab === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake, source)
+  }, [requestAutoTab, settings.voicevoxEnabled])
 
   // EEW の受信による realtime タブ移動。
   //
@@ -331,8 +355,10 @@ export function App() {
   // 津波・地震情報の追従を優先度比較で弾いてしまい、声と画面が食い違う元の不具合に戻る
   // （実測: 読み終えた EEW の保持に大津波警報が弾かれていた）。
   //
-  // 読み上げが無効な端末でも `'speech'` で張るが、その場合は追従が一切起きないため
-  // 他の要求（すべて `'hold'`）は従来どおり優先度で弾かれる。挙動は変わらない。
+  // 読み上げが無効な端末でも `'speech'` で張る（追従が起きないので形式的な指定）。ただし
+  // **その端末では電文の受信が `'receipt'` で出るため、続報（`eewUpdate`）の保持は越えられる**
+  // （`setActiveTabNonRealtime` と `shouldAcceptAutoTab`）。新規発報・レベルアップ・誤報取消の
+  // `eewUrgent` は越えられないままで、そこは従来どおり優先度で弾かれる。
 
   // 続報。手動選択より弱く、地震情報・津波より強い。
   // 動いたときだけ記録する（拒否は requestAutoTab 側が debug で残す）。
