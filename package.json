@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "capture-scenario": "tsx scripts/capture-test-scenario.ts",
-    "bench-kyoshin": "tsx scripts/bench-kyoshin.ts"
+    "bench-kyoshin": "tsx scripts/bench-kyoshin.ts",
+    "build-hypocenter-catalog": "tsx scripts/build-hypocenter-catalog.ts"
   },
   "dependencies": {
     "fflate": "^0.8.3",
