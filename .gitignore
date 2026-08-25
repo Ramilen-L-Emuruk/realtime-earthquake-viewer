@@ -66,6 +66,10 @@ verify-*.jpg
 !.claude/skills/tts-reading-audit/
 .claude/skills/tts-reading-audit/*
 !.claude/skills/tts-reading-audit/SKILL.md
+!.claude/skills/scratch-project-blocks/
+.claude/skills/scratch-project-blocks/*
+!.claude/skills/scratch-project-blocks/SKILL.md
+!.claude/skills/scratch-project-blocks/scratch-blocks.mjs
 
 # 実地震テストのシナリオ本体（DMDATA.JP利用規約第15条によりEEWの二次配信は
 # 個人契約では制限されるため、各自の契約でキャプチャしたものはコミットしない。
