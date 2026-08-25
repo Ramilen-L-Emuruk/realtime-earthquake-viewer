@@ -16,6 +16,9 @@ import { TsunamiTab } from './components/TsunamiTab'
 import { SettingsTab } from './components/SettingsTab'
 import { TelegramTab } from './components/TelegramTab'
 import { SpecialInfoBanner } from './components/SpecialInfoBanner'
+import { ActionChecklist } from './components/ActionChecklist'
+import { useActionChecklist } from './hooks/useActionChecklist'
+import { useStationCoords } from './hooks/useStationCoords'
 import { useEarthquakes } from './hooks/useEarthquakes'
 import { useTestScenarios } from './hooks/useTestScenarios'
 import { useSettings } from './hooks/useSettings'
@@ -1056,6 +1059,24 @@ export function App() {
   )
   const swaveArrival = useSWaveCountdown(psWave, home, hasActiveEEW)
 
+  // 地震後の行動チェックリスト。EEW・強震モニタ・地震情報の 3 経路で発火する（詳細は
+  // useActionChecklist）。観測点座標は他の利用箇所と同じキャッシュを共有するため、ここで
+  // 呼んでも追加の取得は起きない。
+  const stationCoordsForChecklist = useStationCoords()
+  const eewListForChecklist = useMemo(() => [...activeEEWsNoCancelled.values()], [activeEEWsNoCancelled])
+  const actionChecklist = useActionChecklist({
+    minScale: settings.actionChecklistMinScale,
+    home,
+    stationCoords: stationCoordsForChecklist,
+    kyoshinSites: kyoshinSitesGated,
+    // 保持値（kyoshinHeld）を渡す。音・通知・地域単位発報は保持値を使うのがこのアプリの規約で
+    // （kyoshin-detection-spec.md §8）、生値だと強く揺れている最中の単発の欠測でフレームが
+    // 落ち、閾値に達した瞬間を取りこぼす。
+    kyoshinIndices: kyoshinHeld.indices,
+    eews: eewListForChecklist,
+    latestQuake: earthquakes[0],
+  })
+
   const prevEtaRef = useRef<number | null>(null)
   useEffect(() => {
     const eta = swaveArrival?.etaSec ?? null
@@ -1178,6 +1199,16 @@ export function App() {
             <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
             <MapDataStatus />
           </div>
+          {actionChecklist.state && (
+            <ActionChecklist
+              reason={actionChecklist.state.reason}
+              scale={actionChecklist.state.scale}
+              scoped={actionChecklist.state.scoped}
+              collapsed={actionChecklist.collapsed}
+              onDismiss={actionChecklist.dismiss}
+              onRestore={actionChecklist.restore}
+            />
+          )}
           <SpecialInfoBanner nankai={nankai} nankaiCommentary={nankaiCommentary} kohatsu={kohatsu} />
         </div>
 

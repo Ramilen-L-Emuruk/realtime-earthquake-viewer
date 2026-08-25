@@ -9,6 +9,9 @@ export type DefaultTabSetting = 'earthquake' | 'realtime'
 export interface AppSettings {
   minDisplayScale: number   // 最低表示震度 (-1 = すべて)
   notifyMinScale: number    // 通知最低震度 (-1 = 通知しない)
+  // 地震後の行動チェックリストを出す最低震度 (-1 = 出さない)。ホーム地点を設定していれば
+  // その周り（半径 NEARBY_RADIUS_KM）で、していなければ全国のどこかで、この震度に達したら出す
+  actionChecklistMinScale: number
   soundEnabled: boolean     // 地震・EEW・津波の受信時に音を鳴らす
   soundVolume: number       // 通知音・VOICEVOX 読み上げ共通の全体音量 (0.0 〜 1.0)
   // 南海トラフ地震関連解説情報（VYSE51/52）の通知音と読み上げを行う。
@@ -58,6 +61,7 @@ const STORAGE_KEY = isDmdss
 const DEFAULTS: AppSettings = {
   minDisplayScale: -1,
   notifyMinScale: -1,
+  actionChecklistMinScale: 45,
   soundEnabled: true,
   soundVolume: 1.0,
   nankaiCommentaryAlerts: true,
@@ -136,6 +140,7 @@ export function sanitize(partial: Partial<AppSettings>): AppSettings {
   return {
     minDisplayScale: ensureIntensityScale(partial.minDisplayScale, DEFAULTS.minDisplayScale, 'minDisplayScale'),
     notifyMinScale: ensureIntensityScale(partial.notifyMinScale, DEFAULTS.notifyMinScale, 'notifyMinScale'),
+    actionChecklistMinScale: ensureIntensityScale(partial.actionChecklistMinScale, DEFAULTS.actionChecklistMinScale, 'actionChecklistMinScale'),
     soundEnabled: ensureBool(partial.soundEnabled, DEFAULTS.soundEnabled),
     soundVolume: clampNumber(partial.soundVolume, 0, 1, DEFAULTS.soundVolume),
     nankaiCommentaryAlerts: ensureBool(partial.nankaiCommentaryAlerts, DEFAULTS.nankaiCommentaryAlerts),
