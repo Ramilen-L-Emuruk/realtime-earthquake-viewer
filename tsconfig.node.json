@@ -21,6 +21,9 @@
     "vite.config.ts",
     "scripts/capture-test-scenario.ts",
     "scripts/dev-api-key-gate.ts",
-    "scripts/dev-api-key-gate.test.ts"
+    "scripts/dev-api-key-gate.test.ts",
+    "scripts/hypocenterRecord.ts",
+    "scripts/hypocenterRecord.test.ts",
+    "scripts/build-hypocenter-catalog.ts"
   ]
 }
