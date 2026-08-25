@@ -21,6 +21,7 @@
 | [audio-tts-spec.md](audio-tts-spec.md) | 通知音・VOICEVOX・ウィンドウタイトル | `src/utils/alertSound.ts`, `src/utils/voicevox.ts`, `src/hooks/useAlertTitle.ts` |
 | [data-sources-spec.md](data-sources-spec.md) | DMDATA / P2PQuake / Yahoo 統合仕様・クロック同期・生成データ | `src/services/`, `src/utils/clock.ts`, `src/utils/fetchJson.ts` |
 | [settings-pwa-spec.md](settings-pwa-spec.md) | 設定タブ・localStorage・PWA・実地震テスト | `src/components/SettingsTab/`, `src/hooks/useSettings.ts`, `vite.config.ts` |
+| [action-checklist-spec.md](action-checklist-spec.md) | 行動チェックリスト（出す条件・登録地点の周り・畳む挙動） | `src/hooks/useActionChecklist.ts`, `src/utils/actionChecklistTrigger.ts` |
 | [kyoshin-detection-spec.md](kyoshin-detection-spec.md) | 強震モニタ揺れ検知エンジン（詳細仕様） | `src/utils/kyoshinDetector.ts` |
 | [kyoshin-detection-v3-design.md](kyoshin-detection-v3-design.md) | 強震モニタ検知の設計判断・調査・改訂履歴 | 同上（経緯資料） |
 | [kyoshin-detection-design.md](kyoshin-detection-design.md) | 強震モニタ検知の旧設計書（歴史資料・V3 に置換済み） | 同上 |
@@ -35,6 +36,7 @@
 4. **[map-rendering-spec.md](map-rendering-spec.md)** — 地図描画のレイヤー構成・描画順（上記 3 機能の描画側を触るなら必読）
 5. **[audio-tts-spec.md](audio-tts-spec.md) / [settings-pwa-spec.md](settings-pwa-spec.md)** — 音・通知・設定 UI
 6. **[kyoshin-detection-spec.md](kyoshin-detection-spec.md)** — 強震モニタ検知エンジン（他機能と独立性が高いので後回しでよい）
+7. **[action-checklist-spec.md](action-checklist-spec.md)** — 行動チェックリスト（上の 3 機能の出力を受けて出し分けるだけなので、読む順の依存は薄い）
 
 ## 仕様書の書き方（新規追加時）
 

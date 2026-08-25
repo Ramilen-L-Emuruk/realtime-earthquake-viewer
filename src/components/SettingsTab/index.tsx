@@ -259,10 +259,17 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
 
 const SCALE_OPTIONS = [10, 20, 30, 40, 45, 50, 55, 60, 70] as const
 
-function ScaleSelect({ value, onChange, noneLabel = 'すべて表示' }: {
+function ScaleSelect({ value, onChange, noneLabel = 'すべて表示', includeNone = true }: {
   value: number
   onChange: (v: number) => void
   noneLabel?: string
+  /**
+   * 「絞らない」を表す -1 の選択肢を出すか。
+   *
+   * 有効・無効を別のトグルで持つ項目では出さない。出すと `SCALE_OPTIONS` の最小値と同じ文言
+   * （「震度1以上」）が 2 つ並び、どちらを選んでも同じ結果になる紛らわしい一覧になる。
+   */
+  includeNone?: boolean
 }) {
   return (
     <select
@@ -270,7 +277,7 @@ function ScaleSelect({ value, onChange, noneLabel = 'すべて表示' }: {
       onChange={e => onChange(Number(e.target.value))}
       className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
     >
-      <option value={-1}>{noneLabel}</option>
+      {includeNone && <option value={-1}>{noneLabel}</option>}
       {SCALE_OPTIONS.map(s => (
         <option key={s} value={s}>震度{getIntensityLabel(s)}以上</option>
       ))}
@@ -910,6 +917,24 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
               checked={settings.nankaiCommentaryAlerts}
               onChange={v => onUpdate('nankaiCommentaryAlerts', v)}
             />
+          </Row>
+        )}
+        <Row label="行動チェックリスト" description="強い揺れのときに、とるべき行動と持ち出すものを画面上部に出します。緊急地震速報・リアルタイム震度・地震情報のいずれかで判定します">
+          <Toggle
+            checked={settings.actionChecklistMinScale >= 0}
+            onChange={v => onUpdate('actionChecklistMinScale', v ? 45 : -1)}
+          />
+        </Row>
+        {settings.actionChecklistMinScale >= 0 && (
+          <Row label="出す最低震度" description="地点を登録していればその周辺（半径30km）で、していなければ全国のどこかでこの震度に達したときに出します">
+            <div className="flex items-center gap-2">
+              <IntensityBadge scale={settings.actionChecklistMinScale} />
+              <ScaleSelect
+                value={settings.actionChecklistMinScale}
+                onChange={v => onUpdate('actionChecklistMinScale', v)}
+                includeNone={false}
+              />
+            </div>
           </Row>
         )}
         <Row label="ブラウザ通知" description="地震発生時にブラウザ通知を表示します">

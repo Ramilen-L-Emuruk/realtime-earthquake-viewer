@@ -16,6 +16,7 @@ React + TypeScript + MapLibre GL JS で構築されています。
 - **津波情報**: 大津波警報・警報・注意報・予報を海岸線に色分け、観測情報も併記
 - **リアルタイム震度**: 強震モニタ由来の各地の震度を毎秒更新、震源非依存の揺れ検知エンジン付き
 - **通知連携**: 種別ごとの通知音・ブラウザ通知・自動タブ切替・ウィンドウタイトル変更（AutoHotKey 等で監視可能）
+- **行動チェックリスト**: 強い揺れを検知したら、直後にとる行動と避難時に持ち出すものを地図の上に表示（地点を登録するとその周辺で判定）
 - **PWA 対応**: ホーム画面へのインストールとオフラインキャッシュに対応
 - **スマートフォン対応**: 画面の向きに応じた地図と情報の並べ替え、表示中タブの再タップで情報パネルを畳んで地図を全画面表示（縦画面では境界のドラッグで比率も調整可）
 - **VOICEVOX 読み上げ**: ローカル VOICEVOX と連携して情報を音声で読み上げ（任意）
@@ -76,6 +77,7 @@ npm run preview
 - [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) — 通知音・読み上げ・タイトル連携
 - [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) — DMDATA / P2PQuake / Yahoo の統合
 - [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) — 設定・PWA・実地震テスト
+- [`docs/spec/action-checklist-spec.md`](docs/spec/action-checklist-spec.md) — 行動チェックリスト
 - [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) — 強震モニタ揺れ検知エンジン
 - [`CLAUDE.md`](CLAUDE.md) — 開発ワークフロー（Claude Code / 人間 共通）
 
