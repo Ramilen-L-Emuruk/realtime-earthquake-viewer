@@ -4,6 +4,7 @@
    "tier": "confirmed",
    "firstLikely": "20:11:46",
    "firstConfirmed": "20:11:51",
+   "confirmedFrames": 39,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -11,6 +12,7 @@
    "tier": "confirmed",
    "firstLikely": "04:45:28",
    "firstConfirmed": "04:45:29",
+   "confirmedFrames": 61,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -18,6 +20,7 @@
    "tier": "confirmed",
    "firstLikely": "05:45:37",
    "firstConfirmed": "05:45:38",
+   "confirmedFrames": 52,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -25,6 +28,7 @@
    "tier": "confirmed",
    "firstLikely": "11:25:39",
    "firstConfirmed": "11:25:41",
+   "confirmedFrames": 49,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -32,6 +36,7 @@
    "tier": "confirmed",
    "firstLikely": "18:22:43",
    "firstConfirmed": "18:22:44",
+   "confirmedFrames": 46,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -39,6 +44,7 @@
    "tier": "confirmed",
    "firstLikely": "06:49:57",
    "firstConfirmed": "06:49:59",
+   "confirmedFrames": 61,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -46,6 +52,7 @@
    "tier": "confirmed",
    "firstLikely": "23:55:41",
    "firstConfirmed": "23:55:43",
+   "confirmedFrames": 47,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -53,6 +60,7 @@
    "tier": "confirmed",
    "firstLikely": "02:23:54",
    "firstConfirmed": "02:23:57",
+   "confirmedFrames": 33,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -60,6 +68,7 @@
    "tier": "confirmed",
    "firstLikely": "07:46:38",
    "firstConfirmed": "07:46:44",
+   "confirmedFrames": 67,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -67,6 +76,7 @@
    "tier": "confirmed",
    "firstLikely": "11:25:59",
    "firstConfirmed": "11:26:00",
+   "confirmedFrames": 30,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -74,6 +84,7 @@
    "tier": "confirmed",
    "firstLikely": "16:44:50",
    "firstConfirmed": "16:44:56",
+   "confirmedFrames": 34,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -81,6 +92,7 @@
    "tier": "likely",
    "firstLikely": "05:49:43",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -88,6 +100,7 @@
    "tier": "confirmed",
    "firstLikely": "01:10:53",
    "firstConfirmed": "01:10:55",
+   "confirmedFrames": 35,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -95,6 +108,7 @@
    "tier": "confirmed",
    "firstLikely": "00:47:53",
    "firstConfirmed": "00:47:54",
+   "confirmedFrames": 36,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -102,6 +116,7 @@
    "tier": "confirmed",
    "firstLikely": "00:42:42",
    "firstConfirmed": "00:42:44",
+   "confirmedFrames": 46,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -109,6 +124,7 @@
    "tier": "confirmed",
    "firstLikely": "07:30:38",
    "firstConfirmed": "07:30:40",
+   "confirmedFrames": 50,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -116,6 +132,7 @@
    "tier": "confirmed",
    "firstLikely": "02:30:21",
    "firstConfirmed": "02:30:24",
+   "confirmedFrames": 66,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -123,6 +140,7 @@
    "tier": "confirmed",
    "firstLikely": "16:10:15",
    "firstConfirmed": "16:10:15",
+   "confirmedFrames": 135,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -130,6 +148,7 @@
    "tier": "confirmed",
    "firstLikely": "14:42:09",
    "firstConfirmed": "14:42:09",
+   "confirmedFrames": 141,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -137,6 +156,7 @@
    "tier": "confirmed",
    "firstLikely": "23:35:35",
    "firstConfirmed": "23:35:35",
+   "confirmedFrames": 173,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -144,6 +164,7 @@
    "tier": "confirmed",
    "firstLikely": "23:08:07",
    "firstConfirmed": "23:08:07",
+   "confirmedFrames": 83,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -151,6 +172,7 @@
    "tier": "confirmed",
    "firstLikely": "16:43:05",
    "firstConfirmed": "16:43:05",
+   "confirmedFrames": 85,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -158,6 +180,7 @@
    "tier": "confirmed",
    "firstLikely": "23:14:56",
    "firstConfirmed": "23:14:57",
+   "confirmedFrames": 93,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -165,6 +188,7 @@
    "tier": "confirmed",
    "firstLikely": "22:41:35",
    "firstConfirmed": "22:41:37",
+   "confirmedFrames": 113,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -172,6 +196,7 @@
    "tier": "likely",
    "firstLikely": "08:01:20",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -179,6 +204,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -186,6 +212,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -193,6 +220,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -200,6 +228,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -207,6 +236,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -214,6 +244,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -221,6 +252,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -228,6 +260,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -235,6 +268,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -242,6 +276,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -249,6 +284,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -256,6 +292,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -263,6 +300,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -270,6 +308,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -277,6 +316,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -284,6 +324,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -291,6 +332,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -298,6 +340,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -305,6 +348,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -312,6 +356,7 @@
    "tier": "confirmed",
    "firstLikely": "19:30:32",
    "firstConfirmed": "19:30:36",
+   "confirmedFrames": 71,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -319,6 +364,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -326,6 +372,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -333,6 +380,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 1,
    "unrelatedAt": [
     "08:26:52 北海道|本別町向陽町"
@@ -342,6 +390,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 1,
    "unrelatedAt": [
     "13:19:44 広島県|三原市久井町"
@@ -351,6 +400,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -358,6 +408,7 @@
    "tier": "confirmed",
    "firstLikely": "12:04:57",
    "firstConfirmed": "12:05:00",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -365,6 +416,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -372,6 +424,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -379,6 +432,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -386,6 +440,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -393,6 +448,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 1,
    "unrelatedAt": [
     "13:02:32 石川県|珠洲市正院町"
@@ -402,6 +458,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 1,
    "unrelatedAt": [
     "16:38:43 福島県|川内村上川内小山平"
@@ -411,6 +468,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 1,
    "unrelatedAt": [
     "00:38:49 福井県|勝山市旭町"
@@ -420,6 +478,7 @@
    "tier": "confirmed",
    "firstLikely": "09:54:34",
    "firstConfirmed": "09:54:40",
+   "confirmedFrames": 49,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -427,6 +486,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -434,6 +494,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 1,
    "unrelatedAt": [
     "21:44:31 長野県|王滝村鈴ヶ沢"
@@ -443,6 +504,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -450,6 +512,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -457,6 +520,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 1,
    "unrelatedAt": [
     "08:26:52 北海道|本別町向陽町"
@@ -466,6 +530,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -473,6 +538,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -480,6 +546,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -487,6 +554,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -494,6 +562,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -501,6 +570,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -508,6 +578,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -515,6 +586,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -522,6 +594,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -529,6 +602,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -536,6 +610,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 1,
    "unrelatedAt": [
     "13:19:44 広島県|三原市久井町"
@@ -545,6 +620,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 1,
    "unrelatedAt": [
     "15:41:51 北海道|釧路市阿寒町中央"
@@ -554,6 +630,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -561,6 +638,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -568,6 +646,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -575,6 +654,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -582,6 +662,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 1,
    "unrelatedAt": [
     "16:25:07 熊本県|氷川町島地"
@@ -591,6 +672,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 1,
    "unrelatedAt": [
     "18:06:01 宮崎県|日向市東郷町山陰"
@@ -600,6 +682,7 @@
    "tier": "confirmed",
    "firstLikely": "01:03:19",
    "firstConfirmed": "01:03:21",
+   "confirmedFrames": 74,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -607,6 +690,7 @@
    "tier": "confirmed",
    "firstLikely": "01:12:20",
    "firstConfirmed": "01:12:20",
+   "confirmedFrames": 79,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -614,6 +698,7 @@
    "tier": "confirmed",
    "firstLikely": "02:59:11",
    "firstConfirmed": "02:59:13",
+   "confirmedFrames": 84,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -621,6 +706,7 @@
    "tier": "confirmed",
    "firstLikely": "04:25:25",
    "firstConfirmed": "04:25:26",
+   "confirmedFrames": 96,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -628,6 +714,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -635,6 +722,7 @@
    "tier": "confirmed",
    "firstLikely": "06:18:44",
    "firstConfirmed": "06:18:48",
+   "confirmedFrames": 93,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -642,6 +730,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -649,6 +738,7 @@
    "tier": "confirmed",
    "firstLikely": "12:04:20",
    "firstConfirmed": "12:04:22",
+   "confirmedFrames": 101,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -656,6 +746,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -663,6 +754,7 @@
    "tier": "confirmed",
    "firstLikely": "13:37:45",
    "firstConfirmed": "13:37:47",
+   "confirmedFrames": 104,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -670,6 +762,7 @@
    "tier": "likely",
    "firstLikely": "14:03:29",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -677,6 +770,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -684,6 +778,7 @@
    "tier": "confirmed",
    "firstLikely": "18:05:37",
    "firstConfirmed": "18:05:39",
+   "confirmedFrames": 73,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -691,6 +786,7 @@
    "tier": "confirmed",
    "firstLikely": "21:25:49",
    "firstConfirmed": "21:25:51",
+   "confirmedFrames": 77,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -698,6 +794,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -705,6 +802,7 @@
    "tier": "confirmed",
    "firstLikely": "22:49:24",
    "firstConfirmed": "22:49:27",
+   "confirmedFrames": 73,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -712,6 +810,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -719,6 +818,7 @@
    "tier": "confirmed",
    "firstLikely": "00:22:18",
    "firstConfirmed": "00:22:22",
+   "confirmedFrames": 71,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -726,6 +826,7 @@
    "tier": "confirmed",
    "firstLikely": "06:37:23",
    "firstConfirmed": "06:37:23",
+   "confirmedFrames": 123,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -733,6 +834,7 @@
    "tier": "confirmed",
    "firstLikely": "12:07:11",
    "firstConfirmed": "12:07:13",
+   "confirmedFrames": 107,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -740,6 +842,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -747,6 +850,7 @@
    "tier": "confirmed",
    "firstLikely": "15:39:11",
    "firstConfirmed": "15:39:12",
+   "confirmedFrames": 101,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -754,6 +858,7 @@
    "tier": "confirmed",
    "firstLikely": "17:34:45",
    "firstConfirmed": "17:34:48",
+   "confirmedFrames": 69,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -761,6 +866,7 @@
    "tier": "confirmed",
    "firstLikely": "19:36:58",
    "firstConfirmed": "19:37:00",
+   "confirmedFrames": 78,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -768,6 +874,7 @@
    "tier": "confirmed",
    "firstLikely": "21:07:19",
    "firstConfirmed": "21:07:24",
+   "confirmedFrames": 90,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -775,6 +882,7 @@
    "tier": "confirmed",
    "firstLikely": "22:33:22",
    "firstConfirmed": "22:33:24",
+   "confirmedFrames": 104,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -782,6 +890,7 @@
    "tier": "confirmed",
    "firstLikely": "23:09:09",
    "firstConfirmed": "23:09:11",
+   "confirmedFrames": 94,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -789,6 +898,7 @@
    "tier": "likely",
    "firstLikely": "04:32:17",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -796,6 +906,7 @@
    "tier": "likely",
    "firstLikely": "05:22:50",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -803,6 +914,7 @@
    "tier": "confirmed",
    "firstLikely": "05:46:22",
    "firstConfirmed": "05:46:28",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -810,6 +922,7 @@
    "tier": "confirmed",
    "firstLikely": "08:21:32",
    "firstConfirmed": "08:21:34",
+   "confirmedFrames": 80,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -817,6 +930,7 @@
    "tier": "confirmed",
    "firstLikely": "09:54:34",
    "firstConfirmed": "09:54:40",
+   "confirmedFrames": 63,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -824,6 +938,7 @@
    "tier": "confirmed",
    "firstLikely": "12:42:56",
    "firstConfirmed": "12:42:57",
+   "confirmedFrames": 106,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -831,6 +946,7 @@
    "tier": "confirmed",
    "firstLikely": "15:06:00",
    "firstConfirmed": "15:06:01",
+   "confirmedFrames": 119,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -838,6 +954,7 @@
    "tier": "confirmed",
    "firstLikely": "17:09:29",
    "firstConfirmed": "17:09:30",
+   "confirmedFrames": 91,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -845,6 +962,7 @@
    "tier": "confirmed",
    "firstLikely": "17:56:55",
    "firstConfirmed": "17:56:56",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -852,6 +970,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -859,6 +978,7 @@
    "tier": "confirmed",
    "firstLikely": "07:10:50",
    "firstConfirmed": "07:10:52",
+   "confirmedFrames": 107,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -866,6 +986,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -873,6 +994,7 @@
    "tier": "confirmed",
    "firstLikely": "20:44:33",
    "firstConfirmed": "20:44:34",
+   "confirmedFrames": 69,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -880,6 +1002,7 @@
    "tier": "confirmed",
    "firstLikely": "22:55:57",
    "firstConfirmed": "22:56:01",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -887,6 +1010,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -894,6 +1018,7 @@
    "tier": "confirmed",
    "firstLikely": "00:50:31",
    "firstConfirmed": "00:50:33",
+   "confirmedFrames": 126,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -901,6 +1026,7 @@
    "tier": "confirmed",
    "firstLikely": "00:55:32",
    "firstConfirmed": "00:55:33",
+   "confirmedFrames": 77,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -908,6 +1034,7 @@
    "tier": "confirmed",
    "firstLikely": "04:29:30",
    "firstConfirmed": "04:29:34",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -915,6 +1042,7 @@
    "tier": "confirmed",
    "firstLikely": "08:38:34",
    "firstConfirmed": "08:38:37",
+   "confirmedFrames": 118,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -922,6 +1050,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -929,6 +1058,7 @@
    "tier": "confirmed",
    "firstLikely": "09:06:38",
    "firstConfirmed": "09:06:46",
+   "confirmedFrames": 71,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -936,6 +1066,7 @@
    "tier": "likely",
    "firstLikely": "09:45:55",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -943,6 +1074,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -950,6 +1082,7 @@
    "tier": "confirmed",
    "firstLikely": "12:04:57",
    "firstConfirmed": "12:05:00",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -957,6 +1090,7 @@
    "tier": "confirmed",
    "firstLikely": "14:28:48",
    "firstConfirmed": "14:28:50",
+   "confirmedFrames": 130,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -964,6 +1098,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -971,6 +1106,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -978,6 +1114,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -985,6 +1122,7 @@
    "tier": "confirmed",
    "firstLikely": "03:23:50",
    "firstConfirmed": "03:23:51",
+   "confirmedFrames": 81,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -992,6 +1130,7 @@
    "tier": "confirmed",
    "firstLikely": "05:13:28",
    "firstConfirmed": "05:13:32",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -999,6 +1138,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1006,6 +1146,7 @@
    "tier": "confirmed",
    "firstLikely": "09:01:34",
    "firstConfirmed": "09:01:35",
+   "confirmedFrames": 92,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1013,6 +1154,7 @@
    "tier": "likely",
    "firstLikely": "09:11:23",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1020,6 +1162,7 @@
    "tier": "confirmed",
    "firstLikely": "21:02:31",
    "firstConfirmed": "21:02:36",
+   "confirmedFrames": 144,
    "unrelated": 1,
    "unrelatedAt": [
     "21:04:16 宮城県|登米市津山町"
@@ -1029,6 +1172,7 @@
    "tier": "confirmed",
    "firstLikely": "23:28:00",
    "firstConfirmed": "23:28:00",
+   "confirmedFrames": 80,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1036,6 +1180,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1043,6 +1188,7 @@
    "tier": "likely",
    "firstLikely": "00:05:37",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1050,6 +1196,7 @@
    "tier": "likely",
    "firstLikely": "00:57:34",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1057,6 +1204,7 @@
    "tier": "likely",
    "firstLikely": "01:48:54",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1064,6 +1212,7 @@
    "tier": "likely",
    "firstLikely": "05:20:11",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1071,6 +1220,7 @@
    "tier": "confirmed",
    "firstLikely": "05:23:23",
    "firstConfirmed": "05:23:26",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1078,6 +1228,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1085,6 +1236,7 @@
    "tier": "confirmed",
    "firstLikely": "06:42:19",
    "firstConfirmed": "06:42:21",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1092,6 +1244,7 @@
    "tier": "confirmed",
    "firstLikely": "06:48:26",
    "firstConfirmed": "06:48:28",
+   "confirmedFrames": 79,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1099,6 +1252,7 @@
    "tier": "confirmed",
    "firstLikely": "07:51:28",
    "firstConfirmed": "07:51:30",
+   "confirmedFrames": 83,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1106,6 +1260,7 @@
    "tier": "confirmed",
    "firstLikely": "08:38:17",
    "firstConfirmed": "08:38:19",
+   "confirmedFrames": 93,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1113,6 +1268,7 @@
    "tier": "likely",
    "firstLikely": "08:51:31",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1120,6 +1276,7 @@
    "tier": "confirmed",
    "firstLikely": "09:32:59",
    "firstConfirmed": "09:33:04",
+   "confirmedFrames": 66,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1127,6 +1284,7 @@
    "tier": "confirmed",
    "firstLikely": "10:00:08",
    "firstConfirmed": "10:00:09",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1134,6 +1292,7 @@
    "tier": "likely",
    "firstLikely": "11:52:30",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1141,6 +1300,7 @@
    "tier": "confirmed",
    "firstLikely": "12:50:15",
    "firstConfirmed": "12:50:17",
+   "confirmedFrames": 113,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1148,6 +1308,7 @@
    "tier": "confirmed",
    "firstLikely": "12:51:36",
    "firstConfirmed": "12:51:39",
+   "confirmedFrames": 81,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1155,6 +1316,7 @@
    "tier": "confirmed",
    "firstLikely": "12:54:27",
    "firstConfirmed": "12:54:29",
+   "confirmedFrames": 89,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1162,6 +1324,7 @@
    "tier": "confirmed",
    "firstLikely": "13:00:31",
    "firstConfirmed": "13:00:31",
+   "confirmedFrames": 83,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1169,6 +1332,7 @@
    "tier": "confirmed",
    "firstLikely": "14:58:04",
    "firstConfirmed": "14:58:06",
+   "confirmedFrames": 93,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1176,6 +1340,7 @@
    "tier": "confirmed",
    "firstLikely": "16:49:03",
    "firstConfirmed": "16:49:04",
+   "confirmedFrames": 98,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1183,6 +1348,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1190,6 +1356,7 @@
    "tier": "confirmed",
    "firstLikely": "18:22:06",
    "firstConfirmed": "18:22:08",
+   "confirmedFrames": 80,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1197,6 +1364,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1204,6 +1372,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1211,6 +1380,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1218,6 +1388,7 @@
    "tier": "confirmed",
    "firstLikely": "22:12:48",
    "firstConfirmed": "22:12:54",
+   "confirmedFrames": 92,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1225,6 +1396,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1232,6 +1404,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1239,6 +1412,7 @@
    "tier": "confirmed",
    "firstLikely": "22:59:06",
    "firstConfirmed": "22:59:09",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1246,6 +1420,7 @@
    "tier": "confirmed",
    "firstLikely": "23:50:08",
    "firstConfirmed": "23:50:10",
+   "confirmedFrames": 73,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1253,6 +1428,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1260,6 +1436,7 @@
    "tier": "confirmed",
    "firstLikely": "00:40:58",
    "firstConfirmed": "00:41:02",
+   "confirmedFrames": 68,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1267,6 +1444,7 @@
    "tier": "confirmed",
    "firstLikely": "00:54:42",
    "firstConfirmed": "00:54:44",
+   "confirmedFrames": 76,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1274,6 +1452,7 @@
    "tier": "confirmed",
    "firstLikely": "01:19:33",
    "firstConfirmed": "01:19:38",
+   "confirmedFrames": 63,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1281,6 +1460,7 @@
    "tier": "likely",
    "firstLikely": "01:39:09",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1288,6 +1468,7 @@
    "tier": "confirmed",
    "firstLikely": "03:22:21",
    "firstConfirmed": "03:22:27",
+   "confirmedFrames": 65,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1295,6 +1476,7 @@
    "tier": "confirmed",
    "firstLikely": "04:34:54",
    "firstConfirmed": "04:34:56",
+   "confirmedFrames": 74,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1302,6 +1484,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1309,6 +1492,7 @@
    "tier": "likely",
    "firstLikely": "06:18:09",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1316,6 +1500,7 @@
    "tier": "likely",
    "firstLikely": "06:36:45",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1323,6 +1508,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1330,6 +1516,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1337,6 +1524,7 @@
    "tier": "confirmed",
    "firstLikely": "08:17:50",
    "firstConfirmed": "08:17:55",
+   "confirmedFrames": 65,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1344,6 +1532,7 @@
    "tier": "confirmed",
    "firstLikely": "09:19:47",
    "firstConfirmed": "09:19:50",
+   "confirmedFrames": 80,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1351,6 +1540,7 @@
    "tier": "confirmed",
    "firstLikely": "09:45:51",
    "firstConfirmed": "09:45:54",
+   "confirmedFrames": 76,
    "unrelated": 1,
    "unrelatedAt": [
     "09:47:00 北海道|厚真町京町"
@@ -1360,6 +1550,7 @@
    "tier": "confirmed",
    "firstLikely": "09:48:09",
    "firstConfirmed": "09:48:11",
+   "confirmedFrames": 93,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1367,6 +1558,7 @@
    "tier": "confirmed",
    "firstLikely": "10:38:56",
    "firstConfirmed": "10:38:58",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1374,6 +1566,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1381,6 +1574,7 @@
    "tier": "likely",
    "firstLikely": "13:47:49",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1388,6 +1582,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1395,6 +1590,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1402,6 +1598,7 @@
    "tier": "confirmed",
    "firstLikely": "17:55:45",
    "firstConfirmed": "17:55:49",
+   "confirmedFrames": 68,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1409,6 +1606,7 @@
    "tier": "confirmed",
    "firstLikely": "19:05:44",
    "firstConfirmed": "19:05:46",
+   "confirmedFrames": 84,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1416,6 +1614,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1423,6 +1622,7 @@
    "tier": "confirmed",
    "firstLikely": "19:22:36",
    "firstConfirmed": "19:22:37",
+   "confirmedFrames": 93,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1430,6 +1630,7 @@
    "tier": "confirmed",
    "firstLikely": "19:39:17",
    "firstConfirmed": "19:39:18",
+   "confirmedFrames": 101,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1437,6 +1638,7 @@
    "tier": "confirmed",
    "firstLikely": "20:07:41",
    "firstConfirmed": "20:07:43",
+   "confirmedFrames": 87,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1444,6 +1646,7 @@
    "tier": "confirmed",
    "firstLikely": "20:20:29",
    "firstConfirmed": "20:20:31",
+   "confirmedFrames": 99,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1451,6 +1654,7 @@
    "tier": "confirmed",
    "firstLikely": "20:20:42",
    "firstConfirmed": "20:20:47",
+   "confirmedFrames": 79,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1458,6 +1662,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1465,6 +1670,7 @@
    "tier": "confirmed",
    "firstLikely": "22:58:19",
    "firstConfirmed": "22:58:22",
+   "confirmedFrames": 97,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1472,6 +1678,7 @@
    "tier": "confirmed",
    "firstLikely": "00:25:18",
    "firstConfirmed": "00:26:46",
+   "confirmedFrames": 24,
    "unrelated": 1,
    "unrelatedAt": [
     "00:25:40 福島県|檜枝岐村下ノ原"
@@ -1481,6 +1688,7 @@
    "tier": "confirmed",
    "firstLikely": "00:26:45",
    "firstConfirmed": "00:26:47",
+   "confirmedFrames": 73,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1488,6 +1696,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1495,6 +1704,7 @@
    "tier": "confirmed",
    "firstLikely": "05:02:52",
    "firstConfirmed": "05:02:56",
+   "confirmedFrames": 74,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1502,6 +1712,7 @@
    "tier": "confirmed",
    "firstLikely": "05:53:46",
    "firstConfirmed": "05:53:51",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1509,6 +1720,7 @@
    "tier": "confirmed",
    "firstLikely": "06:41:30",
    "firstConfirmed": "06:41:33",
+   "confirmedFrames": 89,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1516,6 +1728,7 @@
    "tier": "likely",
    "firstLikely": "08:13:03",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1523,6 +1736,7 @@
    "tier": "confirmed",
    "firstLikely": "11:34:02",
    "firstConfirmed": "11:34:05",
+   "confirmedFrames": 65,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1530,6 +1744,7 @@
    "tier": "likely",
    "firstLikely": "12:21:51",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1537,6 +1752,7 @@
    "tier": "confirmed",
    "firstLikely": "13:32:59",
    "firstConfirmed": "13:33:01",
+   "confirmedFrames": 69,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1544,6 +1760,7 @@
    "tier": "confirmed",
    "firstLikely": "14:30:33",
    "firstConfirmed": "14:30:39",
+   "confirmedFrames": 91,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1551,6 +1768,7 @@
    "tier": "confirmed",
    "firstLikely": "15:00:45",
    "firstConfirmed": "15:00:45",
+   "confirmedFrames": 78,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1558,6 +1776,7 @@
    "tier": "confirmed",
    "firstLikely": "16:24:54",
    "firstConfirmed": "16:24:57",
+   "confirmedFrames": 73,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1565,6 +1784,7 @@
    "tier": "likely",
    "firstLikely": "17:54:22",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1572,6 +1792,7 @@
    "tier": "confirmed",
    "firstLikely": "20:10:25",
    "firstConfirmed": "20:10:29",
+   "confirmedFrames": 83,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1579,6 +1800,7 @@
    "tier": "confirmed",
    "firstLikely": "20:21:36",
    "firstConfirmed": "20:21:39",
+   "confirmedFrames": 87,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1586,6 +1808,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1593,6 +1816,7 @@
    "tier": "confirmed",
    "firstLikely": "23:40:06",
    "firstConfirmed": "23:40:11",
+   "confirmedFrames": 109,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1600,6 +1824,7 @@
    "tier": "confirmed",
    "firstLikely": "00:13:35",
    "firstConfirmed": "00:13:40",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1607,6 +1832,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1614,6 +1840,7 @@
    "tier": "likely",
    "firstLikely": "07:02:55",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1621,6 +1848,7 @@
    "tier": "confirmed",
    "firstLikely": "07:12:41",
    "firstConfirmed": "07:12:43",
+   "confirmedFrames": 87,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1628,6 +1856,7 @@
    "tier": "confirmed",
    "firstLikely": "08:11:15",
    "firstConfirmed": "08:11:20",
+   "confirmedFrames": 67,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1635,6 +1864,7 @@
    "tier": "confirmed",
    "firstLikely": "10:47:18",
    "firstConfirmed": "10:47:24",
+   "confirmedFrames": 90,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1642,6 +1872,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1649,6 +1880,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1656,6 +1888,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1663,6 +1896,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1670,6 +1904,7 @@
    "tier": "confirmed",
    "firstLikely": "14:13:11",
    "firstConfirmed": "14:13:13",
+   "confirmedFrames": 77,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1677,6 +1912,7 @@
    "tier": "confirmed",
    "firstLikely": "14:19:55",
    "firstConfirmed": "14:19:57",
+   "confirmedFrames": 73,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1684,6 +1920,7 @@
    "tier": "confirmed",
    "firstLikely": "14:29:44",
    "firstConfirmed": "14:29:47",
+   "confirmedFrames": 73,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1691,6 +1928,7 @@
    "tier": "confirmed",
    "firstLikely": "17:06:27",
    "firstConfirmed": "17:06:30",
+   "confirmedFrames": 100,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1698,6 +1936,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1705,6 +1944,7 @@
    "tier": "confirmed",
    "firstLikely": "17:57:35",
    "firstConfirmed": "17:57:38",
+   "confirmedFrames": 76,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1712,6 +1952,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1719,6 +1960,7 @@
    "tier": "confirmed",
    "firstLikely": "20:03:26",
    "firstConfirmed": "20:03:27",
+   "confirmedFrames": 74,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1726,6 +1968,7 @@
    "tier": "confirmed",
    "firstLikely": "20:16:01",
    "firstConfirmed": "20:16:03",
+   "confirmedFrames": 67,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1733,6 +1976,7 @@
    "tier": "likely",
    "firstLikely": "21:26:01",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1740,6 +1984,7 @@
    "tier": "confirmed",
    "firstLikely": "22:23:41",
    "firstConfirmed": "22:23:41",
+   "confirmedFrames": 84,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1747,6 +1992,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1754,6 +2000,7 @@
    "tier": "confirmed",
    "firstLikely": "00:47:31",
    "firstConfirmed": "00:47:33",
+   "confirmedFrames": 77,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1761,6 +2008,7 @@
    "tier": "confirmed",
    "firstLikely": "01:17:26",
    "firstConfirmed": "01:17:28",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1768,6 +2016,7 @@
    "tier": "confirmed",
    "firstLikely": "03:21:57",
    "firstConfirmed": "03:21:57",
+   "confirmedFrames": 73,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1775,6 +2024,7 @@
    "tier": "confirmed",
    "firstLikely": "03:43:08",
    "firstConfirmed": "03:43:12",
+   "confirmedFrames": 75,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1782,6 +2032,7 @@
    "tier": "likely",
    "firstLikely": "03:59:39",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1789,6 +2040,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1796,6 +2048,7 @@
    "tier": "confirmed",
    "firstLikely": "04:57:10",
    "firstConfirmed": "04:57:11",
+   "confirmedFrames": 119,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1803,6 +2056,7 @@
    "tier": "confirmed",
    "firstLikely": "05:52:36",
    "firstConfirmed": "05:52:41",
+   "confirmedFrames": 80,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1810,6 +2064,7 @@
    "tier": "confirmed",
    "firstLikely": "07:04:27",
    "firstConfirmed": "07:04:29",
+   "confirmedFrames": 98,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1817,6 +2072,7 @@
    "tier": "confirmed",
    "firstLikely": "10:04:32",
    "firstConfirmed": "10:04:36",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1824,6 +2080,7 @@
    "tier": "likely",
    "firstLikely": "10:37:35",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1831,6 +2088,7 @@
    "tier": "confirmed",
    "firstLikely": "14:03:55",
    "firstConfirmed": "14:03:56",
+   "confirmedFrames": 72,
    "unrelated": 1,
    "unrelatedAt": [
     "14:02:48 茨城県|河内町源清田"
@@ -1840,6 +2098,7 @@
    "tier": "likely",
    "firstLikely": "16:35:48",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1847,6 +2106,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1854,6 +2114,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1861,6 +2122,7 @@
    "tier": "confirmed",
    "firstLikely": "18:06:30",
    "firstConfirmed": "18:06:31",
+   "confirmedFrames": 99,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1868,6 +2130,7 @@
    "tier": "confirmed",
    "firstLikely": "22:31:15",
    "firstConfirmed": "22:31:17",
+   "confirmedFrames": 76,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1875,6 +2138,7 @@
    "tier": "confirmed",
    "firstLikely": "23:52:11",
    "firstConfirmed": "23:52:12",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1882,6 +2146,7 @@
    "tier": "confirmed",
    "firstLikely": "00:29:37",
    "firstConfirmed": "00:29:38",
+   "confirmedFrames": 92,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1889,6 +2154,7 @@
    "tier": "confirmed",
    "firstLikely": "01:35:54",
    "firstConfirmed": "01:35:55",
+   "confirmedFrames": 75,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1896,6 +2162,7 @@
    "tier": "confirmed",
    "firstLikely": "03:36:17",
    "firstConfirmed": "03:36:22",
+   "confirmedFrames": 69,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1903,6 +2170,7 @@
    "tier": "likely",
    "firstLikely": "03:43:31",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1910,6 +2178,7 @@
    "tier": "likely",
    "firstLikely": "04:10:54",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1917,6 +2186,7 @@
    "tier": "confirmed",
    "firstLikely": "07:26:30",
    "firstConfirmed": "07:26:33",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1924,6 +2194,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1931,6 +2202,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1938,6 +2210,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1945,6 +2218,7 @@
    "tier": "confirmed",
    "firstLikely": "13:18:45",
    "firstConfirmed": "13:18:46",
+   "confirmedFrames": 80,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1952,6 +2226,7 @@
    "tier": "confirmed",
    "firstLikely": "14:09:34",
    "firstConfirmed": "14:09:36",
+   "confirmedFrames": 94,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1959,6 +2234,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1966,6 +2242,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1973,6 +2250,7 @@
    "tier": "confirmed",
    "firstLikely": "19:07:57",
    "firstConfirmed": "19:08:00",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1980,6 +2258,7 @@
    "tier": "confirmed",
    "firstLikely": "19:21:58",
    "firstConfirmed": "19:22:04",
+   "confirmedFrames": 65,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1987,6 +2266,7 @@
    "tier": "confirmed",
    "firstLikely": "19:56:19",
    "firstConfirmed": "19:56:22",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -1994,6 +2274,7 @@
    "tier": "likely",
    "firstLikely": "21:21:27",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2001,6 +2282,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2008,6 +2290,7 @@
    "tier": "likely",
    "firstLikely": "00:54:09",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2015,6 +2298,7 @@
    "tier": "confirmed",
    "firstLikely": "02:44:12",
    "firstConfirmed": "02:44:22",
+   "confirmedFrames": 48,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2022,6 +2306,7 @@
    "tier": "confirmed",
    "firstLikely": "08:08:13",
    "firstConfirmed": "08:08:16",
+   "confirmedFrames": 114,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2029,6 +2314,7 @@
    "tier": "confirmed",
    "firstLikely": "10:02:37",
    "firstConfirmed": "10:02:37",
+   "confirmedFrames": 89,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2036,6 +2322,7 @@
    "tier": "confirmed",
    "firstLikely": "10:04:39",
    "firstConfirmed": "10:04:43",
+   "confirmedFrames": 71,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2043,6 +2330,7 @@
    "tier": "likely",
    "firstLikely": "13:18:40",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2050,6 +2338,7 @@
    "tier": "confirmed",
    "firstLikely": "14:05:21",
    "firstConfirmed": "14:05:22",
+   "confirmedFrames": 98,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2057,6 +2346,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2064,6 +2354,7 @@
    "tier": "confirmed",
    "firstLikely": "14:44:50",
    "firstConfirmed": "14:44:52",
+   "confirmedFrames": 77,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2071,6 +2362,7 @@
    "tier": "confirmed",
    "firstLikely": "16:41:06",
    "firstConfirmed": "16:41:11",
+   "confirmedFrames": 106,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2078,6 +2370,7 @@
    "tier": "likely",
    "firstLikely": "22:08:27",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2085,6 +2378,7 @@
    "tier": "confirmed",
    "firstLikely": "22:17:21",
    "firstConfirmed": "22:17:22",
+   "confirmedFrames": 71,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2092,6 +2386,7 @@
    "tier": "confirmed",
    "firstLikely": "01:10:18",
    "firstConfirmed": "01:10:23",
+   "confirmedFrames": 74,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2099,6 +2394,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2106,6 +2402,7 @@
    "tier": "confirmed",
    "firstLikely": "06:29:16",
    "firstConfirmed": "06:29:20",
+   "confirmedFrames": 90,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2113,6 +2410,7 @@
    "tier": "likely",
    "firstLikely": "09:17:31",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2120,6 +2418,7 @@
    "tier": "confirmed",
    "firstLikely": "09:28:54",
    "firstConfirmed": "09:28:59",
+   "confirmedFrames": 71,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2127,6 +2426,7 @@
    "tier": "confirmed",
    "firstLikely": "10:06:06",
    "firstConfirmed": "10:06:07",
+   "confirmedFrames": 63,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2134,6 +2434,7 @@
    "tier": "confirmed",
    "firstLikely": "10:32:54",
    "firstConfirmed": "10:32:59",
+   "confirmedFrames": 71,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2141,6 +2442,7 @@
    "tier": "confirmed",
    "firstLikely": "11:07:36",
    "firstConfirmed": "11:07:37",
+   "confirmedFrames": 87,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2148,6 +2450,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2155,6 +2458,7 @@
    "tier": "confirmed",
    "firstLikely": "16:55:35",
    "firstConfirmed": "16:55:37",
+   "confirmedFrames": 82,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2162,6 +2466,7 @@
    "tier": "confirmed",
    "firstLikely": "18:47:18",
    "firstConfirmed": "18:47:21",
+   "confirmedFrames": 90,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2169,6 +2474,7 @@
    "tier": "confirmed",
    "firstLikely": "21:23:48",
    "firstConfirmed": "21:23:52",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2176,6 +2482,7 @@
    "tier": "confirmed",
    "firstLikely": "23:28:27",
    "firstConfirmed": "23:28:29",
+   "confirmedFrames": 75,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2183,6 +2490,7 @@
    "tier": "confirmed",
    "firstLikely": "01:32:31",
    "firstConfirmed": "01:32:33",
+   "confirmedFrames": 85,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2190,6 +2498,7 @@
    "tier": "confirmed",
    "firstLikely": "02:53:50",
    "firstConfirmed": "02:53:52",
+   "confirmedFrames": 75,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2197,6 +2506,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2204,6 +2514,7 @@
    "tier": "confirmed",
    "firstLikely": "03:57:02",
    "firstConfirmed": "03:57:05",
+   "confirmedFrames": 65,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2211,6 +2522,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2218,6 +2530,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2225,6 +2538,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2232,6 +2546,7 @@
    "tier": "confirmed",
    "firstLikely": "07:00:45",
    "firstConfirmed": "07:00:48",
+   "confirmedFrames": 71,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2239,6 +2554,7 @@
    "tier": "confirmed",
    "firstLikely": "12:50:41",
    "firstConfirmed": "12:50:43",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2246,6 +2562,7 @@
    "tier": "confirmed",
    "firstLikely": "14:05:25",
    "firstConfirmed": "14:05:27",
+   "confirmedFrames": 80,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2253,6 +2570,7 @@
    "tier": "confirmed",
    "firstLikely": "14:48:17",
    "firstConfirmed": "14:48:19",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2260,6 +2578,7 @@
    "tier": "confirmed",
    "firstLikely": "16:26:57",
    "firstConfirmed": "16:26:58",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2267,6 +2586,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2274,6 +2594,7 @@
    "tier": "confirmed",
    "firstLikely": "18:59:46",
    "firstConfirmed": "18:59:47",
+   "confirmedFrames": 83,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2281,6 +2602,7 @@
    "tier": "confirmed",
    "firstLikely": "02:23:39",
    "firstConfirmed": "02:23:40",
+   "confirmedFrames": 75,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2288,6 +2610,7 @@
    "tier": "confirmed",
    "firstLikely": "07:33:40",
    "firstConfirmed": "07:33:41",
+   "confirmedFrames": 89,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2295,6 +2618,7 @@
    "tier": "confirmed",
    "firstLikely": "08:33:59",
    "firstConfirmed": "08:34:01",
+   "confirmedFrames": 69,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2302,6 +2626,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2309,6 +2634,7 @@
    "tier": "likely",
    "firstLikely": "13:57:28",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2316,6 +2642,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2323,6 +2650,7 @@
    "tier": "confirmed",
    "firstLikely": "17:02:13",
    "firstConfirmed": "17:02:15",
+   "confirmedFrames": 78,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2330,6 +2658,7 @@
    "tier": "confirmed",
    "firstLikely": "18:17:04",
    "firstConfirmed": "18:17:05",
+   "confirmedFrames": 65,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2337,6 +2666,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2344,6 +2674,7 @@
    "tier": "likely",
    "firstLikely": "20:13:30",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2351,6 +2682,7 @@
    "tier": "confirmed",
    "firstLikely": "20:25:39",
    "firstConfirmed": "20:25:44",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2358,6 +2690,7 @@
    "tier": "confirmed",
    "firstLikely": "23:14:16",
    "firstConfirmed": "23:14:20",
+   "confirmedFrames": 68,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2365,6 +2698,7 @@
    "tier": "likely",
    "firstLikely": "23:55:46",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2372,6 +2706,7 @@
    "tier": "confirmed",
    "firstLikely": "00:55:55",
    "firstConfirmed": "00:55:59",
+   "confirmedFrames": 71,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2379,6 +2714,7 @@
    "tier": "confirmed",
    "firstLikely": "01:15:40",
    "firstConfirmed": "01:15:42",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2386,6 +2722,7 @@
    "tier": "likely",
    "firstLikely": "06:11:27",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 1,
    "unrelatedAt": [
     "06:11:29 青森県|田子町田子"
@@ -2395,6 +2732,7 @@
    "tier": "likely",
    "firstLikely": "06:33:43",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2402,6 +2740,7 @@
    "tier": "confirmed",
    "firstLikely": "07:12:18",
    "firstConfirmed": "07:12:20",
+   "confirmedFrames": 92,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2409,6 +2748,7 @@
    "tier": "confirmed",
    "firstLikely": "08:44:59",
    "firstConfirmed": "08:45:04",
+   "confirmedFrames": 66,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2416,6 +2756,7 @@
    "tier": "confirmed",
    "firstLikely": "09:34:18",
    "firstConfirmed": "09:34:22",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2423,6 +2764,7 @@
    "tier": "confirmed",
    "firstLikely": "11:58:02",
    "firstConfirmed": "11:58:06",
+   "confirmedFrames": 64,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2430,6 +2772,7 @@
    "tier": "confirmed",
    "firstLikely": "12:20:58",
    "firstConfirmed": "12:20:59",
+   "confirmedFrames": 71,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2437,6 +2780,7 @@
    "tier": "confirmed",
    "firstLikely": "14:29:03",
    "firstConfirmed": "14:29:05",
+   "confirmedFrames": 65,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2444,6 +2788,7 @@
    "tier": "confirmed",
    "firstLikely": "16:42:34",
    "firstConfirmed": "16:42:36",
+   "confirmedFrames": 80,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2451,6 +2796,7 @@
    "tier": "confirmed",
    "firstLikely": "17:03:56",
    "firstConfirmed": "17:03:58",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2458,6 +2804,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2465,6 +2812,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2472,6 +2820,7 @@
    "tier": "confirmed",
    "firstLikely": "20:25:34",
    "firstConfirmed": "20:25:42",
+   "confirmedFrames": 69,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2479,6 +2828,7 @@
    "tier": "confirmed",
    "firstLikely": "21:37:52",
    "firstConfirmed": "21:37:54",
+   "confirmedFrames": 73,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2486,6 +2836,7 @@
    "tier": "confirmed",
    "firstLikely": "22:19:21",
    "firstConfirmed": "22:19:24",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2493,6 +2844,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2500,6 +2852,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2507,6 +2860,7 @@
    "tier": "confirmed",
    "firstLikely": "04:29:19",
    "firstConfirmed": "04:29:21",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2514,6 +2868,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2521,6 +2876,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2528,6 +2884,7 @@
    "tier": "confirmed",
    "firstLikely": "06:46:11",
    "firstConfirmed": "06:46:14",
+   "confirmedFrames": 116,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2535,6 +2892,7 @@
    "tier": "confirmed",
    "firstLikely": "06:53:16",
    "firstConfirmed": "06:53:18",
+   "confirmedFrames": 84,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2542,6 +2900,7 @@
    "tier": "likely",
    "firstLikely": "09:19:19",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2549,6 +2908,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2556,6 +2916,7 @@
    "tier": "confirmed",
    "firstLikely": "11:57:09",
    "firstConfirmed": "11:57:15",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2563,6 +2924,7 @@
    "tier": "confirmed",
    "firstLikely": "15:41:55",
    "firstConfirmed": "15:41:56",
+   "confirmedFrames": 74,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2570,6 +2932,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2577,6 +2940,7 @@
    "tier": "likely",
    "firstLikely": "22:53:16",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2584,6 +2948,7 @@
    "tier": "confirmed",
    "firstLikely": "04:27:26",
    "firstConfirmed": "04:27:28",
+   "confirmedFrames": 79,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2591,6 +2956,7 @@
    "tier": "likely",
    "firstLikely": "09:23:52",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2598,6 +2964,7 @@
    "tier": "likely",
    "firstLikely": "10:35:11",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2605,6 +2972,7 @@
    "tier": "confirmed",
    "firstLikely": "11:29:07",
    "firstConfirmed": "11:29:08",
+   "confirmedFrames": 103,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2612,6 +2980,7 @@
    "tier": "confirmed",
    "firstLikely": "12:36:04",
    "firstConfirmed": "12:36:05",
+   "confirmedFrames": 93,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2619,6 +2988,7 @@
    "tier": "likely",
    "firstLikely": "18:49:21",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2626,6 +2996,7 @@
    "tier": "confirmed",
    "firstLikely": "22:51:27",
    "firstConfirmed": "22:51:30",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2633,6 +3004,7 @@
    "tier": "confirmed",
    "firstLikely": "00:25:34",
    "firstConfirmed": "00:25:36",
+   "confirmedFrames": 75,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2640,6 +3012,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2647,6 +3020,7 @@
    "tier": "confirmed",
    "firstLikely": "04:23:03",
    "firstConfirmed": "04:23:04",
+   "confirmedFrames": 66,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2654,6 +3028,7 @@
    "tier": "confirmed",
    "firstLikely": "04:50:41",
    "firstConfirmed": "04:50:43",
+   "confirmedFrames": 87,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2661,6 +3036,7 @@
    "tier": "confirmed",
    "firstLikely": "04:52:41",
    "firstConfirmed": "04:52:43",
+   "confirmedFrames": 77,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2668,6 +3044,7 @@
    "tier": "likely",
    "firstLikely": "04:58:24",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2675,6 +3052,7 @@
    "tier": "likely",
    "firstLikely": "05:20:44",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2682,6 +3060,7 @@
    "tier": "confirmed",
    "firstLikely": "05:31:21",
    "firstConfirmed": "05:31:27",
+   "confirmedFrames": 80,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2689,6 +3068,7 @@
    "tier": "confirmed",
    "firstLikely": "05:39:36",
    "firstConfirmed": "05:39:40",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2696,6 +3076,7 @@
    "tier": "confirmed",
    "firstLikely": "07:50:25",
    "firstConfirmed": "07:50:28",
+   "confirmedFrames": 82,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2703,6 +3084,7 @@
    "tier": "confirmed",
    "firstLikely": "12:42:49",
    "firstConfirmed": "12:42:58",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2710,6 +3092,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2717,6 +3100,7 @@
    "tier": "confirmed",
    "firstLikely": "16:05:33",
    "firstConfirmed": "16:05:35",
+   "confirmedFrames": 90,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2724,6 +3108,7 @@
    "tier": "confirmed",
    "firstLikely": "16:29:31",
    "firstConfirmed": "16:29:34",
+   "confirmedFrames": 71,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2731,6 +3116,7 @@
    "tier": "likely",
    "firstLikely": "17:14:13",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2738,6 +3124,7 @@
    "tier": "confirmed",
    "firstLikely": "17:29:40",
    "firstConfirmed": "17:29:43",
+   "confirmedFrames": 75,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2745,6 +3132,7 @@
    "tier": "confirmed",
    "firstLikely": "18:02:51",
    "firstConfirmed": "18:02:54",
+   "confirmedFrames": 68,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2752,6 +3140,7 @@
    "tier": "confirmed",
    "firstLikely": "19:08:41",
    "firstConfirmed": "19:08:45",
+   "confirmedFrames": 85,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2759,6 +3148,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2766,6 +3156,7 @@
    "tier": "confirmed",
    "firstLikely": "22:43:21",
    "firstConfirmed": "22:43:26",
+   "confirmedFrames": 44,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2773,6 +3164,7 @@
    "tier": "confirmed",
    "firstLikely": "23:13:50",
    "firstConfirmed": "23:13:55",
+   "confirmedFrames": 71,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2780,6 +3172,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2787,6 +3180,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2794,6 +3188,7 @@
    "tier": "confirmed",
    "firstLikely": "06:38:59",
    "firstConfirmed": "06:39:02",
+   "confirmedFrames": 68,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2801,6 +3196,7 @@
    "tier": "confirmed",
    "firstLikely": "06:58:41",
    "firstConfirmed": "06:58:42",
+   "confirmedFrames": 88,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2808,6 +3204,7 @@
    "tier": "confirmed",
    "firstLikely": "07:12:58",
    "firstConfirmed": "07:13:00",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2815,6 +3212,7 @@
    "tier": "confirmed",
    "firstLikely": "07:29:11",
    "firstConfirmed": "07:29:14",
+   "confirmedFrames": 73,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2822,6 +3220,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2829,6 +3228,7 @@
    "tier": "confirmed",
    "firstLikely": "09:22:57",
    "firstConfirmed": "09:23:00",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2836,6 +3236,7 @@
    "tier": "confirmed",
    "firstLikely": "10:05:34",
    "firstConfirmed": "10:05:36",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2843,6 +3244,7 @@
    "tier": "likely",
    "firstLikely": "10:58:47",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2850,6 +3252,7 @@
    "tier": "likely",
    "firstLikely": "18:47:10",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2857,6 +3260,7 @@
    "tier": "confirmed",
    "firstLikely": "20:29:30",
    "firstConfirmed": "20:29:34",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2864,6 +3268,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2871,6 +3276,7 @@
    "tier": "confirmed",
    "firstLikely": "21:03:49",
    "firstConfirmed": "21:03:53",
+   "confirmedFrames": 71,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2878,6 +3284,7 @@
    "tier": "likely",
    "firstLikely": "21:38:16",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2885,6 +3292,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2892,6 +3300,7 @@
    "tier": "confirmed",
    "firstLikely": "03:15:44",
    "firstConfirmed": "03:15:48",
+   "confirmedFrames": 52,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2899,6 +3308,7 @@
    "tier": "likely",
    "firstLikely": "06:47:25",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2906,6 +3316,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2913,6 +3324,7 @@
    "tier": "confirmed",
    "firstLikely": "22:01:00",
    "firstConfirmed": "22:01:03",
+   "confirmedFrames": 37,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2920,6 +3332,7 @@
    "tier": "confirmed",
    "firstLikely": "02:19:35",
    "firstConfirmed": "02:19:37",
+   "confirmedFrames": 63,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2927,6 +3340,7 @@
    "tier": "likely",
    "firstLikely": "03:47:29",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2934,6 +3348,7 @@
    "tier": "confirmed",
    "firstLikely": "04:35:48",
    "firstConfirmed": "04:35:48",
+   "confirmedFrames": 52,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2941,6 +3356,7 @@
    "tier": "likely",
    "firstLikely": "13:14:32",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2948,6 +3364,7 @@
    "tier": "confirmed",
    "firstLikely": "15:29:07",
    "firstConfirmed": "15:29:13",
+   "confirmedFrames": 73,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2955,6 +3372,7 @@
    "tier": "confirmed",
    "firstLikely": "18:28:52",
    "firstConfirmed": "18:28:53",
+   "confirmedFrames": 47,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2962,6 +3380,7 @@
    "tier": "likely",
    "firstLikely": "18:39:44",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2969,6 +3388,7 @@
    "tier": "confirmed",
    "firstLikely": "21:24:12",
    "firstConfirmed": "21:24:14",
+   "confirmedFrames": 82,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2976,6 +3396,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2983,6 +3404,7 @@
    "tier": "confirmed",
    "firstLikely": "07:46:09",
    "firstConfirmed": "07:46:12",
+   "confirmedFrames": 28,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2990,6 +3412,7 @@
    "tier": "confirmed",
    "firstLikely": "11:50:40",
    "firstConfirmed": "11:50:43",
+   "confirmedFrames": 57,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -2997,6 +3420,7 @@
    "tier": "confirmed",
    "firstLikely": "23:42:23",
    "firstConfirmed": "23:42:24",
+   "confirmedFrames": 76,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3004,6 +3428,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3011,6 +3436,7 @@
    "tier": "confirmed",
    "firstLikely": "04:14:57",
    "firstConfirmed": "04:14:59",
+   "confirmedFrames": 41,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3018,6 +3444,7 @@
    "tier": "confirmed",
    "firstLikely": "05:14:33",
    "firstConfirmed": "05:14:37",
+   "confirmedFrames": 63,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3025,6 +3452,7 @@
    "tier": "confirmed",
    "firstLikely": "13:51:49",
    "firstConfirmed": "13:51:51",
+   "confirmedFrames": 49,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3032,6 +3460,7 @@
    "tier": "confirmed",
    "firstLikely": "16:37:25",
    "firstConfirmed": "16:37:26",
+   "confirmedFrames": 74,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3039,6 +3468,7 @@
    "tier": "confirmed",
    "firstLikely": "06:42:40",
    "firstConfirmed": "06:42:43",
+   "confirmedFrames": 57,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3046,6 +3476,7 @@
    "tier": "confirmed",
    "firstLikely": "08:54:24",
    "firstConfirmed": "08:54:25",
+   "confirmedFrames": 75,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3053,6 +3484,7 @@
    "tier": "confirmed",
    "firstLikely": "09:14:09",
    "firstConfirmed": "09:14:13",
+   "confirmedFrames": 74,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3060,6 +3492,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3067,6 +3500,7 @@
    "tier": "confirmed",
    "firstLikely": "14:48:54",
    "firstConfirmed": "14:48:55",
+   "confirmedFrames": 45,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3074,6 +3508,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3081,6 +3516,7 @@
    "tier": "confirmed",
    "firstLikely": "17:55:26",
    "firstConfirmed": "17:55:27",
+   "confirmedFrames": 73,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3088,6 +3524,7 @@
    "tier": "confirmed",
    "firstLikely": "04:35:20",
    "firstConfirmed": "04:35:21",
+   "confirmedFrames": 79,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3095,6 +3532,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3102,6 +3540,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3109,6 +3548,7 @@
    "tier": "confirmed",
    "firstLikely": "19:06:43",
    "firstConfirmed": "19:06:44",
+   "confirmedFrames": 56,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3116,6 +3556,7 @@
    "tier": "confirmed",
    "firstLikely": "04:30:21",
    "firstConfirmed": "04:30:25",
+   "confirmedFrames": 75,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3123,6 +3564,7 @@
    "tier": "confirmed",
    "firstLikely": "06:01:40",
    "firstConfirmed": "06:01:41",
+   "confirmedFrames": 59,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3130,6 +3572,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3137,6 +3580,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3144,6 +3588,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3151,6 +3596,7 @@
    "tier": "confirmed",
    "firstLikely": "03:50:14",
    "firstConfirmed": "03:50:15",
+   "confirmedFrames": 85,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3158,6 +3604,7 @@
    "tier": "confirmed",
    "firstLikely": "08:31:25",
    "firstConfirmed": "08:31:27",
+   "confirmedFrames": 73,
    "unrelated": 2,
    "unrelatedAt": [
     "08:32:29 埼玉県|ふじみ野市大井",
@@ -3168,6 +3615,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3175,6 +3623,7 @@
    "tier": "confirmed",
    "firstLikely": "12:36:13",
    "firstConfirmed": "12:36:14",
+   "confirmedFrames": 86,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3182,6 +3631,7 @@
    "tier": "confirmed",
    "firstLikely": "19:01:40",
    "firstConfirmed": "19:01:43",
+   "confirmedFrames": 57,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3189,6 +3639,7 @@
    "tier": "confirmed",
    "firstLikely": "02:10:54",
    "firstConfirmed": "02:10:59",
+   "confirmedFrames": 41,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3196,6 +3647,7 @@
    "tier": "likely",
    "firstLikely": "08:04:52",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3203,6 +3655,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3210,6 +3663,7 @@
    "tier": "confirmed",
    "firstLikely": "11:43:15",
    "firstConfirmed": "11:43:16",
+   "confirmedFrames": 79,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3217,6 +3671,7 @@
    "tier": "confirmed",
    "firstLikely": "18:20:04",
    "firstConfirmed": "18:20:08",
+   "confirmedFrames": 32,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3224,6 +3679,7 @@
    "tier": "confirmed",
    "firstLikely": "21:06:37",
    "firstConfirmed": "21:06:38",
+   "confirmedFrames": 62,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3231,6 +3687,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3238,6 +3695,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3245,6 +3703,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3252,6 +3711,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3259,6 +3719,7 @@
    "tier": "confirmed",
    "firstLikely": "07:09:47",
    "firstConfirmed": "07:09:52",
+   "confirmedFrames": 48,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3266,6 +3727,7 @@
    "tier": "confirmed",
    "firstLikely": "00:25:36",
    "firstConfirmed": "00:25:38",
+   "confirmedFrames": 62,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3273,6 +3735,7 @@
    "tier": "confirmed",
    "firstLikely": "06:21:27",
    "firstConfirmed": "06:21:31",
+   "confirmedFrames": 69,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3280,6 +3743,7 @@
    "tier": "likely",
    "firstLikely": "09:22:32",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3287,6 +3751,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3294,6 +3759,7 @@
    "tier": "confirmed",
    "firstLikely": "11:28:15",
    "firstConfirmed": "11:28:18",
+   "confirmedFrames": 22,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3301,6 +3767,7 @@
    "tier": "confirmed",
    "firstLikely": "20:50:16",
    "firstConfirmed": "20:50:18",
+   "confirmedFrames": 73,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3308,6 +3775,7 @@
    "tier": "confirmed",
    "firstLikely": "01:46:36",
    "firstConfirmed": "01:46:38",
+   "confirmedFrames": 62,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3315,6 +3783,7 @@
    "tier": "confirmed",
    "firstLikely": "03:30:47",
    "firstConfirmed": "03:30:49",
+   "confirmedFrames": 51,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3322,6 +3791,7 @@
    "tier": "confirmed",
    "firstLikely": "07:36:33",
    "firstConfirmed": "07:36:34",
+   "confirmedFrames": 66,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3329,6 +3799,7 @@
    "tier": "confirmed",
    "firstLikely": "09:02:45",
    "firstConfirmed": "09:02:46",
+   "confirmedFrames": 54,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3336,6 +3807,7 @@
    "tier": "confirmed",
    "firstLikely": "19:32:31",
    "firstConfirmed": "19:32:31",
+   "confirmedFrames": 69,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3343,6 +3815,7 @@
    "tier": "confirmed",
    "firstLikely": "03:03:15",
    "firstConfirmed": "03:03:18",
+   "confirmedFrames": 78,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3350,6 +3823,7 @@
    "tier": "likely",
    "firstLikely": "03:14:41",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3357,6 +3831,7 @@
    "tier": "confirmed",
    "firstLikely": "11:25:11",
    "firstConfirmed": "11:25:14",
+   "confirmedFrames": 26,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3364,6 +3839,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3371,6 +3847,7 @@
    "tier": "confirmed",
    "firstLikely": "20:17:44",
    "firstConfirmed": "20:17:47",
+   "confirmedFrames": 53,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3378,6 +3855,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3385,6 +3863,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3392,6 +3871,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3399,6 +3879,7 @@
    "tier": "confirmed",
    "firstLikely": "02:32:46",
    "firstConfirmed": "02:32:47",
+   "confirmedFrames": 53,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3406,6 +3887,7 @@
    "tier": "confirmed",
    "firstLikely": "03:03:00",
    "firstConfirmed": "03:03:02",
+   "confirmedFrames": 38,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3413,6 +3895,7 @@
    "tier": "confirmed",
    "firstLikely": "05:00:06",
    "firstConfirmed": "05:00:06",
+   "confirmedFrames": 94,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3420,6 +3903,7 @@
    "tier": "confirmed",
    "firstLikely": "05:01:41",
    "firstConfirmed": "05:01:41",
+   "confirmedFrames": 59,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3427,6 +3911,7 @@
    "tier": "confirmed",
    "firstLikely": "05:11:30",
    "firstConfirmed": "05:11:30",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3434,6 +3919,7 @@
    "tier": "confirmed",
    "firstLikely": "05:13:09",
    "firstConfirmed": "05:13:09",
+   "confirmedFrames": 80,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3441,6 +3927,7 @@
    "tier": "confirmed",
    "firstLikely": "05:28:22",
    "firstConfirmed": "05:28:24",
+   "confirmedFrames": 73,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3448,6 +3935,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3455,6 +3943,7 @@
    "tier": "confirmed",
    "firstLikely": "10:55:47",
    "firstConfirmed": "10:55:50",
+   "confirmedFrames": 50,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3462,6 +3951,7 @@
    "tier": "confirmed",
    "firstLikely": "15:15:07",
    "firstConfirmed": "15:15:12",
+   "confirmedFrames": 78,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3469,6 +3959,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3476,6 +3967,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3483,6 +3975,7 @@
    "tier": "confirmed",
    "firstLikely": "08:23:17",
    "firstConfirmed": "08:23:22",
+   "confirmedFrames": 78,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3490,6 +3983,7 @@
    "tier": "confirmed",
    "firstLikely": "12:10:00",
    "firstConfirmed": "12:10:01",
+   "confirmedFrames": 39,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3497,6 +3991,7 @@
    "tier": "confirmed",
    "firstLikely": "19:23:23",
    "firstConfirmed": "19:23:27",
+   "confirmedFrames": 73,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3504,6 +3999,7 @@
    "tier": "confirmed",
    "firstLikely": "20:22:13",
    "firstConfirmed": "20:22:14",
+   "confirmedFrames": 86,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3511,6 +4007,7 @@
    "tier": "confirmed",
    "firstLikely": "20:22:13",
    "firstConfirmed": "20:22:14",
+   "confirmedFrames": 26,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3518,6 +4015,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3525,6 +4023,7 @@
    "tier": "confirmed",
    "firstLikely": "07:27:38",
    "firstConfirmed": "07:27:40",
+   "confirmedFrames": 60,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3532,6 +4031,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3539,6 +4039,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3546,6 +4047,7 @@
    "tier": "confirmed",
    "firstLikely": "04:25:45",
    "firstConfirmed": "04:25:47",
+   "confirmedFrames": 53,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3553,6 +4055,7 @@
    "tier": "likely",
    "firstLikely": "05:22:54",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3560,6 +4063,7 @@
    "tier": "confirmed",
    "firstLikely": "05:55:49",
    "firstConfirmed": "05:55:54",
+   "confirmedFrames": 46,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3567,6 +4071,7 @@
    "tier": "confirmed",
    "firstLikely": "09:07:44",
    "firstConfirmed": "09:07:46",
+   "confirmedFrames": 54,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3574,6 +4079,7 @@
    "tier": "confirmed",
    "firstLikely": "11:42:26",
    "firstConfirmed": "11:42:30",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3581,6 +4087,7 @@
    "tier": "confirmed",
    "firstLikely": "18:02:10",
    "firstConfirmed": "18:02:12",
+   "confirmedFrames": 81,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3588,6 +4095,7 @@
    "tier": "likely",
    "firstLikely": "02:27:31",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3595,6 +4103,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3602,6 +4111,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3609,6 +4119,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3616,6 +4127,7 @@
    "tier": "confirmed",
    "firstLikely": "15:19:37",
    "firstConfirmed": "15:19:41",
+   "confirmedFrames": 59,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3623,6 +4135,7 @@
    "tier": "confirmed",
    "firstLikely": "02:05:08",
    "firstConfirmed": "02:05:12",
+   "confirmedFrames": 28,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3630,6 +4143,7 @@
    "tier": "confirmed",
    "firstLikely": "05:14:34",
    "firstConfirmed": "05:14:36",
+   "confirmedFrames": 64,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3637,6 +4151,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3644,6 +4159,7 @@
    "tier": "confirmed",
    "firstLikely": "19:24:03",
    "firstConfirmed": "19:24:05",
+   "confirmedFrames": 35,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3651,6 +4167,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3658,6 +4175,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3665,6 +4183,7 @@
    "tier": "confirmed",
    "firstLikely": "07:08:13",
    "firstConfirmed": "07:08:17",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3672,6 +4191,7 @@
    "tier": "confirmed",
    "firstLikely": "11:46:38",
    "firstConfirmed": "11:46:38",
+   "confirmedFrames": 62,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3679,6 +4199,7 @@
    "tier": "confirmed",
    "firstLikely": "15:13:04",
    "firstConfirmed": "15:13:07",
+   "confirmedFrames": 33,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3686,6 +4207,7 @@
    "tier": "confirmed",
    "firstLikely": "00:23:25",
    "firstConfirmed": "00:23:28",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3693,6 +4215,7 @@
    "tier": "confirmed",
    "firstLikely": "01:08:23",
    "firstConfirmed": "01:08:28",
+   "confirmedFrames": 66,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3700,6 +4223,7 @@
    "tier": "confirmed",
    "firstLikely": "06:27:40",
    "firstConfirmed": "06:27:45",
+   "confirmedFrames": 55,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3707,6 +4231,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3714,6 +4239,7 @@
    "tier": "confirmed",
    "firstLikely": "13:20:53",
    "firstConfirmed": "13:20:58",
+   "confirmedFrames": 42,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3721,6 +4247,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3728,6 +4255,7 @@
    "tier": "confirmed",
    "firstLikely": "00:24:00",
    "firstConfirmed": "00:24:04",
+   "confirmedFrames": 36,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3735,6 +4263,7 @@
    "tier": "confirmed",
    "firstLikely": "01:33:31",
    "firstConfirmed": "01:33:33",
+   "confirmedFrames": 67,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3742,6 +4271,7 @@
    "tier": "confirmed",
    "firstLikely": "15:22:23",
    "firstConfirmed": "15:22:24",
+   "confirmedFrames": 76,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3749,6 +4279,7 @@
    "tier": "confirmed",
    "firstLikely": "21:40:13",
    "firstConfirmed": "21:40:23",
+   "confirmedFrames": 77,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3756,6 +4287,7 @@
    "tier": "confirmed",
    "firstLikely": "01:54:08",
    "firstConfirmed": "01:54:11",
+   "confirmedFrames": 89,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3763,6 +4295,7 @@
    "tier": "confirmed",
    "firstLikely": "15:20:40",
    "firstConfirmed": "15:20:46",
+   "confirmedFrames": 54,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3770,6 +4303,7 @@
    "tier": "likely",
    "firstLikely": "22:31:51",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3777,6 +4311,7 @@
    "tier": "confirmed",
    "firstLikely": "23:20:13",
    "firstConfirmed": "23:20:15",
+   "confirmedFrames": 25,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3784,6 +4319,7 @@
    "tier": "confirmed",
    "firstLikely": "00:09:47",
    "firstConfirmed": "00:09:50",
+   "confirmedFrames": 50,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3791,6 +4327,7 @@
    "tier": "confirmed",
    "firstLikely": "04:15:09",
    "firstConfirmed": "04:15:10",
+   "confirmedFrames": 90,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3798,6 +4335,7 @@
    "tier": "confirmed",
    "firstLikely": "07:06:42",
    "firstConfirmed": "07:06:43",
+   "confirmedFrames": 57,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3805,6 +4343,7 @@
    "tier": "confirmed",
    "firstLikely": "07:19:53",
    "firstConfirmed": "07:19:55",
+   "confirmedFrames": 45,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3812,6 +4351,7 @@
    "tier": "confirmed",
    "firstLikely": "15:08:34",
    "firstConfirmed": "15:08:35",
+   "confirmedFrames": 65,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3819,6 +4359,7 @@
    "tier": "confirmed",
    "firstLikely": "15:52:06",
    "firstConfirmed": "15:52:08",
+   "confirmedFrames": 32,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3826,6 +4367,7 @@
    "tier": "confirmed",
    "firstLikely": "17:08:03",
    "firstConfirmed": "17:08:07",
+   "confirmedFrames": 33,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3833,6 +4375,7 @@
    "tier": "confirmed",
    "firstLikely": "17:14:58",
    "firstConfirmed": "17:15:00",
+   "confirmedFrames": 40,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3840,6 +4383,7 @@
    "tier": "confirmed",
    "firstLikely": "20:15:24",
    "firstConfirmed": "20:15:26",
+   "confirmedFrames": 71,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3847,6 +4391,7 @@
    "tier": "confirmed",
    "firstLikely": "06:50:06",
    "firstConfirmed": "06:50:07",
+   "confirmedFrames": 33,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3854,6 +4399,7 @@
    "tier": "confirmed",
    "firstLikely": "09:18:36",
    "firstConfirmed": "09:18:37",
+   "confirmedFrames": 63,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3861,6 +4407,7 @@
    "tier": "confirmed",
    "firstLikely": "13:56:20",
    "firstConfirmed": "13:56:29",
+   "confirmedFrames": 71,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3868,6 +4415,7 @@
    "tier": "confirmed",
    "firstLikely": "14:08:42",
    "firstConfirmed": "14:08:46",
+   "confirmedFrames": 54,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3875,6 +4423,7 @@
    "tier": "confirmed",
    "firstLikely": "15:45:13",
    "firstConfirmed": "15:45:14",
+   "confirmedFrames": 86,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3882,6 +4431,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3889,6 +4439,7 @@
    "tier": "confirmed",
    "firstLikely": "02:08:35",
    "firstConfirmed": "02:08:36",
+   "confirmedFrames": 64,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3896,6 +4447,7 @@
    "tier": "confirmed",
    "firstLikely": "05:21:11",
    "firstConfirmed": "05:21:12",
+   "confirmedFrames": 88,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3903,6 +4455,7 @@
    "tier": "likely",
    "firstLikely": "09:13:54",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3910,6 +4463,7 @@
    "tier": "confirmed",
    "firstLikely": "16:10:32",
    "firstConfirmed": "16:10:33",
+   "confirmedFrames": 67,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3917,6 +4471,7 @@
    "tier": "confirmed",
    "firstLikely": "16:39:18",
    "firstConfirmed": "16:39:24",
+   "confirmedFrames": 76,
    "unrelated": 1,
    "unrelatedAt": [
     "16:40:03 岩手県|盛岡市薮川"
@@ -3926,6 +4481,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3933,6 +4489,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3940,6 +4497,7 @@
    "tier": "confirmed",
    "firstLikely": "05:13:38",
    "firstConfirmed": "05:13:40",
+   "confirmedFrames": 60,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3947,6 +4505,7 @@
    "tier": "confirmed",
    "firstLikely": "12:55:31",
    "firstConfirmed": "12:55:33",
+   "confirmedFrames": 67,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3954,6 +4513,7 @@
    "tier": "confirmed",
    "firstLikely": "13:29:33",
    "firstConfirmed": "13:29:35",
+   "confirmedFrames": 65,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3961,6 +4521,7 @@
    "tier": "confirmed",
    "firstLikely": "17:54:03",
    "firstConfirmed": "17:54:05",
+   "confirmedFrames": 35,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3968,6 +4529,7 @@
    "tier": "confirmed",
    "firstLikely": "01:15:14",
    "firstConfirmed": "01:15:17",
+   "confirmedFrames": 81,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3975,6 +4537,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3982,6 +4545,7 @@
    "tier": "confirmed",
    "firstLikely": "06:38:37",
    "firstConfirmed": "06:38:38",
+   "confirmedFrames": 62,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3989,6 +4553,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -3996,6 +4561,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4003,6 +4569,7 @@
    "tier": "confirmed",
    "firstLikely": "23:34:29",
    "firstConfirmed": "23:34:31",
+   "confirmedFrames": 69,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4010,6 +4577,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4017,6 +4585,7 @@
    "tier": "confirmed",
    "firstLikely": "18:22:28",
    "firstConfirmed": "18:22:31",
+   "confirmedFrames": 69,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4024,6 +4593,7 @@
    "tier": "confirmed",
    "firstLikely": "19:59:02",
    "firstConfirmed": "19:59:07",
+   "confirmedFrames": 33,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4031,6 +4601,7 @@
    "tier": "confirmed",
    "firstLikely": "21:24:25",
    "firstConfirmed": "21:24:26",
+   "confirmedFrames": 74,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4038,6 +4609,7 @@
    "tier": "confirmed",
    "firstLikely": "21:37:02",
    "firstConfirmed": "21:37:07",
+   "confirmedFrames": 33,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4045,6 +4617,7 @@
    "tier": "confirmed",
    "firstLikely": "03:10:39",
    "firstConfirmed": "03:10:41",
+   "confirmedFrames": 59,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4052,6 +4625,7 @@
    "tier": "confirmed",
    "firstLikely": "05:54:49",
    "firstConfirmed": "05:54:51",
+   "confirmedFrames": 49,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4059,6 +4633,7 @@
    "tier": "confirmed",
    "firstLikely": "12:40:39",
    "firstConfirmed": "12:40:42",
+   "confirmedFrames": 58,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4066,6 +4641,7 @@
    "tier": "confirmed",
    "firstLikely": "00:50:36",
    "firstConfirmed": "00:50:38",
+   "confirmedFrames": 62,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4073,6 +4649,7 @@
    "tier": "confirmed",
    "firstLikely": "00:51:35",
    "firstConfirmed": "00:51:36",
+   "confirmedFrames": 64,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4080,6 +4657,7 @@
    "tier": "confirmed",
    "firstLikely": "02:02:17",
    "firstConfirmed": "02:02:18",
+   "confirmedFrames": 82,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4087,6 +4665,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4094,6 +4673,7 @@
    "tier": "confirmed",
    "firstLikely": "04:05:45",
    "firstConfirmed": "04:05:47",
+   "confirmedFrames": 53,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4101,6 +4681,7 @@
    "tier": "confirmed",
    "firstLikely": "05:58:30",
    "firstConfirmed": "05:58:33",
+   "confirmedFrames": 67,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4108,6 +4689,7 @@
    "tier": "confirmed",
    "firstLikely": "08:50:11",
    "firstConfirmed": "08:50:13",
+   "confirmedFrames": 87,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4115,6 +4697,7 @@
    "tier": "confirmed",
    "firstLikely": "10:45:48",
    "firstConfirmed": "10:45:51",
+   "confirmedFrames": 49,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4122,6 +4705,7 @@
    "tier": "confirmed",
    "firstLikely": "13:27:35",
    "firstConfirmed": "13:27:37",
+   "confirmedFrames": 63,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4129,6 +4713,7 @@
    "tier": "confirmed",
    "firstLikely": "04:03:25",
    "firstConfirmed": "04:03:27",
+   "confirmedFrames": 73,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4136,6 +4721,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4143,6 +4729,7 @@
    "tier": "confirmed",
    "firstLikely": "08:50:13",
    "firstConfirmed": "08:50:16",
+   "confirmedFrames": 84,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4150,6 +4737,7 @@
    "tier": "confirmed",
    "firstLikely": "11:10:21",
    "firstConfirmed": "11:10:22",
+   "confirmedFrames": 74,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4157,6 +4745,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4164,6 +4753,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4171,6 +4761,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4178,6 +4769,7 @@
    "tier": "confirmed",
    "firstLikely": "05:54:50",
    "firstConfirmed": "05:54:51",
+   "confirmedFrames": 49,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4185,6 +4777,7 @@
    "tier": "confirmed",
    "firstLikely": "23:30:50",
    "firstConfirmed": "23:30:51",
+   "confirmedFrames": 49,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4192,6 +4785,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4199,6 +4793,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4206,6 +4801,7 @@
    "tier": "confirmed",
    "firstLikely": "10:20:21",
    "firstConfirmed": "10:20:23",
+   "confirmedFrames": 77,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4213,6 +4809,7 @@
    "tier": "confirmed",
    "firstLikely": "20:30:16",
    "firstConfirmed": "20:30:19",
+   "confirmedFrames": 21,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4220,6 +4817,7 @@
    "tier": "confirmed",
    "firstLikely": "03:52:39",
    "firstConfirmed": "03:52:41",
+   "confirmedFrames": 59,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4227,6 +4825,7 @@
    "tier": "confirmed",
    "firstLikely": "05:15:22",
    "firstConfirmed": "05:15:27",
+   "confirmedFrames": 73,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4234,6 +4833,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4241,6 +4841,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4248,6 +4849,7 @@
    "tier": "confirmed",
    "firstLikely": "22:45:38",
    "firstConfirmed": "22:45:40",
+   "confirmedFrames": 60,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4255,6 +4857,7 @@
    "tier": "confirmed",
    "firstLikely": "12:47:10",
    "firstConfirmed": "12:47:13",
+   "confirmedFrames": 77,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4262,6 +4865,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4269,6 +4873,7 @@
    "tier": "likely",
    "firstLikely": "03:05:02",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4276,6 +4881,7 @@
    "tier": "confirmed",
    "firstLikely": "05:47:11",
    "firstConfirmed": "05:47:14",
+   "confirmedFrames": 86,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4283,6 +4889,7 @@
    "tier": "confirmed",
    "firstLikely": "07:26:39",
    "firstConfirmed": "07:26:41",
+   "confirmedFrames": 59,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4290,6 +4897,7 @@
    "tier": "confirmed",
    "firstLikely": "22:15:55",
    "firstConfirmed": "22:15:58",
+   "confirmedFrames": 42,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4297,6 +4905,7 @@
    "tier": "confirmed",
    "firstLikely": "09:29:36",
    "firstConfirmed": "09:29:45",
+   "confirmedFrames": 55,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4304,6 +4913,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4311,6 +4921,7 @@
    "tier": "confirmed",
    "firstLikely": "16:15:08",
    "firstConfirmed": "16:15:10",
+   "confirmedFrames": 30,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4318,6 +4929,7 @@
    "tier": "confirmed",
    "firstLikely": "18:01:36",
    "firstConfirmed": "18:01:37",
+   "confirmedFrames": 63,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4325,6 +4937,7 @@
    "tier": "confirmed",
    "firstLikely": "18:56:02",
    "firstConfirmed": "18:56:04",
+   "confirmedFrames": 36,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4332,6 +4945,7 @@
    "tier": "likely",
    "firstLikely": "19:35:52",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4339,6 +4953,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4346,6 +4961,7 @@
    "tier": "confirmed",
    "firstLikely": "01:25:11",
    "firstConfirmed": "01:25:13",
+   "confirmedFrames": 77,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4353,6 +4969,7 @@
    "tier": "confirmed",
    "firstLikely": "14:03:22",
    "firstConfirmed": "14:03:25",
+   "confirmedFrames": 75,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4360,6 +4977,7 @@
    "tier": "confirmed",
    "firstLikely": "15:06:58",
    "firstConfirmed": "15:07:01",
+   "confirmedFrames": 39,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4367,6 +4985,7 @@
    "tier": "confirmed",
    "firstLikely": "22:11:26",
    "firstConfirmed": "22:11:27",
+   "confirmedFrames": 73,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4374,6 +4993,7 @@
    "tier": "confirmed",
    "firstLikely": "23:22:45",
    "firstConfirmed": "23:22:47",
+   "confirmedFrames": 53,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4381,6 +5001,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4388,6 +5009,7 @@
    "tier": "confirmed",
    "firstLikely": "15:40:38",
    "firstConfirmed": "15:40:40",
+   "confirmedFrames": 60,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4395,6 +5017,7 @@
    "tier": "confirmed",
    "firstLikely": "04:11:32",
    "firstConfirmed": "04:11:33",
+   "confirmedFrames": 67,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4402,6 +5025,7 @@
    "tier": "confirmed",
    "firstLikely": "04:49:42",
    "firstConfirmed": "04:49:44",
+   "confirmedFrames": 56,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4409,6 +5033,7 @@
    "tier": "confirmed",
    "firstLikely": "20:00:07",
    "firstConfirmed": "20:00:09",
+   "confirmedFrames": 31,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4416,6 +5041,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4423,6 +5049,7 @@
    "tier": "confirmed",
    "firstLikely": "07:13:32",
    "firstConfirmed": "07:13:34",
+   "confirmedFrames": 66,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4430,6 +5057,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4437,6 +5065,7 @@
    "tier": "confirmed",
    "firstLikely": "17:39:42",
    "firstConfirmed": "17:39:43",
+   "confirmedFrames": 57,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4444,6 +5073,7 @@
    "tier": "likely",
    "firstLikely": "21:36:06",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4451,6 +5081,7 @@
    "tier": "confirmed",
    "firstLikely": "15:42:29",
    "firstConfirmed": "15:42:33",
+   "confirmedFrames": 67,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4458,6 +5089,7 @@
    "tier": "confirmed",
    "firstLikely": "16:33:25",
    "firstConfirmed": "16:33:33",
+   "confirmedFrames": 67,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4465,6 +5097,7 @@
    "tier": "confirmed",
    "firstLikely": "19:38:14",
    "firstConfirmed": "19:38:16",
+   "confirmedFrames": 84,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4472,6 +5105,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4479,6 +5113,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4486,6 +5121,7 @@
    "tier": "confirmed",
    "firstLikely": "07:22:22",
    "firstConfirmed": "07:22:26",
+   "confirmedFrames": 74,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4493,6 +5129,7 @@
    "tier": "confirmed",
    "firstLikely": "16:56:36",
    "firstConfirmed": "16:56:40",
+   "confirmedFrames": 60,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4500,6 +5137,7 @@
    "tier": "confirmed",
    "firstLikely": "19:46:43",
    "firstConfirmed": "19:46:44",
+   "confirmedFrames": 56,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4507,6 +5145,7 @@
    "tier": "confirmed",
    "firstLikely": "19:55:26",
    "firstConfirmed": "19:55:28",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4514,6 +5153,7 @@
    "tier": "confirmed",
    "firstLikely": "21:50:45",
    "firstConfirmed": "21:50:47",
+   "confirmedFrames": 53,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4521,6 +5161,7 @@
    "tier": "confirmed",
    "firstLikely": "01:06:29",
    "firstConfirmed": "01:06:30",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4528,6 +5169,7 @@
    "tier": "confirmed",
    "firstLikely": "05:06:21",
    "firstConfirmed": "05:06:23",
+   "confirmedFrames": 77,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4535,6 +5177,7 @@
    "tier": "confirmed",
    "firstLikely": "13:17:58",
    "firstConfirmed": "13:18:03",
+   "confirmedFrames": 37,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4542,6 +5185,7 @@
    "tier": "confirmed",
    "firstLikely": "21:25:10",
    "firstConfirmed": "21:25:14",
+   "confirmedFrames": 79,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4549,6 +5193,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4556,6 +5201,7 @@
    "tier": "confirmed",
    "firstLikely": "02:07:28",
    "firstConfirmed": "02:07:30",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4563,6 +5209,7 @@
    "tier": "confirmed",
    "firstLikely": "03:36:07",
    "firstConfirmed": "03:36:09",
+   "confirmedFrames": 31,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4570,6 +5217,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4577,6 +5225,7 @@
    "tier": "likely",
    "firstLikely": "13:06:06",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4584,6 +5233,7 @@
    "tier": "confirmed",
    "firstLikely": "03:44:11",
    "firstConfirmed": "03:44:16",
+   "confirmedFrames": 84,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4591,6 +5241,7 @@
    "tier": "confirmed",
    "firstLikely": "07:33:22",
    "firstConfirmed": "07:33:26",
+   "confirmedFrames": 74,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4598,6 +5249,7 @@
    "tier": "confirmed",
    "firstLikely": "20:18:03",
    "firstConfirmed": "20:18:06",
+   "confirmedFrames": 34,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4605,6 +5257,7 @@
    "tier": "confirmed",
    "firstLikely": "03:17:34",
    "firstConfirmed": "03:17:41",
+   "confirmedFrames": 59,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4612,6 +5265,7 @@
    "tier": "confirmed",
    "firstLikely": "05:39:17",
    "firstConfirmed": "05:39:22",
+   "confirmedFrames": 78,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4619,6 +5273,7 @@
    "tier": "confirmed",
    "firstLikely": "04:57:45",
    "firstConfirmed": "04:57:47",
+   "confirmedFrames": 53,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4626,6 +5281,7 @@
    "tier": "confirmed",
    "firstLikely": "22:07:59",
    "firstConfirmed": "22:08:02",
+   "confirmedFrames": 38,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4633,6 +5289,7 @@
    "tier": "likely",
    "firstLikely": "05:05:39",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4640,6 +5297,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4647,6 +5305,7 @@
    "tier": "confirmed",
    "firstLikely": "16:38:21",
    "firstConfirmed": "16:38:23",
+   "confirmedFrames": 74,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4654,6 +5313,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4661,6 +5321,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4668,6 +5329,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4675,6 +5337,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4682,6 +5345,7 @@
    "tier": "confirmed",
    "firstLikely": "00:49:12",
    "firstConfirmed": "00:49:13",
+   "confirmedFrames": 76,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4689,6 +5353,7 @@
    "tier": "likely",
    "firstLikely": "05:17:14",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4696,6 +5361,7 @@
    "tier": "confirmed",
    "firstLikely": "08:01:11",
    "firstConfirmed": "08:01:13",
+   "confirmedFrames": 87,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4703,6 +5369,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4710,6 +5377,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4717,6 +5385,7 @@
    "tier": "confirmed",
    "firstLikely": "13:24:48",
    "firstConfirmed": "13:24:48",
+   "confirmedFrames": 52,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4724,6 +5393,7 @@
    "tier": "confirmed",
    "firstLikely": "13:28:08",
    "firstConfirmed": "13:28:08",
+   "confirmedFrames": 77,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4731,6 +5401,7 @@
    "tier": "confirmed",
    "firstLikely": "13:31:47",
    "firstConfirmed": "13:31:47",
+   "confirmedFrames": 53,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4738,6 +5409,7 @@
    "tier": "confirmed",
    "firstLikely": "13:31:47",
    "firstConfirmed": "13:31:47",
+   "confirmedFrames": 113,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4745,6 +5417,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4752,6 +5425,7 @@
    "tier": "confirmed",
    "firstLikely": "16:46:45",
    "firstConfirmed": "16:46:47",
+   "confirmedFrames": 53,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4759,6 +5433,7 @@
    "tier": "confirmed",
    "firstLikely": "07:30:25",
    "firstConfirmed": "07:30:26",
+   "confirmedFrames": 74,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4766,6 +5441,7 @@
    "tier": "confirmed",
    "firstLikely": "08:06:53",
    "firstConfirmed": "08:06:55",
+   "confirmedFrames": 45,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4773,6 +5449,7 @@
    "tier": "confirmed",
    "firstLikely": "08:12:41",
    "firstConfirmed": "08:12:46",
+   "confirmedFrames": 54,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4780,6 +5457,7 @@
    "tier": "confirmed",
    "firstLikely": "08:22:25",
    "firstConfirmed": "08:22:29",
+   "confirmedFrames": 71,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4787,6 +5465,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4794,6 +5473,7 @@
    "tier": "confirmed",
    "firstLikely": "09:08:45",
    "firstConfirmed": "09:08:47",
+   "confirmedFrames": 53,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4801,6 +5481,7 @@
    "tier": "confirmed",
    "firstLikely": "09:34:05",
    "firstConfirmed": "09:34:12",
+   "confirmedFrames": 28,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4808,6 +5489,7 @@
    "tier": "confirmed",
    "firstLikely": "10:11:12",
    "firstConfirmed": "10:11:15",
+   "confirmedFrames": 85,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4815,6 +5497,7 @@
    "tier": "confirmed",
    "firstLikely": "10:48:45",
    "firstConfirmed": "10:48:49",
+   "confirmedFrames": 51,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4822,6 +5505,7 @@
    "tier": "confirmed",
    "firstLikely": "11:32:47",
    "firstConfirmed": "11:32:49",
+   "confirmedFrames": 51,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4829,6 +5513,7 @@
    "tier": "confirmed",
    "firstLikely": "12:19:15",
    "firstConfirmed": "12:19:19",
+   "confirmedFrames": 21,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4836,6 +5521,7 @@
    "tier": "confirmed",
    "firstLikely": "19:21:56",
    "firstConfirmed": "19:21:58",
+   "confirmedFrames": 42,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4843,6 +5529,7 @@
    "tier": "confirmed",
    "firstLikely": "20:58:42",
    "firstConfirmed": "20:58:45",
+   "confirmedFrames": 55,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4850,6 +5537,7 @@
    "tier": "confirmed",
    "firstLikely": "22:44:27",
    "firstConfirmed": "22:44:31",
+   "confirmedFrames": 69,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4857,6 +5545,7 @@
    "tier": "confirmed",
    "firstLikely": "01:11:54",
    "firstConfirmed": "01:11:56",
+   "confirmedFrames": 44,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4864,6 +5553,7 @@
    "tier": "confirmed",
    "firstLikely": "05:03:02",
    "firstConfirmed": "05:03:04",
+   "confirmedFrames": 36,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4871,6 +5561,7 @@
    "tier": "confirmed",
    "firstLikely": "11:49:08",
    "firstConfirmed": "11:49:09",
+   "confirmedFrames": 91,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4878,6 +5569,7 @@
    "tier": "confirmed",
    "firstLikely": "12:46:45",
    "firstConfirmed": "12:46:46",
+   "confirmedFrames": 54,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4885,6 +5577,7 @@
    "tier": "confirmed",
    "firstLikely": "12:53:04",
    "firstConfirmed": "12:53:08",
+   "confirmedFrames": 32,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4892,6 +5585,7 @@
    "tier": "confirmed",
    "firstLikely": "13:00:17",
    "firstConfirmed": "13:00:18",
+   "confirmedFrames": 82,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4899,6 +5593,7 @@
    "tier": "confirmed",
    "firstLikely": "13:22:38",
    "firstConfirmed": "13:22:40",
+   "confirmedFrames": 60,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4906,6 +5601,7 @@
    "tier": "confirmed",
    "firstLikely": "13:31:42",
    "firstConfirmed": "13:31:43",
+   "confirmedFrames": 57,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4913,6 +5609,7 @@
    "tier": "likely",
    "firstLikely": "15:41:20",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4920,6 +5617,7 @@
    "tier": "confirmed",
    "firstLikely": "22:29:05",
    "firstConfirmed": "22:29:05",
+   "confirmedFrames": 95,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4927,6 +5625,7 @@
    "tier": "confirmed",
    "firstLikely": "23:04:38",
    "firstConfirmed": "23:04:40",
+   "confirmedFrames": 60,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4934,6 +5633,7 @@
    "tier": "confirmed",
    "firstLikely": "23:17:49",
    "firstConfirmed": "23:17:50",
+   "confirmedFrames": 50,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4941,6 +5641,7 @@
    "tier": "confirmed",
    "firstLikely": "00:33:20",
    "firstConfirmed": "00:33:23",
+   "confirmedFrames": 77,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4948,6 +5649,7 @@
    "tier": "confirmed",
    "firstLikely": "02:33:04",
    "firstConfirmed": "02:33:04",
+   "confirmedFrames": 96,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4955,6 +5657,7 @@
    "tier": "confirmed",
    "firstLikely": "03:59:50",
    "firstConfirmed": "03:59:51",
+   "confirmedFrames": 49,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4962,6 +5665,7 @@
    "tier": "confirmed",
    "firstLikely": "04:30:09",
    "firstConfirmed": "04:30:12",
+   "confirmedFrames": 88,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4969,6 +5673,7 @@
    "tier": "confirmed",
    "firstLikely": "07:00:59",
    "firstConfirmed": "07:01:02",
+   "confirmedFrames": 38,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4976,6 +5681,7 @@
    "tier": "confirmed",
    "firstLikely": "11:51:10",
    "firstConfirmed": "11:51:12",
+   "confirmedFrames": 82,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4983,6 +5689,7 @@
    "tier": "confirmed",
    "firstLikely": "16:09:46",
    "firstConfirmed": "16:09:49",
+   "confirmedFrames": 51,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4990,6 +5697,7 @@
    "tier": "confirmed",
    "firstLikely": "16:57:43",
    "firstConfirmed": "16:57:46",
+   "confirmedFrames": 54,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -4997,6 +5705,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5004,6 +5713,7 @@
    "tier": "confirmed",
    "firstLikely": "02:44:08",
    "firstConfirmed": "02:44:09",
+   "confirmedFrames": 31,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5011,6 +5721,7 @@
    "tier": "confirmed",
    "firstLikely": "05:22:03",
    "firstConfirmed": "05:22:05",
+   "confirmedFrames": 35,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5018,6 +5729,7 @@
    "tier": "confirmed",
    "firstLikely": "09:12:47",
    "firstConfirmed": "09:12:49",
+   "confirmedFrames": 51,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5025,6 +5737,7 @@
    "tier": "confirmed",
    "firstLikely": "14:39:48",
    "firstConfirmed": "14:39:50",
+   "confirmedFrames": 50,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5032,6 +5745,7 @@
    "tier": "confirmed",
    "firstLikely": "23:34:12",
    "firstConfirmed": "23:34:13",
+   "confirmedFrames": 78,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5039,6 +5753,7 @@
    "tier": "confirmed",
    "firstLikely": "23:49:48",
    "firstConfirmed": "23:49:51",
+   "confirmedFrames": 49,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5046,6 +5761,7 @@
    "tier": "confirmed",
    "firstLikely": "00:19:26",
    "firstConfirmed": "00:19:31",
+   "confirmedFrames": 69,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5053,6 +5769,7 @@
    "tier": "confirmed",
    "firstLikely": "01:04:19",
    "firstConfirmed": "01:04:22",
+   "confirmedFrames": 71,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5060,6 +5777,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5067,6 +5785,7 @@
    "tier": "confirmed",
    "firstLikely": "08:11:34",
    "firstConfirmed": "08:11:37",
+   "confirmedFrames": 63,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5074,6 +5793,7 @@
    "tier": "confirmed",
    "firstLikely": "05:24:27",
    "firstConfirmed": "05:24:29",
+   "confirmedFrames": 71,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5081,6 +5801,7 @@
    "tier": "confirmed",
    "firstLikely": "09:38:27",
    "firstConfirmed": "09:38:32",
+   "confirmedFrames": 66,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5088,6 +5809,7 @@
    "tier": "confirmed",
    "firstLikely": "10:29:20",
    "firstConfirmed": "10:29:24",
+   "confirmedFrames": 76,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5095,6 +5817,7 @@
    "tier": "confirmed",
    "firstLikely": "12:08:55",
    "firstConfirmed": "12:08:57",
+   "confirmedFrames": 43,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5102,6 +5825,7 @@
    "tier": "confirmed",
    "firstLikely": "12:24:41",
    "firstConfirmed": "12:24:43",
+   "confirmedFrames": 57,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5109,6 +5833,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5116,6 +5841,7 @@
    "tier": "confirmed",
    "firstLikely": "23:02:33",
    "firstConfirmed": "23:02:35",
+   "confirmedFrames": 65,
    "unrelated": 1,
    "unrelatedAt": [
     "23:03:38 山形県|山辺町緑ケ丘"
@@ -5125,6 +5851,7 @@
    "tier": "confirmed",
    "firstLikely": "00:02:49",
    "firstConfirmed": "00:02:53",
+   "confirmedFrames": 47,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5132,6 +5859,7 @@
    "tier": "confirmed",
    "firstLikely": "00:33:14",
    "firstConfirmed": "00:33:15",
+   "confirmedFrames": 85,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5139,6 +5867,7 @@
    "tier": "likely",
    "firstLikely": "01:31:56",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5146,6 +5875,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5153,6 +5883,7 @@
    "tier": "confirmed",
    "firstLikely": "08:40:17",
    "firstConfirmed": "08:40:18",
+   "confirmedFrames": 82,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5160,6 +5891,7 @@
    "tier": "confirmed",
    "firstLikely": "08:44:19",
    "firstConfirmed": "08:44:20",
+   "confirmedFrames": 80,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5167,6 +5899,7 @@
    "tier": "confirmed",
    "firstLikely": "10:22:14",
    "firstConfirmed": "10:22:15",
+   "confirmedFrames": 74,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5174,6 +5907,7 @@
    "tier": "confirmed",
    "firstLikely": "10:36:29",
    "firstConfirmed": "10:36:31",
+   "confirmedFrames": 69,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5181,6 +5915,7 @@
    "tier": "confirmed",
    "firstLikely": "19:57:47",
    "firstConfirmed": "19:57:50",
+   "confirmedFrames": 50,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5188,6 +5923,7 @@
    "tier": "confirmed",
    "firstLikely": "21:08:41",
    "firstConfirmed": "21:08:42",
+   "confirmedFrames": 58,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5195,6 +5931,7 @@
    "tier": "confirmed",
    "firstLikely": "22:23:56",
    "firstConfirmed": "22:23:58",
+   "confirmedFrames": 42,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5202,6 +5939,7 @@
    "tier": "confirmed",
    "firstLikely": "23:52:16",
    "firstConfirmed": "23:52:20",
+   "confirmedFrames": 80,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5209,6 +5947,7 @@
    "tier": "confirmed",
    "firstLikely": "01:15:43",
    "firstConfirmed": "01:15:45",
+   "confirmedFrames": 55,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5216,6 +5955,7 @@
    "tier": "confirmed",
    "firstLikely": "03:32:37",
    "firstConfirmed": "03:32:39",
+   "confirmedFrames": 61,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5223,6 +5963,7 @@
    "tier": "confirmed",
    "firstLikely": "05:55:50",
    "firstConfirmed": "05:55:52",
+   "confirmedFrames": 48,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5230,6 +5971,7 @@
    "tier": "confirmed",
    "firstLikely": "06:10:39",
    "firstConfirmed": "06:10:42",
+   "confirmedFrames": 58,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5237,6 +5979,7 @@
    "tier": "confirmed",
    "firstLikely": "13:48:34",
    "firstConfirmed": "13:48:36",
+   "confirmedFrames": 64,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5244,6 +5987,7 @@
    "tier": "confirmed",
    "firstLikely": "16:17:49",
    "firstConfirmed": "16:17:51",
+   "confirmedFrames": 49,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5251,6 +5995,7 @@
    "tier": "confirmed",
    "firstLikely": "20:13:49",
    "firstConfirmed": "20:13:50",
+   "confirmedFrames": 50,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5258,6 +6003,7 @@
    "tier": "confirmed",
    "firstLikely": "20:48:51",
    "firstConfirmed": "20:48:53",
+   "confirmedFrames": 47,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5265,6 +6011,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5272,6 +6019,7 @@
    "tier": "confirmed",
    "firstLikely": "05:25:04",
    "firstConfirmed": "05:25:06",
+   "confirmedFrames": 34,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5279,6 +6027,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5286,6 +6035,7 @@
    "tier": "confirmed",
    "firstLikely": "07:05:36",
    "firstConfirmed": "07:05:38",
+   "confirmedFrames": 62,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5293,6 +6043,7 @@
    "tier": "confirmed",
    "firstLikely": "10:45:04",
    "firstConfirmed": "10:45:05",
+   "confirmedFrames": 35,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5300,6 +6051,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5307,6 +6059,7 @@
    "tier": "confirmed",
    "firstLikely": "13:05:27",
    "firstConfirmed": "13:05:30",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5314,6 +6067,7 @@
    "tier": "confirmed",
    "firstLikely": "14:03:53",
    "firstConfirmed": "14:03:54",
+   "confirmedFrames": 46,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5321,6 +6075,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5328,6 +6083,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5335,6 +6091,7 @@
    "tier": "confirmed",
    "firstLikely": "23:37:39",
    "firstConfirmed": "23:37:41",
+   "confirmedFrames": 59,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5342,6 +6099,7 @@
    "tier": "confirmed",
    "firstLikely": "02:48:18",
    "firstConfirmed": "02:48:20",
+   "confirmedFrames": 80,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5349,6 +6107,7 @@
    "tier": "likely",
    "firstLikely": "07:25:27",
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5356,6 +6115,7 @@
    "tier": "confirmed",
    "firstLikely": "08:29:46",
    "firstConfirmed": "08:29:47",
+   "confirmedFrames": 53,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5363,6 +6123,7 @@
    "tier": "confirmed",
    "firstLikely": "10:17:27",
    "firstConfirmed": "10:17:30",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5370,6 +6131,7 @@
    "tier": "confirmed",
    "firstLikely": "17:24:21",
    "firstConfirmed": "17:24:23",
+   "confirmedFrames": 77,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5377,6 +6139,7 @@
    "tier": "confirmed",
    "firstLikely": "02:03:27",
    "firstConfirmed": "02:03:30",
+   "confirmedFrames": 70,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5384,6 +6147,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5391,6 +6155,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5398,6 +6163,7 @@
    "tier": "confirmed",
    "firstLikely": "00:06:57",
    "firstConfirmed": "00:07:05",
+   "confirmedFrames": 35,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5405,6 +6171,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5412,6 +6179,7 @@
    "tier": "confirmed",
    "firstLikely": "02:55:51",
    "firstConfirmed": "02:55:53",
+   "confirmedFrames": 47,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5419,6 +6187,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5426,6 +6195,7 @@
    "tier": "confirmed",
    "firstLikely": "15:20:04",
    "firstConfirmed": "15:20:06",
+   "confirmedFrames": 72,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5433,6 +6203,7 @@
    "tier": "confirmed",
    "firstLikely": "20:29:45",
    "firstConfirmed": "20:29:46",
+   "confirmedFrames": 54,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5440,6 +6211,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5447,6 +6219,7 @@
    "tier": "confirmed",
    "firstLikely": "01:27:58",
    "firstConfirmed": "01:27:59",
+   "confirmedFrames": 41,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5454,6 +6227,7 @@
    "tier": "confirmed",
    "firstLikely": "02:09:13",
    "firstConfirmed": "02:09:15",
+   "confirmedFrames": 85,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5461,6 +6235,7 @@
    "tier": "confirmed",
    "firstLikely": "06:16:52",
    "firstConfirmed": "06:16:58",
+   "confirmedFrames": 42,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5468,6 +6243,7 @@
    "tier": "confirmed",
    "firstLikely": "13:25:48",
    "firstConfirmed": "13:25:51",
+   "confirmedFrames": 49,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5475,6 +6251,7 @@
    "tier": "confirmed",
    "firstLikely": "16:36:00",
    "firstConfirmed": "16:36:02",
+   "confirmedFrames": 38,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5482,6 +6259,7 @@
    "tier": "confirmed",
    "firstLikely": "23:34:01",
    "firstConfirmed": "23:34:05",
+   "confirmedFrames": 35,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5489,6 +6267,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5496,6 +6275,7 @@
    "tier": "confirmed",
    "firstLikely": "14:05:25",
    "firstConfirmed": "14:05:27",
+   "confirmedFrames": 73,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5503,6 +6283,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5510,6 +6291,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5517,6 +6299,7 @@
    "tier": "confirmed",
    "firstLikely": "20:59:41",
    "firstConfirmed": "20:59:44",
+   "confirmedFrames": 56,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5524,6 +6307,7 @@
    "tier": "confirmed",
    "firstLikely": "21:59:10",
    "firstConfirmed": "21:59:13",
+   "confirmedFrames": 87,
    "unrelated": 2,
    "unrelatedAt": [
     "22:00:22 鳥取県|伯耆町吉長",
@@ -5534,6 +6318,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5541,6 +6326,7 @@
    "tier": "confirmed",
    "firstLikely": "15:16:13",
    "firstConfirmed": "15:16:14",
+   "confirmedFrames": 85,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5548,6 +6334,7 @@
    "tier": "confirmed",
    "firstLikely": "05:40:40",
    "firstConfirmed": "05:40:42",
+   "confirmedFrames": 58,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5555,6 +6342,7 @@
    "tier": "none",
    "firstLikely": null,
    "firstConfirmed": null,
+   "confirmedFrames": 0,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5562,6 +6350,7 @@
    "tier": "confirmed",
    "firstLikely": "12:42:41",
    "firstConfirmed": "12:42:44",
+   "confirmedFrames": 56,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5569,6 +6358,7 @@
    "tier": "confirmed",
    "firstLikely": "11:39:23",
    "firstConfirmed": "11:39:24",
+   "confirmedFrames": 76,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5576,6 +6366,7 @@
    "tier": "confirmed",
    "firstLikely": "23:13:09",
    "firstConfirmed": "23:13:11",
+   "confirmedFrames": 82,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5583,6 +6374,7 @@
    "tier": "confirmed",
    "firstLikely": "14:44:02",
    "firstConfirmed": "14:44:08",
+   "confirmedFrames": 32,
    "unrelated": 0,
    "unrelatedAt": []
   },
@@ -5590,6 +6382,7 @@
    "tier": "confirmed",
    "firstLikely": "15:32:13",
    "firstConfirmed": "15:32:15",
+   "confirmedFrames": 85,
    "unrelated": 0,
    "unrelatedAt": []
   }

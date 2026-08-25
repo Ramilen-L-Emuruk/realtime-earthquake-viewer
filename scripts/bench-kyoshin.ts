@@ -173,6 +173,14 @@ interface Result {
   firstLikely: string | null
   /** 初めて confirmed になった時刻（HH:MM:SS）。無ければ null */
   firstConfirmed: string | null
+  /**
+   * その地震に結びついた confirmed が出ていたフレーム数（＝検知が画面に出ていた秒数）。
+   *
+   * **初 confirmed の時刻だけでは「検知が短くなった」を捕まえられない。** 始まりが同じでも
+   * 途中で確信度が落ちれば、利用者から見た検知は縮む。確信度を降ろす仕組みを入れるときは
+   * ここが唯一の歯止めになる（設計書§33 の単点降格は、この項目が無い状態で入った）。
+   */
+  confirmedFrames: number
   /** どの地震にも結びつかなかった検知イベントの数 */
   unrelated: number
   /** 無関係な検知の代表地点（最大 3 件・診断用） */
@@ -374,10 +382,22 @@ function measure(w: WindowSpec, frames: Frame[], sites: [number, number][], meta
   let state = initState(frames[0].ms - 1000)
   const tracks = new Map<string, EventTrack>()
 
+  // イベント ID ごとに「confirmed だったフレーム」を溜める。地震への帰属は後から立つことがあるため、
+  // ここでは種別を問わず記録し、最後に「その地震に結びついたイベント」の分だけを数える
+  const confirmedAt = new Map<string, number[]>()
+
   for (const f of frames) {
     const missing = f.indices.map((v) => v < 0)
     const r = step(state, { dataTimeMs: f.ms, sites, values: f.indices, missing, eewActive: false }, meta)
     state = r.state
+
+    for (const e of r.detections as DetectionEvent[]) {
+      if (e.confidence === 'confirmed') {
+        const list = confirmedAt.get(e.id)
+        if (list) list.push(f.ms)
+        else confirmedAt.set(e.id, [f.ms])
+      }
+    }
 
     for (const e of r.detections as DetectionEvent[]) {
       if (e.confidence !== 'likely' && e.confidence !== 'confirmed') continue
@@ -396,13 +416,16 @@ function measure(w: WindowSpec, frames: Frame[], sites: [number, number][], meta
     }
   }
 
-  const out: Result = { tier: 'none', firstLikely: null, firstConfirmed: null, unrelated: 0, unrelatedAt: [] }
+  const out: Result = { tier: 'none', firstLikely: null, firstConfirmed: null, confirmedFrames: 0, unrelated: 0, unrelatedAt: [] }
   let likelyMs = Infinity
   let confirmedMs = Infinity
-  for (const [, t] of tracks) {
+  // 同じフレームに複数のイベントが confirmed でも「検知が出ていた 1 秒」として数える
+  const shownFrames = new Set<number>()
+  for (const [id, t] of tracks) {
     if (t.everRelated) {
       if (t.firstLikelyMs < likelyMs) likelyMs = t.firstLikelyMs
       if (t.firstConfirmedMs != null && t.firstConfirmedMs < confirmedMs) confirmedMs = t.firstConfirmedMs
+      for (const ms of confirmedAt.get(id) ?? []) shownFrames.add(ms)
     } else {
       out.unrelated++
       if (out.unrelatedAt.length < 3) {
@@ -411,6 +434,7 @@ function measure(w: WindowSpec, frames: Frame[], sites: [number, number][], meta
       }
     }
   }
+  out.confirmedFrames = shownFrames.size
   if (likelyMs < Infinity) {
     out.tier = confirmedMs < Infinity ? 'confirmed' : 'likely'
     out.firstLikely = hhmmssOf(frames, likelyMs)
@@ -572,6 +596,10 @@ function diffBaseline(rows: { w: WindowSpec; r: Result }[]): boolean {
     if (b.tier !== r.tier) parts.push(`段階 ${b.tier} → ${r.tier}`)
     if (b.firstConfirmed !== r.firstConfirmed) parts.push(`初confirmed ${b.firstConfirmed ?? '-'} → ${r.firstConfirmed ?? '-'}`)
     if (b.firstLikely !== r.firstLikely) parts.push(`初likely ${b.firstLikely ?? '-'} → ${r.firstLikely ?? '-'}`)
+    // 旧ベースライン（この項目が無い頃のもの）は undefined になる。比較から外して誤検出しない
+    if (b.confirmedFrames != null && b.confirmedFrames !== r.confirmedFrames) {
+      parts.push(`確定の継続 ${b.confirmedFrames} → ${r.confirmedFrames} フレーム`)
+    }
     if (b.unrelated !== r.unrelated) parts.push(`無関係な検知 ${b.unrelated} → ${r.unrelated}`)
     if (parts.length > 0) {
       const q = primaryQuake(w)
