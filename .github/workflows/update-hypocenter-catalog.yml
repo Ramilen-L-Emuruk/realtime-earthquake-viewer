@@ -1,0 +1,91 @@
+name: Update hypocenter catalog
+
+# 長期震源カタログ（public/data/hypocenter/）の直近ぶんを週 1 回更新する。
+#
+# 気象庁の「震源リスト」は 2 日前までしか載らないため、どれだけ頻繁に回しても 2 日の尾は残る。
+# その尾は索引の coveredThroughMs が示すので、消費側は「未取得」として描き分けられる。
+#
+# 【なぜ週 1 回か】日 1 回でも尾は 2 日のまま縮まらず、取得の回数だけ増える。
+# 週 1 回なら尾は最大 9 日で、直近を見る機能（b 値・静穏化）にも実害が無い。
+#
+# 【git は太らない】書き換わるのは当年の 1 ファイルだけで、内容は末尾への追記。
+# 実測では 788KB の年ファイルを 52 回更新して .git の増分は 438KB。
+#
+# 【main へ直接 push する — CLAUDE.md「リリース」節の例外】
+# 「main を書き換える操作はリリース手続きの中でのみ行う」という原則の唯一の例外。
+# その原則はバージョン番号の競合とマージ順の混乱を防ぐためのもので、
+# **データのみ・版上げなし・マージなし**のこのコミットはどちらの危険も持たない。
+# リリース手続きは着手前チェックで behind を検出し `git merge --ff-only` で追随する。
+# bot 由来であることはコミットメッセージの `chore: 長期震源カタログを` で見分けられる。
+on:
+  schedule:
+    # 毎週月曜 03:00 UTC（12:00 JST）。気象庁の更新に合わせる必要はないが、
+    # 日本時間の日中にしておくと、失敗に気づいて手で回し直せる。
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# 同時に 2 つ走らせない（両方が同じファイルを書き換えて push が衝突する）
+concurrency:
+  group: update-hypocenter-catalog
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # 日別ページのキャッシュ。**これが無いと毎回 966 日ぶん（約 70MB）を取り直す。**
+      # 過去の日のページは書き換わらないので、無期限に再利用してよい。
+      # key に run_id を入れて毎回新しく保存し、restore-keys で直前のものを引き継ぐ。
+      # **世代は積み上がらない。** GitHub は 7 日間アクセスの無いキャッシュを失効させる。
+      # 毎週触るのは直前の 1 つだけなので、常時 2〜3 世代（約 340MB）に収まる。
+      - name: Restore daily page cache
+        uses: actions/cache@v4
+        with:
+          path: .claude/hypocenter-cache
+          key: hypocenter-daily-${{ github.run_id }}
+          restore-keys: |
+            hypocenter-daily-
+
+      - name: Install dependencies
+        run: npm ci
+
+      # 2024 年以降だけを作り直す。**確定値（年 ZIP）を先に試すので、気象庁が 2024 年の
+      # 確定値を公開した週に、自動で速報値から差し替わる。**
+      - name: Update catalog
+        run: npm run build-hypocenter-catalog -- --from 2024
+
+      # テストを通してから push する。パーサの回帰やカタログの検分に失敗したら、
+      # 壊れたデータを本番へ出さずに止める。
+      - name: Run tests
+        run: npm test
+
+      - name: Commit and push
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add public/data/hypocenter
+          if git diff --cached --quiet; then
+            # 原因を断定しない。生成が年を飛ばした場合も差分は出ないが、それは
+            # 生成スクリプト側が exit 1 で落ちるため、ここへは到達しない。
+            echo '生成物に差分はありません'
+            exit 0
+          fi
+          COVERED=$(node -p "new Date(require('./public/data/hypocenter/index.json').coveredThroughMs + 9*3600e3).toISOString().slice(0,10)")
+          git commit -m "chore: 長期震源カタログを ${COVERED} まで更新" -m 'Co-Authored-By: github-actions[bot] <noreply@github.com>'
+          # main が進んでいたら取り込んでから push する（データのみのコミットなので衝突しない）。
+          # **失敗を警告に落とさない。** 資格情報の失効やブランチ保護で push が通らなくなったとき、
+          # 緑のまま走り続けると「毎週更新しているつもりで何ヶ月も止まっている」ことに誰も気づけない。
+          git pull --rebase origin main
+          git push
