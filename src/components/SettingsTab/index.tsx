@@ -8,6 +8,7 @@ import { checkVoicevoxAvailable, fetchVoicevoxSpeakers, isValidVoicevoxUrl, spea
 import { serverDate, getServerClockOffsetMs } from '../../utils/clock'
 import type { UseTestScenariosResult } from '../../hooks/useTestScenarios'
 import type { ScenarioCategory } from '../../types/testScenario'
+import type { HistoricalArchiveIndex } from '../../types/historicalArchive'
 import { isDmdss } from '../../utils/env'
 import { isValidDmdataApiKey, DMDATA_API_KEY_INVALID_MESSAGE } from '../../utils/dmdataApiKey'
 import { useDebouncedValue } from '../../hooks/useDebouncedValue'
@@ -53,6 +54,10 @@ interface Props {
   replayError?: string | null
   onStartReplay: (date: Date) => void
   onStopReplay: () => void
+  /** 収録済みローカル履歴アーカイブの一覧（DMDATA/P2PQuakeに無い期間を代替する）。表示専用。 */
+  historicalArchives?: HistoricalArchiveIndex
+  /** 上記一覧の読み込みが完了していないか。読み込み中に「確定」を押すとローカルアーカイブが判定から漏れるため、完了まで「確定」を無効化する。 */
+  historicalArchivesLoading?: boolean
   scenarioTest: UseTestScenariosResult
 }
 
@@ -520,7 +525,7 @@ function HomeLocationSection({
 }
 
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus, replayIsFetching, replayError, onStartReplay, onStopReplay, scenarioTest }: Props) {
+export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus, replayIsFetching, replayError, onStartReplay, onStopReplay, historicalArchives, historicalArchivesLoading, scenarioTest }: Props) {
   const [voicevoxStatus, setVoicevoxStatus] = useState<'idle' | 'checking' | 'available' | 'unavailable' | 'invalid'>('idle')
   const [voicevoxSpeakers, setVoicevoxSpeakers] = useState<VoicevoxSpeaker[]>([])
 
@@ -1181,8 +1186,23 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
 
       <Section title="テスト時刻設定">
         <div className="px-4 py-2 bg-blue-900/30 border-b border-blue-700/40">
-          <p className="text-blue-300 text-xs">指定した時刻の当時のデータ（リアルタイム震度・地震情報・津波）を再生します。2020年以降を指定できます。</p>
+          <p className="text-blue-300 text-xs">指定した時刻の当時のデータ（リアルタイム震度・地震情報・津波）を再生します。2020年以降を指定できます。下記の期間（のみ）はローカル収録データにより再生できます。</p>
         </div>
+        {historicalArchives != null && historicalArchives.length > 0 && (
+          <Row label="収録済み履歴アーカイブ">
+            <div className="flex flex-col gap-1 items-end text-right">
+              {historicalArchives.map(a => (
+                <div key={a.id} className="text-xs text-secondary">
+                  <span className="text-white">{a.label}</span>
+                  {' '}
+                  <span className="text-secondary/80">
+                    ({new Date(a.from).toLocaleString('ja-JP')} 〜 {new Date(a.to).toLocaleString('ja-JP')})
+                  </span>
+                </div>
+              ))}
+            </div>
+          </Row>
+        )}
         <Row label="開始時刻" description="確定すると指定時刻から1秒ずつ進みます">
           <div className="flex gap-2 items-center flex-wrap justify-end">
             <input
@@ -1193,10 +1213,10 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             />
             <button
               onClick={handleTimeConfirm}
-              disabled={!kyoshinInputDateTime || replayIsFetching}
+              disabled={!kyoshinInputDateTime || replayIsFetching || historicalArchivesLoading}
               className="text-xs bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white px-3 py-1.5 rounded transition-colors"
             >
-              {replayIsFetching ? '取得中...' : '確定'}
+              {replayIsFetching ? '取得中...' : historicalArchivesLoading ? '準備中...' : '確定'}
             </button>
           </div>
         </Row>
