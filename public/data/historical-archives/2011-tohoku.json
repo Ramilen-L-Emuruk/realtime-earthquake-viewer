@@ -1,0 +1,134 @@
+{
+  "id": "2011-tohoku",
+  "label": "2011年東北地方太平洋沖地震",
+  "description": "M9.0 最大震度7 大津波警報。DMDATAアーカイブ運用開始（2020年4月）より前のため、気象庁公表資料を基にローカル収録（出典: 気象庁ホームページ）。現時点ではPhase 1として本震のEEW数報〜大津波警報第一報までの概略のみ収録",
+  "from": "2011-03-11T05:45:00.000Z",
+  "to": "2011-03-11T06:00:00.000Z",
+  "entries": [
+    {
+      "time": "2011-03-11T05:46:27.000Z",
+      "payload": {
+        "kind": "event",
+        "event": {
+          "kind": "eew",
+          "id": "2011tohoku-eew-1",
+          "time": "2011-03-11T05:46:27.000Z",
+          "test": false,
+          "earthquake": {
+            "originTime": "2011-03-11T05:46:18.000Z",
+            "arrivalTime": "2011-03-11T05:46:45.000Z",
+            "condition": "以上",
+            "hypocenter": { "name": "三陸沖", "latitude": 38.1, "longitude": 142.9, "depth": 24, "magnitude": 4.3 }
+          },
+          "severity": "Forecast",
+          "cancelled": false,
+          "issue": { "eventId": "20110311144618", "serial": "1", "time": "2011-03-11T05:46:27.000Z" },
+          "areas": [
+            { "pref": "宮城県", "name": "宮城県北部", "scaleFrom": 20, "scaleTo": 20, "kindCode": "10", "arrivalTime": null }
+          ]
+        }
+      }
+    },
+    {
+      "time": "2011-03-11T05:46:40.000Z",
+      "payload": {
+        "kind": "event",
+        "event": {
+          "kind": "eew",
+          "id": "2011tohoku-eew-5",
+          "time": "2011-03-11T05:46:40.000Z",
+          "test": false,
+          "earthquake": {
+            "originTime": "2011-03-11T05:46:18.000Z",
+            "arrivalTime": "2011-03-11T05:46:55.000Z",
+            "condition": "以上",
+            "hypocenter": { "name": "三陸沖", "latitude": 38.1, "longitude": 142.9, "depth": 24, "magnitude": 6.3 }
+          },
+          "severity": "Warning",
+          "cancelled": false,
+          "issue": { "eventId": "20110311144618", "serial": "5", "time": "2011-03-11T05:46:40.000Z" },
+          "areas": [
+            { "pref": "宮城県", "name": "宮城県北部", "scaleFrom": 40, "scaleTo": 45, "kindCode": "10", "arrivalTime": null },
+            { "pref": "宮城県", "name": "宮城県中部", "scaleFrom": 30, "scaleTo": 40, "kindCode": "10", "arrivalTime": null }
+          ]
+        }
+      }
+    },
+    {
+      "time": "2011-03-11T05:47:14.000Z",
+      "payload": {
+        "kind": "event",
+        "event": {
+          "kind": "eew",
+          "id": "2011tohoku-eew-15",
+          "time": "2011-03-11T05:47:14.000Z",
+          "test": false,
+          "earthquake": {
+            "originTime": "2011-03-11T05:46:18.000Z",
+            "arrivalTime": "2011-03-11T05:46:41.000Z",
+            "condition": "以上",
+            "hypocenter": { "name": "三陸沖", "latitude": 38.1, "longitude": 142.9, "depth": 24, "magnitude": 8.1 }
+          },
+          "severity": "Warning",
+          "cancelled": false,
+          "isFinal": true,
+          "forecastMaxLpgmClass": 4,
+          "issue": { "eventId": "20110311144618", "serial": "15", "time": "2011-03-11T05:47:14.000Z" },
+          "areas": [
+            { "pref": "宮城県", "name": "宮城県北部", "scaleFrom": 55, "scaleTo": 60, "kindCode": "10", "arrivalTime": null, "lgIntTo": 4 },
+            { "pref": "宮城県", "name": "宮城県中部", "scaleFrom": 50, "scaleTo": 55, "kindCode": "10", "arrivalTime": null, "lgIntTo": 3 },
+            { "pref": "岩手県", "name": "岩手県沿岸南部", "scaleFrom": 45, "scaleTo": 50, "kindCode": "10", "arrivalTime": null, "lgIntTo": 2 },
+            { "pref": "福島県", "name": "福島県浜通り", "scaleFrom": 45, "scaleTo": 50, "kindCode": "10", "arrivalTime": null, "lgIntTo": 2 },
+            { "pref": "茨城県", "name": "茨城県北部", "scaleFrom": 40, "scaleTo": 45, "kindCode": "11", "arrivalTime": null, "lgIntTo": 1 }
+          ]
+        }
+      }
+    },
+    {
+      "time": "2011-03-11T05:49:00.000Z",
+      "payload": {
+        "kind": "event",
+        "event": {
+          "kind": "quake",
+          "id": "2011tohoku-quake-1",
+          "eventId": "20110311144618",
+          "time": "2011-03-11T05:49:00.000Z",
+          "issue": { "source": "気象庁", "time": "2011-03-11T05:49:00.000Z", "type": "震源・震度情報", "correct": "なし" },
+          "earthquake": {
+            "time": "2011-03-11T05:46:18.000Z",
+            "hypocenter": { "name": "三陸沖", "latitude": 38.1, "longitude": 142.9, "depth": 24, "magnitude": 7.9 },
+            "maxScale": 70,
+            "domesticTsunami": "警報等"
+          },
+          "points": [
+            { "pref": "宮城県", "addr": "宮城県北部", "isArea": true, "scale": 70 },
+            { "pref": "岩手県", "addr": "岩手県沿岸南部", "isArea": true, "scale": 60 },
+            { "pref": "福島県", "addr": "福島県浜通り", "isArea": true, "scale": 55 },
+            { "pref": "茨城県", "addr": "茨城県北部", "isArea": true, "scale": 55 },
+            { "pref": "東京都", "addr": "東京都２３区", "isArea": true, "scale": 50 }
+          ]
+        }
+      }
+    },
+    {
+      "time": "2011-03-11T05:49:00.000Z",
+      "payload": {
+        "kind": "event",
+        "event": {
+          "kind": "tsunami",
+          "id": "2011tohoku-tsunami-1",
+          "eventId": "20110311144618",
+          "time": "2011-03-11T05:49:00.000Z",
+          "cancelled": false,
+          "sourceEarthquake": { "hypocenterName": "三陸沖", "magnitude": 7.9, "originTime": "2011-03-11T05:46:00.000Z" },
+          "issue": { "source": "気象庁", "time": "2011-03-11T05:49:00.000Z", "type": "Focus" },
+          "areas": [
+            { "grade": "MajorWarning", "immediate": true, "name": "岩手県", "code": "030", "maxHeight": { "description": "3m", "value": 3.0 } },
+            { "grade": "MajorWarning", "immediate": true, "name": "宮城県", "code": "040", "maxHeight": { "description": "6m", "value": 6.0 } },
+            { "grade": "MajorWarning", "immediate": true, "name": "福島県", "code": "050", "maxHeight": { "description": "3m", "value": 3.0 } }
+          ]
+        }
+      }
+    }
+  ]
+}

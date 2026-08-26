@@ -46,9 +46,11 @@ import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
 import { warmFixedPhrases } from './utils/voicevox'
 import { EEW_LEAD_PHRASES } from './utils/ttsText'
 import type { EEWAlert, JMAQuake, JMATsunami } from './types/earthquake'
-import { useReplayController } from './hooks/useReplayController'
+import { useReplayController, WINDOW_MS as REPLAY_WINDOW_MS, PRE_WINDOW_MS as REPLAY_PRE_WINDOW_MS } from './hooks/useReplayController'
 import { fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache } from './services/dmdataReplay'
 import { fetchP2PReplayEvents, fetchP2PQuakeHistory, clearP2PReplayCache } from './services/p2pquakeReplay'
+import { findCoveringArchiveSync, findArchiveJustEndedSync, fetchLocalArchiveEvents, fetchLocalArchiveQuakeHistory } from './services/localArchiveReplay'
+import { useHistoricalArchiveIndex } from './hooks/useHistoricalArchiveIndex'
 import { log } from './utils/logger'
 import { setReplayOffset as setClockReplayOffset, serverDate } from './utils/clock'
 import { isDmdss } from './utils/env'
@@ -937,11 +939,30 @@ export function App() {
   // API キーはここだけ生の値を渡す。リプレイはユーザーがボタンを押した時点でしか通信せず、
   // キー入力に連動して自動で走ることがないため、遅らせる必要がない
   //（むしろ押した瞬間の最新値を使いたい）。
+  // 設定タブの「テスト時刻設定」に出す、収録済みローカル履歴アーカイブの一覧。
+  // DMDATA/P2PQuakeのアーカイブが存在しない期間（DMDATA運用開始=2020年4月より前等）を
+  // 再現するための同梱データで、対象時刻がこの中の期間に該当すれば下記 fetchReplayEvents が
+  // 通常のアーカイブ取得の代わりにこちらを使う（localArchiveReplay.ts 参照）。
+  const { archives: historicalArchives, isLoading: historicalArchivesLoading } = useHistoricalArchiveIndex()
   const fetchReplayEvents = useCallback(
-    (from: Date, to: Date) => isDmdss
-      ? fetchDmdataReplayEvents(settings.dmdataApiKey, from, to)
-      : fetchP2PReplayEvents(from, to),
-    [settings.dmdataApiKey],
+    (from: Date, to: Date) => {
+      const covering = findCoveringArchiveSync(historicalArchives, from, to)
+      if (covering) return fetchLocalArchiveEvents(covering, from, to)
+      // 収録範囲の終端を過ぎた直後（先読みが1時間ごとに次のウィンドウを取りに来た結果、
+      // ここで初めて収録範囲外に出た）場合、DMDATA/P2PQuakeにはそもそもデータの無い時代
+      // なので静かにフォールバックせず、専用のエラーで知らせる（見つからなければ null で
+      // 通常どおりのフォールバックへ進む）。
+      const justEnded = findArchiveJustEndedSync(historicalArchives, from, REPLAY_WINDOW_MS)
+      if (justEnded) {
+        return Promise.reject(new Error(
+          `ローカル履歴アーカイブ「${justEnded.label}」の収録範囲の終端に達しました。これ以降は再生できません`,
+        ))
+      }
+      return isDmdss
+        ? fetchDmdataReplayEvents(settings.dmdataApiKey, from, to)
+        : fetchP2PReplayEvents(from, to)
+    },
+    [settings.dmdataApiKey, historicalArchives],
   )
   const clearReplayCacheForVariant = useCallback(
     () => { if (isDmdss) clearReplayCache(); else clearP2PReplayCache() },
@@ -950,11 +971,21 @@ export function App() {
   // 地震カードの履歴（再生開始時刻より前の地震）。取得元は再生用と同じくバリアントで変わるが、
   // 引き方が違う。DMDSS 版は日次アーカイブを必要な日数だけ遡り、standard 版は P2PQuake の
   // クエリを 1 回引いて件数で切る（`maxDays` はアーカイブ経路にしか意味が無いため渡さない）。
+  // こちらも fetchReplayEvents と同じく、対象期間がローカル履歴アーカイブに重なればそちらを使う
+  // （重ならなければ DMDATA/P2PQuake 側は「そもそもデータの無い時代」で必ず失敗するため）。
+  // 重なり判定には `maxDays`（既定7日）ではなく fetchReplayEvents の「初期状態」と同じ
+  // REPLAY_PRE_WINDOW_MS（24時間）を使う。ここを独自の幅にすると、本編・初期状態はアーカイブに
+  // 重ならないのに履歴だけ数日先の無関係なアーカイブに重なってしまい、再生は実データ側で
+  // 止まっているのに地震カードだけローカルアーカイブ由来の古い1件を表示する、という不整合が起きる。
   const fetchReplayQuakeHistory = useCallback(
-    (before: Date, targetEvents: number, maxDays: number) => isDmdss
-      ? fetchDmdataQuakeHistory(settings.dmdataApiKey, before, targetEvents, maxDays)
-      : fetchP2PQuakeHistory(before, targetEvents),
-    [settings.dmdataApiKey],
+    (before: Date, targetEvents: number, maxDays: number) => {
+      const covering = findCoveringArchiveSync(historicalArchives, new Date(before.getTime() - REPLAY_PRE_WINDOW_MS), before)
+      if (covering) return fetchLocalArchiveQuakeHistory(covering, before, targetEvents)
+      return isDmdss
+        ? fetchDmdataQuakeHistory(settings.dmdataApiKey, before, targetEvents, maxDays)
+        : fetchP2PQuakeHistory(before, targetEvents)
+    },
+    [settings.dmdataApiKey, historicalArchives],
   )
   const replay = useReplayController({
     fetchEvents: fetchReplayEvents,
@@ -1293,6 +1324,8 @@ export function App() {
               replayError={replay.error}
               onStartReplay={replay.start}
               onStopReplay={replay.stop}
+              historicalArchives={historicalArchives}
+              historicalArchivesLoading={historicalArchivesLoading}
               scenarioTest={scenarioTest}
             />
           </div>
