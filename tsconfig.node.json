@@ -24,6 +24,10 @@
     "scripts/dev-api-key-gate.test.ts",
     "scripts/hypocenterRecord.ts",
     "scripts/hypocenterRecord.test.ts",
-    "scripts/build-hypocenter-catalog.ts"
+    "scripts/build-hypocenter-catalog.ts",
+    "scripts/build-historical-archive-2011-tohoku.ts",
+    "scripts/historicalEewParser.test.ts",
+    "scripts/historicalEewArchiveBuilder.test.ts",
+    "scripts/historicalTsunamiArchiveBuilder.test.ts"
   ]
 }
