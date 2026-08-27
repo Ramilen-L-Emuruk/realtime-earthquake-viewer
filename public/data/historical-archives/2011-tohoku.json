@@ -1,7 +1,7 @@
 {
   "id": "2011-tohoku",
   "label": "2011年東北地方太平洋沖地震",
-  "description": "M9.0 最大震度7 大津波警報。DMDATAアーカイブ運用開始（2020年4月）より前のため、気象庁公表資料を基にローカル収録（出典: 気象庁ホームページ）。Phase 2として本震のEEW全15報・警報級誘発地震19件（各1報の代表値。震源座標は概算・全報の推移は未収録）・地震情報のマグニチュード改定4報・大津波警報の発表〜解除までを収録",
+  "description": "2011年3月11日14時46分頃、三陸沖を震源とするM9.0の地震が発生。宮城県栗原市で震度7を観測し、大津波警報が発表された（東北地方太平洋沖地震）。気象庁公表資料を基にローカル収録（DMDATAアーカイブ運用開始より前の期間のため）。",
   "from": "2011-03-11T05:45:00.000Z",
   "to": "2011-03-13T10:00:00.000Z",
   "entries": [
@@ -376,7 +376,13 @@
         "areas": [
           { "grade": "MajorWarning", "immediate": true, "name": "岩手県", "code": "030", "maxHeight": { "description": "3m", "value": 3.0 } },
           { "grade": "MajorWarning", "immediate": true, "name": "宮城県", "code": "040", "maxHeight": { "description": "6m", "value": 6.0 } },
-          { "grade": "MajorWarning", "immediate": true, "name": "福島県", "code": "050", "maxHeight": { "description": "3m", "value": 3.0 } }
+          { "grade": "MajorWarning", "immediate": true, "name": "福島県", "code": "050", "maxHeight": { "description": "3m", "value": 3.0 } },
+          { "grade": "Warning", "immediate": true, "name": "青森県太平洋沿岸", "maxHeight": { "description": "3m", "value": 3.0 } },
+          { "grade": "Warning", "immediate": true, "name": "茨城県", "maxHeight": { "description": "3m", "value": 3.0 } },
+          { "grade": "Warning", "immediate": true, "name": "千葉県九十九里・外房", "maxHeight": { "description": "3m", "value": 3.0 } },
+          { "grade": "Watch", "immediate": false, "name": "北海道太平洋沿岸東部", "maxHeight": { "description": "1m", "value": 1.0 } },
+          { "grade": "Watch", "immediate": false, "name": "和歌山県", "maxHeight": { "description": "1m", "value": 1.0 } },
+          { "grade": "Watch", "immediate": false, "name": "宮崎県", "maxHeight": { "description": "1m", "value": 1.0 } }
         ]
       } }
     },
@@ -392,7 +398,15 @@
         "areas": [
           { "grade": "MajorWarning", "immediate": true, "name": "岩手県", "code": "030", "maxHeight": { "description": "10m以上", "value": 10.0 } },
           { "grade": "MajorWarning", "immediate": true, "name": "宮城県", "code": "040", "maxHeight": { "description": "10m以上", "value": 10.0 } },
-          { "grade": "MajorWarning", "immediate": true, "name": "福島県", "code": "050", "maxHeight": { "description": "10m以上", "value": 10.0 } }
+          { "grade": "MajorWarning", "immediate": true, "name": "福島県", "code": "050", "maxHeight": { "description": "10m以上", "value": 10.0 } },
+          { "grade": "MajorWarning", "immediate": true, "name": "青森県太平洋沿岸", "maxHeight": { "description": "10m以上", "value": 10.0 } },
+          { "grade": "MajorWarning", "immediate": true, "name": "茨城県", "maxHeight": { "description": "10m以上", "value": 10.0 } },
+          { "grade": "Warning", "immediate": true, "name": "静岡県", "maxHeight": { "description": "3m", "value": 3.0 } },
+          { "grade": "Warning", "immediate": true, "name": "和歌山県", "maxHeight": { "description": "3m", "value": 3.0 } },
+          { "grade": "Warning", "immediate": true, "name": "高知県", "maxHeight": { "description": "3m", "value": 3.0 } },
+          { "grade": "Warning", "immediate": true, "name": "宮崎県", "maxHeight": { "description": "2m", "value": 2.0 } },
+          { "grade": "Watch", "immediate": false, "name": "大阪府", "maxHeight": { "description": "0.5m", "value": 0.5 } },
+          { "grade": "Watch", "immediate": false, "name": "鹿児島県西部", "maxHeight": { "description": "0.5m", "value": 0.5 } }
         ]
       } }
     },
@@ -407,7 +421,12 @@
         "areas": [
           { "grade": "Warning", "immediate": true, "name": "岩手県", "code": "030", "maxHeight": { "description": "3m", "value": 3.0 } },
           { "grade": "Warning", "immediate": true, "name": "宮城県", "code": "040", "maxHeight": { "description": "3m", "value": 3.0 } },
-          { "grade": "Warning", "immediate": true, "name": "福島県", "code": "050", "maxHeight": { "description": "3m", "value": 3.0 } }
+          { "grade": "Warning", "immediate": true, "name": "福島県", "code": "050", "maxHeight": { "description": "3m", "value": 3.0 } },
+          { "grade": "Warning", "immediate": true, "name": "青森県太平洋沿岸", "maxHeight": { "description": "3m", "value": 3.0 } },
+          { "grade": "Watch", "immediate": false, "name": "茨城県", "maxHeight": { "description": "1m", "value": 1.0 } },
+          { "grade": "Watch", "immediate": false, "name": "静岡県", "maxHeight": { "description": "1m", "value": 1.0 } },
+          { "grade": "Watch", "immediate": false, "name": "高知県", "maxHeight": { "description": "1m", "value": 1.0 } },
+          { "grade": "Watch", "immediate": false, "name": "宮崎県", "maxHeight": { "description": "1m", "value": 1.0 } }
         ]
       } }
     },
@@ -422,7 +441,11 @@
         "areas": [
           { "grade": "Watch", "immediate": false, "name": "岩手県", "code": "030", "maxHeight": { "description": "1m", "value": 1.0 } },
           { "grade": "Watch", "immediate": false, "name": "宮城県", "code": "040", "maxHeight": { "description": "1m", "value": 1.0 } },
-          { "grade": "Watch", "immediate": false, "name": "福島県", "code": "050", "maxHeight": { "description": "1m", "value": 1.0 } }
+          { "grade": "Watch", "immediate": false, "name": "福島県", "code": "050", "maxHeight": { "description": "1m", "value": 1.0 } },
+          { "grade": "Watch", "immediate": false, "name": "青森県太平洋沿岸", "maxHeight": { "description": "1m", "value": 1.0 } },
+          { "grade": "Watch", "immediate": false, "name": "茨城県", "maxHeight": { "description": "1m", "value": 1.0 } },
+          { "grade": "Watch", "immediate": false, "name": "高知県", "maxHeight": { "description": "1m", "value": 1.0 } },
+          { "grade": "Watch", "immediate": false, "name": "宮崎県", "maxHeight": { "description": "1m", "value": 1.0 } }
         ]
       } }
     },
