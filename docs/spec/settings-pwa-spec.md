@@ -424,6 +424,32 @@ DMDATAはアーカイブ運用開始の2020年4月から、P2PQuakeは地震情�
     千葉県九十九里外房・千葉県内房の7地域は、気象庁が専門調査会に提出した資料に
     段階ごとの実測値が残っているため、`heightOverrides` で正確な時系列値に上書きしている。
     津波注意報は全地域一律0.5m（検証ページの観測表で確認済み）
+- 2016年熊本地震（前震 2016/4/14 21:26 M6.5・本震 2016/4/16 01:25 M7.3、前震・本震・
+  誘発地震を合わせた警報級EEW全19件・収録期間2016/4/14 12:00〜2016/4/20 0:00）も
+  収録している。こちらは気象庁防災情報XMLフォーマットの運用開始（2011/5/12）より後の
+  地震のため、地震情報（震度速報・震源に関する情報・震源・震度情報・顕著な地震の
+  震源要素更新のお知らせ）と津波は、当時配信された実電文そのものを
+  [`build-historical-archive-2016-kumamoto.ts`](../../scripts/build-historical-archive-2016-kumamoto.ts)
+  が取得し、アプリ本番と同じパーサー（`dmdataParser.ts` の `parseEarthquakeFromXml` /
+  `parseTsunamiFromXml`）でそのまま変換する（新規のパーサーを書いていない）。取得元は
+  国立情報学研究所（NII）CPS-IIPプロジェクトが公開する「気象庁防災情報XMLデータベース」
+  （https://agora.ex.nii.ac.jp/cps/weather/report/ 、2012年12月以降の電文を保存）で、
+  地震情報・津波に関する部分は、他サービスとのマッシュアップでない生電文の利用に
+  限りCC BY 4.0（利用時は同データベース名の表示が必要）。ただしこのデータベースには
+  **緊急地震速報が1件も収録されていない**（全期間で0件を確認済み。二次配信の契約上の
+  制限によるものと見られる）ため、EEWだけは2011年東北地方太平洋沖地震と同じ気象庁
+  発表状況ページ（pub_hist、政府標準利用規約 第1.0版）から取得している。全国の地震を
+  対象に配信される震度速報等の電文から、この地震活動と無関係な地震を取り違えないよう、
+  パース後の震央地名（`熊本県熊本地方`等）で絞り込んでいる。震度速報は震源が未確定の
+  段階で発表されるため震央地名を持たず、観測震度の対象地域名（一次細分区域名の前方
+  一致）で代わりに絞り込む
+  - 収録期間（`from`/`to`）はEEW対象イベントの日付を必ず包含すること。390-393行目の
+    `findArchiveJustEndedSync`の判定により、EEWの実データが`to`より後の日時を持つと
+    JSON上に存在していても再生時刻が到達せず実質再生不能になる（レビューで検出。
+    DATES/WINDOW_ENDとEEW_EVENTSの日付レンジを連動させる形で対処済み）
+  - NIIサイトの一覧表示時刻はISO 8601ではない（タイムゾーンオフセットが分無しの2桁、
+    例: `2016-04-14 21:28:06+09`）ため、分を補ってからDateへ変換する
+    （[`niiJmaXmlArchive.ts`](../../scripts/niiJmaXmlArchive.ts)参照）
 
 再生中はライブ接続を止める（両バリアント）。現在時刻の更新が混ざると、再生時刻より未来の
 地震がカードに並んでしまうため。「リセット」を押すと表示を消してライブへ戻る。
@@ -820,6 +846,8 @@ Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認した�
 - `scripts/historicalTsunamiParser.ts` — 気象庁津波警報検証ページの生HTMLパーサー
 - `scripts/historicalTsunamiArchiveBuilder.ts` — パース結果 → アプリの津波電文形式への変換
 - `scripts/build-historical-archive-2011-tohoku.ts` — 2011年東北地方太平洋沖地震アーカイブの生成 CLI
+- `scripts/niiJmaXmlArchive.ts` — NII「気象庁防災情報XMLデータベース」から実電文を取得
+- `scripts/build-historical-archive-2016-kumamoto.ts` — 2016年熊本地震アーカイブの生成 CLI
 - `src/types/testScenario.ts` — シナリオデータ型
 - `scripts/capture-test-scenario.ts` — シナリオキャプチャ CLI
 - `src/utils/detectionDiagnostics.ts` — 診断ログの切り出し（→ §12）
