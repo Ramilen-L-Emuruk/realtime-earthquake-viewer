@@ -66,6 +66,48 @@ describe('buildEewEntries の severity 判定', () => {
   })
 })
 
+describe('buildEewEntries の isFinal 判定', () => {
+  it('正: 報番号が最大の報だけ isFinal になる（バグ回帰: 常にfalsyのまま欠落していた）', () => {
+    const parsed: ParsedEewPage = {
+      hypocenter: hypo('長野県北部', 37.0, 138.6),
+      hypocenterCandidates: [hypo('長野県北部', 37.0, 138.6)],
+      reports: [
+        report({ reportNum: 1, timeIso: '2011-03-12T00:00:05.000Z' }),
+        report({ reportNum: 2, timeIso: '2011-03-12T00:00:10.000Z' }),
+        report({ reportNum: 3, timeIso: '2011-03-12T00:00:15.000Z' }),
+      ],
+      footnotes,
+    }
+    const entries = buildEewEntries(parsed, { idPrefix: 'test' })
+    const isFinals = entries.map((e) => (e.payload as { event: { isFinal?: boolean } }).event.isFinal)
+    expect(isFinals).toEqual([false, false, true])
+  })
+
+  it('対照: 報が1件だけならその1件が isFinal になる', () => {
+    const parsed: ParsedEewPage = {
+      hypocenter: hypo('長野県北部', 37.0, 138.6),
+      hypocenterCandidates: [hypo('長野県北部', 37.0, 138.6)],
+      reports: [report({ reportNum: 1 })],
+      footnotes,
+    }
+    const [entry] = buildEewEntries(parsed, { idPrefix: 'test' })
+    expect((entry.payload as { event: { isFinal?: boolean } }).event.isFinal).toBe(true)
+  })
+
+  it('安全弁: 最終報の行が震度予想なし（スキップ対象）だと、isFinalを持つ報が無いまま例外にする', () => {
+    const parsed: ParsedEewPage = {
+      hypocenter: hypo('長野県北部', 37.0, 138.6),
+      hypocenterCandidates: [hypo('長野県北部', 37.0, 138.6)],
+      reports: [
+        report({ reportNum: 1, forecastCell: '※1' }),
+        report({ reportNum: 2, forecastCell: '—' }), // 最大の報番号だが震度予想なし行としてスキップされる
+      ],
+      footnotes,
+    }
+    expect(() => buildEewEntries(parsed, { idPrefix: 'test' })).toThrow(/isFinal/)
+  })
+})
+
 describe('buildEewEntries の震央地名解決', () => {
   it('報ごとの座標に最も近い震源候補の名前を使う（1行目を無条件採用しない）', () => {
     const parsed: ParsedEewPage = {

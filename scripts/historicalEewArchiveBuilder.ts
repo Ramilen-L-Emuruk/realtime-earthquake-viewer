@@ -43,6 +43,12 @@ export function buildEewEntries(parsed: ParsedEewPage, opts: BuildEewEntriesOpti
   const eventId = toEventId(parsed.hypocenter.originTimeIso)
   let hasReachedWarningOnce = false
   const entries: HistoricalArchiveEntry[] = []
+  // 気象庁の発表状況ページは、そのEEWで実際に発表された全報を列挙し終えた結果を載せている
+  // （後から報が追加されることはない）ため、一覧中で最大の報番号を持つ報が、その地震の
+  // 最終報そのものである。isFinalが未設定のまま（常にfalsy）だと、最終報のはずの報が
+  // 通常続報の音・扱いのまま再生されてしまう（selectEEWSoundTypeがisFinalを見て
+  // eewFinal/eewUpdateを切り替えるため。src/utils/eew.ts参照）。
+  const maxReportNum = Math.max(...parsed.reports.map((r) => r.reportNum))
 
   for (const report of parsed.reports) {
     if (report.reportNum === 0) continue // 検知時刻の行（震源要素のみ）は電文ではない
@@ -103,12 +109,17 @@ export function buildEewEntries(parsed: ParsedEewPage, opts: BuildEewEntriesOpti
       },
       severity: hasReachedWarningOnce ? 'Warning' : 'Forecast',
       cancelled: false,
+      isFinal: report.reportNum === maxReportNum,
       issue: { eventId, serial: String(report.reportNum), time: report.timeIso },
       ...(areas ? { areas } : {}),
       ...(forecastMaxScale !== undefined ? { forecastMaxScale, forecastMaxScaleOrAbove } : {}),
     }
 
     entries.push({ time: report.timeIso, payload: { kind: 'event', event } })
+  }
+
+  if (entries.length > 0 && !entries.some((e) => (e.payload as { event: EEWAlert }).event.isFinal)) {
+    throw new Error(`${opts.idPrefix}: 最終報（報番号${maxReportNum}）が震度予想なしの行としてスキップされ、isFinalを持つ報が1件もありません`)
   }
 
   return entries
