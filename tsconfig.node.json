@@ -26,6 +26,8 @@
     "scripts/hypocenterRecord.test.ts",
     "scripts/build-hypocenter-catalog.ts",
     "scripts/build-historical-archive-2011-tohoku.ts",
+    "scripts/build-historical-archive-2016-kumamoto.ts",
+    "scripts/niiJmaXmlArchive.test.ts",
     "scripts/historicalEewParser.test.ts",
     "scripts/historicalEewArchiveBuilder.test.ts",
     "scripts/historicalTsunamiArchiveBuilder.test.ts"
