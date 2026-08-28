@@ -334,7 +334,9 @@ JMA 仕様上ここで配信される 556 は全て警報級であるため `con
 `KyoshinSource` を実装すれば下流は変更なしで載る。この形で実装済みなのが
 [`kyoshinLocalArchiveSource.ts`](../../src/services/kyoshinLocalArchiveSource.ts)（NIED K-NET/KiK-net
 実波形由来のローカル限定アーカイブ。再配布禁止のためアプリには同梱せず、実行者本人が
-`scripts/capture-kyoshin-waveform.ts` で生成した場合のみ再生できる。詳細は
+`scripts/capture-kyoshin-waveform.ts` で生成する、または設定タブでNIEDのZIPを直接インポート
+した場合のみ再生できる。後者はIndexedDB（[`kyoshinImportDb.ts`](../../src/utils/kyoshinImportDb.ts)）
+を先にチェックし、無ければ前者の静的ファイルへフォールバックする。詳細は
 [`settings-pwa-spec.md`](settings-pwa-spec.md) §6「NIED K-NET/KiK-netの実波形由来のデータ
 （ローカル限定・リアルタイム震度）」）。
 
@@ -891,3 +893,6 @@ EEW の予想震度は範囲（下限・上限）で配信され、**上限が�
   気象庁の年別 ZIP から M2.0 以上・2009〜2023 年を年ごとの JSON にする。**公開仕様の「96 Byte
   固定長」を鵜呑みにすると 1 バイトずつずれる**など読み取りに複数の罠があり、生成のたびに既知の
   地震と照合する仕組みを併せて入れた
+- 2026-08-29: `kyoshinLocalArchiveSource.ts`の供給元に、設定タブから直接取り込んだK-NET/KiK-net
+  ZIP（IndexedDB保存）を静的ファイルより優先する経路を追加した（§4）。詳細は
+  [`settings-pwa-spec.md`](settings-pwa-spec.md) §6「NIED K-NET/KiK-netの実波形由来のデータ」

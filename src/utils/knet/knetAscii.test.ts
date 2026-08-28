@@ -13,12 +13,13 @@ function buildKnetAsciiFixture(opts: {
   samplingLine?: string
   scaleFactorLine?: string
   recordTimeLine?: string
+  originTimeLine?: string
   memoLine?: string
   data?: number[]
 } = {}): string {
   const data = opts.data ?? [-30, -25, -34, -28, -32, -25, -33, -30, -35, -25]
   const lines = [
-    'Origin Time\t2018/09/06 03:07:59',
+    opts.originTimeLine ?? 'Origin Time\t2018/09/06 03:07:59',
     'Lat.\t42.686',
     'Long.\t142.001',
     'Depth. (km)\t37',
@@ -56,6 +57,8 @@ describe('parseKnetAsciiFile', () => {
     expect(file.scaleFactor).toEqual({ numerator: 2000, denominator: 8388608 })
     // 2018/09/06 03:08:04 JST = 2018/09/05 18:08:04 UTC
     expect(file.recordStartTime.toISOString()).toBe('2018-09-05T18:08:04.000Z')
+    // 2018/09/06 03:07:59 JST = 2018/09/05 18:07:59 UTC
+    expect(file.originTime.toISOString()).toBe('2018-09-05T18:07:59.000Z')
     expect(file.component).toBe('NS')
     expect(file.depthKind).toBe('surface')
     expect(file.rawCounts).toEqual([-30, -25, -34, -28, -32, -25, -33, -30, -35, -25])
@@ -95,6 +98,11 @@ describe('parseKnetAsciiFile', () => {
     expect(() => parseKnetAsciiFile(broken, 'HKD1270809060308.NS')).toThrow(/Station Code/)
   })
 
+  test('安全弁: Origin Time が無いとエラーになる（無警告で欠損値を採用しない）', () => {
+    const broken = buildKnetAsciiFixture({ originTimeLine: 'Unknown Field\t2018/09/06 03:07:59' })
+    expect(() => parseKnetAsciiFile(broken, 'HKD1270809060308.NS')).toThrow(/Origin Time/)
+  })
+
   test('データ行に数値でないトークンがあるとエラーになる', () => {
     const broken = buildKnetAsciiFixture().replace('-30 -25 -34 -28 -32 -25 -33 -30', 'BAD -25 -34 -28 -32 -25 -33 -30')
     expect(() => parseKnetAsciiFile(broken, 'HKD1270809060308.NS')).toThrow(/数値でないトークン/)
@@ -127,6 +135,7 @@ describe('countsToGal', () => {
       samplingHz: 100,
       scaleFactor: { numerator: 2000, denominator: 8388608 },
       recordStartTime: new Date('2018-09-05T18:08:04.000Z'),
+      originTime: new Date('2018-09-05T18:07:59.000Z'),
       component: 'NS',
       depthKind: 'surface',
       rawCounts: [8388608, -8388608, 0],
@@ -146,6 +155,7 @@ describe('groupIntoStations', () => {
     samplingHz: 100,
     scaleFactor: { numerator: 1, denominator: 1 },
     recordStartTime: new Date('2018-09-05T18:08:04.000Z'),
+    originTime: new Date('2018-09-05T18:07:59.000Z'),
     component,
     depthKind,
     rawCounts: [1, 2, 3],

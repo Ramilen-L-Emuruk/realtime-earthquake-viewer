@@ -26,6 +26,8 @@ export interface KnetAsciiFile {
   scaleFactor: { numerator: number; denominator: number }
   /** 記録開始時刻（UTC）。ヘッダーの `Record Time` はJSTのため変換済み。 */
   recordStartTime: Date
+  /** 地震の発生時刻（UTC）。ヘッダーの `Origin Time` はJSTのため変換済み。 */
+  originTime: Date
   component: KnetComponent
   depthKind: KnetDepthKind
   /** 生のカウント値（gal換算前）。 */
@@ -102,6 +104,7 @@ export function parseKnetAsciiFile(text: string, fileName: string): KnetAsciiFil
   let samplingHz: number | null = null
   let scaleFactor: { numerator: number; denominator: number } | null = null
   let recordStartTime: Date | null = null
+  let originTime: Date | null = null
 
   for (let i = 0; i < HEADER_LINE_COUNT; i++) {
     const line = lines[i]
@@ -113,7 +116,8 @@ export function parseKnetAsciiFile(text: string, fileName: string): KnetAsciiFil
     else if ((v = matchField(line, 'Sampling Freq(Hz)', 'Sampling Freq (Hz)')) !== null) samplingHz = parseSamplingHz(v, ctx)
     else if ((v = matchField(line, 'Scale Factor')) !== null) scaleFactor = parseScaleFactor(v, ctx)
     else if ((v = matchField(line, 'Record Time')) !== null) recordStartTime = parseJstDateTime(v, ctx)
-    // 他の行（Origin Time・Lat.・Long.・Depth.・Mag.・Station Height・Duration Time・Dir.・
+    else if ((v = matchField(line, 'Origin Time')) !== null) originTime = parseJstDateTime(v, ctx)
+    // 他の行（Lat.・Long.・Depth.・Mag.・Station Height・Duration Time・Dir.・
     // Max. Acc.・Last Correction・Memo.）はこの用途では使わないため素通しする。
   }
 
@@ -123,6 +127,7 @@ export function parseKnetAsciiFile(text: string, fileName: string): KnetAsciiFil
   if (samplingHz === null) throw new Error(`${fileName}: Sampling Freq(Hz) が見つかりません`)
   if (scaleFactor === null) throw new Error(`${fileName}: Scale Factor が見つかりません`)
   if (recordStartTime === null) throw new Error(`${fileName}: Record Time が見つかりません`)
+  if (originTime === null) throw new Error(`${fileName}: Origin Time が見つかりません`)
 
   const rawCounts: number[] = []
   for (let i = HEADER_LINE_COUNT; i < lines.length; i++) {
@@ -145,6 +150,7 @@ export function parseKnetAsciiFile(text: string, fileName: string): KnetAsciiFil
     samplingHz,
     scaleFactor,
     recordStartTime,
+    originTime,
     component,
     depthKind,
     rawCounts,
@@ -164,6 +170,7 @@ export interface KnetStation {
   longitude: number
   samplingHz: number
   recordStartTime: Date
+  originTime: Date
   /** gal換算済みの3成分波形（地表）。 */
   components: { NS: number[]; EW: number[]; UD: number[] }
 }
@@ -174,6 +181,10 @@ export interface KnetStation {
  * （体感・気象庁の震度観測に対応するのは地表のため）。
  * 3成分が揃わない観測点（記録の欠落・故障等でNIED側が非公開にしている等）は結果から除外し、
  * 除外件数を呼び出し側へ返す。
+ *
+ * `KnetStation.originTime`はNS成分のみを採用し、EW/UDとの一致は検証しない。呼び出し側
+ * （`buildEventResultFromZip`）が本関数を呼ぶ前に全ファイルのOrigin Time一致を検証している
+ * 前提に依存しているため、この前提を経由しない新しい呼び出し元を追加する場合は要注意。
  */
 export function groupIntoStations(files: KnetAsciiFile[]): { stations: KnetStation[]; skippedIncomplete: number } {
   const surface = files.filter((f) => f.depthKind === 'surface')
@@ -197,6 +208,7 @@ export function groupIntoStations(files: KnetAsciiFile[]): { stations: KnetStati
       longitude: entry.NS.longitude,
       samplingHz: entry.NS.samplingHz,
       recordStartTime: entry.NS.recordStartTime,
+      originTime: entry.NS.originTime,
       components: {
         NS: countsToGal(entry.NS),
         EW: countsToGal(entry.EW),

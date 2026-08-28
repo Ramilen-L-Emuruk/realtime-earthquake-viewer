@@ -1,8 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('../utils/logger', () => ({ log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
+// このファイルのテストは静的ファイル経路の挙動を検証する対象。IndexedDB経路（kyoshinImportDb.ts）は
+// 実際のindexedDBが無いNode環境で動かすとReferenceErrorになり無関係な警告が漏れるため、
+// 「インポート未実施（null）」に固定してモックする。IndexedDB優先化そのものの検証は下部の
+// describe('IndexedDBとの優先順位')で個別に行う。
+vi.mock('../utils/kyoshinImportDb', () => ({
+  getMergedKyoshinArchive: vi.fn().mockResolvedValue(null),
+  onImportsChanged: vi.fn(() => () => {}),
+}))
 
 import { log } from '../utils/logger'
+import { getMergedKyoshinArchive } from '../utils/kyoshinImportDb'
 import { createLocalKyoshinArchiveSource, clearLocalKyoshinArchiveCache } from './kyoshinLocalArchiveSource'
 import type { LocalKyoshinArchive } from '../types/localKyoshinArchive'
 
@@ -185,5 +194,52 @@ describe('createLocalKyoshinArchiveSource', () => {
     source2.start({ enqueue: enqueue2, setStalled: vi.fn() })
     await vi.waitFor(() => expect(enqueue2).toHaveBeenCalledTimes(2))
     expect(fetch).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('IndexedDBとの優先順位', () => {
+  beforeEach(() => {
+    clearLocalKyoshinArchiveCache()
+    vi.stubGlobal('fetch', vi.fn())
+    vi.mocked(getMergedKyoshinArchive).mockReset().mockResolvedValue(null)
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('正: IndexedDBにインポート済みデータがあれば、静的ファイルへは問い合わせず優先して使う', async () => {
+    vi.mocked(getMergedKyoshinArchive).mockResolvedValue(validArchive)
+    const source = createLocalKyoshinArchiveSource('2018-iburi')
+    const enqueue = vi.fn()
+    const setStalled = vi.fn()
+    source.start({ enqueue, setStalled })
+
+    await vi.waitFor(() => expect(enqueue).toHaveBeenCalledTimes(2))
+    expect(setStalled).toHaveBeenCalledWith(false)
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('対照: IndexedDBにインポート済みデータが無ければ（null）、従来通り静的ファイルへフォールバックする', async () => {
+    vi.mocked(getMergedKyoshinArchive).mockResolvedValue(null)
+    vi.mocked(fetch).mockResolvedValue(jsonResponse(200, validArchive))
+    const source = createLocalKyoshinArchiveSource('2018-iburi')
+    const enqueue = vi.fn()
+    source.start({ enqueue, setStalled: vi.fn() })
+
+    await vi.waitFor(() => expect(enqueue).toHaveBeenCalledTimes(2))
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('安全弁: IndexedDBの読み取りが例外を投げたら、静的ファイルへは進まず更新停止として可視化する', async () => {
+    // インポート済みデータが「有る可能性」を握りつぶして未生成扱いにすると、IndexedDBの障害と
+    // 地震活動なしを利用者が見分けられなくなる。
+    vi.mocked(getMergedKyoshinArchive).mockRejectedValue(new Error('IndexedDB error'))
+    const source = createLocalKyoshinArchiveSource('2018-iburi')
+    const setStalled = vi.fn()
+    source.start({ enqueue: vi.fn(), setStalled })
+
+    await vi.waitFor(() => expect(setStalled).toHaveBeenCalledWith(true))
+    expect(log.warn).toHaveBeenCalled()
+    expect(fetch).not.toHaveBeenCalled()
   })
 })

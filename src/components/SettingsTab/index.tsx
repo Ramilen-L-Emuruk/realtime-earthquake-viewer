@@ -1,4 +1,4 @@
-import { memo, useState, useCallback, useEffect } from 'react'
+import { memo, useState, useCallback, useEffect, useRef } from 'react'
 import type { AppSettings } from '../../hooks/useSettings'
 import type { ConnectionStatus } from '../../types/earthquake'
 import { getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
@@ -16,6 +16,7 @@ import { DescriptionTip } from './DescriptionTip'
 import { zipSync } from 'fflate'
 import { countRecords, listRecords, clearRecords, onRecordsChanged, hasStorageError } from '../../utils/detectionDiagnosticsDb'
 import { formatFileStamp } from '../../utils/formatters'
+import { useKyoshinImport } from '../../hooks/useKyoshinImport'
 
 export interface TestFunctions {
   earthquake: () => void
@@ -60,6 +61,12 @@ interface Props {
   historicalArchivesLoading?: boolean
   scenarioTest: UseTestScenariosResult
 }
+
+// historicalArchivesはoptionalなpropのため、未指定時に`?? []`をインライン展開すると毎レンダーで
+// 新しい配列インスタンスが生まれる。KyoshinImportRow内部のuseCallback/useEffectの依存配列に
+// そのまま渡ると、参照の不安定さが原因で不要な再フェッチ・エフェクト再実行を招くため、
+// モジュールレベルの安定した空配列を使い回す。
+const EMPTY_HISTORICAL_ARCHIVES: HistoricalArchiveIndex = []
 
 // ---- Reusable UI parts ----
 
@@ -156,6 +163,74 @@ function DiagnosticLogRow() {
         </button>
       </div>
       {error && <span className="text-xs text-red-400 text-right">{error}</span>}
+    </div>
+  )
+}
+
+/**
+ * NIEDから手動でダウンロードしたK-NET/KiK-net ZIPを取り込む。対応するアーカイブは
+ * ZIPヘッダーのOrigin Timeから自動検出するため、ファイルを選ぶだけでよい（useKyoshinImport参照）。
+ */
+function KyoshinImportRow({ historicalArchives }: { historicalArchives: HistoricalArchiveIndex }) {
+  const { summaries, importing, deletingArchiveId, errors, deleteError, storageError, importFiles, deleteArchive } = useKyoshinImport(historicalArchives)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const busy = importing || deletingArchiveId !== null
+
+  const handleFiles = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (files && files.length > 0) void importFiles(files)
+    // 同じファイルを選び直しても onChange が発火するようにする（selectしたまま失敗を直して
+    // 再選択するケースがあるため）。
+    e.target.value = ''
+  }, [importFiles])
+
+  return (
+    <div className="flex flex-col items-end gap-2">
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".zip"
+        multiple
+        onChange={handleFiles}
+        disabled={busy}
+        className="hidden"
+      />
+      <button
+        onClick={() => inputRef.current?.click()}
+        disabled={busy}
+        className="px-3 py-1.5 rounded text-xs bg-panel border border-border text-white disabled:opacity-40"
+      >
+        {importing ? '取り込み中...' : 'ZIPを選択'}
+      </button>
+      {summaries.length > 0 && (
+        <div className="flex flex-col gap-1.5 items-end">
+          {summaries.map((s) => (
+            <div key={s.archiveId} className="flex items-center gap-2">
+              <span className="text-xs text-secondary whitespace-nowrap">{s.label}: {s.eventCount}件</span>
+              <button
+                onClick={() => { void deleteArchive(s.archiveId) }}
+                disabled={busy}
+                className="px-2 py-1 rounded text-xs bg-panel border border-border text-secondary disabled:opacity-40"
+              >
+                {deletingArchiveId === s.archiveId ? '削除中...' : '削除'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {storageError && (
+        <span className="text-xs text-red-400 text-right">
+          この端末では保存済みデータを読み込めません（一部のインポート済みアーカイブが一覧に出ていない可能性があります）
+        </span>
+      )}
+      {deleteError && <span className="text-xs text-red-400 text-right">{deleteError}</span>}
+      {errors.length > 0 && (
+        <div className="flex flex-col gap-0.5 items-end">
+          {errors.map((e, i) => (
+            <span key={`${i}-${e.fileName}`} className="text-xs text-red-400 text-right break-all">{e.fileName}: {e.message}</span>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -1247,6 +1322,16 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             </div>
           </Row>
         )}
+      </Section>
+
+      <Section title="K-NETデータのインポート（ローカル限定）">
+        <Row
+          label="K-NET/KiK-net ZIPの取り込み"
+          description="防災科研（NIED）から自分でダウンロードしたK-NET/KiK-netのZIPファイルを選択すると、地震の発生時刻から対応するアーカイブが自動検出され、そのリアルタイム震度リプレイに反映されます。複数のZIPファイルをまとめて選択すると、1つの地震活動として統合されます。データは端末内にのみ保存され、外部へは送信されません。"
+          hint="対応する収録済みアーカイブ（上の「収録済み履歴アーカイブ」欄）が無い地震は取り込めません"
+        >
+          <KyoshinImportRow historicalArchives={historicalArchives ?? EMPTY_HISTORICAL_ARCHIVES} />
+        </Row>
       </Section>
 
       <Section title="診断ログ">
