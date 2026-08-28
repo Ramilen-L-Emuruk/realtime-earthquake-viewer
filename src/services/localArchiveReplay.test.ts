@@ -22,6 +22,7 @@ const meta: HistoricalArchiveMeta = {
   description: 'test',
   from: '2011-03-11T05:45:00Z',
   to: '2011-03-11T06:00:00Z',
+  firstEventTime: '2011-03-11T05:46:00Z',
 }
 
 // スキーマ検証（historicalArchiveSchema.ts）を通す最小限の妥当な event。

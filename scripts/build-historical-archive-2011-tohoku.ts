@@ -171,12 +171,15 @@ async function main() {
     console.log(`    ${e.time}: 高さ確定 ${withHeight}/${event.areas.length} 地域`)
   }
 
+  if (allEntries.length === 0) throw new Error('entriesが1件もありません（firstEventTimeを決定できません）')
+
   const out: HistoricalArchiveFile = {
     id: existing.id,
     label: existing.label,
     description: existing.description,
     from: existing.from,
     to: existing.to,
+    firstEventTime: allEntries[0].time,
     entries: allEntries,
   }
 

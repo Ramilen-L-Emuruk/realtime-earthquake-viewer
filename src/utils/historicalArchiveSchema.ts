@@ -27,6 +27,9 @@ function isArchiveMeta(v: unknown): v is HistoricalArchiveMeta {
   if (typeof v.description !== 'string') return false
   if (!isValidIso(v.from) || !isValidIso(v.to)) return false
   if (new Date(v.from).getTime() >= new Date(v.to).getTime()) return false
+  if (!isValidIso(v.firstEventTime)) return false
+  const firstEventMs = new Date(v.firstEventTime).getTime()
+  if (firstEventMs < new Date(v.from).getTime() || firstEventMs > new Date(v.to).getTime()) return false
   return true
 }
 
@@ -125,6 +128,7 @@ export function validateHistoricalArchiveFile(v: unknown): { file: HistoricalArc
       description: v.description as string,
       from: v.from as string,
       to: v.to as string,
+      firstEventTime: v.firstEventTime as string,
       entries,
     },
     skipped,

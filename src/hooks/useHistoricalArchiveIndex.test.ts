@@ -31,7 +31,7 @@ describe('useHistoricalArchiveIndex', () => {
 
   it('読み込み完了後は isLoading=false・取得した一覧を返す', async () => {
     const archives: HistoricalArchiveIndex = [
-      { id: '2011-tohoku', label: '2011年東北地方太平洋沖地震', description: 'test', from: '2011-03-11T05:45:00Z', to: '2011-03-11T06:00:00Z' },
+      { id: '2011-tohoku', label: '2011年東北地方太平洋沖地震', description: 'test', from: '2011-03-11T05:45:00Z', to: '2011-03-11T06:00:00Z', firstEventTime: '2011-03-11T05:46:00Z' },
     ]
     mockList.mockResolvedValue(archives)
 

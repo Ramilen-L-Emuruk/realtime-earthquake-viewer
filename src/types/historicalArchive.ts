@@ -9,6 +9,7 @@ export interface HistoricalArchiveMeta {
   description: string  // 概要（震源要素・被害規模・出典等）
   from: string          // 収録範囲の開始（ISO、この時刻以降を対象時刻にできる）
   to: string            // 収録範囲の終了（ISO）
+  firstEventTime: string // 収録している最初の報の時刻（ISO）。「再生」ボタン（1分前から開始）の起点
 }
 
 export interface HistoricalArchiveEntry {
