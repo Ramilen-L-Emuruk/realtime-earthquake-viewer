@@ -166,6 +166,17 @@ describe('parseEarthquakeFromXml: 震源・震度に関する情報（VXSE53）'
     const broken = VXSE53_XML.replace('+39.9+142.2-50000/', '')
     expect(parseEarthquakeFromXml('VXSE53', broken)).toBeNull()
   })
+
+  // 自由付加文は遠地地震専用ではない。国内地震にも付く
+  // （実例: 2026-06-08 フィリピン付近 M8.2 に伴う津波注意報の発表中に起きた国内地震）
+  it('国内地震の電文でも自由付加文を freeText に持つ', () => {
+    const free = 'なお、茨城県から沖縄県地方にかけての太平洋側を中心に津波注意報を発表中です。'
+    const xml = VXSE53_XML.replace('</Body>', `  <Comments>
+      <FreeFormComment>${free}</FreeFormComment>
+    </Comments>
+  </Body>`)
+    expect(parseEarthquakeFromXml('VXSE53', xml)!.freeText).toBe(free)
+  })
 })
 
 // JSON 経路（parseEarthquake）: infoType の訂正フラグが握り潰されないことを確認する。
@@ -350,6 +361,122 @@ describe('遠地地震に関する情報（VXSE53・Head/Title で識別）', ()
   it('付加文が無い電文では forecastText を undefined にする', () => {
     const noComments = { ...FOREIGN_JSON, body: { ...FOREIGN_JSON.body, comments: {} } }
     expect(parseEarthquake('VXSE53', noComments)!.forecastText).toBeUndefined()
+  })
+
+  // 自由付加文（Comments/FreeFormComment）。固定付加文が津波区分ごとの定型文であるのに対し、
+  // こちらは電文ごとに書き起こされる本文で、**続報での更新はこちらにしか現れないことがある**。
+  // 実例: 2026-08-25 のアンバエ火山噴火に伴う遠地地震情報は全 4 報で震源要素も固定付加文も
+  // 同一で、潮位変化の観測状況と次報の予定時刻だけが自由付加文で更新された。
+  describe('自由付加文（FreeFormComment）', () => {
+    const withFree = (free: string) => ({
+      ...FOREIGN_JSON,
+      body: { ...FOREIGN_JSON.body, comments: { ...FOREIGN_JSON.body.comments, free } },
+    })
+    const xmlWithFree = (free: string) =>
+      FOREIGN_XML.replace('</ForecastComment>', `</ForecastComment>
+      <FreeFormComment>${free}</FreeFormComment>`)
+
+    it('改行を保ったまま freeText に持つ（JSON・XML 両経路）', () => {
+      const free = `現在、海外および国内の観測点で有意な潮位変化は観測されていません。
+次の遠地地震に関する情報は、２６日０２時３０分頃に発表の予定です。`
+      expect(parseEarthquake('VXSE53', withFree(free))!.freeText).toBe(free)
+      expect(parseEarthquakeFromXml('VXSE53', xmlWithFree(free))!.freeText).toBe(free)
+    })
+
+    // 実例: 2026-06-08 フィリピン付近 M8.2 の第 2 報以降は、検潮所ごとの最大波の高さが
+    // 全角スペース整形の表で入る。1 行へ潰すと列が崩れるため forecastText のような整形はしない
+    it('全角スペースで整形された表を崩さない', () => {
+      const table = `国・地域名　　　検潮所名　　　これまでの最大波の高さ
+フィリピン　　　ダバオ　　　　０．４６ｍ`
+      expect(parseEarthquake('VXSE53', withFree(table))!.freeText).toBe(table)
+      expect(parseEarthquakeFromXml('VXSE53', xmlWithFree(table))!.freeText).toBe(table)
+    })
+
+    // 対照: 大半の遠地地震は自由付加文を持たない（4 か月 6 事象のうち 2 事象は空）
+    it('自由付加文が無ければ freeText は undefined', () => {
+      expect(parseEarthquake('VXSE53', FOREIGN_JSON)!.freeText).toBeUndefined()
+      expect(parseEarthquakeFromXml('VXSE53', FOREIGN_XML)!.freeText).toBeUndefined()
+    })
+  })
+
+  // 火山の大規模噴火に伴う遠地地震情報で使われるコード。対応表から漏らすと津波区分が
+  // '不明' へ落ち、調査中であることがカードにも読み上げにも出ない（灰色の「不明」になる）
+  it('付加文 0229（日本への津波の有無は調査中）を 調査中 として扱う', () => {
+    const json = {
+      ...FOREIGN_JSON,
+      body: {
+        ...FOREIGN_JSON.body,
+        comments: { forecast: { text: '日本への津波の有無については現在調査中です。', codes: ['0229'] } },
+      },
+    }
+    expect(parseEarthquake('VXSE53', json)!.earthquake.domesticTsunami).toBe('調査中')
+
+    const xml = FOREIGN_XML.replace('<Code>0226 0230</Code>', '<Code>0229</Code>')
+    expect(parseEarthquakeFromXml('VXSE53', xml)!.earthquake.domesticTsunami).toBe('調査中')
+  })
+
+  // 安全弁: 0228 は「一般的に、この規模の地震が海域の浅い領域で発生すると…」という一般論で、
+  // 日本国内への影響区分ではない。区分に写さないのは 022x 系と同じだが、既知として扱わないと
+  // 単独で届いたときに「導出できません」の警告が出る（正常系で鳴らすと警告の価値が下がる）
+  it('付加文 0228 単独は区分に写さないが警告も出さない', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const json = {
+        ...FOREIGN_JSON,
+        body: {
+          ...FOREIGN_JSON.body,
+          comments: {
+            forecast: {
+              text: '一般的に、この規模の地震が海域の浅い領域で発生すると、津波が発生することがあります。',
+              codes: ['0228'],
+            },
+          },
+        },
+      }
+      expect(parseEarthquake('VXSE53', json)!.earthquake.domesticTsunami).toBe('不明')
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 安全弁: 既知のコードと未知のコードが同居しても、未知の側を取りこぼさない。
+  // 「1 つでも既知なら黙る」判定にすると、022x 系が頻出する遠地地震で構造の変化を丸ごと見逃す
+  it('既知の 0228 と未知のコードが同居したら未知の側だけを警告する', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const json = {
+        ...FOREIGN_JSON,
+        body: {
+          ...FOREIGN_JSON.body,
+          comments: { forecast: { text: '一般的に、この規模の地震が…。', codes: ['0228', '9999'] } },
+        },
+      }
+      expect(parseEarthquake('VXSE53', json)!.earthquake.domesticTsunami).toBe('不明')
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('9999'))
+      // 既知のコードは警告文に載せない（読む側が未知のコードだけを見て判断できるように）
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('0228'))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 対照: 本当に知らないコードだけが届いたときは従来どおり警告を出す（電文構造の変化を検知する）
+  it('未知の付加文コードだけなら警告を出す', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const json = {
+        ...FOREIGN_JSON,
+        body: {
+          ...FOREIGN_JSON.body,
+          comments: { forecast: { text: '将来足されるかもしれない付加文。', codes: ['9999'] } },
+        },
+      }
+      expect(parseEarthquake('VXSE53', json)!.earthquake.domesticTsunami).toBe('不明')
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('導出できません'))
+    } finally {
+      warn.mockRestore()
+    }
   })
 })
 

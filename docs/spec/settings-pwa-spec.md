@@ -623,7 +623,7 @@ DMDSS 版は DMDATA の WebSocket、standard 版は P2PQuake の WebSocket が�
 | EEW 深発地震テスト | `createTestEEWDeep()` | なし | 震度予想なし・予報（深発地震・深さ 450km。小笠原諸島西方沖 M6.5）。区域なし。「深発地震のため、予想震度なし。」を待たずに読む経路を確かめる。続報も予報級のまま（理由は後述「実電文の形に合わせる」） |
 | EEW 誤報取消テスト | `createTestEEWWarning()` + `EEW_RETRACTION_CANCEL_MS`(10s) 後に取消 | 50→取消 | 10 秒後に `cancelled:true` 電文で `eewCancel` 音・通知・読み上げを検証 |
 | 地震テスト | `createTestEarthquake(useDmdataShape)` | - | 令和 6 年能登半島地震の実データベース（`src/data/noto-honshin-2024-*.json`）を採用。`points` の形と情報種別はバリアントで切り替える（後述「実電文の形に合わせる」） |
-| 遠地地震テスト | `createTestForeignQuake(includeForecastText)` | - | メキシコ・チアパス州沿岸 M7.4（2026-07-17）の実電文ベース。深さ不明・付加文 `0226`＋`0230` の報を採り、「深さ句の省略」「付加文原文の読み上げ」「`0230` 由来の津波区分（`domesticTsunami: 'なし'`）」を一度に確認できる。付加文は DMDATA 経由でのみ配信されるため、呼び出し側は `isDmdss` を渡して DMDSS 版でのみ `forecastText` を注入する |
+| 遠地地震テスト | `createTestForeignQuake(includeComments)` | - | メキシコ・チアパス州沿岸 M7.4（2026-07-17）の実電文ベース。深さ不明・固定付加文 `0226`＋`0230` の報を採り、「深さ句の省略」「付加文原文の読み上げ」「`0230` 由来の津波区分（`domesticTsunami: 'なし'`）」「自由付加文のカード表示」を一度に確認できる。自由付加文もこの報の実電文どおり（「ＰＴＷＣでは…」の 1 行）。**本文中の日時は実電文のまま**なので、発表時刻を「今」へずらす都合で表示時刻とは食い違う（実電文の形を保つ方を採っている）。付加文は固定・自由とも DMDATA 経由でのみ配信されるため、呼び出し側は `isDmdss` を渡して DMDSS 版でのみ注入する |
 | 大津波警報テスト | `createTestTsunami(withDmdssFields)` | - | 大津波警報（MajorWarning） |
 | 津波警報テスト | `createTestTsunamiWarning(withDmdssFields)` | - | 津波警報 |
 | 津波注意報テスト | `createTestTsunamiWatch(withDmdssFields)` | - | 津波注意報 |
