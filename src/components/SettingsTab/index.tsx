@@ -220,7 +220,7 @@ function KyoshinImportRow({ historicalArchives }: { historicalArchives: Historic
       )}
       {storageError && (
         <span className="text-xs text-red-400 text-right">
-          この端末では保存済みデータを読み込めません（一部のインポート済みアーカイブが一覧に出ていない可能性があります）
+          読み込み済みのデータをうまく読み出せていません（一覧に出ていない地震があるかもしれません）
         </span>
       )}
       {deleteError && <span className="text-xs text-red-400 text-right">{deleteError}</span>}
@@ -1261,10 +1261,16 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
 
       <Section title="テスト時刻設定">
         <div className="px-4 py-2 bg-blue-900/30 border-b border-blue-700/40">
-          <p className="text-blue-300 text-xs">指定した時刻の当時のデータ（リアルタイム震度・地震情報・津波）を再生します。2020年以降を指定できます。下記の期間（のみ）はローカル収録データにより再生できます。</p>
+          <p className="text-blue-300 text-xs">
+            指定した日時の地震情報・津波を再生します（{isDmdss ? '2020年4月' : '2015年'}以降）。
+            リアルタイム震度は直近の期間と、下記の地震でのみ再生できます。
+          </p>
         </div>
         {historicalArchives != null && historicalArchives.length > 0 && (
-          <Row label="収録済み履歴アーカイブ">
+          <Row
+            label="収録済みの地震"
+            description="ここから再生すると地震情報・津波は再現されますが、リアルタイム震度は含まれません。必要な場合は下記の「K-NETデータの取り込み」から読み込んでください。"
+          >
             <div className="flex flex-col gap-1.5 items-end">
               {historicalArchives.map(a => (
                 <div key={a.id} className="flex items-center gap-2">
@@ -1324,11 +1330,11 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         )}
       </Section>
 
-      <Section title="K-NETデータのインポート（ローカル限定）">
+      <Section title="K-NETデータの取り込み">
         <Row
-          label="K-NET/KiK-net ZIPの取り込み"
-          description="防災科研（NIED）から自分でダウンロードしたK-NET/KiK-netのZIPファイルを選択すると、地震の発生時刻から対応するアーカイブが自動検出され、そのリアルタイム震度リプレイに反映されます。複数のZIPファイルをまとめて選択すると、1つの地震活動として統合されます。データは端末内にのみ保存され、外部へは送信されません。"
-          hint="対応する収録済みアーカイブ（上の「収録済み履歴アーカイブ」欄）が無い地震は取り込めません"
+          label="地震波形データを読み込む"
+          description="防災科研（NIED）のサイトからダウンロードしたK-NET/KiK-netの地震波形ファイル（ZIP）を選ぶと、その地震の揺れを「リアルタイム震度」タブで再生できるようになります。複数のファイルをまとめて選ぶと、1つの地震としてまとめて読み込まれます。データはこの端末だけに保存され、外部には送信されません。"
+          hint="上の地震一覧にある地震のみ読み込めます"
         >
           <KyoshinImportRow historicalArchives={historicalArchives ?? EMPTY_HISTORICAL_ARCHIVES} />
         </Row>

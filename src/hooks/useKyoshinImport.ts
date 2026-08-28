@@ -1,4 +1,4 @@
-// 設定タブ「K-NETデータのインポート」用フック。NIEDから利用者が手動でダウンロードした
+// 設定タブ「K-NETデータの取り込み」用フック。NIEDから利用者が手動でダウンロードした
 // K-NET/KiK-netの生ZIPを受け取り、震度時系列を算出してIndexedDBへ保存する。
 // 対応する収録済みアーカイブ（HistoricalArchiveMeta）は、ZIPヘッダーのOrigin Timeから自動検出する。
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -82,7 +82,7 @@ export function useKyoshinImport(historicalArchives: HistoricalArchiveIndex): Us
           const originTime = parseJstTimestamp(event.originTimeJst)
           const meta = findCoveringArchiveSync(historicalArchives, originTime, new Date(originTime.getTime() + 1))
           if (!meta) {
-            throw new Error(`この地震（${originTime.toLocaleString('ja-JP')}）に対応する収録済みアーカイブが見つかりません`)
+            throw new Error(`この地震（${originTime.toLocaleString('ja-JP')}）に対応するデータが見つかりません`)
           }
           if (!(await saveImportedEvent(meta.id, event))) {
             throw new Error('保存に失敗しました（この端末では保存機能が使えない可能性があります）')
