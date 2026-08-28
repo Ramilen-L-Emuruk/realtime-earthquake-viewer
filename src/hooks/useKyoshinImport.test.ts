@@ -80,7 +80,7 @@ describe('useKyoshinImport', () => {
 
     expect(result.current.errors).toHaveLength(1)
     expect(result.current.errors[0].fileName).toBe('unknown.zip')
-    expect(result.current.errors[0].message).toMatch(/対応する収録済みアーカイブ/)
+    expect(result.current.errors[0].message).toMatch(/対応するデータが見つかりません/)
     expect(mockSave).not.toHaveBeenCalled()
   })
 
