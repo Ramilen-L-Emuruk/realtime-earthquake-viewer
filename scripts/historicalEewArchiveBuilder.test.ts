@@ -108,6 +108,42 @@ describe('buildEewEntries の isFinal 判定', () => {
   })
 })
 
+describe('buildEewEntries の forecastCell「震度予想なし」表記ゆれ', () => {
+  it('正: em dash「—」の行はスキップされる（イベント自体は生成される）', () => {
+    const parsed: ParsedEewPage = {
+      hypocenter: hypo('長野県北部', 37.0, 138.6),
+      hypocenterCandidates: [hypo('長野県北部', 37.0, 138.6)],
+      reports: [report({ reportNum: 1, forecastCell: '—' }), report({ reportNum: 2, forecastCell: '※1' })],
+      footnotes,
+    }
+    const entries = buildEewEntries(parsed, { idPrefix: 'test' })
+    expect(entries).toHaveLength(1)
+    expect((entries[0].payload as { event: { issue: { serial: string } } }).event.issue.serial).toBe('2')
+  })
+
+  it('対照（バグ回帰）: 「予測震度なし」の行もスキップされる（2018年北海道胆振東部地震の実ページで確認済み）', () => {
+    const parsed: ParsedEewPage = {
+      hypocenter: hypo('胆振地方中東部', 42.7, 142.0),
+      hypocenterCandidates: [hypo('胆振地方中東部', 42.7, 142.0)],
+      reports: [report({ reportNum: 1, forecastCell: '予測震度なし' }), report({ reportNum: 2, forecastCell: '※1' })],
+      footnotes,
+    }
+    const entries = buildEewEntries(parsed, { idPrefix: 'test' })
+    expect(entries).toHaveLength(1)
+    expect((entries[0].payload as { event: { issue: { serial: string } } }).event.issue.serial).toBe('2')
+  })
+
+  it('安全弁: 未知の表記は黙ってスキップせず例外にする', () => {
+    const parsed: ParsedEewPage = {
+      hypocenter: hypo('長野県北部', 37.0, 138.6),
+      hypocenterCandidates: [hypo('長野県北部', 37.0, 138.6)],
+      reports: [report({ reportNum: 1, forecastCell: '謎の表記' })],
+      footnotes,
+    }
+    expect(() => buildEewEntries(parsed, { idPrefix: 'test' })).toThrow(/未知の予測震度セル/)
+  })
+})
+
 describe('buildEewEntries の震央地名解決', () => {
   it('報ごとの座標に最も近い震源候補の名前を使う（1行目を無条件採用しない）', () => {
     const parsed: ParsedEewPage = {
