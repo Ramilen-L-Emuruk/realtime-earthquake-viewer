@@ -325,13 +325,18 @@ JMA 仕様上ここで配信される 556 は全て警報級であるため `con
 
 | 段 | 実装 | 役割 |
 |---|---|---|
-| 供給元 | [`src/services/kyoshinSource.ts`](../../src/services/kyoshinSource.ts) | どこからデータを持ってくるか。Yahoo のライブ／過去リプレイの 2 実装。リトライ・スケジューリングと、クロック同期の起動／停止（ライブ限定）もここ |
+| 供給元 | [`src/services/kyoshinSource.ts`](../../src/services/kyoshinSource.ts)・[`src/services/kyoshinLocalArchiveSource.ts`](../../src/services/kyoshinLocalArchiveSource.ts) | どこからデータを持ってくるか。Yahoo のライブ／過去リプレイ／ローカル限定アーカイブ（後述）の 3 実装。リトライ・スケジューリングと、クロック同期の起動／停止（ライブ限定）もここ |
 | キュー | [`src/utils/kyoshinFrameQueue.ts`](../../src/utils/kyoshinFrameQueue.ts) | フレームをデータ時刻順に並べ、アプリ時計が追いついた時点で放出する |
 | 反映 | [`src/hooks/useKyoshinRealtime.ts`](../../src/hooks/useKyoshinRealtime.ts) | 放出されたフレームを画面の状態へ入れる。観測点リストの追随取得と hypoInfo 差分もここ |
 
 分離の目的は取得ペースと表示ペースを切り離すこと。Yahoo は 1 秒 1 リクエストなので両者が一致するが、
-「フレーム列が一度にまとまって手に入る」供給元（防災科研 K-NET のアーカイブ等）を足す場合は、
-まとめて投入して時刻に沿って流す必要がある。`KyoshinSource` を実装すれば下流は変更なしで載る。
+「フレーム列が一度にまとまって手に入る」供給元は、まとめて投入して時刻に沿って流す必要がある。
+`KyoshinSource` を実装すれば下流は変更なしで載る。この形で実装済みなのが
+[`kyoshinLocalArchiveSource.ts`](../../src/services/kyoshinLocalArchiveSource.ts)（NIED K-NET/KiK-net
+実波形由来のローカル限定アーカイブ。再配布禁止のためアプリには同梱せず、実行者本人が
+`scripts/capture-kyoshin-waveform.ts` で生成した場合のみ再生できる。詳細は
+[`settings-pwa-spec.md`](settings-pwa-spec.md) §6「NIED K-NET/KiK-netの実波形由来のデータ
+（ローカル限定・リアルタイム震度）」）。
 
 放出は**到来した最新 1 件のみ**を採り、間は捨てて `log.warn` に残す（1Hz の観測フレームは最新の状態だけが
 意味を持つため。到来分を全件処理する電文側のキューとは意味論が逆）。反映は**データ時刻の順に限る**

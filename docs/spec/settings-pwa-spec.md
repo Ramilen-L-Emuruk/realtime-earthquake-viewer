@@ -494,9 +494,56 @@ EEW（緊急地震速報）と津波警報・注意報は、気象庁が公開�
     前提が成り立つが、胆振東部のように間の期間を意図的に取得していないアーカイブでは
     成り立たない。設定タブの「開始時刻」に本震〜最後の余震の間（例: 2018年11月）を手動で
     入力すると、本来は「収録データが無く取得を試みるべき期間」を、黙って「地震活動なし」の
-    空成功として返してしまう。「1分前から再生」ボタン（`firstEventTime`基準）を使う分には
-    影響しない。現状はこの矛盾を解消する仕組みを持たない（`HistoricalArchiveMeta`に実収録日
-    を持たせる等の対応が必要）
+    空成功として返してしまう。「再生」ボタン（`firstEventTime`の1分前を起点とする。上記参照）
+    を使う分には影響しない。現状はこの矛盾を解消する仕組みを持たない（`HistoricalArchiveMeta`
+    に実収録日を持たせる等の対応が必要）
+
+**NIED K-NET/KiK-netの実波形由来のデータ（ローカル限定・リアルタイム震度）**
+
+上記2系統（気象庁発表状況ページ・NII実電文アーカイブ）はEEW・地震情報・津波のみで、
+「リアルタイム震度」タブが表示するリアルタイム震度（強震モニタ）は含まれない。これは
+別のデータ系統（[`data-sources-spec.md`](data-sources-spec.md) §4）で、Yahooのライブ配信は
+直近分しか遡れず、過去の地震では再現できない（リプレイしてもリアルタイム震度タブが
+空のままになる）。
+
+気象庁・防災科研とも、強震観測データの再配布は利用規約で禁止されている
+（気象庁 https://www.data.jma.go.jp/eqev/data/kyoshin/jishin/index.html の
+「掲載しているデータを第三者へ提供することは禁止いたします」、NIED K-NET/KiK-netの登録時
+規約も同様）。そのためこの系統だけは、他の2系統と違い**アプリに同梱しない**。
+[`scripts/capture-kyoshin-waveform.ts`](../../scripts/capture-kyoshin-waveform.ts)が
+実行者本人のNIED登録（https://hinetwww11.bosai.go.jp/nied/registration/ ）でK-NET/KiK-netの
+実波形をダウンロードし、実行したローカル環境限定でのみ再生できるファイルを生成する。
+出力先 `public/data/historical-archives-kyoshin/*.json` は `.gitignore` 対象で、
+このリポジトリには一切含まれない。
+
+- **取得**: `https://www.kyoshin.bosai.go.jp/kyoshin/download/all/zip/{yyyy}/{mm}/{地震発生時刻
+  (JST) YYYYMMDDHHMMSS}_ascii.zip` をBasic認証（`NIED_KNET_USER`/`NIED_KNET_PASSWORD`、
+  `.env.local`に置く。`DMDATA_API_KEY`と同じ運用）で取得する。K-NET+KiK-netの全観測点分が
+  1つのZIPにまとまっており、ヘッダーに観測点の緯度経度が入っているため別途座標表は不要
+- **解析**: [`knetAscii.ts`](../../scripts/knetAscii.ts)がK-NET ASCII形式（17行のヘッダー＋
+  1行8列の整数データ）をパースする。ヘッダーのキー表記（"Long."か"Lon."か等）は公式資料の
+  版で揺れがあり、かつ本実装は実際のダウンロードファイルに対する動作を未検証（NIED登録は
+  実行者個人の認証情報であり、開発・CI環境からは検証できない）。表記ゆれはキーの部分一致で
+  吸収する設計にしてあるが、実行して未知のエラーが出た場合はメッセージを元にこのファイルの
+  判定条件を直すこと
+- **震度算出**: [`seismicIntensity.ts`](../../scripts/seismicIntensity.ts)が気象庁の計測震度
+  算出式（平成8年気象庁告示第4号。周期補正フィルター→3成分ベクトル合成→0.3秒基準）を実装し、
+  スライディングウィンドウ（既定20秒・1秒刻み）で時系列化する。**これは近似であり、本物の
+  強震モニタの記録ではない**: 公式の計測震度計はIIRフィルタによる真の連続処理だが、ここでは
+  オフラインバッチ処理のため毎回FFT→フィルター→逆FFTをやり直す方式で代用している。フィルター
+  式自体は手計算した値との照合テストで検証済み（`seismicIntensity.test.ts`）
+- **出力形式**: [`localKyoshinArchive.ts`](../../src/types/localKyoshinArchive.ts)の
+  `LocalKyoshinArchive`（観測点座標・秒単位のフレーム列）。フレームの震度インデックスは
+  Yahoo側と同じ0〜20の規約（`kyoshinValueToIndex`、`src/utils/kyoshinIntensity.ts`）
+- **消費側**: [`kyoshinLocalArchiveSource.ts`](../../src/services/kyoshinLocalArchiveSource.ts)
+  が`KyoshinSource`として全フレームを一括投入する（時刻ペースはリプレイ時計
+  `serverDate()`が担うため、供給元側でのポーリングは不要）。`useKyoshinRealtime`の
+  `localArchiveId`にカバーする`HistoricalArchiveMeta.id`を渡すとYahooの2ソースより優先される。
+  ファイルが存在しない場合（通常の配信環境では常にこちら）は静かに何も供給しない
+  - **viteの開発サーバーは静的ファイルが無いGETをSPAフォールバック（200・text/html）で
+    返す**ため、404で判定すると開発時に常にJSON解析エラーの警告が出てしまう（実機確認で
+    発覚）。レスポンスの`Content-Type`が`application/json`でなければ「未生成」と同じ扱いに
+    することで回避している（本番の静的配信では同じ状況は素直に404になる）
 
 再生中はライブ接続を止める（両バリアント）。現在時刻の更新が混ざると、再生時刻より未来の
 地震がカードに並んでしまうため。「リセット」を押すと表示を消してライブへ戻る。
@@ -900,6 +947,14 @@ Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認した�
 - `scripts/build-historical-archive-2016-tottori.ts` — 2016年鳥取県中部地震アーカイブの生成 CLI
 - `scripts/build-historical-archive-2018-osaka.ts` — 2018年大阪府北部地震アーカイブの生成 CLI
 - `scripts/build-historical-archive-2018-iburi.ts` — 2018年北海道胆振東部地震アーカイブの生成 CLI
+- `scripts/capture-kyoshin-waveform.ts` — NIED K-NET/KiK-net実波形からローカル限定の強震モニタ風
+  リプレイデータを生成するCLI（出力は`.gitignore`対象、リポジトリに含まない）
+- `scripts/knetAscii.ts` — K-NET/KiK-net ASCII形式波形ファイルのパーサー
+- `scripts/seismicIntensity.ts` — 気象庁の計測震度算出アルゴリズムの実装（FFTベースの周期補正
+  フィルター・スライディングウィンドウ）
+- `src/types/localKyoshinArchive.ts` — ローカル限定強震モニタ風リプレイデータの型
+- `src/services/kyoshinLocalArchiveSource.ts` — 同データを読み込みフレーム供給する`KyoshinSource`
+- `src/utils/kyoshinIntensity.ts` — `kyoshinValueToIndex`（計測震度 → リアルタイム震度インデックス）
 - `src/types/testScenario.ts` — シナリオデータ型
 - `scripts/capture-test-scenario.ts` — シナリオキャプチャ CLI
 - `src/utils/detectionDiagnostics.ts` — 診断ログの切り出し（→ §12）
@@ -1056,3 +1111,8 @@ Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認した�
   過大な初期推定のせいで、気象庁がまだ「予報」として扱っていた回を「警報」と誤判定する
   事故があった（気象庁ページが公式に警報化した回にだけ付ける`eew_public_warning_row`を
   読み取るよう修正）
+- 2026-08-28: ローカル履歴アーカイブのリプレイで「リアルタイム震度」タブが常に空になる問題への
+  対応として、§6に「NIED K-NET/KiK-netの実波形由来のデータ（ローカル限定・リアルタイム震度）」を
+  追加した。気象庁・NIEDとも強震観測データの再配布を規約で禁止しているため、他の2系統と異なり
+  アプリには同梱せず、実行者本人のNIED登録でローカル生成・再生する方式にした
+  （`scripts/capture-kyoshin-waveform.ts`）
