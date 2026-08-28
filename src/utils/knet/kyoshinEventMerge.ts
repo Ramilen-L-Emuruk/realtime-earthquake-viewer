@@ -2,8 +2,8 @@
 // アーカイブへ統合するロジック。capture-kyoshin-waveform.ts から呼ばれる（ネットワーク・ファイル
 // I/Oを含まない純粋な変換部分だけをここに切り出し、単体テストできるようにしている）。
 
-import { kyoshinValueToIndex } from '../src/utils/kyoshinIntensity'
-import type { LocalKyoshinFrame } from '../src/types/localKyoshinArchive'
+import { kyoshinValueToIndex } from '../kyoshinIntensity'
+import type { LocalKyoshinFrame } from '../../types/localKyoshinArchive'
 
 /** 観測点1件・絶対時刻付きの計測震度時系列。 */
 export interface StationSeries {

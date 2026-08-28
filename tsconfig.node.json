@@ -35,13 +35,7 @@
     "scripts/historicalEewParser.test.ts",
     "scripts/historicalEewArchiveBuilder.test.ts",
     "scripts/historicalTsunamiArchiveBuilder.test.ts",
-    "scripts/types/fft-js.d.ts",
-    "scripts/seismicIntensity.ts",
-    "scripts/seismicIntensity.test.ts",
-    "scripts/knetAscii.ts",
-    "scripts/knetAscii.test.ts",
     "scripts/capture-kyoshin-waveform.ts",
-    "scripts/kyoshinEventMerge.ts",
-    "scripts/kyoshinEventMerge.test.ts"
+    "src/types/fft-js.d.ts"
   ]
 }

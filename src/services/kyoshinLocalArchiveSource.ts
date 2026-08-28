@@ -15,6 +15,8 @@
 import type { SiteCoords } from './kyoshin'
 import type { KyoshinSource } from './kyoshinSource'
 import type { LocalKyoshinArchive } from '../types/localKyoshinArchive'
+import { getMergedKyoshinArchive, onImportsChanged } from '../utils/kyoshinImportDb'
+import { STEP_SEC_DEFAULT } from '../utils/knet/buildEventResultFromZip'
 import { log } from '../utils/logger'
 
 const fileUrl = (id: string): string => `${import.meta.env.BASE_URL}data/historical-archives-kyoshin/${id}.json`
@@ -60,11 +62,56 @@ function isLocalKyoshinArchive(raw: unknown): raw is LocalKyoshinArchive {
   })
 }
 
+// ブラウザ内インポート（IndexedDB）で新規保存・削除が起きたら、静的ファイルとの優先順位判定
+// （下記loadLocalKyoshinArchive）をやり直す必要があるため、キャッシュ全体を破棄する。
+// アーカイブは高々数件なので、id単位で追跡せず一律クリアで十分（detectionDiagnosticsDbと違い
+// このキャッシュは「取得結果」のキャッシュであり、インポート内容の変化は取得結果に直結する）。
+//
+// 注意: 再生中のKyoshinSourceが既にenqueue済みのフレームを持っている場合、この破棄は
+// 「次にstart()されたとき（再生位置のジャンプ等）」に新しいデータを反映させるだけで、
+// 稼働中のソースへ即座に反映（ホットリロード）はしない。稼働中のフレームキューへ過去分を
+// 再投入すると、時刻順キュー（kyoshinFrameQueue）が「到来済みのフレーム」として即座に
+// 消費してしまい、表示が巻き戻る恐れがあるため、意図的に見送っている。
+onImportsChanged(() => cache.clear())
+
+/** IndexedDBにインポート済みのイベントを統合したアーカイブを試す。未インポートならnull。 */
+async function loadFromImportDb(id: string): Promise<LoadResult | null> {
+  let archive: LocalKyoshinArchive | null
+  try {
+    archive = await getMergedKyoshinArchive(id, STEP_SEC_DEFAULT)
+  } catch (err) {
+    log.warn(`[kyoshinLocalArchive] ${id} のインポート済みデータ取得に失敗しました（IndexedDB）`, err)
+    return { kind: 'failed', retryable: true }
+  }
+  if (archive === null) return null
+  if (!isLocalKyoshinArchive(archive)) {
+    // mergeEventsの出力なので通常はここに来ないが、念のため静的ファイルと同じ構造検証を通す。
+    log.warn(`[kyoshinLocalArchive] ${id} のインポート済みデータの統合結果が不正です`)
+    return { kind: 'failed', retryable: false }
+  }
+  return { kind: 'found', archive }
+}
+
 function loadLocalKyoshinArchive(id: string): Promise<LoadResult> {
   const cached = cache.get(id)
   if (cached) return cached
 
   const promise = (async (): Promise<LoadResult> => {
+    const fromImportDb = await loadFromImportDb(id)
+    if (fromImportDb !== null) return fromImportDb
+    return loadStaticFile(id)
+  })()
+
+  cache.set(id, promise)
+  promise.then((result) => {
+    if (result.kind === 'failed' && result.retryable) cache.delete(id)
+  })
+  return promise
+}
+
+/** 静的ファイル（capture-kyoshin-waveform.tsの出力）から取得する（従来からの経路）。 */
+function loadStaticFile(id: string): Promise<LoadResult> {
+  return (async (): Promise<LoadResult> => {
     let res: Response
     try {
       res = await fetch(fileUrl(id))
@@ -100,15 +147,6 @@ function loadLocalKyoshinArchive(id: string): Promise<LoadResult> {
     }
     return { kind: 'found', archive: raw }
   })()
-
-  cache.set(id, promise)
-  // retryable な失敗はキャッシュへ残さない。次回 start() されたときに取り直せるようにするため
-  // （fetchSiteList と同じ「失敗したPromiseは残さない」方針。ここでは「一過性かどうか」で
-  // さらに絞っている点が異なる）。
-  promise.then((result) => {
-    if (result.kind === 'failed' && result.retryable) cache.delete(id)
-  })
-  return promise
 }
 
 /**

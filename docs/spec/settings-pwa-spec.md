@@ -509,60 +509,98 @@ EEW（緊急地震速報）と津波警報・注意報は、気象庁が公開�
 気象庁・防災科研とも、強震観測データの再配布は利用規約で禁止されている
 （気象庁 https://www.data.jma.go.jp/eqev/data/kyoshin/jishin/index.html の
 「掲載しているデータを第三者へ提供することは禁止いたします」、NIED K-NET/KiK-netの登録時
-規約も同様）。そのためこの系統だけは、他の2系統と違い**アプリに同梱しない**。
-[`scripts/capture-kyoshin-waveform.ts`](../../scripts/capture-kyoshin-waveform.ts)が
-実行者本人のNIED登録（https://hinetwww11.bosai.go.jp/nied/registration/ ）でK-NET/KiK-netの
-実波形をダウンロードし、実行したローカル環境限定でのみ再生できるファイルを生成する。
-出力先 `public/data/historical-archives-kyoshin/*.json` は `.gitignore` 対象で、
-このリポジトリには一切含まれない。
+規約も同様）。そのためこの系統だけは、他の2系統と違い**アプリに同梱しない**。データの入手経路は
+2通りある（併存。どちらも実行者本人のNIED登録が前提で、生成・インポートしたデータは
+その人のローカル環境限定でのみ再生できる）。
 
-- **取得**: `https://www.kyoshin.bosai.go.jp/kyoshin/download/all/zip/{yyyy}/{mm}/{K-NETイベント
-  ディレクトリ}/{同}_ascii.zip` をBasic認証（`NIED_KNET_USER`/`NIED_KNET_PASSWORD`、
-  `.env.local`に置く。`DMDATA_API_KEY`と同じ運用）で取得する。K-NET+KiK-netの全観測点分が
-  1つのZIPにまとまっており、ヘッダーに観測点の緯度経度が入っているため別途座標表は不要。
-  **イベントディレクトリ名は`--origin`（気象庁発表の原時刻）と完全には一致しない**（K-NET
-  自身のトリガー検知時刻ベースで実測数秒〜1分弱ずれる）ため、月別の一覧ページから最も近い
-  ものを自動で探す（許容誤差60秒。実データで4地震・23イベントを突き合わせ、ずれは最大58秒
-  だった）
-- **複数イベントの統合**: `--origin`は複数回指定でき、本震と離れた余震（数十分後〜数ヶ月後）を
-  1つのアーカイブへまとめられる。観測点は`stationCode`で名寄せし、フレームは各イベントの
-  実際の記録範囲だけを連結する（本震と5ヶ月半後の余震の「間」を1秒刻みで埋めるとファイルが
-  無意味に肥大化するため。localArchiveReplay.tsのfindCoveringArchiveSyncと同じ
-  「収録していない期間は収録していないままにする」考え方）。1イベントの取得・算出に失敗しても
-  （K-NETイベントディレクトリの許容誤差超過等）バッチ全体を止めず、その1件をスキップして
-  残りで統合する（実データで19件中1件が対応イベント無しでスキップされた実績あり）。
-  マージロジックは[`kyoshinEventMerge.ts`](../../scripts/kyoshinEventMerge.ts)に切り出してあり
+1. **Node CLI**（従来からの経路）:
+   [`capture-kyoshin-waveform.ts`](../../scripts/capture-kyoshin-waveform.ts)が実行者本人の
+   NIED登録（https://hinetwww11.bosai.go.jp/nied/registration/ ）でK-NET/KiK-netの実波形を
+   ダウンロードし、`public/data/historical-archives-kyoshin/*.json`（`.gitignore`対象、
+   このリポジトリには一切含まれない）へ書き出す。`.env.local`にNIED認証情報を置いて
+   devサーバーを動かせる環境が必要
+2. **ブラウザ内インポート**（設定タブ「K-NETデータのインポート」。GitHub Pages配信でも使える）:
+   NIEDのダウンロードページから利用者自身がブラウザで直接取得したK-NET/KiK-netの生ZIPを、
+   設定タブでファイル選択するだけで取り込める。ダウンロード・パース・震度算出はすべて
+   ブラウザ内で完結し、認証情報の入力もdevサーバーも不要。保存先はブラウザのIndexedDB
+   （`kyoshinImportDb.ts`）で、対応する収録済みアーカイブ（`HistoricalArchiveMeta`）は
+   ZIPヘッダーのOrigin Timeから自動検出する（詳細は後述）
+
+両経路とも、ダウンロード以降のパース・震度算出ロジックは共通（`src/utils/knet/`配下、後述）。
+CLI側だけが追加で「NIEDのイベントディレクトリ自動探索」（後述）と「認証・ダウンロード」を担う。
+
+- **取得（CLI経路）**: `https://www.kyoshin.bosai.go.jp/kyoshin/download/all/zip/{yyyy}/{mm}/
+  {K-NETイベントディレクトリ}/{同}_ascii.zip` をBasic認証（`NIED_KNET_USER`/
+  `NIED_KNET_PASSWORD`、`.env.local`に置く。`DMDATA_API_KEY`と同じ運用）で取得する。
+  K-NET+KiK-netの全観測点分が1つのZIPにまとまっており、ヘッダーに観測点の緯度経度が
+  入っているため別途座標表は不要。**イベントディレクトリ名は`--origin`（気象庁発表の原時刻）
+  と完全には一致しない**（K-NET自身のトリガー検知時刻ベースで実測数秒〜1分弱ずれる）ため、
+  月別の一覧ページから最も近いものを自動で探す（許容誤差60秒。検証実績は§13参照）。
+  **ブラウザ内インポート経路にはこの探索が無い**——利用者がNIEDのダウンロードページで
+  直接選んだZIPをそのまま受け取るため
+- **複数イベントの統合**: CLIの`--origin`は複数回指定でき、本震と離れた余震（数十分後〜数ヶ月後）
+  を1つのアーカイブへまとめられる（ブラウザ内インポートも複数ファイルを選択すれば同様に
+  統合される）。観測点は`stationCode`で名寄せし、フレームは各イベントの実際の記録範囲だけを
+  連結する（本震と5ヶ月半後の余震の「間」を1秒刻みで埋めるとファイルが無意味に肥大化する
+  ため。localArchiveReplay.tsのfindCoveringArchiveSyncと同じ「収録していない期間は収録して
+  いないままにする」考え方）。1イベントの取得・算出に失敗しても（K-NETイベントディレクトリの
+  許容誤差超過・対応するアーカイブが無い等）バッチ全体を止めず、その1件をスキップして残りで
+  統合する。マージロジックは
+  [`kyoshinEventMerge.ts`](../../src/utils/knet/kyoshinEventMerge.ts)に切り出してあり
   単体テストで検証済み
-- **解析**: [`knetAscii.ts`](../../scripts/knetAscii.ts)がK-NET ASCII形式（17行のヘッダー＋
-  1行8列の整数データ）をパースする。ヘッダーのキーと値の区切りは**固定幅の列位置**で、
+- **解析**: [`knetAscii.ts`](../../src/utils/knet/knetAscii.ts)がK-NET ASCII形式（17行の
+  ヘッダー＋1行8列の整数データ）をパースする。ヘッダーのキーと値の区切りは**固定幅の列位置**で、
   短いキー（"Lat."等）は空白が複数個並ぶ一方、長いキー（"Sampling Freq(Hz)"等）は空白1個
   だけのこともある（「2文字以上の連続空白を区切りとみなす」という初期実装は実データで
-  すぐ全滅した。実機確認で判明・修正済み）。4地震・23イベント分の実データで動作確認済み
-- **震度算出**: [`seismicIntensity.ts`](../../scripts/seismicIntensity.ts)が気象庁の計測震度
-  算出式（平成8年気象庁告示第4号。周期補正フィルター→3成分ベクトル合成→0.3秒基準）を実装し、
-  スライディングウィンドウ（既定20秒・1秒刻み）で時系列化する。**これは近似であり、本物の
-  強震モニタの記録ではない**: 公式の計測震度計はIIRフィルタによる真の連続処理だが、ここでは
-  オフラインバッチ処理のため毎回FFT→フィルター→逆FFTをやり直す方式で代用している。フィルター
-  式自体は手計算した値との照合テストで検証済み（`seismicIntensity.test.ts`）。実データでも
-  4地震すべてでピーク計測震度が実際の発表震度階級と整合した（例: 胆振東部6.74・熊本本震6.50
-  →いずれも震度7の閾値6.5以上、大阪5.64・鳥取5.80→いずれも震度6弱の範囲）
+  すぐ全滅した。実機確認で判明・修正済み）。ヘッダーの`Origin Time`（地震の発生時刻）も
+  読み取り、ブラウザ内インポートのアーカイブ自動検出に使う
+- **震度算出**: [`seismicIntensity.ts`](../../src/utils/knet/seismicIntensity.ts)が気象庁の
+  計測震度算出式（平成8年気象庁告示第4号。周期補正フィルター→3成分ベクトル合成→0.3秒基準）を
+  実装し、スライディングウィンドウ（既定20秒・1秒刻み）で時系列化する。**これは近似であり、
+  本物の強震モニタの記録ではない**: 公式の計測震度計はIIRフィルタによる真の連続処理だが、
+  ここではオフラインバッチ処理のため毎回FFT→フィルター→逆FFTをやり直す方式で代用している。
+  フィルター式自体は手計算した値との照合テストで検証済み（`seismicIntensity.test.ts`）。
+  実データでも4地震すべてでピーク計測震度が実際の発表震度階級と整合した（例: 胆振東部6.74・
+  熊本本震6.50→いずれも震度7の閾値6.5以上、大阪5.64・鳥取5.80→いずれも震度6弱の範囲）。
+  ZIP解析からピーク震度チェックまでの一連の処理は
+  [`buildEventResultFromZip.ts`](../../src/utils/knet/buildEventResultFromZip.ts)に
+  まとめてあり、CLIとブラウザ内インポートの両方から呼ぶ（3成分不揃い比率超過・震度算出0件
+  等の安全弁もここに集約）
 - **出力形式**: [`localKyoshinArchive.ts`](../../src/types/localKyoshinArchive.ts)の
   `LocalKyoshinArchive`（観測点座標・秒単位のフレーム列）。フレームの震度インデックスは
   Yahoo側と同じ0〜20の規約（`kyoshinValueToIndex`、`src/utils/kyoshinIntensity.ts`）
+- **ブラウザ内インポートの保存先**: [`kyoshinImportDb.ts`](../../src/utils/kyoshinImportDb.ts)が
+  IndexedDB（DB名`kyoshin-imports`）へ、マージ前の生の`EventResult`（1イベントぶん）を
+  `${archiveId}:${originTimeJst}`をキーに保存する（同じZIPの再インポートは上書きになる＝
+  冪等）。複数イベントの統合（`mergeEvents`）はコストの低い純関数のため、保存時ではなく
+  **読み出すたびにやり直す**設計にしている（診断ログ用の`detectionDiagnosticsDb.ts`と同じ
+  接続の使い回し・`onversionchange`失効・pub/subの構造だが、ユーザーが手動取得した
+  再取得コストの高いデータを扱うため失敗の可視化をより積極的にしている）。対応するアーカイブは
+  `findCoveringArchiveSync`（`localArchiveReplay.ts`）にZIPヘッダー由来のOrigin Timeを渡し
+  自動検出する。対応するアーカイブが見つからない場合はそのファイルだけを取り込みエラーとし、
+  同時に選択した他のファイルは独立して処理を続ける
 - **消費側**: [`kyoshinLocalArchiveSource.ts`](../../src/services/kyoshinLocalArchiveSource.ts)
   が`KyoshinSource`として全フレームを一括投入する（時刻ペースはリプレイ時計
   `serverDate()`が担うため、供給元側でのポーリングは不要）。`useKyoshinRealtime`の
   `localArchiveId`にカバーする`HistoricalArchiveMeta.id`を渡すとYahooの2ソースより優先される。
-  ファイルが存在しない場合（通常の配信環境では常にこちら）は静かに何も供給しない
+  **IndexedDB（ブラウザ内インポート）を先に確認し、無ければ静的ファイル（CLI経路）へ
+  フォールバックする**。どちらにもデータが無い場合（通常の配信環境では常にこちら）は
+  静かに何も供給しない
+  - IndexedDBに新規保存・削除が起きたら（`onImportsChanged`）、取得結果のキャッシュを
+    丸ごと破棄し、次回`start()`時（再生位置のジャンプ等）に反映させる。**稼働中の
+    `KyoshinSource`への即時反映（ホットリロード）はしない**——過去分のフレームを稼働中の
+    フレームキューへ再投入すると、時刻順キューが「到来済み」として即座に消費してしまい、
+    表示が巻き戻る恐れがあるため
   - **viteの開発サーバーは静的ファイルが無いGETをSPAフォールバック（200・text/html）で
     返す**ため、404で判定すると開発時に常にJSON解析エラーの警告が出てしまう（実機確認で
     発覚）。レスポンスの`Content-Type`が`application/json`でなければ「未生成」と同じ扱いに
     することで回避している（本番の静的配信では同じ状況は素直に404になる）
   - **「未生成」（404・SPAフォールバック）と「取得できたのに壊れている」（5xx・JSON解析
-    失敗・構造不正）を区別する**: 後者は`setStalled(true)`で「更新停止」表示を出す
-    （敵対的レビューで指摘: 区別しないと一時的なサーバー障害が「地震活動なし」と見分けが
-    付かなくなる）。5xx・ネットワーク層の失敗はキャッシュに残さず次回`start()`で再試行する
-    （404・構造不正は再試行しても結果が変わらないためキャッシュしたままにする）
+    失敗・構造不正・IndexedDB読み取り例外）を区別する**: 後者は`setStalled(true)`で
+    「更新停止」表示を出す（敵対的レビューで指摘: 区別しないと一時的なサーバー障害が
+    「地震活動なし」と見分けが付かなくなる）。5xx・ネットワーク層・IndexedDB例外の失敗は
+    キャッシュに残さず次回`start()`で再試行する（404・構造不正は再試行しても結果が
+    変わらないためキャッシュしたままにする）
 
 再生中はライブ接続を止める（両バリアント）。現在時刻の更新が混ざると、再生時刻より未来の
 地震がカードに並んでしまうため。「リセット」を押すと表示を消してライブへ戻る。
@@ -968,13 +1006,19 @@ Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認した�
 - `scripts/build-historical-archive-2018-iburi.ts` — 2018年北海道胆振東部地震アーカイブの生成 CLI
 - `scripts/capture-kyoshin-waveform.ts` — NIED K-NET/KiK-net実波形からローカル限定の強震モニタ風
   リプレイデータを生成するCLI（出力は`.gitignore`対象、リポジトリに含まない）
-- `scripts/knetAscii.ts` — K-NET/KiK-net ASCII形式波形ファイルのパーサー
-- `scripts/seismicIntensity.ts` — 気象庁の計測震度算出アルゴリズムの実装（FFTベースの周期補正
-  フィルター・スライディングウィンドウ）
-- `scripts/kyoshinEventMerge.ts` — 複数のK-NETイベント（本震＋離れた余震）を1つのローカル
+- `src/utils/knet/knetAscii.ts` — K-NET/KiK-net ASCII形式波形ファイルのパーサー
+- `src/utils/knet/seismicIntensity.ts` — 気象庁の計測震度算出アルゴリズムの実装（FFTベースの
+  周期補正フィルター・スライディングウィンドウ）
+- `src/utils/knet/parseAllStationFiles.ts` — ZIP内のNS/EW/UD波形ファイルの一括解析
+- `src/utils/knet/buildEventResultFromZip.ts` — ZIP解析からピーク震度チェックまでの一連の処理
+  （CLIとブラウザ内インポートの共通経路）
+- `src/utils/knet/kyoshinEventMerge.ts` — 複数のK-NETイベント（本震＋離れた余震）を1つのローカル
   アーカイブへ統合するロジック（観測点の名寄せ・スパースなフレーム連結）
+- `src/utils/kyoshinImportDb.ts` — ブラウザ内インポートしたイベントの保存先（IndexedDB）
+- `src/hooks/useKyoshinImport.ts` — 設定タブのK-NETインポートUI用フック
 - `src/types/localKyoshinArchive.ts` — ローカル限定強震モニタ風リプレイデータの型
 - `src/services/kyoshinLocalArchiveSource.ts` — 同データを読み込みフレーム供給する`KyoshinSource`
+  （IndexedDB優先・静的ファイルへのフォールバック）
 - `src/utils/kyoshinIntensity.ts` — `kyoshinValueToIndex`（計測震度 → リアルタイム震度インデックス）
 - `src/types/testScenario.ts` — シナリオデータ型
 - `scripts/capture-test-scenario.ts` — シナリオキャプチャ CLI
@@ -1143,3 +1187,15 @@ Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認した�
   固定幅列で長いキーでは空白1個しかない等）を修正した。あわせて本震と離れた余震を1つの
   アーカイブへ統合する仕組み（`kyoshinEventMerge.ts`）を追加し、1イベントの取得失敗が
   バッチ全体を無駄にしないよう耐性を持たせた
+- 2026-08-29: 上記のNode CLI経路は`.env.local`にNIED認証情報を置いてdevサーバーを動かせる
+  環境が前提で、GitHub Pages配信では使えなかった。設定タブから直接K-NET/KiK-net ZIPを
+  取り込める「ブラウザ内インポート」を追加し、devサーバー無しでも使えるようにした（§6）。
+  ダウンロード・パース・震度算出はブラウザ内で完結させ、保存先はIndexedDB
+  （`kyoshinImportDb.ts`）、対応するアーカイブはZIPヘッダーのOrigin Timeから自動検出する。
+  これに伴い、パース・震度算出の純粋ロジック（`knetAscii.ts`・`seismicIntensity.ts`・
+  `kyoshinEventMerge.ts`）を`scripts/`から`src/utils/knet/`へ移動し、ZIP解析からピーク震度
+  チェックまでを`buildEventResultFromZip.ts`に切り出してCLI・ブラウザ双方の共通経路にした。
+  敵対的レビューで、IndexedDBの読み書きヘルパー（`tx()`）が失敗時にrejectせずnullへ丸める
+  設計になっていたため、「読み取り失敗」と「未インポート」が実装上区別できず、ドキュメント・
+  テストが主張する「IndexedDB障害時の`setStalled(true)`可視化」が到達不能なデッドコードに
+  なっていたCRITICAL相当の不具合を検出・修正した

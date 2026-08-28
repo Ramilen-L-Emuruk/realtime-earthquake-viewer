@@ -32,18 +32,12 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { parseArgs } from 'node:util'
-import { unzipSync } from 'fflate'
-import { parseKnetAsciiFile, groupIntoStations, type KnetAsciiFile } from './knetAscii'
-import { computeIntensityTimeSeries } from './seismicIntensity'
-import { mergeEvents, type EventResult, type StationSeries } from './kyoshinEventMerge'
+import { buildEventResultFromZip, STEP_SEC_DEFAULT, WINDOW_SEC_DEFAULT } from '../src/utils/knet/buildEventResultFromZip'
+import { mergeEvents, type EventResult } from '../src/utils/knet/kyoshinEventMerge'
 import type { LocalKyoshinArchive } from '../src/types/localKyoshinArchive'
 
-const WINDOW_SEC_DEFAULT = 20
-const STEP_SEC_DEFAULT = 1
 /** 期待値との差がこれを超えたら警告する（計測震度のスケール）。 */
 const SANITY_CHECK_TOLERANCE = 1.0
-/** 3成分が揃わない観測点の割合がこれを超えたら失敗として止める。 */
-const INCOMPLETE_STATION_RATIO_LIMIT = 0.5
 
 // .env.local から認証情報を読む（capture-test-scenario.ts と同じ方式）。
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -204,24 +198,6 @@ async function downloadKnetZip(originTimeJst: string, user: string, password: st
   return new Uint8Array(await res.arrayBuffer())
 }
 
-/** ZIP内のNS/EW/UD波形ファイルをすべて解析する。それ以外のファイル（メタ情報等）は無視する。 */
-function parseAllStationFiles(zip: Uint8Array): { files: KnetAsciiFile[]; failures: { fileName: string; message: string }[] } {
-  const entries = unzipSync(zip)
-  const files: KnetAsciiFile[] = []
-  const failures: { fileName: string; message: string }[] = []
-  const decoder = new TextDecoder('utf-8')
-  for (const [path, data] of Object.entries(entries)) {
-    const fileName = path.split('/').pop() ?? path
-    if (!/\.(NS|EW|UD)[12]?$/i.test(fileName)) continue
-    try {
-      files.push(parseKnetAsciiFile(decoder.decode(data), fileName))
-    } catch (err) {
-      failures.push({ fileName, message: err instanceof Error ? err.message : String(err) })
-    }
-  }
-  return { files, failures }
-}
-
 /** 1つのK-NETイベント（--origin 1件ぶん）をダウンロード・解析し、観測点ごとの震度時系列を算出する。 */
 async function processEvent(
   originTimeJst: string,
@@ -233,68 +209,27 @@ async function processEvent(
   console.log(`\n=== イベント origin=${originTimeJst} ===`)
   console.log('K-NET/KiK-net強震データを取得中...')
   const zip = await downloadKnetZip(originTimeJst, user, password)
-  console.log(`ダウンロード完了（${zip.byteLength}バイト）。解凍・パース中...`)
+  console.log(`ダウンロード完了（${zip.byteLength}バイト）。解凍・パース・震度算出中...`)
 
-  const { files, failures } = parseAllStationFiles(zip)
-  if (failures.length > 0) {
-    console.error(`${failures.length}件のファイルでパースに失敗しました:`)
-    for (const f of failures.slice(0, 20)) console.error(`  ${f.fileName}: ${f.message}`)
-    throw new Error(
-      `origin=${originTimeJst}: パースに失敗したファイルがあります（上記参照）。`
-      + 'scripts/knetAscii.ts のヘッダー判定条件が実際のファイル形式と食い違っている可能性があります',
+  let result: EventResult
+  try {
+    result = buildEventResultFromZip(zip, windowSec, stepSec)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    // buildEventResultFromZipは、地震の識別（originTimeJst）がZIPヘッダーから導出できた
+    // 時点以降のエラーには自ら"origin=..."接頭辞を付けている。CLI引数の値で二重に
+    // 付けないよう、既に付いている場合はそのまま伝える。
+    throw new Error(message.startsWith('origin=') ? message : `origin=${originTimeJst}: ${message}`)
+  }
+  if (result.originTimeJst !== originTimeJst) {
+    console.warn(
+      `  注意: ZIPヘッダーのOrigin Time(${result.originTimeJst})が--origin指定値(${originTimeJst})と`
+      + '一致しません（気象庁発表時刻の情報源によるわずかな差の可能性）',
     )
   }
-  if (files.length === 0) throw new Error(`origin=${originTimeJst}: ZIP内にNS/EW/UD波形ファイルが1件も見つかりませんでした`)
+  console.log(`${result.stationSeries.length}観測点。このイベントのピーク計測震度（近似値）: ${result.peakIntensity.toFixed(2)}`)
 
-  const { stations, skippedIncomplete } = groupIntoStations(files)
-  if (skippedIncomplete > 0) {
-    console.warn(`3成分が揃わない観測点 ${skippedIncomplete} 件を除外しました`)
-  }
-  if (stations.length === 0) throw new Error(`origin=${originTimeJst}: 3成分が揃った観測点が0件です`)
-  // 除外が大半を占める場合、component/depthKindの判定ロジック（resolveComponentFromFileName）に
-  // 系統的な誤りがある可能性が高い。警告止まりだと、実質ほぼ空のデータが「成功」として
-  // 書き出されるのに気付けない。
-  const incompleteRatio = skippedIncomplete / (skippedIncomplete + stations.length)
-  if (incompleteRatio > INCOMPLETE_STATION_RATIO_LIMIT) {
-    throw new Error(
-      `origin=${originTimeJst}: 3成分が揃わない観測点が${Math.round(incompleteRatio * 100)}%に達しました`
-      + '（成分・深度の判定ロジックに誤りがある可能性があります）',
-    )
-  }
-  console.log(`${stations.length}観測点を検出。震度時系列を算出中...`)
-
-  const stationSeries: StationSeries[] = stations.map((station) => {
-    const startEpochSec = Math.round(station.recordStartTime.getTime() / 1000)
-    const points = computeIntensityTimeSeries(
-      station.components.NS,
-      station.components.EW,
-      station.components.UD,
-      station.samplingHz,
-      { windowSec, stepSec },
-    ).map((p) => ({
-      epochSec: startEpochSec + Math.round(p.tSec),
-      intensity: p.intensity,
-    }))
-    return { stationCode: station.stationCode, latitude: station.latitude, longitude: station.longitude, points }
-  })
-
-  let peakIntensity = -Infinity
-  for (const s of stationSeries) {
-    for (const p of s.points) {
-      if (p.intensity !== null && p.intensity > peakIntensity) peakIntensity = p.intensity
-    }
-  }
-  // 全ウィンドウがデータ不足でnullだった場合、-1（欠測）だけのフレームが無警告で書き出されて
-  // しまうため、他のイベントを巻き込む前にここで止める。
-  if (!Number.isFinite(peakIntensity)) {
-    throw new Error(
-      `origin=${originTimeJst}: 有効な計測震度を1件も算出できませんでした（全ウィンドウがデータ不足でnullでした）。`
-      + 'サンプリング周波数・スケールファクタ等、算出パイプラインの誤りを疑ってください',
-    )
-  }
-  console.log(`このイベントのピーク計測震度（近似値）: ${peakIntensity.toFixed(2)}`)
-
-  return { originTimeJst, stationSeries, peakIntensity }
+  return result
 }
 
 async function main(): Promise<void> {
