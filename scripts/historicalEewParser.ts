@@ -119,14 +119,23 @@ export function parseTimeOnly(text: string, referenceIsoDate: string): string {
   return new Date(resultMs).toISOString()
 }
 
+// 未確定・未入力を表す表記が発表状況ページによって揺れる（em dash「—」の他に、
+// 2018年大阪府北部地震のページでは半角ハイフン2つ「--」が使われていた。実データで
+// 確認済み）。既知の表記だけを「値なし」として許容し、それ以外は例外にする（黙って
+// null にすると、後段が "分からない" と "壊れている" を区別できなくなる）。
+// このSetは緯度・経度・深さ・マグニチュードといった数値セル共通の表記だけを持つ。
+// 予測震度セル（historicalEewArchiveBuilder.ts）は「予測震度なし」という別の文言も
+// 「値なし」として扱うが、これを混ぜると数値セル側がこの文言を誤って受理してしまう
+// ため、意図的にこのSetには含めず消費側で別途チェックしている（一度「ここに集約する」
+// と書いていたが実態と異なっていたため訂正）。
+export const NO_VALUE_MARKERS = new Set(['—', '--', ''])
+
 /**
  * 「38°06.2′」形式を10進度へ変換する。
- * "—"（未確定）は null を返すが、それ以外の形式に合わないテキストは例外にする
- * （黙って null にすると、後段が "分からない" と "壊れている" を区別できなくなる）。
  */
 export function parseDegMin(text: string): number | null {
   const t = text.trim()
-  if (t === '—' || t === '') return null
+  if (NO_VALUE_MARKERS.has(t)) return null
   const m = t.match(/(\d+)°([\d.]+)′/)
   if (!m) throw new Error(`度分表記を解析できません: "${text}"`)
   return Number(m[1]) + Number(m[2]) / 60
@@ -134,7 +143,7 @@ export function parseDegMin(text: string): number | null {
 
 function parseKm(text: string): number | null {
   const t = text.trim()
-  if (t === '—' || t === '') return null
+  if (NO_VALUE_MARKERS.has(t)) return null
   const m = t.match(/^([\d.]+)\s*km$/)
   if (!m) throw new Error(`深さを解析できません: "${text}"`)
   return Number(m[1])
@@ -142,7 +151,7 @@ function parseKm(text: string): number | null {
 
 function parseNumericCell(text: string): number | null {
   const t = text.trim()
-  if (t === '—' || t === '') return null
+  if (NO_VALUE_MARKERS.has(t)) return null
   const n = Number(t)
   if (!Number.isFinite(n)) throw new Error(`数値を解析できません: "${text}"`)
   return n

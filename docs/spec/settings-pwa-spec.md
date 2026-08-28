@@ -411,7 +411,17 @@ EEW（緊急地震速報）と津波警報・注意報は、気象庁が公開�
 生成できる。手作業の書き起こしではなく、パーサーが生HTMLの表を直接読む。DMDATA由来の
 実電文ではなく気象庁公表資料が典拠のため、DMDATA.JP利用規約が制限するEEWの二次配信は
 適用されないという開発者判断による（法務確認は経ていない）。このパイプラインのうちEEW
-取得部分は、後述の2016年熊本地震アーカイブでも再利用している。
+取得部分は、後述のNII実電文アーカイブ由来の各アーカイブ（2016年熊本地震・2016年鳥取県
+中部地震・2018年大阪府北部地震・2018年北海道胆振東部地震）でも再利用している。
+
+- **発表状況ページの「値なし」表記は地震・年代によって揺れる**: 震源要素の欄は
+  em dash「—」の他に半角ハイフン2つ「--」（2018年大阪府北部地震のページで確認）、
+  予測震度の欄は「—」の他に「予測震度なし」（2018年北海道胆振東部地震のページで確認）
+  という表記もある。既知の表記だけを許容し、未知の表記は例外にする
+  （`historicalEewParser.ts`の`NO_VALUE_MARKERS`、`historicalEewArchiveBuilder.ts`の
+  該当分岐）。新しい地震のアーカイブを作るたびに未知の表記に当たる可能性があるため、
+  例外が出たら実際のページを確認し、真に「値なし」の表記であることを確かめた上で
+  追加すること
 
 - **津波の予測高さが欠けている地域がある**: 気象庁の検証ページが公開しているのは
   「各予報区が最終的に到達した区分の予測高さ」のみで、格上げ前の暫定段階の値は
@@ -431,15 +441,19 @@ EEW（緊急地震速報）と津波警報・注意報は、気象庁が公開�
 自体は残しているが、既存の`2011-tohoku.json`を読み込んで差分マージする構造のため、
 削除後にそのまま再実行しても動かない。
 
-**国立情報学研究所（NII）の実電文アーカイブ由来のデータ（地震情報・津波、2016年熊本地震）**
+**国立情報学研究所（NII）の実電文アーカイブ由来のデータ（地震情報・津波）**
 
-現時点で収録しているのは2016年熊本地震のみ。詳細な数値（前震・本震の日時/M・EEW件数・
-収録期間）は`index.json`の`description`/`from`/`to`/`firstEventTime`を参照（ここでの
-記述と食い違ったら`index.json`を正とする）。気象庁防災情報XMLフォーマットの運用開始
+現時点で収録しているのは2016年熊本地震・2016年鳥取県中部地震・2018年大阪府北部地震・
+2018年北海道胆振東部地震の4件。前震・本震の日時/M・EEW件数・収録期間といった詳細な
+数値は`index.json`の`description`/`from`/`to`/`firstEventTime`を参照（ここでの記述と
+食い違ったら`index.json`を正とする）。いずれも気象庁防災情報XMLフォーマットの運用開始
 （2011/5/12）より後の地震のため、地震情報（震度速報・震源に関する情報・震源・震度情報・
 顕著な地震の震源要素更新のお知らせ）と津波は、当時配信された実電文そのものを
-[`build-historical-archive-2016-kumamoto.ts`](../../scripts/build-historical-archive-2016-kumamoto.ts)
-が取得し、アプリ本番と同じパーサー（`dmdataParser.ts` の `parseEarthquakeFromXml` /
+[`build-historical-archive-2016-kumamoto.ts`](../../scripts/build-historical-archive-2016-kumamoto.ts)・
+[`build-historical-archive-2016-tottori.ts`](../../scripts/build-historical-archive-2016-tottori.ts)・
+[`build-historical-archive-2018-osaka.ts`](../../scripts/build-historical-archive-2018-osaka.ts)・
+[`build-historical-archive-2018-iburi.ts`](../../scripts/build-historical-archive-2018-iburi.ts)が
+取得し、アプリ本番と同じパーサー（`dmdataParser.ts` の `parseEarthquakeFromXml` /
 `parseTsunamiFromXml`）でそのまま変換する（新規のパーサーを書いていない）。取得元は
 国立情報学研究所（NII）CPS-IIPプロジェクトが公開する「気象庁防災情報XMLデータベース」
 （https://agora.ex.nii.ac.jp/cps/weather/report/ 、2012年12月以降の電文を保存）で、
@@ -449,8 +463,14 @@ EEW（緊急地震速報）と津波警報・注意報は、気象庁が公開�
 制限によるものと見られる）ため、EEWだけは上記の気象庁発表状況ページ由来のパイプライン
 （pub_hist、政府標準利用規約 第1.0版）から取得している。全国の地震を対象に配信される
 震度速報等の電文から、この地震活動と無関係な地震を取り違えないよう、パース後の震央地名
-（`熊本県熊本地方`等）で絞り込んでいる。震度速報は震源が未確定の段階で発表されるため
+（例: `熊本県熊本地方`）で絞り込んでいる。震度速報は震源が未確定の段階で発表されるため
 震央地名を持たず、観測震度の対象地域名（一次細分区域名の前方一致）で代わりに絞り込む。
+
+地震活動ごとに変わらない処理（NII時刻のパース・電文種別ラベルの解釈・取消電文の扱い・
+集計の整合性チェック）は
+[`localEarthquakeArchiveBuilder.ts`](../../scripts/localEarthquakeArchiveBuilder.ts)に
+共通化している。地震活動ごとの4本のビルドスクリプトは、EEW一覧・震央地名・観測地域名の
+前方一致・収録期間だけを渡す薄いラッパー。
 
 - 収録期間（`from`/`to`）はEEW対象イベントの日付を必ず包含すること。上記の
   「収録範囲の終端を再生が越えた直後は…」の`findArchiveJustEndedSync`の判定により、
@@ -459,6 +479,24 @@ EEW（緊急地震速報）と津波警報・注意報は、気象庁が公開�
 - NIIサイトの一覧表示時刻はISO 8601ではない（タイムゾーンオフセットが分無しの2桁、
   例: `2016-04-14 21:28:06+09`）ため、分を補ってからDateへ変換する
   （[`niiJmaXmlArchive.ts`](../../scripts/niiJmaXmlArchive.ts)参照）
+- **警報級の余震が長期間に散発する地震活動（2018年北海道胆振東部地震）は、`DATES`を
+  連続した範囲にしない**: 本震2018/9/6・同日余震・約1ヶ月後の余震2018/10/5・約5ヶ月半後の
+  余震2019/2/21と、警報級EEWの間隔が最大5ヶ月半空く。この全期間を連続する日付で取得すると
+  169日分の全国電文を読み込むことになりNIIサイトへの負荷・実行時間の両面で非現実的なため、
+  実際にEEWが出た日の前後だけを`DATES`に指定する（間の期間は「データが存在しない」の
+  ではなく、意図的に取得対象から外している）。収録期間（`from`/`to`）自体は本震から
+  最後の余震までを広くカバーするが、これは時刻ウィンドウによる関連性チェックの範囲に
+  過ぎず、実際に取得するのは`DATES`に列挙した日だけである点に注意
+  - **この設計は`findCoveringArchiveSync`の前提と矛盾する（レビューで検出、未解消）**:
+    同関数は「収録範囲(`from`/`to`)に重なる問い合わせは、その期間データが無かったという
+    空の成功として扱ってよい」という前提に立つ（[`localArchiveReplay.ts`](../../src/services/localArchiveReplay.ts)
+    のコメント参照）。連続してDATESを取得しているアーカイブ（熊本・鳥取・大阪）ではこの
+    前提が成り立つが、胆振東部のように間の期間を意図的に取得していないアーカイブでは
+    成り立たない。設定タブの「開始時刻」に本震〜最後の余震の間（例: 2018年11月）を手動で
+    入力すると、本来は「収録データが無く取得を試みるべき期間」を、黙って「地震活動なし」の
+    空成功として返してしまう。「1分前から再生」ボタン（`firstEventTime`基準）を使う分には
+    影響しない。現状はこの矛盾を解消する仕組みを持たない（`HistoricalArchiveMeta`に実収録日
+    を持たせる等の対応が必要）
 
 再生中はライブ接続を止める（両バリアント）。現在時刻の更新が混ざると、再生時刻より未来の
 地震がカードに並んでしまうため。「リセット」を押すと表示を消してライブへ戻る。
@@ -856,7 +894,12 @@ Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認した�
 - `scripts/historicalTsunamiArchiveBuilder.ts` — パース結果 → アプリの津波電文形式への変換
 - `scripts/build-historical-archive-2011-tohoku.ts` — 2011年東北地方太平洋沖地震アーカイブの生成 CLI
 - `scripts/niiJmaXmlArchive.ts` — NII「気象庁防災情報XMLデータベース」から実電文を取得
+- `scripts/localEarthquakeArchiveBuilder.ts` — NII実電文アーカイブ由来のアーカイブ生成で
+  地震活動ごとに変わらない共通処理（時刻パース・種別判定・関連性判定・集計整合性チェック）
 - `scripts/build-historical-archive-2016-kumamoto.ts` — 2016年熊本地震アーカイブの生成 CLI
+- `scripts/build-historical-archive-2016-tottori.ts` — 2016年鳥取県中部地震アーカイブの生成 CLI
+- `scripts/build-historical-archive-2018-osaka.ts` — 2018年大阪府北部地震アーカイブの生成 CLI
+- `scripts/build-historical-archive-2018-iburi.ts` — 2018年北海道胆振東部地震アーカイブの生成 CLI
 - `src/types/testScenario.ts` — シナリオデータ型
 - `scripts/capture-test-scenario.ts` — シナリオキャプチャ CLI
 - `src/utils/detectionDiagnostics.ts` — 診断ログの切り出し（→ §12）

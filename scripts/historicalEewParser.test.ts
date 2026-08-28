@@ -3,6 +3,7 @@ import type { ParsedEewHypocenter } from './historicalEewParser'
 import {
   intensityTokenToScale,
   parseDegMin,
+  parseEewContentHtml,
   parseHeadlineScale,
   parseTierLabel,
   parseTimeOnly,
@@ -82,6 +83,48 @@ describe('parseTimeOnly', () => {
 describe('parseDegMin', () => {
   it('度分表記を10進度へ変換する', () => {
     expect(parseDegMin('38°06.2′')).toBeCloseTo(38.10333, 4)
+  })
+})
+
+// 発表状況ページの最小限のHTML断片（2018年大阪府北部地震の実ページ構造を基にした固定値）。
+// 地震波検知時刻の行は震源要素が未確定のため、実ページでは全列が「値なし」を示すプレース
+// ホルダーになる。
+function minimalEewHtml(detectionRowPlaceholder: string): string {
+  return `
+    <table id="hypocentral_element_list">
+      <tr><td>header</td></tr>
+      <tr><td>平成30年06月18日07時58分34.1秒</td><td>大阪府北部</td><td>34°50.6′</td><td>135°37.3′</td><td>13km</td><td>6.1</td><td>６弱</td></tr>
+    </table>
+    <table id="information_list">
+      <tr><td>header1</td></tr>
+      <tr><td>header2</td></tr>
+      <tr><td>header3</td></tr>
+      <tr><td>地震波<br>検知時刻</td><td>07時58分38.7秒</td><td>${detectionRowPlaceholder}</td><td>${detectionRowPlaceholder}</td><td>${detectionRowPlaceholder}</td><td>${detectionRowPlaceholder}</td><td>${detectionRowPlaceholder}</td><td>${detectionRowPlaceholder}</td></tr>
+      <tr class='eew_public_warning_row'><td>1</td><td>07時58分41.9秒</td><td>3.2</td><td>34.9</td><td>135.6</td><td>10km</td><td>6.0</td><td>最大震度６弱程度以上</td></tr>
+    </table>
+  `
+}
+
+describe('parseEewContentHtml の「値なし」表記ゆれ', () => {
+  it('正: em dash「—」の検知時刻行を解釈できる', () => {
+    const parsed = parseEewContentHtml(minimalEewHtml('—'))
+    expect(parsed.reports[0].reportNum).toBe(0)
+    expect(parsed.reports[0].latitude).toBeNull()
+    expect(parsed.reports[1].reportNum).toBe(1)
+  })
+
+  it('対照（バグ回帰）: 半角ハイフン2つ「--」の検知時刻行も解釈できる（2018年大阪府北部地震の実ページで確認済み）', () => {
+    const parsed = parseEewContentHtml(minimalEewHtml('--'))
+    expect(parsed.reports[0].reportNum).toBe(0)
+    expect(parsed.reports[0].latitude).toBeNull()
+    expect(parsed.reports[0].depthKm).toBeNull()
+    expect(parsed.reports[0].magnitude).toBeNull()
+    expect(parsed.reports[1].reportNum).toBe(1)
+    expect(parsed.reports[1].magnitude).toBe(6.0)
+  })
+
+  it('安全弁: 未知の表記は「値なし」として黙って通さず例外にする', () => {
+    expect(() => parseEewContentHtml(minimalEewHtml('???'))).toThrow()
   })
 })
 

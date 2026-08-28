@@ -14,7 +14,7 @@
 import type { HistoricalArchiveEntry } from '../src/types/historicalArchive'
 import type { EEWAlert, EEWRegion, IntensityScale } from '../src/types/earthquake'
 import { isValidIntensityScale } from '../src/utils/intensity'
-import { parseHeadlineScale, prefFromRegionName, resolveHypocenterName, type ParsedEewPage } from './historicalEewParser'
+import { NO_VALUE_MARKERS, parseHeadlineScale, prefFromRegionName, resolveHypocenterName, type ParsedEewPage } from './historicalEewParser'
 
 export interface BuildEewEntriesOptions {
   /** entry.id / issue.eventId の元になる接頭辞（例: "2011tohoku-mainshock"） */
@@ -40,6 +40,19 @@ function toIntensityScale(n: number, label: string, context: string): IntensityS
 }
 
 export function buildEewEntries(parsed: ParsedEewPage, opts: BuildEewEntriesOptions): HistoricalArchiveEntry[] {
+  // 既知の未解決の設計ギャップ（レビューで指摘、意図的に未対応）:
+  // 1ページ（1回のcontent_out.html）に複数の震源候補が束ねて記載されることが実データで
+  // ある（historicalEewParser.tsのコメント参照。東北地方太平洋沖地震の20件中8件で確認。
+  // 実際に2011tohoku-as06等で発生する、頻度の高いケース）。hasReachedWarningOnce・
+  // maxReportNumはページ全体で1つしか持たないため、理論上は「先に警報化した地震のフラグを
+  // 後の別地震の報が引き継ぐ」「報番号が少ない方の地震の真の最終報にisFinalが付かない」
+  // 誤判定が起こりうる。ただし実際に生成済みの東北・熊本・鳥取・大阪・胆振東部の全アーカイブで
+  // isFinalが各イベントちょうど1件になることを確認済みで、この誤判定が実データで顕在化した
+  // 形跡は無い（束ねられているのが同一地震の複数の震源候補（暫定解の揺れ）であり、報の
+  // 時系列自体は分離されていないケースが実態と見られる）。「束ね記載＝即エラー」にすると
+  // 東北の実データ（8/20件）で確実に停止してしまうため、ここでは対応を見送っている。
+  // 将来、severity/isFinalの誤りが実際に見つかった場合は、hasReachedWarningOnce・
+  // maxReportNumをresolveHypocenterNameの結果でグルーピングして地震ごとに独立させること。
   const eventId = toEventId(parsed.hypocenter.originTimeIso)
   let hasReachedWarningOnce = false
   const entries: HistoricalArchiveEntry[] = []
@@ -77,8 +90,11 @@ export function buildEewEntries(parsed: ParsedEewPage, opts: BuildEewEntriesOpti
       const scale = parseHeadlineScale(cell)
       forecastMaxScale = toIntensityScale(scale, '見出し震度', ctx)
       forecastMaxScaleOrAbove = true
-    } else if (cell === '—' || cell === '') {
-      continue // 震度予想がまだ無い行（検知直後の最初の1〜2報に限られる）
+    } else if (NO_VALUE_MARKERS.has(cell) || cell === '予測震度なし') {
+      // 震度予想がまだ無い行（検知直後の最初の1〜2報に限られる）。表記は「—」「--」
+      // （数値セルと共有のNO_VALUE_MARKERS）の他に、この予測震度セル特有の文言
+      // 「予測震度なし」もある（2018年北海道胆振東部地震の余震ページで確認済み）。
+      continue
     } else {
       throw new Error(`${ctx}: 未知の予測震度セルです "${cell}"`)
     }
