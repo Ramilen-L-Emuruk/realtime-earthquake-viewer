@@ -5,6 +5,7 @@ import {
   createYahooArchiveSource,
   type KyoshinFrame,
 } from '../services/kyoshinSource'
+import { createLocalKyoshinArchiveSource } from '../services/kyoshinLocalArchiveSource'
 import { createFrameQueue } from '../utils/kyoshinFrameQueue'
 import type { EEWAlert } from '../types/earthquake'
 import { diffHypoInfoEvents, type HypoInfoPendingMissing } from '../utils/eew'
@@ -38,11 +39,30 @@ const DRAIN_INTERVAL_MS = 100
 /** 同種の失敗を記録し直す最小間隔 (ms)。1Hz で再発する失敗を間引きつつ、継続を見失わない幅。 */
 const LOG_THROTTLE_MS = 60_000
 
+/**
+ * ローカル履歴アーカイブ経由のフレームキュー上限（件数、2時間ぶん）。
+ *
+ * `createFrameQueue` の既定上限（30分ぶん）は「フレーム列を一括投入する供給元は自分で
+ * 上限を渡すこと」という契約になっている（`kyoshinFrameQueue.ts` 参照）。
+ * `createLocalKyoshinArchiveSource` は収録範囲全体（K-NET/KiK-netの記録時間＋観測点間の
+ * トリガー時刻のずれ）を起動直後に一括enqueueするため、既定値のままだと理論上は
+ * 上限超過分（最も未来のフレーム）が黙って捨てられうる。実際のK-NET記録は数分程度で
+ * 既定値でも十分収まる想定だが、契約を明示的に満たすため十分な余裕を持った値を渡す。
+ */
+const LOCAL_ARCHIVE_QUEUE_MAX_SIZE = 7200
+
 interface UseKyoshinRealtimeOptions {
   /** EEW の新規発報・更新・解除を検知したときに呼ばれるコールバック。 */
   onEEWEvent?: (eew: EEWAlert) => void
   /** テスト用時刻オフセット (ms)。null/undefined で現在時刻を使用。 */
   timeOffset?: number | null
+  /**
+   * 再生中の期間をカバーするローカル履歴アーカイブのid（`HistoricalArchiveMeta.id`）。
+   * 指定するとYahooの2ソースの代わりに`createLocalKyoshinArchiveSource`を使う
+   * （ローカル限定生成の強震モニタ風データ。未生成なら何も供給しない）。
+   * null/undefined なら従来どおりtimeOffsetでYahooのライブ/リプレイを選ぶ。
+   */
+  localArchiveId?: string | null
 }
 
 /**
@@ -52,8 +72,9 @@ interface UseKyoshinRealtimeOptions {
  * キュー（`utils/kyoshinFrameQueue`）で受け、データ時刻が来たものを state へ反映する。
  * この分離により、1 秒ずつ取りに行く Yahoo と、まとめて手に入るアーカイブを同じ経路に載せられる。
  *
- * `timeOffset` を渡すと過去を再生するソースへ切り替わる（現状は Yahoo が秒ファイルを保持して
- * いる期間のみ遡れる）。
+ * `timeOffset` を渡すと過去を再生するソースへ切り替わる（Yahoo は秒ファイルを保持している
+ * 期間のみ遡れる）。`localArchiveId` を渡すとローカル限定生成の強震モニタ風データ
+ * （`createLocalKyoshinArchiveSource`）を優先する。こちらは未生成なら静かに何も供給しない。
  *
  * hypoInfo の差分検出により EEW 発報・更新・解除を onEEWEvent で通知する（Yahoo 固有）。
  */
@@ -75,8 +96,9 @@ export function useKyoshinRealtime(
   // コールバックを ref で保持し、放出処理のクロージャから安定参照する
   const onEEWEventRef = useRef(options?.onEEWEvent)
   onEEWEventRef.current = options?.onEEWEvent
-  // timeOffset は deps に含めてエフェクトを再起動させるため、ref ではなく直接使う
+  // timeOffset・localArchiveId は deps に含めてエフェクトを再起動させるため、ref ではなく直接使う
   const timeOffset = options?.timeOffset ?? null
+  const localArchiveId = options?.localArchiveId ?? null
 
   useEffect(() => {
     if (!enabled) return
@@ -88,10 +110,12 @@ export function useKyoshinRealtime(
     prevHypoInfoRef.current = []
     pendingMissingRef.current = new Map()
 
-    const queue = createFrameQueue<KyoshinFrame>()
-    const source = timeOffset != null
-      ? createYahooArchiveSource(timeOffset)
-      : createYahooLiveSource()
+    const queue = createFrameQueue<KyoshinFrame>(localArchiveId != null ? LOCAL_ARCHIVE_QUEUE_MAX_SIZE : undefined)
+    const source = localArchiveId != null
+      ? createLocalKyoshinArchiveSource(localArchiveId)
+      : timeOffset != null
+        ? createYahooArchiveSource(timeOffset)
+        : createYahooLiveSource()
 
     // 直前に画面へ反映したフレームのデータ時刻。これ以前のフレームは捨てる（下記参照）。
     let lastAppliedTimeMs = -Infinity
@@ -220,7 +244,7 @@ export function useKyoshinRealtime(
       source.stop()
       queue.clear()
     }
-  }, [enabled, timeOffset])
+  }, [enabled, timeOffset, localArchiveId])
 
   return { sites, indices, dataTime, sitesSiteConfigId, indicesSiteConfigId, error }
 }

@@ -1000,10 +1000,30 @@ export function App() {
     loadReplayEvents,
   })
 
+  // リプレイ中、対象時刻がローカル履歴アーカイブの収録範囲に重なる場合、そのidを
+  // useKyoshinRealtime へ渡す。ローカル限定生成の強震モニタ風データ（scripts/capture-kyoshin-waveform.ts）
+  // が存在すればそちらを使い、無ければ何も供給されない（従来どおりYahooには到達不能な時代のため）。
+  // nowTickをdepsに入れて毎秒再評価する。timeOffset自体が変わるタイミング（再生開始・ジャンプ）
+  // でしか判定しないと、収録範囲の外から連続再生で境界を跨いだ場合に一生ローカルアーカイブへ
+  // 切り替わらない（敵対的レビューで指摘）。
+  // ただし評価に使う「今」はnowTickの値そのものではなくDate.now()+replayTimeOffsetを都度
+  // 組み立てる（nowTickは「再評価のきっかけ」としてdepsに入れているだけ）。nowTickの値は
+  // ライブ接続中は実時刻、リプレイ中はリプレイ時刻を指すため、replayTimeOffsetが変わった
+  // 直後の最初のレンダーではまだ古いモードの値のまま（例: ライブの2026年時刻）残っている
+  // ことがあり、それをそのまま使うと一瞬だけ「収録範囲外」と誤判定してYahooのアーカイブ
+  // ソースが起動し、2018年等の到達不能な日付へのfetchが403エラーとしてコンソールに残る
+  // （実機確認で発覚。テスト時刻設定の手動入力で再現した）。
+  const localKyoshinArchiveId = useMemo(() => {
+    if (replayTimeOffset == null) return null
+    const now = new Date(Date.now() + replayTimeOffset)
+    return findCoveringArchiveSync(historicalArchives, now, new Date(now.getTime() + 1))?.id ?? null
+  }, [replayTimeOffset, nowTick, historicalArchives])
+
   // DMDSS版: Yahoo hypoInfo からのEEW検出は不要（DMDATAが直接配信するため）
   const kyoshin = useKyoshinRealtime(true, {
     onEEWEvent: isDmdss ? undefined : injectEvent,
     timeOffset: replayTimeOffset,
+    localArchiveId: localKyoshinArchiveId,
   })
   // 強震モニタの揺れ検知は V2 エンジン（純粋コア step）で行う。
   // 検知結果は音・自動タブ切替・自動フィット・地図オーバーレイ・リアルタイムタブのカードを駆動する。
