@@ -14,10 +14,12 @@
     "test:watch": "vitest",
     "capture-scenario": "tsx scripts/capture-test-scenario.ts",
     "bench-kyoshin": "tsx scripts/bench-kyoshin.ts",
-    "build-hypocenter-catalog": "tsx scripts/build-hypocenter-catalog.ts"
+    "build-hypocenter-catalog": "tsx scripts/build-hypocenter-catalog.ts",
+    "capture-kyoshin-waveform": "tsx scripts/capture-kyoshin-waveform.ts"
   },
   "dependencies": {
     "fflate": "^0.8.3",
+    "fft-js": "^0.0.12",
     "maplibre-gl": "^6.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
@@ -33,6 +35,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
     "cross-env": "^7.0.3",
+    "fake-indexeddb": "^6.2.5",
     "jsdom": "^30.0.1",
     "mapshaper": "^0.7.49",
     "pbf": "^5.1.2",

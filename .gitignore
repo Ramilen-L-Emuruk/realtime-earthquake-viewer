@@ -77,6 +77,10 @@ verify-*.jpg
 public/data/test-scenarios/*.json
 !public/data/test-scenarios/index.json
 
+# NIED K-NET/KiK-net由来のローカル限定強震モニタ風リプレイデータ（scripts/capture-kyoshin-waveform.ts
+# の出力）。再配布禁止のためコミットしない。実行者本人のNIED登録でのみ生成・再生できる。
+public/data/historical-archives-kyoshin/
+
 # 検知アルゴリズムの試作・計測に使う使い捨てのスクリプトと、その出力。
 # 手元で捨てられる前提のものなのでコミットしない。
 # probe-*.ts はすべて使い捨て（正規の計測は scripts/bench-kyoshin.ts）。

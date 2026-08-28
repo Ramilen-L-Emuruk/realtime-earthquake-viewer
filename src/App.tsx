@@ -46,9 +46,11 @@ import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
 import { warmFixedPhrases } from './utils/voicevox'
 import { EEW_LEAD_PHRASES } from './utils/ttsText'
 import type { EEWAlert, JMAQuake, JMATsunami } from './types/earthquake'
-import { useReplayController } from './hooks/useReplayController'
+import { useReplayController, WINDOW_MS as REPLAY_WINDOW_MS, PRE_WINDOW_MS as REPLAY_PRE_WINDOW_MS } from './hooks/useReplayController'
 import { fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache } from './services/dmdataReplay'
 import { fetchP2PReplayEvents, fetchP2PQuakeHistory, clearP2PReplayCache } from './services/p2pquakeReplay'
+import { findCoveringArchiveSync, findArchiveJustEndedSync, fetchLocalArchiveEvents, fetchLocalArchiveQuakeHistory } from './services/localArchiveReplay'
+import { useHistoricalArchiveIndex } from './hooks/useHistoricalArchiveIndex'
 import { log } from './utils/logger'
 import { setReplayOffset as setClockReplayOffset, serverDate } from './utils/clock'
 import { isDmdss } from './utils/env'
@@ -937,11 +939,30 @@ export function App() {
   // API キーはここだけ生の値を渡す。リプレイはユーザーがボタンを押した時点でしか通信せず、
   // キー入力に連動して自動で走ることがないため、遅らせる必要がない
   //（むしろ押した瞬間の最新値を使いたい）。
+  // 設定タブの「テスト時刻設定」に出す、収録済みローカル履歴アーカイブの一覧。
+  // DMDATA/P2PQuakeのアーカイブが存在しない期間（DMDATA運用開始=2020年4月より前等）を
+  // 再現するための同梱データで、対象時刻がこの中の期間に該当すれば下記 fetchReplayEvents が
+  // 通常のアーカイブ取得の代わりにこちらを使う（localArchiveReplay.ts 参照）。
+  const { archives: historicalArchives, isLoading: historicalArchivesLoading } = useHistoricalArchiveIndex()
   const fetchReplayEvents = useCallback(
-    (from: Date, to: Date) => isDmdss
-      ? fetchDmdataReplayEvents(settings.dmdataApiKey, from, to)
-      : fetchP2PReplayEvents(from, to),
-    [settings.dmdataApiKey],
+    (from: Date, to: Date) => {
+      const covering = findCoveringArchiveSync(historicalArchives, from, to)
+      if (covering) return fetchLocalArchiveEvents(covering, from, to)
+      // 収録範囲の終端を過ぎた直後（先読みが1時間ごとに次のウィンドウを取りに来た結果、
+      // ここで初めて収録範囲外に出た）場合、DMDATA/P2PQuakeにはそもそもデータの無い時代
+      // なので静かにフォールバックせず、専用のエラーで知らせる（見つからなければ null で
+      // 通常どおりのフォールバックへ進む）。
+      const justEnded = findArchiveJustEndedSync(historicalArchives, from, REPLAY_WINDOW_MS)
+      if (justEnded) {
+        return Promise.reject(new Error(
+          `ローカル履歴アーカイブ「${justEnded.label}」の収録範囲の終端に達しました。これ以降は再生できません`,
+        ))
+      }
+      return isDmdss
+        ? fetchDmdataReplayEvents(settings.dmdataApiKey, from, to)
+        : fetchP2PReplayEvents(from, to)
+    },
+    [settings.dmdataApiKey, historicalArchives],
   )
   const clearReplayCacheForVariant = useCallback(
     () => { if (isDmdss) clearReplayCache(); else clearP2PReplayCache() },
@@ -950,11 +971,21 @@ export function App() {
   // 地震カードの履歴（再生開始時刻より前の地震）。取得元は再生用と同じくバリアントで変わるが、
   // 引き方が違う。DMDSS 版は日次アーカイブを必要な日数だけ遡り、standard 版は P2PQuake の
   // クエリを 1 回引いて件数で切る（`maxDays` はアーカイブ経路にしか意味が無いため渡さない）。
+  // こちらも fetchReplayEvents と同じく、対象期間がローカル履歴アーカイブに重なればそちらを使う
+  // （重ならなければ DMDATA/P2PQuake 側は「そもそもデータの無い時代」で必ず失敗するため）。
+  // 重なり判定には `maxDays`（既定7日）ではなく fetchReplayEvents の「初期状態」と同じ
+  // REPLAY_PRE_WINDOW_MS（24時間）を使う。ここを独自の幅にすると、本編・初期状態はアーカイブに
+  // 重ならないのに履歴だけ数日先の無関係なアーカイブに重なってしまい、再生は実データ側で
+  // 止まっているのに地震カードだけローカルアーカイブ由来の古い1件を表示する、という不整合が起きる。
   const fetchReplayQuakeHistory = useCallback(
-    (before: Date, targetEvents: number, maxDays: number) => isDmdss
-      ? fetchDmdataQuakeHistory(settings.dmdataApiKey, before, targetEvents, maxDays)
-      : fetchP2PQuakeHistory(before, targetEvents),
-    [settings.dmdataApiKey],
+    (before: Date, targetEvents: number, maxDays: number) => {
+      const covering = findCoveringArchiveSync(historicalArchives, new Date(before.getTime() - REPLAY_PRE_WINDOW_MS), before)
+      if (covering) return fetchLocalArchiveQuakeHistory(covering, before, targetEvents)
+      return isDmdss
+        ? fetchDmdataQuakeHistory(settings.dmdataApiKey, before, targetEvents, maxDays)
+        : fetchP2PQuakeHistory(before, targetEvents)
+    },
+    [settings.dmdataApiKey, historicalArchives],
   )
   const replay = useReplayController({
     fetchEvents: fetchReplayEvents,
@@ -969,10 +1000,30 @@ export function App() {
     loadReplayEvents,
   })
 
+  // リプレイ中、対象時刻がローカル履歴アーカイブの収録範囲に重なる場合、そのidを
+  // useKyoshinRealtime へ渡す。ローカル限定生成の強震モニタ風データ（scripts/capture-kyoshin-waveform.ts）
+  // が存在すればそちらを使い、無ければ何も供給されない（従来どおりYahooには到達不能な時代のため）。
+  // nowTickをdepsに入れて毎秒再評価する。timeOffset自体が変わるタイミング（再生開始・ジャンプ）
+  // でしか判定しないと、収録範囲の外から連続再生で境界を跨いだ場合に一生ローカルアーカイブへ
+  // 切り替わらない（敵対的レビューで指摘）。
+  // ただし評価に使う「今」はnowTickの値そのものではなくDate.now()+replayTimeOffsetを都度
+  // 組み立てる（nowTickは「再評価のきっかけ」としてdepsに入れているだけ）。nowTickの値は
+  // ライブ接続中は実時刻、リプレイ中はリプレイ時刻を指すため、replayTimeOffsetが変わった
+  // 直後の最初のレンダーではまだ古いモードの値のまま（例: ライブの2026年時刻）残っている
+  // ことがあり、それをそのまま使うと一瞬だけ「収録範囲外」と誤判定してYahooのアーカイブ
+  // ソースが起動し、2018年等の到達不能な日付へのfetchが403エラーとしてコンソールに残る
+  // （実機確認で発覚。テスト時刻設定の手動入力で再現した）。
+  const localKyoshinArchiveId = useMemo(() => {
+    if (replayTimeOffset == null) return null
+    const now = new Date(Date.now() + replayTimeOffset)
+    return findCoveringArchiveSync(historicalArchives, now, new Date(now.getTime() + 1))?.id ?? null
+  }, [replayTimeOffset, nowTick, historicalArchives])
+
   // DMDSS版: Yahoo hypoInfo からのEEW検出は不要（DMDATAが直接配信するため）
   const kyoshin = useKyoshinRealtime(true, {
     onEEWEvent: isDmdss ? undefined : injectEvent,
     timeOffset: replayTimeOffset,
+    localArchiveId: localKyoshinArchiveId,
   })
   // 強震モニタの揺れ検知は V2 エンジン（純粋コア step）で行う。
   // 検知結果は音・自動タブ切替・自動フィット・地図オーバーレイ・リアルタイムタブのカードを駆動する。
@@ -1293,6 +1344,8 @@ export function App() {
               replayError={replay.error}
               onStartReplay={replay.start}
               onStopReplay={replay.stop}
+              historicalArchives={historicalArchives}
+              historicalArchivesLoading={historicalArchivesLoading}
               scenarioTest={scenarioTest}
             />
           </div>

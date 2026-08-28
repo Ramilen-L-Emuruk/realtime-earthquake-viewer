@@ -1,4 +1,4 @@
-import { memo, useState, useCallback, useEffect } from 'react'
+import { memo, useState, useCallback, useEffect, useRef } from 'react'
 import type { AppSettings } from '../../hooks/useSettings'
 import type { ConnectionStatus } from '../../types/earthquake'
 import { getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
@@ -8,6 +8,7 @@ import { checkVoicevoxAvailable, fetchVoicevoxSpeakers, isValidVoicevoxUrl, spea
 import { serverDate, getServerClockOffsetMs } from '../../utils/clock'
 import type { UseTestScenariosResult } from '../../hooks/useTestScenarios'
 import type { ScenarioCategory } from '../../types/testScenario'
+import type { HistoricalArchiveIndex } from '../../types/historicalArchive'
 import { isDmdss } from '../../utils/env'
 import { isValidDmdataApiKey, DMDATA_API_KEY_INVALID_MESSAGE } from '../../utils/dmdataApiKey'
 import { useDebouncedValue } from '../../hooks/useDebouncedValue'
@@ -15,6 +16,7 @@ import { DescriptionTip } from './DescriptionTip'
 import { zipSync } from 'fflate'
 import { countRecords, listRecords, clearRecords, onRecordsChanged, hasStorageError } from '../../utils/detectionDiagnosticsDb'
 import { formatFileStamp } from '../../utils/formatters'
+import { useKyoshinImport } from '../../hooks/useKyoshinImport'
 
 export interface TestFunctions {
   earthquake: () => void
@@ -53,8 +55,18 @@ interface Props {
   replayError?: string | null
   onStartReplay: (date: Date) => void
   onStopReplay: () => void
+  /** 収録済みローカル履歴アーカイブの一覧（DMDATA/P2PQuakeに無い期間を代替する）。表示専用。 */
+  historicalArchives?: HistoricalArchiveIndex
+  /** 上記一覧の読み込みが完了していないか。読み込み中に「確定」を押すとローカルアーカイブが判定から漏れるため、完了まで「確定」を無効化する。 */
+  historicalArchivesLoading?: boolean
   scenarioTest: UseTestScenariosResult
 }
+
+// historicalArchivesはoptionalなpropのため、未指定時に`?? []`をインライン展開すると毎レンダーで
+// 新しい配列インスタンスが生まれる。KyoshinImportRow内部のuseCallback/useEffectの依存配列に
+// そのまま渡ると、参照の不安定さが原因で不要な再フェッチ・エフェクト再実行を招くため、
+// モジュールレベルの安定した空配列を使い回す。
+const EMPTY_HISTORICAL_ARCHIVES: HistoricalArchiveIndex = []
 
 // ---- Reusable UI parts ----
 
@@ -151,6 +163,74 @@ function DiagnosticLogRow() {
         </button>
       </div>
       {error && <span className="text-xs text-red-400 text-right">{error}</span>}
+    </div>
+  )
+}
+
+/**
+ * NIEDから手動でダウンロードしたK-NET/KiK-net ZIPを取り込む。対応するアーカイブは
+ * ZIPヘッダーのOrigin Timeから自動検出するため、ファイルを選ぶだけでよい（useKyoshinImport参照）。
+ */
+function KyoshinImportRow({ historicalArchives }: { historicalArchives: HistoricalArchiveIndex }) {
+  const { summaries, importing, deletingArchiveId, errors, deleteError, storageError, importFiles, deleteArchive } = useKyoshinImport(historicalArchives)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const busy = importing || deletingArchiveId !== null
+
+  const handleFiles = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (files && files.length > 0) void importFiles(files)
+    // 同じファイルを選び直しても onChange が発火するようにする（selectしたまま失敗を直して
+    // 再選択するケースがあるため）。
+    e.target.value = ''
+  }, [importFiles])
+
+  return (
+    <div className="flex flex-col items-end gap-2">
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".zip"
+        multiple
+        onChange={handleFiles}
+        disabled={busy}
+        className="hidden"
+      />
+      <button
+        onClick={() => inputRef.current?.click()}
+        disabled={busy}
+        className="px-3 py-1.5 rounded text-xs bg-panel border border-border text-white disabled:opacity-40"
+      >
+        {importing ? '取り込み中...' : 'ZIPを選択'}
+      </button>
+      {summaries.length > 0 && (
+        <div className="flex flex-col gap-1.5 items-end">
+          {summaries.map((s) => (
+            <div key={s.archiveId} className="flex items-center gap-2">
+              <span className="text-xs text-secondary whitespace-nowrap">{s.label}: {s.eventCount}件</span>
+              <button
+                onClick={() => { void deleteArchive(s.archiveId) }}
+                disabled={busy}
+                className="px-2 py-1 rounded text-xs bg-panel border border-border text-secondary disabled:opacity-40"
+              >
+                {deletingArchiveId === s.archiveId ? '削除中...' : '削除'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {storageError && (
+        <span className="text-xs text-red-400 text-right">
+          読み込み済みのデータをうまく読み出せていません（一覧に出ていない地震があるかもしれません）
+        </span>
+      )}
+      {deleteError && <span className="text-xs text-red-400 text-right">{deleteError}</span>}
+      {errors.length > 0 && (
+        <div className="flex flex-col gap-0.5 items-end">
+          {errors.map((e, i) => (
+            <span key={`${i}-${e.fileName}`} className="text-xs text-red-400 text-right break-all">{e.fileName}: {e.message}</span>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -520,7 +600,7 @@ function HomeLocationSection({
 }
 
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus, replayIsFetching, replayError, onStartReplay, onStopReplay, scenarioTest }: Props) {
+export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTest, kyoshinTimeOffset, kyoshinInputDateTime, onSetKyoshinInputDateTime, dmdataConnectionStatus, replayIsFetching, replayError, onStartReplay, onStopReplay, historicalArchives, historicalArchivesLoading, scenarioTest }: Props) {
   const [voicevoxStatus, setVoicevoxStatus] = useState<'idle' | 'checking' | 'available' | 'unavailable' | 'invalid'>('idle')
   const [voicevoxSpeakers, setVoicevoxSpeakers] = useState<VoicevoxSpeaker[]>([])
 
@@ -1181,8 +1261,35 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
 
       <Section title="テスト時刻設定">
         <div className="px-4 py-2 bg-blue-900/30 border-b border-blue-700/40">
-          <p className="text-blue-300 text-xs">指定した時刻の当時のデータ（リアルタイム震度・地震情報・津波）を再生します。2020年以降を指定できます。</p>
+          <p className="text-blue-300 text-xs">
+            指定した日時の地震情報・津波を再生します（{isDmdss ? '2020年4月' : '2015年'}以降）。
+            リアルタイム震度は直近の期間と、下記の地震でのみ再生できます。
+          </p>
         </div>
+        {historicalArchives != null && historicalArchives.length > 0 && (
+          <Row
+            label="収録済みの地震"
+            description="ここから再生すると地震情報・津波は再現されますが、リアルタイム震度は含まれません。必要な場合は下記の「K-NETデータの取り込み」から読み込んでください。"
+          >
+            <div className="flex flex-col gap-1.5 items-end">
+              {historicalArchives.map(a => (
+                <div key={a.id} className="flex items-center gap-2">
+                  <DescriptionTip
+                    label={a.label}
+                    description={`${new Date(a.from).toLocaleString('ja-JP')} 〜 ${new Date(a.to).toLocaleString('ja-JP')}`}
+                  />
+                  <button
+                    onClick={() => onStartReplay(new Date(new Date(a.firstEventTime).getTime() - 60_000))}
+                    disabled={replayIsFetching || historicalArchivesLoading}
+                    className="text-xs bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white px-2 py-1 rounded transition-colors whitespace-nowrap"
+                  >
+                    再生
+                  </button>
+                </div>
+              ))}
+            </div>
+          </Row>
+        )}
         <Row label="開始時刻" description="確定すると指定時刻から1秒ずつ進みます">
           <div className="flex gap-2 items-center flex-wrap justify-end">
             <input
@@ -1193,10 +1300,10 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             />
             <button
               onClick={handleTimeConfirm}
-              disabled={!kyoshinInputDateTime || replayIsFetching}
+              disabled={!kyoshinInputDateTime || replayIsFetching || historicalArchivesLoading}
               className="text-xs bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white px-3 py-1.5 rounded transition-colors"
             >
-              {replayIsFetching ? '取得中...' : '確定'}
+              {replayIsFetching ? '取得中...' : historicalArchivesLoading ? '準備中...' : '確定'}
             </button>
           </div>
         </Row>
@@ -1221,6 +1328,16 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             </div>
           </Row>
         )}
+      </Section>
+
+      <Section title="K-NETデータの取り込み">
+        <Row
+          label="地震波形データを読み込む"
+          description="防災科研（NIED）のサイトからダウンロードしたK-NET/KiK-netの地震波形ファイル（ZIP）を選ぶと、その地震の揺れを「リアルタイム震度」タブで再生できるようになります。複数のファイルをまとめて選ぶと、1つの地震としてまとめて読み込まれます。データはこの端末だけに保存され、外部には送信されません。"
+          hint="上の地震一覧にある地震のみ読み込めます"
+        >
+          <KyoshinImportRow historicalArchives={historicalArchives ?? EMPTY_HISTORICAL_ARCHIVES} />
+        </Row>
       </Section>
 
       <Section title="診断ログ">
