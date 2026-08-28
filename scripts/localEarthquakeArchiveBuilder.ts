@@ -219,6 +219,25 @@ export async function buildQuakeAndTsunamiSection(opts: QuakeTsunamiOptions): Pr
   return entries
 }
 
+interface IndexEntry {
+  id: string
+  label: string
+  description: string
+  from: string
+  to: string
+  firstEventTime: string
+}
+
+/**
+ * 既存のindex.json一覧へ新規/更新エントリを追加し、収録範囲の開始時刻(from)順に並べ替える。
+ * 単純追記だと実行順（開発時にどのアーカイブを先に作ったか）でしか並ばず、設定タブの一覧が
+ * 地震の起きた順にならない（実際に発生していた不具合）。同じidが既にあれば置き換える。
+ */
+export function mergeIndexEntry(index: IndexEntry[], newEntry: IndexEntry): IndexEntry[] {
+  return [...index.filter((e) => e.id !== newEntry.id), newEntry]
+    .sort((a, b) => new Date(a.from).getTime() - new Date(b.from).getTime())
+}
+
 export interface FinalizeArchiveOptions {
   id: string
   label: string
@@ -286,9 +305,9 @@ export async function finalizeArchive(opts: FinalizeArchiveOptions): Promise<voi
   console.log(`書き出し完了: ${outPath}（全${allEntries.length}件）`)
 
   const indexRaw = await readFile(indexPath, 'utf-8')
-  const index = JSON.parse(indexRaw) as { id: string; description: string }[]
-  const newIndexEntry = { id: out.id, label: out.label, description: out.description, from: out.from, to: out.to, firstEventTime: out.firstEventTime }
-  const updatedIndex = [...index.filter((e) => e.id !== out.id), newIndexEntry]
+  const index = JSON.parse(indexRaw) as IndexEntry[]
+  const newIndexEntry: IndexEntry = { id: out.id, label: out.label, description: out.description, from: out.from, to: out.to, firstEventTime: out.firstEventTime }
+  const updatedIndex = mergeIndexEntry(index, newIndexEntry)
   await writeFile(indexPath, JSON.stringify(updatedIndex, null, 2) + '\n', 'utf-8')
   console.log('index.json を更新しました')
 }
