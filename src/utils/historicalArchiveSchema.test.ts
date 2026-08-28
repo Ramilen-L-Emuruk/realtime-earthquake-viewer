@@ -4,7 +4,7 @@ import { validateHistoricalArchiveIndex, validateHistoricalArchiveFile } from '.
 describe('validateHistoricalArchiveIndex', () => {
   it('正常な index.json を全件通す', () => {
     const raw = [
-      { id: 'a', label: 'A', description: 'test', from: '2011-03-11T05:45:00Z', to: '2011-03-11T06:00:00Z' },
+      { id: 'a', label: 'A', description: 'test', from: '2011-03-11T05:45:00Z', to: '2011-03-11T06:00:00Z', firstEventTime: '2011-03-11T05:46:00Z' },
     ]
     const result = validateHistoricalArchiveIndex(raw)
     expect(result.valid).toHaveLength(1)
@@ -14,16 +14,20 @@ describe('validateHistoricalArchiveIndex', () => {
 
   it('壊れた要素を skip して残りを通す', () => {
     const raw = [
-      { id: 'a', label: 'A', description: 'test', from: '2011-03-11T05:45:00Z', to: '2011-03-11T06:00:00Z' },
-      { id: '', label: 'empty id', description: '', from: '2011-01-01T00:00:00Z', to: '2011-01-02T00:00:00Z' },
-      { id: 'c', label: 'C', description: 'test', from: 'not-a-date', to: '2011-01-02T00:00:00Z' },
+      { id: 'a', label: 'A', description: 'test', from: '2011-03-11T05:45:00Z', to: '2011-03-11T06:00:00Z', firstEventTime: '2011-03-11T05:46:00Z' },
+      { id: '', label: 'empty id', description: '', from: '2011-01-01T00:00:00Z', to: '2011-01-02T00:00:00Z', firstEventTime: '2011-01-01T00:00:00Z' },
+      { id: 'c', label: 'C', description: 'test', from: 'not-a-date', to: '2011-01-02T00:00:00Z', firstEventTime: '2011-01-01T00:00:00Z' },
       // from >= to（範囲が逆転・ゼロ幅）
-      { id: 'd', label: 'D', description: 'test', from: '2011-01-02T00:00:00Z', to: '2011-01-01T00:00:00Z' },
+      { id: 'd', label: 'D', description: 'test', from: '2011-01-02T00:00:00Z', to: '2011-01-01T00:00:00Z', firstEventTime: '2011-01-01T00:00:00Z' },
+      // firstEventTime が欠落
+      { id: 'e', label: 'E', description: 'test', from: '2011-01-01T00:00:00Z', to: '2011-01-02T00:00:00Z' },
+      // firstEventTime が from/to の範囲外
+      { id: 'f', label: 'F', description: 'test', from: '2011-01-01T00:00:00Z', to: '2011-01-02T00:00:00Z', firstEventTime: '2010-12-31T00:00:00Z' },
     ]
     const result = validateHistoricalArchiveIndex(raw)
     expect(result.valid).toHaveLength(1)
     expect(result.valid[0].id).toBe('a')
-    expect(result.skipped).toBe(3)
+    expect(result.skipped).toBe(5)
     expect(result.malformed).toBe(false)
   })
 
@@ -44,7 +48,7 @@ describe('validateHistoricalArchiveIndex', () => {
 })
 
 describe('validateHistoricalArchiveFile', () => {
-  const meta = { id: 'a', label: 'A', description: 'test', from: '2011-03-11T05:45:00Z', to: '2011-03-11T06:00:00Z' }
+  const meta = { id: 'a', label: 'A', description: 'test', from: '2011-03-11T05:45:00Z', to: '2011-03-11T06:00:00Z', firstEventTime: '2011-03-11T05:46:00Z' }
   const validEew = { kind: 'eew', areas: [{ pref: '宮城県', name: '宮城県北部', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: null }] }
   const validQuake = { kind: 'quake', earthquake: { maxScale: 70 }, points: [{ pref: '宮城県', addr: '宮城県北部', isArea: true, scale: 70 }] }
   const validTsunami = { kind: 'tsunami', areas: [{ grade: 'MajorWarning', immediate: true, name: '宮城県' }] }
@@ -62,6 +66,7 @@ describe('validateHistoricalArchiveFile', () => {
     expect(result).not.toBeNull()
     expect(result?.file.entries).toHaveLength(3)
     expect(result?.file.entries[1].silent).toBe(true)
+    expect(result?.file.firstEventTime).toBe(meta.firstEventTime)
     expect(result?.skipped).toBe(0)
   })
 
@@ -69,6 +74,8 @@ describe('validateHistoricalArchiveFile', () => {
     expect(validateHistoricalArchiveFile({ ...meta, id: '', entries: [] })).toBeNull()
     expect(validateHistoricalArchiveFile({ ...meta, from: 'not-a-date', entries: [] })).toBeNull()
     expect(validateHistoricalArchiveFile({ ...meta, from: meta.to, to: meta.from, entries: [] })).toBeNull()
+    expect(validateHistoricalArchiveFile({ ...meta, firstEventTime: 'not-a-date', entries: [] })).toBeNull()
+    expect(validateHistoricalArchiveFile({ ...meta, firstEventTime: '2020-01-01T00:00:00Z', entries: [] })).toBeNull()
   })
 
   it('entries が配列でなければ null', () => {

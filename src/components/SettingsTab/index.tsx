@@ -1190,14 +1190,20 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         </div>
         {historicalArchives != null && historicalArchives.length > 0 && (
           <Row label="収録済み履歴アーカイブ">
-            <div className="flex flex-col gap-1 items-end text-right">
+            <div className="flex flex-col gap-1.5 items-end">
               {historicalArchives.map(a => (
-                <div key={a.id} className="text-xs text-secondary">
-                  <span className="text-white">{a.label}</span>
-                  {' '}
-                  <span className="text-secondary/80">
-                    ({new Date(a.from).toLocaleString('ja-JP')} 〜 {new Date(a.to).toLocaleString('ja-JP')})
-                  </span>
+                <div key={a.id} className="flex items-center gap-2">
+                  <DescriptionTip
+                    label={a.label}
+                    description={`${new Date(a.from).toLocaleString('ja-JP')} 〜 ${new Date(a.to).toLocaleString('ja-JP')}`}
+                  />
+                  <button
+                    onClick={() => onStartReplay(new Date(new Date(a.firstEventTime).getTime() - 60_000))}
+                    disabled={replayIsFetching || historicalArchivesLoading}
+                    className="text-xs bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white px-2 py-1 rounded transition-colors whitespace-nowrap"
+                  >
+                    再生
+                  </button>
                 </div>
               ))}
             </div>

@@ -271,6 +271,8 @@ async function main() {
     throw new Error(`id が重複しています: ${duplicateIds.map(([id, count]) => `${id}(${count}件)`).join(', ')}`)
   }
 
+  if (allEntries.length === 0) throw new Error('entriesが1件もありません（firstEventTimeを決定できません）')
+
   const out: HistoricalArchiveFile = {
     id: '2016-kumamoto',
     label: '2016年熊本地震',
@@ -278,6 +280,7 @@ async function main() {
       '2016年4月14日21時26分頃、熊本県熊本地方を震源とするM6.5の地震（前震）が発生。同16日1時25分頃には同地方でM7.3の地震（本震）が発生し、いずれも熊本県益城町で震度7を観測した（熊本地震）。',
     from: WINDOW_START.toISOString(),
     to: WINDOW_END.toISOString(),
+    firstEventTime: allEntries[0].time,
     entries: allEntries,
   }
 
@@ -287,7 +290,7 @@ async function main() {
 
   const indexRaw = await readFile(INDEX_PATH, 'utf-8')
   const index = JSON.parse(indexRaw) as { id: string; description: string }[]
-  const newIndexEntry = { id: out.id, label: out.label, description: out.description, from: out.from, to: out.to }
+  const newIndexEntry = { id: out.id, label: out.label, description: out.description, from: out.from, to: out.to, firstEventTime: out.firstEventTime }
   const updatedIndex = [...index.filter((e) => e.id !== out.id), newIndexEntry]
   await writeFile(INDEX_PATH, JSON.stringify(updatedIndex, null, 2) + '\n', 'utf-8')
   console.log('index.json を更新しました')
