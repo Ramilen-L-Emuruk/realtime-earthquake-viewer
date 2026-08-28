@@ -306,6 +306,16 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
             {tsunamiInfo.text}
           </div>
 
+          {/* 気象庁の自由付加文。津波区分の定型文（forecastText）と違い電文ごとに書き起こされ、
+              続報での更新はここに現れる（観測された津波の高さ・潮位変化の有無・次報の予定時刻など）。
+              全角スペースで整形された表が入るため `whitespace-pre-wrap` で改行と空白を保つ。
+              コンパクト表示（一覧）には出さない。行数が電文次第で読めず、カードの高さが揃わなくなるため。 */}
+          {quake.freeText && (
+            <div className="w-full rounded-lg bg-panel px-3 py-2 text-xs leading-relaxed text-secondary whitespace-pre-wrap roomy:text-sm">
+              {quake.freeText}
+            </div>
+          )}
+
           {/* 震源の緯度・経度 */}
           {hasLocation && (
             <div className="text-xs text-secondary roomy:text-sm">

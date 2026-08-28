@@ -555,6 +555,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | バッジの文字色（塗り色から白/黒を自動選択・気象庁配色は変更不可）と地図バッジの半径テーブル・アイコン倍率とぼやけの関係 | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §15 |
 | 地震の同一性判定（`eventKey`・統合/選択/通知の共通キー・取消のマッチング・P2PQuake で分離できない限界） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §6.1・§6.2 |
 | 遠地地震の識別（VXSE53・`Head/Title`）・付加文コードと `forecastText` | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §3（遠地地震に関する情報） |
+| 付加文が 2 種類あること（固定＝区分の定型文で**区分が変わらない限り続報でも変わらない**／自由＝電文ごとの本文で**続報で動くのはこちら**）・自由付加文は改行と空白を保つこと（全角スペース整形の表が入る）・読み上げには載せず画面だけに出すこと・未知コードの警告は「既知を取り除いて残ったもの」で判定すること（1 つでも既知なら黙る形にすると 022x 系と同居した新コードを見逃す）・VXSE61 は自由付加文を必ず持つため統合時に更新報の値を優先すること | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §3「津波の付加文（固定と自由の 2 種類）」 |
 | 強震モニタの取得と再生の分離（供給元 → 時刻順キュー → 反映の 3 段・放出は到来分の最新 1 件のみ・反映はデータ時刻順に限る・新しい供給元を足すときの入口） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §4「取得と再生の分離」 |
 | クロック同期の主経路・フォールバックの順序（**主経路が失敗したときだけ Yahoo 経路を走らせる**。両方を `feedServerSample` へ供給すると精度の良い側にバイアスが混ざる。「見送り」は失敗ではないのでフォールバックへ落とさない） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §4「クロック同期」 |
 | 外部時刻サービスの換算基準（返る時刻は応答生成時刻。**中点で換算すると -RTT/2 の系統誤差が乗る**）・`?ms` を落とすと精度が秒単位に静かに劣化すること | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §4「主経路: 外部の時刻サービス」 |

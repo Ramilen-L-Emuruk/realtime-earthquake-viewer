@@ -228,12 +228,14 @@ function parseIntensityPoints(intensity: Record<string, unknown>): JMAQuake['poi
 // 0215: この地震による津波の心配はない
 // 0216: 震源が海底の場合、津波が発生するおそれあり（調査中）
 // 0217: 今後の情報に注意（調査中）
+// 0229: 日本への津波の有無については調査中（遠地地震で使われる）
 // 0230: この地震による日本への津波の影響はない（遠地地震で使われる）
 //
 // 遠地地震は上記に加えて 022x 系（0221「太平洋の広域に津波発生の可能性」・0222「太平洋で
-// 津波発生の可能性」・0226「震源の近傍で津波発生の可能性」）を併用する。これらは震源周辺・
-// 太平洋側の状況を述べるもので日本国内への影響区分ではないため、domesticTsunami には
-// 反映しない（付加文の原文は forecastText に保持し、読み上げ側で使う）。
+// 津波発生の可能性」・0226「震源の近傍で津波発生の可能性」・0228「一般的に、この規模の地震が
+// 海域の浅い領域で発生すると津波が発生することがある」）を併用する。これらは震源周辺・太平洋側の
+// 状況や一般論を述べるもので日本国内への影響区分ではないため、domesticTsunami には反映しない
+// （付加文の原文は forecastText に保持し、読み上げ側で使う）。
 function parseDomesticTsunamiFromComments(comments: Record<string, unknown>): DomesticTsunami {
   const codes = arr(obj(comments.forecast).codes)
   for (const code of codes) {
@@ -244,14 +246,19 @@ function parseDomesticTsunamiFromComments(comments: Record<string, unknown>): Do
     if (code === '0215') return 'なし'
     if (code === '0216') return '海面変動の可能性'
     if (code === '0217') return '調査中'
+    if (code === '0229') return '調査中'
     if (code === '0230') return 'なし'
   }
-  // 022x 系（震源近傍・太平洋側で津波発生の可能性）は日本国内への影響区分ではないため
-  // 単独で来ても正常。警告は「区分にも 022x にも当てはまらない＝未知のコードだけが届いた」
-  // ケースに絞る（正常系で鳴らすと、電文構造が本当に変わったときの検知価値が下がる）。
-  const known022x = new Set(['0221', '0222', '0226'])
-  if (codes.length > 0 && !codes.some(code => known022x.has(String(code)))) {
-    log.warn(`[dmdata] 付加文コードから津波区分を導出できません: ${codes.join(' ')} → 不明`)
+  // 022x 系（震源近傍・太平洋側で津波発生の可能性・規模による一般論）は日本国内への影響区分では
+  // ないため、単独で来ても正常。警告は**既知のコードを取り除いて残ったもの**に絞る
+  // （正常系で鳴らすと、電文構造が本当に変わったときの検知価値が下がる）。
+  //
+  // 「1 つでも既知なら黙る」形にしないこと。022x 系は遠地地震で頻出するため、新しいコードが
+  // それと同居した電文で構造の変化を丸ごと見逃す。
+  const knownNonDomesticCodes = new Set(['0221', '0222', '0226', '0228'])
+  const unknownCodes = codes.map(String).filter(code => !knownNonDomesticCodes.has(code))
+  if (unknownCodes.length > 0) {
+    log.warn(`[dmdata] 付加文コードから津波区分を導出できません: ${unknownCodes.join(' ')} → 不明`)
   }
   return '不明'
 }
@@ -327,6 +334,10 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
     str(obj(obj(body.comments).forecast).text),
     arr(obj(obj(body.comments).forecast).codes),
   )
+  // 自由付加文。固定付加文と違い電文ごとに書き起こされ、続報での更新はこちらに現れる。
+  // 全角スペースで整形された表が入るため**改行・空白をそのまま残し**、前後の空白だけ落とす
+  // （`trim()` は全角スペースも対象。XML 経路の `xmlText` と挙動を揃えている）。
+  const freeText = str(obj(body.comments).free).trim()
 
   // VXSE51/53 は intensity から地域別震度を取り出す。VXSE52 は観測データなし。
   const points = (headType === 'VXSE53' || headType === 'VXSE51')
@@ -373,6 +384,7 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
     },
     points,
     forecastText: forecastText || undefined,
+    freeText: freeText || undefined,
   }
 }
 
@@ -542,6 +554,8 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     forecastCommentEl ? xmlText(xmlQ(forecastCommentEl, 'Text')) : '',
     forecastCodes,
   )
+  // 自由付加文（JSON 経路の comments.free と同じ内容）。`xmlText` が前後の空白だけを落とす。
+  const freeText = xmlText(xmlQ(doc, 'FreeFormComment'))
 
   return {
     kind: 'quake',
@@ -568,6 +582,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     },
     points,
     forecastText: forecastText || undefined,
+    freeText: freeText || undefined,
   }
 }
 
