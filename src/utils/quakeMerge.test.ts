@@ -374,9 +374,53 @@ describe('mergeQuakeInto — VXSE61（顕著地震）', () => {
     const n = makeNoIntensity({ type: '顕著な地震の震源要素更新のお知らせ', tsunami: '警報等' })
     expect(mergeQuakeInto(e, n).earthquake.domesticTsunami).toBe('警報等')
   })
+
+  // VXSE61 は自由付加文を必ず持ち、定型文だけのこともあれば精査後のモーメントマグニチュードが
+  // 添えられることもある。土台が `...existing` なので、明示的に採らないと更新前の付加文が残る
+  it('顕著地震が自由付加文を持てば更新する', () => {
+    const e: JMAQuake = { ...makeQuake(), freeText: '更新前の付加文。' }
+    const amendment = 'なお、この地震の精査したモーメントマグニチュード（Ｍｗ）は６．８です。'
+    const n: JMAQuake = { ...makeNoIntensity({ type: '顕著な地震の震源要素更新のお知らせ' }), freeText: amendment }
+    expect(mergeQuakeInto(e, n).freeText).toBe(amendment)
+  })
+
+  // 対照: 持たない報では既存の付加文を残す（津波区分を「不明」なら据え置くのと同じ考え方）
+  // 震度を既存から補完する経路でも自由付加文を落とさない。震度だけ引き継いで本文を捨てると、
+  // 「津波注意報を発表中です」のような状況説明が後続の震源情報で消える
+  it('震度欠落の後続電文でも既存の自由付加文を保持する', () => {
+    const notice = 'なお、茨城県から沖縄県地方にかけての太平洋側を中心に津波注意報を発表中です。'
+    const e: JMAQuake = { ...makeQuake({ type: '震度速報' }), freeText: notice }
+    const n = makeNoIntensity({ type: '震源情報' })
+    expect(mergeQuakeInto(e, n).freeText).toBe(notice)
+  })
+
+  // 対照: 後続電文が自分の自由付加文を持っていれば、そちらで置き換える
+  it('震度欠落の後続電文が自由付加文を持てばそちらを採る', () => {
+    const e: JMAQuake = { ...makeQuake({ type: '震度速報' }), freeText: '古い本文。' }
+    const n: JMAQuake = { ...makeNoIntensity({ type: '震源情報' }), freeText: '新しい本文。' }
+    expect(mergeQuakeInto(e, n).freeText).toBe('新しい本文。')
+  })
+
+  it('顕著地震が自由付加文を持たなければ既存の付加文を保持する', () => {
+    const e: JMAQuake = { ...makeQuake(), freeText: '既存の付加文。' }
+    const n = makeNoIntensity({ type: '顕著な地震の震源要素更新のお知らせ' })
+    expect(mergeQuakeInto(e, n).freeText).toBe('既存の付加文。')
+  })
 })
 
 describe('mergeQuakeInto — 顕著地震カードが先にある場合（本バグの核心）', () => {
+  // 震度が復活する経路では土台が incoming（震度電文）に替わる。明示的に採らないと
+  // VXSE61 が伝える精査後の Mw が、震度が確定した瞬間に消える
+  it('顕著地震単独カードの自由付加文は、震度電文で震度が復活しても残る', () => {
+    const amendment = 'なお、この地震の精査したモーメントマグニチュード（Ｍｗ）は６．８です。'
+    const e: JMAQuake = {
+      ...makeNoIntensity({ type: '顕著な地震の震源要素更新のお知らせ', time: '2026-07-28T07:40:00Z' }),
+      freeText: amendment,
+    }
+    const n = makeQuake({ time: '2026-07-28T07:30:00Z' })
+    expect(mergeQuakeInto(e, n).freeText).toBe(amendment)
+  })
+
   it('顕著地震単独カード（震度なし）に各地の震度が来たら震度を復活させる', () => {
     // 既存 = 先に単独カード化した VXSE61（優先度5・震度なし・発表が新しい）
     const e = makeNoIntensity({
