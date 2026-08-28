@@ -1,5 +1,36 @@
 import { describe, it, expect } from 'vitest'
-import { parseNiiTime, resolveQuakeHeadType, isRelated, isUnverifiableCancellation } from './localEarthquakeArchiveBuilder'
+import { parseNiiTime, resolveQuakeHeadType, isRelated, isUnverifiableCancellation, mergeIndexEntry } from './localEarthquakeArchiveBuilder'
+
+function indexEntry(id: string, from: string) {
+  return { id, label: id, description: id, from, to: from, firstEventTime: from }
+}
+
+describe('mergeIndexEntry', () => {
+  it('正: 新規エントリを収録範囲の開始時刻(from)順に挿入する', () => {
+    const index = [indexEntry('2018-osaka', '2018-06-17T15:00:00.000Z'), indexEntry('2018-iburi', '2018-09-05T15:00:00.000Z')]
+    const result = mergeIndexEntry(index, indexEntry('2016-kumamoto', '2016-04-14T03:00:00.000Z'))
+    expect(result.map((e) => e.id)).toEqual(['2016-kumamoto', '2018-osaka', '2018-iburi'])
+  })
+
+  it('対照（バグ回帰）: 単純追記だと実行順のままになってしまう', () => {
+    // mergeIndexEntryを使わず配列末尾へ追記するだけの旧実装だと、地震の発生順ではなく
+    // ビルドスクリプトを実行した順に並んでしまっていた（実際に発生していた不具合）。
+    const index = [indexEntry('2018-osaka', '2018-06-17T15:00:00.000Z')]
+    const naiveAppend = [...index, indexEntry('2016-kumamoto', '2016-04-14T03:00:00.000Z')]
+    expect(naiveAppend.map((e) => e.id)).toEqual(['2018-osaka', '2016-kumamoto']) // 発生順ではない
+    expect(mergeIndexEntry(index, indexEntry('2016-kumamoto', '2016-04-14T03:00:00.000Z')).map((e) => e.id))
+      .toEqual(['2016-kumamoto', '2018-osaka']) // 発生順に直る
+  })
+
+  it('安全弁: 同じidが既にある場合は置き換える（重複させない）', () => {
+    const index = [indexEntry('2016-kumamoto', '2016-04-14T03:00:00.000Z')]
+    const updated = indexEntry('2016-kumamoto', '2016-04-14T03:00:00.000Z')
+    updated.description = '更新後の説明'
+    const result = mergeIndexEntry(index, updated)
+    expect(result).toHaveLength(1)
+    expect(result[0].description).toBe('更新後の説明')
+  })
+})
 
 describe('parseNiiTime', () => {
   it('正: NII表示形式（オフセットが分無しの2桁）をDateへ変換する', () => {
