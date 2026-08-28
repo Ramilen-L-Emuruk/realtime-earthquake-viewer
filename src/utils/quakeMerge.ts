@@ -198,6 +198,12 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
           ? incoming.earthquake.domesticTsunami
           : existing.earthquake.domesticTsunami,
       },
+      // VXSE61 は自由付加文を必ず持ち、定型文だけのこともあれば**精査後のモーメント
+      // マグニチュード**が添えられることもある。`...existing` を土台にしているため、
+      // 明示的に採らないとその報だけが持つ情報が捨てられ、更新前の付加文が残り続ける。
+      // 固定付加文（`forecastText`）は実電文では VXSE61 に付かないため触らない
+      // （コードで保証しているわけではない。付くようになったら同じ扱いが要る）。
+      freeText: incoming.freeText ?? existing.freeText,
     }
   }
 
@@ -223,6 +229,9 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
       ...result,
       earthquake: { ...result.earthquake, maxScale: existing.earthquake.maxScale },
       points: existing.points,
+      // 自由付加文も同じ考え方で補う。震度を引き継ぐ経路で本文だけ落とすと、
+      // 「津波注意報を発表中です」のような状況説明が後続の震源情報で静かに消える。
+      freeText: result.freeText ?? existing.freeText,
     }
   }
 
@@ -234,6 +243,10 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
       time: existing.time,
       issue: existing.issue,
       earthquake: { ...result.earthquake, hypocenter: existing.earthquake.hypocenter },
+      // 自由付加文も新しい側（＝ここでは VXSE61）を残す。土台が incoming なので、
+      // 明示しないと VXSE61 が伝える精査後の Mw が**震度が確定した瞬間に消える**。
+      // VXSE61 が先に立ったカードへ後から震度電文が届く経路は実運用で起きる（§8 QUAKE-4）。
+      freeText: existing.freeText ?? result.freeText,
     }
   }
 

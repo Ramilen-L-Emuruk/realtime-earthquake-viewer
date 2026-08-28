@@ -23,11 +23,11 @@ function toEventIdTimestamp(d: Date): string {
  * 津波の影響なし）という、遠地地震特有の組み合わせになる報を選んでいる。
  * これにより「深さ句の省略」「付加文原文の読み上げ」「0230 の津波区分マップ」を一度に確認できる。
  *
- * @param includeForecastText 付加文の原文を含めるか。付加文は DMDATA 経路でのみ配信され、
- *   P2PQuake（標準版）には存在しないため、standard 版のテストでは false を渡して
- *   実データで起こり得ない読み上げが出ないようにする。
+ * @param includeComments 付加文（固定・自由の両方）を含めるか。付加文は DMDATA 経路でのみ
+ *   配信され、P2PQuake（標準版）には存在しないため、standard 版のテストでは false を渡して
+ *   実データで起こり得ない読み上げ・表示が出ないようにする。
  */
-export function createTestForeignQuake(includeForecastText: boolean): JMAQuake {
+export function createTestForeignQuake(includeComments: boolean): JMAQuake {
   const nowDate = serverDate()
   const now = nowDate.toISOString()
   const eventId = toEventIdTimestamp(nowDate)
@@ -47,8 +47,14 @@ export function createTestForeignQuake(includeForecastText: boolean): JMAQuake {
       domesticTsunami: 'なし',
     },
     points: [],
-    forecastText: includeForecastText
+    forecastText: includeComments
       ? '震源の近傍で津波発生の可能性があります。この地震による日本への津波の影響はありません。'
+      : undefined,
+    // 自由付加文も実電文どおり。この報では津波情報の発表元を 1 行添えるだけだが、
+    // 続報が出る事象（火山噴火・津波を伴う海外地震）ではここに観測状況が書かれ、
+    // 固定付加文が動かないまま**自由付加文だけが更新される**。
+    freeText: includeComments
+      ? 'ＰＴＷＣでは１７日２３時５４分に津波情報を発表しています。'
       : undefined,
   }
 }

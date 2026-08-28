@@ -78,6 +78,20 @@ export interface JMAQuake {
    * P2PQuake 経路は付加文を配信しないため undefined。
    */
   forecastText?: string
+  /**
+   * 気象庁の自由付加文（`Comments/FreeFormComment`）の原文。DMDATA 経路でのみ得られる。
+   *
+   * 固定付加文（`forecastText`）が津波区分ごとの定型文であるのに対し、こちらは電文ごとに
+   * 書き起こされる本文で、**続報で実際に更新されるのはこちら側**であることが多い（観測された
+   * 津波の高さ・潮位変化の有無・次報の発表予定時刻など）。固定付加文は区分が変わらない限り
+   * 動かないため、これを持たないと「続報を受けたのに何も変わらない」状態になる。
+   *
+   * 全角スペースで整形された表が入ることがあるため、**改行と空白をそのまま保持する**
+   * （前後の空行だけ落とす）。表示側も `whitespace-pre-wrap` で受けること。
+   *
+   * P2PQuake 経路は配信しないため undefined。
+   */
+  freeText?: string
 }
 
 export type TsunamiGrade = 'MajorWarning' | 'Warning' | 'Watch' | 'Forecast' | 'Unknown'
