@@ -40,6 +40,8 @@
     "scripts/seismicIntensity.test.ts",
     "scripts/knetAscii.ts",
     "scripts/knetAscii.test.ts",
-    "scripts/capture-kyoshin-waveform.ts"
+    "scripts/capture-kyoshin-waveform.ts",
+    "scripts/kyoshinEventMerge.ts",
+    "scripts/kyoshinEventMerge.test.ts"
   ]
 }

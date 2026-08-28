@@ -6,20 +6,24 @@
 // （public/data/historical-archives-kyoshin/*.json）はリポジトリに含めない（.gitignore対象）。
 // 実行者本人のNIED登録が必要で、生成したデータは実行者のローカル環境でのみ再生できる。
 //
-// 使い方:
+// 使い方（複数の--originを指定すると、本震＋余震のように離れた複数のK-NETイベントを
+// 1つのアーカイブへ統合する。観測点はstationCode基準で名寄せし、時間軸は各イベントの
+// 実際の記録範囲のみ（間の無関係な期間は含めない＝スパース）。詳細は下部main()参照）:
 //   NIED_KNET_USER=xxx NIED_KNET_PASSWORD=yyy \
-//     npx tsx scripts/capture-kyoshin-waveform.ts --origin=20180906030759 --id=2018-iburi \
-//     --expected-max-intensity=6.5
+//     npx tsx scripts/capture-kyoshin-waveform.ts \
+//     --origin=20180906030759 --origin=20180906061100 \
+//     --id=2018-iburi --expected-max-intensity=6.5
 //
 //   --origin: 地震発生時刻(JST)をYYYYMMDDHHMMSS形式で指定する（気象庁発表の原時刻）。
-//             K-NET自身のイベントディレクトリ名（トリガー検知時刻ベースで数秒ずれる）とは
-//             完全には一致しないため、月別の一覧から最も近いものを自動で探す
-//             （EVENT_MATCH_TOLERANCE_MS参照）
+//             複数回指定できる。K-NET自身のイベントディレクトリ名（トリガー検知時刻ベースで
+//             数秒〜1分弱ずれる）とは完全には一致しないため、月別の一覧から最も近いものを
+//             自動で探す（EVENT_MATCH_TOLERANCE_MS参照）
 //   --id: 出力ファイル名（<id>.json）。対応する historical-archives/<id>.json と揃えると
 //         リプレイ時に自動で読み込まれる
 //   --window-sec / --step-sec: 計測震度のスライディングウィンドウ設定（既定20秒・1秒刻み）
-//   --expected-max-intensity: 既知の最大震度（計測震度換算値）との差が1.0を超えたら警告を出す。
-//         算出パイプラインの単位取り違え等、明らかな誤りに早期に気付くための任意の検算
+//   --expected-max-intensity: 既知の最大震度（計測震度換算値、全イベント通して）との差が
+//         1.0を超えたら警告を出す。算出パイプラインの単位取り違え等、明らかな誤りに
+//         早期に気付くための任意の検算
 //
 // 認証情報の置き場所は .env.local（NIED_KNET_USER / NIED_KNET_PASSWORD）。
 // NIEDの登録は https://hinetwww11.bosai.go.jp/nied/registration/ から行う（利用者本人の責任）。
@@ -29,10 +33,10 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { unzipSync } from 'fflate'
-import { parseKnetAsciiFile, groupIntoStations, type KnetAsciiFile, type KnetStation } from './knetAscii'
+import { parseKnetAsciiFile, groupIntoStations, type KnetAsciiFile } from './knetAscii'
 import { computeIntensityTimeSeries } from './seismicIntensity'
-import { kyoshinValueToIndex } from '../src/utils/kyoshinIntensity'
-import type { LocalKyoshinArchive, LocalKyoshinFrame } from '../src/types/localKyoshinArchive'
+import { mergeEvents, type EventResult, type StationSeries } from './kyoshinEventMerge'
+import type { LocalKyoshinArchive } from '../src/types/localKyoshinArchive'
 
 const WINDOW_SEC_DEFAULT = 20
 const STEP_SEC_DEFAULT = 1
@@ -69,7 +73,7 @@ function hasByteOrderMark(path: string): boolean {
 }
 
 interface CliArgs {
-  originTimeJst: string
+  originTimesJst: string[]
   id: string
   windowSec: number
   stepSec: number
@@ -79,7 +83,7 @@ interface CliArgs {
 function parseCliArgs(): CliArgs {
   const { values } = parseArgs({
     options: {
-      origin: { type: 'string' },
+      origin: { type: 'string', multiple: true },
       id: { type: 'string' },
       'window-sec': { type: 'string' },
       'step-sec': { type: 'string' },
@@ -87,9 +91,9 @@ function parseCliArgs(): CliArgs {
     },
   })
 
-  const origin = values.origin
-  if (!origin || !/^\d{14}$/.test(origin)) {
-    console.error('--origin は地震発生時刻(JST)をYYYYMMDDHHMMSS形式で指定してください（例: --origin=20180906030759）')
+  const origins = values.origin ?? []
+  if (origins.length === 0 || origins.some((o) => !/^\d{14}$/.test(o))) {
+    console.error('--origin は地震発生時刻(JST)をYYYYMMDDHHMMSS形式で指定してください（例: --origin=20180906030759）。複数回指定可')
     process.exit(1)
   }
   const id = values.id
@@ -109,7 +113,7 @@ function parseCliArgs(): CliArgs {
   }
 
   return {
-    originTimeJst: origin,
+    originTimesJst: origins,
     id,
     windowSec: values['window-sec'] ? Number(values['window-sec']) : WINDOW_SEC_DEFAULT,
     stepSec,
@@ -178,7 +182,7 @@ async function findNearestEventDirectory(originTimeJst: string, auth: string): P
       + `許容誤差${EVENT_MATCH_TOLERANCE_MS / 1000}秒を超えています。--originの時刻を確認してください）`,
     )
   }
-  console.log(`K-NETイベントディレクトリ: ${best.ts}（--originとの差 ${Math.round(best.diffMs / 1000)}秒）`)
+  console.log(`  K-NETイベントディレクトリ: ${best.ts}（--originとの差 ${Math.round(best.diffMs / 1000)}秒）`)
   return best.ts
 }
 
@@ -218,15 +222,48 @@ function parseAllStationFiles(zip: Uint8Array): { files: KnetAsciiFile[]; failur
   return { files, failures }
 }
 
-interface StationSeries {
-  station: KnetStation
-  /** 絶対時刻(UNIX epoch秒、整数)と計測震度のペア。 */
-  points: { epochSec: number; intensity: number | null }[]
-}
+/** 1つのK-NETイベント（--origin 1件ぶん）をダウンロード・解析し、観測点ごとの震度時系列を算出する。 */
+async function processEvent(
+  originTimeJst: string,
+  user: string,
+  password: string,
+  windowSec: number,
+  stepSec: number,
+): Promise<EventResult> {
+  console.log(`\n=== イベント origin=${originTimeJst} ===`)
+  console.log('K-NET/KiK-net強震データを取得中...')
+  const zip = await downloadKnetZip(originTimeJst, user, password)
+  console.log(`ダウンロード完了（${zip.byteLength}バイト）。解凍・パース中...`)
 
-/** 観測点ごとに、絶対時刻付きの計測震度時系列を算出する。 */
-function buildStationSeries(stations: KnetStation[], windowSec: number, stepSec: number): StationSeries[] {
-  return stations.map((station) => {
+  const { files, failures } = parseAllStationFiles(zip)
+  if (failures.length > 0) {
+    console.error(`${failures.length}件のファイルでパースに失敗しました:`)
+    for (const f of failures.slice(0, 20)) console.error(`  ${f.fileName}: ${f.message}`)
+    throw new Error(
+      `origin=${originTimeJst}: パースに失敗したファイルがあります（上記参照）。`
+      + 'scripts/knetAscii.ts のヘッダー判定条件が実際のファイル形式と食い違っている可能性があります',
+    )
+  }
+  if (files.length === 0) throw new Error(`origin=${originTimeJst}: ZIP内にNS/EW/UD波形ファイルが1件も見つかりませんでした`)
+
+  const { stations, skippedIncomplete } = groupIntoStations(files)
+  if (skippedIncomplete > 0) {
+    console.warn(`3成分が揃わない観測点 ${skippedIncomplete} 件を除外しました`)
+  }
+  if (stations.length === 0) throw new Error(`origin=${originTimeJst}: 3成分が揃った観測点が0件です`)
+  // 除外が大半を占める場合、component/depthKindの判定ロジック（resolveComponentFromFileName）に
+  // 系統的な誤りがある可能性が高い。警告止まりだと、実質ほぼ空のデータが「成功」として
+  // 書き出されるのに気付けない。
+  const incompleteRatio = skippedIncomplete / (skippedIncomplete + stations.length)
+  if (incompleteRatio > INCOMPLETE_STATION_RATIO_LIMIT) {
+    throw new Error(
+      `origin=${originTimeJst}: 3成分が揃わない観測点が${Math.round(incompleteRatio * 100)}%に達しました`
+      + '（成分・深度の判定ロジックに誤りがある可能性があります）',
+    )
+  }
+  console.log(`${stations.length}観測点を検出。震度時系列を算出中...`)
+
+  const stationSeries: StationSeries[] = stations.map((station) => {
     const startEpochSec = Math.round(station.recordStartTime.getTime() / 1000)
     const points = computeIntensityTimeSeries(
       station.components.NS,
@@ -238,23 +275,30 @@ function buildStationSeries(stations: KnetStation[], windowSec: number, stepSec:
       epochSec: startEpochSec + Math.round(p.tSec),
       intensity: p.intensity,
     }))
-    return { station, points }
+    return { stationCode: station.stationCode, latitude: station.latitude, longitude: station.longitude, points }
   })
-}
 
-/** 観測点ごとの秒→震度インデックスの検索表を作る（フレーム合成時のO(1)参照用）。 */
-function buildLookups(perStation: StationSeries[]): Map<number, number>[] {
-  return perStation.map((s) => {
-    const map = new Map<number, number>()
+  let peakIntensity = -Infinity
+  for (const s of stationSeries) {
     for (const p of s.points) {
-      if (p.intensity !== null) map.set(p.epochSec, kyoshinValueToIndex(p.intensity))
+      if (p.intensity !== null && p.intensity > peakIntensity) peakIntensity = p.intensity
     }
-    return map
-  })
+  }
+  // 全ウィンドウがデータ不足でnullだった場合、-1（欠測）だけのフレームが無警告で書き出されて
+  // しまうため、他のイベントを巻き込む前にここで止める。
+  if (!Number.isFinite(peakIntensity)) {
+    throw new Error(
+      `origin=${originTimeJst}: 有効な計測震度を1件も算出できませんでした（全ウィンドウがデータ不足でnullでした）。`
+      + 'サンプリング周波数・スケールファクタ等、算出パイプラインの誤りを疑ってください',
+    )
+  }
+  console.log(`このイベントのピーク計測震度（近似値）: ${peakIntensity.toFixed(2)}`)
+
+  return { originTimeJst, stationSeries, peakIntensity }
 }
 
 async function main(): Promise<void> {
-  const { originTimeJst, id, windowSec, stepSec, expectedMaxIntensity } = parseCliArgs()
+  const { originTimesJst, id, windowSec, stepSec, expectedMaxIntensity } = parseCliArgs()
   const user = process.env.NIED_KNET_USER
   const password = process.env.NIED_KNET_PASSWORD
   if (!user || !password) {
@@ -265,83 +309,43 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
-  console.log(`K-NET/KiK-net強震データを取得中... (origin=${originTimeJst})`)
-  const zip = await downloadKnetZip(originTimeJst, user, password)
-  console.log(`ダウンロード完了（${zip.byteLength}バイト）。解凍・パース中...`)
-
-  const { files, failures } = parseAllStationFiles(zip)
-  if (failures.length > 0) {
-    console.error(`${failures.length}件のファイルでパースに失敗しました:`)
-    for (const f of failures.slice(0, 20)) console.error(`  ${f.fileName}: ${f.message}`)
-    throw new Error(
-      'パースに失敗したファイルがあります（上記参照）。scripts/knetAscii.ts のヘッダー判定条件が'
-      + '実際のファイル形式と食い違っている可能性があります',
-    )
-  }
-  if (files.length === 0) throw new Error('ZIP内にNS/EW/UD波形ファイルが1件も見つかりませんでした')
-
-  const { stations, skippedIncomplete } = groupIntoStations(files)
-  if (skippedIncomplete > 0) {
-    console.warn(`3成分が揃わない観測点 ${skippedIncomplete} 件を除外しました`)
-  }
-  if (stations.length === 0) throw new Error('3成分が揃った観測点が0件です')
-  // 除外が大半を占める場合、component/depthKindの判定ロジック（resolveComponentFromFileName）に
-  // 系統的な誤りがある可能性が高い。警告止まりだと、実質ほぼ空のデータが「成功」として
-  // 書き出されるのに気付けない。
-  const incompleteRatio = skippedIncomplete / (skippedIncomplete + stations.length)
-  if (incompleteRatio > INCOMPLETE_STATION_RATIO_LIMIT) {
-    throw new Error(
-      `3成分が揃わない観測点が${Math.round(incompleteRatio * 100)}%に達しました`
-      + '（成分・深度の判定ロジックに誤りがある可能性があります）',
-    )
-  }
-  console.log(`${stations.length}観測点を検出。震度時系列を算出中...`)
-
-  const perStation = buildStationSeries(stations, windowSec, stepSec)
-
-  let globalMinSec = Infinity
-  let globalMaxSec = -Infinity
-  let peakIntensity = -Infinity
-  for (const s of perStation) {
-    for (const p of s.points) {
-      if (p.epochSec < globalMinSec) globalMinSec = p.epochSec
-      if (p.epochSec > globalMaxSec) globalMaxSec = p.epochSec
-      if (p.intensity !== null && p.intensity > peakIntensity) peakIntensity = p.intensity
+  // イベント単位でtry/catchする: 19件のような大きなバッチで1件（許容誤差を超えたイベント
+  // 一致失敗・一時的な通信断等）が失敗しても、既に成功した残り全部を無駄にしない
+  // （実機確認で判明: 17/19まで成功していたのに、18件目の失敗でmain()全体が例外を投げ、
+  // 成功済みの17件分のダウンロード・FFT計算がすべて無駄になった）。
+  const events: EventResult[] = []
+  const eventFailures: { origin: string; message: string }[] = []
+  for (const origin of originTimesJst) {
+    try {
+      events.push(await processEvent(origin, user, password, windowSec, stepSec))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`origin=${origin} をスキップします: ${message}`)
+      eventFailures.push({ origin, message })
     }
   }
-  // globalMinSec/globalMaxSecはintensityがnull（データ不足）の点も含めて更新されるため、
-  // 「フレーム自体は生成できたか」の確認にしかならない。「実際に震度を1件でも算出できたか」は
-  // 別途peakIntensityで確認する必要がある（そうしないと、全窓がnullでも「成功」扱いになり、
-  // 全フレームのindicesが-1（欠測）で埋まったアーカイブが無警告で書き出されてしまう）。
-  if (!Number.isFinite(globalMinSec)) throw new Error('震度時系列を1件も算出できませんでした')
-  if (!Number.isFinite(peakIntensity)) {
-    throw new Error(
-      '有効な計測震度を1件も算出できませんでした（全ウィンドウがデータ不足でnullでした）。'
-      + 'サンプリング周波数・スケールファクタ等、算出パイプラインの誤りを疑ってください',
+  if (events.length === 0) throw new Error('全イベントの取得・算出に失敗しました（上記参照）')
+  if (eventFailures.length > 0) {
+    console.warn(
+      `\n${eventFailures.length}件のイベントをスキップしました: ${eventFailures.map((f) => f.origin).join(', ')}`,
     )
   }
 
-  console.log(`ピーク計測震度（近似値）: ${peakIntensity.toFixed(2)}`)
-  if (expectedMaxIntensity !== null && Math.abs(peakIntensity - expectedMaxIntensity) > SANITY_CHECK_TOLERANCE) {
+  const { stationOrder, siteCoords, frames } = mergeEvents(events, stepSec)
+
+  const overallPeak = Math.max(...events.map((e) => e.peakIntensity))
+  console.log(`\n${events.length}イベント統合。全イベント通してのピーク計測震度（近似値）: ${overallPeak.toFixed(2)}`)
+  if (expectedMaxIntensity !== null && Math.abs(overallPeak - expectedMaxIntensity) > SANITY_CHECK_TOLERANCE) {
     console.warn(
       `警告: 期待値(${expectedMaxIntensity})との差が${SANITY_CHECK_TOLERANCE}を超えています。`
       + 'スケールファクタの取り違え・単位ミス等、算出パイプラインの誤りを疑ってください',
     )
   }
 
-  const lookups = buildLookups(perStation)
-  const frames: LocalKyoshinFrame[] = []
-  for (let sec = globalMinSec; sec <= globalMaxSec; sec += stepSec) {
-    frames.push({
-      time: new Date(sec * 1000).toISOString(),
-      indices: lookups.map((map) => map.get(sec) ?? -1),
-    })
-  }
-
   const archive: LocalKyoshinArchive = {
     id,
-    sites: perStation.map((s) => [s.station.latitude, s.station.longitude]),
-    stationCodes: perStation.map((s) => s.station.stationCode),
+    sites: siteCoords,
+    stationCodes: stationOrder,
     frames,
   }
 
@@ -349,7 +353,7 @@ async function main(): Promise<void> {
   await mkdir(outDir, { recursive: true })
   const outPath = join(outDir, `${id}.json`)
   await writeFile(outPath, JSON.stringify(archive))
-  console.log(`書き出し完了: ${outPath}（${frames.length}フレーム、${archive.sites.length}観測点）`)
+  console.log(`書き出し完了: ${outPath}（${frames.length}フレーム、${stationOrder.length}観測点、${events.length}イベント統合）`)
   console.log('このファイルはリポジトリに含めない（.gitignore対象）。実行者本人の環境でのみ再生できる')
 }
 
