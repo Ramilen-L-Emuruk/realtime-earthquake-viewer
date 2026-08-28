@@ -21,6 +21,7 @@ import {
   type KyoshinSource,
   type KyoshinSourceSink,
 } from '../services/kyoshinSource'
+import { createLocalKyoshinArchiveSource } from '../services/kyoshinLocalArchiveSource'
 import type { SiteCoords, YahooHypoInfoItem } from '../services/kyoshin'
 import type { EEWAlert } from '../types/earthquake'
 import { setReplayOffset } from '../utils/clock'
@@ -31,6 +32,9 @@ import { log } from '../utils/logger'
 vi.mock('../services/kyoshinSource', () => ({
   createYahooLiveSource: vi.fn(),
   createYahooArchiveSource: vi.fn(),
+}))
+vi.mock('../services/kyoshinLocalArchiveSource', () => ({
+  createLocalKyoshinArchiveSource: vi.fn(),
 }))
 
 // フックは失敗のたびにログを出す。console を潰すと React の act 警告まで隠れてしまうため、
@@ -43,6 +47,7 @@ vi.mock('../utils/logger', async (importOriginal) => {
 
 const liveMock = vi.mocked(createYahooLiveSource)
 const archiveMock = vi.mocked(createYahooArchiveSource)
+const localArchiveMock = vi.mocked(createLocalKyoshinArchiveSource)
 
 const NOW = new Date('2026-08-19T12:00:00+09:00').getTime()
 const TOKYO: SiteCoords = [[35.7, 139.7]]
@@ -104,6 +109,7 @@ describe('useKyoshinRealtime の結線', () => {
     vi.useFakeTimers({ now: NOW })
     liveMock.mockReset()
     archiveMock.mockReset()
+    localArchiveMock.mockReset()
     vi.mocked(log.warn).mockClear()
     vi.mocked(log.error).mockClear()
     setReplayOffset(null)
@@ -348,6 +354,18 @@ describe('useKyoshinRealtime の結線', () => {
 
     renderHook(() => useKyoshinRealtime(true, { timeOffset: null }))
     expect(liveMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('localArchiveIdを渡すとローカル供給元を使い、timeOffsetがあってもYahooの2ソースは使わない', () => {
+    const local = createFakeSource()
+    const archive = createFakeSource()
+    localArchiveMock.mockReturnValue(local.source)
+    archiveMock.mockReturnValue(archive.source)
+
+    renderHook(() => useKyoshinRealtime(true, { timeOffset: -3600_000, localArchiveId: '2018-iburi' }))
+    expect(localArchiveMock).toHaveBeenCalledWith('2018-iburi')
+    expect(archiveMock).not.toHaveBeenCalled()
+    expect(liveMock).not.toHaveBeenCalled()
   })
 
   it('時刻オフセットが変わったら供給元を差し替える', () => {

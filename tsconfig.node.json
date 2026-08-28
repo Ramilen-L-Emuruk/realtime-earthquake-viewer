@@ -24,6 +24,18 @@
     "scripts/dev-api-key-gate.test.ts",
     "scripts/hypocenterRecord.ts",
     "scripts/hypocenterRecord.test.ts",
-    "scripts/build-hypocenter-catalog.ts"
+    "scripts/build-hypocenter-catalog.ts",
+    "scripts/build-historical-archive-2011-tohoku.ts",
+    "scripts/build-historical-archive-2016-kumamoto.ts",
+    "scripts/build-historical-archive-2018-osaka.ts",
+    "scripts/build-historical-archive-2016-tottori.ts",
+    "scripts/build-historical-archive-2018-iburi.ts",
+    "scripts/localEarthquakeArchiveBuilder.test.ts",
+    "scripts/niiJmaXmlArchive.test.ts",
+    "scripts/historicalEewParser.test.ts",
+    "scripts/historicalEewArchiveBuilder.test.ts",
+    "scripts/historicalTsunamiArchiveBuilder.test.ts",
+    "scripts/capture-kyoshin-waveform.ts",
+    "src/types/fft-js.d.ts"
   ]
 }

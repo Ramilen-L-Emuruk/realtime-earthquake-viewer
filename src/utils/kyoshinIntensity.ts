@@ -44,6 +44,17 @@ export function kyoshinIndexToLabel(index: number | undefined): string | null {
 }
 
 /**
+ * 計測震度からリアルタイム震度インデックス(0〜20)を求める（kyoshinIndexToJmaの逆変換）。
+ * ローカル生成の強震モニタ風アーカイブ（scripts/capture-kyoshin-waveform.ts）が、実波形から
+ * 算出した計測震度をこのインデックス形式へ変換する際に使う。範囲外は0/20へクランプする
+ * （観測点集合の型はYahoo由来・NIED由来を問わず同じ0〜20の規約に統一しているため）。
+ */
+export function kyoshinValueToIndex(value: number): number {
+  const index = Math.round((value + 3.0) / 0.5)
+  return Math.max(0, Math.min(20, index))
+}
+
+/**
  * リアルタイム震度インデックスの表示色（気象庁の震度配色に統一）。
  *   震度0未満 → null（表示しない）
  *   震度0     → 灰色（SHINDO0_COLOR）

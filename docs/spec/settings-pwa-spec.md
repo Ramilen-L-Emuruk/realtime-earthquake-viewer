@@ -367,6 +367,241 @@ standard 版の一覧に EEW が無いのは、P2PQuake に緊急地震速報を
   再現するために使う（すでに発表されていた津波警報など）。再生開始と同時にまとめて流し込む
 - **履歴**: 地震情報タブのカード一覧を、指定時刻の時点の姿に戻すためのもの（次項）
 
+#### ローカル履歴アーカイブ（DMDATA/P2PQuakeに無い期間の代替）
+
+DMDATA・P2PQuakeとも、電文を遡って取得できる期間には始まりがある。バリアントで異なり、
+DMDATAはアーカイブ運用開始の2020年4月から、P2PQuakeは地震情報が2015-01-10、津波予報が
+2016-11-22から（[`data-sources-spec.md`](data-sources-spec.md) §3）。これより前の日時を
+指定すると、その取得元にはそもそもデータが無い。2016年熊本地震のような、これより前に
+起きた大地震を再現できるよう、アプリに同梱したローカルJSON
+（`public/data/historical-archives/`）で代替する仕組みを用意している。
+
+- 収録範囲の一覧は `index.json`（`id`・`label`・`description`・収録範囲`from`/`to`・
+  最初の報の時刻`firstEventTime`）。本体は `{id}.json`。設定タブの「テスト時刻設定」に
+  収録済みアーカイブとして表示され、ラベルにマウスを乗せる（タップでも可）と収録範囲が
+  吹き出しで出る。隣の「再生」ボタンは`firstEventTime`の1分前を再生開始時刻として
+  渡す（前震・第1報のEEW等、最初の動きが起きる直前から再生したい用途向け）
+- 「本編」「初期状態」「履歴」いずれも、問い合わせ範囲が収録範囲に**重なれば**ローカル
+  アーカイブを優先する（[`localArchiveReplay.ts`](../../src/services/localArchiveReplay.ts)
+  の `findCoveringArchiveSync`）。対象時刻そのものは収録範囲内でも、初期状態が遡る24時間分は
+  収録範囲の外に出ることがほとんどなので、開始時刻だけでなく範囲の重なりで判定する（開始時刻
+  だけで判定すると、初期状態の問い合わせだけDMDATA/P2PQuakeへ漏れてそちらの取得失敗で
+  リプレイ全体が止まる）。**履歴**の重なり判定も、次項の「7日・件数で打ち切る」実際の取得幅
+  ではなく、初期状態と同じ固定24時間を使う。取得幅をそのまま判定に使うと、履歴だけが
+  数日先の無関係なアーカイブに重なり、本編・初期状態は実データ側で止まっているのに
+  履歴一覧だけローカルアーカイブ由来の古い1件を表示する、という不整合が起きるため
+- 収録範囲の終端を再生（1時間ごとに次の区間を裏で取得しに行く先読み）が越えた直後は、
+  DMDATA/P2PQuakeへ黙ってフォールバックせず「収録範囲の終端に達しました」という専用の
+  エラーを出す（`findArchiveJustEndedSync`）。そちらにはそもそもデータの無い時代のため、
+  無警告の空成功や的外れなエラーになるのを防ぐ
+- 震度値（`IntensityScale`）や津波の警報区分など描画に直結する値は
+  [`historicalArchiveSchema.ts`](../../src/utils/historicalArchiveSchema.ts) が実行時にも
+  値域を検証する（実地震シナリオJSONと同じ理由。詳細は[`eew-spec.md`](eew-spec.md) §4）
+- ファイル形式は `ReplayPayload` をそのまま記述したもので、`capture-test-scenario.ts`
+  のような実電文からの自動キャプチャではない。そのため `public/data/test-scenarios/*.json`
+  と異なり `.gitignore` の対象外にしている（中身の出所はデータ源ごとに異なる。後述）
+
+**気象庁発表状況ページ由来のデータ（EEW・津波警報）**
+
+EEW（緊急地震速報）と津波警報・注意報は、気象庁が公開する発表状況ページから機械的に
+取得・生成するパイプライン（[`historicalEewParser.ts`](../../scripts/historicalEewParser.ts)・
+[`historicalEewArchiveBuilder.ts`](../../scripts/historicalEewArchiveBuilder.ts)・
+[`historicalTsunamiParser.ts`](../../scripts/historicalTsunamiParser.ts)・
+[`historicalTsunamiArchiveBuilder.ts`](../../scripts/historicalTsunamiArchiveBuilder.ts)）で
+生成できる。手作業の書き起こしではなく、パーサーが生HTMLの表を直接読む。DMDATA由来の
+実電文ではなく気象庁公表資料が典拠のため、DMDATA.JP利用規約が制限するEEWの二次配信は
+適用されないという開発者判断による（法務確認は経ていない）。このパイプラインのうちEEW
+取得部分は、後述のNII実電文アーカイブ由来の各アーカイブ（2016年熊本地震・2016年鳥取県
+中部地震・2018年大阪府北部地震・2018年北海道胆振東部地震）でも再利用している。
+
+- **発表状況ページの「値なし」表記は地震・年代によって揺れる**: 震源要素の欄は
+  em dash「—」の他に半角ハイフン2つ「--」（2018年大阪府北部地震のページで確認）、
+  予測震度の欄は「—」の他に「予測震度なし」（2018年北海道胆振東部地震のページで確認）
+  という表記もある。既知の表記だけを許容し、未知の表記は例外にする
+  （`historicalEewParser.ts`の`NO_VALUE_MARKERS`、`historicalEewArchiveBuilder.ts`の
+  該当分岐）。新しい地震のアーカイブを作るたびに未知の表記に当たる可能性があるため、
+  例外が出たら実際のページを確認し、真に「値なし」の表記であることを確かめた上で
+  追加すること
+
+- **津波の予測高さが欠けている地域がある**: 気象庁の検証ページが公開しているのは
+  「各予報区が最終的に到達した区分の予測高さ」のみで、格上げ前の暫定段階の値は
+  公開されていない。そのため、ある段階の等級がその地域の最終到達等級と一致する場合
+  （＝以後その地域は格上げされない）だけ予測高さを埋め、まだ格上げ前の暫定段階は
+  高さを空欄にする（誤った小さい値・誤った大きい値のどちらも出さない。
+  `historicalTsunamiArchiveBuilder.ts` の判定ロジック参照）。**現在収録中の2016年
+  熊本地震アーカイブの津波は、後述のとおりこの経路を通らないため該当しない**
+  （このパイプラインで別の地震のアーカイブを新たに作る場合にのみ関係する）
+
+2011年東北地方太平洋沖地震のアーカイブ（`2011-tohoku.json`、上記パイプラインで生成して
+いた）は、地震情報・津波が気象庁公表資料からの独自の書き起こしに留まり、2016年熊本地震
+のような実電文相当の精度（区域・観測点単位の粒度、電文種別ごとの続報）を持たなかった
+ため、生成データと`index.json`のエントリを削除した。地震情報のマグニチュード改定4報
+（対応する機械可読な一覧ページが無く手作業で記録していた分）もこれに含めて削除している。
+[`build-historical-archive-2011-tohoku.ts`](../../scripts/build-historical-archive-2011-tohoku.ts)
+自体は残しているが、既存の`2011-tohoku.json`を読み込んで差分マージする構造のため、
+削除後にそのまま再実行しても動かない。
+
+**国立情報学研究所（NII）の実電文アーカイブ由来のデータ（地震情報・津波）**
+
+現時点で収録しているのは2016年熊本地震・2016年鳥取県中部地震・2018年大阪府北部地震・
+2018年北海道胆振東部地震の4件。前震・本震の日時/M・EEW件数・収録期間といった詳細な
+数値は`index.json`の`description`/`from`/`to`/`firstEventTime`を参照（ここでの記述と
+食い違ったら`index.json`を正とする）。いずれも気象庁防災情報XMLフォーマットの運用開始
+（2011/5/12）より後の地震のため、地震情報（震度速報・震源に関する情報・震源・震度情報・
+顕著な地震の震源要素更新のお知らせ）と津波は、当時配信された実電文そのものを
+[`build-historical-archive-2016-kumamoto.ts`](../../scripts/build-historical-archive-2016-kumamoto.ts)・
+[`build-historical-archive-2016-tottori.ts`](../../scripts/build-historical-archive-2016-tottori.ts)・
+[`build-historical-archive-2018-osaka.ts`](../../scripts/build-historical-archive-2018-osaka.ts)・
+[`build-historical-archive-2018-iburi.ts`](../../scripts/build-historical-archive-2018-iburi.ts)が
+取得し、アプリ本番と同じパーサー（`dmdataParser.ts` の `parseEarthquakeFromXml` /
+`parseTsunamiFromXml`）でそのまま変換する（新規のパーサーを書いていない）。取得元は
+国立情報学研究所（NII）CPS-IIPプロジェクトが公開する「気象庁防災情報XMLデータベース」
+（https://agora.ex.nii.ac.jp/cps/weather/report/ 、2012年12月以降の電文を保存）で、
+地震情報・津波に関する部分は、他サービスとのマッシュアップでない生電文の利用に
+限りCC BY 4.0（利用時は同データベース名の表示が必要）。ただしこのデータベースには
+**緊急地震速報が1件も収録されていない**（全期間で0件を確認済み。二次配信の契約上の
+制限によるものと見られる）ため、EEWだけは上記の気象庁発表状況ページ由来のパイプライン
+（pub_hist、政府標準利用規約 第1.0版）から取得している。全国の地震を対象に配信される
+震度速報等の電文から、この地震活動と無関係な地震を取り違えないよう、パース後の震央地名
+（例: `熊本県熊本地方`）で絞り込んでいる。震度速報は震源が未確定の段階で発表されるため
+震央地名を持たず、観測震度の対象地域名（一次細分区域名の前方一致）で代わりに絞り込む。
+
+地震活動ごとに変わらない処理（NII時刻のパース・電文種別ラベルの解釈・取消電文の扱い・
+集計の整合性チェック）は
+[`localEarthquakeArchiveBuilder.ts`](../../scripts/localEarthquakeArchiveBuilder.ts)に
+共通化している。地震活動ごとの4本のビルドスクリプトは、EEW一覧・震央地名・観測地域名の
+前方一致・収録期間だけを渡す薄いラッパー。
+
+- 収録期間（`from`/`to`）はEEW対象イベントの日付を必ず包含すること。上記の
+  「収録範囲の終端を再生が越えた直後は…」の`findArchiveJustEndedSync`の判定により、
+  EEWの実データが`to`より後の日時を持つと、JSON上に存在していても再生時刻が到達せず
+  実質再生不能になる（`DATES`/`WINDOW_END`と`EEW_EVENTS`の日付レンジを連動させること）
+- NIIサイトの一覧表示時刻はISO 8601ではない（タイムゾーンオフセットが分無しの2桁、
+  例: `2016-04-14 21:28:06+09`）ため、分を補ってからDateへ変換する
+  （[`niiJmaXmlArchive.ts`](../../scripts/niiJmaXmlArchive.ts)参照）
+- **警報級の余震が長期間に散発する地震活動（2018年北海道胆振東部地震）は、`DATES`を
+  連続した範囲にしない**: 本震2018/9/6・同日余震・約1ヶ月後の余震2018/10/5・約5ヶ月半後の
+  余震2019/2/21と、警報級EEWの間隔が最大5ヶ月半空く。この全期間を連続する日付で取得すると
+  169日分の全国電文を読み込むことになりNIIサイトへの負荷・実行時間の両面で非現実的なため、
+  実際にEEWが出た日の前後だけを`DATES`に指定する（間の期間は「データが存在しない」の
+  ではなく、意図的に取得対象から外している）。収録期間（`from`/`to`）自体は本震から
+  最後の余震までを広くカバーするが、これは時刻ウィンドウによる関連性チェックの範囲に
+  過ぎず、実際に取得するのは`DATES`に列挙した日だけである点に注意
+  - **この設計は`findCoveringArchiveSync`の前提と矛盾する（レビューで検出、未解消）**:
+    同関数は「収録範囲(`from`/`to`)に重なる問い合わせは、その期間データが無かったという
+    空の成功として扱ってよい」という前提に立つ（[`localArchiveReplay.ts`](../../src/services/localArchiveReplay.ts)
+    のコメント参照）。連続してDATESを取得しているアーカイブ（熊本・鳥取・大阪）ではこの
+    前提が成り立つが、胆振東部のように間の期間を意図的に取得していないアーカイブでは
+    成り立たない。設定タブの「開始時刻」に本震〜最後の余震の間（例: 2018年11月）を手動で
+    入力すると、本来は「収録データが無く取得を試みるべき期間」を、黙って「地震活動なし」の
+    空成功として返してしまう。「再生」ボタン（`firstEventTime`の1分前を起点とする。上記参照）
+    を使う分には影響しない。現状はこの矛盾を解消する仕組みを持たない（`HistoricalArchiveMeta`
+    に実収録日を持たせる等の対応が必要）
+
+**NIED K-NET/KiK-netの実波形由来のデータ（ローカル限定・リアルタイム震度）**
+
+上記2系統（気象庁発表状況ページ・NII実電文アーカイブ）はEEW・地震情報・津波のみで、
+「リアルタイム震度」タブが表示するリアルタイム震度（強震モニタ）は含まれない。これは
+別のデータ系統（[`data-sources-spec.md`](data-sources-spec.md) §4）で、Yahooのライブ配信は
+直近分しか遡れず、過去の地震では再現できない（リプレイしてもリアルタイム震度タブが
+空のままになる）。
+
+気象庁・防災科研とも、強震観測データの再配布は利用規約で禁止されている
+（気象庁 https://www.data.jma.go.jp/eqev/data/kyoshin/jishin/index.html の
+「掲載しているデータを第三者へ提供することは禁止いたします」、NIED K-NET/KiK-netの登録時
+規約も同様）。そのためこの系統だけは、他の2系統と違い**アプリに同梱しない**。データの入手経路は
+2通りある（併存。どちらも実行者本人のNIED登録が前提で、生成・インポートしたデータは
+その人のローカル環境限定でのみ再生できる）。
+
+1. **Node CLI**（従来からの経路）:
+   [`capture-kyoshin-waveform.ts`](../../scripts/capture-kyoshin-waveform.ts)が実行者本人の
+   NIED登録（https://hinetwww11.bosai.go.jp/nied/registration/ ）でK-NET/KiK-netの実波形を
+   ダウンロードし、`public/data/historical-archives-kyoshin/*.json`（`.gitignore`対象、
+   このリポジトリには一切含まれない）へ書き出す。`.env.local`にNIED認証情報を置いて
+   devサーバーを動かせる環境が必要
+2. **ブラウザ内インポート**（設定タブ「K-NETデータの取り込み」。GitHub Pages配信でも使える）:
+   NIEDのダウンロードページから利用者自身がブラウザで直接取得したK-NET/KiK-netの生ZIPを、
+   設定タブでファイル選択するだけで取り込める。ダウンロード・パース・震度算出はすべて
+   ブラウザ内で完結し、認証情報の入力もdevサーバーも不要。保存先はブラウザのIndexedDB
+   （`kyoshinImportDb.ts`）で、対応する収録済みアーカイブ（`HistoricalArchiveMeta`）は
+   ZIPヘッダーのOrigin Timeから自動検出する（詳細は後述）
+
+両経路とも、ダウンロード以降のパース・震度算出ロジックは共通（`src/utils/knet/`配下、後述）。
+CLI側だけが追加で「NIEDのイベントディレクトリ自動探索」（後述）と「認証・ダウンロード」を担う。
+
+- **取得（CLI経路）**: `https://www.kyoshin.bosai.go.jp/kyoshin/download/all/zip/{yyyy}/{mm}/
+  {K-NETイベントディレクトリ}/{同}_ascii.zip` をBasic認証（`NIED_KNET_USER`/
+  `NIED_KNET_PASSWORD`、`.env.local`に置く。`DMDATA_API_KEY`と同じ運用）で取得する。
+  K-NET+KiK-netの全観測点分が1つのZIPにまとまっており、ヘッダーに観測点の緯度経度が
+  入っているため別途座標表は不要。**イベントディレクトリ名は`--origin`（気象庁発表の原時刻）
+  と完全には一致しない**（K-NET自身のトリガー検知時刻ベースで実測数秒〜1分弱ずれる）ため、
+  月別の一覧ページから最も近いものを自動で探す（許容誤差60秒。検証実績は§13参照）。
+  **ブラウザ内インポート経路にはこの探索が無い**——利用者がNIEDのダウンロードページで
+  直接選んだZIPをそのまま受け取るため
+- **複数イベントの統合**: CLIの`--origin`は複数回指定でき、本震と離れた余震（数十分後〜数ヶ月後）
+  を1つのアーカイブへまとめられる（ブラウザ内インポートも複数ファイルを選択すれば同様に
+  統合される）。観測点は`stationCode`で名寄せし、フレームは各イベントの実際の記録範囲だけを
+  連結する（本震と5ヶ月半後の余震の「間」を1秒刻みで埋めるとファイルが無意味に肥大化する
+  ため。localArchiveReplay.tsのfindCoveringArchiveSyncと同じ「収録していない期間は収録して
+  いないままにする」考え方）。1イベントの取得・算出に失敗しても（K-NETイベントディレクトリの
+  許容誤差超過・対応するアーカイブが無い等）バッチ全体を止めず、その1件をスキップして残りで
+  統合する。マージロジックは
+  [`kyoshinEventMerge.ts`](../../src/utils/knet/kyoshinEventMerge.ts)に切り出してあり
+  単体テストで検証済み
+- **解析**: [`knetAscii.ts`](../../src/utils/knet/knetAscii.ts)がK-NET ASCII形式（17行の
+  ヘッダー＋1行8列の整数データ）をパースする。ヘッダーのキーと値の区切りは**固定幅の列位置**で、
+  短いキー（"Lat."等）は空白が複数個並ぶ一方、長いキー（"Sampling Freq(Hz)"等）は空白1個
+  だけのこともある（「2文字以上の連続空白を区切りとみなす」という初期実装は実データで
+  すぐ全滅した。実機確認で判明・修正済み）。ヘッダーの`Origin Time`（地震の発生時刻）も
+  読み取り、ブラウザ内インポートのアーカイブ自動検出に使う
+- **震度算出**: [`seismicIntensity.ts`](../../src/utils/knet/seismicIntensity.ts)が気象庁の
+  計測震度算出式（平成8年気象庁告示第4号。周期補正フィルター→3成分ベクトル合成→0.3秒基準）を
+  実装し、スライディングウィンドウ（既定20秒・1秒刻み）で時系列化する。**これは近似であり、
+  本物の強震モニタの記録ではない**: 公式の計測震度計はIIRフィルタによる真の連続処理だが、
+  ここではオフラインバッチ処理のため毎回FFT→フィルター→逆FFTをやり直す方式で代用している。
+  フィルター式自体は手計算した値との照合テストで検証済み（`seismicIntensity.test.ts`）。
+  実データでも4地震すべてでピーク計測震度が実際の発表震度階級と整合した（例: 胆振東部6.74・
+  熊本本震6.50→いずれも震度7の閾値6.5以上、大阪5.64・鳥取5.80→いずれも震度6弱の範囲）。
+  ZIP解析からピーク震度チェックまでの一連の処理は
+  [`buildEventResultFromZip.ts`](../../src/utils/knet/buildEventResultFromZip.ts)に
+  まとめてあり、CLIとブラウザ内インポートの両方から呼ぶ（3成分不揃い比率超過・震度算出0件
+  等の安全弁もここに集約）
+- **出力形式**: [`localKyoshinArchive.ts`](../../src/types/localKyoshinArchive.ts)の
+  `LocalKyoshinArchive`（観測点座標・秒単位のフレーム列）。フレームの震度インデックスは
+  Yahoo側と同じ0〜20の規約（`kyoshinValueToIndex`、`src/utils/kyoshinIntensity.ts`）
+- **ブラウザ内インポートの保存先**: [`kyoshinImportDb.ts`](../../src/utils/kyoshinImportDb.ts)が
+  IndexedDB（DB名`kyoshin-imports`）へ、マージ前の生の`EventResult`（1イベントぶん）を
+  `${archiveId}:${originTimeJst}`をキーに保存する（同じZIPの再インポートは上書きになる＝
+  冪等）。複数イベントの統合（`mergeEvents`）はコストの低い純関数のため、保存時ではなく
+  **読み出すたびにやり直す**設計にしている（診断ログ用の`detectionDiagnosticsDb.ts`と同じ
+  接続の使い回し・`onversionchange`失効・pub/subの構造だが、ユーザーが手動取得した
+  再取得コストの高いデータを扱うため失敗の可視化をより積極的にしている）。対応するアーカイブは
+  `findCoveringArchiveSync`（`localArchiveReplay.ts`）にZIPヘッダー由来のOrigin Timeを渡し
+  自動検出する。対応するアーカイブが見つからない場合はそのファイルだけを取り込みエラーとし、
+  同時に選択した他のファイルは独立して処理を続ける
+- **消費側**: [`kyoshinLocalArchiveSource.ts`](../../src/services/kyoshinLocalArchiveSource.ts)
+  が`KyoshinSource`として全フレームを一括投入する（時刻ペースはリプレイ時計
+  `serverDate()`が担うため、供給元側でのポーリングは不要）。`useKyoshinRealtime`の
+  `localArchiveId`にカバーする`HistoricalArchiveMeta.id`を渡すとYahooの2ソースより優先される。
+  **IndexedDB（ブラウザ内インポート）を先に確認し、無ければ静的ファイル（CLI経路）へ
+  フォールバックする**。どちらにもデータが無い場合（通常の配信環境では常にこちら）は
+  静かに何も供給しない
+  - IndexedDBに新規保存・削除が起きたら（`onImportsChanged`）、取得結果のキャッシュを
+    丸ごと破棄し、次回`start()`時（再生位置のジャンプ等）に反映させる。**稼働中の
+    `KyoshinSource`への即時反映（ホットリロード）はしない**——過去分のフレームを稼働中の
+    フレームキューへ再投入すると、時刻順キューが「到来済み」として即座に消費してしまい、
+    表示が巻き戻る恐れがあるため
+  - **viteの開発サーバーは静的ファイルが無いGETをSPAフォールバック（200・text/html）で
+    返す**ため、404で判定すると開発時に常にJSON解析エラーの警告が出てしまう（実機確認で
+    発覚）。レスポンスの`Content-Type`が`application/json`でなければ「未生成」と同じ扱いに
+    することで回避している（本番の静的配信では同じ状況は素直に404になる）
+  - **「未生成」（404・SPAフォールバック）と「取得できたのに壊れている」（5xx・JSON解析
+    失敗・構造不正・IndexedDB読み取り例外）を区別する**: 後者は`setStalled(true)`で
+    「更新停止」表示を出す（敵対的レビューで指摘: 区別しないと一時的なサーバー障害が
+    「地震活動なし」と見分けが付かなくなる）。5xx・ネットワーク層・IndexedDB例外の失敗は
+    キャッシュに残さず次回`start()`で再試行する（404・構造不正は再試行しても結果が
+    変わらないためキャッシュしたままにする）
+
 再生中はライブ接続を止める（両バリアント）。現在時刻の更新が混ざると、再生時刻より未来の
 地震がカードに並んでしまうため。「リセット」を押すと表示を消してライブへ戻る。
 
@@ -753,6 +988,38 @@ Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認した�
 - `src/services/dmdataReplay.ts` — DMDSS 版の日次アーカイブ取得
 - `src/services/dmdataReplayLive.ts` — アーカイブがまだ無い日を埋める取得（当日経路）
 - `src/services/dmdataTelegramPayload.ts` — 取り込む電文種別と本体 → 再生用ペイロードの組み立て
+- `src/services/localArchiveReplay.ts` — ローカル履歴アーカイブの読み出し・収録範囲判定
+- `src/utils/historicalArchiveSchema.ts` — ローカル履歴アーカイブの型検証
+- `src/hooks/useHistoricalArchiveIndex.ts` — 収録済みアーカイブ一覧の取得
+- `src/types/historicalArchive.ts` — ローカル履歴アーカイブのデータ型
+- `scripts/historicalEewParser.ts` — 気象庁EEW発表状況ページの生HTMLパーサー
+- `scripts/historicalEewArchiveBuilder.ts` — パース結果 → アプリのEEW電文形式への変換
+- `scripts/historicalTsunamiParser.ts` — 気象庁津波警報検証ページの生HTMLパーサー
+- `scripts/historicalTsunamiArchiveBuilder.ts` — パース結果 → アプリの津波電文形式への変換
+- `scripts/build-historical-archive-2011-tohoku.ts` — 2011年東北地方太平洋沖地震アーカイブの生成 CLI
+- `scripts/niiJmaXmlArchive.ts` — NII「気象庁防災情報XMLデータベース」から実電文を取得
+- `scripts/localEarthquakeArchiveBuilder.ts` — NII実電文アーカイブ由来のアーカイブ生成で
+  地震活動ごとに変わらない共通処理（時刻パース・種別判定・関連性判定・集計整合性チェック）
+- `scripts/build-historical-archive-2016-kumamoto.ts` — 2016年熊本地震アーカイブの生成 CLI
+- `scripts/build-historical-archive-2016-tottori.ts` — 2016年鳥取県中部地震アーカイブの生成 CLI
+- `scripts/build-historical-archive-2018-osaka.ts` — 2018年大阪府北部地震アーカイブの生成 CLI
+- `scripts/build-historical-archive-2018-iburi.ts` — 2018年北海道胆振東部地震アーカイブの生成 CLI
+- `scripts/capture-kyoshin-waveform.ts` — NIED K-NET/KiK-net実波形からローカル限定の強震モニタ風
+  リプレイデータを生成するCLI（出力は`.gitignore`対象、リポジトリに含まない）
+- `src/utils/knet/knetAscii.ts` — K-NET/KiK-net ASCII形式波形ファイルのパーサー
+- `src/utils/knet/seismicIntensity.ts` — 気象庁の計測震度算出アルゴリズムの実装（FFTベースの
+  周期補正フィルター・スライディングウィンドウ）
+- `src/utils/knet/parseAllStationFiles.ts` — ZIP内のNS/EW/UD波形ファイルの一括解析
+- `src/utils/knet/buildEventResultFromZip.ts` — ZIP解析からピーク震度チェックまでの一連の処理
+  （CLIとブラウザ内インポートの共通経路）
+- `src/utils/knet/kyoshinEventMerge.ts` — 複数のK-NETイベント（本震＋離れた余震）を1つのローカル
+  アーカイブへ統合するロジック（観測点の名寄せ・スパースなフレーム連結）
+- `src/utils/kyoshinImportDb.ts` — ブラウザ内インポートしたイベントの保存先（IndexedDB）
+- `src/hooks/useKyoshinImport.ts` — 設定タブのK-NETインポートUI用フック
+- `src/types/localKyoshinArchive.ts` — ローカル限定強震モニタ風リプレイデータの型
+- `src/services/kyoshinLocalArchiveSource.ts` — 同データを読み込みフレーム供給する`KyoshinSource`
+  （IndexedDB優先・静的ファイルへのフォールバック）
+- `src/utils/kyoshinIntensity.ts` — `kyoshinValueToIndex`（計測震度 → リアルタイム震度インデックス）
 - `src/types/testScenario.ts` — シナリオデータ型
 - `scripts/capture-test-scenario.ts` — シナリオキャプチャ CLI
 - `src/utils/detectionDiagnostics.ts` — 診断ログの切り出し（→ §12）
@@ -886,3 +1153,49 @@ Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認した�
   止まってから」と書いていたが、実装は自動のタブ切替と電文の受信でも計り直す。この依存が
   「自動で見せたものが最低この時間は画面に残る」保証を兼ねていることを併記した ―― 操作からの経過
   だけで測ると、据え置きの端末では津波警報が届いた瞬間に既定タブへ戻され、一瞬映って消える
+- 2026-08-27: テスト時刻設定に「ローカル履歴アーカイブ」を追加した（§6）。DMDATA・P2PQuakeとも
+  電文を遡れる期間に始まりがあり、それより前（2011年東北地方太平洋沖地震等）を再現する手段が
+  無かったため、アプリに同梱したローカルJSONで代替する経路を設けた。現時点は2011年東北地方
+  太平洋沖地震のPhase 1（本震のEEW数報〜大津波警報第一報）のみ収録
+- 2026-08-27: 上記のPhase 1データをPhase 2へ拡充した。本震のEEWを全15報（気象庁公表資料の
+  実測値）へ、大津波警報を発表〜解除の5段階へ、地震情報をマグニチュード改定4報へ広げ、
+  警報級の誘発地震19件（各1報の代表値）を追加した。収録範囲（`to`）も本震発生15分後から
+  大津波警報解除（3/13 17:58）まで拡張した
+- 2026-08-27: Phase 2で手作業のまま残っていた簡略化（EEWの対象地域を4県に絞る・誘発地震を
+  各1報の代表値のみにする・津波を岩手/宮城/福島の3県のみにする）を、機械的な生成へ置き換えて
+  解消した。手作業での書き起こしは、同じ表を何度読んでも報番号のラベルがずれるなど精度に
+  限界があったため、気象庁の発表状況ページを直接パースするスクリプト（本節参照）に切り替えた。
+  本震・誘発地震19件は全報×全国分の地域を、津波は全12段階×全国66予報区の等級を、それぞれ
+  型・値域・件数の機械的な検証（自動テスト・スキーマ検証）付きで再生成した。ただし機械検証は
+  「形式が正しいか」までしか見ないため、敵対的レビューで一次資料と実データを直接突き合わせ、
+  地名・警報タイミングという**意味論的な正しさ**の誤りを2件発見・修正した:
+  (1) 1ページに複数の地震が束ねて記載される場合（20件中8件）に震源要素の1行目を無条件採用
+  していたため、報の座標と無関係な震央地名が付く事故があった（`resolveHypocenterName`で、
+  報ごとの座標に最も近い候補を選ぶよう修正）。
+  (2) 電文全体の「警報」判定を地域別の予想震度から逆算していたため、後に誤りと判明する
+  過大な初期推定のせいで、気象庁がまだ「予報」として扱っていた回を「警報」と誤判定する
+  事故があった（気象庁ページが公式に警報化した回にだけ付ける`eew_public_warning_row`を
+  読み取るよう修正）
+- 2026-08-28: ローカル履歴アーカイブのリプレイで「リアルタイム震度」タブが常に空になる問題への
+  対応として、§6に「NIED K-NET/KiK-netの実波形由来のデータ（ローカル限定・リアルタイム震度）」を
+  追加した。気象庁・NIEDとも強震観測データの再配布を規約で禁止しているため、他の2系統と異なり
+  アプリには同梱せず、実行者本人のNIED登録でローカル生成・再生する方式にした
+  （`scripts/capture-kyoshin-waveform.ts`）。その後、実際にNIED登録済みの環境で2016年熊本地震・
+  2016年鳥取県中部地震・2018年大阪府北部地震・2018年北海道胆振東部地震の4地震・計23イベント
+  （本震＋各アーカイブが収録する余震）を取得・検証し、初期実装では気付けなかった実物特有の
+  不具合（K-NETイベントディレクトリ名が気象庁の原時刻と一致しない・ヘッダーの区切りが
+  固定幅列で長いキーでは空白1個しかない等）を修正した。あわせて本震と離れた余震を1つの
+  アーカイブへ統合する仕組み（`kyoshinEventMerge.ts`）を追加し、1イベントの取得失敗が
+  バッチ全体を無駄にしないよう耐性を持たせた
+- 2026-08-29: 上記のNode CLI経路は`.env.local`にNIED認証情報を置いてdevサーバーを動かせる
+  環境が前提で、GitHub Pages配信では使えなかった。設定タブから直接K-NET/KiK-net ZIPを
+  取り込める「ブラウザ内インポート」を追加し、devサーバー無しでも使えるようにした（§6）。
+  ダウンロード・パース・震度算出はブラウザ内で完結させ、保存先はIndexedDB
+  （`kyoshinImportDb.ts`）、対応するアーカイブはZIPヘッダーのOrigin Timeから自動検出する。
+  これに伴い、パース・震度算出の純粋ロジック（`knetAscii.ts`・`seismicIntensity.ts`・
+  `kyoshinEventMerge.ts`）を`scripts/`から`src/utils/knet/`へ移動し、ZIP解析からピーク震度
+  チェックまでを`buildEventResultFromZip.ts`に切り出してCLI・ブラウザ双方の共通経路にした。
+  敵対的レビューで、IndexedDBの読み書きヘルパー（`tx()`）が失敗時にrejectせずnullへ丸める
+  設計になっていたため、「読み取り失敗」と「未インポート」が実装上区別できず、ドキュメント・
+  テストが主張する「IndexedDB障害時の`setStalled(true)`可視化」が到達不能なデッドコードに
+  なっていたCRITICAL相当の不具合を検出・修正した
