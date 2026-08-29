@@ -11,7 +11,7 @@
 // のは正しい挙動で、ここを待ち行列にすると最新の震度がいつまでも出てこない）。
 //
 // もう 1 つは**到来順**。「新しい方が勝つ」は割り込みだけでは足りない。通知音との間は種別ごとに
-// 0.5〜4.2 秒と幅があるため、先に届いた電文の方が遅く喋り始めることがあり、そのとき古い側が
+// 0.5〜2.8 秒と幅があるため、先に届いた電文の方が遅く喋り始めることがあり、そのとき古い側が
 // 新しい側の声を切っていた（原則が逆向きに破れる）。後から同格以上が予約されたら取り下げる。
 //
 // 読み上げの完了を任意の時点で起こせるよう、モックは解決関数を外に出して保持する。
@@ -64,7 +64,7 @@ async function flush() {
   for (let i = 0; i < 400; i++) await Promise.resolve()
 }
 
-/** 通知音の遅延（最大 4200ms）を消化してから発話に到達させる */
+/** 通知音の遅延（最大 2800ms）を消化してから発話に到達させる */
 async function settle() {
   await vi.advanceTimersByTimeAsync(5000)
   await flush()
@@ -500,7 +500,7 @@ describe('非 EEW の読み上げの優先度', () => {
   // 届いた軽い読み上げのために重い側を取り下げてしまう（津波が読まれなくなる）。
   it('後から届いたのが軽い読み上げなら、先に届いた重い方を取り下げない', async () => {
     const handle = setup()
-    handle(makeTsunami())                       // 声までの間 4.2 秒
+    handle(makeTsunami())                       // 声までの間 2.3 秒
     await vi.advanceTimersByTimeAsync(600)
     await flush()
     handle(makeQuake())                         // 声までの間 0.5 秒
@@ -673,7 +673,7 @@ describe('内容が重ならない同格どうしは互いに待つ', () => {
   // 観測情報を同じ主題にすると**警報の予約が観測情報に「追い越された」と判定されて取り下がる**。
   it('津波警報の予約は、後から届いた観測情報には取り下げられない', async () => {
     const handle = setup()
-    handle(makeTsunami())              // 声までの間 4.2 秒
+    handle(makeTsunami())              // 声までの間 2.3 秒
     await vi.advanceTimersByTimeAsync(500)
     await flush()
     handle(makeTsunamiObs())           // 間 0.8 秒。先に喋り始める
