@@ -528,7 +528,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 仮定震源要素で連動して隠す・採らない箇所の列挙（**新たに `condition` を参照したら必ず追記する**。区域への S 波到達推定の震源もここに含む） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §5 |
 | 「特別警報」を音声で読まないこと（表示・通知・通知音は 2 段階を保つ） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
 | 通知音の内容と説明文の一致（`PLAYERS` の周波数・`COUNTDOWN_PULSES` のパルス数と、設定タブ「通知音テスト」の説明文・仕様書の記述） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §2 |
-| 通知音の質感の分け方（情報系＝`pianoNote` は全音に残響を載せる・EEW は予報だけ弱く持ち警報級と津波警報は乾いたまま・減衰の終端は `decayTone` に集約し種別ごとに分岐させない・アタックに広帯域ノイズを戻さない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §2「質感の分け方 — 警報は乾き、情報は濡れ」 |
+| 通知音の質感の分け方（音階を持つ音は全音に残響を載せる＝情報系は広い IR で深く・EEW の穏やかな音は締まった IR で浅く／**警報級と津波は乾いたまま**・残響の量は呼び出し側の wet で決める（IR 側の係数は音量に効かない）・減衰の終端は `decayTone` に集約し種別ごとに分岐させない・アタックに広帯域ノイズを戻さない・厚みはユニゾン（音階を持つ音すべて）／非整数倍音（情報系のみ）／ステレオ（警報系のみ）で作り、**どれをどこに効かせるかを混ぜない**） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §2「質感の分け方 — 警報は乾き、情報は濡れ」 |
 | VOICEVOX 接続先の確認（`VOICEVOX_URL_DEBOUNCE_MS` で入力が落ち着くまで待つ・`isValidVoicevoxUrl` で通信前に検分・`apiBase` で末尾スラッシュを落とす・試聴も確認済み URL へ送る。検分は入力途中の値を弾く役割を持たない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「接続先の確認」 |
 | チャンク末尾の間を渡す入口が 4 つあること（先行合成・切り出し語の作り置き・再生側の先頭チャンクの作り直し・再生中の次チャンクの先行合成）。**同じ句を作りうる入口どうしは必ず同じ値を渡す**（作り置きと作り直しは同じ句を焼くため、片方が渡し忘れるとキャッシュを先に埋めた側で間が変わる） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「チャンク末尾の句読点には間を足す」 |
 | 通知音の長さと読み上げ遅延の連動（音を作り変えたら `TTS_DELAY_MS` かテーブル外の個別指定を必ず見直す。リバーブを効かせた音は乾音の長さでは足りない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6 |
