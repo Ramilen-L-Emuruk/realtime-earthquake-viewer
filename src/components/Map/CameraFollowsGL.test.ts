@@ -1242,7 +1242,7 @@ describe('揺れフォーカス', () => {
 //
 // ここで固定するのは 3 つ。
 //   1. EEW 発報中でもその点へ寄る
-//   2. 第一報のフォーカスを見せている間は譲る（EEW は「これから来る」の報せなので震源を先に見せる）
+//   2. 新規発報からの猶予（10 秒）の間は譲る（EEW は「これから来る」の報せなので震源を先に見せる）
 //   3. 譲った要求も連番を消費する（後から蒸し返さない）
 describe('揺れフォーカス（EEW 発報中）', () => {
   beforeEach(() => {
@@ -1362,7 +1362,14 @@ describe('揺れフォーカス（EEW 発報中）', () => {
     expect(map.getCenter()).toEqual({ lng: NEXT.lng, lat: NEXT.lat })
   })
 
-  it('[対照] 第一報のフォーカスを見せている間は譲る', () => {
+  // 2 つの帯を両方おさえる。
+  //   1 秒: 実際に起きる形（能登本震では発報の 0.2 秒後に上昇が来ていた）。引き直しの抑制も生きている帯
+  //   5 秒: 引き直しの抑制（3 秒）が明けた後の帯。**猶予が独立した値であることはここでしか分からない**
+  //         （1 秒だけだと、猶予を 3 秒へ戻しても通ってしまう）
+  it.each([
+    ['引き直しの抑制も生きている帯', 1000],
+    ['抑制が明けた後の帯', 5000],
+  ])('[対照] 新規発報から猶予の内側では譲る（%s）', (_name, elapsedMs) => {
     // Arrange: 初出時刻を記録せずにマウントする（＝新規発報として第一報のフォーカスが走る）。
     const map = createFakeMap({ fitZoom: 7 })
     const focusTickRef = { current: 0 }
@@ -1373,18 +1380,42 @@ describe('揺れフォーカス（EEW 発報中）', () => {
     const view = render(eewFocusFrame(map, { focusTickRef, ...refs }))
     expect(moveCount(map)).toBe(1)
 
-    // Act: 第一報の抑制（3 秒）が明ける前に揺れの強まりが来る。
+    // Act: 猶予（SHAKE_FOCUS_YIELD_AFTER_EEW_MS = 10 秒）の内側で揺れの強まりが来る。
     act(() => {
-      vi.advanceTimersByTime(1000)
+      vi.advanceTimersByTime(elapsedMs)
     })
     view.rerender(eewFocusFrame(map, {
       focusTickRef, ...refs,
       shakeFocus: { ...FAR, tick: 1, atMs: Date.now() },
     }))
 
-    // Assert: 寄らない（第一報の画を守る）。連番は消費するので後から蒸し返さない。
+    // Assert: 寄らない。連番は消費するので後から蒸し返さない。
     expect(moveCount(map)).toBe(1)
     expect(focusTickRef.current).toBe(1)
+  })
+
+  // 猶予の外側。ここが効かないと「発報後は二度と寄らない」になる。
+  it('[対照] 猶予を過ぎたら寄る', () => {
+    const map = createFakeMap({ fitZoom: 7 })
+    const focusTickRef = { current: 0 }
+    const refs = {
+      firstSeenAtRef: { current: new Map<string, number>() },
+      focusedEewIdRef: { current: null as string | null },
+    }
+    const view = render(eewFocusFrame(map, { focusTickRef, ...refs }))
+
+    // 猶予（10 秒）が明けてから揺れの強まりが来る。
+    act(() => {
+      vi.advanceTimersByTime(10_100)
+    })
+    const before = moveCount(map)
+    view.rerender(eewFocusFrame(map, {
+      focusTickRef, ...refs,
+      shakeFocus: { ...FAR, tick: 1, atMs: Date.now() },
+    }))
+
+    expect(moveCount(map)).toBe(before + 1)
+    expect(map.getCenter()).toEqual({ lng: FAR.lng, lat: FAR.lat })
   })
 
   it('[安全弁] 譲った要求は、抑制が明けても蒸し返さない', () => {
