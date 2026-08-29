@@ -1171,8 +1171,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 遠地地震は国内で震度を観測しない（maxScale は常に -1）。「最大震度不明」と出すと
         // 震度が判明していないだけに読めてしまうため、規模を出す別書式にする。
         title.setTitle(isForeignQuake
-          ? `🔴 遠地地震 ${hypocenter.name}${hasMagnitude(hypocenter.magnitude) ? ` ${formatMagnitude(hypocenter.magnitude)}` : ''}`
-          : `🔴 地震情報 ${hypocenter.name} 最大震度${getIntensityLabel(maxScale)}`)
+          ? `遠地地震 ${hypocenter.name}${hasMagnitude(hypocenter.magnitude) ? ` ${formatMagnitude(hypocenter.magnitude)}` : ''}`
+          : `地震情報 ${hypocenter.name} 最大震度${getIntensityLabel(maxScale)}`)
       }
       title.scheduleTitleRevert('earthquake')
     } else if (event.kind === 'tsunami' && !event.cancelled) {
@@ -1412,7 +1412,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // useAlertTitle の computeEEWTitle と同じ `eewKindLabel` を使い、文言がずれないようにする。
       const titleLevel = Array.from(activeEEWLevelsRef.current.values())
         .reduce<0 | 1 | 2>((m, l) => Math.max(m, l) as 0 | 1 | 2, 0)
-      const eewTitle = `🚨 ${eewKindLabel(titleLevel)} ${event.earthquake.hypocenter.name}` +
+      const eewTitle = `${eewKindLabel(titleLevel)} ${event.earthquake.hypocenter.name}` +
         (scale > 0 ? ` 最大震度${getIntensityLabelWithOrAbove(scale, scaleOrAbove)}予想` : '') +
         (newCount > 1 ? ` 他${newCount - 1}件` : '')
       title.setTitle(eewTitle)
@@ -1737,8 +1737,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         }
         // タイトル更新
         const specialTitle = specialEvent.kind === 'nankai'
-          ? `⚠️ 南海トラフ臨時情報（${specialEvent.data.kindName ?? '発表中'}）`
-          : '⚠️ 後発地震注意情報 発表中'
+          ? `南海トラフ臨時情報（${specialEvent.data.kindName ?? '発表中'}）`
+          : '後発地震注意情報 発表中'
         title.setTitle(specialTitle)
         title.scheduleTitleRevert('specialInfo')
       } else {

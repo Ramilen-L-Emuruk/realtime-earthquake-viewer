@@ -582,6 +582,21 @@ export function FitToCandidateGL({
 // 引き直してしまい「一瞬 EEW にフォーカス→即ズームアウト」というちらつきになる。
 const GROWTH_FOLLOW_SUPPRESS_MS = 3000
 
+// 新規 EEW の発報から、揺れフォーカス（音が鳴った点へ寄る）を見送る時間。
+//
+// **上の抑制とは役割も長さも別。** あちらは「第一報の画を数秒保たせる」ためにカメラの引き直しを
+// 止めるもので、こちらは「発報直後は EEW の画を優先する」という取り決め。同じ値にしていた頃は、
+// 引き直しの都合が変わると猶予まで一緒に動いてしまった。
+//
+// 10 秒にしたのは、2024-01-01 能登本震の再生で発報の 0.2 秒後と 14 秒後に揺れの強まりが来ており、
+// 後者が震度7に達する瞬間だったため。発報直後の慌ただしい数秒だけを抑え、本震の山は見せる。
+// これより長くすると山そのものを抑え込む側へ倒れる。
+//
+// **下の `NEW_EEW_FOCUS_WINDOW_MS` と値が同じなのは偶然。** あちらは「初めて見た EEW を新規発報と
+// みなす鮮度」で、根拠（タブ移動のずれ）も用途もまったく別。片方を動かすときにもう片方を
+// 揃えにいかないこと。
+const SHAKE_FOCUS_YIELD_AFTER_EEW_MS = 10000
+
 // 「新規発報」とみなす鮮度。EEW を初めて見てからこの時間の内に追従が始まったら第一報のフォーカス
 // （自身の波円／震源へ寄る＋上の抑制）を与え、過ぎていたら「発報中の EEW のところへ入室した」として
 // 合成範囲へ寄せる。
@@ -668,15 +683,14 @@ export function FitToEEWGL({
   // 成長フォロー・件数減少の再フィットを止める期限。**第一報と揺れフォーカスの両方が張る**
   // （どちらも「いま見せている画を数秒保たせたい」ので、止める相手は同じ）。
   const suppressGrowthUntilRef = useRef<number>(0)
-  // 第一報のフォーカスを見せている期限。**揺れフォーカスが「譲るかどうか」を見るのはこちらだけ。**
-  // 上の ref を見ると、自分が直前に張った抑制を読んで 3 秒以内の次の上昇を落としてしまう
-  // （非 EEW 側は連続して寄るため、経路で挙動が変わる。ログも「第一報の直後」と嘘をつく）。
+  // 新規 EEW の発報から揺れフォーカスを見送る期限（`SHAKE_FOCUS_YIELD_AFTER_EEW_MS`）。
+  // **揺れフォーカスが「譲るかどうか」を見るのはこちらだけ。** 上の ref を見ると、自分が直前に
+  // 張った抑制を読んで次の上昇を落としてしまう（非 EEW 側は連続して寄るため、経路で挙動が変わる）。
   //
-  // **EEW が入れ替わっても消さなくてよい。** 持つのは時刻なので、意味を持つのは第一報を飛ばしてから
-  // 3 秒の間だけ。そしてその 3 秒は、他にカメラを動かすものが無い（成長フォローと件数減少は同じ 3 秒で
-  // 止まり、検知追従・候補追従は hasEew で停止、地震・津波の追従は kyoshin モードでマウントされない）
-  // ——画面は実際に第一報のフレーミングを保っている。latest がどの EEW であれ、譲るのが正しい。
-  const firstReportUntilRef = useRef<number>(0)
+  // **EEW が入れ替わっても消さなくてよい。** 規則が「どの EEW であれ、新規発報から一定時間は
+  // 揺れフォーカスを見送る」だから、直前に別の EEW が発報していたなら譲るのが正しい。持つのは
+  // 時刻なので、放置しても猶予が過ぎれば自然に無効になる。
+  const newEewYieldUntilRef = useRef<number>(0)
 
   // 最新 EEW（originTime 降順）を追従対象とする。
   const latest =
@@ -749,8 +763,8 @@ export function FitToEEWGL({
       entryFittedRef.current = true
       resetUserInteraction()
       suppressGrowthUntilRef.current = Date.now() + GROWTH_FOLLOW_SUPPRESS_MS
-      // 揺れフォーカスに譲らせる期限も同じ長さで張る（役割が違うので ref は分ける。上記参照）。
-      firstReportUntilRef.current = suppressGrowthUntilRef.current
+      // 揺れフォーカスに譲らせる猶予はこれとは別の長さで張る（役割が違う。上記の定数参照）。
+      newEewYieldUntilRef.current = Date.now() + SHAKE_FOCUS_YIELD_AFTER_EEW_MS
       // 波円が既にあれば波円へ直接フィット（震源→波円のギクシャク防止）。他に発報中の EEW があっても
       // それらの円は含めない。psWave prop は usePsWaveCalc が別 Effect で非同期に更新するため、新規 EEW
       // 受信直後のこのレンダーではまだ反映されていない（psWave.find に頼ると常に外れて震源フォールバック
@@ -827,11 +841,12 @@ export function FitToEEWGL({
       log.debug('[mapGL] 揺れフォーカス スキップ (EEW中・userInteracting)')
       return
     }
-    // 第一報のフォーカスを見せている間は譲る。EEW は「これから来る」の報せで、まず震源を
-    // 見せる意味がある。揺れの強まりは 3 秒後の次の上昇で拾える。
-    // **見るのは第一報の期限だけ**（自分が張った抑制を見ると自己抑制になる。上記 ref の注記）。
-    if (Date.now() < firstReportUntilRef.current) {
-      log.debug('[mapGL] 揺れフォーカス スキップ (EEW第一報の直後)')
+    // 新規発報から `SHAKE_FOCUS_YIELD_AFTER_EEW_MS` の間は譲る。EEW は「これから来る」の報せで、まず
+    // 震源と予報円を見せる意味がある。揺れの強まりは猶予明けの次の上昇で拾える。
+    // **見るのはこの猶予だけ**（自分が張った抑制を見ると自己抑制になる。上記 ref の注記）。
+    if (Date.now() < newEewYieldUntilRef.current) {
+      const restSec = Math.ceil((newEewYieldUntilRef.current - Date.now()) / 1000)
+      log.debug(`[mapGL] 揺れフォーカス スキップ (EEW新規発報の直後・あと約${restSec}秒)`)
       return
     }
     suppressGrowthUntilRef.current = Date.now() + SHAKE_FOCUS_SUPPRESS_MS

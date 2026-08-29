@@ -712,7 +712,7 @@ export function App() {
     if (title.alertTitle) {
       document.title = title.alertTitle
     } else if (updateCountdown !== null) {
-      document.title = `🔄 ${updateCountdown}秒後に再起動します — ${DEFAULT_TITLE}`
+      document.title = `${updateCountdown}秒後に再起動します — ${DEFAULT_TITLE}`
     } else {
       document.title = DEFAULT_TITLE
     }

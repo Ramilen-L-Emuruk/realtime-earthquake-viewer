@@ -42,12 +42,12 @@ function makeEEW(over: {
 describe('computeEEWTitle', () => {
   it('予報級だけなら「地震動予報」と名乗る', () => {
     const eews = new Map([['a', makeEEW({ id: 'a', name: '宮城県沖', severity: 'Forecast', scaleTo: 20 })]])
-    expect(computeEEWTitle(eews)).toBe('🚨 地震動予報 宮城県沖 最大震度2予想')
+    expect(computeEEWTitle(eews)).toBe('地震動予報 宮城県沖 最大震度2予想')
   })
 
   it('警報級なら「緊急地震速報」と名乗る', () => {
     const eews = new Map([['a', makeEEW({ id: 'a', name: '日向灘', severity: 'Warning', scaleTo: 50 })]])
-    expect(computeEEWTitle(eews)).toBe('🚨 緊急地震速報 日向灘 最大震度5強予想')
+    expect(computeEEWTitle(eews)).toBe('緊急地震速報 日向灘 最大震度5強予想')
   })
 
   // これが本題。警報級が震度未確定（仮定震源要素 → eewMaxScale は 0）で、予報級に震度が付いていると
@@ -59,7 +59,7 @@ describe('computeEEWTitle', () => {
       ['fcst', makeEEW({ id: 'fcst', name: '宮城県沖', severity: 'Forecast', scaleTo: 30 })],
     ])
     const title = computeEEWTitle(eews)
-    expect(title.startsWith('🚨 緊急地震速報 ')).toBe(true)
+    expect(title.startsWith('緊急地震速報 ')).toBe(true)
     // 地名と震度は primary（最大震度）から取るので、予報級の方が出るのは正しい
     expect(title).toContain('宮城県沖')
     expect(title).toContain('他1件')
@@ -69,16 +69,16 @@ describe('computeEEWTitle', () => {
   // 下限を断定した「最大震度4予想」にすると実際の危険度より低く見える。
   it('上限が定まらない予想は「以上」を添える', () => {
     const eews = new Map([['a', makeEEW({ id: 'a', name: '能登半島沖', severity: 'Forecast', scaleTo: 40, scaleToOrAbove: true })]])
-    expect(computeEEWTitle(eews)).toBe('🚨 地震動予報 能登半島沖 最大震度4以上予想')
+    expect(computeEEWTitle(eews)).toBe('地震動予報 能登半島沖 最大震度4以上予想')
   })
 
   it('上限が定まっている予想には添えない（境界の手前）', () => {
     const eews = new Map([['a', makeEEW({ id: 'a', name: '能登半島沖', severity: 'Forecast', scaleTo: 40 })]])
-    expect(computeEEWTitle(eews)).toBe('🚨 地震動予報 能登半島沖 最大震度4予想')
+    expect(computeEEWTitle(eews)).toBe('地震動予報 能登半島沖 最大震度4予想')
   })
 
   it('予想震度が無ければ震度句を省く', () => {
     const eews = new Map([['a', makeEEW({ id: 'a', name: '能登半島沖', severity: 'Warning', condition: '仮定震源要素' })]])
-    expect(computeEEWTitle(eews)).toBe('🚨 緊急地震速報 能登半島沖')
+    expect(computeEEWTitle(eews)).toBe('緊急地震速報 能登半島沖')
   })
 })
