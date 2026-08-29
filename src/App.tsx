@@ -1214,6 +1214,7 @@ export function App() {
             observations={latestTsunamiObservations}
             lpgm={activeLpgm ?? undefined}
             iconScale={settings.mapIconScale}
+            hypocenterDepthScale={settings.hypocenterDepthScale}
             showBathymetry={settings.showBathymetry}
             showActiveFaults={settings.showActiveFaults}
             activeFaultOpacity={settings.activeFaultOpacity}

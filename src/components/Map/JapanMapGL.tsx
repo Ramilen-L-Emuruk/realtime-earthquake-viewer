@@ -17,7 +17,7 @@ import { PlateBoundariesGL } from './PlateBoundariesGL'
 import { QuakeIntensityPointsGL } from './QuakeIntensityPointsGL'
 import { QuakeRegionFillGL } from './QuakeRegionFillGL'
 import { QuakeHeatmapGL } from './QuakeHeatmapGL'
-import { EpicenterGL } from './EpicenterGL'
+import { HypocenterDepthGL } from './HypocenterDepthGL'
 import { LpgmPointsGL } from './LpgmPointsGL'
 import { LpgmRegionFillGL } from './LpgmRegionFillGL'
 import { TsunamiLinesGL } from './TsunamiLinesGL'
@@ -89,6 +89,7 @@ export function JapanMapGL({
   candidateId = null,
   shakeFocus = null,
   iconScale = 1,
+  hypocenterDepthScale = 1,
   showActiveFaults = true,
   activeFaultOpacity = 0.4,
   showPlateBoundaries = true,
@@ -358,7 +359,13 @@ export function JapanMapGL({
           {mode === 'quake' && (
             <>
               {hasEpicenter && epicenter && quake && (
-                <EpicenterGL quake={quake} epicenter={epicenter} prefIntensities={prefIntensities} iconScale={iconScale} />
+                <HypocenterDepthGL
+                  quake={quake}
+                  epicenter={epicenter}
+                  prefIntensities={prefIntensities}
+                  iconScale={iconScale}
+                  exaggeration={hypocenterDepthScale}
+                />
               )}
               {/* 地震モードのカメラフィット（signature 変化時に観測点＋震源へ）。 */}
               <QuakeFitGL

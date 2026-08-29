@@ -37,7 +37,7 @@
                    useQuakeLayerData                                EarthquakeTab
                 （観測点点・区域塗り・震源）                        （カード一覧）
                           ↓
-              QuakeIntensityPointsGL / QuakeRegionFillGL / EpicenterGL
+              QuakeIntensityPointsGL / QuakeRegionFillGL / HypocenterDepthGL
 ```
 
 ## 3. 電文種別
@@ -444,9 +444,12 @@ eventId は確定 ID に変わる。すると先に届いていた震源情報�
 - 区域中心に震度バッジ（icon-image・symbol レイヤー）
 - 2026-08-10 のコミット 55dcc42 で HTML Marker から icon-image に移行済み
 
-### EpicenterGL（震源マーカー）
-- ×印 + ポップアップ
-- HTML `maplibregl.Marker` で実装（座標に紐づく DOM 要素）
+### HypocenterDepthGL（震源マーカー）
+- 震源の × 印 + 震央の印 + その間を結ぶ柄 + ポップアップ
+- **深さを持つ点として地下へ描く**（`gl/depthPointLayer.ts` のカスタムレイヤー）。DOM マーカーは
+  地表にしか置けないため、2026-08-29 に `EpicenterGL`（`maplibregl.Marker` 実装）から移した
+- クリック判定はカラーピッキング。カスタムレイヤーは `queryRenderedFeatures` にヒットしないため
+  （詳細は [`map-rendering-spec.md`](map-rendering-spec.md) §16「深さを持つ点」）
 
 ## 10. 状態管理
 
@@ -467,7 +470,8 @@ eventId は確定 ID に変わる。すると先に届いていた震源情報�
 - `src/components/EarthquakeTab/EarthquakeCard.tsx` — カード表示
 - `src/components/Map/QuakeIntensityPointsGL.tsx` — 観測点ドット
 - `src/components/Map/QuakeRegionFillGL.tsx` — 区域塗り＋区域バッジ
-- `src/components/Map/EpicenterGL.tsx` — 震源マーカー
+- `src/components/Map/HypocenterDepthGL.tsx` — 震源マーカー（深さを持つ点として描く）
+- `src/components/Map/gl/depthPointLayer.ts` — 深さを持つ点の描画とクリック判定
 
 ## 12. テストカバレッジ
 
