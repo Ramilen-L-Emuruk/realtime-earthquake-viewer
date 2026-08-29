@@ -440,9 +440,25 @@ describe('mergeQuakeInto — 顕著地震カードが先にある場合（本バ
 })
 
 describe('mergeQuakeInto — 通常電文どうし', () => {
-  it('各地の震度(既存) に 震度速報 が来たら据え置く（戻り値は既存と同一参照）', () => {
-    const e = makeQuake({ type: '各地の震度情報', maxScale: 70 })
-    const n = makeQuake({ type: '震度速報', maxScale: 50 })
+  // 仕様変更（能登 2024/1/1 実データの回帰修正）: incoming が実震度を持つ続報は issue.type の
+  // 優先度ではなく発表時刻で判定する。同じ分（気象庁電文の time は分精度）に届けば種別を問わず
+  // 受け入れる。理由は quakeMerge.ts の据え置き判定コメントを参照。
+  it('各地の震度(既存) に 同時刻の震度速報 が来たら受け入れる（種別優先度ではなく時刻で判定）', () => {
+    // time を明示的に完全一致させ、等号側の分岐（incoming.time === existing.time）を
+    // 正面から検証する。気象庁電文の time は分単位までしか精度が無く、同じ分に複数種別の
+    // 電文が発表されることは実データでも確認済み（震源情報と震度速報の続報。下の
+    // describe ブロック参照）。
+    const time = '2026-07-28T07:27:30Z'
+    const e = makeQuake({ type: '各地の震度情報', maxScale: 70, time })
+    const n = makeQuake({ type: '震度速報', maxScale: 50, time })
+    const merged = mergeQuakeInto(e, n)
+    expect(merged.issue.type).toBe('震度速報')
+    expect(merged.earthquake.maxScale).toBe(50)
+  })
+
+  it('各地の震度(既存) に 発表が古い震度速報 が来たら据え置く（対照）', () => {
+    const e = makeQuake({ type: '各地の震度情報', maxScale: 70, time: '2026-07-28T07:30:00Z' })
+    const n = makeQuake({ type: '震度速報', maxScale: 50, time: '2026-07-28T07:20:00Z' })
     expect(mergeQuakeInto(e, n)).toBe(e)
   })
 
@@ -461,6 +477,12 @@ describe('mergeQuakeInto — 通常電文どうし', () => {
     expect(merged.points.length).toBeGreaterThan(0)
   })
 
+  it('発表時刻が空の続報は据え置く（異常データを安全側＝据え置きに倒す）', () => {
+    const e = makeQuake({ type: '震度速報', maxScale: 50, time: '2026-07-28T07:27:30Z' })
+    const n = makeQuake({ type: '震度速報', maxScale: 60, time: '' })
+    expect(mergeQuakeInto(e, n)).toBe(e)
+  })
+
   it('取消表示中(cancelledAt)のカードは優先度に関わらず通常電文で置換される', () => {
     const e = makeQuake({ type: '各地の震度情報', maxScale: 70, cancelledAt: new Date() })
     const n = makeQuake({ type: '震度速報', maxScale: 40 })
@@ -476,6 +498,55 @@ describe('mergeQuakeInto — 通常電文どうし', () => {
     const n = makeQuake({ type: '震度速報', maxScale: 50, time: '2026-07-28T07:40:00Z' })
     expect(mergeQuakeInto(e, n)).toBe(e)
   })
+
+  // 能登 2024/1/1 16:06〜16:08 の実データで確認された不具合の回帰テスト（3件セット）。
+  // 震度速報(優先度1)→震源情報(優先度2、震度なし)→震度速報の続報(優先度1) という気象庁の
+  // 実際の発表順序で、旧ロジック（issue.type の優先度のみで判定）だと最後の続報が「震源情報より
+  // 優先度が低い」という理由だけで無視され、新しく増えた区域（新潟県佐渡）が地図・カードに
+  // 反映されなかった。
+  describe('震源情報を挟んだ震度速報の複数報（能登 2024/1/1 実データの回帰）', () => {
+    const firstPrompt = makeQuake({
+      type: '震度速報', maxScale: 50, time: '2026-01-01T07:07:42Z',
+      points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+    })
+    const epicenterOnly = makeNoIntensity({ type: '震源情報', time: '2026-01-01T07:08:32Z' })
+
+    it('正: 震源情報の後でも、時系列的に新しい震度速報の続報（新規区域あり）を取り込む', () => {
+      const afterEpicenter = mergeQuakeInto(firstPrompt, epicenterOnly)
+      expect(afterEpicenter.issue.type).toBe('震源情報')  // 震源情報に一旦切り替わる（既存の既知の挙動）
+
+      const secondPrompt = makeQuake({
+        type: '震度速報', maxScale: 50, time: '2026-01-01T07:08:42Z',
+        points: [
+          { pref: '', addr: '石川県能登', isArea: true, scale: 50 },
+          { pref: '', addr: '新潟県佐渡', isArea: true, scale: 30 },
+        ],
+      })
+      const merged = mergeQuakeInto(afterEpicenter, secondPrompt)
+      expect(merged.issue.type).toBe('震度速報')
+      expect(merged.points.map(p => p.addr)).toContain('新潟県佐渡')
+    })
+
+    it('対照: 震源情報より発表が古い震度速報（取りこぼれて遅れて届いた分）は据え置く', () => {
+      const afterEpicenter = mergeQuakeInto(firstPrompt, epicenterOnly)
+      const staleReplay = makeQuake({
+        type: '震度速報', maxScale: 50, time: '2026-01-01T07:07:50Z',  // epicenterOnly より古い
+        points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+      })
+      expect(mergeQuakeInto(afterEpicenter, staleReplay)).toBe(afterEpicenter)
+    })
+
+    it('安全弁: VXSE61 とマージ済みの完成カードは、発表時刻が新しくても変わらず据え置く', () => {
+      // 既存テスト「顕著地震とマージ済みの完成カード」と同じ保護が、時刻ベースへの変更後も
+      // 引き続き有効であることの確認（境界を動かす変更が別の保護を緩めていないか）。
+      const e: JMAQuake = {
+        ...makeQuake({ type: '各地の震度情報', maxScale: 70 }),
+        issue: { source: 'dmdata', time: '2026-07-28T07:35:00Z', type: '顕著な地震の震源要素更新のお知らせ', correct: 'なし' },
+      }
+      const muchNewer = makeQuake({ type: '震度速報', maxScale: 50, time: '2099-01-01T00:00:00Z' })
+      expect(mergeQuakeInto(e, muchNewer)).toBe(e)
+    })
+  })
 })
 
 describe('mergeQuakeHistory', () => {
@@ -488,6 +559,31 @@ describe('mergeQuakeHistory', () => {
     expect(merged[0].earthquake.maxScale).toBe(70)
     expect(merged[0].issue.type).toBe('顕著な地震の震源要素更新のお知らせ')
     expect(merged[0].earthquake.hypocenter.magnitude).toBe(7.3)
+  })
+
+  // mergeQuakeHistory の「既知の限界」（同関数の宣言コメント参照）: 同じ分（time は分精度）に
+  // 詳しい電文と粗い電文が混在すると、newQuakes の入力順序がそのまま結果に効く。
+  // fetchDmdataEarthquakes が「速報→詳細」の順で結合する前提を、ここで固定する。
+  it('正: 同じ分でも「粗い→詳しい」の順（実際の発表順）で来れば、詳しい方が勝つ', () => {
+    const time = '2026-07-28T07:30:00Z'
+    const prompt = makeQuake({ type: '震度速報', maxScale: 50, time })
+    const detailed = makeQuake({ type: '各地の震度情報', maxScale: 70, time })
+    const merged = mergeQuakeHistory([prompt, detailed])
+    expect(merged).toHaveLength(1)
+    expect(merged[0].issue.type).toBe('各地の震度情報')
+    expect(merged[0].earthquake.maxScale).toBe(70)
+  })
+
+  it('既知の限界: 同じ分で「詳しい→粗い」の順（発表順に反する）だと、粗い方に後退する', () => {
+    const time = '2026-07-28T07:30:00Z'
+    const detailed = makeQuake({ type: '各地の震度情報', maxScale: 70, time })
+    const prompt = makeQuake({ type: '震度速報', maxScale: 50, time })
+    const merged = mergeQuakeHistory([detailed, prompt])
+    expect(merged).toHaveLength(1)
+    // 現状の仕様（意図した動作ではないが既知の限界）。fetchDmdataEarthquakes 側が
+    // 常に「速報→詳細」の順で結合することでこの逆転を避けている。
+    expect(merged[0].issue.type).toBe('震度速報')
+    expect(merged[0].earthquake.maxScale).toBe(50)
   })
 
   it('バッチ跨ぎ: 既存の完成カードは維持し、新バッチの別イベントを追加する（回帰テスト）', () => {
