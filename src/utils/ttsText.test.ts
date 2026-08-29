@@ -2,9 +2,10 @@
 // 「〇時〇分」はローカルタイムゾーン依存のため、時刻の数値そのものではなく
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect } from 'vitest'
-import { earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityToText, lpgmToText, tsunamiToText, tsunamiArrivalToText, tsunamiObservationUpdateToText, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
+import { earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiArrivalToText, tsunamiObservationUpdateToText, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
 import { joinSegments, type SpeechSegment } from './ttsFollow'
 import { getStationCoordsCache } from './stationCoords'
+import { eewMaxScaleInfo, eewMaxLpgmClass } from './eew'
 import type { JMAQuake, JMALpgm, EarthquakePoint, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass, JMATsunami, TsunamiArea, TsunamiObservation } from '../types/earthquake'
 
 const TTS_OPTS: TtsRegionOptions = { intensityLevels: 0, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0 }
@@ -139,6 +140,13 @@ describe('earthquakeToText: 顕著な地震の震源要素更新のお知らせ'
 })
 
 describe('eewIntensityToText: 長周期地震動階級の読み上げ', () => {
+  // 本番コード（useLiveEventHandler.ts）は安定待ちで確定した値を明示的に渡すため、
+  // eewIntensityText は event から直接値を取り直さない。ここでは従来どおり event だけを
+  // 渡せるよう、eewMaxScaleInfo/eewMaxLpgmClass で都度計算してから渡すラッパーを使う。
+  function eewIntensityToText(event: EEWAlert, announceUpgrade = false): string {
+    return eewIntensityText(eewMaxScaleInfo(event), eewMaxLpgmClass(event), event, announceUpgrade)
+  }
+
   function makeEEW(
     forecastMaxLpgmClass?: LpgmClass,
     over: { condition?: EEWAlert['earthquake']['condition']; areas?: EEWAlert['areas']; depth?: number } = {},
