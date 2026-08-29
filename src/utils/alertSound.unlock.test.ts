@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 
-// `unlockAudio()` がマスターチェーンと残響を「音を鳴らす前に」作ることの検証。
+// `unlockAudio()` がマスターチェーンを「音を鳴らす前に」作ることの検証。
 //
-// **なぜ専用ファイルなのか。** alertSound は `_master` / `_reverb` をモジュール変数に
-// キャッシュするため、一度でも音を鳴らすと以後は生成されない。同じファイルに他の
-// テストを置くと、それらが先に音を鳴らして生成済みにしてしまい、`unlockAudio()` の
-// 中身を空にしても通る「空振りするテスト」になる（実際に一度そうなった）。
+// **なぜ専用ファイルなのか。** alertSound は `_master` をモジュール変数にキャッシュする
+// ため、一度でも音を鳴らすと以後は生成されない。同じファイルに他のテストを置くと、
+// それらが先に音を鳴らして生成済みにしてしまい、`unlockAudio()` の中身を空にしても
+// 通る「空振りするテスト」になる（実際に一度そうなった）。
 // Vitest はファイル単位でモジュールを分離するため、ここに 1 件だけ置いて守る。
 //
 // 守っているのは次の性質。Chrome の DynamicsCompressorNode は生成直後の約 0.4 秒だけ
@@ -71,18 +71,17 @@ beforeAll(() => {
 
 const sound = await import('./alertSound')
 
-describe('unlockAudio: 音を鳴らす前にマスターチェーンと残響を作る', () => {
+describe('unlockAudio: 音を鳴らす前にマスターチェーンを作る', () => {
   it('呼ぶ前は何も作られていない（前提の確認）', () => {
     expect(ctx.compressors).toBe(0)
     expect(ctx.convolvers).toBe(0)
   })
 
-  it('unlockAudio() で compressor と残響 2 種が作られ、音は鳴らない', () => {
+  it('unlockAudio() で compressor が作られ、音は鳴らない', () => {
     sound.unlockAudio()
     expect(ctx.compressors).toBe(1)
-    // 情報系（hall）と EEW の穏やかな音（tight）。片方だけだと、その音を初めて
-    // 鳴らす発報でバッファ生成が走る
-    expect(ctx.convolvers).toBe(2)
+    // 残響は全系統で廃した。ここで作られていたら、どこかに戻っている
+    expect(ctx.convolvers).toBe(0)
     // 事前生成であって発音ではない。オシレータを作ってはいけない
     expect(ctx.oscillators).toBe(0)
   })
@@ -91,7 +90,7 @@ describe('unlockAudio: 音を鳴らす前にマスターチェーンと残響を
     sound.unlockAudio()
     sound.unlockAudio()
     expect(ctx.compressors).toBe(1)
-    expect(ctx.convolvers).toBe(2)
+    expect(ctx.convolvers).toBe(0)
     expect(ctx.oscillators).toBe(0)
   })
 

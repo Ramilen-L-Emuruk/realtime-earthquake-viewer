@@ -55,12 +55,6 @@ export function unlockAudio(): void {
   } catch (err) {
     log.error(`[sound] マスターチェーンの事前生成に失敗: ${String(err)}`)
   }
-  // 残響も同格の共有リソースとして先に作る。情報系（pianoNote）と EEW の穏やかな音
-  // （darkPiano）はすべて残響を通るため、発報の瞬間に数秒ぶんのバッファ生成が走る。
-  // **2 種類を別々に試すこと。** 同じ try に入れると、hall の失敗で tight の生成行に
-  // 到達せず、EEW 系を初めて鳴らす発報で合成が走ってしまう（事前生成の意味が消える）。
-  tryGetReverb(ctx, 'hall')
-  tryGetReverb(ctx, 'tight')
 }
 
 /** VOICEVOX 等の外部モジュールが AudioContext を共有するための getter。 */
@@ -75,9 +69,8 @@ export function getAudioContext(): AudioContext | null {
 // ノイズに埋もれるため、compressor で合成音圧の暴走を抑制する（CRIT-3 対応）。
 // 単独再生時の音色はほぼ変わらず（threshold 以下は素通し）、複数音が重なったときだけ
 // リミッター的に働く。パラメータは音楽制作でリミッターとして使うときの標準的な値。
-// _reverb と同じく ctx とペアで保持する。将来 getCtx() が AudioContext を作り直す
-// 実装になったとき、古い ctx のノードを掴んだまま無音になるのを防ぐ（getReverb 側だけ
-// 対策があって master に無い、という非対称を残さない）。
+// ctx とペアで保持する。将来 getCtx() が AudioContext を作り直す実装になったとき、
+// 古い ctx のノードを掴んだまま無音になるのを防ぐ。
 let _master: GainNode | null = null
 let _masterCtx: AudioContext | null = null
 /**
@@ -110,127 +103,29 @@ export function getMasterInput(ctx: AudioContext): AudioNode {
   }
 }
 
-/**
- * 残響の種類。**警報級（`darkAlarm` / `sweep`）はどちらも通さない**——警報として
- * 硬い質感を保つため、濡らすのは音階を持つ音だけに限る。
- *
- * - `hall`  : 情報系（`pianoNote`）。広く長い余韻で角を落とす
- * - `tight` : EEW の穏やかな音（`darkPiano`）。乾いた質感を保ったまま芯だけ支える
- */
-type ReverbKind = 'hall' | 'tight'
+// BiquadFilterNode の欠落を報告済みか。マリンバは 1 音ごとに呼ぶため 1 度だけ記録する。
+let _filterFallbackWarned = false
 
 /**
- * 残響のインパルスレスポンスの作り方。
+ * ローパスを掛けた接続先を作る。**`BiquadFilterNode` を持たない環境ではマスターへ直結する。**
  *
- * **白色ノイズをそのまま減衰させると高域が最後まで残り「シャー」と乗る。**
- * 実際の部屋は高域から先に吸収されるため、時間とともにカットオフが下がる 1 次
- * ローパスを通して暗くしていく（`cutFrom` → `cutTo` が係数の推移。1 に近いほど暗い）。
- * 頭には無音のプリディレイと、離散的な初期反射を置いて空間の大きさを出す。
+ * フィルタを使うのはマリンバ（検知・更新系）だけで、無ければ木の柔らかさが出ないものの
+ * 音そのものは鳴る。ここで諦めると 4 種の通知音が丸ごと無音になるため繋ぎ替える。
  */
-const REVERB_SPECS: Record<ReverbKind, {
-  sec: number
-  decay: number
-  cutFrom: number
-  cutTo: number
-  preDelaySec: number
-  /**
-   * 拡散音（ノイズの尾）にだけ掛ける倍率。初期反射には掛からないため、
-   * **これが決めるのは「初期反射に対して拡散音をどれだけ厚くするか」の比だけ。**
-   *
-   * 残響の絶対的な音量ではない。`ConvolverNode.normalize` は既定の `true` のままで、
-   * ブラウザが IR 全体の実効音量を揃えてしまうため、ここを上げても残響は大きくならない。
-   * 音量を変えたいときは呼び出し側の wet（`PIANO_ROOM_WET` / `EEW_ROOM_WET`）を動かすこと。
-   */
-  diffuseGain: number
-  early: readonly (readonly [sec: number, amp: number])[]
-}> = {
-  hall: {
-    sec: 2.9, decay: 2.0, cutFrom: 0.14, cutTo: 0.80, preDelaySec: 0.024, diffuseGain: 4.0,
-    early: [[0.019, 0.42], [0.031, -0.34], [0.047, 0.26], [0.066, -0.20], [0.089, 0.14], [0.113, -0.10]],
-  },
-  tight: {
-    sec: 0.85, decay: 3.0, cutFrom: 0.28, cutTo: 0.66, preDelaySec: 0.006, diffuseGain: 2.6,
-    early: [[0.006, 0.55], [0.011, -0.40], [0.017, 0.30], [0.024, -0.20]],
-  },
-}
-
-// LOW-B2: convolver を ctx とペアで保持する。現状は getCtx() が audioCtx を再生成しないため
-// この分岐が実行時に到達することはないが、将来 getCtx() の実装が変わって AudioContext を
-// 再生成するようになった場合の防御的コード。ctx が変わったら作り直す。
-const _reverbs = new Map<ReverbKind, ConvolverNode>()
-// 生成に失敗した種類。**記録しないと発報のたびに数秒ぶんのバッファ合成をやり直す**
-// （成功したときしかキャッシュに載らないため）。一度失敗した種類はそのセッションでは
-// 諦め、直接音だけで鳴らす。
-const _reverbFailed = new Set<ReverbKind>()
-let _reverbCtx: AudioContext | null = null
-
-/**
- * ctx が入れ替わっていたらキャッシュと失敗の記録を捨てる。
- *
- * **`getReverb` と `tryGetReverb` の両方の入口で呼ぶこと。** 失敗の記録は
- * `tryGetReverb` が `getReverb` を呼ぶ**前に**見るため、ここを `getReverb` の中だけに
- * 置くと、ctx が作り直されても古い失敗記録が残り続け、二度と残響を作らなくなる。
- */
-function resetReverbCacheIfCtxChanged(ctx: AudioContext): void {
-  if (_reverbCtx === ctx) return
-  _reverbs.clear()
-  _reverbFailed.clear()
-  _reverbCtx = ctx
-}
-
-function getReverb(ctx: AudioContext, kind: ReverbKind): ConvolverNode {
-  resetReverbCacheIfCtxChanged(ctx)
-  const cached = _reverbs.get(kind)
-  if (cached) return cached
-
-  const spec = REVERB_SPECS[kind]
-  const sr = ctx.sampleRate
-  const len = Math.floor(sr * spec.sec)
-  const buf = ctx.createBuffer(2, len, sr)
-  const preDelay = Math.floor(sr * spec.preDelaySec)
-  for (let ch = 0; ch < 2; ch++) {
-    const d = buf.getChannelData(ch)
-    let lp = 0
-    for (let i = preDelay; i < len; i++) {
-      const u = (i - preDelay) / (len - preDelay)
-      const a = spec.cutFrom + (spec.cutTo - spec.cutFrom) * u
-      lp = lp * a + (Math.random() * 2 - 1) * (1 - a)
-      d[i] = lp * Math.pow(1 - u, spec.decay) * spec.diffuseGain
+function lowpassOrMaster(ctx: AudioContext, cutoffHz: number): AudioNode {
+  if (typeof ctx.createBiquadFilter !== 'function') {
+    if (!_filterFallbackWarned) {
+      _filterFallbackWarned = true
+      log.warn('[sound] BiquadFilterNode が無い環境のため、マリンバのローパスを省く')
     }
-    // 初期反射。左右で 1.7ms ずらし極性を交互にすることで、左右の相関を下げて広がりを作る
-    spec.early.forEach(([sec, amp], j) => {
-      const at = Math.floor(sr * (sec + ch * 0.0017))
-      if (at < len) d[at] += amp * (j % 2 ? -1 : 1) * (ch ? 0.9 : 1)
-    })
+    return getMasterInput(ctx)
   }
-  const convolver = ctx.createConvolver()
-  convolver.buffer = buf
-  convolver.connect(getMasterInput(ctx))
-  _reverbs.set(kind, convolver)
-  return convolver
-}
-
-/**
- * 残響を取れなければ諦める版。**残響の失敗で直接音まで落とさないために使う。**
- *
- * `pianoNote` は全音が残響を通るため、`getReverb` が投げると引数評価の時点で
- * 呼び出し元へ例外が伝わり、`earthquake` のような複数音の音は残りの音が丸ごと
- * 鳴らなくなる（直接音は先にスケジュール済みでも、次の音までは届かない）。
- *
- * **失敗は種類ごとに 1 度だけ記録し、以後そのセッションでは試さない。** 再試行を
- * 続けると、恒久的に失敗する環境では発報のたびに数秒ぶんのバッファ合成が走り、
- * 同じ警告がコンソールを埋め尽くす。
- */
-function tryGetReverb(ctx: AudioContext, kind: ReverbKind): ConvolverNode | null {
-  resetReverbCacheIfCtxChanged(ctx)
-  if (_reverbFailed.has(kind)) return null
-  try {
-    return getReverb(ctx, kind)
-  } catch (err) {
-    _reverbFailed.add(kind)
-    log.warn(`[sound] 残響（${kind}）の生成に失敗したため、以後は直接音のみで鳴らす: ${String(err)}`)
-    return null
-  }
+  const lp = ctx.createBiquadFilter()
+  lp.type = 'lowpass'
+  lp.frequency.value = cutoffHz
+  lp.Q.value = 0.7
+  lp.connect(getMasterInput(ctx))
+  return lp
 }
 
 // StereoPannerNode の欠落を報告済みか。高頻度に呼ばれるため 1 度だけ記録する。
@@ -268,11 +163,11 @@ const STOP_MARGIN_SEC = 0.012
 /**
  * 立ち上がって指数減衰する 1 本のトーンを鳴らす。
  *
- * 通知音のプリミティブ（pianoNote / darkPiano / impact / ding）が共通で使う。
+ * 通知音のプリミティブ（pianoNote / darkPiano / darkAlarm / marimba）が共通で使う。
  * 終端の落とし方をここへ集約しているため、各プリミティブは倍音構成だけを持つ。
  * 終端が 0 まで落ちない形に戻すとティックが再発するので、ここを分岐させないこと。
  *
- * @param dest 接続先。通常はマスター入力、残響成分のときは convolver
+ * @param dest 接続先。通常はマスター入力、マリンバのときはローパスフィルタ
  * @param t 発音開始時刻（AudioContext 時間）
  * @param attack 0 から peak に達するまでの秒数
  * @param peak 到達する gain（globalVolume は呼び出し側で適用済み）。
@@ -368,11 +263,6 @@ function gateTone(
   osc.stop(end + 0.05)
 }
 
-// 情報系（pianoNote）の全音に載せる残響。呼び出し側の wet に加算する。
-// EEW の穏やかな音（darkPiano）には別の、ずっと浅い値を使う（EEW_ROOM_WET）
-// ——警報として乾いた質感を保つため、深く濡らすのは情報系だけに限る。
-const PIANO_ROOM_WET = 0.24
-
 // ピアノの 1 音は複数本の弦で鳴っており、その張力のわずかな差がうねりを生む。
 // 基音を 1 本のオシレータで出すとこのうねりが無く、「電子音」として聞こえる。
 const PIANO_UNISON_CENTS = 3.0
@@ -395,8 +285,8 @@ const PIANO_PARTIAL_LEVELS = [0, 0, 0.272, 0.136, 0.068] as const
 // かつては頭に 8ms の広帯域ノイズを重ねて「鍵盤を叩いた感じ」を出していたが、
 // これが小型スピーカーで「プチ」と聞こえる正体だった。連続して鳴る音
 // （地震情報は 0.16 秒間隔の 4 音）では粒が並んで「プチプチ」になる。
-// ノイズは廃し、厚みはユニゾンのうねり・上部倍音・残響で作っている。
-function pianoNote(ctx: AudioContext, freq: number, t: number, dur: number, gain: number, wet = 0): void {
+// ノイズは廃し、厚みはユニゾンのうねりと上部倍音で作っている。
+function pianoNote(ctx: AudioContext, freq: number, t: number, dur: number, gain: number): void {
   const p = gain * globalVolume
   const dest = getMasterInput(ctx)
   const A = 0.012
@@ -413,17 +303,7 @@ function pianoNote(ctx: AudioContext, freq: number, t: number, dur: number, gain
       t + dur * (0.36 - (n - 2) * 0.05))
   }
   decayTone(ctx, dest, 'sine', freq * 0.5, t, 0.010, p * 0.10, t + dur * 0.55)
-  const rev = tryGetReverb(ctx, 'hall')
-  if (rev) {
-    const w = p * (wet + PIANO_ROOM_WET)
-    decayTone(ctx, rev, 'sine', freq, t, A, w, t + dur * 0.85)
-    decayTone(ctx, rev, 'sine', partialFreq(freq, 2, PIANO_INHARMONICITY), t, A, w * 0.4, t + dur * 0.5)
-  }
 }
-
-// EEW の穏やかな音に載せる残響。情報系（PIANO_ROOM_WET）よりずっと浅く、
-// 締まった IR を使う——警報として乾いた質感を保つため。
-const EEW_ROOM_WET = 0.06
 
 // EEW 系のユニゾン幅。情報系より狭くして、うねりを付けつつ緊張感を残す。
 const EEW_UNISON_CENTS = 2.2
@@ -432,7 +312,7 @@ const EEW_UNISON_CENTS = 2.2
 //
 // pianoNote と同じ理由で頭のノイズを廃している。**倍音は整数倍のまま**
 // ——EEW は警報として硬い質感を保つ判断のため、情報系のようにインハーモニシティで
-// 響きを豊かにはしない。足したのはユニゾンのうねりと、芯を支える浅い残響だけ。
+// 響きを豊かにはしない。足したのはユニゾンのうねりだけ。
 function darkPiano(ctx: AudioContext, freq: number, t: number, dur: number, gain: number): void {
   const p = gain * globalVolume
   const dest = getMasterInput(ctx)
@@ -443,8 +323,6 @@ function darkPiano(ctx: AudioContext, freq: number, t: number, dur: number, gain
   decayTone(ctx, dest, 'sine', freq / spread, t, A, p * 0.30, t + dur * 0.97)
   decayTone(ctx, dest, 'sine', freq * 2, t, A, p * 0.24, t + dur * 0.35)
   decayTone(ctx, dest, 'sine', freq * 3, t, A, p * 0.08, t + dur * 0.20)
-  const rev = tryGetReverb(ctx, 'tight')
-  if (rev) decayTone(ctx, rev, 'sine', freq, t, A, p * EEW_ROOM_WET, t + dur * 0.82)
 }
 
 // 警報アラームの離調とステレオ幅。同じ矩形波を左右へ ±7 セントずらして重ねると、
@@ -561,31 +439,32 @@ function sweep(
   layer('triangle',   1.5,  voicing.mid,     -3, -0.25)
 }
 
-// 打撃音: sine + triangle + サブオクターブ（強震モニタ揺れ検知に使用）。
-// 頭のノイズは pianoNote / darkPiano と同じ理由で廃した。打撃感は triangle の
-// 3ms 立ち上がりとサブオクターブで出す（リアルタイム系は残響を足さない）。
-function impact(ctx: AudioContext, freq: number, t: number, dur: number, gain: number): void {
+/**
+ * マリンバ（木琴）。観測と検知を伝える音——揺れ検知・その予兆・震度の更新・
+ * 津波の観測値の更新——をこれ 1 つで作る。
+ *
+ * **他の 4 系統が波形を重ねるだけで作られているのに対し、ここだけフィルタを持つ。**
+ * 木琴の音は板の共鳴が高域を吸うところに柔らかさがあり、波形を足すだけでは作れない。
+ *
+ * 木琴は上部の部分音を **1 : 4 : 10** に調律する（弦の 1 : 2 : 3 とは違う）。倍音が上へ
+ * 大きく離れるため、基音の周りが濁らず、短く鳴らしても音程がはっきり出る。
+ * 実測の板はここからわずかに外れるので 3.9 / 9.8 を使う。
+ *
+ * 理由: 加算合成のままでは「硬い」を解消できず、方式ごと入れ替えた
+ * （経緯は audio-tts-spec.md §10 の 2026-08-29 の項）。
+ *
+ * @param deep 低音を厚くする（震度 5 弱以上の更新音）
+ */
+function marimba(ctx: AudioContext, freq: number, t: number, dur: number, gain: number, deep = false): void {
   const p = gain * globalVolume
-  const dest = getMasterInput(ctx)
-  decayTone(ctx, dest, 'sine',     freq,       t, 0.003, p,        t + dur)
-  decayTone(ctx, dest, 'triangle', freq,       t, 0.003, p * 0.45, t + dur * 0.18)
-  decayTone(ctx, dest, 'sine',     freq * 0.5, t, 0.004, p * 0.35, t + dur * 0.45)
-}
-
-// 純音トーン: sine + 第2倍音（強震モニタ更新音・津波情報更新に使用）。
-// 元からノイズを持たないため、変わったのは終端の落とし方だけ。
-function ding(ctx: AudioContext, freq: number, t: number, dur: number, gain: number): void {
-  const p = gain * globalVolume
-  const dest = getMasterInput(ctx)
-  decayTone(ctx, dest, 'sine', freq,     t, 0.006, p,        t + dur)
-  decayTone(ctx, dest, 'sine', freq * 2, t, 0.006, p * 0.20, t + dur * 0.22)
-}
-
-// 低音補強トーン: ding + サブオクターブ（高震度更新音に使用）
-function dingDeep(ctx: AudioContext, freq: number, t: number, dur: number, gain: number): void {
-  ding(ctx, freq, t, dur, gain)
-  const p = gain * globalVolume
-  decayTone(ctx, getMasterInput(ctx), 'sine', freq * 0.5, t, 0.008, p * 0.50, t + dur * 0.55)
+  // 板の共鳴が高域を吸うのを模す。基音の 6 倍で切ると、上の部分音が角を残さず馴染む。
+  // **フィルタを持たない環境ではマスターへ直結する**（`panTo` と同じ方針）——ここで
+  // 例外を投げると playGuarded が握り潰し、検知・更新系の 4 種が丸ごと無音になる。
+  const lp = lowpassOrMaster(ctx, freq * 6)
+  decayTone(ctx, lp, 'sine', freq,       t, 0.006, p,        t + dur)
+  decayTone(ctx, lp, 'sine', freq * 3.9, t, 0.004, p * 0.22, t + dur * 0.24)
+  decayTone(ctx, lp, 'sine', freq * 9.8, t, 0.003, p * 0.07, t + dur * 0.10)
+  decayTone(ctx, lp, 'sine', freq * 0.5, t, 0.008, p * (deep ? 0.45 : 0.18), t + dur * 0.55)
 }
 
 // ─── サウンドプレーヤー ───────────────────────────────────────────
@@ -659,19 +538,18 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
     darkPiano(ctx, 261.6, base + 2 * 0.10, 1.00, 0.24)
   },
 
-  // 揺れ検知（強震モニタ first contact）: 打撃2音 + シマー高周波。
-  // シマーも decayTone を通す。ここだけ直に書いていたため終端が 0.001 のまま切れ、
-  // 打撃音の後ろで 2637Hz のティックが残っていた（他のプリミティブと揃える）。
+  // 揺れ検知（強震モニタ first contact）: マリンバ 2 音 C#6→A5（下行長 3 度）。
+  // 以前は打撃音 2 つに 2637Hz のシマーを重ねていたが、高域はマリンバの部分音が担うため
+  // 別途足さない。**地震情報（329〜659Hz）と音域が重ならないよう上に置いている**——
+  // 落ち着いた知らせと緊急の気づきが同じ高さで鳴ると、役割の差が消える。
   kyoshin: (ctx, base) => {
-    impact(ctx, 1318, base + 0.00, 0.30, 0.28)
-    decayTone(ctx, getMasterInput(ctx), 'sine', 2637,
-      base + 0.02, 0.005, 0.28 * globalVolume * 0.10, base + 0.18)
-    impact(ctx, 1047, base + 0.24, 0.42, 0.26)
+    marimba(ctx, 1108, base + 0.00, 0.34, 0.28)
+    marimba(ctx, 880,  base + 0.24, 0.46, 0.26)
   },
 
-  // 揺れ検知（候補・未確定）: 控えめな単発チャイム（確定音の1/4以下の音量）
+  // 揺れ検知（候補・未確定）: 控えめな単発 F#5（確定音の1/4以下の音量）
   kyoshinCandidate: (ctx, base) => {
-    ding(ctx, 880, base, 0.22, 0.07)
+    marimba(ctx, 740, base, 0.24, 0.07)
   },
 
   // 津波予報（若干の海面変動）: 穏やかなスイープ 380→460Hz × 2回（tsunamiWatch より低緊迫・低音量）
@@ -698,10 +576,12 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
     for (let i = 0; i < 5; i++) sweep(ctx, SWEEP_VOICINGS.major, 220, 620, base + i * 0.40, 0.34, 0.28)
   },
 
-  // 津波情報更新（グレード不変・観測値更新）: ding 低音 → 高音（穏やかな通知）
+  // 津波情報更新（グレード不変・観測値更新）: マリンバ 2 音 F#4→C#5（穏やかな通知）。
+  // **他の観測・検知音と違い、周波数を下げていない。** 元から低いため、揃えて下げると
+  // 185Hz まで落ちて小型スピーカーでは痩せる（下げ幅は音域に余裕のある高い音だけに掛ける）。
   tsunamiUpdate: (ctx, base) => {
-    ding(ctx, 370, base + 0.00, 0.55, 0.14)
-    ding(ctx, 555, base + 0.28, 0.55, 0.11)
+    marimba(ctx, 370, base + 0.00, 0.55, 0.14)
+    marimba(ctx, 555, base + 0.28, 0.55, 0.11)
   },
 
   // 津波解除・取消・失効: ピアノ G4 → C4 の終止形（下行完全 5 度）。
@@ -712,8 +592,8 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
   // 「ずっこけ」に近い軽さがあり、解除の知らせとして品位を欠いていた。
   // eewCancel（ダークピアノの降下 3 音）と紛れないよう、音色は明るいピアノを使う。
   tsunamiCancel: (ctx, base) => {
-    pianoNote(ctx, 392.0, base + 0.00, 0.58, 0.24, 0.04)
-    pianoNote(ctx, 261.6, base + 0.26, 1.70, 0.26, 0.08)
+    pianoNote(ctx, 392.0, base + 0.00, 0.58, 0.24)
+    pianoNote(ctx, 261.6, base + 0.26, 1.70, 0.26)
   },
 
   // 南海トラフ臨時情報・後発地震注意情報: ピアノA4×2連打 → D5（情報発表の穏やかな緊張感）
@@ -748,22 +628,26 @@ export function kyoshinLevel(index: number): number {
   return 0                    // 震度2以下
 }
 
-interface DingPattern {
+interface MarimbaPattern {
   freqs: number[]
   interval: number
   duration: number
   gain: number
+  /** 低音を厚くする（震度 5 弱以上）。段階の重さを音量とは別の軸で示す */
   deep: boolean
 }
 
-const DING_PATTERNS: DingPattern[] = [
-  { freqs: [659, 880],                              interval: 0.18, duration: 0.28, gain: 0.24, deep: false }, // 震度2以下
-  { freqs: [880, 1047, 1175],                       interval: 0.15, duration: 0.22, gain: 0.32, deep: false }, // 震度3
-  { freqs: [880, 1047, 1175, 1318],                 interval: 0.13, duration: 0.20, gain: 0.34, deep: false }, // 震度4
-  { freqs: [880, 1047, 1175, 1318],                 interval: 0.12, duration: 0.18, gain: 0.36, deep: true  }, // 震度5弱
-  { freqs: [1047, 784, 1047, 784, 1047],            interval: 0.11, duration: 0.17, gain: 0.38, deep: true  }, // 震度5強
-  { freqs: [1175, 880, 1175, 880, 1175, 880],       interval: 0.10, duration: 0.16, gain: 0.40, deep: true  }, // 震度6弱〜強
-  { freqs: [1318, 880, 1318, 880, 1318, 880, 1318], interval: 0.09, duration: 0.15, gain: 0.42, deep: true  }, // 震度7
+// 震度が上がるほど音数が増え、間隔が詰まり、音量が上がる。**この勾配が段階の重さを伝える**
+// ので、音色を変えるときも数値の並びは崩さないこと。
+// 周波数は揺れ検知と同じく短 3 度下げてある（旧: 659〜1318Hz → 現: 554〜1108Hz）。
+const MARIMBA_PATTERNS: MarimbaPattern[] = [
+  { freqs: [554, 740],                         interval: 0.18, duration: 0.28, gain: 0.24, deep: false }, // 震度2以下
+  { freqs: [740, 880, 988],                    interval: 0.15, duration: 0.22, gain: 0.32, deep: false }, // 震度3
+  { freqs: [740, 880, 988, 1108],              interval: 0.13, duration: 0.20, gain: 0.34, deep: false }, // 震度4
+  { freqs: [740, 880, 988, 1108],              interval: 0.12, duration: 0.18, gain: 0.36, deep: true  }, // 震度5弱
+  { freqs: [880, 659, 880, 659, 880],          interval: 0.11, duration: 0.17, gain: 0.38, deep: true  }, // 震度5強
+  { freqs: [988, 740, 988, 740, 988, 740],     interval: 0.10, duration: 0.16, gain: 0.40, deep: true  }, // 震度6弱〜強
+  { freqs: [1108, 740, 1108, 740, 1108, 740, 1108], interval: 0.09, duration: 0.15, gain: 0.42, deep: true }, // 震度7
 ]
 
 // ─── 公開 API ───────────────────────────────────────────────────
@@ -890,10 +774,10 @@ export function playKyoshinUpdateSound(maxIndex: number, gainScale = 1): void {
     ctx.resume().catch(err =>
       log.warn(`[sound] playKyoshinUpdateSound(${maxIndex}) 中の AudioContext 再開に失敗: ${String(err)}`))
   }
-  const p = DING_PATTERNS[kyoshinLevel(maxIndex)]
+  const p = MARIMBA_PATTERNS[kyoshinLevel(maxIndex)]
   const base = ctx.currentTime + 0.02
-  const fn = p.deep ? dingDeep : ding
   playGuarded(`playKyoshinUpdateSound(${maxIndex})`, () => {
-    p.freqs.forEach((freq, i) => fn(ctx, freq, base + i * p.interval, p.duration, p.gain * gainScale))
+    p.freqs.forEach((freq, i) =>
+      marimba(ctx, freq, base + i * p.interval, p.duration, p.gain * gainScale, p.deep))
   })
 }
