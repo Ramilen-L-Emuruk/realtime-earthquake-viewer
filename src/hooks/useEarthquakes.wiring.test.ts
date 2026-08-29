@@ -44,7 +44,7 @@ vi.mock('../utils/stationCoords', () => ({
 // WebSocket の代役。`new` で呼ばれるためクラスで用意する（アロー関数はコンストラクタになれない）。
 // vi.mock のファクトリはファイル先頭へ巻き上げられるので、クラス定義も vi.hoisted で一緒に上げる。
 const { sockets, FakeWebSocket } = vi.hoisted(() => {
-  const sockets: { connected: boolean; onStatusChange: ((s: string) => void) | null }[] = []
+  const sockets: { connected: boolean; onStatusChange: ((s: string) => void) | null; onEvent: ((e: unknown) => void) | null }[] = []
   class FakeWebSocket {
     onEvent: ((e: unknown) => void) | null = null
     onStatusChange: ((s: string) => void) | null = null
@@ -758,5 +758,204 @@ describe('リプレイ開始時の地震カード', () => {
     act(() => { h.current.restoreQuakeHistory([quakeTelegram('20260810010000', '2026-08-10T01:05:00+09:00')]) })
 
     expect(h.current.earthquakes).toHaveLength(2)
+  })
+})
+
+describe('EEW の続報は古い報で退行しない', () => {
+  // 同じ地震の報は同じ秒に複数届く（能登本震の実配信で 46 報中 13 報）。キューは電文の時刻
+  // （秒精度）でしか並べ替えられず、WebSocket の受信は body の展開（gunzip）を待たずに次へ
+  // 進むため、同じ秒に来た報は展開の完了順で処理されうる。順序が入れ替わったまま丸ごと
+  // 上書きすると、地図の区域塗りが古い内容へ戻る。報番号で弾いていることを固定する。
+  //
+  // 画面上は「区域が減っただけ」に見えて電文どおりか退行かの区別がつかないため、
+  // テストで押さえないと気づけない。
+  const AT = '2024-01-01T16:10:20+09:00'
+
+  /** 同一秒・同一 eventId の報。報番号と対象区域だけを変える。 */
+  function report(serial: string, areaNames: string[], over: { serial?: string } = {}): EEWAlert {
+    return {
+      kind: 'eew',
+      id: `dmdata-eew-stale-${serial}`,
+      time: AT,
+      test: false,
+      earthquake: {
+        originTime: AT,
+        arrivalTime: AT,
+        condition: '',
+        hypocenter: { name: '石川県能登地方', latitude: 37.5, longitude: 137.2, depth: 10, magnitude: 7.6 },
+      },
+      severity: 'Warning',
+      cancelled: false,
+      isFinal: false,
+      issue: { eventId: 'stale-event', serial: over.serial ?? serial, time: AT },
+      areas: areaNames.map(name => ({ pref: '', name, scaleFrom: 40, scaleTo: 50, kindCode: '11', arrivalTime: null })),
+    }
+  }
+
+  const areasOf = (h: ReturnType<typeof setup>) =>
+    [...h.current.activeEEWs.values()][0]?.areas?.map(a => a.name) ?? []
+
+  it('新しい報は反映する', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(report('1', ['石川県能登'])) })
+    act(() => { h.current.injectEvent(report('2', ['石川県能登', '富山県西部', '新潟県上越'])) })
+    expect(areasOf(h)).toEqual(['石川県能登', '富山県西部', '新潟県上越'])
+  })
+
+  // 対照: これがこの修正の本体。展開順の入れ替わりを模して、古い報を後から入れる。
+  it('古い報が後から届いても上書きしない', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(report('2', ['石川県能登', '富山県西部', '新潟県上越'])) })
+    act(() => { h.current.injectEvent(report('1', ['石川県能登'])) })
+    expect(areasOf(h)).toEqual(['石川県能登', '富山県西部', '新潟県上越'])
+  })
+
+  // 安全弁 1: 同じ報番号の再送は弾かない（内容が同じなので上書きしても害がなく、
+  // 弾く実装にすると「同番の訂正報」を取りこぼす）。
+  it('同じ報番号の再送は受け入れる', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(report('2', ['石川県能登'])) })
+    act(() => { h.current.injectEvent(report('2', ['石川県能登', '富山県西部'])) })
+    expect(areasOf(h)).toEqual(['石川県能登', '富山県西部'])
+  })
+
+  // 安全弁 2: 報番号を持たない経路（P2PQuake は issue.serial が欠けることがある）では
+  // 順序を決める根拠が無いため判定しない。0 で埋めて比較すると正しい報まで捨ててしまう。
+  it('報番号を持たない報は従来どおり後着を採る', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(report('2', ['石川県能登', '富山県西部'])) })
+    act(() => { h.current.injectEvent(report('x', ['石川県能登'], { serial: '' })) })
+    expect(areasOf(h)).toEqual(['石川県能登'])
+  })
+
+  // 状態（activeEEWs）だけを守っても足りない。通知は setState の外・入口で走るため、
+  // ここを素通ししていると地図・カードは新しい報、読み上げとウィンドウタイトルは古い報という
+  // 食い違いが起きる。揃って退行するより始末が悪いので、入口で捨てることを固定する。
+  it('古い報は通知（読み上げ・タイトル）へも渡さない', () => {
+    const seen: string[] = []
+    const h = setup({
+      onLiveEvent: (e) => { if (e.kind === 'eew') seen.push((e as EEWAlert).issue?.serial ?? '') },
+    })
+    act(() => { h.current.injectEvent(report('2', ['石川県能登', '富山県西部'])) })
+    act(() => { h.current.injectEvent(report('1', ['石川県能登'])) })
+    expect(seen).toEqual(['2'])
+  })
+
+  // 本番のキューディスパッチャは 1 ティックの中で複数のイベントを連続処理する（同じ秒の報が
+  // まとめてキューに載るため、順序が入れ替わりうる場面ほどこうなる）。その間はレンダーが
+  // 挟まらないので、判定を「レンダーで進む値」に頼ると直前に受理した報を見落とす。
+  // レンダーを挟まない連続呼び出しでも守られることを固定する。
+  it('同じティックで連続処理されても古い報を通さない（状態・通知とも）', () => {
+    const seen: string[] = []
+    const h = setup({
+      onLiveEvent: (e) => { if (e.kind === 'eew') seen.push((e as EEWAlert).issue?.serial ?? '') },
+    })
+    // 単一の act の中で 2 件続けて注入する＝間にレンダーが入らない
+    act(() => {
+      h.current.injectEvent(report('2', ['石川県能登', '富山県西部']))
+      h.current.injectEvent(report('1', ['石川県能登']))
+    })
+    expect(seen).toEqual(['2'])
+    expect(areasOf(h)).toEqual(['石川県能登', '富山県西部'])
+  })
+
+  // `eewSerial`（utils/eew.ts）に判定を委ねているため、0・負値・小数は報番号として採らない
+  // ＝比較しない。ここを独自実装に戻すと、その値をそのまま大小比較に使ってしまう。
+  it('報番号として成立しない値（0）は判定に使わない', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(report('2', ['石川県能登', '富山県西部'])) })
+    act(() => { h.current.injectEvent(report('0', ['石川県能登'], { serial: '0' })) })
+    expect(areasOf(h)).toEqual(['石川県能登'])
+  })
+
+  // 台帳は表示が終わった EEW の分を落とす。落とさないと伸び続け、逆に落としすぎると保護が
+  // 効かなくなる。解除で消えたあと、同じキーの報を初報として受け直せることで確認する。
+  it('表示が終わった EEW の報番号は台帳に残さない', () => {
+    vi.useFakeTimers()
+    try {
+      const h = setup()
+      act(() => { h.current.injectEvent(report('5', ['石川県能登', '富山県西部'])) })
+      expect(h.current.activeEEWs.size).toBe(1)
+
+      // 最終報の自動解除を待つ（猶予はマグニチュード起因。十分に進めて消えるまで回す）
+      act(() => { h.current.injectEvent({ ...report('6', ['石川県能登']), isFinal: true }) })
+      act(() => { vi.advanceTimersByTime(30 * 60_000) })
+      expect(h.current.activeEEWs.size).toBe(0)
+
+      // 台帳が残っていると #1 は「古い報」として弾かれ、二度と表示できなくなる
+      act(() => { h.current.injectEvent(report('1', ['新潟県上越'])) })
+      expect(areasOf(h)).toEqual(['新潟県上越'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // 安全弁 3: 取消はガードの手前で処理される。報番号で弾かれると誤報を消せなくなる。
+  it('取消は報番号が古くても効く', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(report('5', ['石川県能登'])) })
+    act(() => {
+      h.current.injectEvent({ ...report('1', []), cancelled: true })
+    })
+    const eew = [...h.current.activeEEWs.values()][0]
+    expect(eew?.cancelledAt).toBeInstanceOf(Date)
+  })
+})
+
+// P2PQuake の補完経路（`enrichEEW`）。standard 版で Yahoo hypoInfo が先に検出した EEW へ
+// 地域別予想震度を注入する経路で、キューを通らず WebSocket から直接呼ばれる。
+//
+// **この関数は退行防止の穴が 3 度続けて見つかった場所。** 状態しか見ていない／レンダー待ちの値と
+// 比べている／台帳を経由しない——いずれもテストが無かったために気づけなかった。主経路と同じ
+// 台帳で判定し、受理したら報番号も進めることを固定する。
+describe('P2PQuake 補完経路も古い報で退行しない', () => {
+  beforeEach(() => { mockIsDmdss = false })
+
+  const AT = '2024-01-01T16:10:20+09:00'
+  function p2pReport(serial: string, areaNames: string[]): EEWAlert {
+    return {
+      kind: 'eew',
+      id: `p2p-eew-${serial}`,
+      time: AT,
+      test: false,
+      earthquake: {
+        originTime: AT,
+        arrivalTime: AT,
+        condition: '',
+        hypocenter: { name: '石川県能登地方', latitude: 37.5, longitude: 137.2, depth: 10, magnitude: 7.6 },
+      },
+      severity: 'Warning',
+      cancelled: false,
+      isFinal: false,
+      issue: { eventId: 'enrich-event', serial, time: AT },
+      areas: areaNames.map(name => ({ pref: '', name, scaleFrom: 40, scaleTo: 50, kindCode: '11', arrivalTime: null })),
+    }
+  }
+  const areasOfEnrich = (h: ReturnType<typeof setup>) =>
+    [...h.current.activeEEWs.values()][0]?.areas?.map(a => a.name) ?? []
+
+  it('台帳より古い報番号の補完は適用しない', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(p2pReport('3', ['石川県能登'])) })
+    act(() => { sockets[0].onEvent?.(p2pReport('2', ['新潟県上越'])) })
+    expect(areasOfEnrich(h)).toEqual(['石川県能登'])
+  })
+
+  it('新しい報の補完は適用し、報番号も進める', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(p2pReport('3', ['石川県能登'])) })
+    act(() => { sockets[0].onEvent?.(p2pReport('4', ['新潟県上越'])) })
+    expect(areasOfEnrich(h)).toEqual(['新潟県上越'])
+    // 報番号を据え置くと、格納した EEW の報番号が内容の新しさを表さなくなる
+    expect([...h.current.activeEEWs.values()][0]?.issue?.serial).toBe('4')
+  })
+
+  // 補完で進めた報番号が台帳にも入っていないと、次に来る古い報を主経路が通してしまう。
+  it('補完で進めた報番号は主経路の判定にも効く', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(p2pReport('3', ['石川県能登'])) })
+    act(() => { sockets[0].onEvent?.(p2pReport('5', ['新潟県上越'])) })
+    act(() => { h.current.injectEvent(p2pReport('4', ['富山県西部'])) })
+    expect(areasOfEnrich(h)).toEqual(['新潟県上越'])
   })
 })

@@ -65,9 +65,11 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
   const { hypocenter } = eew.earthquake
   const prefAreas = areas.filter(a => a.pref)
 
-  // 実際の電文が別物なので名前も分ける。予報級は VXSE45「緊急地震速報（地震動予報）」、
-  // 警報級は VXSE43「緊急地震速報（警報）」。予報級を「緊急地震速報（〜）」の器に入れると
-  // 「緊急地震速報（地震動予報）」と二重になるため、器ごと分ける。
+  // 気象庁が別の電文として発表する区分なので、その名称に合わせて名前も分ける（予報級＝VXSE45
+  // 「緊急地震速報（地震動予報）」／警報級＝VXSE43「緊急地震速報（警報）」）。アプリが受信するのは
+  // VXSE45 だけで、区分を決めるのは `severity`（→ utils/eew.ts の `eewKindLabel`）。
+  // 予報級を「緊急地震速報（〜）」の器に入れると「緊急地震速報（地震動予報）」と二重になるため、
+  // 器ごと分ける。
   const headerLabel = isSpecial ? '緊急地震速報（特別警報）'
     : isWarning ? '緊急地震速報（警報）'
     : '地震動予報'

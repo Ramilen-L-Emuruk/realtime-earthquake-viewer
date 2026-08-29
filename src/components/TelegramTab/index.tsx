@@ -4,8 +4,11 @@ import type { TelegramLogEntry } from '../../types/earthquake'
 import { isDmdss } from '../../utils/env'
 import { formatFileStamp } from '../../utils/formatters'
 
+// VXSE43 は購読していないが、配信分類が変わって届いた場合に `filtered` として記録するため
+// ラベルを残す（services/dmdata.ts の「購読していない EEW 種別」の分岐）。
 const HEAD_TYPE_LABEL: Record<string, string> = {
   VXSE43: 'EEW警報',
+  VXSE44: 'EEW予報（旧形式）',
   VXSE45: 'EEW地震動予報',
   VXSE51: '震度速報',
   VXSE52: '震源情報',
