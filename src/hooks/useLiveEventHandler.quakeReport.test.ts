@@ -48,7 +48,7 @@ async function flush() {
   for (let i = 0; i < 400; i++) await Promise.resolve()
 }
 
-/** 通知音の遅延（最大 4200ms）を消化してから発話に到達させる */
+/** 通知音の遅延（最大 2800ms）を消化してから発話に到達させる */
 async function settle() {
   await vi.advanceTimersByTimeAsync(5000)
   await flush()

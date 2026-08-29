@@ -699,7 +699,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
               )}
             </div>
           </Row>
-          <Row label="試験報を受信（検証用）" description="試験報・訓練報を受信します（VXSE42は疎通確認のみ・VXSE43/45は表示されます）">
+          <Row label="試験報を受信（検証用）" description="試験報・訓練報を受信します（VXSE42は疎通確認のみ・VXSE45は表示されます）">
             <Toggle
               checked={settings.dmdataTestDelivery}
               onChange={v => onUpdate('dmdataTestDelivery', v)}
@@ -1092,23 +1092,23 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         <Row label="EEW 予報（低震度）" description="ダークピアノ F4→A4（緩やか）">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('eewForecast') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="EEW 初報（警報）" description="ダークピアノ F4×3連打 + 警報音 Bb3">
+        <Row label="EEW 初報（警報）" description="警報音 Bb3 の2連">
           <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('eew') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="EEW 特別警報" description="低音上昇 → スイープ → 9連打 + ドローン（震度6弱以上）">
+        <Row label="EEW 特別警報" description="警報音 Bb4/F4 の交互9連打 + 低音（震度6弱以上）">
           <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('eewSpecial') }}>▶ 試聴</TestButton>
         </Row>
         <Row label="EEW 続報" description="ダークピアノ F4 単音">
           <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('eewUpdate') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="EEW 最終報" description="ダークピアノ F4→C4 降下 + C5 跳躍">
+        <Row label="EEW 最終報" description="ダークピアノ F4→C4 の降下2音">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('eewFinal') }}>▶ 試聴</TestButton>
         </Row>
         <Row label="EEW キャンセル" description="ダークピアノ A4→F4→C4 降下3音">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('eewCancel') }}>▶ 試聴</TestButton>
         </Row>
         {/* S 波到達カウントダウンは重大度の系列とは別軸の補助音のため EEW の末尾に置く */}
-        <Row label="S 波到達カウントダウン" description="残り秒数をタップして試聴（秒が減るほど速く・多く鳴る。残り 1 秒はサブ低音とトーンを重ねる）">
+        <Row label="S 波到達カウントダウン" description="残り秒数をタップして試聴（秒が減るほど速く・多く鳴る。残り 1 秒はサブ低音2本と高音を重ねる）">
           <div className="flex flex-wrap gap-1.5 justify-end">
             <CountdownPlayButton second={5} />
             <CountdownPlayButton second={4} />
@@ -1128,16 +1128,16 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('earthquakeInfo') }}>▶ 試聴</TestButton>
         </Row>
         {/* ── 津波情報 ── */}
-        <Row label="津波予報（若干の海面変動）" description="sine 380→460Hz スイープ × 2回">
+        <Row label="津波予報（若干の海面変動）" description="sine 380→460Hz 往復スイープ × 2回">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('tsunamiForecast') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="津波注意報" description="sine 300→500Hz スイープ × 2回">
+        <Row label="津波注意報" description="sine 300→500Hz 往復スイープ × 2回">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('tsunamiWatch') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="津波警報" description="sawtooth 260→560Hz スイープ × 3回">
+        <Row label="津波警報" description="sawtooth 260→560Hz 往復スイープ × 3回">
           <TestButton color="purple" onClick={() => { unlockAudio(); playAlertSound('tsunami') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="大津波警報" description="sawtooth+sine ダブルスイープ × 5回">
+        <Row label="大津波警報" description="sawtooth 220→620Hz 上昇スイープ × 5回（一気に駆け上がり、一瞬で戻る）">
           <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('tsunamiMajor') }}>▶ 試聴</TestButton>
         </Row>
         <Row label="津波情報更新（グレード不変）" description="ding 低音 → 高音（穏やかな通知）">

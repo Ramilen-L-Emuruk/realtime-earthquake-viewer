@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
+import { log } from './logger'
 
 // 通知音の合成（Web Audio API）の回帰テスト。
 //
@@ -43,11 +44,15 @@ class FakeGainNode extends FakeNode { readonly gain = new FakeAudioParam() }
 class FakeOscillatorNode extends FakeNode {
   type = 'sine'
   readonly frequency = new FakeAudioParam()
+  // ユニゾンの離調（同じ周波数を左右へわずかにずらす）で使う
+  readonly detune = new FakeAudioParam()
   startedAt: number | null = null
   stoppedAt: number | null = null
   start(t: number): void { this.startedAt = t }
   stop(t: number): void { this.stoppedAt = t }
 }
+
+class FakePannerNode extends FakeNode { readonly pan = { value: 0 } }
 
 class FakeBufferSourceNode extends FakeNode {
   buffer: unknown = null
@@ -64,10 +69,12 @@ class FakeAudioContext {
   readonly gains: FakeGainNode[] = []
   readonly oscillators: FakeOscillatorNode[] = []
   readonly bufferSources: FakeBufferSourceNode[] = []
+  readonly panners: FakePannerNode[] = []
   compressors = 0
   convolvers = 0
 
   resume(): Promise<void> { this.state = 'running'; return Promise.resolve() }
+  createStereoPanner(): FakePannerNode { const n = new FakePannerNode(); this.panners.push(n); return n }
   createGain(): FakeGainNode { const n = new FakeGainNode(); this.gains.push(n); return n }
   createOscillator(): FakeOscillatorNode {
     const n = new FakeOscillatorNode(); this.oscillators.push(n); return n
@@ -95,6 +102,7 @@ class FakeAudioContext {
     this.gains.length = 0
     this.oscillators.length = 0
     this.bufferSources.length = 0
+    this.panners.length = 0
   }
 }
 
@@ -189,41 +197,226 @@ describe('通知音: 自動化イベントの順序（安全弁）', () => {
   })
 })
 
-describe('通知音: 変更していない音は変わっていない（対照）', () => {
-  // 対照: sweep だけで作る津波警報系には手を入れていない。オシレータ本数を固定して、
-  // ノイズ除去や終端修正の巻き込みで構成が変わったら気づけるようにする。
-  it('津波警報は sweep 3 本のみ', () => {
-    sound.playAlertSound('tsunami')
-    expect(ctx.oscillators).toHaveLength(3)
+describe('通知音: 刷新で入れたもの（正）', () => {
+  // 正: 「電子音っぽい・薄い」への手当てとして入れた 3 点を固定する。
+  // どれも耳では確かめられても、外すと静かに元の質感へ戻る。
+
+  it('ピアノ系の基音はユニゾン（わずかに離調した 2 本を伴う）', () => {
+    sound.playAlertSound('eewUpdate')   // darkPiano の単音
+    // 基音 349.2Hz のすぐ隣（±0.3% 以内・完全一致は除く）に 2 本。
+    // 単一オシレータに戻すとうねりが消え、「電子音っぽさ」が返ってくる
+    const detuned = ctx.oscillators.filter(o =>
+      o.frequency.value !== 349.2 && Math.abs(o.frequency.value - 349.2) < 349.2 * 0.003)
+    expect(detuned).toHaveLength(2)
   })
 
-  it('大津波警報は sweep 10 本（2 種 × 5 回）のみ', () => {
-    sound.playAlertSound('tsunamiMajor')
-    expect(ctx.oscillators).toHaveLength(10)
+  it('警報アラームは左右へ振り分ける（モノラルで鳴らさない）', () => {
+    sound.playAlertSound('eew')
+    expect(ctx.panners.length).toBeGreaterThan(0)
+    const pans = ctx.panners.map(p => p.pan.value)
+    expect(pans.some(v => v < 0)).toBe(true)
+    expect(pans.some(v => v > 0)).toBe(true)
   })
 
-  it('S 波カウントダウン 残り1秒はパルス 6 本 + サブ低音 + 高音の 8 本', () => {
-    sound.playCountdownBeep(1)
-    expect(ctx.oscillators).toHaveLength(8)
+  it('EEW 特別警報は前置きを持たない（周波数を動かすオシレータが 1 本も無い）', () => {
+    // 旧構成は「低音上昇 55→110Hz」と「スイープ 150→800Hz」で 0.68 秒を使っていた。
+    // どちらも周波数の自動化を持つため、残っていればここで捕まる。
+    sound.playAlertSound('eewSpecial')
+    const swept = ctx.oscillators.filter(o => o.frequency.events.length > 0)
+    expect(swept).toHaveLength(0)
   })
 })
 
-describe('通知音: 情報系だけ残響を持つ', () => {
-  // pianoNote は全音にわずかな残響（PIANO_ROOM_WET）を載せる。EEW 系（darkPiano）は
-  // 警報として硬い質感を保つため、wet を明示しない音には残響を作らない。
-  it('地震情報（pianoNote 4 音）は 1 音あたり 6 本のオシレータ（倍音 5 + 残響送り 1）', () => {
-    sound.playAlertSound('earthquake')
-    expect(ctx.oscillators).toHaveLength(24)
+describe('通知音: 声部構成（対照）', () => {
+  // 対照: 本数はレシピそのもの。音色を作り変えるときに、関係ない種別まで
+  // 巻き込んで構成が変わっていないかをここで見る。
+
+  it('津波警報は 6 声部 × 3 回の 18 本', () => {
+    sound.playAlertSound('tsunami')
+    expect(ctx.oscillators).toHaveLength(18)
   })
 
-  it('EEW 続報（darkPiano 単音・wet 指定なし）は残響送りを作らず 3 本だけ', () => {
-    sound.playAlertSound('eewUpdate')
-    expect(ctx.oscillators).toHaveLength(3)
+  it('大津波警報は 6 声部 × 5 回の 30 本', () => {
+    sound.playAlertSound('tsunamiMajor')
+    expect(ctx.oscillators).toHaveLength(30)
   })
 
-  it('EEW 予報は wet 指定があるため 1 音あたり 4 本（倍音 3 + 残響送り 1）', () => {
-    sound.playAlertSound('eewForecast')
+  it('津波予報は段階が下がるぶん声部が減り 4 声部 × 2 回の 8 本', () => {
+    // レベル 0 の声部（subDeep / high）はオシレータを作らない。
+    // 全段階が同じ本数になっていたら、段階ごとの作り分けが効いていない
+    sound.playAlertSound('tsunamiForecast')
     expect(ctx.oscillators).toHaveLength(8)
+  })
+
+  it('津波の声部数は段階が下がるほど減る（打ち間違いで消えた声部を捕まえる）', () => {
+    // SWEEP_VOICINGS のレベル 0 は「その段階では使わない」という正当な指定だが、
+    // 実行時のログでは「意図した 0」と「打ち間違いの 0」を区別できない。
+    // 段階間の大小関係を固定して、静かに声部が消える変更をここで止める。
+    const voices = (type: Parameters<typeof sound.playAlertSound>[0], repeats: number): number => {
+      ctx.reset()
+      sound.playAlertSound(type)
+      return ctx.oscillators.length / repeats
+    }
+    const major    = voices('tsunamiMajor', 5)
+    const warning  = voices('tsunami', 3)
+    const watch    = voices('tsunamiWatch', 2)
+    const forecast = voices('tsunamiForecast', 2)
+    expect([major, warning, watch, forecast]).toEqual([6, 6, 5, 4])
+    expect(major).toBeGreaterThanOrEqual(warning)
+    expect(warning).toBeGreaterThanOrEqual(watch)
+    expect(watch).toBeGreaterThanOrEqual(forecast)
+  })
+
+  it('EEW 特別警報は低音の支えを 9 連打より先にスケジュールする', () => {
+    // 連打の途中で例外が出ても低音だけは鳴るようにするため、順序に意味がある。
+    // 後ろに置くと、最も重い警報が低音を失った状態で途切れる
+    sound.playAlertSound('eewSpecial')
+    expect(ctx.oscillators[0].frequency.value).toBe(58)
+  })
+
+  it('S 波カウントダウン 残り1秒はパルス 6×4 本 + 重ね 4 本の 28 本', () => {
+    sound.playCountdownBeep(1)
+    expect(ctx.oscillators).toHaveLength(28)
+  })
+
+  it('揺れ検知は据え置き（打撃 2 音 + シマーの 7 本）', () => {
+    // 打撃・純音系（impact / ding）はこの刷新の対象外。変わっていたら巻き込み
+    sound.playAlertSound('kyoshin')
+    expect(ctx.oscillators).toHaveLength(7)
+  })
+})
+
+describe('通知音: 津波の段階は掃引の形で聞き分ける', () => {
+  // 周波数と回数だけで差を付けていた頃（大津波 200→500Hz × 5 回 / 津波 260→560Hz × 3 回）は、
+  // 掃引の途中で互いの音域を通過するため冒頭の 1〜2 秒で判別できなかった。
+  // 形（最高音に達する位置）とテンポで分けるのが弁別の要。
+
+  /** 1 声部の「開始 → 最高音 → 開始値へ戻る」から、最高音に達する位置の比を取る */
+  const peakRatio = (osc: FakeOscillatorNode): number => {
+    const ev = osc.frequency.events
+    expect(ev).toHaveLength(3)
+    return (ev[1].time - ev[0].time) / (ev[2].time - ev[0].time)
+  }
+  /** 1 声部が受け持つ 1 周期の長さ */
+  const cycleDur = (osc: FakeOscillatorNode): number => {
+    const ev = osc.frequency.events
+    return ev[2].time - ev[0].time
+  }
+
+  it('大津波警報は上昇主体（周期の 88% まで上がり続ける）', () => {
+    sound.playAlertSound('tsunamiMajor')
+    expect(ctx.oscillators).toHaveLength(30)   // 6 声部 × 5 回（回数は据え置き）
+    for (const osc of ctx.oscillators) expect(peakRatio(osc)).toBeCloseTo(0.88, 2)
+  })
+
+  it('津波警報・注意報・予報は往復（周期の 55% で折り返す）', () => {
+    for (const type of ['tsunami', 'tsunamiWatch', 'tsunamiForecast'] as const) {
+      const before = ctx.oscillators.length
+      sound.playAlertSound(type)
+      const added = ctx.oscillators.slice(before)
+      expect(added.length).toBeGreaterThan(0)
+      for (const osc of added) expect(peakRatio(osc)).toBeCloseTo(0.55, 2)
+    }
+  })
+
+  it('大津波警報と津波警報の折り返し点は十分に離れている（揃えると弁別が消える）', () => {
+    sound.playAlertSound('tsunami')
+    const warning = peakRatio(ctx.oscillators[0])
+    const n = ctx.oscillators.length
+    sound.playAlertSound('tsunamiMajor')
+    const major = peakRatio(ctx.oscillators[n])
+    expect(Math.abs(major - warning)).toBeGreaterThan(0.25)
+  })
+
+  it('大津波警報の 1 周期は津波警報の半分以下（テンポでも差を付ける）', () => {
+    sound.playAlertSound('tsunami')
+    const warning = cycleDur(ctx.oscillators[0])
+    const n = ctx.oscillators.length
+    sound.playAlertSound('tsunamiMajor')
+    const major = cycleDur(ctx.oscillators[n])
+    expect(major).toBeLessThanOrEqual(warning * 0.5)
+  })
+})
+
+describe('通知音: 残響の掛け方', () => {
+  // 音階を持つ音だけが残響を通る。**警報アラームと津波サイレンは通さない**
+  // ——警報として乾いた質感を保つため。
+  it('地震情報（pianoNote 4 音）は 1 音あたり 10 本（ユニゾン3 + 攻撃1 + 倍音3 + サブ1 + 残響送り2）', () => {
+    sound.playAlertSound('earthquake')
+    expect(ctx.oscillators).toHaveLength(40)
+  })
+
+  it('EEW 続報（darkPiano 単音）はユニゾン3 + 倍音2 + 残響送り1 の 6 本', () => {
+    sound.playAlertSound('eewUpdate')
+    expect(ctx.oscillators).toHaveLength(6)
+  })
+
+  it('EEW 予報は同じ構成の 2 音で 12 本', () => {
+    sound.playAlertSound('eewForecast')
+    expect(ctx.oscillators).toHaveLength(12)
+  })
+})
+
+describe('通知音: 不正な音量の扱い（安全弁）', () => {
+  // 0 は音量スライダーを絞り切った正当な状態。NaN と負値は必ずどこかの計算ミスで、
+  // 同じ無言の早期 return に合流させると、声部が消えたことに誰も気づけない。
+  // 判定と「報告する値」は decayTone / gateTone / sweep の 3 つで揃えてある。
+
+  it('音量 0 では警告を出さない（正当な設定）', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      sound.setSoundVolume(0)
+      sound.playAlertSound('eewUpdate')
+      expect(ctx.oscillators).toHaveLength(0)
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('音量が NaN になると警告して鳴らさない（無言で全音が消えない）', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      // setSoundVolume のクランプ（Math.min / Math.max）は NaN を素通しする
+      sound.setSoundVolume(NaN)
+      sound.playAlertSound('eewUpdate')   // decayTone 経路
+      expect(ctx.oscillators).toHaveLength(0)
+      // 報告するのはスケール後の peak（生の gain ではない）
+      expect(warn.mock.calls.some(c => String(c[0]).includes('decayTone: peak が不正'))).toBe(true)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('警報アラームと掃引サイレンでも同じ扱い', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      sound.setSoundVolume(NaN)
+      sound.playAlertSound('eew')       // gateTone 経路
+      sound.playAlertSound('tsunami')   // sweep 経路
+      expect(ctx.oscillators).toHaveLength(0)
+      const messages = warn.mock.calls.map(c => String(c[0]))
+      expect(messages.some(m => m.includes('gateTone: peak が不正'))).toBe(true)
+      expect(messages.some(m => m.includes('sweep: peak が不正'))).toBe(true)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+})
+
+describe('通知音: StereoPanner が無い環境（安全弁）', () => {
+  // 安全弁: 左右への振り分けは音を良くするための飾りであって、必須ではない。
+  // createStereoPanner を持たない実行環境で音が丸ごと落ちないこと。
+  it('マスターへ直結して鳴らす（無音にならない）', () => {
+    const key = 'createStereoPanner'
+    ;(ctx as unknown as Record<string, unknown>)[key] = undefined
+    try {
+      sound.playAlertSound('eew')
+      expect(ctx.oscillators.length).toBeGreaterThan(0)
+      expect(ctx.panners).toHaveLength(0)
+    } finally {
+      delete (ctx as unknown as Record<string, unknown>)[key]
+    }
   })
 })
 
@@ -256,7 +449,8 @@ describe('setSoundVolume', () => {
     sound.setSoundVolume(5)
     sound.playAlertSound('eewUpdate')
     const max = Math.max(...ctx.gains.flatMap(g => g.gain.events.map(e => e.value)))
-    // eewUpdate の基音ピークは gain 0.26。倍率が 1 に丸められていれば 0.26 を超えない
-    expect(max).toBeCloseTo(0.26, 5)
+    // eewUpdate の gain は 0.26。基音はユニゾン 3 本に配分され、主音がその 0.66 倍を
+    // 受け持つ。倍率が 1 に丸められていればこの値を超えない
+    expect(max).toBeCloseTo(0.26 * 0.66, 5)
   })
 })

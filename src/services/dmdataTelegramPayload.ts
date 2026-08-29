@@ -1,26 +1,32 @@
-// リプレイが扱う電文種別と、電文本体から再生用ペイロードを組み立てる処理。
+// アプリが扱う電文種別と、電文本体から再生用ペイロードを組み立てる処理。
 //
-// アーカイブ経路（services/dmdataReplay.ts）と当日経路（services/dmdataReplayLive.ts）の
-// 両方から使う。取得元は違っても「どの種別を扱うか」「本体をどのパーサに渡すか」は同じで、
-// 片方だけ種別を足すと、その電文が取得元によって出たり出なかったりする。
+// 種別の集合はライブ（services/dmdata.ts）とリプレイ（アーカイブ経路 services/dmdataReplay.ts・
+// 当日経路 services/dmdataReplayLive.ts）が**共有する**。取得元は違っても「どの種別を扱うか」は
+// 同じで、片方だけ種別を足すと、その電文が経路によって出たり出なかったりする。
+// 実際に二重定義だった頃、ライブだけが VXSE43 を取り込み、予想震度の区域塗りがライブでのみ
+// 削られる不具合が起きた（下記 EEW_TYPES）。
 import {
   parseEEW, parseEarthquake, parseTsunami, parseLpgm,
   parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml,
 } from './dmdataParser'
 import type { ReplayPayload } from '../types/replay'
 
+// DMDATA の購読分類。ライブ（WebSocket）とリプレイ（アーカイブ要求）で共有する。
+// telegram.earthquake は地震・津波の両方を配信する（telegram.tsunami という分類は無い）。
+//
+// VXSE43 だけを含む `eew.warning` は購読しない（理由は下記 EEW_TYPES）。ここを片方の経路でだけ
+// 足すと、同じ電文がライブでは届きリプレイでは届かない——実際にそれが起きた。
+export const CLASSIFICATIONS = ['eew.forecast', 'telegram.earthquake'] as const
+
 export const QUAKE_TYPES = new Set(['VXSE51', 'VXSE52', 'VXSE53', 'VXSE61'])
 export const TSUNAMI_TYPES = new Set(['VTSE41', 'VTSE51', 'VTSE52'])
-// DMD-8: VXSE43（EEW 警報）を追加。従来は archive リプレイ時に警報級 EEW が黙って
-// 捨てられ、実地震シナリオ収録の警報経路が完全に欠落していた。
+// EEW 電文種別: VXSE45（地震動予報）だけ。警報級もこれ 1 つで賄う。
 //
-// ただし VXSE43 は分類 `eew.warning` にしか無く、アーカイブ経路が要求している分類
-// （`telegram.earthquake,eew.forecast`）には含まれないため、実際には流れてこない。
-// 当日経路も同様（EEW を引く /v2/gd/eew が返すのは VXSE45 だけ）。
-// 実データで確認したところ VXSE43 は対応する VXSE45 の警報報と同一内容が数十ミリ秒後に
-// 流れる複製で、報番号だけが独立している（VXSE45 の別の報と衝突する）。取り込まないことが
-// 欠落ではない理由は docs/spec/settings-pwa-spec.md §6「当日ぶんの取得元」を参照。
-export const EEW_TYPES = new Set(['VXSE43', 'VXSE45'])
+// VXSE43（警報）を取らないのは、VXSE45 の警報報と同内容の複製が遅れて届き、`eventId` で束ねた
+// EEW を古い内容で上書きして区域塗りを削るため。VXSE44（予報）は廃止予定で VXSE45 の下位互換。
+// 判断の根拠と実害は docs/spec/data-sources-spec.md §2「EEW は VXSE45 だけを受ける」。
+// VXSE42（配信テスト）は震源データを持たず EEW として表示できないため、ライブ側で別途処理する。
+export const EEW_TYPES = new Set(['VXSE45'])
 export const LPGM_TYPES = new Set(['VXSE62'])
 // VYSE50=臨時情報（段階あり）、VYSE51/52=関連解説情報（段階なし）。別の型に読むため分ける。
 export const NANKAI_TYPES = new Set(['VYSE50'])

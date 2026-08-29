@@ -10,17 +10,11 @@ import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMA
 import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml } from './dmdataParser'
 import { serverNow, serverDate } from '../utils/clock'
 import { gunzip } from '../utils/gzip'
-import { log } from '../utils/logger'
+import { CLASSIFICATIONS, EEW_TYPES } from './dmdataTelegramPayload'
+import { log, createLogThrottle } from '../utils/logger'
 import { authHeader, dmdataApiKeyProblem, dmdataApiKeyMessage, DmdataApiKeyError } from '../utils/dmdataApiKey'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
-// DMDATA WebSocket 購読分類。telegram.earthquake は地震・津波両方の電文を配信する。
-// telegram.tsunami という分類は存在しないため含めない。
-const CLASSIFICATIONS = ['eew.forecast', 'eew.warning', 'telegram.earthquake']
-// EEW 電文種別: VXSE43=警報, VXSE45=地震動予報。
-// VXSE44（予報）は廃止予定のため除外。VXSE45 で同等情報＋長周期地震動が得られる。
-// VXSE42（配信テスト）は震源データを持たず EEW として表示できないため別途処理する。
-const EEW_TYPES = new Set(['VXSE43', 'VXSE45'])
 // VYSE50=南海トラフ地震臨時情報、VYSE51/52=南海トラフ地震関連解説情報、
 // VYSE60=北海道・三陸沖後発地震注意情報。
 // これらは XML 電文（format: "xml"）として配信されるため REST API 経由で取得する。
@@ -32,6 +26,10 @@ const EEW_TYPES = new Set(['VXSE43', 'VXSE45'])
 const VYSE_NANKAI_TYPES = new Set(['VYSE50'])
 const VYSE_COMMENTARY_TYPES = new Set(['VYSE51', 'VYSE52'])
 const VYSE_KOHATSU_TYPES = new Set(['VYSE60'])
+// VXSE43 の受信は本来起きない。起きるとすれば配信分類の変わり目だが、連続発報で溢れると
+// 他の警告が見えなくなるため間引く（`createLogThrottle` の使い方は utils/logger.ts）。
+const warnUnsubscribedEew = createLogThrottle(60_000)
+
 const RECONNECT_BASE_MS = 3000
 const RECONNECT_MAX_MS = 30000
 const RECONNECT_FACTOR = 1.5
@@ -145,7 +143,7 @@ async function decodeTelegramBody(msg: Record<string, unknown>): Promise<Record<
 
 async function tryFetchTicket(
   apiKey: string,
-  classifications: string[],
+  classifications: readonly string[],
   includeTest: boolean,
   debug: boolean,
 ): Promise<{ url: string; status: number; body: unknown }> {
@@ -521,6 +519,17 @@ export class DmdataWebSocket {
       } else {
         this.onRawMessage?.(this.makeLogEntry(headType, head, data, isTest, 'filtered'))
       }
+    } else if (headType === 'VXSE43') {
+      // VXSE43 は購読していない分類（`eew.warning`）にしか無いので、届いたら配信分類の変わり目を疑う。
+      // 取り込まないことと、届いたのに気づけないことは別なので、**debug に依らず**記録する。
+      // 連続発報で溢れないよう間引くが、電文ログには毎回残して後から追えるようにする。
+      warnUnsubscribedEew(() => log.warn('[dmdata] 購読していない VXSE43（緊急地震速報・警報）を受信しました。配信分類の変更の可能性があります'))
+      this.onRawMessage?.(this.makeLogEntry(headType, head, data, isTest, 'filtered'))
+    } else if (headType === 'VXSE44') {
+      // VXSE44 は購読中の `eew.forecast` に含まれ、予報級 EEW のたびに毎報届く**想定内**の電文。
+      // 廃止予定の旧形式で VXSE45 の下位互換のため取り込まない（→ dmdataTelegramPayload.ts）。
+      // 異常ではないので warn を上げず、電文ログにだけ残す。
+      this.onRawMessage?.(this.makeLogEntry(headType, head, data, isTest, 'filtered'))
     } else if (this.debug) {
       dlog('対象外の電文種別', { headType })
     }
@@ -635,19 +644,28 @@ export async function fetchDmdataEarthquakes(
       : Promise.resolve({ items: [] } as ItemList),
   ])
 
-  // VXSE51/52/53/61 の全電文を一括並列取得（タイプ別のインデックス境界を記録）
+  // VXSE51/52/53/61 の全電文を一括並列取得（タイプ別のインデックス境界を記録）。
+  //
+  // **結合順序は気象庁の通常の発表順（速報→詳細）に合わせること。** mergeQuakeHistory は
+  // time で安定ソートしてから畳み込むため、同じ分（time は分単位までしか精度が無い）に
+  // 複数種別の電文が発表された場合、ソート後もこの結合順序がそのまま残る。
+  // mergeQuakeInto の据え置き判定は「incoming が実震度を持つ電文どうし」では issue.type の
+  // 優先度を見ず time だけで判定するため、この結合順序が「詳しい→粗い」だと、同じ分の
+  // タイで詳しい情報（例: 各地の震度情報）が粗い情報（震度速報）に上書きされてしまう
+  // （敵対的レビューで指摘・確認済み）。VXSE51→52→53→61 の順にしておけば、
+  // 安定ソート後のタイは「粗い→詳しい」の順で並び、後着の詳しい方が正しく採用される。
   const items53 = json53.items ?? []
   const items51 = json51.items ?? []
   const items52 = json52.items ?? []
   const items61 = json61.items ?? []
-  const boundary53 = items53.length
-  const boundary51 = boundary53 + items51.length
+  const boundary51 = items51.length
   const boundary52 = boundary51 + items52.length
+  const boundary53 = boundary52 + items53.length
 
   const allItems = [
-    ...items53.map(it => ({ url: it.url, headType: it.head.type })),
     ...items51.map(it => ({ url: it.url, headType: it.head.type })),
     ...items52.map(it => ({ url: it.url, headType: it.head.type })),
+    ...items53.map(it => ({ url: it.url, headType: it.head.type })),
     ...items61.map(it => ({ url: it.url, headType: it.head.type })),
   ]
   const allResults = await Promise.allSettled(
@@ -660,16 +678,16 @@ export async function fetchDmdataEarthquakes(
       .map(r => r.value)
       .filter((v): v is JMAQuake => v !== null && 'kind' in v && v.kind === 'quake')
 
-  const parsed53 = toQuakes(allResults.slice(0, boundary53))
-  const parsed51 = toQuakes(allResults.slice(boundary53, boundary51))
+  const parsed51 = toQuakes(allResults.slice(0, boundary51))
   const parsed52 = toQuakes(allResults.slice(boundary51, boundary52))
-  const parsed61 = toQuakes(allResults.slice(boundary52))
+  const parsed53 = toQuakes(allResults.slice(boundary52, boundary53))
+  const parsed61 = toQuakes(allResults.slice(boundary53))
 
   // 各タイプの最古受信時刻（time）を求め、最大値を cutoffTime とする。
   // cutoffTime より古いアイテムは全タイプ問わず除外する。
   const oldestOf = (qs: JMAQuake[]): string | null =>
     qs.reduce<string | null>((acc, q) => acc === null || q.time < acc ? q.time : acc, null)
-  const allOldest = [oldestOf(parsed53), oldestOf(parsed51), oldestOf(parsed52), oldestOf(parsed61)]
+  const allOldest = [oldestOf(parsed51), oldestOf(parsed52), oldestOf(parsed53), oldestOf(parsed61)]
     .filter((t): t is string => t !== null)
   const cutoffTime = allOldest.length > 0 ? allOldest.reduce((max, t) => t > max ? t : max) : null
 
@@ -677,8 +695,9 @@ export async function fetchDmdataEarthquakes(
 
   // cutoffTime による不完全カード除外のみ行い、種別横断（VXSE51/52/53/61）の生電文を返す。
   // 同一 eventId の統合（VXSE61 の震源マージ・震度の保持・優先度判定）は呼び出し側の
-  // mergeQuakeHistory がリアルタイム経路と同一ロジックで行う。
-  const quakes = [...parsed53, ...parsed51, ...parsed52, ...parsed61].filter(withinCutoff)
+  // mergeQuakeHistory がリアルタイム経路と同一ロジックで行う。結合順序は上記のとおり
+  // 「速報→詳細」（51→52→53→61）に揃えること。
+  const quakes = [...parsed51, ...parsed52, ...parsed53, ...parsed61].filter(withinCutoff)
 
   return { quakes, nextToken: json53.nextToken }
 }
