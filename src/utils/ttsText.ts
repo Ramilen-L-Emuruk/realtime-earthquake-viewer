@@ -1,5 +1,5 @@
 import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, TsunamiArea, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
-import { eewMaxScaleInfo, eewMaxLpgmClass, eewNoForecastReason } from './eew'
+import { eewNoForecastReason, type EewMaxScaleInfo } from './eew'
 import { getIntensityLabel, getIntensityLabelWithOrAbove } from './intensity'
 import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight } from './tsunami'
 import { joinSegments, plain, type SpeechSegment, type SpeechRef, type QuakeFact } from './ttsFollow'
@@ -582,8 +582,42 @@ function noForecastText(event: EEWAlert): string {
 }
 
 /**
- * EEW 第2フェーズ（予想値）の読み上げテキストを生成する。初報・続報の区別なく同じ形で読む。
- * 予想震度が取れないときは理由付きで「予想震度なし。」。
+ * 震度部分だけの読み上げ文（「予想最大震度〇〇。」または理由付きの「予想震度なし。」）。
+ * `eewIntensityText` が内部で使う（`lpgmClass` が未確定・0 のときは階級部分が空文字になる
+ * ことで、結果的にこちらだけが声になる）。
+ *
+ * `scaleInfo` は呼び出し側で確定させた値を渡す（`event` から直接取り直さない）。安定待ちで
+ * 「この値に確定した」と判定したタイミングと、実際に声になるタイミングにはズレがありうるため、
+ * どの値を読んだかを呼び出し側が制御できるようにしている。
+ *
+ * **既知の限界**: 深発地震で震度だけ出ない場合、`noForecastText` が「深発地震のため、
+ * 予想震度なし。」と読む一方、階級側（`eewLpgmOnlyText`）は震度と無関係に判定するため、
+ * 「予想震度なし」と階級の断言が同居しうる（未対応。docs/spec/eew-spec.md §4）。
+ */
+export function eewScaleOnlyText(scaleInfo: EewMaxScaleInfo, event: EEWAlert): string {
+  if (scaleInfo.scale > 0) {
+    return `予想最大震度${getIntensityLabelWithOrAbove(scaleInfo.scale, scaleInfo.orAbove)}。`
+  }
+  return noForecastText(event)
+}
+
+/**
+ * 長周期地震動階級部分だけの読み上げ文（「予想最大階級〇。」）。0 なら空文字列
+ * （句ごと省く。音声には地図の色フォールバックのような逃げ場が無く、不正値がそのまま
+ * 声に出るのを避けるため）。
+ */
+export function eewLpgmOnlyText(lpgmClass: number): string {
+  return lpgmClass > 0 ? `予想最大階級${lpgmClass}。` : ''
+}
+
+/**
+ * EEW 第2フェーズ（予想値）の読み上げテキストを、震度・階級それぞれの部分から組み立てる。
+ * `eewScaleOnlyText` / `eewLpgmOnlyText` の結合ロジックを呼び出し側（`useLiveEventHandler`）と
+ * 共有するためのヘルパー。初報・続報の区別なく同じ形で読む。
+ *
+ * `scaleInfo`・`lpgmClass` は呼び出し側で確定させた値を渡す（`event` から直接取り直さない）。
+ * 安定待ちで「この値に確定した」と判定したタイミングと、実際に声になるタイミングにはズレが
+ * ありうるため、どの値を読んだかを呼び出し側が制御できるようにしている。
  *
  * `announceUpgrade` が真のとき「緊急地震速報に切り替わりました。」を前置きする。
  * **予報として発報された EEW が警報へ格上げされたときだけ真にすること**（判定は呼び出し側）。
@@ -602,27 +636,18 @@ function noForecastText(event: EEWAlert): string {
  * 引き上げ専用の短句（「震度6弱に引き上げ。」）は持たない。同じ形で言い直せば足りるうえ、
  * 差分の言い方は「基準にした値を実際に発話したか」に依存し、割り込みで消えた発話を基準に
  * すると一度も声に出していない値からの引き上げを語ることになるため。
+ *
+ * 呼び出し側（`useLiveEventHandler`）は震度・階級のどちらが先に確定していても常にこの関数を
+ * 呼ぶ——未確定の階級は `lpgmClass=0` として渡せば `eewLpgmOnlyText` が空文字を返し、
+ * 結果的に震度部分だけが声になる（「個別に呼び分ける」のではなく、0 扱いで自然に省略させる）。
  */
-export function eewIntensityToText(event: EEWAlert, announceUpgrade = false): string {
-  let text = announceUpgrade ? '緊急地震速報に切り替わりました。' : ''
+export function eewIntensityText(
+  scaleInfo: EewMaxScaleInfo, lpgmClass: number, event: EEWAlert, announceUpgrade = false,
+): string {
+  const prefix = announceUpgrade ? '緊急地震速報に切り替わりました。' : ''
   // 上限が定まらない報（単独観測点処理の初報など）は「震度4以上」と読む。値だけ読むと
   // 下限を断定した放送になる（判定は eewMaxScaleInfo・語の付け方は表示と共通）。
-  const { scale, orAbove } = eewMaxScaleInfo(event)
-  if (scale > 0) {
-    text += `予想最大震度${getIntensityLabelWithOrAbove(scale, orAbove)}。`
-  } else {
-    text += noForecastText(event)
-  }
-  // 階級も震度と同じく集約関数を通す（判定条件は eewMaxLpgmClass の JSDoc 参照）。0 のときは
-  // 句ごと省く。音声には地図の色フォールバックのような逃げ場が無く、不正値がそのまま声に出るため。
-  // ただし同関数が 0 を返すのは仮定震源要素のときだけで、noForecastText の 'deep'（深発地震）とは
-  // 連動しない。深発地震で震度だけ出ない場合は「予想震度なし」と階級の断言が同居しうる
-  // （未対応の既知の限界。docs/spec/eew-spec.md §4）。
-  const lpgmClass = eewMaxLpgmClass(event)
-  if (lpgmClass > 0) {
-    text += `予想最大階級${lpgmClass}。`
-  }
-  return text
+  return prefix + eewScaleOnlyText(scaleInfo, event) + eewLpgmOnlyText(lpgmClass)
 }
 
 function domesticTsunamiText(t: DomesticTsunami): string {
