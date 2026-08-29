@@ -546,7 +546,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
     if (confirmed && !prevConfirmedRef.current) {
       log.info('[tab] realtime を要求 (揺れ検知開始 V3 confirmed)')
       setActiveTab('realtime')
-      title.setTitle('📈 揺れ検知')
+      title.setTitle('揺れ検知')
       if (settings.soundEnabled) {
         playAlertSound('kyoshin')
       }
@@ -573,7 +573,7 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
     if (candidate && !prevCandidateRef.current && !confirmed) {
       log.info('[tab] realtime を要求 (揺れの可能性 V3 likely)')
       setActiveTab('realtime')
-      title.setTitle('🔍 揺れの可能性')
+      title.setTitle('揺れの可能性')
       if (settings.soundEnabled) {
         playAlertSound('kyoshinCandidate')
       }

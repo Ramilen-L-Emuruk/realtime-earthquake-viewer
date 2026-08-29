@@ -25,7 +25,7 @@ export function computeEEWTitle(eews: ReadonlyMap<string, EEWAlert>): string {
   // 埋もれる。地名と震度は primary から、区分の名前は最大レベルから取り、軸を分ける。
   const maxLevel = Array.from(eews.values())
     .reduce<0 | 1 | 2>((m, e) => Math.max(m, computeSingleEEWLevel(e)) as 0 | 1 | 2, 0)
-  return `🚨 ${eewKindLabel(maxLevel)} ${primary.earthquake.hypocenter.name}` +
+  return `${eewKindLabel(maxLevel)} ${primary.earthquake.hypocenter.name}` +
     (scale > 0 ? ` 最大震度${getIntensityLabelWithOrAbove(scale, orAbove)}予想` : '') +
     (eews.size > 1 ? ` 他${eews.size - 1}件` : '')
 }
@@ -37,10 +37,10 @@ function applyPriorityTitle(
   kyoshinDetected: boolean,
   setState: (v: string | null) => void,
 ) {
-  if (eews.size === 0 && !tsunami) { setState(kyoshinDetected ? '📈 揺れ検知' : null) }
-  else if (eews.size > 0 && tsunami) { setState(priority ? '🌊 津波情報 発表中' : computeEEWTitle(eews)) }
+  if (eews.size === 0 && !tsunami) { setState(kyoshinDetected ? '揺れ検知' : null) }
+  else if (eews.size > 0 && tsunami) { setState(priority ? '津波情報 発表中' : computeEEWTitle(eews)) }
   else if (eews.size > 0) { setState(computeEEWTitle(eews)) }
-  else { setState('🌊 津波情報 発表中') }
+  else { setState('津波情報 発表中') }
 }
 
 // 情報タイトルが平常タイトルへ戻るまでの表示時間 [ms]。
@@ -55,7 +55,7 @@ export type TitleTimerKind = 'earthquake' | 'eew' | 'tsunami' | 'specialInfo'
 export interface AlertTitleApi {
   /** 現在の情報タイトル（null = 平常時タイトル） */
   alertTitle: string | null
-  /** タイトルを直接設定する（🔴 地震情報 / 🚨 緊急地震速報 / ⚠️ 特別情報 / 📈 揺れ検知 等） */
+  /** タイトルを直接設定する（地震情報 / 緊急地震速報 / 特別情報 / 揺れ検知 等） */
   setTitle: (v: string | null) => void
   /**
    * 優先度ロジックでタイトルを再評価する。
@@ -154,7 +154,7 @@ export function useAlertTitle(opts: {
   }
 
   const showTsunamiTitle = () => {
-    setAlertTitle('🌊 津波情報 発表中')
+    setAlertTitle('津波情報 発表中')
     tsunamiTitleWindowActiveRef.current = true
     window.clearTimeout(timersRef.current.tsunami)
     timersRef.current.tsunami = window.setTimeout(() => {

@@ -730,11 +730,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
 
   if (active.length === 0) {
     return (
-      <div className="h-full flex flex-col items-center justify-center gap-3 p-4">
-        <div className="w-16 h-16 rounded-full flex items-center justify-center"
-          style={{ background: 'rgba(20,83,45,0.5)', border: '2px solid #16a34a' }}>
-          <span className="text-3xl">🌊</span>
-        </div>
+      <div className="h-full flex flex-col items-center justify-center p-4">
         <div className="text-center">
           <p className="text-green-400 font-bold">津波情報はありません</p>
           <p className="text-secondary text-sm mt-1">現在、津波警報・注意報は発表されていません。</p>
