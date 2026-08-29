@@ -486,19 +486,37 @@ interface SweepVoicing {
   readonly mid: number
   readonly detuneCents: number
   readonly width: number
+  /**
+   * 1 周期のうち最高音に達する位置（比）。**掃引の形はこの 1 つの値で決まる。**
+   *
+   * - `0.55` … 上がって下がる往復。時間をほぼ半分ずつ昇降に充てる
+   * - `0.88` … 上がりきってから急に戻る。落ちてこないので「進行している」印象になる
+   *
+   * **大津波警報だけを 0.88 にしているのは、津波警報と聞き分けるため。** 周波数と回数だけで
+   * 差を付けていた頃（大津波 200→500Hz × 5 回 / 津波 260→560Hz × 3 回）は、掃引の途中で
+   * 互いの音域を通過するため冒頭の 1〜2 秒では判別できなかった。回数の違いは最後まで
+   * 聴かなければ分からず、避難を促す最上位の警報がそれでは用をなさない。
+   * 耳は音の高さより**動きの向き**で先に区別するため、形を変えるのが最も効く。
+   *
+   * **ここを揃えると弁別が消える。** 値を動かすときは 2 つの段階を続けて鳴らして確かめること
+   * （`alertSound.test.ts` の「津波の段階は掃引の形で聞き分ける」が、折り返し点と 1 周期の
+   * 長さの両方を固定している。**周波数は弁別の根拠に使っていない**ため固定していない）。
+   */
+  readonly peakAt: number
 }
 
 // 4 段階の声部。**注意報・予報を鋸波にしないこと**——平常時にも届く階級のため、
 // 警報級と同じ荒さで鳴らすと刺さりすぎる。段階を波形で分ける設計は従来どおり。
 const SWEEP_VOICINGS = {
-  major:    { type: 'sawtooth', main: 0.16, sub: 0.32, subDeep: 0.22, high: 0.06, mid: 0.09, detuneCents: 8, width: 0.60 },
-  warning:  { type: 'sawtooth', main: 0.15, sub: 0.30, subDeep: 0.16, high: 0.05, mid: 0.08, detuneCents: 8, width: 0.55 },
-  watch:    { type: 'sine',     main: 0.30, sub: 0.20, subDeep: 0.06, high: 0,    mid: 0.10, detuneCents: 5, width: 0.40 },
-  forecast: { type: 'sine',     main: 0.34, sub: 0.14, subDeep: 0,    high: 0,    mid: 0.06, detuneCents: 4, width: 0.30 },
+  major:    { type: 'sawtooth', main: 0.16, sub: 0.32, subDeep: 0.22, high: 0.06, mid: 0.09, detuneCents: 8, width: 0.60, peakAt: 0.88 },
+  warning:  { type: 'sawtooth', main: 0.15, sub: 0.30, subDeep: 0.16, high: 0.05, mid: 0.08, detuneCents: 8, width: 0.55, peakAt: 0.55 },
+  watch:    { type: 'sine',     main: 0.30, sub: 0.20, subDeep: 0.06, high: 0,    mid: 0.10, detuneCents: 5, width: 0.40, peakAt: 0.55 },
+  forecast: { type: 'sine',     main: 0.34, sub: 0.14, subDeep: 0,    high: 0,    mid: 0.06, detuneCents: 4, width: 0.30, peakAt: 0.55 },
 } as const satisfies Record<string, SweepVoicing>
 
-// 周波数スイープ: freqStart → freqEnd → freqStart の往復サイレン（津波音に使用）。
+// 周波数スイープ: freqStart → freqEnd → freqStart のサイレン（津波音に使用）。
 // 各声部が同じ軌跡を倍率違いで辿るため、うねりながら全体が上下する。
+// 最高音に達する位置は声部構成の `peakAt` が決める（往復か、上昇主体か）。
 function sweep(
   ctx: AudioContext, voicing: SweepVoicing,
   freqStart: number, freqEnd: number, startAt: number, duration: number, gain: number,
@@ -523,7 +541,7 @@ function sweep(
     const g = ctx.createGain()
     osc.type = type
     osc.frequency.setValueAtTime(freqStart * mul, startAt)
-    osc.frequency.linearRampToValueAtTime(freqEnd * mul, startAt + duration * 0.55)
+    osc.frequency.linearRampToValueAtTime(freqEnd * mul, startAt + duration * voicing.peakAt)
     osc.frequency.linearRampToValueAtTime(freqStart * mul, startAt + duration)
     if (detune !== 0) osc.detune.value = detune
     osc.connect(g)
@@ -671,10 +689,13 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
     for (let i = 0; i < 3; i++) sweep(ctx, SWEEP_VOICINGS.warning, 260, 560, base + i * 0.85, 0.70, 0.26)
   },
 
-  // 大津波警報: 鋸波スイープ 200→500Hz × 5回（重みと貫通力）。
+  // 大津波警報: 上昇サイレン 220→620Hz × 5回。
+  // **津波警報と聞き分けられることを最優先にした構成**（`peakAt` の注記を参照）。掃引が
+  // 落ちてこないうえ、1 周期を津波警報の半分以下（0.34 秒）に詰めてあるため、1 周期目で違いが出る。
+  // 回数は据え置き。増やすと全体が伸び、避難を促す音が長く鳴り続けるだけになる。
   // 高音は声部（SWEEP_VOICINGS.major の high）が担うため、別のスイープを重ねない。
   tsunamiMajor: (ctx, base) => {
-    for (let i = 0; i < 5; i++) sweep(ctx, SWEEP_VOICINGS.major, 200, 500, base + i * 0.77, 0.65, 0.28)
+    for (let i = 0; i < 5; i++) sweep(ctx, SWEEP_VOICINGS.major, 220, 620, base + i * 0.40, 0.34, 0.28)
   },
 
   // 津波情報更新（グレード不変・観測値更新）: ding 低音 → 高音（穏やかな通知）

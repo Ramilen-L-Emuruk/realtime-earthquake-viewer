@@ -8,7 +8,7 @@
 //
 // ここで固定するのは 3 つ。
 //   1. 読み上げがある経路は、**発話の番が来たときに**画面を取る（受信の瞬間ではない）
-//   2. ただし待たされずに読めそうなら、通知音と同じ瞬間に先出しする（遅延は最大 4.2 秒あり、
+//   2. ただし待たされずに読めそうなら、通知音と同じ瞬間に先出しする（遅延は最大 2.8 秒あり、
 //      その間画面が留まると「音が鳴ったのに変わらない」ように見えるため）
 //   3. 読み上げを持たない経路（読み上げ無効の端末）は従来どおり受信時に取る
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -54,7 +54,7 @@ function finishSpeech(index: number) {
   if (s && !s.done) { s.done = true; s.finish() }
 }
 
-/** 通知音の遅延（最大 4200ms）と第 2 フェーズの待ち（6000ms）を消化して発話へ到達させる */
+/** 通知音の遅延（最大 2800ms）と第 2 フェーズの待ち（6000ms）を消化して発話へ到達させる */
 async function settle() {
   await vi.advanceTimersByTimeAsync(8000)
   await flush()
@@ -519,7 +519,7 @@ describe('読み上げとタブ切替の同調', () => {
 
   it('先出しは最小滞留時間の床を消費しない（後から声が出る側の追従を弾かない）', async () => {
     // 先出しで床を消費すると、こうなっていた:
-    //   大津波警報を受信 → tsunami を先出し（声が出るのは 4.2 秒後）
+    //   大津波警報を受信 → tsunami を先出し（声が出るのは 2.3 秒後）
     //   → 直後の震度速報（0.5 秒後に声）が床で弾かれ、声が始まっても画面は tsunami のまま
     // 先出しは「これから読む予定」にすぎないので、実際に声が出る側の追従を妨げてはいけない。
     const { handle, spies } = setup()
@@ -527,7 +527,7 @@ describe('読み上げとタブ切替の同調', () => {
     // 先出しは起きるが、床は消費しない
     expect(spies.preSpeechTab).toHaveBeenCalledWith('tsunami', TAB_PRIORITY.tsunami)
     handle(makeQuake())
-    // 震度速報の声（0.5 秒）は大津波警報の声（4.2 秒）より先に始まる
+    // 震度速報の声（0.5 秒）は大津波警報の声（2.3 秒）より先に始まる
     await advance(1000)
     expect(spies.followSpeechTab).toHaveBeenCalledWith('earthquake', TAB_PRIORITY.quake)
   })

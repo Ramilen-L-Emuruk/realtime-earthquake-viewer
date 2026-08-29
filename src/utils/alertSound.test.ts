@@ -286,6 +286,58 @@ describe('通知音: 声部構成（対照）', () => {
   })
 })
 
+describe('通知音: 津波の段階は掃引の形で聞き分ける', () => {
+  // 周波数と回数だけで差を付けていた頃（大津波 200→500Hz × 5 回 / 津波 260→560Hz × 3 回）は、
+  // 掃引の途中で互いの音域を通過するため冒頭の 1〜2 秒で判別できなかった。
+  // 形（最高音に達する位置）とテンポで分けるのが弁別の要。
+
+  /** 1 声部の「開始 → 最高音 → 開始値へ戻る」から、最高音に達する位置の比を取る */
+  const peakRatio = (osc: FakeOscillatorNode): number => {
+    const ev = osc.frequency.events
+    expect(ev).toHaveLength(3)
+    return (ev[1].time - ev[0].time) / (ev[2].time - ev[0].time)
+  }
+  /** 1 声部が受け持つ 1 周期の長さ */
+  const cycleDur = (osc: FakeOscillatorNode): number => {
+    const ev = osc.frequency.events
+    return ev[2].time - ev[0].time
+  }
+
+  it('大津波警報は上昇主体（周期の 88% まで上がり続ける）', () => {
+    sound.playAlertSound('tsunamiMajor')
+    expect(ctx.oscillators).toHaveLength(30)   // 6 声部 × 5 回（回数は据え置き）
+    for (const osc of ctx.oscillators) expect(peakRatio(osc)).toBeCloseTo(0.88, 2)
+  })
+
+  it('津波警報・注意報・予報は往復（周期の 55% で折り返す）', () => {
+    for (const type of ['tsunami', 'tsunamiWatch', 'tsunamiForecast'] as const) {
+      const before = ctx.oscillators.length
+      sound.playAlertSound(type)
+      const added = ctx.oscillators.slice(before)
+      expect(added.length).toBeGreaterThan(0)
+      for (const osc of added) expect(peakRatio(osc)).toBeCloseTo(0.55, 2)
+    }
+  })
+
+  it('大津波警報と津波警報の折り返し点は十分に離れている（揃えると弁別が消える）', () => {
+    sound.playAlertSound('tsunami')
+    const warning = peakRatio(ctx.oscillators[0])
+    const n = ctx.oscillators.length
+    sound.playAlertSound('tsunamiMajor')
+    const major = peakRatio(ctx.oscillators[n])
+    expect(Math.abs(major - warning)).toBeGreaterThan(0.25)
+  })
+
+  it('大津波警報の 1 周期は津波警報の半分以下（テンポでも差を付ける）', () => {
+    sound.playAlertSound('tsunami')
+    const warning = cycleDur(ctx.oscillators[0])
+    const n = ctx.oscillators.length
+    sound.playAlertSound('tsunamiMajor')
+    const major = cycleDur(ctx.oscillators[n])
+    expect(major).toBeLessThanOrEqual(warning * 0.5)
+  })
+})
+
 describe('通知音: 残響の掛け方', () => {
   // 音階を持つ音だけが残響を通る。**警報アラームと津波サイレンは通さない**
   // ——警報として乾いた質感を保つため。
