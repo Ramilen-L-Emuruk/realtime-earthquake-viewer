@@ -247,6 +247,11 @@ export function JapanMapGL({
       fadeDuration: 0,
       style: {
         version: 8,
+        // 地球を球として描く。傾けて見るのが常態になった以上、平面のままだと引いたときに
+        // 端が伸びて見える。**寄ると MapLibre が自動で Mercator へ切り替える**ので、
+        // 日本を細かく見る場面では従来と同じ描画になる（切り替えの実測と、カスタムレイヤーが
+        // 両方の投影に追随する仕組みは docs/spec/map-rendering-spec.md §6「地図の投影」）。
+        projection: { type: 'globe' },
         glyphs: `${import.meta.env.BASE_URL}fonts/{fontstack}/{range}.pbf`,
         sources: {},
         layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#0a0c10' } }],

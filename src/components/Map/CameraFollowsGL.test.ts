@@ -177,10 +177,17 @@ function createFakeMap({ zoom: initialZoom = 4, fitZoom: initialFitZoom = 7 }: {
         y: PANE_HEIGHT / 2 - (lat - center.lat) * PX_PER_DEG,
       }
     },
-    unproject: ([x, y]: [number, number]) => ({
-      lng: center.lng + (x - PANE_WIDTH / 2) / PX_PER_DEG,
-      lat: center.lat - (y - PANE_HEIGHT / 2) / PX_PER_DEG,
-    }),
+    // MapLibre の unproject は `Point`（project の戻り値）も配列も受ける。
+    // **両方受けること**——`mapContainsBounds` は project の戻り値をそのまま渡して往復させ、
+    // 戻り値のずれで「球の裏側か」を見分けている（配列しか受けないと NaN になって常に裏側扱い）。
+    unproject: (pt: [number, number] | { x: number; y: number }) => {
+      const x = Array.isArray(pt) ? pt[0] : pt.x
+      const y = Array.isArray(pt) ? pt[1] : pt.y
+      return {
+        lng: center.lng + (x - PANE_WIDTH / 2) / PX_PER_DEG,
+        lat: center.lat - (y - PANE_HEIGHT / 2) / PX_PER_DEG,
+      }
+    },
     getBounds: () => {
       const { halfLng, halfLat } = viewSpan()
       return {

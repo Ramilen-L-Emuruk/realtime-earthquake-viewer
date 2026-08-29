@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { CustomLayerInterface } from 'maplibre-gl'
+import { applyProjectionUniforms, createProjectionProgramCache } from './gl/projectionProgram'
 import { useMapGL } from './mapGLContext'
 import type { PsWaveCircle } from '../../services/kyoshin'
 import { computeSWaveRadiusAtTime, computeSWaveTravelTimeSec } from '../../hooks/usePsWaveCalc'
@@ -43,17 +44,18 @@ const S_FILL_ALPHA = 0.12
 const S_STROKE: readonly [number, number, number] = [255 / 255, 60 / 255, 0]
 const P_STROKE: readonly [number, number, number] = [56 / 255, 189 / 255, 248 / 255]
 
-const VERT_SRC = `#version 300 es
+// 頂点シェーダーの本体。座標変換は MapLibre が配る投影シェーダーに任せる（gl/projectionProgram.ts）ため、
+// `#version` と prelude はプログラム生成側で前置きする。
+// **`PI` は prelude が宣言している**ので、ここで宣言し直すと再定義エラーになる。
+const VERT_BODY = `
 precision highp float;
 // x = 角度（0〜1 が一周） / y = 正規化半径（0〜1）
 in vec2 a_ring;
-uniform mat4 u_matrix;
 uniform vec2 u_center;     // 震央 (経度, 緯度) 度
 uniform float u_radiusKm;  // この描画での外周半径
 out float v_r;
 out float v_theta;
 
-const float PI = 3.141592653589793;
 // 緯度 1 度あたりの距離（km）。旧実装の 111320m/度 と揃える。
 const float KM_PER_DEG_LAT = 111.32;
 
@@ -73,8 +75,11 @@ void main() {
   float dLng = (km * sin(theta)) / (KM_PER_DEG_LAT * cos(radians(u_center.y)));
   v_r = a_ring.y;
   v_theta = a_ring.x;
-  gl_Position = u_matrix * vec4(mercator(u_center + vec2(dLng, dLat)), 0.0, 1.0);
+  gl_Position = projectTile(mercator(u_center + vec2(dLng, dLat)));
 }`
+
+/** 属性。**並び順がロケーション番号になる**（gl/projectionProgram.ts）。 */
+const RING_ATTRIBS = ['a_ring'] as const
 
 const FRAG_SRC = `#version 300 es
 precision highp float;
@@ -121,46 +126,6 @@ void main() {
   if (a <= 0.0) discard;
   fragColor = vec4(rgb * a, a); // premultiplied
 }`
-
-function compileShader(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
-  const shader = gl.createShader(type) as WebGLShader
-  gl.shaderSource(shader, src)
-  gl.compileShader(shader)
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    log.error('[PsWaveGL] shader compile failed', gl.getShaderInfoLog(shader))
-  }
-  return shader
-}
-
-/**
- * プログラムを作る。**リンクに失敗したら null を返す。**
- *
- * 失敗したプログラムをそのまま返してはならない。WebGL は「リンクされていないプログラムへの
- * `useProgram`」で例外を投げず、**直前にバインドされていた別レイヤーのシェーダーが残ったまま**
- * `drawElements` まで走る。uniform の設定先も null になり（リンク失敗時の `getUniformLocation` は
- * null を返す）、その設定自体も黙って無視される。結果は「予報円が出ない」か「他のレイヤーが乱れる」で、
- * ログには `onAdd` 時の一行しか残らない。
- *
- * 実際にこの実装中、GLSL の予約語（`half`）を変数名に使ってコンパイルが落ち、円が一切描かれない
- * 状態になった。**シェーダーは型チェックもテストも通り抜ける**ので、気づけるのはこのログだけ。
- */
-function buildProgram(gl: WebGL2RenderingContext): WebGLProgram | null {
-  const vs = compileShader(gl, gl.VERTEX_SHADER, VERT_SRC)
-  const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAG_SRC)
-  const program = gl.createProgram() as WebGLProgram
-  gl.attachShader(program, vs)
-  gl.attachShader(program, fs)
-  gl.linkProgram(program)
-  // リンク後はプログラムが参照を保持するので、シェーダー自体は落としてよい。
-  gl.deleteShader(vs)
-  gl.deleteShader(fs)
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    log.error('[PsWaveGL] program link failed', gl.getProgramInfoLog(program))
-    gl.deleteProgram(program)
-    return null
-  }
-  return program
-}
 
 /**
  * 単位円のグリッド（角度 × 正規化半径）を作る。半径が変わっても作り直さない静的バッファ。
@@ -212,12 +177,26 @@ export function PsWaveGL({ psWave, fullOpacity }: Props) {
   useEffect(() => {
     if (!map) return
 
-    let program: WebGLProgram | null = null
+    // 投影ごとにプログラムを持つ（globe と Mercator を行き来する）。**リンクに失敗したら
+    // 描かない**——未リンクのプログラムで `useProgram` すると、直前の別レイヤーのシェーダーが
+    // 残ったまま描画が走る（キャッシュ側が null を返して防いでいる）。
+    const cache = createProjectionProgramCache({
+      label: 'PsWaveGL',
+      makeVertexSource: (prelude, define) => `#version 300 es
+${prelude}
+${define}
+${VERT_BODY}`,
+      fragmentSource: FRAG_SRC,
+      attributes: RING_ATTRIBS,
+      uniforms: [
+        'u_center', 'u_radiusKm', 'u_fill', 'u_stroke',
+        'u_innerR', 'u_fadeOuterR', 'u_strokePx', 'u_dashCount', 'u_opacity',
+      ] as const,
+    })
     let vao: WebGLVertexArrayObject | null = null
     let vbo: WebGLBuffer | null = null
     let ibo: WebGLBuffer | null = null
     let indexCount = 0
-    const u: Record<string, WebGLUniformLocation | null> = {}
 
     /**
      * 破線の周期数。画面上の 1 周期を DASH_PERIOD_PX に近づけるため、円周の画面長から求める。
@@ -231,6 +210,9 @@ export function PsWaveGL({ psWave, fullOpacity }: Props) {
       const center = map.project([lng, lat])
       const edge = map.project([lng + (radiusKm * 1000) / (111320 * cosLat), lat])
       const rPx = Math.hypot(edge.x - center.x, edge.y - center.y)
+      // **`Math.max` は NaN を素通しする。** 投影が有限値を返さない位置（極域など）で
+      // `rPx` が NaN になると下限 4 が効かず、`u_dashCount` へ NaN が渡って破線が壊れる。
+      if (!Number.isFinite(rPx)) return 4
       return Math.max(4, Math.round((2 * Math.PI * rPx) / DASH_PERIOD_PX))
     }
 
@@ -240,15 +222,8 @@ export function PsWaveGL({ psWave, fullOpacity }: Props) {
       renderingMode: '2d',
       onAdd(_m, gl2) {
         const gl = gl2 as WebGL2RenderingContext
-        program = buildProgram(gl)
-        // リンクに失敗したら描画資源を作らない。render 側の `if (!program || !vao)` がここで効く。
-        if (!program) return
-        for (const name of [
-          'u_matrix', 'u_center', 'u_radiusKm', 'u_fill', 'u_stroke',
-          'u_innerR', 'u_fadeOuterR', 'u_strokePx', 'u_dashCount', 'u_opacity',
-        ]) {
-          u[name] = gl.getUniformLocation(program, name)
-        }
+        // **プログラムはここでは作らない。** どの投影のシェーダーが要るかは render の引数で
+        // 初めて分かるうえ、途中で切り替わる。属性の番号は固定してあるので VAO は 1 つで足りる。
         const { verts, indices } = buildRingMesh()
         indexCount = indices.length
         vao = gl.createVertexArray()
@@ -256,7 +231,7 @@ export function PsWaveGL({ psWave, fullOpacity }: Props) {
         vbo = gl.createBuffer()
         gl.bindBuffer(gl.ARRAY_BUFFER, vbo)
         gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW)
-        const loc = gl.getAttribLocation(program, 'a_ring')
+        const loc = RING_ATTRIBS.indexOf('a_ring')
         gl.enableVertexAttribArray(loc)
         gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0)
         ibo = gl.createBuffer()
@@ -266,16 +241,19 @@ export function PsWaveGL({ psWave, fullOpacity }: Props) {
       },
       render(gl2, args) {
         const gl = gl2 as WebGL2RenderingContext
-        if (!program || !vao) return
+        if (!vao) return
         const circles = psWaveRef.current
         if (circles.length === 0) return
+        const prog = cache.get(gl, args)
+        if (!prog) return
+        const u = prog.u
 
-        gl.useProgram(program)
+        gl.useProgram(prog.program)
         gl.bindVertexArray(vao)
         gl.enable(gl.BLEND)
         // premultiplied alpha（フラグメントで rgb に a を掛けている）。
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
-        gl.uniformMatrix4fv(u.u_matrix, false, args.defaultProjectionData.mainMatrix)
+        applyProjectionUniforms(gl, u, args)
         const dpr = window.devicePixelRatio || 1
         gl.uniform1f(u.u_strokePx, STROKE_PX * dpr)
         const opacity = fullOpacityRef.current ? 1 : 0.4
@@ -318,11 +296,10 @@ export function PsWaveGL({ psWave, fullOpacity }: Props) {
       },
       onRemove(_m, gl2) {
         const gl = gl2 as WebGL2RenderingContext
-        if (program) gl.deleteProgram(program)
+        cache.dispose(gl)
         if (vbo) gl.deleteBuffer(vbo)
         if (ibo) gl.deleteBuffer(ibo)
         if (vao) gl.deleteVertexArray(vao)
-        program = null
         vbo = null
         ibo = null
         vao = null
