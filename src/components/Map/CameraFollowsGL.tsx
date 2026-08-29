@@ -366,15 +366,42 @@ export function FitToDetectionGL({
         fittedRef.current = true
         return
       }
+      // 新鮮な揺れフォーカス（レベルアップ等でタブ入室と同時に立った要求）があれば、全体表示を
+      // 経由せず直接そこへ寄せる。この effect は fittedRef を立てた後でないと下の消費ブロックへ
+      // 進めないため、素通しにすると「タブ入室で全体フィット→次の観測点更新（最大1秒後）で
+      // 1点へ寄り直す」という二段ジャンプになる（`useKyoshinAlerts` のレベルアップ処理が
+      // setActiveTab と requestShakeFocus を同時に呼ぶため、入室の初回コミットで両方が立つ）。
+      if (shakeFocus && shakeFocus.tick !== lastConsumedFocusTickRef.current) {
+        const ageMs = Date.now() - shakeFocus.atMs
+        if (ageMs < SHAKE_FOCUS_WINDOW_MS) {
+          fittedRef.current = true
+          lastConsumedFocusTickRef.current = shakeFocus.tick
+          suppressFollowUntilRef.current = Date.now() + SHAKE_FOCUS_SUPPRESS_MS
+          log.debug(
+            `[mapGL] 揺れ検知フィット (初回・揺れフォーカスへ直接 ${shakeFocus.lat.toFixed(2)},${shakeFocus.lng.toFixed(2)})`,
+          )
+          flyToPoint(map, [shakeFocus.lat, shakeFocus.lng], fitMaxZoom(map), 0.8)
+          return
+        }
+        // 古い要求はここで即座に見送る（他の見送りと同じく `dropShakeFocus` で記録する）。素通しに
+        // すると、記録が次の effect 実行（次の観測点更新）まで遅延し、その時点の points/hasDetection
+        // 次第では「寄り先なし」「検知終了」等の別の理由でログされて本当の原因が追えなくなる。
+        dropShakeFocus(`古い要求 ${Math.round(ageMs / 1000)}秒前 (初回)`)
+      }
       fittedRef.current = true
       log.debug(`[mapGL] 揺れ検知フィット (${points.length}点)`)
       fitToPositions(map, points.map(dp2ll), { padding: 60, durationSec: 1.0 })
       return
     }
-    // 揺れフォーカスの消費。揺れが強まったとき（通知音が鳴るとき）と別地点発報のときに、その 1 点へ
-    // 短く寄せる。初回フィットより後に置いているのは、同じコミットで両方が立った場合に「まず全体を
-    // 見せてから寄る」順にするため。**ここは要求を保留する唯一の経路**で、次の観測点更新（毎秒）で
-    // 拾われる——初回フィットの直後なら鮮度の窓に十分収まる。
+    // 揺れフォーカスの消費（2 回目以降）。揺れが強まったとき（通知音が鳴るとき）と別地点発報のときに、
+    // その 1 点へ短く寄せる。初回フィット（上のブロック）は入室と同時に立った新鮮な要求をここより先に
+    // 直接消費し、古い要求もその場で見送って記録する（`dropShakeFocus`）ため、ここへ来るのは次のいずれか:
+    //  - 初回フィット時点で要求が無かった
+    //  - 初回フィット時点で EEW 発報中だったため FitToEEWGL へ委譲した（要求は未消費のまま残り、EEW が
+    //    終わっても検知が続いていればこちらで拾う）
+    //  - 初回フィット後に新しく要求が立った
+    // **ここは要求を保留する経路**で、消費できなければ次の観測点更新（毎秒）で拾われる——直後なら
+    // 鮮度の窓に十分収まる。
     //
     // 見送る条件は 3 つ。**どの場合も連番は消費する**——この要求は「その瞬間を見せたい」ものなので、
     // 抑制が明けてから蒸し返す価値が無い（取り戻す経路も意図的に持たない）。
