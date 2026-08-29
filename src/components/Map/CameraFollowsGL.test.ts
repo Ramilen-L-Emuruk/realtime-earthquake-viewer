@@ -1110,6 +1110,54 @@ describe('揺れフォーカス', () => {
     expect(moveCount(map)).toBe(1)
   })
 
+  // タブ切替（useKyoshinAlerts のレベルアップ処理）と揺れフォーカスの要求は同じコミットで同時に
+  // 立つため、タブ入室＝このコンポーネントの初回マウントの時点で既に新鮮な要求を抱えていることがある。
+  it('[正] 初回マウントと同時に新鮮な要求があれば、全体フィットを経ずに直接その点へ寄る', () => {
+    const focusTickRef = { current: 0 }
+    const map = createFakeMap({ fitZoom: 7 })
+    const focus = focusNow(1)
+
+    const view = render(harness(map, POINTS, [], null, { focusTickRef, shakeFocus: focus }))
+
+    // 1 回しか動かない（点群全体へのフィットを経由しない）。
+    expect(moveCount(map)).toBe(1)
+    expect(fitPaddings(map)[0]).toBeUndefined()
+    expect(map.getCenter()).toEqual({ lng: FAR.lng, lat: FAR.lat })
+    expect(focusTickRef.current).toBe(1)
+
+    // 消費済みなので、直後の観測点更新でも寄り直さない（成長フォローの抑制が効いている）。
+    act(() => {
+      vi.advanceTimersByTime(FOCUS_FLIGHT_DONE_MS)
+    })
+    view.rerender(harness(map, [...POINTS], [], null, { focusTickRef, shakeFocus: focus }))
+    expect(moveCount(map)).toBe(1)
+  })
+
+  it('[対照] 初回マウント時に要求が無ければ、これまで通り点群全体へフィットする', () => {
+    const focusTickRef = { current: 0 }
+    const map = createFakeMap({ fitZoom: 7 })
+
+    render(harness(map, POINTS, [], null, { focusTickRef }))
+
+    expect(moveCount(map)).toBe(1)
+    expect(fitPaddings(map)[0]).toBe(POINTS_PADDING)
+  })
+
+  it('[安全弁] 初回マウント時に要求が古ければ、点群全体へのフィットに落ちる（消費はその場で記録する）', () => {
+    const focusTickRef = { current: 0 }
+    const map = createFakeMap({ fitZoom: 7 })
+    // 6 秒前の要求（実装の受付は 5 秒）。
+    const stale: ShakeFocus = { ...FAR, tick: 1, atMs: Date.now() - 6000 }
+
+    render(harness(map, POINTS, [], null, { focusTickRef, shakeFocus: stale }))
+
+    expect(moveCount(map)).toBe(1)
+    expect(fitPaddings(map)[0]).toBe(POINTS_PADDING)
+    // その場で見送って記録する（次の観測点更新まで持ち越さない。持ち越すと「寄り先なし」
+    // 「検知終了」等の別の理由でログされ、古い要求だったという本当の原因が事後に追えなくなる）。
+    expect(focusTickRef.current).toBe(1)
+  })
+
   it('ユーザーが地図を操作している間は寄らない（震度の上昇で画を奪わない）', () => {
     const focusTickRef = { current: 0 }
     const { map, view } = settled(focusTickRef)
