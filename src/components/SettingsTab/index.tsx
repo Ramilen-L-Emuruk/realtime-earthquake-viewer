@@ -416,7 +416,7 @@ function TestButton({ color, onClick, children, disabled }: {
         fired ? 'bg-gray-600' : BUTTON_CLASSES[color]
       }`}
     >
-      {fired ? '送信済み ✓' : children}
+      {fired ? '送信済み' : children}
     </button>
   )
 }
@@ -662,7 +662,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
       {isDmdss && (
         <Section title="DM-D.S.S 接続設定">
           <div className="px-4 py-2 bg-yellow-900/30 border-b border-yellow-700/40">
-            <p className="text-yellow-400 text-xs">⚠️ APIキーはこのブラウザにのみ保存されます。第三者と共有しないでください。</p>
+            <p className="text-yellow-400 text-xs">APIキーはこのブラウザにのみ保存されます。第三者と共有しないでください。</p>
           </div>
           <Row label="接続状態">
             {dmdataConnectionStatus === 'connected' ? (
@@ -1147,7 +1147,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
 
       <Section title="テスト機能">
         <div className="px-4 py-2 bg-yellow-900/30 border-b border-yellow-700/40">
-          <p className="text-yellow-400 text-xs">⚠️ 動作確認用です。実際のデータは変更されません。</p>
+          <p className="text-yellow-400 text-xs">動作確認用です。実際のデータは変更されません。</p>
         </div>
         {/* ── 緊急地震速報（EEW）: 軽 → 重、取消は末尾 ── */}
         <Row label="地震動予報" description="震度4程度（予報域） – eewForecast 音 / 10秒以内に再度押すと続報、押さなければ最終報確定→無音で自動解除（数分後）">
@@ -1230,7 +1230,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
 
       <Section title="実地震テスト">
         <div className="px-4 py-2 bg-yellow-900/30 border-b border-yellow-700/40">
-          <p className="text-yellow-400 text-xs">⚠️ 実際に発生した地震の電文データを、発生時と同じ間隔で再生します。動作確認用です。</p>
+          <p className="text-yellow-400 text-xs">実際に発生した地震の電文データを、発生時と同じ間隔で再生します。動作確認用です。</p>
         </div>
         {scenarioTest.loadState === 'error' && (
           <Row label="シナリオ一覧の取得に失敗しました" />
