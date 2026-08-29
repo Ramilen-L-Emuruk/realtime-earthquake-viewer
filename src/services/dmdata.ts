@@ -635,19 +635,28 @@ export async function fetchDmdataEarthquakes(
       : Promise.resolve({ items: [] } as ItemList),
   ])
 
-  // VXSE51/52/53/61 の全電文を一括並列取得（タイプ別のインデックス境界を記録）
+  // VXSE51/52/53/61 の全電文を一括並列取得（タイプ別のインデックス境界を記録）。
+  //
+  // **結合順序は気象庁の通常の発表順（速報→詳細）に合わせること。** mergeQuakeHistory は
+  // time で安定ソートしてから畳み込むため、同じ分（time は分単位までしか精度が無い）に
+  // 複数種別の電文が発表された場合、ソート後もこの結合順序がそのまま残る。
+  // mergeQuakeInto の据え置き判定は「incoming が実震度を持つ電文どうし」では issue.type の
+  // 優先度を見ず time だけで判定するため、この結合順序が「詳しい→粗い」だと、同じ分の
+  // タイで詳しい情報（例: 各地の震度情報）が粗い情報（震度速報）に上書きされてしまう
+  // （敵対的レビューで指摘・確認済み）。VXSE51→52→53→61 の順にしておけば、
+  // 安定ソート後のタイは「粗い→詳しい」の順で並び、後着の詳しい方が正しく採用される。
   const items53 = json53.items ?? []
   const items51 = json51.items ?? []
   const items52 = json52.items ?? []
   const items61 = json61.items ?? []
-  const boundary53 = items53.length
-  const boundary51 = boundary53 + items51.length
+  const boundary51 = items51.length
   const boundary52 = boundary51 + items52.length
+  const boundary53 = boundary52 + items53.length
 
   const allItems = [
-    ...items53.map(it => ({ url: it.url, headType: it.head.type })),
     ...items51.map(it => ({ url: it.url, headType: it.head.type })),
     ...items52.map(it => ({ url: it.url, headType: it.head.type })),
+    ...items53.map(it => ({ url: it.url, headType: it.head.type })),
     ...items61.map(it => ({ url: it.url, headType: it.head.type })),
   ]
   const allResults = await Promise.allSettled(
@@ -660,16 +669,16 @@ export async function fetchDmdataEarthquakes(
       .map(r => r.value)
       .filter((v): v is JMAQuake => v !== null && 'kind' in v && v.kind === 'quake')
 
-  const parsed53 = toQuakes(allResults.slice(0, boundary53))
-  const parsed51 = toQuakes(allResults.slice(boundary53, boundary51))
+  const parsed51 = toQuakes(allResults.slice(0, boundary51))
   const parsed52 = toQuakes(allResults.slice(boundary51, boundary52))
-  const parsed61 = toQuakes(allResults.slice(boundary52))
+  const parsed53 = toQuakes(allResults.slice(boundary52, boundary53))
+  const parsed61 = toQuakes(allResults.slice(boundary53))
 
   // 各タイプの最古受信時刻（time）を求め、最大値を cutoffTime とする。
   // cutoffTime より古いアイテムは全タイプ問わず除外する。
   const oldestOf = (qs: JMAQuake[]): string | null =>
     qs.reduce<string | null>((acc, q) => acc === null || q.time < acc ? q.time : acc, null)
-  const allOldest = [oldestOf(parsed53), oldestOf(parsed51), oldestOf(parsed52), oldestOf(parsed61)]
+  const allOldest = [oldestOf(parsed51), oldestOf(parsed52), oldestOf(parsed53), oldestOf(parsed61)]
     .filter((t): t is string => t !== null)
   const cutoffTime = allOldest.length > 0 ? allOldest.reduce((max, t) => t > max ? t : max) : null
 
@@ -677,8 +686,9 @@ export async function fetchDmdataEarthquakes(
 
   // cutoffTime による不完全カード除外のみ行い、種別横断（VXSE51/52/53/61）の生電文を返す。
   // 同一 eventId の統合（VXSE61 の震源マージ・震度の保持・優先度判定）は呼び出し側の
-  // mergeQuakeHistory がリアルタイム経路と同一ロジックで行う。
-  const quakes = [...parsed53, ...parsed51, ...parsed52, ...parsed61].filter(withinCutoff)
+  // mergeQuakeHistory がリアルタイム経路と同一ロジックで行う。結合順序は上記のとおり
+  // 「速報→詳細」（51→52→53→61）に揃えること。
+  const quakes = [...parsed51, ...parsed52, ...parsed53, ...parsed61].filter(withinCutoff)
 
   return { quakes, nextToken: json53.nextToken }
 }
