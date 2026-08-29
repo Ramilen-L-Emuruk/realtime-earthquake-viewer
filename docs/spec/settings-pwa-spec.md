@@ -955,7 +955,8 @@ Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認した�
   - 例: `await window.__mapGL.getSource('quake-region-label').getData()` で震度区域ラベルの `features[].properties.scale` を集計できる
   - ソース ID・レイヤー ID は各 `src/components/Map/*GL.tsx` の冒頭で定数（例: `SRC`／`FILL_SRC`／`LABEL_SRC`／`LABEL_LYR` など）として定義されているので、そこから逆引きする（実装変更で名前が変わる可能性があるため、ここに全リストは掲載しない）
   - 可視レイヤーに絞って集計したい場合は `window.__mapGL.queryRenderedFeatures({ layers: ['<レイヤーID>'] })` を使う
-- **HTML Marker 経由の要素**: 震源×印（`EpicenterGL`）・EEW 震源（`EewEpicentersGL`）・津波の観測バー（`TsunamiObsBarsGL`）は現在も `maplibregl.Marker` のまま。これらだけは `document.querySelectorAll('.maplibregl-marker')` で拾える（震度バッジは含まれない）
+- **HTML Marker 経由の要素**: EEW 震源（`EewEpicentersGL`）・津波の観測バー（`TsunamiObsBarsGL`）は `maplibregl.Marker` のまま。これらだけは `document.querySelectorAll('.maplibregl-marker')` で拾える（震度バッジは含まれない）
+  - **地震情報の震源（× 印）は 2026-08-29 に DOM マーカーをやめた。** 深さを持つ点としてカスタムレイヤーで描いており（`HypocenterDepthGL` / `gl/depthPointLayer.ts`）、`.maplibregl-marker` でも `queryRenderedFeatures` でも拾えない。クリック判定はカラーピッキングなので、検証では対象の座標を `const point = map.project([lng, lat])` で画面座標へ直してから `map.fire('click', { point, lngLat })` を送り、**数フレーム待ってから**吹き出しを確認する（判定は描画ループの中で 1 フレーム遅れて解決する）。深さがあるぶん震源は震央より下にずれるので、傾けた状態では `point.y` にその分を足す
 - **地図ソースの内容**: `await window.__mapGL.getSource('<sourceId>').getData()` で GeoJSON を取り出せる（本番ビルドでも `window.__mapGL` は露出。`src/components/Map/JapanMapGL.tsx`）
 - **レイヤーの表示状態**: `window.__mapGL.getLayoutProperty('<layerId>', 'visibility')`
 - **時間経過を伴う挙動の再現**: 自動解除・アイドル復帰・続報自動確定は `localStorage` の書き換え＋リロード、または `setTimeout` の時間送りで確認する

@@ -35,6 +35,8 @@ export interface JapanMapProps {
   observations?: TsunamiObservation[]
   lpgm?: JMALpgm
   iconScale?: number
+  /** 震源の深さをどれだけ強調するか（1 = 実際の深さ）。水平方向は常に実スケール。 */
+  hypocenterDepthScale?: number
   showBathymetry?: boolean
   showActiveFaults?: boolean
   activeFaultOpacity?: number

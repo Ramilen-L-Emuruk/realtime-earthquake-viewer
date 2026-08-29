@@ -52,6 +52,9 @@ export const MAP_LAYER_ORDER = [
   'kyoshin-points',
   'kyoshin-detected',
   'kyoshin-ripple',
+  // 震源（深さを持つ点）。地下に置くため深度バッファを使う custom layer で、地表の描画物より前面。
+  // 地名ラベルよりは背面（ラベルは常に最前面という既存の方針を崩さない）。
+  'hypocenter-depth',
   // 地名ラベル（地方/県/区域名）は最前面（Leaflet の basemap-labels z450 相当）。
   'basemap-region-labels',
   'basemap-pref-labels',
