@@ -428,20 +428,40 @@ describe('mapContainsBounds', () => {
   /**
    * 中心 (138,38)・1 度 = 100px・ペイン width×height のフェイク。
    * `bearingDeg` を渡すと画面座標を回転させる（判定は画面座標で行うため、回転の検証に要る）。
+   *
+   * `hidden` に挙げた地点は「球の裏側」として扱う（`unproject` が元の座標へ戻らない）。
+   * MapLibre の globe では裏側の点も画面内の座標を返すため、実装はこの往復で見分けている。
    */
-  function mapWithPane(width: number, height: number, bearingDeg = 0): maplibregl.Map {
+  function mapWithPane(
+    width: number,
+    height: number,
+    bearingDeg = 0,
+    hidden: [number, number][] = [],
+  ): maplibregl.Map {
     const center = { lng: 138, lat: 38 }
+    const isHidden = (lng: number, lat: number) =>
+      hidden.some(([hl, ha]) => Math.abs(hl - lng) < 1e-9 && Math.abs(ha - lat) < 1e-9)
     return {
       getContainer: () => ({ clientWidth: width, clientHeight: height }),
       project: ([lng, lat]: [number, number]) => {
         const x0 = (lng - center.lng) * 100
         const y0 = (center.lat - lat) * 100
-        if (!bearingDeg) return { x: x0 + width / 2, y: y0 + height / 2 }
-        const r = (bearingDeg * Math.PI) / 180
-        return {
-          x: x0 * Math.cos(r) + y0 * Math.sin(r) + width / 2,
-          y: -x0 * Math.sin(r) + y0 * Math.cos(r) + height / 2,
-        }
+        const p = !bearingDeg
+          ? { x: x0 + width / 2, y: y0 + height / 2 }
+          : (() => {
+              const r = (bearingDeg * Math.PI) / 180
+              return {
+                x: x0 * Math.cos(r) + y0 * Math.sin(r) + width / 2,
+                y: -x0 * Math.sin(r) + y0 * Math.cos(r) + height / 2,
+              }
+            })()
+        return { ...p, __src: [lng, lat] as [number, number] }
+      },
+      // 手前の点はそのまま戻る。裏側の点は「同じ画面位置にある手前の面」を返す＝大きくずれる。
+      unproject: (p: { __src: [number, number] }) => {
+        const [lng, lat] = p.__src
+        if (isHidden(lng, lat)) return { lng: lng + 170, lat: -lat }
+        return { lng, lat }
       },
     } as unknown as maplibregl.Map
   }
@@ -495,6 +515,26 @@ describe('mapContainsBounds', () => {
     it('回転していても十分小さい矩形は収まっている（安全弁）', () => {
       // 100×100px 相当。45 度回しても対角は 141px で、余裕をもって画面内。
       expect(mapContainsBounds(mapWithPane(800, 600, 45), rect(137.5, 37.5, 138.5, 38.5))).toBe(true)
+    })
+  })
+
+  // 球で描いていると、`map.project()` は地球の裏側の点にも画面内の座標を返す。画面座標だけで
+  // 判定すると、見えていないものを「収まっている」と読んでしまう。
+  describe('球の裏側', () => {
+    const small = () => rect(137.5, 37.5, 138.5, 38.5)
+
+    it('四隅のどれかが裏側なら「収まっていない」', () => {
+      const map = mapWithPane(800, 600, 0, [[138.5, 38.5]])
+      expect(mapContainsBounds(map, small())).toBe(false)
+    })
+
+    it('四隅がすべて手前なら収まっている（対照）', () => {
+      expect(mapContainsBounds(mapWithPane(800, 600), small())).toBe(true)
+    })
+
+    it('裏側でも画面の外にあれば、どのみち「収まっていない」（安全弁）', () => {
+      const map = mapWithPane(800, 600, 0, [[135, 35]])
+      expect(mapContainsBounds(map, rect(130, 30, 146, 46))).toBe(false)
     })
   })
 })

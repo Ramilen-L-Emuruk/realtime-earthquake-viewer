@@ -439,7 +439,30 @@ export function boundsForLiveFollow(
  *
  * 余白がペインに対して大きすぎると（パネルを広げて地図が細くなった状態）判定領域が反転して
  * 常に「収まっていない」になり、毎秒フィットが走る。短辺の 2 割を上限に切り詰めて防ぐ。
+ *
+ * **地球の裏側は「収まっていない」として扱う**（`isBehindGlobe`）。球で描いているとき
+ * `map.project()` は裏側の点にも画面内の座標を返すため、これが無いと見えていないものを
+ * 「収まっている」と誤判定する。
  */
+/**
+ * その地点が地球の裏側（見えない面）にあるか。
+ *
+ * 画面座標は呼び出し側が投影済みのものを渡す（同じ点を二度投影しない）。
+ *
+ * 球で描いているとき、`map.project()` は**裏側の点にも画面内の有限座標を返す**
+ * （実測: zoom 2・中心 138E36N で南大西洋 (-40, -20) が画面中央付近の (500, 411) に落ちる）。
+ * MapLibre は可視面かどうかを直接答える API を持たないので、投影して戻す。`unproject` は
+ * その画面位置にある**手前の面**の座標を返すため、裏側の点は元の緯度経度から大きく外れる
+ * （同じ実測で 176 度ずれる）。手前の点は誤差 0 で戻る。
+ *
+ * 平面（Mercator）投影では常に誤差 0 で戻るため、この判定は何も弾かない。
+ */
+function isBehindGlobe(map: maplibregl.Map, lngLat: [number, number], screen: maplibregl.Point): boolean {
+  const back = map.unproject(screen)
+  // 1 度は最も近い実測ずれ（20 度）の 1/20 で、浮動小数の誤差（実測 0 度）からは十分離れている。
+  return Math.abs(back.lng - lngLat[0]) > 1 || Math.abs(back.lat - lngLat[1]) > 1
+}
+
 export function mapContainsBounds(
   map: maplibregl.Map,
   target: maplibregl.LngLatBounds,
@@ -472,6 +495,8 @@ export function mapContainsBounds(
     if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return false
     if (p.x < margin || p.x > width - margin) return false
     if (p.y < margin || p.y > height - margin) return false
+    // 画面内の座標を返していても、球の裏側なら見えていない。
+    if (isBehindGlobe(map, lngLat, p)) return false
   }
   return true
 }

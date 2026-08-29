@@ -1,5 +1,6 @@
 import type { CustomLayerInterface, Map as MapLibreMap } from 'maplibre-gl'
 import { log } from '../../../utils/logger'
+import { applyProjectionUniforms, createProjectionProgramCache } from './projectionProgram'
 
 // 深さを持つ点を地下へ描く MapLibre カスタムレイヤー。
 //
@@ -13,10 +14,9 @@ import { log } from '../../../utils/logger'
 // 深さ方向の誇張率は uniform で渡す。実スケール（水平 1000km に対し深さ 100km）では薄すぎて形が
 // 読めないため、倍率を変えられるようにしてある。
 //
-// **このレイヤーは Mercator 投影を前提にしている。** 深さの扱い（far の差し替え）は透視投影の
-// `w_clip = -z_view` に依存しており、これは Mercator では傾き・回転・ロールのいずれでも厳密に
-// 成り立つが、**globe 投影では成り立たない**（MapLibre 本体も、単一の行列だけで完結する実装は
-// Mercator 限定にしかならないと明記している）。globe を有効にするなら、ここは無警告で破綻する。
+// 投影は地球儀（globe）と Mercator を行き来する（寄ると MapLibre が自動で切り替える）。
+// 座標変換は MapLibre が配る投影シェーダーに任せ、プログラムは投影ごとに持つ（gl/projectionProgram.ts）。
+// **深さの単位だけは投影で違う**ため、シェーダー内で出し分けている（`elevationForProjection`）。
 
 /** 地下に置く 1 点。 */
 export interface DepthPoint {
@@ -46,45 +46,127 @@ export interface DepthPoint {
 const EARTH_CIRCUMFERENCE_M = 40075016.686
 
 /**
- * 緯度経度と深さを Mercator 座標（x, y, z）へ。
+ * 緯度経度と深さを、頂点バッファに詰める 3 つ組へ。
  *
- * z は MapLibre の `MercatorCoordinate` と同じ定義で、**メートルを緯度依存の係数で割った値**。
- * 地下は負になる。
+ * x・y は Mercator 座標（0〜1）、**z は標高（m）で地下が負**。MapLibre の投影関数
+ * （`projectTileFor3D`）が globe で受け取る単位に合わせてある。Mercator ではシェーダー側で
+ * Mercator 座標系の z へ換算する（`elevationForProjection`）。
  */
 export function toMercator(lng: number, lat: number, depthKm: number): [number, number, number] {
   const x = (180 + lng) / 360
   const y = (180 - (180 / Math.PI) * Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360))) / 360
-  const mercPerMeter = 1 / (EARTH_CIRCUMFERENCE_M * Math.cos((lat * Math.PI) / 180))
-  return [x, y, -depthKm * 1000 * mercPerMeter]
+  return [x, y, -depthKm * 1000]
 }
 
-// 表示用。点は円で描き、縁に細い暗線を置いて背景から浮かせる。
-const VERT_SRC = `#version 300 es
+/**
+ * Mercator 座標の y（0〜1）から緯度の余弦を求める。
+ *
+ * 等長緯度 psi = π(1 - 2y) に対して cos(lat) = 1 / cosh(psi) が成り立つ（グーデルマン関数）。
+ * **シェーダー側の `elevationForProjection` と同じ式**で、深さを Mercator 座標系の z へ
+ * 換算するのに使う。ここに置いてあるのは、その一致を単体テストで確かめるため。
+ */
+export function cosLatFromMercatorY(y: number): number {
+  return 1 / Math.cosh(Math.PI * (1 - 2 * y))
+}
+
+/** MapLibre が球を描くときの地球半径（m）。globe のシェーダー断片が `GLOBE_RADIUS` として宣言する値。 */
+export const GLOBE_RADIUS_M = 6371008.8
+
+/**
+ * 球で地下へ置ける深さの上限（地球半径に対する割合）。
+ *
+ * 1.0 を越えると点が地球の反対側へ写るため、その手前で止める。
+ */
+const MAX_UNDERGROUND_FRACTION = 0.95
+
+/**
+ * 球で使う標高（m）を、地球の中心を越えない範囲へ収める。
+ *
+ * **シェーダー側の `elevationForProjection` と同じ計算**（GLSL には定数を差し込んでいる）。
+ * ここに置いてあるのは、境界を単体テストで固定するため。
+ */
+export function clampElevationForGlobe(elevMeters: number): number {
+  return Math.max(elevMeters, -GLOBE_RADIUS_M * MAX_UNDERGROUND_FRACTION)
+}
+
+/**
+ * 3 つの頂点シェーダー（表示・判定・柄）が共有する部分。
+ *
+ * **表と裏で頂点の式が食い違うと、見えている位置と当たり判定がずれる。** 1 箇所に置いて
+ * 必ず同じ式を使う。
+ */
+const SHARED_VERT = `
 precision highp float;
+uniform float u_exaggeration;
+uniform float u_nearZ;
+uniform float u_invRange;
+uniform float u_slab;
+
+const float MERC_PI = 3.141592653589793;
+const float EARTH_CIRCUMFERENCE_M = 40075016.686;
+const float MAX_UNDERGROUND_FRACTION = MAX_UNDERGROUND_FRACTION_VALUE;
+
+// **\`projectTileFor3D\` の elevation は投影で単位が違う。** globe はメートル、Mercator は
+// Mercator 座標系の z（緯度で縮む）。バッファはメートルで持ち、ここだけで吸収する。
+// Mercator 座標の y から緯度の余弦を戻す式は cosLatFromMercatorY と同じもの。
+//
+// **球では地球の中心を越えさせない。** MapLibre は球面上の点を
+// \`spherePos * (1.0 + elevation / GLOBE_RADIUS)\` で置くので、elevation が -GLOBE_RADIUS を
+// 下回ると係数が負になり、**点が地球の反対側へ写る**。深さ 700km 級の深発地震に強調 10 倍を
+// 掛けるだけで届く（700 × 10 > 6371）。地表の震央だけ正しい位置に残り、震源だけがあり得ない
+// 場所へ飛ぶ形になるので、手前で止める。
+float elevationForProjection(float elevMeters, float mercY) {
+#ifdef GLOBE
+  return max(elevMeters, -GLOBE_RADIUS * MAX_UNDERGROUND_FRACTION);
+#else
+  float cosLat = 1.0 / cosh(MERC_PI * (1.0 - 2.0 * mercY));
+  return elevMeters / (EARTH_CIRCUMFERENCE_M * cosLat);
+#endif
+}
+
+// **地下の点は 2 つの理由で消える。どちらも z の書き換えで避ける。**
+//
+// 1. 平面（Mercator）では MapLibre の far が地下を含まない。傾きが浅いほど far は切り詰められ
+//    （pitch 0 では地表までの距離の 1.01 倍）、真上から見ると深さ数 km でクリップされる。
+// 2. 球（globe）では地表のタイルが深度を書き込む（裏側の半球を隠すため）。素直に描くと、
+//    地下の点は**手前に見えている地面に隠されて 1 ピクセルも出ない**。
+//
+// どちらも「クリップ空間の z を自前で決める」ことで解ける。手前の薄い帯（u_slab）へ写し、
+// 帯の中の位置はカメラからの距離で決める——**点どうしの前後関係は保ったまま、地図の描画物より
+// 必ず手前**になる。透視投影では w_clip = -z_view なので、距離は w から取れる（この関係は
+// globe の射影行列でも成り立つ。どちらも最後は透視変換だから）。
+//
+// **地図全体の深度精度には触らない**（transform の near/far を上書きすると他のレイヤーが
+// z-fighting を起こす）。
+// **下限を丸めないこと。** near より手前の点は t が負になり、クリップ空間の z が -1 を
+// 下回って GPU に破棄される（従来と同じ挙動）。0 で丸めると、破棄される代わりに近クリップ面へ
+// 貼り付いて描かれてしまう。
+float slabZ(float w) {
+  float t = min((w - u_nearZ) * u_invRange, 1.0);
+  return (-1.0 + u_slab * t) * w;
+}
+
+// 深さ（z）にだけ誇張率を掛ける。水平方向は実スケールのまま。
+vec4 projectDepthPoint(vec3 p) {
+  vec4 pos = projectTileFor3D(p.xy, elevationForProjection(p.z * u_exaggeration, p.y));
+  pos.z = slabZ(pos.w);
+  return pos;
+}
+`.replace('MAX_UNDERGROUND_FRACTION_VALUE', MAX_UNDERGROUND_FRACTION.toFixed(2))
+
+// 表示用。点は円で描き、縁に細い暗線を置いて背景から浮かせる。
+const VERT_BODY = `
 in vec3 a_pos;
 in vec3 a_color;
 in float a_size;
 in float a_shape;
 in float a_aux;
-uniform mat4 u_matrix;
 uniform float u_hideAux;
-uniform float u_exaggeration;
 uniform float u_dpr;
-uniform float u_zA;
-uniform float u_zB;
-// **MapLibre の far では地下が切られる。**傾きが浅いほど far は切り詰められ
-// （mercator_transform.ts: pitch 0 では地表までの距離の 1.01 倍）、真上から見ると深さ数 km で
-// クリップされる。透視投影では w_clip = -z_view なので、w からビュー空間の深さを復元し、
-// far を広げた射影での z へ置き換える。**このレイヤーの中だけで完結し、地図全体の深度精度には
-// 触らない**（transform の near/far を上書きすると他のレイヤーが z-fighting を起こす）。
-float farZ(float w) { return u_zA * (-w) + u_zB; }
 out vec3 v_color;
 out float v_shape;
 void main() {
-  // 深さ（z）にだけ誇張率を掛ける。水平方向は実スケールのまま。
-  vec4 pos = u_matrix * vec4(a_pos.xy, a_pos.z * u_exaggeration, 1.0);
-  pos.z = farZ(pos.w);
-  gl_Position = pos;
+  gl_Position = projectDepthPoint(a_pos);
   gl_PointSize = a_size * u_dpr;
   v_color = a_color;
   v_shape = a_shape;
@@ -122,30 +204,17 @@ void main() {
 
 // 判定用。**同じ頂点計算で、色を通し番号にして裏へ描く。** 表と裏がずれないよう、頂点シェーダーは
 // 表示用と同じ式でなければならない（誇張率・傾き・回転が自動的に一致する）。
-const PICK_VERT_SRC = `#version 300 es
-precision highp float;
+const PICK_VERT_BODY = `
 in vec3 a_pos;
 in float a_size;
 in float a_id;
 in float a_aux;
-uniform mat4 u_matrix;
-uniform float u_exaggeration;
 uniform float u_dpr;
-uniform float u_zA;
-uniform float u_zB;
-// **MapLibre の far では地下が切られる。**傾きが浅いほど far は切り詰められ
-// （mercator_transform.ts: pitch 0 では地表までの距離の 1.01 倍）、真上から見ると深さ数 km で
-// クリップされる。透視投影では w_clip = -z_view なので、w からビュー空間の深さを復元し、
-// far を広げた射影での z へ置き換える。**このレイヤーの中だけで完結し、地図全体の深度精度には
-// 触らない**（transform の near/far を上書きすると他のレイヤーが z-fighting を起こす）。
-float farZ(float w) { return u_zA * (-w) + u_zB; }
 uniform float u_hitPad;
 uniform float u_hideAux;
 out vec3 v_id;
 void main() {
-  vec4 pos = u_matrix * vec4(a_pos.xy, a_pos.z * u_exaggeration, 1.0);
-  pos.z = farZ(pos.w);
-  gl_Position = pos;
+  gl_Position = projectDepthPoint(a_pos);
   // 小さい点は狙いにくいので、判定用だけ少し太らせる。
   gl_PointSize = (a_size + u_hitPad) * u_dpr;
   // 隠れている補助の点は判定からも外す。**表示と判定は同じ条件でなければならない**——
@@ -172,21 +241,12 @@ void main() {
 /** 柄の不透明度。点より控えめにして、主役が点であることを保つ。 */
 const STEM_ALPHA = 0.55
 
-const LINE_VERT_SRC = `#version 300 es
-precision highp float;
+const LINE_VERT_BODY = `
 in vec3 a_pos;
 in vec3 a_color;
-uniform mat4 u_matrix;
-uniform float u_exaggeration;
-uniform float u_zA;
-uniform float u_zB;
 out vec3 v_color;
-// 点と同じ差し替え。片方だけ直すと線と点がずれる。
-float farZ(float w) { return u_zA * (-w) + u_zB; }
 void main() {
-  vec4 pos = u_matrix * vec4(a_pos.xy, a_pos.z * u_exaggeration, 1.0);
-  pos.z = farZ(pos.w);
-  gl_Position = pos;
+  gl_Position = projectDepthPoint(a_pos);
   v_color = a_color;
 }`
 
@@ -203,6 +263,27 @@ const LINE_STRIDE_FLOATS = 6
 /** 1 点あたりの float 数（pos 3 + color 3 + size 1 + id 1 + shape 1 + aux 1）。 */
 const STRIDE_FLOATS = 10
 const STRIDE_BYTES = STRIDE_FLOATS * 4
+
+/** 点バッファの並び（属性名・要素数・バイト位置）。表示用と判定用が同じバッファを共有する。 */
+const POINT_LAYOUT = [
+  ['a_pos', 3, 0],
+  ['a_color', 3, 12],
+  ['a_size', 1, 24],
+  ['a_id', 1, 28],
+  ['a_shape', 1, 32],
+  ['a_aux', 1, 36],
+] as const
+
+/** 柄バッファの並び。 */
+const LINE_LAYOUT = [
+  ['a_pos', 3, 0],
+  ['a_color', 3, 12],
+] as const
+
+// 各プログラムが使う属性。**並び順がロケーション番号になる**（gl/projectionProgram.ts）。
+const DISPLAY_ATTRIBS = ['a_pos', 'a_color', 'a_size', 'a_shape', 'a_aux'] as const
+const PICK_ATTRIBS = ['a_pos', 'a_size', 'a_id', 'a_aux'] as const
+const LINE_ATTRIBS = ['a_pos', 'a_color'] as const
 
 /** 判定用に点を太らせる量（CSS px）。小さい点でも狙えるようにする。 */
 const HIT_PAD_PX = 6
@@ -224,19 +305,55 @@ export function metersPerPixelAt(lat: number, zoom: number): number {
   return (EARTH_CIRCUMFERENCE_M * Math.cos((lat * Math.PI) / 180)) / (512 * Math.pow(2, zoom))
 }
 
+/** 深さの帯に使う uniform 名。3 つのプログラムで同じものを使う。 */
+const DEPTH_UNIFORMS = ['u_nearZ', 'u_invRange', 'u_slab'] as const
+
 /**
- * 深さのぶんだけ広げた far での、クリップ空間 z の係数。
+ * 地下の点を写す「手前の帯」の厚み（クリップ空間 z の幅・-1 を基準）。
  *
- * MapLibre の far は地下を含まない（傾き 0 では地表までの距離の 1.01 倍）。透視投影の
- * `w_clip = -z_view` を使い、シェーダーで `z = zA * (-w) + zB` と置き換えるための係数を返す。
+ * 薄いほど地図の描画物に隠されにくく、厚いほど点どうしの前後関係を細かく表せる。0.02 なら
+ * 24bit の深度バッファで 33 万段階が残り、長期カタログの 101 万点でも実用上ぶつからない。
  */
-export function depthClipCoefficients(
-  nearZ: number,
-  farZ: number,
-  depthPx: number,
-): { zA: number; zB: number } {
+const DEPTH_SLAB = 0.02
+
+/** 帯へ写すための係数（`slabZ` へ渡す）。 */
+export interface DepthSlab {
+  nearZ: number
+  invRange: number
+  slab: number
+}
+
+/**
+ * カメラからの距離を「手前の帯」の位置へ写す係数。
+ *
+ * 距離の範囲は near から far までで、**このレイヤーで描く最深点までのぶんだけ far を広げる**
+ * （広げないと、深い点がすべて帯の奥端に貼り付いて前後関係が潰れる）。
+ */
+export function depthSlabRange(nearZ: number, farZ: number, depthPx: number): DepthSlab {
   const far = farZ + depthPx * FAR_MARGIN
-  return { zA: (far + nearZ) / (nearZ - far), zB: (2 * far * nearZ) / (nearZ - far) }
+  return { nearZ, invRange: 1 / Math.max(far - nearZ, 1e-6), slab: DEPTH_SLAB }
+}
+
+/**
+ * カメラからの距離 `w` を帯の中の位置（クリップ空間の z を w で割った値）へ写す。
+ *
+ * **シェーダー側の `slabZ` と同じ計算**（あちらは最後に w を掛けてクリップ空間へ戻す）。
+ * ここに置いてあるのは、帯に収まること・near より手前が切られることを単体テストで固定するため。
+ */
+export function depthSlabNdc(slab: DepthSlab, distance: number): number {
+  // **下限を丸めないこと。** near より手前は負になり、-1 を下回って GPU に破棄される。
+  return -1 + slab.slab * Math.min((distance - slab.nearZ) * slab.invRange, 1)
+}
+
+/** 帯の係数を uniform へ送る。3 つのプログラムで共通。 */
+function applyDepthSlab(
+  gl: WebGL2RenderingContext,
+  u: Record<(typeof DEPTH_UNIFORMS)[number], WebGLUniformLocation | null>,
+  slab: DepthSlab,
+): void {
+  gl.uniform1f(u.u_nearZ, slab.nearZ)
+  gl.uniform1f(u.u_invRange, slab.invRange)
+  gl.uniform1f(u.u_slab, slab.slab)
 }
 
 /**
@@ -283,8 +400,32 @@ export interface DepthPointLayer extends CustomLayerInterface {
 }
 
 export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointLayer {
-  let program: WebGLProgram | null = null
-  let pickProgram: WebGLProgram | null = null
+  // 表示・判定・柄の 3 プログラム。**投影が切り替わると中身が作り直される**ため、
+  // ロケーションはフレームごとにキャッシュから引く（gl/projectionProgram.ts）。
+  const displayCache = createProjectionProgramCache({
+    label: `depthPointLayer:${id}:display`,
+    makeVertexSource: (prelude, define) =>
+      `#version 300 es\n${prelude}\n${define}\n${SHARED_VERT}\n${VERT_BODY}`,
+    fragmentSource: FRAG_SRC,
+    attributes: DISPLAY_ATTRIBS,
+    uniforms: ['u_exaggeration', 'u_dpr', ...DEPTH_UNIFORMS, 'u_hideAux'] as const,
+  })
+  const pickCache = createProjectionProgramCache({
+    label: `depthPointLayer:${id}:pick`,
+    makeVertexSource: (prelude, define) =>
+      `#version 300 es\n${prelude}\n${define}\n${SHARED_VERT}\n${PICK_VERT_BODY}`,
+    fragmentSource: PICK_FRAG_SRC,
+    attributes: PICK_ATTRIBS,
+    uniforms: ['u_exaggeration', 'u_dpr', 'u_hitPad', ...DEPTH_UNIFORMS, 'u_hideAux'] as const,
+  })
+  const lineCache = createProjectionProgramCache({
+    label: `depthPointLayer:${id}:stem`,
+    makeVertexSource: (prelude, define) =>
+      `#version 300 es\n${prelude}\n${define}\n${SHARED_VERT}\n${LINE_VERT_BODY}`,
+    fragmentSource: LINE_FRAG_SRC,
+    attributes: LINE_ATTRIBS,
+    uniforms: ['u_exaggeration', ...DEPTH_UNIFORMS] as const,
+  })
   let vao: WebGLVertexArrayObject | null = null
   let pickVao: WebGLVertexArrayObject | null = null
   let buffer: WebGLBuffer | null = null
@@ -294,18 +435,15 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
   let count = 0
   let warnedDisabled = false
   let warnedFbo = false
+  let warnedPointLimit = false
   let maxDepthKm = 0
   let lineVao: WebGLVertexArrayObject | null = null
   let lineBuffer: WebGLBuffer | null = null
-  let lineProgram: WebGLProgram | null = null
   let lineVertexCount = 0
   let lineData: Float32Array = new Float32Array(0)
-  const lu: Record<string, WebGLUniformLocation | null> = {}
   let exaggeration = 1
   let data: Float32Array = new Float32Array(0)
   let dirty = false
-  const u: Record<string, WebGLUniformLocation | null> = {}
-  const pu: Record<string, WebGLUniformLocation | null> = {}
 
   // 判定の予約と直近の結果。座標が一致する間はキャッシュを返す。
   let wantX = -1
@@ -327,6 +465,24 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
    * 移動直後の最初のクリックが古い結果を返す。
    */
   let doneCamera = ''
+
+  /**
+   * 予約されている判定を「何も無い」で解決する。
+   *
+   * **描かずに抜ける経路はすべてここを通ること。** 予約を残したまま抜けると `pick()` は永久に
+   * `'pending'` を返し、クリックはリトライを使い切って無言で失敗し、ホバーは解決を待って
+   * `triggerRepaint()` を呼び続ける。
+   */
+  const resolvePendingPickAsMiss = () => {
+    if (wantX < 0) return
+    doneHit = null
+    doneX = wantX
+    doneY = wantY
+    doneCamera = cameraSignature()
+    wantX = -1
+    wantY = -1
+    wantForClick = false
+  }
 
   /** 判定のキャッシュを捨てる。点・誇張率・カメラのいずれが変わっても呼ぶ。 */
   const invalidatePick = () => {
@@ -351,60 +507,18 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
     ].join('/')
   }
 
-  const compile = (gl: WebGL2RenderingContext, type: number, src: string): WebGLShader => {
-    const s = gl.createShader(type) as WebGLShader
-    gl.shaderSource(s, src)
-    gl.compileShader(s)
-    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
-      log.error(`[depthPointLayer:${id}] shader compile failed`, gl.getShaderInfoLog(s))
-    }
-    return s
-  }
-
-  /** リンクに失敗したら null を返す（失敗した program で useProgram すると別レイヤーを巻き込む）。 */
-  const link = (gl: WebGL2RenderingContext, vs: string, fs: string): WebGLProgram | null => {
-    const v = compile(gl, gl.VERTEX_SHADER, vs)
-    const f = compile(gl, gl.FRAGMENT_SHADER, fs)
-    const p = gl.createProgram() as WebGLProgram
-    gl.attachShader(p, v)
-    gl.attachShader(p, f)
-    gl.linkProgram(p)
-    gl.deleteShader(v)
-    gl.deleteShader(f)
-    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
-      log.error(`[depthPointLayer:${id}] program link failed`, gl.getProgramInfoLog(p))
-      gl.deleteProgram(p)
-      return null
-    }
-    return p
-  }
-
-  const bindAttribs = (gl: WebGL2RenderingContext, prog: WebGLProgram, withColor: boolean) => {
-    const pos = gl.getAttribLocation(prog, 'a_pos')
-    gl.enableVertexAttribArray(pos)
-    gl.vertexAttribPointer(pos, 3, gl.FLOAT, false, STRIDE_BYTES, 0)
-    if (withColor) {
-      const col = gl.getAttribLocation(prog, 'a_color')
-      gl.enableVertexAttribArray(col)
-      gl.vertexAttribPointer(col, 3, gl.FLOAT, false, STRIDE_BYTES, 12)
-    }
-    const size = gl.getAttribLocation(prog, 'a_size')
-    gl.enableVertexAttribArray(size)
-    gl.vertexAttribPointer(size, 1, gl.FLOAT, false, STRIDE_BYTES, 24)
-    if (withColor) {
-      const shp = gl.getAttribLocation(prog, 'a_shape')
-      gl.enableVertexAttribArray(shp)
-      gl.vertexAttribPointer(shp, 1, gl.FLOAT, false, STRIDE_BYTES, 32)
-      const aux = gl.getAttribLocation(prog, 'a_aux')
-      gl.enableVertexAttribArray(aux)
-      gl.vertexAttribPointer(aux, 1, gl.FLOAT, false, STRIDE_BYTES, 36)
-    } else {
-      const aid = gl.getAttribLocation(prog, 'a_id')
-      gl.enableVertexAttribArray(aid)
-      gl.vertexAttribPointer(aid, 1, gl.FLOAT, false, STRIDE_BYTES, 28)
-      const auxPick = gl.getAttribLocation(prog, 'a_aux')
-      gl.enableVertexAttribArray(auxPick)
-      gl.vertexAttribPointer(auxPick, 1, gl.FLOAT, false, STRIDE_BYTES, 36)
+  /**
+   * VAO へ頂点バッファの読み方を仕込む。
+   *
+   * **番号は `*_ATTRIBS` の並び順で固定してある**（リンク前に `bindAttribLocation` で決めている）。
+   * 投影が切り替わるとプログラムは別物になるが、番号が揃っているので VAO は作り直さずに済む。
+   */
+  const bindAttribs = (gl: WebGL2RenderingContext, layout: readonly (readonly [string, number, number])[], attribs: readonly string[], stride: number) => {
+    for (const [name, size, offset] of layout) {
+      const loc = attribs.indexOf(name)
+      if (loc < 0) continue
+      gl.enableVertexAttribArray(loc)
+      gl.vertexAttribPointer(loc, size, gl.FLOAT, false, stride, offset)
     }
   }
 
@@ -454,63 +568,48 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
 
     onAdd(_m, gl2) {
       const gl = gl2 as WebGL2RenderingContext
-      program = link(gl, VERT_SRC, FRAG_SRC)
-      pickProgram = link(gl, PICK_VERT_SRC, PICK_FRAG_SRC)
-      if (!program || !pickProgram) return
-      for (const n of ['u_matrix', 'u_exaggeration', 'u_dpr', 'u_zA', 'u_zB', 'u_hideAux'])
-        u[n] = gl.getUniformLocation(program, n)
-      for (const n of ['u_matrix', 'u_exaggeration', 'u_dpr', 'u_hitPad', 'u_zA', 'u_zB', 'u_hideAux']) pu[n] = gl.getUniformLocation(pickProgram, n)
-
+      // **プログラムはここでは作らない。** どの投影のシェーダーが要るかは render の引数で初めて
+      // 分かるうえ、途中で切り替わる。VAO だけ先に用意しておく（属性の番号は固定してある）。
       buffer = gl.createBuffer()
       vao = gl.createVertexArray()
       gl.bindVertexArray(vao)
       gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
-      bindAttribs(gl, program, true)
+      bindAttribs(gl, POINT_LAYOUT, DISPLAY_ATTRIBS, STRIDE_BYTES)
       pickVao = gl.createVertexArray()
       gl.bindVertexArray(pickVao)
       gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
-      bindAttribs(gl, pickProgram, false)
-      lineProgram = link(gl, LINE_VERT_SRC, LINE_FRAG_SRC)
-      if (!lineProgram) {
-        // 点は描けるが柄だけ出ない状態になる。点側の失敗（render で記録）と非対称なので、
-        // ここでも残しておかないと「柄が消えている」に対応する手掛かりが無い。
-        log.error(`[depthPointLayer:${id}] 柄のシェーダーを用意できず、縦線を描きません`)
-      }
-      if (lineProgram) {
-        for (const n of ['u_matrix', 'u_exaggeration', 'u_zA', 'u_zB']) lu[n] = gl.getUniformLocation(lineProgram, n)
-        lineBuffer = gl.createBuffer()
-        lineVao = gl.createVertexArray()
-        gl.bindVertexArray(lineVao)
-        gl.bindBuffer(gl.ARRAY_BUFFER, lineBuffer)
-        const lp = gl.getAttribLocation(lineProgram, 'a_pos')
-        gl.enableVertexAttribArray(lp)
-        gl.vertexAttribPointer(lp, 3, gl.FLOAT, false, LINE_STRIDE_FLOATS * 4, 0)
-        const lc = gl.getAttribLocation(lineProgram, 'a_color')
-        gl.enableVertexAttribArray(lc)
-        gl.vertexAttribPointer(lc, 3, gl.FLOAT, false, LINE_STRIDE_FLOATS * 4, 12)
-      }
+      bindAttribs(gl, POINT_LAYOUT, PICK_ATTRIBS, STRIDE_BYTES)
+      lineBuffer = gl.createBuffer()
+      lineVao = gl.createVertexArray()
+      gl.bindVertexArray(lineVao)
+      gl.bindBuffer(gl.ARRAY_BUFFER, lineBuffer)
+      bindAttribs(gl, LINE_LAYOUT, LINE_ATTRIBS, LINE_STRIDE_FLOATS * 4)
       gl.bindVertexArray(null)
       dirty = true
     },
 
     render(gl2, args) {
       const gl = gl2 as WebGL2RenderingContext
-      if (!program || !pickProgram || !vao) {
-        // シェーダーのリンクに失敗している。原因は onAdd で 1 度記録されるが、以後は
+      const display = displayCache.get(gl, args)
+      const picker = pickCache.get(gl, args)
+      if (!display || !picker || !vao) {
+        // シェーダーのリンクに失敗している。原因はキャッシュ側で 1 度記録されるが、以後は
         // 「描かれない・クリックできない」だけが延々続く。**その状態にいることを 1 度だけ残す。**
         if (!warnedDisabled) {
           warnedDisabled = true
           log.error(`[depthPointLayer:${id}] シェーダーを用意できず、描画と判定を止めています`)
         }
+        resolvePendingPickAsMiss()
         return
       }
-      const matrix = args.defaultProjectionData.mainMatrix
+      const u = display.u
+      const pu = picker.u
       const dpr = window.devicePixelRatio || 1
       // MapLibre の far は地下を含まない。**このレイヤーで描く最深点までが入るぶんだけ広げる**
       // （闇雲に伸ばすと深度精度が落ち、点どうしの前後関係が乱れる）。
       const mpp = metersPerPixelAt(map.getCenter().lat, map.getZoom())
       const depthPx = ((maxDepthKm * 1000) / mpp) * exaggeration
-      const { zA, zB } = depthClipCoefficients(args.nearZ, args.farZ, depthPx)
+      const slab = depthSlabRange(args.nearZ, args.farZ, depthPx)
       // 柄が画面上でどれだけの長さになるか。**傾き・深さ・誇張率のどれが小さくても短くなる**ので、
       // ここ 1 箇所で「重なって潰れるか」を判定できる（透視は無視した近似で、判定には足りる）。
       const hideAux = stemScreenLengthPx(maxDepthKm, exaggeration, mpp, map.getPitch()) < MIN_STEM_PX
@@ -525,44 +624,33 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
         dirty = false
       }
       if (count === 0) {
-        // **予約を残したまま抜けてはいけない。** pick が永久に pending を返し、クリックが
-        // リトライを使い切って無言で失敗する。
-        if (wantX >= 0) {
-          doneHit = null
-          doneX = wantX
-          doneY = wantY
-          doneCamera = cameraSignature()
-          wantX = -1
-          wantY = -1
-          wantForClick = false
-        }
+        resolvePendingPickAsMiss()
         return
       }
 
       // --- 柄（点より先に描く。点が上に来る） ---
-      if (lineProgram && lineVao && lineVertexCount > 0 && !hideAux) {
-        gl.useProgram(lineProgram)
+      const line = lineVertexCount > 0 && !hideAux ? lineCache.get(gl, args) : null
+      if (line && lineVao) {
+        gl.useProgram(line.program)
         gl.bindVertexArray(lineVao)
         gl.enable(gl.BLEND)
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
-        gl.uniformMatrix4fv(lu.u_matrix, false, matrix)
-        gl.uniform1f(lu.u_exaggeration, exaggeration)
-        gl.uniform1f(lu.u_zA, zA)
-        gl.uniform1f(lu.u_zB, zB)
+        applyProjectionUniforms(gl, line.u, args)
+        gl.uniform1f(line.u.u_exaggeration, exaggeration)
+        applyDepthSlab(gl, line.u, slab)
         gl.drawArrays(gl.LINES, 0, lineVertexCount)
         gl.bindVertexArray(null)
       }
 
       // --- 点 ---
-      gl.useProgram(program)
+      gl.useProgram(display.program)
       gl.bindVertexArray(vao)
       gl.enable(gl.BLEND)
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
-      gl.uniformMatrix4fv(u.u_matrix, false, matrix)
+      applyProjectionUniforms(gl, u, args)
       gl.uniform1f(u.u_exaggeration, exaggeration)
       gl.uniform1f(u.u_dpr, dpr)
-      gl.uniform1f(u.u_zA, zA)
-      gl.uniform1f(u.u_zB, zB)
+      applyDepthSlab(gl, u, slab)
       gl.uniform1f(u.u_hideAux, hideAux ? 1 : 0)
       gl.drawArrays(gl.POINTS, 0, count)
       gl.bindVertexArray(null)
@@ -575,10 +663,7 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
       const ph = canvas.height
       ensureFbo(gl, pw, ph)
       if (!fbo) {
-        // 予約を消さないと、pick が永久に pending を返し続ける。
-        wantX = -1
-        wantY = -1
-        wantForClick = false
+        resolvePendingPickAsMiss()
         return
       }
       // 読む 1px。WebGL の原点は左下、マウス座標は左上なので y を反転する。
@@ -595,14 +680,13 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
       gl.clearColor(0, 0, 0, 0)
       gl.clear(gl.COLOR_BUFFER_BIT)
       gl.disable(gl.BLEND)
-      gl.useProgram(pickProgram)
+      gl.useProgram(picker.program)
       gl.bindVertexArray(pickVao)
-      gl.uniformMatrix4fv(pu.u_matrix, false, matrix)
+      applyProjectionUniforms(gl, pu, args)
       gl.uniform1f(pu.u_exaggeration, exaggeration)
       gl.uniform1f(pu.u_dpr, dpr)
       gl.uniform1f(pu.u_hitPad, HIT_PAD_PX)
-      gl.uniform1f(pu.u_zA, zA)
-      gl.uniform1f(pu.u_zB, zB)
+      applyDepthSlab(gl, pu, slab)
       gl.uniform1f(pu.u_hideAux, hideAux ? 1 : 0)
       gl.drawArrays(gl.POINTS, 0, count)
       const buf = new Uint8Array(4)
@@ -625,20 +709,18 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
 
     onRemove(_m, gl2) {
       const gl = gl2 as WebGL2RenderingContext
-      if (program) gl.deleteProgram(program)
-      if (pickProgram) gl.deleteProgram(pickProgram)
+      displayCache.dispose(gl)
+      pickCache.dispose(gl)
+      lineCache.dispose(gl)
       if (vao) gl.deleteVertexArray(vao)
       if (pickVao) gl.deleteVertexArray(pickVao)
       if (buffer) gl.deleteBuffer(buffer)
-      if (lineProgram) gl.deleteProgram(lineProgram)
       if (lineVao) gl.deleteVertexArray(lineVao)
       if (lineBuffer) gl.deleteBuffer(lineBuffer)
       if (fboTex) gl.deleteTexture(fboTex)
       if (fbo) gl.deleteFramebuffer(fbo)
-      program = pickProgram = null
       vao = pickVao = null
       buffer = null
-      lineProgram = null
       lineVao = null
       lineBuffer = null
       fbo = null
@@ -650,7 +732,9 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
       count = points.length
       // 通し番号は 24bit の色として運ぶ。0 を「何も無い」に使うぶん 1 つ減る。
       // 超えると番号が衝突し、**別の点をクリックしたことになる**（描画は正常に見える）。
-      if (count > MAX_PICKABLE_POINTS) {
+      if (count > MAX_PICKABLE_POINTS && !warnedPointLimit) {
+        // 呼ばれるたびに出すとコンソールが埋まる（他の失敗ログと同じく一度きりにする）。
+        warnedPointLimit = true
         log.error(
           `[depthPointLayer:${id}] 点が多すぎて判定の番号が衝突します（${count} 件 / 上限 ${MAX_PICKABLE_POINTS} 件）`,
         )
