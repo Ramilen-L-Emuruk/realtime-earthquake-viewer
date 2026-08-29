@@ -684,7 +684,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    * 自分より**後に到来した**同格以上の読み上げに追い越されているか。
    *
    * `speechBlocker` では捉えられない逆転がこれ。あちらは「いま塞がっているか」を厳密不等号で
-   * 見るため、**同格どうしの追い越しが素通りする**。通知音との間は種別ごとに 0.5〜4.2 秒と
+   * 見るため、**同格どうしの追い越しが素通りする**。通知音との間は種別ごとに 0.5〜2.8 秒と
    * 幅があるので、先に届いた電文の方が遅く喋り始めることがあり、そのとき古い側が新しい側の
    * 声を切っていた（震源情報の 1.2 秒以内に震度速報が届くと、震度速報が途中で切られる）。
    * 「同格どうしは新しい方が勝つ」という原則が逆向きに破れる形なので、到来順で裁く。
@@ -969,7 +969,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    * あわせて、読み上げに同調したタブ移動を仕込む。
    *
    * **待たされずに読めそうなら、通知音と同じ瞬間に画面も合わせる。** 遅延は電文の種別ごとに
-   * 0.5〜4.2 秒あり、その間ずっと前のタブに留まると「音が鳴ったのに画面が変わらない」ように
+   * 0.5〜2.8 秒あり、その間ずっと前のタブに留まると「音が鳴ったのに画面が変わらない」ように
    * 見える。読み上げの直前にも同じ追従を呼ぶため、待っている間に別の情報が画面を取っていれば、
    * 自分の番が来た時点で取り戻せる。
    *
@@ -1228,11 +1228,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       title.endTsunamiTitleWindow()
       title.applyPriority()
       // 津波解除・取消・失効の通知音（AUD-6）。cancelReason の 3 種を区別せず単一音で伝える。
-      // TTS は eewCancel と同じく音の後ろへずらして音響重複を避ける。遅延は音長に合わせること
-      // （tsunamiCancel は終止形 2 音で乾音が約 2.0 秒。eewCancel の約 1.25 秒より長い）。
-      // tsunamiCancel はリバーブ（wet）を効かせているため、乾音が止まったあとも残響が尾を引く。
-      // 乾音の長さちょうどでは足りないので 0.4 秒ぶん余白を足している（eewCancel は wet=0 で
-      // 残響が無いため、同じ 1200ms でも重ならない）。
+      // TTS は eewCancel と同じく音の後ろへずらして音響重複を避ける。
+      //
+      // **遅延は乾音の長さで見積もらないこと。** どちらの音も残響を持つため
+      // （情報系は広い IR・EEW 系は締まった IR）、乾音が止まったあとも尾を引く。
+      // 見直しの基準と実測値は audio-tts-spec.md §6 の表に集約してある
+      // ——読み上げが始まる瞬間の残り（ピーク比）で、2600ms は -49.2 dB・1200ms は -54.5 dB。
       if (!alreadySpoken) {
         spokenTsunamiCancelEventIdsRef.current.add(cancelId)
         if (settings.soundEnabled) playAlertSound('tsunamiCancel')
@@ -1240,7 +1241,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           speakNonEEWDelayed(
             tsunamiCancelToText(event.cancelReason),
             SPEECH_PRIORITY.high,
-            2400,
+            2600,
             'tsunami',
             { tab: 'tsunami', priority: TAB_PRIORITY.tsunami },
           )
@@ -1831,7 +1832,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         tsunamiForecast:  1900,
         tsunamiWatch:     1700,
         tsunami:          2800,
-        tsunamiMajor:     4200,
+        // 大津波警報を上昇サイレンへ作り変えて音が 3.73 → 1.94 秒に詰まったため、他の津波と
+        // 同じ基準（音の終わり ＋ 0.3〜0.4 秒）へ揃えた。音の終わりは 1.94 秒。
+        // **最も急を要する警報なので、余った待ち時間はそのまま読み上げの遅れになる。**
+        tsunamiMajor:     2300,
         tsunamiUpdate:     800,
       }
       let ttsText: string | null = null

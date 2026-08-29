@@ -4,7 +4,7 @@ import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pq
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataNankaiCommentary, fetchDmdataKohatsu } from '../services/dmdata'
 import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey, coalesceByEventId, findExistingQuakeCard } from '../utils/quakeMerge'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex } from '../utils/stationCoords'
-import { calcEEWCancelTime } from '../utils/eew'
+import { calcEEWCancelTime, eewSerial, eewEventKey } from '../utils/eew'
 import { mergeTsunamiObservations, isCancelForCurrentTsunami } from '../utils/tsunami'
 import { log } from '../utils/logger'
 import { serverNow, serverDate } from '../utils/clock'
@@ -60,6 +60,30 @@ function insertSorted(queue: QueueEntry[], entry: QueueEntry): void {
   let i = queue.length
   while (i > 0 && queue[i - 1].eventTime > entry.eventTime) i--
   queue.splice(i, 0, entry)
+}
+
+/**
+ * 表示中の EEW より古い報か（＝適用すると内容が退行するか）。
+ *
+ * **同じ地震の報は同じ秒に複数届く。** 能登本震の実配信では 46 報中 13 報が同一秒だった。
+ * キューは電文の時刻（秒精度）でしか並べ替えられず（`enqueueEvent`）、WebSocket の受信は
+ * body の展開（gunzip）を待たずに次へ進むため（`services/dmdata.ts`）、同じ秒に届いた報は
+ * 展開の完了順で処理されうる。順序が入れ替わったまま丸ごと上書きすると、地図の区域塗りが
+ * 古い内容へ戻る。報番号で弾いてそれを防ぐ。
+ *
+ * 報番号の数値化は `eewSerial`（`utils/eew.ts`）に任せる。`0`・負値・小数を弾く判定が既に
+ * あり、そこだけ独自に実装すると同じ値の扱いが 2 通りに割れる。
+ *
+ * **報番号が取れない側があるときは判定しない。** 順序を決める根拠が無いため後着を採る。
+ * 0 で埋めて比較すると、`issue.serial` を持たない報（P2PQuake で起こりうる）を常に
+ * 「古い」と見なして捨ててしまう。同じ報番号の再送も古いとはみなさない（訂正報も同じ番号で
+ * 届きうるため、内容の異同にかかわらず通す）。
+ */
+function isStaleEewReport(existing: EEWAlert, incoming: EEWAlert): boolean {
+  const existingSerial = eewSerial(existing)
+  const incomingSerial = eewSerial(incoming)
+  if (existingSerial === null || incomingSerial === null) return false
+  return incomingSerial < existingSerial
 }
 
 // DMDSS版 EEW の地域別予想震度には pref が含まれないため、細分区域名→都道府県の
@@ -249,6 +273,14 @@ export function useEarthquakes(
   // 現在の state を WS コールバック内から参照するための ref
   const stateRef = useRef(state)
   stateRef.current = state
+  // 受理した EEW の報番号（キーは `eewEventKey`）。古い報の判定に使う。
+  //
+  // **`stateRef` では判定できない。** あれはレンダー時にしか進まないが、キューのディスパッチャは
+  // 1 ティックの中で `handleEvent` を連続で呼ぶ（同じ秒の報がまとめてキューに載るため、まさに
+  // 順序が入れ替わりうる場面で起きる）。その間 `stateRef` は前のレンダーの値のままなので、
+  // 直前に受理した報より古い報を「新しい」と誤判定して通してしまう。こちらは受理した時点で
+  // 即座に進むため、同じティックの中でも正しく比べられる。
+  const acceptedEewSerialRef = useRef<Map<string, number>>(new Map())
   // VXSE51 受信時に震度データをキャッシュし、後続の VXSE52（震源情報）に補完する。
   // VXSE52 は震源のみで震度を持たないため、VXSE51 の maxScale・points を引き継ぐ。
   const quakeIntensityCacheRef = useRef<Map<string, { maxScale: IntensityScale; points: EarthquakePoint[] }>>(new Map())
@@ -272,15 +304,23 @@ export function useEarthquakes(
   // （音・タブ切替なし）。P2PQuakeはcondition（仮定震源要素の判別）・hypocenter（数値型・パース不要）
   // ともYahoo hypoInfoより正確なため、両方を上書きする。ただし報番号が古い場合は上書きしない
   // （WS/ポーリングの到着順序が入れ替わり、新しい報を古い報の値で退行させないため）。
+  //
+  // 古い報を弾く考え方は主経路と同じだが、比べる相手が違う。主経路の `isStaleEewReport` は
+  // 表示中の EEW と比べるのに対し、こちらは台帳（`acceptedEewSerialRef`）と比べる。理由は下記。
+  // かつてここだけ欠けた報番号を 0 で埋めており、`issue.serial` を持たない報が来ると
+  // 常に「古い」と見なされて注入が丸ごと飛んでいた。
   const enrichEEW = useCallback((eventId: string, source: EEWAlert) => {
     // 現在の state から既存 EEW を取り出して severity の格上げを判定する。
     // setState の関数内で判定して外側から onLiveEvent を呼ぶ二重評価を避けるため、
     // stateRef.current 経由で参照する。
     const existing = stateRef.current.activeEEWs.get(eventId)
     if (!existing) return
-    const existingSerial = Number(existing.issue?.serial ?? 0)
-    const sourceSerial = Number(source.issue?.serial ?? 0)
-    if (sourceSerial < existingSerial) return
+    // 古い報かどうかは `handleEvent` と同じ台帳で判定する。`existing` はレンダー待ちで古いことが
+    // あり、そちらと比べると直前に受理した報を見落とす（この経路はキューを通らず WebSocket から
+    // 直接呼ばれるため、`handleEvent` 側の受理と入れ違いになりうる）。
+    const sourceSerial = eewSerial(source)
+    const acceptedSerial = acceptedEewSerialRef.current.get(eventId)
+    if (sourceSerial !== null && acceptedSerial !== undefined && sourceSerial < acceptedSerial) return
     // severity は upgrade only。既存が Warning のときはソースが弱くても維持し、
     // 既存が Forecast/Unknown で source が Warning のときは Warning に格上げする。
     // Yahoo hypoInfo 由来の推定 severity（scaleNum ヒューリスティック）に対して
@@ -291,6 +331,10 @@ export function useEarthquakes(
     const enriched: EEWAlert = {
       ...existing,
       severity: existing.severity === 'Warning' ? 'Warning' : (source.severity ?? existing.severity),
+      // 報番号も進める。中身だけ新しくして番号を据え置くと、格納した EEW の報番号が内容の
+      // 新しさを表さなくなり、以降の判定が「まだ古い報までしか受理していない」と誤認する。
+      // `eventId` は引数のキーと一致していなければならないので触らない。
+      issue: sourceSerial !== null ? { ...existing.issue, serial: source.issue?.serial } : existing.issue,
       areas: source.areas ?? source.regions ?? existing.areas,
       earthquake: {
         ...existing.earthquake,
@@ -298,6 +342,7 @@ export function useEarthquakes(
         hypocenter: source.earthquake.hypocenter,
       },
     }
+    if (sourceSerial !== null) acceptedEewSerialRef.current.set(eventId, sourceSerial)
     setState(prev => ({ ...prev, activeEEWs: new Map(prev.activeEEWs).set(eventId, enriched) }))
     // severity が Warning に格上げされた場合、useLiveEventHandler 側の
     // activeEEWLevelsRef（音・通知・タブ切替を駆動する独立トラッカー）が
@@ -386,6 +431,25 @@ export function useEarthquakes(
   }, [])
 
   const handleEvent = useCallback((event: AppEvent) => {
+    // 古い報は**入口で**捨てる。この下の通知（読み上げ・ウィンドウタイトル）と自動解除の予約は
+    // setState の外で走るため、状態更新の直前で弾いても間に合わない。地図・カードだけが新しい報を
+    // 保ち、読み上げとタイトルが古い報で上書きされる——画面と音声が食い違う方が始末が悪い。
+    // 取消・失効・テスト報は報番号に関わらず通す（弾くと誤報を消せなくなる）。
+    if (event.kind === 'eew') {
+      const incoming = event as EEWAlert
+      if (!incoming.cancelled && !incoming.expired && !incoming.test) {
+        const key = eewEventKey(incoming)
+        const incomingSerial = eewSerial(incoming)
+        const acceptedSerial = acceptedEewSerialRef.current.get(key)
+        if (incomingSerial !== null && acceptedSerial !== undefined && incomingSerial < acceptedSerial) {
+          // 順序の入れ替わり自体は想定内だが、判定が誤り続けるとその EEW は以降更新されない。
+          // 捨てた事実が残らないと原因に辿り着けないため記録する（頻度は 1 地震あたり数件）。
+          log.debug(`[eew] 古い報を破棄: key=${key} 受理済み=#${acceptedSerial} 受信=#${incomingSerial}`)
+          return
+        }
+        if (incomingSerial !== null) acceptedEewSerialRef.current.set(key, incomingSerial)
+      }
+    }
     // ライブ受信／テスト送信のイベントを通知（サイレントモード中は抑制）
     if (!isSilentRef.current) onLiveEventRef.current?.(event)
 
@@ -591,7 +655,9 @@ export function useEarthquakes(
         }
         case 'eew': {
           const eew = event as EEWAlert
-          const key = eew.issue?.eventId ?? eew.id
+          // 台帳（`acceptedEewSerialRef`）と同じキーで引く。式を書き写すと、導出が変わったときに
+          // 片方だけ追従して台帳と状態のキーが割れ、同一ティックの判定が静かに壊れる。
+          const key = eewEventKey(eew)
           if (eew.test) {
             const next = new Map(prev.activeEEWs)
             next.delete(key)
@@ -619,6 +685,11 @@ export function useEarthquakes(
           // 弱い推定値で来ても、既に P2PQuake WS 経由で Warning に上げていたら維持）。
           // areas/earthquake の enrichment 保持は別途扱う（本コミットの範囲外）。
           const existing = prev.activeEEWs.get(key)
+          // 入口（`handleEvent` の先頭）でも同じ判定をしているが、ここにも置く。キューの
+          // ディスパッチャは 1 ティックで複数のイベントを処理し、その間 `stateRef` は
+          // レンダー待ちで進まないため、入口だけでは同じティックに積まれた報を取りこぼす。
+          // 記録は入口に集約する（setState は再実行されうるので副作用を持たせない）。
+          if (existing && isStaleEewReport(existing, eew)) return prev
           const merged: EEWAlert = existing
             ? { ...eew, severity: existing.severity === 'Warning' ? 'Warning' : eew.severity }
             : eew
@@ -633,6 +704,17 @@ export function useEarthquakes(
       }
     })
   }, [])
+
+  // 表示が終わった EEW の報番号は覚えておく必要がない。掃除しないと台帳が伸び続ける
+  // （EEW は 1 日に数十件届き、画面は長く開かれたままになる）。`activeEEWs` から消えたものを
+  // 落とすだけなので、判定に要る間は残る。
+  useEffect(() => {
+    const ledger = acceptedEewSerialRef.current
+    if (ledger.size === 0) return
+    for (const key of [...ledger.keys()]) {
+      if (!state.activeEEWs.has(key)) ledger.delete(key)
+    }
+  }, [state.activeEEWs])
 
   // キューディスパッチャー: 10ms ごとに eventTime <= 現在時刻のエントリを処理する
   useEffect(() => {
@@ -1033,7 +1115,9 @@ export function useEarthquakes(
       if (event.kind === 'eew') {
         if (event.test) return
         const eew = event as EEWAlert
-        const key = eew.issue?.eventId ?? eew.id
+        // この key はそのまま台帳（`acceptedEewSerialRef`）のキーになる。式を書き写すと
+        // 導出が変わったときに片方だけ追従し、台帳と状態のキーが割れる。
+        const key = eewEventKey(eew)
         if (event.cancelled) {
           // Yahoo が検出する前に誤報取消された場合は hypoInfo 消滅イベントが来ない。
           // activeEEWs に残っていれば解除処理を通す。
@@ -1238,6 +1322,9 @@ export function useEarthquakes(
   }, [])
 
   const resetState = useCallback(() => {
+    // 台帳もここで空にする。掃除の `useEffect` に任せると、リセットから次のコミットまでの間に
+    // 同じ eventId の報が届いたとき、消えたはずの報番号と比べて誤って捨てうる。
+    acceptedEewSerialRef.current.clear()
     setState(prev => ({
       ...prev,
       earthquakes: [],
