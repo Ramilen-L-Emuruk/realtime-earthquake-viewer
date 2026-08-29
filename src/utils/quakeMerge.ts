@@ -1,12 +1,21 @@
-import type { JMAQuake } from '../types/earthquake'
+import type { JMAQuake, IssueType } from '../types/earthquake'
 import { log } from './logger'
 
-// 地震情報の優先度（高いほど優先）。live/履歴/P2P の全経路で共有する単一の情報源。
-// 注: incoming が VXSE61 のときは優先度比較に載らない（VXSE61 は常に「震源だけ更新・震度は保持」の
-// 専用分岐 A を通るため）。ただし existing 側が VXSE61（＝既にマージ済みで震度を保持している完成カード）
-// の場合は、分岐 B の据え置き判定でこの 5 が「低優先度の後続電文から完成カードを守るガード」として
-// 実際に使われる。P2P 経路の重複排除でも参照するため、この値は削除しないこと。
-export const QUAKE_ISSUE_PRIORITY: Record<string, number> = {
+// 地震情報の種別優先度（高いほど詳しい）。
+//
+// **`mergeQuakeInto` の据え置き判定のうち、incoming が震度データを持たない電文（震源情報等）の
+// ときにだけ使う。** incoming が震度速報・各地の震度のように実震度を持つ電文なら、この表ではなく
+// 発表時刻（time）で判定する（理由は据え置き判定のコメント）。
+//
+// この表だけで全種別の据え置きを判定していた旧実装には穴があった。震度速報を複数回発表する
+// ケース（能登 2024/1/1 16:06〜16:08 の実データで確認）で、間に震度を持たない震源情報が挟まると、
+// 既存カードの issue.type が「震源情報」に変わる。そこへ震度速報の続報（実震度を持つ）が来ても
+// 優先度だけで判定すると「優先度が低い」という理由で無視され、新しく増えた区域（新潟県佐渡等）が
+// 地図・カードに反映されなくなっていた。
+// IssueType でキー付けする（string ではなく）ことで、将来 IssueType に種別が増えたときに
+// この表への追加漏れをコンパイルエラーで検出できる。漏れたまま実行時 `?? 0` に頼ると、
+// 新種別が無警告で最低優先度（'その他' 相当）として扱われてしまう。
+export const QUAKE_ISSUE_PRIORITY: Record<IssueType, number> = {
   '顕著な地震の震源要素更新のお知らせ': 5,
   '各地の震度情報': 4,
   '震源・震度情報': 3,
@@ -210,15 +219,67 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
   // --- B. incoming が通常電文 ---
   if (!existing) return { ...incoming, eventKey }
 
-  // 据え置き判定: 既存が実震度を持ち・未取消・より高優先度なら更新しない。
+  // 据え置き判定: 既存が実震度を持ち・未取消のとき、incoming を無視するかどうかを判定する。
   // hasIntensity を条件に含めることで、VXSE61 単独カードや震度欠落カードは
-  // 実震度を持つ電文で必ず上書きできる（'顕著…':5 が震度電文を弾く罠を封じる）。
-  if (
-    !existing.cancelledAt
-    && hasIntensity(existing)
-    && (QUAKE_ISSUE_PRIORITY[existing.issue.type] ?? 0) > (QUAKE_ISSUE_PRIORITY[incoming.issue.type] ?? 0)
-  ) {
-    return existing
+  // 実震度を持つ電文で必ず上書きできる。
+  //
+  // **既存が VXSE61 とマージ済みの完成カードなら、時刻を問わず絶対的に据え置く。**
+  // VXSE61 は「震源要素が確定した」という強い意味を持つ電文で、その後に届く通常電文
+  // （震度速報の再送等）で覆されるべきではない。
+  //
+  // **それ以外は、incoming が震度データを持つかどうかで判定軸を変える。**
+  //
+  // - **incoming が実震度を持つ（震度速報・震源・震度情報・各地の震度）**: 発表時刻（time）で
+  //   判定する。issue.type の優先度は見ない。旧実装は種別優先度だけで判定しており、震度速報を
+  //   複数回発表するケース（能登 2024/1/1 16:06〜16:08 の実データで確認）で、間に震度を持たない
+  //   震源情報が挟まって既存カードの issue.type が「震源情報」（震度速報より高優先度）に変わると、
+  //   時系列的には後から届いた正しい震度速報の続報が「優先度が低い」という理由だけで無視され、
+  //   新しく増えた区域（新潟県佐渡等）が地図・カードに反映されなくなっていた。
+  //   **同じ発表時刻（time）の続報は常に受け入れる。** `time`（気象庁電文の ReportDateTime）は
+  //   分単位までしか精度が無く、同じ分に複数報が発表されることが普通にある（上の実データでも
+  //   震源情報と震度速報の続報が同じ分に発表されていた）。`mergeQuakeInto` が時系列順に逐次
+  //   呼ばれる前提（ライブ経路は受信順、`mergeQuakeHistory` は time でソート済み）に乗り、
+  //   後から呼ばれた incoming を信じる。
+  // - **incoming が震度データを持たない（震源情報等。この分岐に来た時点で existing は
+  //   上の if 条件により必ず実震度を持つ）**: issue.type の優先度で判定する。震度を持たない
+  //   電文では time の精度（分単位）で新旧を確定できないうえ、時刻だけで判定すると、詳しい
+  //   情報（例: 震源・震度情報）を持つ既存カードが、粗い情報（震源情報）で種別ラベルだけ
+  //   後退してしまう（`coalesceByEventId` が暫定 ID のカードを畳むときに起きる）。
+  //
+  // **time が欠けている電文は「古い」とみなして据え置く。** 空文字列どうしの比較は
+  // 常に false（`'' < ''` は false）になり据え置かれないため、明示的に弾く必要がある。
+  // 気象庁電文はパーサーが time を必ず埋める前提だが、欠けたまま届いた場合に無警告で
+  // 上書きを許すより、安全側（据え置き）に倒して記録を残す。
+  //
+  // **time の比較は文字列の辞書順（`Date` を経由しない）。** これが時系列順と一致するのは
+  // existing/incoming が同じ書式・同じタイムゾーンオフセットで揃っているときだけ。DMDATA
+  // 経路（dmdataParser.ts）は ISO 8601 + 固定オフセット（例: `+09:00`）、P2PQuake 経路
+  // （p2pquake.ts）はスラッシュ区切りでオフセット無し（例: `2026/01/02 15:04:05`）と書式が
+  // 異なる。今のところ実害が無いのは、standard 版は P2PQuake のみ・DMDSS 版は DMDATA のみと
+  // ビルドバリアントごとにデータソースが単一だから（`CLAUDE.md`）。両方を1つの mergeQuakeInto
+  // 呼び出し系列に混ぜる変更をするなら、先に time を `Date` ベースの比較に置き換えること。
+  if (!existing.cancelledAt && hasIntensity(existing)) {
+    if (existing.issue.type === AMENDMENT_TYPE) return existing
+    if (!incoming.time) {
+      log.warn('[quake] 発表時刻が空の電文を受信（据え置く）', { incomingId: incoming.id, incomingType: incoming.issue.type })
+      return existing
+    }
+    if (hasIntensity(incoming)) {
+      if (incoming.time < existing.time) return existing
+      // **時刻では受け入れるが、種別優先度としては据え置き相当（既存の方が詳しい）だった場合は
+      // 記録を残す。** sameQuakeEntry は eventId が無い経路（P2PQuake）や暫定 ID の再採番で
+      // 別の地震を同一と誤認識しうる（同関数の限界の節を参照）。誤認識が起きると、無関係な
+      // 電文がここを通って正しいカードを無警告で上書きする。ログが無いと「地震カードの内容が
+      // 急に後退した」ときに原因を辿れない。
+      if ((QUAKE_ISSUE_PRIORITY[existing.issue.type] ?? 0) > (QUAKE_ISSUE_PRIORITY[incoming.issue.type] ?? 0)) {
+        log.info('[quake] 種別優先度は据え置き相当だが、発表時刻が新しいため受け入れた', {
+          eventKey, existingType: existing.issue.type, incomingType: incoming.issue.type,
+          existingTime: existing.time, incomingTime: incoming.time,
+        })
+      }
+    } else if ((QUAKE_ISSUE_PRIORITY[existing.issue.type] ?? 0) > (QUAKE_ISSUE_PRIORITY[incoming.issue.type] ?? 0)) {
+      return existing
+    }
   }
 
   let result: JMAQuake = { ...incoming, eventKey }
@@ -322,10 +383,21 @@ export function coalesceByEventId(cards: JMAQuake[]): JMAQuake[] {
 // 同一イベントの判定は sameQuakeEntry に一本化している（Map のキー方式では、震源名を見る
 // 判定や「震度速報は震源名が空」の扱いを表現できないため）。件数は履歴数十〜数百件なので
 // 線形探索で足りる。
+//
+// **既知の限界: 同じ分（time の精度限界）に複数種別の電文が混在する場合、newQuakes の
+// 入力順序がそのまま結果に効く。** ソートは安定ソート（Array.prototype.sort、ES2019 以降で
+// 仕様保証）なので、time が同値の要素は入力配列上の相対順序を保つ。mergeQuakeInto の
+// 据え置き判定は「incoming が実震度を持つ電文どうし」では issue.type の優先度を見ず time
+// だけで判定するため、同じ分に詳しい電文（各地の震度情報等）と粗い電文（震度速報の再送等）が
+// 両方含まれる場合、**入力配列で詳しい方が先・粗い方が後だと、粗い方が詳しい方を上書きする**
+// （敵対的レビューで指摘・確認済み）。呼び出し側（`fetchDmdataEarthquakes`）が
+// 「速報→詳細」（VXSE51→52→53→61）の順に結合することで、通常の発表順に沿う限り
+// この逆転は起きない設計にしている。呼び出し側で結合順序を変える場合はこの前提を崩さないこと。
 export function mergeQuakeHistory(newQuakes: JMAQuake[], base: JMAQuake[] = []): JMAQuake[] {
   const merged: JMAQuake[] = [...base]
 
-  // 電文の発表時刻昇順で適用する（＝到着順の再現）。
+  // 電文の発表時刻昇順で適用する（＝到着順の再現）。同時刻の相対順序は呼び出し側の
+  // 入力順序に委ねる（上の「既知の限界」参照）。
   const ordered = [...newQuakes].sort((a, b) =>
     new Date(a.time).getTime() - new Date(b.time).getTime()
   )
