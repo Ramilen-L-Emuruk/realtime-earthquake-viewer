@@ -116,6 +116,10 @@ function parseEEWRegions(intensity: Record<string, unknown>): EEWRegion[] {
 
 // EEW (VXSE42: 配信テスト, VXSE43: 警報, VXSE44: 予報(廃止予定), VXSE45: 地震動予報)
 // data は WebSocket body を復号・JSON.parse した後のオブジェクト（トップレベル電文）
+//
+// アプリが実際に取り込むのは VXSE45 だけ（種別の絞り込みは呼び出し側の EEW_TYPES が持つ。
+// 理由は services/dmdataTelegramPayload.ts）。ここは種別を問わず電文どおりに解釈する
+// ——絞り込みと解釈は層が違うため、渡された種別は正しく読む。
 export function parseEEW(headType: string, data: Record<string, unknown>): EEWAlert | null {
   const body = obj(data.body)
   const earthquake = obj(body.earthquake)
@@ -159,6 +163,7 @@ export function parseEEW(headType: string, data: Record<string, unknown>): EEWAl
         magnitude: parseNum(obj(earthquake.magnitude).value),
       },
     },
+    // VXSE43 は常に警報。VXSE45 は body.isWarning で警報級が立つ（実測では VXSE43 と同時か先）。
     severity: (headType === 'VXSE43' || body.isWarning === true) ? 'Warning' : 'Forecast',
     cancelled: isCanceled,
     isFinal: body.isLastInfo === true,

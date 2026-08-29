@@ -19,7 +19,7 @@
 
 ```
 [電文経路]
-  DMDATA WebSocket / REST 履歴 (VXSE43/44/45) ──┐
+  DMDATA WebSocket / REST 履歴 (VXSE45)  ───────┐
   P2PQuake WebSocket (code=556)  ────────────────┴── enqueueEvent（eventQueue へ時刻順に積む）
   Yahoo hypoInfo（1Hz ポーリング・standard 版のみ）── handleEvent を直接呼ぶ（キュー非経由）
                                                             │
@@ -82,18 +82,20 @@ enriched オブジェクトを渡して `useLiveEventHandler` 側の音・通知
 
 ### 電文の名称と表示・読み上げ
 
-DMDATA 経路で受けるのは次の 2 種類。
+DMDATA 経路で受けるのは 1 種類だけ。
 
 | 電文種別 | `Control/Title` | 備考 |
 |---|---|---|
-| VXSE43 | 緊急地震速報（警報） | 常に警報 |
 | VXSE45 | 緊急地震速報（地震動予報） | 長周期地震動階級を含む（[DMDATA の電文一覧](https://dmdata.jp/docs/telegrams/ew09040/)）。**警報に該当するかは電文内の `isWarning` が示す**ため、VXSE45 でも警報相当になりうる |
 
-旧形式の VXSE44 を扱わない理由は [`data-sources-spec.md`](data-sources-spec.md) の受信する電文種別を参照。
+VXSE43（警報）と旧形式の VXSE44（予報）を扱わない理由は [`data-sources-spec.md`](data-sources-spec.md)
+§2「EEW は VXSE45 だけを受ける」を参照。
 
 > **区分を決めているのは severity（`computeSingleEEWLevel`）で、電文種別ではない。**
 > `severity` は `headType === 'VXSE43' || body.isWarning === true` から導く（`dmdataParser.ts`）。
-> 「電文種別＝区分」と読み替えると、`isWarning` が立った VXSE45 を予報級と誤って扱うことになる。
+> VXSE43 は受信しないため実際に立つのは後者だけだが、パーサは渡された種別を電文どおりに解釈する
+> （種別の絞り込みは呼び出し側の責務）。「電文種別＝区分」と読み替えると、`isWarning` が立った
+> VXSE45 を予報級と誤って扱うことになる。
 
 **呼び方は電文の名称から借りる。** 予報級を「地震動予報」と呼ぶのは、その内容を運ぶ VXSE45 の名称が
 「緊急地震速報（地震動予報）」だから。予報級を「緊急地震速報（〜）」の器に入れると
@@ -138,7 +140,7 @@ DMDATA 経路で受けるのは次の 2 種類。
   値の決まり方は下記のフォールバック規則を参照）
 - `eewMaxLpgmClass(eew) >= 4`（長周期地震動階級 4 以上）
 
-気象庁の実基準に合わせた OR 条件。長周期地震動階級は DMDATA 電文（VXSE43/44/45）にのみ載るため、
+気象庁の実基準に合わせた OR 条件。長周期地震動階級は DMDATA 電文（VXSE45）にのみ載るため、
 standard 版では `eewMaxLpgmClass` が常に 0 になり震度のみでレベルが決まる。
 
 > **「特別警報」は表示に使い、読み上げには使わない。** 位置づけ自体は公式で、気象庁は震度 6 弱以上
@@ -444,3 +446,7 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
   [`data-sources-spec.md`](data-sources-spec.md) §8）。あわせて区域への S 波到達推定の震源から
   仮定震源要素を除外した（§5）。仮定値の M・深さで走時を解いていたため、根拠のない到達秒数が
   出ていた
+- 2026-08-29: DMDATA 経路で受ける EEW を VXSE45 の 1 種類に絞った（§3）。VXSE43（警報）は VXSE45 の
+  警報報と同内容の複製が遅れて届き、`eventId` で束ねた EEW を古い内容で上書きしていた。区分の判定は
+  従来どおり `severity` が担うため表示・音・読み上げは変わらない（詳細は
+  [`data-sources-spec.md`](data-sources-spec.md) §2「EEW は VXSE45 だけを受ける」）
