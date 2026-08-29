@@ -7,49 +7,192 @@ import { calcShakingDurationSec } from '../../utils/eew'
 import { addOrderedLayer } from './gl/layerOrder'
 import { log } from '../../utils/logger'
 
-// 緊急地震速報の予報円（S波=塗りつぶし＋後端フェード / P波=破線外周）を描画する MapLibre 版
-// （Leaflet 版 PsWaveLayer 相当）。円弧・グラデーションは Canvas2D で描く方が素直なため、
-// 素の <canvas> にこれまで通り 2D で描画したうえで、MapLibre の CustomLayerInterface として
-// GL レイヤースタックに登録し、毎フレームその canvas を WebGL テクスチャとして全画面クアッドに
-// 貼り付ける。DOM の上に直接 <canvas> を重ねる方式（旧実装）だと GL キャンバス全体より必ず
-// 前面に出てしまい、観測点ドットやラベル文字より前に予報円が乗ってしまうため、
-// MAP_LAYER_ORDER の pswave スロット（tsunami-lines より前面・観測点よりは背面）へ
-// 正しく差し込めるこの方式に変更した。
+// 緊急地震速報の予報円（S波=塗りつぶし＋後端フェード / P波=破線外周）を描画する MapLibre 版。
+//
+// **円は地面に貼り付く。** 単位円のグリッド（角度 × 正規化半径）を静的な頂点バッファに持ち、
+// 頂点シェーダーで「その方位へ r×半径 km 進んだ地点」の Mercator 座標を求めてから MapLibre の
+// 行列を掛ける。半径は毎フレーム変わるが uniform で渡すだけなので、バッファは作り直さない。
+//
+// この方式にしている理由は、地図が傾き・回転できるため（docs/spec/map-rendering-spec.md §6）。
+// 画面座標で半径を測って真円を描く方式（旧実装）だと、回転で cos(bearing) 倍に縮み（90 度で
+// 消える）、傾ければ地面の円と画面の円が一致しなくなる。頂点を地理座標で置けば、傾きも回転も
+// MapLibre の行列が面倒を見る。
+//
+// 描画順は MAP_LAYER_ORDER の pswave スロット（tsunami-lines より前面・観測点よりは背面）。
 
 // 後端フェード（揺れ継続時間を過ぎた領域）の幅パラメータ（Leaflet 版と一致）。
 const TRAILING_EDGE_FADE_RATIO = 0.2
 const TRAILING_EDGE_FADE_MIN_KM = 15
 const LYR = 'pswave'
 
-const VERT_SRC = `
-attribute vec2 aPos;
-varying vec2 vUv;
+// 単位円グリッドの分割数。
+// 角度方向は円の滑らかさ、半径方向は測地変換の非線形性（頂点間は線形補間される）を吸収する。
+const RING_SEGMENTS = 128
+const RADIAL_SEGMENTS = 8
+
+// 縁の太さ（CSS px）。Canvas2D 版の lineWidth と揃える。
+// **シェーダーへ渡すときは devicePixelRatio を掛ける。** フラグメントシェーダーの `fwidth` は
+// フレームバッファの物理ピクセル単位で動くため、そのまま渡すと Hi-DPI 端末で 1/dpr の細さになる
+// （旧実装は Canvas2D 側で setTransform(dpr, ...) して吸収していた）。gl/subThresholdLayer.ts と同じ規約。
+const STROKE_PX = 2
+// P 波の破線の 1 周期あたりの画面長（px）。Canvas2D 版の setLineDash([4,4]) と揃える。
+const DASH_PERIOD_PX = 8
+
+const S_FILL: readonly [number, number, number] = [255 / 255, 60 / 255, 0]
+const S_FILL_ALPHA = 0.12
+const S_STROKE: readonly [number, number, number] = [255 / 255, 60 / 255, 0]
+const P_STROKE: readonly [number, number, number] = [56 / 255, 189 / 255, 248 / 255]
+
+const VERT_SRC = `#version 300 es
+precision highp float;
+// x = 角度（0〜1 が一周） / y = 正規化半径（0〜1）
+in vec2 a_ring;
+uniform mat4 u_matrix;
+uniform vec2 u_center;     // 震央 (経度, 緯度) 度
+uniform float u_radiusKm;  // この描画での外周半径
+out float v_r;
+out float v_theta;
+
+const float PI = 3.141592653589793;
+// 緯度 1 度あたりの距離（km）。旧実装の 111320m/度 と揃える。
+const float KM_PER_DEG_LAT = 111.32;
+
+// MapLibre の MercatorCoordinate と同じ式（geo/mercator_coordinate.ts）。
+vec2 mercator(vec2 lngLat) {
+  float x = (180.0 + lngLat.x) / 360.0;
+  float y = (180.0 - (180.0 / PI) * log(tan(PI / 4.0 + lngLat.y * PI / 360.0))) / 360.0;
+  return vec2(x, y);
+}
+
 void main() {
-  vUv = (aPos + 1.0) * 0.5;
-  gl_Position = vec4(aPos, 0.0, 1.0);
+  float theta = a_ring.x * 2.0 * PI;
+  float km = a_ring.y * u_radiusKm;
+  // 経度方向の 1 度は緯度で縮む。旧実装と同じく**震央の緯度**で割る（円の内部で cos を変えると
+  // 大きな円が歪むが、旧実装の見た目を保つことを優先する）。
+  float dLat = (km * cos(theta)) / KM_PER_DEG_LAT;
+  float dLng = (km * sin(theta)) / (KM_PER_DEG_LAT * cos(radians(u_center.y)));
+  v_r = a_ring.y;
+  v_theta = a_ring.x;
+  gl_Position = u_matrix * vec4(mercator(u_center + vec2(dLng, dLat)), 0.0, 1.0);
 }`
 
-const FRAG_SRC = `
-precision mediump float;
-varying vec2 vUv;
-uniform sampler2D uTex;
+const FRAG_SRC = `#version 300 es
+precision highp float;
+in float v_r;
+in float v_theta;
+uniform vec4 u_fill;       // 塗り色（rgb, a）。a=0 なら塗らない
+uniform vec4 u_stroke;     // 縁の色（rgb, a）
+uniform float u_innerR;    // 後端フェードの開始（正規化半径）
+uniform float u_fadeOuterR;// 後端フェードの終端（正規化半径）
+uniform float u_strokePx;  // 縁の太さ（px）
+uniform float u_dashCount; // 破線の周期数（0 なら実線）
+uniform float u_opacity;   // 全体の不透明度
+out vec4 fragColor;
+
 void main() {
-  gl_FragColor = texture2D(uTex, vUv);
+  // v_r の画面上の勾配。1px あたり v_r がどれだけ変わるかを表すので、px 指定の太さを
+  // v_r 空間へ持ち込める。傾けて奥ほど密になっても、縁の太さは画面上で一定に保たれる。
+  float grad = fwidth(v_r);
+
+  // 塗り: 内円までは透明、そこからフェード終端まで線形に立ち上げ、以降は一定。
+  float fill = 0.0;
+  if (u_fill.a > 0.0) {
+    float band = max(u_fadeOuterR - u_innerR, 1e-5);
+    fill = clamp((v_r - u_innerR) / band, 0.0, 1.0);
+    // 外周の外側は塗らない（縁の分だけアンチエイリアスを掛ける）。
+    fill *= 1.0 - smoothstep(1.0 - grad, 1.0 + grad, v_r);
+    fill *= u_fill.a;
+  }
+
+  // 縁: v_r = 1 の等値線を px 幅の帯として描く。
+  float halfPx = u_strokePx * grad * 0.5;
+  float edge = 1.0 - smoothstep(0.0, halfPx + grad, abs(v_r - 1.0));
+  if (u_dashCount > 0.0) {
+    // 破線は角度方向の周期で切る。1 周期の半分を描いて半分を空ける。
+    edge *= step(fract(v_theta * u_dashCount), 0.5);
+  }
+  edge *= u_stroke.a;
+
+  // 縁を塗りの上に載せる。edge は縁の被覆率（0〜1）なので、そのまま混色の係数に使う。
+  // **塗りの量（fill）を係数へ混ぜないこと。** 分母に入れると over 合成としても正しくならず、
+  // 塗り色と縁色を別々にした瞬間に境界へ中間色が滲む（いまは同色なので見えないだけ）。
+  vec3 rgb = mix(u_fill.rgb, u_stroke.rgb, edge);
+  float a = (fill * (1.0 - edge) + edge) * u_opacity;
+  if (a <= 0.0) discard;
+  fragColor = vec4(rgb * a, a); // premultiplied
 }`
 
-function compileShader(gl: WebGLRenderingContext, type: number, src: string): WebGLShader {
+function compileShader(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
   const shader = gl.createShader(type) as WebGLShader
   gl.shaderSource(shader, src)
   gl.compileShader(shader)
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    log.error('[PsWaveGL] shader compile failed', gl.getShaderInfoLog(shader))
+  }
   return shader
 }
 
-function buildProgram(gl: WebGLRenderingContext): WebGLProgram {
+/**
+ * プログラムを作る。**リンクに失敗したら null を返す。**
+ *
+ * 失敗したプログラムをそのまま返してはならない。WebGL は「リンクされていないプログラムへの
+ * `useProgram`」で例外を投げず、**直前にバインドされていた別レイヤーのシェーダーが残ったまま**
+ * `drawElements` まで走る。uniform の設定先も null になり（リンク失敗時の `getUniformLocation` は
+ * null を返す）、その設定自体も黙って無視される。結果は「予報円が出ない」か「他のレイヤーが乱れる」で、
+ * ログには `onAdd` 時の一行しか残らない。
+ *
+ * 実際にこの実装中、GLSL の予約語（`half`）を変数名に使ってコンパイルが落ち、円が一切描かれない
+ * 状態になった。**シェーダーは型チェックもテストも通り抜ける**ので、気づけるのはこのログだけ。
+ */
+function buildProgram(gl: WebGL2RenderingContext): WebGLProgram | null {
+  const vs = compileShader(gl, gl.VERTEX_SHADER, VERT_SRC)
+  const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAG_SRC)
   const program = gl.createProgram() as WebGLProgram
-  gl.attachShader(program, compileShader(gl, gl.VERTEX_SHADER, VERT_SRC))
-  gl.attachShader(program, compileShader(gl, gl.FRAGMENT_SHADER, FRAG_SRC))
+  gl.attachShader(program, vs)
+  gl.attachShader(program, fs)
   gl.linkProgram(program)
+  // リンク後はプログラムが参照を保持するので、シェーダー自体は落としてよい。
+  gl.deleteShader(vs)
+  gl.deleteShader(fs)
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    log.error('[PsWaveGL] program link failed', gl.getProgramInfoLog(program))
+    gl.deleteProgram(program)
+    return null
+  }
   return program
+}
+
+/**
+ * 単位円のグリッド（角度 × 正規化半径）を作る。半径が変わっても作り直さない静的バッファ。
+ *
+ * 頂点は (角度 0〜1, 正規化半径 0〜1)。中心（r=0）は角度の数だけ重複するが、頂点数が
+ * 千点規模なので潰さずそのまま持つ（インデックスの組み立てが単純になる）。
+ */
+function buildRingMesh(): { verts: Float32Array; indices: Uint16Array } {
+  const cols = RING_SEGMENTS + 1
+  const rows = RADIAL_SEGMENTS + 1
+  const verts = new Float32Array(cols * rows * 2)
+  let p = 0
+  for (let j = 0; j < rows; j++) {
+    const r = j / RADIAL_SEGMENTS
+    for (let i = 0; i < cols; i++) {
+      verts[p++] = i / RING_SEGMENTS
+      verts[p++] = r
+    }
+  }
+  const indices = new Uint16Array(RING_SEGMENTS * RADIAL_SEGMENTS * 6)
+  let q = 0
+  for (let j = 0; j < RADIAL_SEGMENTS; j++) {
+    for (let i = 0; i < RING_SEGMENTS; i++) {
+      const a = j * cols + i
+      const b = a + 1
+      const c = a + cols
+      const d = c + 1
+      indices[q++] = a; indices[q++] = c; indices[q++] = b
+      indices[q++] = b; indices[q++] = c; indices[q++] = d
+    }
+  }
+  return { verts, indices }
 }
 
 interface Props {
@@ -69,138 +212,123 @@ export function PsWaveGL({ psWave, fullOpacity }: Props) {
   useEffect(() => {
     if (!map) return
 
-    // 予報円そのものは DOM に置かず、GL テクスチャの供給源としてのみ使う。
-    const canvas2d = document.createElement('canvas')
-    const ctx2d = canvas2d.getContext('2d') as CanvasRenderingContext2D
-
-    const draw2d = () => {
-      const container = map.getContainer()
-      const w = container.clientWidth
-      const h = container.clientHeight
-      if (w === 0 || h === 0) return
-      const dpr = window.devicePixelRatio || 1
-      if (canvas2d.width !== w * dpr || canvas2d.height !== h * dpr) {
-        canvas2d.width = w * dpr
-        canvas2d.height = h * dpr
-      }
-      ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0)
-      ctx2d.clearRect(0, 0, w, h)
-      ctx2d.globalAlpha = fullOpacityRef.current ? 1 : 0.4
-
-      for (const c of psWaveRef.current) {
-        const center = map.project([c.lng, c.lat])
-        // 東方向（同一緯度）で km→px 変換（北方向だと Mercator のスケール係数が緯度で変動するため）。
-        const cosLat = Math.cos((c.lat * Math.PI) / 180)
-
-        if (c.sRadius > 0) {
-          const durationSec = calcShakingDurationSec(c.magnitude, c.sRadius)
-          // PsWaveCircle.depth は number 必須（usePsWaveCalc.ts で Math.max(0, hypocenter.depth ?? 0)
-          // で 0 埋め）のため、以前あった undefined フォールバックはデッドコードだった。
-          const tNow = computeSWaveTravelTimeSec(c.sRadius, c.depth)
-          const tTrailing = tNow - durationSec
-          const sInnerRadiusKm = tTrailing > 0 ? computeSWaveRadiusAtTime(tTrailing, c.depth) : 0
-
-          const lonOffsetS = (c.sRadius * 1000) / (111320 * cosLat)
-          const edgeS = map.project([c.lng + lonOffsetS, c.lat])
-          const sPx = Math.abs(edgeS.x - center.x)
-
-          ctx2d.setLineDash([])
-          ctx2d.strokeStyle = '#ff3c00'
-          ctx2d.lineWidth = 2
-
-          if (sInnerRadiusKm > 0 && sInnerRadiusKm < c.sRadius) {
-            const lonOffsetInner = (sInnerRadiusKm * 1000) / (111320 * cosLat)
-            const edgeInner = map.project([c.lng + lonOffsetInner, c.lat])
-            const innerPx = Math.abs(edgeInner.x - center.x)
-            const fadeWidthKm = Math.max(TRAILING_EDGE_FADE_MIN_KM, c.sRadius * TRAILING_EDGE_FADE_RATIO)
-            const lonOffsetFadeOuter = ((sInnerRadiusKm + fadeWidthKm) * 1000) / (111320 * cosLat)
-            const edgeFadeOuter = map.project([c.lng + lonOffsetFadeOuter, c.lat])
-            const fadeOuterPx = Math.min(Math.abs(edgeFadeOuter.x - center.x), sPx)
-            const gradient = ctx2d.createRadialGradient(center.x, center.y, innerPx, center.x, center.y, fadeOuterPx)
-            gradient.addColorStop(0, 'rgba(255, 60, 0, 0)')
-            gradient.addColorStop(1, 'rgba(255, 60, 0, 0.12)')
-            ctx2d.fillStyle = gradient
-          } else {
-            ctx2d.fillStyle = 'rgba(255, 60, 0, 0.12)'
-          }
-
-          ctx2d.beginPath()
-          ctx2d.arc(center.x, center.y, sPx, 0, Math.PI * 2)
-          ctx2d.fill()
-          ctx2d.stroke()
-        }
-
-        if (c.pRadius > 0) {
-          const lonOffsetP = (c.pRadius * 1000) / (111320 * cosLat)
-          const edgeP = map.project([c.lng + lonOffsetP, c.lat])
-          const pPx = Math.abs(edgeP.x - center.x)
-          ctx2d.setLineDash([4, 4])
-          ctx2d.strokeStyle = '#38bdf8'
-          ctx2d.lineWidth = 2
-          ctx2d.beginPath()
-          ctx2d.arc(center.x, center.y, pPx, 0, Math.PI * 2)
-          ctx2d.stroke()
-        }
-      }
-    }
-
     let program: WebGLProgram | null = null
-    let posBuffer: WebGLBuffer | null = null
-    let texture: WebGLTexture | null = null
-    let uTexLoc: WebGLUniformLocation | null = null
-    let aPosLoc = -1
+    let vao: WebGLVertexArrayObject | null = null
+    let vbo: WebGLBuffer | null = null
+    let ibo: WebGLBuffer | null = null
+    let indexCount = 0
+    const u: Record<string, WebGLUniformLocation | null> = {}
+
+    /**
+     * 破線の周期数。画面上の 1 周期を DASH_PERIOD_PX に近づけるため、円周の画面長から求める。
+     *
+     * 傾けると円周上の px 密度は場所によって変わるので、**震央から東へ半径ぶん進んだ点**で
+     * 代表させる（旧実装が半径 px を測っていたのと同じ点）。厳密な等長にはならないが、
+     * 破線の見た目を保つには足りる。
+     */
+    const dashCountFor = (lng: number, lat: number, radiusKm: number): number => {
+      const cosLat = Math.cos((lat * Math.PI) / 180)
+      const center = map.project([lng, lat])
+      const edge = map.project([lng + (radiusKm * 1000) / (111320 * cosLat), lat])
+      const rPx = Math.hypot(edge.x - center.x, edge.y - center.y)
+      return Math.max(4, Math.round((2 * Math.PI * rPx) / DASH_PERIOD_PX))
+    }
 
     const customLayer: CustomLayerInterface = {
       id: LYR,
       type: 'custom',
       renderingMode: '2d',
-      onAdd(_m, gl) {
+      onAdd(_m, gl2) {
+        const gl = gl2 as WebGL2RenderingContext
         program = buildProgram(gl)
-        aPosLoc = gl.getAttribLocation(program, 'aPos')
-        uTexLoc = gl.getUniformLocation(program, 'uTex')
-        posBuffer = gl.createBuffer()
-        gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer)
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW)
-        texture = gl.createTexture()
-        gl.bindTexture(gl.TEXTURE_2D, texture)
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+        // リンクに失敗したら描画資源を作らない。render 側の `if (!program || !vao)` がここで効く。
+        if (!program) return
+        for (const name of [
+          'u_matrix', 'u_center', 'u_radiusKm', 'u_fill', 'u_stroke',
+          'u_innerR', 'u_fadeOuterR', 'u_strokePx', 'u_dashCount', 'u_opacity',
+        ]) {
+          u[name] = gl.getUniformLocation(program, name)
+        }
+        const { verts, indices } = buildRingMesh()
+        indexCount = indices.length
+        vao = gl.createVertexArray()
+        gl.bindVertexArray(vao)
+        vbo = gl.createBuffer()
+        gl.bindBuffer(gl.ARRAY_BUFFER, vbo)
+        gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW)
+        const loc = gl.getAttribLocation(program, 'a_ring')
+        gl.enableVertexAttribArray(loc)
+        gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0)
+        ibo = gl.createBuffer()
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo)
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW)
+        gl.bindVertexArray(null)
       },
-      render(gl) {
-        if (!program || !texture || !posBuffer) return
-        draw2d()
-        if (canvas2d.width === 0 || canvas2d.height === 0) return
+      render(gl2, args) {
+        const gl = gl2 as WebGL2RenderingContext
+        if (!program || !vao) return
+        const circles = psWaveRef.current
+        if (circles.length === 0) return
 
         gl.useProgram(program)
+        gl.bindVertexArray(vao)
         gl.enable(gl.BLEND)
-        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
+        // premultiplied alpha（フラグメントで rgb に a を掛けている）。
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+        gl.uniformMatrix4fv(u.u_matrix, false, args.defaultProjectionData.mainMatrix)
+        const dpr = window.devicePixelRatio || 1
+        gl.uniform1f(u.u_strokePx, STROKE_PX * dpr)
+        const opacity = fullOpacityRef.current ? 1 : 0.4
+        gl.uniform1f(u.u_opacity, opacity)
 
-        gl.activeTexture(gl.TEXTURE0)
-        gl.bindTexture(gl.TEXTURE_2D, texture)
-        // キャンバス上端（行0）を画面上端に正しく合わせる（既定は下端基準のため反転させる）。
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true)
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas2d)
-        gl.uniform1i(uTexLoc, 0)
+        for (const c of circles) {
+          gl.uniform2f(u.u_center, c.lng, c.lat)
 
-        gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer)
-        gl.enableVertexAttribArray(aPosLoc)
-        gl.vertexAttribPointer(aPosLoc, 2, gl.FLOAT, false, 0, 0)
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
-        gl.disableVertexAttribArray(aPosLoc)
+          if (c.sRadius > 0) {
+            const durationSec = calcShakingDurationSec(c.magnitude, c.sRadius)
+            const tNow = computeSWaveTravelTimeSec(c.sRadius, c.depth)
+            const tTrailing = tNow - durationSec
+            const sInnerKm = tTrailing > 0 ? computeSWaveRadiusAtTime(tTrailing, c.depth) : 0
+            const fadeWidthKm = Math.max(TRAILING_EDGE_FADE_MIN_KM, c.sRadius * TRAILING_EDGE_FADE_RATIO)
+            const innerR = sInnerKm > 0 && sInnerKm < c.sRadius ? sInnerKm / c.sRadius : 0
+            const fadeOuterR = innerR > 0 ? Math.min((sInnerKm + fadeWidthKm) / c.sRadius, 1) : 0
+
+            gl.uniform1f(u.u_radiusKm, c.sRadius)
+            gl.uniform4f(u.u_fill, S_FILL[0], S_FILL[1], S_FILL[2], S_FILL_ALPHA)
+            gl.uniform4f(u.u_stroke, S_STROKE[0], S_STROKE[1], S_STROKE[2], 1)
+            gl.uniform1f(u.u_innerR, innerR)
+            gl.uniform1f(u.u_fadeOuterR, fadeOuterR)
+            gl.uniform1f(u.u_dashCount, 0)
+            gl.drawElements(gl.TRIANGLES, indexCount, gl.UNSIGNED_SHORT, 0)
+          }
+
+          if (c.pRadius > 0) {
+            gl.uniform1f(u.u_radiusKm, c.pRadius)
+            gl.uniform4f(u.u_fill, 0, 0, 0, 0)
+            gl.uniform4f(u.u_stroke, P_STROKE[0], P_STROKE[1], P_STROKE[2], 1)
+            gl.uniform1f(u.u_innerR, 0)
+            gl.uniform1f(u.u_fadeOuterR, 0)
+            gl.uniform1f(u.u_dashCount, dashCountFor(c.lng, c.lat, c.pRadius))
+            gl.drawElements(gl.TRIANGLES, indexCount, gl.UNSIGNED_SHORT, 0)
+          }
+        }
+
+        gl.bindVertexArray(null)
         gl.disable(gl.BLEND)
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
       },
-      onRemove(_m, gl) {
+      onRemove(_m, gl2) {
+        const gl = gl2 as WebGL2RenderingContext
         if (program) gl.deleteProgram(program)
-        if (posBuffer) gl.deleteBuffer(posBuffer)
-        if (texture) gl.deleteTexture(texture)
+        if (vbo) gl.deleteBuffer(vbo)
+        if (ibo) gl.deleteBuffer(ibo)
+        if (vao) gl.deleteVertexArray(vao)
         program = null
-        posBuffer = null
-        texture = null
+        vbo = null
+        ibo = null
+        vao = null
       },
     }
+
 
     addOrderedLayer(map, customLayer)
     const requestRepaint = () => map.triggerRepaint()
@@ -210,7 +338,7 @@ export function PsWaveGL({ psWave, fullOpacity }: Props) {
     // MAP-1: WebGL context lost/restored 時に MapLibre は custom layer を復元しない
     // （公式コードが console.warn で明示）ため、restore で手動再追加する。
     // customLayer は同一オブジェクトを再利用し、onAdd の中で新しい gl コンテキストから
-    // program/buffer/texture 参照を作り直す（onAdd は addLayer 内部で再度呼ばれる）。
+    // program/buffer/VAO 参照を作り直す（onAdd は addLayer 内部で再度呼ばれる）。
     //
     // 重要（v6 タイミング設計）: `_contextRestored` は `setStyle(..., {diff:false})` を呼んだ直後、
     // 同じ同期実行内で `webglcontextrestored` を発火する。この時点で新 Style は `_loaded=false` のため、

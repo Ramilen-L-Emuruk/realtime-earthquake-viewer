@@ -210,22 +210,15 @@ export function JapanMapGL({
       center: JAPAN_CENTER,
       zoom: INITIAL_ZOOM,
       attributionControl: false,
-      // 地図の傾き（pitch）と回転（bearing）はどちらも無効化する。3D 地形（terrain）を使っておらず
-      // 傾き・回転で増える情報が無い一方、予報円（PsWaveGL）の半径計算とカメラ自動フィット
-      // （gl/camera.ts）がどちらも「傾き 0・北が上」を前提にしており、動かすと表示が地理的にズレる。
-      // 理由と既知の破綻の詳細は docs/spec/map-rendering-spec.md §6「地図の傾きと回転」。
-      // このオプション群を削る・緩める場合は、先に上記 2 箇所の前提を直すこと。欠けても型チェックも
-      // 単体テストも通ってしまうため、消したことに気づけるのは手動のブラウザ確認だけになる。
+      // 地図の傾き（pitch）と回転（bearing）はユーザー操作から使える。地下の震源分布を立体で
+      // 見せるため。標準ジェスチャがそのまま担うので、操作系のオプションは何も塞がない。
       //
-      // maxPitch: 0 は傾きの最終防波堤（MapLibre は pitch の setter で minPitch〜maxPitch に
-      // クランプするため、ジェスチャを塞ぎ切れない経路が残っても 0 に丸められる）。回転側に同種の
-      // クランプは無いので、操作経路を個別に塞ぐ（下記 2 オプション＋生成後の disableRotation()）。
-      maxPitch: 0,
-      touchPitch: false,
-      // dragRotate を切れば pitchWithRotate は到達しないが、回転を戻したときに傾きだけ復活しない
-      // よう明示しておく。
-      pitchWithRotate: false,
-      dragRotate: false,
+      // **maxPitch の 60 は MapLibre の既定値。その先は霧（sky / fog）を前提とした領域で、
+      // このアプリは霧を設定していない。** 上げる前に必ず docs/spec/map-rendering-spec.md §6
+      // 「地図の傾きと回転」を読むこと——水平線の位置は fov の引き算では求まらず、MapLibre 内部の
+      // getMercatorHorizon が決める。根拠となる式・霧の設計・実測値は仕様書側に集約してある
+      // （2 箇所に書くと、MapLibre のバージョンが上がったとき片方が取り残される）。
+      maxPitch: 60,
       // CJK ラベルはビルド時に事前生成した SDF グリフ PBF（public/fonts/<stack>/<range>.pbf）を
       // 使う。localIdeographFontFamily:false で漢字を実行時 TinySDF 生成に回さず、必ずサーバー
       // グリフを取りに行かせる（区域名初出＝自動ズームと重なる最悪局面の生成スパイクを恒久的に消す。
@@ -259,13 +252,6 @@ export function JapanMapGL({
       },
     })
     mapRef.current = m
-    // 2 本指のひねりによる回転を止める。touchZoomRotate: false ではピンチズームまで死ぬため、
-    // 回転だけを落とすこの API を使う。
-    m.touchZoomRotate.disableRotation()
-    // キーボードの回転（Shift + ←/→）と傾き（Shift + ↑/↓）を止める。MapLibre の KeyboardHandler は
-    // rotationDisabled のとき bearing・pitch 双方の増分を 0 にするため、この 1 呼び出しで両方塞げる
-    // （パン・ズームのキー操作は残る）。
-    m.keyboard.disableRotation()
     // 検証用: 本番ビルドでも意図的に window.__mapGL を公開する。CLAUDE.md の検証手順
     // （実データの map.getSource(...).getData() 集計・Playwright からの map 操作）と
     // docs/spec/settings-pwa-spec.md の「開発者向け機能」節が明示的にこれを利用する。
