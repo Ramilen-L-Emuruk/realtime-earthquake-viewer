@@ -35,7 +35,7 @@ class FakeAudioParam {
 }
 
 class FakeNode {
-  connect(): void { /* 接続先は検証対象ではない */ }
+  connect(_dest?: unknown): void { /* 既定では接続先を記録しない */ }
   disconnect(): void { /* noop */ }
 }
 
@@ -48,11 +48,22 @@ class FakeOscillatorNode extends FakeNode {
   readonly detune = new FakeAudioParam()
   startedAt: number | null = null
   stoppedAt: number | null = null
+  // 繋いだ先の gain。声部ごとの音量を検証するために記録する
+  connectedTo: unknown = null
+  connect(dest: unknown): void { this.connectedTo = dest }
   start(t: number): void { this.startedAt = t }
   stop(t: number): void { this.stoppedAt = t }
 }
 
 class FakePannerNode extends FakeNode { readonly pan = { value: 0 } }
+
+// マリンバ（検知・更新系）だけがフィルタを通る。ここが無いと例外になり、
+// playGuarded が握り潰して「オシレータ 0 本」という形でしか症状が出ない。
+class FakeBiquadFilterNode extends FakeNode {
+  type = 'lowpass'
+  readonly frequency = new FakeAudioParam()
+  readonly Q = new FakeAudioParam()
+}
 
 class FakeBufferSourceNode extends FakeNode {
   buffer: unknown = null
@@ -70,11 +81,15 @@ class FakeAudioContext {
   readonly oscillators: FakeOscillatorNode[] = []
   readonly bufferSources: FakeBufferSourceNode[] = []
   readonly panners: FakePannerNode[] = []
+  readonly filters: FakeBiquadFilterNode[] = []
   compressors = 0
   convolvers = 0
 
   resume(): Promise<void> { this.state = 'running'; return Promise.resolve() }
   createStereoPanner(): FakePannerNode { const n = new FakePannerNode(); this.panners.push(n); return n }
+  createBiquadFilter(): FakeBiquadFilterNode {
+    const n = new FakeBiquadFilterNode(); this.filters.push(n); return n
+  }
   createGain(): FakeGainNode { const n = new FakeGainNode(); this.gains.push(n); return n }
   createOscillator(): FakeOscillatorNode {
     const n = new FakeOscillatorNode(); this.oscillators.push(n); return n
@@ -103,6 +118,7 @@ class FakeAudioContext {
     this.oscillators.length = 0
     this.bufferSources.length = 0
     this.panners.length = 0
+    this.filters.length = 0
   }
 }
 
@@ -279,10 +295,17 @@ describe('通知音: 声部構成（対照）', () => {
     expect(ctx.oscillators).toHaveLength(28)
   })
 
-  it('揺れ検知は据え置き（打撃 2 音 + シマーの 7 本）', () => {
-    // 打撃・純音系（impact / ding）はこの刷新の対象外。変わっていたら巻き込み
+  it('揺れ検知はマリンバ 2 音で 8 本（基音 + 上部 2 本 + サブ）', () => {
     sound.playAlertSound('kyoshin')
-    expect(ctx.oscillators).toHaveLength(7)
+    expect(ctx.oscillators).toHaveLength(8)
+    // フィルタを通すのはこの系統だけ。1 音につき 1 つ作る
+    expect(ctx.filters).toHaveLength(2)
+  })
+
+  it('揺れ検知の予兆は単発なので 4 本（確定音の半分）', () => {
+    sound.playAlertSound('kyoshinCandidate')
+    expect(ctx.oscillators).toHaveLength(4)
+    expect(ctx.filters).toHaveLength(1)
   })
 })
 
@@ -338,22 +361,73 @@ describe('通知音: 津波の段階は掃引の形で聞き分ける', () => {
   })
 })
 
-describe('通知音: 残響の掛け方', () => {
-  // 音階を持つ音だけが残響を通る。**警報アラームと津波サイレンは通さない**
-  // ——警報として乾いた質感を保つため。
-  it('地震情報（pianoNote 4 音）は 1 音あたり 10 本（ユニゾン3 + 攻撃1 + 倍音3 + サブ1 + 残響送り2）', () => {
+describe('通知音: 残響を持たない（全系統）', () => {
+  // 残響は情報系と EEW の穏やかな音に載せていたが、連続して鳴る音では尾が重なって
+  // 濁るため全廃した。**厚みはユニゾンと倍音だけで作る。**
+  // ConvolverNode を 1 つでも作っていたら、どこかに残響が戻っている。
+
+  it('地震情報（pianoNote 4 音）は 1 音あたり 8 本（ユニゾン3 + 攻撃1 + 倍音3 + サブ1）', () => {
     sound.playAlertSound('earthquake')
-    expect(ctx.oscillators).toHaveLength(40)
+    expect(ctx.oscillators).toHaveLength(32)
+    expect(ctx.convolvers).toBe(0)
   })
 
-  it('EEW 続報（darkPiano 単音）はユニゾン3 + 倍音2 + 残響送り1 の 6 本', () => {
+  it('EEW 続報（darkPiano 単音）はユニゾン3 + 倍音2 の 5 本', () => {
     sound.playAlertSound('eewUpdate')
-    expect(ctx.oscillators).toHaveLength(6)
+    expect(ctx.oscillators).toHaveLength(5)
+    expect(ctx.convolvers).toBe(0)
   })
 
-  it('EEW 予報は同じ構成の 2 音で 12 本', () => {
+  it('EEW 予報は同じ構成の 2 音で 10 本', () => {
     sound.playAlertSound('eewForecast')
-    expect(ctx.oscillators).toHaveLength(12)
+    expect(ctx.oscillators).toHaveLength(10)
+  })
+
+  it('全種別を鳴らしても ConvolverNode を 1 つも作らない', () => {
+    ALL_TYPES.forEach(t => sound.playAlertSound(t))
+    expect(ctx.convolvers).toBe(0)
+  })
+})
+
+describe('震度更新音: 震度5弱以上で低音が厚くなる', () => {
+  // 旧実装は ding / dingDeep という別関数の選択だったが、いまは marimba の真偽値引数。
+  // 取り違えても型では捕まらないので、効果そのものを固定する。
+
+  /** 基音の 1 オクターブ下（サブオクターブ）を鳴らしている声部の、gain の最大値 */
+  const subPeaks = (baseFreqs: number[]): number[] => {
+    const subs = baseFreqs.map(f => f * 0.5)
+    return ctx.oscillators
+      .filter(o => subs.some(sub => Math.abs(o.frequency.value - sub) < 1))
+      .map(o => {
+        const g = o.connectedTo as FakeGainNode
+        return Math.max(...g.gain.events.map(e => e.value))
+      })
+  }
+
+  it('正: 震度5弱はサブオクターブが厚い', () => {
+    sound.playKyoshinUpdateSound(15)      // index 15 = 震度5弱（gain 0.36・deep）
+    const peaks = subPeaks([740, 880, 988, 1108])
+    expect(peaks).toHaveLength(4)
+    // deep のとき 0.45 倍。0.36 × 0.45 = 0.162
+    for (const v of peaks) expect(v).toBeCloseTo(0.162, 3)
+  })
+
+  it('対照: 震度4は同じ音でもサブオクターブが薄い', () => {
+    sound.playKyoshinUpdateSound(13)      // index 13 = 震度4（gain 0.34・deep でない）
+    const peaks = subPeaks([740, 880, 988, 1108])
+    expect(peaks).toHaveLength(4)
+    // deep でないとき 0.18 倍。0.34 × 0.18 = 0.0612
+    for (const v of peaks) expect(v).toBeCloseTo(0.0612, 4)
+  })
+
+  it('安全弁: 段階ごとの音数は変えていない（震度2以下 2 音 → 震度7 7 音）', () => {
+    // 1 音 4 本。音数が変わると段階の勾配（音数・間隔・音量）が崩れる
+    const counts = [9, 11, 13, 15, 16, 17, 19].map(index => {
+      ctx.reset()
+      sound.playKyoshinUpdateSound(index)
+      return ctx.oscillators.length / 4
+    })
+    expect(counts).toEqual([2, 3, 4, 4, 5, 6, 7])
   })
 })
 
@@ -400,6 +474,34 @@ describe('通知音: 不正な音量の扱い（安全弁）', () => {
       expect(messages.some(m => m.includes('sweep: peak が不正'))).toBe(true)
     } finally {
       warn.mockRestore()
+    }
+  })
+})
+
+describe('通知音: BiquadFilter が無い環境（安全弁）', () => {
+  // 安全弁: ローパスは木の柔らかさを出す飾りであって、必須ではない。
+  // createBiquadFilter を持たない実行環境で、マリンバ系の 4 種が丸ごと落ちないこと。
+  it('マスターへ直結して鳴らす（無音にならない）', () => {
+    const key = 'createBiquadFilter'
+    ;(ctx as unknown as Record<string, unknown>)[key] = undefined
+    try {
+      sound.playAlertSound('kyoshin')
+      expect(ctx.oscillators).toHaveLength(8)
+      expect(ctx.filters).toHaveLength(0)
+    } finally {
+      delete (ctx as unknown as Record<string, unknown>)[key]
+    }
+  })
+
+  it('震度更新音も鳴る', () => {
+    const key = 'createBiquadFilter'
+    ;(ctx as unknown as Record<string, unknown>)[key] = undefined
+    try {
+      sound.playKyoshinUpdateSound(19)   // 震度7・7 音連打
+      expect(ctx.oscillators).toHaveLength(28)
+      expect(ctx.filters).toHaveLength(0)
+    } finally {
+      delete (ctx as unknown as Record<string, unknown>)[key]
     }
   })
 })
