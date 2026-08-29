@@ -699,7 +699,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
               )}
             </div>
           </Row>
-          <Row label="試験報を受信（検証用）" description="試験報・訓練報を受信します（VXSE42は疎通確認のみ・VXSE43/45は表示されます）">
+          <Row label="試験報を受信（検証用）" description="試験報・訓練報を受信します（VXSE42は疎通確認のみ・VXSE45は表示されます）">
             <Toggle
               checked={settings.dmdataTestDelivery}
               onChange={v => onUpdate('dmdataTestDelivery', v)}
