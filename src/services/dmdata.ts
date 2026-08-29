@@ -10,17 +10,11 @@ import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMA
 import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml } from './dmdataParser'
 import { serverNow, serverDate } from '../utils/clock'
 import { gunzip } from '../utils/gzip'
-import { log } from '../utils/logger'
+import { CLASSIFICATIONS, EEW_TYPES } from './dmdataTelegramPayload'
+import { log, createLogThrottle } from '../utils/logger'
 import { authHeader, dmdataApiKeyProblem, dmdataApiKeyMessage, DmdataApiKeyError } from '../utils/dmdataApiKey'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
-// DMDATA WebSocket 購読分類。telegram.earthquake は地震・津波両方の電文を配信する。
-// telegram.tsunami という分類は存在しないため含めない。
-const CLASSIFICATIONS = ['eew.forecast', 'eew.warning', 'telegram.earthquake']
-// EEW 電文種別: VXSE43=警報, VXSE45=地震動予報。
-// VXSE44（予報）は廃止予定のため除外。VXSE45 で同等情報＋長周期地震動が得られる。
-// VXSE42（配信テスト）は震源データを持たず EEW として表示できないため別途処理する。
-const EEW_TYPES = new Set(['VXSE43', 'VXSE45'])
 // VYSE50=南海トラフ地震臨時情報、VYSE51/52=南海トラフ地震関連解説情報、
 // VYSE60=北海道・三陸沖後発地震注意情報。
 // これらは XML 電文（format: "xml"）として配信されるため REST API 経由で取得する。
@@ -32,6 +26,10 @@ const EEW_TYPES = new Set(['VXSE43', 'VXSE45'])
 const VYSE_NANKAI_TYPES = new Set(['VYSE50'])
 const VYSE_COMMENTARY_TYPES = new Set(['VYSE51', 'VYSE52'])
 const VYSE_KOHATSU_TYPES = new Set(['VYSE60'])
+// VXSE43 の受信は本来起きない。起きるとすれば配信分類の変わり目だが、連続発報で溢れると
+// 他の警告が見えなくなるため間引く（`createLogThrottle` の使い方は utils/logger.ts）。
+const warnUnsubscribedEew = createLogThrottle(60_000)
+
 const RECONNECT_BASE_MS = 3000
 const RECONNECT_MAX_MS = 30000
 const RECONNECT_FACTOR = 1.5
@@ -145,7 +143,7 @@ async function decodeTelegramBody(msg: Record<string, unknown>): Promise<Record<
 
 async function tryFetchTicket(
   apiKey: string,
-  classifications: string[],
+  classifications: readonly string[],
   includeTest: boolean,
   debug: boolean,
 ): Promise<{ url: string; status: number; body: unknown }> {
@@ -521,6 +519,17 @@ export class DmdataWebSocket {
       } else {
         this.onRawMessage?.(this.makeLogEntry(headType, head, data, isTest, 'filtered'))
       }
+    } else if (headType === 'VXSE43') {
+      // VXSE43 は購読していない分類（`eew.warning`）にしか無いので、届いたら配信分類の変わり目を疑う。
+      // 取り込まないことと、届いたのに気づけないことは別なので、**debug に依らず**記録する。
+      // 連続発報で溢れないよう間引くが、電文ログには毎回残して後から追えるようにする。
+      warnUnsubscribedEew(() => log.warn('[dmdata] 購読していない VXSE43（緊急地震速報・警報）を受信しました。配信分類の変更の可能性があります'))
+      this.onRawMessage?.(this.makeLogEntry(headType, head, data, isTest, 'filtered'))
+    } else if (headType === 'VXSE44') {
+      // VXSE44 は購読中の `eew.forecast` に含まれ、予報級 EEW のたびに毎報届く**想定内**の電文。
+      // 廃止予定の旧形式で VXSE45 の下位互換のため取り込まない（→ dmdataTelegramPayload.ts）。
+      // 異常ではないので warn を上げず、電文ログにだけ残す。
+      this.onRawMessage?.(this.makeLogEntry(headType, head, data, isTest, 'filtered'))
     } else if (this.debug) {
       dlog('対象外の電文種別', { headType })
     }

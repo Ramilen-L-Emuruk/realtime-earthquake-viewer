@@ -7,7 +7,7 @@ import { log } from '../utils/logger'
 import { authHeader } from '../utils/dmdataApiKey'
 import { extractQuakeEventIdFromId } from '../utils/quakeMerge'
 import type { ReplayEntry, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
-import { HANDLED_TYPES, QUAKE_TYPES, XML_ONLY_TYPES, buildJsonPayload, buildXmlPayload } from './dmdataTelegramPayload'
+import { HANDLED_TYPES, QUAKE_TYPES, XML_ONLY_TYPES, buildJsonPayload, buildXmlPayload, CLASSIFICATIONS } from './dmdataTelegramPayload'
 import {
   clearLiveReplayCache, fetchLiveQuakeTelegrams, fetchLiveReplayEntries, resolveLiveDates,
 } from './dmdataReplayLive'
@@ -145,7 +145,7 @@ export async function fetchDmdataReplayEvents(
   endDateObj.setDate(endDateObj.getDate() + 1)
   const endDate = toDateStr(endDateObj)
 
-  const items = await listArchives(apiKey, startDate, endDate, 'telegram.earthquake,eew.forecast')
+  const items = await listArchives(apiKey, startDate, endDate, CLASSIFICATIONS.join(','))
 
   const dec = new TextDecoder()
   const entries: ReplayEntry[] = []
