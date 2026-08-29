@@ -1230,10 +1230,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 津波解除・取消・失効の通知音（AUD-6）。cancelReason の 3 種を区別せず単一音で伝える。
       // TTS は eewCancel と同じく音の後ろへずらして音響重複を避ける。
       //
-      // **遅延は乾音の長さで見積もらないこと。** どちらの音も残響を持つため
-      // （情報系は広い IR・EEW 系は締まった IR）、乾音が止まったあとも尾を引く。
       // 見直しの基準と実測値は audio-tts-spec.md §6 の表に集約してある
-      // ——読み上げが始まる瞬間の残り（ピーク比）で、2600ms は -49.2 dB・1200ms は -54.5 dB。
+      // ——読み上げが始まる瞬間の残り（ピーク比）で、1700ms は -61.2 dB・1200ms は -54.5 dB。
+      // 残響を全廃したぶん音が短くなったので、津波解除は 2600ms から詰めている。
       if (!alreadySpoken) {
         spokenTsunamiCancelEventIdsRef.current.add(cancelId)
         if (settings.soundEnabled) playAlertSound('tsunamiCancel')
@@ -1241,7 +1240,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           speakNonEEWDelayed(
             tsunamiCancelToText(event.cancelReason),
             SPEECH_PRIORITY.high,
-            2600,
+            1700,
             'tsunami',
             { tab: 'tsunami', priority: TAB_PRIORITY.tsunami },
           )

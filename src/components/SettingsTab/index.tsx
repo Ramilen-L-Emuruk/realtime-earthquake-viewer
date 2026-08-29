@@ -1057,13 +1057,13 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
           <p className="text-blue-300 text-xs">クリックで各通知音を試聴できます（設定の通知音 ON/OFF に関わらず鳴ります）</p>
         </div>
         {/* ── 揺れ検知（候補 → 初回 → 更新の順） ── */}
-        <Row label="揺れ検知（候補）" description="控えめな単発チャイム（確定前の予兆通知）">
+        <Row label="揺れ検知（候補）" description="マリンバ単発 F#5（確定前の予兆通知・控えめ）">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('kyoshinCandidate') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="揺れ検知（初回）" description="打撃2音 + シマー高周波">
+        <Row label="揺れ検知（初回）" description="マリンバ2音 C#6→A5（下行長3度）">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('kyoshin') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="揺れ検知・震度更新" description="震度をタップして試聴">
+        <Row label="揺れ検知・震度更新" description="マリンバ。震度が上がるほど音数が増え間隔が詰まる。震度をタップして試聴">
           <div className="flex flex-wrap gap-1.5 justify-end">
             <IntensityPlayButton scale={20} kyoshinIndex={9}  />
             <IntensityPlayButton scale={30} kyoshinIndex={11} />
@@ -1126,7 +1126,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         <Row label="大津波警報" description="sawtooth 220→620Hz 上昇スイープ × 5回（一気に駆け上がり、一瞬で戻る）">
           <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('tsunamiMajor') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="津波情報更新（グレード不変）" description="ding 低音 → 高音（穏やかな通知）">
+        <Row label="津波情報更新（グレード不変）" description="マリンバ2音 F#4→C#5（穏やかな通知）">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('tsunamiUpdate') }}>▶ 試聴</TestButton>
         </Row>
         <Row label="津波解除・取消・期限切れ" description="ピアノ G4→C4 の終止形（3 つの理由を単一音で伝える）">
