@@ -1114,16 +1114,16 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('earthquakeInfo') }}>▶ 試聴</TestButton>
         </Row>
         {/* ── 津波情報 ── */}
-        <Row label="津波予報（若干の海面変動）" description="sine 380→460Hz スイープ × 2回">
+        <Row label="津波予報（若干の海面変動）" description="sine 380→460Hz 往復スイープ × 2回">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('tsunamiForecast') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="津波注意報" description="sine 300→500Hz スイープ × 2回">
+        <Row label="津波注意報" description="sine 300→500Hz 往復スイープ × 2回">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('tsunamiWatch') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="津波警報" description="sawtooth 260→560Hz スイープ × 3回">
+        <Row label="津波警報" description="sawtooth 260→560Hz 往復スイープ × 3回">
           <TestButton color="purple" onClick={() => { unlockAudio(); playAlertSound('tsunami') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="大津波警報" description="sawtooth 200→500Hz スイープ × 5回">
+        <Row label="大津波警報" description="sawtooth 220→620Hz 上昇スイープ × 5回（一気に駆け上がり、一瞬で戻る）">
           <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('tsunamiMajor') }}>▶ 試聴</TestButton>
         </Row>
         <Row label="津波情報更新（グレード不変）" description="ding 低音 → 高音（穏やかな通知）">
