@@ -462,8 +462,8 @@ Yahoo RealTimeData (1Hz JSON)
 
 | トリガー | 挙動 |
 |---|---|
-| candidate 立ち上がり（confirmed 前） | realtime タブへ切替＋タイトル「🔍 揺れの可能性」＋控えめな候補音 |
-| confirmed 立ち上がり（初検知） | realtime タブ＋タイトル「📈 揺れ検知」＋検知音＋ブラウザ通知 |
+| candidate 立ち上がり（confirmed 前） | realtime タブへ切替＋タイトル「揺れの可能性」＋控えめな候補音 |
+| confirmed 立ち上がり（初検知） | realtime タブ＋タイトル「揺れ検知」＋検知音＋ブラウザ通知 |
 | confirmed 中の最大震度の再上昇（レベルアップ／再エスカレーション） | 更新音（同一地震の揺れ強まりを都度知らせる）＋その点へ地図が一時的に寄る（下記） |
 | 検知中に別地域（`isSameEarthquake` が同一地震と判定しない距離）が新たに確定 | 検知音＋ブラウザ通知（「別の地点で揺れを検知」）。その地域の推定震度が `NEW_REGION_MIN_INDEX`（震度3）以上のときに限る。`REGION_PERSIST_MS`(2秒) 継続後・`NEW_REGION_COOLDOWN_MS`(5秒) のクールダウン付きで一過性の分裂を抑制。その地域へ地図が一時的に寄る（下記） |
 | 全イベント解除 | EEW 受信中でなければデフォルトタブへ復帰 |

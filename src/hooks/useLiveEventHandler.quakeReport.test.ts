@@ -169,7 +169,7 @@ describe('地震情報のウィンドウタイトル', () => {
     const handle = setup()
     handle(makeQuake({ type: '震源情報', maxScale: -1 }))
     await flush()
-    expect(titles).toEqual(['🔴 地震情報 石川県能登地方 最大震度不明'])
+    expect(titles).toEqual(['地震情報 石川県能登地方 最大震度不明'])
   })
 
   // 安全弁。遠地地震は国内震度を観測しないため maxScale が常に -1 だが、同一イベントのカードも
@@ -179,7 +179,7 @@ describe('地震情報のウィンドウタイトル', () => {
     const handle = setup([existing])
     handle(makeQuake({ type: '遠地地震', maxScale: -1, magnitude: 7.4 }))
     await flush()
-    expect(titles).toEqual(['🔴 遠地地震 石川県能登地方 M7.4'])
+    expect(titles).toEqual(['遠地地震 石川県能登地方 M7.4'])
   })
 
   // 震度を持つ電文は当然そのまま出す（歯止めが広すぎないことの確認）。
@@ -187,6 +187,6 @@ describe('地震情報のウィンドウタイトル', () => {
     const handle = setup([makeQuake({ type: '震度速報' })])
     handle(makeQuake({ type: '各地の震度情報', maxScale: 50 }))
     await flush()
-    expect(titles).toEqual(['🔴 地震情報 石川県能登地方 最大震度5強'])
+    expect(titles).toEqual(['地震情報 石川県能登地方 最大震度5強'])
   })
 })
