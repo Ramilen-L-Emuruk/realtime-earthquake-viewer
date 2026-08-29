@@ -166,6 +166,8 @@ function createFakeMap({ zoom: initialZoom = 4, fitZoom: initialFitZoom = 7 }: {
     }),
     getZoom: () => zoom,
     getCenter: () => center,
+    // フィット系は現在の回転を保つため bearing を読む（渡さないと MapLibre が 0 を当てて回転が消える）。
+    getBearing: () => 0,
     getContainer: () => ({ clientWidth: PANE_WIDTH, clientHeight: PANE_HEIGHT }),
     project: (ll: [number, number] | { lng: number; lat: number }) => {
       const lng = Array.isArray(ll) ? ll[0] : ll.lng
