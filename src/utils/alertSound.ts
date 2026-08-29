@@ -109,14 +109,15 @@ let _filterFallbackWarned = false
 /**
  * ローパスを掛けた接続先を作る。**`BiquadFilterNode` を持たない環境ではマスターへ直結する。**
  *
- * フィルタを使うのはマリンバ（検知・更新系）だけで、無ければ木の柔らかさが出ないものの
- * 音そのものは鳴る。ここで諦めると 4 種の通知音が丸ごと無音になるため繋ぎ替える。
+ * 使うのは `marimba`（木の柔らかさ）と `warningBeep`（連打で刺さらないための頭打ち）の
+ * 2 系統。無くても音そのものは鳴るので、ここで諦めず繋ぎ替える——揺れ検知・その予兆・
+ * 震度更新音の 3 種が丸ごと無音になるのを避けるため。
  */
 function lowpassOrMaster(ctx: AudioContext, cutoffHz: number): AudioNode {
   if (typeof ctx.createBiquadFilter !== 'function') {
     if (!_filterFallbackWarned) {
       _filterFallbackWarned = true
-      log.warn('[sound] BiquadFilterNode が無い環境のため、マリンバのローパスを省く')
+      log.warn('[sound] BiquadFilterNode が無い環境のため、ローパスを省いて鳴らす')
     }
     return getMasterInput(ctx)
   }
@@ -163,11 +164,13 @@ const STOP_MARGIN_SEC = 0.012
 /**
  * 立ち上がって指数減衰する 1 本のトーンを鳴らす。
  *
- * 通知音のプリミティブ（pianoNote / darkPiano / darkAlarm / marimba）が共通で使う。
+ * 通知音のプリミティブ（pianoNote / darkPiano / darkAlarm / marimba / warningBeep / ding）が
+ * 共通で使う。
  * 終端の落とし方をここへ集約しているため、各プリミティブは倍音構成だけを持つ。
  * 終端が 0 まで落ちない形に戻すとティックが再発するので、ここを分岐させないこと。
  *
  * @param dest 接続先。通常はマスター入力、マリンバのときはローパスフィルタ
+ * @param detuneCents 基音からの離調（セント）。同じ周波数を左右へずらして重ねるときに使う
  * @param t 発音開始時刻（AudioContext 時間）
  * @param attack 0 から peak に達するまでの秒数
  * @param peak 到達する gain（globalVolume は呼び出し側で適用済み）。
@@ -178,6 +181,7 @@ const STOP_MARGIN_SEC = 0.012
 function decayTone(
   ctx: AudioContext, dest: AudioNode, type: OscillatorType,
   freq: number, t: number, attack: number, peak: number, end: number,
+  detuneCents = 0,
 ): void {
   // 音量 0（設定スライダーを絞り切った状態）では TAIL_FLOOR ぶんの残留すら鳴らさない。
   // NaN もここで弾く（放置すると以後の自動化が全滅し、無音の原因が追えなくなる）。
@@ -191,6 +195,7 @@ function decayTone(
   const g = ctx.createGain()
   osc.type = type
   osc.frequency.value = freq
+  if (detuneCents) osc.detune.value = detuneCents
   osc.connect(g)
   g.connect(dest)
   // 減衰の終わりが立ち上がりより前に来ると gain 自動化の順序が壊れる。
@@ -328,6 +333,11 @@ function darkPiano(ctx: AudioContext, freq: number, t: number, dur: number, gain
 // 警報アラームの離調とステレオ幅。同じ矩形波を左右へ ±7 セントずらして重ねると、
 // 干渉によるうなりが生まれてサイレンらしい厚みが出る。**モノラルで鳴らすと薄くなる。**
 const ALARM_DETUNE_CENTS = 7
+
+// 警告ビープ（震度更新音）の離調。矩形波 2 本をこの幅でずらすと、干渉のうねりが
+// 単調さを消す。警報アラームより広いのは、こちらがステレオに振らず 1 点で鳴るため
+// ——左右に置けない代わりに、うねりで厚みを作っている。
+const BEEP_DETUNE_CENTS = 10
 const ALARM_STEREO_WIDTH = 0.55
 
 // 警報トーン: 左右へ振った矩形波 + 鋸波 + サブ 2 段 + 三角波（EEW 警報・特別警報に使用）。
@@ -440,22 +450,17 @@ function sweep(
 }
 
 /**
- * マリンバ（木琴）。観測と検知を伝える音——揺れ検知・その予兆・震度の更新・
- * 津波の観測値の更新——をこれ 1 つで作る。
- *
- * **他の 4 系統が波形を重ねるだけで作られているのに対し、ここだけフィルタを持つ。**
- * 木琴の音は板の共鳴が高域を吸うところに柔らかさがあり、波形を足すだけでは作れない。
+ * マリンバ（木琴）。**揺れを検知したこと**を伝える 2 つ——揺れ検知とその予兆——で使う。
  *
  * 木琴は上部の部分音を **1 : 4 : 10** に調律する（弦の 1 : 2 : 3 とは違う）。倍音が上へ
  * 大きく離れるため、基音の周りが濁らず、短く鳴らしても音程がはっきり出る。
  * 実測の板はここからわずかに外れるので 3.9 / 9.8 を使う。
+ * 板の共鳴が高域を吸う柔らかさはローパスで作る（波形を足すだけでは出せない）。
  *
- * 理由: 加算合成のままでは「硬い」を解消できず、方式ごと入れ替えた
- * （経緯は audio-tts-spec.md §10 の 2026-08-29 の項）。
- *
- * @param deep 低音を厚くする（震度 5 弱以上の更新音）
+ * **倍音が離れるぶん音は転がって聞こえる。** 一度きりの通知には合うが、繰り返し鳴って
+ * 切迫を伝える音には向かない（詳細は audio-tts-spec.md §10 の 2026-08-30 の項）。
  */
-function marimba(ctx: AudioContext, freq: number, t: number, dur: number, gain: number, deep = false): void {
+function marimba(ctx: AudioContext, freq: number, t: number, dur: number, gain: number): void {
   const p = gain * globalVolume
   // 板の共鳴が高域を吸うのを模す。基音の 6 倍で切ると、上の部分音が角を残さず馴染む。
   // **フィルタを持たない環境ではマスターへ直結する**（`panTo` と同じ方針）——ここで
@@ -464,7 +469,7 @@ function marimba(ctx: AudioContext, freq: number, t: number, dur: number, gain: 
   decayTone(ctx, lp, 'sine', freq,       t, 0.006, p,        t + dur)
   decayTone(ctx, lp, 'sine', freq * 3.9, t, 0.004, p * 0.22, t + dur * 0.24)
   decayTone(ctx, lp, 'sine', freq * 9.8, t, 0.003, p * 0.07, t + dur * 0.10)
-  decayTone(ctx, lp, 'sine', freq * 0.5, t, 0.008, p * (deep ? 0.45 : 0.18), t + dur * 0.55)
+  decayTone(ctx, lp, 'sine', freq * 0.5, t, 0.008, p * 0.18, t + dur * 0.55)
 }
 
 // ─── サウンドプレーヤー ───────────────────────────────────────────
@@ -576,12 +581,10 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
     for (let i = 0; i < 5; i++) sweep(ctx, SWEEP_VOICINGS.major, 220, 620, base + i * 0.40, 0.34, 0.28)
   },
 
-  // 津波情報更新（グレード不変・観測値更新）: マリンバ 2 音 F#4→C#5（穏やかな通知）。
-  // **他の観測・検知音と違い、周波数を下げていない。** 元から低いため、揃えて下げると
-  // 185Hz まで落ちて小型スピーカーでは痩せる（下げ幅は音域に余裕のある高い音だけに掛ける）。
+  // 津波情報更新（グレード不変・観測値更新）: 純音 2 音 F#4→C#5（穏やかな通知）
   tsunamiUpdate: (ctx, base) => {
-    marimba(ctx, 370, base + 0.00, 0.55, 0.14)
-    marimba(ctx, 555, base + 0.28, 0.55, 0.11)
+    ding(ctx, 370, base + 0.00, 0.55, 0.14)
+    ding(ctx, 555, base + 0.28, 0.55, 0.11)
   },
 
   // 津波解除・取消・失効: ピアノ G4 → C4 の終止形（下行完全 5 度）。
@@ -590,26 +593,27 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
   // 解除だけは調性のある 2 音で対比させる。
   // 旧実装は ding の降下 3 音（700→520→380Hz）だったが、音程比が半端で下降グリッサンドの
   // 「ずっこけ」に近い軽さがあり、解除の知らせとして品位を欠いていた。
-  // eewCancel（ダークピアノの降下 3 音）と紛れないよう、音色は明るいピアノを使う。
+  // eewCancel（ダークピアノの降下 3 音）とは音色そのもので分かれる（あちらはユニゾンと
+  // 倍音を持つピアノ、こちらは正弦 2 本の純音）。
   tsunamiCancel: (ctx, base) => {
-    pianoNote(ctx, 392.0, base + 0.00, 0.58, 0.24)
-    pianoNote(ctx, 261.6, base + 0.26, 1.70, 0.26)
+    ding(ctx, 392.0, base + 0.00, 0.58, 0.24)
+    ding(ctx, 261.6, base + 0.26, 1.70, 0.26)
   },
 
-  // 南海トラフ臨時情報・後発地震注意情報: ピアノA4×2連打 → D5（情報発表の穏やかな緊張感）
+  // 南海トラフ臨時情報・後発地震注意情報: 純音 A4×2連打 → D5（情報発表の穏やかな緊張感）
   specialInfo: (ctx, base) => {
-    pianoNote(ctx, 440.0, base + 0.00, 0.15, 0.26)
-    pianoNote(ctx, 440.0, base + 0.16, 0.15, 0.26)
-    pianoNote(ctx, 587.3, base + 0.38, 1.20, 0.22)
+    ding(ctx, 440.0, base + 0.00, 0.15, 0.26)
+    ding(ctx, 440.0, base + 0.16, 0.15, 0.26)
+    ding(ctx, 587.3, base + 0.38, 1.20, 0.22)
   },
 
-  // 南海トラフ関連解説情報: ピアノ下降2音 D5→A4（控えめ）。全体で約1.3秒。
+  // 南海トラフ関連解説情報: 純音の下降2音 D5→A4（控えめ）。全体で約1.3秒。
   // **臨時情報（specialInfo）と同じ音にしないこと。** 解説情報は定例解説が平常時にも毎月届く。
   // 段階の発表と同じ音が毎月鳴れば、実際に「巨大地震注意」が出たときに音で区別できなくなる。
   // specialInfo が上昇（A4→D5）なのに対しこちらは下降にして、向きで聞き分けられるようにしている。
   specialInfoCommentary: (ctx, base) => {
-    pianoNote(ctx, 587.3, base + 0.00, 0.90, 0.16)
-    pianoNote(ctx, 440.0, base + 0.20, 1.10, 0.14)
+    ding(ctx, 587.3, base + 0.00, 0.90, 0.16)
+    ding(ctx, 440.0, base + 0.20, 1.10, 0.14)
   },
 }
 
@@ -628,7 +632,7 @@ export function kyoshinLevel(index: number): number {
   return 0                    // 震度2以下
 }
 
-interface MarimbaPattern {
+interface BeepPattern {
   freqs: number[]
   interval: number
   duration: number
@@ -639,15 +643,15 @@ interface MarimbaPattern {
 
 // 震度が上がるほど音数が増え、間隔が詰まり、音量が上がる。**この勾配が段階の重さを伝える**
 // ので、音色を変えるときも数値の並びは崩さないこと。
-// 周波数は揺れ検知と同じく短 3 度下げてある（旧: 659〜1318Hz → 現: 554〜1108Hz）。
-const MARIMBA_PATTERNS: MarimbaPattern[] = [
-  { freqs: [554, 740],                         interval: 0.18, duration: 0.28, gain: 0.24, deep: false }, // 震度2以下
-  { freqs: [740, 880, 988],                    interval: 0.15, duration: 0.22, gain: 0.32, deep: false }, // 震度3
-  { freqs: [740, 880, 988, 1108],              interval: 0.13, duration: 0.20, gain: 0.34, deep: false }, // 震度4
-  { freqs: [740, 880, 988, 1108],              interval: 0.12, duration: 0.18, gain: 0.36, deep: true  }, // 震度5弱
-  { freqs: [880, 659, 880, 659, 880],          interval: 0.11, duration: 0.17, gain: 0.38, deep: true  }, // 震度5強
-  { freqs: [988, 740, 988, 740, 988, 740],     interval: 0.10, duration: 0.16, gain: 0.40, deep: true  }, // 震度6弱〜強
-  { freqs: [1108, 740, 1108, 740, 1108, 740, 1108], interval: 0.09, duration: 0.15, gain: 0.42, deep: true }, // 震度7
+// 周波数はすべて A4・C5・D5・F5・G5・A5 に落ちる（440〜880Hz）。
+const BEEP_PATTERNS: BeepPattern[] = [
+  { freqs: [440, 587],                          interval: 0.18, duration: 0.28, gain: 0.24, deep: false }, // 震度2以下
+  { freqs: [587, 699, 784],                     interval: 0.15, duration: 0.22, gain: 0.32, deep: false }, // 震度3
+  { freqs: [587, 699, 784, 880],                interval: 0.13, duration: 0.20, gain: 0.34, deep: false }, // 震度4
+  { freqs: [587, 699, 784, 880],                interval: 0.12, duration: 0.18, gain: 0.36, deep: true  }, // 震度5弱
+  { freqs: [699, 523, 699, 523, 699],           interval: 0.11, duration: 0.17, gain: 0.38, deep: true  }, // 震度5強
+  { freqs: [784, 587, 784, 587, 784, 587],      interval: 0.10, duration: 0.16, gain: 0.40, deep: true  }, // 震度6弱〜強
+  { freqs: [880, 587, 880, 587, 880, 587, 880], interval: 0.09, duration: 0.15, gain: 0.42, deep: true  }, // 震度7
 ]
 
 // ─── 公開 API ───────────────────────────────────────────────────
@@ -759,6 +763,45 @@ export function playCountdownBeep(second: number): void {
 }
 
 /**
+ * 警告ビープ。**震度が上がったことを伝える連打**に使う。
+ *
+ * 矩形波を ±10 セントずらして 2 本重ねる。干渉のうねりが単調さを消しつつ、矩形波の
+ * 硬さは残る——電子ブザーの系譜で、実際の警報機器が使うのもこの波形。
+ * 正弦波を芯として薄く足し、基音の 8 倍でローパスを掛ける（掛けないと連打で耳に刺さる）。
+ *
+ * 理由: 揺れ検知と同じマリンバで作っていたが、木琴は倍音が上へ大きく離れる（1 : 4 : 10）
+ * ため音が転がって聞こえ、切迫を伝えられなかった。**「検知した」と「強まっている」は
+ * 役割が違う**ので、系統ごと分けている。
+ *
+ * @param deep 低音を厚くする（震度 5 弱以上）
+ */
+function warningBeep(
+  ctx: AudioContext, freq: number, t: number, dur: number, gain: number, deep = false,
+): void {
+  const p = gain * globalVolume
+  const dest = lowpassOrMaster(ctx, freq * 8)
+  decayTone(ctx, dest, 'square', freq, t, 0.003, p * 0.40, t + dur, -BEEP_DETUNE_CENTS)
+  decayTone(ctx, dest, 'square', freq, t, 0.003, p * 0.40, t + dur,  BEEP_DETUNE_CENTS)
+  decayTone(ctx, dest, 'sine',   freq, t, 0.003, p * 0.28, t + dur)
+  decayTone(ctx, dest, 'sine', freq * 0.5, t, 0.006, p * (deep ? 0.45 : 0.20), t + dur * 0.55)
+}
+
+/**
+ * 純音。**値が動いた・状況が変わった**ことを伝える 4 つで使う——津波の観測更新と解除、
+ * 南海トラフの臨時情報と関連解説情報。
+ *
+ * 正弦波と第 2 倍音だけの素直な音。津波の等級は掃引サイレンが受け持つので、観測値の更新と
+ * 解除はそれと質感で分かれている必要がある。南海トラフの 2 つは**互いを向きで区別する**
+ * 設計（上昇と下降）なので、音色そのものは素直なほうが向きが聞き取りやすい。
+ */
+function ding(ctx: AudioContext, freq: number, t: number, dur: number, gain: number): void {
+  const p = gain * globalVolume
+  const dest = getMasterInput(ctx)
+  decayTone(ctx, dest, 'sine', freq,     t, 0.006, p,        t + dur)
+  decayTone(ctx, dest, 'sine', freq * 2, t, 0.006, p * 0.20, t + dur * 0.22)
+}
+
+/**
  * 強震モニタの最大インデックスに応じた震度更新音を鳴らす。
  * @param gainScale 音量倍率（既定1.0）。likely（未確定）中に鳴らす場合は控えめな値を渡し、
  *   confirmed 中の更新と聞き分けられるようにする（確信度に見合わない大きさで鳴らさないため）。
@@ -774,10 +817,10 @@ export function playKyoshinUpdateSound(maxIndex: number, gainScale = 1): void {
     ctx.resume().catch(err =>
       log.warn(`[sound] playKyoshinUpdateSound(${maxIndex}) 中の AudioContext 再開に失敗: ${String(err)}`))
   }
-  const p = MARIMBA_PATTERNS[kyoshinLevel(maxIndex)]
+  const p = BEEP_PATTERNS[kyoshinLevel(maxIndex)]
   const base = ctx.currentTime + 0.02
   playGuarded(`playKyoshinUpdateSound(${maxIndex})`, () => {
     p.freqs.forEach((freq, i) =>
-      marimba(ctx, freq, base + i * p.interval, p.duration, p.gain * gainScale, p.deep))
+      warningBeep(ctx, freq, base + i * p.interval, p.duration, p.gain * gainScale, p.deep))
   })
 }

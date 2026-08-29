@@ -1063,7 +1063,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         <Row label="揺れ検知（初回）" description="マリンバ2音 C#6→A5（下行長3度）">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('kyoshin') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="揺れ検知・震度更新" description="マリンバ。震度が上がるほど音数が増え間隔が詰まる。震度をタップして試聴">
+        <Row label="揺れ検知・震度更新" description="警告ビープ。震度が上がるほど音数が増え間隔が詰まる。震度をタップして試聴">
           <div className="flex flex-wrap gap-1.5 justify-end">
             <IntensityPlayButton scale={20} kyoshinIndex={9}  />
             <IntensityPlayButton scale={30} kyoshinIndex={11} />
@@ -1126,20 +1126,20 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         <Row label="大津波警報" description="sawtooth 220→620Hz 上昇スイープ × 5回（一気に駆け上がり、一瞬で戻る）">
           <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('tsunamiMajor') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="津波情報更新（グレード不変）" description="マリンバ2音 F#4→C#5（穏やかな通知）">
+        <Row label="津波情報更新（グレード不変）" description="純音2音 F#4→C#5（穏やかな通知）">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('tsunamiUpdate') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="津波解除・取消・期限切れ" description="ピアノ G4→C4 の終止形（3 つの理由を単一音で伝える）">
+        <Row label="津波解除・取消・期限切れ" description="純音 G4→C4 の終止形（3 つの理由を単一音で伝える）">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('tsunamiCancel') }}>▶ 試聴</TestButton>
         </Row>
         {/* ── 臨時情報・関連解説情報・後発地震 ── */}
         {isDmdss && (
-          <Row label="南海トラフ臨時情報・後発地震注意情報" description="ピアノA4×2連打 → D5">
+          <Row label="南海トラフ臨時情報・後発地震注意情報" description="純音 A4×2連打 → D5">
             <TestButton color="orange" onClick={() => { unlockAudio(); playAlertSound('specialInfo') }}>▶ 試聴</TestButton>
           </Row>
         )}
         {isDmdss && (
-          <Row label="南海トラフ関連解説情報" description="ピアノ下降2音 D5→A4（臨時情報の上昇と向きで区別）">
+          <Row label="南海トラフ関連解説情報" description="純音の下降2音 D5→A4（臨時情報の上昇と向きで区別）">
             <TestButton color="teal" onClick={() => { unlockAudio(); playAlertSound('specialInfoCommentary') }}>▶ 試聴</TestButton>
           </Row>
         )}

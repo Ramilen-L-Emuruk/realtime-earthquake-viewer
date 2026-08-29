@@ -57,7 +57,7 @@ class FakeOscillatorNode extends FakeNode {
 
 class FakePannerNode extends FakeNode { readonly pan = { value: 0 } }
 
-// マリンバ（検知・更新系）だけがフィルタを通る。ここが無いと例外になり、
+// フィルタを通すのは marimba と warningBeep の 2 系統。ここが無いと例外になり、
 // playGuarded が握り潰して「オシレータ 0 本」という形でしか症状が出ない。
 class FakeBiquadFilterNode extends FakeNode {
   type = 'lowpass'
@@ -390,7 +390,7 @@ describe('通知音: 残響を持たない（全系統）', () => {
 })
 
 describe('震度更新音: 震度5弱以上で低音が厚くなる', () => {
-  // 旧実装は ding / dingDeep という別関数の選択だったが、いまは marimba の真偽値引数。
+  // 旧実装は ding / dingDeep という別関数の選択だったが、いまは warningBeep の真偽値引数。
   // 取り違えても型では捕まらないので、効果そのものを固定する。
 
   /** 基音の 1 オクターブ下（サブオクターブ）を鳴らしている声部の、gain の最大値 */
@@ -406,7 +406,7 @@ describe('震度更新音: 震度5弱以上で低音が厚くなる', () => {
 
   it('正: 震度5弱はサブオクターブが厚い', () => {
     sound.playKyoshinUpdateSound(15)      // index 15 = 震度5弱（gain 0.36・deep）
-    const peaks = subPeaks([740, 880, 988, 1108])
+    const peaks = subPeaks([587, 699, 784, 880])
     expect(peaks).toHaveLength(4)
     // deep のとき 0.45 倍。0.36 × 0.45 = 0.162
     for (const v of peaks) expect(v).toBeCloseTo(0.162, 3)
@@ -414,10 +414,10 @@ describe('震度更新音: 震度5弱以上で低音が厚くなる', () => {
 
   it('対照: 震度4は同じ音でもサブオクターブが薄い', () => {
     sound.playKyoshinUpdateSound(13)      // index 13 = 震度4（gain 0.34・deep でない）
-    const peaks = subPeaks([740, 880, 988, 1108])
+    const peaks = subPeaks([587, 699, 784, 880])
     expect(peaks).toHaveLength(4)
-    // deep でないとき 0.18 倍。0.34 × 0.18 = 0.0612
-    for (const v of peaks) expect(v).toBeCloseTo(0.0612, 4)
+    // deep でないとき 0.20 倍。0.34 × 0.20 = 0.068
+    for (const v of peaks) expect(v).toBeCloseTo(0.068, 4)
   })
 
   it('安全弁: 段階ごとの音数は変えていない（震度2以下 2 音 → 震度7 7 音）', () => {
@@ -478,9 +478,53 @@ describe('通知音: 不正な音量の扱い（安全弁）', () => {
   })
 })
 
+describe('通知音: 系統の割り当て', () => {
+  // 系統は役割で分けてある。**どの音がどのプリミティブで作られるか**を声部数で固定する。
+  // 数が変われば別の系統へ移ったということなので、意図した移動かどうかを立ち止まって考えられる。
+
+  it('純音（正弦＋第2倍音）を使うのは津波の更新・解除と南海トラフの 2 種', () => {
+    const cases: Array<[Parameters<typeof sound.playAlertSound>[0], number]> = [
+      ['tsunamiUpdate', 4],          // 2 音 × 2 本
+      ['tsunamiCancel', 4],          // 2 音 × 2 本
+      ['specialInfo', 6],            // 3 音 × 2 本
+      ['specialInfoCommentary', 4],  // 2 音 × 2 本
+    ]
+    for (const [type, count] of cases) {
+      ctx.reset()
+      sound.playAlertSound(type)
+      expect(ctx.oscillators, type).toHaveLength(count)
+      // 純音はフィルタを通さない
+      expect(ctx.filters, type).toHaveLength(0)
+    }
+  })
+
+  it('ピアノを使うのは地震そのものを伝える 3 種だけ', () => {
+    const cases: Array<[Parameters<typeof sound.playAlertSound>[0], number]> = [
+      ['earthquake', 32],        // 4 音 × 8 本
+      ['earthquakePrompt', 24],  // 3 音 × 8 本
+      ['earthquakeInfo', 16],    // 2 音 × 8 本
+    ]
+    for (const [type, count] of cases) {
+      ctx.reset()
+      sound.playAlertSound(type)
+      expect(ctx.oscillators, type).toHaveLength(count)
+    }
+  })
+
+  it('震度更新音は警告ビープ（矩形波 2 本＋正弦の芯＋サブ）', () => {
+    sound.playKyoshinUpdateSound(13)   // 震度4 = 4 音
+    expect(ctx.oscillators).toHaveLength(16)
+    expect(ctx.oscillators.filter(o => o.type === 'square')).toHaveLength(8)
+    // 矩形波は左右へ離調して重ねる。同じ周波数で detune の符号だけが違う
+    const detunes = ctx.oscillators.filter(o => o.type === 'square').map(o => o.detune.value)
+    expect(new Set(detunes)).toEqual(new Set([-10, 10]))
+    expect(ctx.filters).toHaveLength(4)
+  })
+})
+
 describe('通知音: BiquadFilter が無い環境（安全弁）', () => {
   // 安全弁: ローパスは木の柔らかさを出す飾りであって、必須ではない。
-  // createBiquadFilter を持たない実行環境で、マリンバ系の 4 種が丸ごと落ちないこと。
+  // createBiquadFilter を持たない実行環境で、フィルタを使う 3 種が丸ごと落ちないこと。
   it('マスターへ直結して鳴らす（無音にならない）', () => {
     const key = 'createBiquadFilter'
     ;(ctx as unknown as Record<string, unknown>)[key] = undefined
