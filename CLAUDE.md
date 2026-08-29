@@ -227,6 +227,7 @@ done
 - **型チェック（必須）**: `npx tsc -b`。エラー0を確認する。
   - `npm run build` でも型チェックは走るが、その前段に**地名ラベル用グリフの検証**（`build-glyphs.mjs --check`）が入る。ここで落ちた場合は型エラーではなく「グリフの焼き直し忘れ」なので、メッセージを読んで切り分けること（下記「補助コマンド」参照）。
 - **ユニットテスト**: テストを持つコード（`src/utils/` / `src/hooks/` / `src/services/` / コンポーネント配下の `*.test.ts` が対応する箇所）を変更した場合は `npm test`。**main への push 時に CI（`.github/workflows/deploy.yml`）がビルドより先に同じテストを走らせ、失敗するとビルドもデプロイも実行されない**ため、`ready/` へ改名する前に通しておく。
+  - **テスト本体の中で対象モジュールを初めて読まないこと。** `vi.resetModules()` ＋動的 import で毎回モジュールを作り直す形のテストは、そのファイルで初回の解決・変換（全ファイル並列実行では他ワーカーとの順番待ちで数秒に伸びる）が **1 件目の所要時間に丸ごと乗り**、既定の 5 秒を超えて時間切れになる。トップレベルで一度 `import './対象'` しておけば待ちはファイル読み込み時へ移り、`testTimeout` の対象から外れる。手順・実測値・つまずきどころは [`src/services/akamaiClock.test.ts`](src/services/akamaiClock.test.ts) 冒頭を参照。上限を延ばす対処（`{ timeout: 15_000 }`）を採っているファイルもあるが、待ちを消せるならそちらを先に検討する。
 - **アプリ起動（デフォルト: DMDSS 版）**: **特にバリアントの指定がない場合は `npm run dev:dmdss` を使用する**。
   - DMDSS 版 URL: `http://localhost:5173/realtime-earthquake-viewer/dmdss/`
   - standard 版が明示的に必要な場合のみ `npm run dev` → `http://localhost:5173/realtime-earthquake-viewer/`
