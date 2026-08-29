@@ -77,10 +77,12 @@ describe('unlockAudio: 音を鳴らす前にマスターチェーンと残響を
     expect(ctx.convolvers).toBe(0)
   })
 
-  it('unlockAudio() で compressor と残響が作られ、音は鳴らない', () => {
+  it('unlockAudio() で compressor と残響 2 種が作られ、音は鳴らない', () => {
     sound.unlockAudio()
     expect(ctx.compressors).toBe(1)
-    expect(ctx.convolvers).toBe(1)
+    // 情報系（hall）と EEW の穏やかな音（tight）。片方だけだと、その音を初めて
+    // 鳴らす発報でバッファ生成が走る
+    expect(ctx.convolvers).toBe(2)
     // 事前生成であって発音ではない。オシレータを作ってはいけない
     expect(ctx.oscillators).toBe(0)
   })
@@ -89,7 +91,7 @@ describe('unlockAudio: 音を鳴らす前にマスターチェーンと残響を
     sound.unlockAudio()
     sound.unlockAudio()
     expect(ctx.compressors).toBe(1)
-    expect(ctx.convolvers).toBe(1)
+    expect(ctx.convolvers).toBe(2)
     expect(ctx.oscillators).toBe(0)
   })
 
