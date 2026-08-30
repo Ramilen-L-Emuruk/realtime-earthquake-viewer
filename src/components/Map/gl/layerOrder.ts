@@ -52,6 +52,9 @@ export const MAP_LAYER_ORDER = [
   'kyoshin-points',
   'kyoshin-detected',
   'kyoshin-ripple',
+  // 長期震源カタログの点群。**進行中の地震より背面に置く。** 過去の震源は文脈として敷くもので、
+  // いま起きている地震の震源と重なったときに手前へ出てはいけない（深度が同じなら描画順で決まる）。
+  'hypocenter-catalog',
   // 震源（深さを持つ点）。地下に置くため深度バッファを使う custom layer で、地表の描画物より前面。
   // 地名ラベルよりは背面（ラベルは常に最前面という既存の方針を崩さない）。
   // 地震情報の震源と EEW の震源は同じ仕組みで描く（gl/depthPointLayer.ts）。EEW を前面に置くのは、
