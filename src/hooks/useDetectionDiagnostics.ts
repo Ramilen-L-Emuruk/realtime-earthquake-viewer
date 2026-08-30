@@ -85,6 +85,7 @@ export function useDetectionDiagnostics(
             siteConfigId: cfg ?? '',
             sites,
             event: describeEvent(e, keyToIndex, sites, idx),
+            confirmedBy: e.confirmedBy,
             learned,
           },
           __APP_VERSION__,

@@ -6,7 +6,7 @@
 //   - areas:       "都道府県|細分区域名" -> [lat, lon]（P2P地震情報の isArea:true 地点用・観測点重心）
 //   - regionNames: 一次細分区域名の一覧（stations の 3 要素目が指す先）
 //
-// データ出典: 気象庁 震度観測点一覧（iku55 氏が JSON 化したものを利用）
+// データ出典: 気象庁 震度観測点一覧表（iku55 氏が JSON 化したものを利用）
 //   https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1
 //
 // 更新方法: node scripts/build-station-coords.mjs

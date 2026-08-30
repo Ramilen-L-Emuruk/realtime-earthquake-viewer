@@ -1,5 +1,6 @@
 import type { CustomLayerInterface, Map as MapLibreMap } from 'maplibre-gl'
 import { log } from '../../../utils/logger'
+import { reportRenderFailure, clearRenderFailure } from '../../../utils/renderHealth'
 import { applyProjectionUniforms, createProjectionProgramCache } from './projectionProgram'
 
 // 深さを持つ点を地下へ描く MapLibre カスタムレイヤー。
@@ -610,7 +611,7 @@ export interface DepthPointLayer extends CustomLayerInterface {
   pick(x: number, y: number, forClick?: boolean): DepthPickResult
 }
 
-export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointLayer {
+export function createDepthPointLayer(id: string, map: MapLibreMap, label: string): DepthPointLayer {
   // 表示・判定・柄の 3 プログラム。**投影が切り替わると中身が作り直される**ため、
   // ロケーションはフレームごとにキャッシュから引く（gl/projectionProgram.ts）。
   const displayCache = createProjectionProgramCache({
@@ -645,6 +646,9 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
   let fboSize: [number, number] = [0, 0]
   let count = 0
   let warnedDisabled = false
+  // 画面へ「描けていない」と出しているか。ログ（`warnedDisabled`）は 1 度きりだが、
+  // こちらは**直ったら取り下げる**ので別に持つ。
+  let brokenReported = false
   let warnedFbo = false
   let warnedPointLimit = false
   let visible = true
@@ -843,8 +847,17 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
           warnedDisabled = true
           log.error(`[depthPointLayer:${id}] シェーダーを用意できず、描画と判定を止めています`)
         }
+        // **画面にも出す。** ここで黙ると、件数だけが正しく出たまま地図が空になる
+        //（件数は JS 側だけで数えているので、描けているかを一切見ていない）。
+        brokenReported = true
+        reportRenderFailure(id, label, 'draw')
         resolvePendingPickAsMiss()
         return
+      }
+      if (brokenReported) {
+        // 投影が切り替わってプログラムを作り直したら通ることがある。**直ったら画面から消す。**
+        brokenReported = false
+        clearRenderFailure(id, 'draw')
       }
       const u = display.u
       const pu = picker.u
@@ -961,6 +974,9 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
 
     onRemove(_m, gl2) {
       const gl = gl2 as WebGL2RenderingContext
+      // **画面から外れたら不調の記録も消す。** 残すと、もう出てこない描画物の名前が居座る。
+      brokenReported = false
+      clearRenderFailure(id, 'draw')
       // 予約を残すと、レイヤーが消えた後も再描画を起こし続ける。
       blink.dispose()
       displayCache.dispose(gl)
@@ -1075,6 +1091,14 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
       visible = value
       // 隠している間に解決待ちを残さない（見えないものは掴めない）。
       invalidatePick()
+      // **隠したら「描けていない」も取り下げる。** `render()` は不可視だとシェーダーの可否を
+      // 見る前に抜けるので、ここで消さないと記録が残り続ける。**アンマウントに頼れない**——
+      // 震源カタログは点を詰め直さないために常時マウントしたまま `visible` だけ切り替えるため、
+      // タブを離れた瞬間にバナーが固定され、戻るまで全タブで出っぱなしになる。
+      if (!value && brokenReported) {
+        brokenReported = false
+        clearRenderFailure(id, 'draw')
+      }
       map.triggerRepaint()
     },
 
