@@ -86,6 +86,18 @@ const MAGNITUDE_RAMP: Ramp = [
   [1.0, 0.9, 0.15, 0.3],
 ]
 
+/**
+ * マグニチュードの絞り込みで選べる範囲。
+ *
+ * **色の飽和範囲（`MAGNITUDE_RAMP_RANGE`）とは別に持つ。** 「色をどこで飽和させるか」と
+ * 「どこまで絞り込めるか」は別の判断で、片方を借りていると、色を調整したつもりで絞り込みの
+ * 届く範囲まで一緒に動く。
+ *
+ * 上端は収録の最大（M9.0・2011 年東北地方太平洋沖）に合わせてある。**上端で取りこぼしは
+ * 起きない**——下限の絞り込みなので、上端より大きい地震も残る。
+ */
+export const MAGNITUDE_FILTER_RANGE = { min: 2, max: 9 } as const
+
 /** マグニチュードの色が飽和する範囲。 */
 export const MAGNITUDE_RAMP_RANGE = { min: 2, max: 8 } as const
 
@@ -129,16 +141,26 @@ export function depthRampT(depthKm: number): number {
 /**
  * 点の直径（CSS px）。
  *
- * **マグニチュードには線形に効かせる。** エネルギーは M が 1 増えるごとに約 32 倍なので、M2 と M9 では
+ * **マグニチュードには線形に効かせる。マグニチュードが既に対数**なので、これで物理量に対しては
  * 300 億倍を超える。面積に見立てて直径へ落としても 18 万倍で、図として成立しない。「大きいほど目立つ」
  * という順序だけを保てばよい。
  */
 export function pointSizePx(basePx: number, magnitude: number, sizeBy: CatalogSizeBy): number {
   if (sizeBy === 'fixed') return basePx
   const m = Number.isFinite(magnitude) ? magnitude : MAGNITUDE_RAMP_RANGE.min
-  const scale = 0.5 + 0.35 * (m - MAGNITUDE_RAMP_RANGE.min)
-  return basePx * (scale < 0.35 ? 0.35 : scale > 3.5 ? 3.5 : scale)
+  const scale = EMPHASIS_SLOPE * (m - MAGNITUDE_RAMP_RANGE.min)
+  return basePx * (scale < EMPHASIS_MIN ? EMPHASIS_MIN : scale > EMPHASIS_MAX ? EMPHASIS_MAX : scale)
 }
+
+/** 強調の傾き。M が 1 増えるごとに直径がこの割合ぶん伸びる（M3 で 0.6 倍・M9 で 4.2 倍）。 */
+const EMPHASIS_SLOPE = 0.6
+/**
+ * 倍率の下限。**0 まで落とさない。** 傾きだけで決めると収録の下限（M2.0）で 0 倍になり、
+ * 最も件数の多い地震が 1 つ残らず消える。
+ */
+const EMPHASIS_MIN = 0.35
+/** 倍率の上限。 */
+const EMPHASIS_MAX = 5
 
 /** その期間・その下限で、取りこぼしがあるかどうか。 */
 export interface CatalogCompleteness {
@@ -202,6 +224,43 @@ export function formatMissingYears(years: readonly number[]): string {
   return runs.map(([a, b]) => (a === b ? String(a) : `${a}〜${b}`)).join(', ')
 }
 
+/**
+ * 深さのつまみが取りうる最大値（km）。**これはスライダーの端であって、地震の深さの上限ではない。**
+ *
+ * 端に置いたときは「上限なし」として扱う（`effectiveMaxDepthKm`）。端の値で切ると、カタログを
+ * 作り直してこれより深い地震が入ったときに**黙って消える**。収録の最深は 698.4km なので、
+ * いまは切っても結果は変わらないが、変わらないうちに正しくしておく。
+ */
+export const DEPTH_FILTER_MAX_KM = DEPTH_RAMP_MAX_KM
+
+/**
+ * 端に置いたつまみを「制限なし」へ読み替える。**上下で対称にすること。**
+ *
+ * 見出しは両端とも「制限なし」と書く（`depthBoundLabel`）。下限だけ 0 のまま比較していると、
+ * **深さが負の地震が黙って落ちる**——「制限なし」と表示しながら外すことになる。いまの生成側は
+ * 負の深さを作らないので結果は変わらないが、その不変条件はここからは見えない。片方だけ
+ * 読み替える形にしておくと、取得元が増えたときに気づけない。
+ */
+export function effectiveMaxDepthKm(maxDepthKm: number): number {
+  return maxDepthKm >= DEPTH_FILTER_MAX_KM ? Infinity : maxDepthKm
+}
+
+/** 上と対（下限の端は「下限なし」）。 */
+export function effectiveMinDepthKm(minDepthKm: number): number {
+  return minDepthKm <= 0 ? -Infinity : minDepthKm
+}
+
+/**
+ * 深さの絞り込みの見出し。
+ *
+ * **端は「制限なし」と書く。** 「700km 以浅」と出すと、それより深い地震はこのアプリでは
+ * 見られないと読めてしまう（実際は端＝制限なしで、全部入っている）。
+ */
+export function depthBoundLabel(valueKm: number, bound: 'min' | 'max'): string {
+  if (bound === 'min') return valueKm <= 0 ? '制限なし' : `${valueKm} km 以深`
+  return valueKm >= DEPTH_FILTER_MAX_KM ? '制限なし' : `${valueKm} km 以浅`
+}
+
 /** 絞り込みに残るかどうか。**取り込みと件数の見積もりで同じ述語を使う**ため切り出してある。 */
 function passes(
   magnitude: number,
@@ -227,7 +286,10 @@ export function buildCatalogPointCloud(
   filter: CatalogFilter,
   options: CatalogViewOptions,
 ): CatalogPointCloud {
-  const { minMagnitude, minDepthKm, maxDepthKm } = filter
+  const { minMagnitude } = filter
+  // **端のつまみは「制限なし」。上下とも読み替える**（理由は `effectiveMaxDepthKm`）。
+  const minDepthKm = effectiveMinDepthKm(filter.minDepthKm)
+  const maxDepthKm = effectiveMaxDepthKm(filter.maxDepthKm)
   // 1 周目。件数と、発生年で色を付けるときの分母を同時に取る。
   // **分母は絞り込みに残った点だけで測る。** 年ファイルの端で測ると、深さや M で絞った結果
   // 実際には狭い範囲しか残っていないときに、色が 1 段ぶんしか出ない。

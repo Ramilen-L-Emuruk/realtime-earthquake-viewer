@@ -8,6 +8,11 @@ import {
   catalogCompleteness,
   yearsInRange,
   buildCatalogPointCloud,
+  effectiveMaxDepthKm,
+  effectiveMinDepthKm,
+  depthBoundLabel,
+  DEPTH_FILTER_MAX_KM,
+  MAGNITUDE_FILTER_RANGE,
   oldestYearOf,
   formatMissingYears,
   DEPTH_RAMP_MAX_KM,
@@ -134,9 +139,25 @@ describe('pointSizePx', () => {
     expect(pointSizePx(4, 3, 'magnitude')).toBeLessThan(pointSizePx(4, 6, 'magnitude'))
   })
 
+  // 正: 効き方を数値で固定する。**傾きを動かすとここが落ちる。**
+  it.each([
+    [3, 0.6],
+    [5, 1.8],
+    [7, 3.0],
+    [9, 4.2],
+  ])('M%s で基準の %s 倍', (m, ratio) => {
+    expect(pointSizePx(10, m, 'magnitude')).toBeCloseTo(10 * ratio, 6)
+  })
+
+  // **安全弁: 収録の下限（M2.0）で 0 倍にしない。** 傾きだけで決めると、最も件数の多い
+  // 地震が 1 つ残らず消える。
+  it('M2.0 でも消えない', () => {
+    expect(pointSizePx(10, 2, 'magnitude')).toBe(10 * 0.35)
+  })
+
   // 安全弁: 大小関係だけを保ち、極端な倍率にしない（エネルギー比で写すと M2 と M9 で 300 億倍になる）。
-  it('倍率は 3.5 倍で頭打ち', () => {
-    expect(pointSizePx(4, 20, 'magnitude')).toBe(4 * 3.5)
+  it('倍率は 5 倍で頭打ち', () => {
+    expect(pointSizePx(4, 20, 'magnitude')).toBe(4 * 5)
   })
 
   // 安全弁: M が欠測でも数値を返す（NaN を渡すと点が消える）。
@@ -208,6 +229,80 @@ describe('formatMissingYears', () => {
   // 安全弁: 空なら空文字（呼び出し側は長さで出し分けるが、ここでも壊れないこと）。
   it('空なら空文字', () => {
     expect(formatMissingYears([])).toBe('')
+  })
+})
+
+describe('絞り込みの範囲は色の範囲と別に持つ', () => {
+  // **対照: 色の飽和範囲を借りていないこと。** 借りていると、色を調整したつもりで
+  // 絞り込みの届く範囲まで一緒に動く。**同じ値になった瞬間に気づけなくなる**ので、
+  // 別の定数であること自体をここで固定する。
+  it('マグニチュードの絞り込みは収録の最大まで届く', () => {
+    expect(MAGNITUDE_FILTER_RANGE.max).toBe(9)
+    expect(MAGNITUDE_FILTER_RANGE.max).toBeGreaterThan(MAGNITUDE_RAMP_RANGE.max)
+  })
+
+  // 安全弁: 絞り込みの上端を超える地震も、下限の絞り込みでは残る（取りこぼしは起きない）。
+  it('上端を超える地震も残る', () => {
+    const huge = makeYear(2020, [{ lng: 139, lat: 35, depth: 20, mag: 9.5, timeMs: 1 }])
+    const c = buildCatalogPointCloud([huge], { ...FILTER, minMagnitude: MAGNITUDE_FILTER_RANGE.max }, VIEW)
+    expect(c.columns.count).toBe(1)
+  })
+})
+
+describe('深さの端は「制限なし」', () => {
+  // 正: 端に置いたら上限を外す。**端の値で切ると、より深い地震が入ったとき黙って消える。**
+  it('上限が端なら Infinity', () => {
+    expect(effectiveMaxDepthKm(DEPTH_FILTER_MAX_KM)).toBe(Infinity)
+    expect(effectiveMaxDepthKm(DEPTH_FILTER_MAX_KM + 100)).toBe(Infinity)
+  })
+
+  // **正: 下限も対称に読み替える。** 片方だけだと、「制限なし」と表示しながら
+  // 深さが負の地震を外すことになる。
+  it('下限が端なら -Infinity', () => {
+    expect(effectiveMinDepthKm(0)).toBe(-Infinity)
+    expect(effectiveMinDepthKm(-10)).toBe(-Infinity)
+  })
+
+  it('下限が端の先ならその値のまま', () => {
+    expect(effectiveMinDepthKm(100)).toBe(100)
+  })
+
+  // **安全弁: 下限が端なら、深さが負の地震も残る。**
+  it('下限が端なら負の深さも残る', () => {
+    const odd = makeYear(2020, [{ lng: 139, lat: 35, depth: -2, mag: 5, timeMs: 1 }])
+    const c = buildCatalogPointCloud([odd], { ...FILTER, minDepthKm: 0 }, VIEW)
+    expect(c.columns.count).toBe(1)
+  })
+
+  // 対照: 端の手前ならその値で切る。
+  it('端の手前はその値のまま', () => {
+    expect(effectiveMaxDepthKm(300)).toBe(300)
+  })
+
+  // 正: 端は「制限なし」と書く（「700 km 以浅」だと、それより深いものは見られないと読める）。
+  it('端の見出しは制限なし', () => {
+    expect(depthBoundLabel(DEPTH_FILTER_MAX_KM, 'max')).toBe('制限なし')
+    expect(depthBoundLabel(0, 'min')).toBe('制限なし')
+  })
+
+  // 対照: 端でなければ値を書く。
+  it('端でなければ値を書く', () => {
+    expect(depthBoundLabel(300, 'max')).toBe('300 km 以浅')
+    expect(depthBoundLabel(100, 'min')).toBe('100 km 以深')
+  })
+
+  // **安全弁: 端に置いたとき、収録の上限より深い地震が落ちない。**
+  it('端なら 700km より深い地震も残る', () => {
+    const deep = makeYear(2020, [{ lng: 139, lat: 35, depth: 900, mag: 5, timeMs: 1 }])
+    const c = buildCatalogPointCloud([deep], { ...FILTER, maxDepthKm: DEPTH_FILTER_MAX_KM }, VIEW)
+    expect(c.columns.count).toBe(1)
+  })
+
+  // 対照: 端の手前なら落ちる。
+  it('端の手前なら落ちる', () => {
+    const deep = makeYear(2020, [{ lng: 139, lat: 35, depth: 900, mag: 5, timeMs: 1 }])
+    const c = buildCatalogPointCloud([deep], { ...FILTER, maxDepthKm: DEPTH_FILTER_MAX_KM - 10 }, VIEW)
+    expect(c.columns.count).toBe(0)
   })
 })
 

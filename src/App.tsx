@@ -19,7 +19,7 @@ import { CatalogTab } from './components/CatalogTab'
 import { useHypocenterCatalog } from './hooks/useHypocenterCatalog'
 import { completeMinMagnitude } from './utils/hypocenterCatalog'
 import {
-  buildCatalogPointCloud, DEPTH_RAMP_MAX_KM, CATALOG_REBUILD_DEBOUNCE_MS, oldestYearOf,
+  buildCatalogPointCloud, DEPTH_FILTER_MAX_KM, CATALOG_REBUILD_DEBOUNCE_MS, oldestYearOf,
   type CatalogFilter, type CatalogViewOptions,
 } from './utils/hypocenterCatalogView'
 import { SpecialInfoBanner } from './components/SpecialInfoBanner'
@@ -810,11 +810,19 @@ export function App() {
       toYear: thisYear,
       minMagnitude: 2,
       minDepthKm: 0,
-      maxDepthKm: DEPTH_RAMP_MAX_KM,
+      maxDepthKm: DEPTH_FILTER_MAX_KM,
     }
   })
   const [catalogView, setCatalogView] = useState<CatalogViewOptions>({ colorBy: 'depth', sizeBy: 'fixed', sizePx: 3 })
-  const catalog = useHypocenterCatalog(catalogFilter.fromYear, catalogFilter.toYear, mapTab === 'catalog')
+  // **重い側はスライダーが止まってから動かす。** つまみと数値のラベルは元の値で即座に動く。
+  // 遅らせる先は 2 つあり、どちらも止めないと意味がない。
+  //  - 点群の組み立て: 全期間（約 102 万点）で 1 回 16ms（最悪 45ms）＋ GPU 転送 52ms
+  //  - **年ファイルの取得**: つまみを 1919 まで引きずると途中の 100 通りすべてで取得が走る。
+  //    効果の後始末は打ち切りの印を立てるだけで**発行済みの取得は止めない**ため、
+  //    ドラッグ 1 回で収録の全ファイル（33MB）を取りに行くことになる。
+  const settledFilter = useDebouncedValue(catalogFilter, CATALOG_REBUILD_DEBOUNCE_MS)
+  const settledView = useDebouncedValue(catalogView, CATALOG_REBUILD_DEBOUNCE_MS)
+  const catalog = useHypocenterCatalog(settledFilter.fromYear, settledFilter.toYear, mapTab === 'catalog')
   const catalogIndex = catalog.index
   // 索引が届いたら、期間を収録範囲へ収め、マグニチュードの下限をその期間の完全性に合わせる。
   // **収める側も必要。** 年が明けた直後は「今年」がまだ収録されておらず、選択肢に無い値が残る。
@@ -842,11 +850,6 @@ export function App() {
       return { ...next, minMagnitude: completeMinMagnitude(catalogIndex, oldest) }
     })
   }, [catalogIndex])
-  // **点群の組み立てはスライダーが止まってから。** 全期間（約 102 万点）で 1 回 16ms（最悪 45ms）、
-  // これに GPU バッファの転送 52ms が乗る。つまみを掴んでいる間は毎フレーム値が飛んでくるので、
-  // 素直に繋ぐと引っかかる。**つまみと数値のラベルは元の値で即座に動く**（遅らせるのは重い側だけ）。
-  const settledFilter = useDebouncedValue(catalogFilter, CATALOG_REBUILD_DEBOUNCE_MS)
-  const settledView = useDebouncedValue(catalogView, CATALOG_REBUILD_DEBOUNCE_MS)
   // **タブを離れても点群は捨てない。** 捨てると往復のたびに数十万点を詰め直すことになる
   // （地図側は visible で隠すだけ）。
   const catalogCloud = useMemo(
@@ -1411,6 +1414,9 @@ export function App() {
               onViewChange={setCatalogView}
               pointCount={catalogCloud?.columns.count ?? 0}
               loading={catalog.loading}
+              /* 絞り込みを変えた直後は件数が追いついていない（デバウンスした側で作るため）。
+                 参照が同じなら落ち着いている（`useDebouncedValue` は同じ値なら同じ参照を返す）。 */
+              pending={catalogFilter !== settledFilter || catalogView !== settledView}
               error={catalog.error}
               missingYears={catalog.missingYears}
               onRetry={catalog.retry}
