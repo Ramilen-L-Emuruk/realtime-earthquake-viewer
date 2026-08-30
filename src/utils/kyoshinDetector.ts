@@ -131,7 +131,7 @@ export interface StationMeta {
   /** 各点が属する固定格子セルのキー */
   cellOf: Record<string, string>
   /** フレーム配列と同じ並びの一意キー（computeSiteKeys の結果）。座標衝突時の別実体化に使う。 */
-  keys: string[]
+  keys: readonly string[]
 }
 
 /** 1 フレーム分の入力。 */
@@ -477,14 +477,34 @@ export function siteKey(lat: number, lng: number): string {
  * ——うちの実装でも別実体のまま持てば、既存の最大値集計（updateEventMetrics 等）が同じ結果に自然と
  * 収束する。
  */
-export function computeSiteKeys(sites: [number, number][]): string[] {
+// 観測点リストごとのキー配列。**同じ配列に対しては作り直さない。**
+//
+// 表示側（`kyoshinDetectionView` の `buildSiteIndex`）は強震モニタが 1 秒ごとに値を配るたびに
+// これを呼ぶが、渡ってくる観測点リストは同じ配列（`fetchSiteList` がキャッシュしたもの）で、
+// 座標が変わらない以上キーも変わらない。それでも全 1725 点ぶんの文字列を毎秒組み直しており、
+// 非力な端末では自動移動 1 回のあいだに 30〜50ms をここで使っていた。
+//
+// **配列そのものを鍵にする**（中身の比較はしない）。観測点リストが差し替わるときは必ず別の配列に
+// なるため、これで十分に見分けられる。WeakMap なので、リストが捨てられればキャッシュも一緒に消える。
+//
+// **返す配列は `readonly`。** キャッシュを入れる前は呼び出しごとに別の配列を返していたので、
+// 誰かが並べ替えても他へは波及しなかった。いまは同じ配列を全員（近傍グラフ・表示用の索引・
+// 診断ログ）が共有するため、1 箇所の書き換えが全部を同時に狂わせる。例外は出ず、座標とキーの
+// 対応だけが静かにずれるので、型で止める。
+const siteKeysCache = new WeakMap<readonly [number, number][], readonly string[]>()
+
+export function computeSiteKeys(sites: [number, number][]): readonly string[] {
+  const cached = siteKeysCache.get(sites)
+  if (cached) return cached
   const seen = new Map<string, number>()
-  return sites.map(([lat, lng]) => {
+  const keys = sites.map(([lat, lng]) => {
     const base = siteKey(lat, lng)
     const n = (seen.get(base) ?? 0) + 1
     seen.set(base, n)
     return n === 1 ? base : `${base}#${n}`
   })
+  siteKeysCache.set(sites, keys)
+  return keys
 }
 
 /** 座標 → 固定格子セルキー（CELL_DEG 等間隔ビン）。 */

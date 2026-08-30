@@ -46,4 +46,27 @@ describe('filterSubThresholdIndices', () => {
     // 大阪(index5)は床未満で非表示。未知点(index6=value0.0)は floor=0+0.4=0.4 未満で非表示。
     expect(filterSubThresholdIndices(sites, [5, 6], floors)).toEqual([0, 0])
   })
+
+  // 座標キーのキャッシュ（観測点リストの配列そのものを鍵にする WeakMap）。
+  // 効かなければ毎秒 1725 点ぶんの文字列を組み直す元の負荷に戻り、内容が変わったのに
+  // 使い回せば別の観測点の学習値でフィルタしてしまう。どちらも例外を出さない。
+  it('同じ配列を繰り返し渡しても結果が変わらない（キャッシュが効いても正しい）', () => {
+    const sites: [number, number][] = [OSAKA, TOKYO]
+    const floors = { [siteKey(...OSAKA)]: 1.0 }
+    // 同じ index8(value 1.0) でも、大阪は床1.0+0.4に届かず非表示・東京は床0+0.4を超えて表示。
+    // キーの引き当てが崩れると、この差が消える。
+    const first = filterSubThresholdIndices(sites, [8, 8], floors)
+    const second = filterSubThresholdIndices(sites, [8, 8], floors)
+    expect(second).toEqual(first)
+    expect(second).toEqual([0, 8])
+  })
+
+  it('観測点リストが差し替わったら新しい座標で引き直す', () => {
+    // 前のリストのキーを使い回すと、別の観測点の慢性床でフィルタしてしまう。
+    const floors = { [siteKey(...OSAKA)]: 1.0 }
+    const before: [number, number][] = [OSAKA]
+    const after: [number, number][] = [TOKYO]
+    expect(filterSubThresholdIndices(before, [8], floors)).toEqual([0])
+    expect(filterSubThresholdIndices(after, [8], floors)).toEqual([8])
+  })
 })
