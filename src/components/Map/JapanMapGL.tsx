@@ -99,7 +99,7 @@ export function JapanMapGL({
   showActiveFaults = true,
   activeFaultOpacity = 0.4,
   showPlateBoundaries = true,
-  showDayNight = false,
+  showDayNight = true,
   dayNightOpacity = 0.5,
   quakeSelectionTick = 0,
   onMapReady,
