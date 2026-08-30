@@ -239,7 +239,7 @@ const DEEP_QUAKE_DEPTH_KM = 150
 /**
  * 予想震度が付いていない EEW について、その理由を返す。
  *
- * 読み上げ文（`eewIntensityToText`）と、予想震度の確定を待つかどうかの判断
+ * 読み上げ文（`eewIntensityText`）と、予想震度の確定を待つかどうかの判断
  * （`useLiveEventHandler` の第 2 フェーズ）が同じ判定を使うため、ここに一本化する。
  * 二重に持つと「待たずに読む条件」と「読み上げる理由」が食い違いうる。
  *
@@ -253,6 +253,53 @@ export function eewNoForecastReason(eew: EEWAlert): 'assumed' | 'deep' | 'unknow
   if (eew.earthquake.condition === '仮定震源要素') return 'assumed'
   if (eew.earthquake.hypocenter.depth > DEEP_QUAKE_DEPTH_KM) return 'deep'
   return 'unknown'
+}
+
+// 気象庁震度階級の並び順（震度1〜7）。数値刻みが不均一（5弱/5強・6弱/6強で5刻み、
+// それ以外は10刻み）なため、跳躍幅を「値の差」ではなくこの並び上のインデックス差で測る。
+const SCALE_STEP_ORDER: readonly number[] = [10, 20, 30, 40, 45, 50, 55, 60, 70]
+
+function scaleStepIndex(scale: number): number {
+  if (scale <= 0) return 0
+  const i = SCALE_STEP_ORDER.indexOf(scale)
+  return i < 0 ? 0 : i
+}
+
+/**
+ * 2つの震度階級間の跳躍幅（段階数）。EEW 第 2 フェーズの安定待ち（`useLiveEventHandler`）が
+ * 「急な跳躍ほど長く様子を見る」判定に使う。
+ *
+ * 数値差ではなく段階数で測る理由: 6弱(55)→7(70) は数値差15だが実際は2段階、6強(60)→7(70) は
+ * 数値差10で1段階。数値差のまま閾値判定すると、この2つを区別できない
+ * （2024/08/08 日向灘の瞬間的な震度7と、2024/01/01 能登本震の実際の震度7引き上げを見分けられなくなる）。
+ */
+export function eewScaleJumpSteps(a: number, b: number): number {
+  return Math.abs(scaleStepIndex(a) - scaleStepIndex(b))
+}
+
+/** 震度の跳躍幅がこの段階数以上なら「急な変化」とみなし、長く安定を待つ（判定は `eewScaleJumpSteps`）。 */
+export const EEW_PHASE2_SCALE_JUMP_STEP_THRESHOLD = 2
+/** 緩やかな変化（閾値未満の跳躍）での安定待ち時間。 */
+export const EEW_PHASE2_STABILITY_SMALL_MS = 300
+/** 急な変化（閾値以上の跳躍）での安定待ち時間。 */
+export const EEW_PHASE2_STABILITY_LARGE_MS = 2000
+/**
+ * 安定待ちを諦めて、その時点の最新値で強制確定するまでの上限。値が変わり続けて
+ * いつまでも安定しない場合に無言が続くのを防ぐ（`EEW_PHASE2_STABILITY_LARGE_MS` より
+ * 十分長く取ること。短いと急な変化の安定待ちが機能する前に毎回ここで打ち切られる）。
+ */
+export const EEW_PHASE2_STABILITY_MAX_WAIT_MS = 5000
+/**
+ * 長周期地震動階級の安定待ち時間。階級は 1〜4 の 4 段階しかなく、震度のような
+ * 跳躍幅の概念を適用する意味が薄いため、変化なしで確定するまでの時間を固定で 1 つ持つ。
+ */
+export const EEW_PHASE2_LPGM_STABILITY_MS = 300
+
+/** 震度の跳躍幅から、安定待ち時間 [ms] を返す（判定は `EEW_PHASE2_SCALE_JUMP_STEP_THRESHOLD`）。 */
+export function eewPhase2ScaleStabilityMs(currentScale: number, baseScale: number): number {
+  return eewScaleJumpSteps(currentScale, baseScale) >= EEW_PHASE2_SCALE_JUMP_STEP_THRESHOLD
+    ? EEW_PHASE2_STABILITY_LARGE_MS
+    : EEW_PHASE2_STABILITY_SMALL_MS
 }
 
 /** 情報番号（第N報）。取得できなければ null。 */
