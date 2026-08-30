@@ -1,3 +1,4 @@
+import type * as maplibregl from 'maplibre-gl'
 import type { JMAQuake, JMATsunami, TsunamiObservation, EEWAlert, JMALpgm } from '../../types/earthquake'
 import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
@@ -28,6 +29,16 @@ export interface ShakeFocus {
   lng: number
   tick: number
   atMs: number
+}
+
+/** 地図の外から地図を操作するための取っ手。共有カードの撮影だけが使う。 */
+export interface MapHandle {
+  map: maplibregl.Map
+  /**
+   * 撮影した画像へ、地図キャンバスに写らない描画物を描き足す。
+   * 津波の観測棒は DOM マーカーなので WebGL のキャンバスに含まれない。
+   */
+  drawExtras: (ctx: CanvasRenderingContext2D, map: maplibregl.Map, scale: number) => void
 }
 
 export interface JapanMapProps {
@@ -96,4 +107,12 @@ export interface JapanMapProps {
    * 追従してほしいため、tick が進んだフィットは isUserInteracting を無視して発火する。
    */
   quakeSelectionTick?: number
+  /**
+   * 地図の生成・破棄を外へ知らせる（生成時にハンドル・破棄時に null）。
+   *
+   * 共有カードの撮影は地図そのものを操作するため、地図の外（App）から実体へ触れる必要がある。
+   * 地図へ重ねる UI は App が配置する決まりで、撮影を起こすボタンもそちら側に置くため、
+   * 実体を渡す口をここに 1 つだけ開けている。
+   */
+  onMapReady?: (handle: MapHandle | null) => void
 }
