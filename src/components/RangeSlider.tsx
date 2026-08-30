@@ -1,6 +1,6 @@
 import { memo } from 'react'
 
-// 期間を 1 本のスライダーで選ぶ（つまみが 2 つ）。
+// 範囲を 1 本のスライダーで選ぶ（つまみが 2 つ）。震源カタログの期間・マグニチュード・深さで使う。
 //
 // **HTML に二つまみの入力は無い。** `<input type="range">` を 2 本重ね、溝と選択範囲の帯は
 // 別の要素が描く。本物の range のままにしてあるので、キーボード操作（矢印・Home/End）と
@@ -10,12 +10,22 @@ import { memo } from 'react'
 interface Props {
   min: number
   max: number
+  /** つまみの刻み。 */
+  step: number
   from: number
   to: number
   /** 両端は常に `from <= to` で渡る（押し合いはこの中で解決する）。 */
   onChange: (from: number, to: number) => void
-  /** 読み上げ用の名前。「開始」「終了」に付ける前置き。 */
+  /** 読み上げ用の名前。下の `ends` と組にして各つまみの名前にする。 */
   label: string
+  /**
+   * 読み上げでつまみを言い分ける対語（既定は「下端」「上端」）。
+   *
+   * **期間には「開始」「終了」を渡すこと。**「期間の下端」は日本語として不自然で、
+   * 聞いたときに何を指すか掴みにくい。値の範囲（マグニチュード・深さ・緯度・経度）は
+   * 既定のままでよい。
+   */
+  ends?: readonly [string, string]
   disabled?: boolean
 }
 
@@ -27,19 +37,21 @@ export function percentOf(value: number, min: number, max: number): number {
   return (t > 0 ? (t < 1 ? t : 1) : 0) * 100
 }
 
-export const YearRangeSlider = memo(function YearRangeSlider({
+export const RangeSlider = memo(function RangeSlider({
   min,
   max,
+  step,
   from,
   to,
   onChange,
   label,
+  ends = ['下端', '上端'],
   disabled = false,
 }: Props) {
   const left = percentOf(from, min, max)
   const right = percentOf(to, min, max)
-  // **つまみが重なったときは開始を上に置く。** 下になった側は掴めない。開始が上なら、
-  // 左へ引けば期間が広がり、右へ引けば終了を押して期間ごと動く（どちらも行き止まりにならない）。
+  // **つまみが重なったときは下端を上に置く。** 下になった側は掴めない。下端が上なら、
+  // 左へ引けば範囲が広がり、右へ引けば上端を押して範囲ごと動く（どちらも行き止まりにならない）。
   // 離れているときはつまみ同士が重ならないため、上下は関係しない。
   const fromOnTop = from >= to
 
@@ -54,10 +66,10 @@ export const YearRangeSlider = memo(function YearRangeSlider({
       />
       <input
         type="range"
-        aria-label={`${label}の開始`}
+        aria-label={`${label}の${ends[0]}`}
         min={min}
         max={max}
-        step={1}
+        step={step}
         value={from}
         disabled={disabled}
         onChange={(e) => {
@@ -69,10 +81,10 @@ export const YearRangeSlider = memo(function YearRangeSlider({
       />
       <input
         type="range"
-        aria-label={`${label}の終了`}
+        aria-label={`${label}の${ends[1]}`}
         min={min}
         max={max}
-        step={1}
+        step={step}
         value={to}
         disabled={disabled}
         onChange={(e) => {

@@ -10,10 +10,20 @@ import {
   buildCatalogPointCloud,
   effectiveMaxDepthKm,
   effectiveMinDepthKm,
+  effectiveMaxMagnitude,
+  magnitudeBoundLabel,
+  effectiveLatRange,
+  effectiveLngRange,
+  latBoundLabel,
+  lngBoundLabel,
+  LATITUDE_FILTER_RANGE,
+  LONGITUDE_FILTER_RANGE,
   depthBoundLabel,
   DEPTH_FILTER_MAX_KM,
   MAGNITUDE_FILTER_RANGE,
   oldestYearOf,
+  withCompleteMagnitudeFloor,
+  rangeLabel,
   formatMissingYears,
   DEPTH_RAMP_MAX_KM,
   MAGNITUDE_RAMP_RANGE,
@@ -44,8 +54,13 @@ const FILTER: CatalogFilter = {
   fromYear: 2020,
   toYear: 2021,
   minMagnitude: 2,
+  maxMagnitude: 9,
   minDepthKm: 0,
   maxDepthKm: 700,
+  minLat: 15,
+  maxLat: 56,
+  minLng: 110,
+  maxLng: 165,
 }
 const VIEW: CatalogViewOptions = { colorBy: 'depth', sizeBy: 'fixed', sizePx: 3 }
 
@@ -199,6 +214,55 @@ describe('catalogCompleteness', () => {
   })
 })
 
+describe('withCompleteMagnitudeFloor', () => {
+  const f = (over: Partial<CatalogFilter>): CatalogFilter => ({ ...FILTER, ...over })
+
+  // 正: 期間の古い側に応じて下限が上がる。
+  it('古い期間なら下限が上がる', () => {
+    expect(withCompleteMagnitudeFloor(INDEX, f({ fromYear: 1919, toYear: 2022 })).minMagnitude).toBe(5)
+  })
+
+  // 対照: 上限に余裕があれば上限は触らない。
+  it('上限に余裕があれば触らない', () => {
+    const r = withCompleteMagnitudeFloor(INDEX, f({ fromYear: 1919, toYear: 2022, maxMagnitude: 8 }))
+    expect(r.maxMagnitude).toBe(8)
+  })
+
+  // **安全弁: 下限が上限を追い越したら上限を外す。**
+  // 追い越したままにすると 1 件も残らず、しかも「なぜ 0 件か」が画面のどこにも出ない
+  // （完全性の注意書きは「下限が完全性を割っているか」しか見ないため黙る）。
+  it('下限が上限を追い越したら上限を外す', () => {
+    const r = withCompleteMagnitudeFloor(INDEX, f({ fromYear: 1919, toYear: 2022, minMagnitude: 2, maxMagnitude: 3 }))
+    expect(r.minMagnitude).toBe(5)
+    expect(r.maxMagnitude).toBe(MAGNITUDE_FILTER_RANGE.max)
+    expect(r.minMagnitude).toBeLessThanOrEqual(r.maxMagnitude)
+  })
+
+  // 安全弁: どの期間へ動かしても下限が上限を越えない。
+  it.each([1919, 1960, 1997, 2020])('%i 年からでも下限は上限を越えない', (fromYear) => {
+    const r = withCompleteMagnitudeFloor(INDEX, f({ fromYear, toYear: 2022, minMagnitude: 2, maxMagnitude: 2.5 }))
+    expect(r.minMagnitude).toBeLessThanOrEqual(r.maxMagnitude)
+  })
+})
+
+describe('rangeLabel', () => {
+  // 正: 両側に制限があれば並べる。
+  it('両側に制限があれば並べる', () => {
+    expect(rangeLabel('M 4.0 以上', 'M 7.0 以下')).toBe('M 4.0 以上 〜 M 7.0 以下')
+  })
+
+  // **正: 片側だけなら、その側だけを書く。**「M 4.0 以上 〜 制限なし」は読みにくい。
+  it('片側だけなら片側だけ書く', () => {
+    expect(rangeLabel('M 4.0 以上', '制限なし')).toBe('M 4.0 以上')
+    expect(rangeLabel('制限なし', 'M 7.0 以下')).toBe('M 7.0 以下')
+  })
+
+  // 対照: 両側とも無ければ 1 つに畳む。
+  it('両側とも無ければ畳む', () => {
+    expect(rangeLabel('制限なし', '制限なし')).toBe('制限なし')
+  })
+})
+
 describe('oldestYearOf', () => {
   it('小さいほうを返す', () => {
     expect(oldestYearOf({ fromYear: 2020, toYear: 1960 })).toBe(1960)
@@ -246,6 +310,109 @@ describe('絞り込みの範囲は色の範囲と別に持つ', () => {
     const huge = makeYear(2020, [{ lng: 139, lat: 35, depth: 20, mag: 9.5, timeMs: 1 }])
     const c = buildCatalogPointCloud([huge], { ...FILTER, minMagnitude: MAGNITUDE_FILTER_RANGE.max }, VIEW)
     expect(c.columns.count).toBe(1)
+  })
+})
+
+describe('緯度・経度で切り出す', () => {
+  const y = makeYear(2020, [
+    { lng: 130, lat: 33, depth: 10, mag: 5, timeMs: 1 },  // 九州
+    { lng: 140, lat: 36, depth: 10, mag: 5, timeMs: 2 },  // 関東
+    { lng: 145, lat: 43, depth: 10, mag: 5, timeMs: 3 },  // 北海道沖
+  ])
+
+  // 正: 緯度で挟める。
+  it('緯度で挟む', () => {
+    const c = buildCatalogPointCloud([y], { ...FILTER, minLat: 35, maxLat: 40 }, VIEW)
+    expect(Array.from(c.columns.lat)).toEqual([36])
+  })
+
+  // 正: 経度で挟める。
+  it('経度で挟む', () => {
+    const c = buildCatalogPointCloud([y], { ...FILTER, minLng: 142, maxLng: 150 }, VIEW)
+    expect(Array.from(c.columns.lng)).toEqual([145])
+  })
+
+  // 正: **緯度・経度・深さを重ねて直方体になる。**
+  it('緯度・経度・深さを重ねる', () => {
+    const deep = makeYear(2020, [
+      { lng: 140, lat: 36, depth: 10, mag: 5, timeMs: 1 },
+      { lng: 140, lat: 36, depth: 300, mag: 5, timeMs: 2 },
+    ])
+    const c = buildCatalogPointCloud(
+      [deep],
+      { ...FILTER, minLat: 35, maxLat: 37, minLng: 139, maxLng: 141, minDepthKm: 100, maxDepthKm: 400 },
+      VIEW,
+    )
+    expect(Array.from(c.columns.depthKm)).toEqual([300])
+  })
+
+  // 安全弁: 端は「制限なし」（収録の外にある地震も端なら残る）。
+  it('端なら収録の外も残る', () => {
+    const far = makeYear(2020, [{ lng: 200, lat: 70, depth: 10, mag: 5, timeMs: 1 }])
+    const c = buildCatalogPointCloud([far], FILTER, VIEW)
+    expect(c.columns.count).toBe(1)
+  })
+
+  it('端の読み替え', () => {
+    expect(effectiveLatRange(LATITUDE_FILTER_RANGE.min, LATITUDE_FILTER_RANGE.max)).toEqual([-Infinity, Infinity])
+    expect(effectiveLatRange(30, 40)).toEqual([30, 40])
+    expect(effectiveLngRange(LONGITUDE_FILTER_RANGE.min, LONGITUDE_FILTER_RANGE.max)).toEqual([-Infinity, Infinity])
+    expect(effectiveLngRange(130, 140)).toEqual([130, 140])
+  })
+
+  // 正: 向きの語は深さに揃える（以深／以浅 に対して 以北／以南・以東／以西）。
+  it('見出しの向きの語', () => {
+    expect(latBoundLabel(35, 'min')).toBe('北緯 35.0° 以北')
+    expect(latBoundLabel(40, 'max')).toBe('北緯 40.0° 以南')
+    expect(lngBoundLabel(135, 'min')).toBe('東経 135.0° 以東')
+    expect(lngBoundLabel(145, 'max')).toBe('東経 145.0° 以西')
+    expect(latBoundLabel(LATITUDE_FILTER_RANGE.min, 'min')).toBe('制限なし')
+    expect(lngBoundLabel(LONGITUDE_FILTER_RANGE.max, 'max')).toBe('制限なし')
+  })
+})
+
+describe('マグニチュードの上端も「制限なし」', () => {
+  // 正: 端に置いたら上限を外す（深さと同じ扱い）。
+  it('端なら Infinity', () => {
+    expect(effectiveMaxMagnitude(MAGNITUDE_FILTER_RANGE.max)).toBe(Infinity)
+  })
+
+  // 対照: 端の手前ならその値で切る。
+  it('端の手前はその値のまま', () => {
+    expect(effectiveMaxMagnitude(6)).toBe(6)
+  })
+
+  // **安全弁: 端に置いたとき、収録の最大より大きい地震も残る。**
+  it('端なら M9 より大きい地震も残る', () => {
+    const huge = makeYear(2020, [{ lng: 139, lat: 35, depth: 20, mag: 9.5, timeMs: 1 }])
+    const c = buildCatalogPointCloud([huge], { ...FILTER, maxMagnitude: MAGNITUDE_FILTER_RANGE.max }, VIEW)
+    expect(c.columns.count).toBe(1)
+  })
+
+  // 対照: 端の手前なら落ちる。
+  it('端の手前なら落ちる', () => {
+    const huge = makeYear(2020, [{ lng: 139, lat: 35, depth: 20, mag: 9.5, timeMs: 1 }])
+    const c = buildCatalogPointCloud([huge], { ...FILTER, maxMagnitude: 8 }, VIEW)
+    expect(c.columns.count).toBe(0)
+  })
+
+  // 正: 上限で絞れる（下限だけだった頃には無かった経路）。
+  it('範囲で挟める', () => {
+    const y = makeYear(2020, [
+      { lng: 139, lat: 35, depth: 10, mag: 3, timeMs: 1 },
+      { lng: 140, lat: 36, depth: 10, mag: 5, timeMs: 2 },
+      { lng: 141, lat: 37, depth: 10, mag: 7, timeMs: 3 },
+    ])
+    const c = buildCatalogPointCloud([y], { ...FILTER, minMagnitude: 4, maxMagnitude: 6 }, VIEW)
+    expect(Array.from(c.magnitude)).toEqual([5])
+  })
+
+  // 正: 端は「制限なし」と書く。
+  it('端の見出しは制限なし', () => {
+    expect(magnitudeBoundLabel(MAGNITUDE_FILTER_RANGE.min, 'min')).toBe('制限なし')
+    expect(magnitudeBoundLabel(MAGNITUDE_FILTER_RANGE.max, 'max')).toBe('制限なし')
+    expect(magnitudeBoundLabel(4, 'min')).toBe('M 4.0 以上')
+    expect(magnitudeBoundLabel(6, 'max')).toBe('M 6.0 以下')
   })
 })
 
