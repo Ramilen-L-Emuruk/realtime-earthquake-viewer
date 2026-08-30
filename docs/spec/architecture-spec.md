@@ -39,7 +39,8 @@ React 18 + TypeScript + Vite 6 で作られた PWA（Progressive Web App）。�
   ├─ App.tsx          … 全体レイアウト・イベント連動
   ├─ MapView          … 地図（4 タブ共通で常時表示）
   ├─ IconNav          … タブナビ（右端 or 最下部）
-  └─ 各タブパネル     … EarthquakeTab / RealtimeTab / TsunamiTab / TelegramTab / SettingsTab
+  └─ 各タブパネル     … EarthquakeTab / RealtimeTab / TsunamiTab / CatalogTab /
+                        TelegramTab / SettingsTab
 
 [副作用]
   ├─ 通知音（alertSound）
@@ -81,6 +82,7 @@ React 18 + TypeScript + Vite 6 で作られた PWA（Progressive Web App）。�
 | 詳細報での区域＋観測点同時表示 | ×（観測点のみ） | ○ |
 | 南海トラフ・後発地震情報 | × | ○ |
 | 電文ログ（TelegramTab） | ×（UI は表示・常に空） | ○ |
+| 震源カタログ（CatalogTab） | ○ | ○ |
 | 実地震テスト再生 | ○ | ○ |
 | VOICEVOX 読み上げ | ○ | ○ |
 | ヒートマップ | ○ | ○ |
@@ -304,7 +306,7 @@ iOS はステータスバーの見た目を追加時に固定しており、ペ�
 
 ### タブコンポーネントの再レンダー抑制
 
-`EarthquakeTab` / `RealtimeTab` / `TsunamiTab` / `TelegramTab` / `SettingsTab` と `IconNav` は
+`EarthquakeTab` / `RealtimeTab` / `TsunamiTab` / `CatalogTab` / `TelegramTab` / `SettingsTab` と `IconNav` は
 すべて `React.memo` でラップされている。App が psWave の 100ms 更新や kyoshin の 1Hz 更新で
 再レンダーするたびに、非表示中のタブ（`invisible` で DOM ツリーは維持）まで reconciliation を
 受けないようにするため。

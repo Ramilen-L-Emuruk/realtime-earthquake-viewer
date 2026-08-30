@@ -31,18 +31,24 @@ export function ringsToPolygonFC(
   return { type: 'FeatureCollection', features }
 }
 
-/** リング群を、各リング1本の LineString Feature 群にした FeatureCollection（境界線描画用）。 */
-export function ringsToLineFC(ringGroups: LatLng[][][]): FeatureCollection<LineString> {
+/**
+ * リング群を、各リング1本の LineString Feature 群にした FeatureCollection（境界線描画用）。
+ * props は `ringsToPolygonFC` と同じ意味（複数の種別を 1 ソースへ相乗りさせるときの目印に使う）。
+ */
+export function ringsToLineFC(
+  ringGroups: LatLng[][][],
+  props?: (groupIndex: number) => GeoJsonProperties,
+): FeatureCollection<LineString> {
   const features: Feature<LineString>[] = []
-  for (const rings of ringGroups) {
+  ringGroups.forEach((rings, groupIndex) => {
     for (const ring of rings) {
       features.push({
         type: 'Feature',
-        properties: {},
+        properties: props ? props(groupIndex) : {},
         geometry: { type: 'LineString', coordinates: ringToLngLat(ring) },
       })
     }
-  }
+  })
   return { type: 'FeatureCollection', features }
 }
 
