@@ -1,7 +1,22 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+// 実体をファイル読み込み時に一度通しておく。下の `loadModule` はテストごとにモジュールを作り直すが、
+// **そのファイルで最初の 1 回だけ**は解決と変換が要る。全テストファイルを並列実行すると、この 1 回が
+// 他のワーカーとの順番待ちで数秒に伸びる（実測 2.3〜4.0 秒）。テスト本体の中で最初に読むと、その待ちが
+// 1 件目の所要時間に丸ごと乗って既定の 5 秒を超え、そのテストだけが時間切れになる。
+// ここで通しておけば待ちはファイル読み込み時へ移り、testTimeout の対象から外れる（実測: 1 件目の
+// 取得が 2.3 秒→0.8ms）。
+//
+// 同じ症状には上限を延ばす対処もあり、`prefectures.test.ts` ほか数ファイルが `{ timeout: 15_000 }`
+// で凌いでいる（全体の既定は緩めないので、あちらも検出網は保っている）。ここでは待ちそのものを
+// 消せるこちらを採った。
+import './akamaiClock'
 
 // 記録の内容そのものを検証したいので log だけ差し替える（createLogThrottle は実物を使う）。
-const warnMock = vi.fn()
+//
+// **`vi.hoisted` で作ること。** 上の静的 import はこのファイルのどの文よりも先に評価される一方、
+// 素の `const warnMock = vi.fn()` は書いた位置から動かない。差し替えが走る時点で未初期化になり、
+// ファイルごと読めずに落ちる（`vi.hoisted` はこの宣言を `vi.mock` ともども import より前へ引き上げる）。
+const warnMock = vi.hoisted(() => vi.fn())
 vi.mock('../utils/logger', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/logger')>()),
   log: { debug: vi.fn(), info: vi.fn(), warn: warnMock, error: vi.fn() },
