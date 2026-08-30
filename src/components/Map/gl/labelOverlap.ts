@@ -185,6 +185,24 @@ function overlapsAt(
  *
  * 必要な余地は「退避量 ＋ 文字の半分の高さ」。退避後に文字の**縁**まで領域内へ収める必要があるため、
  * 中心の移動量だけでは足りない。
+ *
+ * **余地は画面の上下で測る。地理の南北ではない。** ラベルを逃がすのは画面座標の上下（`up`/`down`）
+ * だが、`room` が持つのは地理的な真北・真南への余地（`scripts/lib/labelAnchor.mjs` の `shiftRoom` が
+ * 経度線に沿って測って焼いている）。地図が回転していると両者は一致しないので、投影してから
+ * **符号で**どちらが画面上方向に伸びるかを決める。絶対値を取ると、北が画面下へ来たときに
+ * 「上に余地がある」と読み違える。
+ *
+ * **限界: 回転していると余地の見積もりは近い値でしかない。** 画面の真上は地理的には北とは限らず
+ * （回転 45 度なら北東）、その方位の余地は生成データが持っていない。北・南の余地を画面 y 成分へ
+ * 射影して代用するため、退避先が区域の外へわずかにはみ出すことがある。回転が 90 度に近づくと
+ * 南北の y 成分がほぼ 0 になって候補が消え、退避せず薄くする側（安全側）へ倒れる。
+ * なお退避先が他のラベル・バッジと重なるかは、この後 `overlapsAt` が画面座標で確かめるため、
+ * ここでのずれが重なりの見落としに直結することはない。
+ *
+ * **傾き（pitch）では符号は崩れないが、奥ほど余地が小さく見積もられる。** 透視投影で遠方が
+ * 圧縮されるため。zoom 4.6・日本全体の画で実測すると、緯度 0.1 度ぶんの画面 y 差は手前（九州）で
+ * 4px のままなのに対し、最奥（北海道）は 5px → 1px まで縮む（pitch 0 → 60）。退避の候補が
+ * 立たなくなる方向なので安全側へ倒れる（退避せず薄くする）が、**奥のラベルほど退避しにくい**。
  */
 function shiftCandidates(
   map: MapLibreMap,
@@ -197,11 +215,14 @@ function shiftCandidates(
   const need = t.shiftEm * textSize + halfH
   const [lng, lat] = t.lngLat
   // 度 → px の換算は緯度で変わる（メルカトル）。実際に投影して測る。
-  const northPx = Math.abs(centerY - map.project([lng, lat + t.room[0]]).y)
-  const southPx = Math.abs(map.project([lng, lat - t.room[1]]).y - centerY)
+  // 画面 y は下向きが正なので、負の側が「画面上方向へ伸びた」ことを表す。
+  const northDy = map.project([lng, lat + t.room[0]]).y - centerY
+  const southDy = map.project([lng, lat - t.room[1]]).y - centerY
+  const upPx = Math.max(-northDy, -southDy, 0)
+  const downPx = Math.max(northDy, southDy, 0)
   const usable: { dir: LabelShift; room: number }[] = []
-  if (northPx >= need) usable.push({ dir: 'up', room: northPx })
-  if (southPx >= need) usable.push({ dir: 'down', room: southPx })
+  if (upPx >= need) usable.push({ dir: 'up', room: upPx })
+  if (downPx >= need) usable.push({ dir: 'down', room: downPx })
   usable.sort((a, b) => b.room - a.room)
   return usable.map((u) => u.dir)
 }

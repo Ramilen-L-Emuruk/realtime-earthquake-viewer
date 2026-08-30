@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { ringBounds } from './psWaveRing'
 import { fitMaxZoomForPane, REFERENCE_FIT_MAX_ZOOM, EEW_ZOOM_SNAP, snapZoomDown } from './camera'
 import {
   desiredTileZoom,
@@ -89,11 +90,13 @@ const EEW_FOLLOW_PADDING_PX = 60
  * `EEW_FOLLOW_MAX_RADIUS_KM` を小さくしたときにテストが「クランプ前の理論値」を検証し続ける。
  */
 function eewFollowLandingZoom(pane: Pane, radiusKm: number, centerLat: number, centerLng: number): number {
-  const dLat = radiusKm / 111.32
-  const dLng = radiusKm / (111.32 * Math.cos((centerLat * Math.PI) / 180))
+  // **矩形の作り方は実装と共有する**（gl/psWaveRing.ts の ringBounds）。ここで独自に
+  // 「緯度 1 度 = 111.32km」と書くと、実装が測地の解き方へ移ったのに気づかないまま
+  // 別の近似を検証し続けることになる。
+  const [west, south, east, north] = ringBounds(centerLng, centerLat, radiusKm)
   return eewFollowLandingZoomForBox(pane, [
-    [centerLng - dLng, centerLat - dLat],
-    [centerLng + dLng, centerLat + dLat],
+    [west, south],
+    [east, north],
   ])
 }
 

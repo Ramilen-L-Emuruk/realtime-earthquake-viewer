@@ -58,6 +58,8 @@ function createFakeMap() {
     cameraForBounds: vi.fn(() => ({ center: [138, 38] as [number, number], zoom: 6.7 })),
     // 算出不可でフォールバックしたときの記録がペインの実寸を添えるため、寸法だけ持たせる。
     getContainer: () => ({ clientWidth: 800, clientHeight: 600 }),
+    // フィット系は現在の回転を保つため bearing を読む（渡さないと MapLibre が 0 を当てて回転が消える）。
+    getBearing: () => 0,
   }
   return fake as unknown as maplibregl.Map & {
     fire: (event: string, eventData?: unknown) => void
@@ -335,6 +337,7 @@ describe('refitDeltaForBounds', () => {
         return { x: lng * 100, y: -lat * 100 }
       },
       getContainer: () => ({ clientWidth: 400, clientHeight: 200 }),
+      getBearing: () => 0,
     } as unknown as maplibregl.Map
   }
   const bounds = {} as maplibregl.LngLatBounds
@@ -391,22 +394,75 @@ describe('refitDeltaForBounds', () => {
 
 // 成長フォローの「収まっているか」判定。余白を渡すと、画面の縁から余白の内側に入っていることを
 // 要求する（検知点はバッジで描くため、縁の上にあると丸が半分切れる）。
+
+// MapLibre は `fitBounds` / `cameraForBounds` に bearing を渡されない限り**0 として計算する**
+// （`camera.ts` の `options?.bearing || 0`）。`flyTo` / `easeTo` が未指定時に現在値を保つのとは
+// 非対称で、渡し忘れるとユーザーの回した向きが自動フィットのたびに北上へ戻る。
+describe('回転の保持', () => {
+  function mapWithBearing(bearing: number) {
+    const map = createFakeMap()
+    ;(map as unknown as { getBearing: () => number }).getBearing = () => bearing
+    return map
+  }
+
+  it('fitJapan は現在の回転を fitBounds へ渡す', () => {
+    const map = mapWithBearing(45)
+    fitJapan(map, 1.0)
+    expect(map.fitBounds.mock.calls[0][1]).toMatchObject({ bearing: 45 })
+  })
+
+  it('点群フィットは現在の回転を cameraForBounds へ渡す', () => {
+    const map = mapWithBearing(45)
+    fitToPositions(map, [[35, 139], [36, 140]], { padding: 48 })
+    expect(map.cameraForBounds.mock.calls[0][1]).toMatchObject({ bearing: 45 })
+  })
+
+  it('回転していなければ 0 が渡る（対照）', () => {
+    const map = mapWithBearing(0)
+    fitJapan(map, 1.0)
+    expect(map.fitBounds.mock.calls[0][1]).toMatchObject({ bearing: 0 })
+  })
+})
+
 describe('mapContainsBounds', () => {
-  /** 中心 (138,38)・1 度 = 100px・ペイン width×height のフェイク。 */
-  function mapWithPane(width: number, height: number): maplibregl.Map {
+  /**
+   * 中心 (138,38)・1 度 = 100px・ペイン width×height のフェイク。
+   * `bearingDeg` を渡すと画面座標を回転させる（判定は画面座標で行うため、回転の検証に要る）。
+   *
+   * `hidden` に挙げた地点は「球の裏側」として扱う（`unproject` が元の座標へ戻らない）。
+   * MapLibre の globe では裏側の点も画面内の座標を返すため、実装はこの往復で見分けている。
+   */
+  function mapWithPane(
+    width: number,
+    height: number,
+    bearingDeg = 0,
+    hidden: [number, number][] = [],
+  ): maplibregl.Map {
     const center = { lng: 138, lat: 38 }
+    const isHidden = (lng: number, lat: number) =>
+      hidden.some(([hl, ha]) => Math.abs(hl - lng) < 1e-9 && Math.abs(ha - lat) < 1e-9)
     return {
-      getBounds: () => ({
-        getWest: () => center.lng - width / 2 / 100,
-        getSouth: () => center.lat - height / 2 / 100,
-        getEast: () => center.lng + width / 2 / 100,
-        getNorth: () => center.lat + height / 2 / 100,
-      }),
       getContainer: () => ({ clientWidth: width, clientHeight: height }),
-      unproject: ([x, y]: [number, number]) => ({
-        lng: center.lng + (x - width / 2) / 100,
-        lat: center.lat - (y - height / 2) / 100,
-      }),
+      project: ([lng, lat]: [number, number]) => {
+        const x0 = (lng - center.lng) * 100
+        const y0 = (center.lat - lat) * 100
+        const p = !bearingDeg
+          ? { x: x0 + width / 2, y: y0 + height / 2 }
+          : (() => {
+              const r = (bearingDeg * Math.PI) / 180
+              return {
+                x: x0 * Math.cos(r) + y0 * Math.sin(r) + width / 2,
+                y: -x0 * Math.sin(r) + y0 * Math.cos(r) + height / 2,
+              }
+            })()
+        return { ...p, __src: [lng, lat] as [number, number] }
+      },
+      // 手前の点はそのまま戻る。裏側の点は「同じ画面位置にある手前の面」を返す＝大きくずれる。
+      unproject: (p: { __src: [number, number] }) => {
+        const [lng, lat] = p.__src
+        if (isHidden(lng, lat)) return { lng: lng + 170, lat: -lat }
+        return { lng, lat }
+      },
     } as unknown as maplibregl.Map
   }
   /** 矩形（west, south, east, north）。 */
@@ -428,14 +484,10 @@ describe('mapContainsBounds', () => {
   })
 
   it('ペインの実寸が取れないときは余白を無視する（毎秒フィットを撃たせない）', () => {
-    // Arrange: レイアウト前・非表示のコンテナ。内側へ詰めると範囲が 1 点へ潰れ、何を渡しても
+    // Arrange: レイアウト前・非表示のコンテナ。内側へ詰めると判定領域が潰れ、何を渡しても
     // 「収まっていない」になって成長フォローが毎周回発火する。
-    // Act & Assert: 余白なしの判定（getBounds）に倒れるため、表示範囲に入っていれば true。
-    const map = mapWithPane(0, 0)
-    ;(map as unknown as { getBounds: () => unknown }).getBounds = () => ({
-      getWest: () => 130, getSouth: () => 30, getEast: () => 146, getNorth: () => 46,
-    })
-    expect(mapContainsBounds(map, rect(137.5, 37.5, 138.5, 38.5), 60)).toBe(true)
+    // Act & Assert: 判定材料が揃わないので「収まっている」（＝動かさない）側へ倒す。
+    expect(mapContainsBounds(mapWithPane(0, 0), rect(137.5, 37.5, 138.5, 38.5), 60)).toBe(true)
   })
 
   it('余白がペインに対して大きすぎる場合は短辺の 2 割まで詰める（常に「収まっていない」にしない）', () => {
@@ -443,5 +495,46 @@ describe('mapContainsBounds', () => {
     // 何を渡しても false になり、毎秒フィットが走る。上限は短辺の 2 割（20px）。
     // Act & Assert: 中心の狭い目標は収まっている扱いになる。
     expect(mapContainsBounds(mapWithPane(300, 100), rect(137.95, 37.95, 138.05, 38.05), 60)).toBe(true)
+  })
+
+  // 回転すると、地理座標の矩形どうしで比べる方式は「画面からはみ出しているのに収まっている」と
+  // 誤判定する（回転した視野を軸並行の矩形で包むと必ず元より大きくなるため）。EEW の成長フォローは
+  // 「収まっていれば何もしない」だけなので、甘い判定は追従の沈黙に直結する。
+  describe('回転しているとき', () => {
+    // 600×600px 相当の矩形。回転 45 度で対角が縦へ伸び、600px のペインからはみ出す。
+    const big = () => rect(135, 35, 141, 41)
+
+    it('回転して画面からはみ出したら「収まっていない」', () => {
+      expect(mapContainsBounds(mapWithPane(800, 600, 45), big())).toBe(false)
+    })
+
+    it('回転していなければ同じ矩形が収まっている（対照）', () => {
+      expect(mapContainsBounds(mapWithPane(800, 600), big())).toBe(true)
+    })
+
+    it('回転していても十分小さい矩形は収まっている（安全弁）', () => {
+      // 100×100px 相当。45 度回しても対角は 141px で、余裕をもって画面内。
+      expect(mapContainsBounds(mapWithPane(800, 600, 45), rect(137.5, 37.5, 138.5, 38.5))).toBe(true)
+    })
+  })
+
+  // 球で描いていると、`map.project()` は地球の裏側の点にも画面内の座標を返す。画面座標だけで
+  // 判定すると、見えていないものを「収まっている」と読んでしまう。
+  describe('球の裏側', () => {
+    const small = () => rect(137.5, 37.5, 138.5, 38.5)
+
+    it('四隅のどれかが裏側なら「収まっていない」', () => {
+      const map = mapWithPane(800, 600, 0, [[138.5, 38.5]])
+      expect(mapContainsBounds(map, small())).toBe(false)
+    })
+
+    it('四隅がすべて手前なら収まっている（対照）', () => {
+      expect(mapContainsBounds(mapWithPane(800, 600), small())).toBe(true)
+    })
+
+    it('裏側でも画面の外にあれば、どのみち「収まっていない」（安全弁）', () => {
+      const map = mapWithPane(800, 600, 0, [[135, 35]])
+      expect(mapContainsBounds(map, rect(130, 30, 146, 46))).toBe(false)
+    })
   })
 })
