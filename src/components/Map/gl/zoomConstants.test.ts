@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { ringBounds } from './psWaveRing'
-import { fitMaxZoomForPane, REFERENCE_FIT_MAX_ZOOM, EEW_ZOOM_SNAP, snapZoomDown } from './camera'
+import { fitMaxZoomForPane, REFERENCE_FIT_MAX_ZOOM, EEW_ZOOM_SNAP, snapZoomDown, snapZoomNearest } from './camera'
 import {
   desiredTileZoom,
   GEBCO_HIRES_MIN_ZOOM,
@@ -11,7 +11,7 @@ import {
 } from '../../../utils/gebcoPrefetch'
 import { detailMinZoomForPane, labelMinZoomForPane } from './zoomLevels'
 import { ABSOLUTE_MAX_ZOOM, clampMinZoom } from './viewSpan'
-import { REGION_MAX_ZOOM } from '../LabelsGL'
+import { CITY_LABEL_MIN_ZOOM, REGION_MAX_ZOOM } from '../LabelsGL'
 import { JAPAN_BOUNDS, EEW_FOLLOW_MAX_RADIUS_KM } from './bounds'
 
 // 複数モジュールに散らばるズーム閾値の「相互関係」を固定する回帰テスト。
@@ -44,6 +44,27 @@ const PANES: Pane[] = [
 ]
 
 const shortSideOf = (pane: Pane) => Math.min(pane.width, pane.height)
+
+// レイヤーの表示境界を、カメラの着地段（`snapZoomDown` の 0.5 刻み）からどれだけ離すか。
+//
+// flyTo は放物線を描いて飛ぶため、**開始と目標が同じズームでも移動中は必ず下回る**。幅は移動距離に
+// 比例し、実測では 34km で 0.015・57km で 0.041・92km で 0.10（2026-08-30）。ここは「数十 km の
+// 移動で境界を割らない」ことだけを求める下限で、余裕の選び方そのものは LabelsGL の
+// CITY_LABEL_MIN_ZOOM に書いてある。
+const MIN_CLEARANCE_FROM_LANDING_STEP = 0.05
+
+/**
+ * そのズーム値が、カメラの着地しうる段（`snapZoomDown` の 0.5 刻み）から十分離れているか。
+ *
+ * レイヤーの表示境界が着地段と同値だと、その段へ着地するたび flyTo のアンダーシュートで境界を割り、
+ * **移動中だけレイヤーがまるごと消える**。着地すると戻るうえ、ズーム表示は丸めで変化して見えないため、
+ * 症状から原因へ辿り着きにくい。
+ */
+function clearsCameraLandingSteps(zoom: number): boolean {
+  // 丸め方は camera.ts と共有する。ここで式を書き写すと、着地の丸め方を変えたときテストだけが
+  // 古い基準のまま緑になり、ガードが実装からずれたことに気づけない。
+  return Math.abs(zoom - snapZoomNearest(zoom, EEW_ZOOM_SNAP)) > MIN_CLEARANCE_FROM_LANDING_STEP
+}
 
 // fitJapan（`camera.ts`）の padding。日本全体フィットの着地ズームの算出に必要。
 const FIT_JAPAN_PADDING_PX = 20
@@ -156,6 +177,23 @@ describe('ズーム閾値の相互関係', () => {
     // なる。追い越すと MapLibre は minzoom > maxzoom をそのまま受け取り、どのズームでも描かれない
     // レイヤーになる（例外もログも出ない）。実際にレイヤーへ渡す値でこれを固定する。
     expect(clampMinZoom(labelMinZoomForPane(shortSideOf(pane)), REGION_MAX_ZOOM)).toBeLessThan(REGION_MAX_ZOOM)
+  })
+
+  it('区域名ラベルの下限が、カメラの着地しうるズーム段から離れている', () => {
+    // 8 ちょうどに置いていた間、寄り上限が 8 に達するペインでは地震カードを選ぶたびに区域名が
+    // レイヤーごと約 1 秒消えていた（着地点と表示境界が同値・2026-08-30 実測）。
+    expect(clearsCameraLandingSteps(CITY_LABEL_MIN_ZOOM)).toBe(true)
+  })
+
+  it('段に乗った値を判定が捕まえる（ガードが飾りでないことの確認）', () => {
+    // 上のテストが「たまたま通っている」のではなく、現に落とし穴のある値を弾いていることを示す。
+    expect(clearsCameraLandingSteps(8)).toBe(false)
+    expect(clearsCameraLandingSteps(7.5)).toBe(false)
+  })
+
+  it('県名ラベルの帯が潰れない（地方名の上限 < 区域名の下限）', () => {
+    // 区域名の下限を下げすぎると県名の帯が消える。段から逃がすために動かせる範囲の下側を止める。
+    expect(REGION_MAX_ZOOM).toBeLessThan(CITY_LABEL_MIN_ZOOM)
   })
 
   // 以下 3 件は EEW 追従の引き上限（`EEW_FOLLOW_MAX_RADIUS_KM`）と地方名ラベルの閾値の関係。
