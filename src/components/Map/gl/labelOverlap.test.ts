@@ -27,7 +27,12 @@ interface Obstacle {
   opacity?: number
 }
 
-function fakeMap(obstacles: Obstacle[], existingLayers = ['quake-points', 'kyoshin-points']): MapLibreMap {
+function fakeMap(
+  obstacles: Obstacle[],
+  existingLayers = ['quake-points', 'kyoshin-points'],
+  /** 地図の回転（度）。0 なら北が画面上。 */
+  bearingDeg = 0,
+): MapLibreMap {
   return {
     getLayer: (id: string) => (existingLayers.includes(id) ? { id } : undefined),
     // 実物（maplibre-gl の LngLat）は NaN を渡すと同期的に例外を投げる。壊れたデータを素通しした
@@ -35,7 +40,11 @@ function fakeMap(obstacles: Obstacle[], existingLayers = ['quake-points', 'kyosh
     project: ([lng, lat]: [number, number]) => {
       if (!Number.isFinite(lng) || !Number.isFinite(lat))
         throw new Error(`Invalid LngLat object: (${lng}, ${lat})`)
-      return { x: lng * PX_PER_DEG, y: -lat * PX_PER_DEG }
+      const x0 = lng * PX_PER_DEG
+      const y0 = -lat * PX_PER_DEG
+      if (!bearingDeg) return { x: x0, y: y0 }
+      const r = (bearingDeg * Math.PI) / 180
+      return { x: x0 * Math.cos(r) + y0 * Math.sin(r), y: -x0 * Math.sin(r) + y0 * Math.cos(r) }
     },
     queryRenderedFeatures: (box: [[number, number], [number, number]]) => {
       const [[x1, y1], [x2, y2]] = box
@@ -137,6 +146,31 @@ describe('computeLabelPlacements', () => {
     // 上は 0（退避不可）だが下には十分あるので、下へ回れる。負値のように全体を捨てない。
     const map = fakeMap([{ x: 0, y: 0 }])
     expect(only(map, target({ room: [0, 0.1] }))).toEqual({ shift: 'down', dimmed: false })
+  })
+
+  // 地図の回転（bearing）を入れると、地理的な北は画面の上とは限らなくなる。`room` は経度線に
+  // 沿って真北・真南へ測った値（scripts/lib/labelAnchor.mjs の shiftRoom）なので、投影してから
+  // **符号で**どちらが画面上方向に伸びるかを決める必要がある。絶対値で測ると北が画面下へ来た
+  // ときに「上に余地がある」と読み違え、退避先が区域の外へ出る。
+  describe('回転しているとき', () => {
+    it('北が画面下へ来たら、北の余地は「下」の候補になる', () => {
+      // Arrange: 北にだけ余地がある区域を、真南向き（bearing 180）で見る。
+      const map = fakeMap([{ x: 0, y: 0 }], undefined, 180)
+      // Act & Assert: 画面上ではなく下へ逃げる。
+      expect(only(map, target({ room: [0.1, 0] }))).toEqual({ shift: 'down', dimmed: false })
+    })
+
+    it('回転していなければ同じ room で「上」へ退避する（対照）', () => {
+      const map = fakeMap([{ x: 0, y: 0 }])
+      expect(only(map, target({ room: [0.1, 0] }))).toEqual({ shift: 'up', dimmed: false })
+    })
+
+    it('南北が画面の横を向くと余地が消え、退避せず薄くする（安全弁）', () => {
+      // Arrange: bearing 90 では南北の変位がほぼ画面 x 成分になり、y 成分が残らない。
+      // Act & Assert: 上下どちらの候補も立たないので、無理に動かさず薄くする側へ倒れる。
+      const map = fakeMap([{ x: 0, y: 0 }], undefined, 90)
+      expect(only(map, target({ room: [0.1, 0.1] }))).toEqual({ shift: 'none', dimmed: true })
+    })
   })
 
   it('退避させないラベル（地方名＝ shiftEm なし）は重なったら薄くなる', () => {

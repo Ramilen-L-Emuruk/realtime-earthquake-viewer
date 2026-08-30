@@ -17,7 +17,7 @@ import { PlateBoundariesGL } from './PlateBoundariesGL'
 import { QuakeIntensityPointsGL } from './QuakeIntensityPointsGL'
 import { QuakeRegionFillGL } from './QuakeRegionFillGL'
 import { QuakeHeatmapGL } from './QuakeHeatmapGL'
-import { EpicenterGL } from './EpicenterGL'
+import { HypocenterDepthGL } from './HypocenterDepthGL'
 import { LpgmPointsGL } from './LpgmPointsGL'
 import { LpgmRegionFillGL } from './LpgmRegionFillGL'
 import { TsunamiLinesGL } from './TsunamiLinesGL'
@@ -46,6 +46,7 @@ import { kyoshinIndexToJma } from '../../utils/kyoshinIntensity'
 import { log } from '../../utils/logger'
 import { serverNow } from '../../utils/clock'
 import { syncEewFirstSeen } from './gl/eewFirstSeen'
+import { applyFrontSortKeys, bearingChangedEnough } from './gl/screenDepth'
 
 // MapLibre GL JS 版の地図コンポーネント（Leaflet 版 JapanMap と同一 Props）。
 // MapLibre 移行計画 docs/webgl-migration-implementation-plan.md のフェーズ順に、
@@ -89,6 +90,7 @@ export function JapanMapGL({
   candidateId = null,
   shakeFocus = null,
   iconScale = 1,
+  hypocenterDepthScale = 1,
   showActiveFaults = true,
   activeFaultOpacity = 0.4,
   showPlateBoundaries = true,
@@ -210,22 +212,15 @@ export function JapanMapGL({
       center: JAPAN_CENTER,
       zoom: INITIAL_ZOOM,
       attributionControl: false,
-      // 地図の傾き（pitch）と回転（bearing）はどちらも無効化する。3D 地形（terrain）を使っておらず
-      // 傾き・回転で増える情報が無い一方、予報円（PsWaveGL）の半径計算とカメラ自動フィット
-      // （gl/camera.ts）がどちらも「傾き 0・北が上」を前提にしており、動かすと表示が地理的にズレる。
-      // 理由と既知の破綻の詳細は docs/spec/map-rendering-spec.md §6「地図の傾きと回転」。
-      // このオプション群を削る・緩める場合は、先に上記 2 箇所の前提を直すこと。欠けても型チェックも
-      // 単体テストも通ってしまうため、消したことに気づけるのは手動のブラウザ確認だけになる。
+      // 地図の傾き（pitch）と回転（bearing）はユーザー操作から使える。地下の震源分布を立体で
+      // 見せるため。標準ジェスチャがそのまま担うので、操作系のオプションは何も塞がない。
       //
-      // maxPitch: 0 は傾きの最終防波堤（MapLibre は pitch の setter で minPitch〜maxPitch に
-      // クランプするため、ジェスチャを塞ぎ切れない経路が残っても 0 に丸められる）。回転側に同種の
-      // クランプは無いので、操作経路を個別に塞ぐ（下記 2 オプション＋生成後の disableRotation()）。
-      maxPitch: 0,
-      touchPitch: false,
-      // dragRotate を切れば pitchWithRotate は到達しないが、回転を戻したときに傾きだけ復活しない
-      // よう明示しておく。
-      pitchWithRotate: false,
-      dragRotate: false,
+      // **maxPitch の 60 は MapLibre の既定値。その先は霧（sky / fog）を前提とした領域で、
+      // このアプリは霧を設定していない。** 上げる前に必ず docs/spec/map-rendering-spec.md §6
+      // 「地図の傾きと回転」を読むこと——水平線の位置は fov の引き算では求まらず、MapLibre 内部の
+      // getMercatorHorizon が決める。根拠となる式・霧の設計・実測値は仕様書側に集約してある
+      // （2 箇所に書くと、MapLibre のバージョンが上がったとき片方が取り残される）。
+      maxPitch: 60,
       // CJK ラベルはビルド時に事前生成した SDF グリフ PBF（public/fonts/<stack>/<range>.pbf）を
       // 使う。localIdeographFontFamily:false で漢字を実行時 TinySDF 生成に回さず、必ずサーバー
       // グリフを取りに行かせる（区域名初出＝自動ズームと重なる最悪局面の生成スパイクを恒久的に消す。
@@ -253,19 +248,17 @@ export function JapanMapGL({
       fadeDuration: 0,
       style: {
         version: 8,
+        // 地球を球として描く。傾けて見るのが常態になった以上、平面のままだと引いたときに
+        // 端が伸びて見える。**寄ると MapLibre が自動で Mercator へ切り替える**ので、
+        // 日本を細かく見る場面では従来と同じ描画になる（切り替えの実測と、カスタムレイヤーが
+        // 両方の投影に追随する仕組みは docs/spec/map-rendering-spec.md §6「地図の投影」）。
+        projection: { type: 'globe' },
         glyphs: `${import.meta.env.BASE_URL}fonts/{fontstack}/{range}.pbf`,
         sources: {},
         layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#0a0c10' } }],
       },
     })
     mapRef.current = m
-    // 2 本指のひねりによる回転を止める。touchZoomRotate: false ではピンチズームまで死ぬため、
-    // 回転だけを落とすこの API を使う。
-    m.touchZoomRotate.disableRotation()
-    // キーボードの回転（Shift + ←/→）と傾き（Shift + ↑/↓）を止める。MapLibre の KeyboardHandler は
-    // rotationDisabled のとき bearing・pitch 双方の増分を 0 にするため、この 1 呼び出しで両方塞げる
-    // （パン・ズームのキー操作は残る）。
-    m.keyboard.disableRotation()
     // 検証用: 本番ビルドでも意図的に window.__mapGL を公開する。CLAUDE.md の検証手順
     // （実データの map.getSource(...).getData() 集計・Playwright からの map 操作）と
     // docs/spec/settings-pwa-spec.md の「開発者向け機能」節が明示的にこれを利用する。
@@ -294,9 +287,38 @@ export function JapanMapGL({
     // 監視するため、window のリサイズだけでなくパネル境界のつまみの操作でもここへ届く。
     const onResize = () => setAggregateMaxZoom(fitMaxZoom(m))
     m.on('resize', onResize)
+    // 同じ階級のバッジを画面の手前から並べる（gl/screenDepth.ts）。手前らしさは方位だけで決まる
+    // ので、購読するのは回転だけでよい（中心・ズーム・傾きでは並びが変わらない）。
+    // **購読はここに 1 本だけ置く。** 対象のレイヤーはモードごとに出入りするので、各レイヤーの
+    // コンポーネントに置くと購読が増えたり減ったりして、どれが効いているか追えなくなる。
+    let appliedBearing = 0
+    const onRotate = () => {
+      const b = m.getBearing()
+      // 回している間ずっと作り直すとシンボルの配置計算が繰り返し走る。刻みで間引く。
+      if (!bearingChangedEnough(appliedBearing, b)) return
+      appliedBearing = b
+      applyFrontSortKeys(m, b)
+    }
+    m.on('rotate', onRotate)
+    // 間引きで取りこぼした端数を、回し終わりで必ず合わせる。
+    const onRotateEnd = () => {
+      appliedBearing = m.getBearing()
+      applyFrontSortKeys(m, appliedBearing)
+    }
+    m.on('rotateend', onRotateEnd)
+    // レイヤーはモードの切替で後から足される。**足された時点の方位で式を入れ直す**
+    // （追加時の初期値は方位 0 で焼いてあるため、回した状態で入室すると並びがずれる）。
+    // **ここは刻みで間引かない。** 間引くと「レイヤーが足されたのに方位が古いまま」が起きる。
+    // 書き込み自体は `applyFrontSortKeys` が中身の比較で止めるので、値が変わらない限り
+    // 式を組み立てて比べるだけで終わる。
+    const onStyleData = () => applyFrontSortKeys(m, m.getBearing())
+    m.on('styledata', onStyleData)
     return () => {
       m.off('zoomend', onZoomEnd)
       m.off('resize', onResize)
+      m.off('rotate', onRotate)
+      m.off('rotateend', onRotateEnd)
+      m.off('styledata', onStyleData)
       mapRef.current = null
       setMap(null)
       m.remove()
@@ -372,7 +394,13 @@ export function JapanMapGL({
           {mode === 'quake' && (
             <>
               {hasEpicenter && epicenter && quake && (
-                <EpicenterGL quake={quake} epicenter={epicenter} prefIntensities={prefIntensities} iconScale={iconScale} />
+                <HypocenterDepthGL
+                  quake={quake}
+                  epicenter={epicenter}
+                  prefIntensities={prefIntensities}
+                  iconScale={iconScale}
+                  exaggeration={hypocenterDepthScale}
+                />
               )}
               {/* 地震モードのカメラフィット（signature 変化時に観測点＋震源へ）。 */}
               <QuakeFitGL

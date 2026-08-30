@@ -741,6 +741,20 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             ))}
           </select>
         </Row>
+        <Row
+          label="震源の深さの強調"
+          description="地図を傾けたとき、震源をどれだけ深く見せるかの倍率です（水平方向は常に実際の縮尺）"
+        >
+          <select
+            value={settings.hypocenterDepthScale}
+            onChange={e => onUpdate('hypocenterDepthScale', Number(e.target.value))}
+            className="bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+          >
+            {[1, 2, 3, 5, 8, 12, 20].map(s => (
+              <option key={s} value={s}>{s === 1 ? '実際の深さ' : `${s} 倍`}</option>
+            ))}
+          </select>
+        </Row>
         {/* ── 地図レイヤー: 地形 → 地質構造 → 観測データ の順 ── */}
         <Row label="海底地形を表示" description="背景の海域に海底地形（陰影）を表示します">
           <Toggle
