@@ -31,6 +31,8 @@ import { fileURLToPath } from 'node:url'
 import { unzipSync } from 'fflate'
 import { parseHypocenterRecord, parseTrailingBlankDecimal } from './hypocenterRecord'
 import { extractDailyHypocenterRows, parseDailyHypocenterLine } from './hypocenterDailyRecord'
+// 格納単位と「その単位で元データを表せるか」の検査はここが単一情報源。
+import { COORD_SCALE, DEPTH_SCALE, MAG_SCALE, TIME_SCALE, countUnrepresentable, findScaleMismatch } from './hypocenterScale'
 
 const ZIP_BASE = 'https://www.data.jma.go.jp/eqev/data/bulletin/data/hypo'
 const DAILY_BASE = 'https://www.data.jma.go.jp/eqev/data/daily_map'
@@ -43,13 +45,6 @@ const CACHE_DIR = join(__dirname, '..', '.claude', 'hypocenter-cache')
 
 /** カタログの時刻は日本時間。年・日の頭を UTC epoch へ直すのに使う。 */
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000
-
-/** 座標の格納単位。1/10000 度 ≒ 11m で、震源の決定精度（0.01 分 ≒ 18m）より細かい。 */
-const COORD_SCALE = 10000
-/** 深さの格納単位。0.1km。震源の決定誤差はこれより大きいので十分。 */
-const DEPTH_SCALE = 10
-/** M の格納単位。カタログ自体が 0.1 刻み。 */
-const MAG_SCALE = 10
 
 /** 収録の最初の年。気象庁が配布する最古。 */
 const FIRST_YEAR = 1919
@@ -142,6 +137,9 @@ const COMPLETENESS: readonly { from: number; minMagnitude: number }[] = [
  *
  * **取得経路ごとに 1 つ置く。** 経路によって文字コードも切り方も違うため、1 つでは
  * 他の経路の壊れを捕まえられない。
+ *
+ * **期待値は元データが持つ桁のまま書く**（秒は 0.01 秒・深さは 0.01km まで）。丸めた値を
+ * 書くと、格納単位を粗くしたときに照合が通ってしまい、精度が落ちたことに気づけない。
  */
 const KNOWN: readonly {
   year: number
@@ -168,7 +166,7 @@ const KNOWN: readonly {
     year: 1952,
     label: '十勝沖地震（1952 年）の本震',
     path: 'まとめ ZIP 1951-1960',
-    timeIso: '1952-03-04T01:22:44.000Z',
+    timeIso: '1952-03-04T01:22:43.580Z',
     lat: 41.7057,
     lng: 144.1512,
     depth: 54,
@@ -178,7 +176,7 @@ const KNOWN: readonly {
     year: 1964,
     label: '新潟地震の本震',
     path: 'まとめ ZIP 1961-1966',
-    timeIso: '1964-06-16T04:01:41.000Z',
+    timeIso: '1964-06-16T04:01:40.700Z',
     lat: 38.37,
     lng: 139.2117,
     depth: 34.1,
@@ -188,7 +186,7 @@ const KNOWN: readonly {
     year: 1968,
     label: '十勝沖地震（1968 年）の本震',
     path: 'まとめ ZIP 1967-1982',
-    timeIso: '1968-05-16T00:48:55.000Z',
+    timeIso: '1968-05-16T00:48:54.510Z',
     lat: 40.6992,
     lng: 143.5957,
     depth: 0,
@@ -198,10 +196,10 @@ const KNOWN: readonly {
     year: 1997,
     label: '鹿児島県北西部地震（3 月）の本震',
     path: '年 ZIP（1997 の分割ファイル）',
-    timeIso: '1997-03-26T08:31:48.000Z',
+    timeIso: '1997-03-26T08:31:47.900Z',
     lat: 31.9728,
     lng: 130.359,
-    depth: 11.9,
+    depth: 11.85,
     magnitude: 6.6,
   },
   {
@@ -296,16 +294,17 @@ interface YearCatalog {
   coordScale: number
   depthScale: number
   magScale: number
+  timeScale: number
   count: number
-  /** その年の 1 月 1 日 00:00 JST からの経過秒。 */
+  /** その年の 1 月 1 日 00:00 JST からの経過時間 × timeScale。 */
   t: number[]
-  /** 緯度 × 10000。 */
+  /** 緯度 × coordScale。 */
   lat: number[]
-  /** 経度 × 10000。 */
+  /** 経度 × coordScale。 */
   lng: number[]
-  /** 深さ (km) × 10。 */
+  /** 深さ (km) × depthScale。 */
   dep: number[]
-  /** M × 10。 */
+  /** M × magScale。 */
   mag: number[]
   /**
    * 最大震度を持つ地震の添字。**疎に持つ** —— 有感は M2.0 以上の 11.9% しかないので、
@@ -588,6 +587,7 @@ function buildYear(year: number, collected: Collected, minMagnitude: number): Ye
     coordScale: COORD_SCALE,
     depthScale: DEPTH_SCALE,
     magScale: MAG_SCALE,
+    timeScale: TIME_SCALE,
     count: 0,
     t: [],
     lat: [],
@@ -604,7 +604,9 @@ function buildYear(year: number, collected: Collected, minMagnitude: number): Ye
   for (const r of sorted) {
     if (r.magnitude == null || r.magnitude < minMagnitude) continue
     const i = out.t.length
-    out.t.push(Math.round((r.timeMs - startMs) / 1000))
+    // **ミリ秒の整数のまま掛けてから割る。** 先に秒へ直すと 2 進小数で表せない値を経由し、
+    // 0.01 秒の刻みが 1 単位ずれることがある。
+    out.t.push(Math.round(((r.timeMs - startMs) * TIME_SCALE) / 1000))
     out.lat.push(Math.round(r.lat * COORD_SCALE))
     out.lng.push(Math.round(r.lng * COORD_SCALE))
     out.dep.push(Math.round(r.depth * DEPTH_SCALE))
@@ -659,7 +661,7 @@ function verifyKnown(cat: YearCatalog, source: string): void {
   let best = -1
   let bestDiff = Infinity
   for (let i = 0; i < cat.count; i++) {
-    const diff = Math.abs(cat.startMs + cat.t[i] * 1000 - wantMs)
+    const diff = Math.abs(cat.startMs + (cat.t[i] * 1000) / TIME_SCALE - wantMs)
     if (diff < bestDiff) {
       bestDiff = diff
       best = i
@@ -708,6 +710,15 @@ async function readYearSummary(year: number): Promise<YearSummary | null> {
     const raw = await readFile(join(OUT_DIR, `${year}.json`), 'utf-8')
     const parsed = JSON.parse(raw) as Partial<YearCatalog>
     if (typeof parsed.count !== 'number') return null
+    // **格納単位が今の定数と違う年ファイルは弾く。** 単位を変えた後に範囲を絞って生成すると
+    // （週次更新は `--from 2024`）、作り直さなかった年が古い単位で残る。**読み取り側は年ファイル
+    // 自身の単位を信じて読むので、混在していても何も言わずに粗い精度で読む** —— この変更自体が
+    // 直そうとしている「静かに精度が落ちる」形そのもの。捕まえられるのは生成のここだけ。
+    const mismatch = findScaleMismatch(parsed)
+    if (mismatch !== null) {
+      console.error(`  ${year}.json の ${mismatch} です。全年の再生成が必要です`)
+      return null
+    }
     return {
       count: parsed.count,
       quality: parsed.quality === 'preliminary' ? 'preliminary' : 'final',
@@ -786,6 +797,14 @@ async function main(): Promise<void> {
     if (collected.unassigned > 0) {
       failures.push(`${year} 年: 年欄が数字でない J レコードが ${collected.unassigned} 件`)
     }
+    // 格納単位で表せない値は、丸められた状態で出力に入る。**件数 0 を保つのが正常。**
+    const unrepresentable = countUnrepresentable(collected.records)
+    if (unrepresentable.count > 0) {
+      failures.push(
+        `${year} 年: 格納単位で表せない値が ${unrepresentable.count} 件（例: ${unrepresentable.example}）`
+        + ' ← 上流の刻みが細かくなった可能性。hypocenterScale.ts の格納単位を見直すこと',
+      )
+    }
     // **1 件も採れなかった年は異常。** M 欄だけが壊れると震源 3 要素は読めるため
     // 「読めない行」は増えず、件数 0 という形でしか現れない。
     if (cat.count === 0 && collected.kindJ > 0) {
@@ -844,9 +863,13 @@ async function main(): Promise<void> {
       sourceUrl: SOURCE_PAGE,
       license: '気象庁の公共データ利用規約（第1.0版）に基づき、加工して作成',
       minMagnitude,
+      // 格納単位は**目安として載せるだけ**で、読む側は年ファイル自身の値を使う
+      // （`src/utils/hypocenterCatalog.ts`。索引を読み損ねたときに桁を取り違えないため）。
+      // ここは生成に使った定数なので、部分再生成で単位が混在した状態は表せない。
       coordScale: COORD_SCALE,
       depthScale: DEPTH_SCALE,
       magScale: MAG_SCALE,
+      timeScale: TIME_SCALE,
       coveredThroughMs,
       completeness: COMPLETENESS,
       years,
