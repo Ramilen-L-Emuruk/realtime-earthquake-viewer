@@ -82,3 +82,43 @@ body {
   animation: tsunami-obs-blink 1.2s step-end infinite;
 }
 
+
+/* 二つまみのスライダー（震源カタログの期間）。
+   HTML には二つまみの入力が無いので、range を 2 本重ねて「つまみだけ」を見せる。
+   **本物の range のまま重ねる**ことで、キーボード操作（矢印・Home/End）と読み上げは
+   標準の挙動がそのまま残る。溝と選択範囲の帯は別の要素が描く。 */
+.range-thumb-only {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  /* 溝はクリックを受けない。受けると、下に重なったもう 1 本のつまみを掴めなくなる。 */
+  pointer-events: none;
+}
+.range-thumb-only::-webkit-slider-runnable-track { background: transparent; border: none; }
+.range-thumb-only::-moz-range-track { background: transparent; border: none; }
+.range-thumb-only::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  pointer-events: auto;
+  width: 0.875rem;
+  height: 0.875rem;
+  border-radius: 9999px;
+  background: #e2e8f0;
+  border: 2px solid #2a2d38;
+  cursor: pointer;
+}
+.range-thumb-only::-moz-range-thumb {
+  pointer-events: auto;
+  width: 0.875rem;
+  height: 0.875rem;
+  border-radius: 9999px;
+  background: #e2e8f0;
+  border: 2px solid #2a2d38;
+  cursor: pointer;
+}
+.range-thumb-only:focus-visible::-webkit-slider-thumb { outline: 2px solid #3b82f6; outline-offset: 1px; }
+.range-thumb-only:focus-visible::-moz-range-thumb { outline: 2px solid #3b82f6; outline-offset: 1px; }
+/* 操作できないときは、つまみもそう見せる。**素の range を捨てた代償**——`<select disabled>` は
+   ブラウザ既定の見た目を無償で得ていたが、つまみを自前で描くと何も起きない。 */
+.range-thumb-only:disabled::-webkit-slider-thumb { opacity: 0.4; cursor: default; }
+.range-thumb-only:disabled::-moz-range-thumb { opacity: 0.4; cursor: default; }

@@ -1,12 +1,14 @@
 import { memo } from 'react'
+import { YearRangeSlider } from './YearRangeSlider'
+import { Toggle } from '../Toggle'
 import type { HypocenterIndex } from '../../utils/hypocenterCatalog'
 import {
   catalogCompleteness,
-  DEPTH_RAMP_MAX_KM,
-  MAGNITUDE_RAMP_RANGE,
+  DEPTH_FILTER_MAX_KM,
+  depthBoundLabel,
+  MAGNITUDE_FILTER_RANGE,
   type CatalogColorBy,
   type CatalogFilter,
-  type CatalogSizeBy,
   formatMissingYears,
   type CatalogViewOptions,
 } from '../../utils/hypocenterCatalogView'
@@ -23,6 +25,13 @@ interface Props {
   /** いま地図に出ている点の数。 */
   pointCount: number
   loading: boolean
+  /**
+   * 絞り込みを変えた直後で、件数と点群がまだ追いついていないか。
+   *
+   * **これが無いと「効いていない」と誤解される。** ラベルは即座に変わるのに件数は遅れて動くため、
+   * 何も出さないと変更が無視されたように見える（期間以外のスライダーでは `loading` も立たない）。
+   */
+  pending: boolean
   error: string | null
   /** 取得できなかった年（昇順）。空でなければ件数はそのぶん少ない。 */
   missingYears: number[]
@@ -36,10 +45,6 @@ const COLOR_BY_LABEL: Record<CatalogColorBy, string> = {
   time: '発生年',
 }
 
-const SIZE_BY_LABEL: Record<CatalogSizeBy, string> = {
-  fixed: '一定',
-  magnitude: 'マグニチュードに比例',
-}
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -75,67 +80,60 @@ export const CatalogTab = memo(function CatalogTab({
   onViewChange,
   pointCount,
   loading,
+  pending,
   error,
   missingYears,
   onRetry,
 }: Props) {
   const years = index?.years ?? []
+  // **収録の両端をスライダーの端にする。** 索引が来るまでは選んでいる値をそのまま端にして
+  // おく（つまみが範囲外に置かれると、ブラウザが勝手に丸めて値が飛ぶ）。
+  const firstYear = years[0] ?? filter.fromYear
+  const lastYear = years[years.length - 1] ?? filter.toYear
   const completeness = index ? catalogCompleteness(index, filter) : null
 
   return (
     <div className="p-3">
       <Section title="期間">
-        <Row label="開始" hint="期間を変えると、その期間で網羅されている下限にマグニチュードを合わせます">
-          <select
-            value={filter.fromYear}
+        <div className="px-4 py-3">
+          <div className="flex items-baseline justify-between mb-1">
+            <p className="text-white text-sm tabular-nums">
+              {filter.fromYear}年 〜 {filter.toYear}年
+            </p>
+            <p className="text-secondary text-xs tabular-nums">{filter.toYear - filter.fromYear + 1}年ぶん</p>
+          </div>
+          <YearRangeSlider
+            label="期間"
+            min={firstYear}
+            max={lastYear}
+            from={filter.fromYear}
+            to={filter.toYear}
             disabled={years.length === 0}
-            onChange={(e) => {
-              const v = Number(e.target.value)
-              // 深さのスライダーと同じく押し合う。開始が終了を追い越した状態を作らせない
-              // （作れてしまうと、完全性の判定と実際に読む年がずれる）。
-              onFilterChange({ ...filter, fromYear: v, toYear: Math.max(v, filter.toYear) })
-            }}
-            className={SELECT_CLASS}
-          >
-            {years.map((y) => (
-              <option key={y} value={y}>{y}年</option>
-            ))}
-          </select>
-        </Row>
-        <Row label="終了" hint="開始より前の年を選ぶと開始も動き、マグニチュードの下限を合わせ直します">
-          <select
-            value={filter.toYear}
-            disabled={years.length === 0}
-            onChange={(e) => {
-              const v = Number(e.target.value)
-              onFilterChange({ ...filter, toYear: v, fromYear: Math.min(v, filter.fromYear) })
-            }}
-            className={SELECT_CLASS}
-          >
-            {years.map((y) => (
-              <option key={y} value={y}>{y}年</option>
-            ))}
-          </select>
-        </Row>
+            onChange={(fromYear, toYear) => onFilterChange({ ...filter, fromYear, toYear })}
+          />
+          <p className="text-secondary text-xs mt-1">
+            古い側の年を変えると、その期間で網羅されている下限にマグニチュードを合わせます
+          </p>
+        </div>
       </Section>
 
       <Section title="絞り込み">
         <Row label="マグニチュード下限" hint={`M ${filter.minMagnitude.toFixed(1)} 以上`}>
           <input
             type="range"
-            min={index?.minMagnitude ?? MAGNITUDE_RAMP_RANGE.min}
-            max={MAGNITUDE_RAMP_RANGE.max}
+            min={index?.minMagnitude ?? MAGNITUDE_FILTER_RANGE.min}
+            max={MAGNITUDE_FILTER_RANGE.max}
             step={0.1}
             value={filter.minMagnitude}
             onChange={(e) => onFilterChange({ ...filter, minMagnitude: Number(e.target.value) })}
             className="w-32"
           />
         </Row>
-        <Row label="深さの下限" hint={`${filter.minDepthKm} km 以深`}>
+        <Row label="深さの下限" hint={depthBoundLabel(filter.minDepthKm, 'min')}>
           <input
             type="range"
             min={0}
-            max={DEPTH_RAMP_MAX_KM}
+            max={DEPTH_FILTER_MAX_KM}
             step={10}
             value={filter.minDepthKm}
             onChange={(e) => {
@@ -146,11 +144,11 @@ export const CatalogTab = memo(function CatalogTab({
             className="w-32"
           />
         </Row>
-        <Row label="深さの上限" hint={`${filter.maxDepthKm} km 以浅`}>
+        <Row label="深さの上限" hint={depthBoundLabel(filter.maxDepthKm, 'max')}>
           <input
             type="range"
             min={0}
-            max={DEPTH_RAMP_MAX_KM}
+            max={DEPTH_FILTER_MAX_KM}
             step={10}
             value={filter.maxDepthKm}
             onChange={(e) => {
@@ -174,16 +172,12 @@ export const CatalogTab = memo(function CatalogTab({
             ))}
           </select>
         </Row>
-        <Row label="点の大きさ">
-          <select
-            value={view.sizeBy}
-            onChange={(e) => onViewChange({ ...view, sizeBy: e.target.value as CatalogSizeBy })}
-            className={SELECT_CLASS}
-          >
-            {(Object.keys(SIZE_BY_LABEL) as CatalogSizeBy[]).map((k) => (
-              <option key={k} value={k}>{SIZE_BY_LABEL[k]}</option>
-            ))}
-          </select>
+        <Row label="強調表示" hint="マグニチュードが大きいほど点を大きくします（下の基準サイズに対して、M3 で 0.6 倍・M9 で 4.2 倍）">
+          <Toggle
+            label="強調表示"
+            checked={view.sizeBy === 'magnitude'}
+            onChange={(v) => onViewChange({ ...view, sizeBy: v ? 'magnitude' : 'fixed' })}
+          />
         </Row>
         <Row label="点の基準サイズ" hint={`${view.sizePx.toFixed(1)} px`}>
           <input
@@ -199,7 +193,7 @@ export const CatalogTab = memo(function CatalogTab({
       </Section>
 
       <Section title="表示中">
-        <Row label="件数" hint={loading ? '読み込み中' : undefined}>
+        <Row label="件数" hint={loading ? '読み込み中' : pending ? '更新中' : undefined}>
           <span className="text-white text-sm tabular-nums">{pointCount.toLocaleString()} 件</span>
         </Row>
       </Section>
