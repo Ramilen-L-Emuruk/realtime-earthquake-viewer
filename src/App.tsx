@@ -1334,6 +1334,8 @@ export function App() {
             activeFaultOpacity={settings.activeFaultOpacity}
             heatPoints={quakeHeatPoints}
             showPlateBoundaries={settings.showPlateBoundaries}
+            showDayNight={settings.showDayNight}
+            dayNightOpacity={settings.dayNightOpacity}
             kyoshinSites={kyoshinSitesGated}
             kyoshinIndices={kyoshinHeld.indices}
             kyoshinStale={kyoshinHeld.stale}

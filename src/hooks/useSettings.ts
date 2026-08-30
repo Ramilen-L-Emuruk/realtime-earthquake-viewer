@@ -28,6 +28,8 @@ export interface AppSettings {
   activeFaultOpacity: number // 活断層線の不透明度（濃さ、0.05〜1.0）
   showQuakeHeatmap: boolean // 地震情報・リアルタイムタブの地図に直近1ヶ月の地震活動ヒートマップを表示する
   showPlateBoundaries: boolean // 地震情報・リアルタイムタブの地図にプレート境界線を表示する
+  showDayNight: boolean     // 地図に夜の側を重ねる（日の入りから夜が深まるまでを濃淡で表す）
+  dayNightOpacity: number   // 夜側の濃さ（0.2〜0.95）
   defaultTab: DefaultTabSetting    // 起動時・アイドル復帰時に表示するタブ
   tsunamiPriorityDefault: boolean  // 津波発表中はデフォルトタブを津波情報にする
   tsunamiTitleTemporary: boolean   // ウィンドウタイトルの津波表示を受信後一定時間のみにする（false = 発表中ずっと表示）
@@ -55,6 +57,15 @@ export interface AppSettings {
 export const PANEL_RATIO_MIN = 0.2
 export const PANEL_RATIO_MAX = 0.8
 
+/**
+ * 夜側の濃さの範囲。UI のスライダーと localStorage 復元時の丸めで同じ値を使う。
+ *
+ * **上限を 1 にしないこと。** 1 段あたりの濃さは全体の濃さから段数で逆算するため、1 では各段が
+ * 不透明になり、一番外側の段でいきなり最大の濃さに達してグラデーションが消える。
+ */
+export const DAY_NIGHT_OPACITY_MIN = 0.2
+export const DAY_NIGHT_OPACITY_MAX = 0.95
+
 // 通常版とDMDSS版の設定を localStorage 上で分離する
 const STORAGE_KEY = isDmdss
   ? 'quake-viewer-settings-dmdss'
@@ -75,6 +86,12 @@ const DEFAULTS: AppSettings = {
   activeFaultOpacity: 0.4,
   showQuakeHeatmap: false,
   showPlateBoundaries: true,
+  showDayNight: false,
+  // 下げると海の上で効かなくなる（ベースマップの海がもともと濃紺のため）。上げると夜側の陸地と
+  // 海底地形が読めなくなる。掛かるのは地形だけで、境界線・震度の面・観測点はこのレイヤーより
+  // 前面にあるため（gl/layerOrder.ts）、濃くしても地震の情報は沈まない。
+  // 既定は控えめに置き、はっきり暗くしたい場合はスライダーで上げてもらう。
+  dayNightOpacity: 0.5,
   defaultTab: 'earthquake',
   tsunamiPriorityDefault: true,
   tsunamiTitleTemporary: false,
@@ -155,6 +172,8 @@ export function sanitize(partial: Partial<AppSettings>): AppSettings {
     activeFaultOpacity: clampNumber(partial.activeFaultOpacity, 0.05, 1, DEFAULTS.activeFaultOpacity),
     showQuakeHeatmap: ensureBool(partial.showQuakeHeatmap, DEFAULTS.showQuakeHeatmap),
     showPlateBoundaries: ensureBool(partial.showPlateBoundaries, DEFAULTS.showPlateBoundaries),
+    showDayNight: ensureBool(partial.showDayNight, DEFAULTS.showDayNight),
+    dayNightOpacity: clampNumber(partial.dayNightOpacity, DAY_NIGHT_OPACITY_MIN, DAY_NIGHT_OPACITY_MAX, DEFAULTS.dayNightOpacity),
     defaultTab: ensureDefaultTab(partial.defaultTab, DEFAULTS.defaultTab),
     tsunamiPriorityDefault: ensureBool(partial.tsunamiPriorityDefault, DEFAULTS.tsunamiPriorityDefault),
     tsunamiTitleTemporary: ensureBool(partial.tsunamiTitleTemporary, DEFAULTS.tsunamiTitleTemporary),
