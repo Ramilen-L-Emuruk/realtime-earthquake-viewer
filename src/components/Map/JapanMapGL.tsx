@@ -15,9 +15,11 @@ import { KyoshinMaxEffectGL } from './KyoshinMaxEffectGL'
 import { ActiveFaultsGL } from './ActiveFaultsGL'
 import { PlateBoundariesGL } from './PlateBoundariesGL'
 import { QuakeIntensityPointsGL } from './QuakeIntensityPointsGL'
+import { QuakeIntensitySurfaceGL } from './QuakeIntensitySurfaceGL'
 import { QuakeRegionFillGL } from './QuakeRegionFillGL'
 import { QuakeHeatmapGL } from './QuakeHeatmapGL'
 import { HypocenterDepthGL } from './HypocenterDepthGL'
+import { HypocenterCatalogGL } from './HypocenterCatalogGL'
 import { LpgmPointsGL } from './LpgmPointsGL'
 import { LpgmRegionFillGL } from './LpgmRegionFillGL'
 import { TsunamiLinesGL } from './TsunamiLinesGL'
@@ -91,6 +93,7 @@ export function JapanMapGL({
   shakeFocus = null,
   iconScale = 1,
   hypocenterDepthScale = 1,
+  catalogCloud = null,
   showActiveFaults = true,
   activeFaultOpacity = 0.4,
   showPlateBoundaries = true,
@@ -133,8 +136,10 @@ export function JapanMapGL({
   }, [eews])
   const activeFaults = useActiveFaults()
   const plateBoundaries = usePlateBoundaries()
-  // 活断層・プレート境界は地震／リアルタイム震度モードで表示する（Leaflet 版と同条件）。
-  const showOverlayLines = mode === 'quake' || mode === 'kyoshin'
+  // 活断層・プレート境界は地震／リアルタイム震度／震源カタログモードで表示する。
+  // **カタログを足したのは、深さを持つ点群を読むのに沈み込み帯の位置が要るため**
+  //（点群だけ見ても、その並びがプレートの沈み込みだと判らない）。
+  const showOverlayLines = mode === 'quake' || mode === 'kyoshin' || mode === 'catalog'
   // 地震モードの派生データ（震度点／区域集約／震源）。Leaflet 版と共有の導出フック。
   const {
     stationMarkers,
@@ -356,6 +361,11 @@ export function JapanMapGL({
             iconScale={iconScale}
             visible={mode === 'quake' && aggregateByRegion && !lpgmActive}
           />
+          {/* 観測点表示のときだけ、その背景に震度の面を敷く（区域塗りとは排他）。 */}
+          <QuakeIntensitySurfaceGL
+            markers={stationMarkers}
+            visible={mode === 'quake' && !aggregateByRegion && !lpgmActive}
+          />
           <QuakeIntensityPointsGL
             markers={stationMarkers}
             iconScale={iconScale}
@@ -391,6 +401,16 @@ export function JapanMapGL({
             visible={mode === 'kyoshin'}
           />
           <KyoshinMaxEffectGL sites={kyoshinSites} indices={kyoshinIndices} iconScale={iconScale} visible={mode === 'kyoshin'} />
+          {/* 長期震源カタログの点群。**常時マウントして visible だけ切り替える**——
+              カスタムレイヤーの付け外しはシェーダーの作り直しを伴い、タブを往復するたびに
+              数十万点を詰め直すことになる。 */}
+          {catalogCloud && (
+            <HypocenterCatalogGL
+              cloud={catalogCloud}
+              exaggeration={hypocenterDepthScale}
+              visible={mode === 'catalog'}
+            />
+          )}
           {mode === 'quake' && (
             <>
               {hasEpicenter && epicenter && quake && (
