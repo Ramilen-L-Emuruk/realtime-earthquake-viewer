@@ -393,31 +393,39 @@ describe('震度更新音: 震度5弱以上で低音が厚くなる', () => {
   // 旧実装は ding / dingDeep という別関数の選択だったが、いまは warningBeep の真偽値引数。
   // 取り違えても型では捕まらないので、効果そのものを固定する。
 
-  /** 基音の 1 オクターブ下（サブオクターブ）を鳴らしている声部の、gain の最大値 */
-  const subPeaks = (baseFreqs: number[]): number[] => {
-    const subs = baseFreqs.map(f => f * 0.5)
-    return ctx.oscillators
-      .filter(o => subs.some(sub => Math.abs(o.frequency.value - sub) < 1))
-      .map(o => {
-        const g = o.connectedTo as FakeGainNode
-        return Math.max(...g.gain.events.map(e => e.value))
-      })
+  /** ある周波数を鳴らしている声部の gain の最大値 */
+  const peaksAt = (freqs: number[]): number[] =>
+    ctx.oscillators
+      .filter(o => freqs.some(f => Math.abs(o.frequency.value - f) < 1))
+      .map(o => Math.max(...(o.connectedTo as FakeGainNode).gain.events.map(e => e.value)))
+
+  /**
+   * 基音に対するサブオクターブの厚み。**比で測る。**
+   *
+   * 段階ごとの音量は `BASE_GAIN.beep × BEEP_SEVERITY[段]` で決まるため、実測値を直に書くと
+   * 音量設計を触るたびにこのテストが落ちる。ここで固定したいのは deep の効果だけなので、
+   * 同じ呼び出しの中の比を見る。
+   */
+  const subRatio = (baseFreqs: number[]): number => {
+    const base = Math.max(...peaksAt(baseFreqs))
+    const sub = Math.max(...peaksAt(baseFreqs.map(f => f * 0.5)))
+    return sub / base
   }
 
   it('正: 震度5弱はサブオクターブが厚い', () => {
-    sound.playKyoshinUpdateSound(15)      // index 15 = 震度5弱（gain 0.36・deep）
-    const peaks = subPeaks([587, 699, 784, 880])
-    expect(peaks).toHaveLength(4)
-    // deep のとき 0.45 倍。0.36 × 0.45 = 0.162
-    for (const v of peaks) expect(v).toBeCloseTo(0.162, 3)
+    sound.playKyoshinUpdateSound(15)      // index 15 = 震度5弱（deep）
+    const freqs = [587, 699, 784, 880]
+    expect(peaksAt(freqs.map(f => f * 0.5))).toHaveLength(4)
+    // deep のとき 0.45 倍。基音の最も厚い声部（矩形波 0.40 倍）との比は 0.45 / 0.40
+    expect(subRatio(freqs)).toBeCloseTo(0.45 / 0.40, 5)
   })
 
   it('対照: 震度4は同じ音でもサブオクターブが薄い', () => {
-    sound.playKyoshinUpdateSound(13)      // index 13 = 震度4（gain 0.34・deep でない）
-    const peaks = subPeaks([587, 699, 784, 880])
-    expect(peaks).toHaveLength(4)
-    // deep でないとき 0.20 倍。0.34 × 0.20 = 0.068
-    for (const v of peaks) expect(v).toBeCloseTo(0.068, 4)
+    sound.playKyoshinUpdateSound(13)      // index 13 = 震度4（deep でない）
+    const freqs = [587, 699, 784, 880]
+    expect(peaksAt(freqs.map(f => f * 0.5))).toHaveLength(4)
+    // deep でないとき 0.20 倍
+    expect(subRatio(freqs)).toBeCloseTo(0.20 / 0.40, 5)
   })
 
   it('安全弁: 段階ごとの音数は変えていない（震度2以下 2 音 → 震度7 7 音）', () => {
@@ -582,6 +590,126 @@ describe('unlockAudio: マスターチェーンを先に作る', () => {
   })
 })
 
+describe('音量は「系統 × 深刻度」で決まる', () => {
+  // 音量は `BASE_GAIN`（系統ごとの基準）× `SEVERITY`（深刻度）だけで決まり、種別ごとの
+  // 個別の値は持たない。以前は呼び出し側がその場で決めた値を直に渡していたため、同じ系統の
+  // 音どうしでも揃っておらず、深刻度と音圧の順位が食い違っていた。
+  //
+  // 声部ごとの配分（ユニゾン 0.66 倍・矩形波 0.40 倍など）は系統の中で固定なので、
+  // **1 回の呼び出しで最も大きい声部の値**を見れば、渡された基準値どうしを比べられる。
+
+  const loudestVoice = (type: typeof ALL_TYPES[number]): number => {
+    ctx.reset()
+    sound.playAlertSound(type)
+    return Math.max(...ctx.gains.flatMap(g => g.gain.events.map(e => e.value)))
+  }
+
+  it('正: 同じ系統・同じ段の音は同じ値で鳴る', () => {
+    const families: Array<[string, Array<typeof ALL_TYPES[number]>]> = [
+      ['ピアノ × 情報', ['earthquake', 'earthquakePrompt', 'earthquakeInfo']],
+      ['ダークピアノ × 更新', ['eewUpdate', 'eewFinal', 'eewCancel']],
+      ['純音 × 更新', ['tsunamiUpdate', 'tsunamiCancel', 'specialInfoCommentary']],
+    ]
+    for (const [, types] of families) {
+      const values = types.map(loudestVoice)
+      for (const v of values) expect(v).toBeCloseTo(values[0], 10)
+    }
+  })
+
+  it('対照: 段が違えば値も違う', () => {
+    // ダークピアノ: 予報（注意）> 続報（更新）
+    expect(loudestVoice('eewForecast')).toBeGreaterThan(loudestVoice('eewUpdate'))
+    // 純音: 南海トラフ臨時情報（情報）> 関連解説（更新）
+    expect(loudestVoice('specialInfo')).toBeGreaterThan(loudestVoice('specialInfoCommentary'))
+    // スイープ: 大津波 > 津波警報 > 注意報 > 予報
+    const sweeps = (['tsunamiMajor', 'tsunami', 'tsunamiWatch', 'tsunamiForecast'] as const).map(loudestVoice)
+    for (let i = 1; i < sweeps.length; i++) expect(sweeps[i]).toBeLessThan(sweeps[i - 1])
+    // マリンバ: 揺れ検知（注意・検知）> その予兆（更新）。
+    // **予兆は確定と紛れる大きさで鳴らさない**という設計なので、差が縮むと意味が壊れる
+    expect(loudestVoice('kyoshinCandidate')).toBeLessThan(loudestVoice('kyoshin'))
+    // 警報アラーム: EEW 特別警報（最重要）> EEW 警報（警報）。
+    // **このアプリで最も重い 2 つ**なので、逆転を許すと最悪の場面で最悪の音が小さくなる
+    expect(loudestVoice('eewSpecial')).toBeGreaterThan(loudestVoice('eew'))
+  })
+
+  it('安全弁: 系統の中の比は段の比とぴったり一致する', () => {
+    // 「種別ごとの個別の値を書かない」を機械的に確かめられる数少ない手がかり。ある種別にだけ
+    // その場の係数を掛け足すと、同じ系統の別の種別との比が段の比からずれる。
+    //
+    // **スイープと警報アラームは対象外。** 前者は等級ごとに声部の構成が違い（`SWEEP_VOICINGS`）、
+    // 後者は EEW 特別警報だけ 58Hz の支えを重ねるため、最も大きい声部の取り分が種別で変わる。
+    // どちらも順序（1 つ上の `対照` テスト）で守っている。
+    const FAMILIES: Array<[Array<typeof ALL_TYPES[number]>, number[]]> = [
+      [['eewForecast', 'eewUpdate'], [0.50, 0.25]],              // ダークピアノ: 注意 / 更新
+      [['specialInfo', 'specialInfoCommentary'], [0.35, 0.25]],  // 純音: 情報 / 更新
+      [['kyoshin', 'kyoshinCandidate'], [0.50, 0.25]],           // マリンバ: 注意・検知 / 更新
+    ]
+    for (const [types, severities] of FAMILIES) {
+      const values = types.map(loudestVoice)
+      for (let i = 1; i < values.length; i++) {
+        expect(values[i] / values[0]).toBeCloseTo(severities[i] / severities[0], 6)
+      }
+    }
+  })
+
+  it('安全弁: どの音も 0.02〜0.45 の帯に収まる', () => {
+    // **較正そのものを固定する意図はない。** 目標の dBFS へ寄せる値は実測で詰めるものなので、
+    // 触るたびに落ちるテストは邪魔になる。ここで捕まえたいのは桁を取り違えた場合だけ
+    // （`BASE_GAIN.beep` を 0.40 のつもりで 0.04 と書くと、震度更新音が全段聞こえなくなる）。
+    // 現状の実測は 0.040（震度2以下）〜0.341（EEW 特別警報）。
+    const all: number[] = ALL_TYPES.map(loudestVoice)
+    for (const index of [9, 11, 13, 15, 16, 17, 19]) {
+      ctx.reset()
+      sound.playKyoshinUpdateSound(index)
+      all.push(Math.max(...ctx.gains.flatMap(g => g.gain.events.map(e => e.value))))
+    }
+    for (const second of [1, 2, 3, 4, 5]) {
+      ctx.reset()
+      sound.playCountdownBeep(second)
+      all.push(Math.max(...ctx.gains.flatMap(g => g.gain.events.map(e => e.value))))
+    }
+    for (const v of all) {
+      expect(v).toBeGreaterThan(0.02)
+      expect(v).toBeLessThan(0.45)
+    }
+  })
+
+  it('安全弁: 震度更新音は段が上がるほど大きくなる', () => {
+    // 音量の勾配が段階の重さを伝える。1 段でも逆転すると、強い揺れが弱く聞こえる
+    const byLevel = [9, 11, 13, 15, 16, 17, 19].map(index => {
+      ctx.reset()
+      sound.playKyoshinUpdateSound(index)
+      return Math.max(...ctx.gains.flatMap(g => g.gain.events.map(e => e.value)))
+    })
+    for (let i = 1; i < byLevel.length; i++) expect(byLevel[i]).toBeGreaterThan(byLevel[i - 1])
+  })
+})
+
+describe('音の長さは読み上げの遅延と対で決まっている', () => {
+  // 通知音が鳴り終わってから読み上げを始めるため、`useLiveEventHandler` が種別ごとに遅延を
+  // 持つ（audio-tts-spec.md §6）。**音を短く・長くしたときに遅延の見直しが漏れる**のが
+  // 過去に繰り返した事故なので、対になっている種別だけ音の側の終わりを固定しておく。
+  //
+  // ここで測るのは gain 自動化が 0 へ到達する時刻。
+  //
+  // **扱うのは津波の解除だけ。** ほかの種別は鳴り終わる前に読み始める設計で、重なるかどうかは
+  // 残っている音の絶対値で判断している（測るには実際の合成波形が要るのでここでは扱えない）。
+  // 解除だけは「1200ms の時点で完全に止まっている」と実装のコメントが宣言しているので、
+  // その宣言をここで固定する。
+
+  /** その種別の gain 自動化が最後に打たれる時刻（`ctx.currentTime` からの相対秒） */
+  const soundEnd = (type: typeof ALL_TYPES[number]): number => {
+    ctx.reset()
+    sound.playAlertSound(type)
+    const times = ctx.gains.flatMap(g => g.gain.events.map(e => e.time))
+    return Math.max(...times) - ctx.currentTime
+  }
+
+  it('津波の解除は遅延（1200ms）より前に鳴り終わる', () => {
+    expect(soundEnd('tsunamiCancel')).toBeLessThan(1.2)
+  })
+})
+
 describe('setSoundVolume', () => {
   it('0 を渡すと decayTone 系の音は 1 本もオシレータを作らない', () => {
     // 音量 0 では TAIL_FLOOR（0.001 = -60 dBFS）ぶんの残留すら鳴らさない。
@@ -592,11 +720,15 @@ describe('setSoundVolume', () => {
   })
 
   it('範囲外の値は 0〜1 に丸める', () => {
+    // 実測値を書くと音量設計を触るたびに落ちるので、**音量 1 で鳴らしたものと比べる**。
+    // 丸めが効いていなければ 5 倍の値が出る
+    const loudest = (): number => Math.max(...ctx.gains.flatMap(g => g.gain.events.map(e => e.value)))
+    sound.setSoundVolume(1)
+    sound.playAlertSound('eewUpdate')
+    const atOne = loudest()
+    ctx.reset()
     sound.setSoundVolume(5)
     sound.playAlertSound('eewUpdate')
-    const max = Math.max(...ctx.gains.flatMap(g => g.gain.events.map(e => e.value)))
-    // eewUpdate の gain は 0.26。基音はユニゾン 3 本に配分され、主音がその 0.66 倍を
-    // 受け持つ。倍率が 1 に丸められていればこの値を超えない
-    expect(max).toBeCloseTo(0.26 * 0.66, 5)
+    expect(loudest()).toBeCloseTo(atOne, 10)
   })
 })

@@ -474,42 +474,90 @@ function marimba(ctx: AudioContext, freq: number, t: number, dur: number, gain: 
 
 // ─── サウンドプレーヤー ───────────────────────────────────────────
 
+/**
+ * プリミティブごとの基準音量。**種別ごとに個別の値を書かないこと。**
+ *
+ * 以前は呼び出し側がその場で決めた値（0.14〜0.30）を直に渡しており、同じプリミティブを使う
+ * 音どうしでも揃っていなかった。なぜ遠地地震だけ 0.18 なのか、誰にも説明できない状態だった。
+ * **音量は「どの音色か」と「どれだけ急を要するか」の 2 つだけで決める。**
+ *
+ * 数値が系統ごとに違うのは、声部の本数と重なり方が違うため。揃えるのは**同じ系統の中**で
+ * あって、系統をまたいだ数値の一致ではない。
+ */
+const BASE_GAIN = {
+  piano: 0.23,
+  darkPiano: 0.32,
+  darkAlarm: 0.48,
+  sweep: 0.70,
+  marimba: 0.35,
+  beep: 0.40,
+  ding: 0.39,
+} as const
+
+/** 深刻度 1 段ぶんの比（3 dB）。段の中でさらに 1 段下げたいときにも使う。 */
+const SEVERITY_STEP = 0.71
+
+/**
+ * 深刻度の係数。**{@link SEVERITY_STEP} 刻み**（1 段違えば音圧が 3 dB 変わる）。
+ *
+ * 音量が伝えるのは「どれだけ急を要するか」だけ。音色・音程・並べ方は別の役割を持つので、
+ * ここへ混ぜないこと。
+ *
+ * `caution` 以下は `SEVERITY_STEP` を掛け続けた値を丸めてある（0.71² ≒ 0.50、
+ * 0.71³ ≒ 0.35、0.71⁴ ≒ 0.25）。**刻みを変えるならこの 5 つも引き直すこと。**
+ */
+const SEVERITY = {
+  /** 即座の行動が要る。EEW 特別警報・大津波警報 */
+  critical: 1.00,
+  /** 警報。EEW 警報・津波警報。`critical` の 1 段下 */
+  warning: SEVERITY_STEP,
+  /** 注意・検知。津波注意報・EEW 予報・揺れ検知 */
+  caution: 0.50,
+  /** 情報。地震情報・震度速報・遠地地震・津波予報・南海トラフ臨時情報 */
+  info: 0.35,
+  /** 更新・続報・終了。EEW 続報/最終報/誤報取消・津波の解除/観測更新・予兆 */
+  update: 0.25,
+} as const
+
 type SoundPlayer = (ctx: AudioContext, base: number) => void
 
 const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
   // 地震情報（震源・震度情報 / 各地の震度情報）: ピアノ上昇4音 E4→G#4→B4→E5
   earthquake: (ctx, base) => {
     const arpFreqs = [329.6, 415.3, 493.9, 659.3] as const
-    arpFreqs.forEach((f, i) => pianoNote(ctx, f, base + i * 0.16, 0.90, 0.26))
+    arpFreqs.forEach((f, i) => pianoNote(ctx, f, base + i * 0.16, 0.90, BASE_GAIN.piano * SEVERITY.info))
   },
 
   // 震度速報: ピアノ上昇3音 G#4→B4→E5
   earthquakePrompt: (ctx, base) => {
     const freqs = [415.3, 493.9, 659.3] as const
-    freqs.forEach((f, i) => pianoNote(ctx, f, base + i * 0.13, 0.60, 0.26))
+    freqs.forEach((f, i) => pianoNote(ctx, f, base + i * 0.13, 0.60, BASE_GAIN.piano * SEVERITY.info))
   },
 
-  // 遠地地震 / その他: ピアノ2音 G4→B4（控えめ）
+  // 遠地地震 / その他: ピアノ2音 G4→B4
   earthquakeInfo: (ctx, base) => {
-    pianoNote(ctx, 392.0, base,        1.20, 0.18)
-    pianoNote(ctx, 493.9, base + 0.20, 1.40, 0.16)
+    const g = BASE_GAIN.piano * SEVERITY.info
+    pianoNote(ctx, 392.0, base,        1.20, g)
+    pianoNote(ctx, 493.9, base + 0.20, 1.40, g)
   },
 
   // EEW 予報: ダークピアノ F4→A4（緩やか）
   eewForecast: (ctx, base) => {
-    darkPiano(ctx, 349.2, base,        0.90, 0.26)
-    darkPiano(ctx, 440.0, base + 0.22, 0.95, 0.26)
+    const g = BASE_GAIN.darkPiano * SEVERITY.caution
+    darkPiano(ctx, 349.2, base,        0.90, g)
+    darkPiano(ctx, 440.0, base + 0.22, 0.95, g)
   },
 
   // EEW 最終報: ダークピアノ F4→C4 降下2音
   eewFinal: (ctx, base) => {
-    darkPiano(ctx, 349.2, base,        0.55, 0.24)
-    darkPiano(ctx, 261.6, base + 0.18, 0.60, 0.23)
+    const g = BASE_GAIN.darkPiano * SEVERITY.update
+    darkPiano(ctx, 349.2, base,        0.55, g)
+    darkPiano(ctx, 261.6, base + 0.18, 0.60, g)
   },
 
   // EEW 続報: ダークピアノ F4 単音
   eewUpdate: (ctx, base) => {
-    darkPiano(ctx, 349.2, base, 0.50, 0.26)
+    darkPiano(ctx, 349.2, base, 0.50, BASE_GAIN.darkPiano * SEVERITY.update)
   },
 
   // EEW 警報: 警報アラーム Bb3 の 2 連。
@@ -517,8 +565,9 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
   // 以前は頭にダークピアノ F4×3 連打の前置きがあったが、警報の到達が 0.5 秒遅れる。
   // **前置きは置かず、1 音目から警報アラームで始める。**
   eew: (ctx, base) => {
-    darkAlarm(ctx, 233.1, base,        0.42, 0.26)
-    darkAlarm(ctx, 233.1, base + 0.52, 0.46, 0.26)
+    const g = BASE_GAIN.darkAlarm * SEVERITY.warning
+    darkAlarm(ctx, 233.1, base,        0.42, g)
+    darkAlarm(ctx, 233.1, base + 0.52, 0.46, g)
   },
 
   // EEW 特別警報: 警報アラーム Bb4/F4 の交互 9 連打 + 低音の支え（震度6弱以上）。
@@ -531,16 +580,19 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
     // 9 連打の下に敷く低音。連打の隙間が空いても重さが途切れないよう、全体を貫かせる。
     // **連打より先にスケジュールすること。** 後ろに置くと、連打の途中で例外が出た場合に
     // この行へ到達せず、最も重い警報が低音を失った状態で途切れる。
-    decayTone(ctx, getMasterInput(ctx), 'sine', 58, base + 0.03, 0.02, 0.20 * globalVolume, base + 1.15)
+    const g = BASE_GAIN.darkAlarm * SEVERITY.critical
+    // 低音は連打より 1 段（3 dB）控える。同じ大きさにすると 58Hz が連打を覆い、打点が溶ける。
+    decayTone(ctx, getMasterInput(ctx), 'sine', 58, base + 0.03, 0.02, g * SEVERITY_STEP * globalVolume, base + 1.15)
     const alarmFreqs = [466.2, 349.2, 466.2, 349.2, 466.2, 349.2, 466.2, 349.2, 466.2] as const
-    alarmFreqs.forEach((f, i) => darkAlarm(ctx, f, base + 0.03 + i * 0.108, 0.095, 0.30))
+    alarmFreqs.forEach((f, i) => darkAlarm(ctx, f, base + 0.03 + i * 0.108, 0.095, g))
   },
 
   // EEW 解除: ダークピアノ A4→F4→C4 降下3音（100ms 間隔）
   eewCancel: (ctx, base) => {
-    darkPiano(ctx, 440.0, base + 0 * 0.10, 0.90, 0.26)
-    darkPiano(ctx, 349.2, base + 1 * 0.10, 0.95, 0.25)
-    darkPiano(ctx, 261.6, base + 2 * 0.10, 1.00, 0.24)
+    const g = BASE_GAIN.darkPiano * SEVERITY.update
+    darkPiano(ctx, 440.0, base + 0 * 0.10, 0.90, g)
+    darkPiano(ctx, 349.2, base + 1 * 0.10, 0.95, g)
+    darkPiano(ctx, 261.6, base + 2 * 0.10, 1.00, g)
   },
 
   // 揺れ検知（強震モニタ first contact）: マリンバ 2 音 C#6→A5（下行長 3 度）。
@@ -548,28 +600,32 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
   // 別途足さない。**地震情報（329〜659Hz）と音域が重ならないよう上に置いている**——
   // 落ち着いた知らせと緊急の気づきが同じ高さで鳴ると、役割の差が消える。
   kyoshin: (ctx, base) => {
-    marimba(ctx, 1108, base + 0.00, 0.34, 0.28)
-    marimba(ctx, 880,  base + 0.24, 0.46, 0.26)
+    const g = BASE_GAIN.marimba * SEVERITY.caution
+    marimba(ctx, 1108, base + 0.00, 0.34, g)
+    marimba(ctx, 880,  base + 0.24, 0.46, g)
   },
 
-  // 揺れ検知（候補・未確定）: 控えめな単発 F#5（確定音の1/4以下の音量）
+  // 揺れ検知（候補・未確定）: 控えめな単発 F#5。
+  // 確定（`kyoshin`）が「注意・検知」の段なのに対しこちらは「更新」の段で、渡す値は半分。
+  // 確定は 2 音が重なるぶん、合成後のピークでは 15 dB 差になる。
+  // **まだ確からしくない知らせなので、確定音と紛れる大きさでは鳴らさない。**
   kyoshinCandidate: (ctx, base) => {
-    marimba(ctx, 740, base, 0.24, 0.07)
+    marimba(ctx, 740, base, 0.24, BASE_GAIN.marimba * SEVERITY.update)
   },
 
   // 津波予報（若干の海面変動）: 穏やかなスイープ 380→460Hz × 2回（tsunamiWatch より低緊迫・低音量）
   tsunamiForecast: (ctx, base) => {
-    for (let i = 0; i < 2; i++) sweep(ctx, SWEEP_VOICINGS.forecast, 380, 460, base + i * 0.90, 0.70, 0.15)
+    for (let i = 0; i < 2; i++) sweep(ctx, SWEEP_VOICINGS.forecast, 380, 460, base + i * 0.90, 0.70, BASE_GAIN.sweep * SEVERITY.info)
   },
 
   // 津波注意報: スイープ 300→500Hz × 2回（緩やか・低め）
   tsunamiWatch: (ctx, base) => {
-    for (let i = 0; i < 2; i++) sweep(ctx, SWEEP_VOICINGS.watch, 300, 500, base + i * 0.80, 0.60, 0.22)
+    for (let i = 0; i < 2; i++) sweep(ctx, SWEEP_VOICINGS.watch, 300, 500, base + i * 0.80, 0.60, BASE_GAIN.sweep * SEVERITY.caution)
   },
 
   // 津波警報: 鋸波スイープ 260→560Hz × 3回（鋸波の荒さで緊迫感）
   tsunami: (ctx, base) => {
-    for (let i = 0; i < 3; i++) sweep(ctx, SWEEP_VOICINGS.warning, 260, 560, base + i * 0.85, 0.70, 0.26)
+    for (let i = 0; i < 3; i++) sweep(ctx, SWEEP_VOICINGS.warning, 260, 560, base + i * 0.85, 0.70, BASE_GAIN.sweep * SEVERITY.warning)
   },
 
   // 大津波警報: 上昇サイレン 220→620Hz × 5回。
@@ -578,33 +634,37 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
   // 回数は据え置き。増やすと全体が伸び、避難を促す音が長く鳴り続けるだけになる。
   // 高音は声部（SWEEP_VOICINGS.major の high）が担うため、別のスイープを重ねない。
   tsunamiMajor: (ctx, base) => {
-    for (let i = 0; i < 5; i++) sweep(ctx, SWEEP_VOICINGS.major, 220, 620, base + i * 0.40, 0.34, 0.28)
+    for (let i = 0; i < 5; i++) sweep(ctx, SWEEP_VOICINGS.major, 220, 620, base + i * 0.40, 0.34, BASE_GAIN.sweep * SEVERITY.critical)
   },
 
   // 津波情報更新（グレード不変・観測値更新）: 純音 2 音 F#4→C#5（穏やかな通知）
   tsunamiUpdate: (ctx, base) => {
-    ding(ctx, 370, base + 0.00, 0.55, 0.14)
-    ding(ctx, 555, base + 0.28, 0.55, 0.11)
+    const g = BASE_GAIN.ding * SEVERITY.update
+    ding(ctx, 370, base + 0.00, 0.55, g)
+    ding(ctx, 555, base + 0.28, 0.55, g)
   },
 
-  // 津波解除・取消・失効: ピアノ G4 → C4 の終止形（下行完全 5 度）。
+  // 津波解除・取消・失効: 純音 G4 → C4 の終止形（下行完全 5 度）。
   // ドミナント→トニックの解決で「終わった」を音楽的に言い切る。津波系の
   // tsunamiWatch/tsunami/tsunamiMajor が上昇スイープで緊迫感を出しているのに対し、
-  // 解除だけは調性のある 2 音で対比させる。
-  // 旧実装は ding の降下 3 音（700→520→380Hz）だったが、音程比が半端で下降グリッサンドの
-  // 「ずっこけ」に近い軽さがあり、解除の知らせとして品位を欠いていた。
+  // 解除だけは調性のある 2 音で対比させる。音程比が半端な降下 3 音（700→520→380Hz）は
+  // 下降グリッサンドの「ずっこけ」に近い軽さがあり、解除の知らせとして品位を欠いていた。
+  // **長さは観測情報の更新（tsunamiUpdate）に揃える。** 同じ純音の 2 音なのに 2 音目だけ
+  // 3 倍長く引いていた頃は、続けて聞くと別の系統に聞こえた。
   // eewCancel（ダークピアノの降下 3 音）とは音色そのもので分かれる（あちらはユニゾンと
   // 倍音を持つピアノ、こちらは正弦 2 本の純音）。
   tsunamiCancel: (ctx, base) => {
-    ding(ctx, 392.0, base + 0.00, 0.58, 0.24)
-    ding(ctx, 261.6, base + 0.26, 1.70, 0.26)
+    const g = BASE_GAIN.ding * SEVERITY.update
+    ding(ctx, 392.0, base + 0.00, 0.55, g)
+    ding(ctx, 261.6, base + 0.26, 0.55, g)
   },
 
   // 南海トラフ臨時情報・後発地震注意情報: 純音 A4×2連打 → D5（情報発表の穏やかな緊張感）
   specialInfo: (ctx, base) => {
-    ding(ctx, 440.0, base + 0.00, 0.15, 0.26)
-    ding(ctx, 440.0, base + 0.16, 0.15, 0.26)
-    ding(ctx, 587.3, base + 0.38, 1.20, 0.22)
+    const g = BASE_GAIN.ding * SEVERITY.info
+    ding(ctx, 440.0, base + 0.00, 0.15, g)
+    ding(ctx, 440.0, base + 0.16, 0.15, g)
+    ding(ctx, 587.3, base + 0.38, 1.20, g)
   },
 
   // 南海トラフ関連解説情報: 純音の下降2音 D5→A4（控えめ）。全体で約1.3秒。
@@ -612,17 +672,29 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
   // 段階の発表と同じ音が毎月鳴れば、実際に「巨大地震注意」が出たときに音で区別できなくなる。
   // specialInfo が上昇（A4→D5）なのに対しこちらは下降にして、向きで聞き分けられるようにしている。
   specialInfoCommentary: (ctx, base) => {
-    ding(ctx, 587.3, base + 0.00, 0.90, 0.16)
-    ding(ctx, 440.0, base + 0.20, 1.10, 0.14)
+    const g = BASE_GAIN.ding * SEVERITY.update
+    ding(ctx, 587.3, base + 0.00, 0.90, g)
+    ding(ctx, 440.0, base + 0.20, 1.10, g)
   },
 }
 
 // ─── 震度更新音（強震モニタ）─────────────────────────────────────
 // 震度が上がるにつれ音程・回数・音量が連動して増加する。
 
+/**
+ * 震度更新音の段。**`BEEP_PATTERNS` / `BEEP_SEVERITY` の添字と型で結んである。**
+ *
+ * 段を増減するときは 3 箇所（この型・2 つの表）を同時に直すことになり、片方だけ変えれば
+ * 型検査で止まる。結んでいないと、表が短いまま段だけ増えたときに添字が `undefined` になり、
+ * 音量が `NaN` になったり `p.freqs` で例外が出たりする。
+ */
+type BeepLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6
+/** 段ごとに 1 つずつ値を持つ表。長さが `BeepLevel` の値域と一致することを型で保証する */
+type ByBeepLevel<T> = readonly [T, T, T, T, T, T, T]
+
 // 強震モニタ index → 震度7段階のマッピング（インデックスは 0〜20、計測震度 = index * 0.5 - 3.0）
 // index 9=震度2相当、11=震度3、13=震度4、15=震度5弱、16=震度5強、17=震度6弱/6強、19=震度7
-export function kyoshinLevel(index: number): number {
+export function kyoshinLevel(index: number): BeepLevel {
   if (index >= 19) return 6  // 震度7 (計測震度 6.5+)
   if (index >= 17) return 5  // 震度6弱/6強 (計測震度 5.5〜6.5)
   if (index >= 16) return 4  // 震度5強 (計測震度 5.0〜5.5)
@@ -636,22 +708,34 @@ interface BeepPattern {
   freqs: number[]
   interval: number
   duration: number
-  gain: number
   /** 低音を厚くする（震度 5 弱以上）。段階の重さを音量とは別の軸で示す */
   deep: boolean
 }
 
-// 震度が上がるほど音数が増え、間隔が詰まり、音量が上がる。**この勾配が段階の重さを伝える**
-// ので、音色を変えるときも数値の並びは崩さないこと。
+/**
+ * 震度更新音の段階ごとの深刻度。**7 段階を 3 dB 刻みでは表せない**ので、この表が段を刻む。
+ *
+ * 震度6弱〜強までは 1 dB ずつ緩やかに上げ、**震度7 だけ `SEVERITY.warning` へ跳ねる**
+ * （そこで 4 dB 開く）。音量だけで 7 段を刻もうとすると、下の段が聞こえないほど小さくなるか、
+ * 上の段が警報を覆うかのどちらかになる。**勾配を作っているのは音量だけではない**——音数
+ * （2 → 7 音）と `deep`（震度5弱以上でサブオクターブが厚くなる）も効いており、実測の勾配は
+ * 合計 10.5 dB で、震度5弱と震度7 のところで大きく開く。
+ */
+const BEEP_SEVERITY: ByBeepLevel<number> = [
+  SEVERITY.update, 0.281, 0.316, 0.355, 0.399, 0.449, SEVERITY.warning,
+]
+
+// 震度が上がるほど音数が増え、間隔が詰まる。**この勾配が段階の重さを伝える**ので、
+// 音色を変えるときも数値の並びは崩さないこと。音量は BEEP_SEVERITY が別に持つ。
 // 周波数はすべて A4・C5・D5・F5・G5・A5 に落ちる（440〜880Hz）。
-const BEEP_PATTERNS: BeepPattern[] = [
-  { freqs: [440, 587],                          interval: 0.18, duration: 0.28, gain: 0.24, deep: false }, // 震度2以下
-  { freqs: [587, 699, 784],                     interval: 0.15, duration: 0.22, gain: 0.32, deep: false }, // 震度3
-  { freqs: [587, 699, 784, 880],                interval: 0.13, duration: 0.20, gain: 0.34, deep: false }, // 震度4
-  { freqs: [587, 699, 784, 880],                interval: 0.12, duration: 0.18, gain: 0.36, deep: true  }, // 震度5弱
-  { freqs: [699, 523, 699, 523, 699],           interval: 0.11, duration: 0.17, gain: 0.38, deep: true  }, // 震度5強
-  { freqs: [784, 587, 784, 587, 784, 587],      interval: 0.10, duration: 0.16, gain: 0.40, deep: true  }, // 震度6弱〜強
-  { freqs: [880, 587, 880, 587, 880, 587, 880], interval: 0.09, duration: 0.15, gain: 0.42, deep: true  }, // 震度7
+const BEEP_PATTERNS: ByBeepLevel<BeepPattern> = [
+  { freqs: [440, 587],                          interval: 0.18, duration: 0.28, deep: false }, // 震度2以下
+  { freqs: [587, 699, 784],                     interval: 0.15, duration: 0.22, deep: false }, // 震度3
+  { freqs: [587, 699, 784, 880],                interval: 0.13, duration: 0.20, deep: false }, // 震度4
+  { freqs: [587, 699, 784, 880],                interval: 0.12, duration: 0.18, deep: true  }, // 震度5弱
+  { freqs: [699, 523, 699, 523, 699],           interval: 0.11, duration: 0.17, deep: true  }, // 震度5強
+  { freqs: [784, 587, 784, 587, 784, 587],      interval: 0.10, duration: 0.16, deep: true  }, // 震度6弱〜強
+  { freqs: [880, 587, 880, 587, 880, 587, 880], interval: 0.09, duration: 0.15, deep: true  }, // 震度7
 ]
 
 // ─── 公開 API ───────────────────────────────────────────────────
@@ -738,25 +822,30 @@ export function playCountdownBeep(second: number): void {
 
   playGuarded(`playCountdownBeep(${second})`, () => {
     const dest = getMasterInput(ctx)
+    // 刻みは「注意」の段。**秒読みそのものは警報より前に出ない**——1 秒ごとに鳴り続けるため、
+    // 警報と同じ大きさで刻むと EEW の警報音を覆う。
+    const tick = BASE_GAIN.darkAlarm * SEVERITY.caution
+    // 残り 1 秒に重ねる支えだけ「最重要」の段。S 波が届く直前の一撃で、ここだけ段が上がる。
+    const last = BASE_GAIN.darkAlarm * SEVERITY.critical
     // パルスは短いため release を 3ms まで詰める。gateTone の既定（40ms）のままだと
     // 20Hz ゲートのパルス幅（22.5ms）を超えて減衰し、カウントの切れ味が鈍る。
     const pulse = { attack: 0.003, release: 0.003 }
     for (let i = 0; i < steps; i++) {
       const pt = t0 + i * period
-      gateTone(ctx, panTo(ctx, -0.5), 'square', 440, pt, pulseW, 0.12 * globalVolume,
+      gateTone(ctx, panTo(ctx, -0.5), 'square', 440, pt, pulseW, tick * 0.50 * globalVolume,
         { ...pulse, detuneCents: -ALARM_DETUNE_CENTS })
-      gateTone(ctx, panTo(ctx, 0.5), 'square', 440, pt, pulseW, 0.12 * globalVolume,
+      gateTone(ctx, panTo(ctx, 0.5), 'square', 440, pt, pulseW, tick * 0.50 * globalVolume,
         { ...pulse, detuneCents: ALARM_DETUNE_CENTS })
-      gateTone(ctx, dest, 'sine', 220, pt, pulseW, 0.15 * globalVolume, pulse)
-      decayTone(ctx, dest, 'square', 880, pt, 0.001, 0.07 * globalVolume, pt + 0.018)
+      gateTone(ctx, dest, 'sine', 220, pt, pulseW, tick * 0.625 * globalVolume, pulse)
+      decayTone(ctx, dest, 'square', 880, pt, 0.001, tick * 0.2917 * globalVolume, pt + 0.018)
     }
 
     if (second === 1) {
-      gateTone(ctx, dest, 'sine', 110, t0, totalDur, 0.30 * globalVolume, { attack: 0.010, release: 0.06 })
-      gateTone(ctx, dest, 'sine',  55, t0, totalDur, 0.18 * globalVolume, { attack: 0.012, release: 0.06 })
-      gateTone(ctx, panTo(ctx, 0.35), 'sine', 1320, t0, totalDur, 0.13 * globalVolume,
+      gateTone(ctx, dest, 'sine', 110, t0, totalDur, last * 0.625 * globalVolume, { attack: 0.010, release: 0.06 })
+      gateTone(ctx, dest, 'sine',  55, t0, totalDur, last * 0.375 * globalVolume, { attack: 0.012, release: 0.06 })
+      gateTone(ctx, panTo(ctx, 0.35), 'sine', 1320, t0, totalDur, last * 0.2708 * globalVolume,
         { attack: 0.005, release: 0.06, detuneCents: 5 })
-      gateTone(ctx, panTo(ctx, -0.35), 'sine', 1320, t0, totalDur, 0.13 * globalVolume,
+      gateTone(ctx, panTo(ctx, -0.35), 'sine', 1320, t0, totalDur, last * 0.2708 * globalVolume,
         { attack: 0.005, release: 0.06, detuneCents: -5 })
     }
   })
@@ -817,10 +906,15 @@ export function playKyoshinUpdateSound(maxIndex: number, gainScale = 1): void {
     ctx.resume().catch(err =>
       log.warn(`[sound] playKyoshinUpdateSound(${maxIndex}) 中の AudioContext 再開に失敗: ${String(err)}`))
   }
-  const p = BEEP_PATTERNS[kyoshinLevel(maxIndex)]
   const base = ctx.currentTime + 0.02
+  // **再生に関わる計算はガードの内側に置くこと。** 外に出すと、そこで出た例外は
+  // `[sound] ... の再生に失敗` に残らず、Error Boundary を持たないこのアプリでは
+  // 画面全体のアンマウントになる。
   playGuarded(`playKyoshinUpdateSound(${maxIndex})`, () => {
+    const level = kyoshinLevel(maxIndex)
+    const p = BEEP_PATTERNS[level]
+    const g = BASE_GAIN.beep * BEEP_SEVERITY[level]
     p.freqs.forEach((freq, i) =>
-      warningBeep(ctx, freq, base + i * p.interval, p.duration, p.gain * gainScale, p.deep))
+      warningBeep(ctx, freq, base + i * p.interval, p.duration, g * gainScale, p.deep))
   })
 }

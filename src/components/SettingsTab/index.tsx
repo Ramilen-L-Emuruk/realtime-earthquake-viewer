@@ -1110,7 +1110,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         <Row label="地震情報（震源・震度 / 各地の震度）" description="ピアノ上昇4音 E4→G#4→B4→E5">
           <TestButton color="red" onClick={() => { unlockAudio(); playAlertSound('earthquake') }}>▶ 試聴</TestButton>
         </Row>
-        <Row label="地震情報（震源情報・遠地地震）" description="ピアノ2音 G4→B4（控えめ）">
+        <Row label="地震情報（震源情報・遠地地震）" description="ピアノ2音 G4→B4">
           <TestButton color="blue" onClick={() => { unlockAudio(); playAlertSound('earthquakeInfo') }}>▶ 試聴</TestButton>
         </Row>
         {/* ── 津波情報 ── */}
