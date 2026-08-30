@@ -32,9 +32,12 @@ function fakeMap(
   existingLayers = ['quake-points', 'kyoshin-points'],
   /** 地図の回転（度）。0 なら北が画面上。 */
   bearingDeg = 0,
+  /** 地図ペインの実寸（画面外のラベルを判定から外すのに使う）。既定は代表点 (0,0) を含む広さ。 */
+  container: { clientWidth: number; clientHeight: number } = { clientWidth: 800, clientHeight: 600 },
 ): MapLibreMap {
   return {
     getLayer: (id: string) => (existingLayers.includes(id) ? { id } : undefined),
+    getContainer: () => container,
     // 実物（maplibre-gl の LngLat）は NaN を渡すと同期的に例外を投げる。壊れたデータを素通しした
     // ときの巻き添え（targets.map ごと落ちる）を再現できるよう、モックも同じ振る舞いにする。
     project: ([lng, lat]: [number, number]) => {
@@ -279,6 +282,69 @@ describe('computeLabelPlacements', () => {
     const placements = computeLabelPlacements(map, targets, 1)
     expect(placements).toHaveLength(3)
     expect(placements.map((p) => p.shift)).toEqual(['up', 'none', 'up'])
+  })
+})
+
+// 判定は 1 ラベルにつき queryRenderedFeatures を 1〜3 回呼ぶ。全国 250 件前後を毎回問い合わせると
+// 非力な端末でメインスレッドが 1 秒以上止まるため、画面の外にあるものは呼ぶ前に外す。
+// **絞りすぎれば「避けるべきラベルを見逃す」ので、境界と縮退のときの倒し方を固定しておく。**
+describe('画面外のラベルは判定しない', () => {
+  /** queryRenderedFeatures が何回呼ばれたかを数える。 */
+  function countingMap(...args: Parameters<typeof fakeMap>) {
+    const map = fakeMap(...args)
+    const orig = map.queryRenderedFeatures.bind(map)
+    let calls = 0
+    ;(map as unknown as { queryRenderedFeatures: unknown }).queryRenderedFeatures = (
+      ...a: Parameters<typeof orig>
+    ) => {
+      calls++
+      return orig(...a)
+    }
+    return { map, calls: () => calls }
+  }
+
+  it('画面の外にあるラベルは問い合わせずに「退避なし」で返す', () => {
+    // 代表点 (0,0) は画面内、lngLat [1,1] は (1000,-1000) で画面（800×600）の外。
+    const { map, calls } = countingMap([{ x: 0, y: 0 }])
+    const placements = computeLabelPlacements(map, [target({ id: 0, lngLat: [1, 1] })], 1)
+    expect(placements).toEqual([{ shift: 'none', dimmed: false }])
+    expect(calls()).toBe(0)
+  })
+
+  it('画面内のラベルは従来どおり問い合わせる（絞りすぎていないこと）', () => {
+    const { map, calls } = countingMap([{ x: 0, y: 0 }])
+    expect(computeLabelPlacements(map, [target()], 1)).toEqual([{ shift: 'up', dimmed: false }])
+    expect(calls()).toBeGreaterThan(0)
+  })
+
+  it('縁のすぐ外でも、退避すれば画面へ入る位置なら判定する', () => {
+    // 退避量 2em = 20px・halfH 6.5px なので、上端から 26.5px までは退避後に画面へ入りうる。
+    // y = -20 は画面の外だが、上へ逃がせば見えるので判定を省いてはならない。
+    const { map, calls } = countingMap([{ x: 0, y: -20 }])
+    computeLabelPlacements(map, [target({ id: 0, lngLat: [0, 0.02] })], 1)
+    expect(calls()).toBeGreaterThan(0)
+  })
+
+  it('横は退避量を足さない（左右へは逃がさないので、余白は文字の半幅だけ）', () => {
+    // halfW=10。x=-9（左端から 9px 外）はまだ文字の一部が見えるので判定する。
+    const near = countingMap([{ x: -9, y: 0 }])
+    computeLabelPlacements(near.map, [target({ id: 0, lngLat: [-0.009, 0] })], 1)
+    expect(near.calls()).toBeGreaterThan(0)
+    // x=-30 は半幅ぶん外へ完全に出ており、上下へ逃がしても横位置は変わらないので判定しない。
+    // **左右への退避を足すなら、この期待値は変わる**（`isOffScreen` の横の余白も直すこと）。
+    const far = countingMap([{ x: -30, y: 0 }])
+    computeLabelPlacements(far.map, [target({ id: 0, lngLat: [-0.03, 0] })], 1)
+    expect(far.calls()).toBe(0)
+  })
+
+  it('ペインの実寸が取れないときは絞らない（レイアウト前・非表示）', () => {
+    // 0 と比べると全ラベルが画面外になり、重なり回避が丸ごと止まる。判定する側へ倒す。
+    const { map, calls } = countingMap([{ x: 1000, y: -1000 }], undefined, 0, {
+      clientWidth: 0,
+      clientHeight: 0,
+    })
+    computeLabelPlacements(map, [target({ id: 0, lngLat: [1, 1] })], 1)
+    expect(calls()).toBeGreaterThan(0)
   })
 })
 

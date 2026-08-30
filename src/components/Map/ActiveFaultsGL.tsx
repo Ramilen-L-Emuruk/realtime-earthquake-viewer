@@ -7,18 +7,27 @@ import { twoLinePopupHtml } from './gl/popupHtml'
 import { addOrderedLayer } from './gl/layerOrder'
 import { detailMinZoom } from './gl/zoomLevels'
 import { bindDynamicZoomRange, clampMinZoom } from './gl/viewSpan'
+import {
+  OVERLAY_LINE_SRC,
+  dropOverlayLines,
+  overlayLineKindFilter,
+  putOverlayLines,
+  type OverlayLineProps,
+} from './gl/overlayLineSource'
 
 // 全国活断層線（産総研 活断層データベース）を描画する MapLibre 版（Leaflet の ActiveFaultsLayer 相当）。
 // セグメント1件=MultiLineString feature 1件（約580件）にまとめ、1枚の line レイヤーで描く。
 // 表示/非表示は layout.visibility の切替のみ（データ再構築はしない）。クリック時は bbox tolerance で
 // 当たり判定し、活断層名のポップアップを出す（Leaflet 版の透明ヒット線＋tolerance に相当）。
+//
+// geojson ソースはプレート境界線と共有する（gl/overlayLineSource.ts）。自分の分は `kind: 'fault'`
+// で区別し、レイヤー側は filter で拾う。
 
 // ダーク地図に馴染ませた控えめな活断層色（鮮やかな #c2410c は目立ちすぎるため彩度を落とした暗い赤茶）。
 const FAULT_COLOR = '#96421f'
 // 線クリックの当たり判定許容（px）。旧 Leaflet の Canvas ヒットレンダラー tolerance:8 に揃える。
 const HIT_TOL_PX = 8
 
-const SRC = 'active-faults'
 const LYR = 'active-faults'
 
 interface Props {
@@ -34,13 +43,17 @@ export function ActiveFaultsGL({ activeFaults, visible, opacity }: Props) {
   // データ到着で一度だけ source + layer を構築。
   useEffect(() => {
     if (!map || !activeFaults) return
-    const fc = segmentsToMultiLineFC(activeFaults, (seg) => ({ name: seg.name }))
-    map.addSource(SRC, { type: 'geojson', data: fc })
+    const fc = segmentsToMultiLineFC(
+      activeFaults,
+      (seg): OverlayLineProps & { name: string } => ({ kind: 'fault', name: seg.name }),
+    )
+    putOverlayLines(map, 'fault', fc.features)
     // MAP_LAYER_ORDER に従い kyoshin/quake の各レイヤーより下へ挿入する（追加順非依存）。
     addOrderedLayer(map, {
       id: LYR,
       type: 'line',
-      source: SRC,
+      source: OVERLAY_LINE_SRC,
+      filter: overlayLineKindFilter('fault'),
       // 引いた画では線が潰れて列島が塗り潰された塊になるため描画しない（gl/zoomLevels.ts）。
       minzoom: clampMinZoom(detailMinZoom(map)),
       layout: {
@@ -69,8 +82,9 @@ export function ActiveFaultsGL({ activeFaults, visible, opacity }: Props) {
       unbindZoomRange()
       popupRef.current?.remove()
       popupRef.current = null
+      // 共有ソースは自分のレイヤーを外してから降りる（参照が残っていると削除できない）。
       if (map.getLayer(LYR)) map.removeLayer(LYR)
-      if (map.getSource(SRC)) map.removeSource(SRC)
+      dropOverlayLines(map, 'fault')
     }
   }, [map, activeFaults])
 
