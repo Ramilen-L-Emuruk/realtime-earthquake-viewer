@@ -5,6 +5,8 @@ import { useMapGL } from './mapGLContext'
 import type { PsWaveCircle } from '../../services/kyoshin'
 import { computeSWaveRadiusAtTime, computeSWaveTravelTimeSec } from '../../hooks/usePsWaveCalc'
 import { calcShakingDurationSec } from '../../utils/eew'
+import { EARTH_RADIUS_KM } from '../../utils/geo'
+import { ringVertex } from './gl/psWaveRing'
 import { addOrderedLayer } from './gl/layerOrder'
 import { log } from '../../utils/logger'
 
@@ -56,8 +58,8 @@ uniform float u_radiusKm;  // この描画での外周半径
 out float v_r;
 out float v_theta;
 
-// 緯度 1 度あたりの距離（km）。旧実装の 111320m/度 と揃える。
-const float KM_PER_DEG_LAT = 111.32;
+// 地球半径（km）。距離を測る側（utils/geo.ts の haversineKm）と同じ値を使う。
+const float EARTH_RADIUS_KM = EARTH_RADIUS_VALUE;
 
 // MapLibre の MercatorCoordinate と同じ式（geo/mercator_coordinate.ts）。
 vec2 mercator(vec2 lngLat) {
@@ -67,16 +69,27 @@ vec2 mercator(vec2 lngLat) {
 }
 
 void main() {
-  float theta = a_ring.x * 2.0 * PI;
+  float theta = a_ring.x * 2.0 * PI;   // 方位（真北から時計回り）
   float km = a_ring.y * u_radiusKm;
-  // 経度方向の 1 度は緯度で縮む。旧実装と同じく**震央の緯度**で割る（円の内部で cos を変えると
-  // 大きな円が歪むが、旧実装の見た目を保つことを優先する）。
-  float dLat = (km * cos(theta)) / KM_PER_DEG_LAT;
-  float dLng = (km * sin(theta)) / (KM_PER_DEG_LAT * cos(radians(u_center.y)));
+  // **震央から方位 theta へ距離 km だけ大円上を進んだ点**（測地円）。
+  //
+  // 以前は「緯度 1 度 = 111.32km、経度は震央の緯度の cos で割る」という近似で置いていた。
+  // 円が大きいほど南北の端で縮尺がずれ、球で描くと歪みとして出る（実測: 半径 200km で 0.75%・
+  // 800km で 2.67%）。大円で解けばこれが 0 になる。
+  //
+  // 平面（Mercator）ではこの直しでは歪みは消えない（半径 400km で 4%）。あちらは図法そのものが
+  // 南北へ引き伸ばすためで、地面の上で正しい円は Mercator 上で必ず北側が大きくなる。**消すには
+  // 円が波の到達位置を表さなくなるのを受け入れるしかない**ので、消さない。
+  float d = km / EARTH_RADIUS_KM;      // 角距離（ラジアン）
+  float lat0 = radians(u_center.y);
+  float lng0 = radians(u_center.x);
+  float sinLat = sin(lat0) * cos(d) + cos(lat0) * sin(d) * cos(theta);
+  float lat = asin(clamp(sinLat, -1.0, 1.0));
+  float lng = lng0 + atan(sin(theta) * sin(d) * cos(lat0), cos(d) - sin(lat0) * sinLat);
   v_r = a_ring.y;
   v_theta = a_ring.x;
-  gl_Position = projectTile(mercator(u_center + vec2(dLng, dLat)));
-}`
+  gl_Position = projectTile(mercator(vec2(degrees(lng), degrees(lat))));
+}`.replace('EARTH_RADIUS_VALUE', EARTH_RADIUS_KM.toFixed(1))
 
 /** 属性。**並び順がロケーション番号になる**（gl/projectionProgram.ts）。 */
 const RING_ATTRIBS = ['a_ring'] as const
@@ -206,9 +219,10 @@ ${VERT_BODY}`,
      * 破線の見た目を保つには足りる。
      */
     const dashCountFor = (lng: number, lat: number, radiusKm: number): number => {
-      const cosLat = Math.cos((lat * Math.PI) / 180)
       const center = map.project([lng, lat])
-      const edge = map.project([lng + (radiusKm * 1000) / (111320 * cosLat), lat])
+      // 円の頂点と同じ測地の解き方で端の点を出す（gl/psWaveRing.ts）。近似で出すと、
+      // 円そのものと破線の基準がわずかに食い違う。
+      const edge = map.project(ringVertex(lng, lat, radiusKm, Math.PI / 2))
       const rPx = Math.hypot(edge.x - center.x, edge.y - center.y)
       // **`Math.max` は NaN を素通しする。** 投影が有限値を返さない位置（極域など）で
       // `rPx` が NaN になると下限 4 が効かず、`u_dashCount` へ NaN が渡って破線が壊れる。

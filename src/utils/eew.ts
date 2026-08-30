@@ -1,4 +1,5 @@
 import type { EEWAlert, EEWRegion } from '../types/earthquake'
+import { hypocentralDistanceKm } from './geo'
 import type { AlertSoundType } from './alertSound'
 import { computeSWaveTravelTimeSec } from '../hooks/usePsWaveCalc'
 import { isValidIntensityScale } from './intensity'
@@ -44,7 +45,8 @@ export function calcFeltRadiusKm(mjma: number, depth: number, targetIntensity = 
   let lo = 0, hi = MAX_FELT_RADIUS_KM / FELT_RADIUS_BUFFER
   for (let i = 0; i < 50; i++) {
     const mid = (lo + hi) / 2
-    const hypoDist = Math.sqrt(mid ** 2 + depth ** 2)
+    // 地表は曲がっているので平らな直角三角形では解かない（utils/geo.ts）。
+    const hypoDist = hypocentralDistanceKm(mid, depth)
     const X = Math.max(hypoDist - faultHalfLen, 3)
     if (calcPGV600(X, mw, depth) > pgvThreshold) lo = mid
     else hi = mid

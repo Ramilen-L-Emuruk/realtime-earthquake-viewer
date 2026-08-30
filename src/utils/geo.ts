@@ -1,7 +1,65 @@
-import type { LatLng } from './prefectures'
+/**
+ * 緯度経度の組。**幾何の側で定義する。**
+ *
+ * 以前は `prefectures.ts`（生成データを fetch する層）に置いていたが、そちらは
+ * `import.meta.env` を使うためブラウザ向けの型が要る。純粋な幾何であるこのファイルが
+ * データ取得層へ依存していると、**スクリプト側のプロジェクトから使えなくなる**
+ * （`tsc -b` が `import.meta.env` で落ちる）。
+ */
+export type LatLng = [number, number]
+
+/**
+ * 地球半径（km・平均半径）。
+ *
+ * **距離を測る側と、距離から点を作る側で同じ値を使うこと。** EEW の予報円は「S 波がここまで来た」を
+ * 表すので、`haversineKm` が返す距離と円の半径が別の半径から出ていると、線の位置と距離の表示が
+ * 静かに食い違う（`components/Map/PsWaveGL.tsx`）。
+ */
+export const EARTH_RADIUS_KM = 6371
+
+/**
+ * 震源が乗っている球の半径。
+ *
+ * **1km 未満まで下げない。** 実データの深さは深くても数百 km だが、壊れた値が来たとき
+ * 0 以下になると `sqrt` の中身が負になって NaN が出る。NaN はカメラ追従の矩形へ流れ込むと
+ * **他の EEW や検知点まで巻き込んで範囲全体を壊す**（gl/bounds.ts の同種の防御と揃える）。
+ */
+function innerRadiusKm(depthKm: number): number {
+  return Math.max(EARTH_RADIUS_KM - depthKm, 1)
+}
+
+/**
+ * 地表距離（震央距離）から震源距離（震源までの直線距離）へ。
+ *
+ * **平らな直角三角形（√(地表距離² + 深さ²)）ではない。** 地表は曲がっているので、震央から離れる
+ * ほど地表の点は震源から見て「下がって」いく。球の上で 2 点を結ぶ弦の長さで解く。
+ *
+ * 誤差は浅い地震では 0.1% 未満だが、深発地震で遠方を見ると効く（地表 800km・深さ 700km で 3.3%）。
+ *
+ * 式は弦の長さ `√(深さ² + 4·R·(R−深さ)·sin²(Δ/2))`（Δ は震央角）。**この形を使うのは
+ * 数値の都合**——余弦定理をそのまま使うと、近距離で `cos(Δ)` が 1 に張り付いて桁が落ちる。
+ */
+export function hypocentralDistanceKm(surfaceDistKm: number, depthKm: number): number {
+  const inner = innerRadiusKm(depthKm)
+  const halfDelta = surfaceDistKm / (2 * EARTH_RADIUS_KM)
+  return Math.sqrt(depthKm ** 2 + 4 * EARTH_RADIUS_KM * inner * Math.sin(halfDelta) ** 2)
+}
+
+/**
+ * 震源距離から地表距離へ（`hypocentralDistanceKm` の逆関数）。
+ *
+ * 震源距離が深さに満たない＝波はまだ地表のどこにも達していないので 0 を返す
+ * （真上へ抜けるのが最短で、その長さがちょうど深さ）。
+ */
+export function surfaceDistanceKm(hypoDistKm: number, depthKm: number): number {
+  const inner = innerRadiusKm(depthKm)
+  const sinHalf2 = (hypoDistKm ** 2 - depthKm ** 2) / (4 * EARTH_RADIUS_KM * inner)
+  if (!(sinHalf2 > 0)) return 0
+  return 2 * EARTH_RADIUS_KM * Math.asin(Math.min(1, Math.sqrt(sinHalf2)))
+}
 
 export function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6371
+  const R = EARTH_RADIUS_KM
   const toRad = (deg: number) => deg * (Math.PI / 180)
   const dLat = toRad(lat2 - lat1)
   const dLng = toRad(lng2 - lng1)
