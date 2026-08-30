@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { sanitize, load, injectDevApiKey, resolveDevApiKey, stripDevApiKey } from './useSettings'
+import {
+  sanitize,
+  load,
+  injectDevApiKey,
+  resolveDevApiKey,
+  stripDevApiKey,
+  DAY_NIGHT_OPACITY_MIN,
+  DAY_NIGHT_OPACITY_MAX,
+} from './useSettings'
 
 const STORAGE_KEY = 'quake-viewer-settings'
 
@@ -46,6 +54,36 @@ describe('sanitize', () => {
 
   it('activeFaultOpacity=0.01 → 0.05 にクランプ（下限）', () => {
     expect(sanitize({ activeFaultOpacity: 0.01 }).activeFaultOpacity).toBe(0.05)
+  })
+
+  it('夜側の濃さの上限は 1 未満', () => {
+    // 1 だと 1 段あたりの不透明度が 1 になり、一番外側の段でいきなり最大の濃さに達して
+    // グラデーションが消える。定数そのものを見る（クランプ先と突き合わせると、上限を動かした
+    // ときに期待値も一緒に動いてしまい、この条件を検証できない）。
+    expect(DAY_NIGHT_OPACITY_MAX).toBeLessThan(1)
+    expect(DAY_NIGHT_OPACITY_MIN).toBeGreaterThan(0)
+  })
+
+  it('dayNightOpacity=1.0 → 上限にクランプ', () => {
+    expect(sanitize({ dayNightOpacity: 1.0 }).dayNightOpacity).toBe(DAY_NIGHT_OPACITY_MAX)
+  })
+
+  it('dayNightOpacity=0.01 → 下限にクランプ', () => {
+    expect(sanitize({ dayNightOpacity: 0.01 }).dayNightOpacity).toBe(DAY_NIGHT_OPACITY_MIN)
+  })
+
+  it('dayNightOpacity が文字列 → 既定値', () => {
+    expect(sanitize({ dayNightOpacity: 'dark' as unknown as number }).dayNightOpacity).toBe(
+      sanitize({}).dayNightOpacity,
+    )
+  })
+
+  it('夜側の濃さの既定値は、スライダーの刻みに乗る', () => {
+    // 乗らないと、動かしたあとスライダーで既定値へ戻せなくなる。既定値は sanitize から引く
+    // （リテラルで書くと、既定値を変えたときに検証をすり抜ける）。
+    const defaultOpacity = sanitize({}).dayNightOpacity
+    const steps = (defaultOpacity - DAY_NIGHT_OPACITY_MIN) / 0.05
+    expect(Math.abs(steps - Math.round(steps))).toBeLessThan(1e-9)
   })
 
   it('idleRevertSec=-100 → 0 にクランプ', () => {

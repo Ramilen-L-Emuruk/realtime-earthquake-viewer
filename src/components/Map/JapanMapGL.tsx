@@ -14,6 +14,7 @@ import { KyoshinDetectedPointsGL } from './KyoshinDetectedPointsGL'
 import { KyoshinMaxEffectGL } from './KyoshinMaxEffectGL'
 import { ActiveFaultsGL } from './ActiveFaultsGL'
 import { PlateBoundariesGL } from './PlateBoundariesGL'
+import { DayNightGL } from './DayNightGL'
 import { QuakeIntensityPointsGL } from './QuakeIntensityPointsGL'
 import { QuakeIntensitySurfaceGL } from './QuakeIntensitySurfaceGL'
 import { QuakeRegionFillGL } from './QuakeRegionFillGL'
@@ -98,6 +99,8 @@ export function JapanMapGL({
   showActiveFaults = true,
   activeFaultOpacity = 0.4,
   showPlateBoundaries = true,
+  showDayNight = false,
+  dayNightOpacity = 0.5,
   quakeSelectionTick = 0,
   onMapReady,
 }: JapanMapProps) {
@@ -379,6 +382,9 @@ export function JapanMapGL({
             iconScale={iconScale}
             visible={(mode === 'quake' || mode === 'kyoshin') && !!heatPoints && heatPoints.length > 0}
           />
+          {/* 夜の側の重ね塗り。地図の照明条件にあたるので、モードを問わず出す
+              （夜間の津波は避難の条件が変わるため、津波モードでも意味を持つ）。 */}
+          <DayNightGL visible={showDayNight} opacity={dayNightOpacity} />
           <PlateBoundariesGL plateBoundaries={plateBoundaries} visible={showOverlayLines && showPlateBoundaries} />
           <ActiveFaultsGL activeFaults={activeFaults} visible={showOverlayLines && showActiveFaults} opacity={activeFaultOpacity} />
           {/* 通常の震度表示（LPGM 進行中は非表示＝下の LPGM 表示に置き換わる）。
