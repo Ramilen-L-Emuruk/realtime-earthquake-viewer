@@ -24,6 +24,10 @@ export const MAP_LAYER_ORDER = [
   'subregion-hit',
   'sub-borders',
   'pref-borders',
+  // 夜の側の重ね塗り（DayNightGL）。地形と境界線の上に掛けて「夜だ」と分かる程度に沈めるが、
+  // 震度の塗り・ヒートマップより下に置いて情報の色を濁らせない。薄明の段は 1 枚のレイヤーの中で
+  // 重ねる（重なりは同一レイヤー内でも累積するため、段数を変えてもここは動かない）。
+  'day-night',
   // 地震活動ヒートマップ（旧 z255）。プレート境界線・活断層線（旧 z263）より背面。
   'quake-heat',
   // ヒートマップのクリック当たり判定用の透明レイヤー。heatmap レイヤーは queryRenderedFeatures に

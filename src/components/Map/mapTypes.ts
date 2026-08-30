@@ -42,6 +42,14 @@ export interface JapanMapProps {
   activeFaultOpacity?: number
   heatPoints?: HeatPoint[] | null
   showPlateBoundaries?: boolean
+  /** 夜の側を重ねて描くか（DayNightGL）。 */
+  showDayNight?: boolean
+  /**
+   * 夜側の濃さ。全段が重なりきったところの不透明度。
+   * 値域は `useSettings.ts` の `DAY_NIGHT_OPACITY_MIN` / `DAY_NIGHT_OPACITY_MAX` が単一情報源。
+   * **1 を渡さないこと**（各段が不透明になり、一番外側の段でグラデーションが消える）。
+   */
+  dayNightOpacity?: number
   kyoshinSites?: SiteCoords
   kyoshinIndices?: number[]
   /**

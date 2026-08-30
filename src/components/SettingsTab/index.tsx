@@ -1,5 +1,6 @@
 import { memo, useState, useCallback, useEffect, useRef } from 'react'
 import type { AppSettings } from '../../hooks/useSettings'
+import { DAY_NIGHT_OPACITY_MIN, DAY_NIGHT_OPACITY_MAX } from '../../hooks/useSettings'
 import type { ConnectionStatus } from '../../types/earthquake'
 import { getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
 import { readableTextColor } from '../../utils/contrast'
@@ -755,12 +756,35 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             ))}
           </select>
         </Row>
-        {/* ── 地図レイヤー: 地形 → 地質構造 → 観測データ の順 ── */}
+        {/* ── 地図レイヤー: 地形 → 明るさ → 地質構造 → 観測データ の順 ── */}
         <Row label="海底地形を表示" description="背景の海域に海底地形（陰影）を表示します">
           <Toggle
             checked={settings.showBathymetry}
             onChange={v => onUpdate('showBathymetry', v)}
           />
+        </Row>
+        <Row label="昼夜の境目を表示" description="地図に夜の側を重ねます。日の入りから夜が深まるまでを、濃さの変化で表します">
+          <Toggle
+            checked={settings.showDayNight}
+            onChange={v => onUpdate('showDayNight', v)}
+          />
+        </Row>
+        <Row label="夜側の濃さ" description="夜の側をどれだけ暗くするかを調整します（濃くするほど地形や県境が見えにくくなります）">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-secondary w-8 text-right">
+              {Math.round(settings.dayNightOpacity * 100)}%
+            </span>
+            <input
+              type="range"
+              min={DAY_NIGHT_OPACITY_MIN}
+              max={DAY_NIGHT_OPACITY_MAX}
+              step={0.05}
+              value={settings.dayNightOpacity}
+              onChange={e => onUpdate('dayNightOpacity', Number(e.target.value))}
+              disabled={!settings.showDayNight}
+              className="w-24 accent-blue-500 disabled:opacity-40"
+            />
+          </div>
         </Row>
         <Row label="プレート境界線を表示" description="地震情報・リアルタイムタブの地図に世界のプレート境界線を表示します（PB2002モデル）">
           <Toggle
