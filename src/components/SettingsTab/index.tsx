@@ -738,7 +738,8 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             ))}
           </select>
         </Row>
-        {/* ── 地図レイヤー: 地形 → 明るさ → 地質構造 → 観測データ の順 ── */}
+        {/* ── 地図レイヤー: 地形 → 明るさ → 地質構造 → 観測データ の順。
+            濃さのような従属する項目は、親のトグルがオンのときだけ出す（VOICEVOX の関連設定と同じ） ── */}
         <Row label="海底地形を表示" description="背景の海域に海底地形（陰影）を表示します">
           <Toggle
             checked={settings.showBathymetry}
@@ -751,23 +752,24 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             onChange={v => onUpdate('showDayNight', v)}
           />
         </Row>
-        <Row label="夜側の濃さ" description="夜の側をどれだけ暗くするかを調整します（暗くなるのは陸地と海底地形だけで、県境や震度は読めたまま残ります）">
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-secondary w-8 text-right">
-              {Math.round(settings.dayNightOpacity * 100)}%
-            </span>
-            <input
-              type="range"
-              min={DAY_NIGHT_OPACITY_MIN}
-              max={DAY_NIGHT_OPACITY_MAX}
-              step={0.05}
-              value={settings.dayNightOpacity}
-              onChange={e => onUpdate('dayNightOpacity', Number(e.target.value))}
-              disabled={!settings.showDayNight}
-              className="w-24 accent-blue-500 disabled:opacity-40"
-            />
-          </div>
-        </Row>
+        {settings.showDayNight && (
+          <Row label="夜側の濃さ" description="夜の側をどれだけ暗くするかを調整します（暗くなるのは陸地と海底地形だけで、県境や震度は読めたまま残ります）">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-secondary w-8 text-right">
+                {Math.round(settings.dayNightOpacity * 100)}%
+              </span>
+              <input
+                type="range"
+                min={DAY_NIGHT_OPACITY_MIN}
+                max={DAY_NIGHT_OPACITY_MAX}
+                step={0.05}
+                value={settings.dayNightOpacity}
+                onChange={e => onUpdate('dayNightOpacity', Number(e.target.value))}
+                className="w-24 accent-blue-500"
+              />
+            </div>
+          </Row>
+        )}
         <Row label="プレート境界線を表示" description="地震情報・リアルタイムタブの地図に世界のプレート境界線を表示します（PB2002モデル）">
           <Toggle
             checked={settings.showPlateBoundaries}
@@ -780,23 +782,24 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             onChange={v => onUpdate('showActiveFaults', v)}
           />
         </Row>
-        <Row label="活断層線の濃さ" description="活断層線の不透明度を調整します（濃くするほど目立ちます）">
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-secondary w-8 text-right">
-              {Math.round(settings.activeFaultOpacity * 100)}%
-            </span>
-            <input
-              type="range"
-              min={0.05}
-              max={1}
-              step={0.05}
-              value={settings.activeFaultOpacity}
-              onChange={e => onUpdate('activeFaultOpacity', Number(e.target.value))}
-              disabled={!settings.showActiveFaults}
-              className="w-24 accent-blue-500 disabled:opacity-40"
-            />
-          </div>
-        </Row>
+        {settings.showActiveFaults && (
+          <Row label="活断層線の濃さ" description="活断層線の不透明度を調整します（濃くするほど目立ちます）">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-secondary w-8 text-right">
+                {Math.round(settings.activeFaultOpacity * 100)}%
+              </span>
+              <input
+                type="range"
+                min={0.05}
+                max={1}
+                step={0.05}
+                value={settings.activeFaultOpacity}
+                onChange={e => onUpdate('activeFaultOpacity', Number(e.target.value))}
+                className="w-24 accent-blue-500"
+              />
+            </div>
+          </Row>
+        )}
         <Row label="地震活動ヒートマップを表示" description="地震情報・リアルタイムタブの地図に直近1ヶ月の地震活動をヒートマップで表示します（初回表示時にAPIから取得）">
           <Toggle
             checked={settings.showQuakeHeatmap}
