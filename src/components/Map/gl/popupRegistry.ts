@@ -11,10 +11,9 @@ import type { Map as MapLibreMap, MapMouseEvent, MapGeoJSONFeature, PointLike } 
 // ここで map ごとに単一の click / mousemove ハンドラと単一の Popup インスタンスを持ち、
 // 登録された全レイヤーを優先度順に問い合わせて、最初にヒットした1件だけを表示する。
 //
-// HTML マーカー（震源・区域ラベル等）は queryRenderedFeatures の対象外だが、マーカー要素の
-// クリックは地図コンテナへバブリングして map の click も発火させる。マーカーは常に最前面の点
-// として扱いたいので、claimClickForMarker で「この click はマーカーが取った」と宣言させ、
-// レイヤー由来の表示を抑止する（順序はマーカー要素→コンテナのバブリングで保証される）。
+// カスタムレイヤー（`gl/depthPointLayer.ts` で描く震源など）は queryRenderedFeatures の対象外
+// なので、`pick` に自前の判定を渡してもらう。判定が描画ループの中でしか解けない実装があるため、
+// 未解決（`'pending'`）を「何も無い」と区別し、数フレームだけ聞き直す。
 
 /**
  * 当たり判定の優先度。狭くて狙って押したものほど先に拾う。
@@ -46,6 +45,18 @@ export interface PopupSource {
    * 指マークになって「押せるもの」の区別が付かなくなるため false にする。
    */
   hoverCursor?: boolean
+  /**
+   * カスタムレイヤー用の自前判定。指定するとこちらを使い、`queryRenderedFeatures` は呼ばない。
+   *
+   * MapLibre はカスタムレイヤーが何を描いたかを知らないため、`queryRenderedFeatures` に一切
+   * ヒットしない。地下に点を置くレイヤー（`gl/depthPointLayer.ts`）のように、描画を自前で持つ
+   * ものはここへ判定を渡す。**`tolPx` は使われない**（判定の許容範囲はレイヤー側が決める）。
+   *
+   * 判定がその場で解けない実装（描画ループの中で解くもの）は `'pending'` を返す。呼び出し側が
+   * 次のフレームで聞き直す。**`null` を返してはならない**——「何も無い」と区別が付かず、
+   * `mousemove` が先に来ないタッチ操作で 1 回目が必ず空振りする。
+   */
+  pick?: (point: maplibregl.Point, forClick: boolean) => MapGeoJSONFeature | null | 'pending'
 }
 
 export interface PopupHandle {
@@ -56,6 +67,14 @@ export interface PopupHandle {
 // 吹き出し自身がマウスを受け取ると「対象から外れた」と判定され、出る/消えるを繰り返して明滅する。
 // HTML マーカーが自前でホバー吹き出しを出す場合も同じクラスを使う必要があるため export する
 // （QuakeIntensityPointsGL 等）。
+/**
+ * 判定が未解決だったとき、何フレームまで聞き直すか（クリックとホバーの両方で使う）。
+ *
+ * 描画ループの中でしか解けないレイヤー（`gl/depthPointLayer.ts`）があり、**タッチ操作は
+ * `mousemove` を伴わない**ため、指が触れた最初の入力では必ず未解決になる。数フレーム待てば解ける。
+ */
+const CLICK_PICK_RETRY_FRAMES = 3
+
 export const HOVER_CLASS = 'map-hover-popup'
 const POPUP_OFFSET = 12
 
@@ -67,8 +86,6 @@ interface Registry {
   hoverHtml: string | null
   /** カーソルを pointer にしたのが自分かどうか（他所のカーソル指定を奪って戻さないため）。 */
   cursorOwned: boolean
-  /** 直前の click を HTML マーカーが消費したか。 */
-  markerClaimed: boolean
   /** 開いているクリックポップアップの定期再生成（refreshMs 指定時のみ）。 */
   refresh: { source: PopupSource; feature: MapGeoJSONFeature; timer: number } | null
   detach: () => void
@@ -112,7 +129,6 @@ function createRegistry(map: MapLibreMap): Registry {
     }),
     hoverHtml: null,
     cursorOwned: false,
-    markerClaimed: false,
     refresh: null,
     detach: () => {},
   }
@@ -156,13 +172,26 @@ function createRegistry(map: MapLibreMap): Registry {
   }
 
   // 優先度順に全登録レイヤーを問い合わせ、最初にヒットした1件を返す。
-  const findTop = (point: maplibregl.Point): { source: PopupSource; feature: MapGeoJSONFeature } | null => {
+  /**
+   * `forClick` は判定の予約が競合したときの優先度に使う（クリックの予約はホバーに奪われない）。
+   */
+  const findTop = (
+    point: maplibregl.Point,
+    forClick: boolean,
+  ): { source: PopupSource; feature: MapGeoJSONFeature } | null | 'pending' => {
     for (const priority of PRIORITY_ORDER) {
+      let pending = false
       for (const source of reg.sources) {
         if (source.priority !== priority) continue
         // 非表示（visibility:none）のレイヤーは queryRenderedFeatures にヒットしないため、
         // 表示切替中のレイヤーは自然に対象から外れる。
         if (!map.getLayer(source.layerId)) continue
+        if (source.pick) {
+          const f = source.pick(point, forClick)
+          if (f === 'pending') { pending = true; continue }
+          if (f) return { source, feature: f }
+          continue
+        }
         const box: [PointLike, PointLike] = [
           [point.x - source.tolPx, point.y - source.tolPx],
           [point.x + source.tolPx, point.y + source.tolPx],
@@ -170,19 +199,22 @@ function createRegistry(map: MapLibreMap): Registry {
         const feats = map.queryRenderedFeatures(box, { layers: [source.layerId] })
         if (feats.length > 0) return { source, feature: pickTop(feats, source.rankKey) }
       }
+      // **この優先度に未解決が残っていたら、下位は見ない。** 見に行くと、まだ確定していない上位を
+      // 飛び越えて下位が先に当たる。地図には「どこを押しても区域名は出す」最後の受け皿
+      // （BaseMapGL の basemap 優先度）があるため、放置すると**未解決のたびに区域名が開く**。
+      // 同一優先度内は回し切ってから判定する（同期で当たるものがあればそちらを採る）。
+      if (pending) return 'pending'
     }
     return null
   }
 
-  const onClick = (e: MapMouseEvent) => {
-    if (reg.markerClaimed) {
-      // マーカーが自前の吹き出しを開いた直後。レイヤー由来は出さず、残っていれば閉じる。
-      reg.markerClaimed = false
-      closeClick()
-      closeHover()
+  const onClick = (e: MapMouseEvent, retry = 0) => {
+    const hit = findTop(e.point, true)
+    // 未解決なら数フレームだけ聞き直す。ここで諦めると、タッチ操作の 1 回目が必ず空振りする。
+    if (hit === 'pending') {
+      if (retry < CLICK_PICK_RETRY_FRAMES) requestAnimationFrame(() => onClick(e, retry + 1))
       return
     }
-    const hit = findTop(e.point)
     if (!hit) {
       closeClick()
       return
@@ -195,13 +227,20 @@ function createRegistry(map: MapLibreMap): Registry {
     startRefresh(hit.source, hit.feature)
   }
 
-  const onMouseMove = (e: MapMouseEvent) => {
+  const onMouseMove = (e: MapMouseEvent, retry = 0) => {
     // パン／ズーム中は吹き出しが地図に引きずられて鬱陶しいので追従しない。
     if (map.isMoving()) {
       closeHover()
       return
     }
-    const hit = findTop(e.point)
+    const hit = findTop(e.point, false)
+    // 未解決のときはカーソルも吹き出しも触らずに聞き直す。**ここで消すと、判定の 1 フレーム遅れが
+    // 明滅として現れる。** そして「次の mousemove で解ける」に頼ってもいけない——**目的の点で
+    // マウスを止めると次のイベントが来ない**ので、解決済みの値を読む機会が永久に来ない。
+    if (hit === 'pending') {
+      if (retry < CLICK_PICK_RETRY_FRAMES) requestAnimationFrame(() => onMouseMove(e, retry + 1))
+      return
+    }
     if (!hit) {
       releaseCursor()
       closeHover()
@@ -272,21 +311,3 @@ export function registerPopupSource(map: MapLibreMap, source: PopupSource): Popu
   }
 }
 
-/**
- * HTML マーカーの要素にクリック宣言を仕込む。マーカーは最前面の点として常に優先され、
- * そのクリックではレイヤー由来のポップアップを出さない。戻り値を呼ぶと解除する。
- */
-export function attachMarkerClaim(map: MapLibreMap, element: HTMLElement): PopupHandle {
-  const onClick = () => {
-    const reg = registries.get(map)
-    if (!reg) return
-    reg.markerClaimed = true
-    // 何らかの理由で map の click が続かなかった場合に宣言が残らないようにする
-    // （マーカー要素→コンテナのバブリングは通常必ず届くが、保険として次のタスクで倒す）。
-    setTimeout(() => {
-      reg.markerClaimed = false
-    }, 0)
-  }
-  element.addEventListener('click', onClick)
-  return { remove: () => element.removeEventListener('click', onClick) }
-}

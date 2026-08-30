@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { frontSortKeyExpression, mercatorProps } from './gl/screenDepth'
 import type { GeoJSONSource, MapGeoJSONFeature } from 'maplibre-gl'
 import type { Feature, FeatureCollection, Point } from 'geojson'
 import { useMapGL } from './mapGLContext'
@@ -41,6 +42,8 @@ function buildFC(markers: LpgmMarker[], iconScale: number): FeatureCollection<Po
       lgInt: m.lgInt,
       name: m.name,
       pref: m.pref,
+      // 同じ階級のバッジを画面の手前から並べるために持たせる（gl/screenDepth.ts）。
+      ...mercatorProps(m.position[1], m.position[0]),
     },
     geometry: { type: 'Point', coordinates: [m.position[1], m.position[0]] },
   }))
@@ -88,7 +91,9 @@ export function LpgmPointsGL({ markers, iconScale, visible }: Props) {
         'icon-size': ['get', 'iconSizeRatio'],
         'icon-allow-overlap': true,
         'icon-ignore-placement': true,
-        'symbol-sort-key': ['get', 'lgInt'],
+        // 階級が第一・画面の手前らしさが第二の合成キー（gl/screenDepth.ts）。方位が変われば
+        // JapanMapGL が式を差し替える。ここで置くのは方位 0 の初期値。
+        'symbol-sort-key': frontSortKeyExpression('lgInt', 0),
         visibility: visible ? 'visible' : 'none',
       },
     })

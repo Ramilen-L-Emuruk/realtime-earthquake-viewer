@@ -5,7 +5,9 @@
 
 import { fetchJsonWithTimeout } from './fetchJson'
 
-export type LatLng = [number, number]
+// 定義は幾何の側（./geo）。従来どおりここからも引けるよう再エクスポートする。
+import type { LatLng } from './geo'
+export type { LatLng }
 
 /**
  * 代表点からラベルを退避させられる余地 `[北, 南]`（緯度差の度数）。

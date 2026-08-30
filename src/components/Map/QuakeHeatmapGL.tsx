@@ -188,6 +188,12 @@ export function QuakeHeatmapGL({ points, iconScale, visible }: Props) {
       layout: { visibility: visible ? 'visible' : 'none' },
       paint: {
         'circle-radius': HIT_RADIUS_PX,
+        // **遠近を付けない。** `circle-pitch-scale` の既定は 'map' で、傾けるとカメラからの距離に
+        // 応じて半径が縮む（傾き 60 度で奥は 1/4 ほど）。この地図の点・バッジ・ラベル・DOM マーカーは
+        // すべて画面に正対したまま一定の大きさで描く方針なので、そちらへ揃える。とくに震度0以下を描く
+        // `gl/subThresholdLayer.ts` は自前シェーダーの固定サイズ（`gl_PointSize`）なので、ここを既定の
+        // まま残すと**同じ観測点なのに震度1以上だけ奥で縮む**という食い違いが出る。
+        'circle-pitch-scale': 'viewport',
         'circle-color': '#000000',
         'circle-opacity': 0,
       },

@@ -1,4 +1,5 @@
 import type { LatLng } from '../../../utils/stationCoords'
+import { ringBounds } from './psWaveRing'
 import { calcFeltRadiusKm } from '../../../utils/eew'
 
 // カメラ追従の目標範囲を決める純粋計算。maplibre-gl に依存しない。
@@ -134,9 +135,9 @@ export function boundsFromEewCircles(circles: EewFollowCircle[]): BoundsTuple | 
     const feltRadiusKm = hasMag ? calcFeltRadiusKm(c.magnitude as number, depthKm) : Infinity
     // ルーズ余白を掛けた**後**に引き上限をかける（先に上限をかけると 1.2 倍で上限を超えてしまう）。
     const radiusKm = Math.min(Math.min(waveRadiusKm, feltRadiusKm) * EEW_FOLLOW_LOOSE, EEW_FOLLOW_MAX_RADIUS_KM)
-    const latDelta = radiusKm / 111.32
-    const lngDelta = radiusKm / (111.32 * Math.cos((c.lat * Math.PI) / 180))
-    bounds = mergeBounds(bounds, [c.lng - lngDelta, c.lat - latDelta, c.lng + lngDelta, c.lat + latDelta])
+    // 円の外接矩形。**円と同じ測地の解き方で出す**（gl/psWaveRing.ts の ringBounds）。
+    // 緯度 1 度 = 111.32km の近似で出していた頃は、円が測地円になったぶんだけ矩形とずれていた。
+    bounds = mergeBounds(bounds, ringBounds(c.lng, c.lat, radiusKm))
   }
   return bounds
 }
