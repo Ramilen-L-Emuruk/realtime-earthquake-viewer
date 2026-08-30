@@ -569,6 +569,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 読み上げた観測点の記憶を画面用と分けること（画面用＝受信時に進める／読み上げ用＝**声に出す瞬間**に進める。共有すると、鳴らなかった観測値が既読になり二度と読まれない。**既読にするのは実際に読んだ分だけ**＝件数上限で落ちた観測点と、等級の発表に同梱された実測値は含めない） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §10「読み上げた観測点の記憶は画面用と分ける」 |
 | 津波の解除で観測点の記憶を落とす条件（**表示中の津波に向けた解除のときだけ**落とす・判定は `isCancelForCurrentTsunami` に集約しカードの状態更新と共有する・落とすのは記憶と画面の状態だけで**音と読み上げは判定を経ない**・リセットとリプレイ復元でも同じ範囲を揃える） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §5「解除電文と表示中の津波の照合」 |
 | EEW P/S 波予報円の計算・仮定震源要素の連動箇所 | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §5-§6 |
+| 距離をすべて球で解くこと（地球半径は `utils/geo.ts` の `EARTH_RADIUS_KM` に一本化・**距離を測る側と距離から点を作る側で同じ値**）。**`√(地表距離² + 深さ²)` を書かない**（`hypocentralDistanceKm` / `surfaceDistanceKm` を使う。深発・遠距離で 3% 効く）／**屈折波はモホ面沿いの距離を地表の弧へ換算する**（しないと直達波だけ球で混在）／予報円の頂点・外接矩形・破線の本数は**同じ `ringVertex` を通す**（別々の近似だと円と矩形がずれる）／平面投影での南北の伸びは図法の性質なので消さない | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §6「距離はすべて球で解く」 |
 | EEW レベル判定（特別警報の条件・長周期の DMDATA 限定） | [`docs/spec/eew-spec.md`](docs/spec/eew-spec.md) §4 |
 | 地図レイヤー描画順・EEW 予想レイヤーの kyoshin 限定・`maplibregl.Marker` の opacity（**中の要素の CSS アニメーションと乗算される**。点滅する描画物を弱めるときは振幅も併せて決める） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §2・§3・§7・§10 |
 | EEW 予想の区域塗りとカメラ追従対象の一致（`useEewLayerData` の `eewFitPositions` と `JapanMapGL` の塗り分けが、同じ「予想長周期を優先する」判定を使っていること） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6 |
