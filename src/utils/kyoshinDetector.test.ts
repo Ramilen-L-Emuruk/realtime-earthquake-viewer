@@ -212,6 +212,34 @@ describe('computeSiteKeys', () => {
     // 4件とも別実体（重複無し）
     expect(new Set(keys).size).toBe(4)
   })
+
+  // キャッシュ（観測点リストの配列そのものを鍵にする WeakMap）。
+  // **効いていることと、効きすぎないことの両方を固定する。** 効かなければ全1725点ぶんの
+  // 文字列を毎秒組み直す元の負荷に戻り、効きすぎれば（＝内容が変わったのに同じ配列を返せば）
+  // 座標とキーの対応が静かにずれる。どちらも例外を出さないので、テストでしか気づけない。
+  it('同じ配列を渡したら組み直さず同じ結果を返す', () => {
+    const sites: [number, number][] = [
+      [35.0, 139.0],
+      [36.0, 140.0],
+    ]
+    expect(computeSiteKeys(sites)).toBe(computeSiteKeys(sites))
+  })
+
+  it('別の配列なら中身が同じでも作り直す（差し替えを取りこぼさない）', () => {
+    const a: [number, number][] = [[35.0, 139.0]]
+    const b: [number, number][] = [[35.0, 139.0]]
+    const ka = computeSiteKeys(a)
+    const kb = computeSiteKeys(b)
+    expect(kb).not.toBe(ka)
+    expect(kb).toEqual(ka)
+  })
+
+  it('観測点リストが差し替わったら新しい内容のキーを返す', () => {
+    const before: [number, number][] = [[35.0, 139.0]]
+    const after: [number, number][] = [[40.0, 141.0]]
+    expect(computeSiteKeys(before)).toEqual([siteKey(35.0, 139.0)])
+    expect(computeSiteKeys(after)).toEqual([siteKey(40.0, 141.0)])
+  })
 })
 
 describe('buildStationMeta: 座標衝突時も両方の点を近傍グラフに残す', () => {

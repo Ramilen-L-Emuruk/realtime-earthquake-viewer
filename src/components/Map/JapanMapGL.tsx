@@ -49,6 +49,7 @@ import { log } from '../../utils/logger'
 import { serverNow } from '../../utils/clock'
 import { syncEewFirstSeen } from './gl/eewFirstSeen'
 import { applyFrontSortKeys, bearingChangedEnough } from './gl/screenDepth'
+import { installNoopCameraUpdateSkip } from './gl/skipNoopCameraUpdate'
 
 // MapLibre GL JS 版の地図コンポーネント（Leaflet 版 JapanMap と同一 Props）。
 // MapLibre 移行計画 docs/webgl-migration-implementation-plan.md のフェーズ順に、
@@ -264,6 +265,12 @@ export function JapanMapGL({
       },
     })
     mapRef.current = m
+    // カメラが動くたびに走る「地形めり込み補正」を、地形を使っていないこの地図では省く
+    // （gl/skipNoopCameraUpdate.ts。省略してよいかは実際に本物と突き合わせて確かめる）。
+    const cameraUpdateSkip = installNoopCameraUpdateSkip(m)
+    // 効き具合を読む口。**省略が効いているかは画面にも警告にも現れない**ので、これが無いと
+    // 「入れたのに軽くならない」ときに原因を切り分けられない。露出の考え方は下の __mapGL と同じ。
+    ;(window as unknown as Record<string, unknown>).__cameraUpdateSkip = cameraUpdateSkip.status
     // 検証用: 本番ビルドでも意図的に window.__mapGL を公開する。CLAUDE.md の検証手順
     // （実データの map.getSource(...).getData() 集計・Playwright からの map 操作）と
     // docs/spec/settings-pwa-spec.md の「開発者向け機能」節が明示的にこれを利用する。
@@ -324,6 +331,8 @@ export function JapanMapGL({
       m.off('rotate', onRotate)
       m.off('rotateend', onRotateEnd)
       m.off('styledata', onStyleData)
+      cameraUpdateSkip.restore()
+      delete (window as unknown as Record<string, unknown>).__cameraUpdateSkip
       mapRef.current = null
       setMap(null)
       m.remove()
