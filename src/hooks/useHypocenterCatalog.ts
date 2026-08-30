@@ -31,6 +31,13 @@ export interface HypocenterCatalogState {
   error: string | null
   /** 取得できなかった年（昇順）。空なら欠けなし。**件数はこのぶん少なく出る。** */
   missingYears: number[]
+  /**
+   * 取りに行った年の数（索引に無い年は含まない）。
+   *
+   * **`missingYears` と突き合わせて「一部が欠けた」と「まるごと取れなかった」を言い分けるために要る。**
+   * 件数が 0 のとき、絞り込みの結果なのか取得の失敗なのかは利用者から区別できない。
+   */
+  requestedYears: number
   /** もう一度取りに行く。期間を変えずに失敗から復帰する手段。 */
   retry: () => void
 }
@@ -65,6 +72,7 @@ export function useHypocenterCatalog(
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [missingYears, setMissingYears] = useState<number[]>(EMPTY_MISSING)
+  const [requestedYears, setRequestedYears] = useState(0)
   // 取り直しの合図。期間が変わらなくても効果を回し直すために連番で持つ。
   const [attempt, setAttempt] = useState(0)
   const retry = useCallback(() => setAttempt((n) => n + 1), [])
@@ -98,6 +106,7 @@ export function useHypocenterCatalog(
   useEffect(() => {
     if (!enabled || !index) return
     const wanted = yearsInRange(index, fromYear, toYear)
+    setRequestedYears(wanted.length)
     if (wanted.length === 0) {
       setYears(EMPTY_YEARS)
       setMissingYears(EMPTY_MISSING)
@@ -135,5 +144,5 @@ export function useHypocenterCatalog(
     }
   }, [enabled, index, fromYear, toYear, attempt])
 
-  return { index, years, loading, error, missingYears, retry }
+  return { index, years, loading, error, missingYears, requestedYears, retry }
 }

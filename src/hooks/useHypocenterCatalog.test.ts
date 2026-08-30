@@ -103,12 +103,25 @@ describe('useHypocenterCatalog', () => {
   })
 
   // 対照: 全部失敗したら 1 件も返さない（前の期間のものを残さない）。
+  // **`requestedYears` と `missingYears` が同数になること**が「まるごと取れなかった」の合図で、
+  // 画面の文言はこれで「そのぶん少ない」と「1 件も出ていない」を言い分ける。
   it('全部失敗したら年は空', async () => {
     mockYear.mockImplementation(() => Promise.reject(new Error('boom')))
     const { result } = renderHook(() => useHypocenterCatalog(2020, 2022, true))
     await waitFor(() => expect(result.current.loading).toBe(false))
     expect(result.current.years).toEqual([])
     expect(result.current.missingYears).toEqual([2020, 2021, 2022])
+    expect(result.current.requestedYears).toBe(3)
+  })
+
+  // 対照: 一部だけ欠けたときは同数にならない（上の合図が常に立たないこと）。
+  it('一部だけ欠けたら requestedYears の方が多い', async () => {
+    mockYear.mockImplementation((y: number) =>
+      y === 2021 ? Promise.reject(new Error('boom')) : Promise.resolve(makeYear(y)),
+    )
+    const { result } = renderHook(() => useHypocenterCatalog(2020, 2022, true))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.missingYears.length).toBeLessThan(result.current.requestedYears)
   })
 
   // 正: 索引の失敗は `error` として出す。

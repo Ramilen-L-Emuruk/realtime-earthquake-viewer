@@ -216,23 +216,25 @@ describe('catalogCompleteness', () => {
 
 describe('withCompleteMagnitudeFloor', () => {
   const f = (over: Partial<CatalogFilter>): CatalogFilter => ({ ...FILTER, ...over })
+  /** 期間だけを動かす（下限には手を触れない）。実際の操作で起きる形。 */
+  const movePeriod = (prev: CatalogFilter, fromYear: number, toYear: number) =>
+    withCompleteMagnitudeFloor(INDEX, prev, { ...prev, fromYear, toYear })
 
   // 正: 期間の古い側に応じて下限が上がる。
   it('古い期間なら下限が上がる', () => {
-    expect(withCompleteMagnitudeFloor(INDEX, f({ fromYear: 1919, toYear: 2022 })).minMagnitude).toBe(5)
+    expect(movePeriod(f({}), 1919, 2022).minMagnitude).toBe(5)
   })
 
   // 対照: 上限に余裕があれば上限は触らない。
   it('上限に余裕があれば触らない', () => {
-    const r = withCompleteMagnitudeFloor(INDEX, f({ fromYear: 1919, toYear: 2022, maxMagnitude: 8 }))
-    expect(r.maxMagnitude).toBe(8)
+    expect(movePeriod(f({ maxMagnitude: 8 }), 1919, 2022).maxMagnitude).toBe(8)
   })
 
   // **安全弁: 下限が上限を追い越したら上限を外す。**
   // 追い越したままにすると 1 件も残らず、しかも「なぜ 0 件か」が画面のどこにも出ない
   // （完全性の注意書きは「下限が完全性を割っているか」しか見ないため黙る）。
   it('下限が上限を追い越したら上限を外す', () => {
-    const r = withCompleteMagnitudeFloor(INDEX, f({ fromYear: 1919, toYear: 2022, minMagnitude: 2, maxMagnitude: 3 }))
+    const r = movePeriod(f({ minMagnitude: 2, maxMagnitude: 3 }), 1919, 2022)
     expect(r.minMagnitude).toBe(5)
     expect(r.maxMagnitude).toBe(MAGNITUDE_FILTER_RANGE.max)
     expect(r.minMagnitude).toBeLessThanOrEqual(r.maxMagnitude)
@@ -240,8 +242,27 @@ describe('withCompleteMagnitudeFloor', () => {
 
   // 安全弁: どの期間へ動かしても下限が上限を越えない。
   it.each([1919, 1960, 1997, 2020])('%i 年からでも下限は上限を越えない', (fromYear) => {
-    const r = withCompleteMagnitudeFloor(INDEX, f({ fromYear, toYear: 2022, minMagnitude: 2, maxMagnitude: 2.5 }))
+    const r = movePeriod(f({ minMagnitude: 2, maxMagnitude: 2.5 }), fromYear, 2022)
     expect(r.minMagnitude).toBeLessThanOrEqual(r.maxMagnitude)
+  })
+
+  // **正: 手で上げた下限は期間を動かしても残る。**
+  // 大きい地震だけを見ている最中に期間のつまみを触っただけで M2.0 へ戻ると、絞り込みが
+  // 無言で解ける（戻った値はちょうど完全性の下限なので注意書きも出ない）。
+  it('手で上げた下限は期間を動かしても残る', () => {
+    expect(movePeriod(f({ minMagnitude: 6 }), 1919, 2022).minMagnitude).toBe(6)
+  })
+
+  // 対照: 手で選んだ値でも、完全性を割るなら引き上げる（記録に無い地震を数えないため）。
+  it('手で選んだ下限でも完全性を割るなら引き上げる', () => {
+    expect(movePeriod(f({ minMagnitude: 3 }), 1919, 2022).minMagnitude).toBe(5)
+  })
+
+  // **安全弁: 合わせた値なら期間を戻したときに下がる（往復できる）。**
+  // 引き上げたまま据え置くと「動かして戻しただけなのに件数が減ったまま」になる。
+  it('合わせた値は期間を戻せば下がる', () => {
+    const wide = f({ fromYear: 1919, toYear: 2022, minMagnitude: 5 })
+    expect(movePeriod(wide, 2020, 2022).minMagnitude).toBe(2)
   })
 })
 
