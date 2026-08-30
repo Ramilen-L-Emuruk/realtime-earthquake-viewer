@@ -86,7 +86,7 @@ const DEFAULTS: AppSettings = {
   activeFaultOpacity: 0.4,
   showQuakeHeatmap: false,
   showPlateBoundaries: true,
-  showDayNight: false,
+  showDayNight: true,
   // 下げると海の上で効かなくなる（ベースマップの海がもともと濃紺のため）。上げると夜側の陸地と
   // 海底地形が読めなくなる。掛かるのは地形だけで、境界線・震度の面・観測点はこのレイヤーより
   // 前面にあるため（gl/layerOrder.ts）、濃くしても地震の情報は沈まない。
