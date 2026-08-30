@@ -14,6 +14,12 @@ import {
   createBlinkScheduler,
   alphaPair,
   BLINK_PERIOD_MS,
+  mercatorX,
+  mercatorY,
+  elevationMetersFromDepthKm,
+  writePointInto,
+  POINT_LAYOUT,
+  STRIDE_FLOATS,
 } from './depthPointLayer'
 
 describe('toMercator', () => {
@@ -290,5 +296,71 @@ describe('createBlinkScheduler', () => {
     s.schedule()
     vi.advanceTimersByTime(half)
     expect(repaint).toHaveBeenCalledTimes(2)
+  })
+})
+
+// 点を渡す入口が 2 つある（`setPoints` のオブジェクト配列と `setPointsColumnar` の列指向）。
+// どちらも同じバッファへ同じ並びで書かないと、片方だけ色や大きさがずれる。
+// 背景は docs/spec/map-rendering-spec.md §16「深さを持つ点」。
+describe('列指向の座標ヘルパー', () => {
+  // 正: スカラー版を合成すると toMercator と一致する。
+  it.each([
+    [139.7, 35.7, 0],
+    [139.7, 35.7, 450],
+    [-70.5, -20.1, 120],
+    [180, 60, 700],
+  ])('経度 %f・緯度 %f・深さ %ikm で toMercator と一致', (lng, lat, depthKm) => {
+    const [x, y, z] = toMercator(lng, lat, depthKm)
+    expect(mercatorX(lng)).toBe(x)
+    expect(mercatorY(lat)).toBe(y)
+    expect(elevationMetersFromDepthKm(depthKm)).toBe(z)
+  })
+
+  // 対照: 式を二重に持つと必ずどこかでずれる。ここが落ちたら、片方だけ直したということ。
+  it('式を別々に持ち直していない（近い値ではなく完全一致）', () => {
+    for (let lat = -85; lat <= 85; lat += 5) {
+      expect(mercatorY(lat)).toBe(toMercator(0, lat, 0)[1])
+    }
+  })
+})
+
+describe('writePointInto', () => {
+  // 正: 渡した値が並びのとおりに入る。
+  it('各属性がバッファの決められた位置へ入る', () => {
+    const data = new Float32Array(STRIDE_FLOATS)
+    // **値は単精度で正確に表せるものを選ぶ。** 0.9 のような値は Float32Array へ入れた時点で
+    // 丸められ、書き込み位置が正しくても一致しなくなる（並びを見たいテストの邪魔になるだけ）。
+    writePointInto(data, 0, 0.25, 0.5, -30000, 1, 0.5, 0.25, 7, 1, 1, 0.75, 0.125)
+    expect(Array.from(data)).toEqual([0.25, 0.5, -30000, 1, 0.5, 0.25, 7, 0, 1, 1, 0.75, 0.125])
+  })
+
+  // 正: 通し番号は添字そのもの（判定がこの値で点を引く）。
+  it('通し番号に添字が入る', () => {
+    const data = new Float32Array(STRIDE_FLOATS * 3)
+    for (let i = 0; i < 3; i++) writePointInto(data, i, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1)
+    expect([data[7], data[STRIDE_FLOATS + 7], data[STRIDE_FLOATS * 2 + 7]]).toEqual([0, 1, 2])
+  })
+
+  // 安全弁: 隣の点の領域を侵さない。ストライドを間違えると静かに上書きし合う。
+  it('隣の点を上書きしない', () => {
+    const data = new Float32Array(STRIDE_FLOATS * 2).fill(-1)
+    writePointInto(data, 1, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9)
+    expect(Array.from(data.subarray(0, STRIDE_FLOATS))).toEqual(Array(STRIDE_FLOATS).fill(-1))
+  })
+
+  // 安全弁: 書き込む位置と、シェーダーへ属性を結びつける位置が同じ表を指していること。
+  // **片方だけ直しても型検査は通る**ので、ここで突き合わせる。
+  it('POINT_LAYOUT の最後の属性がストライドの端に収まる', () => {
+    const last = POINT_LAYOUT[POINT_LAYOUT.length - 1]
+    expect(last[2] / 4 + last[1]).toBe(STRIDE_FLOATS)
+  })
+
+  it('POINT_LAYOUT に隙間も重なりも無い', () => {
+    let expected = 0
+    for (const [, size, byteOffset] of POINT_LAYOUT) {
+      expect(byteOffset / 4).toBe(expected)
+      expected += size
+    }
+    expect(expected).toBe(STRIDE_FLOATS)
   })
 })

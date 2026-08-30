@@ -1,5 +1,6 @@
 import { memo, useState, useCallback, useEffect, useRef } from 'react'
 import type { AppSettings } from '../../hooks/useSettings'
+import { Toggle } from '../Toggle'
 import type { ConnectionStatus } from '../../types/earthquake'
 import { getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
 import { readableTextColor } from '../../utils/contrast'
@@ -12,7 +13,7 @@ import type { HistoricalArchiveIndex } from '../../types/historicalArchive'
 import { isDmdss } from '../../utils/env'
 import { isValidDmdataApiKey, DMDATA_API_KEY_INVALID_MESSAGE } from '../../utils/dmdataApiKey'
 import { useDebouncedValue } from '../../hooks/useDebouncedValue'
-import { DescriptionTip } from './DescriptionTip'
+import { DescriptionTip } from '../DescriptionTip'
 import { zipSync } from 'fflate'
 import { countRecords, listRecords, clearRecords, onRecordsChanged, hasStorageError } from '../../utils/detectionDiagnosticsDb'
 import { formatFileStamp } from '../../utils/formatters'
@@ -313,27 +314,6 @@ function CreditRow({ label, children }: { label: string; children: React.ReactNo
       <p className="text-white text-sm flex-shrink-0">{label}</p>
       <div className="min-w-0 grow text-right">{children}</div>
     </div>
-  )
-}
-
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      role="switch"
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      className={`
-        relative inline-flex h-6 w-11 items-center rounded-full transition-colors
-        ${checked ? 'bg-blue-500' : 'bg-border'}
-      `}
-    >
-      <span
-        className={`
-          inline-block h-4 w-4 rounded-full bg-white shadow transition-transform
-          ${checked ? 'translate-x-6' : 'translate-x-1'}
-        `}
-      />
-    </button>
   )
 }
 

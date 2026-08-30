@@ -207,12 +207,14 @@ function overlapsAt(
 function shiftCandidates(
   map: MapLibreMap,
   t: LabelOverlapTarget,
-  textSize: number,
+  shiftPx: number,
   halfH: number,
   centerY: number,
 ): LabelShift[] {
   if (!t.shiftEm || !isUsableRoom(t.room)) return []
-  const need = t.shiftEm * textSize + halfH
+  // 退避量そのものは呼び出し側で算出したものを使う（`isOffScreen` の余白と同じ値でなければ、
+  // 「逃がせば見える」と見た位置と「逃がせる」と判断する位置がずれる）。
+  const need = shiftPx + halfH
   const [lng, lat] = t.lngLat
   // 度 → px の換算は緯度で変わる（メルカトル）。実際に投影して測る。
   // 画面 y は下向きが正なので、負の側が「画面上方向へ伸びた」ことを表す。
@@ -228,10 +230,42 @@ function shiftCandidates(
 }
 
 /**
+ * 判定する価値がない（＝画面から完全に外れている）ラベルか。
+ *
+ * 重なりの判定は `map.queryRenderedFeatures()` を 1 ラベルにつき 1〜3 回呼ぶ。**画面の外にある
+ * ラベルは何とも重なりようがない**のに、絞らなければ全件ぶん問い合わせることになる（地方 ＋ 県 47 ＋
+ * 一次細分区域 192 で常に 250 件前後）。自動移動 1 回あたりの実測（CPU を 4 倍遅くした状態）では
+ * 248 回・合計 1.2 秒を問い合わせに使っていた。絞ると 56 回・0.3 秒になる。
+ *
+ * 縦の余白に退避量を含めるのは、**縁のすぐ外にあるラベルも逃がせば画面へ入る**ため。横に含めないのは
+ * 退避が上下だけだから（`LabelShift`）。左右へ逃がす方向を足すなら、ここの余白も併せて直すこと。
+ *
+ * **投影が壊れた（有限でない）とき・ペインの実寸が取れないときは「画面内」として扱う**——判定を
+ * 省くほうへ倒すと、本来避けるべきラベルを黙って見逃す。省いてよいと確信できる場合だけ省く。
+ */
+function isOffScreen(
+  pane: { width: number; height: number },
+  point: { x: number; y: number },
+  halfW: number,
+  halfH: number,
+  shiftPx: number,
+): boolean {
+  if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return false
+  if (!(pane.width > 0 && pane.height > 0)) return false
+  const marginY = halfH + shiftPx
+  return (
+    point.x < -halfW ||
+    point.x > pane.width + halfW ||
+    point.y < -marginY ||
+    point.y > pane.height + marginY
+  )
+}
+
+/**
  * 各ラベルの配置（退避方向・薄くするか）を判定する。戻り値は `targets` と同じ順・同じ長さ。
  *
  * 対象レイヤーが 1 つも存在しない（quake/kyoshin どちらのモードでもない等）場合は、全ラベルを
- * 退避なし・不透明のままにする。
+ * 退避なし・不透明のままにする。**画面の外にあるラベルも判定しない**（`isOffScreen`）。
  *
  * iconScale は地図アイコンの倍率（設定値）。ラベルの text-size も同倍率で描画されるため
  * （LabelsGL）、判定に使う矩形・退避量にも同じ倍率を掛けないと、倍率変更時に
@@ -244,6 +278,9 @@ export function computeLabelPlacements(
 ): LabelPlacement[] {
   const layers = OVERLAP_CHECK_LAYER_IDS.filter((id) => map.getLayer(id))
   if (layers.length === 0) return targets.map(() => ({ shift: 'none', dimmed: false }))
+  // ペインの実寸はループ中に変わらないので 1 度だけ読む。
+  const container = map.getContainer()
+  const pane = { width: container.clientWidth, height: container.clientHeight }
 
   return targets.map((t) => {
     // 座標も生成データ由来なので、`room` と同じく投影の前に確かめる（isFinitePair の説明を参照）。
@@ -252,12 +289,13 @@ export function computeLabelPlacements(
     const point = map.project(t.lngLat)
     const textSize = t.textSize * iconScale
     const { halfW, halfH } = estimateHalfExtent(t.text, textSize)
+    const shiftPx = (t.shiftEm ?? 0) * textSize
+    if (isOffScreen(pane, point, halfW, halfH, shiftPx)) return { shift: 'none', dimmed: false }
     // 代表点の判定では excludeName を効かせない（避けたい相手を除外してしまうため。上の定義を参照）。
     if (!overlapsAt(map, layers, point.x, point.y, halfW, halfH, undefined))
       return { shift: 'none', dimmed: false }
 
-    const shiftPx = (t.shiftEm ?? 0) * textSize
-    for (const dir of shiftCandidates(map, t, textSize, halfH, point.y)) {
+    for (const dir of shiftCandidates(map, t, shiftPx, halfH, point.y)) {
       const cy = dir === 'up' ? point.y - shiftPx : point.y + shiftPx
       if (!overlapsAt(map, layers, point.x, cy, halfW, halfH, t.excludeName))
         return { shift: dir, dimmed: false }
