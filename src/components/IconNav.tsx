@@ -1,6 +1,6 @@
 import { memo, type ReactNode } from 'react'
 
-export type TabId = 'earthquake' | 'realtime' | 'tsunami' | 'settings' | 'telegrams'
+export type TabId = 'earthquake' | 'realtime' | 'tsunami' | 'catalog' | 'settings' | 'telegrams'
 
 const ICON_PROPS = {
   viewBox: '0 0 24 24',
@@ -36,6 +36,15 @@ const ICONS: Record<TabId, ReactNode> = {
       <path d="M2 15c1.8 0 1.8 2 3.5 2S7.3 15 9 15s1.8 2 3.5 2 1.8-2 3.5-2 1.8 2 3.5 2 1.2-2 2-2" />
     </svg>
   ),
+  // 震源カタログ: 散布図（軸と点）
+  catalog: (
+    <svg {...ICON_PROPS}>
+      <polyline points="4 3 4 20 21 20" />
+      <circle cx="9" cy="15" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="13.5" cy="9" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="17.5" cy="13" r="1.4" fill="currentColor" stroke="none" />
+    </svg>
+  ),
   // 設定: 歯車
   settings: (
     <svg {...ICON_PROPS}>
@@ -56,6 +65,7 @@ const ITEMS: { id: TabId; label: string }[] = [
   { id: 'earthquake', label: '地震情報' },
   { id: 'realtime', label: 'リアルタイム' },
   { id: 'tsunami', label: '津波情報' },
+  { id: 'catalog', label: '震源カタログ' },
   { id: 'settings', label: '設定' },
   { id: 'telegrams', label: '電文ログ' },
 ]

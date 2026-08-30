@@ -3,14 +3,16 @@ import type { JMAQuake, JMATsunami, TsunamiObservation, EEWAlert, JMALpgm } from
 import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { HeatPoint } from '../../utils/quakeHeatmap'
+import type { CatalogPointCloud } from '../../utils/hypocenterCatalogView'
 
 // 地図コンポーネントの契約（Props とモード）の単一情報源。
 // Leaflet 版 JapanMap と MapLibre 版 JapanMapGL、両者を出し分ける MapView が
 // この同一の型を共有することで、移行中に両実装のシグネチャがずれないようにする。
 // （MapLibre 移行計画 docs/webgl-migration-implementation-plan.md F0）
 
-// 地図のモード: quake=地震情報 / tsunami=津波海岸線 / kyoshin=リアルタイム震度・予報円。
-export type MapMode = 'quake' | 'tsunami' | 'kyoshin'
+// 地図のモード: quake=地震情報 / tsunami=津波海岸線 / kyoshin=リアルタイム震度・予報円 /
+// catalog=長期震源カタログの点群。
+export type MapMode = 'quake' | 'tsunami' | 'kyoshin' | 'catalog'
 
 /**
  * 揺れ検知で「今この 1 点を見せたい」という要求。`useKyoshinAlerts` が通知音とまったく同じ判定で
@@ -48,6 +50,13 @@ export interface JapanMapProps {
   iconScale?: number
   /** 震源の深さをどれだけ強調するか（1 = 実際の深さ）。水平方向は常に実スケール。 */
   hypocenterDepthScale?: number
+  /**
+   * 長期震源カタログの点群（`catalog` モードで描く）。
+   *
+   * **絞り込みと色付けは呼び出し側の担当。** 地図は受け取った列をそのまま描くだけで、
+   * カタログの読み込みにも条件にも関わらない（点数が多く、条件が変わるたびに詰め直すため）。
+   */
+  catalogCloud?: CatalogPointCloud | null
   showBathymetry?: boolean
   showActiveFaults?: boolean
   activeFaultOpacity?: number

@@ -7,7 +7,9 @@ export default defineConfig({
   test: {
     environment: 'node',
     // scripts 配下も対象にする（ビルド設定から切り出した純関数のテストが置かれる）。
-    include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
+    // **`.tsx` も拾う。** JSX を書くコンポーネントのテスト（`RangeSlider.test.tsx` 等）は
+    // 拡張子を変えざるを得ず、`.ts` だけの列挙だと**エラーも出さずに実行されない**。
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'scripts/**/*.test.ts'],
     // テストのタイムアウトは既定（5 秒）のまま。混雑時に 5 秒を割りうる生成データローダの
     // テストだけが個別に延長している（理由は prefectures.test.ts のコメント）。
     // ここを全体で緩めると、無関係なテストに入り込んだ性能劣化を見逃す網になる。

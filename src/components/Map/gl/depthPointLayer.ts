@@ -8,7 +8,7 @@ import { applyProjectionUniforms, createProjectionProgramCache } from './project
 // ではなく実際の深さへ置ける。DOM マーカー（maplibregl.Marker）は地表にしか置けないため、
 // 深さを扱う描画物はすべてこのレイヤーに乗せる。
 //
-// **点の数に依存しない作りにしてある。** 震源 1 点でも長期カタログの 101 万点でも、頂点バッファ 1 本と
+// **点の数に依存しない作りにしてある。** 震源 1 点でも長期カタログの 102 万点でも、頂点バッファ 1 本と
 // drawArrays 1 回で描く。クリック判定も後述のカラーピッキングで点数に依らない。
 //
 // 深さ方向の誇張率は uniform で渡す。実スケール（水平 1000km に対し深さ 100km）では薄すぎて形が
@@ -51,6 +51,33 @@ export interface DepthPoint {
   blink?: { high: number; low: number }
 }
 
+/**
+ * 点を列ごとの型付き配列で渡す形。**数万〜数百万点を描くとき用**。
+ *
+ * `DepthPoint[]` は 1 点につきオブジェクトと色のタプルを作るため、27 万点なら 27 万個の
+ * オブジェクトが毎回ゴミになる。設定を動かすたびに詰め直す用途では、その分が丸ごと無駄になる。
+ *
+ * **柄・補助点・点滅は持てない。** いずれも震源マーカーのように点が数個のときの機能で、
+ * 大量の点に付ける意味がない（柄は点数ぶんの線を増やし、点滅は画面を埋め尽くす）。
+ * 必要なら `setPoints` を使うこと。
+ */
+export interface DepthPointColumns {
+  /** 点の数。座標・サイズの配列はこの長さ、色は 3 倍の長さを持つ。 */
+  count: number
+  lng: Float64Array | Float32Array
+  lat: Float64Array | Float32Array
+  /** 深さ（km）。0 なら地表。 */
+  depthKm: Float64Array | Float32Array
+  /** RGB（0〜1）を 3 要素ずつ並べたもの。長さは `count * 3`。 */
+  color: Float32Array
+  /** 直径（CSS px）。長さは `count`。 */
+  sizePx: Float32Array
+  /** 全点共通の形（既定は円）。点ごとに変えたいなら `setPoints` を使う。 */
+  shape?: DepthPointShape
+  /** 全点共通の不透明度（既定 1）。 */
+  alpha?: number
+}
+
 /** Web Mercator の赤道全周（m）。gl/viewSpan.ts と同じ値。 */
 const EARTH_CIRCUMFERENCE_M = 40075016.686
 
@@ -65,9 +92,27 @@ export const BLINK_PERIOD_MS = 1200
  * Mercator 座標系の z へ換算する（`elevationForProjection`）。
  */
 export function toMercator(lng: number, lat: number, depthKm: number): [number, number, number] {
-  const x = (180 + lng) / 360
-  const y = (180 - (180 / Math.PI) * Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360))) / 360
-  return [x, y, -depthKm * 1000]
+  return [mercatorX(lng), mercatorY(lat), elevationMetersFromDepthKm(depthKm)]
+}
+
+/**
+ * 経度を Mercator の x（0〜1）へ。
+ *
+ * **`toMercator` と式を二重に持たない。** 列指向の詰め込み（`setPointsColumnar`）は 100 万点規模で
+ * 回るため 1 点ごとに 3 つ組を確保したくない。そちらはこの関数を直に使う。
+ */
+export function mercatorX(lng: number): number {
+  return (180 + lng) / 360
+}
+
+/** 緯度を Mercator の y（0〜1）へ。 */
+export function mercatorY(lat: number): number {
+  return (180 - (180 / Math.PI) * Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360))) / 360
+}
+
+/** 深さ（km）を頂点バッファの z（標高メートル・地下が負）へ。 */
+export function elevationMetersFromDepthKm(depthKm: number): number {
+  return -depthKm * 1000
 }
 
 /**
@@ -297,11 +342,49 @@ void main() {
 const LINE_STRIDE_FLOATS = 8
 
 /** 1 点あたりの float 数（pos 3 + color 3 + size 1 + id 1 + shape 1 + aux 1 + 明滅 2）。 */
-const STRIDE_FLOATS = 12
+export const STRIDE_FLOATS = 12
 const STRIDE_BYTES = STRIDE_FLOATS * 4
 
+/**
+ * 点 1 つぶんを頂点バッファへ書く。
+ *
+ * **並びを知っているのはここだけにする。** 点の入口が 2 つある（オブジェクトの配列と列指向）ため、
+ * それぞれが添字を直に触ると、属性を 1 つ足したときに片方だけ直して静かにずれる。
+ *
+ * 単体テストが `POINT_LAYOUT` と突き合わせられるよう公開している（`STRIDE_FLOATS` も同じ理由）。
+ */
+export function writePointInto(
+  data: Float32Array,
+  i: number,
+  x: number,
+  y: number,
+  z: number,
+  r: number,
+  g: number,
+  b: number,
+  sizePx: number,
+  shapeId: number,
+  aux: number,
+  alphaHi: number,
+  alphaLo: number,
+): void {
+  const o = i * STRIDE_FLOATS
+  data[o] = x
+  data[o + 1] = y
+  data[o + 2] = z
+  data[o + 3] = r
+  data[o + 4] = g
+  data[o + 5] = b
+  data[o + 6] = sizePx
+  data[o + 7] = i
+  data[o + 8] = shapeId
+  data[o + 9] = aux
+  data[o + 10] = alphaHi
+  data[o + 11] = alphaLo
+}
+
 /** 点バッファの並び（属性名・要素数・バイト位置）。表示用と判定用が同じバッファを共有する。 */
-const POINT_LAYOUT = [
+export const POINT_LAYOUT = [
   ['a_pos', 3, 0],
   ['a_color', 3, 12],
   ['a_size', 1, 24],
@@ -427,7 +510,7 @@ const DEPTH_UNIFORMS = ['u_nearZ', 'u_invRange', 'u_slab'] as const
  * 地下の点を写す「手前の帯」の厚み（クリップ空間 z の幅・-1 を基準）。
  *
  * 薄いほど地図の描画物に隠されにくく、厚いほど点どうしの前後関係を細かく表せる。0.02 なら
- * 24bit の深度バッファで 33 万段階が残り、長期カタログの 101 万点でも実用上ぶつからない。
+ * 24bit の深度バッファで 33 万段階が残り、長期カタログの 102 万点でも実用上ぶつからない。
  */
 const DEPTH_SLAB = 0.02
 
@@ -499,6 +582,19 @@ export type DepthPickResult = number | null | 'pending'
 export interface DepthPointLayer extends CustomLayerInterface {
   /** 描く点を差し替える。 */
   setPoints(points: readonly DepthPoint[]): void
+  /**
+   * 描く点を列ごとの型付き配列で差し替える（`setPoints` と排他。後から呼んだほうが残る）。
+   *
+   * `pick` が返す添字は、こちらでも配列の位置を指す。
+   */
+  setPointsColumnar(columns: DepthPointColumns): void
+  /**
+   * 描くかどうか。**点は保持したまま止める。**
+   *
+   * 隠すのに空の点を渡すと、戻すたびに数十万点を詰め直して GPU へ送り直すことになる
+   * （全期間・約 102 万点で組み立て 16ms ＋ 転送 52ms）。タブを行き来するだけでその費用を払わない。
+   */
+  setVisible(value: boolean): void
   /** 深さ方向の誇張率。1 が実スケール。 */
   setExaggeration(value: number): void
   /**
@@ -551,6 +647,7 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
   let warnedDisabled = false
   let warnedFbo = false
   let warnedPointLimit = false
+  let visible = true
   const blink = createBlinkScheduler(() => map.triggerRepaint())
   let maxDepthKm = 0
   let lineVao: WebGLVertexArrayObject | null = null
@@ -606,6 +703,31 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
     doneY = -1
     doneHit = null
     doneCamera = ''
+  }
+
+  /**
+   * 判定の番号が足りるか確かめる。
+   *
+   * 通し番号は 24bit の色として運ぶ（0 を「何も無い」に使うぶん 1 つ少ない）。超えると番号が
+   * 衝突し、**別の点をクリックしたことになる**。描画は正常に見えるので気づけない。
+   */
+  const warnIfTooManyToPick = (n: number) => {
+    // 呼ばれるたびに出すとコンソールが埋まる（他の失敗ログと同じく一度きりにする）。
+    if (n <= MAX_PICKABLE_POINTS || warnedPointLimit) return
+    warnedPointLimit = true
+    log.error(
+      `[depthPointLayer:${id}] 点が多すぎて判定の番号が衝突します（${n} 件 / 上限 ${MAX_PICKABLE_POINTS} 件）`,
+    )
+  }
+
+  /** 点を差し替えたあとの後始末。**2 つの入口で必ず同じことをする**ための 1 箇所。 */
+  const finishPointUpdate = (anyBlink: boolean) => {
+    blink.setBlinking(anyBlink)
+    dirty = true
+    // 判定のキャッシュは点が変わった時点で無効。
+    invalidatePick()
+    map.triggerRepaint()
+    blink.schedule()
   }
 
   /** いまのカメラの状態を表す文字列。ここが変われば同じ画面座標でも別の点を指す。 */
@@ -705,6 +827,12 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
     },
 
     render(gl2, args) {
+      // **GL の状態を触る前に抜ける。** プログラムやバッファを束ねた後で抜けると、
+      // その状態が次のレイヤーへ漏れる。
+      if (!visible) {
+        resolvePendingPickAsMiss()
+        return
+      }
       const gl = gl2 as WebGL2RenderingContext
       const display = displayCache.get(gl, args)
       const picker = pickCache.get(gl, args)
@@ -856,37 +984,31 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
 
     setPoints(points) {
       count = points.length
-      // 通し番号は 24bit の色として運ぶ。0 を「何も無い」に使うぶん 1 つ減る。
-      // 超えると番号が衝突し、**別の点をクリックしたことになる**（描画は正常に見える）。
-      if (count > MAX_PICKABLE_POINTS && !warnedPointLimit) {
-        // 呼ばれるたびに出すとコンソールが埋まる（他の失敗ログと同じく一度きりにする）。
-        warnedPointLimit = true
-        log.error(
-          `[depthPointLayer:${id}] 点が多すぎて判定の番号が衝突します（${count} 件 / 上限 ${MAX_PICKABLE_POINTS} 件）`,
-        )
-      }
+      warnIfTooManyToPick(count)
       maxDepthKm = 0
       let anyBlink = false
       data = new Float32Array(count * STRIDE_FLOATS)
       for (let i = 0; i < count; i++) {
         const p = points[i]
         const [x, y, z] = toMercator(p.lng, p.lat, p.depthKm)
-        const o = i * STRIDE_FLOATS
-        data[o] = x
-        data[o + 1] = y
-        data[o + 2] = z
-        data[o + 3] = p.color[0]
-        data[o + 4] = p.color[1]
-        data[o + 5] = p.color[2]
-        data[o + 6] = p.sizePx
-        data[o + 7] = i
-        data[o + 8] = SHAPE_ID[p.shape ?? 'circle']
-        data[o + 9] = p.auxiliary ? 1 : 0
         // **明滅は不透明度に掛け込んでおく。** シェーダー側は 2 値を選ぶだけで済み、
         // 「不透明度と明滅の積」という関係が 1 箇所に閉じる。
         const [hi, lo] = alphaPair(p)
-        data[o + 10] = hi
-        data[o + 11] = lo
+        writePointInto(
+          data,
+          i,
+          x,
+          y,
+          z,
+          p.color[0],
+          p.color[1],
+          p.color[2],
+          p.sizePx,
+          SHAPE_ID[p.shape ?? 'circle'],
+          p.auxiliary ? 1 : 0,
+          hi,
+          lo,
+        )
         if (hi !== lo) anyBlink = true
         if (p.depthKm > maxDepthKm) maxDepthKm = p.depthKm
       }
@@ -911,12 +1033,49 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
           lineData[q + 7] = lo
         }
       })
-      blink.setBlinking(anyBlink)
-      dirty = true
-      // 判定のキャッシュは点が変わった時点で無効。
+      finishPointUpdate(anyBlink)
+    },
+
+    setPointsColumnar(cols) {
+      count = cols.count
+      warnIfTooManyToPick(count)
+      maxDepthKm = 0
+      data = new Float32Array(count * STRIDE_FLOATS)
+      const shapeId = SHAPE_ID[cols.shape ?? 'circle']
+      const alpha = cols.alpha ?? 1
+      const { lng, lat, depthKm, color, sizePx } = cols
+      for (let i = 0; i < count; i++) {
+        const d = depthKm[i]
+        const c = i * 3
+        writePointInto(
+          data,
+          i,
+          mercatorX(lng[i]),
+          mercatorY(lat[i]),
+          elevationMetersFromDepthKm(d),
+          color[c],
+          color[c + 1],
+          color[c + 2],
+          sizePx[i],
+          shapeId,
+          0,
+          alpha,
+          alpha,
+        )
+        if (d > maxDepthKm) maxDepthKm = d
+      }
+      // 柄は持たない（型の説明のとおり）。前に setPoints で描いた柄が残らないよう空にする。
+      lineVertexCount = 0
+      lineData = new Float32Array(0)
+      finishPointUpdate(false)
+    },
+
+    setVisible(value) {
+      if (visible === value) return
+      visible = value
+      // 隠している間に解決待ちを残さない（見えないものは掴めない）。
       invalidatePick()
       map.triggerRepaint()
-      blink.schedule()
     },
 
     setExaggeration(value) {
@@ -927,7 +1086,7 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
     },
 
     pick(x, y, forClick = false) {
-      if (count === 0) return null
+      if (!visible || count === 0) return null
       if (Math.round(x) === doneX && Math.round(y) === doneY && cameraSignature() === doneCamera) {
         return doneHit
       }
