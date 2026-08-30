@@ -15,6 +15,7 @@ import { KyoshinMaxEffectGL } from './KyoshinMaxEffectGL'
 import { ActiveFaultsGL } from './ActiveFaultsGL'
 import { PlateBoundariesGL } from './PlateBoundariesGL'
 import { QuakeIntensityPointsGL } from './QuakeIntensityPointsGL'
+import { QuakeIntensitySurfaceGL } from './QuakeIntensitySurfaceGL'
 import { QuakeRegionFillGL } from './QuakeRegionFillGL'
 import { QuakeHeatmapGL } from './QuakeHeatmapGL'
 import { HypocenterDepthGL } from './HypocenterDepthGL'
@@ -359,6 +360,11 @@ export function JapanMapGL({
             regionAggregates={regionAggregates}
             iconScale={iconScale}
             visible={mode === 'quake' && aggregateByRegion && !lpgmActive}
+          />
+          {/* 観測点表示のときだけ、その背景に震度の面を敷く（区域塗りとは排他）。 */}
+          <QuakeIntensitySurfaceGL
+            markers={stationMarkers}
+            visible={mode === 'quake' && !aggregateByRegion && !lpgmActive}
           />
           <QuakeIntensityPointsGL
             markers={stationMarkers}
