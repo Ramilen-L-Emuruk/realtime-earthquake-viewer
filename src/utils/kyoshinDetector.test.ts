@@ -17,6 +17,7 @@ import {
   type Frame,
   type StationMeta,
   type SiteState,
+  type DetectionEvent,
 } from './kyoshinDetector'
 import { haversineKm } from './geo'
 
@@ -2076,5 +2077,182 @@ describe('単点確定の降格', () => {
   it('SOLO_CONFIRM_GRACE_MS は確定に要する時間より長い（確定と同時に降ろさない）', () => {
     expect(PARAMS.SOLO_CONFIRM_GRACE_MS).toBeGreaterThan(PARAMS.CONFIRM_FRAMES * 1000)
     expect(PARAMS.SOLO_CONFIRM_GRACE_MS).toBeGreaterThan(PARAMS.HOLD_MS)
+  })
+})
+
+// ============================================================
+// 判定の内訳（根拠開示）
+// ============================================================
+
+describe('DetectionGates: 確信度を決めた材料を持ち帰る', () => {
+  const defs = grid3x3(35, 139)
+  const meta = buildStationMeta(sitesOf(defs))
+
+  // 正: 判定に実際に使った要求値が入っていること
+  it('確定した確信度の内訳に、そのフレームの要求値が入る', () => {
+    const { detections } = drive(quietThenShake(defs, { shakeValue: 2.0, shakeCount: 5 }), meta)
+    const e = detections.find((d) => d.confidence === 'confirmed')
+    expect(e).toBeDefined()
+    expect(e!.gates.sizeReq).toBe(PARAMS.CONFIRM_POINTS)
+    expect(e!.gates.intensityReq).toBe(PARAMS.MIN_CONFIRM_INTENSITY)
+    expect(e!.gates.intenseReq).toBe(PARAMS.CONFIRM_INTENSE_POINTS)
+    expect(e!.gates.streakReq).toBe(PARAMS.CONFIRM_FRAMES)
+    expect(e!.gates.eewActive).toBe(false)
+  })
+
+  // 正: 要求値は固定値ではなく、その場の条件で動いたものが入る
+  it('EEW 発表中は緩和後の要求値が内訳に入る', () => {
+    const frames = quietThenShake(defs, { shakeValue: 2.0, shakeCount: 5 }).map((f) => ({
+      ...f,
+      eewActive: true,
+    }))
+    const { detections } = drive(frames, meta)
+    const e = detections.find((d) => d.confidence === 'confirmed')
+    expect(e).toBeDefined()
+    expect(e!.gates.eewActive).toBe(true)
+    expect(e!.gates.sizeReq).toBe(PARAMS.EEW_CONFIRM_POINTS)
+    expect(e!.gates.streakReq).toBe(PARAMS.EEW_CONFIRM_FRAMES)
+  })
+
+  // 安全弁: 内訳を足しても判定そのものは動かないこと（EEW 緩和が効いた結果は変わらない）
+  it('内訳は判定に影響しない（同じ入力なら確信度は従来どおり）', () => {
+    const frames = quietThenShake(defs, { shakeValue: 2.0, shakeCount: 5 })
+    const a = drive(frames, meta).detections.map((d) => `${d.confidence}:${d.lastSize}`)
+    const b = drive(frames, meta).detections.map((d) => `${d.confidence}:${d.lastSize}`)
+    expect(a).toEqual(b)
+    expect(a.some((s) => s.startsWith('confirmed'))).toBe(true)
+  })
+})
+
+describe('ConfirmSnapshot: 確定した瞬間で凍結する', () => {
+  const defs = grid3x3(35, 139)
+  const meta = buildStationMeta(sitesOf(defs))
+
+  /** 揺れて確定させたあと、値を震度0級まで落として保持（HOLD）へ入らせる。 */
+  function confirmThenDecay(): ReturnType<typeof drive> {
+    const frames = quietThenShake(defs, { shakeValue: 3.0, shakeCount: 4 })
+    let t = frames[frames.length - 1].dataTimeMs + 1000
+    for (let i = 0; i < 4; i++, t += 1000) frames.push(uniformFrame(defs, t, 0.0))
+    return drive(frames, meta)
+  }
+
+  // 正: 確定したイベントは内訳の凍結を持つ
+  it('確定したイベントは confirmedBy を持ち、確定時の震度を残す', () => {
+    const { detections } = confirmThenDecay()
+    const e = detections.find((d) => d.confidence === 'confirmed')
+    expect(e).toBeDefined()
+    expect(e!.confirmedBy).not.toBeNull()
+    expect(e!.confirmedBy!.intensity).toBeGreaterThanOrEqual(PARAMS.MIN_CONFIRM_INTENSITY)
+    expect(e!.confirmedBy!.size).toBeGreaterThanOrEqual(PARAMS.MIN_LIKELY_POINTS)
+  })
+
+  // 正: 減衰しても凍結した値は動かない（現フレームの内訳とは別物であること）
+  it('確定後に震度が落ちても confirmedBy は確定時の値のまま', () => {
+    const { detections } = confirmThenDecay()
+    const e = detections.find((d) => d.confidence === 'confirmed')!
+    // 保持で confirmed のままだが、現在の最大震度は確定時より下がっている
+    expect(e.maxIntensity).toBeLessThan(e.confirmedBy!.intensity)
+    // 凍結側は確定要求を満たしたまま
+    expect(e.confirmedBy!.intensity).toBeGreaterThanOrEqual(e.confirmedBy!.gates.intensityReq)
+  })
+
+  // 対照: 確定に至らなかったイベントは凍結を持たない
+  it('確定に至らないイベントの confirmedBy は null', () => {
+    // 震度0級のコヒーレントな揺れ。広がりはあるが MIN_CONFIRM_INTENSITY に届かない
+    const { detections } = drive(quietThenShake(defs, { shakeValue: 0.2, shakeCount: 5 }), meta)
+    for (const d of detections) {
+      if (d.confidence !== 'confirmed') expect(d.confirmedBy).toBeNull()
+    }
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+
+  // 安全弁: gates のほうは凍結しない（両者を取り違えると「なぜ確定したか」が現在値で上書きされる）
+  it('gates は毎フレーム更新される（confirmedBy とは別物）', () => {
+    const { detections } = confirmThenDecay()
+    const e = detections.find((d) => d.confidence === 'confirmed')!
+    // 減衰後のフレームでは確定震度に達した点が無い＝現フレームの内訳は要求を満たしていない
+    expect(e.gates.intenseCount).toBe(0)
+    // 一方、凍結側は満たしている
+    expect(e.confirmedBy!.gates.intenseCount).toBeGreaterThanOrEqual(
+      e.confirmedBy!.gates.intenseReq,
+    )
+  })
+})
+
+describe('併合しても内訳とイベントの整合が崩れない', () => {
+  // 近傍グラフでは繋がらないが併合はされる 2 群（約 73km 東・R_KM=40km の外・MERGE_EVENT_KM=100km の内）
+  const far: StationDef[] = [...grid3x3(35.0, 139.0, 0.1), ...grid3x3(35.0, 139.8, 0.1)]
+  const meta = buildStationMeta(sitesOf(far))
+
+  /** 西の群だけ先に揺らし、途中から東の群も加える（そこで併合が走る）。 */
+  function twoPatchFrames(): Frame[] {
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(far, t, 0))
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(frameWith(far, t, (idx) => (idx < 9 ? 2.0 : 0)))
+    for (let i = 0; i < 8; i++, t += 1000) frames.push(uniformFrame(far, t, 2.0))
+    return frames
+  }
+
+  /** 全フレームの検知を集める。 */
+  function driveAll(frames: Frame[]): DetectionEvent[][] {
+    let state = initState(frames[0].dataTimeMs - 1000)
+    const out: DetectionEvent[][] = []
+    for (const f of frames) {
+      const r = step(state, f, meta)
+      state = r.state
+      out.push(r.detections)
+    }
+    return out
+  }
+
+  // 安全弁: 「確定しているのに確定の内訳が無い」を作らない。表示側はこの組み合わせで黙るため、
+  // 崩れると「いちばん説明が要る confirmed の行」が静かに消える
+  it('confirmed なら必ず confirmedBy を持つ（併合が走るフレームを含む）', () => {
+    for (const detections of driveAll(twoPatchFrames())) {
+      for (const d of detections) {
+        if (d.confidence === 'confirmed') expect(d.confirmedBy).not.toBeNull()
+      }
+    }
+  })
+
+  // 正: 凍結した内訳が、そのイベント自身の確定時刻を指したままであること。
+  // 併合で別イベントの内訳を採るときに、確定時刻だけ早いほうへ揃えて内訳は host のまま
+  // 残す（またはその逆）と、ここが食い違う
+  it('confirmedBy.atMs はイベントの firstConfirmedAtMs と一致し続ける', () => {
+    let checked = 0
+    for (const detections of driveAll(twoPatchFrames())) {
+      for (const d of detections) {
+        if (d.confirmedBy == null) continue
+        expect(d.confirmedBy.atMs).toBe(d.firstConfirmedAtMs)
+        checked++
+      }
+    }
+    // 確定が 1 度も起きない構成でテストが素通りしないこと
+    expect(checked).toBeGreaterThan(0)
+  })
+
+  // 対照: 併合で点数が増えたのに内訳の要求値が消えない（`gates` が毎フレーム作り直される
+  // ことで、併合フレームだけ空になる等の事故を起こしていないこと）
+  it('併合後も内訳の要求値が埋まっている', () => {
+    const all = driveAll(twoPatchFrames())
+    const last = all[all.length - 1]
+    expect(last.length).toBe(1)
+    for (const d of last) {
+      expect(d.gates.sizeReq).toBeGreaterThan(0)
+      expect(d.gates.streakReq).toBeGreaterThan(0)
+      expect(d.gates.intenseReq).toBeGreaterThan(0)
+    }
+  })
+
+  // 安全弁: この構成が本当に併合を通っていること。通らなくなると、上の 3 件は
+  // 「併合しても崩れない」ではなく「併合が起きていないだけ」を確かめる空のテストになる
+  it('この構成は実際に併合を通る（東の群が 1 本化されて点数が倍になる）', () => {
+    const sizes = driveAll(twoPatchFrames()).map((ds) => ds[0]?.lastSize ?? 0)
+    // 西だけの間は 9 点、東が加わって 1 本化されると 18 点
+    expect(sizes).toContain(9)
+    expect(sizes).toContain(18)
+    // 1 本化なので、イベントが 2 件並ぶフレームは無い
+    expect(driveAll(twoPatchFrames()).every((ds) => ds.length <= 1)).toBe(true)
   })
 })
