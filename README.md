@@ -23,6 +23,7 @@ React + TypeScript + MapLibre GL JS で構築されています。
 - **スマートフォン対応**: 画面の向きに応じた地図と情報の並べ替え、表示中タブの再タップで情報パネルを畳んで地図を全画面表示（縦画面では境界のドラッグで比率も調整可）
 - **VOICEVOX 読み上げ**: ローカル VOICEVOX と連携して情報を音声で読み上げ（任意）
 - **電文ログ**: 受信電文の一覧・生電文コピー・ダウンロード（開発・検証用途、DM-D.S.S 版のみ実データ）
+- **共有カード**: 表示中の地図を、見出しと出典を添えた 1 枚の画像にして共有・保存
 
 各機能の詳細仕様は [`docs/spec/`](docs/spec/) 配下の機能別仕様書を参照。
 
@@ -80,6 +81,7 @@ npm run preview
 - [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) — DMDATA / P2PQuake / Yahoo の統合
 - [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) — 設定・PWA・実地震テスト
 - [`docs/spec/action-checklist-spec.md`](docs/spec/action-checklist-spec.md) — 行動チェックリスト
+- [`docs/spec/share-card-spec.md`](docs/spec/share-card-spec.md) — 共有カード
 - [`docs/spec/kyoshin-detection-spec.md`](docs/spec/kyoshin-detection-spec.md) — 強震モニタ揺れ検知エンジン
 - [`CLAUDE.md`](CLAUDE.md) — 開発ワークフロー（Claude Code / 人間 共通）
 
