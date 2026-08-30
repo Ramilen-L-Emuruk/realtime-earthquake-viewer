@@ -21,16 +21,18 @@ const YEAR_2023 = {
   // 通年ぶんある年の終端は翌年の頭。
   coveredThroughMs: Date.UTC(2024, 0, 1) - 9 * 60 * 60 * 1000,
   quality: 'final' as const,
-  coordScale: 10000,
-  depthScale: 10,
+  // 格納単位は元データの刻みに乗る値を使う（緯度経度は 0.01 分＝1/6000 度・深さと秒は 0.01 刻み）。
+  coordScale: 6000,
+  depthScale: 100,
   magScale: 10,
+  timeScale: 100,
   count: 2,
-  // 1 件目: 元日 00:00:00 JST / 35.6765N 140.6545E / 深さ 50.0km / M4.5
-  // 2 件目: その 1 時間後 / 38.1035N 142.8610E / 深さ 23.7km / M9.0
-  t: [0, 3600],
-  lat: [356765, 381035],
-  lng: [1406545, 1428610],
-  dep: [500, 237],
+  // 1 件目: 元日 00:00:00.00 JST / 35.6765N 140.6545E / 深さ 50.00km / M4.5
+  // 2 件目: その 1 時間 0.12 秒後 / 38.1035N 142.8610E / 深さ 23.74km / M9.0
+  t: [0, 360012],
+  lat: [214059, 228621],
+  lng: [843927, 857166],
+  dep: [5000, 2374],
   mag: [45, 90],
   // 震度は疎に持つ。2 件目（M9.0）だけが震度 7。
   intIdx: [1],
@@ -74,18 +76,31 @@ describe('loadHypocenterYear', () => {
     expect(y.lat[0]).toBeCloseTo(35.6765, 4)
     expect(y.lng[0]).toBeCloseTo(140.6545, 4)
     expect(y.depth[0]).toBeCloseTo(50, 3)
+    // 深さは 0.01km 刻みで入っている。0.1km へ丸めると 23.7 になり、この検証で落ちる。
+    expect(y.depth[1]).toBeCloseTo(23.74, 3)
     expect(y.magnitude[0]).toBeCloseTo(4.5, 3)
     expect(y.magnitude[1]).toBeCloseTo(9.0, 3)
   })
 
-  it('時刻は年の起点からの経過秒として復元する', async () => {
+  it('時刻は年の起点からの経過時間として復元する', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => okResponse(YEAR_2023)))
     const { loadHypocenterYear } = await freshModule()
     const y = await loadHypocenterYear(2023)
 
     // 2023-01-01 00:00:00 JST = 2022-12-31 15:00:00 UTC
     expect(new Date(y.timeMs[0]).toISOString()).toBe('2022-12-31T15:00:00.000Z')
-    // 1 時間後
+    // **1 時間 0.12 秒後。** 秒へ丸めた形（timeScale を無視して t を秒と見る等）では
+    // 3600000 になり、0.12 秒が消える。元データの秒欄は 0.01 秒まで持っている。
+    expect(y.timeMs[1] - y.timeMs[0]).toBe(3600120)
+  })
+
+  // 時刻の刻みも年ファイル自身が持つ値に従う。ここを固定値（秒）で読むと、刻みを細かくした
+  // 生成物を 100 倍先の時刻として解釈する（2023 年のデータが 2124 年に並ぶ）。
+  it('時刻の格納単位もファイルが持つ値に従う', async () => {
+    const perSecond = { ...YEAR_2023, timeScale: 1, t: [0, 3600] }
+    vi.stubGlobal('fetch', vi.fn(async () => okResponse(perSecond)))
+    const { loadHypocenterYear } = await freshModule()
+    const y = await loadHypocenterYear(2023)
     expect(y.timeMs[1] - y.timeMs[0]).toBe(3600 * 1000)
   })
 
@@ -122,7 +137,7 @@ describe('壊れたファイルを受け取ったとき', () => {
 
   // **格納単位が欠けると `数値 / undefined` が NaN になる。** 例外を投げないので「取得成功」として
   // 通り、その年の座標・深さ・M が全件 NaN で埋まったまま統計へ流れる。
-  it.each(['coordScale', 'depthScale', 'magScale'])('%s が無ければ失敗する', async (key) => {
+  it.each(['coordScale', 'depthScale', 'magScale', 'timeScale'])('%s が無ければ失敗する', async (key) => {
     const broken: Record<string, unknown> = { ...YEAR_2023 }
     delete broken[key]
     vi.stubGlobal('fetch', vi.fn(async () => okResponse(broken)))
@@ -134,6 +149,17 @@ describe('壊れたファイルを受け取ったとき', () => {
     vi.stubGlobal('fetch', vi.fn(async () => okResponse({ ...YEAR_2023, coordScale: 0 })))
     const { loadHypocenterYear } = await freshModule()
     await expect(loadHypocenterYear(2023)).rejects.toThrow(/coordScale/)
+  })
+
+  // **0 以外にも穴がある。** 負の値は符号が反転した座標を、小数は桁がずれた時刻を、
+  // どちらも例外も NaN も出さずに返す。0 だけを弾く検証では通ってしまう。
+  it.each([
+    ['負の値', { coordScale: -6000 }, /coordScale/],
+    ['小数', { timeScale: 0.001 }, /timeScale/],
+  ])('格納単位が%sなら失敗する', async (_label, override, pattern) => {
+    vi.stubGlobal('fetch', vi.fn(async () => okResponse({ ...YEAR_2023, ...override })))
+    const { loadHypocenterYear } = await freshModule()
+    await expect(loadHypocenterYear(2023)).rejects.toThrow(pattern)
   })
 
   it('起点時刻が無ければ失敗する', async () => {

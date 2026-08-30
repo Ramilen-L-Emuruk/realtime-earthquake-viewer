@@ -10,9 +10,10 @@
 // （分割後は全行きっちり 96 文字になる）。
 //
 // **数値欄は「整数部＋小数部」で、小数部が空白のぶんだけ桁が減る。**
-// 1961〜1993 年は精度が 1 桁少なく、緯度分を `474 `（= 47.4 分）と書く。空白を無視して
-// `474 / 100` と読むと 4.74 分になり、**緯度が 78km ずれる**。年代を跨いで読むには
-// 必ず `parseTrailingBlankDecimal` を通すこと。書式の年代別分布は
+// 桁が 1 つ少ない年は緯度分を `474 `（= 47.4 分）と書く。空白を無視して `474 / 100` と読むと
+// 4.74 分になり、**緯度が 78km ずれる**。
+// **どの年がそうかは年の範囲で区切れない**（年の途中で切り替わる年もある）ため、年で判定せず
+// 必ず `parseTrailingBlankDecimal` を通すこと。書式の詳細は
 // `docs/spec/data-sources-spec.md` §6「長期震源カタログ」。
 
 /** 1 レコードの長さ（改行を含まない）。 */
@@ -97,7 +98,7 @@ export function parseHypocenterRecord(line: string): HypocenterRecord | null {
   if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null
   if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null
 
-  // 秒は「整数 2 桁 ＋ 小数部」。1961〜1993 年は小数 1 桁（`031 ` = 3.1 秒）。
+  // 秒は「整数 2 桁 ＋ 小数部」。桁が 1 つ少ない年は小数 1 桁（`031 ` = 3.1 秒）。
   const secText = line.slice(13, 17)
   const secondUnknown = secText.trim() === ''
   const sec = secondUnknown ? 0 : parseTrailingBlankDecimal(secText, 2)

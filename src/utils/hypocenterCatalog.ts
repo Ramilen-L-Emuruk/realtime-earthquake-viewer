@@ -120,6 +120,7 @@ interface RawYear {
   coordScale: number
   depthScale: number
   magScale: number
+  timeScale: number
   count: number
   t: number[]
   lat: number[]
@@ -216,7 +217,7 @@ export function loadHypocenterIndex(): Promise<HypocenterIndex> {
 /**
  * 1 年ぶんを取得する。初回のみ fetch し、以降はキャッシュを返す。
  *
- * 読み込んだ時点で TypedArray へ移し、格納単位（1/10000 度など）を実数へ戻す。
+ * 読み込んだ時点で TypedArray へ移し、格納単位（1/6000 度など）を実数へ戻す。
  * **単位は年ファイル自身が持っている値を使う** —— 索引側の値と食い違ったとき、読んだファイルの
  * 側を信じる方が桁がずれない。
  */
@@ -240,7 +241,7 @@ export function loadHypocenterYear(year: number): Promise<HypocenterYear> {
         if (!Array.isArray(col) || col.length !== raw.count) {
           throw new Error(`hypocenter ${year}: ${key} の長さが count と一致しません`)
         }
-        // **要素の型まで見る。** `null` が混ざると `null / 10000` は例外にも NaN にもならず
+        // **要素の型まで見る。** `null` が混ざると `null / coordScale` は例外にも NaN にもならず
         // **0 になる** —— 北緯 0 度・東経 0 度という「もっともらしい嘘」が静かに紛れ込み、
         // 地図にアフリカ沖の地震として現れる。NaN なら下流で崩れて気づけるが、0 は気づけない。
         for (let i = 0; i < col.length; i++) {
@@ -262,11 +263,14 @@ export function loadHypocenterYear(year: number): Promise<HypocenterYear> {
         throw new Error(`hypocenter ${year}: quality が不正です`)
       }
       // **格納単位も必ず確かめる。** 欠けていると `数値 / undefined` が NaN になり、その年の
-      // 座標・深さ・M が**例外を投げずに全件 NaN で埋まる**。検分しなければ「取得成功」として
+      // 時刻・座標・深さ・M が**例外を投げずに全件 NaN で埋まる**。検分しなければ「取得成功」として
       // 通り、統計側でグラフが崩れるまで誰も気づけない。
-      for (const key of ['coordScale', 'depthScale', 'magScale'] as const) {
+      //
+      // **正の整数まで見る。** 0 だけを弾いても穴は残る —— 負の値なら符号が反転した座標を、
+      // 小数なら桁がずれた時刻を、どちらも例外も NaN も出さずに「成功」として返す。
+      for (const key of ['coordScale', 'depthScale', 'magScale', 'timeScale'] as const) {
         const scale = raw[key]
-        if (typeof scale !== 'number' || !Number.isFinite(scale) || scale === 0) {
+        if (typeof scale !== 'number' || !Number.isInteger(scale) || scale <= 0) {
           throw new Error(`hypocenter ${year}: ${key} が不正です`)
         }
       }
@@ -308,9 +312,9 @@ export function loadHypocenterYear(year: number): Promise<HypocenterYear> {
         intensityCode: raw.intCode ?? [],
       }
       for (let i = 0; i < n; i++) {
-        // 時刻は「その年の頭からの経過秒」で入っている。起点は年ファイルが持っているので、
-        // ここで日本時間を意識する必要はない。
-        out.timeMs[i] = raw.startMs + raw.t[i] * 1000
+        // 時刻は「その年の頭からの経過時間 × timeScale」で入っている。起点も刻みも年ファイルが
+        // 持っているので、ここで日本時間を意識する必要はない。
+        out.timeMs[i] = raw.startMs + (raw.t[i] * 1000) / raw.timeScale
         out.lat[i] = raw.lat[i] / raw.coordScale
         out.lng[i] = raw.lng[i] / raw.coordScale
         out.depth[i] = raw.dep[i] / raw.depthScale
