@@ -88,7 +88,8 @@ const DEFAULTS: AppSettings = {
   showPlateBoundaries: true,
   showDayNight: false,
   // 下げると海の上で効かなくなる（ベースマップの海がもともと濃紺のため）。上げると夜側の地形・
-  // 県境・活断層線が読めなくなる。震度の塗りはこれより前面なので、濃くしても地震の情報は沈まない。
+  // 県境・活断層線が読めなくなる。掛かるのは地形だけで（境界線・震度の面はこれより前面）、
+  // 濃くしても地震の情報は沈まない。
   // 既定は控えめに置き、はっきり暗くしたい場合はスライダーで上げてもらう。
   dayNightOpacity: 0.5,
   defaultTab: 'earthquake',

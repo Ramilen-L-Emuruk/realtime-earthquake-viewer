@@ -9,7 +9,7 @@
 
 - 電文パース（DMDATA JSON / XML、P2PQuake JSON）
 - 同一 eventId の続報統合（速報 → 詳細報の順で情報を上書き）
-- 地図の表示: 観測点別震度ドット・区域別震度塗り・震源マーカー
+- 地図の表示: 観測点別震度ドット・区域別震度塗り・観測点から補間した震度の面・震源マーカー
 - ズームレベルによる集約表示切替（詳細 ↔ 区域）
 - 訂正・取消の表示
 
@@ -37,7 +37,7 @@
                    useQuakeLayerData                                EarthquakeTab
                 （観測点点・区域塗り・震源）                        （カード一覧）
                           ↓
-              QuakeIntensityPointsGL / QuakeRegionFillGL / HypocenterDepthGL
+       QuakeIntensityPointsGL / QuakeRegionFillGL / QuakeIntensitySurfaceGL / HypocenterDepthGL
 ```
 
 ## 3. 電文種別
@@ -493,6 +493,29 @@ existing/incoming が同じ書式・同じタイムゾーンオフセットで�
 - 区域中心に震度バッジ（icon-image・symbol レイヤー）
 - 2026-08-10 のコミット 55dcc42 で HTML Marker から icon-image に移行済み
 
+### QuakeIntensitySurfaceGL（震度の面）
+
+観測点の震度を補間して「揺れの広がりの形」を面で敷く。点の背景であって、観測点バッジは面の上に残る。
+**描き方（補間・陸クリップ・解像度・描けないときの扱い）は
+[`map-rendering-spec.md`](map-rendering-spec.md) §17 が単一情報源。** ここには出す条件だけを書く。
+
+**区域塗りとは排他。** 面と観測点ドットは同じ式（`mode === 'quake' && !aggregateByRegion &&
+!lpgmActive`）を使い、区域塗りはその否定（`aggregateByRegion`）を使う。3 つが対になっているので、
+**どれか 1 つの式だけを変えると排他が崩れる**。区域塗りは気象庁が発表した区域ごとの最大震度そのもので、
+面は観測点からの推定なので、同じ画面に置くとどちらが発表値でどちらが推定かが混ざる。
+
+**渡すのは `stationMarkers`**（§7）。区域の代表点（`isArea: true`）は区域の最大震度であって、その
+座標の観測値ではないため、補間に混ぜない。
+
+**寄っても面は消さない。** 視野が観測点の間隔（10〜20km）を下回ると面はほぼ単色になり読み取れる情報は
+無くなるが、そこで消すと操作の途中で唐突に面が失われる。害が出るのは海への漏れのほうで、それは
+陸クリップで塞いである。
+
+**「観測点はあるのに 1 件も使える値が無い」はバリアントで起こりやすさが違う。** この状態は面を出さずに
+記録する（[`map-rendering-spec.md`](map-rendering-spec.md) §17）が、DMDSS 版では構造的に起こらない——
+DMDATA 経路のパーサは階級を読めなかった観測点を `points` に積まないため、`stationMarkers` へ届く点は
+必ず階級表の値を持つ。標準版は「震度0」を `-1`（不明）へ寄せて残す（§4）ので、そこだけが到達しうる。
+
 ### HypocenterDepthGL（震源マーカー）
 - 震源の × 印 + 震央の印 + その間を結ぶ柄 + ポップアップ
 - **深さを持つ点として地下へ描く**（`gl/depthPointLayer.ts` のカスタムレイヤー）。DOM マーカーは
@@ -519,6 +542,9 @@ existing/incoming が同じ書式・同じタイムゾーンオフセットで�
 - `src/components/EarthquakeTab/EarthquakeCard.tsx` — カード表示
 - `src/components/Map/QuakeIntensityPointsGL.tsx` — 観測点ドット
 - `src/components/Map/QuakeRegionFillGL.tsx` — 区域塗り＋区域バッジ
+- `src/components/Map/QuakeIntensitySurfaceGL.tsx` — 震度の面（観測点表示時の背景）
+- `src/utils/isoseismal.ts` — 面の補間（階級値の写像・逆距離加重・海のマスク）
+- `src/utils/isoseismal.test.ts` — テスト
 - `src/components/Map/HypocenterDepthGL.tsx` — 震源マーカー（深さを持つ点として描く）
 - `src/components/Map/gl/depthPointLayer.ts` — 深さを持つ点の描画とクリック判定
 
@@ -527,6 +553,9 @@ existing/incoming が同じ書式・同じタイムゾーンオフセットで�
 - `quakeMerge.test.ts`: 続報マージのケースをカバー
 - `dmdataParser.test.ts`: XML の VXSE51/53、JSON の訂正フラグ、遠地地震（XML・JSON 両経路）をカバー
 - `ttsText.test.ts`: 読み上げ文の生成（遠地地震の名乗り・深さ不明・規模不明・付加文の優先）をカバー
+- `isoseismal.test.ts`: 震度の面の補間。階級値の写像（不等間隔が均されること・階級表に無い値を弾くこと）、
+  色の帯の境界、Mercator 等間隔の格子、海のマスク（効くこと・広げれば外側にも出ること）、
+  影響半径の内外、格子の外にある観測点を東西南北それぞれで拾えること、`usedPoints` をカバー
 
 ## 13. 改訂履歴
 
@@ -539,3 +568,5 @@ existing/incoming が同じ書式・同じタイムゾーンオフセットで�
 - 2026-08-28: 自由付加文（`freeText`）の取り込みを追加。続報で更新されるのは固定付加文ではなく
   こちら側であることが実電文の確認で判明したため（2026-08-25 の火山噴火に伴う遠地地震情報は
   全 4 報で震源要素・固定付加文とも同一）。あわせて付加文コード 0228・0229 を表に追加した
+- 2026-08-30: 観測点の震度を補間した面（`QuakeIntensitySurfaceGL`）を追加。観測点表示のズーム帯で
+  点の背景に敷く。区域塗りとは排他にして、発表値と推定を同じ画面に混ぜないようにした（§9）
