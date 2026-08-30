@@ -1,5 +1,7 @@
 import * as maplibregl from 'maplibre-gl'
 import type { Map as MapLibreMap, MapMouseEvent, MapGeoJSONFeature, PointLike } from 'maplibre-gl'
+import { log } from '../../../utils/logger'
+import { reportRenderFailure, clearRenderFailure } from '../../../utils/renderHealth'
 
 // 地図上のポップアップを一元調停する。1クリックにつき必ず1枚だけ開く。
 //
@@ -57,6 +59,13 @@ export interface PopupSource {
    * `mousemove` が先に来ないタッチ操作で 1 回目が必ず空振りする。
    */
   pick?: (point: maplibregl.Point, forClick: boolean) => MapGeoJSONFeature | null | 'pending'
+  /**
+   * 判定が失敗したときに画面へ出す名前（`utils/renderHealth.ts`）。
+   *
+   * 省略すると記録だけ残して画面には出さない。**`pick` を持つソースにだけ意味がある**——
+   * `queryRenderedFeatures` に任せるソースは MapLibre 側が面倒を見るため、ここで拾う失敗が無い。
+   */
+  label?: string
 }
 
 export interface PopupHandle {
@@ -187,7 +196,21 @@ function createRegistry(map: MapLibreMap): Registry {
         // 表示切替中のレイヤーは自然に対象から外れる。
         if (!map.getLayer(source.layerId)) continue
         if (source.pick) {
-          const f = source.pick(point, forClick)
+          let f: MapGeoJSONFeature | null | 'pending'
+          try {
+            f = source.pick(point, forClick)
+          } catch (err) {
+            // **1 つの判定の失敗で全部を止めない。** ここは全ソースを回す唯一の場所なので、
+            // 投げさせると**どのレイヤーもクリックに応じなくなる**（最後の受け皿である
+            // 区域名の表示まで巻き添えになる）。そのソースだけ飛ばして続ける。
+            log.error(`[popupRegistry] ${source.layerId} の判定が失敗しました`, err)
+            if (source.label) reportRenderFailure(source.layerId, source.label, 'interact')
+            continue
+          }
+          // **成功に転じたら取り下げる。** 報告済みかどうかを別に覚えない——覚えると
+          // ストアと二重に持つことになり、片方だけ消えたときに食い違う。どちらの呼び出しも
+          // 変化が無ければ何もせずに返る。
+          if (source.label) clearRenderFailure(source.layerId, 'interact')
           if (f === 'pending') { pending = true; continue }
           if (f) return { source, feature: f }
           continue
@@ -303,6 +326,8 @@ export function registerPopupSource(map: MapLibreMap, source: PopupSource): Popu
     remove: () => {
       const i = reg.sources.indexOf(source)
       if (i >= 0) reg.sources.splice(i, 1)
+      // 外したソースの不調は画面に残さない（もう判定に呼ばれないので、直ったかも判らない）。
+      if (source.label) clearRenderFailure(source.layerId, 'interact')
       if (reg.sources.length === 0) {
         reg.detach()
         registries.delete(map)
