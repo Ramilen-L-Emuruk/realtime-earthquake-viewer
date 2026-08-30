@@ -22,6 +22,7 @@
 | [data-sources-spec.md](data-sources-spec.md) | DMDATA / P2PQuake / Yahoo 統合仕様・クロック同期・生成データ | `src/services/`, `src/utils/clock.ts`, `src/utils/fetchJson.ts` |
 | [settings-pwa-spec.md](settings-pwa-spec.md) | 設定タブ・localStorage・PWA・実地震テスト | `src/components/SettingsTab/`, `src/hooks/useSettings.ts`, `vite.config.ts` |
 | [action-checklist-spec.md](action-checklist-spec.md) | 行動チェックリスト（出す条件・登録地点の周り・畳む挙動） | `src/hooks/useActionChecklist.ts`, `src/utils/actionChecklistTrigger.ts` |
+| [share-card-spec.md](share-card-spec.md) | 共有カード（撮影の制約・見出しの組み立て・出典の焼き込み） | `src/components/Map/gl/captureMap.ts`, `src/utils/shareCard.ts` |
 | [kyoshin-detection-spec.md](kyoshin-detection-spec.md) | 強震モニタ揺れ検知エンジン（詳細仕様） | `src/utils/kyoshinDetector.ts` |
 | [kyoshin-detection-v3-design.md](kyoshin-detection-v3-design.md) | 強震モニタ検知の設計判断・調査・改訂履歴 | 同上（経緯資料） |
 | [kyoshin-detection-design.md](kyoshin-detection-design.md) | 強震モニタ検知の旧設計書（歴史資料・V3 に置換済み） | 同上 |
