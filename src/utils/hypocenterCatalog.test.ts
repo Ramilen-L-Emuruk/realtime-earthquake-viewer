@@ -6,6 +6,12 @@
 // 単位の掛け違いや列のずれは型でも実行時エラーでも捕まらず、静かに嘘の座標を返す。
 
 import { describe, it, expect, afterEach, vi } from 'vitest'
+// 実体をファイル読み込み時に一度通しておく。下の `freshModule` はテストごとにモジュールを作り直すが、
+// **そのファイルで最初の 1 回だけ**は解決と変換が要り、全テストファイルを並列実行すると他のワーカーとの
+// 順番待ちで数秒に伸びる。テスト本体の中で最初に読むとその待ちが 1 件目の所要時間に丸ごと乗り、既定の
+// 5 秒を超えて時間切れになる。ここで通せば待ちはファイル読み込み時へ移る
+// （経緯と、モックを併用する場合のつまずきどころは `../services/akamaiClock.test.ts` の同じ import）。
+import './hypocenterCatalog'
 
 async function freshModule() {
   vi.resetModules()
