@@ -23,7 +23,7 @@ export interface AppSettings {
   mapIconScale: number      // 地図アイコンの倍率 (1 = 100%、UI 倍率とは独立)
   // 地図を傾けたとき、震源をどれだけ深く見せるか (1 = 実際の深さ)。水平方向は常に実スケール。
   hypocenterDepthScale: number
-  showBathymetry: boolean   // 背景に海底地形（ESRI Ocean）を表示する
+  showBathymetry: boolean   // 背景に海底地形（GEBCO・NOAA NCEI）を表示する
   showActiveFaults: boolean // 地震情報・リアルタイムタブの地図に活断層線を表示する
   activeFaultOpacity: number // 活断層線の不透明度（濃さ、0.05〜1.0）
   showQuakeHeatmap: boolean // 地震情報・リアルタイムタブの地図に直近1ヶ月の地震活動ヒートマップを表示する
