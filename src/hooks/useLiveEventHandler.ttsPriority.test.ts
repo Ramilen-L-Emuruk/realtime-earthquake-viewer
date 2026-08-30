@@ -425,6 +425,37 @@ describe('非 EEW の読み上げの優先度', () => {
     expect(spokenTexts()[2]).toContain('震度速報')
   })
 
+  // 値がある通常経路（`scale > 0`）でも、確定までは安定待ち（跳躍幅に応じて 300ms〜2000ms）が
+  // 挟まる。この間も「EEW はこれから話す」状態のはず。安定待ち中のタイマー
+  // （`eewScaleStabilityRef`/`eewLpgmStabilityRef`）を `speechBlocker` が見ていないと、
+  // 上のテストと同じ症状（地震情報が滑り込んで確定後の第 2 フェーズに必ず切られる）が
+  // 「値が無い理由不明のケース」だけでなく「ほとんどの実地震で通る主経路」で再発する。
+  it('EEW の震度が安定待ちで確定するまでの間も、地震情報は待つ', async () => {
+    const handle = setup()
+    handle(makeEEW())   // 初報 scale=55（6弱）。初出値・跳躍0段階なので安定待ちは 300ms
+    await flush()
+    expect(spokenTexts()).toHaveLength(1)
+    expect(spokenTexts()[0]).toContain('緊急地震速報')
+
+    // 震源の読み上げが終わる。第 2 フェーズは安定待ち中（残り約 300ms）
+    finishSpeech(0)
+    await flush()
+
+    handle(makeQuake())
+    await vi.advanceTimersByTimeAsync(200)   // まだ安定待ちの途中
+    await flush()
+    expect(spokenTexts()).toHaveLength(1)    // 滑り込まない
+
+    // 安定待ちが確定し、第 2 フェーズが読まれ、そのあとに地震情報が続く
+    await vi.advanceTimersByTimeAsync(200)
+    await flush()
+    expect(spokenTexts()[1]).toContain('予想最大震度')
+    finishSpeech(1)
+    await vi.advanceTimersByTimeAsync(3000)   // 地震情報の通知音の遅延
+    await flush()
+    expect(spokenTexts()[2]).toContain('震度速報')
+  })
+
   // 仮定震源要素（単独点処理）は予想震度が載らないと判っているため待たずに読む。ここで固定するのは
   // **第 1 フェーズが終わった瞬間の隙間を、予約済みの第 2 フェーズが取る**こと（3 番目の assert）。
   // 予約が第 1 フェーズの完了後まで遅れると、待たされていた地震情報がこの隙間に入り、震源と予想値の
