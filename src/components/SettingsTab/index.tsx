@@ -1085,6 +1085,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             <IntensityPlayButton scale={45} kyoshinIndex={15} />
             <IntensityPlayButton scale={50} kyoshinIndex={16} />
             <IntensityPlayButton scale={55} kyoshinIndex={17} />
+            <IntensityPlayButton scale={60} kyoshinIndex={18} />
             <IntensityPlayButton scale={70} kyoshinIndex={19} />
           </div>
         </Row>
