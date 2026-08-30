@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildSiteIndex, dropIsolatedZeroPoints, resolveMembers, deriveKyoshinView, type DetectedPoint } from './kyoshinDetectionView'
-import { siteKey, type DetectionEvent } from './kyoshinDetector'
+import { initGates, siteKey, type DetectionEvent } from './kyoshinDetector'
 import type { SiteCoords } from '../services/kyoshin'
 
 /**
@@ -30,6 +30,8 @@ function fakeEvent(overrides: Partial<DetectionEvent> & Pick<DetectionEvent, 'id
     everConfirmed: overrides.confidence === 'confirmed',
     lastSpreadAtMs: 0,
     everNeighborRise: overrides.confidence === 'likely' || overrides.confidence === 'confirmed',
+    gates: initGates(),
+    confirmedBy: null,
     ...overrides,
   }
 }
