@@ -43,7 +43,8 @@ import { usePlateBoundaries } from '../../hooks/usePlateBoundaries'
 import { useQuakeLayerData } from '../../hooks/useQuakeLayerData'
 import { useTsunamiLayerData } from '../../hooks/useTsunamiLayerData'
 import { useEewLayerData } from '../../hooks/useEewLayerData'
-import type { JapanMapProps } from './mapTypes'
+import type { JapanMapProps, MapHandle } from './mapTypes'
+import { drawTsunamiObsBars } from './gl/tsunamiObsBar'
 import { kyoshinIndexToJma } from '../../utils/kyoshinIntensity'
 import { log } from '../../utils/logger'
 import { serverNow } from '../../utils/clock'
@@ -98,10 +99,17 @@ export function JapanMapGL({
   activeFaultOpacity = 0.4,
   showPlateBoundaries = true,
   quakeSelectionTick = 0,
+  onMapReady,
 }: JapanMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const [map, setMap] = useState<maplibregl.Map | null>(null)
+  // 地図の生成 effect は依存配列が空（地図は 1 度だけ作る）。コールバックを直接読むと、
+  // 親が別の関数を渡してきたときに古い参照を掴んだままになるため ref 越しに呼ぶ。
+  const onMapReadyRef = useRef(onMapReady)
+  useEffect(() => {
+    onMapReadyRef.current = onMapReady
+  }, [onMapReady])
   // 集約切替（zoom <= 寄り上限 で一次細分区域集約）判定のため現在ズームを追跡する。
   const [zoom, setZoom] = useState(INITIAL_ZOOM)
   // 集約切替の閾値。カメラの寄り上限と同値にすることで「自動フィット着地後は必ず区域集約＝震度塗り」
@@ -160,6 +168,17 @@ export function JapanMapGL({
     observations,
     obsUpdateStatus,
   )
+  // 撮影した画像へ描き足すもの。いまは津波の観測棒だけで、これは DOM マーカーのため
+  // WebGL のキャンバスに写らない（gl/tsunamiObsBar.ts の drawTsunamiObsBars）。
+  // 表示条件は下の TsunamiObsBarsGL のマウント条件と揃える。
+  const extrasRef = useRef<{ bars: typeof observationBars; iconScale: number; showBars: boolean }>({
+    bars: [],
+    iconScale: 1,
+    showBars: false,
+  })
+  useEffect(() => {
+    extrasRef.current = { bars: observationBars, iconScale, showBars: mode === 'tsunami' }
+  }, [observationBars, iconScale, mode])
   // カメラが追う検知点。**実際に地図へ描かれているものだけ**に揃える。
   // detectedPoints（confirmed イベントのメンバーの和集合）は現在の震度で絞られていない
   // （`kyoshinDetector` の memberKeys。値が下がりきった点は `MEMBER_DROP_MS` の猶予を過ぎれば
@@ -284,6 +303,14 @@ export function JapanMapGL({
       setZoom(m.getZoom())
       setAggregateMaxZoom(fitMaxZoom(m))
       setMap(m)
+      const handle: MapHandle = {
+        map: m,
+        drawExtras: (ctx, target, scale) => {
+          const { bars, iconScale: s, showBars } = extrasRef.current
+          if (showBars) drawTsunamiObsBars(ctx, target, scale, bars, s)
+        },
+      }
+      onMapReadyRef.current?.(handle)
     })
     // ズーム確定ごとに zoom state を更新（集約切替の再評価用）。
     const onZoomEnd = () => setZoom(m.getZoom())
@@ -326,6 +353,7 @@ export function JapanMapGL({
       m.off('styledata', onStyleData)
       mapRef.current = null
       setMap(null)
+      onMapReadyRef.current?.(null)
       m.remove()
     }
   }, [])
