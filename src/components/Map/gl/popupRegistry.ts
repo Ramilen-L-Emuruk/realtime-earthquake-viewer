@@ -11,10 +11,9 @@ import type { Map as MapLibreMap, MapMouseEvent, MapGeoJSONFeature, PointLike } 
 // ここで map ごとに単一の click / mousemove ハンドラと単一の Popup インスタンスを持ち、
 // 登録された全レイヤーを優先度順に問い合わせて、最初にヒットした1件だけを表示する。
 //
-// HTML マーカー（震源・区域ラベル等）は queryRenderedFeatures の対象外だが、マーカー要素の
-// クリックは地図コンテナへバブリングして map の click も発火させる。マーカーは常に最前面の点
-// として扱いたいので、claimClickForMarker で「この click はマーカーが取った」と宣言させ、
-// レイヤー由来の表示を抑止する（順序はマーカー要素→コンテナのバブリングで保証される）。
+// カスタムレイヤー（`gl/depthPointLayer.ts` で描く震源など）は queryRenderedFeatures の対象外
+// なので、`pick` に自前の判定を渡してもらう。判定が描画ループの中でしか解けない実装があるため、
+// 未解決（`'pending'`）を「何も無い」と区別し、数フレームだけ聞き直す。
 
 /**
  * 当たり判定の優先度。狭くて狙って押したものほど先に拾う。
@@ -87,8 +86,6 @@ interface Registry {
   hoverHtml: string | null
   /** カーソルを pointer にしたのが自分かどうか（他所のカーソル指定を奪って戻さないため）。 */
   cursorOwned: boolean
-  /** 直前の click を HTML マーカーが消費したか。 */
-  markerClaimed: boolean
   /** 開いているクリックポップアップの定期再生成（refreshMs 指定時のみ）。 */
   refresh: { source: PopupSource; feature: MapGeoJSONFeature; timer: number } | null
   detach: () => void
@@ -132,7 +129,6 @@ function createRegistry(map: MapLibreMap): Registry {
     }),
     hoverHtml: null,
     cursorOwned: false,
-    markerClaimed: false,
     refresh: null,
     detach: () => {},
   }
@@ -213,13 +209,6 @@ function createRegistry(map: MapLibreMap): Registry {
   }
 
   const onClick = (e: MapMouseEvent, retry = 0) => {
-    if (reg.markerClaimed) {
-      // マーカーが自前の吹き出しを開いた直後。レイヤー由来は出さず、残っていれば閉じる。
-      reg.markerClaimed = false
-      closeClick()
-      closeHover()
-      return
-    }
     const hit = findTop(e.point, true)
     // 未解決なら数フレームだけ聞き直す。ここで諦めると、タッチ操作の 1 回目が必ず空振りする。
     if (hit === 'pending') {
@@ -322,21 +311,3 @@ export function registerPopupSource(map: MapLibreMap, source: PopupSource): Popu
   }
 }
 
-/**
- * HTML マーカーの要素にクリック宣言を仕込む。マーカーは最前面の点として常に優先され、
- * そのクリックではレイヤー由来のポップアップを出さない。戻り値を呼ぶと解除する。
- */
-export function attachMarkerClaim(map: MapLibreMap, element: HTMLElement): PopupHandle {
-  const onClick = () => {
-    const reg = registries.get(map)
-    if (!reg) return
-    reg.markerClaimed = true
-    // 何らかの理由で map の click が続かなかった場合に宣言が残らないようにする
-    // （マーカー要素→コンテナのバブリングは通常必ず届くが、保険として次のタスクで倒す）。
-    setTimeout(() => {
-      reg.markerClaimed = false
-    }, 0)
-  }
-  element.addEventListener('click', onClick)
-  return { remove: () => element.removeEventListener('click', onClick) }
-}

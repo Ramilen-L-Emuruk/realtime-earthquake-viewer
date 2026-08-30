@@ -46,6 +46,7 @@ import { kyoshinIndexToJma } from '../../utils/kyoshinIntensity'
 import { log } from '../../utils/logger'
 import { serverNow } from '../../utils/clock'
 import { syncEewFirstSeen } from './gl/eewFirstSeen'
+import { applyFrontSortKeys, bearingChangedEnough } from './gl/screenDepth'
 
 // MapLibre GL JS 版の地図コンポーネント（Leaflet 版 JapanMap と同一 Props）。
 // MapLibre 移行計画 docs/webgl-migration-implementation-plan.md のフェーズ順に、
@@ -286,9 +287,38 @@ export function JapanMapGL({
     // 監視するため、window のリサイズだけでなくパネル境界のつまみの操作でもここへ届く。
     const onResize = () => setAggregateMaxZoom(fitMaxZoom(m))
     m.on('resize', onResize)
+    // 同じ階級のバッジを画面の手前から並べる（gl/screenDepth.ts）。手前らしさは方位だけで決まる
+    // ので、購読するのは回転だけでよい（中心・ズーム・傾きでは並びが変わらない）。
+    // **購読はここに 1 本だけ置く。** 対象のレイヤーはモードごとに出入りするので、各レイヤーの
+    // コンポーネントに置くと購読が増えたり減ったりして、どれが効いているか追えなくなる。
+    let appliedBearing = 0
+    const onRotate = () => {
+      const b = m.getBearing()
+      // 回している間ずっと作り直すとシンボルの配置計算が繰り返し走る。刻みで間引く。
+      if (!bearingChangedEnough(appliedBearing, b)) return
+      appliedBearing = b
+      applyFrontSortKeys(m, b)
+    }
+    m.on('rotate', onRotate)
+    // 間引きで取りこぼした端数を、回し終わりで必ず合わせる。
+    const onRotateEnd = () => {
+      appliedBearing = m.getBearing()
+      applyFrontSortKeys(m, appliedBearing)
+    }
+    m.on('rotateend', onRotateEnd)
+    // レイヤーはモードの切替で後から足される。**足された時点の方位で式を入れ直す**
+    // （追加時の初期値は方位 0 で焼いてあるため、回した状態で入室すると並びがずれる）。
+    // **ここは刻みで間引かない。** 間引くと「レイヤーが足されたのに方位が古いまま」が起きる。
+    // 書き込み自体は `applyFrontSortKeys` が中身の比較で止めるので、値が変わらない限り
+    // 式を組み立てて比べるだけで終わる。
+    const onStyleData = () => applyFrontSortKeys(m, m.getBearing())
+    m.on('styledata', onStyleData)
     return () => {
       m.off('zoomend', onZoomEnd)
       m.off('resize', onResize)
+      m.off('rotate', onRotate)
+      m.off('rotateend', onRotateEnd)
+      m.off('styledata', onStyleData)
       mapRef.current = null
       setMap(null)
       m.remove()

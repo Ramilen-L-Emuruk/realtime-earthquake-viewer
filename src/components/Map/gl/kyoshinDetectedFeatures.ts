@@ -1,4 +1,5 @@
 import type { FeatureCollection, Point } from 'geojson'
+import { mercatorProps } from './screenDepth'
 import type { DetectedPoint } from '../../../utils/kyoshinDetectionView'
 import { kyoshinIndexToJma, type KyoshinJma } from '../../../utils/kyoshinIntensity'
 import { getScaleRadius } from '../../../utils/intensity'
@@ -47,6 +48,8 @@ function buildFeatures(points: DetectedPoint[], iconScale: number, confirmed: bo
         // 欠測ホールドで直前値を描いている点。レイヤー側が icon-opacity を落として
         // 「そこに点はあるが今は値が無い」と示す（utils/kyoshinMissingHold.ts）。
         stale: p.stale === true,
+        // 同じ階級のバッジを画面の手前から並べるために持たせる（gl/screenDepth.ts）。
+        ...mercatorProps(p.lng, p.lat),
       },
       geometry: { type: 'Point' as const, coordinates: [p.lng, p.lat] },
     }]

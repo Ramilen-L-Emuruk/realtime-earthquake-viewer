@@ -158,11 +158,15 @@ export function HypocenterDepthGL({ quake, epicenter, prefIntensities, iconScale
         stem: true,
       },
     ])
-  }, [epicenter, quake, iconScale])
+    // **`map` を依存に含めること。** レイヤーを作るのは別の effect（`[map]`）で、地図の生成は
+    // 非同期（`load` を待つ）。先にこの効果が走ると `layerRef.current` が null のまま素通りし、
+    // 後からレイヤーができても点が入らない。
+  }, [map, epicenter, quake, iconScale])
 
   useEffect(() => {
     layerRef.current?.setExaggeration(exaggeration)
-  }, [exaggeration])
+    // 同上。誇張率もレイヤーができる前に決まっていることがある。
+  }, [map, exaggeration])
 
   return null
 }
