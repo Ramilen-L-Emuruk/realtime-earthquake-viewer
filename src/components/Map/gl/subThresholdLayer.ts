@@ -1,4 +1,5 @@
 import * as maplibregl from 'maplibre-gl'
+import { applyProjectionUniforms, createProjectionProgramCache } from './projectionProgram'
 import { SHINDO0_COLOR } from '../../../utils/kyoshinIntensity'
 
 // 強震モニタの震度0以下（index 1〜6）を描く MapLibre カスタムレイヤーの GL 実装。
@@ -34,14 +35,18 @@ function hexToRgb(hex: string): [number, number, number] {
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]
 }
 
-const POINT_VS = `#version 300 es
-uniform mat4 u_matrix;
+// 頂点シェーダーの本体。座標変換は MapLibre が配る投影シェーダーに任せる（gl/projectionProgram.ts）ため、
+// `#version` と prelude はプログラム生成側で前置きする。
+const POINT_VS_BODY = `
 uniform float u_size;
 in vec2 a_pos;
 void main() {
-  gl_Position = u_matrix * vec4(a_pos, 0.0, 1.0);
+  gl_Position = projectTile(a_pos);
   gl_PointSize = u_size;
 }`
+
+/** 点プログラムの属性。**並び順がロケーション番号になる。** */
+const POINT_ATTRIBS = ['a_pos'] as const
 
 const POINT_FS = `#version 300 es
 precision mediump float;
@@ -133,7 +138,18 @@ export function makeSubThresholdLayer(
   countingSort(new Uint8Array(n))
   dirtyIdx = false
 
-  let pointProg: WebGLProgram
+  // 点は投影ごとにプログラムを持つ（globe と Mercator を行き来する）。
+  // 合成用のフルスクリーン矩形は投影に依らないので、こちらは従来どおり 1 本だけ作る。
+  const pointCache = createProjectionProgramCache({
+    label: 'subthreshold',
+    makeVertexSource: (prelude, define) => `#version 300 es
+${prelude}
+${define}
+${POINT_VS_BODY}`,
+    fragmentSource: POINT_FS,
+    attributes: POINT_ATTRIBS,
+    uniforms: ['u_size', 'u_color'] as const,
+  })
   let quadProg: WebGLProgram
   let fbo: WebGLFramebuffer
   let tex: WebGLTexture
@@ -142,10 +158,8 @@ export function makeSubThresholdLayer(
   let quadBuf: WebGLBuffer
   let texW = 0
   let texH = 0
-  let uMatrix: WebGLUniformLocation | null
-  let uSize: WebGLUniformLocation | null
-  let uColor: WebGLUniformLocation | null
-  let aPos = 0
+  /** 点の属性は番号を固定してあるので、プログラムが差し替わっても VAO 相当の設定は変わらない。 */
+  const aPos = POINT_ATTRIBS.indexOf('a_pos')
   let uTex: WebGLUniformLocation | null
   let uOpacity: WebGLUniformLocation | null
   let aQuad = 0
@@ -172,12 +186,7 @@ export function makeSubThresholdLayer(
     type: 'custom',
     onAdd(map: maplibregl.Map, gl: WebGL2RenderingContext) {
       mapRef = map
-      pointProg = linkProg(gl, POINT_VS, POINT_FS)
       quadProg = linkProg(gl, QUAD_VS, QUAD_FS)
-      uMatrix = gl.getUniformLocation(pointProg, 'u_matrix')
-      uSize = gl.getUniformLocation(pointProg, 'u_size')
-      uColor = gl.getUniformLocation(pointProg, 'u_color')
-      aPos = gl.getAttribLocation(pointProg, 'a_pos')
       uTex = gl.getUniformLocation(quadProg, 'u_tex')
       uOpacity = gl.getUniformLocation(quadProg, 'u_opacity')
       aQuad = gl.getAttribLocation(quadProg, 'a_quad')
@@ -202,6 +211,12 @@ export function makeSubThresholdLayer(
     },
     render(gl: WebGL2RenderingContext, args: maplibregl.CustomRenderMethodInput) {
       if (!visible) return
+      // **GL の状態を触る前に取ること。** 下のリサイズ処理は自前の FBO を bind したまま進み、
+      // 本描画先へ戻すのは関数末尾の復元処理。その手前で抜けると、以後 MapLibre が発行する描画が
+      // このレイヤーのオフスクリーンテクスチャへ流れ込み、**画面が更新されなくなる**。
+      const point = pointCache.get(gl, args)
+      // シェーダーを用意できなければ描かない（原因はキャッシュ側が記録する）。
+      if (!point) return
       const canvas = mapRef.getCanvas()
       const w = canvas.width
       const h = canvas.height
@@ -229,7 +244,6 @@ export function makeSubThresholdLayer(
         dirtyIdx = false
       }
 
-      const matrix = args.defaultProjectionData.mainMatrix
       const dpr = window.devicePixelRatio || 1
       const size = BASE_RADIUS * 2 * dpr * iconScale
 
@@ -247,10 +261,10 @@ export function makeSubThresholdLayer(
         gl.clear(gl.COLOR_BUFFER_BIT)
         gl.enable(gl.BLEND)
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA) // premultiplied over（縁 a<1 のみ合成）
-        gl.useProgram(pointProg)
-        gl.uniformMatrix4fv(uMatrix, false, matrix)
-        gl.uniform1f(uSize, size)
-        gl.uniform4f(uColor, COLOR[0], COLOR[1], COLOR[2], 1.0)
+        gl.useProgram(point.program)
+        applyProjectionUniforms(gl, point.u, args)
+        gl.uniform1f(point.u.u_size, size)
+        gl.uniform4f(point.u.u_color, COLOR[0], COLOR[1], COLOR[2], 1.0)
         gl.bindBuffer(gl.ARRAY_BUFFER, posBuf)
         gl.enableVertexAttribArray(aPos)
         gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0)
@@ -283,7 +297,7 @@ export function makeSubThresholdLayer(
       gl.disableVertexAttribArray(aQuad)
     },
     onRemove(_map: maplibregl.Map, gl: WebGL2RenderingContext) {
-      gl.deleteProgram(pointProg)
+      pointCache.dispose(gl)
       gl.deleteProgram(quadProg)
       gl.deleteFramebuffer(fbo)
       gl.deleteTexture(tex)

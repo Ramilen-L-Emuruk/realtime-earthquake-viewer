@@ -1,30 +1,53 @@
 import { useEffect, useRef } from 'react'
-import * as maplibregl from 'maplibre-gl'
+import type { MapGeoJSONFeature } from 'maplibre-gl'
 import { useMapGL } from './mapGLContext'
 import type { EewEpicenter } from '../../hooks/useEewLayerData'
 import { getIntensityColor, getIntensityLabelWithOrAbove } from '../../utils/intensity'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
-import { attachMarkerClaim, type PopupHandle } from './gl/popupRegistry'
+import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
+import { addOrderedLayer } from './gl/layerOrder'
+import { createDepthPointLayer, type DepthPoint, type DepthPointLayer } from './gl/depthPointLayer'
 import { badgeHtml, escapeHtml } from './gl/popupHtml'
+import { log } from '../../utils/logger'
 
-// EEW（緊急地震速報）の震源(×印・点滅)を描画する MapLibre 版（Leaflet 版 JapanMap の
-// EEW 震源マーカー相当）。全モードで表示し、リアルタイム震度モード以外は半透明にする。
-// 複数 EEW 時は全震源を表示する。
+// EEW（緊急地震速報）の震源（×印・点滅）。全モードで表示し、リアルタイム震度モード以外は
+// 半透明にする。複数 EEW 時は全震源を表示する。
+//
+// **地震情報の震源と同じ仕組みで、実際の深さへ置く**（gl/depthPointLayer.ts）。地表に×印だけを
+// 置いていた頃は、地震情報の震源だけが深さを持ち EEW は地表という非対称があった。
+//
 // 仮定震源要素（単独観測点処理）の震源は控えめに描いて確定震源と区別する
 // （予報円を出さない・カードで M/深さを隠すのと同じ扱いを地図にも与える）。
+// **深さも採らない**——数値が確定していないため、地表に置く（docs/spec/eew-spec.md §5）。
 // 区別は「不透明度を下げる」だけでなく「点滅の振幅を浅くする」ことでも付ける。
-// Marker の不透明度と点滅アニメーションは乗算されるため、下げるだけでは
-// 点滅の谷で消えてしまい「たまに薄く見える」状態になる（下記 CSS クラスの出し分け）。
+// 不透明度と点滅は**乗算される**ため、下げるだけでは点滅の谷で消えてしまい
+// 「たまに薄く見える」状態になる（下記の 2 組の定数）。
 //
-// クリックで震源名・第何報・M・深さ・予想最大震度・警報種別を出す（地震情報の震源マーカーと対）。
-//
-// 震源 id をキーに差分更新する。特に fullOpacity（モード切替由来）だけが変わったときに
-// 全マーカーを作り直すと、EEW発報中にタブを切り替えるだけで震源×印が一瞬消えてしまうため、
-// opacity だけの変化は marker.setOpacity() で済ませ、マーカー自体は作り直さない。
+// クリックで震源名・第何報・M・深さ・予想最大震度・警報種別を出す（地震情報の震源と対）。
+
+const LYR = 'eew-epicenters'
+
+/** ×印の色・大きさ。地震情報の震源（HypocenterDepthGL）と揃える。 */
+const CROSS_COLOR: readonly [number, number, number] = [255 / 255, 34 / 255, 34 / 255]
+const CROSS_SIZE_PX = 32
+/** 震央（地表）の印。震源より控えめにして、主役が震源であることを保つ。 */
+const EPICENTER_COLOR: readonly [number, number, number] = [0.62, 0.16, 0.16]
+const EPICENTER_SIZE_PX = 12
+
+/**
+ * ×印の点滅（明側・暗側の不透明度）。周期は `BLINK_PERIOD_MS`。
+ *
+ * 仮定震源要素は振幅を浅くする。不透明度と**乗算される**ため、確定と同じ谷（0.1）を使うと
+ * 倍率と掛かって事実上消えてしまう。「常に見えるが穏やかに明滅する」質感で確定と区別する。
+ */
+export const EEW_BLINK = {
+  confirmed: { high: 1, low: 0.1 },
+  assumed: { high: 0.9, low: 0.45 },
+} as const
 
 /**
  * 仮定震源要素の×印の不透明度倍率。確定震源より控えめにするが、点滅
- * （`eew-blink-assumed`・谷 0.45）と乗算されるため下げすぎない。
+ * （`EEW_BLINK.assumed`・谷 0.45）と乗算されるため下げすぎない。
  * kyoshin モードではこちらが採られる（1 × 0.7）。
  */
 const ASSUMED_OPACITY_RATIO = 0.7
@@ -39,8 +62,8 @@ const DIMMED_OPACITY = 0.4
 
 /**
  * ×印に渡す不透明度。`fullOpacity` は kyoshin モードかどうか（それ以外は半透明）。
- * 点滅アニメーション（`eew-blink` / `eew-blink-assumed`）の opacity と**乗算される**ので、
- * 実際の見え方はこの値そのものではない。積の関係は `EewEpicentersGL.test.ts` が固定している。
+ * 点滅（`EEW_BLINK`）と**乗算される**ので、実際の見え方はこの値そのものではない。
+ * 積の関係は `EewEpicentersGL.test.ts` が固定している。
  *
  * 仮定震源が確定震源より薄いのは**濃い側だけ**。確定は谷が深いため（1 → 0.1／0.4 → 0.04）、
  * **点滅の谷ではどのモードでも仮定の方が濃くなる**（kyoshin 0.315 対 0.1／他 0.158 対 0.04）。
@@ -53,43 +76,60 @@ export function crossOpacity(isAssumed: boolean, fullOpacity: boolean): number {
   return isAssumed ? Math.max(base * ASSUMED_OPACITY_RATIO, ASSUMED_OPACITY_MIN) : base
 }
 
+/**
+ * 震源をレイヤーへ渡す点の並びと、点の添字から震源を引く表を作る。
+ *
+ * 1 つの震源につき「震央（地表の丸・補助）」と「震源（地下の×）」の 2 点を出す。深さが 0 のとき
+ * （ごく浅い・仮定震源要素）は柄の長さが 0 になり、震央の印はレイヤー側の判定で自動的に消える。
+ *
+ * **クリックの引き当てに使うので、点の並びと表の並びは必ず一致させること。**
+ */
+export function buildEpicenterPoints(
+  epicenters: readonly EewEpicenter[],
+  iconScale: number,
+  fullOpacity: boolean,
+): { points: DepthPoint[]; owners: EewEpicenter[] } {
+  const points: DepthPoint[] = []
+  const owners: EewEpicenter[] = []
+  for (const ep of epicenters) {
+    const alpha = crossOpacity(ep.isAssumed, fullOpacity)
+    const blink = ep.isAssumed ? EEW_BLINK.assumed : EEW_BLINK.confirmed
+    // 仮定震源要素は深さを採らない（M・深さを画面から隠すのと同じ扱い）。
+    const depthKm = ep.isAssumed ? 0 : (ep.depth ?? 0)
+    const [lat, lng] = ep.position
+    points.push({
+      lng,
+      lat,
+      depthKm: 0,
+      shape: 'circle',
+      auxiliary: true,
+      color: EPICENTER_COLOR,
+      sizePx: EPICENTER_SIZE_PX * iconScale,
+      alpha,
+      blink,
+    })
+    owners.push(ep)
+    points.push({
+      lng,
+      lat,
+      depthKm,
+      shape: 'cross',
+      stem: true,
+      color: CROSS_COLOR,
+      sizePx: CROSS_SIZE_PX * iconScale,
+      alpha,
+      blink,
+    })
+    owners.push(ep)
+  }
+  return { points, owners }
+}
+
 interface Props {
   epicenters: EewEpicenter[]
   iconScale: number
   /** リアルタイム震度モードのとき不透明、それ以外は半透明（0.4）。 */
   fullOpacity: boolean
-}
-
-// 不透明度はここでは設定しない。element の style.opacity は Marker 自身が
-// （地形に隠れたときの制御のため）毎フレーム上書きするので、Marker のオプションで渡す。
-// style.cssText の丸ごと代入は Marker がポジショニングに使う transform を消してしまうため、
-// 更新時は個別プロパティだけ触る。
-export function updateCrossEl(el: HTMLDivElement, iconScale: number, isAssumed: boolean): void {
-  const s = Math.round(32 * iconScale)
-  el.style.width = `${s}px`
-  el.style.height = `${s}px`
-  el.style.cursor = 'pointer'
-  if (isAssumed) el.title = '震源未確定（単独観測点処理）'
-  else el.removeAttribute('title')
-  // eew-blink クラスで点滅（Leaflet 版 getEpicenterIcon(blink=true) と同じ CSS）。
-  // 仮定震源要素は振幅の浅い eew-blink-assumed を使う（Marker 側の不透明度と乗算されても谷で消えない）。
-  const blinkClass = isAssumed ? 'eew-blink-assumed' : 'eew-blink'
-  // **寸法と点滅クラスが同じなら SVG を作り直さない。** 作り直すと点滅が頭から始まり、続報が
-  // 続く間は止まって見える（→ docs/spec/map-rendering-spec.md §10）。
-  // **SVG の中身が isAssumed / iconScale 以外に依存するようになったら、この比較対象を広げること。**
-  // 例えば線の色や太さを確信度で分けると、width と class が同じままで新しい見た目が反映されない。
-  const svg = el.firstElementChild
-  if (svg && svg.getAttribute('width') === String(s) && svg.getAttribute('class') === blinkClass) return
-  el.innerHTML =
-    `<svg viewBox="0 0 32 32" width="${s}" height="${s}" class="${blinkClass}" xmlns="http://www.w3.org/2000/svg">` +
-    `<line x1="4" y1="4" x2="28" y2="28" stroke="#ff2222" stroke-width="4" stroke-linecap="round"/>` +
-    `<line x1="28" y1="4" x2="4" y2="28" stroke="#ff2222" stroke-width="4" stroke-linecap="round"/></svg>`
-}
-
-function buildCrossEl(iconScale: number, isAssumed: boolean): HTMLDivElement {
-  const el = document.createElement('div')
-  updateCrossEl(el, iconScale, isAssumed)
-  return el
 }
 
 function buildPopupHtml(ep: EewEpicenter): string {
@@ -129,93 +169,97 @@ function buildPopupHtml(ep: EewEpicenter): string {
   )
 }
 
-interface EpicenterEntry {
-  marker: maplibregl.Marker
-  popup: maplibregl.Popup
-  claim: PopupHandle
-  isAssumed: boolean
-}
-
 export function EewEpicentersGL({ epicenters, iconScale, fullOpacity }: Props) {
   const map = useMapGL()
-  const entriesRef = useRef<Map<string, EpicenterEntry>>(new Map())
-  // 最新の fullOpacity を ref で持ち、下の主 effect（fullOpacity を deps に含めない）から
-  // 新規マーカー生成時の初期 opacity 計算に使う。
-  const fullOpacityRef = useRef(fullOpacity)
-  fullOpacityRef.current = fullOpacity
+  const layerRef = useRef<DepthPointLayer | null>(null)
+  // 点の添字から震源 id を引く表。レイヤー登録は map の寿命で 1 回だけなので、クロージャに
+  // 古い値を閉じ込めないよう ref を経由する。
+  const ownerIdsRef = useRef<string[]>([])
+  // id からいまの震源を引く表。**吹き出しの中身は id 経由で引く。**
+  // 「最後に引き当てたもの」を覚えて使うと、`refreshMs` のような後から呼び直す経路が入ったとき、
+  // 別の震源の内容を出す穴になる（いまは呼び直しが無いので到達しないだけ）。
+  const byIdRef = useRef<Map<string, EewEpicenter>>(new Map())
 
-  const opacityFor = (isAssumed: boolean): string =>
-    String(crossOpacity(isAssumed, fullOpacityRef.current))
-
-  // 震源一覧・アイコン倍率の変化で差分更新する。fullOpacity はここでは扱わない
-  // （下の別 effect で marker.setOpacity() のみ行う）。
   useEffect(() => {
     if (!map) return
-    const entries = entriesRef.current
-    const seen = new Set<string>()
-    for (const ep of epicenters) {
-      seen.add(ep.id)
-      const existing = entries.get(ep.id)
-      // isAssumed（確定/未確定）が変わらない限り、位置・見た目・ポップアップだけ更新して使い回す。
-      if (existing && existing.isAssumed === ep.isAssumed) {
-        const el = existing.marker.getElement() as HTMLDivElement
-        updateCrossEl(el, iconScale, ep.isAssumed)
-        existing.marker.setLngLat([ep.position[1], ep.position[0]])
-        existing.marker.setOpacity(opacityFor(ep.isAssumed))
-        existing.popup.setHTML(buildPopupHtml(ep)).setOffset(Math.round(32 * iconScale) * 0.4)
-        continue
-      }
-      if (existing) {
-        existing.claim.remove()
-        existing.marker.remove()
-        entries.delete(ep.id)
-      }
-      const el = buildCrossEl(iconScale, ep.isAssumed)
-      // maxWidth は既定（240px）だと 1 行に「バッジ・予想最大震度・区分」を並べたとき折り返す
-      // （「予想最大震度 4以上」＋「地震動予報」で溢れる）。区域塗りのポップアップ
-      // （gl/popupRegistry.ts の clickPopup）と同じ 280px に揃える。
-      const popup = new maplibregl.Popup({
-        closeButton: true,
-        offset: Math.round(32 * iconScale) * 0.4,
-        maxWidth: '280px',
-      }).setHTML(buildPopupHtml(ep))
-      // opacityWhenCovered は指定しない。このアプリは terrain（3D地形）を使っておらず
-      // 「覆われたとき」が起きないため効果が無い一方、指定すると Marker がオクルージョン判定の
-      // 経路に入り、ポップアップのクリックが効かなくなる（外すと開くことを実測で確認）。
-      const marker = new maplibregl.Marker({ element: el, opacity: opacityFor(ep.isAssumed) })
-        .setLngLat([ep.position[1], ep.position[0]])
-        .setPopup(popup)
-        .addTo(map)
-      const claim = attachMarkerClaim(map, el)
-      entries.set(ep.id, { marker, popup, claim, isAssumed: ep.isAssumed })
-    }
-    for (const [id, entry] of entries) {
-      if (seen.has(id)) continue
-      entry.claim.remove()
-      entry.marker.remove()
-      entries.delete(id)
-    }
-  }, [map, epicenters, iconScale])
+    const layer = createDepthPointLayer(LYR, map)
+    layerRef.current = layer
 
-  // fullOpacity（モード切替由来）だけの変化は setOpacity のみで反映し、マーカーは作り直さない。
-  useEffect(() => {
-    for (const entry of entriesRef.current.values()) {
-      entry.marker.setOpacity(opacityFor(entry.isAssumed))
+    const add = () => {
+      try {
+        if (!map.getLayer(LYR)) addOrderedLayer(map, layer)
+      } catch (err) {
+        log.error('[EewEpicentersGL] custom layer add failed', err)
+      }
     }
-    // opacityFor は fullOpacityRef 経由で最新値を読むだけの純関数的ヘルパーなので deps には不要。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fullOpacity])
+    add()
 
-  useEffect(() => {
-    const entries = entriesRef.current
+    // MAP-1: WebGL context lost/restored 時に MapLibre は custom layer を復元しない。
+    // HypocenterDepthGL / PsWaveGL と同じ手当て。
+    const onRestored = () => {
+      log.warn('[EewEpicentersGL] WebGL context restored, re-adding custom layer')
+      if (map.isStyleLoaded()) add()
+      else map.once('style.load', add)
+    }
+    map.on('webglcontextrestored', onRestored)
+
+    // カスタムレイヤーは queryRenderedFeatures にヒットしないので、判定を自前で渡す。
+    let popup: PopupHandle | null = null
+    try {
+      popup = registerPopupSource(map, {
+        layerId: LYR,
+        priority: 'point',
+        // pick を渡すとき tolPx は使われない（許容範囲はレイヤー側の HIT_PAD_PX）。
+        tolPx: 0,
+        pick: (point, forClick) => {
+          const hit = layerRef.current?.pick(point.x, point.y, forClick)
+          if (hit === 'pending') return 'pending'
+          if (hit == null) return null
+          const id = ownerIdsRef.current[hit]
+          const ep = id ? byIdRef.current.get(id) : undefined
+          if (!ep) return null
+          // 吹き出しの位置は地表（震央）に置く。Popup は LngLat しか受け付けないため、
+          // 地下の × 印とは深さのぶんだけ離れて出る。
+          return {
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [ep.position[1], ep.position[0]] },
+            properties: { id },
+          } as unknown as MapGeoJSONFeature
+        },
+        buildClickHtml: (feature) => {
+          const ep = byIdRef.current.get(String(feature.properties?.id))
+          // 引けないのは、吹き出しを開いたまま EEW が失効したときだけ。空を返すと閉じるボタン
+          // だけの箱が残るので、消えたことを言う。
+          return ep ? buildPopupHtml(ep) : '<div style="font-size:12px;color:#94a3b8">この緊急地震速報は終了しました</div>'
+        },
+      })
+    } catch (err) {
+      log.error('[EewEpicentersGL] popup source registration failed', err)
+    }
+
     return () => {
-      for (const entry of entries.values()) {
-        entry.claim.remove()
-        entry.marker.remove()
-      }
-      entries.clear()
+      popup?.remove()
+      map.off('webglcontextrestored', onRestored)
+      map.off('style.load', add)
+      layerRef.current = null
+      if (map.getLayer(LYR)) map.removeLayer(LYR)
     }
   }, [map])
+
+  useEffect(() => {
+    const { points, owners } = buildEpicenterPoints(epicenters, iconScale, fullOpacity)
+    ownerIdsRef.current = owners.map((ep) => ep.id)
+    byIdRef.current = new Map(epicenters.map((ep) => [ep.id, ep]))
+    // **`fullOpacity` だけの変化でも作り直す。** 旧実装（DOM マーカー）はこれを避けていたが、
+    // 理由は「作り直すと×印が一瞬消え、CSS の点滅が頭から始まる」ことだった。どちらもこの実装には
+    // 当てはまらない——点は数個で作り直しは頂点バッファ 100 バイト程度の差し替えに過ぎず、
+    // 点滅の位相は全点共通の時計から決まるので作り直しの影響を受けない。
+    layerRef.current?.setPoints(points)
+    // **`map` を依存に含めること。** レイヤーを作るのは別の effect（`[map]`）で、地図の生成は
+    // 非同期（`load` を待つ）。ページを開いた時点で既に EEW が出ていると、この効果が先に
+    // 走って `layerRef.current` が null のまま素通りし、**後からレイヤーができても点が入らない**。
+    // 続報が来れば自己回復するが、最終報しか無ければ震源が永久に描かれない。
+  }, [map, epicenters, iconScale, fullOpacity])
 
   return null
 }

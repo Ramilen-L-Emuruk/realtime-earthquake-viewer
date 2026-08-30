@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import { ringVertex } from './psWaveRing'
+import { haversineKm } from '../../../utils/geo'
 import {
   boundsContains,
   boundsForLiveFollowTuple,
@@ -92,6 +94,16 @@ describe('boundsFromPositionsTuple', () => {
   })
 })
 
+/**
+ * 半径 km を南北の度へ。**実装と同じ測地の解き方で出す**（gl/psWaveRing.ts）。
+ * 「緯度 1 度 = 111.32km」で書くと、それは R=6378km 相当で距離計算（R=6371）と 0.11% ずれる。
+ */
+const latDegForKm = (lat: number, lng: number, km: number) => {
+  const [, north] = ringVertex(lng, lat, km, 0)
+  const [, south] = ringVertex(lng, lat, km, Math.PI)
+  return (north - south) / 2
+}
+
 describe('boundsFromEewCircles', () => {
   it('円が無ければ null', () => {
     expect(boundsFromEewCircles([])).toBeNull()
@@ -138,7 +150,7 @@ describe('boundsFromEewCircles', () => {
       { lat: 37, lng: 141, pRadius: 30, sRadius: 0, depth: 10, magnitude: 4.0 },
     ]
     const bounds = boundsFromEewCircles(circles)!
-    expect((bounds[3] - bounds[1]) / 2).toBeCloseTo((30 * 1.2) / 111.32, 2)
+    expect((bounds[3] - bounds[1]) / 2).toBeCloseTo(latDegForKm(37, 141, 30 * 1.2), 2)
   })
 
   it('magnitude 不明なら有感半径クランプを外し引き上限のみ効かせる', () => {
@@ -151,7 +163,7 @@ describe('boundsFromEewCircles', () => {
     const bounds = boundsFromEewCircles(circles)!
 
     // Assert: 引き上限の半径まで（それ以上は広がらない）・中心は震源のまま
-    expect((bounds[3] - bounds[1]) / 2).toBeCloseTo(EEW_FOLLOW_MAX_RADIUS_KM / 111.32, 5)
+    expect((bounds[3] - bounds[1]) / 2).toBeCloseTo(latDegForKm(37, 141, EEW_FOLLOW_MAX_RADIUS_KM), 5)
     expect((bounds[1] + bounds[3]) / 2).toBeCloseTo(37, 10)
     expect((bounds[0] + bounds[2]) / 2).toBeCloseTo(141, 10)
   })
@@ -168,7 +180,7 @@ describe('boundsFromEewCircles', () => {
     const bounds = boundsFromEewCircles(circles)!
 
     // Assert: 半径は上限ちょうど・箱は震源中心
-    expect((bounds[3] - bounds[1]) / 2).toBeCloseTo(EEW_FOLLOW_MAX_RADIUS_KM / 111.32, 5)
+    expect((bounds[3] - bounds[1]) / 2).toBeCloseTo(latDegForKm(38.1, 142.9, EEW_FOLLOW_MAX_RADIUS_KM), 5)
     expect((bounds[1] + bounds[3]) / 2).toBeCloseTo(38.1, 10)
     expect((bounds[0] + bounds[2]) / 2).toBeCloseTo(142.9, 10)
   })
@@ -214,7 +226,8 @@ describe('boundsFromEewCircles', () => {
     const bounds = boundsFromEewCircles(circles)!
 
     // Assert: 上限そのもの（ルーズ余白は乗らない）
-    const halfSpanKm = ((bounds[3] - bounds[1]) / 2) * 111.32
+    // 度 → km は haversineKm で戻す（実装と同じ球）。
+    const halfSpanKm = haversineKm(bounds[1], 141, bounds[3], 141) / 2
     expect(halfSpanKm).toBeCloseTo(EEW_FOLLOW_MAX_RADIUS_KM, 5)
     expect(halfSpanKm).toBeLessThan(EEW_FOLLOW_MAX_RADIUS_KM * EEW_FOLLOW_LOOSE)
   })

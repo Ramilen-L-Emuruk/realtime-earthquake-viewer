@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { frontSortKeyExpression, mercatorProps } from './gl/screenDepth'
 import type { GeoJSONSource, MapGeoJSONFeature } from 'maplibre-gl'
 import type { Feature, FeatureCollection, Point, Polygon } from 'geojson'
 import { useMapGL } from './mapGLContext'
@@ -60,6 +61,8 @@ function buildLabelFC(regions: RegionAggregate[], iconScale: number): FeatureCol
       iconSizeRatio: ((getScaleRadius(r.scale) + 4) * iconScale) / INTENSITY_ICON_BASE_RADIUS,
       scale: r.scale,
       name: r.name,
+      // 同じ階級のバッジを画面の手前から並べるために持たせる（gl/screenDepth.ts）。
+      ...mercatorProps(r.label[1], r.label[0]),
     },
     geometry: { type: 'Point', coordinates: [r.label[1], r.label[0]] },
   }))
@@ -110,7 +113,9 @@ export function QuakeRegionFillGL({ regionAggregates, iconScale, visible }: Prop
         'icon-size': ['get', 'iconSizeRatio'],
         'icon-allow-overlap': true,
         'icon-ignore-placement': true,
-        'symbol-sort-key': ['get', 'scale'],
+        // 階級が第一・画面の手前らしさが第二の合成キー（gl/screenDepth.ts）。方位が変われば
+        // JapanMapGL が式を差し替える。ここで置くのは方位 0 の初期値。
+        'symbol-sort-key': frontSortKeyExpression('scale', 0),
         visibility: visible ? 'visible' : 'none',
       },
     })

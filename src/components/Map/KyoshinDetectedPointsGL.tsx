@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { frontSortKeyExpression } from './gl/screenDepth'
 import type { GeoJSONSource } from 'maplibre-gl'
 import type { FeatureCollection, Point } from 'geojson'
 import { useMapGL } from './mapGLContext'
@@ -66,7 +67,9 @@ export function KyoshinDetectedPointsGL({ confirmedPoints, unconfirmedPoints, ic
         // symbol-sort-key（震度が高いほど大きい値）で震度の強い点を前面に描く。
         'icon-allow-overlap': true,
         'icon-ignore-placement': true,
-        'symbol-sort-key': ['get', 'index'],
+        // 階級が第一・画面の手前らしさが第二の合成キー（gl/screenDepth.ts）。方位が変われば
+        // JapanMapGL が式を差し替える。ここで置くのは方位 0 の初期値。
+        'symbol-sort-key': frontSortKeyExpression('index', 0),
         visibility: visible ? 'visible' : 'none',
       },
       paint: {

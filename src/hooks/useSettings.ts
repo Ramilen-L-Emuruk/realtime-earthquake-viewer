@@ -21,6 +21,8 @@ export interface AppSettings {
   nankaiCommentaryAlerts: boolean
   uiScale: number           // UI 倍率 (1 = 100%)
   mapIconScale: number      // 地図アイコンの倍率 (1 = 100%、UI 倍率とは独立)
+  // 地図を傾けたとき、震源をどれだけ深く見せるか (1 = 実際の深さ)。水平方向は常に実スケール。
+  hypocenterDepthScale: number
   showBathymetry: boolean   // 背景に海底地形（ESRI Ocean）を表示する
   showActiveFaults: boolean // 地震情報・リアルタイムタブの地図に活断層線を表示する
   activeFaultOpacity: number // 活断層線の不透明度（濃さ、0.05〜1.0）
@@ -67,6 +69,7 @@ const DEFAULTS: AppSettings = {
   nankaiCommentaryAlerts: true,
   uiScale: 1,
   mapIconScale: 1,
+  hypocenterDepthScale: 1,
   showBathymetry: true,
   showActiveFaults: true,
   activeFaultOpacity: 0.4,
@@ -146,6 +149,7 @@ export function sanitize(partial: Partial<AppSettings>): AppSettings {
     nankaiCommentaryAlerts: ensureBool(partial.nankaiCommentaryAlerts, DEFAULTS.nankaiCommentaryAlerts),
     uiScale: clampNumber(partial.uiScale, 0.5, 3, DEFAULTS.uiScale),
     mapIconScale: clampNumber(partial.mapIconScale, 0.5, 3, DEFAULTS.mapIconScale),
+    hypocenterDepthScale: clampNumber(partial.hypocenterDepthScale, 1, 20, DEFAULTS.hypocenterDepthScale),
     showBathymetry: ensureBool(partial.showBathymetry, DEFAULTS.showBathymetry),
     showActiveFaults: ensureBool(partial.showActiveFaults, DEFAULTS.showActiveFaults),
     activeFaultOpacity: clampNumber(partial.activeFaultOpacity, 0.05, 1, DEFAULTS.activeFaultOpacity),

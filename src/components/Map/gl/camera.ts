@@ -1,7 +1,6 @@
 import * as maplibregl from 'maplibre-gl'
 import type { LatLng } from '../../../utils/stationCoords'
 import {
-  boundsContains,
   boundsForLiveFollowTuple,
   boundsFromEewCircles,
   boundsFromPositionsTuple,
@@ -166,7 +165,7 @@ interface UserInteractionState {
 }
 
 // kyoshin モードでは FitToCandidate／FitToDetection／FitToEEW が、津波モードでは TsunamiFitGL が
-// 同じ map の zoomstart/dragstart を監視する。コンポーネントごとに個別のリスナーを張ると同じ
+// 同じ map の zoomstart/dragstart/rotatestart/pitchstart を監視する。コンポーネントごとに個別のリスナーを張ると同じ
 // イベントを N 回処理するだけで実害は無いが、判定ロジックを変える際に N 箇所のマウント順序を
 // 意識する必要が出るため、map ごとに 1 組だけ登録し listeners 経由で購読者へ配る。
 const userInteractionStates = new WeakMap<maplibregl.Map, UserInteractionState>()
@@ -201,6 +200,10 @@ function ensureUserInteractionState(map: maplibregl.Map): UserInteractionState {
   }
   map.on('zoomstart', onInteraction)
   map.on('dragstart', onInteraction)
+  // 傾き・回転もユーザーの意図的な操作なので抑制の対象に含める。ここが漏れると、傾けている
+  // 最中に自動フィットが割り込んで視点を奪う。
+  map.on('rotatestart', onInteraction)
+  map.on('pitchstart', onInteraction)
   userInteractionStates.set(map, state)
   return state
 }
@@ -229,7 +232,7 @@ export function subscribeUserInteraction(
 /** 日本全体にフィットする（本アプリの既定フレーミング・padding 20）。 */
 export function fitJapan(map: maplibregl.Map, durationSec = 1.0): void {
   const duration = durationSec * 1000
-  map.fitBounds(JAPAN_BOUNDS, { padding: 20, duration }, beginProgrammaticFlight(map, duration))
+  map.fitBounds(JAPAN_BOUNDS, { padding: 20, duration, bearing: map.getBearing() }, beginProgrammaticFlight(map, duration))
 }
 
 /** 1 点へ flyTo する（[lat,lng] で受ける）。 */
@@ -244,9 +247,9 @@ export function flyToPoint(map: maplibregl.Map, [lat, lng]: LatLng, zoom = fitMa
  * 着地ズームは `flyToBoundsSnapped` と同じく段階へ切り下げる（＝わずかにズームアウトして余白を残す）。
  * **分数ズームでぴったり寄せてはならない。** ぴったり寄せると目標の縁が画面の縁からちょうど
  * padding の位置に着地するため、同じ余白で「収まっているか」を見る成長フォロー
- * （`mapContainsBounds`）の判定が境界のちょうど上に乗る。境界一致は本来「収まっている」側だが
- * （`boundsContains` は `<=`）、着地ズームを解く経路（`cameraForBounds`）と判定側の逆投影
- * （`unproject`）は別々の浮動小数演算なので、境界では結果が保証されない。
+ * （`mapContainsBounds`）の判定が境界のちょうど上に乗る。境界一致は本来「収まっている」側だが、
+ * 着地ズームを解く経路（`cameraForBounds`）と判定側の投影（`map.project`）は別々の浮動小数演算
+ * なので、境界では結果が保証されない。
  * 2026-08-21 にブラウザで実測したところ、寄り上限にクランプされない広さの点群（5°×4°・5°×5°・
  * 12°×11°）はいずれも余白の余裕が 0px で判定は「はみ出している」に転び、着地直後に必ず 1 段
  * 引き直されていた（寄りすぎた後にちょっと引く、二段のカメラ移動）。切り下げれば同じ 3 ケースで
@@ -278,7 +281,7 @@ export function flyToBounds(
 ): void {
   const { padding = 48, maxZoom = fitMaxZoom(map), durationSec = 1.0 } = opts
   const duration = durationSec * 1000
-  map.fitBounds(bounds, { padding, maxZoom, duration }, beginProgrammaticFlight(map, duration))
+  map.fitBounds(bounds, { padding, maxZoom, duration, bearing: map.getBearing() }, beginProgrammaticFlight(map, duration))
 }
 
 /**
@@ -320,7 +323,7 @@ export function flyToBoundsSnapped(
 ): void {
   const { padding = 48, maxZoom = fitMaxZoom(map), durationSec = 1.0, zoomStep = EEW_ZOOM_SNAP } = opts
   const duration = durationSec * 1000
-  const cam = map.cameraForBounds(bounds, { padding, maxZoom })
+  const cam = map.cameraForBounds(bounds, { padding, maxZoom, bearing: map.getBearing() })
   if (!cam || cam.zoom == null) {
     // cameraForBounds が算出不可なときは通常 fitBounds にフォールバック（分数ズーム）。
     // 実測: 算出を諦めるのは padding が地図ペインの実寸を超えたときだけ（MapLibre は判定用の
@@ -336,7 +339,7 @@ export function flyToBoundsSnapped(
         { padding, maxZoom, paneWidth: container.clientWidth, paneHeight: container.clientHeight },
       )
     })
-    map.fitBounds(bounds, { padding, maxZoom, duration }, beginProgrammaticFlight(map, duration))
+    map.fitBounds(bounds, { padding, maxZoom, duration, bearing: map.getBearing() }, beginProgrammaticFlight(map, duration))
     return
   }
   map.flyTo({ center: cam.center, zoom: snapZoomDown(cam.zoom, zoomStep), duration }, beginProgrammaticFlight(map, duration))
@@ -375,7 +378,7 @@ export function refitDeltaForBounds(
   opts: { padding?: number; maxZoom?: number; zoomStep?: number } = {},
 ): RefitDelta | null {
   const { padding = 48, maxZoom = fitMaxZoom(map), zoomStep = EEW_ZOOM_SNAP } = opts
-  const cam = map.cameraForBounds(bounds, { padding, maxZoom })
+  const cam = map.cameraForBounds(bounds, { padding, maxZoom, bearing: map.getBearing() })
   if (!cam || !Number.isFinite(cam.zoom) || !cam.center) return null
   // ペインの実寸が取れない（レイアウト前・非表示）間は判定材料が揃わないので測らない。
   // ズームの利得も cameraForBounds がコンテナ寸法から逆算した値なので、片方だけ信じる根拠が無い。
@@ -424,51 +427,77 @@ export function boundsForLiveFollow(
 }
 
 /**
- * 現在の表示範囲が target bounds を完全に含むか（成長フォローの「収まっているか」判定）。
+ * 目標の矩形が地図の画に収まっているか。`marginPx` を渡すと、画面の縁からその幅だけ内側に
+ * 入っていることを求める（バッジが縁で切れて見える前に判定を落とすため）。
  *
- * `marginPx` を渡すと、画面の縁からその幅だけ内側に入っていることを要求する。バッジで描く目標
- * （揺れ検知点）では、点が縁のちょうど上にあると丸が半分切れた状態で「収まっている」と判定されて
- * しまうため（2026-07-17 大隅半島東方沖の再生で実際に最上段のバッジが切れていた）。
- * 渡す値はフィットの padding に合わせること——フィット後は必ず padding ぶん内側に入るので、
- * 同じ値なら「寄り直した直後に再び収まっていないと判定される」往復が起きない。
+ * **判定は画面座標で行う。** 目標の四隅を投影し、すべてが余白の内側にあるかを見る。
+ * 地理座標の矩形どうしで比べてはならない——地図が回転していると、視野を軸並行の矩形で包んだ
+ * ものは実際の視野より必ず大きくなり（45 度で約 1.41 倍）、**画面からはみ出しているものを
+ * 「収まっている」と誤判定する**。EEW の成長フォロー（`CameraFollowsGL`）は「収まっていれば
+ * 何もしない」だけで収め直しの経路を持たないため、ここが甘いと回転した地図で追従が黙って止まる。
+ * 画面座標で見れば、回転にも傾きにも自動的に追従する。
  *
- * 目標が円や区域塗り（EEW 追従）の場合は縁に接していても切れて見えないため、既定の 0 で使う。
+ * 余白がペインに対して大きすぎると（パネルを広げて地図が細くなった状態）判定領域が反転して
+ * 常に「収まっていない」になり、毎秒フィットが走る。短辺の 2 割を上限に切り詰めて防ぐ。
+ *
+ * **地球の裏側は「収まっていない」として扱う**（`isBehindGlobe`）。球で描いているとき
+ * `map.project()` は裏側の点にも画面内の座標を返すため、これが無いと見えていないものを
+ * 「収まっている」と誤判定する。
  */
+/**
+ * その地点が地球の裏側（見えない面）にあるか。
+ *
+ * 画面座標は呼び出し側が投影済みのものを渡す（同じ点を二度投影しない）。
+ *
+ * 球で描いているとき、`map.project()` は**裏側の点にも画面内の有限座標を返す**
+ * （実測: zoom 2・中心 138E36N で南大西洋 (-40, -20) が画面中央付近の (500, 411) に落ちる）。
+ * MapLibre は可視面かどうかを直接答える API を持たないので、投影して戻す。`unproject` は
+ * その画面位置にある**手前の面**の座標を返すため、裏側の点は元の緯度経度から大きく外れる
+ * （同じ実測で 176 度ずれる）。手前の点は誤差 0 で戻る。
+ *
+ * 平面（Mercator）投影では常に誤差 0 で戻るため、この判定は何も弾かない。
+ */
+function isBehindGlobe(map: maplibregl.Map, lngLat: [number, number], screen: maplibregl.Point): boolean {
+  const back = map.unproject(screen)
+  // 1 度は最も近い実測ずれ（20 度）の 1/20 で、浮動小数の誤差（実測 0 度）からは十分離れている。
+  return Math.abs(back.lng - lngLat[0]) > 1 || Math.abs(back.lat - lngLat[1]) > 1
+}
+
 export function mapContainsBounds(
   map: maplibregl.Map,
   target: maplibregl.LngLatBounds,
   marginPx = 0,
 ): boolean {
-  const view = viewBoundsTuple(map, marginPx)
-  return boundsContains(view, [
-    target.getWest(),
-    target.getSouth(),
-    target.getEast(),
-    target.getNorth(),
-  ])
-}
-
-/**
- * 判定に使う表示範囲。`marginPx` が 0 なら `getBounds()` そのまま、正なら画面四隅から
- * その幅だけ内側の点を逆投影して縮めた範囲を返す。
- *
- * 余白がペインに対して大きすぎると（パネルを広げて地図が細くなった状態）内側の範囲が反転して
- * 常に「収まっていない」になり、毎秒フィットが走る。短辺の 2 割を上限に切り詰めて防ぐ。
- */
-function viewBoundsTuple(map: maplibregl.Map, marginPx: number): BoundsTuple {
   const container = map.getContainer()
   const width = container.clientWidth
   const height = container.clientHeight
-  // ペインの実寸が取れない（レイアウト前・非表示）間は内側へ詰めない。詰めると範囲が 1 点へ潰れて
-  // 何を渡しても「収まっていない」になり、毎秒フィットが走る（`refitDeltaForBounds` が同じ条件で
-  // 判定を見送るのと同じ考え方で、判定材料が揃わないときは動かさない側に倒す）。
-  if (marginPx <= 0 || !(Math.min(width, height) > 0)) {
-    const view = map.getBounds()
-    return [view.getWest(), view.getSouth(), view.getEast(), view.getNorth()]
+  // ペインの実寸が取れない（レイアウト前・非表示）間は「収まっている」に倒す。判定材料が揃わない
+  // ときは動かさない側へ倒す方針（`refitDeltaForBounds` が同じ条件で見送るのと揃えている）。
+  if (!(Math.min(width, height) > 0)) return true
+  const margin = marginPx > 0 ? Math.min(marginPx, Math.floor(Math.min(width, height) * 0.2)) : 0
+  const west = target.getWest()
+  const south = target.getSouth()
+  const east = target.getEast()
+  const north = target.getNorth()
+  const corners: [number, number][] = [
+    [west, south],
+    [east, south],
+    [west, north],
+    [east, north],
+  ]
+  for (const lngLat of corners) {
+    const p = map.project(lngLat)
+    // 目標が画面の外（遠方）にあっても投影は有限値を返す。`maxPitch: 60` の上限で実測すると、
+    // 緯度 89.9 度（北極近く）でも y = -143 という有限値で、遠いほど単調に小さくなるだけ。
+    // つまり画面外は下の範囲チェックで正しく弾かれる。この有限判定は NaN が紛れ込んだ場合の
+    // 防御として置いてある。**`maxPitch` を上げて地面がカメラの背後へ回る領域まで許すなら、
+    // 符号が反転した有限値がたまたま範囲内へ入る経路が生まれる。そのときはここを見直すこと。**
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return false
+    if (p.x < margin || p.x > width - margin) return false
+    if (p.y < margin || p.y > height - margin) return false
+    // 画面内の座標を返していても、球の裏側なら見えていない。
+    if (isBehindGlobe(map, lngLat, p)) return false
   }
-  const margin = Math.min(marginPx, Math.floor(Math.min(width, height) * 0.2))
-  const nw = map.unproject([margin, margin])
-  const se = map.unproject([width - margin, height - margin])
-  return [nw.lng, se.lat, se.lng, nw.lat]
+  return true
 }
 
