@@ -40,10 +40,22 @@ export interface DepthPoint {
    * 真上から見たとき、深さが浅いとき、誇張率を下げたときのいずれでも同じ条件で消える。
    */
   auxiliary?: boolean
+  /** 不透明度（既定 1）。点滅と**掛け合わさる**。 */
+  alpha?: number
+  /**
+   * 点滅させるか。`high` と `low` の 2 値を交互に出す矩形の明滅で、周期は全点で共通
+   * （`BLINK_PERIOD_MS`）。**位相も全点で揃う**——ばらばらに明滅すると数が増えたとき騒がしい。
+   *
+   * **判定（クリック）は明滅を見ない。** 暗い側の位相でも掴めないと、狙って押せない。
+   */
+  blink?: { high: number; low: number }
 }
 
 /** Web Mercator の赤道全周（m）。gl/viewSpan.ts と同じ値。 */
 const EARTH_CIRCUMFERENCE_M = 40075016.686
+
+/** 点滅の周期（ms）。明と暗が半分ずつ。 */
+export const BLINK_PERIOD_MS = 1200
 
 /**
  * 緯度経度と深さを、頂点バッファに詰める 3 つ組へ。
@@ -101,6 +113,8 @@ uniform float u_exaggeration;
 uniform float u_nearZ;
 uniform float u_invRange;
 uniform float u_slab;
+// 点滅の位相。1 が明、0 が暗。**全点で共通**（位相が揃っていないと数が増えたとき騒がしい）。
+uniform float u_blinkPhase;
 
 const float MERC_PI = 3.141592653589793;
 const float EARTH_CIRCUMFERENCE_M = 40075016.686;
@@ -161,15 +175,20 @@ in vec3 a_color;
 in float a_size;
 in float a_shape;
 in float a_aux;
+// 明滅の明側・暗側の不透明度。点ごとの不透明度は CPU 側で掛け込んである。
+in float a_alphaHi;
+in float a_alphaLo;
 uniform float u_hideAux;
 uniform float u_dpr;
 out vec3 v_color;
 out float v_shape;
+out float v_alpha;
 void main() {
   gl_Position = projectDepthPoint(a_pos);
   gl_PointSize = a_size * u_dpr;
   v_color = a_color;
   v_shape = a_shape;
+  v_alpha = mix(a_alphaLo, a_alphaHi, u_blinkPhase);
   // 補助の点は、柄が潰れる状況では描かない（サイズ 0 でラスタライズされなくなる）。
   if (a_aux > 0.5 && u_hideAux > 0.5) gl_PointSize = 0.0;
 }`
@@ -184,6 +203,7 @@ const FRAG_SRC = `#version 300 es
 precision highp float;
 in vec3 v_color;
 in float v_shape;
+in float v_alpha;
 out vec4 fragColor;
 void main() {
   vec2 p = gl_PointCoord - 0.5;
@@ -198,6 +218,7 @@ void main() {
     a = 1.0 - smoothstep(0.10 - w, 0.10 + w, arm);
     a *= 1.0 - smoothstep(0.42, 0.48, length(p));
   }
+  a *= v_alpha;
   if (a <= 0.0) discard;
   fragColor = vec4(v_color * a, a); // premultiplied
 }`
@@ -244,24 +265,33 @@ const STEM_ALPHA = 0.55
 const LINE_VERT_BODY = `
 in vec3 a_pos;
 in vec3 a_color;
+in float a_alphaHi;
+in float a_alphaLo;
 out vec3 v_color;
+out float v_alpha;
 void main() {
   gl_Position = projectDepthPoint(a_pos);
   v_color = a_color;
+  // 柄は点と同じ明滅に乗せる。別々に動かすと、繋がって見えない。
+  v_alpha = mix(a_alphaLo, a_alphaHi, u_blinkPhase);
 }`
 
 const LINE_FRAG_SRC = `#version 300 es
 precision highp float;
 in vec3 v_color;
+in float v_alpha;
 out vec4 fragColor;
-void main() { fragColor = vec4(v_color * STEM_ALPHA, STEM_ALPHA); } // premultiplied
+void main() {
+  float a = STEM_ALPHA * v_alpha;
+  fragColor = vec4(v_color * a, a); // premultiplied
+}
 `.replace(/STEM_ALPHA/g, STEM_ALPHA.toFixed(2))
 
-/** 柄 1 本あたりの float 数（pos 3 + color 3）× 2 頂点。 */
-const LINE_STRIDE_FLOATS = 6
+/** 柄 1 本あたりの float 数（pos 3 + color 3 + 明滅 2）× 2 頂点。 */
+const LINE_STRIDE_FLOATS = 8
 
-/** 1 点あたりの float 数（pos 3 + color 3 + size 1 + id 1 + shape 1 + aux 1）。 */
-const STRIDE_FLOATS = 10
+/** 1 点あたりの float 数（pos 3 + color 3 + size 1 + id 1 + shape 1 + aux 1 + 明滅 2）。 */
+const STRIDE_FLOATS = 12
 const STRIDE_BYTES = STRIDE_FLOATS * 4
 
 /** 点バッファの並び（属性名・要素数・バイト位置）。表示用と判定用が同じバッファを共有する。 */
@@ -272,18 +302,97 @@ const POINT_LAYOUT = [
   ['a_id', 1, 28],
   ['a_shape', 1, 32],
   ['a_aux', 1, 36],
+  ['a_alphaHi', 1, 40],
+  ['a_alphaLo', 1, 44],
 ] as const
 
 /** 柄バッファの並び。 */
 const LINE_LAYOUT = [
   ['a_pos', 3, 0],
   ['a_color', 3, 12],
+  ['a_alphaHi', 1, 24],
+  ['a_alphaLo', 1, 28],
 ] as const
 
 // 各プログラムが使う属性。**並び順がロケーション番号になる**（gl/projectionProgram.ts）。
-const DISPLAY_ATTRIBS = ['a_pos', 'a_color', 'a_size', 'a_shape', 'a_aux'] as const
+// **判定用は明滅を持たない。** 暗い側の位相でも掴めないと、狙って押せない。
+const DISPLAY_ATTRIBS = ['a_pos', 'a_color', 'a_size', 'a_shape', 'a_aux', 'a_alphaHi', 'a_alphaLo'] as const
 const PICK_ATTRIBS = ['a_pos', 'a_size', 'a_id', 'a_aux'] as const
-const LINE_ATTRIBS = ['a_pos', 'a_color'] as const
+const LINE_ATTRIBS = ['a_pos', 'a_color', 'a_alphaHi', 'a_alphaLo'] as const
+
+/**
+ * 点の「明側・暗側」の不透明度。点ごとの不透明度と明滅を掛け合わせて 1 組にする。
+ *
+ * **ここで掛けておくことで、シェーダー側は 2 値を選ぶだけで済む。** 不透明度と明滅が
+ * 掛け合わさるという関係が 1 箇所に閉じ、片方だけ変えて谷で消える事故を防げる。
+ */
+export function alphaPair(p: Pick<DepthPoint, 'alpha' | 'blink'>): [number, number] {
+  const base = p.alpha ?? 1
+  if (!p.blink) return [base, base]
+  return [base * p.blink.high, base * p.blink.low]
+}
+
+/**
+ * いまの点滅の位相（1 が明、0 が暗）。矩形の明滅で、周期の前半が明。
+ *
+ * **全点で共通の時計から決める。** 点ごとに位相を持たせるとばらばらに明滅して騒がしい。
+ */
+export function blinkPhaseAt(nowMs: number): number {
+  return nowMs % BLINK_PERIOD_MS < BLINK_PERIOD_MS / 2 ? 1 : 0
+}
+
+/**
+ * 点滅のための再描画予約。
+ *
+ * MapLibre は変化が無ければ描き直さないので、何もしないと位相が切り替わらず点滅が止まる
+ * （CSS アニメーションと違い自走しない）。かといって毎フレーム要求すると、**1 秒に 2 回しか
+ * 変わらない値のために 60fps で回し続ける**ことになる。次の切り替わりまでの残り時間だけ待つ。
+ *
+ * 描画のたびに `schedule()` が呼ばれるので、**予約は 1 本だけに保つ**。張り直すと、カメラ操作で
+ * 描画が増えた分だけ予約も増え、同じ瞬間に何本もの再描画が重なる。
+ */
+export interface BlinkScheduler {
+  /** 点滅する点があるかを伝える。無くなれば予約は止まる。 */
+  setBlinking(value: boolean): void
+  /** 次の切り替わりへ予約する（既に予約済み、または点滅が無ければ何もしない）。 */
+  schedule(): void
+  /** 予約を落とす。**レイヤーを外すときに必ず呼ぶ**（残すと消えた後も再描画を起こす）。 */
+  dispose(): void
+}
+
+export function createBlinkScheduler(
+  triggerRepaint: () => void,
+  now: () => number = () => performance.now(),
+): BlinkScheduler {
+  let blinking = false
+  // `setTimeout` の戻り値の型はブラウザ（number）と node（Timeout）で違う。ここでは中身を見ず
+  // `clearTimeout` へ渡すだけなので、環境をまたいで通る形にしておく。
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const half = BLINK_PERIOD_MS / 2
+  return {
+    setBlinking(value) {
+      blinking = value
+    },
+    schedule() {
+      if (!blinking || timer !== undefined) return
+      // `globalThis` を通すのは、この部品だけをブラウザ環境を立てずに単体テストできるようにするため
+      // （`window.` だと node の実行環境で落ちる）。
+      timer = globalThis.setTimeout(
+        () => {
+          timer = undefined
+          // 予約してから点滅が無くなっていることがある。**発火時にもう一度見る。**
+          if (blinking) triggerRepaint()
+        },
+        half - (now() % half),
+      )
+    },
+    dispose() {
+      globalThis.clearTimeout(timer)
+      timer = undefined
+      blinking = false
+    },
+  }
+}
 
 /** 判定用に点を太らせる量（CSS px）。小さい点でも狙えるようにする。 */
 const HIT_PAD_PX = 6
@@ -408,7 +517,7 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
       `#version 300 es\n${prelude}\n${define}\n${SHARED_VERT}\n${VERT_BODY}`,
     fragmentSource: FRAG_SRC,
     attributes: DISPLAY_ATTRIBS,
-    uniforms: ['u_exaggeration', 'u_dpr', ...DEPTH_UNIFORMS, 'u_hideAux'] as const,
+    uniforms: ['u_exaggeration', 'u_dpr', ...DEPTH_UNIFORMS, 'u_hideAux', 'u_blinkPhase'] as const,
   })
   const pickCache = createProjectionProgramCache({
     label: `depthPointLayer:${id}:pick`,
@@ -424,7 +533,7 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
       `#version 300 es\n${prelude}\n${define}\n${SHARED_VERT}\n${LINE_VERT_BODY}`,
     fragmentSource: LINE_FRAG_SRC,
     attributes: LINE_ATTRIBS,
-    uniforms: ['u_exaggeration', ...DEPTH_UNIFORMS] as const,
+    uniforms: ['u_exaggeration', ...DEPTH_UNIFORMS, 'u_blinkPhase'] as const,
   })
   let vao: WebGLVertexArrayObject | null = null
   let pickVao: WebGLVertexArrayObject | null = null
@@ -436,6 +545,7 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
   let warnedDisabled = false
   let warnedFbo = false
   let warnedPointLimit = false
+  const blink = createBlinkScheduler(() => map.triggerRepaint())
   let maxDepthKm = 0
   let lineVao: WebGLVertexArrayObject | null = null
   let lineBuffer: WebGLBuffer | null = null
@@ -610,6 +720,7 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
       const mpp = metersPerPixelAt(map.getCenter().lat, map.getZoom())
       const depthPx = ((maxDepthKm * 1000) / mpp) * exaggeration
       const slab = depthSlabRange(args.nearZ, args.farZ, depthPx)
+      const phase = blinkPhaseAt(performance.now())
       // 柄が画面上でどれだけの長さになるか。**傾き・深さ・誇張率のどれが小さくても短くなる**ので、
       // ここ 1 箇所で「重なって潰れるか」を判定できる（透視は無視した近似で、判定には足りる）。
       const hideAux = stemScreenLengthPx(maxDepthKm, exaggeration, mpp, map.getPitch()) < MIN_STEM_PX
@@ -637,6 +748,7 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
         applyProjectionUniforms(gl, line.u, args)
         gl.uniform1f(line.u.u_exaggeration, exaggeration)
+        gl.uniform1f(line.u.u_blinkPhase, phase)
         applyDepthSlab(gl, line.u, slab)
         gl.drawArrays(gl.LINES, 0, lineVertexCount)
         gl.bindVertexArray(null)
@@ -652,9 +764,15 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
       gl.uniform1f(u.u_dpr, dpr)
       applyDepthSlab(gl, u, slab)
       gl.uniform1f(u.u_hideAux, hideAux ? 1 : 0)
+      gl.uniform1f(u.u_blinkPhase, phase)
       gl.drawArrays(gl.POINTS, 0, count)
       gl.bindVertexArray(null)
       gl.disable(gl.BLEND)
+      // **位相が変わる瞬間にだけ再描画を予約する。** MapLibre は変化が無ければ描き直さないので、
+      // 何もしないと位相が切り替わらず点滅が止まる（CSS アニメーションと違い自走しない）。
+      // 毎フレーム `triggerRepaint()` を呼べば動くが、**1 秒に 2 回しか変わらない値のために
+      // 60fps で回し続けることになる**。次の切り替わりまでの残り時間だけ待つ。
+      blink.schedule()
 
       // --- 判定（予約があるときだけ） ---
       if (wantX < 0) return
@@ -709,6 +827,8 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
 
     onRemove(_m, gl2) {
       const gl = gl2 as WebGL2RenderingContext
+      // 予約を残すと、レイヤーが消えた後も再描画を起こし続ける。
+      blink.dispose()
       displayCache.dispose(gl)
       pickCache.dispose(gl)
       lineCache.dispose(gl)
@@ -740,6 +860,7 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
         )
       }
       maxDepthKm = 0
+      let anyBlink = false
       data = new Float32Array(count * STRIDE_FLOATS)
       for (let i = 0; i < count; i++) {
         const p = points[i]
@@ -755,6 +876,12 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
         data[o + 7] = i
         data[o + 8] = SHAPE_ID[p.shape ?? 'circle']
         data[o + 9] = p.auxiliary ? 1 : 0
+        // **明滅は不透明度に掛け込んでおく。** シェーダー側は 2 値を選ぶだけで済み、
+        // 「不透明度と明滅の積」という関係が 1 箇所に閉じる。
+        const [hi, lo] = alphaPair(p)
+        data[o + 10] = hi
+        data[o + 11] = lo
+        if (hi !== lo) anyBlink = true
         if (p.depthKm > maxDepthKm) maxDepthKm = p.depthKm
       }
       // 柄（地表からその点までの縦線）。stem を立てた点のぶんだけ 2 頂点ずつ作る。
@@ -764,6 +891,7 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
       stems.forEach((p, k) => {
         const top = toMercator(p.lng, p.lat, 0)
         const bottom = toMercator(p.lng, p.lat, p.depthKm)
+        const [hi, lo] = alphaPair(p)
         const base = k * 2 * LINE_STRIDE_FLOATS
         for (const [j, v] of [top, bottom].entries()) {
           const q = base + j * LINE_STRIDE_FLOATS
@@ -773,12 +901,16 @@ export function createDepthPointLayer(id: string, map: MapLibreMap): DepthPointL
           lineData[q + 3] = p.color[0]
           lineData[q + 4] = p.color[1]
           lineData[q + 5] = p.color[2]
+          lineData[q + 6] = hi
+          lineData[q + 7] = lo
         }
       })
+      blink.setBlinking(anyBlink)
       dirty = true
       // 判定のキャッシュは点が変わった時点で無効。
       invalidatePick()
       map.triggerRepaint()
+      blink.schedule()
     },
 
     setExaggeration(value) {

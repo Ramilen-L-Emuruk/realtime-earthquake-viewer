@@ -245,12 +245,16 @@ standard 版では `eewMaxLpgmClass` が常に 0 になり震度のみでレベ�
 - **カードで M・深さを隠す** — `src/components/RealtimeTab/index.tsx` の EEW カード内表示条件
 - **震度・長周期階級を 0 扱い** — `src/utils/eew.ts` の `eewMaxScale` / `eewMaxLpgmClass`
 - **地図の震源×印を控えめに描く** — `src/hooks/useEewLayerData.ts` で `EewEpicenter.isAssumed` フラグ生成 →
-  `src/components/Map/EewEpicentersGL.tsx` が不透明度（`crossOpacity`）と点滅の振幅（`src/index.css` の
-  `eew-blink-assumed`・0.9 ↔ 0.45。確定震源は `eew-blink` で 1 ↔ 0.1）の両方を弱める。
+  `src/components/Map/EewEpicentersGL.tsx` が不透明度（`crossOpacity`）と点滅の振幅（`EEW_BLINK.assumed`・
+  0.9 ↔ 0.45。確定震源は `EEW_BLINK.confirmed` で 1 ↔ 0.1）の両方を弱める。
   **不透明度だけで弱めない**のは、この 2 つが乗算されるため（[`map-rendering-spec.md`](map-rendering-spec.md)
-  §10）。下げるだけでは点滅の谷で×印が消える。引き換えに、**仮定が確定より薄いのは濃い側だけ**になり、
+  §16）。下げるだけでは点滅の谷で×印が消える。引き換えに、**仮定が確定より薄いのは濃い側だけ**になり、
   点滅の谷ではどのモードでも仮定の方が濃くなる（確定の方が谷が深いため）。積の下限は
   `src/components/Map/EewEpicentersGL.test.ts` が固定している
+- **地図の震源に深さを採らない** — 同じく `EewEpicentersGL.tsx`。確定震源は電文の深さへ置くが、
+  仮定震源要素は地表（深さ 0）に置く。M・深さを画面から隠すのと同じ扱いで、**採ると確定していない
+  数値を立体で断定して見せることになる**。深さ 0 では柄の長さが 0 になり、震央の印もレイヤー側の
+  判定で自動的に消える（[`map-rendering-spec.md`](map-rendering-spec.md) §16）
 - **検知エンジンの EEW 連動緩和判定** — `src/App.tsx` の `hasActiveNonAssumedEEW`
 - **区域への S 波到達推定の震源に採らない** — `src/hooks/useEewLayerData.ts` の `eewAreaFills` が
   `EewAreaFill.origin` を作るときに除外する。M・深さが仮定値（実データでは M1・深さ 10km 固定）なので

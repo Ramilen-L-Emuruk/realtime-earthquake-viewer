@@ -1,7 +1,7 @@
 // 深さを持つ点の座標変換・深度の帯・柄の長さを固定する。
 // 描画そのものは WebGL なのでここでは触れない（ブラウザ確認の担当）。
 // 実装の詳細と背景は docs/spec/map-rendering-spec.md §16「深さを持つ点」。
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   toMercator,
   cosLatFromMercatorY,
@@ -11,6 +11,9 @@ import {
   depthSlabRange,
   depthSlabNdc,
   stemScreenLengthPx,
+  createBlinkScheduler,
+  alphaPair,
+  BLINK_PERIOD_MS,
 } from './depthPointLayer'
 
 describe('toMercator', () => {
@@ -186,5 +189,106 @@ describe('metersPerPixelAt', () => {
 
   it('高緯度ほど小さい（Mercator の縮尺）', () => {
     expect(metersPerPixelAt(60, 8)).toBeLessThan(metersPerPixelAt(10, 8))
+  })
+})
+
+
+describe('alphaPair', () => {
+  // 点ごとの不透明度と点滅は**掛け合わさる**。片方だけ動かすと点滅の谷で消えるので、
+  // 掛け算はここ 1 箇所に閉じている。
+  it('点滅が無ければ明も暗も同じ値', () => {
+    expect(alphaPair({ alpha: 0.4 })).toEqual([0.4, 0.4])
+  })
+
+  it('不透明度を省くと 1 として扱う', () => {
+    expect(alphaPair({})).toEqual([1, 1])
+  })
+
+  it('不透明度と点滅を掛け合わせる', () => {
+    expect(alphaPair({ alpha: 0.4, blink: { high: 1, low: 0.1 } })).toEqual([0.4, 0.04000000000000001])
+  })
+})
+
+describe('createBlinkScheduler', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  const half = BLINK_PERIOD_MS / 2
+
+  it('点滅する点が無ければ予約しない（対照）', () => {
+    const repaint = vi.fn()
+    const s = createBlinkScheduler(repaint, () => 0)
+    s.schedule()
+    vi.advanceTimersByTime(BLINK_PERIOD_MS * 3)
+    expect(repaint).not.toHaveBeenCalled()
+  })
+
+  // 正: 位相が変わる瞬間にだけ再描画を要求する。
+  it('次の切り替わりで 1 回だけ再描画を要求する', () => {
+    const repaint = vi.fn()
+    let t = 100
+    const s = createBlinkScheduler(repaint, () => t)
+    s.setBlinking(true)
+    s.schedule()
+    vi.advanceTimersByTime(half - 100 - 1)
+    expect(repaint).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(repaint).toHaveBeenCalledTimes(1)
+  })
+
+  // 安全弁: 描画のたびに schedule が呼ばれるので、予約が積み上がってはならない。
+  it('何度呼んでも予約は 1 本（描画のたびに呼ばれる）', () => {
+    const repaint = vi.fn()
+    const s = createBlinkScheduler(repaint, () => 0)
+    s.setBlinking(true)
+    for (let i = 0; i < 50; i++) s.schedule()
+    vi.advanceTimersByTime(BLINK_PERIOD_MS)
+    expect(repaint).toHaveBeenCalledTimes(1)
+  })
+
+  // 安全弁: 予約してから点滅が無くなることがある（EEW が失効して点が消える）。
+  it('予約後に点滅が無くなったら、発火しても再描画を要求しない', () => {
+    const repaint = vi.fn()
+    const s = createBlinkScheduler(repaint, () => 0)
+    s.setBlinking(true)
+    s.schedule()
+    s.setBlinking(false)
+    vi.advanceTimersByTime(BLINK_PERIOD_MS * 3)
+    expect(repaint).not.toHaveBeenCalled()
+  })
+
+  // 安全弁: レイヤーを外した後にタイマーが生き残ると、消えた後も再描画を起こし続ける。
+  it('dispose 後は発火しない', () => {
+    const repaint = vi.fn()
+    const s = createBlinkScheduler(repaint, () => 0)
+    s.setBlinking(true)
+    s.schedule()
+    s.dispose()
+    vi.advanceTimersByTime(BLINK_PERIOD_MS * 3)
+    expect(repaint).not.toHaveBeenCalled()
+  })
+
+  it('dispose 後に schedule を呼んでも予約しない（点滅の記録も落ちている）', () => {
+    const repaint = vi.fn()
+    const s = createBlinkScheduler(repaint, () => 0)
+    s.setBlinking(true)
+    s.dispose()
+    s.schedule()
+    vi.advanceTimersByTime(BLINK_PERIOD_MS * 3)
+    expect(repaint).not.toHaveBeenCalled()
+  })
+
+  it('発火した後は次の切り替わりへ張り直せる', () => {
+    const repaint = vi.fn()
+    let t = 0
+    const s = createBlinkScheduler(repaint, () => t)
+    s.setBlinking(true)
+    s.schedule()
+    vi.advanceTimersByTime(half)
+    t = half
+    expect(repaint).toHaveBeenCalledTimes(1)
+    s.schedule()
+    vi.advanceTimersByTime(half)
+    expect(repaint).toHaveBeenCalledTimes(2)
   })
 })

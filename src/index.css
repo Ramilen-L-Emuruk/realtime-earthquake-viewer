@@ -82,23 +82,3 @@ body {
   animation: tsunami-obs-blink 1.2s step-end infinite;
 }
 
-@keyframes eew-blink {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.1; }
-}
-.eew-blink {
-  animation: eew-blink 1.2s step-end infinite;
-}
-
-/* 仮定震源要素（単独観測点処理）の震源×印。確定震源より控えめに見せるが、
-   このアニメーションは Marker 側の不透明度と乗算されるため、確定と同じ
-   谷（0.1）を使うと倍率と掛かって事実上消えてしまう。振幅を浅くして
-   「常に見えるが穏やかに明滅する」質感で確定と区別する
-   （倍率は EewEpicentersGL.tsx の ASSUMED_OPACITY_RATIO・docs/spec/eew-spec.md §5）。 */
-@keyframes eew-blink-assumed {
-  0%, 100% { opacity: 0.9; }
-  50%       { opacity: 0.45; }
-}
-.eew-blink-assumed {
-  animation: eew-blink-assumed 1.2s step-end infinite;
-}
