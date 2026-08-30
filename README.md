@@ -101,6 +101,7 @@ MIT License
 
 **データ・地図・フォントの出典**:
 - 地図データ: 「気象庁 予報区等 GIS データ（都道府県・地震情報／細分区域・津波予報区）」
+- 震度観測点の座標: 気象庁「震度観測点一覧表」 — データ整備: [iku55 氏による JSON 化](https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1)
 - 長期震源カタログ: 気象庁「地震月報（カタログ編）震源データ」（https://www.data.jma.go.jp/eqev/data/bulletin/hypo.html ）・「震源リスト」（https://www.data.jma.go.jp/eqev/data/daily_map/ ）を加工して作成（いずれも公共データ利用規約 第1.0版）
 - 海底地形: GEBCO; NOAA National Centers for Environmental Information (NCEI)
 - 活断層データ: 「産総研 活断層データベース」（政府標準利用規約 2.0）
