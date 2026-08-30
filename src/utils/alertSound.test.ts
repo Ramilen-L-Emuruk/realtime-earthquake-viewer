@@ -149,6 +149,12 @@ beforeEach(() => {
   sound.setSoundVolume(1)
 })
 
+/**
+ * 震度更新音の段ごとに、その段へ落ちる強震モニタのインデックスを 1 つずつ。
+ * 気象庁の階級（震度2以下 / 3 / 4 / 5弱 / 5強 / 6弱 / 6強 / 7）と 1 対 1 で並ぶ。
+ */
+const KYOSHIN_INDEX_BY_LEVEL = [9, 11, 13, 15, 16, 17, 18, 19] as const
+
 describe('通知音: アタックのノイズを持ち込まない', () => {
   // 正: プチプチの原因だった広帯域ノイズバースト（AudioBufferSourceNode）を
   // どの通知音も作らない。pianoNote / darkPiano / impact が持っていたもの。
@@ -428,14 +434,15 @@ describe('震度更新音: 震度5弱以上で低音が厚くなる', () => {
     expect(subRatio(freqs)).toBeCloseTo(0.20 / 0.40, 5)
   })
 
-  it('安全弁: 段階ごとの音数は変えていない（震度2以下 2 音 → 震度7 7 音）', () => {
-    // 1 音 4 本。音数が変わると段階の勾配（音数・間隔・音量）が崩れる
-    const counts = [9, 11, 13, 15, 16, 17, 19].map(index => {
+  it('安全弁: 段階ごとの音数は変えていない（震度2以下 2 音 → 震度7 8 音）', () => {
+    // 1 音 4 本。音数が変わると段階の勾配（音数・間隔・音量）が崩れる。
+    // 震度4 と 5弱だけが並ぶ（`deep` の有無で分かれる）
+    const counts = KYOSHIN_INDEX_BY_LEVEL.map(index => {
       ctx.reset()
       sound.playKyoshinUpdateSound(index)
       return ctx.oscillators.length / 4
     })
-    expect(counts).toEqual([2, 3, 4, 4, 5, 6, 7])
+    expect(counts).toEqual([2, 3, 4, 4, 5, 6, 7, 8])
   })
 })
 
@@ -549,8 +556,8 @@ describe('通知音: BiquadFilter が無い環境（安全弁）', () => {
     const key = 'createBiquadFilter'
     ;(ctx as unknown as Record<string, unknown>)[key] = undefined
     try {
-      sound.playKyoshinUpdateSound(19)   // 震度7・7 音連打
-      expect(ctx.oscillators).toHaveLength(28)
+      sound.playKyoshinUpdateSound(19)   // 震度7・8 音連打
+      expect(ctx.oscillators).toHaveLength(32)
       expect(ctx.filters).toHaveLength(0)
     } finally {
       delete (ctx as unknown as Record<string, unknown>)[key]
@@ -658,7 +665,7 @@ describe('音量は「系統 × 深刻度」で決まる', () => {
     // （`BASE_GAIN.beep` を 0.40 のつもりで 0.04 と書くと、震度更新音が全段聞こえなくなる）。
     // 現状の実測は 0.040（震度2以下）〜0.341（EEW 特別警報）。
     const all: number[] = ALL_TYPES.map(loudestVoice)
-    for (const index of [9, 11, 13, 15, 16, 17, 19]) {
+    for (const index of KYOSHIN_INDEX_BY_LEVEL) {
       ctx.reset()
       sound.playKyoshinUpdateSound(index)
       all.push(Math.max(...ctx.gains.flatMap(g => g.gain.events.map(e => e.value))))
@@ -676,7 +683,7 @@ describe('音量は「系統 × 深刻度」で決まる', () => {
 
   it('安全弁: 震度更新音は段が上がるほど大きくなる', () => {
     // 音量の勾配が段階の重さを伝える。1 段でも逆転すると、強い揺れが弱く聞こえる
-    const byLevel = [9, 11, 13, 15, 16, 17, 19].map(index => {
+    const byLevel = KYOSHIN_INDEX_BY_LEVEL.map(index => {
       ctx.reset()
       sound.playKyoshinUpdateSound(index)
       return Math.max(...ctx.gains.flatMap(g => g.gain.events.map(e => e.value)))
