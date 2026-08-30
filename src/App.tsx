@@ -15,6 +15,14 @@ import { RealtimeTab } from './components/RealtimeTab'
 import { TsunamiTab } from './components/TsunamiTab'
 import { SettingsTab } from './components/SettingsTab'
 import { TelegramTab } from './components/TelegramTab'
+import { CatalogTab } from './components/CatalogTab'
+import { useHypocenterCatalog } from './hooks/useHypocenterCatalog'
+import {
+  buildCatalogPointCloud, DEPTH_FILTER_MAX_KM, MAGNITUDE_FILTER_RANGE,
+  LATITUDE_FILTER_RANGE, LONGITUDE_FILTER_RANGE,
+  CATALOG_REBUILD_DEBOUNCE_MS, oldestYearOf, withCompleteMagnitudeFloor,
+  type CatalogFilter, type CatalogViewOptions, type CatalogPointCloud,
+} from './utils/hypocenterCatalogView'
 import { SpecialInfoBanner } from './components/SpecialInfoBanner'
 import { ActionChecklist } from './components/ActionChecklist'
 import { useActionChecklist } from './hooks/useActionChecklist'
@@ -786,7 +794,88 @@ export function App() {
   // mapTab から MapMode への写像は kyoshinSubIndices の分岐（PERF-1）でも使うため
   // ここ 1 箇所で導出し、下流はこれを参照する（マッピング重複を避ける）。
   const mapMode: MapMode =
-    mapTab === 'tsunami' ? 'tsunami' : mapTab === 'realtime' ? 'kyoshin' : 'quake'
+    mapTab === 'tsunami' ? 'tsunami'
+      : mapTab === 'realtime' ? 'kyoshin'
+        : mapTab === 'catalog' ? 'catalog'
+          : 'quake'
+
+  // ── 長期震源カタログ（震源カタログタブ） ──────────────────────────────────
+  // **タブを開くまで取りに行かない。** 全期間で 108 ファイル・gzip 12.6MB あり、起動時に
+  // 読むと地震情報の表示まで遅れる。年ごとの取得はローダー側がキャッシュする。
+  const [catalogFilter, setCatalogFilter] = useState<CatalogFilter>(() => {
+    const thisYear = new Date().getFullYear()
+    return {
+      // 初期表示は直近 10 年。マグニチュードの下限は索引が届いた時点でその期間の
+      // 完全性へ合わせ直す（下の効果）。ここでの 2 は索引が来るまでの仮の値。
+      fromYear: thisYear - 9,
+      toYear: thisYear,
+      minMagnitude: MAGNITUDE_FILTER_RANGE.min,
+      maxMagnitude: MAGNITUDE_FILTER_RANGE.max,
+      minDepthKm: 0,
+      maxDepthKm: DEPTH_FILTER_MAX_KM,
+      minLat: LATITUDE_FILTER_RANGE.min,
+      maxLat: LATITUDE_FILTER_RANGE.max,
+      minLng: LONGITUDE_FILTER_RANGE.min,
+      maxLng: LONGITUDE_FILTER_RANGE.max,
+    }
+  })
+  const [catalogView, setCatalogView] = useState<CatalogViewOptions>({ colorBy: 'depth', sizeBy: 'fixed', sizePx: 3 })
+  // **重い側はスライダーが止まってから動かす。** つまみと数値のラベルは元の値で即座に動く。
+  // 遅らせる先は 2 つあり、どちらも止めないと意味がない。
+  //  - 点群の組み立て: 全期間（約 102 万点）で 1 回 16ms（最悪 45ms）＋ GPU 転送 52ms
+  //  - **年ファイルの取得**: つまみを 1919 まで引きずると途中の 100 通りすべてで取得が走る。
+  //    効果の後始末は打ち切りの印を立てるだけで**発行済みの取得は止めない**ため、
+  //    ドラッグ 1 回で収録の全ファイル（33MB）を取りに行くことになる。
+  const settledFilter = useDebouncedValue(catalogFilter, CATALOG_REBUILD_DEBOUNCE_MS)
+  const settledView = useDebouncedValue(catalogView, CATALOG_REBUILD_DEBOUNCE_MS)
+  const catalog = useHypocenterCatalog(settledFilter.fromYear, settledFilter.toYear, mapTab === 'catalog')
+  const catalogIndex = catalog.index
+  // 索引が届いたら、期間を収録範囲へ収め、マグニチュードの下限をその期間の完全性に合わせる。
+  // **収める側も必要。** 年が明けた直後は「今年」がまだ収録されておらず、選択肢に無い値が残る。
+  useEffect(() => {
+    if (!catalogIndex || catalogIndex.years.length === 0) return
+    setCatalogFilter((prev) => {
+      const lo = catalogIndex.years[0]
+      const hi = catalogIndex.years[catalogIndex.years.length - 1]
+      const fromYear = Math.min(Math.max(prev.fromYear, lo), hi)
+      const toYear = Math.min(Math.max(prev.toYear, lo), hi)
+      const next = withCompleteMagnitudeFloor(catalogIndex, prev, { ...prev, fromYear, toYear })
+      if (
+        fromYear === prev.fromYear && toYear === prev.toYear &&
+        next.minMagnitude === prev.minMagnitude && next.maxMagnitude === prev.maxMagnitude
+      ) return prev
+      return next
+    })
+  }, [catalogIndex])
+  // 期間の始まりを変えたら、その期間で網羅されている下限へ合わせ直す。
+  // **手で下げるのは妨げない**（下げたときは注意書きが出る）。合わせ直すのは期間を動かした時だけ。
+  const handleCatalogFilterChange = useCallback((next: CatalogFilter) => {
+    setCatalogFilter((prev) => {
+      if (!catalogIndex) return next
+      // **見るのは期間の最も古い年**（`oldestYearOf`）。「開始」だけを見ると、終了側を古い年へ
+      // 動かしたときに下限が付いてこない。合わせ方は `withCompleteMagnitudeFloor` に集約
+      //（下限が上限を追い越す経路と、手で選んだ下限を残す判断があるため、単に代入してはいけない）。
+      if (oldestYearOf(next) === oldestYearOf(prev)) return next
+      return withCompleteMagnitudeFloor(catalogIndex, prev, next)
+    })
+  }, [catalogIndex])
+  // **タブを離れても点群は捨てない。** 捨てると往復のたびに数十万点を詰め直すことになる
+  // （地図側は visible で隠すだけ）。
+  //
+  // **離れている間は作り直しもしない。** つまみを動かした直後（150ms 以内）に別のタブへ移ると、
+  // 待ちが明けたところで組み立て（最悪 45ms）と GPU 転送（52ms）が走る。移った先が
+  // リアルタイム震度や EEW だと、そこでフレームが飛ぶ。**EEW の自動タブ切替とも重なりうる。**
+  // 最後に組んだものを持ったまま止め、タブへ戻った時に一度だけ追いつかせる。
+  const catalogCloudRef = useRef<CatalogPointCloud | null>(null)
+  const catalogActive = mapTab === 'catalog'
+  const catalogCloud = useMemo(() => {
+    if (!catalogActive) return catalogCloudRef.current
+    const next = catalog.years.length > 0
+      ? buildCatalogPointCloud(catalog.years, settledFilter, settledView)
+      : null
+    catalogCloudRef.current = next
+    return next
+  }, [catalogActive, catalog.years, settledFilter, settledView])
 
   // 津波発表中フラグ（解除済みでない津波情報があるか。Forecast＝若干の海面変動も含む）とバッジ用グレード
   // tsunamiGrade は色分け用のため MajorWarning/Warning/Watch のみ（Forecast は除外）
@@ -854,6 +943,10 @@ export function App() {
       // 移動が追跡を消すため（`requestAutoTab`）、後から見ると常に「追跡なし」になる。
       // 畳むのは移動の後。タブ移動は必ずパネルを開くので、先に畳んでも打ち消される。
       const collapseAfterRevert = specialInfoPanelHoldRef.current === true
+      // **震源カタログを見ている間は既定タブへ戻さない。** アイドル復帰は「離席したら速報へ返す」
+      // ための仕組みだが、カタログは腰を据えて眺めるタブで、見ているだけの時間は操作として
+      // 数えられない。実測では 1 分ほどで画面ごと持っていかれ、点群の探索が成立しなかった。
+      // **EEW・揺れ検知への移動は従来どおり行う**（下の分岐）。進行中の揺れは過去の記録より優先する。
       if (activeEEWsRef.current.size > 0 || kyoshinDetectedRef.current) {
         const hasActiveEew = activeEEWsRef.current.size > 0
         log.info(`[tab] → realtime (アイドル復帰・${hasActiveEew ? 'EEW中' : '揺れ検知中'} idleRevertSec=${settings.idleRevertSec})`)
@@ -864,6 +957,8 @@ export function App() {
         // 重みは張る理由に合わせる（揺れ検知だけのときに EEW 相当を張らない。理由は idleRevertPriority）。
         // 駆動源は `'idleRevert'`。読み上げ追従には譲る保持になる（理由は shouldAcceptAutoTab）。
         forceTab('realtime', idleRevertPriority(hasActiveEew), 'idleRevert')
+      } else if (activeTabRef.current === 'catalog') {
+        log.info(`[tab] 震源カタログのためアイドル復帰を見送り (idleRevertSec=${settings.idleRevertSec})`)
       } else {
         log.info(`[tab] → ${defaultTabRef.current} (アイドル復帰 idleRevertSec=${settings.idleRevertSec})`)
         revertToDefaultTab()
@@ -1209,6 +1304,7 @@ export function App() {
         <div className="relative flex-1 min-h-0">
           <MapView
             mode={mapMode}
+            catalogCloud={catalogCloud}
             quake={mapQuake}
             tsunamis={tsunamis}
             observations={latestTsunamiObservations}
@@ -1329,6 +1425,24 @@ export function App() {
               speechFollowEnabled={settings.voicevoxEnabled}
               /* 自動で見せたときは先頭から見せる（手動選択では位置を保つ） */
               autoShowTick={tsunamiAutoShowTick}
+            />
+          </div>
+          <div className={`${TAB_SCROLLER_CLASS}${activeTab !== 'catalog' ? ' invisible pointer-events-none' : ''}`}>
+            <CatalogTab
+              index={catalog.index}
+              filter={catalogFilter}
+              onFilterChange={handleCatalogFilterChange}
+              view={catalogView}
+              onViewChange={setCatalogView}
+              pointCount={catalogCloud?.columns.count ?? 0}
+              loading={catalog.loading}
+              /* 絞り込みを変えた直後は件数が追いついていない（デバウンスした側で作るため）。
+                 参照が同じなら落ち着いている（`useDebouncedValue` は同じ値なら同じ参照を返す）。 */
+              pending={catalogFilter !== settledFilter || catalogView !== settledView}
+              error={catalog.error}
+              missingYears={catalog.missingYears}
+              requestedYears={catalog.requestedYears}
+              onRetry={catalog.retry}
             />
           </div>
           <div className={`${TAB_SCROLLER_CLASS}${activeTab !== 'telegrams' ? ' invisible pointer-events-none' : ''}`}>
