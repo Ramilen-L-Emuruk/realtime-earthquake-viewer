@@ -797,7 +797,7 @@ ZIP の配布単位は年ごとではない。1919〜1982 年は 4 つのまと�
 
 出典:
 - 気象庁 予報区等 GIS データ: [Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)
-- 観測点座標: [iku55 氏による JSON 化](https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1)
+- 観測点座標: 気象庁 震度観測点一覧表 — データ整備: [iku55 氏による JSON 化](https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1)
 - GEBCO 海底地形: [GEBCO Basemap (NCEI)](https://tiles.arcgis.com/tiles/C8EMgrsFcRFL6LrL/arcgis/rest/services/GEBCO_basemap_NCEI/MapServer)
 - 活断層: 産業技術総合研究所 [活断層データベース](https://gbank.gsj.jp/activefault/)（政府標準利用規約 2.0）
 - 長期震源カタログ: 気象庁 [地震月報（カタログ編）震源データ](https://www.data.jma.go.jp/eqev/data/bulletin/hypo.html)（1919〜2023 年）・[震源リスト](https://www.data.jma.go.jp/eqev/data/daily_map/)（2024 年〜）（いずれも公共データ利用規約 第1.0版・加工して作成）
