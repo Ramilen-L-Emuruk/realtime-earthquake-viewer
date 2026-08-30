@@ -8,17 +8,37 @@ import {
   TAIL_FRAMES,
   type CaptureSeed,
 } from './detectionDiagnostics'
-import type { DetectionEvent } from './kyoshinDetector'
+import { initGates } from './kyoshinDetector'
+import type { ConfirmSnapshot, DetectionEvent } from './kyoshinDetector'
 
 /** 最小の記録種。イベント ID と確信度だけを変えて使う。 */
-function seed(id: string, dataTimeMs: number, confidence = 'likely'): CaptureSeed {
+function seed(
+  id: string,
+  dataTimeMs: number,
+  confidence = 'likely',
+  confirmedBy: ConfirmSnapshot | null = null,
+): CaptureSeed {
   return {
     dataTimeMs,
     siteConfigId: '20260123000000',
     sites: [[35, 139]],
-    event: { id, confidence, lastSize: 3, maxIntensity: 0.5, epicenter: [35, 139], members: [] },
+    event: {
+      id,
+      confidence,
+      lastSize: 3,
+      maxIntensity: 0.5,
+      epicenter: [35, 139],
+      members: [],
+      gates: initGates(),
+    },
+    confirmedBy,
     learned: null,
   }
+}
+
+/** 確定の内訳。`atMs`（確定した時刻）が「どちらを採るか」の比較に使われる。 */
+function snapshot(size: number, atMs = 0): ConfirmSnapshot {
+  return { atMs, size, intensity: 3.0, gates: initGates() }
 }
 
 /** フレームを n 本流す。時刻は 1 秒刻み。 */
@@ -101,6 +121,53 @@ describe('DiagnosticCapture', () => {
     const done = c.takeFinished()
     expect(done[0].event.confidence).toBe('faint') // 開いた瞬間の姿はそのまま
     expect(done[0].reachedConfidence).toBe('confirmed') // 到達した先も分かる
+  })
+
+  // 正: 記録を開いた後に確定へ育っても、その内訳が記録に残る
+  it('開いた後で確定した場合も、確定の内訳を記録に残す', () => {
+    const c = new DiagnosticCapture()
+    const t = feed(c, 0, 5)
+    // 開いた時点は faint で、まだ確定していない
+    c.open(seed('evt-1', t, 'faint'), '1.0.0', 'standard')
+    // 2 フレーム後に確定へ育つ
+    c.open(seed('evt-1', t + 2000, 'confirmed', snapshot(6)), '1.0.0', 'standard')
+    feed(c, t, TAIL_FRAMES)
+    const done = c.takeFinished()
+    expect(done[0].confirmedBy?.size).toBe(6)
+    // 開いた瞬間のイベントの姿は据え置き（reachedConfidence と同じ切り分け）
+    expect(done[0].event.confidence).toBe('faint')
+  })
+
+  // 対照: 確定しなかった記録は内訳を持たない
+  it('確定しなかった記録の confirmedBy は null', () => {
+    const c = new DiagnosticCapture()
+    const t = feed(c, 0, 5)
+    c.open(seed('evt-1', t, 'likely'), '1.0.0', 'standard')
+    c.open(seed('evt-1', t + 2000, 'faint'), '1.0.0', 'standard')
+    feed(c, t, TAIL_FRAMES)
+    expect(c.takeFinished()[0].confirmedBy).toBeNull()
+  })
+
+  // 安全弁: 選ぶ基準は到着順ではなく確定時刻。エンジン側の併合（より早く確定したほうへ
+  // 差し替える）と基準を揃えないと、画面が出している根拠と記録が食い違ったまま固定される
+  it('後から届いた内訳でも、確定が早ければそちらを採る（併合で差し替わる経路）', () => {
+    const c = new DiagnosticCapture()
+    const t = feed(c, 0, 5)
+    c.open(seed('evt-1', t, 'confirmed', snapshot(4, t)), '1.0.0', 'standard')
+    // 併合で「もっと早く確定していた別イベントの内訳」が持ち込まれる
+    c.open(seed('evt-1', t + 2000, 'confirmed', snapshot(9, t - 3000)), '1.0.0', 'standard')
+    feed(c, t, TAIL_FRAMES)
+    expect(c.takeFinished()[0].confirmedBy?.size).toBe(9)
+  })
+
+  // 対照: 確定が遅いほうへは差し替えない（単に後から届いただけでは動かない）
+  it('後から届いた内訳の確定が遅ければ採らない', () => {
+    const c = new DiagnosticCapture()
+    const t = feed(c, 0, 5)
+    c.open(seed('evt-1', t, 'confirmed', snapshot(4, t)), '1.0.0', 'standard')
+    c.open(seed('evt-1', t + 2000, 'confirmed', snapshot(9, t + 2000)), '1.0.0', 'standard')
+    feed(c, t, TAIL_FRAMES)
+    expect(c.takeFinished()[0].confirmedBy?.size).toBe(4)
   })
 
   it('確信度は上がる方向にだけ動かす（保持で下がっても到達点は残る）', () => {
