@@ -1,6 +1,6 @@
 // リアルタイムタブの右パネル。地図エリアは JapanMap が強震モニタ（観測点）と
 // 予報円を描画し、ここでは EEW 情報カード・強震モニタ検知(V2)カード・震度スケール凡例・注記を表示する。
-import { memo, useRef } from 'react'
+import { memo, useRef, useState } from 'react'
 import type { EEWAlert } from '../../types/earthquake'
 import type { DetectionEvent, Confidence } from '../../utils/kyoshinDetector'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
@@ -12,6 +12,7 @@ import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor } from '../..
 import { eewAreas, eewMaxScaleInfo, eewMaxLpgmClass, eewSerial, computeSingleEEWLevel } from '../../utils/eew'
 import { kyoshinIndexToJma, kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
 import { readableTextColor } from '../../utils/contrast'
+import { gateNotes, gateRows, gateShortfall } from '../../utils/detectionGates'
 
 // 凡例は地図と同じ気象庁の震度配色（getIntensityColor）を使う。scale=0 は震度0（灰色）。
 const SCALE_LEGEND: { label: string; scale: number }[] = [
@@ -337,6 +338,78 @@ const V2_TIER: Record<Confidence, { label: string; color: string; bg: string; bo
 const KYOSHIN_FAINT_HEADING_INTENSITY = 0.5
 
 
+/**
+ * 検知の根拠（判定の内訳）。既定は畳んでおき、開いたときだけ表を出す。
+ *
+ * 一般利用者に読ませたいのは 1 行の要約（`gateShortfall`）までで、表のほうは検知エンジンの
+ * 挙動を追う人向け。カードの主情報（推定最大震度・震度分布）を押しのけないよう、既定は閉じる。
+ *
+ * **地域ごとに 1 ブロック出す。** カード自体は複数の連結成分を「1 つの揺れ」として集約するが、
+ * 判定は地域ごとに独立して走っているため、まとめると「どの地域の話か」が消える。
+ */
+function KyoshinGateDetail({ events }: { events: DetectionEvent[] }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mt-1">
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        aria-expanded={open}
+        className="text-xs text-secondary hover:text-white underline decoration-dotted underline-offset-2"
+      >
+        {open ? '判定の内訳を閉じる' : '判定の内訳'}
+      </button>
+      {open && (
+        <div className="flex flex-col gap-2 mt-1.5">
+          {/* 番号は**イベント ID の順**で振る。`step()` が返す並びは最大震度の降順で毎フレーム
+              並べ替わるため、渡された順に番号を振ると、震度が近い 2 地域が競り合っている間
+              「地域1」「地域2」のラベルだけが別の地域へ移る。ID は生成順の連番で動かない */}
+          {[...events].sort((a, b) => a.id.localeCompare(b.id, 'en', { numeric: true })).map((e, i) => {
+            const notes = gateNotes(e)
+            return (
+              <div key={e.id} className="rounded p-2" style={{ background: 'rgba(255,255,255,0.05)' }}>
+                {events.length >= 2 && (
+                  <div className="text-xs text-secondary mb-1">{`地域 ${i + 1}（${V2_TIER[e.confidence].label}）`}</div>
+                )}
+                {/* 幅は中身に合わせる（`w-full` にすると見出しと数値が横いっぱいに離れて対応が読めない） */}
+                <table className="text-xs">
+                  <tbody>
+                    {gateRows(e).map(r => (
+                      <tr key={r.label}>
+                        <td className="text-secondary py-0.5 pr-2">{r.label}</td>
+                        <td className="py-0.5 pr-1 text-right font-mono text-white whitespace-nowrap">{r.value}</td>
+                        <td className="py-0.5 text-secondary font-mono whitespace-nowrap">
+                          {r.req != null ? `/ ${r.req}` : ''}
+                        </td>
+                        <td className="py-0.5 pl-2 w-4 text-right" aria-hidden={r.met == null}>
+                          {r.met == null ? '' : r.met ? '✓' : ''}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {notes.length > 0 && (
+                  <ul className="mt-1 flex flex-col gap-0.5">
+                    {notes.map(n => (
+                      <li key={n} className="text-xs text-secondary">{n}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )
+          })}
+          {/* カード本文の「N観測点で反応」と数え方が違う。あちらは現在震度0以上の点を数え、
+              こちらは判定が使う「床を明確に超えて継続中 or 直近に立ち上がった」点を数える。
+              同じ画面に 2 つの点数が並ぶので、違うことは言っておく */}
+          <p className="text-xs text-secondary">
+            ※判定は 1 秒ごとに行います。「揺れ継続中の点」は判定に使う数え方で、上の観測点数とは基準が異なります
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // 強震モニタ検知の集約カード。
 // 近傍一致型の検知は震度5+ の大地震で有感域が複数の地域（連結成分）に分かれるため、コアは
 // 複数の confirmed/likely イベントを同時に返す。これを「1 つの揺れ」として 1 枚に集約表示する
@@ -357,6 +430,13 @@ function KyoshinDetectionSummary({ events, points, visible }: {
       ? 'likely'
       : 'faint'
   const tier = V2_TIER[topTier]
+  // 一行の根拠を出す代表イベント。最上位ティアのうち最大震度が最大のもの（`deriveKyoshinView` が
+  // 主 likely を選ぶのと同じ基準）。複数地域あるときは代表 1 件だけを 1 行に出し、地域ごとの
+  // 内訳は折りたたみ（`KyoshinGateDetail`）へ回す
+  const primary = events
+    .filter(e => e.confidence === topTier)
+    .reduce<DetectionEvent | null>((best, e) => (!best || e.maxIntensity > best.maxIntensity ? e : best), null)
+  const shortfall = primary ? gateShortfall(primary) : null
   const isFaint = topTier === 'faint'
   // 見出しは**ティアではなく観測された震度**で選ぶ。faint には 2 種類あり、震度0 級のコヒーレント
   // 揺れと、震度1 以上に達しているが周囲の裏付けが取れなかったもの（設計書§32）が混ざる。
@@ -507,6 +587,10 @@ function KyoshinDetectionSummary({ events, points, visible }: {
               ? `${activeCount}観測点で反応${regionCount >= 2 ? ` ・ ${regionCount}地域` : ''} ・ 推定値`
               : `観測点の反応は収まりました${regionCount >= 2 ? ` ・ ${regionCount}地域` : ''}`}
           </span>
+          {/* 確信度チップが「どの段か」を示すのに対し、この行は「なぜその段なのか」を示す。
+              言うことが無ければ行ごと出さない（`gateShortfall` が null を返す） */}
+          {shortfall && <span className="text-xs text-secondary">{shortfall}</span>}
+          <KyoshinGateDetail events={events} />
         </div>
       </div>
     </div>
