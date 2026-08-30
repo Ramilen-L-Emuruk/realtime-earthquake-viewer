@@ -3,7 +3,7 @@ import type { Map as MapLibreMap, RasterLayerSpecification } from 'maplibre-gl'
 import { useMapGL } from './mapGLContext'
 import { loadPrefectures } from '../../utils/prefectures'
 import { loadSubRegions } from '../../utils/subregions'
-import { ringsToPolygonFC, ringsToLineFC } from './gl/geojson'
+import { basemapKindFilter, buildBasemapFC } from './gl/basemapFeatures'
 import { addOrderedLayer } from './gl/layerOrder'
 import { detailMinZoom } from './gl/zoomLevels'
 import { bindDynamicZoomRange, clampMinZoom } from './gl/viewSpan'
@@ -32,11 +32,10 @@ const SUBREGION_BORDER = '#39414f' // 一次細分区域の境界（細く控え
 // （backdrop*(1-0.58)=0.42。TileTintLayer.tsx のコメント参照）。
 const BATHYMETRY_BRIGHTNESS_MAX = 0.42
 
-const SRC_LAND = 'basemap-land'
-const SRC_SUB = 'basemap-sub-borders'
-const SRC_SUB_HIT = 'basemap-subregion-hit'
+// 陸地塗り・県境・区域境界線・区域の当たり判定は 1 つの geojson ソースを共有し、レイヤー側は
+// `kind` の filter で描き分ける（理由と実測値は gl/basemapFeatures.ts）。
+const SRC_BASEMAP = 'basemap-shapes'
 const LYR_SUB_HIT = 'subregion-hit'
-const SRC_PREF = 'basemap-pref-borders'
 const SRC_GEBCO = 'gebco'
 const LYR_GEBCO = 'gebco-raster'
 const SRC_GEBCO_OVERVIEW = 'gebco-overview'
@@ -146,39 +145,47 @@ export function BaseMapGL({ showBathymetry }: Props) {
       if (subRes.status === 'rejected')
         log.warn('[data] subregions 取得失敗（区域境界線と区域名ポップアップの当たり判定が全ズームで出ない）', subRes.reason)
 
+      // 4 枚のレイヤーは 1 つのソースを共有する。取れたデータの分だけ feature が入り、
+      // レイヤー側は `kind` の filter で自分の分を拾う（gl/basemapFeatures.ts）。
+      // 両方の取得に失敗したときは下のレイヤーが 1 枚も足されないので、ソースも作らない
+      // （この effect は [map] 依存で再走しないため、後から埋まることもない）。
+      if (prefs || subs) {
+        map.addSource(SRC_BASEMAP, { type: 'geojson', data: buildBasemapFC(prefs, subs) })
+      }
+
       // MAP_LAYER_ORDER に従い最下層スロット（land-fill < sub-borders < pref-borders）へ挿入する。
       // 遅延読込で faults/plates 等のオーバーレイより後に追加されても、常にその背面へ入る。
       // 1) 陸地塗り（都道府県ポリゴン・塗りのみ）
       if (prefs) {
-        const rings = Object.values(prefs).map((s) => s.rings)
-        map.addSource(SRC_LAND, { type: 'geojson', data: ringsToPolygonFC(rings) })
-        addOrderedLayer(map, { id: LYR_LAND, type: 'fill', source: SRC_LAND, paint: { 'fill-color': LAND_FILL } })
+        addOrderedLayer(map, {
+          id: LYR_LAND,
+          type: 'fill',
+          source: SRC_BASEMAP,
+          filter: basemapKindFilter('land'),
+          paint: { 'fill-color': LAND_FILL },
+        })
       }
       // 2) 一次細分区域の細い境界線（陸地塗りより前面）
       // 区域線・県境は引いた画で網目が潰れるため下限を設ける（視野の実距離基準・gl/zoomLevels.ts）。
       // 陸地塗りには設けない（列島のシルエットは低ズームでも位置の手掛かりになるため）。
       if (subs) {
-        const rings = subs.map((sr) => sr.rings)
-        map.addSource(SRC_SUB, { type: 'geojson', data: ringsToLineFC(rings) })
         addOrderedLayer(map, {
           id: LYR_SUB,
           type: 'line',
-          source: SRC_SUB,
+          source: SRC_BASEMAP,
+          filter: basemapKindFilter('sub-line'),
           minzoom: clampMinZoom(detailMinZoom(map)),
           paint: { 'line-color': SUBREGION_BORDER, 'line-width': 0.5 },
         })
         // 区域名ポップアップの当たり判定。塗りは完全透明で見た目に出さず、区域名だけを載せる。
         // 地図のどこを押しても「そこがどの一次細分区域か」は分かる、という最後の受け皿にする
         // （優先度 basemap ＝ 観測点・線・区域塗り・ヒートマップのどれにも当たらなかったときだけ出る）。
-        map.addSource(SRC_SUB_HIT, {
-          type: 'geojson',
-          data: ringsToPolygonFC(rings, (i) => ({ name: subs[i].name })),
-        })
         // 区域線が消える倍率では当たり判定も消す（線が見えないのに区域名だけ出るのを避ける）。
         addOrderedLayer(map, {
           id: LYR_SUB_HIT,
           type: 'fill',
-          source: SRC_SUB_HIT,
+          source: SRC_BASEMAP,
+          filter: basemapKindFilter('sub-hit'),
           minzoom: clampMinZoom(detailMinZoom(map)),
           paint: { 'fill-color': '#000000', 'fill-opacity': 0 },
         })
@@ -193,12 +200,11 @@ export function BaseMapGL({ showBathymetry }: Props) {
       }
       // 3) 県境（強調・細線より前面）
       if (prefs) {
-        const rings = Object.values(prefs).map((s) => s.rings)
-        map.addSource(SRC_PREF, { type: 'geojson', data: ringsToLineFC(rings) })
         addOrderedLayer(map, {
           id: LYR_PREF,
           type: 'line',
-          source: SRC_PREF,
+          source: SRC_BASEMAP,
+          filter: basemapKindFilter('pref-line'),
           minzoom: clampMinZoom(detailMinZoom(map)),
           paint: { 'line-color': PREF_BORDER, 'line-width': 1 },
         })
@@ -211,10 +217,11 @@ export function BaseMapGL({ showBathymetry }: Props) {
       unbindZoomRange()
       popupRef.current?.remove()
       popupRef.current = null
+      // 共有ソースはレイヤーを全て外してから消す（1 枚でも残っていると removeSource が失敗する）。
       for (const id of [LYR_PREF, LYR_SUB, LYR_SUB_HIT, LYR_LAND, LYR_GEBCO, LYR_GEBCO_OVERVIEW]) {
         if (map.getLayer(id)) map.removeLayer(id)
       }
-      for (const id of [SRC_PREF, SRC_SUB, SRC_SUB_HIT, SRC_LAND, SRC_GEBCO, SRC_GEBCO_OVERVIEW]) {
+      for (const id of [SRC_BASEMAP, SRC_GEBCO, SRC_GEBCO_OVERVIEW]) {
         if (map.getSource(id)) map.removeSource(id)
       }
     }
