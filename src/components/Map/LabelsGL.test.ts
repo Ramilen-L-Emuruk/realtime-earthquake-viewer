@@ -41,6 +41,18 @@ const SUBS = [
   },
 ]
 
+// 地図ペインの実寸と、フェイクの投影が使う中心・縮尺。
+//
+// **投影は「カメラ中心が画面の中央に来る」形にすること**（実物の `map.project()` と同じ）。
+// 経度緯度をそのまま定数倍する形だと、日本の実座標（地方名の `REGIONS` は経度 128〜142.8・
+// 緯度 26.5〜43.4）がペインの遥か外に落ちる。重なり判定は画面の外にあるラベルを問い合わせ前に
+// 外すため（`gl/labelOverlap.ts` の `isOffScreen`）、そうなると**判定が 1 回も走らず**、
+// 「いつ判定が走るか」を見ているこのテストは意味を失う。縮尺は日本全体がこのペインに収まる値。
+const PANE_WIDTH = 800
+const PANE_HEIGHT = 600
+const CENTER = { lng: 135.4, lat: 35 }
+const PX_PER_DEG = 30
+
 /** 判定が走った回数を数えられる最小の map。判定は queryRenderedFeatures の呼び出しで観測する。 */
 function fakeMap() {
   const sources = new Map<string, { setData: ReturnType<typeof vi.fn> }>()
@@ -55,7 +67,10 @@ function fakeMap() {
     removeLayer: vi.fn(),
     removeSource: (id: string) => sources.delete(id),
     setLayoutProperty: vi.fn(),
-    project: ([lng, lat]: LatLng) => ({ x: lng * 1000, y: -lat * 1000 }),
+    project: ([lng, lat]: LatLng) => ({
+      x: (lng - CENTER.lng) * PX_PER_DEG + PANE_WIDTH / 2,
+      y: (CENTER.lat - lat) * PX_PER_DEG + PANE_HEIGHT / 2,
+    }),
     queryRenderedFeatures: () => {
       queryCalls++
       return []
@@ -63,7 +78,7 @@ function fakeMap() {
     on: (ev: string, fn: () => void) => handlers.set(ev, [...(handlers.get(ev) ?? []), fn]),
     off: vi.fn(),
     getZoom: () => 8,
-    getContainer: () => ({ clientWidth: 800, clientHeight: 600 }),
+    getContainer: () => ({ clientWidth: PANE_WIDTH, clientHeight: PANE_HEIGHT }),
   }
   return {
     map: map as unknown as MapLibreMap,
