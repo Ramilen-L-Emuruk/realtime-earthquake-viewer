@@ -10,6 +10,7 @@ import { MapView, type MapMode } from './components/Map/MapView'
 import type { ShakeFocus } from './components/Map/mapTypes'
 import { MapUpdateTime } from './components/MapUpdateTime'
 import { MapDataStatus } from './components/MapDataStatus'
+import { MapRenderStatus } from './components/MapRenderStatus'
 import { EarthquakeTab } from './components/EarthquakeTab'
 import { RealtimeTab } from './components/RealtimeTab'
 import { TsunamiTab } from './components/TsunamiTab'
@@ -1333,7 +1334,7 @@ export function App() {
             obsUpdateStatus={obsUpdateStatus}
             quakeSelectionTick={quakeSelectionTick}
           />
-          {/* 地図左上に重ねる情報の置き場。上から更新時刻・生成データの取得状況。
+          {/* 地図左上に重ねる情報の置き場。上から更新時刻・生成データの取得状況・地図描画の不調。
               z-[99999]: 区域集約震度バッジ（QuakeRegionFillGL）は el.style.zIndex = scale*1000 で、
               scale は JMA 震度階級の数値コード（震度7 = 70）まであるため最大 70000 まで積む。
               それより確実に高い値にして常に最前面に出す。 */}
@@ -1346,6 +1347,7 @@ export function App() {
           >
             <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
             <MapDataStatus />
+            <MapRenderStatus />
           </div>
           {actionChecklist.state && (
             <ActionChecklist
