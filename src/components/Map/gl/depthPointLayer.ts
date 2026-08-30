@@ -161,6 +161,12 @@ float slabZ(float w) {
 }
 
 // 深さ（z）にだけ誇張率を掛ける。水平方向は実スケールのまま。
+//
+// **球の裏側へ回った点も消えない。意図した挙動なので、消す方向へ直さないこと。**
+// \`projectTileFor3D\` は水平線のクリッピング（\`globeComputeClippingZ\`）を掛けず、
+// 加えて上の z の書き換えがそれを打ち消す。遠地地震の震源は日本と同じ視野に入らないため、
+// 透けて見えるほうを採っている
+// （docs/spec/map-rendering-spec.md §16「球の裏側にある点は透けたまま残す」）。
 vec4 projectDepthPoint(vec3 p) {
   vec4 pos = projectTileFor3D(p.xy, elevationForProjection(p.z * u_exaggeration, p.y));
   pos.z = slabZ(pos.w);
