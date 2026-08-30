@@ -749,7 +749,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             onChange={v => onUpdate('showDayNight', v)}
           />
         </Row>
-        <Row label="夜側の濃さ" description="夜の側をどれだけ暗くするかを調整します（濃くするほど地形や県境が見えにくくなります）">
+        <Row label="夜側の濃さ" description="夜の側をどれだけ暗くするかを調整します（暗くなるのは陸地と海底地形だけで、県境や震度は読めたまま残ります）">
           <div className="flex items-center gap-2">
             <span className="text-xs text-secondary w-8 text-right">
               {Math.round(settings.dayNightOpacity * 100)}%
