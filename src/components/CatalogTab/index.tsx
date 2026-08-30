@@ -47,6 +47,13 @@ interface Props {
   error: string | null
   /** 取得できなかった年（昇順）。空でなければ件数はそのぶん少ない。 */
   missingYears: number[]
+  /**
+   * 取りに行った年の数。
+   *
+   * **`missingYears` と同数なら「まるごと取れなかった」。** 件数 0 が絞り込みの結果なのか
+   * 取得の失敗なのか、これが無いと言い分けられない。
+   */
+  requestedYears: number
   onRetry: () => void
 }
 
@@ -131,6 +138,7 @@ export const CatalogTab = memo(function CatalogTab({
   pending,
   error,
   missingYears,
+  requestedYears,
   onRetry,
 }: Props) {
   const years = index?.years ?? []
@@ -284,7 +292,12 @@ export const CatalogTab = memo(function CatalogTab({
       {(error || missingYears.length > 0) && (
         <div className="px-1 mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
           <p className="text-xs text-red-400">
-            {error ?? `${formatMissingYears(missingYears)} 年を取得できませんでした。件数はそのぶん少なく出ています。`}
+            {/* **まるごと取れなかったときは言い方を変える。** 「そのぶん少なく」では、
+                1 件も出ていない状態が「少し欠けている」と読める。 */}
+            {error
+              ?? (missingYears.length >= requestedYears
+                ? `${formatMissingYears(missingYears)} 年を取得できませんでした。この期間の地震は 1 件も出ていません。`
+                : `${formatMissingYears(missingYears)} 年を取得できませんでした。件数はそのぶん少なく出ています。`)}
           </p>
           <button
             onClick={onRetry}

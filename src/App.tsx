@@ -21,7 +21,7 @@ import {
   buildCatalogPointCloud, DEPTH_FILTER_MAX_KM, MAGNITUDE_FILTER_RANGE,
   LATITUDE_FILTER_RANGE, LONGITUDE_FILTER_RANGE,
   CATALOG_REBUILD_DEBOUNCE_MS, oldestYearOf, withCompleteMagnitudeFloor,
-  type CatalogFilter, type CatalogViewOptions,
+  type CatalogFilter, type CatalogViewOptions, type CatalogPointCloud,
 } from './utils/hypocenterCatalogView'
 import { SpecialInfoBanner } from './components/SpecialInfoBanner'
 import { ActionChecklist } from './components/ActionChecklist'
@@ -839,8 +839,11 @@ export function App() {
       const hi = catalogIndex.years[catalogIndex.years.length - 1]
       const fromYear = Math.min(Math.max(prev.fromYear, lo), hi)
       const toYear = Math.min(Math.max(prev.toYear, lo), hi)
-      const next = withCompleteMagnitudeFloor(catalogIndex, { ...prev, fromYear, toYear })
-      if (fromYear === prev.fromYear && toYear === prev.toYear && next.minMagnitude === prev.minMagnitude) return prev
+      const next = withCompleteMagnitudeFloor(catalogIndex, prev, { ...prev, fromYear, toYear })
+      if (
+        fromYear === prev.fromYear && toYear === prev.toYear &&
+        next.minMagnitude === prev.minMagnitude && next.maxMagnitude === prev.maxMagnitude
+      ) return prev
       return next
     })
   }, [catalogIndex])
@@ -851,17 +854,28 @@ export function App() {
       if (!catalogIndex) return next
       // **見るのは期間の最も古い年**（`oldestYearOf`）。「開始」だけを見ると、終了側を古い年へ
       // 動かしたときに下限が付いてこない。合わせ方は `withCompleteMagnitudeFloor` に集約
-      //（下限が上限を追い越す경路があるため、単に代入してはいけない）。
+      //（下限が上限を追い越す経路と、手で選んだ下限を残す判断があるため、単に代入してはいけない）。
       if (oldestYearOf(next) === oldestYearOf(prev)) return next
-      return withCompleteMagnitudeFloor(catalogIndex, next)
+      return withCompleteMagnitudeFloor(catalogIndex, prev, next)
     })
   }, [catalogIndex])
   // **タブを離れても点群は捨てない。** 捨てると往復のたびに数十万点を詰め直すことになる
   // （地図側は visible で隠すだけ）。
-  const catalogCloud = useMemo(
-    () => (catalog.years.length > 0 ? buildCatalogPointCloud(catalog.years, settledFilter, settledView) : null),
-    [catalog.years, settledFilter, settledView],
-  )
+  //
+  // **離れている間は作り直しもしない。** つまみを動かした直後（150ms 以内）に別のタブへ移ると、
+  // 待ちが明けたところで組み立て（最悪 45ms）と GPU 転送（52ms）が走る。移った先が
+  // リアルタイム震度や EEW だと、そこでフレームが飛ぶ。**EEW の自動タブ切替とも重なりうる。**
+  // 最後に組んだものを持ったまま止め、タブへ戻った時に一度だけ追いつかせる。
+  const catalogCloudRef = useRef<CatalogPointCloud | null>(null)
+  const catalogActive = mapTab === 'catalog'
+  const catalogCloud = useMemo(() => {
+    if (!catalogActive) return catalogCloudRef.current
+    const next = catalog.years.length > 0
+      ? buildCatalogPointCloud(catalog.years, settledFilter, settledView)
+      : null
+    catalogCloudRef.current = next
+    return next
+  }, [catalogActive, catalog.years, settledFilter, settledView])
 
   // 津波発表中フラグ（解除済みでない津波情報があるか。Forecast＝若干の海面変動も含む）とバッジ用グレード
   // tsunamiGrade は色分け用のため MajorWarning/Warning/Watch のみ（Forecast は除外）
@@ -1425,6 +1439,7 @@ export function App() {
               pending={catalogFilter !== settledFilter || catalogView !== settledView}
               error={catalog.error}
               missingYears={catalog.missingYears}
+              requestedYears={catalog.requestedYears}
               onRetry={catalog.retry}
             />
           </div>
