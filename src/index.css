@@ -118,7 +118,7 @@ body {
 }
 .range-thumb-only:focus-visible::-webkit-slider-thumb { outline: 2px solid #3b82f6; outline-offset: 1px; }
 .range-thumb-only:focus-visible::-moz-range-thumb { outline: 2px solid #3b82f6; outline-offset: 1px; }
-/* 操作できないときは、つまみもそう見せる。**素の range を捨てた代償**——`<select disabled>` は
-   ブラウザ既定の見た目を無償で得ていたが、つまみを自前で描くと何も起きない。 */
+/* 操作できないときは、つまみもそう見せる。**つまみを自前で描いている代償**——`:disabled` に
+   対する既定の見た目が付いてこないので、自分で薄くする。 */
 .range-thumb-only:disabled::-webkit-slider-thumb { opacity: 0.4; cursor: default; }
 .range-thumb-only:disabled::-moz-range-thumb { opacity: 0.4; cursor: default; }

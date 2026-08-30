@@ -25,11 +25,18 @@ export type CatalogSizeBy = 'fixed' | 'magnitude'
 export interface CatalogFilter {
   fromYear: number
   toYear: number
-  /** マグニチュードの下限（この値を含む）。 */
+  /** マグニチュードの範囲（両端を含む）。 */
   minMagnitude: number
+  maxMagnitude: number
   /** 深さの範囲（km・両端を含む）。 */
   minDepthKm: number
   maxDepthKm: number
+  /** 緯度の範囲（度・両端を含む）。深さと合わせて直方体で切り出す。 */
+  minLat: number
+  maxLat: number
+  /** 経度の範囲（度・両端を含む）。 */
+  minLng: number
+  maxLng: number
 }
 
 /** 見せ方。 */
@@ -197,6 +204,36 @@ export function catalogCompleteness(
 }
 
 /**
+ * 期間の古い側が変わったときに、マグニチュードの下限をその期間の完全性へ合わせる。
+ *
+ * **上限も一緒に見ること。** 下限だけ上げると上限を追い越すことがある——M2.0〜3.0 に絞った
+ * まま期間を 1919 年まで広げると、下限が 5.0 になって上限 3.0 を越える。そうなると 1 件も
+ * 残らないうえ、**「なぜ 0 件なのか」が画面のどこにも出ない**（完全性の注意書きは
+ * 「下限が完全性を割っているか」しか見ないので、この状態では黙っている）。
+ *
+ * 追い越すなら上限を外す。利用者が選んだ上限は別の下限を前提に選ばれたもので、
+ * 新しい下限より下に留め置く意味が無いため。
+ */
+export function withCompleteMagnitudeFloor(index: HypocenterIndex, next: CatalogFilter): CatalogFilter {
+  const minMagnitude = completeMinMagnitude(index, oldestYearOf(next))
+  if (minMagnitude <= next.maxMagnitude) return { ...next, minMagnitude }
+  return { ...next, minMagnitude, maxMagnitude: MAGNITUDE_FILTER_RANGE.max }
+}
+
+/**
+ * 範囲の見出しを 1 つの文にする。
+ *
+ * **片側だけ制限があるなら、その側だけを書く。** 「M 4.0 以上 〜 制限なし」は読みにくく、
+ * 「M 4.0 以上」だけで絞り込みの内容を過不足なく表せる。
+ */
+export function rangeLabel(minText: string, maxText: string, unlimited = '制限なし'): string {
+  if (minText === unlimited && maxText === unlimited) return unlimited
+  if (minText === unlimited) return maxText
+  if (maxText === unlimited) return minText
+  return `${minText} 〜 ${maxText}`
+}
+
+/**
  * 収録されている年のうち、指定した範囲に入るものを昇順で返す。
  *
  * **索引に無い年は落とす。** 範囲の指定だけで年ファイルを取りに行くと、存在しない年で 404 になる。
@@ -245,6 +282,22 @@ export function effectiveMaxDepthKm(maxDepthKm: number): number {
   return maxDepthKm >= DEPTH_FILTER_MAX_KM ? Infinity : maxDepthKm
 }
 
+/**
+ * マグニチュードの上端を「制限なし」へ読み替える。
+ *
+ * **端で切らない。** 収録の最大は M9.0 だが、より大きい地震が入ったときに端で切っていると
+ * 黙って消える。深さと同じ扱い。
+ */
+export function effectiveMaxMagnitude(maxMagnitude: number): number {
+  return maxMagnitude >= MAGNITUDE_FILTER_RANGE.max ? Infinity : maxMagnitude
+}
+
+/** マグニチュードの範囲の見出し。端は「制限なし」と書く（理由は `depthBoundLabel` と同じ）。 */
+export function magnitudeBoundLabel(value: number, bound: 'min' | 'max'): string {
+  if (bound === 'min') return value <= MAGNITUDE_FILTER_RANGE.min ? '制限なし' : `M ${value.toFixed(1)} 以上`
+  return value >= MAGNITUDE_FILTER_RANGE.max ? '制限なし' : `M ${value.toFixed(1)} 以下`
+}
+
 /** 上と対（下限の端は「下限なし」）。 */
 export function effectiveMinDepthKm(minDepthKm: number): number {
   return minDepthKm <= 0 ? -Infinity : minDepthKm
@@ -261,16 +314,71 @@ export function depthBoundLabel(valueKm: number, bound: 'min' | 'max'): string {
   return valueKm >= DEPTH_FILTER_MAX_KM ? '制限なし' : `${valueKm} km 以浅`
 }
 
+/**
+ * 緯度・経度の絞り込みで選べる範囲（度）。
+ *
+ * **収録の実測は緯度 17.41〜54.97・経度 114.78〜160.16**（日付変更線はまたがない。西経の地震は 0 件）。
+ * それを含む丸い値にしてある。**端は「制限なし」として扱う**ので、これより外の地震が将来入っても、
+ * つまみを端に置いているかぎり落ちない。
+ */
+export const LATITUDE_FILTER_RANGE = { min: 15, max: 56 } as const
+export const LONGITUDE_FILTER_RANGE = { min: 110, max: 165 } as const
+
+/** 緯度・経度の端を「制限なし」へ読み替える（深さ・マグニチュードと同じ扱い）。 */
+export function effectiveLatRange(minLat: number, maxLat: number): [number, number] {
+  return [
+    minLat <= LATITUDE_FILTER_RANGE.min ? -Infinity : minLat,
+    maxLat >= LATITUDE_FILTER_RANGE.max ? Infinity : maxLat,
+  ]
+}
+
+export function effectiveLngRange(minLng: number, maxLng: number): [number, number] {
+  return [
+    minLng <= LONGITUDE_FILTER_RANGE.min ? -Infinity : minLng,
+    maxLng >= LONGITUDE_FILTER_RANGE.max ? Infinity : maxLng,
+  ]
+}
+
+/**
+ * 緯度・経度の範囲の見出し。端は「制限なし」と書く（理由は `depthBoundLabel` と同じ）。
+ *
+ * 向きの語は深さに揃える（深さが「以深／以浅」なので、緯度は「以北／以南」・経度は「以東／以西」）。
+ */
+export function latBoundLabel(value: number, bound: 'min' | 'max'): string {
+  if (bound === 'min') return value <= LATITUDE_FILTER_RANGE.min ? '制限なし' : `北緯 ${value.toFixed(1)}° 以北`
+  return value >= LATITUDE_FILTER_RANGE.max ? '制限なし' : `北緯 ${value.toFixed(1)}° 以南`
+}
+
+export function lngBoundLabel(value: number, bound: 'min' | 'max'): string {
+  if (bound === 'min') return value <= LONGITUDE_FILTER_RANGE.min ? '制限なし' : `東経 ${value.toFixed(1)}° 以東`
+  return value >= LONGITUDE_FILTER_RANGE.max ? '制限なし' : `東経 ${value.toFixed(1)}° 以西`
+}
+
 /** 絞り込みに残るかどうか。**取り込みと件数の見積もりで同じ述語を使う**ため切り出してある。 */
-function passes(
-  magnitude: number,
-  depthKm: number,
-  minMagnitude: number,
-  minDepthKm: number,
-  maxDepthKm: number,
-): boolean {
-  if (!(magnitude >= minMagnitude)) return false
-  return depthKm >= minDepthKm && depthKm <= maxDepthKm
+/**
+ * 絞り込みの境界。**端を「制限なし」へ読み替えたあとの値**が入る。
+ *
+ * 引数を並べずに 1 つのオブジェクトで渡すのは、境界が 5 対 10 個あり、**すべて `number` なので
+ * 順序を取り違えても型検査に掛からない**ため（緯度と経度を入れ替えても通ってしまう）。
+ */
+interface Bounds {
+  minMagnitude: number
+  maxMagnitude: number
+  minDepthKm: number
+  maxDepthKm: number
+  minLat: number
+  maxLat: number
+  minLng: number
+  maxLng: number
+}
+
+/** 絞り込みに残るかどうか。**取り込みと件数の見積もりで同じ述語を使う**ため切り出してある。 */
+function passes(magnitude: number, depthKm: number, lat: number, lng: number, b: Bounds): boolean {
+  // NaN はどの比較でも偽になるので、欠測はここで落ちる。
+  if (!(magnitude >= b.minMagnitude && magnitude <= b.maxMagnitude)) return false
+  if (!(depthKm >= b.minDepthKm && depthKm <= b.maxDepthKm)) return false
+  if (!(lat >= b.minLat && lat <= b.maxLat)) return false
+  return lng >= b.minLng && lng <= b.maxLng
 }
 
 /**
@@ -286,10 +394,19 @@ export function buildCatalogPointCloud(
   filter: CatalogFilter,
   options: CatalogViewOptions,
 ): CatalogPointCloud {
-  const { minMagnitude } = filter
-  // **端のつまみは「制限なし」。上下とも読み替える**（理由は `effectiveMaxDepthKm`）。
-  const minDepthKm = effectiveMinDepthKm(filter.minDepthKm)
-  const maxDepthKm = effectiveMaxDepthKm(filter.maxDepthKm)
+  // **端のつまみは「制限なし」。すべての境界で読み替える**（理由は `effectiveMaxDepthKm`）。
+  const [minLat, maxLat] = effectiveLatRange(filter.minLat, filter.maxLat)
+  const [minLng, maxLng] = effectiveLngRange(filter.minLng, filter.maxLng)
+  const bounds: Bounds = {
+    minMagnitude: filter.minMagnitude,
+    maxMagnitude: effectiveMaxMagnitude(filter.maxMagnitude),
+    minDepthKm: effectiveMinDepthKm(filter.minDepthKm),
+    maxDepthKm: effectiveMaxDepthKm(filter.maxDepthKm),
+    minLat,
+    maxLat,
+    minLng,
+    maxLng,
+  }
   // 1 周目。件数と、発生年で色を付けるときの分母を同時に取る。
   // **分母は絞り込みに残った点だけで測る。** 年ファイルの端で測ると、深さや M で絞った結果
   // 実際には狭い範囲しか残っていないときに、色が 1 段ぶんしか出ない。
@@ -298,7 +415,7 @@ export function buildCatalogPointCloud(
   let timeHi = -Infinity
   for (const y of years) {
     for (let i = 0; i < y.count; i++) {
-      if (!passes(y.magnitude[i], y.depth[i], minMagnitude, minDepthKm, maxDepthKm)) continue
+      if (!passes(y.magnitude[i], y.depth[i], y.lat[i], y.lng[i], bounds)) continue
       count++
       const t = y.timeMs[i]
       if (t < timeLo) timeLo = t
@@ -320,7 +437,7 @@ export function buildCatalogPointCloud(
     for (let i = 0; i < y.count; i++) {
       const m = y.magnitude[i]
       const d = y.depth[i]
-      if (!passes(m, d, minMagnitude, minDepthKm, maxDepthKm)) continue
+      if (!passes(m, d, y.lat[i], y.lng[i], bounds)) continue
       lng[k] = y.lng[i]
       lat[k] = y.lat[i]
       depthKm[k] = d

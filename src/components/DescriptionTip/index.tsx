@@ -24,8 +24,8 @@ function currentViewport() {
  * 入力欄と、その下に出る検証エラーの赤字を吹き出しが覆ってしまう（実測で 28x119px 重なった）。
  * 行の下端を基準にすれば、折り返しの有無に関わらず操作対象を隠さない。
  *
- * 現状の呼び出し元は `Row` だけで、そこでは必ず目印が付く。フォールバックは
- * `Row` 以外から使われたときに位置が壊れないための保険。
+ * 呼び出し元は `data-settings-row` を持つ行（設定タブの `Row`・震源カタログタブの `Row` と
+ * 目印を持たない場所から使われたときに位置が壊れないための保険。
  */
 function anchorRectFor(label: HTMLElement): DOMRect {
   const row = label.closest<HTMLElement>('[data-settings-row]')

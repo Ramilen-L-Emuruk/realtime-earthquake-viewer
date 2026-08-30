@@ -17,9 +17,10 @@ import { SettingsTab } from './components/SettingsTab'
 import { TelegramTab } from './components/TelegramTab'
 import { CatalogTab } from './components/CatalogTab'
 import { useHypocenterCatalog } from './hooks/useHypocenterCatalog'
-import { completeMinMagnitude } from './utils/hypocenterCatalog'
 import {
-  buildCatalogPointCloud, DEPTH_FILTER_MAX_KM, CATALOG_REBUILD_DEBOUNCE_MS, oldestYearOf,
+  buildCatalogPointCloud, DEPTH_FILTER_MAX_KM, MAGNITUDE_FILTER_RANGE,
+  LATITUDE_FILTER_RANGE, LONGITUDE_FILTER_RANGE,
+  CATALOG_REBUILD_DEBOUNCE_MS, oldestYearOf, withCompleteMagnitudeFloor,
   type CatalogFilter, type CatalogViewOptions,
 } from './utils/hypocenterCatalogView'
 import { SpecialInfoBanner } from './components/SpecialInfoBanner'
@@ -808,9 +809,14 @@ export function App() {
       // 完全性へ合わせ直す（下の効果）。ここでの 2 は索引が来るまでの仮の値。
       fromYear: thisYear - 9,
       toYear: thisYear,
-      minMagnitude: 2,
+      minMagnitude: MAGNITUDE_FILTER_RANGE.min,
+      maxMagnitude: MAGNITUDE_FILTER_RANGE.max,
       minDepthKm: 0,
       maxDepthKm: DEPTH_FILTER_MAX_KM,
+      minLat: LATITUDE_FILTER_RANGE.min,
+      maxLat: LATITUDE_FILTER_RANGE.max,
+      minLng: LONGITUDE_FILTER_RANGE.min,
+      maxLng: LONGITUDE_FILTER_RANGE.max,
     }
   })
   const [catalogView, setCatalogView] = useState<CatalogViewOptions>({ colorBy: 'depth', sizeBy: 'fixed', sizePx: 3 })
@@ -833,9 +839,9 @@ export function App() {
       const hi = catalogIndex.years[catalogIndex.years.length - 1]
       const fromYear = Math.min(Math.max(prev.fromYear, lo), hi)
       const toYear = Math.min(Math.max(prev.toYear, lo), hi)
-      const minMagnitude = completeMinMagnitude(catalogIndex, Math.min(fromYear, toYear))
-      if (fromYear === prev.fromYear && toYear === prev.toYear && minMagnitude === prev.minMagnitude) return prev
-      return { ...prev, fromYear, toYear, minMagnitude }
+      const next = withCompleteMagnitudeFloor(catalogIndex, { ...prev, fromYear, toYear })
+      if (fromYear === prev.fromYear && toYear === prev.toYear && next.minMagnitude === prev.minMagnitude) return prev
+      return next
     })
   }, [catalogIndex])
   // 期間の始まりを変えたら、その期間で網羅されている下限へ合わせ直す。
@@ -844,10 +850,10 @@ export function App() {
     setCatalogFilter((prev) => {
       if (!catalogIndex) return next
       // **見るのは期間の最も古い年**（`oldestYearOf`）。「開始」だけを見ると、終了側を古い年へ
-      // 動かしたときに下限が付いてこない。
-      const oldest = oldestYearOf(next)
-      if (oldest === oldestYearOf(prev)) return next
-      return { ...next, minMagnitude: completeMinMagnitude(catalogIndex, oldest) }
+      // 動かしたときに下限が付いてこない。合わせ方は `withCompleteMagnitudeFloor` に集約
+      //（下限が上限を追い越す경路があるため、単に代入してはいけない）。
+      if (oldestYearOf(next) === oldestYearOf(prev)) return next
+      return withCompleteMagnitudeFloor(catalogIndex, next)
     })
   }, [catalogIndex])
   // **タブを離れても点群は捨てない。** 捨てると往復のたびに数十万点を詰め直すことになる
