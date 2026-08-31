@@ -293,8 +293,8 @@ describe('EEW 読み上げの文言と発話順序', () => {
     speakMock.mockClear()
 
     handle(makeEEW({ serial: 2, scaleTo: 50 }))
-    // 5弱(45)→5強(50) は同じ階級内の変化で跳躍幅 1 段階（small=300ms）
-    await vi.advanceTimersByTimeAsync(300)
+    // 5弱(45)→5強(50) は跳躍幅 1 段階（large=2000ms）
+    await vi.advanceTimersByTimeAsync(2000)
     await flushMicrotasks()
     expect(spokenTexts()).toEqual(['予想最大震度5強。'])
   })
@@ -321,6 +321,62 @@ describe('EEW 読み上げの文言と発話順序', () => {
     await flushMicrotasks()
     // 途中の 4・5弱 は読まず、最新の 5強 を 1 回だけ読む
     expect(spokenTexts()).toEqual(['予想最大震度5強。'])
+  })
+
+  // 2024/01/01 能登本震の第13報を再現する回帰テスト。直前の確定値（6強）からの跳躍幅が
+  // 1段階しかない震度7が届き、608ms後に6強へ訂正された。旧仕様（1段階の変化は small=300ms）
+  // では、300ms後にタイマーが先に発火して訂正前の震度7を確定・読み上げてしまっていた
+  // （EEW_PHASE2_SCALE_JUMP_STEP_THRESHOLD を 2→1 に下げる前）。閾値変更後は1段階の変化も
+  // large（2000ms）を待つため、608ms後の訂正を待てるようになる。
+  it('直前の確定値から1段階だけ跳んだ瞬間的な震度7（能登本震13報）は誤読しない', async () => {
+    const handle = setup()
+    // 6強で確定・読み上げまで進める
+    handle(makeEEW({ scaleTo: 60 }))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度6強。'])
+    speakMock.mockClear()
+
+    // 第13報相当: 6強→7（跳躍幅1段階）
+    handle(makeEEW({ serial: 2, scaleTo: 70 }))
+    await vi.advanceTimersByTimeAsync(608)
+    // 第14報相当: 7→6強への訂正（608ms後、まだ large=2000ms の安定待ち中）
+    handle(makeEEW({ serial: 3, scaleTo: 60 }))
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushMicrotasks()
+
+    // 震度7は一度も読み上げられない。6強は既読（spoken=6強）のため再読もしない
+    expect(spokenTexts()).toEqual([])
+  })
+
+  // 2024/08/08 日向灘 M7.1 の回帰テスト。第15報で震度7が0.8秒だけ存在して6強→6弱へ訂正された
+  // 事象（安定待ち導入の直接の契機）とは別に、この地震では**6弱を確定・読み上げ済みの後**、
+  // 震度7→6強と瞬間的に跳ね上がってから再び6弱へ戻る変動もあった（実データ: 6弱確定→震度7出現
+  // →740ms後に6強へ訂正→1570ms後に6弱へ戻る）。6強のサイクルが安定（large=2000ms）する前に
+  // 6弱へ戻るため、震度7・6強のどちらも確定・読み上げられず、最終的な6弱（既読と同値）で黙る。
+  it('確定・読み上げ済みの値へ戻る前の瞬間的な震度7→6強（日向灘の実データ）は誤読しない', async () => {
+    const handle = setup()
+    // 6弱で確定・読み上げまで進める
+    handle(makeEEW({ scaleTo: 55 }))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度6弱。'])
+    speakMock.mockClear()
+
+    // 6弱→7（跳躍幅2段階）
+    handle(makeEEW({ serial: 2, scaleTo: 70 }))
+    await vi.advanceTimersByTimeAsync(700)
+    // 740ms相当: 7→6強への訂正（跳躍幅1段階、6弱基準）。まだ large=2000ms の安定待ち中
+    handle(makeEEW({ serial: 3, scaleTo: 60 }))
+    await vi.advanceTimersByTimeAsync(1500)
+    // 6強のサイクル開始（訂正時点）から 1500ms しか経っておらず、まだ確定していない
+    // 6強→6弱への復帰（跳躍幅0段階、6弱基準）
+    handle(makeEEW({ serial: 4, scaleTo: 55 }))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+
+    // 震度7・6強のどちらも一度も読み上げられない。6弱は既読のため再読もしない
+    expect(spokenTexts()).toEqual([])
   })
 
   // 安定待ちの上限（EEW_PHASE2_STABILITY_MAX_WAIT_MS=5000ms）は「値が最初に変わった時刻」から
@@ -363,10 +419,88 @@ describe('EEW 読み上げの文言と発話順序', () => {
 
     handle(makeEEW({ serial: 2, scaleTo: 50, lgIntTo: 3 }))
     // 震度は変化なし。階級だけ新しいサイクルに入り、階級の安定待ち（300ms）を経て確定する。
-    // 震度は既に確定済みなので、確定した瞬間に一緒に読まれる
+    // 震度は実際に声に出た値（5強）とちょうど一致しているため繰り返さず、階級部分だけを読む
     await vi.advanceTimersByTimeAsync(300)
     await flushMicrotasks()
-    expect(spokenTexts()).toEqual(['予想最大震度5強。予想最大階級3。'])
+    expect(spokenTexts()).toEqual(['予想最大階級3。'])
+  })
+
+  // 安全弁: 震度の scale 値が同じでも orAbove（「〜以上」）が変わっていれば「据え置き」とは
+  // 見なさず、震度も含めて読み直す。scale だけを見て判定すると、上限が定まらなくなった
+  // 変化（「震度4」→「震度4以上」）を据え置きと誤認し、階級部分だけの短句に落としてしまう。
+  it('震度の scale は同じでも orAbove が変わっていれば、震度も含めて読み直す', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 40, lgIntTo: 2 }))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度4。予想最大階級2。'])
+    speakMock.mockClear()
+
+    handle(makeEEW({ serial: 2, scaleTo: 40, scaleToOrAbove: true, lgIntTo: 3 }))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual(['予想最大震度4以上。予想最大階級3。'])
+  })
+
+  // 震度・階級が同一続報で同時に新しい値へ変化すると、階級の安定待ち（300ms固定）の方が
+  // 震度側（跳躍幅次第で300〜2000ms）より先に完了することがある。ここで階級の確定だけで
+  // 読み上げをトリガーすると、震度がまだ「変化中」なのに「据え置き」と誤判定し、階級だけの
+  // 短句を読んだ直後に震度の確定でもう一度全文を読む二重発話になる（`confirmLpgm` へ
+  // `!eewScaleStabilityRef.current.has(key)` を追加する前は実際にこれが起きていた）。
+  it('震度・階級が同一続報で同時に変化し、階級の安定待ちが先に終わっても二重発話にならない', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50, lgIntTo: 1 }))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度5強。予想最大階級1。'])
+    speakMock.mockClear()
+
+    // 震度5強→6弱（跳躍1段階=large2000ms）と階級1→2（300ms固定）が同一続報で同時に変化
+    handle(makeEEW({ serial: 2, scaleTo: 55, lgIntTo: 2 }))
+    // 階級の安定待ち（300ms）が先に完了する。震度はまだ安定待ち中（2000ms未満）なので
+    // 階級だけの短句をトリガーせず、震度の確定を待つ
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual([])
+
+    // 震度の安定待ち（2000ms）が完了すると、震度・階級を一緒に1回だけ読む
+    await vi.advanceTimersByTimeAsync(1700)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual(['予想最大震度6弱。予想最大階級2。'])
+  })
+
+  // 安全弁: 震度が据え置きへ復帰する一方、階級がまだ未確定のまま `level`（安定待ちを経ない
+  // 生イベントから即座に計算される）だけが特別警報相当に上がることがある。この状態で
+  // `confirmedLpgm=0` のまま `scaleUnchanged` 経由の短句化に入ると、空文字の発話が生成され
+  // 「想定外」警告が誤って出たうえ既読も更新されない、という穴があった（`enqueuePhase2` に
+  // `if (scaleUnchanged && confirmedLpgm === 0) return null` を追加する前）。
+  it('震度が据え置きに復帰する一方、階級が未確定のまま level だけ上がっても空発話にならない', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50, severity: 'Warning' }))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度5強。'])
+    speakMock.mockClear()
+
+    // 震度が瞬間的に6強へ跳躍（3段階=large2000ms）
+    handle(makeEEW({ serial: 2, scaleTo: 60 }))
+    await vi.advanceTimersByTimeAsync(1900)
+    // 震度が5強に戻る（baseScale=50なので跳躍0段階=small300msに切り替わる）
+    handle(makeEEW({ serial: 3, scaleTo: 50 }))
+    await vi.advanceTimersByTimeAsync(50)
+    // 階級が新たに4で届く（震度より50ms遅れて届いたため、震度の安定待ち300msの方が先に完了する）
+    handle(makeEEW({ serial: 4, scaleTo: 50, lgIntTo: 4 }))
+    await vi.advanceTimersByTimeAsync(250)
+    await flushMicrotasks()
+    // 震度の安定待ちが先に完了する時点では、latest の生値で level が特別警報相当まで
+    // 上がっているが、階級はまだ確定していない（confirmedLpgm=0）。空発話や「想定外」警告を
+    // 出さず、黙って階級の確定を待つ
+    expect(spokenTexts()).toEqual([])
+
+    // 階級の安定待ちが完了すると、正しく「予想最大階級4。」が読まれる
+    await vi.advanceTimersByTimeAsync(50)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual(['予想最大階級4。'])
   })
 
   // 長周期階級の安定待ちにも震度と同じ上限（5秒）がある。無いと、階級が固定待ち時間（300ms）
@@ -390,8 +524,9 @@ describe('EEW 読み上げの文言と発話順序', () => {
     handle(makeEEW({ serial: serial++, scaleTo: 50, lgIntTo: 4 }))
     await vi.advanceTimersByTimeAsync(4300)   // サイクル開始（最初の階級変化）から合計5000msを超える
     await flushMicrotasks()
-    // 安定を待たず、上限到達時点の最新の階級（4）で強制確定する。震度は既読のまま一緒に読まれる
-    expect(spokenTexts()).toEqual(['予想最大震度5強。予想最大階級4。'])
+    // 安定を待たず、上限到達時点の最新の階級（4）で強制確定する。震度は据え置き（既に声に
+    // 出た値と一致）のため繰り返さず、階級部分だけを読む
+    expect(spokenTexts()).toEqual(['予想最大階級4。'])
   })
 
   // 「以上」は階級値に現れない。既読を階級だけで覚えていると、上限が定まらなくなった変化を
@@ -569,8 +704,8 @@ describe('EEW 読み上げの文言と発話順序', () => {
       expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。'])
 
       handle(makeEEW({ serial: 2, scaleTo: 55, severity: 'Warning' }))
-      // 5強(50)→6弱(55) は跳躍幅1段階（small=300ms）
-      await vi.advanceTimersByTimeAsync(300)
+      // 5強(50)→6弱(55) は跳躍幅1段階（large=2000ms、値の変化は常にlarge判定）
+      await vi.advanceTimersByTimeAsync(2000)
       await flushMicrotasks()
       expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。'])
 
@@ -744,8 +879,8 @@ describe('EEW 読み上げの文言と発話順序', () => {
       await flushMicrotasks()
 
       handle(makeEEW({ serial: 2, scaleTo: 55 }))
-      // 5強(50)→6弱(55) は跳躍幅1段階（small=300ms）
-      await vi.advanceTimersByTimeAsync(300)
+      // 5強(50)→6弱(55) は跳躍幅1段階（large=2000ms、値の変化は常にlarge判定）
+      await vi.advanceTimersByTimeAsync(2000)
       await flushMicrotasks()
       handle(makeEEW({ serial: 3, scaleTo: 70 }))
       // 6弱(55)→7(70) は跳躍幅2段階（large=2000ms）
@@ -800,8 +935,8 @@ describe('EEW 読み上げの文言と発話順序', () => {
       await flushMicrotasks()
       speakMock.mockClear()
 
-      handle(makeEEW({ serial: 2, scaleTo: 55 }))   // 6弱 → 特別警報の条件（跳躍幅1段階=300ms）
-      await vi.advanceTimersByTimeAsync(300)
+      handle(makeEEW({ serial: 2, scaleTo: 55 }))   // 6弱 → 特別警報の条件（跳躍幅1段階=large=2000ms）
+      await vi.advanceTimersByTimeAsync(2000)
       await flushMicrotasks()
       expect(spokenTexts()).toEqual(['予想最大震度6弱。'])
     })
@@ -830,7 +965,8 @@ describe('EEW 読み上げの文言と発話順序', () => {
       speakMock.mockClear()
 
       handle(makeEEW({ serial: 2, scaleTo: 55, severity: 'Forecast' }))
-      await vi.advanceTimersByTimeAsync(300)
+      // 5強(50)→6弱(55) は跳躍幅1段階（large=2000ms）
+      await vi.advanceTimersByTimeAsync(2000)
       await flushMicrotasks()
       expect(spokenTexts()).toEqual(['予想最大震度6弱。'])
     })
@@ -960,18 +1096,24 @@ describe('EEW 読み上げの文言と発話順序', () => {
      * 通ったものだけを `heard` に積む（voicevox.ts と同じ順序: 判定 → 再生 → 次のチャンク）。
      * チャンクの割り方は本体の `splitIntoChunks` をそのまま使う（手書きで真似ると、本体の
      * 分割条件を変えたときにこのテストだけが古い境界を前提に通り続ける）。
+     *
+     * `synthMs`/`chunkMs` は既定で `SYNTH_MS`/`CHUNK_MS` を使うが、震度 1 段階の変化でも
+     * 安定待ちが 2000ms（large）かかる現行仕様では、既定値のままだと「合成・再生の途中で
+     * 安定待ちが先に終わる」シナリオを作れないテストがある。そのテストだけ個別に長い値を渡す。
      */
-    function installChunkedSpeak(heard: string[]) {
+    function installChunkedSpeak(heard: string[], opts?: { synthMs?: number; chunkMs?: number }) {
+      const synthMs = opts?.synthMs ?? SYNTH_MS
+      const chunkMs = opts?.chunkMs ?? CHUNK_MS
       speakMock.mockImplementation(((...args: unknown[]) => {
         const text = args[1] as string
         const shouldStillPlay = args[4] as (() => boolean) | undefined
         const chunks = splitIntoChunks(text)
         return (async () => {
-          await new Promise<void>(r => { setTimeout(r, SYNTH_MS) })
+          await new Promise<void>(r => { setTimeout(r, synthMs) })
           for (const chunk of chunks) {
             if (shouldStillPlay && !shouldStillPlay()) return
             heard.push(chunk)
-            await new Promise<void>(r => { setTimeout(r, CHUNK_MS) })
+            await new Promise<void>(r => { setTimeout(r, chunkMs) })
           }
         })()
       }))
@@ -984,28 +1126,31 @@ describe('EEW 読み上げの文言と発話順序', () => {
     }
 
     // 安定待ちが挟まるため、旧実装（続報を受けた瞬間に取り下げる）とは異なり、
-    // **続報の安定待ちが完了して確定するまでは古い発話がそのまま続く**。合成待ち
-    // （SYNTH_MS=400ms）の中で確実に確定させるため、跳躍幅1段階（small=300ms）の値を使う。
+    // **続報の安定待ちが完了して確定するまでは古い発話がそのまま続く**。震度1段階の変化でも
+    // 安定待ちは 2000ms（large）かかるため、実際の合成待ち（SYNTH_MS=400ms）の中では確実に
+    // 確定させられない。このテストだけ合成待ちを長め（LONG_SYNTH_MS=2500ms）に設定し、
+    // 「合成中に安定待ちが先に終わる」状況を作る。
     it('合成を待つ間に予想が上がったら、古い値は 1 音も鳴らさない', async () => {
       const heard: string[] = []
-      installChunkedSpeak(heard)
+      const LONG_SYNTH_MS = 2500
+      installChunkedSpeak(heard, { synthMs: LONG_SYNTH_MS })
       const handle = setup()
 
       handle(makeEEW({ scaleTo: 45, lgIntTo: 1 }))
       await flushMicrotasks()
       // 第1フェーズ（合成待ち + 2 チャンク）を鳴らし切る。この間に震度・階級の安定待ち
       // （どちらも初出値・跳躍0段階=300ms）も経て確定し、第2フェーズがチェーンに積まれる
-      await advance(SYNTH_MS + CHUNK_MS * 2)
+      await advance(LONG_SYNTH_MS + CHUNK_MS * 2)
       expect(heard).toEqual(['緊急地震速報、', '日向灘で地震。'])
 
-      // 第2フェーズは 5弱 で文面が作られ、いまは合成待ち。その間に 5強 の続報が届き、
-      // 安定待ち（跳躍1段階=300ms、合成待ちより短い）を経て確定する
+      // 第2フェーズは 5弱 で文面が作られ、いまは合成待ち（2500ms）。その間に 5強 の続報が届き、
+      // 安定待ち（跳躍1段階=large=2000ms、合成待ちより短い）を経て確定する
       await advance(50)
       handle(makeEEW({ serial: 2, scaleTo: 50, lgIntTo: 2 }))
-      await advance(300)
+      await advance(2000)
 
       // 5弱 は鳴らずに取り下げられ、5強 だけが鳴る
-      await advance(SYNTH_MS + CHUNK_MS * 2)
+      await advance(LONG_SYNTH_MS + CHUNK_MS * 2)
       expect(heard.filter(c => c.includes('5弱'))).toEqual([])
       expect(heard).toContain('予想最大震度5強。')
       expect(heard).toContain('予想最大階級2。')
@@ -1013,25 +1158,28 @@ describe('EEW 読み上げの文言と発話順序', () => {
 
     it('鳴っている途中に予想が上がったら、そこから先のチャンクを鳴らさない', async () => {
       const heard: string[] = []
-      installChunkedSpeak(heard)
+      // 震度1段階の変化でも安定待ちは2000ms（large）かかるため、CHUNK_MS（1200ms）のままでは
+      // 「1チャンク再生中に安定待ちが先に終わる」状況を作れない。このテストだけチャンクの
+      // 再生時間を長め（LONG_CHUNK_MS=3000ms）に設定する。
+      const LONG_CHUNK_MS = 3000
+      installChunkedSpeak(heard, { chunkMs: LONG_CHUNK_MS })
       const handle = setup()
 
       handle(makeEEW({ scaleTo: 45, lgIntTo: 1 }))
       await flushMicrotasks()
-      await advance(SYNTH_MS + CHUNK_MS * 2)   // 第1フェーズ
-      await advance(SYNTH_MS)                  // 第2フェーズの合成待ち
+      await advance(SYNTH_MS + LONG_CHUNK_MS * 2)   // 第1フェーズ
+      await advance(SYNTH_MS)                       // 第2フェーズの合成待ち
       expect(heard[heard.length - 1]).toBe('予想最大震度5弱。')
 
-      // 「予想最大震度5弱。」を鳴らしている途中で 5強 が届き、安定待ち
-      // （跳躍1段階=300ms、CHUNK_MS より短い）を経て確定する
-      await advance(CHUNK_MS / 2)
+      // 「予想最大震度5弱。」チャンクの再生開始直後に 5強 が届き、安定待ち
+      // （跳躍1段階=large=2000ms、チャンク再生時間より短い）を経て確定する
+      await advance(100)
       handle(makeEEW({ serial: 2, scaleTo: 50, lgIntTo: 2 }))
-      await advance(300)
-      await advance(CHUNK_MS / 2 - 300)
+      await advance(2000)
 
       // 続きの「予想最大階級1。」は鳴らさず、5強 の読み直しへ移る
       expect(heard).not.toContain('予想最大階級1。')
-      await advance(SYNTH_MS + CHUNK_MS * 2)
+      await advance(SYNTH_MS + LONG_CHUNK_MS * 2)
       expect(heard).toEqual([
         '緊急地震速報、', '日向灘で地震。',
         '予想最大震度5弱。',
