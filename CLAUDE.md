@@ -536,10 +536,10 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | チャンク末尾の句読点に間を足すこと（VOICEVOX は後ろに何も続かない句読点に間を付けない・チャンクは隙間なく詰めて鳴らす・**最後のチャンクには足さない**・足すかどうかは合成の入口 3 つで揃える。読点で名前を並べても間が入らない症状の原因のひとつ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「チャンク末尾の句読点には間を足す」 |
 | 辞書での分割によって落ちた句読点を戻すこと（**チャンク末尾とは別の穴**で、同じ症状に原因が 2 つある／落ちた位置に種を置き、長さは `/mora_data` の引き直しに決めさせる・引き直しは「間が無い位置に間を作る」ことはしない・種を置かない位置が 2 つある（チャンク末尾は `CHUNK_BREAK_PAUSE` の担当／掛ける先の句が無い場合。後者は現状起きない）・**置いた後にも歯止めがある**（種が句の並びの末尾に来たら引き直し値を採らない）・引き直しが間を返さなかったときは種へ倒して記録する） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「分割で落ちた句読点を戻す」 |
 | 読み上げを鳴らす直前の見直し（`shouldStillPlay`。渡しているのは EEW だけ・判定はチャンク単位・鳴っている途中のチャンクは切らない・第 2 フェーズは誤報取消と値の引き上げで打ち切り、第 1 フェーズは誤報取消のみ・自動解除と値の引き下げでは止めない。**区分の格上げだけは別経路**で音を直接止める＝次行） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「鳴らす直前の見直し」・§6 |
-| VOICEVOX 接続先の確認（`VOICEVOX_URL_DEBOUNCE_MS` で入力が落ち着くまで待つ・`isValidVoicevoxUrl` で通信前に検分・`apiBase` で末尾スラッシュを落とす・試聴も確認済み URL へ送る。検分は入力途中の値を弾く役割を持たない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「接続先の確認」 |
+| VOICEVOX 接続先の確認（`VOICEVOX_URL_DEBOUNCE_MS` で入力が落ち着くまで待つ・`isValidVoicevoxUrl` で通信前に検分・`apiBase` で末尾スラッシュを落とす・試聴も確認済み URL へ送る。検分は入力途中の値を弾く役割を持たない／**設定の変化で通信する経路はすべて同じ前置きを通す**——接続確認と切り出し語の作り置きの 2 つで、後者は設定タブの外にあり画面にも出ないため見落としやすい） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「接続先の確認」 |
 | チャンク末尾の間を渡す入口が 4 つあること（先行合成・切り出し語の作り置き・再生側の先頭チャンクの作り直し・再生中の次チャンクの先行合成）。**同じ句を作りうる入口どうしは必ず同じ値を渡す**（作り置きと作り直しは同じ句を焼くため、片方が渡し忘れるとキャッシュを先に埋めた側で間が変わる） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §3「チャンク末尾の句読点には間を足す」 |
 | 通知音と声の間に合成を先行させること（`prewarmVoicevox`。進行中の読み上げを止めない・使われなかったものは打ち切る・失敗時は再生側で作り直す。対象は非 EEW の遅延経路） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「間を合成の時間に充てる（先行合成）」 |
-| EEW の切り出し語を作り置きすること（`warmFixedPhrases`。**合成中のものは待たない**・切り出し語と `splitIntoChunks` の分割条件が噛み合わないと黙って効かなくなる） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「間が無い経路には作り置きを用意する（切り出し語）」 |
+| EEW の切り出し語を作り置きすること（`warmFixedPhrases`。**合成中のものは待たない**・切り出し語と `splitIntoChunks` の分割条件が噛み合わないと黙って効かなくなる・**接続先は §3「接続先の確認」の前置き（入力の落ち着き待ちと通信前の検分）を通すこと**——設定の変化で走る数少ない経路で、生の値を使うと打鍵ごとにリクエストが飛ぶ） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「間が無い経路には作り置きを用意する（切り出し語）」 |
 | 間を置く読み上げの予約を追跡すること（`scheduleSpeech`。画面を閉じたときとリプレイ開始で取り消す。対象は EEW 誤報取消を含む全経路） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §6「間を置く読み上げの予約は追跡する」 |
 
 ### 読み上げ: 順番と割り込み
