@@ -6,6 +6,7 @@ import { gunzip } from '../utils/gzip'
 import { log } from '../utils/logger'
 import { authHeader } from '../utils/dmdataApiKey'
 import { extractQuakeEventIdFromId } from '../utils/quakeMerge'
+import { latestValidDateTime } from '../utils/tsunami'
 import type { ReplayEntry, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
 import { HANDLED_TYPES, QUAKE_TYPES, XML_ONLY_TYPES, buildJsonPayload, buildXmlPayload, CLASSIFICATIONS } from './dmdataTelegramPayload'
 import {
@@ -364,6 +365,80 @@ export async function fetchDmdataReplayEvents(
   return { entries, skipped: skippedCount, failedArchiveUrls }
 }
 
+/** 初期状態に載せるかどうかを、津波イベント単位で決めた結果。 */
+interface TsunamiPreWindowState {
+  /** T 時点でこの津波が続いているか（false ならその津波の報は 1 通も載せない）。 */
+  alive: boolean
+  /** 報を跨いで最後に伝えられた有効期限。 */
+  validDateTime?: string
+}
+
+/**
+ * 同一の津波イベントに属する報をまとめるキー。
+ *
+ * `eventId` を持たない電文（P2PQuake の 552。この関数は DMDATA アーカイブだけでなく全バリアントの
+ * 初期状態で使われる——呼び出しは `useReplayController` に 1 箇所だけある）は `id` が報ごとに変わる
+ * ため、報 1 通ずつが別のグループになる。その経路の扱いは下の `resolveTsunamiPreWindowStates` に書く。
+ *
+ * 空文字を弾くのは、キーの導出と「識別子を持つか」の判定を同じ述語に揃えるため（`??` だと空文字が
+ * 有効な識別子として通り、識別子の無い電文どうしが 1 つの津波として束ねられる）。
+ */
+function tsunamiGroupKey(tsunami: JMATsunami): string {
+  return tsunami.eventId || tsunami.id
+}
+
+/**
+ * 初期状態の再現に載せる津波を、報ではなくイベント単位で決める。
+ *
+ * 報 1 通だけで判定できない事実が 2 つある。
+ *
+ * ひとつは**有効期限**。気象庁は期限が決まった報で一度だけ ValidDateTime を載せ、以後の続報には
+ * 載せない（詳細と実データは `utils/tsunami` の `latestValidDateTime`）。報ごとに見ると、期限を
+ * 伝えた報だけが「期限切れ」で捨てられ、期限を持たない最後の報が生き残る。予報のみの津波に解除
+ * 電文は出ないため、そうなると失効の予約も積まれず永久に画面へ残る。
+ *
+ * もうひとつは**解除**。解除報を捨てるだけでは、それより前の発表報が残って解除済みの津波が復活する。
+ *
+ * **解除による足切りは `eventId` を持つ電文にしか適用しない。** 識別子が無ければ「どの津波の解除か」
+ * を決められず、時刻の前後だけで落とすと、同じ 24 時間に無関係な津波が 2 つあったときに、解除された
+ * 側の時刻で、まだ発表中の側まで消える。識別子の無い経路では**解除報も含めて全報をそのまま流し**、
+ * 照合は `isCancelForCurrentTsunami`（発表時刻の前後で足切りする既存の述語。カードの状態更新と
+ * 読み上げの記憶で共有している）へ委ねる。初期状態でも解除は届くので津波は画面から消える
+ * （解除の表示が 10 秒挟まる点だけが「載せない」場合との違い）。
+ *
+ * 有効期限のほうは識別子の有無で分けない。識別子が無ければ 1 グループ 1 報になり、その報自身の
+ * 期限で判定することになる（報単位で見ていた従来と同じ）。
+ */
+function resolveTsunamiPreWindowStates(
+  entries: ReplayEntry[],
+  targetTime: Date,
+): Map<string, TsunamiPreWindowState> {
+  const groups = new Map<string, JMATsunami[]>()
+  for (const entry of entries) {
+    if (entry.payload.kind !== 'event') continue
+    const ev = entry.payload.event
+    if (ev.kind !== 'tsunami') continue
+    const tsunami = ev as JMATsunami
+    const key = tsunamiGroupKey(tsunami)
+    const group = groups.get(key)
+    if (group) group.push(tsunami)
+    else groups.set(key, [tsunami])
+  }
+
+  const states = new Map<string, TsunamiPreWindowState>()
+  for (const [key, reports] of groups) {
+    const identified = !!reports[0].eventId
+    if (identified && reports.some(r => r.cancelled)) {
+      states.set(key, { alive: false })
+      continue
+    }
+    const validDateTime = latestValidDateTime(reports)
+    const expired = !!validDateTime && new Date(validDateTime).getTime() <= targetTime.getTime()
+    states.set(key, { alive: !expired, validDateTime })
+  }
+  return states
+}
+
 // T 時点でまだ有効な電文のみを残すフィルタ（pre-window 初期状態用）
 export function filterPreWindowEvents(
   entries: ReplayEntry[],
@@ -373,6 +448,10 @@ export function filterPreWindowEvents(
   // 状態管理キーは issue.eventId（シリアル番号を含まない）に合わせる
   const eewByEventId = new Map<string, Array<{ entry: ReplayEntry; eew: EEWAlert }>>()
   const quakeByEventId = new Map<string, ReplayEntry>()
+  // 津波は報を跨いで状態が積み上がる（観測のみの続報が前報の区域を引き継ぐ）ため、EEW のように
+  // 最新 1 報へ畳まずに全報を順に流す。一方で「T 時点でその津波が終わっているか」は報 1 通では
+  // 判定できないので、先にイベント単位で決めてからループへ入る。
+  const tsunamiStates = resolveTsunamiPreWindowStates(entries, targetTime)
   const result: ReplayEntry[] = []
 
   for (const entry of entries) {
@@ -400,8 +479,24 @@ export function filterPreWindowEvents(
 
     if (ev.kind === 'tsunami') {
       const tsunami = ev as JMATsunami
-      if (tsunami.cancelled) continue
-      if (tsunami.validDateTime && new Date(tsunami.validDateTime).getTime() <= targetTime.getTime()) continue
+      const state = tsunamiStates.get(tsunamiGroupKey(tsunami))
+      if (!state) {
+        // 状態は同じ `entries` から作るので、ここへ来るのは作る側と読む側の入力が食い違ったとき
+        // だけ。津波が 1 件も出ない結果は画面上「静かな時間だった」と見分けが付かないので、
+        // 落とす前に記録を残す。
+        log.warn(`[replay] 津波の有効性を解決できなかったため初期状態に載せません: id=${tsunami.id}`)
+        continue
+      }
+      if (!state.alive) continue
+      // その津波に対して最後に伝えられた期限を、期限を持たない報にも持たせる。補わないと
+      // 最後の報で失効の予約が積まれず、期限を過ぎても画面から消えなくなる。
+      if (state.validDateTime && !tsunami.validDateTime) {
+        result.push({
+          ...entry,
+          payload: { kind: 'event', event: { ...tsunami, validDateTime: state.validDateTime } },
+        })
+        continue
+      }
     }
 
     result.push(entry)

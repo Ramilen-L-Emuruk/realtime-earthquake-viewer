@@ -6,7 +6,7 @@ import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQ
 import type { QuakeRetraction } from '../utils/quakeMerge'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex } from '../utils/stationCoords'
 import { calcEEWCancelTime, eewSerial, eewEventKey } from '../utils/eew'
-import { mergeTsunamiObservations, isCancelForCurrentTsunami } from '../utils/tsunami'
+import { mergeTsunamiObservations, isCancelForCurrentTsunami, withInheritedValidDateTime, latestValidDateTime } from '../utils/tsunami'
 import { log } from '../utils/logger'
 import { serverNow, serverDate } from '../utils/clock'
 
@@ -559,8 +559,14 @@ export function useEarthquakes(
       let expireTime: Date | null = null
       if (!tsunami.cancelled) {
         if (tsunami.validDateTime) {
-          expireTime = new Date(tsunami.validDateTime)
-        } else if (!isDmdss) {
+          // 日時として読めない期限で予約を積まないこと。キューのディスパッチャは先頭ブロッキング
+          // （`q[0].eventTime <= now` が偽なら以降を見ない）で、Invalid Date との比較は常に偽に
+          // なるため、1 件積むだけで以後のすべての電文が二度と発火しなくなる。
+          const parsed = new Date(tsunami.validDateTime)
+          if (Number.isFinite(parsed.getTime())) expireTime = parsed
+          else log.warn(`[tsunami] 有効期限を日時として読めないため失効予約を積みません: id=${tsunami.id} validDateTime=${tsunami.validDateTime}`)
+        }
+        if (!expireTime && !isDmdss) {
           const FAILSAFE_MS = 24 * 60 * 60 * 1000
           // 初期状態の再現（silent 注入）では、過去に発表された電文をまとめて「いま」流し直す。
           // 受信時刻を基準にすると、20 時間前に出ていた津波が再生開始からさらに 24 時間残り、
@@ -713,7 +719,14 @@ export function useEarthquakes(
           if (sameEvent) {
             const areas = tsunami.areas.length > 0 ? tsunami.areas : current.areas
             const observations = mergeTsunamiObservations(current.observations, tsunami.observations)
-            return { ...prev, tsunamis: [{ ...tsunami, areas, observations }], lastUpdate: now }
+            // 有効期限は報ではなく津波に付く事実なので、期限を持たない続報では前報の値を残す
+            // （気象庁は期限が決まった報で一度だけ伝える。詳細は utils/tsunami の
+            // `latestValidDateTime`）。期限を持つ報が来たらそちらへ従う（延長・短縮）。
+            //
+            // `??` で書かずにその関数へ通すのは、**日時として読めない値を弾く箇所を 1 つに保つため**。
+            // 読めない期限をカードへ入れると、以後の続報でも引き継がれ続け、比較はすべて偽に倒れる。
+            const validDateTime = latestValidDateTime([current, tsunami])
+            return { ...prev, tsunamis: [{ ...tsunami, areas, observations, validDateTime }], lastUpdate: now }
           }
           // TSU-3: 別 eventId の tsunami で既存を上書きするケースを検知したら警告する。
           // 実装は 1 件スロットのまま（複数同時発表は稀なため型変更はスコープ外）だが、
@@ -967,7 +980,16 @@ export function useEarthquakes(
           const earthquakes = mergeQuakeHistory(quakeEvents, [], quakeRetractionsRef.current)
           const allTsunami = tsunamiEvents
             .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
-          const latestTsunami = allTsunami[0]
+          // 画面へ載せるのは最新報 1 通だけ。その報が有効期限を持たなくても、同じ津波の過去報が
+          // 伝えていれば引き継ぐ（引き継がないと下の失効予約が積まれず、期限切れの津波が消えない）。
+          const latestTsunami = allTsunami[0] && withInheritedValidDateTime(allTsunami[0], allTsunami)
+          // 気象庁は予報のみになった津波に必ず期限を付ける（tsunami-spec.md §3）。それが引き継げて
+          // いないなら、期限を伝えた報が取得件数の上限から押し出された疑いがある。放っておくと
+          // 「消えない津波」に化けるが、画面には何の痕跡も出ないので記録だけは残す。
+          if (latestTsunami && !latestTsunami.validDateTime && latestTsunami.areas.length > 0
+              && latestTsunami.areas.every(a => a.grade === 'Forecast')) {
+            log.warn(`[data] 予報のみの津波に有効期限が付いていません（期限を伝えた報を取得できていない可能性）: id=${latestTsunami.id}`)
+          }
           const now = serverDate()
           const tsunamis = latestTsunami
             && !latestTsunami.cancelled
@@ -1134,7 +1156,9 @@ export function useEarthquakes(
         const earthquakes = mergeQuakeHistory(quakeEvents, [], quakeRetractionsRef.current)
         const allTsunami = (tsunamiEvents as JMATsunami[])
           .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
-        const latestTsunami = allTsunami[0]
+        // DMDSS 側と同じ引き継ぎ。P2PQuake の 552 は有効期限を持たないため実際には何も変わらないが、
+        // 経路ごとに扱いを違えない（片方だけ直すと、次に触る人がどちらが正なのか判断できない）。
+        const latestTsunami = allTsunami[0] && withInheritedValidDateTime(allTsunami[0], allTsunami)
         const nowP2p = serverDate()
         const tsunamis = latestTsunami
           && !latestTsunami.cancelled

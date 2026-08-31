@@ -601,7 +601,10 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   } catch { return null }
 
   const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
-  const eventId = xmlText(xmlQ(doc, 'EventID'))
+  // 空文字は undefined に落とす（JSON 経路の `str(data.eventId) || undefined` と同じ形）。
+  // 「同一イベントか」の判定はどこも falsy 判定で書かれているのに対し、キーの導出側が空文字を
+  // 有効な識別子として扱うと、識別子を持たない電文どうしが同じ津波として束ねられる。
+  const eventId = xmlText(xmlQ(doc, 'EventID')) || undefined
   const serial = xmlText(xmlQ(doc, 'Serial')) || '1'
   const infoType = xmlText(xmlQ(doc, 'InfoType'))
   const validDateTime = xmlText(xmlQ(doc, 'ValidDateTime')) || undefined
@@ -622,7 +625,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
     ? { hypocenterName: eqHypoName, magnitude: !isNaN(eqMagnitude) ? eqMagnitude : undefined, originTime: (eqEl ? xmlText(xmlQ(eqEl, 'OriginTime')) : '') || undefined }
     : undefined
 
-  const id = `dmdata-xml-tsunami-${eventId}-${serial}`
+  const id = `dmdata-xml-tsunami-${eventId ?? ''}-${serial}`
   const cancelled = infoType === '取消'
 
   // InfoType=取消: 誤って発表した電文そのものの取消（誤報取消）
