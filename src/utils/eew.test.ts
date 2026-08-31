@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewMaxScale, eewMaxScaleInfo, isForecastScaleHigher, eewNoForecastReason, eewSerial, selectEEWSoundType, type HypoInfoPendingMissing } from './eew'
+import { calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewMaxScale, eewMaxScaleInfo, isForecastScaleHigher, eewNoForecastReason, eewSerial, selectEEWSoundType, eewPhase2ScaleStabilityMs, EEW_PHASE2_STABILITY_SMALL_MS, EEW_PHASE2_STABILITY_LARGE_MS, type HypoInfoPendingMissing } from './eew'
 import type { YahooHypoInfoItem } from '../services/kyoshin'
 import type { EEWAlert, EEWRegion, IntensityScale, LpgmClass } from '../types/earthquake'
 
@@ -659,5 +659,30 @@ describe('eewNoForecastReason', () => {
 
   it('浅い通常の震源なら unknown（値が遅れて付く可能性が残る）', () => {
     expect(eewNoForecastReason(makeEEW())).toBe('unknown')
+  })
+})
+
+// 2024/01/01 能登本震の第13報（6強→7、1段階の変化）が、直前の確定値からの跳躍幅が
+// 1段階しかないために短い猶予（旧仕様: small=300ms）しか与えられず、608ms後に届いた
+// 6強への訂正報を待てずに、0.6秒しか存在しなかった震度7がそのまま確定・読み上げられて
+// しまった（docs/spec/audio-tts-spec.md §6 参照）。EEW_PHASE2_SCALE_JUMP_STEP_THRESHOLD を
+// 2→1 に下げ、1段階以上の変化は常に large（2000ms）待つようにして再発を防ぐ。
+describe('eewPhase2ScaleStabilityMs: 震度の跳躍幅から安定待ち時間を決める', () => {
+  // 正: 1段階の変化（能登本震13報の6強→7と同じ跳躍幅）でも large（2000ms）を待つ
+  it('跳躍幅1段階の変化は large（2000ms）を待つ', () => {
+    // 6強(60)→7(70) は SCALE_STEP_ORDER 上で1段階
+    expect(eewPhase2ScaleStabilityMs(70, 60)).toBe(EEW_PHASE2_STABILITY_LARGE_MS)
+  })
+
+  // 対照: 値が変わっていない（0段階）場合は、閾値を下げても small（300ms）のまま
+  it('値が変わっていない（0段階）場合は small（300ms）のまま', () => {
+    expect(eewPhase2ScaleStabilityMs(55, 55)).toBe(EEW_PHASE2_STABILITY_SMALL_MS)
+  })
+
+  // 安全弁: 2段階以上の急な跳躍（旧仕様でも large だったもの）は、今回の変更後も
+  // 引き続き large のまま——閾値を下げたことで緩んだわけではないことを確認する
+  it('跳躍幅2段階以上の急な変化も引き続き large（2000ms）を待つ', () => {
+    // 6弱(55)→7(70) は SCALE_STEP_ORDER 上で2段階
+    expect(eewPhase2ScaleStabilityMs(70, 55)).toBe(EEW_PHASE2_STABILITY_LARGE_MS)
   })
 })
