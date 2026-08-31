@@ -68,6 +68,28 @@ function makeNoIntensity(o: QuakeOpts = {}): JMAQuake {
   }
 }
 
+// 実電文どおりの震度速報を作る。**`makeQuake({ type: '震度速報' })` では駄目**で、あちらは
+// 震源要素を持たせてしまう。実際の VXSE51 は電文に Earthquake 要素が無く、パーサーは震源名を
+// 空・座標を -200（位置不明センチネル）・深さを -1 で埋める。マグニチュードは経路で違い、
+// JSON 経路（ライブ）は `NaN`、XML 経路は `0`（`dmdataParser.ts`）。ここでは NaN を採る。
+//
+// **津波区分と固定付加文は自前で持つ。** 震度速報が津波の情報を持たないと思い込むと、そこを
+// 補完する誤った実装を通してしまう。実データ（能登 2024/1/1 の前震・
+// `public/data/test-scenarios/2024-noto.json`）では津波区分 `調査中`・固定付加文
+// 「今後の情報に注意してください。」が入っている。値をこれに揃えておく。
+function makePrompt(o: QuakeOpts = {}): JMAQuake {
+  const base = makeQuake({ type: '震度速報', maxScale: 50, ...o })
+  return {
+    ...base,
+    earthquake: {
+      ...base.earthquake,
+      hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: NaN },
+      domesticTsunami: '調査中',
+    },
+    forecastText: '今後の情報に注意してください。',
+  }
+}
+
 describe('extractQuakeEventId', () => {
   it('dmdata-quake- 形式の id から14桁 eventId を抽出する', () => {
     expect(extractQuakeEventId(makeQuake({ id: 'dmdata-quake-20260728162718-1' }))).toBe('20260728162718')
@@ -545,6 +567,109 @@ describe('mergeQuakeInto — 通常電文どうし', () => {
       }
       const muchNewer = makeQuake({ type: '震度速報', maxScale: 50, time: '2099-01-01T00:00:00Z' })
       expect(mergeQuakeInto(e, muchNewer)).toBe(e)
+    })
+  })
+
+  // 上の回帰テストは震度（points）だけを見ており、`makeQuake` が震度速報にも震源要素を
+  // 持たせるため震源の消失を検出できていなかった。実電文どおりの震度速報（`makePrompt`）で
+  // 固定する。能登 2024/1/1 の実データでは 3 通の `time` がいずれも分精度で 16:08 に並ぶため、
+  // 据え置き判定は続報を受け入れる（＝置換が走る）。
+  describe('震源を持たない続報（震度速報）は既存の震源を消さない', () => {
+    const firstPrompt = makePrompt({
+      time: '2026-01-01T07:07:42Z',
+      points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+    })
+    const epicenterOnly: JMAQuake = {
+      ...makeNoIntensity({
+        type: '震源情報', time: '2026-01-01T07:08:00Z',
+        hypoName: '石川県能登地方', mag: 5.7, tsunami: 'なし',
+      }),
+      forecastText: 'この地震による津波の心配はありません。',
+    }
+    const secondPrompt = makePrompt({
+      time: '2026-01-01T07:08:00Z',
+      points: [
+        { pref: '', addr: '石川県能登', isArea: true, scale: 50 },
+        { pref: '', addr: '新潟県佐渡', isArea: true, scale: 30 },
+      ],
+    })
+
+    it('正: 震源情報が確定させた震源要素が、震度速報の続報でも残る', () => {
+      const afterEpicenter = mergeQuakeInto(firstPrompt, epicenterOnly)
+      expect(afterEpicenter.earthquake.hypocenter.name).toBe('石川県能登地方')
+
+      const merged = mergeQuakeInto(afterEpicenter, secondPrompt)
+      // 新しく増えた区域は取り込む（従来の回帰テストが守っている挙動）
+      expect(merged.points.map(p => p.addr)).toContain('新潟県佐渡')
+      // 震源要素は既存カードのものが残る
+      expect(merged.earthquake.hypocenter.name).toBe('石川県能登地方')
+      expect(merged.earthquake.hypocenter.magnitude).toBe(5.7)
+      expect(merged.earthquake.hypocenter.depth).toBe(10)
+      // 座標が -200（位置不明センチネル）へ戻らない＝地図の震源マーカーが消えない
+      expect(merged.earthquake.hypocenter.latitude).toBe(epicenterOnly.earthquake.hypocenter.latitude)
+      expect(merged.earthquake.hypocenter.longitude).toBe(epicenterOnly.earthquake.hypocenter.longitude)
+    })
+
+    it('対照: 震度速報が自前で持つ津波区分・固定付加文は既存で塗り替えない', () => {
+      // 補完は震源要素だけ。津波区分と固定付加文は震度速報が自前で持つ値（構造的欠落では
+      // ない）なので、電文が主張するとおりに採る。ここを補うと、気象庁が出していない
+      // 区分を表示し続けることになる。
+      const afterEpicenter = mergeQuakeInto(firstPrompt, epicenterOnly)
+      expect(afterEpicenter.earthquake.domesticTsunami).toBe('なし')
+
+      const merged = mergeQuakeInto(afterEpicenter, secondPrompt)
+      expect(merged.earthquake.domesticTsunami).toBe('調査中')
+      expect(merged.forecastText).toBe('今後の情報に注意してください。')
+    })
+
+    it('対照: incoming が震源を持つ電文なら、既存の震源で塗り替えず incoming の値を採る', () => {
+      // 補完は「その種別が構造的に震源を持たない」場合だけ。震源を持つ電文の値まで
+      // 既存へ固定すると、精査で更新されたマグニチュードが反映されなくなる。
+      const existing = makeQuake({ type: '震源・震度情報', maxScale: 50, mag: 7.1, time: '2026-01-01T07:08:00Z' })
+      const revised = makeQuake({ type: '各地の震度情報', maxScale: 50, mag: 6.8, time: '2026-01-01T07:10:00Z' })
+      expect(mergeQuakeInto(existing, revised).earthquake.hypocenter.magnitude).toBe(6.8)
+    })
+
+    it('安全弁: 既存も震源未確定（震度速報どうし）なら震源を作らない', () => {
+      // 空を無理に埋めない。埋めると「位置不明」の判定が壊れ、緯度経度 0 の地点に
+      // 震源マーカーが立ちうる。
+      const merged = mergeQuakeInto(firstPrompt, secondPrompt)
+      expect(merged.earthquake.hypocenter.name).toBe('')
+      expect(merged.earthquake.hypocenter.latitude).toBe(-200)
+      expect(merged.points.map(p => p.addr)).toContain('新潟県佐渡')
+    })
+
+    it('安全弁: 既存が震源名を持たなければ、座標が入っていても引き継がない', () => {
+      // 判定の軸は震源名。実運用ではパーサーが「名前は空だが座標は有効」を作らない
+      // （震源を持つ電文で座標が読めないものは捨てる）が、その前提に寄りかからず
+      // 引き継ぎの条件そのものを固定する。上の安全弁だけでは、既存側の震源が常に
+      // センチネル値になるため `!isHypocenterPending(existing)` を外しても検出できない。
+      const nameless: JMAQuake = {
+        ...firstPrompt,
+        earthquake: {
+          ...firstPrompt.earthquake,
+          hypocenter: { name: '', latitude: 37.5, longitude: 137.3, depth: 10, magnitude: 5.7 },
+        },
+      }
+      const merged = mergeQuakeInto(nameless, secondPrompt)
+      expect(merged.earthquake.hypocenter.latitude).toBe(-200)
+      expect(merged.earthquake.hypocenter.magnitude).toBeNaN()
+    })
+
+    it('安全弁: 取消表示中のカードからは震源を引き継がない', () => {
+      // 取消は「その報の内容が誤りだった」意味なので、取り下げられた震源を新しいカードへ
+      // 持ち込まない（持ち込むと気象庁が消した位置を地図に出し直すことになる）。
+      const cancelledEpicenter: JMAQuake = { ...epicenterOnly, cancelledAt: new Date() }
+      const merged = mergeQuakeInto(cancelledEpicenter, secondPrompt)
+      expect(merged.earthquake.hypocenter.name).toBe('')
+      expect(merged.earthquake.hypocenter.latitude).toBe(-200)
+    })
+
+    it('安全弁: 逆方向（震度を持たない震源情報が既存の震度を引き継ぐ）が生きている', () => {
+      // 対の補完を壊していないことの確認。片方だけ効く状態になっていないか。
+      const afterEpicenter = mergeQuakeInto(firstPrompt, epicenterOnly)
+      expect(afterEpicenter.earthquake.maxScale).toBe(50)
+      expect(afterEpicenter.points.map(p => p.addr)).toContain('石川県能登')
     })
   })
 })
