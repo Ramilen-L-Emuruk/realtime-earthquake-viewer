@@ -7,14 +7,20 @@
 //
 // 【欠測との関係】瞬断（1〜2 秒）は `kyoshinMissingHold` が直前値で吸収するため、ここでは何もしない。
 // 数十秒に及ぶ恒久的な停止は保持期間を過ぎて値が消えるが、そのときは半径内の別の点が拾う。
-// 半径内の点がすべて欠測していたら `kyoshinScaleForScope` が全国基準で判定し直す（大きな地震では
-// 近くの点がまとめて途絶しうるが、それは「揺れていない」ことの証明にならないため）。
 //
 // 【2 つの観測点集合】強震モニタ（Yahoo・約 1725 点・座標のみの配列）と気象庁の震度観測点
-// （`station-coords.json`・約 4372 件・"県|観測点名" のキー）は**別物**。前者は配列の添字が
-// 観測値の添字に対応し、後者は電文の観測点名と突き合わせる。用途ごとに関数を分けているのはこのため。
+// （`station-coords.json`・約 4372 件・"県|観測点名" のキー）は**別物**。前者は観測点キーで
+// 検知エンジンの出力と突き合わせ、後者は電文の観測点名と突き合わせる。用途ごとに関数を分けている
+// のはこのため。
+//
+// 【全件版が要る理由】半径内の集合だけでは「近所が電文に載っていない」の意味が決まらない。
+// 「載るほど揺れていない」のか「電文の粒度がこちらの索引と噛み合っていない」のかで、出すべきか
+// どうかが正反対になる。全件版（`allStationNames` / `allRegionNames`）はその見分けに使う
+// （`quakeScaleForScope`）。
 
 import { haversineKm } from './geo'
+import { computeSiteKeys } from './kyoshinDetector'
+import type { SiteCoords } from '../services/kyoshin'
 import type { StationCoordsData } from './stationCoords'
 
 /**
@@ -34,20 +40,29 @@ export interface HomePoint {
 }
 
 /**
- * 強震モニタの観測点のうち、半径内にあるものの添字を返す。
+ * 強震モニタの観測点のうち、半径内にあるものの**観測点キー**を返す。
  *
- * 返す添字はフレームの `indices` の添字にそのまま使える（`SiteCoords` と `indices` は同順）。
+ * 添字ではなくキーを返すのは、突き合わせる相手が検知エンジンの出力だから。エンジンはメンバー
+ * 観測点をキーで持ち（`DetectionEvent.memberKeys`）、それを解決した `DetectedPoint` もキーを
+ * 持つ。**同一座標に複数の実体がある観測点が実在する**ため（`computeSiteKeys` の説明）、点の
+ * 同一性は座標ではなくキーで判断する。
+ *
+ * **`sites` に穴（欠けた要素）があってはならない。** キーの生成を検知エンジンと共有した結果、
+ * この関数も `computeSiteKeys` と同じ前提（密な配列）に従う。穴があれば例外になるが、同じ配列は
+ * 検知エンジンの `step()` も同じ関数へ渡しているので、そこが先に壊れる。
  */
-export function nearbyKyoshinIndices(
-  sites: readonly (readonly [number, number])[],
+export function nearbyKyoshinKeys(
+  sites: SiteCoords,
   home: HomePoint,
   radiusKm: number = NEARBY_RADIUS_KM,
-): number[] {
-  const found: number[] = []
+): Set<string> {
+  const keys = computeSiteKeys(sites)
+  const found = new Set<string>()
   for (let i = 0; i < sites.length; i++) {
     const site = sites[i]
-    if (!site) continue
-    if (haversineKm(home.lat, home.lng, site[0], site[1]) <= radiusKm) found.push(i)
+    const key = keys[i]
+    if (!site || key == null) continue
+    if (haversineKm(home.lat, home.lng, site[0], site[1]) <= radiusKm) found.add(key)
   }
   return found
 }
@@ -72,10 +87,35 @@ export function nearbyStationNames(
   for (const [key, entry] of Object.entries(data.stations)) {
     if (!entry) continue
     if (haversineKm(home.lat, home.lng, entry[0], entry[1]) > radiusKm) continue
-    const name = key.slice(key.indexOf('|') + 1)
+    const name = stationNameOf(key)
     if (name) names.add(name)
   }
   return names
+}
+
+/** 座標テーブルのキー（"県|観測点名"）から観測点名だけを取り出す。 */
+function stationNameOf(key: string): string {
+  return key.slice(key.indexOf('|') + 1)
+}
+
+/**
+ * 座標テーブルが知っている**すべての**観測点名（半径で絞らない）。
+ *
+ * 電文に載っている観測点をこちらが引けるかどうかを見るために使う。1 件でも引ければ粒度は
+ * 噛み合っているので、自宅の周りが載っていないのは「載るほど揺れていない」からだと言える。
+ */
+export function allStationNames(data: StationCoordsData): Set<string> {
+  const names = new Set<string>()
+  for (const key of Object.keys(data.stations)) {
+    const name = stationNameOf(key)
+    if (name) names.add(name)
+  }
+  return names
+}
+
+/** 座標テーブルが知っているすべての一次細分区域名（`allStationNames` と同じ用途）。 */
+export function allRegionNames(data: StationCoordsData): Set<string> {
+  return new Set(data.regionNames ?? [])
 }
 
 /**

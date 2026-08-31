@@ -1230,10 +1230,12 @@ export function App() {
     home,
     stationCoords: stationCoordsForChecklist,
     kyoshinSites: kyoshinSitesGated,
-    // 保持値（kyoshinHeld）を渡す。音・通知・地域単位発報は保持値を使うのがこのアプリの規約で
-    // （kyoshin-detection-spec.md §8）、生値だと強く揺れている最中の単発の欠測でフレームが
-    // 落ち、閾値に達した瞬間を取りこぼす。
-    kyoshinIndices: kyoshinHeld.indices,
+    // 検知エンジンが確定した揺れのメンバー観測点を渡す（音・地図の検知点と同じ集合）。
+    // 生の観測値を渡すと 1 点の跳ね上がりがそのまま表示される震度になる（理由は
+    // kyoshinScaleForScope）。値は保持値なので、強く揺れている最中の単発の欠測でも落ちない。
+    detectedPoints: kyoshinView.detectedPoints,
+    // エンジンが詰まって検知結果を出せない間は、空の結果を「揺れていない」と読ませない。
+    kyoshinStalled: kyoshinV2.stalled,
     eews: eewListForChecklist,
     latestQuake: earthquakes[0],
   })
