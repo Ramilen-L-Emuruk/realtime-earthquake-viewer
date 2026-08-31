@@ -52,7 +52,12 @@ vi.mock('../utils/voicevox', () => ({
   // 鳴ったチャンクの判定に使う（このモックはチャンクの通知を出さないので常に null で足りる）
   getSpeechClock: () => null,
 }))
-vi.mock('../utils/alertSound', () => ({ playAlertSound: vi.fn() }))
+// 音の実体だけ差し替える。**通知音との間（`ttsDelayFor`）は本物を使う** ―― 読み上げの順番と
+// 待ち合わせはこの間の長さで決まるため、模擬すると検証の前提が変わる。
+vi.mock('../utils/alertSound', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/alertSound')>()
+  return { ...actual, playAlertSound: vi.fn() }
+})
 vi.mock('../utils/notifications', () => ({ showBrowserNotification: vi.fn() }))
 
 function spokenTexts(): string[] {
@@ -64,7 +69,7 @@ async function flush() {
   for (let i = 0; i < 400; i++) await Promise.resolve()
 }
 
-/** 通知音の遅延（最大 2800ms）を消化してから発話に到達させる */
+/** 通知音との間（最長 2720ms＝津波警報）を消化してから発話に到達させる */
 async function settle() {
   await vi.advanceTimersByTimeAsync(5000)
   await flush()
@@ -205,7 +210,7 @@ function setup() {
     defaultTabRef: { current: 'earthquake' },
     setActiveTabRealtimeForKyoshin: vi.fn(), setActiveTabNonRealtime: vi.fn(),
     setActiveTabRealtimeOnUpdate: vi.fn(),
-    setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(), expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
+    setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(() => true), expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(), setActiveLpgmEventId: vi.fn(),
   }))
   return result.current.handleLiveEvent
@@ -496,18 +501,21 @@ describe('非 EEW の読み上げの優先度', () => {
     expect(spokenTexts()[1]).toContain('富山県東部')
   })
 
-  // 到来順の規則。震源情報は声までの間が 1.7 秒、震度速報は 0.5 秒。震源情報の直後に震度速報が
-  // 届くと震度速報の方が先に喋り始めるため、優先度だけで裁いていた頃は**古い震源情報が新しい
-  // 震度速報を途中で切っていた**。「同格どうしは新しい方が勝つ」の逆で、聞こえ方も順序が
-  // 入れ替わる。後から同格以上が予約されていたら、先に届いた側を取り下げる。
+  // 到来順の規則。通知音との間は音の種別で決まり（`ttsDelayFor`）、各地の震度情報は 0.77 秒、
+  // 震度速報は 0.5 秒。前者の直後に震度速報が届くと震度速報の方が先に喋り始めるため、優先度だけで
+  // 裁いていた頃は**古い方が新しい震度速報を途中で切っていた**。「同格どうしは新しい方が勝つ」の
+  // 逆で、聞こえ方も順序が入れ替わる。後から同格以上が予約されていたら、先に届いた側を取り下げる。
+  //
+  // **間の差が大きい 2 種別を選ぶこと。** 差より長く待ってから後発を投げると先発の方が先に
+  // 喋り始め、追い越しそのものが起きない（この組の差は 270ms）。
   it('先に届いた同格の読み上げは、後から届いた方に追い越されたら取り下げる', async () => {
     const handle = setup()
-    handle(makeQuake({ type: '震源情報' }))
-    await vi.advanceTimersByTimeAsync(600)      // 震源情報の間（1.7 秒）が明ける前に
+    handle(makeQuake({ type: '各地の震度情報' }))
+    await vi.advanceTimersByTimeAsync(100)     // 間（0.77 秒）が明ける前に
     await flush()
-    handle(makeQuake({ type: '震度速報' }))
+    handle(makeQuake({ type: '震度速報' }))    // 間 0.5 秒 ＝ こちらが先に喋り始める
     await settle()
-    // 震源情報は読まれない（取り下げ）。新しい震度速報だけが最後まで読まれる
+    // 各地の震度情報は読まれない（取り下げ）。新しい震度速報だけが最後まで読まれる
     expect(spokenTexts()).toHaveLength(1)
     expect(spokenTexts()[0]).toContain('震度速報')
   })
@@ -574,12 +582,16 @@ describe('非 EEW の読み上げの優先度', () => {
   // 取り下げが決まった予約は「最後に予約されたもの」から降りる。降りないと、自分より前に
   // 予約されていた読み上げが「後発に追い越された」と誤認して連鎖的に取り下がり、**追い越した側も
   // 追い越された側も鳴らない**。
+  //
+  // **EEW を読み切らせるのは 2 つの間の隙間で行う。** 先発の間が明けたときに EEW がまだ喋って
+  // いると、先発は「後から届いた読み上げに追い越された」として正当に取り下げられ、連鎖の有無を
+  // 見分けられなくなる。
   it('後発が取り下げられたら、先に届いていた読み上げは読まれる', async () => {
     const handle = setup()
-    handle(makeQuake({ type: '震源情報' }))    // 声までの間 1.7 秒
+    handle(makeQuake({ type: '各地の震度情報' }))  // 声までの間 0.77 秒
     await vi.advanceTimersByTimeAsync(100)
     await flush()
-    handle(makeQuake({ type: '震度速報' }))    // 声までの間 0.5 秒
+    handle(makeQuake({ type: '震度速報' }))        // 声までの間 0.5 秒（明けるのは 0.6 秒の時点）
     await vi.advanceTimersByTimeAsync(100)
     await flush()
 
@@ -589,21 +601,23 @@ describe('非 EEW の読み上げの優先度', () => {
     expect(spokenTexts()[0]).toContain('緊急地震速報')
 
     // 震度速報は EEW に追い越されて取り下げられる
-    await vi.advanceTimersByTimeAsync(500)
+    await vi.advanceTimersByTimeAsync(400)
     await flush()
     expect(spokenTexts()).toHaveLength(1)
 
     // EEW の読み上げ（震源 → 予想震度の 2 フェーズ）を読み切らせる。残っていると EEW が最優先の
-    // ままなので、震源情報が読まれない理由が「連鎖」か「EEW 待ち」か切り分けられない。
+    // ままなので、各地の震度情報が読まれない理由が「連鎖」か「EEW 待ち」か切り分けられない。
+    // **ここではタイマーを進めない**（進めると先発の間まで明けてしまう）。
     for (let i = 0; i < 5; i++) {
       speeches.forEach((_, idx) => finishSpeech(idx))
       await flush()
     }
 
-    // 震源情報の間（1.7 秒）が明ける。取り下げが連鎖していなければ読まれる
+    // 各地の震度情報の間（0.77 秒）が明ける。取り下げが連鎖していなければ読まれる
+    // （各地の震度情報は「地震情報。」と名乗る。震度速報の「震度速報。」とはここで見分ける）
     await vi.advanceTimersByTimeAsync(2000)
     await flush()
-    expect(spokenTexts().some(t => t.includes('震源情報'))).toBe(true)
+    expect(spokenTexts().some(t => t.startsWith('地震情報。'))).toBe(true)
   })
 
   // 主題はイベントごとに分ける。別の地震は別のイベントで内容が重ならないため、種別だけでまとめると

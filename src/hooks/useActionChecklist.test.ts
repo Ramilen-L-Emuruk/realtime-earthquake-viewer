@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useActionChecklist, SUPPRESS_MS } from './useActionChecklist'
 import type { EEWAlert, JMAQuake } from '../types/earthquake'
+import type { DetectedPoint } from '../utils/kyoshinDetectionView'
 
 const MIN = 45 // 震度5弱
 
@@ -43,24 +44,32 @@ function eewAlert(eventId: string, scale: number, cancelled = false): EEWAlert {
   } as unknown as EEWAlert
 }
 
-const NO_INDICES: readonly number[] = []
+const NO_POINTS: readonly DetectedPoint[] = []
+
+/** 検知エンジンが確定と判断したメンバー観測点。 */
+function detected(index: number): readonly DetectedPoint[] {
+  return [{ key: '37.500,137.200', lat: 37.5, lng: 137.2, index }]
+}
 
 interface Props {
   q?: JMAQuake
   e?: readonly EEWAlert[]
-  k?: readonly number[]
+  k?: readonly DetectedPoint[]
+  /** 検知エンジンが結果を出せなくなっている（`useKyoshinDetectorV2` の `stalled`）。 */
+  stalled?: boolean
   min?: number
 }
 
 function setup(initial: JMAQuake | undefined, eews: readonly EEWAlert[] = NO_EEWS) {
   return renderHook(
-    ({ q, e, k, min }: Props) =>
+    ({ q, e, k, stalled, min }: Props) =>
       useActionChecklist({
         minScale: min ?? MIN,
         home: null,
         stationCoords: null,
         kyoshinSites: [],
-        kyoshinIndices: k ?? NO_INDICES,
+        detectedPoints: k ?? NO_POINTS,
+        kyoshinStalled: stalled ?? false,
         eews: e ?? NO_EEWS,
         latestQuake: q,
       }),
@@ -306,13 +315,13 @@ describe('レビュー 2 巡目で見つかった穴の回帰', () => {
     const STRONG = 19 // 震度7
     const CALM = 6 // 震度0
     const { result, rerender } = setup(undefined)
-    act(() => rerender({ k: [STRONG] }))
+    act(() => rerender({ k: detected(STRONG) }))
     const first = result.current.state?.key
     expect(first).toMatch(/^kyoshin:/)
 
-    act(() => rerender({ k: [CALM] })) // 揺れが収まる（識別子を捨てる）
+    act(() => rerender({ k: detected(CALM) })) // 揺れが収まる（識別子を捨てる）
     act(() => void vi.advanceTimersByTime(1000))
-    act(() => rerender({ k: [STRONG] })) // 別の地震
+    act(() => rerender({ k: detected(STRONG) })) // 別の地震
     expect(result.current.state?.key).not.toBe(first)
   })
 
@@ -320,10 +329,75 @@ describe('レビュー 2 巡目で見つかった穴の回帰', () => {
   it('揺れが続いている間は識別子を変えない', () => {
     const STRONG = 19
     const { result, rerender } = setup(undefined)
-    act(() => rerender({ k: [STRONG] }))
+    act(() => rerender({ k: detected(STRONG) }))
     const first = result.current.state?.key
     act(() => void vi.advanceTimersByTime(1000))
-    act(() => rerender({ k: [STRONG, STRONG] }))
+    act(() => rerender({ k: [...detected(STRONG), { key: 'x', lat: 37, lng: 137, index: STRONG }] }))
     expect(result.current.state?.key).toBe(first)
+  })
+
+  // 確定していない揺れでは発火しない。生の観測値を素通ししていたときは、1 点の跳ね上がりが
+  // そのまま「震度7」として帯に出ていた（実データ 793 窓の再生で、気象庁発表が震度1 の地震に
+  // 震度5弱、震度4 の地震に震度6弱と表示された）。
+  it('検知エンジンが確定を出していなければ、値の高い点があっても発火しない', () => {
+    const { result, rerender } = setup(undefined)
+    act(() => rerender({ k: NO_POINTS }))
+    expect(result.current.state).toBe(null)
+  })
+})
+
+// 強震モニタ経路の入力を検知エンジンへ移したことで、エンジンの異常がこの機能にも波及するように
+// なった。エンジンは連続して壊れると検知結果を空にする（`useKyoshinDetectorV2` の `stalled`）ので、
+// それを「揺れが収まった」と読ませない。
+describe('検知エンジンが詰まっている間', () => {
+  const STRONG = 19 // 震度7
+
+  it('識別子を捨てない（復帰したとき同じ揺れとして扱う）', () => {
+    const { result, rerender } = setup(undefined)
+    act(() => rerender({ k: detected(STRONG) }))
+    const first = result.current.state?.key
+    expect(first).toMatch(/^kyoshin:/)
+
+    act(() => rerender({ k: NO_POINTS, stalled: true }))
+    act(() => void vi.advanceTimersByTime(1000))
+    act(() => rerender({ k: detected(STRONG), stalled: false }))
+    expect(result.current.state?.key).toBe(first)
+  })
+
+  it('出ている帯を引っ込めない', () => {
+    const { result, rerender } = setup(undefined)
+    act(() => rerender({ k: detected(STRONG) }))
+    act(() => rerender({ k: NO_POINTS, stalled: true }))
+    expect(result.current.state?.reason).toBe('kyoshin')
+    expect(result.current.state?.scale).toBe(70)
+  })
+
+  // 揺れが続いているのに「強い揺れがありました」（過去形）へ差し替わると、震度も別の値になる
+  it('地震情報へ落とさない（過去形へ差し替わらない）', () => {
+    const { result, rerender } = setup(undefined)
+    act(() => rerender({ k: detected(STRONG) }))
+    expect(result.current.state?.reason).toBe('kyoshin')
+    act(() => rerender({ k: NO_POINTS, stalled: true, q: quake('ev1', 55) }))
+    expect(result.current.state?.reason).toBe('kyoshin')
+    expect(result.current.state?.scale).toBe(70)
+  })
+
+  // 安全弁: 留めるのは強震モニタの帯が出ているときだけ。何も出ていない状態まで止めると、
+  // エンジンが壊れ続けている端末で地震情報の経路まで死ぬ。
+  it('何も出ていなければ、詰まっていても地震情報で出す', () => {
+    const { result, rerender } = setup(undefined)
+    act(() => rerender({ k: NO_POINTS, stalled: true, q: quake('ev1', 55) }))
+    expect(result.current.state?.reason).toBe('quake')
+  })
+
+  // 対照: 詰まっていないのに検知が消えたのは「揺れが収まった」。次の揺れは別物として扱う。
+  it('詰まっていないなら、検知が消えた時点で識別子を捨てる', () => {
+    const { result, rerender } = setup(undefined)
+    act(() => rerender({ k: detected(STRONG) }))
+    const first = result.current.state?.key
+    act(() => rerender({ k: NO_POINTS, stalled: false }))
+    act(() => void vi.advanceTimersByTime(1000))
+    act(() => rerender({ k: detected(STRONG), stalled: false }))
+    expect(result.current.state?.key).not.toBe(first)
   })
 })

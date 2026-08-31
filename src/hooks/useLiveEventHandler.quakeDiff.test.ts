@@ -52,7 +52,12 @@ vi.mock('../utils/voicevox', async () => {
     },
   }
 })
-vi.mock('../utils/alertSound', () => ({ playAlertSound: vi.fn() }))
+// 音の実体だけ差し替える。**通知音との間（`ttsDelayFor`）は本物を使う** ―― 読み上げの順番と
+// 待ち合わせはこの間の長さで決まるため、模擬すると検証の前提が変わる。
+vi.mock('../utils/alertSound', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/alertSound')>()
+  return { ...actual, playAlertSound: vi.fn() }
+})
 vi.mock('../utils/notifications', () => ({ showBrowserNotification: vi.fn() }))
 
 function spokenTexts(): string[] {
@@ -135,7 +140,7 @@ function setup() {
     defaultTabRef: { current: 'earthquake' },
     setActiveTabRealtimeForKyoshin: vi.fn(), setActiveTabNonRealtime,
     setActiveTabRealtimeOnUpdate: vi.fn(),
-    setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab, preSpeechTab: vi.fn(),
+    setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab, preSpeechTab: vi.fn(() => true),
     expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(), setActiveLpgmEventId: vi.fn(),
   }))
@@ -185,7 +190,7 @@ describe('地震情報の続報: 既読は声になった分だけ進む', () =>
 
     handle(makeQuake(threeAreas))
     await settle()
-    expect(followSpeechTab).toHaveBeenCalledWith('earthquake', expect.anything())
+    expect(followSpeechTab).toHaveBeenCalledWith('earthquake', expect.anything(), { alreadyShown: true })
   })
 
   it('正: 途中で切られたら、鳴った区域だけが既読になる', async () => {

@@ -14,7 +14,7 @@ import {
 import { haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
 import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, matchesArea, sortAreasForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations } from '../utils/tsunami'
-import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
+import { playAlertSound, ttsDelayFor, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
 import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
 import { joinSegments, plain, hasFollowTarget, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
@@ -158,10 +158,6 @@ type EEWPhase1Progress = {
   /** 予約済みでまだ声になっていない言い直し。null なら重ねてよい。 */
   restateToken: object | null
 }
-
-// 南海トラフ関連解説情報の通知音（specialInfoCommentary）は約 1.3 秒。鳴り終わってから読み上げる。
-// 音を作り変えたらこの値も見直すこと（docs/spec/audio-tts-spec.md §6）。
-const NANKAI_COMMENTARY_TTS_DELAY_MS = 1500
 
 // 先に鳴っている読み上げ（EEW を含む）の完了を待つ上限。津波の本文は 60 秒近くに達することが
 // あるため、EEW チェーンの刻み（EEW_SPEECH_CHAIN_MAX_WAIT_MS）を流用すると読み上げを途中で
@@ -378,15 +374,23 @@ export interface LiveEventHandlerDeps {
    * 受信時の要求（`setActiveTab*`）との違いは、**読み上げの順番待ちを経ている**こと。
    * 重い電文の読み上げ中に届いた軽い電文は、その読み上げが終わって自分の番が来たときに
    * 初めて画面を取る（従来は受信の瞬間に要求して保持に弾かれ、そのまま捨てられていた）。
+   *
+   * **受信時の先出しで既に画面を取れていたら `alreadyShown` を立てて渡す。** 渡した場合、
+   * 揺れ検知に奪われていても取り返さない（往復を防ぐ。判断は `shouldRetakeAfterPreSpeech` で、
+   * 読み上げを持つ相手に奪われた場合は取り返す）。
    */
-  followSpeechTab: (tab: TabId, priority: TabPriority) => void
+  followSpeechTab: (tab: TabId, priority: TabPriority, opts?: { alreadyShown?: boolean }) => void
   /**
    * 通知音と同時に出す**先出し**の追従（待たされずに読めると判断したときだけ）。
    *
    * `followSpeechTab` と分けているのは、**先出しに最小滞留時間の床を掛けないため**。
    * 予定の段階で床を消費すると、後から実際に声が出る側の追従を弾く（理由は App 側の宣言箇所）。
+   *
+   * **戻り値は呼び出した瞬間に画面を取れたか。** そのあと奪われたかは含まない。
+   * 呼び出し側はこれを `followSpeechTab` の `alreadyShown` へ渡すだけで、**追従の呼び出し
+   * 自体は省かない** —— 取り返すかどうかは保持の中身を見て App 側が決める。
    */
-  preSpeechTab: (tab: TabId, priority: TabPriority) => void
+  preSpeechTab: (tab: TabId, priority: TabPriority) => boolean
   /**
    * 読み上げの進行を画面へ伝える（津波カードの追従スクロール）。
    *
@@ -842,8 +846,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    * `speakWithVoicevox` は待ち行列ではなく割り込み（既存の再生を stop し進行中の合成を abort
    * する）なので、待たずに投げると緊急度の低い情報が重い情報を途中で消す。実例: 2024/1/1 能登の
    * 16:08 の EEW 第 1 報が、その 0.36 秒後に読み上げの始まった震源情報に潰されていた
-   * （震源情報の電文自体は EEW より先に届いており、TTS_DELAY_MS を経て読み上げが始まる。
-   * **割り込みは電文の到来順では決まらない**）。同じ再生では、大津波警報の読み上げが 30 秒後に
+   * （震源情報の電文自体は EEW より先に届いており、通知音との間（`ttsDelayFor`）を経て
+   * 読み上げが始まる。**割り込みは電文の到来順では決まらない**）。同じ再生では、大津波警報の
+   * 読み上げが 30 秒後に
    * 始まった地震情報に消されていた。
    *
    * 逆向き（優先度の高い側が低い側を切る）は許す。緊急度どおりであり、また地震情報の本文は
@@ -1016,10 +1021,14 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    * 通知音との重なりを避ける間（`delay`）を置いてから非 EEW の読み上げを始める。
    * あわせて、読み上げに同調したタブ移動を仕込む。
    *
-   * **待たされずに読めそうなら、通知音と同じ瞬間に画面も合わせる。** 遅延は電文の種別ごとに
-   * 0.5〜2.8 秒あり、その間ずっと前のタブに留まると「音が鳴ったのに画面が変わらない」ように
+   * **待たされずに読めそうなら、通知音と同じ瞬間に画面も合わせる。** 間は音の種別ごとに
+   * 0.5〜2.7 秒あり、その間ずっと前のタブに留まると「音が鳴ったのに画面が変わらない」ように
    * 見える。読み上げの直前にも同じ追従を呼ぶため、待っている間に別の情報が画面を取っていれば、
    * 自分の番が来た時点で取り戻せる。
+   *
+   * **ただし揺れ検知に奪われた場合だけは取り戻さない**（先出しで一度見せているため。判断は
+   * `shouldRetakeAfterPreSpeech`）。取り戻すと、次のレベルアップでまた奪われて画面が数秒の
+   * うちに往復する。先出しの成否を `followSpeechTab` の `alreadyShown` へ渡して判断させる。
    *
    * 先出しの判断が外れること（遅延の最中に EEW や津波が割り込む）はある。**巻き戻さない。**
    * 割り込んだ側が自分で画面を取るため、放っておけば正しい方へ落ち着く。
@@ -1059,10 +1068,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       latestScheduledSeqByTopicRef.current.clear()
     }
     latestScheduledSeqByTopicRef.current.set(topic, seq)
+    // **先出しで画面を取れたか。** これは下の `onSpeakStart` で `alreadyShown` として渡すだけで、
+    // 追従を呼ぶかどうかの判断には使わない（理由はそちらのコメント）。
+    let tabTakenByPreSpeech = false
     if (follow) {
       if (blockedAtSchedule === null) {
         log.info(`[tab] ${follow.tab} を要求 (通知音と同時・読み上げの待ちなし)`)
-        preSpeechTab(follow.tab, follow.priority)
+        tabTakenByPreSpeech = preSpeechTab(follow.tab, follow.priority)
       } else {
         // 見送った理由を残す。「音は鳴ったのに画面がすぐ動かなかった」を後から追うのに必要
         // （動いたかどうかは `requestAutoTab` の記録で分かるが、なぜ待ったかは分からない）。
@@ -1111,7 +1123,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // 声に出す瞬間にまとめて行う（画面を合わせる・読み上げた値を既読へ移す）
           () => {
             onSpeakStart?.()
-            if (follow) followSpeechTab(follow.tab, follow.priority)
+            // **先出しで既に画面を取れていたかを渡す。** 取れていた場合に取り返すかどうかは
+            // 保持の中身を見て決める（`shouldRetakeAfterPreSpeech`）——揺れ検知に奪われたなら
+            // 取り返さず、読み上げを持つ相手に奪われたなら取り返す。
+            // **ここで呼び分けない**のは、`tabTakenByPreSpeech` が「取れた実績」でしかなく、
+            // その後に奪われたかを知らないため。呼ばずに省くと、近接して届いた 2 つの電文が
+            // 互いの先出しを上書きし合ったとき、後で声に出る側の画面が二度と戻らない。
+            if (follow) followSpeechTab(follow.tab, follow.priority, { alreadyShown: tabTakenByPreSpeech })
           },
           prewarmed,
           segments,
@@ -1166,7 +1184,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         speakNonEEWDelayed(
           earthquakeCancelToText(original?.time ?? null),
           SPEECH_PRIORITY.normal,
-          1200,
+          ttsDelayFor('eewCancel'),
           `quake:${quakeEventKey(event as import('../types/earthquake').JMAQuake)}`,
           { tab: 'earthquake', priority: TAB_PRIORITY.quake },
         )
@@ -1278,9 +1296,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 津波解除・取消・失効の通知音（AUD-6）。cancelReason の 3 種を区別せず単一音で伝える。
       // TTS は eewCancel と同じく音の後ろへずらして音響重複を避ける。
       //
-      // 見直しの基準と実測値は audio-tts-spec.md §6 の表に集約してある。
-      // 2 音目を観測情報の更新に揃えて音が 1.33 → 0.82 秒に詰まったため、遅延も 1700ms から
-      // 詰めた。1200ms の時点で音は完全に止まっている（地震情報の取消・EEW 誤報取消と同値）。
+      // 間の長さは音の種別で決まる（`ttsDelayFor`）。実測値と測り方は audio-tts-spec.md §6。
       if (!alreadySpoken) {
         spokenTsunamiCancelEventIdsRef.current.add(cancelId)
         if (settings.soundEnabled) playAlertSound('tsunamiCancel')
@@ -1288,7 +1304,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           speakNonEEWDelayed(
             tsunamiCancelToText(event.cancelReason),
             SPEECH_PRIORITY.high,
-            1200,
+            ttsDelayFor('tsunamiCancel'),
             'tsunami',
             { tab: 'tsunami', priority: TAB_PRIORITY.tsunami },
           )
@@ -1359,7 +1375,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             if (settings.voicevoxEnabled) {
               // 誤報取消は「手動選択より強い」側の通知なので、追従も eewUrgent で出す
               // （eewUpdate だと、取消を読み上げる直前に手動で別タブへ移られた場合に弾かれる）。
-              scheduleSpeech(1200, () => chainEEWSpeech(
+              scheduleSpeech(ttsDelayFor('eewCancel'), () => chainEEWSpeech(
                 () => eewCancelToText(event),
                 () => followSpeechTab('realtime', TAB_PRIORITY.eewUrgent),
               ))
@@ -1914,7 +1930,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 主題は地震情報と分ける。内容が別軸（震度と長周期地震動階級）なので、片方が
         // もう片方の言い換えにはならない（割り込みは従来どおり許す）。
         speakNonEEWDelayed(
-          lpgmSpeech, SPEECH_PRIORITY.normal, 1000, `lpgm:${lpgmEvent.eventId}`,
+          lpgmSpeech, SPEECH_PRIORITY.normal, ttsDelayFor('earthquake'), `lpgm:${lpgmEvent.eventId}`,
           { tab: 'earthquake', priority: TAB_PRIORITY.quake },
         )
       }
@@ -1940,7 +1956,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 最下位の専用層を使う（理由は SPEECH_PRIORITY の commentary の注記）。
         // 帯で伝える情報なのでタブは動かさない（パネルの展開は expandPanelForSpecialInfo が担う）。
         speakNonEEWDelayed(
-          nankaiCommentaryToText(commentary), SPEECH_PRIORITY.commentary, NANKAI_COMMENTARY_TTS_DELAY_MS,
+          nankaiCommentaryToText(commentary), SPEECH_PRIORITY.commentary, ttsDelayFor('specialInfoCommentary'),
           'nankaiCommentary',
         )
       }
@@ -1965,7 +1981,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // 帯で伝える情報なのでタブは動かさない（理由は関連解説情報と同じ）
           // 臨時情報と後発地震注意情報は主題を分ける。どちらも `high` だが互いに言い換えでは
           // ないため、まとめると一方の発表がもう一方を無音のまま消す。
-          speakNonEEWDelayed(ttsText, SPEECH_PRIORITY.high, 1500, specialEvent.kind === 'nankai' ? 'nankai' : 'kohatsu')
+          speakNonEEWDelayed(ttsText, SPEECH_PRIORITY.high, ttsDelayFor('specialInfo'),
+            specialEvent.kind === 'nankai' ? 'nankai' : 'kohatsu')
         }
         // タイトル更新
         const specialTitle = specialEvent.kind === 'nankai'
@@ -2056,19 +2073,6 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
 
     // VOICEVOX 読み上げ（新しい情報が来たら再生中を割り込み停止して読み直す）
     if (settings.voicevoxEnabled) {
-      const TTS_DELAY_MS: Partial<Record<AlertSoundType, number>> = {
-        earthquake:       1000,
-        earthquakePrompt:  500,
-        earthquakeInfo:   1700,
-        tsunamiForecast:  1900,
-        tsunamiWatch:     1700,
-        tsunami:          2800,
-        // 大津波警報を上昇サイレンへ作り変えて音が 3.73 → 1.94 秒に詰まったため、他の津波と
-        // 同じ基準（音の終わり ＋ 0.3〜0.4 秒）へ揃えた。音の終わりは 1.94 秒。
-        // **最も急を要する警報なので、余った待ち時間はそのまま読み上げの遅れになる。**
-        tsunamiMajor:     2300,
-        tsunamiUpdate:     800,
-      }
       let ttsText: string | null = null
       // 読み上げ文は断片列でも作る。**用途は種別で違う。**
       //   津波 … カードを読み上げに追従させる（どの語がどの区域・観測点を指すか。`ttsFollow`）
@@ -2217,7 +2221,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         speakNonEEWDelayed(
           ttsText,
           speechPriority,
-          TTS_DELAY_MS[type] ?? 0,
+          ttsDelayFor(type),
           speechTopic,
           { tab: followTab, priority: event.kind === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake },
           ttsSegments ?? undefined,
