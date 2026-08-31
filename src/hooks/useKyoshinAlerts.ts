@@ -10,6 +10,7 @@ import { haversineKm } from '../utils/geo'
 import { log } from '../utils/logger'
 import { computeSWaveRadiusAtTime } from './usePsWaveCalc'
 import type { ConfirmedShock } from '../utils/kyoshinDetectionView'
+import { PARAMS } from '../utils/kyoshinDetector'
 
 // 強震モニタの揺れ検知（V3 エンジン）に応じたタブ切替・ウィンドウタイトル・通知音・ブラウザ通知を担うフック。
 //
@@ -442,6 +443,29 @@ export function stepAlertRegions(
   return alert
 }
 
+/**
+ * 復帰後の検知が、途絶前と同じ揺れか。**復帰後のすべての地点が途絶前のいずれかの近くにある**ときだけ真。
+ *
+ * 1 つでも離れた地点が混じっていれば偽——別の地震が始まっている可能性があり、そこで音を抑えると
+ * **無関係な地震を無音で握り潰す**。「余分に鳴る」より悪い失敗なので、判定は鳴らす側へ倒す。
+ *
+ * 物差しは `MERGE_EVENT_KM`（イベント重心がこの距離以内なら 1 地震として併合する）。照合しているのが
+ * まさに**イベント重心どうし**（`ConfirmedShock` の `lat`/`lng`）なので目的が一致する。同一地震の照合に
+ * 使う `REGION_MATCH_KM`(300km) は借りない——あちらは「1 つの地震の揺れが継続監視の中でどこまで
+ * 広がりうるか」の物差しで、途絶をまたいだ同一性の判定には広すぎる（`MAX_DT_GAP_MS` の途絶で重心が
+ * 動くのは S 波が進む数十 km ぶん）。`isSameEarthquake` そのものも使わない。あちらは経過時間と EEW から
+ * 動的な閾値を作るが、ここへ時刻を持ち込むと窓の起点・時計系統・閉じ忘れの問題が戻る（設計書§35）。
+ *
+ * export しているのはテストから直接呼ぶため。
+ */
+export function isSameShakeAsBefore(
+  now: readonly ConfirmedShock[],
+  before: readonly ConfirmedShock[],
+): boolean {
+  if (now.length === 0 || before.length === 0) return false
+  return now.every((s) => before.some((b) => haversineKm(s.lat, s.lng, b.lat, b.lng) <= PARAMS.MERGE_EVENT_KM))
+}
+
 export interface KyoshinAlertsDeps {
   /** confirmed イベントが1件以上あるか（V3 検知の確定） */
   confirmed: boolean
@@ -456,6 +480,14 @@ export interface KyoshinAlertsDeps {
   confirmedShocks: ConfirmedShock[]
   /** 現フレームのデータ時刻文字列（毎フレーム更新される別地点発報エフェクトの駆動キー） */
   dataTime: string
+  /**
+   * 検知結果が「**判らなくなったので空にした**」状態か（`useKyoshinDetectorV2` の同名フィールド）。
+   *
+   * `confirmed` が落ちた理由が「揺れが収まった」のか「上流の異常で検知そのものが止まった」のかを
+   * 見分けるために要る。後者からの復帰は同じ地震が続いていることが多く、そこで警報音とブラウザ通知を
+   * 鳴らし直すと「収まって、また始まった」という誤った印象を与える。
+   */
+  stalled: boolean
   settings: AppSettings
   /** useAlertTitle の戻り値（ウィンドウタイトル操作 API） */
   title: AlertTitleApi
@@ -486,7 +518,7 @@ export interface KyoshinAlertsDeps {
 
 export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
   const {
-    confirmed, candidate, candidateMaxIndex, confirmedShocks, dataTime, settings, title,
+    confirmed, candidate, candidateMaxIndex, confirmedShocks, dataTime, stalled, settings, title,
     activeEEWsRef, defaultTabRef, setActiveTab, revertToDefaultTab, onShakeFocus,
   } = deps
 
@@ -495,6 +527,18 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
   // 毎レンダー ref へ写し、発報の瞬間に最新だけを読む（`activeEEWsRef` と同じ流儀）。
   const onShakeFocusRef = useRef(onShakeFocus)
   onShakeFocusRef.current = onShakeFocus
+  // `stalled` も同じ理由で ref に写す。依存配列へ入れると、検知が止まった／戻ったというだけで
+  // 発報エフェクトが走り直す。
+  const stalledRef = useRef(stalled)
+  stalledRef.current = stalled
+  // 直近に確定していた検知地点。途絶をまたいで「同じ揺れの続きか」を照合するために持つ
+  // （`confirmed` が落ちたフレームでは `confirmedShocks` は既に空なので、落ちる前の値が要る）。
+  const lastConfirmedShocksRef = useRef<readonly ConfirmedShock[]>([])
+  if (confirmed) lastConfirmedShocksRef.current = confirmedShocks
+  // 発報エフェクトの依存配列には `confirmedShocks` を入れていないため、クロージャで掴むと古い実体を
+  // 読む。他のコールバックと同じく ref へ写して、発報の瞬間に最新を読む。
+  const confirmedShocksRef = useRef(confirmedShocks)
+  confirmedShocksRef.current = confirmedShocks
   /**
    * 揺れの強まりで見せる 1 点＝**レベルを担った観測点そのもの**（そのイベントで最大震度を
    * 記録した点。`ConfirmedShock.peak`）。
@@ -542,28 +586,64 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
 
   // 確定検知の開始/終了: realtime タブ＋タイトル＋通知音＋ブラウザ通知。
   const prevConfirmedRef = useRef(false)
+  /**
+   * 「判らなくなった」ことで confirmed が落ちたまま、まだ結果が戻っていないか。
+   *
+   * **経過時間では測らない。** 起点は「confirmed が落ちたのを観測した時刻」で、検知エンジンが数えて
+   * いる「最後に結果を出せた時刻」より数フレーム遅い。測る時計もアプリ時計とデータ時刻で別物で、
+   * リプレイでは進む速さが違う。そして窓を閉じ損ねると、**後から来た無関係な地震の警報を無音で
+   * 握り潰す**（詳細は設計書§35）。
+   *
+   * 代わりに**復帰した検知が途絶前と同じ場所か**を照合する（`isSameShakeAsBefore`）。印が立って
+   * いるだけでは足りない——途絶が `MAX_DT_GAP_MS` 以内なら検知エンジンは状態を組み直さず通常の経路を
+   * 通るので、復帰フレームで**まったく別の地震**が確定しうる（EEW 発表中や高震度は 1 フレームで確定
+   * する設計のため、強い地震ほど起こりやすい）。
+   */
+  const lostWhileStalledRef = useRef(false)
+  /** 途絶に入る直前に確定していた検知地点（復帰後との照合用）。 */
+  const shocksBeforeStallRef = useRef<readonly ConfirmedShock[]>([])
   useEffect(() => {
     if (confirmed && !prevConfirmedRef.current) {
-      log.info('[tab] realtime を要求 (揺れ検知開始 V3 confirmed)')
+      const resumed = lostWhileStalledRef.current
+        && isSameShakeAsBefore(confirmedShocksRef.current, shocksBeforeStallRef.current)
+      lostWhileStalledRef.current = false
+      shocksBeforeStallRef.current = []
+      log.info(`[tab] realtime を要求 (揺れ検知${resumed ? '再開' : '開始'} V3 confirmed)`)
       setActiveTab('realtime')
       title.setTitle('揺れ検知')
-      if (settings.soundEnabled) {
-        playAlertSound('kyoshin')
-      }
-      if (settings.notifyMinScale >= 0 && settings.notifyDetection) {
-        const label = kyoshinIndexToLabel(effectiveKyoshinMaxIndex) ?? '?'
-        showBrowserNotification('揺れを検知中', `推定最大震度 ${label}（強震モニタ）`, 'kyoshin-detection')
+      // 抑えるのは音と通知だけ。画面（タブ・タイトル）は従来どおり、検知が落ちた時点で一度既定へ
+      // 戻り、ここで復帰する（結果が空の間まで「揺れ検知」を出し続けると、判っていない状態を
+      // 判っているように見せることになる）。
+      if (resumed) {
+        log.info('[kyoshin] 検知の復帰につき検知音とブラウザ通知は省略（同じ地震の続き）')
+      } else {
+        if (settings.soundEnabled) {
+          playAlertSound('kyoshin')
+        }
+        if (settings.notifyMinScale >= 0 && settings.notifyDetection) {
+          const label = kyoshinIndexToLabel(effectiveKyoshinMaxIndex) ?? '?'
+          showBrowserNotification('揺れを検知中', `推定最大震度 ${label}（強震モニタ）`, 'kyoshin-detection')
+        }
       }
     } else if (!confirmed && prevConfirmedRef.current) {
+      // 揺れが収まったのか、検知そのものが止まったのか。後者だけ「続きかもしれない」印を立て、
+      // 照合のために直前の検知地点を控える。
+      lostWhileStalledRef.current = stalled
+      shocksBeforeStallRef.current = stalled ? lastConfirmedShocksRef.current : []
       title.applyPriority({ kyoshinDetected: false })
       if (activeEEWsRef.current.size === 0) {
         log.info(`[tab] → ${defaultTabRef.current} (揺れ検知終了 V3)`)
         revertToDefaultTab()
       }
+    } else if (!confirmed && !stalled) {
+      // 結果は戻ったのに検知は無い＝続きではなかった。印を下ろす。ここを省くと印が残り続け、
+      // 後から来た無関係な地震で音と通知が出なくなる。
+      lostWhileStalledRef.current = false
+      shocksBeforeStallRef.current = []
     }
     prevConfirmedRef.current = confirmed
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 音の再鳴を安定させるため依存は限定する
-  }, [confirmed, effectiveKyoshinMaxIndex, settings.soundEnabled, settings.notifyDetection])
+  }, [confirmed, stalled, effectiveKyoshinMaxIndex, settings.soundEnabled, settings.notifyDetection])
 
   // 可能性（likely）発生時の早期反応: タブ切替＋タイトル変更＋控えめな候補音のみ
   // （ブラウザ通知・フル音は確定時まで行わない）。確定（confirmed）に昇格した場合は上の

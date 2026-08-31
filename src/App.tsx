@@ -1179,11 +1179,22 @@ export function App() {
   // PERF-1: kyoshin モード以外では KyoshinSubThreshold レイヤーが表示されないため、
   // 他モードのとき filterSubThresholdIndices の毎秒 1725 点走査をスキップする
   // （`undefined` を返せば JapanMapGL 側で kyoshinIndices にフォールバックする）。
+  //
+  // 床は観測点の並びで対応づけるため、**床がこの観測点配列に対して計算されたものか**を参照で確かめる
+  // （`floorsSites`。理由は useKyoshinDetectorV2 の同フィールド）。不一致の間はフィルタをかけずに素の
+  // 震度を出す（消すより出す方へ倒す）。
+  //
+  // ここで「フィルタが効いていない」ことを別途記録しないのは、素通りが続く状況の**主な原因が別の形で
+  // 記録される**ため。観測点リストの差し替え直後の不一致は次のデータ時刻で解消し、解消しない場合は
+  // 原因側が記録を出し続ける——観測点リストの取得が失敗し続けるなら useKyoshinRealtime が、
+  // `step()` が壊れ続ける・観測点数と震度の件数が食い違うなら useKyoshinDetectorV2 が。
+  // 記録に現れない経路も 1 つ残っている（観測点リストを並行して取りに行ったときの応答順の入れ替わり。
+  // 取得は成功しているので失敗の記録には出ない。docs/spec/data-sources-spec.md の「残る既知の課題」）。
   const kyoshinSubIndices = useMemo(
-    () => (mapMode === 'kyoshin'
+    () => (mapMode === 'kyoshin' && kyoshinV2.floorsSites === kyoshinSitesGated
       ? filterSubThresholdIndices(kyoshinSitesGated, kyoshinHeld.indices, kyoshinV2.floors)
       : undefined),
-    [mapMode, kyoshinSitesGated, kyoshinHeld, kyoshinV2.floors],
+    [mapMode, kyoshinSitesGated, kyoshinHeld, kyoshinV2.floors, kyoshinV2.floorsSites],
   )
   // タイマーコールバック内から最新の confirmed 値を参照する ref（宣言はコンポーネント冒頭・代入はここ）
   kyoshinDetectedRef.current = kyoshinView.confirmed
@@ -1262,6 +1273,9 @@ export function App() {
     candidateMaxIndex: kyoshinView.candidateMaxIndex,
     confirmedShocks: kyoshinView.confirmedShocks,
     dataTime: kyoshin.dataTime,
+    // 検知が「止まった」ことによる消失と、揺れが収まったことによる消失を見分けさせる
+    // （見分けないと、上流の異常から復帰したときに同じ地震で警報が鳴り直す）。
+    stalled: kyoshinV2.stalled,
     settings,
     title,
     activeEEWsRef,

@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
 import { filterSubThresholdIndices } from './kyoshinSubThresholdFilter'
-import { siteKey } from './kyoshinDetector'
 
 const OSAKA: [number, number] = [34.7, 135.5]
 const TOKYO: [number, number] = [35.7, 139.7]
@@ -10,63 +9,92 @@ describe('filterSubThresholdIndices', () => {
   it('floors が空（未学習）のときは生データをそのまま返す', () => {
     const sites: [number, number][] = [OSAKA, TOKYO]
     const indices = [5, 3]
-    expect(filterSubThresholdIndices(sites, indices, {})).toEqual(indices)
+    expect(filterSubThresholdIndices(sites, indices, [])).toEqual(indices)
   })
 
   it('慢性床＋マージンを超えない点は 0（非表示）にする（大阪のような常時ノイジーな点）', () => {
-    const sites: [number, number][] = [OSAKA]
     // 大阪の慢性床が value 1.0（index 8 相当）まで学習済み。平常の index5(value -0.5) は床未満。
-    const floors = { [siteKey(...OSAKA)]: 1.0 }
-    expect(filterSubThresholdIndices(sites, [5], floors)).toEqual([0])
+    expect(filterSubThresholdIndices([OSAKA], [5], [1.0])).toEqual([0])
   })
 
   it('慢性床＋マージンを超えた点はそのまま表示する（実際に揺れが強まったとき）', () => {
-    const sites: [number, number][] = [OSAKA]
-    const floors = { [siteKey(...OSAKA)]: 1.0 }
     // value(index10)=2.0 >= floor(1.0)+SUSTAIN_MARGIN(0.4)=1.4 なので表示
-    expect(filterSubThresholdIndices(sites, [10], floors)).toEqual([10])
+    expect(filterSubThresholdIndices([OSAKA], [10], [1.0])).toEqual([10])
   })
 
   it('床が低い静かな点はそのまま低いレベルでも表示され続ける（東京のような点）', () => {
-    const sites: [number, number][] = [TOKYO]
-    const floors = { [siteKey(...TOKYO)]: -2.0 }
     // value(index3)=-1.5 >= floor(-2.0)+0.4=-1.6 なので表示
-    expect(filterSubThresholdIndices(sites, [3], floors)).toEqual([3])
+    expect(filterSubThresholdIndices([TOKYO], [3], [-2.0])).toEqual([3])
   })
 
-  it('floors に無い座標（未知の観測点）は floor=0 として扱う', () => {
-    const sites: [number, number][] = [UNKNOWN]
-    // value(index6)=0.0 < floor(0)+0.4=0.4 なので非表示
-    expect(filterSubThresholdIndices(sites, [6], {})).toEqual([6]) // floors全体が空なら早期returnでそのまま
+  it('床を学習していない点（0 が入る）は震度0ドットの範囲では非表示になる', () => {
+    // index 1〜6 の value は最大 0.0 で、floor(0)+0.4=0.4 に届かない
+    expect(filterSubThresholdIndices([OSAKA, UNKNOWN], [5, 6], [1.0, 0])).toEqual([0, 0])
   })
 
-  it('floors が非空で一部座標だけ未登録の場合、その点は floor=0 扱いでフィルタされる', () => {
-    const sites: [number, number][] = [OSAKA, UNKNOWN]
-    const floors = { [siteKey(...OSAKA)]: 1.0 }
-    // 大阪(index5)は床未満で非表示。未知点(index6=value0.0)は floor=0+0.4=0.4 未満で非表示。
-    expect(filterSubThresholdIndices(sites, [5, 6], floors)).toEqual([0, 0])
+  // 座標が重複する観測点（Yahoo の公開座標は同一座標に複数の実体が載る。全1725点中207グループ・431点）。
+  // 検知エンジンは computeSiteKeys で #2, #3 と別実体に分けて床を学習している。以前はこのフィルタが
+  // 座標から作ったキーで引いていたため、2つ目以降が**グループ先頭の床**で判定されていた
+  // （実測 15 分で 60 点の表示が食い違った）。
+  describe('座標が重複する観測点', () => {
+    const DUP_A: [number, number] = [35.7, 139.8]
+    const DUP_B: [number, number] = [35.7, 139.8] // 同一座標の別実体
+
+    it('同一座標でも並び順で別々の床が効く（先頭の床を流用しない）', () => {
+      const sites: [number, number][] = [DUP_A, DUP_B]
+      // 先頭は静かな点（床 -2.5）、2つ目は都市ノイズの点（床 -1.0）。同じ index3(value -1.5) でも
+      // 先頭は表示（-1.5 >= -2.5+0.4=-2.1）、2つ目は非表示（-1.5 < -1.0+0.4=-0.6）。
+      expect(filterSubThresholdIndices(sites, [3, 3], [-2.5, -1.0])).toEqual([3, 0])
+    })
+
+    it('先頭が静かでも 2 つ目のノイジーな点は素通りしない', () => {
+      const sites: [number, number][] = [DUP_A, DUP_B]
+      // 2つ目の床 1.0（ノイジー）。index6(value 0.0) は 1.4 に届かず非表示。
+      // 座標キーで引いていた頃は先頭の床 -3.0 を引いて表示されていた。
+      expect(filterSubThresholdIndices(sites, [6, 6], [-3.0, 1.0])).toEqual([6, 0])
+    })
+
+    it('3 つ以上が同一座標でもそれぞれの床で判定する', () => {
+      const sites: [number, number][] = [DUP_A, DUP_B, [35.7, 139.8]]
+      // それぞれ 表示 / 非表示 / 表示
+      expect(filterSubThresholdIndices(sites, [4, 4, 4], [-2.0, 0.5, -1.5])).toEqual([4, 0, 4])
+    })
   })
 
-  // 座標キーのキャッシュ（観測点リストの配列そのものを鍵にする WeakMap）。
-  // 効かなければ毎秒 1725 点ぶんの文字列を組み直す元の負荷に戻り、内容が変わったのに
-  // 使い回せば別の観測点の学習値でフィルタしてしまう。どちらも例外を出さない。
-  it('同じ配列を繰り返し渡しても結果が変わらない（キャッシュが効いても正しい）', () => {
+  // 安全弁: 位置で対応づける以上、長さのずれは「別地点の床で判定する」ことを意味する。
+  // 消すより出す方へ倒す（フィルタ自体をかけない）。
+  describe('長さが揃わないとき', () => {
+    it('floors が sites より短ければフィルタしない', () => {
+      const sites: [number, number][] = [OSAKA, TOKYO]
+      expect(filterSubThresholdIndices(sites, [5, 5], [1.0])).toEqual([5, 5])
+    })
+
+    it('floors が indices と食い違えばフィルタしない', () => {
+      const sites: [number, number][] = [OSAKA, TOKYO]
+      expect(filterSubThresholdIndices(sites, [5], [1.0, -2.0])).toEqual([5])
+    })
+  })
+
+  // 観測点ごとに床が効くこと。以前は座標から作ったキーで辞書を引いており、キーを毎秒 1725 点ぶん
+  // 組み直す負荷を避けるためのキャッシュも持っていた。並びで対応づける今はキーを作らないので、
+  // キャッシュごと不要になっている。
+  it('同じ入力を繰り返し渡しても結果が変わらない', () => {
     const sites: [number, number][] = [OSAKA, TOKYO]
-    const floors = { [siteKey(...OSAKA)]: 1.0 }
+    const floors = [1.0, 0]
     // 同じ index8(value 1.0) でも、大阪は床1.0+0.4に届かず非表示・東京は床0+0.4を超えて表示。
-    // キーの引き当てが崩れると、この差が消える。
+    // 対応づけが崩れると、この差が消える。
     const first = filterSubThresholdIndices(sites, [8, 8], floors)
     const second = filterSubThresholdIndices(sites, [8, 8], floors)
     expect(second).toEqual(first)
     expect(second).toEqual([0, 8])
   })
 
-  it('観測点リストが差し替わったら新しい座標で引き直す', () => {
-    // 前のリストのキーを使い回すと、別の観測点の慢性床でフィルタしてしまう。
-    const floors = { [siteKey(...OSAKA)]: 1.0 }
+  it('観測点リストが差し替わったら、その並びの床で判定する', () => {
+    // 前のリストに対応づけたまま使うと、別の観測点の慢性床でフィルタしてしまう。床は観測点と
+    // 一緒に差し替わる（呼び出し側が `floorsSites` の参照で照合してから渡す）。
     const before: [number, number][] = [OSAKA]
     const after: [number, number][] = [TOKYO]
-    expect(filterSubThresholdIndices(before, [8], floors)).toEqual([0])
-    expect(filterSubThresholdIndices(after, [8], floors)).toEqual([8])
+    expect(filterSubThresholdIndices(before, [8], [1.0])).toEqual([0])
+    expect(filterSubThresholdIndices(after, [8], [0])).toEqual([8])
   })
 })
