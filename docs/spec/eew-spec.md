@@ -243,6 +243,9 @@ standard 版では `eewMaxLpgmClass` が常に 0 になり震度のみでレベ�
 
 - **予報円を出さない** — `src/hooks/usePsWaveCalc.ts` の `computeEewCircle`（`condition === '仮定震源要素'` で早期 return）
 - **カードで M・深さを隠す** — `src/components/RealtimeTab/index.tsx` の EEW カード内表示条件
+- **共有カードの見出しで M を出さない** — `src/utils/shareCardContent.ts` の `kyoshinContent`
+  （[`share-card-spec.md`](share-card-spec.md) §3）。**画面より強い理由がある**——共有された画像は
+  後から訂正できない。予想震度は区域ごとの発表値なので、そちらは隠さない
 - **震度・長周期階級を 0 扱い** — `src/utils/eew.ts` の `eewMaxScale` / `eewMaxLpgmClass`
 - **地図の震源×印を控えめに描く** — `src/hooks/useEewLayerData.ts` で `EewEpicenter.isAssumed` フラグ生成 →
   `src/components/Map/EewEpicentersGL.tsx` が不透明度（`crossOpacity`）と点滅の振幅（`EEW_BLINK.assumed`・

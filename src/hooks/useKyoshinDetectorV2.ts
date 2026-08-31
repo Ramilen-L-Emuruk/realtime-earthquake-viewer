@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useLazyRef } from './useLazyRef'
 import { MISSING_INDEX_THRESHOLD, type SiteCoords } from '../services/kyoshin'
 import {
   step,
@@ -201,7 +202,10 @@ export function useKyoshinDetectorV2(
   enabled: boolean,
   hasActiveNonAssumedEEW: boolean,
 ): KyoshinDetectorV2Result {
-  const stateRef = useRef<DetectorState>(loadInitialState())
+  // `useRef(loadInitialState())` と書いてはいけない——**引数式は毎レンダー評価される**ため、
+  // 1Hz の再レンダーのたびに localStorage の読み取りと学習資産の復元が走り、結果は捨てられる
+  // （理由と実測値は `useLazyRef`）。
+  const stateRef = useLazyRef(loadInitialState)
   // sites の参照も保持する。参照が同じなら中身は同じ（fetchSiteList が同一 siteConfigId に対して
   // 同じ配列を返す）ため、全点シグネチャの計算まで省ける。
   const metaRef = useRef<{ sites: SiteCoords; sig: string; meta: StationMeta } | null>(null)

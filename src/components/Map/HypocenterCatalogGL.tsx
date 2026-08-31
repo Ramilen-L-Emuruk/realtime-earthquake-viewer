@@ -6,6 +6,7 @@ import { createDepthPointLayer, type DepthPointLayer } from './gl/depthPointLaye
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
 import { formatMagnitude } from '../../utils/formatters'
 import { log } from '../../utils/logger'
+import { reportRenderFailure, clearRenderFailure } from '../../utils/renderHealth'
 import type { CatalogPointCloud } from '../../utils/hypocenterCatalogView'
 
 // 長期震源カタログの点群。**深さを持つ点**として地下へ描く（gl/depthPointLayer.ts）。
@@ -18,6 +19,8 @@ import type { CatalogPointCloud } from '../../utils/hypocenterCatalogView'
 // 知らず `queryRenderedFeatures` にヒットしないため、`popupRegistry` へ自前の判定を渡す。
 
 const LYR = 'hypocenter-catalog'
+/** 不調を知らせるときに画面へ出す名前（`utils/renderHealth.ts`）。 */
+const LABEL = '震源カタログ'
 
 interface Props {
   cloud: CatalogPointCloud
@@ -75,14 +78,19 @@ export function HypocenterCatalogGL({ cloud, exaggeration, visible }: Props) {
 
   useEffect(() => {
     if (!map) return
-    const layer = createDepthPointLayer(LYR, map)
+    const layer = createDepthPointLayer(LYR, map, LABEL)
     layerRef.current = layer
 
     const add = () => {
       try {
         if (!map.getLayer(LYR)) addOrderedLayer(map, layer)
+        // 載せられたら不調の記録を消す（前回の失敗を引きずらない）。
+        clearRenderFailure(LYR, 'draw')
       } catch (err) {
         log.error('[HypocenterCatalogGL] custom layer add failed', err)
+        // **ここも画面へ出す。** 載せられなければ `render()` が一度も呼ばれず、
+        // 描画側の検出（シェーダーの可否）には永久に到達しない。
+        reportRenderFailure(LYR, LABEL, 'draw')
       }
     }
     add()
@@ -99,6 +107,7 @@ export function HypocenterCatalogGL({ cloud, exaggeration, visible }: Props) {
     try {
       popup = registerPopupSource(map, {
         layerId: LYR,
+        label: LABEL,
         priority: 'point',
         tolPx: 0,
         pick: (point, forClick) => {
@@ -125,10 +134,15 @@ export function HypocenterCatalogGL({ cloud, exaggeration, visible }: Props) {
       })
     } catch (err) {
       log.error('[HypocenterCatalogGL] popup source registration failed', err)
+      // **画面にも出す。** 描画は出るのにクリックしても何も返らない状態は、
+      // 見た目からは仕様と区別がつかない。
+      reportRenderFailure(LYR, LABEL, 'interact')
     }
 
     return () => {
       popup?.remove()
+      // 画面から外れたら不調の記録も消す（残すと、もう出てこないものの名前が居座る）。
+      clearRenderFailure(LYR, 'interact')
       map.off('webglcontextrestored', onRestored)
       map.off('style.load', add)
       layerRef.current = null

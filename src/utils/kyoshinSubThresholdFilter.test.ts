@@ -74,4 +74,27 @@ describe('filterSubThresholdIndices', () => {
       expect(filterSubThresholdIndices(sites, [5], [1.0, -2.0])).toEqual([5])
     })
   })
+
+  // 観測点ごとに床が効くこと。以前は座標から作ったキーで辞書を引いており、キーを毎秒 1725 点ぶん
+  // 組み直す負荷を避けるためのキャッシュも持っていた。並びで対応づける今はキーを作らないので、
+  // キャッシュごと不要になっている。
+  it('同じ入力を繰り返し渡しても結果が変わらない', () => {
+    const sites: [number, number][] = [OSAKA, TOKYO]
+    const floors = [1.0, 0]
+    // 同じ index8(value 1.0) でも、大阪は床1.0+0.4に届かず非表示・東京は床0+0.4を超えて表示。
+    // 対応づけが崩れると、この差が消える。
+    const first = filterSubThresholdIndices(sites, [8, 8], floors)
+    const second = filterSubThresholdIndices(sites, [8, 8], floors)
+    expect(second).toEqual(first)
+    expect(second).toEqual([0, 8])
+  })
+
+  it('観測点リストが差し替わったら、その並びの床で判定する', () => {
+    // 前のリストに対応づけたまま使うと、別の観測点の慢性床でフィルタしてしまう。床は観測点と
+    // 一緒に差し替わる（呼び出し側が `floorsSites` の参照で照合してから渡す）。
+    const before: [number, number][] = [OSAKA]
+    const after: [number, number][] = [TOKYO]
+    expect(filterSubThresholdIndices(before, [8], [1.0])).toEqual([0])
+    expect(filterSubThresholdIndices(after, [8], [0])).toEqual([8])
+  })
 })
