@@ -32,6 +32,8 @@ export interface ShareCardContentInput {
 export interface ShareCardContent {
   header: ShareCardHeader
   notices: string[]
+  /** 共有先へ画像と一緒に渡す本文。 */
+  shareText: string
   /** 保存名に使う語。日本語のファイル名を扱えない環境があるので ASCII に限る。 */
   filenameLabel: string
 }
@@ -43,15 +45,18 @@ export interface ShareCardContent {
  * 描かれる（`JapanMapGL` の `PsWaveGL` / `EewEpicentersGL` はどのモードでも表示する）。
  * 「地震モードだから緊急地震速報は写らない」は成り立たないため、発報中かどうかで判断する。
  */
-export function buildShareCardContent({
-  mode,
-  quake,
-  tsunamis,
-  eews,
-  showBathymetry,
-  showActiveFaults,
-  showPlateBoundaries,
-}: ShareCardContentInput): ShareCardContent {
+export function buildShareCardContent(
+  {
+    mode,
+    quake,
+    tsunamis,
+    eews,
+    showBathymetry,
+    showActiveFaults,
+    showPlateBoundaries,
+  }: ShareCardContentInput,
+  appUrl: string,
+): ShareCardContent {
   const liveEews = eews.filter((e) => !e.cancelled && !e.expired)
   // **描いていないものを出典に挙げない**——読み手が画像の中に探しても見つからない。逆に
   // 描いているのに挙げないのは帰属表示の欠落になる。判定は表示の設定とモードの両方を見る。
@@ -68,12 +73,26 @@ export function buildShareCardContent({
   const notices = [attributionLine({ derived, asIs })]
   if (liveEews.length > 0) notices.unshift(EEW_NOTICE)
 
-  if (mode === 'tsunami') return { ...tsunamiContent(tsunamis), notices }
-  if (mode === 'kyoshin') return { ...kyoshinContent(liveEews), notices }
-  return { ...quakeContent(quake), notices }
+  const base =
+    mode === 'tsunami' ? tsunamiContent(tsunamis) : mode === 'kyoshin' ? kyoshinContent(liveEews) : quakeContent(quake)
+  return { ...base, notices, shareText: buildShareText(base.header, appUrl) }
 }
 
-type ContentWithoutNotices = Omit<ShareCardContent, 'notices'>
+/**
+ * 共有先の本文を組み立てる。**材料は見出しと同じ**——画像と本文で違うことを述べないため。
+ *
+ * **注意文は入れない。** 緊急地震速報の注意文（EEW_NOTICE）は画像へ焼いてあり、本文と画像は
+ * 共有シートで一緒に渡る。本文にも重ねると X の全角 140 字にほぼ届き、震源名が長ければ超える
+ * ——利用者が削ることになり、削られた結果として注意文そのものが落ちうる。
+ */
+function buildShareText(header: ShareCardHeader, appUrl: string): string {
+  const lines = [[header.title, header.subtitle].filter(Boolean).join(SUBTITLE_SEPARATOR)]
+  if (header.meta) lines.push(header.meta)
+  lines.push(appUrl)
+  return lines.join('\n')
+}
+
+type ContentWithoutNotices = Omit<ShareCardContent, 'notices' | 'shareText'>
 
 function quakeContent(quake: JMAQuake | null): ContentWithoutNotices {
   if (!quake) return { header: { title: '地震情報' }, filenameLabel: 'quake' }
