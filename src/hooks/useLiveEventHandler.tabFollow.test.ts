@@ -41,7 +41,12 @@ vi.mock('../utils/voicevox', () => ({
   speakWithVoicevox: (...args: unknown[]) => speakMock(...(args as [string, string])),
   prewarmVoicevox: (...args: unknown[]) => prewarmMock(...(args as [string, string])),
 }))
-vi.mock('../utils/alertSound', () => ({ playAlertSound: vi.fn() }))
+// 音の実体だけ差し替える。**通知音との間（`ttsDelayFor`）は本物を使う** ―― 読み上げの順番と
+// 待ち合わせはこの間の長さで決まるため、模擬すると検証の前提が変わる。
+vi.mock('../utils/alertSound', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/alertSound')>()
+  return { ...actual, playAlertSound: vi.fn() }
+})
 vi.mock('../utils/notifications', () => ({ showBrowserNotification: vi.fn() }))
 
 async function flush() {
@@ -54,7 +59,7 @@ function finishSpeech(index: number) {
   if (s && !s.done) { s.done = true; s.finish() }
 }
 
-/** 通知音の遅延（最大 2800ms）と第 2 フェーズの待ち（6000ms）を消化して発話へ到達させる */
+/** 通知音との間（最長 2720ms）と第 2 フェーズの待ち（6000ms）を消化して発話へ到達させる */
 async function settle() {
   await vi.advanceTimersByTimeAsync(8000)
   await flush()
