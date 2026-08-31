@@ -12,6 +12,8 @@ import {
   GRADES_IN_CARD_ORDER,
   compareObservedHeightDesc,
   overSuffixedHeight,
+  latestValidDateTime,
+  withInheritedValidDateTime,
 } from './tsunami'
 import type { JMATsunami, TsunamiArea, TsunamiObservation } from '../types/earthquake'
 
@@ -412,5 +414,74 @@ describe('overSuffixedHeight', () => {
   it('数字を含まない description には補わない', () => {
     expect(overSuffixedHeight({ description: '巨大', over: true })).toBe('巨大')
     expect(overSuffixedHeight({ description: '高い', over: true })).toBe('高い')
+  })
+})
+
+describe('latestValidDateTime', () => {
+  // 気象庁は有効期限を 1 通だけで伝え、以後の続報には載せない（実データ: 2024 年能登半島地震は
+  // 01/02 10:00 の VTSE41 が 01/02 17:00 を伝え、3 分後の VTSE51 は持たない）。
+  it('期限を伝えた報が途中にあり、その後の報が持たなくても期限を返す', () => {
+    const reports = [
+      makeTsunami({ id: 'a', time: '2024-01-02T10:00:00+09:00', validDateTime: '2024-01-02T17:00:00+09:00' }),
+      makeTsunami({ id: 'b', time: '2024-01-02T10:03:00+09:00' }),
+    ]
+    expect(latestValidDateTime(reports)).toBe('2024-01-02T17:00:00+09:00')
+  })
+
+  it('順序がばらばらでも発表時刻が最も新しい期限を返す（延長・短縮に従う）', () => {
+    const reports = [
+      makeTsunami({ id: 'b', time: '2024-01-02T13:00:00+09:00', validDateTime: '2024-01-03T09:00:00+09:00' }),
+      makeTsunami({ id: 'a', time: '2024-01-02T10:00:00+09:00', validDateTime: '2024-01-02T17:00:00+09:00' }),
+    ]
+    expect(latestValidDateTime(reports)).toBe('2024-01-03T09:00:00+09:00')
+  })
+
+  it('期限を伝えた報が 1 通も無ければ undefined（standard 版は構造的に持たない）', () => {
+    expect(latestValidDateTime([makeTsunami({ time: '2024-01-01T16:12:00+09:00' })])).toBeUndefined()
+  })
+
+  it('発表時刻が読めない報の期限は採らない（新旧を判定できない）', () => {
+    const reports = [
+      makeTsunami({ id: 'a', time: '2024-01-02T10:00:00+09:00', validDateTime: '2024-01-02T17:00:00+09:00' }),
+      makeTsunami({ id: 'b', time: '壊れた時刻', validDateTime: '2024-01-01T00:00:00+09:00' }),
+    ]
+    expect(latestValidDateTime(reports)).toBe('2024-01-02T17:00:00+09:00')
+  })
+})
+
+describe('withInheritedValidDateTime', () => {
+  it('最新報が期限を持たなければ同一イベントの過去報から引き継ぐ', () => {
+    const older = makeTsunami({ id: 'a', eventId: 'E1', time: '2024-01-02T10:00:00+09:00', validDateTime: '2024-01-02T17:00:00+09:00' })
+    const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00' })
+    expect(withInheritedValidDateTime(latest, [latest, older]).validDateTime).toBe('2024-01-02T17:00:00+09:00')
+  })
+
+  it('最新報が期限を持つならそれを使う', () => {
+    const older = makeTsunami({ id: 'a', eventId: 'E1', time: '2024-01-02T10:00:00+09:00', validDateTime: '2024-01-02T17:00:00+09:00' })
+    const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T13:00:00+09:00', validDateTime: '2024-01-03T09:00:00+09:00' })
+    expect(withInheritedValidDateTime(latest, [latest, older]).validDateTime).toBe('2024-01-03T09:00:00+09:00')
+  })
+
+  it('別イベントの報からは引き継がない', () => {
+    const other = makeTsunami({ id: 'x', eventId: 'E2', time: '2024-01-02T10:00:00+09:00', validDateTime: '2024-01-02T17:00:00+09:00' })
+    const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00' })
+    expect(withInheritedValidDateTime(latest, [latest, other]).validDateTime).toBeUndefined()
+  })
+
+  it('日時として読めない期限は落とす（残すと以後の比較がすべて偽へ倒れる）', () => {
+    const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00', validDateTime: '壊れた期限' })
+    expect(withInheritedValidDateTime(latest, [latest]).validDateTime).toBeUndefined()
+  })
+
+  it('自分の期限が読めなければ、同一イベントの過去報から引き継ぐ', () => {
+    const older = makeTsunami({ id: 'a', eventId: 'E1', time: '2024-01-02T10:00:00+09:00', validDateTime: '2024-01-02T17:00:00+09:00' })
+    const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00', validDateTime: '壊れた期限' })
+    expect(withInheritedValidDateTime(latest, [latest, older]).validDateTime).toBe('2024-01-02T17:00:00+09:00')
+  })
+
+  it('eventId が無い経路（P2PQuake）では id が一致する報だけを見る', () => {
+    const other = makeTsunami({ id: 'x', time: '2024-01-02T10:00:00+09:00', validDateTime: '2024-01-02T17:00:00+09:00' })
+    const latest = makeTsunami({ id: 'b', time: '2024-01-02T10:03:00+09:00' })
+    expect(withInheritedValidDateTime(latest, [latest, other]).validDateTime).toBeUndefined()
   })
 })

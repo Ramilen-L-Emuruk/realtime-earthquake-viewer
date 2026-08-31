@@ -1100,3 +1100,107 @@ describe('DMDSS 版: 取消の後に届いた報', () => {
     expect(h.current.earthquakes).toHaveLength(0)
   })
 })
+
+// 有効期限は報ではなく津波に付く事実として扱う（実データと理由は utils/tsunami の
+// `latestValidDateTime`）。気象庁は期限が決まった報で一度だけ ValidDateTime を載せ、以後の
+// 続報には載せない。報 1 通だけを見ると、最後の報が期限を持たない津波は失効しなくなる。
+describe('津波の有効期限は報を跨いで引き継ぐ', () => {
+  // 2024 年能登半島地震の並びに合わせる。10:00 の報が「01/02 17:00 まで」を伝え、10:03 の報は
+  // 期限を持たない。以降、解除電文は出ない。
+  const EXPIRE_AT = '2024-01-02T17:00:00+09:00'
+  const WITH_EXPIRE = { id: 'noto-1', time: '2024-01-02T10:00:00+09:00', validDateTime: EXPIRE_AT }
+  const WITHOUT_EXPIRE = { id: 'noto-2', time: '2024-01-02T10:03:00+09:00' }
+
+  function forecast(opts: { id: string; time: string; validDateTime?: string; eventId?: string }): JMATsunami {
+    return {
+      kind: 'tsunami',
+      id: opts.id,
+      eventId: opts.eventId ?? 'noto-tsunami',
+      time: opts.time,
+      cancelled: false,
+      validDateTime: opts.validDateTime,
+      issue: { source: '気象庁', time: opts.time, type: 'Focus' },
+      areas: [{ grade: 'Forecast', immediate: false, name: '石川県能登' }],
+    }
+  }
+
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('期限を持たない続報を受けてもカードは期限を保つ', () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+
+    act(() => { h.current.injectEvent(forecast(WITH_EXPIRE)) })
+    act(() => { h.current.injectEvent(forecast(WITHOUT_EXPIRE)) })
+    act(() => { vi.advanceTimersByTime(100) })
+
+    expect(h.current.tsunamis[0].id).toBe('noto-2')
+    expect(h.current.tsunamis[0].validDateTime).toBe(EXPIRE_AT)
+  })
+
+  it('日時として読めない期限を持つ続報でも、カードには前報の読める期限が残る', () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+
+    act(() => { h.current.injectEvent(forecast(WITH_EXPIRE)) })
+    act(() => { h.current.injectEvent(forecast({ ...WITHOUT_EXPIRE, validDateTime: '壊れた期限' })) })
+    act(() => { vi.advanceTimersByTime(100) })
+
+    expect(h.current.tsunamis[0].validDateTime).toBe(EXPIRE_AT)
+  })
+
+  it('履歴からの復元でも期限を引き継ぎ、期限を過ぎたら失効する', async () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    // 履歴は新しい順に並ぶとは限らないため、実装側の並べ替えに任せて逆順で渡す
+    vi.mocked(fetchDmdataTsunamis).mockResolvedValue([forecast(WITH_EXPIRE), forecast(WITHOUT_EXPIRE)])
+    const h = setup()
+    await h.flush()
+
+    expect(h.current.tsunamis).toHaveLength(1)
+    expect(h.current.tsunamis[0].id).toBe('noto-2')
+
+    act(() => { vi.advanceTimersByTime(9 * 60_000) })
+    expect(h.current.tsunamis[0].cancelledAt).toBeUndefined()
+
+    act(() => { vi.advanceTimersByTime(2 * 60_000) })
+    expect(h.current.tsunamis[0].cancelReason).toBe('expired')
+  })
+
+  it('履歴からの復元で、期限を過ぎていれば最初から表示しない', async () => {
+    vi.setSystemTime(new Date('2024-01-02T17:30:00+09:00'))
+    vi.mocked(fetchDmdataTsunamis).mockResolvedValue([forecast(WITH_EXPIRE), forecast(WITHOUT_EXPIRE)])
+    const h = setup()
+    await h.flush()
+
+    expect(h.current.tsunamis).toEqual([])
+  })
+
+  // standard 版（P2PQuake）は 552 に期限相当のフィールドを持たないため、この引き継ぎは何もしない。
+  // 「持たないこと」を固定しておく（API が拡張されて期限相当の値が現れたら、ここが落ちて気づける）。
+  it('standard 版では期限を持たないため引き継ぎが働かず、解除電文で消えるまで残る', async () => {
+    vi.setSystemTime(new Date('2024-01-02T17:30:00+09:00'))
+    mockIsDmdss = false
+    vi.mocked(fetchHistory).mockResolvedValue([
+      { ...forecast(WITH_EXPIRE), eventId: undefined, validDateTime: undefined },
+      { ...forecast(WITHOUT_EXPIRE), eventId: undefined, validDateTime: undefined },
+    ] as unknown as AppEvent[])
+    const h = setup()
+    await h.flush()
+
+    expect(h.current.tsunamis.map(t => t.id)).toEqual(['noto-2'])
+    expect(h.current.tsunamis[0].validDateTime).toBeUndefined()
+  })
+
+  it('別イベントの報からは期限を引き継がない（無関係な期限で消さない）', async () => {
+    vi.setSystemTime(new Date('2024-01-02T17:30:00+09:00'))
+    vi.mocked(fetchDmdataTsunamis).mockResolvedValue([
+      forecast({ ...WITH_EXPIRE, eventId: 'other-tsunami' }),
+      forecast(WITHOUT_EXPIRE),
+    ])
+    const h = setup()
+    await h.flush()
+
+    expect(h.current.tsunamis.map(t => t.id)).toEqual(['noto-2'])
+  })
+})
