@@ -1,7 +1,8 @@
 // VOICEVOX の接続確認先として通信してよい URL かの判定（`isValidVoicevoxUrl`）。
 //
 // この判定は「入力途中の値を弾く」ためのものではない。入力途中で飛ぶリクエストを止めるのは
-// 設定タブ側のデバウンス（`VOICEVOX_URL_DEBOUNCE_MS`）の役目で、ここが担うのは
+// 呼び出し側のデバウンス（`VOICEVOX_URL_DEBOUNCE_MS`。設定タブの接続確認と、App の切り出し語の
+// 作り置きの両方が使う）の役目で、ここが担うのは
 // スキームの書き忘れのような直らない誤りを「起動していません」と誤診しないこと。
 // その境界を取り違えるとどちらの防御も中途半端になるため、対で固定する。
 import { describe, it, expect, vi, afterEach } from 'vitest'

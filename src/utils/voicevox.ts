@@ -2,6 +2,20 @@ import { getAudioContext, getMasterInput } from './alertSound'
 import { findPhraseBreakMatch, getTtsPhraseBreakDictCache, isPlaceNameKey, loadTtsPhraseBreakDict } from './ttsPhraseBreakDict'
 import { log, createLogThrottle } from './logger'
 
+/**
+ * 設定の接続先を使って通信を始めるまでに、入力が落ち着くのを待つ時間。
+ *
+ * 入力欄は 1 文字ごとに設定を保存するため、生の値を effect の依存に渡すと打鍵のたびに通信が
+ * 走る（実測: 「192」と打つ途中の「1」「19」「192」がそれぞれ IPv4 の `0.0.0.1` / `0.0.0.19` /
+ * `0.0.0.192` として接続され、全部失敗した）。DMDATA の APIキー（`App.tsx` の
+ * `API_KEY_DEBOUNCE_MS`）と同じ 800ms に揃えてある。
+ *
+ * **設定の変化で通信する側は全部これを通すこと。** 該当するのは接続確認・話者一覧（設定タブ）と
+ * 切り出し語の作り置き（`warmFixedPhrases`）。試聴と実際の読み上げはユーザー操作・電文の受信の
+ * 時点でしか通信しないので対象外。
+ */
+export const VOICEVOX_URL_DEBOUNCE_MS = 800
+
 export type VoicevoxStyle = { name: string; id: number }
 export type VoicevoxSpeaker = { name: string; speaker_uuid: string; styles: VoicevoxStyle[] }
 
