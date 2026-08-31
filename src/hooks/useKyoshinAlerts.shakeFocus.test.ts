@@ -40,6 +40,7 @@ function makeDeps(over: Partial<KyoshinAlertsDeps> = {}): KyoshinAlertsDeps {
     candidateMaxIndex: 0,
     confirmedShocks: [],
     dataTime: '',
+    stalled: false,
     // notifyMinScale は -1（通知しない）。ブラウザ通知はこのテストの対象外。
     settings: { soundEnabled: true, notifyMinScale: -1, notifyDetection: false } as unknown as AppSettings,
     title: { setTitle: vi.fn(), applyPriority: vi.fn() } as unknown as AlertTitleApi,

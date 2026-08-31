@@ -4,10 +4,13 @@ import {
   createAlertRegionState, stepAlertRegions,
   REGION_MATCH_KM, DEFAULT_VIRTUAL_DEPTH_KM, DYNAMIC_THRESHOLD_SAFETY_FACTOR,
   OUTBREAK_PROPAGATION_WINDOW_MS, NEW_REGION_COOLDOWN_MS, NEW_REGION_MIN_INDEX,
-  PROPAGATION_MAX_KM, type AlertRegion,
+  PROPAGATION_MAX_KM, isSameShakeAsBefore, type AlertRegion,
 } from './useKyoshinAlerts'
 import { computeSWaveRadiusAtTime } from './usePsWaveCalc'
 import type { EEWAlert, Hypocenter } from '../types/earthquake'
+import type { ConfirmedShock } from '../utils/kyoshinDetectionView'
+import { haversineKm } from '../utils/geo'
+import { PARAMS } from '../utils/kyoshinDetector'
 
 function fakeRegion(overrides: Partial<AlertRegion> = {}): AlertRegion {
   return {
@@ -417,5 +420,49 @@ describe('stepAlertRegions', () => {
     // 沖縄は現れない。フレームは 1 つしか進まないが、データ時刻では 55 秒が過ぎている
     stepAlertRegions(state, [NOTO, FUKUOKA], t + 60_000, new Map())
     expect(state.regions).toHaveLength(2)
+  })
+})
+
+// 途絶をまたいだ「同じ揺れの続きか」の照合。真を返すと検知音とブラウザ通知を抑えるため、
+// **迷ったら偽（鳴らす側）へ倒す**のが要件。偽になりすぎても余分に鳴るだけで済むが、真になりすぎると
+// 無関係な地震を無音で握り潰す。
+describe('isSameShakeAsBefore', () => {
+  const shockAt = (lat: number, lng: number): ConfirmedShock => ({ lat, lng, index: 20, peak: { lat, lng } })
+  const NOTO = shockAt(37.5, 137.0)
+  const NEAR_NOTO = shockAt(37.6, 137.1) // 約 14km
+  const FUKUOKA = shockAt(33.6, 130.4) // 能登から約 700km
+
+  it('[正] 復帰後のすべての地点が途絶前の近くにあれば同じ揺れ', () => {
+    expect(isSameShakeAsBefore([NEAR_NOTO], [NOTO])).toBe(true)
+  })
+
+  it('[対照] 離れた場所だけになっていれば別の揺れ', () => {
+    expect(isSameShakeAsBefore([FUKUOKA], [NOTO])).toBe(false)
+  })
+
+  it('[安全弁] 1 つでも離れた地点が混じれば別の揺れとみなす（元の揺れが続いていても知らせる）', () => {
+    expect(isSameShakeAsBefore([NOTO, FUKUOKA], [NOTO])).toBe(false)
+  })
+
+  it('[安全弁] どちらかが空なら別の揺れとみなす（照合材料が無いのに抑えない）', () => {
+    expect(isSameShakeAsBefore([], [NOTO])).toBe(false)
+    expect(isSameShakeAsBefore([NOTO], [])).toBe(false)
+  })
+
+  it('境界は MERGE_EVENT_KM（イベント重心どうしを 1 地震とみなす物差し）', () => {
+    // 同一地震の照合に使う REGION_MATCH_KM(300km) は借りない。あちらは「継続監視の中で 1 つの地震の
+    // 揺れがどこまで広がりうるか」の値で、途絶をまたいだ同一性の判定には広すぎる（能登から 289km＝
+    // 東京〜仙台ほど離れた別の地震まで「同じ揺れ」になってしまう）。
+    const inside = shockAt(37.5 + 0.85, 137.0) // 約 94km
+    const outside = shockAt(37.5 + 0.95, 137.0) // 約 106km
+    expect(haversineKm(NOTO.lat, NOTO.lng, inside.lat, inside.lng)).toBeLessThan(PARAMS.MERGE_EVENT_KM)
+    expect(haversineKm(NOTO.lat, NOTO.lng, outside.lat, outside.lng)).toBeGreaterThan(PARAMS.MERGE_EVENT_KM)
+    expect(isSameShakeAsBefore([inside], [NOTO])).toBe(true)
+    expect(isSameShakeAsBefore([outside], [NOTO])).toBe(false)
+    // REGION_MATCH_KM を借りていた頃は真だった距離が、いまは別の揺れとして鳴る側へ倒れる
+    const farInsideOldThreshold = shockAt(37.5 + 2.6, 137.0) // 約 289km
+    expect(haversineKm(NOTO.lat, NOTO.lng, farInsideOldThreshold.lat, farInsideOldThreshold.lng))
+      .toBeLessThan(REGION_MATCH_KM)
+    expect(isSameShakeAsBefore([farInsideOldThreshold], [NOTO])).toBe(false)
   })
 })
