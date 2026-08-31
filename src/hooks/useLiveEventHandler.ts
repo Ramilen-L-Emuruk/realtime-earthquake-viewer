@@ -16,7 +16,7 @@ import { showBrowserNotification } from '../utils/notifications'
 import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, matchesArea, sortAreasForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations } from '../utils/tsunami'
 import { playAlertSound, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
-import { eewAlertToText, eewIntensityText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
+import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
 import { joinSegments, plain, hasFollowTarget, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
@@ -1544,10 +1544,31 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // 上がったときだけ。初報から警報なら第 1 フェーズが「緊急地震速報、〇〇で地震。」と
             // 伝えており（そのとき spokenEEWLevelsRef を埋めている）、重ねて言う意味がない。
             const announceUpgrade = level >= 1 && spokenLevel < 1
-            const text = eewIntensityText(confirmedScale, confirmedLpgm, latest, announceUpgrade)
+            // 震度が実際に声に出た値（spokenEEWScalesRef）とちょうど一致していて、区分格上げの
+            // 前置きも無いなら、震度は繰り返さず階級部分だけを読む。震度自体が上がった・下がった
+            // 場合や、区分格上げに伴う場合はこれまでどおり震度も含めて全文を読み直す
+            // （区分格上げは「何の震度で警報になったか」を再確認させる意味があるため省略しない）。
+            const spokenScale = spokenEEWScalesRef.current.get(key)
+            const scaleUnchanged = !announceUpgrade && eewPhase2DoneRef.current.has(key)
+              && spokenScale !== undefined
+              && spokenScale.scale === confirmedScale.scale
+              && spokenScale.orAbove === confirmedScale.orAbove
+            // 震度据え置きで、階級もまだ何も確定していなければ（confirmedLpgm=0）、実際に
+            // 読むべき差分が無い。`level` は安定待ちを経ない生イベントから即座に計算されるため
+            // （1536行目）、階級の安定待ちが完了する前に一時的に level だけが上がって上の
+            // 早期returnゲートをすり抜けることがある。ここで空文字のまま `eewLpgmOnlyText` を
+            // 呼ぶと「想定外」警告が誤って出たうえ、既読（spokenEEWLevelsRef 等）も更新されない
+            // まま終わってしまう（1567行目以降に到達しないため）。階級が正式に確定すれば
+            // `confirmLpgm` 経由で改めてここへ呼ばれるので、ここで黙っても取りこぼしにはならない。
+            if (scaleUnchanged && confirmedLpgm === 0) return null
+            const text = scaleUnchanged
+              ? eewLpgmOnlyText(confirmedLpgm)
+              : eewIntensityText(confirmedScale, confirmedLpgm, latest, announceUpgrade)
             if (!text) {
-              // 想定外。eewScaleOnlyText は常に非空を返す（noForecastText が全ケースを
-              // カバーするため）。無言のまま握り潰さず記録に残す。
+              // 想定外。eewIntensityText 経由なら eewScaleOnlyText が常に非空を返す
+              // （noForecastText が全ケースをカバーするため）。scaleUnchanged 経由の
+              // eewLpgmOnlyText 単体も、confirmedLpgm===0 のケースは上の早期return で
+              // 弾いているため常に非空のはず。無言のまま握り潰さず記録に残す。
               log.warn('[eew] 想定外: phase2 のテキストが空になった', key)
               return null
             }
@@ -1621,17 +1642,29 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
          * ——震度が確定するまで保留し、震度確定時に一緒に読む（非対称ルール。宣言箇所は
          * `eewConfirmedScaleRef` の JSDoc）。震度が既に確定済みなら、ここでトリガーする
          * （震度は既読の値のまま再利用され、実質「階級だけの追加読み上げ」になる）。
+         *
+         * ただし**震度側で新しい安定待ちサイクルが進行中なら、ここではトリガーしない**。
+         * 震度・階級が同一続報で同時に変化すると、階級の安定待ち（300ms固定）の方が震度側
+         * （跳躍幅次第で300〜2000ms）より先に完了することがある。ここで待たずにトリガーすると、
+         * 震度がまだ「変化中」なのに `enqueuePhase2` 側が「据え置き」と誤判定して階級だけの
+         * 短句を読み、直後に震度の確定で全文をもう一度読む——という二重発話になる。
          */
         const confirmLpgm = (lpgmClass: number) => {
           eewLpgmStabilityRef.current.delete(key)
           eewConfirmedLpgmRef.current.set(key, lpgmClass)
-          if (eewConfirmedScaleRef.current.has(key)) enqueuePhase2()
+          if (eewConfirmedScaleRef.current.has(key) && !eewScaleStabilityRef.current.has(key)) enqueuePhase2()
         }
 
         /**
          * 震度の安定待ちサイクルを更新する。値が変わっていなければ何もしない
          * （タイマーは張ったまま）。変わっていれば待ち直す。跳躍幅（`eewPhase2ScaleStabilityMs`）
-         * が大きいほど長く待つ——急な跳躍ほど「まだ確定していないかもしれない」と疑うため。
+         * が baseScale（サイクル開始時点の直前の確定値）から 1 段階以上あれば長く待つ。
+         *
+         * baseScale はサイクル中は据え置きなので、瞬間的に跳ね上がった値が同じサイクル内で
+         * 直前の確定値へちょうど戻ると、跳躍幅が 0 段階に戻って短い猶予（SMALL=300ms）で
+         * 即確定する。2024/01/01 能登本震の第13報（6強→7→608ms後に6強へ訂正）では、この
+         * 復帰が震度7の長い猶予（LARGE=2000ms）タイマーより先に発火し、訂正後の6強で
+         * 確定する（既読の6強と同値なので実際には黙る）。
          *
          * 上限（`EEW_PHASE2_STABILITY_MAX_WAIT_MS`）はサイクル開始時刻から固定でカウントし、
          * 値が変わるたびにリセットしない。リセットすると、続報が連投される大地震ほど
