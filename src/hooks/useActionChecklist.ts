@@ -28,11 +28,15 @@ import {
   type NearbyScope,
 } from '../utils/actionChecklistTrigger'
 import {
-  nearbyKyoshinIndices,
+  allRegionNames,
+  allStationNames,
+  nearbyKyoshinKeys,
   nearbyRegionNames,
   nearbyStationNames,
   type HomePoint,
 } from '../utils/nearbyStations'
+import type { DetectedPoint } from '../utils/kyoshinDetectionView'
+import type { SiteCoords } from '../services/kyoshin'
 import { quakeEventKey } from '../utils/quakeMerge'
 import { eewEventKey } from '../utils/eew'
 import { isValidIntensityScale } from '../utils/intensity'
@@ -126,13 +130,27 @@ export function useActionChecklist(params: {
   minScale: number
   home: HomePoint | null
   stationCoords: StationCoordsData | null
-  /** 強震モニタの観測点座標（`indices` と同順であることが保証されたもの）。 */
-  kyoshinSites: readonly (readonly [number, number])[]
-  kyoshinIndices: readonly number[]
+  /** 強震モニタの観測点座標（半径内の観測点キーを引くのに使う）。 */
+  kyoshinSites: SiteCoords
+  /**
+   * 検知エンジンが確定した揺れのメンバー観測点（`deriveKyoshinView` の `detectedPoints`）。
+   *
+   * 生の観測値ではなくこちらを渡す。理由は `kyoshinScaleForScope`。
+   */
+  detectedPoints: readonly DetectedPoint[]
+  /**
+   * 検知エンジンが結果を出せなくなっているか（`useKyoshinDetectorV2` の `stalled`）。
+   *
+   * **これを見ないと「揺れが収まった」と「エンジンが詰まっている」を区別できない。** エンジンは
+   * 連続して壊れると検知結果を空にするので、`detectedPoints` だけを見ていると揺れの最中でも
+   * 「近所は揺れていない」と読んでしまう。強震モニタ経路の入力をエンジンへ移した以上、その異常も
+   * 併せて受け取る必要がある（`useKyoshinAlerts` が同じ理由でこれを見ている）。
+   */
+  kyoshinStalled: boolean
   eews: readonly EEWAlert[]
   latestQuake: JMAQuake | undefined
 }): { state: ChecklistState | null; collapsed: boolean; dismiss: () => void; restore: () => void } {
-  const { minScale, home, stationCoords, kyoshinSites, kyoshinIndices, eews, latestQuake } = params
+  const { minScale, home, stationCoords, kyoshinSites, detectedPoints, kyoshinStalled, eews, latestQuake } = params
 
   const [state, setState] = useState<ChecklistState | null>(null)
   const [suppress, setSuppress] = useState<SuppressRecord | null>(loadSuppress)
@@ -144,9 +162,12 @@ export function useActionChecklist(params: {
   const scope = useMemo<NearbyScope>(() => {
     if (!home || !stationCoords) return NO_SCOPE
     return {
-      kyoshinIndices: nearbyKyoshinIndices(kyoshinSites, home),
+      kyoshinKeys: nearbyKyoshinKeys(kyoshinSites, home),
       stationNames: nearbyStationNames(stationCoords, home),
       regionNames: nearbyRegionNames(stationCoords, home),
+      // 全件版は地域を絞れるときにしか使わないので、ここで一緒に作る。
+      knownStationNames: allStationNames(stationCoords),
+      knownRegionNames: allRegionNames(stationCoords),
     }
   }, [home, stationCoords, kyoshinSites])
 
@@ -204,11 +225,14 @@ export function useActionChecklist(params: {
     if (wasCollapsed && !keepCollapsed && record) applySuppress(null)
   }, [applySuppress])
 
-  // 強震モニタの観測値。**フレームが変わったときだけ判定する。** App は EEW の予報円で 100ms
-  // ごとに再描画されるため、素で書くと 1 秒に 1 度で足りる走査がレンダーのたびに走る。
+  // 強震モニタの観測値。**判定は検知フレームが進むたび（高々 1 秒に 1 度）に限る。** App は EEW の
+  // 予報円で 100ms ごとに再描画されるため、素で書くとレンダーのたびに走査が走る。
+  //
+  // 検知エンジンが詰まっている間は判定しない。空の検知結果を「揺れていない」と読むと、揺れの
+  // 最中に帯を引っ込めることになる（下の `kyoshinStalled` の扱いと対になっている）。
   const hitScale = useMemo(
-    () => kyoshinScaleForScope(kyoshinIndices, scope, minScale),
-    [kyoshinIndices, scope, minScale],
+    () => (kyoshinStalled ? null : kyoshinScaleForScope(detectedPoints, scope, minScale)),
+    [detectedPoints, scope, minScale, kyoshinStalled],
   )
 
   // 強震モニタの識別子は「その揺れの区切り」を表す必要があるが、強震モニタ自体は地震を区別
@@ -223,7 +247,10 @@ export function useActionChecklist(params: {
   const kyoshinAnchorRef = useRef<string | null>(null)
 
   useEffect(() => {
-    if (hitScale == null) kyoshinAnchorRef.current = null
+    // **識別子を捨てるのは「揺れが収まった」ときだけ。** 検知エンジンが詰まって結果を出せない
+    // 数秒でも `hitScale` は null になるが、そこで捨てると復帰したとき同じ揺れが別物として扱われ、
+    // 畳んだ帯が開き直す。
+    if (hitScale == null && !kyoshinStalled) kyoshinAnchorRef.current = null
     if (minScale < 0) return
 
     // **緊急度の順に見て、最初に成立したものを出す。** 3 つは同時に成立しうる（発報中の EEW・
@@ -256,13 +283,18 @@ export function useActionChecklist(params: {
       return
     }
 
+    // **詰まっている間に地震情報へ落とさない。** 揺れが続いているのに「強い揺れがありました」
+    // （過去形）へ差し替わり、震度も別の値になる。留めるのは**表示中が強震モニタ由来のときだけ**
+    // —— 何も出ていない状態まで止めると、エンジンが壊れ続けている端末で地震情報の経路まで死ぬ。
+    if (kyoshinStalled && stateRef.current?.reason === 'kyoshin') return
+
     if (latestQuake) {
       const scale = quakeScaleForScope(latestQuake, scope, minScale)
       if (scale != null) {
         show({ reason: 'quake', scale, scoped, key: `quake:${quakeEventKey(latestQuake)}` })
       }
     }
-  }, [eews, hitScale, latestQuake, scope, minScale, scoped, show])
+  }, [eews, hitScale, kyoshinStalled, latestQuake, scope, minScale, scoped, show])
 
   // 設定で「出さない」に切り替えたら、いま出ているものも引っ込める。判定側で早期に抜けるだけ
   // では、開いたままの帯が手動で閉じるまで残り続ける（開いている間は寿命でも消さない設計のため）。

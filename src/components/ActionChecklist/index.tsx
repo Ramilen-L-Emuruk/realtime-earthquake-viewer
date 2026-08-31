@@ -58,11 +58,39 @@ const WRAPPER_CLASS =
   'absolute top-12 left-0 right-0 z-[99999] pointer-events-none px-2 flex justify-center'
 
 /**
+ * 震度の見せ方。**強震モニタ経路だけ指標名を添える。**
+ *
+ * この経路が見ているのは強震モニタのリアルタイム震度で、気象庁が発表する計測震度とは別の指標。
+ * 揺れの継続時間まで見る計測震度に対して 1〜2 秒の窓で出す速報値なので、**同じ地震でも高く振れる**
+ * （実測: 発表が震度1 の地震の震源から 8km で 5弱相当、発表6強 の地震で震度7相当）。「震度7」と
+ * だけ書くと、同じ画面の地震カードに出ている発表震度と食い違って見える。
+ *
+ * 名前は横に伸ばさず上へ小さく乗せる。「リアルタイム震度5弱」を 1 行で書くと帯と畳んだボタンが
+ * 間延びして地図を覆う。緊急地震速報は予想値・地震情報は発表値なので、そちらは「震度○」のまま。
+ */
+function ScaleText({ reason, label }: { reason: ChecklistReason; label: string }) {
+  if (reason !== 'kyoshin') return <>震度{label}</>
+  return (
+    <>
+      <span className="block text-[0.65em] leading-tight opacity-90">リアルタイム</span>
+      震度{label}
+    </>
+  )
+}
+
+/** 読み上げ・`aria-label` 用の文字列。表示（`ScaleText`）と同じ内容を 1 行で言う。 */
+function scaleAriaText(reason: ChecklistReason, label: string): string {
+  return reason === 'kyoshin' ? `リアルタイム震度${label}` : `震度${label}`
+}
+
+/**
  * 震度の表示に確保する幅（「震度5弱」の 4 文字ぶん）。
  *
  * 震度ラベルは階級によって 1〜2 文字で揺れる（「7」と「6弱」）。成り行きの幅にすると、揺れが
  * 強まって階級が上がるたびに帯とボタンの幅が動く。**強震モニタ経路では毎秒変わりうる**ので、
  * 常に最大幅を確保して動かないようにする。`em` はフォントサイズ基準なので UI 倍率にも追従する。
+ *
+ * 上に乗る「リアルタイム」は 0.65em × 6 文字 = 約 3.9em なので、この幅に収まる。
  *
  * バッジ側は `box-sizing: border-box` で左右のパディング（`px-1.5` = 0.75rem）も幅に含まれるため、
  * その分を足す。
@@ -115,11 +143,11 @@ export function ActionChecklist({ reason, scale, scoped, collapsed, onDismiss, o
         <button
           className="pointer-events-auto flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-red-950/90 border border-red-400/80 shadow-lg text-white/90 hover:text-white hover:bg-red-900/90"
           onClick={onRestore}
-          aria-label={`震度${label}の行動チェックリストを開く`}
+          aria-label={`${scaleAriaText(reason, label)}の行動チェックリストを開く`}
         >
           <ChecklistIcon />
           <span className="text-xs font-bold whitespace-nowrap">
-            <span className={SCALE_WIDTH_PLAIN}>震度{label}</span> 行動チェック
+            <span className={SCALE_WIDTH_PLAIN}><ScaleText reason={reason} label={label} /></span> 行動チェック
           </span>
         </button>
       </div>
@@ -136,7 +164,7 @@ export function ActionChecklist({ reason, scale, scoped, collapsed, onDismiss, o
               仕組みの説明は要らない。その説明は設定タブの「出す最低震度」の項目に置いてある。 */}
           <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
             <span className={`text-xs font-bold text-white px-1.5 py-0.5 rounded bg-red-500 flex-shrink-0 ${SCALE_WIDTH_BADGE}`}>
-              震度{label}
+              <ScaleText reason={reason} label={label} />
             </span>
             <span className="text-white text-sm font-bold leading-tight">
               {scoped ? HEADLINE[reason].scoped : HEADLINE[reason].global}
