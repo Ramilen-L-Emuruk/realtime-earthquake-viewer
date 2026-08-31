@@ -6,7 +6,7 @@ import type { ConnectionStatus } from '../../types/earthquake'
 import { getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
 import { readableTextColor } from '../../utils/contrast'
 import { playAlertSound, playCountdownBeep, playKyoshinUpdateSound, unlockAudio } from '../../utils/alertSound'
-import { checkVoicevoxAvailable, fetchVoicevoxSpeakers, isValidVoicevoxUrl, speakWithVoicevox, type VoicevoxSpeaker } from '../../utils/voicevox'
+import { checkVoicevoxAvailable, fetchVoicevoxSpeakers, isValidVoicevoxUrl, speakWithVoicevox, VOICEVOX_URL_DEBOUNCE_MS, type VoicevoxSpeaker } from '../../utils/voicevox'
 import { serverDate, getServerClockOffsetMs } from '../../utils/clock'
 import type { UseTestScenariosResult } from '../../hooks/useTestScenarios'
 import type { ScenarioCategory } from '../../types/testScenario'
@@ -501,12 +501,6 @@ function ServerClockOffsetDisplay() {
   return <span className="text-xs text-secondary">{sign}{offsetMs} ms</span>
 }
 
-// VOICEVOX の接続確認を遅らせる時間。入力欄は 1 文字ごとに設定を保存するため、生の値を
-// 確認 effect の依存に渡すと打鍵のたびに /version を叩く（実測: 「192」と打つ途中の「1」「19」
-// 「192」がそれぞれ IPv4 の 0.0.0.1 / 0.0.0.19 / 0.0.0.192 として接続され、全部失敗した）。
-// DMDATA の APIキー（App.tsx の API_KEY_DEBOUNCE_MS）と同じ 800ms に揃える。
-const VOICEVOX_URL_DEBOUNCE_MS = 800
-
 // ---- Main component ----
 
 function HomeLocationSection({
@@ -588,7 +582,9 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
   const [voicevoxSpeakers, setVoicevoxSpeakers] = useState<VoicevoxSpeaker[]>([])
 
   // 通信を起こす側へ渡す URL は入力が落ち着くまで待つ。保存と入力欄の表示は即座に反映したいので、
-  // 遅らせるのは確認 effect だけにする（試聴・実際の読み上げはユーザー操作の時点でしか通信しない）。
+  // 遅らせるのは通信する側だけにする。**設定の変化で通信するものは全部待たせること** ——
+  // ここの確認 effect のほかに、切り出し語の作り置き（`App.tsx` の `warmFixedPhrases`）が
+  // 同じ性質を持つ。試聴・実際の読み上げはユーザー操作・電文の受信の時点でしか通信しない。
   const debouncedVoicevoxUrl = useDebouncedValue(settings.voicevoxUrl, VOICEVOX_URL_DEBOUNCE_MS)
   // 入力が止まって確認が走るまでの間、前回の結果（例:「起動中」）を出したままにすると、
   // 入力欄に見えている URL とは別の URL の結果を指してしまう。確認予定であることを見せる。

@@ -55,7 +55,7 @@ import { quakeEventKey } from './utils/quakeMerge'
 import { tsunamiOverallGrade } from './utils/tsunami'
 import { playCountdownBeep, unlockAudio, setSoundVolume } from './utils/alertSound'
 import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
-import { warmFixedPhrases } from './utils/voicevox'
+import { warmFixedPhrases, isValidVoicevoxUrl, VOICEVOX_URL_DEBOUNCE_MS } from './utils/voicevox'
 import { EEW_LEAD_PHRASES } from './utils/ttsText'
 import type { EEWAlert, JMAQuake, JMATsunami } from './types/earthquake'
 import { useReplayController, WINDOW_MS as REPLAY_WINDOW_MS, PRE_WINDOW_MS as REPLAY_PRE_WINDOW_MS } from './hooks/useReplayController'
@@ -604,10 +604,24 @@ export function App() {
   // EEW は通知音との間を置かずに読み始めるため先行合成（prewarmVoicevox）が使えず、合成の
   // 往復がそのまま声の出遅れになる。切り出し語は 3 通りの固定句なので先に作っておける。
   // 接続先・話者が変われば作り直す（別の声のまま鳴らさないため）。
+  //
+  // **接続先は入力が落ち着くのを待ってから使う。** ここは設定の変化で通信する数少ない経路で、
+  // 生の値を依存に渡すと URL を手で打つあいだ 1 文字ごとに合成要求が飛ぶ（3 句ぶん × 打鍵数）。
+  // 通信前の検分も設定タブの接続確認と揃える——スキームの書き忘れのような直らない誤りで
+  // 叩き続けないため。
+  const debouncedVoicevoxUrl = useDebouncedValue(settings.voicevoxUrl, VOICEVOX_URL_DEBOUNCE_MS)
   useEffect(() => {
     if (!settings.voicevoxEnabled) return
-    warmFixedPhrases(settings.voicevoxUrl, settings.voicevoxSpeakerId, EEW_LEAD_PHRASES)
-  }, [settings.voicevoxEnabled, settings.voicevoxUrl, settings.voicevoxSpeakerId])
+    if (!isValidVoicevoxUrl(debouncedVoicevoxUrl)) {
+      // **黙って戻らない。** 設定タブは同じ条件を「接続先の URL が正しくありません」として
+      // 画面に出すが、こちらは画面を持たないため、記録が無いと「作り置きが一度も効かない」
+      // 原因を追えない（`warmFixedPhrases` 側の早期 return と同じ流儀）。
+      // 値が変わるまで effect は走り直さないので、間引きは要らない。
+      log.debug('[VoiceVox] 切り出し語の作り置きをスキップ (接続先の URL が不正)')
+      return
+    }
+    warmFixedPhrases(debouncedVoicevoxUrl, settings.voicevoxSpeakerId, EEW_LEAD_PHRASES)
+  }, [settings.voicevoxEnabled, debouncedVoicevoxUrl, settings.voicevoxSpeakerId])
 
   // ブラウザの自動再生制限に対応: 初回のユーザー操作で音声を有効化する
   useEffect(() => {
