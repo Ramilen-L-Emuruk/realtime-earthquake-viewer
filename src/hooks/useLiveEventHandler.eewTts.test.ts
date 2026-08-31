@@ -419,10 +419,88 @@ describe('EEW 読み上げの文言と発話順序', () => {
 
     handle(makeEEW({ serial: 2, scaleTo: 50, lgIntTo: 3 }))
     // 震度は変化なし。階級だけ新しいサイクルに入り、階級の安定待ち（300ms）を経て確定する。
-    // 震度は既に確定済みなので、確定した瞬間に一緒に読まれる
+    // 震度は実際に声に出た値（5強）とちょうど一致しているため繰り返さず、階級部分だけを読む
     await vi.advanceTimersByTimeAsync(300)
     await flushMicrotasks()
-    expect(spokenTexts()).toEqual(['予想最大震度5強。予想最大階級3。'])
+    expect(spokenTexts()).toEqual(['予想最大階級3。'])
+  })
+
+  // 安全弁: 震度の scale 値が同じでも orAbove（「〜以上」）が変わっていれば「据え置き」とは
+  // 見なさず、震度も含めて読み直す。scale だけを見て判定すると、上限が定まらなくなった
+  // 変化（「震度4」→「震度4以上」）を据え置きと誤認し、階級部分だけの短句に落としてしまう。
+  it('震度の scale は同じでも orAbove が変わっていれば、震度も含めて読み直す', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 40, lgIntTo: 2 }))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度4。予想最大階級2。'])
+    speakMock.mockClear()
+
+    handle(makeEEW({ serial: 2, scaleTo: 40, scaleToOrAbove: true, lgIntTo: 3 }))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual(['予想最大震度4以上。予想最大階級3。'])
+  })
+
+  // 震度・階級が同一続報で同時に新しい値へ変化すると、階級の安定待ち（300ms固定）の方が
+  // 震度側（跳躍幅次第で300〜2000ms）より先に完了することがある。ここで階級の確定だけで
+  // 読み上げをトリガーすると、震度がまだ「変化中」なのに「据え置き」と誤判定し、階級だけの
+  // 短句を読んだ直後に震度の確定でもう一度全文を読む二重発話になる（`confirmLpgm` へ
+  // `!eewScaleStabilityRef.current.has(key)` を追加する前は実際にこれが起きていた）。
+  it('震度・階級が同一続報で同時に変化し、階級の安定待ちが先に終わっても二重発話にならない', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50, lgIntTo: 1 }))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度5強。予想最大階級1。'])
+    speakMock.mockClear()
+
+    // 震度5強→6弱（跳躍1段階=large2000ms）と階級1→2（300ms固定）が同一続報で同時に変化
+    handle(makeEEW({ serial: 2, scaleTo: 55, lgIntTo: 2 }))
+    // 階級の安定待ち（300ms）が先に完了する。震度はまだ安定待ち中（2000ms未満）なので
+    // 階級だけの短句をトリガーせず、震度の確定を待つ
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual([])
+
+    // 震度の安定待ち（2000ms）が完了すると、震度・階級を一緒に1回だけ読む
+    await vi.advanceTimersByTimeAsync(1700)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual(['予想最大震度6弱。予想最大階級2。'])
+  })
+
+  // 安全弁: 震度が据え置きへ復帰する一方、階級がまだ未確定のまま `level`（安定待ちを経ない
+  // 生イベントから即座に計算される）だけが特別警報相当に上がることがある。この状態で
+  // `confirmedLpgm=0` のまま `scaleUnchanged` 経由の短句化に入ると、空文字の発話が生成され
+  // 「想定外」警告が誤って出たうえ既読も更新されない、という穴があった（`enqueuePhase2` に
+  // `if (scaleUnchanged && confirmedLpgm === 0) return null` を追加する前）。
+  it('震度が据え置きに復帰する一方、階級が未確定のまま level だけ上がっても空発話にならない', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50, severity: 'Warning' }))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度5強。'])
+    speakMock.mockClear()
+
+    // 震度が瞬間的に6強へ跳躍（3段階=large2000ms）
+    handle(makeEEW({ serial: 2, scaleTo: 60 }))
+    await vi.advanceTimersByTimeAsync(1900)
+    // 震度が5強に戻る（baseScale=50なので跳躍0段階=small300msに切り替わる）
+    handle(makeEEW({ serial: 3, scaleTo: 50 }))
+    await vi.advanceTimersByTimeAsync(50)
+    // 階級が新たに4で届く（震度より50ms遅れて届いたため、震度の安定待ち300msの方が先に完了する）
+    handle(makeEEW({ serial: 4, scaleTo: 50, lgIntTo: 4 }))
+    await vi.advanceTimersByTimeAsync(250)
+    await flushMicrotasks()
+    // 震度の安定待ちが先に完了する時点では、latest の生値で level が特別警報相当まで
+    // 上がっているが、階級はまだ確定していない（confirmedLpgm=0）。空発話や「想定外」警告を
+    // 出さず、黙って階級の確定を待つ
+    expect(spokenTexts()).toEqual([])
+
+    // 階級の安定待ちが完了すると、正しく「予想最大階級4。」が読まれる
+    await vi.advanceTimersByTimeAsync(50)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual(['予想最大階級4。'])
   })
 
   // 長周期階級の安定待ちにも震度と同じ上限（5秒）がある。無いと、階級が固定待ち時間（300ms）
@@ -446,8 +524,9 @@ describe('EEW 読み上げの文言と発話順序', () => {
     handle(makeEEW({ serial: serial++, scaleTo: 50, lgIntTo: 4 }))
     await vi.advanceTimersByTimeAsync(4300)   // サイクル開始（最初の階級変化）から合計5000msを超える
     await flushMicrotasks()
-    // 安定を待たず、上限到達時点の最新の階級（4）で強制確定する。震度は既読のまま一緒に読まれる
-    expect(spokenTexts()).toEqual(['予想最大震度5強。予想最大階級4。'])
+    // 安定を待たず、上限到達時点の最新の階級（4）で強制確定する。震度は据え置き（既に声に
+    // 出た値と一致）のため繰り返さず、階級部分だけを読む
+    expect(spokenTexts()).toEqual(['予想最大階級4。'])
   })
 
   // 「以上」は階級値に現れない。既読を階級だけで覚えていると、上限が定まらなくなった変化を
