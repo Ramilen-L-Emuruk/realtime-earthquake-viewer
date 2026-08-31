@@ -1,4 +1,5 @@
 import type { JMATsunami, TsunamiArea, TsunamiGrade, TsunamiObservation } from '../types/earthquake'
+import { log } from './logger'
 
 const GRADE_PRIORITY: Record<TsunamiGrade, number> = {
   MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0,
@@ -76,6 +77,75 @@ export function isCancelForCurrentTsunami(cancel: JMATsunami, current: JMATsunam
   const currentAt = new Date(current.time).getTime()
   if (Number.isFinite(cancelAt) && Number.isFinite(currentAt) && cancelAt < currentAt) return false
   return true
+}
+
+/**
+ * 同一の津波イベントに属する報から、最後に伝えられた有効期限（`validDateTime`）を選ぶ。
+ *
+ * **有効期限は報ではなく津波そのものに付く事実として扱うこと。** 気象庁は期限が決まった報で
+ * 一度だけ ValidDateTime を載せ、以後の続報には載せない。2024 年能登半島地震の実電文では
+ * 01/02 10:00 の VTSE41 が「01/02 17:00 まで」を伝え、その 3 分後に届いた最後の報（VTSE51）は
+ * 期限を持たない。2024 年日向灘地震も同じ形で、津波予報が最後に残るケースの標準的な運用。
+ * 報 1 通だけを見て期限の有無を判定すると、そういう津波は「失効しない津波」として扱われ、
+ * 期限を過ぎても画面に残り続ける（予報のみに解除電文は出ないため、消す手段が他に無い）。
+ *
+ * 期限を持つ報が複数あれば発表時刻が最も新しいものを採る（気象庁が期限を延ばした・縮めた場合に
+ * 従うため）。発表時刻が読めない報は新旧を判定できないので候補から外す。
+ *
+ * **期限そのものが日時として読めない値は採らない。** 読めない値を採ると、その津波が「期限を持つ」
+ * 顔をしたまま、以後の比較（`new Date(壊れた値) <= now` 等）がすべて偽に倒れる。表示を続ける側にも、
+ * 失効の予約を積まない側にも同時に倒れるため、消す手段が無い津波が黙って出来上がる。捨てるときは
+ * 記録を残す（画面には何の痕跡も残らないため）。
+ *
+ * @param reports 同一イベントの報。順序は問わない
+ * @returns 最後に伝えられた期限。1 通も期限を持たなければ undefined
+ */
+export function latestValidDateTime(reports: JMATsunami[]): string | undefined {
+  let latestAt = -Infinity
+  let latest: string | undefined
+  for (const report of reports) {
+    if (!report.validDateTime) continue
+    if (!Number.isFinite(new Date(report.validDateTime).getTime())) {
+      log.warn(`[tsunami] 有効期限を日時として読めないため採用しません: id=${report.id} validDateTime=${report.validDateTime}`)
+      continue
+    }
+    const at = new Date(report.time).getTime()
+    if (!Number.isFinite(at)) {
+      // 発表時刻が読めないと新旧を判定できない。期限が読めない場合と同じく記録を残す
+      // （片方だけ無言で落とすと、期限が消えた原因を追う手がかりが残らない）。
+      log.warn(`[tsunami] 発表時刻を日時として読めないため有効期限の候補から外します: id=${report.id} time=${report.time}`)
+      continue
+    }
+    if (at < latestAt) continue
+    latestAt = at
+    latest = report.validDateTime
+  }
+  return latest
+}
+
+/**
+ * 最新報に有効期限が無ければ、同一イベントの過去報から引き継いだものを返す。
+ *
+ * 履歴からの復元（初回ロード・リロード）は最新の 1 報だけを画面へ載せるため、その報が期限を
+ * 持たないと失効の予約が積まれず、期限切れの津波が消えないまま残る。引き継ぐ理由は
+ * `latestValidDateTime` に同じ。
+ *
+ * 同一イベントの判定は `eventId`、`eventId` を持たない経路（P2PQuake）では `id` の一致で行う。
+ * 別の津波の期限を引き継ぐと、発表中の津波を無関係な期限で消しうる。
+ *
+ * @param latest 画面へ載せる最新報
+ * @param reports 同じ取得結果に含まれる報（`latest` を含んでよい）
+ */
+export function withInheritedValidDateTime(latest: JMATsunami, reports: JMATsunami[]): JMATsunami {
+  // 自分の期限が日時として読めるならそれを使う（判定は `latestValidDateTime` と同じ 1 箇所に置く）。
+  if (latestValidDateTime([latest])) return latest
+  const sameEvent = reports.filter(r => r !== latest
+    && (latest.eventId ? r.eventId === latest.eventId : !r.eventId && r.id === latest.id))
+  const inherited = latestValidDateTime(sameEvent)
+  if (inherited) return { ...latest, validDateTime: inherited }
+  // 読めない期限は落とす。残すと「期限を持つ津波」の顔をしたまま以後の比較がすべて偽へ倒れ、
+  // 表示は続くのに失効の予約も積まれない。落とせば standard 版の 24 時間フェイルセーフが働く。
+  return latest.validDateTime ? { ...latest, validDateTime: undefined } : latest
 }
 
 /**

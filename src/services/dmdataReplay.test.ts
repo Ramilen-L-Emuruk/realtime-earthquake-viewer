@@ -5,7 +5,9 @@
 // 丸ごと不可能になっていた。また目録（telegrams.json）が無いアーカイブは無言で
 // 捨てられ、「電文 0 件だが成功」に化けて原因が追えなかった。
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache } from './dmdataReplay'
+import { fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache, filterPreWindowEvents } from './dmdataReplay'
+import type { JMATsunami } from '../types/earthquake'
+import type { ReplayEntry } from '../types/replay'
 import { DmdataApiKeyError } from '../utils/dmdataApiKey'
 
 const HEADER = 512
@@ -759,5 +761,110 @@ describe('fetchDmdataQuakeHistory', () => {
     await expect(fetchDmdataQuakeHistory('abc123あ', new Date('2026-08-10T12:00:00+09:00'), 50, 7))
       .rejects.toThrow(DmdataApiKeyError)
     expect(fetchSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('filterPreWindowEvents の津波', () => {
+  // 有効期限は報ではなく津波に付く事実として扱う（詳細は utils/tsunami の latestValidDateTime）。
+  // ここで再現するのは 2024 年能登半島地震の実電文の並び:
+  //   01/02 10:00 VTSE41  期限「01/02 17:00 まで」を伝える唯一の報
+  //   01/02 10:03 VTSE51  期限を持たない最後の報（以降、解除電文は出ない）
+  function tsunamiEntry(
+    time: string,
+    opts: { eventId?: string; validDateTime?: string; cancelled?: boolean } = {},
+  ): ReplayEntry {
+    const tsunami: JMATsunami = {
+      kind: 'tsunami',
+      id: `dmdata-tsunami-${opts.eventId ?? 'E1'}-${time}`,
+      eventId: opts.eventId ?? 'E1',
+      time,
+      cancelled: !!opts.cancelled,
+      cancelReason: opts.cancelled ? 'lifted' : undefined,
+      validDateTime: opts.validDateTime,
+      issue: { source: '気象庁', time, type: 'Focus' },
+      areas: opts.cancelled
+        ? []
+        : [{ grade: 'Forecast', immediate: false, name: '石川県能登', code: '392' }],
+    }
+    return { replayTime: new Date(time), payload: { kind: 'event', event: tsunami } }
+  }
+
+  function keptTsunamis(entries: ReplayEntry[], target: string): JMATsunami[] {
+    return filterPreWindowEvents(entries, new Date(target))
+      .map(e => (e.payload.kind === 'event' ? e.payload.event : null))
+      .filter((ev): ev is JMATsunami => ev?.kind === 'tsunami')
+  }
+
+  const notoEntries = [
+    tsunamiEntry('2024-01-02T10:00:00+09:00', { validDateTime: '2024-01-02T17:00:00+09:00' }),
+    tsunamiEntry('2024-01-02T10:03:00+09:00'),
+  ]
+
+  it('期限を過ぎた時刻を開始点にしたら、期限を持たない最後の報も残さない', () => {
+    expect(keptTsunamis(notoEntries, '2024-01-02T17:30:00+09:00')).toEqual([])
+  })
+
+  it('期限より前を開始点にしたら残し、期限を持たない報にも期限を補う', () => {
+    const kept = keptTsunamis(notoEntries, '2024-01-02T16:50:00+09:00')
+    expect(kept.map(t => t.time)).toEqual([
+      '2024-01-02T10:00:00+09:00',
+      '2024-01-02T10:03:00+09:00',
+    ])
+    // 補わないと最後の報で失効の予約が積まれず、期限を過ぎても消えない
+    expect(kept[1].validDateTime).toBe('2024-01-02T17:00:00+09:00')
+  })
+
+  it('期限を伝えた報が 1 通も無ければ残す（standard 版・期限がまだ決まっていない段階）', () => {
+    const entries = [tsunamiEntry('2024-01-01T16:12:00+09:00'), tsunamiEntry('2024-01-01T16:22:00+09:00')]
+    expect(keptTsunamis(entries, '2024-01-01T18:00:00+09:00')).toHaveLength(2)
+  })
+
+  it('解除電文がある津波は発表報ごと残さない（解除済みの津波を復活させない）', () => {
+    const entries = [
+      tsunamiEntry('2024-08-08T20:00:00+09:00'),
+      tsunamiEntry('2024-08-08T22:00:00+09:00', { cancelled: true }),
+    ]
+    expect(keptTsunamis(entries, '2024-08-09T02:00:00+09:00')).toEqual([])
+  })
+
+  // P2PQuake（standard 版）の 552 は eventId を持たず id も報ごとに変わるため、報 1 通ずつが
+  // 別グループになる。この経路で解除の足切りを時刻だけで行うと、同じ 24 時間に無関係な津波が
+  // 2 つあったとき、解除された側の時刻でまだ発表中の側まで消える。解除報ごと全部を流し、照合は
+  // `isCancelForCurrentTsunami` に委ねる。
+  it('eventId が無い経路では解除報も含めて全報を通す（無関係な津波を巻き込まない）', () => {
+    const unkeyed = (time: string, cancelled?: boolean): ReplayEntry => {
+      const entry = tsunamiEntry(time, { cancelled })
+      const tsunami = entry.payload.kind === 'event' ? (entry.payload.event as JMATsunami) : null
+      return { ...entry, payload: { kind: 'event', event: { ...tsunami!, eventId: undefined } } }
+    }
+    const entries = [
+      unkeyed('2024-08-08T20:00:00+09:00'),
+      unkeyed('2024-08-08T22:00:00+09:00', true),
+      unkeyed('2024-08-08T23:00:00+09:00'),
+    ]
+    const kept = keptTsunamis(entries, '2024-08-09T02:00:00+09:00')
+    expect(kept.map(t => `${t.time} cancelled=${t.cancelled}`)).toEqual([
+      '2024-08-08T20:00:00+09:00 cancelled=false',
+      '2024-08-08T22:00:00+09:00 cancelled=true',
+      '2024-08-08T23:00:00+09:00 cancelled=false',
+    ])
+  })
+
+  // 期限の判定は識別子の有無で分けない（識別子が無ければ報 1 通ずつが 1 グループになり、その報
+  // 自身の期限で判定される＝報単位で見ていた従来と同じ）。
+  it('eventId が無い報でも、その報自身の期限が過ぎていれば載せない', () => {
+    const entry = tsunamiEntry('2024-01-02T10:00:00+09:00', { validDateTime: '2024-01-02T17:00:00+09:00' })
+    const tsunami = entry.payload.kind === 'event' ? (entry.payload.event as JMATsunami) : null
+    const unkeyed = { ...entry, payload: { kind: 'event' as const, event: { ...tsunami!, eventId: undefined } } }
+    expect(keptTsunamis([unkeyed], '2024-01-02T17:30:00+09:00')).toEqual([])
+  })
+
+  it('別イベントの津波は互いに影響しない（一方が失効しても他方は残る）', () => {
+    const entries = [
+      tsunamiEntry('2024-01-02T10:00:00+09:00', { eventId: 'E1', validDateTime: '2024-01-02T17:00:00+09:00' }),
+      tsunamiEntry('2024-01-02T18:00:00+09:00', { eventId: 'E2' }),
+    ]
+    const kept = keptTsunamis(entries, '2024-01-02T19:00:00+09:00')
+    expect(kept.map(t => t.eventId)).toEqual(['E2'])
   })
 })
