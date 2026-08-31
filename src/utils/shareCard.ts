@@ -296,38 +296,92 @@ const SHARE_SHEET_TIMEOUT_MS = 120_000
 
 export type ShareResult = 'shared' | 'downloaded' | 'canceled' | 'timedOut'
 
+/** 共有の結果。本文を渡せたかどうかはボタンの見せ方を変えるため別に持つ。 */
+export interface ShareOutcome {
+  result: ShareResult
+  /** 保存へ落ちたときに、本文をクリップボードへ置けたか。 */
+  textCopied: boolean
+}
+
 /**
- * 画像を共有する。共有シートが使えない環境ではダウンロードへ落とす。
+ * 本文へ載せるアプリの URL。
+ *
+ * **DMDSS 版から共有しても standard 版の URL を載せる。** DMDSS 版は DMDATA.JP の API キーが
+ * 要るため、受け取った人がそのまま開くと設定画面に突き当たる。
+ */
+export function currentAppUrl(): string {
+  return standardAppUrl(location.origin, import.meta.env.BASE_URL)
+}
+
+/**
+ * `currentAppUrl` の中身を環境から切り離したもの（テストのため）。
+ *
+ * 末尾スラッシュの有無を問わず落とす。`base` の書き方を決めているのは `vite.config.ts` の一存なので、
+ * そこが変わったときに本文の URL が黙って DMDSS 版へ戻らないようにしておく。
+ */
+export function standardAppUrl(origin: string, base: string): string {
+  return new URL(base.replace(/dmdss\/?$/, ''), origin).href
+}
+
+/**
+ * 画像を共有シートへ渡す。使えない環境では保存し、本文はクリップボードへ置く。
  *
  * `navigator.share` の有無だけでは判定できない——ファイルの共有に対応していない実装があるため、
- * `canShare({ files })` まで確かめる。共有シートを閉じただけの取り消し（AbortError）は失敗では
+ * `canShare` まで確かめる。共有シートを閉じただけの取り消し（AbortError）は失敗では
  * ないので、ダウンロードへ落とさずそのまま終える。
+ *
+ * **判定は渡すものをすべて含めて行う。** 画像だけで確かめて本文を後から足すと、本文を受け取れ
+ * ない実装で `share()` が投げ、そこから保存へ落ちる遠回りになる。
  *
  * **応答を待つ上限を置く。** 共有シートを開いたまま放置されたり、シートが応答を返さない実装に
  * 当たると、待ち続けている間ボタンが押せないままになる（実際、自動操作の環境では返らない）。
  * 上限に達したらボタンだけ戻す——シートが開いている可能性があるので、保存へは落とさない。
  */
-export async function shareOrDownloadImage(blob: Blob, filename: string): Promise<ShareResult> {
+export async function shareOrDownloadImage(blob: Blob, filename: string, text: string): Promise<ShareOutcome> {
   const file = new File([blob], filename, { type: blob.type })
-  if (navigator.canShare?.({ files: [file] })) {
+  const data: ShareData = { files: [file], text }
+  if (navigator.canShare?.(data)) {
     try {
       const timedOut = Symbol('timedOut')
       const result = await Promise.race([
-        navigator.share({ files: [file] }).then(() => 'shared' as const),
+        navigator.share(data).then(() => 'shared' as const),
         new Promise<typeof timedOut>((r) => setTimeout(() => r(timedOut), SHARE_SHEET_TIMEOUT_MS)),
       ])
       if (result === timedOut) {
         log.warn('[shareCard] 共有シートの応答が返らないため待つのをやめました')
-        return 'timedOut'
+        return { result: 'timedOut', textCopied: false }
       }
-      return 'shared'
+      return { result: 'shared', textCopied: false }
     } catch (e) {
-      if (e instanceof DOMException && e.name === 'AbortError') return 'canceled'
+      if (e instanceof DOMException && e.name === 'AbortError') return { result: 'canceled', textCopied: false }
       log.warn('[shareCard] 共有に失敗したため保存へ切り替えます', e)
     }
   }
   downloadBlob(blob, filename)
-  return 'downloaded'
+  // 共有シートが無い環境では本文の渡し先が無い。貼り付けられるようクリップボードへ置く。
+  return { result: 'downloaded', textCopied: await copyToClipboard(text) }
+}
+
+/**
+ * 本文をクリップボードへ置く。**置けたかどうかを返す**——置けていないのに「コピーしました」と
+ * 見せると、利用者は貼り付け先で初めて気づくことになる。
+ *
+ * 失敗する理由は 2 つある。API が無い場合（安全な文脈でない配信）と、書き込みが拒否される場合
+ * （クリックからの猶予が切れたときを含む。画像の生成に手間取るとここへ来る）。
+ */
+async function copyToClipboard(text: string): Promise<boolean> {
+  // `?.` で呼ぶと、API が無い環境では undefined を await して成功したように見える。先に確かめる。
+  if (!navigator.clipboard?.writeText) {
+    log.warn('[shareCard] この環境ではクリップボードへ書き込めないため本文を渡せません')
+    return false
+  }
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch (e) {
+    log.warn('[shareCard] 本文をクリップボードへ置けませんでした', e)
+    return false
+  }
 }
 
 function downloadBlob(blob: Blob, filename: string): void {
