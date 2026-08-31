@@ -959,3 +959,144 @@ describe('P2PQuake 補完経路も古い報で退行しない', () => {
     expect(areasOfEnrich(h)).toEqual(['新潟県上越'])
   })
 })
+
+// 取消の後に届いた報の結線。純粋関数側（`quakeMerge.test.ts`）は判定そのものを厚く固定して
+// いるが、**それを正しい引数・正しいタイミングで呼んでいるか**はここでしか見えない。
+// 台帳の受け渡しを 1 箇所忘れても型チェックもユニットテストも通ってしまう（実際に、実装途中で
+// 台帳を作ったのに 1 箇所も渡していない状態が敵対的レビューで観測された）。
+describe('DMDSS 版: 取消の後に届いた報', () => {
+  const 発生時刻 = '2026-01-01T07:06:00+09:00'
+  const 震度速報 = (id: string, time: string): JMAQuake => ({
+    kind: 'quake',
+    id,
+    time,
+    issue: { source: '気象庁', time, type: '震度速報', correct: 'なし' },
+    earthquake: {
+      time: 発生時刻,
+      hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: NaN },
+      maxScale: 50,
+      domesticTsunami: '調査中',
+    },
+    points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+  })
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => {
+    vi.useRealTimers()
+    setReplayOffset(null)
+  })
+
+  const 取消 = (id: string, time: string): JMAQuake => ({
+    ...震度速報(id, time),
+    cancelled: true,
+    earthquake: {
+      time: '',
+      hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 },
+      maxScale: -1,
+      domesticTsunami: '不明',
+    },
+    points: [],
+  })
+
+  it('取消より前に発表された報は、purge を過ぎて届いても採らない', async () => {
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(震度速報('dmdata-quake-20260101160610-1', '2026-01-01T07:07:00+09:00')) })
+    expect(h.current.earthquakes).toHaveLength(1)
+
+    // 取消を受けるとカードは 10 秒表示され、そのあと消える。
+    act(() => { h.current.injectEvent(取消('dmdata-quake-20260101160610-2', '2026-01-01T07:10:00+09:00')) })
+    expect(h.current.earthquakes[0]?.cancelledAt).toBeInstanceOf(Date)
+    act(() => { vi.advanceTimersByTime(11_000) })
+    expect(h.current.earthquakes).toHaveLength(0)
+
+    // **カードが消えた後**に、取消より前に発表された報が遅れて届く。台帳が無いと復活する。
+    act(() => { h.current.injectEvent(震度速報('dmdata-quake-20260101160610-3', '2026-01-01T07:09:00+09:00')) })
+    expect(h.current.earthquakes).toHaveLength(0)
+  })
+
+  it('取消より後に発表された報は、別カードとして立てる', async () => {
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(震度速報('dmdata-quake-20260101160611-1', '2026-01-01T07:07:00+09:00')) })
+    act(() => { h.current.injectEvent(取消('dmdata-quake-20260101160611-2', '2026-01-01T07:10:00+09:00')) })
+    act(() => { vi.advanceTimersByTime(11_000) })
+    expect(h.current.earthquakes).toHaveLength(0)
+
+    act(() => { h.current.injectEvent(震度速報('dmdata-quake-20260101160611-3', '2026-01-01T07:11:00+09:00')) })
+    expect(h.current.earthquakes).toHaveLength(1)
+  })
+
+  it('取消の 10 秒表示中に続報が来ても、取消の表示と消滅を妨げない', async () => {
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(震度速報('dmdata-quake-20260101160612-1', '2026-01-01T07:07:00+09:00')) })
+    act(() => { h.current.injectEvent(取消('dmdata-quake-20260101160612-2', '2026-01-01T07:10:00+09:00')) })
+
+    // 取消より後に発表された報。取消済みカードを置換せず、別カードとして立つ。
+    act(() => { h.current.injectEvent(震度速報('dmdata-quake-20260101160612-3', '2026-01-01T07:11:00+09:00')) })
+    expect(h.current.earthquakes.filter(q => q.cancelledAt)).toHaveLength(1)
+
+    // purge が空振りせず、取消済みカードだけが消える。
+    act(() => { vi.advanceTimersByTime(11_000) })
+    expect(h.current.earthquakes.filter(q => q.cancelledAt)).toHaveLength(0)
+    expect(h.current.earthquakes).toHaveLength(1)
+  })
+
+  // `resetState` はリプレイの開始・停止でリプレイ制御側が呼ぶ（このフックは公開するだけ）。
+  it('resetState で台帳を空にする（時間軸が変わるため）', async () => {
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(震度速報('dmdata-quake-20260101160613-1', '2026-01-01T07:07:00+09:00')) })
+    act(() => { h.current.injectEvent(取消('dmdata-quake-20260101160613-2', '2026-01-01T07:10:00+09:00')) })
+    act(() => { vi.advanceTimersByTime(11_000) })
+    expect(h.current.earthquakes).toHaveLength(0)
+
+    act(() => { h.current.resetState() })
+
+    // 台帳が空いたので、同じ報がもう一度届けばカードになる。
+    act(() => { h.current.injectEvent(震度速報('dmdata-quake-20260101160613-3', '2026-01-01T07:09:00+09:00')) })
+    expect(h.current.earthquakes).toHaveLength(1)
+  })
+
+  // 台帳は件数に上限を置き、古いものから落とす。向きを取り違えると「直近の取消を忘れて古い取消を
+  // 覚え続ける」形になり、症状は「取り消したはずの地震が復活する」——仕様書 §6.2 が塞いだ穴へ戻る。
+  it('台帳が上限を超えたら古い記録から落とす', async () => {
+    const h = setup()
+    await h.flush()
+
+    // 上限（20 件）を 1 件超える取消を、それぞれ別イベントとして入れる。
+    // カードが無くても記録は残る（順序の入れ替わりで取消が先に届く場合に備えるため）。
+    const eventIds = Array.from({ length: 21 }, (_, i) => `2026010117${String(i).padStart(4, '0')}`)
+    for (const eventId of eventIds) {
+      act(() => { h.current.injectEvent(取消(`dmdata-quake-${eventId}-1`, '2026-01-01T07:10:00+09:00')) })
+    }
+
+    // 最も古い取消は台帳から落ちているので、その報は弾かれずカードになる。
+    act(() => {
+      h.current.injectEvent(震度速報(`dmdata-quake-${eventIds[0]}-2`, '2026-01-01T07:09:00+09:00'))
+    })
+    expect(h.current.earthquakes).toHaveLength(1)
+
+    // 2 件目以降は残っているので、引き続き弾かれる（落とす向きが逆でないことの確認）。
+    act(() => {
+      h.current.injectEvent(震度速報(`dmdata-quake-${eventIds[1]}-2`, '2026-01-01T07:09:00+09:00'))
+    })
+    expect(h.current.earthquakes).toHaveLength(1)
+  })
+
+  it('対照: resetState を挟まなければ、同じ報は引き続き弾かれる', async () => {
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(震度速報('dmdata-quake-20260101160614-1', '2026-01-01T07:07:00+09:00')) })
+    act(() => { h.current.injectEvent(取消('dmdata-quake-20260101160614-2', '2026-01-01T07:10:00+09:00')) })
+    act(() => { vi.advanceTimersByTime(11_000) })
+
+    act(() => { h.current.injectEvent(震度速報('dmdata-quake-20260101160614-3', '2026-01-01T07:09:00+09:00')) })
+    expect(h.current.earthquakes).toHaveLength(0)
+  })
+})
