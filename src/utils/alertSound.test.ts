@@ -739,3 +739,51 @@ describe('setSoundVolume', () => {
     expect(loudest()).toBeCloseTo(atOne, 10)
   })
 })
+
+describe('通知音のあとに声を出すまでの間', () => {
+  // 間の長さは「音が聞こえなくなる時刻（実測）＋ 音の切れ方で決まる余白」。値を電文の種別ごとに
+  // 直書きしていた頃、震源情報だけがピーク比 −40 dB まで待って 1700ms になっていた（実際に
+  // 聞こえるのは 590ms まで）。ここで固定するのは次の 3 点。
+  //
+  //   正     : 掃引（津波の等級）は音が切れてから 0.3 秒待つ
+  //   対照   : 減衰の尾を持つ音は余白を置かない（尾に声が重なってよい）
+  //   安全弁 : 余白を足す対象の列挙が、周波数を動かす音（＝掃引）と一致する
+
+  /** その音が掃引かどうか。周波数を動かすオシレータを 1 本でも作れば掃引。 */
+  const isSweep = (type: typeof ALL_TYPES[number]): boolean => {
+    ctx.reset()
+    sound.playAlertSound(type)
+    return ctx.oscillators.some(o => o.frequency.events.length >= 2)
+  }
+  const gapOf = (type: typeof ALL_TYPES[number]): number =>
+    sound.ttsDelayFor(type) - sound.SOUND_AUDIBLE_END_MS[type]
+
+  it('正: 掃引（津波の等級）は音が切れてから 0.3 秒待つ', () => {
+    for (const type of ['tsunami', 'tsunamiMajor', 'tsunamiWatch', 'tsunamiForecast'] as const) {
+      expect(gapOf(type), type).toBe(300)
+    }
+  })
+
+  it('対照: 減衰の尾を持つ音は余白を置かない', () => {
+    // ピアノ・ダークピアノ・純音・マリンバ。尾が「終わりつつある音」として聞けるため、
+    // 実測値（聞こえなくなる時刻）そのままで話し始める。
+    for (const type of ['earthquake', 'earthquakePrompt', 'earthquakeInfo',
+      'eewCancel', 'tsunamiUpdate', 'tsunamiCancel', 'specialInfo', 'specialInfoCommentary'] as const) {
+      expect(gapOf(type), type).toBe(0)
+    }
+  })
+
+  it('安全弁: 余白を足す対象は、周波数を動かす音と一致する', () => {
+    // 掃引かどうかは鳴らさないと判らないため実装側は列挙で持っている。列挙が音の実態から
+    // ずれると、尾を持たない音の直後に声が食い込む（または余白が二重に付く）。
+    for (const type of ALL_TYPES) {
+      expect(gapOf(type), type).toBe(isSweep(type) ? 300 : 0)
+    }
+  })
+
+  it('安全弁: 全種別が実測値を持つ（音を新設したときの入れ忘れを止める）', () => {
+    for (const type of ALL_TYPES) {
+      expect(sound.SOUND_AUDIBLE_END_MS[type], type).toBeGreaterThan(0)
+    }
+  })
+})
