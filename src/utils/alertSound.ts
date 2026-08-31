@@ -678,6 +678,80 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
   },
 }
 
+// ─── 通知音を鳴らしてから声を出すまでの間 ─────────────────────────
+
+/**
+ * 通知音が**聞こえなくなる**までの時間（ms）。
+ *
+ * 実測値。音量 100% で `OfflineAudioContext` に描画した波形の**絶対値が −33.8 dBFS を
+ * 最後に超えた時刻**を 10ms 単位へ切り上げたもの。
+ *
+ * **ピーク比で測らないこと。** ピークの低い音ほど、同じ比率でも絶対値では深く沈むまで待つ計算に
+ * なり、以前はこの罠で 1 種別だけ実際に聞こえる時間の 3 倍近い値になっていた。また**音量設計
+ * （{@link BASE_GAIN}・{@link SEVERITY}）を変えたら基準の −33.8 dBFS ごと引き直すこと** ――
+ * `decayTone` は固定の床へ向かって減衰するため、ピークが動けば同じ時刻の絶対値も動く。
+ * 測り方・基準値の由来・経緯は [audio-tts-spec.md](../../docs/spec/audio-tts-spec.md) §6。
+ *
+ * **音を作り変えたら、その種別をここで測り直すこと。** {@link ttsDelayFor} から参照されない音
+ * （EEW の発報・揺れ検知）も表に入れてある——全種別を持てば、音を新設したときの入れ忘れを
+ * 型検査が止められる。
+ */
+export const SOUND_AUDIBLE_END_MS: Record<AlertSoundType, number> = {
+  earthquake:             770,
+  earthquakePrompt:       500,
+  earthquakeInfo:         590,
+  eew:                   1000,
+  eewUpdate:              270,
+  eewFinal:               510,
+  eewCancel:              720,
+  eewSpecial:            1020,
+  eewForecast:            670,
+  tsunami:               2420,
+  tsunamiMajor:          1970,
+  tsunamiWatch:          1420,
+  tsunamiForecast:       1620,
+  tsunamiUpdate:          530,
+  tsunamiCancel:          510,
+  kyoshin:                490,
+  kyoshinCandidate:       120,
+  specialInfo:            920,
+  specialInfoCommentary:  700,
+}
+
+/**
+ * 音が聞こえなくなってから声を出すまでの余白（ms）。**音の切れ方で決まる。**
+ *
+ * 減衰の尾を持つ音（ピアノ・ダークピアノ・純音・マリンバ）は、尾に声が重なっても「終わりつつある
+ * 音」として聞ける。掃引（{@link sweep} で鳴る津波の等級）は尾を持たず突然切れるため、切れた直後に声が来ると詰まって
+ * 聞こえる。**差は実測で明らか**で、絶対 −33.8 dBFS から −40 dBFS まで落ちるのに掃引は 3ms、
+ * 尾を持つ音は 150ms 前後かかる。
+ */
+const SPEECH_GAP_MS = 300
+
+/**
+ * 掃引で鳴る音（尾を持たず突然切れる）。{@link SPEECH_GAP_MS} を足す対象。
+ *
+ * **鳴らさないと掃引かどうかは判らない**ため列挙で持つ。列挙が実装からずれないよう、
+ * `alertSound.test.ts` が「周波数を動かすオシレータを持つ音」と一致することを固定している。
+ */
+const ABRUPT_SOUNDS: readonly AlertSoundType[] =
+  ['tsunami', 'tsunamiMajor', 'tsunamiWatch', 'tsunamiForecast']
+
+/**
+ * 通知音を鳴らしてから読み上げを始めるまでの間（ms）。
+ *
+ * **電文の種別ではなく音の種別で決まる。** 同じ音を使う経路（地震情報の取消と EEW 誤報取消、
+ * 地震情報と長周期地震動）に別々の値が書かれる余地を消すため、呼び出し側はこの関数だけを使う。
+ *
+ * この関数を呼ばない音は 2 種類ある。**読み上げはあるが間を置かないもの**（EEW の発報・南海トラフの
+ * 取消と終了）と、**読み上げそのものを持たないもの**（揺れ検知。音・通知・タブ移動だけ）。EEW は
+ * 最も急を要するため間を置かず、代わりに切り出し語の作り置きで合成の往復を消している
+ * （`voicevox.ts` の `warmFixedPhrases`）。
+ */
+export function ttsDelayFor(type: AlertSoundType): number {
+  return SOUND_AUDIBLE_END_MS[type] + (ABRUPT_SOUNDS.includes(type) ? SPEECH_GAP_MS : 0)
+}
+
 // ─── 震度更新音（強震モニタ）─────────────────────────────────────
 // 震度が上がるにつれ音程・回数・音量が連動して増加する。
 
