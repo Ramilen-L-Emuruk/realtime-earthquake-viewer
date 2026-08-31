@@ -378,15 +378,23 @@ export interface LiveEventHandlerDeps {
    * 受信時の要求（`setActiveTab*`）との違いは、**読み上げの順番待ちを経ている**こと。
    * 重い電文の読み上げ中に届いた軽い電文は、その読み上げが終わって自分の番が来たときに
    * 初めて画面を取る（従来は受信の瞬間に要求して保持に弾かれ、そのまま捨てられていた）。
+   *
+   * **受信時の先出しで既に画面を取れていたら `alreadyShown` を立てて渡す。** 渡した場合、
+   * 揺れ検知に奪われていても取り返さない（往復を防ぐ。判断は `shouldRetakeAfterPreSpeech` で、
+   * 読み上げを持つ相手に奪われた場合は取り返す）。
    */
-  followSpeechTab: (tab: TabId, priority: TabPriority) => void
+  followSpeechTab: (tab: TabId, priority: TabPriority, opts?: { alreadyShown?: boolean }) => void
   /**
    * 通知音と同時に出す**先出し**の追従（待たされずに読めると判断したときだけ）。
    *
    * `followSpeechTab` と分けているのは、**先出しに最小滞留時間の床を掛けないため**。
    * 予定の段階で床を消費すると、後から実際に声が出る側の追従を弾く（理由は App 側の宣言箇所）。
+   *
+   * **戻り値は呼び出した瞬間に画面を取れたか。** そのあと奪われたかは含まない。
+   * 呼び出し側はこれを `followSpeechTab` の `alreadyShown` へ渡すだけで、**追従の呼び出し
+   * 自体は省かない** —— 取り返すかどうかは保持の中身を見て App 側が決める。
    */
-  preSpeechTab: (tab: TabId, priority: TabPriority) => void
+  preSpeechTab: (tab: TabId, priority: TabPriority) => boolean
   /**
    * 読み上げの進行を画面へ伝える（津波カードの追従スクロール）。
    *
@@ -1021,6 +1029,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    * 見える。読み上げの直前にも同じ追従を呼ぶため、待っている間に別の情報が画面を取っていれば、
    * 自分の番が来た時点で取り戻せる。
    *
+   * **ただし揺れ検知に奪われた場合だけは取り戻さない**（先出しで一度見せているため。判断は
+   * `shouldRetakeAfterPreSpeech`）。取り戻すと、次のレベルアップでまた奪われて画面が数秒の
+   * うちに往復する。先出しの成否を `followSpeechTab` の `alreadyShown` へ渡して判断させる。
+   *
    * 先出しの判断が外れること（遅延の最中に EEW や津波が割り込む）はある。**巻き戻さない。**
    * 割り込んだ側が自分で画面を取るため、放っておけば正しい方へ落ち着く。
    */
@@ -1059,10 +1071,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       latestScheduledSeqByTopicRef.current.clear()
     }
     latestScheduledSeqByTopicRef.current.set(topic, seq)
+    // **先出しで画面を取れたか。** これは下の `onSpeakStart` で `alreadyShown` として渡すだけで、
+    // 追従を呼ぶかどうかの判断には使わない（理由はそちらのコメント）。
+    let tabTakenByPreSpeech = false
     if (follow) {
       if (blockedAtSchedule === null) {
         log.info(`[tab] ${follow.tab} を要求 (通知音と同時・読み上げの待ちなし)`)
-        preSpeechTab(follow.tab, follow.priority)
+        tabTakenByPreSpeech = preSpeechTab(follow.tab, follow.priority)
       } else {
         // 見送った理由を残す。「音は鳴ったのに画面がすぐ動かなかった」を後から追うのに必要
         // （動いたかどうかは `requestAutoTab` の記録で分かるが、なぜ待ったかは分からない）。
@@ -1111,7 +1126,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // 声に出す瞬間にまとめて行う（画面を合わせる・読み上げた値を既読へ移す）
           () => {
             onSpeakStart?.()
-            if (follow) followSpeechTab(follow.tab, follow.priority)
+            // **先出しで既に画面を取れていたかを渡す。** 取れていた場合に取り返すかどうかは
+            // 保持の中身を見て決める（`shouldRetakeAfterPreSpeech`）——揺れ検知に奪われたなら
+            // 取り返さず、読み上げを持つ相手に奪われたなら取り返す。
+            // **ここで呼び分けない**のは、`tabTakenByPreSpeech` が「取れた実績」でしかなく、
+            // その後に奪われたかを知らないため。呼ばずに省くと、近接して届いた 2 つの電文が
+            // 互いの先出しを上書きし合ったとき、後で声に出る側の画面が二度と戻らない。
+            if (follow) followSpeechTab(follow.tab, follow.priority, { alreadyShown: tabTakenByPreSpeech })
           },
           prewarmed,
           segments,
