@@ -191,7 +191,7 @@ function makeEEW(over: { serial?: string } = {}): EEWAlert {
 function setup(over: { voicevoxEnabled?: boolean } = {}) {
   const spies = {
     followSpeechTab: vi.fn(),
-    preSpeechTab: vi.fn(),
+    preSpeechTab: vi.fn(() => true),
     expandPanelForSpecialInfo: vi.fn(),
     setActiveTabNonRealtime: vi.fn(),
     setActiveTabRealtimeOnUpdate: vi.fn(),
@@ -261,10 +261,12 @@ describe('読み上げとタブ切替の同調', () => {
   })
 
   it('地震情報の発話が始まると earthquake へ追従する', async () => {
+    // 先出しで既に画面を取れているので `alreadyShown` が立つ。**追従の呼び出し自体は省かない**
+    // ——取り返すかどうかは保持の中身を見て App 側が決める（`shouldRetakeAfterPreSpeech`）。
     const { handle, spies } = setup()
     handle(makeQuake())
     await settle()
-    expect(spies.followSpeechTab).toHaveBeenCalledWith('earthquake', TAB_PRIORITY.quake)
+    expect(spies.followSpeechTab).toHaveBeenCalledWith('earthquake', TAB_PRIORITY.quake, { alreadyShown: true })
   })
 
   it('EEW の発話が始まると realtime へ追従する', async () => {
@@ -287,8 +289,10 @@ describe('読み上げとタブ切替の同調', () => {
     expect(spoken).toContain('緊急地震速報')  // EEW は読まれる
     // フィクスチャは震度速報なので本文は「震度速報。」で始まる（EEW の文面には現れない）
     expect(spoken).not.toContain('震度速報。')
-    // 取り下げた側のタブ追従も呼ばない（画面は追い越した側に留まる）
-    expect(spies.followSpeechTab).not.toHaveBeenCalledWith('earthquake', TAB_PRIORITY.quake)
+    // 取り下げた側のタブ追従も呼ばない（画面は追い越した側に留まる）。
+    // **第 3 引数まで書くこと。** `not.toHaveBeenCalledWith` は引数の数も見るので、省くと
+    // 実際に呼ばれていても一致せず、この検証が常に通ってしまう。
+    expect(spies.followSpeechTab).not.toHaveBeenCalledWith('earthquake', TAB_PRIORITY.quake, expect.anything())
   })
 
   it('後から来た地震情報は取り下げず、EEW の後に読む', async () => {
@@ -303,7 +307,8 @@ describe('読み上げとタブ切替の同調', () => {
     await settle()
     const spoken = speeches.map(s => s.text).join('')
     expect(spoken).toContain('震度速報。')    // 地震情報（震度速報）が読まれる
-    expect(spies.followSpeechTab).toHaveBeenCalledWith('earthquake', TAB_PRIORITY.quake)
+    // EEW の読み上げ中に届いたので先出しは見送られている（`alreadyShown` は false）
+    expect(spies.followSpeechTab).toHaveBeenCalledWith('earthquake', TAB_PRIORITY.quake, { alreadyShown: false })
   })
 
   it('順番を待っている間に重い読み上げが増えても、取り下げず待ち続ける', async () => {
@@ -389,7 +394,8 @@ describe('読み上げとタブ切替の同調', () => {
 
     finishSpeech(0)
     await flush()
-    expect(spies.followSpeechTab).toHaveBeenCalledWith('tsunami', TAB_PRIORITY.tsunami)
+    // 警報の読み上げ中に届いたので先出しは見送られている（`alreadyShown` は false）
+    expect(spies.followSpeechTab).toHaveBeenCalledWith('tsunami', TAB_PRIORITY.tsunami, { alreadyShown: false })
   })
 
   it('読み上げが無効でも、津波の観測点更新でタブを要求する', async () => {
@@ -465,7 +471,7 @@ describe('読み上げとタブ切替の同調', () => {
     const { handle, spies } = setup()
     handle(makeTsunamiObsOnly())
     await settle()
-    expect(spies.followSpeechTab).toHaveBeenCalledWith('tsunami', TAB_PRIORITY.tsunami)
+    expect(spies.followSpeechTab).toHaveBeenCalledWith('tsunami', TAB_PRIORITY.tsunami, { alreadyShown: true })
     expect(speeches.map(s => s.text).join('')).toContain('輪島港')
   })
 
@@ -527,9 +533,11 @@ describe('読み上げとタブ切替の同調', () => {
     // 先出しは起きるが、床は消費しない
     expect(spies.preSpeechTab).toHaveBeenCalledWith('tsunami', TAB_PRIORITY.tsunami)
     handle(makeQuake())
-    // 震度速報の声（0.5 秒）は大津波警報の声（2.3 秒）より先に始まる
+    // 震度速報の声（0.5 秒）は大津波警報の声（2.3 秒）より先に始まる。
+    // 地震情報の先出しも成功する（**追従どうしは保持を見ない**ので、津波の保持を優先度に
+    // 関わらず上書きする。tsunami 3 ＞ quake 1 で弾かれる、ではない）。
     await advance(1000)
-    expect(spies.followSpeechTab).toHaveBeenCalledWith('earthquake', TAB_PRIORITY.quake)
+    expect(spies.followSpeechTab).toHaveBeenCalledWith('earthquake', TAB_PRIORITY.quake, { alreadyShown: true })
   })
 
   it('高い優先度の読み上げ中は先出しせず、自分の番が来てから移る', async () => {
@@ -542,10 +550,10 @@ describe('読み上げとタブ切替の同調', () => {
     handle(makeQuake())
     expect(spies.preSpeechTab).not.toHaveBeenCalled()
     expect(spies.followSpeechTab).not.toHaveBeenCalled()
-    // 津波の発話が終われば順番が来る
+    // 津波の発話が終われば順番が来る（先出しは見送られたので `alreadyShown` は false）
     for (const s of speeches) { if (!s.done) { s.done = true; s.finish() } }
     await settle()
-    expect(spies.followSpeechTab).toHaveBeenCalledWith('earthquake', TAB_PRIORITY.quake)
+    expect(spies.followSpeechTab).toHaveBeenCalledWith('earthquake', TAB_PRIORITY.quake, { alreadyShown: false })
   })
 
   it('津波の新規発報も、受信時ではなく発話の番で tsunami を取る', async () => {
@@ -553,6 +561,6 @@ describe('読み上げとタブ切替の同調', () => {
     handle(makeTsunami())
     expect(spies.setActiveTabNonRealtime).not.toHaveBeenCalled()
     await settle()
-    expect(spies.followSpeechTab).toHaveBeenCalledWith('tsunami', TAB_PRIORITY.tsunami)
+    expect(spies.followSpeechTab).toHaveBeenCalledWith('tsunami', TAB_PRIORITY.tsunami, { alreadyShown: true })
   })
 })

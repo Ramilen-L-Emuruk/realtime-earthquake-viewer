@@ -135,7 +135,7 @@ function setup() {
     defaultTabRef: { current: 'earthquake' },
     setActiveTabRealtimeForKyoshin: vi.fn(), setActiveTabNonRealtime,
     setActiveTabRealtimeOnUpdate: vi.fn(),
-    setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab, preSpeechTab: vi.fn(),
+    setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab, preSpeechTab: vi.fn(() => true),
     expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(), setActiveLpgmEventId: vi.fn(),
   }))
@@ -185,7 +185,7 @@ describe('地震情報の続報: 既読は声になった分だけ進む', () =>
 
     handle(makeQuake(threeAreas))
     await settle()
-    expect(followSpeechTab).toHaveBeenCalledWith('earthquake', expect.anything())
+    expect(followSpeechTab).toHaveBeenCalledWith('earthquake', expect.anything(), { alreadyShown: true })
   })
 
   it('正: 途中で切られたら、鳴った区域だけが既読になる', async () => {
