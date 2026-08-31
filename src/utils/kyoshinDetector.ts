@@ -57,6 +57,84 @@ export interface SiteState {
   lastLevelActiveAtMs: number | null
 }
 
+/**
+ * 確信度の判定に使った値の内訳（根拠開示・**表示専用**）。
+ *
+ * `updateEventMetrics` が確信度を決めた**そのフレームの**要求値と中間集計を、判定を終えた後に
+ * そのまま持ち帰るだけのもの。「なぜこの確信度なのか」「確定まであと何が足りないか」を
+ * 画面と診断ログへ出すために置いている。
+ *
+ * 守ること 3 つ。
+ *
+ * 1. **判定はここを読まない。** 分岐の入力にすると、表示のための構造体が判定の一部になり、
+ *    片方を変えたときにもう片方が黙って変わる。書くのは判定を終えた後の 1 箇所だけにする
+ * 2. **イベント自身が既に持っている値を写さない。** 点数は `lastSize`、震度は `maxIntensity`、
+ *    連続フレーム数は `confirmStreak`、周囲の裏付けは `everNeighborRise` が持っている。
+ *    ここへ複製すると `mergeAdjacentEvents` が本体だけを書き換えたときに二重管理が食い違う。
+ *    **ここに置くのは「要求値」と「イベントに残らない中間集計」だけ**
+ * 3. **要求値は毎フレーム動く。** 慢性活性セル・疎地域・EEW 発表中で確定点数の要求が変わるため、
+ *    定数として読まないこと（診断ログの記録が版をまたいで比較できるのもこれが理由）
+ */
+export interface DetectionGates {
+  /** 確定に要る点数（`lastSize` と比べる）。慢性活性・疎地域・EEW で動く */
+  sizeReq: number
+  /**
+   * 確定に要る最大震度（`maxIntensity` と比べる）。慢性活性セルでは引き上がる。
+   * `updateEventMetrics` の `confirmIntensityReq` がそのまま入る。
+   */
+  intensityReq: number
+  /** 確定震度に達したメンバー数（第3ゲート・§18）。イベントには残らない */
+  intenseCount: number
+  /** 第3ゲートに要る点数 */
+  intenseReq: number
+  /** 確定に要る連続フレーム数（`confirmStreak` と比べる）。EEW 中は短くなる */
+  streakReq: number
+  /** 高震度 fast path の対象メンバー数（§20・§29）。イベントには残らない */
+  highIntenseCount: number
+  /** 高震度 fast path に要る点数 */
+  highIntenseReq: number
+  /** 高震度 fast path の対象になる震度（計測震度）。この値以上のメンバーを数える */
+  highIntensityReq: number
+  /** 高震度 fast path が成立し、点数ゲートを免除したか */
+  fastPath: boolean
+  /** likely の広がり条件を、`LIKELY_HOLD_MS` の保持を含めて満たしているか */
+  spreadHeld: boolean
+  /** likely に要る震度（`everNeighborRise` と併せて likely の条件になる） */
+  likelyIntensityReq: number
+  /** 慢性活性セル（確定の要求を引き上げている） */
+  chronic: boolean
+  /** 疎地域（局所の実在近傍数から確定点数の要求を引き下げている） */
+  sparse: boolean
+  /** EEW 発表中（確定の点数・連続フレーム数の要求を引き下げている） */
+  eewActive: boolean
+  /** 単点のまま居座って確定を降ろされたか（§33）。降格した場合は確信度が weak になる */
+  soloStale: boolean
+}
+
+/**
+ * 確定した瞬間の判定材料（根拠開示・表示専用）。
+ *
+ * `DetectionGates` が**現フレームの姿**しか持たないのに対し、こちらは `everConfirmed` が立った
+ * 瞬間で凍結する。確定後は震度が減衰して点数も減り、`everConfirmed` のラッチだけが確信度を
+ * 支える局面が普通に来るため、現フレームの内訳から「なぜ確定したか」は復元できない。
+ */
+export interface ConfirmSnapshot {
+  /**
+   * 確定した dataTime(ms)。凍結した当時の `firstConfirmedAtMs` と同値。
+   *
+   * **どちらの内訳を採るかの比較に使う。** 併合（`mergeAdjacentEvents`）は同じイベント ID へ
+   * 別イベントの内訳を持ち込むため、「先に来たほう」ではなく「先に確定したほう」で選ばないと、
+   * 画面が出している根拠と診断ログの根拠が食い違う。
+   */
+  atMs: number
+  /** 確定した瞬間の「揺れ継続中の点数」 */
+  size: number
+  /** 確定した瞬間の最大震度（計測震度） */
+  intensity: number
+  /** 確定した瞬間に課されていた要求値と中間集計 */
+  gates: DetectionGates
+}
+
 /** 検知イベント（多重地震・余震を同時に保持できる）。 */
 export interface DetectionEvent {
   id: string
@@ -106,6 +184,20 @@ export interface DetectionEvent {
    * 立ち上がりを何度も検出して鳴らし直す（`everConfirmed` を確信度のラッチにしているのと同じ事情）。
    */
   everNeighborRise: boolean
+  /**
+   * 確信度の判定に使った値の内訳（表示専用）。毎フレーム `updateEventMetrics` が書き換える。
+   * 判定の入力にしないこと（理由は `DetectionGates`）。
+   */
+  gates: DetectionGates
+  /**
+   * 確定した瞬間の判定材料（表示専用）。未確定は null。
+   *
+   * **一度入っても不変ではない。** `updateEventMetrics` は初めて確定したフレームで 1 度だけ
+   * 書くが、`mergeAdjacentEvents` は別イベントを 1 本化するときに**より早く確定したほう**の
+   * 内訳へ差し替える（`firstConfirmedAtMs` を早いほうへ揃えるのと対になる操作）。
+   * この構造体を消費する側は「イベント ID ごとに不変」を前提にしないこと。
+   */
+  confirmedBy: ConfirmSnapshot | null
 }
 
 /** 検知エンジンの全状態。localStorage への永続化を想定（floor・cellActivity が学習資産）。 */
@@ -131,7 +223,7 @@ export interface StationMeta {
   /** 各点が属する固定格子セルのキー */
   cellOf: Record<string, string>
   /** フレーム配列と同じ並びの一意キー（computeSiteKeys の結果）。座標衝突時の別実体化に使う。 */
-  keys: string[]
+  keys: readonly string[]
 }
 
 /** 1 フレーム分の入力。 */
@@ -481,14 +573,34 @@ export function siteKey(lat: number, lng: number): string {
  * ——うちの実装でも別実体のまま持てば、既存の最大値集計（updateEventMetrics 等）が同じ結果に自然と
  * 収束する。
  */
-export function computeSiteKeys(sites: [number, number][]): string[] {
+// 観測点リストごとのキー配列。**同じ配列に対しては作り直さない。**
+//
+// 表示側（`kyoshinDetectionView` の `buildSiteIndex`）は強震モニタが 1 秒ごとに値を配るたびに
+// これを呼ぶが、渡ってくる観測点リストは同じ配列（`fetchSiteList` がキャッシュしたもの）で、
+// 座標が変わらない以上キーも変わらない。それでも全 1725 点ぶんの文字列を毎秒組み直しており、
+// 非力な端末では自動移動 1 回のあいだに 30〜50ms をここで使っていた。
+//
+// **配列そのものを鍵にする**（中身の比較はしない）。観測点リストが差し替わるときは必ず別の配列に
+// なるため、これで十分に見分けられる。WeakMap なので、リストが捨てられればキャッシュも一緒に消える。
+//
+// **返す配列は `readonly`。** キャッシュを入れる前は呼び出しごとに別の配列を返していたので、
+// 誰かが並べ替えても他へは波及しなかった。いまは同じ配列を全員（近傍グラフ・表示用の索引・
+// 診断ログ）が共有するため、1 箇所の書き換えが全部を同時に狂わせる。例外は出ず、座標とキーの
+// 対応だけが静かにずれるので、型で止める。
+const siteKeysCache = new WeakMap<readonly [number, number][], readonly string[]>()
+
+export function computeSiteKeys(sites: [number, number][]): readonly string[] {
+  const cached = siteKeysCache.get(sites)
+  if (cached) return cached
   const seen = new Map<string, number>()
-  return sites.map(([lat, lng]) => {
+  const keys = sites.map(([lat, lng]) => {
     const base = siteKey(lat, lng)
     const n = (seen.get(base) ?? 0) + 1
     seen.set(base, n)
     return n === 1 ? base : `${base}#${n}`
   })
+  siteKeysCache.set(sites, keys)
+  return keys
 }
 
 /** 座標 → 固定格子セルキー（CELL_DEG 等間隔ビン）。 */
@@ -705,6 +817,33 @@ export function memberOverlapFrac(a: Set<string>, bKeys: string[]): number {
 // ============================================================
 
 /** 空の検知状態を生成する（コールドスタート用）。warmup は無い。 */
+/**
+ * `DetectionGates` の初期値。イベント生成の直後に `updateEventMetrics` が必ず上書きするため、
+ * 実行時にここの値が画面へ出ることはない（型を満たすための置き石）。
+ *
+ * 公開しているのは、`DetectionEvent` を組み立てるテストが「内訳には関心が無い」ことを
+ * 明示できるようにするため。
+ */
+export function initGates(): DetectionGates {
+  return {
+    sizeReq: PARAMS.CONFIRM_POINTS,
+    intensityReq: PARAMS.MIN_CONFIRM_INTENSITY,
+    intenseCount: 0,
+    intenseReq: PARAMS.CONFIRM_INTENSE_POINTS,
+    streakReq: PARAMS.CONFIRM_FRAMES,
+    highIntenseCount: 0,
+    highIntenseReq: PARAMS.HIGH_CONFIRM_POINTS,
+    highIntensityReq: PARAMS.HIGH_CONFIRM_INTENSITY,
+    fastPath: false,
+    spreadHeld: false,
+    likelyIntensityReq: PARAMS.MIN_LIKELY_INTENSITY,
+    chronic: false,
+    sparse: false,
+    eewActive: false,
+    soloStale: false,
+  }
+}
+
 export function initState(dataTimeMs = 0): DetectorState {
   return {
     sites: {},
@@ -1079,6 +1218,8 @@ function associate(
         everMultiPoint: false,
         lastSpreadAtMs: 0,
         everNeighborRise: false,
+        gates: initGates(),
+        confirmedBy: null,
       }
       updateEventMetrics(
         ev,
@@ -1142,6 +1283,14 @@ function mergeAdjacentEvents(events: DetectionEvent[], now: number): DetectionEv
     host.lastSpreadAtMs = Math.max(host.lastSpreadAtMs, e.lastSpreadAtMs)
     host.confirmStreak = Math.max(host.confirmStreak, e.confirmStreak)
     host.everConfirmed = host.everConfirmed || e.everConfirmed
+    // 確定の内訳は「先に確定したほう」から採る。`firstConfirmedAtMs` を早いほうへ揃えるのと
+    // 対になる操作なので、**揃える前の値**で選ぶ
+    const eConfirmedEarlier =
+      e.firstConfirmedAtMs > 0 &&
+      (host.firstConfirmedAtMs === 0 || e.firstConfirmedAtMs < host.firstConfirmedAtMs)
+    if (host.confirmedBy == null || eConfirmedEarlier) {
+      host.confirmedBy = e.confirmedBy ?? host.confirmedBy
+    }
     // 確定の計時は早いほうに揃える（遅いほうに合わせると猶予が伸びる）。0 は未確定なので除く
     const confirmedAts = [host.firstConfirmedAtMs, e.firstConfirmedAtMs].filter((v) => v > 0)
     host.firstConfirmedAtMs = confirmedAts.length > 0 ? Math.min(...confirmedAts) : 0
@@ -1159,6 +1308,38 @@ function mergeAdjacentEvents(events: DetectionEvent[], now: number): DetectionEv
         : host.confidence === 'likely' || e.confidence === 'likely'
           ? 'likely'
           : host.confidence
+    // 内訳も 1 本化した姿に揃える。**併合が本体の値を書き換えた分だけ**追従させる
+    // ——揃えないと「点数は 8 なのに内訳は 3 点で確定まであと 2 点」と表示が矛盾する。
+    // 数え上げ（intenseCount・highIntenseCount）は `lastSize` と同じく合算する（メンバーは
+    // 和集合で、併合対象の 2 イベントは別々の成分に由来するため重複しない）。
+    // **要求値（sizeReq 等）は host のものを残す。** 併合後の密度・慢性活性で引き直すには
+    // updateEventMetrics が持っている材料（avail・cellActivity）が要るが、ここには渡って
+    // いない。ずれるのは併合が起きたフレームの 1 秒だけで、次フレームには引き直される。
+    // `intenseCount` は**イベントごとに違うバーで数えた値**なので、単純に足せない
+    // （`confirmIntensityReq` は慢性活性セルかどうかで変わり、併合の相手は最大 100km 離れている）。
+    // バーが揃っているときだけ合算し、食い違うときは厳しいほうのバーを表示に残して、
+    // **そのバーで実際に数えた側の値だけ**を採る。足りない側は数え直せないので載せない
+    // ——欠けた数を出すほうが、違うバーで数えた点を混ぜた数を出すよりまし。
+    // `highIntenseCount` は `HIGH_CONFIRM_INTENSITY` という全イベント共通の定数で数えるため、
+    // この問題を持たない（そのまま合算してよい）。
+    const intensityReq = Math.max(host.gates.intensityReq, e.gates.intensityReq)
+    const sameBar = host.gates.intensityReq === e.gates.intensityReq
+    host.gates = {
+      ...host.gates,
+      intensityReq,
+      intenseCount: sameBar
+        ? host.gates.intenseCount + e.gates.intenseCount
+        : host.gates.intensityReq === intensityReq
+          ? host.gates.intenseCount
+          : e.gates.intenseCount,
+      highIntenseCount: host.gates.highIntenseCount + e.gates.highIntenseCount,
+      fastPath: host.gates.fastPath || e.gates.fastPath,
+      // lastSpreadAtMs を max で揃えているので、保持の成立も論理和になる
+      spreadHeld: host.gates.spreadHeld || e.gates.spreadHeld,
+      // cells は和集合になるため、どちらかが慢性活性セルなら 1 本化した後もそう扱う
+      chronic: host.gates.chronic || e.gates.chronic,
+      soloStale: hostStale,
+    }
   }
   return hosts
 }
@@ -1341,6 +1522,36 @@ function updateEventMetrics(
     e.confidence = 'faint'
   } else {
     e.confidence = 'weak'
+  }
+
+  // 判定に使った値を持ち帰る（根拠開示・表示専用）。**確信度を決め終えた後に 1 箇所だけで書く**
+  // ——判定の途中で書くと、以降の分岐がここを読める形になり、表示用の構造体が判定の入力になる。
+  // 点数・震度・連続フレーム数・周囲の裏付けはイベント自身が持っているので複製しない（`DetectionGates`）。
+  e.gates = {
+    sizeReq: effectiveConfirmReq,
+    intensityReq: confirmIntensityReq,
+    intenseCount,
+    intenseReq: PARAMS.CONFIRM_INTENSE_POINTS,
+    streakReq: confirmFramesReq,
+    highIntenseCount,
+    highIntenseReq: PARAMS.HIGH_CONFIRM_POINTS,
+    highIntensityReq: PARAMS.HIGH_CONFIRM_INTENSITY,
+    fastPath: meetsHighFastPath,
+    spreadHeld,
+    likelyIntensityReq: PARAMS.MIN_LIKELY_INTENSITY,
+    chronic: isChronic,
+    // 疎地域の引き下げが「実際に効いたか」を見る。`densityReq < confirmPointsReq` で判定すると、
+    // 下限（MIN_LIKELY_POINTS）に頭を押さえられて結局下がらなかった場合まで真になる
+    sparse: effectiveConfirmReq < confirmPointsReq,
+    eewActive,
+    soloStale: soloTooLong,
+  }
+
+  // 確定したフレームの内訳を凍結する。判定した値を `e.gates` に組み上げた**後**に行う
+  // ——`everConfirmed` が立つのは上の分岐の途中で、その時点の `e.gates` はまだ前フレームの姿。
+  // 見分けは `firstConfirmedAtMs === now`（確定した当のフレームでだけ真になる）。
+  if (e.confirmedBy == null && e.everConfirmed && e.firstConfirmedAtMs === now) {
+    e.confirmedBy = { atMs: now, size, intensity: e.maxIntensity, gates: { ...e.gates } }
   }
 
   void cellOf

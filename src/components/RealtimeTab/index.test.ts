@@ -17,6 +17,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { createElement } from 'react'
 import { render, cleanup, screen, act } from '@testing-library/react'
 import { RealtimeTab } from './index'
+import { initGates } from '../../utils/kyoshinDetector'
 import type { DetectionEvent } from '../../utils/kyoshinDetector'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 
@@ -43,6 +44,8 @@ function fakeEvent(
     everConfirmed: overrides.confidence === 'confirmed',
     lastSpreadAtMs: 0,
     everNeighborRise: overrides.confidence === 'likely' || overrides.confidence === 'confirmed',
+    gates: initGates(),
+    confirmedBy: null,
     ...overrides,
   }
 }
@@ -292,5 +295,77 @@ describe('震度分布バーの幅スケール', () => {
     setPageVisibility('visible')
 
     expect(barWidth('2点')).toBe('100%')
+  })
+})
+
+describe('検知カードは判定の根拠を出す', () => {
+  it('確定したものは確定時の内訳を一行で出す', () => {
+    const e = fakeEvent({
+      id: 'evt-1',
+      confidence: 'confirmed',
+      confirmedBy: { atMs: 0, size: 6, intensity: 2.0, gates: initGates() },
+    })
+    renderTab([e], [P('a', 8)])
+    expect(screen.getByText('6点・震度2で確定')).toBeTruthy()
+  })
+
+  it('まだのものは確定まで何が足りないかを出す', () => {
+    const e = fakeEvent({
+      id: 'evt-1',
+      confidence: 'likely',
+      lastSize: 3,
+      gates: { ...initGates(), sizeReq: 5, intenseCount: 2, intenseReq: 2 },
+    })
+    renderTab([e], [P('a', 8)])
+    expect(screen.getByText('確定まで あと2点')).toBeTruthy()
+  })
+
+  // 対照: 内訳の表は既定で畳んでおく（カードの主情報を押しのけない）
+  it('判定の内訳は既定では畳まれている', () => {
+    renderTab([fakeEvent({ id: 'evt-1', confidence: 'confirmed' })], [P('a', 8)])
+    expect(screen.getByText('判定の内訳')).toBeTruthy()
+    expect(screen.queryByText('揺れ継続中の点')).toBeNull()
+  })
+
+  it('開くと判定の内訳が出る', () => {
+    const e = fakeEvent({
+      id: 'evt-1',
+      confidence: 'likely',
+      lastSize: 3,
+      gates: { ...initGates(), sizeReq: 5 },
+    })
+    renderTab([e], [P('a', 8)])
+    act(() => { screen.getByText('判定の内訳').click() })
+    expect(screen.getByText('揺れ継続中の点')).toBeTruthy()
+    expect(screen.getByText('/ 5')).toBeTruthy()
+  })
+
+  // 安全弁: 検知エンジンの内部用語を利用者へ出さない（「フレーム」は 1 秒ごとの処理単位で、
+  // 画面のどこにも定義が無い）。回帰で戻さないよう文言の側で固定する
+  it('内訳に検知エンジンの内部用語を出さない', () => {
+    const e = fakeEvent({
+      id: 'evt-1',
+      confidence: 'likely',
+      lastSize: 5,
+      confirmStreak: 1,
+      gates: { ...initGates(), sizeReq: 5, streakReq: 3, intenseCount: 2, intenseReq: 2 },
+    })
+    renderTab([e], [P('a', 8)])
+    act(() => { screen.getByText('判定の内訳').click() })
+    expect(document.body.textContent).not.toMatch(/フレーム/)
+    expect(screen.getByText('確定まで あと約2秒')).toBeTruthy()
+  })
+
+  // 安全弁: 要求が動いた理由は内訳の中でだけ出す（一行の要約に混ぜない）
+  it('条件を緩めた理由は内訳を開いたときに出る', () => {
+    const e = fakeEvent({
+      id: 'evt-1',
+      confidence: 'likely',
+      gates: { ...initGates(), eewActive: true },
+    })
+    renderTab([e], [P('a', 8)])
+    expect(screen.queryByText(/緊急地震速報の発表中/)).toBeNull()
+    act(() => { screen.getByText('判定の内訳').click() })
+    expect(screen.getByText(/緊急地震速報の発表中/)).toBeTruthy()
   })
 })

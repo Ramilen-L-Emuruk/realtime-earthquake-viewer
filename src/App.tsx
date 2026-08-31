@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback, type CSSProperties } from 'react'
+import type { MapHandle } from './components/Map/mapTypes'
 import { IconNav, type TabId } from './components/IconNav'
 import {
   TAB_PRIORITY, TAB_HOLD_MS, shouldAcceptAutoTab, shouldFollowNow, idleRevertPriority,
@@ -10,6 +11,9 @@ import { MapView, type MapMode } from './components/Map/MapView'
 import type { ShakeFocus } from './components/Map/mapTypes'
 import { MapUpdateTime } from './components/MapUpdateTime'
 import { MapDataStatus } from './components/MapDataStatus'
+import { MapRenderStatus } from './components/MapRenderStatus'
+import { ShareCardButton } from './components/ShareCardButton'
+import { useShareCard } from './hooks/useShareCard'
 import { EarthquakeTab } from './components/EarthquakeTab'
 import { RealtimeTab } from './components/RealtimeTab'
 import { TsunamiTab } from './components/TsunamiTab'
@@ -1284,6 +1288,20 @@ export function App() {
   })
 
   const mapQuake = mapTab === 'earthquake' ? selectedQuake : latest
+  // 共有カード（表示中の地図を 1 枚の画像にする）。撮影は地図そのものを操作するため実体が要る
+  // ——地図の生成時に受け取って持つ。地図へ重ねる UI は App が配置する決まりなので、
+  // それを起こすボタンもここに置く。
+  const [mapHandle, setMapHandle] = useState<MapHandle | null>(null)
+  const shareCard = useShareCard(mapHandle, {
+    mode: mapMode,
+    quake: mapQuake,
+    tsunamis,
+    eews: eewsForMap,
+    // 出典に何を挙げるかは「地図に描かれているか」で決まるため、表示の設定をそのまま渡す。
+    showBathymetry: settings.showBathymetry,
+    showActiveFaults: settings.showActiveFaults,
+    showPlateBoundaries: settings.showPlateBoundaries,
+  })
 
   // 地図左上の更新時刻: リアルタイム表示はリアルタイム震度(kyoshin)の更新時刻、
   // DMDSS版かつWS接続中は現在時刻を毎秒更新、それ以外は最終受信時刻を表示する。
@@ -1330,6 +1348,8 @@ export function App() {
             activeFaultOpacity={settings.activeFaultOpacity}
             heatPoints={quakeHeatPoints}
             showPlateBoundaries={settings.showPlateBoundaries}
+            showDayNight={settings.showDayNight}
+            dayNightOpacity={settings.dayNightOpacity}
             kyoshinSites={kyoshinSitesGated}
             kyoshinIndices={kyoshinHeld.indices}
             kyoshinStale={kyoshinHeld.stale}
@@ -1346,8 +1366,9 @@ export function App() {
             focusObsName={focusedObsName}
             obsUpdateStatus={obsUpdateStatus}
             quakeSelectionTick={quakeSelectionTick}
+            onMapReady={setMapHandle}
           />
-          {/* 地図左上に重ねる情報の置き場。上から更新時刻・生成データの取得状況。
+          {/* 地図左上に重ねる情報の置き場。上から更新時刻・生成データの取得状況・地図描画の不調。
               z-[99999]: 区域集約震度バッジ（QuakeRegionFillGL）は el.style.zIndex = scale*1000 で、
               scale は JMA 震度階級の数値コード（震度7 = 70）まであるため最大 70000 まで積む。
               それより確実に高い値にして常に最前面に出す。 */}
@@ -1360,7 +1381,20 @@ export function App() {
           >
             <MapUpdateTime lastUpdate={overlayUpdateTime} error={overlayError} />
             <MapDataStatus />
+            <MapRenderStatus />
           </div>
+          {/* 地図右下。表示中の地図を画像にするボタン。左上の情報ブロックと同じ理由で z を高く取る。 */}
+          {shareCard.ready && (
+            <div
+              className="absolute z-[99999] flex flex-col items-end gap-1"
+              style={{
+                bottom: 'max(0.5rem, env(safe-area-inset-bottom, 0px))',
+                right: 'max(0.5rem, env(safe-area-inset-right, 0px))',
+              }}
+            >
+              <ShareCardButton state={shareCard.state} onClick={() => shareCard.share()} />
+            </div>
+          )}
           {actionChecklist.state && (
             <ActionChecklist
               reason={actionChecklist.state.reason}

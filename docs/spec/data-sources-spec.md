@@ -11,9 +11,11 @@
 - **P2PQuake API v2**（標準版・認証不要） — 地震情報・EEW・津波情報の主系
 - **Yahoo!天気・災害 リアルタイム震度**（両バリアント共通） — 強震モニタデータ。EEW 補完は標準版のみ
 
-さらに以下も外部・準外部データとして扱う:
+さらに以下も外部・準外部データとして扱う（「オプショナル」は設定で表示を切り替えられるもの）:
 
-- 気象庁 予報区等 GIS データ（座標テーブル・境界・海岸線・生成物）
+- 気象庁 予報区等 GIS データ（都道府県・一次細分区域の境界／津波予報区の海岸線）
+- 気象庁 震度観測点一覧表（震度観測点の座標＋所属区域のテーブル）
+- 気象庁 地震月報（カタログ編）震源データ／震源リスト（長期震源カタログ）
 - GEBCO 海底地形タイル（背景・オプショナル）
 - 産総研 活断層データベース（オプショナル）
 - PB2002 プレート境界（オプショナル）
@@ -804,10 +806,10 @@ ZIP の配布単位は年ごとではない。1919〜1982 年は 4 つのまと�
 
 出典:
 - 気象庁 予報区等 GIS データ: [Ichihai1415/JMA-GIS-GeoJSON](https://github.com/Ichihai1415/JMA-GIS-GeoJSON)
-- 観測点座標: [iku55 氏による JSON 化](https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1)
+- 観測点座標: 気象庁 震度観測点一覧表 — データ整備: [iku55 氏による JSON 化](https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1)
+- 長期震源カタログ: 気象庁 [地震月報（カタログ編）震源データ](https://www.data.jma.go.jp/eqev/data/bulletin/hypo.html)（1919〜2023 年）・[震源リスト](https://www.data.jma.go.jp/eqev/data/daily_map/)（2024 年〜）（いずれも公共データ利用規約 第1.0版・加工して作成）
 - GEBCO 海底地形: [GEBCO Basemap (NCEI)](https://tiles.arcgis.com/tiles/C8EMgrsFcRFL6LrL/arcgis/rest/services/GEBCO_basemap_NCEI/MapServer)
 - 活断層: 産業技術総合研究所 [活断層データベース](https://gbank.gsj.jp/activefault/)（政府標準利用規約 2.0）
-- 長期震源カタログ: 気象庁 [地震月報（カタログ編）震源データ](https://www.data.jma.go.jp/eqev/data/bulletin/hypo.html)（1919〜2023 年）・[震源リスト](https://www.data.jma.go.jp/eqev/data/daily_map/)（2024 年〜）（いずれも公共データ利用規約 第1.0版・加工して作成）
 - プレート境界: [PB2002](http://peterbird.name/publications/2003_pb2002/2003_pb2002.htm)（Peter Bird）／データ整備: Hugo Ahlenius・Nordpil [fraxen/tectonicplates](https://github.com/fraxen/tectonicplates)（[Open Data Commons Attribution License 1.0](http://opendatacommons.org/licenses/by/1.0/)）
 
 ## 7. リプレイ機能
