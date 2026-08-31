@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataNankaiCommentary, fetchDmdataKohatsu } from '../services/dmdata'
-import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey, coalesceByEventId, findExistingQuakeCard } from '../utils/quakeMerge'
+import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey, coalesceByEventId, findExistingQuakeCard, isRetractedQuakeReport, quakeRetractionOf } from '../utils/quakeMerge'
+import type { QuakeRetraction } from '../utils/quakeMerge'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex } from '../utils/stationCoords'
 import { calcEEWCancelTime, eewSerial, eewEventKey } from '../utils/eew'
 import { mergeTsunamiObservations, isCancelForCurrentTsunami } from '../utils/tsunami'
@@ -37,6 +38,26 @@ import {
 export const MAX_HISTORY_RETAINED = 50
 const LOAD_MORE_BATCH = 50        // 「もっと見る」1回あたりの取得件数
 const MAX_TELEGRAM_LOG = 200      // 電文ログの最大保持件数
+const MAX_QUAKE_RETRACTIONS = 20  // 取消を見た事実の台帳の最大保持件数（`rememberQuakeRetraction`）
+
+/**
+ * 取消電文がこのカードに効くか。
+ *
+ * **種別（`issue.type`）まで見る。** 遠地地震の取消報が「震源・震度情報」のカードを巻き込まない
+ * ようにするため（遠地地震は VXSE53 を共有し `Head/Title` だけが異なる。`dmdataParser` の
+ * `resolveIssueType` 参照）。既に取消表示中のカードは対象外。
+ *
+ * 台帳への記録（入口）と実際の取消の適用（`setState` の中）で**同じ述語を使う**ために切り出して
+ * いる。書き写すと片方だけが変わり、記録と適用の範囲が静かにずれる。
+ */
+function isQuakeCancelTarget(card: JMAQuake, cancel: JMAQuake): boolean {
+  return !card.cancelledAt && sameQuakeEntry(card, cancel) && card.issue.type === cancel.issue.type
+}
+
+/** 取消電文が効くカードを探す。判定は `isQuakeCancelTarget`。 */
+function findQuakeCancelTarget(cards: readonly JMAQuake[], cancel: JMAQuake): JMAQuake | undefined {
+  return cards.find(card => isQuakeCancelTarget(card, cancel))
+}
 const EEW_FINAL_SILENCE_MS = 10000 // EEW発報テスト（特別警報・警報・予報）: この間隔クリックが無ければ最終報として確定する
 const EEW_RETRACTION_CANCEL_MS = 10000 // EEW誤報取消テスト: 発報からこの秒数後に取消電文を送る
 
@@ -284,6 +305,14 @@ export function useEarthquakes(
   // VXSE51 受信時に震度データをキャッシュし、後続の VXSE52（震源情報）に補完する。
   // VXSE52 は震源のみで震度を持たないため、VXSE51 の maxScale・points を引き継ぐ。
   const quakeIntensityCacheRef = useRef<Map<string, { maxScale: IntensityScale; points: EarthquakePoint[] }>>(new Map())
+  // 取消を見た事実の台帳。取消の後に届いた報のうち「取消より前に発表されたもの」を捨てるために使う
+  // （判定は `isRetractedQuakeReport`。切り分けの理由は docs/spec/quake-spec.md §6.2）。
+  //
+  // **カードの `cancelledAt` を見るだけでは足りない。** 取消済みカードは 10 秒後に purge されるため、
+  // それを過ぎて届いた古い報を弾けない。順序の入れ替わりを拾うのが目的なのに、10 秒で記憶が
+  // 消えては用を成さない。履歴経路（`mergeQuakeHistory`）はカードごと消すので、そちらの取消も
+  // ここに集めて両経路で共有する。
+  const quakeRetractionsRef = useRef<QuakeRetraction[]>([])
   // 後発地震注意情報（VYSE60）の7日間有効期限タイマー
   const kohatsuExpireTimerRef = useRef<number | undefined>(undefined)
   // 南海トラフ地震関連解説情報（VYSE51/52）の7日間有効期限タイマー。
@@ -430,6 +459,26 @@ export function useEarthquakes(
     return true
   }, [])
 
+  /**
+   * 取消を見た事実を台帳へ積む。件数に上限を置き、古いものから落とす。
+   *
+   * 上限を置くのは、長時間つないだままの端末で無制限に伸びるのを避けるため。**判定は毎回全件を
+   * 走査する**ので、伸びると受信ごとの処理も重くなる。取り下げ済みの報が届くのは順序の
+   * 入れ替わりか誤認識なので、直近の取消だけ覚えていれば足りる。
+   */
+  const rememberQuakeRetraction = useCallback((retraction: QuakeRetraction) => {
+    const list = quakeRetractionsRef.current
+    list.push(retraction)
+    if (list.length > MAX_QUAKE_RETRACTIONS) list.splice(0, list.length - MAX_QUAKE_RETRACTIONS)
+  }, [])
+
+  /** 履歴バッチに含まれる取消電文を台帳へ取り込む（ライブ経路と記憶を共有するため）。 */
+  const rememberQuakeRetractionsFromBatch = useCallback((quakes: readonly JMAQuake[]) => {
+    for (const q of quakes) {
+      if (q.cancelled) rememberQuakeRetraction(quakeRetractionOf(q))
+    }
+  }, [rememberQuakeRetraction])
+
   const handleEvent = useCallback((event: AppEvent) => {
     // 古い報は**入口で**捨てる。この下の通知（読み上げ・ウィンドウタイトル）と自動解除の予約は
     // setState の外で走るため、状態更新の直前で弾いても間に合わない。地図・カードだけが新しい報を
@@ -484,6 +533,15 @@ export function useEarthquakes(
           maxScale: quake.earthquake.maxScale,
           points: quake.points,
         })
+      }
+      // 取消を見た事実も**入口で**台帳へ積む（EEW 側の台帳と同じ置き方）。`setState` の更新関数は
+      // 再実行されうるため、そこに副作用を置くと同じ記録が二重に積まれ、台帳の実効容量が縮む。
+      if (quake.cancelled) {
+        // 当たったカードを渡せると照合の材料が揃う（理由は `QuakeRetraction`）。判定は下の
+        // 取消分岐と同じ述語（`findQuakeCancelTarget`）を使う。書き写すと片方だけ変わりうる。
+        rememberQuakeRetraction(
+          quakeRetractionOf(quake, findQuakeCancelTarget(stateRef.current.earthquakes, quake)),
+        )
       }
     }
 
@@ -556,8 +614,7 @@ export function useEarthquakes(
           if (quake.cancelled) {
             let found = false
             const earthquakes = prev.earthquakes.map(e => {
-              const matches = sameQuakeEntry(e, quake) && e.issue.type === quake.issue.type
-              if (matches && !e.cancelledAt) {
+              if (isQuakeCancelTarget(e, quake)) {
                 found = true
                 insertSorted(eventQueueRef.current, {
                   eventTime: new Date(now.getTime() + 10_000),
@@ -599,12 +656,26 @@ export function useEarthquakes(
           // mergeQuakeInto に委譲する（いずれも履歴経路と同一ロジック）。
           // 一致するカードが 2 枚あることがある（暫定 ID と確定 ID）。どちらを既存として
           // 扱うかで統合後の eventKey が変わるため、選び方は findExistingQuakeCard に集約する。
+          // 取消の後に届いた報のうち、取消より前に発表されたもの（＝取り下げ済みの内容）は
+          // 採らない。判定の中身と 2 通りの異常の切り分けは `isRetractedQuakeReport`。
+          if (isRetractedQuakeReport(quakeRetractionsRef.current, quake)) {
+            log.warn('[quake] 取消以前に発表された報を捨てた', {
+              id: quake.id, issueType: quake.issue.type, time: quake.time,
+            })
+            return prev
+          }
           const existing = findExistingQuakeCard(prev.earthquakes, quake)
           const merged = mergeQuakeInto(existing, quake)
           if (merged === existing) return prev
           // 統合の結果、暫定 ID で作られたカードが確定 ID を持つカードと重複することがある。
           // 履歴経路（mergeQuakeHistory）と同じ畳み込みをここでも通す（理由は coalesceByEventId）。
-          const next = coalesceByEventId([merged, ...prev.earthquakes.filter(e => !sameQuakeEntry(e, quake))])
+          //
+          // **取消表示中のカードは差し替えの対象から外す（残す）。** ここで落とすと 10 秒表示を
+          // 待たずに消え、しかも purge 予約（`id` で対象を引く）が空振りする。
+          const next = coalesceByEventId([
+            merged,
+            ...prev.earthquakes.filter(e => e.cancelledAt || !sameQuakeEntry(e, quake)),
+          ])
           return {
             ...prev,
             earthquakes: sortQuakes(next),
@@ -892,7 +963,8 @@ export function useEarthquakes(
           const { quakes: quakeEvents, nextToken } = quakeResult
           dmdataCursorRef.current = nextToken
           // 種別横断の生電文を eventId ごとに統合（リアルタイムと同一ロジック）。
-          const earthquakes = mergeQuakeHistory(quakeEvents)
+          rememberQuakeRetractionsFromBatch(quakeEvents)
+          const earthquakes = mergeQuakeHistory(quakeEvents, [], quakeRetractionsRef.current)
           const allTsunami = tsunamiEvents
             .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
           const latestTsunami = allTsunami[0]
@@ -1058,7 +1130,8 @@ export function useEarthquakes(
         // 種別横断の生電文をイベントごとに統合する（DMDSS 版・リアルタイムと同一ロジック）。
         // 以前は earthquake.time をキーにした Map で「優先度が最も高い 1 報」を選んでいたが、
         // P2PQuake の発生時刻は分単位のため、同じ分に起きた別の地震が 1 枚に潰れていた。
-        const earthquakes = mergeQuakeHistory(quakeEvents)
+        rememberQuakeRetractionsFromBatch(quakeEvents)
+        const earthquakes = mergeQuakeHistory(quakeEvents, [], quakeRetractionsRef.current)
         const allTsunami = (tsunamiEvents as JMATsunami[])
           .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
         const latestTsunami = allTsunami[0]
@@ -1159,9 +1232,11 @@ export function useEarthquakes(
         // 既存カード群を base に、新バッチの生電文を eventId ごとに統合する。
         // これによりバッチ跨ぎ（先に届いた VXSE61 単独カードへ後続の VXSE53 の震度を合流など）も
         // リアルタイムと同一結果になる。
+        // 台帳への記録は setState の外で行う（更新関数は再実行されうるため副作用を持たせない）。
+        rememberQuakeRetractionsFromBatch(events)
         setState(prev => ({
           ...prev,
-          earthquakes: mergeQuakeHistory(events, prev.earthquakes),
+          earthquakes: mergeQuakeHistory(events, prev.earthquakes, quakeRetractionsRef.current),
           isLoadingMore: false,
           hasMore: !!nextToken,
         }))
@@ -1192,9 +1267,11 @@ export function useEarthquakes(
         p2pRawOffsetRef.current += events.length
         // 既存カード群を base に新バッチを統合する（DMDSS 版と同じ扱い）。
         // バッチ跨ぎで同一イベントの続報が届いた場合もリアルタイムと同一結果になる。
+        // 台帳への記録は setState の外で行う（理由は DMDSS 版側と同じ）。
+        rememberQuakeRetractionsFromBatch(events)
         setState(prev => ({
           ...prev,
-          earthquakes: mergeQuakeHistory(events, prev.earthquakes),
+          earthquakes: mergeQuakeHistory(events, prev.earthquakes, quakeRetractionsRef.current),
           isLoadingMore: false,
           hasMore: events.length === LOAD_MORE_BATCH,
         }))
@@ -1325,6 +1402,9 @@ export function useEarthquakes(
     // 台帳もここで空にする。掃除の `useEffect` に任せると、リセットから次のコミットまでの間に
     // 同じ eventId の報が届いたとき、消えたはずの報番号と比べて誤って捨てうる。
     acceptedEewSerialRef.current.clear()
+    // 取消の台帳も空にする。リプレイの開始・リセットで時間軸が変わるため、前の軸で見た取消の
+    // 発表時刻と新しい軸の報を比べると、正常な報を取り下げ済みと誤判定する。
+    quakeRetractionsRef.current = []
     setState(prev => ({
       ...prev,
       earthquakes: [],
@@ -1364,7 +1444,8 @@ export function useEarthquakes(
    */
   const restoreQuakeHistory = useCallback((quakes: JMAQuake[]) => {
     if (quakes.length === 0) return
-    setState(prev => ({ ...prev, earthquakes: mergeQuakeHistory(quakes, prev.earthquakes) }))
+    rememberQuakeRetractionsFromBatch(quakes)
+    setState(prev => ({ ...prev, earthquakes: mergeQuakeHistory(quakes, prev.earthquakes, quakeRetractionsRef.current) }))
   }, [])
 
   const loadReplayEvents = useCallback((entries: import('../types/replay').ReplayEntry[]) => {
