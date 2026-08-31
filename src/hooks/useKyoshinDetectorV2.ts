@@ -14,12 +14,14 @@ import {
   type DetectionEvent,
   type TriggerResult,
 } from '../utils/kyoshinDetector'
-import { log } from '../utils/logger'
+import { createLogThrottle, log } from '../utils/logger'
 
 /** 学習資産（点別床・セル慢性活性）の localStorage キー。座標/セル基準なので siteConfigId 版差に非依存。 */
 const LEARNED_KEY = 'kyoshin-v3-learned'
 /** 学習資産の保存間隔(ms)。毎フレーム書くと無駄なのでスロットルする。 */
 const SAVE_INTERVAL_MS = 60_000
+/** 観測点数と震度の件数の食い違いを記録する最小間隔(ms)。毎フレーム出すと埋まる。 */
+const PAIR_MISMATCH_LOG_MS = 300_000
 
 // localStorage が壊れた/無効な環境（プライベートモード・dom.storage.enabled=false・
 // 一部の iframe サンドボックス等）では、getItem/setItem が呼ばれるたびに例外を投げる。
@@ -78,10 +80,42 @@ export interface KyoshinDetectorV2Result {
   /** 対象データ時刻 */
   dataTime: string
   /**
-   * 観測点ごとの表示用慢性ノイズ床（座標キー→value）。震度0ドット表示（KyoshinSubThresholdGL）が
-   * 慢性的にノイジーな観測点を鈍く見せるフィルタに使う。未学習（空オブジェクト）はフィルタ未適用の合図。
+   * 観測点ごとの表示用慢性ノイズ床（value）。**`sites` と同じ並びの配列**で、震度0ドット表示
+   * （KyoshinSubThresholdGL）が慢性的にノイジーな観測点を鈍く見せるフィルタに使う。空配列は
+   * フィルタ未適用の合図。
+   *
+   * 座標キーの辞書にしないのは、同一座標に複数の実観測点が載る点があるため（`computeSiteKeys` が
+   * `#2`, `#3` と別実体に分ける）。受け取る側が座標からキーを作り直すと、その規則が 2 箇所に増えて
+   * 静かに食い違う（実際にそうなっていた。`kyoshinSubThresholdFilter.ts` 参照）。並びで対応づければ
+   * 規則そのものが要らない。
+   *
+   * まだ床を持たない点は 0 を入れる。0 に `SUSTAIN_MARGIN` を足した実効しきい値（0.4）が震度0ドットの
+   * 上限（index 6 ＝ value 0.0）を上回るため、実質「表示しない」側へ倒れる。床を持たないのは、一度も
+   * 観測できていない欠測点と、**大きな時刻の飛び（スリープ復帰・リプレイの巻き戻し等）の直後に
+   * ちょうど欠測している点**——`kyoshinDetector` の不連続リセットは欠測点のキーを作り直さないため、
+   * 学習済みの点でも一時的に落ちる。
    */
-  floors: Record<string, number>
+  floors: number[]
+  /**
+   * `floors` を計算した観測点配列の参照。**`floors` を位置で使う側は、自分が持っている観測点配列と
+   * これが同一参照であることを確かめてから使うこと。**
+   *
+   * `floors` を作り直すのは**次にデータ時刻が進んだとき**（この effect の deps）なのに対し、呼び出し側の
+   * 観測点配列はそのレンダーで即座に切り替わる。観測点リストが差し替わってからデータ時刻が進むまでの間
+   * （途中に別のレンダーを挟むこともある）は「新しい観測点 × 古い床」が並び、点数がたまたま一致すると
+   * 長さの検査をすり抜けて別地点の床で判定してしまう。
+   * リストの差し替えは年数回の `siteConfigId` 更新に限らず、過去日のリプレイを始めるたびに起こる
+   * （`services/kyoshinSource.ts` が再生対象日の `siteConfigId` を使うため）。
+   */
+  floorsSites: SiteCoords
+  /**
+   * この結果が「**結果を出せなくなったので空にした**」ものか（`RESULT_STALL_RESET_FRAMES` 参照）。
+   *
+   * 受け取る側が「揺れが収まって検知が消えた」のと区別するために持つ。後者からの復帰は同じ地震が
+   * 続いていることが多く（`stateRef` は保持され、`MAX_DT_GAP_MS` 以内なら同じイベントが返る）、
+   * 警報音や通知を鳴らし直すと「収まって、また始まった」という誤った印象を与える。
+   */
+  stalled: boolean
 }
 
 const EMPTY: KyoshinDetectorV2Result = {
@@ -89,7 +123,9 @@ const EMPTY: KyoshinDetectorV2Result = {
   triggers: [],
   recentOnsetKeys: new Set<string>(),
   dataTime: '',
-  floors: {},
+  floors: [],
+  floorsSites: [],
+  stalled: false,
 }
 
 /**
@@ -100,6 +136,12 @@ const EMPTY: KyoshinDetectorV2Result = {
  * `computeSiteKeys` が座標の重複点に出現順で `#2`, `#3` を割り当てた結果で、Yahoo の観測点リストでは
  * 全1725点中431点が座標重複に該当する。一方で表示側の `buildSiteIndex` は毎回キーを作り直すため、
  * 両者のキーがずれ、`recentOnsetKeys` を使う判定（孤立した震度0点の間引きの救済）が静かに効かなくなる。
+ *
+ * 並べるのは**座標キーで足りる**（`computeSiteKeys` の `#2` 付きキーにしなくてよい）。`computeSiteKeys`
+ * は座標列だけを入力とする決定的な関数なので、座標列が同じなら割り当ても必ず同じ・座標列が違えば
+ * ここも必ず違う——両者の検出能力は等価で、`#2` を含めても余分に捕まるものは無い。裏返しとして、
+ * 同一座標のグループ内で 2 点の実体が入れ替わった更新は**どちらの作り方でも検出できない**（座標しか
+ * 持たない配列では区別がつかない）。
  *
  * 全点の走査は O(点数) だが、呼ぶのは `sites` の**参照が変わったとき**だけに絞っている（呼び出し側参照）。
  * 同一 `siteConfigId` の観測点リストは `fetchSiteList` がキャッシュした同じ配列を返すため、
@@ -115,16 +157,21 @@ export function siteSignature(sites: SiteCoords): string {
 }
 
 /**
- * `step()` の連続失敗をこの回数だけ許し、超えたら検知結果を空にする。
+ * **結果を出せないフレーム**がこの回数だけ続いたら、検知結果を空にする。
  *
- * 例外時は `setResult` を呼ばずに抜けるため、結果（`detections` と `recentOnsetKeys`）は前フレームの値で
- * 凍結する。一方で表示側が使う現在震度は生きたまま更新され続けるので、放置すると「古いメンバーを
- * 現在の震度で描き続ける」状態になり、孤立した震度0点の間引きも古い `recentOnsetKeys` で判定される。
- * 数フレームの一過性なら保持した方が明滅しないが、恒常的に壊れているなら表示を止める方が安全。
+ * 出せない理由は 2 つある——`step()` が例外を投げる場合と、観測点数と震度の件数が食い違って step() へ
+ * 入れない場合。**どちらも `setResult` を呼ばずに抜けるため帰結は同じ**で、結果（`detections` と
+ * `recentOnsetKeys`）は前フレームの値で凍結する。一方で表示側が使う現在震度は生きたまま更新され続ける
+ * ので、放置すると「古いメンバーを現在の震度で描き続ける」状態になり、孤立した震度0点の間引きも古い
+ * `recentOnsetKeys` で判定される。数フレームの一過性なら保持した方が明滅しないが、恒常的に壊れて
+ * いるなら表示を止める方が安全。
+ *
+ * 理由ごとにカウンタを分けないのは、**表示から見れば区別が無い**ため。分けると片方だけ閾値に届かない
+ * まま交互に起きたときに、いつまでも凍結が解けない。
  *
  * export しているのはテストが閾値を参照するため（フック外から使う想定はない）。
  */
-export const STEP_FAIL_RESET_FRAMES = 5
+export const RESULT_STALL_RESET_FRAMES = 5
 
 /**
  * 強震モニタ検知エンジン（純粋コア step・V3 近傍一致型）の React ラッパー。
@@ -159,7 +206,10 @@ export function useKyoshinDetectorV2(
   // 同じ配列を返す）ため、全点シグネチャの計算まで省ける。
   const metaRef = useRef<{ sites: SiteCoords; sig: string; meta: StationMeta } | null>(null)
   const lastSaveRef = useRef(0)
-  const stepFailRef = useRef(0)
+  const stalledFramesRef = useRef(0)
+  // 観測点数と震度の件数が食い違ったことの記録（間引き）。遅延初期化する
+  // （`useRef(createLogThrottle(...))` と書くと毎レンダーで捨てるだけのクロージャを作る）。
+  const pairMismatchLogRef = useRef<((emit: () => void) => void) | null>(null)
   // dataTime 更新時のみ step() を進める設計（下記 useEffect の deps 参照）に合わせ、EEW 状態は
   // ref で最新値を持ち回す（deps に含めると EEW 変化のたびに同一フレームへ再度 step() してしまう）。
   const hasActiveNonAssumedEEWRef = useRef(hasActiveNonAssumedEEW)
@@ -180,7 +230,26 @@ export function useKyoshinDetectorV2(
     // 揃うまで step() をスキップする（長さ不整合の TypeError 対策も兼ねる）。
     if (sitesSiteConfigId == null || indicesSiteConfigId == null) return
     if (sitesSiteConfigId !== indicesSiteConfigId) return
-    if (sites.length !== indices.length) return
+    if (sites.length !== indices.length) {
+      // 同じ `siteConfigId` なのに件数が違う＝上流データの異常。ここで抜けると step() へ入らず
+      // **揺れ検知が丸ごと止まる**が、例外ではないので下の catch も通らない。記録しないと
+      // 平常時と見分けがつかない（検知が出ないのが正常な状態なので、止まっていることに気づけない）。
+      // 毎フレーム出さないよう間引く。
+      pairMismatchLogRef.current ??= createLogThrottle(PAIR_MISMATCH_LOG_MS)
+      pairMismatchLogRef.current(() => log.error(
+        `[kyoshinV2] 観測点数(${sites.length})と震度の件数(${indices.length})が食い違うため検知を停止しています`
+        + `（siteConfigId=${sitesSiteConfigId}）`,
+      ))
+      // 例外のときと同じく、続くなら結果を空にする。ここで抜けるだけだと、異常が始まった瞬間に
+      // 出ていた検知イベントが**異常が続く限り凍結**し、音・自動タブ切替・自動フィット・地図・
+      // 検知カードへ流れ続ける（詳細は RESULT_STALL_RESET_FRAMES）。
+      stalledFramesRef.current++
+      if (stalledFramesRef.current === RESULT_STALL_RESET_FRAMES) {
+        log.error('[kyoshinV2] 件数の食い違いが続くため検知結果を空にします')
+        setResult({ ...EMPTY, stalled: true })
+      }
+      return
+    }
 
     // 観測点集合が変わったときだけ近傍メタを構築（フレーム毎の O(点数²) を避ける）。
     // 二段構え: まず参照で弾き（毎秒はここで終わる）、参照が変わったときだけ全点シグネチャを比べる。
@@ -193,6 +262,8 @@ export function useKyoshinDetectorV2(
         metaRef.current.sites = sites
       }
     }
+    // 以降は step() へ渡す分と床を並べ直す分で同じメタを使う（`meta.keys` が sites と同じ並び）。
+    const stationMeta = metaRef.current.meta
 
     let stepResult: ReturnType<typeof step>
     try {
@@ -207,31 +278,48 @@ export function useKyoshinDetectorV2(
           missing: indices.map((idx) => idx < MISSING_INDEX_THRESHOLD),
           eewActive: hasActiveNonAssumedEEWRef.current,
         },
-        metaRef.current.meta,
+        stationMeta,
       )
     } catch (err) {
       // step 内部で予期せぬ例外（sites/indices の長さ不整合を潜り抜けたケース等）が
       // 発生した場合、stateRef を破損させずログして次フレームで再試行する。
       // 例外を握り潰さないと useEffect のクリーンアップが走らず検知エンジンが恒久停止する。
-      stepFailRef.current++
-      log.error(`[kyoshinV2] step() threw (${stepFailRef.current}フレーム連続):`, err)
+      stalledFramesRef.current++
+      log.error(`[kyoshinV2] step() threw (${stalledFramesRef.current}フレーム連続):`, err)
       // 連続で壊れているなら結果を空にする。保持し続けると、凍結した memberKeys /
-      // recentOnsetKeys を現在の震度に当てて描き続ける（詳細は STEP_FAIL_RESET_FRAMES）。
+      // recentOnsetKeys を現在の震度に当てて描き続ける（詳細は RESULT_STALL_RESET_FRAMES）。
       // 学習資産（点別床・セル慢性活性）は stateRef に残すので、復帰時に学び直しにならない。
-      if (stepFailRef.current === STEP_FAIL_RESET_FRAMES) {
+      if (stalledFramesRef.current === RESULT_STALL_RESET_FRAMES) {
         log.error('[kyoshinV2] step() の連続失敗が続くため検知結果を空にします')
-        setResult(EMPTY)
+        setResult({ ...EMPTY, stalled: true })
       }
       return
     }
-    stepFailRef.current = 0
+    stalledFramesRef.current = 0
     const { state, detections, triggers, recentOnsetKeys, prunedMembers } = stepResult
     stateRef.current = state
 
-    const floors: Record<string, number> = {}
-    for (const [key, s] of Object.entries(state.sites)) floors[key] = chronicNoiseFloor(s)
+    // 床は `sites` と同じ並びの配列で渡す（詳細は KyoshinDetectorV2Result.floors）。
+    // `state.sites` を走査せず `meta.keys` を走査するのは、キーの網羅性をこちらが握るため。
+    // `step()` / `ingest()` は返す `state.sites` を毎回ゼロから作り直し、その回の `meta.keys` の
+    // 範囲だけを埋めるので、`state.sites` のキーは常に `meta.keys` の部分集合になる（欠ける点は
+    // `floors` の説明を参照）。学習資産の更新を差分方式へ最適化するような変更が入るとこの前提が
+    // 崩れるため、そのときはここも見直すこと。
+    const floors = new Array<number>(stationMeta.keys.length)
+    for (let i = 0; i < stationMeta.keys.length; i++) {
+      const s = state.sites[stationMeta.keys[i]]
+      floors[i] = s ? chronicNoiseFloor(s) : 0
+    }
 
-    setResult({ detections, triggers, recentOnsetKeys: new Set(recentOnsetKeys), dataTime, floors })
+    setResult({
+      detections,
+      triggers,
+      recentOnsetKeys: new Set(recentOnsetKeys),
+      dataTime,
+      floors,
+      floorsSites: sites,
+      stalled: false,
+    })
 
     // 学習資産（点別床・セル慢性活性）を定期的に永続化する（再読込・5時リロード後も学習を保つ）
     if (dataTimeMs - lastSaveRef.current >= SAVE_INTERVAL_MS) {

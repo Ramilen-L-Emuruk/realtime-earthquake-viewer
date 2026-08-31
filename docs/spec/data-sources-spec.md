@@ -399,7 +399,14 @@ JMA 仕様上ここで配信される 556 は全て警報級であるため `con
 `filterSubThresholdIndices`）も同じ `sites[i]`／`indices[i]` の位置対応で消費するため、`src/App.tsx` で
 `sitesSiteConfigId === indicesSiteConfigId` の条件を満たさない期間は空配列にゲートして通す。
 sitelist の非同期取得が完了した次フレームで元の実データに戻る（非表示時間はネットワーク往復 1 回分）。
-step 内例外も try/catch でログ出力の上、次フレームへ復帰する。
+step 内例外も try/catch でログ出力の上、次フレームへ復帰する。**同じ `siteConfigId` なのに件数が食い違う
+フレームも step() へ通さない**（上流データの異常。検知が丸ごと止まるため、間引いた上で記録に残す）。
+
+このゲートが守るのは `sites` と `indices` の対応まで。**検知エンジンの結果を位置で使う値には別の確認が要る**
+——`filterSubThresholdIndices` が使う慢性ノイズ床は effect 経由で 1 レンダー遅れて届くため、ゲートを通過した
+直後は「新しい観測点 × 古い床」が並びうる。床がどの観測点配列に対して計算されたかを参照で照合してから使う
+（詳細は [kyoshin-detection-spec.md](kyoshin-detection-spec.md) の「震度0ドット表示フィルタ」）。**検知結果を
+位置で消費する経路を新しく足すときは、同じ照合が要らないかを確かめること。**
 
 **残る既知の課題**（発生頻度・切替頻度から今回のスコープ外）:
 - 並行 `fetchSiteList` 呼び出しの順序保証がない（1 回目の応答が 2 回目より遅れると `sites`／`sitesSiteConfigId`
