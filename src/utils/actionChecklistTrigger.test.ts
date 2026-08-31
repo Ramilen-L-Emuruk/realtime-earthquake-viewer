@@ -8,11 +8,24 @@ import {
   type NearbyScope,
 } from './actionChecklistTrigger'
 import type { EEWAlert, JMAQuake } from '../types/earthquake'
+import type { DetectedPoint } from './kyoshinDetectionView'
 
 const MIN = 45 // 震度5弱
 
+/**
+ * 全件版（`known*`）は既定で半径内の集合と同じにする。
+ *
+ * 実運用では両者は同じ座標テーブルから作られ、全件版は必ず半径内の集合を含む。索引が噛み合って
+ * いるかの判定はこの関係に依存するので、テストでも保つ。噛み合わない状況を作りたいときは、
+ * こちらが知らない名前を電文側に置く。
+ */
 function scope(partial: Partial<NearbyScope>): NearbyScope {
-  return { ...NO_SCOPE, ...partial }
+  const merged = { ...NO_SCOPE, ...partial }
+  return {
+    ...merged,
+    knownStationNames: partial.knownStationNames ?? merged.stationNames,
+    knownRegionNames: partial.knownRegionNames ?? merged.regionNames,
+  }
 }
 
 function quake(maxScale: number, points: JMAQuake['points']): JMAQuake {
@@ -124,53 +137,83 @@ describe('kyoshinScaleForScope', () => {
   // Yahoo のインデックス -> 震度: value = -3.0 + index * 0.5。index 19 で 6.5（震度7）
   const STRONG = 19
   const WEAK = 8 // 1.0（震度1）
+  const HOME_KEY = '35.700,139.700'
+  const FAR_KEY = '34.700,135.500'
 
-  it('地域を絞れないときは全点を見る', () => {
-    expect(kyoshinScaleForScope([WEAK, STRONG], NO_SCOPE, MIN)).not.toBe(null)
-    expect(kyoshinScaleForScope([WEAK, WEAK], NO_SCOPE, MIN)).toBe(null)
+  /** 検知エンジンが確定と判断したメンバー観測点（`deriveKyoshinView` の解決結果）。 */
+  function pt(key: string, index: number): DetectedPoint {
+    return { key, lat: 35, lng: 139, index }
+  }
+
+  // 生の観測値を素通しで走査していたため、1 点の跳ね上がりがそのまま表示される震度になっていた
+  // （実データ 793 窓の再生で、気象庁発表が震度1 の地震に震度5弱、震度4 の地震に震度6弱と出た）。
+  // 渡すのは検知エンジンが「近傍の点が揃って上がった」と認めたメンバーだけ。
+  it('確定した揺れが無ければ出さない', () => {
+    expect(kyoshinScaleForScope([], NO_SCOPE, MIN)).toBe(null)
   })
 
-  it('地域を絞れるときは半径内の添字だけを見る', () => {
-    const near = scope({ kyoshinIndices: [0] })
-    // 添字 1 が強く揺れていても、自宅の周り（添字 0）は弱いので出さない
-    expect(kyoshinScaleForScope([WEAK, STRONG], near, MIN)).toBe(null)
-    expect(kyoshinScaleForScope([STRONG, WEAK], near, MIN)).not.toBe(null)
+  it('地域を絞れないときは確定メンバー全体を見る', () => {
+    expect(kyoshinScaleForScope([pt(FAR_KEY, WEAK), pt(HOME_KEY, STRONG)], NO_SCOPE, MIN)).toBe(70)
+    expect(kyoshinScaleForScope([pt(FAR_KEY, WEAK), pt(HOME_KEY, WEAK)], NO_SCOPE, MIN)).toBe(null)
+  })
+
+  it('地域を絞れるときは半径内の観測点だけを見る', () => {
+    const near = scope({ kyoshinKeys: new Set([HOME_KEY]) })
+    // 遠方が強く揺れていても、自宅の周りが弱いので出さない
+    expect(kyoshinScaleForScope([pt(FAR_KEY, STRONG), pt(HOME_KEY, WEAK)], near, MIN)).toBe(null)
+    expect(kyoshinScaleForScope([pt(FAR_KEY, WEAK), pt(HOME_KEY, STRONG)], near, MIN)).toBe(70)
+  })
+
+  // 対照: 半径内に確定メンバーが無いのは「近所は揺れていない」。ここで全国基準へ倒すと、
+  // 遠方の地震で毎回出ることになり、地点を登録した意味が消える。
+  it('半径内に確定メンバーが無ければ出さない', () => {
+    const near = scope({ kyoshinKeys: new Set([HOME_KEY]) })
+    expect(kyoshinScaleForScope([pt(FAR_KEY, STRONG)], near, MIN)).toBe(null)
+  })
+
+  // 安全弁: 離島など半径内に強震モニタの観測点が 1 つも無い端末では絞れない。
+  // 「近くに点が無いから出さない」は、まさに情報が要る人に出さない結果になる。
+  it('半径内に強震モニタの観測点が無ければ確定メンバー全体で判定する', () => {
+    const near = scope({ stationNames: new Set(['どこかの観測点']) })
+    expect(kyoshinScaleForScope([pt(FAR_KEY, STRONG)], near, MIN)).toBe(70)
   })
 
   it('欠測（負のセンチネル）は無視して他の点で判定する', () => {
-    const near = scope({ kyoshinIndices: [0, 1] })
-    expect(kyoshinScaleForScope([-1, STRONG], near, MIN)).not.toBe(null)
+    const near = scope({ kyoshinKeys: new Set([HOME_KEY, FAR_KEY]) })
+    expect(kyoshinScaleForScope([pt(FAR_KEY, -1), pt(HOME_KEY, STRONG)], near, MIN)).toBe(70)
   })
 
-  // 大きな地震では近くの観測点がまとめて途絶しうる。それは「揺れていない」ことの証明ではない
-  // ので、ここで諦めると最も情報が要る場面で最も早い経路だけが黙って止まる。
-  it('半径内の点がすべて欠測なら全国基準へ倒す', () => {
-    const near = scope({ kyoshinIndices: [0] })
-    expect(kyoshinScaleForScope([-1, STRONG], near, MIN)).toBe(70)
+  // 安全弁: 大きな地震では近くの観測点がまとめて途絶しうる。それは「揺れていない」ことの証明では
+  // ないので、ここで諦めると最も情報が要る場面で最も早い経路だけが黙って止まる。確定メンバーでも
+  // 値は欠測へ戻りうる（`deriveKyoshinView` は値の有無に関わらず点を作る）。
+  it('半径内の確定メンバーがすべて欠測なら全国基準へ倒す', () => {
+    const near = scope({ kyoshinKeys: new Set([HOME_KEY]) })
+    expect(kyoshinScaleForScope([pt(HOME_KEY, -1), pt(FAR_KEY, STRONG)], near, MIN)).toBe(70)
   })
 
   // 対照: 震度0 は「観測できて揺れていない」。ここまで倒すと遠方の地震で毎回出ることになる。
   it('半径内の点が観測できていれば、閾値未満でも全国基準へ倒さない', () => {
-    const near = scope({ kyoshinIndices: [0] })
+    const near = scope({ kyoshinKeys: new Set([HOME_KEY]) })
     const ZERO = 6 // 0.0（震度0）
-    expect(kyoshinScaleForScope([ZERO, STRONG], near, MIN)).toBe(null)
+    expect(kyoshinScaleForScope([pt(HOME_KEY, ZERO), pt(FAR_KEY, STRONG)], near, MIN)).toBe(null)
   })
 
   // 安全弁: 一部だけ欠測している場合は倒さない（残った点で判定する）
   it('半径内に生きている点が 1 つでもあれば、その範囲だけで判定する', () => {
-    const near = scope({ kyoshinIndices: [0, 1] })
+    const near = scope({ kyoshinKeys: new Set([HOME_KEY, 'near-b']) })
     const ZERO = 6
-    expect(kyoshinScaleForScope([-1, ZERO, STRONG], near, MIN)).toBe(null)
+    const points = [pt(HOME_KEY, -1), pt('near-b', ZERO), pt(FAR_KEY, STRONG)]
+    expect(kyoshinScaleForScope(points, near, MIN)).toBe(null)
   })
 
   // 当初は「閾値に達したか」の真偽だけを返していたため、呼び出し側が設定値をそのまま
   // 表示していた（実際に震度7でも「震度5弱」と出る）。実測の最大を返して表示に使う。
   it('閾値ではなく実際に観測した最大震度を返す', () => {
-    expect(kyoshinScaleForScope([STRONG], NO_SCOPE, MIN)).toBe(70)
+    expect(kyoshinScaleForScope([pt(HOME_KEY, STRONG)], NO_SCOPE, MIN)).toBe(70)
   })
 
   it('閾値に届かない点しか無ければ null', () => {
-    expect(kyoshinScaleForScope([WEAK], NO_SCOPE, MIN)).toBe(null)
+    expect(kyoshinScaleForScope([pt(HOME_KEY, WEAK)], NO_SCOPE, MIN)).toBe(null)
   })
 
   // 強震モニタは震度0 と震度1 の階級値がどちらも 10。設定は震度1 まで下げられるため、
@@ -182,17 +225,18 @@ describe('kyoshinScaleForScope', () => {
     const ONE = 8 // 1.0（震度1）
 
     it('震度0 の点しか無ければ出さない', () => {
-      expect(kyoshinScaleForScope([ZERO, ZERO, ZERO], NO_SCOPE, MIN1)).toBe(null)
+      const points = [pt('a', ZERO), pt('b', ZERO), pt('c', ZERO)]
+      expect(kyoshinScaleForScope(points, NO_SCOPE, MIN1)).toBe(null)
     })
 
     it('震度1 の点があれば出す', () => {
-      expect(kyoshinScaleForScope([ZERO, ONE], NO_SCOPE, MIN1)).toBe(10)
+      expect(kyoshinScaleForScope([pt('a', ZERO), pt('b', ONE)], NO_SCOPE, MIN1)).toBe(10)
     })
 
     // 安全弁: 震度0 を落とすのは「震度1 以上」の判定であって、上の閾値まで緩めない
     it('閾値が高いときの判定は変わらない', () => {
-      expect(kyoshinScaleForScope([ZERO, ONE], NO_SCOPE, MIN)).toBe(null)
-      expect(kyoshinScaleForScope([ZERO, STRONG], NO_SCOPE, MIN)).toBe(70)
+      expect(kyoshinScaleForScope([pt('a', ZERO), pt('b', ONE)], NO_SCOPE, MIN)).toBe(null)
+      expect(kyoshinScaleForScope([pt('a', ZERO), pt('b', STRONG)], NO_SCOPE, MIN)).toBe(70)
     })
   })
 })
@@ -252,7 +296,7 @@ describe('hasNearby', () => {
   })
 
   it('どれか 1 つでもあれば絞れる', () => {
-    expect(hasNearby(scope({ kyoshinIndices: [0] }))).toBe(true)
+    expect(hasNearby(scope({ kyoshinKeys: new Set(['35.700,139.700']) }))).toBe(true)
     expect(hasNearby(scope({ stationNames: new Set(['どこかの観測点']) }))).toBe(true)
     expect(hasNearby(scope({ regionNames: new Set(['x']) }))).toBe(true)
   })
@@ -284,7 +328,7 @@ describe('区域しか持たない地震情報（震度速報）', () => {
     expect(quakeScaleForScope(q, NEAR_REGION, MIN)).toBe(null)
   })
 
-  it('半径内に該当する点が 1 つも無ければ全国基準へ倒す（出さない方へ倒さない）', () => {
+  it('索引と噛み合わない電文は全国基準へ倒す（出さない方へ倒さない）', () => {
     // 区域名の索引と電文の区域名が噛み合わない場合。揺れが無い証明ではないので全国基準で見る。
     const q = quake(60, [{ pref: '不明県', addr: '未知の区域', isArea: true, scale: 60 }])
     expect(quakeScaleForScope(q, NEAR_REGION, MIN)).toBe(60)
@@ -293,6 +337,76 @@ describe('区域しか持たない地震情報（震度速報）', () => {
   it('半径内の点があって閾値未満なら出さない（全国基準へ倒さない）', () => {
     const q = quake(70, [{ pref: '東京都', addr: '新宿区西新宿', isArea: false, scale: 30 }])
     expect(quakeScaleForScope(q, NEAR_REGION, MIN)).toBe(null)
+  })
+})
+
+// 「半径内の点が電文に載っていない」の読み方は 2 通りある（近所が揺れていない／索引が噛み合って
+// いない）。両方を後者として扱っていたため、遠方の地震では地点を登録した意味が消えていた
+// （実測: 2018 年大阪府北部地震を東京の地点で受けると、最初に届く震度速報 3 本がいずれも半径内
+// 0 件になり、全国基準の震度6弱で発火する。電文には震度1以上の観測点しか載らないため、
+// 自宅の周りが無感なら 0 件になるのが普通）。
+describe('半径内が電文に載っていないとき', () => {
+  const NEAR_TOKYO = scope({
+    stationNames: new Set(['新宿区西新宿']),
+    regionNames: new Set(['東京都23区']),
+    // 全件版は全国を知っている（半径外の観測点・区域も引ける）
+    knownStationNames: new Set(['新宿区西新宿', '大阪北区茶屋町']),
+    knownRegionNames: new Set(['東京都23区', '大阪府北部']),
+  })
+
+  it('電文の点を 1 件でも引けるなら、近所は揺れていないと読んで出さない', () => {
+    const q = quake(55, [{ pref: '', addr: '大阪北区茶屋町', isArea: false, scale: 55 }])
+    expect(quakeScaleForScope(q, NEAR_TOKYO, MIN)).toBe(null)
+  })
+
+  it('区域しか持たない電文（震度速報）でも同じ', () => {
+    const q = quake(55, [{ pref: '', addr: '大阪府北部', isArea: true, scale: 55 }])
+    expect(quakeScaleForScope(q, NEAR_TOKYO, MIN)).toBe(null)
+  })
+
+  // 対照: 1 件も引けないなら索引が古い等で判定できない。揺れが無い証明ではないので全国基準。
+  it('電文の点を 1 件も引けなければ全国基準へ倒す', () => {
+    const q = quake(55, [{ pref: '', addr: '未知の観測点', isArea: false, scale: 55 }])
+    expect(quakeScaleForScope(q, NEAR_TOKYO, MIN)).toBe(55)
+  })
+
+  // 安全弁: 引けた点の震度が壊れていたら噛み合いの証拠にしない（走査でも飛ばしている点なので、
+  // ここだけ数えると値の使えない点で「近所は揺れていない」と結論することになる）
+  it('引ける点が壊れた震度しか持たなければ全国基準へ倒す', () => {
+    const q = quake(55, [
+      { pref: '', addr: '大阪北区茶屋町', isArea: false, scale: 99 } as unknown as NonNullable<JMAQuake['points']>[number],
+    ])
+    expect(quakeScaleForScope(q, NEAR_TOKYO, MIN)).toBe(55)
+  })
+
+  // 安全弁: 地点を登録していない端末では絞れないので、この判定は働かない（従来どおり全国基準）
+  it('地点を登録していなければ従来どおり全国基準', () => {
+    const q = quake(55, [{ pref: '', addr: '大阪北区茶屋町', isArea: false, scale: 55 }])
+    expect(quakeScaleForScope(q, NO_SCOPE, MIN)).toBe(55)
+  })
+
+  // 「載っていない」から言えることは電文の粒度で決まる。震度速報は震度3以上の区域しか載せない
+  // ので、そこから言えるのは「震度3未満」まで。それより低い閾値では判定できない。
+  describe('区域しか持たない電文（震度速報）の下限', () => {
+    const areaOnly = quake(55, [{ pref: '', addr: '大阪府北部', isArea: true, scale: 55 }])
+
+    it('閾値が震度3以上なら、載っていない区域は閾値未満と読んで出さない', () => {
+      expect(quakeScaleForScope(areaOnly, NEAR_TOKYO, 30)).toBe(null)
+    })
+
+    // 対照: 判定できない閾値では全国基準へ倒す。**ここで保留すると二度と評価されないことがある**
+    // ——見るのは常に最新の 1 件なので、観測点を載せた続報が届く前に別の地震が起きると、
+    // 古い方は先頭へ戻れない。
+    it('閾値が震度1・2 なら判定できないので全国基準へ倒す', () => {
+      expect(quakeScaleForScope(areaOnly, NEAR_TOKYO, 10)).toBe(55)
+      expect(quakeScaleForScope(areaOnly, NEAR_TOKYO, 20)).toBe(55)
+    })
+
+    // 安全弁: 観測点の点を持つ電文は震度1以上を全部載せるので、閾値が震度1でも出さなくてよい
+    it('観測点を持つ電文なら閾値が震度1でも出さない', () => {
+      const withStation = quake(55, [{ pref: '', addr: '大阪北区茶屋町', isArea: false, scale: 55 }])
+      expect(quakeScaleForScope(withStation, NEAR_TOKYO, 10)).toBe(null)
+    })
   })
 })
 

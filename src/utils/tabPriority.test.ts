@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest'
 import {
   TAB_PRIORITY, TAB_HOLD_MS, TAB_FOLLOW_MIN_DWELL_MS,
   shouldAcceptAutoTab, shouldFollowNow, idleRevertPriority, resolveNonRealtimeTabSource,
+  shouldRetakeAfterPreSpeech,
   type TabHold,
 } from './tabPriority'
 
@@ -245,6 +246,59 @@ describe('resolveNonRealtimeTabSource', () => {
     // 地震情報（1）でも同じこと
     expect(shouldAcceptAutoTab(eewHold, TAB_PRIORITY.quake, NOW, resolveNonRealtimeTabSource(false))).toBe(true)
     expect(shouldAcceptAutoTab(eewHold, TAB_PRIORITY.quake, NOW, resolveNonRealtimeTabSource(true))).toBe(false)
+  })
+})
+
+describe('shouldRetakeAfterPreSpeech', () => {
+  // 直したかった症状: 地震情報を先出しで earthquake へ出した直後、揺れ検知のレベルアップが
+  // realtime を取り、地震情報の発話が始まると earthquake へ取り返し、次のレベルアップでまた
+  // realtime——数秒のうちに画面が往復していた。強震モニタは 1 秒ごとにフレームが来るので、
+  // 通知音との間（地震情報系は 0.5〜1.7 秒）にレベルアップ判定が 1〜2 回入る。
+
+  it('正: 揺れ検知そのものが持っている画面は取り返さない', () => {
+    expect(shouldRetakeAfterPreSpeech(held(TAB_PRIORITY.kyoshin), NOW)).toBe(false)
+  })
+
+  it('対照: 揺れ検知中のアイドル復帰は同じ優先度でも取り返す', () => {
+    // `idleRevertPriority(false)` も kyoshin で張るが、発火は `idleRevertSec`（既定 30 秒）に
+    // 1 回きりで往復の原因にならない。ここで弾くと、キュー待ちで長く待たされた読み上げが
+    // 直前のアイドル復帰に阻まれ、声だけ出て画面が動かなくなる（`shouldAcceptAutoTab` の
+    // 判定 5「アイドル復帰の保持は読み上げ追従を妨げない」を破ることになる）。
+    expect(shouldRetakeAfterPreSpeech(held(TAB_PRIORITY.kyoshin, 'idleRevert'), NOW)).toBe(true)
+  })
+
+  it('対照: 読み上げを持つ相手に奪われたなら取り返す', () => {
+    // 読み上げは待ち行列で順番が直列に保証されているため、取り返しても往復にならない。
+    // ここを止めると、近接して届いた 2 つの電文が互いの先出しを上書きし合ったとき、
+    // 後で声に出る側の画面が二度と戻らない（この仕組みが直したかった食い違いの再発）。
+    expect(shouldRetakeAfterPreSpeech(held(TAB_PRIORITY.tsunami, 'speech'), NOW)).toBe(true)
+    expect(shouldRetakeAfterPreSpeech(held(TAB_PRIORITY.quake, 'speech'), NOW)).toBe(true)
+    expect(shouldRetakeAfterPreSpeech(held(TAB_PRIORITY.eewUpdate, 'speech'), NOW)).toBe(true)
+  })
+
+  it('安全弁: 保持が切れていれば取り返す（揺れ検知でも）', () => {
+    const expired: TabHold = { until: NOW - 1, priority: TAB_PRIORITY.kyoshin, source: 'hold' }
+    expect(shouldRetakeAfterPreSpeech(expired, NOW)).toBe(true)
+  })
+
+  it('先出し → 別の読み上げが横取り → 取り返す、の遷移が通る', () => {
+    // 1 度目のレビューが指摘した並びを、保持の遷移として通しで確かめる。
+    // 地震情報が先出しで earthquake を取り、声が出る前に津波の先出しが tsunami を奪い、
+    // 地震情報の番が来たときに取り返せること。
+    const afterPreSpeech: TabHold = { until: NOW + TAB_HOLD_MS, priority: TAB_PRIORITY.quake, source: 'speech' }
+    // 津波の先出しは「追従どうしは保持を見ない」で通る（優先度差ではない）
+    expect(shouldAcceptAutoTab(afterPreSpeech, TAB_PRIORITY.tsunami, NOW, 'speech')).toBe(true)
+    const stolen: TabHold = { until: NOW + TAB_HOLD_MS, priority: TAB_PRIORITY.tsunami, source: 'speech' }
+    // 地震情報は取り返しに行き、実際に受け付けられる
+    expect(shouldRetakeAfterPreSpeech(stolen, NOW)).toBe(true)
+    expect(shouldAcceptAutoTab(stolen, TAB_PRIORITY.quake, NOW, 'speech')).toBe(true)
+  })
+
+  it('安全弁: 揺れ検知以外の保持は、ここでは止めず優先度の判定へ回す', () => {
+    // 手動選択・アイドル復帰は `shouldAcceptAutoTab` 側に既定の扱いがある。ここで先回りして
+    // 止めると、アイドル復帰が読み上げ追従に譲る規則（判定の 5）が効かなくなる。
+    expect(shouldRetakeAfterPreSpeech(held(TAB_PRIORITY.manual), NOW)).toBe(true)
+    expect(shouldRetakeAfterPreSpeech(held(TAB_PRIORITY.quake, 'idleRevert'), NOW)).toBe(true)
   })
 })
 

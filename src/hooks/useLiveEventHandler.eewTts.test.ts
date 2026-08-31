@@ -57,7 +57,12 @@ vi.mock('../utils/voicevox', async (importOriginal) => ({
   getSpeechClock: () => null,
   stopSpeech: () => releaseCurrentSpeech(),
 }))
-vi.mock('../utils/alertSound', () => ({ playAlertSound: vi.fn() }))
+// 音の実体だけ差し替える。**通知音との間（`ttsDelayFor`）は本物を使う** ―― 読み上げの順番と
+// 待ち合わせはこの間の長さで決まるため、模擬すると検証の前提が変わる。
+vi.mock('../utils/alertSound', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/alertSound')>()
+  return { ...actual, playAlertSound: vi.fn() }
+})
 vi.mock('../utils/notifications', () => ({ showBrowserNotification: vi.fn() }))
 
 /** 発話されたテキストだけを配列で取り出す（speakWithVoicevox の第 2 引数） */
@@ -163,7 +168,7 @@ function setup() {
     setActiveTabNonRealtime: vi.fn(),
     setActiveTabRealtimeOnUpdate: vi.fn(),
     setActiveTabRealtimeUrgent: vi.fn(),
-    followSpeechTab: vi.fn(), preSpeechTab: vi.fn(), expandPanelForSpecialInfo: vi.fn(),
+    followSpeechTab: vi.fn(), preSpeechTab: vi.fn(() => true), expandPanelForSpecialInfo: vi.fn(),
     revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(),
     setActiveLpgmEventId: vi.fn(),

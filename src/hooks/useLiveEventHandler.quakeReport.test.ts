@@ -37,7 +37,12 @@ vi.mock('../utils/voicevox', () => ({
   // 鳴ったチャンクの判定に使う（このモックはチャンクの通知を出さないので常に null で足りる）
   getSpeechClock: () => null,
 }))
-vi.mock('../utils/alertSound', () => ({ playAlertSound: vi.fn() }))
+// 音の実体だけ差し替える。**通知音との間（`ttsDelayFor`）は本物を使う** ―― 読み上げの順番と
+// 待ち合わせはこの間の長さで決まるため、模擬すると検証の前提が変わる。
+vi.mock('../utils/alertSound', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/alertSound')>()
+  return { ...actual, playAlertSound: vi.fn() }
+})
 vi.mock('../utils/notifications', () => ({ showBrowserNotification: vi.fn() }))
 
 function spokenTexts(): string[] {
@@ -48,7 +53,7 @@ async function flush() {
   for (let i = 0; i < 400; i++) await Promise.resolve()
 }
 
-/** 通知音の遅延（最大 2800ms）を消化してから発話に到達させる */
+/** 通知音との間（最長 2720ms＝津波警報）を消化してから発話に到達させる */
 async function settle() {
   await vi.advanceTimersByTimeAsync(5000)
   await flush()
@@ -99,7 +104,7 @@ function setup(existingCards: JMAQuake[] = []) {
     defaultTabRef: { current: 'earthquake' },
     setActiveTabRealtimeForKyoshin: vi.fn(), setActiveTabNonRealtime: vi.fn(),
     setActiveTabRealtimeOnUpdate: vi.fn(),
-    setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(),
+    setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(() => true),
     expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(), setActiveLpgmEventId: vi.fn(),
   }))

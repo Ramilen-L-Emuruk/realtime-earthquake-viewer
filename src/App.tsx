@@ -3,6 +3,7 @@ import type { MapHandle } from './components/Map/mapTypes'
 import { IconNav, type TabId } from './components/IconNav'
 import {
   TAB_PRIORITY, TAB_HOLD_MS, shouldAcceptAutoTab, shouldFollowNow, idleRevertPriority,
+  shouldRetakeAfterPreSpeech,
   resolveNonRealtimeTabSource,
   type TabHold, type TabPriority, type TabHoldSource, type TabFollowMark,
 } from './utils/tabPriority'
@@ -396,10 +397,29 @@ export function App() {
    * 追従どうしでは保持を見ない（理由は `shouldAcceptAutoTab`）。手動選択の保持には従来どおり
    * 譲るが、揺れ検知とアイドル復帰の保持は追従を妨げない（同じく `shouldAcceptAutoTab`）。
    *
+   * **例外が 1 つある。** 受信時の先出しで既に画面を取れていた場合（`alreadyShown`）に限り、
+   * 揺れ検知そのものが持っている画面は取り返さない（`shouldRetakeAfterPreSpeech`）。
+   *
    * **画面は声よりわずかに先に出る。** `speakWithVoicevox` は再生完了で解決する作りで、
    * 「音が鳴り始めた瞬間」を呼び出し側から観測できないため、掴めるのは合成を投入した時点まで。
    */
-  const followSpeechTab = useCallback((tab: TabId, priority: TabPriority) => {
+  const followSpeechTab = useCallback((
+    tab: TabId,
+    priority: TabPriority,
+    // 受信時の先出しで既に画面を取れていたか。取れていた場合、揺れ検知に奪われていても
+    // 取り返さない（理由は `shouldRetakeAfterPreSpeech`）。
+    opts?: { alreadyShown?: boolean },
+  ) => {
+    if (opts?.alreadyShown && !shouldRetakeAfterPreSpeech(tabHoldRef.current, Date.now())) {
+      // **省いた事実は必ず残す。** 残さないと「揺れ検知に譲った」のか「要求が届いていない」のかを
+      // 後から区別できない（要求を出さない以上、`requestAutoTab` 側の記録も出ない）。
+      log.debug(`[tab] → ${tab} 追従を省略 (先出しで見せた画面を揺れ検知が保持中・取り返さない)`)
+      // **畳んだパネルは開く。** `requestAutoTab` は成立でも拒否でも開く（保持は「今見せるべき
+      // ものを守る」ためで、情報を隠すためではない）。ここだけ通らないと、畳んだまま揺れ検知が
+      // 続いている端末で、読み上げが始まってもパネルが閉じたままになる。
+      setPanelCollapsed(false)
+      return
+    }
     requestAutoTab(tab, priority, 'speech', { dwell: true })
   }, [requestAutoTab])
 
@@ -414,10 +434,14 @@ export function App() {
    * 津波を受信して tsunami を先出し → 直後に届いた地震情報は床で弾かれる → 0.5 秒後に地震情報の
    * **声が始まっても**床が明けておらず画面は tsunami のまま → 津波の声が出るのは 4.2 秒後。
    * 地震情報を読んでいる 3.7 秒間、声と画面が食い違っていた（まさに直したかった症状）。
+   *
+   * **画面を取れたかを返す。** ただし返すのは**呼び出した瞬間の成否**で、そのあと誰かに
+   * 奪われたかは含まない。呼び出し側はこれを `followSpeechTab` の `alreadyShown` に渡し、
+   * 取り返すかどうかの判断は保持の中身を見て決める（`shouldRetakeAfterPreSpeech`）。
    */
-  const preSpeechTab = useCallback((tab: TabId, priority: TabPriority) => {
+  const preSpeechTab = useCallback((tab: TabId, priority: TabPriority) => (
     requestAutoTab(tab, priority, 'speech')
-  }, [requestAutoTab])
+  ), [requestAutoTab])
 
   // useLiveEventHandler が返す resetTsunamiScrollToTop を revertToDefaultTab から呼べるようにする ref。
   // revertToDefaultTab はフック呼び出しより前に定義されるため、defaultTabRef と同様に
@@ -1244,10 +1268,12 @@ export function App() {
     home,
     stationCoords: stationCoordsForChecklist,
     kyoshinSites: kyoshinSitesGated,
-    // 保持値（kyoshinHeld）を渡す。音・通知・地域単位発報は保持値を使うのがこのアプリの規約で
-    // （kyoshin-detection-spec.md §8）、生値だと強く揺れている最中の単発の欠測でフレームが
-    // 落ち、閾値に達した瞬間を取りこぼす。
-    kyoshinIndices: kyoshinHeld.indices,
+    // 検知エンジンが確定した揺れのメンバー観測点を渡す（音・地図の検知点と同じ集合）。
+    // 生の観測値を渡すと 1 点の跳ね上がりがそのまま表示される震度になる（理由は
+    // kyoshinScaleForScope）。値は保持値なので、強く揺れている最中の単発の欠測でも落ちない。
+    detectedPoints: kyoshinView.detectedPoints,
+    // エンジンが詰まって検知結果を出せない間は、空の結果を「揺れていない」と読ませない。
+    kyoshinStalled: kyoshinV2.stalled,
     eews: eewListForChecklist,
     latestQuake: earthquakes[0],
   })

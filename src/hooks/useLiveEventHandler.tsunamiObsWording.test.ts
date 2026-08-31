@@ -32,7 +32,12 @@ vi.mock('../utils/voicevox', () => ({
   // （このテストは既読の粒度ではなく、渡す記憶と並びを見る）。
   getSpeechClock: () => null,
 }))
-vi.mock('../utils/alertSound', () => ({ playAlertSound: vi.fn() }))
+// 音の実体だけ差し替える。**通知音との間（`ttsDelayFor`）は本物を使う** ―― 読み上げの順番と
+// 待ち合わせはこの間の長さで決まるため、模擬すると検証の前提が変わる。
+vi.mock('../utils/alertSound', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/alertSound')>()
+  return { ...actual, playAlertSound: vi.fn() }
+})
 vi.mock('../utils/notifications', () => ({ showBrowserNotification: vi.fn() }))
 
 function spokenTexts(): string[] {
@@ -115,7 +120,7 @@ function setup(displayed: JMATsunami[] = []) {
     defaultTabRef: { current: 'earthquake' },
     setActiveTabRealtimeForKyoshin: vi.fn(), setActiveTabNonRealtime: vi.fn(),
     setActiveTabRealtimeOnUpdate: vi.fn(),
-    setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(),
+    setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(() => true),
     expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(), setActiveLpgmEventId: vi.fn(),
   }))
