@@ -10,6 +10,8 @@ import {
   coalesceByEventId,
   findExistingQuakeCard,
   sortQuakes,
+  isRetractedQuakeReport,
+  quakeRetractionOf,
 } from './quakeMerge'
 import type { JMAQuake, IssueType, IntensityScale, EarthquakePoint, DomesticTsunami, CorrectType } from '../types/earthquake'
 
@@ -610,16 +612,39 @@ describe('mergeQuakeInto — 通常電文どうし', () => {
       expect(merged.earthquake.hypocenter.longitude).toBe(epicenterOnly.earthquake.hypocenter.longitude)
     })
 
-    it('対照: 震度速報が自前で持つ津波区分・固定付加文は既存で塗り替えない', () => {
-      // 補完は震源要素だけ。津波区分と固定付加文は震度速報が自前で持つ値（構造的欠落では
-      // ない）なので、電文が主張するとおりに採る。ここを補うと、気象庁が出していない
-      // 区分を表示し続けることになる。
+    // 旧テスト「対照: 震度速報が自前で持つ津波区分・固定付加文は既存で塗り替えない」を覆した。
+    // 震度速報の津波区分は種別に付く定型文で、その報の判断を表していないため採らないことにした
+    // （実データでは震源情報が `なし` と判断した 10 秒後の続報が `調査中` のまま届く）。
+    it('正: 震度速報の続報でも、既存カードの津波区分・固定付加文が残る', () => {
       const afterEpicenter = mergeQuakeInto(firstPrompt, epicenterOnly)
       expect(afterEpicenter.earthquake.domesticTsunami).toBe('なし')
 
       const merged = mergeQuakeInto(afterEpicenter, secondPrompt)
+      expect(merged.earthquake.domesticTsunami).toBe('なし')
+      expect(merged.forecastText).toBe('この地震による津波の心配はありません。')
+    })
+
+    it('対照: 既存が津波区分を持たない（不明）なら震度速報の値を使う', () => {
+      // 判断がまだ無いカードに「なし」を捏造しない。震度速報の `調査中` が正しい表示になる。
+      const unknown: JMAQuake = {
+        ...makeNoIntensity({ type: '震源情報', time: '2026-01-01T07:08:00Z', hypoName: '石川県能登地方' }),
+        earthquake: {
+          ...makeNoIntensity({ type: '震源情報', hypoName: '石川県能登地方' }).earthquake,
+          domesticTsunami: '不明',
+        },
+        forecastText: undefined,
+      }
+      const merged = mergeQuakeInto(unknown, secondPrompt)
       expect(merged.earthquake.domesticTsunami).toBe('調査中')
       expect(merged.forecastText).toBe('今後の情報に注意してください。')
+    })
+
+    it('安全弁: 震度速報以外の続報は津波区分を普通に置き換える（引き下げも反映する）', () => {
+      // 定型文を採らないのは震度速報だけ。他の種別は実際の判断を運ぶので、値が軽くなる
+      // 方向でも従う（§6.4 の「値の取り下げには従う」）。
+      const warned = makeQuake({ type: '震源・震度情報', maxScale: 50, time: '2026-01-01T07:10:00Z', tsunami: '注意報' })
+      const cleared = makeQuake({ type: '各地の震度情報', maxScale: 50, time: '2026-01-01T07:20:00Z', tsunami: 'なし' })
+      expect(mergeQuakeInto(warned, cleared).earthquake.domesticTsunami).toBe('なし')
     })
 
     it('対照: incoming が震源を持つ電文なら、既存の震源で塗り替えず incoming の値を採る', () => {
@@ -1013,5 +1038,192 @@ describe('区域を持たない電文が先に割り込む場合', () => {
     expect(merged).toHaveLength(1)
     expect(merged[0].earthquake.hypocenter.name).toBe('天草灘')  // 更新後の震源
     expect(merged[0].earthquake.maxScale).toBe(30)               // 震度は保持
+  })
+})
+
+// 取消の後に届いた報の扱い（`isRetractedQuakeReport` / `findExistingQuakeCard` / `mergeQuakeHistory`）。
+//
+// 正常な運用では取消の後に同じ地震の続報は来ない。届いたなら「到着順の入れ替わり」か
+// 「同一性の誤認識」のどちらかで、発表時刻で切り分ける（詳細は `isRetractedQuakeReport`）。
+describe('取消の後に届いた報', () => {
+  const 発生時刻 = '2026-01-01T07:06:00Z'
+  const 震度速報 = makeQuake({
+    id: 'dmdata-quake-20260101160610-1', type: '震度速報', hypoName: '',
+    time: '2026-01-01T07:07:00Z', quakeTime: 発生時刻, maxScale: 50,
+    points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+  })
+  // 取消電文はパーサが発生時刻・震源名とも空で作る（照合は eventId のみ）。
+  const 取消: JMAQuake = {
+    ...makeQuake({ id: 'dmdata-quake-20260101160610-2', type: '震度速報', time: '2026-01-01T07:10:00Z' }),
+    cancelled: true,
+    earthquake: {
+      time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 },
+      maxScale: -1, domesticTsunami: '不明',
+    },
+    points: [],
+  }
+  // 取消を受けたカード（ライブ経路が作る形）。照合の材料が揃っている。
+  const 取消済みカード: JMAQuake = { ...震度速報, cancelledAt: new Date() }
+  const retractions = [quakeRetractionOf(取消, 取消済みカード)]
+
+  describe('isRetractedQuakeReport', () => {
+    it('正: 取消より前に発表された報は取り下げ済みとみなす', () => {
+      const stale = makeQuake({
+        id: 'dmdata-quake-20260101160610-3', type: '震度速報', hypoName: '',
+        time: '2026-01-01T07:09:00Z', quakeTime: 発生時刻, maxScale: 50,
+        points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+      })
+      expect(isRetractedQuakeReport(retractions, stale)).toBe(true)
+    })
+
+    it('正: 発表時刻が同じ報も取り下げ側へ倒す（分精度では前後を決められない）', () => {
+      const tie = makeQuake({
+        id: 'dmdata-quake-20260101160610-4', type: '震度速報', hypoName: '',
+        time: 取消.time, quakeTime: 発生時刻, maxScale: 50,
+        points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+      })
+      expect(isRetractedQuakeReport(retractions, tie)).toBe(true)
+    })
+
+    it('正: 発表時刻が空の報も取り下げ側へ倒す', () => {
+      const noTime = makeQuake({
+        id: 'dmdata-quake-20260101160610-5', type: '震度速報', hypoName: '',
+        time: '', quakeTime: 発生時刻, maxScale: 50,
+        points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+      })
+      expect(isRetractedQuakeReport(retractions, noTime)).toBe(true)
+    })
+
+    it('対照: 取消より後に発表された報は取り下げ済みとしない（別カードとして立てる）', () => {
+      // 種別は取消と同じにして、発表時刻の条件だけを見る。
+      const fresh = makeQuake({
+        id: 'dmdata-quake-20260101160610-6', type: '震度速報', hypoName: '',
+        time: '2026-01-01T07:11:00Z', quakeTime: 発生時刻, maxScale: 50,
+        points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+      })
+      expect(isRetractedQuakeReport(retractions, fresh)).toBe(false)
+    })
+
+    it('対照: 種別が違う報は取り下げの対象にしない（取消の適用側と対称に保つ）', () => {
+      // 取消は情報単位で、適用側（`useEarthquakes` の取消分岐）も種別まで見て絞っている。
+      // 参照側で広げると、取消と無関係な種別の正常な報が無音で消える。
+      const otherType = makeQuake({
+        id: 'dmdata-quake-20260101160610-8', type: '震源・震度情報', hypoName: '石川県能登地方',
+        time: '2026-01-01T07:09:00Z', quakeTime: 発生時刻, maxScale: 50,
+        points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+      })
+      expect(isRetractedQuakeReport(retractions, otherType)).toBe(false)
+    })
+
+    it('対照: 別イベントの報は取り下げの対象にしない', () => {
+      const other = makeQuake({
+        id: 'dmdata-quake-20260101161010-1', type: '震度速報', hypoName: '',
+        time: '2026-01-01T07:09:00Z', quakeTime: '2026-01-01T07:10:00Z', maxScale: 40,
+        points: [{ pref: '', addr: '新潟県上越', isArea: true, scale: 40 }],
+      })
+      expect(isRetractedQuakeReport(retractions, other)).toBe(false)
+    })
+
+    it('安全弁: 記録が空なら何も取り下げない', () => {
+      expect(isRetractedQuakeReport([], 震度速報)).toBe(false)
+    })
+  })
+
+  describe('findExistingQuakeCard', () => {
+    it('正: 取消表示中のカードは既存として選ばない（置換で取消が消えるのを防ぐ）', () => {
+      const fresh = makeQuake({
+        id: 'dmdata-quake-20260101160610-6', type: '震源・震度情報', hypoName: '石川県能登地方',
+        time: '2026-01-01T07:11:00Z', quakeTime: 発生時刻, maxScale: 50,
+        points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+      })
+      expect(findExistingQuakeCard([取消済みカード], fresh)).toBeUndefined()
+    })
+
+    it('対照: 取消されていない同一イベントのカードは従来どおり選ぶ', () => {
+      const fresh = makeQuake({
+        id: 'dmdata-quake-20260101160610-6', type: '震源・震度情報', hypoName: '石川県能登地方',
+        time: '2026-01-01T07:11:00Z', quakeTime: 発生時刻, maxScale: 50,
+        points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+      })
+      expect(findExistingQuakeCard([震度速報], fresh)?.id).toBe(震度速報.id)
+    })
+  })
+
+  describe('mergeQuakeHistory', () => {
+    // **取消と同じ分の報でしかこの経路は通らない。** `mergeQuakeHistory` は `time` 昇順で
+    // 畳み込むので、取消より古い報は必ず取消の前に処理され、取消がカードを消して終わる。
+    // 取消と同時刻の報だけが「取消を処理した後」に回ってきうる（同時刻の相対順序は入力順）。
+    it('正: 取消と同じ分に発表された報が、入力順で取消より後に来ても復活させない', () => {
+      const tie = makeQuake({
+        id: 'dmdata-quake-20260101160610-3', type: '震度速報', hypoName: '',
+        time: 取消.time, quakeTime: 発生時刻, maxScale: 50,
+        points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+      })
+      // 履歴はカードを消してしまうため、取消を見た事実を別に覚えていないと復活する。
+      expect(mergeQuakeHistory([震度速報, 取消, tie])).toHaveLength(0)
+    })
+
+    it('対照: 取消より前に発表された報は、時刻順で取消の前に処理されて取消で消える', () => {
+      const stale = makeQuake({
+        id: 'dmdata-quake-20260101160610-7', type: '震度速報', hypoName: '',
+        time: '2026-01-01T07:09:00Z', quakeTime: 発生時刻, maxScale: 50,
+        points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+      })
+      expect(mergeQuakeHistory([震度速報, stale, 取消])).toHaveLength(0)
+    })
+
+    it('対照: 取消より後に発表された報は新しいカードとして残る', () => {
+      const fresh = makeQuake({
+        id: 'dmdata-quake-20260101160610-6', type: '震源・震度情報', hypoName: '石川県能登地方',
+        time: '2026-01-01T07:11:00Z', quakeTime: 発生時刻, maxScale: 50,
+        points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+      })
+      const merged = mergeQuakeHistory([震度速報, 取消, fresh])
+      expect(merged).toHaveLength(1)
+      expect(merged[0].earthquake.hypocenter.name).toBe('石川県能登地方')
+    })
+
+    it('安全弁: 取消が無ければ従来どおり統合する', () => {
+      const fresh = makeQuake({
+        id: 'dmdata-quake-20260101160610-6', type: '震源・震度情報', hypoName: '石川県能登地方',
+        time: '2026-01-01T07:11:00Z', quakeTime: 発生時刻, maxScale: 50,
+        points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+      })
+      expect(mergeQuakeHistory([震度速報, fresh])).toHaveLength(1)
+    })
+
+    // 「もっと見る」は `base` に画面のカード群を渡すため、取消表示中のカード（10 秒 purge 待ち）が
+    // 混ざりうる。ライブ経路と同じ守りが要る。
+    it('正: base の取消表示中のカードを置換しない（取消と purge 予約を保つ）', () => {
+      const fresh = makeQuake({
+        id: 'dmdata-quake-20260101160610-9', type: '震源・震度情報', hypoName: '石川県能登地方',
+        time: '2026-01-01T07:11:00Z', quakeTime: 発生時刻, maxScale: 50,
+        points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+      })
+      const merged = mergeQuakeHistory([fresh], [取消済みカード])
+      // 取消済みカードは残り、新しい報は別カードとして立つ。
+      expect(merged).toHaveLength(2)
+      const kept = merged.find(q => q.cancelledAt)
+      expect(kept?.id).toBe(取消済みカード.id)
+    })
+
+    it('正: 呼び出し側の台帳に載っている取消でも、取り下げ済みの報を弾く', () => {
+      // `base` の取消はこのバッチに含まれないため、台帳を渡さないと照合できない。
+      const stale = makeQuake({
+        id: 'dmdata-quake-20260101160610-10', type: '震度速報', hypoName: '',
+        time: '2026-01-01T07:09:00Z', quakeTime: 発生時刻, maxScale: 50,
+        points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+      })
+      expect(mergeQuakeHistory([stale], [], retractions)).toHaveLength(0)
+    })
+
+    it('対照: 台帳を渡さなければ弾かない（台帳が効いていることの裏返し）', () => {
+      const stale = makeQuake({
+        id: 'dmdata-quake-20260101160610-10', type: '震度速報', hypoName: '',
+        time: '2026-01-01T07:09:00Z', quakeTime: 発生時刻, maxScale: 50,
+        points: [{ pref: '', addr: '石川県能登', isArea: true, scale: 50 }],
+      })
+      expect(mergeQuakeHistory([stale])).toHaveLength(1)
+    })
   })
 })
