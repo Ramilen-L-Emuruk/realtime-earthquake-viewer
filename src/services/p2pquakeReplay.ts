@@ -200,8 +200,9 @@ function toEntry(raw: RawP2PEvent): ReplayEntry | null {
   // 型を確定させるためここでも確認する。
   if (!event || (event.kind !== 'quake' && event.kind !== 'tsunami')) return null
   const replayTime = new Date(event.time)
-  // Invalid Date を再生キューへ積むとディスパッチャが先頭で止まり、以後の電文が二度と
-  // 発火しない（useEarthquakes の enqueueEvent の注記と同じ理由）。ここで弾いて数える。
+  // 読めない時刻はイベントキューも捨てるが（`EventQueue` の `push`）、あちらは呼び出し規約の
+  // 違反として `error` に残る。**再生元の電文が壊れているのは取りこぼしとして数えたい事実**なので、
+  // ここで弾いて `warn` に留める。
   if (!Number.isFinite(replayTime.getTime())) {
     log.warn(`[replay] 時刻を読めない電文をスキップ id=${event.id} time=${event.time}`)
     return null

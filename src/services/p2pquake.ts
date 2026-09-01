@@ -128,13 +128,13 @@ function readNumber(v: unknown): number {
  *
  * 空を破棄するのは、空文字が下流で `new Date('')` = Invalid Date になり、
  * `useEarthquakes` の `?? serverNow()`（`??` は null/undefined しか救わない）をすり抜けるため。
- * キューのディスパッチャは先頭ブロッキング（`q[0].eventTime <= now`）で、NaN 比較は常に偽に
- * なるため、Invalid Date が 1 件混ざると以降のライブイベントが二度と発火しない。
+ * 読めない時刻をイベントキューへ渡すと何が起きるかは `EventQueue`（`hooks/useEarthquakes.ts`）の
+ * `push` の注記にまとめてある。
  *
  * 一方「値はあるが読めない」を破棄しないのは、P2PQuake の時刻が `2026/01/02 15:04:05.999` という
  * スラッシュ区切りの非 ISO 形式で、`Date` のパース可否がブラウザ実装に依存するため。
  * 厳格な実装に当たったときに全電文を捨てるより、時刻表示が崩れても地震を出す方が実害が小さい。
- * キュー停止そのものは `enqueueEvent` 側の `Number.isFinite` ガードで別途塞いである。
+ * 読めないまま下流へ渡っても電文は失われない。`enqueueEvent` が現在時刻で代替してキューへ積む。
  */
 function readTime(v: unknown, context: string, field: string): string | null {
   const time = str(v)

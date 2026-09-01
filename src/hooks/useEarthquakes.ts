@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { useLazyRef } from './useLazyRef'
 import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataNankaiCommentary, fetchDmdataKohatsu } from '../services/dmdata'
@@ -77,10 +78,94 @@ interface QueueEntry {
   silent?: boolean
 }
 
-function insertSorted(queue: QueueEntry[], entry: QueueEntry): void {
-  let i = queue.length
-  while (i > 0 && queue[i - 1].eventTime > entry.eventTime) i--
-  queue.splice(i, 0, entry)
+/**
+ * 発火時刻の昇順に並んだイベントキュー。
+ *
+ * **配列を外へ出さない**のが唯一の設計目的。かつては素の `QueueEntry[]` を ref に持たせていて、
+ * 中身を書き換える側（挿入・取り出し）と作り直す側（`filter` での絞り込み）が同居していた。
+ * ディスパッチャは 1 回のティックで複数のエントリを続けて処理するため、その途中で配列が
+ * 差し替わると、それ以降に取り出したエントリが差し替え前の配列からしか消えず、新しい配列に
+ * 残ったままになる。次のティックがそれを先頭から読み、同じ電文を再処理した（実測で 1 通の地震情報が
+ * 数千回取り出され、受信音が鳴り続けた。再現の条件は `useEarthquakes.wiring.test.ts` 側に書いてある）。
+ *
+ * 画面には「カードが更新され続ける」ようにしか映らず、型検査でも例外でも捕まらない。**同じ誤りを
+ * 書けなくするために、配列そのものは閉じ込めてある。**
+ *
+ * **持ち主の ref ごと差し替えるのも同じこと**（`eventQueueRef.current = createEventQueue()`）。
+ * 差し替え前のキューに残っていた予約は、誰にも取り出されないまま消える。捨てたいときは
+ * `clear()` を呼ぶこと。
+ */
+interface EventQueue {
+  /**
+   * 発火時刻の昇順を保って 1 件積む。
+   *
+   * **日時として読めない発火時刻のエントリは積まず、記録に残す。** 取り出し側（`shiftReady`）では
+   * 弾けない。NaN は `<=` と `>` のどちらとも偽になるため、判定の書き方で転ぶ先が変わる（実測）:
+   *
+   *   - `eventTime > now` なら止める形 … 止まらず**即座に発火する**（現在の `shiftReady`）
+   *   - `!(eventTime <= now)` なら止める形 … **止まる**。以後すべての電文が発火しない
+   *
+   * どちらも望ましくないので、**入口で落とすのが唯一の確実な手**。積む経路はこの `push` だけ
+   * （配列は閉じ込めてある）なので、ここを通せば以降は有限値しか並ばない。ここで弾くのは
+   * 呼び出し規約の違反なので、既定で消える詳細ログではなく `error` で残す。
+   */
+  push(entry: QueueEntry): void
+  /**
+   * `keep` が false を返した要素を取り除く。
+   *
+   * **`keep` は例外を投げてはならない。** 途中で抜けると「前半だけ詰め直され、後半は未走査」の
+   * まま長さも切り詰められない。読み元は壊さないので要素が消えることはないが、**残すと決めた
+   * エントリが重複したまま残る**。述語はフィールドの参照だけに留めること。
+   */
+  retain(keep: (entry: QueueEntry) => boolean): void
+  /**
+   * 発火時刻が `now` 以前の先頭を 1 件取り出す。無ければ `undefined`。
+   *
+   * **先頭で止まる**（時刻の来ていない先頭より後ろは見ない）。並びが崩れると後ろが取り残される
+   * ため、順序は `push` だけが決める。
+   *
+   * 発火時刻が有限であることは `push` が保証している。**この判定の向きを変えるなら、
+   * 読めない時刻が来たときにどちらへ転ぶかを `push` の注記で確かめてから変えること。**
+   */
+  shiftReady(now: Date): QueueEntry | undefined
+  /** すべて捨てる。 */
+  clear(): void
+}
+
+function createEventQueue(): EventQueue {
+  const entries: QueueEntry[] = []
+  return {
+    push(entry) {
+      if (!Number.isFinite(entry.eventTime.getTime())) {
+        // 何を捨てたかまで残す。`payload.kind` は大半の経路で 'event' 固定になり、
+        // `String(new Date(NaN))` も常に 'Invalid Date' なので、それだけでは同じ読み込みで
+        // 複数捨てたときに区別が付かない。
+        const detail = entry.payload.kind === 'event'
+          ? entry.payload.event.kind + ' id=' + String((entry.payload.event as { id?: unknown }).id ?? '(なし)')
+          : entry.payload.kind
+        log.error('[queue] 発火時刻が日時として読めないエントリを捨てた ' + detail
+          + ' eventTime=' + String(entry.eventTime))
+        return
+      }
+      let i = entries.length
+      while (i > 0 && entries[i - 1].eventTime > entry.eventTime) i--
+      entries.splice(i, 0, entry)
+    },
+    retain(keep) {
+      // 配列を作り直さず、書き込みカーソルで前へ詰める（`write <= read` が常に成り立つので
+      // 読む前に上書きすることはない）。
+      let write = 0
+      for (let read = 0; read < entries.length; read++) {
+        if (keep(entries[read])) entries[write++] = entries[read]
+      }
+      entries.length = write
+    },
+    shiftReady(now) {
+      if (entries.length === 0 || entries[0].eventTime > now) return undefined
+      return entries.shift()
+    },
+    clear() { entries.length = 0 },
+  }
 }
 
 /**
@@ -318,9 +403,9 @@ export function useEarthquakes(
   // 南海トラフ地震関連解説情報（VYSE51/52）の7日間有効期限タイマー。
   // 解説情報には解除電文が無く、定例解説は平常時にも毎月届く。期限で畳まないと帯が常駐する。
   const nankaiCommentaryExpireTimerRef = useRef<number | undefined>(undefined)
-  // イベントキュー: eventTime 昇順でソート済み。ディスパッチャーが 100ms ごとに先頭から処理する。
-  // リプレイ時は eventTime と再生時刻を比較して発火制御する。
-  const eventQueueRef = useRef<QueueEntry[]>([])
+  // イベントキュー: ディスパッチャーが 10ms ごとに、発火時刻の来たものを先頭から処理する。
+  // リプレイ時は eventTime と再生時刻を比較して発火制御する（並びと取り出しの規約は `EventQueue`）。
+  const eventQueueRef = useLazyRef<EventQueue>(createEventQueue)
   // DMDSS 版「もっと見る」用カーソルと API キー（useCallback 内の stale closure 回避）
   const dmdataCursorRef = useRef<string | undefined>(undefined)
   const dmdataApiKeyRef = useRef(dmdataApiKey)
@@ -400,15 +485,14 @@ export function useEarthquakes(
   // 接続を張る方針に戻すなら、一律で潰すのではなく予約ごとに時間軸を持たせること。
 
   // WebSocket 受信時のエントリポイント: event.time を基準にキューへ挿入する
-  // live モードでは event.time ≈ now なので次のティック（最大 100ms 後）に即時発火する
+  // live モードでは event.time ≈ now なので次のティック（最大 10ms 後）に即時発火する
   const enqueueEvent = useCallback((event: AppEvent, overrideTime?: Date) => {
     const parsed = overrideTime ?? new Date((event as { time?: string }).time ?? serverNow())
-    // Invalid Date を 1 件でも積むとキューが恒久停止する。ディスパッチャは先頭ブロッキング
-    // （`q[0].eventTime <= now` が偽なら以降を処理しない）で、NaN 比較は常に偽になるため
-    // その後ろに積まれたイベントが二度と発火しない。パーサ側でも弾いているが、
-    // 単一の壊れた時刻でライブ更新が全停止する事故は入口でも防いでおく。
+    // 日時として読めない時刻は `push` が捨てる（失敗モードは `EventQueue` の注記に集約）。
+    // ここは捨てさせず、**現在時刻で代替して必ず流す**。ライブ受信の電文は画面に出ないと
+    // 気づけないため、時刻が壊れていても「いま届いた」として扱うほうが害が小さい。
     const eventTime = Number.isFinite(parsed.getTime()) ? parsed : serverDate()
-    insertSorted(eventQueueRef.current, { eventTime, payload: { kind: 'event', event } })
+    eventQueueRef.current.push({ eventTime, payload: { kind: 'event', event } })
   }, [])
 
   // 時刻ソースはアプリ時計(serverDate)に一元化。ライブ時はサーバー同期、
@@ -511,7 +595,7 @@ export function useEarthquakes(
       const eew = event as EEWAlert
       if (!eew.cancelled && !eew.test && eew.isFinal) {
         const cancelTime = calcEEWCancelTime(eew, new Date(eew.time))
-        insertSorted(eventQueueRef.current, {
+        eventQueueRef.current.push({
           eventTime: cancelTime,
           payload: { kind: 'event', event: { ...eew, cancelled: true, expired: true } as AppEvent },
         })
@@ -559,9 +643,9 @@ export function useEarthquakes(
       let expireTime: Date | null = null
       if (!tsunami.cancelled) {
         if (tsunami.validDateTime) {
-          // 日時として読めない期限で予約を積まないこと。キューのディスパッチャは先頭ブロッキング
-          // （`q[0].eventTime <= now` が偽なら以降を見ない）で、Invalid Date との比較は常に偽に
-          // なるため、1 件積むだけで以後のすべての電文が二度と発火しなくなる。
+          // 日時として読めない期限で予約を積まないこと（`push` も捨てるが、そちらは
+          // 呼び出し規約の違反として `error` に残る。**電文が期限を持たないのは正常** なので、
+          // ここで分けて `warn` に留める。失敗モードは `EventQueue` の注記）。
           const parsed = new Date(tsunami.validDateTime)
           if (Number.isFinite(parsed.getTime())) expireTime = parsed
           else log.warn(`[tsunami] 有効期限を日時として読めないため失効予約を積みません: id=${tsunami.id} validDateTime=${tsunami.validDateTime}`)
@@ -584,7 +668,7 @@ export function useEarthquakes(
         // expired 予約は最新 1 件だけ残せば充分。P2PQuake 経路は eventId が無く id も続報ごとに
         // 変わるため、id/eventId 一致条件を課すと古い予約が消えず積み上がる問題があった。
         // 明示解除電文でも purge するのは、TSU-5A の 24h 予約を解決済み津波に対して発火させないため。
-        eventQueueRef.current = eventQueueRef.current.filter(entry => {
+        eventQueueRef.current.retain(entry => {
           if (entry.payload.kind !== 'event') return true
           const ev = entry.payload.event
           if (ev.kind !== 'tsunami') return true
@@ -598,7 +682,7 @@ export function useEarthquakes(
           // その場で失効させる（silent 注入なので音は鳴らない）。
           const alreadyExpired = expireTime <= now
           if (!alreadyExpired || isSilentRef.current) {
-            insertSorted(eventQueueRef.current, {
+            eventQueueRef.current.push({
               eventTime: alreadyExpired ? now : expireTime,
               silent: alreadyExpired ? true : undefined,
               payload: { kind: 'event', event: { ...tsunami, cancelled: true, cancelReason: 'expired' } as AppEvent },
@@ -622,7 +706,7 @@ export function useEarthquakes(
             const earthquakes = prev.earthquakes.map(e => {
               if (isQuakeCancelTarget(e, quake)) {
                 found = true
-                insertSorted(eventQueueRef.current, {
+                eventQueueRef.current.push({
                   eventTime: new Date(now.getTime() + 10_000),
                   payload: { kind: 'purge-cancelled-quake', id: e.id },
                   silent: true,
@@ -698,7 +782,7 @@ export function useEarthquakes(
             if (prev.tsunamis.length > 0 && !prev.tsunamis[0].cancelledAt) {
               // TSU-4: purge 予約に対象 id を持たせ、他イベントが後で置換した場合に誤って
               // 新しいカードを 10 秒前に消してしまうレースを防ぐ。
-              insertSorted(eventQueueRef.current, {
+              eventQueueRef.current.push({
                 eventTime: new Date(now.getTime() + 10_000),
                 payload: { kind: 'purge-cancelled-tsunami', id: prev.tsunamis[0].id },
                 silent: true,
@@ -756,7 +840,7 @@ export function useEarthquakes(
             }
             const existing = prev.activeEEWs.get(key)
             if (!existing || existing.cancelledAt) return prev
-            insertSorted(eventQueueRef.current, {
+            eventQueueRef.current.push({
               eventTime: new Date(now.getTime() + 10_000),
               payload: { kind: 'purge-cancelled-eew', key },
               silent: true,
@@ -804,9 +888,13 @@ export function useEarthquakes(
   useEffect(() => {
     const id = setInterval(() => {
       const now = getTimeRef.current()
-      const q = eventQueueRef.current
-      while (q.length > 0 && q[0].eventTime <= now) {
-        const { payload, silent } = q.shift()!
+      // 1 件ずつキューへ問い合わせる。下の `handleEvent` は津波の失効予約を張り替える際に
+      // キューの中身を変えるため、**取り出し済みの一覧をこちら側で保持してはいけない**
+      // （理由と実測値は `EventQueue` の注記）。
+      for (;;) {
+        const entry = eventQueueRef.current.shiftReady(now)
+        if (!entry) break
+        const { payload, silent } = entry
         isSilentRef.current = !!silent
         if (payload.kind === 'event') {
           handleEvent(payload.event)
@@ -891,7 +979,7 @@ export function useEarthquakes(
       if (nankaiCommentaryExpireTimerRef.current !== undefined) {
         window.clearTimeout(nankaiCommentaryExpireTimerRef.current)
       }
-      eventQueueRef.current = []
+      eventQueueRef.current.clear()
     }
   }, [])
 
@@ -1044,7 +1132,7 @@ export function useEarthquakes(
           if (tsunamis.length > 0 && latestTsunami?.validDateTime) {
             const expireTime = new Date(latestTsunami.validDateTime)
             if (expireTime > serverDate()) {
-              insertSorted(eventQueueRef.current, {
+              eventQueueRef.current.push({
                 eventTime: expireTime,
                 payload: { kind: 'event', event: { ...latestTsunami, cancelled: true, cancelReason: 'expired' } as AppEvent },
               })
@@ -1179,7 +1267,7 @@ export function useEarthquakes(
         // 再実行されるため、同一 eventId の既存 expired 予約を除去してから積む（TSU-1 と同じ排除）。
         if (tsunamis.length > 0 && latestTsunami?.validDateTime) {
           const purgeKey = latestTsunami.eventId
-          eventQueueRef.current = eventQueueRef.current.filter(entry => {
+          eventQueueRef.current.retain(entry => {
             if (entry.payload.kind !== 'event') return true
             const ev = entry.payload.event
             if (ev.kind !== 'tsunami') return true
@@ -1190,7 +1278,7 @@ export function useEarthquakes(
           })
           const expireTime = new Date(latestTsunami.validDateTime)
           if (expireTime > serverDate()) {
-            insertSorted(eventQueueRef.current, {
+            eventQueueRef.current.push({
               eventTime: expireTime,
               payload: { kind: 'event', event: { ...latestTsunami, cancelled: true, cancelReason: 'expired' } as AppEvent },
             })
@@ -1443,7 +1531,7 @@ export function useEarthquakes(
       // 未来の地震がカードに並ぶ。ライブへ戻る側は履歴の取得完了時に立て直すので落としてよい。
       hasMore: false,
     }))
-    eventQueueRef.current = []
+    eventQueueRef.current.clear()
     quakeIntensityCacheRef.current.clear()
     // 後発地震注意情報の7日タイマーもリセット対象。resetState 後に古いタイマーが残ると、
     // リプレイモード切替→ライブ復帰後に発火して新しく設定された kohatsu を null に上書きしうる。
@@ -1474,7 +1562,7 @@ export function useEarthquakes(
 
   const loadReplayEvents = useCallback((entries: import('../types/replay').ReplayEntry[]) => {
     for (const { payload, replayTime, silent } of entries) {
-      insertSorted(eventQueueRef.current, { eventTime: replayTime, payload, silent })
+      eventQueueRef.current.push({ eventTime: replayTime, payload, silent })
     }
   }, [])
 
