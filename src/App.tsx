@@ -477,7 +477,7 @@ export function App() {
   const speechFollow = useMemo(() => createSpeechFollowController(setSpeechFollowSession), [])
 
   // ライブイベント受信処理（通知音・タイトル・タブ切替・読み上げ・ブラウザ通知）
-  const { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, focusedDistrict, resetTsunamiScrollToTop } = useLiveEventHandler({
+  const { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, areaGradeChangedKeys, focusedDistrict, resetTsunamiScrollToTop } = useLiveEventHandler({
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate, setActiveTabRealtimeUrgent,
     setActiveTabRealtimeForKyoshin: () => requestTabForKyoshin('realtime'),
@@ -1502,6 +1502,7 @@ export function App() {
               onObservationClick={focusTsunamiObs}
               focusedDistrict={focusedDistrict}
               obsUpdateStatus={obsUpdateStatus}
+            areaGradeChangedKeys={areaGradeChangedKeys}
               speechSession={speechFollowSession}
               /* 読み上げ追従の可否。タブは invisible で隠すだけなので**非表示でもスクロールは
                  効いてしまう**（戻ってきたら知らない位置にいる）。折りたたみ時はさらに幅か

@@ -2,7 +2,7 @@
 // parseEarthquakeFromXml（REST 履歴経路）のテスト。
 // DOMParser を使うためこのファイルだけ jsdom 環境で動かす（既定は node）。
 import { describe, it, expect, vi } from 'vitest'
-import { parseEarthquake, parseEarthquakeFromXml, parseEEW, parseTsunami, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml } from './dmdataParser'
+import { parseEarthquake, parseEarthquakeFromXml, parseEEW, parseTsunami, parseTsunamiFromXml, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml } from './dmdataParser'
 import { log } from '../utils/logger'
 
 // 震度速報（VXSE51）。震源が未確定の段階で出るため Earthquake 要素を持たず、
@@ -1124,5 +1124,113 @@ describe('parseNankaiCommentaryFromXml（VYSE51/52 南海トラフ地震関連�
       body: '本文テキスト',
     }).replace('<EarthquakeInfo>', '<Comments><Text>別セクションの文</Text></Comments><EarthquakeInfo>')
     expect(parseNankaiCommentaryFromXml(xml)?.body).toBe('本文テキスト')
+  })
+})
+
+// 区域単位の等級変化（`lastGrade`）。気象庁は一部解除でも区域を電文から消さず、
+// 「津波予報（Kind=72）／前回は津波注意報（LastKind=62）」の形で降格として載せる。
+// これを読み落とすと、他の区域に注意報が残る限り最上位等級は動かないため、
+// アプリからは「変化なし」に見える（→ docs/spec/tsunami-spec.md §10「区域単位で等級が動いた報」）。
+// フィクスチャは 2024 年能登半島地震 01/02 02:30 の VTSE41 を 3 区域に縮めたもの。
+const VTSE41_PARTIAL_LIFT_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/">
+  <Control>
+    <Title>津波警報・注意報・予報a</Title>
+    <DateTime>2024-01-01T17:30:42Z</DateTime>
+    <PublishingOffice>気象庁</PublishingOffice>
+  </Control>
+  <Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+    <Title>津波注意報・津波予報</Title>
+    <ReportDateTime>2024-01-02T02:30:00+09:00</ReportDateTime>
+    <EventID>20240101161010</EventID>
+    <InfoType>発表</InfoType>
+    <Headline><Text>津波注意報を一部解除しました。</Text></Headline>
+  </Head>
+  <Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
+    <Tsunami>
+      <Forecast>
+        <Item>
+          <Area><Name>石川県能登</Name><Code>360</Code></Area>
+          <Category>
+            <Kind><Name>津波注意報</Name><Code>62</Code></Kind>
+            <LastKind><Name>津波注意報</Name><Code>62</Code></LastKind>
+          </Category>
+        </Item>
+        <Item>
+          <Area><Name>福岡県日本海沿岸</Name><Code>711</Code></Area>
+          <Category>
+            <Kind><Name>津波予報（若干の海面変動）</Name><Code>72</Code></Kind>
+            <LastKind><Name>津波注意報</Name><Code>62</Code></LastKind>
+          </Category>
+        </Item>
+        <Item>
+          <Area><Name>長崎県西方</Name><Code>730</Code></Area>
+          <Category>
+            <Kind><Name>津波予報（若干の海面変動）</Name><Code>71</Code></Kind>
+          </Category>
+        </Item>
+      </Forecast>
+    </Tsunami>
+  </Body>
+</Report>`
+
+describe('津波電文の LastKind（区域単位の等級変化）', () => {
+  it('正: XML 経路で LastKind を前回の等級として読む', () => {
+    const t = parseTsunamiFromXml(VTSE41_PARTIAL_LIFT_XML)
+    expect(t).not.toBeNull()
+    // 解除された区域は電文から消えない（3 区域すべてが載る）
+    expect(t!.cancelled).toBe(false)
+    expect(t!.areas.map(a => [a.name, a.grade, a.lastGrade])).toEqual([
+      ['石川県能登', 'Watch', 'Watch'],
+      ['福岡県日本海沿岸', 'Forecast', 'Watch'],
+      ['長崎県西方', 'Forecast', undefined],
+    ])
+  })
+
+  it('対照: LastKind が無い区域は lastGrade を持たない（「前回は津波なし」と偽らない）', () => {
+    const t = parseTsunamiFromXml(VTSE41_PARTIAL_LIFT_XML)
+    expect(t!.areas.find(a => a.name === '長崎県西方')!.lastGrade).toBeUndefined()
+  })
+
+  it('正: JSON 経路でも kind.lastKind.code を前回の等級として読む', () => {
+    const json = {
+      eventId: '20240101161010',
+      serialNo: '1',
+      reportDateTime: '2024-01-02T02:30:00+09:00',
+      infoType: '発表',
+      body: {
+        tsunami: {
+          forecasts: [
+            { kind: { code: '72', lastKind: { code: '62' } }, name: '福岡県日本海沿岸', code: '711' },
+            { kind: { code: '62' }, name: '石川県能登', code: '360' },
+          ],
+        },
+      },
+    }
+    const t = parseTsunami('VTSE41', json)
+    expect(t).not.toBeNull()
+    expect(t!.areas.map(a => [a.name, a.grade, a.lastGrade])).toEqual([
+      ['福岡県日本海沿岸', 'Forecast', 'Watch'],
+      ['石川県能登', 'Watch', undefined],
+    ])
+  })
+
+  it('安全弁: 解除系コード（60）の区域は従来どおり areas から除かれる', () => {
+    const json = {
+      eventId: '20240101161010',
+      serialNo: '1',
+      reportDateTime: '2024-01-02T10:00:00+09:00',
+      infoType: '発表',
+      body: {
+        tsunami: {
+          forecasts: [
+            { kind: { code: '60', lastKind: { code: '62' } }, name: '福岡県日本海沿岸', code: '711' },
+          ],
+        },
+      },
+    }
+    const t = parseTsunami('VTSE41', json)
+    expect(t!.cancelled).toBe(true)
+    expect(t!.areas).toEqual([])
   })
 })

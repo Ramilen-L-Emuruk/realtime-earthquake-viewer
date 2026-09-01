@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AppEvent, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary, TsunamiArea, TsunamiObservation } from '../types/earthquake'
+import type { AppEvent, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary, TsunamiArea, TsunamiObservation, TsunamiGrade } from '../types/earthquake'
 import type { TabId } from '../components/IconNav'
 import type { AppSettings } from './useSettings'
 import type { AlertTitleApi } from './useAlertTitle'
@@ -13,10 +13,10 @@ import {
 } from '../utils/eew'
 import { haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
-import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, matchesArea, sortAreasForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations } from '../utils/tsunami'
+import { tsunamiMaxGrade, tsunamiAreaGradeChanges, selectUnspokenAreaGradeChanges, rememberAreaGrades, tsunamiAreaKey, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, matchesArea, sortAreasForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations } from '../utils/tsunami'
 import { playAlertSound, ttsDelayFor, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
-import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
+import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
 import { joinSegments, plain, hasFollowTarget, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
@@ -526,6 +526,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // 入る（読み上げ文は「読み上げた値からの差分」で作るため）。
   const spokenObsHeightRef = useRef<Map<string, { value: number; over?: boolean }>>(new Map())
   const spokenObsNamesRef = useRef<Set<string>>(new Set())
+  // 区域ごとに、等級の変化として**最後に声にした等級**（区域キー → 等級）。
+  //
+  // 気象庁の `LastKind` は等級が動いた瞬間だけでなく、その後の続報にも同じ値が載り続ける。
+  // 記録を持たないと、2 区域の解除を伝える文を続報のたびに読み直す（→ `selectUnspokenAreaGradeChanges`）。
+  // 観測点の記憶と同じく**発話を始める瞬間**に進める。読み上げが無効な端末だけは声が出ないため、
+  // タブを見せた時点で進める（進めないと続報ごとに画面を奪う）。
+  const spokenAreaGradeRef = useRef<Map<string, TsunamiGrade>>(new Map())
   // VOICEVOX EEW 読み上げの進行管理。
   //
   //   eewSpeechChainRef   … EEW の読み上げを直列化するチェーン（**全 EEW で 1 本**）。
@@ -613,6 +620,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // 津波観測点の新規/更新バッジ表示状態と自動クリアタイマー
   const [obsUpdateStatus, setObsUpdateStatus] = useState<Map<string, 'new' | 'updated'>>(() => new Map())
   const obsStatusClearTimerRef = useRef<number>(0)
+  // 直近の受信で等級が動いた区域（`tsunamiAreaKey`）。カードが「〇〇から切り替え」を出す条件。
+  //
+  // **`lastGrade` だけで出してはいけない。** `LastKind` は変化した後の続報にも載り続けるため、
+  // 区域の値だけを見ると何通も後まで「たった今切り替わった」ように見え続ける（読み上げは既読で
+  // 1 回に絞っているのに、画面だけ持続する非対称になる）。観測点のバッジ（`obsUpdateStatus`）と
+  // 同じく「今回分だけ」に置き換え、同じタイマーで消す。
+  const [areaGradeChangedKeys, setAreaGradeChangedKeys] = useState<Set<string>>(() => new Set())
   // 津波イベント受信時にスクロールでフォーカスする予報区（今回の受信で変更があった区域全部＋その中の最高波高区域）。
   // 対象区域が特定できない受信（区域のみの発表・実質変化なしの続報・解除）は top: null（一番上へ戻す）で表す。
   const [focusedDistrict, setFocusedDistrict] = useState<{ districts: { code?: string; name?: string }[]; top: { code?: string; name?: string } | null; ts: number } | null>(null)
@@ -1163,6 +1177,26 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 「更新音が鳴ったのに、読み上げは発報の重みで地震情報を切る」形の食い違いになる
     // （実際にそうなっていた。等級が動いていない続報まで `high` で読んでいた）。
     let tsunamiIsObservationUpdate = false
+    // 津波の続報が「区域単位で等級が動いた報」か（全体の最上位等級は変わらないが、一部の区域で
+    // 解除・切替・引き上げが起きている）。**観測情報と同じ枠に入れないための判定。**
+    // 気象庁は一部解除でも区域を電文から消さず等級の降格として載せるため、他の区域に注意報が
+    // 残っている限り最上位は動かない。これを観測情報として扱うと、観測波高の更新が無ければ
+    // 読み上げ文が空になり、受信音だけが鳴って何も伝わらない
+    // （→ docs/spec/tsunami-spec.md §10「区域単位で等級が動いた報」）。音の種別判定で立てて読み上げの枝で消費する。
+    let tsunamiIsAreaGradeChange = false
+    // 区域単位で等級が動いた組のうち、**まだ声にしていない分だけ**。読み上げが無効な端末の
+    // タブ移動（UI ブロック）と、読み上げの枝分け（音の種別判定）の双方が見るため、ここで
+    // 1 度だけ求める。既読を除くのは、`LastKind` が変化後の続報にも載り続けるため
+    // （→ `selectUnspokenAreaGradeChanges`）。
+    const tsunamiAreaChanges = event.kind === 'tsunami' && !event.cancelled
+      ? selectUnspokenAreaGradeChanges(
+        // **渡すのはマージ済みの観測点。** 区域の並びはカードと揃える規約（`sortAreasForCardDisplay`）で、
+        // 一部解除の電文は観測点を持たないことが多い。今回の電文の分だけで並べると、画面が既存の
+        // 観測値で並べた順と食い違い、読み上げに追従するスクロールが往復する。
+        tsunamiAreaGradeChanges(event, mergeTsunamiObservations(tsunamisRef.current[0]?.observations, event.observations) ?? []),
+        spokenAreaGradeRef.current,
+      )
+      : []
     if (event.kind === 'quake' && event.cancelled) {
       // 地震情報取消: カード削除は useEarthquakes reducer が担う。通知音・読み上げのみここで処理する。
       if (settings.soundEnabled) playAlertSound('eewCancel')
@@ -1264,6 +1298,15 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         if (tsunamiIsNewOrUpgraded) {
           log.info(`[tab] tsunami を要求 (${isNew ? '新規発報' : 'グレード格上げ'}・読み上げ無効)`)
           setActiveTabNonRealtime('tsunami')
+        } else if (tsunamiAreaChanges.length > 0) {
+          // 一部の区域だけ等級が動いた報。最上位が変わらないので上の判定には掛からないが、
+          // 読み上げが無い端末では画面が唯一の伝達手段になる。
+          log.info('[tab] tsunami を要求 (区域単位の等級変化・読み上げ無効)')
+          setActiveTabNonRealtime('tsunami')
+          // **声が出ない端末はここで既読にする。** 進めないと、同じ変化を載せ続ける続報
+          // （`LastKind` は変化後も残る）のたびに画面を奪う。読み上げが有効な端末では、
+          // 発話を始める瞬間に進める側に任せる。
+          rememberAreaGrades(tsunamiAreaChanges, spokenAreaGradeRef.current)
         } else {
           log.debug('[tab] tsunami タブ切替スキップ (同一イベント扱い・grade 不変・読み上げ無効)')
         }
@@ -1340,8 +1383,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         seenObsNamesRef.current.clear()
         spokenObsHeightRef.current.clear()
         spokenObsNamesRef.current.clear()
+        spokenAreaGradeRef.current.clear()
         window.clearTimeout(obsStatusClearTimerRef.current)
         setObsUpdateStatus(new Map())
+        setAreaGradeChangedKeys(new Set())
         setFocusedDistrict({ districts: [], top: null, ts: Date.now() })
       } else {
         // 捨てた事実を残す。黙って通すと「解除を受けたのにバッジが消えない」を追えない。
@@ -2044,7 +2089,15 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // `isDowngradeSound` は `gradeUnchanged` と排他なので（等級が動いていない報と、下がった報）、
         // ここで除く必要はない。引き下げは等級が動いた報として新規・格上げと同じ重さで扱う
         // （音だけは同じ更新音を鳴らす）。
-        tsunamiIsObservationUpdate = gradeUnchanged
+        // 区域単位の等級変化は**この報だけで判定できる**（`lastGrade` は電文が持つ事実で、
+        // 前報の記憶に依存しない）。最上位が動いた報は従来の発表文・降格文が担当するので、
+        // 新しい枝へ回すのは最上位が動いていない報だけに絞る。
+        const hasAreaGradeChange = tsunamiAreaChanges.length > 0
+        tsunamiIsObservationUpdate = gradeUnchanged && !hasAreaGradeChange
+        tsunamiIsAreaGradeChange = gradeUnchanged && hasAreaGradeChange
+        // **音は従来のまま更新音を鳴らす。** 一部解除は「まだ他の区域で続いている」状態なので、
+        // 全解除の音（`tsunamiCancel`）を鳴らすと終わったと誤解させる。伝える役目は読み上げと
+        // 表示に持たせている。
         if (gradeUnchanged || isDowngradeSound) {
           type = 'tsunamiUpdate'
         } else if (grade === 'MajorWarning') type = 'tsunamiMajor'
@@ -2185,6 +2238,17 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // 読み上げ文の生成と同じ関数を使う。理由は `selectArrivalsToSpeak` の宣言箇所）。
             spokenObs = [...selectObservationUpdatesToSpeak(updatedObs), ...selectArrivalsToSpeak(newlyArrivedObs)]
           }
+        } else if (tsunamiIsAreaGradeChange) {
+          // 区域単位で等級が動いた報。**動いた区域だけを読む**（残っている区域はカードが示す）。
+          // 全区域を挙げる発表文（`tsunamiToSegments`）へ流すと、2 区域が解除されただけの報で
+          // 発表中の全区域を読み直すことになる。
+          ttsSegments = tsunamiAreaGradeChangeToSegments(tsunamiAreaChanges)
+          // 等級が動いた報と同じく、観測中（波高未確定）で新規に到達が確認された観測点も併せて読む
+          const newlyArrivedObsOnAreaChange = observationsInCardOrder(event)
+            .filter(o => !o.height && !spokenObsNamesRef.current.has(o.name))
+          ttsSegments = [...ttsSegments, ...tsunamiArrivalToSegments(newlyArrivedObsOnAreaChange)]
+          // 等級の発表と同じ扱いで、既読にするのは到達確認だけ（実測値は読んでいない）
+          spokenObs = selectArrivalsToSpeak(newlyArrivedObsOnAreaChange)
         } else {
           const isDowngrade = prevGrade !== null && GRADE_RANK[currentGrade as GradeKey] < GRADE_RANK[prevGrade as GradeKey]
           ttsSegments = isDowngrade ? tsunamiDowngradeToSegments(event) : tsunamiToSegments(event)
@@ -2217,6 +2281,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           : tsunamiIsObservationUpdate ? 'tsunamiObs' : 'tsunami'
         // クロージャで掴むため const に写す（`let` のままでは絞り込みが効かない）
         const obsToMark = spokenObs
+        // 区域の等級変化も**発話を始める瞬間**に既読へ移す（観測点と同じ理由。待たされた末に
+        // 見送られた変化は既読にならず、次の報でもう一度読み上げ対象に入る）。
+        //
+        // **専用の文を読んだ報だけに限らない。** 全体の等級が同時に動いた報では発表文・降格文が
+        // 全区域を等級ごとに読み上げるので、動いた区域の「いまの等級」はそこで声になっている。
+        // 限ってしまうと、次に全体が落ち着いた報で「〇〇から切り替えられました」を遅れて言い直す。
+        const areasToMark = tsunamiAreaChanges.length > 0 ? tsunamiAreaChanges : null
         const spokenState = quakeSpokenState
         speakNonEEWDelayed(
           ttsText,
@@ -2229,8 +2300,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           spokenState ? refs => applySpokenRefs(spokenState, refs) : undefined,
           // 読み上げた観測点を既読へ移すのは**声に出す瞬間**（宣言は `spokenObsHeightRef`）。
           // 待たされた末に見送られた分は既読にならず、次の電文でもう一度読み上げ対象に入る。
-          obsToMark
-            ? () => rememberObservations(obsToMark, spokenObsNamesRef.current, spokenObsHeightRef.current)
+          obsToMark || areasToMark
+            ? () => {
+              if (obsToMark) rememberObservations(obsToMark, spokenObsNamesRef.current, spokenObsHeightRef.current)
+              if (areasToMark) rememberAreaGrades(areasToMark, spokenAreaGradeRef.current)
+            }
             : undefined,
         )
       } else if (event.kind === 'tsunami' && tsunamiIsNewOrUpgraded) {
@@ -2291,6 +2365,17 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               : pickTopFromCardOrder(newlyArrivedObs552, event.areas, event.observations ?? []),
             ts: Date.now(),
           })
+        } else if (tsunamiAreaChanges.length > 0) {
+          // 観測点は動いていないが区域の等級が動いた報（一部解除など）。**動いた区域へ寄せる。**
+          // ここを下の「変化が無い」枝へ流すと、解除された区域がカードのどこにあっても
+          // 画面は一番上へ戻り、何が変わったのか見えない。
+          const changedAreas = tsunamiAreaChanges.flatMap(c => c.areas)
+          setFocusedDistrict({
+            districts: changedAreas.map(a => ({ code: a.code, name: a.name })),
+            // 並びは読み上げと同じ（重い遷移が先）。その先頭を上端に置く
+            top: { code: changedAreas[0].code, name: changedAreas[0].name },
+            ts: Date.now(),
+          })
         } else {
           // スクロール先となる変化が無い電文（再送・実質変化なし）は一番上へ戻す
           setFocusedDistrict({ districts: [], top: null, ts: Date.now() })
@@ -2321,8 +2406,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 津波情報を受信するたびに obsUpdateStatus を今回分だけの Map に置き換える（前回分は破棄）。
       // 60秒以内に次の情報が来なければ obsStatusClearTimerRef が空 Map にする。
       setObsUpdateStatus(new Map(newStatusEntries))
+      // 等級が動いた区域も「今回分だけ」に置き換える（持続させない理由は宣言箇所）
+      setAreaGradeChangedKeys(new Set(tsunamiAreaChanges.flatMap(c => c.areas.map(tsunamiAreaKey))))
       window.clearTimeout(obsStatusClearTimerRef.current)
-      obsStatusClearTimerRef.current = window.setTimeout(() => setObsUpdateStatus(new Map()), 60000)
+      obsStatusClearTimerRef.current = window.setTimeout(() => {
+        setObsUpdateStatus(new Map())
+        setAreaGradeChangedKeys(new Set())
+      }, 60000)
 
       // 画面用の記憶だけをここで進める。読み上げ用（`spokenObsHeightRef`）は発話を始める瞬間まで
       // 待つ（受信時に進めると、鳴らなかった観測値まで既読になり二度と読まれない）。
@@ -2383,6 +2473,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 読み上げ用の既読も落とす（画面用と対称。残すとリプレイ後の観測情報が「更新なし」になる）
     spokenObsHeightRef.current.clear()
     spokenObsNamesRef.current.clear()
+    spokenAreaGradeRef.current.clear()
     seenLpgmEventIdsRef.current.clear()
     // 60秒 obs バッジ自動消去タイマーもリプレイ切替時に持ち越さない（アンマウント経路と対称）
     window.clearTimeout(obsStatusClearTimerRef.current)
@@ -2440,6 +2531,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             seenObsNamesRef.current.clear()
             spokenObsHeightRef.current.clear()
             spokenObsNamesRef.current.clear()
+            spokenAreaGradeRef.current.clear()
           } else {
             const grade = tsunamiMaxGrade(tsunami)
             if (grade !== 'Unknown') lastTsunamiGradeRef.current = grade
@@ -2449,6 +2541,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // 再生を始めたのに津波の到達をいまさら読み上げることになる。
             rememberObservations(tsunami.observations ?? [], seenObsNamesRef.current, lastMaxObsHeightRef.current)
             rememberObservations(tsunami.observations ?? [], spokenObsNamesRef.current, spokenObsHeightRef.current)
+            // **区域の等級変化も同じく埋めること。** `LastKind` は変化した後の続報にも載り続けるため、
+            // 埋め忘れると、注入後の最初の続報が T より前に起きた解除を「いま起きた」ものとして
+            // 読み上げ・タブ移動する（観測点で防いでいるのと同型の穴）。
+            rememberAreaGrades(tsunamiAreaGradeChanges(tsunami), spokenAreaGradeRef.current)
           }
         }
       } else if (payload.kind === 'lpgm' && !payload.data.cancelled) {
@@ -2463,5 +2559,5 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     setFocusedDistrict({ districts: [], top: null, ts: Date.now() })
   }, [])
 
-  return { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, focusedDistrict, resetTsunamiScrollToTop }
+  return { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, areaGradeChangedKeys, focusedDistrict, resetTsunamiScrollToTop }
 }
