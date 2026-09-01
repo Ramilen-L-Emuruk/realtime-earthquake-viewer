@@ -7,6 +7,7 @@ import { mapChunksToRefs, planFollowScroll, type FollowRect, type SpeechFollowSe
 import { getSpeechClock } from '../../utils/voicevox'
 import { INTERACTION_HOLD_SEC } from '../Map/gl/camera'
 import { log } from '../../utils/logger'
+import { useTsunamiObsCoords } from '../../hooks/useTsunamiObsCoords'
 
 export interface FocusedDistrict {
   // 今回の受信で変更（新規/更新）があった区域すべて。対象区域が特定できない受信では空配列
@@ -148,7 +149,7 @@ function TsunamiHeightHeader({ label, style }: { label: string; style: GradeStyl
   )
 }
 
-function TsunamiAreaRow({ area, observations, style, onObservationClick, isChanged, isTop, registerRow, registerSpeechRow, obsUpdateStatus, areaGradeChangedKeys }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle; onObservationClick?: (name: string) => void; isChanged: boolean; isTop: boolean; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, 'new' | 'updated'>; areaGradeChangedKeys?: ReadonlySet<string> }) {
+function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocusObs, isChanged, isTop, registerRow, registerSpeechRow, obsUpdateStatus, areaGradeChangedKeys }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle; onObservationClick?: (name: string) => void; canFocusObs: (name: string) => boolean; isChanged: boolean; isTop: boolean; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, 'new' | 'updated'>; areaGradeChangedKeys?: ReadonlySet<string> }) {
   const setRowRef = useCallback((el: HTMLDivElement | null) => {
     registerRow?.(area, isChanged, isTop, el)
     // 追従スクロールの引き当て用。focusedDistrict とは違い、変更の有無に関わらず全区域を登録する
@@ -209,7 +210,7 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, isChang
         <div className="mx-4 mb-3 flex flex-col gap-1.5">
           {/* 実測値あり観測点 */}
           {observations.map((obs, i) => {
-            const clickable = !!obs.height && !!onObservationClick
+            const clickable = !!onObservationClick && canFocusObs(obs.name)
             const updateStatus = obsUpdateStatus?.get(obs.name)
             const borderLeftStyle = updateStatus === 'new'
               ? '3px solid #4ade80'
@@ -274,8 +275,8 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, isChang
   )
 }
 
-function TsunamiObservationRow({ obs, onObservationClick, registerSpeechRow }: { obs: TsunamiObservation; onObservationClick?: (name: string) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void }) {
-  const clickable = !!obs.height && !!onObservationClick
+function TsunamiObservationRow({ obs, onObservationClick, canFocusObs, registerSpeechRow }: { obs: TsunamiObservation; onObservationClick?: (name: string) => void; canFocusObs: (name: string) => boolean; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void }) {
+  const clickable = !!onObservationClick && canFocusObs(obs.name)
   return (
     <div
       /* 追従スクロールの引き当て用。この行は区域に紐づかない観測点（沖合）で、読み上げは
@@ -307,7 +308,7 @@ function TsunamiObservationRow({ obs, onObservationClick, registerSpeechRow }: {
   )
 }
 
-function TsunamiGradeCard({ grade, areas, observations, onObservationClick, focusedDistrict, registerRow, registerSpeechRow, registerSpeechAnchor, obsUpdateStatus, areaGradeChangedKeys }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[]; onObservationClick?: (name: string) => void; focusedDistrict?: FocusedDistrict | null; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; registerSpeechAnchor?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, 'new' | 'updated'>; areaGradeChangedKeys?: ReadonlySet<string> }) {
+function TsunamiGradeCard({ grade, areas, observations, onObservationClick, canFocusObs, focusedDistrict, registerRow, registerSpeechRow, registerSpeechAnchor, obsUpdateStatus, areaGradeChangedKeys }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[]; onObservationClick?: (name: string) => void; canFocusObs: (name: string) => boolean; focusedDistrict?: FocusedDistrict | null; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; registerSpeechAnchor?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, 'new' | 'updated'>; areaGradeChangedKeys?: ReadonlySet<string> }) {
   if (areas.length === 0) return null
   const style = getGradeStyle(grade)
   const groups = groupAreasForCardDisplay(areas, observations)
@@ -333,6 +334,7 @@ function TsunamiGradeCard({ grade, areas, observations, onObservationClick, focu
           {group.heightLabel && <TsunamiHeightHeader label={group.heightLabel} style={style} />}
           {group.areas.map((area, i) => (
             <TsunamiAreaRow
+              canFocusObs={canFocusObs}
               key={i}
               area={area}
               observations={observations.filter(o => matchesArea(o, area))}
@@ -361,6 +363,13 @@ function getTopGrade(tsunamis: JMATsunami[]): TsunamiGrade {
 
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
 export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservationClick, focusedDistrict, obsUpdateStatus, areaGradeChangedKeys, speechSession, isVisible, speechFollowEnabled, autoShowTick }: Props) {
+  // 行をクリックできるかは「地図がその観測点へ寄れるか」で決める。
+  //
+  // 座標表（`tsunami-obs-coords.json`）に無い観測点は地図に印が出ず、`FocusObsGL` も寄せ先を
+  // 見つけられずに黙って何もしない。押せる見た目だけ与えると、利用者からは「押したのに動かない」
+  // 理由が分からない。判定の材料は地図側（`useTsunamiLayerData`）が印を出すかどうかと同じ座標表。
+  const obsCoords = useTsunamiObsCoords()
+  const canFocusObs = useCallback((name: string) => !!obsCoords?.[name], [obsCoords])
   // cancelledAt がある = 10秒表示中なので active に含める
   const active = tsunamis.filter(t => !t.cancelled || t.cancelledAt)
 
@@ -833,6 +842,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
             )}
             {GRADE_ORDER.map(grade => (
               <TsunamiGradeCard
+                canFocusObs={canFocusObs}
                 key={grade}
                 grade={grade}
                 areas={t.areas.filter(a => a.grade === grade)}
@@ -854,7 +864,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                   沖合観測
                 </div>
                 {unmatched.map((obs, i) => (
-                  <TsunamiObservationRow key={i} obs={obs} onObservationClick={onObservationClick} registerSpeechRow={registerSpeechRow} />
+                  <TsunamiObservationRow key={i} obs={obs} onObservationClick={onObservationClick} canFocusObs={canFocusObs} registerSpeechRow={registerSpeechRow} />
                 ))}
               </div>
             )}
