@@ -1545,6 +1545,35 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               log.warn('[eew] 想定外: 震度未確定のまま phase2 が呼ばれた', key)
               return null
             }
+            // **発話の順番が来た時点で、確定値より高い震度が既に届いて安定待ち中なら降りる。**
+            // 確定値は安定待ちを通った値なので、待っている間に上がったぶんはまだ入っていない。
+            // そのまま読むと、画面が上位の予想を出しているのに声だけ一段低い値を言う
+            // （2024/01/01 能登の前震: 第 4 報 +2.1 秒で 5 強・第 7 報 +4.1 秒で 6 弱。震源を
+            // 読み終える頃には 6 弱が届いているのに「予想最大震度5強。」を読み、読み終えてから
+            // 6 弱を言い直していた）。
+            //
+            // **降りても取りこぼしにはならない**が、それは「サイクルは必ず確定へ至る」という
+            // 単一の理由ではなく、次の 3 通りで担保されている。**`clearScaleStability` を新しく
+            // 呼ぶ場所を足すときは、そこがどれに当たるかを確かめること。**
+            //   1. サイクル自身のタイマーが `confirmScale` を呼ぶ（通常）
+            //   2. サイクルを捨てる側が、同じイベント処理の中で確定経路を張り直す
+            //      （`firePhase1` の後始末と、予想震度が有→無に戻ったときの後始末。どちらも
+            //      直後に `confirmScale` / `updateScaleStability` / 理由不明タイマーのいずれかへ
+            //      必ず落ちる。**ただし理由不明タイマーが既に動いている場合は張り直さず、
+            //      そのタイマーが確定を担う**——「冗長」と見て消さないこと）
+            //   3. 読まないことが正しい場合（誤報取消・自動解除・リプレイのリセット・アンマウント）
+            // **沈黙の間も `speechBlocker` が `eewPhase2` を返すので、非 EEW が滑り込むことはない。**
+            //
+            // **待つのは震度だけ。** 階級側の安定待ちを理由に震度を止めてはならない（「震度は
+            // 階級の確定を待たない」非対称ルール。§6「震度と階級の確定タイミングの同期」）。
+            //
+            // 引き上げ方向だけを見る。引き下げの安定待ちで止めると、下がった値は読まない方針
+            // （黙る）と噛み合って、確定済みの値がいつまでも声にならない。
+            const pendingScaleCycle = eewScaleStabilityRef.current.get(key)
+            if (pendingScaleCycle && isForecastScaleHigher(pendingScaleCycle.scaleInfo, confirmedScale)) {
+              log.debug('[eew] より高い予想震度の確定を待つため phase2 を降りる', key)
+              return null
+            }
             const confirmedLpgm = eewConfirmedLpgmRef.current.get(key) ?? 0
             // 区分は引き下げない。一度「警報」と伝えた EEW は、以後 severity が落ちても
             // 「伝え済み」として扱う（前置きを言い直さない。activeEEWLevelsRef の Math.max と同じ方針）。
@@ -1626,7 +1655,15 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           }, () => followSpeechTab('realtime', TAB_PRIORITY.eewUpdate))
         }
 
-        /** 震度の安定待ちサイクル・タイマーを終了する（後始末専用。確定処理は行わない）。 */
+        /**
+         * 震度の安定待ちサイクル・タイマーを終了する（後始末専用。確定処理は行わない）。
+         *
+         * **単体で呼ばないこと。** 捨てたサイクルは `confirmScale` に至らないため、同じイベント
+         * 処理の中で確定経路（`confirmScale` / `updateScaleStability` / 理由不明タイマー）を
+         * 張り直すか、「読まないことが正しい」場面であることが要る。第 2 フェーズは確定値より
+         * 高い値が安定待ち中なら発話を降りるので（`enqueuePhase2` のガード）、張り直しを欠くと
+         * その EEW の予想震度が無言のまま終わる。
+         */
         const clearScaleStability = () => {
           const cycle = eewScaleStabilityRef.current.get(key)
           if (cycle) { clearTimeout(cycle.timer); eewScaleStabilityRef.current.delete(key) }
