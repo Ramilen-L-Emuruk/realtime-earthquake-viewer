@@ -14,6 +14,9 @@ import {
   overSuffixedHeight,
   latestValidDateTime,
   withInheritedValidDateTime,
+  tsunamiAreaGradeChanges,
+  selectUnspokenAreaGradeChanges,
+  rememberAreaGrades,
 } from './tsunami'
 import type { JMATsunami, TsunamiArea, TsunamiObservation } from '../types/earthquake'
 
@@ -483,5 +486,105 @@ describe('withInheritedValidDateTime', () => {
     const other = makeTsunami({ id: 'x', time: '2024-01-02T10:00:00+09:00', validDateTime: '2024-01-02T17:00:00+09:00' })
     const latest = makeTsunami({ id: 'b', time: '2024-01-02T10:03:00+09:00' })
     expect(withInheritedValidDateTime(latest, [latest, other]).validDateTime).toBeUndefined()
+  })
+})
+
+// 2024 年能登半島地震 01/02 02:30 の「津波注意報を一部解除しました」に相当する形。
+// 気象庁は解除された区域を電文から消さず、津波予報への降格（Kind=72 / LastKind=62）として載せる。
+function makePartialLift(): JMATsunami {
+  return makeTsunami({
+    areas: [
+      makeArea({ code: '360', name: '石川県能登', grade: 'Watch', lastGrade: 'Watch' }),
+      makeArea({ code: '711', name: '福岡県日本海沿岸', grade: 'Forecast', lastGrade: 'Watch' }),
+      makeArea({ code: '720', name: '佐賀県北部', grade: 'Forecast', lastGrade: 'Watch' }),
+    ],
+  })
+}
+
+describe('tsunamiAreaGradeChanges（区域単位の等級変化）', () => {
+  it('正: 注意報から予報へ落ちた区域を 1 組にまとめる（最上位が動かない報でも検出できる）', () => {
+    const changes = tsunamiAreaGradeChanges(makePartialLift())
+    expect(changes).toHaveLength(1)
+    expect(changes[0].from).toBe('Watch')
+    expect(changes[0].to).toBe('Forecast')
+    expect(changes[0].raised).toBe(false)
+    expect(changes[0].areas.map(a => a.name)).toEqual(['福岡県日本海沿岸', '佐賀県北部'])
+    // この報の最上位等級は動いていない（他の区域に注意報が残る）ことを併せて固定する
+    expect(tsunamiMaxGrade(makePartialLift())).toBe('Watch')
+  })
+
+  it('対照: 等級が動いていない区域は組に入らない', () => {
+    const changes = tsunamiAreaGradeChanges(makePartialLift())
+    expect(changes.flatMap(c => c.areas).map(a => a.name)).not.toContain('石川県能登')
+  })
+
+  it('対照: lastGrade を持たない区域（P2PQuake 経路）は数えない', () => {
+    const tsunami = makeTsunami({
+      areas: [makeArea({ code: '711', name: '福岡県日本海沿岸', grade: 'Forecast' })],
+    })
+    expect(tsunamiAreaGradeChanges(tsunami)).toEqual([])
+  })
+
+  it('安全弁: 遷移先が Unknown の組は返さない（等級の名前が付かず文にできない）', () => {
+    const tsunami = makeTsunami({
+      areas: [makeArea({ code: '711', name: '福岡県日本海沿岸', grade: 'Unknown', lastGrade: 'Watch' })],
+    })
+    expect(tsunamiAreaGradeChanges(tsunami)).toEqual([])
+  })
+
+  it('引き上げの組を引き下げより先に置く', () => {
+    const tsunami = makeTsunami({
+      areas: [
+        makeArea({ code: '711', name: '福岡県日本海沿岸', grade: 'Forecast', lastGrade: 'Watch' }),
+        makeArea({ code: '500', name: '京都府', grade: 'Warning', lastGrade: 'Watch' }),
+      ],
+    })
+    const changes = tsunamiAreaGradeChanges(tsunami)
+    expect(changes.map(c => [c.from, c.to, c.raised])).toEqual([
+      ['Watch', 'Warning', true],
+      ['Watch', 'Forecast', false],
+    ])
+  })
+
+  it('同じ向き・同じ遷移先なら遷移元の重い順に置く', () => {
+    const tsunami = makeTsunami({
+      areas: [
+        makeArea({ code: '340', name: '新潟県上中下越', grade: 'Watch', lastGrade: 'Warning' }),
+        makeArea({ code: '360', name: '石川県能登', grade: 'Watch', lastGrade: 'MajorWarning' }),
+      ],
+    })
+    expect(tsunamiAreaGradeChanges(tsunami).map(c => c.from)).toEqual(['MajorWarning', 'Warning'])
+  })
+})
+
+describe('selectUnspokenAreaGradeChanges / rememberAreaGrades（等級変化の既読）', () => {
+  it('正: 何も読んでいなければそのまま残る', () => {
+    const changes = tsunamiAreaGradeChanges(makePartialLift())
+    expect(selectUnspokenAreaGradeChanges(changes, new Map())).toEqual(changes)
+  })
+
+  it('対照: 声にした等級と同じ区域は落ちる（続報が同じ LastKind を載せ続けても二度読みしない）', () => {
+    const spoken = new Map<string, TsunamiArea['grade']>()
+    rememberAreaGrades(tsunamiAreaGradeChanges(makePartialLift()), spoken)
+    // 02:31・02:33 の続報は 02:30 と同じ「予報 / 前回は注意報」を載せてくる
+    expect(selectUnspokenAreaGradeChanges(tsunamiAreaGradeChanges(makePartialLift()), spoken)).toEqual([])
+  })
+
+  it('安全弁: 等級がさらに動けばもう一度読む（既読は「最後に声にした等級」で持つ）', () => {
+    const spoken = new Map<string, TsunamiArea['grade']>()
+    rememberAreaGrades(tsunamiAreaGradeChanges(makePartialLift()), spoken)
+    const reRaised = makeTsunami({
+      areas: [makeArea({ code: '711', name: '福岡県日本海沿岸', grade: 'Watch', lastGrade: 'Forecast' })],
+    })
+    const changes = selectUnspokenAreaGradeChanges(tsunamiAreaGradeChanges(reRaised), spoken)
+    expect(changes).toHaveLength(1)
+    expect(changes[0].to).toBe('Watch')
+  })
+
+  it('一部の区域だけ既読なら、残りの区域で組を残す', () => {
+    const spoken = new Map<string, TsunamiArea['grade']>([['711', 'Forecast']])
+    const changes = selectUnspokenAreaGradeChanges(tsunamiAreaGradeChanges(makePartialLift()), spoken)
+    expect(changes).toHaveLength(1)
+    expect(changes[0].areas.map(a => a.name)).toEqual(['佐賀県北部'])
   })
 })
