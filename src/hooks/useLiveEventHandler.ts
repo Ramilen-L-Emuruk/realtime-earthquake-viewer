@@ -16,7 +16,7 @@ import { showBrowserNotification } from '../utils/notifications'
 import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations } from '../utils/tsunami'
 import { playAlertSound, ttsDelayFor, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
-import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
+import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
 import { joinSegments, plain, hasFollowTarget, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
@@ -2245,7 +2245,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             : []
           const arrivalSegments = tsunamiArrivalToSegments(newlyArrivedObs)
           if (updateSegments.length > 0) {
-            ttsSegments = [...updateSegments, ...arrivalSegments]
+            // 波高の文と到達確認の文は別の話題。接続語なしで並べると切れ目が耳で分からない
+            // （どちらも「地名で〜しました」の形になる。理由は `joinWithAlso`）。
+            ttsSegments = joinWithAlso(updateSegments, arrivalSegments)
           } else if (arrivalSegments.length > 0) {
             ttsSegments = [plain('津波観測情報。'), ...arrivalSegments]
           }
@@ -2269,12 +2271,26 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // （こちらもカードの並びに揃える。理由は観測点更新側と同じ）
           const newlyArrivedObsOnGradeChange = observationsInCardOrder(event)
             .filter(o => !o.height && !spokenObsNamesRef.current.has(o.name))
-          ttsSegments = [...ttsSegments, ...tsunamiArrivalToSegments(newlyArrivedObsOnGradeChange)]
+          // **等級を語れない電文では到達確認を継がない。** 区域はあるのに等級が 1 つも取れない
+          // （全区域が `Unknown`）電文もここへ来るが、引き下げ側は「津波警報等は全て解除されました」を
+          // 返すため、継ぐと解除の直後に新たな到達を伝える矛盾した並びになる。**読まない分は既読にも
+          // しない**ので、続く観測情報の続報で「津波観測情報。」の名乗り付きで読まれる。
+          //
+          // **この式が新規発表・格上げの側を巻き込むことはない。** そちらでは `Unknown` がここまで
+          // 来ないため ―― 音の種別が決まらず上の `if (!type) return` で抜けるし、
+          // `lastTsunamiGradeRef` は `Unknown` を覚えないので比較の基準にも混ざらない。
+          // 種別の判定に「`Unknown` でも鳴らす」分岐を足すなら、ここも併せて見直すこと。
+          const canTellGrade = currentGrade !== 'Unknown'
+          // 等級の発表と到達確認は別の話題（観測情報の続報と同じ理由で「また、」を挟む）。
+          ttsSegments = joinWithAlso(
+            ttsSegments,
+            canTellGrade ? tsunamiArrivalToSegments(newlyArrivedObsOnGradeChange) : [],
+          )
           // **等級の発表では観測点の実測値を読まない。** 読むのは区域の予想波高
           // （`tsunamiToSegments` → `areaHeightSentence`）で、観測点は区域の並べ替えにしか
           // 使わない。ここで観測点を既読にすると、一度も声に出していない実測値が既読になり、
           // 直後の観測情報で読まれなくなる。既読にするのは到達確認だけ。
-          spokenObs = selectArrivalsToSpeak(newlyArrivedObsOnGradeChange)
+          spokenObs = canTellGrade ? selectArrivalsToSpeak(newlyArrivedObsOnGradeChange) : []
         }
         if (ttsSegments) ttsText = joinSegments(ttsSegments)
       }
@@ -2525,6 +2541,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // 埋め忘れると、注入後の最初の観測情報でそれまでの全観測点が読み直され、途中から
             // 再生を始めたのに津波の到達をいまさら読み上げることになる。
             rememberObservations(tsunami.observations ?? [], seenObsNamesRef.current, lastMaxObsHeightRef.current)
+            // ライブ経路が持つ「等級を語れない電文では既読にしない」ガード（`canTellGrade`）は
+            // ここに無い。この復元は DMDSS 版のリプレイ専用で、DMDATA は未知の区分を安全側で
+            // 津波警報へ丸めるため（`dmdataParser` の Kind/Code 判定）、区域が残ったまま等級だけ
+            // 落ちた電文が届かないから。ライブ側のガードを変えるときはこの非対称でよいか確かめる。
             rememberObservations(tsunami.observations ?? [], spokenObsNamesRef.current, spokenObsHeightRef.current)
           }
         }
