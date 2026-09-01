@@ -608,6 +608,16 @@ const SHAKE_FOCUS_YIELD_AFTER_EEW_MS = 10000
 // 経ってから手動でタブへ入ったときに、育った予想区域塗りや検知点を差し置いて震源近傍へ寄ってしまう。
 const NEW_EEW_FOCUS_WINDOW_MS = 10000
 
+/**
+ * 目標矩形の南北の幅（km・ログ用）。
+ *
+ * 緯度 1 度あたりの子午線弧長は R·(π/180)。**111.32 は R=6378km 相当**で、距離計算
+ * （utils/geo.ts の R=6371）と 0.11% ずれていた。
+ */
+function boundsSpanNsKm(bounds: maplibregl.LngLatBounds): number {
+  return Math.round(((bounds.getNorth() - bounds.getSouth()) * Math.PI * EARTH_RADIUS_KM) / 180)
+}
+
 // ── EEW 追従（idle 抑制つき・最も複雑） ──────────────────────────────────────────
 // 新規 EEW: 震源中心→予報円へフィット（第一報は震源近傍の寄りを見せたいため、予想の区域塗りは
 // ここでは含めない）。**発報中の EEW のところへ入室した場合は第一報ではない**ので、成長フォローと
@@ -692,6 +702,37 @@ export function FitToEEWGL({
   // 揺れフォーカスを見送る」だから、直前に別の EEW が発報していたなら譲るのが正しい。持つのは
   // 時刻なので、放置しても猶予が過ぎれば自然に無効になる。
   const newEewYieldUntilRef = useRef<number>(0)
+  // 第一報の抑制中に見た震源の位置（第一報自身を含む）。**震源が訂正で画の外へ出たときの
+  // 寄り直し先に足すためだけに持つ。**
+  //
+  // 現在の震源だけへ寄せると、訂正が暴れている間は報のたびに寄り直すことになる。2024-01-01
+  // 17:48 の能登余震（`20240101174834`）では 1 秒足らずで 3 報が第一報から 159km → 287km →
+  // 201km と飛び交い、+5.7 秒の第 5 報でようやく 289km 先へ確定した。振れ幅ごと画に収めておけば
+  // 寄り直しの回数が減る。
+  //
+  // 恒常メンバーにはしない（`boundsForLiveFollow` へ常時渡さない）——訂正が収まった後まで
+  // 古い震源を含み続けると画が無駄に広いまま固まる。締め直すのは下の収め直しフォローの担当。
+  //
+  // 件数の上限は要らない。積めるのは第一報の抑制（`GROWTH_FOLLOW_SUPPRESS_MS` = 3 秒）のあいだ
+  // だけで、評価は波円の再計算（100ms）ごと。同じ位置は積まないので上限は構造的に 30 点。
+  // マウントごとに落ちてよい: 第一報フォーカスを与えた入室でしか意味を持たず、別モードから
+  // 入室した回は入室フィットが合成範囲へ寄せ直すため（`entryFittedRef` と同じ寿命）。
+  const relocationSpanRef = useRef<LatLng[]>([])
+  // 第一報の抑制の期限。**`suppressGrowthUntilRef` とは別に持つ。** あちらは揺れフォーカスも
+  // 張るので、震源訂正フォロー（下）の条件にすると「寄せた観測点から震源が外れている」だけで
+  // 引き戻してしまい、揺れフォーカスが 3 秒保たない。破ってよいのは第一報が張った抑制だけ。
+  //
+  // **この分離が効くのは `SHAKE_FOCUS_YIELD_AFTER_EEW_MS > GROWTH_FOLLOW_SUPPRESS_MS` だから。**
+  // 揺れフォーカスは新規発報から前者のあいだ見送るので、その抑制を張れるのは常にこちらが失効した
+  // 後になり、両方が同時に有効な状態は生まれない。片方だけ動かすとこの前提が崩れるため、
+  // 大小関係はテストで固定してある（`CameraFollowsGL.test.ts`）。
+  const firstReportSuppressUntilRef = useRef<number>(0)
+  // 収め直しフォローの待ち。意味と閾値は揺れ検知側と同じ（`REFIT_MIN_ZOOM_GAIN` の注記）。
+  const refitSinceRef = useRef<number>(0)
+  const refitBlindRef = useRef(false)
+  // 震源訂正フォローが動けなかった理由。**同じ理由では 1 度しか記録しない**——判定は波円の
+  // 再計算で 100ms ごとに走るため、素通しにすると 3 秒の抑制中に同じ行が 30 本並ぶ。
+  const relocationSkipRef = useRef<string | null>(null)
 
   // 最新 EEW（originTime 降順）を追従対象とする。
   const latest =
@@ -706,6 +747,9 @@ export function FitToEEWGL({
   useEffect(() => {
     if (!map) return
     if (!latest) {
+      // 発報が終わったら訂正の記録は忘れる。残すと、次の EEW で抑制を破ったときに無関係な
+      // 場所まで含む画になる（親が `focusedEewIdRef` を落とすのと同じ理由）。
+      relocationSpanRef.current = []
       if (hadEewRef.current) {
         hadEewRef.current = false
         if (isUserInteracting) {
@@ -764,6 +808,10 @@ export function FitToEEWGL({
       entryFittedRef.current = true
       resetUserInteraction()
       suppressGrowthUntilRef.current = Date.now() + GROWTH_FOLLOW_SUPPRESS_MS
+      firstReportSuppressUntilRef.current = suppressGrowthUntilRef.current
+      // 訂正の振れ幅の記録を、この震源から始め直す（上記 ref の注記）。円へ寄せるか震源 1 点へ
+      // 寄せるかに関わらず、画の中心にあるのはこの震源。
+      relocationSpanRef.current = [[latitude, longitude]]
       // 揺れフォーカスに譲らせる猶予はこれとは別の長さで張る（役割が違う。上記の定数参照）。
       newEewYieldUntilRef.current = Date.now() + SHAKE_FOCUS_YIELD_AFTER_EEW_MS
       // 波円が既にあれば波円へ直接フィット（震源→波円のギクシャク防止）。他に発報中の EEW があっても
@@ -915,35 +963,171 @@ export function FitToEEWGL({
   // 震源座標一点は必ず含める。円だけを見ると、その EEW の震源が画面から取り残される穴になるため。
   // isProgrammaticFlight(map) により、他コンポーネントの自動フィットが進行中の間もこの効果は
   // 再フィットを待つ（同時に複数のカメラアニメーションが競合するのを避ける）。
-  // 新規 EEW 受信直後は GROWTH_FOLLOW_SUPPRESS_MS の間、この効果自体を止める（上の useEffect 参照）。
+  // 新規 EEW 受信直後は GROWTH_FOLLOW_SUPPRESS_MS の間、成長フォローを止める（上の useEffect 参照）。
+  // **止めるのは「成長」だけ。震源そのものが画から出たら抑制を破って寄り直す**（下記）。
+  //
+  // 収まっている間も止まりきらないよう、揺れ検知側と同じ収め直しフォローを併せて持つ。成長
+  // フォローは「はみ出したら引く」しかしないため、これが無いと訂正で広げた画がそのまま固まる。
   useEffect(() => {
     if (!map) return
-    if (eews.length === 0) return
-    if (isUserInteracting || isProgrammaticFlight(map)) return
-    if (Date.now() < suppressGrowthUntilRef.current) return
+    // 判定していない分岐では待ちを積ませない（揺れ検知側と同じ流儀。抑制が明けた瞬間に
+    // 「ゆるい状態が続いた」と誤認して待ち時間ゼロで寄り直すのを防ぐ）。**発報が終わったときも
+    // 落とすこと**——残すと、次の EEW の最初の収め直し判定が前の EEW の待ちを引き継いで即座に
+    // 発火する（いまは第一報の抑制が同じコミットで落としてくれるが、その結合に頼らない）。
+    const resetRefitWait = () => {
+      refitSinceRef.current = 0
+      refitBlindRef.current = false
+    }
+    const noteRelocationSkip = (reason: string) => {
+      if (relocationSkipRef.current === reason) return
+      relocationSkipRef.current = reason
+      log.debug(`[mapGL] EEW震源訂正フォロー スキップ (${reason})`)
+    }
+    if (eews.length === 0) {
+      resetRefitWait()
+      relocationSkipRef.current = null
+      return
+    }
+    if (isUserInteracting || isProgrammaticFlight(map)) {
+      resetRefitWait()
+      return
+    }
+    const hypocenters = eewHypocenters(eews)
+    if (Date.now() < suppressGrowthUntilRef.current) {
+      resetRefitWait()
+      // 第一報の抑制が防いでいるのは「検知点が育った瞬間に画を奪われる」ちらつきであって、
+      // **震源の訂正はちらつきではない**——いま見せている画が気象庁に取り下げられたということ。
+      // 収まっているうちは動かさない（訂正が小さければ第一報の画のままでよい）。
+      //
+      // 破ってよいのは第一報が張った抑制だけ（上記 `firstReportSuppressUntilRef` の注記）。
+      if (Date.now() >= firstReportSuppressUntilRef.current) return
+      // **見るのは第一報のフォーカスを与えた EEW だけ。** 全 EEW の震源を見ると、先に発報していた
+      // 別の EEW が画の外にあるだけで抑制を破ってしまう——それは訂正ではなく、抑制がまさに
+      // 防いでいる「第一報の画が合成範囲へ即座に引き戻される」状態そのもの。
+      const focusedKey = focusedEewIdRef.current
+      const tracked = focusedKey === null ? undefined : eews.find((e) => eewEventKey(e) === focusedKey)
+      if (!tracked) {
+        // フォーカスを与えた EEW が取消・失効で消えた直後のコミットで通る（親が
+        // `focusedEewIdRef` を落とすのは子の effect より後）。他の EEW が発報中なら、その間
+        // 訂正フォローだけが黙って止まる——理由を残さないと事後に切り分けられない。
+        noteRelocationSkip('フォーカス対象の EEW が見当たらない')
+        return
+      }
+      const trackedHypocenter = eewHypocenters([tracked])
+      // 訂正の振れ幅は、寄り直すかどうかに関わらず記録し続ける。画に収まっている訂正も振れ幅の
+      // 一部で、あとで画から出る報が来たときに「どこまで飛んだか」を決める材料になる。
+      // **同じ位置は積まない。** この effect は波円の再計算で 100ms ごとに走るため、素通しにすると
+      // 動きの無い震源が 30 点並び、ログの「訂正N点」が振れの回数を表さなくなる（矩形は変わらない）。
+      for (const p of trackedHypocenter) {
+        if (!relocationSpanRef.current.some(([lat, lng]) => lat === p[0] && lng === p[1])) {
+          relocationSpanRef.current.push(p)
+        }
+      }
+      // 寄り直し先には記録した振れ幅を足す（`relocationSpanRef` の注記）。現在の震源だけへ
+      // 寄せると、訂正が続いている間は報のたびに寄り直すことになる。
+      //
+      // **材料も第一報と同じものに揃える**（自身の波円と自身の震源だけ。他の EEW の波円・検知点・
+      // 予想の区域塗りは足さない）。足すと、上と同じ理由で第一報の画が合成範囲へ化ける。
+      const ownCircles = psWave.filter((c) => c.eventId === focusedKey)
+      const relocated = boundsForLiveFollow(ownCircles, relocationSpanRef.current, [], [])
+      if (!relocated) {
+        // **到達しないはず。** ここへ来る条件（第一報の抑制が有効）は、第一報フォーカスが
+        // `relocationSpanRef` を 1 点で作り直した後にしか成立せず、空の記録から矩形を作ろうと
+        // することはない。不変条件が崩れた印なので、常に残る側で記録する。
+        log.warn('[mapGL] EEW震源訂正フォロー 寄り先を作れない（訂正の記録が空）')
+        return
+      }
+      // **物差しは「寄り直したら中心がどれだけ動くか」で、「画からはみ出したか」ではない。**
+      // はみ出しで測ると、訂正後の震源が縁の内側にぎりぎり残っている間は拾えない。2024-01-01
+      // 17:48 の能登余震を再生して実測したところ、第一報は南北 451km の画へ寄り、289km 離れた
+      // 訂正後の震源はその縁の内側に収まっていた——はみ出し判定では 1 度も発火しない。
+      //
+      // ずれの閾値は下の収め直しフォローと同じ `REFIT_MIN_SHIFT_RATIO`（ペイン短辺の 2 割）。
+      // 同じ「画がどれだけ変わるか」を測るので、別の値を持つ理由が無い（上の実測では 33%）。
+      //
+      // **`zoomGain` は見ない。** 抑制中に「もっと寄れる」だけで動くと、第一報がわざと狭く見せて
+      // いる画を自分で壊すことになる。ここで拾いたいのは位置がずれたことだけ。
+      const delta = refitDeltaForBounds(map, relocated, { padding: 60 })
+      if (delta === null) {
+        // 寄り直し先を算出できない（地図のコンテナ寸法が取れない・座標が壊れている）。
+        // **「ずれが小さい」と同じ条件式にまとめないこと**——下の収め直しフォローは同じ状態を
+        // 記録するので、こちらだけ無言だと「抑制中は動かなかったが抑制明けには動いた」経路の
+        // 切り分けができない。
+        noteRelocationSkip('寄り直し先を算出できない')
+        return
+      }
+      // ずれが小さいのは常態なので記録しない（この effect は 100ms ごとに走る）。
+      if (delta.centerShiftRatio < REFIT_MIN_SHIFT_RATIO) return
+      relocationSkipRef.current = null
+      log.debug(
+        `[mapGL] EEW震源訂正フォロー (第一報の抑制を破る・訂正${relocationSpanRef.current.length}点` +
+          `・中心${(delta.centerShiftRatio * 100).toFixed(0)}% 南北${boundsSpanNsKm(relocated)}km)`,
+      )
+      flyToBoundsSnapped(map, relocated, { padding: 60, durationSec: 0.8 })
+      return
+    }
+    // 抑制の外に出たら、抑制中のスキップの記録は用済み（次の第一報でまた記録し直す）。
+    relocationSkipRef.current = null
     const bounds = boundsForLiveFollow(
       psWave,
-      eewHypocenters(eews),
+      hypocenters,
       detectedPoints.map(dp2ll),
       forecastAreaPositions,
     )
-    if (bounds && !mapContainsBounds(map, bounds)) {
+    if (!bounds) {
+      resetRefitWait()
+      return
+    }
+    if (!mapContainsBounds(map, bounds)) {
+      resetRefitWait()
       // 区域数は 2 で割って求める（forecastAreaPositions は区域あたり bbox の 2 点。useEewLayerData 参照）。
       // 目標の南北幅も添える。円の半径は引き上限（`EEW_FOLLOW_MAX_RADIUS_KM`）で頭打ちになるが、
       // 頭打ちになった事実そのものはどこにも残らない。実地震のあとに「これ以上広がらなかったのは
       // 仕様（上限）か、目標の計算が壊れたのか」を切り分ける手掛かりとして幅を記録する
       // （上限の 2 倍で止まっていれば仕様どおり）。
-      // 南北の幅。緯度 1 度あたりの子午線弧長は R·(π/180)。**111.32 は R=6378km 相当**で、
-      // 距離計算（utils/geo.ts の R=6371）と 0.11% ずれていた。
-      const spanNsKm = Math.round(
-        ((bounds.getNorth() - bounds.getSouth()) * Math.PI * EARTH_RADIUS_KM) / 180,
-      )
       log.debug(
         `[mapGL] EEW成長フォロー 波円${psWave.length}個+震源${eews.length}件+検知${detectedPoints.length}点` +
-          `+予想区域${forecastAreaPositions.length / 2}件 南北${spanNsKm}km`,
+          `+予想区域${forecastAreaPositions.length / 2}件 南北${boundsSpanNsKm(bounds)}km`,
       )
       flyToBoundsSnapped(map, bounds, { padding: 60, durationSec: 0.8 })
+      return
     }
+    // 収め直しフォロー。画に収まっていても、震源の訂正で目標が別の場所へ移ったり、訂正の振れ幅を
+    // 包むために広げた画（上の震源訂正フォロー）が用済みになったりすると、成長フォローだけでは
+    // 画がずれたまま固まる（収まっている限り何もしないため）。閾値・待ち時間は揺れ検知側と
+    // 同じものを使う——`REFIT_HOLD_MS` の 8 秒は「一瞬変わっただけで寄せない」ための待ちで、
+    // 震源訂正が暴れる時間（2024-01-01 17:48 の能登余震で 6 秒）を待ち切る長さでもある。
+    // **padding は下の fly と揃えること。** 食い違うと「得られると計算した段数」と実際の着地が
+    // ずれ、着地後も発火し続ける（`refitDeltaForBounds` の注記）。
+    const delta = refitDeltaForBounds(map, bounds, { padding: 60 })
+    if (delta === null) {
+      // 寄り直し先を算出できない（地図のコンテナ寸法が取れない・座標が壊れている）。成長フォローは
+      // すでに「収まっている」と判断して通り過ぎているため、この状態が続くとどちらのフォローも
+      // 動かない。黙って止まると原因を追えないので、入った瞬間だけ記録する（毎周回では出さない。
+      // この effect は波円の再計算で 100ms ごとに走るため、素通しにするとログが埋まる）。
+      refitSinceRef.current = 0
+      if (!refitBlindRef.current) {
+        refitBlindRef.current = true
+        log.debug('[mapGL] EEW収め直しフォロー 判定不可 (寄り直し先を算出できない)')
+      }
+      return
+    }
+    refitBlindRef.current = false
+    if (delta.zoomGain < REFIT_MIN_ZOOM_GAIN && delta.centerShiftRatio < REFIT_MIN_SHIFT_RATIO) {
+      refitSinceRef.current = 0
+      return
+    }
+    const reason = `${delta.zoomGain.toFixed(1)}段・中心${(delta.centerShiftRatio * 100).toFixed(0)}%`
+    const now = Date.now()
+    if (refitSinceRef.current === 0) {
+      refitSinceRef.current = now
+      log.debug(`[mapGL] EEW収め直しフォロー 待機開始 (${reason})`)
+      return
+    }
+    if (now - refitSinceRef.current < REFIT_HOLD_MS) return
+    refitSinceRef.current = 0
+    log.debug(`[mapGL] EEW収め直しフォロー (${reason} 南北${boundsSpanNsKm(bounds)}km)`)
+    flyToBoundsSnapped(map, bounds, { padding: 60, durationSec: 0.8 })
   }, [eews, psWave, detectedPoints, forecastAreaPositions, map, isUserInteracting])
 
   return null
