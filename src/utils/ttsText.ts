@@ -1395,6 +1395,26 @@ export function tsunamiObservationUpdateToText(
   return joinSegments(tsunamiObservationUpdateToSegments(updatedObs, headline, maxPoints, spokenHeights))
 }
 
+/**
+ * 話題の変わる断片列を「また、」で継ぐ。
+ *
+ * 別々の関数が組んだ文をそのまま並べると、境目に手がかりの無い文が 2 つ続く。津波の観測情報で
+ * 「新たに隠岐、隠岐西郷で0.1メートルを観測しました。」の直後に「兵庫県北部、豊岡市津居山で
+ * 到達を確認しました。」が来る形がそれで、**どちらも「地名で〜しました」の同じ形**なので、
+ * 後ろの文が前の文の続き（同じ観測点の話）に聞こえる。区切り方は等級ごと
+ * （{@link lowerGradeSentence}）・新規と更新の群（{@link tsunamiObservationUpdateToSegments}）で
+ * 既に使っているものに揃える。
+ *
+ * **どちらかが空なら接続語を付けない。** 前段が無いのに「また、」で始まる文にしないため。
+ */
+export function joinWithAlso(
+  lead: readonly SpeechSegment[],
+  follow: readonly SpeechSegment[],
+): SpeechSegment[] {
+  if (lead.length === 0 || follow.length === 0) return [...lead, ...follow]
+  return [...lead, plain('また、'), ...follow]
+}
+
 /** 到達確認で読み上げる件数の上限（多いときは渡された並びの先頭から採る）。 */
 export const ARRIVAL_SPEAK_MAX_POINTS = 5
 

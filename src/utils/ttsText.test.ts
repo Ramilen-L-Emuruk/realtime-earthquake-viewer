@@ -2,8 +2,8 @@
 // 「〇時〇分」はローカルタイムゾーン依存のため、時刻の数値そのものではなく
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect } from 'vitest'
-import { earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiObservationUpdateToText, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
-import { joinSegments, type SpeechSegment } from './ttsFollow'
+import { earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiObservationUpdateToText, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
+import { joinSegments, plain, type SpeechSegment } from './ttsFollow'
 import { getStationCoordsCache } from './stationCoords'
 import { eewMaxScaleInfo, eewMaxLpgmClass } from './eew'
 import type { JMAQuake, JMALpgm, EarthquakePoint, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass, JMATsunami, TsunamiArea, TsunamiObservation } from '../types/earthquake'
@@ -939,6 +939,27 @@ describe('津波観測情報の読み上げ: 新規と更新の言い分け', ()
     expect(text).toContain('また、岩手県、釜石で2.8メートルに更新されました。')
     expect(text).not.toContain('宮古')
     expect(text).toContain('ほか1地点でも観測しています。')
+  })
+})
+
+// 別々の関数が組んだ文を連結する側のヘルパー。呼び出し側の結線は
+// `useLiveEventHandler.tsunamiObsWording.test.ts` が見ている。
+describe('joinWithAlso: 話題の変わり目', () => {
+  // 正: 両方あれば間に「また、」が入る
+  it('前段と後段が揃っていれば「また、」で継ぐ', () => {
+    expect(joinSegments(joinWithAlso([plain('観測しました。')], [plain('到達を確認しました。')])))
+      .toBe('観測しました。また、到達を確認しました。')
+  })
+
+  // 対照: 継ぐ前段が無いのに「また、」で始まる文にしない
+  it('前段が空なら接続語を付けない', () => {
+    expect(joinSegments(joinWithAlso([], [plain('到達を確認しました。')])))
+      .toBe('到達を確認しました。')
+  })
+
+  // 安全弁: 後段が無いときに文末へ「また、」が残らない
+  it('後段が空なら接続語を付けない', () => {
+    expect(joinSegments(joinWithAlso([plain('観測しました。')], []))).toBe('観測しました。')
   })
 })
 
