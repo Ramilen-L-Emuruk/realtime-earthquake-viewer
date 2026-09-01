@@ -8,6 +8,7 @@ import { REGIONS } from '../../utils/regions'
 import { addOrderedLayer } from './gl/layerOrder'
 import { JP_FONT_STACK } from './gl/fontStack'
 import { log } from '../../utils/logger'
+import { profileSpan } from '../../utils/frameProfiler'
 import {
   LABEL_TEXT_OPACITY_EXPR,
   computeLabelPlacements,
@@ -386,10 +387,15 @@ export function LabelsGL({ overlapSignature, iconScale }: Props) {
     if (!map) return
     let timeoutId: ReturnType<typeof setTimeout> | null = null
 
+    // **重なり判定はここで同期的にまとめて走る。** 1 ラベルにつき `queryRenderedFeatures` を
+    // 1〜3 回呼ぶため、移動 1 回あたりの所要は数十 ms に達しうる（実測値は gl/labelOverlap.ts）。
+    // 移動直後のコマ落ちの容疑者なので、区間として名前を付けて記録する（utils/frameProfiler.ts）。
     const run = () => {
       if (!map.getSource(REGION_SRC)) return
       const targets = targetsRef.current
-      applyPlacements(map, targets, computeLabelPlacements(map, targets, iconScaleRef.current), lastSigRef.current)
+      profileSpan('labels:overlap', () =>
+        applyPlacements(map, targets, computeLabelPlacements(map, targets, iconScaleRef.current), lastSigRef.current),
+      )
     }
     const schedule = () => {
       if (timeoutId != null) clearTimeout(timeoutId)

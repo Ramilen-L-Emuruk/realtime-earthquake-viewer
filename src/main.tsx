@@ -7,6 +7,12 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import './index.css'
 import { App } from './App'
 import { log } from './utils/logger'
+import { installFrameProfiler } from './utils/frameProfiler'
+
+// コマ落ちの診断（`window.__frameProfiler`）を使えるようにする。**呼び口を用意するだけで、
+// `start()` を呼ぶまで何も記録しない**（utils/frameProfiler.ts の `arm`）。このアプリは地震の
+// ときに開かれるので、診断のための仕事を常時載せない。
+installFrameProfiler()
 
 // autoUpdate モードで新 SW がコントローラーになったら sw-updated イベントを発火する。
 // 初回インストール時（controller が null → SW）は除外し、更新時のみ通知する。
