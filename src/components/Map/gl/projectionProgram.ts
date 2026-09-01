@@ -1,5 +1,6 @@
 import type { CustomRenderMethodInput } from 'maplibre-gl'
 import { log } from '../../../utils/logger'
+import { profileSpan } from '../../../utils/frameProfiler'
 
 // MapLibre の投影シェーダーを取り込んだ WebGL プログラムを、投影ごとに用意して使い回す。
 //
@@ -93,49 +94,57 @@ export function createProjectionProgramCache<K extends string>(
 ): ProjectionProgramCache<K> {
   const byVariant = new Map<string, ProjectionProgram<K> | null>()
 
+  // 実際に組み立てる側。**通るのは投影ごとに一度だけ**だが、通る瞬間は描画フレームの中で、
+  // しかも globe → Mercator の切り替え（寄る移動の途中）に重なる。コンパイルとリンクが
+  // レイヤーの数だけ 1 フレームにまとまって乗るため、コマ落ちの容疑者として区間で囲う
+  // （下の `get` から呼ぶ。記録の仕組みは utils/frameProfiler.ts）。
+  const build = (gl: WebGL2RenderingContext, args: CustomRenderMethodInput): ProjectionProgram<K> | null => {
+    const { variantName, vertexShaderPrelude, define } = args.shaderData
+    const tag = `${spec.label}:${variantName}`
+    const vs = compile(gl, tag, gl.VERTEX_SHADER, spec.makeVertexSource(vertexShaderPrelude, define))
+    const fs = compile(gl, tag, gl.FRAGMENT_SHADER, spec.fragmentSource)
+    const program = gl.createProgram() as WebGLProgram
+    gl.attachShader(program, vs)
+    gl.attachShader(program, fs)
+    // **リンク前に属性の番号を固定する。** 投影が切り替わるとプログラムは別物になるが、
+    // 番号が揃っていれば VAO はそのまま使える。
+    spec.attributes.forEach((name, i) => gl.bindAttribLocation(program, i, name))
+    gl.linkProgram(program)
+    gl.deleteShader(vs)
+    gl.deleteShader(fs)
+
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      // **リンクに失敗したプログラムを返してはならない。** WebGL は未リンクのプログラムへの
+      // `useProgram` で例外を投げず、直前の別レイヤーのシェーダーが残ったまま描画が走る。
+      log.error(`[${tag}] program link failed`, gl.getProgramInfoLog(program))
+      gl.deleteProgram(program)
+      byVariant.set(variantName, null)
+      return null
+    }
+
+    const u = {} as UniformLocations<K | ProjectionUniform>
+    // 投影側の 5 つは Mercator で 4 つが null になるのが正常なので、黙って引く。
+    for (const name of PROJECTION_UNIFORMS) u[name] = gl.getUniformLocation(program, name)
+    // **呼び出し側の uniform が null なら記録する。** 名前が GLSL と 1 文字でも食い違うと
+    // `getUniformLocation` は静かに null を返し、以後の `uniform*` は何もしない——
+    // コンパイルもリンクも通るのに、その値だけが既定のまま効かなくなる。
+    // （GLSL 側で最適化により消えた場合も null になるため、常に不具合とは限らない）
+    for (const name of spec.uniforms) {
+      const loc = gl.getUniformLocation(program, name)
+      if (loc === null) log.warn(`[${tag}] uniform ${name} が見つかりません（名前の食い違いか未使用）`)
+      u[name] = loc
+    }
+    const built: ProjectionProgram<K> = { program, u }
+    byVariant.set(variantName, built)
+    return built
+  }
+
   return {
     get(gl, args) {
-      const { variantName, vertexShaderPrelude, define } = args.shaderData
+      const { variantName } = args.shaderData
       const cached = byVariant.get(variantName)
       if (cached !== undefined) return cached
-
-      const tag = `${spec.label}:${variantName}`
-      const vs = compile(gl, tag, gl.VERTEX_SHADER, spec.makeVertexSource(vertexShaderPrelude, define))
-      const fs = compile(gl, tag, gl.FRAGMENT_SHADER, spec.fragmentSource)
-      const program = gl.createProgram() as WebGLProgram
-      gl.attachShader(program, vs)
-      gl.attachShader(program, fs)
-      // **リンク前に属性の番号を固定する。** 投影が切り替わるとプログラムは別物になるが、
-      // 番号が揃っていれば VAO はそのまま使える。
-      spec.attributes.forEach((name, i) => gl.bindAttribLocation(program, i, name))
-      gl.linkProgram(program)
-      gl.deleteShader(vs)
-      gl.deleteShader(fs)
-
-      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        // **リンクに失敗したプログラムを返してはならない。** WebGL は未リンクのプログラムへの
-        // `useProgram` で例外を投げず、直前の別レイヤーのシェーダーが残ったまま描画が走る。
-        log.error(`[${tag}] program link failed`, gl.getProgramInfoLog(program))
-        gl.deleteProgram(program)
-        byVariant.set(variantName, null)
-        return null
-      }
-
-      const u = {} as UniformLocations<K | ProjectionUniform>
-      // 投影側の 5 つは Mercator で 4 つが null になるのが正常なので、黙って引く。
-      for (const name of PROJECTION_UNIFORMS) u[name] = gl.getUniformLocation(program, name)
-      // **呼び出し側の uniform が null なら記録する。** 名前が GLSL と 1 文字でも食い違うと
-      // `getUniformLocation` は静かに null を返し、以後の `uniform*` は何もしない——
-      // コンパイルもリンクも通るのに、その値だけが既定のまま効かなくなる。
-      // （GLSL 側で最適化により消えた場合も null になるため、常に不具合とは限らない）
-      for (const name of spec.uniforms) {
-        const loc = gl.getUniformLocation(program, name)
-        if (loc === null) log.warn(`[${tag}] uniform ${name} が見つかりません（名前の食い違いか未使用）`)
-        u[name] = loc
-      }
-      const built: ProjectionProgram<K> = { program, u }
-      byVariant.set(variantName, built)
-      return built
+      return profileSpan('gl:program-compile', () => build(gl, args), `${spec.label}:${variantName}`)
     },
 
     dispose(gl) {

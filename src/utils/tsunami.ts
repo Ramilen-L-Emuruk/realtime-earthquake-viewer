@@ -80,6 +80,25 @@ export function isCancelForCurrentTsunami(cancel: JMATsunami, current: JMATsunam
 }
 
 /**
+ * 新報を「表示中の津波の続報」として扱い、前報の区域・観測点を引き継いでよいかを判定する。
+ *
+ * **カードの状態更新（`useEarthquakes`）と、カードの並びを引く基準の組み立て
+ * （`useLiveEventHandler` の `tsunamiCardOrderBasis`）で同じ述語を使うこと。** 前者だけが
+ * 引き継ぎを断ると、読み上げ・通知・スクロールの送り先が「カードに無い観測点」で並べ替えた
+ * 結果になる。逆も同じで、片方だけ緩めれば黙って食い違う。
+ *
+ * 引き継ぐのは**双方が同じ `eventId` を持ち、表示中が解除表示に入っていない**ときだけ。
+ *
+ * - `eventId` を持たない経路（P2PQuake の 552）は同一性を判定できないので引き継がない。
+ *   standard 版で観測点が蓄積されないのはこのため（カードもそう振る舞う）
+ * - 解除表示中（`cancelledAt`）のカードは 10 秒で消える。その値を新しい津波へ持ち込まない
+ */
+export function isTsunamiContinuation(current: JMATsunami | undefined, next: JMATsunami): boolean {
+  return !!current && !!current.eventId && !!next.eventId
+    && current.eventId === next.eventId && !current.cancelledAt
+}
+
+/**
  * 同一の津波イベントに属する報から、最後に伝えられた有効期限（`validDateTime`）を選ぶ。
  *
  * **有効期限は報ではなく津波そのものに付く事実として扱うこと。** 気象庁は期限が決まった報で
@@ -187,6 +206,142 @@ export function isTsunamiGradeUpgrade(next: JMATsunami, current: JMATsunami | un
   const nextGrade = tsunamiMaxGrade(next)
   const currentGrade = tsunamiMaxGrade(current)
   return GRADE_PRIORITY[nextGrade] > GRADE_PRIORITY[currentGrade]
+}
+
+/** 1 つの報の中で、区域の等級が「どこから、どこへ」動いたかの組。 */
+export interface TsunamiAreaGradeChange {
+  /** 前回この区域に発表されていた等級（`TsunamiArea.lastGrade`） */
+  from: TsunamiGrade
+  /** 今回この区域に発表されている等級 */
+  to: TsunamiGrade
+  /** この遷移をした区域。カードの表示順に並ぶ */
+  areas: TsunamiArea[]
+  /**
+   * 等級が上がったか（引き上げ）。`false` なら下がった（切替・解除）。
+   *
+   * 読み上げの動詞（「引き上げられました」/「切り替えられました」）と並び順の両方がこれで
+   * 決まる。判定は `isTsunamiGradeRaised` に閉じている。
+   */
+  raised: boolean
+}
+
+/**
+ * 区域単位で等級が動いた組を、読み上げ・表示に使う順で返す。
+ *
+ * **全体の最上位等級が変わらない報でも、区域ごとには等級が動いている。** 気象庁は一部解除でも
+ * 区域を電文から消さず「津波注意報 → 津波予報」の降格として載せるため、他の区域に注意報が
+ * 残っていると `tsunamiMaxGrade` は同じ値を返し続ける。2024 年能登半島地震の 01/02 02:30 の報
+ * （福岡県日本海沿岸・佐賀県北部の 2 区域だけが解除）がこの形で、音以外は何も起きなかった。
+ *
+ * 並びは**引き上げの組を先、引き下げの組を後**に置き、それぞれの中は遷移先の等級が重い順。
+ * 聞き手が取るべき行動が重くなる側を先に伝えるため。
+ *
+ * `lastGrade` を持たない区域（P2PQuake 経路・`LastKind` の無い電文）は判定できないので数えない。
+ * 遷移先が `Unknown` の組も返さない（等級の名前が付かず、文にも表示にもできない）。
+ *
+ * @param tsunami 判定する報
+ * @param observations 区域の並べ替えに使う観測情報。既定はこの報が持つもの
+ */
+export function tsunamiAreaGradeChanges(
+  tsunami: JMATsunami,
+  observations: readonly TsunamiObservation[] = tsunami.observations ?? [],
+): TsunamiAreaGradeChange[] {
+  const byTransition = new Map<string, TsunamiAreaGradeChange>()
+  for (const area of tsunami.areas) {
+    const from = area.lastGrade
+    if (from === undefined || from === area.grade) continue
+    if (area.grade === 'Unknown') continue
+    const key = `${from}>${area.grade}`
+    const found = byTransition.get(key)
+    if (found) found.areas.push(area)
+    else byTransition.set(key, {
+      from,
+      to: area.grade,
+      areas: [area],
+      raised: isTsunamiGradeRaised(from, area.grade),
+    })
+  }
+  const changes = [...byTransition.values()]
+  for (const change of changes) {
+    change.areas = sortAreasForCardDisplay(change.areas, [...observations])
+  }
+  return changes.sort((a, b) => {
+    if (a.raised !== b.raised) return a.raised ? -1 : 1
+    if (GRADE_PRIORITY[a.to] !== GRADE_PRIORITY[b.to]) return GRADE_PRIORITY[b.to] - GRADE_PRIORITY[a.to]
+    return GRADE_PRIORITY[b.from] - GRADE_PRIORITY[a.from]
+  })
+}
+
+/**
+ * 等級の短い呼び名。読み上げの文と、カードで等級の移り変わりを示す行が共有する。
+ *
+ * カードの等級カードが掲げる見出し（`TsunamiTab` の `GRADE_LABEL`）は「津波予報（若干の
+ * 海面変動）」のように正式名を出すが、文の中へ差し込むには長い。**両方を別々に持たないこと**
+ * ―― 読み上げと表示で等級の呼び名が食い違う。
+ */
+export const TSUNAMI_GRADE_SHORT_LABEL: Record<TsunamiGrade, string> = {
+  MajorWarning: '大津波警報',
+  Warning: '津波警報',
+  Watch: '津波注意報',
+  Forecast: '津波予報',
+  Unknown: '',
+}
+
+/**
+ * 等級が `from` から `to` へ上がったか（引き上げ）。下がった場合と、動いていない場合は false。
+ *
+ * **等級の重さの比較はこの関数に閉じる。** 読み上げの動詞（「引き上げられました」/
+ * 「切り替えられました」）・組の並び順・カードの表示がいずれもこの向きで決まるので、
+ * 呼び出し側でそれぞれ比べ直すと、等級を増やしたときに片方だけ漏れる。
+ */
+export function isTsunamiGradeRaised(from: TsunamiGrade, to: TsunamiGrade): boolean {
+  return GRADE_PRIORITY[to] > GRADE_PRIORITY[from]
+}
+
+/** 区域を既読の記録で引くときのキー。`matchesArea` と同じく区域コードを優先する。 */
+export function tsunamiAreaKey(area: TsunamiArea): string {
+  return area.code ?? area.name
+}
+
+/**
+ * まだ声にしていない等級変化だけを残す。
+ *
+ * **`LastKind` は変化した瞬間だけでなく、その後の続報にも載り続ける。** 2024 年能登半島地震の
+ * 01/02 02:30 で解除された福岡県日本海沿岸・佐賀県北部は、02:31・02:33 の続報でも
+ * 「津波予報／前回は津波注意報」のまま届いた。電文の事実だけで読み上げると同じ文を 3 回読む。
+ *
+ * 記録は「その区域について最後に声にした等級」。今回の等級と一致していれば読み終えている。
+ * 等級がさらに動けば（予報 → 注意報へ引き上げ等）値が変わるので、もう一度読む。
+ *
+ * @param changes `tsunamiAreaGradeChanges` の結果
+ * @param spoken 声にした等級の記録（区域キー → 等級）
+ */
+export function selectUnspokenAreaGradeChanges(
+  changes: readonly TsunamiAreaGradeChange[],
+  spoken: ReadonlyMap<string, TsunamiGrade>,
+): TsunamiAreaGradeChange[] {
+  const result: TsunamiAreaGradeChange[] = []
+  for (const change of changes) {
+    const areas = change.areas.filter(area => spoken.get(tsunamiAreaKey(area)) !== area.grade)
+    if (areas.length > 0) result.push({ ...change, areas })
+  }
+  return result
+}
+
+/**
+ * 声にした等級変化を既読へ移す。
+ *
+ * **呼ぶのは発話を始める瞬間だけ。** 受信時や読み上げ文を組んだ時点で進めると、上位の読み上げに
+ * 割り込まれて鳴らなかった変化が既読になり、二度と伝わらない（観測点の記憶と同じ規約。理由は
+ * `useLiveEventHandler` の `spokenObsHeightRef` の宣言箇所）。
+ */
+export function rememberAreaGrades(
+  changes: readonly TsunamiAreaGradeChange[],
+  spoken: Map<string, TsunamiGrade>,
+): void {
+  for (const change of changes) {
+    for (const area of change.areas) spoken.set(tsunamiAreaKey(area), area.grade)
+  }
 }
 
 /**
@@ -382,11 +537,40 @@ export function sortAreasForCardDisplay(areas: TsunamiArea[], observations: Tsun
 }
 
 /**
+ * 等級カードをまたいだ、カードが描く区域の通し順を返す。
+ *
+ * `sortAreasForCardDisplay` は**1 つの等級の中**の並びしか決めない（カードが等級ごとに分かれて
+ * いるため）。等級が混ざった区域の一覧を「カードで上から見える順」に並べたいときはこちらを使う。
+ * 等級混じりのまま `sortAreasForCardDisplay` へ渡すと、波高の見出しで等級をまたいで束ねてしまい、
+ * 注意報の区域が警報の区域より上に来ることがある。
+ *
+ * 上位から何件かだけを採る用途（通知の本文・スクロールの送り先）では、この違いがそのまま
+ * 「カードの先頭に無い区域を代表として挙げる」形で現れる。
+ *
+ * `GRADES_IN_CARD_ORDER` に無い等級の区域は落ちる。カード（`TsunamiTab`）も等級ごとに
+ * 絞り込んで描くので**カードと同じ振る舞い**だが、電文の解析（`dmdataParser` / `p2pquake`）が
+ * 既知の 5 値へ正規化することに依存している。正規化を緩めるなら両方を併せて見直すこと。
+ */
+export function sortAreasAcrossGradesForCardDisplay(
+  areas: readonly TsunamiArea[],
+  observations: readonly TsunamiObservation[],
+): TsunamiArea[] {
+  const all = [...observations]
+  const ordered: TsunamiArea[] = []
+  for (const grade of GRADES_IN_CARD_ORDER) {
+    const inGrade = areas.filter(a => a.grade === grade)
+    if (inGrade.length === 0) continue
+    ordered.push(...sortAreasForCardDisplay(inGrade, all))
+  }
+  return ordered
+}
+
+/**
  * 観測点をカードが描画する順に並べる。
  *
- * カードの入れ子をそのまま辿る ―― 等級カード（`GRADES_IN_CARD_ORDER`）→ 予想波高の見出し →
- * 区域（`sortAreasForCardDisplay`）→ 区域内は電文の並び → 区域に紐づかない観測点（「沖合観測」
- * のカード）を最後に置く。
+ * カードの入れ子をそのまま辿る ―― 等級カード → 予想波高の見出し → 区域
+ * （`sortAreasAcrossGradesForCardDisplay`）→ 区域内は電文の並び → 区域に紐づかない観測点
+ * （「沖合観測」のカード）を最後に置く。
  *
  * **読み上げの観測点列挙もこの順に揃える**（→ [`ttsText.ts`] の
  * `tsunamiObservationUpdateToSegments`）。区域の並びで既に踏んでいるのと同じ罠で、読み上げが
@@ -409,18 +593,13 @@ export function sortObservationsForCardDisplay(
   observations: readonly TsunamiObservation[],
   areas: readonly TsunamiArea[],
 ): TsunamiObservation[] {
-  const all = [...observations]
   const placed = new Set<TsunamiObservation>()
   const ordered: TsunamiObservation[] = []
-  for (const grade of GRADES_IN_CARD_ORDER) {
-    const inGrade = areas.filter(a => a.grade === grade)
-    if (inGrade.length === 0) continue
-    for (const area of sortAreasForCardDisplay(inGrade, all)) {
-      for (const obs of observations) {
-        if (placed.has(obs) || !matchesArea(obs, area)) continue
-        placed.add(obs)
-        ordered.push(obs)
-      }
+  for (const area of sortAreasAcrossGradesForCardDisplay(areas, observations)) {
+    for (const obs of observations) {
+      if (placed.has(obs) || !matchesArea(obs, area)) continue
+      placed.add(obs)
+      ordered.push(obs)
     }
   }
   // どの区域にも紐づかない観測点（沖合の観測点）はカードでも最後に来る。

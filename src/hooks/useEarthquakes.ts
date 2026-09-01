@@ -7,7 +7,7 @@ import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQ
 import type { QuakeRetraction } from '../utils/quakeMerge'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex } from '../utils/stationCoords'
 import { calcEEWCancelTime, eewSerial, eewEventKey } from '../utils/eew'
-import { mergeTsunamiObservations, isCancelForCurrentTsunami, withInheritedValidDateTime, latestValidDateTime } from '../utils/tsunami'
+import { mergeTsunamiObservations, isCancelForCurrentTsunami, isTsunamiContinuation, withInheritedValidDateTime, latestValidDateTime } from '../utils/tsunami'
 import { log } from '../utils/logger'
 import { serverNow, serverDate } from '../utils/clock'
 
@@ -798,8 +798,9 @@ export function useEarthquakes(
           // 同一イベントの続報: 観測のみ電文（areas=[]）で警報カードが消えないよう前回の areas を維持し、
           // observations は上書きではなくマージする（区域・観測点ごとに前回値を保持）。
           const current = prev.tsunamis[0]
-          const sameEvent = current && current.eventId && tsunami.eventId
-            && current.eventId === tsunami.eventId && !current.cancelledAt
+          // 引き継ぎの条件は `isTsunamiContinuation` に集約する（読み上げ・通知・スクロールが
+          // 使うカード順の基準と同じ述語を使うため。宣言箇所に理由）。
+          const sameEvent = isTsunamiContinuation(current, tsunami)
           if (sameEvent) {
             const areas = tsunami.areas.length > 0 ? tsunami.areas : current.areas
             const observations = mergeTsunamiObservations(current.observations, tsunami.observations)

@@ -9,6 +9,7 @@ import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { LatLng } from '../../utils/stationCoords'
 import type { EEWAlert } from '../../types/earthquake'
 import type { ShakeFocus } from './mapTypes'
+import type { PsWaveCircle } from '../../services/kyoshin'
 
 // 「確定検知の終了」と「候補クラスタの継続」が重なる遷移を固定する回帰テスト。
 // この組み合わせはタイミング依存で、実機（Playwright）では再現が難しい。過去に 2 度作り込んでいる:
@@ -87,8 +88,8 @@ const PANE_HEIGHT = 600
 // テストは検知範囲の広さの代わりにこの値を動かす——**範囲が狭まった** = 寄り直せば深く寄れる、を
 // 表すのがこの値の役目（`setFitZoom`）。既定の 7 は基準ペインでの寄り上限に相当する値。
 function createFakeMap({ zoom: initialZoom = 4, fitZoom: initialFitZoom = 7 }: { zoom?: number; fitZoom?: number } = {}) {
-  const handlers = new Map<string, Set<() => void>>()
-  const onceHandlers = new Map<string, Set<() => void>>()
+  const handlers = new Map<string, Set<(e?: unknown) => void>>()
+  const onceHandlers = new Map<string, Set<(e?: unknown) => void>>()
   // 日本全体を見ている状態から始める（fitJapan 相当のズームと中心）。fit/fly で書き換わる。
   let zoom = initialZoom
   let fitZoom = initialFitZoom
@@ -124,36 +125,45 @@ function createFakeMap({ zoom: initialZoom = 4, fitZoom: initialFitZoom = 7 }: {
    */
   const moves: { padding?: number; west?: number }[] = []
   let pendingFit: { padding?: number; west: number; center: [number, number] } | null = null
+  // 直近のカメラ操作へ渡されたイベントデータ（`beginProgrammaticFlight` の戻り値）。
+  // `completeFlight` が moveend でそのまま返し、飛行ロックを解かせる。
+  let lastFlightEventData: unknown = null
   const fake = {
-    on(event: string, handler: () => void) {
+    on(event: string, handler: (e?: unknown) => void) {
       if (!handlers.has(event)) handlers.set(event, new Set())
       handlers.get(event)!.add(handler)
     },
-    off(event: string, handler: () => void) {
+    off(event: string, handler: (e?: unknown) => void) {
       handlers.get(event)?.delete(handler)
     },
-    once(event: string, handler: () => void) {
+    once(event: string, handler: (e?: unknown) => void) {
       if (!onceHandlers.has(event)) onceHandlers.set(event, new Set())
       onceHandlers.get(event)!.add(handler)
     },
-    fire(event: string) {
-      for (const handler of handlers.get(event) ?? []) handler()
+    // 第 2 引数はイベントデータ。**飛行の完了（moveend）を再現するために要る**——
+    // `beginProgrammaticFlight` が張る moveend は `flightId` が一致する回だけ飛行ロックを解く。
+    // 渡さないと本物の 0.8 秒に対して 2.8 秒（0.8＋`FLIGHT_EXPIRY_MARGIN_MS`）ロックが残り、
+    // テストだけが実挙動より 2 秒鈍い状態になる。
+    fire(event: string, data?: unknown) {
+      for (const handler of handlers.get(event) ?? []) handler(data)
       const once = onceHandlers.get(event)
       if (once) {
-        for (const handler of once) handler()
+        for (const handler of once) handler(data)
         once.clear()
       }
     },
     // 着地ズームは本物のように算出できない（ビューポート寸法と padding から逆算する処理を
     // フェイクに持たせても、それは実装の再実装になる）。中心だけ目標に合わせ、ズームは据え置く。
-    fitBounds: vi.fn((bounds?: FakeBoundsLike, opts?: { padding?: number }) => {
+    fitBounds: vi.fn((bounds?: FakeBoundsLike, opts?: { padding?: number }, eventData?: unknown) => {
+      lastFlightEventData = eventData ?? null
       if (bounds) {
         const [lng, lat] = boundsCenter(bounds)
         center = { lng, lat }
         moves.push({ padding: opts?.padding, west: boundsWest(bounds) })
       }
     }),
-    flyTo: vi.fn((opts?: { zoom?: number; center?: [number, number] }) => {
+    flyTo: vi.fn((opts?: { zoom?: number; center?: [number, number] }, eventData?: unknown) => {
+      lastFlightEventData = eventData ?? null
       if (typeof opts?.zoom === 'number') zoom = opts.zoom
       if (opts?.center) center = { lng: opts.center[0], lat: opts.center[1] }
       const fit =
@@ -209,17 +219,29 @@ function createFakeMap({ zoom: initialZoom = 4, fitZoom: initialFitZoom = 7 }: {
     setFitZoom: (z: number) => {
       fitZoom = z
     },
+    /**
+     * 直近のカメラ操作が着地したことにする（moveend）。飛行ロックが解けるので、続く評価が
+     * 実機と同じタイミングで走る。**時間を進めるだけでは代用できない**——ロックの期限切れは
+     * 飛行時間より 2 秒遅く、その間に起きるはずの追従がテストでは起きない。
+     */
+    completeFlight: () => {
+      if (lastFlightEventData) fake.fire('moveend', lastFlightEventData)
+    },
   }
   return fake as unknown as maplibregl.Map & {
-    fire: (event: string) => void
+    fire: (event: string, data?: unknown) => void
     moves: { padding?: number; west?: number }[]
     setFitZoom: (z: number) => void
+    completeFlight: () => void
   }
 }
 
 const dp = (lat: number, lng: number): DetectedPoint => ({ key: `${lat},${lng}`, lat, lng, index: 20 })
 
-type FakeMap = maplibregl.Map & { moves: { padding?: number; west?: number }[] }
+type FakeMap = maplibregl.Map & {
+  moves: { padding?: number; west?: number }[]
+  completeFlight: () => void
+}
 
 /**
  * カメラ操作ごとの padding。どの経路が呼ばれたかの判別に使う（日本全体＝20 / 点群＝60）。
@@ -637,18 +659,21 @@ describe('EEW の初期フレーミング', () => {
     eews: EEWAlert[],
     detected: DetectedPoint[],
     refs: { firstSeenAtRef: { current: Map<string, number> }; focusedEewIdRef: { current: string | null } },
+    opts: { shakeFocus?: ShakeFocus | null; focusTickRef?: { current: number }; psWave?: PsWaveCircle[] } = {},
   ) {
     return h(
       MapGLContext.Provider,
       { value: map },
       h(FitToEEWGL, {
         eews,
-        psWave: [],
+        psWave: opts.psWave ?? [],
         detectedPoints: [...detected],
         hasDetection: detected.length > 0,
         candidatePoints: [],
         forecastAreaPositions: [],
-        lastConsumedFocusTickRef: { current: 0 },
+        shakeFocus: opts.shakeFocus ?? null,
+        // 消費済み連番はマウントをまたいで残す必要があるため、要求を出すテストだけ外から渡す。
+        lastConsumedFocusTickRef: opts.focusTickRef ?? { current: 0 },
         ...refs,
       }),
     )
@@ -802,6 +827,259 @@ describe('EEW の初期フレーミング', () => {
     // 入室として合成範囲へ寄る（ref を内部に持つと、ここが 2 回目の震源直行になる）。
     expect((map as FakeMap).moves.slice(1)).toEqual([{ padding: POINTS_PADDING, west: UNION_WEST }])
   })
+
+  // ── 震源訂正フォロー ─────────────────────────────────────────────────────────
+  // 第一報の抑制は「検知点が育った瞬間に画を奪われる」ちらつきを防ぐためのもので、震源そのものが
+  // 訂正されたときまで止めると、取り下げられた場所に貼り付いたままになる。
+  //
+  // 実例（2024-01-01 17:48 の能登余震 `20240101174834`）: 第一報は深さ 350km と推定されて波円が
+  // 地表に出ず、震源 1 点への最大ズームになる。その後 1 秒足らずで 3 報が第一報から 159km →
+  // 287km → 201km と飛び交い、+5.7 秒の第 5 報で 289km 先へ確定した。抑制がそのまま効くと、
+  // 訂正が始まってから 3 秒間はまったく動かない。
+
+  /** 新規発報から揺れフォーカスを見送る猶予（`SHAKE_FOCUS_YIELD_AFTER_EEW_MS`）。実装側と独立に持つ。 */
+  const SHAKE_FOCUS_YIELD_AFTER_EEW_MS = 10000
+  /** 訂正後の震源。第一報（137.2）の画（フェイクの視野は経度 ±4 度）から確実に外れる位置。 */
+  const RELOCATED_LNG = 143.0
+  /**
+   * 第一報の画に**収まっているが縁に寄った**訂正。寄り直し先の中心はペイン短辺の 27% 動く
+   * （閾値は 20%）。実地震で起きたのはこの形で、「画からはみ出したか」で測ると拾えない。
+   */
+  const EDGE_LNG = 140.5
+  /** 訂正後だが第一報の画の中ほどに収まる位置（中心のずれは 15%＝閾値未満）。 */
+  const NEARBY_LNG = 139.0
+  const relocated = (lng: number) =>
+    ({
+      ...NOTO,
+      earthquake: { ...NOTO.earthquake, hypocenter: { ...NOTO.earthquake.hypocenter, longitude: lng } },
+    }) as unknown as EEWAlert
+
+  it('[正] 抑制中でも、震源が画から外れる訂正が来たら寄り直す（寄り先に第一報の位置も含める）', () => {
+    // Arrange: 新規発報。第一報は震源 1 点へ直行する。
+    const map = createFakeMap({ fitZoom: 5 })
+    const refs = refsFor([NOTO], 0)
+    const view = render(eewFrame(map, [NOTO], [], refs))
+    expect((map as FakeMap).moves).toEqual([{}])
+
+    // Act: 飛行が着地したあと、抑制が明ける前に震源が画の外へ訂正される。
+    act(() => {
+      vi.advanceTimersByTime(800)
+      ;(map as FakeMap).completeFlight()
+      vi.advanceTimersByTime(400)
+    })
+    view.rerender(eewFrame(map, [relocated(RELOCATED_LNG)], [], refs))
+
+    // Assert: 抑制の 3 秒を待たずに寄り直す。**寄り先の西端は第一報の 137.2**——現在の震源だけへ
+    // 寄せると西端は 143.0 になり、訂正が続く間は報のたびに寄り直すことになる。
+    expect((map as FakeMap).moves.slice(1)).toEqual([
+      { padding: POINTS_PADDING, west: NOTO.earthquake.hypocenter.longitude },
+    ])
+  })
+
+  it('[正] 訂正後の震源が画の縁の内側でも、寄り直しで中心が大きく動くなら破る', () => {
+    // Arrange: 新規発報。
+    const map = createFakeMap({ fitZoom: 5 })
+    const refs = refsFor([NOTO], 0)
+    const view = render(eewFrame(map, [NOTO], [], refs))
+
+    // Act: 画の中には残るが、縁に寄る訂正。
+    act(() => {
+      vi.advanceTimersByTime(800)
+      ;(map as FakeMap).completeFlight()
+      vi.advanceTimersByTime(400)
+    })
+    view.rerender(eewFrame(map, [relocated(EDGE_LNG)], [], refs))
+
+    // Assert: 寄り直す。**「はみ出したか」で測っていた頃はここが素通りしていた**——2024-01-01
+    // 17:48 の能登余震の再生でも、289km 離れた訂正後の震源は縁の内側に収まっていた。
+    expect((map as FakeMap).moves.slice(1)).toEqual([
+      { padding: POINTS_PADDING, west: NOTO.earthquake.hypocenter.longitude },
+    ])
+  })
+
+  it('[対照] 訂正が第一報の画に収まっているうちは、抑制中に動かさない', () => {
+    // Arrange: 同じく新規発報。
+    const map = createFakeMap({ fitZoom: 5 })
+    const refs = refsFor([NOTO], 0)
+    const view = render(eewFrame(map, [NOTO], [], refs))
+
+    // Act: 画の中で収まる範囲の訂正。
+    act(() => {
+      vi.advanceTimersByTime(800)
+      ;(map as FakeMap).completeFlight()
+      vi.advanceTimersByTime(400)
+    })
+    view.rerender(eewFrame(map, [relocated(NEARBY_LNG)], [], refs))
+
+    // Assert: 動かない。小さな訂正まで拾うと、第一報の画を見せる意味が無くなる
+    // （実データでも 1 報あたり 10〜40km の訂正は珍しくない）。
+    expect(moveCount(map)).toBe(1)
+  })
+
+  it('[安全弁] 揺れフォーカスが張った抑制は破らない（寄せた観測点から引き戻さない）', () => {
+    // Arrange: 新規発報で第一報のフォーカスを与える。**入室では駄目**——フォーカス済みの EEW が
+    // 無いと、破る条件のもう一段（追従対象の特定）で先に止まってしまい、この安全弁を素通りする。
+    const map = createFakeMap({ fitZoom: 5 })
+    const refs = refsFor([NOTO], 0)
+    const focusTickRef = { current: 0 }
+    const view = render(eewFrame(map, [NOTO], [], refs, { focusTickRef }))
+    expect(moveCount(map)).toBe(1)
+
+    // Act: 第一報の抑制（3 秒）も、揺れフォーカスを見送る猶予（10 秒）も明けるまで進める。
+    act(() => {
+      vi.advanceTimersByTime(800)
+      ;(map as FakeMap).completeFlight()
+      vi.advanceTimersByTime(SHAKE_FOCUS_YIELD_AFTER_EEW_MS)
+    })
+    view.rerender(eewFrame(map, [NOTO], [], refs, { focusTickRef }))
+    expect(moveCount(map)).toBe(1)
+
+    // Act 2: 震源から遠く離れた観測点で揺れが強まり、そこへ寄せる。
+    const focus: ShakeFocus = { lat: 37.5, lng: 150.0, tick: 1, atMs: Date.now() }
+    view.rerender(eewFrame(map, [NOTO], [], refs, { shakeFocus: focus, focusTickRef }))
+    expect(moveCount(map)).toBe(2)
+
+    // Act 3: 飛行が着地する。この時点で震源（137.2）は画（150 ± 4 度）の外にある。
+    act(() => {
+      vi.advanceTimersByTime(800)
+      ;(map as FakeMap).completeFlight()
+      vi.advanceTimersByTime(400)
+    })
+    view.rerender(eewFrame(map, [NOTO], [], refs, { shakeFocus: focus, focusTickRef }))
+
+    // Assert: 引き戻さない。揺れフォーカスも `suppressGrowthUntilRef` を張るため、破る条件を
+    // 「震源が画の外」だけにすると、寄せた画が 3 秒保たずに奪われる。
+    //
+    // **このテストは定数の大小関係も押さえている。** 分離が効くのは
+    // `SHAKE_FOCUS_YIELD_AFTER_EEW_MS`（10 秒）が `GROWTH_FOLLOW_SUPPRESS_MS`（3 秒）より長く、
+    // 揺れフォーカスの抑制が張られる頃には第一報の抑制が失効しているから。実装側で前者を縮める
+    // （または後者を伸ばす）と、ここで震源訂正フォローが発火して 3 件目の移動が記録される。
+    expect(moveCount(map)).toBe(2)
+  })
+
+  it('[安全弁] 波円が育っただけでは、震源訂正フォローを繰り返さない', () => {
+    // Arrange: 新規発報 → 画の外への訂正で、震源訂正フォローを 1 度発火させる。
+    const map = createFakeMap({ fitZoom: 5 })
+    const refs = refsFor([NOTO], 0)
+    const circle = (sRadius: number): PsWaveCircle[] => [
+      // eventId は `eewEventKey`（`issue.eventId ?? id`）と同じ導出。食い違うと自身の円を拾えない。
+      { eventId: NOTO.issue!.eventId!, lat: 37.5, lng: RELOCATED_LNG, pRadius: sRadius * 1.7, sRadius } as PsWaveCircle,
+    ]
+    const view = render(eewFrame(map, [NOTO], [], refs))
+    act(() => {
+      vi.advanceTimersByTime(800)
+      ;(map as FakeMap).completeFlight()
+      vi.advanceTimersByTime(400)
+    })
+    const settled = relocated(RELOCATED_LNG)
+    view.rerender(eewFrame(map, [settled], [], refs, { psWave: circle(20) }))
+    act(() => {
+      vi.advanceTimersByTime(800)
+      ;(map as FakeMap).completeFlight()
+    })
+    const afterRelocation = moveCount(map)
+    expect(afterRelocation).toBe(2)
+
+    // Act: 震源は動かさず、波円だけを育てて再評価する（実装では 100ms ごとに走る評価）。
+    // 第一報の抑制（3 秒）が明ける前に収める。
+    for (const r of [30, 40, 50, 60]) {
+      act(() => {
+        vi.advanceTimersByTime(100)
+      })
+      view.rerender(eewFrame(map, [settled], [], refs, { psWave: circle(r) }))
+    }
+
+    // Assert: 動かない。円が育つと寄り先の矩形の中心もわずかに動くが、破る条件は「寄り直すと
+    // 中心がペイン短辺の 2 割以上動く」なので、位置の訂正が無い限り閾値に届かない。
+    // ここが緩むと、第一報がわざと狭く見せている画を訂正フォロー自身が壊し続けることになる。
+    expect(moveCount(map)).toBe(afterRelocation)
+  })
+
+  // ── 収め直しフォロー ─────────────────────────────────────────────────────────
+  // 上の震源訂正フォローは訂正の振れ幅ごと包むので、収まった後は画が広いまま残る。成長フォローは
+  // 「はみ出したら引く」しかしないため、締め直す経路が要る（揺れ検知側と同じ仕掛け）。
+
+  /** 収め直しフォローの保持時間（`REFIT_HOLD_MS`）の前後。実装側と独立に持つ。 */
+  const BEFORE_REFIT_HOLD_MS = 7000
+  const AFTER_REFIT_HOLD_MS = 9000
+
+  /**
+   * 震源訂正フォローで「第一報 137.2 と訂正後 143.0 を包む画」まで進め、収め直しの待ちを
+   * 開始させた状態を作る。待ちは**待ちに入った評価を起点に**数えるので、開始まで進めてから
+   * 時間を送らないと保持時間の前後を突けない。
+   */
+  function arrangeWidenedThenSettled(map: maplibregl.Map) {
+    const refs = refsFor([NOTO], 0)
+    const view = render(eewFrame(map, [NOTO], [], refs))
+    act(() => {
+      vi.advanceTimersByTime(800)
+      ;(map as FakeMap).completeFlight()
+      vi.advanceTimersByTime(400)
+    })
+    const settled = relocated(RELOCATED_LNG)
+    view.rerender(eewFrame(map, [settled], [], refs))
+    act(() => {
+      vi.advanceTimersByTime(800)
+      ;(map as FakeMap).completeFlight()
+      // 第一報の抑制（3 秒）を明けさせる。ここから先は成長フォローと収め直しフォローの領分。
+      vi.advanceTimersByTime(AFTER_SUPPRESS_END_MS)
+    })
+    // 待ちの開始。
+    view.rerender(eewFrame(map, [settled], [], refs))
+    return { view, refs, settled }
+  }
+
+  it('[正] 訂正で広げた画は、保持時間の経過後に確定した震源へ締め直す', () => {
+    // Arrange: 第一報（137.2）と訂正後（143.0）を包む画まで進め、収め直しの待ちに入った状態。
+    const map = createFakeMap({ fitZoom: 5 })
+    const { view, refs, settled } = arrangeWidenedThenSettled(map)
+    expect(moveCount(map)).toBe(2)
+
+    // Act: 保持時間の手前まで進む（波円の再計算に相当する再評価を挟む）。
+    act(() => {
+      vi.advanceTimersByTime(BEFORE_REFIT_HOLD_MS)
+    })
+    view.rerender(eewFrame(map, [settled], [], refs))
+
+    // Assert: まだ締め直さない（一瞬ずれただけで寄せない待ち）。
+    expect(moveCount(map)).toBe(2)
+
+    // Act 2: 保持時間を越える。
+    act(() => {
+      vi.advanceTimersByTime(AFTER_REFIT_HOLD_MS - BEFORE_REFIT_HOLD_MS)
+    })
+    view.rerender(eewFrame(map, [settled], [], refs))
+
+    // Assert 2: 確定した震源だけの画へ締め直す（西端が 137.2 から 143.0 へ寄る）。
+    expect((map as FakeMap).moves.slice(2)).toEqual([{ padding: POINTS_PADDING, west: RELOCATED_LNG }])
+  })
+
+  it('[安全弁] 締め直した後は、目標が変わらない限り二度と動かない（往復しない）', () => {
+    // Arrange: 上のテストの続き（締め直しまで終えた状態）。
+    const map = createFakeMap({ fitZoom: 5 })
+    const { view, refs, settled } = arrangeWidenedThenSettled(map)
+    act(() => {
+      vi.advanceTimersByTime(AFTER_REFIT_HOLD_MS)
+    })
+    view.rerender(eewFrame(map, [settled], [], refs))
+    act(() => {
+      vi.advanceTimersByTime(800)
+      ;(map as FakeMap).completeFlight()
+    })
+    const afterRefit = moveCount(map)
+    expect(afterRefit).toBe(3)
+
+    // Act: そのまま保持時間ぶんの再評価を繰り返す。
+    for (let i = 0; i < 3; i++) {
+      act(() => {
+        vi.advanceTimersByTime(AFTER_REFIT_HOLD_MS)
+      })
+      view.rerender(eewFrame(map, [settled], [], refs))
+    }
+
+    // Assert: 動かない。着地後は寄り直しの利得も中心のずれも 0 になるのが往復しない根拠。
+    expect(moveCount(map)).toBe(afterRefit)
+  })
 })
 
 // ── 津波モードの帰還（TsunamiFitGL） ───────────────────────────────────────────
@@ -819,6 +1097,15 @@ const OBS_WEST = 130.0
 const COAST_WEST = 141.0
 const SIG = '岩手県:MajorWarning'
 
+// 到達確認だけの観測点（波高なし）。北海道沖に 2 点置き、寄り先を矩形の西端で判別する。
+// **2 点以上にすること**——1 点だと fitToPositions が退化矩形を避けて flyTo へ落ち、
+// fitBounds の記録に現れない。
+const arrival = (name: string, lat: number, lng: number) => ({ name, lat, lng })
+const ARRIVALS = [arrival('C', 43.0, 145.0), arrival('D', 42.0, 144.0)]
+const ARRIVAL_WEST = 144.0
+/** 観測棒（西端 130.0）と到達確認（144.0）を束ねた矩形の西端。 */
+const UNION_OBS_ARRIVAL_WEST = OBS_WEST
+
 /** カメラ操作の時系列。日本全体は -1、点群へのフィットは矩形の西端で表す。 */
 function fitTargets(map: maplibregl.Map): (number | undefined)[] {
   return (map as FakeMap).moves.map((m) => (m.padding === JAPAN_PADDING ? -1 : m.west))
@@ -829,6 +1116,7 @@ interface TsunamiProps {
   signature?: string
   coast?: LatLng[]
   bars?: typeof OBS_BARS
+  arrivals?: typeof ARRIVALS
   focus?: { name: string; ts: number } | null
 }
 
@@ -841,6 +1129,7 @@ function tsunamiHarness(map: maplibregl.Map, props: TsunamiProps = {}) {
       tsunamiSignature: props.signature ?? SIG,
       tsunamiFitPositions: props.coast ?? COAST,
       observationBars: props.bars ?? [],
+      arrivalMarkers: props.arrivals ?? [],
       focusObsName: props.focus ?? null,
     }),
   )
@@ -976,6 +1265,86 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
 
     // Assert: 日本全体へ帰る（寄ったまま取り残されない）。
     expect(fitTargets(map).slice(before)).toEqual([-1])
+  })
+
+  // ── 到達確認（波高が「観測中」）の観測点への追従 ──────────────────────────
+  // カード・読み上げは到達確認を扱うのに地図だけが黙っていた回帰。声が「到達を確認しました」と
+  // 言うのに画面が動かないと、どこに到達したのかが読み取れない。
+
+  it('波高がまだ出ていない到達確認だけでも、その観測点へ寄る', () => {
+    // Arrange: 発表直後の海岸線フィットまで進んだ状態（観測点はまだ 1 つも無い）。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map))
+    const before = fitTargets(map).length
+
+    // Act: 到達確認だけの観測情報が届く（波高は「観測中」）。
+    view.rerender(tsunamiHarness(map, { arrivals: ARRIVALS }))
+
+    // Assert: その観測点へ寄る。
+    expect(fitTargets(map).slice(before)).toEqual([ARRIVAL_WEST])
+  })
+
+  it('既に出ている到達確認では寄り直さない（点滅が落ちただけで動かさない）', () => {
+    // Arrange: 到達確認へ寄った状態。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { arrivals: ARRIVALS }))
+    const before = fitTargets(map).length
+
+    // Act: 同じ観測点のまま配列だけ作り直される（続報の再送・点滅の解除など）。
+    view.rerender(tsunamiHarness(map, { arrivals: [...ARRIVALS] }))
+    view.rerender(tsunamiHarness(map, { arrivals: [arrival('C', 43.0, 145.0), arrival('D', 42.0, 144.0)] }))
+
+    // Assert: カメラは動かない。
+    expect(fitTargets(map).length).toBe(before)
+  })
+
+  it('実測の更新と新規到達が同じ電文で届いたら、両方が入る枠へ寄る', () => {
+    // Arrange: 発表直後の海岸線フィットまで進んだ状態。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map))
+    const before = fitTargets(map).length
+
+    // Act: 九州沖の実測更新と北海道沖の到達確認が同時に届く。
+    view.rerender(tsunamiHarness(map, { bars: OBS_BARS, arrivals: ARRIVALS }))
+
+    // Assert: 片方だけを映さず、両方が入る矩形へ寄る（西端は観測棒側）。
+    expect(fitTargets(map).slice(before)).toEqual([UNION_OBS_ARRIVAL_WEST])
+  })
+
+  it('到達確認へ寄った後も、猶予が満了すれば対象海域全体へ帰る', () => {
+    // Arrange: 到達確認へ寄った状態（実測と同じく寄りっぱなしにしない）。
+    const map = createFakeMap()
+    render(tsunamiHarness(map, { arrivals: ARRIVALS }))
+    const before = fitTargets(map).length
+
+    // Act: 以後何も起きないまま猶予が満了する。
+    act(() => {
+      vi.advanceTimersByTime(INTERACTION_HOLD_SEC * 1000)
+    })
+
+    // Assert: 対象海域全体へ帰る。
+    expect(fitTargets(map).slice(before)).toEqual([COAST_WEST])
+  })
+
+  it('到達確認だけの観測点でも、行のクリックで猶予を数え直す', () => {
+    // Arrange: 到達確認へ寄った状態。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { arrivals: ARRIVALS }))
+    const before = fitTargets(map).length
+
+    // Act 1: 猶予の途中でその行をクリックする（FocusObsGL がその観測点へ寄せる）。
+    act(() => {
+      vi.advanceTimersByTime(20_000)
+    })
+    view.rerender(tsunamiHarness(map, { arrivals: ARRIVALS, focus: { name: 'C', ts: 1 } }))
+
+    // Act 2: 元の猶予なら満了しているはずの時間まで進める。
+    act(() => {
+      vi.advanceTimersByTime(20_000)
+    })
+
+    // Assert: まだ帰らない（実測の行をクリックしたときと同じ扱い）。
+    expect(fitTargets(map).length).toBe(before)
   })
 })
 

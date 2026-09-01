@@ -16,6 +16,7 @@ import {
   type TriggerResult,
 } from '../utils/kyoshinDetector'
 import { createLogThrottle, log } from '../utils/logger'
+import { profileSpan } from '../utils/frameProfiler'
 
 /** 学習資産（点別床・セル慢性活性）の localStorage キー。座標/セル基準なので siteConfigId 版差に非依存。 */
 const LEARNED_KEY = 'kyoshin-v3-learned'
@@ -271,18 +272,22 @@ export function useKyoshinDetectorV2(
 
     let stepResult: ReturnType<typeof step>
     try {
-      stepResult = step(
-        stateRef.current,
-        {
-          dataTimeMs,
-          sites: sites as [number, number][],
-          values: indices,
-          // 欠測点（Yahoo が index<0 で返す観測点データなし）を除外する。渡さないと欠測復旧時の
-          // 急上昇がオンセットと誤認識されうる（missing の実際の判定根拠は services/kyoshin.ts 参照）。
-          missing: indices.map((idx) => idx < MISSING_INDEX_THRESHOLD),
-          eewActive: hasActiveNonAssumedEEWRef.current,
-        },
-        stationMeta,
+      // 全国約 1725 点を毎秒 1 回まとめて判定する。カメラの移動と同じフレームに落ちればコマ落ちの
+      // 原因になりうるため、区間として名前を付けて記録する（utils/frameProfiler.ts）。
+      stepResult = profileSpan('kyoshin:detector-step', () =>
+        step(
+          stateRef.current,
+          {
+            dataTimeMs,
+            sites: sites as [number, number][],
+            values: indices,
+            // 欠測点（Yahoo が index<0 で返す観測点データなし）を除外する。渡さないと欠測復旧時の
+            // 急上昇がオンセットと誤認識されうる（missing の実際の判定根拠は services/kyoshin.ts 参照）。
+            missing: indices.map((idx) => idx < MISSING_INDEX_THRESHOLD),
+            eewActive: hasActiveNonAssumedEEWRef.current,
+          },
+          stationMeta,
+        ),
       )
     } catch (err) {
       // step 内部で予期せぬ例外（sites/indices の長さ不整合を潜り抜けたケース等）が
