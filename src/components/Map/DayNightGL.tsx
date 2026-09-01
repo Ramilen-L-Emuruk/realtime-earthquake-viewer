@@ -1,18 +1,23 @@
 import { useEffect, useRef } from 'react'
-import type { GeoJSONSource } from 'maplibre-gl'
+import type { DataDrivenPropertyValueSpecification, GeoJSONSource } from 'maplibre-gl'
 import type { FeatureCollection, Polygon } from 'geojson'
 import { useMapGL } from './mapGLContext'
 import { addOrderedLayer } from './gl/layerOrder'
-import { shadowPolygon, shadowAltitudes, SHADOW_STEPS } from '../../utils/solarTerminator'
+import { shadowBands, SHADOW_STEPS } from '../../utils/solarTerminator'
 import { serverNow } from '../../utils/clock'
 import { log } from '../../utils/logger'
 
-// 夜の側を地図に重ねる。日の入りから天文薄明の下限までを刻んだ面を、同じ濃さで重ね塗りする。
-// 内側ほど枚数が増えるので、濃淡は重なりの累積そのものが作る（帯を穴あきポリゴンで切り出すより
-// 単純で、リングの巻き方向の取り違えが起きない）。
+// 夜の側を地図に重ねる。日の入りから天文薄明の下限までを刻み、段ごとに「その段の濃さ」を持つ
+// 帯として描く。帯どうしは重ならないので、同じ画素を塗るのは 1 回だけで済む。
 //
-// **重なりは 1 枚のレイヤーの中でも累積する**ため、段ごとにレイヤーを分ける必要はない。分けると
-// 段数を変えるたびに gl/layerOrder.ts の登録も動かすことになる。
+// **濃淡を重ね塗りの累積で作らない。** 半透明を重ねるたびに結果が 8bit へ丸められ、色の成分ごとに
+// 潰れ方が違う。32 回も重ねると誤差が積み上がって色相そのものが動く（陸地の上で濃さ 70% のとき、
+// 赤だけが 22 から 14 まで落ちて緑と青は 1 も動かず、青紫から青緑へ 34 度ずれた）。帯にすれば
+// 合成は 1 回きりなので、誤差は 1/255 に収まって累積しない。同じ画素を塗る回数が段数ぶんから
+// 1 回に減るぶん、描画コストも段数に比例しなくなる。
+//
+// 帯は 1 枚のレイヤーへまとめて入れる。段ごとにレイヤーを分けると、段数を変えるたびに
+// gl/layerOrder.ts の登録も動かすことになる。
 //
 // 面の形は utils/solarTerminator.ts が作る。時刻は serverNow() から取るため、テスト時刻設定での
 // 再生中は再生時計の昼夜になる（壁時計を使うと、過去の地震を再生しているのに今の昼夜が出る）。
@@ -21,14 +26,29 @@ const SRC = 'day-night'
 const LYR = 'day-night'
 
 /**
- * 1 枚あたりの不透明度。重ねた結果が `nightOpacity`（設定）になるよう段数から逆算する。
+ * 帯の濃さを深さ（`depth`）から決める式。最も内側の帯が設定どおりの `nightOpacity` になる。
  *
- * 段数を変えても夜の濃さは変わらず、変わるのは境目の滑らかさだけ。**逆に、夜を濃くすると
- * 1 段あたりの濃さもそのまま上がり、段差が縞として見え始める**ので、濃さの上限と段数は
- * 対で決める（上限は useSettings.ts の `DAY_NIGHT_OPACITY_MAX`）。
+ * 段を重ねて濃くしていた頃と同じ濃さの付き方にするため、深さに対して指数で効かせる。段数を
+ * 変えても夜の濃さは変わらず、変わるのは境目の滑らかさだけ（上限は useSettings.ts の
+ * `DAY_NIGHT_OPACITY_MAX`）。
+ *
+ * **濃さは feature へ焼き込まず式で持たせる。** 焼き込むと、設定のスライダーを動かすたびに面を
+ * 作り直すことになる。深さは形が変わらないかぎり不変なので、動くのはこの式の係数だけで済む。
+ *
+ * **`depth` を持たない feature をこのソースへ混ぜないこと。** MapLibre は式の評価に失敗しても
+ * 例外を投げず、警告を 1 度出してそのプロパティの既定値へ落ちる。`fill-opacity` の既定は 1 な
+ * ので、素のまま `get` すると夜の面が**真っ黒な不透明の板**になる。`coalesce` で 0 へ倒して
+ * おけば、異常時は濃くなる側ではなく消える側へ寄る。式の中からはアプリの `log` を呼べないため、
+ * 転落しても記録は残らない。`depth` を必ず入れる `buildFeatureCollection` 側だけが拠り所になる。
+ *
+ * `totalSteps` には**帯を作るときと同じ段数**を渡すこと。ずれても式は成立してしまい、最も内側の
+ * 帯が設定値へ届かないまま夜が薄くなるだけで終わる。
  */
-function stepOpacity(nightOpacity: number): number {
-  return 1 - Math.pow(1 - nightOpacity, 1 / SHADOW_STEPS)
+export function opacityExpression(
+  nightOpacity: number,
+  totalSteps: number,
+): DataDrivenPropertyValueSpecification<number> {
+  return ['-', 1, ['^', 1 - nightOpacity, ['/', ['coalesce', ['get', 'depth'], 0], totalSteps]]]
 }
 
 /** 夜の色。純黒だと地図が沈むので、わずかに青へ寄せる。 */
@@ -46,11 +66,11 @@ const REDRAW_THRESHOLD_MS = 60000
 function buildFeatureCollection(epochMs: number): FeatureCollection<Polygon> {
   return {
     type: 'FeatureCollection',
-    features: shadowAltitudes().flatMap(altitude =>
-      shadowPolygon(epochMs, altitude).map(ring => ({
+    features: shadowBands(epochMs, SHADOW_STEPS).flatMap(band =>
+      band.polygons.map(rings => ({
         type: 'Feature' as const,
-        properties: {},
-        geometry: { type: 'Polygon' as const, coordinates: [ring] },
+        properties: { depth: band.depth },
+        geometry: { type: 'Polygon' as const, coordinates: rings },
       })),
     ),
   }
@@ -78,9 +98,9 @@ export function DayNightGL({ visible, opacity }: Props) {
       layout: { visibility: visible ? 'visible' : 'none' },
       paint: {
         'fill-color': NIGHT_COLOR,
-        'fill-opacity': stepOpacity(opacity),
-        // 経度 ±180 で切った縦辺どうしが隣り合うため、縁を滑らかにすると継ぎ目が線として
-        // 見える。面は縁を強調する必要がないので、アンチエイリアスを外して継ぎ目を消す。
+        'fill-opacity': opacityExpression(opacity, SHADOW_STEPS),
+        // 経度 ±180 で切った縦辺どうしと、隣り合う帯の境目が接する。縁を滑らかにするとそこが
+        // 線として見えるため、アンチエイリアスを外して継ぎ目を消す。
         'fill-antialias': false,
         // 既定の 300ms トランジションを外す。形の差し替えでは効かないが、将来 opacity を
         // 触ったときに黙って遅延が入るのを防ぐ。
@@ -103,7 +123,7 @@ export function DayNightGL({ visible, opacity }: Props) {
   useEffect(() => {
     if (!map) return
     // スライダーを動かしている間も遅れずに追う（paint の既定 300ms トランジションは外してある）。
-    if (map.getLayer(LYR)) map.setPaintProperty(LYR, 'fill-opacity', stepOpacity(opacity))
+    if (map.getLayer(LYR)) map.setPaintProperty(LYR, 'fill-opacity', opacityExpression(opacity, SHADOW_STEPS))
   }, [map, opacity])
 
   useEffect(() => {
@@ -121,8 +141,18 @@ export function DayNightGL({ visible, opacity }: Props) {
       if (Math.abs(now - lastDrawnAtRef.current) < REDRAW_THRESHOLD_MS) return
       const source = map.getSource(SRC) as GeoJSONSource | undefined
       if (!source) return
+      let data: FeatureCollection<Polygon>
+      try {
+        data = buildFeatureCollection(now)
+      } catch (error) {
+        // 面を作れなかったのに時刻だけ進めると、次の周回が「まだ描き直す時期ではない」と判断して
+        // REDRAW_THRESHOLD_MS のあいだ再試行が止まる。1 度の失敗が最大 1 分の固着に化けるので、
+        // 記録を残したうえで時刻は据え置き、次の周回で作り直す。
+        log.error('[day-night] 夜の面を作れませんでした', error)
+        return
+      }
       lastDrawnAtRef.current = now
-      source.setData(buildFeatureCollection(now))
+      source.setData(data)
     }
     // 非表示の間に時計が進んでいる（再生の開始・終了を含む）ので、まず今の時刻で描き直す。
     lastDrawnAtRef.current = Number.NEGATIVE_INFINITY
