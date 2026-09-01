@@ -80,6 +80,25 @@ export function isCancelForCurrentTsunami(cancel: JMATsunami, current: JMATsunam
 }
 
 /**
+ * 新報を「表示中の津波の続報」として扱い、前報の区域・観測点を引き継いでよいかを判定する。
+ *
+ * **カードの状態更新（`useEarthquakes`）と、カードの並びを引く基準の組み立て
+ * （`useLiveEventHandler` の `tsunamiCardOrderBasis`）で同じ述語を使うこと。** 前者だけが
+ * 引き継ぎを断ると、読み上げ・通知・スクロールの送り先が「カードに無い観測点」で並べ替えた
+ * 結果になる。逆も同じで、片方だけ緩めれば黙って食い違う。
+ *
+ * 引き継ぐのは**双方が同じ `eventId` を持ち、表示中が解除表示に入っていない**ときだけ。
+ *
+ * - `eventId` を持たない経路（P2PQuake の 552）は同一性を判定できないので引き継がない。
+ *   standard 版で観測点が蓄積されないのはこのため（カードもそう振る舞う）
+ * - 解除表示中（`cancelledAt`）のカードは 10 秒で消える。その値を新しい津波へ持ち込まない
+ */
+export function isTsunamiContinuation(current: JMATsunami | undefined, next: JMATsunami): boolean {
+  return !!current && !!current.eventId && !!next.eventId
+    && current.eventId === next.eventId && !current.cancelledAt
+}
+
+/**
  * 同一の津波イベントに属する報から、最後に伝えられた有効期限（`validDateTime`）を選ぶ。
  *
  * **有効期限は報ではなく津波そのものに付く事実として扱うこと。** 気象庁は期限が決まった報で
@@ -382,11 +401,40 @@ export function sortAreasForCardDisplay(areas: TsunamiArea[], observations: Tsun
 }
 
 /**
+ * 等級カードをまたいだ、カードが描く区域の通し順を返す。
+ *
+ * `sortAreasForCardDisplay` は**1 つの等級の中**の並びしか決めない（カードが等級ごとに分かれて
+ * いるため）。等級が混ざった区域の一覧を「カードで上から見える順」に並べたいときはこちらを使う。
+ * 等級混じりのまま `sortAreasForCardDisplay` へ渡すと、波高の見出しで等級をまたいで束ねてしまい、
+ * 注意報の区域が警報の区域より上に来ることがある。
+ *
+ * 上位から何件かだけを採る用途（通知の本文・スクロールの送り先）では、この違いがそのまま
+ * 「カードの先頭に無い区域を代表として挙げる」形で現れる。
+ *
+ * `GRADES_IN_CARD_ORDER` に無い等級の区域は落ちる。カード（`TsunamiTab`）も等級ごとに
+ * 絞り込んで描くので**カードと同じ振る舞い**だが、電文の解析（`dmdataParser` / `p2pquake`）が
+ * 既知の 5 値へ正規化することに依存している。正規化を緩めるなら両方を併せて見直すこと。
+ */
+export function sortAreasAcrossGradesForCardDisplay(
+  areas: readonly TsunamiArea[],
+  observations: readonly TsunamiObservation[],
+): TsunamiArea[] {
+  const all = [...observations]
+  const ordered: TsunamiArea[] = []
+  for (const grade of GRADES_IN_CARD_ORDER) {
+    const inGrade = areas.filter(a => a.grade === grade)
+    if (inGrade.length === 0) continue
+    ordered.push(...sortAreasForCardDisplay(inGrade, all))
+  }
+  return ordered
+}
+
+/**
  * 観測点をカードが描画する順に並べる。
  *
- * カードの入れ子をそのまま辿る ―― 等級カード（`GRADES_IN_CARD_ORDER`）→ 予想波高の見出し →
- * 区域（`sortAreasForCardDisplay`）→ 区域内は電文の並び → 区域に紐づかない観測点（「沖合観測」
- * のカード）を最後に置く。
+ * カードの入れ子をそのまま辿る ―― 等級カード → 予想波高の見出し → 区域
+ * （`sortAreasAcrossGradesForCardDisplay`）→ 区域内は電文の並び → 区域に紐づかない観測点
+ * （「沖合観測」のカード）を最後に置く。
  *
  * **読み上げの観測点列挙もこの順に揃える**（→ [`ttsText.ts`] の
  * `tsunamiObservationUpdateToSegments`）。区域の並びで既に踏んでいるのと同じ罠で、読み上げが
@@ -409,18 +457,13 @@ export function sortObservationsForCardDisplay(
   observations: readonly TsunamiObservation[],
   areas: readonly TsunamiArea[],
 ): TsunamiObservation[] {
-  const all = [...observations]
   const placed = new Set<TsunamiObservation>()
   const ordered: TsunamiObservation[] = []
-  for (const grade of GRADES_IN_CARD_ORDER) {
-    const inGrade = areas.filter(a => a.grade === grade)
-    if (inGrade.length === 0) continue
-    for (const area of sortAreasForCardDisplay(inGrade, all)) {
-      for (const obs of observations) {
-        if (placed.has(obs) || !matchesArea(obs, area)) continue
-        placed.add(obs)
-        ordered.push(obs)
-      }
+  for (const area of sortAreasAcrossGradesForCardDisplay(areas, observations)) {
+    for (const obs of observations) {
+      if (placed.has(obs) || !matchesArea(obs, area)) continue
+      placed.add(obs)
+      ordered.push(obs)
     }
   }
   // どの区域にも紐づかない観測点（沖合の観測点）はカードでも最後に来る。

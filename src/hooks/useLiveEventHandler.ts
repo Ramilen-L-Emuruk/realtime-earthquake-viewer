@@ -13,7 +13,7 @@ import {
 } from '../utils/eew'
 import { haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
-import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, matchesArea, sortAreasForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations } from '../utils/tsunami'
+import { tsunamiMaxGrade, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations } from '../utils/tsunami'
 import { playAlertSound, ttsDelayFor, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
 import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
@@ -301,15 +301,58 @@ function uniqueDistricts(observations: { districtCode?: string; districtName?: s
   return result
 }
 
+/** カードの並びを引くための材料（→ `tsunamiCardOrderBasis`）。仕様書での呼び方も「材料」で揃えている。 */
+interface TsunamiCardOrderBasis {
+  /** カードが描いている区域。 */
+  areas: TsunamiArea[]
+  /** カードが持っている観測点の全体（マージ済み）。 */
+  observations: TsunamiObservation[]
+}
+
+/**
+ * カードの並びを引くための材料を作る ―― カードが描いている区域と、カードが持っている観測点の全体。
+ *
+ * **受信した電文の値をそのまま使ってはいけない。** 区域は観測情報の続報が持たず
+ * （`isTsunamiObservationOnly`）、観測点はどの報も「その報が載せた分」しか持たない。一方カードは
+ * 前の発表の区域を出したまま観測点を足していくので、画面が出している津波（`tsunamisRef.current[0]`）と
+ * 混ぜて初めてカードと同じ材料になる。
+ *
+ * 区域の並びは「その区域で最も深刻な実測波高」で決まるため（`sortAreasForCardDisplay`）、
+ * 電文の観測点だけで並べると**観測を持たない区域として後ろへ回り、カードと逆転する**。等級を
+ * 切り替える報（警報 → 注意報など）は観測点をほとんど載せないので、そこが最も大きくずれる。
+ *
+ * この材料を使う先は 3 つあり、どれもカードと並びが食い違うと実害が出る:
+ * 読み上げ（追従スクロールがカード上を往復する）・受信時スクロールの送り先（カードの先頭でない
+ * 区域へ寄る）・ブラウザ通知の区域（カードの上位と違う区域を代表として挙げる）。
+ *
+ * **引き継ぐ条件はカードと同じ述語（`isTsunamiContinuation`）で判定する。** カードは別の地震の
+ * 津波・解除表示中のカードからは値を引き継がず、`eventId` を持たない経路（P2PQuake）では
+ * そもそも蓄積しない。ここだけ無条件に混ぜると、**カードに無い観測点で並べ替えた結果**を
+ * 読み上げ・通知・スクロールが使うことになる。
+ *
+ * **既知の限界**: `tsunamisRef` は App のレンダーで代入されるため、キューのディスパッチャが
+ * 1 tick で津波電文を 2 件以上さばいたときは 2 件目がバッチ前の値を見る。並びがカードと 1 件分
+ * ずれるだけで、読み上げる内容も新旧の言い分けも変わらない（言い分けの基準は `spokenObsHeightRef`）。
+ */
+function tsunamiCardOrderBasis(event: JMATsunami, displayed: JMATsunami | undefined): TsunamiCardOrderBasis {
+  const inherited = isTsunamiContinuation(displayed, event) ? displayed : undefined
+  return {
+    areas: event.areas.length > 0 ? event.areas : (inherited?.areas ?? []),
+    observations: mergeTsunamiObservations(inherited?.observations, event.observations ?? []) ?? [],
+  }
+}
+
 // 波高未確定（観測中）の新規到達観測点しか無いとき、その中でどの区域をスクロール先の
 // 先頭にするかを、津波情報カードの実際の表示順（TsunamiGradeCard と同じ並び替え）から決める。
 // 電文内の記載順ではなく、画面上で一番上に表示される区域を優先する。
+// 引数の区域・観測点は `tsunamiCardOrderBasis` が作ったものを渡すこと（電文の値を直接渡すと
+// 並べ替えが空回りし、電文順の先頭へ寄る）。
 function pickTopFromCardOrder(
   newlyArrivedObs: { districtCode?: string; districtName?: string }[],
   areas: import('../types/earthquake').TsunamiArea[],
   allObservations: import('../types/earthquake').TsunamiObservation[],
 ): { code?: string; name?: string } {
-  const ordered = sortAreasForCardDisplay(areas, allObservations)
+  const ordered = sortAreasAcrossGradesForCardDisplay(areas, allObservations)
   const matched = ordered.find(area => newlyArrivedObs.some(o => matchesArea(o as import('../types/earthquake').TsunamiObservation, area)))
   if (matched) return { code: matched.code, name: matched.name }
   return { code: newlyArrivedObs[0].districtCode, name: newlyArrivedObs[0].districtName }
@@ -1163,6 +1206,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 「更新音が鳴ったのに、読み上げは発報の重みで地震情報を切る」形の食い違いになる
     // （実際にそうなっていた。等級が動いていない続報まで `high` で読んでいた）。
     let tsunamiIsObservationUpdate = false
+    // 津波のカードと並びを揃えるための材料（→ `tsunamiCardOrderBasis`）。**電文の `areas` /
+    // `observations` を直接使わず、必ずここから引くこと。** 通知・読み上げ・受信時スクロールの
+    // 3 経路で共有する（別々に組み立てると、片方だけがカードと食い違う形で残る）。
+    // 津波以外では空（参照するのは津波の分岐だけなので、null を配って各所で確かめるより素直）。
+    const tsunamiCardBasis: TsunamiCardOrderBasis = event.kind === 'tsunami'
+      ? tsunamiCardOrderBasis(event, tsunamisRef.current[0])
+      : { areas: [], observations: [] }
     if (event.kind === 'quake' && event.cancelled) {
       // 地震情報取消: カード削除は useEarthquakes reducer が担う。通知音・読み上げのみここで処理する。
       if (settings.soundEnabled) playAlertSound('eewCancel')
@@ -2018,9 +2068,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         : grade === 'Warning' ? '津波警報'
         : grade === 'Forecast' ? '津波予報（若干の海面変動）'
         : '津波注意報'
+      // **区域はカードの並びで挙げる**（`tsunamiCardBasis`）。上位 5 件しか出さないので、
+      // 電文順（気象庁の地理順）で切ると、カードの先頭に並ぶ深刻な区域が通知から落ちる。
       showBrowserNotification(
         tsunamiNotifyTitle,
-        event.areas.slice(0, 5).map(a => a.name).join('、'),
+        sortAreasAcrossGradesForCardDisplay(tsunamiCardBasis.areas, tsunamiCardBasis.observations)
+          .slice(0, 5).map(a => a.name).join('、'),
         'tsunami',
         true,
       )
@@ -2104,38 +2157,20 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         ttsText = joinSegments(ttsSegments)
       } else if (event.kind === 'tsunami') {
         /**
-         * 観測点の読み上げ順を引くための「カードが描いている区域」。
-         *
-         * **電文の `areas` だけでは足りない。** 観測情報の続報は区域を持たずに届くため
-         * （`isTsunamiObservationOnly`）、それを渡すと並べ替えが何もしない。カードは前の発表の
-         * 区域を出したまま観測点をその下に足していくので、画面が出している津波の区域を使う。
-         */
-        const areasForCardOrder = (e: JMATsunami): TsunamiArea[] =>
-          e.areas.length > 0 ? e.areas : (tsunamisRef.current[0]?.areas ?? [])
-        /**
          * 今回の電文が運んできた観測点を、**カードの並び**で返す。
          *
-         * 並べ替えにはカードが持つ観測点の全体（マージ済み）を渡す。今回の分だけで並べると、
-         * 既報の観測点を載せない続報で「観測を持たない区域」として後ろへ回り、カードの並びと
-         * 逆転する（`sortObservationsForCardDisplay` の宣言箇所）。並びを得たあと、今回の分だけを
-         * オブジェクトの同一性で絞り込む（マージは今回の要素をそのまま持つ）。
-         *
-         * **既知の限界**: `tsunamisRef` は App のレンダーで代入されるため、キューのディスパッチャが
-         * 1 tick で津波電文を 2 件以上さばいたときは 2 件目がバッチ前の値を見る。並びがカードと
-         * 1 件分ずれるだけで、読み上げる観測点も新旧の言い分けも変わらない（言い分けの基準は
-         * `spokenObsHeightRef`）。ここを埋めるにはマージ済み観測点をこのフックでも持つことになり、
-         * 解除・リプレイ復元での落とし忘れという別種の穴を増やすので採らない。
+         * 並べ替えの材料はカードと同じもの（`tsunamiCardBasis`）を使う。並びを得たあと、今回の
+         * 分だけをオブジェクトの同一性で絞り込む（マージは今回の要素をそのまま持つ）。
          */
         const observationsInCardOrder = (e: JMATsunami): TsunamiObservation[] => {
           const own = e.observations ?? []
           if (own.length === 0) return []
-          const areas = areasForCardOrder(e)
           // 基準が引けないと電文順のまま読む。**黙って落ちないよう記録する** ―― カードの並びと
           // 食い違えば追従スクロールが往復するので、往復を見たときに原因を辿れるようにする。
-          if (areas.length === 0) log.info('[tsunami] 観測点の並びの基準となる区域が無い（電文順で読み上げる）')
-          const merged = mergeTsunamiObservations(tsunamisRef.current[0]?.observations, own) ?? own
+          if (tsunamiCardBasis.areas.length === 0) log.info('[tsunami] 観測点の並びの基準となる区域が無い（電文順で読み上げる）')
           const ownSet = new Set(own)
-          return sortObservationsForCardDisplay(merged, areas).filter(o => ownSet.has(o))
+          return sortObservationsForCardDisplay(tsunamiCardBasis.observations, tsunamiCardBasis.areas)
+            .filter(o => ownSet.has(o))
         }
         const GRADE_RANK = { MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0 } as const
         type GradeKey = keyof typeof GRADE_RANK
@@ -2187,7 +2222,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           }
         } else {
           const isDowngrade = prevGrade !== null && GRADE_RANK[currentGrade as GradeKey] < GRADE_RANK[prevGrade as GradeKey]
-          ttsSegments = isDowngrade ? tsunamiDowngradeToSegments(event) : tsunamiToSegments(event)
+          // **区域の並べ替えにはカードと同じ材料を渡す**（`tsunamiCardBasis`）。等級を切り替える報は
+          // 観測点をほとんど載せないため、電文の分だけで並べると読み上げが電文順（気象庁の地理順）に
+          // 戻り、実測波高の順に並んでいるカードの上を追従スクロールが往復する。
+          ttsSegments = isDowngrade
+            ? tsunamiDowngradeToSegments(event, tsunamiCardBasis.observations)
+            : tsunamiToSegments(event, tsunamiCardBasis.observations)
           // グレード変化と同時に観測中（波高未確定）で新規到達した観測点も読み上げに含める
           // （こちらもカードの並びに揃える。理由は観測点更新側と同じ）
           const newlyArrivedObsOnGradeChange = observationsInCardOrder(event)
@@ -2288,7 +2328,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             districts: uniqueDistricts([...updatedObs552, ...newlyArrivedObs552]),
             top: topObs
               ? { code: topObs.districtCode, name: topObs.districtName }
-              : pickTopFromCardOrder(newlyArrivedObs552, event.areas, event.observations ?? []),
+              : pickTopFromCardOrder(newlyArrivedObs552, tsunamiCardBasis.areas, tsunamiCardBasis.observations),
             ts: Date.now(),
           })
         } else {
@@ -2307,7 +2347,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             districts: uniqueDistricts([...obsWithHeight552, ...newlyArrivedObs552b]),
             top: topObs
               ? { code: topObs.districtCode, name: topObs.districtName }
-              : pickTopFromCardOrder(newlyArrivedObs552b, event.areas, event.observations ?? []),
+              : pickTopFromCardOrder(newlyArrivedObs552b, tsunamiCardBasis.areas, tsunamiCardBasis.observations),
             ts: Date.now(),
           })
         } else {

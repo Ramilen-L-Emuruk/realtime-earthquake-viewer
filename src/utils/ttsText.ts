@@ -1110,12 +1110,39 @@ function orderAreasForSpeech(
   return sortAreasForCardDisplay([...areas], [...observations])
 }
 
-/** VTSE41/51/52 津波情報（新規発表・引き上げ）の読み上げを断片列で返す。 */
-export function tsunamiToSegments(event: JMATsunami): SpeechSegment[] {
+/**
+ * 区域の並べ替えに使う観測点を決める。
+ *
+ * **カードが持っている観測点の全体（マージ済み）を渡すこと。** 区域の並びは「その区域で最も
+ * 深刻な実測波高」で決まるため（`sortAreasByObservation`）、その電文が運んできた分だけで
+ * 並べるとカードと食い違う。等級を切り替える報（警報 → 注意報など）は観測点をほとんど
+ * 載せないので、渡さないと読み上げだけが電文順（気象庁の地理順）に戻り、追従スクロールが
+ * カード上を往復する。
+ *
+ * 省略時は電文が載せた分で並べる。呼び出し側が画面の津波を持たないテストのための既定値で、
+ * 実際の受信経路（`useLiveEventHandler`）では必ず渡す。
+ */
+function observationsForAreaOrder(
+  event: JMATsunami,
+  observationsForOrder?: readonly TsunamiObservation[],
+): readonly TsunamiObservation[] {
+  return observationsForOrder ?? event.observations ?? []
+}
+
+/**
+ * VTSE41/51/52 津波情報（新規発表・引き上げ）の読み上げを断片列で返す。
+ *
+ * `observationsForOrder` は区域の並べ替えにだけ使う（→ `observationsForAreaOrder`）。
+ * 読み上げる内容は `event` だけで決まる ―― 等級の発表では観測点の実測値を読まない。
+ */
+export function tsunamiToSegments(
+  event: JMATsunami,
+  observationsForOrder?: readonly TsunamiObservation[],
+): SpeechSegment[] {
   const topGrade = GRADE_ORDER.find(g => event.areas.some(a => a.grade === g))
   if (!topGrade) return []
 
-  const observations = event.observations ?? []
+  const observations = observationsForAreaOrder(event, observationsForOrder)
   // 波高の文はグループの境界が電文順で決まるため、並べ替える前のものを渡す
   const rawTopAreas = event.areas.filter(a => a.grade === topGrade)
   const gradeLabel = tsunamiGradeLabel(topGrade)
@@ -1143,16 +1170,28 @@ export function tsunamiToSegments(event: JMATsunami): SpeechSegment[] {
   ]
 }
 
-export function tsunamiToText(event: JMATsunami): string {
-  return joinSegments(tsunamiToSegments(event))
+export function tsunamiToText(
+  event: JMATsunami,
+  observationsForOrder?: readonly TsunamiObservation[],
+): string {
+  return joinSegments(tsunamiToSegments(event, observationsForOrder))
 }
 
-/** VTSE41/51/52 津波情報 引き下げ時の読み上げを断片列で返す。 */
-export function tsunamiDowngradeToSegments(event: JMATsunami): SpeechSegment[] {
+/**
+ * VTSE41/51/52 津波情報 引き下げ時の読み上げを断片列で返す。
+ *
+ * `observationsForOrder` の役割は `tsunamiToSegments` と同じ。**引き下げこそ渡すこと** ――
+ * 警報から注意報へ切り替える報が届くころには観測が出揃っており、カードは実測波高の順に
+ * 並び替わっている。
+ */
+export function tsunamiDowngradeToSegments(
+  event: JMATsunami,
+  observationsForOrder?: readonly TsunamiObservation[],
+): SpeechSegment[] {
   const topGrade = GRADE_ORDER.find(g => event.areas.some(a => a.grade === g))
   if (!topGrade) return [plain(tsunamiCancelToText(event.cancelReason))]
 
-  const observations = event.observations ?? []
+  const observations = observationsForAreaOrder(event, observationsForOrder)
   const rawTopAreas = event.areas.filter(a => a.grade === topGrade)
   const gradeLabel = tsunamiGradeLabel(topGrade)
   const heights = areaHeightSentence(rawTopAreas, observations)
@@ -1174,8 +1213,11 @@ export function tsunamiDowngradeToSegments(event: JMATsunami): SpeechSegment[] {
 }
 
 /** VTSE41/51/52 津波情報 引き下げ時の読み上げテキストを生成する。 */
-export function tsunamiDowngradeToText(event: JMATsunami): string {
-  return joinSegments(tsunamiDowngradeToSegments(event))
+export function tsunamiDowngradeToText(
+  event: JMATsunami,
+  observationsForOrder?: readonly TsunamiObservation[],
+): string {
+  return joinSegments(tsunamiDowngradeToSegments(event, observationsForOrder))
 }
 
 /** VTSE41/51/52 津波警報等 全解除の読み上げテキストを cancelReason ごとに生成する。 */
