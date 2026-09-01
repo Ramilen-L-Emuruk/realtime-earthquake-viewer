@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation } from '../../types/earthquake'
 import { formatDateTimeMin, formatTime } from '../../utils/formatters'
 import { quakeEventKey } from '../../utils/quakeMerge'
-import { groupAreasForCardDisplay, matchesArea, overSuffixedHeight, GRADES_IN_CARD_ORDER } from '../../utils/tsunami'
+import { groupAreasForCardDisplay, matchesArea, overSuffixedHeight, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, tsunamiAreaKey } from '../../utils/tsunami'
 import { mapChunksToRefs, planFollowScroll, type FollowRect, type SpeechFollowSession, type SpeechRef } from '../../utils/ttsFollow'
 import { getSpeechClock } from '../../utils/voicevox'
 import { INTERACTION_HOLD_SEC } from '../Map/gl/camera'
@@ -23,6 +23,13 @@ interface Props {
   onObservationClick?: (name: string) => void
   focusedDistrict?: FocusedDistrict | null
   obsUpdateStatus?: Map<string, 'new' | 'updated'>
+  /**
+   * 直近の受信で等級が動いた区域（`tsunamiAreaKey`）。この集合にある区域だけが
+   * 「〇〇から切り替え」を出す。**区域が持つ `lastGrade` だけで出さないこと** ――
+   * 気象庁の `LastKind` は変化した後の続報にも載り続けるため、何通も後まで
+   * 「たった今切り替わった」ように見え続ける（→ docs/spec/tsunami-spec.md §10）。
+   */
+  areaGradeChangedKeys?: ReadonlySet<string>
   /** 進行中の読み上げ。渡されるとカードが読み上げに追従する（`null` なら追従しない） */
   speechSession?: SpeechFollowSession | null
   /**
@@ -141,7 +148,7 @@ function TsunamiHeightHeader({ label, style }: { label: string; style: GradeStyl
   )
 }
 
-function TsunamiAreaRow({ area, observations, style, onObservationClick, isChanged, isTop, registerRow, registerSpeechRow, obsUpdateStatus }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle; onObservationClick?: (name: string) => void; isChanged: boolean; isTop: boolean; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, 'new' | 'updated'> }) {
+function TsunamiAreaRow({ area, observations, style, onObservationClick, isChanged, isTop, registerRow, registerSpeechRow, obsUpdateStatus, areaGradeChangedKeys }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle; onObservationClick?: (name: string) => void; isChanged: boolean; isTop: boolean; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, 'new' | 'updated'>; areaGradeChangedKeys?: ReadonlySet<string> }) {
   const setRowRef = useCallback((el: HTMLDivElement | null) => {
     registerRow?.(area, isChanged, isTop, el)
     // 追従スクロールの引き当て用。focusedDistrict とは違い、変更の有無に関わらず全区域を登録する
@@ -151,6 +158,20 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, isChang
   const arrivalText = area.firstHeight?.arrivalTime
     ? `到達予想 ${formatTime(area.firstHeight.arrivalTime).slice(0, 5)}`
     : (area.firstHeight?.condition ?? null)
+
+  // 直近の受信で等級が動いた区域に、その移り変わりを 1 行で示す。
+  //
+  // 条件は 2 つ。**直近の受信で動いた区域であること**（`areaGradeChangedKeys`。区域が持つ
+  // `lastGrade` は変化後の続報にも残るため、これが無いと出続ける）と、**前回が「津波なし」
+  // （`Unknown`）でないこと**（新規発表の報では全区域がそこから始まり、全部の行に付いて
+  // 意味を持たなくなる）。`lastGrade` は DMDATA 経路のみが持つ（P2PQuake は配信しない）。
+  const gradeChange = areaGradeChangedKeys?.has(tsunamiAreaKey(area))
+    && area.lastGrade && area.lastGrade !== 'Unknown' && area.lastGrade !== area.grade
+    ? {
+      raised: isTsunamiGradeRaised(area.lastGrade, area.grade),
+      label: TSUNAMI_GRADE_SHORT_LABEL[area.lastGrade],
+    }
+    : null
 
   const stations = area.stations ?? []
   // 実測値がある観測点名のセット（到達済み判定・到達中バッジ抑制に使用）
@@ -168,6 +189,11 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, isChang
           {arrivalText && (
             <span className="block mt-1" style={{ fontSize: '0.9375rem', color: style.arrivalColor }}>
               {arrivalText}
+            </span>
+          )}
+          {gradeChange && (
+            <span className="block mt-1" style={{ fontSize: '0.8125rem', color: gradeChange.raised ? '#f87171' : '#9ca3af' }}>
+              {gradeChange.label}から{gradeChange.raised ? '引き上げ' : '切り替え'}
             </span>
           )}
         </div>
@@ -281,7 +307,7 @@ function TsunamiObservationRow({ obs, onObservationClick, registerSpeechRow }: {
   )
 }
 
-function TsunamiGradeCard({ grade, areas, observations, onObservationClick, focusedDistrict, registerRow, registerSpeechRow, registerSpeechAnchor, obsUpdateStatus }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[]; onObservationClick?: (name: string) => void; focusedDistrict?: FocusedDistrict | null; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; registerSpeechAnchor?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, 'new' | 'updated'> }) {
+function TsunamiGradeCard({ grade, areas, observations, onObservationClick, focusedDistrict, registerRow, registerSpeechRow, registerSpeechAnchor, obsUpdateStatus, areaGradeChangedKeys }: { grade: TsunamiGrade; areas: TsunamiArea[]; observations: TsunamiObservation[]; onObservationClick?: (name: string) => void; focusedDistrict?: FocusedDistrict | null; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; registerSpeechAnchor?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, 'new' | 'updated'>; areaGradeChangedKeys?: ReadonlySet<string> }) {
   if (areas.length === 0) return null
   const style = getGradeStyle(grade)
   const groups = groupAreasForCardDisplay(areas, observations)
@@ -317,6 +343,7 @@ function TsunamiGradeCard({ grade, areas, observations, onObservationClick, focu
               registerRow={registerRow}
               registerSpeechRow={registerSpeechRow}
               obsUpdateStatus={obsUpdateStatus}
+              areaGradeChangedKeys={areaGradeChangedKeys}
             />
           ))}
         </div>
@@ -333,7 +360,7 @@ function getTopGrade(tsunamis: JMATsunami[]): TsunamiGrade {
 }
 
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservationClick, focusedDistrict, obsUpdateStatus, speechSession, isVisible, speechFollowEnabled, autoShowTick }: Props) {
+export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservationClick, focusedDistrict, obsUpdateStatus, areaGradeChangedKeys, speechSession, isVisible, speechFollowEnabled, autoShowTick }: Props) {
   // cancelledAt がある = 10秒表示中なので active に含める
   const active = tsunamis.filter(t => !t.cancelled || t.cancelledAt)
 
@@ -816,6 +843,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                 registerSpeechRow={registerSpeechRow}
                 registerSpeechAnchor={registerSpeechAnchor}
                 obsUpdateStatus={obsUpdateStatus}
+                areaGradeChangedKeys={areaGradeChangedKeys}
               />
             ))}
             {unmatched.length > 0 && (

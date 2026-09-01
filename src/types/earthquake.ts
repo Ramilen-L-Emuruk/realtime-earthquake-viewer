@@ -106,6 +106,17 @@ export interface TsunamiStation {
 
 export interface TsunamiArea {
   grade: TsunamiGrade
+  /**
+   * 前回この区域に発表されていた等級（気象庁電文の `LastKind`）。
+   *
+   * **区域単位の切替・引き上げはこれでしか分からない。** 気象庁は一部解除でも区域を電文から
+   * 消さず、「津波注意報 → 津波予報」のような等級の降格として載せる。全体の最上位等級だけを
+   * 見ていると、他の区域に注意報が残っている限り「変化なし」に見える
+   * （→ docs/spec/tsunami-spec.md §10「区域単位で等級が動いた報」）。
+   *
+   * DMDATA 経路（XML・JSON）のみ。P2PQuake は相当する項目を配信しないため常に undefined。
+   */
+  lastGrade?: TsunamiGrade
   immediate: boolean
   name: string
   code?: string

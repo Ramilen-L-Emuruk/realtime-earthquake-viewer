@@ -1,7 +1,7 @@
 import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, TsunamiArea, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
 import { eewNoForecastReason, type EewMaxScaleInfo } from './eew'
 import { getIntensityLabel, getIntensityLabelWithOrAbove } from './intensity'
-import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight } from './tsunami'
+import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight, TSUNAMI_GRADE_SHORT_LABEL, type TsunamiAreaGradeChange } from './tsunami'
 import { joinSegments, plain, type SpeechSegment, type SpeechRef, type QuakeFact } from './ttsFollow'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
@@ -12,13 +12,8 @@ import { createLogThrottle, log } from './logger'
 const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch', 'Forecast']
 
 function tsunamiGradeLabel(grade: TsunamiGrade): string {
-  switch (grade) {
-    case 'MajorWarning': return '大津波警報'
-    case 'Warning':      return '津波警報'
-    case 'Watch':        return '津波注意報'
-    case 'Forecast':     return '津波予報'
-    default:              return ''
-  }
+  // 呼び名はカードの「等級が移り変わった」行と共有する（`TSUNAMI_GRADE_SHORT_LABEL`）
+  return TSUNAMI_GRADE_SHORT_LABEL[grade]
 }
 
 // 震度スケールの降順リスト
@@ -1218,6 +1213,54 @@ export function tsunamiDowngradeToText(
   observationsForOrder?: readonly TsunamiObservation[],
 ): string {
   return joinSegments(tsunamiDowngradeToSegments(event, observationsForOrder))
+}
+
+/**
+ * 区域単位で等級が動いた報（一部解除・一部切替・一部引き上げ）の読み上げを断片列で返す。
+ *
+ * 例:「福岡県日本海沿岸、佐賀県北部の津波注意報が津波予報に切り替えられました。」
+ * 「京都府の津波注意報が津波警報に引き上げられました。また、石川県能登の大津波警報が
+ * 津波警報に切り替えられました。」
+ *
+ * **動いた区域だけを挙げ、残っている区域は語らない。** この報で聞き手が知りたいのは自分の
+ * 地域が変わったかどうかで、発表中の区域の全体像はカードが示す。全区域を読む発表文
+ * （`tsunamiToSegments`）と役割を分けている。
+ *
+ * **行動指示（「海岸から離れてください」等）も付けない。** 等級の発表と違い、この報は
+ * 「どこがどう変わったか」を伝えるためのもの。
+ *
+ * 遷移の組ごとに 1 文を置き、2 文目以降を「また、」で継ぐ（等級ごとに文を分ける
+ * `lowerGradeSentence` と同じ作法）。区域名は自分の組の中で読点連結し、助詞は述語の直前に
+ * 1 つだけ置く（→ docs/spec/audio-tts-spec.md §4）。
+ *
+ * 変化が無ければ空を返す（呼び出し側が観測点更新の読み上げへ落とす）。
+ *
+ * **受け取るのは既読を除いた組。** `LastKind` は変化した後の続報にも載り続けるため、電文から
+ * 毎回組を作り直すと同じ文を繰り返す（→ `selectUnspokenAreaGradeChanges`）。既読の判断は
+ * 呼び出し側（発話の直前に記録を進める側）が持つ。
+ *
+ * @param changes 読み上げる等級変化の組。並びがそのまま文の順になる
+ */
+export function tsunamiAreaGradeChangeToSegments(changes: readonly TsunamiAreaGradeChange[]): SpeechSegment[] {
+  const segments: SpeechSegment[] = []
+  changes.forEach((change, i) => {
+    if (i > 0) segments.push(plain('また、'))
+    segments.push(...areaNameSegments(change.areas))
+    if (change.from === 'Unknown') {
+      // 前回は津波なし（`LastKind` が 00 等）。「〜の津波なしが」とは言えないので、
+      // 波高が付いていない発表文と同じ言い方に落とす。
+      segments.push(plain(`に${tsunamiGradeLabel(change.to)}が発表されました。`))
+      return
+    }
+    const verb = change.raised ? '引き上げられました' : '切り替えられました'
+    segments.push(plain(`の${tsunamiGradeLabel(change.from)}が${tsunamiGradeLabel(change.to)}に${verb}。`))
+  })
+  return segments
+}
+
+/** 区域単位で等級が動いた報の読み上げテキストを生成する。 */
+export function tsunamiAreaGradeChangeToText(changes: readonly TsunamiAreaGradeChange[]): string {
+  return joinSegments(tsunamiAreaGradeChangeToSegments(changes))
 }
 
 /** VTSE41/51/52 津波警報等 全解除の読み上げテキストを cancelReason ごとに生成する。 */
