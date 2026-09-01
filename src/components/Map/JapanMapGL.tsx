@@ -50,6 +50,7 @@ import { drawTsunamiObsBars } from './gl/tsunamiObsBar'
 import { drawTsunamiArrivalMarkers } from './gl/tsunamiArrivalMarker'
 import { kyoshinIndexToJma } from '../../utils/kyoshinIntensity'
 import { log } from '../../utils/logger'
+import { beginSpan, noteEvent } from '../../utils/frameProfiler'
 import { serverNow } from '../../utils/clock'
 import { syncEewFirstSeen } from './gl/eewFirstSeen'
 import { applyFrontSortKeys, bearingChangedEnough } from './gl/screenDepth'
@@ -374,12 +375,45 @@ export function JapanMapGL({
     // 式を組み立てて比べるだけで終わる。
     const onStyleData = () => applyFrontSortKeys(m, m.getBearing())
     m.on('styledata', onStyleData)
+
+    // コマ落ちの診断（utils/frameProfiler.ts）へ、地図側の文脈を 2 つ渡す。
+    //
+    // **カメラの移動は区間として記録する。** 区間そのものの長さには意味がない（飛行時間なので
+    // 必ず長い）。目的は、記録された長いフレームを後から「移動中に起きたもの」と結び付けられる
+    // ようにすることだけ。
+    let endMoveSpan: ((detail?: string) => void) | null = null
+    const onMoveStart = () => {
+      // 前の区間が閉じていなければここで閉じる。`movestart` が続けて来ても開いたままにしない
+      // （閉じ忘れた区間は記録に残らず、その移動中のフレームが「移動外」に見える）。
+      endMoveSpan?.()
+      endMoveSpan = beginSpan('camera:move')
+    }
+    const onMoveEnd = () => {
+      endMoveSpan?.()
+      endMoveSpan = null
+    }
+    m.on('movestart', onMoveStart)
+    m.on('moveend', onMoveEnd)
+    // **タイルの到着は点として記録する。** これが長いフレームの前後に集まっていれば読み込み側、
+    // 集まっていなければメインスレッド側——この切り分けが診断の主眼。ソース ID まで名前に含める
+    // のは、海底地形ラスタと geojson の再タイル化を混ぜないため。
+    const onSourceData = (e: maplibregl.MapSourceDataEvent) => {
+      if (e.tile) noteEvent(`map:tile:${e.sourceId}`)
+    }
+    m.on('sourcedata', onSourceData)
+
     return () => {
+      // 飛行中に破棄されたら、そこまでを部分区間として残す（閉じないと記録が丸ごと消える）。
+      endMoveSpan?.()
+      endMoveSpan = null
       m.off('zoomend', onZoomEnd)
       m.off('resize', onResize)
       m.off('rotate', onRotate)
       m.off('rotateend', onRotateEnd)
       m.off('styledata', onStyleData)
+      m.off('movestart', onMoveStart)
+      m.off('moveend', onMoveEnd)
+      m.off('sourcedata', onSourceData)
       cameraUpdateSkip.restore()
       delete (window as unknown as Record<string, unknown>).__cameraUpdateSkip
       mapRef.current = null
