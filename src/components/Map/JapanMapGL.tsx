@@ -25,6 +25,7 @@ import { LpgmPointsGL } from './LpgmPointsGL'
 import { LpgmRegionFillGL } from './LpgmRegionFillGL'
 import { TsunamiLinesGL } from './TsunamiLinesGL'
 import { TsunamiObsBarsGL } from './TsunamiObsBarsGL'
+import { TsunamiArrivalMarkersGL } from './TsunamiArrivalMarkersGL'
 import { EewRegionFillGL } from './EewRegionFillGL'
 import { EewLpgmRegionFillGL } from './EewLpgmRegionFillGL'
 import { EewEpicentersGL } from './EewEpicentersGL'
@@ -46,6 +47,7 @@ import { useTsunamiLayerData } from '../../hooks/useTsunamiLayerData'
 import { useEewLayerData } from '../../hooks/useEewLayerData'
 import type { JapanMapProps, MapHandle } from './mapTypes'
 import { drawTsunamiObsBars } from './gl/tsunamiObsBar'
+import { drawTsunamiArrivalMarkers } from './gl/tsunamiArrivalMarker'
 import { kyoshinIndexToJma } from '../../utils/kyoshinIntensity'
 import { log } from '../../utils/logger'
 import { serverNow } from '../../utils/clock'
@@ -166,23 +168,38 @@ export function JapanMapGL({
     quakeFitPositions,
     quakeSignature,
   } = useQuakeLayerData(mode, quake, { zoom, aggregateMaxZoom }, lpgm)
-  // 津波の派生データ（海岸線＋観測棒）。発報中は全モードで海岸線を描くため常時計算する。
-  const { tsunamiLines, observationBars, tsunamiFitPositions, tsunamiSignature } = useTsunamiLayerData(
+  // 津波の派生データ（海岸線＋観測棒＋到達確認マーカー）。発報中は全モードで海岸線を描くため常時計算する。
+  const { tsunamiLines, observationBars, arrivalMarkers, tsunamiFitPositions, tsunamiSignature } = useTsunamiLayerData(
     tsunamis,
     observations,
     obsUpdateStatus,
   )
-  // 撮影した画像へ描き足すもの。いまは津波の観測棒だけで、これは DOM マーカーのため
-  // WebGL のキャンバスに写らない（gl/tsunamiObsBar.ts の drawTsunamiObsBars）。
-  // 表示条件は下の TsunamiObsBarsGL のマウント条件と揃える。
-  const extrasRef = useRef<{ bars: typeof observationBars; iconScale: number; showBars: boolean }>({
+  // 観測行クリックで寄せられる点。**カードに出ている観測点をすべて含める**こと——
+  // 実測（観測棒）だけにすると、到達確認の行をクリックしても地図が動かない。
+  const focusablePoints = useMemo(
+    () => [
+      ...observationBars.map((b) => ({ name: b.name, lat: b.lat, lng: b.lng })),
+      ...arrivalMarkers.map((m) => ({ name: m.name, lat: m.lat, lng: m.lng })),
+    ],
+    [observationBars, arrivalMarkers],
+  )
+  // 撮影した画像へ描き足すもの。いまは津波の観測棒と到達確認マーカーで、どちらも DOM マーカーの
+  // ため WebGL のキャンバスに写らない（gl/tsunamiObsBar.ts・gl/tsunamiArrivalMarker.ts）。
+  // 表示条件は下の TsunamiObsBarsGL / TsunamiArrivalMarkersGL のマウント条件と揃える。
+  const extrasRef = useRef<{
+    bars: typeof observationBars
+    arrivals: typeof arrivalMarkers
+    iconScale: number
+    showBars: boolean
+  }>({
     bars: [],
+    arrivals: [],
     iconScale: 1,
     showBars: false,
   })
   useEffect(() => {
-    extrasRef.current = { bars: observationBars, iconScale, showBars: mode === 'tsunami' }
-  }, [observationBars, iconScale, mode])
+    extrasRef.current = { bars: observationBars, arrivals: arrivalMarkers, iconScale, showBars: mode === 'tsunami' }
+  }, [observationBars, arrivalMarkers, iconScale, mode])
   // カメラが追う検知点。**実際に地図へ描かれているものだけ**に揃える。
   // detectedPoints（confirmed イベントのメンバーの和集合）は現在の震度で絞られていない
   // （`kyoshinDetector` の memberKeys。値が下がりきった点は `MEMBER_DROP_MS` の猶予を過ぎれば
@@ -316,8 +333,10 @@ export function JapanMapGL({
       const handle: MapHandle = {
         map: m,
         drawExtras: (ctx, target, scale) => {
-          const { bars, iconScale: s, showBars } = extrasRef.current
-          if (showBars) drawTsunamiObsBars(ctx, target, scale, bars, s)
+          const { bars, arrivals, iconScale: s, showBars } = extrasRef.current
+          if (!showBars) return
+          drawTsunamiObsBars(ctx, target, scale, bars, s)
+          drawTsunamiArrivalMarkers(ctx, target, scale, arrivals, s)
         },
       }
       onMapReadyRef.current?.(handle)
@@ -549,15 +568,21 @@ export function JapanMapGL({
           {mode === 'tsunami' && observationBars.length > 0 && (
             <TsunamiObsBarsGL bars={observationBars} iconScale={iconScale} />
           )}
+          {/* 津波の到達確認マーカー: 波高がまだ出ていない観測点に印を置く。観測棒と対で、
+              値が付いた観測点はこちらから消えて棒へ移る。 */}
+          {mode === 'tsunami' && arrivalMarkers.length > 0 && (
+            <TsunamiArrivalMarkersGL markers={arrivalMarkers} iconScale={iconScale} />
+          )}
           {/* 津波カメラ追従・観測フォーカス（モード切替をまたいで ref 保持するため常時マウント）。 */}
           <TsunamiFitGL
             mode={mode}
             tsunamiSignature={tsunamiSignature}
             tsunamiFitPositions={tsunamiFitPositions}
             observationBars={observationBars}
+            arrivalMarkers={arrivalMarkers}
             focusObsName={focusObsName}
           />
-          <FocusObsGL focusObsName={focusObsName} observationBars={observationBars} />
+          <FocusObsGL focusObsName={focusObsName} observationBars={focusablePoints} />
         </MapGLContext.Provider>
       </div>
     </div>
