@@ -324,6 +324,151 @@ describe('再生中もキューの予約は発火時刻を待つ', () => {
   })
 })
 
+// キュー配列の identity。津波の失効予約の張り替えはキューの中身に触るが、**配列を作り直しては
+// いけない**。ディスパッチャは 1 ティックで複数のエントリを続けて処理するため、その途中で
+// 差し替えると、それ以降に取り出した電文が差し替え前の配列からしか消えず、新しい配列には
+// 残ったままになる。次のティックはその配列を先頭から読むので同じ電文を再処理する。
+//
+// 実測（2024-01-02 16:59 からの再生）では地震情報 1 通で受信音が 15 回鳴り、キューからの
+// 取り出しが 3779 回に達した。画面には「同じカードが更新され続ける」ようにしか映らず、
+// 型検査でも例外でも捕まらないため、ここで固定する。
+describe('キューは配列を差し替えない（同じ電文を二度処理しない）', () => {
+  const OFFSET_MS = -3600_000
+
+  /** 有効期限を持つ津波。処理すると失効予約の張り替えが走る（キューの中身に触る形）。 */
+  const 津波 = (at: Date, validForMs: number, 連番 = 1): JMATsunami => {
+    const iso = at.toISOString()
+    return {
+      kind: 'tsunami',
+      id: `queue-identity-tsunami-${連番}`,
+      eventId: `queue-identity-tsunami-event-${連番}`,
+      time: iso,
+      cancelled: false,
+      validDateTime: new Date(at.getTime() + validForMs).toISOString(),
+      issue: { source: '気象庁', time: iso, type: 'Focus' },
+      areas: [{ grade: 'Forecast', immediate: false, name: 'テスト沿岸' }],
+    }
+  }
+
+  /** 津波より後ろへ積む地震情報。通知が 1 回だけであることを見る。 */
+  const 地震情報 = (at: Date, 連番 = 1): JMAQuake => {
+    const iso = at.toISOString()
+    return {
+      kind: 'quake',
+      id: `queue-identity-quake-${連番}`,
+      time: iso,
+      issue: { source: '気象庁', time: iso, type: '震源・震度情報', correct: 'なし' },
+      earthquake: {
+        time: iso,
+        hypocenter: { name: 'テスト沖', latitude: 35, longitude: 140, depth: 10, magnitude: 4.0 },
+        maxScale: 10,
+        domesticTsunami: 'なし',
+      },
+      points: [{ pref: '', addr: 'テスト県北部', isArea: true, scale: 10 }],
+    }
+  }
+
+  const 地震の通知数 = (fn: ReturnType<typeof vi.fn>) =>
+    fn.mock.calls.filter(([e]) => (e as AppEvent).kind === 'quake').length
+
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => {
+    vi.useRealTimers()
+    setReplayOffset(null)
+  })
+
+  it('津波と同じティックで処理した地震情報を、一度だけ通知する', () => {
+    setReplayOffset(OFFSET_MS)
+    const onLiveEvent = vi.fn()
+    const h = setup({ offset: OFFSET_MS, onLiveEvent })
+    const at = serverDate()
+
+    // 津波を先に積む。**この順序が要る**——張り替えは津波の処理で走るので、地震情報が
+    // その後ろに無いと差し替えの影響を受けるエントリが存在しない。
+    act(() => {
+      h.current.loadReplayEvents([
+        { payload: { kind: 'event', event: 津波(at, 60_000) }, replayTime: at },
+        { payload: { kind: 'event', event: 地震情報(at) }, replayTime: at },
+      ])
+    })
+
+    act(() => { vi.advanceTimersByTime(100) })
+    expect(地震の通知数(onLiveEvent)).toBe(1)
+
+    // ティックを回し続けても増えない（キューに残っていない）。
+    act(() => { vi.advanceTimersByTime(5_000) })
+    expect(地震の通知数(onLiveEvent)).toBe(1)
+  })
+
+  // 実際の再現（2024-01-02 16:59 開始）ではキューに数十件が並び、張り替えは何度も起きていた。
+  // 上の 2 件構成は最小の再現形でしかないため、**張り替えが連鎖する形**も固定する。ここが無いと、
+  // 「1 回の差し替えだけ避ける」ような部分的な直し方でもテストが通ってしまう。
+  it('張り替えが続けて起きても、後ろの電文をそれぞれ一度だけ通知する', () => {
+    setReplayOffset(OFFSET_MS)
+    const onLiveEvent = vi.fn()
+    const h = setup({ offset: OFFSET_MS, onLiveEvent })
+    const at = serverDate()
+
+    act(() => {
+      h.current.loadReplayEvents([
+        { payload: { kind: 'event', event: 津波(at, 60_000, 1) }, replayTime: at },
+        { payload: { kind: 'event', event: 地震情報(at, 1) }, replayTime: at },
+        { payload: { kind: 'event', event: 津波(at, 90_000, 2) }, replayTime: at },
+        { payload: { kind: 'event', event: 地震情報(at, 2) }, replayTime: at },
+      ])
+    })
+
+    act(() => { vi.advanceTimersByTime(100) })
+    expect(地震の通知数(onLiveEvent)).toBe(2)
+
+    act(() => { vi.advanceTimersByTime(5_000) })
+    expect(地震の通知数(onLiveEvent)).toBe(2)
+  })
+
+  // 発火時刻が日時として読めないエントリは、積む時点で弾く。取り出し側では弾けない——NaN は
+  // `<=` と `>` のどちらとも偽になるため、判定の書き方で「即座に発火する」と「以後すべて止まる」の
+  // どちらかに転ぶ（どちらの形がどちらへ転ぶかは `EventQueue` の `push` の注記）。**どちらの壊れ方も
+  // ログにも例外にも出ない**ため、入口で弾いていることをここで固定する。
+  it('発火時刻が読めないエントリは積まず、後続の電文を止めない', () => {
+    setReplayOffset(OFFSET_MS)
+    const onLiveEvent = vi.fn()
+    const h = setup({ offset: OFFSET_MS, onLiveEvent })
+    const at = serverDate()
+
+    act(() => {
+      h.current.loadReplayEvents([
+        { payload: { kind: 'event', event: 地震情報(at, 1) }, replayTime: new Date(NaN) },
+        { payload: { kind: 'event', event: 地震情報(at, 2) }, replayTime: at },
+      ])
+    })
+
+    act(() => { vi.advanceTimersByTime(100) })
+    // 読めない時刻の 1 件目は積まれず、2 件目だけが通る（1 件目で止まらない・1 件目が即発火しない）
+    const 通知された = onLiveEvent.mock.calls
+      .map(([e]) => e as AppEvent)
+      .filter(e => e.kind === 'quake')
+      .map(e => (e as JMAQuake).id)
+    expect(通知された).toEqual(['queue-identity-quake-2'])
+  })
+
+  it('張り替えは効いたままで、続報で期限を延ばすと古い予約は消える', () => {
+    setReplayOffset(OFFSET_MS)
+    const h = setup({ offset: OFFSET_MS })
+    const at = serverDate()
+
+    // 初報の期限は 60 秒後、続報で 120 秒後へ延ばす。古い予約が残っていれば 60 秒で失効する。
+    act(() => { h.current.injectEvent(津波(at, 60_000)) })
+    act(() => { h.current.injectEvent(津波(at, 120_000)) })
+
+    act(() => { vi.advanceTimersByTime(70_000) })
+    expect(h.current.tsunamis[0].cancelledAt).toBeUndefined()
+
+    act(() => { vi.advanceTimersByTime(60_000) })
+    expect(h.current.tsunamis[0].cancelledAt).toBeInstanceOf(Date)
+    expect(h.current.tsunamis[0].cancelReason).toBe('expired')
+  })
+})
+
 // EEW 発報テスト（設定タブのテストボタン）が作る「報の推移」。
 //
 // 実運用（dmdataParser.parseEEW）では 1 報ごとに報番号・id・発表時刻が進み、震源時刻は
