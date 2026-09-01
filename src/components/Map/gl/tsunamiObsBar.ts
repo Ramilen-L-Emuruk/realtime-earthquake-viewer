@@ -95,10 +95,17 @@ export function drawTsunamiObsBars(
  *
  * 球投影では `map.project()` が**裏側の点にも画面内の座標を返す**
  * （docs/spec/map-rendering-spec.md §6）。投影して戻す往復で確かめる。
+ *
+ * 到達確認マーカー（`gl/tsunamiArrivalMarker.ts`）も同じ判定を通す。観測棒と同じ
+ * `maplibregl.Marker` で、共有カードでは同じように 2D で描き直すため。
  */
-function isOnVisibleSide(map: maplibregl.Map, p: { x: number; y: number }, bar: TsunamiObsBar): boolean {
+export function isOnVisibleSide(
+  map: maplibregl.Map,
+  p: { x: number; y: number },
+  point: { lat: number; lng: number },
+): boolean {
   const back = map.unproject([p.x, p.y])
-  return Math.abs(back.lng - bar.lng) < VISIBLE_SIDE_TOLERANCE_DEG && Math.abs(back.lat - bar.lat) < VISIBLE_SIDE_TOLERANCE_DEG
+  return Math.abs(back.lng - point.lng) < VISIBLE_SIDE_TOLERANCE_DEG && Math.abs(back.lat - point.lat) < VISIBLE_SIDE_TOLERANCE_DEG
 }
 
 /** 往復の投影で許す誤差（度）。裏側に回った点はこの桁では収まらないほど大きくずれる。 */
