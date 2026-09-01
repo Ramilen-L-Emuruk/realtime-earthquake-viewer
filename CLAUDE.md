@@ -271,6 +271,7 @@ done
     > 2026-08-20: この罠を踏み、削除済みのはずの旧実装のログが preview に出ていた。バンドル名を突き合わせて初めて別物を見ていたと分かった。dev サーバー（HMR）とは別の経路で「古い実装を見てしまう」事故が起きる。
   - 地図系の変更では `map.isSourceLoaded(id)`・`queryRenderedFeatures` で **geojson ソースが実際にタイル化・描画されているか**まで確認する（ラスタ地形だけ出ていても油断しない）。
   - **理由（2026-07-28 v4.0.0→v4.0.1 の本番限定バグ）**: dev サーバー（`vite dev`）は未バンドルでモジュールを解決するため、**本番ビルド（rollup バンドル）でのみ壊れる不具合が dev では再現しない**。実例＝MapLibre GL v6 の `setWorkerUrl()` 欠落で geojson ワーカーのパスが本番だけ解決できず、地図のベクタ（県境・一次細分区域・震度点・活断層等）が全滅した（全ソース `isSourceLoaded=false`・ラスタ地形だけ描画）。dev のみで検証し preview を飛ばしたため見逃し、GitHub Pages で初めて発覚した。**worker/asset のパス解決・コード分割・minify 起因の壊れは dev では出ない**ため、大きな変更は必ず本番ビルドをブラウザで確認する。
+- **コマ落ち・引っかかりを疑ったとき**: 体感や見た目で当てにいかず `window.__frameProfiler` で測る（`__frameProfiler.reset(); __frameProfiler.start()` → 操作 → `__frameProfiler.dump()`）。落ちたフレームを詰まらせた処理が名前で出る。読み方・囲ってある区間の一覧・区間を足すときの決まりは [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §11「フレーム時間の記録」。
 - **ブラウザ確認（修正時は必須）**: **Playwright MCP**（`mcp__playwright__*` ツール群）で上記 URL を開き、`browser_take_screenshot`・`browser_evaluate` で表示や DOM を確認する。**`preview_start` / `preview_*` ツール（Claude Preview MCP）は使用しない。**
   - **起動確認時は必ず DMDSS 版（`npm run dev:dmdss`）を起動する**。ユーザーも実機確認を行うため、DMDSS 版が起動していることを必ず確認してからブラウザ検証を行う。
 - **修正後の確認は徹底する**。型チェック・ブラウザ動作など複数の手段で確実に修正されたことを確認する。「たぶん直っているだろう」でコミットしない。
