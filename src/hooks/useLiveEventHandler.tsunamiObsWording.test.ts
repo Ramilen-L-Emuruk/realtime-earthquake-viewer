@@ -252,3 +252,122 @@ describe('津波観測情報の読み上げ: 新旧の言い分けと並び', ()
     expect(text.indexOf('八戸')).toBeLessThan(text.indexOf('輪島港'))
   })
 })
+
+// 波高の文と到達確認の文は別々の関数が組む。連結するときに「また、」を挟まないと、どちらも
+// 「地名で〜しました」の形なので後ろの文が前の続きに聞こえる（2024/01/01 17:40 の実電文で
+// 隠岐西郷の波高と豊岡市津居山の到達確認が並んだ形）。
+describe('津波の読み上げ: 話題が変わるところを「また、」で継ぐ', () => {
+  // 正: 同じ電文に「波高が付いた観測点」と「到達だけ確認された観測点」が混ざったら間に挟む
+  it('波高の文の後に到達確認が続くときは「また、」で継ぐ', async () => {
+    const handle = setup()
+    handle(makeObsReport([
+      { name: '隠岐西郷', district: '隠岐', code: '551', value: 0.1 },
+      { name: '豊岡市津居山', district: '兵庫県北部', code: '520' },
+    ]) as never)
+    await settle()
+    expect(spokenTexts()[0])
+      .toContain('新たに隠岐、隠岐西郷で0.1メートルを観測しました。また、兵庫県北部、豊岡市津居山で到達を確認しました。')
+  })
+
+  // 正: 等級の発表と同時に到達が確認された場合も同じ（連結している箇所が別なので個別に固定する）
+  it('等級の発表の後に到達確認が続くときも「また、」で継ぐ', async () => {
+    const handle = setup()
+    handle(makeObsReport(
+      [{ name: '輪島港', district: '石川県能登', code: '390' }],
+      [{ name: '石川県能登', code: '390', grade: 'MajorWarning' }],
+    ) as never)
+    await settle()
+    const text = spokenTexts()[0]
+    expect(text).toContain('大津波警報')
+    expect(text).toContain('また、石川県能登、輪島港で到達を確認しました。')
+  })
+
+  // 正: 群分けの「また、新たに」と到達確認の「また、」は同じ電文に同居しうる。**2 回とも要る** ――
+  // 前者は新規と更新の境目、後者は波高と到達確認の境目で、示している切れ目が違う
+  it('上がった区域・初出・到達確認が同居したら「また、」は 2 回', async () => {
+    const handle = setup()
+    handle(makeObsReport([{ name: '輪島港', district: '石川県能登', code: '390', value: 0.3 }]) as never)
+    await settle()
+
+    handle(makeObsReport([
+      { name: '輪島港', district: '石川県能登', code: '390', value: 1.2 },
+      { name: '珠洲市長橋', district: '石川県能登', code: '390', value: 0.5 },
+      { name: '七尾港', district: '石川県能登', code: '390' },
+    ], [], 'tsunami-obs-2') as never)
+    await settle()
+    const text = spokenTexts()[1]
+    expect(text).toContain('石川県能登、輪島港で1.2メートルに更新されました。')
+    expect(text).toContain('また、新たに石川県能登、珠洲市長橋で0.5メートルを観測しました。')
+    expect(text).toContain('また、石川県能登、七尾港で到達を確認しました。')
+    expect(text.match(/また、/g)).toHaveLength(2)
+    // 到達確認は最後（波高の 2 群を読み終えてから継ぐ）
+    expect(text.indexOf('珠洲市長橋')).toBeLessThan(text.indexOf('七尾港'))
+  })
+
+  // 正: 区域はあるのに等級が 1 つも取れない電文（全区域が Unknown）は、引き下げ側で
+  // 「全て解除されました」になる。ここに到達確認を継ぐと、解除の直後に新たな到達を伝える
+  // 矛盾した並びになるので継がない
+  it('等級を語れない電文では到達確認を継がない', async () => {
+    const handle = setup()
+    // 先に等級を発表して、次の報が「引き下げ」と判定される状態を作る
+    handle(makeObsReport([], [{ name: '石川県能登', code: '390', grade: 'MajorWarning' }]) as never)
+    await settle()
+
+    const before = spokenTexts().length
+    handle(makeObsReport(
+      [{ name: '七尾港', district: '石川県能登', code: '390' }],
+      [{ name: '石川県能登', code: '390', grade: 'Unknown' }],
+      'tsunami-unknown',
+    ) as never)
+    await settle()
+    const text = spokenTexts().slice(before).join('')
+    expect(text).toContain('全て解除されました')
+    expect(text).not.toContain('また、')
+    expect(text).not.toContain('七尾港')
+  })
+
+  // 安全弁: 上で読まなかった到達確認を既読にしない。続く観測情報の続報で読まれること
+  it('継がなかった到達確認は既読にせず、次の観測情報で読む', async () => {
+    const handle = setup()
+    handle(makeObsReport([], [{ name: '石川県能登', code: '390', grade: 'MajorWarning' }]) as never)
+    await settle()
+    handle(makeObsReport(
+      [{ name: '七尾港', district: '石川県能登', code: '390' }],
+      [{ name: '石川県能登', code: '390', grade: 'Unknown' }],
+      'tsunami-unknown',
+    ) as never)
+    await settle()
+
+    const before = spokenTexts().length
+    handle(makeArrivalReport(['七尾港'], 'tsunami-arr-after') as never)
+    await settle()
+    expect(spokenTexts().slice(before).join('')).toContain('七尾港で到達を確認しました。')
+  })
+
+  // 対照: 到達確認だけの電文は継ぐ前段が無い。「また、」で始まる文にしない
+  it('到達確認だけの電文には「また、」を付けない', async () => {
+    const handle = setup()
+    handle(makeArrivalReport(['輪島港']) as never)
+    await settle()
+    expect(spokenTexts()[0]).toContain('津波観測情報。石川県能登、輪島港で到達を確認しました。')
+    expect(spokenTexts()[0]).not.toContain('また、')
+  })
+
+  // 安全弁: 到達確認が無ければ「また、」は増えない。新規と更新の群分けが使う「また、」
+  // （`tsunamiObservationUpdateToSegments`）と二重にならないこと
+  it('到達確認が無ければ「また、」は群分けのぶんだけ', async () => {
+    const handle = setup()
+    handle(makeObsReport([{ name: '輪島港', district: '石川県能登', code: '390', value: 0.3 }]) as never)
+    await settle()
+    expect(spokenTexts()[0]).not.toContain('また、')
+
+    handle(makeObsReport([
+      { name: '輪島港', district: '石川県能登', code: '390', value: 1.2 },
+      { name: '珠洲市長橋', district: '石川県能登', code: '390', value: 0.5 },
+    ], [], 'tsunami-obs-2') as never)
+    await settle()
+    // 群分けの「また、新たに」だけ。到達確認のぶんは足されない
+    expect(spokenTexts()[1].match(/また、/g)).toHaveLength(1)
+    expect(spokenTexts()[1]).toContain('また、新たに')
+  })
+})
