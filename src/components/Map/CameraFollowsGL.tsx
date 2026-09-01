@@ -953,6 +953,11 @@ export function FitToEEWGL({
 // 優先順位の取り決めは gl/tsunamiFit.ts の decideTsunamiFit（純関数・テストで固定）。
 // ここは「持ち越しの管理」と「アイドル復帰タイマー」だけを担う。
 //
+// 寄り先は「値が動いた観測点」と「新しく到達が確認された観測点」の両方（波高がまだ出ていない
+// 観測点は arrivalMarkers として別に届く）。到達確認を外すと、地図だけが「どこに到達したか」を
+// 知らない状態になる——カードのバッジも読み上げもこの観測点を扱っているため、声が「到達を
+// 確認しました」と言うのに画面が動かない、という食い違いが生まれる。
+//
 // 観測点へ寄ったままにしないのが要点。観測情報は電文のたびに寄り直すため、寄った先に留まると
 // 発表中の対象海域全体が二度と画面に入らない（海岸線 signature は寄った時点で消費するので、
 // 区域・等級が変わらない限り海岸線フィットは再発火しない）。無操作・無更新が INTERACTION_HOLD_SEC 秒
@@ -962,12 +967,15 @@ export function TsunamiFitGL({
   tsunamiSignature,
   tsunamiFitPositions,
   observationBars,
+  arrivalMarkers,
   focusObsName = null,
 }: {
   mode: string
   tsunamiSignature: string
   tsunamiFitPositions: LatLng[]
   observationBars: { name: string; lat: number; lng: number; height: { value: number } }[]
+  /** 到達は確認されたが波高がまだ出ていない観測点。値が付くと observationBars へ移る。 */
+  arrivalMarkers: { name: string; lat: number; lng: number }[]
   /** 観測行クリックで FocusObsGL が寄せた観測点。猶予を数え直すためだけに見る（フィットはしない）。 */
   focusObsName?: { name: string; ts: number } | null
 }) {
@@ -978,6 +986,9 @@ export function TsunamiFitGL({
   // （帰還経路を消すとこの前提も崩れるので、経路を減らすときは併せて見直すこと）。
   const lastTsunamiSigRef = useRef<string>('')
   const prevObsMapRef = useRef<Map<string, number>>(new Map())
+  // 到達確認は波高を持たないため、値ではなく「名前が新しく現れたか」で見る。点滅（blinking）は
+  // 60 秒で落ちるが名前は残るので、点滅が消えただけで寄り直すことはない。
+  const prevArrivalNamesRef = useRef<Set<string>>(new Set())
   const pendingObsPositionsRef = useRef<LatLng[]>([])
   const prevModeRef = useRef<string>(mode)
   const prevInteractingRef = useRef(false)
@@ -1016,11 +1027,11 @@ export function TsunamiFitGL({
     if (focusObsTs === 0 || focusObsTs === lastFocusObsTsRef.current) return
     // 実際に寄せられるクリックだけを数え直しの対象にする。カメラが動かないクリックで猶予を
     // 延ばすと、何も起きていないのに俯瞰への復帰が遅れる（判定は findObsBar に集約）。
-    if (!findObsBar(observationBars, focusObsName?.name)) return
+    if (!findObsBar([...observationBars, ...arrivalMarkers], focusObsName?.name)) return
     lastFocusObsTsRef.current = focusObsTs
     idleReturnDueRef.current = false
     armIdleReturnTimer()
-  }, [focusObsTs, focusObsName, observationBars, armIdleReturnTimer])
+  }, [focusObsTs, focusObsName, observationBars, arrivalMarkers, armIdleReturnTimer])
 
   useEffect(() => {
     if (!map) return
@@ -1035,12 +1046,25 @@ export function TsunamiFitGL({
     const newMap = new Map<string, number>()
     for (const b of observationBars) newMap.set(b.name, b.height.value)
     prevObsMapRef.current = newMap
-    if (updatedBars.length > 0) {
+
+    // 新しく到達が確認された観測点。**既に見た名前は数えない**——点滅が落ちただけ・別の観測点の
+    // 更新で配列が作り直されただけ、で寄り直すと画面が落ち着かない。
+    const prevArrivals = prevArrivalNamesRef.current
+    const newArrivals = arrivalMarkers.filter((m) => !prevArrivals.has(m.name))
+    prevArrivalNamesRef.current = new Set(arrivalMarkers.map((m) => m.name))
+
+    if (updatedBars.length > 0 || newArrivals.length > 0) {
       // 持ち越しは「最後に届いたぶん」で置き換える（溜めて合成しない）。フィットを見送っている間に
       // 複数の電文が届いた場合、全部を束ねると離れた観測点の和で引きの画になり、どこで新しく
       // 観測されたのかが読めなくなる。取りこぼすのは枠の選び方だけで、観測値はカードにも
       // 波高バーにも残る。
-      pendingObsPositionsRef.current = updatedBars.map((b) => [b.lat, b.lng] as LatLng)
+      //
+      // 実測の更新と新規到達が同じ電文で届いたときは両方を収める。片方だけ映すと、もう一方が
+      // 画面外に残って「更新はあったのに見えない」状態になる。
+      pendingObsPositionsRef.current = [
+        ...updatedBars.map((b) => [b.lat, b.lng] as LatLng),
+        ...newArrivals.map((m) => [m.lat, m.lng] as LatLng),
+      ]
       lastTsunamiSigRef.current = tsunamiSignature
     }
 
@@ -1086,7 +1110,7 @@ export function TsunamiFitGL({
     log.debug('[mapGL] fitJapan (津波の帰還: 海岸線なし or 発表終了)')
     fitJapan(map, 1.0)
   }, [
-    map, mode, tsunamiSignature, tsunamiFitPositions, observationBars, isUserInteracting,
+    map, mode, tsunamiSignature, tsunamiFitPositions, observationBars, arrivalMarkers, isUserInteracting,
     idleReturnTick, armIdleReturnTimer, clearIdleReturnTimer,
   ])
 

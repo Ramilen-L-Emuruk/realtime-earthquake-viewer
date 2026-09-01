@@ -819,6 +819,15 @@ const OBS_WEST = 130.0
 const COAST_WEST = 141.0
 const SIG = '岩手県:MajorWarning'
 
+// 到達確認だけの観測点（波高なし）。北海道沖に 2 点置き、寄り先を矩形の西端で判別する。
+// **2 点以上にすること**——1 点だと fitToPositions が退化矩形を避けて flyTo へ落ち、
+// fitBounds の記録に現れない。
+const arrival = (name: string, lat: number, lng: number) => ({ name, lat, lng })
+const ARRIVALS = [arrival('C', 43.0, 145.0), arrival('D', 42.0, 144.0)]
+const ARRIVAL_WEST = 144.0
+/** 観測棒（西端 130.0）と到達確認（144.0）を束ねた矩形の西端。 */
+const UNION_OBS_ARRIVAL_WEST = OBS_WEST
+
 /** カメラ操作の時系列。日本全体は -1、点群へのフィットは矩形の西端で表す。 */
 function fitTargets(map: maplibregl.Map): (number | undefined)[] {
   return (map as FakeMap).moves.map((m) => (m.padding === JAPAN_PADDING ? -1 : m.west))
@@ -829,6 +838,7 @@ interface TsunamiProps {
   signature?: string
   coast?: LatLng[]
   bars?: typeof OBS_BARS
+  arrivals?: typeof ARRIVALS
   focus?: { name: string; ts: number } | null
 }
 
@@ -841,6 +851,7 @@ function tsunamiHarness(map: maplibregl.Map, props: TsunamiProps = {}) {
       tsunamiSignature: props.signature ?? SIG,
       tsunamiFitPositions: props.coast ?? COAST,
       observationBars: props.bars ?? [],
+      arrivalMarkers: props.arrivals ?? [],
       focusObsName: props.focus ?? null,
     }),
   )
@@ -976,6 +987,86 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
 
     // Assert: 日本全体へ帰る（寄ったまま取り残されない）。
     expect(fitTargets(map).slice(before)).toEqual([-1])
+  })
+
+  // ── 到達確認（波高が「観測中」）の観測点への追従 ──────────────────────────
+  // カード・読み上げは到達確認を扱うのに地図だけが黙っていた回帰。声が「到達を確認しました」と
+  // 言うのに画面が動かないと、どこに到達したのかが読み取れない。
+
+  it('波高がまだ出ていない到達確認だけでも、その観測点へ寄る', () => {
+    // Arrange: 発表直後の海岸線フィットまで進んだ状態（観測点はまだ 1 つも無い）。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map))
+    const before = fitTargets(map).length
+
+    // Act: 到達確認だけの観測情報が届く（波高は「観測中」）。
+    view.rerender(tsunamiHarness(map, { arrivals: ARRIVALS }))
+
+    // Assert: その観測点へ寄る。
+    expect(fitTargets(map).slice(before)).toEqual([ARRIVAL_WEST])
+  })
+
+  it('既に出ている到達確認では寄り直さない（点滅が落ちただけで動かさない）', () => {
+    // Arrange: 到達確認へ寄った状態。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { arrivals: ARRIVALS }))
+    const before = fitTargets(map).length
+
+    // Act: 同じ観測点のまま配列だけ作り直される（続報の再送・点滅の解除など）。
+    view.rerender(tsunamiHarness(map, { arrivals: [...ARRIVALS] }))
+    view.rerender(tsunamiHarness(map, { arrivals: [arrival('C', 43.0, 145.0), arrival('D', 42.0, 144.0)] }))
+
+    // Assert: カメラは動かない。
+    expect(fitTargets(map).length).toBe(before)
+  })
+
+  it('実測の更新と新規到達が同じ電文で届いたら、両方が入る枠へ寄る', () => {
+    // Arrange: 発表直後の海岸線フィットまで進んだ状態。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map))
+    const before = fitTargets(map).length
+
+    // Act: 九州沖の実測更新と北海道沖の到達確認が同時に届く。
+    view.rerender(tsunamiHarness(map, { bars: OBS_BARS, arrivals: ARRIVALS }))
+
+    // Assert: 片方だけを映さず、両方が入る矩形へ寄る（西端は観測棒側）。
+    expect(fitTargets(map).slice(before)).toEqual([UNION_OBS_ARRIVAL_WEST])
+  })
+
+  it('到達確認へ寄った後も、猶予が満了すれば対象海域全体へ帰る', () => {
+    // Arrange: 到達確認へ寄った状態（実測と同じく寄りっぱなしにしない）。
+    const map = createFakeMap()
+    render(tsunamiHarness(map, { arrivals: ARRIVALS }))
+    const before = fitTargets(map).length
+
+    // Act: 以後何も起きないまま猶予が満了する。
+    act(() => {
+      vi.advanceTimersByTime(INTERACTION_HOLD_SEC * 1000)
+    })
+
+    // Assert: 対象海域全体へ帰る。
+    expect(fitTargets(map).slice(before)).toEqual([COAST_WEST])
+  })
+
+  it('到達確認だけの観測点でも、行のクリックで猶予を数え直す', () => {
+    // Arrange: 到達確認へ寄った状態。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { arrivals: ARRIVALS }))
+    const before = fitTargets(map).length
+
+    // Act 1: 猶予の途中でその行をクリックする（FocusObsGL がその観測点へ寄せる）。
+    act(() => {
+      vi.advanceTimersByTime(20_000)
+    })
+    view.rerender(tsunamiHarness(map, { arrivals: ARRIVALS, focus: { name: 'C', ts: 1 } }))
+
+    // Act 2: 元の猶予なら満了しているはずの時間まで進める。
+    act(() => {
+      vi.advanceTimersByTime(20_000)
+    })
+
+    // Assert: まだ帰らない（実測の行をクリックしたときと同じ扱い）。
+    expect(fitTargets(map).length).toBe(before)
   })
 })
 
