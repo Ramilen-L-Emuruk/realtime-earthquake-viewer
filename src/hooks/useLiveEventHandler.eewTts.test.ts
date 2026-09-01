@@ -384,6 +384,128 @@ describe('EEW 読み上げの文言と発話順序', () => {
     expect(spokenTexts()).toEqual([])
   })
 
+  // 確定値は「安定待ちを通った値」なので、待っている間に上がったぶんはまだ入っていない。
+  // 発話の順番が来るまでに次の値が届いていると、画面が上位の予想を出しているのに声だけ一段低い
+  // 値を言うことになる（2024/01/01 能登の前震: 第 4 報 +2.1 秒で 5 強・第 7 報 +4.1 秒で 6 弱。
+  // 震源を読み終える頃には 6 弱が届いているのに「予想最大震度5強。」を読み、読み終えてから
+  // 6 弱を言い直していた）。より高い値が安定待ち中なら、その確定を待ってから読む。
+  //
+  // 以下 3 件は対で意味を持つ——待つこと（正）／引き下げでは待たないこと（対照）／階級の
+  // 安定待ちでは震度を止めないこと（安全弁。「震度は階級の確定を待たない」非対称ルール）。
+  it('より高い予想震度が安定待ち中なら、その確定を待って古い値は読まない', async () => {
+    const handle = setup()
+    const release = holdNextSpeech()
+    handle(makeEEW({ scaleTo: 50 }))
+    await flushMicrotasks()
+    await vi.advanceTimersByTimeAsync(300)   // 5強で確定（第2フェーズを予約）
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。'])
+
+    // 震源を読んでいる最中に 6弱 が届く（跳躍幅1段階 → large=2000ms の安定待ち）
+    handle(makeEEW({ serial: 2, scaleTo: 55 }))
+    await flushMicrotasks()
+    release()
+    await flushMicrotasks()
+    // 順番が来ても 5強 は読まない（画面は既に 6弱）
+    expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。'])
+
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushMicrotasks()
+    // 6弱 の確定で改めて予約され、正しい値だけが 1 回読まれる
+    expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度6弱。'])
+  })
+
+  // 対照・安全弁の 2 件は、ガードの `if` を丸ごと外しても通る（外した状態が「待たない」なので
+  // 当然そうなる）。守っているのは**待ちすぎる方向の誤実装**——引き下げでも待つ、階級の
+  // 安定待ちでも待つ、といった条件の広げ方を入れた瞬間に落ちる。ガードの分岐そのものは
+  // 上の「正」が固定している。
+  it('引き下げの安定待ち中は待たず、確定済みの値をそのまま読む（対照）', async () => {
+    const handle = setup()
+    const release = holdNextSpeech()
+    handle(makeEEW({ scaleTo: 55 }))
+    await flushMicrotasks()
+    await vi.advanceTimersByTimeAsync(300)   // 6弱で確定
+    await flushMicrotasks()
+
+    // 震源を読んでいる最中に 5強 へ下がる続報（引き下げは追わない方針）
+    handle(makeEEW({ serial: 2, scaleTo: 50 }))
+    await flushMicrotasks()
+    release()
+    await flushMicrotasks()
+    // 引き下げの確定を待って黙ると、確定済みの 6弱 がいつまでも声にならない
+    expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度6弱。'])
+  })
+
+  it('長周期階級の安定待ち中でも、震度の発話は止めない（安全弁）', async () => {
+    const handle = setup()
+    const release = holdNextSpeech()
+    handle(makeEEW({ scaleTo: 50, lgIntTo: 1 }))
+    await flushMicrotasks()
+    await vi.advanceTimersByTimeAsync(300)   // 震度・階級とも確定
+    await flushMicrotasks()
+
+    // 震源を読んでいる最中に階級だけが上がる（震度は据え置き）
+    handle(makeEEW({ serial: 2, scaleTo: 50, lgIntTo: 3 }))
+    await flushMicrotasks()
+    release()
+    await flushMicrotasks()
+    // 階級の安定待ちを理由に震度を止めてはならない
+    expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度5強。予想最大階級1。'])
+  })
+
+  // ガードは「確定を経ずに捨てられたサイクル」の後始末に依存する。捨てた側が同じイベント処理の
+  // 中で確定経路を張り直せていなければ、その EEW の予想震度は無言のまま終わる（`enqueuePhase2`
+  // のガードの「担保の 3 通り」の 2 番目）。**この 1 件はその張り直しを固定するもので、ガード自体
+  // は通らない**——旧値は確定前（安定待ち中）なので第 2 フェーズの予約すら存在せず、`enqueuePhase2`
+  // に到達しないまま `clearScaleStability` でサイクルごと捨てられる。ガードとの噛み合わせは次の 1 件。
+  it('安定待ち中に震源が大幅更新されても、新震源の値で 1 回だけ読む', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50 }))
+    await flushMicrotasks()
+    // 5強 の安定待ち（300ms）が明ける前に、震源が 50km 超動いた続報が届く
+    await vi.advanceTimersByTimeAsync(100)
+    handle(makeEEW({ serial: 2, scaleTo: 55, hypocenter: { name: '種子島近海', latitude: 30.5, longitude: 131.0 } }))
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushMicrotasks()
+
+    expect(spokenTexts()).toEqual([
+      '緊急地震速報、日向灘で地震。',
+      '震源を更新、種子島近海で地震。',
+      '予想最大震度6弱。',
+    ])
+  })
+
+  // 震源の大幅更新でサイクルを捨てた**後**に、張り直したサイクルの確定を追い越して値が上がる。
+  // ここが「捨てる経路」とガードが実際に噛み合う場面——新震源で確定した値の予約が発話の順番を
+  // 待っている間に、さらに高い値が届く。
+  it('震源の大幅更新を挟んだ後でも、確定を追い越した引き上げを待つ', async () => {
+    const handle = setup()
+    const release = holdNextSpeech()
+    handle(makeEEW({ scaleTo: 50 }))
+    await flushMicrotasks()
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    // 震源が 50km 超動く（旧サイクルと確定値を捨てて第 1 フェーズを積み直す）
+    handle(makeEEW({ serial: 2, scaleTo: 50, hypocenter: { name: '種子島近海', latitude: 30.5, longitude: 131.0 } }))
+    await vi.advanceTimersByTimeAsync(300)   // 新震源の 5強 が確定（第 2 フェーズを予約）
+    await flushMicrotasks()
+    // 予約が順番を待っている間に 6弱 へ上がる（跳躍幅1段階 → large=2000ms）
+    handle(makeEEW({ serial: 3, scaleTo: 55, hypocenter: { name: '種子島近海', latitude: 30.5, longitude: 131.0 } }))
+    await flushMicrotasks()
+    release()
+    await flushMicrotasks()
+    // 順番が来ても 5強 は読まない
+    expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '震源を更新、種子島近海で地震。'])
+
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual([
+      '緊急地震速報、日向灘で地震。',
+      '震源を更新、種子島近海で地震。',
+      '予想最大震度6弱。',
+    ])
+  })
+
   // 安定待ちの上限（EEW_PHASE2_STABILITY_MAX_WAIT_MS=5000ms）は「値が最初に変わった時刻」から
   // 固定でカウントし、値が変わるたびにリセットしない。ここでは常に大きい跳躍幅（large=2000ms）を
   // 保つ値を安定待ちより短い間隔で送り続け、2000ms では一度も確定できないまま上限に達することを
@@ -782,13 +904,14 @@ describe('EEW 読み上げの文言と発話順序', () => {
       await flushMicrotasks()
 
       expect(spokenTexts().filter(t => t === '緊急地震速報、日向灘で地震。')).toHaveLength(1)
-      // 区分の格上げ（Forecast→Warning）はその時点の震度(5強)を伴って安定待ちを経ずに
-      // 即座に確定・発話される。続く 55→60 の連投は通常どおり安定待ちを経て 1 回にまとまり、
-      // 最新値(6強)だけが読まれる
+      // 区分の格上げ（Forecast→Warning）はその時点の震度(5強)を安定待ちを経ずに確定するが、
+      // 発話の順番が来た時点では既に 6強 が届いて安定待ち中なので、5強 は**声にならない**
+      // （確定を待って降りる。→「より高い予想震度が安定待ち中なら…」のテスト群）。
+      // 続く 55→60 の連投は通常どおり安定待ちを経て 1 回にまとまり、最新値(6強)だけが読まれる。
+      // 区分の格上げ自体は言い直し（「緊急地震速報、日向灘で地震。」）が伝えている
       expect(spokenTexts()).toEqual([
         '地震動予報、日向灘で地震。',
         '緊急地震速報、日向灘で地震。',
-        '予想最大震度5強。',
         '予想最大震度6強。',
       ])
     })

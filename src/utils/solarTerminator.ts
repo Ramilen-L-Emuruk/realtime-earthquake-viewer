@@ -305,3 +305,107 @@ export function shadowPolygon(epochMs: number, altitudeDeg: number, steps = 360)
 
   return clipToLongitudeBand(ring)
 }
+
+/** 帯 1 枚。太陽高度が隣り合う 2 段に挟まれた領域を表す。 */
+export interface ShadowBand {
+  /**
+   * 日の入りから数えて何段ぶん内側か。1 が最も外側（日の入りのすぐ内）で、`steps` が最も内側
+   * （天文薄明より内）。**濃さはこの値だけで決まる**ので、帯の形と濃さの対応はここで閉じる。
+   */
+  depth: number
+  /**
+   * GeoJSON Polygon の `coordinates` と同じ形。`[0]` が外環、`[1]` 以降が穴。
+   * 日付変更線を跨ぐ帯は複数のポリゴンに分かれる。
+   */
+  polygons: Point[][][]
+}
+
+/**
+ * リングが囲む符号付き面積（度平方）。正なら反時計回り。
+ *
+ * 面積 0 のリングは向きを決められないため、下の `orientRing` は時計回りとして扱う。呼び出し側は
+ * `clipToLongitudeBand` の `MIN_RING_AREA_DEG2` を通ったリングだけを渡すこと。
+ */
+function signedRingArea(ring: Point[]): number {
+  let doubled = 0
+  for (let i = 0; i < ring.length - 1; i++) {
+    doubled += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1]
+  }
+  return doubled / 2
+}
+
+/**
+ * リングの巻き方向を揃える。
+ *
+ * **穴を穴として描かせるにはこれが要る。** MapLibre はリングの向きを面積の符号で読み、最初の
+ * リングと逆向きのものを穴として扱う。GeoJSON の定めどおり外環を反時計回り・穴を時計回りに
+ * すれば、その判定と食い違わない。
+ */
+function orientRing(ring: Point[], counterClockwise: boolean): Point[] {
+  const isCounterClockwise = signedRingArea(ring) > 0
+  if (isCounterClockwise === counterClockwise) return ring
+  return [...ring].reverse()
+}
+
+/**
+ * リングが経度方向に占める範囲。
+ *
+ * 空のリングでは呼ばれない（`clipToLongitudeBand` が頂点数と面積で弾いたものだけが渡る）。
+ */
+function longitudeRangeOf(ring: Point[]): { min: number; max: number } {
+  let min = Infinity
+  let max = -Infinity
+  for (const [lon] of ring) {
+    if (lon < min) min = lon
+    if (lon > max) max = lon
+  }
+  return { min, max }
+}
+
+/**
+ * リングを経度の範囲で切り取る。範囲に何も残らなければ空を返す。
+ *
+ * **段どうしで断片の割れ方が違うため、内側をそのまま外側の穴にはできない。** 極を含むキャップは
+ * 経度を一周するので、中心経度のところで切れて 2 つの断片になる。ところが 1 つ内側の段が極を
+ * 含まない大きさなら、そちらは切れ目のない 1 本のリングのまま。この内側リングは外側の切れ目を
+ * 跨いで**両方の断片に半分ずつ入る**ので、どちらか一方の穴として押し込むと、穴を付けられなかった
+ * 側の帯が内側の段まで塗り広がる（同じ場所を 2 枚の帯が覆う）。外側の断片が占める経度で内側を
+ * 割ってから配れば、断片の対応が 1 対 1 になる。
+ */
+function clipRingToLongitudeRange(ring: Point[], min: number, max: number): Point[] {
+  // 面積の下限は `clipToLongitudeBand` と同じ `MIN_RING_AREA_DEG2` を使うが、**較正した文脈は
+  // 違う**。あちらは経度 ±180 という固定の境界で測った値で、ここで切る境界は外側の断片の頂点
+  // から決まる。段の刻みが作る帯の幅はこの閾値（1e-12 度平方）より桁違いに大きいため正当な穴を
+  // 弾くことはないが、閾値を動かすときは両方の呼び出しを見ること。
+  const east = clipHalfPlane(ring, p => p[0] >= min, (a, b) => crossAtLongitude(a, b, min))
+  if (east.length === 0) return []
+  const clipped = clipHalfPlane(east, p => p[0] <= max, (a, b) => crossAtLongitude(a, b, max))
+  if (clipped.length < 4 || ringArea(clipped) < MIN_RING_AREA_DEG2) return []
+  return clipped
+}
+
+/**
+ * 夜の側を、太陽高度で刻んだ「帯」に分けて返す。外側から内側の順。
+ *
+ * `shadowPolygon` が返すのは「その高度以下の領域」なので、段を重ねると内側ほど何枚も
+ * 重なる。ここでは隣り合う段の差を取って**重ならない帯**にするため、濃淡を重ね塗りの累積では
+ * なく帯ごとの濃さで作れる。同じ画素を塗る回数が段数ぶんから 1 回に減り、半透明を重ねるたびに
+ * 生じる 8bit の丸め誤差も積み上がらない（重ねると色が変わってしまう。仕様書 §18）。
+ *
+ * 最も内側の段（天文薄明より内）は一様な濃さなので、穴を持たない 1 枚の面になる。
+ */
+export function shadowBands(epochMs: number, steps: number = SHADOW_STEPS, ringSteps = 360): ShadowBand[] {
+  const caps = shadowAltitudes(steps).map(altitude => shadowPolygon(epochMs, altitude, ringSteps))
+  return caps.map((outerRings, i) => {
+    const innerRings = i + 1 < caps.length ? caps[i + 1] : []
+    const polygons = outerRings.map(outer => {
+      const span = longitudeRangeOf(outer)
+      const holes = innerRings
+        .map(inner => clipRingToLongitudeRange(inner, span.min, span.max))
+        .filter(hole => hole.length > 0)
+        .map(hole => orientRing(hole, false))
+      return [orientRing(outer, true), ...holes]
+    })
+    return { depth: i + 1, polygons }
+  })
+}

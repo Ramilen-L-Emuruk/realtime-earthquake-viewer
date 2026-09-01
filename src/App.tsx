@@ -227,33 +227,49 @@ export function App() {
     // （`'hold'` で出すと EEW 発表中に画面が動かず、`'receipt'` で出すと読み上げ中の EEW から
     // 画面を奪う）。`forceTab` が既定値を撤廃しているのと同じ理由で、全呼び出しに明示させる。
     source: TabHoldSource,
-    // 最小滞留時間の床を掛けるか。**発話に同調した追従（`followSpeechTab`）だけ true にする。**
-    // 受信の瞬間に出す要求（EEW の新規発報・続報）に掛けると、続報が 1.5 秒未満で連投された
-    // ときに保持の張り直しを落とす。床の目的は「無音のまま追従が連打されるのを抑える」ことで、
-    // 受信時要求はそもそも連打の原因ではない。
-    opts?: { dwell?: boolean },
+    // **実際に声に出す瞬間の追従か**（`followSpeechTab` だけ true。先出しと受信時要求は false）。
+    // 効くのは 2 箇所で、どちらも「いま声になるか」で決まるため 1 つの旗にまとめてある。
+    //
+    // - **最小滞留時間の床を掛ける。** 受信の瞬間に出す要求（EEW の新規発報・続報）に掛けると、
+    //   続報が 1.5 秒未満で連投されたときに保持の張り直しを落とす。床の目的は「無音のまま追従が
+    //   連打されるのを抑える」ことで、受信時要求はそもそも連打の原因ではない
+    // - **EEW 続報の片方向抑制を素通りする**（`shouldAcceptAutoTab` の判定 3）。抑制が止めたい
+    //   のは続報のたび無条件に飛ぶ受信時要求であって、読み上げを奪って喋る追従ではない
+    //
+    // **用途が分かれる要求が出ても、この旗を割らないこと。** どちらの効果も「いま声になるか」
+    // という同じ事実から出ている。片方だけ欲しい要求が現れたら、意味を変えるのではなく別の
+    // 引数を足す——ここの意味をこっそり変えると、既存の全電文の挙動が無言で変わる。
+    //
+    // **既定値は置かない**（`source` と同じ理由）。渡し忘れの症状は「タブが動かない」で、
+    // 例外もログも出ない。必須にしておけば、新しい呼び出しを足したときに型が捕まえる。
+    follow: boolean,
   ): boolean => {
     const hold = tabHoldRef.current
     const now = Date.now()
-    if (opts?.dwell && !shouldFollowNow(lastFollowRef.current, priority, now)) {
+    if (follow && !shouldFollowNow(lastFollowRef.current, priority, now)) {
       log.debug(`[tab] → ${tab} 追従を間引き (直前の追従から${now - (lastFollowRef.current?.at ?? 0)}ms・駆動${source})`)
       setPanelCollapsed(false)
       return false
     }
-    if (!shouldAcceptAutoTab(hold, priority, now, source)) {
+    // **追従かどうかもログに残すこと。** 受信時要求・先出し・追従はどれも駆動源が `'speech'` で、
+    // 優先度も同じ値を取りうる（EEW の続報は 3 つとも `eewUpdate`）。この印が無いと、拒否の記録を
+    // 見ても「受信時要求が抑制で弾かれた（意図どおり）」のか「追従が別の理由で弾かれた（疑わしい）」
+    // のかを事後に切り分けられない。
+    const followNote = follow ? '・追従' : ''
+    if (!shouldAcceptAutoTab(hold, priority, now, source, follow)) {
       // **保持の側の駆動源も出すこと。** どの優先度に負けたかだけでは「何がその保持を張ったか」が
       // 分からず、拒否の原因（受信時要求か・手動選択か・アイドル復帰か）を突き合わせられない。
-      log.debug(`[tab] → ${tab} スキップ (優先度${priority}・駆動${source} < 保持中${hold.priority}・駆動${hold.source}・残り${hold.until - now}ms)`)
+      log.debug(`[tab] → ${tab} スキップ (優先度${priority}・駆動${source}${followNote} < 保持中${hold.priority}・駆動${hold.source}・残り${hold.until - now}ms)`)
       setPanelCollapsed(false)
       return false
     }
     tabHoldRef.current = { until: now + TAB_HOLD_MS, priority, source }
-    // **床の読み書きは同じ条件で行うこと**（上の間引き判定と同じ `opts?.dwell`）。書き込みだけを
+    // **床の読み書きは同じ条件で行うこと**（上の間引き判定と同じ `follow`）。書き込みだけを
     // 広く取ると、床を使わない要求（先出し・EEW の受信時要求）が床を進め、後から実際に声が出る
     // 側の追従を弾く。それは「声は出ているのに画面が動かない」という、この仕組みで直したかった
     // 症状そのもの。実際に踏んだ形: EEW の新規発報が受信時に床を進める → 1.5 秒以内に順番が来た
     // 津波の追従が弾かれ、津波を読んでいるのに画面が realtime に留まる。
-    if (opts?.dwell) lastFollowRef.current = { at: now, priority }
+    if (follow) lastFollowRef.current = { at: now, priority }
     // 読み上げ系の移動は呼び出し元が名前付きの記録を持たないものがあるため、ここで成立を残す。
     // 拒否だけが記録されて成立が残らないと、ログから「動いたのか何も起きなかったのか」を区別できない。
     //
@@ -263,7 +279,7 @@ export function App() {
     const heldNote = hold.until - now > 0
       ? `・保持中${hold.priority}/${hold.source}を突破`
       : '・保持切れ'
-    log.debug(`[tab] → ${tab} 移動 (優先度${priority}・駆動${source}${heldNote})`)
+    log.debug(`[tab] → ${tab} 移動 (優先度${priority}・駆動${source}${followNote}${heldNote})`)
     // 特別情報のためにパネルを開いていた場合、**ここでは畳まないが追跡も捨てない。**
     // 畳まないのは、タブ移動が「その内容を見せる」ための展開であり、打ち消すと移動の意味が
     // 無くなるため。追跡を捨てないのは、捨てると畳んだ状態へ戻す機会が二度と来ないため
@@ -330,7 +346,8 @@ export function App() {
    */
   const forceTab = useCallback((tab: TabId, priority: TabPriority, source: TabHoldSource) => {
     tabHoldRef.current = { until: 0, priority: TAB_PRIORITY.quake, source: 'hold' }
-    requestAutoTab(tab, priority, source)
+    // 追従ではない。ユーザー操作と既定の状態への復帰はどちらも「いま声になる」経路ではない
+    requestAutoTab(tab, priority, source, false)
   }, [requestAutoTab])
 
   /**
@@ -341,7 +358,7 @@ export function App() {
   const requestTabForKyoshin = useCallback((tab: TabId) => {
     // 駆動源は `'hold'`。**`'receipt'` にしない** ——揺れ検知も読み上げを持たない経路だが、
     // 移動先が realtime で、EEW の保持中はすでに realtime を出しているため越える必要がない。
-    requestAutoTab(tab, TAB_PRIORITY.kyoshin, 'hold')
+    requestAutoTab(tab, TAB_PRIORITY.kyoshin, 'hold', false)
   }, [requestAutoTab])
 
   /** ユーザー操作によるタブ移動。以後 TAB_HOLD_MS は自動切替に奪わせない。 */
@@ -363,7 +380,7 @@ export function App() {
   //   見えなくなる（この優先度の仕組みが最初に直した症状そのもの）
   const setActiveTabNonRealtime = useCallback((tab: Exclude<TabId, 'realtime'>) => {
     const source = resolveNonRealtimeTabSource(settings.voicevoxEnabled)
-    requestAutoTab(tab, tab === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake, source)
+    requestAutoTab(tab, tab === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake, source, false)
   }, [requestAutoTab, settings.voicevoxEnabled])
 
   // EEW の受信による realtime タブ移動。
@@ -381,12 +398,12 @@ export function App() {
   // 続報。手動選択より弱く、地震情報・津波より強い。
   // 動いたときだけ記録する（拒否は requestAutoTab 側が debug で残す）。
   const setActiveTabRealtimeOnUpdate = useCallback(() => {
-    if (requestAutoTab('realtime', TAB_PRIORITY.eewUpdate, 'speech')) log.info('[tab] → realtime (EEW続報)')
+    if (requestAutoTab('realtime', TAB_PRIORITY.eewUpdate, 'speech', false)) log.info('[tab] → realtime (EEW続報)')
   }, [requestAutoTab])
 
   // 新規発報・レベルアップ・誤報取消。手動選択より強い。
   const setActiveTabRealtimeUrgent = useCallback(() => {
-    requestAutoTab('realtime', TAB_PRIORITY.eewUrgent, 'speech')
+    requestAutoTab('realtime', TAB_PRIORITY.eewUrgent, 'speech', false)
   }, [requestAutoTab])
 
   /**
@@ -420,7 +437,7 @@ export function App() {
       setPanelCollapsed(false)
       return
     }
-    requestAutoTab(tab, priority, 'speech', { dwell: true })
+    requestAutoTab(tab, priority, 'speech', true)
   }, [requestAutoTab])
 
   /**
@@ -440,7 +457,7 @@ export function App() {
    * 取り返すかどうかの判断は保持の中身を見て決める（`shouldRetakeAfterPreSpeech`）。
    */
   const preSpeechTab = useCallback((tab: TabId, priority: TabPriority) => (
-    requestAutoTab(tab, priority, 'speech')
+    requestAutoTab(tab, priority, 'speech', false)
   ), [requestAutoTab])
 
   // useLiveEventHandler が返す resetTsunamiScrollToTop を revertToDefaultTab から呼べるようにする ref。
@@ -477,7 +494,7 @@ export function App() {
   const speechFollow = useMemo(() => createSpeechFollowController(setSpeechFollowSession), [])
 
   // ライブイベント受信処理（通知音・タイトル・タブ切替・読み上げ・ブラウザ通知）
-  const { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, focusedDistrict, resetTsunamiScrollToTop } = useLiveEventHandler({
+  const { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, areaGradeChangedKeys, focusedDistrict, resetTsunamiScrollToTop } = useLiveEventHandler({
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate, setActiveTabRealtimeUrgent,
     setActiveTabRealtimeForKyoshin: () => requestTabForKyoshin('realtime'),
@@ -1502,6 +1519,7 @@ export function App() {
               onObservationClick={focusTsunamiObs}
               focusedDistrict={focusedDistrict}
               obsUpdateStatus={obsUpdateStatus}
+            areaGradeChangedKeys={areaGradeChangedKeys}
               speechSession={speechFollowSession}
               /* 読み上げ追従の可否。タブは invisible で隠すだけなので**非表示でもスクロールは
                  効いてしまう**（戻ってきたら知らない位置にいる）。折りたたみ時はさらに幅か
