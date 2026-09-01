@@ -516,7 +516,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 階級をまたぐ県名まとめの抑止（上位の階級で区域名を出した県は下位の階級でまとめない・地震と長周期の両方に同じ規則を置く・数えるのは**続報で差分に落とす前**の区域（落とした後だと既出の区域が消えて県の全区域が揃って見える。**差分を持つのは地震の経路だけ**で長周期は毎回全区域を読み直す）・区域名と県名の見分けは区域名の索引に頼るので「多区域の県に県名と同名の区域が無い」ことが前提） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「地域名の粒度」 |
 | 読み上げで地域名を 1 件も作れなかったときの扱い（最大震度だけを伝える・**震度も判らなければ何も足さない**（`intensityText` は震度不明で空を返すので確かめずに埋めると助詞だけの文になる）・地震情報と震度速報で同じ一文（`maxScaleOnlySentence`）を使う・地域が消えたことは間引いて記録する） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「地域名の粒度」 |
 | 読み上げの地域名の並び順（**地震・長周期のみ**。気象庁の標準順・順序の実体は `station-coords.json` の区域キー順・上限で切るときの選抜だけは震源距離で行う・震源を持たない電文（震度速報・長周期）は距離で選ばない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4 |
-| 津波の区域の並び順（読み上げとカードで**同じ並びを使う**こと・実体は `tsunami.ts` の `sortAreasForCardDisplay`・予想最大波高の文もカードの波高見出しと同じ区切りで読む。片方だけ変えると追従スクロールが上下へ往復する） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「津波の区域の並び順」 |
+| 津波の区域の並び順（読み上げとカードで**同じ並びを使う**こと・実体は `tsunami.ts` の `sortAreasForCardDisplay`（**1 つの等級の中だけ**）と `sortAreasAcrossGradesForCardDisplay`（等級をまたぐ通し順。上位数件だけ採る通知・スクロールはこちら）・予想最大波高の文もカードの波高見出しと同じ区切りで読む。片方だけ変えると追従スクロールが上下へ往復する） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「津波の区域の並び順」 |
 | 津波観測情報で新規と更新を言い分けること（境界は**前に声にした波高があるか**だけで、名前を聞いたことがあるかでは判定しない・到達確認だけ読んだ観測点に初値が付いたら「新たに」側・渡すのは読み上げ用の記憶・深刻な波高を含む群を先に読み「また、」で継ぐ・群に割っても件数上限は合計） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「新規と更新を言い分ける」 |
 | 読み上げから外した地点数の句を述語に貼り付けないこと（`omittedPointsSentence`。新規と更新で述語が変わるため、貼り付けると外した地点が更新扱いになる。地点数の言い方は到達確認と共有する） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「観測点は「選抜」と「並び」を分ける」 |
 | 津波の読み上げの組み立て（**区域名は 1 回だけ**・等級ごとに「区域と波高」を 1 文で言い切る・等級と行動を先に言う・下位等級の波高も読む・等級をまたいで波高をまとめない・波高が付いていない区域は別の文で挙げる・数値で表せない波高（「巨大」「高い」）は語を補う） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「区域名は 1 回だけ。等級ごとに「区域と波高」を 1 文で言い切る」 |
@@ -605,7 +605,8 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 
 | 項目 | 単一情報源となる仕様書 |
 |---|---|
-| 津波の観測点の並び順（区域と同じくカードに揃える・実体は `tsunami.ts` の `sortObservationsForCardDisplay`・等級カードの順を並べる定数もカードと共有する・**選抜（深刻な順）と並び（カード順）は別物**・並べ替えに渡すのは**マージ済みの全観測点**（今回の電文の分だけで並べると部分再送の続報で区域の順位が逆転する）・続報は区域を持たないため基準は画面が出している津波から引く） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §9「観測点の並び順」 |
+| 津波の観測点の並び順（区域と同じくカードに揃える・実体は `tsunami.ts` の `sortObservationsForCardDisplay`・等級カードの順を並べる定数もカードと共有する・**選抜（深刻な順）と並び（カード順）は別物**） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §9「観測点の並び順」 |
+| 並べ替えに渡す材料をカードと同じにすること（区域＋マージ済み観測点。組み立ては `useLiveEventHandler` の `tsunamiCardOrderBasis` に集約し、**読み上げ・ブラウザ通知の本文・受信時スクロールの送り先**の 3 経路で共有する。電文の `areas` / `observations` を直接使わない・続報は区域を持たないため基準は画面が出している津波から引く・**前報を引き継ぐ条件はカードの状態更新と同じ述語**（`isTsunamiContinuation`）で判定する・**等級を切り替える報で最も大きくずれる**（観測点をほとんど載せないため、電文の分だけで並べると電文順へ戻る）・読み上げの関数は第 2 引数で受け取り**省略すると電文の分だけで並べる**ので受信経路からは必ず渡す） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §9「並べ替えに渡す材料はカードと同じものにする」 |
 | 上限で読まなかった到達確認を既読にしないこと（絞り込みは読み上げ文の生成と共有する＝`selectArrivalsToSpeak`） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §10「読み上げた観測点の記憶は画面用と分ける」 |
 | 観測波高の深刻さの順（「○m以上」は値の大小より**先に**見る・カードの区域の並びと読み上げの観測点の選抜で同じ `compareObservedHeightDesc` を使う・表示文字列に「以上」を二重に付けない・アプリ側で言い換えない） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §6「観測波高の「以上」」 |
 | 津波の予想波高「あり／なし」の判定（`hasForecastHeight`。`maxHeight` の有無ではなく `description` の中身で見る。食い違うと値 0 の区域がカードにも読み上げにも出ない。DMDATA と P2PQuake で波高の有無が変わる非対称性も同節） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §9「予想波高の有無」 |

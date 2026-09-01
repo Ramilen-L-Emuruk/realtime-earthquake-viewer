@@ -5,9 +5,11 @@ import {
   isTsunamiNewFire,
   isTsunamiGradeUpgrade,
   isCancelForCurrentTsunami,
+  isTsunamiContinuation,
   matchesArea,
   groupAreasForCardDisplay,
   sortAreasForCardDisplay,
+  sortAreasAcrossGradesForCardDisplay,
   sortObservationsForCardDisplay,
   GRADES_IN_CARD_ORDER,
   compareObservedHeightDesc,
@@ -312,6 +314,88 @@ describe('groupAreasForCardDisplay / sortAreasForCardDisplay', () => {
   it('波高を持たない区域は独立したグループになる', () => {
     const groups = groupAreasForCardDisplay([area('岩手県', '030'), area('宮城県', '040')], [])
     expect(groups.map(g => g.heightLabel)).toEqual([null, null])
+  })
+})
+
+
+// 「表示中の津波の続報として前報の値を引き継ぐか」の判定。カードの状態更新と、
+// 読み上げ・通知・スクロールが使うカード順の基準が、同じ述語を共有する。
+describe('isTsunamiContinuation', () => {
+  const t = (over: Partial<JMATsunami> = {}): JMATsunami => makeTsunami({ eventId: 'E1', ...over })
+
+  // 正: 同じ eventId・解除表示に入っていなければ引き継ぐ
+  it('同じ eventId の続報は引き継ぐ', () => {
+    expect(isTsunamiContinuation(t(), t({ id: 'next' }))).toBe(true)
+  })
+
+  // 対照: 別の地震の津波からは引き継がない（カードも新しい電文だけを描く）
+  it('eventId が違えば引き継がない', () => {
+    expect(isTsunamiContinuation(t({ eventId: 'E1' }), t({ eventId: 'E2' }))).toBe(false)
+  })
+
+  // 対照: eventId を持たない経路（P2PQuake の 552）は同一性を判定できない
+  it('どちらかが eventId を持たなければ引き継がない', () => {
+    expect(isTsunamiContinuation(t({ eventId: undefined }), t())).toBe(false)
+    expect(isTsunamiContinuation(t(), t({ eventId: undefined }))).toBe(false)
+  })
+
+  // 安全弁: 解除表示中のカードは 10 秒で消える。その値を新しい津波へ持ち込まない
+  it('表示中が解除表示に入っていれば引き継がない', () => {
+    expect(isTsunamiContinuation(t({ cancelledAt: new Date() }), t())).toBe(false)
+  })
+
+  it('表示中の津波が無ければ引き継がない', () => {
+    expect(isTsunamiContinuation(undefined, t())).toBe(false)
+  })
+})
+
+
+// 等級カードをまたいだ区域の通し順。カードから上位いくつかだけを採る用途
+// （ブラウザ通知の本文・受信時スクロールの送り先）は、この並びを使う。
+describe('sortAreasAcrossGradesForCardDisplay', () => {
+  const area = (name: string, code: string, grade: TsunamiArea['grade'], height?: string): TsunamiArea =>
+    makeArea({ name, code, grade, maxHeight: height ? { description: height, value: 0 } : undefined })
+  const height = (name: string, code: string, value: number): TsunamiObservation =>
+    ({ name, districtCode: code, districtName: name, height: { value, description: `${value}m` } })
+
+  // 正: 予想波高が同じでも、重い等級の区域が先に来る
+  it('重い等級の区域を先に置く', () => {
+    const areas = [area('北海道太平洋沿岸東部', '080', 'Watch', '1m'), area('岩手県', '030', 'Warning', '1m')]
+    expect(sortAreasAcrossGradesForCardDisplay(areas, []).map(a => a.name))
+      .toEqual(['岩手県', '北海道太平洋沿岸東部'])
+  })
+
+  // 対照: 等級を分けない `sortAreasForCardDisplay` は波高で束ねるため、この並びにならない。
+  // 等級混じりの一覧をそちらへ渡すと、注意報の区域が警報より上に出る
+  it('等級を分けない並べ替えとは結果が違う', () => {
+    const areas = [area('北海道太平洋沿岸東部', '080', 'Watch', '1m'), area('岩手県', '030', 'Warning', '1m')]
+    expect(sortAreasForCardDisplay(areas, []).map(a => a.name))
+      .toEqual(['北海道太平洋沿岸東部', '岩手県'])
+  })
+
+  // 安全弁: 等級の中では従来どおり実測波高の深刻な順。等級で分けたことが、
+  // 区域どうしの並べ替えを止めてしまっていないこと
+  it('同じ等級の中は実測波高の深刻な順を保つ', () => {
+    const areas = [
+      area('岩手県', '030', 'Warning', '3m'),
+      area('宮城県', '040', 'Warning', '3m'),
+      area('北海道太平洋沿岸東部', '080', 'Watch', '1m'),
+    ]
+    expect(sortAreasAcrossGradesForCardDisplay(areas, [height('宮城県', '040', 2.4)]).map(a => a.name))
+      .toEqual(['宮城県', '岩手県', '北海道太平洋沿岸東部'])
+  })
+
+  // 安全弁: 等級が 1 つも欠けない（`GRADES_IN_CARD_ORDER` の網羅性に依存している）
+  it('どの等級の区域も落とさない', () => {
+    const areas = [
+      area('A', '010', 'Unknown'),
+      area('B', '020', 'Forecast'),
+      area('C', '030', 'Watch'),
+      area('D', '040', 'Warning'),
+      area('E', '050', 'MajorWarning'),
+    ]
+    expect(sortAreasAcrossGradesForCardDisplay(areas, []).map(a => a.name))
+      .toEqual(['E', 'D', 'C', 'B', 'A'])
   })
 })
 
