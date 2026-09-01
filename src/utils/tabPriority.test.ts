@@ -145,9 +145,11 @@ describe('shouldAcceptAutoTab（読み上げ追従）', () => {
     expect(shouldAcceptAutoTab(held(TAB_PRIORITY.manual), TAB_PRIORITY.eewUrgent, NOW, 'hold')).toBe(true)
   })
 
-  it('EEW の続報は、他の情報が確保している画面を奪わない', () => {
+  it('EEW 続報の受信は、他の情報が確保している画面を奪わない', () => {
     // 従来からある片方向の抑制。これが無いと、津波や地震情報を読み上げて画面を移した直後に
     // EEW の続報が来て realtime へ引き戻し、数秒ごとに画面が往復する。
+    // **対照**: 止めるのは受信の瞬間に出す要求だけ（`isSpeechFollow` を渡さない＝false）。
+    // 実際に声に出す瞬間の追従は次の it が扱う。
     expect(shouldAcceptAutoTab(held(TAB_PRIORITY.tsunami, 'speech'), TAB_PRIORITY.eewUpdate, NOW, 'speech')).toBe(false)
     expect(shouldAcceptAutoTab(held(TAB_PRIORITY.quake, 'speech'), TAB_PRIORITY.eewUpdate, NOW, 'speech')).toBe(false)
     expect(shouldAcceptAutoTab(held(TAB_PRIORITY.quake), TAB_PRIORITY.eewUpdate, NOW, 'hold')).toBe(false)
@@ -158,6 +160,24 @@ describe('shouldAcceptAutoTab（読み上げ追従）', () => {
     expect(shouldAcceptAutoTab(held(TAB_PRIORITY.eewUpdate, 'speech'), TAB_PRIORITY.eewUpdate, NOW, 'speech')).toBe(true)
     // 新規発報・レベルアップ・誤報取消は eewUrgent なので抑制に掛からない
     expect(shouldAcceptAutoTab(held(TAB_PRIORITY.tsunami, 'speech'), TAB_PRIORITY.eewUrgent, NOW, 'speech')).toBe(true)
+  })
+
+  // 直したかった症状: 予想震度が上がって EEW が読み上げを奪ったのに、画面は地震情報・津波の
+  // タブに留まっていた。片方向抑制が要求の性質を見ずに弾き、「追従どうしは保持を見ない」判定
+  // まで到達していなかった。追従は EEW が実際に声に出す場面でしか呼ばれないため、これを通しても
+  // 抑制が防いでいた往復（続報のたびに飛ぶ受信時要求）は起きない。
+  it('EEW 続報でも、声に出す瞬間の追従は他の読み上げが取った画面を越える', () => {
+    // **正**: 地震情報・津波の追従が張った保持を越える。
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.quake, 'speech'), TAB_PRIORITY.eewUpdate, NOW, 'speech', true)).toBe(true)
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.tsunami, 'speech'), TAB_PRIORITY.eewUpdate, NOW, 'speech', true)).toBe(true)
+    // **安全弁**: 手動選択は追従でも越えない。続報より強い保持として残す
+    //（越えてよいのは新規発報・レベルアップ・誤報取消の `eewUrgent` だけ）。
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.manual), TAB_PRIORITY.eewUpdate, NOW, 'speech', true)).toBe(false)
+    // **安全弁**: 旗と駆動源が対になっていない要求では素通りさせない。「実際に声に出す瞬間」は
+    // 読み上げ系の駆動でしか起こらないため、受信・手動選択の駆動に旗が付いていたら対応が崩れている。
+    // 素通りを許すと、抑制が意図しない経路で外れる。
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.quake, 'speech'), TAB_PRIORITY.eewUpdate, NOW, 'receipt', true)).toBe(false)
+    expect(shouldAcceptAutoTab(held(TAB_PRIORITY.quake, 'speech'), TAB_PRIORITY.eewUpdate, NOW, 'hold', true)).toBe(false)
   })
 
   // 長周期地震動は地震情報と同格（`quake`）。読み上げ側と揃えてある（`SPEECH_PRIORITY.normal`）。
