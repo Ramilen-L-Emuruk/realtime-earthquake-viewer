@@ -57,6 +57,16 @@ async function settle() {
 }
 
 /**
+ * 同一の津波イベントを指す識別子。
+ *
+ * **区域を持たない続報は DMDATA 経路（VTSE51②・VTSE52）にしか無く、その電文は必ず
+ * `eventId` を持つ。** カードが前報の区域・観測点を引き継ぐ条件（`isTsunamiContinuation`）は
+ * これで判定するので、実電文の形に合わせて双方へ持たせる。省くと画面の津波から区域を引けず、
+ * 並べ替えが働かない状態を検証してしまう。
+ */
+const EVENT_ID = 'evt-1'
+
+/**
  * 津波の観測情報（等級を伝えない続報）。`areas` を渡すと区域の並べ替えが効く。
  * 実電文と同じく既報の観測点も載せ続ける。
  */
@@ -68,6 +78,7 @@ function makeObsReport(
   return {
     kind: 'tsunami',
     id,
+    eventId: EVENT_ID,
     time: '2026-01-01T12:00:00Z',
     cancelled: false,
     issue: { source: 'JMA', time: '2026-01-01T12:00:00Z', type: 'Focus' },
@@ -91,6 +102,7 @@ function displayedTsunami(areas: { name: string; code: string; grade: string; he
   return {
     kind: 'tsunami',
     id: 'tsunami-displayed',
+    eventId: EVENT_ID,
     time: '2026-01-01T12:00:00Z',
     cancelled: false,
     issue: { source: 'JMA', time: '2026-01-01T12:00:00Z', type: 'Focus' },

@@ -2,7 +2,7 @@
 // 「〇時〇分」はローカルタイムゾーン依存のため、時刻の数値そのものではなく
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect } from 'vitest'
-import { earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiArrivalToText, tsunamiObservationUpdateToText, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
+import { earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiObservationUpdateToText, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
 import { joinSegments, type SpeechSegment } from './ttsFollow'
 import { getStationCoordsCache } from './stationCoords'
 import { eewMaxScaleInfo, eewMaxLpgmClass } from './eew'
@@ -588,6 +588,50 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
       { name: '石巻港', districtCode: '040', districtName: '宮城県', height: { value: 7.2, description: '7.2m' } },
     ]))
     expect(text).toContain('宮城県、福島県、岩手県で10メートル以上が予想されています。')
+  })
+
+  // 等級を切り替える報（津波警報 → 津波注意報など）は、観測点をほとんど載せない。
+  // それでもカードは前の報までに積んだ観測点で並び替わっているため、電文の観測点だけで
+  // 並べると読み上げだけが電文順（気象庁の地理順）に戻り、追従スクロールがカード上を往復する。
+  // 呼び出し側（`useLiveEventHandler`）はカードが持つ観測点の全体を第 2 引数で渡す。
+  describe('等級を切り替える報', () => {
+    // 切替後の等級は注意報。3 区域とも予想波高は同じなので、並びは実測波高だけで決まる
+    const watchAreas: TsunamiArea[] = [
+      { grade: 'Watch', immediate: false, name: '岩手県', code: '030', maxHeight: { description: '１ｍ', value: 1 } },
+      { grade: 'Watch', immediate: false, name: '宮城県', code: '040', maxHeight: { description: '１ｍ', value: 1 } },
+      { grade: 'Watch', immediate: false, name: '福島県', code: '050', maxHeight: { description: '１ｍ', value: 1 } },
+    ]
+    // カードが持っている観測点（前の報までに積んだもの）。宮城 > 福島 の順に深刻
+    const cardObservations: TsunamiObservation[] = [
+      { name: '石巻港', districtCode: '040', districtName: '宮城県', height: { value: 7.2, description: '7.2m' } },
+      { name: '小名浜', districtCode: '050', districtName: '福島県', height: { value: 3.1, description: '3.1m' } },
+    ]
+
+    // 正: カードが持つ観測点を渡せば、観測点を載せていない報でもカード順で読む
+    it('カードが持つ観測点を渡せばカード順で読む', () => {
+      const text = tsunamiDowngradeToText(makeTsunamiWithObs(watchAreas, []), cardObservations)
+      expect(text).toContain('宮城県、福島県、岩手県で1メートルが予想されています。')
+    })
+
+    // 対照: 渡さなければ電文が載せた分だけで並べる（既定の振る舞いは変えていない）
+    it('渡さなければ電文順で読む', () => {
+      const text = tsunamiDowngradeToText(makeTsunamiWithObs(watchAreas, []))
+      expect(text).toContain('岩手県、宮城県、福島県で1メートルが予想されています。')
+    })
+
+    // 安全弁: 渡した観測点は並べ替えにしか使わない。等級の発表で実測値まで読むと、
+    // 直後の観測情報と二重になり、読み上げ用の既読（`spokenObsHeightRef`）とも食い違う
+    it('渡した観測点の実測値は読み上げない', () => {
+      const text = tsunamiDowngradeToText(makeTsunamiWithObs(watchAreas, []), cardObservations)
+      expect(text).not.toContain('石巻港')
+      expect(text).not.toContain('7.2')
+    })
+
+    // 正: 新規発表・引き上げ側（`tsunamiToText`）も同じ引数で並びが決まる
+    it('新規発表・引き上げでも同じように効く', () => {
+      const text = tsunamiToText(makeTsunamiWithObs(watchAreas, []), cardObservations)
+      expect(text).toContain('宮城県、福島県、岩手県で1メートルが予想されています。')
+    })
   })
 
   // 安全弁: 並べ替えは波高グループの中だけ。グループの順序（電文順）は動かさない
