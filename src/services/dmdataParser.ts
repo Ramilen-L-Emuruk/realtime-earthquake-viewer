@@ -653,15 +653,27 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   }
 
   const areas: TsunamiArea[] = []
+  // 解除コード（00/50/60）で `areas` から落とした区域の名前。全区域が落ちれば正式解除だが、
+  // **他の区域が残ったまま一部だけ落ちた場合は区域単位の等級変化として検出できない**
+  // （`lastGrade` は残った区域にしか付かない）。下で記録を残す。
+  const droppedByCancelCode: string[] = []
   for (const itemEl of itemEls) {
     const areaName = xmlText(xmlQ(itemEl, 'Name'))
     const areaCode = xmlText(xmlQ(itemEl, 'Code')) || undefined
     const kindEl = xmlQ(itemEl, 'Kind')
     const kindCode = kindEl ? xmlText(xmlQ(kindEl, 'Code')) : ''
     let grade = parseTsunamiGradeByCode(kindCode)
+    // 前回この区域に発表されていた等級（Category/LastKind/Code）。区域単位の切替・引き上げは
+    // これでしか分からない（理由は `TsunamiArea.lastGrade`）。`LastKind` は Item 直下の Category
+    // にしか現れないため、子孫全探索でも Station 配下と取り違えない。
+    const lastKindEl = xmlQ(itemEl, 'LastKind')
+    const lastGrade = parseLastKindGrade(lastKindEl ? xmlText(xmlQ(lastKindEl, 'Code')) : '', '[tsunami XML]')
     if (!areaName) continue
     if (grade === 'Unknown') {
-      if (isKnownCancelCode(kindCode)) continue
+      if (isKnownCancelCode(kindCode)) {
+        droppedByCancelCode.push(areaName)
+        continue
+      }
       // DMD-5: 未知コードは silent lifted 誤認を避けるため Warning 相当で保持し警告する
       log.warn(`[tsunami XML] 未知の Kind/Code: "${kindCode}" → 安全側で Warning として areas 保持`)
       grade = 'Warning'
@@ -699,6 +711,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
 
     areas.push({
       grade,
+      lastGrade,
       immediate: condition === 'ただちに津波来襲と予測',
       name: areaName,
       code: areaCode,
@@ -710,6 +723,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
 
   // Forecast があるのに有効エリアが0件 = 気象庁による正式な解除（区域が電文から消える）
   if (areas.length === 0) return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: true, cancelReason: 'lifted', issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [] }
+  warnPartialDrop(droppedByCancelCode, '[tsunami XML]')
 
   // Observation も含む場合（VTSE51①: Forecast + Observation 両方あり）
   const observations = observationEl ? parseTsunamiObservationsFromXml(observationEl) : undefined
@@ -771,6 +785,45 @@ function parseTsunamiGradeByCode(code: string): TsunamiGrade {
 // 検知したら log.warn の上、安全側の grade（Warning）で areas を保持する。
 function isKnownCancelCode(code: string): boolean {
   return code === '50' || code === '60' || code === '00'
+}
+
+/**
+ * 発表中の区域が残っているのに、一部の区域だけが解除コード（00/50/60）で `areas` から
+ * 落ちた場合に記録を残す。
+ *
+ * 2024 年能登半島地震（`eventId=20240101161010`）の津波電文を確かめた範囲では、解除された区域も
+ * **予報への降格**として電文に残り、この形は現れなかった（01/01〜01/02 の VTSE41 7 通と 01/02 の
+ * VTSE51 11 通で、現れた `Kind/Code` は 51・53・62・71・72 だけ）。再確認するには DMDATA archive
+ * API（`/v2/archive` の `telegram.earthquake` 分類）から 2024-01-01・2024-01-02 の tar を展開し、
+ * VTSE41/51 の `forecasts[].kind.code` を数える。もし気象庁がこの表現を使った場合、落ちた区域は
+ * `lastGrade` を持てないため「区域単位で等級が動いた報」として検出できず、カードから
+ * 説明もなく消える（→ docs/spec/tsunami-spec.md §10）。画面には何も出ないので、
+ * 追う手がかりをここに残す。
+ */
+function warnPartialDrop(droppedNames: string[], logPrefix: string): void {
+  if (droppedNames.length === 0) return
+  log.warn(`${logPrefix} 発表中の区域が残っているのに解除コードで落ちた区域があります（区域単位の等級変化として検出できません）: ${droppedNames.join('・')}`)
+}
+
+/**
+ * `LastKind/Code`（前回その区域に発表されていた等級）を等級へ写す。
+ *
+ * **未知コードを `Unknown` のまま採らないこと。** `Unknown` は「前回は津波なし」を意味し、
+ * 読み上げでは「〇〇に津波注意報が発表されました」という**別内容の文**に化ける
+ * （`ttsText.ts` の `tsunamiAreaGradeChangeToSegments`）。JMA のコード改定で未知コードが来たとき、
+ * 事実と違う説明を無警告で出すことになる。判定から外して警告を残す ―― 現在の等級（`Kind/Code`）
+ * 側が「安全側の `Warning` へ倒して警告する」のと同じ思想で、こちらは倒す先が無いので諦める。
+ *
+ * 既知の解除コード（00/50/60）は「前回は津波なし」で正しい。新規発表の第一報がこの形で届く
+ * （2024 年能登半島地震の第一報は全区域が `LastKind=00`）。
+ */
+function parseLastKindGrade(code: string, logPrefix: string): TsunamiGrade | undefined {
+  if (!code) return undefined
+  const grade = parseTsunamiGradeByCode(code)
+  if (grade !== 'Unknown') return grade
+  if (isKnownCancelCode(code)) return 'Unknown'
+  log.warn(`${logPrefix} 未知の LastKind/Code: "${code}" → 前回の等級を判定しません`)
+  return undefined
 }
 
 // 津波情報 (VTSE41: 大津波警報特別、VTSE51: 警報・注意報・解除、VTSE52: 沖合観測)
@@ -886,13 +939,20 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
   }
 
   const areas: TsunamiArea[] = []
+  // 解除コードで落とした区域（意味は XML 経路と同じ）
+  const droppedByCancelCode: string[] = []
   for (const item of rawItems) {
     const it = obj(item)
     const kind = obj(it.kind)
     const codeStr = str(kind.code)
     let grade = parseTsunamiGradeByCode(codeStr)
+    // 前回この区域に発表されていた等級（扱いは XML 経路と同じ）
+    const lastGrade = parseLastKindGrade(str(obj(kind.lastKind).code), '[tsunami]')
     if (grade === 'Unknown') {
-      if (isKnownCancelCode(codeStr)) continue  // 既知の解除コード（50/60/00）は除外
+      if (isKnownCancelCode(codeStr)) {
+        droppedByCancelCode.push(str(it.name))
+        continue  // 既知の解除コード（50/60/00）は除外
+      }
       // DMD-5: 未知コードは JMA コード改定の可能性。silent に解除扱いにせず、
       // 安全側の grade（Warning）で areas を保持し警告ログを残す。
       log.warn(`[tsunami] 未知の Kind/Code: "${codeStr}" → 安全側で Warning として areas 保持`)
@@ -927,6 +987,7 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
 
     areas.push({
       grade,
+      lastGrade,
       immediate: firstHeight.condition === 'ただちに津波来襲と予測',
       name: str(it.name),
       code: str(it.code) || undefined,
@@ -946,6 +1007,7 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
 
   // 全区域が電文から消えた = 気象庁による正式な解除（Kind/Code が 50/60/00 など、grade判定不能で除外された結果0件）
   if (areas.length === 0) return { kind: 'tsunami', id, eventId, time, cancelled: true, cancelReason: 'lifted', issue: { source, time, type: 'Focus' }, areas: [] }
+  warnPartialDrop(droppedByCancelCode, '[tsunami]')
 
   return { kind: 'tsunami', id, eventId, time, cancelled: false, validDateTime, headline, warningComment, sourceEarthquake, issue: { source, time, type: 'Focus' }, areas, observations }
 }

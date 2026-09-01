@@ -2,8 +2,9 @@
 // 「〇時〇分」はローカルタイムゾーン依存のため、時刻の数値そのものではなく
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect } from 'vitest'
-import { earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiObservationUpdateToText, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
+import { earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
 import { joinSegments, plain, type SpeechSegment } from './ttsFollow'
+import { tsunamiAreaGradeChanges } from './tsunami'
 import { getStationCoordsCache } from './stationCoords'
 import { eewMaxScaleInfo, eewMaxLpgmClass } from './eew'
 import type { JMAQuake, JMALpgm, EarthquakePoint, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass, JMATsunami, TsunamiArea, TsunamiObservation } from '../types/earthquake'
@@ -1373,5 +1374,66 @@ describe('earthquakeToText: 座標テーブルが無いときの地域名', () =
         makeLocalQuake('各地の震度情報', 40 as IntensityScale, points), TTS_OPTS, false, state)
       expect(joinSegments(second)).toBe('地震情報が更新されました。')
     })
+  })
+})
+
+describe('tsunamiAreaGradeChangeToText（区域単位で等級が動いた報）', () => {
+  function makeAreaChangeTsunami(areas: TsunamiArea[]): JMATsunami {
+    const now = '2026-01-01T00:00:00Z'
+    return {
+      kind: 'tsunami',
+      id: 'test-tsunami',
+      time: now,
+      cancelled: false,
+      issue: { source: 'テスト', time: now, type: 'Focus' },
+      areas,
+    }
+  }
+  const textOf = (areas: TsunamiArea[]) =>
+    tsunamiAreaGradeChangeToText(tsunamiAreaGradeChanges(makeAreaChangeTsunami(areas)))
+
+  // 2024 年能登半島地震 01/02 02:30 の一部解除に相当する形
+  const partialLift: TsunamiArea[] = [
+    { grade: 'Watch', lastGrade: 'Watch', immediate: false, code: '360', name: '石川県能登' },
+    { grade: 'Forecast', lastGrade: 'Watch', immediate: false, code: '711', name: '福岡県日本海沿岸' },
+    { grade: 'Forecast', lastGrade: 'Watch', immediate: false, code: '720', name: '佐賀県北部' },
+  ]
+
+  it('正: 区域名を読点で連ね、遷移元と遷移先を述語で言い切る', () => {
+    expect(textOf(partialLift)).toBe('福岡県日本海沿岸、佐賀県北部の津波注意報が津波予報に切り替えられました。')
+  })
+
+  it('等級が上がった区域は動詞が「引き上げられました」になる', () => {
+    expect(textOf([
+      { grade: 'Warning', lastGrade: 'Watch', immediate: false, code: '500', name: '京都府' },
+    ])).toBe('京都府の津波注意報が津波警報に引き上げられました。')
+  })
+
+  it('遷移の組が複数あれば「また、」で継ぎ、引き上げを先に読む', () => {
+    expect(textOf([
+      { grade: 'Forecast', lastGrade: 'Watch', immediate: false, code: '711', name: '福岡県日本海沿岸' },
+      { grade: 'Warning', lastGrade: 'Watch', immediate: false, code: '500', name: '京都府' },
+    ])).toBe('京都府の津波注意報が津波警報に引き上げられました。また、福岡県日本海沿岸の津波注意報が津波予報に切り替えられました。')
+  })
+
+  it('前回が津波なしの区域は「〜に発表されました」の形に落とす（「津波なしが」とは言えない）', () => {
+    expect(textOf([
+      { grade: 'Watch', lastGrade: 'Unknown', immediate: false, code: '500', name: '京都府' },
+    ])).toBe('京都府に津波注意報が発表されました。')
+  })
+
+  it('安全弁: 行動指示も残っている区域の総括も付けない（動いた区域だけを述べる）', () => {
+    const text = textOf(partialLift)
+    expect(text).not.toContain('離れ')
+    expect(text).not.toContain('その他')
+    expect(text).not.toContain('継続')
+    // 動いていない区域の名前は出さない
+    expect(text).not.toContain('石川県能登')
+  })
+
+  it('安全弁: 変化が無ければ空文字（呼び出し側が観測点更新の読み上げへ落とせる）', () => {
+    expect(textOf([
+      { grade: 'Watch', lastGrade: 'Watch', immediate: false, code: '360', name: '石川県能登' },
+    ])).toBe('')
   })
 })
