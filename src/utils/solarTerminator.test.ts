@@ -4,6 +4,7 @@ import {
   solarAltitude,
   shadowPolygon,
   shadowAltitudes,
+  shadowBands,
   NIGHT_ALTITUDE,
   SUNSET_ALTITUDE,
 } from './solarTerminator'
@@ -380,5 +381,137 @@ describe('夜側の覆い方', () => {
         }
       }
     }
+  })
+})
+
+describe('shadowBands', () => {
+  /** 平面座標での点の内外判定（レイキャスティング）。 */
+  function inRing(ring: Array<[number, number]>, lon: number, lat: number): boolean {
+    let inside = false
+    for (let i = 0, j = ring.length - 2; i < ring.length - 1; j = i++) {
+      const [xi, yi] = ring[i]
+      const [xj, yj] = ring[j]
+      if (yi > lat !== yj > lat && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) inside = !inside
+    }
+    return inside
+  }
+
+  /** 穴あきポリゴンの内外判定。外環に入り、どの穴にも入らないときだけ内側。 */
+  function inPolygon(rings: Array<Array<[number, number]>>, lon: number, lat: number): boolean {
+    if (!inRing(rings[0], lon, lat)) return false
+    return !rings.slice(1).some(hole => inRing(hole, lon, lat))
+  }
+
+  /** リングが囲む符号付き面積。正なら反時計回り。 */
+  function signedArea(ring: Array<[number, number]>): number {
+    let doubled = 0
+    for (let i = 0; i < ring.length - 1; i++) {
+      doubled += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1]
+    }
+    return doubled / 2
+  }
+
+  // 面積に比例するよう、緯度は sin 一様で振る。乱数は使わず固定の格子にして結果を再現可能にする。
+  const probes: Array<[number, number]> = []
+  for (let a = 0; a < 40; a++) {
+    for (let b = 0; b < 20; b++) {
+      probes.push([
+        -180 + (360 * (a + 0.5)) / 40,
+        (Math.asin(2 * ((b + 0.5) / 20) - 1) * 180) / Math.PI,
+      ])
+    }
+  }
+
+  const times = [
+    Date.UTC(2024, 2, 20, 3, 6),
+    Date.UTC(2024, 5, 20, 20, 51),
+    Date.UTC(2024, 11, 21, 9, 21),
+    // 外側の段が極を含み、1 つ内側の段は含まない時期。外側は経度が一周するので中心経度のところで
+    // 2 つの断片に割れるのに、内側は 1 本のまま**その切れ目を跨いで**広がる。分点・至点はどの段も
+    // 割れ方が揃うため、この時刻を入れないと帯が二重に重なる不具合をすり抜ける（実測: 下の
+    // 二重被覆テストがこの 1 件で 800 点中 158 点を検出する）。
+    //
+    // **断片数が段で変わる日なら何でもよいわけではない。** 内側が切れ目を跨がない配置だと
+    // 二重被覆は起きず、素通りする（2024-01-31 は断片数が変わるのに 20000 点で 0 件だった）。
+    Date.UTC(2024, 3, 20),
+  ]
+  const STEPS = 6
+
+  it('同じ場所を 2 枚以上の帯で覆わない（重ね塗りをやめた前提そのもの）', () => {
+    for (const t of times) {
+      const bands = shadowBands(t, STEPS)
+      for (const [lon, lat] of probes) {
+        const count = bands.reduce(
+          (n, band) => n + band.polygons.reduce((m, rings) => m + (inPolygon(rings, lon, lat) ? 1 : 0), 0),
+          0,
+        )
+        expect(count).toBeLessThanOrEqual(1)
+      }
+    }
+  })
+
+  it('帯を全部合わせると、日の入りより暗い領域と一致する', () => {
+    for (const t of times) {
+      const bands = shadowBands(t, STEPS)
+      const outermost = shadowAltitudes(STEPS)[0]
+      for (const [lon, lat] of probes) {
+        const altitudeHere = solarAltitude(t, lat, lon)
+        // 境界のごく近くは折れ線近似の誤差が出るので判定から外す
+        if (Math.abs(altitudeHere - outermost) < 0.5) continue
+        const covered = bands.some(band => band.polygons.some(rings => inPolygon(rings, lon, lat)))
+        expect(covered).toBe(altitudeHere < outermost)
+      }
+    }
+  })
+
+  it('点を含む帯の深さは、その点の太陽高度から決まる段数と一致する', () => {
+    for (const t of times) {
+      const bands = shadowBands(t, STEPS)
+      const altitudes = shadowAltitudes(STEPS)
+      for (const [lon, lat] of probes) {
+        const altitudeHere = solarAltitude(t, lat, lon)
+        // どの段の境界にも近くない点だけを見る（近いと折れ線近似で隣の帯へずれる）
+        if (altitudes.some(a => Math.abs(altitudeHere - a) < 0.5)) continue
+        const expected = altitudes.filter(a => altitudeHere < a).length
+        const found = bands.find(band => band.polygons.some(rings => inPolygon(rings, lon, lat)))
+        expect(found?.depth ?? 0).toBe(expected)
+      }
+    }
+  })
+
+  it('外環は反時計回り、穴は時計回りになっている', () => {
+    for (const t of times) {
+      for (const band of shadowBands(t, STEPS)) {
+        for (const rings of band.polygons) {
+          expect(signedArea(rings[0])).toBeGreaterThan(0)
+          for (const hole of rings.slice(1)) expect(signedArea(hole)).toBeLessThan(0)
+        }
+      }
+    }
+  })
+
+  it('内側の段の断片を取りこぼさない（穴が付かないと帯が内側まで広がる）', () => {
+    for (const t of times) {
+      const bands = shadowBands(t, STEPS)
+      const caps = shadowAltitudes(STEPS).map(a => shadowPolygon(t, a))
+      for (let i = 0; i + 1 < caps.length; i++) {
+        const holes = bands[i].polygons.reduce((n, rings) => n + rings.length - 1, 0)
+        // 外側が複数の断片に割れていると、内側 1 本がその境で分かれて穴の数は増える。減ることは
+        // 無い（減ったぶんだけ帯が内側の段まで塗り広がる）。
+        //
+        // **この本数だけでは、穴がどの断片に付いたかは分からない。** 誤った断片へ丸ごと寄せても
+        // 本数は変わらないため、ここは穴が丸ごと消えた場合しか捕まえられない。誤った帰属を
+        // 捕まえるのは下の二重被覆と深さのテスト（実際、その 2 つが検出した）。
+        expect(holes).toBeGreaterThanOrEqual(caps[i + 1].length)
+      }
+      // 最も内側の段は一様な濃さなので穴を持たない
+      const innermost = bands[bands.length - 1]
+      for (const rings of innermost.polygons) expect(rings).toHaveLength(1)
+    }
+  })
+
+  it('深さは 1 から段数まで、外側から内側の順に並ぶ', () => {
+    const bands = shadowBands(times[0], STEPS)
+    expect(bands.map(b => b.depth)).toEqual([1, 2, 3, 4, 5, 6])
   })
 })
