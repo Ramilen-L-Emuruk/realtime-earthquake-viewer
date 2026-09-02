@@ -1210,6 +1210,7 @@ export function App() {
     kyoshinIndicesGated,
     kyoshin.dataTime,
     kyoshin.indicesSiteConfigId,
+    !settings.recordingMode,
   )
   // V2 検知イベント → 表示状態（confirmed/candidate・検知点・候補点）へ変換する
   const kyoshinView = useMemo(
@@ -1399,6 +1400,7 @@ export function App() {
             observations={latestTsunamiObservations}
             lpgm={activeLpgm ?? undefined}
             iconScale={settings.mapIconScale}
+            recording={settings.recordingMode}
             hypocenterDepthScale={settings.hypocenterDepthScale}
             showBathymetry={settings.showBathymetry}
             showActiveFaults={settings.showActiveFaults}
