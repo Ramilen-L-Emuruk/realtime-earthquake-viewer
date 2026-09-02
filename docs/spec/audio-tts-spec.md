@@ -832,8 +832,9 @@ EEW 警報が 14 通届いた報がある。割り込みは例外ではない。
   区域が画面外に残る
 - **並べ替えに渡す観測点は、カードが持っている全体**（`useLiveEventHandler` の
   `tsunamiCardOrderBasis` から引く）。区域の並びは「その区域で最も深刻な実測波高」で決まるので、
-  渡す観測点が違えば並びも変わる。読み上げの関数（`tsunamiToSegments` / `tsunamiDowngradeToSegments`）は
-  第 2 引数でこれを受け取る ―― **省略すると電文が載せた分だけで並べる**ので、受信経路からは必ず渡す。
+  渡す観測点が違えば並びも変わる。読み上げの関数（`tsunamiToSegments` / `tsunamiDowngradeToSegments`）と
+  区域単位の等級変化を組む `tsunamiAreaGradeChanges` は、第 2 引数でこれを受け取る ――
+  **省略すると電文が載せた分だけで並べる**ので、受信経路からは必ず渡す。
   渡し忘れがどの電文で症状として出るか、引き継ぎの条件はどうかは
   [`tsunami-spec.md`](tsunami-spec.md) §9「並べ替えに渡す材料はカードと同じものにする」
 - 検証は `ttsText.test.ts`（観測が入ると順序が変わること・非隣接の同じ波高を分けること・等級の

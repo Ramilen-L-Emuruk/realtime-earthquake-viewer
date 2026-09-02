@@ -322,7 +322,7 @@ describe('groupAreasForCardDisplay / sortAreasForCardDisplay', () => {
 
 
 // 「表示中の津波の続報として前報の値を引き継ぐか」の判定。カードの状態更新と、
-// 読み上げ・通知・スクロールが使うカード順の基準が、同じ述語を共有する。
+// カード順の基準（`tsunamiCardOrderBasis`）が、同じ述語を共有する。
 describe('isTsunamiContinuation', () => {
   const t = (over: Partial<JMATsunami> = {}): JMATsunami => makeTsunami({ eventId: 'E1', ...over })
 
