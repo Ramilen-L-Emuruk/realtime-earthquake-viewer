@@ -26,6 +26,7 @@ import { LpgmRegionFillGL } from './LpgmRegionFillGL'
 import { TsunamiLinesGL } from './TsunamiLinesGL'
 import { TsunamiObsBarsGL } from './TsunamiObsBarsGL'
 import { TsunamiArrivalMarkersGL } from './TsunamiArrivalMarkersGL'
+import { TsunamiMissingMarkersGL } from './TsunamiMissingMarkersGL'
 import { EewRegionFillGL } from './EewRegionFillGL'
 import { EewLpgmRegionFillGL } from './EewLpgmRegionFillGL'
 import { EewEpicentersGL } from './EewEpicentersGL'
@@ -48,6 +49,7 @@ import { useEewLayerData } from '../../hooks/useEewLayerData'
 import type { JapanMapProps, MapHandle } from './mapTypes'
 import { drawTsunamiObsBars } from './gl/tsunamiObsBar'
 import { drawTsunamiArrivalMarkers } from './gl/tsunamiArrivalMarker'
+import { drawTsunamiMissingMarkers } from './gl/tsunamiMissingMarker'
 import { kyoshinIndexToJma } from '../../utils/kyoshinIntensity'
 import { log } from '../../utils/logger'
 import { beginSpan, noteEvent } from '../../utils/frameProfiler'
@@ -170,8 +172,9 @@ export function JapanMapGL({
     quakeFitPositions,
     quakeSignature,
   } = useQuakeLayerData(mode, quake, { zoom, aggregateMaxZoom }, lpgm)
-  // 津波の派生データ（海岸線＋観測棒＋到達確認マーカー）。発報中は全モードで海岸線を描くため常時計算する。
-  const { tsunamiLines, observationBars, arrivalMarkers, tsunamiFitPositions, tsunamiSignature } = useTsunamiLayerData(
+  // 津波の派生データ（海岸線＋観測棒＋到達確認マーカー＋欠測マーカー）。発報中は全モードで海岸線を
+  // 描くため常時計算する。
+  const { tsunamiLines, observationBars, arrivalMarkers, missingMarkers, tsunamiFitPositions, tsunamiSignature } = useTsunamiLayerData(
     tsunamis,
     observations,
     obsUpdateStatus,
@@ -182,26 +185,32 @@ export function JapanMapGL({
     () => [
       ...observationBars.map((b) => ({ name: b.name, lat: b.lat, lng: b.lng })),
       ...arrivalMarkers.map((m) => ({ name: m.name, lat: m.lat, lng: m.lng })),
+      // 欠測の観測点もカードに行があるので寄せられるようにする（数値を持つ欠測は観測棒にも
+      // 入るが、`focusablePoints` は名前で引くだけなので重複しても寄り先は同じ）。
+      ...missingMarkers.map((m) => ({ name: m.name, lat: m.lat, lng: m.lng })),
     ],
-    [observationBars, arrivalMarkers],
+    [observationBars, arrivalMarkers, missingMarkers],
   )
-  // 撮影した画像へ描き足すもの。いまは津波の観測棒と到達確認マーカーで、どちらも DOM マーカーの
-  // ため WebGL のキャンバスに写らない（gl/tsunamiObsBar.ts・gl/tsunamiArrivalMarker.ts）。
-  // 表示条件は下の TsunamiObsBarsGL / TsunamiArrivalMarkersGL のマウント条件と揃える。
+  // 撮影した画像へ描き足すもの。いまは津波の観測棒・到達確認マーカー・欠測マーカーで、いずれも
+  // DOM マーカーのため WebGL のキャンバスに写らない（gl/tsunamiObsBar.ts・
+  // gl/tsunamiArrivalMarker.ts・gl/tsunamiMissingMarker.ts）。表示条件は下の TsunamiObsBarsGL /
+  // TsunamiArrivalMarkersGL / TsunamiMissingMarkersGL のマウント条件と揃える。
   const extrasRef = useRef<{
     bars: typeof observationBars
     arrivals: typeof arrivalMarkers
+    missing: typeof missingMarkers
     iconScale: number
     showBars: boolean
   }>({
     bars: [],
     arrivals: [],
+    missing: [],
     iconScale: 1,
     showBars: false,
   })
   useEffect(() => {
-    extrasRef.current = { bars: observationBars, arrivals: arrivalMarkers, iconScale, showBars: mode === 'tsunami' }
-  }, [observationBars, arrivalMarkers, iconScale, mode])
+    extrasRef.current = { bars: observationBars, arrivals: arrivalMarkers, missing: missingMarkers, iconScale, showBars: mode === 'tsunami' }
+  }, [observationBars, arrivalMarkers, missingMarkers, iconScale, mode])
   // カメラが追う検知点。**実際に地図へ描かれているものだけ**に揃える。
   // detectedPoints（confirmed イベントのメンバーの和集合）は現在の震度で絞られていない
   // （`kyoshinDetector` の memberKeys。値が下がりきった点は `MEMBER_DROP_MS` の猶予を過ぎれば
@@ -335,10 +344,13 @@ export function JapanMapGL({
       const handle: MapHandle = {
         map: m,
         drawExtras: (ctx, target, scale) => {
-          const { bars, arrivals, iconScale: s, showBars } = extrasRef.current
+          const { bars, arrivals, missing, iconScale: s, showBars } = extrasRef.current
           if (!showBars) return
           drawTsunamiObsBars(ctx, target, scale, bars, s)
           drawTsunamiArrivalMarkers(ctx, target, scale, arrivals, s)
+          // 欠測は観測棒より後（手前）に描く。数値を持つ欠測では棒の足元に重なるため、
+          // 先に描くと棒の台座に隠れる。
+          drawTsunamiMissingMarkers(ctx, target, scale, missing, s)
         },
       }
       onMapReadyRef.current?.(handle)
@@ -608,6 +620,11 @@ export function JapanMapGL({
           {mode === 'tsunami' && arrivalMarkers.length > 0 && (
             <TsunamiArrivalMarkersGL markers={arrivalMarkers} iconScale={iconScale} />
           )}
+          {/* 津波の欠測マーカー: 観測データが得られていない観測点に印を置く。到達確認マーカーとは
+              意味が違うので別の印（理由は gl/tsunamiMissingMarker.ts）。 */}
+          {mode === 'tsunami' && missingMarkers.length > 0 && (
+            <TsunamiMissingMarkersGL markers={missingMarkers} iconScale={iconScale} />
+          )}
           {/* 津波カメラ追従・観測フォーカス（モード切替をまたいで ref 保持するため常時マウント）。 */}
           <TsunamiFitGL
             mode={mode}
@@ -615,6 +632,7 @@ export function JapanMapGL({
             tsunamiFitPositions={tsunamiFitPositions}
             observationBars={observationBars}
             arrivalMarkers={arrivalMarkers}
+            missingMarkers={missingMarkers}
             focusObsName={focusObsName}
           />
           <FocusObsGL focusObsName={focusObsName} observationBars={focusablePoints} />

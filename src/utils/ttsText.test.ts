@@ -2,7 +2,7 @@
 // 「〇時〇分」はローカルタイムゾーン依存のため、時刻の数値そのものではなく
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect } from 'vitest'
-import { earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
+import { earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
 import { joinSegments, plain, type SpeechSegment } from './ttsFollow'
 import { tsunamiAreaGradeChanges } from './tsunami'
 import { getStationCoordsCache } from './stationCoords'
@@ -1435,5 +1435,108 @@ describe('tsunamiAreaGradeChangeToText（区域単位で等級が動いた報）
     expect(textOf([
       { grade: 'Watch', lastGrade: 'Watch', immediate: false, code: '360', name: '石川県能登' },
     ])).toBe('')
+  })
+})
+
+// 欠測（観測データが得られていない観測点）の読み上げ。
+// 到達確認の文（「到達を確認しました」）へ混ぜると到達を断定してしまう
+// （→ docs/spec/audio-tts-spec.md §4「欠測は到達確認と別の文で伝える」）。
+describe('tsunamiMissingToText', () => {
+  const missing = (name: string, districtName?: string, height?: { value: number; description: string; over?: boolean }): TsunamiObservation => ({
+    name,
+    districtName,
+    height,
+    condition: { maxHeightMissing: true },
+  })
+
+  it('正: 波高を持たない欠測は「欠測となっています」と伝える', () => {
+    const text = tsunamiMissingToText([missing('大船渡', '岩手県')])
+    // 場所を示す「で」は付けない（欠測は観測点そのものの状態）
+    expect(text).toBe('岩手県、大船渡は欠測となっています。')
+  })
+
+  it('正: これまでに観測できた波高がある欠測はその値も伝える', () => {
+    const text = tsunamiMissingToText([missing('宮古', '岩手県', { value: 3.2, description: '3.2m以上', over: true })])
+    expect(text).toBe('これまでに岩手県、宮古で3.2メートル以上を観測したのち、欠測となっています。')
+  })
+
+  it('正: 「微弱 欠測」は微弱も伝える（カードの波高欄と揃える）', () => {
+    const text = tsunamiMissingToText([{
+      name: '釧路',
+      districtName: '北海道太平洋沿岸東部',
+      condition: { maxHeightMissing: true, weak: true },
+    }])
+    expect(text).toBe('これまでに北海道太平洋沿岸東部、釧路で微弱な津波を観測したのち、欠測となっています。')
+  })
+
+  it('対照: 微弱でも数値でもない欠測は「これまでに…観測したのち」の形にしない', () => {
+    // 観測できていた事実が無いのに「これまでに」で始めると、何かを観測したように聞こえる
+    const text = tsunamiMissingToText([missing('大船渡', '岩手県')])
+    expect(text).toBe('岩手県、大船渡は欠測となっています。')
+    expect(text).not.toContain('これまでに')
+  })
+
+  it('正: 値を持つ群を先に読み、持たない群を「また、」で継ぐ', () => {
+    const text = tsunamiMissingToText([
+      missing('大船渡', '岩手県'),
+      missing('宮古', '岩手県', { value: 3.2, description: '3.2m以上', over: true }),
+    ])
+    expect(text).toBe('これまでに岩手県、宮古で3.2メートル以上を観測したのち、欠測となっています。また、岩手県、大船渡は欠測となっています。')
+  })
+
+  it('正: 「到達を確認」の語を使わない（到達したかどうかは判っていない）', () => {
+    const text = tsunamiMissingToText([missing('大船渡', '岩手県')])
+    expect(text).not.toContain('到達')
+    expect(text).not.toContain('観測中')
+  })
+
+  it('対照: 対象が無ければ何も言わない（空文字）', () => {
+    expect(tsunamiMissingToText([])).toBe('')
+  })
+
+  it('安全弁: 件数上限を超えたら外した地点数を伝える', () => {
+    const many = ['A', 'B', 'C', 'D', 'E', 'F', 'G'].map(n => missing(n, '岩手県'))
+    const text = tsunamiMissingToText(many)
+    // 助詞は述語に合わせる。「ほか2地点でも」は場所を示す「で」なので欠測には使わない
+    expect(text).toContain('ほか2地点も欠測となっています。')
+    expect(text).not.toContain('ほか2地点でも')
+  })
+
+  it('安全弁: どちらかの群が空なら「また、」を付けない', () => {
+    expect(tsunamiMissingToText([missing('大船渡', '岩手県')])).not.toContain('また、')
+    expect(tsunamiMissingToText([missing('宮古', '岩手県', { value: 1.0, description: '1.0m' })])).not.toContain('また、')
+  })
+})
+
+// 「微弱」（観測した波がごく小さい）の観測点に「最大波高は観測中です」と言わない。
+// 観測中は「これから値が出る」の意味なので、確定している微弱に当てると事実がずれる。
+describe('tsunamiArrivalToText: 微弱の言い分け', () => {
+  const at = '2026-09-03T10:00:00+09:00'
+
+  it('正: 微弱の観測点は「最大波高は微弱です」と伝える', () => {
+    const text = tsunamiArrivalToText([
+      { name: '釧路', districtName: '北海道太平洋沿岸東部', arrivalTime: at, condition: { weak: true } },
+    ])
+    expect(text).toBe('北海道太平洋沿岸東部、釧路で到達を確認しました。最大波高は微弱です。')
+  })
+
+  it('対照: 微弱でない観測点は従来どおり「最大波高は観測中です」', () => {
+    const text = tsunamiArrivalToText([
+      { name: '釧路', districtName: '北海道太平洋沿岸東部', arrivalTime: at },
+    ])
+    expect(text).toBe('北海道太平洋沿岸東部、釧路で到達を確認しました。最大波高は観測中です。')
+  })
+
+  it('正: 観測中と微弱が混ざったら群を分けて「また、」で継ぐ', () => {
+    const text = tsunamiArrivalToText([
+      { name: '大洗', districtName: '茨城県', arrivalTime: at },
+      { name: '釧路', districtName: '北海道太平洋沿岸東部', arrivalTime: at, condition: { weak: true } },
+    ])
+    expect(text).toBe('茨城県、大洗で到達を確認しました。最大波高は観測中です。また、北海道太平洋沿岸東部、釧路で到達を確認しました。最大波高は微弱です。')
+  })
+
+  it('安全弁: 片方の群だけなら「また、」を付けない', () => {
+    expect(tsunamiArrivalToText([{ name: '釧路', arrivalTime: at, condition: { weak: true } }])).not.toContain('また、')
+    expect(tsunamiArrivalToText([{ name: '釧路', arrivalTime: at }])).not.toContain('また、')
   })
 })

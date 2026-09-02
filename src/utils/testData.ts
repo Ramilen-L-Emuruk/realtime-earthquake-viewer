@@ -530,10 +530,23 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
         ],
       },
     ],
+    // 観測状態（`condition`）は電文の `Condition` に現れる組み合わせを一通り含める。
+    // 気象庁は「重要 欠測」「微弱 欠測」のように複数を併記するため（電文解説資料 Ⅱ.12）、
+    // 単独の状態しか置かないとカード・地図・読み上げの併記の扱いが一度も通らない。
     observations: [
       { name: '宮古',   districtCode: '030', districtName: '岩手県',           height: { value: 8.5, description: '8.5m以上', over: true }, arrivalTime: nowIso, initial: '押し' },
+      // これまでの最大波を観測した後に観測が途切れた観測点（値と欠測が同時に来る形）。
+      { name: '大船渡', districtCode: '030', districtName: '岩手県',           height: { value: 3.2, description: '3.2m以上', over: true }, arrivalTime: t(-5), initial: '押し', condition: { maxHeightMissing: true, important: true } },
       { name: '石巻港', districtCode: '040', districtName: '宮城県',           height: { value: 7.2, description: '7.2m' }, arrivalTime: nowIso, initial: '押し' },
+      // 到達は確認できたが最大波が欠測（波高の数値が無い）。
+      { name: '相馬',   districtCode: '050', districtName: '福島県',           arrivalTime: t(-2), initial: '押し', condition: { maxHeightMissing: true } },
+      // 第1波も最大波も欠測（到達したかどうかも判っていない）。
+      { name: 'いわき市小名浜', districtCode: '050', districtName: '福島県',   condition: { firstHeightMissing: true, maxHeightMissing: true } },
+      // 水位が上昇中の観測点。波高の数値が消えないことの確認を兼ねる。
+      { name: '大洗',   districtCode: '070', districtName: '茨城県',           height: { value: 2.1, description: '2.1m' }, arrivalTime: t(20), initial: '押し', condition: { rising: true } },
       { name: '八戸港', districtCode: '060', districtName: '青森県太平洋沿岸', height: { value: 1.8, description: '1.8m' }, arrivalTime: nowIso, initial: '引き' },
+      // 津波注意報の区域で、これまでの最大波がごく小さい（数値を発表しない）。
+      { name: '釧路',   districtCode: '080', districtName: '北海道太平洋沿岸東部', arrivalTime: t(30), initial: '押し', condition: { weak: true } },
       { name: '沖合40km', height: { value: 3.0, description: '3.0m以上', over: true }, arrivalTime: nowIso },
     ],
   }

@@ -1117,6 +1117,7 @@ interface TsunamiProps {
   coast?: LatLng[]
   bars?: typeof OBS_BARS
   arrivals?: typeof ARRIVALS
+  missing?: typeof ARRIVALS
   focus?: { name: string; ts: number } | null
 }
 
@@ -1130,6 +1131,7 @@ function tsunamiHarness(map: maplibregl.Map, props: TsunamiProps = {}) {
       tsunamiFitPositions: props.coast ?? COAST,
       observationBars: props.bars ?? [],
       arrivalMarkers: props.arrivals ?? [],
+      missingMarkers: props.missing ?? [],
       focusObsName: props.focus ?? null,
     }),
   )
@@ -1282,6 +1284,49 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
 
     // Assert: その観測点へ寄る。
     expect(fitTargets(map).slice(before)).toEqual([ARRIVAL_WEST])
+  })
+
+  // ── 欠測（観測データが得られていない）の観測点への追従 ────────────────────
+  // 到達確認と同じ理由で寄る。観測できなくなった場所は、津波が来ていないことの保証にならない。
+
+  it('新たに欠測となった観測点へ寄る', () => {
+    // Arrange: 発表直後の海岸線フィットまで進んだ状態。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map))
+    const before = fitTargets(map).length
+
+    // Act: 欠測の観測点が届く。
+    view.rerender(tsunamiHarness(map, { missing: ARRIVALS }))
+
+    // Assert: その観測点へ寄る（寄り先の作り方は到達確認と同じ）。
+    expect(fitTargets(map).slice(before)).toEqual([ARRIVAL_WEST])
+  })
+
+  it('既に出ている欠測では寄り直さない（配列が作り直されただけで動かさない）', () => {
+    // Arrange: 欠測へ寄った状態。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { missing: ARRIVALS }))
+    const before = fitTargets(map).length
+
+    // Act: 同じ観測点のまま配列だけ作り直される（続報の再送・点滅の解除など）。
+    view.rerender(tsunamiHarness(map, { missing: [...ARRIVALS] }))
+    view.rerender(tsunamiHarness(map, { missing: [arrival('C', 43.0, 145.0), arrival('D', 42.0, 144.0)] }))
+
+    // Assert: 寄り直さない。
+    expect(fitTargets(map).slice(before)).toEqual([])
+  })
+
+  it('実測の更新と新規の欠測が同じ電文で届いたら、両方が入る枠へ寄る', () => {
+    // Arrange: 海岸線フィットまで進んだ状態。
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map))
+    const before = fitTargets(map).length
+
+    // Act: 九州沖の実測更新と北海道沖の欠測が同時に届く。
+    view.rerender(tsunamiHarness(map, { bars: OBS_BARS, missing: ARRIVALS }))
+
+    // Assert: 片方だけを映さず、両方が入る矩形へ寄る（到達確認と同じ扱い）。
+    expect(fitTargets(map).slice(before)).toEqual([UNION_OBS_ARRIVAL_WEST])
   })
 
   it('既に出ている到達確認では寄り直さない（点滅が落ちただけで動かさない）', () => {

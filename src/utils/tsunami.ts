@@ -1,4 +1,4 @@
-import type { JMATsunami, TsunamiArea, TsunamiGrade, TsunamiObservation } from '../types/earthquake'
+import type { JMATsunami, TsunamiArea, TsunamiGrade, TsunamiObservation, TsunamiObservationCondition } from '../types/earthquake'
 import { log } from './logger'
 
 const GRADE_PRIORITY: Record<TsunamiGrade, number> = {
@@ -345,6 +345,163 @@ export function rememberAreaGrades(
   }
 }
 
+// ============================================================
+// 観測状態（電文の Condition）
+// ============================================================
+
+/** `FirstHeight/Condition` に現れる語と、写す先のフラグ。 */
+const FIRST_HEIGHT_CONDITIONS: Record<string, keyof TsunamiObservationCondition> = {
+  // 全角・半角の「1」が混在しうるため両方を引けるようにしておく（電文解説資料の表記は全角）。
+  '第１波識別不能': 'firstWaveUnidentifiable',
+  '第1波識別不能': 'firstWaveUnidentifiable',
+  '欠測': 'firstHeightMissing',
+}
+
+/** `MaxHeight/Condition` に現れる語と、写す先のフラグ。 */
+const MAX_HEIGHT_CONDITIONS: Record<string, keyof TsunamiObservationCondition> = {
+  '欠測': 'maxHeightMissing',
+  '微弱': 'weak',
+  '観測中': 'observing',
+  '重要': 'important',
+}
+
+/** `jmx_eb:TsunamiHeight@condition` に現れる語と、写す先のフラグ。 */
+const HEIGHT_CONDITIONS: Record<string, keyof TsunamiObservationCondition> = {
+  '上昇中': 'rising',
+}
+
+/**
+ * 知らない語を記録した組（`欄名:語`）。観測情報は数分おきに再送され同じ語が何度も来るので、
+ * 1 度だけ出す。地図に出せない観測点名の記録（`useTsunamiLayerData`）と同じ間引き方。
+ */
+const reportedUnknownConditions = new Set<string>()
+
+function collectConditionFlags(
+  raw: string | undefined,
+  table: Record<string, keyof TsunamiObservationCondition>,
+  field: string,
+  into: TsunamiObservationCondition,
+): void {
+  if (!raw) return
+  // 併記の区切りは全角スペース（電文解説資料 Ⅱ.12）。半角・改行が混ざっても読めるよう広く割る。
+  for (const token of raw.split(/[\s　]+/)) {
+    if (!token) continue
+    const flag = table[token]
+    if (flag) {
+      into[flag] = true
+      continue
+    }
+    // **黙って捨てない。** 気象庁が語を増やしたとき、表示も読み上げも何も言わないまま
+    // その状態を無視することになる（2025-07-24 に「欠測」が増えたときが実際にそれだった）。
+    const key = `${field}:${token}`
+    if (reportedUnknownConditions.has(key)) continue
+    reportedUnknownConditions.add(key)
+    log.warn(`[tsunami] 観測点の ${field} に未知の語があります（無視します）: ${token}`)
+  }
+}
+
+/**
+ * 気象庁電文の `Condition` を観測状態（{@link TsunamiObservationCondition}）へ写す。
+ *
+ * **併記を前提に分割して照合する。** `MaxHeight/Condition` は複数の内容を全角スペースで
+ * 並べる（電文解説資料 Ⅱ.12 の事例に「重要 欠測」「微弱 欠測」「観測中 欠測」がある）ため、
+ * 文字列の完全一致では読み取れない。
+ *
+ * DMDATA の JSON はこの `Condition` を `condition`（微弱・観測中・重要・第１波識別不能）と
+ * `status`（欠測）の 2 つに分けて配る。**呼び出し側で空白を挟んで繋いで渡せば**、XML と同じ
+ * 扱いになる（経路ごとに判定を書き分けない）。
+ *
+ * 何も立たなければ `undefined` を返す（大多数の観測点は状態を持たない）。
+ */
+export function parseTsunamiObservationCondition(input: {
+  /** `FirstHeight/Condition`（JSON は `firstHeight.condition` と `firstHeight.status`）。 */
+  firstHeight?: string
+  /** `MaxHeight/Condition`（JSON は `maxHeight.condition` と `maxHeight.status`）。 */
+  maxHeight?: string
+  /** `jmx_eb:TsunamiHeight@condition`（JSON は `maxHeight.height.condition`）。 */
+  heightCondition?: string
+}): TsunamiObservationCondition | undefined {
+  const condition: TsunamiObservationCondition = {}
+  collectConditionFlags(input.firstHeight, FIRST_HEIGHT_CONDITIONS, 'FirstHeight/Condition', condition)
+  collectConditionFlags(input.maxHeight, MAX_HEIGHT_CONDITIONS, 'MaxHeight/Condition', condition)
+  collectConditionFlags(input.heightCondition, HEIGHT_CONDITIONS, 'TsunamiHeight@condition', condition)
+  return Object.keys(condition).length > 0 ? condition : undefined
+}
+
+/**
+ * その観測点が欠測かどうか。
+ *
+ * **「まだ観測できていない（観測中）」と「もう観測できない（欠測）」を見分ける唯一の述語。**
+ * カード・地図・読み上げはすべてこれを通すこと ―― `height` の有無で振り分けると、欠測の
+ * 観測点が「到達確認・波高は観測中」として扱われる（気象庁が 2025-07-24 に欠測の発表を
+ * 始めたのは、まさにその取り違えを防ぐため）。
+ *
+ * 第1波と最大波のどちらが欠測でも真。**どちらが欠測かで扱いを変えたい場合は
+ * `condition` を直接見る**（到達時刻だけ判っていて波高が落ちた状態と、到達自体が判らない
+ * 状態は別物）。
+ */
+export function isObservationMissing(obs: TsunamiObservation): boolean {
+  return !!(obs.condition?.maxHeightMissing || obs.condition?.firstHeightMissing)
+}
+
+/**
+ * 観測点の行に出すバッジの語（左から順に並べる）。
+ *
+ * **観測の性質を述べる場所**で、波高そのものは {@link observationHeightText} が受け持つ。
+ * 分けているのは、欠測が数値と同時に来る（電文解説資料 Ⅱ.12 事例 6）ため——1 つの欄に
+ * 押し込むとどちらかが消える。
+ *
+ * 「到達確認」を欠測の観測点に付けないこと。第1波が欠測なら到達したかどうかも判っていない。
+ */
+export function observationBadges(obs: TsunamiObservation): string[] {
+  const missing = isObservationMissing(obs)
+  const badges: string[] = []
+  if (obs.height) badges.push('実測')
+  else if (obs.arrivalTime) badges.push('到達確認')
+  else if (missing) return ['欠測']
+  else badges.push('到達確認')
+  if (missing) badges.push('欠測')
+  // 水位が上昇中なら、いま見えている波高が最大とは限らないことを伝える。
+  if (obs.condition?.rising) badges.push('上昇中')
+  // 「重要」は大津波警報の基準を超えた値に気象庁が付ける印。語をそのまま出しても何が重要なのか
+  // 伝わらないので、意味の側を書く。
+  if (obs.condition?.important) badges.push('大津波警報の基準超')
+  return badges
+}
+
+/**
+ * 到達時刻の代わりに出す語。時刻が入っていれば空を返す（呼び出し側が時刻を出す）。
+ *
+ * 気象庁は「津波は観測したが第1波の到達時刻が不明瞭で観測できなかった」場合に
+ * `FirstHeight/Condition` へ「第１波識別不能」と載せる（電文解説資料 Ⅱ.12）。**到達そのものは
+ * 確定している**ので到達確認の扱いは変えず、時刻の欄にだけ理由を出す。空欄にすると、時刻を
+ * 出せない理由が電文にあることが画面から読めない。
+ */
+export function observationArrivalFallbackText(obs: TsunamiObservation): string {
+  if (obs.arrivalTime) return ''
+  return obs.condition?.firstWaveUnidentifiable ? '到達時刻不明' : ''
+}
+
+/**
+ * 観測点の行の右端に出す文字列。数値が無いときは、無い理由（電文の語）を出す。
+ *
+ * **欠測のときは空を返す。** バッジ（{@link observationBadges}）が既に「欠測」を言っているため、
+ * 重ねると同じ語が 1 行に 2 回出る。
+ *
+ * 「観測中」を欠測の観測点へ出さないこと——「これから値が出る」と読めてしまう。
+ */
+export function observationHeightText(obs: TsunamiObservation): string {
+  if (obs.height) return overSuffixedHeight(obs.height)
+  // 「微弱」は欠測と併記されうる（同 事例 7）。そのときも気象庁が波高について述べた語はこちら。
+  if (obs.condition?.weak) return '微弱'
+  if (isObservationMissing(obs)) return ''
+  // `condition.observing`（電文が「観測中」と明示した場合）に専用の分岐は要らない。
+  // 数値も微弱も欠測も無い状態は、電文が「観測中」と書いた場合と、`MaxHeight` 要素そのものが
+  // 無い場合（これまでの最大波を観測していない）の 2 通りだが、**利用者にとっては同じ**
+  // ――どちらもこれから値が出る。フラグは電文を読み違えていないかを確かめる側（テスト）で使う。
+  return '観測中'
+}
+
 /**
  * 前回・今回の観測情報をマージする。VTSE51②/VTSE52（観測のみ電文）が届くたびに
  * 全観測点が再送されるとは限らないため、区域コード+観測点名をキーに upsert し、
@@ -448,13 +605,13 @@ export function compareObservedHeightDesc(a: ObservedHeightRank, b: ObservedHeig
  * 観測波高の表示文字列に「以上」（観測可能範囲の超過）を必要なだけ補う。
  *
  * `description` は over のとき既に「以上」を含む（`dmdataParser` が `${value}m以上` を組む）ため、
- * 記号や語を重ねると「>8.5m以上」のような二重表記になる。一方で電文が `height.condition` を
- * 持つ経路では `description` がその文字列に置き換わって「以上」が落ちうるので、含まないときだけ補う。
+ * 記号や語を重ねると「>8.5m以上」のような二重表記になる。含まないときだけ補う。
  *
- * **数字を含まない `description` には足さない。** `condition` には「巨大」のような数値化されない語が
- * 入りうる（`dmdataParser.test.ts` の実電文相当フィクスチャにある形）ので、機械的に繋ぐと
- * 「巨大以上」という読めない語になる。その場合は語自体が確定していないことを伝えているため、
- * `over` の印を落としてでも文字列を壊さない方を採る。
+ * **数字を含まない `description` には足さない。** 機械的に繋ぐと「巨大以上」のような読めない語に
+ * なる。数値化されない語（「巨大」「高い」）が入るのは区域の予想波高だが、そちらは `over` を
+ * 持たないため現状ここへは来ない ―― 経路が増えたときの歯止めとして残してある。
+ * その場合は語自体が確定していないことを伝えているため、`over` の印を落としてでも
+ * 文字列を壊さない方を採る。
  *
  * 数字の判定は**全角も数える**。`over` が立つのは JSON 経路だけで、そこが自前で組む表記
  * （`${value}m以上`）は半角だが、`condition` は電文由来の文字列がそのまま入るため全角が来うる
