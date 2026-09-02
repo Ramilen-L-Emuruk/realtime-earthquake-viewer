@@ -859,6 +859,9 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             onChange={v => onUpdate('periodicReloadHours', v ? 1 : 0)}
           />
         </Row>
+        <Row label="録画モード" description="画面録画中のコマ落ちを減らします。表示される内容は変わりませんが、地名ラベルの位置調整が数秒遅れ、揺れ検知の診断ログを保存しません">
+          <Toggle checked={settings.recordingMode} onChange={v => onUpdate('recordingMode', v)} />
+        </Row>
       </Section>
 
       <Section title="通知設定">

@@ -262,44 +262,87 @@ function isOffScreen(
 }
 
 /**
- * 各ラベルの配置（退避方向・薄くするか）を判定する。戻り値は `targets` と同じ順・同じ長さ。
+ * 判定 1 巡のあいだ変わらない材料。`computeLabelPlacement` へ毎回渡す。
  *
- * 対象レイヤーが 1 つも存在しない（quake/kyoshin どちらのモードでもない等）場合は、全ラベルを
- * 退避なし・不透明のままにする。**画面の外にあるラベルも判定しない**（`isOffScreen`）。
+ * 切り出してあるのは、**1 巡を複数フレームに分けて進めるため**（LabelsGL の分割実行）。
+ * ペインの実寸と対象レイヤーの一覧は巡回中に変わらないので、1 巡につき 1 度だけ読む。
+ */
+export interface OverlapContext {
+  /** 実在する対象レイヤーの id。 */
+  layers: string[]
+  /** 地図ペインの実寸（px）。 */
+  pane: { width: number; height: number }
+  /**
+   * 地図アイコンの倍率（設定値）。ラベルの text-size も同倍率で描画されるため（LabelsGL）、
+   * 判定に使う矩形・退避量にも同じ倍率を掛けないと、倍率変更時に「実際は重なっているのに
+   * 避けない」ズレが出る。
+   */
+  iconScale: number
+}
+
+/**
+ * 判定に使う共通の材料を用意する。
  *
- * iconScale は地図アイコンの倍率（設定値）。ラベルの text-size も同倍率で描画されるため
- * （LabelsGL）、判定に使う矩形・退避量にも同じ倍率を掛けないと、倍率変更時に
- * 「実際は重なっているのに避けない」ズレが出る。
+ * 対象レイヤーが 1 つも存在しない（quake/kyoshin どちらのモードでもない等）場合は `null` を返す。
+ * 呼び出し側は全ラベルを退避なし・不透明のままにする。
+ */
+export function prepareOverlapContext(map: MapLibreMap, iconScale: number): OverlapContext | null {
+  const layers = OVERLAP_CHECK_LAYER_IDS.filter((id) => map.getLayer(id))
+  if (layers.length === 0) return null
+  const container = map.getContainer()
+  return {
+    layers,
+    pane: { width: container.clientWidth, height: container.clientHeight },
+    iconScale,
+  }
+}
+
+/**
+ * ラベル 1 件の配置（退避方向・薄くするか）を判定する。
+ *
+ * **画面の外にあるラベルは判定しない**（`isOffScreen`）。
+ *
+ * `map.project()` を使うため、**同じ巡回の中でカメラが動いてはならない**。動いた場合は前半と
+ * 後半で別の視点の判定が混ざるので、呼び出し側が巡回ごと捨てる（LabelsGL の `movestart`）。
+ */
+export function computeLabelPlacement(
+  map: MapLibreMap,
+  ctx: OverlapContext,
+  t: LabelOverlapTarget,
+): LabelPlacement {
+  // 座標も生成データ由来なので、`room` と同じく投影の前に確かめる（isFinitePair の説明を参照）。
+  // 壊れている場合そのラベルは MapLibre 側でも描画されないため、判定結果は既定値でよい。
+  if (!isFinitePair(t.lngLat)) return { shift: 'none', dimmed: false }
+  const point = map.project(t.lngLat)
+  const textSize = t.textSize * ctx.iconScale
+  const { halfW, halfH } = estimateHalfExtent(t.text, textSize)
+  const shiftPx = (t.shiftEm ?? 0) * textSize
+  if (isOffScreen(ctx.pane, point, halfW, halfH, shiftPx)) return { shift: 'none', dimmed: false }
+  // 代表点の判定では excludeName を効かせない（避けたい相手を除外してしまうため。上の定義を参照）。
+  if (!overlapsAt(map, ctx.layers, point.x, point.y, halfW, halfH, undefined))
+    return { shift: 'none', dimmed: false }
+
+  for (const dir of shiftCandidates(map, t, shiftPx, halfH, point.y)) {
+    const cy = dir === 'up' ? point.y - shiftPx : point.y + shiftPx
+    if (!overlapsAt(map, ctx.layers, point.x, cy, halfW, halfH, t.excludeName))
+      return { shift: dir, dimmed: false }
+  }
+  return { shift: 'none', dimmed: true }
+}
+
+/**
+ * 各ラベルの配置を**まとめて**判定する。戻り値は `targets` と同じ順・同じ長さ。
+ *
+ * 実際の再評価は 1 フレームに収めず分けて進めるため（LabelsGL）、**この関数は実行時の経路には
+ * 乗っていない**。残してあるのは、分割して進めた結果と一致することをテストで確かめる土台として。
+ * 判定そのものは `computeLabelPlacement` の 1 箇所にしか無い。
  */
 export function computeLabelPlacements(
   map: MapLibreMap,
   targets: LabelOverlapTarget[],
   iconScale: number,
 ): LabelPlacement[] {
-  const layers = OVERLAP_CHECK_LAYER_IDS.filter((id) => map.getLayer(id))
-  if (layers.length === 0) return targets.map(() => ({ shift: 'none', dimmed: false }))
-  // ペインの実寸はループ中に変わらないので 1 度だけ読む。
-  const container = map.getContainer()
-  const pane = { width: container.clientWidth, height: container.clientHeight }
-
-  return targets.map((t) => {
-    // 座標も生成データ由来なので、`room` と同じく投影の前に確かめる（isFinitePair の説明を参照）。
-    // 壊れている場合そのラベルは MapLibre 側でも描画されないため、判定結果は既定値でよい。
-    if (!isFinitePair(t.lngLat)) return { shift: 'none', dimmed: false }
-    const point = map.project(t.lngLat)
-    const textSize = t.textSize * iconScale
-    const { halfW, halfH } = estimateHalfExtent(t.text, textSize)
-    const shiftPx = (t.shiftEm ?? 0) * textSize
-    if (isOffScreen(pane, point, halfW, halfH, shiftPx)) return { shift: 'none', dimmed: false }
-    // 代表点の判定では excludeName を効かせない（避けたい相手を除外してしまうため。上の定義を参照）。
-    if (!overlapsAt(map, layers, point.x, point.y, halfW, halfH, undefined))
-      return { shift: 'none', dimmed: false }
-
-    for (const dir of shiftCandidates(map, t, shiftPx, halfH, point.y)) {
-      const cy = dir === 'up' ? point.y - shiftPx : point.y + shiftPx
-      if (!overlapsAt(map, layers, point.x, cy, halfW, halfH, t.excludeName))
-        return { shift: dir, dimmed: false }
-    }
-    return { shift: 'none', dimmed: true }
-  })
+  const ctx = prepareOverlapContext(map, iconScale)
+  if (!ctx) return targets.map(() => ({ shift: 'none', dimmed: false }))
+  return targets.map((t) => computeLabelPlacement(map, ctx, t))
 }

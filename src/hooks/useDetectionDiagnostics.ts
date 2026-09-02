@@ -39,6 +39,7 @@ function readLearned(): LearnedState | null {
  * @param indices 計測震度インデックス（生値）
  * @param dataTime 対象データ時刻（ISO 文字列）
  * @param siteConfigId 観測点リストの版
+ * @param enabled 記録を保存するか。`false` のあいだは切り出しまで行って**捨てる**（録画モード）
  */
 export function useDetectionDiagnostics(
   detections: DetectionEvent[],
@@ -46,11 +47,12 @@ export function useDetectionDiagnostics(
   indices: number[],
   dataTime: string,
   siteConfigId: string | null,
+  enabled = true,
 ): void {
   const captureRef = useRef(new DiagnosticCapture())
   // フレーム到来ごとの処理で最新値を参照する（deps は dataTime だけに絞りたいため ref で持ち回す）
-  const latest = useRef({ detections, sites, indices, siteConfigId })
-  latest.current = { detections, sites, indices, siteConfigId }
+  const latest = useRef({ detections, sites, indices, siteConfigId, enabled })
+  latest.current = { detections, sites, indices, siteConfigId, enabled }
 
   // 観測点集合が入れ替わったら、座標と値の対応が変わるので溜めた分を捨てる
   useEffect(() => {
@@ -58,7 +60,7 @@ export function useDetectionDiagnostics(
   }, [siteConfigId])
 
   useEffect(() => {
-    const { detections: evs, sites: st, indices: idx, siteConfigId: cfg } = latest.current
+    const { detections: evs, sites: st, indices: idx, siteConfigId: cfg, enabled: on } = latest.current
     if (!dataTime || idx.length === 0 || st.length !== idx.length) return
     const ms = new Date(dataTime).getTime()
     if (!Number.isFinite(ms)) return
@@ -93,7 +95,7 @@ export function useDetectionDiagnostics(
         )
       }
     }
-    persist(capture.takeFinished())
+    persist(capture.takeFinished(), on)
   }, [dataTime])
 
   // 画面が見えなくなったら、後ろ側が足りないままでも記録を残す。
@@ -105,12 +107,12 @@ export function useDetectionDiagnostics(
   useEffect(() => {
     const capture = captureRef.current
     const onHidden = (): void => {
-      if (document.visibilityState === 'hidden') persist(capture.flush())
+      if (document.visibilityState === 'hidden') persist(capture.flush(), latest.current.enabled)
     }
     document.addEventListener('visibilitychange', onHidden)
     return () => {
       document.removeEventListener('visibilitychange', onHidden)
-      persist(capture.flush())
+      persist(capture.flush(), latest.current.enabled)
     }
   }, [])
 }
@@ -123,8 +125,16 @@ export function useDetectionDiagnostics(
  */
 let chain: Promise<void> = Promise.resolve()
 
-function persist(records: DiagnosticRecord[]): void {
+function persist(records: DiagnosticRecord[], enabled: boolean): void {
   if (records.length === 0) return
+  // 録画モードでは保存しない。**捨てたことは黙らせない**が、この 1 行が担うのは進行中の確認まで
+  // ——`log.info` は console へ出すだけで残らない（DevTools を閉じていれば見えず、リロードで消える）。
+  // 記録が無い理由の説明を担っているのは設定欄の文面のほうで、ここはその補助。
+  // 切り出し自体は通しておくこと（止めると、録画モードを切った直後の検知で前側が欠ける）。
+  if (!enabled) {
+    log.info(`[diagnostics] 録画モードのため記録を保存しなかった（${records.length} 件）`)
+    return
+  }
   chain = chain.then(async () => {
     for (const r of records) {
       await saveRecord(r)

@@ -48,6 +48,11 @@ export interface JapanMapProps {
   observations?: TsunamiObservation[]
   lpgm?: JMALpgm
   iconScale?: number
+  /**
+   * 録画モード（設定値）。画面の内容は変えず、**録画中に要らない再計算を控える**ためだけに使う。
+   * いまの対象は地名ラベルの重なり判定（LabelsGL）。
+   */
+  recording?: boolean
   /** 震源の深さをどれだけ強調するか（1 = 実際の深さ）。水平方向は常に実スケール。 */
   hypocenterDepthScale?: number
   /**

@@ -35,6 +35,9 @@ export interface AppSettings {
   tsunamiTitleTemporary: boolean   // ウィンドウタイトルの津波表示を受信後一定時間のみにする（false = 発表中ずっと表示）
   idleRevertSec: number            // 操作なしでデフォルトタブへ戻るまでの秒数 (0 = 無効)
   periodicReloadHours: number      // 定期自動リロード（0 = 無効、1以上 = 毎日午前5時に実行）
+  // 画面録画のあいだ、表示に要らない再計算を控える。表示される内容そのものは変わらない
+  // （地名ラベルの退避が数秒遅れる・揺れ検知の診断ログを保存しない）。
+  recordingMode: boolean
   notifyEEW: boolean               // 緊急地震速報の発報・昇格時にブラウザ通知を送る
   notifyTsunami: boolean           // 津波注意報以上が発表されたときにブラウザ通知を送る
   notifyDetection: boolean         // 強震モニタの揺れ検知時にブラウザ通知を送る
@@ -97,6 +100,7 @@ const DEFAULTS: AppSettings = {
   tsunamiTitleTemporary: false,
   idleRevertSec: 30,
   periodicReloadHours: 1,
+  recordingMode: false,
   notifyEEW: true,
   notifyTsunami: true,
   notifyDetection: false,
@@ -179,6 +183,7 @@ export function sanitize(partial: Partial<AppSettings>): AppSettings {
     tsunamiTitleTemporary: ensureBool(partial.tsunamiTitleTemporary, DEFAULTS.tsunamiTitleTemporary),
     idleRevertSec: clampNumber(partial.idleRevertSec, 0, 3600, DEFAULTS.idleRevertSec),
     periodicReloadHours: clampNumber(partial.periodicReloadHours, 0, 168, DEFAULTS.periodicReloadHours),
+    recordingMode: ensureBool(partial.recordingMode, DEFAULTS.recordingMode),
     notifyEEW: ensureBool(partial.notifyEEW, DEFAULTS.notifyEEW),
     notifyTsunami: ensureBool(partial.notifyTsunami, DEFAULTS.notifyTsunami),
     notifyDetection: ensureBool(partial.notifyDetection, DEFAULTS.notifyDetection),
