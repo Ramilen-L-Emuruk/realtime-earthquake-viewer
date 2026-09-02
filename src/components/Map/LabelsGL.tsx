@@ -11,9 +11,10 @@ import { log } from '../../utils/logger'
 import { profileSpan } from '../../utils/frameProfiler'
 import {
   LABEL_TEXT_OPACITY_EXPR,
-  computeLabelPlacements,
+  computeLabelPlacement,
   isUsableRoom,
   labelTextOffsetExpr,
+  prepareOverlapContext,
   type LabelOverlapTarget,
   type LabelPlacement,
 } from './gl/labelOverlap'
@@ -115,6 +116,41 @@ const SUB_SRC = 'basemap-subregion-labels'
 // 挟まらないようデバウンスする。
 const OVERLAP_CHECK_DEBOUNCE_MS = 200
 
+// 前の判定が終わってから次を始めるまでの最小間隔。**デバウンスとは別物**——あちらは「操作が
+// 落ち着くまで待つ」、こちらは「落ち着いていても続けて走らせない」。
+//
+// 再評価の引き金は moveend だけでなく、マーカー側の位置が変わったとき（`overlapSignature`）も
+// 含む。強震モニタの検知点は地震のあいだ毎秒のように入れ替わるため、間隔を置かないと**2 秒に
+// 1 回**判定が走る（本番実測: 201 秒で 118 回・合計 5390ms ＝ 実時間の 2.7%）。
+//
+// 遅れて追いつく形になるが、この判定はもともと即時性を要求していない——`isVisibleHit` が見る
+// 観測点の色は毎秒変わるのに、`overlapSignature` はその毎秒更新を意図的に除外している
+// （JapanMapGL の同定数のコメント）。
+const OVERLAP_MIN_INTERVAL_MS = 1000
+
+// 1 フレームで判定に使ってよい時間。これを超えたら残りは次のフレームへ回す。
+//
+// 全件をまとめて回すと 1 巡で数十 ms に達し（同上・平均 45.7ms）、そのフレームは確実に落ちる。
+// 分割しても総量は変わらないが、1 フレームあたりの山が消える。
+const OVERLAP_CHUNK_BUDGET_MS = 5
+
+/**
+ * 次のチャンクを予約する。
+ *
+ * `requestAnimationFrame` が無い環境では `setTimeout` へ落とす。**分割そのものはやめない**
+ * ——やめると 1 フレームへ戻り、この仕組みが防ごうとしているコマ落ちが復活する。
+ */
+function requestNextChunk(cb: () => void): number {
+  if (typeof requestAnimationFrame === 'function') return requestAnimationFrame(cb)
+  return setTimeout(cb, 0) as unknown as number
+}
+
+/** `requestNextChunk` で取った予約を取り消す（取り方と同じ機構で落とす）。 */
+function cancelChunk(id: number): void {
+  if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(id)
+  else clearTimeout(id as unknown as ReturnType<typeof setTimeout>)
+}
+
 /** 退避なし・表示のまま（レイヤー構築時の初期値）。 */
 const DEFAULT_PLACEMENT: LabelPlacement = { shift: 'none', dimmed: false }
 
@@ -195,9 +231,15 @@ interface Props {
   overlapSignature: string
   /** 地図アイコンの倍率（設定値）。震度バッジ等と揃えてラベルも拡縮する。 */
   iconScale: number
+  /**
+   * 録画モード（設定値）。**有効なあいだは `overlapSignature` の変化で再評価しない**——
+   * 判定はカメラが止まったときだけ走る。検知点が入れ替わってもラベルの退避が数秒遅れるだけで、
+   * 録画した映像には現れない。
+   */
+  recording?: boolean
 }
 
-export function LabelsGL({ overlapSignature, iconScale }: Props) {
+export function LabelsGL({ overlapSignature, iconScale, recording = false }: Props) {
   const map = useMapGL()
   // レイヤー構築は [map] 依存の useEffect 内で行い、県名・区域名は非同期ロード後に追加される。
   // その追加が倍率変更より後になることがあるため、構築時は ref 経由で最新の倍率を読む
@@ -364,10 +406,10 @@ export function LabelsGL({ overlapSignature, iconScale }: Props) {
   // 倍率変更を既存レイヤーへ反映する（レイヤーの作り直しは伴わない）。ラベルの実サイズが変われば
   // 重なり判定に使う矩形も変わるため、反映後に再評価をかける。
   //
-  // この effect は上下の effect と宣言順で噛み合っている: 構築（[map]）→ 本 effect → 重なり判定（下）。
-  // マウント時点では scheduleOverlapCheckRef がまだ未設定（no-op）のため、ここからの再評価要求は
-  // 空振りする。初回の判定は下の effect が自前で schedule() を呼ぶことで成立している。
-  // 3 つの順序を入れ替えるときは、この噛み合わせが崩れていないか確認すること。
+  // この effect は前後の effect と宣言順で噛み合っている: 構築（[map]）→ 本 effect → 判定の駆動 →
+  // 再評価の要求。マウント時点では scheduleOverlapCheckRef がまだ未設定（no-op）のため、ここからの
+  // 要求は空振りする。初回の判定は駆動側の effect が自前で schedule() を呼ぶことで成立している。
+  // 4 つの順序を入れ替えるときは、この噛み合わせが崩れていないか確認すること。
   useEffect(() => {
     if (!map) return
     const sizes: [string, number][] = [
@@ -381,37 +423,119 @@ export function LabelsGL({ overlapSignature, iconScale }: Props) {
     scheduleOverlapCheckRef.current()
   }, [map, iconScale])
 
-  // 重なり判定の再評価。地図の移動完了時（moveend）と、マーカー側の位置情報が変わったとき
-  // （overlapSignature の変化）の両方をトリガーにする。デバウンスして連続操作中の負荷を抑える。
+  // 重なり判定の駆動。**依存は `map` だけ。** 地図の移動完了（`moveend`）を購読し、判定の実行・
+  // 待ち時間の管理・中断をここが持つ。マーカー側の位置が変わったときの要求は下の effect が出す。
+  //
+  // **再評価の契機を依存配列に入れてはならない。** 入れると契機が来るたびに effect ごと作り直され、
+  // ここで持っている「前の判定が終わった時刻」も「巡回の世代」も初期値へ戻る。最小間隔が消えるのは
+  // まさに最小間隔を置きたかった場面（強震モニタの検知点が毎秒入れ替わる地震の最中）で、
+  // **デバウンスの 200ms しか効かない状態になる**。地図イベントの購読も毎回張り直すことになる。
   useEffect(() => {
     if (!map) return
     let timeoutId: ReturnType<typeof setTimeout> | null = null
+    let chunkId: number | null = null
+    // 直近の判定が「終わった」時刻。最小間隔はここから測る（始めた時刻ではない）。
+    // **初期値を 0 にしないこと。** `performance.now()` はページを開いてからの経過 ms なので、
+    // 0 は「起動直後に 1 度走った」と読める値になり、最初の判定が最小間隔ぶん遅れる。
+    let finishedAtMs = Number.NEGATIVE_INFINITY
+    // 巡回の世代。**予約を落とすだけでは中断にならない**——実行中のチャンクは最後まで走り切り、
+    // そのまま次を予約するか結果を書き戻してしまう。捨てた巡回だと判る印を持たせる。
+    let generation = 0
 
-    // **重なり判定はここで同期的にまとめて走る。** 1 ラベルにつき `queryRenderedFeatures` を
-    // 1〜3 回呼ぶため、移動 1 回あたりの所要は数十 ms に達しうる（実測値は gl/labelOverlap.ts）。
-    // 移動直後のコマ落ちの容疑者なので、区間として名前を付けて記録する（utils/frameProfiler.ts）。
+    const cancelPass = () => {
+      generation++
+      if (chunkId == null) return
+      cancelChunk(chunkId)
+      chunkId = null
+    }
+
+    // **判定は 1 フレームに収めず、OVERLAP_CHUNK_BUDGET_MS ずつ進める。** 1 ラベルにつき
+    // `queryRenderedFeatures` を 1〜3 回呼ぶため、全件をまとめて回すと 1 巡で数十 ms に達する。
+    // 区間として名前を付けて記録する（utils/frameProfiler.ts）。分割が効いていれば、この区間は
+    // 1 回あたり予算以内に収まる。
     const run = () => {
       if (!map.getSource(REGION_SRC)) return
+      // 前の巡回が残っていたら捨てる。新しい方が新しいマーカー集合を見ているため。
+      cancelPass()
       const targets = targetsRef.current
-      profileSpan('labels:overlap', () =>
-        applyPlacements(map, targets, computeLabelPlacements(map, targets, iconScaleRef.current), lastSigRef.current),
-      )
+      const ctx = prepareOverlapContext(map, iconScaleRef.current)
+      // 対象レイヤーが無い（＝全ラベル既定値）／ラベルがまだ無い場合は分けるほどの仕事が無い。
+      if (!ctx || targets.length === 0) {
+        finishedAtMs = performance.now()
+        applyPlacements(map, targets, targets.map(() => DEFAULT_PLACEMENT), lastSigRef.current)
+        return
+      }
+      const placements: LabelPlacement[] = new Array<LabelPlacement>(targets.length)
+      const gen = generation
+      let next = 0
+      const step = () => {
+        chunkId = null
+        if (gen !== generation) return
+        profileSpan('labels:overlap', () => {
+          const deadline = performance.now() + OVERLAP_CHUNK_BUDGET_MS
+          // 予算を使い切っていても必ず 1 件は進める（進まないと同じ判定を毎フレーム繰り返す）。
+          do {
+            placements[next] = computeLabelPlacement(map, ctx, targets[next])
+            next++
+          } while (next < targets.length && performance.now() < deadline)
+        })
+        // チャンクの実行中に捨てられていたら、次を予約もしないし書き戻しもしない。
+        if (gen !== generation) return
+        if (next < targets.length) {
+          chunkId = requestNextChunk(step)
+          return
+        }
+        // **書き戻すのは全件そろってから 1 回だけ。** 途中で書くと、前半は新しい判定・後半は
+        // 前回の判定という混ざった状態が画面に出る。
+        finishedAtMs = performance.now()
+        applyPlacements(map, targets, placements, lastSigRef.current)
+      }
+      step()
     }
+
     const schedule = () => {
       if (timeoutId != null) clearTimeout(timeoutId)
-      timeoutId = setTimeout(run, OVERLAP_CHECK_DEBOUNCE_MS)
+      // デバウンスと最小間隔の遅い方まで待つ。
+      const wait = Math.max(
+        OVERLAP_CHECK_DEBOUNCE_MS,
+        finishedAtMs + OVERLAP_MIN_INTERVAL_MS - performance.now(),
+      )
+      timeoutId = setTimeout(run, wait)
+    }
+
+    // **カメラが動き出したら、進行中の巡回は捨てる。** 判定は `map.project()` で画面座標を出す
+    // ため、途中でカメラが動くと前半と後半で別の視点の結果が混ざる（分割したことで初めて生じる
+    // 危険で、同期版には無かった）。待機中の予約も落とす——飛行中に走らせても着地でやり直しに
+    // なるだけ。moveend が必ず来るので、そこで組み直される。
+    const onMoveStart = () => {
+      cancelPass()
+      if (timeoutId != null) {
+        clearTimeout(timeoutId)
+        timeoutId = null
+      }
     }
 
     scheduleOverlapCheckRef.current = schedule
+    map.on('movestart', onMoveStart)
     map.on('moveend', schedule)
     schedule()
 
     return () => {
       if (timeoutId != null) clearTimeout(timeoutId)
+      cancelPass()
+      map.off('movestart', onMoveStart)
       map.off('moveend', schedule)
       scheduleOverlapCheckRef.current = () => {}
     }
-  }, [map, overlapSignature])
+  }, [map])
+
+  // マーカー側の位置が変わったら再評価を要求する。**録画モードでは要求しない**（`recording`）——
+  // 判定は地図が止まったときだけ走ればよく、ラベルの退避が数秒遅れても録画した映像には現れない。
+  // `moveend` の購読は上の effect が持っているので、こちらを止めても地図の移動では走る。
+  useEffect(() => {
+    if (!map || recording) return
+    scheduleOverlapCheckRef.current()
+  }, [map, overlapSignature, recording])
 
   return null
 }
