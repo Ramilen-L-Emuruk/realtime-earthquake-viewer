@@ -4,6 +4,7 @@ import type { LatLng } from '../utils/tsunamiZones'
 import { useTsunamiZones } from './useTsunamiZones'
 import { useTsunamiObsCoords } from './useTsunamiObsCoords'
 import { TSUNAMI_RANK } from '../utils/tsunamiStyle'
+import { isObservationMissing } from '../utils/tsunami'
 import { log } from '../utils/logger'
 
 // 津波モードの描画に必要な派生データ（海岸線＋観測棒）を計算する共有フック。
@@ -44,6 +45,28 @@ export interface TsunamiArrivalMarker {
   blinking: boolean
 }
 
+/**
+ * 観測データが欠測となっている観測点（電文の `Condition` に「欠測」がある状態）。
+ *
+ * **到達確認マーカー（{@link TsunamiArrivalMarker}）とは別の一覧にする。** あちらは「到達した
+ * 事実は確定していて波高だけがこれから」という意味なので、観測そのものが届いていない観測点を
+ * 混ぜると印の意味が壊れる。
+ *
+ * **これまでに観測できた波高がある欠測は観測棒も出る**（電文が「これまでの最大波の高さ」を
+ * 載せてくるため）。そのときこの印は棒の足元に重なり、量は棒が・観測できていないことはこの印が
+ * 伝える。
+ */
+export interface TsunamiMissingMarker {
+  name: string
+  lat: number
+  lng: number
+  /** 第 1 波の到達時刻。欠測より前に到達を確認できていれば入る。 */
+  arrivalTime?: string
+  /** これまでに観測できた最大波（欠測になる前の値）。無いこともある。 */
+  height?: { value: number; description: string; over?: boolean }
+  blinking: boolean
+}
+
 // 観測棒の高さ→ピクセル換算パラメータ（Leaflet 版と一致）。
 const OBS_MAX_M = 5.0
 const OBS_MAX_PX = 400
@@ -57,6 +80,7 @@ export function useTsunamiLayerData(
   tsunamiLines: TsunamiLine[]
   observationBars: TsunamiObsBar[]
   arrivalMarkers: TsunamiArrivalMarker[]
+  missingMarkers: TsunamiMissingMarker[]
   tsunamiFitPositions: LatLng[]
   tsunamiSignature: string
 } {
@@ -114,6 +138,9 @@ export function useTsunamiLayerData(
     const markers: TsunamiArrivalMarker[] = []
     for (const o of observations) {
       if (o.height) continue
+      // 欠測は下の `missingMarkers` が受け持つ。**ここへ混ぜないこと** ―― この印は「到達した
+      // 事実は確定している」意味で、欠測は到達したかどうかも判っていない。
+      if (isObservationMissing(o)) continue
       const latLng = tsunamiObsCoords[o.name]
       if (!latLng) continue
       markers.push({
@@ -126,6 +153,28 @@ export function useTsunamiLayerData(
       })
     }
     // 観測棒と同じ北→南（後に描くほど手前）。
+    return markers.sort((a, b) => b.lat - a.lat)
+  }, [tsunamiObsCoords, observations, obsUpdateStatus])
+
+  // 欠測の観測点。**波高の有無で落とさない** ―― 数値を持つ欠測（これまでの最大波を観測した後に
+  // 観測が途切れた状態）は観測棒も出るので、この印は棒の足元に重なって「以後は観測できていない」
+  // ことだけを足す。
+  const missingMarkers = useMemo<TsunamiMissingMarker[]>(() => {
+    if (!tsunamiObsCoords || observations.length === 0) return []
+    const markers: TsunamiMissingMarker[] = []
+    for (const o of observations) {
+      if (!isObservationMissing(o)) continue
+      const latLng = tsunamiObsCoords[o.name]
+      if (!latLng) continue
+      markers.push({
+        name: o.name,
+        lat: latLng[0],
+        lng: latLng[1],
+        arrivalTime: o.arrivalTime,
+        height: o.height,
+        blinking: obsUpdateStatus?.has(o.name) ?? false,
+      })
+    }
     return markers.sort((a, b) => b.lat - a.lat)
   }, [tsunamiObsCoords, observations, obsUpdateStatus])
 
@@ -155,5 +204,5 @@ export function useTsunamiLayerData(
   )
   const tsunamiSignature = tsunamiLines.map((l) => `${l.name}:${l.grade}`).join(',')
 
-  return { tsunamiLines, observationBars, arrivalMarkers, tsunamiFitPositions, tsunamiSignature }
+  return { tsunamiLines, observationBars, arrivalMarkers, missingMarkers, tsunamiFitPositions, tsunamiSignature }
 }

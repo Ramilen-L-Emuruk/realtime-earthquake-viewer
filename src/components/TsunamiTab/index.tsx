@@ -2,7 +2,8 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation } from '../../types/earthquake'
 import { formatDateTimeMin, formatTime } from '../../utils/formatters'
 import { quakeEventKey } from '../../utils/quakeMerge'
-import { groupAreasForCardDisplay, matchesArea, overSuffixedHeight, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, tsunamiAreaKey } from '../../utils/tsunami'
+import { groupAreasForCardDisplay, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, tsunamiAreaKey } from '../../utils/tsunami'
+import { TSUNAMI_MISSING_COLOR as MISSING_COLOR } from '../../utils/tsunamiStyle'
 import { mapChunksToRefs, planFollowScroll, type FollowRect, type SpeechFollowSession, type SpeechRef } from '../../utils/ttsFollow'
 import { getSpeechClock } from '../../utils/voicevox'
 import { INTERACTION_HOLD_SEC } from '../Map/gl/camera'
@@ -234,12 +235,22 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-semibold" style={{ fontSize: '0.8125rem', color: style.heightColor }}>{obs.name}</span>
-                      <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: `${style.cardBorder}30`, color: style.heightColor }}>
-                        {obs.height ? '実測' : '到達確認'}
-                      </span>
+                      {observationBadges(obs).map(label => (
+                        <span
+                          key={label}
+                          className="text-xs font-bold px-1.5 py-0.5 rounded"
+                          style={label === '欠測'
+                            ? { background: `${MISSING_COLOR}26`, color: MISSING_COLOR }
+                            : { background: `${style.cardBorder}30`, color: style.heightColor }}
+                        >
+                          {label}
+                        </span>
+                      ))}
                     </div>
                     <div className="mt-1" style={{ fontSize: '0.6875rem', color: '#9ca3af' }}>
-                      {obs.arrivalTime && `${formatTime(obs.arrivalTime).slice(0, 5)}${obs.initial ? ` ${obs.initial}波` : ''}`}
+                      {obs.arrivalTime
+                        ? `${formatTime(obs.arrivalTime).slice(0, 5)}${obs.initial ? ` ${obs.initial}波` : ''}`
+                        : observationArrivalFallbackText(obs)}
                       {/* 同名 station があれば満潮時刻をここに表示 */}
                       {(() => {
                         const matched = stations.find(s => s.name === obs.name)
@@ -248,9 +259,9 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
                     </div>
                   </div>
                   {obs.height ? (
-                    <span className="font-bold flex-shrink-0" style={{ fontSize: '1.25rem', color: style.heightColor }}>{overSuffixedHeight(obs.height)}</span>
-                  ) : (
-                    <span className="flex-shrink-0" style={{ fontSize: '0.8125rem', color: '#9ca3af' }}>観測中</span>
+                    <span className="font-bold flex-shrink-0" style={{ fontSize: '1.25rem', color: style.heightColor }}>{observationHeightText(obs)}</span>
+                  ) : observationHeightText(obs) && (
+                    <span className="flex-shrink-0" style={{ fontSize: '0.8125rem', color: '#9ca3af' }}>{observationHeightText(obs)}</span>
                   )}
                 </div>
               </div>
@@ -290,18 +301,37 @@ function TsunamiObservationRow({ obs, onObservationClick, canFocusObs, registerS
       onKeyDown={clickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') onObservationClick!(obs.name) } : undefined}
     >
       <div className="flex-1 min-w-0">
-        <span className="text-white font-semibold block text-[1rem] roomy:text-[1.125rem]">
-          {obs.name}
-        </span>
-        {obs.arrivalTime && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-white font-semibold text-[1rem] roomy:text-[1.125rem]">
+            {obs.name}
+          </span>
+          {/* 区域に紐づく行と同じ語を出す（バッジの決め方は `observationBadges`）。ここへ出さないと、
+              沖合の観測点だけ欠測が画面から落ちる */}
+          {observationBadges(obs).filter(label => label !== '到達確認').map(label => (
+            <span
+              key={label}
+              className="text-xs font-bold px-1.5 py-0.5 rounded"
+              style={label === '欠測'
+                ? { background: `${MISSING_COLOR}26`, color: MISSING_COLOR }
+                : { background: 'rgba(255,255,255,0.08)', color: '#9ca3af' }}
+            >
+              {label}
+            </span>
+          ))}
+        </div>
+        {obs.arrivalTime ? (
           <span className="block mt-1 text-secondary" style={{ fontSize: '0.8125rem' }}>
             到達: {formatTime(obs.arrivalTime).slice(0, 5)}{obs.initial ? `（${obs.initial}）` : ''}
           </span>
+        ) : observationArrivalFallbackText(obs) && (
+          <span className="block mt-1 text-secondary" style={{ fontSize: '0.8125rem' }}>
+            {observationArrivalFallbackText(obs)}
+          </span>
         )}
       </div>
-      {obs.height && (
+      {observationHeightText(obs) && (
         <span className="text-secondary flex-shrink-0" style={{ fontSize: '1rem' }}>
-          {overSuffixedHeight(obs.height)}
+          {observationHeightText(obs)}
         </span>
       )}
     </div>

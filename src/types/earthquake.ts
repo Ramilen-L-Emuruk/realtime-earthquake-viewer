@@ -133,6 +133,40 @@ export interface TsunamiArea {
   stations?: TsunamiStation[]
 }
 
+/**
+ * 潮位観測点の観測状態（気象庁電文の `Condition`）。
+ *
+ * **排他ではない。** 気象庁は `MaxHeight/Condition` に複数の内容を全角スペースで併記する
+ * （電文解説資料 Ⅱ.12 に「重要 欠測」「微弱 欠測」「観測中 欠測」の事例がある）ため、
+ * どれか 1 つを選ぶ形では表せない。読み取りは `parseTsunamiObservationCondition` に集約する。
+ */
+export interface TsunamiObservationCondition {
+  /** 第1波の到達時刻が不明瞭で観測できなかった（`FirstHeight/Condition` = 第１波識別不能）。 */
+  firstWaveUnidentifiable?: boolean
+  /** 第1波が欠測（`FirstHeight/Condition` = 欠測）。到達したかどうかが判っていない。 */
+  firstHeightMissing?: boolean
+  /**
+   * 最大波が欠測（`MaxHeight/Condition` = 欠測）。
+   *
+   * **`height` と同時に立ちうる。** そのときの数値は「これまでの最大波の高さ」＝欠測になる前に
+   * 観測できた値で、以後は観測できていない（電文解説資料 Ⅱ.12 事例 6）。
+   */
+  maxHeightMissing?: boolean
+  /** 津波注意報の区域で、これまでの最大波が非常に小さい（`MaxHeight/Condition` = 微弱）。 */
+  weak?: boolean
+  /** 予想される高さに比べ十分小さく、数値を発表していない（`MaxHeight/Condition` = 観測中）。 */
+  observing?: boolean
+  /** これまでの最大波が大津波警報の基準を超えた（`MaxHeight/Condition` = 重要）。 */
+  important?: boolean
+  /**
+   * 水位が上昇中（`jmx_eb:TsunamiHeight@condition` = 上昇中）。
+   *
+   * 上の 6 つと出所が違う（波高の要素の属性で、`MaxHeight/Condition` ではない）が、
+   * 観測状態としては同じ枠なのでここへ入れる。
+   */
+  rising?: boolean
+}
+
 export interface TsunamiObservation {
   name: string
   height?: {
@@ -140,6 +174,11 @@ export interface TsunamiObservation {
     description: string
     over?: boolean
   }
+  /**
+   * 電文が伝える観測状態。**欠測・微弱・観測中の判定はここだけを見る**
+   * （`height` の有無では「まだ観測できていない」と「もう観測できない」を見分けられない）。
+   */
+  condition?: TsunamiObservationCondition
   arrivalTime?: string
   initial?: string  // 引き波 | 押し波
   // 観測点が属する津波予報区（districtCode）。forecasts[].code と一致させて area 行に紐づける。
