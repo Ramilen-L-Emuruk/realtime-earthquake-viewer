@@ -84,8 +84,9 @@ export function isCancelForCurrentTsunami(cancel: JMATsunami, current: JMATsunam
  *
  * **カードの状態更新（`useEarthquakes`）と、カードの並びを引く基準の組み立て
  * （`useLiveEventHandler` の `tsunamiCardOrderBasis`）で同じ述語を使うこと。** 前者だけが
- * 引き継ぎを断ると、読み上げ・通知・スクロールの送り先が「カードに無い観測点」で並べ替えた
- * 結果になる。逆も同じで、片方だけ緩めれば黙って食い違う。
+ * 引き継ぎを断ると、その基準を渡す先が「カードに無い観測点」で並べ替えた結果を使うことになる
+ * （渡す先の一覧は `tsunamiCardOrderBasis` の宣言箇所。ここで数え上げないのは、経路が増えたときに
+ * 取りこぼすため）。逆も同じで、片方だけ緩めれば黙って食い違う。
  *
  * 引き継ぐのは**双方が同じ `eventId` を持ち、表示中が解除表示に入っていない**ときだけ。
  *
