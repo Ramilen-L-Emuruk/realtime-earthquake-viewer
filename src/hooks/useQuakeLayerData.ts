@@ -234,6 +234,9 @@ export function useQuakeLayerData(
     }
 
     // パス2: isArea:true の地点 → 区域名で直接マッチ（観測点が海上でも確実に塗る）。
+    // DMDATA JSON 経路の都道府県ロールアップ点（addr が県名）もここで拾う。他所（quakeMerge /
+    // ttsText）は addr !== pref で除くが、ここは除かない——一致する区域名を持つのは単一区域の
+    // 奈良県だけで、県の最大震度と区域の最大震度が同値になるため。他県のぶんは参照されない。
     for (const p of quake.points) {
       if (!p.isArea) continue
       bump(p.addr, p.scale)
