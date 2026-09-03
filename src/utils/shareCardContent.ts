@@ -145,7 +145,7 @@ function kyoshinContent(liveEews: EEWAlert[]): ContentWithoutNotices {
   const info = eewMaxScaleInfo(eew)
   const knownScale = isValidIntensityScale(info.scale) && info.scale >= 0
   const { hypocenter } = eew.earthquake
-  // **仮定震源要素（単独観測点処理・震源未確定）の報では規模を出さない。** 電文には数値が
+  // **仮定震源要素（震源未確定）の報では規模を出さない。** 電文には数値が
   // 入っているが、それは地震学的に意味を持たない仮の値。画面では隠している（`RealtimeTab`）ので、
   // 画像にも焼かない——共有された画像は後から訂正できない。
   // **`condition` を参照する箇所は eew-spec.md §5 に列挙する決まり。足したらそちらも更新すること。**

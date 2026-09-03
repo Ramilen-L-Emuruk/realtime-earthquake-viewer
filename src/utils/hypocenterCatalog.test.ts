@@ -359,6 +359,25 @@ describe('嘘の値が紛れ込む経路を塞ぐ', () => {
     const { loadHypocenterYear } = await freshModule()
     await expect(loadHypocenterYear(2023)).rejects.toThrow(/intIdx/)
   })
+
+  // **索引の年も中身まで見る。** 年として読めない値からは NaN の時刻ができ、それが
+  // 日付ピッカーの `value` に入るところで例外になる。震源カタログタブは常時マウント
+  // されているので、その例外は**アプリ全体を落とす**（画面が真っ白になる）。
+  it.each([[null], ['2023'], [Number.NaN], [Infinity], [2023.5]])(
+    'years に %o が混ざれば失敗する',
+    async (bad) => {
+      vi.stubGlobal('fetch', vi.fn(async () => okResponse({ ...INDEX, years: [bad] })))
+      const { loadHypocenterIndex } = await freshModule()
+      await expect(loadHypocenterIndex()).rejects.toThrow(/years/)
+    },
+  )
+
+  // 対照: まともな索引は通ること（検分を厳しくして正常系を壊していないこと）。
+  it('まともな索引は通る', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => okResponse(INDEX)))
+    const { loadHypocenterIndex } = await freshModule()
+    expect((await loadHypocenterIndex()).years).toEqual([2023])
+  })
 })
 
 describe('completeMinMagnitude は並び順に依存しない', () => {

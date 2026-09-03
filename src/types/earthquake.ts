@@ -46,6 +46,16 @@ export type DomesticTsunami =
 export interface JMAQuake {
   kind: 'quake'
   id: string
+  /**
+   * 電文が配信する地震の識別子（DMDATA は 14 桁タイムスタンプ）。P2PQuake 経路では配信されない。
+   *
+   * **同一性判定には使わない。** 統合・選択・通知は `eventKey`、または `id` 文字列から抜く
+   * `extractQuakeEventId`（`utils/quakeMerge.ts`）で行う。このフィールドを直接読むのは
+   * `TsunamiTab` の原因地震リンクと `testScenarioReplay` の ID 再採番の 2 箇所だけ。
+   *
+   * **全経路・全種別（取消電文を含む）で埋めること。** 欠けると上の 2 箇所がその報だけ
+   * 取りこぼす（XML 経路と取消電文で落ちていたのを 2026-09-04 に揃えた）。
+   */
   eventId?: string
   time: string
   cancelled?: boolean
@@ -133,6 +143,40 @@ export interface TsunamiArea {
   stations?: TsunamiStation[]
 }
 
+/**
+ * 潮位観測点の観測状態（気象庁電文の `Condition`）。
+ *
+ * **排他ではない。** 気象庁は `MaxHeight/Condition` に複数の内容を全角スペースで併記する
+ * （電文解説資料 Ⅱ.12 に「重要 欠測」「微弱 欠測」「観測中 欠測」の事例がある）ため、
+ * どれか 1 つを選ぶ形では表せない。読み取りは `parseTsunamiObservationCondition` に集約する。
+ */
+export interface TsunamiObservationCondition {
+  /** 第1波の到達時刻が不明瞭で観測できなかった（`FirstHeight/Condition` = 第１波識別不能）。 */
+  firstWaveUnidentifiable?: boolean
+  /** 第1波が欠測（`FirstHeight/Condition` = 欠測）。到達したかどうかが判っていない。 */
+  firstHeightMissing?: boolean
+  /**
+   * 最大波が欠測（`MaxHeight/Condition` = 欠測）。
+   *
+   * **`height` と同時に立ちうる。** そのときの数値は「これまでの最大波の高さ」＝欠測になる前に
+   * 観測できた値で、以後は観測できていない（電文解説資料 Ⅱ.12 事例 6）。
+   */
+  maxHeightMissing?: boolean
+  /** 津波注意報の区域で、これまでの最大波が非常に小さい（`MaxHeight/Condition` = 微弱）。 */
+  weak?: boolean
+  /** 予想される高さに比べ十分小さく、数値を発表していない（`MaxHeight/Condition` = 観測中）。 */
+  observing?: boolean
+  /** これまでの最大波が大津波警報の基準を超えた（`MaxHeight/Condition` = 重要）。 */
+  important?: boolean
+  /**
+   * 水位が上昇中（`jmx_eb:TsunamiHeight@condition` = 上昇中）。
+   *
+   * 上の 6 つと出所が違う（波高の要素の属性で、`MaxHeight/Condition` ではない）が、
+   * 観測状態としては同じ枠なのでここへ入れる。
+   */
+  rising?: boolean
+}
+
 export interface TsunamiObservation {
   name: string
   height?: {
@@ -140,6 +184,11 @@ export interface TsunamiObservation {
     description: string
     over?: boolean
   }
+  /**
+   * 電文が伝える観測状態。**欠測・微弱・観測中の判定はここだけを見る**
+   * （`height` の有無では「まだ観測できていない」と「もう観測できない」を見分けられない）。
+   */
+  condition?: TsunamiObservationCondition
   arrivalTime?: string
   initial?: string  // 引き波 | 押し波
   // 観測点が属する津波予報区（districtCode）。forecasts[].code と一致させて area 行に紐づける。
@@ -273,7 +322,22 @@ export interface JMANankai {
   kindName: string   // '調査中' | '巨大地震注意' | '巨大地震警戒' | '調査終了'
   headline: string
   body: string
-  cancelled: boolean // kindName === '調査終了'
+  /**
+   * 帯を引っ込めるか。調査終了（`kindCode === '0204'`）と取消の両方で立つ。
+   *
+   * **取消と調査終了を、これ 1 つで見分けてはいけない**（→ `retracted`）。どちらも状況の表示を
+   * 終える点は同じだが、**意味は正反対**——調査終了は「調べた結果、可能性は通常の範囲内だった」
+   * という気象庁の判断で、取消は「その電文を撤回する」だけ。可能性については何も言っていない。
+   */
+  cancelled: boolean
+  /**
+   * 取消電文（`Head/InfoType` が「取消」）か。
+   *
+   * 気象庁の定めでは、取消は**「独立した情報単位」全体を取り消す**という意味しか持たない
+   * （電文解説資料 Ⅰ.別紙ウ）。段階の判断を含まないので、`kindName` に「調査終了」を詰めて
+   * 済ませてはならない —— 発表していない安心情報をアプリが作ることになる。
+   */
+  retracted?: boolean
   reportDateTime: string
 }
 
@@ -305,6 +369,8 @@ export interface JMAKohatsu {
   headline: string
   body: string
   cancelled: boolean
+  /** 取消電文か（意味は `JMANankai.retracted` に同じ）。 */
+  retracted?: boolean
   reportDateTime: string
   expireAt: string  // reportDateTime + 7日
 }

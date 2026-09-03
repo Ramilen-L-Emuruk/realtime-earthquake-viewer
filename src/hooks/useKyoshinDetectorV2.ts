@@ -190,8 +190,8 @@ export const RESULT_STALL_RESET_FRAMES = 5
  * @param sitesSiteConfigId sites がどの `siteConfigId` で fetch されたか
  * @param indicesSiteConfigId indices が属する `siteConfigId`（毎フレーム RealTimeData 由来）
  * @param enabled 有効フラグ（false の間は何もしない）
- * @param hasActiveNonAssumedEEW 震源要素が確定した（単独点処理=仮定震源要素でない）EEW が発表中か
- *   （cancelled 除く）。true の間は confirmed の確定条件を緩和する（§19）。単独点処理由来の速報は
+ * @param hasActiveNonAssumedEEW 震源要素が確定した（＝仮定震源要素でない）EEW が発表中か
+ *   （cancelled 除く）。true の間は confirmed の確定条件を緩和する（§19）。仮定震源要素由来の速報は
  *   震源・推定震度の誤差が大きいため緩和しない。
  */
 export function useKyoshinDetectorV2(

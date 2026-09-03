@@ -10,6 +10,7 @@ import {
   createTestTsunami,
 } from './testData'
 import { eewAreas, eewMaxScale, eewNoForecastReason } from './eew'
+import { isObservationMissing } from './tsunami'
 
 // テストデータが「名前で」外部データと突き合わせている箇所を固定する。
 //
@@ -67,9 +68,11 @@ describe('テスト津波の観測点名', () => {
     // 「`height` があり、名前から座標が引ける」観測点にだけ棒を作り、予報区への紐づけ
     // （`districtCode`）は見ない。ここで `districtCode` の有無で絞ると、予報区に紐づかない
     // 観測点の名前の誤りを取りこぼす。
+    // **欠測の観測点も同じ表を引く**（`missingMarkers`）ので対象に含める。含めないと、
+    // 欠測のテストデータだけ名前を間違えても気づけない。
     // 観測点はバリアントに依存しない（差は eventId・validDateTime のみ）ので DMDSS 版で見る。
     const targets = (createTestTsunami(true).observations ?? []).filter(
-      (o) => o.height && !KNOWN_COORDLESS_OBSERVATIONS.has(o.name),
+      (o) => (o.height || isObservationMissing(o)) && !KNOWN_COORDLESS_OBSERVATIONS.has(o.name),
     )
     const names = targets.map((o) => o.name)
     expect(names.length).toBeGreaterThan(0)

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewMaxScale, eewMaxScaleInfo, isForecastScaleHigher, eewNoForecastReason, eewSerial, selectEEWSoundType, eewPhase2ScaleStabilityMs, EEW_PHASE2_STABILITY_SMALL_MS, EEW_PHASE2_STABILITY_LARGE_MS, type HypoInfoPendingMissing } from './eew'
+import { calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewMaxScale, eewMaxScaleInfo, isForecastScaleHigher, eewNoForecastReason, canPresentLpgmClass, eewSerial, selectEEWSoundType, eewPhase2ScaleStabilityMs, EEW_PHASE2_STABILITY_SMALL_MS, EEW_PHASE2_STABILITY_LARGE_MS, type HypoInfoPendingMissing } from './eew'
 import type { YahooHypoInfoItem } from '../services/kyoshin'
 import type { EEWAlert, EEWRegion, IntensityScale, LpgmClass } from '../types/earthquake'
 
@@ -241,7 +241,11 @@ describe('computeSingleEEWLevel', () => {
     expect(computeSingleEEWLevel(eew)).toBe(1)
   })
 
-  it('仮定震源要素（単独点処理）は震度・長周期地震動階級とも0扱いでレベル1', () => {
+  // **かつては仮定震源要素を震度・階級とも 0 扱いにしてレベル1に落としていた。** 気象庁が
+  // 最大予測震度を発表しない条件は「観測点 1 点による震度予測」と「深さ 150km 超」の 2 つで、
+  // 該当すれば電文に値が入らない。値が載っている報を受信側で潰す理由は無く、潰せば深刻な予想を
+  // 軽い扱いへ落とすことになる（詳細は eewMaxScaleInfo のコメント）。
+  it('仮定震源要素でも電文全体の予想値を採る（震度6弱以上ならレベル2へ上げる）', () => {
     const eew = makeEEW({
       earthquake: {
         originTime: '2026-01-01T12:00:00Z',
@@ -251,6 +255,20 @@ describe('computeSingleEEWLevel', () => {
       },
       forecastMaxScale: 60,
       forecastMaxLpgmClass: 4,
+    })
+    expect(computeSingleEEWLevel(eew)).toBe(2)
+  })
+
+  // 対照: 値を持たない仮定震源要素（＝気象庁が発表しなかった報）はレベル1のまま。
+  // 「condition を無視するようにした」のではなく「値があれば採る」だけであることを固定する。
+  it('仮定震源要素で予想値を持たない報はレベル1に留まる', () => {
+    const eew = makeEEW({
+      earthquake: {
+        originTime: '2026-01-01T12:00:00Z',
+        arrivalTime: '2026-01-01T12:00:20Z',
+        condition: '仮定震源要素',
+        hypocenter: { name: 'テスト震源', latitude: 35.0, longitude: 135.0, depth: 10, magnitude: 1.0 },
+      },
     })
     expect(computeSingleEEWLevel(eew)).toBe(1)
   })
@@ -305,7 +323,7 @@ describe('eewMaxScaleInfo: 「〜以上」の集約', () => {
   }
 
   it('「以上」の区域が最大なら orAbove を立てる', () => {
-    // 2024/1/1 16:18 の余震の初報に相当（石川県能登 震度4以上・単独観測点処理）。
+    // 2024/1/1 16:18 の余震の初報に相当（石川県能登 震度4以上・仮定震源要素）。
     const eew = makeEEW({ areas: [area({ scaleFrom: 40, scaleTo: 40, scaleToOrAbove: true })] })
     expect(eewMaxScaleInfo(eew)).toEqual({ scale: 40, orAbove: true })
     expect(eewMaxScale(eew)).toBe(40)
@@ -341,13 +359,34 @@ describe('eewMaxScaleInfo: 「〜以上」の集約', () => {
     expect(eewMaxScaleInfo(eew)).toEqual({ scale: 40, orAbove: true })
   })
 
-  it('仮定震源要素で areas が空なら scale=0・orAbove=false（フラグが残っていても採らない）', () => {
+  // **かつては仮定震源要素というだけで forecastMaxScale を捨てていた。** 気象庁が最大予測震度を
+  // 発表しないのは「観測点 1 点による震度予測」と「深さ 150km 超」で、該当すれば電文に値が入らない。
+  // 受信側で潰す必要はなく、潰していた頃は 2024 能登の 1/1〜1/3 で震度3以上の予想を持つ 25 報が
+  // 「予想震度なし」に落ちていた。
+  it('仮定震源要素でも areas が空なら電文全体の forecastMaxScale を採る', () => {
     const eew = makeEEW({
       earthquake: { ...makeEEW().earthquake, condition: '仮定震源要素' },
-      forecastMaxScale: 70,
+      forecastMaxScale: 30,
       forecastMaxScaleOrAbove: true,
     })
+    expect(eewMaxScaleInfo(eew)).toEqual({ scale: 30, orAbove: true })
+  })
+
+  // 対照: 値そのものが無い報（＝気象庁が発表しなかった報）は 0 のまま。`condition` を無視する
+  // ようにしたのではなく、値があれば採るだけであることを固定する。
+  it('仮定震源要素で forecastMaxScale を持たない報は 0 のまま', () => {
+    const eew = makeEEW({ earthquake: { ...makeEEW().earthquake, condition: '仮定震源要素' } })
     expect(eewMaxScaleInfo(eew)).toEqual({ scale: 0, orAbove: false })
+  })
+
+  // 安全弁: 区域別予想を先に見る順序は変えていない。
+  it('仮定震源要素でも areas があればそちらを優先する', () => {
+    const eew = makeEEW({
+      earthquake: { ...makeEEW().earthquake, condition: '仮定震源要素' },
+      areas: [area({ scaleFrom: 40, scaleTo: 40, scaleToOrAbove: true })],
+      forecastMaxScale: 70,
+    })
+    expect(eewMaxScaleInfo(eew)).toEqual({ scale: 40, orAbove: true })
   })
 
   it('震度が取れないときは orAbove を立てない（「不明以上」を作らない）', () => {
@@ -441,7 +480,10 @@ describe('eewMaxLpgmClass', () => {
     expect(eewMaxLpgmClass(eew)).toBe(3)
   })
 
-  it('仮定震源要素かつareasが空なら0（forecastMaxLpgmClassがあっても無視）', () => {
+  // 震度側と同じ理由で `condition` では捨てない（`eewMaxScaleInfo` のコメント参照）。
+  // 実データ（2024 能登 1/1〜1/3）では仮定震源要素 72 報のすべてが長周期階級を持たなかったので、
+  // 捨てる分岐は元から効いていなかった——ここで固定するのは「値が来たら素直に採る」ことだけ。
+  it('仮定震源要素でも areas が空なら電文全体の forecastMaxLpgmClass を採る', () => {
     const eew = makeEEW({
       earthquake: {
         originTime: '2026-01-01T12:00:00Z',
@@ -450,6 +492,19 @@ describe('eewMaxLpgmClass', () => {
         hypocenter: { name: 'テスト震源', latitude: 35.0, longitude: 135.0, depth: 10, magnitude: 6.0 },
       },
       forecastMaxLpgmClass: 4,
+    })
+    expect(eewMaxLpgmClass(eew)).toBe(4)
+  })
+
+  // 対照: 値を持たない報は 0 のまま。
+  it('仮定震源要素で forecastMaxLpgmClass を持たない報は 0 のまま', () => {
+    const eew = makeEEW({
+      earthquake: {
+        originTime: '2026-01-01T12:00:00Z',
+        arrivalTime: '2026-01-01T12:00:20Z',
+        condition: '仮定震源要素',
+        hypocenter: { name: 'テスト震源', latitude: 35.0, longitude: 135.0, depth: 10, magnitude: 1.0 },
+      },
     })
     expect(eewMaxLpgmClass(eew)).toBe(0)
   })
@@ -606,6 +661,25 @@ describe('eewSerial', () => {
 // 予想震度が出ない理由の判定。読み上げ文と「値の確定を待つかどうか」の両方が同じ判定を使う
 // （utils/ttsText.ts の noForecastText / hooks/useLiveEventHandler.ts の第 2 フェーズ）。
 // 'unknown' だけは値が遅れて付く可能性が残る＝待つ意味がある、という切り分けが要点。
+// 震度を伝えられない報で階級だけ出すと「予想震度なし」と階級の断言が同居する。気象庁の電文では
+// 最大予測震度が必須要素・長周期地震動階級が任意なので、この組み合わせは電文として作れない。
+// **この述語はカード表示・読み上げ・第 2 フェーズの言い直しの 3 経路で共有する**ため、ここで固定する。
+describe('canPresentLpgmClass', () => {
+  it('震度と階級が揃っていれば出す', () => {
+    expect(canPresentLpgmClass(40, 3)).toBe(true)
+  })
+
+  // 対照: 震度が無ければ階級も出さない（これが今回入れたガード）。
+  it('震度が取れないときは階級を出さない', () => {
+    expect(canPresentLpgmClass(0, 3)).toBe(false)
+  })
+
+  // 安全弁: 階級側の 0 を通してしまうと「予想最大階級0。」を作る。震度の有無とは別に弾く。
+  it('階級が 0 なら震度があっても出さない', () => {
+    expect(canPresentLpgmClass(40, 0)).toBe(false)
+  })
+})
+
 describe('eewNoForecastReason', () => {
   it('仮定震源要素なら assumed', () => {
     const eew = makeEEW({

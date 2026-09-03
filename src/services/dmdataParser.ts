@@ -19,6 +19,7 @@ import type {
   TsunamiObservation,
 } from '../types/earthquake'
 import { isValidLpgmClass } from '../utils/lpgm'
+import { parseTsunamiObservationCondition } from '../utils/tsunami'
 import { log } from '../utils/logger'
 import { arr, obj, parseNum, str } from './parseHelpers'
 
@@ -47,7 +48,7 @@ const DMDATA_INTENSITY_OVER = 'over'
  * EEW の予想震度の範囲（`{ from, to }`）を、階級 1 つと「以上」フラグに畳む。
  *
  * `to: "over"` は上限を定めない表現（例: `from: "4", to: "over"` = 「震度4以上」）。
- * これを震度7と読むと、単独観測点処理の初報のように下限しか決まっていない報が
+ * これを震度7と読むと、仮定震源要素の初報のように下限しか決まっていない報が
  * 最大震度7として塗られ・読み上げられる。上限には下限側の値を採り、「以上」は
  * フラグで持ち越して表示・読み上げで語を補う（P2PQuake の `scaleTo: 99` と同じ扱い）。
  */
@@ -157,8 +158,11 @@ export function parseEEW(headType: string, data: Record<string, unknown>): EEWAl
       condition: str(earthquake.condition),
       hypocenter: {
         name: str(hypo.name),
-        latitude: isCanceled ? 0 : lat,
-        longitude: isCanceled ? 0 : lng,
+        // 取消電文は震源要素を持たない。**0 ではなく -200 を入れる**——0 はギニア湾沖の有効な座標として
+        // `hasKnownEpicenter` を通ってしまう。他の経路（この下の VXSE51・震度速報、p2pquake の
+        // `COORD_UNKNOWN`）と同じ「位置不明」センチネルに揃え、1 つの述語で弾けるようにする。
+        latitude: isCanceled ? -200 : lat,
+        longitude: isCanceled ? -200 : lng,
         depth,
         magnitude: parseNum(obj(earthquake.magnitude).value),
       },
@@ -312,6 +316,15 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
     return {
       kind: 'quake',
       id: `dmdata-quake-${eventId}-${serial}`,
+      // 通常報と形を揃える。同一性判定（quakeMerge の sameQuakeEntry・coalesceByEventId）は
+      // どれも id 文字列から 14 桁を抜く extractQuakeEventId を通るため、そちらは変わらない。
+      // フィールドを直接読むのは 2 箇所で、うち 1 つは**挙動が変わる**:
+      //   - TsunamiTab の原因地震リンク: 取消済みカードを除外するので影響しない
+      //   - testScenarioReplay の remapAppEvent: 以前は eventId が無く id が無変換で返っていたため、
+      //     同じシナリオ内の通常報が新 ID へ再採番されるのに取消報だけ実データの元 ID が残り、
+      //     リプレイ中に取消が既存カードへ当たらなかった。いまは一貫して再採番される
+      // 規約は types/earthquake.ts の JMAQuake.eventId の JSDoc に置いてある。
+      eventId: eventId || undefined,
       time: reportTime,
       cancelled: true,
       issue: { source: str(data.editorialOffice ?? data.publishingOffice), time: reportTime, type: issueType, correct: 'なし' as CorrectType },
@@ -423,6 +436,24 @@ function xmlChild(parent: Element, localName: string): Element | null {
   return null
 }
 
+// 電文の発表元（issue.source）。実電文の Control は EditorialOffice（例「気象庁本庁」）と
+// PublishingOffice（例「気象庁」）を併せ持つ。JSON 経路が
+// `data.editorialOffice ?? data.publishingOffice` の順で読むため、XML 経路も同じ順で解決する。
+//
+// Control 直下に限るのは、同名要素が他の位置に現れた電文で取り違えないため。
+// どちらも無ければ空文字を返す（JSON 経路も str() で空文字に落ちる）。
+//
+// **空文字の扱いだけは JSON 経路と一致しない。** ここは `||` なので
+// `<EditorialOffice></EditorialOffice>`（要素はあるが空）でも PublishingOffice へ落ちるが、
+// JSON 経路は `??` なので `editorialOffice: ''` はそのまま空文字を返す。issue.source は
+// 現状どのコンポーネントからも読まれないため実害は無いが、この値を使うコードを足すときは見ておくこと。
+function parseIssueSourceFromXml(doc: Document): string {
+  const controlEl = xmlQ(doc, 'Control')
+  if (!controlEl) return ''
+  return xmlText(xmlChild(controlEl, 'EditorialOffice'))
+    || xmlText(xmlChild(controlEl, 'PublishingOffice'))
+}
+
 function xmlText(el: Element | null): string {
   return el?.textContent?.trim() ?? ''
 }
@@ -454,15 +485,18 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   // 取消報でも同じ判定が要るため、取消の早期リターンより前で解決しておく。
   const headInfoEl = xmlQ(doc, 'Head')
   const issueType = resolveIssueType(headType, headInfoEl ? xmlText(xmlQ(headInfoEl, 'Title')) : '')
+  const source = parseIssueSourceFromXml(doc)
 
   // 取消電文（InfoType === '取消'）: Earthquake 要素が存在しないため早期リターン
   if (infoType === '取消') {
     return {
       kind: 'quake',
       id: `dmdata-xml-quake-${eventId}-${serial}`,
+      // JSON 経路の取消と同じ理由で持たせる（そちらのコメント参照）。
+      eventId: eventId || undefined,
       time: reportDateTime,
       cancelled: true,
-      issue: { source: '気象庁', time: reportDateTime, type: issueType, correct: 'なし' as CorrectType },
+      issue: { source, time: reportDateTime, type: issueType, correct: 'なし' as CorrectType },
       earthquake: { time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 }, maxScale: -1, domesticTsunami: '不明' },
       points: [],
     }
@@ -512,6 +546,19 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     if (allEls[i].localName === 'Pref') prefEls.push(allEls[i])
   }
   for (const prefEl of prefEls) {
+    // 都道府県ロールアップ点。JSON 経路の intensity.prefectures[] に対応する。
+    // EarthquakeCard は pref の有無で「都道府県の点」と「区域の点」を見分けるため、
+    // ここだけ pref に名前を入れる（区域・観測点は下で pref: '' にする）。
+    //
+    // 実電文は Pref 直下に MaxInt を持つ（能登半島地震の震度速報で
+    // <Pref><Name>石川県</Name><Code>17</Code><MaxInt>5+</MaxInt> を確認）。
+    // xmlChild で直下に限るのは、MaxInt を持たない電文で配下 Area の値を拾わないため。
+    const prefName = xmlText(xmlChild(prefEl, 'Name'))
+    const prefScale = parseIntensityStr(xmlText(xmlChild(prefEl, 'MaxInt')) || null)
+    if (prefName && prefScale >= 0) {
+      points.push({ pref: prefName, addr: prefName, isArea: true, scale: prefScale as IntensityScale })
+    }
+
     const descendants = prefEl.getElementsByTagName('*')
     for (let i = 0; i < descendants.length; i++) {
       const el = descendants[i]
@@ -565,9 +612,13 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   return {
     kind: 'quake',
     id: `dmdata-xml-quake-${eventId}-${serial}`,
+    // 空文字は undefined に落とす（JSON 経路の `eventId || undefined` と同じ形）。
+    // TsunamiTab は q.eventId を直接比較して原因地震カードへのリンクを作るため、
+    // フィールドを落とすと履歴経由のカードがそのリンクに引き当たらない。
+    eventId: eventId || undefined,
     time: reportDateTime,
     issue: {
-      source: '気象庁',
+      source,
       time: reportDateTime,
       type: issueType,
       correct,
@@ -607,6 +658,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   const eventId = xmlText(xmlQ(doc, 'EventID')) || undefined
   const serial = xmlText(xmlQ(doc, 'Serial')) || '1'
   const infoType = xmlText(xmlQ(doc, 'InfoType'))
+  const source = parseIssueSourceFromXml(doc)
   const validDateTime = xmlText(xmlQ(doc, 'ValidDateTime')) || undefined
   // Headline 配下には <Information> など区域名・コードの入れ子要素が続くことがあるため、
   // xmlText(xmlQ(doc,'Headline')) のような全文連結ではなく <Text> だけを狙って取得する。
@@ -630,7 +682,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
 
   // InfoType=取消: 誤って発表した電文そのものの取消（誤報取消）
   if (cancelled) {
-    return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: true, cancelReason: 'retracted', issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [] }
+    return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: true, cancelReason: 'retracted', issue: { source, time: reportDateTime, type: 'Focus' }, areas: [] }
   }
 
   const forecastEl = xmlQ(doc, 'Forecast')
@@ -643,7 +695,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   if (!forecastEl && observationEl) {
     const observations = parseTsunamiObservationsFromXml(observationEl)
     if (observations.length === 0) return null
-    return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: false, headline, warningComment, sourceEarthquake, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [], observations }
+    return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: false, headline, warningComment, sourceEarthquake, issue: { source, time: reportDateTime, type: 'Focus' }, areas: [], observations }
   }
 
   const allEls = forecastEl!.getElementsByTagName('*')
@@ -686,7 +738,12 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
     const mhEl = xmlQ(itemEl, 'MaxHeight')
     const heightEl = mhEl ? xmlQ(mhEl, 'TsunamiHeight') : null
     const heightVal = heightEl ? parseFloat(xmlText(heightEl)) : NaN
-    const heightDesc = heightEl?.getAttribute('description') ?? ''
+    // description 属性は実電文では入っていた（確かめた範囲は
+    // → docs/spec/tsunami-spec.md §6「観測波高の「以上」」）。それでも数値から組む道を残すのは、
+    // JSON 経路が condition が空のとき同じことをしているため（表示・読み上げは description しか
+    // 見ないので、空だと波高が画面から消える）。
+    const heightDesc = (heightEl?.getAttribute('description') ?? '')
+      || (!isNaN(heightVal) ? `${heightVal}m` : '')
 
     // Station 要素（各潮位観測点の満潮時刻・到達予想時刻）
     const stationEls = itemEl.getElementsByTagName('Station')
@@ -722,13 +779,13 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   }
 
   // Forecast があるのに有効エリアが0件 = 気象庁による正式な解除（区域が電文から消える）
-  if (areas.length === 0) return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: true, cancelReason: 'lifted', issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas: [] }
+  if (areas.length === 0) return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: true, cancelReason: 'lifted', issue: { source, time: reportDateTime, type: 'Focus' }, areas: [] }
   warnPartialDrop(droppedByCancelCode, '[tsunami XML]')
 
   // Observation も含む場合（VTSE51①: Forecast + Observation 両方あり）
   const observations = observationEl ? parseTsunamiObservationsFromXml(observationEl) : undefined
 
-  return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: false, validDateTime, headline, warningComment, sourceEarthquake, issue: { source: '気象庁', time: reportDateTime, type: 'Focus' }, areas, observations: observations && observations.length > 0 ? observations : undefined }
+  return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: false, validDateTime, headline, warningComment, sourceEarthquake, issue: { source, time: reportDateTime, type: 'Focus' }, areas, observations: observations && observations.length > 0 ? observations : undefined }
 }
 
 function parseTsunamiObservationsFromXml(observationEl: Element): import('../types/earthquake').TsunamiObservation[] {
@@ -754,10 +811,44 @@ function parseTsunamiObservationsFromXml(observationEl: Element): import('../typ
       const mhEl = xmlQ(st, 'MaxHeight')
       const heightEl = mhEl ? xmlQ(mhEl, 'TsunamiHeight') : null
       const heightVal = heightEl ? parseFloat(xmlText(heightEl)) : NaN
-      const heightDesc = heightEl?.getAttribute('description') ?? ''
+      // 電文が書いた表示文字列。over の判定と下の記録はこの生の値だけを見る
+      // （表示のために補った文字列を混ぜると「電文が何と言ったか」が分からなくなる）。
+      const rawHeightDesc = heightEl?.getAttribute('description') ?? ''
+      // 観測可能範囲を超えた値・機器が被災した値は「〇m以上」の形で発表される。JSON 経路は
+      // maxHeight.height.over の真偽値で受け取るが、XML の TsunamiHeight に真偽値の属性は無いため、
+      // 気象庁が組んだ表示文字列である description の文言から復元する。
+      // **「以上」が付く実電文は未確認。** 語彙の傍証と、この判定が空振りしうる条件は
+      // → docs/spec/tsunami-spec.md §6「観測波高の「以上」」。
+      // false ではなく undefined に落とすのは JSON 経路（over || undefined）と形を揃えるため。
+      const over = rawHeightDesc.includes('以上') || undefined
+      // description が空だと over を復元する手がかりが無い。JSON 経路には「波高は読めないが
+      // over は立っていた」ケースの記録が下にあるのに対し、XML 経路の over は description が
+      // 唯一の情報源なので、落ちた事実を残さないと「以上」が黙って通常値として扱われる。
+      // 波高そのものが読めない電文は下の height ごと落ちる経路で扱うため、ここでは除く。
+      if (!isNaN(heightVal) && !rawHeightDesc) {
+        log.warn(`[tsunami XML] 波高の description 属性が空のため「以上」を判定できません: ${name}`)
+      }
+      // 逆に、数値が読めないのに「以上」が書かれている電文。height ごと落ちるので表示は
+      // 変わらないが、JSON 経路には対になる記録があるため、XML 経路だけ痕跡が残らない状態を作らない。
+      if (isNaN(heightVal) && over) {
+        log.warn(`[tsunami XML] 「以上」の観測値だが波高が数値として読めません: ${name}`)
+      }
+      // 表示・読み上げは description しか見ないため、空のまま返すと**利用者から波高が消える**
+      // （カードの数値・地図の観測棒のツールチップ・読み上げの数値部分がすべて空になる。
+      // overSuffixedHeight は over が無ければ description をそのまま返すだけ）。
+      // 予想波高側と同じ形で数値から組む。over は上で生の値から判定済みなので、
+      // ここで補った文字列（「以上」を含まない）が判定に混ざることはない。
+      const heightDesc = rawHeightDesc || (!isNaN(heightVal) ? `${heightVal}m` : '')
       observations.push({
         name,
-        height: !isNaN(heightVal) ? { value: heightVal, description: heightDesc } : undefined,
+        height: !isNaN(heightVal) ? { value: heightVal, description: heightDesc, over } : undefined,
+        // 欠測・微弱・観測中・重要はここでしか判らない（数値の有無では見分けられない）。
+        // 併記されるため読み取りは `parseTsunamiObservationCondition` に任せる。
+        condition: parseTsunamiObservationCondition({
+          firstHeight: fhEl ? xmlText(xmlQ(fhEl, 'Condition')) : undefined,
+          maxHeight: mhEl ? xmlText(xmlQ(mhEl, 'Condition')) : undefined,
+          heightCondition: heightEl?.getAttribute('condition') ?? undefined,
+        }),
         arrivalTime: arrivalTime || undefined,
         initial: initial || undefined,
         districtCode,
@@ -878,9 +969,19 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
         if (isNaN(heightVal) && over) log.warn(`[tsunami] 「以上」の観測値だが波高が数値として読めません: ${name}`)
         observations.push({
           name,
+          // **`description` は数値だけで組む。** 電文の `height.condition`（観測点に現れるのは
+          // 「上昇中」）をここへ入れると、数値が出ているのに画面と読み上げが「上昇中」しか示さず
+          // 波高が消える。状態は下の `condition` が持つ。
           height: !isNaN(heightVal)
-            ? { value: heightVal, description: str(hObj.condition) || (over ? `${heightVal}m以上` : `${heightVal}m`), over: over || undefined }
+            ? { value: heightVal, description: over ? `${heightVal}m以上` : `${heightVal}m`, over: over || undefined }
             : undefined,
+          // DMDATA は電文の `Condition` を `condition` と `status`（欠測）に分けて配るので、
+          // 空白で繋いで XML と同じ読み取りへ渡す（理由は `parseTsunamiObservationCondition`）。
+          condition: parseTsunamiObservationCondition({
+            firstHeight: `${str(fh.condition)} ${str(fh.status)}`,
+            maxHeight: `${str(mh.condition)} ${str(mh.status)}`,
+            heightCondition: str(hObj.condition),
+          }),
           arrivalTime: str(fh.arrivalTime) || undefined,
           initial: str(fh.initial) || undefined,
           districtCode,
@@ -916,9 +1017,19 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
         if (isNaN(heightVal) && over) log.warn(`[tsunami] 「以上」の観測値だが波高が数値として読めません: ${name}`)
         observations.push({
           name,
+          // **`description` は数値だけで組む。** 電文の `height.condition`（観測点に現れるのは
+          // 「上昇中」）をここへ入れると、数値が出ているのに画面と読み上げが「上昇中」しか示さず
+          // 波高が消える。状態は下の `condition` が持つ。
           height: !isNaN(heightVal)
-            ? { value: heightVal, description: str(hObj.condition) || (over ? `${heightVal}m以上` : `${heightVal}m`), over: over || undefined }
+            ? { value: heightVal, description: over ? `${heightVal}m以上` : `${heightVal}m`, over: over || undefined }
             : undefined,
+          // DMDATA は電文の `Condition` を `condition` と `status`（欠測）に分けて配るので、
+          // 空白で繋いで XML と同じ読み取りへ渡す（理由は `parseTsunamiObservationCondition`）。
+          condition: parseTsunamiObservationCondition({
+            firstHeight: `${str(fh.condition)} ${str(fh.status)}`,
+            maxHeight: `${str(mh.condition)} ${str(mh.status)}`,
+            heightCondition: str(hObj.condition),
+          }),
           arrivalTime: str(fh.arrivalTime) || undefined,
           initial: str(fh.initial) || undefined,
           districtCode,
@@ -1115,13 +1226,21 @@ export function parseNankaiFromXml(xml: string): JMANankai | null {
   const infoType       = xmlText(xmlQ(doc, 'InfoType'))
   const id             = `dmdata-xml-nankai-${eventId}-${serial}`
 
-  // 取消の場合は調査終了相当として扱う
+  // 取消は「その電文を撤回する」だけで、段階の判断を含まない（電文解説資料 Ⅰ.別紙ウ
+  // 「取消電文の運用」）。**`kindName` に「調査終了」を詰めない** —— 調査終了は
+  // 「調べた結果、可能性は通常の範囲内だった」という気象庁の判断で、意味が正反対になる。
+  // 取り消された事実は `retracted` で持ち、帯を引っ込める点だけ `cancelled` を共有する。
+  //
+  // 取消の理由は `Body/Text` に入ると資料が定めているので拾う。**いまは画面に出ない**（帯は取消で
+  // 引っ込むため）。将来ログや画面へ出す余地を残すために持たせている。
   if (infoType === '取消') {
+    const cancelBodyEl = xmlQ(doc, 'Body')
     return {
       id, time: reportDateTime, eventId,
-      kindCode: '0204', kindName: '調査終了',
-      headline: '南海トラフ地震臨時情報（取消）', body: '',
-      cancelled: true, reportDateTime,
+      kindCode: '', kindName: '',
+      headline: '南海トラフ地震臨時情報（取消）',
+      body: cancelBodyEl ? xmlText(xmlQ(cancelBodyEl, 'Text')) : '',
+      cancelled: true, retracted: true, reportDateTime,
     }
   }
 
@@ -1227,11 +1346,15 @@ export function parseVyse60FromXml(xml: string): JMAKohatsu | null {
   const infoType       = xmlText(xmlQ(doc, 'InfoType'))
   const id             = `dmdata-xml-kohatsu-${eventId}-${serial}`
 
+  // 取消の扱いは南海トラフ臨時情報と同じ（理由はそちらのコメント）。段階を持たない電文なので
+  // 名乗りの取り違えは起きないが、**取消であることと理由は残す**。
   if (infoType === '取消') {
+    const cancelBodyEl = xmlQ(doc, 'Body')
     return {
       id, time: reportDateTime, eventId,
-      headline: '北海道・三陸沖後発地震注意情報（取消）', body: '',
-      cancelled: true, reportDateTime,
+      headline: '北海道・三陸沖後発地震注意情報（取消）',
+      body: cancelBodyEl ? xmlText(xmlQ(cancelBodyEl, 'Text')) : '',
+      cancelled: true, retracted: true, reportDateTime,
       expireAt: reportDateTime,
     }
   }
