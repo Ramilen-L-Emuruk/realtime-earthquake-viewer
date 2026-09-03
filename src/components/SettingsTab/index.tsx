@@ -37,6 +37,7 @@ export interface TestFunctions {
   nankaiChecking?: () => void
   nankaiWatch?: () => void
   nankaiWarning?: () => void
+  nankaiRetraction?: () => void
   nankaiCommentaryAdHoc?: () => void
   nankaiCommentaryRoutine?: () => void
   kohatsu?: () => void
@@ -1228,6 +1229,11 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         {isDmdss && onTest.nankaiWarning && (
           <Row label="南海トラフ臨時情報（巨大地震警戒）" description="バナー表示 + specialInfo 音">
             <TestButton color="red" onClick={onTest.nankaiWarning}>警戒テスト</TestButton>
+          </Row>
+        )}
+        {isDmdss && onTest.nankaiRetraction && (
+          <Row label="南海トラフ臨時情報（取消）" description="巨大地震注意を発表し、90秒後に同じ識別情報の取消を流す。バナーが消え、読み上げは取り消された事実だけを伝える（発生可能性については何も述べない）">
+            <TestButton color="blue" onClick={onTest.nankaiRetraction}>取消テスト</TestButton>
           </Row>
         )}
         {isDmdss && onTest.nankaiCommentaryAdHoc && (

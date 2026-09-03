@@ -1146,13 +1146,21 @@ export function parseNankaiFromXml(xml: string): JMANankai | null {
   const infoType       = xmlText(xmlQ(doc, 'InfoType'))
   const id             = `dmdata-xml-nankai-${eventId}-${serial}`
 
-  // 取消の場合は調査終了相当として扱う
+  // 取消は「その電文を撤回する」だけで、段階の判断を含まない（電文解説資料 Ⅰ.別紙ウ
+  // 「取消電文の運用」）。**`kindName` に「調査終了」を詰めない** —— 調査終了は
+  // 「調べた結果、可能性は通常の範囲内だった」という気象庁の判断で、意味が正反対になる。
+  // 取り消された事実は `retracted` で持ち、帯を引っ込める点だけ `cancelled` を共有する。
+  //
+  // 取消の理由は `Body/Text` に入ると資料が定めているので拾う。**いまは画面に出ない**（帯は取消で
+  // 引っ込むため）。将来ログや画面へ出す余地を残すために持たせている。
   if (infoType === '取消') {
+    const cancelBodyEl = xmlQ(doc, 'Body')
     return {
       id, time: reportDateTime, eventId,
-      kindCode: '0204', kindName: '調査終了',
-      headline: '南海トラフ地震臨時情報（取消）', body: '',
-      cancelled: true, reportDateTime,
+      kindCode: '', kindName: '',
+      headline: '南海トラフ地震臨時情報（取消）',
+      body: cancelBodyEl ? xmlText(xmlQ(cancelBodyEl, 'Text')) : '',
+      cancelled: true, retracted: true, reportDateTime,
     }
   }
 
@@ -1258,11 +1266,15 @@ export function parseVyse60FromXml(xml: string): JMAKohatsu | null {
   const infoType       = xmlText(xmlQ(doc, 'InfoType'))
   const id             = `dmdata-xml-kohatsu-${eventId}-${serial}`
 
+  // 取消の扱いは南海トラフ臨時情報と同じ（理由はそちらのコメント）。段階を持たない電文なので
+  // 名乗りの取り違えは起きないが、**取消であることと理由は残す**。
   if (infoType === '取消') {
+    const cancelBodyEl = xmlQ(doc, 'Body')
     return {
       id, time: reportDateTime, eventId,
-      headline: '北海道・三陸沖後発地震注意情報（取消）', body: '',
-      cancelled: true, reportDateTime,
+      headline: '北海道・三陸沖後発地震注意情報（取消）',
+      body: cancelBodyEl ? xmlText(xmlQ(cancelBodyEl, 'Text')) : '',
+      cancelled: true, retracted: true, reportDateTime,
       expireAt: reportDateTime,
     }
   }

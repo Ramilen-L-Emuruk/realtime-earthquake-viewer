@@ -312,7 +312,22 @@ export interface JMANankai {
   kindName: string   // '調査中' | '巨大地震注意' | '巨大地震警戒' | '調査終了'
   headline: string
   body: string
-  cancelled: boolean // kindName === '調査終了'
+  /**
+   * 帯を引っ込めるか。調査終了（`kindCode === '0204'`）と取消の両方で立つ。
+   *
+   * **取消と調査終了を、これ 1 つで見分けてはいけない**（→ `retracted`）。どちらも状況の表示を
+   * 終える点は同じだが、**意味は正反対**——調査終了は「調べた結果、可能性は通常の範囲内だった」
+   * という気象庁の判断で、取消は「その電文を撤回する」だけ。可能性については何も言っていない。
+   */
+  cancelled: boolean
+  /**
+   * 取消電文（`Head/InfoType` が「取消」）か。
+   *
+   * 気象庁の定めでは、取消は**「独立した情報単位」全体を取り消す**という意味しか持たない
+   * （電文解説資料 Ⅰ.別紙ウ）。段階の判断を含まないので、`kindName` に「調査終了」を詰めて
+   * 済ませてはならない —— 発表していない安心情報をアプリが作ることになる。
+   */
+  retracted?: boolean
   reportDateTime: string
 }
 
@@ -344,6 +359,8 @@ export interface JMAKohatsu {
   headline: string
   body: string
   cancelled: boolean
+  /** 取消電文か（意味は `JMANankai.retracted` に同じ）。 */
+  retracted?: boolean
   reportDateTime: string
   expireAt: string  // reportDateTime + 7日
 }

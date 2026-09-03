@@ -2,12 +2,12 @@
 // 「〇時〇分」はローカルタイムゾーン依存のため、時刻の数値そのものではなく
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect } from 'vitest'
-import { earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
+import { nankaiToText, earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
 import { joinSegments, plain, type SpeechSegment } from './ttsFollow'
 import { tsunamiAreaGradeChanges } from './tsunami'
 import { getStationCoordsCache } from './stationCoords'
 import { eewMaxScaleInfo, eewMaxLpgmClass } from './eew'
-import type { JMAQuake, JMALpgm, EarthquakePoint, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass, JMATsunami, TsunamiArea, TsunamiObservation } from '../types/earthquake'
+import type { JMAQuake, JMALpgm, EarthquakePoint, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass, JMATsunami, TsunamiArea, TsunamiObservation, JMANankai } from '../types/earthquake'
 
 const TTS_OPTS: TtsRegionOptions = { intensityLevels: 0, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0 }
 
@@ -1557,5 +1557,38 @@ describe('tsunamiArrivalToText: 微弱の言い分け', () => {
   it('安全弁: 片方の群だけなら「また、」を付けない', () => {
     expect(tsunamiArrivalToText([{ name: '釧路', arrivalTime: at, condition: { weak: true } }])).not.toContain('また、')
     expect(tsunamiArrivalToText([{ name: '釧路', arrivalTime: at }])).not.toContain('また、')
+  })
+})
+
+// 南海トラフ臨時情報の「取消」と「調査終了」は意味が正反対。取消は電文の撤回でしかなく、
+// 地震の発生可能性についての判断を含まない（電文解説資料 Ⅰ.別紙ウ）。
+describe('nankaiToText: 取消と調査終了の言い分け', () => {
+  const nankai = (o: Partial<JMANankai>): JMANankai => ({
+    id: 'n1', time: '2026-08-20T17:00:00+09:00', eventId: '20260820170000',
+    kindCode: '', kindName: '', headline: '', body: '',
+    cancelled: false, reportDateTime: '2026-08-20T17:00:00+09:00',
+    ...o,
+  })
+
+  it('正: 取消は取り消された事実だけを伝える', () => {
+    const text = nankaiToText(nankai({ cancelled: true, retracted: true }))
+    expect(text).toBe('南海トラフ地震臨時情報は取り消されました。')
+  })
+
+  it('正: 取消で「発生可能性」について何も断定しない', () => {
+    // 気象庁が発表していない安心情報をアプリが作らないこと
+    const text = nankaiToText(nankai({ cancelled: true, retracted: true }))
+    expect(text).not.toContain('通常の範囲内')
+    expect(text).not.toContain('調査終了')
+  })
+
+  it('対照: 本物の調査終了は従来どおり可能性まで伝える', () => {
+    const text = nankaiToText(nankai({ cancelled: true, kindCode: '0204', kindName: '調査終了' }))
+    expect(text).toBe('南海トラフ地震臨時情報、調査終了。南海トラフ地震の発生可能性は通常の範囲内でした。')
+  })
+
+  it('安全弁: 段階の発表は取消の分岐に吸われない', () => {
+    expect(nankaiToText(nankai({ kindName: '巨大地震警戒' }))).toContain('巨大地震警戒')
+    expect(nankaiToText(nankai({ kindName: '調査中' }))).toContain('調査中')
   })
 })
