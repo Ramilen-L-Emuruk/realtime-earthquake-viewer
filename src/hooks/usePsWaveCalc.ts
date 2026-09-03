@@ -109,7 +109,10 @@ export function computeEewCircle(eew: EEWAlert, now: number): PsWaveCircle | nul
   if (eew.cancelled || eew.cancelledAt) return null
   const { hypocenter } = eew.earthquake
   if (!Number.isFinite(hypocenter.latitude) || !Number.isFinite(hypocenter.longitude)) return null
-  // マグニチュード・深さが仮の値（震源未確定・単独点処理）の場合はカードと同様に円を生成しない
+  // 仮定震源要素では円を描かない。震源・M・深さが固定の仮定値であることに加え、**気象庁は
+  // PLUM 法による予測の報で主要動の到達予測時刻を出さない**（PLUM は震源を使わないため猶予時間を
+  // 算出できず、受信端末向けのガイドラインも「まもなく到達」等の表現を推奨している）。予報円は
+  // 猶予時間の図示なので、描けば根拠のない秒数を見せることになる。震源名が空の報も同じ扱い。
   if (!hypocenter.name || eew.earthquake.condition === '仮定震源要素') return null
 
   const originMs = new Date(eew.earthquake.originTime).getTime()

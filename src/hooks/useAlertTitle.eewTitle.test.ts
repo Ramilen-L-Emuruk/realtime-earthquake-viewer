@@ -4,9 +4,11 @@
 // （緊急地震速報／地震動予報）を取り違えると外から見て危険度を誤る。
 //
 // とくに注意が要るのは**どの軸で区分を決めるか**。地名と震度は最大震度の EEW（primary）から
-// 取るが、区分の名前は発表中の EEW すべての最大レベルから取る。`eewMaxScale` は仮定震源要素
-// （単独観測点処理）で 0 を返すため、震度未確定の警報級が震度の付いた予報級に primary を
-// 奪われ、警報級が「他N件」に埋もれる並びが実在する。
+// 取るが、区分の名前は発表中の EEW すべての最大レベルから取る。`eewMaxScale` は**予想震度を
+// 持たない報**で 0 を返すため、震度未確定の警報級が震度の付いた予報級に primary を奪われ、
+// 警報級が「他N件」に埋もれる並びが実在する。
+// （0 になる条件は `condition` ではなく「電文に値があるか」。仮定震源要素でも値が載っていれば
+// 採る——下のテストが `forecastMaxScale` を持たせていないのは、その状態を作るため）
 import { describe, it, expect } from 'vitest'
 import { computeEEWTitle } from './useAlertTitle'
 import type { EEWAlert, IntensityScale } from '../types/earthquake'

@@ -214,14 +214,17 @@ export function createTestEEWForecast(eventId?: string, serial = 1, baseTime?: D
   }
 }
 
-// 単独点処理（仮定震源要素）の初期報 → 続報で震源確定・警報へ格上げ。
-// 初報は 1 観測点でしか捉えられておらず、地域別予想が発表されない（areas が空・condition が
-// 「仮定震源要素」）。読み上げは待たずに「単独点処理のため、予想震度なし。」と伝え、続報で値が
-// 付いた時点で言い直す（docs/spec/audio-tts-spec.md §6）。
+// 仮定震源要素の初期報 → 続報で震源確定・警報へ格上げ。
+//
+// 初報は震源要素が推定できず、PLUM 法による震度予測だけが有効な状態。**その PLUM も 1 点しか
+// 鳴っていない報**を模しており、気象庁が最大予測震度を発表しない条件（観測点 1 点による震度予測）に
+// あたるため、区域も電文全体の予想震度も持たない。読み上げは待たずに「単独点処理のため、予想震度
+// なし。」と伝え、続報で値が付いた時点で言い直す（docs/spec/audio-tts-spec.md §6）。
 //
 // **震源名は報をまたいで変えない。** 名前が変わって 50km 超動くと「震源を更新、〇〇で地震。」の
 // 経路（useLiveEventHandler の hypoFarMoved）に入り、確かめたい格上げの言い方が出てこない。
-// 単独点処理の仮定値（深さ 10km・M5.0）から確定値（深さ 30km・M6.5）へ更新する形にしてある。
+// 気象庁が仮定震源要素に入れる固定値（深さ 10km・M1.0）から確定値（深さ 30km・M6.5）へ
+// 更新する形にしてある。
 export function createTestEEWAssumed(eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
   const origin = baseTime ?? serverDate()
   const report = serverDate().toISOString()
@@ -236,10 +239,10 @@ export function createTestEEWAssumed(eventId?: string, serial = 1, baseTime?: Da
       originTime: origin.toISOString(),
       arrivalTime: new Date(origin.getTime() + 20000).toISOString(),
       condition: isAssumed ? '仮定震源要素' : '以上',
-      // 単独点処理では震源要素そのものが仮定値。カード・地図側もこれを見て M・深さを隠す
-      // （docs/spec/eew-spec.md §5）
+      // 仮定震源要素では震源要素そのものが固定の仮定値（気象庁は観測点直下・深さ 10km・M1.0 を入れる）。
+      // カード・地図側もこれを見て M・深さを隠す（docs/spec/eew-spec.md §5）
       hypocenter: isAssumed
-        ? { name: '日向灘', latitude: 32.0, longitude: 132.0, depth: 10, magnitude: 5.0 }
+        ? { name: '日向灘', latitude: 32.0, longitude: 132.0, depth: 10, magnitude: 1.0 }
         : { name: '日向灘', latitude: 32.0, longitude: 132.0, depth: 30, magnitude: 6.5 },
     },
     severity: isAssumed ? 'Forecast' : 'Warning',

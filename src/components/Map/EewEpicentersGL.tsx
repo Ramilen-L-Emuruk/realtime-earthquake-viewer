@@ -17,7 +17,7 @@ import { reportRenderFailure, clearRenderFailure } from '../../utils/renderHealt
 // **地震情報の震源と同じ仕組みで、実際の深さへ置く**（gl/depthPointLayer.ts）。地表に×印だけを
 // 置いていた頃は、地震情報の震源だけが深さを持ち EEW は地表という非対称があった。
 //
-// 仮定震源要素（単独観測点処理）の震源は控えめに描いて確定震源と区別する
+// 仮定震源要素（震源未確定）の震源は控えめに描いて確定震源と区別する
 // （予報円を出さない・カードで M/深さを隠すのと同じ扱いを地図にも与える）。
 // **深さも採らない**——数値が確定していないため、地表に置く（docs/spec/eew-spec.md §5）。
 // 区別は「不透明度を下げる」だけでなく「点滅の振幅を浅くする」ことでも付ける。
@@ -135,14 +135,14 @@ interface Props {
   fullOpacity: boolean
 }
 
-function buildPopupHtml(ep: EewEpicenter): string {
+export function buildPopupHtml(ep: EewEpicenter): string {
   const isWarning = ep.severity === 'Warning'
   const kindColor = isWarning ? '#f87171' : '#fbbf24'
   // 予報級の電文は VXSE45「緊急地震速報（地震動予報）」。表示も実態に合わせる
   const kind = isWarning ? '警報' : '地震動予報'
   // 報番号は電文由来。最終報なら第N報より「最終報」の方が状態が伝わる。
   const serialText = ep.isFinal ? '最終報' : ep.serial ? `第${escapeHtml(ep.serial)}報` : ''
-  // 単独観測点処理の初期報は震源が確定していない。数値を鵜呑みにしないよう明示する
+  // 仮定震源要素の報は震源が確定していない。数値を鵜呑みにしないよう明示する
   // （×印を薄く描く判定と同じ isAssumed を使い、判定を二重に持たない）。
   const provisional = ep.isAssumed
   const scaleLabel = getIntensityLabelWithOrAbove(ep.maxScale, ep.maxScaleOrAbove)
@@ -152,7 +152,7 @@ function buildPopupHtml(ep: EewEpicenter): string {
     `<span style="font-weight:700;font-size:13px">${escapeHtml(ep.name)}</span>` +
     (serialText ? `<span style="font-size:11px;color:#94a3b8">${serialText}</span>` : '') +
     `</div>` +
-    // EEW-6: 仮定震源要素（単独観測点処理）は M・深さが未確定なので数値を隠す。
+    // EEW-6: 仮定震源要素（震源未確定）は M・深さが未確定なので数値を隠す。
     // カード表示（RealtimeTab の EEWCard）と同じ扱いにする。
     `<div style="margin-top:2px;font-size:11px;color:#94a3b8">` +
     (provisional
@@ -165,8 +165,12 @@ function buildPopupHtml(ep: EewEpicenter): string {
     `${badgeHtml(scaleLabel, getIntensityColor(ep.maxScale))}` +
     `<span style="color:#cbd5e1;white-space:nowrap">予想最大震度 ${escapeHtml(scaleLabel)}</span>` +
     `<span style="color:${kindColor};font-weight:700;white-space:nowrap">${kind}</span></div>` +
+    // 地名まで含めて仮の値であることを言い切る。カードの「（震源未確定）」だけでは
+    // 「この地名がおおよその震源」と読めてしまうが、実際は最初に揺れを検知した観測点の所在地で
+    // 震源とは無関係（→ docs/spec/eew-spec.md §5）。ポップアップは行数に余裕があるので書ききる。
     (provisional
-      ? `<div style="margin-top:4px;font-size:11px;color:#fbbf24">仮定震源要素（単独観測点処理・震源未確定）</div>`
+      ? `<div style="margin-top:4px;font-size:11px;color:#fbbf24">仮定震源要素（震源未確定）<br>` +
+        `<span style="color:#94a3b8">地名は最初に揺れを検知した観測点の位置です</span></div>`
       : '') +
     `</div>`
   )

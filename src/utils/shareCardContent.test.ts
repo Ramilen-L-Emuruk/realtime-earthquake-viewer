@@ -199,7 +199,7 @@ describe('buildShareCardContent — 緊急地震速報', () => {
     expect(c.header.subtitle).toContain('日向灘')
   })
 
-  // 単独観測点処理の報は、電文に数値が入っていても地震学的に意味を持たない仮の値。
+  // 仮定震源要素の報は、電文に数値が入っていても地震学的に意味を持たない仮の値。
   // 画面（RealtimeTab）は隠しているので、共有した後で訂正できない画像でも隠す。
   it('仮定震源要素では規模を出さない', () => {
     const c = build(input({ mode: 'kyoshin', eews: [eew({ condition: '仮定震源要素' })] }))

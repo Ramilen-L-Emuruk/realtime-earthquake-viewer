@@ -161,10 +161,16 @@ export interface EewMaxScaleInfo {
 }
 
 /** 対象地域の最大予想震度と「以上」表現の有無。震度が取れないときは scale=0 を返す。
- * condition=仮定震源要素（単独点処理）かつ areas が空の場合は forecastMaxScale を使わず 0 を返す。
- * 単独点PLUM検知では forecastMaxInt が設定されても地域別予想は発表されないため。
- * （**areas が付く単独点処理の報は実在する**。2024/1/1 16:18 の余震の初報が
- * 「石川県能登 震度4以上」の 1 区域を持っていた。areas を優先する順序はそのままでよい）
+ *
+ * **`condition === '仮定震源要素'` を理由に値を捨てないこと。** 気象庁が最大予測震度を発表しないのは
+ * 「観測点 1 点による震度予測」と「深さ 150km 超（PLUM 法による 2 点以上の震度予測がある場合を除く）」の
+ * 2 つで、どちらも該当すれば電文に値が入らない。受信側で潰す必要はなく、潰せば発表済みの値を落とす。
+ * 仮定震源要素は「震源要素が推定できず PLUM 法のみが有効」の意味で、**PLUM の観測点数は定義に含まれない**
+ * （2024 能登 1/1〜1/3 の実データでは仮定震源要素 72 報のうち 50 報が最大予測震度を持っていた。
+ * うち区域を持たない 25 報が、かつてこの経路で「予想震度なし」に落ちていた）。
+ *
+ * 区域別予想を先に見るのは、地域ごとの内訳のほうが細かいため。気象庁が区域を列挙するのは
+ * 震度 4 以上を予測した予報区だけなので、震度 3 以下の予想は区域が空のまま電文全体の値だけが載る。
  *
  * 震度スケール外の値（`IntensityScale` に無い中間値・範囲外値）は採用しない。
  * `EEWRegion` は型で守られているが、実地震シナリオ JSON のように型検査を通らない経路から
@@ -186,7 +192,6 @@ export function eewMaxScaleInfo(eew: EEWAlert): EewMaxScaleInfo {
     }
   }
   if (areasMax > 0) return { scale: areasMax, orAbove: areasOrAbove }
-  if (eew.earthquake.condition === '仮定震源要素') return { scale: 0, orAbove: false }
   const forecast = eew.forecastMaxScale
   const scale = forecast != null && isValidIntensityScale(forecast) ? forecast : 0
   return { scale, orAbove: scale > 0 && eew.forecastMaxScaleOrAbove === true }
@@ -215,9 +220,10 @@ export function isForecastScaleHigher(latest: EewMaxScaleInfo, spoken: EewMaxSca
 }
 
 /** 対象地域の最大予想長周期地震動階級（1〜4）。データが無ければ0。
- * eewMaxScale と同じ考え方で areas の地域別 lgIntTo を優先し、
- * condition=仮定震源要素（単独点処理）かつ areas が空の場合は forecastMaxLpgmClass を使わず0を返す
- * （単独点PLUM検知では地域別の詳細予想が発表されないため）。
+ * eewMaxScale と同じ考え方で areas の地域別 lgIntTo を優先し、**`condition` では値を捨てない**
+ * （理由は `eewMaxScaleInfo` のコメントと同じ。2024 能登 1/1〜1/3 の実データでは仮定震源要素 72 報の
+ * すべてが長周期階級を持たなかったので、捨てる分岐は元から効いていなかった）。
+ * 深さ 150km 超では気象庁が長周期階級そのものを電文へ載せないため、ここで深さを見る必要も無い。
  * Yahoo hypoInfo・P2PQuake 由来の EEW は長周期地震動階級のフィールド自体を持たないため常に0になる
  * （DMDATA=DMDSS版のみ取得可能。標準版は震度のみでレベル判定される）。
  */
@@ -227,16 +233,36 @@ export function eewMaxLpgmClass(eew: EEWAlert): number {
     0,
   )
   if (areasMax > 0) return areasMax
-  if (eew.earthquake.condition === '仮定震源要素') return 0
   const forecast = eew.forecastMaxLpgmClass
   return forecast != null && isValidLpgmClass(forecast) ? forecast : 0
 }
 
 /**
- * 深発地震とみなす深さ [km]。これより深い地震では気象庁が予想震度を発表しないことがある
- * （震源が深いと地表の揺れを予測しきれず、地域別予想の付かない報になる）。
+ * 長周期地震動階級を画面・音声に出してよいか。
+ *
+ * **震度を伝えられない報では階級も出さない。** 気象庁の電文は最大予測震度が必須要素
+ * （`ForecastInt`・1 回）で、長周期地震動階級のほうが任意（`ForecastLgInt`・0 回/1 回）。
+ * つまり「震度なし・階級あり」という電文は作れない。深さ 150km 超では階級のほうが先に落ちる
+ * （震度と違い PLUM 法による例外規定を持たない）。到達したら電文の異常で、そのまま出せば
+ * 「予想震度なし」と階級の断言が同じ画面・同じ発話に並ぶ。
+ *
+ * **3 経路で共有すること**——カード（`RealtimeTab` の階級バッジ）・読み上げ（`eewIntensityText`）・
+ * 第 2 フェーズの言い直し（`useLiveEventHandler` の震度据え置き分岐）。片方だけに置くと画面と音声が
+ * 食い違う。記録は呼び出し側の責務（読み上げ経路が `log.warn` を出す。カードは毎レンダー走るので
+ * ここでは出さない）。
  */
-const DEEP_QUAKE_DEPTH_KM = 150
+export function canPresentLpgmClass(scale: number, lpgmClass: number): boolean {
+  return scale > 0 && lpgmClass > 0
+}
+
+/**
+ * 深発地震とみなす深さ [km]。気象庁はこれより深い地震について、**PLUM 法による 2 点以上の震度予測が
+ * ある場合を除き**最大予測震度を発表しない（震源が深いと地表の揺れを予測しきれないため）。
+ * 長周期地震動階級のほうは PLUM の例外を持たず、この深さを超えると電文に載らない。
+ *
+ * 表示・読み上げで「深発地震のため」と理由を添える箇所もこの値を使う（直書きしないこと）。
+ */
+export const DEEP_QUAKE_DEPTH_KM = 150
 
 /**
  * 予想震度が付いていない EEW について、その理由を返す。
@@ -245,7 +271,11 @@ const DEEP_QUAKE_DEPTH_KM = 150
  * （`useLiveEventHandler` の第 2 フェーズ）が同じ判定を使うため、ここに一本化する。
  * 二重に持つと「待たずに読む条件」と「読み上げる理由」が食い違いうる。
  *
- * - `assumed` … 仮定震源要素（単独点処理）。1 観測点でしか捉えられておらず、その報に地域別予想は載らない
+ * - `assumed` … 仮定震源要素（震源要素が推定できず PLUM 法のみが有効な状態）。ここへ来るのは
+ *   **値を持たない仮定震源要素だけ**で、それは PLUM が 1 点しか鳴っていない状態にあたり、気象庁が
+ *   最大予測震度を発表しない条件「観測点 1 点による震度予測」と一致する（PLUM が 2 点以上なら値が
+ *   載り、`eewMaxScale` が拾うのでここへ来ない）。表示・読み上げが「単独点処理のため」と言えるのは
+ *   この対応があるからで、`condition` そのものは観測点数を意味しない
  * - `deep` … 深発地震（深さ `DEEP_QUAKE_DEPTH_KM` km 超）
  * - `unknown` … 上記以外。**この理由だけは値が遅れて付く可能性が残る**ため、待つ意味があるのはここだけ
  *
@@ -331,8 +361,10 @@ export function eewSerial(eew: EEWAlert): number | null {
 // EEW 単発のレベル算出: 0=予報級（severity!=='Warning'。震度の高低に関係なく警報未満は全て 0）
 // / 1=警報（severity==='Warning'） / 2=特別警報（severity==='Warning' かつ 震度6弱以上 または
 // 長周期地震動階級4以上）。気象庁の実基準（震度6弱以上 or 長周期地震動階級4以上）に合わせている。
-// 震度が取れないケース（地域別予想なし・全地域が震度未確定の -1・仮定震源要素）では eewMaxScale が
-// 0 を返すため、55 との比較だけで自然に特別警報から外れる。専用のガードは要らない。
+// 震度が取れないケース（地域別予想なし・全地域が震度未確定の -1・電文に最大予測震度が無い）では
+// eewMaxScale が 0 を返すため、55 との比較だけで自然に特別警報から外れる。専用のガードは要らない。
+// **「仮定震源要素だから 0」ではない**——値が載っていれば仮定震源要素でも採るので、条件を満たせば
+// レベル 2 になる（`eewMaxScaleInfo` のコメント参照）。
 // レベル1・2ともに severity（isWarning）必須。予報級電文（severity=Forecast）は震度だけ高くても常にレベル0とする。
 /**
  * ウィンドウタイトル・ブラウザ通知の見出しに使う区分の名前。

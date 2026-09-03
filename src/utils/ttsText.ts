@@ -1,5 +1,5 @@
 import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, TsunamiArea, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
-import { eewNoForecastReason, type EewMaxScaleInfo } from './eew'
+import { eewNoForecastReason, canPresentLpgmClass, type EewMaxScaleInfo } from './eew'
 import { getIntensityLabel, getIntensityLabelWithOrAbove } from './intensity'
 import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight, TSUNAMI_GRADE_SHORT_LABEL, type TsunamiAreaGradeChange } from './tsunami'
 import { joinSegments, plain, type SpeechSegment, type SpeechRef, type QuakeFact } from './ttsFollow'
@@ -585,9 +585,8 @@ function noForecastText(event: EEWAlert): string {
  * 「この値に確定した」と判定したタイミングと、実際に声になるタイミングにはズレがありうるため、
  * どの値を読んだかを呼び出し側が制御できるようにしている。
  *
- * **既知の限界**: 深発地震で震度だけ出ない場合、`noForecastText` が「深発地震のため、
- * 予想震度なし。」と読む一方、階級側（`eewLpgmOnlyText`）は震度と無関係に判定するため、
- * 「予想震度なし」と階級の断言が同居しうる（未対応。docs/spec/eew-spec.md §4）。
+ * 震度を伝えられないときに階級句を落とすのは、結合する `eewIntensityText` の役目
+ * （この関数は震度部分だけを組み立てる）。
  */
 export function eewScaleOnlyText(scaleInfo: EewMaxScaleInfo, event: EEWAlert): string {
   if (scaleInfo.scale > 0) {
@@ -640,9 +639,14 @@ export function eewIntensityText(
   scaleInfo: EewMaxScaleInfo, lpgmClass: number, event: EEWAlert, announceUpgrade = false,
 ): string {
   const prefix = announceUpgrade ? '緊急地震速報に切り替わりました。' : ''
-  // 上限が定まらない報（単独観測点処理の初報など）は「震度4以上」と読む。値だけ読むと
+  // 上限が定まらない報（仮定震源要素の初報など）は「震度4以上」と読む。値だけ読むと
   // 下限を断定した放送になる（判定は eewMaxScaleInfo・語の付け方は表示と共通）。
-  return prefix + eewScaleOnlyText(scaleInfo, event) + eewLpgmOnlyText(lpgmClass)
+  //
+  // **震度を伝えられないときは階級も読まない**（判定は `canPresentLpgmClass`。カード表示・
+  // 第 2 フェーズの言い直しと同じ述語を共有する。理由はそちらのコメント）。
+  const scaleText = eewScaleOnlyText(scaleInfo, event)
+  const lpgmText = canPresentLpgmClass(scaleInfo.scale, lpgmClass) ? eewLpgmOnlyText(lpgmClass) : ''
+  return prefix + scaleText + lpgmText
 }
 
 function domesticTsunamiText(t: DomesticTsunami): string {
