@@ -1920,6 +1920,91 @@ describe('単点確定の降格', () => {
     expect(confirmed[0].everMultiPoint).toBe(true)
   })
 
+  // **正: 隣が揺れていなければ降ろす。**
+  // 上限に張り付いた 1 点の隣で、ほぼ平常の点がわずかに動いただけでも「2 点目」として
+  // 数えられ、降ろす契機が永久に消えていた（実際に震度7 の誤検知が 5 時間居座った）。
+  it('2 点目がほぼ平常なら降ろす（張り付いた点の隣で微動しているだけ）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
+    const holdSec = PARAMS.SOLO_CONFIRM_GRACE_MS / 1000 + 5
+    // idx0 が上限に張り付き、隣の idx1 は震度0 相当のまま。実際の記録と同じ組み合わせ
+    for (let i = 0; i < holdSec; i++, t += 1000) {
+      frames.push(frameWith(defs, t, (idx) => (idx === 0 ? 7 : idx === 1 ? 0.5 : 0)))
+    }
+    const { detections } = drive(frames, meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+
+  // **安全弁: 低い震度では対の相手に値を要求しない。**
+  // 震源最近傍の 1 点が先に立ち上がり、隣が遅れて追いつくのは実地震の正常な姿。ここへ一律に
+  // 値を課すと、能登型の初動まで降ろすことになる（実測は設計書§36）。
+  it('低い震度なら 2 点目がほぼ平常でも降ろさない（遅れて伝播する初動を殺さない）', () => {
+    const defs = grid3x3(35.0, 139.0, 0.1)
+    const meta = buildStationMeta(sitesOf(defs))
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
+    const holdSec = PARAMS.SOLO_CONFIRM_GRACE_MS / 1000 + 5
+    // idx0 は SOLO_PAIR_HIGH_INTENSITY 未満。隣は震度0 相当のまま
+    for (let i = 0; i < holdSec; i++, t += 1000) {
+      frames.push(frameWith(defs, t, (idx) => (idx === 0 ? 3.5 : idx === 1 ? 0.5 : 0)))
+    }
+    const { detections } = drive(frames, meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(true)
+  })
+
+  // **正: 離れた場所の無関係な地震と併合しても、固着は降りる。**
+  // `everMultiPoint` を併合で引き継いでいた頃は、`MERGE_EVENT_KM`(100km) 以内で小さい地震が
+  // 1 度起きるだけで印が永久に立ち、降ろす契機が消えていた（実測では 84km 先の震度1 が 6 秒で足りた）。
+  it('離れた無関係な地震と併合しても固着は降りる', () => {
+    // A（固着）と B（無関係）は R_KM の外・MERGE_EVENT_KM の内に置く
+    const defs: StationDef[] = [...grid3x3(35.0, 139.0, 0.1), ...grid3x3(35.7, 139.35, 0.1)]
+    const meta = buildStationMeta(sitesOf(defs))
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
+    // A の 1 点が上限に張り付く
+    for (let i = 0; i < 10; i++, t += 1000) frames.push(frameWith(defs, t, (idx) => (idx === 0 ? 7 : 0)))
+    // B で無関係な小さい地震が 6 秒だけ起きて収まる
+    for (let i = 0; i < 6; i++, t += 1000) {
+      frames.push(frameWith(defs, t, (idx) => (idx === 0 ? 7 : idx >= 9 && idx <= 11 ? 1 : 0)))
+    }
+    // その後は A の固着だけが続く
+    const holdSec = PARAMS.SOLO_CONFIRM_GRACE_MS / 1000 + 25
+    for (let i = 0; i < holdSec; i++, t += 1000) frames.push(frameWith(defs, t, (idx) => (idx === 0 ? 7 : 0)))
+    const { detections } = drive(frames, meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(false)
+  })
+
+  // **安全弁: 併合を引き継がなくしても、本物の裏付けなら印は立つ。**
+  // 併合の場で引き継ぐのをやめた代わりに、次のフレームの評価が host のメンバー（和集合）で
+  // 見直す。**このテストは継承を戻しても通る**——守っているのは「継承を外したことで本物まで
+  // 降ろしていないか」であって、継承の除去そのものは上の「正」が守っている。
+  it('併合相手が十分な値で続けば単点扱いから抜ける', () => {
+    // A（固着）と B（本物の裏付け）は R_KM の外・MERGE_EVENT_KM の内
+    const defs: StationDef[] = [...grid3x3(35.0, 139.0, 0.1), ...grid3x3(35.7, 139.35, 0.1)]
+    const meta = buildStationMeta(sitesOf(defs))
+    const frames: Frame[] = []
+    let t = 0
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(uniformFrame(defs, t, 0))
+    for (let i = 0; i < 5; i++, t += 1000) frames.push(frameWith(defs, t, (idx) => (idx === 0 ? 7 : 0)))
+    // B の 3 点が対の下限を超えて立ち上がり、そのまま続く（B の中で隣り合う対ができる）
+    const holdSec = PARAMS.SOLO_CONFIRM_GRACE_MS / 1000 + 15
+    for (let i = 0; i < holdSec; i++, t += 1000) {
+      frames.push(frameWith(defs, t, (idx) => (idx === 0 ? 7 : idx >= 9 && idx <= 11 ? 3.5 : 0)))
+    }
+    const { detections } = drive(frames, meta)
+    expect(detections.some((d) => d.confidence === 'confirmed')).toBe(true)
+  })
+
+  // 安全弁: 閾値の大小関係。逆転すると、高震度のイベントで対がほとんど成立しなくなる
+  it('対の下限は適用を始める震度より低い', () => {
+    expect(PARAMS.SOLO_PAIR_MIN_INTENSITY).toBeLessThan(PARAMS.SOLO_PAIR_HIGH_INTENSITY)
+  })
+
   // 安全弁: 一度でも単点でなくなれば、その後に痩せても降りない
   it('2 点になった後で単点へ痩せても降ろさない（本物の余韻を切らない）', () => {
     const defs = grid3x3(35.0, 139.0, 0.1)
