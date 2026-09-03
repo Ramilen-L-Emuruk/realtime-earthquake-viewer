@@ -979,13 +979,34 @@ describe('parseNankaiFromXml（VYSE50 南海トラフ地震臨時情報）', () 
     expect(nankai?.cancelled).toBe(true)
   })
 
-  it('取消電文は調査終了相当として cancelled=true', () => {
+  // 正: 取消は「その電文の撤回」でしかない。**以前は「調査終了」に化かしていた**（気象庁が
+  // 発表していない「可能性は通常の範囲内」という判断を、アプリが作っていた）
+  it('取消電文は retracted=true。調査終了を名乗らない', () => {
     const nankai = parseNankaiFromXml(nankaiXml({
       title: '南海トラフ地震臨時情報（巨大地震注意）',
       infoType: '取消',
     }))
-    expect(nankai?.cancelled).toBe(true)
+    expect(nankai?.retracted).toBe(true)
+    expect(nankai?.cancelled).toBe(true)   // 帯を引っ込める点は調査終了と同じ
+    expect(nankai?.kindName).not.toBe('調査終了')
+    expect(nankai?.kindCode).not.toBe('0204')
+  })
+
+  // 対照: 本物の調査終了は retracted を立てない（名乗りも従来どおり）
+  it('調査終了は retracted を立てない', () => {
+    const nankai = parseNankaiFromXml(nankaiXml({ title: '南海トラフ地震臨時情報（調査終了）' }))
+    expect(nankai?.retracted).toBeFalsy()
     expect(nankai?.kindName).toBe('調査終了')
+  })
+
+  // 安全弁: 取消の理由（資料が Body/Text と定めている）を捨てない
+  it('取消の理由を body に取り込む', () => {
+    const nankai = parseNankaiFromXml(nankaiXml({
+      title: '南海トラフ地震臨時情報（巨大地震注意）',
+      infoType: '取消',
+      body: 'システム障害のため取り消します。',
+    }))
+    expect(nankai?.body).toBe('システム障害のため取り消します。')
   })
 
   it('本文（Body/Text）を body に取り込む', () => {

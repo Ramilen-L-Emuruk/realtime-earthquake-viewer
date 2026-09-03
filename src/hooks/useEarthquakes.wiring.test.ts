@@ -774,15 +774,35 @@ describe('南海トラフ関連解説情報の帯は期限で畳む', () => {
     await h.flush()
     expect(h.current.nankaiCommentary?.id).toBe('c-live')
 
-    // 取消はライブ受信経路（injectEvent は AppEvent 専用なので、キュー経由の payload を使う）
+    // 取消はライブ受信経路（injectEvent は AppEvent 専用なので、キュー経由の payload を使う）。
+    // **取消は対象と同じ `eventId` を持つ**（電文解説資料 Ⅰ.別紙ウ「独立した情報単位」）ので、
+    // フィクスチャもその形にする。
     act(() => {
       h.current.loadReplayEvents([{
-        payload: { kind: 'nankaiCommentary', data: { ...commentary('c-cancel', 60_000), cancelled: true } },
+        payload: { kind: 'nankaiCommentary', data: { ...commentary('c-live', 60_000), cancelled: true } },
         replayTime: serverDate(),
       }])
     })
     act(() => { vi.advanceTimersByTime(50) })
     expect(h.current.nankaiCommentary).toBeNull()
+  })
+
+  // 安全弁: 別の情報単位に向けた取消で、いま出ている帯を消さない。気象庁は発表ごとに別の
+  // `EventID` を割り振るため（同 Ⅰ.別紙エ）、遅れて届いた古い取消がこの形で来うる
+  it('別の eventId に向けた取消では帯を消さない', async () => {
+    vi.mocked(fetchDmdataNankaiCommentary).mockResolvedValue(commentary('c-live', 60_000))
+    const h = setup()
+    await h.flush()
+    expect(h.current.nankaiCommentary?.id).toBe('c-live')
+
+    act(() => {
+      h.current.loadReplayEvents([{
+        payload: { kind: 'nankaiCommentary', data: { ...commentary('c-other', 60_000), cancelled: true } },
+        replayTime: serverDate(),
+      }])
+    })
+    act(() => { vi.advanceTimersByTime(50) })
+    expect(h.current.nankaiCommentary?.id).toBe('c-live')
   })
 })
 
@@ -1347,5 +1367,94 @@ describe('津波の有効期限は報を跨いで引き継ぐ', () => {
     await h.flush()
 
     expect(h.current.tsunamis.map(t => t.id)).toEqual(['noto-2'])
+  })
+})
+
+// 南海トラフ臨時情報の取消は「その電文が指す情報単位」だけを消す。
+//
+// **ライブ受信（WebSocket）とキュー（リプレイ・テストボタン）の 2 経路がある。** 規則を片方に
+// しか書かなかったため、テストとリプレイでは防げるのに本番の受信では素通りする、という状態を
+// 一度作った。ここで両経路を通す。
+describe('南海トラフ臨時情報の取消の適用先', () => {
+  function nankai(eventId: string, o: Record<string, unknown> = {}) {
+    const now = serverDate().toISOString()
+    return {
+      kind: 'nankai' as const,
+      data: {
+        id: `n-${eventId}`, time: now, eventId,
+        kindCode: '0202', kindName: '巨大地震注意',
+        headline: '南海トラフ地震臨時情報（巨大地震注意）', body: '',
+        cancelled: false, reportDateTime: now,
+        ...o,
+      },
+    }
+  }
+
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('正: ライブ受信でも、別の識別情報への取消では帯を消さない', async () => {
+    const h = setup()
+    await h.flush()
+    act(() => { sockets[0].onEvent?.(nankai('evt-A')) })
+    expect(h.current.nankai?.eventId).toBe('evt-A')
+
+    // 遅れて届いた別の情報単位への取消
+    act(() => { sockets[0].onEvent?.(nankai('evt-OLD', { cancelled: true, retracted: true, kindCode: '', kindName: '' })) })
+    expect(h.current.nankai?.eventId).toBe('evt-A')
+  })
+
+  it('正: 同じ識別情報への取消なら帯を消す', async () => {
+    const h = setup()
+    await h.flush()
+    act(() => { sockets[0].onEvent?.(nankai('evt-A')) })
+    act(() => { sockets[0].onEvent?.(nankai('evt-A', { cancelled: true, retracted: true, kindCode: '', kindName: '' })) })
+    expect(h.current.nankai).toBeNull()
+  })
+
+  // 安全弁: **これを照合すると帯が永久に消えない。** 「調査終了」は気象庁が調査の結果として
+  // 発表する別の報で、臨時情報は発表ごとに別の識別情報を割り振るため、段階の報と一致しない
+  it('安全弁: 識別情報が違っても「調査終了」では帯を消す', async () => {
+    const h = setup()
+    await h.flush()
+    act(() => { sockets[0].onEvent?.(nankai('evt-A')) })
+    act(() => {
+      sockets[0].onEvent?.(nankai('evt-B', { cancelled: true, kindCode: '0204', kindName: '調査終了' }))
+    })
+    expect(h.current.nankai).toBeNull()
+  })
+
+  it('安全弁: 見送った取消では読み上げ・通知のイベントを起こさない', async () => {
+    const events: unknown[] = []
+    const h = setup({ onLiveEvent: (e: unknown) => { events.push(e) } })
+    await h.flush()
+    act(() => { sockets[0].onEvent?.(nankai('evt-A')) })
+    const before = events.length
+    act(() => { sockets[0].onEvent?.(nankai('evt-OLD', { cancelled: true, retracted: true, kindCode: '', kindName: '' })) })
+    // 帯を消していないので、「取り消されました」を伝える経路にも乗せない
+    expect(events.length).toBe(before)
+  })
+
+  it('正: 何も表示していないときの取消は、読み上げ・通知を起こさない', async () => {
+    // 帯を出していない状態で古い取消が届く経路（起動直後・再接続直後）。取り消された情報
+    // そのものを利用者は見ていないので、「取り消されました」と告げても伝わらない
+    const events: unknown[] = []
+    const h = setup({ onLiveEvent: (e: unknown) => { events.push(e) } })
+    await h.flush()
+    const before = events.length
+    act(() => { sockets[0].onEvent?.(nankai('evt-X', { cancelled: true, retracted: true, kindCode: '', kindName: '' })) })
+    expect(events.length).toBe(before)
+    expect(h.current.nankai).toBeNull()
+  })
+
+  it('対照: 何も表示していなくても「調査終了」は伝える', async () => {
+    // 調査終了はそれ自体が意味を持つ報（調査の結果が通常の範囲内だった）。取消と違い、
+    // 対象の帯を見ていなくても伝わる。**取消の抑制をここまで広げないこと**
+    const events: unknown[] = []
+    const h = setup({ onLiveEvent: (e: unknown) => { events.push(e) } })
+    await h.flush()
+    const before = events.length
+    act(() => { sockets[0].onEvent?.(nankai('evt-Y', { cancelled: true, kindCode: '', kindName: '調査終了' })) })
+    expect(events.length).toBe(before + 1)
   })
 })

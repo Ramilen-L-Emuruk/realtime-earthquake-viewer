@@ -518,7 +518,7 @@ export function App() {
     simulateEarthquake, simulateForeignQuake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
-    simulateNankai, simulateNankaiCommentary, simulateKohatsu,
+    simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     resetState, loadReplayEvents, restoreQuakeHistory,
   } = useEarthquakes(handleLiveEvent, debouncedApiKey, settings.dmdataTestDelivery, replayTimeOffset)
   earthquakesRef.current = earthquakes
@@ -561,6 +561,7 @@ export function App() {
     nankaiChecking:    () => simulateNankai('調査中'),
     nankaiWatch:       () => simulateNankai('巨大地震注意'),
     nankaiWarning:     () => simulateNankai('巨大地震警戒'),
+    nankaiRetraction:  simulateNankaiRetraction,
     nankaiCommentaryAdHoc:   () => simulateNankaiCommentary('臨時解説'),
     nankaiCommentaryRoutine: () => simulateNankaiCommentary('定例解説'),
     kohatsu:           simulateKohatsu,
@@ -579,7 +580,7 @@ export function App() {
     simulateEarthquake, simulateForeignQuake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
-    simulateNankai, simulateNankaiCommentary, simulateKohatsu,
+    simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
   ])
   // IconNav の onTabChange。手動選択は必ず即時反映し、以後 TAB_HOLD_MS の間は自動切替に
   // 奪わせない（EEW の新規発報・レベルアップ・誤報取消だけはこれより強い）。
