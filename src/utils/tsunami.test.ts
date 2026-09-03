@@ -19,6 +19,11 @@ import {
   tsunamiAreaGradeChanges,
   selectUnspokenAreaGradeChanges,
   rememberAreaGrades,
+  parseTsunamiObservationCondition,
+  isObservationMissing,
+  observationBadges,
+  observationHeightText,
+  observationArrivalFallbackText,
 } from './tsunami'
 import type { JMATsunami, TsunamiArea, TsunamiObservation } from '../types/earthquake'
 
@@ -670,5 +675,156 @@ describe('selectUnspokenAreaGradeChanges / rememberAreaGrades（等級変化の�
     const changes = selectUnspokenAreaGradeChanges(tsunamiAreaGradeChanges(makePartialLift()), spoken)
     expect(changes).toHaveLength(1)
     expect(changes[0].areas.map(a => a.name)).toEqual(['佐賀県北部'])
+  })
+})
+
+// ============================================================
+// 観測状態（電文の Condition）
+// ============================================================
+describe('parseTsunamiObservationCondition', () => {
+  it('正: MaxHeight/Condition の「欠測」を読む', () => {
+    expect(parseTsunamiObservationCondition({ maxHeight: '欠測' })).toEqual({ maxHeightMissing: true })
+  })
+
+  it('正: 全角スペースで併記された「重要 欠測」を両方立てる', () => {
+    // 電文解説資料 Ⅱ.12 事例 6 の形。完全一致で照合していると片方も読めない
+    expect(parseTsunamiObservationCondition({ maxHeight: '重要　欠測' }))
+      .toEqual({ important: true, maxHeightMissing: true })
+  })
+
+  it('正: 「微弱 欠測」「観測中 欠測」も併記として読む（同 事例 7・8）', () => {
+    expect(parseTsunamiObservationCondition({ maxHeight: '微弱　欠測' }))
+      .toEqual({ weak: true, maxHeightMissing: true })
+    expect(parseTsunamiObservationCondition({ maxHeight: '観測中　欠測' }))
+      .toEqual({ observing: true, maxHeightMissing: true })
+  })
+
+  it('正: 第1波と最大波の欠測を別のフラグへ写す', () => {
+    // 「到達は確認できたが波高の観測が落ちた」と「到達したかも判らない」は別の状態
+    expect(parseTsunamiObservationCondition({ firstHeight: '欠測', maxHeight: '欠測' }))
+      .toEqual({ firstHeightMissing: true, maxHeightMissing: true })
+    expect(parseTsunamiObservationCondition({ maxHeight: '欠測' }))
+      .toEqual({ maxHeightMissing: true })
+  })
+
+  it('正: DMDATA の condition と status を空白で繋いだ形も読める', () => {
+    // JSON 経路はこの形で渡す（`dmdataParser`）。XML と同じ結果になること
+    expect(parseTsunamiObservationCondition({ maxHeight: '重要 欠測' }))
+      .toEqual({ important: true, maxHeightMissing: true })
+    // 片方が空でも空白だけのトークンを拾わない
+    expect(parseTsunamiObservationCondition({ maxHeight: ' 欠測' })).toEqual({ maxHeightMissing: true })
+    expect(parseTsunamiObservationCondition({ maxHeight: '重要 ' })).toEqual({ important: true })
+  })
+
+  it('正: 第１波識別不能は全角・半角のどちらの「1」でも読む', () => {
+    expect(parseTsunamiObservationCondition({ firstHeight: '第１波識別不能' }))
+      .toEqual({ firstWaveUnidentifiable: true })
+    expect(parseTsunamiObservationCondition({ firstHeight: '第1波識別不能' }))
+      .toEqual({ firstWaveUnidentifiable: true })
+  })
+
+  it('対照: 状態が何も無ければ undefined（大多数の観測点に欄を作らない）', () => {
+    expect(parseTsunamiObservationCondition({})).toBeUndefined()
+    expect(parseTsunamiObservationCondition({ firstHeight: '', maxHeight: '', heightCondition: '' })).toBeUndefined()
+    expect(parseTsunamiObservationCondition({ maxHeight: '   ' })).toBeUndefined()
+  })
+
+  it('対照: 欄をまたいだ取り違えをしない（欠測は書かれた側だけに立つ）', () => {
+    // MaxHeight 側の語を FirstHeight 側から読んでしまうと、到達の断定に化ける
+    expect(parseTsunamiObservationCondition({ firstHeight: '微弱' })).toBeUndefined()
+    expect(parseTsunamiObservationCondition({ maxHeight: '第１波識別不能' })).toBeUndefined()
+  })
+
+  it('安全弁: 知らない語は無視して他の語を落とさない', () => {
+    // 気象庁が語を増やしても、併記された既知の語は読めること
+    expect(parseTsunamiObservationCondition({ maxHeight: '欠測　新しい語' }))
+      .toEqual({ maxHeightMissing: true })
+  })
+})
+
+describe('isObservationMissing', () => {
+  const obs = (condition?: TsunamiObservation['condition']): TsunamiObservation => ({ name: '宮古', condition })
+
+  it('正: 第1波・最大波のどちらの欠測でも真', () => {
+    expect(isObservationMissing(obs({ maxHeightMissing: true }))).toBe(true)
+    expect(isObservationMissing(obs({ firstHeightMissing: true }))).toBe(true)
+  })
+
+  it('対照: 「観測中」は欠測ではない（まだ値が出ていないだけ）', () => {
+    expect(isObservationMissing(obs({ observing: true }))).toBe(false)
+    expect(isObservationMissing(obs())).toBe(false)
+  })
+})
+
+describe('observationBadges / observationHeightText', () => {
+  const obs = (o: Partial<TsunamiObservation>): TsunamiObservation => ({ name: '宮古', ...o })
+
+  it('正: 欠測と数値が同時に来たら両方見せる（値はバッジに潰されない）', () => {
+    const o = obs({
+      height: { value: 3.2, description: '3.2m以上', over: true },
+      condition: { maxHeightMissing: true, important: true },
+    })
+    expect(observationBadges(o)).toEqual(['実測', '欠測', '大津波警報の基準超'])
+    expect(observationHeightText(o)).toBe('3.2m以上')
+  })
+
+  it('正: 到達だけ確認できている欠測は「到達確認」と「欠測」を併記する', () => {
+    const o = obs({ arrivalTime: '2026-09-03T10:00:00+09:00', condition: { maxHeightMissing: true } })
+    expect(observationBadges(o)).toEqual(['到達確認', '欠測'])
+    // バッジが欠測を言っているので値の欄は空（同じ語を 1 行に 2 回出さない）
+    expect(observationHeightText(o)).toBe('')
+  })
+
+  it('正: 到達も欠測なら「到達確認」を付けない（到達を断定しない）', () => {
+    const o = obs({ condition: { firstHeightMissing: true, maxHeightMissing: true } })
+    expect(observationBadges(o)).toEqual(['欠測'])
+    expect(observationHeightText(o)).toBe('')
+  })
+
+  it('正: 「微弱」は波高の欄に出す（欠測と併記されても波高側の語はこちら）', () => {
+    expect(observationHeightText(obs({ condition: { weak: true } }))).toBe('微弱')
+    expect(observationHeightText(obs({ condition: { weak: true, maxHeightMissing: true } }))).toBe('微弱')
+  })
+
+  it('対照: 欠測でない波高未確定は従来どおり「到達確認 / 観測中」', () => {
+    const o = obs({ arrivalTime: '2026-09-03T10:00:00+09:00' })
+    expect(observationBadges(o)).toEqual(['到達確認'])
+    expect(observationHeightText(o)).toBe('観測中')
+  })
+
+  it('安全弁: 欠測の観測点に「観測中」を出さない（値が出る見込みだと読める）', () => {
+    const o = obs({ condition: { observing: true, maxHeightMissing: true } })
+    expect(observationHeightText(o)).not.toBe('観測中')
+  })
+})
+
+describe('observationBadges: 上昇中 / observationArrivalFallbackText', () => {
+  const obs = (o: Partial<TsunamiObservation>): TsunamiObservation => ({ name: '大洗', ...o })
+
+  it('正: 上昇中はバッジに出す（いま見えている波高が最大とは限らない）', () => {
+    const o = obs({ height: { value: 2.1, description: '2.1m' }, condition: { rising: true } })
+    expect(observationBadges(o)).toEqual(['実測', '上昇中'])
+    // 波高の数値はバッジに潰されない
+    expect(observationHeightText(o)).toBe('2.1m')
+  })
+
+  it('対照: 上昇中でなければバッジは増えない', () => {
+    expect(observationBadges(obs({ height: { value: 2.1, description: '2.1m' } }))).toEqual(['実測'])
+  })
+
+  it('正: 第1波識別不能は到達時刻の欄に理由を出す', () => {
+    expect(observationArrivalFallbackText(obs({ condition: { firstWaveUnidentifiable: true } }))).toBe('到達時刻不明')
+  })
+
+  it('対照: 到達時刻があれば何も返さない（呼び出し側が時刻を出す）', () => {
+    expect(observationArrivalFallbackText(obs({
+      arrivalTime: '2026-09-03T10:00:00+09:00',
+      condition: { firstWaveUnidentifiable: true },
+    }))).toBe('')
+  })
+
+  it('安全弁: 第1波識別不能でも「到達確認」の扱いは変えない（到達そのものは確定している）', () => {
+    // 気象庁の定義は「津波を観測したものの第1波の到達時刻が不明瞭」。到達は起きている
+    expect(observationBadges(obs({ condition: { firstWaveUnidentifiable: true } }))).toEqual(['到達確認'])
   })
 })

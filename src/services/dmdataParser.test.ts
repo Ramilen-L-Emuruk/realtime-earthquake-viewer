@@ -777,11 +777,13 @@ describe('parseTsunami: JSON 電文の発表・取消・sourceEarthquake', () =>
       expect(t!.observations?.[0].height).toEqual({ value: 7.2, description: '7.2m', over: undefined })
     })
 
-    // 安全弁: condition があると description はそちらで確定する（「以上」が落ちうる形）。
-    // `overSuffixedHeight`（src/utils/tsunami.ts）がこの形を前提に「数字を含まないなら足さない」判定をしている
-    it('condition があれば description はその文字列になる（over は残る）', () => {
-      const t = parseTsunami('VTSE51', withStations({ maxHeight: { height: { value: '8.5', condition: '巨大', over: true } } }))
-      expect(t!.observations?.[0].height).toEqual({ value: 8.5, description: '巨大', over: true })
+    // 安全弁: 波高の condition（観測点に現れるのは「上昇中」）で数値を潰さない。
+    // **以前はここで description が condition の文字列に置き換わっていた**（「以上」も数値も落ちた）。
+    // 状態は `condition` 側が持つので、description は数値だけで組む
+    it('波高の condition があっても description は数値のまま（状態は condition へ）', () => {
+      const t = parseTsunami('VTSE51', withStations({ maxHeight: { height: { value: '8.5', condition: '上昇中', over: true } } }))
+      expect(t!.observations?.[0].height).toEqual({ value: 8.5, description: '8.5m以上', over: true })
+      expect(t!.observations?.[0].condition).toEqual({ rising: true })
     })
 
     // 安全弁: 波高が数値として読めなければ height ごと落ちる（over も一緒に消える）。
@@ -1232,5 +1234,133 @@ describe('津波電文の LastKind（区域単位の等級変化）', () => {
     const t = parseTsunami('VTSE41', json)
     expect(t!.cancelled).toBe(true)
     expect(t!.areas).toEqual([])
+  })
+})
+
+// 潮位観測点の観測状態（電文の `Condition`）。気象庁は 2025-07-24 から「欠測」を発表しており、
+// 「重要 欠測」のように複数の内容を全角スペースで併記する（電文解説資料 Ⅱ.12 の事例）。
+// 読み落とすと、欠測の観測点が「到達確認・波高は観測中」として画面と読み上げに出る
+// （→ docs/spec/tsunami-spec.md §6「観測状態（欠測・微弱・観測中・重要）」）。
+const VTSE51_MISSING_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/">
+  <Control>
+    <Title>津波情報a</Title>
+    <DateTime>2026-09-03T01:00:00Z</DateTime>
+    <PublishingOffice>気象庁</PublishingOffice>
+  </Control>
+  <Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+    <Title>津波観測に関する情報</Title>
+    <ReportDateTime>2026-09-03T10:00:00+09:00</ReportDateTime>
+    <EventID>20260903095500</EventID>
+    <InfoType>発表</InfoType>
+  </Head>
+  <Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/"
+        xmlns:jmx_eb="http://xml.kishou.go.jp/jmaxml1/elementBasis1/">
+    <Tsunami>
+      <Observation>
+        <Item>
+          <Area><Name>岩手県</Name><Code>030</Code></Area>
+          <Station>
+            <Name>宮古</Name><Code>0031</Code>
+            <FirstHeight><ArrivalTime>2026-09-03T09:58:00+09:00</ArrivalTime><Initial>押し</Initial></FirstHeight>
+            <MaxHeight>
+              <DateTime>2026-09-03T09:59:00+09:00</DateTime>
+              <Condition>重要　欠測</Condition>
+              <jmx_eb:TsunamiHeight type="これまでの最大波の高さ" unit="m" description="３．２ｍ以上">3.2</jmx_eb:TsunamiHeight>
+            </MaxHeight>
+          </Station>
+          <Station>
+            <Name>大船渡</Name><Code>0033</Code>
+            <FirstHeight><Condition>欠測</Condition></FirstHeight>
+            <MaxHeight><Condition>欠測</Condition></MaxHeight>
+          </Station>
+          <Station>
+            <Name>釜石</Name><Code>0032</Code>
+            <FirstHeight><ArrivalTime>2026-09-03T09:57:00+09:00</ArrivalTime><Initial>押し</Initial></FirstHeight>
+            <MaxHeight><Condition>観測中　欠測</Condition></MaxHeight>
+          </Station>
+          <Station>
+            <Name>久慈</Name><Code>0034</Code>
+            <FirstHeight><ArrivalTime>2026-09-03T09:56:00+09:00</ArrivalTime><Initial>押し</Initial></FirstHeight>
+            <MaxHeight><Condition>観測中</Condition></MaxHeight>
+          </Station>
+        </Item>
+      </Observation>
+    </Tsunami>
+  </Body>
+</Report>`
+
+describe('潮位観測点の観測状態（Condition）', () => {
+  const byName = (t: ReturnType<typeof parseTsunamiFromXml>, name: string) =>
+    t!.observations!.find(o => o.name === name)!
+
+  it('正: XML 経路で「重要 欠測」を両方立て、これまでの最大波も残す', () => {
+    const t = parseTsunamiFromXml(VTSE51_MISSING_XML)
+    const miyako = byName(t, '宮古')
+    // 電文は欠測と同時に「これまでの最大波の高さ」を載せる。値を捨てると、
+    // 観測できていた事実（ここでは大津波警報の基準超え）が画面から消える
+    expect(miyako.height).toEqual({ value: 3.2, description: '３．２ｍ以上' })
+    expect(miyako.condition).toEqual({ important: true, maxHeightMissing: true })
+  })
+
+  it('正: 第1波・最大波がどちらも欠測の観測点は到達時刻を持たない', () => {
+    const t = parseTsunamiFromXml(VTSE51_MISSING_XML)
+    const ofunato = byName(t, '大船渡')
+    expect(ofunato.arrivalTime).toBeUndefined()
+    expect(ofunato.height).toBeUndefined()
+    expect(ofunato.condition).toEqual({ firstHeightMissing: true, maxHeightMissing: true })
+  })
+
+  it('正: 「観測中 欠測」は到達だけ確定していて波高が欠測の状態', () => {
+    const t = parseTsunamiFromXml(VTSE51_MISSING_XML)
+    const kamaishi = byName(t, '釜石')
+    expect(kamaishi.arrivalTime).toBe('2026-09-03T09:57:00+09:00')
+    expect(kamaishi.condition).toEqual({ observing: true, maxHeightMissing: true })
+  })
+
+  it('対照: 「観測中」だけの観測点は欠測を立てない（従来の到達確認の経路）', () => {
+    const t = parseTsunamiFromXml(VTSE51_MISSING_XML)
+    const kuji = byName(t, '久慈')
+    expect(kuji.condition).toEqual({ observing: true })
+    expect(kuji.height).toBeUndefined()
+  })
+
+  it('正: JSON 経路は condition と status を合わせて同じ結果になる', () => {
+    // DMDATA は電文の Condition を condition（重要）と status（欠測）に分けて配る
+    const json = {
+      eventId: '20260903095500',
+      serialNo: '1',
+      type: '津波情報',
+      status: '通常',
+      infoType: '発表',
+      reportDateTime: '2026-09-03T10:00:00+09:00',
+      body: {
+        tsunami: {
+          observations: [{
+            code: '030',
+            name: '岩手県',
+            stations: [{
+              name: '宮古',
+              code: '0031',
+              firstHeight: { arrivalTime: '2026-09-03T09:58:00+09:00', initial: '押し' },
+              maxHeight: {
+                condition: '重要',
+                status: '欠測',
+                height: { type: 'これまでの最大波の高さ', unit: 'm', value: '3.2', over: true },
+              },
+            }],
+          }],
+        },
+      },
+    }
+    const t = parseTsunami('VTSE51', json)
+    expect(t!.observations?.[0].condition).toEqual({ important: true, maxHeightMissing: true })
+    expect(t!.observations?.[0].height).toEqual({ value: 3.2, description: '3.2m以上', over: true })
+  })
+
+  it('安全弁: 状態を持たない観測点に condition を作らない', () => {
+    const t = parseTsunamiFromXml(VTSE41_PARTIAL_LIFT_XML)
+    // 区域だけの電文（観測点なし）でも壊れないこと
+    expect(t!.observations).toBeUndefined()
   })
 })

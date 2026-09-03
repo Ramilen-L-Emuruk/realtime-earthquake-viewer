@@ -1325,10 +1325,14 @@ function observationDetailSegments(
  *
  * 観測波高の読み上げと到達確認の読み上げ（`tsunamiArrivalToSegments`）で共有する。地点数の
  * 言い方を手で複製すると、片方だけ変えたときに黙って乖離する（続く述語だけを引数で受ける）。
+ *
+ * **助詞は述語に合わせて選ぶ。** 既定の「でも」は場所を示す「で」で、そこで何かを観測した・
+ * 到達を確認したという述語に続く形。**欠測は観測点そのものの状態**（その場所で何かが起きた
+ * わけではない）なので、「で」を落として「ほか○地点も」にする。
  */
-function omittedPointsSentence(total: number, shown: number, tail: string): SpeechSegment[] {
+function omittedPointsSentence(total: number, shown: number, tail: string, particle = 'でも'): SpeechSegment[] {
   const omitted = total - shown
-  return omitted > 0 ? [plain(`ほか${omitted}地点でも${tail}。`)] : []
+  return omitted > 0 ? [plain(`ほか${omitted}地点${particle}${tail}。`)] : []
 }
 
 // 波高つきの 1 地点ぶん（地点名は呼び出し側が断片にするので、それに続く部分だけを返す）。
@@ -1488,15 +1492,90 @@ export function selectArrivalsToSpeak(
 export function tsunamiArrivalToSegments(obs: TsunamiObservation[], maxPoints = ARRIVAL_SPEAK_MAX_POINTS): SpeechSegment[] {
   if (obs.length === 0) return []
   const shown = selectArrivalsToSpeak(obs, maxPoints)
+  // **「微弱」の観測点に「観測中」と言わない。** 微弱は「観測した波がごく小さい」ことを
+  // 気象庁が伝えている状態で、値がこれから出るわけではない（電文解説資料 Ⅱ.12）。
+  const weak = shown.filter(o => o.condition?.weak)
+  const observing = shown.filter(o => !o.condition?.weak)
+  const clause = (items: TsunamiObservation[], tail: string): SpeechSegment[] =>
+    items.length > 0 ? [...observationDetailSegments(items, () => ''), plain(tail)] : []
   return [
-    ...observationDetailSegments(shown, () => ''),
-    plain('で到達を確認しました。最大波高は観測中です。'),
+    ...joinWithAlso(
+      clause(observing, 'で到達を確認しました。最大波高は観測中です。'),
+      clause(weak, 'で到達を確認しました。最大波高は微弱です。'),
+    ),
     ...omittedPointsSentence(obs.length, shown.length, '到達を確認しています'),
   ]
 }
 
 export function tsunamiArrivalToText(obs: TsunamiObservation[], maxPoints = 5): string {
   return joinSegments(tsunamiArrivalToSegments(obs, maxPoints))
+}
+
+/** 欠測で読み上げる件数の上限（多いときは渡された並びの先頭から採る）。 */
+export const MISSING_SPEAK_MAX_POINTS = 5
+
+/**
+ * 欠測のうち**実際に読み上げる分**を選ぶ（渡された並びの先頭から上限まで）。
+ *
+ * **既読として記録する側も必ずこの関数で絞ること**（`useLiveEventHandler` の
+ * `spokenObsMissingRef`）。上限で読まなかった観測点まで既読にすると、その欠測は二度と
+ * 読まれない（到達確認・波高更新と同じ約束）。
+ */
+export function selectMissingToSpeak(
+  obs: readonly TsunamiObservation[],
+  maxPoints = MISSING_SPEAK_MAX_POINTS,
+): TsunamiObservation[] {
+  return obs.slice(0, maxPoints)
+}
+
+/**
+ * 観測データが欠測となった観測点の読み上げ。
+ *
+ * **到達確認（{@link tsunamiArrivalToSegments}）へ混ぜないこと。** あちらは「到達した事実は
+ * 確定していて波高だけがこれから」という文で、欠測の観測点に当てると到達を断定してしまう。
+ *
+ * 文は 2 通りに分かれる。電文は欠測と同時に「これまでの最大波の高さ」を載せることがある
+ * （気象庁 電文解説資料 Ⅱ.12 事例 6）ため、**値を観測できていた観測点はその値も伝える**。
+ * 値を持つ群を先に置き、持たない群を「また、」で継ぐ（区切り方は `joinWithAlso`）。
+ *
+ * **読む順は渡された並びのまま。** 波高更新・到達確認と同じく、呼び出し側がカードの並び
+ * （`sortObservationsForCardDisplay`）で渡すこと。
+ */
+export function tsunamiMissingToSegments(
+  obs: TsunamiObservation[],
+  maxPoints = MISSING_SPEAK_MAX_POINTS,
+): SpeechSegment[] {
+  if (obs.length === 0) return []
+  const shown = selectMissingToSpeak(obs, maxPoints)
+  // 「これまでに何を観測できていたか」を言える観測点。**波高の数値だけでなく「微弱」も含める**
+  // （「微弱 欠測」は同 事例 7 の形。カードは波高の欄に「微弱」を出すので、読み上げだけ黙ると
+  // 声を頼りにしている人にその分だけ届かない）。
+  const observed = shown.filter(o => o.height || o.condition?.weak)
+  const unknown = shown.filter(o => !(o.height || o.condition?.weak))
+  const observedClause: SpeechSegment[] = observed.length > 0
+    ? [
+      plain('これまでに'),
+      ...observationDetailSegments(observed, o => (o.height ? observedHeightSuffix(o) : 'で微弱な津波')),
+      plain('を観測したのち、欠測となっています。'),
+    ]
+    : []
+  const missingClause: SpeechSegment[] = unknown.length > 0
+    ? [
+      ...observationDetailSegments(unknown, () => ''),
+      // **場所を示す「で」を付けない。** 欠測は観測点そのものの状態で、その場所で何かが
+      // 起きたわけではない（「◯◯は欠測」が正しい形）。値を観測できていた側の文
+      // （上の `observedClause`）では観測がその場所で起きているので「で」を使う。
+      plain('は欠測となっています。'),
+    ]
+    : []
+  return [
+    ...joinWithAlso(observedClause, missingClause),
+    ...omittedPointsSentence(obs.length, shown.length, '欠測となっています', 'も'),
+  ]
+}
+
+export function tsunamiMissingToText(obs: TsunamiObservation[], maxPoints = MISSING_SPEAK_MAX_POINTS): string {
+  return joinSegments(tsunamiMissingToSegments(obs, maxPoints))
 }
 
 /** 南海トラフ地震臨時情報（VYSE50/51/52）の読み上げテキストを生成する。 */

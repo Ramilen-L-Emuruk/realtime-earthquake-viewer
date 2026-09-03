@@ -868,7 +868,7 @@ DMDSS 版は DMDATA の WebSocket、standard 版は P2PQuake の WebSocket が�
 | EEW 誤報取消テスト | `createTestEEWWarning()` + `EEW_RETRACTION_CANCEL_MS`(10s) 後に取消 | 50→取消 | 10 秒後に `cancelled:true` 電文で `eewCancel` 音・通知・読み上げを検証 |
 | 地震テスト | `createTestEarthquake(useDmdataShape)` | - | 令和 6 年能登半島地震の実データベース（`src/data/noto-honshin-2024-*.json`）を採用。`points` の形と情報種別はバリアントで切り替える（後述「実電文の形に合わせる」） |
 | 遠地地震テスト | `createTestForeignQuake(includeComments)` | - | メキシコ・チアパス州沿岸 M7.4（2026-07-17）の実電文ベース。深さ不明・固定付加文 `0226`＋`0230` の報を採り、「深さ句の省略」「付加文原文の読み上げ」「`0230` 由来の津波区分（`domesticTsunami: 'なし'`）」「自由付加文のカード表示」を一度に確認できる。自由付加文もこの報の実電文どおり（「ＰＴＷＣでは…」の 1 行）。**本文中の日時は実電文のまま**なので、発表時刻を「今」へずらす都合で表示時刻とは食い違う（実電文の形を保つ方を採っている）。付加文は固定・自由とも DMDATA 経由でのみ配信されるため、呼び出し側は `isDmdss` を渡して DMDSS 版でのみ注入する |
-| 大津波警報テスト | `createTestTsunami(withDmdssFields)` | - | 大津波警報（MajorWarning） |
+| 大津波警報テスト | `createTestTsunami(withDmdssFields)` | - | 大津波警報（MajorWarning）。観測点には**観測状態の組み合わせを一通り**含める（実測／実測＋欠測＋重要／到達確認＋欠測／第1波も最大波も欠測／上昇中／微弱）。単独の状態しか置かないと、カード・地図・読み上げの併記の扱いが一度も通らない（状態の一覧は [`tsunami-spec.md`](tsunami-spec.md) §6「観測状態」） |
 | 津波警報テスト | `createTestTsunamiWarning(withDmdssFields)` | - | 津波警報 |
 | 津波注意報テスト | `createTestTsunamiWatch(withDmdssFields)` | - | 津波注意報 |
 | 津波予報テスト | `createTestTsunamiForecast(withDmdssFields)` | - | 津波予報。DMDSS は 90 秒（`TEST_AUTO_DISMISS_MS`）後に `expired` 経路で解除。standard は `validDateTime` を持たないため解除電文で消す（後述「実電文の形に合わせる」） |
