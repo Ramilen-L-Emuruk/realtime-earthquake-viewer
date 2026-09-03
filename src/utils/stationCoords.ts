@@ -188,6 +188,34 @@ export function buildAreaPrefIndex(data: StationCoordsData): Map<string, string>
  * stations のキー "都道府県|観測点名" を分解して name -> pref の Map を作る（初出優先）。
  * DMDATA JSON 電文の stations[] は都道府県情報を含まないため、この逆引きで pref を補完する。
  */
+// 一次細分区域名 → 都道府県名 の索引を、座標テーブルが差し替わるまで使い回す。
+// 点の役割の判定（`quakePoints.ts` の `isAreaPoint`）へ渡すために、地震の統合経路と
+// 読み上げ文の生成から繰り返し呼ばれる。都度 `buildAreaPrefIndex` を作ると区域数ぶんの
+// ループがそのたびに走るうえ、経路ごとに別インスタンスの索引を渡すことになる。
+// 返す Map は共有物なので、受け取った側で書き換えないこと（現状はすべて読み取りのみ）。
+let areaPrefIndexFor: StationCoordsData | null = null
+let areaPrefIndexCache: Map<string, string> | null = null
+
+/**
+ * 一次細分区域名 → 都道府県名 の索引。座標テーブルが未読み込み・取得失敗なら null。
+ *
+ * 渡し先で null が何を意味するかは `quakePoints.ts` の {@link isAreaPoint} を参照
+ * （名前だけの判定へ落ち、区域名が県名と同じ奈良県を取りこぼす）。
+ */
+export function getAreaPrefIndexCache(): Map<string, string> | null {
+  const data = getStationCoordsCache()
+  if (!data) {
+    areaPrefIndexFor = null
+    areaPrefIndexCache = null
+    return null
+  }
+  if (data !== areaPrefIndexFor) {
+    areaPrefIndexFor = data
+    areaPrefIndexCache = buildAreaPrefIndex(data)
+  }
+  return areaPrefIndexCache
+}
+
 export function buildStationPrefIndex(data: StationCoordsData): Map<string, string> {
   const index = new Map<string, string>()
   for (const key of Object.keys(data.stations)) {

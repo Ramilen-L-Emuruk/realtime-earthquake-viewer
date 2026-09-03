@@ -88,6 +88,14 @@ function prefRollup(pref: string, scale: number): EarthquakePoint {
   return { pref, addr: pref, isArea: true, scale: scale as IntensityScale }
 }
 
+/**
+ * 標準版（P2PQuake）の区域の点。区域にも pref を積むのが DMDATA 経路との違い。
+ * → docs/spec/quake-spec.md §4
+ */
+function p2pArea(pref: string, addr: string, scale: number): EarthquakePoint {
+  return { pref, addr, isArea: true, scale: scale as IntensityScale }
+}
+
 /** 震源を指定した震度速報を作る。 */
 function makeQuake(points: EarthquakePoint[], hypo: { lat: number; lon: number }): JMAQuake {
   return {
@@ -342,6 +350,30 @@ describe('震度の地域列挙: 観測点しか持たない電文（P2PQuake �
     )
     const text = earthquakeToText(quake, OPTS, true)
     expect(text).toContain('最大震度4を新潟県上越で観測しました。')
+  })
+
+  // 正: 標準版は区域の点にも pref を積むため、区域名が県名と同じ奈良県は addr === pref になる。
+  // ロールアップ点かどうかを名前だけで決めると、この区域が読み上げから静かに落ちる。
+  // 奈良県は県内の一次細分区域が 1 つだけで、その名前が県名と同じ唯一の県
+  // （stationCoords.test.ts が固定）。
+  it('標準版の区域の点は、区域名が県名と同じ奈良県でも読み上げに残る', () => {
+    const quake = makeQuake(
+      [p2pArea('奈良県', '奈良県', 40), p2pArea('大阪府', '大阪府南部', 40)],
+      SOUTH_HYPO,
+    )
+    const text = earthquakeToText(quake, OPTS, true)
+    expect(text).toContain('最大震度4を大阪府南部、奈良県で観測しました。')
+  })
+
+  // 対照: 同じ形（addr === pref）でも、区域として実在しない県名は区域にしない。
+  // これを緩めると、県名が区域名と並んで粒度が崩れる。
+  it('区域の点と一緒に届いた都道府県ロールアップ点は区域として読まない', () => {
+    const quake = makeQuake(
+      [area('大阪府南部', 40), prefRollup('大阪府', 40)],
+      SOUTH_HYPO,
+    )
+    const text = earthquakeToText(quake, OPTS, true)
+    expect(text).toContain('最大震度4を大阪府南部で観測しました。')
   })
 })
 
