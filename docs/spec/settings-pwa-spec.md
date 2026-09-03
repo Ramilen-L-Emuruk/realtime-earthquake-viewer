@@ -874,6 +874,7 @@ DMDSS 版は DMDATA の WebSocket、standard 版は P2PQuake の WebSocket が�
 | 津波予報テスト | `createTestTsunamiForecast(withDmdssFields)` | - | 津波予報。DMDSS は 90 秒（`TEST_AUTO_DISMISS_MS`）後に `expired` 経路で解除。standard は `validDateTime` を持たないため解除電文で消す（後述「実電文の形に合わせる」） |
 | 津波誤報取消テスト | `createTestTsunamiRetraction(withDmdssFields)` + 90 秒後に取消電文 | - | 警報・注意報混在の発表 → 90 秒後に電文全体が取り消される（DMDSS は `retracted` 経路。standard は理由を判別できないため「解除」表示） |
 | 南海トラフ臨時情報テスト 3 種（DMDSS 版のみ） | `createTestNankai('調査中'／'巨大地震注意'／'巨大地震警戒')` | - | バナー表示 + `specialInfo` 音。バナー消去ボタンは無く、再テストで上書きされる |
+| 南海トラフ臨時情報 取消テスト（DMDSS 版のみ） | `createTestNankai('巨大地震注意')` + 90 秒後に `createTestNankaiRetraction(...)` | - | 発表を出し、90 秒後に**同じ識別情報の取消**を流す。バナーが消え、読み上げは取り消された事実だけを伝える（発生可能性については何も述べない）。**受信と同じイベントキューへ積む** —— 状態を直接書き換えると取消の識別情報の照合を通らず、実運用で効く分岐を踏まないテストになる |
 | 南海トラフ関連解説情報テスト 2 種（DMDSS 版のみ） | `createTestNankaiCommentary('臨時解説'／'定例解説')` | - | 臨時情報とは別の帯（teal）に表示 + `specialInfoCommentary` 音。**閉じるボタンあり**・発表から 7 日で自動消去。読み上げ・音は「解説情報の音・読み上げ」設定で切れる |
 | 後発地震テスト（DMDSS 版のみ） | `createTestKohatsu()` | - | 北海道・三陸沖後発地震注意情報のバナー表示 + `specialInfo` 音 |
 | 通知テスト | `App.tsx` の `onTest.notification`（インライン。`testData.ts` には無い） | - | 通知許可が必要（未許可なら案内ダイアログを出して送信しない）。許可状況は「通知設定」の「通知許可」行で確認できる |
