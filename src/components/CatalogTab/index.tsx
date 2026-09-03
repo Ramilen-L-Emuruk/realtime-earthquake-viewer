@@ -1,5 +1,6 @@
 import { memo } from 'react'
 import { RangeSlider } from '../RangeSlider'
+import { DateField } from '../DateField'
 import { Toggle } from '../Toggle'
 import { DescriptionTip } from '../DescriptionTip'
 import type { HypocenterIndex } from '../../utils/hypocenterCatalog'
@@ -16,7 +17,17 @@ import {
   type CatalogColorBy,
   type CatalogFilter,
   formatMissingYears,
+  formatJstDate,
+  periodFromDateChange,
+  periodFromYearChange,
+  pointSizePx,
+  jstYearEndMs,
+  jstYearOf,
+  jstYearStartMs,
+  oldestYearOf,
+  periodDayCount,
   rangeLabel,
+  toDateInputValue,
   type CatalogViewOptions,
 } from '../../utils/hypocenterCatalogView'
 
@@ -127,6 +138,10 @@ function RangeRow({
 const SELECT_CLASS =
   'bg-panel border border-border text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-blue-500'
 
+// 日付ピッカー。**`color-scheme` を暗い側へ寄せる**——ブラウザが描くカレンダーのアイコンと
+// ポップアップは配色をここから決めるため、指定しないと暗い背景の上に明るい部品が乗る。
+const DATE_INPUT_CLASS = `${SELECT_CLASS} [color-scheme:dark]`
+
 export const CatalogTab = memo(function CatalogTab({
   index,
   filter,
@@ -144,9 +159,26 @@ export const CatalogTab = memo(function CatalogTab({
   const years = index?.years ?? []
   // **収録の両端をスライダーの端にする。** 索引が来るまでは選んでいる値をそのまま端にして
   // おく（つまみが範囲外に置かれると、ブラウザが勝手に丸めて値が飛ぶ）。
-  const firstYear = years[0] ?? filter.fromYear
-  const lastYear = years[years.length - 1] ?? filter.toYear
+  const fromYear = jstYearOf(filter.fromMs)
+  const toYear = jstYearOf(filter.toMs)
+  const firstYear = years[0] ?? fromYear
+  const lastYear = years[years.length - 1] ?? toYear
+  const periodMin = jstYearStartMs(firstYear)
+  const periodMax = jstYearEndMs(lastYear)
   const completeness = index ? catalogCompleteness(index, filter) : null
+
+  // 期間の決め方そのものは `hypocenterCatalogView` の純粋関数に置いてある（単体テストの対象）。
+  // ここは値を繋ぐだけ。
+  const changeYears = (nextFrom: number, nextTo: number) => {
+    onFilterChange({ ...filter, ...periodFromYearChange(filter, nextFrom, nextTo) })
+  }
+
+  // **読めない値では何もしない。** 日付ピッカーは打鍵の途中で空や不完全な値を返す。
+  const changeDate = (value: string, edge: 'from' | 'to') => {
+    const next = periodFromDateChange(filter, value, edge, periodMin, periodMax)
+    if (next == null) return
+    onFilterChange({ ...filter, ...next })
+  }
 
 
   return (
@@ -154,8 +186,8 @@ export const CatalogTab = memo(function CatalogTab({
       <Section title="絞り込み">
         <RangeRow
           label="期間"
-          description="表示する年の範囲です。古い側の年を変えると、その期間で網羅されている下限にマグニチュードを合わせます（観測網が疎だった時代は小さい地震が記録に残っていないため）"
-          valueText={`${filter.fromYear}年 〜 ${filter.toYear}年（${filter.toYear - filter.fromYear + 1}年ぶん）`}
+          description="表示する期間です。スライダーは年ごとに動き、日付を選ぶと年の途中から指定できます。日付を選んだ側は、もう一方のつまみを動かしても保たれます。古い側の年が変わると、その期間で網羅されている下限にマグニチュードを合わせます（観測網が疎だった時代は小さい地震が記録に残っていないため）"
+          valueText={`${formatJstDate(filter.fromMs)} 〜 ${formatJstDate(filter.toMs)}（${periodDayCount(filter.fromMs, filter.toMs).toLocaleString()}日ぶん）`}
         >
           <RangeSlider
             label="期間"
@@ -163,11 +195,32 @@ export const CatalogTab = memo(function CatalogTab({
             min={firstYear}
             max={lastYear}
             step={1}
-            from={filter.fromYear}
-            to={filter.toYear}
+            from={fromYear}
+            to={toYear}
             disabled={years.length === 0}
-            onChange={(fromYear, toYear) => onFilterChange({ ...filter, fromYear, toYear })}
+            onChange={changeYears}
           />
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <DateField
+              label="期間の開始日"
+              value={toDateInputValue(filter.fromMs)}
+              min={toDateInputValue(periodMin)}
+              max={toDateInputValue(periodMax)}
+              disabled={years.length === 0}
+              onCommit={(v) => changeDate(v, 'from')}
+              className={DATE_INPUT_CLASS}
+            />
+            <span className="text-secondary text-xs">〜</span>
+            <DateField
+              label="期間の終了日"
+              value={toDateInputValue(filter.toMs)}
+              min={toDateInputValue(periodMin)}
+              max={toDateInputValue(periodMax)}
+              disabled={years.length === 0}
+              onCommit={(v) => changeDate(v, 'to')}
+              className={DATE_INPUT_CLASS}
+            />
+          </div>
         </RangeRow>
 
         <RangeRow
@@ -250,7 +303,11 @@ export const CatalogTab = memo(function CatalogTab({
             ))}
           </select>
         </Row>
-        <Row label="強調表示" description="マグニチュードが大きいほど点を大きくします。下の基準サイズに対して、M3 で 0.6 倍・M9 で 4.2 倍です">
+        {/* **倍率は実装から引く。** 数値を書き写すと、効き方を変えたときに説明文だけ古い値のまま残る。 */}
+        <Row
+          label="強調表示"
+          description={`マグニチュードが大きいほど点を大きくします。下の基準サイズに対して、M3 で ${pointSizePx(1, 3, 'magnitude').toFixed(2)} 倍・M9 で ${pointSizePx(1, 9, 'magnitude').toFixed(2)} 倍です`}
+        >
           <Toggle
             label="強調表示"
             checked={view.sizeBy === 'magnitude'}
@@ -310,7 +367,7 @@ export const CatalogTab = memo(function CatalogTab({
 
       {completeness?.belowComplete && (
         <p className="text-xs text-yellow-400 px-1 mb-3">
-          {Math.min(filter.fromYear, filter.toYear)} 年からの期間で取りこぼしが無いのは M {completeness.completeMin.toFixed(1)} 以上です。
+          {oldestYearOf(filter)} 年からの期間で取りこぼしが無いのは M {completeness.completeMin.toFixed(1)} 以上です。
           それより小さい地震は古い年ほど記録に残っておらず、少なく見えます。
         </p>
       )}
