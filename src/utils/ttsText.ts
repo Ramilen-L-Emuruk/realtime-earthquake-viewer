@@ -1501,6 +1501,13 @@ export function tsunamiArrivalToText(obs: TsunamiObservation[], maxPoints = 5): 
 
 /** 南海トラフ地震臨時情報（VYSE50/51/52）の読み上げテキストを生成する。 */
 export function nankaiToText(event: JMANankai): string {
+  // **取消と調査終了を混ぜない。** 取消は「その電文を撤回する」だけで、地震の発生可能性に
+  // ついての判断を含まない（電文解説資料 Ⅰ.別紙ウ。→ `JMANankai.retracted`）。ここで
+  // 「通常の範囲内でした」と言うと、**気象庁が発表していない安心情報をアプリが作る**ことになる。
+  // 取り消された事実だけを伝え、状況の断定も行動指示も足さない。
+  if (event.retracted) {
+    return '南海トラフ地震臨時情報は取り消されました。'
+  }
   if (event.cancelled || event.kindName === '調査終了') {
     return '南海トラフ地震臨時情報、調査終了。南海トラフ地震の発生可能性は通常の範囲内でした。'
   }

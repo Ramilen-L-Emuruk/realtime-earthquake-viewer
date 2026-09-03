@@ -342,6 +342,29 @@ export function createTestNankai(kindName: '調査中' | '巨大地震注意' | 
 //   - summary は Head/Headline/Text 相当の一文要約（バナーの見出しに出る）
 //   - body は Body/EarthquakeInfo/Text 相当の本文（開いたときに出る）
 //   - serialCode は地震関連情報番号コード。実電文で確認できた値は臨時解説 210・定例解説 200
+/**
+ * 南海トラフ地震臨時情報の取消電文。**対象と同じ `eventId` を持たせる**
+ * （取消は「独立した情報単位」を指すため。気象庁 地震火山関連 XML 電文解説資料 Ⅰ.別紙ウ）。
+ *
+ * 段階の名乗り（`kindName`）は空にする。取消は電文の撤回でしかなく、段階の判断を含まない
+ * ―― ここに「調査終了」を入れると、発表されていない安心情報をテストデータ側から作ることになる。
+ */
+export function createTestNankaiRetraction(base: JMANankai): JMANankai {
+  const now = serverDate().toISOString()
+  return {
+    ...base,
+    id: `${base.id}-cancel`,
+    time: now,
+    reportDateTime: now,
+    kindCode: '',
+    kindName: '',
+    headline: '南海トラフ地震臨時情報（取消）',
+    body: 'システムの障害により、先に発表した南海トラフ地震臨時情報を取り消します。',
+    cancelled: true,
+    retracted: true,
+  }
+}
+
 export function createTestNankaiCommentary(serialName: '臨時解説' | '定例解説'): JMANankaiCommentary {
   const now = serverDate().toISOString()
   const expireAt = new Date(serverNow() + 7 * 24 * 3600 * 1000).toISOString()
