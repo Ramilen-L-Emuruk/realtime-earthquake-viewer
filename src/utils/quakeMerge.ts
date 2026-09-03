@@ -1,4 +1,5 @@
 import type { JMAQuake, IssueType } from '../types/earthquake'
+import { isAreaPoint, type AreaPrefIndex } from './quakePoints'
 import { log } from './logger'
 
 // 地震情報の種別優先度（高いほど詳しい）。
@@ -95,16 +96,22 @@ function isHypocenterPending(q: JMAQuake): boolean {
 // **都道府県のロールアップ点を除くこと。** DMDATA の JSON 経路（ライブ）は `intensity.prefectures`
 // を `{ pref: 名前, addr: 名前, isArea: true }` として足すため、`isArea` だけで絞ると県名が混ざる。
 // 県は区域より粗いので、同じ県の別々の区域で起きた 2 つの地震が「重なる」ことになってしまう。
-// 除き方は読み上げ側（`ttsText.ts` の `p.isArea && p.addr !== p.pref`）と揃える。
-function areaNames(q: JMAQuake): Set<string> {
-  return new Set(q.points.filter(p => p.isArea && p.addr !== p.pref).map(p => p.addr))
+// 除き方は読み上げ側と揃える（判定は `quakePoints.ts` の `isAreaPoint` に集約）。
+//
+// **索引は引数で受ける。** このモジュールは座標テーブルを import できない（node 側スクリプトの
+// 型検査対象に入るため。capture-test-scenario → dmdataReplay → ここ）ので、ブラウザ側の
+// 呼び出し元が `getAreaPrefIndexCache()` から渡す。null のときは名前だけの判定へ落ち、
+// 区域名が県名と同じ奈良県を取りこぼす——区域集合が小さくなる方向なので、判定は
+// 「引き離せない」へ倒れる（別の地震を同一視することはあっても、同じ地震を割ることはない）。
+function areaNames(q: JMAQuake, areaPrefIndex: AreaPrefIndex): Set<string> {
+  return new Set(q.points.filter(p => isAreaPoint(p, areaPrefIndex)).map(p => p.addr))
 }
 
 // 両方が区域別震度を持ち、少なくとも 1 つを共有するか。
-function hasSharedArea(a: JMAQuake, b: JMAQuake): boolean {
-  const sa = areaNames(a)
+function hasSharedArea(a: JMAQuake, b: JMAQuake, areaPrefIndex: AreaPrefIndex): boolean {
+  const sa = areaNames(a, areaPrefIndex)
   if (sa.size === 0) return false
-  const sb = areaNames(b)
+  const sb = areaNames(b, areaPrefIndex)
   if (sb.size === 0) return false
   for (const name of sa) if (sb.has(name)) return true
   return false
@@ -112,8 +119,9 @@ function hasSharedArea(a: JMAQuake, b: JMAQuake): boolean {
 
 // 「両方が区域別震度を持つのに 1 つも重ならない」なら、別の地震とみなせる。
 // 片方でも区域を持たなければ判断材料が無いので false（＝引き離せない）を返す。
-function hasDisjointAreas(a: JMAQuake, b: JMAQuake): boolean {
-  return areaNames(a).size > 0 && areaNames(b).size > 0 && !hasSharedArea(a, b)
+function hasDisjointAreas(a: JMAQuake, b: JMAQuake, areaPrefIndex: AreaPrefIndex): boolean {
+  return areaNames(a, areaPrefIndex).size > 0 && areaNames(b, areaPrefIndex).size > 0
+    && !hasSharedArea(a, b, areaPrefIndex)
 }
 
 // 2つの地震カードが同一イベントかどうか。
@@ -141,7 +149,7 @@ function hasDisjointAreas(a: JMAQuake, b: JMAQuake): boolean {
 // - eventId が完全に一致すれば、発生時刻も区域も見ずに同一と判断する
 // - 暫定 ID のカードは、区域を持たない電文（震源情報）とはその場では合流しない
 // - P2PQuake 経路では、同じ分に起きた別々の地震を常には分離できない（震源名が同じ場合など）
-export function sameQuakeEntry(a: JMAQuake, b: JMAQuake): boolean {
+export function sameQuakeEntry(a: JMAQuake, b: JMAQuake, areaPrefIndex: AreaPrefIndex): boolean {
   if (a.eventKey && b.eventKey) return a.eventKey === b.eventKey
   const ea = extractQuakeEventId(a)
   const eb = extractQuakeEventId(b)
@@ -158,7 +166,7 @@ export function sameQuakeEntry(a: JMAQuake, b: JMAQuake): boolean {
   // 数えないよう、値があることまで要求する。
   if (!a.earthquake.time || a.earthquake.time !== b.earthquake.time) return false
   if (hasConflictingHypocenter(a, b)) return false
-  return requiresSharedArea ? hasSharedArea(a, b) : !hasDisjointAreas(a, b)
+  return requiresSharedArea ? hasSharedArea(a, b, areaPrefIndex) : !hasDisjointAreas(a, b, areaPrefIndex)
 }
 
 // カードが実際の震度データ（最大震度 or 各地の震度）を持つか。
@@ -445,10 +453,11 @@ export function quakeRetractionOf(cancel: JMAQuake, matched?: JMAQuake): QuakeRe
 export function isRetractedQuakeReport(
   retractions: readonly QuakeRetraction[],
   incoming: JMAQuake,
+  areaPrefIndex: AreaPrefIndex,
 ): boolean {
   return retractions.some(r =>
     r.issueType === incoming.issue.type
-    && sameQuakeEntry(r.entry, incoming)
+    && sameQuakeEntry(r.entry, incoming, areaPrefIndex)
     && (!incoming.time || incoming.time <= r.reportTime)
   )
 }
@@ -468,11 +477,11 @@ export function isRetractedQuakeReport(
  * さらに `id` も入れ替わるため 10 秒後の purge 予約（`id` で対象を引く）が空振りし、取り消した
  * はずの地震が居座る。取消の後に届いた報の扱いは `isRetractedQuakeReport` を参照。
  */
-export function findExistingQuakeCard(cards: JMAQuake[], incoming: JMAQuake): JMAQuake | undefined {
+export function findExistingQuakeCard(cards: JMAQuake[], incoming: JMAQuake, areaPrefIndex: AreaPrefIndex): JMAQuake | undefined {
   let found: JMAQuake | undefined
   for (const card of cards) {
     if (card.cancelledAt) continue
-    if (!sameQuakeEntry(card, incoming)) continue
+    if (!sameQuakeEntry(card, incoming, areaPrefIndex)) continue
     // 発表時刻が同値なら id で決める。配列順（＝到着順）に委ねると、同じ入力でも
     // ライブと履歴で選ばれる側が変わる。
     if (!found || card.time < found.time || (card.time === found.time && card.id < found.id)) found = card
@@ -537,10 +546,13 @@ export function coalesceByEventId(cards: JMAQuake[]): JMAQuake[] {
 // （敵対的レビューで指摘・確認済み）。呼び出し側（`fetchDmdataEarthquakes`）が
 // 「速報→詳細」（VXSE51→52→53→61）の順に結合することで、通常の発表順に沿う限り
 // この逆転は起きない設計にしている。呼び出し側で結合順序を変える場合はこの前提を崩さないこと。
+// 索引の意味は `quakePoints.ts` の `isAreaPoint`。**省略可能にしない**——渡し忘れた呼び出し側が
+// 黙って縮退する（区域名が県名と同じ奈良県だけ区域で引き当てられなくなる）ため、型検査に見張らせる。
 export function mergeQuakeHistory(
   newQuakes: JMAQuake[],
-  base: JMAQuake[] = [],
-  knownRetractions: readonly QuakeRetraction[] = [],
+  base: JMAQuake[],
+  knownRetractions: readonly QuakeRetraction[],
+  areaPrefIndex: AreaPrefIndex,
 ): JMAQuake[] {
   const merged: JMAQuake[] = [...base]
 
@@ -564,14 +576,14 @@ export function mergeQuakeHistory(
     // 過去情報である履歴ではその最終状態（非表示）に一致させる。
     if (q.cancelled) {
       // 取消表示中のカードも対象に含める（履歴の最終状態は非表示なので消して良い）。
-      const target = merged.findIndex(e => sameQuakeEntry(e, q))
+      const target = merged.findIndex(e => sameQuakeEntry(e, q, areaPrefIndex))
       // 照合の精度が高い順に、当たったカード → 取消電文そのもの（理由は `QuakeRetraction`）。
       retractions.push(quakeRetractionOf(q, target >= 0 ? merged[target] : undefined))
       if (target >= 0) merged.splice(target, 1)
       continue
     }
     // 取消以前に発表された報は取り下げ済みなので採らない（`isRetractedQuakeReport`）。
-    if (isRetractedQuakeReport(retractions, q)) {
+    if (isRetractedQuakeReport(retractions, q, areaPrefIndex)) {
       log.warn('[quake] 取消以前に発表された報を捨てた', {
         id: q.id, issueType: q.issue.type, time: q.time,
       })
@@ -579,7 +591,7 @@ export function mergeQuakeHistory(
     }
     // **取消表示中のカードは置換しない**（理由は `findExistingQuakeCard`）。`base` 経由で
     // 混ざりうるため、ライブ経路と同じ守りをここにも置く。
-    const index = merged.findIndex(e => !e.cancelledAt && sameQuakeEntry(e, q))
+    const index = merged.findIndex(e => !e.cancelledAt && sameQuakeEntry(e, q, areaPrefIndex))
     if (index >= 0) merged[index] = mergeQuakeInto(merged[index], q)
     else merged.push(mergeQuakeInto(undefined, q))
   }

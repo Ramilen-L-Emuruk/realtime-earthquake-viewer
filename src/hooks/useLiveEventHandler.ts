@@ -21,6 +21,7 @@ import { joinSegments, plain, hasFollowTarget, mapChunksToRefs, spokenChunkIndic
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
 import { extractQuakeEventIdFromId, quakeEventKey, sameQuakeEntry } from '../utils/quakeMerge'
+import { getAreaPrefIndexCache } from '../utils/stationCoords'
 
 // EEW 読み上げ第 2 フェーズ（予想値）のタイミング。
 // 初報で予想震度が付いておらず、かつ**付かない理由がはっきりしない**場合に待つ上限。
@@ -1300,7 +1301,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 統合より前に呼ばれるため、earthquakesRef はこの電文を取り込む前の状態）。
       // 同一 tick に複数電文が捌けて ref が追いつかない場合はキーが実カードと一致せず、
       // 選択は「取消でない最新カード」へフォールバックする（App.tsx の selectedQuake 導出）。
-      const existingCard = earthquakesRef.current.find(q => sameQuakeEntry(q, incomingQuake))
+      const existingCard = earthquakesRef.current.find(q => sameQuakeEntry(q, incomingQuake, getAreaPrefIndexCache()))
       // 選択と読み上げの主題は同じキーで揃える（どちらも「どの地震か」を指すもの）。
       const incomingEventKey = quakeEventKey(existingCard ?? incomingQuake)
       quakeSpeechTopic = `quake:${incomingEventKey}`

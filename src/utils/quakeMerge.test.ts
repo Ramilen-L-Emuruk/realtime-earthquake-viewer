@@ -1,19 +1,43 @@
 import { describe, it, expect } from 'vitest'
 import {
   mergeQuakeInto,
-  mergeQuakeHistory,
+  mergeQuakeHistory as mergeQuakeHistoryWithIndex,
   extractQuakeEventId,
   extractQuakeEventIdFromId,
-  sameQuakeEntry,
+  sameQuakeEntry as sameQuakeEntryWithIndex,
   hasIntensity,
   quakeEventKey,
   coalesceByEventId,
-  findExistingQuakeCard,
+  findExistingQuakeCard as findExistingQuakeCardWithIndex,
   sortQuakes,
-  isRetractedQuakeReport,
+  isRetractedQuakeReport as isRetractedQuakeReportWithIndex,
   quakeRetractionOf,
 } from './quakeMerge'
 import type { JMAQuake, IssueType, IntensityScale, EarthquakePoint, DomesticTsunami, CorrectType } from '../types/earthquake'
+
+// 区域名の索引を渡す引数は、本番の呼び出し側が渡し忘れないよう必須にしてある
+// （→ quakeMerge.ts の mergeQuakeHistory のコメント）。このファイルの既存のテストは
+// **索引なしの経路**を見るので、ここで一度だけ既定値を与えて包む。索引を渡したときの
+// 違い（区域名が県名と同じ奈良県を区域として引き当てられる）は専用の describe で確かめる。
+import { readFileSync } from 'node:fs'
+import { buildAreaPrefIndex, type StationCoordsData } from './stationCoords'
+import type { AreaPrefIndex } from './quakePoints'
+
+const sameQuakeEntry = (a: JMAQuake, b: JMAQuake, idx: AreaPrefIndex = null) =>
+  sameQuakeEntryWithIndex(a, b, idx)
+const mergeQuakeHistory = (
+  newQuakes: JMAQuake[],
+  base: JMAQuake[] = [],
+  knownRetractions: Parameters<typeof mergeQuakeHistoryWithIndex>[2] = [],
+  idx: AreaPrefIndex = null,
+) => mergeQuakeHistoryWithIndex(newQuakes, base, knownRetractions, idx)
+const findExistingQuakeCard = (cards: JMAQuake[], incoming: JMAQuake, idx: AreaPrefIndex = null) =>
+  findExistingQuakeCardWithIndex(cards, incoming, idx)
+const isRetractedQuakeReport = (
+  retractions: Parameters<typeof isRetractedQuakeReportWithIndex>[0],
+  incoming: JMAQuake,
+  idx: AreaPrefIndex = null,
+) => isRetractedQuakeReportWithIndex(retractions, incoming, idx)
 
 interface QuakeOpts {
   eventId?: string
@@ -1225,5 +1249,40 @@ describe('取消の後に届いた報', () => {
       })
       expect(mergeQuakeHistory([stale])).toHaveLength(1)
     })
+  })
+})
+
+// 区域名が県名と同じ奈良県は、標準版（P2PQuake）だと `addr === pref` になる。ロールアップ点と
+// 同じ形なので、名前だけで除くとこの区域が区域の重なり判定から消え、同じ分に起きた別々の地震を
+// 引き離せなくなる。索引を渡せば区域として数えられる（→ docs/spec/quake-spec.md §4）。
+describe('区域の重なり判定: 区域名が県名と同じ奈良県', () => {
+  const AREA_PREF_INDEX = buildAreaPrefIndex(
+    JSON.parse(readFileSync('public/data/station-coords.json', 'utf8')) as StationCoordsData,
+  )
+
+  // 標準版は区域の点にも pref を積む。eventId を持たない ID にして区域の重なり判定へ通す。
+  const naraOnly = () => makeQuake({
+    id: 'p2p-1', type: '震度速報', hypoName: '',
+    points: [{ pref: '奈良県', addr: '奈良県', isArea: true, scale: 30 }],
+  })
+  const osakaOnly = () => makeQuake({
+    id: 'p2p-2', type: '震度速報', hypoName: '',
+    points: [{ pref: '大阪府', addr: '大阪府南部', isArea: true, scale: 30 }],
+  })
+
+  // 正: 索引を渡せば奈良県も区域として数えられるので、重ならない 2 つを別の地震だと言える。
+  it('索引を渡せば、奈良県だけの地震と大阪府南部だけの地震を引き離せる', () => {
+    expect(sameQuakeEntry(naraOnly(), osakaOnly(), AREA_PREF_INDEX)).toBe(false)
+  })
+
+  // 対照: 索引なしでは奈良県の区域点が消えて区域集合が空になり、引き離す材料を失う。
+  // これは記録済みの縮退（quakeMerge は座標テーブルを import できないため既定でこちら）。
+  it('索引が無いと引き離せない（区域集合が空になり「別の地震」と言えない）', () => {
+    expect(sameQuakeEntry(naraOnly(), osakaOnly(), null)).toBe(true)
+  })
+
+  // 安全弁: 索引を渡しても、同じ区域なら同一イベントのまま。引き離す方向へ過剰に倒さない。
+  it('索引を渡しても、同じ奈良県どうしは同一イベントのまま', () => {
+    expect(sameQuakeEntry(naraOnly(), naraOnly(), AREA_PREF_INDEX)).toBe(true)
   })
 })
