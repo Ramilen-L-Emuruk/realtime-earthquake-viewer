@@ -456,9 +456,10 @@ export function compareObservedHeightDesc(a: ObservedHeightRank, b: ObservedHeig
  * 「巨大以上」という読めない語になる。その場合は語自体が確定していないことを伝えているため、
  * `over` の印を落としてでも文字列を壊さない方を採る。
  *
- * 数字の判定は**全角も数える**。`over` が立つのは JSON 経路だけで、そこが自前で組む表記
- * （`${value}m以上`）は半角だが、`condition` は電文由来の文字列がそのまま入るため全角が来うる
- * （`ttsText.ts` の `tsunamiHeightToSpeech` が同じ理由で両方を扱う）。ASCII だけを見ると
+ * 数字の判定は**全角も数える**。JSON 経路が自前で組む表記（`${value}m以上`）は半角だが、
+ * `condition` と XML 経路の `description` 属性は電文由来の文字列がそのまま入るため全角が来うる
+ * （実電文の `TsunamiHeight` は `description="０．５ｍ"` の形。`ttsText.ts` の
+ * `tsunamiHeightToSpeech` が同じ理由で両方を扱う）。ASCII だけを見ると
  * 「８．５ｍ」のような表記で「以上」が黙って落ちる。
  *
  * **観測波高を人に見せる・読み上げる経路はすべてこれを通すこと。** 片方だけ通すと、地図には

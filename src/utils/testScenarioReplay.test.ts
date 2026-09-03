@@ -196,6 +196,51 @@ describe('instantiateScenario', () => {
       expect(eid1).toBeDefined()
       expect(eid1).toBe(eid2)
     })
+    // 取消電文も eventId フィールドを持つ（`dmdataParser` の取消早期リターン）。持たない場合の
+    // 挙動は下の対照テストが示すとおりで、**取消報の id だけ実データの元 eventId を埋め込んだまま
+    // 残る**。同一シナリオ内で通常報とキーが食い違うため、リプレイ中に取消が既存カードへ当たらない。
+    it('取消報も通常報と同じ新IDにマッピングされる', () => {
+      const quake = makeQuake({ id: 'dmdata-quake-20240101070900-1' })
+      const cancel = makeQuake({
+        id: 'dmdata-quake-20240101070900-2',
+        cancelled: true,
+        issue: { source: '気象庁', time: '2024-01-01T07:12:00Z', type: '震度速報', correct: 'なし' },
+      })
+      const scenario: TestScenarioFile = {
+        id: 'test', label: 'テスト', description: '', category: 'quake', durationMs: 120000,
+        baseTime: '2024-01-01T07:10:00Z',
+        entries: [
+          { offsetMs: 0, payload: { kind: 'event', event: quake } },
+          { offsetMs: 120000, payload: { kind: 'event', event: cancel } },
+        ],
+      }
+      const result = instantiateScenario(scenario, NOW)
+      const e1 = (result[0].payload as { kind: 'event'; event: JMAQuake }).event
+      const e2 = (result[1].payload as { kind: 'event'; event: JMAQuake }).event
+      const eid1 = e1.id.match(/^dmdata-quake-(\d{14})-1$/)?.[1]
+      const eid2 = e2.id.match(/^dmdata-quake-(\d{14})-2$/)?.[1]
+      expect(eid1).toBeDefined()
+      expect(eid2).toBe(eid1)
+      // 実データの元 eventId が残っていないこと。残ると同一性判定がシナリオ外のキーで行われる
+      expect(e2.id).not.toContain('20240101070900')
+    })
+
+    // 対照: eventId フィールドを持たない報は再採番されない（`makeIdRemapper` が偽値を素通しし、
+    // `replaceEventIdInId` も置換しない）。これは remapAppEvent の仕様で、**フィールドを落とすと
+    // 上のテストが壊れる**ことを示す。取消電文がこの状態だったのを 2026-09-04 に揃えた。
+    it('eventId を持たない報は id が再採番されない', () => {
+      const noEventId = makeQuake({ id: 'dmdata-quake-20240101070900-9', eventId: undefined })
+      const scenario: TestScenarioFile = {
+        id: 'test', label: 'テスト', description: '', category: 'quake', durationMs: 1000,
+        baseTime: '2024-01-01T07:10:00Z',
+        entries: [{ offsetMs: 0, payload: { kind: 'event', event: noEventId } }],
+      }
+      const result = instantiateScenario(scenario, NOW)
+      const e = (result[0].payload as { kind: 'event'; event: JMAQuake }).event
+      expect(e.id).toBe('dmdata-quake-20240101070900-9')
+      expect(e.eventId).toBeUndefined()
+    })
+
   })
 
   describe('EEWAlert', () => {
