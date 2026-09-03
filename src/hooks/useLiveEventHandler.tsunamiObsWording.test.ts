@@ -97,6 +97,34 @@ function makeArrivalReport(names: string[], id = 'tsunami-arr'): JMATsunami {
   return makeObsReport(names.map(n => ({ name: n, district: '石川県能登', code: '390' })), [], id)
 }
 
+/**
+ * 欠測の観測点を持つ観測情報。
+ *
+ * `condition` は電文の `Condition` を読み取った形（`parseTsunamiObservationCondition` の出力）。
+ * `value` を与えると「これまでの最大波を観測した後に観測が途切れた」形になる。
+ */
+function makeMissingReport(
+  points: { name: string; value?: number; firstHeightMissing?: boolean }[],
+  id = 'tsunami-missing',
+): JMATsunami {
+  return {
+    kind: 'tsunami',
+    id,
+    eventId: EVENT_ID,
+    time: '2026-01-01T12:00:00Z',
+    cancelled: false,
+    issue: { source: 'JMA', time: '2026-01-01T12:00:00Z', type: 'Focus' },
+    areas: [],
+    observations: points.map(p => ({
+      name: p.name,
+      districtCode: '390',
+      districtName: '石川県能登',
+      height: p.value === undefined ? undefined : { value: p.value, description: `${p.value}m` },
+      condition: { maxHeightMissing: true, firstHeightMissing: p.firstHeightMissing },
+    })),
+  } as unknown as JMATsunami
+}
+
 /** 画面が出している津波（区域はここが持つ。観測情報の続報は区域を持たずに届く）。 */
 function displayedTsunami(areas: { name: string; code: string; grade: string; height?: string }[]): JMATsunami {
   return {
@@ -137,6 +165,33 @@ function setup(displayed: JMATsunami[] = []) {
     selectQuake: vi.fn(), setActiveLpgmEventId: vi.fn(),
   }))
   return result.current.handleLiveEvent
+}
+
+/** `setup` と同じ結線で、リプレイ復元も呼べるようにフックの戻り値ごと返す。 */
+function setupFull(displayed: JMATsunami[] = []) {
+  const settings = {
+    voicevoxEnabled: true, voicevoxUrl: 'http://x', voicevoxSpeakerId: 1,
+    soundEnabled: false, soundVolume: 1, notifyMinScale: -1,
+    notifyEEW: false, notifyTsunami: false, notifyDetection: false,
+    ttsIntensityLevels: [], ttsMaxRegions: 0, ttsAlwaysReadScale: 0, ttsRegionTolerance: 0,
+    minDisplayScale: -1,
+  } as unknown as AppSettings
+  const title = new Proxy({ alertTitle: null } as Record<string, unknown>, {
+    get: (t, k) => (k in t ? t[k as string] : vi.fn()),
+  })
+  const { result } = renderHook(() => useLiveEventHandler({
+    settings, title: title as never,
+    earthquakesRef: { current: [] as JMAQuake[] },
+    tsunamisRef: { current: displayed },
+    kyoshinDetectedRef: { current: false },
+    defaultTabRef: { current: 'earthquake' },
+    setActiveTabRealtimeForKyoshin: vi.fn(), setActiveTabNonRealtime: vi.fn(),
+    setActiveTabRealtimeOnUpdate: vi.fn(),
+    setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(() => true),
+    expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
+    selectQuake: vi.fn(), setActiveLpgmEventId: vi.fn(),
+  }))
+  return result.current
 }
 
 beforeEach(() => {
@@ -381,5 +436,237 @@ describe('津波の読み上げ: 話題が変わるところを「また、」�
     // 群分けの「また、新たに」だけ。到達確認のぶんは足されない
     expect(spokenTexts()[1].match(/また、/g)).toHaveLength(1)
     expect(spokenTexts()[1]).toContain('また、新たに')
+  })
+})
+
+// 欠測（観測データが得られていない観測点）をフックの結線ごと固定する。
+// 文の組み立ては `ttsText.test.ts`。ここで守るのは「到達確認の経路へ流れ込まないこと」と
+// 「既読の記憶を到達確認と混ぜないこと」（→ docs/spec/tsunami-spec.md §10）。
+describe('津波観測情報の読み上げ: 欠測', () => {
+  // 正: 欠測の観測点は欠測として読まれる
+  it('欠測の観測点は「到達を確認」ではなく欠測として読む', async () => {
+    const handle = setup()
+    handle(makeMissingReport([{ name: '輪島港' }]) as never)
+    await settle()
+    expect(spokenTexts()[0]).toBe('津波観測情報。石川県能登、輪島港は欠測となっています。')
+  })
+
+  // 正: 値を持つ欠測はその値も読む（電文が「これまでの最大波の高さ」を載せてくる）
+  it('これまでに観測できた波高がある欠測は値も読む', async () => {
+    const handle = setup()
+    handle(makeMissingReport([{ name: '輪島港', value: 1.2 }]) as never)
+    await settle()
+    expect(spokenTexts()[0]).toContain('これまでに石川県能登、輪島港で1.2メートルを観測したのち、欠測となっています。')
+  })
+
+  // 対照: 欠測でない波高未確定は従来どおり到達確認として読む
+  it('欠測でない波高未確定は従来どおり「到達を確認しました」', async () => {
+    const handle = setup()
+    handle(makeArrivalReport(['輪島港']) as never)
+    await settle()
+    expect(spokenTexts()[0]).toContain('輪島港で到達を確認しました。')
+    expect(spokenTexts()[0]).not.toContain('欠測')
+  })
+
+  // 正: 到達確認と欠測が同じ電文で来たら、確定した事実を先に読み「また、」で継ぐ
+  it('到達確認と欠測が同じ電文なら到達確認を先に読む', async () => {
+    const handle = setup()
+    handle({
+      ...makeArrivalReport(['珠洲市長橋']),
+      observations: [
+        ...makeArrivalReport(['珠洲市長橋']).observations!,
+        ...makeMissingReport([{ name: '輪島港' }]).observations!,
+      ],
+    } as never)
+    await settle()
+    const text = spokenTexts()[0]
+    expect(text).toContain('珠洲市長橋で到達を確認しました。')
+    expect(text).toContain('また、石川県能登、輪島港は欠測となっています。')
+    expect(text.indexOf('到達を確認')).toBeLessThan(text.indexOf('欠測'))
+  })
+
+  // 安全弁: 同じ欠測を続報で読み直さない
+  it('同じ欠測は続報で読み直さない', async () => {
+    const handle = setup()
+    handle(makeMissingReport([{ name: '輪島港' }]) as never)
+    await settle()
+    handle(makeMissingReport([{ name: '輪島港' }], 'tsunami-missing-2') as never)
+    await settle()
+    expect(spokenTexts().filter(t => t.includes('欠測'))).toHaveLength(1)
+  })
+
+  // 安全弁: 欠測の既読と到達確認の既読を混ぜない。混ぜると、欠測を読んだ観測点が
+  // 復帰して到達を確認できても「一度読んだ」と見なされて黙る
+  it('欠測を読んだ観測点は、復帰後の到達確認をきちんと読む', async () => {
+    const handle = setup()
+    handle(makeMissingReport([{ name: '輪島港' }]) as never)
+    await settle()
+    const before = spokenTexts().length
+    handle(makeArrivalReport(['輪島港'], 'tsunami-arr-recovered') as never)
+    await settle()
+    expect(spokenTexts().slice(before).join('')).toContain('輪島港で到達を確認しました。')
+  })
+
+  // 安全弁: 復帰したあと再び欠測になったら、新しい事実として読む
+  it('復帰後にもう一度欠測になったら読み直す', async () => {
+    const handle = setup()
+    handle(makeMissingReport([{ name: '輪島港' }]) as never)
+    await settle()
+    handle(makeArrivalReport(['輪島港'], 'tsunami-arr-recovered') as never)
+    await settle()
+    const before = spokenTexts().length
+    handle(makeMissingReport([{ name: '輪島港' }], 'tsunami-missing-again') as never)
+    await settle()
+    expect(spokenTexts().slice(before).join('')).toContain('欠測となっています。')
+  })
+})
+
+// 値を持つ欠測（電文が「これまでの最大波の高さ」を載せる形）を二重に読まないこと。
+// 波高更新の文と欠測の文が同じ観測点・同じ値を語ると、いま観測できているのかが伝わらない。
+describe('津波観測情報の読み上げ: 欠測と波高更新の切り分け', () => {
+  it('正: 値を持つ欠測は欠測の文だけで読む（「新たに観測しました」と重ねない）', async () => {
+    const handle = setup()
+    handle(makeMissingReport([{ name: '輪島港', value: 1.2 }]) as never)
+    await settle()
+    const text = spokenTexts()[0]
+    expect(text).toContain('これまでに石川県能登、輪島港で1.2メートルを観測したのち、欠測となっています。')
+    expect(text).not.toContain('を観測しました。')
+  })
+
+  it('対照: 欠測でない観測点は従来どおり「新たに…を観測しました」', async () => {
+    const handle = setup()
+    handle(makeObsReport([{ name: '輪島港', district: '石川県能登', code: '390', value: 1.2 }]) as never)
+    await settle()
+    expect(spokenTexts()[0]).toContain('新たに石川県能登、輪島港で1.2メートルを観測しました。')
+  })
+
+  it('安全弁: 欠測の観測点と普通の観測点が混ざっても、それぞれ 1 度だけ読む', async () => {
+    const handle = setup()
+    handle({
+      ...makeObsReport([{ name: '珠洲市長橋', district: '石川県能登', code: '390', value: 0.5 }]),
+      observations: [
+        ...makeObsReport([{ name: '珠洲市長橋', district: '石川県能登', code: '390', value: 0.5 }]).observations!,
+        ...makeMissingReport([{ name: '輪島港', value: 1.2 }]).observations!,
+      ],
+    } as never)
+    await settle()
+    const text = spokenTexts()[0]
+    expect(text.match(/珠洲市長橋/g)).toHaveLength(1)
+    expect(text.match(/輪島港/g)).toHaveLength(1)
+    expect(text).toContain('新たに石川県能登、珠洲市長橋で0.5メートルを観測しました。')
+    expect(text).toContain('また、これまでに石川県能登、輪島港で1.2メートルを観測したのち、欠測となっています。')
+  })
+})
+
+// リプレイ復元（窓の手前の全報を順に舐める）と、ライブ経路の記憶の対称性。
+// 復元が「欠測になった」だけを積んで「復帰した」を落とさないと、再生開始後の再欠測が黙る。
+describe('津波観測情報の読み上げ: リプレイ復元と欠測の記憶', () => {
+  const entry = (event: JMATsunami) => ({
+    payload: { kind: 'event' as const, event },
+    replayTime: new Date('2026-01-01T12:00:00Z'),
+  })
+
+  it('正: 窓の手前で欠測から復帰していれば、再生開始後の欠測を読む', async () => {
+    const d = setupFull()
+    // 手前の 2 報: 欠測 → 復帰（到達確認）
+    d.restorePreWindowTracking([
+      entry(makeMissingReport([{ name: '輪島港' }], 'pre-1')),
+      entry(makeArrivalReport(['輪島港'], 'pre-2')),
+    ] as never)
+    d.handleLiveEvent(makeMissingReport([{ name: '輪島港' }], 'live-1') as never)
+    await settle()
+    expect(spokenTexts().join('')).toContain('欠測となっています。')
+  })
+
+  it('対照: 窓の手前の時点で欠測のままなら、その欠測は読み直さない', async () => {
+    const d = setupFull()
+    d.restorePreWindowTracking([entry(makeMissingReport([{ name: '輪島港' }], 'pre-1'))] as never)
+    d.handleLiveEvent(makeMissingReport([{ name: '輪島港' }], 'live-1') as never)
+    await settle()
+    expect(spokenTexts().join('')).not.toContain('欠測')
+  })
+
+  it('安全弁: 手前で欠測だった観測点が復帰したら、到達確認は読む', async () => {
+    // 復元が欠測の観測点名を「到達確認を声にした」側へ入れていると、ここで黙る
+    const d = setupFull()
+    d.restorePreWindowTracking([entry(makeMissingReport([{ name: '輪島港' }], 'pre-1'))] as never)
+    d.handleLiveEvent(makeArrivalReport(['輪島港'], 'live-1') as never)
+    await settle()
+    expect(spokenTexts().join('')).toContain('輪島港で到達を確認しました。')
+  })
+})
+
+// 欠測のまま「これまでの最大波」の値だけが上がる続報（断続的な欠測）。
+// 名前だけで既読を判定すると、最初の欠測報のあとに届いたより深刻な値が一度も伝わらない。
+describe('津波観測情報の読み上げ: 欠測のまま値が上がる続報', () => {
+  it('正: 欠測が続いていても値が上がったら読み直す', async () => {
+    const handle = setup()
+    handle(makeMissingReport([{ name: '輪島港', value: 1.2 }]) as never)
+    await settle()
+    const before = spokenTexts().length
+    handle(makeMissingReport([{ name: '輪島港', value: 3.5 }], 'tsunami-missing-2') as never)
+    await settle()
+    expect(spokenTexts().slice(before).join('')).toContain('3.5メートルを観測したのち、欠測となっています。')
+  })
+
+  it('対照: 値が変わらない続報は読み直さない', async () => {
+    const handle = setup()
+    handle(makeMissingReport([{ name: '輪島港', value: 1.2 }]) as never)
+    await settle()
+    const before = spokenTexts().length
+    handle(makeMissingReport([{ name: '輪島港', value: 1.2 }], 'tsunami-missing-2') as never)
+    await settle()
+    expect(spokenTexts().slice(before).join('')).not.toContain('欠測')
+  })
+
+  it('安全弁: 値が下がった続報では読み直さない（気象庁が取り下げた値を強調しない）', async () => {
+    const handle = setup()
+    handle(makeMissingReport([{ name: '輪島港', value: 3.5 }]) as never)
+    await settle()
+    const before = spokenTexts().length
+    handle(makeMissingReport([{ name: '輪島港', value: 1.2 }], 'tsunami-missing-2') as never)
+    await settle()
+    expect(spokenTexts().slice(before).join('')).not.toContain('欠測')
+  })
+})
+
+// 「到達確認 → 欠測 → 復帰」の順で届いたとき、復帰の到達確認を読むこと。
+// 記憶の遷移はライブ経路とリプレイ復元で同じ規則を通す
+// （`forgetSpokenOnObservationStateChange`）。片方だけに書くと非対称が生まれる。
+describe('津波観測情報の読み上げ: 到達確認と欠測を行き来する観測点', () => {
+  it('正: 到達確認を読んだ後に欠測へ入り、復帰したらもう一度到達確認を読む', async () => {
+    const handle = setup()
+    handle(makeArrivalReport(['輪島港']) as never)
+    await settle()
+    handle(makeMissingReport([{ name: '輪島港' }], 'tsunami-missing') as never)
+    await settle()
+    const before = spokenTexts().length
+    handle(makeArrivalReport(['輪島港'], 'tsunami-arr-2') as never)
+    await settle()
+    expect(spokenTexts().slice(before).join('')).toContain('輪島港で到達を確認しました。')
+  })
+
+  it('対照: 欠測を挟まなければ到達確認は読み直さない', async () => {
+    const handle = setup()
+    handle(makeArrivalReport(['輪島港']) as never)
+    await settle()
+    const before = spokenTexts().length
+    handle(makeArrivalReport(['輪島港'], 'tsunami-arr-2') as never)
+    await settle()
+    expect(spokenTexts().slice(before).join('')).not.toContain('到達を確認しました')
+  })
+
+  it('安全弁: 復帰を読んだ後に再び欠測へ入ったら、その欠測も読む', async () => {
+    const handle = setup()
+    handle(makeArrivalReport(['輪島港']) as never)
+    await settle()
+    handle(makeMissingReport([{ name: '輪島港' }], 'tsunami-missing') as never)
+    await settle()
+    handle(makeArrivalReport(['輪島港'], 'tsunami-arr-2') as never)
+    await settle()
+    const before = spokenTexts().length
+    handle(makeMissingReport([{ name: '輪島港' }], 'tsunami-missing-2') as never)
+    await settle()
+    expect(spokenTexts().slice(before).join('')).toContain('欠測となっています。')
   })
 })

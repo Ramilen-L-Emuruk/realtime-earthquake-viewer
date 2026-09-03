@@ -19,6 +19,7 @@ import type {
   TsunamiObservation,
 } from '../types/earthquake'
 import { isValidLpgmClass } from '../utils/lpgm'
+import { parseTsunamiObservationCondition } from '../utils/tsunami'
 import { log } from '../utils/logger'
 import { arr, obj, parseNum, str } from './parseHelpers'
 
@@ -758,6 +759,13 @@ function parseTsunamiObservationsFromXml(observationEl: Element): import('../typ
       observations.push({
         name,
         height: !isNaN(heightVal) ? { value: heightVal, description: heightDesc } : undefined,
+        // 欠測・微弱・観測中・重要はここでしか判らない（数値の有無では見分けられない）。
+        // 併記されるため読み取りは `parseTsunamiObservationCondition` に任せる。
+        condition: parseTsunamiObservationCondition({
+          firstHeight: fhEl ? xmlText(xmlQ(fhEl, 'Condition')) : undefined,
+          maxHeight: mhEl ? xmlText(xmlQ(mhEl, 'Condition')) : undefined,
+          heightCondition: heightEl?.getAttribute('condition') ?? undefined,
+        }),
         arrivalTime: arrivalTime || undefined,
         initial: initial || undefined,
         districtCode,
@@ -878,9 +886,19 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
         if (isNaN(heightVal) && over) log.warn(`[tsunami] 「以上」の観測値だが波高が数値として読めません: ${name}`)
         observations.push({
           name,
+          // **`description` は数値だけで組む。** 電文の `height.condition`（観測点に現れるのは
+          // 「上昇中」）をここへ入れると、数値が出ているのに画面と読み上げが「上昇中」しか示さず
+          // 波高が消える。状態は下の `condition` が持つ。
           height: !isNaN(heightVal)
-            ? { value: heightVal, description: str(hObj.condition) || (over ? `${heightVal}m以上` : `${heightVal}m`), over: over || undefined }
+            ? { value: heightVal, description: over ? `${heightVal}m以上` : `${heightVal}m`, over: over || undefined }
             : undefined,
+          // DMDATA は電文の `Condition` を `condition` と `status`（欠測）に分けて配るので、
+          // 空白で繋いで XML と同じ読み取りへ渡す（理由は `parseTsunamiObservationCondition`）。
+          condition: parseTsunamiObservationCondition({
+            firstHeight: `${str(fh.condition)} ${str(fh.status)}`,
+            maxHeight: `${str(mh.condition)} ${str(mh.status)}`,
+            heightCondition: str(hObj.condition),
+          }),
           arrivalTime: str(fh.arrivalTime) || undefined,
           initial: str(fh.initial) || undefined,
           districtCode,
@@ -916,9 +934,19 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
         if (isNaN(heightVal) && over) log.warn(`[tsunami] 「以上」の観測値だが波高が数値として読めません: ${name}`)
         observations.push({
           name,
+          // **`description` は数値だけで組む。** 電文の `height.condition`（観測点に現れるのは
+          // 「上昇中」）をここへ入れると、数値が出ているのに画面と読み上げが「上昇中」しか示さず
+          // 波高が消える。状態は下の `condition` が持つ。
           height: !isNaN(heightVal)
-            ? { value: heightVal, description: str(hObj.condition) || (over ? `${heightVal}m以上` : `${heightVal}m`), over: over || undefined }
+            ? { value: heightVal, description: over ? `${heightVal}m以上` : `${heightVal}m`, over: over || undefined }
             : undefined,
+          // DMDATA は電文の `Condition` を `condition` と `status`（欠測）に分けて配るので、
+          // 空白で繋いで XML と同じ読み取りへ渡す（理由は `parseTsunamiObservationCondition`）。
+          condition: parseTsunamiObservationCondition({
+            firstHeight: `${str(fh.condition)} ${str(fh.status)}`,
+            maxHeight: `${str(mh.condition)} ${str(mh.status)}`,
+            heightCondition: str(hObj.condition),
+          }),
           arrivalTime: str(fh.arrivalTime) || undefined,
           initial: str(fh.initial) || undefined,
           districtCode,
