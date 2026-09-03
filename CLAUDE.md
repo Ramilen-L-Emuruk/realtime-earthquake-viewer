@@ -730,6 +730,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 生成データ（`public/data/*.json`）の取得タイムアウト値・失敗時の扱い（TTS 辞書のみ別値） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §6 |
 | 生成データの中身の検分（200 でも空・想定外の形なら失敗として扱う）を**取得の中**（`fetchJsonWithTimeout` の `validate`）で行うこと。取得後に呼び出し側で確かめると、その時点で成功として数え終わっているため「データの一部を取得できませんでした」に計上されず、`console` にしか残らない。**新しいローダーを足すときも同じ場所へ渡す** | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §6 |
 | 出典の書き方を README と仕様書で揃えないこと（**食い違うのは一次細分区域の呼び名だけ**。README「ライセンス」節は気象庁 予報区等 GIS データ側のレイヤー名「地震情報／細分区域」＝`build-subregions.mjs` が読む `AreaForecastLocalE`、仕様書はアプリが作る生成物「一次細分区域の境界」。同じものを別の観点で書いているので、片方に寄せない——配信元の表記を言い換えると出典表示として成り立たなくなる。「都道府県」「津波予報区」は両文書とも同じ語なので対象外） | [`docs/spec/data-sources-spec.md`](docs/spec/data-sources-spec.md) §1・§6（出典） |
+| 同じ電文を読む JSON 経路と XML 経路で読み取り結果を揃えること（対になっているのは地震・津波・長周期の 3 つ。**XML 経路が通るのは REST の個別電文取得だけ**＝起動時の初期履歴表示と「もっと見る」で、archive リプレイは XML 版が目録に載っていても JSON 版を採るためこちらには現れない。片方だけ直すと**同じ地震でも履歴で開いたかライブで受信したかで中身が変わる**・突き合わせは `dmdataParser.test.ts` の「JSON 経路と XML 経路の読み取り一致」describe が担うが、**フィールド単位で名指しして比べる形**で、両経路の結果を丸ごと突き合わせる検査は無い（＝そのフィールドの `it()` を書かないと落ちない。今回直した欠落もそれで長く見つからなかった）・**ただし意図的な差もある**（長周期の観測点の `pref` と `name` は電文構造自体が違い、揃えるとどちらかの情報を捨てることになる）） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §4・[`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §6 |
 
 ### 画面構成と設定
 

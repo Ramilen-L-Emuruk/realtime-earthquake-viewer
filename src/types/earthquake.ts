@@ -46,6 +46,16 @@ export type DomesticTsunami =
 export interface JMAQuake {
   kind: 'quake'
   id: string
+  /**
+   * 電文が配信する地震の識別子（DMDATA は 14 桁タイムスタンプ）。P2PQuake 経路では配信されない。
+   *
+   * **同一性判定には使わない。** 統合・選択・通知は `eventKey`、または `id` 文字列から抜く
+   * `extractQuakeEventId`（`utils/quakeMerge.ts`）で行う。このフィールドを直接読むのは
+   * `TsunamiTab` の原因地震リンクと `testScenarioReplay` の ID 再採番の 2 箇所だけ。
+   *
+   * **全経路・全種別（取消電文を含む）で埋めること。** 欠けると上の 2 箇所がその報だけ
+   * 取りこぼす（XML 経路と取消電文で落ちていたのを 2026-09-04 に揃えた）。
+   */
   eventId?: string
   time: string
   cancelled?: boolean
