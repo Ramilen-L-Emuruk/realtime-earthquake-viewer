@@ -7,7 +7,7 @@ import type { ReplayEntry } from '../types/replay'
 import { getIntensityLabel, getIntensityLabelWithOrAbove } from '../utils/intensity'
 import { formatMagnitude, hasMagnitude } from '../utils/formatters'
 import {
-  eewMaxScaleInfo, isForecastScaleHigher, eewMaxLpgmClass, eewNoForecastReason, computeSingleEEWLevel,
+  eewMaxScaleInfo, isForecastScaleHigher, eewMaxLpgmClass, eewNoForecastReason, computeSingleEEWLevel, canPresentLpgmClass,
   selectEEWSoundType, eewKindLabel, eewPhase2ScaleStabilityMs,
   EEW_PHASE2_STABILITY_MAX_WAIT_MS, EEW_PHASE2_LPGM_STABILITY_MS, type EewMaxScaleInfo,
 } from '../utils/eew'
@@ -24,7 +24,7 @@ import { extractQuakeEventIdFromId, quakeEventKey, sameQuakeEntry } from '../uti
 
 // EEW 読み上げ第 2 フェーズ（予想値）のタイミング。
 // 初報で予想震度が付いておらず、かつ**付かない理由がはっきりしない**場合に待つ上限。
-// 仮定震源要素（単独点処理）・深発地震はその報に予想震度が載らないと判っているので待たない
+// 仮定震源要素・深発地震はその報に予想震度が載らないと判っているので待たない
 // （判定は eewNoForecastReason）。ここで待つのは「値が遅れて付くかもしれない」場合だけなので、
 // 上限は短く取る。長く取ると、結局は理由不明の「予想震度なし」を読むまで無言になる。
 const EEW_PHASE2_MAX_WAIT_MS = 3000
@@ -1782,6 +1782,15 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // まま終わってしまう（1567行目以降に到達しないため）。階級が正式に確定すれば
             // `confirmLpgm` 経由で改めてここへ呼ばれるので、ここで黙っても取りこぼしにはならない。
             if (scaleUnchanged && confirmedLpgm === 0) return null
+            // **震度を伝えられない報で階級だけ確定するのは電文の異常**（最大予測震度は必須要素・
+            // 長周期地震動階級は任意なので、この組み合わせは作れない。判定は `canPresentLpgmClass`）。
+            // 黙って落とさず記録に残す。この後の扱いは経路で分かれる——`eewLpgmOnlyText` 単体の
+            // 経路は読むものが無くなるので降り、`eewIntensityText` の経路は震度の文
+            // （「予想震度なし」）が残るので続行し、同じ述語で階級句だけが落ちる。
+            if (confirmedLpgm > 0 && !canPresentLpgmClass(confirmedScale.scale, confirmedLpgm)) {
+              log.warn('[eew] 想定外: 震度を伝えられない報で階級だけ確定した', key, confirmedLpgm)
+              if (scaleUnchanged) return null
+            }
             const text = scaleUnchanged
               ? eewLpgmOnlyText(confirmedLpgm)
               : eewIntensityText(confirmedScale, confirmedLpgm, latest, announceUpgrade)
@@ -1795,8 +1804,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             }
             // 既読の更新は発話の直前だけで行う。予約した時点で更新すると、取消で捨てられた発話や
             // 割り込みで消えた発話まで既読になり、一度も声に出していない値が基準になってしまう。
+            //
+            // **階級は「実際に声に含めた分」だけ記録する。** 上のガードに掛かった報（震度を
+            // 伝えられないのに階級だけ確定した＝電文の異常）では `eewIntensityText` が階級句を
+            // 落とすため、`confirmedLpgm` をそのまま入れると言っていない値が既読になる。
+            const spokenLpgm = canPresentLpgmClass(confirmedScale.scale, confirmedLpgm) ? confirmedLpgm : 0
             spokenEEWScalesRef.current.set(key, confirmedScale)
-            spokenEEWLpgmClassesRef.current.set(key, confirmedLpgm)
+            spokenEEWLpgmClassesRef.current.set(key, spokenLpgm)
             spokenEEWLevelsRef.current.set(key, level)
             eewPhase2DoneRef.current.add(key)
             return {

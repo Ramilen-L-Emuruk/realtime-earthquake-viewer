@@ -399,7 +399,8 @@ function parseEEW(raw: Record<string, unknown>): EEWAlert | null {
       // 半径 0 のまま描画され続けるため、欠落は必ず警告する。
       originTime: hasEarthquake ? requiredStr(earthquake.originTime, context, 'earthquake.originTime') : '',
       arrivalTime: hasEarthquake ? requiredStr(earthquake.arrivalTime, context, 'earthquake.arrivalTime') : '',
-      // '仮定震源要素'（単独観測点処理）の判別に使う。eewMaxScale/eewMaxLpgmClass が参照する。
+      // '仮定震源要素' の判別に使う（`eewNoForecastReason`・予報円の抑止・カードの M/深さ非表示など。
+      // 参照箇所の一覧は docs/spec/eew-spec.md §5）。
       condition: str(earthquake.condition),
       hypocenter: parseHypocenter(earthquake.hypocenter, context),
     },
