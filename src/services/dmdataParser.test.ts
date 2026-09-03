@@ -1852,8 +1852,10 @@ describe('潮位観測点の観測状態（Condition）', () => {
     const t = parseTsunamiFromXml(VTSE51_MISSING_XML)
     const miyako = byName(t, '宮古')
     // 電文は欠測と同時に「これまでの最大波の高さ」を載せる。値を捨てると、
-    // 観測できていた事実（ここでは大津波警報の基準超え）が画面から消える
-    expect(miyako.height).toEqual({ value: 3.2, description: '３．２ｍ以上' })
+    // 観測できていた事実（ここでは大津波警報の基準超え）が画面から消える。
+    // description の「以上」は観測可能範囲の超過を表すため over も立つ
+    // （→ docs/spec/tsunami-spec.md §6「観測波高の「以上」」）
+    expect(miyako.height).toEqual({ value: 3.2, description: '３．２ｍ以上', over: true })
     expect(miyako.condition).toEqual({ important: true, maxHeightMissing: true })
   })
 
