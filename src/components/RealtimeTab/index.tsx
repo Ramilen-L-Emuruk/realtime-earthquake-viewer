@@ -9,7 +9,7 @@ import { usePageVisible } from '../../hooks/usePageVisible'
 import { formatDateTime, formatTime } from '../../utils/formatters'
 import { getIntensityColor, getIntensityLabel, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
 import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
-import { eewAreas, eewMaxScaleInfo, eewMaxLpgmClass, eewSerial, computeSingleEEWLevel } from '../../utils/eew'
+import { eewAreas, eewMaxScaleInfo, eewMaxLpgmClass, eewSerial, computeSingleEEWLevel, eewNoForecastReason, canPresentLpgmClass } from '../../utils/eew'
 import { kyoshinIndexToJma, kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
 import { readableTextColor } from '../../utils/contrast'
 import { gateNotes, gateRows, gateShortfall } from '../../utils/detectionGates'
@@ -50,6 +50,31 @@ interface Props {
   onDeactivateLpgm?: () => void
 }
 
+/**
+ * 予想震度が付いていない EEW のバナー。理由の判定は `eewNoForecastReason` に委ねる
+ * （読み上げの「〜のため、予想震度なし。」と同じ判定を使う。ここで深さや `condition` を
+ * 直接見ると、閾値を動かしたときに画面と音声が食い違う）。
+ *
+ * 理由が判らないとき（`unknown`）は何も添えない。値が遅れて付く可能性が残る状態で、
+ * 気象庁が「発表しない」と決めたわけではないため。
+ */
+function NoForecastBanner({ eew }: { eew: EEWAlert }) {
+  const reason = eewNoForecastReason(eew)
+  return (
+    <div
+      className="w-full rounded-lg py-2 px-4 flex flex-col items-center justify-center gap-1 roomy:py-3.5"
+      style={{ backgroundColor: 'rgba(42,42,42,0.8)', border: '2px solid #4b5563' }}
+    >
+      {reason !== 'unknown' && (
+        <span className="text-xs font-medium" style={{ color: '#9ca3af' }}>
+          {reason === 'assumed' ? '単独点処理のため' : '深発地震のため'}
+        </span>
+      )}
+      <span className="text-xl font-extrabold" style={{ color: '#e5e7eb' }}>予想震度なし</span>
+    </div>
+  )
+}
+
 function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
   eew: EEWAlert
   activeLpgmEventId?: string | null
@@ -64,6 +89,9 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
   const areas = eewAreas(eew)
   const serial = eewSerial(eew)
   const { hypocenter } = eew.earthquake
+  // 震源要素が推定できず、PLUM 法による震度予測だけが有効な状態。震源・規模・深さは固定の仮定値
+  // （観測点直下 10km・M1.0）なので、数値は伏せ、地名には未確定である旨を添える。
+  const isAssumed = eew.earthquake.condition === '仮定震源要素'
   const prefAreas = areas.filter(a => a.pref)
 
   // 気象庁が別の電文として発表する区分なので、その名称に合わせて名前も分ける（予報級＝VXSE45
@@ -143,22 +171,14 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
             </span>
           </div>
         ) : (
-          <div
-            className="w-full rounded-lg py-2 px-4 flex flex-col items-center justify-center gap-1 roomy:py-3.5"
-            style={{ backgroundColor: 'rgba(42,42,42,0.8)', border: '2px solid #4b5563' }}
-          >
-            {eew.earthquake.condition === '仮定震源要素' ? (
-              <span className="text-xs font-medium" style={{ color: '#9ca3af' }}>単独点処理のため</span>
-            ) : eew.earthquake.hypocenter.depth > 150 ? (
-              <span className="text-xs font-medium" style={{ color: '#9ca3af' }}>深発地震のため</span>
-            ) : null}
-            <span className="text-xl font-extrabold" style={{ color: '#e5e7eb' }}>予想震度なし</span>
-          </div>
+          <NoForecastBanner eew={eew} />
         )}
 
         {/* 推定最大長周期地震動階級（クリックで地図表示トグル）。地域別 lgIntTo 優先のため
-            電文全体の forecastMaxLpgmClass が無くても地域別データがあれば表示する（eewMaxLpgmClass参照） */}
-        {lpgmClass >= 1 && (
+            電文全体の forecastMaxLpgmClass が無くても地域別データがあれば表示する（eewMaxLpgmClass参照）。
+            **震度を出せない報では階級も出さない**（判定は `canPresentLpgmClass`・読み上げと同じ述語）。
+            出すと「予想震度なし」バナーの真下に階級の断言が並ぶ。 */}
+        {canPresentLpgmClass(maxScale, lpgmClass) && (
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onToggleLpgm?.(eew.issue?.eventId ?? eew.id) }}
@@ -188,13 +208,19 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
           {formatDateTime(eew.earthquake.originTime)}ごろ
         </div>
 
-        {/* 震源名 */}
+        {/* 震源名。仮定震源要素のときの地名は「最初に揺れを捉えた観測点の所在地」であって
+            震源の推定位置ではないため、断定して見えないよう注記を添える（M・深さを伏せるのと同じ理由）。 */}
         <div className="font-bold text-white leading-tight text-[1.25rem] roomy:text-[1.625rem]">
           {hypocenter.name || '震源調査中'}
+          {isAssumed && hypocenter.name && (
+            <span className="ml-1.5 font-medium text-[0.8125rem] roomy:text-[1rem]" style={{ color: '#9ca3af' }}>
+              （震源未確定）
+            </span>
+          )}
         </div>
 
-        {/* マグニチュード・深さ（2カラムグリッド）：仮定震源要素（単独点処理）時は仮定値のため非表示 */}
-        {hypocenter.name && eew.earthquake.condition !== '仮定震源要素' && (
+        {/* マグニチュード・深さ（2カラムグリッド）：仮定震源要素のときは固定の仮定値のため非表示 */}
+        {hypocenter.name && !isAssumed && (
           <div className="grid grid-cols-2 gap-2">
             <div
               className="flex flex-col gap-0.5 rounded-lg p-2 roomy:gap-1 roomy:p-2.5"

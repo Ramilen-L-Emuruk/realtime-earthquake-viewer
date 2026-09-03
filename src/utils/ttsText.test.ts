@@ -150,7 +150,16 @@ describe('eewIntensityToText: 長周期地震動階級の読み上げ', () => {
 
   function makeEEW(
     forecastMaxLpgmClass?: LpgmClass,
-    over: { condition?: EEWAlert['earthquake']['condition']; areas?: EEWAlert['areas']; depth?: number } = {},
+    over: {
+      condition?: EEWAlert['earthquake']['condition']; areas?: EEWAlert['areas']; depth?: number
+      /**
+       * 既定では震度を持たせない（「予想震度なし」側の経路を確かめるテストが多いため）。
+       * **階級句を読ませたいテストでは必ず渡すこと。** 気象庁の電文では最大予測震度が必須要素で
+       * 階級は任意なので、「震度なし・階級あり」は成立せず、`eewIntensityText` は震度を伝えられない
+       * ときに階級句を落とす。
+       */
+      forecastMaxScale?: IntensityScale
+    } = {},
   ): EEWAlert {
     return {
       kind: 'eew',
@@ -165,6 +174,7 @@ describe('eewIntensityToText: 長周期地震動階級の読み上げ', () => {
       },
       severity: 'Warning',
       cancelled: false,
+      forecastMaxScale: over.forecastMaxScale,
       forecastMaxLpgmClass,
       issue: { eventId: 'e1', serial: '1', time: '2026-01-01T12:00:00Z' },
       areas: over.areas ?? [],
@@ -172,7 +182,16 @@ describe('eewIntensityToText: 長周期地震動階級の読み上げ', () => {
   }
 
   it('階級 1〜4 は読み上げる', () => {
-    expect(eewIntensityToText(makeEEW(4))).toContain('予想最大階級4。')
+    expect(eewIntensityToText(makeEEW(4, { forecastMaxScale: 40 }))).toContain('予想最大階級4。')
+  })
+
+  // 安全弁: 震度を伝えられない報では階級句を落とす。気象庁は最大予測震度を必須要素として出し、
+  // 階級のほうを任意にしているため「震度なし・階級あり」の電文は作れない。そのまま読むと
+  // 「予想震度なし。予想最大階級3。」という矛盾した発話になる。
+  it('震度を伝えられない報では階級を読み上げない', () => {
+    const text = eewIntensityToText(makeEEW(3, { depth: 400 }))
+    expect(text).toContain('深発地震のため、予想震度なし。')
+    expect(text).not.toContain('予想最大階級')
   })
 
   it('階級が無ければ読み上げない', () => {

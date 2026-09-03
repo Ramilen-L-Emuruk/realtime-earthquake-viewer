@@ -48,7 +48,7 @@ const DMDATA_INTENSITY_OVER = 'over'
  * EEW の予想震度の範囲（`{ from, to }`）を、階級 1 つと「以上」フラグに畳む。
  *
  * `to: "over"` は上限を定めない表現（例: `from: "4", to: "over"` = 「震度4以上」）。
- * これを震度7と読むと、単独観測点処理の初報のように下限しか決まっていない報が
+ * これを震度7と読むと、仮定震源要素の初報のように下限しか決まっていない報が
  * 最大震度7として塗られ・読み上げられる。上限には下限側の値を採り、「以上」は
  * フラグで持ち越して表示・読み上げで語を補う（P2PQuake の `scaleTo: 99` と同じ扱い）。
  */
@@ -158,8 +158,11 @@ export function parseEEW(headType: string, data: Record<string, unknown>): EEWAl
       condition: str(earthquake.condition),
       hypocenter: {
         name: str(hypo.name),
-        latitude: isCanceled ? 0 : lat,
-        longitude: isCanceled ? 0 : lng,
+        // 取消電文は震源要素を持たない。**0 ではなく -200 を入れる**——0 はギニア湾沖の有効な座標として
+        // `hasKnownEpicenter` を通ってしまう。他の経路（この下の VXSE51・震度速報、p2pquake の
+        // `COORD_UNKNOWN`）と同じ「位置不明」センチネルに揃え、1 つの述語で弾けるようにする。
+        latitude: isCanceled ? -200 : lat,
+        longitude: isCanceled ? -200 : lng,
         depth,
         magnitude: parseNum(obj(earthquake.magnitude).value),
       },

@@ -20,6 +20,7 @@ import { RealtimeTab } from './index'
 import { initGates } from '../../utils/kyoshinDetector'
 import type { DetectionEvent } from '../../utils/kyoshinDetector'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
+import type { EEWAlert } from '../../types/earthquake'
 
 afterEach(cleanup)
 // `document.visibilityState` を差し替えるテストがあるため、モックはテストごとに戻す
@@ -367,5 +368,80 @@ describe('検知カードは判定の根拠を出す', () => {
     expect(screen.queryByText(/緊急地震速報の発表中/)).toBeNull()
     act(() => { screen.getByText('判定の内訳').click() })
     expect(screen.getByText(/緊急地震速報の発表中/)).toBeTruthy()
+  })
+})
+
+// EEW カードの「仮定震源要素の見せ方」。述語そのもの（`canPresentLpgmClass`）は eew.test.ts が
+// 固定しているが、カードの `maxScale` / `lpgmClass` へ正しく配線されているかはここでしか確かめられない。
+function fakeEEW(over: Partial<EEWAlert> = {}): EEWAlert {
+  return {
+    kind: 'eew',
+    id: 'test-eew',
+    time: '2026-01-01T12:00:00Z',
+    test: false,
+    earthquake: {
+      originTime: '2026-01-01T12:00:00Z',
+      arrivalTime: '2026-01-01T12:00:20Z',
+      condition: '以上',
+      hypocenter: { name: '日向灘', latitude: 32, longitude: 132, depth: 30, magnitude: 6.5 },
+    },
+    severity: 'Forecast',
+    cancelled: false,
+    issue: { eventId: 'e1', serial: '1', time: '2026-01-01T12:00:00Z' },
+    ...over,
+  }
+}
+
+/** 気象庁が仮定震源要素に入れる固定値（観測点直下・深さ 10km・M1.0）で作る。 */
+function assumedEEW(over: Partial<EEWAlert> = {}): EEWAlert {
+  return fakeEEW({
+    earthquake: {
+      originTime: '2026-01-01T12:00:00Z',
+      arrivalTime: '2026-01-01T12:00:20Z',
+      condition: '仮定震源要素',
+      hypocenter: { name: '日向灘', latitude: 32, longitude: 132, depth: 10, magnitude: 1 },
+    },
+    ...over,
+  })
+}
+
+function renderEEW(eew: EEWAlert) {
+  return render(createElement(RealtimeTab, {
+    eews: [eew],
+    swaveArrival: null,
+    kyoshinV2Detections: [],
+    kyoshinDetectedPoints: [],
+    visible: true,
+  }))
+}
+
+describe('EEW カードの仮定震源要素の見せ方', () => {
+  // 正: 地名は最初に揺れを検知した観測点の所在地なので、断定して見えないよう注記を添える。
+  // M・深さは固定の仮定値なので伏せる（従来からの扱い）。
+  it('仮定震源要素では震源名に注記を添え、M・深さを出さない', () => {
+    renderEEW(assumedEEW())
+    expect(screen.getByText('（震源未確定）')).toBeTruthy()
+    expect(screen.queryByText('マグニチュード')).toBeNull()
+  })
+
+  // 対照: 震源が確定している報では注記を出さない（出すと確定値まで疑わせる）。
+  it('確定震源では注記を出さず M・深さを見せる', () => {
+    renderEEW(fakeEEW({ forecastMaxScale: 40 }))
+    expect(screen.queryByText('（震源未確定）')).toBeNull()
+    expect(screen.getByText('マグニチュード')).toBeTruthy()
+  })
+
+  // 正: 震度を出せない報では階級バッジも出さない（`canPresentLpgmClass` の配線）。
+  // 出すと「予想震度なし」の真下に階級の断言が並ぶ。
+  it('予想震度が無い報では長周期階級バッジを出さない', () => {
+    renderEEW(assumedEEW({ forecastMaxLpgmClass: 3 }))
+    expect(screen.getByText('予想震度なし')).toBeTruthy()
+    expect(screen.queryByText('推定長周期地震動')).toBeNull()
+  })
+
+  // 安全弁: 震度が出る報では従来どおり階級バッジを出す（ガードが広すぎないことの確認）。
+  it('予想震度がある報では長周期階級バッジを出す', () => {
+    renderEEW(fakeEEW({ forecastMaxScale: 40, forecastMaxLpgmClass: 3 }))
+    expect(screen.getByText('推定長周期地震動')).toBeTruthy()
   })
 })
