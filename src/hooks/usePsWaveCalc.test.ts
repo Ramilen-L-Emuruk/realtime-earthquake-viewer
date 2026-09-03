@@ -62,7 +62,7 @@ describe('computeEewCircle', () => {
     expect(computeEewCircle(eew, NOW)).toBeNull()
   })
 
-  it('震源名が無い（単独観測点処理）EEW は null', () => {
+  it('震源名が無い仮定震源要素の EEW は null', () => {
     const eew = makeEEW({
       earthquake: {
         originTime: '2026-01-01T12:00:00Z',

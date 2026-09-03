@@ -4,6 +4,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { parseEarthquake, parseEarthquakeFromXml, parseEEW, parseTsunami, parseTsunamiFromXml, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml } from './dmdataParser'
 import { log } from '../utils/logger'
+import { hasKnownEpicenter } from '../utils/geo'
 
 // 震度速報（VXSE51）。震源が未確定の段階で出るため Earthquake 要素を持たず、
 // 震度は Pref > Area（一次細分区域）までしか無い。
@@ -522,12 +523,18 @@ describe('parseEEW: JSON 電文の severity・cancel・LPGM', () => {
     expect(eew!.severity).toBe('Warning')
   })
 
-  it('isCanceled=true は cancelled 電文（座標 0・areas 空・VXSE43 は severity=Warning 保持）', () => {
+  // **座標は -200（位置不明センチネル）で埋める。0 にしてはならない** ——0 はギニア湾沖の有効な
+  // 座標として `hasKnownEpicenter` を通り、地図に震源×印を立てうる。いまは取消済みの EEW が
+  // `cancelledAt` で先に除かれるため表に出ないが、二重防御の奥が壊れた状態を残さない。
+  // 他の経路（VXSE51・震度速報・p2pquake の COORD_UNKNOWN）と同じ値に揃えてある。
+  it('isCanceled=true は cancelled 電文（座標は位置不明センチネル・areas 空・VXSE43 は severity=Warning 保持）', () => {
     const cancelJson = { ...baseEEWJson, body: { ...baseEEWJson.body, isCanceled: true } }
     const eew = parseEEW('VXSE43', cancelJson)
     expect(eew).not.toBeNull()
     expect(eew!.cancelled).toBe(true)
-    expect(eew!.earthquake.hypocenter.latitude).toBe(0)
+    expect(eew!.earthquake.hypocenter.latitude).toBe(-200)
+    expect(eew!.earthquake.hypocenter.longitude).toBe(-200)
+    expect(hasKnownEpicenter(eew!.earthquake.hypocenter.latitude, eew!.earthquake.hypocenter.longitude)).toBe(false)
     expect(eew!.areas).toEqual([])
     expect(eew!.severity).toBe('Warning')
     // 座標欠落でも cancelled=true なら null を返さない
@@ -554,7 +561,7 @@ describe('parseEEW: JSON 電文の severity・cancel・LPGM', () => {
     expect(parseEEW('VXSE45', outOfRange)!.forecastMaxScale).toBeUndefined()
   })
 
-  // to='over' は「上限を定めない」。震度7と読むと、下限しか決まっていない報（単独観測点処理の
+  // to='over' は「上限を定めない」。震度7と読むと、下限しか決まっていない報（仮定震源要素の
   // 初報など）が最大震度7として塗られ・読み上げられる。2024/1/1 16:18 の余震の初報が
   // 実際にこの形（石川県能登 from='4' / to='over'）で、震度7の警戒色が能登一帯に出ていた。
   describe("予想震度の to='over'（上限なし）", () => {

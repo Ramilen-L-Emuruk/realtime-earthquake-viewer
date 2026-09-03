@@ -721,13 +721,14 @@ export function App() {
   )
   // cancelledAt 除外済みのアクティブ EEW が1件以上あるか（S波カウントダウン等が参照する）
   const hasActiveEEW = activeEEWsNoCancelled.size > 0
-  // 強震モニタ検知エンジン（useKyoshinDetectorV2）の EEW 連動緩和専用。震源要素が確定した（単独点処理=
-  // 仮定震源要素でない）EEW のみを見る。severity（Warning/Forecast）は推定震度の大小を示す軸に過ぎず、
-  // 予報級でも震度3〜4相当は普通にありうるため使わない。condition==='仮定震源要素' は 1 観測点のみの
-  // データで震源を仮決めした速報で、震源・マグニチュード・推定震度の誤差が大きい（RealtimeTab・ttsText
-  // が「単独点処理のため」として推定震度・マグニチュード等を非表示にするのと同じ判断基準）。
-  // hasActiveEEW をそのまま使うと単独点処理由来の速報1件だけで全国規模の確定緩和が発動し、単点ノイズ
+  // 強震モニタ検知エンジン（useKyoshinDetectorV2）の EEW 連動緩和専用。**震源要素が確定した EEW だけ**を
+  // 見る。severity（Warning/Forecast）は推定震度の大小を示す軸に過ぎず、予報級でも震度3〜4相当は
+  // 普通にありうるため使わない。`condition === '仮定震源要素'` は震源要素そのものを推定できず、
+  // 観測点直下・深さ 10km・M1.0 という固定の仮定値が入っている状態で、**その震源に基づく緩和は
+  // 根拠を持たない**（RealtimeTab・shareCardContent が M・深さを隠すのと同じ判断基準）。
+  // hasActiveEEW をそのまま使うと仮定震源要素の速報 1 件だけで全国規模の確定緩和が発動し、単点ノイズ
   // 由来の誤 confirmed を EEW 経由で再導入しかねないため区別する。
+  // **観測点の数で分けているのではない**——仮定震源要素の定義に観測点数は含まれない（eew-spec.md §5）。
   const hasActiveNonAssumedEEW = useMemo(
     () => [...activeEEWsNoCancelled.values()].some((eew) => eew.earthquake.condition !== '仮定震源要素'),
     [activeEEWsNoCancelled],

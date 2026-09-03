@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { crossOpacity, EEW_BLINK, buildEpicenterPoints } from './EewEpicentersGL'
+import { crossOpacity, EEW_BLINK, buildEpicenterPoints, buildPopupHtml } from './EewEpicentersGL'
 import { alphaPair, blinkPhaseAt, BLINK_PERIOD_MS } from './gl/depthPointLayer'
 import type { EewEpicenter } from '../../hooks/useEewLayerData'
 
-// 仮定震源要素（単独観測点処理）の×印の見え方は、2 つの値の積で決まる。
+// 仮定震源要素（震源未確定）の×印の見え方は、2 つの値の積で決まる。
 //   1. 点ごとの不透明度 … crossOpacity
 //   2. 点滅の明側・暗側 … EEW_BLINK
 // この 2 つは乗算されるため、片方だけを動かすと「点滅の谷で×印が事実上消える」状態へ静かに
@@ -142,5 +142,50 @@ describe('buildEpicenterPoints', () => {
     const { points } = buildEpicenterPoints([epicenter()], 2, true)
     expect(points[1].sizePx).toBe(64)
     expect(points[0].sizePx).toBe(24)
+  })
+})
+
+// 震源ポップアップの文言。**仮定震源要素では地名まで仮の値**で、電文の震央地名は「PLUM 法で
+// 最初にトリガーした観測点の所在地」であって震源の推定位置ではない（docs/spec/eew-spec.md §5）。
+// カード側の「（震源未確定）」だけでは「この地名がおおよその震源」と読めるため、行数に余裕のある
+// ポップアップでは但し書きまで出す。
+const makeEp = (over: Partial<EewEpicenter> = {}): EewEpicenter => ({
+  id: 'e1',
+  position: [32.0, 132.0],
+  isAssumed: false,
+  name: '日向灘',
+  magnitude: 6.5,
+  depth: 30,
+  serial: '1',
+  severity: 'Forecast',
+  maxScale: 40,
+  maxScaleOrAbove: false,
+  isFinal: false,
+  ...over,
+})
+
+describe('EEW 震源ポップアップの文言', () => {
+  // 正: 仮定震源要素では、震源が未確定であることと、地名が観測点の位置であることの両方を書く。
+  it('仮定震源要素では震源未確定と地名の但し書きを出し、M・深さを伏せる', () => {
+    const html = buildPopupHtml(makeEp({ isAssumed: true }))
+    expect(html).toContain('仮定震源要素（震源未確定）')
+    expect(html).toContain('地名は最初に揺れを検知した観測点の位置です')
+    expect(html).toContain('震源調査中')
+    expect(html).not.toContain('6.5')
+  })
+
+  // 対照: 確定震源では但し書きを出さない（出すと確定した震源まで疑わせる）。
+  it('確定震源では但し書きを出さず M・深さを見せる', () => {
+    const html = buildPopupHtml(makeEp())
+    expect(html).not.toContain('震源未確定')
+    expect(html).not.toContain('観測点の位置')
+    expect(html).toContain('深さ')
+  })
+
+  // 安全弁: 震源名は電文由来の文字列なのでエスケープを通す（但し書きの追加で経路を変えていない）。
+  it('震源名はエスケープされる', () => {
+    const html = buildPopupHtml(makeEp({ name: '<script>x</script>' }))
+    expect(html).not.toContain('<script>')
+    expect(html).toContain('&lt;script&gt;')
   })
 })
