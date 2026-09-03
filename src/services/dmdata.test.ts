@@ -289,6 +289,67 @@ describe('fetchDmdataGdEarthquakes', () => {
 // 通信に載せられない文字（日本語入力の変換途中の値など）を含むキーが渡ったときの契約。
 // 呼び出し側（useEarthquakes）が通信前に弾くのが本筋だが、そこが漏れても
 // 「補助情報の取得は null / 空配列」「主系の取得は理由の分かる例外」という約束を守る。
+// 個別電文の取得で落ちた分を記録する。
+//
+// 取得できなかった電文は履歴からそのまま消え、**件数が減ったことにも気づけない**——
+// `cutoffTime` は取得できた分だけで決まるため、欠けたまま「揃った履歴」に見える。
+describe('個別電文の取得に失敗したときの記録', () => {
+  const KEY = 'valid-key'
+  const LIST_ITEM = { id: 'x1', url: 'https://data.api.dmdata.jp/v1/x1', head: { type: 'VXSE53' } }
+
+  /**
+   * 電文一覧は成功させ、個別電文の取得だけを `onTelegram` に委ねる fetch。
+   * 一覧（`/v2/telegram`）と本体（`data.api.dmdata.jp`）で応答を分ける。
+   */
+  function stubTelegramFetch(onTelegram: () => Promise<Response>) {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('data.api.dmdata.jp')) return onTelegram()
+      // VXSE53 の一覧にだけ 1 件入れる（他の種別は空でよい）
+      const items = url.includes('type=VXSE53') ? [LIST_ITEM] : []
+      return { ok: true, json: async () => ({ items }) } as unknown as Response
+    }))
+  }
+  const warnings = () => vi.mocked(log.warn).mock.calls.map(c => c.join(' '))
+
+  // 正: HTTP エラーで落ちた電文を記録する
+  it('HTTP エラーで取得できなかった電文を記録する', async () => {
+    stubTelegramFetch(async () => ({ ok: false, status: 404 }) as unknown as Response)
+
+    await fetchDmdataEarthquakes(KEY, 10)
+
+    expect(warnings().filter(w => w.includes('電文を取得できませんでした'))).toHaveLength(1)
+    expect(warnings().find(w => w.includes('電文を取得できませんでした'))).toContain('404')
+  })
+
+  // 正: 例外（ネットワーク断・DNS 失敗）で落ちた件数を記録する。
+  // `Promise.allSettled` の `fulfilled` だけを残す形は、これを件数ごと消してしまう
+  it('例外で終わった電文の件数を記録する', async () => {
+    stubTelegramFetch(async () => { throw new Error('network down') })
+
+    await fetchDmdataEarthquakes(KEY, 10)
+
+    const hit = warnings().filter(w => w.includes('例外で終わりました'))
+    expect(hit).toHaveLength(1)
+    expect(hit[0]).toContain('network down')
+  })
+
+  // 対照: すべて取得できたときは何も記録しない。平常運転でログが埋まらないことの歯止め
+  it('すべて取得できれば記録しない', async () => {
+    stubTelegramFetch(async () => ({
+      ok: true,
+      // **中身がパースできる必要はない。** このファイルは node 環境で動くため `DOMParser` が
+      // 無く、電文の解釈は必ず失敗する。見たいのは「取得の層」の記録だけなので、
+      // 判定はその 2 つの文言に絞っている（解釈の失敗は別の文言で出る）
+      text: async () => '<Report/>',
+    }) as unknown as Response)
+
+    await fetchDmdataEarthquakes(KEY, 10)
+
+    expect(warnings().filter(w => w.includes('電文を取得できませんでした'))).toHaveLength(0)
+    expect(warnings().filter(w => w.includes('例外で終わりました'))).toHaveLength(0)
+  })
+})
+
 describe('APIキーが不正なときの取得の振る舞い', () => {
   const INVALID_KEY = 'abc123あ'
 

@@ -582,7 +582,12 @@ async function fetchOneTelegram(
   const res = await fetch(url, {
     headers: { Authorization: authHeader(apiKey) },
   })
-  if (!res.ok) return null
+  // 取得できなかった電文は履歴からそのまま消える。**件数が減ったことにも気づけない**——
+  // `cutoffTime` は取得できた分だけで決まるため、欠けたまま「揃った履歴」に見える。
+  if (!res.ok) {
+    log.warn(`[dmdata] ${headType} の電文を取得できませんでした（HTTP ${res.status}）`)
+    return null
+  }
   const xml = await res.text()
   if (headType === 'VXSE51' || headType === 'VXSE52' || headType === 'VXSE53' || headType === 'VXSE61') {
     return parseEarthquakeFromXml(headType, xml)
@@ -593,7 +598,24 @@ async function fetchOneTelegram(
   if (headType === 'VXSE62') {
     return parseLpgmFromXml(xml)
   }
+  // 呼び出し側が扱わない種別を渡した場合。現状は到達しないが、種別を足したときに
+  // 「取得はできたのに黙って捨てる」形へ落ちないよう記録する。
+  log.warn(`[dmdata] 取得した電文の種別を扱えません: ${headType}`)
   return null
+}
+
+/**
+ * 個別電文の取得で例外になった件数を記録する。
+ *
+ * `Promise.allSettled` の結果から `fulfilled` だけを残す形は、**ネットワーク断や DNS 失敗で
+ * 落ちた電文を件数ごと消す**。HTTP エラーと解釈の失敗は `fetchOneTelegram` と各パーサが
+ * それぞれ記録するので、ここで数えるのは例外になった分だけでよい。
+ */
+function warnRejectedTelegrams(results: PromiseSettledResult<unknown>[], label: string): void {
+  const rejected = results.filter(r => r.status === 'rejected')
+  if (rejected.length === 0) return
+  const first = (rejected[0] as PromiseRejectedResult).reason
+  log.warn(`[dmdata] ${label}: ${results.length} 件中 ${rejected.length} 件の電文取得が例外で終わりました（最初の理由: ${String(first)}）`)
 }
 
 // DMDATA REST API で地震履歴（VXSE51/52/53: 震度速報・震源情報・震源＋各地震度）を取得する。
@@ -671,6 +693,7 @@ export async function fetchDmdataEarthquakes(
   const allResults = await Promise.allSettled(
     allItems.map(({ url, headType }) => fetchOneTelegram(apiKey, url, headType)),
   )
+  warnRejectedTelegrams(allResults, '地震履歴の取得')
 
   const toQuakes = (results: typeof allResults): JMAQuake[] =>
     results
@@ -741,6 +764,7 @@ export async function fetchDmdataTsunamis(
   const results = await Promise.allSettled(
     items.map(it => fetchOneTelegram(apiKey, it.url, it.head.type)),
   )
+  warnRejectedTelegrams(results, '津波履歴の取得')
   return results
     .filter((r): r is PromiseFulfilledResult<JMAQuake | JMATsunami | JMALpgm | null> => r.status === 'fulfilled')
     .map(r => r.value)
@@ -889,6 +913,7 @@ export async function fetchDmdataLpgms(
     const pageResults = await Promise.allSettled(
       targets.map(it => fetchOneTelegram(apiKey, it.url, it.head.type)),
     )
+      warnRejectedTelegrams(pageResults, '長周期地震動観測情報の取得')
     for (const r of pageResults) {
       if (r.status === 'fulfilled' && r.value !== null && 'maxClass' in (r.value as object)) {
         collected.push(r.value as JMALpgm)

@@ -618,6 +618,263 @@ describe('遠地地震に関する情報（VXSE53・Head/Title で識別）', ()
 })
 
 // DMD-7: EEW（VXSE43/45）JSON パーサーの基本テスト。severity 付与・cancel・LPGM を検証する。
+// 震度点を積めなかったときの記録。
+//
+// `if (name && scale >= 0)` は条件を満たさない要素を無言で捨てる。落ちても下流の不変条件は
+// 破れない（`EarthquakeCard.prefGroups` は区域点からの逆引き集計へ静かに落ち、震度の面は
+// 「届く点は必ず階級表の値を持つ」前提のまま成り立つ）ため、**点が丸ごと消えても画面には
+// 「情報が少し粗くなった」以上には現れない**。2026-09-04 の都道府県ロールアップ点の欠落は
+// それで長く見つからなかった。
+//
+// 記録するのは**その種別が全滅したときだけ**。部分的な脱落で鳴らすとログが埋まり、本当の
+// 全滅が埋もれる。以下は 6 箇所（3 種 × 2 経路）それぞれについて、正（全滅で鳴る）・
+// 対照（元要素が 0 件なら鳴らない）・安全弁（部分脱落で鳴らさない）を対で固定する。
+describe('震度点を積めなかったときの記録', () => {
+  // log.warn を差し替え、出た警告文を文字列として集める。
+  // 種別ラベルの部分一致で数えるのは、どの種別について鳴ったかを見分けるため。
+  const captureWarnings = (run: () => void): string[] => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      run()
+      return warn.mock.calls.map(c => c.join(' '))
+    } finally {
+      warn.mockRestore()
+    }
+  }
+  const matching = (warnings: string[], label: string) => warnings.filter(w => w.includes(label))
+
+  const REGION = '震度の区域'
+  const STATION = '震度の観測点'
+  const PREF = '都道府県の代表震度'
+  const NO_POINTS = '震度の点を 1 件も取り出せませんでした'
+
+  describe('JSON 経路（parseEarthquake）', () => {
+    const withIntensity = (intensity: Record<string, unknown>) => ({
+      ...VXSE53_JSON,
+      body: { ...VXSE53_JSON.body, intensity: { maxInt: '4', ...intensity } },
+    })
+    const OK_PREFS = [{ code: '03', name: '岩手県', maxInt: '4' }]
+    const OK_REGIONS = [{ code: '221', name: '岩手県沿岸北部', maxInt: '4' }]
+    const OK_STATIONS = [{ code: '3350631', name: '普代村銅屋', int: '3' }]
+
+    // 正: 区域が全滅すると鳴り、読めなかった値そのものが文面に出る。
+    // 値を載せるのは、次に鳴ったとき電文を掘り直さずに原因へ届くようにするため
+    it('区域が全滅すると読めなかった値つきで記録する', () => {
+      const warnings = captureWarnings(() => {
+        parseEarthquake('VXSE53', withIntensity({
+          prefectures: OK_PREFS,
+          regions: [{ code: '221', name: '岩手県沿岸北部', maxInt: '不明' }],
+          stations: OK_STATIONS,
+        }))
+      })
+      expect(matching(warnings, REGION)).toHaveLength(1)
+      expect(matching(warnings, REGION)[0]).toContain('岩手県沿岸北部="不明"')
+      // 他の種別は読めているので巻き込まない
+      expect(matching(warnings, STATION)).toHaveLength(0)
+      expect(matching(warnings, PREF)).toHaveLength(0)
+    })
+
+    it('観測点が全滅すると記録する', () => {
+      const warnings = captureWarnings(() => {
+        parseEarthquake('VXSE53', withIntensity({
+          prefectures: OK_PREFS,
+          regions: OK_REGIONS,
+          stations: [{ code: '3350631', name: '普代村銅屋', int: '' }],
+        }))
+      })
+      expect(matching(warnings, STATION)).toHaveLength(1)
+    })
+
+    it('都道府県が全滅すると記録する', () => {
+      const warnings = captureWarnings(() => {
+        parseEarthquake('VXSE53', withIntensity({
+          prefectures: [{ code: '03', name: '岩手県', maxInt: '不明' }],
+          regions: OK_REGIONS,
+          stations: OK_STATIONS,
+        }))
+      })
+      expect(matching(warnings, PREF)).toHaveLength(1)
+    })
+
+    // 対照: 元要素が 0 件なら鳴らない。震度速報は観測点を持たないのが正常で、
+    // ここで鳴ると平常運転でログが埋まる
+    it('観測点を持たない電文では観測点について鳴らない', () => {
+      const warnings = captureWarnings(() => {
+        parseEarthquake('VXSE53', withIntensity({ prefectures: OK_PREFS, regions: OK_REGIONS }))
+      })
+      expect(matching(warnings, STATION)).toHaveLength(0)
+    })
+
+    // 安全弁: 部分脱落では鳴らさない。階級表に無い値を持つ要素が 1 点混じるのは
+    // 起こりうるので、1 件ずつ鳴らす形に変えるとここが落ちる
+    it('一部だけ読めない区域では鳴らない', () => {
+      const warnings = captureWarnings(() => {
+        parseEarthquake('VXSE53', withIntensity({
+          prefectures: OK_PREFS,
+          regions: [
+            { code: '221', name: '岩手県沿岸北部', maxInt: '4' },
+            { code: '211', name: '岩手県内陸北部', maxInt: '不明' },
+          ],
+          stations: OK_STATIONS,
+        }))
+      })
+      expect(matching(warnings, REGION)).toHaveLength(0)
+    })
+  })
+
+  describe('XML 経路（parseEarthquakeFromXml）', () => {
+    // Pref 直下の MaxInt。Observation 直下・Area 直下にも同じ要素名があるため、
+    // 直前の Code で位置を特定して差し替える
+    const breakPrefMaxInt = (xml: string) =>
+      xml.replace('<Code>03</Code>\n          <MaxInt>4</MaxInt>', '<Code>03</Code>\n          <MaxInt>不明</MaxInt>')
+    const breakArea221 = (xml: string) =>
+      xml.replace('<Code>221</Code>\n            <MaxInt>4</MaxInt>', '<Code>221</Code>\n            <MaxInt>不明</MaxInt>')
+    const breakArea211 = (xml: string) =>
+      xml.replace('<Code>211</Code>\n            <MaxInt>3</MaxInt>', '<Code>211</Code>\n            <MaxInt>不明</MaxInt>')
+
+    it('都道府県が全滅すると読めなかった値つきで記録する', () => {
+      const warnings = captureWarnings(() => {
+        parseEarthquakeFromXml('VXSE51', breakPrefMaxInt(VXSE51_XML))
+      })
+      expect(matching(warnings, PREF)).toHaveLength(1)
+      expect(matching(warnings, PREF)[0]).toContain('岩手県="不明"')
+      expect(matching(warnings, REGION)).toHaveLength(0)
+    })
+
+    it('区域が全滅すると記録する', () => {
+      const warnings = captureWarnings(() => {
+        parseEarthquakeFromXml('VXSE51', breakArea211(breakArea221(VXSE51_XML)))
+      })
+      expect(matching(warnings, REGION)).toHaveLength(1)
+      expect(matching(warnings, PREF)).toHaveLength(0)
+    })
+
+    it('観測点が全滅すると記録する', () => {
+      const warnings = captureWarnings(() => {
+        parseEarthquakeFromXml('VXSE53', VXSE53_XML.replace('<Int>3</Int>', '<Int>不明</Int>'))
+      })
+      expect(matching(warnings, STATION)).toHaveLength(1)
+    })
+
+    // 対照: 震度速報は Area までしか持たない。観測点について鳴らせば毎回鳴る
+    it('観測点を持たない震度速報では観測点について鳴らない', () => {
+      const warnings = captureWarnings(() => { parseEarthquakeFromXml('VXSE51', VXSE51_XML) })
+      expect(matching(warnings, STATION)).toHaveLength(0)
+    })
+
+    // 対照: 手を入れていない実電文どおりの形では 1 件も鳴らない。
+    // 実電文 120 通（VXSE51/53 各 60 通）で Pref 246 件すべてが直下に MaxInt を持つことを確認済み
+    it('そのままの電文では何も鳴らない', () => {
+      expect(captureWarnings(() => { parseEarthquakeFromXml('VXSE51', VXSE51_XML) })).toHaveLength(0)
+      expect(captureWarnings(() => { parseEarthquakeFromXml('VXSE53', VXSE53_XML) })).toHaveLength(0)
+    })
+
+    it('一部だけ読めない区域では鳴らない', () => {
+      const warnings = captureWarnings(() => {
+        parseEarthquakeFromXml('VXSE51', breakArea211(VXSE51_XML))
+      })
+      expect(matching(warnings, REGION)).toHaveLength(0)
+    })
+
+    it('一部だけ読めない観測点では鳴らない', () => {
+      const twoStations = VXSE53_XML.replace('</IntensityStation>', `</IntensityStation>
+              <IntensityStation>
+                <Name>普代村第二</Name>
+                <Code>3350632</Code>
+                <Int>不明</Int>
+              </IntensityStation>`)
+      const warnings = captureWarnings(() => { parseEarthquakeFromXml('VXSE53', twoStations) })
+      expect(matching(warnings, STATION)).toHaveLength(0)
+    })
+  })
+
+  // 種別ごとの全滅検知は「元要素はあるのに読めなかった」しか捕まえられない。元要素そのものが
+  // 見えなくなった場合（Observation の位置が変わった・JSON のキーが改名された）は数える対象が
+  // 0 件になって素通りするため、電文単位でもう一段見る。
+  describe('震度を伝える電文なのに点が 0 件', () => {
+    const stripIntensity = (xml: string) => xml.replace(/<Intensity>[\s\S]*<\/Intensity>/, '')
+    const noIntensityJson = { ...VXSE53_JSON, body: { ...VXSE53_JSON.body, intensity: {} } }
+
+    // 正: 種別ごとの検知は 1 件も鳴らない（数える対象が無い）のに、こちらは鳴る
+    it('JSON 経路: intensity が空なら記録する', () => {
+      const warnings = captureWarnings(() => { parseEarthquake('VXSE53', noIntensityJson) })
+      expect(matching(warnings, NO_POINTS)).toHaveLength(1)
+      expect(matching(warnings, REGION)).toHaveLength(0)
+      expect(matching(warnings, STATION)).toHaveLength(0)
+      expect(matching(warnings, PREF)).toHaveLength(0)
+    })
+
+    it('XML 経路: Intensity が丸ごと無ければ記録する', () => {
+      const warnings = captureWarnings(() => {
+        parseEarthquakeFromXml('VXSE53', stripIntensity(VXSE53_XML))
+      })
+      expect(matching(warnings, NO_POINTS)).toHaveLength(1)
+    })
+
+    // 対照: 震源情報（VXSE52）は観測データを持たないのが正常
+    it('震源情報では鳴らない', () => {
+      const xmlWarnings = captureWarnings(() => {
+        parseEarthquakeFromXml('VXSE52', stripIntensity(VXSE53_XML))
+      })
+      expect(matching(xmlWarnings, NO_POINTS)).toHaveLength(0)
+      const jsonWarnings = captureWarnings(() => { parseEarthquake('VXSE52', noIntensityJson) })
+      expect(matching(jsonWarnings, NO_POINTS)).toHaveLength(0)
+    })
+
+    // 対照: 遠地地震は VXSE53 として配信されるが国内の震度を持たない。
+    // Head/Title でしか見分けられないため、ここだけ issueType で除いている
+    it('遠地地震では鳴らない', () => {
+      const farXml = stripIntensity(VXSE53_XML)
+        .split('<Title>震源・震度に関する情報</Title>')
+        .join('<Title>遠地地震に関する情報</Title>')
+      expect(matching(captureWarnings(() => {
+        parseEarthquakeFromXml('VXSE53', farXml)
+      }), NO_POINTS)).toHaveLength(0)
+      const farJson = { ...noIntensityJson, title: '遠地地震に関する情報' }
+      expect(matching(captureWarnings(() => {
+        parseEarthquake('VXSE53', farJson)
+      }), NO_POINTS)).toHaveLength(0)
+    })
+
+    // 安全弁: 判定は headType で行う。points を作るかどうかを決めているのが headType なので、
+    // issueType で言い換えると 2 つの判定がいずれずれる（resolveIssueType は未知の headType を
+    // '震源・震度情報' へ落とすため、点を作らない電文が「震度を伝える電文」に見える）
+    it('未知の種別では鳴らない（issueType では震源・震度情報に見える）', () => {
+      const warnings = captureWarnings(() => {
+        parseEarthquakeFromXml('VXSE99', stripIntensity(VXSE53_XML))
+      })
+      expect(matching(warnings, NO_POINTS)).toHaveLength(0)
+    })
+
+    // 安全弁: 訂正報（InfoType=訂正）を特別扱いしない。**点が 0 件なら訂正報でも鳴る。**
+    //
+    // 「訂正報は震源だけを訂正するので震度を持たない。鳴るのは誤検知だ」という見立てが
+    // レビューで出たが、実装からは支持されなかった——気象庁は震源要素だけの訂正を
+    // **別の種別（VXSE61）** に分けており、そちらは判定の対象外。VXSE53 の訂正報は
+    // 通常報と同じ経路で読まれ、`correct` フラグが立つだけ（`取消` だけが早期 return で分かれる）。
+    // 気象庁の電文解説資料も、震源要素を訂正する報に「＊印は気象庁以外の震度観測点」の
+    // 固定付加文（0262）を併記する例を載せている＝観測点の震度を持つ形。
+    //
+    // **`infoType` を見て黙らせる変更が入ったらここが落ちる。** 見立てだけで検知を止めない
+    // ための歯止めなので、覆すなら訂正報が震度を落とす実電文を先に見つけること
+    it('訂正報でも点が 0 件なら鳴る（訂正報を特別扱いしない）', () => {
+      const corrected = stripIntensity(VXSE53_XML).replace('<InfoType>発表</InfoType>', '<InfoType>訂正</InfoType>')
+      const quake = parseEarthquakeFromXml('VXSE53', corrected)!
+      expect(quake.issue.correct).toBe('訂正')
+      const warnings = captureWarnings(() => { parseEarthquakeFromXml('VXSE53', corrected) })
+      expect(matching(warnings, NO_POINTS)).toHaveLength(1)
+    })
+
+    // 安全弁: 訂正報（VXSE61）は震源要素だけを伝える。点を持たないのが正常
+    it('顕著な地震の震源要素更新では鳴らない', () => {
+      const warnings = captureWarnings(() => {
+        parseEarthquakeFromXml('VXSE61', stripIntensity(VXSE53_XML))
+      })
+      expect(matching(warnings, NO_POINTS)).toHaveLength(0)
+    })
+  })
+})
+
 describe('parseEEW: JSON 電文の severity・cancel・LPGM', () => {
   const baseEEWJson = {
     eventId: '20260101120000',
@@ -1229,6 +1486,117 @@ function commentaryXml(opts: {
 </Report>`
 }
 
+// 長周期地震動でも「読めなかった要素」を記録する。震度点と同じ構造の穴が残っていた。
+//
+// **震度点との違いは「階級 0」の扱い。** `lgInt >= 1` の除外には「階級 0 ＝該当なし」という
+// 正常な脱落が混ざるため、数えるのは 0 かどうかではなく **値として解釈できたか**。
+// 0 を落ちた扱いにすると平常時に鳴り続ける。
+describe('長周期地震動: 読めなかった要素の記録', () => {
+  const captureWarnings = (run: () => void): string[] => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      run()
+      return warn.mock.calls.map(c => c.join(' '))
+    } finally {
+      warn.mockRestore()
+    }
+  }
+  const matching = (warnings: string[], label: string) => warnings.filter(w => w.includes(label))
+  const LG_REGION = '長周期地震動の区域'
+  const LG_STATION = '長周期地震動の観測点'
+  const NO_LG_REGION = '階級を持つ区域を 1 件も取り出せませんでした'
+
+  // 対照: 手を入れていない実電文どおりの形では 1 件も鳴らない
+  it('そのままの電文では何も鳴らない', () => {
+    expect(captureWarnings(() => { parseLpgmFromXml(PARITY_LPGM_XML) })).toHaveLength(0)
+    expect(captureWarnings(() => { parseLpgm(PARITY_LPGM_JSON) })).toHaveLength(0)
+  })
+
+  // 正: 区域の階級が数値として読めなければ記録する（XML）
+  it('XML: 区域の階級が読めなければ記録する', () => {
+    const broken = PARITY_LPGM_XML.replace('<Code>370</Code>\n            <MaxInt>3</MaxInt>\n            <MaxLgInt>2</MaxLgInt>', '<Code>370</Code>\n            <MaxInt>3</MaxInt>\n            <MaxLgInt>不明</MaxLgInt>')
+    const warnings = captureWarnings(() => { parseLpgmFromXml(broken) })
+    expect(matching(warnings, LG_REGION)).toHaveLength(1)
+    expect(matching(warnings, LG_REGION)[0]).toContain('新潟県上越="不明"')
+  })
+
+  // 正: 観測点の階級が数値として読めなければ記録する（XML）
+  it('XML: 観測点の階級が読めなければ記録する', () => {
+    const broken = PARITY_LPGM_XML.replace('<LgInt>2</LgInt>', '<LgInt></LgInt>')
+    expect(matching(captureWarnings(() => { parseLpgmFromXml(broken) }), LG_STATION)).toHaveLength(1)
+  })
+
+  // 正: JSON 経路も同じ形で記録する（片方だけ直すと経路で挙動が変わる）
+  it('JSON: 区域の階級が読めなければ記録する', () => {
+    const json = structuredClone(PARITY_LPGM_JSON)
+    json.body.intensity.regions = [{ code: '370', name: '新潟県上越', maxLgInt: '不明' }]
+    expect(matching(captureWarnings(() => { parseLpgm(json) }), LG_REGION)).toHaveLength(1)
+  })
+
+  // 対照: 階級 0 は「読めている」。該当なしを表す正常な値なので鳴らしてはいけない
+  it('階級 0 の区域が混ざっても鳴らない', () => {
+    const json = structuredClone(PARITY_LPGM_JSON)
+    json.body.intensity.regions = [
+      { code: '370', name: '新潟県上越', maxLgInt: '2' },
+      { code: '371', name: '新潟県中越', maxLgInt: '0' },
+    ]
+    const warnings = captureWarnings(() => { parseLpgm(json) })
+    expect(matching(warnings, LG_REGION)).toHaveLength(0)
+    expect(matching(warnings, NO_LG_REGION)).toHaveLength(0)
+  })
+
+  // 安全弁: 一部だけ読めない場合は鳴らさない（震度点と同じ「全滅のときだけ」の規則）
+  it('一部だけ読めない区域では鳴らない', () => {
+    const json = structuredClone(PARITY_LPGM_JSON)
+    json.body.intensity.regions = [
+      { code: '370', name: '新潟県上越', maxLgInt: '2' },
+      { code: '371', name: '新潟県中越', maxLgInt: '不明' },
+    ]
+    expect(matching(captureWarnings(() => { parseLpgm(json) }), LG_REGION)).toHaveLength(0)
+  })
+
+  // 正: 電文が最大階級を名乗っているのに、その階級を持つ区域が 1 件も無い。
+  // 種別ごとの検知は「元要素はあるのに読めなかった」しか拾えないため、元要素ごと
+  // 見えなくなった場合（Pref/Area の位置が変わった等）はこちらで拾う
+  it('最大階級を名乗るのに区域が 1 件も無ければ記録する', () => {
+    const json = structuredClone(PARITY_LPGM_JSON)
+    json.body.intensity.regions = []
+    expect(matching(captureWarnings(() => { parseLpgm(json) }), NO_LG_REGION)).toHaveLength(1)
+  })
+
+  // 正: 最大階級そのものが読めない電文は、階級 0（正常な振り分け）と区別して記録する。
+  // **この 2 つを同じ `return null` に落とすと、電文が壊れていても無言で捨てられる**——
+  // 区域・観測点の階級で同じ区別をしているのに、それを読みにいくかを決めるゲートだけ
+  // 素通しになっていた
+  it('最大階級が読めない電文は記録して捨てる', () => {
+    const json = structuredClone(PARITY_LPGM_JSON)
+    json.body.intensity.maxLgInt = '不明'
+    const warnings = captureWarnings(() => {
+      expect(parseLpgm(json)).toBeNull()
+    })
+    expect(warnings.filter(w => w.includes('最大長周期地震動階級を読めません'))).toHaveLength(1)
+
+    // 最初の <MaxLgInt> は Observation 直下（＝電文全体の最大階級）。String.replace は
+    // 先頭の 1 件だけ置換するので、Pref・Area 配下の同名要素には触れない
+    const xml = PARITY_LPGM_XML.replace('<MaxLgInt>2</MaxLgInt>', '<MaxLgInt>不明</MaxLgInt>')
+    const xmlWarnings = captureWarnings(() => {
+      expect(parseLpgmFromXml(xml)).toBeNull()
+    })
+    expect(xmlWarnings.filter(w => w.includes('最大長周期地震動階級を読めません'))).toHaveLength(1)
+  })
+
+  // 対照: 階級1以上を観測していない報（maxLgInt 0）は手前で null を返す正常な振り分け。
+  // ここで鳴らすと、長周期地震動を伴わない地震のたびに記録が出る
+  it('階級1以上を観測していない報では鳴らない', () => {
+    const json = structuredClone(PARITY_LPGM_JSON)
+    json.body.intensity.maxLgInt = '0'
+    const warnings = captureWarnings(() => {
+      expect(parseLpgm(json)).toBeNull()
+    })
+    expect(warnings).toHaveLength(0)
+  })
+})
+
 describe('parseNankaiFromXml（VYSE50 南海トラフ地震臨時情報）', () => {
   it('巨大地震注意を Head/Title から判定する（Head/InfoKind には現れない）', () => {
     const nankai = parseNankaiFromXml(nankaiXml({ title: '南海トラフ地震臨時情報（巨大地震注意）' }))
@@ -1729,6 +2097,118 @@ const VTSE41_PARTIAL_LIFT_XML = `<?xml version="1.0" encoding="UTF-8"?>
     </Tsunami>
   </Body>
 </Report>`
+
+// 区域の名前を読めなかったときに「正式解除」へ化けないこと。
+//
+// XML 経路は名前を読めない区域を捨てる（`if (!areaName) continue`）。捨てた結果 0 件になったものを
+// 「気象庁による正式な解除」と解釈していたため、電文の構造が変われば
+// **「津波警報が解除されました」という事実と逆の内容を発表する**——無言で消えるより重い。
+// JSON 経路は名前が空でも区域を積むので 0 件にならず、この化けは XML 経路にしか無かった。
+describe('津波 XML: 区域を読めなかったときに解除へ化けないこと', () => {
+  const captureWarnings = (run: () => void): string[] => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      run()
+      return warn.mock.calls.map(c => c.join(' '))
+    } finally {
+      warn.mockRestore()
+    }
+  }
+  // 区域名の要素だけを潰す（Kind/LastKind はそのまま＝「解除コードで落ちた」形にはしない）
+  const breakAreaNames = (xml: string) => xml.replace(/<Name>(石川県能登|福岡県日本海沿岸|長崎県西方)<\/Name>/g, '<Name></Name>')
+
+  // 正: 全区域の名前が読めなければ、解除にせず電文ごと捨てて記録する
+  // （元電文の等級は 62・72・71 でどれも現役なので、3 件とも「解除と言えない」側に入る）
+  it('全区域の名前が読めなければ解除にせず捨てる', () => {
+    const broken = breakAreaNames(VTSE41_PARTIAL_LIFT_XML)
+    const warnings = captureWarnings(() => {
+      expect(parseTsunamiFromXml(broken)).toBeNull()
+    })
+    expect(warnings.filter(w => w.includes('解除済みとも判定できません'))).toHaveLength(1)
+  })
+
+  // 対照: 手を入れていない電文は従来どおり 3 区域を読み、解除にもならない
+  it('そのままの電文では 3 区域を読み解除にならない', () => {
+    const t = parseTsunamiFromXml(VTSE41_PARTIAL_LIFT_XML)!
+    expect(t.cancelled).toBe(false)
+    expect(t.areas).toHaveLength(3)
+  })
+
+  // 安全弁: **本物の解除は解除のまま。** 区域が電文から消える（Item が無い）形は気象庁の
+  // 正式な解除で、名前が読めなかったわけではない。ここを巻き込むと解除が届かなくなる
+  it('区域が電文から消えた形は従来どおり解除として扱う', () => {
+    const lifted = VTSE41_PARTIAL_LIFT_XML.replace(/<Item>[\s\S]*<\/Item>/, '')
+    const t = parseTsunamiFromXml(lifted)!
+    expect(t.cancelled).toBe(true)
+    expect(t.cancelReason).toBe('lifted')
+  })
+
+  // 正: **等級が現役のまま名前だけ壊れた区域**が混ざっていたら、他に解除コードの区域があっても
+  // 解除にしない。他の区域の解除コードは、その区域が解除されたことしか意味しない。
+  //
+  // ここを通してしまうと「まだ津波予報が出ている区域について解除されましたと伝える」ことになる。
+  // 元の電文では福岡（Code 72）・長崎（Code 71）がどちらも現役の津波予報
+  it('現役の等級のまま名前が読めない区域があれば解除にしない', () => {
+    const mixed = VTSE41_PARTIAL_LIFT_XML
+      .replace('<Kind><Name>津波注意報</Name><Code>62</Code></Kind>', '<Kind><Name>津波注意報解除</Name><Code>60</Code></Kind>')
+      .replace('<Name>福岡県日本海沿岸</Name>', '<Name></Name>')
+      .replace('<Name>長崎県西方</Name>', '<Name></Name>')
+    const warnings = captureWarnings(() => {
+      expect(parseTsunamiFromXml(mixed)).toBeNull()
+    })
+    expect(warnings.filter(w => w.includes('解除済みとも判定できません'))).toHaveLength(1)
+  })
+
+  // 対照: 名前が読めなくても **解除コードが読めていれば** その区域は解除済み。
+  // 全区域がそうなら解除として通す（「解除と言えない」区域が 0 件なので断定できる）
+  it('名前が読めなくても全区域が解除コードなら解除として通す', () => {
+    const allCancelled = VTSE41_PARTIAL_LIFT_XML
+      .replace('<Code>62</Code></Kind>', '<Code>60</Code></Kind>')
+      .replace('<Code>72</Code></Kind>', '<Code>60</Code></Kind>')
+      .replace('<Code>71</Code></Kind>', '<Code>60</Code></Kind>')
+      .replace('<Name>福岡県日本海沿岸</Name>', '<Name></Name>')
+    const t = parseTsunamiFromXml(allCancelled)
+    expect(t).not.toBeNull()
+    expect(t!.cancelled).toBe(true)
+    expect(t!.cancelReason).toBe('lifted')
+  })
+
+  // 読めなかった区域があった事実は、解除として通す場合でも記録する
+  it('解除として通す場合でも読めなかった区域を記録する', () => {
+    const allCancelled = VTSE41_PARTIAL_LIFT_XML
+      .replace('<Code>62</Code></Kind>', '<Code>60</Code></Kind>')
+      .replace('<Code>72</Code></Kind>', '<Code>60</Code></Kind>')
+      .replace('<Code>71</Code></Kind>', '<Code>60</Code></Kind>')
+      .replace('<Name>福岡県日本海沿岸</Name>', '<Name></Name>')
+    const warnings = captureWarnings(() => { parseTsunamiFromXml(allCancelled) })
+    expect(warnings.filter(w => w.includes('名前を読めませんでした'))).toHaveLength(1)
+  })
+
+  // 有効な区域が残ったまま一部だけ解除コードで落ちる形。**気象庁は一部解除でも区域を電文から
+  // 消さず等級の降格として載せる**ため実電文では稀だが、コード自身がこれを
+  // 「区域単位の等級変化として検出できない」既知のリスクとして名指ししている
+  // （→ docs/spec/tsunami-spec.md §10）。この関数は判定を何度も書き換えているので、
+  // 隣接する経路が黙って壊れないよう記録が出ることだけ固定しておく
+  it('一部だけ解除コードで落ちたら記録する（残りは通常の津波として成立）', () => {
+    const partialLift = VTSE41_PARTIAL_LIFT_XML
+      .replace('<Kind><Name>津波注意報</Name><Code>62</Code></Kind>', '<Kind><Name>津波注意報解除</Name><Code>60</Code></Kind>')
+    const warnings = captureWarnings(() => {
+      const t = parseTsunamiFromXml(partialLift)!
+      expect(t.cancelled).toBe(false)
+      expect(t.areas).toHaveLength(2)
+    })
+    expect(warnings.filter(w => w.includes('解除コードで落ちた区域があります'))).toHaveLength(1)
+  })
+
+  // 安全弁: 一部の区域だけ名前が読めない場合は、読めた区域で通常どおり成立させる。
+  // 0 件になったときだけ解除との取り違えが起きるので、そこ以外は止めない
+  it('一部の区域だけ読めない場合は残りで成立する', () => {
+    const partial = VTSE41_PARTIAL_LIFT_XML.replace('<Name>石川県能登</Name>', '<Name></Name>')
+    const t = parseTsunamiFromXml(partial)!
+    expect(t.cancelled).toBe(false)
+    expect(t.areas).toHaveLength(2)
+  })
+})
 
 describe('津波電文の LastKind（区域単位の等級変化）', () => {
   it('正: XML 経路で LastKind を前回の等級として読む', () => {
