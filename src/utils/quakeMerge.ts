@@ -29,7 +29,10 @@ const AMENDMENT_TYPE = '顕著な地震の震源要素更新のお知らせ'
 
 // 電文 ID 文字列から eventId（14桁タイムスタンプ）を抽出する。
 // VXSE51/52/53/61 はすべて同じ eventId を共有するため、同一地震の同定に使用できる。
-// 電文 ID の書式: `dmdata-quake-YYYYMMDDhhmmss-<serial>` または `dmdata-xml-quake-…`（archive リプレイ経路）。
+// 電文 ID の書式: `dmdata-quake-YYYYMMDDhhmmss-<serial>` または `dmdata-xml-quake-…`（REST 履歴取得経路）。
+// `xml-` が付くのは REST の個別電文取得（services/dmdata.ts の fetchOneTelegram）だけ。archive
+// リプレイは同じ電文の XML 版と JSON 版が両方載っていても JSON 版を採るため（dmdataReplay.ts の
+// `if (!entry.originalId) continue`）、そちらからは付かない。
 export function extractQuakeEventIdFromId(id: string | undefined | null): string | null {
   return id?.match(/^dmdata-(?:xml-)?quake-(\d{14})-/)?.[1] ?? null
 }
