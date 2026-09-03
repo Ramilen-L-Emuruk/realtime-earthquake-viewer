@@ -27,6 +27,17 @@ import {
   formatMissingYears,
   DEPTH_RAMP_MAX_KM,
   MAGNITUDE_RAMP_RANGE,
+  jstYearOf,
+  jstYearStartMs,
+  jstYearEndMs,
+  toDateInputValue,
+  fromDateInputValue,
+  clampDayToRange,
+  clampPeriodToRange,
+  periodFromYearChange,
+  periodFromDateChange,
+  formatJstDate,
+  periodDayCount,
   type CatalogFilter,
   type CatalogViewOptions,
 } from './hypocenterCatalogView'
@@ -41,7 +52,9 @@ const makeYear = (
   count: events.length,
   coveredThroughMs: Date.UTC(year + 1, 0, 1),
   quality: 'final',
-  timeMs: Float64Array.from(events.map((e) => e.timeMs)),
+  // **時刻はその年の中へ置く。** 期間の絞り込みが日単位で効くので、生の小さな値のままだと
+  // すべて 1970 年の地震になり、どのテストでも 1 件も残らない。
+  timeMs: Float64Array.from(events.map((e) => jstYearStartMs(year) + e.timeMs)),
   lat: Float64Array.from(events.map((e) => e.lat)),
   lng: Float64Array.from(events.map((e) => e.lng)),
   depth: Float32Array.from(events.map((e) => e.depth)),
@@ -51,12 +64,12 @@ const makeYear = (
 })
 
 const FILTER: CatalogFilter = {
-  fromYear: 2020,
-  toYear: 2021,
+  fromMs: jstYearStartMs(2020),
+  toMs: jstYearEndMs(2021),
   minMagnitude: 2,
   maxMagnitude: 9,
   minDepthKm: 0,
-  maxDepthKm: 700,
+  maxDepthKm: DEPTH_FILTER_MAX_KM,
   minLat: 15,
   maxLat: 56,
   minLng: 110,
@@ -156,23 +169,50 @@ describe('pointSizePx', () => {
 
   // 正: 効き方を数値で固定する。**傾きを動かすとここが落ちる。**
   it.each([
-    [3, 0.6],
-    [5, 1.8],
-    [7, 3.0],
-    [9, 4.2],
+    [3, 0.435],
+    [5, 0.914588],
+    [7, 1.92292],
+    [9, 4.04294],
   ])('M%s で基準の %s 倍', (m, ratio) => {
-    expect(pointSizePx(10, m, 'magnitude')).toBeCloseTo(10 * ratio, 6)
+    expect(pointSizePx(10, m, 'magnitude')).toBeCloseTo(10 * ratio, 4)
+  })
+
+  // **正: 倍率は M が 1 増えるごとに一定倍。** 線形へ戻すとここが落ちる（上端ほど比が縮むため）。
+  it.each([
+    [2, 3],
+    [5, 6],
+    [8, 9],
+  ])('M%s → M%s の比はどこでも同じ', (lo, hi) => {
+    const ratio = pointSizePx(10, hi, 'magnitude') / pointSizePx(10, lo, 'magnitude')
+    expect(ratio).toBeCloseTo(1.45, 6)
+  })
+
+  // **対照: 最大級どうしでも大きさが変わる。** M8 と M9 の差が読み取れることがこの設計の目的。
+  it('M8 と M9 で目に見えて変わる', () => {
+    expect(pointSizePx(10, 9, 'magnitude') / pointSizePx(10, 8, 'magnitude')).toBeCloseTo(1.45, 6)
   })
 
   // **安全弁: 収録の下限（M2.0）で 0 倍にしない。** 傾きだけで決めると、最も件数の多い
   // 地震が 1 つ残らず消える。
   it('M2.0 でも消えない', () => {
-    expect(pointSizePx(10, 2, 'magnitude')).toBe(10 * 0.35)
+    expect(pointSizePx(10, 2, 'magnitude')).toBeCloseTo(10 * 0.3, 6)
+  })
+
+  // 安全弁: 収録の下限より小さい値が来ても、下限と同じ大きさで止める。
+  it('収録の下限より小さい M は下限と同じ大きさ', () => {
+    expect(pointSizePx(10, -5, 'magnitude')).toBeCloseTo(pointSizePx(10, 2, 'magnitude'), 6)
   })
 
   // 安全弁: 大小関係だけを保ち、極端な倍率にしない（エネルギー比で写すと M2 と M9 で 300 億倍になる）。
-  it('倍率は 5 倍で頭打ち', () => {
-    expect(pointSizePx(4, 20, 'magnitude')).toBe(4 * 5)
+  it('倍率は 8 倍で頭打ち', () => {
+    expect(pointSizePx(4, 20, 'magnitude')).toBe(4 * 8)
+  })
+
+  // **対照: 上限は M10 より先にある。** ここで頭打ちすると、起こりうる規模の範囲で
+  // 大きさの差が消える。
+  it('M10 までは頭打ちしない', () => {
+    expect(pointSizePx(4, 10, 'magnitude')).toBeLessThan(4 * 8)
+    expect(pointSizePx(4, 10, 'magnitude')).toBeGreaterThan(pointSizePx(4, 9.5, 'magnitude'))
   })
 
   // 安全弁: M が欠測でも数値を返す（NaN を渡すと点が消える）。
@@ -183,7 +223,7 @@ describe('pointSizePx', () => {
 
 describe('catalogCompleteness', () => {
   const f = (fromYear: number, toYear: number, minMagnitude: number): CatalogFilter =>
-    ({ ...FILTER, fromYear, toYear, minMagnitude })
+    ({ ...FILTER, fromMs: jstYearStartMs(fromYear), toMs: jstYearEndMs(toYear), minMagnitude })
 
   // 正: 1997 年以降なら M2.0 まで完全。
   it('1997 年からは M2.0 が完全', () => {
@@ -218,7 +258,11 @@ describe('withCompleteMagnitudeFloor', () => {
   const f = (over: Partial<CatalogFilter>): CatalogFilter => ({ ...FILTER, ...over })
   /** 期間だけを動かす（下限には手を触れない）。実際の操作で起きる形。 */
   const movePeriod = (prev: CatalogFilter, fromYear: number, toYear: number) =>
-    withCompleteMagnitudeFloor(INDEX, prev, { ...prev, fromYear, toYear })
+    withCompleteMagnitudeFloor(INDEX, prev, {
+      ...prev,
+      fromMs: jstYearStartMs(fromYear),
+      toMs: jstYearEndMs(toYear),
+    })
 
   // 正: 期間の古い側に応じて下限が上がる。
   it('古い期間なら下限が上がる', () => {
@@ -261,7 +305,7 @@ describe('withCompleteMagnitudeFloor', () => {
   // **安全弁: 合わせた値なら期間を戻したときに下がる（往復できる）。**
   // 引き上げたまま据え置くと「動かして戻しただけなのに件数が減ったまま」になる。
   it('合わせた値は期間を戻せば下がる', () => {
-    const wide = f({ fromYear: 1919, toYear: 2022, minMagnitude: 5 })
+    const wide = f({ fromMs: jstYearStartMs(1919), toMs: jstYearEndMs(2022), minMagnitude: 5 })
     expect(movePeriod(wide, 2020, 2022).minMagnitude).toBe(2)
   })
 })
@@ -286,12 +330,19 @@ describe('rangeLabel', () => {
 
 describe('oldestYearOf', () => {
   it('小さいほうを返す', () => {
-    expect(oldestYearOf({ fromYear: 2020, toYear: 1960 })).toBe(1960)
-    expect(oldestYearOf({ fromYear: 1960, toYear: 2020 })).toBe(1960)
+    expect(oldestYearOf({ fromMs: jstYearStartMs(2020), toMs: jstYearEndMs(1960) })).toBe(1960)
+    expect(oldestYearOf({ fromMs: jstYearStartMs(1960), toMs: jstYearEndMs(2020) })).toBe(1960)
   })
 
   it('同じ年なら その年', () => {
-    expect(oldestYearOf({ fromYear: 2000, toYear: 2000 })).toBe(2000)
+    expect(oldestYearOf({ fromMs: jstYearStartMs(2000), toMs: jstYearEndMs(2000) })).toBe(2000)
+  })
+
+  // **安全弁: 年末ぎりぎりでも年を取り違えない。** 実行環境が UTC だと、日本時間の
+  // 12 月 31 日 23:59 は UTC では 14:59 の同日で、素朴に読むと 1 年ずれる。
+  it('年の境目でも日本時間で数える', () => {
+    expect(oldestYearOf({ fromMs: jstYearEndMs(2000), toMs: jstYearEndMs(2000) })).toBe(2000)
+    expect(oldestYearOf({ fromMs: jstYearStartMs(2001), toMs: jstYearStartMs(2001) })).toBe(2001)
   })
 })
 
@@ -321,9 +372,18 @@ describe('絞り込みの範囲は色の範囲と別に持つ', () => {
   // **対照: 色の飽和範囲を借りていないこと。** 借りていると、色を調整したつもりで
   // 絞り込みの届く範囲まで一緒に動く。**同じ値になった瞬間に気づけなくなる**ので、
   // 別の定数であること自体をここで固定する。
-  it('マグニチュードの絞り込みは収録の最大まで届く', () => {
+  it('マグニチュードの絞り込みと色の飽和は別の値', () => {
     expect(MAGNITUDE_FILTER_RANGE.max).toBe(9)
-    expect(MAGNITUDE_FILTER_RANGE.max).toBeGreaterThan(MAGNITUDE_RAMP_RANGE.max)
+    expect(MAGNITUDE_RAMP_RANGE.max).not.toBe(MAGNITUDE_FILTER_RANGE.max)
+  })
+
+  // 深さは絞り込みの端と色の飽和が**いまのところ同じ値**（どちらも 750km）。
+  // **この検査は「別の定数として持っていること」を保証しない**——かつてのように
+  // `DEPTH_FILTER_MAX_KM = DEPTH_RAMP_MAX_KM` と結合し直しても、両方 750 を返して通ってしまう。
+  // 値でしか見られない以上ここが限界で、分離そのものはコードを読んで守る。
+  it('深さの絞り込みの端と色の飽和はいまのところ同じ値', () => {
+    expect(DEPTH_FILTER_MAX_KM).toBe(750)
+    expect(DEPTH_RAMP_MAX_KM).toBe(750)
   })
 
   // 安全弁: 絞り込みの上端を超える地震も、下限の絞り込みでは残る（取りこぼしは起きない）。
@@ -480,7 +540,7 @@ describe('深さの端は「制限なし」', () => {
   })
 
   // **安全弁: 端に置いたとき、収録の上限より深い地震が落ちない。**
-  it('端なら 700km より深い地震も残る', () => {
+  it('端なら収録の最深より深い地震も残る', () => {
     const deep = makeYear(2020, [{ lng: 139, lat: 35, depth: 900, mag: 5, timeMs: 1 }])
     const c = buildCatalogPointCloud([deep], { ...FILTER, maxDepthKm: DEPTH_FILTER_MAX_KM }, VIEW)
     expect(c.columns.count).toBe(1)
@@ -614,5 +674,357 @@ describe('buildCatalogPointCloud', () => {
     ])
     const c = buildCatalogPointCloud([huge], FILTER, { ...VIEW, colorBy: 'magnitude' })
     expect(Array.from(c.columns.color).every((v) => v >= 0 && v <= 1)).toBe(true)
+  })
+})
+
+describe('期間は日単位で絞る', () => {
+  /** その年の何日目か（0 始まり）を時刻へ。 */
+  const day = (year: number, index: number) => jstYearStartMs(year) + index * 24 * 60 * 60 * 1000
+  const y2020 = makeYear(2020, [
+    { lng: 139, lat: 35, depth: 10, mag: 5, timeMs: 0 },                        // 1 月 1 日 0 時
+    { lng: 140, lat: 36, depth: 10, mag: 5, timeMs: day(2020, 100) - jstYearStartMs(2020) },
+    { lng: 141, lat: 37, depth: 10, mag: 5, timeMs: jstYearEndMs(2020) - jstYearStartMs(2020) }, // 大晦日の終わり
+  ])
+
+  const period = (fromMs: number, toMs: number): CatalogFilter => ({ ...FILTER, fromMs, toMs })
+
+  // 正: 期間に入る日だけ残る。
+  it('期間の中の日だけ残る', () => {
+    const c = buildCatalogPointCloud([y2020], period(day(2020, 50), day(2020, 150) - 1), VIEW)
+    expect(Array.from(c.columns.lng)).toEqual([140])
+  })
+
+  // 対照: 年をまたがずに、同じ年の中で切れる。**年単位のままだとここが 3 件になる。**
+  it('同じ年の中で切れる', () => {
+    const whole = buildCatalogPointCloud([y2020], period(jstYearStartMs(2020), jstYearEndMs(2020)), VIEW)
+    expect(whole.columns.count).toBe(3)
+    const half = buildCatalogPointCloud([y2020], period(jstYearStartMs(2020), day(2020, 200)), VIEW)
+    expect(half.columns.count).toBe(2)
+  })
+
+  // **安全弁: 両端を含む。** 年の頭ちょうどと大晦日の終わりに起きた地震が落ちないこと。
+  it('両端の瞬間も含む', () => {
+    const c = buildCatalogPointCloud([y2020], period(jstYearStartMs(2020), jstYearEndMs(2020)), VIEW)
+    expect(c.columns.count).toBe(3)
+  })
+
+  // **安全弁: 開始と終了が逆でも同じ範囲。** 逆転した値で 0 件になると、原因が画面に出ない。
+  it('開始と終了が逆でも同じ', () => {
+    const forward = buildCatalogPointCloud([y2020], period(day(2020, 50), day(2020, 150) - 1), VIEW)
+    const reverse = buildCatalogPointCloud([y2020], period(day(2020, 150) - 1, day(2020, 50)), VIEW)
+    expect(Array.from(reverse.columns.lng)).toEqual(Array.from(forward.columns.lng))
+  })
+})
+
+describe('日本時間の暦日', () => {
+  // 正: 年の頭と終わりを日本時間で返す。**実行環境が UTC でもずれないこと。**
+  it('年の両端は日本時間の 0 時と 23:59:59.999', () => {
+    expect(new Date(jstYearStartMs(2020)).toISOString()).toBe('2019-12-31T15:00:00.000Z')
+    expect(new Date(jstYearEndMs(2020)).toISOString()).toBe('2020-12-31T14:59:59.999Z')
+  })
+
+  // 対照: 年をまたぐ瞬間で年が切り替わる。
+  it('年の境目で切り替わる', () => {
+    expect(jstYearOf(jstYearEndMs(2020))).toBe(2020)
+    expect(jstYearOf(jstYearEndMs(2020) + 1)).toBe(2021)
+  })
+
+  // 正: 日付ピッカーの値と往復できる。
+  it('日付ピッカーの値と往復する', () => {
+    const ms = fromDateInputValue('2020-03-14', 'start')
+    expect(ms).not.toBeNull()
+    expect(toDateInputValue(ms!)).toBe('2020-03-14')
+    expect(formatJstDate(ms!)).toBe('2020年3月14日')
+  })
+
+  // 正: 終わり側はその日の最後の瞬間。
+  it('終わり側はその日の最後の瞬間', () => {
+    const end = fromDateInputValue('2020-03-14', 'end')
+    expect(end).not.toBeNull()
+    expect(toDateInputValue(end!)).toBe('2020-03-14')
+    expect(end! - fromDateInputValue('2020-03-14', 'start')!).toBe(24 * 60 * 60 * 1000 - 1)
+  })
+
+  // **安全弁: 存在しない日を採らない。** `Date.UTC` は翌月へ繰り上げて別の日を黙って返す。
+  it('存在しない日は null', () => {
+    expect(fromDateInputValue('2021-02-30', 'start')).toBeNull()
+    expect(fromDateInputValue('2020-13-01', 'start')).toBeNull()
+  })
+
+  // 安全弁: 打鍵の途中や空欄でも null（呼び出し側は今の値を保つ）。
+  it('読めない値は null', () => {
+    expect(fromDateInputValue('', 'start')).toBeNull()
+    expect(fromDateInputValue('2020-3-1', 'start')).toBeNull()
+    expect(fromDateInputValue('abc', 'start')).toBeNull()
+  })
+
+  // 正: 日数は両端を含む。
+  it('日数は両端を含む', () => {
+    const from = fromDateInputValue('2020-03-14', 'start')!
+    const to = fromDateInputValue('2020-03-14', 'end')!
+    expect(periodDayCount(from, to)).toBe(1)
+    expect(periodDayCount(from, fromDateInputValue('2020-03-16', 'end')!)).toBe(3)
+  })
+
+  // 正: 1 年ぶんはうるう年で 366 日。
+  it('うるう年は 366 日', () => {
+    expect(periodDayCount(jstYearStartMs(2020), jstYearEndMs(2020))).toBe(366)
+    expect(periodDayCount(jstYearStartMs(2021), jstYearEndMs(2021))).toBe(365)
+  })
+})
+
+describe('色は上端・深い側でも分かれる', () => {
+  /** その M・その深さの点 1 つを作って色を読む。 */
+  const colorOf = (over: { mag?: number; depth?: number }, colorBy: 'magnitude' | 'depth') => {
+    const y = makeYear(2020, [{ lng: 139, lat: 35, depth: over.depth ?? 10, mag: over.mag ?? 5, timeMs: 0 }])
+    const c = buildCatalogPointCloud([y], FILTER, { ...VIEW, colorBy })
+    expect(c.columns.count).toBe(1)
+    return Array.from(c.columns.color)
+  }
+
+  /** 2 色の隔たり（RGB を 0〜1 の座標と見た距離）。 */
+  const colorDistance = (x: number[], y: number[]) => Math.hypot(x[0] - y[0], x[1] - y[1], x[2] - y[2])
+
+  /**
+   * 見分けが付くとみなす隔たりの下限。**実測から置いた値。**
+   *
+   * **「色が違う」だけでは足りない。** 飽和より手前の値どうしは、直す前も数値としては違って
+   * いた——目で見分けられるかは別の話で、それを言うには量が要る。実際、直す前は深さの
+   * 100km 刻み（300km 以深）が 0.094〜0.114 しかなく、M8→M9 は 0.000（完全に同色）だった。
+   * いまは深さが 0.150〜0.196、マグニチュードが 0.191〜0.473。この値はその間に置いてある。
+   */
+  const DISTINCT = 0.13
+
+  // **正: M8 と M9 が見分けられる。** 上端を M8 で飽和させていた頃はここが完全に同色だった。
+  it('M8 と M9 は見分けが付く', () => {
+    expect(colorDistance(colorOf({ mag: 8 }, 'magnitude'), colorOf({ mag: 9 }, 'magnitude')))
+      .toBeGreaterThan(DISTINCT)
+  })
+
+  // 対照: 実用域（件数の 99% 以上）でも段階的に変わる。
+  it.each([[2, 3], [3, 4], [4, 5], [5, 6], [6, 7], [7, 8]])('M%s と M%s は見分けが付く', (lo, hi) => {
+    expect(colorDistance(colorOf({ mag: lo }, 'magnitude'), colorOf({ mag: hi }, 'magnitude')))
+      .toBeGreaterThan(DISTINCT)
+  })
+
+  // **安全弁: 飽和より上は同じ色。** 飽和させること自体は保つ（外挿すると 0〜1 を外れる）。
+  it('飽和より上は同じ色', () => {
+    expect(colorOf({ mag: MAGNITUDE_RAMP_RANGE.max }, 'magnitude'))
+      .toEqual(colorOf({ mag: MAGNITUDE_RAMP_RANGE.max + 3 }, 'magnitude'))
+  })
+
+  // **正: 深い側も 100km 刻みで分かれる。** 深発地震の主体は 300〜450km で、
+  // ここが潰れると日本のスラブが 1 色になる。
+  it.each([[300, 400], [400, 500], [500, 600], [600, 700]])('深さ %s km と %s km は見分けが付く', (lo, hi) => {
+    expect(colorDistance(colorOf({ depth: lo }, 'depth'), colorOf({ depth: hi }, 'depth')))
+      .toBeGreaterThan(DISTINCT)
+  })
+
+  // 対照: 浅い側の分解能も残っている（大半の地震は 50km より浅い）。
+  it.each([[0, 10], [10, 30], [30, 60], [60, 100], [100, 200], [200, 300]])(
+    '深さ %s km と %s km は見分けが付く',
+    (lo, hi) => {
+      expect(colorDistance(colorOf({ depth: lo }, 'depth'), colorOf({ depth: hi }, 'depth')))
+        .toBeGreaterThan(DISTINCT)
+    },
+  )
+
+  // 安全弁: どの深さでも色は 0〜1 に収まる。
+  it.each([0, 10, 100, 400, 700, 750, 900])('深さ %s km の色が 0〜1', (depth) => {
+    expect(colorOf({ depth }, 'depth').every((v) => v >= 0 && v <= 1)).toBe(true)
+  })
+})
+
+describe('clampDayToRange', () => {
+  const min = jstYearStartMs(2020)
+  const max = jstYearEndMs(2026)
+  const DAY = 24 * 60 * 60 * 1000
+
+  // 正: 範囲の中はそのまま、その日の始まりと終わりを返す。
+  it('範囲の中はそのまま', () => {
+    const r = clampDayToRange('2024-03-14', min, max)
+    expect(r).not.toBeNull()
+    expect(toDateInputValue(r![0])).toBe('2024-03-14')
+    expect(toDateInputValue(r![1])).toBe('2024-03-14')
+    expect(r![1] - r![0]).toBe(DAY - 1)
+  })
+
+  // 対照: 範囲の外は端の日へ寄せる。
+  it('範囲より前は最初の日へ', () => {
+    expect(toDateInputValue(clampDayToRange('1900-01-01', min, max)![0])).toBe('2020-01-01')
+  })
+
+  it('範囲より後は最後の日へ', () => {
+    expect(toDateInputValue(clampDayToRange('2099-12-31', min, max)![0])).toBe('2026-12-31')
+  })
+
+  // **安全弁: 寄せた後も 1 日ぶんの幅が残る。**
+  // 始まりと終わりを別々に時刻で丸めると、範囲より先の日で両方が範囲の終わり（その日の最後の
+  // 瞬間）へ寄り、**幅が 1 ミリ秒へ潰れる**。そうなると 1 件も残らないのに、見出しは
+  // 「1 日ぶん」ともっともらしく出るため原因に辿り着けない。
+  it.each(['1900-01-01', '2099-12-31'])('%s へ寄せても 1 日ぶんの幅が残る', (value) => {
+    const r = clampDayToRange(value, min, max)
+    expect(r![1] - r![0]).toBe(DAY - 1)
+    expect(periodDayCount(r![0], r![1])).toBe(1)
+  })
+
+  // 安全弁: 寄せた先が範囲からはみ出さない。
+  it.each(['1900-01-01', '2099-12-31'])('%s へ寄せても範囲の中に収まる', (value) => {
+    const r = clampDayToRange(value, min, max)
+    expect(r![0]).toBeGreaterThanOrEqual(min)
+    expect(r![1]).toBeLessThanOrEqual(max)
+  })
+
+  // 対照: 範囲の端ちょうどの日は寄せない。
+  it('範囲の端ちょうどは寄せない', () => {
+    expect(clampDayToRange('2020-01-01', min, max)![0]).toBe(min)
+    expect(clampDayToRange('2026-12-31', min, max)![1]).toBe(max)
+  })
+
+  // 安全弁: 読めない値は null（呼び出し側は今の値を保つ）。
+  it('読めない値は null', () => {
+    expect(clampDayToRange('', min, max)).toBeNull()
+    expect(clampDayToRange('2021-02-30', min, max)).toBeNull()
+  })
+})
+
+describe('clampPeriodToRange', () => {
+  const min = jstYearStartMs(1919)
+  const max = jstYearEndMs(2025)
+  const DAY = 24 * 60 * 60 * 1000
+
+  // 正: 範囲の中はそのまま。
+  it('範囲の中はそのまま', () => {
+    const period = { fromMs: jstYearStartMs(2020), toMs: jstYearEndMs(2021) }
+    expect(clampPeriodToRange(period, min, max)).toEqual(period)
+  })
+
+  // 対照: はみ出した側だけ寄る。
+  it('片側だけはみ出したらその側だけ寄る', () => {
+    const period = { fromMs: jstYearStartMs(2020), toMs: jstYearEndMs(2026) }
+    const r = clampPeriodToRange(period, min, max)
+    expect(r.fromMs).toBe(period.fromMs)
+    expect(r.toMs).toBe(max)
+  })
+
+  // **安全弁: 期間が丸ごと範囲の外にあっても幅が消えない。**
+  // 両端をそれぞれ時刻で丸めると同じ 1 点へ寄り、1 件も残らないのに見出しは「1 日ぶん」と出る。
+  // 年が明けた直後、その年ぶんのカタログがまだ生成されていないときに起こりうる。
+  it('期間が丸ごと後ろへ外れても 1 日ぶんの幅が残る', () => {
+    const r = clampPeriodToRange({ fromMs: jstYearStartMs(2026), toMs: jstYearEndMs(2026) }, min, max)
+    expect(r.toMs - r.fromMs).toBe(DAY - 1)
+    expect(periodDayCount(r.fromMs, r.toMs)).toBe(1)
+    expect(r.toMs).toBe(max)
+  })
+
+  it('期間が丸ごと前へ外れても 1 日ぶんの幅が残る', () => {
+    const r = clampPeriodToRange({ fromMs: jstYearStartMs(1900), toMs: jstYearEndMs(1900) }, min, max)
+    expect(r.toMs - r.fromMs).toBe(DAY - 1)
+    expect(periodDayCount(r.fromMs, r.toMs)).toBe(1)
+    expect(r.fromMs).toBe(min)
+  })
+
+  // **安全弁: 非有限な値が来ても例外を投げない。**
+  // 日付を組み立てる側（`toDateInputValue`）は非有限で例外を投げるので、素通りさせると
+  // 画面ごと落ちる（震源カタログタブは常時マウントされている）。
+  it('非有限な期間でも例外を投げない', () => {
+    expect(() => clampPeriodToRange({ fromMs: Number.NaN, toMs: Number.NaN }, min, max)).not.toThrow()
+  })
+
+  // 安全弁: 寄せた先が範囲からはみ出さない。
+  it.each([
+    [jstYearStartMs(2026), jstYearEndMs(2026)],
+    [jstYearStartMs(1900), jstYearEndMs(1900)],
+  ])('外れた期間を寄せても範囲の中に収まる', (fromMs, toMs) => {
+    const r = clampPeriodToRange({ fromMs, toMs }, min, max)
+    expect(r.fromMs).toBeGreaterThanOrEqual(min)
+    expect(r.toMs).toBeLessThanOrEqual(max)
+    expect(r.fromMs).toBeLessThan(r.toMs)
+  })
+})
+
+describe('periodFromYearChange', () => {
+  /** 2020 年 6 月 15 日 〜 2024 年 3 月 2 日。両端とも年の途中。 */
+  const period = {
+    fromMs: fromDateInputValue('2020-06-15', 'start')!,
+    toMs: fromDateInputValue('2024-03-02', 'end')!,
+  }
+
+  // 正: 動かした側は年の境界へ。
+  it('動かした側は年の頭・末へ', () => {
+    const r = periodFromYearChange(period, 2018, 2024)
+    expect(r.fromMs).toBe(jstYearStartMs(2018))
+  })
+
+  // **対照: 動かしていない側の日付は保つ。**
+  // 両方を年へ丸め直すと、片方のつまみを触っただけでもう片方の日付指定が黙って消える。
+  it('動かしていない側の日付は保つ', () => {
+    expect(periodFromYearChange(period, 2018, 2024).toMs).toBe(period.toMs)
+    expect(periodFromYearChange(period, 2020, 2026).fromMs).toBe(period.fromMs)
+  })
+
+  // 対照: 同じ年を指したままなら何も変わらない。
+  it('同じ年のままなら変わらない', () => {
+    expect(periodFromYearChange(period, 2020, 2024)).toEqual(period)
+  })
+
+  // **安全弁: どの動かし方でも逆転しない。**
+  // つまみ側が `from <= to` を保証していても、片側の日付を保つとその関係が崩れうる。
+  it.each([
+    [2018, 2024], [2020, 2026], [2024, 2024], [2020, 2020], [2018, 2018], [2026, 2026],
+  ])('%i〜%i へ動かしても開始が終了を越えない', (fromYear, toYear) => {
+    const r = periodFromYearChange(period, fromYear, toYear)
+    expect(r.fromMs).toBeLessThanOrEqual(r.toMs)
+  })
+})
+
+describe('periodFromDateChange', () => {
+  const min = jstYearStartMs(1919)
+  const max = jstYearEndMs(2025)
+  const period = {
+    fromMs: fromDateInputValue('2020-06-15', 'start')!,
+    toMs: fromDateInputValue('2024-03-02', 'end')!,
+  }
+
+  // 正: 変えた側だけが動く。
+  it('変えた側だけが動く', () => {
+    const r = periodFromDateChange(period, '2021-01-10', 'from', min, max)!
+    expect(toDateInputValue(r.fromMs)).toBe('2021-01-10')
+    expect(r.toMs).toBe(period.toMs)
+  })
+
+  // 対照: 相手を追い越したら押す。
+  it('相手を追い越したら押す', () => {
+    const r = periodFromDateChange(period, '2025-05-05', 'from', min, max)!
+    expect(toDateInputValue(r.fromMs)).toBe('2025-05-05')
+    expect(toDateInputValue(r.toMs)).toBe('2025-05-05')
+  })
+
+  // **安全弁: 押した先も日の境界に乗る。** 時刻で押すと終了が「その日の 0 時」になり幅が消える。
+  it.each(['from', 'to'] as const)('%s 側で押しても 1 日ぶんの幅が残る', (edge) => {
+    const value = edge === 'from' ? '2025-05-05' : '2019-01-01'
+    const r = periodFromDateChange(period, value, edge, min, max)!
+    expect(periodDayCount(r.fromMs, r.toMs)).toBe(1)
+    expect(r.toMs - r.fromMs).toBe(24 * 60 * 60 * 1000 - 1)
+  })
+
+  // 安全弁: 収録の外を指す日は端の 1 日へ寄せる（打鍵では範囲外も入る）。
+  it('範囲の外は端の日へ寄せる', () => {
+    const r = periodFromDateChange(period, '2099-12-31', 'to', min, max)!
+    expect(r.toMs).toBe(max)
+    expect(r.fromMs).toBe(period.fromMs)
+  })
+
+  // 対照: 押した先の日付は from 側・to 側で同じ形になる（片側だけ緩い検査にしない）。
+  it('to 側で押しても開始はその日の始まりへ', () => {
+    const r = periodFromDateChange(period, '2019-01-01', 'to', min, max)!
+    expect(toDateInputValue(r.fromMs)).toBe('2019-01-01')
+    expect(toDateInputValue(r.toMs)).toBe('2019-01-01')
+  })
+
+  // 安全弁: 読めない値は null（呼び出し側は今の値を保つ）。
+  it('読めない値は null', () => {
+    expect(periodFromDateChange(period, '', 'from', min, max)).toBeNull()
+    expect(periodFromDateChange(period, '2021-02-30', 'to', min, max)).toBeNull()
   })
 })
