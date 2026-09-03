@@ -185,6 +185,15 @@ export function loadHypocenterIndex(): Promise<HypocenterIndex> {
         if (idx.years.length === 0) {
           throw new Error('hypocenter index: 収録年が 0 件です')
         }
+        // **年の中身まで見る。** 数値でない年が 1 つでも混ざると、そこから作った時刻が NaN になり、
+        // 日付ピッカーへ渡すところで例外になる（`toDateInputValue`）。震源カタログタブは常時
+        // マウントされているので、その例外は**アプリ全体を落とす**。下の `coveredThroughMs` と
+        // 同じ厳しさで見ておく。
+        for (const year of idx.years) {
+          if (typeof year !== 'number' || !Number.isInteger(year)) {
+            throw new Error(`hypocenter index: years に年として読めない値があります（${String(year)}）`)
+          }
+        }
         // **終端が無ければ失敗させる。** 無いまま通すと、消費側は「未取得」と「地震が無かった」を
         // 区別できないまま格子を描く。欠けていることに気づけるのはここだけ。
         if (typeof idx.coveredThroughMs !== 'number' || !Number.isFinite(idx.coveredThroughMs)) {

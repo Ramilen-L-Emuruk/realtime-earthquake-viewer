@@ -26,6 +26,7 @@ import {
   buildCatalogPointCloud, DEPTH_FILTER_MAX_KM, MAGNITUDE_FILTER_RANGE,
   LATITUDE_FILTER_RANGE, LONGITUDE_FILTER_RANGE,
   CATALOG_REBUILD_DEBOUNCE_MS, oldestYearOf, withCompleteMagnitudeFloor,
+  jstYearOf, jstYearStartMs, jstYearEndMs, clampPeriodToRange,
   type CatalogFilter, type CatalogViewOptions, type CatalogPointCloud,
 } from './utils/hypocenterCatalogView'
 import { SpecialInfoBanner } from './components/SpecialInfoBanner'
@@ -863,12 +864,13 @@ export function App() {
   // **タブを開くまで取りに行かない。** 全期間で 108 ファイル・gzip 12.6MB あり、起動時に
   // 読むと地震情報の表示まで遅れる。年ごとの取得はローダー側がキャッシュする。
   const [catalogFilter, setCatalogFilter] = useState<CatalogFilter>(() => {
-    const thisYear = new Date().getFullYear()
+    // **年は日本時間で数える。** 端末の時計が別のタイムゾーンだと、年明け前後に収録の無い年を選ぶ。
+    const thisYear = jstYearOf(Date.now())
     return {
       // 初期表示は直近 10 年。マグニチュードの下限は索引が届いた時点でその期間の
       // 完全性へ合わせ直す（下の効果）。ここでの 2 は索引が来るまでの仮の値。
-      fromYear: thisYear - 9,
-      toYear: thisYear,
+      fromMs: jstYearStartMs(thisYear - 9),
+      toMs: jstYearEndMs(thisYear),
       minMagnitude: MAGNITUDE_FILTER_RANGE.min,
       maxMagnitude: MAGNITUDE_FILTER_RANGE.max,
       minDepthKm: 0,
@@ -888,20 +890,26 @@ export function App() {
   //    ドラッグ 1 回で収録の全ファイル（33MB）を取りに行くことになる。
   const settledFilter = useDebouncedValue(catalogFilter, CATALOG_REBUILD_DEBOUNCE_MS)
   const settledView = useDebouncedValue(catalogView, CATALOG_REBUILD_DEBOUNCE_MS)
-  const catalog = useHypocenterCatalog(settledFilter.fromYear, settledFilter.toYear, mapTab === 'catalog')
+  const catalog = useHypocenterCatalog(
+    jstYearOf(settledFilter.fromMs),
+    jstYearOf(settledFilter.toMs),
+    mapTab === 'catalog',
+  )
   const catalogIndex = catalog.index
   // 索引が届いたら、期間を収録範囲へ収め、マグニチュードの下限をその期間の完全性に合わせる。
   // **収める側も必要。** 年が明けた直後は「今年」がまだ収録されておらず、選択肢に無い値が残る。
   useEffect(() => {
     if (!catalogIndex || catalogIndex.years.length === 0) return
     setCatalogFilter((prev) => {
-      const lo = catalogIndex.years[0]
-      const hi = catalogIndex.years[catalogIndex.years.length - 1]
-      const fromYear = Math.min(Math.max(prev.fromYear, lo), hi)
-      const toYear = Math.min(Math.max(prev.toYear, lo), hi)
-      const next = withCompleteMagnitudeFloor(catalogIndex, prev, { ...prev, fromYear, toYear })
+      const lo = jstYearStartMs(catalogIndex.years[0])
+      const hi = jstYearEndMs(catalogIndex.years[catalogIndex.years.length - 1])
+      // **収めるのは日ごと**（`clampPeriodToRange`）。両端をそれぞれ時刻で丸めると、選んでいる
+      // 期間が丸ごと収録の外にあるときに同じ 1 点へ潰れ、1 件も残らないのに見出しは
+      // 「1 日ぶん」と出る。
+      const { fromMs, toMs } = clampPeriodToRange(prev, lo, hi)
+      const next = withCompleteMagnitudeFloor(catalogIndex, prev, { ...prev, fromMs, toMs })
       if (
-        fromYear === prev.fromYear && toYear === prev.toYear &&
+        fromMs === prev.fromMs && toMs === prev.toMs &&
         next.minMagnitude === prev.minMagnitude && next.maxMagnitude === prev.maxMagnitude
       ) return prev
       return next
