@@ -392,6 +392,20 @@ export const PARAMS = {
    * （実データでは size 2 止まりの本物が 4 件あり、いずれも能登・福島の大地震の成分）。
    */
   SOLO_DECAY_SIZE: 2,
+  /**
+   * 単点でなくなったと認めるのに、対の相手へ値を要求し始める震度。
+   *
+   * **低い震度では要求しない。** 震源最近傍の 1 点が先に立ち上がり、隣が追いつくのに時間が
+   * かかるのは実地震の正常な姿で、そこへ一律に値を課すと本物の初動まで降ろしてしまう。
+   */
+  SOLO_PAIR_HIGH_INTENSITY: 4.5,
+  /**
+   * 上の震度を超えたイベントで、対の相手に要求する値。
+   *
+   * **これが無いと、上限に張り付いた 1 点の隣で微動しているだけの点が「2 点目」に数えられる。**
+   * 実際にリアルタイム震度7 の誤検知が 5 時間居座った（隣は 0.5 のまま 31 秒不変）。
+   */
+  SOLO_PAIR_MIN_INTENSITY: 2.0,
 
   /**
    * メンバーを外すまでの猶予(ms)。イベントのメンバーが「levelActive を最後に満たしてから」これを
@@ -1294,8 +1308,15 @@ function mergeAdjacentEvents(events: DetectionEvent[], now: number): DetectionEv
     // 確定の計時は早いほうに揃える（遅いほうに合わせると猶予が伸びる）。0 は未確定なので除く
     const confirmedAts = [host.firstConfirmedAtMs, e.firstConfirmedAtMs].filter((v) => v > 0)
     host.firstConfirmedAtMs = confirmedAts.length > 0 ? Math.min(...confirmedAts) : 0
-    // メンバーは和集合になるので、どちらかが単点でなくなっていれば 1 本化した後もそう扱う
-    host.everMultiPoint = host.everMultiPoint || e.everMultiPoint
+    // **`everMultiPoint` は併合で引き継がない。**
+    //
+    // 和集合になるのだから引き継いでよさそうに見えるが、この印は一度立つと降りない。引き継ぐと
+    // **併合相手が消えて根拠が無くなった後も残り、単点のまま居座る確定を降ろす契機が永久に消える**
+    // （`MERGE_EVENT_KM` は 100km なので、固着した点の周りで無関係な小さい地震が 1 度起きる
+    // だけで成立する。実測では 84km 先の震度1 が 6 秒あれば足りた）。
+    //
+    // 引き継がなくても困らない——併合後の姿は次のフレームの `updateEventMetrics` が host の
+    // メンバー（和集合）で評価し直すので、**対が実在すればそこで立つ**。実データ 793 窓でも差分は出ない。
     // 併合したどちらかが周囲の裏付けを持っていれば、1 本化した後も持つ（メンバーは和集合になるため）
     host.everNeighborRise = host.everNeighborRise || e.everNeighborRise
     // 併合した結果に対して単点判定をやり直す（everMultiPoint は論理和・firstConfirmedAtMs は
@@ -1388,6 +1409,8 @@ function updateEventMetrics(
   // size に数えたメンバーの座標。単点判定の隣接チェックに使う（下記 hasAdjacentPair）
   const sizeLats: number[] = []
   const sizeLngs: number[] = []
+  // 対の相手に値を要求するとき（下記 SOLO_PAIR_MIN_INTENSITY）に使う。座標と同じ並び
+  const sizeVals: number[] = []
   for (const k of e.memberKeys) {
     const p = cur.get(k)
     const t = triggeredAt[k]
@@ -1400,6 +1423,7 @@ function updateEventMetrics(
       if (p) {
         sizeLats.push(p.lat)
         sizeLngs.push(p.lng)
+        sizeVals.push(p.value)
       }
     }
     if (p && p.levelActive) {
@@ -1488,7 +1512,24 @@ function updateEventMetrics(
   // ——L2 が成分を作るときと同じ `R_KM` を使う。
   // `size` の条件は `hasAdjacentPair` の呼び出しを省くための早期リターン（対が 1 つも無ければ
   // あちらも偽を返す）。`SOLO_DECAY_SIZE` を 3 以上へ動かしたときに意味を持つ
-  if (!e.everMultiPoint && size >= PARAMS.SOLO_DECAY_SIZE && hasAdjacentPair(sizeLats, sizeLngs)) {
+  // **高震度のイベントでは、対の相手にも値を要求する。**
+  // 上限に張り付いた 1 点の隣で微動しているだけの点でも成分にはなるため、座標の隣接だけで
+  // 見ると「2 点目が来た」と誤認し、単点居座りを降ろす契機が永久に消える。低い震度で要求
+  // しないのは、隣が追いつくのに時間がかかる本物の初動を巻き込むため
+  // （`SOLO_PAIR_HIGH_INTENSITY`）。
+  let pairLats = sizeLats
+  let pairLngs = sizeLngs
+  if (maxV >= PARAMS.SOLO_PAIR_HIGH_INTENSITY) {
+    pairLats = []
+    pairLngs = []
+    for (let i = 0; i < sizeLats.length; i++) {
+      if (sizeVals[i] >= PARAMS.SOLO_PAIR_MIN_INTENSITY) {
+        pairLats.push(sizeLats[i])
+        pairLngs.push(sizeLngs[i])
+      }
+    }
+  }
+  if (!e.everMultiPoint && size >= PARAMS.SOLO_DECAY_SIZE && hasAdjacentPair(pairLats, pairLngs)) {
     e.everMultiPoint = true
   }
   // 降ろすのは確信度だけで、状態は書き換えない（理由は `isSoloConfirmStale` のコメント）。
