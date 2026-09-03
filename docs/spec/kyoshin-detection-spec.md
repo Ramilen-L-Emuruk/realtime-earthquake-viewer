@@ -165,8 +165,19 @@ Yahoo RealTimeData (1Hz JSON)
 
    - **発報の条件は変えていない。** 震源最近傍の 1 点が先に立ち上がり、遅れて周囲へ伝播するのは実地震の
      正常な姿なので、鳴らすまでの経路には手を入れない
-   - **数えるのは点数ではなく「隣り合う対があるか」**（`hasAdjacentPair`・`R_KM` 以内）。メンバーは併合で
+   - **数えるのは点数ではなく「隣り合う対があるか」**(`hasAdjacentPair`・`R_KM` 以内)。メンバーは併合で
      和集合になるため、離れた場所で別々に張り付いた 2 点でも点数だけは 2 になる
+   - **高震度のイベントでは、対の相手にも値を要求する**（`SOLO_PAIR_HIGH_INTENSITY` 以上のイベントに
+     `SOLO_PAIR_MIN_INTENSITY` 以上を課す）。張り付いた 1 点の隣で微動しているだけの点も成分には
+     なるため、座標の隣接だけで見ると「2 点目が来た」と誤認し、**降ろす契機が永久に消える**。
+     低い震度で要求しないのは、隣が追いつくのに時間がかかる本物の初動を巻き込むため（実測は設計書§36）
+   - **併合（`mergeAdjacentEvents`）では `everMultiPoint` を引き継がない。** 引き継ぐと、併合相手が
+     消えて根拠が無くなった後も印が残り、降ろす契機が永久に消える（`MERGE_EVENT_KM` は 100km なので、
+     固着した点の周りで無関係な小さい地震が 1 度起きるだけで成立する）。併合後の姿は次のフレームで
+     評価し直されるので、対が実在すればそこで立つ。**上の下限とこれは両方要る**（片方だけでは塞がらない）
+   - **この対策が塞ぐのは `SOLO_PAIR_HIGH_INTENSITY` 以上で固着した観測点だけ。** 値が動いていない
+     ことを直接見ているのではなく「震度が高いなら固着を疑う」という代理で判定しているため、
+     それより低い値で固着した点は同じ形で居座る（設計書§36「残っている穴」）
    - **状態は書き換えない**（`everConfirmed` を降ろさない）。降ろすと確定条件を満たし直した瞬間に再確定し、
      猶予の周期で `confirmed` と `weak` を往復する。**明滅は居座りより悪い**（検知音が鳴り直すため）
    - 判定は `isSoloConfirmStale` に集約する。確信度を書く箇所は `updateEventMetrics` と
@@ -184,7 +195,7 @@ Yahoo RealTimeData (1Hz JSON)
      CHRONIC_POINT_BUMP), ceil((局所実在近傍数+1) × CONFIRM_DENSITY_FRAC)))`。疎地域（離島等）は
      点数要件を自動的に下げる
    - `confirmPointsBase`・`confirmFramesReq` は `frame.eewActive`（呼び出し側が「震源要素が確定した
-     （単独点処理=仮定震源要素でない）EEW が発表中か」を渡す。severity は推定震度の大小を示す軸に
+     （＝仮定震源要素でない）EEW が発表中か」を渡す。severity は推定震度の大小を示す軸に
      過ぎず判定に使わない）が true の間、`CONFIRM_POINTS`/`CONFIRM_FRAMES` の代わりに緩和値
      `EEW_CONFIRM_POINTS`/`EEW_CONFIRM_FRAMES` を使う（震源座標・距離は見ない＝震源非依存を維持したまま
      確定を早める）。単点ノイズを弾く `CONFIRM_INTENSE_POINTS`・`MIN_CONFIRM_INTENSITY`・
@@ -286,6 +297,8 @@ Yahoo RealTimeData (1Hz JSON)
 | `NEIGHBOR_RISE_FRAC` | likely に要する「圏内で同時に立ち上がっている点」の割合（同上） | 0.15 |
 | `SOLO_CONFIRM_GRACE_MS` | 単点のまま確定が居座るのを許す時間（設計書§33） | 20,000 ms |
 | `SOLO_DECAY_SIZE` | 「単点ではなくなった」とみなす点数（隣接する対であること） | 2 |
+| `SOLO_PAIR_HIGH_INTENSITY` | 対の相手に値を要求し始める震度（設計書§36） | 4.5（震度5弱） |
+| `SOLO_PAIR_MIN_INTENSITY` | 上を超えたイベントで、対の相手に要求する値 | 2.0（震度2 相当） |
 | `CELL_ACTIVITY_TAU_MS` | セル慢性活性の学習時定数 | 1,800,000 ms（30分） |
 | `CHRONIC_THRESHOLD` | 慢性活性セルとみなす閾値 | 0.25 |
 | `CHRONIC_POINT_BUMP` | 慢性活性セルでの点数引き上げ幅 | 4 |

@@ -29,6 +29,7 @@ import {
   createTestTsunamiForecast,
   createTestTsunamiRetraction,
   createTestNankai,
+  createTestNankaiRetraction,
   createTestNankaiCommentary,
   createTestKohatsu,
   TEST_AUTO_DISMISS_MS,
@@ -382,6 +383,17 @@ export function useEarthquakes(
   const testEEWRetractionRef = useRef<TestEEWRetractionEntry | null>(null)
   // テスト津波の発報状態を種別ごとに独立管理
   const testTsunamiRef = useRef<{ cancelTimer: number; tsunami: JMATsunami } | null>(null)
+  // 南海トラフ臨時情報の取消テストで、発表から取消までを待つタイマー
+  const testNankaiRetractionTimerRef = useRef<number | undefined>(undefined)
+  // 帯に出している南海トラフ臨時情報・後発地震注意情報の識別情報（無ければ null）。取消の照合に使う。
+  //
+  // **`stateRef` では判定できない。** あれはレンダー時にしか進まないが、キューのディスパッチャは
+  // 1 ティックの中で複数のイベントを処理する（理由は `acceptedEewSerialRef` の宣言箇所に同じ）。
+  // こちらは反映した時点で即座に進むため、同じティックの中でも正しく比べられる。
+  const shownNankaiEventIdRef = useRef<string | null>(null)
+  const shownKohatsuEventIdRef = useRef<string | null>(null)
+  // 解説情報だけは `id`（識別情報と号数の組）で持つ。理由は `applyNankaiCommentary` の照合箇所。
+  const shownCommentaryIdRef = useRef<string | null>(null)
   // 現在の state を WS コールバック内から参照するための ref
   const stateRef = useRef(state)
   stateRef.current = state
@@ -515,6 +527,79 @@ export function useEarthquakes(
   // 期限切れの電文を弾くのは、アーカイブ再生で流れてきた古い解説が帯として残らないようにするため。
   // 畳むときに id を照合するのは、待っている間に新しい解説へ入れ替わっていた場合に
   // そちらを消してしまわないため。
+  /**
+   * 南海トラフ臨時情報を帯へ反映する。
+   *
+   * **ライブ受信（WebSocket）とキュー（リプレイ・テストボタン）の両方から呼ぶこと。**
+   * 同じ規則を 2 箇所に書くと片方だけ更新が漏れる ―― 実際に、取消の照合をキュー側だけに入れて
+   * ライブ受信が素通りする状態を作った。関連解説情報（`applyNankaiCommentary`）と同じ形に揃える。
+   *
+   * @returns 反映したか。取消を見送った場合は `false` で、**呼び出し側は音・読み上げも起こさない**
+   *   （表示していないものの取消を告げても伝わらない）。
+   */
+  const applyNankai = useCallback((nankai: JMANankai): boolean => {
+    if (!nankai.cancelled) {
+      shownNankaiEventIdRef.current = nankai.eventId
+      setState(prev => ({ ...prev, nankai }))
+      return true
+    }
+    // **照合するのは取消（`retracted`）だけ。**
+    //
+    // 「調査終了」は気象庁が調査の結果として発表する別の報で、臨時情報は**発表ごとに別の識別情報**を
+    // 割り振る（実測。→ docs/spec/data-sources-spec.md §2 の表）。つまり段階の報と調査終了の報で
+    // `EventID` は一致しない。ここを照合すると、**正常な調査終了で帯が永久に消えなくなる**。
+    //
+    // 取消は「その電文が指す情報単位」を取り消すので、対象と同じ識別情報を持つ（電文解説資料
+    // Ⅰ.別紙ウ）。遅れて届いた古い取消が新しい段階の帯を消さないよう、そちらだけ照合する。
+    if (nankai.retracted && shownNankaiEventIdRef.current !== nankai.eventId) {
+      // 表示していない場合（記憶が空）もここへ来る。**帯が無いまま「取り消されました」と
+      // 告げないため**——利用者は取り消された情報自体を見ていない。
+      log.info(shownNankaiEventIdRef.current === null
+        ? `[nankai] 表示していない情報単位への取消のため何もしません received=${nankai.eventId}`
+        : `[nankai] 別の情報単位への取消のため帯を残します received=${nankai.eventId} shown=${shownNankaiEventIdRef.current}`)
+      return false
+    }
+    shownNankaiEventIdRef.current = null
+    setState(prev => ({ ...prev, nankai: null }))
+    return true
+  }, [])
+
+  /**
+   * 後発地震注意情報を帯へ反映する。失効の予約もここで持つ。
+   * 呼ぶ場所と戻り値の意味は `applyNankai` に同じ。
+   */
+  const applyKohatsu = useCallback((kohatsu: JMAKohatsu): boolean => {
+    if (kohatsuExpireTimerRef.current !== undefined) {
+      window.clearTimeout(kohatsuExpireTimerRef.current)
+      kohatsuExpireTimerRef.current = undefined
+    }
+    if (!kohatsu.cancelled) {
+      const expireMs = new Date(kohatsu.expireAt).getTime() - getTimeRef.current().getTime()
+      if (expireMs > 0) {
+        kohatsuExpireTimerRef.current = window.setTimeout(() => {
+          kohatsuExpireTimerRef.current = undefined
+          shownKohatsuEventIdRef.current = null
+          setState(prev => ({ ...prev, kohatsu: null }))
+        }, expireMs)
+      }
+      shownKohatsuEventIdRef.current = kohatsu.eventId
+      setState(prev => ({ ...prev, kohatsu }))
+      return true
+    }
+    // 照合は取消だけ（理由は `applyNankai`）。後発地震に「調査終了」相当の段階は無いが、
+    // 判定の形を揃えておく ―― 片方だけ違う規則にすると、次に触る人がどちらが正しいか判らない。
+    if (kohatsu.retracted && shownKohatsuEventIdRef.current !== kohatsu.eventId) {
+      // 表示していない場合もここへ来る（理由は `applyNankai` の同じ箇所に同じ）
+      log.info(shownKohatsuEventIdRef.current === null
+        ? `[kohatsu] 表示していない情報単位への取消のため何もしません received=${kohatsu.eventId}`
+        : `[kohatsu] 別の情報単位への取消のため帯を残します received=${kohatsu.eventId} shown=${shownKohatsuEventIdRef.current}`)
+      return false
+    }
+    shownKohatsuEventIdRef.current = null
+    setState(prev => ({ ...prev, kohatsu: null }))
+    return true
+  }, [])
+
   const applyNankaiCommentary = useCallback((commentary: JMANankaiCommentary): boolean => {
     // 取消電文は帯を消す。false を返すので音・読み上げも起こさない（取消を告げる必要のある
     // 重さの情報ではないため。臨時情報の取消とは扱いが違う）
@@ -523,6 +608,22 @@ export function useEarthquakes(
         window.clearTimeout(nankaiCommentaryExpireTimerRef.current)
         nankaiCommentaryExpireTimerRef.current = undefined
       }
+      // 失効の予約と同じく、消す前に `id` を照合する（待っている間に新しい解説へ入れ替わって
+      // いた場合にそちらを消さないため）。
+      //
+      // **`eventId` では足りない。** 臨時解説（VYSE51）は一連の期間で `eventId` が固定で、
+      // 号数は `Serial` にしか出ない（→ docs/spec/data-sources-spec.md §2 の表）。`eventId` だけを
+      // 比べると、連日届く別の号を同じものとして扱い、照合が素通りする。`id` は両方を含む。
+      //
+      // **`id` を要求しても正当な取消は弾かれない。** 取消電文の `Serial` は「直前の時点における
+      // 最新の情報番号の値」と定められている（電文解説資料 Ⅰ.別紙ウ 2.）ので、帯に出している号
+      // （＝最新号）と一致する。古い号を指す取消だけが弾かれる ―― それがここで防ぎたいもの。
+      const shown = shownCommentaryIdRef.current
+      if (shown !== commentary.id) {
+        log.info(`[nankaiCommentary] 別の号への取消のため帯を残します received=${commentary.id} shown=${shown}`)
+        return false
+      }
+      shownCommentaryIdRef.current = null
       setState(prev => ({ ...prev, nankaiCommentary: null }))
       return false
     }
@@ -539,9 +640,11 @@ export function useEarthquakes(
     if (nankaiCommentaryExpireTimerRef.current !== undefined) {
       window.clearTimeout(nankaiCommentaryExpireTimerRef.current)
     }
+    shownCommentaryIdRef.current = commentary.id
     setState(prev => ({ ...prev, nankaiCommentary: commentary }))
     nankaiCommentaryExpireTimerRef.current = window.setTimeout(() => {
       nankaiCommentaryExpireTimerRef.current = undefined
+      if (shownCommentaryIdRef.current === commentary.id) shownCommentaryIdRef.current = null
       setState(prev => (
         prev.nankaiCommentary?.id === commentary.id ? { ...prev, nankaiCommentary: null } : prev
       ))
@@ -918,8 +1021,9 @@ export function useEarthquakes(
           }
         } else if (payload.kind === 'nankai') {
           const nankai = payload.data
-          setState(prev => ({ ...prev, nankai: nankai.cancelled ? null : nankai }))
-          if (!silent) onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as AppEvent)
+          // 反映しなかった取消では音も読み上げも起こさない（判定は `applyNankai`）。
+          const applied = applyNankai(nankai)
+          if (applied && !silent) onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as AppEvent)
         } else if (payload.kind === 'nankaiCommentary') {
           const commentary = payload.data
           // 期限切れなら反映も通知もしない（画面に出ないものを読み上げても意味がない）
@@ -951,23 +1055,8 @@ export function useEarthquakes(
           })
         } else if (payload.kind === 'kohatsu') {
           const kohatsu = payload.data
-          if (kohatsuExpireTimerRef.current !== undefined) {
-            window.clearTimeout(kohatsuExpireTimerRef.current)
-            kohatsuExpireTimerRef.current = undefined
-          }
-          if (!kohatsu.cancelled) {
-            const expireMs = new Date(kohatsu.expireAt).getTime() - getTimeRef.current().getTime()
-            if (expireMs > 0) {
-              kohatsuExpireTimerRef.current = window.setTimeout(() => {
-                kohatsuExpireTimerRef.current = undefined
-                setState(prev => ({ ...prev, kohatsu: null }))
-              }, expireMs)
-            }
-            setState(prev => ({ ...prev, kohatsu }))
-          } else {
-            setState(prev => ({ ...prev, kohatsu: null }))
-          }
-          if (!silent) onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as AppEvent)
+          const applied = applyKohatsu(kohatsu)
+          if (applied && !silent) onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as AppEvent)
         }
         isSilentRef.current = false
       }
@@ -985,6 +1074,10 @@ export function useEarthquakes(
       }
       if (nankaiCommentaryExpireTimerRef.current !== undefined) {
         window.clearTimeout(nankaiCommentaryExpireTimerRef.current)
+      }
+      // 取消テストの待ちも落とす。残すと、キューを空にした後で取消をひとつ差し込む。
+      if (testNankaiRetractionTimerRef.current !== undefined) {
+        window.clearTimeout(testNankaiRetractionTimerRef.current)
       }
       eventQueueRef.current.clear()
     }
@@ -1108,32 +1201,23 @@ export function useEarthquakes(
             }
           }
 
-          // 後発地震注意情報の有効期限タイマー（初回ロード時）
-          if (kohatsuData && !kohatsuData.cancelled) {
-            const expireMs = new Date(kohatsuData.expireAt).getTime() - serverNow()
-            if (expireMs > 0) {
-              if (kohatsuExpireTimerRef.current !== undefined) window.clearTimeout(kohatsuExpireTimerRef.current)
-              kohatsuExpireTimerRef.current = window.setTimeout(() => {
-                kohatsuExpireTimerRef.current = undefined
-                setState(prev => ({ ...prev, kohatsu: null }))
-              }, expireMs)
-            }
-          }
-
           if (cancelled) return
           setState(prev => ({
             ...prev,
             earthquakes,
             tsunamis,
             lpgmByEventId,
-            nankai: nankaiData ?? null,
-            kohatsu: kohatsuData ?? null,
             lastUpdate: serverDate(),
             isLoading: false,
             hasMore: !!nextToken,
             error: null,
           }))
-          // 解説情報は期限タイマーの張り替えを伴うためヘルパ経由で入れる（期限切れは入らない）
+          // **臨時情報・後発地震・解説情報はヘルパ経由で入れる。** ここで state を直書きすると、
+          // 表示中の識別情報を覚える記憶（`shownNankaiEventIdRef` 等）が進まず、以後に届いた
+          // 取消の照合が「表示していない」と誤判定して無条件に帯を消す。後発地震の期限タイマーも
+          // `applyKohatsu` が張るので、ここで重ねて張らない（取得は取消・期限切れを除いて返す）。
+          if (nankaiData) applyNankai(nankaiData)
+          if (kohatsuData) applyKohatsu(kohatsuData)
           if (commentaryData) applyNankaiCommentary(commentaryData)
           // 初回ロードで津波が有効（validDateTime未来）の場合、キューへ解除イベントを挿入する。
           if (tsunamis.length > 0 && latestTsunami?.validDateTime) {
@@ -1188,8 +1272,10 @@ export function useEarthquakes(
           }
         } else if (ev.kind === 'nankai') {
           const nankai = ev.data
-          setState(prev => ({ ...prev, nankai: nankai.cancelled ? null : nankai }))
-          onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as AppEvent)
+          // キュー経路と同じ関数を通す（規則を 2 箇所に書かない。理由は `applyNankai`）。
+          if (applyNankai(nankai)) {
+            onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as AppEvent)
+          }
         } else if (ev.kind === 'nankaiCommentary') {
           const commentary = ev.data
           if (applyNankaiCommentary(commentary)) {
@@ -1197,23 +1283,9 @@ export function useEarthquakes(
           }
         } else if (ev.kind === 'kohatsu') {
           const kohatsu = ev.data
-          if (kohatsuExpireTimerRef.current !== undefined) {
-            window.clearTimeout(kohatsuExpireTimerRef.current)
-            kohatsuExpireTimerRef.current = undefined
+          if (applyKohatsu(kohatsu)) {
+            onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as AppEvent)
           }
-          if (!kohatsu.cancelled) {
-            const expireMs = new Date(kohatsu.expireAt).getTime() - serverNow()
-            if (expireMs > 0) {
-              kohatsuExpireTimerRef.current = window.setTimeout(() => {
-                kohatsuExpireTimerRef.current = undefined
-                setState(prev => ({ ...prev, kohatsu: null }))
-              }, expireMs)
-            }
-            setState(prev => ({ ...prev, kohatsu }))
-          } else {
-            setState(prev => ({ ...prev, kohatsu: null }))
-          }
-          onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as AppEvent)
         } else {
           const data = ev.data
           const enriched = data.kind === 'eew' ? enrichEEWPref(data as EEWAlert, areaPrefIndex) : data
@@ -1491,9 +1563,33 @@ export function useEarthquakes(
   )
 
   const simulateNankai = useCallback((kindName: '調査中' | '巨大地震注意' | '巨大地震警戒') => {
+    // **受信と同じ関数を通す。** state を直書きすると、表示中の識別情報を覚える ref が進まず、
+    // 直後に取消テストを走らせたときの照合が実運用と食い違う。
     const nankai = createTestNankai(kindName)
-    setState(prev => ({ ...prev, nankai }))
-    onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as AppEvent)
+    if (applyNankai(nankai)) {
+      onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as AppEvent)
+    }
+  }, [applyNankai])
+
+  /**
+   * 南海トラフ臨時情報の取消テスト。発表を出し、`TEST_AUTO_DISMISS_MS` 後に**同じ `eventId` の
+   * 取消**を流す（取消は対象の情報単位を指すため。`createTestNankaiRetraction`）。
+   *
+   * **受信と同じ経路（イベントキュー）へ積む。** 上の `simulateNankai` のように state を直接
+   * 書き換えると、取消の照合（`eventId` の一致確認）を一度も通らないテストになる ―― 実運用で
+   * 効く分岐を踏まないテストボタンは、あってもこの穴を見つけられない。
+   */
+  const simulateNankaiRetraction = useCallback(() => {
+    if (testNankaiRetractionTimerRef.current !== undefined) {
+      window.clearTimeout(testNankaiRetractionTimerRef.current)
+    }
+    const nankai = createTestNankai('巨大地震注意')
+    const retraction = createTestNankaiRetraction(nankai)
+    eventQueueRef.current.push({ eventTime: serverDate(), payload: { kind: 'nankai', data: nankai } })
+    testNankaiRetractionTimerRef.current = window.setTimeout(() => {
+      testNankaiRetractionTimerRef.current = undefined
+      eventQueueRef.current.push({ eventTime: serverDate(), payload: { kind: 'nankai', data: retraction } })
+    }, TEST_AUTO_DISMISS_MS)
   }, [])
 
   const simulateNankaiCommentary = useCallback((serialName: '臨時解説' | '定例解説') => {
@@ -1504,18 +1600,12 @@ export function useEarthquakes(
   }, [applyNankaiCommentary])
 
   const simulateKohatsu = useCallback(() => {
+    // 受信と同じ関数を通す（理由は `simulateNankai` に同じ）。期限タイマーもそちらが張る。
     const kohatsu = createTestKohatsu()
-    if (kohatsuExpireTimerRef.current !== undefined) window.clearTimeout(kohatsuExpireTimerRef.current)
-    const expireMs = new Date(kohatsu.expireAt).getTime() - serverNow()
-    if (expireMs > 0) {
-      kohatsuExpireTimerRef.current = window.setTimeout(() => {
-        kohatsuExpireTimerRef.current = undefined
-        setState(prev => ({ ...prev, kohatsu: null }))
-      }, expireMs)
+    if (applyKohatsu(kohatsu)) {
+      onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as AppEvent)
     }
-    setState(prev => ({ ...prev, kohatsu }))
-    onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as AppEvent)
-  }, [])
+  }, [applyKohatsu])
 
   const resetState = useCallback(() => {
     // 台帳もここで空にする。掃除の `useEffect` に任せると、リセットから次のコミットまでの間に
@@ -1524,6 +1614,16 @@ export function useEarthquakes(
     // 取消の台帳も空にする。リプレイの開始・リセットで時間軸が変わるため、前の軸で見た取消の
     // 発表時刻と新しい軸の報を比べると、正常な報を取り下げ済みと誤判定する。
     quakeRetractionsRef.current = []
+    // 帯を消すので、表示中の識別情報の記憶も落とす（残すと、次に届いた取消の照合が
+    // 消えた帯の識別情報と比べられる）。取消テストの待ちも落とす ―― リプレイへ切り替えた後で
+    // テスト用の取消がキューへ紛れ込むのを防ぐ。
+    shownNankaiEventIdRef.current = null
+    shownKohatsuEventIdRef.current = null
+    shownCommentaryIdRef.current = null
+    if (testNankaiRetractionTimerRef.current !== undefined) {
+      window.clearTimeout(testNankaiRetractionTimerRef.current)
+      testNankaiRetractionTimerRef.current = undefined
+    }
     setState(prev => ({
       ...prev,
       earthquakes: [],
@@ -1582,7 +1682,7 @@ export function useEarthquakes(
     simulateForeignQuake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
-    simulateNankai, simulateNankaiCommentary, simulateKohatsu,
+    simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     resetState,
     loadReplayEvents,
     restoreQuakeHistory,

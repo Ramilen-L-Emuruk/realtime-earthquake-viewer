@@ -26,6 +26,7 @@ import {
   buildCatalogPointCloud, DEPTH_FILTER_MAX_KM, MAGNITUDE_FILTER_RANGE,
   LATITUDE_FILTER_RANGE, LONGITUDE_FILTER_RANGE,
   CATALOG_REBUILD_DEBOUNCE_MS, oldestYearOf, withCompleteMagnitudeFloor,
+  jstYearOf, jstYearStartMs, jstYearEndMs, clampPeriodToRange,
   type CatalogFilter, type CatalogViewOptions, type CatalogPointCloud,
 } from './utils/hypocenterCatalogView'
 import { SpecialInfoBanner } from './components/SpecialInfoBanner'
@@ -518,7 +519,7 @@ export function App() {
     simulateEarthquake, simulateForeignQuake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
-    simulateNankai, simulateNankaiCommentary, simulateKohatsu,
+    simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     resetState, loadReplayEvents, restoreQuakeHistory,
   } = useEarthquakes(handleLiveEvent, debouncedApiKey, settings.dmdataTestDelivery, replayTimeOffset)
   earthquakesRef.current = earthquakes
@@ -561,6 +562,7 @@ export function App() {
     nankaiChecking:    () => simulateNankai('調査中'),
     nankaiWatch:       () => simulateNankai('巨大地震注意'),
     nankaiWarning:     () => simulateNankai('巨大地震警戒'),
+    nankaiRetraction:  simulateNankaiRetraction,
     nankaiCommentaryAdHoc:   () => simulateNankaiCommentary('臨時解説'),
     nankaiCommentaryRoutine: () => simulateNankaiCommentary('定例解説'),
     kohatsu:           simulateKohatsu,
@@ -579,7 +581,7 @@ export function App() {
     simulateEarthquake, simulateForeignQuake,
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
-    simulateNankai, simulateNankaiCommentary, simulateKohatsu,
+    simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
   ])
   // IconNav の onTabChange。手動選択は必ず即時反映し、以後 TAB_HOLD_MS の間は自動切替に
   // 奪わせない（EEW の新規発報・レベルアップ・誤報取消だけはこれより強い）。
@@ -721,13 +723,14 @@ export function App() {
   )
   // cancelledAt 除外済みのアクティブ EEW が1件以上あるか（S波カウントダウン等が参照する）
   const hasActiveEEW = activeEEWsNoCancelled.size > 0
-  // 強震モニタ検知エンジン（useKyoshinDetectorV2）の EEW 連動緩和専用。震源要素が確定した（単独点処理=
-  // 仮定震源要素でない）EEW のみを見る。severity（Warning/Forecast）は推定震度の大小を示す軸に過ぎず、
-  // 予報級でも震度3〜4相当は普通にありうるため使わない。condition==='仮定震源要素' は 1 観測点のみの
-  // データで震源を仮決めした速報で、震源・マグニチュード・推定震度の誤差が大きい（RealtimeTab・ttsText
-  // が「単独点処理のため」として推定震度・マグニチュード等を非表示にするのと同じ判断基準）。
-  // hasActiveEEW をそのまま使うと単独点処理由来の速報1件だけで全国規模の確定緩和が発動し、単点ノイズ
+  // 強震モニタ検知エンジン（useKyoshinDetectorV2）の EEW 連動緩和専用。**震源要素が確定した EEW だけ**を
+  // 見る。severity（Warning/Forecast）は推定震度の大小を示す軸に過ぎず、予報級でも震度3〜4相当は
+  // 普通にありうるため使わない。`condition === '仮定震源要素'` は震源要素そのものを推定できず、
+  // 観測点直下・深さ 10km・M1.0 という固定の仮定値が入っている状態で、**その震源に基づく緩和は
+  // 根拠を持たない**（RealtimeTab・shareCardContent が M・深さを隠すのと同じ判断基準）。
+  // hasActiveEEW をそのまま使うと仮定震源要素の速報 1 件だけで全国規模の確定緩和が発動し、単点ノイズ
   // 由来の誤 confirmed を EEW 経由で再導入しかねないため区別する。
+  // **観測点の数で分けているのではない**——仮定震源要素の定義に観測点数は含まれない（eew-spec.md §5）。
   const hasActiveNonAssumedEEW = useMemo(
     () => [...activeEEWsNoCancelled.values()].some((eew) => eew.earthquake.condition !== '仮定震源要素'),
     [activeEEWsNoCancelled],
@@ -862,12 +865,13 @@ export function App() {
   // **タブを開くまで取りに行かない。** 全期間で 108 ファイル・gzip 12.6MB あり、起動時に
   // 読むと地震情報の表示まで遅れる。年ごとの取得はローダー側がキャッシュする。
   const [catalogFilter, setCatalogFilter] = useState<CatalogFilter>(() => {
-    const thisYear = new Date().getFullYear()
+    // **年は日本時間で数える。** 端末の時計が別のタイムゾーンだと、年明け前後に収録の無い年を選ぶ。
+    const thisYear = jstYearOf(Date.now())
     return {
       // 初期表示は直近 10 年。マグニチュードの下限は索引が届いた時点でその期間の
       // 完全性へ合わせ直す（下の効果）。ここでの 2 は索引が来るまでの仮の値。
-      fromYear: thisYear - 9,
-      toYear: thisYear,
+      fromMs: jstYearStartMs(thisYear - 9),
+      toMs: jstYearEndMs(thisYear),
       minMagnitude: MAGNITUDE_FILTER_RANGE.min,
       maxMagnitude: MAGNITUDE_FILTER_RANGE.max,
       minDepthKm: 0,
@@ -887,20 +891,26 @@ export function App() {
   //    ドラッグ 1 回で収録の全ファイル（33MB）を取りに行くことになる。
   const settledFilter = useDebouncedValue(catalogFilter, CATALOG_REBUILD_DEBOUNCE_MS)
   const settledView = useDebouncedValue(catalogView, CATALOG_REBUILD_DEBOUNCE_MS)
-  const catalog = useHypocenterCatalog(settledFilter.fromYear, settledFilter.toYear, mapTab === 'catalog')
+  const catalog = useHypocenterCatalog(
+    jstYearOf(settledFilter.fromMs),
+    jstYearOf(settledFilter.toMs),
+    mapTab === 'catalog',
+  )
   const catalogIndex = catalog.index
   // 索引が届いたら、期間を収録範囲へ収め、マグニチュードの下限をその期間の完全性に合わせる。
   // **収める側も必要。** 年が明けた直後は「今年」がまだ収録されておらず、選択肢に無い値が残る。
   useEffect(() => {
     if (!catalogIndex || catalogIndex.years.length === 0) return
     setCatalogFilter((prev) => {
-      const lo = catalogIndex.years[0]
-      const hi = catalogIndex.years[catalogIndex.years.length - 1]
-      const fromYear = Math.min(Math.max(prev.fromYear, lo), hi)
-      const toYear = Math.min(Math.max(prev.toYear, lo), hi)
-      const next = withCompleteMagnitudeFloor(catalogIndex, prev, { ...prev, fromYear, toYear })
+      const lo = jstYearStartMs(catalogIndex.years[0])
+      const hi = jstYearEndMs(catalogIndex.years[catalogIndex.years.length - 1])
+      // **収めるのは日ごと**（`clampPeriodToRange`）。両端をそれぞれ時刻で丸めると、選んでいる
+      // 期間が丸ごと収録の外にあるときに同じ 1 点へ潰れ、1 件も残らないのに見出しは
+      // 「1 日ぶん」と出る。
+      const { fromMs, toMs } = clampPeriodToRange(prev, lo, hi)
+      const next = withCompleteMagnitudeFloor(catalogIndex, prev, { ...prev, fromMs, toMs })
       if (
-        fromYear === prev.fromYear && toYear === prev.toYear &&
+        fromMs === prev.fromMs && toMs === prev.toMs &&
         next.minMagnitude === prev.minMagnitude && next.maxMagnitude === prev.maxMagnitude
       ) return prev
       return next

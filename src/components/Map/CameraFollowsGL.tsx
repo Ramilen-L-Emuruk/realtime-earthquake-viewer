@@ -1152,6 +1152,7 @@ export function TsunamiFitGL({
   tsunamiFitPositions,
   observationBars,
   arrivalMarkers,
+  missingMarkers,
   focusObsName = null,
 }: {
   mode: string
@@ -1160,6 +1161,11 @@ export function TsunamiFitGL({
   observationBars: { name: string; lat: number; lng: number; height: { value: number } }[]
   /** 到達は確認されたが波高がまだ出ていない観測点。値が付くと observationBars へ移る。 */
   arrivalMarkers: { name: string; lat: number; lng: number }[]
+  /**
+   * 観測データが欠測となった観測点。**到達確認と同じく寄り先に含める**——観測できなくなった
+   * 場所は、津波が来ていないことの保証にならないため画面に出す必要がある。
+   */
+  missingMarkers: { name: string; lat: number; lng: number }[]
   /** 観測行クリックで FocusObsGL が寄せた観測点。猶予を数え直すためだけに見る（フィットはしない）。 */
   focusObsName?: { name: string; ts: number } | null
 }) {
@@ -1173,6 +1179,9 @@ export function TsunamiFitGL({
   // 到達確認は波高を持たないため、値ではなく「名前が新しく現れたか」で見る。点滅（blinking）は
   // 60 秒で落ちるが名前は残るので、点滅が消えただけで寄り直すことはない。
   const prevArrivalNamesRef = useRef<Set<string>>(new Set())
+  // 欠測も到達確認と同じく「名前が新しく現れたか」で見る（波高を持つ欠測もあるが、値の変化は
+  // 観測棒の側が拾うので、ここで見るのは欠測になったこと自体）。
+  const prevMissingNamesRef = useRef<Set<string>>(new Set())
   const pendingObsPositionsRef = useRef<LatLng[]>([])
   const prevModeRef = useRef<string>(mode)
   const prevInteractingRef = useRef(false)
@@ -1211,11 +1220,11 @@ export function TsunamiFitGL({
     if (focusObsTs === 0 || focusObsTs === lastFocusObsTsRef.current) return
     // 実際に寄せられるクリックだけを数え直しの対象にする。カメラが動かないクリックで猶予を
     // 延ばすと、何も起きていないのに俯瞰への復帰が遅れる（判定は findObsBar に集約）。
-    if (!findObsBar([...observationBars, ...arrivalMarkers], focusObsName?.name)) return
+    if (!findObsBar([...observationBars, ...arrivalMarkers, ...missingMarkers], focusObsName?.name)) return
     lastFocusObsTsRef.current = focusObsTs
     idleReturnDueRef.current = false
     armIdleReturnTimer()
-  }, [focusObsTs, focusObsName, observationBars, arrivalMarkers, armIdleReturnTimer])
+  }, [focusObsTs, focusObsName, observationBars, arrivalMarkers, missingMarkers, armIdleReturnTimer])
 
   useEffect(() => {
     if (!map) return
@@ -1237,7 +1246,12 @@ export function TsunamiFitGL({
     const newArrivals = arrivalMarkers.filter((m) => !prevArrivals.has(m.name))
     prevArrivalNamesRef.current = new Set(arrivalMarkers.map((m) => m.name))
 
-    if (updatedBars.length > 0 || newArrivals.length > 0) {
+    // 新しく欠測になった観測点。到達確認と同じ理由で、既に見た名前は数えない。
+    const prevMissing = prevMissingNamesRef.current
+    const newMissing = missingMarkers.filter((m) => !prevMissing.has(m.name))
+    prevMissingNamesRef.current = new Set(missingMarkers.map((m) => m.name))
+
+    if (updatedBars.length > 0 || newArrivals.length > 0 || newMissing.length > 0) {
       // 持ち越しは「最後に届いたぶん」で置き換える（溜めて合成しない）。フィットを見送っている間に
       // 複数の電文が届いた場合、全部を束ねると離れた観測点の和で引きの画になり、どこで新しく
       // 観測されたのかが読めなくなる。取りこぼすのは枠の選び方だけで、観測値はカードにも
@@ -1248,6 +1262,7 @@ export function TsunamiFitGL({
       pendingObsPositionsRef.current = [
         ...updatedBars.map((b) => [b.lat, b.lng] as LatLng),
         ...newArrivals.map((m) => [m.lat, m.lng] as LatLng),
+        ...newMissing.map((m) => [m.lat, m.lng] as LatLng),
       ]
       lastTsunamiSigRef.current = tsunamiSignature
     }
@@ -1294,7 +1309,7 @@ export function TsunamiFitGL({
     log.debug('[mapGL] fitJapan (津波の帰還: 海岸線なし or 発表終了)')
     fitJapan(map, 1.0)
   }, [
-    map, mode, tsunamiSignature, tsunamiFitPositions, observationBars, arrivalMarkers, isUserInteracting,
+    map, mode, tsunamiSignature, tsunamiFitPositions, observationBars, arrivalMarkers, missingMarkers, isUserInteracting,
     idleReturnTick, armIdleReturnTimer, clearIdleReturnTimer,
   ])
 

@@ -234,7 +234,7 @@ export function useQuakeLayerData(
     }
 
     // パス2: isArea:true の地点 → 区域名で直接マッチ（観測点が海上でも確実に塗る）。
-    // DMDATA JSON 経路の都道府県ロールアップ点（addr が県名）もここで拾うが、下流は
+    // DMDSS 経路の都道府県ロールアップ点（addr が県名）もここで拾うが、下流は
     // subregionIndex（実在する区域名）を鍵に引くため、余分なキーは参照されない。
     // **quakePoints.ts の `isAreaPoint` をここへ持ち込まないこと。** あちらは座標テーブルの
     // 索引で名前の衝突を裁くため、テーブルが未読み込みだと奈良県——区域名が県名と同じ唯一の

@@ -214,14 +214,17 @@ export function createTestEEWForecast(eventId?: string, serial = 1, baseTime?: D
   }
 }
 
-// 単独点処理（仮定震源要素）の初期報 → 続報で震源確定・警報へ格上げ。
-// 初報は 1 観測点でしか捉えられておらず、地域別予想が発表されない（areas が空・condition が
-// 「仮定震源要素」）。読み上げは待たずに「単独点処理のため、予想震度なし。」と伝え、続報で値が
-// 付いた時点で言い直す（docs/spec/audio-tts-spec.md §6）。
+// 仮定震源要素の初期報 → 続報で震源確定・警報へ格上げ。
+//
+// 初報は震源要素が推定できず、PLUM 法による震度予測だけが有効な状態。**その PLUM も 1 点しか
+// 鳴っていない報**を模しており、気象庁が最大予測震度を発表しない条件（観測点 1 点による震度予測）に
+// あたるため、区域も電文全体の予想震度も持たない。読み上げは待たずに「単独点処理のため、予想震度
+// なし。」と伝え、続報で値が付いた時点で言い直す（docs/spec/audio-tts-spec.md §6）。
 //
 // **震源名は報をまたいで変えない。** 名前が変わって 50km 超動くと「震源を更新、〇〇で地震。」の
 // 経路（useLiveEventHandler の hypoFarMoved）に入り、確かめたい格上げの言い方が出てこない。
-// 単独点処理の仮定値（深さ 10km・M5.0）から確定値（深さ 30km・M6.5）へ更新する形にしてある。
+// 気象庁が仮定震源要素に入れる固定値（深さ 10km・M1.0）から確定値（深さ 30km・M6.5）へ
+// 更新する形にしてある。
 export function createTestEEWAssumed(eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
   const origin = baseTime ?? serverDate()
   const report = serverDate().toISOString()
@@ -236,10 +239,10 @@ export function createTestEEWAssumed(eventId?: string, serial = 1, baseTime?: Da
       originTime: origin.toISOString(),
       arrivalTime: new Date(origin.getTime() + 20000).toISOString(),
       condition: isAssumed ? '仮定震源要素' : '以上',
-      // 単独点処理では震源要素そのものが仮定値。カード・地図側もこれを見て M・深さを隠す
-      // （docs/spec/eew-spec.md §5）
+      // 仮定震源要素では震源要素そのものが固定の仮定値（気象庁は観測点直下・深さ 10km・M1.0 を入れる）。
+      // カード・地図側もこれを見て M・深さを隠す（docs/spec/eew-spec.md §5）
       hypocenter: isAssumed
-        ? { name: '日向灘', latitude: 32.0, longitude: 132.0, depth: 10, magnitude: 5.0 }
+        ? { name: '日向灘', latitude: 32.0, longitude: 132.0, depth: 10, magnitude: 1.0 }
         : { name: '日向灘', latitude: 32.0, longitude: 132.0, depth: 30, magnitude: 6.5 },
     },
     severity: isAssumed ? 'Forecast' : 'Warning',
@@ -342,6 +345,29 @@ export function createTestNankai(kindName: '調査中' | '巨大地震注意' | 
 //   - summary は Head/Headline/Text 相当の一文要約（バナーの見出しに出る）
 //   - body は Body/EarthquakeInfo/Text 相当の本文（開いたときに出る）
 //   - serialCode は地震関連情報番号コード。実電文で確認できた値は臨時解説 210・定例解説 200
+/**
+ * 南海トラフ地震臨時情報の取消電文。**対象と同じ `eventId` を持たせる**
+ * （取消は「独立した情報単位」を指すため。気象庁 地震火山関連 XML 電文解説資料 Ⅰ.別紙ウ）。
+ *
+ * 段階の名乗り（`kindName`）は空にする。取消は電文の撤回でしかなく、段階の判断を含まない
+ * ―― ここに「調査終了」を入れると、発表されていない安心情報をテストデータ側から作ることになる。
+ */
+export function createTestNankaiRetraction(base: JMANankai): JMANankai {
+  const now = serverDate().toISOString()
+  return {
+    ...base,
+    id: `${base.id}-cancel`,
+    time: now,
+    reportDateTime: now,
+    kindCode: '',
+    kindName: '',
+    headline: '南海トラフ地震臨時情報（取消）',
+    body: 'システムの障害により、先に発表した南海トラフ地震臨時情報を取り消します。',
+    cancelled: true,
+    retracted: true,
+  }
+}
+
 export function createTestNankaiCommentary(serialName: '臨時解説' | '定例解説'): JMANankaiCommentary {
   const now = serverDate().toISOString()
   const expireAt = new Date(serverNow() + 7 * 24 * 3600 * 1000).toISOString()
@@ -530,10 +556,23 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
         ],
       },
     ],
+    // 観測状態（`condition`）は電文の `Condition` に現れる組み合わせを一通り含める。
+    // 気象庁は「重要 欠測」「微弱 欠測」のように複数を併記するため（電文解説資料 Ⅱ.12）、
+    // 単独の状態しか置かないとカード・地図・読み上げの併記の扱いが一度も通らない。
     observations: [
       { name: '宮古',   districtCode: '030', districtName: '岩手県',           height: { value: 8.5, description: '8.5m以上', over: true }, arrivalTime: nowIso, initial: '押し' },
+      // これまでの最大波を観測した後に観測が途切れた観測点（値と欠測が同時に来る形）。
+      { name: '大船渡', districtCode: '030', districtName: '岩手県',           height: { value: 3.2, description: '3.2m以上', over: true }, arrivalTime: t(-5), initial: '押し', condition: { maxHeightMissing: true, important: true } },
       { name: '石巻港', districtCode: '040', districtName: '宮城県',           height: { value: 7.2, description: '7.2m' }, arrivalTime: nowIso, initial: '押し' },
+      // 到達は確認できたが最大波が欠測（波高の数値が無い）。
+      { name: '相馬',   districtCode: '050', districtName: '福島県',           arrivalTime: t(-2), initial: '押し', condition: { maxHeightMissing: true } },
+      // 第1波も最大波も欠測（到達したかどうかも判っていない）。
+      { name: 'いわき市小名浜', districtCode: '050', districtName: '福島県',   condition: { firstHeightMissing: true, maxHeightMissing: true } },
+      // 水位が上昇中の観測点。波高の数値が消えないことの確認を兼ねる。
+      { name: '大洗',   districtCode: '070', districtName: '茨城県',           height: { value: 2.1, description: '2.1m' }, arrivalTime: t(20), initial: '押し', condition: { rising: true } },
       { name: '八戸港', districtCode: '060', districtName: '青森県太平洋沿岸', height: { value: 1.8, description: '1.8m' }, arrivalTime: nowIso, initial: '引き' },
+      // 津波注意報の区域で、これまでの最大波がごく小さい（数値を発表しない）。
+      { name: '釧路',   districtCode: '080', districtName: '北海道太平洋沿岸東部', arrivalTime: t(30), initial: '押し', condition: { weak: true } },
       { name: '沖合40km', height: { value: 3.0, description: '3.0m以上', over: true }, arrivalTime: nowIso },
     ],
   }

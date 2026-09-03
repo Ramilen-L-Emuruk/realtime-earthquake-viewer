@@ -54,7 +54,7 @@ export interface EewEpicenter {
   id: string
   position: LatLng
   /**
-   * 仮定震源要素（単独観測点処理）による未確定の震源か。
+   * 仮定震源要素（震源未確定）による未確定の震源か。
    * 確定震源と描き分けるほか、ポップアップでも「震源未確定」の注記に使う。
    */
   isAssumed: boolean
@@ -104,7 +104,7 @@ export function useEewLayerData(
     const warningNames = new Set<string>()
     for (const eew of eews) {
       const hc = eew.earthquake.hypocenter
-      // 仮定震源要素（単独観測点処理）の震源は使わない。M・深さが仮定値のため、これで走時を
+      // 仮定震源要素（震源未確定）の震源は使わない。M・深さが仮定値のため、これで走時を
       // 解くと根拠のない到達秒数になる。予報円を出さない・カードで M/深さを隠す・
       // useKyoshinAlerts が震源に採らないのと同じ扱いを、S波到達の推定にも与える。
       const origin: EewOrigin | null =
@@ -183,7 +183,7 @@ export function useEewLayerData(
           // 続報でマーカーを使い回すため、報番号を含まないキーを使う（`activeEEWs` の統合キーと同じ）。
           id: eew.issue?.eventId ?? eew.id,
           position: [hc.latitude, normalizeEpicenterLng(hc.longitude, JAPAN_CENTER_LNG)],
-          // 単独観測点処理の震源は後続報で大きく動く。予報円を出さない・カードで M/深さを
+          // 震源未確定の報は後続報で震源が大きく動く。予報円を出さない・カードで M/深さを
           // 隠すのと同じ扱いを地図の震源にも与えるため、確定/未確定を描画側へ伝える。
           isAssumed: eew.earthquake.condition === '仮定震源要素',
           name: hc.name,

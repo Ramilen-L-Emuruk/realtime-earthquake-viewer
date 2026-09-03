@@ -2,12 +2,12 @@
 // 「〇時〇分」はローカルタイムゾーン依存のため、時刻の数値そのものではなく
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect } from 'vitest'
-import { earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
+import { nankaiToText, earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
 import { joinSegments, plain, type SpeechSegment } from './ttsFollow'
 import { tsunamiAreaGradeChanges } from './tsunami'
 import { getStationCoordsCache } from './stationCoords'
 import { eewMaxScaleInfo, eewMaxLpgmClass } from './eew'
-import type { JMAQuake, JMALpgm, EarthquakePoint, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass, JMATsunami, TsunamiArea, TsunamiObservation } from '../types/earthquake'
+import type { JMAQuake, JMALpgm, EarthquakePoint, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass, JMATsunami, TsunamiArea, TsunamiObservation, JMANankai } from '../types/earthquake'
 
 const TTS_OPTS: TtsRegionOptions = { intensityLevels: 0, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0 }
 
@@ -150,7 +150,16 @@ describe('eewIntensityToText: 長周期地震動階級の読み上げ', () => {
 
   function makeEEW(
     forecastMaxLpgmClass?: LpgmClass,
-    over: { condition?: EEWAlert['earthquake']['condition']; areas?: EEWAlert['areas']; depth?: number } = {},
+    over: {
+      condition?: EEWAlert['earthquake']['condition']; areas?: EEWAlert['areas']; depth?: number
+      /**
+       * 既定では震度を持たせない（「予想震度なし」側の経路を確かめるテストが多いため）。
+       * **階級句を読ませたいテストでは必ず渡すこと。** 気象庁の電文では最大予測震度が必須要素で
+       * 階級は任意なので、「震度なし・階級あり」は成立せず、`eewIntensityText` は震度を伝えられない
+       * ときに階級句を落とす。
+       */
+      forecastMaxScale?: IntensityScale
+    } = {},
   ): EEWAlert {
     return {
       kind: 'eew',
@@ -165,6 +174,7 @@ describe('eewIntensityToText: 長周期地震動階級の読み上げ', () => {
       },
       severity: 'Warning',
       cancelled: false,
+      forecastMaxScale: over.forecastMaxScale,
       forecastMaxLpgmClass,
       issue: { eventId: 'e1', serial: '1', time: '2026-01-01T12:00:00Z' },
       areas: over.areas ?? [],
@@ -172,7 +182,16 @@ describe('eewIntensityToText: 長周期地震動階級の読み上げ', () => {
   }
 
   it('階級 1〜4 は読み上げる', () => {
-    expect(eewIntensityToText(makeEEW(4))).toContain('予想最大階級4。')
+    expect(eewIntensityToText(makeEEW(4, { forecastMaxScale: 40 }))).toContain('予想最大階級4。')
+  })
+
+  // 安全弁: 震度を伝えられない報では階級句を落とす。気象庁は最大予測震度を必須要素として出し、
+  // 階級のほうを任意にしているため「震度なし・階級あり」の電文は作れない。そのまま読むと
+  // 「予想震度なし。予想最大階級3。」という矛盾した発話になる。
+  it('震度を伝えられない報では階級を読み上げない', () => {
+    const text = eewIntensityToText(makeEEW(3, { depth: 400 }))
+    expect(text).toContain('深発地震のため、予想震度なし。')
+    expect(text).not.toContain('予想最大階級')
   })
 
   it('階級が無ければ読み上げない', () => {
@@ -1435,5 +1454,141 @@ describe('tsunamiAreaGradeChangeToText（区域単位で等級が動いた報）
     expect(textOf([
       { grade: 'Watch', lastGrade: 'Watch', immediate: false, code: '360', name: '石川県能登' },
     ])).toBe('')
+  })
+})
+
+// 欠測（観測データが得られていない観測点）の読み上げ。
+// 到達確認の文（「到達を確認しました」）へ混ぜると到達を断定してしまう
+// （→ docs/spec/audio-tts-spec.md §4「欠測は到達確認と別の文で伝える」）。
+describe('tsunamiMissingToText', () => {
+  const missing = (name: string, districtName?: string, height?: { value: number; description: string; over?: boolean }): TsunamiObservation => ({
+    name,
+    districtName,
+    height,
+    condition: { maxHeightMissing: true },
+  })
+
+  it('正: 波高を持たない欠測は「欠測となっています」と伝える', () => {
+    const text = tsunamiMissingToText([missing('大船渡', '岩手県')])
+    // 場所を示す「で」は付けない（欠測は観測点そのものの状態）
+    expect(text).toBe('岩手県、大船渡は欠測となっています。')
+  })
+
+  it('正: これまでに観測できた波高がある欠測はその値も伝える', () => {
+    const text = tsunamiMissingToText([missing('宮古', '岩手県', { value: 3.2, description: '3.2m以上', over: true })])
+    expect(text).toBe('これまでに岩手県、宮古で3.2メートル以上を観測したのち、欠測となっています。')
+  })
+
+  it('正: 「微弱 欠測」は微弱も伝える（カードの波高欄と揃える）', () => {
+    const text = tsunamiMissingToText([{
+      name: '釧路',
+      districtName: '北海道太平洋沿岸東部',
+      condition: { maxHeightMissing: true, weak: true },
+    }])
+    expect(text).toBe('これまでに北海道太平洋沿岸東部、釧路で微弱な津波を観測したのち、欠測となっています。')
+  })
+
+  it('対照: 微弱でも数値でもない欠測は「これまでに…観測したのち」の形にしない', () => {
+    // 観測できていた事実が無いのに「これまでに」で始めると、何かを観測したように聞こえる
+    const text = tsunamiMissingToText([missing('大船渡', '岩手県')])
+    expect(text).toBe('岩手県、大船渡は欠測となっています。')
+    expect(text).not.toContain('これまでに')
+  })
+
+  it('正: 値を持つ群を先に読み、持たない群を「また、」で継ぐ', () => {
+    const text = tsunamiMissingToText([
+      missing('大船渡', '岩手県'),
+      missing('宮古', '岩手県', { value: 3.2, description: '3.2m以上', over: true }),
+    ])
+    expect(text).toBe('これまでに岩手県、宮古で3.2メートル以上を観測したのち、欠測となっています。また、岩手県、大船渡は欠測となっています。')
+  })
+
+  it('正: 「到達を確認」の語を使わない（到達したかどうかは判っていない）', () => {
+    const text = tsunamiMissingToText([missing('大船渡', '岩手県')])
+    expect(text).not.toContain('到達')
+    expect(text).not.toContain('観測中')
+  })
+
+  it('対照: 対象が無ければ何も言わない（空文字）', () => {
+    expect(tsunamiMissingToText([])).toBe('')
+  })
+
+  it('安全弁: 件数上限を超えたら外した地点数を伝える', () => {
+    const many = ['A', 'B', 'C', 'D', 'E', 'F', 'G'].map(n => missing(n, '岩手県'))
+    const text = tsunamiMissingToText(many)
+    // 助詞は述語に合わせる。「ほか2地点でも」は場所を示す「で」なので欠測には使わない
+    expect(text).toContain('ほか2地点も欠測となっています。')
+    expect(text).not.toContain('ほか2地点でも')
+  })
+
+  it('安全弁: どちらかの群が空なら「また、」を付けない', () => {
+    expect(tsunamiMissingToText([missing('大船渡', '岩手県')])).not.toContain('また、')
+    expect(tsunamiMissingToText([missing('宮古', '岩手県', { value: 1.0, description: '1.0m' })])).not.toContain('また、')
+  })
+})
+
+// 「微弱」（観測した波がごく小さい）の観測点に「最大波高は観測中です」と言わない。
+// 観測中は「これから値が出る」の意味なので、確定している微弱に当てると事実がずれる。
+describe('tsunamiArrivalToText: 微弱の言い分け', () => {
+  const at = '2026-09-03T10:00:00+09:00'
+
+  it('正: 微弱の観測点は「最大波高は微弱です」と伝える', () => {
+    const text = tsunamiArrivalToText([
+      { name: '釧路', districtName: '北海道太平洋沿岸東部', arrivalTime: at, condition: { weak: true } },
+    ])
+    expect(text).toBe('北海道太平洋沿岸東部、釧路で到達を確認しました。最大波高は微弱です。')
+  })
+
+  it('対照: 微弱でない観測点は従来どおり「最大波高は観測中です」', () => {
+    const text = tsunamiArrivalToText([
+      { name: '釧路', districtName: '北海道太平洋沿岸東部', arrivalTime: at },
+    ])
+    expect(text).toBe('北海道太平洋沿岸東部、釧路で到達を確認しました。最大波高は観測中です。')
+  })
+
+  it('正: 観測中と微弱が混ざったら群を分けて「また、」で継ぐ', () => {
+    const text = tsunamiArrivalToText([
+      { name: '大洗', districtName: '茨城県', arrivalTime: at },
+      { name: '釧路', districtName: '北海道太平洋沿岸東部', arrivalTime: at, condition: { weak: true } },
+    ])
+    expect(text).toBe('茨城県、大洗で到達を確認しました。最大波高は観測中です。また、北海道太平洋沿岸東部、釧路で到達を確認しました。最大波高は微弱です。')
+  })
+
+  it('安全弁: 片方の群だけなら「また、」を付けない', () => {
+    expect(tsunamiArrivalToText([{ name: '釧路', arrivalTime: at, condition: { weak: true } }])).not.toContain('また、')
+    expect(tsunamiArrivalToText([{ name: '釧路', arrivalTime: at }])).not.toContain('また、')
+  })
+})
+
+// 南海トラフ臨時情報の「取消」と「調査終了」は意味が正反対。取消は電文の撤回でしかなく、
+// 地震の発生可能性についての判断を含まない（電文解説資料 Ⅰ.別紙ウ）。
+describe('nankaiToText: 取消と調査終了の言い分け', () => {
+  const nankai = (o: Partial<JMANankai>): JMANankai => ({
+    id: 'n1', time: '2026-08-20T17:00:00+09:00', eventId: '20260820170000',
+    kindCode: '', kindName: '', headline: '', body: '',
+    cancelled: false, reportDateTime: '2026-08-20T17:00:00+09:00',
+    ...o,
+  })
+
+  it('正: 取消は取り消された事実だけを伝える', () => {
+    const text = nankaiToText(nankai({ cancelled: true, retracted: true }))
+    expect(text).toBe('南海トラフ地震臨時情報は取り消されました。')
+  })
+
+  it('正: 取消で「発生可能性」について何も断定しない', () => {
+    // 気象庁が発表していない安心情報をアプリが作らないこと
+    const text = nankaiToText(nankai({ cancelled: true, retracted: true }))
+    expect(text).not.toContain('通常の範囲内')
+    expect(text).not.toContain('調査終了')
+  })
+
+  it('対照: 本物の調査終了は従来どおり可能性まで伝える', () => {
+    const text = nankaiToText(nankai({ cancelled: true, kindCode: '0204', kindName: '調査終了' }))
+    expect(text).toBe('南海トラフ地震臨時情報、調査終了。南海トラフ地震の発生可能性は通常の範囲内でした。')
+  })
+
+  it('安全弁: 段階の発表は取消の分岐に吸われない', () => {
+    expect(nankaiToText(nankai({ kindName: '巨大地震警戒' }))).toContain('巨大地震警戒')
+    expect(nankaiToText(nankai({ kindName: '調査中' }))).toContain('調査中')
   })
 })
