@@ -432,7 +432,11 @@ describe('電文の body を復号できなかったときの記録', () => {
   it('XML 以外の format は記録するが本文は返す', async () => {
     const got = await decodeTelegramText({ body: '{"a":1}', encoding: 'utf-8', format: 'json' })
     expect(got).toBe('{"a":1}')
-    expect(warnings().filter(w => w.includes('XML 以外の format: json'))).toHaveLength(1)
+    const hit = warnings().filter(w => w.includes('XML 以外の format: json'))
+    expect(hit).toHaveLength(1)
+    // 安全弁: 本文は返せているので「復号できませんでした」と書かない。
+    // 同じ文言にすると、ログを読んだ人が電文を落としたと取り違える。
+    expect(hit[0]).not.toContain('復号できませんでした')
   })
 
   // 安全弁: `typeof null` は 'object' を返すので、そのまま流すと読み手が形を取り違える

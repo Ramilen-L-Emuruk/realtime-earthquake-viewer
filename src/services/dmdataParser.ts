@@ -434,11 +434,10 @@ function readHypocenterCoord(areaEl: Element, headType: string): { lat: number; 
  * 区域側の文言が震源の `condition` に化け、仮定震源要素の判定が誤って立つ。
  */
 export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null {
-  let doc: Document
-  try {
-    doc = new DOMParser().parseFromString(xml, 'application/xml')
-    if (doc.querySelector('parsererror')) return null
-  } catch { return null }
+  // **記録は他の XML パーサーと同じ仕組みに乗せる。** ここだけ素の `return null` にすると、
+  // 電文が 1 通丸ごと消えたことがどこにも残らない（EEW は最も落としてはいけない電文）。
+  const doc = parseTelegramXml(xml, DMDATA_LOG_PREFIX)
+  if (!doc) return null
 
   const eventId = xmlText(xmlQ(doc, 'EventID'))
   const serial = xmlText(xmlQ(doc, 'Serial')) || '1'
@@ -451,8 +450,11 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
     ? parseJmaCoord(xmlText(xmlQ(areaEl, 'Coordinate')))
     : { lat: NaN, lng: NaN, depth: -1 }
 
-  // 取消以外で震源が読めない電文は不正として捨てる（JSON 経路と同じ判定）。
-  if (!isCanceled && (!Number.isFinite(lat) || !Number.isFinite(lng))) return null
+  // 取消以外で震源が読めない電文は不正として捨てる。地震情報側と同じ判定・同じ記録の付け方。
+  if (!isCanceled && (!Number.isFinite(lat) || !Number.isFinite(lng))) {
+    const coordStr = areaEl ? xmlText(xmlQ(areaEl, 'Coordinate')) : ''
+    return dropTelegram(DMDATA_LOG_PREFIX, `${headType}（緊急地震速報）の震源座標が読めません: Coordinate="${coordStr}"`)
+  }
 
   const forecastEl = xmlQ(doc, 'Forecast')
   const intRange = (el: Element | null): { from: string; to: string } => ({

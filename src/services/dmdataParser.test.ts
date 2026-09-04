@@ -493,7 +493,6 @@ describe('遠地地震に関する情報（VXSE53・Head/Title で識別）', ()
 
 })
 
-// DMD-7: EEW（VXSE43/45）JSON パーサーの基本テスト。severity 付与・cancel・LPGM を検証する。
 // 震度点を積めなかったときの記録。
 //
 // `if (name && scale >= 0)` は条件を満たさない要素を無言で捨てる。落ちても下流の不変条件は
@@ -839,6 +838,31 @@ describe('parseEEWFromXml: severity・cancel・LPGM', () => {
 
   it('座標が読めない発表電文（非 cancel）は null', () => {
     expect(parseEEWFromXml('VXSE45', eewXml({ area: '<Name>茨城県沖</Name>' }))).toBeNull()
+  })
+
+  // 正: 捨てたことを**常に残る側**へ記録する。EEW は最も落としてはいけない電文なのに、
+  // ここだけ素の `return null` で、電文が 1 通丸ごと消えても何も残らない形だった。
+  it('座標が読めずに捨てたことを記録する', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      parseEEWFromXml('VXSE45', eewXml({ area: '<Name>茨城県沖</Name>' }))
+      const hit = warn.mock.calls.map(c => c.join(' ')).filter(w => w.includes('震源座標が読めません'))
+      expect(hit).toHaveLength(1)
+      expect(hit[0]).toContain('VXSE45')
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 正: XML として読めない電文も同じく記録する（`parsererror` は例外にならないので見落としやすい）。
+  it('XML として読めない電文を記録して捨てる', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      expect(parseEEWFromXml('VXSE45', '<Report><Head></Report>')).toBeNull()
+      expect(warn.mock.calls.map(c => c.join(' ')).filter(w => w.includes('電文を読み取れなかった'))).toHaveLength(1)
+    } finally {
+      warn.mockRestore()
+    }
   })
 })
 

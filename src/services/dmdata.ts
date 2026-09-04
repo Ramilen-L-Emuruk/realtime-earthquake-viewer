@@ -106,13 +106,18 @@ function base64ToBytes(b64: string): Uint8Array {
 // そこに隠れる**。理由の種類は固定なので、キーごとに持って困る量にはならない。
 const undecodableBodyThrottles = new Map<string, (emit: () => void) => void>()
 
-function warnUndecodableBody(kind: string, detail: string, msg: Record<string, unknown>): null {
+/**
+ * 理由ごとに間引いて記録する。戻り値の `null` は「この電文は読めなかった」を表すので、
+ * **本文を返す経路から呼ぶときは戻り値を使わないこと**（`headline` を分けているのはそのため。
+ * 読めているのに「復号できませんでした」と書くと、ログを読んだ人が原因を取り違える）。
+ */
+function warnUndecodableBody(kind: string, detail: string, msg: Record<string, unknown>, headline = '電文の body を復号できませんでした'): null {
   let throttle = undecodableBodyThrottles.get(kind)
   if (!throttle) {
     throttle = createLogThrottle(60_000)
     undecodableBodyThrottles.set(kind, throttle)
   }
-  throttle(() => log.warn(`[DMDSS] 電文の body を復号できませんでした（${detail}）`, {
+  throttle(() => log.warn(`[DMDSS] ${headline}（${detail}）`, {
     format: msg.format, compression: msg.compression, encoding: msg.encoding,
   }))
   return null
@@ -159,7 +164,9 @@ export async function decodeTelegramText(msg: Record<string, unknown>): Promise<
   // （大文字になった等）だけで全電文を捨てると被害が記録より遥かに大きい。中身が XML でなければ
   // パーサー側が弾き、そこでも記録が残る。
   const format = typeof msg.format === 'string' ? msg.format : null
-  if (format !== 'xml') warnUndecodableBody('format', `XML 以外の format: ${format ?? '(無し)'}`, msg)
+  if (format !== 'xml') {
+    warnUndecodableBody('format', `XML 以外の format: ${format ?? '(無し)'}`, msg, '電文の format が想定と違います')
+  }
   return text
 }
 
