@@ -1019,7 +1019,7 @@ EEW の予想震度は範囲（下限・上限）で配信され、**上限が�
 ## 10. 関連実装ファイル
 
 - `src/services/dmdata.ts` — DMDATA WebSocket + 認証
-- `src/services/dmdataParser.ts` — DMDATA JSON/XML パース
+- `src/services/dmdataParser.ts` — DMDATA の電文（XML）のパース
 - `src/services/dmdataReplay.ts` — DMDATA archive リプレイ
 - `src/services/p2pquake.ts` — P2PQuake クライアント + レスポンス検証
 - `src/services/parseHelpers.ts` — 外部レスポンスの値取り出しヘルパ（DMDATA・P2PQuake 共用）
