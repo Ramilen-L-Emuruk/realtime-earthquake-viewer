@@ -38,7 +38,7 @@ git branch --list 'ready/*' --no-merged main
 | 結果 | 動作 |
 |---|---|
 | 1 本以上ある | 「手順」へ進む |
-| 無い | 「リリースロック」の**「離れるとき」を通ってから**ユーザーに伝え、**「監視モード」に入るか確認する**。監視が不要ならここで終了。**ロックを持ったまま監視に入ると、自分が候補を検知したとき自分のロックで自分を止める** |
+| 無い | 「リリースロック」の**「離れるとき」を通ってから**ユーザーに伝え、**「監視モード」に入るか確認する**。監視が不要ならここで終了。**監視は数時間〜数日に及ぶ。ロックを持ったまま入ると、その間ずっと他セッションの着手を止める** |
 
 ## 着手前チェック
 
@@ -61,7 +61,7 @@ git branch --list 'ready/*' --no-merged main
 あるが、**メッセージは相手の作業に割り込む**。関係ないセッションを止めてまで聞くことではないため、
 状態をファイルに置いて読むだけにする。
 
-置き場所は `<リポジトリのトップレベル>/.claude/release.lock`（`.gitignore` 済みなのでコミットに混ざらない）。
+置き場所は `<リポジトリのトップレベル>/.claude/release.lock`（`.gitignore` の `.claude/*` で除外済みなのでコミットに混ざらない）。
 
 ```json
 {
@@ -73,29 +73,109 @@ git branch --list 'ready/*' --no-merged main
 }
 ```
 
+### 読む（着手前チェック #2）
+
+ファイルが無ければ着手してよい。あれば中身を読む。
+
+**まず `sessionId` が自分のものかを見る。** 自分のロックなら監視モードから戻った等の再入なので、
+`step` を更新して先へ進む。他人のロックだったときだけ生存判定へ進む。
+
+```bash
+node -e "
+const fs=require('fs');
+const p='.claude/release.lock';
+if(!fs.existsSync(p)){ console.log('NONE'); process.exit(0) }
+let l;
+try{ l=JSON.parse(fs.readFileSync(p,'utf8')) }
+catch(e){ console.log('MALFORMED: '+e.message); process.exit(0) }
+const bad=[];
+if(typeof l.sessionId!=='string' || !l.sessionId) bad.push('sessionId');
+if(l.pid!==null && !(Number.isInteger(l.pid) && l.pid>0)) bad.push('pid');
+if(!Number.isFinite(Date.parse(l.startedAt))) bad.push('startedAt');
+if(bad.length){
+  console.log('MALFORMED: 値が不正なキー '+bad.join(', '));
+  console.log(JSON.stringify(l,null,2)); process.exit(0)
+}
+console.log(l.sessionId===process.env.CLAUDE_CODE_SESSION_ID ? 'MINE' : 'OTHER');
+console.log(JSON.stringify(l,null,2));
+"
+```
+
+**判定は終了コードではなく、標準出力の先頭語で行う**（このスクリプトはどの分岐でも 0 で終わる）。
+
+**検証は値の型で行っている。** `pid` は「正の整数」か「`null`」のどちらかだけを正当とし、
+`startedAt` は日時として解釈できることを求める。キーの有無だけを見ると、`pid` に文字列や
+オブジェクトが入った壊れたロックが素通りし、後段の `Get-Process` へそのまま渡ってしまう。
+
+`MALFORMED` なら**残骸と断定しない**。出力をユーザーへ提示して指示を仰ぐ。
+
+`OTHER` なら記録された `pid` の生存を確かめる。**PowerShell ツールで実行すること** ——Bash ツールが
+Git Bash の環境では `Get-Process` は `command not found` になる。
+
+**`pid` が `null` のときはこのスクリプトを実行せず、下表の最終行へ直行する。** `Get-Process -Id $null` は
+パラメータのバインディングで失敗し、これは `-ErrorAction SilentlyContinue` では抑えられない。
+下の雛形は `Get-Process` を `try` の外に置いているため、例外がそのまま出て `DEAD` とも `ALIVE` とも
+付かない出力になる。
+
+```powershell
+$p = Get-Process -Id <pid> -ErrorAction SilentlyContinue
+if (-not $p) { "DEAD" }
+else {
+  try { "ALIVE started=$($p.StartTime.ToUniversalTime().ToString('o'))" }
+  catch { "ALIVE started=UNKNOWN" }
+}
+```
+
+| 結果 | 判断 |
+|---|---|
+| `DEAD` | 異常終了した残骸。**消してよいかユーザーに確認する**（`step` と `startedAt` を提示する） |
+| `ALIVE` でプロセス開始時刻がロックの `startedAt` より**後** | **PID が再利用されている**（Windows は PID を再利用する）。無関係なプロセスなので残骸として扱う。**`DEAD` と同じく、消してよいかユーザーに確認する** |
+| `ALIVE` でプロセス開始時刻が `startedAt` 以前 | **他セッションがリリース中。中断してユーザーに報告する** |
+| `ALIVE started=UNKNOWN` | 権限等で開始時刻を読めなかった。**残骸と断定せず、ユーザーに状況を提示して指示を仰ぐ** |
+| ロックの `pid` が `null` | 生存判定ができない。**消してよいかではなく、他セッションの状況をユーザーへ直接確認する** |
+| 読み取りが `MALFORMED` を返した | 中身が壊れている。**残骸と断定せず、出力を提示して指示を仰ぐ** |
+
+**`step` は中断時の手がかりになる。** セッションが落ちると「どこまで進んだか」を誰も報告できないが、
+ロックが残っていればそこから読める。
+
 ### 入るとき
 
 **着手前チェック #2 を通った時点で作る。** そこから先（#3・#4）にも `git fetch` を含む数秒〜十数秒が
 あり、待てばその分だけ窓が広がる。
 
 前提は 3 つ ——`CLAUDE_CODE_SESSION_ID` が環境変数にあること、`claude` CLI が PATH から呼べること、
-`node` が使えること。**`pid` が `null` になったら生存判定ができない**ので、その旨をユーザーへ伝えて
-手動での排他確認に切り替える。
+`node` が使えること。
 
 ```bash
 node -e "
 const fs=require('fs'), cp=require('child_process');
-const id=process.env.CLAUDE_CODE_SESSION_ID;
-const me=JSON.parse(cp.execSync('claude agents --json',{encoding:'utf8'}))
-  .find(a=>a.sessionId===id);
-fs.mkdirSync('.claude',{recursive:true});
-fs.writeFileSync('.claude/release.lock', JSON.stringify({
-  sessionId:id, pid:me?.pid??null, name:me?.name??null,
-  startedAt:new Date().toISOString(), step:'着手'
-},null,2));
-console.log(me?.pid ? 'ok' : 'pid を取得できなかった。手動で排他を確認すること');
+try{
+  const id=process.env.CLAUDE_CODE_SESSION_ID;
+  if(!id) throw new Error('CLAUDE_CODE_SESSION_ID が設定されていない');
+  const me=JSON.parse(cp.execSync('claude agents --json',{encoding:'utf8'}))
+    .find(a=>a.sessionId===id);
+  fs.mkdirSync('.claude',{recursive:true});
+  fs.writeFileSync('.claude/release.lock', JSON.stringify({
+    sessionId:id, pid:me?.pid??null, name:me?.name??null,
+    startedAt:new Date().toISOString(), step:'着手'
+  },null,2));
+  console.log(me?.pid ? 'OK' : 'OK-NO-PID');
+}catch(e){ console.log('FAILED: '+e.message) }
 "
 ```
+
+パスが相対なので、**リポジトリのトップレベルで実行すること**（着手前チェック #1 を通っていれば満たされる）。
+
+**判定は終了コードではなく、標準出力の先頭語で行う**（このスクリプトは失敗しても 0 で終わる）。
+
+| 出力 | 状態 | すること |
+|---|---|---|
+| `OK` | ロックを作れた | 先へ進む |
+| `OK-NO-PID` | ロックは作れたが `pid` が無い | **生存判定ができない。**その旨をユーザーへ伝え、手動での排他確認に切り替える（バックグラウンドで起動されたセッションは `pid` を持たない） |
+| `FAILED: <理由>` | **ロックは作られていない** | 先へ進まず、ユーザーへ報告する |
+
+**`FAILED` を見落とさないこと。** ロックが無いまま手続きを続けると、排他が掛かっていない状態で
+main を書き換えることになる。
 
 段が進んだら `step` を書き換える（マージ／統合後の検証／バージョン更新／プッシュ）。上のスクリプトを
 そのまま流し直してよい（`startedAt` が更新されるが、生存判定は「プロセス開始時刻より後か」で見るため
@@ -104,19 +184,22 @@ console.log(me?.pid ? 'ok' : 'pid を取得できなかった。手動で排他�
 ### 離れるとき
 
 **正常終了・却下・中断・監視モードへの移行 —— どれも「この手続きから離れる」ことに変わりはない。**
-削除はここ 1 箇所に集約する。**個々の手順に削除を書き分けると必ず漏れる**（設計時に手順 8 の
-連続リリースを見落とし、ロックの空白期間ができていた）。
+削除はここ 1 箇所に集約する。**個々の手順に削除を書き分けると必ず漏れる。**
 
 **手順**:
 
 ```bash
-git log origin/main..main --oneline
+git log origin/main..main --oneline; echo "exit=$?"
 ```
 
-| 出力 | 操作 |
+**終了コードまで見ること。** `origin/main` が解決できないと git は fatal を stderr へ出して非ゼロで終わり、
+**stdout は空になる**。出力だけを見ると「未 push のコミットが無い」と区別が付かない。
+
+| 結果 | 操作 |
 |---|---|
-| 空 | **ロックを消す** |
-| 何かある | **消さずに `step` を実際に止まった段へ書き換える**。未 push のコミットが残っており、次に来たセッションがその状態を知る必要がある |
+| `exit=0` で出力が空 | **ロックを消す** |
+| `exit=0` で何かある | **消さずに `step` を実際に止まった段へ書き換える**。未 push のコミットが残っており、次に来たセッションがその状態を知る必要がある |
+| `exit` が 0 以外 | **判定できていない。ロックを消さず、`step` も触らずに、状況をユーザーへ報告する。** 消せば、未 push の有無が不明なまま別セッションが着手する |
 
 **離れる場面**（すべて上の手順を通る）:
 
@@ -132,47 +215,6 @@ git log origin/main..main --oneline
 再開する）」という経路があり、そこは着手前チェックを通らないため**ロックが再作成されない**。
 手順 7 で消すと、2 回目のリリースが終わるまで空白ができる。
 
-### 読む（着手前チェック #2）
-
-ファイルが無ければ着手してよい。あれば中身を読む。
-
-**まず `sessionId` が自分のものかを見る。** 自分のロックなら監視モードから戻った等の再入なので、
-`step` を更新して先へ進む。他人のロックだったときだけ生存判定へ進む。
-
-```bash
-node -e "
-const fs=require('fs');
-const p='.claude/release.lock';
-if(!fs.existsSync(p)){ console.log('NONE'); process.exit(0) }
-const l=JSON.parse(fs.readFileSync(p,'utf8'));
-console.log(l.sessionId===process.env.CLAUDE_CODE_SESSION_ID ? 'MINE' : 'OTHER');
-console.log(JSON.stringify(l,null,2));
-"
-```
-
-`OTHER` なら記録された `pid` の生存を確かめる。**PowerShell ツールで実行すること** ——Bash ツールは
-Git Bash なので `Get-Process` は `command not found` になる。
-
-```powershell
-$p = Get-Process -Id <pid> -ErrorAction SilentlyContinue
-if (-not $p) { "DEAD" }
-else {
-  try { "ALIVE started=$($p.StartTime.ToUniversalTime().ToString('o'))" }
-  catch { "ALIVE started=UNKNOWN" }
-}
-```
-
-| 結果 | 判断 |
-|---|---|
-| `DEAD` | 異常終了した残骸。**消してよいかユーザーに確認する**（`step` と `startedAt` を提示する） |
-| `ALIVE` でプロセス開始時刻がロックの `startedAt` より**後** | **PID が再利用されている**（Windows は PID を再利用する）。無関係なプロセスなので残骸として扱う |
-| `ALIVE` でプロセス開始時刻が `startedAt` 以前 | **他セッションがリリース中。中断してユーザーに報告する** |
-| `ALIVE started=UNKNOWN` | 権限等で開始時刻を読めなかった。**残骸と断定せず、ユーザーに状況を提示して指示を仰ぐ** |
-| ロックの `pid` が `null` | 生存判定ができない。**消してよいかではなく、他セッションの状況をユーザーへ直接確認する** |
-
-**`step` は中断時の手がかりになる。** セッションが落ちると「どこまで進んだか」を誰も報告できないが、
-ロックが残っていればそこから読める。
-
 ### この仕組みの限界
 
 **ロックは競合を完全には防がない。** ファイルの確認と作成は不可分ではないので、2 つのセッションが
@@ -181,7 +223,6 @@ else {
 **技術的な最後の砦は従来どおり**、手順 6 の `git fetch` 再確認と non-fast-forward での push 拒否。
 ロックはそれを早い段階で補うものであって、置き換えるものではない。**ロックが無いことを根拠に
 「排他が保証された」と考えないこと。**
-
 
 ## 手順
 
