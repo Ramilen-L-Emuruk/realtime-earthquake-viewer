@@ -111,7 +111,7 @@ const VXSE53_XML = `<?xml version="1.0" encoding="UTF-8"?>
 
 // VXSE53_XML と同じ地震。下の describe が、XML 経路で落としてはいけない項目を項目ごとに固定する。
 // 実電文の Control は EditorialOffice（気象庁本庁）と PublishingOffice（気象庁）の両方を持ち、
-// JSON 経路は前者を優先するため、発表元は「気象庁本庁」になる。
+// 編集官署を先に採るため、発表元は「気象庁本庁」になる。
 
 describe('parseEarthquakeFromXml: 震度速報（VXSE51）', () => {
   it('Earthquake 要素が無くてもパースできる', () => {
@@ -137,9 +137,9 @@ describe('parseEarthquakeFromXml: 震度速報（VXSE51）', () => {
     expect(quake.earthquake.time).toBe('2026-08-09T02:58:00+09:00')
   })
 
-  // 都道府県ロールアップ点（pref 付き）を含む。以前は XML 経路だけこれを落としていたため、
+  // 都道府県ロールアップ点（pref 付き）を含む。以前はこれを落としていたため、
   // EarthquakeCard が区域点からの逆引き集計に落ち、区域の震度が揃わない県では
-  // 気象庁発表の代表値と粒度がずれていた（JSON 経路の intensity.prefectures[] に対応する）。
+  // 気象庁発表の代表値と粒度がずれていた。
   it('points は都道府県ロールアップ点と一次細分区域を持ち、区域の pref は空にする', () => {
     const points = parseEarthquakeFromXml('VXSE51', VXSE51_XML)!.points
     expect(points).toEqual([
@@ -165,10 +165,10 @@ describe('parseEarthquakeFromXml: 震源・震度に関する情報（VXSE53）'
     expect(area).toEqual({ pref: '', addr: '岩手県沿岸北部', isArea: true, scale: 40 })
   })
 
-  it('観測点は JSON 経路の stations[] と同じ規約で pref を空文字にする（QUAKE-2）', () => {
+  it('観測点は区域と同じ規約で pref を空文字にする（QUAKE-2）', () => {
     // 以前は pref: prefName を付けていたが、EarthquakeCard.prefGroups が「観測点値」を
     // 都道府県別最大震度と誤解し、区域単位の最大震度が観測点値に上書きされる問題があった。
-    // 対称性のため JSON stations[] と同じ pref: '' に統一する。
+    // 区域点と揃えて pref: '' に統一する。
     const points = parseEarthquakeFromXml('VXSE53', VXSE53_XML)!.points
     const station = points.find(p => !p.isArea)!
     expect(station).toEqual({ pref: '', addr: '普代村銅屋', isArea: false, scale: 30 })
@@ -201,18 +201,11 @@ describe('parseEarthquakeFromXml: 震源・震度に関する情報（VXSE53）'
 })
 
 // 電文の読み取りは XML 経路だけ。**ここは「落ちていないこと」を項目ごとに固定する場所**で、
-// 経路を 1 本にする前に JSON 版と突き合わせて確かめた値をそのまま書き留めてある。
-// 実装をコピーした値ではなく、両経路が一致していた時点の値であることに意味がある。
-// JSON 経路（parseEarthquake）: infoType の訂正フラグが握り潰されないことを確認する。
-// 従来は correct を 'なし' 固定にしていて、UI での「訂正」バッジ表示が発火しなかった。
-// 同じ地震を JSON 版と XML 版で読み、結果を突き合わせる。
+// 経路を 1 本にする前、撤去した JSON 版と突き合わせて確かめた値をそのまま書き留めてある。
+// **実装をコピーした値ではなく、2 つの読み取りが一致していた時点の値**であることに意味がある。
 //
-// XML 経路は REST の個別電文取得（fetchOneTelegram）だけが通る道で、これは起動時の初期履歴表示と
-// 「もっと見る」が叩く。つまり **同じ地震でも、履歴で読み込まれたかライブで受信したかで中身が
-// 変わりうる**。片方だけが埋めるフィールドを作らないよう、対で検証する。
-//
-// この describe は「両経路が揃っていること」だけを見る。片方にしか無い挙動（JSON の訂正フラグ等）は
-// それぞれの describe で扱う。
+// ここが崩れたら、電文から取れていたはずの項目が落ちたということ。**画面には
+// 「情報が少し粗くなった」以上には現れない**ので、テストで固定しておくしかない。
 describe('XML 経路が落としてはいけない項目（地震）', () => {
   const fromXml = () => parseEarthquakeFromXml('VXSE53', VXSE53_XML)!
 
@@ -224,8 +217,7 @@ describe('XML 経路が落としてはいけない項目（地震）', () => {
   })
 
   // 正: 都道府県ロールアップ点（pref 付き）。実電文の Pref 直下には MaxInt があり
-  // （能登半島地震の震度速報で <Pref><Name>石川県</Name><Code>17</Code><MaxInt>5+</MaxInt> を確認）、
-  // JSON 経路は intensity.prefectures[] として同じ値を受け取る。
+  // （能登半島地震の震度速報で <Pref><Name>石川県</Name><Code>17</Code><MaxInt>5+</MaxInt> を確認）。
   // これが無いと EarthquakeCard は区域点からの逆引き集計に落ち、気象庁発表の代表値と粒度がずれる。
   it('都道府県ロールアップ点（pref 付き）を持つ', () => {
     const expected = { pref: '岩手県', addr: '岩手県', isArea: true, scale: 40 }
@@ -420,7 +412,7 @@ describe('遠地地震に関する情報（VXSE53・Head/Title で識別）', ()
       FOREIGN_XML.replace('</ForecastComment>', `</ForecastComment>
       <FreeFormComment>${free}</FreeFormComment>`)
 
-    it('改行を保ったまま freeText に持つ（JSON・XML 両経路）', () => {
+    it('改行を保ったまま freeText に持つ', () => {
       const free = `現在、海外および国内の観測点で有意な潮位変化は観測されていません。
 次の遠地地震に関する情報は、２６日０２時３０分頃に発表の予定です。`
       expect(parseEarthquakeFromXml('VXSE53', xmlWithFree(free))!.freeText).toBe(free)
@@ -589,7 +581,7 @@ describe('震度点を積めなかったときの記録', () => {
   })
 
   // 種別ごとの全滅検知は「元要素はあるのに読めなかった」しか捕まえられない。元要素そのものが
-  // 見えなくなった場合（Observation の位置が変わった・JSON のキーが改名された）は数える対象が
+  // 見えなくなった場合（Observation の位置が変わった・要素名が改名された）は数える対象が
   // 0 件になって素通りするため、電文単位でもう一段見る。
   describe('震度を伝える電文なのに点が 0 件', () => {
     const stripIntensity = (xml: string) => xml.replace(/<Intensity>[\s\S]*<\/Intensity>/, '')
@@ -835,7 +827,7 @@ describe('parseEEWFromXml: severity・cancel・LPGM', () => {
 
   // 安全弁: 取消はそのイベントの打ち切りなので最終報として扱う。実電文の取消は Body に Text しか
   // 持たず NextAdvisory が無い（2026-03-07 の取消で確認）ので、文言だけを見ると false に落ちる。
-  // DMDATA の JSON 変換は取消に isLastInfo: true を立てており、そちらと同じ意味にする。
+  // 取消の後に続報は来ないので、最終報と同じに扱う。
   it('取消は最終報として扱う（NextAdvisory が無くても）', () => {
     const xml = eewXml({ infoType: '取消' })
     expect(xml).not.toContain('NextAdvisory')
@@ -963,16 +955,13 @@ describe('parseLpgmFromXml: xmlChild が Area 直下の値を拾い、配下 Cit
   })
 })
 
-// 長周期地震動: JSON 経路と XML 経路の読み取り一致。
-//
-// この対を置くまで、JSON 側の parseLpgm にはテストが 1 件も存在しなかった（XML 側は上記
-// DMD-6 のみ）。両方を同じ電文で突き合わせる場所が無かったため、片方だけ触っても気づけない。
+// 長周期地震動の読み取りを項目ごとに固定する。
 //
 // フィクスチャは実電文（2024-01-01 能登半島地震の長周期地震動に関する観測情報）の構造に
 // 合わせている。要点は 3 つ:
 //   - Pref / Area 直下に MaxInt（震度）と MaxLgInt（長周期階級）が併存する
 //   - IntensityStation は Int / LgInt に加えて LgIntPerPeriod（帯域別・複数）を持つ
-//   - 観測点名に県名が入らない（例「上越市中ノ俣」）。JSON 側は県略称込み（例「新潟上越市中ノ俣」）
+//   - 観測点名に県名が入らない（例「上越市中ノ俣」）
 const PARITY_LPGM_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <Report xmlns="http://xml.kishou.go.jp/jmaxml1/" xmlns:jmx_eb="http://xml.kishou.go.jp/jmaxml1/elementBasis1/">
   <Control>
@@ -1022,9 +1011,6 @@ const PARITY_LPGM_XML = `<?xml version="1.0" encoding="UTF-8"?>
   </Body>
 </Report>`
 
-// 上の XML と同じ電文を JSON 版で表したもの。観測点名は DMDATA の JSON スキーマどおり
-// 県略称を含む形式で入る（parseLpgm のコメント参照）。
-
 describe('XML 経路が落としてはいけない項目（長周期地震動）', () => {
   const fromXml = () => parseLpgmFromXml(PARITY_LPGM_XML)!
 
@@ -1052,12 +1038,9 @@ describe('XML 経路が落としてはいけない項目（長周期地震動）
     }
   })
 
-  // 意図的な差: 観測点の pref と name は経路で異なる。電文自体の構造が違うためで、
-  // 揃えようとすると片方の情報を捨てることになる。
-  //   - XML: 観測点名に県名が入らないので、Pref/Name から都道府県を補って pref に持つ
-  //   - JSON: 観測点名が県略称込みなので pref は空。座標解決は JapanMap の stationPrefIndex が行う
-  // types/earthquake.ts の LpgmPoint.pref のコメントがこの差を定めている。
-  it('観測点の pref と name は電文構造の差をそのまま残す', () => {
+  // 観測点名に県名が入らないので、Pref/Name から都道府県を補って pref に持つ。
+  // types/earthquake.ts の LpgmPoint.pref のコメントがこの扱いを定めている。
+  it('観測点は名前に県名を含まず、pref を Pref/Name から補う', () => {
     expect(fromXml().points![0]).toEqual({ code: '1522201', name: '上越市中ノ俣', pref: '新潟県', lgInt: 2 })
   })
 
@@ -1447,10 +1430,8 @@ describe('parseNankaiCommentaryFromXml（VYSE51/52 南海トラフ地震関連�
   })
 })
 
-// 津波: JSON 経路と XML 経路の読み取り一致。
-//
-// XML 経路は REST 履歴取得（fetchDmdataTsunamis）だけが通る道で、起動時に直近の津波を読み込む。
-// 進行中の津波がある状態でアプリを開くと、まずこちらが画面とカードを作る。
+// 津波の読み取りを項目ごとに固定する。ライブ（WebSocket）・REST 履歴・リプレイのいずれも
+// この 1 本を通るので、ここが崩れると進行中の津波の見え方がまるごと変わる。
 //
 // フィクスチャは実電文（2024-01-01 能登半島地震の津波情報a）の構造に合わせている。
 // 実電文の TsunamiHeight は type / unit / description の 3 属性を持ち、description は全角
@@ -1512,9 +1493,6 @@ const PARITY_TSUNAMI_XML = `<?xml version="1.0" encoding="UTF-8"?>
   </Body>
 </Report>`
 
-// 上の XML と同じ津波を JSON 版で表したもの。DMDATA の JSON は観測点の「以上」を
-// maxHeight.height.over の真偽値で持つ（XML では description の文言に現れる）。
-
 describe('XML 経路が落としてはいけない項目（津波）', () => {
   const fromXml = () => parseTsunamiFromXml(PARITY_TSUNAMI_XML)!
 
@@ -1555,7 +1533,7 @@ describe('XML 経路が落としてはいけない項目（津波）', () => {
   })
 
   // 対照: 振り切っていない観測値では立てない。false ではなく undefined に落とす
-  // （JSON 経路が over || undefined としているため、形まで揃える）。
+  // （「以上」が付かない大多数の観測点に、意味の無いフィールドを持たせない）。
   it('通常の観測値では over を立てない', () => {
     const xml = PARITY_TSUNAMI_XML.replace('description="８．５ｍ以上"', 'description="８．５ｍ"')
     expect(parseTsunamiFromXml(xml)!.observations![0].height?.over).toBeUndefined()
@@ -1574,7 +1552,7 @@ describe('XML 経路が落としてはいけない項目（津波）', () => {
 
 
   // 数値が読めないのに「以上」が書かれている電文。height ごと落ちるので表示は変わらないが、
-  // JSON 経路に対になる記録があるため、XML 経路だけ痕跡が残らない状態を作らない。
+  // 痕跡が残らない状態を作らない（下の空 description と対になる記録）。
   it('波高が読めないのに「以上」がある電文は記録を残す', () => {
     const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
     try {
@@ -1586,9 +1564,9 @@ describe('XML 経路が落としてはいけない項目（津波）', () => {
       warn.mockRestore()
     }
   })
-  // description 属性が落ちると over を復元する手がかりが無くなる（XML ではこの属性が唯一の
-  // 情報源）。JSON 経路には「波高は読めないが over は立っていた」ケースの記録があるので、
-  // XML 経路にも対になる記録を置く。無いと「以上」が黙って通常値として扱われる。
+  // description 属性が落ちると over を復元する手がかりが無くなる（電文ではこの属性が唯一の
+  // 情報源）。上の「波高は読めないが over は立っていた」と対になる記録を置く。
+  // 無いと「以上」が黙って通常値として扱われる。
   describe('波高の description 属性が空のとき', () => {
     // 「以上」判定に関する記録だけを数える。parseTsunamiFromXml は未知の Kind/Code など
     // 別の理由でも警告を出すため、`not.toHaveBeenCalled()` で見ると、無関係な警告が
@@ -1928,8 +1906,8 @@ describe('潮位観測点の観測状態（Condition）', () => {
     // 観測できていた事実（ここでは大津波警報の基準超え）が画面から消える。
     // description の「以上」は観測可能範囲の超過を表すため over も立つ
     // （→ docs/spec/tsunami-spec.md §6「観測波高の「以上」」）
-    // 表示文字列の期待値を全角から半角へ覆した。電文の原文は全角だが、JSON 経路が数値から
-    // 半角で組んでいるため、経路で表示が変わっていた（→ 下記「波高の表示文字列は半角に揃える」）。
+    // 表示文字列の期待値を全角から半角へ覆した。電文の原文は全角だが、画面と読み上げは
+    // ずっと半角で出してきた（→ 下記「波高の表示文字列は半角に揃える」）。
     expect(miyako.height).toEqual({ value: 3.2, description: '3.2m以上', over: true })
     expect(miyako.condition).toEqual({ important: true, maxHeightMissing: true })
   })
@@ -2006,9 +1984,9 @@ const VXSE61_XML = `<?xml version="1.0" encoding="UTF-8"?>
 
 
 describe('震源要素更新（VXSE61）は「度分」の座標を採る', () => {
-  // 正: 度分の座標を 10 進度へ直した値になる（JSON 経路が返すのと同じ値）。
+  // 正: 度分の座標を 10 進度へ直した値になる。
   // 度単位のほうを採ると 40.2 / 142.3 / 深さ 40km になり、最大 1.2km ずれる。
-  it('XML 経路が度分の座標を 10 進度で返す', () => {
+  it('度分の座標を 10 進度で返す', () => {
     const q = parseEarthquakeFromXml('VXSE61', VXSE61_XML)!
     expect(q.earthquake.hypocenter.latitude).toBe(40.21)
     expect(q.earthquake.hypocenter.longitude).toBe(142.3033)
@@ -2100,8 +2078,7 @@ describe('震源要素更新（VXSE61）は「度分」の座標を採る', () =
 
 
 // 気象庁の原文は全角（"０．２ｍ未満"）だが、画面と読み上げはずっと半角で出してきた。
-// JSON 経路は数値から `${value}m` と半角で組むため、XML 経路だけ全角だと同じ津波でも
-// 履歴で開いたかライブで受信したかで表示が変わる。実電文 62 通の照合で 375 箇所ずれていた。
+// 原文のまま流すと同じ値でも全角と半角が混じって並ぶ。実電文 62 通の照合で 375 箇所ずれていた。
 describe('波高の表示文字列は半角に揃える', () => {
   const xmlWith = (desc: string) => PARITY_TSUNAMI_XML.replace('description="８．５ｍ以上"', `description="${desc}"`)
 
@@ -2199,7 +2176,7 @@ describe('parseEEWFromXml（VXSE45 の XML 経路）', () => {
     expect(parseEEWFromXml('VXSE45', xml)!.isFinal).toBe(false)
   })
 
-  // 正: 区域の Kind が「緊急地震速報（警報）」なら警報級として扱う（JSON の body.isWarning に対応）。
+  // 正: 区域の Kind が「緊急地震速報（警報）」なら警報級として扱う。
   it('区域の Kind から警報級を判定し、区域を読む', () => {
     const xml = EEW_XML.replace('</Forecast>', `${EEW_WARNING_PREF}</Forecast>`)
     const e = parseEEWFromXml('VXSE45', xml)!

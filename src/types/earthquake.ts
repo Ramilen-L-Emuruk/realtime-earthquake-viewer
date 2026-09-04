@@ -124,7 +124,7 @@ export interface TsunamiArea {
    * 見ていると、他の区域に注意報が残っている限り「変化なし」に見える
    * （→ docs/spec/tsunami-spec.md §10「区域単位で等級が動いた報」）。
    *
-   * DMDATA 経路（XML・JSON）のみ。P2PQuake は相当する項目を配信しないため常に undefined。
+   * DMDATA 経路のみ。P2PQuake は相当する項目を配信しないため常に undefined。
    */
   lastGrade?: TsunamiGrade
   immediate: boolean
@@ -286,7 +286,7 @@ export interface EEWAlert {
 export interface LpgmPoint {
   code: string      // 観測点コード（例: "0122401"）
   name: string      // 観測点名（例: "新千歳空港"）
-  pref: string      // 都道府県名（XML由来は Pref/Name、JSON由来は空文字）
+  pref: string      // 都道府県名（電文の Pref/Name から補う）
   lgInt: number     // 長周期地震動階級 1〜4
 }
 
