@@ -2,7 +2,7 @@
 // parseEarthquakeFromXml（REST 履歴経路）のテスト。
 // DOMParser を使うためこのファイルだけ jsdom 環境で動かす（既定は node）。
 import { describe, it, expect, vi } from 'vitest'
-import { parseEarthquake, parseEarthquakeFromXml, parseEEW, parseTsunami, parseTsunamiFromXml, parseLpgm, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml } from './dmdataParser'
+import { parseEarthquake, parseEarthquakeFromXml, parseEEW, parseEEWFromXml, parseTsunami, parseTsunamiFromXml, parseLpgm, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml } from './dmdataParser'
 import { log } from '../utils/logger'
 import { hasKnownEpicenter } from '../utils/geo'
 import { hasMagnitude } from '../utils/formatters'
@@ -2138,5 +2138,235 @@ describe('波高の表示文字列は半角に揃える', () => {
   it('半角化しても「以上」から over を立てる', () => {
     expect(parseTsunamiFromXml(xmlWith('８．５ｍ以上'))!.observations![0].height?.over).toBe(true)
     expect(parseTsunamiFromXml(xmlWith('８．５ｍ'))!.observations![0].height?.over).toBeUndefined()
+  })
+})
+
+// EEW の XML 電文（VXSE45）。実電文 2026-09-03 福島県会津 M3.5 の写しを最小化したもの。
+// 予報級・最終報。取消・警報級は下でこれを書き換えて作る。
+const EEW_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/" xmlns:jmx="http://xml.kishou.go.jp/jmaxml1/">
+<Control><Title>緊急地震速報（地震動予報）</Title><DateTime>2026-09-03T13:35:37Z</DateTime><Status>通常</Status><EditorialOffice>気象庁本庁</EditorialOffice><PublishingOffice>気象庁</PublishingOffice></Control>
+<Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+<Title>緊急地震速報（地震動予報）</Title>
+<ReportDateTime>2026-09-03T22:35:37+09:00</ReportDateTime>
+<TargetDateTime>2026-09-03T22:35:37+09:00</TargetDateTime>
+<EventID>20260903223458</EventID>
+<InfoType>発表</InfoType>
+<Serial>3</Serial>
+<InfoKind>緊急地震速報</InfoKind>
+<InfoKindVersion>1.2_0</InfoKindVersion>
+</Head>
+<Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/" xmlns:jmx_eb="http://xml.kishou.go.jp/jmaxml1/elementBasis1/">
+<NextAdvisory>この情報をもって、緊急地震速報：最終報とします。</NextAdvisory>
+<Earthquake>
+<OriginTime>2026-09-03T22:34:56+09:00</OriginTime>
+<ArrivalTime>2026-09-03T22:34:58+09:00</ArrivalTime>
+<Hypocenter><Area>
+<Name>福島県会津</Name>
+<Code type="震央地名">252</Code>
+<jmx_eb:Coordinate description="北緯３７．２度　東経１３９．３度　深さ　１０ｋｍ">+37.2+139.3-10000/</jmx_eb:Coordinate>
+<ReduceName>福島県</ReduceName>
+</Area></Hypocenter>
+<jmx_eb:Magnitude type="Mj" description="Ｍ３．５">3.5</jmx_eb:Magnitude>
+</Earthquake>
+<Intensity><Forecast>
+<ForecastInt><From>2</From><To>2</To></ForecastInt>
+<ForecastLgInt><From>0</From><To>0</To></ForecastLgInt>
+</Forecast></Intensity>
+</Body>
+</Report>`
+
+// 警報級（実電文 2024-08-09 の写し）。区域の Kind が「緊急地震速報（警報）」で、
+// 区域側にも Condition（「既に主要動到達と推測」）が入る。
+const EEW_WARNING_PREF = `<Pref><Name>神奈川</Name><Code>9140</Code><Area>
+<Name>神奈川県東部</Name><Code>360</Code>
+<Category><Kind><Name>緊急地震速報（警報）</Name><Code>11</Code></Kind></Category>
+<ForecastInt><From>5-</From><To>5-</To></ForecastInt>
+<ForecastLgInt><From>1</From><To>1</To></ForecastLgInt>
+<Condition>既に主要動到達と推測</Condition>
+</Area></Pref>`
+
+describe('parseEEWFromXml（VXSE45 の XML 経路）', () => {
+  // 正: 震源・予想最大震度・最終報を読む。
+  it('予報級の報を読む', () => {
+    const e = parseEEWFromXml('VXSE45', EEW_XML)!
+    expect(e.issue).toEqual({ eventId: '20260903223458', serial: '3', time: '2026-09-03T22:35:37+09:00' })
+    expect(e.earthquake.hypocenter).toEqual({ name: '福島県会津', latitude: 37.2, longitude: 139.3, depth: 10, magnitude: 3.5 })
+    expect(e.forecastMaxScale).toBe(20)
+    expect(e.severity).toBe('Forecast')
+    expect(e.isFinal).toBe(true)
+    expect(e.areas).toEqual([])
+  })
+
+  // 対照: 最終報の文言が無ければ isFinal は立たない。
+  it('最終報の文言が無ければ isFinal を立てない', () => {
+    const xml = EEW_XML.replace(/<NextAdvisory>[^<]*<\/NextAdvisory>/, '')
+    expect(parseEEWFromXml('VXSE45', xml)!.isFinal).toBe(false)
+  })
+
+  // 正: 区域の Kind が「緊急地震速報（警報）」なら警報級として扱う（JSON の body.isWarning に対応）。
+  it('区域の Kind から警報級を判定し、区域を読む', () => {
+    const xml = EEW_XML.replace('</Forecast>', `${EEW_WARNING_PREF}</Forecast>`)
+    const e = parseEEWFromXml('VXSE45', xml)!
+    expect(e.severity).toBe('Warning')
+    expect(e.areas).toEqual([{
+      pref: '', name: '神奈川県東部', scaleFrom: 45, scaleTo: 45,
+      kindCode: '11', arrivalTime: null, lgIntTo: 1,
+    }])
+  })
+
+  // 対照: 予報の Kind しか無ければ警報級にしない。
+  it('予報の区域だけなら警報級にしない', () => {
+    const xml = EEW_XML.replace('</Forecast>', `${EEW_WARNING_PREF.replace('緊急地震速報（警報）', '緊急地震速報（予報）').replace('<Code>11</Code>', '<Code>00</Code>')}</Forecast>`)
+    const e = parseEEWFromXml('VXSE45', xml)!
+    expect(e.severity).toBe('Forecast')
+    expect(e.areas![0].kindCode).toBe('00')
+  })
+
+  // 安全弁: Condition は要素の位置で意味が変わる。Earthquake 直下は震源の状態（「仮定震源要素」）、
+  // Pref/Area 直下は区域の状態（「既に主要動到達と推測」）。子孫から拾うと、警報級の電文で
+  // 区域側の文言が震源の condition に化け、仮定震源要素の判定が誤って立つ。
+  it('区域の Condition を震源の condition に混ぜない', () => {
+    const xml = EEW_XML.replace('</Forecast>', `${EEW_WARNING_PREF}</Forecast>`)
+    expect(parseEEWFromXml('VXSE45', xml)!.earthquake.condition).toBe('')
+  })
+
+  // 正: 震源側の Condition は読む（仮定震源要素。表示・読み上げを抑える判定に使う）。
+  it('震源の Condition（仮定震源要素）は読む', () => {
+    const xml = EEW_XML.replace('<OriginTime>', '<Condition>仮定震源要素</Condition><OriginTime>')
+    expect(parseEEWFromXml('VXSE45', xml)!.earthquake.condition).toBe('仮定震源要素')
+  })
+
+  // 安全弁: 上限を定めない予想震度（To が over）を震度7に読まない。下限へ寄せて「以上」を持つ。
+  it('To が over の予想震度は下限＋「以上」にする', () => {
+    const xml = EEW_XML.replace('<ForecastInt><From>2</From><To>2</To></ForecastInt>', '<ForecastInt><From>4</From><To>over</To></ForecastInt>')
+    const e = parseEEWFromXml('VXSE45', xml)!
+    expect(e.forecastMaxScale).toBe(40)
+    expect(e.forecastMaxScaleOrAbove).toBe(true)
+  })
+
+  // 安全弁: 取消は Head/InfoType で伝わる。座標は「位置不明」センチネルにし、区域は空にする。
+  it('取消は座標をセンチネルにして区域を空にする', () => {
+    const xml = EEW_XML.replace('<InfoType>発表</InfoType>', '<InfoType>取消</InfoType>')
+      .replace('</Forecast>', `${EEW_WARNING_PREF}</Forecast>`)
+    const e = parseEEWFromXml('VXSE45', xml)!
+    expect(e.cancelled).toBe(true)
+    expect(e.earthquake.hypocenter.latitude).toBe(-200)
+    expect(e.earthquake.hypocenter.longitude).toBe(-200)
+    expect(e.areas).toEqual([])
+    expect(e.forecastMaxScale).toBeUndefined()
+  })
+})
+
+// EEW_XML と同じ電文の JSON 版（実電文 2026-09-03 福島県会津 M3.5 の写しを最小化したもの）。
+// 下の「一致」テストが両経路を突き合わせるため、**片方だけ値を変えないこと**。
+const EEW_JSON = {
+  type: '緊急地震速報（地震動予報）',
+  title: '緊急地震速報（地震動予報）',
+  status: '通常',
+  infoType: '発表',
+  editorialOffice: '大阪管区気象台',
+  publishingOffice: ['気象庁'],
+  pressDateTime: '2026-09-03T13:35:37Z',
+  reportDateTime: '2026-09-03T22:35:37+09:00',
+  targetDateTime: '2026-09-03T22:35:37+09:00',
+  eventId: '20260903223458',
+  serialNo: '3',
+  infoKind: '緊急地震速報',
+  infoKindVersion: '1.2_0',
+  body: {
+    isLastInfo: true,
+    isCanceled: false,
+    isWarning: false,
+    earthquake: {
+      originTime: '2026-09-03T22:34:56+09:00',
+      arrivalTime: '2026-09-03T22:34:58+09:00',
+      hypocenter: {
+        code: '252',
+        name: '福島県会津',
+        coordinate: {
+          latitude: { text: '37.2˚N', value: '37.2000' },
+          longitude: { text: '139.3˚E', value: '139.3000' },
+          height: { type: '高さ', unit: 'm', value: '-10000' },
+        },
+        depth: { type: '深さ', unit: 'km', value: '10' },
+        reduce: { code: '9207', name: '福島県' },
+      },
+      magnitude: { type: 'マグニチュード', unit: 'Mj', value: '3.5' },
+    },
+    intensity: {
+      forecastMaxInt: { from: '2', to: '2' },
+      forecastMaxLgInt: { from: '0', to: '0' },
+    },
+  },
+}
+
+// 警報級の区域。EEW_WARNING_PREF（XML）と同じ内容を JSON の形で書いたもの。
+const EEW_WARNING_REGION = {
+  code: '360',
+  name: '神奈川県東部',
+  forecastMaxInt: { from: '5-', to: '5-' },
+  forecastMaxLgInt: { from: '1', to: '1' },
+  isPlum: false,
+  isWarning: true,
+  kind: { name: '緊急地震速報（警報）', code: '11' },
+  condition: '既に主要動到達と推測',
+}
+
+// 地震・津波・長周期と同じ形の突き合わせ。**この describe が無いと、CLAUDE.md の整合性
+// チェックポイントが「両経路の一致は npm test が担保する」と書いているのに EEW だけ空手形になる。
+// 実電文 21 通での照合は使い捨てのハーネスで行ったもので、恒久の網はここにしか残らない。
+describe('EEW: JSON 経路と XML 経路の読み取り一致', () => {
+  const fromJson = () => parseEEW('VXSE45', EEW_JSON as unknown as Record<string, unknown>)!
+  const fromXml = () => parseEEWFromXml('VXSE45', EEW_XML)!
+
+  it('id と issue（イベント ID・報番号・発表時刻）が一致する', () => {
+    expect(fromXml().id).toBe(fromJson().id)
+    expect(fromXml().issue).toEqual(fromJson().issue)
+  })
+
+  it('震源要素（名前・緯度経度・深さ・規模）が一致する', () => {
+    expect(fromXml().earthquake.hypocenter).toEqual(fromJson().earthquake.hypocenter)
+  })
+
+  it('発生時刻・到達時刻・震源の状態が一致する', () => {
+    const x = fromXml().earthquake, j = fromJson().earthquake
+    expect([x.originTime, x.arrivalTime, x.condition]).toEqual([j.originTime, j.arrivalTime, j.condition])
+  })
+
+  it('予想最大震度・長周期階級・区分・最終報が一致する', () => {
+    const x = fromXml(), j = fromJson()
+    expect(x.forecastMaxScale).toBe(j.forecastMaxScale)
+    expect(x.forecastMaxLpgmClass).toBe(j.forecastMaxLpgmClass)
+    expect(x.severity).toBe(j.severity)
+    expect(x.isFinal).toBe(j.isFinal)
+    expect(x.cancelled).toBe(j.cancelled)
+  })
+
+  // 正: 警報級の区域を両経路で同じ形に読む。区域は予想震度の塗りと読み上げに直結する。
+  it('警報級の区域を同じ形に読む', () => {
+    const json = structuredClone(EEW_JSON) as Record<string, unknown>
+    const body = json.body as Record<string, unknown>
+    body.isWarning = true
+    ;(body.intensity as Record<string, unknown>).regions = [EEW_WARNING_REGION]
+    const xml = EEW_XML.replace('</Forecast>', `${EEW_WARNING_PREF}</Forecast>`)
+    const j = parseEEW('VXSE45', json)!
+    const x = parseEEWFromXml('VXSE45', xml)!
+    expect(x.areas).toEqual(j.areas)
+    expect(x.severity).toBe(j.severity)
+    expect(x.severity).toBe('Warning')
+  })
+
+  // 安全弁: 上限を定めない予想震度（`to: over`）を両経路とも下限＋「以上」に読む。
+  // 片方だけ震度7に読むと、履歴で開いたか受信したかで最大震度が変わる。
+  it('上限のない予想震度を同じに読む', () => {
+    const json = structuredClone(EEW_JSON) as Record<string, unknown>
+    ;((json.body as Record<string, unknown>).intensity as Record<string, unknown>).forecastMaxInt = { from: '4', to: 'over' }
+    const xml = EEW_XML.replace('<ForecastInt><From>2</From><To>2</To></ForecastInt>', '<ForecastInt><From>4</From><To>over</To></ForecastInt>')
+    const j = parseEEW('VXSE45', json)!
+    const x = parseEEWFromXml('VXSE45', xml)!
+    expect(x.forecastMaxScale).toBe(j.forecastMaxScale)
+    expect(x.forecastMaxScaleOrAbove).toBe(j.forecastMaxScaleOrAbove)
+    expect(x.forecastMaxScale).toBe(40)
   })
 })

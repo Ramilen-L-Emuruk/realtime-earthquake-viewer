@@ -127,6 +127,25 @@ VXSE43（警報）と旧形式の VXSE44（予報）を扱わない理由は [`d
 合わせる方を採っている。ここに書いたのは**表示**の理由。読み上げには「音声だけで区分が判別できる
 ようにする」という固有の理由が加わるため、そちらは [`audio-tts-spec.md`](audio-tts-spec.md) §6 にある。
 
+### JSON 経路と XML 経路（`parseEEW` / `parseEEWFromXml`）
+
+DMDATA は同じ電文を JSON にも XML にも配る。**JSON 版が真偽値で受け取る 3 つは、XML では別の形で
+現れる**（実電文 21 通で対応を確かめた。予報級 14・警報級 6・仮定震源要素 1）。
+
+| JSON | XML |
+|---|---|
+| `body.isCanceled` | `Head/InfoType` が「取消」 |
+| `body.isLastInfo` | `Body/NextAdvisory` に最終報の文言 |
+| `body.isWarning` | 区域の `Category/Kind/Name` が「緊急地震速報（警報）」 |
+
+**`Condition` は要素の位置で意味が変わる。** `Earthquake` 直下は震源の状態（「仮定震源要素」）、
+`Pref/Area` 直下は区域の状態（「既に主要動到達と推測」）。子孫から拾うと、警報級の電文で区域側の
+文言が震源の `condition` に化け、**仮定震源要素の判定が誤って立つ**（§5 の抑制が丸ごと発動し、
+震源・規模が画面と読み上げから消える）。
+
+上限を定めない予想震度（`<To>over</To>`）は XML でも同じ語で現れる（扱いは §4「上限を定めない
+予想震度の扱い」）。
+
 ## 4. レベル判定（`computeSingleEEWLevel`）
 
 `src/utils/eew.ts` の `computeSingleEEWLevel(eew)` が単一情報源。判定は 3 段階の直列条件で行う:
@@ -588,3 +607,6 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
   これに伴い「深発地震で階級だけ載る電文が実在するか未確認」という保留を解消した（仕様上ありえない）。
 - 2026-09-03: 取消電文の震源座標を `0` から `-200`（位置不明センチネル）へ変更した。`0` はギニア湾沖の
   有効な座標として `hasKnownEpicenter` を通るため、他の経路と同じ値に揃えて 1 つの述語で弾けるようにした。
+- 2026-09-04: XML 電文を読む `parseEEWFromXml` を追加した（§3）。DMDATA の電文を XML 経路へ
+  統一する準備で、この時点ではまだどの経路からも呼んでいない。実電文 21 通で JSON 版と
+  突き合わせ、差分ゼロを確認した。
