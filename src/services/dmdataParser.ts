@@ -458,15 +458,94 @@ function xmlText(el: Element | null): string {
   return el?.textContent?.trim() ?? ''
 }
 
+// 度分表記（"+4012.6" = 北緯 40 度 12.6 分）を 10 進度へ直す。読めない値は NaN を返す。
+//
+// 小数第 4 位で丸めるのは DMDATA の JSON 変換に合わせるため（"40.2100" / "142.3033"）。
+// 丸めないと同じ電文でも経路によって末尾がずれる。
+//
+// **分が 60 以上の値は捨てる**（例: "+4065.5"）。分として成り立たない値なので、有限性しか
+// 見ていない呼び出し元の防御を素通りさせず、ここで NaN にして落とす。
+//
+// **このガードが守るのはそこまで。** 度単位の座標（"+40.2"）が誤って度分の要素に入っていても
+// 「0 度 40.2 分」で分は 60 未満のため、ここは通ってしまう。その取り違えを捕まえているのは
+// 下記 `degreeMinuteCoordProblem`（度単位側との突き合わせ）で、**別の防御**。
+// 片方を消してもう片方が代わりを務めることはない。
+function degreeMinuteToDegrees(v: number): number {
+  const sign = v < 0 ? -1 : 1
+  const abs = Math.abs(v)
+  const deg = Math.floor(abs / 100)
+  const min = abs - deg * 100
+  if (!(min < 60)) return NaN
+  return sign * Math.round((deg + min / 60) * 1e4) / 1e4
+}
+
 // JMA XML 座標文字列（例: "+36.3+140.0-70000/"）→ lat/lng/depth(km)
-function parseJmaCoord(s: string): { lat: number; lng: number; depth: number } {
+//
+// @param degreeMinute 緯度経度が度分表記（"+4012.6+14218.2-44000/"）か。
+//   要素の type 属性で判別する（下記 readHypocenterCoord）。桁数から推測しない
+//   ——度単位の経度は 3 桁になりうるので、桁だけでは度分と見分けられない。
+function parseJmaCoord(s: string, degreeMinute = false): { lat: number; lng: number; depth: number } {
   const m = s.match(/([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)?\//)
   if (!m) return { lat: NaN, lng: NaN, depth: -1 }
-  const lat = parseFloat(m[1])
-  const lng = parseFloat(m[2])
+  const lat = degreeMinute ? degreeMinuteToDegrees(parseFloat(m[1])) : parseFloat(m[1])
+  const lng = degreeMinute ? degreeMinuteToDegrees(parseFloat(m[2])) : parseFloat(m[2])
   // 高さフィールドは負値・メートル単位（海面下）
   const depth = m[3] != null ? Math.abs(parseFloat(m[3])) / 1000 : -1
   return { lat, lng, depth }
+}
+
+// 震源の座標を読む。
+//
+// VXSE61（顕著な地震の震源要素更新のお知らせ）は Coordinate を 2 つ持つ。1 つ目は度単位へ
+// 丸めた値で、電文自身が「度単位の震源要素は、津波情報等を引き続き発表する場合に使用されます」
+// と用途を断っている。震源要素として採るのは type="震源位置（度分）" のほうで、DMDATA の
+// JSON 変換もそちらを 10 進度へ直した値を返す。丸めた側を採ると深さが 4km ずれた実例がある
+// （2026-06-25 岩手県沖 M7.2: 度単位 40km ／度分 44km）。
+//
+// **丸めた側へ落ちたことは必ず記録する。** ずれは有効な座標の形をしていて、画面にも
+// 読み上げにも「おかしい」とは出ない。落ちた事実を残さないと、4km のずれが起きていることに
+// 誰も気づけない。ただし記録するのは VXSE61 のときだけ——他の種別は Coordinate を元から
+// 1 つしか持たず、そこで鳴らすと正常系が警告で埋まる。
+// 度分から起こした座標を、度単位の座標と突き合わせて許す差。度単位側は同じ震源を 0.1 度へ
+// 丸めた値なので、正しければ差は 0.05 度に収まる。実電文 8 通で測った最大の食い違いは
+// 0.048 度で、その約 2 倍を取っている。
+const COORD_CROSS_CHECK_TOLERANCE_DEG = 0.1
+
+// 度分から起こした座標が信用できるか。信用できないなら理由を返す（記録の文面に使う）。
+//
+// **有限性だけでは足りない。** 度単位の値（"+40.2"）が誤って度分の要素に入っていると
+// 「0 度 40.2 分」＝ 0.67 度という、有限だがまるで違う座標になる。度単位の座標は同じ震源を
+// 丸めたものなので、突き合わせればこの取り違えを捕まえられる。
+function degreeMinuteCoordProblem(
+  dm: { lat: number; lng: number },
+  plain: { lat: number; lng: number },
+): string | null {
+  if (!Number.isFinite(dm.lat) || !Number.isFinite(dm.lng)) return '座標を読めません'
+  // 突き合わせる相手が無い電文（度分しか持たない）は、そのまま採るしかない。
+  if (!Number.isFinite(plain.lat) || !Number.isFinite(plain.lng)) return null
+  const off = Math.max(Math.abs(dm.lat - plain.lat), Math.abs(dm.lng - plain.lng))
+  if (off > COORD_CROSS_CHECK_TOLERANCE_DEG) return `度単位の座標と ${off.toFixed(2)} 度食い違います`
+  return null
+}
+
+function readHypocenterCoord(areaEl: Element, headType: string): { lat: number; lng: number; depth: number } {
+  const els = xmlAll(areaEl, 'Coordinate')
+  const dm = els.find(el => (el.getAttribute('type') ?? '').includes('度分'))
+  // 度分の要素そのものを度単位として読み直さないよう、退避先は「度分ではないほう」から採る。
+  const plain = parseJmaCoord(xmlText(els.find(el => el !== dm) ?? null))
+  if (!dm) {
+    if (headType === 'VXSE61') {
+      log.warn(`[quake XML] ${headType}: 「震源位置（度分）」の座標が見当たらないため、度単位へ丸めた座標を使います`)
+    }
+    return plain
+  }
+  const parsed = parseJmaCoord(xmlText(dm), true)
+  const problem = degreeMinuteCoordProblem(parsed, plain)
+  if (!problem) return parsed
+  // 電文ごと捨てると震源要素更新が丸ごと消えるため、丸めた側へ落として記録を残す
+  // （退避先が無ければ座標なしのまま返り、呼び出し元の有限性チェックで電文が捨てられる）。
+  log.warn(`[quake XML] ${headType}: 「震源位置（度分）」の${problem}。度単位へ丸めた座標を使います: ${xmlText(dm)}`)
+  return plain
 }
 
 // REST API 経由の JMA XML（VXSE51/52/53）を JMAQuake にパース
@@ -512,8 +591,9 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   // 遠地地震は Area/DetailedName に詳細震央地名（例: "ベネズエラ沿岸"）が入る。なければ Area/Name にフォールバック。
   const hypName = (areaEl ? xmlText(xmlQ(areaEl, 'DetailedName')) : '')
     || (areaEl ? xmlText(xmlQ(areaEl, 'Name')) : '')
-  const coordStr = areaEl ? xmlText(xmlQ(areaEl, 'Coordinate')) : ''
-  const { lat, lng, depth } = parseJmaCoord(coordStr)
+  const { lat, lng, depth } = areaEl
+    ? readHypocenterCoord(areaEl, headType)
+    : { lat: NaN, lng: NaN, depth: -1 }
 
   // 震源を持つ電文で座標が読めないものは不正として捨てる（震度速報は上で除外済み）。
   if (earthquakeEl && (!Number.isFinite(lat) || !Number.isFinite(lng))) return null
@@ -527,10 +607,12 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
 
   // Magnitude 要素が空・欠落の電文は「規模不明」。`|| 0` で 0 に潰すと M0.0 と実測値のように
   // 表示・読み上げされるため、NaN のまま返して不明判定（formatters の hasMagnitude）に委ねる。
-  // VXSE51（震度速報）は Earthquake 要素自体を持たず、震源情報なしの意味で 0 を維持する。
+  // VXSE51（震度速報）は Earthquake 要素自体を持たない。**ここも 0 ではなく NaN にする**——
+  // 0 は `hasMagnitude` を通るので「Ｍ０．０」と読める形になってしまう。JSON 経路は
+  // `parseNum(undefined)` が NaN を返しており、以前はこの 1 箇所だけが食い違っていた。
   const magnitude = earthquakeEl
     ? parseFloat(xmlText(xmlQ(earthquakeEl, 'Magnitude')))
-    : 0
+    : NaN
 
   // MaxInt は Intensity > Observation 直下
   const obsEl = xmlQ(doc, 'Observation')
@@ -644,6 +726,23 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
 
 // REST API 経由の JMA XML（VTSE41/VTSE51/VTSE52）を JMATsunami にパース。
 // 観測データ（Observation のみ）の場合は null を返す。
+// 波高の表示文字列（XML の `description` 属性）を半角へ直す。
+//
+// 気象庁の原文は全角（"０．２ｍ未満" / "８．５ｍ以上"）だが、画面と読み上げはずっと半角で
+// 出してきた。JSON 経路も数値から `${value}m` と半角で組むため、XML 経路だけ全角になると
+// **同じ津波でも履歴で開いたかライブで受信したかで表示が変わる**。
+//
+// 直すのは数字・小数点・単位だけ。「未満」「以上」「超」「巨大」といった語はそのまま残す
+// （原文が持つ意味を落とさないため。数字を含まない "巨大" は素通りする）。
+// 前後の空白は落とす（実電文に先頭が全角空白の "　１ｍ" があった）。
+function toHalfWidthHeightDesc(s: string): string {
+  return s
+    .replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .replace(/．/g, '.')
+    .replace(/ｍ/g, 'm')
+    .trim()
+}
+
 export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   let doc: Document
   try {
@@ -742,7 +841,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
     // → docs/spec/tsunami-spec.md §6「観測波高の「以上」」）。それでも数値から組む道を残すのは、
     // JSON 経路が condition が空のとき同じことをしているため（表示・読み上げは description しか
     // 見ないので、空だと波高が画面から消える）。
-    const heightDesc = (heightEl?.getAttribute('description') ?? '')
+    const heightDesc = toHalfWidthHeightDesc(heightEl?.getAttribute('description') ?? '')
       || (!isNaN(heightVal) ? `${heightVal}m` : '')
 
     // Station 要素（各潮位観測点の満潮時刻・到達予想時刻）
@@ -838,7 +937,9 @@ function parseTsunamiObservationsFromXml(observationEl: Element): import('../typ
       // overSuffixedHeight は over が無ければ description をそのまま返すだけ）。
       // 予想波高側と同じ形で数値から組む。over は上で生の値から判定済みなので、
       // ここで補った文字列（「以上」を含まない）が判定に混ざることはない。
-      const heightDesc = rawHeightDesc || (!isNaN(heightVal) ? `${heightVal}m` : '')
+      // 半角へ直すのは表示に使う側だけ。上の over 判定と記録は生の `rawHeightDesc` を見ている
+      // （「電文が何と言ったか」を判定から見えなくしないため）。
+      const heightDesc = toHalfWidthHeightDesc(rawHeightDesc) || (!isNaN(heightVal) ? `${heightVal}m` : '')
       observations.push({
         name,
         height: !isNaN(heightVal) ? { value: heightVal, description: heightDesc, over } : undefined,
