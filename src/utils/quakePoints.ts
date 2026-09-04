@@ -11,9 +11,8 @@ export type AreaPrefIndex = ReadonlyMap<string, string> | null
  *
  * `isArea: true` の点には 2 種類ある。
  * - **一次細分区域の点** — 気象庁が区域単位で発表した震度
- * - **都道府県ロールアップ点** — DMDSS 経路（DMDATA）が県別の最大震度を
- *   `{ pref: 県名, addr: 県名, isArea: true }` として足す集約値（JSON 経路は
- *   `intensity.prefectures[]`、XML 経路は `Pref` 直下の `MaxInt`）
+ * - **都道府県ロールアップ点** — DMDATA 経路が県別の最大震度を
+ *   `{ pref: 県名, addr: 県名, isArea: true }` として足す集約値（電文の `Pref` 直下の `MaxInt`）
  *
  * 県は区域より粗いので、後者を区域として扱うと読み上げの粒度が崩れ、地震の同一性判定では
  * 「同じ県の別々の区域で起きた 2 つの地震」が重なって見える。
@@ -24,7 +23,7 @@ export type AreaPrefIndex = ReadonlyMap<string, string> | null
  * ——が巻き添えで落ち、標準版の震度速報から奈良県だけが静かに消える。名前が衝突したときは
  * 「その名前が一次細分区域として実在するか」を見て決める。
  *
- * 奈良県では DMDATA JSON 経路の区域点とロールアップ点が両方とも真になるが、名前も震度も
+ * 奈良県では DMDATA 経路の区域点とロールアップ点が両方とも真になるが、名前も震度も
  * 同じ（単一区域なので県の最大震度は配下区域の最大震度）なので、集合・Map で受ける
  * 呼び出し側では重複しない。
  *
