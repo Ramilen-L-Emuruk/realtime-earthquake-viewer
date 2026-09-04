@@ -35,48 +35,38 @@ function listItem(t: MockTelegram) {
 }
 
 function quakeBody(eventId: string, reportTime: string): string {
-  return JSON.stringify({
-    eventId,
-    serialNo: '1',
-    infoType: '発表',
-    reportDateTime: reportTime,
-    body: {
-      earthquake: {
-        arrivalTime: reportTime,
-        hypocenter: {
-          name: '岩手県沖',
-          coordinate: { latitude: { value: '39.9' }, longitude: { value: '142.2' }, height: { value: '-50000' } },
-        },
-        magnitude: { value: '5.1' },
-        maxInt: '4',
-      },
-      intensity: { maxInt: '4' },
-    },
-  })
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/" xmlns:jmx="http://xml.kishou.go.jp/jmaxml1/">
+<Control><Title>震源・震度に関する情報</Title><Status>通常</Status><EditorialOffice>気象庁</EditorialOffice></Control>
+<Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+<Title>震源・震度に関する情報</Title><ReportDateTime>${reportTime}</ReportDateTime>
+<EventID>${eventId}</EventID><InfoType>発表</InfoType><Serial>1</Serial></Head>
+<Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/" xmlns:jmx_eb="http://xml.kishou.go.jp/jmaxml1/elementBasis1/">
+<Earthquake><OriginTime>${reportTime}</OriginTime><ArrivalTime>${reportTime}</ArrivalTime>
+<Hypocenter><Area><Name>岩手県沖</Name><jmx_eb:Coordinate>+39.9+142.2-50000/</jmx_eb:Coordinate></Area></Hypocenter>
+<jmx_eb:Magnitude type="Mj">5.1</jmx_eb:Magnitude></Earthquake>
+<Intensity><Observation><MaxInt>4</MaxInt></Observation></Intensity>
+</Body></Report>`
 }
 
 function eewBody(eventId: string, serial: string, reportTime: string, isWarning = false): string {
-  return JSON.stringify({
-    eventId,
-    serialNo: serial,
-    infoType: '発表',
-    reportDateTime: reportTime,
-    body: {
-      isLastInfo: false,
-      isCanceled: false,
-      isWarning,
-      earthquake: {
-        originTime: reportTime,
-        arrivalTime: reportTime,
-        hypocenter: {
-          name: '茨城県南部',
-          coordinate: { latitude: { value: '36.0' }, longitude: { value: '140.1' }, height: { value: '-80000' } },
-        },
-        magnitude: { value: '6.4' },
-      },
-      intensity: { forecastMaxInt: { from: '5+', to: '5+' } },
-    },
-  })
+  const pref = isWarning
+    ? `<Pref><Name>茨城</Name><Code>9130</Code><Area><Name>茨城県南部</Name><Code>310</Code>
+<Category><Kind><Name>緊急地震速報（警報）</Name><Code>11</Code></Kind></Category>
+<ForecastInt><From>5+</From><To>5+</To></ForecastInt></Area></Pref>`
+    : ''
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/" xmlns:jmx="http://xml.kishou.go.jp/jmaxml1/">
+<Control><Title>緊急地震速報（地震動予報）</Title><Status>通常</Status><EditorialOffice>気象庁</EditorialOffice></Control>
+<Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+<Title>緊急地震速報（地震動予報）</Title><ReportDateTime>${reportTime}</ReportDateTime>
+<EventID>${eventId}</EventID><InfoType>発表</InfoType><Serial>${serial}</Serial></Head>
+<Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/" xmlns:jmx_eb="http://xml.kishou.go.jp/jmaxml1/elementBasis1/">
+<Earthquake><OriginTime>${reportTime}</OriginTime><ArrivalTime>${reportTime}</ArrivalTime>
+<Hypocenter><Area><Name>茨城県南部</Name><jmx_eb:Coordinate>+36.0+140.1-80000/</jmx_eb:Coordinate></Area></Hypocenter>
+<jmx_eb:Magnitude type="Mj">6.4</jmx_eb:Magnitude></Earthquake>
+<Intensity><Forecast><ForecastInt><From>5+</From><To>5+</To></ForecastInt>${pref}</Forecast></Intensity>
+</Body></Report>`
 }
 
 const VYSE60_XML = `<?xml version="1.0" encoding="UTF-8"?>
@@ -86,20 +76,18 @@ const VYSE60_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <Body><Comment><Text>巨大地震に注意してください。</Text></Comment></Body></Report>`
 
 /**
- * 当日経路が叩く 3 種の API に応答するモック。
+ * 当日経路が叩く API に応答するモック。
  *
- * @param opts.json  formatMode=json の電文一覧が返す件
- * @param opts.xml   XML 版の電文一覧が返す件
+ * @param opts.list  電文一覧が返す件（XML 版・JSON 版の両方が載る）
  * @param opts.eew   gd/eew のイベントと、その全報の電文
  * @param opts.bodies URL → 本体
  */
 function mockLive(opts: {
-  json?: MockTelegram[]
-  xml?: MockTelegram[]
+  list?: MockTelegram[]
   eew?: Array<{ eventId: string; dateTime: string; originTime?: string; telegrams: MockTelegram[] }>
   bodies?: Record<string, string | 'error'>
-  /** 引けなくする一覧。3 本を個別に落とせないと「1 本だけ失敗」を再現できない。 */
-  listError?: Array<'telegram-json' | 'telegram-xml' | 'eew'>
+  /** 引けなくする一覧。2 本を個別に落とせないと「1 本だけ失敗」を再現できない。 */
+  listError?: Array<'telegram' | 'eew'>
 }) {
   const fails = new Set(opts.listError ?? [])
   const urls: string[] = []
@@ -107,10 +95,8 @@ function mockLive(opts: {
     urls.push(input)
     const ok = (json: unknown) => ({ ok: true, json: async () => json } as unknown as Response)
     if (input.includes('/v2/telegram?')) {
-      const jsonMode = input.includes('formatMode=json')
-      if (fails.has(jsonMode ? 'telegram-json' : 'telegram-xml')) return { ok: false, status: 500 } as unknown as Response
-      const items = (jsonMode ? opts.json : opts.xml) ?? []
-      return ok({ status: 'ok', items: items.map(listItem) })
+      if (fails.has('telegram')) return { ok: false, status: 500 } as unknown as Response
+      return ok({ status: 'ok', items: (opts.list ?? []).map(listItem) })
     }
     if (input.includes('/v2/gd/eew?')) {
       if (fails.has('eew')) return { ok: false, status: 500 } as unknown as Response
@@ -213,12 +199,16 @@ describe('fetchLiveReplayEntries', () => {
     expect(decoded.some(u => u.includes('/v2/gd/eew?') && u.includes('datetime=2026-08-22~2026-08-24'))).toBe(true)
   })
 
-  it('地震電文は JSON 版だけを取り込む', async () => {
+  // 同じ電文が XML 版（originalId 無し）と JSON 版（originalId 有り）で一覧に載る。
+  // 版を選ばないと同じ電文を二重に取り込む。
+  it('地震電文は XML 版だけを取り込む', async () => {
     const { fn } = mockLive({
-      json: [{ id: 'j1', originalId: 'x1', type: 'VXSE53', headTime: '2026-08-23T02:00:00Z', receivedTime: '2026-08-23T02:00:01.500Z', url: 'https://b/j1' }],
-      // 同じ電文の XML 版。JSON パーサしか無い種別なのでこちらは拾わない
-      xml: [{ id: 'x1', type: 'VXSE53', headTime: '2026-08-23T02:00:00Z', receivedTime: '2026-08-23T02:00:01.500Z', url: 'https://b/x1' }],
-      bodies: { 'https://b/j1': quakeBody('20260823110000', '2026-08-23T11:00:00+09:00') },
+      list: [
+        { id: 'x1', type: 'VXSE53', headTime: '2026-08-23T02:00:00Z', receivedTime: '2026-08-23T02:00:01.500Z', url: 'https://b/x1' },
+        { id: 'j1', originalId: 'x1', type: 'VXSE53', headTime: '2026-08-23T02:00:00Z', receivedTime: '2026-08-23T02:00:01.500Z', url: 'https://b/j1' },
+      ],
+      // 本体を用意するのは XML 版だけ。JSON 版まで拾えば取得に失敗して取りこぼしに数えられる。
+      bodies: { 'https://b/x1': quakeBody('20260823110000', '2026-08-23T11:00:00+09:00') },
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
@@ -231,11 +221,12 @@ describe('fetchLiveReplayEntries', () => {
     expect(result.entries[0].replayTime.toISOString()).toBe('2026-08-23T02:00:01.500Z')
   })
 
-  it('南海トラフ系は XML 版だけを取り込む', async () => {
+  it('南海トラフ系も XML 版だけを取り込む', async () => {
     const { fn } = mockLive({
-      // JSON 版も一覧に載るが、XML パーサしか無いので捨てる
-      json: [{ id: 'j2', originalId: 'x2', type: 'VYSE60', headTime: '2026-08-23T03:00:00Z', receivedTime: '2026-08-23T03:00:00.100Z', url: 'https://b/j2' }],
-      xml: [{ id: 'x2', type: 'VYSE60', headTime: '2026-08-23T03:00:00Z', receivedTime: '2026-08-23T03:00:00.100Z', url: 'https://b/x2' }],
+      list: [
+        { id: 'x2', type: 'VYSE60', headTime: '2026-08-23T03:00:00Z', receivedTime: '2026-08-23T03:00:00.100Z', url: 'https://b/x2' },
+        { id: 'j2', originalId: 'x2', type: 'VYSE60', headTime: '2026-08-23T03:00:00Z', receivedTime: '2026-08-23T03:00:00.100Z', url: 'https://b/j2' },
+      ],
       bodies: { 'https://b/x2': VYSE60_XML },
     })
     globalThis.fetch = fn as unknown as typeof fetch
@@ -248,15 +239,15 @@ describe('fetchLiveReplayEntries', () => {
 
   it('窓の外の電文と、担当日でない電文を落とす', async () => {
     const { fn } = mockLive({
-      json: [
+      list: [
         // 窓より前（head.time が FROM 未満）
-        { id: 'a', originalId: 'xa', type: 'VXSE53', headTime: '2026-08-22T14:00:00Z', receivedTime: '2026-08-23T02:00:00.000Z', url: 'https://b/a' },
+        { id: 'a', type: 'VXSE53', headTime: '2026-08-22T14:00:00Z', receivedTime: '2026-08-23T02:00:00.000Z', url: 'https://b/a' },
         // 担当日でない（受信が JST 8/24）
-        { id: 'b', originalId: 'xb', type: 'VXSE53', headTime: '2026-08-23T02:00:00Z', receivedTime: '2026-08-23T15:00:00.000Z', url: 'https://b/b' },
+        { id: 'b', type: 'VXSE53', headTime: '2026-08-23T02:00:00Z', receivedTime: '2026-08-23T15:00:00.000Z', url: 'https://b/b' },
         // テスト電文
-        { id: 'c', originalId: 'xc', type: 'VXSE53', headTime: '2026-08-23T02:00:00Z', receivedTime: '2026-08-23T02:00:00.000Z', url: 'https://b/c', test: true },
+        { id: 'c', type: 'VXSE53', headTime: '2026-08-23T02:00:00Z', receivedTime: '2026-08-23T02:00:00.000Z', url: 'https://b/c', test: true },
         // 対象外の種別
-        { id: 'd', originalId: 'xd', type: 'VZSE40', headTime: '2026-08-23T02:00:00Z', receivedTime: '2026-08-23T02:00:00.000Z', url: 'https://b/d' },
+        { id: 'd', type: 'VZSE40', headTime: '2026-08-23T02:00:00Z', receivedTime: '2026-08-23T02:00:00.000Z', url: 'https://b/d' },
       ],
       bodies: {},
     })
@@ -283,8 +274,8 @@ describe('fetchLiveReplayEntries', () => {
         ],
       }],
       bodies: {
-        'https://b/e1': eewBody('20260823110000', '1', '2026-08-23T11:00:01+09:00'),
-        'https://b/e2': eewBody('20260823110000', '2', '2026-08-23T11:00:03+09:00', true),
+        'https://data.api.dmdata.jp/v1/xe1': eewBody('20260823110000', '1', '2026-08-23T11:00:01+09:00'),
+        'https://data.api.dmdata.jp/v1/xe2': eewBody('20260823110000', '2', '2026-08-23T11:00:03+09:00', true),
       },
     })
     globalThis.fetch = fn as unknown as typeof fetch
@@ -297,6 +288,33 @@ describe('fetchLiveReplayEntries', () => {
     // 警報級は VXSE45 の body.isWarning で立つ（VXSE43 を取り込まなくても再現できる）
     expect(severities).toContain('Forecast')
     expect(severities).toContain('Warning')
+  })
+
+  // EEW の全報は JSON 版を指して返るので、XML 版の URL は originalId から組む。
+  // 欠けていれば XML の在り処が分からず読めない ―― 黙って捨てると「取りこぼし 0 件」の
+  // 表示のまま報が欠ける（実測では常に付いてくるが、数え落としの穴を残さない）。
+  it('EEW の電文に originalId が無ければ取りこぼしとして数える', async () => {
+    const { fn } = mockLive({
+      eew: [{
+        eventId: '20260823110000',
+        dateTime: '2026-08-23T11:00:05+09:00',
+        originTime: '2026-08-23T11:00:00+09:00',
+        telegrams: [
+          { id: 'e1', originalId: 'xe1', type: 'VXSE45', headTime: '2026-08-23T02:00:01Z', receivedTime: '2026-08-23T02:00:01.100Z', url: 'https://b/e1' },
+          // originalId 無し（XML を引けない）
+          { id: 'e2', type: 'VXSE45', headTime: '2026-08-23T02:00:03Z', receivedTime: '2026-08-23T02:00:03.200Z', url: 'https://b/e2' },
+        ],
+      }],
+      bodies: { 'https://data.api.dmdata.jp/v1/xe1': eewBody('20260823110000', '1', '2026-08-23T11:00:01+09:00') },
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS)
+
+    expect(result.entries).toHaveLength(1)
+    expect(result.skipped).toBe(1)
+    // 失ったのが 1 通と分かっているので、取得元（イベント丸ごと）としては数えない
+    expect(result.failedSources).toEqual([])
   })
 
   // 窓に一報も掛からないイベントの詳細を引くと、揺れの多い日にリクエストが跳ね上がる。
@@ -319,9 +337,9 @@ describe('fetchLiveReplayEntries', () => {
 
   it('本体が取れなかった電文は取りこぼしとして数え、残りは活かす', async () => {
     const { fn } = mockLive({
-      json: [
-        { id: 'ok', originalId: 'xok', type: 'VXSE53', headTime: '2026-08-23T02:00:00Z', receivedTime: '2026-08-23T02:00:00.000Z', url: 'https://b/ok' },
-        { id: 'ng', originalId: 'xng', type: 'VXSE53', headTime: '2026-08-23T02:01:00Z', receivedTime: '2026-08-23T02:01:00.000Z', url: 'https://b/ng' },
+      list: [
+        { id: 'ok', type: 'VXSE53', headTime: '2026-08-23T02:00:00Z', receivedTime: '2026-08-23T02:00:00.000Z', url: 'https://b/ok' },
+        { id: 'ng', type: 'VXSE53', headTime: '2026-08-23T02:01:00Z', receivedTime: '2026-08-23T02:01:00.000Z', url: 'https://b/ng' },
       ],
       bodies: {
         'https://b/ok': quakeBody('20260823110000', '2026-08-23T11:00:00+09:00'),
@@ -364,9 +382,9 @@ describe('fetchLiveReplayEntries', () => {
   // UI の取りこぼし通知に出ず、静かな時間帯と区別が付かなくなる。
   it('時刻が壊れた電文は取りこぼしとして数える', async () => {
     const { fn } = mockLive({
-      json: [
-        { id: 'bad1', originalId: 'xb1', type: 'VXSE53', headTime: 'not-a-date', receivedTime: '2026-08-23T02:00:00.000Z', url: 'https://b/bad1' },
-        { id: 'bad2', originalId: 'xb2', type: 'VXSE53', headTime: '2026-08-23T02:00:00Z', receivedTime: 'not-a-date', url: 'https://b/bad2' },
+      list: [
+        { id: 'bad1', type: 'VXSE53', headTime: 'not-a-date', receivedTime: '2026-08-23T02:00:00.000Z', url: 'https://b/bad1' },
+        { id: 'bad2', type: 'VXSE53', headTime: '2026-08-23T02:00:00Z', receivedTime: 'not-a-date', url: 'https://b/bad2' },
       ],
       bodies: {},
     })
@@ -378,12 +396,12 @@ describe('fetchLiveReplayEntries', () => {
     expect(result.skipped).toBe(2)
   })
 
-  // 3 本の一覧は互いに隔離する。1 本の一時障害で他の 2 本の成果まで捨てると、
+  // 2 本の一覧は互いに隔離する。片方の一時障害でもう片方の成果まで捨てると、
   // 「EEW の一覧がこけただけで今日の地震も津波も出ない」ことになる。しかも取得元が
   // 当日経路 1 本しか無い窓では、それが全滅と見なされて再生ごと止まる。
   it('EEW の一覧が引けなくても、地震電文は残す', async () => {
     const { fn } = mockLive({
-      json: [{ id: 'j1', originalId: 'x1', type: 'VXSE53', headTime: '2026-08-23T02:00:00Z', receivedTime: '2026-08-23T02:00:01.500Z', url: 'https://b/j1' }],
+      list: [{ id: 'j1', type: 'VXSE53', headTime: '2026-08-23T02:00:00Z', receivedTime: '2026-08-23T02:00:01.500Z', url: 'https://b/j1' }],
       bodies: { 'https://b/j1': quakeBody('20260823110000', '2026-08-23T11:00:00+09:00') },
       listError: ['eew'],
     })
@@ -405,8 +423,8 @@ describe('fetchLiveReplayEntries', () => {
           { id: 'e1', originalId: 'xe1', type: 'VXSE45', headTime: '2026-08-23T02:00:01Z', receivedTime: '2026-08-23T02:00:01.100Z', url: 'https://b/e1' },
         ],
       }],
-      bodies: { 'https://b/e1': eewBody('20260823110000', '1', '2026-08-23T11:00:01+09:00') },
-      listError: ['telegram-json'],
+      bodies: { 'https://data.api.dmdata.jp/v1/xe1': eewBody('20260823110000', '1', '2026-08-23T11:00:01+09:00') },
+      listError: ['telegram'],
     })
     globalThis.fetch = fn as unknown as typeof fetch
 
@@ -418,8 +436,8 @@ describe('fetchLiveReplayEntries', () => {
 
   // すべて引けなければその日は 1 通も取れていない。呼び出し元が日単位の失敗として
   // 扱えるよう投げる（部分的に取れた場合と区別が付かなくなるため）。
-  it('3 本の一覧をすべて引けなければ例外にする', async () => {
-    const { fn } = mockLive({ listError: ['telegram-json', 'telegram-xml', 'eew'] })
+  it('2 本の一覧をすべて引けなければ例外にする', async () => {
+    const { fn } = mockLive({ listError: ['telegram', 'eew'] })
     globalThis.fetch = fn as unknown as typeof fetch
     await expect(fetchLiveReplayEntries('key', FROM, TO, DAYS)).rejects.toThrow(/一覧をすべて取得できませんでした/)
   })
@@ -443,9 +461,9 @@ describe('fetchLiveQuakeTelegrams', () => {
   // 落とさないと、再生開始前の一覧に未来の地震が並ぶ。
   it('指定時刻より後に発表された電文は採らない', async () => {
     const { fn } = mockLive({
-      json: [
-        { id: 'past', originalId: 'xp', type: 'VXSE53', headTime: '2026-08-23T00:05:00Z', receivedTime: '2026-08-23T00:05:01.000Z', url: 'https://b/past' },
-        { id: 'future', originalId: 'xf', type: 'VXSE53', headTime: '2026-08-23T09:05:00Z', receivedTime: '2026-08-23T09:05:01.000Z', url: 'https://b/future' },
+      list: [
+        { id: 'past', type: 'VXSE53', headTime: '2026-08-23T00:05:00Z', receivedTime: '2026-08-23T00:05:01.000Z', url: 'https://b/past' },
+        { id: 'future', type: 'VXSE53', headTime: '2026-08-23T09:05:00Z', receivedTime: '2026-08-23T09:05:01.000Z', url: 'https://b/future' },
       ],
       bodies: {
         'https://b/past': quakeBody('20260823090500', '2026-08-23T09:05:00+09:00'),
@@ -465,9 +483,9 @@ describe('fetchLiveQuakeTelegrams', () => {
   // 前日ぶんの呼び出しでは受信日が違い、当日ぶんの呼び出しでは発表が日の始まりより前になる。
   it('発表が前日深夜・受信が当日にまたがった電文を落とさない', async () => {
     const { fn } = mockLive({
-      json: [
+      list: [
         // JST 8/22 23:59 発表 → JST 8/23 00:00:05 受信
-        { id: 'across', originalId: 'xa', type: 'VXSE53', headTime: '2026-08-22T14:59:00Z', receivedTime: '2026-08-22T15:00:05.000Z', url: 'https://b/across' },
+        { id: 'across', type: 'VXSE53', headTime: '2026-08-22T14:59:00Z', receivedTime: '2026-08-22T15:00:05.000Z', url: 'https://b/across' },
       ],
       bodies: { 'https://b/across': quakeBody('20260822235900', '2026-08-22T23:59:00+09:00') },
     })
@@ -480,8 +498,8 @@ describe('fetchLiveQuakeTelegrams', () => {
 
   it('地震以外の種別は採らない', async () => {
     const { fn } = mockLive({
-      json: [
-        { id: 'ts', originalId: 'xt', type: 'VTSE51', headTime: '2026-08-23T00:05:00Z', receivedTime: '2026-08-23T00:05:01.000Z', url: 'https://b/ts' },
+      list: [
+        { id: 'ts', type: 'VTSE51', headTime: '2026-08-23T00:05:00Z', receivedTime: '2026-08-23T00:05:01.000Z', url: 'https://b/ts' },
       ],
       bodies: { 'https://b/ts': '{}' },
     })

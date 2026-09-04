@@ -7,7 +7,7 @@
 
 地震情報（震度速報・震源情報・各地の震度）を受信・表示するモジュール群。以下を扱う:
 
-- 電文パース（DMDATA JSON / XML、P2PQuake JSON）
+- 電文パース（DMDATA は XML、P2PQuake は JSON）
 - 同一 eventId の続報統合（速報 → 詳細報の順で情報を上書き）
 - 地図の表示: 観測点別震度ドット・区域別震度塗り・観測点から補間した震度の面・震源マーカー
 - ズームレベルによる集約表示切替（詳細 ↔ 区域）
@@ -22,7 +22,7 @@
 ```
 [電文]
   DMDATA WS/REST (VXSE51/52/53/61) ──┐
-  P2PQuake WS (code=551)  ────────────┴── parseIntensityPoints / parseEarthquakeFromXml / convertEvent
+  P2PQuake WS (code=551)  ────────────┴── parseEarthquakeFromXml / convertEvent
                                                     ↓
                                               JMAQuake 型
                                                     ↓
@@ -51,10 +51,10 @@
 | 訂正 | VXSE61 | — | 顕著な地震の震源要素更新 |
 | 取消 | — | — | 誤発表の取消 |
 
-**発表元（`issue.source`）** は編集官署 → 発表官署の順で解決する（JSON は
-`editorialOffice ?? publishingOffice`、XML は `Control/EditorialOffice` → `Control/PublishingOffice`。
-実電文では編集官署が「気象庁本庁」・発表官署が「気象庁」なので、解決順で値が変わる）。
-**両経路で同じ順序にすること。** ただし現状この値を表示・読み上げ・通知に使っている箇所は無い。
+**発表元（`issue.source`）** は編集官署 → 発表官署の順で解決する
+（`Control/EditorialOffice` → `Control/PublishingOffice`）。実電文では編集官署が「気象庁本庁」・
+発表官署が「気象庁」なので、解決順で値が変わる。ただし現状この値を表示・読み上げ・通知に
+使っている箇所は無い。
 
 ### 遠地地震に関する情報
 
@@ -154,7 +154,8 @@ VXSE61 の XML は `Hypocenter/Area` に **`Coordinate` を 2 つ**持つ。
 **採るのは度分のほう。** DMDATA の JSON 変換も度分を 10 進度へ直した値を返す
 （`"40.2100"` / `"142.3033"`）。丸めた側を採ると座標だけでなく**深さもずれる**
 （2026-06-25 岩手県沖 M7.2 の実電文で 40km と 44km）。10 進度へ直すときは小数第 4 位で
-丸めて JSON 経路と桁を揃える。
+丸める（DMDATA の JSON 変換が返す桁に合わせた値。経路を XML へ一本化する前に
+両者を突き合わせて確かめたときの基準）。
 
 度分かどうかは **`type` 属性で判別する。桁数から推測しない** —— 度単位の経度は 3 桁に
 なりうるため、桁だけでは度分と見分けられない。
@@ -179,8 +180,7 @@ VXSE61 の XML は `Hypocenter/Area` に **`Coordinate` を 2 つ**持つ。
 
 | 経路 | 震度速報 | 詳細報 |
 |---|---|---|
-| DMDSS: WebSocket JSON（`parseIntensityPoints`） | 区域のみ | **区域＋観測点** |
-| DMDSS: REST XML（`parseEarthquakeFromXml`） | 区域のみ | 区域＋観測点 |
+| DMDSS: XML（`parseEarthquakeFromXml`。ライブ・REST 履歴・リプレイで共通） | 区域のみ | 区域＋観測点 |
 | 標準版: P2PQuake | 区域のみ（ScalePrompt） | **観測点のみ**（DetailScale は区域を落とす） |
 
 **QUAKE-6 の既知の制約（P2PQuake API 仕様上）**: 実データ検証（`api.p2pquake.net/v2/history?codes=551`）で確認
@@ -208,22 +208,21 @@ VXSE61 の XML は `Hypocenter/Area` に **`Coordinate` を 2 つ**持つ。
 **識別規則**（**DMDSS 経路限定**）: DMDATA JSON / XML 経路の points について `pref` の有無で
 「点の役割」を識別する。P2PQuake 経路は上記の通り常に `pref` 非空で届くため、この規則の対象外。
 - 区域は必ず `pref: ''` で積む（`isArea: true`）
-- 観測点も `pref: ''` で積む（`isArea: false`）。DMDSS の JSON 経路と XML 経路の両方で統一（QUAKE-2）
+- 観測点も `pref: ''` で積む（`isArea: false`）
 - **都道府県ロールアップ点**を `pref: '<都道府県名>', addr: '<都道府県名>', isArea: true` で追加する。
-  情報源は JSON 経路が `intensity.prefectures[]`、XML 経路が `Pref` 直下の `MaxInt`（実電文の
+  情報源は `Pref` 直下の `MaxInt`（実電文の
   `<Pref><Name>石川県</Name><Code>17</Code><MaxInt>5+</MaxInt>` に相当）。
   `EarthquakeCard.prefGroups` は `pref` が非空かどうかだけを見るため `isArea` の値は表示には
   影響しないが、点の役割は「区域や観測点ではない集約値」なので `true` で積む
-  - XML 側は `xmlChild`（直下限定）で `MaxInt` を取る。`xmlQ`（子孫検索）にすると、`Pref` 直下に
+  - `MaxInt` は `xmlChild`（直下限定）で取る。`xmlQ`（子孫検索）にすると、`Pref` 直下に
     `MaxInt` を持たない電文で配下 `Area` の値を都道府県の代表値として拾ってしまう
 
 合成テストデータ（地震テストボタン）も DMDSS ではこの形を作る
 （→ [`settings-pwa-spec.md`](settings-pwa-spec.md) §7「実電文の形に合わせる」）。
 
-**QUAKE-2 の対応（2026-08-13）**: 以前は XML 経路（`parseEarthquakeFromXml`）が観測点に `pref: prefName` を
-積んでおり JSON 経路と非対称だった。`EarthquakeCard.prefGroups` は「pref 非空＝都道府県ロールアップ点」
-前提で処理するため、XML 経路のみ「観測点値」を都道府県別最大震度と誤解して区域最大震度を上書きしていた。
-現在は XML 側も `pref: ''` に統一済み。
+**QUAKE-2 の対応（2026-08-13）**: 以前は `parseEarthquakeFromXml` が観測点に `pref: prefName` を積んでいた。
+`EarthquakeCard.prefGroups` は「pref 非空＝都道府県ロールアップ点」前提で処理するため、
+「観測点値」を都道府県別最大震度と誤解して区域最大震度を上書きしていた。現在は `pref: ''` に統一済み。
 
 **都道府県ロールアップ点の欠落（2026-09-04 に解消）**: 上の QUAKE-2 で観測点の `pref` は揃えたが、
 `Pref` 直下の `MaxInt` を読む処理が XML 経路に無く、**都道府県ロールアップ点そのものが落ちていた**。
@@ -311,7 +310,7 @@ EventID は震源が決まると採り直されることがある（**観測か�
 EventID を共有するため（2026-08-23 22:45 の 2 通で確認）、**両方が震源未確定なら別々の地震**として
 扱う。ここを緩めると、同じ区域を揺らした別々の地震が 1 枚に潰れる。
 
-**数えるのは一次細分区域だけ。** §4 のとおり DMDATA の JSON 経路（ライブ）は都道府県を
+**数えるのは一次細分区域だけ。** §4 のとおり DMDATA 経路は都道府県を
 `{ pref: 名前, addr: 名前, isArea: true }` としても足すため、`isArea` だけで絞ると県名が混ざる。
 県は区域より粗く、同じ県の別々の区域で起きた 2 つの地震が「重なる」ことになってしまう。除き方は
 読み上げ側（`ttsText.ts`）と同じく `p.isArea && p.addr !== p.pref`。
@@ -417,7 +416,7 @@ eventId は確定 ID に変わる。すると先に届いていた震源情報�
 
 **訂正の扱い**:
 - XML パーサ（`parseEarthquakeFromXml`）は `InfoType === '訂正'` を判定して `correct: '訂正'` を設定
-- JSON パーサ（`parseEarthquake`）も `infoType === '訂正'` を判定して同じく設定する（旧実装は `'なし'` 固定で
+- かつては JSON パーサ（`parseEarthquake`）も `infoType === '訂正'` を判定していた（旧実装は `'なし'` 固定で
   訂正バッジが出なかった。`dmdataParser.test.ts` に回帰テストあり）
 - P2PQuake 経路（`convertEvent`）は `CORRECT_TYPE_MAP` で日本語化
 
@@ -791,3 +790,4 @@ DMDATA 経路のパーサは階級を読めなかった観測点を `points` に
   起こした値を返していたため、同じ地震でも履歴とライブで震源が違った）。あわせて丸めた側へ
   落ちたことを記録に残すようにし、震度速報の規模を `0` から `NaN` へ変えた（§5。`0` は
   `hasMagnitude` を通るため「Ｍ０．０」と読める形になっていた）
+- 2026-09-04: 電文の読み取りを XML 経路へ一本化し、JSON 版のパーサー（`parseEarthquake`）を撤去した。

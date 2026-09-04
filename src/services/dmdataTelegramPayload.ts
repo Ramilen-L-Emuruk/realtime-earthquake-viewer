@@ -6,7 +6,7 @@
 // 実際に二重定義だった頃、ライブだけが VXSE43 を取り込み、予想震度の区域塗りがライブでのみ
 // 削られる不具合が起きた（下記 EEW_TYPES）。
 import {
-  parseEEW, parseEarthquake, parseTsunami, parseLpgm,
+  parseEEWFromXml, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml,
   parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml,
 } from './dmdataParser'
 import type { ReplayPayload } from '../types/replay'
@@ -33,56 +33,42 @@ export const NANKAI_TYPES = new Set(['VYSE50'])
 export const COMMENTARY_TYPES = new Set(['VYSE51', 'VYSE52'])
 export const KOHATSU_TYPES = new Set(['VYSE60'])
 
-/**
- * XML 形式でしか読めない種別（南海トラフ関連・後発地震注意情報）。
- *
- * これらは XML パーサ（`parseNankaiFromXml` 等）しか無いため、JSON 版の電文が存在しても
- * そちらは使えない。取得元ごとに「どちらの版を拾うか」の判定が要る。
- */
-export const XML_ONLY_TYPES = new Set([...NANKAI_TYPES, ...COMMENTARY_TYPES, ...KOHATSU_TYPES])
-
 // リプレイが取り込む電文種別の全体。取得元の目録には対象外の種別も多数含まれるため、
 // まずこれで絞ってから欠落を警告する（絞る前に警告すると、正常動作でログが埋まって
 // 本当の異常が見えなくなる）。
 export const HANDLED_TYPES = new Set([
-  ...QUAKE_TYPES, ...TSUNAMI_TYPES, ...EEW_TYPES, ...LPGM_TYPES, ...XML_ONLY_TYPES,
+  ...QUAKE_TYPES, ...TSUNAMI_TYPES, ...EEW_TYPES, ...LPGM_TYPES,
+  ...NANKAI_TYPES, ...COMMENTARY_TYPES, ...KOHATSU_TYPES,
 ])
 
 /**
- * JSON 形式の電文本体から再生用ペイロードを組み立てる。
+ * 電文本体（気象庁の XML）から再生用ペイロードを組み立てる。
  *
- * @param headType 電文種別（VXSE53 等）
- * @param data 電文本体の JSON
- * @returns 組み立てたペイロード。対象外の種別・パース失敗なら null
- */
-export function buildJsonPayload(headType: string, data: Record<string, unknown>): ReplayPayload | null {
-  if (EEW_TYPES.has(headType)) {
-    const event = parseEEW(headType, data)
-    return event ? { kind: 'event', event } : null
-  }
-  if (QUAKE_TYPES.has(headType)) {
-    const event = parseEarthquake(headType, data)
-    return event ? { kind: 'event', event } : null
-  }
-  if (TSUNAMI_TYPES.has(headType)) {
-    const event = parseTsunami(headType, data)
-    return event ? { kind: 'event', event } : null
-  }
-  if (LPGM_TYPES.has(headType)) {
-    const lpgm = parseLpgm(data)
-    return lpgm ? { kind: 'lpgm', data: lpgm } : null
-  }
-  return null
-}
-
-/**
- * XML 形式の電文本体から再生用ペイロードを組み立てる。
+ * 取得元（ライブ・アーカイブ・当日経路）を問わず、電文の読み取りはこの 1 本に集約する。
+ * DMDATA は JSON 変換版も配るが採らない ―― 変換は独自スキーマで無損失を謳っておらず、
+ * 実際に津波の注意文と予想波高の「未満」が落ちていた。
  *
- * @param headType 電文種別（VYSE50/51/52/60）
+ * @param headType 電文種別
  * @param xml 電文本体の XML
  * @returns 組み立てたペイロード。対象外の種別・パース失敗なら null
  */
 export function buildXmlPayload(headType: string, xml: string): ReplayPayload | null {
+  if (EEW_TYPES.has(headType)) {
+    const event = parseEEWFromXml(headType, xml)
+    return event ? { kind: 'event', event } : null
+  }
+  if (QUAKE_TYPES.has(headType)) {
+    const event = parseEarthquakeFromXml(headType, xml)
+    return event ? { kind: 'event', event } : null
+  }
+  if (TSUNAMI_TYPES.has(headType)) {
+    const event = parseTsunamiFromXml(xml)
+    return event ? { kind: 'event', event } : null
+  }
+  if (LPGM_TYPES.has(headType)) {
+    const lpgm = parseLpgmFromXml(xml)
+    return lpgm ? { kind: 'lpgm', data: lpgm } : null
+  }
   if (NANKAI_TYPES.has(headType)) {
     const nankai = parseNankaiFromXml(xml)
     return nankai ? { kind: 'nankai', data: nankai } : null

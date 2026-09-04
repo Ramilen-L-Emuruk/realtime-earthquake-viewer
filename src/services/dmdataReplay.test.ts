@@ -4,11 +4,20 @@
 // 従来は電文 1 通の破損で Promise.all ごと reject し、その日を含む期間の再生が
 // 丸ごと不可能になっていた。また目録（telegrams.json）が無いアーカイブは無言で
 // 捨てられ、「電文 0 件だが成功」に化けて原因が追えなかった。
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache, filterPreWindowEvents } from './dmdataReplay'
 import type { JMATsunami } from '../types/earthquake'
 import type { ReplayEntry } from '../types/replay'
 import { DmdataApiKeyError } from '../utils/dmdataApiKey'
+
+// 電文の読み取りが XML に一本化されたため DOMParser が要る。**環境ごと jsdom へ移さない**
+// ——このファイルの tar 生成は Blob.stream() と CompressionStream を使っており、jsdom の Blob は
+// stream() を持たないため全件が落ちる。必要な 1 つだけを node 環境へ足す。
+import { JSDOM } from 'jsdom'
+globalThis.DOMParser = new JSDOM().window.DOMParser
+// 差したままにしない。vitest はファイルごとに実行コンテキストを分けるので現状は漏れないが、
+// 分離設定に依存した「たまたま漏れていない」状態を残さない。
+afterAll(() => { delete (globalThis as { DOMParser?: unknown }).DOMParser })
 
 const HEADER = 512
 const enc = new TextEncoder()
@@ -45,33 +54,35 @@ async function makeTarGz(files: Array<{ name: string; content: string }>): Promi
   return new Uint8Array(await new Response(stream).arrayBuffer())
 }
 
-// 電文 1 通の中身（VXSE53 = 震源・震度に関する情報）。parseEarthquake が通る最小形。
+// 電文 1 通の中身（VXSE53 = 震源・震度に関する情報）。parseEarthquakeFromXml が通る最小形。
 function quakeBody(hypocenterName: string): string {
-  return JSON.stringify({
-    eventId: '20260810120000',
-    serialNo: '1',
-    infoType: '発表',
-    reportDateTime: '2026-08-10T12:05:00+09:00',
-    targetDateTime: '2026-08-10T12:00:00+09:00',
-    editorialOffice: '気象庁',
-    body: {
-      earthquake: {
-        arrivalTime: '2026-08-10T12:00:00+09:00',
-        hypocenter: {
-          name: hypocenterName,
-          coordinate: { latitude: { value: '39.9' }, longitude: { value: '142.2' }, height: { value: '-50000' } },
-        },
-        magnitude: { value: '5.1' },
-        maxInt: '4',
-      },
-      intensity: { maxInt: '4' },
-    },
-  })
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/" xmlns:jmx="http://xml.kishou.go.jp/jmaxml1/">
+<Control><Title>震源・震度に関する情報</Title><Status>通常</Status><EditorialOffice>気象庁</EditorialOffice><PublishingOffice>気象庁</PublishingOffice></Control>
+<Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+<Title>震源・震度に関する情報</Title>
+<ReportDateTime>2026-08-10T12:05:00+09:00</ReportDateTime>
+<TargetDateTime>2026-08-10T12:00:00+09:00</TargetDateTime>
+<EventID>20260810120000</EventID>
+<InfoType>発表</InfoType>
+<Serial>1</Serial>
+<InfoKind>地震情報</InfoKind>
+</Head>
+<Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/" xmlns:jmx_eb="http://xml.kishou.go.jp/jmaxml1/elementBasis1/">
+<Earthquake>
+<OriginTime>2026-08-10T12:00:00+09:00</OriginTime>
+<ArrivalTime>2026-08-10T12:00:00+09:00</ArrivalTime>
+<Hypocenter><Area><Name>${hypocenterName}</Name><jmx_eb:Coordinate>+39.9+142.2-50000/</jmx_eb:Coordinate></Area></Hypocenter>
+<jmx_eb:Magnitude type="Mj">5.1</jmx_eb:Magnitude>
+</Earthquake>
+<Intensity><Observation><MaxInt>4</MaxInt></Observation></Intensity>
+</Body>
+</Report>`
 }
 
 /** manifest 1 件分。ファイル名は id の先頭 7 文字を含む必要がある。 */
 function manifestEntry(id: string, type = 'VXSE53', time = '2026-08-10T12:05:00+09:00') {
-  return { id, originalId: id, classification: 'telegram.earthquake', head: { type, time, test: false } }
+  return { id, classification: 'telegram.earthquake', head: { type, time, test: false } }
 }
 
 const FROM = new Date('2026-08-10T00:00:00+09:00')
@@ -118,7 +129,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('正常なアーカイブから電文を取り込む', async () => {
     const gz = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('1234567abc')]) },
-      { name: '1234567abc_20260810120500000_0.json', content: quakeBody('岩手県沖') },
+      { name: '1234567abc_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
@@ -140,8 +151,8 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
           manifestEntry('ddddddd4'),                                  // 正常
         ]),
       },
-      { name: 'aaaaaaa1_20260810120500000_0.json', content: '{ 壊れた JSON' },
-      { name: 'ddddddd4_20260810120800000_0.json', content: quakeBody('石廊崎沖') },
+      { name: 'aaaaaaa1_20260810120500000_0.xml', content: '<Report><壊れた' },
+      { name: 'ddddddd4_20260810120800000_0.xml', content: quakeBody('石廊崎沖') },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
@@ -155,7 +166,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('一部のアーカイブが失敗した件数を戻り値で返す', async () => {
     const good = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('eeeeeee5')]) },
-      { name: 'eeeeeee5_20260810120500000_0.json', content: quakeBody('房総沖') },
+      { name: 'eeeeeee5_20260810120500000_0.xml', content: quakeBody('房総沖') },
     ])
     globalThis.fetch = mockArchives([
       { url: 'https://x/broken', gz: 'error' },
@@ -176,7 +187,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     const noManifest = await makeTarGz([{ name: 'body.json', content: quakeBody('無関係') }])
     const good = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('ggggggg7')]) },
-      { name: 'ggggggg7_20260810120500000_0.json', content: quakeBody('駿河湾') },
+      { name: 'ggggggg7_20260810120500000_0.xml', content: quakeBody('駿河湾') },
     ])
     globalThis.fetch = mockArchives([
       { url: 'https://x/nomanifest', gz: noManifest },
@@ -193,7 +204,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     const brokenManifest = await makeTarGz([{ name: 'telegrams.json', content: '[[[壊れた' }])
     const good = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('hhhhhhh8')]) },
-      { name: 'hhhhhhh8_20260810120500000_0.json', content: quakeBody('相模湾') },
+      { name: 'hhhhhhh8_20260810120500000_0.xml', content: quakeBody('相模湾') },
     ])
     globalThis.fetch = mockArchives([
       { url: 'https://x/brokenmanifest', gz: brokenManifest },
@@ -244,7 +255,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('当日経路が読めなくても、アーカイブから読めた分は残す', async () => {
     const gz = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('aaaaaaa1')]) },
-      { name: 'aaaaaaa1_20260810120500000_0.json', content: quakeBody('岩手県沖') },
+      { name: 'aaaaaaa1_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
     ])
     globalThis.fetch = mockArchivesWithLive([{ date: '2026-08-09', url: 'https://x/d09', gz }], 'error') as unknown as typeof fetch
 
@@ -267,7 +278,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('読めなかったアーカイブは URL で返す（呼び出し元が重複を除けるように）', async () => {
     const good = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('iiiiiii9')]) },
-      { name: 'iiiiiii9_20260810120500000_0.json', content: quakeBody('若狭湾') },
+      { name: 'iiiiiii9_20260810120500000_0.xml', content: quakeBody('若狭湾') },
     ])
     globalThis.fetch = mockArchives([
       { url: 'https://x/broken', gz: 'error' },
@@ -283,7 +294,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('すべて正常なら skipped も failedArchives も 0', async () => {
     const gz = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('fffffff6')]) },
-      { name: 'fffffff6_20260810120500000_0.json', content: quakeBody('伊豆大島近海') },
+      { name: 'fffffff6_20260810120500000_0.xml', content: quakeBody('伊豆大島近海') },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
@@ -297,8 +308,8 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('破損した電文が 1 通あっても、他の電文は取り込まれる（全滅しない）', async () => {
     const gz = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('aaaaaaa1'), manifestEntry('bbbbbbb2')]) },
-      { name: 'aaaaaaa1_20260810120500000_0.json', content: '{ これは JSON ではない' },
-      { name: 'bbbbbbb2_20260810120600000_0.json', content: quakeBody('宮城県沖') },
+      { name: 'aaaaaaa1_20260810120500000_0.xml', content: '<Report><これは XML ではない' },
+      { name: 'bbbbbbb2_20260810120600000_0.xml', content: quakeBody('宮城県沖') },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
@@ -307,14 +318,17 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     // 壊れていない側は取り込めている
     expect(entries).toHaveLength(1)
     // 捨てた事実はログに残る（無言で消さない）
-    expect(errors.join('\n')).toMatch(/aaaaaaa1/)
+    // **XML の壊れ方は例外にならない** ―― DOMParser は投げず parsererror を含む文書を返すため、
+    // パーサが null を返して warn 側に出る（JSON だった頃は JSON.parse が投げて error 側だった）。
+    // どちらに出るかではなく「残ること」が要件なので、両方を見る。
+    expect([...warns, ...errors].join('\n')).toMatch(/aaaaaaa1/)
   })
 
   it('telegrams.json が無いアーカイブは警告を残してスキップし、他のアーカイブは処理する', async () => {
     const broken = await makeTarGz([{ name: 'body.json', content: quakeBody('無関係') }])
     const good = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('ccccccc3')]) },
-      { name: 'ccccccc3_20260810120500000_0.json', content: quakeBody('福島県沖') },
+      { name: 'ccccccc3_20260810120500000_0.xml', content: quakeBody('福島県沖') },
     ])
     globalThis.fetch = mockArchives([
       { url: 'https://x/broken', gz: broken },
@@ -331,7 +345,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     const broken = await makeTarGz([{ name: 'telegrams.json', content: '[[[壊れた目録' }])
     const good = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('ddddddd4')]) },
-      { name: 'ddddddd4_20260810120500000_0.json', content: quakeBody('三陸沖') },
+      { name: 'ddddddd4_20260810120500000_0.xml', content: quakeBody('三陸沖') },
     ])
     globalThis.fetch = mockArchives([
       { url: 'https://x/broken', gz: broken },
@@ -360,7 +374,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('head.time が不正な電文は警告を残してスキップする（Invalid Date を通さない）', async () => {
     const gz = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('fffffff6', 'VXSE53', 'not-a-date')]) },
-      { name: 'fffffff6_20260810120500000_0.json', content: quakeBody('日向灘') },
+      { name: 'fffffff6_20260810120500000_0.xml', content: quakeBody('日向灘') },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
@@ -381,7 +395,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
           manifestEntry('jjjjjjj0'),
         ]),
       },
-      { name: 'jjjjjjj0_20260810120500000_0.json', content: quakeBody('種子島近海') },
+      { name: 'jjjjjjj0_20260810120500000_0.xml', content: quakeBody('種子島近海') },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
@@ -408,7 +422,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   // 実アーカイブでは manifest に同じ電文が XML 版と JSON 版の 2 エントリで載る
   // （originalId を持つ方が JSON 版）。XML 版を落とすのは正常な重複排除なので、
   // ここで警告を出すと通常のリプレイ 1 回で数十件のログが出て異常が埋もれる。
-  it('originalId を持たない XML 版エントリは、警告なしで JSON 版だけを取り込む', async () => {
+  it('originalId を持つ JSON 版エントリは、警告なしで XML 版だけを取り込む', async () => {
     const xmlId = 'aaa1111x'
     const jsonId = 'bbb2222j'
     const gz = await makeTarGz([
@@ -419,8 +433,9 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
           { id: jsonId, originalId: xmlId, classification: 'telegram.earthquake', head: { type: 'VXSE53', time: '2026-08-10T12:05:00+09:00', test: false } },
         ]),
       },
-      { name: `${xmlId}_20260810120500000_0.xml`, content: '<Report/>' },
-      { name: `${jsonId}_20260810120500000_0.json`, content: quakeBody('石狩地方中部') },
+      { name: `${xmlId}_20260810120500000_0.xml`, content: quakeBody('石狩地方中部') },
+      // 拡張子も実アーカイブどおり分ける。`.xml` を探す処理が JSON 版を拾わないことも併せて見る。
+      { name: `${jsonId}_20260810120500000_0.json`, content: '{"_originalId":"x"}' },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
@@ -428,7 +443,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
 
     // 二重に取り込まれない
     expect(entries).toHaveLength(1)
-    // XML 版を落としたことで警告が出ない
+    // JSON 版を落としたことで警告が出ない
     expect(warns.join('\n')).not.toMatch(/originalId/)
     expect(warns.join('\n')).not.toMatch(/本体が見つからず/)
   })
@@ -444,7 +459,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('一部のアーカイブが取得失敗しても、残りのアーカイブの電文は取り込まれる', async () => {
     const good = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('8888888h')]) },
-      { name: '8888888h_20260810120500000_0.json', content: quakeBody('十勝沖') },
+      { name: '8888888h_20260810120500000_0.xml', content: quakeBody('十勝沖') },
     ])
     globalThis.fetch = mockArchives([
       { url: 'https://x/broken', gz: 'error' },
@@ -474,7 +489,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
 
     const good = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('6666666k')]) },
-      { name: '6666666k_20260810120500000_0.json', content: quakeBody('遠州灘') },
+      { name: '6666666k_20260810120500000_0.xml', content: quakeBody('遠州灘') },
     ])
     globalThis.fetch = mockArchives([
       { url: 'https://x/brokentar', gz: brokenGz },
@@ -501,7 +516,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
         ]),
       },
       { name: `${xmlId}_20260810120500000_0.xml`, content: '<Report/>' },
-      { name: `${jsonId}_20260810120500000_0.json`, content: '{}' },
+      { name: `${jsonId}_20260810120500000_0.xml`, content: '{}' },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
@@ -519,7 +534,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
           manifestEntry('5555555m'),
         ]),
       },
-      { name: '5555555m_20260810120500000_0.json', content: quakeBody('紀伊水道') },
+      { name: '5555555m_20260810120500000_0.xml', content: quakeBody('紀伊水道') },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
@@ -533,7 +548,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     // 1 回目は 500、2 回目は成功する fetch を用意する
     const good = await makeTarGz([
       { name: 'telegrams.json', content: JSON.stringify([manifestEntry('7777777g')]) },
-      { name: '7777777g_20260810120500000_0.json', content: quakeBody('浦河沖') },
+      { name: '7777777g_20260810120500000_0.xml', content: quakeBody('浦河沖') },
     ])
     let attempt = 0
     globalThis.fetch = vi.fn(async (input: string) => {
@@ -608,26 +623,27 @@ describe('fetchDmdataQuakeHistory', () => {
 
   /** eventId と発表時刻を指定できる電文本体（既定の quakeBody は eventId が固定のため）。 */
   function historyBody(eventId: string, reportTime: string, serial = '1'): string {
-    return JSON.stringify({
-      eventId,
-      serialNo: serial,
-      infoType: '発表',
-      reportDateTime: reportTime,
-      targetDateTime: reportTime,
-      editorialOffice: '気象庁',
-      body: {
-        earthquake: {
-          arrivalTime: reportTime,
-          hypocenter: {
-            name: '岩手県沖',
-            coordinate: { latitude: { value: '39.9' }, longitude: { value: '142.2' }, height: { value: '-50000' } },
-          },
-          magnitude: { value: '5.1' },
-          maxInt: '4',
-        },
-        intensity: { maxInt: '4' },
-      },
-    })
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/" xmlns:jmx="http://xml.kishou.go.jp/jmaxml1/">
+<Control><Title>震源・震度に関する情報</Title><Status>通常</Status><EditorialOffice>気象庁</EditorialOffice><PublishingOffice>気象庁</PublishingOffice></Control>
+<Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+<Title>震源・震度に関する情報</Title>
+<ReportDateTime>${reportTime}</ReportDateTime>
+<TargetDateTime>${reportTime}</TargetDateTime>
+<EventID>${eventId}</EventID>
+<InfoType>発表</InfoType>
+<Serial>${serial}</Serial>
+</Head>
+<Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/" xmlns:jmx_eb="http://xml.kishou.go.jp/jmaxml1/elementBasis1/">
+<Earthquake>
+<OriginTime>${reportTime}</OriginTime>
+<ArrivalTime>${reportTime}</ArrivalTime>
+<Hypocenter><Area><Name>岩手県沖</Name><jmx_eb:Coordinate>+39.9+142.2-50000/</jmx_eb:Coordinate></Area></Hypocenter>
+<jmx_eb:Magnitude type="Mj">5.1</jmx_eb:Magnitude>
+</Earthquake>
+<Intensity><Observation><MaxInt>4</MaxInt></Observation></Intensity>
+</Body>
+</Report>`
   }
 
   /** 1 日ぶんのアーカイブ。id 先頭 7 文字がファイル名に含まれる必要がある。 */
@@ -638,7 +654,7 @@ describe('fetchDmdataQuakeHistory', () => {
         content: JSON.stringify(telegrams.map(t => manifestEntry(t.id, 'VXSE53', t.time))),
       },
       ...telegrams.map(t => ({
-        name: `${t.id}_20260810120500000_0.json`,
+        name: `${t.id}_20260810120500000_0.xml`,
         content: historyBody(t.eventId, t.time, t.serial),
       })),
     ])

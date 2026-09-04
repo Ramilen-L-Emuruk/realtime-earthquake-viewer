@@ -8,7 +8,7 @@
 
 大津波警報・津波警報・津波注意報・津波予報を受信・表示するモジュール群。以下を扱う:
 
-- 電文パース（DMDATA JSON / XML、P2PQuake JSON）
+- 電文パース（DMDATA は XML、P2PQuake は JSON）
 - 区域別の警報等級の統合
 - 観測情報（津波観測点の波高・到達時刻）のマージ
 - 解除・取消・期限切れの 3 経路の出し分け（DMDSS 版のみ完全対応）
@@ -20,7 +20,7 @@
 ```
 [電文]
   DMDATA WS / REST (VTSE41/51/52) ──┐
-  P2PQuake WS (code=552)  ───────────┴── parseTsunami / parseTsunamiFromXml
+  P2PQuake WS (code=552)  ───────────┴── parseTsunamiFromXml / convertEvent
                                                    ↓
                                             JMATsunami 型
                                                    ↓
@@ -160,8 +160,11 @@ archive API から取得して確認）:
 
 ## 4. 電文パース
 
-### DMDATA JSON（`parseTsunami`）
-- `src/services/dmdataParser.ts` の `parseTsunami` 関数
+### DMDATA XML（`parseTsunamiFromXml`）
+
+ライブ（WebSocket）・REST 履歴・リプレイのいずれもこの 1 本を通る。
+
+- `src/services/dmdataParser.ts` の `parseTsunamiFromXml` 関数
 - `tsunami.forecasts` から区域別の等級・波高・到達時刻を抽出
 - `tsunami.observations` から観測情報を抽出
 - 未知の Kind/Code は `Unknown` → 除外される（現状は既知コードが固定のため実害は限定的）
@@ -174,11 +177,6 @@ archive API から取得して確認）:
 - 予想波高が「巨大」「高い」のとき（数値化できない表記）は**`maxHeight` ごと落ちる**。
   P2PQuake 経路は落とさない（下記）ので、**経路によって同じ電文でも波高の有無が変わる**。
   波高が無い区域の扱いは §9「予想波高の有無」を参照
-
-### DMDATA XML 履歴（`parseTsunamiFromXml`）
-- 同上ファイルの XML パーサ側
-- REST 履歴取得時に使用
-- 前回の等級は `Category/LastKind/Code` から読む（JSON 経路と同じ扱い）
 
 ### P2PQuake（`convertEvent`）
 - `src/services/p2pquake.ts` の code=552 分岐
@@ -237,25 +235,21 @@ archive API から取得して確認）:
 
 - キーは `${o.districtCode ?? o.districtName ?? ''}|${o.name}`（区域コード or 区域名 と観測点名を `|` で連結。同じ区域内の複数観測点を区別するため）
 - 同一キーで既存があれば更新、なければ追加
-- `over` フラグは**両経路で立つが、拾い方が違う**。JSON 経路は `maxHeight.height.over` の
-  真偽値をそのまま読む。XML 経路は `description` 属性の文言に「以上」が含まれるかで復元する
-  （XML には真偽値に相当する属性が無いため）。属性の形を確かめた範囲と、この判定が空振りしうる
-  条件は下記「観測波高の「以上」」に集約する
-  - **接続直後の履歴補完は XML 経路**（`fetchOneTelegram` → `parseTsunamiFromXml`）。ここで
-    `over` を落とすと、起動直後に見える履歴だけ並び順と代表値が変わる
+- `over` フラグは `description` 属性の文言に「以上」が含まれるかで立てる（XML には真偽値に
+  相当する属性が無いため）。属性の形を確かめた範囲と、この判定が空振りしうる条件は
+  下記「観測波高の「以上」」に集約する
   - standard 版（P2PQuake）は観測点データ自体を持たないため、この節の内容は DMDSS 版限定
 
 ### 観測波高の「以上」
 
 気象庁は、観測施設の観測可能な範囲を超えた観測値・機器が被災した観測値を「○m以上」の形で
-発表する。DMDATA の JSON 経路ではこれが `height.over` で立ち、表示文字列（`height.description`）
-にも「以上」が入る。XML 経路は `description` 属性（気象庁が組んだ表示文字列。全角で
-「０．５ｍ」等）の文言に「以上」が含まれるかで同じ印を復元する。
+発表する。電文にはこれを表す真偽値が無く、`description` 属性（気象庁が組んだ表示文字列。
+全角で「０．５ｍ」等）の文言に「以上」が含まれるかで印を立てる。
 
-**XML 経路については、「以上」が付く実電文そのものは未確認。** 属性の形を確かめた 2024 年
+**「以上」が付く実電文そのものは未確認。** 属性の形を確かめた 2024 年
 1 月 1〜2 日の津波電文 12 通（`TsunamiHeight` 要素 150 個）は、能登半島地震の観測値が最大 1.2m
-だったため振り切った観測点を含まない。この語彙で合っていることの傍証は 3 つ ―― JSON 経路が自ら
-`${value}m以上` を組んでいること、`overSuffixedHeight` が同じ語を見ていること、そして電文解説資料
+だったため振り切った観測点を含まない。この語彙で合っていることの傍証は 3 つ ―― DMDATA の
+JSON 変換が自ら `${value}m以上` を組むこと、`overSuffixedHeight` が同じ語を見ていること、そして電文解説資料
 （Ⅱ.12 事例 6）に基づくフィクスチャ（`dmdataParser.test.ts` の `VTSE51_MISSING_XML`）が
 `description="３．２ｍ以上"` の形を持つこと。それでも実配信された電文で確かめたわけではないため、
 別の表記（「〇m超」等）が使われていた場合は XML 経路の判定が空振りする。
@@ -297,9 +291,9 @@ archive API から取得して確認）:
 **数字・小数点・単位だけ半角へ直して**渡す（`dmdataParser` の `toHalfWidthHeightDesc`）。
 前後の空白も落とす（実電文に先頭が全角空白の `　１ｍ` があった）。
 
-- **JSON 経路に合わせている。** DMDATA の JSON は `description` を持たず `{type, unit, value}`
-  しか配らないため、こちらは数値から `${value}m` と半角で組んでいる。揃えないと同じ津波でも
-  履歴で開いたかライブで受信したかで表示が変わる
+- **半角にする理由。** 画面と読み上げはずっと半角で出してきた。全角のまま通すと、数値が
+  読み取りにくくなるうえ、`description` を持たない電文で数値から組む表記（`${value}m`）と
+  同じ画面に全角と半角が混ざる
 - **「未満」「以上」「超」「巨大」といった語は残す。** 数値だけで組み直すと、津波予報
   （若干の海面変動）の `０．２ｍ未満` が `0.2m` に化けて意味が変わる。数字を含まない
   `巨大` `高い` はそのまま通る
@@ -960,3 +954,4 @@ EEW の発表状況は判定に入れない（下記「優先度ルール」参�
 - 2026-09-04: 波高の表示文字列（`description`）を XML 経路でも半角へ揃えた（§6）。原文は全角で、
   JSON 経路は数値から半角で組むため、同じ津波でも履歴とライブで表記が変わっていた（実電文 62 通の
   照合で 375 箇所）。数値だけで組み直さないのは「０．２ｍ未満」の「未満」を落とさないため
+- 2026-09-04: 電文の読み取りを XML 経路へ一本化し、JSON 版のパーサー（`parseTsunami`）を撤去した（§4）。

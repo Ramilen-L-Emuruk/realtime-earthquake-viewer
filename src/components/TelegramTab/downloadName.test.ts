@@ -2,7 +2,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { createElement as h } from 'react'
 import { render, cleanup, act, fireEvent } from '@testing-library/react'
-import { TelegramTab } from './index'
+import { TelegramTab, formatEntryForView, formatEntryForDownload } from './index'
 import type { TelegramLogEntry } from '../../types/earthquake'
 import { withTz } from '../../test-utils/withTz'
 
@@ -147,5 +147,54 @@ describe('電文ログのダウンロード名', () => {
     } finally {
       cap.restore()
     }
+  })
+})
+
+
+// 電文の読み取りを XML へ一本化したことで、`rawBody` には気象庁の XML がそのまま入る。
+// `JSON.stringify` に通すと全体がエスケープされ、改行が \n の 2 文字に潰れて 1 行になる。
+describe('電文ログの本文の見せ方・落とし方', () => {
+  const xmlEntry = (body: string, head?: unknown): TelegramLogEntry => ({
+    id: 'x', receivedAt: new Date('2026-09-04T12:00:00+09:00'), source: 'dmdss',
+    headType: 'VXSE53', isTest: false, status: 'parsed', kind: 'quake',
+    ...(head !== undefined ? { rawHead: head } : {}),
+    rawBody: body,
+  })
+  const XML = '<?xml version="1.0" encoding="UTF-8"?>\n<Report>\n  <Control/>\n</Report>'
+
+  // 正: XML はエスケープせずそのまま見せる。改行が保たれること。
+  it('XML の本文はエスケープせずに見せる', () => {
+    const text = formatEntryForView(xmlEntry(XML))
+    expect(text).toContain('<?xml version="1.0"')
+    expect(text.split('\n').length).toBeGreaterThan(1)
+  })
+
+  // 正: ヘッダは電文の外側の情報なので、表示では XML の前に置く。
+  it('ヘッダがあれば XML の前に JSON で置く', () => {
+    const text = formatEntryForView(xmlEntry(XML, { type: 'VXSE53' }))
+    expect(text.indexOf('"type"')).toBeLessThan(text.indexOf('<?xml'))
+  })
+
+  // 正: ダウンロードは XML そのもの。ヘッダを混ぜると XML 宣言が先頭でなくなり読めなくなる。
+  it('XML は .xml で、ヘッダを混ぜずに落とす', () => {
+    const { text, ext } = formatEntryForDownload(xmlEntry(XML, { type: 'VXSE53' }))
+    expect(ext).toBe('xml')
+    expect(text).toBe(XML)
+  })
+
+  // 安全弁: **文字列だからといって XML とは限らない。** 復号に失敗した電文と、復号の前に
+  // 捨てた試験報は、復号前の base64 がそのまま入る。これを XML 扱いすると base64 の塊に
+  // .xml が付き、ヘッダも落ちたファイルになる。
+  it('復号前の base64 は XML 扱いしない（ヘッダごと .json で落とす）', () => {
+    const b64 = 'H4sIAAAAAAAAA6tWKkpNzMlRsl'
+    const { text, ext } = formatEntryForDownload(xmlEntry(b64, { type: 'VXSE53' }))
+    expect(ext).toBe('json')
+    expect(JSON.parse(text)).toEqual({ head: { type: 'VXSE53' }, body: b64 })
+  })
+
+  // 対照: P2PQuake の本文はオブジェクトなので従来どおり JSON。
+  it('オブジェクトの本文は従来どおり .json', () => {
+    const e = { ...xmlEntry(XML), source: 'p2pquake' as const, rawBody: { code: 551 } as unknown as string }
+    expect(formatEntryForDownload(e).ext).toBe('json')
   })
 })

@@ -92,7 +92,8 @@ VXSE43（警報）と旧形式の VXSE44（予報）を扱わない理由は [`d
 §2「EEW は VXSE45 だけを受ける」を参照。
 
 > **区分を決めているのは severity（`computeSingleEEWLevel`）で、電文種別ではない。**
-> `severity` は `headType === 'VXSE43' || body.isWarning === true` から導く（`dmdataParser.ts`）。
+> `severity` は「`headType` が VXSE43」または「区域の `Category/Kind/Name` が『緊急地震速報（警報）』」
+> から導く（`dmdataParser.ts` の `parseEEWFromXml`）。
 > VXSE43 は受信しないため実際に立つのは後者だけだが、パーサは渡された種別を電文どおりに解釈する
 > （種別の絞り込みは呼び出し側の責務）。「電文種別＝区分」と読み替えると、`isWarning` が立った
 > VXSE45 を予報級と誤って扱うことになる。
@@ -127,16 +128,20 @@ VXSE43（警報）と旧形式の VXSE44（予報）を扱わない理由は [`d
 合わせる方を採っている。ここに書いたのは**表示**の理由。読み上げには「音声だけで区分が判別できる
 ようにする」という固有の理由が加わるため、そちらは [`audio-tts-spec.md`](audio-tts-spec.md) §6 にある。
 
-### JSON 経路と XML 経路（`parseEEW` / `parseEEWFromXml`）
+### 真偽値は電文の形から復元する（`parseEEWFromXml`）
 
-DMDATA は同じ電文を JSON にも XML にも配る。**JSON 版が真偽値で受け取る 3 つは、XML では別の形で
-現れる**（実電文 21 通で対応を確かめた。予報級 14・警報級 6・仮定震源要素 1）。
+電文には「取消か」「最終報か」「警報級か」を表す真偽値が無い。DMDATA の JSON 変換はこれらを
+`body` のフラグとして持つが、**XML では別の形で現れる**ので読み替える（実電文 24 通で対応を
+確かめた。予報級 14・警報級 6・仮定震源要素 1・取消 1・取消前 2）。
 
-| JSON | XML |
+| 意味 | XML での現れ方 |
 |---|---|
-| `body.isCanceled` | `Head/InfoType` が「取消」 |
-| `body.isLastInfo` | `Body/NextAdvisory` に最終報の文言 |
-| `body.isWarning` | 区域の `Category/Kind/Name` が「緊急地震速報（警報）」 |
+| 取消 | `Head/InfoType` が「取消」 |
+| 最終報 | `Body/NextAdvisory` に最終報の文言、**または取消** |
+| 警報級 | 区域の `Category/Kind/Name` が「緊急地震速報（警報）」 |
+
+**取消は最終報として扱う。** 実電文の取消は `Body` に `Text` しか持たず `NextAdvisory` が無い
+（2026-03-07 の取消で確認）。文言だけを見ると最終報にならず、自動解除の扱いが変わる。
 
 **`Condition` は要素の位置で意味が変わる。** `Earthquake` 直下は震源の状態（「仮定震源要素」）、
 `Pref/Area` 直下は区域の状態（「既に主要動到達と推測」）。子孫から拾うと、警報級の電文で区域側の
@@ -406,8 +411,10 @@ standard 版で Yahoo hypoInfo が先に仮定震源要素の EEW を検知し�
 
 ## 8. 誤報取消（明示的な取消電文）
 
-DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` 無し）が来た場合、自動解除と異なり
-以下を伴う:
+DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`）が来た場合、自動解除と異なり以下を伴う。
+
+**取消は `isFinal` も立つ**（§3。そのイベントの打ち切りだから）。ただし消費側はどこでも
+`cancelled` を先に見て分岐するので、`isFinal` の値で取消の扱いが変わることはない。
 
 - `eewCancel` 音の再生（`hadKey=true` のみ。二重鳴り防止）
 - ブラウザ通知（`hadKey` 有無を問わず発火。tag=`eew-cancel-${key}` で自動上書きされるため二重にならない）
@@ -610,3 +617,4 @@ DMDATA・P2PQuake で明示的な取消電文（`cancelled: true`・`isFinal` �
 - 2026-09-04: XML 電文を読む `parseEEWFromXml` を追加した（§3）。DMDATA の電文を XML 経路へ
   統一する準備で、この時点ではまだどの経路からも呼んでいない。実電文 21 通で JSON 版と
   突き合わせ、差分ゼロを確認した。
+- 2026-09-04: 電文の読み取りを XML 経路へ一本化し、JSON 版のパーサー（`parseEEW`）を撤去した（§3）。
