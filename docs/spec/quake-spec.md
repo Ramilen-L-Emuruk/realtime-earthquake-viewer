@@ -205,7 +205,7 @@ VXSE61 の XML は `Hypocenter/Area` に **`Coordinate` を 2 つ**持つ。
 震度情報を入手していない」）は API 仕様上の正規値なので、下限の `45` として扱う
 （詳細は [`data-sources-spec.md`](data-sources-spec.md) §3）。
 
-**識別規則**（**DMDSS 経路限定**）: DMDATA JSON / XML 経路の points について `pref` の有無で
+**識別規則**（**DMDATA 経路限定**）: DMDATA 経路の points について `pref` の有無で
 「点の役割」を識別する。P2PQuake 経路は上記の通り常に `pref` 非空で届くため、この規則の対象外。
 - 区域は必ず `pref: ''` で積む（`isArea: true`）
 - 観測点も `pref: ''` で積む（`isArea: false`）
@@ -779,7 +779,7 @@ DMDATA 経路のパーサは階級を読めなかった観測点を `points` に
 
 ## 11. 関連実装ファイル
 
-- `src/services/dmdataParser.ts` — DMDATA JSON/XML パース
+- `src/services/dmdataParser.ts` — DMDATA の電文（XML）のパース
 - `src/services/p2pquake.ts` — P2PQuake の convertEvent（quake ケース）
 - `src/utils/quakeMerge.ts` — 続報マージ
 - `src/utils/quakeMerge.test.ts` — テスト
@@ -809,7 +809,7 @@ DMDATA 経路のパーサは階級を読めなかった観測点を `points` に
   それを正しい引数・正しいタイミングで呼んでいるかはここでしか見えない**（台帳の受け渡しを 1 箇所
   忘れても型チェックもユニットテストも通る）。台帳の件数上限と落とす向きもここで固定する
   **`makeQuake({ type: '震度速報' })` は震源要素を持たせてしまうため、この穴の検出には使えない**
-- `dmdataParser.test.ts`: XML の VXSE51/53、JSON の訂正フラグ、遠地地震（XML・JSON 両経路）をカバー
+- `dmdataParser.test.ts`: VXSE51/53 の読み取り、訂正フラグ、遠地地震をカバー
 - `ttsText.test.ts`: 読み上げ文の生成（遠地地震の名乗り・深さ不明・規模不明・付加文の優先）をカバー
 - `isoseismal.test.ts`: 震度の面の補間。階級値の写像（不等間隔が均されること・階級表に無い値を弾くこと）、
   色の帯の境界、Mercator 等間隔の格子、海のマスク（効くこと・広げれば外側にも出ること）、
