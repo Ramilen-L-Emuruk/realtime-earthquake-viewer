@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { JMANankai, JMANankaiCommentary, JMAKohatsu } from '../../types/earthquake'
 import { log } from '../../utils/logger'
+import { normalizeDmdataTelegramId } from '../../utils/dmdataId'
 
 interface Props {
   nankai: JMANankai | null
@@ -194,7 +195,11 @@ function CommentaryBanner({ commentary }: { commentary: JMANankaiCommentary }) {
     }
   })
 
-  if (dismissedId === commentary.id) return null
+  // 突き合わせる前に書式を揃える。保存されている id は閉じた当時のもので、
+  // 電文 id の書式を変えた版へ更新すると素の比較では外れる（＝閉じた帯が復活する）。
+  if (dismissedId != null && normalizeDmdataTelegramId(dismissedId) === normalizeDmdataTelegramId(commentary.id)) {
+    return null
+  }
 
   const dismiss = () => {
     // 永続化できない環境（プライベートモード等・容量超過）でも、この場で閉じる動作は止めない。
