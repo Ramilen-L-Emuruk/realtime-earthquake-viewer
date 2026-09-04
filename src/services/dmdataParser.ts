@@ -44,6 +44,9 @@ function parseIntensityStr(s: string | undefined | null): IntensityScale {
 /** 上限を定めない予想震度を表す DMDATA の値。P2PQuake の `scaleTo: 99` と同じ意味。 */
 const DMDATA_INTENSITY_OVER = 'over'
 
+/** 区域が警報の対象であることを表す Kind 名（XML 経路で `body.isWarning` を復元するのに使う）。 */
+const EEW_WARNING_KIND_NAME = '緊急地震速報（警報）'
+
 /**
  * EEW の予想震度の範囲（`{ from, to }`）を、階級 1 つと「以上」フラグに畳む。
  *
@@ -546,6 +549,108 @@ function readHypocenterCoord(areaEl: Element, headType: string): { lat: number; 
   // （退避先が無ければ座標なしのまま返り、呼び出し元の有限性チェックで電文が捨てられる）。
   log.warn(`[quake XML] ${headType}: 「震源位置（度分）」の${problem}。度単位へ丸めた座標を使います: ${xmlText(dm)}`)
   return plain
+}
+
+/**
+ * XML 電文（VXSE45 等）を EEWAlert に読む。JSON 版 `parseEEW` と対になる。
+ *
+ * JSON 版が真偽値で受け取る 3 つは、XML では次の形で現れる（実電文 21 通で確かめた）。
+ *
+ * | JSON | XML |
+ * |---|---|
+ * | `body.isCanceled` | `Head/InfoType` が「取消」 |
+ * | `body.isLastInfo` | `Body/NextAdvisory` に最終報の文言 |
+ * | `body.isWarning` | 区域の `Category/Kind/Name` が「緊急地震速報（警報）」 |
+ *
+ * **`Condition` は要素の位置で意味が変わる。** `Earthquake` 直下は震源の状態（「仮定震源要素」）、
+ * `Pref/Area` 直下は区域の状態（「既に主要動到達と推測」）。子孫から拾うと、警報級の電文で
+ * 区域側の文言が震源の `condition` に化け、仮定震源要素の判定が誤って立つ。
+ */
+export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null {
+  let doc: Document
+  try {
+    doc = new DOMParser().parseFromString(xml, 'application/xml')
+    if (doc.querySelector('parsererror')) return null
+  } catch { return null }
+
+  const eventId = xmlText(xmlQ(doc, 'EventID'))
+  const serial = xmlText(xmlQ(doc, 'Serial')) || '1'
+  const reportTime = xmlText(xmlQ(doc, 'ReportDateTime'))
+  const isCanceled = xmlText(xmlQ(doc, 'InfoType')) === '取消'
+
+  const eqEl = xmlQ(doc, 'Earthquake')
+  const areaEl = eqEl ? xmlQ(xmlQ(eqEl, 'Hypocenter') ?? eqEl, 'Area') : null
+  const { lat, lng, depth } = areaEl
+    ? parseJmaCoord(xmlText(xmlQ(areaEl, 'Coordinate')))
+    : { lat: NaN, lng: NaN, depth: -1 }
+
+  // 取消以外で震源が読めない電文は不正として捨てる（JSON 経路と同じ判定）。
+  if (!isCanceled && (!Number.isFinite(lat) || !Number.isFinite(lng))) return null
+
+  const forecastEl = xmlQ(doc, 'Forecast')
+  const intRange = (el: Element | null): { from: string; to: string } => ({
+    from: xmlText(el ? xmlChild(el, 'From') : null),
+    to: xmlText(el ? xmlChild(el, 'To') : null),
+  })
+  const { scale: forecastScale, orAbove: forecastOrAbove } =
+    parseForecastInt(intRange(forecastEl ? xmlChild(forecastEl, 'ForecastInt') : null))
+  const lgTop = intRange(forecastEl ? xmlChild(forecastEl, 'ForecastLgInt') : null)
+  const lgClass = parseInt(lgTop.to || lgTop.from, 10)
+
+  const areas: EEWRegion[] = []
+  // 警報級かどうかは区域の Kind 名で判る（実電文 21 通で JSON の body.isWarning と一致）。
+  // 区域を回るついでに拾う ―― 名前で引き直すと、同名の区域があるときに取り違える。
+  let sawWarningKind = false
+  for (const prefEl of forecastEl ? xmlAll(forecastEl, 'Pref') : []) {
+    for (const a of xmlAll(prefEl, 'Area')) {
+      const name = xmlText(xmlChild(a, 'Name'))
+      if (!name) continue
+      const fi = intRange(xmlChild(a, 'ForecastInt'))
+      const { scale: scaleTo, orAbove } = parseForecastInt(fi)
+      const lg = intRange(xmlChild(a, 'ForecastLgInt'))
+      const lgVal = parseInt(lg.to || lg.from, 10)
+      const kindEl = xmlQ(a, 'Kind')
+      if (xmlText(kindEl ? xmlChild(kindEl, 'Name') : null) === EEW_WARNING_KIND_NAME) sawWarningKind = true
+      areas.push({
+        pref: '',
+        name,
+        scaleFrom: parseIntensityStr(fi.from),
+        scaleTo,
+        ...(orAbove && { scaleToOrAbove: true }),
+        kindCode: xmlText(kindEl ? xmlChild(kindEl, 'Code') : null),
+        arrivalTime: xmlText(xmlChild(a, 'ArrivalTime')) || null,
+        lgIntTo: isValidLpgmClass(lgVal) ? lgVal : undefined,
+      })
+    }
+  }
+
+  return {
+    kind: 'eew',
+    id: `dmdata-eew-${eventId}-${serial}`,
+    time: reportTime,
+    test: false,
+    earthquake: {
+      originTime: xmlText(eqEl ? xmlChild(eqEl, 'OriginTime') : null),
+      arrivalTime: xmlText(eqEl ? xmlChild(eqEl, 'ArrivalTime') : null),
+      // Earthquake 直下だけを見る（上記のとおり Area 直下にも Condition がある）。
+      condition: xmlText(eqEl ? xmlChild(eqEl, 'Condition') : null),
+      hypocenter: {
+        name: xmlText(areaEl ? xmlChild(areaEl, 'Name') : null),
+        latitude: isCanceled ? -200 : lat,
+        longitude: isCanceled ? -200 : lng,
+        depth,
+        magnitude: eqEl ? parseFloat(xmlText(xmlQ(eqEl, 'Magnitude'))) : NaN,
+      },
+    },
+    severity: (headType === 'VXSE43' || sawWarningKind) ? 'Warning' : 'Forecast',
+    cancelled: isCanceled,
+    isFinal: (xmlText(xmlQ(doc, 'NextAdvisory')) || '').includes('最終報'),
+    forecastMaxScale: (!isCanceled && forecastScale >= 0) ? forecastScale as IntensityScale : undefined,
+    ...(!isCanceled && forecastScale > 0 && forecastOrAbove && { forecastMaxScaleOrAbove: true }),
+    forecastMaxLpgmClass: (!isCanceled && isValidLpgmClass(lgClass)) ? lgClass : undefined,
+    issue: { eventId, serial, time: reportTime },
+    areas: isCanceled ? [] : areas,
+  }
 }
 
 // REST API 経由の JMA XML（VXSE51/52/53）を JMAQuake にパース
