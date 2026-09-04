@@ -11,7 +11,7 @@ import {
   hasMagnitude,
 } from '../../utils/formatters'
 import { getIntensityLabel, getIntensityColor, getIntensityBgColor, getDepthColor, getMagnitudeColor } from '../../utils/intensity'
-import { buildAreaPrefIndex, buildPrefAreaNamesIndex } from '../../utils/stationCoords'
+import { buildAreaPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, byValueDescThenRegion } from '../../utils/stationCoords'
 import { useStationCoords } from '../../hooks/useStationCoords'
 
 /** issue.type に応じたバッジの Tailwind クラスを返す。 */
@@ -115,10 +115,15 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
       else for (const [name, scale] of addrScales) result.set(name, scale)
     }
 
+    // 震度の降順。**同じ震度どうしは気象庁の標準順（北から南）で並べる。**
+    // ここを震度だけで並べると、`sort` が安定なぶん Map の挿入順＝電文が点を並べた順が残る。
+    // 電文の並びは種別ごとに違う（例: 県ごとにまとまる／区域と観測点が別々にまとまる）ので、
+    // 電文の書式が変わるだけで画面の並びが黙って動く。読み上げと同じ索引で並べて断ち切る。
+    const order = stationData ? buildRegionOrderIndex(stationData) : null
     return Array.from(result.entries())
       .map(([pref, scale]) => ({ pref, scale }))
       .filter(({ scale }) => scale >= 0)
-      .sort((a, b) => b.scale - a.scale)
+      .sort(byValueDescThenRegion(g => g.scale, g => g.pref, order))
   }, [isSelected, quake.points, stationData])
 
   // 長周期地震動の区域も、地震の震度と同じ考え方で県内全区域が同じ階級で揃っていれば
@@ -153,7 +158,9 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
       else for (const [name, maxLgInt] of nameClasses) result.push({ name, maxLgInt })
     }
 
-    return result.sort((a, b) => b.maxLgInt - a.maxLgInt)
+    // 階級の降順。同じ階級どうしは震度側と同じく気象庁の標準順で並べる（理由は上記）。
+    const order = stationData ? buildRegionOrderIndex(stationData) : null
+    return result.sort(byValueDescThenRegion(g => g.maxLgInt, g => g.name, order))
   }, [isSelected, lpgm, stationData])
 
   if (isSelected) {

@@ -97,8 +97,8 @@ describe('extractQuakeEventId', () => {
     expect(extractQuakeEventId(makeQuake({ id: 'dmdata-quake-20260728162718-1' }))).toBe('20260728162718')
   })
 
-  it('dmdata-xml-quake- 形式にも対応する', () => {
-    expect(extractQuakeEventId(makeQuake({ id: 'dmdata-xml-quake-20260728162718-3' }))).toBe('20260728162718')
+  it('dmdata-quake- 形式にも対応する', () => {
+    expect(extractQuakeEventId(makeQuake({ id: 'dmdata-quake-20260728162718-3' }))).toBe('20260728162718')
   })
 
   it('形式外の id では null を返す（P2P 由来など）', () => {
@@ -123,8 +123,8 @@ describe('extractQuakeEventIdFromId', () => {
     expect(extractQuakeEventIdFromId('dmdata-quake-20260728162718-1')).toBe('20260728162718')
   })
 
-  it('dmdata-xml-quake- 形式にも対応する', () => {
-    expect(extractQuakeEventIdFromId('dmdata-xml-quake-20260728162718-3')).toBe('20260728162718')
+  it('dmdata-quake- 形式にも対応する', () => {
+    expect(extractQuakeEventIdFromId('dmdata-quake-20260728162718-3')).toBe('20260728162718')
   })
 
   it('形式外の id 文字列は null を返す', () => {
@@ -164,11 +164,11 @@ describe('sameQuakeEntry', () => {
   // 以下 4 件はその救済と、救済のために緩めすぎていないことの対。
   it('震度速報は eventId が食い違っても、発生時刻と区域が重なれば同一イベントとみなす', () => {
     const prompt = makeQuake({
-      id: 'dmdata-xml-quake-20260824040519-1', type: '震度速報', hypoName: '',
+      id: 'dmdata-quake-20260824040519-1', type: '震度速報', hypoName: '',
       points: [{ pref: '', addr: '熊本県天草・芦北地方', isArea: true, scale: 30 }],
     })
     const detail = makeQuake({
-      id: 'dmdata-xml-quake-20260824040526-1', type: '震源・震度情報', hypoName: '熊本県天草・芦北地方',
+      id: 'dmdata-quake-20260824040526-1', type: '震源・震度情報', hypoName: '熊本県天草・芦北地方',
       points: [
         { pref: '', addr: '熊本県天草・芦北地方', isArea: true, scale: 30 },
         { pref: '', addr: '熊本県熊本地方', isArea: true, scale: 20 },
@@ -178,18 +178,18 @@ describe('sameQuakeEntry', () => {
   })
 
   it('震源が判明している電文どうしは、eventId が食い違えば別イベントのままとする', () => {
-    const a = makeQuake({ id: 'dmdata-xml-quake-20260824040519-1', hypoName: '熊本県天草・芦北地方' })
-    const b = makeQuake({ id: 'dmdata-xml-quake-20260824040526-1', hypoName: '熊本県天草・芦北地方' })
+    const a = makeQuake({ id: 'dmdata-quake-20260824040519-1', hypoName: '熊本県天草・芦北地方' })
+    const b = makeQuake({ id: 'dmdata-quake-20260824040526-1', hypoName: '熊本県天草・芦北地方' })
     expect(sameQuakeEntry(a, b)).toBe(false)
   })
 
   it('震度速報でも、区域が 1 つも重ならなければ別イベントとする', () => {
     const prompt = makeQuake({
-      id: 'dmdata-xml-quake-20260824040519-1', type: '震度速報', hypoName: '',
+      id: 'dmdata-quake-20260824040519-1', type: '震度速報', hypoName: '',
       points: [{ pref: '', addr: '青森県三八上北', isArea: true, scale: 30 }],
     })
     const detail = makeQuake({
-      id: 'dmdata-xml-quake-20260824040526-1', type: '震源・震度情報', hypoName: '熊本県天草・芦北地方',
+      id: 'dmdata-quake-20260824040526-1', type: '震源・震度情報', hypoName: '熊本県天草・芦北地方',
       points: [{ pref: '', addr: '熊本県天草・芦北地方', isArea: true, scale: 30 }],
     })
     expect(sameQuakeEntry(prompt, detail)).toBe(false)
@@ -197,12 +197,12 @@ describe('sameQuakeEntry', () => {
 
   it('震度速報でも、発生時刻の一致は免除しない', () => {
     const prompt = makeQuake({
-      id: 'dmdata-xml-quake-20260824040519-1', type: '震度速報', hypoName: '',
+      id: 'dmdata-quake-20260824040519-1', type: '震度速報', hypoName: '',
       quakeTime: '2026-08-24T04:05:00Z',
       points: [{ pref: '', addr: '熊本県天草・芦北地方', isArea: true, scale: 30 }],
     })
     const detail = makeQuake({
-      id: 'dmdata-xml-quake-20260824040526-1', type: '震源・震度情報', hypoName: '熊本県天草・芦北地方',
+      id: 'dmdata-quake-20260824040526-1', type: '震源・震度情報', hypoName: '熊本県天草・芦北地方',
       quakeTime: '2026-08-24T05:05:00Z',
       points: [{ pref: '', addr: '熊本県天草・芦北地方', isArea: true, scale: 30 }],
     })
@@ -235,11 +235,11 @@ describe('sameQuakeEntry', () => {
   // したがって「両方が震源未確定で ID が違う」なら別々の地震。区域が重なっても合流させない。
   it('震度速報どうしは eventId が違えば別イベントとする（区域が重なっても）', () => {
     const a = makeQuake({
-      id: 'dmdata-xml-quake-20260815065801-1', type: '震度速報', hypoName: '',
+      id: 'dmdata-quake-20260815065801-1', type: '震度速報', hypoName: '',
       points: [{ pref: '', addr: '群馬県南部', isArea: true, scale: 30 }],
     })
     const b = makeQuake({
-      id: 'dmdata-xml-quake-20260815065812-1', type: '震度速報', hypoName: '',
+      id: 'dmdata-quake-20260815065812-1', type: '震度速報', hypoName: '',
       points: [{ pref: '', addr: '群馬県南部', isArea: true, scale: 20 }],
     })
     expect(sameQuakeEntry(a, b)).toBe(false)
@@ -250,12 +250,12 @@ describe('sameQuakeEntry', () => {
   // 「揺れていない地域の震度が別の震源に貼り付く」カードができる（2026-08-15 の衝突と同型）。
   it('区域を持たない別地震の震源情報は、震度速報のカードに合流しない', () => {
     const prompt = makeQuake({
-      id: 'dmdata-xml-quake-20260815065801-1', type: '震度速報', hypoName: '',
+      id: 'dmdata-quake-20260815065801-1', type: '震度速報', hypoName: '',
       quakeTime: '2026-08-15T06:58:00Z',
       points: [{ pref: '', addr: '群馬県南部', isArea: true, scale: 30 }],
     })
     const other = makeNoIntensity({
-      id: 'dmdata-xml-quake-20260815065812-1', type: '震源情報', hypoName: 'インドネシア、フローレス',
+      id: 'dmdata-quake-20260815065812-1', type: '震源情報', hypoName: 'インドネシア、フローレス',
       quakeTime: '2026-08-15T06:58:00Z',
     })
     expect(sameQuakeEntry(prompt, other)).toBe(false)
@@ -263,9 +263,9 @@ describe('sameQuakeEntry', () => {
   })
 
   it('取消電文は eventId が食い違えば別イベントとする（震源名・発生時刻が空でも合流しない）', () => {
-    const card = makeQuake({ id: 'dmdata-xml-quake-20260824040526-1', hypoName: '熊本県天草・芦北地方' })
+    const card = makeQuake({ id: 'dmdata-quake-20260824040526-1', hypoName: '熊本県天草・芦北地方' })
     const cancel: JMAQuake = {
-      ...makeQuake({ id: 'dmdata-xml-quake-20260824040519-2', hypoName: '' }),
+      ...makeQuake({ id: 'dmdata-quake-20260824040519-2', hypoName: '' }),
       cancelled: true,
       earthquake: { ...makeQuake().earthquake, time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 }, maxScale: -1 },
       points: [],
@@ -281,7 +281,7 @@ describe('sameQuakeEntry', () => {
       earthquake: { ...makeQuake().earthquake, time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 }, maxScale: -1 },
       points: [],
     })
-    expect(sameQuakeEntry(mk('dmdata-xml-quake-20260824040519-2'), mk('dmdata-xml-quake-20260824040526-2'))).toBe(false)
+    expect(sameQuakeEntry(mk('dmdata-quake-20260824040519-2'), mk('dmdata-quake-20260824040526-2'))).toBe(false)
   })
 
   // P2PQuake 経路（eventId が無い）でも区域の重なりが効くことを固定する。
@@ -901,16 +901,16 @@ describe('coalesceByEventId — 暫定 EventID で分かれたカードを畳む
   const 発生時刻 = '2026-08-23T19:05:00Z'
   // 2026-08-24 04:05 熊本県天草・芦北地方の実系列。震度速報だけ EventID が別採番されている。
   const 震度速報 = makeQuake({
-    id: 'dmdata-xml-quake-20260824040519-1', type: '震度速報', hypoName: '',
+    id: 'dmdata-quake-20260824040519-1', type: '震度速報', hypoName: '',
     time: '2026-08-23T19:06:00Z', quakeTime: 発生時刻, maxScale: 30,
     points: [{ pref: '', addr: '熊本県天草・芦北地方', isArea: true, scale: 30 }],
   })
   const 震源情報 = makeNoIntensity({
-    id: 'dmdata-xml-quake-20260824040526-1', type: '震源情報', hypoName: '熊本県天草・芦北地方',
+    id: 'dmdata-quake-20260824040526-1', type: '震源情報', hypoName: '熊本県天草・芦北地方',
     time: '2026-08-23T19:08:00Z', quakeTime: 発生時刻,
   })
   const 震源震度情報 = makeQuake({
-    id: 'dmdata-xml-quake-20260824040526-2', type: '震源・震度情報', hypoName: '熊本県天草・芦北地方',
+    id: 'dmdata-quake-20260824040526-2', type: '震源・震度情報', hypoName: '熊本県天草・芦北地方',
     time: '2026-08-23T19:09:00Z', quakeTime: 発生時刻, maxScale: 30,
     points: [{ pref: '', addr: '熊本県天草・芦北地方', isArea: true, scale: 30 }],
   })
@@ -928,15 +928,15 @@ describe('coalesceByEventId — 暫定 EventID で分かれたカードを畳む
   })
 
   it('取消表示中のカードは畳まない（purge 予約が空振りするため）', () => {
-    const cancelled = { ...makeQuake({ id: 'dmdata-xml-quake-20260824040526-1' }), cancelledAt: new Date() }
-    const normal = makeQuake({ id: 'dmdata-xml-quake-20260824040526-2' })
+    const cancelled = { ...makeQuake({ id: 'dmdata-quake-20260824040526-1' }), cancelledAt: new Date() }
+    const normal = makeQuake({ id: 'dmdata-quake-20260824040526-2' })
     expect(coalesceByEventId([cancelled, normal])).toHaveLength(2)
     expect(coalesceByEventId([normal, cancelled])).toHaveLength(2)
   })
 
   it('eventId が違うカードは畳まない', () => {
-    const a = makeQuake({ id: 'dmdata-xml-quake-20260824040519-1' })
-    const b = makeQuake({ id: 'dmdata-xml-quake-20260824040526-1' })
+    const a = makeQuake({ id: 'dmdata-quake-20260824040519-1' })
+    const b = makeQuake({ id: 'dmdata-quake-20260824040526-1' })
     expect(coalesceByEventId([a, b])).toHaveLength(2)
   })
 
@@ -947,8 +947,8 @@ describe('coalesceByEventId — 暫定 EventID で分かれたカードを畳む
   })
 
   it('畳むときは震度を持つ完成したカードを残す', () => {
-    const 完成 = makeQuake({ id: 'dmdata-xml-quake-20260824040526-2', type: '震源・震度情報', maxScale: 30 })
-    const 震源のみ = makeNoIntensity({ id: 'dmdata-xml-quake-20260824040526-1', type: '震源情報' })
+    const 完成 = makeQuake({ id: 'dmdata-quake-20260824040526-2', type: '震源・震度情報', maxScale: 30 })
+    const 震源のみ = makeNoIntensity({ id: 'dmdata-quake-20260824040526-1', type: '震源情報' })
     const [card] = coalesceByEventId([完成, 震源のみ])
     expect(card.earthquake.maxScale).toBe(30)
     expect(card.issue.type).toBe('震源・震度情報')
@@ -958,16 +958,16 @@ describe('coalesceByEventId — 暫定 EventID で分かれたカードを畳む
 describe('findExistingQuakeCard — 一致が 2 枚あるときの選び方', () => {
   const 発生時刻 = '2026-08-23T19:05:00Z'
   const 震度速報 = makeQuake({
-    id: 'dmdata-xml-quake-20260824040519-1', type: '震度速報', hypoName: '',
+    id: 'dmdata-quake-20260824040519-1', type: '震度速報', hypoName: '',
     time: '2026-08-23T19:06:00Z', quakeTime: 発生時刻, maxScale: 30,
     points: [{ pref: '', addr: '熊本県天草・芦北地方', isArea: true, scale: 30 }],
   })
   const 震源情報カード = makeNoIntensity({
-    id: 'dmdata-xml-quake-20260824040526-1', type: '震源情報', hypoName: '熊本県天草・芦北地方',
+    id: 'dmdata-quake-20260824040526-1', type: '震源情報', hypoName: '熊本県天草・芦北地方',
     time: '2026-08-23T19:08:00Z', quakeTime: 発生時刻,
   })
   const 震源震度情報 = makeQuake({
-    id: 'dmdata-xml-quake-20260824040526-2', type: '震源・震度情報', hypoName: '熊本県天草・芦北地方',
+    id: 'dmdata-quake-20260824040526-2', type: '震源・震度情報', hypoName: '熊本県天草・芦北地方',
     time: '2026-08-23T19:09:00Z', quakeTime: 発生時刻, maxScale: 30,
     points: [{ pref: '', addr: '熊本県天草・芦北地方', isArea: true, scale: 30 }],
   })
@@ -998,8 +998,8 @@ describe('findExistingQuakeCard — 一致が 2 枚あるときの選び方', ()
   })
 
   it('畳み込みは並び順に関わらず震度を持つカードを残す', () => {
-    const 完成 = makeQuake({ id: 'dmdata-xml-quake-20260824040526-2', type: '震源・震度情報', maxScale: 30 })
-    const 震源のみ = makeNoIntensity({ id: 'dmdata-xml-quake-20260824040526-1', type: '震源情報' })
+    const 完成 = makeQuake({ id: 'dmdata-quake-20260824040526-2', type: '震源・震度情報', maxScale: 30 })
+    const 震源のみ = makeNoIntensity({ id: 'dmdata-quake-20260824040526-1', type: '震源情報' })
     for (const order of [[完成, 震源のみ], [震源のみ, 完成]]) {
       const [card] = coalesceByEventId(order)
       expect(card.earthquake.maxScale).toBe(30)
@@ -1010,21 +1010,21 @@ describe('findExistingQuakeCard — 一致が 2 枚あるときの選び方', ()
 describe('区域を持たない電文が先に割り込む場合', () => {
   const 発生時刻 = '2026-08-23T19:05:00Z'
   const 震度速報 = makeQuake({
-    id: 'dmdata-xml-quake-20260824040519-1', type: '震度速報', hypoName: '',
+    id: 'dmdata-quake-20260824040519-1', type: '震度速報', hypoName: '',
     time: '2026-08-23T19:06:00Z', quakeTime: 発生時刻, maxScale: 30,
     points: [{ pref: '', addr: '熊本県天草・芦北地方', isArea: true, scale: 30 }],
   })
   const 震源情報 = makeNoIntensity({
-    id: 'dmdata-xml-quake-20260824040526-1', type: '震源情報', hypoName: '熊本県天草・芦北地方',
+    id: 'dmdata-quake-20260824040526-1', type: '震源情報', hypoName: '熊本県天草・芦北地方',
     time: '2026-08-23T19:08:00Z', quakeTime: 発生時刻,
   })
   // 震源要素更新（VXSE61）も区域を持たない。確定 ID 側のカードだけを更新する。
   const 震源要素更新 = makeNoIntensity({
-    id: 'dmdata-xml-quake-20260824040526-9', type: '顕著な地震の震源要素更新のお知らせ',
+    id: 'dmdata-quake-20260824040526-9', type: '顕著な地震の震源要素更新のお知らせ',
     hypoName: '天草灘', time: '2026-08-23T19:10:00Z', quakeTime: 発生時刻,
   })
   const 震源震度情報 = makeQuake({
-    id: 'dmdata-xml-quake-20260824040526-2', type: '震源・震度情報', hypoName: '熊本県天草・芦北地方',
+    id: 'dmdata-quake-20260824040526-2', type: '震源・震度情報', hypoName: '熊本県天草・芦北地方',
     time: '2026-08-23T19:09:00Z', quakeTime: 発生時刻, maxScale: 30,
     points: [{ pref: '', addr: '熊本県天草・芦北地方', isArea: true, scale: 30 }],
   })

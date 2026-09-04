@@ -418,7 +418,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   if (infoType === '取消') {
     return {
       kind: 'quake',
-      id: `dmdata-xml-quake-${eventId}-${serial}`,
+      id: `dmdata-quake-${eventId}-${serial}`,
       // JSON 経路の取消と同じ理由で持たせる（そちらのコメント参照）。
       eventId: eventId || undefined,
       time: reportDateTime,
@@ -540,7 +540,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
 
   return {
     kind: 'quake',
-    id: `dmdata-xml-quake-${eventId}-${serial}`,
+    id: `dmdata-quake-${eventId}-${serial}`,
     // 空文字は undefined に落とす（JSON 経路の `eventId || undefined` と同じ形）。
     // TsunamiTab は q.eventId を直接比較して原因地震カードへのリンクを作るため、
     // フィールドを落とすと履歴経由のカードがそのリンクに引き当たらない。
@@ -623,7 +623,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
     ? { hypocenterName: eqHypoName, magnitude: !isNaN(eqMagnitude) ? eqMagnitude : undefined, originTime: (eqEl ? xmlText(xmlQ(eqEl, 'OriginTime')) : '') || undefined }
     : undefined
 
-  const id = `dmdata-xml-tsunami-${eventId ?? ''}-${serial}`
+  const id = `dmdata-tsunami-${eventId ?? ''}-${serial}`
   const cancelled = infoType === '取消'
 
   // InfoType=取消: 誤って発表した電文そのものの取消（誤報取消）
@@ -877,7 +877,7 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   const eventId        = xmlText(xmlQ(doc, 'EventID'))
   const serial         = xmlText(xmlQ(doc, 'Serial')) || '1'
   const infoType       = xmlText(xmlQ(doc, 'InfoType'))
-  const id             = `dmdata-xml-lpgm-${eventId}-${serial}`
+  const id             = `dmdata-lpgm-${eventId}-${serial}`
   const cancelled      = infoType === '取消'
 
   const earthquakeEl = xmlQ(doc, 'Earthquake')
@@ -966,7 +966,7 @@ export function parseNankaiFromXml(xml: string): JMANankai | null {
   const eventId        = xmlText(xmlQ(doc, 'EventID'))
   const serial         = xmlText(xmlQ(doc, 'Serial')) || '1'
   const infoType       = xmlText(xmlQ(doc, 'InfoType'))
-  const id             = `dmdata-xml-nankai-${eventId}-${serial}`
+  const id             = `dmdata-nankai-${eventId}-${serial}`
 
   // 取消は「その電文を撤回する」だけで、段階の判断を含まない（電文解説資料 Ⅰ.別紙ウ
   // 「取消電文の運用」）。**`kindName` に「調査終了」を詰めない** —— 調査終了は
@@ -1066,7 +1066,7 @@ export function parseNankaiCommentaryFromXml(xml: string): JMANankaiCommentary |
   const cancelled = xmlText(xmlQ(doc, 'InfoType')) === '取消'
 
   return {
-    id: `dmdata-xml-nankai-commentary-${eventId}-${serial}`,
+    id: `dmdata-nankai-commentary-${eventId}-${serial}`,
     time: reportDateTime, eventId,
     serialCode, serialName: serialName || '解説情報',
     headline, summary, body: bodyText,
@@ -1086,7 +1086,7 @@ export function parseVyse60FromXml(xml: string): JMAKohatsu | null {
   const eventId        = xmlText(xmlQ(doc, 'EventID'))
   const serial         = xmlText(xmlQ(doc, 'Serial')) || '1'
   const infoType       = xmlText(xmlQ(doc, 'InfoType'))
-  const id             = `dmdata-xml-kohatsu-${eventId}-${serial}`
+  const id             = `dmdata-kohatsu-${eventId}-${serial}`
 
   // 取消の扱いは南海トラフ臨時情報と同じ（理由はそちらのコメント）。段階を持たない電文なので
   // 名乗りの取り違えは起きないが、**取消であることと理由は残す**。

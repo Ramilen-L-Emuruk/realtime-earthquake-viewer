@@ -1043,7 +1043,7 @@ describe('parseNankaiCommentaryFromXml（VYSE51/52 南海トラフ地震関連�
       serialName: '定例解説',
       serialCode: '200',
     }))
-    expect(commentary?.id).toBe('dmdata-xml-nankai-commentary-20260820170000-1')
+    expect(commentary?.id).toBe('dmdata-nankai-commentary-20260820170000-1')
   })
 
   it('臨時情報を渡すと null（段階を持つ電文はこちらで扱わない）', () => {
