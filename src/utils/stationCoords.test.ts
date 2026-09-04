@@ -286,3 +286,42 @@ describe('観測点 → 一次細分区域の逆引き（lookupStationRegion）'
     expect(new Set(names).size).toBe(names.length)
   })
 })
+
+// 点の役割の判定（`quakePoints.ts` の `isAreaPoint`）へ渡す索引のキャッシュ層。
+// 地震の統合経路から毎回呼ばれるため、同じ座標テーブルでは作り直さないことが要る。
+//
+// `cache` は成功時に一度だけ入り、以後 `loadStationCoords` は即座に返す。つまり
+// 「別のデータへ差し替わる」経路は無く、作り直しが起きるのは **null からの復帰**
+// （取得失敗 → 再取得で成功）だけ。最後のテストがその経路を通す。
+describe('getAreaPrefIndexCache', { timeout: 15_000 }, () => {
+  it('座標テーブルが未読み込みなら null', async () => {
+    const m = await freshModule()
+    expect(m.getAreaPrefIndexCache()).toBeNull()
+  })
+
+  it('読み込み後は区域名から都道府県を引ける', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => okResponse(SAMPLE)))
+    const m = await freshModule()
+    await m.loadStationCoords()
+    expect(m.getAreaPrefIndexCache()?.get('石川県能登')).toBe('石川県')
+  })
+
+  it('繰り返し呼んでも索引を作り直さない', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => okResponse(SAMPLE)))
+    const m = await freshModule()
+    await m.loadStationCoords()
+    expect(m.getAreaPrefIndexCache()).toBe(m.getAreaPrefIndexCache())
+  })
+
+  it('取得失敗のあと成功すれば索引ができる（null のまま固定されない）', async () => {
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce(okResponse(SAMPLE))
+    vi.stubGlobal('fetch', fetchMock)
+    const m = await freshModule()
+    await expect(m.loadStationCoords()).rejects.toThrow()
+    expect(m.getAreaPrefIndexCache()).toBeNull()
+    await m.loadStationCoords()
+    expect(m.getAreaPrefIndexCache()?.get('石川県能登')).toBe('石川県')
+  })
+})

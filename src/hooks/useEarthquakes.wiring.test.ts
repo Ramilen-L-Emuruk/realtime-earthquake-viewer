@@ -39,6 +39,9 @@ vi.mock('../utils/stationCoords', () => ({
   loadStationCoords: vi.fn(() => Promise.resolve({})),
   onStationCoordsLoaded: vi.fn(() => () => {}),
   buildAreaPrefIndex: vi.fn(() => new Map()),
+  // 点の役割の判定へ渡す索引（→ quakePoints.ts の isAreaPoint）。この配線テストは区域名の
+  // 衝突を見ないので、座標テーブル未読み込みと同じ null を返す。
+  getAreaPrefIndexCache: vi.fn(() => null),
 }))
 
 // WebSocket の代役。`new` で呼ばれるためクラスで用意する（アロー関数はコンストラクタになれない）。
