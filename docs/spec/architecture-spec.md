@@ -381,7 +381,7 @@ realtime-earthquake-viewer/
 │   ├── hooks/                 # データ取得・状態管理・派生データ計算
 │   ├── services/              # 外部データソースクライアント → data-sources-spec.md
 │   │   ├── dmdata.ts          # DMDATA.JP WebSocket + REST
-│   │   ├── dmdataParser.ts    # DMDATA JSON/XML パース
+│   │   ├── dmdataParser.ts    # DMDATA の電文（XML）のパース
 │   │   ├── dmdataReplay.ts    # 実地震シナリオリプレイ（archive 取得）
 │   │   ├── p2pquake.ts        # P2PQuake（標準版）＋レスポンス検証
 │   │   ├── parseHelpers.ts    # 外部レスポンスの値取り出しヘルパ（DMDATA・P2PQuake 共用）

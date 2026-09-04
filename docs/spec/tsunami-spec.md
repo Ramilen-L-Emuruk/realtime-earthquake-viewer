@@ -835,7 +835,7 @@ EEW の発表状況は判定に入れない（下記「優先度ルール」参�
 
 ## 12. 関連実装ファイル
 
-- `src/services/dmdataParser.ts` — DMDATA JSON/XML パース（tsunami 分岐）
+- `src/services/dmdataParser.ts` — DMDATA の電文（XML）のパース（tsunami 分岐）
 - `src/services/p2pquake.ts` — P2PQuake 経路の convertEvent
 - `src/utils/tsunami.ts` — 等級算出・観測情報マージ・区域の並べ替え（カードと読み上げの単一情報源）
 - `src/utils/ttsFollow.ts` — 読み上げ追従スクロールの計算・追従セッションの世代管理
@@ -849,16 +849,15 @@ EEW の発表状況は判定に入れない（下記「優先度ルール」参�
 
 ## 13. テスト
 
-- `dmdataParser.test.ts` は現状 VXSE51/53（地震 XML）のみカバー
-- `parseTsunami` / `parseTsunamiFromXml` / `mergeTsunamiObservations` の単体テストは無し（HIGH 課題）
+- `dmdataParser.test.ts` が `parseTsunamiFromXml` の読み取りを見る（等級・波高の表記・観測状態・
+  `LastKind`・区域を読めなかったときの扱い）。`mergeTsunamiObservations` の単体テストは無し（HIGH 課題）
 - 解除電文の照合（§5）は `useEarthquakes.wiring.test.ts` の「津波テストの解除電文」でカバー。
   `eventId` を持たない経路（P2PQuake 相当）で `id` が違っても解除が届くこと・古い発表時刻の解除は
   受け入れないこと、双方が `eventId` を持つ場合は別イベントの解除で消えないことを見る
 - 区域単位の等級変化（§10）は 3 層で見る。`tsunami.test.ts` が変化の抽出と既読の絞り込み、
   `ttsText.test.ts` が文の組み立て、`useLiveEventHandler.tsunamiAreaGradeChange.test.ts` が
   フックの枝分け（最上位が動かない報でも読むこと・続報で二度読みしないこと・既読になった後も
-  観測点更新の読み上げが働くこと）。`dmdataParser.test.ts` は `LastKind` の読み取りを
-  XML・JSON の両経路で見る
+  観測点更新の読み上げが働くこと）。`dmdataParser.test.ts` は `LastKind` の読み取りを見る
 
 ## 14. 改訂履歴
 
