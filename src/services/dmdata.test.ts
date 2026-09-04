@@ -11,8 +11,8 @@ import {
   fetchDmdataNankai,
   fetchDmdataNankaiCommentary,
   fetchDmdataKohatsu,
-  decodeTelegramBody,
   DmdataWebSocket,
+  decodeTelegramText,
 } from './dmdata'
 import { DmdataApiKeyError, DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
 import { log } from '../utils/logger'
@@ -402,70 +402,61 @@ describe('長周期地震動の一覧取得を打ち切ったときの記録', (
 // 何も残らないのに、コードは「記録しているから追える」と読める。
 describe('電文の body を復号できなかったときの記録', () => {
   const warnings = () => vi.mocked(log.warn).mock.calls.map(c => String(c[0]))
-  const gzipBase64 = (obj: unknown) => {
-    // gzip は用意せず、復号で例外を出させたいときに使う不正な base64
-    void obj
-    return 'not-base64-@@@'
-  }
 
   // 対照: 正常な body は読めて、何も記録しない
-  it('base64 の JSON は読めて記録も出さない', async () => {
-    const body = btoa(String.fromCharCode(...new TextEncoder().encode('{"a":1}')))
-    const got = await decodeTelegramBody({ body, encoding: 'base64', format: 'json' })
-    expect(got).toEqual({ a: 1 })
+  it('base64 の XML は読めて記録も出さない', async () => {
+    const body = btoa(String.fromCharCode(...new TextEncoder().encode('<Report/>')))
+    const got = await decodeTelegramText({ body, encoding: 'base64', format: 'xml' })
+    expect(got).toBe('<Report/>')
     expect(warnings()).toHaveLength(0)
   })
 
-  // 対照: 既に object の body（将来の仕様変更に備えた保険）も素通し
-  it('object の body はそのまま返し記録も出さない', async () => {
-    const got = await decodeTelegramBody({ body: { a: 1 } })
-    expect(got).toEqual({ a: 1 })
-    expect(warnings()).toHaveLength(0)
-  })
-
-  // 正: 4 つの失敗をそれぞれ別の理由として記録する
+  // 正: 失敗の理由をそれぞれ別のものとして記録する
   // base64 の復号は圧縮形式の判定より**先**に走る。不正な base64 を渡すと
   // ここではなく「復号で例外」の側へ落ちるので、読める base64 を渡すこと
   it('未対応の圧縮形式を記録する', async () => {
-    const got = await decodeTelegramBody({ body: btoa('x'), encoding: 'base64', compression: 'zip' })
+    const got = await decodeTelegramText({ body: btoa('x'), encoding: 'base64', compression: 'zip', format: 'xml' })
     expect(got).toBeNull()
     expect(warnings().filter(w => w.includes('未対応の圧縮形式: zip'))).toHaveLength(1)
   })
 
   it('復号の例外を記録する', async () => {
-    const got = await decodeTelegramBody({ body: gzipBase64(null), encoding: 'base64', compression: 'gzip' })
+    // gzip として解けない base64 を渡して例外を起こさせる
+    const got = await decodeTelegramText({ body: 'not-base64-@@@', encoding: 'base64', compression: 'gzip', format: 'xml' })
     expect(got).toBeNull()
     expect(warnings().filter(w => w.includes('復号で例外が出ました'))).toHaveLength(1)
   })
 
-  it('JSON 以外の format を記録する', async () => {
-    const got = await decodeTelegramBody({ body: '<Report/>', encoding: 'utf-8', format: 'xml' })
-    expect(got).toBeNull()
-    expect(warnings().filter(w => w.includes('JSON 以外の format: xml'))).toHaveLength(1)
+  // 正: `formatMode: 'raw'` なら format は xml のはず。違えば配信形態が変わった印。
+  // **ただし本文は返す** —— 復号は成功しているので、値が変わっただけで電文を捨てない。
+  it('XML 以外の format は記録するが本文は返す', async () => {
+    const got = await decodeTelegramText({ body: '{"a":1}', encoding: 'utf-8', format: 'json' })
+    expect(got).toBe('{"a":1}')
+    expect(warnings().filter(w => w.includes('XML 以外の format: json'))).toHaveLength(1)
   })
 
-  it('JSON として読めないことを記録する', async () => {
-    const got = await decodeTelegramBody({ body: '{壊れている', encoding: 'utf-8', format: 'json' })
-    expect(got).toBeNull()
-    expect(warnings().filter(w => w.includes('JSON として読めません'))).toHaveLength(1)
-  })
-
-  // 安全弁: `typeof null` は 'object' を返すので、そのまま流すと
-  // 「オブジェクトでもありません: object」という矛盾した文になる
+  // 安全弁: `typeof null` は 'object' を返すので、そのまま流すと読み手が形を取り違える
   it('body が null なら shape を null と書く', async () => {
-    const got = await decodeTelegramBody({ body: null })
+    const got = await decodeTelegramText({ body: null })
     expect(got).toBeNull()
-    const hit = warnings().filter(w => w.includes('文字列でもオブジェクトでもありません'))
+    const hit = warnings().filter(w => w.includes('文字列ではありません'))
     expect(hit).toHaveLength(1)
     expect(hit[0]).toContain('null')
     expect(hit[0]).not.toContain(': object')
   })
 
-  // 安全弁: 配列も object 扱いにしない（手前の分岐が Array を弾いている）
+  // 安全弁: 配列も object と書かない
   it('body が配列なら shape を array と書く', async () => {
-    const got = await decodeTelegramBody({ body: [1, 2] })
+    const got = await decodeTelegramText({ body: [1, 2] })
     expect(got).toBeNull()
     expect(warnings().filter(w => w.includes('array'))).toHaveLength(1)
+  })
+
+  // 安全弁: かつて VYSE 系で想定していた `{ uri }` の形もここへ落ちる（別扱いしない）
+  it('body が { uri } でも shape として記録する', async () => {
+    const got = await decodeTelegramText({ body: { uri: 'https://example.invalid/x' } })
+    expect(got).toBeNull()
+    expect(warnings().filter(w => w.includes('文字列ではありません'))).toHaveLength(1)
   })
 })
 
@@ -562,5 +553,50 @@ describe('DmdataWebSocket: APIキーが不正なとき', () => {
       ws.disconnect()
       vi.useRealTimers()
     }
+  })
+})
+
+
+// 電文の本文の復号。`formatMode: 'raw'` で購読しているので、届くのは base64 + gzip の XML。
+// ここが壊れると電文が 1 通も読めなくなるが、型検査では気づけない（`body` は unknown 由来）。
+describe('decodeTelegramText', () => {
+  /** base64 + gzip に包む（DMDATA が配る形）。 */
+  async function pack(text: string): Promise<string> {
+    const gz = new Blob([new TextEncoder().encode(text) as BlobPart])
+      .stream()
+      .pipeThrough(new CompressionStream('gzip'))
+    const bytes = new Uint8Array(await new Response(gz).arrayBuffer())
+    let bin = ''
+    for (const b of bytes) bin += String.fromCharCode(b)
+    return btoa(bin)
+  }
+
+  const XML = '<?xml version="1.0" encoding="UTF-8"?><Report><Control><Title>震源・震度に関する情報</Title></Control></Report>'
+
+  // 正: 実際の配信形態（base64 + gzip）を解いて XML のテキストが返る。
+  it('base64 + gzip の本文を XML のテキストへ戻す', async () => {
+    const body = await pack(XML)
+    const text = await decodeTelegramText({ body, encoding: 'base64', compression: 'gzip', format: 'xml' })
+    expect(text).toBe(XML)
+  })
+
+  // 対照: 圧縮なしの base64 も読める（配信形態が変わっても本文を落とさない）。
+  it('圧縮なしの base64 も読める', async () => {
+    let bin = ''
+    for (const b of new TextEncoder().encode(XML)) bin += String.fromCharCode(b)
+    const text = await decodeTelegramText({ body: btoa(bin), encoding: 'base64', format: 'xml' })
+    expect(text).toBe(XML)
+  })
+
+  // 安全弁: 本文が文字列でない形（かつて VYSE 系で想定していた `{ uri }` 等）は null にする。
+  // 読めないものを読めたことにすると、空の電文が正常系として下流へ流れる。
+  it('本文が文字列でなければ null', async () => {
+    expect(await decodeTelegramText({ body: { uri: 'https://example.invalid/x' } })).toBeNull()
+    expect(await decodeTelegramText({})).toBeNull()
+  })
+
+  // 安全弁: 解けない圧縮形式（zip 等）は null。ブラウザの DecompressionStream が扱えない。
+  it('対応していない圧縮形式は null', async () => {
+    expect(await decodeTelegramText({ body: 'AAAA', encoding: 'base64', compression: 'zip' })).toBeNull()
   })
 })

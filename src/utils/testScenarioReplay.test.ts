@@ -84,7 +84,7 @@ function makeLpgm(overrides: Partial<JMALpgm> = {}): JMALpgm {
 
 function makeNankai(overrides: Partial<JMANankai> = {}): JMANankai {
   return {
-    id: 'dmdata-xml-nankai-20240101070900-1',
+    id: 'dmdata-nankai-20240101070900-1',
     eventId: '20240101070900',
     time: '2024-01-01T07:30:00Z',
     kindCode: '0202',
@@ -99,7 +99,7 @@ function makeNankai(overrides: Partial<JMANankai> = {}): JMANankai {
 
 function makeKohatsu(overrides: Partial<JMAKohatsu> = {}): JMAKohatsu {
   return {
-    id: 'dmdata-xml-kohatsu-20240101070900-1',
+    id: 'dmdata-kohatsu-20240101070900-1',
     eventId: '20240101070900',
     time: '2024-01-01T07:30:00Z',
     headline: 'テスト見出し',

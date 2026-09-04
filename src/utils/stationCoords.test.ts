@@ -325,3 +325,90 @@ describe('getAreaPrefIndexCache', { timeout: 15_000 }, () => {
     expect(m.getAreaPrefIndexCache()?.get('石川県能登')).toBe('石川県')
   })
 })
+
+// 気象庁の標準順で並べる索引。読み上げ（ttsText）と地震カードの行順が**同じ索引**を使う。
+// カード側はもともと震度だけで並べており、同震度の行は Map の挿入順＝電文が点を並べた順が
+// 残っていた。電文の並びは種別で違うため、書式が変わるだけで画面の並びが黙って動く。
+describe('regionOrderRank / sortByRegionOrder', () => {
+  const order = {
+    areas: new Map([['石川県能登', 10], ['宮城県北部', 3], ['奈良県', 20]]),
+    prefs: new Map([['石川県', 10], ['宮城県', 3], ['奈良県', 99]]),
+  }
+
+  // 正: 索引の順位で並ぶ（北から南）。
+  it('索引の順位で並べる', async () => {
+    const { sortByRegionOrder } = await freshModule()
+    expect(sortByRegionOrder(['石川県能登', '宮城県北部'], order)).toEqual(['宮城県北部', '石川県能登'])
+  })
+
+  // 安全弁: 区域名を県名より先に引く。現行データの「奈良県」は県内唯一の区域名で、
+  // 両方の Map に別の順位で載る。取り違えると県名の順位で並んでしまう。
+  it('区域名を県名より先に引く', async () => {
+    const { regionOrderRank } = await freshModule()
+    expect(regionOrderRank('奈良県', order)).toBe(20)
+  })
+
+  // 安全弁: 索引に無い名前（震度観測点を持たない区域など）は末尾へ回す。
+  // 気象庁の標準順でもこれらは末尾に置かれるので、末尾送りは標準順と矛盾しない。
+  it('索引に無い名前は末尾へ回す', async () => {
+    const { sortByRegionOrder } = await freshModule()
+    expect(sortByRegionOrder(['未知の区域', '宮城県北部'], order)).toEqual(['宮城県北部', '未知の区域'])
+  })
+
+  // 対照: 索引そのものが無い（座標テーブル未読み込み）ときは並べ替えない。
+  // ここで勝手に並べると、読み込み前後で順序が変わって見える。
+  it('索引が無ければ並べ替えない', async () => {
+    const { sortByRegionOrder } = await freshModule()
+    expect(sortByRegionOrder(['石川県能登', '宮城県北部'], null)).toEqual(['石川県能登', '宮城県北部'])
+  })
+
+  // 安全弁: 索引の有無にかかわらず入力を書き換えない。索引が無いときだけ引数を
+  // そのまま返す実装にすると、戻り値を詰め替える呼び出し元が元データを壊す。
+  it('索引が無くても入力の配列を書き換えない', async () => {
+    const { sortByRegionOrder } = await freshModule()
+    const input = ['石川県能登', '宮城県北部']
+    const result = sortByRegionOrder(input, null)
+    expect(result).not.toBe(input)
+    result.reverse()
+    expect(input).toEqual(['石川県能登', '宮城県北部'])
+  })
+})
+
+describe('byValueDescThenRegion', () => {
+  const order = {
+    areas: new Map([['石川県能登', 10], ['宮城県北部', 3], ['奈良県', 20]]),
+    prefs: new Map([['石川県', 10], ['宮城県', 3], ['奈良県', 99]]),
+  }
+  const rows = [
+    { name: '石川県能登', value: 3 },
+    { name: '奈良県', value: 5 },
+    { name: '宮城県北部', value: 3 },
+  ]
+  const sorted = async (o: typeof order | null) => {
+    const { byValueDescThenRegion } = await freshModule()
+    return [...rows].sort(byValueDescThenRegion(r => r.value, r => r.name, o)).map(r => r.name)
+  }
+
+  // 正: 値の降順が第一。同値になったところで初めて標準順が効く。
+  it('値の降順で並べ、同値は気象庁の標準順で決める', async () => {
+    expect(await sorted(order)).toEqual(['奈良県', '宮城県北部', '石川県能登'])
+  })
+
+  // 対照: 索引が無ければ同値の決着は付かず、元の並び（＝電文の順）が残る。
+  // ここが「並べ替えを足す前の挙動」で、座標テーブル未読み込み時のフォールバックにあたる。
+  it('索引が無ければ同値は元の並びのまま', async () => {
+    expect(await sorted(null)).toEqual(['奈良県', '石川県能登', '宮城県北部'])
+  })
+
+  // 安全弁: 値の比較が標準順に負けない。順位の若い（北の）区域でも、値が小さければ後ろ。
+  // 2 つの鍵の優先順位を取り違えると、震度の低い地域が上に並ぶ。
+  it('標準順が値の降順を追い越さない', async () => {
+    const { byValueDescThenRegion } = await freshModule()
+    const north = { name: '宮城県北部', value: 1 }
+    const south = { name: '奈良県', value: 7 }
+    expect([north, south].sort(byValueDescThenRegion(r => r.value, r => r.name, order))).toEqual([
+      south,
+      north,
+    ])
+  })
+})

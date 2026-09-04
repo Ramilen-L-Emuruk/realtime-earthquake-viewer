@@ -44,8 +44,47 @@ function buildDownloadPayload(entry: TelegramLogEntry): unknown {
   return entry.rawHead !== undefined ? { head: entry.rawHead, body: entry.rawBody } : entry.rawBody
 }
 
-function triggerDownload(json: string, filename: string) {
-  const blob = new Blob([json], { type: 'application/json' })
+/**
+ * 本文が復号済みの XML か。
+ *
+ * **「文字列かどうか」では判定できない。** 復号に失敗した電文と、復号の前に捨てた試験報は、
+ * 復号前の base64 文字列がそのまま `rawBody` に入る（`dmdata.ts` の失敗経路）。これを XML と
+ * 見なすと、base64 の塊に `.xml` が付き、ヘッダも落ちたファイルが落ちてくる。
+ * base64 は `<` で始まらないので、中身で見分ける。
+ */
+function isXmlBody(body: unknown): body is string {
+  return typeof body === 'string' && body.trimStart().startsWith('<')
+}
+
+/**
+ * 展開表示・コピー用の本文。
+ *
+ * **XML は `JSON.stringify` に通さない。** 通すと全体がエスケープされ、改行が `\n` の 2 文字に
+ * 潰れて 1 行になり、目視でもコピペでも使えなくなる。ヘッダは電文の外側の情報なので、
+ * XML の前に JSON として置く。
+ */
+export function formatEntryForView(entry: TelegramLogEntry): string {
+  if (isXmlBody(entry.rawBody)) {
+    const head = entry.rawHead !== undefined ? `${JSON.stringify(entry.rawHead, null, 2)}\n\n` : ''
+    return head + entry.rawBody
+  }
+  return JSON.stringify(buildDownloadPayload(entry), null, 2)
+}
+
+/**
+ * 単体ダウンロードの中身と拡張子。
+ *
+ * XML の電文はそのまま `.xml` で落とす（パーサや検証器へそのまま渡せる形にする）。
+ * ヘッダは付けない —— 付けると XML 宣言が先頭でなくなり、XML として読めなくなる。
+ * XML でない本文（復号に失敗した base64・P2PQuake の JSON）は、ヘッダごと `.json` で落とす。
+ */
+export function formatEntryForDownload(entry: TelegramLogEntry): { text: string; ext: 'xml' | 'json' } {
+  if (isXmlBody(entry.rawBody)) return { text: entry.rawBody, ext: 'xml' }
+  return { text: JSON.stringify(buildDownloadPayload(entry), null, 2), ext: 'json' }
+}
+
+function triggerDownload(text: string, filename: string) {
+  const blob = new Blob([text], { type: filename.endsWith('.xml') ? 'application/xml' : 'application/json' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -106,18 +145,17 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
   const clearSelection = useCallback(() => setSelectedIds(new Set()), [])
 
   const handleCopy = useCallback((entry: TelegramLogEntry) => {
-    const json = JSON.stringify(buildDownloadPayload(entry), null, 2)
-    navigator.clipboard.writeText(json).then(() => {
+    navigator.clipboard.writeText(formatEntryForView(entry)).then(() => {
       setCopied(entry.id)
       setTimeout(() => setCopied(id => id === entry.id ? null : id), 1500)
     }).catch(() => {})
   }, [])
 
   const handleDownload = useCallback((entry: TelegramLogEntry) => {
-    const json = JSON.stringify(buildDownloadPayload(entry), null, 2)
+    const { text, ext } = formatEntryForDownload(entry)
     const ts = formatFileStamp(entry.receivedAt.getTime())
     const source = entry.source === 'dmdss' ? 'DMDSS' : 'P2PQuake'
-    triggerDownload(json, `${ts}_${source}_${entry.headType}.json`)
+    triggerDownload(text, `${ts}_${source}_${entry.headType}.${ext}`)
   }, [])
 
   const handleDownloadSelected = useCallback(() => {
@@ -141,14 +179,14 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
     const files: Record<string, Uint8Array> = {}
     const usedNames = new Map<string, number>()
     for (const e of entries) {
-      const json = JSON.stringify(buildDownloadPayload(e), null, 2)
+      const { text: body, ext } = formatEntryForDownload(e)
       const source = e.source === 'dmdss' ? 'DMDSS' : 'P2PQuake'
       const ts = formatFileStamp(e.receivedAt.getTime())
-      const base = `${ts}_${source}_${e.headType}.json`
+      const base = `${ts}_${source}_${e.headType}.${ext}`
       const count = usedNames.get(base) ?? 0
       usedNames.set(base, count + 1)
-      const filename = count === 0 ? base : `${ts}_${source}_${e.headType}_${count + 1}.json`
-      files[filename] = enc.encode(json)
+      const filename = count === 0 ? base : `${ts}_${source}_${e.headType}_${count + 1}.${ext}`
+      files[filename] = enc.encode(body)
     }
     const zipped = zipSync(files)
     const ts = formatFileStamp(Date.now())
@@ -315,7 +353,7 @@ export const TelegramTab = memo(function TelegramTab({ telegramLog, onClear }: P
                               </button>
                             </div>
                             <pre className="text-xs font-mono text-secondary bg-black/30 rounded p-2 overflow-x-auto max-h-96 whitespace-pre-wrap break-all">
-                              {JSON.stringify(buildDownloadPayload(entry), null, 2)}
+                              {formatEntryForView(entry)}
                             </pre>
                           </div>
                         )}

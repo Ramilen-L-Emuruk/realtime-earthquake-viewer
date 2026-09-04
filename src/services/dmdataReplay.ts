@@ -1,4 +1,4 @@
-import { parseEarthquake } from './dmdataParser'
+import { parseEarthquakeFromXml } from './dmdataParser'
 import { parseTar } from '../utils/tarParser'
 import type { JMAQuake, EEWAlert, JMATsunami } from '../types/earthquake'
 import { calcEEWCancelTime } from '../utils/eew'
@@ -8,7 +8,7 @@ import { authHeader } from '../utils/dmdataApiKey'
 import { extractQuakeEventIdFromId } from '../utils/quakeMerge'
 import { latestValidDateTime } from '../utils/tsunami'
 import type { ReplayEntry, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
-import { HANDLED_TYPES, QUAKE_TYPES, XML_ONLY_TYPES, buildJsonPayload, buildXmlPayload, CLASSIFICATIONS } from './dmdataTelegramPayload'
+import { HANDLED_TYPES, QUAKE_TYPES, buildXmlPayload, CLASSIFICATIONS } from './dmdataTelegramPayload'
 import {
   clearLiveReplayCache, fetchLiveQuakeTelegrams, fetchLiveReplayEntries, resolveLiveDates,
 } from './dmdataReplayLive'
@@ -116,22 +116,6 @@ async function listArchives(
   return items
 }
 
-/**
- * 目録エントリの id 先頭 7 文字に対応する JSON 本体を探す。
- *
- * 目録（telegrams.json）自身も .json なので明示的に除く。
- */
-function findJsonBody(
-  files: Map<string, Uint8Array>,
-  idPrefix: string,
-): { name: string; bytes: Uint8Array } | null {
-  const name = [...files.keys()].find(
-    (n) => n.endsWith('.json') && n !== 'telegrams.json' && n.includes(idPrefix),
-  )
-  const bytes = name ? files.get(name) : undefined
-  return name && bytes ? { name, bytes } : null
-}
-
 export async function fetchDmdataReplayEvents(
   apiKey: string,
   fromTime: Date,
@@ -229,64 +213,35 @@ export async function fetchDmdataReplayEvents(
         try {
           const idPrefix = entry.id.slice(0, 7)
 
-          if (XML_ONLY_TYPES.has(headType)) {
-            // XML 形式電文（VYSE50/51/52/60）。これらは XML パーサ（parseNankaiFromXml /
-            // parseNankaiCommentaryFromXml / parseVyse60FromXml）でしか読めないため、
-            // XML 版エントリ（originalId 無し）だけを拾う。
-            // 実アーカイブでは確認できた全種別が XML 版と JSON 版の 2 エントリで載っていたため、
-            // VYSE 系にも JSON 版が現れうる。それをここで弾かないと、JSON 版の id で .xml を
-            // 探して見つからず「本体が見つからず」警告を出し続けることになる。
-            if (entry.originalId) continue
-            const xmlFileName = [...files.keys()].find(
-              (n) => n.endsWith('.xml') && n.includes(idPrefix),
-            )
-            const bodyBytes = xmlFileName ? files.get(xmlFileName) : undefined
-            if (!bodyBytes) {
-              log.warn(`[replay] XML 電文の本体が見つからずスキップ id=${entry.id} type=${headType}`)
-              skippedCount++
-              continue
-            }
-            const xmlText = dec.decode(bodyBytes)
-
-            const payload = buildXmlPayload(headType, xmlText)
-            if (payload) {
-              entries.push({ payload, replayTime: entryTime })
-            } else {
-              log.warn(`[replay] XML 電文のパースに失敗しスキップ id=${entry.id} type=${headType}`)
-              skippedCount++
-            }
-            continue
-          }
-
-          // JSON 形式電文（地震・津波・EEW・VXSE62）
-          //
           // manifest には同じ電文が XML 版と JSON 版の 2 エントリで載る。originalId を持つ方が
           // JSON 版（XML から変換されたもの）で、その値は元の XML エントリの id を指す。
-          // ここで originalId 無しを落とすのは元の XML 側を捨てて JSON 版だけを拾うためで、
-          // 同一電文の二重取り込みを防ぐ正常な重複排除。実データでは manifest の約半数が
-          // これに該当するため、警告は出さない（出すと正常運転でログが埋まる）。
-          if (!entry.originalId) continue
-          const body = findJsonBody(files, idPrefix)
-          if (!body) {
-            log.warn(`[replay] JSON 電文の本体が見つからずスキップ id=${entry.id} type=${headType}`)
+          // **採るのは XML 版**（originalId 無し）。JSON 版を落とすのは同一電文の二重取り込みを
+          // 防ぐ正常な重複排除で、実データでは manifest の約半数がこれに該当するため警告は出さない。
+          if (entry.originalId) continue
+          const xmlFileName = [...files.keys()].find(
+            (n) => n.endsWith('.xml') && n.includes(idPrefix),
+          )
+          const bodyBytes = xmlFileName ? files.get(xmlFileName) : undefined
+          if (!bodyBytes) {
+            log.warn(`[replay] 電文の本体が見つからずスキップ id=${entry.id} type=${headType}`)
             skippedCount++
             continue
           }
-          const jsonFileName = body.name
-          const data = JSON.parse(dec.decode(body.bytes)) as Record<string, unknown>
 
-          const payload = buildJsonPayload(headType, data)
+          const payload = buildXmlPayload(headType, dec.decode(bodyBytes))
           if (payload) {
-            // ファイル名の17桁タイムスタンプ（YYYYMMDDHHMMSSmmm）はミリ秒精度の実受信時刻。
-            // pressDateTime は秒単位で切り捨てられているため、ファイル名から ms を優先的に取得する。
-            const replayTime = parseMsFromFileName(jsonFileName) ?? new Date((data.pressDateTime as string | undefined) ?? entryTime.toISOString())
+            // ファイル名の 17 桁タイムスタンプ（YYYYMMDDHHMMSSmmm）はミリ秒精度の実受信時刻。
+            // 発表時刻は秒単位で切り捨てられているため、ファイル名から ms を優先的に取得する
+            // （報が連続する EEW で順序と間隔を保つのに要る）。
+            const replayTime = (xmlFileName ? parseMsFromFileName(xmlFileName) : null) ?? entryTime
             entries.push({ payload, replayTime })
           } else {
             log.warn(`[replay] 電文のパースに失敗しスキップ id=${entry.id} type=${headType}`)
             skippedCount++
           }
         } catch (e) {
-          // 1 通の破損（JSON 破損・パーサ内の例外）で全体を落とさない。以前は個別の
+          // 1 通の想定外の例外で全体を落とさない（XML の破損はパーサが null を返すため
+          // ここへは来ず、上の warn として記録される）。以前は個別の
           // try/catch が無く、壊れた電文が 1 通あるだけで Promise.all ごと reject し、
           // その日を含む期間の再生が丸ごと不可能になっていた。
           log.error(`[replay] 電文の取り込みに失敗しスキップ id=${entry.id} type=${headType}`, e)
@@ -633,7 +588,8 @@ export async function fetchDmdataQuakeHistory(
       if (!QUAKE_TYPES.has(entry.head.type)) continue
       // XML 版と JSON 版の 2 エントリで載るうち、JSON パーサで読める方だけを拾う
       // （`fetchDmdataReplayEvents` と同じ重複排除。正常動作なので警告は出さない）。
-      if (!entry.originalId) continue
+      // 上と同じ理由で XML 版（originalId 無し）を採る。JSON 版は正常な重複排除として捨てる。
+      if (entry.originalId) continue
 
       const entryTime = new Date(typeof entry.head.time === 'string' ? entry.head.time : NaN)
       if (Number.isNaN(entryTime.getTime())) {
@@ -646,14 +602,15 @@ export async function fetchDmdataQuakeHistory(
       if (entryTime > before) continue
 
       try {
-        const body = findJsonBody(files, entry.id.slice(0, 7))
-        if (!body) {
+        const idPrefix = entry.id.slice(0, 7)
+        const xmlFileName = [...files.keys()].find((n) => n.endsWith('.xml') && n.includes(idPrefix))
+        const bodyBytes = xmlFileName ? files.get(xmlFileName) : undefined
+        if (!bodyBytes) {
           log.warn(`[replay] 履歴用電文の本体が見つからずスキップ id=${entry.id} type=${entry.head.type}`)
           skipped++
           continue
         }
-        const data = JSON.parse(dec.decode(body.bytes)) as Record<string, unknown>
-        const quake = parseEarthquake(entry.head.type, data)
+        const quake = parseEarthquakeFromXml(entry.head.type, dec.decode(bodyBytes))
         if (!quake) {
           log.warn(`[replay] 履歴用電文のパースに失敗しスキップ id=${entry.id} type=${entry.head.type}`)
           skipped++
