@@ -450,7 +450,14 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
     ? parseJmaCoord(xmlText(xmlQ(areaEl, 'Coordinate')))
     : { lat: NaN, lng: NaN, depth: -1 }
 
-  // 取消以外で震源が読めない電文は不正として捨てる。地震情報側と同じ判定・同じ記録の付け方。
+  // 取消以外で震源が読めない電文は不正として捨てる。地震情報側（`parseEarthquakeFromXml`）と同じく
+  // **要素が無いのか、要素はあるが座標が読めないのかを書き分ける。** 前者では `coordStr` が空文字に
+  // なるため 1 つの文言にまとめると、「電文の構造が変わった」のか「座標の書式が変わった」のかが
+  // ログから読み取れない。取消は Body に Text しか持たず `Earthquake` を持たないので、どちらの
+  // 判定からも外す。
+  if (!isCanceled && !eqEl) {
+    return dropTelegram(DMDATA_LOG_PREFIX, `${headType}（緊急地震速報）に Earthquake 要素がありません`)
+  }
   if (!isCanceled && (!Number.isFinite(lat) || !Number.isFinite(lng))) {
     const coordStr = areaEl ? xmlText(xmlQ(areaEl, 'Coordinate')) : ''
     return dropTelegram(DMDATA_LOG_PREFIX, `${headType}（緊急地震速報）の震源座標が読めません: Coordinate="${coordStr}"`)
