@@ -91,10 +91,15 @@ function parseHypocenterCoord(hypo: Record<string, unknown>): {
 // pref はこの電文に単体では含まれないため空文字とし、フック層で station-coords から補完する。
 function parseEEWRegions(intensity: Record<string, unknown>): EEWRegion[] {
   const regions: EEWRegion[] = []
+  const tally = createReadTally('緊急地震速報の予想区域')
   for (const raw of arr(intensity.regions)) {
     const r = obj(raw)
     const name = str(r.name)
-    if (!name) continue
+    if (!name) {
+      tally.unreadable(name, str(r.code))
+      continue
+    }
+    tally.readable()
     const fm = obj(r.forecastMaxInt)
     const { scale: scaleTo, orAbove } = parseForecastInt(fm)
     const scaleFrom = parseIntensityStr(str(fm.from))
@@ -112,6 +117,7 @@ function parseEEWRegions(intensity: Record<string, unknown>): EEWRegion[] {
       lgIntTo,
     })
   }
+  tally.warnIfNoneReadable(DMDATA_JSON_LOG_PREFIX)
   return regions
 }
 
@@ -131,7 +137,9 @@ export function parseEEW(headType: string, data: Record<string, unknown>): EEWAl
   const serial = str(data.serialNo ?? data.serial ?? '1')
   const reportTime = str(data.reportDateTime ?? data.pressDateTime ?? data.reportTime)
 
-  if (!isCanceled && (!Number.isFinite(lat) || !Number.isFinite(lng))) return null
+  if (!isCanceled && (!Number.isFinite(lat) || !Number.isFinite(lng))) {
+    return dropTelegram(DMDATA_JSON_LOG_PREFIX, `${headType}（緊急地震速報）の震源座標が読めません`)
+  }
 
   const intensity = obj(body.intensity)
   const forecastMaxInt = obj(intensity.forecastMaxInt)
@@ -186,6 +194,136 @@ const VXSE_ISSUE_TYPE: Record<string, IssueType> = {
   VXSE61: '顕著な地震の震源要素更新のお知らせ',
 }
 
+// 震度点の記録に付ける経路の印。同じ電文でも JSON 経路（WebSocket ライブ受信）と
+// XML 経路（REST の個別電文取得＝起動時の初期履歴と「もっと見る」）で通る道が違うため、
+// ログだけを見てどちらで落ちたかが分かるようにする。津波が `[tsunami]` / `[tsunami XML]` を
+// 使っているのと同じ付け方。
+const DMDATA_JSON_LOG_PREFIX = '[dmdata]'
+const DMDATA_XML_LOG_PREFIX = '[dmdata XML]'
+const TSUNAMI_JSON_LOG_PREFIX = '[tsunami]'
+const TSUNAMI_XML_LOG_PREFIX = '[tsunami XML]'
+
+/**
+ * 電文を丸ごと捨てたことを記録し `null` を返す。
+ *
+ * **点が 1 種類消えるより被害が大きい。** カード自体が画面に出ないのに、素の `return null` は
+ * 理由を何も残さない。呼び出し側で `return dropTelegram(...)` と書けるよう `null` を返す。
+ *
+ * **正常な振り分けには使わないこと。** ここへ来てよいのは「読めるはずのものが読めなかった」
+ * 場合だけで、電文の種別を見分けて呼び出し側へ返す早期 return（南海トラフの臨時情報と解説情報の
+ * 振り分け・長周期地震動で階級1以上を観測していない報）は対象外。混ぜると平常時に鳴り続ける。
+ */
+function dropTelegram(logPrefix: string, reason: string): null {
+  log.warn(`${logPrefix} 電文を読み取れなかったため捨てました: ${reason}`)
+  return null
+}
+
+/**
+ * 電文の XML を DOM へ起こす。読めなければ記録して `null` を返す。
+ *
+ * `DOMParser` は不正な XML でも例外を投げず `parsererror` 要素を持つ文書を返すため、両方を見る。
+ * **6 つの XML パーサで同じ手順を書き写していた**ので 1 箇所へ寄せた（片方の判定だけ足す・
+ * 記録を片方にだけ入れる、といったずれが起きる形だった）。
+ */
+function parseTelegramXml(xml: string, logPrefix: string): Document | null {
+  let doc: Document
+  try {
+    doc = new DOMParser().parseFromString(xml, 'application/xml')
+  } catch (e) {
+    return dropTelegram(logPrefix, `XML の解析で例外が出ました: ${String(e)}`)
+  }
+  if (doc.querySelector('parsererror')) {
+    return dropTelegram(logPrefix, 'XML として読めません（parsererror）')
+  }
+  return doc
+}
+
+// 電文の要素を「読めたか」で数えるための入れ物。1 種別（震度の区域・観測点・都道府県、
+// 長周期地震動の区域・観測点、津波の観測点…）につき 1 つ作る。
+//
+// **記録するのはその種別が全滅したときだけで、部分的な脱落では黙る。** 階級表に無い値を持つ
+// 要素が 1 点混じるのは正常運転で起こりうるため、1 件ずつ鳴らすとログが埋まって本当の全滅が
+// 埋もれる。「元要素はあるのに 1 件も使える値が無い」ときだけ出す形は、震度の面が採っている
+// 判定と同じ（→ docs/spec/map-rendering-spec.md §17）。
+//
+// **読めなかった値そのものを見本に載せる。** 件数だけだと、次に鳴ったとき電文を掘り直すことに
+// なる。気象庁が新しい表記を出したときは、その文字列がログに名前で出る。
+interface ReadTally {
+  /** 読めた要素を 1 件数える */
+  readable(): void
+  /** 読めなかった要素を数え、見本を控える */
+  unreadable(name: string, rawValue: string): void
+  /** 全滅していれば記録する。1 件でも読めていれば、または読めなかった要素が 0 件なら何もしない */
+  warnIfNoneReadable(logPrefix: string): void
+}
+
+// **「読めた」と「積んだ」は同じではない。** 震度点は積む条件（`name && scale >= 0`）が
+// そのまま読めたかどうかなので一致するが、長周期地震動は「階級 0 ＝該当なし」を読めたうえで
+// 積まない。**0 を読めなかった扱いにすると平常時に鳴り続ける**ので、数えるのは
+// 「値として解釈できたか」であって「結果に残ったか」ではない。
+
+/** 警告文に載せる見本の上限。全滅した電文の 1 行で読み切れる程度に留める。 */
+const READ_TALLY_SAMPLE_LIMIT = 3
+
+function createReadTally(kindLabel: string): ReadTally {
+  let readableCount = 0
+  let unreadableCount = 0
+  const samples: string[] = []
+  return {
+    readable: () => { readableCount++ },
+    unreadable: (name, rawValue) => {
+      unreadableCount++
+      if (samples.length < READ_TALLY_SAMPLE_LIMIT) {
+        // 名前が空の要素もここへ来る（積む条件は「名前がある」と「値が読める」を畳んでいる）。
+        // どちらが欠けたのか読めるよう、空でも印を残す。
+        samples.push(`${name || '(名前なし)'}="${rawValue}"`)
+      }
+    },
+    warnIfNoneReadable: (logPrefix) => {
+      if (unreadableCount === 0 || readableCount > 0) return
+      const more = unreadableCount > samples.length ? ' ほか' : ''
+      log.warn(`${logPrefix} ${kindLabel}が ${unreadableCount} 件ありますが 1 件も読めませんでした（読めなかった値: ${samples.join('・')}${more}）`)
+    },
+  }
+}
+
+// 長周期地震動観測情報が階級1以上を伝えているのに、その階級を持つ区域が 1 件も無い場合を記録する。
+//
+// ここまで来た電文は `maxClass` が 1〜4 に収まっている（0 は「階級1以上を観測していない」報として
+// 手前で `null` を返す）。**電文が最大階級を名乗っている以上、その値を持つ区域が必ずある**はずで、
+// 0 件なら区域を読めていない。種別ごとの検知（`ReadTally`）は「元要素はあるのに読めなかった」しか
+// 拾えないため、`Pref`/`Area` の位置が変わって元要素ごと見えなくなった場合はこちらで拾う。
+function warnIfNoLpgmRegions(maxClass: number, regionCount: number, logPrefix: string): void {
+  if (regionCount > 0) return
+  log.warn(`${logPrefix} VXSE62 は最大長周期地震動階級 ${maxClass} を伝えていますが、階級を持つ区域を 1 件も取り出せませんでした`)
+}
+
+// 震度を伝える電文（VXSE51/53）なのに点を 1 件も取り出せなかった場合を記録する。
+//
+// 種別ごとの全滅検知（`IntensityDropTally`）は「元要素はあるのに読めなかった」を捕まえるが、
+// **元要素そのものが見えなくなった場合**（`Observation` の位置が変わった・セレクタが壊れた・
+// JSON のキーが改名された）は数える対象が 0 件になるため素通りする。そこだけをこちらで拾う。
+//
+// **「震度を伝える電文か」の判定は `headType` で行う。** 点を取り出すかどうかを決めている
+// `parseEarthquake` の条件（`headType === 'VXSE53' || headType === 'VXSE51'`）をそのまま持って
+// きている。`issueType` で言い換えると、同じ事実を別々に導いた 2 つの判定ができて、いずれ
+// ずれる ―― `resolveIssueType` は**未知の headType を `'震源・震度情報'` へ落とす**ので、
+// 点を作らない電文が「震度を伝える電文」に見える。
+//
+// 遠地地震だけは `issueType` で除く。VXSE53 として配信され `Head/Title` でしか見分けられず、
+// 国内の震度を持たないのが正常なため。
+function warnIfNoIntensityPoints(
+  headType: string,
+  issueType: IssueType,
+  points: JMAQuake['points'],
+  logPrefix: string,
+): void {
+  if (headType !== 'VXSE51' && headType !== 'VXSE53') return
+  if (issueType === '遠地地震') return
+  if (points.length > 0) return
+  log.warn(`${logPrefix} ${headType} は震度を伝える電文ですが、震度の点を 1 件も取り出せませんでした`)
+}
+
 // VXSE51/53 JSON 電文（earthquake-information v1.1.0）の body.intensity から震度データを取り出す。
 // v1.1.0 スキーマは regions[]/stations[] のフラット配列構造を持つ。
 // regions[]    → 一次細分区域（isArea:true・pref:''・地図の subregion 色付けに使用）
@@ -194,22 +332,35 @@ const VXSE_ISSUE_TYPE: Record<string, IssueType> = {
 //   ※ 都道府県名は subregions.json に存在しないため地図描画には影響しない
 function parseIntensityPoints(intensity: Record<string, unknown>): JMAQuake['points'] {
   const points: JMAQuake['points'] = []
+  // 種別ごとに全滅を数える。ラベルは XML 経路と揃えること（同じ事象が経路によって別の語で
+  // 記録されると、ログだけを見て突き合わせられなくなる）。
+  const regionTally = createReadTally('震度の区域')
+  const stationTally = createReadTally('震度の観測点')
+  const prefTally = createReadTally('都道府県の代表震度')
 
   for (const rawRegion of arr(intensity.regions)) {
     const r = obj(rawRegion)
     const name = str(r.name)
-    const scale = parseIntensityStr(str(r.maxInt) || null)
+    const rawInt = str(r.maxInt)
+    const scale = parseIntensityStr(rawInt || null)
     if (name && scale >= 0) {
       points.push({ pref: '', addr: name, isArea: true, scale: scale as IntensityScale })
+      regionTally.readable()
+    } else {
+      regionTally.unreadable(name, rawInt)
     }
   }
 
   for (const rawSt of arr(intensity.stations)) {
     const s = obj(rawSt)
     const name = str(s.name).replace(/＊$/, '')
-    const scale = parseIntensityStr(str(s.int) || null)
+    const rawInt = str(s.int)
+    const scale = parseIntensityStr(rawInt || null)
     if (name && scale >= 0) {
       points.push({ pref: '', addr: name, isArea: false, scale: scale as IntensityScale })
+      stationTally.readable()
+    } else {
+      stationTally.unreadable(name, rawInt)
     }
   }
 
@@ -219,11 +370,19 @@ function parseIntensityPoints(intensity: Record<string, unknown>): JMAQuake['poi
   for (const rawPref of arr(intensity.prefectures)) {
     const p = obj(rawPref)
     const name = str(p.name)
-    const scale = parseIntensityStr(str(p.maxInt) || null)
+    const rawInt = str(p.maxInt)
+    const scale = parseIntensityStr(rawInt || null)
     if (name && scale >= 0) {
       points.push({ pref: name, addr: name, isArea: true, scale: scale as IntensityScale })
+      prefTally.readable()
+    } else {
+      prefTally.unreadable(name, rawInt)
     }
   }
+
+  regionTally.warnIfNoneReadable(DMDATA_JSON_LOG_PREFIX)
+  stationTally.warnIfNoneReadable(DMDATA_JSON_LOG_PREFIX)
+  prefTally.warnIfNoneReadable(DMDATA_JSON_LOG_PREFIX)
 
   return points
 }
@@ -339,7 +498,9 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
 
   // VXSE51（震度速報）は震源情報を持たないため座標チェックをスキップする。
   // それ以外は有効な座標が必須。
-  if (headType !== 'VXSE51' && (!Number.isFinite(lat) || !Number.isFinite(lng))) return null
+  if (headType !== 'VXSE51' && (!Number.isFinite(lat) || !Number.isFinite(lng))) {
+    return dropTelegram(DMDATA_JSON_LOG_PREFIX, `${headType} の震源座標が読めません`)
+  }
 
   const intensity = obj(body.intensity)
   // maxInt は v1.1.0 では body.intensity.maxInt に存在する（earthquake.maxInt は存在しない）
@@ -373,6 +534,7 @@ export function parseEarthquake(headType: string, data: Record<string, unknown>)
 
   // 遠地地震は data.title で判定する（data.body.type には現れない）。判定規則は resolveIssueType 参照。
   const issueType = resolveIssueType(headType, str(data.title))
+  warnIfNoIntensityPoints(headType, issueType, points, DMDATA_JSON_LOG_PREFIX)
 
   const correct: CorrectType = str(data.infoType) === '訂正' ? '訂正' : 'なし'
 
@@ -471,11 +633,8 @@ function parseJmaCoord(s: string): { lat: number; lng: number; depth: number } {
 
 // REST API 経由の JMA XML（VXSE51/52/53）を JMAQuake にパース
 export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake | null {
-  let doc: Document
-  try {
-    doc = new DOMParser().parseFromString(xml, 'application/xml')
-    if (doc.querySelector('parsererror')) return null
-  } catch { return null }
+  const doc = parseTelegramXml(xml, DMDATA_XML_LOG_PREFIX)
+  if (!doc) return null
 
   const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
   const eventId = xmlText(xmlQ(doc, 'EventID'))
@@ -505,7 +664,9 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   // VXSE51（震度速報）は震源が未確定の段階で発表されるため Earthquake 要素を持たない。
   // JSON 経路（parseEarthquake）と同じく、この電文だけ震源なしを許容する。
   const earthquakeEl = xmlQ(doc, 'Earthquake')
-  if (!earthquakeEl && headType !== 'VXSE51') return null
+  if (!earthquakeEl && headType !== 'VXSE51') {
+    return dropTelegram(DMDATA_XML_LOG_PREFIX, `${headType} に Earthquake 要素がありません`)
+  }
 
   const hypocenterEl = earthquakeEl ? xmlQ(earthquakeEl, 'Hypocenter') : null
   const areaEl = hypocenterEl ? xmlQ(hypocenterEl, 'Area') : null
@@ -516,7 +677,9 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   const { lat, lng, depth } = parseJmaCoord(coordStr)
 
   // 震源を持つ電文で座標が読めないものは不正として捨てる（震度速報は上で除外済み）。
-  if (earthquakeEl && (!Number.isFinite(lat) || !Number.isFinite(lng))) return null
+  if (earthquakeEl && (!Number.isFinite(lat) || !Number.isFinite(lng))) {
+    return dropTelegram(DMDATA_XML_LOG_PREFIX, `${headType} の震源座標が読めません: Coordinate="${coordStr}"`)
+  }
 
   // 震度速報は Head/TargetDateTime（地震検知時刻）を earthquake.time に充てる。
   // 通常電文は arrivalTime を優先し、無ければ originTime にフォールバックする（JSON 経路の
@@ -540,6 +703,10 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   // 震度は Pref 配下に「一次細分区域(Area) → 市区町村(City) → 観測点(IntensityStation)」と
   // 入れ子で入る。震度速報は Area までしか持たず、震源・震度情報は両方を持つ。
   const points: JMAQuake['points'] = []
+  // 種別ごとに全滅を数える。ラベルは JSON 経路（parseIntensityPoints）と揃えること。
+  const prefTally = createReadTally('都道府県の代表震度')
+  const areaTally = createReadTally('震度の区域')
+  const stationTally = createReadTally('震度の観測点')
   const allEls = doc.getElementsByTagName('*')
   const prefEls: Element[] = []
   for (let i = 0; i < allEls.length; i++) {
@@ -554,9 +721,13 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     // <Pref><Name>石川県</Name><Code>17</Code><MaxInt>5+</MaxInt> を確認）。
     // xmlChild で直下に限るのは、MaxInt を持たない電文で配下 Area の値を拾わないため。
     const prefName = xmlText(xmlChild(prefEl, 'Name'))
-    const prefScale = parseIntensityStr(xmlText(xmlChild(prefEl, 'MaxInt')) || null)
+    const prefRawInt = xmlText(xmlChild(prefEl, 'MaxInt'))
+    const prefScale = parseIntensityStr(prefRawInt || null)
     if (prefName && prefScale >= 0) {
       points.push({ pref: prefName, addr: prefName, isArea: true, scale: prefScale as IntensityScale })
+      prefTally.readable()
+    } else {
+      prefTally.unreadable(prefName, prefRawInt)
     }
 
     const descendants = prefEl.getElementsByTagName('*')
@@ -568,9 +739,13 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
         // pref の有無で「都道府県の点」と「区域の点」を見分けるため（座標側は
         // useQuakeLayerData が区域名から都道府県を逆引きして引き当てる）。
         const areaName = xmlText(xmlChild(el, 'Name'))
-        const areaScale = parseIntensityStr(xmlText(xmlChild(el, 'MaxInt')) || null)
+        const areaRawInt = xmlText(xmlChild(el, 'MaxInt'))
+        const areaScale = parseIntensityStr(areaRawInt || null)
         if (areaName && areaScale >= 0) {
           points.push({ pref: '', addr: areaName, isArea: true, scale: areaScale as IntensityScale })
+          areaTally.readable()
+        } else {
+          areaTally.unreadable(areaName, areaRawInt)
         }
         continue
       }
@@ -587,9 +762,17 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
         // 「観測点値」を都道府県別最大震度と誤解し、区域単位の最大震度が観測点値に
         // 上書きされて低震度に見える不具合があった。
         points.push({ pref: '', addr: stName, isArea: false, scale: scale as IntensityScale })
+        stationTally.readable()
+      } else {
+        stationTally.unreadable(stName, intStr)
       }
     }
   }
+
+  prefTally.warnIfNoneReadable(DMDATA_XML_LOG_PREFIX)
+  areaTally.warnIfNoneReadable(DMDATA_XML_LOG_PREFIX)
+  stationTally.warnIfNoneReadable(DMDATA_XML_LOG_PREFIX)
+  warnIfNoIntensityPoints(headType, issueType, points, DMDATA_XML_LOG_PREFIX)
 
   const correct: CorrectType = infoType === '訂正' ? '訂正' : 'なし'
 
@@ -645,11 +828,8 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
 // REST API 経由の JMA XML（VTSE41/VTSE51/VTSE52）を JMATsunami にパース。
 // 観測データ（Observation のみ）の場合は null を返す。
 export function parseTsunamiFromXml(xml: string): JMATsunami | null {
-  let doc: Document
-  try {
-    doc = new DOMParser().parseFromString(xml, 'application/xml')
-    if (doc.querySelector('parsererror')) return null
-  } catch { return null }
+  const doc = parseTelegramXml(xml, TSUNAMI_XML_LOG_PREFIX)
+  if (!doc) return null
 
   const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
   // 空文字は undefined に落とす（JSON 経路の `str(data.eventId) || undefined` と同じ形）。
@@ -689,12 +869,16 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   const observationEl = xmlQ(doc, 'Observation')
 
   // Forecast も Observation もなければパース不可
-  if (!forecastEl && !observationEl) return null
+  if (!forecastEl && !observationEl) {
+    return dropTelegram(TSUNAMI_XML_LOG_PREFIX, 'Forecast も Observation もありません')
+  }
 
   // Observation のみ（VTSE51②: 津波観測情報）
   if (!forecastEl && observationEl) {
     const observations = parseTsunamiObservationsFromXml(observationEl)
-    if (observations.length === 0) return null
+    if (observations.length === 0) {
+      return dropTelegram(TSUNAMI_XML_LOG_PREFIX, 'Observation はありますが観測点を 1 件も読めません')
+    }
     return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: false, headline, warningComment, sourceEarthquake, issue: { source, time: reportDateTime, type: 'Focus' }, areas: [], observations }
   }
 
@@ -709,6 +893,14 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   // **他の区域が残ったまま一部だけ落ちた場合は区域単位の等級変化として検出できない**
   // （`lastGrade` は残った区域にしか付かない）。下で記録を残す。
   const droppedByCancelCode: string[] = []
+  const forecastStationTally = createReadTally('津波の到達予想の観測点')
+  // 名前を読めなかった区域は、**等級まで見て 2 つに分ける**。名前だけで一緒くたにすると、
+  // まだ有効かもしれない区域を巻き込んで「解除」を発表する（下の判定を参照）。
+  //   解除済み       … 解除コード（00/50/60）が読めた。名前が無くてもこの区域は解除されている
+  //   解除と言えない … 解除コードではない。**等級が現役と読めたものと、未知コードで本当に
+  //                    分からないものの両方が入る**。どちらも「解除ではない」側なので分けない
+  let unreadableCancelledCount = 0
+  let unreadableActiveCount = 0
   for (const itemEl of itemEls) {
     const areaName = xmlText(xmlQ(itemEl, 'Name'))
     const areaCode = xmlText(xmlQ(itemEl, 'Code')) || undefined
@@ -719,8 +911,12 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
     // これでしか分からない（理由は `TsunamiArea.lastGrade`）。`LastKind` は Item 直下の Category
     // にしか現れないため、子孫全探索でも Station 配下と取り違えない。
     const lastKindEl = xmlQ(itemEl, 'LastKind')
-    const lastGrade = parseLastKindGrade(lastKindEl ? xmlText(xmlQ(lastKindEl, 'Code')) : '', '[tsunami XML]')
-    if (!areaName) continue
+    const lastGrade = parseLastKindGrade(lastKindEl ? xmlText(xmlQ(lastKindEl, 'Code')) : '', TSUNAMI_XML_LOG_PREFIX)
+    if (!areaName) {
+      if (isKnownCancelCode(kindCode)) unreadableCancelledCount++
+      else unreadableActiveCount++
+      continue
+    }
     if (grade === 'Unknown') {
       if (isKnownCancelCode(kindCode)) {
         droppedByCancelCode.push(areaName)
@@ -752,7 +948,11 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
       const st = stationEls[i]
       const stName = xmlText(xmlQ(st, 'Name'))
       const stCode = xmlText(xmlQ(st, 'Code'))
-      if (!stName) continue
+      if (!stName) {
+        forecastStationTally.unreadable(stName, stCode)
+        continue
+      }
+      forecastStationTally.readable()
       const highTide = xmlText(xmlQ(st, 'HighTideDateTime')) || undefined
       const stFhEl = xmlQ(st, 'FirstHeight')
       const stArrival = stFhEl ? xmlText(xmlQ(stFhEl, 'ArrivalTime')) : ''
@@ -778,9 +978,37 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
     })
   }
 
-  // Forecast があるのに有効エリアが0件 = 気象庁による正式な解除（区域が電文から消える）
+  // Forecast があるのに有効エリアが0件 = 気象庁による正式な解除（区域が電文から消える）。
+  //
+  // **「区域を読めなかった」をここへ流し込まないこと。** 名前が読めない区域を捨てた結果として
+  // 0 件になった場合まで解除と解釈すると、電文の構造が変わったときに
+  // **「津波警報が解除されました」という事実と逆の内容を発表する**（無言で消えるより重い）。
+  // JSON 経路（`parseTsunami`）は名前が空でも区域を積むため 0 件にならず、この化けは
+  // XML 経路にしか無かった。読めなかった区域が 1 件でもあれば解除と見なさず、電文ごと捨てる。
+  // 電文の区域は 3 つのどれかに入る —— **有効**（`areas` へ積んだ）・**解除済み**（解除コードが
+  // 読めた。名前の可否を問わない）・**解除と言えない**（名前が読めず、解除コードでもない）。
+  //
+  // **「解除」と断定してよいのは、解除と言えない区域が 1 つも無いときだけ。** そこには等級が
+  // 現役のまま名前だけ壊れた区域が入りうるので、解除として通すと**まだ津波予報・注意報が
+  // 出ている区域について「解除されました」と伝える**ことになる。他の区域に解除コードがあることは
+  // その区域の解除を意味するだけで、こちらについては何も保証しない。
+  //
+  // 逆に、有効が 0 で解除と言えない区域も 0 なら、残るのは解除済みだけなので解除として正しい
+  // （区域が電文から丸ごと消える通常の全解除も、区域 0 件でここへ来る）。
+  const unreadableAreaCount = unreadableCancelledCount + unreadableActiveCount
+  if (areas.length === 0 && unreadableActiveCount > 0) {
+    return dropTelegram(
+      TSUNAMI_XML_LOG_PREFIX,
+      `Forecast の区域 ${unreadableActiveCount} 件で名前を読めず、解除済みとも判定できません（解除と取り違えないため電文を捨てます）`,
+    )
+  }
+  // 捨てるほどではないが、読めなかった区域があった事実は残す。
+  if (unreadableAreaCount > 0) {
+    log.warn(`${TSUNAMI_XML_LOG_PREFIX} Forecast の区域 ${unreadableAreaCount} 件で名前を読めませんでした（うち解除済みと判定できたもの: ${unreadableCancelledCount} 件）`)
+  }
   if (areas.length === 0) return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: true, cancelReason: 'lifted', issue: { source, time: reportDateTime, type: 'Focus' }, areas: [] }
-  warnPartialDrop(droppedByCancelCode, '[tsunami XML]')
+  warnPartialDrop(droppedByCancelCode, TSUNAMI_XML_LOG_PREFIX)
+  forecastStationTally.warnIfNoneReadable(TSUNAMI_XML_LOG_PREFIX)
 
   // Observation も含む場合（VTSE51①: Forecast + Observation 両方あり）
   const observations = observationEl ? parseTsunamiObservationsFromXml(observationEl) : undefined
@@ -790,6 +1018,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
 
 function parseTsunamiObservationsFromXml(observationEl: Element): import('../types/earthquake').TsunamiObservation[] {
   const observations: import('../types/earthquake').TsunamiObservation[] = []
+  const tally = createReadTally('津波の観測点')
   const allEls = observationEl.getElementsByTagName('*')
   const itemEls: Element[] = []
   for (let i = 0; i < allEls.length; i++) {
@@ -804,7 +1033,11 @@ function parseTsunamiObservationsFromXml(observationEl: Element): import('../typ
     for (let i = 0; i < stationEls.length; i++) {
       const st = stationEls[i]
       const name = xmlText(xmlQ(st, 'Name'))
-      if (!name) continue
+      if (!name) {
+        tally.unreadable(name, xmlText(xmlQ(st, 'Code')))
+        continue
+      }
+      tally.readable()
       const fhEl = xmlQ(st, 'FirstHeight')
       const arrivalTime = fhEl ? xmlText(xmlQ(fhEl, 'ArrivalTime')) : ''
       const initial = fhEl ? xmlText(xmlQ(fhEl, 'Initial')) : ''
@@ -856,6 +1089,7 @@ function parseTsunamiObservationsFromXml(observationEl: Element): import('../typ
       })
     }
   }
+  tally.warnIfNoneReadable(TSUNAMI_XML_LOG_PREFIX)
   return observations
 }
 
@@ -949,8 +1183,11 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
   // v1.1.0 スキーマ: observations[].stations[] 配下に各潮位観測点データがある。
   if (headType === 'VTSE52') {
     const rawObs = arr(tsunami.observations)
-    if (rawObs.length === 0) return null
+    if (rawObs.length === 0) {
+      return dropTelegram(TSUNAMI_JSON_LOG_PREFIX, `${headType}（沖合の観測）に observations がありません`)
+    }
     const observations: TsunamiObservation[] = []
+    const tally = createReadTally('津波の観測点')
     for (const rawDistrict of rawObs) {
       const district = obj(rawDistrict)
       const districtCode = str(district.code) || undefined
@@ -958,7 +1195,11 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
       for (const rawSt of arr(district.stations)) {
         const st = obj(rawSt)
         const name = str(st.name)
-        if (!name) continue
+        if (!name) {
+          tally.unreadable(name, str(st.code))
+          continue
+        }
+        tally.readable()
         const fh = obj(st.firstHeight)
         const mh = obj(st.maxHeight)
         const hObj = obj(mh.height)
@@ -966,7 +1207,7 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
         const over = hObj.over === true
         // 数値が読めないと height ごと落ちるため、over（観測可能範囲の超過）の情報も一緒に消える。
         // 表示・並び順・読み上げのどこにも痕跡が残らないので、記録だけは残す。
-        if (isNaN(heightVal) && over) log.warn(`[tsunami] 「以上」の観測値だが波高が数値として読めません: ${name}`)
+        if (isNaN(heightVal) && over) log.warn(`${TSUNAMI_JSON_LOG_PREFIX} 「以上」の観測値だが波高が数値として読めません: ${name}`)
         observations.push({
           name,
           // **`description` は数値だけで組む。** 電文の `height.condition`（観測点に現れるのは
@@ -989,7 +1230,10 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
         })
       }
     }
-    if (observations.length === 0) return null
+    tally.warnIfNoneReadable(TSUNAMI_JSON_LOG_PREFIX)
+    if (observations.length === 0) {
+      return dropTelegram(TSUNAMI_JSON_LOG_PREFIX, `${headType} の observations はありますが観測点を 1 件も読めません`)
+    }
     return { kind: 'tsunami', id, eventId, time, cancelled: false, headline, warningComment, sourceEarthquake, issue: { source, time, type: 'Focus' }, areas: [], observations }
   }
 
@@ -999,6 +1243,7 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
   let observations: TsunamiObservation[] | undefined
   if (headType === 'VTSE51' && rawObs.length > 0) {
     observations = []
+    const tally = createReadTally('津波の観測点')
     for (const rawDistrict of rawObs) {
       const district = obj(rawDistrict)
       const districtCode = str(district.code) || undefined
@@ -1006,7 +1251,11 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
       for (const rawSt of arr(district.stations)) {
         const st = obj(rawSt)
         const name = str(st.name)
-        if (!name) continue
+        if (!name) {
+          tally.unreadable(name, str(st.code))
+          continue
+        }
+        tally.readable()
         const fh = obj(st.firstHeight)
         const mh = obj(st.maxHeight)
         const hObj = obj(mh.height)
@@ -1014,7 +1263,7 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
         const over = hObj.over === true
         // 数値が読めないと height ごと落ちるため、over（観測可能範囲の超過）の情報も一緒に消える。
         // 表示・並び順・読み上げのどこにも痕跡が残らないので、記録だけは残す。
-        if (isNaN(heightVal) && over) log.warn(`[tsunami] 「以上」の観測値だが波高が数値として読めません: ${name}`)
+        if (isNaN(heightVal) && over) log.warn(`${TSUNAMI_JSON_LOG_PREFIX} 「以上」の観測値だが波高が数値として読めません: ${name}`)
         observations.push({
           name,
           // **`description` は数値だけで組む。** 電文の `height.condition`（観測点に現れるのは
@@ -1037,6 +1286,7 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
         })
       }
     }
+    tally.warnIfNoneReadable(TSUNAMI_JSON_LOG_PREFIX)
     if (observations.length === 0) observations = undefined
   }
 
@@ -1045,20 +1295,23 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
 
   // forecasts がなく observations のみ = 観測情報のみ電文（VTSE51②）
   if (rawItems.length === 0) {
-    if (!observations || observations.length === 0) return null
+    if (!observations || observations.length === 0) {
+      return dropTelegram(TSUNAMI_JSON_LOG_PREFIX, `${headType} に forecasts も observations もありません`)
+    }
     return { kind: 'tsunami', id, eventId, time, cancelled: false, headline, warningComment, sourceEarthquake, issue: { source, time, type: 'Focus' }, areas: [], observations }
   }
 
   const areas: TsunamiArea[] = []
   // 解除コードで落とした区域（意味は XML 経路と同じ）
   const droppedByCancelCode: string[] = []
+  const forecastStationTally = createReadTally('津波の到達予想の観測点')
   for (const item of rawItems) {
     const it = obj(item)
     const kind = obj(it.kind)
     const codeStr = str(kind.code)
     let grade = parseTsunamiGradeByCode(codeStr)
     // 前回この区域に発表されていた等級（扱いは XML 経路と同じ）
-    const lastGrade = parseLastKindGrade(str(obj(kind.lastKind).code), '[tsunami]')
+    const lastGrade = parseLastKindGrade(str(obj(kind.lastKind).code), TSUNAMI_JSON_LOG_PREFIX)
     if (grade === 'Unknown') {
       if (isKnownCancelCode(codeStr)) {
         droppedByCancelCode.push(str(it.name))
@@ -1066,7 +1319,7 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
       }
       // DMD-5: 未知コードは JMA コード改定の可能性。silent に解除扱いにせず、
       // 安全側の grade（Warning）で areas を保持し警告ログを残す。
-      log.warn(`[tsunami] 未知の Kind/Code: "${codeStr}" → 安全側で Warning として areas 保持`)
+      log.warn(`${TSUNAMI_JSON_LOG_PREFIX} 未知の Kind/Code: "${codeStr}" → 安全側で Warning として areas 保持`)
       grade = 'Warning'
     }
     const firstHeight = obj(it.firstHeight)
@@ -1083,7 +1336,11 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
       for (const rawSt of rawStations) {
         const st = obj(rawSt)
         const stName = str(st.name)
-        if (!stName) continue
+        if (!stName) {
+          forecastStationTally.unreadable(stName, str(st.code))
+          continue
+        }
+        forecastStationTally.readable()
         const stFh = obj(st.firstHeight)
         stations.push({
           name: stName,
@@ -1118,18 +1375,16 @@ export function parseTsunami(headType: string, data: Record<string, unknown>): J
 
   // 全区域が電文から消えた = 気象庁による正式な解除（Kind/Code が 50/60/00 など、grade判定不能で除外された結果0件）
   if (areas.length === 0) return { kind: 'tsunami', id, eventId, time, cancelled: true, cancelReason: 'lifted', issue: { source, time, type: 'Focus' }, areas: [] }
-  warnPartialDrop(droppedByCancelCode, '[tsunami]')
+  warnPartialDrop(droppedByCancelCode, TSUNAMI_JSON_LOG_PREFIX)
+  forecastStationTally.warnIfNoneReadable(TSUNAMI_JSON_LOG_PREFIX)
 
   return { kind: 'tsunami', id, eventId, time, cancelled: false, validDateTime, headline, warningComment, sourceEarthquake, issue: { source, time, type: 'Focus' }, areas, observations }
 }
 
 // REST API 経由の JMA XML（VXSE62: 長周期地震動観測情報）を JMALpgm にパース
 export function parseLpgmFromXml(xml: string): JMALpgm | null {
-  let doc: Document
-  try {
-    doc = new DOMParser().parseFromString(xml, 'application/xml')
-    if (doc.querySelector('parsererror')) return null
-  } catch { return null }
+  const doc = parseTelegramXml(xml, DMDATA_XML_LOG_PREFIX)
+  if (!doc) return null
 
   const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
   const eventId        = xmlText(xmlQ(doc, 'EventID'))
@@ -1142,18 +1397,29 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   const originTime   = earthquakeEl ? xmlText(xmlQ(earthquakeEl, 'OriginTime')) : ''
 
   if (cancelled) return { id, eventId, time: reportDateTime, originTime, maxClass: 0, cancelled: true }
-  if (!originTime) return null
+  if (!originTime) return dropTelegram(DMDATA_XML_LOG_PREFIX, 'VXSE62（長周期地震動観測情報）に OriginTime がありません')
 
   // VXSE62 XML: Intensity > Observation > MaxLgInt が最大長周期地震動階級
   const obsEl       = xmlQ(doc, 'Observation')
   const maxClassStr = obsEl ? xmlText(xmlQ(obsEl, 'MaxLgInt')) : ''
   const maxClass    = parseInt(maxClassStr, 10)
 
-  if (!(maxClass >= 1 && maxClass <= 4)) return null
+  // **階級 0 と「読めない」を同じ `return null` に落とさないこと。** 0 は「階級1以上を
+  // 観測していない」という正常な報で、記録すると長周期地震動を伴わない地震のたびに鳴る。
+  // 読めない値（欠損・想定外の表記）は電文を捨てた理由として残す。区域・観測点の階級で
+  // 同じ区別をしているのに、それを読みにいくかを決めるこのゲートだけ素通しだった。
+  if (maxClass === 0) return null
+  if (!(maxClass >= 1 && maxClass <= 4)) {
+    return dropTelegram(DMDATA_XML_LOG_PREFIX, `VXSE62 の最大長周期地震動階級を読めません: "${maxClassStr}"`)
+  }
 
   // 観測点・細分区域データを抽出
   const points: import('../types/earthquake').LpgmPoint[] = []
   const regions: import('../types/earthquake').LpgmRegion[] = []
+  // 震度点と同じ構造の穴がここにもある。**数えるのは「階級として読めたか」で、階級 0 は
+  // 読めている**（該当なしを表す正常な値）。0 を落ちた扱いにすると平常時に鳴り続ける。
+  const lgRegionTally = createReadTally('長周期地震動の区域')
+  const lgStationTally = createReadTally('長周期地震動の観測点')
 
   const allEls = doc.getElementsByTagName('*')
   const prefEls: Element[] = []
@@ -1176,8 +1442,14 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
       // MaxLgInt も同様（Area 直下と City 直下に同名要素あり）。
       const areaName    = xmlText(xmlChild(areaEl, 'Name'))
       const areaCode    = xmlText(xmlChild(areaEl, 'Code'))
-      const areaMaxLgInt = parseInt(xmlText(xmlChild(areaEl, 'MaxLgInt')), 10)
-      if (areaMaxLgInt >= 1) regions.push({ code: areaCode, name: areaName, maxLgInt: areaMaxLgInt })
+      const areaRawLgInt = xmlText(xmlChild(areaEl, 'MaxLgInt'))
+      const areaMaxLgInt = parseInt(areaRawLgInt, 10)
+      if (Number.isFinite(areaMaxLgInt)) {
+        lgRegionTally.readable()
+        if (areaMaxLgInt >= 1) regions.push({ code: areaCode, name: areaName, maxLgInt: areaMaxLgInt })
+      } else {
+        lgRegionTally.unreadable(areaName, areaRawLgInt)
+      }
 
       const areaChildren = areaEl.getElementsByTagName('*')
       for (let i = 0; i < areaChildren.length; i++) {
@@ -1187,11 +1459,21 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
         // 存在しないため xmlQ（子孫検索）でも xmlChild と同じ結果になる（DMD-6 対象外）。
         const stName = xmlText(xmlQ(stEl, 'Name'))
         const stCode = xmlText(xmlQ(stEl, 'Code'))
-        const lgInt  = parseInt(xmlText(xmlQ(stEl, 'LgInt')), 10)
-        if (lgInt >= 1) points.push({ code: stCode, name: stName, pref: prefName, lgInt })
+        const stRawLgInt = xmlText(xmlQ(stEl, 'LgInt'))
+        const lgInt  = parseInt(stRawLgInt, 10)
+        if (Number.isFinite(lgInt)) {
+          lgStationTally.readable()
+          if (lgInt >= 1) points.push({ code: stCode, name: stName, pref: prefName, lgInt })
+        } else {
+          lgStationTally.unreadable(stName, stRawLgInt)
+        }
       }
     }
   }
+
+  lgRegionTally.warnIfNoneReadable(DMDATA_XML_LOG_PREFIX)
+  lgStationTally.warnIfNoneReadable(DMDATA_XML_LOG_PREFIX)
+  warnIfNoLpgmRegions(maxClass, regions.length, DMDATA_XML_LOG_PREFIX)
 
   return { id, eventId, time: reportDateTime, originTime, maxClass, cancelled: false, points, regions }
 }
@@ -1214,11 +1496,8 @@ const NANKAI_STAGES: ReadonlyArray<{ keyword: string; code: string }> = [
 // 固定されており、段階のキーワードを含まないため、以前はどの電文も既定値の「調査中」に
 // 落ちていた（「巨大地震注意」が「調査中」と表示される不具合）。
 export function parseNankaiFromXml(xml: string): JMANankai | null {
-  let doc: Document
-  try {
-    doc = new DOMParser().parseFromString(xml, 'application/xml')
-    if (doc.querySelector('parsererror')) return null
-  } catch { return null }
+  const doc = parseTelegramXml(xml, DMDATA_XML_LOG_PREFIX)
+  if (!doc) return null
 
   const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
   const eventId        = xmlText(xmlQ(doc, 'EventID'))
@@ -1278,11 +1557,8 @@ export function parseNankaiFromXml(xml: string): JMANankai | null {
 // 確認できたのは臨時解説 210 と定例解説 200 の 2 値のみ。コード表は非公開のため、
 // 未知のコードでも解説情報として通し、名称はそのまま表示に使う。
 export function parseNankaiCommentaryFromXml(xml: string): JMANankaiCommentary | null {
-  let doc: Document
-  try {
-    doc = new DOMParser().parseFromString(xml, 'application/xml')
-    if (doc.querySelector('parsererror')) return null
-  } catch { return null }
+  const doc = parseTelegramXml(xml, DMDATA_XML_LOG_PREFIX)
+  if (!doc) return null
 
   const headEl   = xmlQ(doc, 'Head')
   const headline = headEl ? xmlText(xmlQ(headEl, 'Title')) : ''
@@ -1296,7 +1572,9 @@ export function parseNankaiCommentaryFromXml(xml: string): JMANankaiCommentary |
   // 期限（expireAt）の計算に使うため、日時として解釈できることをここで確かめる。
   // 不正な文字列のまま進むと new Date(...).toISOString() が RangeError を投げる。
   const reportMs = new Date(reportDateTime).getTime()
-  if (!Number.isFinite(reportMs)) return null
+  if (!Number.isFinite(reportMs)) {
+    return dropTelegram(DMDATA_XML_LOG_PREFIX, `南海トラフ関連解説情報の発表時刻を日時として読めません: "${reportDateTime}"`)
+  }
   const eventId = xmlText(xmlQ(doc, 'EventID'))
   const serial  = xmlText(xmlQ(doc, 'Serial')) || '1'
 
@@ -1334,11 +1612,8 @@ export function parseNankaiCommentaryFromXml(xml: string): JMANankaiCommentary |
 
 // REST API 経由の JMA XML（VYSE60: 北海道・三陸沖後発地震注意情報）を JMAKohatsu にパース
 export function parseVyse60FromXml(xml: string): JMAKohatsu | null {
-  let doc: Document
-  try {
-    doc = new DOMParser().parseFromString(xml, 'application/xml')
-    if (doc.querySelector('parsererror')) return null
-  } catch { return null }
+  const doc = parseTelegramXml(xml, DMDATA_XML_LOG_PREFIX)
+  if (!doc) return null
 
   const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
   const eventId        = xmlText(xmlQ(doc, 'EventID'))
@@ -1390,26 +1665,56 @@ export function parseLpgm(data: Record<string, unknown>): JMALpgm | null {
     return { id, eventId, time, originTime, maxClass: 0, cancelled: true }
   }
 
-  if (!originTime) return null
+  if (!originTime) return dropTelegram(DMDATA_JSON_LOG_PREFIX, 'VXSE62（長周期地震動観測情報）に originTime がありません')
 
   const intensity = obj(body.intensity)
   const maxClassStr = str(intensity.maxLgInt)
   const maxClass = parseInt(maxClassStr, 10)
 
-  if (!(maxClass >= 1 && maxClass <= 4)) return null
+  // 階級 0 は正常な振り分け。読めない値だけ記録する（理由は XML 経路側のコメント）。
+  if (maxClass === 0) return null
+  if (!(maxClass >= 1 && maxClass <= 4)) {
+    return dropTelegram(DMDATA_JSON_LOG_PREFIX, `VXSE62 の最大長周期地震動階級を読めません: "${maxClassStr}"`)
+  }
 
-  // 細分区域・観測点データを抽出
-  const rawRegions = arr(intensity.regions)
-  const regions: import('../types/earthquake').LpgmRegion[] = rawRegions
-    .map(r => ({ code: str(obj(r).code), name: str(obj(r).name), maxLgInt: parseInt(str(obj(r).maxLgInt), 10) }))
-    .filter(r => r.maxLgInt >= 1)
+  // 細分区域・観測点データを抽出。XML 経路と同じく「階級として読めたか」を数える
+  // （階級 0 は読めている。詳しくは XML 経路側のコメント）。
+  const lgRegionTally = createReadTally('長周期地震動の区域')
+  const lgStationTally = createReadTally('長周期地震動の観測点')
+
+  const regions: import('../types/earthquake').LpgmRegion[] = []
+  for (const rawRegion of arr(intensity.regions)) {
+    const r = obj(rawRegion)
+    const name = str(r.name)
+    const rawLgInt = str(r.maxLgInt)
+    const maxLgInt = parseInt(rawLgInt, 10)
+    if (Number.isFinite(maxLgInt)) {
+      lgRegionTally.readable()
+      if (maxLgInt >= 1) regions.push({ code: str(r.code), name, maxLgInt })
+    } else {
+      lgRegionTally.unreadable(name, rawLgInt)
+    }
+  }
 
   // JSON電文の station.name は都道府県略称を含む形式（例: "茨城鹿嶋市鉢形"）
   // pref は空文字で格納し、座標解決は JapanMap 側の stationPrefIndex に委ねる
-  const rawStations = arr(intensity.stations)
-  const points: import('../types/earthquake').LpgmPoint[] = rawStations
-    .map(s => ({ code: str(obj(s).code), name: str(obj(s).name), pref: '', lgInt: parseInt(str(obj(s).lgInt), 10) }))
-    .filter(p => p.lgInt >= 1)
+  const points: import('../types/earthquake').LpgmPoint[] = []
+  for (const rawStation of arr(intensity.stations)) {
+    const st = obj(rawStation)
+    const name = str(st.name)
+    const rawLgInt = str(st.lgInt)
+    const lgInt = parseInt(rawLgInt, 10)
+    if (Number.isFinite(lgInt)) {
+      lgStationTally.readable()
+      if (lgInt >= 1) points.push({ code: str(st.code), name, pref: '', lgInt })
+    } else {
+      lgStationTally.unreadable(name, rawLgInt)
+    }
+  }
+
+  lgRegionTally.warnIfNoneReadable(DMDATA_JSON_LOG_PREFIX)
+  lgStationTally.warnIfNoneReadable(DMDATA_JSON_LOG_PREFIX)
+  warnIfNoLpgmRegions(maxClass, regions.length, DMDATA_JSON_LOG_PREFIX)
 
   return { id, eventId, time, originTime, maxClass, cancelled: false, points, regions }
 }
