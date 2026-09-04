@@ -5,11 +5,6 @@
 // （空文字・空オブジェクト・空配列・NaN）へ寄せ、呼び出し側が必須判定・センチネル変換を行う。
 // 例外を投げないのは、1 フィールドの不整合で電文 1 通が丸ごと落ちるのを避けるため。
 
-/** 数値として読む。取れない場合は NaN（`Number.isFinite()` で判定して既定値へ寄せる）。 */
-export function parseNum(v: unknown): number {
-  if (v === null || v === undefined) return NaN
-  return Number(v)
-}
 
 /** 文字列として読む。文字列でなければ空文字（`|| undefined` で optional に落とせる）。 */
 export function str(v: unknown): string {

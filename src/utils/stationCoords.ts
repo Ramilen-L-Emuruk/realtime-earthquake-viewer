@@ -149,6 +149,47 @@ export interface RegionOrderIndex {
  * 呼び出し側は引けなかった名前を末尾へ回すこと（気象庁の標準順でもこれらは末尾に置かれるため、
  * 末尾送りは標準順と矛盾しない）。
  */
+export function regionOrderRank(name: string, order: RegionOrderIndex | null): number {
+  if (!order) return 0
+  // 区域名を先に引く（県名と同名の区域があっても、より具体的な区域の順位を採る）。
+  // 未知の名前どうしの比較で NaN を出さないよう、番兵は減算可能な有限値にする。
+  return order.areas.get(name) ?? order.prefs.get(name) ?? Number.MAX_SAFE_INTEGER
+}
+
+/**
+ * 地域名を気象庁の標準順（北から南。同じ県の区域は隣り合う）に並べ替える。
+ *
+ * 索引に載っていない名前（震度観測点を持たない区域など）は元の順序を保ったまま末尾へ回す。
+ * 索引そのものが無い（座標テーブル未読み込み）ときは並べ替えず、呼び出し元が作った順を通す。
+ */
+export function sortByRegionOrder(names: string[], order: RegionOrderIndex | null): string[] {
+  // 索引が無くても新しい配列を返す。**ここで入力をそのまま返すと、索引の有無で
+  // 「別配列」と「呼び出し元の配列そのもの」に分かれる。** 戻り値を並べ替え直したり
+  // 詰め替えたりする呼び出し元が、座標テーブルの読み込みが済んでいない間だけ
+  // 元データを壊すことになる。
+  if (!order) return [...names]
+  return [...names].sort((a, b) => regionOrderRank(a, order) - regionOrderRank(b, order))
+}
+
+/**
+ * 「値の降順、同値なら気象庁の標準順（北から南）」で並べる比較関数を作る。
+ *
+ * 値だけで比べると `Array.prototype.sort` が安定なぶん元の並びが残る。地震カードの
+ * 場合それは電文が点を並べた順で、電文の書式が変わるだけで画面の並びが黙って動く。
+ * 同値どうしの決着を索引に委ねて断ち切る。
+ *
+ * @param value 並べる値（震度・長周期階級など。大きいほど前に出る）
+ * @param name  順位を引く地域名（区域名でも県名でもよい。`regionOrderRank` が両方引く）
+ */
+export function byValueDescThenRegion<T>(
+  value: (x: T) => number,
+  name: (x: T) => string,
+  order: RegionOrderIndex | null,
+): (a: T, b: T) => number {
+  return (a, b) =>
+    value(b) - value(a) || regionOrderRank(name(a), order) - regionOrderRank(name(b), order)
+}
+
 export function buildRegionOrderIndex(data: StationCoordsData): RegionOrderIndex {
   const areas = new Map<string, number>()
   const prefs = new Map<string, number>()

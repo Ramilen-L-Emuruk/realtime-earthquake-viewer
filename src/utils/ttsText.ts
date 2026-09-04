@@ -5,7 +5,7 @@ import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, has
 import { joinSegments, plain, type SpeechSegment, type SpeechRef, type QuakeFact } from './ttsFollow'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
-import { getStationCoordsCache, getAreaPrefIndexCache, buildStationPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, lookupStationRegion, type RegionOrderIndex, type StationCoordsData } from './stationCoords'
+import { getStationCoordsCache, getAreaPrefIndexCache, buildStationPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, sortByRegionOrder, lookupStationRegion, type StationCoordsData } from './stationCoords'
 import { isAreaPoint } from './quakePoints'
 import { hasMagnitude, hasDepth } from './formatters'
 import { createLogThrottle, log } from './logger'
@@ -154,22 +154,6 @@ function coordForName(name: string): [number, number] | null {
   const prefs = getPrefecturesCache()
   if (prefs && name in prefs) return prefs[name].label
   return null
-}
-
-/**
- * 地域名を気象庁の標準順（北から南。同じ県の区域は隣り合う）に並べ替える。
- * 震源からの距離順だと同じ県の同じ震度でも間に他県が挟まり、聞いて位置を掴みにくいため。
- *
- * 索引に載っていない名前（震度観測点を持たない区域など）は元の順序を保ったまま末尾へ回す。
- * 索引そのものが無い（座標テーブル未読み込み）ときは並べ替えず、呼び出し元が作った順を通す。
- */
-function sortByRegionOrder(names: string[], order: RegionOrderIndex | null): string[] {
-  if (!order) return names
-  // 区域名を先に引く（県名と同名の区域があっても、より具体的な区域の順位を採る）。
-  // 未知の名前どうしの比較で NaN を出さないよう、番兵は減算可能な有限値にする。
-  const rank = (name: string) =>
-    order.areas.get(name) ?? order.prefs.get(name) ?? Number.MAX_SAFE_INTEGER
-  return [...names].sort((a, b) => rank(a) - rank(b))
 }
 
 export interface TtsRegionOptions {
@@ -940,8 +924,9 @@ export function earthquakeToText(event: JMAQuake, opts: TtsRegionOptions, isNew:
  * 波高の表記を読める形にする。"３ｍ" → "3メートル"、"10m以上" → "10メートル以上"、
  * "０．５ｍ" → "0.5メートル" など。
  *
- * **全角と半角の両方が来る。** 経路によって表記が違う（XML 履歴は全角、JSON は半角）ため、
- * どちらか片方だけを変換すると素通りした側が「えむ」と読まれる。
+ * **全角と半角の両方が来る。** 波高そのものは両経路とも半角で渡ってくる（`dmdataParser` の
+ * `toHalfWidthHeightDesc`）が、この関数は `headline`（電文の文章）にも通しており、そちらは
+ * 全角のまま。片方だけを変換すると素通りした側が「えむ」と読まれる。
  *
  * 単位を置き換えるのは**数字の直後だけ**。この関数は `headline`（電文の文章）にも通すので、
  * 無条件に m を置き換えると文中の語を壊す。大文字の M を対象にしないのも同じ理由で、

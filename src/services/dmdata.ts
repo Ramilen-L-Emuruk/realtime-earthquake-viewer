@@ -2,30 +2,21 @@
 // POST /v2/socket → チケット取得 → WebSocket(dmdata.v2) 接続 → Ping/Pong → データ受信。
 // 切断時は指数バックオフで再接続する（チケット再取得から）。
 //
-// 重要: data メッセージの body は formatMode:"json" でも base64 + gzip のまま届く
-// （仕様: data.encoding="base64" / data.compression="gzip"）。
-// クライアント側で「base64 デコード → gunzip → JSON.parse」を行う必要がある。
+// 重要: data メッセージの body は base64 + gzip で届く（仕様: data.encoding="base64" /
+// data.compression="gzip"）。クライアント側で「base64 デコード → gunzip」を行う必要がある。
+// `formatMode: 'raw'` で購読しているため、復号して得られるのは気象庁の XML そのもの。
 
 import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, EEWAlert, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
-import { parseEEW, parseEarthquake, parseTsunami, parseLpgm, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml } from './dmdataParser'
+import { parseEEWFromXml, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml } from './dmdataParser'
 import { serverNow, serverDate } from '../utils/clock'
 import { gunzip } from '../utils/gzip'
-import { CLASSIFICATIONS, EEW_TYPES } from './dmdataTelegramPayload'
+import { CLASSIFICATIONS, EEW_TYPES, NANKAI_TYPES, COMMENTARY_TYPES, KOHATSU_TYPES } from './dmdataTelegramPayload'
 import { log, createLogThrottle } from '../utils/logger'
 import { authHeader, dmdataApiKeyProblem, dmdataApiKeyMessage, DmdataApiKeyError } from '../utils/dmdataApiKey'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
-// VYSE50=南海トラフ地震臨時情報、VYSE51/52=南海トラフ地震関連解説情報、
-// VYSE60=北海道・三陸沖後発地震注意情報。
-// これらは XML 電文（format: "xml"）として配信されるため REST API 経由で取得する。
-//
-// 臨時情報（VYSE50）と解説情報（VYSE51/52）は別物として扱う。段階（調査中・巨大地震注意等）を
-// 持つのは臨時情報だけで、解説情報は状況の解説にとどまる。同じスロットに入れると解説情報が
-// 段階の表示を上書きしてしまう（VYSE51 は臨時情報の発表期間中、毎日届く）。
-// VYSE51=臨時解説（臨時情報の期間中）、VYSE52=定例解説（平常時に毎月）。
-const VYSE_NANKAI_TYPES = new Set(['VYSE50'])
-const VYSE_COMMENTARY_TYPES = new Set(['VYSE51', 'VYSE52'])
-const VYSE_KOHATSU_TYPES = new Set(['VYSE60'])
+// 種別の集合は `dmdataTelegramPayload.ts` が単一情報源。ここで定義し直すと、種別を足したとき
+// ライブ側とリプレイ側が食い違う（同じ電文が経路によって出たり出なかったりする）。
 // VXSE43 の受信は本来起きない。起きるとすれば配信分類の変わり目だが、連続発報で溢れると
 // 他の警告が見えなくなるため間引く（`createLogThrottle` の使い方は utils/logger.ts）。
 const warnUnsubscribedEew = createLogThrottle(60_000)
@@ -99,20 +90,20 @@ function base64ToBytes(b64: string): Uint8Array {
   return bytes
 }
 
-// data メッセージの body を encoding/compression/format に従って復号し、JSON オブジェクトを返す。
-// format が json 以外（xml 等）や復号失敗時は null。
+// data メッセージの body を encoding/compression に従って復号し、電文のテキスト（XML）を返す。
+// 復号できなければ null。
+//
+// `formatMode: 'raw'` で購読しているので本文は気象庁の XML そのもの。**本文は必ず同梱される**
+// （`body` は常に文字列で、URL だけが来る形は無い。実接続で確認 → docs/spec/data-sources-spec.md）。
 //
 // **失敗の理由はここでしか分からない。** 呼び出し側は `null` を受けて電文ログへ
-// `'body decode failed'` と記録するが、**4 つある失敗の別**（未対応の圧縮・復号の例外・
-// 想定外の format・JSON として読めない）は区別できない。理由を `dlog`（debug 専用）にだけ
-// 書くと既定では何も残らないので、この関数が常に残る側で記録する
-// （同じ判断で `[DMDSS]` の警告を出している先例が下の VYSE の分岐にある）。
+// `'body decode failed'` と記録するが、**3 つある失敗の別**（本文の形・未対応の圧縮・復号の例外）
+// は区別できない。理由を `dlog`（debug 専用）にだけ書くと既定では何も残らないので、この関数が
+// 常に残る側で記録する（同じ判断で `[DMDSS]` の警告を出している先例が下にある）。
 //
-// XML の電文（VYSE 系）は呼び出し側が URI から取りに行って手前で `return` するため、ここへは
-// 来ない。したがって `format !== 'json'` は異常。
 // 理由ごとに間引く。**1 本にまとめないこと** —— ブラウザが `DecompressionStream` に対応して
 // いない等の持続的な障害では同じ理由が電文のたびに鳴り続け、1 本だと**別の理由の初回が
-// そこに隠れる**。理由の種類は下の 5 つで固定なので、キーごとに持って困る量にはならない。
+// そこに隠れる**。理由の種類は固定なので、キーごとに持って困る量にはならない。
 const undecodableBodyThrottles = new Map<string, (emit: () => void) => void>()
 
 function warnUndecodableBody(kind: string, detail: string, msg: Record<string, unknown>): null {
@@ -131,22 +122,17 @@ function warnUndecodableBody(kind: string, detail: string, msg: Record<string, u
  * data メッセージの body を復号する本体。**テストから直接呼べるよう export している**
  * （WebSocket 経由でしか到達できないと、失敗の分岐を 1 つも検証できない）。
  */
-export async function decodeTelegramBody(msg: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+export async function decodeTelegramText(msg: Record<string, unknown>): Promise<string | null> {
   const raw = msg.body
-  // 既に object（将来仕様変更時の保険）
-  if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
-    return raw as Record<string, unknown>
-  }
   if (typeof raw !== 'string') {
-    // `typeof null` は 'object' を返すため、そのまま流すと「オブジェクトでもありません: object」
-    // という矛盾した文になる（手前の分岐が null を弾いた後にここへ落ちる）。
+    // `typeof null` は 'object' を返すため、そのまま流すと「文字列ではありません: object」という
+    // 曖昧な文になる。かつて VYSE 系で想定していた `{ uri }` の形もここへ落ちる。
     const shape = raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw
-    return warnUndecodableBody('shape', `body が文字列でもオブジェクトでもありません: ${shape}`, msg)
+    return warnUndecodableBody('shape', `body が文字列ではありません: ${shape}`, msg)
   }
 
   const encoding = typeof msg.encoding === 'string' ? msg.encoding : 'utf-8'
   const compression = typeof msg.compression === 'string' ? msg.compression : null
-  const format = typeof msg.format === 'string' ? msg.format : 'json'
 
   let text: string
   try {
@@ -168,12 +154,13 @@ export async function decodeTelegramBody(msg: Record<string, unknown>): Promise<
     return warnUndecodableBody('decode', `復号で例外が出ました: ${String(e)}`, msg)
   }
 
-  if (format !== 'json') return warnUndecodableBody('format', `JSON 以外の format: ${format}`, msg)
-  try {
-    return JSON.parse(text) as Record<string, unknown>
-  } catch (e) {
-    return warnUndecodableBody('json', `JSON として読めません: ${String(e)}`, msg)
-  }
+  // `formatMode: 'raw'` で購読しているので `format` は xml のはず。違えば配信形態が変わった印なので
+  // 記録する。**ただし本文は返す** —— ここまで来た時点で復号は成功しており、値が変わった
+  // （大文字になった等）だけで全電文を捨てると被害が記録より遥かに大きい。中身が XML でなければ
+  // パーサー側が弾き、そこでも記録が残る。
+  const format = typeof msg.format === 'string' ? msg.format : null
+  if (format !== 'xml') warnUndecodableBody('format', `XML 以外の format: ${format ?? '(無し)'}`, msg)
+  return text
 }
 
 async function tryFetchTicket(
@@ -194,7 +181,10 @@ async function tryFetchTicket(
       classifications,
       // 試験報・訓練報（EEW 配信テスト VXSE42 等）は including 指定時のみ配信される。
       test: testParam,
-      formatMode: 'json',
+      // 気象庁の XML をそのまま受け取る。JSON 変換版は使わない ―― 変換は「利用頻度の高い
+      // データ」に絞った独自スキーマで、無損失を謳っていない（実際に津波の注意文と
+      // 予想波高の「未満」が落ちていた）。読み取りを 1 本にすれば穴も 1 つで済む。
+      formatMode: 'raw',
       appName: 'quake-viewer-dmdss',
     }),
   })
@@ -449,65 +439,13 @@ export class DmdataWebSocket {
     }
     if (!headType) return
 
-    // VYSE50（南海トラフ臨時情報）・VYSE51/52（同 関連解説情報）・VYSE60（後発地震）は
-    // format:"xml" で配信される。WebSocket メッセージの body.uri から XML を取得してパースする。
-    if (VYSE_NANKAI_TYPES.has(headType) || VYSE_COMMENTARY_TYPES.has(headType) || VYSE_KOHATSU_TYPES.has(headType)) {
-      const uri = (msg as { body?: { uri?: string } }).body?.uri
-      if (!uri) {
-        if (this.debug) dlog('VYSE 電文に uri がない', { headType })
-        this.onRawMessage?.(this.makeLogEntry(headType, head, msg.body, isTest, 'error', undefined, 'no uri'))
-        return
-      }
-      try {
-        const res = await fetch(uri, { headers: { Authorization: authHeader(this.apiKey) } })
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const xml = await res.text()
-        if (VYSE_NANKAI_TYPES.has(headType)) {
-          const nankai = parseNankaiFromXml(xml)
-          if (nankai) {
-            if (this.debug) dlog('南海トラフ臨時情報受信', { headType, kindName: nankai.kindName })
-            this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'nankai'))
-            this.onEvent?.({ kind: 'nankai', data: nankai })
-          } else {
-            // VYSE50 は必ず段階（調査中・巨大地震注意等）を持つ電文なので、読めないのは書式が
-            // 変わった等の異常。電文ログ（設定タブ）だけに残すと開かないと気づけないため、
-            // debug フラグに関わらずコンソールへ出す。
-            log.warn(`[DMDSS] 南海トラフ臨時情報 (${headType}) の段階を解析できませんでした`)
-            this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
-          }
-        } else if (VYSE_COMMENTARY_TYPES.has(headType)) {
-          const commentary = parseNankaiCommentaryFromXml(xml)
-          if (commentary) {
-            if (this.debug) dlog('南海トラフ関連解説情報受信', { headType, serialName: commentary.serialName })
-            this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'nankaiCommentary'))
-            this.onEvent?.({ kind: 'nankaiCommentary', data: commentary })
-          } else {
-            // 取消電文は cancelled を立てて返るためここには来ない。null は書式の異常だけ
-            log.warn(`[DMDSS] 南海トラフ関連解説情報 (${headType}) を解析できませんでした`)
-            this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
-          }
-        } else {
-          const kohatsu = parseVyse60FromXml(xml)
-          if (kohatsu) {
-            if (this.debug) dlog('後発地震注意情報受信', { headType })
-            this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'kohatsu'))
-            this.onEvent?.({ kind: 'kohatsu', data: kohatsu })
-          } else {
-            this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
-          }
-        }
-      } catch (e) {
-        if (this.debug) dlog('VYSE XML 取得失敗', { headType, error: String(e) })
-        this.onRawMessage?.(this.makeLogEntry(headType, head, msg.body, isTest, 'error', undefined, String(e)))
-      }
-      return
-    }
-
-    // body は base64 + gzip。復号して JSON 化する（仕様準拠）。
-    const data = await decodeTelegramBody(msg)
-    if (!data) {
-      if (this.debug) dlog('body 復号失敗', { headType, format: msg.format, compression: msg.compression, encoding: msg.encoding })
-      if (headType) this.onRawMessage?.(this.makeLogEntry(headType, head, msg.body, isTest, 'error', undefined, 'body decode failed'))
+    // body は base64 + gzip の XML 本文（formatMode:'raw'）。復号してテキストにする。
+    const xml = await decodeTelegramText(msg)
+    if (xml === null) {
+      // 理由の別と間引きは `decodeTelegramText` が持つ（**そこにしか理由は無い**）。ここで
+      // 重ねて警告すると、持続的な障害のとき間引きの効かない側が電文のたびに鳴り、
+      // 理由付きの記録がそこに埋もれる。ここは電文ログへ残すだけにする。
+      this.onRawMessage?.(this.makeLogEntry(headType, head, msg.body, isTest, 'error', undefined, 'body decode failed'))
       return
     }
 
@@ -517,54 +455,87 @@ export class DmdataWebSocket {
       return
     }
 
-    if (EEW_TYPES.has(headType)) {
-      const eew = parseEEW(headType, data)
+    if (NANKAI_TYPES.has(headType)) {
+      const nankai = parseNankaiFromXml(xml)
+      if (nankai) {
+        if (this.debug) dlog('南海トラフ臨時情報受信', { headType, kindName: nankai.kindName })
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'nankai'))
+        this.onEvent?.({ kind: 'nankai', data: nankai })
+      } else {
+        // VYSE50 は必ず段階（調査中・巨大地震注意等）を持つ電文なので、読めないのは書式が
+        // 変わった等の異常。電文ログ（設定タブ）だけに残すと開かないと気づけないため、
+        // debug フラグに関わらずコンソールへ出す。
+        log.warn(`[DMDSS] 南海トラフ臨時情報 (${headType}) の段階を解析できませんでした`)
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
+      }
+    } else if (COMMENTARY_TYPES.has(headType)) {
+      const commentary = parseNankaiCommentaryFromXml(xml)
+      if (commentary) {
+        if (this.debug) dlog('南海トラフ関連解説情報受信', { headType, serialName: commentary.serialName })
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'nankaiCommentary'))
+        this.onEvent?.({ kind: 'nankaiCommentary', data: commentary })
+      } else {
+        // 取消電文は cancelled を立てて返るためここには来ない。null は書式の異常だけ
+        log.warn(`[DMDSS] 南海トラフ関連解説情報 (${headType}) を解析できませんでした`)
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
+      }
+    } else if (KOHATSU_TYPES.has(headType)) {
+      const kohatsu = parseVyse60FromXml(xml)
+      if (kohatsu) {
+        if (this.debug) dlog('後発地震注意情報受信', { headType })
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'kohatsu'))
+        this.onEvent?.({ kind: 'kohatsu', data: kohatsu })
+      } else {
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
+      }
+    } else if (EEW_TYPES.has(headType)) {
+      const eew = parseEEWFromXml(headType, xml)
       if (!eew) {
         if (this.debug) dlog('EEW パース結果が null', { headType })
-        this.onRawMessage?.(this.makeLogEntry(headType, head, data, isTest, 'filtered'))
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
         return
       }
       if (this.debug) dlog('EEW 受信 → 通知', { headType, test: isTest, eventId: eew.issue?.eventId, severity: eew.severity, forecastMaxScale: eew.forecastMaxScale })
-      this.onRawMessage?.(this.makeLogEntry(headType, head, data, isTest, 'parsed', 'eew'))
+      this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'eew'))
       // 検証用に受信した試験報 EEW はカード・音・地図へ流すため test:false で通知する。
       this.onEvent?.({ kind: 'eew', data: isTest ? { ...eew, test: false } : eew })
     } else if (headType === 'VXSE51' || headType === 'VXSE52' || headType === 'VXSE53' || headType === 'VXSE61') {
-      const quake = parseEarthquake(headType, data)
+      const quake = parseEarthquakeFromXml(headType, xml)
       if (this.debug) dlog('地震情報', { headType, parsed: !!quake })
       if (quake) {
-        this.onRawMessage?.(this.makeLogEntry(headType, head, data, isTest, 'parsed', 'quake'))
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'quake'))
         this.onEvent?.({ kind: 'quake', data: quake })
       } else {
-        this.onRawMessage?.(this.makeLogEntry(headType, head, data, isTest, 'filtered'))
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
       }
     } else if (headType === 'VTSE41' || headType === 'VTSE51' || headType === 'VTSE52') {
-      const tsunami = parseTsunami(headType, data)
+      const tsunami = parseTsunamiFromXml(xml)
       if (this.debug) dlog('津波情報', { headType, parsed: !!tsunami })
       if (tsunami) {
-        this.onRawMessage?.(this.makeLogEntry(headType, head, data, isTest, 'parsed', 'tsunami'))
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'tsunami'))
         this.onEvent?.({ kind: 'tsunami', data: tsunami })
       } else {
-        this.onRawMessage?.(this.makeLogEntry(headType, head, data, isTest, 'filtered'))
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
       }
     } else if (headType === 'VXSE62') {
-      const lpgm = parseLpgm(data)
+      const lpgm = parseLpgmFromXml(xml)
       if (lpgm) {
-        this.onRawMessage?.(this.makeLogEntry(headType, head, data, isTest, 'parsed', 'lpgm'))
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'lpgm'))
         this.onEvent?.({ kind: 'lpgm', data: lpgm })
       } else {
-        this.onRawMessage?.(this.makeLogEntry(headType, head, data, isTest, 'filtered'))
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
       }
     } else if (headType === 'VXSE43') {
       // VXSE43 は購読していない分類（`eew.warning`）にしか無いので、届いたら配信分類の変わり目を疑う。
       // 取り込まないことと、届いたのに気づけないことは別なので、**debug に依らず**記録する。
       // 連続発報で溢れないよう間引くが、電文ログには毎回残して後から追えるようにする。
       warnUnsubscribedEew(() => log.warn('[dmdata] 購読していない VXSE43（緊急地震速報・警報）を受信しました。配信分類の変更の可能性があります'))
-      this.onRawMessage?.(this.makeLogEntry(headType, head, data, isTest, 'filtered'))
+      this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
     } else if (headType === 'VXSE44') {
       // VXSE44 は購読中の `eew.forecast` に含まれ、予報級 EEW のたびに毎報届く**想定内**の電文。
       // 廃止予定の旧形式で VXSE45 の下位互換のため取り込まない（→ dmdataTelegramPayload.ts）。
       // 異常ではないので warn を上げず、電文ログにだけ残す。
-      this.onRawMessage?.(this.makeLogEntry(headType, head, data, isTest, 'filtered'))
+      this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
     } else if (this.debug) {
       dlog('対象外の電文種別', { headType })
     }
