@@ -20,6 +20,7 @@ import type { RawP2PEvent } from './p2pquake'
 import type { JMAQuake } from '../types/earthquake'
 import { convertEvent, fetchJmaArchiveRaw } from './p2pquake'
 import { sameQuakeEntry } from '../utils/quakeMerge'
+import { getAreaPrefIndexCache } from '../utils/stationCoords'
 import { log } from '../utils/logger'
 
 /** 1 ページの取得件数（API 側の上限）。 */
@@ -271,7 +272,7 @@ export async function fetchP2PQuakeHistory(before: Date, targetEvents: number): 
   // 最も古いカードだけが震度速報のまま残るなど、途中で切れた形になる）。
   const seenEvents: JMAQuake[] = []
   for (const { event } of candidates) {
-    if (!seenEvents.some(e => sameQuakeEntry(e, event))) {
+    if (!seenEvents.some(e => sameQuakeEntry(e, event, getAreaPrefIndexCache()))) {
       if (seenEvents.length >= targetEvents) break
       seenEvents.push(event)
     }

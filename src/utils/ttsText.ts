@@ -5,7 +5,8 @@ import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, has
 import { joinSegments, plain, type SpeechSegment, type SpeechRef, type QuakeFact } from './ttsFollow'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
-import { getStationCoordsCache, buildAreaPrefIndex, buildStationPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, lookupStationRegion, type RegionOrderIndex, type StationCoordsData } from './stationCoords'
+import { getStationCoordsCache, getAreaPrefIndexCache, buildStationPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, lookupStationRegion, type RegionOrderIndex, type StationCoordsData } from './stationCoords'
+import { isAreaPoint } from './quakePoints'
 import { hasMagnitude, hasDepth } from './formatters'
 import { createLogThrottle, log } from './logger'
 
@@ -87,7 +88,10 @@ function regionNamesForScale(
   // 拾えたか」が判らないため、ここでロールアップ点を足すと区域名と県名が二重に並ぶ。
   // 前提が崩れた場合は、その県の震度が読み上げから静かに落ちる（他の区域で地域名が作れてしまうため
   // 下の「地域名 0 件」の記録にも掛からない）。狭めるなら「区域点を持つ県だけ観測点経路を飛ばす」形。
-  const areaPoints = matched.filter(p => p.isArea && p.addr !== p.pref)
+  // 索引が null（座標テーブル未読み込み・取得失敗）のときは名前だけの判定へ落ち、奈良県を
+  // 取りこぼす。個別の記録は置かない——その状態では観測点からの区域逆引きも全滅していて
+  // 地域名は広範に落ちており、原因は `useStationCoords` が log.error で報告済みのため。
+  const areaPoints = matched.filter(p => isAreaPoint(p, idx.areaPrefIndex))
   if (areaPoints.length > 0) return aggregateAreaNamesByPref(areaPoints, idx.prefAreaNames, idx.areaPrefIndex, prefsWithAreaShown)
 
   // 区域の点を持たない電文では観測点の所属区域を逆引きし、区域粒度で読む。P2PQuake の詳細報が
@@ -258,7 +262,10 @@ function buildRegionSegments(
   const stationData = getStationCoordsCache()
   const idx: RegionNameIndexes = {
     prefAreaNames: stationData ? buildPrefAreaNamesIndex(stationData) : null,
-    areaPrefIndex: stationData ? buildAreaPrefIndex(stationData) : null,
+    // 区域名 → 県名だけはキャッシュから受け取る。地震の統合経路と同じ索引で、読み取りしかしない
+    // （→ docs/spec/quake-spec.md §4「ロールアップ点の見分け方」）。読み上げ文を作るたびに
+    // 組み直すと、点の役割の判定（isAreaPoint）へ渡す索引が経路ごとに別物になる。
+    areaPrefIndex: getAreaPrefIndexCache(),
     stationPrefIndex: stationData ? buildStationPrefIndex(stationData) : null,
     stationData,
   }
@@ -1677,7 +1684,7 @@ function buildLpgmRegionText(lpgm: JMALpgm, opts: TtsRegionOptions): string {
   if (classes.length === 0) return ''
 
   const stationData = getStationCoordsCache()
-  const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
+  const areaPrefIndex = getAreaPrefIndexCache()
   const prefAreaNames = stationData ? buildPrefAreaNamesIndex(stationData) : null
   const regionOrder = stationData ? buildRegionOrderIndex(stationData) : null
 
