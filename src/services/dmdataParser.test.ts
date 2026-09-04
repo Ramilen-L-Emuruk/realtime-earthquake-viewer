@@ -5,6 +5,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { parseEarthquake, parseEarthquakeFromXml, parseEEW, parseTsunami, parseTsunamiFromXml, parseLpgm, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml } from './dmdataParser'
 import { log } from '../utils/logger'
 import { hasKnownEpicenter } from '../utils/geo'
+import { hasMagnitude } from '../utils/formatters'
 
 // 震度速報（VXSE51）。震源が未確定の段階で出るため Earthquake 要素を持たず、
 // 震度は Pref > Area（一次細分区域）までしか無い。
@@ -148,11 +149,16 @@ describe('parseEarthquakeFromXml: 震度速報（VXSE51）', () => {
     expect(quake!.issue.type).toBe('震度速報')
   })
 
-  it('震源は「位置不明」センチネル(-200)になる', () => {
+  // 規模の期待値を 0 から NaN へ覆した。0 は `hasMagnitude` を通ってしまい「Ｍ０．０」と
+  // 表示・読み上げされる（震度速報は規模を伴わないので、これは実測値のような嘘になる）。
+  // JSON 経路は `parseNum(undefined)` で元から NaN を返しており、そちらへ揃えた。
+  it('震源は「位置不明」センチネル(-200)、規模は不明（NaN）になる', () => {
     const hc = parseEarthquakeFromXml('VXSE51', VXSE51_XML)!.earthquake.hypocenter
     expect(hc.latitude).toBe(-200)
     expect(hc.longitude).toBe(-200)
-    expect(hc.magnitude).toBe(0)
+    expect(Number.isNaN(hc.magnitude)).toBe(true)
+    // 安全弁: 0 に戻ると「Ｍ０．０」を表示する側の判定を通ってしまう。
+    expect(hasMagnitude(hc.magnitude)).toBe(false)
   })
 
   it('earthquake.time に Head/TargetDateTime を使う', () => {
@@ -1855,7 +1861,9 @@ describe('潮位観測点の観測状態（Condition）', () => {
     // 観測できていた事実（ここでは大津波警報の基準超え）が画面から消える。
     // description の「以上」は観測可能範囲の超過を表すため over も立つ
     // （→ docs/spec/tsunami-spec.md §6「観測波高の「以上」」）
-    expect(miyako.height).toEqual({ value: 3.2, description: '３．２ｍ以上', over: true })
+    // 表示文字列の期待値を全角から半角へ覆した。電文の原文は全角だが、JSON 経路が数値から
+    // 半角で組んでいるため、経路で表示が変わっていた（→ 下記「波高の表示文字列は半角に揃える」）。
+    expect(miyako.height).toEqual({ value: 3.2, description: '3.2m以上', over: true })
     expect(miyako.condition).toEqual({ important: true, maxHeightMissing: true })
   })
 
@@ -1918,5 +1926,217 @@ describe('潮位観測点の観測状態（Condition）', () => {
     const t = parseTsunamiFromXml(VTSE41_PARTIAL_LIFT_XML)
     // 区域だけの電文（観測点なし）でも壊れないこと
     expect(t!.observations).toBeUndefined()
+  })
+})
+
+// VXSE61（顕著な地震の震源要素更新のお知らせ）は Coordinate を 2 つ持つ。
+// 1 つ目は度単位へ丸めた値で、電文自身が「度単位の震源要素は、津波情報等を引き続き
+// 発表する場合に使用されます」と用途を断っている。震源要素として採るのは 2 つ目の
+// type="震源位置（度分）"（実電文 2026-06-25 岩手県沖 M7.2 の写し）。
+const VXSE61_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/" xmlns:jmx="http://xml.kishou.go.jp/jmaxml1/">
+<Control>
+<Title>顕著な地震の震源要素更新のお知らせ</Title>
+<DateTime>2026-06-25T01:15:12Z</DateTime>
+<Status>通常</Status>
+<EditorialOffice>気象庁本庁</EditorialOffice>
+<PublishingOffice>気象庁</PublishingOffice>
+</Control>
+<Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+<Title>顕著な地震の震源要素更新のお知らせ</Title>
+<ReportDateTime>2026-06-25T10:15:00+09:00</ReportDateTime>
+<TargetDateTime>2026-06-25T10:15:00+09:00</TargetDateTime>
+<EventID>20260625073021</EventID>
+<InfoType>発表</InfoType>
+<Serial></Serial>
+<InfoKind>震源要素更新のお知らせ</InfoKind>
+<InfoKindVersion>1.0_0</InfoKindVersion>
+<Headline><Text>令和　８年　６月２５日１０時１５分をもって、地震の発生場所と規模を更新します。</Text></Headline>
+</Head>
+<Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/" xmlns:jmx_eb="http://xml.kishou.go.jp/jmaxml1/elementBasis1/">
+<Earthquake>
+<OriginTime>2026-06-25T07:30:00+09:00</OriginTime>
+<ArrivalTime>2026-06-25T07:30:00+09:00</ArrivalTime>
+<Hypocenter><Area>
+<Name>岩手県沖</Name>
+<Code type="震央地名">286</Code>
+<jmx_eb:Coordinate description="北緯４０．２度　東経１４２．３度　深さ　４０ｋｍ">+40.2+142.3-40000/</jmx_eb:Coordinate>
+<jmx_eb:Coordinate type="震源位置（度分）" description="北緯４０度１２．６分　東経１４２度１８．２分　深さ　４４ｋｍ">+4012.6+14218.2-44000/</jmx_eb:Coordinate>
+</Area></Hypocenter>
+<jmx_eb:Magnitude type="Mj" description="Ｍ７．２">7.2</jmx_eb:Magnitude>
+</Earthquake>
+<Comments><FreeFormComment>度単位の震源要素は、津波情報等を引き続き発表する場合に使用されます。</FreeFormComment></Comments>
+</Body>
+</Report>`
+
+const VXSE61_JSON = {
+  _originalId: 'dummy-original-id',
+  type: '顕著な地震の震源要素更新のお知らせ',
+  title: '顕著な地震の震源要素更新のお知らせ',
+  status: '通常',
+  infoType: '発表',
+  editorialOffice: '気象庁本庁',
+  publishingOffice: ['気象庁'],
+  pressDateTime: '2026-06-25T01:15:12Z',
+  reportDateTime: '2026-06-25T10:15:00+09:00',
+  targetDateTime: '2026-06-25T10:15:00+09:00',
+  eventId: '20260625073021',
+  serialNo: null,
+  infoKind: '震源要素更新のお知らせ',
+  infoKindVersion: '1.0_0',
+  headline: '令和　８年　６月２５日１０時１５分をもって、地震の発生場所と規模を更新します。',
+  body: {
+    earthquake: {
+      originTime: '2026-06-25T07:30:00+09:00',
+      arrivalTime: '2026-06-25T07:30:00+09:00',
+      hypocenter: {
+        code: '286',
+        name: '岩手県沖',
+        coordinate: {
+          latitude: { text: "40˚12.6'N", value: '40.2100' },
+          longitude: { text: "142˚18.2'E", value: '142.3033' },
+          height: { type: '高さ', unit: 'm', value: '-44000' },
+        },
+        depth: { type: '深さ', unit: 'km', value: '44' },
+      },
+      magnitude: { type: 'マグニチュード', value: '7.2', unit: 'Mj' },
+    },
+    comments: { free: '度単位の震源要素は、津波情報等を引き続き発表する場合に使用されます。' },
+  },
+}
+
+describe('震源要素更新（VXSE61）は「度分」の座標を採る', () => {
+  // 正: 度分の座標を 10 進度へ直した値になる（JSON 経路が返すのと同じ値）。
+  // 度単位のほうを採ると 40.2 / 142.3 / 深さ 40km になり、最大 1.2km ずれる。
+  it('XML 経路が度分の座標を 10 進度で返す', () => {
+    const q = parseEarthquakeFromXml('VXSE61', VXSE61_XML)!
+    expect(q.earthquake.hypocenter.latitude).toBe(40.21)
+    expect(q.earthquake.hypocenter.longitude).toBe(142.3033)
+    expect(q.earthquake.hypocenter.depth).toBe(44)
+  })
+
+  // 正: 同じ電文を JSON 経路に通しても同じ値になる。
+  it('JSON 経路と一致する', () => {
+    const x = parseEarthquakeFromXml('VXSE61', VXSE61_XML)!
+    const j = parseEarthquake('VXSE61', VXSE61_JSON)!
+    expect(x.earthquake.hypocenter.latitude).toBe(j.earthquake.hypocenter.latitude)
+    expect(x.earthquake.hypocenter.longitude).toBe(j.earthquake.hypocenter.longitude)
+    expect(x.earthquake.hypocenter.depth).toBe(j.earthquake.hypocenter.depth)
+    expect(x.earthquake.hypocenter.magnitude).toBe(j.earthquake.hypocenter.magnitude)
+  })
+
+  // 丸めた側へ落ちたことを数える。parseEarthquakeFromXml は別の理由でも警告を出すため、
+  // `not.toHaveBeenCalled()` で見ると無関係な警告が増えたときに目的と関係なく落ちる。
+  const fallbackWarnCount = (calls: unknown[][]) =>
+    calls.filter(c => String(c[0]).includes('度単位へ丸めた座標を使います')).length
+
+  const withWarnSpy = <T,>(fn: () => T): { value: T; warns: number } => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      return { value: fn(), warns: fallbackWarnCount(warn.mock.calls) }
+    } finally {
+      warn.mockRestore()
+    }
+  }
+
+  // 対照: 正常な電文では記録を残さない。鳴りっぱなしだと本物の異常が埋もれる。
+  it('度分を読めたときは記録を残さない', () => {
+    expect(withWarnSpy(() => parseEarthquakeFromXml('VXSE61', VXSE61_XML)!).warns).toBe(0)
+  })
+
+  // 安全弁: VXSE61 なのに度分が無い電文。度単位へ落ちること自体は許すが、黙って落ちない。
+  // ずれは有効な座標の形をしていて画面にも読み上げにも異常として出ないため、記録が唯一の手がかり。
+  it('VXSE61 に度分が無ければ度単位へ落ちたことを記録する', () => {
+    const xml = VXSE61_XML.replace(/<jmx_eb:Coordinate type="震源位置（度分）"[\s\S]*?<\/jmx_eb:Coordinate>/, '')
+    const r = withWarnSpy(() => parseEarthquakeFromXml('VXSE61', xml)!)
+    expect(r.value.earthquake.hypocenter.latitude).toBe(40.2)
+    expect(r.value.earthquake.hypocenter.depth).toBe(40)
+    expect(r.warns).toBe(1)
+  })
+
+  // 安全弁: 度分として読めない値（分が 60 以上）。度単位の値を誤って度分の要素へ入れた電文が
+  // これにあたる。「0 度 40.2 分」＝ 0.67 度という有限だが全く違う座標にせず、丸めた側へ落とす。
+  it('度分が壊れていれば度単位へ落として記録する', () => {
+    const xml = VXSE61_XML.replace('+4012.6+14218.2-44000/', '+40.2+142.3-44000/')
+    const r = withWarnSpy(() => parseEarthquakeFromXml('VXSE61', xml)!)
+    expect(r.value.earthquake.hypocenter.latitude).toBe(40.2)
+    expect(r.value.earthquake.hypocenter.longitude).toBe(142.3)
+    expect(r.warns).toBe(1)
+  })
+
+  // 安全弁: 分が 60 以上の値（分として成り立たない）。`degreeMinuteToDegrees` の `min < 60` は
+  // 突き合わせとは別の防御で、こちらは**突き合わせる相手が無くても**効く。閾値の向きが
+  // 静かに反転しても気づけるよう、この分岐だけを踏むケースを固定しておく。
+  it('分が 60 以上の度分は採らない', () => {
+    const xml = VXSE61_XML.replace('+4012.6+14218.2-44000/', '+4065.5+14218.2-44000/')
+    const r = withWarnSpy(() => parseEarthquakeFromXml('VXSE61', xml)!)
+    expect(r.value.earthquake.hypocenter.latitude).toBe(40.2)
+    expect(r.warns).toBe(1)
+  })
+
+  // 突き合わせる相手（度単位の座標）を消した電文。`degreeMinuteCoordProblem` は相手が無いと
+  // 無条件に許すので、ここで効くのは `degreeMinuteToDegrees` の `min < 60` だけになる。
+  const dmOnly = (coord: string) => VXSE61_XML
+    .replace(/<jmx_eb:Coordinate description=[^>]*>[^<]*<\/jmx_eb:Coordinate>/, '')
+    .replace('+4012.6+14218.2-44000/', coord)
+
+  // 対照: 度単位を消しただけなら、度分がそのまま読める（下の安全弁が「消したせい」で
+  // 通っているのではないことを示す）。
+  it('度分しか無い電文でも度分を読む', () => {
+    const q = parseEarthquakeFromXml('VXSE61', dmOnly('+4012.6+14218.2-44000/'))!
+    expect(q.earthquake.hypocenter.latitude).toBe(40.21)
+  })
+
+  // 安全弁: 分が 60 以上（分として成り立たない値）。突き合わせが使えないこの経路では
+  // `min < 60` だけが防御になる。採ってしまうと 41.09 度という有限だが誤った座標が流れる。
+  it('突き合わせる相手が無くても分が 60 以上の度分は採らない', () => {
+    expect(parseEarthquakeFromXml('VXSE61', dmOnly('+4065.5+14218.2-44000/'))).toBeNull()
+  })
+
+  // 対照: 度分の座標を持たない電文（VXSE53 等）は従来どおり度単位の座標を読む。
+  // 選び方を「常に 2 つ目」にすると、この経路が壊れる。
+  it('度分の座標を持たない電文は 1 つ目の座標を読む', () => {
+    const q = parseEarthquakeFromXml('VXSE53', VXSE53_XML)!
+    expect(Number.isFinite(q.earthquake.hypocenter.latitude)).toBe(true)
+    expect(q.earthquake.hypocenter.latitude).toBeGreaterThan(20)
+    expect(q.earthquake.hypocenter.latitude).toBeLessThan(50)
+  })
+})
+
+
+// 気象庁の原文は全角（"０．２ｍ未満"）だが、画面と読み上げはずっと半角で出してきた。
+// JSON 経路は数値から `${value}m` と半角で組むため、XML 経路だけ全角だと同じ津波でも
+// 履歴で開いたかライブで受信したかで表示が変わる。実電文 62 通の照合で 375 箇所ずれていた。
+describe('波高の表示文字列は半角に揃える', () => {
+  const xmlWith = (desc: string) => PARITY_TSUNAMI_XML.replace('description="８．５ｍ以上"', `description="${desc}"`)
+
+  // 正: 全角の数字・小数点・単位を半角へ直す。
+  it('全角の数字・小数点・単位を半角にする', () => {
+    const t = parseTsunamiFromXml(xmlWith('０．２ｍ'))!
+    expect(t.observations![0].height?.description).toBe('0.2m')
+  })
+
+  // 安全弁: 「未満」「以上」「超」といった語は残す。数字だけを見て組み直すと、
+  // 「０．２ｍ未満」（津波予報・若干の海面変動）が「0.2m」に化けて意味が変わる。
+  it('数値に添えられた語は落とさない', () => {
+    expect(parseTsunamiFromXml(xmlWith('０．２ｍ未満'))!.observations![0].height?.description).toBe('0.2m未満')
+    expect(parseTsunamiFromXml(xmlWith('８．５ｍ以上'))!.observations![0].height?.description).toBe('8.5m以上')
+  })
+
+  // 対照: 数字を含まない表示文字列（「巨大」「高い」）はそのまま通す。
+  it('数値で表せない波高はそのまま残す', () => {
+    expect(parseTsunamiFromXml(xmlWith('巨大'))!.observations![0].height?.description).toBe('巨大')
+  })
+
+  // 安全弁: 前後の空白は落とす（実電文に先頭が全角空白の "　１ｍ" があった）。
+  it('前後の空白を落とす', () => {
+    expect(parseTsunamiFromXml(xmlWith('　１ｍ'))!.observations![0].height?.description).toBe('1m')
+  })
+
+  // 安全弁: over の判定は生の description を見ている。半角化した文字列で判定するように
+  // 変えても「以上」は残るので通ってしまうが、判定の入力を取り違えないことを固定しておく。
+  it('半角化しても「以上」から over を立てる', () => {
+    expect(parseTsunamiFromXml(xmlWith('８．５ｍ以上'))!.observations![0].height?.over).toBe(true)
+    expect(parseTsunamiFromXml(xmlWith('８．５ｍ'))!.observations![0].height?.over).toBeUndefined()
   })
 })

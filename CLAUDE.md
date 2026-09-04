@@ -622,6 +622,8 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 震度の区域集約の閾値が自動フィットの寄り上限と同値であること（ペイン寸法で変わるため定数に置けない。独自の値を置くと大きな画面で震度塗りが出ない） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §7 |
 | 震度の面（観測点の補間）と区域塗りを重ねないこと（**面と観測点ドットが同じ式・区域塗りがその否定**の 3 つで対になっており、どれか 1 つの式だけを変えると発表値と推定が同じ画面に並ぶ／渡すのは `stationMarkers` で区域の代表点を混ぜない／**寄っても消さない**） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §9「QuakeIntensitySurfaceGL」 |
 | 震度集約の単位（一次細分区域）・観測点 0 件時の集約維持 | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §7 |
+| VXSE61（震源要素更新）の座標は **`type="震源位置（度分）"` の要素**から読むこと（同じ Area にある度単位の要素は、津波情報等で使うためのものだと電文自身が断っている丸め値で、採ると深さまでずれる・度分かどうかは `type` 属性で見て桁数から推測しない・**丸めた側へ落ちたら必ず記録を残す**（ずれた座標は有効な値の形をしていて画面にも読み上げにも異常として出ない）・読めるかの判定は「分が 60 以上」と「度単位の座標と 0.1 度を超えて食い違う」の 2 段で、**度単位の値が度分の要素に入っていた場合は後者でしか捕まらない**） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §3「震源要素更新（VXSE61）の座標」 |
+| 震度速報（VXSE51）の規模は `NaN`（不明）にすること。`0` にしない（`hasMagnitude(0)` は真を返すため「Ｍ０．０」と実測値のように表示・読み上げされる） | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §5 |
 | 遠地地震の識別（VXSE53・`Head/Title`）・付加文コードと `forecastText` | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §3（遠地地震に関する情報） |
 | 付加文が 2 種類あること（固定＝区分の定型文で**区分が変わらない限り続報でも変わらない**／自由＝電文ごとの本文で**続報で動くのはこちら**）・自由付加文は改行と空白を保つこと（全角スペース整形の表が入る）・読み上げには載せず画面だけに出すこと・未知コードの警告は「既知を取り除いて残ったもの」で判定すること（1 つでも既知なら黙る形にすると 022x 系と同居した新コードを見逃す）・VXSE61 は自由付加文を必ず持つため統合時に更新報の値を優先すること | [`docs/spec/quake-spec.md`](docs/spec/quake-spec.md) §3「津波の付加文（固定と自由の 2 種類）」 |
 
@@ -634,6 +636,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 津波の観測点の並び順（区域と同じくカードに揃える・実体は `tsunami.ts` の `sortObservationsForCardDisplay`・等級カードの順を並べる定数もカードと共有する・**選抜（深刻な順）と並び（カード順）は別物**） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §9「観測点の並び順」 |
 | 並べ替えに渡す材料をカードと同じにすること（区域＋マージ済み観測点。組み立ては `useLiveEventHandler` の `tsunamiCardOrderBasis` に集約し、**読み上げ・ブラウザ通知の本文・受信時スクロールの送り先・区域単位で等級が動いた報**の 4 経路で共有する。電文の `areas` / `observations` を直接使わない・続報は区域を持たないため基準は画面が出している津波から引く・**前報を引き継ぐ条件はカードの状態更新と同じ述語**（`isTsunamiContinuation`）で判定する・**等級を切り替える報で最も大きくずれる**（観測点をほとんど載せないため、電文の分だけで並べると電文順へ戻る）・並びを作る関数（読み上げの `tsunamiToSegments` / `tsunamiDowngradeToSegments` と `tsunamiAreaGradeChanges`）は第 2 引数で受け取り**省略すると電文の分だけで並べる**ので受信経路からは必ず渡す） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §9「並べ替えに渡す材料はカードと同じものにする」 |
 | 上限で読まなかった到達確認を既読にしないこと（絞り込みは読み上げ文の生成と共有する＝`selectArrivalsToSpeak`） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §10「読み上げた観測点の記憶は画面用と分ける」 |
+| 波高の表示文字列（`description`）は両経路とも半角で渡すこと（原文は全角・XML 経路は `toHalfWidthHeightDesc` で数字と単位だけ直す・**「未満」「以上」「超」「巨大」といった語は残す**（数値だけで組み直すと「０．２ｍ未満」が「0.2m」に化けて意味が変わる）・`over` の判定と記録は生の属性値を見る） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §6「波高の表示文字列は半角へ揃える」 |
 | 観測波高の深刻さの順（「○m以上」は値の大小より**先に**見る・カードの区域の並びと読み上げの観測点の選抜で同じ `compareObservedHeightDesc` を使う・表示文字列に「以上」を二重に付けない・アプリ側で言い換えない） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §6「観測波高の「以上」」 |
 | 津波の予想波高「あり／なし」の判定（`hasForecastHeight`。`maxHeight` の有無ではなく `description` の中身で見る。食い違うと値 0 の区域がカードにも読み上げにも出ない。DMDATA と P2PQuake で波高の有無が変わる非対称性も同節） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §9「予想波高の有無」 |
 | 津波の解除経路（`cancelReason` 3 種・DMDSS 限定・standard 版フォールバック） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §3 |
