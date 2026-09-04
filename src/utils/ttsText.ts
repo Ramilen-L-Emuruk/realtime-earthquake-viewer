@@ -26,7 +26,7 @@ const warnNoRegionNames = createLogThrottle(NO_REGION_LOG_THROTTLE_MS)
 
 // 県内の一次細分区域が全部同じ階級で揃っている場合、区域名の列挙を「〇〇県」1件にまとめる。
 // 入力の出自は問わない（電文の区域点／観測点から逆引きした区域名／都道府県ロールアップ名のどれでも
-// 通る）。DMDATA JSON 電文由来の区域点は pref が空文字（dmdataParser.ts 参照）のため、
+// 通る）。DMDATA 経路の区域点は pref が空文字（`parseEarthquakeFromXml` 参照）のため、
 // areaPrefIndex（区域名→県名の逆引き）で補完してからグルーピングする。
 // prefAreaNames が引けない（未読み込み）場合はまとめず区域名をそのまま返す。
 //
@@ -123,7 +123,7 @@ function regionNamesForScale(
       if (!prefsWithRegion.has(pref)) resolved.push({ pref, addr: pref })
     }
     // 観測点を 1 つも持たない県は都道府県ロールアップ点から拾う。観測点が取れた時点で打ち切ると、
-    // その県が読み上げから黙って消える（DMDATA JSON 経路は区域・観測点・県の 3 種が同時に届く）。
+    // その県が読み上げから黙って消える（DMDATA の電文は区域・観測点・県の 3 種が同時に届く）。
     for (const p of matched) {
       if (!p.isArea || !p.pref || p.addr !== p.pref) continue
       if (prefsWithRegion.has(p.pref) || prefsWithoutRegion.has(p.pref)) continue

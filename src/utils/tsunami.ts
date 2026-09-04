@@ -407,18 +407,16 @@ function collectConditionFlags(
  * 並べる（電文解説資料 Ⅱ.12 の事例に「重要 欠測」「微弱 欠測」「観測中 欠測」がある）ため、
  * 文字列の完全一致では読み取れない。
  *
- * DMDATA の JSON はこの `Condition` を `condition`（微弱・観測中・重要・第１波識別不能）と
- * `status`（欠測）の 2 つに分けて配る。**呼び出し側で空白を挟んで繋いで渡せば**、XML と同じ
- * 扱いになる（経路ごとに判定を書き分けない）。
+ * **入力は 3 つに分かれる**（下の引数）。どこに現れた状態かで意味が違うため、まとめずに渡す。
  *
  * 何も立たなければ `undefined` を返す（大多数の観測点は状態を持たない）。
  */
 export function parseTsunamiObservationCondition(input: {
-  /** `FirstHeight/Condition`（JSON は `firstHeight.condition` と `firstHeight.status`）。 */
+  /** `FirstHeight/Condition`。 */
   firstHeight?: string
-  /** `MaxHeight/Condition`（JSON は `maxHeight.condition` と `maxHeight.status`）。 */
+  /** `MaxHeight/Condition`。 */
   maxHeight?: string
-  /** `jmx_eb:TsunamiHeight@condition`（JSON は `maxHeight.height.condition`）。 */
+  /** `jmx_eb:TsunamiHeight@condition`。 */
   heightCondition?: string
 }): TsunamiObservationCondition | undefined {
   const condition: TsunamiObservationCondition = {}

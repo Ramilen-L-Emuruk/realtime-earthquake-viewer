@@ -71,7 +71,7 @@ afterAll(() => {
 })
 
 function area(addr: string, scale: number): EarthquakePoint {
-  // pref を空にして、区域名から県を逆引きする実運用の経路（DMDATA JSON 電文）を通す。
+  // pref を空にして、区域名から県を逆引きする実運用の経路（DMDATA の電文）を通す。
   return { pref: '', addr, isArea: true, scale: scale as IntensityScale }
 }
 
@@ -83,7 +83,7 @@ function station(pref: string, addr: string, scale: number): EarthquakePoint {
   return { pref, addr, isArea: false, scale: scale as IntensityScale }
 }
 
-/** 都道府県ロールアップ点（DMDATA JSON 経路の prefectures[] 由来）。→ docs/spec/quake-spec.md §4 */
+/** 都道府県ロールアップ点（DMDATA 経路の Pref 直下の MaxInt 由来）。→ docs/spec/quake-spec.md §4 */
 function prefRollup(pref: string, scale: number): EarthquakePoint {
   return { pref, addr: pref, isArea: true, scale: scale as IntensityScale }
 }
@@ -333,7 +333,7 @@ describe('震度の地域列挙: 観測点しか持たない電文（P2PQuake �
   })
 
   // 安全弁: 観測点が取れた時点で打ち切ると、観測点を持たない県が黙って消える。
-  // DMDATA の JSON 経路は区域・観測点・都道府県ロールアップ点の 3 種が同じ電文で届く。
+  // DMDATA の電文は区域・観測点・都道府県ロールアップ点の 3 種が同時に届く。
   it('観測点を持たない県は都道府県ロールアップ点から拾う', () => {
     const quake = makeQuake(
       [station('新潟県', '糸魚川市一の宮', 40), prefRollup('岩手県', 40)],

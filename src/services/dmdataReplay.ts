@@ -586,9 +586,8 @@ export async function fetchDmdataQuakeHistory(
     for (const entry of manifest) {
       if (!entry?.head || entry.head.test) continue
       if (!QUAKE_TYPES.has(entry.head.type)) continue
-      // XML 版と JSON 版の 2 エントリで載るうち、JSON パーサで読める方だけを拾う
+      // XML 版と JSON 版の 2 エントリで載るうち、XML 版（originalId 無し）だけを拾う
       // （`fetchDmdataReplayEvents` と同じ重複排除。正常動作なので警告は出さない）。
-      // 上と同じ理由で XML 版（originalId 無し）を採る。JSON 版は正常な重複排除として捨てる。
       if (entry.originalId) continue
 
       const entryTime = new Date(typeof entry.head.time === 'string' ? entry.head.time : NaN)
