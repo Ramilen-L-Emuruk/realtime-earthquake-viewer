@@ -178,11 +178,11 @@ function warnIfNoLpgmRegions(maxClass: number, regionCount: number, logPrefix: s
 // 震度を伝える電文（VXSE51/53）なのに点を 1 件も取り出せなかった場合を記録する。
 //
 // 種別ごとの全滅検知（`IntensityDropTally`）は「元要素はあるのに読めなかった」を捕まえるが、
-// **元要素そのものが見えなくなった場合**（`Observation` の位置が変わった・セレクタが壊れた・
-// JSON のキーが改名された）は数える対象が 0 件になるため素通りする。そこだけをこちらで拾う。
+// **元要素そのものが見えなくなった場合**（`Observation` の位置が変わった・要素名が改名された・
+// セレクタが壊れた）は数える対象が 0 件になるため素通りする。そこだけをこちらで拾う。
 //
 // **「震度を伝える電文か」の判定は `headType` で行う。** 点を取り出すかどうかを決めている
-// `parseEarthquake` の条件（`headType === 'VXSE53' || headType === 'VXSE51'`）をそのまま持って
+// `parseEarthquakeFromXml` の条件（`headType === 'VXSE53' || headType === 'VXSE51'`）をそのまま持って
 // きている。`issueType` で言い換えると、同じ事実を別々に導いた 2 つの判定ができて、いずれ
 // ずれる ―― `resolveIssueType` は**未知の headType を `'震源・震度情報'` へ落とす**ので、
 // 点を作らない電文が「震度を伝える電文」に見える。
@@ -201,8 +201,8 @@ function warnIfNoIntensityPoints(
   log.warn(`${logPrefix} ${headType} は震度を伝える電文ですが、震度の点を 1 件も取り出せませんでした`)
 }
 
-// DMDATA JSON v1.1.0 では earthquake.domesticTsunami が存在しない。
-// body.comments.forecast.codes（気象庁防災情報XML 固定付加文コード表）から津波情報区分を導出する。
+// 電文は津波情報区分を 1 つの要素では持たない。固定付加文のコード
+//（気象庁防災情報XML 固定付加文コード表）から導出する。
 // 0211: 津波警報等（大津波警報・津波警報あるいは津波注意報）を発表中
 // 0212: 日本の沿岸では若干の海面変動、被害の心配なし
 // 0213: 海面変動継続、海水浴や磯釣り等注意
@@ -264,7 +264,7 @@ function extractForecastText(rawText: string, codes: unknown[]): string {
 }
 
 /**
- * 電文種別コードと Head/Title（JSON は `title`）から issue.type を決める。
+ * 電文種別コードと `Head/Title` から issue.type を決める。
  *
  * 遠地地震は各地の震度と同じ VXSE53 で配信され、`Head/Title` だけが「遠地地震に関する情報」になる
  * （`Control/Title` は「震源・震度に関する情報」のまま）。通常報・取消報のどちらもこの規則で判定する。
@@ -307,16 +307,14 @@ function xmlChild(parent: Element, localName: string): Element | null {
 }
 
 // 電文の発表元（issue.source）。実電文の Control は EditorialOffice（例「気象庁本庁」）と
-// PublishingOffice（例「気象庁」）を併せ持つ。JSON 経路が
-// `data.editorialOffice ?? data.publishingOffice` の順で読むため、XML 経路も同じ順で解決する。
+// PublishingOffice（例「気象庁」）を併せ持ち、編集官署を先に採る。
 //
 // Control 直下に限るのは、同名要素が他の位置に現れた電文で取り違えないため。
-// どちらも無ければ空文字を返す（JSON 経路も str() で空文字に落ちる）。
+// どちらも無ければ空文字を返す。
 //
-// **空文字の扱いだけは JSON 経路と一致しない。** ここは `||` なので
-// `<EditorialOffice></EditorialOffice>`（要素はあるが空）でも PublishingOffice へ落ちるが、
-// JSON 経路は `??` なので `editorialOffice: ''` はそのまま空文字を返す。issue.source は
-// 現状どのコンポーネントからも読まれないため実害は無いが、この値を使うコードを足すときは見ておくこと。
+// **空の要素は「無い」と同じに扱う。** `||` なので `<EditorialOffice></EditorialOffice>`
+// （要素はあるが空）でも PublishingOffice へ落ちる。issue.source は現状どのコンポーネントからも
+// 読まれないため実害は無いが、この値を使うコードを足すときは見ておくこと。
 function parseIssueSourceFromXml(doc: Document): string {
   const controlEl = xmlQ(doc, 'Control')
   if (!controlEl) return ''
@@ -330,8 +328,8 @@ function xmlText(el: Element | null): string {
 
 // 度分表記（"+4012.6" = 北緯 40 度 12.6 分）を 10 進度へ直す。読めない値は NaN を返す。
 //
-// 小数第 4 位で丸めるのは DMDATA の JSON 変換に合わせるため（"40.2100" / "142.3033"）。
-// 丸めないと同じ電文でも経路によって末尾がずれる。
+// 小数第 4 位で丸めるのは、度分を 60 で割った端数を切るため（"40.2100" / "142.3033"）。
+// 丸めないと 40.21000000000001 のような値が座標として流れる。
 //
 // **分が 60 以上の値は捨てる**（例: "+4065.5"）。分として成り立たない値なので、有限性しか
 // 見ていない呼び出し元の防御を素通りさせず、ここで NaN にして落とす。
@@ -419,15 +417,16 @@ function readHypocenterCoord(areaEl: Element, headType: string): { lat: number; 
 }
 
 /**
- * XML 電文（VXSE45 等）を EEWAlert に読む。JSON 版 `parseEEW` と対になる。
+ * XML 電文（VXSE45 等）を EEWAlert に読む。
  *
- * JSON 版が真偽値で受け取る 3 つは、XML では次の形で現れる（実電文 21 通で確かめた）。
+ * **`EEWAlert` の真偽値は、電文の形から組み立てる。** 電文はどれも真偽値では持たない
+ * （実電文 21 通で確かめた）。
  *
- * | JSON | XML |
+ * | 立てるもの | 電文での表れ |
  * |---|---|
- * | `body.isCanceled` | `Head/InfoType` が「取消」 |
- * | `body.isLastInfo` | `Body/NextAdvisory` に最終報の文言 |
- * | `body.isWarning` | 区域の `Category/Kind/Name` が「緊急地震速報（警報）」 |
+ * | `cancelled` | `Head/InfoType` が「取消」 |
+ * | `isFinal` | `Body/NextAdvisory` に最終報の文言（取消も打ち切りなので立てる） |
+ * | `severity: 'Warning'` | 区域の `Category/Kind/Name` が「緊急地震速報（警報）」 |
  *
  * **`Condition` は要素の位置で意味が変わる。** `Earthquake` 直下は震源の状態（「仮定震源要素」）、
  * `Pref/Area` 直下は区域の状態（「既に主要動到達と推測」）。子孫から拾うと、警報級の電文で
@@ -474,7 +473,7 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
   const lgClass = parseInt(lgTop.to || lgTop.from, 10)
 
   const areas: EEWRegion[] = []
-  // 警報級かどうかは区域の Kind 名で判る（実電文 21 通で JSON の body.isWarning と一致）。
+  // 警報級かどうかは区域の Kind 名で判る（実電文 21 通で確かめた）。
   // 区域を回るついでに拾う ―― 名前で引き直すと、同名の区域があるときに取り違える。
   let sawWarningKind = false
   for (const prefEl of forecastEl ? xmlAll(forecastEl, 'Pref') : []) {
@@ -551,7 +550,10 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     return {
       kind: 'quake',
       id: `dmdata-quake-${eventId}-${serial}`,
-      // JSON 経路の取消と同じ理由で持たせる（そちらのコメント参照）。
+      // **取消でも通常報と形を揃える。** 同一性の判定（`sameQuakeEntry` 等）は id 文字列から
+      // 14 桁を抜く `extractQuakeEventId` を通るので、このフィールドの有無では挙動は変わらない。
+      // 揃えておくのは、次にこのフィールドを使うコードが「取消だけ持たない」ことを知らずに
+      // 取りこぼすのを防ぐため（読んでいるのは TsunamiTab の原因地震リンク）。
       eventId: eventId || undefined,
       time: reportDateTime,
       cancelled: true,
@@ -562,7 +564,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   }
 
   // VXSE51（震度速報）は震源が未確定の段階で発表されるため Earthquake 要素を持たない。
-  // JSON 経路（parseEarthquake）と同じく、この電文だけ震源なしを許容する。
+  // **この電文だけ震源なしを許容する。** 他の種別で無いのは電文の異常。
   const earthquakeEl = xmlQ(doc, 'Earthquake')
   if (!earthquakeEl && headType !== 'VXSE51') {
     return dropTelegram(DMDATA_LOG_PREFIX, `${headType} に Earthquake 要素がありません`)
@@ -586,8 +588,8 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   }
 
   // 震度速報は Head/TargetDateTime（地震検知時刻）を earthquake.time に充てる。
-  // 通常電文は arrivalTime を優先し、無ければ originTime にフォールバックする（JSON 経路の
-  // parseEarthquake と揃える。DMD-4: 従来 XML は OriginTime を採用し JSON と 1 分ずれていた）。
+  // 通常電文は arrivalTime を優先し、無ければ originTime にフォールバックする
+  // （DMD-4: かつて OriginTime を採っていて、同じ地震の時刻が 1 分ずれていた）。
   const originTime = earthquakeEl
     ? (xmlText(xmlQ(earthquakeEl, 'ArrivalTime')) || xmlText(xmlQ(earthquakeEl, 'OriginTime')))
     : xmlText(xmlQ(doc, 'TargetDateTime'))
@@ -618,7 +620,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     if (allEls[i].localName === 'Pref') prefEls.push(allEls[i])
   }
   for (const prefEl of prefEls) {
-    // 都道府県ロールアップ点。JSON 経路の intensity.prefectures[] に対応する。
+    // 都道府県ロールアップ点（電文の Pref 直下が持つ県別の最大震度）。
     // EarthquakeCard は pref の有無で「都道府県の点」と「区域の点」を見分けるため、
     // ここだけ pref に名前を入れる（区域・観測点は下で pref: '' にする）。
     //
@@ -640,7 +642,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
       const el = descendants[i]
 
       if (el.localName === 'Area') {
-        // 区域は JSON 経路の regions[] と同じ規約で pref を空にする。EarthquakeCard は
+        // 区域は pref を空にする。EarthquakeCard は
         // pref の有無で「都道府県の点」と「区域の点」を見分けるため（座標側は
         // useQuakeLayerData が区域名から都道府県を逆引きして引き当てる）。
         const areaName = xmlText(xmlChild(el, 'Name'))
@@ -662,7 +664,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
       const intStr = xmlText(xmlChild(el, 'Int'))
       const scale = parseIntensityStr(intStr || null)
       if (stName && scale >= 0) {
-        // QUAKE-2: 観測点は JSON 経路の stations[] と同じ規約で pref を空にする。
+        // QUAKE-2: 観測点も区域と同じく pref を空にする。
         // 以前は pref: prefName を付けていたため EarthquakeCard.prefGroups が
         // 「観測点値」を都道府県別最大震度と誤解し、区域単位の最大震度が観測点値に
         // 上書きされて低震度に見える不具合があった。
@@ -689,18 +691,18 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     ? xmlAll(forecastCommentEl, 'Code').flatMap(el => xmlText(el).split(/\s+/)).filter(Boolean)
     : []
   const domestic = parseDomesticTsunamiFromComments({ forecast: { codes: forecastCodes } })
-  // 付加文の原文（ForecastComment > Text）。JSON 経路の comments.forecast.text と同じ内容。
+  // 付加文の原文（ForecastComment > Text）。
   const forecastText = extractForecastText(
     forecastCommentEl ? xmlText(xmlQ(forecastCommentEl, 'Text')) : '',
     forecastCodes,
   )
-  // 自由付加文（JSON 経路の comments.free と同じ内容）。`xmlText` が前後の空白だけを落とす。
+  // 自由付加文（FreeFormComment）。`xmlText` が前後の空白だけを落とす。
   const freeText = xmlText(xmlQ(doc, 'FreeFormComment'))
 
   return {
     kind: 'quake',
     id: `dmdata-quake-${eventId}-${serial}`,
-    // 空文字は undefined に落とす（JSON 経路の `eventId || undefined` と同じ形）。
+    // 空文字は undefined に落とす。
     // TsunamiTab は q.eventId を直接比較して原因地震カードへのリンクを作るため、
     // フィールドを落とすと履歴経由のカードがそのリンクに引き当たらない。
     eventId: eventId || undefined,
@@ -715,7 +717,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
       time: originTime,
       hypocenter: {
         name: hypName,
-        // 震度速報は震源情報なし。-200 は「位置不明」センチネル（JSON 経路と同じ）。
+        // 震度速報は震源情報なし。-200 は「位置不明」センチネル（P2PQuake 経路と揃えてある）。
         latitude: Number.isFinite(lat) ? lat : -200,
         longitude: Number.isFinite(lng) ? lng : -200,
         depth,
@@ -735,8 +737,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
 // 波高の表示文字列（XML の `description` 属性）を半角へ直す。
 //
 // 気象庁の原文は全角（"０．２ｍ未満" / "８．５ｍ以上"）だが、画面と読み上げはずっと半角で
-// 出してきた。JSON 経路も数値から `${value}m` と半角で組むため、XML 経路だけ全角になると
-// **同じ津波でも履歴で開いたかライブで受信したかで表示が変わる**。
+// 出してきた。**原文のまま流すと、同じ値でも全角と半角が混じって並ぶ。**
 //
 // 直すのは数字・小数点・単位だけ。「未満」「以上」「超」「巨大」といった語はそのまま残す
 // （原文が持つ意味を落とさないため。数字を含まない "巨大" は素通りする）。
@@ -754,7 +755,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   if (!doc) return null
 
   const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
-  // 空文字は undefined に落とす（JSON 経路の `str(data.eventId) || undefined` と同じ形）。
+  // 空文字は undefined に落とす。
   // 「同一イベントか」の判定はどこも falsy 判定で書かれているのに対し、キーの導出側が空文字を
   // 有効な識別子として扱うと、識別子を持たない電文どうしが同じ津波として束ねられる。
   const eventId = xmlText(xmlQ(doc, 'EventID')) || undefined
@@ -858,7 +859,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
     const heightVal = heightEl ? parseFloat(xmlText(heightEl)) : NaN
     // description 属性は実電文では入っていた（確かめた範囲は
     // → docs/spec/tsunami-spec.md §6「観測波高の「以上」」）。それでも数値から組む道を残すのは、
-    // JSON 経路が condition が空のとき同じことをしているため（表示・読み上げは description しか
+    // 属性が空でも波高を出せるようにするため（表示・読み上げは description しか
     // 見ないので、空だと波高が画面から消える）。
     const heightDesc = toHalfWidthHeightDesc(heightEl?.getAttribute('description') ?? '')
       || (!isNaN(heightVal) ? `${heightVal}m` : '')
@@ -905,8 +906,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   // **「区域を読めなかった」をここへ流し込まないこと。** 名前が読めない区域を捨てた結果として
   // 0 件になった場合まで解除と解釈すると、電文の構造が変わったときに
   // **「津波警報が解除されました」という事実と逆の内容を発表する**（無言で消えるより重い）。
-  // JSON 経路（`parseTsunami`）は名前が空でも区域を積むため 0 件にならず、この化けは
-  // XML 経路にしか無かった。読めなかった区域が 1 件でもあれば解除と見なさず、電文ごと捨てる。
+  // 読めなかった区域が 1 件でもあれば解除と見なさず、電文ごと捨てる。
   // 電文の区域は 3 つのどれかに入る —— **有効**（`areas` へ積んだ）・**解除済み**（解除コードが
   // 読めた。名前の可否を問わない）・**解除と言えない**（名前が読めず、解除コードでもない）。
   //
@@ -969,22 +969,23 @@ function parseTsunamiObservationsFromXml(observationEl: Element): import('../typ
       // 電文が書いた表示文字列。over の判定と下の記録はこの生の値だけを見る
       // （表示のために補った文字列を混ぜると「電文が何と言ったか」が分からなくなる）。
       const rawHeightDesc = heightEl?.getAttribute('description') ?? ''
-      // 観測可能範囲を超えた値・機器が被災した値は「〇m以上」の形で発表される。JSON 経路は
-      // maxHeight.height.over の真偽値で受け取るが、XML の TsunamiHeight に真偽値の属性は無いため、
+      // 観測可能範囲を超えた値・機器が被災した値は「〇m以上」の形で発表される。
+      // **電文はこれを真偽値では持たない**（`TsunamiHeight` にその属性は無い）ので、
       // 気象庁が組んだ表示文字列である description の文言から復元する。
       // **「以上」が付く実電文は未確認。** 語彙の傍証と、この判定が空振りしうる条件は
       // → docs/spec/tsunami-spec.md §6「観測波高の「以上」」。
-      // false ではなく undefined に落とすのは JSON 経路（over || undefined）と形を揃えるため。
+      // false ではなく undefined に落とす。「以上」が付かない大多数の観測点に
+      // 意味の無いフィールドを持たせない。
       const over = rawHeightDesc.includes('以上') || undefined
-      // description が空だと over を復元する手がかりが無い。JSON 経路には「波高は読めないが
-      // over は立っていた」ケースの記録が下にあるのに対し、XML 経路の over は description が
+      // description が空だと over を復元する手がかりが無い。下には「波高は読めないが
+      // over は立っていた」ケースの記録があるのに対し、over は description が
       // 唯一の情報源なので、落ちた事実を残さないと「以上」が黙って通常値として扱われる。
       // 波高そのものが読めない電文は下の height ごと落ちる経路で扱うため、ここでは除く。
       if (!isNaN(heightVal) && !rawHeightDesc) {
         log.warn(`[tsunami XML] 波高の description 属性が空のため「以上」を判定できません: ${name}`)
       }
       // 逆に、数値が読めないのに「以上」が書かれている電文。height ごと落ちるので表示は
-      // 変わらないが、JSON 経路には対になる記録があるため、XML 経路だけ痕跡が残らない状態を作らない。
+      // 変わらないが、痕跡が残らない状態を作らない（上の空 description と対になる記録）。
       if (isNaN(heightVal) && over) {
         log.warn(`[tsunami XML] 「以上」の観測値だが波高が数値として読めません: ${name}`)
       }

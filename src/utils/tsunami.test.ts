@@ -707,8 +707,10 @@ describe('parseTsunamiObservationCondition', () => {
       .toEqual({ maxHeightMissing: true })
   })
 
-  it('正: DMDATA の condition と status を空白で繋いだ形も読める', () => {
-    // JSON 経路はこの形で渡す（`dmdataParser`）。XML と同じ結果になること
+  it('正: 空白で併記された 2 つの状態を両方読める', () => {
+    // 電文の `Condition` は複数の状態を全角スペースで並べる（「重要 欠測」等）。
+    // 完全一致で照合すると、併記された時点でどちらも読めなくなる
+    // （→ docs/spec/tsunami-spec.md §6「観測状態」）。
     expect(parseTsunamiObservationCondition({ maxHeight: '重要 欠測' }))
       .toEqual({ important: true, maxHeightMissing: true })
     // 片方が空でも空白だけのトークンを拾わない
