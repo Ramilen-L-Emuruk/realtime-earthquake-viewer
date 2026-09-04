@@ -11,6 +11,7 @@ import {
   fetchDmdataNankai,
   fetchDmdataNankaiCommentary,
   fetchDmdataKohatsu,
+  decodeTelegramBody,
   DmdataWebSocket,
 } from './dmdata'
 import { DmdataApiKeyError, DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
@@ -347,6 +348,124 @@ describe('個別電文の取得に失敗したときの記録', () => {
 
     expect(warnings().filter(w => w.includes('電文を取得できませんでした'))).toHaveLength(0)
     expect(warnings().filter(w => w.includes('例外で終わりました'))).toHaveLength(0)
+  })
+})
+
+// 長周期地震動の履歴取得で、ページ送りを打ち切った理由を残す。
+//
+// **黙って `break` すると、取れたところまでが「全部取れた」ように返る。** 件数が減ったことに
+// 気づく手立てが無い。個別電文の取得側（`warnRejectedTelegrams`）と同じ形の穴が、
+// 同じ関数の一覧取得側に残っていた。
+describe('長周期地震動の一覧取得を打ち切ったときの記録', () => {
+  const KEY = 'valid-key'
+  const warnings = () => vi.mocked(log.warn).mock.calls.map(c => c.join(' '))
+
+  // 正: 一覧取得が HTTP エラーなら理由を残す
+  it('一覧が HTTP エラーなら打ち切りを記録する', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 503 }) as unknown as Response))
+
+    await fetchDmdataLpgms(KEY, '2026-09-01T00:00:00+09:00')
+
+    const hit = warnings().filter(w => w.includes('打ち切ります'))
+    expect(hit).toHaveLength(1)
+    expect(hit[0]).toContain('503')
+  })
+
+  // 正: 例外（ネットワーク断）でも理由を残す
+  it('一覧が例外で終わっても打ち切りを記録する', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network down') }))
+
+    await fetchDmdataLpgms(KEY, '2026-09-01T00:00:00+09:00')
+
+    const hit = warnings().filter(w => w.includes('打ち切ります'))
+    expect(hit).toHaveLength(1)
+    expect(hit[0]).toContain('network down')
+  })
+
+  // 対照: 一覧が空で正常に終わるページ送りでは鳴らない。
+  // 「取り終えた」と「途中で諦めた」を混ぜると、平常運転でログが埋まる
+  it('一覧が空なら打ち切りを記録しない', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true, json: async () => ({ items: [] }),
+    }) as unknown as Response))
+
+    await fetchDmdataLpgms(KEY, '2026-09-01T00:00:00+09:00')
+
+    expect(warnings().filter(w => w.includes('打ち切ります'))).toHaveLength(0)
+  })
+})
+
+// ライブ受信の body を復号できなかった理由を記録する。
+//
+// 呼び出し側（WebSocket の onmessage）は電文ログへ「復号に失敗した」とだけ残すので、
+// **4 つある失敗の別はここでしか分からない**。理由を debug 専用のログに書くと既定では
+// 何も残らないのに、コードは「記録しているから追える」と読める。
+describe('電文の body を復号できなかったときの記録', () => {
+  const warnings = () => vi.mocked(log.warn).mock.calls.map(c => String(c[0]))
+  const gzipBase64 = (obj: unknown) => {
+    // gzip は用意せず、復号で例外を出させたいときに使う不正な base64
+    void obj
+    return 'not-base64-@@@'
+  }
+
+  // 対照: 正常な body は読めて、何も記録しない
+  it('base64 の JSON は読めて記録も出さない', async () => {
+    const body = btoa(String.fromCharCode(...new TextEncoder().encode('{"a":1}')))
+    const got = await decodeTelegramBody({ body, encoding: 'base64', format: 'json' })
+    expect(got).toEqual({ a: 1 })
+    expect(warnings()).toHaveLength(0)
+  })
+
+  // 対照: 既に object の body（将来の仕様変更に備えた保険）も素通し
+  it('object の body はそのまま返し記録も出さない', async () => {
+    const got = await decodeTelegramBody({ body: { a: 1 } })
+    expect(got).toEqual({ a: 1 })
+    expect(warnings()).toHaveLength(0)
+  })
+
+  // 正: 4 つの失敗をそれぞれ別の理由として記録する
+  // base64 の復号は圧縮形式の判定より**先**に走る。不正な base64 を渡すと
+  // ここではなく「復号で例外」の側へ落ちるので、読める base64 を渡すこと
+  it('未対応の圧縮形式を記録する', async () => {
+    const got = await decodeTelegramBody({ body: btoa('x'), encoding: 'base64', compression: 'zip' })
+    expect(got).toBeNull()
+    expect(warnings().filter(w => w.includes('未対応の圧縮形式: zip'))).toHaveLength(1)
+  })
+
+  it('復号の例外を記録する', async () => {
+    const got = await decodeTelegramBody({ body: gzipBase64(null), encoding: 'base64', compression: 'gzip' })
+    expect(got).toBeNull()
+    expect(warnings().filter(w => w.includes('復号で例外が出ました'))).toHaveLength(1)
+  })
+
+  it('JSON 以外の format を記録する', async () => {
+    const got = await decodeTelegramBody({ body: '<Report/>', encoding: 'utf-8', format: 'xml' })
+    expect(got).toBeNull()
+    expect(warnings().filter(w => w.includes('JSON 以外の format: xml'))).toHaveLength(1)
+  })
+
+  it('JSON として読めないことを記録する', async () => {
+    const got = await decodeTelegramBody({ body: '{壊れている', encoding: 'utf-8', format: 'json' })
+    expect(got).toBeNull()
+    expect(warnings().filter(w => w.includes('JSON として読めません'))).toHaveLength(1)
+  })
+
+  // 安全弁: `typeof null` は 'object' を返すので、そのまま流すと
+  // 「オブジェクトでもありません: object」という矛盾した文になる
+  it('body が null なら shape を null と書く', async () => {
+    const got = await decodeTelegramBody({ body: null })
+    expect(got).toBeNull()
+    const hit = warnings().filter(w => w.includes('文字列でもオブジェクトでもありません'))
+    expect(hit).toHaveLength(1)
+    expect(hit[0]).toContain('null')
+    expect(hit[0]).not.toContain(': object')
+  })
+
+  // 安全弁: 配列も object 扱いにしない（手前の分岐が Array を弾いている）
+  it('body が配列なら shape を array と書く', async () => {
+    const got = await decodeTelegramBody({ body: [1, 2] })
+    expect(got).toBeNull()
+    expect(warnings().filter(w => w.includes('array'))).toHaveLength(1)
   })
 })
 

@@ -101,13 +101,48 @@ function base64ToBytes(b64: string): Uint8Array {
 
 // data メッセージの body を encoding/compression/format に従って復号し、JSON オブジェクトを返す。
 // format が json 以外（xml 等）や復号失敗時は null。
-async function decodeTelegramBody(msg: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+//
+// **失敗の理由はここでしか分からない。** 呼び出し側は `null` を受けて電文ログへ
+// `'body decode failed'` と記録するが、**4 つある失敗の別**（未対応の圧縮・復号の例外・
+// 想定外の format・JSON として読めない）は区別できない。理由を `dlog`（debug 専用）にだけ
+// 書くと既定では何も残らないので、この関数が常に残る側で記録する
+// （同じ判断で `[DMDSS]` の警告を出している先例が下の VYSE の分岐にある）。
+//
+// XML の電文（VYSE 系）は呼び出し側が URI から取りに行って手前で `return` するため、ここへは
+// 来ない。したがって `format !== 'json'` は異常。
+// 理由ごとに間引く。**1 本にまとめないこと** —— ブラウザが `DecompressionStream` に対応して
+// いない等の持続的な障害では同じ理由が電文のたびに鳴り続け、1 本だと**別の理由の初回が
+// そこに隠れる**。理由の種類は下の 5 つで固定なので、キーごとに持って困る量にはならない。
+const undecodableBodyThrottles = new Map<string, (emit: () => void) => void>()
+
+function warnUndecodableBody(kind: string, detail: string, msg: Record<string, unknown>): null {
+  let throttle = undecodableBodyThrottles.get(kind)
+  if (!throttle) {
+    throttle = createLogThrottle(60_000)
+    undecodableBodyThrottles.set(kind, throttle)
+  }
+  throttle(() => log.warn(`[DMDSS] 電文の body を復号できませんでした（${detail}）`, {
+    format: msg.format, compression: msg.compression, encoding: msg.encoding,
+  }))
+  return null
+}
+
+/**
+ * data メッセージの body を復号する本体。**テストから直接呼べるよう export している**
+ * （WebSocket 経由でしか到達できないと、失敗の分岐を 1 つも検証できない）。
+ */
+export async function decodeTelegramBody(msg: Record<string, unknown>): Promise<Record<string, unknown> | null> {
   const raw = msg.body
   // 既に object（将来仕様変更時の保険）
   if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
     return raw as Record<string, unknown>
   }
-  if (typeof raw !== 'string') return null
+  if (typeof raw !== 'string') {
+    // `typeof null` は 'object' を返すため、そのまま流すと「オブジェクトでもありません: object」
+    // という矛盾した文になる（手前の分岐が null を弾いた後にここへ落ちる）。
+    const shape = raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw
+    return warnUndecodableBody('shape', `body が文字列でもオブジェクトでもありません: ${shape}`, msg)
+  }
 
   const encoding = typeof msg.encoding === 'string' ? msg.encoding : 'utf-8'
   const compression = typeof msg.compression === 'string' ? msg.compression : null
@@ -123,21 +158,21 @@ async function decodeTelegramBody(msg: Record<string, unknown>): Promise<Record<
         text = new TextDecoder().decode(bytes)
       } else {
         // zip 等は DecompressionStream 非対応のため未サポート
-        return null
+        return warnUndecodableBody('compression', `未対応の圧縮形式: ${compression}`, msg)
       }
     } else {
       // encoding="utf-8" 等は生テキスト
       text = raw
     }
-  } catch {
-    return null
+  } catch (e) {
+    return warnUndecodableBody('decode', `復号で例外が出ました: ${String(e)}`, msg)
   }
 
-  if (format !== 'json') return null
+  if (format !== 'json') return warnUndecodableBody('format', `JSON 以外の format: ${format}`, msg)
   try {
     return JSON.parse(text) as Record<string, unknown>
-  } catch {
-    return null
+  } catch (e) {
+    return warnUndecodableBody('json', `JSON として読めません: ${String(e)}`, msg)
   }
 }
 
@@ -887,11 +922,20 @@ export async function fetchDmdataLpgms(
 
   for (;;) {
     const qs  = nextToken ? `&cursorToken=${nextToken}` : ''
+    // **ここで黙って `break` すると、取れたところまでが「全部取れた」ように返る。**
+    // 件数が減ったことに気づく手立てが無いので、打ち切った理由を残す
+    // （同じ形の穴を個別電文の取得側では `warnRejectedTelegrams` で塞いでいる）。
     let res: Response
     try {
       res = await fetch(`${API_BASE}/telegram?type=VXSE62&limit=20${qs}`, { headers })
-    } catch { break }
-    if (!res.ok) break
+    } catch (e) {
+      log.warn(`[dmdata] 長周期地震動観測情報の一覧取得が例外で終わったため、${collected.length} 件までで打ち切ります: ${String(e)}`)
+      break
+    }
+    if (!res.ok) {
+      log.warn(`[dmdata] 長周期地震動観測情報の一覧取得が HTTP ${res.status} のため、${collected.length} 件までで打ち切ります`)
+      break
+    }
 
     const json = await res.json() as {
       items?: Array<{ id: string; url: string; head: { type: string; time?: string } }>
