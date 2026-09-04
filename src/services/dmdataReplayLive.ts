@@ -4,9 +4,8 @@
 // アーカイブだけを見ていると、今日を指定したリプレイは電文 0 件になり、前日をまたぐ指定では
 // 「前日側だけ再生されて今日側が静まり返る」という中途半端な状態になる。
 //
-// 取得元は種別で分かれる。
-//   - 地震・津波・長周期: /v2/telegram に formatMode=json を付ける（アーカイブと同じ JSON 本体が返る）
-//   - 南海トラフ・後発地震: /v2/telegram（XML 版。これらは XML パーサでしか読めない）
+// 取得元は 2 つ。電文の読み取りは XML へ一本化しているので、どちらも XML 版の本体を取る。
+//   - 地震・津波・長周期・南海トラフ・後発地震: /v2/telegram（formatMode を付けない＝XML 版が返る）
 //   - EEW: /v2/gd/eew（イベント一覧）→ /v2/gd/eew/{eventId}（全報）→ 各報の電文 URL
 //
 // EEW だけ経路が違うのは、/v2/telegram が EEW を保持していないため（type=VXSE45 を指定しても
@@ -22,12 +21,11 @@ import { log } from '../utils/logger'
 import { authHeader } from '../utils/dmdataApiKey'
 import type { JMAQuake } from '../types/earthquake'
 import type { ReplayEntry } from '../types/replay'
-import {
-  HANDLED_TYPES, QUAKE_TYPES, XML_ONLY_TYPES,
-  buildJsonPayload, buildXmlPayload,
-} from './dmdataTelegramPayload'
+import { HANDLED_TYPES, QUAKE_TYPES, buildXmlPayload } from './dmdataTelegramPayload'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
+/** 電文本体の配信元。一覧が返す `url` と同じ形を id から組むのに使う。 */
+const DATA_BASE = 'https://data.api.dmdata.jp/v1/'
 /** 一覧 API の 1 ページあたりの取得件数（API の上限）。 */
 const LIST_LIMIT = 100
 /**
@@ -194,19 +192,18 @@ function fetchBody(url: string, apiKey: string): Promise<string> {
 /**
  * 電文一覧を全ページ取得する。
  *
- * @param jsonMode true なら JSON 版（`formatMode=json`）、false なら XML 版を返させる
+ * `formatMode` を付けないので返るのは XML 版（気象庁の電文そのもの）。JSON 版は使わない
+ * （理由は `dmdataTelegramPayload.ts` の `buildXmlPayload`）。
  */
 async function listTelegrams(
   apiKey: string,
   utcFrom: string,
   utcTo: string,
-  jsonMode: boolean,
 ): Promise<TelegramListItem[]> {
   const items: TelegramListItem[] = []
   let cursorToken: string | undefined
   for (;;) {
     const params = new URLSearchParams({ datetime: `${utcFrom}~${utcTo}`, limit: String(LIST_LIMIT) })
-    if (jsonMode) params.set('formatMode', 'json')
     if (cursorToken) params.set('cursorToken', cursorToken)
     const json = await getJson<{ items?: TelegramListItem[]; nextToken?: string }>(
       `${API_BASE}/telegram?${params.toString()}`, apiKey, 'Telegram list',
@@ -230,12 +227,10 @@ type TelegramVerdict = 'include' | 'exclude' | 'malformed'
 /**
  * 一覧の 1 件を取り込むべきか判定する。
  *
- * @param jsonMode その一覧が JSON 版を返す設定で引かれたか
  * @param days 当日経路が担当する JST 日付
  */
 function classifyTelegram(
   item: TelegramListItem,
-  jsonMode: boolean,
   fromTime: Date,
   toTime: Date,
   days: ReadonlySet<string>,
@@ -243,11 +238,9 @@ function classifyTelegram(
   if (!item?.head || item.head.test) return 'exclude'
   const headType = item.head.type
   if (!HANDLED_TYPES.has(headType)) return 'exclude'
-  // XML パーサしか無い種別は XML 版（originalId 無し）を、それ以外は JSON 版（originalId 有り）を拾う。
-  // 同じ電文が両方の版で一覧に載るため、ここで版を選ばないと二重に取り込む。
-  const wantsXml = XML_ONLY_TYPES.has(headType)
-  if (wantsXml === jsonMode) return 'exclude'
-  if (wantsXml ? Boolean(item.originalId) : !item.originalId) return 'exclude'
+  // 同じ電文が XML 版と JSON 版の 2 エントリで一覧に載る。採るのは XML 版（originalId 無し）。
+  // ここで版を選ばないと同じ電文を二重に取り込む。
+  if (item.originalId) return 'exclude'
   // 担当日の判定は受信時刻で行う（アーカイブが日をまとめる基準と同じ）。
   const received = new Date(item.receivedTime)
   if (Number.isNaN(received.getTime())) {
@@ -272,7 +265,7 @@ async function listEewTelegrams(
   utcTo: string,
   fromTime: Date,
   toTime: Date,
-): Promise<{ items: TelegramListItem[]; failedSources: string[] }> {
+): Promise<{ items: TelegramListItem[]; failedSources: string[]; skipped: number }> {
   const events: EewListItem[] = []
   let cursorToken: string | undefined
   for (;;) {
@@ -299,13 +292,29 @@ async function listEewTelegrams(
 
   const failedSources: string[] = []
   const items: TelegramListItem[] = []
+  // 組み替えに失敗した報の数。**取得元ではなく電文の件数として数える** ―― 失ったのが
+  // 「1 通」と分かっているため（イベント丸ごとを失う failedSources とは単位が違う）。
+  let skipped = 0
   await mapWithLimit(targets, BODY_CONCURRENCY, async (ev) => {
     try {
       const json = await getJson<{ items?: Array<{ telegrams?: TelegramListItem[] }> }>(
         `${API_BASE}/gd/eew/${encodeURIComponent(ev.eventId)}`, apiKey, 'EEW detail',
       )
       for (const rep of json.items ?? []) {
-        for (const tg of rep.telegrams ?? []) items.push(tg)
+        for (const tg of rep.telegrams ?? []) {
+          // ここで返る 1 件は JSON 版を指している（`url` が JSON 本体・`originalId` が元の XML の id）。
+          // 電文の読み取りは XML に一本化しているので、XML 版を指す形へ組み替えて積む。
+          // 一覧経路と同じく「originalId 無し＝XML 版」の形に揃えないと `classifyTelegram` が落とす。
+          const xmlId = tg.originalId
+          if (!xmlId) {
+            // 実測では常に付いてくるが、無ければ XML の在り処が分からず読めない。
+            // 黙って捨てると「取りこぼし 0 件」の表示のまま報が欠ける。
+            log.warn(`[replay] EEW の電文に originalId が無く XML を引けないためスキップ id=${tg.id}`)
+            skipped++
+            continue
+          }
+          items.push({ ...tg, id: xmlId, originalId: undefined, url: `${DATA_BASE}${xmlId}` })
+        }
       }
     } catch (e) {
       // 1 イベントの詳細が引けなくても他のイベントは活かす。失ったのは「そのイベントの全報」で
@@ -315,7 +324,7 @@ async function listEewTelegrams(
       failedSources.push(`eew:${ev.eventId}`)
     }
   })
-  return { items, failedSources }
+  return { items, failedSources, skipped }
 }
 
 export interface LiveReplayResult {
@@ -325,7 +334,7 @@ export interface LiveReplayResult {
   /**
    * 読めなかった取得元の識別子。
    *
-   * 引けなかった一覧（`live-telegram:<日>` / `live-telegram-xml:<日>` / `live-eew:<日>`）と、
+   * 引けなかった一覧（`live-telegram:<日>` / `live-eew:<日>`）と、
    * 全報を引けなかった EEW イベント（`eew:<eventId>`）。
    *
    * 「失ったのが何通か分からない」損失を電文の件数に混ぜないための枠。呼び出し元は
@@ -342,7 +351,7 @@ export interface LiveReplayResult {
  * @param toTime 取得したい期間の終わり（この時刻は含まない）
  * @param days 当日経路が担当する JST 日付（`resolveLiveDates` の結果）
  * @returns 再生用エントリ・取りこぼし件数・読めなかった取得元
- * @throws 3 本の一覧をすべて引けなかった場合（その日ぶんが 1 通も取れていない状態）。
+ * @throws 2 本の一覧をすべて引けなかった場合（その日ぶんが 1 通も取れていない状態）。
  *   一部だけ引けなかったときは投げず、引けた分を返して失敗を `failedSources` に記録する
  */
 export async function fetchLiveReplayEntries(
@@ -355,13 +364,12 @@ export async function fetchLiveReplayEntries(
   const daySet = new Set(days)
   const { from: utcFrom, to: utcTo } = utcRangeForJstDates(days)
 
-  // 3 本の一覧は互いに隔離する。1 本の一時障害で他の 2 本の成果まで捨てると、
+  // 2 本の一覧は互いに隔離する。片方の一時障害でもう片方の成果まで捨てると、
   // 「EEW の一覧がこけただけで今日の地震も津波も出ない」ことになる。しかも取得元が
   // 当日経路 1 本しか無い窓（本編の 1 時間）では、それが全滅と見なされて例外になり、
   // 地震電文が取れていたのに再生ごと止まる。
   const settled = await Promise.allSettled([
-    listTelegrams(apiKey, utcFrom, utcTo, true),
-    listTelegrams(apiKey, utcFrom, utcTo, false),
+    listTelegrams(apiKey, utcFrom, utcTo),
     listEewTelegrams(apiKey, utcFrom, utcTo, fromTime, toTime),
   ])
   const dayLabel = days.join(',')
@@ -378,36 +386,29 @@ export async function fetchLiveReplayEntries(
     for (const day of days) listFailures.push(`${label}:${day}`)
     return fallback
   }
-  const jsonList = take(settled[0], 'live-telegram', [] as TelegramListItem[])
-  const xmlList = take(settled[1], 'live-telegram-xml', [] as TelegramListItem[])
-  const eew = take(settled[2], 'live-eew', { items: [] as TelegramListItem[], failedSources: [] as string[] })
-  // 3 本とも引けなければ、その日ぶんは 1 通も取れていない。呼び出し元が「その日の取得元が
+  const telegramList = take(settled[0], 'live-telegram', [] as TelegramListItem[])
+  const eew = take(settled[1], 'live-eew', { items: [] as TelegramListItem[], failedSources: [] as string[], skipped: 0 })
+  // 2 本とも引けなければ、その日ぶんは 1 通も取れていない。呼び出し元が「その日の取得元が
   // 読めなかった」として扱えるよう投げる（部分的に取れた場合と区別が付かなくなるため）。
   if (failedListCount === settled.length) {
     throw new Error(`Live fetch failed: 当日経路の一覧をすべて取得できませんでした（日=${dayLabel}）`)
   }
 
-  let skipped = 0
-  // EEW は /v2/gd/eew から来るが、返る 1 件分の形は電文一覧と同じ（JSON 版）なので同じ判定に掛ける。
-  const targets: Array<{ item: TelegramListItem; xml: boolean }> = []
-  for (const cand of [
-    ...jsonList.map(item => ({ item, xml: false })),
-    ...eew.items.map(item => ({ item, xml: false })),
-    ...xmlList.map(item => ({ item, xml: true })),
-  ]) {
-    const verdict = classifyTelegram(cand.item, !cand.xml, fromTime, toTime, daySet)
+  // EEW の一覧を組み立てる段で落ちた報も取りこぼしに含める。
+  let skipped = eew.skipped
+  // EEW は /v2/gd/eew から来るが、XML 版を指す形へ組み替えてあるので同じ判定に掛けられる。
+  const targets: TelegramListItem[] = []
+  for (const item of [...telegramList, ...eew.items]) {
+    const verdict = classifyTelegram(item, fromTime, toTime, daySet)
     if (verdict === 'malformed') skipped++
-    else if (verdict === 'include') targets.push(cand)
+    else if (verdict === 'include') targets.push(item)
   }
 
   const entries: ReplayEntry[] = []
-  await mapWithLimit(targets, BODY_CONCURRENCY, async ({ item, xml }) => {
+  await mapWithLimit(targets, BODY_CONCURRENCY, async (item) => {
     const headType = item.head.type
     try {
-      const text = await fetchBody(item.url, apiKey)
-      const payload = xml
-        ? buildXmlPayload(headType, text)
-        : buildJsonPayload(headType, JSON.parse(text) as Record<string, unknown>)
+      const payload = buildXmlPayload(headType, await fetchBody(item.url, apiKey))
       if (!payload) {
         log.warn(`[replay] 電文のパースに失敗しスキップ id=${item.id} type=${headType}`)
         skipped++
@@ -458,12 +459,12 @@ export async function fetchLiveQuakeTelegrams(
   // 窓判定は上限を含まないため、1ms 足して同じ範囲にする。
   const until = new Date(before.getTime() + 1)
 
-  const list = await listTelegrams(apiKey, utcFrom, utcTo, true)
+  const list = await listTelegrams(apiKey, utcFrom, utcTo)
   let skipped = 0
   const targets: TelegramListItem[] = []
   for (const item of list) {
     if (!QUAKE_TYPES.has(item.head?.type)) continue
-    const verdict = classifyTelegram(item, true, windowFrom, until, daySet)
+    const verdict = classifyTelegram(item, windowFrom, until, daySet)
     if (verdict === 'malformed') skipped++
     else if (verdict === 'include') targets.push(item)
   }
@@ -471,8 +472,7 @@ export async function fetchLiveQuakeTelegrams(
   const quakes: JMAQuake[] = []
   await mapWithLimit(targets, BODY_CONCURRENCY, async (item) => {
     try {
-      const data = JSON.parse(await fetchBody(item.url, apiKey)) as Record<string, unknown>
-      const payload = buildJsonPayload(item.head.type, data)
+      const payload = buildXmlPayload(item.head.type, await fetchBody(item.url, apiKey))
       if (payload?.kind !== 'event' || payload.event.kind !== 'quake') {
         log.warn(`[replay] 履歴用電文のパースに失敗しスキップ id=${item.id} type=${item.head.type}`)
         skipped++

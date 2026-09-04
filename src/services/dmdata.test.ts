@@ -12,6 +12,7 @@ import {
   fetchDmdataNankaiCommentary,
   fetchDmdataKohatsu,
   DmdataWebSocket,
+  decodeTelegramText,
 } from './dmdata'
 import { DmdataApiKeyError, DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
 import { log } from '../utils/logger'
@@ -382,5 +383,50 @@ describe('DmdataWebSocket: APIキーが不正なとき', () => {
       ws.disconnect()
       vi.useRealTimers()
     }
+  })
+})
+
+
+// 電文の本文の復号。`formatMode: 'raw'` で購読しているので、届くのは base64 + gzip の XML。
+// ここが壊れると電文が 1 通も読めなくなるが、型検査では気づけない（`body` は unknown 由来）。
+describe('decodeTelegramText', () => {
+  /** base64 + gzip に包む（DMDATA が配る形）。 */
+  async function pack(text: string): Promise<string> {
+    const gz = new Blob([new TextEncoder().encode(text) as BlobPart])
+      .stream()
+      .pipeThrough(new CompressionStream('gzip'))
+    const bytes = new Uint8Array(await new Response(gz).arrayBuffer())
+    let bin = ''
+    for (const b of bytes) bin += String.fromCharCode(b)
+    return btoa(bin)
+  }
+
+  const XML = '<?xml version="1.0" encoding="UTF-8"?><Report><Control><Title>震源・震度に関する情報</Title></Control></Report>'
+
+  // 正: 実際の配信形態（base64 + gzip）を解いて XML のテキストが返る。
+  it('base64 + gzip の本文を XML のテキストへ戻す', async () => {
+    const body = await pack(XML)
+    const text = await decodeTelegramText({ body, encoding: 'base64', compression: 'gzip', format: 'xml' })
+    expect(text).toBe(XML)
+  })
+
+  // 対照: 圧縮なしの base64 も読める（配信形態が変わっても本文を落とさない）。
+  it('圧縮なしの base64 も読める', async () => {
+    let bin = ''
+    for (const b of new TextEncoder().encode(XML)) bin += String.fromCharCode(b)
+    const text = await decodeTelegramText({ body: btoa(bin), encoding: 'base64', format: 'xml' })
+    expect(text).toBe(XML)
+  })
+
+  // 安全弁: 本文が文字列でない形（かつて VYSE 系で想定していた `{ uri }` 等）は null にする。
+  // 読めないものを読めたことにすると、空の電文が正常系として下流へ流れる。
+  it('本文が文字列でなければ null', async () => {
+    expect(await decodeTelegramText({ body: { uri: 'https://example.invalid/x' } })).toBeNull()
+    expect(await decodeTelegramText({})).toBeNull()
+  })
+
+  // 安全弁: 解けない圧縮形式（zip 等）は null。ブラウザの DecompressionStream が扱えない。
+  it('対応していない圧縮形式は null', async () => {
+    expect(await decodeTelegramText({ body: 'AAAA', encoding: 'base64', compression: 'zip' })).toBeNull()
   })
 })

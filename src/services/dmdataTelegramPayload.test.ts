@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+// 電文の読み取りが XML に一本化されたため、DOMParser を使う jsdom 環境で動かす（既定は node）。
 // アプリが受け取る電文の入口（購読分類・EEW 種別）を固定するテスト。
 //
 // 守りたいのは「VXSE43（緊急地震速報・警報）を取り込まない」こと。取り込むと遅れて届く複製が
@@ -6,28 +8,36 @@
 // この集合はライブ（services/dmdata.ts）とリプレイ（dmdataReplay.ts / dmdataReplayLive.ts）が
 // 共有する。かつて二重定義でライブ側だけ VXSE43 を含み、ライブでのみ塗りが削られていた。
 import { describe, it, expect } from 'vitest'
-import { CLASSIFICATIONS, EEW_TYPES, HANDLED_TYPES, buildJsonPayload } from './dmdataTelegramPayload'
+import { CLASSIFICATIONS, EEW_TYPES, HANDLED_TYPES, buildXmlPayload } from './dmdataTelegramPayload'
 
-const EEW_JSON = {
-  eventId: '20240101161010',
-  serialNo: '30',
-  reportDateTime: '2024-01-01T16:11:07+09:00',
-  body: {
-    isWarning: true,
-    isLastInfo: false,
-    isCanceled: false,
-    earthquake: {
-      originTime: '2024-01-01T16:10:10+09:00',
-      arrivalTime: '2024-01-01T16:10:10+09:00',
-      hypocenter: { name: '石川県能登地方', coordinate: { latitude: { value: '37.5' }, longitude: { value: '137.2' } }, depth: { value: '10' } },
-      magnitude: { value: '7.6' },
-    },
-    intensity: {
-      forecastMaxInt: { from: '7', to: '7' },
-      regions: [{ code: '390', name: '石川県能登', forecastMaxInt: { from: '6+', to: '7' }, kind: { code: '11' } }],
-    },
-  },
-}
+// 2024-01-01 能登半島地震の緊急地震速報（地震動予報・警報級）を最小化したもの。
+const EEW_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/" xmlns:jmx="http://xml.kishou.go.jp/jmaxml1/">
+<Control><Title>緊急地震速報（地震動予報）</Title><Status>通常</Status><EditorialOffice>気象庁本庁</EditorialOffice><PublishingOffice>気象庁</PublishingOffice></Control>
+<Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+<Title>緊急地震速報（地震動予報）</Title>
+<ReportDateTime>2024-01-01T16:11:07+09:00</ReportDateTime>
+<EventID>20240101161010</EventID>
+<InfoType>発表</InfoType>
+<Serial>30</Serial>
+</Head>
+<Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/" xmlns:jmx_eb="http://xml.kishou.go.jp/jmaxml1/elementBasis1/">
+<Earthquake>
+<OriginTime>2024-01-01T16:10:10+09:00</OriginTime>
+<ArrivalTime>2024-01-01T16:10:10+09:00</ArrivalTime>
+<Hypocenter><Area><Name>石川県能登地方</Name><jmx_eb:Coordinate>+37.5+137.2-10000/</jmx_eb:Coordinate></Area></Hypocenter>
+<jmx_eb:Magnitude type="Mj">7.6</jmx_eb:Magnitude>
+</Earthquake>
+<Intensity><Forecast>
+<ForecastInt><From>7</From><To>7</To></ForecastInt>
+<Pref><Name>石川</Name><Code>9170</Code><Area>
+<Name>石川県能登</Name><Code>390</Code>
+<Category><Kind><Name>緊急地震速報（警報）</Name><Code>11</Code></Kind></Category>
+<ForecastInt><From>6+</From><To>7</To></ForecastInt>
+</Area></Pref>
+</Forecast></Intensity>
+</Body>
+</Report>`
 
 describe('EEW として扱う電文種別', () => {
   it('VXSE45（地震動予報）は取り込む', () => {
@@ -47,16 +57,16 @@ describe('EEW として扱う電文種別', () => {
   })
 
   it('種別が対象外なら電文本体があってもペイロードを作らない', () => {
-    expect(buildJsonPayload('VXSE43', EEW_JSON)).toBeNull()
-    expect(buildJsonPayload('VXSE44', EEW_JSON)).toBeNull()
+    expect(buildXmlPayload('VXSE43', EEW_XML)).toBeNull()
+    expect(buildXmlPayload('VXSE44', EEW_XML)).toBeNull()
   })
 
   it('VXSE45 はペイロードを作る（区域も落とさない）', () => {
-    const payload = buildJsonPayload('VXSE45', EEW_JSON)
+    const payload = buildXmlPayload('VXSE45', EEW_XML)
     expect(payload?.kind).toBe('event')
     const event = payload?.kind === 'event' ? payload.event : null
     expect(event?.kind).toBe('eew')
-    // 警報級の判定は VXSE43 を取らなくても body.isWarning で立つ。
+    // 警報級の判定は VXSE43 を取らなくても、区域の Kind 名から立つ。
     expect(event?.kind === 'eew' ? event.severity : null).toBe('Warning')
     expect(event?.kind === 'eew' ? event.areas?.length : null).toBe(1)
   })

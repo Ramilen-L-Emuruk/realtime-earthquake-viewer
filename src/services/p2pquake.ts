@@ -7,7 +7,7 @@ import { serverNow, serverDate } from '../utils/clock'
 import { quakeIdentityKey } from '../utils/quakeHeatmap'
 import { isValidIntensityScale } from '../utils/intensity'
 import { log } from '../utils/logger'
-// 数値は parseHelpers の parseNum ではなくローカルの readNumber を使う（理由は readNumber の注記）
+// 数値はローカルの readNumber で読む（理由は readNumber の注記）
 import { arr, obj, str } from './parseHelpers'
 
 const API_BASE = 'https://api.p2pquake.net/v2'
@@ -54,7 +54,7 @@ const TSUNAMI_GRADES: readonly TsunamiGrade[] = ['MajorWarning', 'Warning', 'Wat
 // 震源が未確定のときのセンチネル。いずれも P2PQuake API 自身が「不明」に使う値なので、
 // 正常データをそのまま通すだけで内部表現と一致する。
 // 座標・深さは DMDATA 経路（dmdataParser.ts）とも同じ値。規模だけは一致しない
-// （DMDATA 経路は parseNum 由来の NaN）。どちらも hasMagnitude() が「不明」として弾くため
+// （DMDATA 経路は XML パーサ由来の NaN）。どちらも hasMagnitude() が「不明」として弾くため
 // 表示・読み上げの結果は揃う。地図・カードは lat/lng > -200 で「位置あり」を判定する。
 const COORD_UNKNOWN = -200
 const DEPTH_UNKNOWN = -1
@@ -112,7 +112,7 @@ function flushWarnCounts(context: string): void {
 }
 
 /**
- * 数値フィールドを読む。`parseNum()`（＝`Number()`）は空文字・真偽値・空配列を 0 に変換してしまい、
+ * 数値フィールドを読む。素の `Number()` は空文字・真偽値・空配列を 0 に変換してしまい、
  * 壊れた値が「有効な 0」として無警告で通る（緯度 `''` → 0 = ギニア湾沖）。
  * 数値そのものか、数値として読める非空文字列だけを受け付ける。
  */
