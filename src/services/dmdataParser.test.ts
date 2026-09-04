@@ -671,7 +671,14 @@ function eewXml(o: {
   pref?: string
   area?: string
   nextAdvisory?: string
+  /**
+   * 実電文の取消と同じく `Earthquake` 要素を持たない形にする。
+   * `area` は `Earthquake` の中にあるため同時に渡せない（渡すと黙って無視されるので手前で弾く）。
+   * `pref` は `Intensity/Forecast` の中なので影響を受けない。
+   */
+  noEarthquake?: boolean
 } = {}): string {
+  if (o.noEarthquake && o.area) throw new Error('eewXml: noEarthquake と area は同時に指定できない')
   const area = o.area ?? '<Name>茨城県沖</Name><jmx_eb:Coordinate>+36.2+141.0-30000/</jmx_eb:Coordinate>'
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -686,12 +693,14 @@ function eewXml(o: {
     '</Head>',
     '<Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/" xmlns:jmx_eb="http://xml.kishou.go.jp/jmaxml1/elementBasis1/">',
     o.nextAdvisory ?? '',
-    '<Earthquake>',
-    '<OriginTime>2026-01-01T12:00:00+09:00</OriginTime>',
-    '<ArrivalTime>2026-01-01T12:00:00+09:00</ArrivalTime>',
-    '<Hypocenter><Area>' + area + '</Area></Hypocenter>',
-    '<jmx_eb:Magnitude type="Mj">6.5</jmx_eb:Magnitude>',
-    '</Earthquake>',
+    ...(o.noEarthquake ? [] : [
+      '<Earthquake>',
+      '<OriginTime>2026-01-01T12:00:00+09:00</OriginTime>',
+      '<ArrivalTime>2026-01-01T12:00:00+09:00</ArrivalTime>',
+      '<Hypocenter><Area>' + area + '</Area></Hypocenter>',
+      '<jmx_eb:Magnitude type="Mj">6.5</jmx_eb:Magnitude>',
+      '</Earthquake>',
+    ]),
     '<Intensity><Forecast>',
     '<ForecastInt>' + (o.forecastInt ?? '<From>5-</From><To>5+</To>') + '</ForecastInt>',
     '<ForecastLgInt>' + (o.forecastLgInt ?? '<From>2</From><To>3</To>') + '</ForecastLgInt>',
@@ -737,8 +746,10 @@ describe('parseEEWFromXml: severity・cancel・LPGM', () => {
     expect(hasKnownEpicenter(eew.earthquake.hypocenter.latitude, eew.earthquake.hypocenter.longitude)).toBe(false)
     expect(eew.areas).toEqual([])
     expect(eew.severity).toBe('Warning')
-    // 実電文の取消は Earthquake 要素ごと持たない。それでも null を返さない
-    const noEq = eewXml({ infoType: '取消' }).replace(/<Earthquake>[\s\S]*<\/Earthquake>/, '')
+    // 安全弁: 実電文の取消は Earthquake 要素ごと持たない。それでも null を返さない
+    // （構造の異常として捨てる判定が取消を外していること。→ `parseEEWFromXml` の `!isCanceled`）
+    const noEq = eewXml({ infoType: '取消', noEarthquake: true })
+    expect(noEq).not.toContain('<Earthquake>')
     expect(parseEEWFromXml('VXSE43', noEq)).not.toBeNull()
   })
 
@@ -849,6 +860,28 @@ describe('parseEEWFromXml: severity・cancel・LPGM', () => {
       const hit = warn.mock.calls.map(c => c.join(' ')).filter(w => w.includes('震源座標が読めません'))
       expect(hit).toHaveLength(1)
       expect(hit[0]).toContain('VXSE45')
+      // 対照: 要素はある電文なので、構造が変わったときの文言のほうへ落ちてはならない。
+      expect(warn.mock.calls.map(c => c.join(' ')).filter(w => w.includes('Earthquake 要素がありません'))).toHaveLength(0)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 正: `Earthquake` 要素そのものが無い電文は、座標の書式が変わった場合と別の文言で記録する。
+  // 要素が無いと `Coordinate` は空文字になるので、同じ文言にまとめるとログから
+  // 「電文の構造が変わった」のか「座標の書式が変わった」のかを見分けられない。
+  // 取消は `Earthquake` 要素が無くても捨てない（`parseEEWFromXml` の `!isCanceled`）。その安全弁は、
+  // `noEarthquake` を渡した取消電文が null にならないことを見ている箇所が固定している。
+  it('Earthquake 要素が無い発表電文は構造の異常として記録する', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const xml = eewXml({ noEarthquake: true })
+      expect(xml).not.toContain('<Earthquake>')
+      expect(parseEEWFromXml('VXSE45', xml)).toBeNull()
+      const hit = warn.mock.calls.map(c => c.join(' ')).filter(w => w.includes('Earthquake 要素がありません'))
+      expect(hit).toHaveLength(1)
+      expect(hit[0]).toContain('VXSE45')
+      expect(warn.mock.calls.map(c => c.join(' ')).filter(w => w.includes('震源座標が読めません'))).toHaveLength(0)
     } finally {
       warn.mockRestore()
     }
