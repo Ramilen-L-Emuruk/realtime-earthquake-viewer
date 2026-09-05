@@ -159,11 +159,21 @@ function TsunamiHeightHeader({ label, style }: { label: string; style: GradeStyl
  *
  * 表に無い文言はバッジにしない（`arrivalText` として本文にそのまま出る）。気象庁が語を
  * 増やしたとき、知らない語を赤いバッジで強調してしまわないため。
+ *
+ * **3 値は気象庁の電文解説資料（地震火山関連）の事例と、実電文の両方で確かめてある。**
+ * 「津波到達中と推測」「第１波の到達を確認」は令和6年能登半島地震の電文に実在した
+ * （同じ欄には「第１波識別不能」「観測中」「微弱」も現れる。それらは観測状態として
+ * `parseTsunamiObservationCondition` が拾う）。
+ *
+ * **全角・半角の「1」を両方引けるようにしておく**（解説資料の表記は全角）。同じ欄を読む
+ * `FIRST_HEIGHT_CONDITIONS`（`tsunami.ts`）が既に両方を持っており、片方だけ想定しないと
+ * 同じ電文の同じ欄で扱いが割れる。
  */
 const ARRIVAL_CONDITION_BADGE: Record<string, string> = {
   'ただちに津波来襲と予測': 'まもなく到達',
   '津波到達中と推測': '到達中',
   '第１波の到達を確認': '第1波到達',
+  '第1波の到達を確認': '第1波到達',
 }
 
 function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocusObs, isChanged, isTop, registerRow, registerSpeechRow, obsUpdateStatus, areaGradeChangedKeys }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle; onObservationClick?: (name: string) => void; canFocusObs: (name: string) => boolean; isChanged: boolean; isTop: boolean; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, 'new' | 'updated'>; areaGradeChangedKeys?: ReadonlySet<string> }) {

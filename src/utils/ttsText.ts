@@ -383,7 +383,7 @@ function unreceivedRegionSegments(
   // **推定の理由まで言う。** 「5弱以上と推定されます」だけだと、なぜ推定なのかが伝わらない。
   // 語は気象庁の「未入電」をそのまま使い、画面のバッジ（「未入電あり」）とも揃える ——
   // 聞いた語で画面を探せるように。
-  segments.push(plain('では、震度5弱以上と推定されますが、震度は未入電です。'))
+  segments.push(plain('では、震度5弱以上と推定されますが、未入電です。'))
   return segments
 }
 
@@ -596,7 +596,7 @@ function maxScaleOnlySentence(maxScale: IntensityScale, unreceived = false): str
   // （EEW が上限を定めない予想震度を「以上」と読むのと同じ扱い）。
   // 語は地点を挙げる文と揃える（→ `unreceivedRegionSegments`）。
   return unreceived
-    ? `最大震度${label}以上と推定されますが、震度は未入電です。`
+    ? `最大震度${label}以上と推定されますが、未入電です。`
     : `最大震度${label}を観測しました。`
 }
 

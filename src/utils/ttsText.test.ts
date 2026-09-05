@@ -1132,11 +1132,11 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
   // 正: 「5弱以上・未入電」は**別の文**で伝える。地域名を含む文の述語は「観測しました」で、
   // 観測値が届いていない区域をそこへ入れると嘘になる。**音声だけの利用者は画面の注記を
   // 見られない**ので、ここで言い分けないと「実際にはもっと強いかもしれない」が伝わらない。
-  it('未入電の区域は理由を添えて「〜では、震度5弱以上と推定されますが、震度は未入電です」で読む', () => {
+  it('未入電の区域は理由を添えて「〜では、震度5弱以上と推定されますが、未入電です」で読む', () => {
     const state = createQuakeSpokenState()
     const unreceived: EarthquakePoint = { pref: '', addr: '宮城県北部', isArea: true, scale: 45, unreceived: true }
     const text = joinSegments(earthquakeToSegments(quakeOf([unreceived], 45), OPTS, true, state))
-    expect(text).toBe('震度速報。宮城県北部では、震度5弱以上と推定されますが、震度は未入電です。')
+    expect(text).toBe('震度速報。宮城県北部では、震度5弱以上と推定されますが、未入電です。')
   })
 
   // 安全弁: 観測値の文と混ぜない。同じ電文に両方あれば、文を分けて両方伝える
@@ -1146,7 +1146,7 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
     const unreceived: EarthquakePoint = { pref: '', addr: '宮城県北部', isArea: true, scale: 45, unreceived: true }
     const text = joinSegments(earthquakeToSegments(quakeOf([observed, unreceived], 45), OPTS, true, state))
     expect(text).toContain('震度3を福島県中通りで観測しました。')
-    expect(text).toContain('宮城県北部では、震度5弱以上と推定されますが、震度は未入電です。')
+    expect(text).toContain('宮城県北部では、震度5弱以上と推定されますが、未入電です。')
     // 未入電の区域が「観測しました」の文に混ざらないこと
     expect(text).not.toContain('宮城県北部で観測しました')
   })
@@ -1180,7 +1180,7 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
     const text = joinSegments(second)
     // 差分の経路に入っていること（全文の経路なら震源の「〜頃、」が付く）
     expect(text).not.toContain('頃、')
-    expect(text).toContain('宮城県北部では、震度5弱以上と推定されますが、震度は未入電です。')
+    expect(text).toContain('宮城県北部では、震度5弱以上と推定されますが、未入電です。')
   })
 
   // 正: 推定として読んだ区域に観測値が届いたら読み直す。階級は下限へ寄せてあるので、
@@ -1230,7 +1230,7 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
     const state = createQuakeSpokenState()
     const opts = { ...OPTS, maxRegions: 1 }
     const text = joinSegments(earthquakeToSegments(quakeOf(UNRECEIVED_3, 45), opts, true, state))
-    expect(text).toContain('ほか2地域では、震度5弱以上と推定されますが、震度は未入電です。')
+    expect(text).toContain('ほか2地域では、震度5弱以上と推定されますが、未入電です。')
   })
 
   // 正: 地点で読むときの省略は「ほかN地点」（区域の「ほかN地域」と単位を言い分ける）
@@ -1241,7 +1241,7 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
     }))
     const opts = { ...OPTS, maxRegions: 1 }
     const text = joinSegments(earthquakeToSegments(quakeOf(stations, 45), opts, true, state))
-    expect(text).toContain('ほか2地点では、震度5弱以上と推定されますが、震度は未入電です。')
+    expect(text).toContain('ほか2地点では、震度5弱以上と推定されますが、未入電です。')
   })
 
   // 安全弁: 許容超過の範囲内では省略しない（「ほかN地域」の方が長くなるため）

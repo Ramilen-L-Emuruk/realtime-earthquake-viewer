@@ -263,7 +263,7 @@ describe('convertEvent', () => {
       expect(warnSpy).not.toHaveBeenCalled()
     })
 
-    // 正: 46 は「5弱以上・未入電」。**DMDATA の `!5-` と同じ事実**なので、標準版でも
+    // 正: 46 は「5弱以上・未入電」。**DMDATA の「震度５弱以上未入電」と同じ事実**なので、標準版でも
     // 印を立てて表示・読み上げの扱いを揃える（→ quake-spec.md §4）
     it('46 の点には未入電の印を立てる', () => {
       const q = convert({
