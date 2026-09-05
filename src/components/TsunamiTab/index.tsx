@@ -150,6 +150,22 @@ function TsunamiHeightHeader({ label, style }: { label: string; style: GradeStyl
   )
 }
 
+/**
+ * 区域の到達状況（`FirstHeight/Condition`）をバッジの文言へ写す。
+ *
+ * **3 つは意味が違う。** 「ただちに津波来襲と予測」はこれから来る予測、「津波到達中と推測」は
+ * いま来ている推測、「第１波の到達を確認」は実際に到達した事実。**どれも同じ「到達中」と
+ * 出していたため、これから来るのか既に来たのかが読み取れなかった。**
+ *
+ * 表に無い文言はバッジにしない（`arrivalText` として本文にそのまま出る）。気象庁が語を
+ * 増やしたとき、知らない語を赤いバッジで強調してしまわないため。
+ */
+const ARRIVAL_CONDITION_BADGE: Record<string, string> = {
+  'ただちに津波来襲と予測': 'まもなく到達',
+  '津波到達中と推測': '到達中',
+  '第１波の到達を確認': '第1波到達',
+}
+
 function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocusObs, isChanged, isTop, registerRow, registerSpeechRow, obsUpdateStatus, areaGradeChangedKeys }: { area: TsunamiArea; observations: TsunamiObservation[]; style: GradeStyle; onObservationClick?: (name: string) => void; canFocusObs: (name: string) => boolean; isChanged: boolean; isTop: boolean; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; obsUpdateStatus?: Map<string, 'new' | 'updated'>; areaGradeChangedKeys?: ReadonlySet<string> }) {
   const setRowRef = useCallback((el: HTMLDivElement | null) => {
     registerRow?.(area, isChanged, isTop, el)
@@ -157,9 +173,17 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
     registerSpeechRow?.(speechRowKeys({ kind: 'area', code: area.code, name: area.name }), el)
   }, [registerRow, registerSpeechRow, area, isChanged, isTop])
 
+  // バッジにする文言は本文から外す（同じことを 2 度書かない）。表に無い文言は本文へ残す。
+  //
+  // **バッジが出ない区域では本文へ戻す。** バッジは実測がある区域では出さない（下記）ため、
+  // 無条件に本文から外すと**到達状況が画面のどこにも出ない**。
+  const badgeSuppressed = observations.length > 0
+  const arrivalBadgeLabel = !badgeSuppressed && area.firstHeight?.condition
+    ? ARRIVAL_CONDITION_BADGE[area.firstHeight.condition]
+    : undefined
   const arrivalText = area.firstHeight?.arrivalTime
     ? `到達予想 ${formatTime(area.firstHeight.arrivalTime).slice(0, 5)}`
-    : (area.firstHeight?.condition ?? null)
+    : (arrivalBadgeLabel ? null : (area.firstHeight?.condition ?? null))
 
   // 直近の受信で等級が動いた区域に、その移り変わりを 1 行で示す。
   //
@@ -178,8 +202,13 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
   const stations = area.stations ?? []
   // 実測値がある観測点名のセット（到達済み判定・到達中バッジ抑制に使用）
   const observedNames = new Set(observations.map(o => o.name))
-  // 区域内に1件でも実測値があれば到達中バッジは不要（実測行で代替できる）
-  const showImmediateBadge = area.immediate && observations.length === 0
+  // 区域内に1件でも実測値があれば到達のバッジは不要（実測行で代替できる）。
+  //
+  // `immediate` も見るのは P2PQuake 経路のため —— あちらは条件の文言を配信せず、
+  // 「ただちに来襲」を真偽値だけで伝える。DMDATA 経路は文言から引く。
+  const arrivalBadge = badgeSuppressed
+    ? undefined
+    : (arrivalBadgeLabel ?? (area.immediate ? ARRIVAL_CONDITION_BADGE['ただちに津波来襲と予測'] : undefined))
 
   return (
     <div ref={setRowRef} className="border-b border-white/5 last:border-0">
@@ -199,10 +228,10 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
             </span>
           )}
         </div>
-        {showImmediateBadge && (
+        {arrivalBadge && (
           <span className="flex-shrink-0 text-xs font-bold px-2 py-1 rounded border"
             style={{ color: '#f87171', backgroundColor: 'rgba(239,68,68,0.15)', borderColor: '#ef4444' }}>
-            到達中
+            {arrivalBadge}
           </span>
         )}
       </div>
@@ -810,7 +839,9 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
   const topStyle = getGradeStyle(topGrade)
   const cancelInfo = CANCEL_REASON_LABEL[active[0]?.cancelReason ?? 'lifted']
   const latestTime = active[0]?.time
-  const sourceEarthquake = active[0]?.sourceEarthquake
+  // 1 件目を主に扱い、残りは下に併記する（電文は複数の地震を持ちうる）。
+  const sourceEarthquakes = active[0]?.sourceEarthquakes ?? []
+  const sourceEarthquake = sourceEarthquakes[0]
 
   // 津波の原因地震に対応する地震カードを eventId で照合する
   const tsunamiEventId = active[0]?.eventId
@@ -849,9 +880,24 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
             {!isCancelledDisplay && sourceEarthquake && (
               <div className="mt-1.5 pt-1.5" style={{ fontSize: '0.6875rem', color: topStyle.arrivalColor, opacity: 0.9, borderTop: `1px solid ${topStyle.cardBorder}40` }}>
                 震源: {sourceEarthquake.hypocenterName}
-                {sourceEarthquake.magnitude !== undefined && `　M${sourceEarthquake.magnitude}`}
+                {/* 規模が数値で無いときは気象庁が添えた説明を出す（「Ｍ８を超える巨大地震」）。
+                    ここを空にすると、最大級の地震ほど震源名だけの薄い表示になる。 */}
+                {sourceEarthquake.magnitude !== undefined
+                  ? `　M${sourceEarthquake.magnitude}`
+                  : sourceEarthquake.magnitudeCondition && `　${sourceEarthquake.magnitudeCondition}`}
                 {sourceEarthquake.originTime && `　${formatTime(sourceEarthquake.originTime).slice(0, 5)}発生`}
                 {linkedQuake && <span style={{ marginLeft: '0.375rem', fontSize: '0.625rem', opacity: 0.7 }}>▶ 地震情報</span>}
+                {/* 短い間に複数の地震が起きると、1 つの津波情報にまとめて発表される。
+                    2 件目以降を落とすと、どの地震による津波なのかが読み取れなくなる。 */}
+                {sourceEarthquakes.slice(1).map((eq, i) => (
+                  <div key={i}>
+                    {eq.hypocenterName}
+                    {eq.magnitude !== undefined
+                      ? `　M${eq.magnitude}`
+                      : eq.magnitudeCondition && `　${eq.magnitudeCondition}`}
+                    {eq.originTime && `　${formatTime(eq.originTime).slice(0, 5)}発生`}
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -886,16 +932,39 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                 areaGradeChangedKeys={areaGradeChangedKeys}
               />
             ))}
-            {unmatched.length > 0 && (
+            {(unmatched.length > 0 || (t.estimations?.length ?? 0) > 0) && (
               <div className="bg-card rounded-lg overflow-hidden"
                 style={{ border: '2px solid #1d4ed8', boxShadow: '0 0 0 1px rgba(29,78,216,0.25)' }}>
-                <div className="w-full py-1.5 px-4 text-center text-xs font-bold tracking-widest"
-                  style={{ backgroundColor: '#0c1a3a', color: '#93c5fd', borderBottom: '1px solid #1d4ed8' }}>
-                  沖合観測
-                </div>
+                {/* 実測が 1 件も無く推定だけが届く電文もあるので、見出しは中身に合わせる。 */}
+                {unmatched.length > 0 && (
+                  <div className="w-full py-1.5 px-4 text-center text-xs font-bold tracking-widest"
+                    style={{ backgroundColor: '#0c1a3a', color: '#93c5fd', borderBottom: '1px solid #1d4ed8' }}>
+                    沖合観測
+                  </div>
+                )}
                 {unmatched.map((obs, i) => (
                   <TsunamiObservationRow key={i} obs={obs} onObservationClick={onObservationClick} canFocusObs={canFocusObs} registerSpeechRow={registerSpeechRow} />
                 ))}
+                {/* 沖合の観測から導いた沿岸への推定。実測とは別のものなので実測の下に区切って
+                    並べる。**推定したのは気象庁で、アプリ側の計算ではない**ことを見出しに書く。 */}
+                {t.estimations && t.estimations.length > 0 && (
+                  <>
+                    <div className="w-full py-1 px-4 text-center"
+                      style={{ backgroundColor: 'rgba(12,26,58,0.6)', color: '#93c5fd', fontSize: '0.6875rem', ...(unmatched.length > 0 && { borderTop: '1px solid #1d4ed8' }) }}>
+                      沿岸への推定（気象庁発表）
+                    </div>
+                    {t.estimations.map((est, i) => (
+                      <div key={i} className="flex items-center justify-between gap-2 px-4 py-1.5 border-b border-white/5 last:border-0">
+                        <span className="text-white text-[0.9375rem] truncate">{est.name}</span>
+                        <span className="flex-shrink-0 text-right" style={{ fontSize: '0.8125rem', color: '#93c5fd' }}>
+                          {est.maxHeight?.description && <span className="font-bold">{est.maxHeight.description}</span>}
+                          {est.arrivalTime && <span className="ml-2">{formatTime(est.arrivalTime).slice(0, 5)}到達予想</span>}
+                          {!est.arrivalTime && est.arrivalCondition && <span className="ml-2">{est.arrivalCondition}</span>}
+                        </span>
+                      </div>
+                    ))}
+                  </>
+                )}
               </div>
             )}
             {t.warningComment && !t.cancelledAt && (

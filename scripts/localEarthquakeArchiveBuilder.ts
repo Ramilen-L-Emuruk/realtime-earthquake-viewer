@@ -173,7 +173,10 @@ export async function buildQuakeAndTsunamiSection(opts: QuakeTsunamiOptions): Pr
         // 持っている場合だけ震央地名で関連性を確認する。持たない場合はキーワード＋時刻
         // ウィンドウのみが頼りになる（isRelated と非対称だが、津波電文の構造上これ以上の
         // 判定材料が無い）。
-        if (tsunami.sourceEarthquake?.hypocenterName && !hypocenterNames.has(tsunami.sourceEarthquake.hypocenterName)) {
+        // 原因地震が複数ある電文では、**1 つでも対象の震源に当たれば残す**。
+        // 先頭だけを見ると、2 件目に対象が入っている電文を落とす。
+        const sourceNames = tsunami.sourceEarthquakes?.map(eq => eq.hypocenterName).filter(Boolean) ?? []
+        if (sourceNames.length > 0 && !sourceNames.some(n => hypocenterNames.has(n))) {
           skippedUnrelated++
           continue
         }

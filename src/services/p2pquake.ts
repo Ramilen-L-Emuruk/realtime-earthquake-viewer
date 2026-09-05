@@ -69,6 +69,18 @@ const MAGNITUDE_UNKNOWN = -1
 //       つまり 0 のままでも -1 でも判定結果は変わらない。
 const P2P_SCALE_ALIASES: Record<number, IntensityScale> = { 46: 45, 0: -1 }
 
+/**
+ * 「震度5弱以上と推定されるが震度情報を入手していない」を表す P2PQuake の値。
+ * DMDATA の `!5-` と同じ事実で、**表示・読み上げの扱いも揃える**（→ quake-spec.md §4）。
+ */
+const P2P_UNRECEIVED_SCALE = 46
+
+/** 値が「5弱以上・未入電」か。切り捨ては `toIntensityScale` と同じ規約に合わせる。 */
+function isUnreceivedScale(v: unknown): boolean {
+  if (v === undefined || v === null) return false
+  return Math.trunc(readNumber(v)) === P2P_UNRECEIVED_SCALE
+}
+
 // scaleTo の「〜程度以上」コード。scaleFrom とセットで初めて意味を成す（例: scaleFrom=70 なら「震度7程度以上」）。
 const P2P_SCALE_TO_OR_ABOVE = 99
 
@@ -217,6 +229,7 @@ function parseQuakePoints(v: unknown, context: string): EarthquakePoint[] {
       isArea: p.isArea === true,
       // scale は points[] の必須フィールド（maxScale と違い「無いのが正常」ではない）
       scale: toIntensityScale(p.scale, context, 'points[].scale', true),
+      ...(isUnreceivedScale(p.scale) && { unreceived: true }),
     })
   }
   return points

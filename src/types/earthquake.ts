@@ -16,6 +16,14 @@ export interface EarthquakePoint {
   addr: string
   isArea: boolean
   scale: IntensityScale
+  /**
+   * 「震度5弱以上と推定されるが観測値が入電していない」地点（電文の `!5-`）。
+   *
+   * **`scale` は下限の 45（5弱）が入る。** 揺れが強い地域ほど観測点からの通信が途絶え
+   * やすく、最も震度が高いはずの市町村がこの形で届く。観測値と同じ顔で出すと、
+   * 実際にはもっと強い可能性があることが伝わらない。
+   */
+  unreceived?: boolean
 }
 
 export type IssueType =
@@ -69,6 +77,14 @@ export interface JMAQuake {
   earthquake: {
     time: string
     hypocenter: Hypocenter
+    /**
+     * 電文全体の最大震度。**「5弱以上・未入電」（電文の `!5-`）もここへ 45 として入る。**
+     * 読めないからと `-1`（不明）に落とすと、行動チェックリストが発火せず、読み上げの
+     * 「最大」も消え、カードの見出しが「?」になる。
+     *
+     * 未入電かどうかは**フィールドで持たず** `points` から導く（`isMaxScaleUnreceived`）。
+     * 理由はその関数のコメント。
+     */
     maxScale: IntensityScale
     domesticTsunami: DomesticTsunami
   }
@@ -112,6 +128,42 @@ export interface TsunamiStation {
   highTideDateTime?: string
   arrivalTime?: string
   arrivalCondition?: string
+}
+
+/**
+ * 沖合で観測された津波から導いた、沿岸への推定（電文の `Estimation`）。
+ *
+ * **観測値でも気象庁の発表値でもない。** 沖合の観測点で捉えた波から沿岸の予報区への
+ * 到達と高さを推定したもので、VTSE52（沖合の津波観測に関する情報）でのみ届く。
+ * 発表中の予想波高（`TsunamiArea.maxHeight`）と混ぜないこと。
+ */
+export interface TsunamiEstimation {
+  /** 津波予報区名。 */
+  name: string
+  code?: string
+  /** 到達予想時刻（推定）。 */
+  arrivalTime?: string
+  /** 時刻を出せないときの説明（「早いところでは既に津波到達と推定」等）。 */
+  arrivalCondition?: string
+  /** 予想高さ（推定）。数値にならない表記もあるため `description` を正とする。 */
+  maxHeight?: {
+    description: string
+    value?: number
+  }
+}
+
+export interface TsunamiSourceEarthquake {
+  hypocenterName: string
+  magnitude?: number
+  /**
+   * 規模が数値で求まらないときに気象庁が添える説明（`jmx_eb:Magnitude@description`）。
+   *
+   * **「規模不明」と「Ｍ８を超える巨大地震」は別物。** 後者は M8 を超えて速報できない
+   * ことを表し、同じ電文で予想波高が「巨大」「高い」になる。`magnitude` が無いことだけを
+   * 見て「不明」と出すと、**最大級の地震ほど情報が薄く見える**。
+   */
+  magnitudeCondition?: string
+  originTime?: string
 }
 
 export interface TsunamiArea {
@@ -211,11 +263,13 @@ export interface JMATsunami {
   // 付加文（固定文）。避難行動の呼びかけなど JMA 公式の定型文。長文の解説（FreeFormComment）は含まない。
   warningComment?: string
   // この津波を引き起こした地震（Earthquake 要素）。震源名・マグニチュード・発生時刻。
-  sourceEarthquake?: {
-    hypocenterName: string
-    magnitude?: number
-    originTime?: string
-  }
+  /**
+   * この津波を引き起こした地震。**電文は複数持ちうる**（`Earthquake` 要素が繰り返す）。
+   *
+   * 短い間に複数の地震が起き、まとめて 1 つの津波情報として発表される場合がある。1 件目だけを
+   * 読むと、残りの震源が画面から消える。表示は 1 件目を主に扱い、残りを併記する。
+   */
+  sourceEarthquakes?: TsunamiSourceEarthquake[]
   // 若干の海面変動など予報のみの場合、JMAは明示的なキャンセル電文を送らず
   // ValidDateTime の経過でのみ有効期限が示される。
   validDateTime?: string
@@ -226,6 +280,13 @@ export interface JMATsunami {
   }
   areas: TsunamiArea[]
   observations?: TsunamiObservation[]
+  /**
+   * 沖合の観測から導いた沿岸への推定（VTSE52 のみ）。
+   *
+   * 沖合の観測点は沿岸より先に津波を捉えるため、ここに**まだ到達していない沿岸**の
+   * 到達予想と高さが入る。観測値の下に並べて、推定であることが分かる形で出す。
+   */
+  estimations?: TsunamiEstimation[]
 }
 
 export interface EEWRegion {
@@ -281,6 +342,13 @@ export interface EEWAlert {
   forecastMaxScaleOrAbove?: boolean
   // DMDATA EEW 電文 body.intensity.forecastMaxLpgmInt から取得した推定最大長周期地震動階級（1〜4）。
   forecastMaxLpgmClass?: LpgmClass
+  /**
+   * 気象庁の固定付加文（`Comments/Warning/Text`）。避難行動の呼びかけなどの定型文。
+   *
+   * 津波の同名フィールドと同じ扱いで、**画面にだけ出す**（読み上げには載せない）。EEW の
+   * 読み上げは秒を争うため、定型文を挟むと肝心の震度・地域が遅れる。
+   */
+  warningComment?: string
 }
 
 export interface LpgmPoint {
