@@ -43,21 +43,56 @@ function parseIntensityStr(s: string | undefined | null): IntensityScale {
 /**
  * 「震度5弱以上と推定されるが、観測値が入電していない」を表す気象庁の表記。
  *
- * 揺れの強い地域ほど観測点からの通信が途絶えやすく、**最も震度が高いはずの市町村が
- * この値で届く**。階級として読めないからと捨てると、大地震のときにその地域だけ画面から消える。
+ * 揺れの強い地域ほど観測点からの通信が途絶えやすく、**最も震度が高いはずの観測点が
+ * この値で届く**。階級として読めないからと捨てると、大地震のときにその地点が画面から消える。
+ *
+ * **値は実電文から採っている。** 令和6年能登半島地震（2024-01-01 16:16 発表の震源・震度情報）に
+ * 次の形で現れる —— 数字は**全角**。
+ *
+ *     <IntensityStation><Name>輪島市門前町走出＊</Name><Code>1720431</Code>
+ *       <Int>震度５弱以上未入電</Int></IntensityStation>
+ *
+ * 短縮形（`!5-` 等）で書かない。2024-01-01〜06 の全電文 853 通を走査したが、この文字列以外の
+ * 表記は 1 度も現れなかった。**推測で書くとテストが通っても実電文で 1 件も拾えない**
+ * （実際にそうなっていた）。
+ *
+ * 気象庁の電文解説資料（地震火山関連）によれば、この語が入るのは `IntensityStation/Int` の
+ * ほかに `City/Condition` と見出し部（`Information/Item/Kind/Name`）がある。**どちらも読まない**
+ * —— 同じ市町村の観測点に必ず `Int=震度５弱以上未入電` が並ぶため、同じ事実を二重に持つだけ。
  */
-const UNRECEIVED_INTENSITY = '!5-'
+const UNRECEIVED_INTENSITY = '震度５弱以上未入電'
 
 /**
  * 震度の文字列を、階級と「未入電かどうか」に分けて読む。
  *
- * **`!5-` を階級表へ入れない。** 階級値は観測された震度を表すもので、そこへ混ぜると
+ * **未入電を階級表へ入れない。** 階級値は観測された震度を表すもので、そこへ混ぜると
  * 「5弱を観測した」と区別できなくなる。下限（5弱）へ寄せ、未入電であることは別に持つ
  * —— 上限を定めない予想震度を下限へ寄せて「以上」をフラグで持つのと同じ扱い。
  */
 function readIntensity(s: string | null): { scale: IntensityScale; unreceived: boolean } {
   if (s === UNRECEIVED_INTENSITY) return { scale: 45, unreceived: true }
+  if (s && s.includes('未入電')) unknownUnreceivedValues.add(s)
   return { scale: parseIntensityStr(s), unreceived: false }
+}
+
+/**
+ * 「未入電」を含むのに解釈できなかった震度の値。
+ *
+ * **基準は将来変わりうる。** 電文解説資料は「当面は震度５弱を基準とし」と断っており、
+ * 「震度６弱以上未入電」のような表記が現れる余地がある。**表記を推測して先回りしない**
+ * —— どう書かれるかの定めが無いまま実装すると、また実物と食い違う（`!5-` で実際に起きた）。
+ *
+ * 読めないままでよいが、**黙って落とさない**。未入電は最も震度が高いはずの地点に付く値で、
+ * 1 件消えるだけでも重い。全滅を待つ `ReadTally` と違い、**1 件でも記録する**。
+ */
+const unknownUnreceivedValues = new Set<string>()
+
+/** 上の記録を 1 電文につき 1 行にまとめて出し、次の電文のために空にする。 */
+function flushUnknownUnreceived(logPrefix: string): void {
+  if (unknownUnreceivedValues.size === 0) return
+  const values = [...unknownUnreceivedValues].map(v => `"${v}"`).join('・')
+  log.error(`${logPrefix} 未入電を表す未知の震度表記のため、その地点を読めませんでした（画面と読み上げから落ちます）: ${values}`)
+  unknownUnreceivedValues.clear()
 }
 
 /** 上限を定めない予想震度を表す DMDATA の値。P2PQuake の `scaleTo: 99` と同じ意味。 */
@@ -631,7 +666,11 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     : NaN
 
   // MaxInt は Intensity > Observation 直下。
-  // **ここも `!5-` を読む。** 最も強い地点が未入電なら要約値もその形で届く。
+  // **仕様外への保険。** 電文解説資料は `MaxInt` の値域を全階層 "1"〜"7" と定めており、
+  // その範囲に未入電の観測点しか無い場合は **`MaxInt` 要素そのものが出現しない**（未入電の
+  // 文字列は入らない）。実電文 853 通でも `MaxInt` に現れたことは無い。
+  // 仕様が変わってここへ入った場合に `-1` へ落として最大震度を失わないよう、読めるようにだけ
+  // しておく。**この保険が働かない限り `isMaxScaleUnreceived` は真にならない。**
   const obsEl = xmlQ(doc, 'Observation')
   const maxIntStr = obsEl ? xmlText(xmlQ(obsEl, 'MaxInt')) : ''
   const { scale: maxScale } = readIntensity(maxIntStr || null)
@@ -640,6 +679,9 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   // 入れ子で入る。震度速報は Area までしか持たず、震源・震度情報は両方を持つ。
   const points: JMAQuake['points'] = []
   // 種別ごとに全滅を数える。
+  // 前の電文の解析が途中で終わっていた場合に備えて空にしてから始める（解析は同期なので、
+  // 1 電文ぶんの記録がここから下で完結する）。
+  unknownUnreceivedValues.clear()
   const prefTally = createReadTally('都道府県の代表震度')
   const areaTally = createReadTally('震度の区域')
   const stationTally = createReadTally('震度の観測点')
@@ -708,6 +750,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   prefTally.warnIfNoneReadable(DMDATA_LOG_PREFIX)
   areaTally.warnIfNoneReadable(DMDATA_LOG_PREFIX)
   stationTally.warnIfNoneReadable(DMDATA_LOG_PREFIX)
+  flushUnknownUnreceived(DMDATA_LOG_PREFIX)
   warnIfNoIntensityPoints(headType, issueType, points, DMDATA_LOG_PREFIX)
 
   const correct: CorrectType = infoType === '訂正' ? '訂正' : 'なし'
@@ -908,15 +951,20 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
     // 属性が空でも波高を出せるようにするため（表示・読み上げは description しか
     // 見ないので、空だと波高が画面から消える）。
     //
-    // **数値にならない予想波高は `condition` 属性に入る。** M8 を超える地震では規模を速報
-    // できないため、気象庁は大津波警報・津波警報の第一報で高さを「巨大」「高い」と発表し、
-    // `TsunamiHeight` の本文（数値）を空にする。数値が無いことを理由に落とすと、**最も重大な
-    // 場面で波高が 1 つも出ない**。読み上げ側は語を補う仕組みを持っている（`ttsText.ts` の
-    // `NON_NUMERIC_HEIGHT_PHRASE`）ので、ここは電文の語をそのまま渡せばよい。
-    const heightCondition = heightEl?.getAttribute('condition') ?? ''
+    // **数値にならない予想波高は `description` に入る。`condition` ではない。**
+    // M8 を超える地震では規模を速報できないため、気象庁は高さを「巨大」「高い」と発表するが、
+    // 電文解説資料によれば `condition` は**固定値「不明」**で、定性的表現は `description` の側。
+    // 本文は "NaN" になる。
+    //
+    //     <jmx_eb:TsunamiHeight type="津波の高さ" unit="m" condition="不明"
+    //       description="巨大">NaN</jmx_eb:TsunamiHeight>
+    //
+    // **`condition` を表示文字列のフォールバックに使わないこと。** 定性的表現がない津波注意報・
+    // 予報では `description` が空属性になり、そこへ落ちると波高として「不明」と表示・読み上げ
+    // することになる（実際にそうなっていた）。数値も語も無ければ波高は持たせない。
+    // 読み上げ側は語を補う仕組みを持っている（`ttsText.ts` の `NON_NUMERIC_HEIGHT_PHRASE`）。
     const heightDesc = toHalfWidthHeightDesc(heightEl?.getAttribute('description') ?? '')
       || (!isNaN(heightVal) ? `${heightVal}m` : '')
-      || heightCondition
 
     // Station 要素（各潮位観測点の満潮時刻・到達予想時刻）
     const stationEls = itemEl.getElementsByTagName('Station')

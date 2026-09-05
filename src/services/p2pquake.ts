@@ -71,7 +71,8 @@ const P2P_SCALE_ALIASES: Record<number, IntensityScale> = { 46: 45, 0: -1 }
 
 /**
  * 「震度5弱以上と推定されるが震度情報を入手していない」を表す P2PQuake の値。
- * DMDATA の `!5-` と同じ事実で、**表示・読み上げの扱いも揃える**（→ quake-spec.md §4）。
+ * DMDATA の「震度５弱以上未入電」と同じ事実で、**表示・読み上げの扱いも揃える**
+ * （→ quake-spec.md §4）。
  */
 const P2P_UNRECEIVED_SCALE = 46
 

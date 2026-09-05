@@ -301,7 +301,7 @@ describe('震度の地域列挙: 観測点しか持たない電文（P2PQuake �
       SOUTH_HYPO,
     )
     const text = earthquakeToText(quake, OPTS, true)
-    expect(text).toContain('輪島市舳倉島では、震度5弱以上と推定されますが、震度は未入電です。')
+    expect(text).toContain('輪島市舳倉島では、震度5弱以上と推定されますが、未入電です。')
   })
 
   // 安全弁: 同じ区域に観測値があっても矛盾しない（区域名で丸めていないこと）
@@ -322,7 +322,7 @@ describe('震度の地域列挙: 観測点しか持たない電文（P2PQuake �
   it('地点を持たない電文では区域名で読む', () => {
     const quake = makeQuake([{ ...area('石川県能登', 45), unreceived: true }], SOUTH_HYPO)
     const text = earthquakeToText(quake, OPTS, true)
-    expect(text).toContain('石川県能登では、震度5弱以上と推定されますが、震度は未入電です。')
+    expect(text).toContain('石川県能登では、震度5弱以上と推定されますが、未入電です。')
   })
 
   // 正: 未入電を含む県は、全区域が揃っていても県名へまとめない（カードと同じ規則。
@@ -339,7 +339,7 @@ describe('震度の地域列挙: 観測点しか持たない電文（P2PQuake �
       SOUTH_HYPO,
     )
     const text = earthquakeToText(quake, OPTS, true)
-    expect(text).toContain('では、震度5弱以上と推定されますが、震度は未入電です。')
+    expect(text).toContain('では、震度5弱以上と推定されますが、未入電です。')
     // 「埼玉県」単独では出ない（埼玉県北部・南部・秩父に続く形だけ許す）。
     expect(text).not.toMatch(/埼玉県(?![北南秩])/)
   })
@@ -387,7 +387,7 @@ describe('震度の地域列挙: 観測点しか持たない電文（P2PQuake �
       SOUTH_HYPO,
     )
     const text = earthquakeToText(quake, { ...OPTS, maxRegions: 1 }, true)
-    expect(text).toContain('ほか1件では、震度5弱以上と推定されますが、震度は未入電です。')
+    expect(text).toContain('ほか1件では、震度5弱以上と推定されますが、未入電です。')
   })
 
   it('pref が空の観測点でも区域を引ける（DMDATA の XML 経路）', () => {
