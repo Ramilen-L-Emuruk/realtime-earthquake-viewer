@@ -50,7 +50,8 @@ import { useSWaveCountdown } from './hooks/useSWaveCountdown'
 import { usePsWaveCalc } from './hooks/usePsWaveCalc'
 import { useQuakeHeatmap } from './hooks/useQuakeHeatmap'
 import { useDebouncedValue } from './hooks/useDebouncedValue'
-import { getIntensityLabel } from './utils/intensity'
+import { getIntensityLabelWithOrAbove } from './utils/intensity'
+import { isMaxScaleUnreceived } from './utils/quakePoints'
 import { formatMagnitude, formatDateTimeLocal } from './utils/formatters'
 import { computeEEWLevel, eewMaxLpgmClass } from './utils/eew'
 import { quakeEventKey } from './utils/quakeMerge'
@@ -768,7 +769,13 @@ export function App() {
     if (latestQuake.earthquake.maxScale < settings.notifyMinScale) return
     if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
     lastNotifiedIdRef.current = notifyKey
-    const scale = getIntensityLabel(latestQuake.earthquake.maxScale)
+    // **断定形で出さない**（→ docs/spec/quake-spec.md §4「震度5弱以上未入電」）。OS 通知は
+    // カードを開かない利用者が最初に目にする経路なので、ここを落とすと「実際にはもっと強い
+    // かもしれない」が誰にも届かない。
+    const scale = getIntensityLabelWithOrAbove(
+      latestQuake.earthquake.maxScale,
+      isMaxScaleUnreceived(latestQuake.earthquake.maxScale, latestQuake.points),
+    )
     new Notification('地震情報', {
       body: `${latestQuake.earthquake.hypocenter.name} 最大震度${scale} ${formatMagnitude(latestQuake.earthquake.hypocenter.magnitude)}`,
       icon: `${import.meta.env.BASE_URL}icons/icon.svg`,

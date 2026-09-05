@@ -4,7 +4,8 @@ import type { TabId } from '../components/IconNav'
 import type { AppSettings } from './useSettings'
 import type { AlertTitleApi } from './useAlertTitle'
 import type { ReplayEntry } from '../types/replay'
-import { getIntensityLabel, getIntensityLabelWithOrAbove } from '../utils/intensity'
+import { getIntensityLabelWithOrAbove } from '../utils/intensity'
+import { isMaxScaleUnreceived } from '../utils/quakePoints'
 import { formatMagnitude, hasMagnitude } from '../utils/formatters'
 import {
   eewMaxScaleInfo, isForecastScaleHigher, eewMaxLpgmClass, eewNoForecastReason, computeSingleEEWLevel, canPresentLpgmClass,
@@ -1403,7 +1404,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 震度が判明していないだけに読めてしまうため、規模を出す別書式にする。
         title.setTitle(isForeignQuake
           ? `遠地地震 ${hypocenter.name}${hasMagnitude(hypocenter.magnitude) ? ` ${formatMagnitude(hypocenter.magnitude)}` : ''}`
-          : `地震情報 ${hypocenter.name} 最大震度${getIntensityLabel(maxScale)}`)
+          // ウィンドウタイトルも断定形にしない（理由は App.tsx の通知と同じ）。
+          : `地震情報 ${hypocenter.name} 最大震度${getIntensityLabelWithOrAbove(maxScale, isMaxScaleUnreceived(maxScale, event.points))}`)
       }
       title.scheduleTitleRevert('earthquake')
     } else if (event.kind === 'tsunami' && !event.cancelled) {

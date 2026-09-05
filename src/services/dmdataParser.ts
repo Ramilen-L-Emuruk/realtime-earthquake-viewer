@@ -40,6 +40,61 @@ function parseIntensityStr(s: string | undefined | null): IntensityScale {
   return map[s] ?? -1
 }
 
+/**
+ * 「震度5弱以上と推定されるが、観測値が入電していない」を表す気象庁の表記。
+ *
+ * 揺れの強い地域ほど観測点からの通信が途絶えやすく、**最も震度が高いはずの観測点が
+ * この値で届く**。階級として読めないからと捨てると、大地震のときにその地点が画面から消える。
+ *
+ * **値は実電文から採っている。** 令和6年能登半島地震（2024-01-01 16:16 発表の震源・震度情報）に
+ * 次の形で現れる —— 数字は**全角**。
+ *
+ *     <IntensityStation><Name>輪島市門前町走出＊</Name><Code>1720431</Code>
+ *       <Int>震度５弱以上未入電</Int></IntensityStation>
+ *
+ * 短縮形（`!5-` 等）で書かない。2024-01-01〜06 の全電文 853 通を走査したが、この文字列以外の
+ * 表記は 1 度も現れなかった。**推測で書くとテストが通っても実電文で 1 件も拾えない**
+ * （実際にそうなっていた）。
+ *
+ * 気象庁の電文解説資料（地震火山関連）によれば、この語が入るのは `IntensityStation/Int` の
+ * ほかに `City/Condition` と見出し部（`Information/Item/Kind/Name`）がある。**どちらも読まない**
+ * —— 同じ市町村の観測点に必ず `Int=震度５弱以上未入電` が並ぶため、同じ事実を二重に持つだけ。
+ */
+const UNRECEIVED_INTENSITY = '震度５弱以上未入電'
+
+/**
+ * 震度の文字列を、階級と「未入電かどうか」に分けて読む。
+ *
+ * **未入電を階級表へ入れない。** 階級値は観測された震度を表すもので、そこへ混ぜると
+ * 「5弱を観測した」と区別できなくなる。下限（5弱）へ寄せ、未入電であることは別に持つ
+ * —— 上限を定めない予想震度を下限へ寄せて「以上」をフラグで持つのと同じ扱い。
+ */
+function readIntensity(s: string | null): { scale: IntensityScale; unreceived: boolean } {
+  if (s === UNRECEIVED_INTENSITY) return { scale: 45, unreceived: true }
+  if (s && s.includes('未入電')) unknownUnreceivedValues.add(s)
+  return { scale: parseIntensityStr(s), unreceived: false }
+}
+
+/**
+ * 「未入電」を含むのに解釈できなかった震度の値。
+ *
+ * **基準は将来変わりうる。** 電文解説資料は「当面は震度５弱を基準とし」と断っており、
+ * 「震度６弱以上未入電」のような表記が現れる余地がある。**表記を推測して先回りしない**
+ * —— どう書かれるかの定めが無いまま実装すると、また実物と食い違う（`!5-` で実際に起きた）。
+ *
+ * 読めないままでよいが、**黙って落とさない**。未入電は最も震度が高いはずの地点に付く値で、
+ * 1 件消えるだけでも重い。全滅を待つ `ReadTally` と違い、**1 件でも記録する**。
+ */
+const unknownUnreceivedValues = new Set<string>()
+
+/** 上の記録を 1 電文につき 1 行にまとめて出し、次の電文のために空にする。 */
+function flushUnknownUnreceived(logPrefix: string): void {
+  if (unknownUnreceivedValues.size === 0) return
+  const values = [...unknownUnreceivedValues].map(v => `"${v}"`).join('・')
+  log.error(`${logPrefix} 未入電を表す未知の震度表記のため、その地点を読めませんでした（画面と読み上げから落ちます）: ${values}`)
+  unknownUnreceivedValues.clear()
+}
+
 /** 上限を定めない予想震度を表す DMDATA の値。P2PQuake の `scaleTo: 99` と同じ意味。 */
 const DMDATA_INTENSITY_OVER = 'over'
 
@@ -462,6 +517,10 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
     return dropTelegram(DMDATA_LOG_PREFIX, `${headType}（緊急地震速報）の震源座標が読めません: Coordinate="${coordStr}"`)
   }
 
+  const eewCommentsEl = xmlQ(doc, 'Comments')
+  const eewWarningCommentEl = eewCommentsEl ? xmlQ(eewCommentsEl, 'Warning') : null
+  const warningComment = (eewWarningCommentEl ? xmlText(xmlQ(eewWarningCommentEl, 'Text')) : '') || undefined
+
   const forecastEl = xmlQ(doc, 'Forecast')
   const intRange = (el: Element | null): { from: string; to: string } => ({
     from: xmlText(el ? xmlChild(el, 'From') : null),
@@ -527,6 +586,10 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
     forecastMaxLpgmClass: (!isCanceled && isValidLpgmClass(lgClass)) ? lgClass : undefined,
     issue: { eventId, serial, time: reportTime },
     areas: isCanceled ? [] : areas,
+    // 固定付加文（`Comments/Warning/Text`）。地震情報・津波では既に読んでいたが EEW だけ
+    // 落としていた。避難行動の呼びかけなどが入る。取消電文の Text は付加文ではなく取消の
+    // 理由なので、`Comments` の下に限って拾う。
+    ...(warningComment && { warningComment }),
   }
 }
 
@@ -602,15 +665,23 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     ? parseFloat(xmlText(xmlQ(earthquakeEl, 'Magnitude')))
     : NaN
 
-  // MaxInt は Intensity > Observation 直下
+  // MaxInt は Intensity > Observation 直下。
+  // **仕様外への保険。** 電文解説資料は `MaxInt` の値域を全階層 "1"〜"7" と定めており、
+  // その範囲に未入電の観測点しか無い場合は **`MaxInt` 要素そのものが出現しない**（未入電の
+  // 文字列は入らない）。実電文 853 通でも `MaxInt` に現れたことは無い。
+  // 仕様が変わってここへ入った場合に `-1` へ落として最大震度を失わないよう、読めるようにだけ
+  // しておく。**この保険が働かない限り `isMaxScaleUnreceived` は真にならない。**
   const obsEl = xmlQ(doc, 'Observation')
   const maxIntStr = obsEl ? xmlText(xmlQ(obsEl, 'MaxInt')) : ''
-  const maxScale = parseIntensityStr(maxIntStr || null)
+  const { scale: maxScale } = readIntensity(maxIntStr || null)
 
   // 震度は Pref 配下に「一次細分区域(Area) → 市区町村(City) → 観測点(IntensityStation)」と
   // 入れ子で入る。震度速報は Area までしか持たず、震源・震度情報は両方を持つ。
   const points: JMAQuake['points'] = []
   // 種別ごとに全滅を数える。
+  // 前の電文の解析が途中で終わっていた場合に備えて空にしてから始める（解析は同期なので、
+  // 1 電文ぶんの記録がここから下で完結する）。
+  unknownUnreceivedValues.clear()
   const prefTally = createReadTally('都道府県の代表震度')
   const areaTally = createReadTally('震度の区域')
   const stationTally = createReadTally('震度の観測点')
@@ -629,9 +700,9 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     // xmlChild で直下に限るのは、MaxInt を持たない電文で配下 Area の値を拾わないため。
     const prefName = xmlText(xmlChild(prefEl, 'Name'))
     const prefRawInt = xmlText(xmlChild(prefEl, 'MaxInt'))
-    const prefScale = parseIntensityStr(prefRawInt || null)
+    const { scale: prefScale, unreceived: prefUnreceived } = readIntensity(prefRawInt || null)
     if (prefName && prefScale >= 0) {
-      points.push({ pref: prefName, addr: prefName, isArea: true, scale: prefScale as IntensityScale })
+      points.push({ pref: prefName, addr: prefName, isArea: true, scale: prefScale as IntensityScale, ...(prefUnreceived && { unreceived: true }) })
       prefTally.readable()
     } else {
       prefTally.unreadable(prefName, prefRawInt)
@@ -647,9 +718,9 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
         // useQuakeLayerData が区域名から都道府県を逆引きして引き当てる）。
         const areaName = xmlText(xmlChild(el, 'Name'))
         const areaRawInt = xmlText(xmlChild(el, 'MaxInt'))
-        const areaScale = parseIntensityStr(areaRawInt || null)
+        const { scale: areaScale, unreceived: areaUnreceived } = readIntensity(areaRawInt || null)
         if (areaName && areaScale >= 0) {
-          points.push({ pref: '', addr: areaName, isArea: true, scale: areaScale as IntensityScale })
+          points.push({ pref: '', addr: areaName, isArea: true, scale: areaScale as IntensityScale, ...(areaUnreceived && { unreceived: true }) })
           areaTally.readable()
         } else {
           areaTally.unreadable(areaName, areaRawInt)
@@ -662,13 +733,13 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
       // station-coords.json のキーには '＊' がないため除去して引き当てる。
       const stName = xmlText(xmlChild(el, 'Name')).replace(/＊$/, '')
       const intStr = xmlText(xmlChild(el, 'Int'))
-      const scale = parseIntensityStr(intStr || null)
+      const { scale, unreceived } = readIntensity(intStr || null)
       if (stName && scale >= 0) {
         // QUAKE-2: 観測点も区域と同じく pref を空にする。
         // 以前は pref: prefName を付けていたため EarthquakeCard.prefGroups が
         // 「観測点値」を都道府県別最大震度と誤解し、区域単位の最大震度が観測点値に
         // 上書きされて低震度に見える不具合があった。
-        points.push({ pref: '', addr: stName, isArea: false, scale: scale as IntensityScale })
+        points.push({ pref: '', addr: stName, isArea: false, scale: scale as IntensityScale, ...(unreceived && { unreceived: true }) })
         stationTally.readable()
       } else {
         stationTally.unreadable(stName, intStr)
@@ -679,6 +750,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   prefTally.warnIfNoneReadable(DMDATA_LOG_PREFIX)
   areaTally.warnIfNoneReadable(DMDATA_LOG_PREFIX)
   stationTally.warnIfNoneReadable(DMDATA_LOG_PREFIX)
+  flushUnknownUnreceived(DMDATA_LOG_PREFIX)
   warnIfNoIntensityPoints(headType, issueType, points, DMDATA_LOG_PREFIX)
 
   const correct: CorrectType = infoType === '訂正' ? '訂正' : 'なし'
@@ -770,15 +842,27 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   const commentsEl = xmlQ(doc, 'Comments')
   const warningCommentEl = commentsEl ? xmlQ(commentsEl, 'WarningComment') : null
   const warningComment = (warningCommentEl ? xmlText(xmlQ(warningCommentEl, 'Text')) : '') || undefined
-  // この津波を引き起こした地震（Earthquake 要素）
-  const eqEl = xmlQ(doc, 'Earthquake')
-  const eqHypoEl = eqEl ? xmlQ(eqEl, 'Hypocenter') : null
-  const eqHypoName = eqHypoEl ? xmlText(xmlQ(eqHypoEl, 'Name')) : ''
-  const eqMagnitudeEl = eqEl ? xmlQ(eqEl, 'Magnitude') : null
-  const eqMagnitude = eqMagnitudeEl ? parseFloat(xmlText(eqMagnitudeEl)) : NaN
-  const sourceEarthquake = eqHypoName
-    ? { hypocenterName: eqHypoName, magnitude: !isNaN(eqMagnitude) ? eqMagnitude : undefined, originTime: (eqEl ? xmlText(xmlQ(eqEl, 'OriginTime')) : '') || undefined }
-    : undefined
+  // この津波を引き起こした地震。**電文は複数持ちうる**（短い間に起きた地震がまとめて
+  // 1 つの津波情報になる）。1 件目だけを読むと残りの震源が画面から消える。
+  const sourceEarthquakeList = xmlAll(doc, 'Earthquake').map(eqEl => {
+    const hypoEl = xmlQ(eqEl, 'Hypocenter')
+    const hypoName = hypoEl ? xmlText(xmlQ(hypoEl, 'Name')) : ''
+    const magnitudeEl = xmlQ(eqEl, 'Magnitude')
+    const magnitude = magnitudeEl ? parseFloat(xmlText(magnitudeEl)) : NaN
+    // 規模が数値で求まらないとき、気象庁は本文を空にして `condition="不明"` を立て、
+    // **`description` に理由を書く**（「Ｍ８を超える巨大地震」）。`condition` は「不明」固定なので、
+    // それだけでは「観測が足りず不明」と「M8 を超えていて速報できない」を見分けられない。
+    // 後者は同じ電文で予想波高が「巨大」「高い」になる場面で、最も伝えるべき事実にあたる。
+    const magnitudeCondition = magnitudeEl?.getAttribute('description')?.trim() || undefined
+    return {
+      hypocenterName: hypoName,
+      magnitude: !isNaN(magnitude) ? magnitude : undefined,
+      ...(isNaN(magnitude) && magnitudeCondition && { magnitudeCondition }),
+      originTime: xmlText(xmlQ(eqEl, 'OriginTime')) || undefined,
+    }
+  // 震源名を読めなかったものは落とす（名前が無いと画面に出しようがない）。
+  }).filter(eq => eq.hypocenterName)
+  const sourceEarthquakes = sourceEarthquakeList.length > 0 ? sourceEarthquakeList : undefined
 
   const id = `dmdata-tsunami-${eventId ?? ''}-${serial}`
   const cancelled = infoType === '取消'
@@ -796,13 +880,18 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
     return dropTelegram(TSUNAMI_LOG_PREFIX, 'Forecast も Observation もありません')
   }
 
-  // Observation のみ（VTSE51②: 津波観測情報）
+  // 沖合の観測から導いた沿岸への推定（VTSE52 のみ）。観測と同じ電文に入る。
+  const estimationEl = xmlQ(doc, 'Estimation')
+  const estimationList = estimationEl ? parseTsunamiEstimationsFromXml(estimationEl) : []
+  const estimations = estimationList.length > 0 ? estimationList : undefined
+
+  // Observation のみ（VTSE51②: 津波観測情報 / VTSE52: 沖合の津波観測に関する情報）
   if (!forecastEl && observationEl) {
     const observations = parseTsunamiObservationsFromXml(observationEl)
     if (observations.length === 0) {
       return dropTelegram(TSUNAMI_LOG_PREFIX, 'Observation はありますが観測点を 1 件も読めません')
     }
-    return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: false, headline, warningComment, sourceEarthquake, issue: { source, time: reportDateTime, type: 'Focus' }, areas: [], observations }
+    return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: false, headline, warningComment, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas: [], observations, estimations }
   }
 
   const allEls = forecastEl!.getElementsByTagName('*')
@@ -861,6 +950,19 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
     // → docs/spec/tsunami-spec.md §6「観測波高の「以上」」）。それでも数値から組む道を残すのは、
     // 属性が空でも波高を出せるようにするため（表示・読み上げは description しか
     // 見ないので、空だと波高が画面から消える）。
+    //
+    // **数値にならない予想波高は `description` に入る。`condition` ではない。**
+    // M8 を超える地震では規模を速報できないため、気象庁は高さを「巨大」「高い」と発表するが、
+    // 電文解説資料によれば `condition` は**固定値「不明」**で、定性的表現は `description` の側。
+    // 本文は "NaN" になる。
+    //
+    //     <jmx_eb:TsunamiHeight type="津波の高さ" unit="m" condition="不明"
+    //       description="巨大">NaN</jmx_eb:TsunamiHeight>
+    //
+    // **`condition` を表示文字列のフォールバックに使わないこと。** 定性的表現がない津波注意報・
+    // 予報では `description` が空属性になり、そこへ落ちると波高として「不明」と表示・読み上げ
+    // することになる（実際にそうなっていた）。数値も語も無ければ波高は持たせない。
+    // 読み上げ側は語を補う仕組みを持っている（`ttsText.ts` の `NON_NUMERIC_HEIGHT_PHRASE`）。
     const heightDesc = toHalfWidthHeightDesc(heightEl?.getAttribute('description') ?? '')
       || (!isNaN(heightVal) ? `${heightVal}m` : '')
 
@@ -896,7 +998,11 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
       name: areaName,
       code: areaCode,
       firstHeight: { arrivalTime: arrivalTime || undefined, condition },
-      maxHeight: !isNaN(heightVal) ? { description: heightDesc, value: heightVal } : undefined,
+      // 数値が無くても `description`（「巨大」等）があれば持たせる。`value` は型でも
+      // オプショナルで、表示・読み上げはどちらも `description` しか見ない。
+      maxHeight: (!isNaN(heightVal) || heightDesc)
+        ? { description: heightDesc, ...(!isNaN(heightVal) && { value: heightVal }) }
+        : undefined,
       stations: stations.length > 0 ? stations : undefined,
     })
   }
@@ -935,7 +1041,49 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   // Observation も含む場合（VTSE51①: Forecast + Observation 両方あり）
   const observations = observationEl ? parseTsunamiObservationsFromXml(observationEl) : undefined
 
-  return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: false, validDateTime, headline, warningComment, sourceEarthquake, issue: { source, time: reportDateTime, type: 'Focus' }, areas, observations: observations && observations.length > 0 ? observations : undefined }
+  return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: false, validDateTime, headline, warningComment, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas, observations: observations && observations.length > 0 ? observations : undefined, estimations }
+}
+
+/**
+ * 沖合の観測から導いた沿岸への推定（`Estimation`）を読む。VTSE52 でのみ現れる。
+ *
+ * 構造は `Forecast` と同じで、`Item` ごとに津波予報区（`Area`）と `FirstHeight` /
+ * `MaxHeight` を持つ。**発表中の予想と混ぜない** —— こちらは観測から導いた推定で、
+ * 気象庁が発表している予想波高とは別物。
+ */
+function parseTsunamiEstimationsFromXml(estimationEl: Element): import('../types/earthquake').TsunamiEstimation[] {
+  const estimations: import('../types/earthquake').TsunamiEstimation[] = []
+  const tally = createReadTally('沖合からの推定')
+  for (const itemEl of xmlAll(estimationEl, 'Item')) {
+    const areaEl = xmlQ(itemEl, 'Area')
+    const name = areaEl ? xmlText(xmlQ(areaEl, 'Name')) : ''
+    const code = areaEl ? xmlText(xmlQ(areaEl, 'Code')) : ''
+    if (!name) {
+      tally.unreadable(name, code)
+      continue
+    }
+    tally.readable()
+    const fhEl = xmlQ(itemEl, 'FirstHeight')
+    const mhEl = xmlQ(itemEl, 'MaxHeight')
+    const heightEl = mhEl ? xmlQ(mhEl, 'TsunamiHeight') : null
+    const heightVal = heightEl ? parseFloat(xmlText(heightEl)) : NaN
+    // 予想側と同じ順で組む（表示文字列 → 数値から組む → 数値にならない表記）。
+    const heightDesc = toHalfWidthHeightDesc(heightEl?.getAttribute('description') ?? '')
+      || (!isNaN(heightVal) ? `${heightVal}m` : '')
+      || (heightEl?.getAttribute('condition') ?? '')
+    estimations.push({
+      name,
+      ...(code && { code }),
+      ...(fhEl && xmlText(xmlQ(fhEl, 'ArrivalTime')) && { arrivalTime: xmlText(xmlQ(fhEl, 'ArrivalTime')) }),
+      // 時刻を出せないときの説明（「早いところでは既に津波到達と推定」等）。
+      ...(fhEl && xmlText(xmlQ(fhEl, 'Condition')) && { arrivalCondition: xmlText(xmlQ(fhEl, 'Condition')) }),
+      ...((!isNaN(heightVal) || heightDesc) && {
+        maxHeight: { description: heightDesc, ...(!isNaN(heightVal) && { value: heightVal }) },
+      }),
+    })
+  }
+  tally.warnIfNoneReadable(TSUNAMI_LOG_PREFIX)
+  return estimations
 }
 
 function parseTsunamiObservationsFromXml(observationEl: Element): import('../types/earthquake').TsunamiObservation[] {

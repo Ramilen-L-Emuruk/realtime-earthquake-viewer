@@ -6,6 +6,7 @@ import { parseEarthquakeFromXml, parseEEWFromXml, parseTsunamiFromXml, parseLpgm
 import { log } from '../utils/logger'
 import { hasKnownEpicenter } from '../utils/geo'
 import { hasMagnitude } from '../utils/formatters'
+import { isMaxScaleUnreceived } from '../utils/quakePoints'
 
 // 震度速報（VXSE51）。震源が未確定の段階で出るため Earthquake 要素を持たず、
 // 震度は Pref > Area（一次細分区域）までしか無い。
@@ -109,6 +110,71 @@ const VXSE53_XML = `<?xml version="1.0" encoding="UTF-8"?>
   </Body>
 </Report>`
 
+/**
+ * 実電文から採った未入電の断片（令和6年能登半島地震・2024-01-01 16:16 発表の震源・震度情報）。
+ *
+ * **推測で組まないこと。** 以前この値を `!5-` と書いており、テストは通るのに実電文を 1 件も
+ * 拾えない状態だった。実物の特徴は 3 つ ——
+ *   1. 値は「震度５弱以上未入電」で**数字が全角**
+ *   2. 現れるのは `IntensityStation/Int` だけ（`MaxInt` には出ない）
+ *   3. 地方公共団体の観測局は名前の末尾に '＊' が付く
+ * 同じ市に観測値（6+）と未入電が同居する形も実物どおり。
+ */
+const NOTO_UNRECEIVED_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/" xmlns:jmx_eb="http://xml.kishou.go.jp/jmaxml1/elementBasis1/">
+  <Control>
+    <Title>震源・震度に関する情報</Title>
+    <DateTime>2024-01-01T07:16:00Z</DateTime>
+    <Status>通常</Status>
+    <EditorialOffice>気象庁本庁</EditorialOffice>
+    <PublishingOffice>気象庁</PublishingOffice>
+  </Control>
+  <Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+    <Title>震源・震度情報</Title>
+    <ReportDateTime>2024-01-01T16:16:00+09:00</ReportDateTime>
+    <TargetDateTime>2024-01-01T16:16:00+09:00</TargetDateTime>
+    <EventID>20240101161010</EventID>
+    <InfoType>発表</InfoType>
+    <Serial>1</Serial>
+  </Head>
+  <Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
+    <Earthquake>
+      <OriginTime>2024-01-01T16:10:00+09:00</OriginTime>
+      <ArrivalTime>2024-01-01T16:10:00+09:00</ArrivalTime>
+      <Hypocenter>
+        <Area>
+          <Name>石川県能登地方</Name>
+          <Coordinate>+37.5+137.3-16000/</Coordinate>
+        </Area>
+      </Hypocenter>
+      <jmx_eb:Magnitude type="Mj">7.6</jmx_eb:Magnitude>
+    </Earthquake>
+    <Intensity>
+      <Observation>
+        <MaxInt>6+</MaxInt>
+        <Pref>
+          <Name>石川県</Name>
+          <Code>17</Code>
+          <MaxInt>6+</MaxInt>
+          <Area>
+            <Name>石川県能登</Name>
+            <Code>390</Code>
+            <MaxInt>6+</MaxInt>
+            <City>
+              <Name>輪島市</Name>
+              <Code>1720400</Code>
+              <MaxInt>6+</MaxInt>
+              <IntensityStation><Name>輪島市鳳至町</Name><Code>1720402</Code><Int>6+</Int></IntensityStation>
+              <IntensityStation><Name>輪島市舳倉島</Name><Code>1720401</Code><Int>5-</Int></IntensityStation>
+              <IntensityStation><Name>輪島市門前町走出＊</Name><Code>1720431</Code><Int>震度５弱以上未入電</Int></IntensityStation>
+            </City>
+          </Area>
+        </Pref>
+      </Observation>
+    </Intensity>
+  </Body>
+</Report>`
+
 // VXSE53_XML と同じ地震。下の describe が、XML 経路で落としてはいけない項目を項目ごとに固定する。
 // 実電文の Control は EditorialOffice（気象庁本庁）と PublishingOffice（気象庁）の両方を持ち、
 // 編集官署を先に採るため、発表元は「気象庁本庁」になる。
@@ -163,6 +229,114 @@ describe('parseEarthquakeFromXml: 震源・震度に関する情報（VXSE53）'
     // 都道府県ロールアップ点（pref 付き）と取り違えないよう pref が空のものを探す
     const area = points.find(p => p.isArea && p.pref === '')!
     expect(area).toEqual({ pref: '', addr: '岩手県沿岸北部', isArea: true, scale: 40 })
+  })
+
+  // 正: 「震度5弱以上と推定されるが観測値が入電していない」地点を落とさない。
+  //
+  // **揺れが強い地域ほどこの形で届く。** 観測点からの通信が途絶えるためで、階級として
+  // 読めないからと捨てると、大地震のときに最も震度が高いはずの地点が画面から消える。
+  //
+  // **電文の断片は実物から採っている**（令和6年能登半島地震・2024-01-01 16:16 発表の
+  // 震源・震度情報）。値は「震度５弱以上未入電」で数字は全角。以前ここを推測で `!5-` と
+  // 書いており、テストは通るのに実電文を 1 件も拾えない状態だった。
+  it('未入電の震度を 5弱以上として持つ', () => {
+    const station = parseEarthquakeFromXml('VXSE53', NOTO_UNRECEIVED_XML)!.points
+      .find(p => !p.isArea && p.addr === '輪島市門前町走出')!
+    // 階級は下限へ寄せる（上限を定めない予想震度と同じ扱い）
+    expect(station.scale).toBe(45)
+    expect(station.unreceived).toBe(true)
+  })
+
+  // 正: 基準が変わって未知の表記になったら、**黙って落とさず記録する**。
+  //
+  // 解説資料は「当面は震度５弱を基準とし」と断っており、表記は将来変わりうる。
+  // 表記を推測して先回りはしない（`!5-` で実際に外した）が、消えたことに気づけるようにする。
+  // 未入電は最も震度が高いはずの地点に付く値なので、**全滅を待たず 1 件でも記録する**。
+  it('未知の未入電表記は読めないが記録を残す', () => {
+    const err = vi.spyOn(log, 'error').mockImplementation(() => {})
+    try {
+      const xml = NOTO_UNRECEIVED_XML.replace('震度５弱以上未入電', '震度６弱以上未入電')
+      const points = parseEarthquakeFromXml('VXSE53', xml)!.points
+      // 読めないので点は積まれない
+      expect(points.some(p => p.addr === '輪島市門前町走出')).toBe(false)
+      expect(err).toHaveBeenCalledWith(expect.stringContaining('震度６弱以上未入電'))
+    } finally {
+      err.mockRestore()
+    }
+  })
+
+  // 対照: 既知の表記では記録を出さない（通常運転で毎回鳴らない）
+  it('既知の未入電表記では記録を出さない', () => {
+    const err = vi.spyOn(log, 'error').mockImplementation(() => {})
+    try {
+      parseEarthquakeFromXml('VXSE53', NOTO_UNRECEIVED_XML)
+      expect(err).not.toHaveBeenCalled()
+    } finally {
+      err.mockRestore()
+    }
+  })
+
+  // 対照: 同じ電文の観測値には印を付けない。実電文では未入電と観測値が同じ市に同居する。
+  it('同じ市の観測値には未入電の印を付けない', () => {
+    const points = parseEarthquakeFromXml('VXSE53', NOTO_UNRECEIVED_XML)!.points
+    const observed = points.find(p => !p.isArea && p.addr === '輪島市鳳至町')!
+    expect(observed.scale).toBe(60)
+    expect(observed.unreceived).toBeUndefined()
+  })
+
+  // 安全弁: 観測点名末尾の '＊'（地方公共団体の観測局）は落として座標テーブルのキーに揃える。
+  it('観測点名の末尾の ＊ を落とす', () => {
+    const points = parseEarthquakeFromXml('VXSE53', NOTO_UNRECEIVED_XML)!.points
+    expect(points.some(p => p.addr.endsWith('＊'))).toBe(false)
+  })
+
+  // 安全弁: **全体の最大震度は観測値のまま**。未入電の地点があっても、観測できた地点が
+  // あればそちらが最大になる（実電文でもこの形だった）。ここが未入電に化けると、
+  // 見出しに要らない「以上」が付く。
+  it('未入電の地点があっても最大震度は観測値のまま', () => {
+    const q = parseEarthquakeFromXml('VXSE53', NOTO_UNRECEIVED_XML)!
+    expect(q.earthquake.maxScale).toBe(60)
+    expect(isMaxScaleUnreceived(q.earthquake.maxScale, q.points)).toBe(false)
+  })
+
+  // 正: **電文全体の最大震度**も未入電を読む。最も強い地点が未入電なら要約値もこの形で届く。
+  // ここを `-1`（不明）に落とすと、行動チェックリストが発火せず、読み上げの「最大」も消え、
+  // カードの見出しが「?」になる —— **通信が途絶えるほどの地震で、そこだけ情報が薄くなる**。
+  it('電文全体の最大震度が未入電でも 5弱以上として持つ', () => {
+    // 区域の MaxInt も同時に差し替える（最大値なので、その値を持つ点が必ずある）。
+    // 最大値なので、その値を持つ点が必ずある）
+    const xml = VXSE53_XML
+      .replace(/(<Observation>[\s\S]*?<MaxInt>)4(<\/MaxInt>)/, '$1震度５弱以上未入電$2')
+      .replace(/(<Name>岩手県沿岸北部<\/Name>[\s\S]*?<MaxInt>)4(<\/MaxInt>)/, '$1震度５弱以上未入電$2')
+    const q = parseEarthquakeFromXml('VXSE53', xml)!
+    expect(q.earthquake.maxScale).toBe(45)
+    // 未入電かは `points` から導く（フィールドで持たない。理由は `isMaxScaleUnreceived`）
+    expect(isMaxScaleUnreceived(q.earthquake.maxScale, q.points)).toBe(true)
+  })
+
+  // 対照: 観測された最大震度には印を付けない
+  it('観測された最大震度には未入電の印を付けない', () => {
+    const q = parseEarthquakeFromXml('VXSE53', VXSE53_XML)!
+    expect(isMaxScaleUnreceived(q.earthquake.maxScale, q.points)).toBe(false)
+  })
+
+  // 対照: 観測された 5弱 には印を付けない。付けると「実際にはもっと強いかもしれない」が
+  // 観測値にまで及び、逆の誤解を生む
+  it('観測された 5弱 には未入電の印を付けない', () => {
+    const xml = VXSE53_XML.replace('<Int>3</Int>', '<Int>5-</Int>')
+    const station = parseEarthquakeFromXml('VXSE53', xml)!.points.find(p => !p.isArea)!
+    expect(station.scale).toBe(45)
+    expect(station.unreceived).toBeUndefined()
+  })
+
+  // 安全弁: 区域・都道府県の `MaxInt` でも同じ扱いにする。3 箇所のうち 1 つでも
+  // 読み落とすと、その粒度だけ地図から消える
+  it('区域の MaxInt が未入電でも落とさない', () => {
+    // 「岩手県沿岸北部」の直下にある MaxInt だけを差し替える（同名要素が入れ子で並ぶため）
+    const xml = VXSE53_XML.replace(/(<Name>岩手県沿岸北部<\/Name>[\s\S]*?<MaxInt>)4(<\/MaxInt>)/, '$1震度５弱以上未入電$2')
+    const area = parseEarthquakeFromXml('VXSE53', xml)!.points.find(p => p.isArea && p.addr === '岩手県沿岸北部')!
+    expect(area.scale).toBe(45)
+    expect(area.unreceived).toBe(true)
   })
 
   it('観測点は区域と同じ規約で pref を空文字にする（QUAKE-2）', () => {
@@ -669,6 +843,8 @@ function eewXml(o: {
    * `pref` は `Intensity/Forecast` の中なので影響を受けない。
    */
   noEarthquake?: boolean
+  /** 固定付加文（`Comments/Warning/Text`）。避難行動の呼びかけなどが入る。 */
+  warningComment?: string
 } = {}): string {
   if (o.noEarthquake && o.area) throw new Error('eewXml: noEarthquake と area は同時に指定できない')
   const area = o.area ?? '<Name>茨城県沖</Name><jmx_eb:Coordinate>+36.2+141.0-30000/</jmx_eb:Coordinate>'
@@ -698,6 +874,9 @@ function eewXml(o: {
     '<ForecastLgInt>' + (o.forecastLgInt ?? '<From>2</From><To>3</To>') + '</ForecastLgInt>',
     o.pref ?? '',
     '</Forecast></Intensity>',
+    ...(o.warningComment
+      ? ['<Comments><Warning><Text>' + o.warningComment + '</Text></Warning></Comments>']
+      : []),
     '</Body></Report>',
   ].join('\n')
 }
@@ -877,6 +1056,18 @@ describe('parseEEWFromXml: severity・cancel・LPGM', () => {
     } finally {
       warn.mockRestore()
     }
+  })
+
+  // 正: 固定付加文を読む。地震情報・津波では読んでいたが EEW だけ落としていた。
+  // 避難行動の呼びかけなどが入る
+  it('固定付加文を読む', () => {
+    const xml = eewXml({ warningComment: '強い揺れに警戒してください。' })
+    expect(parseEEWFromXml('VXSE45', xml)!.warningComment).toBe('強い揺れに警戒してください。')
+  })
+
+  // 対照: 付加文が無い電文では持たない。空文字を入れると、画面に空の枠が出る
+  it('固定付加文が無ければ持たない', () => {
+    expect(parseEEWFromXml('VXSE45', eewXml())!.warningComment).toBeUndefined()
   })
 
   // 正: XML として読めない電文も同じく記録する（`parsererror` は例外にならないので見落としやすい）。
@@ -1505,11 +1696,11 @@ describe('XML 経路が落としてはいけない項目（津波）', () => {
     }
   })
 
-  it('eventId と sourceEarthquake を同じに読む', () => {
+  it('eventId と原因地震を同じに読む', () => {
     for (const t of [fromXml()]) {
       expect(t.eventId).toBe('20260101120000')
-      expect(t.sourceEarthquake?.hypocenterName).toBe('房総半島沖')
-      expect(t.sourceEarthquake?.magnitude).toBe(8.5)
+      expect(t.sourceEarthquakes?.[0].hypocenterName).toBe('房総半島沖')
+      expect(t.sourceEarthquakes?.[0].magnitude).toBe(8.5)
     }
   })
 
@@ -1548,6 +1739,60 @@ describe('XML 経路が落としてはいけない項目（津波）', () => {
   it('予想波高の表示文字列が無ければ数値から作る', () => {
     const xml = PARITY_TSUNAMI_XML.replace(' description="１０ｍ超"', '')
     expect(parseTsunamiFromXml(xml)!.areas[0].maxHeight?.description).toBe('10m')
+  })
+
+  // 正: 数値にならない予想波高を落とさない。
+  //
+  // **これが出るのは最も重大な場面。** M8 を超える地震では規模を速報できないため、気象庁は
+  // 大津波警報・津波警報の第一報で高さを「巨大」「高い」と発表し、本文を "NaN" にする。
+  // 数値が無いことを理由に落とすと、そのとき波高が 1 つも画面に出ない。
+  //
+  // **電文の形は解説資料の事例そのまま。** `condition` は固定値「不明」で、定性的表現は
+  // `description` の側に入る（取り違えていた）。
+  it('数値にならない予想波高（巨大・高い）を description に持つ', () => {
+    const xml = PARITY_TSUNAMI_XML.replace(
+      '<jmx_eb:TsunamiHeight type="津波の高さ" unit="m" description="１０ｍ超">10</jmx_eb:TsunamiHeight>',
+      '<jmx_eb:TsunamiHeight type="津波の高さ" unit="m" condition="不明" description="巨大">NaN</jmx_eb:TsunamiHeight>',
+    )
+    const area = parseTsunamiFromXml(xml)!.areas[0]
+    expect(area.maxHeight?.description).toBe('巨大')
+    // 数値は持たない。`value` を 0 や NaN で埋めると、波高の比較や並べ替えが狂う
+    expect(area.maxHeight?.value).toBeUndefined()
+  })
+
+  // 対照: 数値がある通常の電文では `condition` を見ない。優先順を取り違えると発表値が化ける
+  it('数値がある電文では condition を採らない', () => {
+    const xml = PARITY_TSUNAMI_XML.replace(
+      'description="１０ｍ超">10<',
+      'description="１０ｍ超" condition="不明">10<',
+    )
+    const area = parseTsunamiFromXml(xml)!.areas[0]
+    expect(area.maxHeight?.description).toBe('10m超')
+    expect(area.maxHeight?.value).toBe(10)
+  })
+
+  // 安全弁: **`condition` を表示文字列のフォールバックに使わない。**
+  //
+  // 解説資料いわく「定性的表現がない津波注意報や津波予報の場合は、@description は空属性となる」。
+  // そこで `condition` へ落ちると、波高として**「不明」と表示・読み上げする**ことになる
+  // （実際にそうなっていた）。数値も語も無ければ波高は持たせない。
+  it('description が空で condition だけある電文では maxHeight を作らない', () => {
+    const xml = PARITY_TSUNAMI_XML.replace(
+      '<jmx_eb:TsunamiHeight type="津波の高さ" unit="m" description="１０ｍ超">10</jmx_eb:TsunamiHeight>',
+      '<jmx_eb:TsunamiHeight type="津波の高さ" unit="m" condition="不明" description="">NaN</jmx_eb:TsunamiHeight>',
+    )
+    expect(parseTsunamiFromXml(xml)!.areas[0].maxHeight).toBeUndefined()
+  })
+
+  // 安全弁: 数値も表示文字列も無ければ、`maxHeight` そのものを作らない。
+  // 空の `description` を持つオブジェクトを返すと、`hasForecastHeight` は偽なのに
+  // オブジェクトはあるという食い違いが生まれる
+  it('何も言えない予想波高では maxHeight を作らない', () => {
+    const xml = PARITY_TSUNAMI_XML.replace(
+      '<jmx_eb:TsunamiHeight type="津波の高さ" unit="m" description="１０ｍ超">10</jmx_eb:TsunamiHeight>',
+      '<jmx_eb:TsunamiHeight type="津波の高さ" unit="m"></jmx_eb:TsunamiHeight>',
+    )
+    expect(parseTsunamiFromXml(xml)!.areas[0].maxHeight).toBeUndefined()
   })
 
 
@@ -1815,9 +2060,63 @@ describe('津波の取消・全解除・原因地震', () => {
   })
 
   // 対照: 震源名が無ければ原因地震を名乗らない（空文字の見出しを作らない）。
-  it('震源名が無ければ sourceEarthquake を持たない', () => {
+  // 正: 規模が数値で求まらないとき、気象庁が添えた説明を持つ。
+  //
+  // **「規模不明」と「Ｍ８を超える巨大地震」は別物。** 後者は M8 を超えていて速報できない
+  // ことを表し、同じ電文で予想波高が「巨大」「高い」になる。数値が無いことだけを見て
+  // 「不明」と出すと、最大級の地震ほど画面が薄くなる。
+  it('規模が数値で求まらないときは説明を持つ', () => {
+    const xml = PARITY_TSUNAMI_XML.replace(
+      '<jmx_eb:Magnitude type="Mj">8.5</jmx_eb:Magnitude>',
+      '<jmx_eb:Magnitude type="Mj" condition="不明" description="Ｍ８を超える巨大地震">NaN</jmx_eb:Magnitude>',
+    )
+    const eq = parseTsunamiFromXml(xml)!.sourceEarthquakes![0]
+    expect(eq.magnitude).toBeUndefined()
+    expect(eq.magnitudeCondition).toBe('Ｍ８を超える巨大地震')
+  })
+
+  // 対照: 数値が読めるときは説明を持たない。両方を持たせると表示が二重になる
+  it('規模が読めるときは説明を持たない', () => {
+    const eq = parseTsunamiFromXml(PARITY_TSUNAMI_XML)!.sourceEarthquakes![0]
+    expect(eq.magnitude).toBe(8.5)
+    expect(eq.magnitudeCondition).toBeUndefined()
+  })
+
+  // 正: 原因地震が複数ある電文で全件を読む。短い間に起きた地震がまとめて 1 つの
+  // 津波情報として発表されることがあり、1 件目だけ読むと残りが画面から消える
+  it('原因地震が複数あれば全件を持つ', () => {
+    const second = [
+      '<Earthquake>',
+      '<OriginTime>2026-01-01T12:05:00+09:00</OriginTime>',
+      '<Hypocenter><Area><Name>三陸沖</Name></Area></Hypocenter>',
+      '<jmx_eb:Magnitude type="Mj">7.2</jmx_eb:Magnitude>',
+      '</Earthquake>',
+    ].join('')
+    const xml = PARITY_TSUNAMI_XML.replace('</Earthquake>', '</Earthquake>' + second)
+    const eqs = parseTsunamiFromXml(xml)!.sourceEarthquakes!
+    expect(eqs).toHaveLength(2)
+    expect(eqs.map(e => e.hypocenterName)).toEqual(['房総半島沖', '三陸沖'])
+  })
+
+  // 安全弁: 名前を読めない地震は落とす（画面に出しようがない）。**残りは残す** ——
+  // 1 件読めないだけで全部捨てると、読めた震源まで画面から消える
+  it('名前を読めない地震だけを落とし、残りは残す', () => {
+    const broken = [
+      '<Earthquake>',
+      '<OriginTime>2026-01-01T12:05:00+09:00</OriginTime>',
+      '<Hypocenter><Area></Area></Hypocenter>',
+      '<jmx_eb:Magnitude type="Mj">7.2</jmx_eb:Magnitude>',
+      '</Earthquake>',
+    ].join('')
+    const xml = PARITY_TSUNAMI_XML.replace('</Earthquake>', '</Earthquake>' + broken)
+    const eqs = parseTsunamiFromXml(xml)!.sourceEarthquakes!
+    expect(eqs).toHaveLength(1)
+    expect(eqs[0].hypocenterName).toBe('房総半島沖')
+  })
+
+  it('震源名が無ければ原因地震を持たない', () => {
     const xml = PARITY_TSUNAMI_XML.replace('<Hypocenter><Area><Name>房総半島沖</Name></Area></Hypocenter>', '<Hypocenter><Area></Area></Hypocenter>')
-    expect(parseTsunamiFromXml(xml)!.sourceEarthquake).toBeUndefined()
+    expect(parseTsunamiFromXml(xml)!.sourceEarthquakes).toBeUndefined()
   })
 })
 
@@ -1982,6 +2281,72 @@ const VXSE61_XML = `<?xml version="1.0" encoding="UTF-8"?>
 </Body>
 </Report>`
 
+
+// 沖合の観測から導いた沿岸への推定（VTSE52 の `Estimation`）。
+//
+// 沖合の観測点は沿岸より先に津波を捉えるため、ここには**まだ到達していない沿岸**の
+// 到達予想と高さが入る。観測値でも気象庁の発表値でもないので、実測と混ぜない。
+const VTSE52_XML = [
+  '<?xml version="1.0" encoding="UTF-8"?>',
+  '<Report xmlns="http://xml.kishou.go.jp/jmaxml1/" xmlns:jmx_eb="http://xml.kishou.go.jp/jmaxml1/elementBasis1/">',
+  '<Control><Title>沖合の津波観測に関する情報</Title><Status>通常</Status><EditorialOffice>気象庁</EditorialOffice></Control>',
+  '<Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">',
+  '<Title>沖合の津波観測に関する情報</Title>',
+  '<ReportDateTime>2026-01-01T12:30:00+09:00</ReportDateTime>',
+  '<EventID>20260101120000</EventID><InfoType>発表</InfoType><Serial>1</Serial>',
+  '</Head>',
+  '<Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">',
+  '<Tsunami>',
+  '<Observation>',
+  '<Item><Area><Name>三陸沖北部</Name><Code>901</Code></Area>',
+  '<Station><Name>岩手中部沖</Name><Code>21401</Code>',
+  '<MaxHeight><jmx_eb:TsunamiHeight type="最大波の高さ" unit="m" description="１．２ｍ">1.2</jmx_eb:TsunamiHeight></MaxHeight>',
+  '</Station></Item>',
+  '</Observation>',
+  '<Estimation>',
+  '<Item><Area><Name>岩手県</Name><Code>210</Code></Area>',
+  '<FirstHeight><ArrivalTime>2026-01-01T12:50:00+09:00</ArrivalTime></FirstHeight>',
+  '<MaxHeight><jmx_eb:TsunamiHeight type="津波の高さ" unit="m" description="３ｍ">3</jmx_eb:TsunamiHeight></MaxHeight>',
+  '</Item>',
+  '<Item><Area><Name>宮城県</Name><Code>220</Code></Area>',
+  '<FirstHeight><Condition>早いところでは既に津波到達と推定</Condition></FirstHeight>',
+  '</Item>',
+  '</Estimation>',
+  '</Tsunami>',
+  '</Body></Report>',
+].join('')
+
+describe('沖合の観測から導いた沿岸への推定（VTSE52）', () => {
+  // 正: 区域名・到達予想時刻・予想高さを読む
+  it('推定の区域名・到達予想時刻・高さを読む', () => {
+    const est = parseTsunamiFromXml(VTSE52_XML)!.estimations!
+    expect(est).toHaveLength(2)
+    expect(est[0].name).toBe('岩手県')
+    expect(est[0].code).toBe('210')
+    expect(est[0].arrivalTime).toBe('2026-01-01T12:50:00+09:00')
+    expect(est[0].maxHeight).toEqual({ description: '3m', value: 3 })
+  })
+
+  // 正: 時刻を出せないときの説明を読む。ここを落とすと、既に到達している可能性が伝わらない
+  it('時刻の代わりの説明を読む', () => {
+    const est = parseTsunamiFromXml(VTSE52_XML)!.estimations!
+    expect(est[1].arrivalTime).toBeUndefined()
+    expect(est[1].arrivalCondition).toBe('早いところでは既に津波到達と推定')
+  })
+
+  // 対照: 沖合の実測は観測点として読む（推定と混ざらない）
+  it('沖合の実測は観測点として読み、推定と混ぜない', () => {
+    const t = parseTsunamiFromXml(VTSE52_XML)!
+    expect(t.observations!.map(o => o.name)).toEqual(['岩手中部沖'])
+    expect(t.estimations!.map(e => e.name)).toEqual(['岩手県', '宮城県'])
+  })
+
+  // 安全弁: `Estimation` を持たない電文では作らない。空配列を返すと、画面が
+  // 「推定あり」の見出しだけを出す
+  it('Estimation が無い電文では持たない', () => {
+    expect(parseTsunamiFromXml(PARITY_TSUNAMI_XML)!.estimations).toBeUndefined()
+  })
+})
 
 describe('震源要素更新（VXSE61）は「度分」の座標を採る', () => {
   // 正: 度分の座標を 10 進度へ直した値になる。

@@ -2,7 +2,8 @@ import type { EEWAlert, JMAQuake, JMATsunami } from '../types/earthquake'
 import type { MapMode } from '../components/Map/mapTypes'
 import { computeSingleEEWLevel, eewKindLabel, eewMaxScale, eewMaxScaleInfo } from './eew'
 import { formatDateTime, formatDepth, formatMagnitude, formatTsunamiGrade, hasDepth, hasMagnitude } from './formatters'
-import { getIntensityColor, getIntensityLabel, getIntensityLabelWithOrAbove, isValidIntensityScale } from './intensity'
+import { getIntensityColor, getIntensityLabelWithOrAbove, isValidIntensityScale } from './intensity'
+import { isMaxScaleUnreceived } from './quakePoints'
 import { ATTRIBUTION_SOURCES, attributionLine, EEW_NOTICE, type ShareCardHeader } from './shareCard'
 import { tsunamiOverallGrade } from './tsunami'
 
@@ -106,7 +107,11 @@ function quakeContent(quake: JMAQuake | null): ContentWithoutNotices {
   if (hasDepth(hypocenter.depth)) parts.push(`深さ ${formatDepth(hypocenter.depth)}`)
   return {
     header: {
-      title: knownScale ? `最大震度 ${getIntensityLabel(maxScale)}` : '地震情報',
+      // 未入電なら「以上」を付ける。**画像は訂正できない**ので、下限だけが確定した値を
+      // 断定形で焼き付けない（仮定震源要素で規模を出さないのと同じ理由。→ share-card-spec.md）。
+      title: knownScale
+        ? `最大震度 ${getIntensityLabelWithOrAbove(maxScale, isMaxScaleUnreceived(maxScale, quake.points))}`
+        : '地震情報',
       titleColor: knownScale ? getIntensityColor(maxScale) : undefined,
       subtitle: parts.join(SUBTITLE_SEPARATOR),
       meta: `${formatDateTime(time)} 発生`,
@@ -121,10 +126,17 @@ function tsunamiContent(tsunamis: JMATsunami[]): ContentWithoutNotices {
   if (!grade) return { header: { title: '津波情報' }, filenameLabel: 'tsunami' }
   const { text, color } = formatTsunamiGrade(grade)
   const areaCount = new Set(live.flatMap((t) => t.areas.map((a) => a.name))).size
-  const source = live.find((t) => t.sourceEarthquake)?.sourceEarthquake
+  // 共有カードは 1 行に収める。原因地震が複数あっても先頭だけを載せる
+  // （画像は訂正できないので、収まらない情報を詰め込まない）。
+  const source = live.find((t) => t.sourceEarthquakes?.length)?.sourceEarthquakes?.[0]
   const parts: string[] = []
   if (source) {
-    parts.push(source.magnitude != null ? `${source.hypocenterName}　M${source.magnitude.toFixed(1)}` : source.hypocenterName)
+    // 規模が数値で無いときは説明を出す（「Ｍ８を超える巨大地震」）。落とすと、**最も重大な
+    // 地震ほど震源名だけの薄い画像になる**。
+    const magnitudeText = source.magnitude != null
+      ? `　M${source.magnitude.toFixed(1)}`
+      : (source.magnitudeCondition ? `　${source.magnitudeCondition}` : '')
+    parts.push(`${source.hypocenterName}${magnitudeText}`)
   }
   if (areaCount > 0) parts.push(`${areaCount} 区域`)
   const issued = live[0]?.issue.time ?? live[0]?.time
