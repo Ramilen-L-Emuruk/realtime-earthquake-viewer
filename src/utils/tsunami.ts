@@ -178,10 +178,12 @@ export function withInheritedValidDateTime(latest: JMATsunami, reports: JMATsuna
  *   - `current` 無し
  *   - `current` が取消済み（`cancelled` or 10秒表示中の `cancelledAt`）
  *   - `current.eventId` と `next.eventId` が異なる（別地震の津波）
- *   - `eventId` が両者で欠落する場合は `sourceEarthquake.originTime` で代替判定
+ *   - `eventId` が両者で欠落する場合は原因地震（`sourceEarthquakes[0]`）の `originTime` で代替判定
  *     （DMDATA XML の Earthquake 要素経由でのみ機能する。P2PQuake API v2 の
- *     生 552 電文には `earthquake` 相当のフィールドが無く `sourceEarthquake` は
+ *     生 552 電文には `earthquake` 相当のフィールドが無く `sourceEarthquakes` は
  *     常に undefined になるため、標準版ではこのフォールバックは実質発火しない）
+ *     **比べるのは 1 件目だけ** —— 電文は原因地震を複数持ちうるが、2 件目以降は続報で
+ *     増減するので同一性の鍵にならない
  *   - 上記いずれの識別子も取れない場合は false（保守的に続報扱い）。
  *     標準版はこの経路がデフォルトで、別地震の新規津波でもタブが奪われない
  *     （grade 格上げか手動タブ切替に依存する）
@@ -190,8 +192,10 @@ export function isTsunamiNewFire(next: JMATsunami, current: JMATsunami | undefin
   if (!current) return true
   if (current.cancelled || current.cancelledAt) return true
   if (current.eventId && next.eventId) return current.eventId !== next.eventId
-  const currentOrigin = current.sourceEarthquake?.originTime
-  const nextOrigin = next.sourceEarthquake?.originTime
+  // 識別子を持たない経路（P2PQuake）のフォールバック。**比べるのは 1 件目だけ。**
+  // 複数の地震が原因のとき、2 件目以降は続報で増減しうるので同一性の鍵にならない。
+  const currentOrigin = current.sourceEarthquakes?.[0]?.originTime
+  const nextOrigin = next.sourceEarthquakes?.[0]?.originTime
   if (currentOrigin && nextOrigin) return currentOrigin !== nextOrigin
   return false
 }

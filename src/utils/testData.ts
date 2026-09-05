@@ -69,6 +69,12 @@ export function createTestForeignQuake(includeComments: boolean): JMAQuake {
  * 組み合わせ（`isArea: false` かつ `pref` 非空）になり、都道府県別表示の分岐が
  * テストでは一度も通らない。
  */
+/**
+ * テストで「5弱以上・未入電」に差し替える観測点。
+ * 元から震度5弱の地点を選ぶ（差し替えても最大震度が動かない）。
+ */
+const UNRECEIVED_TEST_STATIONS = new Set(['輪島市舳倉島', '金沢市弥生'])
+
 function toDmdataPoints(points: EarthquakePoint[]): EarthquakePoint[] {
   const converted: EarthquakePoint[] = []
   const prefMax = new Map<string, IntensityScale>()
@@ -124,12 +130,32 @@ export function createTestEarthquake(useDmdataShape: boolean): JMAQuake {
     // 輪島市門前町走出（震度7）のみ例外的に手動追加: 本震直後は停電・通信障害で観測データが
     // 未着で電文に反映されず、気象庁が2024/1/25の報道発表で「震度追加」として震度7
     // （計測震度6.5）を確定させたもの（電文形式では取得不可、気象庁公式発表を典拠とする）。
+    // **2 地点を「震度5弱以上未入電」に差し替える。** 揺れが強い地域ほど観測点からの通信が
+    // 途絶え、気象庁は観測値の代わりに「震度５弱以上未入電」で発表する。実データは確定報
+    // ——通信が復旧した後の値——なのでこの形を含まないが、**発表直後に最も起きる形**なので
+    // 画面で確かめられるようにしておく。実際に能登本震では 3 地点が未入電で、通信復旧後の
+    // 1 月 25 日に「震度追加」として発表された（うち輪島市門前町走出が震度7）。
+    //
+    // **差し替えるのは地点。** 未入電は観測点 1 つ 1 つに付く事実で、区域・県の `MaxInt` は
+    // 配下の最大として派生する（→ docs/spec/quake-spec.md §4）。県のロールアップ点だけを
+    // 未入電にすると実電文には無い形になり、地点名を読む経路も通らない。
+    //
+    // 選んだのは元から震度5弱の 2 地点。差し替えても最大震度（7）は動かないので、他の
+    // 期待値に影響しない。石川県は最大が震度7の観測値なのに未入電の地点も含む形になり、
+    // **「最大は観測できているが未入電もある」という最も起きやすい形**を画面で確かめられる。
     points: useDmdataShape
-      ? toDmdataPoints(notoHonshinPoints as EarthquakePoint[])
+      ? toDmdataPoints(notoHonshinPoints as EarthquakePoint[]).map(p =>
+        !p.isArea && UNRECEIVED_TEST_STATIONS.has(p.addr)
+          ? { ...p, unreceived: true }
+          : p,
+      )
       // P2PQuake は観測点電文（DetailScale）と区域速報電文（ScalePrompt）を別々に送るため、
       // 1 電文に両方が混ざることはない（→ quake-spec.md §4）。`各地の震度情報` として送る以上、
       // 区域点は落とす。
-      : (notoHonshinPoints as EarthquakePoint[]).filter((p) => !p.isArea),
+      // 標準版でも同じ地点を未入電にする（P2PQuake は震度値 46 で同じ事実を配信する）。
+      : (notoHonshinPoints as EarthquakePoint[])
+        .filter((p) => !p.isArea)
+        .map(p => (UNRECEIVED_TEST_STATIONS.has(p.addr) ? { ...p, unreceived: true } : p)),
   }
 }
 
@@ -176,6 +202,8 @@ export function createTestEEWWarning(eventId?: string, serial = 1, baseTime?: Da
     severity: 'Warning',
     cancelled: false,
     forecastMaxLpgmClass: 3,
+    // 気象庁の固定付加文。EEW にも付く（`Comments/Warning/Text`）
+    warningComment: '強い揺れに警戒してください。',
     issue: { eventId: eid, serial: String(serial), time: report },
     areas: [
       { pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null, lgIntTo: 3 },
@@ -498,14 +526,21 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
     cancelled: false,
     issue: { source: 'テスト', time: nowIso, type: 'Focus' },
     warningComment: 'ただちに高台へ避難してください。\n津波は繰り返し襲ってきます。警報が解除されるまで安全な場所から離れないでください。',
-    sourceEarthquake: { hypocenterName: '三陸沖', magnitude: 9.0, originTime: nowIso },
+    // M8 を超える地震では規模を速報できないため、気象庁は「Ｍ８を超える巨大地震」と書き、
+    // 予想波高も数値ではなく「巨大」で発表する（下の岩手県）。**第一報で最も起きる形**なので
+    // テストにも入れておく。2 件目は、短い間に起きた地震がまとめて 1 通で届く場合の形。
+    sourceEarthquakes: [
+      { hypocenterName: '三陸沖', magnitudeCondition: 'Ｍ８を超える巨大地震', originTime: nowIso },
+      { hypocenterName: '岩手県沖', magnitude: 7.2, originTime: t(-3) },
+    ],
     // name は地図の海岸線表示用に、津波予報区データ（tsunami-zones.json）に実在する区域名を使用する
     // 2011年東北地方太平洋沖地震を参考にした発令内容
     // code は津波予報区コード（テスト用の仮値）。observations の districtCode と一致させて紐づけを確認する
     areas: [
       {
+        // 数値にならない予想波高。`value` を持たないのが電文どおりの形
         grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030',
-        maxHeight: { description: '10m以上', value: 10.0 },
+        maxHeight: { description: '巨大' },
         firstHeight: { arrivalTime: t(-6), condition: 'ただちに津波来襲と予測' },
         stations: [
           { name: '宮古',   code: '0031', arrivalTime: t(-6), highTideDateTime: t(60) },
@@ -516,7 +551,8 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
       {
         grade: 'MajorWarning', immediate: true, name: '宮城県', code: '040',
         maxHeight: { description: '10m以上', value: 10.0 },
-        firstHeight: { arrivalTime: t(-4), condition: 'ただちに津波来襲と予測' },
+        // 到達状況は 3 つある。時刻を出せない段階ではこちらが入る
+        firstHeight: { condition: '津波到達中と推測' },
         stations: [
           { name: '石巻港', code: '0041', arrivalTime: t(-4), highTideDateTime: t(55) },
           { name: '仙台港', code: '0042', arrivalTime: t(-3), highTideDateTime: t(57) },
@@ -526,7 +562,7 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
       {
         grade: 'MajorWarning', immediate: true, name: '福島県', code: '050',
         maxHeight: { description: '6m', value: 6.0 },
-        firstHeight: { arrivalTime: t(-2), condition: 'ただちに津波来襲と予測' },
+        firstHeight: { condition: '第１波の到達を確認' },
         stations: [
           { name: '小名浜', code: '0051', arrivalTime: t(-2), highTideDateTime: t(65) },
         ],
@@ -574,6 +610,13 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
       // 津波注意報の区域で、これまでの最大波がごく小さい（数値を発表しない）。
       { name: '釧路',   districtCode: '080', districtName: '北海道太平洋沿岸東部', arrivalTime: t(30), initial: '押し', condition: { weak: true } },
       { name: '沖合40km', height: { value: 3.0, description: '3.0m以上', over: true }, arrivalTime: nowIso },
+    ],
+    // 沖合の観測から導いた沿岸への推定（電文の `Estimation`）。沖合の観測点は沿岸より先に
+    // 津波を捉えるため、**まだ到達していない沿岸**の到達予想と高さが入る。
+    // 時刻を出せない段階では説明（下の 2 件目）で伝える。
+    estimations: [
+      { name: '岩手県', code: '030', arrivalTime: t(8), maxHeight: { description: '5m', value: 5.0 } },
+      { name: '宮城県', code: '040', arrivalCondition: '早いところでは既に津波到達と推定', maxHeight: { description: '4m', value: 4.0 } },
     ],
   }
 }

@@ -115,15 +115,15 @@ describe('isTsunamiNewFire', () => {
     expect(isTsunamiNewFire(next, current)).toBe(false)
   })
 
-  it('eventId が両方 undefined でも sourceEarthquake.originTime が異なれば true（P2PQuake 経路のフォールバック）', () => {
-    const current = makeTsunami({ sourceEarthquake: { hypocenterName: 'A', originTime: '2026-01-01T00:00:00Z' } })
-    const next = makeTsunami({ sourceEarthquake: { hypocenterName: 'B', originTime: '2026-01-02T00:00:00Z' } })
+  it('eventId が両方 undefined でも原因地震の originTime が異なれば true（P2PQuake 経路のフォールバック）', () => {
+    const current = makeTsunami({ sourceEarthquakes: [{ hypocenterName: 'A', originTime: '2026-01-01T00:00:00Z' }] })
+    const next = makeTsunami({ sourceEarthquakes: [{ hypocenterName: 'B', originTime: '2026-01-02T00:00:00Z' }] })
     expect(isTsunamiNewFire(next, current)).toBe(true)
   })
 
   it('eventId が両方 undefined で originTime が同じは false（同一地震の続報）', () => {
-    const current = makeTsunami({ sourceEarthquake: { hypocenterName: 'A', originTime: '2026-01-01T00:00:00Z' } })
-    const next = makeTsunami({ sourceEarthquake: { hypocenterName: 'A', originTime: '2026-01-01T00:00:00Z' } })
+    const current = makeTsunami({ sourceEarthquakes: [{ hypocenterName: 'A', originTime: '2026-01-01T00:00:00Z' }] })
+    const next = makeTsunami({ sourceEarthquakes: [{ hypocenterName: 'A', originTime: '2026-01-01T00:00:00Z' }] })
     expect(isTsunamiNewFire(next, current)).toBe(false)
   })
 
