@@ -1730,7 +1730,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // 6 弱を言い直していた）。
             //
             // **降りても取りこぼしにはならない**が、それは「サイクルは必ず確定へ至る」という
-            // 単一の理由ではなく、次の 3 通りで担保されている。**`clearScaleStability` を新しく
+            // 単一の理由ではなく、次の 4 通りで担保されている。**`clearScaleStability` を新しく
             // 呼ぶ場所を足すときは、そこがどれに当たるかを確かめること。**
             //   1. サイクル自身のタイマーが `confirmScale` を呼ぶ（通常）
             //   2. サイクルを捨てる側が、同じイベント処理の中で確定経路を張り直す
@@ -1739,6 +1739,15 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             //      必ず落ちる。**ただし理由不明タイマーが既に動いている場合は張り直さず、
             //      そのタイマーが確定を担う**——「冗長」と見て消さないこと）
             //   3. 読まないことが正しい場合（誤報取消・自動解除・リプレイのリセット・アンマウント）
+            //   4. `clearScaleStability` を呼んだ時点で（**捨てるサイクルが無い場合を含めて**）
+            //      **確定値が最新の電文と既に一致している**場合。予想震度が無く理由も
+            //      判らない報が続き、かつ確定値が既に「予想震度なし」（`scale === 0`）のとき、
+            //      理由不明タイマーを張らずに済ませる経路がこれにあたる。張り直しても同じ値で
+            //      確定し直すだけで何も読まないのに、待っている 3 秒のあいだ非 EEW の読み上げを
+            //      止めてしまう（止められた側は「追い越された」と判定して取り下げる）。
+            //      **判定は「確定したか」ではなく「確定値が 0 か」で行うこと**——前者にすると
+            //      2 の後始末（有→無に戻ったとき）まで巻き込み、取り下げられた予想震度が
+            //      確定値として残る
             // **沈黙の間も `speechBlocker` が `eewPhase2` を返すので、非 EEW が滑り込むことはない。**
             //
             // **待つのは震度だけ。** 階級側の安定待ちを理由に震度を止めてはならない（「震度は
@@ -2109,10 +2118,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         } else if (eewNoForecastReason(event) !== 'unknown') {
           clearPhase2MaxTimer()
           confirmScale({ scale: 0, orAbove: false })
-        } else if (!eewTtsMaxTimersRef.current.has(key)) {
-          // 予想震度がまだ無く、付かない理由も判らない。値が付いた続報で安定待ちへ回すが、
-          // 最後まで付かないこともあるため上限で打ち切り、「予想震度なし」で確定する。
-          // 続報のたびに二重に張らないよう、既に動いていなければ新規に張る。
+        } else {
+          // 予想震度がまだ無く、付かない理由も判らない。
           //
           // **直前の続報までは scale>0 だった場合の後始末。** 一度 areas が付いた後の続報で
           // 再び scale=0（かつ理由不明）に戻ると、この分岐に初めて落ちる。ここで
@@ -2120,12 +2127,42 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // 生き残ったまま先に発火し、もう存在しないはずの古い震度で確定してしまう
           // （enqueuePhase2 は「上がった時だけ読む」判定のため、後から来る正しい
           // 「予想震度なし」への訂正が黙って弾かれ、誤った値が確定したまま残る）。
+          // **破棄は確定済みかどうかに関わらず行う**——下の待ちを張らない場合も、古い
+          // サイクルを残すと同じ誤確定が起きる。
           clearScaleStability()
-          const maxTimer = setTimeout(() => {
-            eewTtsMaxTimersRef.current.delete(key)
-            confirmScale({ scale: 0, orAbove: false })
-          }, EEW_PHASE2_MAX_WAIT_MS)
-          eewTtsMaxTimersRef.current.set(key, maxTimer)
+          // 値が付いた続報で安定待ちへ回すが、最後まで付かないこともあるため上限で
+          // 打ち切り、「予想震度なし」で確定する。
+          //
+          // **見るのは「確定したか」ではなく「確定値が既に『予想震度なし』か」。** 前者で
+          // 判定すると、上の後始末（予想震度が有→無に戻った続報）で確定経路が一つも
+          // 張られなくなり、`eewConfirmedScaleRef` に古い値が残ったままになる。気象庁が
+          // 取り下げた予想震度を、以後の区分格上げで読み上げうる。
+          //
+          // 既に「予想震度なし」で確定しているなら、この待ちは何も読み上げない——同じ値で
+          // 確定し直すだけで、`enqueuePhase2` の「上がった時だけ読む」判定に弾かれる。
+          // それでも `speechBlocker` は待っている間ずっと `eewPhase2` を返すため、
+          // **喋る予定が無いまま非 EEW の読み上げを 3 秒止める**ことになる。実害は
+          // 「止める」だけでは済まない: 止められた側は「後から重い読み上げに追い越された」
+          // と判定して取り下げる（`speakNonEEWDelayed`）ので、その電文は一言も鳴らない。
+          // 2024/01/01 能登の再生では、予想震度が付かない別 EEW の第 4 報がこの待ちを
+          // 張り直し、同時刻に届いた震度速報（最大震度6強）を丸ごと消していた。
+          //
+          // 確定後に予想震度が付いた続報が来た場合は上の `scale > 0` の枝が拾うので、
+          // ここで待たなくても取りこぼさない。
+          //
+          // **`scale` だけ見れば足りるのは、`scale === 0` が常に `orAbove === false` を
+          // 伴うから**（`eewMaxScaleInfo` は `orAbove` を `scale > 0` との論理積で作る。
+          // 「震度なし以上」という値は作れない）。`eewConfirmedScaleRef` へ直接書き込む
+          // 経路を足すときは、この前提が保たれることを確かめること——崩れると、訂正されない
+          // `orAbove` を抱えたまま「最新の電文と一致している」と誤認する。
+          if (!eewTtsMaxTimersRef.current.has(key)
+            && eewConfirmedScaleRef.current.get(key)?.scale !== 0) {
+            const maxTimer = setTimeout(() => {
+              eewTtsMaxTimersRef.current.delete(key)
+              confirmScale({ scale: 0, orAbove: false })
+            }, EEW_PHASE2_MAX_WAIT_MS)
+            eewTtsMaxTimersRef.current.set(key, maxTimer)
+          }
         }
       }
 
