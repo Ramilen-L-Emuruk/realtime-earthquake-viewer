@@ -1,4 +1,4 @@
-import type { EarthquakePoint } from '../types/earthquake'
+import type { EarthquakePoint, IntensityScale } from '../types/earthquake'
 
 /**
  * 一次細分区域名 → 都道府県名 の逆引き索引（`buildAreaPrefIndex`）。
@@ -38,4 +38,21 @@ export function isAreaPoint(
   if (!p.isArea) return false
   if (p.addr !== p.pref) return true
   return areaPrefIndex?.has(p.addr) ?? false
+}
+
+/**
+ * 電文全体の最大震度が「5弱以上・未入電」か（→ docs/spec/quake-spec.md §4）。
+ *
+ * **これはフィールドとして持たない。** 震度を持たない続報（震源情報など）に既存の震度と
+ * `points` を引き継ぐ経路が 2 つあり（`mergeQuakeInto` の補完と、`useEarthquakes` の
+ * 震度キャッシュ）、フィールドで持つと**そのたびにコピーを書き足す必要がある**。
+ * 実際に 2 箇所とも書き漏らして、続報で「5弱以上」が黙って「5弱」へ降格していた。
+ * **`points` は両経路とも必ず一緒に運ばれる**ので、そこから導けば漏れようがない。
+ *
+ * 判定は「最大震度と同じ階級の点に未入電があるか」。未入電は下限の 45（5弱）へ寄せてあるので、
+ * 最大震度が 45 のときだけ真になりうる。
+ */
+export function isMaxScaleUnreceived(maxScale: IntensityScale, points: readonly EarthquakePoint[]): boolean {
+  if (maxScale < 0) return false
+  return points.some(p => p.unreceived && p.scale === maxScale)
 }

@@ -263,6 +263,35 @@ describe('convertEvent', () => {
       expect(warnSpy).not.toHaveBeenCalled()
     })
 
+    // 正: 46 は「5弱以上・未入電」。**DMDATA の `!5-` と同じ事実**なので、標準版でも
+    // 印を立てて表示・読み上げの扱いを揃える（→ quake-spec.md §4）
+    it('46 の点には未入電の印を立てる', () => {
+      const q = convert({
+        ...REAL_QUAKE,
+        points: [{ addr: 'テスト観測点', isArea: false, pref: 'テスト県', scale: 46 }],
+      }) as JMAQuake
+      expect(q.points[0].unreceived).toBe(true)
+    })
+
+    // 対照: 観測された 5弱（45）には立てない。立てると「実際にはもっと強いかもしれない」が
+    // 観測値にまで及び、逆の誤解を生む
+    it('観測された 45 には未入電の印を立てない', () => {
+      const q = convert({
+        ...REAL_QUAKE,
+        points: [{ addr: 'テスト観測点', isArea: false, pref: 'テスト県', scale: 45 }],
+      }) as JMAQuake
+      expect(q.points[0].unreceived).toBeUndefined()
+    })
+
+    // 安全弁: 切り捨ての規約は階級の変換と揃える。46.9 は 46 として読む
+    it('小数が付いた 46 でも印を立てる', () => {
+      const q = convert({
+        ...REAL_QUAKE,
+        points: [{ addr: 'テスト観測点', isArea: false, pref: 'テスト県', scale: 46.9 }],
+      }) as JMAQuake
+      expect(q.points[0].unreceived).toBe(true)
+    })
+
     it('小数が付いた値は整数部で判定する（仕様の「整数部のみ有効」）', () => {
       expect(pointScale(45.0)).toBe(45)
       expect(pointScale(55.4)).toBe(55)

@@ -286,6 +286,21 @@ describe('震度の地域列挙: 観測点しか持たない電文（P2PQuake �
     expect(text).toContain('最大震度4を埼玉県で観測しました。')
   })
 
+  // 正: 未入電を含む県は、全区域が揃っていても県名へまとめない（カードと同じ規則。
+  // → docs/spec/quake-spec.md §4）。まとめると、画面が区域別に並べている同じ電文を
+  // 音声だけ県名 1 つに畳んで伝えることになる。対照は 1 つ上のテスト（観測値ならまとめる）。
+  it('未入電を含む県は全区域が揃っても県名へまとめない', () => {
+    const unreceived = (addr: string): EarthquakePoint => ({ ...station('埼玉県', addr, 45), unreceived: true })
+    const quake = makeQuake(
+      [unreceived('熊谷市桜町'), unreceived('さいたま北区宮原'), unreceived('秩父市上町')],
+      SOUTH_HYPO,
+    )
+    const text = earthquakeToText(quake, OPTS, true)
+    expect(text).toContain('では震度5弱以上と推定されます。')
+    // 「埼玉県」単独では出ない（埼玉県北部・南部・秩父地方に続く形だけ許す）。
+    expect(text).not.toMatch(/埼玉県(?![北南秩])/)
+  })
+
   it('pref が空の観測点でも区域を引ける（DMDATA の XML 経路）', () => {
     const quake = makeQuake(
       [station('', '糸魚川市一の宮', 40), station('', '長岡市幸町', 40)],

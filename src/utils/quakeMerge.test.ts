@@ -22,6 +22,7 @@ import type { JMAQuake, IssueType, IntensityScale, EarthquakePoint, DomesticTsun
 import { readFileSync } from 'node:fs'
 import { buildAreaPrefIndex, type StationCoordsData } from './stationCoords'
 import type { AreaPrefIndex } from './quakePoints'
+import { isMaxScaleUnreceived } from './quakePoints'
 
 const sameQuakeEntry = (a: JMAQuake, b: JMAQuake, idx: AreaPrefIndex = null) =>
   sameQuakeEntryWithIndex(a, b, idx)
@@ -435,6 +436,22 @@ describe('mergeQuakeInto — VXSE61（顕著地震）', () => {
   // 対照: 持たない報では既存の付加文を残す（津波区分を「不明」なら据え置くのと同じ考え方）
   // 震度を既存から補完する経路でも自由付加文を落とさない。震度だけ引き継いで本文を捨てると、
   // 「津波注意報を発表中です」のような状況説明が後続の震源情報で消える
+  // 安全弁: 「5弱以上・未入電」が続報で断定形へ降格しないこと。
+  //
+  // **これは印を `points` から導く設計に依っている。** 震度を引き継ぐ経路は `maxScale` と
+  // `points` を必ず一緒に運ぶので、点が持つ印もそのまま残る。フィールドで別に持つと、
+  // この経路でコピーを書き足し忘れて黙って降格する（実際にそうなっていた）。
+  it('震度欠落の後続電文でも未入電の印が残る', () => {
+    const e: JMAQuake = {
+      ...makeQuake({ type: '震度速報' }),
+      earthquake: { ...makeQuake({ type: '震度速報' }).earthquake, maxScale: 45 },
+      points: [{ pref: '', addr: '岩手県沿岸北部', isArea: true, scale: 45, unreceived: true }],
+    }
+    const merged = mergeQuakeInto(e, makeNoIntensity({ type: '震源情報' }))
+    expect(merged.earthquake.maxScale).toBe(45)
+    expect(isMaxScaleUnreceived(merged.earthquake.maxScale, merged.points)).toBe(true)
+  })
+
   it('震度欠落の後続電文でも既存の自由付加文を保持する', () => {
     const notice = 'なお、茨城県から沖縄県地方にかけての太平洋側を中心に津波注意報を発表中です。'
     const e: JMAQuake = { ...makeQuake({ type: '震度速報' }), freeText: notice }
