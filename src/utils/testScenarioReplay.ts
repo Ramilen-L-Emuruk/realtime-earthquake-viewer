@@ -68,10 +68,10 @@ function remapAppEvent(event: AppEvent, deltaMs: number, remapId: IdRemapper): A
         eventId: newEventId,
         time: shiftIso(event.time, deltaMs),
         validDateTime: shiftIsoOpt(event.validDateTime, deltaMs),
-        sourceEarthquake: event.sourceEarthquake && {
-          ...event.sourceEarthquake,
-          originTime: shiftIsoOpt(event.sourceEarthquake.originTime, deltaMs),
-        },
+        sourceEarthquakes: event.sourceEarthquakes?.map(eq => ({
+          ...eq,
+          originTime: shiftIsoOpt(eq.originTime, deltaMs),
+        })),
         issue: { ...event.issue, time: shiftIso(event.issue.time, deltaMs) },
         areas: event.areas.map(a => ({
           ...a,

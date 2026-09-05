@@ -61,7 +61,7 @@ async function settle() {
 
 // 同一イベントとして扱わせるため earthquake.time と震源名は固定する（`sameQuakeEntry` は
 // eventId を持たない電文を「発生時刻が同じで震源が矛盾しない」で束ねる）。
-function makeQuake(over: { type?: IssueType; addr?: string; maxScale?: number; magnitude?: number } = {}): JMAQuake {
+function makeQuake(over: { type?: IssueType; addr?: string; maxScale?: number; magnitude?: number; unreceived?: boolean } = {}): JMAQuake {
   const maxScale = over.maxScale ?? 40
   return {
     kind: 'quake',
@@ -77,7 +77,7 @@ function makeQuake(over: { type?: IssueType; addr?: string; maxScale?: number; m
       maxScale,
       domesticTsunami: 'なし',
     },
-    points: maxScale < 0 ? [] : [{ pref: '石川県', addr: over.addr ?? '石川県能登', isArea: true, scale: maxScale }],
+    points: maxScale < 0 ? [] : [{ pref: '石川県', addr: over.addr ?? '石川県能登', isArea: true, scale: maxScale, ...(over.unreceived ? { unreceived: true } : {}) }],
   } as JMAQuake
 }
 
@@ -193,5 +193,23 @@ describe('地震情報のウィンドウタイトル', () => {
     handle(makeQuake({ type: '各地の震度情報', maxScale: 50 }))
     await flush()
     expect(titles).toEqual(['地震情報 石川県能登地方 最大震度5強'])
+  })
+
+  // 正: 「5弱以上・未入電」は**断定形で出さない**（→ docs/spec/quake-spec.md §4）。
+  // タイトルはカードを開かない利用者が最初に目にする経路なので、ここを落とすと
+  // 「実際にはもっと強いかもしれない」が誰にも届かない。
+  it('最大震度が未入電なら「以上」を添える', async () => {
+    const handle = setup()
+    handle(makeQuake({ type: '震度速報', maxScale: 45, unreceived: true }))
+    await flush()
+    expect(titles).toEqual(['地震情報 石川県能登地方 最大震度5弱以上'])
+  })
+
+  // 対照: 観測された5弱には添えない（階級は同じ 45 なので、点の印でしか見分けられない）。
+  it('観測された5弱には「以上」を添えない', async () => {
+    const handle = setup()
+    handle(makeQuake({ type: '震度速報', maxScale: 45 }))
+    await flush()
+    expect(titles).toEqual(['地震情報 石川県能登地方 最大震度5弱'])
   })
 })

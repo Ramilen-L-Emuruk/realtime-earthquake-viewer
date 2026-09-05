@@ -1,5 +1,5 @@
 import { useMemo, useRef, useEffect } from 'react'
-import type { JMAQuake, JMALpgm, IssueType } from '../../types/earthquake'
+import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint } from '../../types/earthquake'
 import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
 import {
   formatQuakeTime,
@@ -10,8 +10,9 @@ import {
   formatCorrectType,
   hasMagnitude,
 } from '../../utils/formatters'
-import { getIntensityLabel, getIntensityColor, getIntensityBgColor, getDepthColor, getMagnitudeColor } from '../../utils/intensity'
-import { buildAreaPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, byValueDescThenRegion } from '../../utils/stationCoords'
+import { getIntensityLabelWithOrAbove, getIntensityColor, getIntensityBgColor, getDepthColor, getMagnitudeColor } from '../../utils/intensity'
+import { buildAreaPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, buildStationPrefIndex, lookupStationRegion, regionOrderRank, byValueDescThenRegion } from '../../utils/stationCoords'
+import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel } from '../../utils/quakePoints'
 import { useStationCoords } from '../../hooks/useStationCoords'
 
 /** issue.type に応じたバッジの Tailwind クラスを返す。 */
@@ -64,6 +65,9 @@ interface Props {
 export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, activeLpgmEventId, onToggleLpgm }: Props) {
   const { earthquake, issue } = quake
   const { hypocenter, maxScale, domesticTsunami } = earthquake
+  // 電文全体の最大震度が「5弱以上・未入電」だったとき、見出しにも「以上」を付ける。
+  // 付けないと、実際にはもっと強い可能性があることが見出しから読み取れない。
+  const maxScaleLabel = maxScale === -1 ? '?' : getIntensityLabelWithOrAbove(maxScale, isMaxScaleUnreceived(maxScale, quake.points))
   const tsunamiInfo = formatDomesticTsunami(domesticTsunami)
   const hasLocation = hypocenter.latitude > -200 && hypocenter.longitude > -200
 
@@ -76,15 +80,51 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
 
   const stationData = useStationCoords()
 
+  /**
+   * 未入電の点を切り分けた結果と、名前の解決に使う索引。**バッジとブロックで共有する。**
+   * 別々に解決すると、片方だけが名前を引けたときに「印は出るのに地点が出ない」
+   * （またはその逆）という自己矛盾が起きる。
+   *
+   * **観測点の所属を引けない場合、印を付ける行が決まらない。** DMDATA は観測点を `pref: ''` で
+   * 積むため、座標テーブルが未読み込みのあいだ（起動直後の数百 ms）や、電文の観測点が
+   * テーブルに無い場合は県も区域も引けない。そのときは印が出ないが、**ブロックには地点名が
+   * 出る**ので情報自体は失われない（→ docs/spec/quake-spec.md §4）。
+   */
+  const unreceivedIndexes = useMemo(() => {
+    const stationPrefIndex = stationData ? buildStationPrefIndex(stationData) : null
+    const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
+    const prefOf = (p: EarthquakePoint): string =>
+      p.pref || areaPrefIndex?.get(p.addr) || stationPrefIndex?.get(p.addr) || ''
+    const regionOfStation = (p: EarthquakePoint): string | null => {
+      const pref = prefOf(p)
+      return pref && stationData ? lookupStationRegion(stationData, pref, p.addr) : null
+    }
+    const { stations, areas } = partitionUnreceivedPoints(quake.points, p => [
+      regionOfStation(p) ?? '',
+      prefOf(p),
+    ])
+    return { stationPrefIndex, areaPrefIndex, prefOf, regionOfStation, stations, areas }
+  }, [quake.points, stationData])
+
   const prefGroups = useMemo(() => {
     if (!isSelected || !quake.points.length) return []
 
-    // pref 設定済みの点（JSON prefectures[] 由来）→ 都道府県別の最大震度とする
-    const prefMax = new Map<string, number>()
+    // 震度と一緒に「未入電か」を持ち回る。**名前だけで後から引かないこと** ——
+    // 同じ区域に観測値と未入電が混ざったとき、勝った観測値にまで印が付く。
+    // 同じ震度なら**観測値を採る**。並び順で結果が変わらないようにするため（電文は 1 つの
+    // 区域につき 1 点しか持たないので現状は起きないが、順序依存を残す理由も無い）。
+    type Entry = { scale: number; unreceived: boolean }
+    const higher = (a: Entry | undefined, b: Entry): Entry => {
+      if (!a) return b
+      if (a.scale !== b.scale) return a.scale > b.scale ? a : b
+      return a.unreceived ? b : a
+    }
+
+    // pref 設定済みの点（都道府県ロールアップ点）→ 都道府県別の最大震度とする
+    const prefMax = new Map<string, Entry>()
     for (const p of quake.points) {
       if (!p.pref) continue
-      const cur = prefMax.get(p.pref) ?? -1
-      if (p.scale > cur) prefMax.set(p.pref, p.scale)
+      prefMax.set(p.pref, higher(prefMax.get(p.pref), { scale: p.scale, unreceived: !!p.unreceived }))
     }
 
     // pref 未設定の一次細分区域点（JSON regions[] 由来）を実際の都道府県ごとにグルーピングし、
@@ -92,39 +132,99 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
     // 既に prefectures[] 側にデータがある都道府県は、行の重複を避けるため区域側を無視する。
     const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
     const prefAreaNames = stationData ? buildPrefAreaNamesIndex(stationData) : null
-    const areaByPref = new Map<string, Map<string, number>>()
+    const areaByPref = new Map<string, Map<string, Entry>>()
     for (const p of quake.points) {
       if (p.pref || !p.isArea) continue
       const pref = areaPrefIndex?.get(p.addr)
       if (!pref || prefMax.has(pref)) continue
-      const set = areaByPref.get(pref) ?? new Map<string, number>()
-      const cur = set.get(p.addr)
-      if (cur == null || p.scale > cur) set.set(p.addr, p.scale)
+      const set = areaByPref.get(pref) ?? new Map<string, Entry>()
+      set.set(p.addr, higher(set.get(p.addr), { scale: p.scale, unreceived: !!p.unreceived }))
       areaByPref.set(pref, set)
     }
 
-    const result = new Map<string, number>(prefMax)
+    const result = new Map<string, Entry>(prefMax)
     for (const [pref, addrScales] of areaByPref) {
       const fullSet = prefAreaNames?.get(pref)
-      const scales = new Set(addrScales.values())
+      const scales = new Set([...addrScales.values()].map(e => e.scale))
+      // **未入電を含む県はまとめない。** 階級は下限へ寄せてあるので、観測した5弱と
+      // 「5弱以上・未入電」は `scale` では区別できず、県内が「同じ震度」に見えてしまう。
+      // まとめると、印を全区域に広げれば観測値を未入電と偽り、落とせば**実際にはもっと
+      // 強いかもしれない区域があること**が消える。区域のまま並べれば、どちらも起きない。
+      const hasUnreceived = [...addrScales.values()].some(e => e.unreceived)
       const isWholePref = fullSet != null && fullSet.size > 0
         && addrScales.size === fullSet.size
         && [...addrScales.keys()].every(n => fullSet.has(n))
         && scales.size === 1
-      if (isWholePref) result.set(pref, [...scales][0])
-      else for (const [name, scale] of addrScales) result.set(name, scale)
+        && !hasUnreceived
+      if (isWholePref) {
+        result.set(pref, { scale: [...scales][0], unreceived: false })
+      } else {
+        for (const [name, entry] of addrScales) result.set(name, entry)
+      }
     }
 
     // 震度の降順。**同じ震度どうしは気象庁の標準順（北から南）で並べる。**
     // ここを震度だけで並べると、`sort` が安定なぶん Map の挿入順＝電文が点を並べた順が残る。
     // 電文の並びは種別ごとに違う（例: 県ごとにまとまる／区域と観測点が別々にまとまる）ので、
     // 電文の書式が変わるだけで画面の並びが黙って動く。読み上げと同じ索引で並べて断ち切る。
+    // 「未入電あり」の印は、**その範囲に未入電の地点が 1 つでもあるか**で出す。行の最大が
+    // 未入電かどうかでは判定しない —— 区域・県の最大震度は配下の最大なので、1 点でも観測値が
+    // 届けばそちらが勝つ。最大だけを見ると「最大は観測できたが別の地点は未入電」という
+    // **最も起きやすい形**で印が消える（→ docs/spec/quake-spec.md §4）。
+    // **ブロックと同じ切り分け結果から作る**（`unreceivedIndexes`）。別々に解決すると、
+    // 片方だけが名前を引けたときに「印は出るのに地点が出ない」（またはその逆）になる。
+    const { prefOf, regionOfStation, stations: unreceivedStations, areas: unreceivedAreaPoints } = unreceivedIndexes
+    const unreceivedPrefs = new Set<string>()
+    const unreceivedAreas = new Set<string>()
+    for (const p of [...unreceivedStations, ...unreceivedAreaPoints]) {
+      const pref = prefOf(p)
+      if (pref) unreceivedPrefs.add(pref)
+      // 区域点はそのまま。都道府県ロールアップ点（addr === pref）は県として既に数えている。
+      if (p.isArea) { if (!p.pref) unreceivedAreas.add(p.addr) }
+      else {
+        const region = regionOfStation(p)
+        if (region) unreceivedAreas.add(region)
+      }
+    }
+
     const order = stationData ? buildRegionOrderIndex(stationData) : null
     return Array.from(result.entries())
-      .map(([pref, scale]) => ({ pref, scale }))
+      .map(([pref, { scale, unreceived }]) => ({
+        pref,
+        scale,
+        unreceived,
+        hasUnreceived: unreceivedPrefs.has(pref) || unreceivedAreas.has(pref),
+      }))
       .filter(({ scale }) => scale >= 0)
       .sort(byValueDescThenRegion(g => g.scale, g => g.pref, order))
-  }, [isSelected, quake.points, stationData])
+  }, [isSelected, quake.points, stationData, unreceivedIndexes])
+
+  /**
+   * 「震度を入手していない地点」。**未入電は観測点 1 つ 1 つに付く事実**なので、地点名で見せる
+   * （気象庁も市町村・地点名で発表する。→ docs/spec/quake-spec.md §4）。県や区域の行に印を
+   * 付けるだけでは、地点 1 つの話が範囲全体の話に見えてしまう。
+   *
+   * 地点を持たない電文（震度速報は区域しか持たない）では区域名で出す。
+   * 並びは読み上げと同じ気象庁の標準順 —— 電文が点を並べた順に画面を委ねない。
+   */
+  const unreceivedPoints = useMemo(() => {
+    const empty = { names: [] as string[], unit: '地点' }
+    if (!isSelected) return empty
+    const { prefOf, regionOfStation, stations, areas } = unreceivedIndexes
+    if (stations.length === 0 && areas.length === 0) return empty
+    const order = stationData ? buildRegionOrderIndex(stationData) : null
+    const rank = (p: EarthquakePoint): number => (p.isArea
+      ? regionOrderRank(p.addr, order)
+      : regionOrderRank(regionOfStation(p) ?? prefOf(p), order))
+    const ordered = [...stations, ...areas]
+      .map((p, i) => ({ p, i, r: rank(p) }))
+      .sort((a, b) => a.r - b.r || a.i - b.i)
+      .map(({ p }) => p.addr)
+    return {
+      names: [...new Set(ordered)],
+      unit: unreceivedUnitLabel(stations.length > 0, areas.length > 0),
+    }
+  }, [isSelected, stationData, unreceivedIndexes])
 
   // 長周期地震動の区域も、地震の震度と同じ考え方で県内全区域が同じ階級で揃っていれば
   // 「〇〇県」1件にまとめる（TTS の buildLpgmRegionText と同じ判定）。
@@ -216,7 +316,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
               className="font-black leading-none text-[3.25rem] roomy:text-[5.5rem]"
               style={{ color: '#ffffff' }}
             >
-              {maxScale === -1 ? '?' : getIntensityLabel(maxScale)}
+              {maxScaleLabel}
             </span>
           </div>
 
@@ -356,9 +456,35 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
               )
             }
 
-            return prefGroups.length > 0 ? (
+            if (prefGroups.length === 0 && unreceivedPoints.names.length === 0) return null
+
+            return (
               <div className="flex flex-col gap-0.5 pt-1 border-t border-white/10">
-                {prefGroups.map(({ pref, scale }, idx) => (
+                {/* **地点の話は地点として見せる。** 震度一覧の上に置くのは、最も強く揺れた
+                    かもしれない場所が分からないことが、最大震度の次に重要だから。 */}
+                {unreceivedPoints.names.length > 0 && (
+                  <div
+                    className="mb-1 px-2 py-1.5 rounded"
+                    style={{ backgroundColor: 'rgba(156,163,175,0.12)', border: '1px solid rgba(156,163,175,0.35)' }}
+                  >
+                    {/* **単位は中身に合わせる。** 地点を持たない電文（震度速報は区域しか
+                        持たない）では区域名が並ぶので、見出しが「地点」のままだと粒度を
+                        誤解させる。読み上げの「ほかN地点／ほかN地域」と同じ判定で切り替える。 */}
+                    <div className="text-[0.75rem] roomy:text-[0.875rem] font-bold" style={{ color: '#d1d5db' }}>
+                      震度を入手していない{unreceivedPoints.unit}
+                    </div>
+                    {/* **推定したのは気象庁**であることを書く。このアプリは強震モニタ由来の
+                        値にも「推定」を使っており（リアルタイムタブ）、主語が無いと
+                        「アプリが推定した値」と取り違えられる。 */}
+                    <div className="text-[0.6875rem] roomy:text-[0.8125rem] mb-1" style={{ color: '#9ca3af' }}>
+                      気象庁は震度5弱以上と推定していますが、震度が届いていません（未入電）
+                    </div>
+                    <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[0.8125rem] roomy:text-[1rem] text-white">
+                      {unreceivedPoints.names.map(name => <span key={name}>{name}</span>)}
+                    </div>
+                  </div>
+                )}
+                {prefGroups.map(({ pref, scale, unreceived, hasUnreceived }, idx) => (
                   <div
                     key={pref}
                     className="flex items-center justify-between px-2 py-1 rounded roomy:py-1.5"
@@ -368,13 +494,30 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                       className="font-bold flex-shrink-0 whitespace-nowrap text-[0.9375rem] roomy:text-[1.125rem]"
                       style={{ color: getIntensityColor(scale) }}
                     >
-                      震度{getIntensityLabel(scale)}
+                      {/* 未入電は「5弱以上」。観測値と同じ顔で出すと、実際にはもっと強い
+                          可能性があることが伝わらない。EEW の「上限を定めない予想震度」と
+                          同じ語を同じヘルパーで付ける。 */}
+                      震度{getIntensityLabelWithOrAbove(scale, unreceived)}
                     </span>
-                    <span className="text-white text-[0.9375rem] roomy:text-[1.125rem]">{pref}</span>
+                    <span className="text-white text-[0.9375rem] roomy:text-[1.125rem]">
+                      {pref}
+                      {/* **「あり」を付けて範囲の話にする。** 未入電は地点単位の事実なので、
+                          「〇〇県 未入電」だと県が丸ごと未入電に読める。どの地点かは上の
+                          ブロックが示す。語は気象庁のものをそのまま使い、読み上げとも揃える。 */}
+                      {hasUnreceived && (
+                        <span
+                          className="ml-1.5 text-[0.75rem] roomy:text-[0.875rem]"
+                          style={{ color: '#9ca3af' }}
+                          title="この範囲に、震度が届いていない観測点があります"
+                        >
+                          未入電あり
+                        </span>
+                      )}
+                    </span>
                   </div>
                 ))}
               </div>
-            ) : null
+            )
           })()}
         </div>
       </button>
@@ -424,7 +567,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
             className="text-5xl font-black leading-tight"
             style={{ color: getIntensityColor(maxScale) }}
           >
-            {maxScale === -1 ? '?' : getIntensityLabel(maxScale)}
+            {maxScaleLabel}
           </span>
         </div>
 

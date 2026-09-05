@@ -134,11 +134,11 @@ export function buildTsunamiEntries(
           eventId: opts.eventId,
           time: timeIso,
           cancelled: false,
-          sourceEarthquake: {
+          sourceEarthquakes: [{
             hypocenterName: opts.hypocenterName,
             magnitude: opts.magnitudeByStage[stageNum],
             originTime: opts.originTimeIso,
-          },
+          }],
           issue: { source: '気象庁', time: timeIso, type: 'Focus' },
           areas,
         },
