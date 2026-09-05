@@ -286,6 +286,110 @@ describe('震度の地域列挙: 観測点しか持たない電文（P2PQuake �
     expect(text).toContain('最大震度4を埼玉県で観測しました。')
   })
 
+  // ---- 未入電は地点名で読む ----
+  //
+  // 未入電は観測点 1 つ 1 つに付く事実。区域名へ丸めると、同じ区域に観測値がある電文で
+  // 「最大震度7を〜で観測しました。〜では…未入電です。」と矛盾して聞こえる。
+
+  // 正: 未入電の観測点があれば、区域名ではなく地点名で読む
+  it('未入電の地点は地点名で読む', () => {
+    const quake = makeQuake(
+      [
+        station('石川県', '輪島市河井町', 40),
+        { ...station('石川県', '輪島市舳倉島', 45), unreceived: true },
+      ],
+      SOUTH_HYPO,
+    )
+    const text = earthquakeToText(quake, OPTS, true)
+    expect(text).toContain('輪島市舳倉島では、震度5弱以上と推定されますが、未入電です。')
+  })
+
+  // 安全弁: 同じ区域に観測値があっても矛盾しない（区域名で丸めていないこと）
+  it('同じ区域に観測値があっても区域名で未入電を語らない', () => {
+    const quake = makeQuake(
+      [
+        station('石川県', '輪島市河井町', 40),
+        { ...station('石川県', '輪島市舳倉島', 45), unreceived: true },
+      ],
+      SOUTH_HYPO,
+    )
+    const text = earthquakeToText(quake, OPTS, true)
+    // 区域名（石川県能登）を主語にした未入電の文は作らない
+    expect(text).not.toMatch(/石川県能登では、震度5弱以上と推定されます/)
+  })
+
+  // 対照: 地点を持たない電文（震度速報は区域しか持たない）は従来どおり区域名で読む
+  it('地点を持たない電文では区域名で読む', () => {
+    const quake = makeQuake([{ ...area('石川県能登', 45), unreceived: true }], SOUTH_HYPO)
+    const text = earthquakeToText(quake, OPTS, true)
+    expect(text).toContain('石川県能登では、震度5弱以上と推定されますが、未入電です。')
+  })
+
+  // 正: 未入電を含む県は、全区域が揃っていても県名へまとめない（カードと同じ規則。
+  // → docs/spec/quake-spec.md §4）。まとめると、画面が区域別に並べている同じ電文を
+  // 音声だけ県名 1 つに畳んで伝えることになる。対照は 1 つ上のテスト（観測値ならまとめる）。
+  //
+  // **区域点で書くこと。** 観測点で書くと地点名を読む経路へ入り、県名へまとめる処理を
+  // 一度も通らない —— 地点名は「埼玉県」を含まないのでアサーションが常に真になり、
+  // 何も検証しないテストになる。
+  it('未入電を含む県は全区域が揃っても県名へまとめない', () => {
+    const unreceived = (addr: string): EarthquakePoint => ({ ...area(addr, 45), unreceived: true })
+    const quake = makeQuake(
+      [unreceived('埼玉県北部'), unreceived('埼玉県南部'), unreceived('埼玉県秩父')],
+      SOUTH_HYPO,
+    )
+    const text = earthquakeToText(quake, OPTS, true)
+    expect(text).toContain('では、震度5弱以上と推定されますが、未入電です。')
+    // 「埼玉県」単独では出ない（埼玉県北部・南部・秩父に続く形だけ許す）。
+    expect(text).not.toMatch(/埼玉県(?![北南秩])/)
+  })
+
+  // ---- 地点と区域の未入電が同じ電文に混在したとき ----
+  //
+  // 電文全体で「地点があるか」を 1 つのフラグにして倒すと、区域単位でしか未入電を伝えて
+  // こない県が読み上げから丸ごと消える。しかも痕跡が残らない。
+
+  // 正: 地点で覆えない区域の未入電も落とさない
+  it('地点と区域の未入電が混在しても、どちらも落とさない', () => {
+    const quake = makeQuake(
+      [
+        { ...station('石川県', '輪島市舳倉島', 45), unreceived: true },
+        { ...area('埼玉県北部', 45), unreceived: true },
+      ],
+      SOUTH_HYPO,
+    )
+    const text = earthquakeToText(quake, OPTS, true)
+    expect(text).toContain('輪島市舳倉島')
+    expect(text).toContain('埼玉県北部')
+  })
+
+  // 対照: 地点が覆う区域は二重に言わない（区域の最大震度は配下の最大なので同じ形で届く）
+  it('未入電の地点が属する区域は重ねて読まない', () => {
+    const quake = makeQuake(
+      [
+        { ...station('石川県', '輪島市舳倉島', 45), unreceived: true },
+        { ...area('石川県能登', 45), unreceived: true },
+      ],
+      SOUTH_HYPO,
+    )
+    const text = earthquakeToText(quake, OPTS, true)
+    expect(text).toContain('輪島市舳倉島')
+    expect(text).not.toContain('石川県能登')
+  })
+
+  // 安全弁: 混在時の省略は単位を断定しない（「ほかN地点」とも「ほかN地域」とも言えない）
+  it('混在して上限を超えたら「ほかN件」で省略を伝える', () => {
+    const quake = makeQuake(
+      [
+        { ...station('石川県', '輪島市舳倉島', 45), unreceived: true },
+        { ...area('埼玉県北部', 45), unreceived: true },
+      ],
+      SOUTH_HYPO,
+    )
+    const text = earthquakeToText(quake, { ...OPTS, maxRegions: 1 }, true)
+    expect(text).toContain('ほか1件では、震度5弱以上と推定されますが、未入電です。')
+  })
+
   it('pref が空の観測点でも区域を引ける（DMDATA の XML 経路）', () => {
     const quake = makeQuake(
       [station('', '糸魚川市一の宮', 40), station('', '長岡市幸町', 40)],

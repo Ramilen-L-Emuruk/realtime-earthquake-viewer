@@ -52,7 +52,7 @@ function makeTsunami(overrides: Partial<JMATsunami> = {}): JMATsunami {
     time: '2024-01-01T07:15:00Z',
     cancelled: false,
     validDateTime: '2024-01-01T09:15:00Z',
-    sourceEarthquake: { hypocenterName: 'テスト震源', magnitude: 7.0, originTime: '2024-01-01T07:09:00Z' },
+    sourceEarthquakes: [{ hypocenterName: 'テスト震源', magnitude: 7.0, originTime: '2024-01-01T07:09:00Z' }],
     issue: { source: '気象庁', time: '2024-01-01T07:15:00Z', type: 'Focus' },
     areas: [
       {
@@ -291,7 +291,7 @@ describe('instantiateScenario', () => {
   })
 
   describe('JMATsunami', () => {
-    it('validDateTime・sourceEarthquake.originTime・areas/observationsのネストした時刻がすべてシフトされる', () => {
+    it('validDateTime・原因地震の originTime・areas/observationsのネストした時刻がすべてシフトされる', () => {
       const tsunami = makeTsunami()
       const baseTime = '2024-01-01T07:15:00Z'
       const originalDelta = NOW.getTime() - new Date(baseTime).getTime()
@@ -304,7 +304,7 @@ describe('instantiateScenario', () => {
       const shifted = (result[0].payload as { kind: 'event'; event: JMATsunami }).event
 
       expect(new Date(shifted.validDateTime!).getTime()).toBe(new Date(tsunami.validDateTime!).getTime() + originalDelta)
-      expect(new Date(shifted.sourceEarthquake!.originTime!).getTime()).toBe(new Date(tsunami.sourceEarthquake!.originTime!).getTime() + originalDelta)
+      expect(new Date(shifted.sourceEarthquakes![0].originTime!).getTime()).toBe(new Date(tsunami.sourceEarthquakes![0].originTime!).getTime() + originalDelta)
       expect(new Date(shifted.areas[0].firstHeight!.arrivalTime!).getTime()).toBe(new Date(tsunami.areas[0].firstHeight!.arrivalTime!).getTime() + originalDelta)
       expect(new Date(shifted.areas[0].stations![0].highTideDateTime!).getTime()).toBe(new Date(tsunami.areas[0].stations![0].highTideDateTime!).getTime() + originalDelta)
       expect(new Date(shifted.areas[0].stations![0].arrivalTime!).getTime()).toBe(new Date(tsunami.areas[0].stations![0].arrivalTime!).getTime() + originalDelta)

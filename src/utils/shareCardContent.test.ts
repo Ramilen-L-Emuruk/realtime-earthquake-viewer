@@ -56,7 +56,7 @@ function tsunami(over: { grade?: string; areaName?: string } = {}): JMATsunami {
     time: '2026/08/24 12:40:00',
     cancelled: false,
     issue: { source: '', time: '2026/08/24 12:40:00', type: 'Focus' },
-    sourceEarthquake: { hypocenterName: '日向灘', magnitude: 8.1 },
+    sourceEarthquakes: [{ hypocenterName: '日向灘', magnitude: 8.1 }],
     areas: [{ grade: over.grade ?? 'MajorWarning', immediate: false, name: over.areaName ?? '宮崎県' }],
   } as unknown as JMATsunami
 }

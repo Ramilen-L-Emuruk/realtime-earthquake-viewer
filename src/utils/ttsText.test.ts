@@ -1129,6 +1129,139 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
     expect(joinSegments(segments)).toBe('震度速報。最大震度4を観測しました。')
   })
 
+  // 正: 「5弱以上・未入電」は**別の文**で伝える。地域名を含む文の述語は「観測しました」で、
+  // 観測値が届いていない区域をそこへ入れると嘘になる。**音声だけの利用者は画面の注記を
+  // 見られない**ので、ここで言い分けないと「実際にはもっと強いかもしれない」が伝わらない。
+  it('未入電の区域は理由を添えて「〜では、震度5弱以上と推定されますが、未入電です」で読む', () => {
+    const state = createQuakeSpokenState()
+    const unreceived: EarthquakePoint = { pref: '', addr: '宮城県北部', isArea: true, scale: 45, unreceived: true }
+    const text = joinSegments(earthquakeToSegments(quakeOf([unreceived], 45), OPTS, true, state))
+    expect(text).toBe('震度速報。宮城県北部では、震度5弱以上と推定されますが、未入電です。')
+  })
+
+  // 安全弁: 観測値の文と混ぜない。同じ電文に両方あれば、文を分けて両方伝える
+  it('観測値と未入電が混ざれば文を分けて両方読む', () => {
+    const state = createQuakeSpokenState()
+    const observed: EarthquakePoint = { pref: '', addr: '福島県中通り', isArea: true, scale: 30 }
+    const unreceived: EarthquakePoint = { pref: '', addr: '宮城県北部', isArea: true, scale: 45, unreceived: true }
+    const text = joinSegments(earthquakeToSegments(quakeOf([observed, unreceived], 45), OPTS, true, state))
+    expect(text).toContain('震度3を福島県中通りで観測しました。')
+    expect(text).toContain('宮城県北部では、震度5弱以上と推定されますが、未入電です。')
+    // 未入電の区域が「観測しました」の文に混ざらないこと
+    expect(text).not.toContain('宮城県北部で観測しました')
+  })
+
+  // 対照: 同じ未入電を繰り返し受けても二度読みしない（既読は通常の区域と同じ仕組み）
+  it('同じ未入電の続報では読み直さない', () => {
+    const state = createQuakeSpokenState()
+    const unreceived: EarthquakePoint = { pref: '', addr: '宮城県北部', isArea: true, scale: 45, unreceived: true }
+    // 記録は本番と同じ規則で進める（`markSpoken` → `applySpokenRefs`）
+    markSpoken(state, earthquakeToSegments(quakeOf([unreceived], 45), OPTS, true, state))
+    const second = earthquakeToSegments(quakeOf([unreceived], 45), OPTS, false, state)
+    expect(joinSegments(second)).not.toContain('未入電です')
+  })
+
+  // ---- 未入電の情報が続報で静かに落ちないこと ----
+  //
+  // 未入電の点だけを持つ地震情報。震源要素は初報で全部読ませ、続報を差分の経路へ入れる。
+  const UNRECEIVED: EarthquakePoint = { pref: '', addr: '宮城県北部', isArea: true, scale: 45, unreceived: true }
+  const OBSERVED_45: EarthquakePoint = { pref: '', addr: '宮城県北部', isArea: true, scale: 45 }
+  const OBSERVED_30: EarthquakePoint = { pref: '', addr: '福島県中通り', isArea: true, scale: 30 }
+  const quakeInfo = (points: EarthquakePoint[], maxScale: number) =>
+    quakeOf(points, maxScale, { type: '震源・震度情報' })
+
+  // 正: 震源要素が既出のまま新しく未入電の区域が加わった続報でも、その区域を読む。
+  // 落とすと差分の経路（震度速報以外の続報は必ずここを通る）で一度も声にならない。
+  it('続報の差分でも未入電の区域を読む', () => {
+    const state = createQuakeSpokenState()
+    markSpoken(state, earthquakeToSegments(quakeInfo([OBSERVED_30], 30), OPTS, true, state))
+
+    const second = earthquakeToSegments(quakeInfo([OBSERVED_30, UNRECEIVED], 45), OPTS, false, state)
+    const text = joinSegments(second)
+    // 差分の経路に入っていること（全文の経路なら震源の「〜頃、」が付く）
+    expect(text).not.toContain('頃、')
+    expect(text).toContain('宮城県北部では、震度5弱以上と推定されますが、未入電です。')
+  })
+
+  // 正: 推定として読んだ区域に観測値が届いたら読み直す。階級は下限へ寄せてあるので、
+  // 震度だけを既読の鍵にすると「同じ震度」と判定されて確定が永久に読まれない。
+  it('未入電として読んだ区域が観測値で確定したら読み直す', () => {
+    const state = createQuakeSpokenState()
+    markSpoken(state, earthquakeToSegments(quakeOf([UNRECEIVED], 45), OPTS, true, state))
+
+    const second = earthquakeToSegments(quakeOf([OBSERVED_45], 45), OPTS, false, state)
+    const text = joinSegments(second)
+    expect(text).toContain('宮城県北部で観測しました')
+    // 初めて挙げる区域ではないので「新たに」は付けない
+    expect(text).not.toContain('新たに')
+  })
+
+  // 対照: 逆向き（観測 → 推定）には戻さない。確定した観測が不確かになったとは伝えない。
+  it('観測値で読んだ区域を同じ震度の未入電で読み直さない', () => {
+    const state = createQuakeSpokenState()
+    markSpoken(state, earthquakeToSegments(quakeOf([OBSERVED_45], 45), OPTS, true, state))
+
+    const second = earthquakeToSegments(quakeOf([UNRECEIVED], 45), OPTS, false, state)
+    expect(joinSegments(second)).not.toContain('未入電です')
+  })
+
+  // ---- 未入電の区域も観測値の文と同じ上限規則に乗ること ----
+  //
+  // `maxRegions` は **0 が「無制限」**。ここを 1 と取り違えると、無制限にした端末で
+  // 1 件しか読まれないうえ、省いたことも伝わらない。
+  const UNRECEIVED_3: EarthquakePoint[] = [
+    { pref: '', addr: '宮城県北部', isArea: true, scale: 45, unreceived: true },
+    { pref: '', addr: '宮城県中部', isArea: true, scale: 45, unreceived: true },
+    { pref: '', addr: '宮城県南部', isArea: true, scale: 45, unreceived: true },
+  ]
+
+  // 正: 無制限（0）なら件数で切らない
+  it('未入電の区域は maxRegions=0（無制限）で全件読む', () => {
+    const state = createQuakeSpokenState()
+    const text = joinSegments(earthquakeToSegments(quakeOf(UNRECEIVED_3, 45), OPTS, true, state))
+    expect(text).toContain('宮城県北部')
+    expect(text).toContain('宮城県中部')
+    expect(text).toContain('宮城県南部')
+    expect(text).not.toContain('ほか')
+  })
+
+  // 対照: 上限を超えたら切り、省いた件数を伝える（観測値の文と同じ「ほかN地域」）
+  it('未入電の区域が上限を超えたら「ほかN地域」で省略を伝える', () => {
+    const state = createQuakeSpokenState()
+    const opts = { ...OPTS, maxRegions: 1 }
+    const text = joinSegments(earthquakeToSegments(quakeOf(UNRECEIVED_3, 45), opts, true, state))
+    expect(text).toContain('ほか2地域では、震度5弱以上と推定されますが、未入電です。')
+  })
+
+  // 正: 地点で読むときの省略は「ほかN地点」（区域の「ほかN地域」と単位を言い分ける）
+  it('未入電の地点が上限を超えたら「ほかN地点」で省略を伝える', () => {
+    const state = createQuakeSpokenState()
+    const stations: EarthquakePoint[] = ['A観測点', 'B観測点', 'C観測点'].map(addr => ({
+      pref: '宮城県', addr, isArea: false, scale: 45 as IntensityScale, unreceived: true,
+    }))
+    const opts = { ...OPTS, maxRegions: 1 }
+    const text = joinSegments(earthquakeToSegments(quakeOf(stations, 45), opts, true, state))
+    expect(text).toContain('ほか2地点では、震度5弱以上と推定されますが、未入電です。')
+  })
+
+  // 安全弁: 許容超過の範囲内では省略しない（「ほかN地域」の方が長くなるため）
+  it('未入電の区域も許容超過の範囲内なら省略しない', () => {
+    const state = createQuakeSpokenState()
+    const opts = { ...OPTS, maxRegions: 1, regionTolerance: 2 }
+    const text = joinSegments(earthquakeToSegments(quakeOf(UNRECEIVED_3, 45), opts, true, state))
+    expect(text).not.toContain('ほか')
+    expect(text).toContain('宮城県南部')
+  })
+
+  // 安全弁: 観測値どうしの据え置きは従来どおり読み直さない（上の緩和が広がっていないこと）
+  it('観測値で読んだ区域は同じ震度の観測値では読み直さない', () => {
+    const state = createQuakeSpokenState()
+    markSpoken(state, earthquakeToSegments(quakeOf([OBSERVED_45], 45), OPTS, true, state))
+
+    const second = earthquakeToSegments(quakeOf([OBSERVED_45], 45), OPTS, false, state)
+    expect(joinSegments(second)).not.toContain('宮城県北部')
+  })
+
   it('安全弁: 「ほかN地域」に切られた区域には参照が付かない（既読にならない）', () => {
     const state = createQuakeSpokenState()
     const points = [area('宮城県', '宮城県北部', 40), area('福島県', '福島県中通り', 40)]

@@ -40,7 +40,7 @@ export type SpeechRef =
   | { kind: 'grade'; grade: string }
   | { kind: 'area'; code?: string; name: string }
   | { kind: 'station'; name: string }
-  | { kind: 'quakeRegion'; name: string; scale: number }
+  | { kind: 'quakeRegion'; name: string; scale: number; unreceived?: boolean }
   | { kind: 'quakeFact'; fact: QuakeFact; value: string }
 
 /**
@@ -85,7 +85,7 @@ function sameRef(a: SpeechRef, b: SpeechRef): boolean {
   if (a.kind === 'station' && b.kind === 'station') return a.name === b.name
   // 地震の区域は震度も含めて比べる。同じ区域を別の階級で挙げることは 1 つの文の中では
   // 起きないが、名前だけで同一とみなすと将来そうなったときに階級の低い側へ丸められる。
-  if (a.kind === 'quakeRegion' && b.kind === 'quakeRegion') return a.name === b.name && a.scale === b.scale
+  if (a.kind === 'quakeRegion' && b.kind === 'quakeRegion') return a.name === b.name && a.scale === b.scale && !a.unreceived === !b.unreceived
   if (a.kind === 'quakeFact' && b.kind === 'quakeFact') return a.fact === b.fact && a.value === b.value
   return false
 }

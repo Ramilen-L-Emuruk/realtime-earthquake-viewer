@@ -302,6 +302,15 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
             )}
           </div>
         )}
+
+        {/* 気象庁の固定付加文（避難行動の呼びかけ等）。**読み上げには載せない** ——
+            EEW の読み上げは秒を争うため、定型文を挟むと震度・地域が遅れる。
+            取消電文では出さない（そのときの本文は付加文ではなく取消の理由）。 */}
+        {eew.warningComment && !eew.cancelled && (
+          <div className="text-secondary text-xs" style={{ lineHeight: '1.7', whiteSpace: 'pre-line' }}>
+            {eew.warningComment}
+          </div>
+        )}
       </div>
     </div>
   )
