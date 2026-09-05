@@ -56,3 +56,37 @@ export function isMaxScaleUnreceived(maxScale: IntensityScale, points: readonly 
   if (maxScale < 0) return false
   return points.some(p => p.unreceived && p.scale === maxScale)
 }
+
+/**
+ * 未入電の点を「地点名で読むもの」と「区域名で補うもの」に分ける。
+ *
+ * 未入電は観測点 1 つ 1 つに付く事実なので、地点名が最も正確。ただし**地点で覆えない
+ * 区域・県の未入電を落としてはいけない**。電文全体で 1 つのフラグにして地点側へ倒すと、
+ * 別の県が区域単位だけで未入電を伝えてきたときにその県が読み上げからも画面からも消え、
+ * しかも痕跡が残らない（「部分脱落では黙る」形になる）。
+ *
+ * 逆に地点と区域を無条件に並べると、同じ事実を二重に伝える —— 電文の区域・県の最大震度は
+ * 配下の最大なので、地点が未入電ならその区域と県も同じ形で届く（→ docs/spec/quake-spec.md §4）。
+ * そこで**地点が覆う名前を除いた区域・県だけ**を補う。
+ *
+ * @param coveredNames 地点が覆う名前（その観測点の所属区域名・都道府県名）を返す。
+ *   呼び出し側が持っている索引で解決する。引けないものは返さなくてよい。
+ */
+export function partitionUnreceivedPoints(
+  points: readonly EarthquakePoint[],
+  coveredNames: (station: EarthquakePoint) => readonly string[],
+): { stations: EarthquakePoint[]; areas: EarthquakePoint[] } {
+  const unreceived = points.filter(p => p.unreceived && p.addr)
+  const stations = unreceived.filter(p => !p.isArea)
+  const covered = new Set<string>()
+  for (const p of stations) {
+    for (const name of coveredNames(p)) if (name) covered.add(name)
+  }
+  return { stations, areas: unreceived.filter(p => p.isArea && !covered.has(p.addr)) }
+}
+
+/** {@link partitionUnreceivedPoints} の結果に合わせた単位の語（「ほかN◯◯」と見出しに使う）。 */
+export function unreceivedUnitLabel(hasStations: boolean, hasAreas: boolean): string {
+  if (hasStations && hasAreas) return '件'
+  return hasStations ? '地点' : '地域'
+}

@@ -69,6 +69,12 @@ export function createTestForeignQuake(includeComments: boolean): JMAQuake {
  * 組み合わせ（`isArea: false` かつ `pref` 非空）になり、都道府県別表示の分岐が
  * テストでは一度も通らない。
  */
+/**
+ * テストで「5弱以上・未入電」に差し替える観測点。
+ * 元から震度5弱の地点を選ぶ（差し替えても最大震度が動かない）。
+ */
+const UNRECEIVED_TEST_STATIONS = new Set(['輪島市舳倉島', '金沢市弥生'])
+
 function toDmdataPoints(points: EarthquakePoint[]): EarthquakePoint[] {
   const converted: EarthquakePoint[] = []
   const prefMax = new Map<string, IntensityScale>()
@@ -124,22 +130,32 @@ export function createTestEarthquake(useDmdataShape: boolean): JMAQuake {
     // 輪島市門前町走出（震度7）のみ例外的に手動追加: 本震直後は停電・通信障害で観測データが
     // 未着で電文に反映されず、気象庁が2024/1/25の報道発表で「震度追加」として震度7
     // （計測震度6.5）を確定させたもの（電文形式では取得不可、気象庁公式発表を典拠とする）。
-    // **1 区域だけ「震度5弱以上未入電」に差し替える。** 揺れが強い地域ほど観測点からの通信が
+    // **2 地点を「震度5弱以上未入電」に差し替える。** 揺れが強い地域ほど観測点からの通信が
     // 途絶え、気象庁は観測値の代わりに `!5-`（5弱以上・未入電）で発表する。実データは確定報
     // ——通信が復旧した後の値——なのでこの形を含まないが、**発表直後に最も起きる形**なので
-    // 画面で確かめられるようにしておく。差し替えるのは元から震度5弱の区域で、最大震度は動かない。
+    // 画面で確かめられるようにしておく。実際に能登本震では 3 地点が未入電で、通信復旧後の
+    // 1 月 25 日に「震度追加」として発表された（うち輪島市門前町走出が震度7）。
+    //
+    // **差し替えるのは地点。** 未入電は観測点 1 つ 1 つに付く事実で、区域・県の `MaxInt` は
+    // 配下の最大として派生する（→ docs/spec/quake-spec.md §4）。県のロールアップ点だけを
+    // 未入電にすると実電文には無い形になり、地点名を読む経路も通らない。
+    //
+    // 選んだのは元から震度5弱の 2 地点。差し替えても最大震度（7）は動かないので、他の
+    // 期待値に影響しない。石川県は最大が震度7の観測値なのに未入電の地点も含む形になり、
+    // **「最大は観測できているが未入電もある」という最も起きやすい形**を画面で確かめられる。
     points: useDmdataShape
       ? toDmdataPoints(notoHonshinPoints as EarthquakePoint[]).map(p =>
-        // 都道府県ロールアップ点を差し替える（カードの行はこの粒度で出る）。長野県は元から
-        // 震度5弱なので、差し替えても最大震度は動かない。
-        p.pref === '長野県' && p.addr === '長野県'
+        !p.isArea && UNRECEIVED_TEST_STATIONS.has(p.addr)
           ? { ...p, unreceived: true }
           : p,
       )
       // P2PQuake は観測点電文（DetailScale）と区域速報電文（ScalePrompt）を別々に送るため、
       // 1 電文に両方が混ざることはない（→ quake-spec.md §4）。`各地の震度情報` として送る以上、
       // 区域点は落とす。
-      : (notoHonshinPoints as EarthquakePoint[]).filter((p) => !p.isArea),
+      // 標準版でも同じ地点を未入電にする（P2PQuake は震度値 46 で同じ事実を配信する）。
+      : (notoHonshinPoints as EarthquakePoint[])
+        .filter((p) => !p.isArea)
+        .map(p => (UNRECEIVED_TEST_STATIONS.has(p.addr) ? { ...p, unreceived: true } : p)),
   }
 }
 

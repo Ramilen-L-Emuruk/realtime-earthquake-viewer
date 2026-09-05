@@ -5,8 +5,8 @@ import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, has
 import { joinSegments, plain, type SpeechSegment, type SpeechRef, type QuakeFact } from './ttsFollow'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
-import { getStationCoordsCache, getAreaPrefIndexCache, buildStationPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, sortByRegionOrder, lookupStationRegion, type StationCoordsData, type RegionOrderIndex } from './stationCoords'
-import { isAreaPoint, isMaxScaleUnreceived } from './quakePoints'
+import { getStationCoordsCache, getAreaPrefIndexCache, buildStationPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, regionOrderRank, sortByRegionOrder, lookupStationRegion, type StationCoordsData, type RegionOrderIndex } from './stationCoords'
+import { isAreaPoint, isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel } from './quakePoints'
 import { hasMagnitude, hasDepth } from './formatters'
 import { createLogThrottle, log } from './logger'
 
@@ -305,14 +305,21 @@ function isUnreceivedUnspoken(spoken: QuakeSpokenState, name: string): boolean {
 }
 
 /**
- * 「5弱以上・未入電」の区域を伝える一文。
+ * 「5弱以上・未入電」を伝える一文。
  *
  * **通常の文に混ぜない。** 地域名を含む文の述語は「観測しました」で、電文が「観測値が
- * 届いていない」と明言している区域をそこへ入れると嘘になる。階級も下限へ寄せてあるので、
+ * 届いていない」と明言しているものをそこへ入れると嘘になる。階級も下限へ寄せてあるので、
  * 語だけ「以上」に変えても述語との食い違いは残る。**別の文へ出して述語ごと分ける。**
  *
+ * **地点名で読む。** 未入電は観測点 1 つ 1 つに付く事実で、気象庁も市町村・地点名で発表する。
+ * 区域名へ丸めると、同じ区域に観測値がある電文で「最大震度7を石川県能登で観測しました。
+ * 石川県能登では…未入電です。」と矛盾して聞こえる（区域の最大は観測できているのに、
+ * 区域全体が未入電であるかのように語ることになる）。地点の話にすれば衝突しない。
+ *
+ * 地点を持たない電文（震度速報は区域しか持たない）だけ、従来どおり区域名で読む。
+ *
  * 既読は通常の区域と同じ仕組み（`quakeRegion`）に乗せるが、**鍵には未入電の別も含める**。
- * 同じ区域が後の報で観測値として確定したら、階級が同じでも読み直す（→ `regionDiffKind`）。
+ * 同じ名前が後の報で観測値として確定したら、階級が同じでも読み直す（→ `regionDiffKind`）。
  */
 function unreceivedRegionSegments(
   points: EarthquakePoint[],
@@ -330,16 +337,38 @@ function unreceivedRegionSegments(
   const regionOrder = stationData ? buildRegionOrderIndex(stationData) : null
   const unreceived = points.filter(p => p.unreceived)
   if (unreceived.length === 0) return []
+
+  // 地点名で読み、地点で覆えない区域・県だけを区域名で補う（規則は `partitionUnreceivedPoints`）。
+  const regionOfStation = (p: EarthquakePoint): string | null => {
+    const pref = p.pref || idx.stationPrefIndex?.get(p.addr) || ''
+    return pref && idx.stationData ? lookupStationRegion(idx.stationData, pref, p.addr) : null
+  }
+  const { stations, areas } = partitionUnreceivedPoints(points, p => [
+    regionOfStation(p) ?? '',
+    p.pref || idx.stationPrefIndex?.get(p.addr) || '',
+  ])
+
+  // 地点の並びは所属区域の順（気象庁の標準順）。同じ区域の中は電文の順を保つ。
+  // `selectRegionNames` の並べ替えは地点名を索引で引けないため順序を変えない（安定ソート）ので、
+  // ここで整えた順がそのまま読み上げ順になる。
+  const stationNames = [...stations]
+    .map((p, i) => ({ p, i, r: regionOrderRank(regionOfStation(p) ?? p.pref, regionOrder) }))
+    .sort((a, b) => a.r - b.r || a.i - b.i)
+    .map(({ p }) => p.addr)
+
   // **未入電を含む県は県名へまとめない**（カードと同じ規則。→ quake-spec.md §4）。まとめると
   // 画面が区域別に並べている同じ電文を、音声だけ県名 1 つに畳んで伝えることになる。
   // `prefsWithAreaShown` は「この県は区域名のまま出す」という指定なので、関係する県を全部入れる。
   const unreceivedPrefs = new Set<string>()
-  for (const p of unreceived) {
-    const pref = p.pref || idx.areaPrefIndex?.get(p.addr) || idx.stationPrefIndex?.get(p.addr) || ''
+  for (const p of areas) {
+    const pref = p.pref || idx.areaPrefIndex?.get(p.addr) || ''
     if (pref) unreceivedPrefs.add(pref)
   }
   // 階級は下限の 45 に揃っているので、1 つの階級としてまとめて名前を引く。
-  const unspoken = regionNamesForScale(unreceived, 45, idx, unreceivedPrefs)
+  const areaNames = areas.length > 0 ? regionNamesForScale(areas, 45, idx, unreceivedPrefs) : []
+
+  const unit = unreceivedUnitLabel(stationNames.length > 0, areaNames.length > 0)
+  const unspoken = [...stationNames, ...areaNames]
     .filter(name => !spoken || isUnreceivedUnspoken(spoken, name))
   // **選抜と上限は観測値の文と同じ規則に乗せる**（`selectRegionNames`）。独自に切ると、
   // 「無制限」の設定で 1 件しか読まれない・省いた件数を伝えない、といったずれが片側にだけ出る。
@@ -350,8 +379,11 @@ function unreceivedRegionSegments(
     if (i > 0) segments.push(plain('、'))
     segments.push({ text: name, refs: [{ kind: 'quakeRegion', name, scale: 45, unreceived: true }] })
   })
-  if (omittedCount > 0) segments.push(plain(`、ほか${omittedCount}地域`))
-  segments.push(plain('では震度5弱以上と推定されます。'))
+  if (omittedCount > 0) segments.push(plain(`、ほか${omittedCount}${unit}`))
+  // **推定の理由まで言う。** 「5弱以上と推定されます」だけだと、なぜ推定なのかが伝わらない。
+  // 語は気象庁の「未入電」をそのまま使い、画面のバッジ（「未入電あり」）とも揃える ——
+  // 聞いた語で画面を探せるように。
+  segments.push(plain('では、震度5弱以上と推定されますが、震度は未入電です。'))
   return segments
 }
 
@@ -562,8 +594,9 @@ function maxScaleOnlySentence(maxScale: IntensityScale, unreceived = false): str
   // **未入電を「観測しました」と言わない。** 電文が「5弱以上・未入電」と明言している値を
   // 断定形で読むと、実際にはもっと強い可能性があることが音声だけの利用者に伝わらない
   // （EEW が上限を定めない予想震度を「以上」と読むのと同じ扱い）。
+  // 語は地点を挙げる文と揃える（→ `unreceivedRegionSegments`）。
   return unreceived
-    ? `最大震度${label}以上と推定されます。`
+    ? `最大震度${label}以上と推定されますが、震度は未入電です。`
     : `最大震度${label}を観測しました。`
 }
 
