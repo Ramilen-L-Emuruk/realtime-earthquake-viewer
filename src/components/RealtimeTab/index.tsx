@@ -8,8 +8,8 @@ import type { SWaveArrival } from '../../hooks/useSWaveCountdown'
 import { usePageVisible } from '../../hooks/usePageVisible'
 import { formatDateTime, formatTime } from '../../utils/formatters'
 import { getIntensityColor, getIntensityLabel, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
-import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
-import { eewAreas, eewMaxScaleInfo, eewMaxLpgmClass, eewSerial, computeSingleEEWLevel, eewNoForecastReason, canPresentLpgmClass } from '../../utils/eew'
+import { getLpgmClassLabelWithApproxAbove, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
+import { eewAreas, eewMaxScaleInfo, eewMaxLpgmClassInfo, eewSerial, computeSingleEEWLevel, eewNoForecastReason, canPresentLpgmClass } from '../../utils/eew'
 import { kyoshinIndexToJma, kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
 import { readableTextColor } from '../../utils/contrast'
 import { gateNotes, gateRows, gateShortfall } from '../../utils/detectionGates'
@@ -82,7 +82,7 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
   onDeactivateLpgm?: () => void
 }) {
   const { scale: maxScale, orAbove: maxScaleOrAbove } = eewMaxScaleInfo(eew)
-  const lpgmClass = eewMaxLpgmClass(eew)
+  const { cls: lpgmClass, over: lpgmClassOver } = eewMaxLpgmClassInfo(eew)
   const level = computeSingleEEWLevel(eew)
   const isWarning = level >= 1
   const isSpecial = level === 2
@@ -163,11 +163,14 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
             <span className="text-sm font-medium" style={{ color: getIntensityColor(maxScale) }}>
               予想最大震度
             </span>
-            {/* 上限が定まらない報（「震度4以上」等）は語を落とさず出す。値だけにすると
-                下限を断定した表示になる。「以上」は本体より小さく添えて桁数の膨らみを抑える。 */}
+            {/* 上限が定まらない報（「震度4程度以上」等）は語を落とさず出す。値だけにすると
+                下限を断定した表示になる。語は本体より小さく添えて桁数の膨らみを抑える。
+                **語は「程度以上」**（気象庁の表現。→ `getIntensityLabelWithApproxAbove`）。
+                ここだけ自前で組んでいるため、語を変えたときに取り残されやすい —— 実際に
+                タイトル・読み上げ・共有カードだけ直り、このバナーが「以上」のまま残った。 */}
             <span className="font-black leading-none text-[3rem] roomy:text-[4.5rem]" style={{ color: '#ffffff' }}>
               {getIntensityLabel(maxScale)}
-              {maxScaleOrAbove && <span className="font-bold text-[1.25rem] roomy:text-[1.75rem]">以上</span>}
+              {maxScaleOrAbove && <span className="font-bold text-[1.25rem] roomy:text-[1.75rem]">程度以上</span>}
             </span>
           </div>
         ) : (
@@ -198,7 +201,7 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
               推定長周期地震動
             </span>
             <span className="text-xl font-black roomy:text-2xl" style={{ color: '#ffffff' }}>
-              {getLpgmClassLabel(lpgmClass)}
+              {getLpgmClassLabelWithApproxAbove(lpgmClass, lpgmClassOver)}
             </span>
           </button>
         )}

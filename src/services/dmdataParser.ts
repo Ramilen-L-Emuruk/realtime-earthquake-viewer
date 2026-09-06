@@ -16,6 +16,7 @@ import type {
   CorrectType,
   TsunamiArea,
   TsunamiGrade,
+  LpgmClass,
 } from '../types/earthquake'
 import { isValidLpgmClass } from '../utils/lpgm'
 import { parseTsunamiObservationCondition } from '../utils/tsunami'
@@ -121,6 +122,37 @@ function parseForecastInt(range: Record<string, unknown>): { scale: IntensitySca
   // to があれば to を採る**（不明のまま返す）。ここで from へ落とすと、上限が不明な報の震度が
   // 下限の値で出るようになり、over 以外の挙動を静かに変えてしまう。
   return { scale: parseIntensityStr(toStr || fromStr), orAbove: false }
+}
+
+/**
+ * 長周期地震動階級の予測（`ForecastLgInt`）を読む。**震度側と同じく `over` を扱う。**
+ *
+ * 電文解説資料（Ⅱ.21 2-1-3-2）が定める値域:
+ *
+ * > （1 回，値："0"/"1"/"2"/"3"/"4"/"over"/"不明"） 最大予測長周期地震動階級の上限を示す。
+ * > 0 ：長周期地震動階級 1 未満 …… 4 ：長周期地震動階級 4　over:～程度以上　不明：不明時
+ * > 事例１（最大予測長周期地震動階級が階級 3 程度以上の場合（「程度以上」の表現））
+ * >   `<ForecastLgInt><From>3</From><To>over</To></ForecastLgInt>`
+ *
+ * **`parseInt("over")` は `NaN` になる。** そのまま階級として扱っていたため、
+ * 気象庁が「階級3程度以上」と発表した報では**長周期の予測が丸ごと消えていた**
+ * （震度側は対応済みだったのに長周期側だけ抜けていた）。上限には下限側の値を採り、
+ * 「程度以上」はフラグで持ち越して表示・読み上げで語を補う。
+ */
+function parseForecastLgInt(range: Record<string, unknown>): { cls: LpgmClass | undefined; over: boolean } {
+  const fromStr = str(range.from)
+  const toStr = str(range.to)
+  const pick = (v: string): LpgmClass | undefined => {
+    const n = parseInt(v, 10)
+    return isValidLpgmClass(n) ? n : undefined
+  }
+  if (toStr === DMDATA_INTENSITY_OVER) {
+    const from = pick(fromStr)
+    // 下限が読めなければ「程度以上」も意味を成さない（「不明程度以上」を作らない）。
+    return { cls: from, over: from !== undefined }
+  }
+  // over 以外は従来どおり「to があれば to・空なら from」。
+  return { cls: pick(toStr || fromStr), over: false }
 }
 
 const VXSE_ISSUE_TYPE: Record<string, IssueType> = {
@@ -517,8 +549,16 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
     return dropTelegram(DMDATA_LOG_PREFIX, `${headType}（緊急地震速報）の震源座標が読めません: Coordinate="${coordStr}"`)
   }
 
+  // 要素名は `WarningComment`。電文解説資料の事例（Ⅱ.21 4-1）:
+  //
+  //     <Comments><WarningComment codeType="固定付加文">
+  //       <Text>強い揺れに警戒してください。</Text><Code>0201</Code></WarningComment></Comments>
+  //
+  // **`Warning` と書いていて実電文を 1 件も拾えていなかった。** 同じファイルの津波側は
+  // 正しく `WarningComment` を引いており、EEW 側だけ取り違えていた。テストのヘルパーも
+  // 同じ誤った要素名で電文を組んでいたため、緑でも何も保証していなかった。
   const eewCommentsEl = xmlQ(doc, 'Comments')
-  const eewWarningCommentEl = eewCommentsEl ? xmlQ(eewCommentsEl, 'Warning') : null
+  const eewWarningCommentEl = eewCommentsEl ? xmlQ(eewCommentsEl, 'WarningComment') : null
   const warningComment = (eewWarningCommentEl ? xmlText(xmlQ(eewWarningCommentEl, 'Text')) : '') || undefined
 
   const forecastEl = xmlQ(doc, 'Forecast')
@@ -528,8 +568,8 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
   })
   const { scale: forecastScale, orAbove: forecastOrAbove } =
     parseForecastInt(intRange(forecastEl ? xmlChild(forecastEl, 'ForecastInt') : null))
-  const lgTop = intRange(forecastEl ? xmlChild(forecastEl, 'ForecastLgInt') : null)
-  const lgClass = parseInt(lgTop.to || lgTop.from, 10)
+  const { cls: lgClass, over: lgClassOver } =
+    parseForecastLgInt(intRange(forecastEl ? xmlChild(forecastEl, 'ForecastLgInt') : null))
 
   const areas: EEWRegion[] = []
   // 警報級かどうかは区域の Kind 名で判る（実電文 21 通で確かめた）。
@@ -541,8 +581,7 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
       if (!name) continue
       const fi = intRange(xmlChild(a, 'ForecastInt'))
       const { scale: scaleTo, orAbove } = parseForecastInt(fi)
-      const lg = intRange(xmlChild(a, 'ForecastLgInt'))
-      const lgVal = parseInt(lg.to || lg.from, 10)
+      const { cls: lgVal, over: lgOver } = parseForecastLgInt(intRange(xmlChild(a, 'ForecastLgInt')))
       const kindEl = xmlQ(a, 'Kind')
       if (xmlText(kindEl ? xmlChild(kindEl, 'Name') : null) === EEW_WARNING_KIND_NAME) sawWarningKind = true
       areas.push({
@@ -553,7 +592,8 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
         ...(orAbove && { scaleToOrAbove: true }),
         kindCode: xmlText(kindEl ? xmlChild(kindEl, 'Code') : null),
         arrivalTime: xmlText(xmlChild(a, 'ArrivalTime')) || null,
-        lgIntTo: isValidLpgmClass(lgVal) ? lgVal : undefined,
+        lgIntTo: lgVal,
+        ...(lgOver && { lgIntToOver: true }),
       })
     }
   }
@@ -583,7 +623,8 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
     isFinal: isCanceled || (xmlText(xmlQ(doc, 'NextAdvisory')) || '').includes('最終報'),
     forecastMaxScale: (!isCanceled && forecastScale >= 0) ? forecastScale as IntensityScale : undefined,
     ...(!isCanceled && forecastScale > 0 && forecastOrAbove && { forecastMaxScaleOrAbove: true }),
-    forecastMaxLpgmClass: (!isCanceled && isValidLpgmClass(lgClass)) ? lgClass : undefined,
+    forecastMaxLpgmClass: isCanceled ? undefined : lgClass,
+    ...(!isCanceled && lgClassOver && { forecastMaxLpgmClassOver: true }),
     issue: { eventId, serial, time: reportTime },
     areas: isCanceled ? [] : areas,
     // 固定付加文（`Comments/Warning/Text`）。地震情報・津波では既に読んでいたが EEW だけ

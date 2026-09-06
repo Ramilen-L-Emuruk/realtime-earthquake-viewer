@@ -2,7 +2,7 @@ import type { EEWAlert, JMAQuake, JMATsunami } from '../types/earthquake'
 import type { MapMode } from '../components/Map/mapTypes'
 import { computeSingleEEWLevel, eewKindLabel, eewMaxScale, eewMaxScaleInfo } from './eew'
 import { formatDateTime, formatDepth, formatMagnitude, formatTsunamiGrade, hasDepth, hasMagnitude } from './formatters'
-import { getIntensityColor, getIntensityLabelWithOrAbove, isValidIntensityScale } from './intensity'
+import { getIntensityColor, getIntensityLabelWithOrAbove, getIntensityLabelWithApproxAbove, isValidIntensityScale } from './intensity'
 import { isMaxScaleUnreceived } from './quakePoints'
 import { ATTRIBUTION_SOURCES, attributionLine, EEW_NOTICE, type ShareCardHeader } from './shareCard'
 import { tsunamiOverallGrade } from './tsunami'
@@ -164,7 +164,7 @@ function kyoshinContent(liveEews: EEWAlert[]): ContentWithoutNotices {
   const assumedHypocenter = eew.earthquake.condition === '仮定震源要素'
   const parts = [hypocenter.name]
   if (!assumedHypocenter && hasMagnitude(hypocenter.magnitude)) parts.push(formatMagnitude(hypocenter.magnitude))
-  if (knownScale) parts.push(`予想最大震度 ${getIntensityLabelWithOrAbove(info.scale, info.orAbove)}`)
+  if (knownScale) parts.push(`予想最大震度 ${getIntensityLabelWithApproxAbove(info.scale, info.orAbove)}`)
   const serial = eew.issue?.serial
   return {
     header: {

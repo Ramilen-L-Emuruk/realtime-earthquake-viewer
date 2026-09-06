@@ -317,6 +317,7 @@ export function createTestEEW(eventId?: string, serial = 1, baseTime?: Date): EE
   const report = serverDate().toISOString()
   const eid = eventId ?? `test-${Date.now()}`
   const at = (offsetMs: number) => new Date(origin.getTime() + offsetMs).toISOString()
+  const isFirstReport = serial <= 1
   return {
     kind: 'eew',
     id: `test-eew-${eid}-${serial}`,
@@ -331,11 +332,26 @@ export function createTestEEW(eventId?: string, serial = 1, baseTime?: Date): EE
     },
     severity: 'Warning',
     cancelled: false,
-    forecastMaxLpgmClass: 4,
+    // **初報は上限を定めない予想で来る**（電文の `To="over"`）。規模の推定が不確かな段階では
+    // 気象庁が「震度6強程度以上」「階級3程度以上」と発表する。2011年東北沖の初報がまさにその形で、
+    // M7.2 と推定していたものが実際には M9.0 だった。
+    //
+    // ボタンを 1 回押すと「程度以上」、もう 1 回押すと確定した値へ上がる。**この遷移まで再現する**
+    // —— 上限が定まったことの言い直し（読み上げ）と、値の引き上げに追随する画面が確かめられる。
+    ...(isFirstReport
+      ? { forecastMaxLpgmClass: 3 as const, forecastMaxLpgmClassOver: true }
+      : { forecastMaxLpgmClass: 4 as const }),
     issue: { eventId: eid, serial: String(serial), time: report },
     // 実データに合わせ areas を使用（参照は utils/eew.ts の eewAreas() で吸収）
     areas: [
-      { pref: '宮城県', name: '宮城県北部', scaleFrom: 55, scaleTo: 60, kindCode: '10', arrivalTime: at(15000), lgIntTo: 4 },
+      {
+        pref: '宮城県', name: '宮城県北部', scaleFrom: 55, scaleTo: 60, kindCode: '10',
+        arrivalTime: at(15000),
+        // 震度は上限を定めず（「震度6強程度以上」）、長周期は初報で 1 段低い階級から始まる。
+        ...(isFirstReport
+          ? { scaleToOrAbove: true, lgIntTo: 3 as const, lgIntToOver: true }
+          : { lgIntTo: 4 as const }),
+      },
       { pref: '宮城県', name: '宮城県中部', scaleFrom: 50, scaleTo: 55, kindCode: '10', arrivalTime: at(18000), lgIntTo: 3 },
       { pref: '岩手県', name: '岩手県沿岸南部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(22000), lgIntTo: 2 },
       { pref: '福島県', name: '福島県浜通り', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(25000), lgIntTo: 2 },

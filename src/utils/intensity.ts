@@ -62,14 +62,35 @@ export function getIntensityLabel(scale: number): string {
 /**
  * 震度ラベルに「以上」を補う（`orAbove` のとき）。
  *
- * EEW の予想震度は上限が定まらないことがあり、その報は下限側の階級を持つ
- * （`EEWRegion.scaleToOrAbove` / `eewMaxScaleInfo`）。値だけを見せると
- * 「震度4以上」を「震度4」と断定してしまうため、表示・読み上げはこの語を通す。
+ * **こちらは「5弱以上・未入電」専用。** 電文の値そのものが `震度５弱以上未入電` で、
+ * 気象庁が「以上」と書いている（「程度」は付かない）。
+ *
+ * **EEW の上限を定めない予想震度には使わない** —— そちらの気象庁の表現は「程度以上」で、
+ * 語が違う（→ `getIntensityLabelWithApproxAbove`）。同じ関数を使い回していたため、
+ * 片方に揃えるともう片方が気象庁の表記から外れる状態だった。
+ *
  * 「不明」（階級外）に語を足しても意味を成さないので、その場合は付けない。
  */
 export function getIntensityLabelWithOrAbove(scale: number, orAbove: boolean): string {
   const label = getIntensityLabel(scale)
   return orAbove && isValidIntensityScale(scale) && scale > 0 ? `${label}以上` : label
+}
+
+/**
+ * 震度ラベルに「程度以上」を補う（`over` のとき）。**EEW の予想震度専用。**
+ *
+ * 予想震度は上限が定まらないことがあり、その報は下限側の階級を持つ
+ * （`EEWRegion.scaleToOrAbove` / `eewMaxScaleInfo`）。値だけを見せると
+ * 「震度4程度以上」を「震度4」と断定してしまうため、表示・読み上げはこの語を通す。
+ *
+ * **語は気象庁の表現に合わせる。** 電文解説資料（Ⅱ.21）は `To` の値域を
+ * 「7 ：震度 7　over:～程度以上　不明：不明時」と定め、事例も「最大予測震度が
+ * 震度 5 弱**程度以上**の場合」と書いている。長周期地震動階級も同じ言い方
+ * （→ `getLpgmClassLabelWithApproxAbove`）。
+ */
+export function getIntensityLabelWithApproxAbove(scale: number, over: boolean): string {
+  const label = getIntensityLabel(scale)
+  return over && isValidIntensityScale(scale) && scale > 0 ? `${label}程度以上` : label
 }
 
 export function getIntensityColor(scale: number): string {

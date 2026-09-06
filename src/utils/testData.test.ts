@@ -126,6 +126,31 @@ describe('地震情報テストの points 形状', () => {
   })
 })
 
+// 上限を定めない予想（電文の `To="over"`）をテストボタンでも再現していること。
+//
+// **テストボタンはパーサーを通らない**（内部型を直接組み立てる）ので、ここに無いものは
+// 実機で一度も確かめられない。実際に「程度以上」の表示・読み上げを足したときテストデータが
+// 追随しておらず、画面で確認する手段が無かった。
+describe('テスト EEW の上限を定めない予想', () => {
+  it('初報は震度も長周期も「程度以上」で来る', () => {
+    const first = createTestEEW(undefined, 1)
+    expect(first.forecastMaxLpgmClassOver).toBe(true)
+    const strongest = eewAreas(first).find((a) => a.name === '宮城県北部')!
+    expect(strongest.scaleToOrAbove).toBe(true)
+    expect(strongest.lgIntToOver).toBe(true)
+  })
+
+  // 対照: 続報では確定し、値も上がる（言い直しと引き上げの経路を通す）
+  it('続報では確定した値になる', () => {
+    const next = createTestEEW(undefined, 2)
+    expect(next.forecastMaxLpgmClassOver).toBeUndefined()
+    expect(next.forecastMaxLpgmClass).toBe(4)
+    const strongest = eewAreas(next).find((a) => a.name === '宮城県北部')!
+    expect(strongest.scaleToOrAbove).toBeUndefined()
+    expect(strongest.lgIntTo).toBe(4)
+  })
+})
+
 // EEW の kindCode は気象庁コード表12（緊急地震速報種別）: 00/01/09 が予報、10/11/19 が警報。
 // 警報は予想震度5弱（scaleTo 45）以上の区域に発表されるため、震度4以下の区域に警報コードが
 // 付いていると「予報なのに警報表示」という実運用では起こらない状態になる。

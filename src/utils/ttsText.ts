@@ -1,6 +1,6 @@
 import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, TsunamiArea, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
 import { eewNoForecastReason, canPresentLpgmClass, type EewMaxScaleInfo } from './eew'
-import { getIntensityLabel, getIntensityLabelWithOrAbove } from './intensity'
+import { getIntensityLabel, getIntensityLabelWithApproxAbove } from './intensity'
 import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight, TSUNAMI_GRADE_SHORT_LABEL, type TsunamiAreaGradeChange } from './tsunami'
 import { joinSegments, plain, type SpeechSegment, type SpeechRef, type QuakeFact } from './ttsFollow'
 import { getSubRegionsCache } from './subregions'
@@ -724,7 +724,7 @@ function noForecastText(event: EEWAlert): string {
  */
 export function eewScaleOnlyText(scaleInfo: EewMaxScaleInfo, event: EEWAlert): string {
   if (scaleInfo.scale > 0) {
-    return `予想最大震度${getIntensityLabelWithOrAbove(scaleInfo.scale, scaleInfo.orAbove)}。`
+    return `予想最大震度${getIntensityLabelWithApproxAbove(scaleInfo.scale, scaleInfo.orAbove)}。`
   }
   return noForecastText(event)
 }
@@ -734,9 +734,11 @@ export function eewScaleOnlyText(scaleInfo: EewMaxScaleInfo, event: EEWAlert): s
  * （句ごと省く。音声には地図の色フォールバックのような逃げ場が無く、不正値がそのまま
  * 声に出るのを避けるため）。
  */
-export function eewLpgmOnlyText(lpgmClass: number): string {
-  return lpgmClass > 0 ? `予想最大階級${lpgmClass}。` : ''
+export function eewLpgmOnlyText(lpgmClass: number, over = false): string {
+  // 「程度以上」は気象庁の表現（→ `getLpgmClassLabelWithApproxAbove` のコメント）。
+  return lpgmClass > 0 ? `予想最大階級${lpgmClass}${over ? '程度以上' : ''}。` : ''
 }
+
 
 /**
  * EEW 第2フェーズ（予想値）の読み上げテキストを、震度・階級それぞれの部分から組み立てる。
@@ -771,6 +773,11 @@ export function eewLpgmOnlyText(lpgmClass: number): string {
  */
 export function eewIntensityText(
   scaleInfo: EewMaxScaleInfo, lpgmClass: number, event: EEWAlert, announceUpgrade = false,
+  /**
+   * 階級が「程度以上」だったか。**`event` から引き直さない** —— 渡される `lpgmClass` は
+   * 安定待ちを経た確定値で、現在の報の値と食い違いうる。引き直すと別の値に語を貼り付ける。
+   */
+  lpgmOver = false,
 ): string {
   const prefix = announceUpgrade ? '緊急地震速報に切り替わりました。' : ''
   // 上限が定まらない報（仮定震源要素の初報など）は「震度4以上」と読む。値だけ読むと
@@ -779,7 +786,9 @@ export function eewIntensityText(
   // **震度を伝えられないときは階級も読まない**（判定は `canPresentLpgmClass`。カード表示・
   // 第 2 フェーズの言い直しと同じ述語を共有する。理由はそちらのコメント）。
   const scaleText = eewScaleOnlyText(scaleInfo, event)
-  const lpgmText = canPresentLpgmClass(scaleInfo.scale, lpgmClass) ? eewLpgmOnlyText(lpgmClass) : ''
+  const lpgmText = canPresentLpgmClass(scaleInfo.scale, lpgmClass)
+    ? eewLpgmOnlyText(lpgmClass, lpgmOver)
+    : ''
   return prefix + scaleText + lpgmText
 }
 
