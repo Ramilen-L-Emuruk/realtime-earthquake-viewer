@@ -9,6 +9,7 @@ import { getStationCoordsCache, getAreaPrefIndexCache, buildStationPrefIndex, bu
 import { isAreaPoint, isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel } from './quakePoints'
 import { hasMagnitude, hasDepth } from './formatters'
 import { createLogThrottle, log } from './logger'
+import { hasKnownEpicenter } from './geo'
 
 const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch', 'Forecast']
 
@@ -270,7 +271,7 @@ function selectRegionNames(
   // 持たない電文で入る。p2pquake.ts / dmdataParser.ts 参照）。どちらも距離の基準にはできない。
   // -200 を弾かないと、地球上に存在しない点からの距離で地域を選ぶことになる。
   const hasEpicenter = hypocenter != null
-    && hypocenter.latitude > -200 && hypocenter.longitude > -200
+    && hasKnownEpicenter(hypocenter.latitude, hypocenter.longitude)
     && (hypocenter.latitude !== 0 || hypocenter.longitude !== 0)
   let picked = hasEpicenter
     ? [...names].sort((a, b) => {

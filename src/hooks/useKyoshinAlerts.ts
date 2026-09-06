@@ -6,7 +6,7 @@ import type { AlertTitleApi } from './useAlertTitle'
 import { playAlertSound, playKyoshinUpdateSound, kyoshinLevel } from '../utils/alertSound'
 import { kyoshinIndexToLabel } from '../utils/kyoshinIntensity'
 import { showBrowserNotification } from '../utils/notifications'
-import { haversineKm } from '../utils/geo'
+import { hasKnownEpicenter, haversineKm } from '../utils/geo'
 import { log } from '../utils/logger'
 import { computeSWaveRadiusAtTime } from './usePsWaveCalc'
 import type { ConfirmedShock } from '../utils/kyoshinDetectionView'
@@ -165,7 +165,10 @@ export interface NearestEewInfo {
 function extractEewInfo(eew: EEWAlert): NearestEewInfo | null {
   if (eew.earthquake.condition === '仮定震源要素') return null
   const { hypocenter } = eew.earthquake
-  if (!Number.isFinite(hypocenter.latitude) || !Number.isFinite(hypocenter.longitude)) return null
+  // **位置の判定は `hasKnownEpicenter` に通す。** 位置不明のセンチネル `-200` は有限なので
+  // `Number.isFinite` をすり抜ける。すり抜けると `isSameEarthquake` が「有効な EEW がある」と
+  // 数えたうえで距離判定に必ず外れ、**通常の距離フォールバックへ到達しないまま別地震と答える**。
+  if (!hasKnownEpicenter(hypocenter.latitude, hypocenter.longitude)) return null
   return {
     lat: hypocenter.latitude,
     lng: hypocenter.longitude,

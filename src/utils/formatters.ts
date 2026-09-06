@@ -1,4 +1,4 @@
-import type { CorrectType, DomesticTsunami, IssueType, TsunamiGrade } from '../types/earthquake'
+import type { CorrectType, DomesticTsunami, Hypocenter, IssueType, TsunamiGrade } from '../types/earthquake'
 
 export function formatDateTime(isoString: string): string {
   const date = new Date(isoString)
@@ -113,6 +113,21 @@ export function formatMagnitudeValue(magnitude: number, condition?: string): str
 export function formatMagnitudeWithCondition(magnitude: number, condition?: string): string {
   if (hasMagnitude(magnitude)) return formatMagnitude(magnitude)
   return condition ? formatMagnitudeCondition(condition) : '不明'
+}
+
+/**
+ * 震源の規模か深さのどちらかが判っているか。**位置とは別に判定する。**
+ *
+ * 「位置は判らないが規模は判っている」電文がある（震源要素不明。→ quake-spec.md §5）。
+ * 位置と一緒くたに伏せると、震源を決められないほど異常な地震で最も重要な数値が画面から消える。
+ * 共有カード・ブラウザ通知は元からそれぞれ独立に判定していて、カードだけが取り残されていた。
+ *
+ * 震源要素をまったく持たない電文（震度速報）では 3 つとも偽になり、欄ごと出ない。
+ */
+export function hasHypocenterFacts(hypocenter: Hypocenter): boolean {
+  return hasMagnitude(hypocenter.magnitude)
+    || !!hypocenter.magnitudeCondition
+    || hasDepth(hypocenter.depth)
 }
 
 /**

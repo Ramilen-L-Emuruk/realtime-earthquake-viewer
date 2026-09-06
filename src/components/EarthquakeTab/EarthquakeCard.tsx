@@ -7,12 +7,14 @@ import {
   formatDomesticTsunami,
   formatIssueType,
   formatCorrectType,
+  hasHypocenterFacts,
   hasMagnitude,
   formatMagnitudeValue,
   formatMagnitudeWithCondition,
   formatCoordinate,
 } from '../../utils/formatters'
 import { getIntensityLabelWithOrAbove, getIntensityColor, getIntensityBgColor, getDepthColor, getMagnitudeColor } from '../../utils/intensity'
+import { hasKnownEpicenter } from '../../utils/geo'
 import { buildAreaPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, buildStationPrefIndex, lookupStationRegion, regionOrderRank, byValueDescThenRegion } from '../../utils/stationCoords'
 import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel } from '../../utils/quakePoints'
 import { useStationCoords } from '../../hooks/useStationCoords'
@@ -71,7 +73,9 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
   // 付けないと、実際にはもっと強い可能性があることが見出しから読み取れない。
   const maxScaleLabel = maxScale === -1 ? '?' : getIntensityLabelWithOrAbove(maxScale, isMaxScaleUnreceived(maxScale, quake.points))
   const tsunamiInfo = formatDomesticTsunami(domesticTsunami)
-  const hasLocation = hypocenter.latitude > -200 && hypocenter.longitude > -200
+  const hasLocation = hasKnownEpicenter(hypocenter.latitude, hypocenter.longitude)
+  // 規模・深さは位置と別に判定する（→ `hasHypocenterFacts`）
+  const hasFacts = hasHypocenterFacts(hypocenter)
   // 長周期の「観測情報の種類」から出す一文（値 2・4 のときだけ。→ `lpgmCategoryNote`）。
   // 条件と本文の両方で使うので一度だけ計算する。
   const categoryNote = lpgmCategoryNote(lpgm?.category)
@@ -392,7 +396,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
           </div>
 
           {/* マグニチュード・深さ（2カラムグリッド） */}
-          {hasLocation && (
+          {hasFacts && (
             <div className="grid grid-cols-2 gap-2">
               <div
                 className="flex flex-col gap-0.5 rounded-lg p-2 roomy:gap-1 roomy:p-2.5"
@@ -630,7 +634,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
 
           {/* 深さ・マグニチュード */}
           <div className="flex items-center gap-2 text-base mb-1">
-            {hasLocation && (
+            {hasFacts && (
               <span className="flex items-center gap-1 text-secondary">
                 <span>深さ</span>
                 <span className="text-white font-medium">{formatDepth(hypocenter.depth)}</span>
