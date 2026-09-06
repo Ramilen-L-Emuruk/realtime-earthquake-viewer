@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { formatCoordinate, formatDepth, formatMagnitude, formatMagnitudeCondition, formatMagnitudeValue, formatMagnitudeWithCondition, formatFileStamp } from './formatters'
+import { formatCoordinate, formatDepth, formatMagnitude, formatMagnitudeCondition, formatMagnitudeValue, formatMagnitudeWithCondition, formatFileStamp, hasHypocenterFacts } from './formatters'
+import type { Hypocenter } from '../types/earthquake'
 import { withTz } from '../test-utils/withTz'
 import { getMagnitudeColor, getDepthColor } from './intensity'
 
@@ -190,5 +191,45 @@ describe('見出しに M を持たない欄の規模', () => {
   // 安全弁: 数値が読めるなら説明より数値を優先する。
   it('数値が読めれば数値を優先する', () => {
     expect(formatMagnitudeWithCondition(7.6, 'Ｍ８を超える巨大地震')).toBe('M7.6')
+  })
+})
+
+// 震源の位置が判らなくても、規模や深さだけは判っていることがある（震源要素不明の電文。
+// → quake-spec.md §5）。位置と一緒くたに伏せると、震源を決められないほど異常な地震で
+// 最も重要な数値がカードから消える。
+describe('hasHypocenterFacts', () => {
+  const hypo = (over: Partial<Hypocenter> = {}): Hypocenter =>
+    ({ name: '岩手県沖', latitude: 39.9, longitude: 142.2, depth: 50, magnitude: 5.1, ...over })
+
+  // 正: 位置が「不明」でも、規模が判っていれば出す。これがこの述語を分けた理由。
+  it('位置が不明でも規模が判っていれば真', () => {
+    expect(hasHypocenterFacts(hypo({ latitude: -200, longitude: -200, depth: -1 }))).toBe(true)
+  })
+
+  // 正: 規模の説明だけ（「Ｍ８を超える巨大地震」）でも出す。
+  it('規模の説明だけでも真', () => {
+    expect(hasHypocenterFacts(hypo({
+      latitude: -200, longitude: -200, depth: -1, magnitude: NaN,
+      magnitudeCondition: 'Ｍ８を超える巨大地震',
+    }))).toBe(true)
+  })
+
+  // 正: 深さだけでも出す。
+  it('深さだけでも真', () => {
+    expect(hasHypocenterFacts(hypo({ magnitude: NaN, depth: 0 }))).toBe(true)
+  })
+
+  // 対照: 震源要素をまったく持たない電文（震度速報）では欄ごと出ない。
+  // **ここが偽にならないと、震度速報のカードに「不明／不明」の欄が並ぶ。**
+  it('震度速報（震源要素なし）では偽', () => {
+    expect(hasHypocenterFacts(hypo({
+      name: '', latitude: -200, longitude: -200, depth: -1, magnitude: NaN,
+    }))).toBe(false)
+  })
+
+  // 安全弁: 3 つの条件は OR。1 つでも AND に書き換わったら落ちる。
+  it('規模だけ・深さだけのどちらでも真になる（AND ではない）', () => {
+    expect(hasHypocenterFacts(hypo({ magnitude: 5.1, depth: -1 }))).toBe(true)
+    expect(hasHypocenterFacts(hypo({ magnitude: NaN, depth: 50 }))).toBe(true)
   })
 })

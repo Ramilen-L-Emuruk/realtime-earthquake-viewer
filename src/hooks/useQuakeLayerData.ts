@@ -9,7 +9,7 @@ import {
   buildStationPrefIndex,
   type LatLng,
 } from '../utils/stationCoords'
-import { pointInRings, normalizeEpicenterLng } from '../utils/geo'
+import { pointInRings, normalizeEpicenterLng, hasKnownEpicenter } from '../utils/geo'
 import { ringsBounds, type SubRegion } from '../utils/subregions'
 import { extractQuakeEventId } from '../utils/quakeMerge'
 import { japanWideCornersLatLng } from '../components/Map/gl/bounds'
@@ -260,11 +260,8 @@ export function useQuakeLayerData(
     return list.sort((a, b) => a.scale - b.scale)
   }, [subregionIndex, regionMaxByName])
 
-  const hasEpicenter = !!(
-    quake &&
-    quake.earthquake.hypocenter.latitude > -200 &&
-    quake.earthquake.hypocenter.longitude > -200
-  )
+  const hasEpicenter = !!quake
+    && hasKnownEpicenter(quake.earthquake.hypocenter.latitude, quake.earthquake.hypocenter.longitude)
 
   const epicenter = useMemo<LatLng | null>(() => {
     if (!hasEpicenter || !quake) return null

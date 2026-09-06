@@ -224,6 +224,43 @@ describe('parseEarthquakeFromXml: 震源・震度に関する情報（VXSE53）'
     expect(points.filter(p => !p.isArea)).toHaveLength(1)
   })
 
+  // 正: 気象庁が「震源要素不明」と書いて送ってきた電文は捨てない（電文解説資料 Ⅱ.33 例外表現１）。
+  // **震源が判らないだけで、震度は全国分そろっている。** 電文ごと捨てると、震源を決められない
+  // ほど異常な地震で震度が丸ごと消える。
+  it('震源要素不明の電文は捨てず、震度を残す', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const xml = VXSE53_XML.replace(
+        '<Coordinate>+39.9+142.2-50000/</Coordinate>',
+        '<Coordinate description="震源要素不明" />')
+      const quake = parseEarthquakeFromXml('VXSE53', xml)
+      expect(quake).not.toBeNull()
+      // 震度は 1 点も落とさない（これがこの修正の目的）
+      expect(quake!.points).toEqual(parseEarthquakeFromXml('VXSE53', VXSE53_XML)!.points)
+      // 位置は「不明」のセンチネルへ倒す（カードの `hasLocation`・地図の `useQuakeLayerData` が弾く）
+      expect(quake!.earthquake.hypocenter.latitude).toBe(-200)
+      expect(quake!.earthquake.hypocenter.longitude).toBe(-200)
+      expect(quake!.earthquake.hypocenter.name).toBe('岩手県沖')
+      // **安全弁: 位置を使う側の述語で弾かれること。** `Number.isFinite(-200)` は真なので、
+      // 有限性だけを見ている経路があるとセンチネルがそのまま地図へ流れる（実際に 3 箇所あった）。
+      expect(hasKnownEpicenter(quake!.earthquake.hypocenter.latitude, quake!.earthquake.hypocenter.longitude)).toBe(false)
+      // 規模は座標と独立に読める。位置と一緒くたに伏せない（カードの `hasHypocenterFacts`）
+      expect(quake!.earthquake.hypocenter.magnitude).toBe(5.1)
+      // 捨ててはいないが、異常な状態であることは記録する
+      expect(warn.mock.calls.map(c => c.join(' ')).filter(w => w.includes('震源要素不明'))).toHaveLength(1)
+      expect(warn.mock.calls.map(c => c.join(' ')).filter(w => w.includes('震源座標が読めません'))).toHaveLength(0)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 対照: 属性が無いただの空の座標は、書式が壊れた疑いなので従来どおり捨てる。
+  // **ここを「読めなければ通す」に広げると、電文の書式が変わっても気づけなくなる。**
+  it('説明の無い空の座標は従来どおり捨てる', () => {
+    const xml = VXSE53_XML.replace('<Coordinate>+39.9+142.2-50000/</Coordinate>', '<Coordinate />')
+    expect(parseEarthquakeFromXml('VXSE53', xml)).toBeNull()
+  })
+
   it('区域の震度は Area 直下の MaxInt を採り、配下 City の値に引きずられない', () => {
     const points = parseEarthquakeFromXml('VXSE53', VXSE53_XML)!.points
     // 都道府県ロールアップ点（pref 付き）と取り違えないよう pref が空のものを探す
@@ -1049,6 +1086,37 @@ describe('parseEEWFromXml: severity・cancel・LPGM', () => {
 
   it('座標が読めない発表電文（非 cancel）は null', () => {
     expect(parseEEWFromXml('VXSE45', eewXml({ area: '<Name>茨城県沖</Name>' }))).toBeNull()
+  })
+
+  // 正: 気象庁が「震源要素不明」と書いて送ってきた電文は捨てない（電文解説資料 Ⅱ.21 例外表現２）。
+  // 震源が判らないだけで予想震度と対象区域は残っており、捨てると伝えるべきことごと消える。
+  it('震源要素不明の電文は捨てず、位置不明として通す', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const xml = eewXml({ area: '<Name>茨城県沖</Name><jmx_eb:Coordinate description="震源要素不明" />' })
+      const eew = parseEEWFromXml('VXSE45', xml)
+      expect(eew).not.toBeNull()
+      // 位置は「不明」のセンチネルへ倒す。NaN のまま渡すと寄り先の判定が 2 通りに割れる
+      expect(eew!.earthquake.hypocenter.latitude).toBe(-200)
+      expect(eew!.earthquake.hypocenter.longitude).toBe(-200)
+      // 震源名と予想は残る
+      expect(eew!.earthquake.hypocenter.name).toBe('茨城県沖')
+      expect(eew!.forecastMaxScale).toBe(50)
+      // **安全弁: 位置を使う側の述語で弾かれること。**（上の地震情報側と同じ理由）
+      expect(hasKnownEpicenter(eew!.earthquake.hypocenter.latitude, eew!.earthquake.hypocenter.longitude)).toBe(false)
+      // 捨ててはいないが、異常な状態であることは記録する
+      expect(warn.mock.calls.map(c => c.join(' ')).filter(w => w.includes('震源要素不明'))).toHaveLength(1)
+      expect(warn.mock.calls.map(c => c.join(' ')).filter(w => w.includes('震源座標が読めません'))).toHaveLength(0)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 対照: 属性が無いただの空の座標は、書式が壊れた疑いなので従来どおり捨てる。
+  // **ここを「読めなければ通す」に広げると、電文の書式が変わっても気づけなくなる。**
+  it('説明の無い空の座標は従来どおり捨てる', () => {
+    const xml = eewXml({ area: '<Name>茨城県沖</Name><jmx_eb:Coordinate />' })
+    expect(parseEEWFromXml('VXSE45', xml)).toBeNull()
   })
 
   // 正: 捨てたことを**常に残る側**へ記録する。EEW は最も落としてはいけない電文なのに、

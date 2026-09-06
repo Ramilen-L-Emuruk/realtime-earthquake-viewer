@@ -477,6 +477,26 @@ describe('EEW 読み上げの文言と発話順序', () => {
     ])
   })
 
+  // 対照: 位置不明のセンチネル（-200）へ落ちた続報では「震源を更新」と言わない。
+  //
+  // **`Number.isFinite(-200)` は真なので、有限性だけを見ていると距離が無意味に大きく出て
+  // 「50km 超動いた」と誤判定する。** 位置が判らなくなっただけで震源が動いた保証は無いのに、
+  // 読み上げを頭から言い直すことになる。この状態は「震源要素不明」の電文を捨てずに通す
+  // ようにして初めて届くようになった（→ quake-spec.md §5）。
+  it('位置不明のセンチネルへ落ちた続報では「震源を更新」と言わない', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50 }))
+    await flushMicrotasks()
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    // 震源名は変わるが、座標は「位置不明」。動いたかどうかは判定できない
+    handle(makeEEW({ serial: 2, scaleTo: 50, hypocenter: { name: '種子島近海', latitude: -200, longitude: -200 } }))
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushMicrotasks()
+
+    expect(spokenTexts().some(t => t.includes('震源を更新'))).toBe(false)
+  })
+
   // 震源の大幅更新でサイクルを捨てた**後**に、張り直したサイクルの確定を追い越して値が上がる。
   // ここが「捨てる経路」とガードが実際に噛み合う場面——新震源で確定した値の予約が発話の順番を
   // 待っている間に、さらに高い値が届く。

@@ -110,4 +110,38 @@ describe('computeEewCircle', () => {
     expect(circle!.pRadius).toBe(0)
     expect(circle!.sRadius).toBe(0)
   })
+
+  // 安全弁: 位置不明のセンチネル（-200）では円を作らない。
+  //
+  // **`Number.isFinite(-200)` は真なので、有限性だけを見ていると素通りする。** 素通りした値は
+  // `PsWaveGL` の `map.project([lng, lat])` へ渡り、MapLibre が緯度の範囲外として例外を投げる
+  // （ブラウザで実測: 「Invalid LngLat latitude value: must be between -90 and 90」）。
+  // ErrorBoundary が無いので画面ごと落ちる。
+  //
+  // この状態は「震源要素不明」の電文を捨てずに通すようにして初めて届くようになった
+  // （→ quake-spec.md §5）。取消電文も -200 を持つが、こちらは手前の早期 return で止まる。
+  it('位置不明のセンチネルでは円を作らない', () => {
+    const eew = makeEEW({
+      earthquake: {
+        originTime: '2026-01-01T12:00:00Z',
+        arrivalTime: '2026-01-01T12:00:20Z',
+        condition: '',
+        hypocenter: { name: '茨城県沖', latitude: -200, longitude: -200, depth: -1, magnitude: 6.5 },
+      },
+    })
+    expect(computeEewCircle(eew, NOW)).toBeNull()
+  })
+
+  // 対照: 座標が読めない（NaN）場合も従来どおり作らない。
+  it('座標が NaN でも円を作らない', () => {
+    const eew = makeEEW({
+      earthquake: {
+        originTime: '2026-01-01T12:00:00Z',
+        arrivalTime: '2026-01-01T12:00:20Z',
+        condition: '',
+        hypocenter: { name: '茨城県沖', latitude: NaN, longitude: NaN, depth: 10, magnitude: 6.5 },
+      },
+    })
+    expect(computeEewCircle(eew, NOW)).toBeNull()
+  })
 })

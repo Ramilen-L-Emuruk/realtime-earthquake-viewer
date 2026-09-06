@@ -13,7 +13,7 @@ import {
   EEW_PHASE2_STABILITY_MAX_WAIT_MS, EEW_PHASE2_LPGM_STABILITY_MS, eewMaxLpgmClassInfo,
   type EewMaxScaleInfo, type EewMaxLpgmClassInfo,
 } from '../utils/eew'
-import { haversineKm } from '../utils/geo'
+import { hasKnownEpicenter, haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
 import { isWarningLevelWhileObserving, tsunamiMaxGrade, tsunamiAreaGradeChanges, selectUnspokenAreaGradeChanges, rememberAreaGrades, tsunamiAreaKey, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations, isObservationMissing } from '../utils/tsunami'
 import { playAlertSound, ttsDelayFor, type AlertSoundType } from '../utils/alertSound'
@@ -2012,7 +2012,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         const hypo = event.earthquake.hypocenter
         const prevHypo = activeEEWAnnouncedHypocentersRef.current.get(key)
         const hypoNameChanged = !isNew && prevHypo !== undefined && hypo.name !== prevHypo.name
-        const hypoFarMoved = hypoNameChanged && Number.isFinite(hypo.latitude) && Number.isFinite(hypo.longitude)
+        // 位置の判定は `hasKnownEpicenter`。位置不明のセンチネル `-200` は有限なので
+        // `Number.isFinite` をすり抜け、距離が無意味に大きく出て「50km 超動いた」と誤判定する。
+        const hypoFarMoved = hypoNameChanged && hasKnownEpicenter(hypo.latitude, hypo.longitude)
           && haversineKm(hypo.latitude, hypo.longitude, prevHypo.lat, prevHypo.lng) > 50
         // 予報として**読み上げている最中に**警報へ上がった。読み切るのを待たず、警報として
         // 頭から言い直す（待つと区分の告知が実測 5.5 秒遅れる）。語の途中で切れても文の頭から
@@ -2122,8 +2124,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             () => followSpeechTab('realtime', isNew ? TAB_PRIORITY.eewUrgent : TAB_PRIORITY.eewUpdate),
             restateAsWarning,
           )
-          // 発話した震源情報を記録する
-          if (Number.isFinite(hypo.latitude) && Number.isFinite(hypo.longitude)) {
+          // 発話した震源情報を記録する。**位置不明のセンチネルは記録しない** —— 記録すると
+          // 次の続報で `-200` を相手に距離を測ることになる（上の `hypoFarMoved` と同じ理由）。
+          if (hasKnownEpicenter(hypo.latitude, hypo.longitude)) {
             activeEEWAnnouncedHypocentersRef.current.set(key, { name: hypo.name, lat: hypo.latitude, lng: hypo.longitude })
           }
         }

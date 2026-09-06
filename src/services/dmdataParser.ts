@@ -276,6 +276,12 @@ function warnIfNoLpgmRegions(maxClass: number, regionCount: number, logPrefix: s
 //
 // 遠地地震だけは `issueType` で除く。VXSE53 として配信され `Head/Title` でしか見分けられず、
 // 国内の震度を持たないのが正常なため。
+//
+// **この除外だけで足りることを実電文で確かめてある。** 解説資料は「国内で震度が観測されない
+// 場合、本要素（Intensity）は出現しない」と書いており、国内の電文でも震度が無い形がありうる
+// ように読める。DMDATA のアーカイブ 20 か月分（2025-01〜2026-09）を数えたところ、
+// `Intensity` を持たない VXSE51/VXSE53 は 58 通あって**その全部が遠地地震**、国内の
+// VXSE53 6,169 通は 1 通残らず震度を持っていた。偽陽性は 0 件。
 function warnIfNoIntensityPoints(
   headType: string,
   issueType: IssueType,
@@ -506,6 +512,29 @@ function degreeMinuteCoordProblem(
   return null
 }
 
+/**
+ * 震源要素が「全要素とも不明」と書かれた電文か。
+ *
+ * 気象庁は震源を決められないとき、座標を空にして理由を属性へ書く（電文解説資料の例外表現。
+ * 津波 VTSE41/51/52・EEW VXSE45・地震 VXSE52/53・長周期 VXSE62 の 7 種別で定義されている）。
+ *
+ * ```xml
+ * <jmx_eb:Coordinate description="震源要素不明" />
+ * ```
+ *
+ * **これを「座標の書式が壊れている」と一緒にしない。** 前者は気象庁が意図して送っている形で、
+ * 震源が判らないだけで震度は全国分そろっている。電文ごと捨てると、**最も異常な地震で
+ * 全国の震度が丸ごと消える**。後者は電文の書式が変わった疑いなので、従来どおり捨てて記録する。
+ *
+ * 属性値の空白は落としてから照合する。解説資料の他の事例（「北緯　３９．０度…」）は
+ * 全角空白で区切られており、この属性だけ空白が入らないと決めてかかる根拠が無い。
+ */
+function isUnknownHypocenterCoord(areaEl: Element | null): boolean {
+  if (!areaEl) return false
+  return xmlAll(areaEl, 'Coordinate').some(el =>
+    (el.getAttribute('description') ?? '').replace(/[\s　]/g, '').includes('震源要素不明'))
+}
+
 function readHypocenterCoord(areaEl: Element, headType: string): { lat: number; lng: number; depth: number } {
   const els = xmlAll(areaEl, 'Coordinate')
   const dm = els.find(el => (el.getAttribute('type') ?? '').includes('度分'))
@@ -567,9 +596,19 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
   if (!isCanceled && !eqEl) {
     return dropTelegram(DMDATA_LOG_PREFIX, `${headType}（緊急地震速報）に Earthquake 要素がありません`)
   }
+  // **「震源要素不明」だけは捨てない**（→ `isUnknownHypocenterCoord`）。地震情報側と同じ扱いで、
+  // 震源が判らないだけの電文と、座標の書式が壊れた電文を分ける。予想震度と対象区域は残るので、
+  // 予報円が描けなくても伝えるべきことがある。
+  //
+  // **位置を使う側は `hasKnownEpicenter` を通すこと。** `Number.isFinite` だけでは足りない ——
+  // センチネル `-200` は有限で、すり抜けると予報円が MapLibre の緯度検証で例外を投げ、
+  // 揺れ検知の同一地震判定が距離のフォールバックへ到達しなくなる（どちらも実際に起きていた）。
   if (!isCanceled && (!Number.isFinite(lat) || !Number.isFinite(lng))) {
-    const coordStr = areaEl ? xmlText(xmlQ(areaEl, 'Coordinate')) : ''
-    return dropTelegram(DMDATA_LOG_PREFIX, `${headType}（緊急地震速報）の震源座標が読めません: Coordinate="${coordStr}"`)
+    if (!isUnknownHypocenterCoord(areaEl)) {
+      const coordStr = areaEl ? xmlText(xmlQ(areaEl, 'Coordinate')) : ''
+      return dropTelegram(DMDATA_LOG_PREFIX, `${headType}（緊急地震速報）の震源座標が読めません: Coordinate="${coordStr}"`)
+    }
+    log.warn(`${DMDATA_LOG_PREFIX} ${headType}（緊急地震速報）は震源要素不明の電文です。震源を伏せて予想震度と対象区域を出します: EventID=${eventId} 第${serial}報`)
   }
 
   // 要素名は `WarningComment`。電文解説資料の事例（Ⅱ.21 4-1）:
@@ -638,8 +677,10 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
       condition: xmlText(eqEl ? xmlChild(eqEl, 'Condition') : null),
       hypocenter: {
         name: xmlText(areaEl ? xmlChild(areaEl, 'Name') : null),
-        latitude: isCanceled ? -200 : lat,
-        longitude: isCanceled ? -200 : lng,
+        // 取消と震源要素不明はどちらも「位置が無い」。**NaN のまま渡さない** —— 取消が
+        // 既にセンチネルへ倒しているので、同じ状態を 2 通りの値で表すと弾き方が 2 つに割れる。
+        latitude: isCanceled ? -200 : (Number.isFinite(lat) ? lat : -200),
+        longitude: isCanceled ? -200 : (Number.isFinite(lng) ? lng : -200),
         depth,
         magnitude: eqEl ? parseFloat(xmlText(xmlQ(eqEl, 'Magnitude'))) : NaN,
       },
@@ -717,11 +758,19 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     : { lat: NaN, lng: NaN, depth: -1 }
 
   // 震源を持つ電文で座標が読めないものは不正として捨てる（震度速報は上で除外済み）。
+  // **ただし「震源要素不明」だけは捨てない**（→ `isUnknownHypocenterCoord`）。震源が判らない
+  // だけで震度は全国分そろっており、捨てると最も異常な地震で震度が丸ごと消える。位置不明の
+  // センチネル（-200）へ倒せば、カード（`hasLocation`）も地図（`useQuakeLayerData`）も
+  // 既にあるガードで震源だけを伏せる。
+  //
   // **読めなかった値そのものを記録に載せる。** 座標の要素は 2 つ載ることがある（度単位と度分。
   // → `readHypocenterCoord`）ので、どちらが来ていたか分かるよう両方を並べる。
   if (earthquakeEl && (!Number.isFinite(lat) || !Number.isFinite(lng))) {
-    const coordStr = areaEl ? xmlAll(areaEl, 'Coordinate').map(el => xmlText(el)).join(' / ') : ''
-    return dropTelegram(DMDATA_LOG_PREFIX, `${headType} の震源座標が読めません: Coordinate="${coordStr}"`)
+    if (!isUnknownHypocenterCoord(areaEl)) {
+      const coordStr = areaEl ? xmlAll(areaEl, 'Coordinate').map(el => xmlText(el)).join(' / ') : ''
+      return dropTelegram(DMDATA_LOG_PREFIX, `${headType} の震源座標が読めません: Coordinate="${coordStr}"`)
+    }
+    log.warn(`${DMDATA_LOG_PREFIX} ${headType} は震源要素不明の電文です。震源を伏せて震度だけを出します: EventID=${eventId} 第${serial}報`)
   }
 
   // 震度速報は Head/TargetDateTime（地震検知時刻）を earthquake.time に充てる。
