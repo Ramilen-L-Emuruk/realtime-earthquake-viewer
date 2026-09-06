@@ -313,6 +313,21 @@ export interface TsunamiObservation {
    * 電文種別（`headType`）から立てる。
    */
   offshore?: boolean
+  /**
+   * 最大波の続報での位置づけ（`MaxHeight/Revise`）。「追加」＝新たに出現、「更新」＝既出の内容が
+   * 変わった。
+   *
+   * **これは値の変化を表す印ではなく、気象庁が明示的に置いた信号として読む。**
+   * 沖合の観測点で `Condition` が「観測中」のまま `Revise` が「更新」になるのは、
+   * **津波警報に相当する津波を観測している**ことを示す（電文解説資料 Ⅱ.13 1-1-2-2-2）。
+   * 「観測中」の中身は変わりようがない（`DateTime` も高さも出ない）ので、この組み合わせは
+   * 気象庁が意図して書いたものにしかならない。判定は `isWarningLevelWhileObserving`。
+   *
+   * **新規／更新の言い分け（読み上げ）には使わないこと。** あちらの境界は「前に声にした波高が
+   * あるか」で、`Revise` が言っているのは「気象庁が何を発表したか」。別の軸なので混ぜると、
+   * 読み上げが割り込みで鳴らなかった観測点を「更新」として扱う。
+   */
+  maxHeightRevise?: string
   // 観測点が属する津波予報区（districtCode）。forecasts[].code と一致させて area 行に紐づける。
   // VTSE52（沖合観測単独電文）は区域を持たないため undefined になる。
   districtCode?: string
@@ -463,12 +478,22 @@ export interface JMANankai {
   id: string
   time: string
   eventId: string
-  kindCode: string   // '0201'=調査中 '0202'=巨大地震注意 '0203'=巨大地震警戒 '0204'=調査終了
+  /**
+   * 気象庁の地震関連情報番号コード（電文の `Body/EarthquakeInfo/InfoSerial/Code`）。
+   *
+   * `111`/`112`/`113`=調査中（発表の契機が違う。順に「監視領域内の M6.8 以上の地震」
+   * 「ひずみ計の有意な変化」「その他の現象」）／`120`=巨大地震警戒／`130`=巨大地震注意／
+   * `190`=調査終了。
+   *
+   * **空文字になることがある。** `InfoSerial` は電文仕様上は省略可で、読めなかった報は
+   * `Head/Title` から段階を拾う（そのときコードは持てない）。**判定には `kindName` を使うこと。**
+   */
+  kindCode: string
   kindName: string   // '調査中' | '巨大地震注意' | '巨大地震警戒' | '調査終了'
   headline: string
   body: string
   /**
-   * 帯を引っ込めるか。調査終了（`kindCode === '0204'`）と取消の両方で立つ。
+   * 帯を引っ込めるか。調査終了（`kindName === '調査終了'`）と取消の両方で立つ。
    *
    * **取消と調査終了を、これ 1 つで見分けてはいけない**（→ `retracted`）。どちらも状況の表示を
    * 終える点は同じだが、**意味は正反対**——調査終了は「調べた結果、可能性は通常の範囲内だった」
@@ -494,7 +519,12 @@ export interface JMANankaiCommentary {
   id: string
   time: string
   eventId: string
-  serialCode: string // '210'=臨時解説 '200'=定例解説
+  /**
+   * 気象庁の地震関連情報番号コード（`Body/EarthquakeInfo/InfoSerial/Code`）。
+   * `200`=定例解説／`210`=臨時解説（次回も臨時）／`219`=臨時解説（次回は定例）。
+   * 名称（`serialName`）はどちらの臨時解説も「臨時解説」で、次回の予定だけがコードで分かれる。
+   */
+  serialCode: string
   serialName: string // '臨時解説' | '定例解説'
   headline: string   // Head/Title 例: '南海トラフ地震関連解説情報（第１号）'
   summary: string    // Head/Headline/Text の一文要約。バナーの見出しに使う
