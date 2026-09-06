@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { GeoJSONSource, MapGeoJSONFeature } from 'maplibre-gl'
 import type { Feature, FeatureCollection, Polygon } from 'geojson'
 import { useMapGL } from './mapGLContext'
-import { getIntensityColor, getIntensityLabelWithOrAbove } from '../../utils/intensity'
+import { getIntensityColor, getIntensityLabelWithApproxAbove } from '../../utils/intensity'
 import type { EewAreaFill } from '../../hooks/useEewLayerData'
 import { haversineKm } from '../../utils/geo'
 import { serverNow } from '../../utils/clock'
@@ -76,7 +76,7 @@ function buildFC(areaFills: EewAreaFill[]): FeatureCollection<Polygon> {
 // 上限が定まらない区域（「震度4以上」）はバッジにも語を出す。塗り色は下限の階級色のままで、
 // 色を変える手立ては無いため、断定に見えないよう文字側で補う。
 function scaleLabelOf(f: MapGeoJSONFeature): string {
-  return getIntensityLabelWithOrAbove(
+  return getIntensityLabelWithApproxAbove(
     Number(f.properties?.scale ?? 0),
     Boolean(f.properties?.scaleOrAbove),
   )

@@ -4,13 +4,14 @@ import type { TabId } from '../components/IconNav'
 import type { AppSettings } from './useSettings'
 import type { AlertTitleApi } from './useAlertTitle'
 import type { ReplayEntry } from '../types/replay'
-import { getIntensityLabelWithOrAbove } from '../utils/intensity'
+import { getIntensityLabelWithOrAbove, getIntensityLabelWithApproxAbove } from '../utils/intensity'
 import { isMaxScaleUnreceived } from '../utils/quakePoints'
 import { formatMagnitude, hasMagnitude } from '../utils/formatters'
 import {
-  eewMaxScaleInfo, isForecastScaleHigher, eewMaxLpgmClass, eewNoForecastReason, computeSingleEEWLevel, canPresentLpgmClass,
+  eewMaxScaleInfo, isForecastScaleHigher, isForecastLpgmHigher, eewNoForecastReason, computeSingleEEWLevel, canPresentLpgmClass,
   selectEEWSoundType, eewKindLabel, eewPhase2ScaleStabilityMs,
-  EEW_PHASE2_STABILITY_MAX_WAIT_MS, EEW_PHASE2_LPGM_STABILITY_MS, type EewMaxScaleInfo,
+  EEW_PHASE2_STABILITY_MAX_WAIT_MS, EEW_PHASE2_LPGM_STABILITY_MS, eewMaxLpgmClassInfo,
+  type EewMaxScaleInfo, type EewMaxLpgmClassInfo,
 } from '../utils/eew'
 import { haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
@@ -569,7 +570,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // `isForecastScaleHigher`）。
   const spokenEEWScalesRef = useRef<Map<string, EewMaxScaleInfo>>(new Map())
   // 階級だけが上がる続報（震度据え置きで 2→3 等）は震度にもレベルにも現れないため専用に持つ。
-  const spokenEEWLpgmClassesRef = useRef<Map<string, number>>(new Map())
+  const spokenEEWLpgmClassesRef = useRef<Map<string, EewMaxLpgmClassInfo>>(new Map())
   /**
    * EEW 第 2 フェーズの安定待ち。震度・長周期階級を**独立に**追う（eventId 別）。
    *
@@ -591,7 +592,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     timer: ReturnType<typeof setTimeout>
   }
   interface EEWLpgmStabilityCycle {
-    lpgmClass: number
+    /**
+     * 待っている値。**「程度以上」も一緒に持つ**（`EewMaxLpgmClassInfo`）。
+     * 階級の数値だけで比べると、数値が同じで `over` だけ変わる続報を「据え置き」と誤判定し、
+     * **その変化が読み上げから無音で消える**（震度側は `orAbove` を比較に含めている）。
+     * 「階級3」→「階級3程度以上」は上限が定まらなくなった＝安全側の変化なので落とせない。
+     */
+    info: EewMaxLpgmClassInfo
     since: number
     timer: ReturnType<typeof setTimeout>
   }
@@ -607,7 +614,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    * それ単体で急いで伝える理由が薄いため。
    */
   const eewConfirmedScaleRef = useRef<Map<string, EewMaxScaleInfo>>(new Map())
-  const eewConfirmedLpgmRef = useRef<Map<string, number>>(new Map())
+  const eewConfirmedLpgmRef = useRef<Map<string, EewMaxLpgmClassInfo>>(new Map())
   // 読み上げた区分（0=予報 / 1 以上=警報）。予想震度・階級が据え置きのまま severity だけ
   // 確定する続報があり、値だけを見ていると区分の変化が声に出ない。
   const spokenEEWLevelsRef = useRef<Map<string, 0 | 1 | 2>>(new Map())
@@ -1656,7 +1663,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           : currentLevel === 1 ? '緊急地震速報 警報' : eewKindLabel(0)
         showBrowserNotification(
           eewNotifyTitle,
-          `${event.earthquake.hypocenter.name}${scale > 0 ? ` 最大震度${getIntensityLabelWithOrAbove(scale, scaleOrAbove)}予想` : ''}`,
+          `${event.earthquake.hypocenter.name}${scale > 0 ? ` 最大震度${getIntensityLabelWithApproxAbove(scale, scaleOrAbove)}予想` : ''}`,
           `eew-${key}`,
           true,
         )
@@ -1669,7 +1676,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       const titleLevel = Array.from(activeEEWLevelsRef.current.values())
         .reduce<0 | 1 | 2>((m, l) => Math.max(m, l) as 0 | 1 | 2, 0)
       const eewTitle = `${eewKindLabel(titleLevel)} ${event.earthquake.hypocenter.name}` +
-        (scale > 0 ? ` 最大震度${getIntensityLabelWithOrAbove(scale, scaleOrAbove)}予想` : '') +
+        (scale > 0 ? ` 最大震度${getIntensityLabelWithApproxAbove(scale, scaleOrAbove)}予想` : '') +
         (newCount > 1 ? ` 他${newCount - 1}件` : '')
       title.setTitle(eewTitle)
       title.scheduleTitleRevert('eew')
@@ -1753,7 +1760,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               log.debug('[eew] より高い予想震度の確定を待つため phase2 を降りる', key)
               return null
             }
-            const confirmedLpgm = eewConfirmedLpgmRef.current.get(key) ?? 0
+            // 確定した階級と「程度以上」。既読の比較・表示に使う値は階級の数値だけで、
+            // 「程度以上」は語を添えるためだけに持つ。
+            const confirmedLpgmInfo = eewConfirmedLpgmRef.current.get(key)
+            const confirmedLpgm = confirmedLpgmInfo?.cls ?? 0
             // 区分は引き下げない。一度「警報」と伝えた EEW は、以後 severity が落ちても
             // 「伝え済み」として扱う（前置きを言い直さない。activeEEWLevelsRef の Math.max と同じ方針）。
             const spokenLevel = spokenEEWLevelsRef.current.get(key) ?? 0
@@ -1762,7 +1772,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // 読んだ後は、実際に発話した値より上がったものが一つも無ければ黙る（引き下げは追わない）。
             if (eewPhase2DoneRef.current.has(key)
               && !isForecastScaleHigher(confirmedScale, spokenEEWScalesRef.current.get(key))
-              && confirmedLpgm <= (spokenEEWLpgmClassesRef.current.get(key) ?? 0)
+              && !isForecastLpgmHigher(
+                { cls: confirmedLpgm, over: confirmedLpgmInfo?.over === true },
+                spokenEEWLpgmClassesRef.current.get(key),
+              )
               && level <= spokenLevel) return null
             // 「緊急地震速報に切り替わりました。」は、予報として発報されたものが警報へ
             // 上がったときだけ。初報から警報なら第 1 フェーズが「緊急地震速報、〇〇で地震。」と
@@ -1795,8 +1808,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               if (scaleUnchanged) return null
             }
             const text = scaleUnchanged
-              ? eewLpgmOnlyText(confirmedLpgm)
-              : eewIntensityText(confirmedScale, confirmedLpgm, latest, announceUpgrade)
+              ? eewLpgmOnlyText(confirmedLpgm, confirmedLpgmInfo?.over === true)
+              : eewIntensityText(confirmedScale, confirmedLpgm, latest, announceUpgrade, confirmedLpgmInfo?.over === true)
             if (!text) {
               // 想定外。eewIntensityText 経由なら eewScaleOnlyText が常に非空を返す
               // （noForecastText が全ケースをカバーするため）。scaleUnchanged 経由の
@@ -1811,7 +1824,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // **階級は「実際に声に含めた分」だけ記録する。** 上のガードに掛かった報（震度を
             // 伝えられないのに階級だけ確定した＝電文の異常）では `eewIntensityText` が階級句を
             // 落とすため、`confirmedLpgm` をそのまま入れると言っていない値が既読になる。
-            const spokenLpgm = canPresentLpgmClass(confirmedScale.scale, confirmedLpgm) ? confirmedLpgm : 0
+            const spokenLpgm: EewMaxLpgmClassInfo = canPresentLpgmClass(confirmedScale.scale, confirmedLpgm)
+              ? { cls: confirmedLpgm, over: confirmedLpgmInfo?.over === true }
+              : { cls: 0, over: false }
             spokenEEWScalesRef.current.set(key, confirmedScale)
             spokenEEWLpgmClassesRef.current.set(key, spokenLpgm)
             spokenEEWLevelsRef.current.set(key, level)
@@ -1839,7 +1854,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
                 if (!now) return true
                 const nowScale = eewConfirmedScaleRef.current.get(key)
                 if (!nowScale) return true
-                const nowLpgm = eewConfirmedLpgmRef.current.get(key) ?? 0
+                const nowLpgm = eewConfirmedLpgmRef.current.get(key)?.cls ?? 0
+                // 数値だけの比較で足りる（ここは「後から確定した値の方が低ければ取り下げる」判定）
                 return !isForecastScaleHigher(nowScale, confirmedScale)
                   && nowLpgm <= confirmedLpgm
                   && computeSingleEEWLevel(now) <= level
@@ -1895,9 +1911,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
          * 震度がまだ「変化中」なのに `enqueuePhase2` 側が「据え置き」と誤判定して階級だけの
          * 短句を読み、直後に震度の確定で全文をもう一度読む——という二重発話になる。
          */
-        const confirmLpgm = (lpgmClass: number) => {
+        const confirmLpgm = (info: EewMaxLpgmClassInfo) => {
           eewLpgmStabilityRef.current.delete(key)
-          eewConfirmedLpgmRef.current.set(key, lpgmClass)
+          eewConfirmedLpgmRef.current.set(key, info)
           if (eewConfirmedScaleRef.current.has(key) && !eewScaleStabilityRef.current.has(key)) enqueuePhase2()
         }
 
@@ -1943,19 +1959,20 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
          * 固定待ち時間より短い間隔で変化し続けた場合に永久に確定しなくなる（震度は必ず読まれるが、
          * 階級だけがその EEW で一度も読み上げられないまま終わる）。
          */
-        const updateLpgmStability = (lpgmClass: number) => {
+        const updateLpgmStability = (info: EewMaxLpgmClassInfo) => {
+          const same = (a: EewMaxLpgmClassInfo | undefined) => a != null && a.cls === info.cls && a.over === info.over
           const cycle = eewLpgmStabilityRef.current.get(key)
           if (cycle) {
-            if (cycle.lpgmClass === lpgmClass) return
-          } else if (eewConfirmedLpgmRef.current.get(key) === lpgmClass) {
+            if (same(cycle.info)) return
+          } else if (same(eewConfirmedLpgmRef.current.get(key))) {
             return
           }
           if (cycle) clearTimeout(cycle.timer)
           const since = cycle ? cycle.since : Date.now()
           const remainingMaxWaitMs = since + EEW_PHASE2_STABILITY_MAX_WAIT_MS - Date.now()
           const waitMs = Math.max(0, Math.min(EEW_PHASE2_LPGM_STABILITY_MS, remainingMaxWaitMs))
-          const timer = setTimeout(() => confirmLpgm(lpgmClass), waitMs)
-          eewLpgmStabilityRef.current.set(key, { lpgmClass, since, timer })
+          const timer = setTimeout(() => confirmLpgm(info), waitMs)
+          eewLpgmStabilityRef.current.set(key, { info, since, timer })
         }
 
         // 続報での震源地名変化+座標移動の検出（B-3: 名前変化かつ50km超移動で再発話）
@@ -2101,7 +2118,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 震度がまだ未確定のため `confirmLpgm` が保留し、直後に震度が確定した瞬間に一緒に
         // 読まれる。逆（震度を先にセットする）だと、震度だけが単独で先に確定・発話され、
         // 数 ms 後に階級だけの再読み上げが続くという不自然な二重発話になる
-        updateLpgmStability(eewMaxLpgmClass(event))
+        updateLpgmStability(eewMaxLpgmClassInfo(event))
         if (severityUpgraded) {
           clearPhase2MaxTimer()
           confirmScale({ scale, orAbove: scaleOrAbove })
@@ -2764,7 +2781,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           const restoredLevel = computeSingleEEWLevel(eew)
           activeEEWLevelsRef.current.set(key, restoredLevel)
           spokenEEWScalesRef.current.set(key, eewMaxScaleInfo(eew))
-          spokenEEWLpgmClassesRef.current.set(key, eewMaxLpgmClass(eew))
+          spokenEEWLpgmClassesRef.current.set(key, eewMaxLpgmClassInfo(eew))
           // 区分も復元する。落とすと注入後の最初の続報で「警報。」が付き直し、
           // 途中から再生を始めた地震がその場で警報化したように聞こえる。
           spokenEEWLevelsRef.current.set(key, restoredLevel)
@@ -2774,7 +2791,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // 安定待ちの確定値も復元する。復元しないと注入後最初の続報の跳躍幅計算が
           // 「自分自身」を基準にしてしまい（跳躍0扱い）、実際より短い安定待ちになる。
           eewConfirmedScaleRef.current.set(key, eewMaxScaleInfo(eew))
-          eewConfirmedLpgmRef.current.set(key, eewMaxLpgmClass(eew))
+          eewConfirmedLpgmRef.current.set(key, eewMaxLpgmClassInfo(eew))
         } else if (ev.kind === 'tsunami') {
           const tsunami = ev as JMATsunami
           // **ライブ経路と同じ形で進めること**（電文は時系列順に渡ってくる）。片方だけずらすと、

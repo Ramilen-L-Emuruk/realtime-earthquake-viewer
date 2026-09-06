@@ -875,7 +875,7 @@ function eewXml(o: {
     o.pref ?? '',
     '</Forecast></Intensity>',
     ...(o.warningComment
-      ? ['<Comments><Warning><Text>' + o.warningComment + '</Text></Warning></Comments>']
+      ? ['<Comments><WarningComment codeType="固定付加文"><Text>' + o.warningComment + '</Text><Code>0201</Code></WarningComment></Comments>']
       : []),
     '</Body></Report>',
   ].join('\n')
@@ -996,6 +996,35 @@ describe('parseEEWFromXml: severity・cancel・LPGM', () => {
       expect(eew.forecastMaxScaleOrAbove).toBeUndefined()
       expect(eew.areas).toEqual([])
     })
+  })
+
+  // 正: 長周期地震動階級にも `To="over"`（〜程度以上）が来る。
+  //
+  // 電文解説資料（Ⅱ.21 2-1-3-2）の値域は `"0"/"1"/"2"/"3"/"4"/"over"/"不明"` で、
+  // 事例も「最大予測長周期地震動階級が階級 3 程度以上の場合」として `<To>over</To>` を示す。
+  // **`parseInt("over")` は NaN になる。** そのまま階級として扱っていたため、気象庁が
+  // 「階級3程度以上」と発表した報では**長周期の予測が丸ごと消えていた**（震度側は対応済みで、
+  // 長周期側だけ抜けていた）。下限側を採り「程度以上」はフラグで持ち越す。
+  it('長周期地震動階級の To=over は下限を採り「程度以上」を立てる', () => {
+    const xml = eewXml({ forecastLgInt: '<From>3</From><To>over</To>' })
+    const eew = parseEEWFromXml('VXSE45', xml)!
+    expect(eew.forecastMaxLpgmClass).toBe(3)
+    expect(eew.forecastMaxLpgmClassOver).toBe(true)
+  })
+
+  // 対照: over でなければフラグは立たない（震度側の `parseForecastInt` と同じ扱い）
+  it('長周期地震動階級が確定していれば「程度以上」は立てない', () => {
+    const eew = parseEEWFromXml('VXSE45', eewXml())!
+    expect(eew.forecastMaxLpgmClass).toBe(3)
+    expect(eew.forecastMaxLpgmClassOver).toBeUndefined()
+  })
+
+  // 安全弁: 下限が読めなければ「程度以上」も意味を成さない（「不明程度以上」を作らない）
+  it('下限が読めない over では階級もフラグも持たない', () => {
+    const xml = eewXml({ forecastLgInt: '<From>不明</From><To>over</To>' })
+    const eew = parseEEWFromXml('VXSE45', xml)!
+    expect(eew.forecastMaxLpgmClass).toBeUndefined()
+    expect(eew.forecastMaxLpgmClassOver).toBeUndefined()
   })
 
   it('forecastMaxLpgmClass は To 優先、範囲外は undefined', () => {

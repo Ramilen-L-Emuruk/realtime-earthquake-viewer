@@ -30,6 +30,21 @@ export function getLpgmClassLabel(cls: number): string {
   return isValidLpgmClass(cls) ? `階級${cls}` : '階級不明'
 }
 
+/**
+ * 階級ラベルに「程度以上」を補う（`over` のとき）。**EEW の予測階級専用。**
+ *
+ * **語は気象庁の表現に合わせる。** 電文解説資料（Ⅱ.21 2-1-3-2）は `To` の値域を
+ * 「4 ：長周期地震動階級 4　over:～程度以上　不明：不明時」と定め、事例も
+ * 「最大予測長周期地震動階級が階級 3 **程度以上**の場合」と書いている。
+ * 震度側の予想も同じ言い方（→ `getIntensityLabelWithApproxAbove`）。
+ *
+ * 「階級不明」に語を足しても意味を成さないので、その場合は付けない。
+ */
+export function getLpgmClassLabelWithApproxAbove(cls: number, over: boolean): string {
+  const label = getLpgmClassLabel(cls)
+  return over && isValidLpgmClass(cls) ? `${label}程度以上` : label
+}
+
 export function getLpgmClassColor(cls: number): string {
   return LPGM_COLORS[cls] ?? '#9ca3af'
 }

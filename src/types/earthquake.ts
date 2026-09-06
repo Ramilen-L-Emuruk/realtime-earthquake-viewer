@@ -306,6 +306,11 @@ export interface EEWRegion {
   kindCode: string
   arrivalTime: string | null
   lgIntTo?: LpgmClass  // 地域別予想長周期地震動階級。電文に含まれない場合は undefined
+  /**
+   * 上限を定めない予測（電文の `To="over"`）だったか。意味と扱いは `scaleToOrAbove` と同じで、
+   * **語だけが違う** —— 気象庁の表現は「階級3程度以上」（→ `getLpgmClassLabelWithApproxAbove`）。
+   */
+  lgIntToOver?: boolean
 }
 
 export interface EEWAlert {
@@ -342,8 +347,10 @@ export interface EEWAlert {
   forecastMaxScaleOrAbove?: boolean
   // DMDATA EEW 電文 body.intensity.forecastMaxLpgmInt から取得した推定最大長周期地震動階級（1〜4）。
   forecastMaxLpgmClass?: LpgmClass
+  /** 上限を定めない予測（電文の `To="over"`）だったか。→ `EEWRegion.lgIntToOver` */
+  forecastMaxLpgmClassOver?: boolean
   /**
-   * 気象庁の固定付加文（`Comments/Warning/Text`）。避難行動の呼びかけなどの定型文。
+   * 気象庁の固定付加文（`Comments/WarningComment/Text`）。避難行動の呼びかけなどの定型文。
    *
    * 津波の同名フィールドと同じ扱いで、**画面にだけ出す**（読み上げには載せない）。EEW の
    * 読み上げは秒を争うため、定型文を挟むと肝心の震度・地域が遅れる。

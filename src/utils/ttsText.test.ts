@@ -6,7 +6,7 @@ import { nankaiToText, earthquakeToText, earthquakeToSegments, createQuakeSpoken
 import { joinSegments, plain, type SpeechSegment } from './ttsFollow'
 import { tsunamiAreaGradeChanges } from './tsunami'
 import { getStationCoordsCache } from './stationCoords'
-import { eewMaxScaleInfo, eewMaxLpgmClass } from './eew'
+import { eewMaxScaleInfo, eewMaxLpgmClassInfo } from './eew'
 import type { JMAQuake, JMALpgm, EarthquakePoint, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass, JMATsunami, TsunamiArea, TsunamiObservation, JMANankai } from '../types/earthquake'
 
 const TTS_OPTS: TtsRegionOptions = { intensityLevels: 0, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0 }
@@ -143,9 +143,10 @@ describe('earthquakeToText: 顕著な地震の震源要素更新のお知らせ'
 describe('eewIntensityToText: 長周期地震動階級の読み上げ', () => {
   // 本番コード（useLiveEventHandler.ts）は安定待ちで確定した値を明示的に渡すため、
   // eewIntensityText は event から直接値を取り直さない。ここでは従来どおり event だけを
-  // 渡せるよう、eewMaxScaleInfo/eewMaxLpgmClass で都度計算してから渡すラッパーを使う。
+  // 渡せるよう、eewMaxScaleInfo/eewMaxLpgmClassInfo で都度計算してから渡すラッパーを使う。
   function eewIntensityToText(event: EEWAlert, announceUpgrade = false): string {
-    return eewIntensityText(eewMaxScaleInfo(event), eewMaxLpgmClass(event), event, announceUpgrade)
+    const lg = eewMaxLpgmClassInfo(event)
+    return eewIntensityText(eewMaxScaleInfo(event), lg.cls, event, announceUpgrade, lg.over)
   }
 
   function makeEEW(
@@ -233,13 +234,14 @@ describe('eewIntensityToText: 長周期地震動階級の読み上げ', () => {
   })
 
   // 上限が定まらない報（DMDATA の to='over' / P2PQuake の scaleTo=99）は下限側の階級を持つ。
-  // 語を落とすと「震度4以上」を「震度4」と断定した放送になる。
-  describe('eewIntensityToText: 「〜以上」の読み上げ', () => {
-    it('上限が定まらない予想は「以上」を付けて読む', () => {
+  // 語を落とすと「震度4程度以上」を「震度4」と断定した放送になる。
+  // **語は気象庁の表現に合わせてある**（→ `getIntensityLabelWithApproxAbove`）。
+  describe('eewIntensityToText: 「〜程度以上」の読み上げ', () => {
+    it('上限が定まらない予想は「程度以上」を付けて読む', () => {
       const eew = makeEEW(undefined, {
         areas: [{ pref: '石川県', name: '石川県能登', scaleFrom: 40, scaleTo: 40, scaleToOrAbove: true, kindCode: '09', arrivalTime: null }],
       })
-      expect(eewIntensityToText(eew)).toBe('予想最大震度4以上。')
+      expect(eewIntensityToText(eew)).toBe('予想最大震度4程度以上。')
     })
 
     it('上限が定まっている予想には付けない（境界の手前）', () => {

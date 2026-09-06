@@ -219,6 +219,21 @@ export function isForecastScaleHigher(latest: EewMaxScaleInfo, spoken: EewMaxSca
   return latest.orAbove && !spoken.orAbove
 }
 
+/**
+ * 確定した階級が、既に声にした階級より上がったか。**`isForecastScaleHigher` と同じ形。**
+ *
+ * 数値が同じでも「程度以上」が付いたなら上がったものとして扱う —— 上限が定まらなくなった＝
+ * もっと強いかもしれない、という安全側の変化だから。**数値だけで比べると、この変化が
+ * 読み上げから無音で消える**（実際にそうなっていた）。逆向き（程度以上 → 確定）は追わない。
+ */
+export function isForecastLpgmHigher(
+  latest: EewMaxLpgmClassInfo, spoken: EewMaxLpgmClassInfo | undefined,
+): boolean {
+  if (!spoken) return latest.cls > 0
+  if (latest.cls !== spoken.cls) return latest.cls > spoken.cls
+  return latest.over && !spoken.over
+}
+
 /** 対象地域の最大予想長周期地震動階級（1〜4）。データが無ければ0。
  * eewMaxScale と同じ考え方で areas の地域別 lgIntTo を優先し、**`condition` では値を捨てない**
  * （理由は `eewMaxScaleInfo` のコメントと同じ。2024 能登 1/1〜1/3 の実データでは仮定震源要素 72 報の
@@ -228,13 +243,43 @@ export function isForecastScaleHigher(latest: EewMaxScaleInfo, spoken: EewMaxSca
  * （DMDATA=DMDSS版のみ取得可能。標準版は震度のみでレベル判定される）。
  */
 export function eewMaxLpgmClass(eew: EEWAlert): number {
-  const areasMax = eewAreas(eew).reduce(
-    (max, r) => (r.lgIntTo != null && isValidLpgmClass(r.lgIntTo) ? Math.max(max, r.lgIntTo) : max),
-    0,
-  )
-  if (areasMax > 0) return areasMax
+  return eewMaxLpgmClassInfo(eew).cls
+}
+
+/** {@link eewMaxLpgmClassInfo} の戻り値。 */
+export interface EewMaxLpgmClassInfo {
+  /** 最大予想長周期地震動階級（1〜4）。取れないときは 0 */
+  cls: number
+  /**
+   * その値が上限を定めない予測（電文の `To="over"`）だったか。
+   * **表示・読み上げで「程度以上」を補うのに要る**（→ `getLpgmClassLabelWithApproxAbove`）。
+   * 震度側の `EewMaxScaleInfo.orAbove` と同じ扱いで、語だけが違う。
+   */
+  over: boolean
+}
+
+/**
+ * 最大予想長周期地震動階級と、それが「程度以上」だったか。
+ *
+ * 選び方は `eewMaxScaleInfo` と揃える —— 地域別を優先し、**同じ階級で「程度以上」の区域が
+ * 1 つでもあれば「程度以上」を立てる**（上限が定まらない区域を、定まった区域に紛れさせない）。
+ */
+export function eewMaxLpgmClassInfo(eew: EEWAlert): EewMaxLpgmClassInfo {
+  let areasMax = 0
+  let areasOver = false
+  for (const r of eewAreas(eew)) {
+    if (r.lgIntTo == null || !isValidLpgmClass(r.lgIntTo)) continue
+    if (r.lgIntTo > areasMax) {
+      areasMax = r.lgIntTo
+      areasOver = r.lgIntToOver === true
+    } else if (r.lgIntTo === areasMax && r.lgIntToOver) {
+      areasOver = true
+    }
+  }
+  if (areasMax > 0) return { cls: areasMax, over: areasOver }
   const forecast = eew.forecastMaxLpgmClass
-  return forecast != null && isValidLpgmClass(forecast) ? forecast : 0
+  const cls = forecast != null && isValidLpgmClass(forecast) ? forecast : 0
+  return { cls, over: cls > 0 && eew.forecastMaxLpgmClassOver === true }
 }
 
 /**
