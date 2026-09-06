@@ -164,10 +164,13 @@ function makeTsunamiCancel(over: { id?: string } = {}): JMATsunami {
   } as unknown as JMATsunami
 }
 
-function makeEEW(over: { noAreas?: boolean; condition?: string } = {}): EEWAlert {
+// **続報は `serial` を進めること。** 実装は受理した報番号の台帳で古い報を捨てるため、
+// 同じ番号のまま 2 通目を流すと 2 通目が入口で落ち、テストが何も検証しない状態になる。
+function makeEEW(over: { noAreas?: boolean; condition?: string; serial?: number } = {}): EEWAlert {
+  const serial = over.serial ?? 1
   return {
     kind: 'eew',
-    id: 'eew-1',
+    id: `eew-${serial}`,
     time: '2026-01-01T12:00:00Z',
     test: false,
     earthquake: {
@@ -181,7 +184,7 @@ function makeEEW(over: { noAreas?: boolean; condition?: string } = {}): EEWAlert
     },
     severity: 'Warning',
     cancelled: false,
-    issue: { eventId: 'eew-evt', serial: '1', time: '2026-01-01T12:00:00Z' },
+    issue: { eventId: 'eew-evt', serial: String(serial), time: '2026-01-01T12:00:00Z' },
     areas: over.noAreas
       ? []
       : [{ pref: '石川県', name: '石川県能登', scaleFrom: 45, scaleTo: 55, kindCode: '10', arrivalTime: null }],
@@ -428,6 +431,113 @@ describe('非 EEW の読み上げの優先度', () => {
     finishSpeech(1)
     await flush()
     expect(spokenTexts()[2]).toContain('震度速報')
+  })
+
+  // 上のテストの裏返し。**待つのは、まだ一度も確定していないときだけ。**
+  //
+  // 「予想震度なし」で確定した後も同じ状態の続報が届き続ける（気象電文は続報ごとに全量を
+  // 載せるため、値が付かないままなら何度でも同じ形で来る）。ここで待ちを張り直すと、
+  // 確定値と同じ値で確定し直すだけで**何も読み上げない**のに、`speechBlocker` は 3 秒間
+  // `eewPhase2` を返し続ける。止められた地震情報は「後から重い読み上げに追い越された」と
+  // 判定して取り下げるため、**一言も鳴らずに消える**。
+  //
+  // 2024/01/01 能登の再生では、予想震度が付かない別 EEW（新島・神津島近海）の第 4 報が
+  // この張り直しを起こし、同時刻（16:11:43）に届いた震度速報（最大震度6強）を
+  // 丸ごと消していた。張り直したタイマーは 3 秒後に発火したが、予想どおり何も喋っていない。
+  it('「予想震度なし」で確定した後の同内容の続報は、地震情報を止めない', async () => {
+    const handle = setup()
+    handle(makeEEW({ noAreas: true }))
+    await flush()
+    finishSpeech(0)
+    await flush()
+
+    // 上限で「予想震度なし」を読み、確定する
+    await vi.advanceTimersByTimeAsync(3000)
+    await flush()
+    expect(spokenTexts()[1]).toContain('予想震度なし')
+    finishSpeech(1)
+    await flush()
+
+    // 同じ内容（予想震度なし・理由不明）の続報が届く
+    handle(makeEEW({ noAreas: true, serial: 2 }))
+    await flush()
+
+    handle(makeQuake())
+    await vi.advanceTimersByTimeAsync(1000)   // 地震情報の通知音の遅延
+    await flush()
+    expect(spokenTexts()[2]).toContain('震度速報')
+  })
+
+  // 対照。**確定前は従来どおり待たせること**——「続報なら張り直さない」ではなく
+  // 「確定済みなら張り直さない」が条件。ここを取り違えて続報全般で待ちを消すと、値が
+  // 遅れて付くタイプの EEW で第 2 フェーズが地震情報に切られる形（上の 2 つのテストが
+  // 塞いだ症状）へ戻る。
+  it('確定前なら、同内容の続報が来ても地震情報は待つ', async () => {
+    const handle = setup()
+    handle(makeEEW({ noAreas: true }))
+    await flush()
+    finishSpeech(0)
+    await flush()
+
+    // 上限（3 秒）に達する前に続報が届く
+    await vi.advanceTimersByTimeAsync(1000)
+    handle(makeEEW({ noAreas: true, serial: 2 }))
+    await flush()
+
+    handle(makeQuake())
+    await vi.advanceTimersByTimeAsync(1000)   // 通知音の遅延を消化しても
+    await flush()
+    expect(spokenTexts()).toHaveLength(1)     // 滑り込まない
+  })
+
+  // 安全弁。待ちを張らなくしたぶん取りこぼしが増えていないこと。確定後に値が付いた続報は
+  // `scale > 0` の枝が安定待ちへ回すので、理由不明の待ちが無くても読み上げに届く。
+  it('確定後に予想震度が付いた続報は、待ちを張らなくても読み上げる', async () => {
+    const handle = setup()
+    handle(makeEEW({ noAreas: true }))
+    await flush()
+    finishSpeech(0)
+    await flush()
+    await vi.advanceTimersByTimeAsync(3000)
+    await flush()
+    expect(spokenTexts()[1]).toContain('予想震度なし')
+    finishSpeech(1)
+    await flush()
+
+    // 値が付いた続報。震度なし（0）からの跳躍なので安定待ちは長い側（2000ms）
+    handle(makeEEW({ serial: 2 }))
+    await vi.advanceTimersByTimeAsync(2000)
+    await flush()
+    expect(spokenTexts()[2]).toContain('予想最大震度')
+  })
+
+  // 安全弁その 2。**判定は「確定したか」ではなく「確定値が『予想震度なし』か」。**
+  //
+  // 予想震度が付いていた EEW が、続報で値を失うことがある（気象庁が予想を取り下げる形）。
+  // このとき確定値を「予想震度なし」へ訂正する経路は理由不明タイマーしかない。「一度でも
+  // 確定していれば張らない」にすると訂正が走らず、取り下げられた予想震度が確定値として
+  // 残り、以後の区分格上げでそれを読み上げうる。ここでは待ちが立つこと（＝訂正の経路が
+  // 生きていること）を、地震情報が待たされることで観測する。
+  it('予想震度が確定していた EEW が値を失った続報では、従来どおり待つ', async () => {
+    const handle = setup()
+    handle(makeEEW())   // 初報 scale=55（6弱）。初出値・跳躍0段階なので安定待ちは 300ms
+    await flush()
+    finishSpeech(0)
+    await flush()
+    await vi.advanceTimersByTimeAsync(300)
+    await flush()
+    expect(spokenTexts()[1]).toContain('予想最大震度')
+    finishSpeech(1)
+    await flush()
+
+    // 続報で予想震度が消える（付かない理由も判らない）
+    handle(makeEEW({ noAreas: true, serial: 2 }))
+    await flush()
+
+    handle(makeQuake())
+    await vi.advanceTimersByTimeAsync(1000)   // 通知音の遅延を消化しても
+    await flush()
+    expect(spokenTexts()).toHaveLength(2)     // 訂正の待ちが立っているので滑り込まない
   })
 
   // 値がある通常経路（`scale > 0`）でも、確定までは安定待ち（跳躍幅に応じて 300ms〜2000ms）が
