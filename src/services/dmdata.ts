@@ -516,7 +516,7 @@ export class DmdataWebSocket {
         this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
       }
     } else if (headType === 'VTSE41' || headType === 'VTSE51' || headType === 'VTSE52') {
-      const tsunami = parseTsunamiFromXml(xml)
+      const tsunami = parseTsunamiFromXml(headType, xml)
       if (this.debug) dlog('津波情報', { headType, parsed: !!tsunami })
       if (tsunami) {
         this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'tsunami'))
@@ -606,7 +606,7 @@ async function fetchOneTelegram(
     return parseEarthquakeFromXml(headType, xml)
   }
   if (headType === 'VTSE41' || headType === 'VTSE51' || headType === 'VTSE52') {
-    return parseTsunamiFromXml(xml)
+    return parseTsunamiFromXml(headType, xml)
   }
   if (headType === 'VXSE62') {
     return parseLpgmFromXml(xml)

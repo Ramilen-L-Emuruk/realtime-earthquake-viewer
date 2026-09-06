@@ -1,4 +1,4 @@
-import type { JMATsunami, TsunamiArea, TsunamiGrade, TsunamiObservation, TsunamiObservationCondition } from '../types/earthquake'
+import type { JMATsunami, TsunamiArea, TsunamiEstimation, TsunamiEstimationCondition, TsunamiGrade, TsunamiObservation, TsunamiObservationCondition } from '../types/earthquake'
 import { log } from './logger'
 
 const GRADE_PRIORITY: Record<TsunamiGrade, number> = {
@@ -375,16 +375,32 @@ const HEIGHT_CONDITIONS: Record<string, keyof TsunamiObservationCondition> = {
 }
 
 /**
+ * 沿岸への推定（`Estimation/Item/MaxHeight/Condition`）に現れる語と、写す先のフラグ。
+ *
+ * **観測点の表を流用しないこと。** 推定値なので語は「観測中」ではなく「推定中」で、
+ * 混ぜると電文に無い語を引き当てるうえ、未知語の記録も効かなくなる。
+ */
+const ESTIMATION_MAX_HEIGHT_CONDITIONS: Record<string, keyof TsunamiEstimationCondition> = {
+  '推定中': 'estimating',
+  '重要': 'important',
+}
+
+/** 区域の予想波高（`Forecast/Item/MaxHeight/Condition`）に現れる語と、写す先のフラグ。 */
+const FORECAST_MAX_HEIGHT_CONDITIONS: Record<string, 'forecastHeightImportant'> = {
+  '重要': 'forecastHeightImportant',
+}
+
+/**
  * 知らない語を記録した組（`欄名:語`）。観測情報は数分おきに再送され同じ語が何度も来るので、
  * 1 度だけ出す。地図に出せない観測点名の記録（`useTsunamiLayerData`）と同じ間引き方。
  */
 const reportedUnknownConditions = new Set<string>()
 
-function collectConditionFlags(
+function collectConditionFlags<K extends string>(
   raw: string | undefined,
-  table: Record<string, keyof TsunamiObservationCondition>,
+  table: Record<string, K>,
   field: string,
-  into: TsunamiObservationCondition,
+  into: Partial<Record<K, boolean>>,
 ): void {
   if (!raw) return
   // 併記の区切りは全角スペース（電文解説資料 Ⅱ.12）。半角・改行が混ざっても読めるよう広く割る。
@@ -400,7 +416,7 @@ function collectConditionFlags(
     const key = `${field}:${token}`
     if (reportedUnknownConditions.has(key)) continue
     reportedUnknownConditions.add(key)
-    log.warn(`[tsunami] 観測点の ${field} に未知の語があります（無視します）: ${token}`)
+    log.warn(`[tsunami] ${field} に未知の語があります（無視します）: ${token}`)
   }
 }
 
@@ -424,10 +440,34 @@ export function parseTsunamiObservationCondition(input: {
   heightCondition?: string
 }): TsunamiObservationCondition | undefined {
   const condition: TsunamiObservationCondition = {}
-  collectConditionFlags(input.firstHeight, FIRST_HEIGHT_CONDITIONS, 'FirstHeight/Condition', condition)
-  collectConditionFlags(input.maxHeight, MAX_HEIGHT_CONDITIONS, 'MaxHeight/Condition', condition)
-  collectConditionFlags(input.heightCondition, HEIGHT_CONDITIONS, 'TsunamiHeight@condition', condition)
+  collectConditionFlags(input.firstHeight, FIRST_HEIGHT_CONDITIONS, 'Observation/FirstHeight/Condition', condition)
+  collectConditionFlags(input.maxHeight, MAX_HEIGHT_CONDITIONS, 'Observation/MaxHeight/Condition', condition)
+  collectConditionFlags(input.heightCondition, HEIGHT_CONDITIONS, 'Observation/TsunamiHeight@condition', condition)
   return Object.keys(condition).length > 0 ? condition : undefined
+}
+
+/**
+ * 沿岸への推定の `MaxHeight/Condition` を {@link TsunamiEstimationCondition} へ写す。
+ *
+ * 観測点側と分けているのは語彙が違うため（「観測中」ではなく「推定中」）。併記の割り方と
+ * 未知語の記録は共通の {@link collectConditionFlags} が受け持つ。
+ */
+export function parseTsunamiEstimationCondition(maxHeight: string | undefined): TsunamiEstimationCondition | undefined {
+  const condition: TsunamiEstimationCondition = {}
+  collectConditionFlags(maxHeight, ESTIMATION_MAX_HEIGHT_CONDITIONS, 'Estimation/MaxHeight/Condition', condition)
+  return Object.keys(condition).length > 0 ? condition : undefined
+}
+
+/**
+ * 区域の予想波高の `MaxHeight/Condition` から「重要」を読む。
+ *
+ * 立つ語は「重要」1 つだけだが、未知語を記録する仕組みを観測・推定と揃えたいので
+ * 同じ経路を通す（電文が語を増やしたときに黙って捨てないため）。
+ */
+export function parseTsunamiForecastHeightImportant(maxHeight: string | undefined): boolean | undefined {
+  const flags: Partial<Record<'forecastHeightImportant', boolean>> = {}
+  collectConditionFlags(maxHeight, FORECAST_MAX_HEIGHT_CONDITIONS, 'Forecast/MaxHeight/Condition', flags)
+  return flags.forecastHeightImportant || undefined
 }
 
 /**
@@ -465,10 +505,67 @@ export function observationBadges(obs: TsunamiObservation): string[] {
   if (missing) badges.push('欠測')
   // 水位が上昇中なら、いま見えている波高が最大とは限らないことを伝える。
   if (obs.condition?.rising) badges.push('上昇中')
-  // 「重要」は大津波警報の基準を超えた値に気象庁が付ける印。語をそのまま出しても何が重要なのか
-  // 伝わらないので、意味の側を書く。
-  if (obs.condition?.important) badges.push('大津波警報の基準超')
+  // 「重要」は基準を超えた値に気象庁が付ける印。語をそのまま出しても何が重要なのか
+  // 伝わらないので、意味の側を書く。**基準は沿岸と沖合で違う**（→ importantBadgeText）。
+  if (obs.condition?.important) badges.push(importantBadgeText(!!obs.offshore))
   return badges
+}
+
+/**
+ * 「重要」（`MaxHeight/Condition`）を利用者向けに言い換えた語。
+ *
+ * **基準が電文で違う。** 語をそのまま「重要」と出しても何が重要なのか伝わらないので意味を
+ * 書くが、そのとき電文ごとの基準を混ぜると、実際より軽い／重い印象を与える。
+ *
+ * | 出所 | 電文解説資料 | 基準 |
+ * |---|---|---|
+ * | 沿岸の潮位観測点（VTSE51） | Ⅱ.12 1-2-2-2 | 大津波警報のみ |
+ * | 沖合の潮位観測点（VTSE52） | Ⅱ.13 1-1-2-2-2 | 大津波警報・津波警報 |
+ * | 沿岸への推定（VTSE52） | Ⅱ.13 1-2-2-3 | 大津波警報・津波警報 |
+ *
+ * 区域の予想波高（`Forecast`）の「重要」は**意味そのものが違う**ため、ここではなく
+ * {@link forecastHeightImportantBadge} が受け持つ。
+ */
+export function importantBadgeText(offshore: boolean): string {
+  return offshore ? '大津波警報・津波警報の基準超' : '大津波警報の基準超'
+}
+
+/**
+ * 区域の予想波高に付く「重要」の語。
+ *
+ * 観測・推定の「重要」（実際に高い津波を観測・推定した）とは違い、**予想の書き換え**を指す
+ * —— 大津波警報の区域で予想波高が初めて数値になった、または上方修正された
+ * （電文解説資料 Ⅱ.11 1-1-2-4）。同じ語で出すと取り違えるので分けている。
+ */
+export function forecastHeightImportantBadge(): string {
+  // 「更新」では方向が伝わらない（この印は引き下げでは付かない）。かといって「引き上げ」だけでは、
+  // 「巨大」から「10m超」へ数値になっただけの報まで「高さが上がった」と言うことになる。
+  // 電文の定義（初めて数値で発表／上方修正）をそのまま書く。
+  return '予想の高さを数値で発表・引き上げ'
+}
+
+/**
+ * 沿岸への推定の行に出すバッジ（左から順に）。
+ *
+ * 観測点の {@link observationBadges} と分けているのは、推定には「欠測」「上昇中」が無く、
+ * 代わりに数値を出せない理由が「推定中」である点が違うため。
+ */
+export function estimationBadges(est: TsunamiEstimation): string[] {
+  const badges: string[] = []
+  if (est.condition?.important) badges.push(importantBadgeText(true))
+  return badges
+}
+
+/**
+ * 沿岸への推定の行の右端に出す波高。数値が無いときは、無い理由（電文の語）を出す。
+ *
+ * 「推定中」は**数値を出せるほど大きくない**ことを気象庁が明示した状態で、`DateTime` と
+ * `jmx_eb:TsunamiHeight` の代わりに現れる（電文解説資料 Ⅱ.13 1-2-2-3）。空欄にすると、
+ * 値が無いのが電文の判断なのか読み落としなのか画面から分からない。
+ */
+export function estimationHeightText(est: TsunamiEstimation): string {
+  if (est.maxHeight?.description) return est.maxHeight.description
+  return est.condition?.estimating ? '推定中' : ''
 }
 
 /**

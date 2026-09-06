@@ -4,11 +4,13 @@ import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor } from '../..
 import {
   formatQuakeTime,
   formatDepth,
-  formatMagnitude,
   formatDomesticTsunami,
   formatIssueType,
   formatCorrectType,
   hasMagnitude,
+  formatMagnitudeValue,
+  formatMagnitudeWithCondition,
+  formatCoordinate,
 } from '../../utils/formatters'
 import { getIntensityLabelWithOrAbove, getIntensityColor, getIntensityBgColor, getDepthColor, getMagnitudeColor } from '../../utils/intensity'
 import { buildAreaPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, buildStationPrefIndex, lookupStationRegion, regionOrderRank, byValueDescThenRegion } from '../../utils/stationCoords'
@@ -379,9 +381,14 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                 <span className="text-xs font-medium tracking-wide" style={{ color: magColor }}>
                   マグニチュード
                 </span>
-                <span className="font-black leading-none text-[1.375rem] roomy:text-[1.75rem]" style={{ color: '#ffffff' }}>
-                  {/* 規模不明（-1／NaN）を toFixed に通すと "-1.0"／"NaN" と表示される。深さ側の formatDepth と揃える */}
-                  {hasMagnitude(hypocenter.magnitude) ? hypocenter.magnitude.toFixed(1) : '不明'}
+                {/* 規模不明（-1／NaN）を toFixed に通すと "-1.0"／"NaN" と表示される。深さ側の formatDepth と揃える。
+                    数値が無くても気象庁が説明を添えていればそれを出す（「Ｍ８を超える巨大地震」を
+                    「不明」で潰さない）。説明は数値より長いので、そのときだけ字を小さくする。 */}
+                <span
+                  className={`font-black leading-none ${hypocenter.magnitudeCondition && !hasMagnitude(hypocenter.magnitude) ? 'text-[0.9375rem] roomy:text-[1.125rem] leading-snug' : 'text-[1.375rem] roomy:text-[1.75rem]'}`}
+                  style={{ color: '#ffffff' }}
+                >
+                  {formatMagnitudeValue(hypocenter.magnitude, hypocenter.magnitudeCondition)}
                 </span>
               </div>
               <div
@@ -426,7 +433,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
           {/* 震源の緯度・経度 */}
           {hasLocation && (
             <div className="text-xs text-secondary roomy:text-sm">
-              北緯 {hypocenter.latitude.toFixed(1)}° 東経 {hypocenter.longitude.toFixed(1)}°
+              {formatCoordinate(hypocenter.latitude, hypocenter.longitude)}
             </div>
           )}
 
@@ -608,7 +615,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                   className="inline-block w-1.5 h-3.5 rounded-sm flex-shrink-0"
                   style={{ backgroundColor: getDepthColor(hypocenter.depth) }}
                 />
-                <span className="text-white font-medium">{formatMagnitude(hypocenter.magnitude)}</span>
+                <span className="text-white font-medium">{formatMagnitudeWithCondition(hypocenter.magnitude, hypocenter.magnitudeCondition)}</span>
                 <span
                   className="inline-block w-1.5 h-3.5 rounded-sm flex-shrink-0"
                   style={{ backgroundColor: getMagnitudeColor(hypocenter.magnitude) }}

@@ -75,6 +75,64 @@ export function formatMagnitude(magnitude: number): string {
   return `M${magnitude.toFixed(1)}`
 }
 
+/**
+ * 規模の説明（`Hypocenter.magnitudeCondition` ＝ `jmx_eb:Magnitude@description`）を表示用に直す。
+ *
+ * **「不明」で潰さない。** 電文は「Ｍ不明」と「Ｍ８を超える巨大地震」をどちらも数値なし・
+ * `@condition="不明"` で送ってくるが、後者は M8 を超えて速報できないという別の事実で、
+ * 最も伝えるべき場面に出る。
+ *
+ * 原文は全角なので、数字と記号だけ半角へ揃える（同じ欄に並ぶ数値表示が半角のため）。
+ */
+export function formatMagnitudeCondition(condition: string): string {
+  return condition
+    .replace(/^Ｍ/, 'M')
+    .replace(/[０-９．]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+}
+
+/**
+ * 「マグニチュード」の見出しを別に出している欄（地震カードの詳細表示）で、値として出す文字列。
+ * 見出しと重ならないよう説明の先頭の「M」を落とす。説明が無ければ従来どおり「不明」。
+ */
+export function formatMagnitudeValue(magnitude: number, condition?: string): string {
+  if (hasMagnitude(magnitude)) return magnitude.toFixed(1)
+  if (!condition) return '不明'
+  return formatMagnitudeCondition(condition).replace(/^M/, '')
+}
+
+/**
+ * {@link formatMagnitude} の、説明を落とさない版。見出しに「M」を持たない欄で使う。
+ *
+ * **規模を出す箇所はすべてこれを通すこと。** 呼び出し側ごとに `hasMagnitude` の分岐を書くと、
+ * 経路を 1 つ足すたびに漏れる —— 実際、説明を読むようにした最初の版では、地震カードの
+ * 詳細表示・共有カード・ウィンドウタイトル・読み上げだけを直し、**一覧の行・ブラウザ通知・
+ * 地図の震源ポップアップが「不明」のまま残った**（一覧の行は表示時間の大半を占める）。
+ *
+ * 説明を持たない経路（P2PQuake・EEW・長期震源カタログ）では従来どおり「不明」を返す。
+ */
+export function formatMagnitudeWithCondition(magnitude: number, condition?: string): string {
+  if (hasMagnitude(magnitude)) return formatMagnitude(magnitude)
+  return condition ? formatMagnitudeCondition(condition) : '不明'
+}
+
+/**
+ * 震源の緯度・経度を気象庁の表記で書く。
+ *
+ * **南半球・西半球を「北緯 -35.8°」と書かない。** 遠地地震は世界中で起きるため負の値が来る。
+ * 気象庁の電文も向きを語で書く（電文解説資料の事例「南緯１７．２度　東経１７８．６度」）。
+ *
+ * @param digits 小数点以下の桁数。震源要素は 0.1 度刻み、長期震源カタログはより細かい
+ */
+export function formatCoordinate(latitude: number, longitude: number, digits = 1): string {
+  // 深さ・規模と同じく、読めない値はこの関数の中で弾く。呼び出し側のガードだけに任せると、
+  // ガードを持たない経路が足された日に「NaN°」が無警告で画面へ出る（`Infinity < 0` は偽なので
+  // 向きの語まで誤る）。
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return '不明'
+  const ns = latitude < 0 ? '南緯' : '北緯'
+  const ew = longitude < 0 ? '西経' : '東経'
+  return `${ns} ${Math.abs(latitude).toFixed(digits)}° ${ew} ${Math.abs(longitude).toFixed(digits)}°`
+}
+
 export function formatDomesticTsunami(type: DomesticTsunami): { text: string; color: string } {
   const map: Record<DomesticTsunami, { text: string; color: string }> = {
     'なし': { text: '津波の心配なし', color: '#22c55e' },

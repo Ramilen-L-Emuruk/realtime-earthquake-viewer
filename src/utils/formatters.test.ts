@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatDepth, formatMagnitude, formatFileStamp } from './formatters'
+import { formatCoordinate, formatDepth, formatMagnitude, formatMagnitudeCondition, formatMagnitudeValue, formatMagnitudeWithCondition, formatFileStamp } from './formatters'
 import { withTz } from '../test-utils/withTz'
 import { getMagnitudeColor, getDepthColor } from './intensity'
 
@@ -103,5 +103,92 @@ describe('formatFileStamp', () => {
     const before = process.env.TZ
     withTz('Asia/Kathmandu', () => formatFileStamp(BASE))
     expect(process.env.TZ).toBe(before)
+  })
+})
+
+// 規模が数値にならないときの説明（`jmx_eb:Magnitude@description`）。
+// 「Ｍ不明」と「Ｍ８を超える巨大地震」はどちらも数値なしで届くが、後者は M8 を超えて
+// 速報できないという別の事実で、最も伝えるべき場面に出る。
+describe('規模の説明の表示', () => {
+  // 正: 全角の記号・数字を半角へ揃える（同じ欄に並ぶ数値表示に合わせる）。
+  it('全角の記号・数字を半角にする', () => {
+    expect(formatMagnitudeCondition('Ｍ８を超える巨大地震')).toBe('M8を超える巨大地震')
+  })
+
+  // 安全弁: 数字を含まない語はそのまま残す。
+  it('数字を含まない説明はそのまま残す', () => {
+    expect(formatMagnitudeCondition('Ｍ不明')).toBe('M不明')
+  })
+
+  // 正: 「マグニチュード」の見出しを別に出す欄では、重ならないよう先頭の記号を落とす。
+  it('見出しがある欄では先頭の記号を落とす', () => {
+    expect(formatMagnitudeValue(NaN, 'Ｍ８を超える巨大地震')).toBe('8を超える巨大地震')
+    expect(formatMagnitudeValue(NaN, 'Ｍ不明')).toBe('不明')
+  })
+
+  // 対照: 数値が読めるなら説明があっても数値を出す。
+  it('数値が読めれば数値を出す', () => {
+    expect(formatMagnitudeValue(7.6, 'Ｍ８を超える巨大地震')).toBe('7.6')
+  })
+
+  // 安全弁: 説明が無い規模不明は従来どおり「不明」。
+  it('説明が無ければ不明のまま', () => {
+    expect(formatMagnitudeValue(NaN)).toBe('不明')
+    expect(formatMagnitudeValue(-1)).toBe('不明')
+  })
+})
+
+// 震源の緯度・経度。遠地地震は世界中で起きるため負の値が来る。
+describe('震源の座標の表記', () => {
+  // 正: 南半球・西半球は向きを語で書く（気象庁の電文と同じ）。
+  it('南半球・西半球を語で書く', () => {
+    expect(formatCoordinate(-35.8, -72.7)).toBe('南緯 35.8° 西経 72.7°')
+  })
+
+  // 対照: 北半球・東半球は従来どおり。
+  it('北半球・東半球は従来どおり', () => {
+    expect(formatCoordinate(37.5, 138.6)).toBe('北緯 37.5° 東経 138.6°')
+  })
+
+  // 安全弁: 赤道・本初子午線は北緯・東経の側へ倒す（「南緯 0.0°」と書かない）。
+  it('0 は北緯・東経として書く', () => {
+    expect(formatCoordinate(0, 0)).toBe('北緯 0.0° 東経 0.0°')
+  })
+
+  // 桁数は呼び出し側が決める（震源要素は 0.1 度刻み、長期震源カタログはより細かい）。
+  it('桁数を指定できる', () => {
+    expect(formatCoordinate(-17.234, 178.567, 3)).toBe('南緯 17.234° 東経 178.567°')
+  })
+
+  // 安全弁: 読めない値はこの関数の中で弾く。呼び出し側のガードだけに任せると、ガードを持たない
+  // 経路が足された日に「NaN°」が出る（`Infinity < 0` は偽なので向きの語まで誤る）。
+  it('読めない値は不明にする', () => {
+    expect(formatCoordinate(NaN, 138.6)).toBe('不明')
+    expect(formatCoordinate(37.5, NaN)).toBe('不明')
+    expect(formatCoordinate(Infinity, -Infinity)).toBe('不明')
+  })
+})
+
+// 規模を出す欄はすべて 1 本の述語を通す。呼び出し側ごとに分岐を書くと経路を足すたびに漏れる。
+describe('見出しに M を持たない欄の規模', () => {
+  // 正: 数値があれば従来どおり。
+  it('数値があれば M 付きで出す', () => {
+    expect(formatMagnitudeWithCondition(7.6)).toBe('M7.6')
+  })
+
+  // 正: 数値が無くても説明があれば落とさない。
+  it('説明があれば落とさない', () => {
+    expect(formatMagnitudeWithCondition(NaN, 'Ｍ８を超える巨大地震')).toBe('M8を超える巨大地震')
+  })
+
+  // 対照: 説明が無ければ従来どおり「不明」（説明を持たない P2PQuake・EEW・カタログの経路）。
+  it('説明が無ければ不明', () => {
+    expect(formatMagnitudeWithCondition(NaN)).toBe('不明')
+    expect(formatMagnitudeWithCondition(-1)).toBe('不明')
+  })
+
+  // 安全弁: 数値が読めるなら説明より数値を優先する。
+  it('数値が読めれば数値を優先する', () => {
+    expect(formatMagnitudeWithCondition(7.6, 'Ｍ８を超える巨大地震')).toBe('M7.6')
   })
 })

@@ -1714,7 +1714,7 @@ const PARITY_TSUNAMI_XML = `<?xml version="1.0" encoding="UTF-8"?>
 </Report>`
 
 describe('XML 経路が落としてはいけない項目（津波）', () => {
-  const fromXml = () => parseTsunamiFromXml(PARITY_TSUNAMI_XML)!
+  const fromXml = () => parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!
 
   it('等級・区域名・ただちに来襲の別を同じに読む', () => {
     for (const t of [fromXml()]) {
@@ -1756,7 +1756,7 @@ describe('XML 経路が落としてはいけない項目（津波）', () => {
   // （「以上」が付かない大多数の観測点に、意味の無いフィールドを持たせない）。
   it('通常の観測値では over を立てない', () => {
     const xml = PARITY_TSUNAMI_XML.replace('description="８．５ｍ以上"', 'description="８．５ｍ"')
-    expect(parseTsunamiFromXml(xml)!.observations![0].height?.over).toBeUndefined()
+    expect(parseTsunamiFromXml('VTSE51', xml)!.observations![0].height?.over).toBeUndefined()
   })
 
   it('issue.source を電文の編集官署から読む', () => {
@@ -1767,7 +1767,7 @@ describe('XML 経路が落としてはいけない項目（津波）', () => {
   // 空のまま返すと波高が画面から消える。実電文は必ず description を持つので異常時の保険。
   it('予想波高の表示文字列が無ければ数値から作る', () => {
     const xml = PARITY_TSUNAMI_XML.replace(' description="１０ｍ超"', '')
-    expect(parseTsunamiFromXml(xml)!.areas[0].maxHeight?.description).toBe('10m')
+    expect(parseTsunamiFromXml('VTSE51', xml)!.areas[0].maxHeight?.description).toBe('10m')
   })
 
   // 正: 数値にならない予想波高を落とさない。
@@ -1783,7 +1783,7 @@ describe('XML 経路が落としてはいけない項目（津波）', () => {
       '<jmx_eb:TsunamiHeight type="津波の高さ" unit="m" description="１０ｍ超">10</jmx_eb:TsunamiHeight>',
       '<jmx_eb:TsunamiHeight type="津波の高さ" unit="m" condition="不明" description="巨大">NaN</jmx_eb:TsunamiHeight>',
     )
-    const area = parseTsunamiFromXml(xml)!.areas[0]
+    const area = parseTsunamiFromXml('VTSE51', xml)!.areas[0]
     expect(area.maxHeight?.description).toBe('巨大')
     // 数値は持たない。`value` を 0 や NaN で埋めると、波高の比較や並べ替えが狂う
     expect(area.maxHeight?.value).toBeUndefined()
@@ -1795,7 +1795,7 @@ describe('XML 経路が落としてはいけない項目（津波）', () => {
       'description="１０ｍ超">10<',
       'description="１０ｍ超" condition="不明">10<',
     )
-    const area = parseTsunamiFromXml(xml)!.areas[0]
+    const area = parseTsunamiFromXml('VTSE51', xml)!.areas[0]
     expect(area.maxHeight?.description).toBe('10m超')
     expect(area.maxHeight?.value).toBe(10)
   })
@@ -1810,7 +1810,7 @@ describe('XML 経路が落としてはいけない項目（津波）', () => {
       '<jmx_eb:TsunamiHeight type="津波の高さ" unit="m" description="１０ｍ超">10</jmx_eb:TsunamiHeight>',
       '<jmx_eb:TsunamiHeight type="津波の高さ" unit="m" condition="不明" description="">NaN</jmx_eb:TsunamiHeight>',
     )
-    expect(parseTsunamiFromXml(xml)!.areas[0].maxHeight).toBeUndefined()
+    expect(parseTsunamiFromXml('VTSE51', xml)!.areas[0].maxHeight).toBeUndefined()
   })
 
   // 安全弁: 数値も表示文字列も無ければ、`maxHeight` そのものを作らない。
@@ -1821,7 +1821,7 @@ describe('XML 経路が落としてはいけない項目（津波）', () => {
       '<jmx_eb:TsunamiHeight type="津波の高さ" unit="m" description="１０ｍ超">10</jmx_eb:TsunamiHeight>',
       '<jmx_eb:TsunamiHeight type="津波の高さ" unit="m"></jmx_eb:TsunamiHeight>',
     )
-    expect(parseTsunamiFromXml(xml)!.areas[0].maxHeight).toBeUndefined()
+    expect(parseTsunamiFromXml('VTSE51', xml)!.areas[0].maxHeight).toBeUndefined()
   })
 
 
@@ -1831,7 +1831,7 @@ describe('XML 経路が落としてはいけない項目（津波）', () => {
     const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
     try {
       const xml = PARITY_TSUNAMI_XML.replace('>8.5</jmx_eb:TsunamiHeight>', '></jmx_eb:TsunamiHeight>')
-      expect(parseTsunamiFromXml(xml)!.observations![0].height).toBeUndefined()
+      expect(parseTsunamiFromXml('VTSE51', xml)!.observations![0].height).toBeUndefined()
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('数値として読めません'))
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('銚子'))
     } finally {
@@ -1853,7 +1853,7 @@ describe('XML 経路が落としてはいけない項目（津波）', () => {
     it('観測点名を添えて記録を残す', () => {
       const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
       try {
-        const t = parseTsunamiFromXml(withoutDesc())!
+        const t = parseTsunamiFromXml('VTSE51', withoutDesc())!
         expect(t.observations![0].height?.over).toBeUndefined()
         expect(overWarnCount(warn.mock.calls)).toBe(1)
         expect(warn).toHaveBeenCalledWith(expect.stringContaining('銚子'))
@@ -1868,7 +1868,7 @@ describe('XML 経路が落としてはいけない項目（津波）', () => {
     it('表示文字列は数値から補う（波高が画面から消えないように）', () => {
       const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
       try {
-        const t = parseTsunamiFromXml(withoutDesc())!
+        const t = parseTsunamiFromXml('VTSE51', withoutDesc())!
         expect(t.observations![0].height?.value).toBe(8.5)
         expect(t.observations![0].height?.description).toBe('8.5m')
       } finally {
@@ -1881,7 +1881,7 @@ describe('XML 経路が落としてはいけない項目（津波）', () => {
     it('description があれば記録しない', () => {
       const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
       try {
-        parseTsunamiFromXml(PARITY_TSUNAMI_XML)
+        parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)
         expect(overWarnCount(warn.mock.calls)).toBe(0)
       } finally {
         warn.mockRestore()
@@ -1894,7 +1894,7 @@ describe('XML 経路が落としてはいけない項目（津波）', () => {
       const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
       try {
         const xml = withoutDesc().replace('>8.5</jmx_eb:TsunamiHeight>', '></jmx_eb:TsunamiHeight>')
-        expect(parseTsunamiFromXml(xml)!.observations![0].height).toBeUndefined()
+        expect(parseTsunamiFromXml('VTSE51', xml)!.observations![0].height).toBeUndefined()
         expect(overWarnCount(warn.mock.calls)).toBe(0)
       } finally {
         warn.mockRestore()
@@ -1973,14 +1973,14 @@ describe('津波 XML: 区域を読めなかったときに解除へ化けない�
   it('全区域の名前が読めなければ解除にせず捨てる', () => {
     const broken = breakAreaNames(VTSE41_PARTIAL_LIFT_XML)
     const warnings = captureWarnings(() => {
-      expect(parseTsunamiFromXml(broken)).toBeNull()
+      expect(parseTsunamiFromXml('VTSE51', broken)).toBeNull()
     })
     expect(warnings.filter(w => w.includes('解除済みとも判定できません'))).toHaveLength(1)
   })
 
   // 対照: 手を入れていない電文は従来どおり 3 区域を読み、解除にもならない
   it('そのままの電文では 3 区域を読み解除にならない', () => {
-    const t = parseTsunamiFromXml(VTSE41_PARTIAL_LIFT_XML)!
+    const t = parseTsunamiFromXml('VTSE41', VTSE41_PARTIAL_LIFT_XML)!
     expect(t.cancelled).toBe(false)
     expect(t.areas).toHaveLength(3)
   })
@@ -1989,7 +1989,7 @@ describe('津波 XML: 区域を読めなかったときに解除へ化けない�
   // 正式な解除で、名前が読めなかったわけではない。ここを巻き込むと解除が届かなくなる
   it('区域が電文から消えた形は従来どおり解除として扱う', () => {
     const lifted = VTSE41_PARTIAL_LIFT_XML.replace(/<Item>[\s\S]*<\/Item>/, '')
-    const t = parseTsunamiFromXml(lifted)!
+    const t = parseTsunamiFromXml('VTSE51', lifted)!
     expect(t.cancelled).toBe(true)
     expect(t.cancelReason).toBe('lifted')
   })
@@ -2005,7 +2005,7 @@ describe('津波 XML: 区域を読めなかったときに解除へ化けない�
       .replace('<Name>福岡県日本海沿岸</Name>', '<Name></Name>')
       .replace('<Name>長崎県西方</Name>', '<Name></Name>')
     const warnings = captureWarnings(() => {
-      expect(parseTsunamiFromXml(mixed)).toBeNull()
+      expect(parseTsunamiFromXml('VTSE51', mixed)).toBeNull()
     })
     expect(warnings.filter(w => w.includes('解除済みとも判定できません'))).toHaveLength(1)
   })
@@ -2018,7 +2018,7 @@ describe('津波 XML: 区域を読めなかったときに解除へ化けない�
       .replace('<Code>72</Code></Kind>', '<Code>60</Code></Kind>')
       .replace('<Code>71</Code></Kind>', '<Code>60</Code></Kind>')
       .replace('<Name>福岡県日本海沿岸</Name>', '<Name></Name>')
-    const t = parseTsunamiFromXml(allCancelled)
+    const t = parseTsunamiFromXml('VTSE51', allCancelled)
     expect(t).not.toBeNull()
     expect(t!.cancelled).toBe(true)
     expect(t!.cancelReason).toBe('lifted')
@@ -2031,7 +2031,7 @@ describe('津波 XML: 区域を読めなかったときに解除へ化けない�
       .replace('<Code>72</Code></Kind>', '<Code>60</Code></Kind>')
       .replace('<Code>71</Code></Kind>', '<Code>60</Code></Kind>')
       .replace('<Name>福岡県日本海沿岸</Name>', '<Name></Name>')
-    const warnings = captureWarnings(() => { parseTsunamiFromXml(allCancelled) })
+    const warnings = captureWarnings(() => { parseTsunamiFromXml('VTSE51', allCancelled) })
     expect(warnings.filter(w => w.includes('名前を読めませんでした'))).toHaveLength(1)
   })
 
@@ -2044,7 +2044,7 @@ describe('津波 XML: 区域を読めなかったときに解除へ化けない�
     const partialLift = VTSE41_PARTIAL_LIFT_XML
       .replace('<Kind><Name>津波注意報</Name><Code>62</Code></Kind>', '<Kind><Name>津波注意報解除</Name><Code>60</Code></Kind>')
     const warnings = captureWarnings(() => {
-      const t = parseTsunamiFromXml(partialLift)!
+      const t = parseTsunamiFromXml('VTSE51', partialLift)!
       expect(t.cancelled).toBe(false)
       expect(t.areas).toHaveLength(2)
     })
@@ -2055,7 +2055,7 @@ describe('津波 XML: 区域を読めなかったときに解除へ化けない�
   // 0 件になったときだけ解除との取り違えが起きるので、そこ以外は止めない
   it('一部の区域だけ読めない場合は残りで成立する', () => {
     const partial = VTSE41_PARTIAL_LIFT_XML.replace('<Name>石川県能登</Name>', '<Name></Name>')
-    const t = parseTsunamiFromXml(partial)!
+    const t = parseTsunamiFromXml('VTSE51', partial)!
     expect(t.cancelled).toBe(false)
     expect(t.areas).toHaveLength(2)
   })
@@ -2065,7 +2065,7 @@ describe('津波 XML: 区域を読めなかったときに解除へ化けない�
 describe('津波の取消・全解除・原因地震', () => {
   it('InfoType=取消 なら cancelled=true・cancelReason=retracted・areas 空', () => {
     const xml = PARITY_TSUNAMI_XML.replace('<InfoType>発表</InfoType>', '<InfoType>取消</InfoType>')
-    const t = parseTsunamiFromXml(xml)!
+    const t = parseTsunamiFromXml('VTSE51', xml)!
     expect(t.cancelled).toBe(true)
     expect(t.cancelReason).toBe('retracted')
     expect(t.areas).toEqual([])
@@ -2077,13 +2077,13 @@ describe('津波の取消・全解除・原因地震', () => {
   // 空文字が入ると「EventID を持つ別の津波」と区別できなくなる。
   it('EventID が空なら eventId を持たない', () => {
     const xml = PARITY_TSUNAMI_XML.replace('<EventID>20260101120000</EventID>', '<EventID></EventID>')
-    expect(parseTsunamiFromXml(xml)!.eventId).toBeUndefined()
+    expect(parseTsunamiFromXml('VTSE51', xml)!.eventId).toBeUndefined()
   })
 
   it('全区域が解除系コード（60）なら areas=[] で cancelReason=lifted', () => {
     const xml = PARITY_TSUNAMI_XML
       .replace('<Kind><Name>大津波警報：発表</Name><Code>52</Code></Kind>', '<Kind><Name>津波警報解除</Name><Code>60</Code></Kind>')
-    const t = parseTsunamiFromXml(xml)!
+    const t = parseTsunamiFromXml('VTSE51', xml)!
     expect(t.areas).toEqual([])
     expect(t.cancelReason).toBe('lifted')
   })
@@ -2099,14 +2099,14 @@ describe('津波の取消・全解除・原因地震', () => {
       '<jmx_eb:Magnitude type="Mj">8.5</jmx_eb:Magnitude>',
       '<jmx_eb:Magnitude type="Mj" condition="不明" description="Ｍ８を超える巨大地震">NaN</jmx_eb:Magnitude>',
     )
-    const eq = parseTsunamiFromXml(xml)!.sourceEarthquakes![0]
+    const eq = parseTsunamiFromXml('VTSE51', xml)!.sourceEarthquakes![0]
     expect(eq.magnitude).toBeUndefined()
     expect(eq.magnitudeCondition).toBe('Ｍ８を超える巨大地震')
   })
 
   // 対照: 数値が読めるときは説明を持たない。両方を持たせると表示が二重になる
   it('規模が読めるときは説明を持たない', () => {
-    const eq = parseTsunamiFromXml(PARITY_TSUNAMI_XML)!.sourceEarthquakes![0]
+    const eq = parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!.sourceEarthquakes![0]
     expect(eq.magnitude).toBe(8.5)
     expect(eq.magnitudeCondition).toBeUndefined()
   })
@@ -2122,7 +2122,7 @@ describe('津波の取消・全解除・原因地震', () => {
       '</Earthquake>',
     ].join('')
     const xml = PARITY_TSUNAMI_XML.replace('</Earthquake>', '</Earthquake>' + second)
-    const eqs = parseTsunamiFromXml(xml)!.sourceEarthquakes!
+    const eqs = parseTsunamiFromXml('VTSE51', xml)!.sourceEarthquakes!
     expect(eqs).toHaveLength(2)
     expect(eqs.map(e => e.hypocenterName)).toEqual(['房総半島沖', '三陸沖'])
   })
@@ -2138,20 +2138,20 @@ describe('津波の取消・全解除・原因地震', () => {
       '</Earthquake>',
     ].join('')
     const xml = PARITY_TSUNAMI_XML.replace('</Earthquake>', '</Earthquake>' + broken)
-    const eqs = parseTsunamiFromXml(xml)!.sourceEarthquakes!
+    const eqs = parseTsunamiFromXml('VTSE51', xml)!.sourceEarthquakes!
     expect(eqs).toHaveLength(1)
     expect(eqs[0].hypocenterName).toBe('房総半島沖')
   })
 
   it('震源名が無ければ原因地震を持たない', () => {
     const xml = PARITY_TSUNAMI_XML.replace('<Hypocenter><Area><Name>房総半島沖</Name></Area></Hypocenter>', '<Hypocenter><Area></Area></Hypocenter>')
-    expect(parseTsunamiFromXml(xml)!.sourceEarthquakes).toBeUndefined()
+    expect(parseTsunamiFromXml('VTSE51', xml)!.sourceEarthquakes).toBeUndefined()
   })
 })
 
 describe('津波電文の LastKind（区域単位の等級変化）', () => {
   it('正: XML 経路で LastKind を前回の等級として読む', () => {
-    const t = parseTsunamiFromXml(VTSE41_PARTIAL_LIFT_XML)
+    const t = parseTsunamiFromXml('VTSE41', VTSE41_PARTIAL_LIFT_XML)
     expect(t).not.toBeNull()
     // 解除された区域は電文から消えない（3 区域すべてが載る）
     expect(t!.cancelled).toBe(false)
@@ -2163,7 +2163,7 @@ describe('津波電文の LastKind（区域単位の等級変化）', () => {
   })
 
   it('対照: LastKind が無い区域は lastGrade を持たない（「前回は津波なし」と偽らない）', () => {
-    const t = parseTsunamiFromXml(VTSE41_PARTIAL_LIFT_XML)
+    const t = parseTsunamiFromXml('VTSE41', VTSE41_PARTIAL_LIFT_XML)
     expect(t!.areas.find(a => a.name === '長崎県西方')!.lastGrade).toBeUndefined()
   })
 
@@ -2228,7 +2228,7 @@ describe('潮位観測点の観測状態（Condition）', () => {
     t!.observations!.find(o => o.name === name)!
 
   it('正: XML 経路で「重要 欠測」を両方立て、これまでの最大波も残す', () => {
-    const t = parseTsunamiFromXml(VTSE51_MISSING_XML)
+    const t = parseTsunamiFromXml('VTSE51', VTSE51_MISSING_XML)
     const miyako = byName(t, '宮古')
     // 電文は欠測と同時に「これまでの最大波の高さ」を載せる。値を捨てると、
     // 観測できていた事実（ここでは大津波警報の基準超え）が画面から消える。
@@ -2241,7 +2241,7 @@ describe('潮位観測点の観測状態（Condition）', () => {
   })
 
   it('正: 第1波・最大波がどちらも欠測の観測点は到達時刻を持たない', () => {
-    const t = parseTsunamiFromXml(VTSE51_MISSING_XML)
+    const t = parseTsunamiFromXml('VTSE51', VTSE51_MISSING_XML)
     const ofunato = byName(t, '大船渡')
     expect(ofunato.arrivalTime).toBeUndefined()
     expect(ofunato.height).toBeUndefined()
@@ -2249,14 +2249,14 @@ describe('潮位観測点の観測状態（Condition）', () => {
   })
 
   it('正: 「観測中 欠測」は到達だけ確定していて波高が欠測の状態', () => {
-    const t = parseTsunamiFromXml(VTSE51_MISSING_XML)
+    const t = parseTsunamiFromXml('VTSE51', VTSE51_MISSING_XML)
     const kamaishi = byName(t, '釜石')
     expect(kamaishi.arrivalTime).toBe('2026-09-03T09:57:00+09:00')
     expect(kamaishi.condition).toEqual({ observing: true, maxHeightMissing: true })
   })
 
   it('対照: 「観測中」だけの観測点は欠測を立てない（従来の到達確認の経路）', () => {
-    const t = parseTsunamiFromXml(VTSE51_MISSING_XML)
+    const t = parseTsunamiFromXml('VTSE51', VTSE51_MISSING_XML)
     const kuji = byName(t, '久慈')
     expect(kuji.condition).toEqual({ observing: true })
     expect(kuji.height).toBeUndefined()
@@ -2264,7 +2264,7 @@ describe('潮位観測点の観測状態（Condition）', () => {
 
 
   it('安全弁: 状態を持たない観測点に condition を作らない', () => {
-    const t = parseTsunamiFromXml(VTSE41_PARTIAL_LIFT_XML)
+    const t = parseTsunamiFromXml('VTSE41', VTSE41_PARTIAL_LIFT_XML)
     // 区域だけの電文（観測点なし）でも壊れないこと
     expect(t!.observations).toBeUndefined()
   })
@@ -2333,47 +2333,153 @@ const VTSE52_XML = [
   '</Station></Item>',
   '</Observation>',
   '<Estimation>',
+  // 事例１: 到達時刻と説明が併存する。加えて基準を超えた合図（重要）が付く形
   '<Item><Area><Name>岩手県</Name><Code>210</Code></Area>',
-  '<FirstHeight><ArrivalTime>2026-01-01T12:50:00+09:00</ArrivalTime></FirstHeight>',
-  '<MaxHeight><jmx_eb:TsunamiHeight type="津波の高さ" unit="m" description="３ｍ">3</jmx_eb:TsunamiHeight></MaxHeight>',
+  '<FirstHeight><ArrivalTime>2026-01-01T12:50:00+09:00</ArrivalTime><Condition>早いところでは既に津波到達と推定</Condition></FirstHeight>',
+  '<MaxHeight><Condition>重要</Condition><jmx_eb:TsunamiHeight type="津波の高さ" unit="m" description="３ｍ">3</jmx_eb:TsunamiHeight></MaxHeight>',
   '</Item>',
+  // 事例２: 潮位観測点で第１波識別不能。時刻が出せず説明だけになる
   '<Item><Area><Name>宮城県</Name><Code>220</Code></Area>',
   '<FirstHeight><Condition>早いところでは既に津波到達と推定</Condition></FirstHeight>',
+  '</Item>',
+  // 事例２（MaxHeight）: 予想される高さに比べ十分小さく、数値を発表していない
+  '<Item><Area><Name>福島県</Name><Code>230</Code></Area>',
+  '<FirstHeight><Condition>早いところでは既に津波到達と推定</Condition></FirstHeight>',
+  '<MaxHeight><Condition>推定中</Condition></MaxHeight>',
   '</Item>',
   '</Estimation>',
   '</Tsunami>',
   '</Body></Report>',
 ].join('')
 
+// 区域の予想波高に付く「重要」（`Forecast/Item/MaxHeight/Condition`）。
+//
+// 電文解説資料 Ⅱ.11 1-1-2-4 は「大津波警報の津波予報区に対して、予想される津波の高さが最初に
+// 数値で発表された場合や、大津波警報の中で予想される津波の高さが上方修正された場合」に付くと
+// 定めている。**観測・推定の「重要」とは意味が違う**（あちらは実際に高い津波を観測・推定した合図）。
+describe('区域の予想波高の「重要」', () => {
+  const captureWarnings = (run: () => void): string[] => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      run()
+      return warn.mock.calls.map(c => c.join(' '))
+    } finally {
+      warn.mockRestore()
+    }
+  }
+  // Forecast の MaxHeight にだけ Condition を差す（Observation 側は type が違うので当たらない）。
+  const withCondition = (cond: string) => PARITY_TSUNAMI_XML.replace(
+    '<jmx_eb:TsunamiHeight type="津波の高さ"',
+    `<Condition>${cond}</Condition><jmx_eb:TsunamiHeight type="津波の高さ"`,
+  )
+
+  // 正: 「重要」を読む。数値と併存する（Condition は DateTime/TsunamiHeight を置き換えない）。
+  it('重要を読む', () => {
+    const area = parseTsunamiFromXml('VTSE51', withCondition('重要'))!.areas[0]
+    expect(area.forecastHeightImportant).toBe(true)
+    expect(area.maxHeight?.description).toBe('10m超')
+  })
+
+  // 対照: Condition が無い区域には立てない（大多数はこちら）。false ではなく undefined へ落とす。
+  it('Condition が無ければ立てない', () => {
+    expect(parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!.areas[0].forecastHeightImportant).toBeUndefined()
+  })
+
+  // 安全弁: 知らない語を黙って捨てない。
+  it('未知の語があれば記録する', () => {
+    const warnings = captureWarnings(() => { parseTsunamiFromXml('VTSE51', withCondition('未知の状態')) })
+    expect(warnings.filter(w => w.includes('Forecast/MaxHeight/Condition') && w.includes('未知の状態'))).toHaveLength(1)
+  })
+})
+
 describe('沖合の観測から導いた沿岸への推定（VTSE52）', () => {
+  const captureWarnings = (run: () => void): string[] => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      run()
+      return warn.mock.calls.map(c => c.join(' '))
+    } finally {
+      warn.mockRestore()
+    }
+  }
   // 正: 区域名・到達予想時刻・予想高さを読む
   it('推定の区域名・到達予想時刻・高さを読む', () => {
-    const est = parseTsunamiFromXml(VTSE52_XML)!.estimations!
-    expect(est).toHaveLength(2)
+    const est = parseTsunamiFromXml('VTSE52', VTSE52_XML)!.estimations!
+    expect(est).toHaveLength(3)
     expect(est[0].name).toBe('岩手県')
     expect(est[0].code).toBe('210')
     expect(est[0].arrivalTime).toBe('2026-01-01T12:50:00+09:00')
     expect(est[0].maxHeight).toEqual({ description: '3m', value: 3 })
   })
 
-  // 正: 時刻を出せないときの説明を読む。ここを落とすと、既に到達している可能性が伝わらない
-  it('時刻の代わりの説明を読む', () => {
-    const est = parseTsunamiFromXml(VTSE52_XML)!.estimations!
+  // 正: 時刻が出せないときも説明を読む。ここを落とすと、既に到達している可能性が伝わらない
+  it('時刻が無くても到達の説明を読む', () => {
+    const est = parseTsunamiFromXml('VTSE52', VTSE52_XML)!.estimations!
     expect(est[1].arrivalTime).toBeUndefined()
     expect(est[1].arrivalCondition).toBe('早いところでは既に津波到達と推定')
   })
 
+  // 正: 到達の説明は時刻と併存する。電文解説資料 Ⅱ.13 1-2-2-2 は Condition を常に記載し、
+  // 第１波を明瞭に観測した沿岸にだけ ArrivalTime を足すと定めている（事例１は両方を持つ）。
+  // **時刻があるときに説明を落とさないこと**——落とすと、時刻を出せる沿岸ほど注意喚起が消える。
+  it('到達の説明は時刻と併存する', () => {
+    const est = parseTsunamiFromXml('VTSE52', VTSE52_XML)!.estimations!
+    expect(est[0].arrivalTime).toBe('2026-01-01T12:50:00+09:00')
+    expect(est[0].arrivalCondition).toBe('早いところでは既に津波到達と推定')
+  })
+
+  // 正: 数値を発表していない沿岸（Condition=推定中）を読む。この区域は DateTime も
+  // jmx_eb:TsunamiHeight も持たないため、ここを読まないと波高欄が空のままになる。
+  it('数値を発表していない沿岸の「推定中」を読む', () => {
+    const est = parseTsunamiFromXml('VTSE52', VTSE52_XML)!.estimations!
+    expect(est[2].name).toBe('福島県')
+    expect(est[2].maxHeight).toBeUndefined()
+    expect(est[2].condition?.estimating).toBe(true)
+  })
+
+  // 正: 基準を超えた合図（Condition=重要）を読む。数値と併存する。
+  it('基準を超えた合図（重要）を読む', () => {
+    const est = parseTsunamiFromXml('VTSE52', VTSE52_XML)!.estimations!
+    expect(est[0].condition?.important).toBe(true)
+    expect(est[0].maxHeight).toEqual({ description: '3m', value: 3 })
+  })
+
+  // 対照: Condition を持たない推定にはフラグを作らない（大多数はこちら）。
+  it('Condition が無ければ状態を持たせない', () => {
+    const est = parseTsunamiFromXml('VTSE52', VTSE52_XML)!.estimations!
+    expect(est[1].condition).toBeUndefined()
+  })
+
+  // 安全弁: 知らない語を黙って捨てない。気象庁が語を増やしたとき、表示も読み上げも
+  // 何も言わないままその状態を無視することになる。
+  it('推定の Condition に未知の語があれば記録する', () => {
+    const xml = VTSE52_XML.replace('<Condition>推定中</Condition>', '<Condition>推定中 未知の状態</Condition>')
+    const warnings = captureWarnings(() => { parseTsunamiFromXml('VTSE52', xml) })
+    expect(warnings.filter(w => w.includes('Estimation/MaxHeight/Condition') && w.includes('未知の状態'))).toHaveLength(1)
+  })
+
+  // 正: 沖合の観測点には出所の印を付ける。「重要」の基準が沿岸と違うため、
+  // これが無いとバッジが沿岸の基準（大津波警報のみ）で出てしまう。
+  it('沖合の観測点に offshore を立てる', () => {
+    expect(parseTsunamiFromXml('VTSE52', VTSE52_XML)!.observations![0].offshore).toBe(true)
+  })
+
+  // 対照: 沿岸の観測点（VTSE51）には立てない。
+  it('沿岸の観測点には offshore を立てない', () => {
+    expect(parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!.observations![0].offshore).toBeUndefined()
+  })
+
   // 対照: 沖合の実測は観測点として読む（推定と混ざらない）
   it('沖合の実測は観測点として読み、推定と混ぜない', () => {
-    const t = parseTsunamiFromXml(VTSE52_XML)!
+    const t = parseTsunamiFromXml('VTSE52', VTSE52_XML)!
     expect(t.observations!.map(o => o.name)).toEqual(['岩手中部沖'])
-    expect(t.estimations!.map(e => e.name)).toEqual(['岩手県', '宮城県'])
+    expect(t.estimations!.map(e => e.name)).toEqual(['岩手県', '宮城県', '福島県'])
   })
 
   // 安全弁: `Estimation` を持たない電文では作らない。空配列を返すと、画面が
   // 「推定あり」の見出しだけを出す
   it('Estimation が無い電文では持たない', () => {
-    expect(parseTsunamiFromXml(PARITY_TSUNAMI_XML)!.estimations).toBeUndefined()
+    expect(parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!.estimations).toBeUndefined()
   })
 })
 
@@ -2478,32 +2584,32 @@ describe('波高の表示文字列は半角に揃える', () => {
 
   // 正: 全角の数字・小数点・単位を半角へ直す。
   it('全角の数字・小数点・単位を半角にする', () => {
-    const t = parseTsunamiFromXml(xmlWith('０．２ｍ'))!
+    const t = parseTsunamiFromXml('VTSE51', xmlWith('０．２ｍ'))!
     expect(t.observations![0].height?.description).toBe('0.2m')
   })
 
   // 安全弁: 「未満」「以上」「超」といった語は残す。数字だけを見て組み直すと、
   // 「０．２ｍ未満」（津波予報・若干の海面変動）が「0.2m」に化けて意味が変わる。
   it('数値に添えられた語は落とさない', () => {
-    expect(parseTsunamiFromXml(xmlWith('０．２ｍ未満'))!.observations![0].height?.description).toBe('0.2m未満')
-    expect(parseTsunamiFromXml(xmlWith('８．５ｍ以上'))!.observations![0].height?.description).toBe('8.5m以上')
+    expect(parseTsunamiFromXml('VTSE51', xmlWith('０．２ｍ未満'))!.observations![0].height?.description).toBe('0.2m未満')
+    expect(parseTsunamiFromXml('VTSE51', xmlWith('８．５ｍ以上'))!.observations![0].height?.description).toBe('8.5m以上')
   })
 
   // 対照: 数字を含まない表示文字列（「巨大」「高い」）はそのまま通す。
   it('数値で表せない波高はそのまま残す', () => {
-    expect(parseTsunamiFromXml(xmlWith('巨大'))!.observations![0].height?.description).toBe('巨大')
+    expect(parseTsunamiFromXml('VTSE51', xmlWith('巨大'))!.observations![0].height?.description).toBe('巨大')
   })
 
   // 安全弁: 前後の空白は落とす（実電文に先頭が全角空白の "　１ｍ" があった）。
   it('前後の空白を落とす', () => {
-    expect(parseTsunamiFromXml(xmlWith('　１ｍ'))!.observations![0].height?.description).toBe('1m')
+    expect(parseTsunamiFromXml('VTSE51', xmlWith('　１ｍ'))!.observations![0].height?.description).toBe('1m')
   })
 
   // 安全弁: over の判定は生の description を見ている。半角化した文字列で判定するように
   // 変えても「以上」は残るので通ってしまうが、判定の入力を取り違えないことを固定しておく。
   it('半角化しても「以上」から over を立てる', () => {
-    expect(parseTsunamiFromXml(xmlWith('８．５ｍ以上'))!.observations![0].height?.over).toBe(true)
-    expect(parseTsunamiFromXml(xmlWith('８．５ｍ'))!.observations![0].height?.over).toBeUndefined()
+    expect(parseTsunamiFromXml('VTSE51', xmlWith('８．５ｍ以上'))!.observations![0].height?.over).toBe(true)
+    expect(parseTsunamiFromXml('VTSE51', xmlWith('８．５ｍ'))!.observations![0].height?.over).toBeUndefined()
   })
 })
 
@@ -2676,5 +2782,78 @@ describe('XML 経路が落としてはいけない項目（EEW）', () => {
     const e = parseEEWFromXml('VXSE45', xml)!
     expect(e.forecastMaxScale).toBe(40)
     expect(e.forecastMaxScaleOrAbove).toBe(true)
+  })
+})
+
+// 規模が数値にならないときの説明（`jmx_eb:Magnitude@description`）。
+//
+// 電文は「Ｍ不明」と「Ｍ８を超える巨大地震」をどちらも本文 NaN・`@condition="不明"` で送ってくる
+// （電文解説資料 Ⅱ.32/33/36）。**`description` でしか見分けられない。** 津波側は対応済みだったため、
+// 同じ地震が津波タブでは「Ｍ８を超える巨大地震」・地震タブでは「不明」になっていた。
+describe('地震情報の規模の説明（Magnitude@description）', () => {
+  const withMagnitude = (mag: string) =>
+    FOREIGN_XML.replace('<jmx_eb:Magnitude type="M">7.4</jmx_eb:Magnitude>', mag)
+  const HUGE = '<jmx_eb:Magnitude type="M" condition="不明" description="Ｍ８を超える巨大地震">NaN</jmx_eb:Magnitude>'
+  const UNKNOWN = '<jmx_eb:Magnitude type="M" condition="不明" description="Ｍ不明">NaN</jmx_eb:Magnitude>'
+
+  // 正: 「Ｍ８を超える巨大地震」を原文のまま保持する。
+  it('数値にならない規模の説明を保持する', () => {
+    const hc = parseEarthquakeFromXml('VXSE53', withMagnitude(HUGE))!.earthquake.hypocenter
+    expect(Number.isNaN(hc.magnitude)).toBe(true)
+    expect(hc.magnitudeCondition).toBe('Ｍ８を超える巨大地震')
+  })
+
+  // 正: 「Ｍ不明」も別の値として保持する（両者を同じ「不明」へ潰さない）。
+  it('「Ｍ不明」と「Ｍ８を超える巨大地震」を別の値として持つ', () => {
+    const huge = parseEarthquakeFromXml('VXSE53', withMagnitude(HUGE))!.earthquake.hypocenter
+    const unknown = parseEarthquakeFromXml('VXSE53', withMagnitude(UNKNOWN))!.earthquake.hypocenter
+    expect(huge.magnitudeCondition).not.toBe(unknown.magnitudeCondition)
+  })
+
+  // 対照: 数値が読める電文では持たせない。持たせると、表示側が数値より説明を優先しかねない。
+  it('数値が読める電文では説明を持たせない', () => {
+    expect(parseEarthquakeFromXml('VXSE53', FOREIGN_XML)!.earthquake.hypocenter.magnitudeCondition).toBeUndefined()
+  })
+
+  // 安全弁: description が無い規模不明の電文では undefined のまま（空文字を持たせない）。
+  it('説明が無ければ持たせない', () => {
+    const noDesc = withMagnitude('<jmx_eb:Magnitude type="M" condition="不明">NaN</jmx_eb:Magnitude>')
+    expect(parseEarthquakeFromXml('VXSE53', noDesc)!.earthquake.hypocenter.magnitudeCondition).toBeUndefined()
+  })
+})
+
+// 訂正報が何を訂正したのか（`VarComment/Code`）。
+//
+// 気象庁は訂正の中身を固定付加文（その他）のコードに載せる。**現行のコード表で訂正を表すのは
+// `0256`「震源要素を訂正します。」1 つだけ**なので、区別できるのは「震源を訂正」と
+// 「（内容の判らない）訂正」の 2 つ。震度だけの訂正に当たるコードは存在しない。
+describe('訂正報の訂正区分（VarComment）', () => {
+  const corrected = (varComment: string) => VXSE53_XML
+    .replace('<InfoType>発表</InfoType>', '<InfoType>訂正</InfoType>')
+    .replace('</Body>', `${varComment}</Body>`)
+  const VAR = (codes: string) =>
+    `<Comments><VarComment codeType="固定付加文"><Text>震源要素を訂正します。</Text><Code>${codes}</Code></VarComment></Comments>`
+
+  // 正: 0256 があれば「震源を訂正」まで読む。実電文は 0262（＊印の説明）と併記される。
+  it('0256 があれば震源を訂正と読む', () => {
+    expect(parseEarthquakeFromXml('VXSE53', corrected(VAR('0256 0262')))!.issue.correct).toBe('震源を訂正')
+  })
+
+  // 対照: 訂正に当たらないコードだけなら、内容までは判らないので「訂正」に留める。
+  it('訂正のコードが無ければ訂正のままにする', () => {
+    expect(parseEarthquakeFromXml('VXSE53', corrected(VAR('0262')))!.issue.correct).toBe('訂正')
+  })
+
+  // 対照: VarComment を持たない訂正報も「訂正」。**ここで「なし」へ落とさないこと**——
+  // 訂正であること自体は InfoType が確定させている。
+  it('VarComment が無くても訂正であることは落とさない', () => {
+    const xml = VXSE53_XML.replace('<InfoType>発表</InfoType>', '<InfoType>訂正</InfoType>')
+    expect(parseEarthquakeFromXml('VXSE53', xml)!.issue.correct).toBe('訂正')
+  })
+
+  // 安全弁: 発表報では、同じコードが載っていても訂正にしない。
+  it('発表報では 0256 があっても なし のまま', () => {
+    const xml = VXSE53_XML.replace('</Body>', `${VAR('0256')}</Body>`)
+    expect(parseEarthquakeFromXml('VXSE53', xml)!.issue.correct).toBe('なし')
   })
 })
