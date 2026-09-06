@@ -1,6 +1,6 @@
 import { useMemo, useRef, useEffect } from 'react'
 import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint } from '../../types/earthquake'
-import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
+import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor, lpgmCategoryNote } from '../../utils/lpgm'
 import {
   formatQuakeTime,
   formatDepth,
@@ -72,6 +72,9 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
   const maxScaleLabel = maxScale === -1 ? '?' : getIntensityLabelWithOrAbove(maxScale, isMaxScaleUnreceived(maxScale, quake.points))
   const tsunamiInfo = formatDomesticTsunami(domesticTsunami)
   const hasLocation = hypocenter.latitude > -200 && hypocenter.longitude > -200
+  // 長周期の「観測情報の種類」から出す一文（値 2・4 のときだけ。→ `lpgmCategoryNote`）。
+  // 条件と本文の両方で使うので一度だけ計算する。
+  const categoryNote = lpgmCategoryNote(lpgm?.category)
 
   const cardRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
@@ -283,9 +286,22 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
         }}
       >
         {quake.cancelledAt && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg">
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg px-4">
             <span className="font-black text-white" style={{ fontSize: '3rem', lineHeight: 1.1 }}>キャンセル</span>
             <span className="text-sm font-bold text-white/90 mt-1">この地震情報は取り消されました</span>
+            {/* 気象庁が書いた取消しの概要（電文の `Body/Text`）。アプリが組み立てた文言ではないので
+                そのまま出す。オーバーレイは 10 秒で消えるが、理由を捨てる理由にはならない。 */}
+            {quake.cancelText && (
+              // カードは `overflow-hidden` で、オーバーレイは `absolute inset-0`。**本文が下地の
+              // 高さを超えると下が切れる**（読み上げは長文を画面へ委ねる設計なので、そこで切れると
+              // 理由がどこにも残らない）。この要素の中でスクロールできるようにしておく。
+              <span
+                className="mt-2 text-center text-white/80 overflow-y-auto"
+                style={{ fontSize: '0.75rem', lineHeight: 1.5, whiteSpace: 'pre-line', maxHeight: '40%' }}
+              >
+                {quake.cancelText}
+              </span>
+            )}
           </div>
         )}
         {/* 種別ヘッダー */}
@@ -348,6 +364,13 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
               <span className="text-xl font-black roomy:text-2xl" style={{ color: '#ffffff' }}>
                 {getLpgmClassLabel(lpgm.maxClass)}
               </span>
+            </div>
+          )}
+          {/* 電文の「観測情報の種類」（`LgCategory`）が伝えているのは、階級を観測した地域の中に
+              震度が小さい地域があるかどうか。**分類番号は出さず意味だけ書く**（→ `lpgmCategoryNote`）。 */}
+          {lpgm && lpgm.maxClass >= 1 && categoryNote && (
+            <div className="text-secondary" style={{ fontSize: '0.75rem', lineHeight: 1.5 }}>
+              {categoryNote}
             </div>
           )}
 

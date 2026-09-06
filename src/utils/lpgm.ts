@@ -65,3 +65,25 @@ export function getLpgmClassRadius(cls: number): number {
 export function getLpgmClassBgColor(cls: number): string {
   return LPGM_BG_COLORS[cls] ?? 'transparent'
 }
+
+/**
+ * 長周期地震動に関する観測情報の種類（`LgCategory`）から、利用者へ伝える一文を作る。
+ *
+ * **分類番号そのものは出さない。**「種類2」と書いても何も伝わらない。値 2・4 が意味するのは
+ * 「長周期地震動階級を観測した地域のうち、最大震度が4以下の地域がある」＝**揺れそのものは
+ * 強くないのに、高層階が大きく揺れた地域がある**という状況で、高い建物にいる人にはこれが効く。
+ * 1・3 は階級を観測した地域がどこも震度5弱以上なので、震度の表示だけで状況が伝わる。
+ *
+ * **文は「地域があります」で受ける。** 電文が主張しているのは「そういう地域が存在する」ことで、
+ * 震度が小さかった地域すべてがそうだったとは言っていない。
+ *
+ * 値ごとの定義表と、この受け方にした理由の全文は
+ * `docs/spec/quake-spec.md` §8「長周期地震動の「観測情報の種類」は意味を出す」。
+ *
+ * @returns 伝えることがなければ空文字
+ */
+export function lpgmCategoryNote(category: number | undefined): string {
+  if (category !== 2 && category !== 4) return ''
+  return '震度が小さくても高層階が大きく揺れた地域があります'
+}
+

@@ -621,11 +621,16 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
     }
   }
 
+  // 取消しの概要（`Body/Text`）。地震情報・津波情報と同じ扱い（`Comments` は取消電文に出現しない）。
+  const eewCancelBodyEl = isCanceled ? xmlQ(doc, 'Body') : null
+  const eewCancelText = eewCancelBodyEl ? xmlText(xmlChild(eewCancelBodyEl, 'Text')) : ''
+
   return {
     kind: 'eew',
     id: `dmdata-eew-${eventId}-${serial}`,
     time: reportTime,
     test: false,
+    ...(eewCancelText && { cancelText: eewCancelText }),
     earthquake: {
       originTime: xmlText(eqEl ? xmlChild(eqEl, 'OriginTime') : null),
       arrivalTime: xmlText(eqEl ? xmlChild(eqEl, 'ArrivalTime') : null),
@@ -674,6 +679,8 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
 
   // 取消電文（InfoType === '取消'）: Earthquake 要素が存在しないため早期リターン
   if (infoType === '取消') {
+    const cancelBodyEl = xmlQ(doc, 'Body')
+    const cancelBodyText = cancelBodyEl ? xmlText(xmlChild(cancelBodyEl, 'Text')) : ''
     return {
       kind: 'quake',
       id: `dmdata-quake-${eventId}-${serial}`,
@@ -684,6 +691,9 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
       eventId: eventId || undefined,
       time: reportDateTime,
       cancelled: true,
+      // 取消しの概要（`Body/Text`）。**`Comments` ではなく `Body` 直下**——取消電文は付加文を
+      // 持たない（電文解説資料が「情報形態が"取消"の場合、本要素は出現しない」と定めている）。
+      ...(cancelBodyText && { cancelText: cancelBodyText }),
       issue: { source, time: reportDateTime, type: issueType, correct: 'なし' as CorrectType },
       earthquake: { time: '', hypocenter: { name: '', latitude: -200, longitude: -200, depth: -1, magnitude: 0 }, maxScale: -1, domesticTsunami: '不明' },
       points: [],
@@ -736,7 +746,8 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     : undefined
 
   // MaxInt は Intensity > Observation 直下。
-  // **仕様外への保険。** 電文解説資料は `MaxInt` の値域を全階層 "1"〜"7" と定めており、
+  // **仕様外への保険。** 電文解説資料は `MaxInt` の値域を "1"〜"7" と定めており
+  // （震度速報 VXSE51 だけは "3"〜"7"。震度3未満では発表しないため）、
   // その範囲に未入電の観測点しか無い場合は **`MaxInt` 要素そのものが出現しない**（未入電の
   // 文字列は入らない）。実電文 853 通でも `MaxInt` に現れたことは無い。
   // 仕様が変わってここへ入った場合に `-1` へ落として最大震度を失わないよう、読めるようにだけ
@@ -924,7 +935,12 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
   // 1 つの津波情報になる）。1 件目だけを読むと残りの震源が画面から消える。
   const sourceEarthquakeList = xmlAll(doc, 'Earthquake').map(eqEl => {
     const hypoEl = xmlQ(eqEl, 'Hypocenter')
-    const hypoName = hypoEl ? xmlText(xmlQ(hypoEl, 'Name')) : ''
+    // **詳細震央地名を優先する**（地震情報側（`parseEarthquakeFromXml`）と同じ規則）。
+    // 国外の地震では `Name` が「中米」のように粗く、`DetailedName` に「メキシコ、チアパス州沿岸」が
+    // 入る。津波側だけ粗い名前を出していた。
+    const hypoAreaEl = hypoEl ? xmlQ(hypoEl, 'Area') : null
+    const hypoName = (hypoAreaEl ? xmlText(xmlQ(hypoAreaEl, 'DetailedName')) : '')
+      || (hypoEl ? xmlText(xmlQ(hypoEl, 'Name')) : '')
     const magnitudeEl = xmlQ(eqEl, 'Magnitude')
     const magnitude = magnitudeEl ? parseFloat(xmlText(magnitudeEl)) : NaN
     // 規模が数値で求まらないとき、気象庁は本文を空にして `condition="不明"` を立て、
@@ -932,11 +948,16 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
     // それだけでは「観測が足りず不明」と「M8 を超えていて速報できない」を見分けられない。
     // 後者は同じ電文で予想波高が「巨大」「高い」になる場面で、最も伝えるべき事実にあたる。
     const magnitudeCondition = magnitudeEl?.getAttribute('description')?.trim() || undefined
+    // 震央補助表現は `Hypocenter/Area` 直下（`NameFromMark`）、震源決定機関は `Hypocenter` 直下
+    // （`Source`）。**どちらも地震情報側では既に読んでいるか読む価値があると分かっていたのに、
+    // 津波側だけ落ちていた**（規模の説明と同じ非対称）。`Area` は震源名で引いたものを使い回す。
     return {
       hypocenterName: hypoName,
       magnitude: !isNaN(magnitude) ? magnitude : undefined,
       ...(isNaN(magnitude) && magnitudeCondition && { magnitudeCondition }),
       originTime: xmlText(xmlQ(eqEl, 'OriginTime')) || undefined,
+      ...(hypoAreaEl && xmlText(xmlQ(hypoAreaEl, 'NameFromMark')) && { nameFromMark: xmlText(xmlQ(hypoAreaEl, 'NameFromMark')) }),
+      ...(hypoEl && xmlText(xmlChild(hypoEl, 'Source')) && { source: xmlText(xmlChild(hypoEl, 'Source')) }),
     }
   // 震源名を読めなかったものは落とす（名前が無いと画面に出しようがない）。
   }).filter(eq => eq.hypocenterName)
@@ -947,7 +968,10 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
 
   // InfoType=取消: 誤って発表した電文そのものの取消（誤報取消）
   if (cancelled) {
-    return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: true, cancelReason: 'retracted', issue: { source, time: reportDateTime, type: 'Focus' }, areas: [] }
+    // 取消しの概要（`Body/Text`）。地震情報側と同じ扱い（`Comments` は取消電文に出現しない）。
+    const cancelBodyEl = xmlQ(doc, 'Body')
+    const cancelText = cancelBodyEl ? xmlText(xmlChild(cancelBodyEl, 'Text')) : ''
+    return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: true, cancelReason: 'retracted', ...(cancelText && { cancelText }), issue: { source, time: reportDateTime, type: 'Focus' }, areas: [] }
   }
 
   const forecastEl = xmlQ(doc, 'Forecast')
@@ -1252,6 +1276,8 @@ function parseTsunamiObservationsFromXml(observationEl: Element, offshore: boole
         // 続報での位置づけ。**値の変化では代わりが利かない信号**を運ぶ
         // （→ `TsunamiObservation.maxHeightRevise`）。
         ...(mhEl && xmlText(xmlQ(mhEl, 'Revise')) && { maxHeightRevise: xmlText(xmlQ(mhEl, 'Revise')) }),
+        // 特殊観測機器の名称（Ⅱ.13 1-1-2-2）。沖合の観測点だけが持つ
+        ...(xmlText(xmlQ(st, 'Sensor')) && { sensor: xmlText(xmlQ(st, 'Sensor')) }),
         districtCode,
         districtName,
       })
@@ -1413,7 +1439,17 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   lgStationTally.warnIfNoneReadable(DMDATA_LOG_PREFIX)
   warnIfNoLpgmRegions(maxClass, regions.length, DMDATA_LOG_PREFIX)
 
-  return { id, eventId, time: reportDateTime, originTime, maxClass, cancelled: false, points, regions }
+  // 長周期地震動に関する観測情報の種類（Ⅱ.37 2-1-4）。値域は "1"〜"4"。
+  // **読めない値は持たせない**（分類が無いことと、知らない分類が来たことを区別する必要はない
+  // ——どちらも「意味を出せない」に落ちる）。値域の外は記録して捨てる。
+  const categoryStr = obsEl ? xmlText(xmlQ(obsEl, 'LgCategory')) : ''
+  const category = parseInt(categoryStr, 10)
+  if (categoryStr && !(category >= 1 && category <= 4)) {
+    log.warn(`${DMDATA_LOG_PREFIX} 長周期地震動の観測情報の種類を読めません（無視します）: "${categoryStr}"`)
+  }
+  const categoryValue = category >= 1 && category <= 4 ? category : undefined
+
+  return { id, eventId, time: reportDateTime, originTime, maxClass, cancelled: false, points, regions, ...(categoryValue && { category: categoryValue }) }
 }
 
 // 臨時情報の段階。Head/Title（情報名）の括弧内に現れるキーワードで判別する。

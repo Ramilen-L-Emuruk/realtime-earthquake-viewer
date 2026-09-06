@@ -1,9 +1,10 @@
 // earthquakeToText / lpgmToText（読み上げ文生成）のテスト。
 // 「〇時〇分」はローカルタイムゾーン依存のため、時刻の数値そのものではなく
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
-import { describe, it, expect } from 'vitest'
-import { nankaiToText, earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, tsunamiWarningLevelToText, selectWarningLevelToSpeak, WARNING_LEVEL_SPEAK_MAX_POINTS, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
+import { describe, it, expect, vi } from 'vitest'
+import { earthquakeCancelToText, tsunamiCancelToText, eewCancelToText, CANCEL_REASON_SPEAK_MAX_CHARS, nankaiToText, earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, tsunamiWarningLevelToText, selectWarningLevelToSpeak, WARNING_LEVEL_SPEAK_MAX_POINTS, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
 import { joinSegments, plain, type SpeechSegment } from './ttsFollow'
+import { log } from './logger'
 import { tsunamiAreaGradeChanges } from './tsunami'
 import { getStationCoordsCache } from './stationCoords'
 import { eewMaxScaleInfo, eewMaxLpgmClassInfo } from './eew'
@@ -1831,5 +1832,74 @@ describe('tsunamiWarningLevelToText', () => {
   it('既読にするのは読んだ分だけ', () => {
     const many = Array.from({ length: 8 }, (_, i) => obs(`沖合${i + 1}`))
     expect(selectWarningLevelToSpeak(many)).toHaveLength(WARNING_LEVEL_SPEAK_MAX_POINTS)
+  })
+})
+
+// 取消しの概要（電文の `Body/Text`）。アプリの定型文（「キャンセルされました」）は何が起きたかしか
+// 言っておらず、**なぜ取り消したのかは電文のこの本文にしか無い**。
+describe('取消の理由を読み上げる', () => {
+  // 正: 定型文の後ろに気象庁の本文を続ける
+  it('地震情報の取消に理由を足す', () => {
+    const text = earthquakeCancelToText('2026-01-01T12:00:00+09:00', '先ほどの地震情報は誤りでしたので取り消します。')
+    expect(text).toContain('キャンセルされました。')
+    expect(text).toContain('先ほどの地震情報は誤りでしたので取り消します。')
+  })
+
+  it('津波情報の取消に理由を足す', () => {
+    const text = tsunamiCancelToText('retracted', '先ほどの津波警報は誤りでしたので取り消します。')
+    expect(text).toContain('取り消されました。')
+    expect(text).toContain('先ほどの津波警報は誤りでしたので取り消します。')
+  })
+
+  // 対照: 理由が無ければ従来どおり（空文字を足して助詞だけの文にしない）
+  it('理由が無ければ従来どおり', () => {
+    // 時刻の書式はローカルタイムゾーン依存なので、末尾だけを見る
+    expect(earthquakeCancelToText('2026-01-01T12:00:00+09:00')).toMatch(/に発表された地震情報はキャンセルされました。$/)
+    expect(tsunamiCancelToText('lifted')).toBe('津波警報等は全て解除されました。')
+  })
+
+  // 安全弁: 句点で終わっていない本文には句点を足す（次の文と繋がって聞こえないため）
+  it('句点で終わらない本文には句点を足す', () => {
+    expect(tsunamiCancelToText('retracted', '装置の障害によるもの')).toContain('装置の障害によるもの。')
+  })
+
+  // 安全弁: 長い本文は読まない。読み上げが伸びると後続の電文が待ちの上限に達して割り込む
+  it('長すぎる本文は読まない（画面に委ねる）', () => {
+    const long = 'あ'.repeat(CANCEL_REASON_SPEAK_MAX_CHARS + 1)
+    expect(tsunamiCancelToText('retracted', long)).toBe('津波警報等は誤って発表されたため取り消されました。')
+  })
+})
+
+// 取消しの概要は地震・津波・EEW の 3 つで同じ構造。**扱いを揃えないと、同じ事象なのに
+// 種別によって理由が出たり出なかったりする。**
+describe('EEW の取消の理由を読み上げる', () => {
+  const cancelledEew = (cancelText?: string) => ({
+    kind: 'eew', id: 'e1', time: '2026-01-01T12:00:05+09:00', test: false, cancelled: true,
+    issue: { eventId: 'e', serial: '2', time: '2026-01-01T12:00:00+09:00' },
+    earthquake: { originTime: '2026-01-01T12:00:00+09:00', arrivalTime: '2026-01-01T12:00:00+09:00', hypocenter: { name: '日向灘', latitude: 32, longitude: 132, depth: 30, magnitude: 6.5 } },
+    ...(cancelText && { cancelText }),
+  } as unknown as EEWAlert)
+
+  it('理由を足す', () => {
+    const text = eewCancelToText(cancelledEew('先ほどの緊急地震速報は誤りでしたので取り消します。'))
+    expect(text).toContain('キャンセルされました。')
+    expect(text).toContain('先ほどの緊急地震速報は誤りでしたので取り消します。')
+  })
+
+  // 対照: 理由が無ければ従来どおり（空文字を足して助詞だけの文にしない）
+  it('理由が無ければ従来どおり', () => {
+    expect(eewCancelToText(cancelledEew())).toMatch(/緊急地震速報はキャンセルされました。$/)
+  })
+
+  // 安全弁: 上限を超えた本文は読まないが、**捨てたことを記録する**（画面には全文が出る）
+  it('長すぎる本文は読まず、記録を残す', () => {
+    const info = vi.spyOn(log, 'info').mockImplementation(() => {})
+    try {
+      const long = 'あ'.repeat(CANCEL_REASON_SPEAK_MAX_CHARS + 1)
+      expect(eewCancelToText(cancelledEew(long))).toMatch(/キャンセルされました。$/)
+      expect(info).toHaveBeenCalledWith(expect.stringContaining('取消しの概要が長いため'))
+    } finally {
+      info.mockRestore()
+    }
   })
 })

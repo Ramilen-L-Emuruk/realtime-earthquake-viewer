@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isValidLpgmClass, getLpgmClassLabel, getLpgmClassColor, getLpgmClassRadius } from './lpgm'
+import { isValidLpgmClass, getLpgmClassLabel, getLpgmClassColor, getLpgmClassRadius, lpgmCategoryNote } from './lpgm'
 import { LPGM_ICON_BASE_RADIUS } from '../components/Map/gl/lpgmIcons'
 
 describe('isValidLpgmClass', () => {
@@ -61,5 +61,29 @@ describe('getLpgmClassRadius', () => {
   it('区域バッジの最大半径が等倍でベース半径を超えない', () => {
     const maxRegionRadius = Math.max(...[1, 2, 3, 4].map(c => getLpgmClassRadius(c) + 8))
     expect(maxRegionRadius).toBeLessThanOrEqual(LPGM_ICON_BASE_RADIUS)
+  })
+})
+
+// 長周期地震動に関する観測情報の種類（電文の `LgCategory`）。
+// **分類番号そのものは利用者に出さない。** 値 2・4 が意味するのは「階級を観測した地域のうち
+// 最大震度が4以下の地域がある」＝揺れは強くないのに高層階が大きく揺れた地域がある、という状況。
+describe('長周期の観測情報の種類', () => {
+  // 正: 2・4 のときだけ意味を出す
+  it('2 と 4 では意味を出す', () => {
+    expect(lpgmCategoryNote(2)).toBe('震度が小さくても高層階が大きく揺れた地域があります')
+    expect(lpgmCategoryNote(4)).toBe('震度が小さくても高層階が大きく揺れた地域があります')
+  })
+
+  // 対照: 1・3 は階級を観測した地域がどこも震度5弱以上。震度の表示だけで状況が伝わるので何も足さない
+  it('1 と 3 では何も出さない', () => {
+    expect(lpgmCategoryNote(1)).toBe('')
+    expect(lpgmCategoryNote(3)).toBe('')
+  })
+
+  // 安全弁: 種類を持たない電文・値域の外では何も出さない（分類番号を画面に漏らさない）
+  it('無い値・値域の外では何も出さない', () => {
+    expect(lpgmCategoryNote(undefined)).toBe('')
+    expect(lpgmCategoryNote(0)).toBe('')
+    expect(lpgmCategoryNote(9)).toBe('')
   })
 })

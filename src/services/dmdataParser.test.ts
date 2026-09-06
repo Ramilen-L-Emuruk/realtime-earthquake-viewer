@@ -2459,7 +2459,7 @@ const VTSE52_XML = [
   '<Tsunami>',
   '<Observation>',
   '<Item><Area><Name>三陸沖北部</Name><Code>901</Code></Area>',
-  '<Station><Name>岩手中部沖</Name><Code>21401</Code>',
+  '<Station><Name>岩手中部沖</Name><Code>21401</Code><Sensor>ＧＮＳＳ波浪計</Sensor>',
   '<MaxHeight><jmx_eb:TsunamiHeight type="最大波の高さ" unit="m" description="１．２ｍ">1.2</jmx_eb:TsunamiHeight></MaxHeight>',
   '</Station>',
   // 「観測中」のまま Revise が「更新」。中身は変わりようがないので、気象庁が意図して
@@ -3018,5 +3018,119 @@ describe('最大波の Revise', () => {
     const xml = VTSE52_XML.replace('<Revise>更新</Revise>', '<Revise>追加</Revise>')
     const obs = parseTsunamiFromXml('VTSE52', xml)!.observations!
     expect(obs.find(o => o.name === '宮城沖')!.maxHeightRevise).toBe('追加')
+  })
+})
+
+// 電文が載せているのに読んでいなかった要素（第 4 段）。どれも単独では小さいが、
+// **読まなければ画面にも音声にも一切現れない**。
+describe('これまで読んでいなかった要素', () => {
+  // 正: 沖合観測点の特殊観測機器（Ⅱ.13 1-1-2-2）。波浪計と水圧計では測っているものが違う
+  it('沖合観測点の Sensor を読む', () => {
+    const obs = parseTsunamiFromXml('VTSE52', VTSE52_XML)!.observations!
+    expect(obs.find(o => o.name === '岩手中部沖')!.sensor).toBe('ＧＮＳＳ波浪計')
+  })
+
+  // 対照: Sensor を持たない観測点には付けない（沿岸の観測点は持たない）
+  it('Sensor が無ければ持たせない', () => {
+    expect(parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!.observations![0].sensor).toBeUndefined()
+  })
+
+  // 正: 取消しの概要（`Body/Text`）。**なぜ取り消したかはここにしか無い**
+  it('地震情報の取消の理由を読む', () => {
+    const xml = VXSE53_XML
+      .replace('<InfoType>発表</InfoType>', '<InfoType>取消</InfoType>')
+      .replace('</Body>', '<Text>先ほどの地震情報は誤りでしたので取り消します。</Text></Body>')
+    const quake = parseEarthquakeFromXml('VXSE53', xml)!
+    expect(quake.cancelled).toBe(true)
+    expect(quake.cancelText).toBe('先ほどの地震情報は誤りでしたので取り消します。')
+  })
+
+  it('津波情報の取消の理由を読む', () => {
+    const xml = PARITY_TSUNAMI_XML
+      .replace('<InfoType>発表</InfoType>', '<InfoType>取消</InfoType>')
+      .replace('</Body>', '<Text>先ほどの津波警報は誤りでしたので取り消します。</Text></Body>')
+    const t = parseTsunamiFromXml('VTSE51', xml)!
+    expect(t.cancelled).toBe(true)
+    expect(t.cancelText).toBe('先ほどの津波警報は誤りでしたので取り消します。')
+  })
+
+  // 対照: 通常報の `Body` 直下に Text は出ない。取消以外で拾わないこと
+  it('通常報では取消の理由を持たせない', () => {
+    expect(parseEarthquakeFromXml('VXSE53', VXSE53_XML)!.cancelText).toBeUndefined()
+  })
+
+  // 正: 津波の原因地震の詳細震央地名。**地震情報側は読んでいたのに津波側だけ落ちていた**
+  it('津波の原因地震は詳細震央地名を優先する', () => {
+    const xml = PARITY_TSUNAMI_XML.replace(
+      '<Hypocenter><Area><Name>房総半島沖</Name></Area></Hypocenter>',
+      '<Hypocenter><Area><Name>中米</Name><DetailedName>メキシコ、チアパス州沿岸</DetailedName></Area></Hypocenter>',
+    )
+    expect(parseTsunamiFromXml('VTSE51', xml)!.sourceEarthquakes![0].hypocenterName).toBe('メキシコ、チアパス州沿岸')
+  })
+
+  // 対照: 詳細震央地名が無ければ震央地名へ落ちる
+  it('詳細震央地名が無ければ震央地名を使う', () => {
+    expect(parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!.sourceEarthquakes![0].hypocenterName).toBe('房総半島沖')
+  })
+
+  // 正: 震央補助表現と震源決定機関（Ⅱ.13 2-3-1-4 / 2-3-2）
+  it('震央補助表現と震源決定機関を読む', () => {
+    const xml = PARITY_TSUNAMI_XML.replace(
+      '<Hypocenter><Area><Name>房総半島沖</Name></Area></Hypocenter>',
+      '<Hypocenter><Area><Name>駿河湾</Name><NameFromMark>御前崎の北東４０ｋｍ付近</NameFromMark></Area><Source>ＰＴＷＣ</Source></Hypocenter>',
+    )
+    const eq = parseTsunamiFromXml('VTSE51', xml)!.sourceEarthquakes![0]
+    expect(eq.nameFromMark).toBe('御前崎の北東４０ｋｍ付近')
+    expect(eq.source).toBe('ＰＴＷＣ')
+  })
+
+  // 対照: どちらも無ければ持たせない（大多数の地震はこちら）
+  it('震央補助表現・震源決定機関が無ければ持たせない', () => {
+    const eq = parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!.sourceEarthquakes![0]
+    expect(eq.nameFromMark).toBeUndefined()
+    expect(eq.source).toBeUndefined()
+  })
+
+  // 正: 長周期地震動に関する観測情報の種類（Ⅱ.37 2-1-4）
+  it('長周期の観測情報の種類を読む', () => {
+    const xml = PARITY_LPGM_XML.replace('<MaxLgInt>2</MaxLgInt>', '<MaxLgInt>2</MaxLgInt><LgCategory>2</LgCategory>')
+    expect(parseLpgmFromXml(xml)!.category).toBe(2)
+  })
+
+  // 安全弁: 値域（"1"〜"4"）の外は記録して捨てる。既定値へ丸めると、意味を持たない番号で
+  // 「高層階が大きく揺れた地域があります」の一文を出しかねない
+  it('値域の外は記録して捨てる', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const xml = PARITY_LPGM_XML.replace('<MaxLgInt>2</MaxLgInt>', '<MaxLgInt>2</MaxLgInt><LgCategory>9</LgCategory>')
+      expect(parseLpgmFromXml(xml)!.category).toBeUndefined()
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('観測情報の種類を読めません'))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 対照: LgCategory が無い電文では持たせない
+  it('LgCategory が無ければ持たせない', () => {
+    expect(parseLpgmFromXml(PARITY_LPGM_XML)!.category).toBeUndefined()
+  })
+})
+
+// 取消しの概要は 3 つの電文で同じ構造（`Body/Text`）。**片方だけ拾うと、同じ事象なのに
+// 種別によって理由が出たり出なかったりする。**
+describe('EEW の取消の理由', () => {
+  // 正: EEW の誤報取消も理由を読む
+  it('取消の理由を読む', () => {
+    const xml = EEW_XML
+      .replace('<InfoType>発表</InfoType>', '<InfoType>取消</InfoType>')
+      .replace('</Body>', '<Text>先ほどの緊急地震速報は誤りでしたので取り消します。</Text></Body>')
+    const eew = parseEEWFromXml('VXSE45', xml)!
+    expect(eew.cancelled).toBe(true)
+    expect(eew.cancelText).toBe('先ほどの緊急地震速報は誤りでしたので取り消します。')
+  })
+
+  // 対照: 通常報では拾わない。取消電文に付加文は出現しないので `Body` 直下だけを見る
+  it('通常報では持たせない', () => {
+    expect(parseEEWFromXml('VXSE45', EEW_XML)!.cancelText).toBeUndefined()
   })
 })

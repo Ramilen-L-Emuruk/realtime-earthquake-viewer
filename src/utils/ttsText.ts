@@ -679,9 +679,12 @@ function formatDayTime(isoTime: string): string {
 /** VXSE43/45 EEW キャンセル（誤報取消）の読み上げテキストを生成する。 */
 export function eewCancelToText(event: EEWAlert): string {
   const time = event.issue?.time ? formatTime(event.issue.time) : null
-  return time
+  const head = time
     ? `${time}に発表された緊急地震速報はキャンセルされました。`
     : '緊急地震速報はキャンセルされました。'
+  // 地震情報・津波情報と同じ扱い（→ `cancelReasonSentence`）。3 つの電文で揃えないと、
+  // 同じ事象なのに種別によって理由が出たり出なかったりする
+  return head + cancelReasonSentence(event.cancelText)
 }
 
 /**
@@ -689,11 +692,45 @@ export function eewCancelToText(event: EEWAlert): string {
  * time は取消電文自体の発表時刻ではなく、同一 eventId で最後に受信した地震情報の発表時刻を渡すこと
  * （呼び出し側 useLiveEventHandler.ts で解決する）。
  */
-export function earthquakeCancelToText(time: string | null): string {
+export function earthquakeCancelToText(time: string | null, cancelText?: string): string {
   const formatted = time ? formatTime(time) : null
-  if (formatted) return `${formatted}に発表された地震情報はキャンセルされました。`
-  return '地震情報はキャンセルされました。'
+  const head = formatted
+    ? `${formatted}に発表された地震情報はキャンセルされました。`
+    : '地震情報はキャンセルされました。'
+  return head + cancelReasonSentence(cancelText)
 }
+
+/**
+ * 取消しの概要（電文の `Body/Text`）を読み上げへ足す句。無ければ空。
+ *
+ * **気象庁が書いた理由をそのまま読む。** アプリの定型文（「キャンセルされました」）は何が
+ * 起きたかしか言っておらず、なぜ取り消したのかは電文のこの本文にしか無い。
+ *
+ * **長い本文は読まない。** 取消しの概要は 1〜2 文が通例だが、他の自由文と同じく長文が入りうる。
+ * 読み上げが伸びると後続の電文が待ちの上限に達して割り込むため、上限を超えたら画面に委ねる
+ * （画面には全文が出る）。
+ */
+function cancelReasonSentence(cancelText: string | undefined): string {
+  const text = cancelText?.replace(/\s+/g, ' ').trim()
+  if (!text) return ''
+  if (text.length > CANCEL_REASON_SPEAK_MAX_CHARS) {
+    // **捨てたことを残す。** 気象庁が書いた理由を丸ごと落とすので、痕跡が無いと
+    // 「今日は長文だったから読まなかった」を後から確かめられない（画面には全文が出る）。
+    log.info(`[tts] 取消しの概要が長いため読み上げを省きました（${text.length}文字。画面には全文が出ます）`)
+    return ''
+  }
+  // 電文の本文は句点で終わることが多いが、終わっていなければ足す（次の文と繋がって聞こえないため）
+  return /[。．]$/.test(text) ? text : `${text}。`
+}
+
+/**
+ * 取消しの概要を読み上げる上限（文字数）。
+ *
+ * 実電文の取消しの概要は 1〜2 文（例「先ほどの地震情報は誤りでしたので取り消します。」）。
+ * 超える本文は画面に委ねる —— 読み上げが伸びると、後続の電文が待ちの上限
+ * （`HIGHER_PRIORITY_SPEECH_MAX_WAIT_MS`）に達して割り込む。
+ */
+export const CANCEL_REASON_SPEAK_MAX_CHARS = 120
 
 /**
  * EEW 第1フェーズ（新規発報の即時、または続報での震源更新時）の読み上げテキストを生成する。
@@ -1485,10 +1522,14 @@ export function tsunamiAreaGradeChangeToText(changes: readonly TsunamiAreaGradeC
 }
 
 /** VTSE41/51/52 津波警報等 全解除の読み上げテキストを cancelReason ごとに生成する。 */
-export function tsunamiCancelToText(cancelReason: JMATsunami['cancelReason']): string {
-  if (cancelReason === 'retracted') return '津波警報等は誤って発表されたため取り消されました。'
-  if (cancelReason === 'expired') return '津波予報の有効期間が終了しました。'
-  return '津波警報等は全て解除されました。'
+export function tsunamiCancelToText(cancelReason: JMATsunami['cancelReason'], cancelText?: string): string {
+  const head = cancelReason === 'retracted'
+    ? '津波警報等は誤って発表されたため取り消されました。'
+    : cancelReason === 'expired'
+      ? '津波予報の有効期間が終了しました。'
+      : '津波警報等は全て解除されました。'
+  // 取消しの概要は取消電文にしか入らない。解除・失効では電文に無いので空のまま
+  return head + cancelReasonSentence(cancelText)
 }
 
 /** 観測点を districtName（津波予報区）ごとにまとめる。区域名を持たない観測は単独の項目にする。 */

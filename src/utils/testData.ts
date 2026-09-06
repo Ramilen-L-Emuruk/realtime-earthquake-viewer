@@ -215,6 +215,10 @@ export function createTestLpgm(eventId: string): JMALpgm {
     originTime: now,
     maxClass: notoHonshinLpgm.maxClass,
     cancelled: false,
+    // 電文の「観測情報の種類」。**4＝階級3以上を観測した地域のうち、最大震度が4以下の地域がある**
+    // （揺れは強くないのに高層階が大きく揺れた地域がある）。値 1・3 では何も出さないので、
+    // 意味を出す側の経路を実機で通せるよう 4 を入れている
+    category: 4,
     regions: notoHonshinLpgm.regions,
     points: notoHonshinLpgm.points,
   }
@@ -592,7 +596,7 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
     // テストにも入れておく。2 件目は、短い間に起きた地震がまとめて 1 通で届く場合の形。
     sourceEarthquakes: [
       { hypocenterName: '三陸沖', magnitudeCondition: 'Ｍ８を超える巨大地震', originTime: nowIso },
-      { hypocenterName: '岩手県沖', magnitude: 7.2, originTime: t(-3) },
+      { hypocenterName: '岩手県沖', magnitude: 7.2, originTime: t(-3), nameFromMark: '宮古の東１２０ｋｍ付近', source: 'ＰＴＷＣ' },
     ],
     // name は地図の海岸線表示用に、津波予報区データ（tsunami-zones.json）に実在する区域名を使用する
     // 2011年東北地方太平洋沖地震を参考にした発令内容
@@ -675,12 +679,12 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
       { name: '釧路',   districtCode: '080', districtName: '北海道太平洋沿岸東部', arrivalTime: t(30), initial: '押し', condition: { weak: true } },
       // 沖合の潮位観測点。「重要」の基準が沿岸と違う（大津波警報だけでなく津波警報も含む）ため、
       // 出所の印（offshore）を付けてバッジの語が切り替わることを確かめられるようにする。
-      { name: '沖合40km', offshore: true, height: { value: 3.0, description: '3.0m以上', over: true }, arrivalTime: nowIso, condition: { important: true } },
+      { name: '沖合40km', offshore: true, sensor: 'ＧＮＳＳ波浪計', height: { value: 3.0, description: '3.0m以上', over: true }, arrivalTime: nowIso, condition: { important: true } },
       // 「観測中」のまま Revise が「更新」。大津波警報の区域に対応する沖合の観測点で、沿岸で
       // 推定される高さが 3m 超に届かないときの形で、**津波警報に相当する津波を観測している**
       // ことを気象庁が示す（電文解説資料 Ⅱ.13 1-1-2-2-2）。値が変わらないので、アプリの
       // 「値の変化で判定する」仕組みでは作れない状態 —— テストボタンに無いと実機で一度も見られない。
-      { name: '沖合80km', offshore: true, arrivalTime: t(-1), condition: { observing: true }, maxHeightRevise: '更新' },
+      { name: '沖合80km', offshore: true, sensor: '水圧計', arrivalTime: t(-1), condition: { observing: true }, maxHeightRevise: '更新' },
     ],
     // 沖合の観測から導いた沿岸への推定（電文の `Estimation`）。沖合の観測点は沿岸より先に
     // 津波を捉えるため、**まだ到達していない沿岸**の到達予想と高さが入る。
