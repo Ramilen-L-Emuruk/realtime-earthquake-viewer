@@ -1799,6 +1799,60 @@ export function tsunamiMissingToText(obs: TsunamiObservation[], maxPoints = MISS
   return joinSegments(tsunamiMissingToSegments(obs, maxPoints))
 }
 
+/**
+ * 「観測中」のまま津波警報に相当する津波を観測している観測点を読む上限。
+ *
+ * 沖合の観測点は数が限られるうえ、この状態になるのは大津波警報の発表中だけ。欠測と同じ
+ * 件数に揃えてある（読み上げが長くなりすぎない範囲で、落ちた分は件数で伝える）。
+ */
+export const WARNING_LEVEL_SPEAK_MAX_POINTS = 5
+
+/**
+ * 読み上げる観測点の絞り込み。
+ *
+ * **既読の記録と文の生成で同じものを通すこと。** 別々に切ると、上限で読まなかった観測点まで
+ * 既読になり、次の報でも読まれない（到達確認・欠測でも同じ規則）。
+ */
+export function selectWarningLevelToSpeak(
+  obs: readonly TsunamiObservation[],
+  maxPoints = WARNING_LEVEL_SPEAK_MAX_POINTS,
+): TsunamiObservation[] {
+  return obs.slice(0, maxPoints)
+}
+
+/**
+ * 「観測中」のまま津波警報に相当する津波を観測している観測点の読み上げ。
+ *
+ * 気象庁が `Revise` に置いた信号（→ `tsunami.ts` の `isWarningLevelWhileObserving`）を伝える。
+ * **波高の数値が無いため、他のどの文にも乗らない** —— 波高更新の文は数値を読み、到達確認の文は
+ * 「到達を確認しました」で到達だけを述べる。この状態を黙って落とすと、資料が「注意する必要が
+ * ある」と名指しした事実が音声から消える。
+ *
+ * **高さは言わない。** 電文が数値を出していないので、アプリが「1m 超」などと補ってはいけない。
+ * 伝えるのは気象庁が言ったことだけ ―― 警報に相当する津波を観測している、という事実。
+ *
+ * **読む順は渡された並びのまま**（呼び出し側がカードの並びで渡す。欠測・到達確認と同じ）。
+ */
+export function tsunamiWarningLevelToSegments(
+  obs: TsunamiObservation[],
+  maxPoints = WARNING_LEVEL_SPEAK_MAX_POINTS,
+): SpeechSegment[] {
+  if (obs.length === 0) return []
+  const shown = selectWarningLevelToSpeak(obs, maxPoints)
+  return [
+    ...observationDetailSegments(shown, () => ''),
+    plain('では、津波警報に相当する津波を観測しています。'),
+    ...omittedPointsSentence(obs.length, shown.length, '津波警報に相当する津波を観測しています', 'も'),
+  ]
+}
+
+export function tsunamiWarningLevelToText(
+  obs: TsunamiObservation[],
+  maxPoints = WARNING_LEVEL_SPEAK_MAX_POINTS,
+): string {
+  return joinSegments(tsunamiWarningLevelToSegments(obs, maxPoints))
+}
+
 /** 南海トラフ地震臨時情報（VYSE50/51/52）の読み上げテキストを生成する。 */
 export function nankaiToText(event: JMANankai): string {
   // **取消と調査終了を混ぜない。** 取消は「その電文を撤回する」だけで、地震の発生可能性に

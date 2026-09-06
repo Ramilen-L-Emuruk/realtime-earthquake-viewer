@@ -1249,6 +1249,9 @@ function parseTsunamiObservationsFromXml(observationEl: Element, offshore: boole
         initial: initial || undefined,
         // 沿岸（VTSE51）と沖合（VTSE52）で「重要」の基準が違うため、出所を持ち回す。
         ...(offshore && { offshore: true }),
+        // 続報での位置づけ。**値の変化では代わりが利かない信号**を運ぶ
+        // （→ `TsunamiObservation.maxHeightRevise`）。
+        ...(mhEl && xmlText(xmlQ(mhEl, 'Revise')) && { maxHeightRevise: xmlText(xmlQ(mhEl, 'Revise')) }),
         districtCode,
         districtName,
       })
@@ -1415,21 +1418,57 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
 
 // 臨時情報の段階。Head/Title（情報名）の括弧内に現れるキーワードで判別する。
 // 「調査終了」と「調査中」は互いに部分文字列にならないため、並び順に依存しない。
-const NANKAI_STAGES: ReadonlyArray<{ keyword: string; code: string }> = [
-  { keyword: '巨大地震警戒', code: '0203' },
-  { keyword: '巨大地震注意', code: '0202' },
-  { keyword: '調査終了',     code: '0204' },
-  { keyword: '調査中',       code: '0201' },
-]
+/**
+ * 南海トラフ地震臨時情報の段階（気象庁「地震関連情報番号コード」）。
+ *
+ * 値は気象庁のコード表（`EarthquakeInformation` コード表・種別「地震関連情報番号」）そのまま。
+ * **調査中に 3 つあるのは発表の契機が違うため**（111＝監視領域内の M6.8 以上の地震、
+ * 112＝ひずみ計の有意な変化、113＝その他の現象）。段階としてはどれも「調査中」で、
+ * いまは画面・読み上げとも契機を出し分けていない。
+ */
+const NANKAI_STAGE_BY_CODE: Readonly<Record<string, string>> = {
+  '111': '調査中',
+  '112': '調査中',
+  '113': '調査中',
+  '120': '巨大地震警戒',
+  '130': '巨大地震注意',
+  '190': '調査終了',
+}
+
+/**
+ * 段階の名称。`InfoSerial` を読めなかった電文で `Head/Title` から拾うための落とし先。
+ *
+ * **一次情報源は `InfoSerial`**（上の表）。`Head/Title` は電文がそこから組み立てた結果で、
+ * 文字列の一致に頼ると表記が変わった日に黙って読めなくなる。ただし `InfoSerial` は
+ * 電文仕様上は省略可（0 回/1 回）なので、落とし先は残す。
+ */
+const NANKAI_STAGE_KEYWORDS: readonly string[] = ['巨大地震警戒', '巨大地震注意', '調査終了', '調査中']
+
+/** 解説情報が `Body/EarthquakeInfo/InfoKind` に名乗る値（電文解説資料 Ⅱ.41 1-1）。 */
+const NANKAI_COMMENTARY_INFO_KIND = '南海トラフ地震関連解説情報'
+
+/**
+ * 解説情報の地震関連情報番号コード（200＝定例解説／210・219＝臨時解説）。
+ *
+ * **臨時情報と同じ番号体系にある。** 段階のコードだけを見ると解説情報を段階として読むので、
+ * 段階の判定から明示的に外す。
+ */
+const NANKAI_COMMENTARY_CODES: ReadonlySet<string> = new Set(['200', '210', '219'])
 
 // REST API 経由の JMA XML（VYSE50: 南海トラフ地震臨時情報）を JMANankai にパース。
 // 段階を判別できない電文（= 解説情報 VYSE51/52）は null を返す。解説情報は
 // parseNankaiCommentaryFromXml で別の型に読む。
 //
-// 段階の情報源は Head/Title（例「南海トラフ地震臨時情報（巨大地震注意）」）。
+// 段階の一次情報源は Body/EarthquakeInfo/InfoSerial（地震関連情報番号コード。電文解説資料 Ⅱ.41 1-2）。
+// 実電文（2024-08-08 の 2 通）でも `<InfoSerial codeType="地震関連情報番号コード"><Name>調査中</Name>
+// <Code>111</Code></InfoSerial>` の形で入っていた。**実電文で裏が取れているのは 111（調査中）と
+// 130（巨大地震注意）の 2 つだけ**で、残りは公開コード表からの写し（120・190 が発表された
+// ことは過去に一度も無い）。食い違いに気づけるよう、表と電文の名乗りがずれたら記録を残す。
+//
 // **Head/InfoKind は使えない。** 実電文 14 通すべてで「南海トラフ地震に関連する情報」で
-// 固定されており、段階のキーワードを含まないため、以前はどの電文も既定値の「調査中」に
-// 落ちていた（「巨大地震注意」が「調査中」と表示される不具合）。
+// 固定されており、段階のキーワードを含まない（以前はここを見ていて、どの電文も既定値の
+// 「調査中」に落ちていた）。**Head/Title は落とし先**——段階は読めるが、電文が `InfoSerial` から
+// 組み立てた結果なので文字列の一致に頼ることになる。
 export function parseNankaiFromXml(xml: string): JMANankai | null {
   const doc = parseTelegramXml(xml, DMDATA_LOG_PREFIX)
   if (!doc) return null
@@ -1462,7 +1501,7 @@ export function parseNankaiFromXml(xml: string): JMANankai | null {
   const headEl   = xmlQ(doc, 'Head')
   const headline = headEl ? xmlText(xmlQ(headEl, 'Title')) : ''
 
-  const stage = NANKAI_STAGES.find(s => headline.includes(s.keyword))
+  const stage = resolveNankaiStage(doc, headline)
   // 段階が読めない電文は臨時情報ではない（解説情報など）。既定値で「調査中」を騙るより
   // 呼び出し側に判断を返す。
   if (!stage) return null
@@ -1479,18 +1518,77 @@ export function parseNankaiFromXml(xml: string): JMANankai | null {
 
   return {
     id, time: reportDateTime, eventId,
-    kindCode: stage.code, kindName: stage.keyword,
+    kindCode: stage.code, kindName: stage.name,
     headline, body: bodyText,
-    cancelled: stage.code === '0204', reportDateTime,
+    // 調査終了で帯を引っ込める。**コードではなく名称で見る**——`InfoSerial` を読めず
+    // `Head/Title` へ落ちた電文はコードを持たないため、コードで判定すると帯が残る。
+    cancelled: stage.name === '調査終了', reportDateTime,
   }
+}
+
+/**
+ * 南海トラフ地震臨時情報の段階を決める。臨時情報でなければ `null`。
+ *
+ * `InfoSerial/Code` を先に見て、読めなければ `Head/Title` のキーワードへ落とす。
+ * **落ちたことは記録する** —— 段階そのものは読めているので画面には異常が出ず、
+ * 一次情報源が消えたことに気づく手がかりが他に無い。
+ */
+function resolveNankaiStage(doc: Document, headline: string): { code: string; name: string } | null {
+  const bodyEl = xmlQ(doc, 'Body')
+  const quakeInfoEl = bodyEl ? xmlQ(bodyEl, 'EarthquakeInfo') : null
+  // **臨時情報と解説情報は電文自身が名乗り分けている**（Ⅱ.41 1-1「”南海トラフ地震臨時情報”
+  // 又は”南海トラフ地震関連解説情報”を記載する」）。段階のコードは両者で同じ番号体系を使う
+  // （200/210/219 が解説情報）ので、ここで先に分けないと解説情報を段階として読んでしまう。
+  // **Head/InfoKind ではない** —— あちらは「南海トラフ地震に関連する情報」で固定。
+  const infoKind = quakeInfoEl ? xmlText(xmlQ(quakeInfoEl, 'InfoKind')) : ''
+  if (infoKind === NANKAI_COMMENTARY_INFO_KIND) return null
+
+  const serialEl = quakeInfoEl ? xmlQ(quakeInfoEl, 'InfoSerial') : null
+  const code = serialEl ? xmlText(xmlQ(serialEl, 'Code')) : ''
+  const serialName = serialEl ? xmlText(xmlQ(serialEl, 'Name')) : ''
+
+  const known = NANKAI_STAGE_BY_CODE[code]
+  if (known) {
+    // **表と電文の名乗りが食い違ったら黙って通さない。** 表は気象庁の公開コード表を写したものだが、
+    // 実電文で裏を取れているのは 111（調査中）と 130（巨大地震注意）の 2 つだけ。残り 4 つは
+    // 過去に発表されたことが無く、写し間違いや改訂に気づく手立てが他に無い。
+    if (serialName && serialName !== known) {
+      log.warn(`[dmdata] 南海トラフ臨時情報のコードと名称が食い違います: ${code}（表では"${known}"）／電文の名称は"${serialName}"`)
+      // **電文が段階名を名乗っているならそちらを採る。** 表が古い可能性のほうを先に潰す ——
+      // 取り違えの向きによっては、巨大地震警戒の報を調査終了として帯ごと消しかねない。
+      // 名乗りが段階名そのものでない（表記ゆれ・注記付き）ときは表を採る（アプリ内の判定は
+      // `kindName` の一致で書かれているため、揺れた文字列を通すとそちらが崩れる）。
+      if (NANKAI_STAGE_KEYWORDS.includes(serialName)) return { code, name: serialName }
+    }
+    return { code, name: known }
+  }
+
+  // **解説情報のコードは段階として通さない。** 上の `InfoKind` の分岐で弾けているはずだが、
+  // その 1 枚だけに頼ると、名乗りが揺れた電文で解説情報が「段階」として画面へ出る。
+  if (NANKAI_COMMENTARY_CODES.has(code)) return null
+
+  // コードは読めたが表に無い。気象庁が段階を増やした場合で、電文の `Name` をそのまま使う。
+  // **既定値へ丸めない** —— 知らない段階を「調査中」と名乗ると、警戒の報を軽く見せうる。
+  // **帯を引っ込めるかは名称の一致（`kindName === '調査終了'`）で決まる**ので、終了に相当する
+  // 段階が新しい名前で来た場合は帯が残る。軽く見せない側を優先した結果として受け入れている。
+  if (code && serialName) {
+    log.warn(`[dmdata] 南海トラフ臨時情報に未知の地震関連情報番号コードがあります（名称をそのまま使います）: ${code} "${serialName}"`)
+    return { code, name: serialName }
+  }
+
+  const keyword = NANKAI_STAGE_KEYWORDS.find(k => headline.includes(k))
+  if (!keyword) return null
+  log.warn(`[dmdata] 南海トラフ臨時情報の InfoSerial を読めないため Head/Title から段階を採ります: "${headline}"`)
+  return { code: '', name: keyword }
 }
 
 // REST API 経由の JMA XML（VYSE51/52: 南海トラフ地震関連解説情報）を JMANankaiCommentary に
 // パース。段階を持つ電文（= 臨時情報 VYSE50）は null を返す。
 //
-// 種別は Body/EarthquakeInfo/InfoSerial（地震関連情報番号コード）で判別する。実電文で
-// 確認できたのは臨時解説 210 と定例解説 200 の 2 値のみ。コード表は非公開のため、
-// 未知のコードでも解説情報として通し、名称はそのまま表示に使う。
+// 種別は Body/EarthquakeInfo/InfoSerial（地震関連情報番号コード）で判別する。コード表が定める
+// 解説情報の値は 200＝定例解説／210＝臨時解説（次回も臨時）／219＝臨時解説（次回は定例）の 3 つで、
+// **名称はどちらの臨時解説も「臨時解説」**（次回の予定だけがコードで分かれる）。実電文で
+// 確認できたのは 210 と 200。未知のコードでも解説情報として通し、名称はそのまま表示に使う。
 export function parseNankaiCommentaryFromXml(xml: string): JMANankaiCommentary | null {
   const doc = parseTelegramXml(xml, DMDATA_LOG_PREFIX)
   if (!doc) return null
@@ -1501,7 +1599,7 @@ export function parseNankaiCommentaryFromXml(xml: string): JMANankaiCommentary |
   // 段階キーワードを持つのは臨時情報。呼び出し側（dmdata.ts / dmdataReplay.ts）が電文種別で
   // 振り分けているため通常は発火しない二重防御。単体で呼んだときに臨時情報を取り違えないための
   // 保険であり、相互排他は dmdataParser.test.ts で固定している。
-  if (NANKAI_STAGES.some(s => headline.includes(s.keyword))) return null
+  if (NANKAI_STAGE_KEYWORDS.some(k => headline.includes(k))) return null
 
   const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
   // 期限（expireAt）の計算に使うため、日時として解釈できることをここで確かめる。

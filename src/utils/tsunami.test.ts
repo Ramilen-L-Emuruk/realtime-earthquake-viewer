@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  isWarningLevelWhileObserving,
   importantBadgeText,
   forecastHeightImportantBadge,
   estimationBadges,
@@ -897,5 +898,64 @@ describe('沿岸への推定の波高欄', () => {
   it('推定中はバッジにしない', () => {
     expect(estimationBadges({ name: '福島県', condition: { estimating: true } })).toEqual([])
     expect(estimationBadges({ name: '岩手県', condition: { important: true } })).toEqual(['大津波警報・津波警報の基準超'])
+  })
+})
+
+// 「観測中」のまま津波警報に相当する津波を観測している状態。
+//
+// 気象庁は大津波警報の区域に対応する沖合の観測点で、沿岸で推定される高さが大津波警報の基準
+// （3m 超）に届かないとき数値を出さず「観測中」とする。そのとき `Revise` に「更新」と書くことで
+// 津波警報相当（1m 超）を観測していることを示す（Ⅱ.13 1-1-2-2-2）。
+// **「観測中」の中身は変わりようがないので、値の変化からは導けない。**
+describe('観測中のまま津波警報相当', () => {
+  const offshoreObserving = (over: Partial<TsunamiObservation> = {}): TsunamiObservation => ({
+    name: '宮城沖', offshore: true, condition: { observing: true }, ...over,
+  })
+
+  // 正: 沖合・観測中・Revise=更新 の 3 つが揃ったとき。
+  it('沖合で観測中のまま更新なら立てる', () => {
+    expect(isWarningLevelWhileObserving(offshoreObserving({ maxHeightRevise: '更新' }))).toBe(true)
+  })
+
+  // 対照: 「追加」では立てない（新たに観測中になっただけ）。
+  it('追加では立てない', () => {
+    expect(isWarningLevelWhileObserving(offshoreObserving({ maxHeightRevise: '追加' }))).toBe(false)
+  })
+
+  // 対照: Revise が無ければ立てない。
+  it('Revise が無ければ立てない', () => {
+    expect(isWarningLevelWhileObserving(offshoreObserving())).toBe(false)
+  })
+
+  // 安全弁: 沿岸の観測点には当てない。仕組みとしては成り立ちそうに見えるが、資料が注意を
+  // 書いているのは沖合だけ。先回りすると気象庁が言っていない警告をアプリが作ることになる。
+  it('沿岸の観測点には当てない', () => {
+    expect(isWarningLevelWhileObserving({
+      name: '銚子', condition: { observing: true }, maxHeightRevise: '更新',
+    })).toBe(false)
+  })
+
+  // 安全弁: 「観測中」でなければ当てない（数値が出ている観測点の更新は普通の更新）。
+  it('観測中でなければ当てない', () => {
+    expect(isWarningLevelWhileObserving({
+      name: '宮城沖', offshore: true, maxHeightRevise: '更新',
+      height: { value: 1.2, description: '1.2m' },
+    })).toBe(false)
+  })
+
+  // 正: バッジに出る。既存の「重要」のバッジと併記できる。
+  it('バッジに出す', () => {
+    expect(observationBadges(offshoreObserving({ maxHeightRevise: '更新', arrivalTime: '2026-01-01T12:20:00+09:00' })))
+      .toContain('津波警報相当を観測')
+  })
+
+  // 安全弁: 「〜の基準超」と同じ形にしない。同じ行に並ぶので、形を揃えると
+  // 「実測値が弱いほうの基準だけ超えた」と読める（実際は数値が出ていない）
+  it('「基準超」の語形と混ぜない', () => {
+    const badge = observationBadges(offshoreObserving({ maxHeightRevise: '更新', arrivalTime: '2026-01-01T12:20:00+09:00' }))
+      .find(b => b.includes('津波警報'))!
+    expect(badge).not.toContain('基準超')
+    expect(badge).not.toBe(importantBadgeText(true))
+    expect(badge).not.toBe(importantBadgeText(false))
   })
 })

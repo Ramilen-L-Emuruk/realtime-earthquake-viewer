@@ -1279,17 +1279,32 @@ describe('XML 経路が落としてはいけない項目（長周期地震動）
 
 // ─── 南海トラフ関連（VYSE50 臨時情報 / VYSE51・VYSE52 関連解説情報）───────────────
 //
-// 実電文 14 通（2024年8月の臨時情報・臨時解説、2026年3〜8月の定例解説）で確認した構造に
-// 合わせている。要点は **段階のキーワードが Head/Title にしか現れないこと**。
-// Head/InfoKind は段階に関わらず「南海トラフ地震に関連する情報」で固定されており、
-// そこを判定に使うと全電文が既定値の「調査中」に落ちる（実際にそうなっていた）。
+// 実電文（2024-08-08 の臨時情報 2 通・2024-08-09 の臨時解説、2026年3〜8月の定例解説）で
+// 確認した構造に合わせている。要点は 2 つ。
+//
+// - **段階は `Body/EarthquakeInfo/InfoSerial` が一次情報源**（実電文は
+//   `<Name>調査中</Name><Code>111</Code>`）。`Head/Title` にも段階の語が出るが、そちらは
+//   電文が InfoSerial から組み立てた結果で、読めなかったときの落とし先として使う
+// - **`Head/InfoKind` は段階に関わらず「南海トラフ地震に関連する情報」で固定**。
+//   そこを判定に使うと全電文が既定値の「調査中」に落ちる（実際にそうなっていた）。
+//   臨時情報と解説情報の名乗り分けは `Body/EarthquakeInfo/InfoKind` の側
 
 function nankaiXml(opts: {
   title: string
   infoType?: string
   reportDateTime?: string
   body?: string
+  /** `Body/EarthquakeInfo/InfoSerial`。`null` を渡すと要素ごと落とす（落とし先の確認用）。 */
+  serial?: { name: string; code: string } | null
 }): string {
+  // 既定は標題の段階に合う実コードを充てる（実電文と同じ組み合わせにするため）。
+  const defaultCodes: Record<string, string> = {
+    '調査中': '111', '巨大地震警戒': '120', '巨大地震注意': '130', '調査終了': '190',
+  }
+  const defaultName = opts.title.replace(/^.*（|）.*$/g, '')
+  const serial = opts.serial === undefined
+    ? { name: defaultName, code: defaultCodes[defaultName] ?? '111' }
+    : opts.serial
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Report xmlns="http://xml.kishou.go.jp/jmaxml1/">
   <Control>
@@ -1307,6 +1322,10 @@ function nankaiXml(opts: {
   <Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
     <EarthquakeInfo>
       <InfoKind>南海トラフ地震臨時情報</InfoKind>
+      ${serial ? `<InfoSerial codeType="地震関連情報番号コード">
+        <Name>${serial.name}</Name>
+        <Code>${serial.code}</Code>
+      </InfoSerial>` : ''}
       <Text>${opts.body ?? '想定震源域内でマグニチュード7.0以上の地震が発生しました。'}</Text>
     </EarthquakeInfo>
   </Body>
@@ -1454,31 +1473,143 @@ describe('長周期地震動: 読めなかった要素の記録', () => {
 })
 
 describe('parseNankaiFromXml（VYSE50 南海トラフ地震臨時情報）', () => {
-  it('巨大地震注意を Head/Title から判定する（Head/InfoKind には現れない）', () => {
-    const nankai = parseNankaiFromXml(nankaiXml({ title: '南海トラフ地震臨時情報（巨大地震注意）' }))
+  // 正: 段階は `InfoSerial/Code` から読む。実電文（2024-08-08 10:15）は 130＝巨大地震注意
+  it('巨大地震注意を InfoSerial のコードから判定する', () => {
+    const nankai = parseNankaiFromXml(nankaiXml({
+      title: '南海トラフ地震臨時情報（巨大地震注意）', serial: { name: '巨大地震注意', code: '130' },
+    }))
     if (!nankai) throw new Error('parseNankaiFromXml returned null unexpectedly')
     expect(nankai.kindName).toBe('巨大地震注意')
-    expect(nankai.kindCode).toBe('0202')
+    expect(nankai.kindCode).toBe('130')
     expect(nankai.cancelled).toBe(false)
   })
 
-  it('調査中を判定する', () => {
-    const nankai = parseNankaiFromXml(nankaiXml({ title: '南海トラフ地震臨時情報（調査中）' }))
-    expect(nankai?.kindName).toBe('調査中')
-    expect(nankai?.kindCode).toBe('0201')
+  // 正: 調査中はコードが 3 つある（発表の契機が違う）。**どれも段階としては「調査中」**
+  it('調査中の 3 つのコードをすべて調査中として読む', () => {
+    for (const code of ['111', '112', '113']) {
+      const nankai = parseNankaiFromXml(nankaiXml({
+        title: '南海トラフ地震臨時情報（調査中）', serial: { name: '調査中', code },
+      }))
+      expect(nankai?.kindName).toBe('調査中')
+      expect(nankai?.kindCode).toBe(code)
+    }
   })
 
   it('巨大地震警戒を判定する', () => {
-    const nankai = parseNankaiFromXml(nankaiXml({ title: '南海トラフ地震臨時情報（巨大地震警戒）' }))
+    const nankai = parseNankaiFromXml(nankaiXml({
+      title: '南海トラフ地震臨時情報（巨大地震警戒）', serial: { name: '巨大地震警戒', code: '120' },
+    }))
     expect(nankai?.kindName).toBe('巨大地震警戒')
-    expect(nankai?.kindCode).toBe('0203')
+    expect(nankai?.kindCode).toBe('120')
   })
 
   it('調査終了は cancelled=true（帯を消す条件）', () => {
-    const nankai = parseNankaiFromXml(nankaiXml({ title: '南海トラフ地震臨時情報（調査終了）' }))
+    const nankai = parseNankaiFromXml(nankaiXml({
+      title: '南海トラフ地震臨時情報（調査終了）', serial: { name: '調査終了', code: '190' },
+    }))
     expect(nankai?.kindName).toBe('調査終了')
-    expect(nankai?.kindCode).toBe('0204')
+    expect(nankai?.kindCode).toBe('190')
     expect(nankai?.cancelled).toBe(true)
+  })
+
+  // 対照: `Head/Title` は落とし先。`InfoSerial` を持たない電文でも段階は読めるが、
+  // コードは持てないので `cancelled` は名称で判定する必要がある
+  it('InfoSerial が無ければ Head/Title から段階を採り、記録を残す', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const nankai = parseNankaiFromXml(nankaiXml({
+        title: '南海トラフ地震臨時情報（調査終了）', serial: null,
+      }))
+      expect(nankai?.kindName).toBe('調査終了')
+      expect(nankai?.kindCode).toBe('')
+      // コードで判定していると帯が残る
+      expect(nankai?.cancelled).toBe(true)
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('Head/Title から段階を採ります'))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 正: 表と電文の名乗りが一致していれば、そのまま段階として通す（記録も出さない）
+  it('コードと名称が一致すればそのまま通す', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const nankai = parseNankaiFromXml(nankaiXml({
+        title: '南海トラフ地震臨時情報（調査終了）', serial: { name: '調査終了', code: '190' },
+      }))
+      expect(nankai?.kindName).toBe('調査終了')
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 安全弁: 名乗りが表記ゆれ（段階名そのものではない）なら表を採るが、**黙って通さない**。
+  // アプリ内の判定は `kindName` の一致で書かれているため、揺れた文字列を通すとそちらが崩れる
+  it('名称が表記ゆれなら表を採り、食い違いを記録する', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const nankai = parseNankaiFromXml(nankaiXml({
+        title: '南海トラフ地震臨時情報（調査終了）',
+        serial: { name: '調査終了（表記ゆれ）', code: '190' },
+      }))
+      expect(nankai?.kindName).toBe('調査終了')
+      expect(nankai?.cancelled).toBe(true)
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('コードと名称が食い違います'))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 安全弁: 名乗りが**別の段階名そのもの**なら電文の側を採る。表は公開コード表の写しで、
+  // 実電文で裏が取れているのは 111 と 130 だけ。取り違えの向きによっては、巨大地震警戒の報を
+  // 調査終了として帯ごと消しかねない
+  it('名称が別の段階名なら電文の側を採る', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const nankai = parseNankaiFromXml(nankaiXml({
+        title: '南海トラフ地震臨時情報（巨大地震警戒）',
+        serial: { name: '巨大地震警戒', code: '190' },
+      }))
+      expect(nankai?.kindName).toBe('巨大地震警戒')
+      // 帯を消さない（表を信じていたら調査終了として消えていた）
+      expect(nankai?.cancelled).toBe(false)
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('コードと名称が食い違います'))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 安全弁: 解説情報のコードは段階として通さない。`InfoKind` の分岐を迂回しても止まること
+  it('解説情報のコードは InfoKind が揺れても段階にしない', () => {
+    const xml = nankaiXml({
+      title: '南海トラフ地震臨時情報（調査中）', serial: { name: '臨時解説', code: '210' },
+    }).replace('<InfoKind>南海トラフ地震臨時情報</InfoKind>', '<InfoKind>南海トラフ地震に関連する情報</InfoKind>')
+    expect(parseNankaiFromXml(xml)).toBeNull()
+  })
+
+  // 安全弁: 表に無いコードを既定値へ丸めない。知らない段階を「調査中」と名乗ると、
+  // より重い段階の報を軽く見せうる
+  it('未知のコードは名称をそのまま使い、記録を残す', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const nankai = parseNankaiFromXml(nankaiXml({
+        title: '南海トラフ地震臨時情報（巨大地震特別警戒）', serial: { name: '巨大地震特別警戒', code: '140' },
+      }))
+      expect(nankai?.kindName).toBe('巨大地震特別警戒')
+      expect(nankai?.kindCode).toBe('140')
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('未知の地震関連情報番号コード'))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 安全弁: 解説情報のコード（200/210/219）は臨時情報と同じ番号体系にある。
+  // **`Body/EarthquakeInfo/InfoKind` で先に分けないと、解説情報を段階として読む**
+  it('解説情報のコードを段階として読まない', () => {
+    expect(parseNankaiFromXml(commentaryXml({
+      title: '南海トラフ地震関連解説情報（第１号）', serialName: '臨時解説', serialCode: '210',
+    }))).toBeNull()
   })
 
   // 正: 取消は「その電文の撤回」でしかない。**以前は「調査終了」に化かしていた**（気象庁が
@@ -1491,7 +1622,7 @@ describe('parseNankaiFromXml（VYSE50 南海トラフ地震臨時情報）', () 
     expect(nankai?.retracted).toBe(true)
     expect(nankai?.cancelled).toBe(true)   // 帯を引っ込める点は調査終了と同じ
     expect(nankai?.kindName).not.toBe('調査終了')
-    expect(nankai?.kindCode).not.toBe('0204')
+    expect(nankai?.kindCode).not.toBe('190')
   })
 
   // 対照: 本物の調査終了は retracted を立てない（名乗りも従来どおり）
@@ -2330,6 +2461,11 @@ const VTSE52_XML = [
   '<Item><Area><Name>三陸沖北部</Name><Code>901</Code></Area>',
   '<Station><Name>岩手中部沖</Name><Code>21401</Code>',
   '<MaxHeight><jmx_eb:TsunamiHeight type="最大波の高さ" unit="m" description="１．２ｍ">1.2</jmx_eb:TsunamiHeight></MaxHeight>',
+  '</Station>',
+  // 「観測中」のまま Revise が「更新」。中身は変わりようがないので、気象庁が意図して
+  // 置いた信号にしかならない ―― 津波警報に相当する津波を観測している（Ⅱ.13 1-1-2-2-2）
+  '<Station><Name>宮城沖</Name><Code>21402</Code>',
+  '<MaxHeight><Condition>観測中</Condition><Revise>更新</Revise></MaxHeight>',
   '</Station></Item>',
   '</Observation>',
   '<Estimation>',
@@ -2472,7 +2608,7 @@ describe('沖合の観測から導いた沿岸への推定（VTSE52）', () => {
   // 対照: 沖合の実測は観測点として読む（推定と混ざらない）
   it('沖合の実測は観測点として読み、推定と混ぜない', () => {
     const t = parseTsunamiFromXml('VTSE52', VTSE52_XML)!
-    expect(t.observations!.map(o => o.name)).toEqual(['岩手中部沖'])
+    expect(t.observations!.map(o => o.name)).toEqual(['岩手中部沖', '宮城沖'])
     expect(t.estimations!.map(e => e.name)).toEqual(['岩手県', '宮城県', '福島県'])
   })
 
@@ -2855,5 +2991,32 @@ describe('訂正報の訂正区分（VarComment）', () => {
   it('発表報では 0256 があっても なし のまま', () => {
     const xml = VXSE53_XML.replace('</Body>', `${VAR('0256')}</Body>`)
     expect(parseEarthquakeFromXml('VXSE53', xml)!.issue.correct).toBe('なし')
+  })
+})
+
+// 最大波の続報での位置づけ（`MaxHeight/Revise`）。
+//
+// **値の変化では代わりが利かない信号を運ぶ。** 沖合の観測点で `Condition` が「観測中」のまま
+// `Revise` が「更新」になるのは、津波警報に相当する津波を観測していることを示す
+// （電文解説資料 Ⅱ.13 1-1-2-2-2。資料自身が「注意する必要がある」と名指ししている）。
+describe('最大波の Revise', () => {
+  // 正: Revise を読む。
+  it('Revise を読む', () => {
+    const obs = parseTsunamiFromXml('VTSE52', VTSE52_XML)!.observations!
+    expect(obs.find(o => o.name === '宮城沖')!.maxHeightRevise).toBe('更新')
+  })
+
+  // 対照: Revise を持たない観測点には付けない（空文字を持たせない）。
+  it('Revise が無ければ持たせない', () => {
+    const obs = parseTsunamiFromXml('VTSE52', VTSE52_XML)!.observations!
+    expect(obs.find(o => o.name === '岩手中部沖')!.maxHeightRevise).toBeUndefined()
+  })
+
+  // 安全弁: 「追加」もそのまま読む。意味を持たせるのは述語側の仕事で、
+  // パーサーが「更新」だけを通すと、後から別の判定を足すときに材料が無い。
+  it('「追加」もそのまま読む', () => {
+    const xml = VTSE52_XML.replace('<Revise>更新</Revise>', '<Revise>追加</Revise>')
+    const obs = parseTsunamiFromXml('VTSE52', xml)!.observations!
+    expect(obs.find(o => o.name === '宮城沖')!.maxHeightRevise).toBe('追加')
   })
 })

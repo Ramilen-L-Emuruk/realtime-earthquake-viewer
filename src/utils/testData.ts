@@ -409,7 +409,7 @@ export function createTestEEW(eventId?: string, serial = 1, baseTime?: Date): EE
 export function createTestNankai(kindName: '調査中' | '巨大地震注意' | '巨大地震警戒'): JMANankai {
   const now = serverDate().toISOString()
   const kindCodeMap: Record<string, string> = {
-    '調査中': '0201', '巨大地震注意': '0202', '巨大地震警戒': '0203',
+    '調査中': '111', '巨大地震注意': '130', '巨大地震警戒': '120',
   }
   const bodyMap: Record<string, string> = {
     '調査中': '南海トラフ沿いの大規模な地震発生の可能性について、現在気象庁が調査を行っています。この情報は、調査中の段階で発表するものです。今後の情報に注意してください。',
@@ -420,7 +420,7 @@ export function createTestNankai(kindName: '調査中' | '巨大地震注意' | 
     id: `test-nankai-${Date.now()}`,
     time: now,
     eventId: `test-nankai-event-${Date.now()}`,
-    kindCode: kindCodeMap[kindName] ?? '0201',
+    kindCode: kindCodeMap[kindName] ?? '111',
     kindName,
     headline: `南海トラフ地震臨時情報（${kindName}）`,
     body: bodyMap[kindName] ?? '',
@@ -676,6 +676,11 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
       // 沖合の潮位観測点。「重要」の基準が沿岸と違う（大津波警報だけでなく津波警報も含む）ため、
       // 出所の印（offshore）を付けてバッジの語が切り替わることを確かめられるようにする。
       { name: '沖合40km', offshore: true, height: { value: 3.0, description: '3.0m以上', over: true }, arrivalTime: nowIso, condition: { important: true } },
+      // 「観測中」のまま Revise が「更新」。大津波警報の区域に対応する沖合の観測点で、沿岸で
+      // 推定される高さが 3m 超に届かないときの形で、**津波警報に相当する津波を観測している**
+      // ことを気象庁が示す（電文解説資料 Ⅱ.13 1-1-2-2-2）。値が変わらないので、アプリの
+      // 「値の変化で判定する」仕組みでは作れない状態 —— テストボタンに無いと実機で一度も見られない。
+      { name: '沖合80km', offshore: true, arrivalTime: t(-1), condition: { observing: true }, maxHeightRevise: '更新' },
     ],
     // 沖合の観測から導いた沿岸への推定（電文の `Estimation`）。沖合の観測点は沿岸より先に
     // 津波を捉えるため、**まだ到達していない沿岸**の到達予想と高さが入る。

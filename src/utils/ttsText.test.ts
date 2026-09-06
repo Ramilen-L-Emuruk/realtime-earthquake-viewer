@@ -2,7 +2,7 @@
 // 「〇時〇分」はローカルタイムゾーン依存のため、時刻の数値そのものではなく
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect } from 'vitest'
-import { nankaiToText, earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
+import { nankaiToText, earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, tsunamiWarningLevelToText, selectWarningLevelToSpeak, WARNING_LEVEL_SPEAK_MAX_POINTS, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
 import { joinSegments, plain, type SpeechSegment } from './ttsFollow'
 import { tsunamiAreaGradeChanges } from './tsunami'
 import { getStationCoordsCache } from './stationCoords'
@@ -1790,5 +1790,46 @@ describe('earthquakeToText: 数値にならない規模', () => {
 
     const text = joinSegments(earthquakeToSegments(q, TTS_OPTS, false, spoken))
     expect(text).not.toContain('巨大地震')
+  })
+})
+
+// 「観測中」のまま津波警報に相当する津波を観測している観測点の読み上げ。
+//
+// 波高の数値が無いため、波高更新の文にも到達確認の文にも乗らない。黙って落とすと、
+// 気象庁が「注意する必要がある」と名指しした事実が音声から消える。
+describe('tsunamiWarningLevelToText', () => {
+  const obs = (name: string, districtName?: string): TsunamiObservation => ({
+    name, offshore: true, condition: { observing: true }, maxHeightRevise: '更新',
+    ...(districtName && { districtName }),
+  })
+
+  // 正: 何を観測しているかを伝える。
+  it('津波警報に相当する津波を観測していると読む', () => {
+    expect(tsunamiWarningLevelToText([obs('宮城沖')]))
+      .toBe('宮城沖では、津波警報に相当する津波を観測しています。')
+  })
+
+  // 対照: 高さを補わない。電文が数値を出していないので、アプリが「1m 超」等と言ってはいけない。
+  it('高さを補わない', () => {
+    const text = tsunamiWarningLevelToText([obs('宮城沖')])
+    expect(text).not.toMatch(/メートル|[0-9]m/)
+  })
+
+  // 対照: 対象が無ければ空。空文字が「また、」で継がれると助詞だけの文になる。
+  it('対象が無ければ空にする', () => {
+    expect(tsunamiWarningLevelToText([])).toBe('')
+  })
+
+  // 安全弁: 件数上限を超えた分は数で伝える。黙って落とすと、読まれなかった観測点の存在が消える。
+  it('件数上限を超えた分は数で伝える', () => {
+    const many = Array.from({ length: 8 }, (_, i) => obs(`沖合${i + 1}`))
+    const text = tsunamiWarningLevelToText(many)
+    expect(text).toContain('ほか3地点')
+  })
+
+  // 安全弁: 既読の記録に載せるのは実際に読んだ分だけ（絞り込みは文の生成と共有する）。
+  it('既読にするのは読んだ分だけ', () => {
+    const many = Array.from({ length: 8 }, (_, i) => obs(`沖合${i + 1}`))
+    expect(selectWarningLevelToSpeak(many)).toHaveLength(WARNING_LEVEL_SPEAK_MAX_POINTS)
   })
 })
