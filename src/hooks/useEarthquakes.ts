@@ -243,6 +243,11 @@ function runSimulateTsunami(
       issue: { ...tsunami.issue, time: now },
       cancelled: true,
       cancelReason: isDmdss ? cancelReason : undefined,
+      // 取消しの概要（電文の `Body/Text`）。**誤報取消のときだけ気象庁が理由を書く**ので、
+      // 解除では持たせない。実電文の形に合わせないと、画面と読み上げでこの経路を通れない
+      ...(isDmdss && cancelReason === 'retracted'
+        ? { cancelText: 'システムの障害により誤った津波警報等を配信しました。' }
+        : {}),
       areas: [],
     })
     ref.current = null
@@ -306,6 +311,11 @@ function runSimulateEEWRetraction(
     handleEvent({
       ...report,
       cancelled: true,
+      // 取消しの概要（電文の `Body/Text`）。地震・津波と同じ構造なので同じ形で持たせる ——
+      // 実電文の形がテストボタンに無いと、EEW だけこの経路を実機で一度も通れない。
+      // **DMDSS 版限定**: この項目を作れるのは XML を読む dmdataParser だけで、
+      // P2PQuake 経路（standard 版）には対応するフィールドが無い。津波の解除テストと同じ扱い
+      ...(isDmdss ? { cancelText: 'システムの障害により誤った緊急地震速報を配信しました。' } : {}),
       areas: [],
       forecastMaxScale: undefined,
       forecastMaxLpgmClass: undefined,
@@ -821,7 +831,8 @@ export function useEarthquakes(
                   payload: { kind: 'purge-cancelled-quake', id: e.id },
                   silent: true,
                 })
-                return { ...e, cancelledAt: now }
+                // 津波側と同じく、取消電文だけが持つ項目は名指しで移す（土台は表示中のカード）。
+                return { ...e, cancelledAt: now, ...(quake.cancelText && { cancelText: quake.cancelText }) }
               }
               return e
             })
@@ -897,7 +908,19 @@ export function useEarthquakes(
                 payload: { kind: 'purge-cancelled-tsunami', id: prev.tsunamis[0].id },
                 silent: true,
               })
-              return { ...prev, tsunamis: [{ ...prev.tsunamis[0], cancelledAt: now, cancelReason: tsunami.cancelReason }], lastUpdate: now }
+              // **取消電文から引き継ぐのは 2 つ。** 表示中のカードを土台にするので、
+              // 取消電文だけが持つ項目は名指しで移さないと落ちる（`cancelText` は
+              // 気象庁が書いた取消しの理由で、他のどこにも無い）。
+              return {
+                ...prev,
+                tsunamis: [{
+                  ...prev.tsunamis[0],
+                  cancelledAt: now,
+                  cancelReason: tsunami.cancelReason,
+                  ...(tsunami.cancelText && { cancelText: tsunami.cancelText }),
+                }],
+                lastUpdate: now,
+              }
             }
             return { ...prev, tsunamis: [], lastUpdate: now }
           }
@@ -957,7 +980,8 @@ export function useEarthquakes(
               silent: true,
             })
             const next = new Map(prev.activeEEWs)
-            next.set(key, { ...existing, cancelledAt: now })
+            // 地震・津波と同じく、取消電文だけが持つ項目は名指しで移す（土台は表示中の EEW）。
+            next.set(key, { ...existing, cancelledAt: now, ...(eew.cancelText && { cancelText: eew.cancelText }) })
             return { ...prev, activeEEWs: next, lastUpdate: now }
           }
           // 続報の上書きだが severity は upgrade only にする（Yahoo hypoInfo 続報が

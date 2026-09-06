@@ -80,6 +80,13 @@ export interface JMAQuake {
   time: string
   cancelled?: boolean
   cancelledAt?: Date
+  /**
+   * 取消しの概要（`Body/Text`）。取消電文でのみ入る。
+   *
+   * 電文解説資料は「情報形態が"取消"の場合に、取消しの概要等を本要素に記載する」と定めている
+   * （Ⅱ.33 ほか）。**気象庁が書いた取り消しの理由**で、アプリが組み立てた文言ではない。
+   */
+  cancelText?: string
   issue: {
     source: string
     time: string
@@ -211,6 +218,23 @@ export interface TsunamiSourceEarthquake {
    */
   magnitudeCondition?: string
   originTime?: string
+  /**
+   * 震央補助表現（`NameFromMark`。「御前崎の北東４０ｋｍ付近」）。
+   *
+   * 日本近海で発生し津波警報・注意報を発表した地震にだけ付く（電文解説資料 Ⅱ.13 2-3-1-4）。
+   * **震央地名より具体的に場所が分かる** —— 「駿河湾」だけでは自分との位置関係が掴めない。
+   */
+  nameFromMark?: string
+  /**
+   * 震源を決定した機関の略称（`Source`。「ＰＴＷＣ」「ＵＳＧＳ」等）。
+   *
+   * 国外で発生した地震で、気象庁以外の機関が決めた震源要素を採用したときだけ入る
+   * （電文解説資料 Ⅱ.13 2-3-2）。**誰が決めた値かは、値そのものと同じくらい重要**。
+   *
+   * **`JMATsunami.issue.source`（発表元。「気象庁」等）とは別物。** 名前が同じなので、
+   * どちらを指しているかは階層で見分けること。
+   */
+  source?: string
 }
 
 export interface TsunamiArea {
@@ -314,6 +338,13 @@ export interface TsunamiObservation {
    */
   offshore?: boolean
   /**
+   * 特殊観測機器の名称（`Station/Sensor`）。「ＧＮＳＳ波浪計」「水圧計」（電文解説資料 Ⅱ.13 1-1-2-2）。
+   *
+   * 沖合の観測点だけが持つ。**電文の語をそのまま出す**（言い換えると、どちらの計器が測った値かが
+   * 分からなくなる）。
+   */
+  sensor?: string
+  /**
    * 最大波の続報での位置づけ（`MaxHeight/Revise`）。「追加」＝新たに出現、「更新」＝既出の内容が
    * 変わった。
    *
@@ -343,6 +374,13 @@ export interface JMATsunami {
   // cancelled=true のときの解除理由。'lifted'=気象庁の正式解除（区域が電文から消える）、
   // 'retracted'=誤って発表した電文の取消（InfoType=取消）、'expired'=ValidDateTime満了によりアプリが自動検出。
   cancelReason?: 'lifted' | 'retracted' | 'expired'
+  /**
+   * 取消しの概要（`Body/Text`）。取消電文（`InfoType` = 取消）でのみ入る。
+   *
+   * **アプリの定型文（`CANCEL_REASON_LABEL`）とは別物。** あちらは解除・取消・失効の区別を
+   * 説明する文で、こちらは**気象庁がその報に書いた理由**。なぜ取り消したのかはここにしか無い。
+   */
+  cancelText?: string
   cancelledAt?: Date
   headline?: string
   // 付加文（固定文）。避難行動の呼びかけなど JMA 公式の定型文。長文の解説（FreeFormComment）は含まない。
@@ -399,6 +437,13 @@ export interface EEWRegion {
 }
 
 export interface EEWAlert {
+  /**
+   * 取消しの概要（`Body/Text`）。取消電文でのみ入る。
+   *
+   * **地震情報・津波情報と同じ構造。** 取消電文は `Body` に `Text` しか持たないので、
+   * 3 つの電文で扱いを揃える（片方だけ拾うと、同じ事象なのに種別によって理由が出たり出なかったりする）。
+   */
+  cancelText?: string
   kind: 'eew'
   id: string
   time: string
@@ -465,6 +510,17 @@ export interface JMALpgm {
   cancelled: boolean
   points?: LpgmPoint[]    // 観測点別階級（取消電文では undefined）
   regions?: LpgmRegion[]  // 一次細分区域別最大階級
+  /**
+   * 長周期地震動に関する観測情報の種類（`LgCategory`。値は "1"〜"4"。電文解説資料 Ⅱ.37 2-1-4）。
+   *
+   * 階級と震度の組み合わせの分類。**2 と 4 は「階級を観測した地域のうち、最大震度が4以下の
+   * 地域がある」ことを表す** —— 揺れそのものは強くないのに高層階が大きく揺れた地域がある、
+   * という状況。数字そのものは利用者に出さない（分類番号を見せても伝わらない）。
+   *
+   * 値ごとの定義表（全国の最大階級と、数える地域の階級の下限が値で違う）と、画面に出す一文の
+   * 決め方は `docs/spec/quake-spec.md` §8「長周期地震動の「観測情報の種類」は意味を出す」。
+   */
+  category?: number
 }
 
 export type AppEvent = JMAQuake | JMATsunami | EEWAlert

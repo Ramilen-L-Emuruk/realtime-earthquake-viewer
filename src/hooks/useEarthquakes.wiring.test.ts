@@ -561,6 +561,35 @@ describe('EEW 発報テストの報の推移', () => {
     expect(cancel.isFinal).toBeFalsy()
     expect(h.current.activeEEWs.size).toBe(1)
   })
+
+  // 取消しの概要（電文の `Body/Text`）は XML を読む dmdataParser でしか作れない。
+  // 津波の解除テストと同じ形で、バリアントの境目を正・対照の対で固定する。
+  it('DMDSS 版: 誤報取消は取消しの概要を持つ', () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+
+    act(() => { h.current.simulateEEWRetraction() })
+    act(() => { vi.advanceTimersByTime(10_000) })
+
+    const cancel = events.filter((e): e is EEWAlert => e.kind === 'eew')[1]
+    expect(cancel.cancelled).toBe(true)
+    expect(cancel.cancelText).toBeTruthy()
+  })
+
+  // 対照: standard 版の P2PQuake には対応するフィールドが無い。テストボタンが実電文の形から
+  // 外れると、実機では一度も起きない表示・読み上げが「起きる」ように見える
+  it('standard 版: 取消しの概要を持たない（P2PQuake には無い項目）', () => {
+    mockIsDmdss = false
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+
+    act(() => { h.current.simulateEEWRetraction() })
+    act(() => { vi.advanceTimersByTime(10_000) })
+
+    const cancel = events.filter((e): e is EEWAlert => e.kind === 'eew')[1]
+    expect(cancel.cancelled).toBe(true)
+    expect(cancel.cancelText).toBeUndefined()
+  })
 })
 
 // 津波テストの解除電文。EEW の最終報と同じ「直前の電文を流用して据え置く」形になっていた。
@@ -599,6 +628,28 @@ describe('津波テストの解除電文', () => {
     // 成否に関わらず呼ばれるため、ここを見ないと「音は鳴るがカードは残る」状態を通してしまう。
     expect(h.current.tsunamis[0]?.cancelledAt).toBeInstanceOf(Date)
     expect(h.current.tsunamis[0]?.cancelReason).toBe('lifted')
+  })
+
+  // 取消電文だけが持つ項目は、表示中のカードを土台にする更新で**名指しで移さないと落ちる**。
+  // パーサーも読み上げも通っているのに画面にだけ出ない、という形になり、型検査でも捕まらない
+  // （オプショナルなので）。実際にブラウザ確認で見つかった。
+  it('DMDSS 版: 誤報取消の理由をカードへ引き継ぐ', () => {
+    const h = setup()
+    act(() => { h.current.simulateTsunamiRetraction() })
+    act(() => { vi.advanceTimersByTime(90_000) })
+
+    expect(h.current.tsunamis[0]?.cancelReason).toBe('retracted')
+    expect(h.current.tsunamis[0]?.cancelText).toBeTruthy()
+  })
+
+  // 対照: 解除（`lifted`）は取消電文ではないので理由を持たない。**無いものを作らない**
+  it('解除では取消の理由を持たない', () => {
+    const h = setup()
+    act(() => { h.current.simulateTsunamiWatch() })
+    act(() => { vi.advanceTimersByTime(90_000) })
+
+    expect(h.current.tsunamis[0]?.cancelReason).toBe('lifted')
+    expect(h.current.tsunamis[0]?.cancelText).toBeUndefined()
   })
 
   it('standard 版: 解除理由と eventId を持たない（P2PQuake では判別できない項目）', () => {
@@ -1068,6 +1119,35 @@ describe('EEW の続報は古い報で退行しない', () => {
     const eew = [...h.current.activeEEWs.values()][0]
     expect(eew?.cancelledAt).toBeInstanceOf(Date)
   })
+
+  // 取消電文だけが持つ項目は、**表示中の EEW を土台にする更新で名指しで移さないと落ちる**。
+  // 地震・津波側と対の回帰テスト（3 種別すべての状態更新に同じ落とし穴がある）。
+  // 描画側のテスト（`RealtimeTab/cancelReason.test.tsx`）は `EEWAlert` を直接渡すので
+  // ここを通らない。両方無いと「電文は持っているのに画面へ届かない」を捕まえられない。
+  it('取消の理由を表示中の EEW へ引き継ぐ', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(report('1', ['石川県能登'])) })
+    act(() => {
+      h.current.injectEvent({
+        ...report('2', []),
+        cancelled: true,
+        cancelText: 'システムの障害により誤った緊急地震速報を配信しました。',
+      })
+    })
+    const eew = [...h.current.activeEEWs.values()][0]
+    expect(eew?.cancelledAt).toBeInstanceOf(Date)
+    expect(eew?.cancelText).toBe('システムの障害により誤った緊急地震速報を配信しました。')
+  })
+
+  // 対照: 理由を持たない取消電文では作らない（無いものを埋めない）
+  it('理由を持たない取消では持たせない', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(report('1', ['石川県能登'])) })
+    act(() => { h.current.injectEvent({ ...report('2', []), cancelled: true }) })
+    const eew = [...h.current.activeEEWs.values()][0]
+    expect(eew?.cancelledAt).toBeInstanceOf(Date)
+    expect(eew?.cancelText).toBeUndefined()
+  })
 })
 
 // P2PQuake の補完経路（`enrichEEW`）。standard 版で Yahoo hypoInfo が先に検出した EEW へ
@@ -1163,6 +1243,37 @@ describe('DMDSS 版: 取消の後に届いた報', () => {
       domesticTsunami: '不明',
     },
     points: [],
+  })
+
+  // 取消電文だけが持つ項目は、**表示中のカードを土台にする更新で名指しで移さないと落ちる**。
+  // 津波側と対の回帰テスト。パーサーも読み上げも通り、オプショナルなので型検査も素通りするため、
+  // ここが無いと「画面にだけ出ない」状態を検出できない。
+  it('取消の理由をカードへ引き継ぐ', async () => {
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(震度速報('dmdata-quake-20260101160612-1', '2026-01-01T07:07:00+09:00')) })
+    act(() => {
+      h.current.injectEvent({
+        ...取消('dmdata-quake-20260101160612-2', '2026-01-01T07:10:00+09:00'),
+        cancelText: '先ほどの地震情報は誤りでしたので取り消します。',
+      })
+    })
+
+    expect(h.current.earthquakes[0]?.cancelledAt).toBeInstanceOf(Date)
+    expect(h.current.earthquakes[0]?.cancelText).toBe('先ほどの地震情報は誤りでしたので取り消します。')
+  })
+
+  // 対照: 理由を持たない取消電文では作らない（無いものを埋めない）
+  it('理由を持たない取消では持たせない', async () => {
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(震度速報('dmdata-quake-20260101160613-1', '2026-01-01T07:07:00+09:00')) })
+    act(() => { h.current.injectEvent(取消('dmdata-quake-20260101160613-2', '2026-01-01T07:10:00+09:00')) })
+
+    expect(h.current.earthquakes[0]?.cancelledAt).toBeInstanceOf(Date)
+    expect(h.current.earthquakes[0]?.cancelText).toBeUndefined()
   })
 
   it('取消より前に発表された報は、purge を過ぎて届いても採らない', async () => {

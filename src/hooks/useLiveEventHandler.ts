@@ -1378,7 +1378,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           ? earthquakesRef.current.find(e => extractQuakeEventIdFromId(e.id) === cancelEventId)
           : undefined
         speakNonEEWDelayed(
-          earthquakeCancelToText(original?.time ?? null),
+          earthquakeCancelToText(original?.time ?? null, event.cancelText),
           SPEECH_PRIORITY.normal,
           ttsDelayFor('eewCancel'),
           `quake:${quakeEventKey(event as import('../types/earthquake').JMAQuake)}`,
@@ -1508,7 +1508,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         if (settings.soundEnabled) playAlertSound('tsunamiCancel')
         if (settings.voicevoxEnabled) {
           speakNonEEWDelayed(
-            tsunamiCancelToText(event.cancelReason),
+            tsunamiCancelToText(event.cancelReason, event.cancelText),
             SPEECH_PRIORITY.high,
             ttsDelayFor('tsunamiCancel'),
             'tsunami',

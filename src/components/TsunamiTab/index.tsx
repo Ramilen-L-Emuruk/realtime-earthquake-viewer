@@ -151,6 +151,38 @@ function TsunamiHeightHeader({ label, style }: { label: string; style: GradeStyl
 }
 
 /**
+ * 津波の原因地震を 1 行で出す。
+ *
+ * **1 件目と 2 件目以降で同じものを通すこと。** 電文は原因地震を複数持ちうる（短い間に起きた
+ * 地震がまとめて 1 通で発表される）ので、別々に書くと項目を足したとき片方に漏れる。
+ */
+function SourceEarthquakeLine({ eq, prefix, link }: {
+  eq: NonNullable<JMATsunami['sourceEarthquakes']>[number]
+  prefix: string
+  link: React.ReactNode
+}) {
+  return (
+    <div>
+      {prefix}{eq.hypocenterName}
+      {/* 規模が数値で無いときは気象庁が添えた説明を出す（「Ｍ８を超える巨大地震」）。
+          ここを空にすると、最大級の地震ほど震源名だけの薄い表示になる。 */}
+      {eq.magnitude !== undefined
+        ? `　M${eq.magnitude}`
+        : eq.magnitudeCondition && `　${formatMagnitudeCondition(eq.magnitudeCondition)}`}
+      {eq.originTime && `　${formatTime(eq.originTime).slice(0, 5)}発生`}
+      {link}
+      {/* 震央補助表現（「御前崎の北東40km付近」）と震源決定機関（「ＰＴＷＣ」等）。
+          前者は震央地名より具体的に場所が分かり、後者は誰が決めた値かを示す。
+          どちらも気象庁の語をそのまま出す。 */}
+      {eq.nameFromMark && <div>{eq.nameFromMark}</div>}
+      {/* この要素は**気象庁以外の機関が決めた震源を採用したときだけ**入る（Ⅱ.13 2-3-2）ので、
+          機関名だけでは含意（気象庁の決定ではない）が伝わらない。ラベルに書く。 */}
+      {eq.source && <div>震源決定: {eq.source}（気象庁以外）</div>}
+    </div>
+  )
+}
+
+/**
  * 区域の到達状況（`FirstHeight/Condition`）をバッジの文言へ写す。
  *
  * **3 つは意味が違う。** 「ただちに津波来襲と予測」はこれから来る予測、「津波到達中と推測」は
@@ -369,10 +401,16 @@ function TsunamiObservationRow({ obs, onObservationClick, canFocusObs, registerS
         {obs.arrivalTime ? (
           <span className="block mt-1 text-secondary" style={{ fontSize: '0.8125rem' }}>
             到達: {formatTime(obs.arrivalTime).slice(0, 5)}{obs.initial ? `（${obs.initial}）` : ''}
+            {/* 特殊観測機器（「ＧＮＳＳ波浪計」「水圧計」）。沖合の観測点だけが持つ。
+                電文の語をそのまま出す —— 言い換えると、どちらの計器が測った値か分からなくなる。
+                **括弧で括る** —— 「到達: 」のラベルは時刻にしか掛かっておらず、素で並べると
+                地名や別の値と読める。 */}
+            {obs.sensor && `　（${obs.sensor}）`}
           </span>
-        ) : observationArrivalFallbackText(obs) && (
+        ) : (observationArrivalFallbackText(obs) || obs.sensor) && (
           <span className="block mt-1 text-secondary" style={{ fontSize: '0.8125rem' }}>
             {observationArrivalFallbackText(obs)}
+            {obs.sensor && `${observationArrivalFallbackText(obs) ? '　' : ''}（${obs.sensor}）`}
           </span>
         )}
       </div>
@@ -895,26 +933,28 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
             <div className="mt-1" style={{ fontSize: '0.6875rem', color: isCancelledDisplay ? '#6b7280' : topStyle.headerColor, opacity: 0.8 }}>
               {isCancelledDisplay ? cancelInfo.desc : topGrade === 'Forecast' ? '若干の海面変動があるかもしれません' : '海岸・河川から直ちに離れてください'}
             </div>
+            {/* 気象庁が書いた取消しの概要（電文の `Body/Text`）。アプリの定型文（上の `cancelInfo.desc`）
+                とは別で、なぜ取り消したのかはここにしか無い。 */}
+            {isCancelledDisplay && active[0]?.cancelText && (
+              <div className="mt-1" style={{ fontSize: '0.6875rem', color: '#9ca3af', lineHeight: 1.6, whiteSpace: 'pre-line' }}>
+                {active[0].cancelText}
+              </div>
+            )}
             {!isCancelledDisplay && sourceEarthquake && (
               <div className="mt-1.5 pt-1.5" style={{ fontSize: '0.6875rem', color: topStyle.arrivalColor, opacity: 0.9, borderTop: `1px solid ${topStyle.cardBorder}40` }}>
-                震源: {sourceEarthquake.hypocenterName}
-                {/* 規模が数値で無いときは気象庁が添えた説明を出す（「Ｍ８を超える巨大地震」）。
-                    ここを空にすると、最大級の地震ほど震源名だけの薄い表示になる。 */}
-                {sourceEarthquake.magnitude !== undefined
-                  ? `　M${sourceEarthquake.magnitude}`
-                  : sourceEarthquake.magnitudeCondition && `　${formatMagnitudeCondition(sourceEarthquake.magnitudeCondition)}`}
-                {sourceEarthquake.originTime && `　${formatTime(sourceEarthquake.originTime).slice(0, 5)}発生`}
-                {linkedQuake && <span style={{ marginLeft: '0.375rem', fontSize: '0.625rem', opacity: 0.7 }}>▶ 地震情報</span>}
                 {/* 短い間に複数の地震が起きると、1 つの津波情報にまとめて発表される。
-                    2 件目以降を落とすと、どの地震による津波なのかが読み取れなくなる。 */}
-                {sourceEarthquakes.slice(1).map((eq, i) => (
-                  <div key={i}>
-                    {eq.hypocenterName}
-                    {eq.magnitude !== undefined
-                      ? `　M${eq.magnitude}`
-                      : eq.magnitudeCondition && `　${formatMagnitudeCondition(eq.magnitudeCondition)}`}
-                    {eq.originTime && `　${formatTime(eq.originTime).slice(0, 5)}発生`}
-                  </div>
+                    2 件目以降を落とすと、どの地震による津波なのかが読み取れなくなる。
+                    **1 件目と 2 件目以降で別々に書かない** —— 項目を足したとき片方に漏れる
+                    （実際、震央補助表現と震源決定機関を 1 件目にだけ足して 2 件目で落としていた）。 */}
+                {sourceEarthquakes.map((eq, i) => (
+                  <SourceEarthquakeLine
+                    key={i}
+                    eq={eq}
+                    prefix={i === 0 ? '震源: ' : ''}
+                    link={i === 0 && linkedQuake
+                      ? <span style={{ marginLeft: '0.375rem', fontSize: '0.625rem', opacity: 0.7 }}>▶ 地震情報</span>
+                      : null}
+                  />
                 ))}
               </div>
             )}

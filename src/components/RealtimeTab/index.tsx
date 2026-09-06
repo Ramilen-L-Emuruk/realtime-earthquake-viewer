@@ -126,9 +126,22 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
       onClick={onDeactivateLpgm}
     >
       {eew.cancelledAt && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg">
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg px-4">
           <span className="font-black text-white" style={{ fontSize: '3rem', lineHeight: 1.1 }}>キャンセル</span>
           <span className="text-sm font-bold text-white/90 mt-1">この緊急地震速報は取り消されました</span>
+          {/* 気象庁が書いた取消しの概要（電文の `Body/Text`）。アプリが組み立てた文言ではないので
+              そのまま出す。地震情報のカードと同じ扱い（quake-spec.md §8）。 */}
+          {eew.cancelText && (
+            // カードは `overflow-hidden` で、オーバーレイは `absolute inset-0`。**本文が下地の
+            // 高さを超えると下が切れる**（読み上げは長文を画面へ委ねる設計なので、そこで切れると
+            // 理由がどこにも残らない）。この要素の中でスクロールできるようにしておく。
+            <span
+              className="mt-2 text-center text-white/80 overflow-y-auto"
+              style={{ fontSize: '0.75rem', lineHeight: 1.5, whiteSpace: 'pre-line', maxHeight: '40%' }}
+            >
+              {eew.cancelText}
+            </span>
+          )}
         </div>
       )}
       {/* 種別ヘッダー */}
