@@ -17,6 +17,7 @@ import { isValidDmdataApiKey, DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dm
 import {
   createTestEarthquake,
   createTestForeignQuake,
+  createTestForeignQuakeHuge,
   createTestLpgm,
   createTestEEW,
   createTestEEWWarning,
@@ -1497,6 +1498,10 @@ export function useEarthquakes(
     handleEvent(createTestForeignQuake(isDmdss))
   }, [handleEvent])
 
+  const simulateForeignQuakeHuge = useCallback(() => {
+    handleEvent(createTestForeignQuakeHuge(isDmdss))
+  }, [handleEvent])
+
   const simulateEEW = useCallback(
     () => runSimulateEEW('special', createTestEEW, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent),
     [handleEvent],
@@ -1680,6 +1685,7 @@ export function useEarthquakes(
     clearTelegramLog,
     simulateEarthquake,
     simulateForeignQuake,
+    simulateForeignQuakeHuge,
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,

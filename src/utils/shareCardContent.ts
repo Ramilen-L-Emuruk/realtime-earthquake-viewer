@@ -1,7 +1,7 @@
 import type { EEWAlert, JMAQuake, JMATsunami } from '../types/earthquake'
 import type { MapMode } from '../components/Map/mapTypes'
 import { computeSingleEEWLevel, eewKindLabel, eewMaxScale, eewMaxScaleInfo } from './eew'
-import { formatDateTime, formatDepth, formatMagnitude, formatTsunamiGrade, hasDepth, hasMagnitude } from './formatters'
+import { formatDateTime, formatDepth, formatMagnitude, formatMagnitudeCondition, formatMagnitudeWithCondition, formatTsunamiGrade, hasDepth, hasMagnitude } from './formatters'
 import { getIntensityColor, getIntensityLabelWithOrAbove, getIntensityLabelWithApproxAbove, isValidIntensityScale } from './intensity'
 import { isMaxScaleUnreceived } from './quakePoints'
 import { ATTRIBUTION_SOURCES, attributionLine, EEW_NOTICE, type ShareCardHeader } from './shareCard'
@@ -103,7 +103,10 @@ function quakeContent(quake: JMAQuake | null): ContentWithoutNotices {
   const knownScale = isValidIntensityScale(maxScale) && maxScale >= 0
   // 規模・深さは不明のことがある。「不明」の語を並べても伝わらないので、項目ごと落とす。
   const parts = [hypocenter.name]
-  if (hasMagnitude(hypocenter.magnitude)) parts.push(formatMagnitude(hypocenter.magnitude))
+  // 数値が無くても「Ｍ８を超える巨大地震」は落とさない。M8 を超えて速報できないという事実は、
+  // 規模が判らないこととは別物で、最も伝えるべき場面に出る。「不明」の語だけは従来どおり落とす。
+  const magnitude = formatMagnitudeWithCondition(hypocenter.magnitude, hypocenter.magnitudeCondition)
+  if (magnitude !== '不明') parts.push(magnitude)
   if (hasDepth(hypocenter.depth)) parts.push(`深さ ${formatDepth(hypocenter.depth)}`)
   return {
     header: {
@@ -135,7 +138,9 @@ function tsunamiContent(tsunamis: JMATsunami[]): ContentWithoutNotices {
     // 地震ほど震源名だけの薄い画像になる**。
     const magnitudeText = source.magnitude != null
       ? `　M${source.magnitude.toFixed(1)}`
-      : (source.magnitudeCondition ? `　${source.magnitudeCondition}` : '')
+      // 地震側と同じ述語を通す。素通しにすると同じ電文由来の同じ事実が、地震の共有カードでは
+      // 半角・津波の共有カードでは全角、と表記が割れる
+      : (source.magnitudeCondition ? `　${formatMagnitudeCondition(source.magnitudeCondition)}` : '')
     parts.push(`${source.hypocenterName}${magnitudeText}`)
   }
   if (areaCount > 0) parts.push(`${areaCount} 区域`)

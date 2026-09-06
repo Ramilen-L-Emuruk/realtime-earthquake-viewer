@@ -60,6 +60,51 @@ export function createTestForeignQuake(includeComments: boolean): JMAQuake {
 }
 
 /**
+ * 遠地地震の第一報で、規模を数値で速報できない形。
+ *
+ * M8 を超える地震と推定されると、気象庁は規模を数値ではなく
+ * 「Ｍ８を超える巨大地震」と発表する（電文では本文 `NaN`・`@condition="不明"` で、
+ * `@description` だけが「Ｍ不明」と区別する）。**規模が判らないことと、大きすぎて
+ * 速報できないことは別物**で、後者は最も伝えるべき場面に出る。
+ *
+ * 震央地名・付加文の組み合わせは気象庁の電文解説資料の事例に拠る（詳細震央地名
+ * 「チリ中部沿岸」、固定付加文 `0229`＋`0221`＋`0228`）。同じ場面で津波側は
+ * 予想波高が「巨大」になるため、大津波警報テストと合わせて確かめられる。
+ */
+export function createTestForeignQuakeHuge(includeComments: boolean): JMAQuake {
+  const nowDate = serverDate()
+  const now = nowDate.toISOString()
+  const eventId = toEventIdTimestamp(nowDate)
+  return {
+    kind: 'quake',
+    id: `dmdata-quake-${eventId}-1`,
+    eventId,
+    time: now,
+    issue: { source: 'テスト', time: now, type: '遠地地震', correct: 'なし' },
+    earthquake: {
+      time: now,
+      hypocenter: {
+        name: 'チリ中部沿岸',
+        latitude: -35.8,
+        longitude: -72.7,
+        // 第一報は深さも決まらないことが多い。-1 が「不明」のセンチネル
+        depth: -1,
+        // 数値は入らない。説明だけが「規模不明」と「M8 超」を分ける
+        magnitude: NaN,
+        magnitudeCondition: 'Ｍ８を超える巨大地震',
+      },
+      maxScale: -1,
+      // 0229（日本への津波の有無については現在調査中です）由来
+      domesticTsunami: '調査中',
+    },
+    points: [],
+    forecastText: includeComments
+      ? '日本への津波の有無については現在調査中です。太平洋の広域に津波発生の可能性があります。一般的に、この規模の地震が海域の浅い領域で発生すると、津波が発生することがあります。'
+      : undefined,
+  }
+}
+
+/**
  * 観測点別震度を DMDATA（DMDSS）経路の points 形状へ変換する。
  *
  * 実運用の `dmdataParser` は JSON スキーマが観測点に親都道府県を持たないため、
@@ -567,6 +612,9 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
       {
         grade: 'MajorWarning', immediate: true, name: '宮城県', code: '040',
         maxHeight: { description: '10m以上', value: 10.0 },
+        // 大津波警報の区域で予想波高が初めて数値になった／上方修正された合図（電文の
+        // `MaxHeight/Condition` = 重要）。観測・推定の「重要」とは意味が違う
+        forecastHeightImportant: true,
         // 到達状況は 3 つある。時刻を出せない段階ではこちらが入る
         firstHeight: { condition: '津波到達中と推測' },
         stations: [
@@ -625,14 +673,26 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
       { name: '八戸港', districtCode: '060', districtName: '青森県太平洋沿岸', height: { value: 1.8, description: '1.8m' }, arrivalTime: nowIso, initial: '引き' },
       // 津波注意報の区域で、これまでの最大波がごく小さい（数値を発表しない）。
       { name: '釧路',   districtCode: '080', districtName: '北海道太平洋沿岸東部', arrivalTime: t(30), initial: '押し', condition: { weak: true } },
-      { name: '沖合40km', height: { value: 3.0, description: '3.0m以上', over: true }, arrivalTime: nowIso },
+      // 沖合の潮位観測点。「重要」の基準が沿岸と違う（大津波警報だけでなく津波警報も含む）ため、
+      // 出所の印（offshore）を付けてバッジの語が切り替わることを確かめられるようにする。
+      { name: '沖合40km', offshore: true, height: { value: 3.0, description: '3.0m以上', over: true }, arrivalTime: nowIso, condition: { important: true } },
     ],
     // 沖合の観測から導いた沿岸への推定（電文の `Estimation`）。沖合の観測点は沿岸より先に
     // 津波を捉えるため、**まだ到達していない沿岸**の到達予想と高さが入る。
-    // 時刻を出せない段階では説明（下の 2 件目）で伝える。
+    //
+    // 3 件で実電文の形を一通り出す。
+    //   岩手県 … 到達時刻と説明が併存し、基準を超えた合図（重要）が付く
+    //   宮城県 … 潮位観測点で第1波を明瞭に観測できず、時刻が出せない
+    //   福島県 … 予想される高さに比べ十分小さく、数値を発表しない（推定中）
     estimations: [
-      { name: '岩手県', code: '030', arrivalTime: t(8), maxHeight: { description: '5m', value: 5.0 } },
+      {
+        name: '岩手県', code: '030', arrivalTime: t(8),
+        arrivalCondition: '早いところでは既に津波到達と推定',
+        maxHeight: { description: '5m', value: 5.0 },
+        condition: { important: true },
+      },
       { name: '宮城県', code: '040', arrivalCondition: '早いところでは既に津波到達と推定', maxHeight: { description: '4m', value: 4.0 } },
+      { name: '福島県', code: '050', arrivalCondition: '早いところでは既に津波到達と推定', condition: { estimating: true } },
     ],
   }
 }

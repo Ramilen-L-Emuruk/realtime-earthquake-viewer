@@ -19,7 +19,7 @@ import type {
   LpgmClass,
 } from '../types/earthquake'
 import { isValidLpgmClass } from '../utils/lpgm'
-import { parseTsunamiObservationCondition } from '../utils/tsunami'
+import { parseTsunamiEstimationCondition, parseTsunamiForecastHeightImportant, parseTsunamiObservationCondition } from '../utils/tsunami'
 import { log } from '../utils/logger'
 import { arr, obj, str } from './parseHelpers'
 
@@ -342,6 +342,29 @@ function normalizeForecastText(text: string): string {
 // 付加文の原文を取り出す。コードは届いているのに原文が空という状態は電文構造の変化を示す。
 // この場合 TTS は区分由来の文へ静かに退行し、022x/023x 系の前置き（「震源の近傍で津波発生の
 // 可能性があります」等）が落ちたまま一見自然な文が読み上げられるため、警告を残して検知可能にする。
+/** 震源要素の訂正を表す固定付加文のコード（電文解説資料 Ⅱ.33 4-2 の事例２）。 */
+const CORRECT_HYPOCENTER_CODE = '0256'
+
+/**
+ * 訂正報（`Head/InfoType` = 訂正）が何を訂正したのかを、固定付加文（その他）から読む。
+ *
+ * 気象庁は訂正の中身を `VarComment/Code` に載せる。**現行のコード表で訂正を表すのは
+ * `0256`「震源要素を訂正します。」1 つだけ**で、震度だけの訂正に当たるコードは無い
+ * （`AdditionalCommentEarthquake` コード表）。そのため区別できるのは「震源を訂正」と
+ * 「（内容の判らない）訂正」の 2 つで、P2PQuake 経路が持つ 5 値とは揃わない。
+ *
+ * `VarComment` を持たない訂正報・コードを読めなかった訂正報は `'訂正'` のまま返す。
+ * 訂正であること自体は `InfoType` が確定させているので、ここで落としてはならない。
+ */
+function resolveCorrectType(doc: Document): CorrectType {
+  const varCommentEl = xmlQ(doc, 'VarComment')
+  if (!varCommentEl) return '訂正'
+  // 複数の固定付加文は 1 つの Code へ空白区切りで併記される（同資料）。兄弟要素へ分かれた
+  // 場合も取りこぼさないよう、ForecastComment 側と同じ集め方をする。
+  const codes = xmlAll(varCommentEl, 'Code').flatMap(el => xmlText(el).split(/\s+/)).filter(Boolean)
+  return codes.includes(CORRECT_HYPOCENTER_CODE) ? '震源を訂正' : '訂正'
+}
+
 function extractForecastText(rawText: string, codes: unknown[]): string {
   const text = normalizeForecastText(rawText)
   if (!text && codes.length > 0) {
@@ -702,9 +725,15 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   // 表示・読み上げされるため、NaN のまま返して不明判定（formatters の hasMagnitude）に委ねる。
   // VXSE51（震度速報）は Earthquake 要素自体を持たない。**ここも 0 ではなく NaN にする**——
   // 0 は `hasMagnitude` を通るので「Ｍ０．０」と読める形になってしまう。
-  const magnitude = earthquakeEl
-    ? parseFloat(xmlText(xmlQ(earthquakeEl, 'Magnitude')))
-    : NaN
+  const magnitudeEl = earthquakeEl ? xmlQ(earthquakeEl, 'Magnitude') : null
+  const magnitude = magnitudeEl ? parseFloat(xmlText(magnitudeEl)) : NaN
+  // 規模が数値にならないときに気象庁が添える説明。**「Ｍ不明」と「Ｍ８を超える巨大地震」は
+  // 電文上どちらも本文 NaN・`@condition="不明"`** で、`description` でしか見分けられない
+  // （電文解説資料 Ⅱ.32/33/36）。津波側（`parseTsunamiFromXml`）と同じ規則で、数値が
+  // 読めたときは持たせない。
+  const magnitudeCondition = isNaN(magnitude)
+    ? (magnitudeEl?.getAttribute('description')?.trim() || undefined)
+    : undefined
 
   // MaxInt は Intensity > Observation 直下。
   // **仕様外への保険。** 電文解説資料は `MaxInt` の値域を全階層 "1"〜"7" と定めており、
@@ -794,7 +823,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   flushUnknownUnreceived(DMDATA_LOG_PREFIX)
   warnIfNoIntensityPoints(headType, issueType, points, DMDATA_LOG_PREFIX)
 
-  const correct: CorrectType = infoType === '訂正' ? '訂正' : 'なし'
+  const correct: CorrectType = infoType === '訂正' ? resolveCorrectType(doc) : 'なし'
 
   // ForecastComment > Code から domesticTsunami を導出。
   // 実電文はスペース区切りで 1 要素にまとまる（例: <Code>0226 0230</Code>）が、兄弟要素に
@@ -835,6 +864,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
         longitude: Number.isFinite(lng) ? lng : -200,
         depth,
         magnitude,
+        ...(magnitudeCondition && { magnitudeCondition }),
       },
       maxScale: maxScale >= 0 ? maxScale as IntensityScale : -1,
       domesticTsunami: domestic,
@@ -863,7 +893,14 @@ function toHalfWidthHeightDesc(s: string): string {
     .trim()
 }
 
-export function parseTsunamiFromXml(xml: string): JMATsunami | null {
+/**
+ * 津波電文（VTSE41 / VTSE51 / VTSE52）を読む。
+ *
+ * `headType` を受け取るのは**沖合と沿岸を見分けるため**。VTSE52「沖合の津波観測に関する情報」の
+ * 観測点は沿岸と「重要」の基準が違い（→ `tsunami.ts` の `importantBadgeText`）、電文の中身からは
+ * 区域名が空であることでしか区別できない —— それは副作用であって根拠ではないので、種別で判定する。
+ */
+export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami | null {
   const doc = parseTelegramXml(xml, TSUNAMI_LOG_PREFIX)
   if (!doc) return null
 
@@ -926,9 +963,12 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   const estimationList = estimationEl ? parseTsunamiEstimationsFromXml(estimationEl) : []
   const estimations = estimationList.length > 0 ? estimationList : undefined
 
+  // 沖合の潮位観測点かどうか。「重要」の基準が沿岸と違うためここで分ける。
+  const offshore = headType === 'VTSE52'
+
   // Observation のみ（VTSE51②: 津波観測情報 / VTSE52: 沖合の津波観測に関する情報）
   if (!forecastEl && observationEl) {
-    const observations = parseTsunamiObservationsFromXml(observationEl)
+    const observations = parseTsunamiObservationsFromXml(observationEl, offshore)
     if (observations.length === 0) {
       return dropTelegram(TSUNAMI_LOG_PREFIX, 'Observation はありますが観測点を 1 件も読めません')
     }
@@ -1044,6 +1084,9 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
       maxHeight: (!isNaN(heightVal) || heightDesc)
         ? { description: heightDesc, ...(!isNaN(heightVal) && { value: heightVal }) }
         : undefined,
+      // 大津波警報の区域で予想波高が初めて数値になった／上方修正された合図。
+      // 観測・推定の「重要」とは意味が違う（→ TsunamiArea.forecastHeightImportant）。
+      forecastHeightImportant: parseTsunamiForecastHeightImportant(mhEl ? xmlText(xmlQ(mhEl, 'Condition')) : undefined),
       stations: stations.length > 0 ? stations : undefined,
     })
   }
@@ -1080,7 +1123,7 @@ export function parseTsunamiFromXml(xml: string): JMATsunami | null {
   forecastStationTally.warnIfNoneReadable(TSUNAMI_LOG_PREFIX)
 
   // Observation も含む場合（VTSE51①: Forecast + Observation 両方あり）
-  const observations = observationEl ? parseTsunamiObservationsFromXml(observationEl) : undefined
+  const observations = observationEl ? parseTsunamiObservationsFromXml(observationEl, offshore) : undefined
 
   return { kind: 'tsunami', id, eventId, time: reportDateTime, cancelled: false, validDateTime, headline, warningComment, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas, observations: observations && observations.length > 0 ? observations : undefined, estimations }
 }
@@ -1112,22 +1155,28 @@ function parseTsunamiEstimationsFromXml(estimationEl: Element): import('../types
     const heightDesc = toHalfWidthHeightDesc(heightEl?.getAttribute('description') ?? '')
       || (!isNaN(heightVal) ? `${heightVal}m` : '')
       || (heightEl?.getAttribute('condition') ?? '')
+    // 数値が無い理由（「推定中」）と、基準を超えた合図（「重要」）。
+    // **`MaxHeight/Condition` は `DateTime` と `jmx_eb:TsunamiHeight` の代わりに出る**ので
+    // （電文解説資料 Ⅱ.13 1-2-2-3）、ここを読まないと「推定中」の沿岸は波高欄が空のままになる。
+    const condition = parseTsunamiEstimationCondition(mhEl ? xmlText(xmlQ(mhEl, 'Condition')) : undefined)
     estimations.push({
       name,
       ...(code && { code }),
       ...(fhEl && xmlText(xmlQ(fhEl, 'ArrivalTime')) && { arrivalTime: xmlText(xmlQ(fhEl, 'ArrivalTime')) }),
-      // 時刻を出せないときの説明（「早いところでは既に津波到達と推定」等）。
+      // 到達についての説明（「早いところでは既に津波到達と推定」）。**時刻と併存する**ので、
+      // 時刻があるかどうかで拾い分けない（理由は TsunamiEstimation.arrivalCondition）。
       ...(fhEl && xmlText(xmlQ(fhEl, 'Condition')) && { arrivalCondition: xmlText(xmlQ(fhEl, 'Condition')) }),
       ...((!isNaN(heightVal) || heightDesc) && {
         maxHeight: { description: heightDesc, ...(!isNaN(heightVal) && { value: heightVal }) },
       }),
+      ...(condition && { condition }),
     })
   }
   tally.warnIfNoneReadable(TSUNAMI_LOG_PREFIX)
   return estimations
 }
 
-function parseTsunamiObservationsFromXml(observationEl: Element): import('../types/earthquake').TsunamiObservation[] {
+function parseTsunamiObservationsFromXml(observationEl: Element, offshore: boolean): import('../types/earthquake').TsunamiObservation[] {
   const observations: import('../types/earthquake').TsunamiObservation[] = []
   const tally = createReadTally('津波の観測点')
   const allEls = observationEl.getElementsByTagName('*')
@@ -1198,6 +1247,8 @@ function parseTsunamiObservationsFromXml(observationEl: Element): import('../typ
         }),
         arrivalTime: arrivalTime || undefined,
         initial: initial || undefined,
+        // 沿岸（VTSE51）と沖合（VTSE52）で「重要」の基準が違うため、出所を持ち回す。
+        ...(offshore && { offshore: true }),
         districtCode,
         districtName,
       })

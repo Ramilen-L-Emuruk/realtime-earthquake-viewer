@@ -1,8 +1,8 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation } from '../../types/earthquake'
-import { formatDateTimeMin, formatTime } from '../../utils/formatters'
+import { formatDateTimeMin, formatMagnitudeCondition, formatTime } from '../../utils/formatters'
 import { quakeEventKey } from '../../utils/quakeMerge'
-import { groupAreasForCardDisplay, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, tsunamiAreaKey } from '../../utils/tsunami'
+import { groupAreasForCardDisplay, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, tsunamiAreaKey } from '../../utils/tsunami'
 import { TSUNAMI_MISSING_COLOR as MISSING_COLOR } from '../../utils/tsunamiStyle'
 import { mapChunksToRefs, planFollowScroll, type FollowRect, type SpeechFollowSession, type SpeechRef } from '../../utils/ttsFollow'
 import { getSpeechClock } from '../../utils/voicevox'
@@ -235,6 +235,14 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
           {gradeChange && (
             <span className="block mt-1" style={{ fontSize: '0.8125rem', color: gradeChange.raised ? '#f87171' : '#9ca3af' }}>
               {gradeChange.label}から{gradeChange.raised ? '引き上げ' : '切り替え'}
+            </span>
+          )}
+          {/* 大津波警報の区域で、予想波高が初めて数値になった／上方修正された
+              （電文の `MaxHeight/Condition` = 重要）。観測・推定の「重要」とは意味が違うので
+              語を分けている（→ tsunami.ts の forecastHeightImportantBadge）。 */}
+          {area.forecastHeightImportant && (
+            <span className="block mt-1" style={{ fontSize: '0.8125rem', color: '#f87171' }}>
+              {forecastHeightImportantBadge()}
             </span>
           )}
         </div>
@@ -894,7 +902,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                     ここを空にすると、最大級の地震ほど震源名だけの薄い表示になる。 */}
                 {sourceEarthquake.magnitude !== undefined
                   ? `　M${sourceEarthquake.magnitude}`
-                  : sourceEarthquake.magnitudeCondition && `　${sourceEarthquake.magnitudeCondition}`}
+                  : sourceEarthquake.magnitudeCondition && `　${formatMagnitudeCondition(sourceEarthquake.magnitudeCondition)}`}
                 {sourceEarthquake.originTime && `　${formatTime(sourceEarthquake.originTime).slice(0, 5)}発生`}
                 {linkedQuake && <span style={{ marginLeft: '0.375rem', fontSize: '0.625rem', opacity: 0.7 }}>▶ 地震情報</span>}
                 {/* 短い間に複数の地震が起きると、1 つの津波情報にまとめて発表される。
@@ -904,7 +912,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                     {eq.hypocenterName}
                     {eq.magnitude !== undefined
                       ? `　M${eq.magnitude}`
-                      : eq.magnitudeCondition && `　${eq.magnitudeCondition}`}
+                      : eq.magnitudeCondition && `　${formatMagnitudeCondition(eq.magnitudeCondition)}`}
                     {eq.originTime && `　${formatTime(eq.originTime).slice(0, 5)}発生`}
                   </div>
                 ))}
@@ -964,13 +972,28 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                       沿岸への推定（気象庁発表）
                     </div>
                     {t.estimations.map((est, i) => (
-                      <div key={i} className="flex items-center justify-between gap-2 px-4 py-1.5 border-b border-white/5 last:border-0">
-                        <span className="text-white text-[0.9375rem] truncate">{est.name}</span>
-                        <span className="flex-shrink-0 text-right" style={{ fontSize: '0.8125rem', color: '#93c5fd' }}>
-                          {est.maxHeight?.description && <span className="font-bold">{est.maxHeight.description}</span>}
-                          {est.arrivalTime && <span className="ml-2">{formatTime(est.arrivalTime).slice(0, 5)}到達予想</span>}
-                          {!est.arrivalTime && est.arrivalCondition && <span className="ml-2">{est.arrivalCondition}</span>}
-                        </span>
+                      <div key={i} className="px-4 py-1.5 border-b border-white/5 last:border-0">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="flex items-center gap-2 flex-wrap min-w-0">
+                            <span className="text-white text-[0.9375rem] truncate">{est.name}</span>
+                            {estimationBadges(est).map(label => (
+                              <span key={label} className="text-xs font-bold px-1.5 py-0.5 rounded"
+                                style={{ background: 'rgba(29,78,216,0.3)', color: '#93c5fd' }}>
+                                {label}
+                              </span>
+                            ))}
+                          </span>
+                          <span className="flex-shrink-0 text-right" style={{ fontSize: '0.8125rem', color: '#93c5fd' }}>
+                            {/* 数値が無ければ、無い理由（電文の「推定中」）を出す。 */}
+                            {estimationHeightText(est) && <span className="font-bold">{estimationHeightText(est)}</span>}
+                            {est.arrivalTime && <span className="ml-2">{formatTime(est.arrivalTime).slice(0, 5)}到達予想</span>}
+                          </span>
+                        </div>
+                        {/* 到達についての説明は時刻と併存する（電文解説資料 Ⅱ.13 1-2-2-2 の事例１）。
+                            時刻があるときに隠すと、時刻を出せる沿岸ほど注意喚起が落ちる。 */}
+                        {est.arrivalCondition && (
+                          <div className="mt-0.5" style={{ fontSize: '0.6875rem', color: '#9ca3af' }}>{est.arrivalCondition}</div>
+                        )}
                       </div>
                     ))}
                   </>

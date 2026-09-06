@@ -52,7 +52,7 @@ import { useQuakeHeatmap } from './hooks/useQuakeHeatmap'
 import { useDebouncedValue } from './hooks/useDebouncedValue'
 import { getIntensityLabelWithOrAbove } from './utils/intensity'
 import { isMaxScaleUnreceived } from './utils/quakePoints'
-import { formatMagnitude, formatDateTimeLocal } from './utils/formatters'
+import { formatMagnitudeWithCondition, formatDateTimeLocal } from './utils/formatters'
 import { computeEEWLevel, eewMaxLpgmClass } from './utils/eew'
 import { quakeEventKey } from './utils/quakeMerge'
 import { tsunamiOverallGrade } from './utils/tsunami'
@@ -517,7 +517,7 @@ export function App() {
     earthquakes, tsunamis, activeEEWs, lpgmByEventId, nankai, nankaiCommentary, kohatsu, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
     telegramLog, clearTelegramLog,
     injectEvent, loadMoreEarthquakes,
-    simulateEarthquake, simulateForeignQuake,
+    simulateEarthquake, simulateForeignQuake, simulateForeignQuakeHuge,
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
@@ -549,6 +549,7 @@ export function App() {
   const testHandlers = useMemo(() => ({
     earthquake:        simulateEarthquake,
     foreignQuake:      simulateForeignQuake,
+    foreignQuakeHuge:  simulateForeignQuakeHuge,
     eew:               simulateEEW,
     eewWarning:        simulateEEWWarning,
     eewForecast:       simulateEEWForecast,
@@ -579,7 +580,7 @@ export function App() {
       })
     },
   }), [
-    simulateEarthquake, simulateForeignQuake,
+    simulateEarthquake, simulateForeignQuake, simulateForeignQuakeHuge,
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
@@ -777,7 +778,7 @@ export function App() {
       isMaxScaleUnreceived(latestQuake.earthquake.maxScale, latestQuake.points),
     )
     new Notification('地震情報', {
-      body: `${latestQuake.earthquake.hypocenter.name} 最大震度${scale} ${formatMagnitude(latestQuake.earthquake.hypocenter.magnitude)}`,
+      body: `${latestQuake.earthquake.hypocenter.name} 最大震度${scale} ${formatMagnitudeWithCondition(latestQuake.earthquake.hypocenter.magnitude, latestQuake.earthquake.hypocenter.magnitudeCondition)}`,
       icon: `${import.meta.env.BASE_URL}icons/icon.svg`,
       tag: latestQuake.id,
     })

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseNiiTime, resolveQuakeHeadType, isRelated, isUnverifiableCancellation, mergeIndexEntry } from './localEarthquakeArchiveBuilder'
+import { parseNiiTime, resolveQuakeHeadType, resolveTsunamiHeadType, isRelated, isUnverifiableCancellation, mergeIndexEntry } from './localEarthquakeArchiveBuilder'
 
 function indexEntry(id: string, from: string) {
   return { id, label: id, description: id, from, to: from, firstEventTime: from }
@@ -107,5 +107,30 @@ describe('isUnverifiableCancellation', () => {
   it('安全弁: 取消電文でも震央地名を持つ場合は判定不能扱いにしない（構造上ありえないが念のため）', () => {
     const quake = { cancelled: true, earthquake: { hypocenter: { name: '熊本県熊本地方' } }, points: [] }
     expect(isUnverifiableCancellation(quake)).toBe(false)
+  })
+})
+
+// 津波の種別ラベル。**沖合（VTSE52）と沿岸（VTSE51）でパーサーの扱いが変わる**ため、
+// ここを誤ると「重要」の基準（大津波警報のみ／大津波警報・津波警報）が入れ替わる。
+describe('resolveTsunamiHeadType', () => {
+  it('正: 具体的なラベルから順に判定する', () => {
+    // NII の表示ラベルは末尾に説明のつかない "a" が付くことがある（同ファイル冒頭の注記）
+    expect(resolveTsunamiHeadType('沖合の津波観測に関する情報')).toBe('VTSE52')
+    expect(resolveTsunamiHeadType('津波情報a')).toBe('VTSE51')
+    expect(resolveTsunamiHeadType('津波警報・注意報・予報a')).toBe('VTSE41')
+  })
+
+  it('対照: 「津波情報」を含むラベルは「警報」の語があっても VTSE51 のまま', () => {
+    // 判定順を誤ると、解除等で「警報」を名乗る津波情報が VTSE41 として記録される。
+    expect(resolveTsunamiHeadType('津波情報（津波警報解除）')).toBe('VTSE51')
+  })
+
+  it('対照: 「沖合」は他のどの語より先に見る', () => {
+    // ここが崩れると沿岸として扱われ、「重要」のバッジが実際より軽い基準で出る。
+    expect(resolveTsunamiHeadType('沖合の津波観測に関する情報（津波警報）')).toBe('VTSE52')
+  })
+
+  it('安全弁: 未知のラベルは黙ってスキップせず例外にする', () => {
+    expect(() => resolveTsunamiHeadType('謎の津波電文')).toThrow()
   })
 })

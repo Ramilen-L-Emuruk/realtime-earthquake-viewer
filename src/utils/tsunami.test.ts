@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
+  importantBadgeText,
+  forecastHeightImportantBadge,
+  estimationBadges,
+  estimationHeightText,
   tsunamiMaxGrade,
   tsunamiOverallGrade,
   isTsunamiNewFire,
@@ -828,5 +832,70 @@ describe('observationBadges: 上昇中 / observationArrivalFallbackText', () => 
   it('安全弁: 第1波識別不能でも「到達確認」の扱いは変えない（到達そのものは確定している）', () => {
     // 気象庁の定義は「津波を観測したものの第1波の到達時刻が不明瞭」。到達は起きている
     expect(observationBadges(obs({ condition: { firstWaveUnidentifiable: true } }))).toEqual(['到達確認'])
+  })
+})
+
+// 「重要」（`MaxHeight/Condition`）の意味は電文で違う。語をそのまま出しても伝わらないので
+// 意味の側を書くが、そのとき基準を取り違えると実際より軽い／重い印象を与える。
+describe('「重要」の言い換えは出所ごとに分ける', () => {
+  // 正: 沖合の観測点・沿岸への推定は大津波警報と津波警報の両方が基準
+  // （電文解説資料 Ⅱ.13 1-1-2-2-2 / 1-2-2-3）。
+  it('沖合は大津波警報・津波警報の両方を挙げる', () => {
+    expect(importantBadgeText(true)).toBe('大津波警報・津波警報の基準超')
+  })
+
+  // 対照: 沿岸の潮位観測点は大津波警報のみが基準（Ⅱ.12 1-2-2-2）。広げると過大になる。
+  it('沿岸は大津波警報だけを挙げる', () => {
+    expect(importantBadgeText(false)).toBe('大津波警報の基準超')
+  })
+
+  // 安全弁: 区域の予想波高の「重要」は別の語にする。あちらは実際に観測・推定した高さではなく
+  // **予想の書き換え**を指すので（Ⅱ.11 1-1-2-4）、同じ語で出すと取り違える。
+  it('区域の予想波高の「重要」は別の語にする', () => {
+    expect(forecastHeightImportantBadge()).not.toBe(importantBadgeText(true))
+    expect(forecastHeightImportantBadge()).not.toBe(importantBadgeText(false))
+  })
+
+  // 対照: この印は引き下げでは付かない。方向が伝わらない語のままにしない
+  // （赤い色で出しているのに「下がったかもしれない更新」とも読めてしまう）。
+  it('区域の予想波高の語は方向を伝える', () => {
+    expect(forecastHeightImportantBadge()).toContain('引き上げ')
+  })
+
+  // 正: 沖合の観測点にはその基準でバッジが付く。
+  it('沖合の観測点のバッジに沖合の基準を使う', () => {
+    const obs: TsunamiObservation = { name: '岩手中部沖', offshore: true, condition: { important: true }, arrivalTime: '2026-01-01T12:20:00+09:00' }
+    expect(observationBadges(obs)).toContain('大津波警報・津波警報の基準超')
+  })
+
+  // 対照: 沿岸の観測点は従来どおり。
+  it('沿岸の観測点のバッジは従来のまま', () => {
+    const obs: TsunamiObservation = { name: '銚子', condition: { important: true }, arrivalTime: '2026-01-01T12:20:00+09:00' }
+    expect(observationBadges(obs)).toContain('大津波警報の基準超')
+  })
+})
+
+// 沿岸への推定は、数値を出せない状態（「推定中」）を電文が明示する。空欄にすると、値が無いのが
+// 気象庁の判断なのか読み落としなのか画面から分からない。
+describe('沿岸への推定の波高欄', () => {
+  // 正: 数値があればそれを出す。
+  it('数値があれば数値を出す', () => {
+    expect(estimationHeightText({ name: '岩手県', maxHeight: { description: '3m', value: 3 } })).toBe('3m')
+  })
+
+  // 正: 数値が無く「推定中」なら理由を出す。
+  it('推定中なら理由を出す', () => {
+    expect(estimationHeightText({ name: '福島県', condition: { estimating: true } })).toBe('推定中')
+  })
+
+  // 対照: どちらも無ければ空（沖合から遠く、推定そのものが出ない沿岸）。
+  it('数値も理由も無ければ空にする', () => {
+    expect(estimationHeightText({ name: '青森県' })).toBe('')
+  })
+
+  // 安全弁: バッジは「重要」のときだけ。「推定中」は波高欄の担当で、両方に出すと 1 行に 2 回並ぶ。
+  it('推定中はバッジにしない', () => {
+    expect(estimationBadges({ name: '福島県', condition: { estimating: true } })).toEqual([])
+    expect(estimationBadges({ name: '岩手県', condition: { important: true } })).toEqual(['大津波警報・津波警報の基準超'])
   })
 })

@@ -4,7 +4,7 @@ import { useMapGL } from './mapGLContext'
 import { addOrderedLayer } from './gl/layerOrder'
 import { createDepthPointLayer, type DepthPointLayer } from './gl/depthPointLayer'
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
-import { formatMagnitude } from '../../utils/formatters'
+import { formatCoordinate, formatMagnitude } from '../../utils/formatters'
 import { log } from '../../utils/logger'
 import { reportRenderFailure, clearRenderFailure } from '../../utils/renderHealth'
 import type { CatalogPointCloud } from '../../utils/hypocenterCatalogView'
@@ -55,7 +55,7 @@ function formatCatalogDepth(depthKm: number): string {
 function buildPopupHtml(cloud: CatalogPointCloud, i: number): string {
   const lat = cloud.columns.lat[i]
   const lng = cloud.columns.lng[i]
-  const coord = `北緯 ${lat.toFixed(3)}° 東経 ${lng.toFixed(3)}°`
+  const coord = formatCoordinate(lat, lng, 3)
   return (
     `<div class="text-sm" style="min-width:170px">` +
     `<div class="font-bold" style="margin-bottom:4px">${formatCatalogTime(cloud.timeMs[i])}</div>` +

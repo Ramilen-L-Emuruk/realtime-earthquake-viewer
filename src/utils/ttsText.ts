@@ -561,6 +561,51 @@ function magnitudePhrase(mag: number): string {
 }
 
 /**
+ * 規模が数値にならないときの説明（`jmx_eb:Magnitude@description`）を読む文。
+ *
+ * **「Ｍ不明」と「Ｍ８を超える巨大地震」は別物**で、後者は M8 を超えて速報できないことを表す
+ * （電文解説資料 Ⅱ.32/33/36）。数値が無いことだけを見て黙ると、最大級の地震ほど音声から
+ * 規模が消える。
+ *
+ * **別の文にする。** 「マグニチュード〜の地震が発生しました」の句へ差し込むと
+ * 「8を超える巨大地震の地震が発生しました」と重なる。
+ */
+const MAGNITUDE_CONDITION_SENTENCE: Record<string, string> = {
+  'Ｍ不明': 'マグニチュードは不明です。',
+  'Ｍ８を超える巨大地震': 'マグニチュードは8を超える巨大地震とみられます。',
+}
+
+/** 未知の説明を記録した値。同じ地震の続報で何度も来るので 1 度だけ出す。 */
+const reportedUnknownMagnitudeConditions = new Set<string>()
+
+function magnitudeConditionSentence(hypocenter: Hypocenter): string {
+  const desc = hypocenter.magnitudeCondition
+  if (!desc || hasMagnitude(hypocenter.magnitude)) return ''
+  const known = MAGNITUDE_CONDITION_SENTENCE[desc]
+  if (known) return known
+  // 気象庁が語を増やしたときに黙らない。全角の「Ｍ」と全角数字だけを直して読む
+  // （見出しの「マグニチュードは」と重ならないよう先頭の「Ｍ」は落とす）。
+  if (!reportedUnknownMagnitudeConditions.has(desc)) {
+    reportedUnknownMagnitudeConditions.add(desc)
+    log.warn(`[tts] 規模の説明に未知の表記があります（そのまま読みます）: ${desc}`)
+  }
+  const body = desc.replace(/^[ＭM]/, '').replace(/[０-９．]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+  return `マグニチュードは${body}です。`
+}
+
+/**
+ * 既読の記録に載せる規模の値。
+ *
+ * **数値と説明を同じ鍵で持つ。** 別々にすると、「Ｍ不明」→「Ｍ８を超える巨大地震」→ 実測値、と
+ * 段階的に確定していく続報で、変わったことを検出できない箇所が出る。
+ */
+function magnitudeFactValue(hypocenter: Hypocenter): string {
+  return hasMagnitude(hypocenter.magnitude)
+    ? magnitudeText(hypocenter.magnitude)
+    : (hypocenter.magnitudeCondition ?? '')
+}
+
+/**
  * 「〇〇を震源とする」の深さ部分を返す（Destination/ScaleAndDestination 系）。
  * 表示側 formatDepth と判定を揃える（負値 = 不明 / 0 = ごく浅い）。負値では空文字を返す。
  * 深さ不明の電文は遠地地震で頻出し（`depth: {value: null, condition: "不明"}`）、
@@ -824,10 +869,16 @@ function quakeOccurrenceSegments(hypocenter: Hypocenter): SpeechSegment[] {
     }
     segments.push(plain('を震源とする'))
   }
-  if (tellable.has('magnitude')) {
-    segments.push({ text: magnitudePhrase(hypocenter.magnitude), refs: [{ kind: 'quakeFact', fact: 'magnitude', value: magnitudeText(hypocenter.magnitude) }] })
+  const magRef: SpeechRef[] = [{ kind: 'quakeFact', fact: 'magnitude', value: magnitudeFactValue(hypocenter) }]
+  const numeric = magnitudePhrase(hypocenter.magnitude)
+  if (tellable.has('magnitude') && numeric) {
+    segments.push({ text: numeric, refs: magRef })
   }
   segments.push(plain('地震が発生しました。'))
+  // 数値にならない規模は、句へ差し込まず別の文で伝える（→ magnitudeConditionSentence）。
+  if (tellable.has('magnitude') && !numeric) {
+    segments.push({ text: magnitudeConditionSentence(hypocenter), refs: magRef })
+  }
   return segments
 }
 
@@ -864,7 +915,8 @@ function tellableHypocenterFacts(hypocenter: Hypocenter): Set<QuakeFact> {
     facts.add('hypocenterName')
     if (depthSourcePhrase(hypocenter.depth)) facts.add('depth')
   }
-  if (magnitudePhrase(hypocenter.magnitude)) facts.add('magnitude')
+  // 数値が読めなくても、気象庁が説明を添えていれば規模は語れる（「Ｍ８を超える巨大地震」）。
+  if (magnitudePhrase(hypocenter.magnitude) || magnitudeConditionSentence(hypocenter)) facts.add('magnitude')
   return facts
 }
 
@@ -920,9 +972,14 @@ function changedFactSegments(event: JMAQuake, spoken: QuakeSpokenState): SpeechS
   if (changed('hypocenterName', hypocenter.name)) {
     segments.push({ text: `震源は${hypocenter.name}に更新されました。`, refs: [{ kind: 'quakeFact', fact: 'hypocenterName', value: hypocenter.name }] })
   }
-  if (changed('magnitude', magnitudeText(hypocenter.magnitude))) {
-    const value = magnitudeText(hypocenter.magnitude)
-    segments.push({ text: `マグニチュードは${value}に更新されました。`, refs: [{ kind: 'quakeFact', fact: 'magnitude', value }] })
+  if (changed('magnitude', magnitudeFactValue(hypocenter))) {
+    const value = magnitudeFactValue(hypocenter)
+    // 数値にならない規模は「〜に更新されました」の形へ入れられない（「8を超える巨大地震に
+    // 更新されました」）。そのときは初報と同じ文で言い直す。
+    const text = hasMagnitude(hypocenter.magnitude)
+      ? `マグニチュードは${magnitudeText(hypocenter.magnitude)}に更新されました。`
+      : magnitudeConditionSentence(hypocenter)
+    segments.push({ text, refs: [{ kind: 'quakeFact', fact: 'magnitude', value }] })
   }
   if (changed('depth', String(hypocenter.depth))) {
     segments.push({ text: `震源の深さは${depthUpdateValue(hypocenter.depth)}に更新されました。`, refs: [{ kind: 'quakeFact', fact: 'depth', value: String(hypocenter.depth) }] })
@@ -1003,10 +1060,15 @@ export function earthquakeToSegments(
       amended.push({ text: `マグニチュード${value}`, refs: [{ kind: 'quakeFact', fact: 'magnitude', value }] })
     }
     const head = plain(`顕著な地震の震源要素更新のお知らせ。${time}頃発生した${hypocenter.name}の地震について、`)
+    // 数値にならない規模は「〜に更新されました」の並びへ入れられないので、別の文で後に足す。
+    const magCondition = magnitudeConditionSentence(hypocenter)
+    const conditionSegments: SpeechSegment[] = magCondition
+      ? [{ text: magCondition, refs: [{ kind: 'quakeFact', fact: 'magnitude', value: magnitudeFactValue(hypocenter) }] }]
+      : []
     // 深さ・規模とも不明なら要素を並べられないため、更新があった事実だけを伝える。
     return amended.length > 0
-      ? [head, ...amended, plain('に更新されました。')]
-      : [head, plain('震源要素が更新されました。')]
+      ? [head, ...amended, plain('に更新されました。'), ...conditionSegments]
+      : [head, plain('震源要素が更新されました。'), ...conditionSegments]
   }
 
   if (type === '遠地地震') {

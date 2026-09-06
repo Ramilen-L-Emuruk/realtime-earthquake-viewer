@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AppEvent, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary, TsunamiArea, TsunamiObservation, TsunamiGrade } from '../types/earthquake'
+import type { AppEvent, EEWAlert, Hypocenter, JMAQuake, JMATsunami, JMANankaiCommentary, TsunamiArea, TsunamiObservation, TsunamiGrade } from '../types/earthquake'
 import type { TabId } from '../components/IconNav'
 import type { AppSettings } from './useSettings'
 import type { AlertTitleApi } from './useAlertTitle'
 import type { ReplayEntry } from '../types/replay'
 import { getIntensityLabelWithOrAbove, getIntensityLabelWithApproxAbove } from '../utils/intensity'
 import { isMaxScaleUnreceived } from '../utils/quakePoints'
-import { formatMagnitude, hasMagnitude } from '../utils/formatters'
+import { formatMagnitudeWithCondition } from '../utils/formatters'
 import {
   eewMaxScaleInfo, isForecastScaleHigher, isForecastLpgmHigher, eewNoForecastReason, computeSingleEEWLevel, canPresentLpgmClass,
   selectEEWSoundType, eewKindLabel, eewPhase2ScaleStabilityMs,
@@ -213,6 +213,18 @@ const LATEST_SPEECH_TOPIC_MAX = 200
 /** 指定時間だけ待つ（優先度の待ち合わせで、待つ相手の Promise がまだ無いときに使う）。 */
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => { setTimeout(resolve, ms) })
+}
+
+/**
+ * 遠地地震のウィンドウタイトルに付ける規模の句（先頭の空白込み。出せなければ空文字）。
+ *
+ * 数値が無くても「Ｍ８を超える巨大地震」は出す。**遠地地震はタイトルが規模だけを伝える経路**で、
+ * ここで落とすと最大級の地震ほどタイトルが震央地名だけになる。
+ */
+function magnitudeTitlePart(hypocenter: Hypocenter): string {
+  const text = formatMagnitudeWithCondition(hypocenter.magnitude, hypocenter.magnitudeCondition)
+  // 「不明」はタイトルに出さない（震央地名だけのほうが短く読める）
+  return text === '不明' ? '' : ` ${text}`
 }
 
 // 待ちきれずに割り込むことを選んだときの警告。VOICEVOX が無応答だと読み上げごとに起こりうるため
@@ -1410,7 +1422,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 遠地地震は国内で震度を観測しない（maxScale は常に -1）。「最大震度不明」と出すと
         // 震度が判明していないだけに読めてしまうため、規模を出す別書式にする。
         title.setTitle(isForeignQuake
-          ? `遠地地震 ${hypocenter.name}${hasMagnitude(hypocenter.magnitude) ? ` ${formatMagnitude(hypocenter.magnitude)}` : ''}`
+          ? `遠地地震 ${hypocenter.name}${magnitudeTitlePart(hypocenter)}`
           // ウィンドウタイトルも断定形にしない（理由は App.tsx の通知と同じ）。
           : `地震情報 ${hypocenter.name} 最大震度${getIntensityLabelWithOrAbove(maxScale, isMaxScaleUnreceived(maxScale, event.points))}`)
       }

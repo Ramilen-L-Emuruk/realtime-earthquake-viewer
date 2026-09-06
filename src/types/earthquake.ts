@@ -9,6 +9,18 @@ export interface Hypocenter {
   longitude: number
   depth: number
   magnitude: number
+  /**
+   * 規模が数値で求まらないときに気象庁が添える説明（`jmx_eb:Magnitude@description`）。
+   *
+   * **「Ｍ不明」と「Ｍ８を超える巨大地震」は別物。** 電文はどちらも本文 `NaN`・
+   * `@condition="不明"` で送ってくる（電文解説資料 Ⅱ.32/33/36）ため、`magnitude` の側だけを
+   * 見ても見分けられない。後者は M8 を超えて速報できないことを表し、同じ地震の津波情報では
+   * 予想波高が「巨大」「高い」になる —— **最大級の地震ほど画面が「不明」の一語になる**。
+   *
+   * 津波側の `TsunamiSourceEarthquake.magnitudeCondition` と同じもの。値も原文のままで、
+   * 全角の「Ｍ」を含む（表示はそのまま出し、読み上げは `magnitudeConditionSpeech` で直す）。
+   */
+  magnitudeCondition?: string
 }
 
 export interface EarthquakePoint {
@@ -137,19 +149,54 @@ export interface TsunamiStation {
  * 到達と高さを推定したもので、VTSE52（沖合の津波観測に関する情報）でのみ届く。
  * 発表中の予想波高（`TsunamiArea.maxHeight`）と混ぜないこと。
  */
+/**
+ * 沿岸への推定の状態（`Estimation` 配下の `MaxHeight/Condition`）。
+ *
+ * 観測点側（{@link TsunamiObservationCondition}）と語彙が違う —— 推定値なので「観測中」ではなく
+ * **「推定中」**。同じ表に混ぜると、電文が言っていない語を引き当てる。
+ */
+export interface TsunamiEstimationCondition {
+  /**
+   * 予想される高さに比べ十分小さく、数値を発表していない（`MaxHeight/Condition` = 推定中）。
+   *
+   * このとき `DateTime` と `jmx_eb:TsunamiHeight` は**出現しない**（電文解説資料 Ⅱ.13 1-2-2-3）
+   * ので、`maxHeight` が作れない。値の無い理由がこのフラグにしか残らない。
+   */
+  estimating?: boolean
+  /**
+   * 推定される高さが大津波警報・津波警報の基準を超え、追加または更新された
+   * （`MaxHeight/Condition` = 重要）。定性的表現から数値表現へ変わった場合も含む。
+   *
+   * **観測点側の「重要」とは基準が違う。** 沿岸の観測（VTSE51）は大津波警報のみが基準で、
+   * こちらと沖合の観測（VTSE52）は大津波警報・津波警報の両方。語を分ける理由は
+   * `tsunami.ts` の {@link import('../utils/tsunami').importantBadgeText}。
+   */
+  important?: boolean
+}
+
 export interface TsunamiEstimation {
   /** 津波予報区名。 */
   name: string
   code?: string
   /** 到達予想時刻（推定）。 */
   arrivalTime?: string
-  /** 時刻を出せないときの説明（「早いところでは既に津波到達と推定」等）。 */
+  /**
+   * 到達についての説明（「早いところでは既に津波到達と推定」）。
+   *
+   * **`arrivalTime` と併存する。** 電文解説資料 Ⅱ.13 1-2-2-2 は「子要素 Condition に
+   * "早いところでは既に津波到達と推定" と記載する。当該沿岸地域に属する潮位観測点のうち、
+   * １観測点以上で津波の第１波の時刻を明瞭に観測した場合は、子要素 ArrivalTime に……
+   * 記載する」と定めており、事例１は両方を持つ。**「時刻を出せないときの代わり」ではない**
+   * ので、時刻があるときに隠さないこと（隠すと、時刻を出せる沿岸ほど注意喚起が落ちる）。
+   */
   arrivalCondition?: string
   /** 予想高さ（推定）。数値にならない表記もあるため `description` を正とする。 */
   maxHeight?: {
     description: string
     value?: number
   }
+  /** 電文が伝える推定の状態。数値が無い理由（「推定中」）はここにしか残らない。 */
+  condition?: TsunamiEstimationCondition
 }
 
 export interface TsunamiSourceEarthquake {
@@ -192,6 +239,18 @@ export interface TsunamiArea {
     // （P2PQuake の仕様どおりの挙動。表示・読み上げはいずれも description しか見ない）。
     value?: number
   }
+  /**
+   * 予想波高が大津波警報の区域で初めて数値になった、または上方修正された
+   * （`Forecast/Item/MaxHeight/Condition` = 重要）。
+   *
+   * **観測・推定の「重要」とは意味が違う。** あちらは実際に高い津波を観測・推定した合図だが、
+   * こちらは**予想の書き換え**を指す（電文解説資料 Ⅱ.11 1-1-2-4「大津波警報の津波予報区に
+   * 対して、予想される津波の高さが最初に数値で発表された場合や、大津波警報の中で予想される
+   * 津波の高さが上方修正された場合」）。同じ語で出すと取り違える。
+   *
+   * DMDATA 経路のみ。P2PQuake は相当する項目を配信しないため常に undefined。
+   */
+  forecastHeightImportant?: boolean
   stations?: TsunamiStation[]
 }
 
@@ -243,6 +302,17 @@ export interface TsunamiObservation {
   condition?: TsunamiObservationCondition
   arrivalTime?: string
   initial?: string  // 引き波 | 押し波
+  /**
+   * 沖合の潮位観測点（VTSE52「沖合の津波観測に関する情報」）か。沿岸（VTSE51）は false/undefined。
+   *
+   * **「重要」の基準が沿岸と違う**ため必要になる —— 沿岸は大津波警報のみ、沖合は
+   * 大津波警報・津波警報の両方（電文解説資料 Ⅱ.12 1-2-2-2 と Ⅱ.13 1-1-2-2-2）。
+   *
+   * **`districtCode` の有無で代用しないこと。** 沖合の観測点が津波予報区に属さないため
+   * 結果的に一致するが、それは電文が区域名を空にしている副作用にすぎない。判定は
+   * 電文種別（`headType`）から立てる。
+   */
+  offshore?: boolean
   // 観測点が属する津波予報区（districtCode）。forecasts[].code と一致させて area 行に紐づける。
   // VTSE52（沖合観測単独電文）は区域を持たないため undefined になる。
   districtCode?: string

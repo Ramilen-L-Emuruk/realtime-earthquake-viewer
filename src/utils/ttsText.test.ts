@@ -16,6 +16,7 @@ function makeQuake(over: {
   name?: string
   depth?: number
   magnitude?: number
+  magnitudeCondition?: string
   maxScale?: IntensityScale
   domesticTsunami?: DomesticTsunami
   forecastText?: string
@@ -33,6 +34,7 @@ function makeQuake(over: {
         longitude: -93.0,
         depth: over.depth ?? -1,
         magnitude: over.magnitude ?? 7.4,
+        ...(over.magnitudeCondition && { magnitudeCondition: over.magnitudeCondition }),
       },
       maxScale: over.maxScale ?? -1,
       domesticTsunami: over.domesticTsunami ?? 'なし',
@@ -1725,5 +1727,68 @@ describe('nankaiToText: 取消と調査終了の言い分け', () => {
   it('安全弁: 段階の発表は取消の分岐に吸われない', () => {
     expect(nankaiToText(nankai({ kindName: '巨大地震警戒' }))).toContain('巨大地震警戒')
     expect(nankaiToText(nankai({ kindName: '調査中' }))).toContain('調査中')
+  })
+})
+
+// 規模が数値にならない電文（`jmx_eb:Magnitude@description`）。
+//
+// 数値が無いことだけを見て黙ると、**最大級の地震ほど音声から規模が消える**。
+// 「Ｍ８を超える巨大地震」は M8 を超えて速報できないことを表し、同じ地震の津波情報では
+// 予想波高が「巨大」「高い」になる場面に出る。
+describe('earthquakeToText: 数値にならない規模', () => {
+  // 正: 別の文で伝える。句へ差し込むと「巨大地震の地震が発生しました」と重なる。
+  it('「Ｍ８を超える巨大地震」を別の文で読む', () => {
+    const text = earthquakeToText(makeQuake({ magnitude: NaN, magnitudeCondition: 'Ｍ８を超える巨大地震' }), TTS_OPTS, true)
+    expect(text).toContain('地震が発生しました。マグニチュードは8を超える巨大地震とみられます。')
+    expect(text).not.toContain('巨大地震の地震')
+  })
+
+  // 正: 「Ｍ不明」も読む。値が無いことを伝えるのも情報。
+  it('「Ｍ不明」を読む', () => {
+    const text = earthquakeToText(makeQuake({ magnitude: NaN, magnitudeCondition: 'Ｍ不明' }), TTS_OPTS, true)
+    expect(text).toContain('マグニチュードは不明です。')
+  })
+
+  // 対照: 数値が読めるなら従来どおり句の中で読む（別の文は足さない）。
+  it('数値が読めれば従来どおり句の中で読む', () => {
+    const text = earthquakeToText(makeQuake({ magnitude: 7.4 }), TTS_OPTS, true)
+    expect(text).toContain('マグニチュード7.4の地震が発生しました。')
+    expect(text).not.toContain('マグニチュードは')
+  })
+
+  // 対照: 説明が無い規模不明では何も足さない（「NaN」「マイナス1.0」を読ませない）。
+  it('説明が無い規模不明では規模に触れない', () => {
+    const text = earthquakeToText(makeQuake({ magnitude: NaN }), TTS_OPTS, true)
+    expect(text).not.toContain('マグニチュード')
+  })
+
+  // 安全弁: 未知の説明でも黙らない。気象庁が語を増やしたときに規模が音声から消えないため。
+  it('未知の説明でも読む', () => {
+    const text = earthquakeToText(makeQuake({ magnitude: NaN, magnitudeCondition: 'Ｍ９を超える未曾有の地震' }), TTS_OPTS, true)
+    expect(text).toContain('マグニチュードは9を超える未曾有の地震です。')
+  })
+
+  // 正: 既読の記録は数値と説明を同じ鍵で持つ。段階的に確定していく続報
+  // （「Ｍ不明」→「Ｍ８を超える巨大地震」→ 実測値）で、変わったことを取りこぼさない。
+  it('説明が変わったら続報で読み直す', () => {
+    const first = makeQuake({ type: '震源・震度情報', magnitude: NaN, magnitudeCondition: 'Ｍ不明' })
+    const spoken = createQuakeSpokenState()
+    const segs = earthquakeToSegments(first, TTS_OPTS, true, spoken)
+    applySpokenRefs(spoken, segs.flatMap(seg => seg.refs))
+
+    const second = makeQuake({ type: '震源・震度情報', magnitude: NaN, magnitudeCondition: 'Ｍ８を超える巨大地震' })
+    const text = joinSegments(earthquakeToSegments(second, TTS_OPTS, false, spoken))
+    expect(text).toContain('マグニチュードは8を超える巨大地震とみられます。')
+  })
+
+  // 対照: 同じ説明の続報では読み直さない（続報のたびに同じことを言わない）。
+  it('説明が変わらなければ続報で読み直さない', () => {
+    const q = makeQuake({ type: '震源・震度情報', magnitude: NaN, magnitudeCondition: 'Ｍ８を超える巨大地震' })
+    const spoken = createQuakeSpokenState()
+    const segs = earthquakeToSegments(q, TTS_OPTS, true, spoken)
+    applySpokenRefs(spoken, segs.flatMap(seg => seg.refs))
+
+    const text = joinSegments(earthquakeToSegments(q, TTS_OPTS, false, spoken))
+    expect(text).not.toContain('巨大地震')
   })
 })

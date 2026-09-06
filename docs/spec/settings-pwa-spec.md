@@ -871,7 +871,8 @@ DMDSS 版は DMDATA の WebSocket、standard 版は P2PQuake の WebSocket が�
 | EEW 誤報取消テスト | `createTestEEWWarning()` + `EEW_RETRACTION_CANCEL_MS`(10s) 後に取消 | 50→取消 | 10 秒後に `cancelled:true` 電文で `eewCancel` 音・通知・読み上げを検証 |
 | 地震テスト | `createTestEarthquake(useDmdataShape)` | - | 令和 6 年能登半島地震の実データベース（`src/data/noto-honshin-2024-*.json`）を採用。`points` の形と情報種別はバリアントで切り替える（後述「実電文の形に合わせる」） |
 | 遠地地震テスト | `createTestForeignQuake(includeComments)` | - | メキシコ・チアパス州沿岸 M7.4（2026-07-17）の実電文ベース。深さ不明・固定付加文 `0226`＋`0230` の報を採り、「深さ句の省略」「付加文原文の読み上げ」「`0230` 由来の津波区分（`domesticTsunami: 'なし'`）」「自由付加文のカード表示」を一度に確認できる。自由付加文もこの報の実電文どおり（「ＰＴＷＣでは…」の 1 行）。**本文中の日時は実電文のまま**なので、発表時刻を「今」へずらす都合で表示時刻とは食い違う（実電文の形を保つ方を採っている）。付加文は固定・自由とも DMDATA 経由でのみ配信されるため、呼び出し側は `isDmdss` を渡して DMDSS 版でのみ注入する |
-| 大津波警報テスト | `createTestTsunami(withDmdssFields)` | - | 大津波警報（MajorWarning）。観測点には**観測状態の組み合わせを一通り**含める（実測／実測＋欠測＋重要／到達確認＋欠測／第1波も最大波も欠測／上昇中／微弱）。単独の状態しか置かないと、カード・地図・読み上げの併記の扱いが一度も通らない（状態の一覧は [`tsunami-spec.md`](tsunami-spec.md) §6「観測状態」） |
+| 巨大地震テスト | `createTestForeignQuakeHuge(includeComments)` | - | 遠地地震の第一報で**規模を数値で速報できない**形（チリ中部沿岸・「Ｍ８を超える巨大地震」＝画面には「M8を超える巨大地震」と出る・深さ不明・津波の有無は調査中）。「Ｍ不明」と区別して表示・読み上げできるかを確かめる（→ [`quake-spec.md`](quake-spec.md) §8）。震央地名・付加文（`0229`＋`0221`＋`0228`）の組み合わせは気象庁の電文解説資料の事例に拠る |
+| 大津波警報テスト | `createTestTsunami(withDmdssFields)` | - | 大津波警報（MajorWarning）。観測点には**観測状態の組み合わせを一通り**含める（実測／実測＋欠測＋重要／到達確認＋欠測／第1波も最大波も欠測／上昇中／微弱／沖合の観測点）。単独の状態しか置かないと、カード・地図・読み上げの併記の扱いが一度も通らない（状態の一覧は [`tsunami-spec.md`](tsunami-spec.md) §6「観測状態」）。沿岸への推定も 3 通り入れる（到達時刻と説明が併存し「重要」が付く／時刻を出せない／数値を発表しない「推定中」）。**沖合の観測点を入れているのは「重要」の基準が沿岸と違うため**で、バッジの語が切り替わることを実機で確かめられる |
 | 津波警報テスト | `createTestTsunamiWarning(withDmdssFields)` | - | 津波警報 |
 | 津波注意報テスト | `createTestTsunamiWatch(withDmdssFields)` | - | 津波注意報 |
 | 津波予報テスト | `createTestTsunamiForecast(withDmdssFields)` | - | 津波予報。DMDSS は 90 秒（`TEST_AUTO_DISMISS_MS`）後に `expired` 経路で解除。standard は `validDateTime` を持たないため解除電文で消す（後述「実電文の形に合わせる」） |
@@ -1254,3 +1255,6 @@ Playwright / Chrome DevTools でボタン発火後の DOM 状態を確認した�
   （仮定震源要素でも PLUM が 2 点以上なら区域が付く報は実在する。[`eew-spec.md`](eew-spec.md) §5）。
 - 2026-09-04: リプレイの 2 経路（アーカイブ・当日）も XML 版の電文を読むよう揃えた（§6）。
   当日経路は電文一覧が 1 本になり、EEW は `originalId` から XML の URL を組み替えて取りに行く。
+- 2026-09-06: テストボタン「遠地地震（規模を速報できない報）」を足し、大津波警報テストへ沿岸への推定の
+  3 通りと沖合の観測点を加えた（§7）。電文から読む項目を増やしたのに、実機で確かめられる形が
+  どのボタンにも無い状態を作らないため。
