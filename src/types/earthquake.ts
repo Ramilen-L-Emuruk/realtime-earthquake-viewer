@@ -627,6 +627,13 @@ export interface JMALpgm {
   id: string
   eventId: string     // VXSE51/52/53/62 が共有する 14 桁タイムスタンプ。lpgmByEventId の Map キー
   time: string
+  /**
+   * 電文の運用種別（`Control/Status`）。訓練・試験のときだけ入る。→ {@link TelegramOperationStatus}
+   *
+   * **全種別に付ける。** ヘッダ部の要素なので、どの電文にも同じ形で入る。種別によって
+   * 付けたり付けなかったりすると、試験報の印が電文の種類次第で出たり出なかったりする。
+   */
+  operationStatus?: TelegramOperationStatus
   originTime: string  // TTS 読み上げテキスト用
   maxClass: number    // 1〜4
   cancelled: boolean
@@ -656,6 +663,13 @@ export interface JMANankai {
   id: string
   time: string
   eventId: string
+  /**
+   * 電文の運用種別（`Control/Status`）。訓練・試験のときだけ入る。→ {@link TelegramOperationStatus}
+   *
+   * **全種別に付ける。** ヘッダ部の要素なので、どの電文にも同じ形で入る。種別によって
+   * 付けたり付けなかったりすると、試験報の印が電文の種類次第で出たり出なかったりする。
+   */
+  operationStatus?: TelegramOperationStatus
   /**
    * 気象庁の地震関連情報番号コード（電文の `Body/EarthquakeInfo/InfoSerial/Code`）。
    *
@@ -698,6 +712,13 @@ export interface JMANankaiCommentary {
   time: string
   eventId: string
   /**
+   * 電文の運用種別（`Control/Status`）。訓練・試験のときだけ入る。→ {@link TelegramOperationStatus}
+   *
+   * **全種別に付ける。** ヘッダ部の要素なので、どの電文にも同じ形で入る。種別によって
+   * 付けたり付けなかったりすると、試験報の印が電文の種類次第で出たり出なかったりする。
+   */
+  operationStatus?: TelegramOperationStatus
+  /**
    * 気象庁の地震関連情報番号コード（`Body/EarthquakeInfo/InfoSerial/Code`）。
    * `200`=定例解説／`210`=臨時解説（次回も臨時）／`219`=臨時解説（次回は定例）。
    * 名称（`serialName`）はどちらの臨時解説も「臨時解説」で、次回の予定だけがコードで分かれる。
@@ -719,6 +740,13 @@ export interface JMAKohatsu {
   id: string
   time: string
   eventId: string
+  /**
+   * 電文の運用種別（`Control/Status`）。訓練・試験のときだけ入る。→ {@link TelegramOperationStatus}
+   *
+   * **全種別に付ける。** ヘッダ部の要素なので、どの電文にも同じ形で入る。種別によって
+   * 付けたり付けなかったりすると、試験報の印が電文の種類次第で出たり出なかったりする。
+   */
+  operationStatus?: TelegramOperationStatus
   headline: string
   body: string
   cancelled: boolean

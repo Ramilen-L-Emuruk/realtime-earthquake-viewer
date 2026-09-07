@@ -2,7 +2,7 @@
 // parseEarthquakeFromXml（REST 履歴経路）のテスト。
 // DOMParser を使うためこのファイルだけ jsdom 環境で動かす（既定は node）。
 import { describe, it, expect, vi } from 'vitest'
-import { parseEarthquakeFromXml, parseEEWFromXml, parseTsunamiFromXml, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml } from './dmdataParser'
+import { parseEarthquakeFromXml, parseEEWFromXml, parseTsunamiFromXml, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml } from './dmdataParser'
 import { log } from '../utils/logger'
 import { hasKnownEpicenter } from '../utils/geo'
 import { hasMagnitude } from '../utils/formatters'
@@ -1514,6 +1514,7 @@ function nankaiXml(opts: {
 <Report xmlns="http://xml.kishou.go.jp/jmaxml1/">
   <Control>
     <Title>南海トラフ地震臨時情報</Title>
+    <Status>通常</Status>
     <PublishingOffice>気象庁</PublishingOffice>
   </Control>
   <Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
@@ -1549,6 +1550,7 @@ function commentaryXml(opts: {
 <Report xmlns="http://xml.kishou.go.jp/jmaxml1/">
   <Control>
     <Title>南海トラフ地震関連解説情報</Title>
+    <Status>通常</Status>
     <PublishingOffice>気象庁</PublishingOffice>
   </Control>
   <Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
@@ -3340,6 +3342,40 @@ describe('EEW の取消の理由', () => {
   })
 })
 
+// 後発地震注意情報（VYSE60）。**この種別のテストが 1 件も無かった**ので、運用種別の横断テストと
+// 合わせて足す。構造は実電文（2025-03-06 の訓練報。DMDATA アーカイブ）に合わせている ——
+// 本文は `Body/Text` 直下ではなく `Body/EarthquakeInfo/Text`、`Serial` は空で届く。
+//
+// **実電文の多くが訓練報**（サンプルした 7 通のうち 5 通）。発表頻度が低いぶん、これまでに
+// 配信されたものに占める訓練の割合が大きい種別。
+const VYSE60_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/">
+  <Control>
+    <Title>北海道・三陸沖後発地震注意情報</Title>
+    <DateTime>2026-01-01T03:00:00Z</DateTime>
+    <Status>通常</Status>
+    <EditorialOffice>大阪管区気象台</EditorialOffice>
+    <PublishingOffice>気象庁</PublishingOffice>
+  </Control>
+  <Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+    <Title>北海道・三陸沖後発地震注意情報</Title>
+    <ReportDateTime>2026-01-01T12:00:00+09:00</ReportDateTime>
+    <TargetDateTime>2026-01-01T12:00:00+09:00</TargetDateTime>
+    <EventID>20260101120000</EventID>
+    <InfoType>発表</InfoType>
+    <Serial></Serial>
+    <InfoKind>北海道・三陸沖後発地震注意情報</InfoKind>
+    <InfoKindVersion>1.3_1</InfoKindVersion>
+    <Headline><Text>　本日１２時００分頃に三陸沖を震源とするモーメントマグニチュード７．８の地震が発生しました。</Text></Headline>
+  </Head>
+  <Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
+    <EarthquakeInfo type="北海道・三陸沖後発地震注意情報">
+      <InfoKind>北海道・三陸沖後発地震注意情報</InfoKind>
+      <Text>　この地震の発生により、巨大地震の想定震源域では新たな大規模地震の発生可能性が平常時と比べて相対的に高まっていると考えられます。</Text>
+    </EarthquakeInfo>
+  </Body>
+</Report>`
+
 // 電文の運用種別（`Control/Status`。電文解説資料 Ⅰ.3）。
 //
 // **`EEWAlert.test` とは別物。** あちらは「画面・音・地図へ流さない」抑制フラグで、検証用に
@@ -3374,5 +3410,45 @@ describe('電文の運用種別（Status）', () => {
     const eew = parseEEWFromXml('VXSE45', xml)!
     expect(eew.operationStatus).toBe('試験')
     expect(eew.test).toBe(false)
+  })
+
+  // **全種別が同じ扱いになっているか、まとめて見る。**
+  //
+  // `Status` はヘッダ部の要素で、どの電文にも同じ形で入る。にもかかわらず最初の実装では
+  // 7 つのパース関数のうち 3 つ（地震・津波・EEW）にしか通しておらず、**試験報の印が電文の
+  // 種別によって出たり出なかったりする**状態を作っていた。1 種別ずつのテストではこの穴は
+  // 見えない —— 通した種別だけを見て「読めている」と判断してしまう。
+  it('どの種別でも読む', () => {
+    const t = (xml: string) => xml.replace('<Status>通常</Status>', '<Status>試験</Status>')
+    expect(parseEarthquakeFromXml('VXSE53', t(VXSE53_XML))!.operationStatus).toBe('試験')
+    expect(parseTsunamiFromXml('VTSE51', t(PARITY_TSUNAMI_XML))!.operationStatus).toBe('試験')
+    expect(parseEEWFromXml('VXSE45', t(eewXml()))!.operationStatus).toBe('試験')
+    expect(parseLpgmFromXml(t(PARITY_LPGM_XML))!.operationStatus).toBe('試験')
+    expect(parseNankaiFromXml(t(nankaiXml({ title: '南海トラフ地震臨時情報（調査中）' })))!.operationStatus).toBe('試験')
+    expect(parseNankaiCommentaryFromXml(t(commentaryXml({ title: '南海トラフ地震関連解説情報（定例）', serialName: '定例解説', serialCode: '200' })))!.operationStatus).toBe('試験')
+    expect(parseVyse60FromXml(t(VYSE60_XML))!.operationStatus).toBe('試験')
+  })
+
+  // **取消の分岐にも載っているか。** 長周期・南海トラフ・後発地震は取消で別の `return` を
+  // 持つ。分岐ごとに書くと片方だけ落ちる —— この一連の作業で何度も踏んだ形なので、
+  // 正常系と同じ強さで押さえる。
+  it('取消電文でも読む', () => {
+    const t = (xml: string) => xml
+      .replace('<Status>通常</Status>', '<Status>訓練</Status>')
+      .replace('<InfoType>発表</InfoType>', '<InfoType>取消</InfoType>')
+    expect(parseLpgmFromXml(t(PARITY_LPGM_XML))!.operationStatus).toBe('訓練')
+    expect(parseNankaiFromXml(t(nankaiXml({ title: '南海トラフ地震臨時情報（調査中）' })))!.operationStatus).toBe('訓練')
+    expect(parseVyse60FromXml(t(VYSE60_XML))!.operationStatus).toBe('訓練')
+  })
+
+  // 対照: 「通常」ではどの種別も持たせない。
+  it('どの種別でも通常なら持たせない', () => {
+    expect(parseEarthquakeFromXml('VXSE53', VXSE53_XML)!.operationStatus).toBeUndefined()
+    expect(parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!.operationStatus).toBeUndefined()
+    expect(parseEEWFromXml('VXSE45', eewXml())!.operationStatus).toBeUndefined()
+    expect(parseLpgmFromXml(PARITY_LPGM_XML)!.operationStatus).toBeUndefined()
+    expect(parseNankaiFromXml(nankaiXml({ title: '南海トラフ地震臨時情報（調査中）' }))!.operationStatus).toBeUndefined()
+    expect(parseNankaiCommentaryFromXml(commentaryXml({ title: '南海トラフ地震関連解説情報（定例）', serialName: '定例解説', serialCode: '200' }))!.operationStatus).toBeUndefined()
+    expect(parseVyse60FromXml(VYSE60_XML)!.operationStatus).toBeUndefined()
   })
 })

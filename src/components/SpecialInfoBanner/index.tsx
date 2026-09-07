@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { JMANankai, JMANankaiCommentary, JMAKohatsu } from '../../types/earthquake'
+import type { JMANankai, JMANankaiCommentary, JMAKohatsu, TelegramOperationStatus } from '../../types/earthquake'
 import { log } from '../../utils/logger'
 import { normalizeDmdataTelegramId } from '../../utils/dmdataId'
 
@@ -109,6 +109,29 @@ function ChevronIcon({ open }: { open: boolean }) {
   )
 }
 
+/**
+ * 電文が自分で名乗っている運用種別（`Control/Status`）の印。訓練・試験のときだけ出す。
+ *
+ * **バナーで出る種別ほど訓練報の割合が高い。** 実電文を数えたところ、後発地震注意情報は
+ * 訓練 5 / 通常 2、南海トラフ臨時情報は訓練 4 / 通常 4 だった（発表頻度が低いぶん、これまでに
+ * 配信されたものに占める訓練の割合が大きい）。印が無いと、訓練の「巨大地震注意」が本物と
+ * 同じ顔で出る。
+ *
+ * 本文にも「＊＊＊これは訓練です＊＊＊」と書かれることがあるが、**帯は畳まれていることが多い**
+ * ので、開かなくても分かるところに出す。
+ */
+function OperationStatusBadge({ status }: { status?: TelegramOperationStatus }) {
+  if (!status) return null
+  return (
+    <span
+      className="text-xs font-bold px-1.5 py-0.5 rounded flex-shrink-0"
+      style={{ backgroundColor: '#1f2937', color: '#fcd34d', border: '1px solid #d97706' }}
+    >
+      {status}報
+    </span>
+  )
+}
+
 function NankaiBanner({ nankai }: { nankai: JMANankai }) {
   const [open, setOpen] = useState(false)
   const { bg, border, badge } = nankaiColors(nankai.kindName)
@@ -124,6 +147,7 @@ function NankaiBanner({ nankai }: { nankai: JMANankai }) {
           <span className={`text-xs font-bold text-white px-1.5 py-0.5 rounded ${badge}`}>
             {nankai.kindName}
           </span>
+          <OperationStatusBadge status={nankai.operationStatus} />
           <span className="text-white text-sm font-bold leading-tight truncate">{nankai.headline}</span>
         </div>
         <ChevronIcon open={open} />
@@ -156,6 +180,7 @@ function KohatsuBanner({ kohatsu }: { kohatsu: JMAKohatsu }) {
           <span className="text-xs font-bold text-white px-1.5 py-0.5 rounded bg-blue-500 flex-shrink-0">
             後発地震注意
           </span>
+          <OperationStatusBadge status={kohatsu.operationStatus} />
           <span className="text-white text-sm font-bold leading-tight truncate">{kohatsu.headline}</span>
         </div>
         <ChevronIcon open={open} />
@@ -226,6 +251,7 @@ function CommentaryBanner({ commentary }: { commentary: JMANankaiCommentary }) {
             <span className="text-xs font-bold text-white px-1.5 py-0.5 rounded bg-teal-500 flex-shrink-0">
               {commentary.serialName}
             </span>
+            <OperationStatusBadge status={commentary.operationStatus} />
             <span className="text-white text-sm font-bold leading-tight truncate">{commentary.headline}</span>
           </div>
           <ChevronIcon open={open} />
