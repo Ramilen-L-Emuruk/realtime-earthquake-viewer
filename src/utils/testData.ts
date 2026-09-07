@@ -201,6 +201,29 @@ export function createTestEarthquake(useDmdataShape: boolean): JMAQuake {
       : (notoHonshinPoints as EarthquakePoint[])
         .filter((p) => !p.isArea)
         .map(p => (UNRECEIVED_TEST_STATIONS.has(p.addr) ? { ...p, unreceived: true } : p)),
+    // 市町村ごとの震度（電文の `Pref/Area/City`）。**DMDATA 経路でのみ配信される**ので
+    // standard 版では持たせない（P2PQuake は市町村の粒度を配信しない）。
+    // 能登本震の確定報から、震度が割れている区域（石川県能登）の市町村を採った。
+    //
+    // **未入電は 2 つの形を両方入れる。** 解説資料 Ⅱ.33 2-1-3-3-3 は `Condition` が出る条件を
+    // 「配下に未入電の観測点があり、かつ市町村の最大震度が震度4以下（又は入電なし）」と
+    // 定めており、`MaxInt` の有無で意味が変わる：
+    //   値あり＋Condition … その市町村は震度4を観測、配下に未入電あり →「震度4」＋「未入電あり」
+    //   値なし＋Condition … 市町村の値そのものが入電なし             →「5弱以上」
+    // 片方だけだと、畳んで書いてしまう誤りを画面で捕まえられない。
+    ...(useDmdataShape && {
+      cities: [
+        { name: '輪島市', area: '石川県能登', pref: '石川県', scale: 70 as const },
+        { name: '志賀町', area: '石川県能登', pref: '石川県', scale: 70 as const },
+        { name: '穴水町', area: '石川県能登', pref: '石川県', scale: 60 as const },
+        { name: '珠洲市', area: '石川県能登', pref: '石川県', scale: 45 as const, unreceived: true },
+        { name: '能登町', area: '石川県能登', pref: '石川県', scale: 40 as const, hasUnreceived: true },
+        // **別の区域の市町村も入れる。** DMDATA の電文は `Pref/MaxInt` を必ず持つので
+        // カードの行は都道府県単位になり、区域の別を示さないと能登と加賀が混ざる。
+        { name: '金沢市', area: '石川県加賀', pref: '石川県', scale: 50 as const },
+        { name: '小松市', area: '石川県加賀', pref: '石川県', scale: 45 as const },
+      ],
+    }),
   }
 }
 
@@ -253,6 +276,19 @@ export function createTestEEWWarning(eventId?: string, serial = 1, baseTime?: Da
     forecastMaxLpgmClass: 3,
     // 気象庁の固定付加文。EEW にも付く（`Comments/Warning/Text`）
     warningComment: '強い揺れに警戒してください。',
+    // 震央が内陸か海域か（`Hypocenter/Area/LandOrSea`）。実電文 405 通中 404 通に入る
+    landOrSea: '海域',
+    // 短縮用震央地名（`ReduceName`）。「日向灘」は元から短いので実電文でも同じ文字列になる
+    reduceName: '日向灘',
+    // 震源要素の精度（`Hypocenter/Accuracy`）。実電文の事例３（IPF法 3点／4点・P相/全相混在・3点）
+    // に合わせる。**画面に語が出る組み合わせを選ぶ** —— 0（不明）だけを入れると欄が空のままで、
+    // 表示できているかを実機で確かめられない
+    accuracy: { epicenterRank: 3, epicenterRank2: 3, depthRank: 3, magnitudeRank: 4, magnitudePoints: 3 },
+    // 続報で最大予測値が上がる形（`Intensity/Forecast/Appendix`）。初報は変化なし、
+    // 2 報目以降は「震央の位置が変わったため大きくなった」を出す
+    forecastChange: serial <= 1
+      ? { maxInt: 0, maxLgInt: 0, reason: 0 }
+      : { maxInt: 1, maxLgInt: 0, reason: 2 },
     issue: { eventId: eid, serial: String(serial), time: report },
     areas: [
       { pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null, lgIntTo: 3 },
