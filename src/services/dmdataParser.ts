@@ -1557,6 +1557,9 @@ function parseLastKindGrade(code: string, logPrefix: string): TsunamiGrade | und
 export function parseLpgmFromXml(xml: string): JMALpgm | null {
   const doc = parseTelegramXml(xml, DMDATA_LOG_PREFIX)
   if (!doc) return null
+  // 電文の運用種別（`Control/Status`）。**全種別に付ける** —— ヘッダ部の要素なので、
+  // 種別によって付けたり付けなかったりすると、試験報の印が電文の種類次第で出たり出なかったりする。
+  const lpgmOperationStatus = parseOperationStatus(doc)
 
   const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
   const eventId        = xmlText(xmlQ(doc, 'EventID'))
@@ -1568,7 +1571,7 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   const earthquakeEl = xmlQ(doc, 'Earthquake')
   const originTime   = earthquakeEl ? xmlText(xmlQ(earthquakeEl, 'OriginTime')) : ''
 
-  if (cancelled) return { id, eventId, time: reportDateTime, originTime, maxClass: 0, cancelled: true }
+  if (cancelled) return { ...(lpgmOperationStatus && { operationStatus: lpgmOperationStatus }), id, eventId, time: reportDateTime, originTime, maxClass: 0, cancelled: true }
   if (!originTime) return dropTelegram(DMDATA_LOG_PREFIX, 'VXSE62（長周期地震動観測情報）に OriginTime がありません')
 
   // VXSE62 XML: Intensity > Observation > MaxLgInt が最大長周期地震動階級
@@ -1657,7 +1660,7 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   }
   const categoryValue = category >= 1 && category <= 4 ? category : undefined
 
-  return { id, eventId, time: reportDateTime, originTime, maxClass, cancelled: false, points, regions, ...(categoryValue && { category: categoryValue }) }
+  return { ...(lpgmOperationStatus && { operationStatus: lpgmOperationStatus }), id, eventId, time: reportDateTime, originTime, maxClass, cancelled: false, points, regions, ...(categoryValue && { category: categoryValue }) }
 }
 
 // 臨時情報の段階。Head/Title（情報名）の括弧内に現れるキーワードで判別する。
@@ -1716,6 +1719,9 @@ const NANKAI_COMMENTARY_CODES: ReadonlySet<string> = new Set(['200', '210', '219
 export function parseNankaiFromXml(xml: string): JMANankai | null {
   const doc = parseTelegramXml(xml, DMDATA_LOG_PREFIX)
   if (!doc) return null
+  // 電文の運用種別（`Control/Status`）。**全種別に付ける** —— ヘッダ部の要素なので、
+  // 種別によって付けたり付けなかったりすると、試験報の印が電文の種類次第で出たり出なかったりする。
+  const nankaiOperationStatus = parseOperationStatus(doc)
 
   const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
   const eventId        = xmlText(xmlQ(doc, 'EventID'))
@@ -1733,6 +1739,7 @@ export function parseNankaiFromXml(xml: string): JMANankai | null {
   if (infoType === '取消') {
     const cancelBodyEl = xmlQ(doc, 'Body')
     return {
+      ...(nankaiOperationStatus && { operationStatus: nankaiOperationStatus }),
       id, time: reportDateTime, eventId,
       kindCode: '', kindName: '',
       headline: '南海トラフ地震臨時情報（取消）',
@@ -1761,6 +1768,7 @@ export function parseNankaiFromXml(xml: string): JMANankai | null {
     || (bodyEl ? xmlText(xmlQ(bodyEl, 'Text')) : '')
 
   return {
+    ...(nankaiOperationStatus && { operationStatus: nankaiOperationStatus }),
     id, time: reportDateTime, eventId,
     kindCode: stage.code, kindName: stage.name,
     headline, body: bodyText,
@@ -1836,6 +1844,9 @@ function resolveNankaiStage(doc: Document, headline: string): { code: string; na
 export function parseNankaiCommentaryFromXml(xml: string): JMANankaiCommentary | null {
   const doc = parseTelegramXml(xml, DMDATA_LOG_PREFIX)
   if (!doc) return null
+  // 電文の運用種別（`Control/Status`）。**全種別に付ける** —— ヘッダ部の要素なので、
+  // 種別によって付けたり付けなかったりすると、試験報の印が電文の種類次第で出たり出なかったりする。
+  const commentaryOperationStatus = parseOperationStatus(doc)
 
   const headEl   = xmlQ(doc, 'Head')
   const headline = headEl ? xmlText(xmlQ(headEl, 'Title')) : ''
@@ -1879,6 +1890,7 @@ export function parseNankaiCommentaryFromXml(xml: string): JMANankaiCommentary |
   const cancelled = xmlText(xmlQ(doc, 'InfoType')) === '取消'
 
   return {
+    ...(commentaryOperationStatus && { operationStatus: commentaryOperationStatus }),
     id: `dmdata-nankai-commentary-${eventId}-${serial}`,
     time: reportDateTime, eventId,
     serialCode, serialName: serialName || '解説情報',
@@ -1891,6 +1903,9 @@ export function parseNankaiCommentaryFromXml(xml: string): JMANankaiCommentary |
 export function parseVyse60FromXml(xml: string): JMAKohatsu | null {
   const doc = parseTelegramXml(xml, DMDATA_LOG_PREFIX)
   if (!doc) return null
+  // 電文の運用種別（`Control/Status`）。**全種別に付ける** —— ヘッダ部の要素なので、
+  // 種別によって付けたり付けなかったりすると、試験報の印が電文の種類次第で出たり出なかったりする。
+  const kohatsuOperationStatus = parseOperationStatus(doc)
 
   const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
   const eventId        = xmlText(xmlQ(doc, 'EventID'))
@@ -1903,6 +1918,7 @@ export function parseVyse60FromXml(xml: string): JMAKohatsu | null {
   if (infoType === '取消') {
     const cancelBodyEl = xmlQ(doc, 'Body')
     return {
+    ...(kohatsuOperationStatus && { operationStatus: kohatsuOperationStatus }),
       id, time: reportDateTime, eventId,
       headline: '北海道・三陸沖後発地震注意情報（取消）',
       body: cancelBodyEl ? xmlText(xmlQ(cancelBodyEl, 'Text')) : '',
@@ -1922,5 +1938,5 @@ export function parseVyse60FromXml(xml: string): JMAKohatsu | null {
   // 有効期限は発表時刻 + 7日
   const expireAt = new Date(new Date(reportDateTime).getTime() + 7 * 24 * 3600 * 1000).toISOString()
 
-  return { id, time: reportDateTime, eventId, headline, body: bodyText, cancelled: false, reportDateTime, expireAt }
+  return { ...(kohatsuOperationStatus && { operationStatus: kohatsuOperationStatus }), id, time: reportDateTime, eventId, headline, body: bodyText, cancelled: false, reportDateTime, expireAt }
 }

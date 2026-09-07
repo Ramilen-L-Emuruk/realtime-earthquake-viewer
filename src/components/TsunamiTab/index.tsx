@@ -921,8 +921,18 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
           <div className="px-3 py-2 roomy:px-4 roomy:py-3"
             style={{ background: isCancelledDisplay ? 'rgba(75,85,99,0.18)' : `${topStyle.cardBorder}18` }}>
             <div className="flex items-center justify-between gap-2">
-              <div className="font-bold" style={{ fontSize: '0.875rem', color: isCancelledDisplay ? '#9ca3af' : topStyle.headerColor }}>
+              <div className="font-bold flex items-center gap-2" style={{ fontSize: '0.875rem', color: isCancelledDisplay ? '#9ca3af' : topStyle.headerColor }}>
                 {isCancelledDisplay ? cancelInfo.title : `${GRADE_LABEL[topGrade]} 発令中`}
+                {/* 電文が自分で名乗っている運用種別（`Control/Status`）。訓練・試験のときだけ出す。
+                    印が無いと、訓練の大津波警報が本物と同じ顔で出る。 */}
+                {active[0]?.operationStatus && (
+                  <span
+                    className="px-1.5 py-0.5 rounded flex-shrink-0"
+                    style={{ fontSize: '0.6875rem', backgroundColor: '#1f2937', color: '#fcd34d', border: '1px solid #d97706' }}
+                  >
+                    {active[0].operationStatus}報
+                  </span>
+                )}
               </div>
               {latestTime && (
                 <div className="text-right flex-shrink-0" style={{ fontSize: '0.6875rem', color: isCancelledDisplay ? '#6b7280' : topStyle.arrivalColor, opacity: 0.8 }}>
