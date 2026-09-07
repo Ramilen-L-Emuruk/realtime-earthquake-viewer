@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isValidLpgmClass, getLpgmClassLabel, getLpgmClassColor, getLpgmClassRadius, lpgmCategoryNote } from './lpgm'
+import { isValidLpgmClass, getLpgmClassLabel, getLpgmClassColor, getLpgmClassRadius, lpgmCategoryNote, lpgmPeriodLabel } from './lpgm'
 import { LPGM_ICON_BASE_RADIUS } from '../components/Map/gl/lpgmIcons'
 
 describe('isValidLpgmClass', () => {
@@ -85,5 +85,21 @@ describe('長周期の観測情報の種類', () => {
     expect(lpgmCategoryNote(undefined)).toBe('')
     expect(lpgmCategoryNote(0)).toBe('')
     expect(lpgmCategoryNote(9)).toBe('')
+  })
+})
+
+describe('lpgmPeriodLabel', () => {
+  // 電文の `PeriodicBand` は 1〜7 で、気象庁は 1.5〜2.5 秒台を第 1 帯とし
+  // 1 秒刻みで 7.5〜8.5 秒台の第 7 帯まで置く（電文解説資料 Ⅱ.37）。
+  it('帯の番号を中心周期で書く（番号のままでは意味が伝わらない）', () => {
+    expect(lpgmPeriodLabel(1)).toBe('2秒')
+    expect(lpgmPeriodLabel(7)).toBe('8秒')
+  })
+
+  it('値域の外は「周期不明」に倒す（型検査が及ばない経路から来る）', () => {
+    expect(lpgmPeriodLabel(0)).toBe('周期不明')
+    expect(lpgmPeriodLabel(8)).toBe('周期不明')
+    expect(lpgmPeriodLabel(1.5)).toBe('周期不明')
+    expect(lpgmPeriodLabel(NaN)).toBe('周期不明')
   })
 })

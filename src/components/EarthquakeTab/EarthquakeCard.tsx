@@ -1,5 +1,5 @@
 import { useMemo, useRef, useEffect } from 'react'
-import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint } from '../../types/earthquake'
+import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint, IntensityScale } from '../../types/earthquake'
 import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor, lpgmCategoryNote } from '../../utils/lpgm'
 import {
   formatQuakeTime,
@@ -13,7 +13,7 @@ import {
   formatMagnitudeWithCondition,
   formatCoordinate,
 } from '../../utils/formatters'
-import { getIntensityLabelWithOrAbove, getIntensityColor, getIntensityBgColor, getDepthColor, getMagnitudeColor } from '../../utils/intensity'
+import { getIntensityLabel, getIntensityLabelWithOrAbove, getIntensityColor, getIntensityBgColor, getDepthColor, getMagnitudeColor } from '../../utils/intensity'
 import { hasKnownEpicenter } from '../../utils/geo'
 import type { JMAQuakeCity } from '../../types/earthquake'
 
@@ -292,11 +292,23 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
     const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
     const prefAreaNames = stationData ? buildPrefAreaNamesIndex(stationData) : null
 
+    // 区域の最大震度。**階級と並べると「揺れは小さいのに高層階が大きく揺れた」形が出る**
+    // ——長周期地震動でいちばん伝えたい差がこれ。県へまとめた行では最も大きいものを採る。
+    const maxIntByName = new Map<string, IntensityScale>()
     const noPref: { name: string; maxLgInt: number }[] = []
     const byPref = new Map<string, Map<string, number>>()
     for (const r of regions) {
-      const pref = areaPrefIndex?.get(r.name)
+      // **電文が都道府県名を書いているならそれを使う。** 座標表からの逆引きは
+      // 電文に無かった頃の代理で、表に無い区域では引けずにまとめが崩れる。
+      const pref = r.pref || areaPrefIndex?.get(r.name)
+      const noteMaxInt = (key: string) => {
+        if (r.maxInt === undefined) return
+        const cur = maxIntByName.get(key)
+        if (cur === undefined || r.maxInt > cur) maxIntByName.set(key, r.maxInt)
+      }
+      noteMaxInt(r.name)
       if (!pref) { noPref.push({ name: r.name, maxLgInt: r.maxLgInt }); continue }
+      noteMaxInt(pref)
       const set = byPref.get(pref) ?? new Map<string, number>()
       const cur = set.get(r.name)
       if (cur == null || r.maxLgInt > cur) set.set(r.name, r.maxLgInt)
@@ -314,10 +326,20 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
       if (isWholePref) result.push({ name: pref, maxLgInt: [...classes][0] })
       else for (const [name, maxLgInt] of nameClasses) result.push({ name, maxLgInt })
     }
+    // 行の見出し（区域名または県名）に紐づく最大震度を添える。
+    //
+    // **県の行は電文が書いている値を優先する。** 区域から積み上げると、区域の震度を
+    // 1 つでも読み落としたとき静かに低く出る（パーサー側が `prefs` を用意しているのは
+    // そのため。→ `LpgmPref`）。電文に無い県だけ、区域からの積み上げへ落とす。
+    const prefMaxIntByName = new Map((lpgm?.prefs ?? []).map(p => [p.name, p.maxInt]))
+    const withMaxInt = result.map(g => ({
+      ...g,
+      maxInt: prefMaxIntByName.get(g.name) ?? maxIntByName.get(g.name),
+    }))
 
     // 階級の降順。同じ階級どうしは震度側と同じく気象庁の標準順で並べる（理由は上記）。
     const order = stationData ? buildRegionOrderIndex(stationData) : null
-    return result.sort(byValueDescThenRegion(g => g.maxLgInt, g => g.name, order))
+    return withMaxInt.sort(byValueDescThenRegion(g => g.maxLgInt, g => g.name, order))
   }, [isSelected, lpgm, stationData])
 
   if (isSelected) {
@@ -432,6 +454,42 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
               {categoryNote}
             </div>
           )}
+          {/* 付加文。固定（`ForecastComment/Text`。この地震について気象庁が添える定型文で、
+              実電文では緊急地震速報の発表の有無を伝えている）・その他の固定
+              （`VarComment/Text`）・自由（`FreeFormComment`。階級ごとの揺れの言い換え）の 3 種。
+              **自由付加文は改行と空白を保つ**（地震情報側と同じ扱い。全角スペースの表が入る）。 */}
+          {lpgm && lpgm.maxClass >= 1 && lpgm.forecastText && (
+            <div className="text-secondary" style={{ fontSize: '0.75rem', lineHeight: 1.5 }}>
+              {lpgm.forecastText}
+            </div>
+          )}
+          {lpgm && lpgm.maxClass >= 1 && lpgm.varCommentText && (
+            <div className="text-secondary" style={{ fontSize: '0.75rem', lineHeight: 1.5 }}>
+              {lpgm.varCommentText}
+            </div>
+          )}
+          {lpgm && lpgm.maxClass >= 1 && lpgm.freeFormText && (
+            <div
+              className="text-secondary"
+              style={{ fontSize: '0.75rem', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}
+            >
+              {lpgm.freeFormText}
+            </div>
+          )}
+          {/* 気象庁の詳細ページ（`Comments/URI`）。**アプリが出せないもの（波形・スペクトル）の
+              在りかを電文自身が示している**ので、そこへ行ける導線を残す。 */}
+          {lpgm && lpgm.maxClass >= 1 && lpgm.uri && (
+            <a
+              href={lpgm.uri}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="text-blue-400 underline w-fit"
+              style={{ fontSize: '0.75rem', lineHeight: 1.5 }}
+            >
+              気象庁の詳細ページ（波形・スペクトル）
+            </a>
+          )}
 
           {/* 日時 + 訂正情報 */}
           <div className="flex items-center gap-2 flex-wrap">
@@ -526,7 +584,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
             if (isLpgmActive && lpgmGroups.length > 0) {
               return (
                 <div className="flex flex-col gap-0.5 pt-1 border-t border-white/10">
-                  {lpgmGroups.map(({ name, maxLgInt }, idx) => (
+                  {lpgmGroups.map(({ name, maxLgInt, maxInt }, idx) => (
                     <div
                       key={name}
                       className="flex items-center justify-between px-2 py-1 rounded roomy:py-1.5"
@@ -538,7 +596,16 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                       >
                         長周期 {getLpgmClassLabel(maxLgInt)}
                       </span>
-                      <span className="text-white text-[0.9375rem] roomy:text-[1.125rem]">{name}</span>
+                      <span className="flex items-baseline gap-2 min-w-0">
+                        {/* **震度を並べる。** 階級だけだと「揺れは小さいのに高層階が
+                            大きく揺れた」形が読み取れない —— 長周期地震動で最も伝えたい差 */}
+                        {maxInt !== undefined && (
+                          <span className="text-[0.8125rem] text-gray-400 whitespace-nowrap roomy:text-[0.9375rem]">
+                            震度 {getIntensityLabel(maxInt)}
+                          </span>
+                        )}
+                        <span className="text-white text-[0.9375rem] roomy:text-[1.125rem]">{name}</span>
+                      </span>
                     </div>
                   ))}
                 </div>

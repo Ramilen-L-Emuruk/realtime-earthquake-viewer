@@ -610,17 +610,91 @@ export interface EEWAlert {
   forecastChange?: EEWForecastChange
 }
 
+/**
+ * 周期帯ごとの長周期地震動階級と絶対速度応答スペクトル（電文解説資料 Ⅱ.37 2-1-6・2-1-7）。
+ *
+ * **長周期地震動は「周期帯ごとに効き方が違う」ことが本体。** 電文は 1〜7 の 7 帯
+ * （1.5〜2.5 秒台 … 7.5〜8.5 秒台）を持ち、帯が長いほど高い建物が大きく揺れる。
+ * 全体の階級（{@link LpgmPoint.lgInt}）だけでは、その揺れが低層寄りか高層寄りかが出せない。
+ */
+export interface LpgmPeriodBand {
+  /** 電文の `PeriodicBand`（1〜7）。中心周期は 2 秒台から 8 秒台まで 1 秒刻み */
+  band: number
+  /** その周期帯の長周期地震動階級。0（該当なし）もそのまま持つ */
+  lgInt?: number
+  /** その周期帯の絶対速度応答スペクトル（cm/s） */
+  sva?: number
+}
+
 export interface LpgmPoint {
   code: string      // 観測点コード（例: "0122401"）
   name: string      // 観測点名（例: "新千歳空港"）
   pref: string      // 都道府県名（電文の Pref/Name から補う）
   lgInt: number     // 長周期地震動階級 1〜4
+  /**
+   * その観測点の震度（`IntensityStation/Int`）。
+   *
+   * **長周期の電文は震度も持っている。** 階級だけを出すと「階級4 なのに震度は 3 だった」
+   * ような、高層階だけが大きく揺れた状況を伝えられない（→ {@link JMALpgm.category} が
+   * 地域単位で言おうとしているのと同じことを、観測点単位で言える）。
+   */
+  int?: IntensityScale
+  /** 絶対速度応答スペクトルの最大値（`Sva`。cm/s） */
+  sva?: number
+  /** 周期帯ごとの内訳。→ {@link LpgmPeriodBand} */
+  periods?: LpgmPeriodBand[]
+}
+
+/**
+ * 長周期地震動観測情報が持つ震源の要素（`Body/Earthquake/Hypocenter`）。
+ *
+ * **読んで持つが、画面には出していない。** 長周期の情報は地震カードに紐づけて出しており、
+ * 震源・規模はそちらが同じ地震の値を出すため重複する。**電文が持っているものを落とさない**
+ * ために保持する（地震情報と突き合わせて訂正に気づく、長周期が先に届いた場合に出す、
+ * といった使い道はここでは実装していない）。
+ */
+export interface LpgmHypocenter {
+  /** 震央地名（`Area/Name`） */
+  name: string
+  /** 震央地名コード（`Area/Code`） */
+  code?: string
+  latitude?: number
+  longitude?: number
+  /** 深さ（km）。読めないときは持たせない */
+  depth?: number
+  /**
+   * 震央補助表現（`Area/NameFromMark`。例:「長崎の東８０ｋｍ付近」）。
+   * 有名地名から離れた震源のときだけ電文に入る。
+   */
+  nameFromMark?: string
+  /** 震央補助表現の構成要素（`MarkCode` / `Direction` / `Distance`）。上の文の材料 */
+  markCode?: string
+  direction?: string
+  distanceKm?: number
+}
+
+/**
+ * 都道府県ごとの最大値（電文の `Pref/MaxInt`・`Pref/MaxLgInt`）。
+ *
+ * **区域の値から計算し直さない。** 気象庁が都道府県単位の最大値を電文に書いているので、
+ * それを使う。区域から積み上げると、区域を 1 つでも読み落としたときに静かにずれる
+ * （電文が直接述べている事実を代理値で置き換える形になる）。
+ */
+export interface LpgmPref {
+  code: string
+  name: string
+  maxLgInt: number
+  maxInt?: IntensityScale
 }
 
 export interface LpgmRegion {
   code: string      // 一次細分区域コード（例: "102"）
   name: string      // 一次細分区域名（例: "石狩地方南部"）
   maxLgInt: number  // 区域内最大長周期地震動階級 1〜4
+  /** その区域が属する都道府県名（電文の `Pref/Name` から補う） */
+  pref?: string
+  /** 区域内の最大震度（`Area/MaxInt`）。階級と並べると、揺れの高さと長さの差が出る */
+  maxInt?: IntensityScale
 }
 
 export interface JMALpgm {
@@ -639,6 +713,40 @@ export interface JMALpgm {
   cancelled: boolean
   points?: LpgmPoint[]    // 観測点別階級（取消電文では undefined）
   regions?: LpgmRegion[]  // 一次細分区域別最大階級
+  prefs?: LpgmPref[]      // 都道府県別最大階級・最大震度（→ {@link LpgmPref}）
+  /**
+   * 全国の最大震度（`Intensity/Observation/MaxInt`）。
+   *
+   * **読んで持つが、画面には出していない。** 同じ地震の最大震度は地震カードが出すため。
+   * 区域・観測点ごとの震度（{@link LpgmRegion.maxInt} / {@link LpgmPoint.int}）は
+   * 階級と並べる意味があるので出している。
+   */
+  maxInt?: IntensityScale
+  /** 地震の規模（`jmx_eb:Magnitude`）。数値で求まらないときは持たせない。画面には出していない */
+  magnitude?: number
+  /** 地震発現時刻（`Earthquake/ArrivalTime`）。発生時刻（{@link originTime}）と別物。画面には出していない */
+  arrivalTime?: string
+  /** 震源の要素。→ {@link LpgmHypocenter} */
+  hypocenter?: LpgmHypocenter
+  /**
+   * 固定付加文（`Comments/ForecastComment/Text`）。
+   * 例:「この地震について、緊急地震速報を発表しています。」
+   */
+  forecastText?: string
+  /** 固定付加文（その他。`Comments/VarComment/Text`） */
+  varCommentText?: string
+  /**
+   * 自由付加文（`Comments/FreeFormComment`）。階級ごとの揺れの言い換えと、
+   * 詳細ページへの案内が入る。**改行と空白を保つ**（地震情報側と同じ扱い）。
+   */
+  freeFormText?: string
+  /**
+   * 気象庁の詳細ページ（`Comments/URI`）。波形とスペクトルが載る。
+   *
+   * **アプリが出せない情報の在りかを、電文自身が示している。** 周期帯ごとの階級までは
+   * 出せても波形は出せないので、そこへ行ける導線を残す。
+   */
+  uri?: string
   /**
    * 長周期地震動に関する観測情報の種類（`LgCategory`。値は "1"〜"4"。電文解説資料 Ⅱ.37 2-1-4）。
    *

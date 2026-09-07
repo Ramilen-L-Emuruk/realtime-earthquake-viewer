@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import type { JMAQuake, JMALpgm } from '../types/earthquake'
+import type { JMAQuake, JMALpgm, IntensityScale, LpgmPeriodBand } from '../types/earthquake'
 import { useStationCoords } from './useStationCoords'
 import { useSubRegions } from './useSubRegions'
 import {
@@ -55,6 +55,15 @@ export interface LpgmMarker {
   name: string
   /** 都道府県名。電文に無ければ座標テーブルの索引から補完する。 */
   pref: string
+  /**
+   * その観測点の震度・絶対速度応答スペクトル・周期帯ごとの内訳（クリック時の吹き出し用）。
+   *
+   * **階級だけでは「どの高さの建物が揺れたか」が出せない。** 長周期地震動は周期帯ごとに
+   * 効き方が違い、電文はその内訳を持っている（→ `LpgmPeriodBand`）。
+   */
+  int?: IntensityScale
+  sva?: number
+  periods?: LpgmPeriodBand[]
 }
 
 export interface LpgmRegionAggregate {
@@ -62,6 +71,14 @@ export interface LpgmRegionAggregate {
   maxLgInt: number
   rings: LatLng[][]
   label: LatLng
+  /**
+   * 区域内の最大震度（電文の `Area/MaxInt`）。
+   *
+   * **同じ事実が経路によって出たり出なかったりしないようにする。** 階級と震度の差は
+   * 長周期地震動で最も伝えたいところで、カードにも観測点の吹き出しにも出している。
+   * ここだけ落とすと、寄り引きしただけで情報が消える。
+   */
+  maxInt?: IntensityScale
 }
 
 /**
@@ -295,7 +312,12 @@ export function useQuakeLayerData(
       const pref = p.pref || stationPrefIndex.get(p.name) || ''
       const position = lookupPointCoords(stationCoords, pref, p.name, false)
       if (!position) continue
-      markers.push({ position, lgInt: p.lgInt, name: p.name, pref })
+      markers.push({
+        position, lgInt: p.lgInt, name: p.name, pref,
+        ...(p.int !== undefined && { int: p.int }),
+        ...(p.sva !== undefined && { sva: p.sva }),
+        ...(p.periods && { periods: p.periods }),
+      })
     }
     return markers.sort((a, b) => a.lgInt - b.lgInt)
   }, [lpgmActive, lpgm, stationCoords, stationPrefIndex])
@@ -304,9 +326,13 @@ export function useQuakeLayerData(
   const lpgmRegionAggregates = useMemo<LpgmRegionAggregate[]>(() => {
     if (!lpgmActive || !lpgm?.regions?.length || !subregions) return []
     const maxByName = new Map(lpgm.regions.map((r) => [r.name, r.maxLgInt]))
+    const maxIntByName = new Map(lpgm.regions.map((r) => [r.name, r.maxInt]))
     return subregions
       .filter((sr) => (maxByName.get(sr.name) ?? 0) >= 1)
-      .map((sr) => ({ name: sr.name, maxLgInt: maxByName.get(sr.name)!, rings: sr.rings, label: sr.label }))
+      .map((sr) => ({
+        name: sr.name, maxLgInt: maxByName.get(sr.name)!, rings: sr.rings, label: sr.label,
+        ...(maxIntByName.get(sr.name) !== undefined && { maxInt: maxIntByName.get(sr.name) }),
+      }))
       .sort((a, b) => a.maxLgInt - b.maxLgInt)
   }, [lpgmActive, lpgm, subregions])
 

@@ -87,3 +87,15 @@ export function lpgmCategoryNote(category: number | undefined): string {
   return '震度が小さくても高層階が大きく揺れた地域があります'
 }
 
+
+/**
+ * 周期帯の番号（電文の `PeriodicBand`。1〜7）を中心周期の表示に直す。
+ *
+ * 気象庁は 1.5〜2.5 秒台を第 1 帯とし、以降 1 秒刻みで 7.5〜8.5 秒台の第 7 帯まで置く
+ * （電文解説資料 Ⅱ.37）。**番号をそのまま出しても意味が伝わらない**ので中心周期で書く。
+ * 周期が長い帯ほど高い建物が大きく揺れる。
+ */
+export function lpgmPeriodLabel(band: number): string {
+  if (!Number.isInteger(band) || band < 1 || band > 7) return '周期不明'
+  return `${band + 1}秒`
+}
