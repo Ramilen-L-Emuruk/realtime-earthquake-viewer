@@ -1363,7 +1363,7 @@ describe('parseLpgmFromXml: xmlChild が Area 直下の値を拾い、配下 Cit
     if (!lpgm) throw new Error('parseLpgmFromXml returned null unexpectedly')
     if (lpgm.cancelled) throw new Error('expected発表 but got取消')
     expect(lpgm.regions).toEqual([
-      { code: '250', name: '東京都２３区', maxLgInt: 3 },
+      { code: '250', name: '東京都２３区', maxLgInt: 3, pref: '東京都' },
     ])
   })
 
@@ -1407,9 +1407,23 @@ const PARITY_LPGM_XML = `<?xml version="1.0" encoding="UTF-8"?>
   <Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
     <Earthquake>
       <OriginTime>2026-08-13T18:58:00+09:00</OriginTime>
+      <ArrivalTime>2026-08-13T18:58:30+09:00</ArrivalTime>
+      <Hypocenter>
+        <Area>
+          <Name>新潟県上越地方</Name>
+          <Code>371</Code>
+          <jmx_eb:Coordinate description="北緯３７．１度　東経１３８．２度　深さ　２０ｋｍ">+37.1+138.2-20000/</jmx_eb:Coordinate>
+          <NameFromMark>高田の南西１０ｋｍ付近</NameFromMark>
+          <MarkCode type="震央補助">705</MarkCode>
+          <Direction>南西</Direction>
+          <Distance unit="km">10</Distance>
+        </Area>
+      </Hypocenter>
+      <jmx_eb:Magnitude type="Mj" description="Ｍ５．２">5.2</jmx_eb:Magnitude>
     </Earthquake>
     <Intensity>
       <Observation>
+        <MaxInt>3</MaxInt>
         <MaxLgInt>2</MaxLgInt>
         <Pref>
           <Name>新潟県</Name>
@@ -1428,11 +1442,28 @@ const PARITY_LPGM_XML = `<?xml version="1.0" encoding="UTF-8"?>
               <LgInt>2</LgInt>
               <LgIntPerPeriod PeriodicBand="1" PeriodUnit="秒台">2</LgIntPerPeriod>
               <LgIntPerPeriod PeriodicBand="2" PeriodUnit="秒台">2</LgIntPerPeriod>
+              <LgIntPerPeriod PeriodicBand="3" PeriodUnit="秒台">0</LgIntPerPeriod>
+              <Sva unit="cm/s">12.5</Sva>
+              <SvaPerPeriod unit="cm/s" PeriodicBand="1" PeriodUnit="秒台">12.5</SvaPerPeriod>
+              <SvaPerPeriod unit="cm/s" PeriodicBand="2" PeriodUnit="秒台">8.1</SvaPerPeriod>
+              <SvaPerPeriod unit="cm/s" PeriodicBand="3" PeriodUnit="秒台">3.4</SvaPerPeriod>
             </IntensityStation>
           </Area>
         </Pref>
       </Observation>
     </Intensity>
+    <Comments>
+      <ForecastComment codeType="固定付加文">
+        <Text>この地震について、緊急地震速報を発表しています。</Text>
+        <Code>0241</Code>
+      </ForecastComment>
+      <VarComment codeType="固定付加文">
+        <Text>この地震について、緊急地震速報を発表しています。</Text>
+        <Code>0241</Code>
+      </VarComment>
+      <FreeFormComment>各長周期地震動階級に対する簡易な現象表現</FreeFormComment>
+      <URI>https://www.data.jma.go.jp/eew/data/ltpgm/event.php?eventId=20260813185800</URI>
+    </Comments>
   </Body>
 </Report>`
 
@@ -1449,9 +1480,11 @@ describe('XML 経路が落としてはいけない項目（長周期地震動）
     }
   })
 
-  it('区域別の最大階級を同じに読む', () => {
+  it('区域別の最大階級を同じに読む（都道府県名と最大震度も併せて持つ）', () => {
     for (const l of [fromXml()]) {
-      expect(l.regions).toEqual([{ code: '370', name: '新潟県上越', maxLgInt: 2 }])
+      expect(l.regions).toEqual([
+        { code: '370', name: '新潟県上越', maxLgInt: 2, pref: '新潟県', maxInt: 30 },
+      ])
     }
   })
 
@@ -1466,7 +1499,113 @@ describe('XML 経路が落としてはいけない項目（長周期地震動）
   // 観測点名に県名が入らないので、Pref/Name から都道府県を補って pref に持つ。
   // types/earthquake.ts の LpgmPoint.pref のコメントがこの扱いを定めている。
   it('観測点は名前に県名を含まず、pref を Pref/Name から補う', () => {
-    expect(fromXml().points![0]).toEqual({ code: '1522201', name: '上越市中ノ俣', pref: '新潟県', lgInt: 2 })
+    const p = fromXml().points![0]
+    expect(p.code).toBe('1522201')
+    expect(p.name).toBe('上越市中ノ俣')
+    expect(p.pref).toBe('新潟県')
+    expect(p.lgInt).toBe(2)
+  })
+
+  // 長周期地震動は「どの周期帯が強く出たか」が本体で、全体の階級だけでは
+  // 低層寄りか高層寄りかが出せない。**正・対照・安全弁の 3 種で固定する。**
+  describe('観測点の周期帯ごとの内訳', () => {
+    it('正: 帯ごとの階級と絶対速度応答スペクトルを PeriodicBand の番号で持つ', () => {
+      expect(fromXml().points![0].periods).toEqual([
+        { band: 1, lgInt: 2, sva: 12.5 },
+        { band: 2, lgInt: 2, sva: 8.1 },
+        { band: 3, lgInt: 0, sva: 3.4 },
+      ])
+    })
+
+    it('安全弁: 階級 0 の帯も落とさない（0 は「その周期帯では該当なし」という正常な値）', () => {
+      const band3 = fromXml().points![0].periods!.find(b => b.band === 3)
+      expect(band3?.lgInt).toBe(0)
+    })
+
+    it('対照: PeriodicBand を読めない要素だけを捨て、他の帯は残す', () => {
+      const xml = PARITY_LPGM_XML.replace(
+        '<LgIntPerPeriod PeriodicBand="2" PeriodUnit="秒台">2</LgIntPerPeriod>',
+        '<LgIntPerPeriod PeriodUnit="秒台">2</LgIntPerPeriod>',
+      )
+      const periods = parseLpgmFromXml(xml)!.points![0].periods!
+      // 帯 2 は階級を落とすが、同じ帯の Sva は残り、帯 1・3 は無傷
+      expect(periods.map(b => b.band)).toEqual([1, 2, 3])
+      expect(periods.find(b => b.band === 2)).toEqual({ band: 2, sva: 8.1 })
+      expect(periods.find(b => b.band === 1)).toEqual({ band: 1, lgInt: 2, sva: 12.5 })
+    })
+  })
+
+  it('観測点の震度と絶対速度応答スペクトルを読む', () => {
+    const p = fromXml().points![0]
+    expect(p.int).toBe(30)      // 震度3
+    expect(p.sva).toBe(12.5)
+  })
+
+  // 気象庁が都道府県単位の最大値を電文に書いている。区域から積み上げると、
+  // 区域を 1 つ読み落としたときに静かにずれる。
+  it('都道府県の最大階級・最大震度を電文から読む', () => {
+    expect(fromXml().prefs).toEqual([
+      { code: '15', name: '新潟県', maxLgInt: 2, maxInt: 30 },
+    ])
+  })
+
+  it('全国の最大震度・規模・地震発現時刻を読む', () => {
+    const l = fromXml()
+    expect(l.maxInt).toBe(30)
+    expect(l.magnitude).toBe(5.2)
+    expect(l.arrivalTime).toBe('2026-08-13T18:58:30+09:00')
+  })
+
+  it('震源の要素（座標・震央補助表現）を読む', () => {
+    expect(fromXml().hypocenter).toEqual({
+      name: '新潟県上越地方',
+      code: '371',
+      latitude: 37.1,
+      longitude: 138.2,
+      depth: 20,
+      nameFromMark: '高田の南西１０ｋｍ付近',
+      markCode: '705',
+      direction: '南西',
+      distanceKm: 10,
+    })
+  })
+
+  it('付加文と気象庁の詳細ページを読む（固定・その他の固定・自由の 3 種）', () => {
+    const l = fromXml()
+    expect(l.forecastText).toBe('この地震について、緊急地震速報を発表しています。')
+    expect(l.varCommentText).toBe('この地震について、緊急地震速報を発表しています。')
+    expect(l.freeFormText).toBe('各長周期地震動階級に対する簡易な現象表現')
+    expect(l.uri).toBe('https://www.data.jma.go.jp/eew/data/ltpgm/event.php?eventId=20260813185800')
+  })
+
+  // **値域の外は捨てて記録する。** 表示側は「周期不明」「階級不明」へ倒すので画面は
+  // 壊れないが、そのままでは電文の書式が変わったことに誰も気づけない。
+  describe('周期帯・階級の値域', () => {
+    it('対照: 周期帯の番号が 1〜7 の外なら、その帯を採らない', () => {
+      const xml = PARITY_LPGM_XML.replace('PeriodicBand="3" PeriodUnit="秒台">0<', 'PeriodicBand="8" PeriodUnit="秒台">0<')
+      const periods = parseLpgmFromXml(xml)!.points![0].periods!
+      // 帯 8 は階級を捨てる。同じ帯の Sva（PeriodicBand="3"）は残る
+      expect(periods.some(b => b.band === 8)).toBe(false)
+      expect(periods.find(b => b.band === 3)).toEqual({ band: 3, sva: 3.4 })
+    })
+
+    it('対照: 階級表に無い値の帯は採らない（0 は「該当なし」なので通す）', () => {
+      const xml = PARITY_LPGM_XML.replace('PeriodicBand="1" PeriodUnit="秒台">2</LgIntPerPeriod>', 'PeriodicBand="1" PeriodUnit="秒台">9</LgIntPerPeriod>')
+      const periods = parseLpgmFromXml(xml)!.points![0].periods!
+      expect(periods.find(b => b.band === 1)).toEqual({ band: 1, sva: 12.5 })
+    })
+
+    it('対照: 都道府県の最大階級が階級表の外なら prefs に積まない', () => {
+      // `<Code>15</Code>`（新潟県）直後の MaxLgInt だけを差し替える。同じ要素名が
+      // Area 直下にもあるので、県の側だと分かる目印から辿る。
+      const xml = PARITY_LPGM_XML.replace(/(<Code>15<\/Code>[\s\S]*?<MaxLgInt>)2(<\/MaxLgInt>)/, '$19$2')
+      expect(parseLpgmFromXml(xml)!.prefs).toBeUndefined()
+    })
+
+    it('安全弁: 応答スペクトルの負値は採らない（物理量なので読めない値と同じ扱い）', () => {
+      const xml = PARITY_LPGM_XML.replace('<Sva unit="cm/s">12.5</Sva>', '<Sva unit="cm/s">-1</Sva>')
+      expect(parseLpgmFromXml(xml)!.points![0].sva).toBeUndefined()
+    })
   })
 
   it('取消電文は両経路とも cancelled=true で返す', () => {

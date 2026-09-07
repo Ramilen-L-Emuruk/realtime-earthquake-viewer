@@ -3,7 +3,8 @@ import { frontSortKeyExpression, mercatorProps } from './gl/screenDepth'
 import type { GeoJSONSource, MapGeoJSONFeature } from 'maplibre-gl'
 import type { Feature, FeatureCollection, Point } from 'geojson'
 import { useMapGL } from './mapGLContext'
-import { getLpgmClassColor, getLpgmClassLabel, getLpgmClassRadius } from '../../utils/lpgm'
+import { getLpgmClassColor, getLpgmClassLabel, getLpgmClassRadius, lpgmPeriodLabel } from '../../utils/lpgm'
+import { getIntensityLabel } from '../../utils/intensity'
 import type { LpgmMarker } from '../../hooks/useQuakeLayerData'
 import { addOrderedLayer } from './gl/layerOrder'
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
@@ -42,6 +43,11 @@ function buildFC(markers: LpgmMarker[], iconScale: number): FeatureCollection<Po
       lgInt: m.lgInt,
       name: m.name,
       pref: m.pref,
+      // **周期帯の内訳は文字列にして渡す。** GeoJSON の properties は MapLibre を
+      // 通ると配列やオブジェクトが素の形では戻らないため、読み出す側で復元する。
+      int: m.int ?? -1,
+      sva: m.sva ?? -1,
+      periodsJson: m.periods && m.periods.length > 0 ? JSON.stringify(m.periods) : '',
       // 同じ階級のバッジを画面の手前から並べるために持たせる（gl/screenDepth.ts）。
       ...mercatorProps(m.position[1], m.position[0]),
     },
@@ -59,16 +65,69 @@ function hoverHtml(f: MapGeoJSONFeature): string {
   )
 }
 
+/**
+ * 周期帯ごとの内訳。**長周期地震動は「どの周期帯が強く出たか」が本体**で、
+ * 全体の階級だけでは低層寄りか高層寄りかが出せない。
+ *
+ * 階級 0 の帯も出す —— 0 は「その周期帯では該当なし」で、落とすと
+ * 「短い周期だけ強く出た」形が「短い周期しか観測していない」ように見える。
+ */
+export function lpgmPeriodsHtml(json: string): string {
+  if (!json) return ''
+  let bands: { band: number; lgInt?: number; sva?: number }[]
+  try {
+    bands = JSON.parse(json)
+  } catch {
+    return ''
+  }
+  if (!Array.isArray(bands) || bands.length === 0) return ''
+  const rows = bands.map(b => {
+    const cls = typeof b.lgInt === 'number' ? b.lgInt : -1
+    const chip = cls >= 1
+      ? badgeHtml(String(cls), getLpgmClassColor(cls))
+      : `<span style="display:inline-block;width:16px;text-align:center;color:#64748b">−</span>`
+    const sva = typeof b.sva === 'number' ? b.sva.toFixed(1) : ''
+    return (
+      `<div style="display:flex;align-items:center;gap:6px;line-height:1.6">` +
+      `<span style="width:32px;color:#94a3b8;text-align:right">${escapeHtml(lpgmPeriodLabel(b.band))}</span>` +
+      `${chip}` +
+      `<span style="color:#cbd5e1;font-variant-numeric:tabular-nums">${escapeHtml(sva)}</span></div>`
+    )
+  }).join('')
+  // **専門用語をそのまま出さない。** このアプリは分類番号を平易な一文へ直す作法を取っている
+  // （→ `lpgmCategoryNote`）。周期帯・応答の大きさも、値だけ出しても何を意味するか伝わらない。
+  // 数字は残したうえで、読み方を一行添える。
+  return (
+    `<div style="margin-top:8px;border-top:1px solid #334155;padding-top:6px">` +
+    `<div style="font-size:10px;color:#94a3b8;margin-bottom:2px">揺れの周期ごと（階級・揺れの大きさ）</div>` +
+    `<div style="font-size:11px">${rows}</div>` +
+    `<div style="font-size:10px;color:#94a3b8;margin-top:4px">周期が長いほど、高い建物が大きく揺れます</div></div>`
+  )
+}
+
 function clickHtml(f: MapGeoJSONFeature): string {
   const lgInt = Number(f.properties?.lgInt ?? 0)
   const pref = String(f.properties?.pref ?? '')
+  const int = Number(f.properties?.int ?? -1)
+  const sva = Number(f.properties?.sva ?? -1)
   return (
-    `<div style="min-width:150px">` +
+    `<div style="min-width:170px">` +
     `<div style="font-weight:700;font-size:13px">${escapeHtml(String(f.properties?.name ?? ''))}</div>` +
     (pref ? `<div style="margin-top:2px;font-size:11px;color:#94a3b8">${escapeHtml(pref)}</div>` : '') +
     `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:12px">` +
     `${badgeHtml(String(lgInt), getLpgmClassColor(lgInt))}` +
     `<span style="color:#cbd5e1">長周期地震動${escapeHtml(getLpgmClassLabel(lgInt))}</span></div>` +
+    // **震度も併せて出す。** 震度は小さいのに階級が高い観測点があることが長周期地震動の
+    // 要点で、片方だけ出すとその差が見えない。
+    (int >= 0
+      ? `<div style="margin-top:4px;font-size:12px;color:#cbd5e1">震度 ${escapeHtml(getIntensityLabel(int))}</div>`
+      : '') +
+    // 絶対速度応答スペクトルの最大値。語をそのまま出しても伝わらないので、
+    // 「揺れの大きさ」と書いて単位を添える（値は電文のまま）。
+    (sva >= 0
+      ? `<div style="margin-top:2px;font-size:11px;color:#94a3b8">揺れの大きさ 最大 ${escapeHtml(sva.toFixed(1))} cm/s</div>`
+      : '') +
+    lpgmPeriodsHtml(String(f.properties?.periodsJson ?? '')) +
     `</div>`
   )
 }

@@ -812,7 +812,7 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
     ...(!isCanceled && lgClassOver && { forecastMaxLpgmClassOver: true }),
     issue: { eventId, serial, time: reportTime },
     areas: isCanceled ? [] : areas,
-    // 固定付加文（`Comments/Warning/Text`）。地震情報・津波では既に読んでいたが EEW だけ
+    // 固定付加文（`Comments/WarningComment/Text`）。地震情報・津波では既に読んでいたが EEW だけ
     // 落としていた。避難行動の呼びかけなどが入る。取消電文の Text は付加文ではなく取消の
     // 理由なので、`Comments` の下に限って拾う。
     ...(warningComment && { warningComment }),
@@ -1554,6 +1554,57 @@ function parseLastKindGrade(code: string, logPrefix: string): TsunamiGrade | und
 }
 
 // REST API 経由の JMA XML（VXSE62: 長周期地震動観測情報）を JMALpgm にパース
+/**
+ * 周期帯の番号（`PeriodicBand`）の値域。気象庁は 1.5〜2.5 秒台を第 1 帯とし、
+ * 1 秒刻みで 7.5〜8.5 秒台の第 7 帯まで置く（電文解説資料 Ⅱ.37 2-1-6・2-1-7）。
+ */
+const LPGM_PERIOD_BAND_MAX = 7
+
+/**
+ * 観測点の周期帯ごとの内訳（`LgIntPerPeriod` / `SvaPerPeriod`）。
+ *
+ * **帯は `PeriodicBand` 属性が決める。** 文書順に並んでいる前提で番号を振ると、
+ * 帯が 1 つ欠けた電文で以後がすべて 1 つずつずれる（値は妥当な形をしているので画面にも
+ * 異常として出ない）。**値域（1〜7）の外も捨てる** —— 表示側は「周期不明」へ倒すので
+ * 画面は壊れないが、そのままでは電文の書式が変わったことに誰も気づけない。
+ *
+ * **階級 0 の帯も持つ。** 0 は「その周期帯では該当なし」を表す正常な値で、落とすと
+ * 「短い周期だけが強く出た」形が「短い周期しか観測していない」ように見える。
+ *
+ * **記録は電文ごとに 1 行へまとめる**（`ReadTally`）。この要素は 1 電文に数千個ある
+ * （能登本震の実電文で観測点 198 × 帯 7 × 2 種 ＝ 2772 個）。1 件ずつ記録すると、
+ * 書式が変わったとき数千行が一度に出て他の警告が埋もれる。
+ */
+function readLpgmPeriodBands(
+  stEl: Element,
+  tally: ReadTally,
+): import('../types/earthquake').LpgmPeriodBand[] {
+  const byBand = new Map<number, import('../types/earthquake').LpgmPeriodBand>()
+  const put = (el: Element, key: 'lgInt' | 'sva') => {
+    const rawBand = el.getAttribute('PeriodicBand') ?? ''
+    const band = parseInt(rawBand, 10)
+    const raw = xmlText(el)
+    const value = parseFloat(raw)
+    const bandOk = Number.isInteger(band) && band >= 1 && band <= LPGM_PERIOD_BAND_MAX
+    // 階級は 1〜4 の階級表に載る値だけを採る（0 は「該当なし」で正常なのでそのまま通す）。
+    // 応答スペクトルは物理量なので負値だけ弾く。
+    const valueOk = key === 'lgInt'
+      ? Number.isInteger(value) && (value === 0 || isValidLpgmClass(value))
+      : Number.isFinite(value) && value >= 0
+    if (!bandOk || !valueOk) {
+      tally.unreadable(`${el.localName}[${rawBand}]`, raw)
+      return
+    }
+    tally.readable()
+    const rec = byBand.get(band) ?? { band }
+    rec[key] = value
+    byBand.set(band, rec)
+  }
+  for (const el of xmlAll(stEl, 'LgIntPerPeriod')) put(el, 'lgInt')
+  for (const el of xmlAll(stEl, 'SvaPerPeriod')) put(el, 'sva')
+  return [...byBand.values()].sort((a, b) => a.band - b.band)
+}
+
 export function parseLpgmFromXml(xml: string): JMALpgm | null {
   const doc = parseTelegramXml(xml, DMDATA_LOG_PREFIX)
   if (!doc) return null
@@ -1591,10 +1642,16 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   // 観測点・細分区域データを抽出
   const points: import('../types/earthquake').LpgmPoint[] = []
   const regions: import('../types/earthquake').LpgmRegion[] = []
+  const prefs: import('../types/earthquake').LpgmPref[] = []
   // 震度点と同じ構造の穴がここにもある。**数えるのは「階級として読めたか」で、階級 0 は
   // 読めている**（該当なしを表す正常な値）。0 を落ちた扱いにすると平常時に鳴り続ける。
   const lgRegionTally = createReadTally('長周期地震動の区域')
   const lgStationTally = createReadTally('長周期地震動の観測点')
+  // **震度も階級と同じ規律で数える。** 隣の `MaxLgInt` は全滅すれば警告が出るのに、
+  // 併記のために足した `MaxInt` 側だけ黙って落ちる、という非対称を作らないため。
+  const lgIntensityTally = createReadTally('長周期地震動の電文に入っている震度')
+  // 周期帯は 1 電文に 800 個を超えるので、1 件ずつではなく電文ごとに 1 行へまとめる。
+  const lgPeriodTally = createReadTally('長周期地震動の周期帯')
 
   const allEls = doc.getElementsByTagName('*')
   const prefEls: Element[] = []
@@ -1605,6 +1662,26 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
     // DMD-6: Pref 配下には Area/Name（孫要素）も存在するため、xmlQ（子孫全体検索）は
     // 文書順で先に出た方を拾って誤検出しうる。Pref 直下の Name だけを取る xmlChild に置換。
     const prefName = xmlText(xmlChild(prefEl, 'Name'))
+    // 都道府県の最大値。**区域から計算し直さない** —— 気象庁が電文に書いている値を使う
+    // （積み上げると、区域を 1 つ読み落としたときに静かにずれる）。
+    // **採用の基準は区域（`regions`）と揃える** —— 階級 1 以上だけを積む。同じ関数の中で
+    // 同じ性質の値に別の基準を当てると、次に触る人がどちらが正しいのか読めない。
+    const prefRawLgInt = xmlText(xmlChild(prefEl, 'MaxLgInt'))
+    const prefMaxLgInt = parseInt(prefRawLgInt, 10)
+    const prefRawInt = xmlText(xmlChild(prefEl, 'MaxInt'))
+    const prefMaxInt = readIntensity(prefRawInt || null).scale
+    if (prefRawInt) {
+      if (prefMaxInt >= 0) lgIntensityTally.readable()
+      else lgIntensityTally.unreadable(prefName, prefRawInt)
+    }
+    if (isValidLpgmClass(prefMaxLgInt)) {
+      prefs.push({
+        code: xmlText(xmlChild(prefEl, 'Code')),
+        name: prefName,
+        maxLgInt: prefMaxLgInt,
+        ...(prefMaxInt >= 0 && { maxInt: prefMaxInt }),
+      })
+    }
     const prefChildren = prefEl.getElementsByTagName('*')
     const areaElsArr: Element[] = []
     for (let i = 0; i < prefChildren.length; i++) {
@@ -1619,9 +1696,21 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
       const areaCode    = xmlText(xmlChild(areaEl, 'Code'))
       const areaRawLgInt = xmlText(xmlChild(areaEl, 'MaxLgInt'))
       const areaMaxLgInt = parseInt(areaRawLgInt, 10)
+      // 区域の最大震度。階級と並べると「揺れは小さいのに高層階が大きく揺れた」形が出る。
+      const areaRawInt = xmlText(xmlChild(areaEl, 'MaxInt'))
+      const areaMaxInt = readIntensity(areaRawInt || null).scale
+      if (areaRawInt) {
+        if (areaMaxInt >= 0) lgIntensityTally.readable()
+        else lgIntensityTally.unreadable(areaName, areaRawInt)
+      }
       if (Number.isFinite(areaMaxLgInt)) {
         lgRegionTally.readable()
-        if (areaMaxLgInt >= 1) regions.push({ code: areaCode, name: areaName, maxLgInt: areaMaxLgInt })
+        if (areaMaxLgInt >= 1) {
+          regions.push({
+            code: areaCode, name: areaName, maxLgInt: areaMaxLgInt, pref: prefName,
+            ...(areaMaxInt >= 0 && { maxInt: areaMaxInt }),
+          })
+        }
       } else {
         lgRegionTally.unreadable(areaName, areaRawLgInt)
       }
@@ -1634,11 +1723,32 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
         // 存在しないため xmlQ（子孫検索）でも xmlChild と同じ結果になる（DMD-6 対象外）。
         const stName = xmlText(xmlQ(stEl, 'Name'))
         const stCode = xmlText(xmlQ(stEl, 'Code'))
-        const stRawLgInt = xmlText(xmlQ(stEl, 'LgInt'))
+        const stRawLgInt = xmlText(xmlChild(stEl, 'LgInt'))
         const lgInt  = parseInt(stRawLgInt, 10)
+        // 観測点の震度と絶対速度応答スペクトル、周期帯ごとの内訳。
+        // **`Int` は `xmlChild` で取る** —— `LgInt` と前方一致しないので誤りはしないが、
+        // 直下だけを見る形に揃えておく（この電文は同名要素を入れ子にしないが、
+        // 揃えておかないと構造が変わったときに静かに別の値を拾う）。
+        const stRawInt = xmlText(xmlChild(stEl, 'Int'))
+        const stInt = readIntensity(stRawInt || null).scale
+        if (stRawInt) {
+          if (stInt >= 0) lgIntensityTally.readable()
+          else lgIntensityTally.unreadable(stName, stRawInt)
+        }
+        // 応答スペクトルは物理量なので負値は採らない（読めない値と同じ扱い）
+        const stRawSva = xmlText(xmlChild(stEl, 'Sva'))
+        const stSva = parseFloat(stRawSva)
+        const periods = readLpgmPeriodBands(stEl, lgPeriodTally)
         if (Number.isFinite(lgInt)) {
           lgStationTally.readable()
-          if (lgInt >= 1) points.push({ code: stCode, name: stName, pref: prefName, lgInt })
+          if (lgInt >= 1) {
+            points.push({
+              code: stCode, name: stName, pref: prefName, lgInt,
+              ...(stInt >= 0 && { int: stInt }),
+              ...(Number.isFinite(stSva) && stSva >= 0 && { sva: stSva }),
+              ...(periods.length > 0 && { periods }),
+            })
+          }
         } else {
           lgStationTally.unreadable(stName, stRawLgInt)
         }
@@ -1648,6 +1758,8 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
 
   lgRegionTally.warnIfNoneReadable(DMDATA_LOG_PREFIX)
   lgStationTally.warnIfNoneReadable(DMDATA_LOG_PREFIX)
+  lgIntensityTally.warnIfNoneReadable(DMDATA_LOG_PREFIX)
+  lgPeriodTally.warnIfNoneReadable(DMDATA_LOG_PREFIX)
   warnIfNoLpgmRegions(maxClass, regions.length, DMDATA_LOG_PREFIX)
 
   // 長周期地震動に関する観測情報の種類（Ⅱ.37 2-1-4）。値域は "1"〜"4"。
@@ -1660,7 +1772,68 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   }
   const categoryValue = category >= 1 && category <= 4 ? category : undefined
 
-  return { ...(lpgmOperationStatus && { operationStatus: lpgmOperationStatus }), id, eventId, time: reportDateTime, originTime, maxClass, cancelled: false, points, regions, ...(categoryValue && { category: categoryValue }) }
+  // 全国の最大震度。最大階級と並べて出すと「震度は大きくないのに高層階が大きく揺れた」
+  // 地震かどうかがひと目で分かる。
+  const obsRawInt = obsEl ? xmlText(xmlChild(obsEl, 'MaxInt')) : ''
+  const obsMaxInt = readIntensity(obsRawInt || null).scale
+  if (obsRawInt && obsMaxInt < 0) {
+    log.warn(`${DMDATA_LOG_PREFIX} VXSE62 の全国の最大震度を読めません（無視します）: "${obsRawInt}"`)
+  }
+
+  // 震源の要素。**読んで持つが、画面には出していない**（→ `LpgmHypocenter`）。
+  // 同じ地震の震源・規模は地震カードが出すため重複する。電文が持っているものを落とさない
+  // ために保持している。
+  const lpgmHypoEl = earthquakeEl ? xmlQ(earthquakeEl, 'Hypocenter') : null
+  const lpgmHypoAreaEl = lpgmHypoEl ? xmlQ(lpgmHypoEl, 'Area') : null
+  let lpgmHypocenter: import('../types/earthquake').LpgmHypocenter | undefined
+  if (lpgmHypoAreaEl) {
+    const name = xmlText(xmlChild(lpgmHypoAreaEl, 'Name'))
+    // 座標は地震情報側と同じ書式（`+32.6+130.7-10000/`。深さはメートルで負値）。
+    const { lat, lng, depth } = parseJmaCoord(xmlText(xmlChild(lpgmHypoAreaEl, 'Coordinate')))
+    const distance = parseFloat(xmlText(xmlChild(lpgmHypoAreaEl, 'Distance')))
+    if (name) {
+      lpgmHypocenter = {
+        name,
+        ...(xmlText(xmlChild(lpgmHypoAreaEl, 'Code')) && { code: xmlText(xmlChild(lpgmHypoAreaEl, 'Code')) }),
+        ...(Number.isFinite(lat) && { latitude: lat }),
+        ...(Number.isFinite(lng) && { longitude: lng }),
+        // **深さの `-1` は「読めなかった」の目印。** 有限だからと通すと、深さ 1km 未満と
+        // 区別が付かない値が入る（`parseJmaCoord` は読めないとき -1 を返す）。
+        ...(depth >= 0 && { depth }),
+        ...(xmlText(xmlChild(lpgmHypoAreaEl, 'NameFromMark')) && { nameFromMark: xmlText(xmlChild(lpgmHypoAreaEl, 'NameFromMark')) }),
+        ...(xmlText(xmlChild(lpgmHypoAreaEl, 'MarkCode')) && { markCode: xmlText(xmlChild(lpgmHypoAreaEl, 'MarkCode')) }),
+        ...(xmlText(xmlChild(lpgmHypoAreaEl, 'Direction')) && { direction: xmlText(xmlChild(lpgmHypoAreaEl, 'Direction')) }),
+        ...(Number.isFinite(distance) && { distanceKm: distance }),
+      }
+    }
+  }
+  const lpgmMagnitude = earthquakeEl ? parseFloat(xmlText(xmlQ(earthquakeEl, 'Magnitude'))) : NaN
+  const lpgmArrivalTime = earthquakeEl ? xmlText(xmlChild(earthquakeEl, 'ArrivalTime')) : ''
+
+  // 付加文と、気象庁の詳細ページ。**アプリが出せない情報（波形・スペクトル）の在りかを
+  // 電文自身が示している**ので、そこへ行ける導線を残す。
+  const lpgmCommentsEl = xmlQ(doc, 'Comments')
+  const lpgmForecastEl = lpgmCommentsEl ? xmlChild(lpgmCommentsEl, 'ForecastComment') : null
+  const lpgmForecastText = lpgmForecastEl ? xmlText(xmlChild(lpgmForecastEl, 'Text')) : ''
+  const lpgmVarEl = lpgmCommentsEl ? xmlChild(lpgmCommentsEl, 'VarComment') : null
+  const lpgmVarText = lpgmVarEl ? xmlText(xmlChild(lpgmVarEl, 'Text')) : ''
+  const lpgmFreeText = lpgmCommentsEl ? xmlText(xmlChild(lpgmCommentsEl, 'FreeFormComment')) : ''
+  const lpgmUri = lpgmCommentsEl ? xmlText(xmlChild(lpgmCommentsEl, 'URI')) : ''
+
+  return {
+    ...(lpgmOperationStatus && { operationStatus: lpgmOperationStatus }),
+    id, eventId, time: reportDateTime, originTime, maxClass, cancelled: false, points, regions,
+    ...(prefs.length > 0 && { prefs }),
+    ...(obsMaxInt >= 0 && { maxInt: obsMaxInt }),
+    ...(Number.isFinite(lpgmMagnitude) && { magnitude: lpgmMagnitude }),
+    ...(lpgmArrivalTime && { arrivalTime: lpgmArrivalTime }),
+    ...(lpgmHypocenter && { hypocenter: lpgmHypocenter }),
+    ...(lpgmForecastText && { forecastText: lpgmForecastText }),
+    ...(lpgmVarText && { varCommentText: lpgmVarText }),
+    ...(lpgmFreeText && { freeFormText: lpgmFreeText }),
+    ...(lpgmUri && { uri: lpgmUri }),
+    ...(categoryValue && { category: categoryValue }),
+  }
 }
 
 // 臨時情報の段階。Head/Title（情報名）の括弧内に現れるキーワードで判別する。

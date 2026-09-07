@@ -1,7 +1,17 @@
 import type { JMAQuake, JMATsunami, EEWAlert, JMANankai, JMANankaiCommentary, JMAKohatsu, EarthquakePoint, IntensityScale, JMALpgm } from '../types/earthquake'
 import { serverNow, serverDate } from './clock'
 import notoHonshinPoints from '../data/noto-honshin-2024-points.json'
-import notoHonshinLpgm from '../data/noto-honshin-2024-lpgm.json'
+import notoHonshinLpgmJson from '../data/noto-honshin-2024-lpgm.json'
+
+/**
+ * JSON の import は数値を `number` へ広げるため、震度・階級の値であることを型で言い直す。
+ *
+ * **中身は実電文をパーサーへ通して作ったもの**（`parseLpgmFromXml` が階級表の値しか
+ * 通さない）なので、ここで改めて検証はしない。手で書いたデータへこの書き方をしないこと。
+ */
+const notoHonshinLpgm = notoHonshinLpgmJson as unknown as Omit<
+  JMALpgm, 'id' | 'eventId' | 'time' | 'cancelled'
+>
 
 // テスト発報（EEW・津波）の自動解除までの時間。実発報の解除ロジックとは無関係の、テスト表示専用の固定値。
 export const TEST_AUTO_DISMISS_MS = 90000
@@ -228,22 +238,26 @@ export function createTestEarthquake(useDmdataShape: boolean): JMAQuake {
 }
 
 // 本震と同一 eventId（14桁タイムスタンプ）を持つ長周期地震動観測情報（VXSE62, 2024/1/1
-// 16:23発表）の実データ。震度データと同じくDMDATA archive確定報から採取（最大階級4）。
+// 16:23発表）の実データ。DMDATA archive の確定報を**そのままパーサーへ通して**作ってある
+// （最大階級4・観測点198・区域72・都道府県31）。
+//
+// **手で組み立てない。** 電文から読む項目を足すたびに、テストボタンだけ古い形のまま残る。
+// 実電文を通して作れば、周期帯ごとの階級・絶対速度応答スペクトル・区域の最大震度といった
+// 新しい項目も同時に揃う（それが無いと実機で一度も画面に出ない）。
 export function createTestLpgm(eventId: string): JMALpgm {
   const now = serverDate().toISOString()
   return {
+    ...notoHonshinLpgm,
     id: `test-lpgm-${eventId}`,
     eventId,
     time: now,
+    // 発生時刻だけは「いま」に寄せる（テストは常に直近の地震として出す）
     originTime: now,
-    maxClass: notoHonshinLpgm.maxClass,
     cancelled: false,
     // 電文の「観測情報の種類」。**4＝階級3以上を観測した地域のうち、最大震度が4以下の地域がある**
     // （揺れは強くないのに高層階が大きく揺れた地域がある）。値 1・3 では何も出さないので、
     // 意味を出す側の経路を実機で通せるよう 4 を入れている
     category: 4,
-    regions: notoHonshinLpgm.regions,
-    points: notoHonshinLpgm.points,
   }
 }
 
