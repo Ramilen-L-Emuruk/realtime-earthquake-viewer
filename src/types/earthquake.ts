@@ -23,6 +23,17 @@ export interface Hypocenter {
   magnitudeCondition?: string
 }
 
+/**
+ * 電文の運用種別（`Control/Status`。電文解説資料 Ⅰ.3）。
+ *
+ * **`EEWAlert.test` とは別物。** あちらは「画面・音・地図へ流さない」ための抑制フラグで、
+ * 検証用に受信した試験報はあえて `test: false` にして流している（`services/dmdata.ts`）。
+ * こちらは**電文が自分で名乗っている種別**で、表示に印を付けるためだけに持つ。
+ *
+ * 「通常」は持たせない（既定の状態に欄を割く意味がない）。
+ */
+export type TelegramOperationStatus = '訓練' | '試験'
+
 export interface EarthquakePoint {
   pref: string
   addr: string
@@ -62,6 +73,41 @@ export type DomesticTsunami =
   | '若干の海面変動'
   | '注意報'
   | '警報等'
+
+/**
+ * 市町村ごとの震度（電文の `Pref/Area/City`。電文解説資料 Ⅱ.33 2-1-3-3-3）。
+ *
+ * **`points` へ混ぜない。** `points` は「都道府県ロールアップ点／区域／観測点」の 3 種を
+ * `pref` の有無と `isArea` の組み合わせで見分けており、4 種目を足すとカード・地図・読み上げの
+ * 見分けが一斉に狂う。市町村は表示の粒度を 1 段細かくするためだけのものなので、別に持つ。
+ */
+export interface JMAQuakeCity {
+  /** 市町村名（`City/Name`）。 */
+  name: string
+  /** 所属する一次細分区域名（`Area/Name`）。カードでこの区域の下にぶら下げる。 */
+  area: string
+  /** 所属する都道府県名（`Pref/Name`）。 */
+  pref: string
+  scale: IntensityScale
+  /**
+   * **この市町村の震度そのものが未入電**（`MaxInt` が無く `Condition` だけがある形）。
+   * `scale` は下限の 45（5弱）が入る。表示は「5弱以上」。
+   *
+   * 都道府県・区域の行と同じ意味（→ {@link EarthquakePoint.unreceived}）。
+   */
+  unreceived?: boolean
+  /**
+   * **配下に未入電の観測点がある**（`MaxInt` と `Condition` が併存する形）。
+   * `scale` はこの市町村が実際に観測した最大震度。表示は「未入電あり」。
+   *
+   * **`unreceived` と混ぜないこと。** 解説資料 Ⅱ.33 2-1-3-3-3 は `Condition` が出る条件を
+   * 「配下に基準以上と考えられるが値を入手していない観測点があり、**かつ市町村の最大震度が
+   * 基準未満（又は入電なし）**」と定めている。前者だけを見て 1 つのフラグへ畳むと、
+   * 「震度4を観測したが未入電もある」市町村が「4以上」と表示され、観測できた値を
+   * 下限のように見せてしまう。
+   */
+  hasUnreceived?: boolean
+}
 
 export interface JMAQuake {
   kind: 'quake'
@@ -107,7 +153,18 @@ export interface JMAQuake {
     maxScale: IntensityScale
     domesticTsunami: DomesticTsunami
   }
+  /**
+   * 電文の運用種別（`Control/Status`）。訓練・試験のときだけ入る。→ {@link TelegramOperationStatus}
+   */
+  operationStatus?: TelegramOperationStatus
   points: EarthquakePoint[]
+  /**
+   * 市町村ごとの震度（`Pref/Area/City`）。DMDATA の XML 経路でのみ入る。
+   *
+   * 区域（一次細分区域）と観測点の**あいだの粒度**。気象庁の発表単位のひとつで、
+   * カードの詳細表示で区域の下にぶら下げる。P2PQuake 経路は配信しないため undefined。
+   */
+  cities?: JMAQuakeCity[]
   /**
    * 同一地震を貫いて変わらない内部キー。統合・選択・通知の同一性判定はすべてこれで行う。
    * `mergeQuakeInto` が統合のたびに既存カードの値を引き継ぐため、続報で `id` が変わっても不変。
@@ -370,6 +427,10 @@ export interface JMATsunami {
   id: string
   eventId?: string
   time: string
+  /**
+   * 電文の運用種別（`Control/Status`）。訓練・試験のときだけ入る。→ {@link TelegramOperationStatus}
+   */
+  operationStatus?: TelegramOperationStatus
   cancelled: boolean
   // cancelled=true のときの解除理由。'lifted'=気象庁の正式解除（区域が電文から消える）、
   // 'retracted'=誤って発表した電文の取消（InfoType=取消）、'expired'=ValidDateTime満了によりアプリが自動検出。
@@ -436,6 +497,48 @@ export interface EEWRegion {
   lgIntToOver?: boolean
 }
 
+/**
+ * 震源要素の精度（電文の `Hypocenter/Accuracy`。電文解説資料 Ⅱ.21 1-4-2）。
+ *
+ * 値は電文の属性そのまま。**アプリ側で意味へ畳まない** —— ランクの意味は気象庁が改定しうるし、
+ * 部内システム専用と断られている値もある（`epicenterRank2` の 1・9 以外、`magnitudePoints`）。
+ * 表示に使う語は `utils/eew.ts` の対応表が単一情報源。
+ *
+ * 実電文 405 通（2026-06〜09）ではすべての報に出現する。
+ */
+export interface EEWAccuracy {
+  /** 震央位置の精度ランク（0〜8）。**1 は「P波／S波レベル超え、IPF 法（1 点）、または仮定震源要素」**。 */
+  epicenterRank?: number
+  /** 震央位置の精度ランク 2（0〜4・9）。**9 は「推定震源とマグニチュードはこれ以降変化しない」**。 */
+  epicenterRank2?: number
+  /** 深さの精度ランク（0〜8）。値の意味は `epicenterRank` と同じ表。 */
+  depthRank?: number
+  /** マグニチュードの精度ランク（0・2〜6・8）。8 は「P波／S波レベル超え、または仮定震源要素」。 */
+  magnitudeRank?: number
+  /** マグニチュード計算に使った観測点数（0〜5。**5 は「5 点以上」**、1 は「1 点、P波／S波レベル超え、または仮定震源要素」）。 */
+  magnitudePoints?: number
+}
+
+/**
+ * 最大予測値の変化（電文の `Body/Intensity/Forecast/Appendix`。電文解説資料 Ⅱ.21 2-1-4）。
+ *
+ * **気象庁が「変わったか」と「なぜ変わったか」を直接言っている。** アプリは続報どうしを
+ * 比べて変化を推定しているが、それは代理指標で、電文はこちらを正としている。
+ *
+ * 震度予測・長周期階級予測をどちらも行っていない報では要素ごと出現しない（実電文 405 通中 318 通）。
+ */
+export interface EEWForecastChange {
+  /** 最大予測震度の変化。0＝ほとんど変化なし／1＝1.0 以上大きくなった／2＝1.0 以上小さくなった。 */
+  maxInt?: 0 | 1 | 2
+  /** 最大予測長周期地震動階級の変化。値の意味は `maxInt` と同じ。 */
+  maxLgInt?: 0 | 1 | 2
+  /**
+   * 変化の理由。0＝変化なし／1＝主としてＭが変化（1.0 以上）／2＝主として震央位置が変化（10.0km 以上）／
+   * 3＝Ｍと震央位置の複合／4＝震源の深さが変化（30.0km 以上）／**9＝PLUM 法による予測により変化**。
+   */
+  reason?: 0 | 1 | 2 | 3 | 4 | 9
+}
+
 export interface EEWAlert {
   /**
    * 取消しの概要（`Body/Text`）。取消電文でのみ入る。
@@ -486,6 +589,25 @@ export interface EEWAlert {
    * 読み上げは秒を争うため、定型文を挟むと肝心の震度・地域が遅れる。
    */
   warningComment?: string
+  /**
+   * 電文の運用種別（`Control/Status`）。訓練・試験のときだけ入る。→ {@link TelegramOperationStatus}
+   *
+   * **`test` と混同しないこと。** `test` は流すかどうかの抑制で、こちらは画面に印を出すため。
+   */
+  operationStatus?: TelegramOperationStatus
+  /** 震源要素の精度（`Hypocenter/Accuracy`）。DMDATA の XML 経路でのみ入る。 */
+  accuracy?: EEWAccuracy
+  /** 震央が内陸か海域か（`Hypocenter/Area/LandOrSea`）。値は電文どおり。 */
+  landOrSea?: '内陸' | '海域'
+  /**
+   * 短縮用震央地名（`Hypocenter/Area/ReduceName`）。例: 「青森県東方沖」に対して「青森東方沖」。
+   *
+   * **通常の震央地名（`hypocenter.name`）を置き換えるものではない。** 幅が足りない場所で
+   * 代わりに出すための短い呼び方で、気象庁が電文に載せている。
+   */
+  reduceName?: string
+  /** 最大予測値の変化（`Intensity/Forecast/Appendix`）。 */
+  forecastChange?: EEWForecastChange
 }
 
 export interface LpgmPoint {

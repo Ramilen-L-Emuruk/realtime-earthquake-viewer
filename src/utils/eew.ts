@@ -529,3 +529,94 @@ export function diffHypoInfoEvents(
 
   return { events, pendingMissing }
 }
+
+// ============================================================================
+// 震源要素の精度・最大予測値の変化（電文解説資料 Ⅱ.21 1-4-2・2-1-4）
+//
+// **語は解説資料の原文から採る。** ランクの数字を画面に出しても何も伝わらないので意味へ直すが、
+// 言い換えはしない ―― 気象庁が「IPF 法（5 点以上）」と書いているものを「精度が高い」と
+// 要約すると、資料と突き合わせられなくなるうえ、こちらが評価を足したことになる。
+// ============================================================================
+
+/** 震央位置・深さの精度ランク（`Epicenter@rank` / `Depth@rank`）。解説資料 Ⅱ.21 1-4-2-1。 */
+const EPICENTER_RANK_LABEL: Readonly<Record<number, string>> = {
+  1: 'P波／S波レベル超え、IPF法（1点）、または仮定震源要素',
+  2: 'IPF法（2点）',
+  3: 'IPF法（3点／4点）',
+  4: 'IPF法（5点以上）',
+  5: '防災科研システム（4点以下、または精度情報なし）',
+  6: '防災科研システム（5点以上）',
+  7: 'EPOS（海域）',
+  8: 'EPOS（内陸）',
+}
+
+/** マグニチュードの精度ランク（`MagnitudeCalculation@rank`）。解説資料 Ⅱ.21 1-4-2-3。 */
+const MAGNITUDE_RANK_LABEL: Readonly<Record<number, string>> = {
+  2: '防災科研システム',
+  3: '全点P相',
+  4: 'P相／全相混在',
+  5: '全点全相',
+  6: 'EPOS',
+  8: 'P波／S波レベル超え、または仮定震源要素',
+}
+
+/**
+ * 精度ランクの意味。**0（不明）と未知の値では何も返さない** ―― 「不明」と書いても
+ * 利用者には伝わらず、欄が埋まるだけになる。
+ */
+export function eewEpicenterRankLabel(rank: number | undefined): string {
+  return rank === undefined ? '' : (EPICENTER_RANK_LABEL[rank] ?? '')
+}
+
+export function eewMagnitudeRankLabel(rank: number | undefined): string {
+  return rank === undefined ? '' : (MAGNITUDE_RANK_LABEL[rank] ?? '')
+}
+
+/**
+ * マグニチュード計算に使った観測点数の表示。**5 は「5点以上」**（解説資料 Ⅱ.21 1-4-2-4）。
+ * 上限を「5点」と書くと、実際にはもっと多いかもしれないことが消える。
+ */
+export function eewMagnitudePointsLabel(points: number | undefined): string {
+  if (points === undefined || points <= 0) return ''
+  return points >= 5 ? '5点以上' : `${points}点`
+}
+
+/**
+ * **震源とマグニチュードがこれ以降変化しないか**（`Epicenter@rank2` が 9）。
+ *
+ * 解説資料 Ⅱ.21 1-4-2-1 が「推定震源とマグニチュードはこれ以降変化しない」と定めている値。
+ * ただし**同じ注に「PLUM 法により予測震度が今後変化する可能性はある」とも書いてある**ので、
+ * 「最終報」とは言わないこと ―― 震源が確定しても予想震度は動きうる。
+ */
+export function isEewHypocenterSettled(eew: EEWAlert): boolean {
+  return eew.accuracy?.epicenterRank2 === 9
+}
+
+/** 最大予測値の変化の理由（`MaxIntChangeReason`）。解説資料 Ⅱ.21 2-1-4-3。 */
+const FORECAST_CHANGE_REASON_LABEL: Readonly<Record<number, string>> = {
+  1: 'マグニチュードが変わったため',
+  2: '震央の位置が変わったため',
+  3: 'マグニチュードと震央の位置が変わったため',
+  4: '震源の深さが変わったため',
+  9: 'PLUM法による予測で変わったため',
+}
+
+/**
+ * 最大予測値が変わったことを伝える一文。変化が無い（0）・読めない報では空を返す。
+ *
+ * **「1.0 以上」は計測震度の差**で、画面に出している震度階級の差とは別物（解説資料 Ⅱ.21 2-1-4-1）。
+ * 「階級が 1 つ上がった」と読み替えないこと。
+ */
+export function eewForecastChangeText(eew: EEWAlert): string {
+  const c = eew.forecastChange
+  if (!c) return ''
+  const increased = c.maxInt === 1 || c.maxLgInt === 1
+  const decreased = c.maxInt === 2 || c.maxLgInt === 2
+  if (!increased && !decreased) return ''
+  // 上下が同時に立つ報（震度は上がり階級は下がった等）は「変わりました」に倒す。
+  // どちらか一方に決めると、立っていない側を無かったことにする。
+  const direction = increased && decreased ? '変わりました' : increased ? '大きくなりました' : '小さくなりました'
+  const reasonText = c.reason !== undefined ? FORECAST_CHANGE_REASON_LABEL[c.reason] : undefined
+  return reasonText ? `予想が${direction}（${reasonText}）` : `予想が${direction}`
+}
+
