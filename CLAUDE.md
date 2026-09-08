@@ -807,6 +807,9 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 欠測を到達確認と別の文で読むこと（「◯◯で到達を確認しました」は到達の断定・**値を持つ欠測は波高更新の文で読まない**（二重読みになる）・**欠測のまま値が上がる続報は読み直す**（比較は波高更新側と同じ述語）・既読は到達確認と別に持ち発話の瞬間に進める・**状態の変わり目で記憶を落とす規則は 1 箇所に保つ**（ライブ経路とリプレイ復元の 2 箇所に分けると取りこぼす）・「微弱」に「最大波高は観測中です」と言わない） | [`docs/spec/audio-tts-spec.md`](docs/spec/audio-tts-spec.md) §4「欠測は到達確認と別の文で伝える」 |
 | 波高がまだ出ていない観測点（「観測中」）を地図にも出すこと（棒と到達確認マーカーは `height` の有無で排他・**形は丸バッジの家族に合わせ、高さを持たせない**（震度・検知点と同じ塗り丸＋白フチ＋影／観測階級色を借りず無彩色／**薄くしない**——不透明度は「値が古い・確定していない」の意味で、到達も場所も確定しているため）・カメラの寄り先にも含める・**実測の更新と同じ電文で来たら両方が入る枠へ寄せる**・座標表に無い名前は 1 度だけ記録する。落とすと、カードと読み上げが到達を伝えている間も地図だけが黙る） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §8「到達確認マーカー」・[`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6「津波追従の目標範囲」 |
 | 観測点の行のクリック可否は「座標表に名前があるか」で決めること（**実測と到達確認で分けない**・区域に紐づく行と沖合観測の行は別コンポーネントなので**両方に同じ述語を通す**。押せる見た目だけ与えると、寄せ先が無い観測点で何も起きない理由が利用者に分からない） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §9「観測点の行をクリックしたときの寄り先」 |
+| 震源の位置要素（`Hypocenter/Area`）は 1 箇所で読むこと（`readHypocenterAreaDetail`。座標・深さ・震央地名コード・震央補助表現の材料を、津波と長周期地震動観測情報で共有する・**経路ごとに書き分けない**＝かつて津波だけ座標と材料が落ちていたが、震央補助表現の文は読んでいたので画面からは欠けに見えなかった・**深さの `0` は「ごく浅い」という有効値**で `-1` が「読めなかった」の目印・地震情報は VXSE61 が `Coordinate` を 2 つ持つためここを通らない） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §4「DMDATA XML」 |
+| 地震発現時刻（`ArrivalTime`）と地震発生時刻（`OriginTime`）を混ぜないこと（**実電文で 1 分ずれる**・地震情報は発現時刻を、津波は発生時刻を出しており同じ地震が経路で別の時刻になる・**津波の `originTime` は入れ替えないこと**＝`isTsunamiContinuation` / `isTsunamiNewFire` が識別子を持たない電文の同一性判定に使っている） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §4「DMDATA XML」 |
+| 最大波の観測時刻（`MaxHeight/DateTime`）を観測点の行に出すこと（**波高の数値だけではいつの値か分からない**・語を冠して第1波の到達時刻と区別する・波高を出していない行では出さない・**区域に紐づく行と沖合の行の両方に同じ述語を通す**） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §9「最大波の観測時刻」 |
 | 津波の解除で観測点の記憶を落とす条件（**表示中の津波に向けた解除のときだけ**落とす・判定は `isCancelForCurrentTsunami` に集約しカードの状態更新と共有する・落とすのは記憶と画面の状態だけで**音と読み上げは判定を経ない**・リセットとリプレイ復元でも同じ範囲を揃える） | [`docs/spec/tsunami-spec.md`](docs/spec/tsunami-spec.md) §5「解除電文と表示中の津波の照合」 |
 
 ### 緊急地震速報（EEW）
@@ -928,7 +931,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | テストデータと UI 説明文（テストボタンの `scaleTo` 値等） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §7 |
 | テストデータが実電文の形に沿っていること（報番号・発表時刻・`id` は報ごとに進める／震源時刻は固定／取消・解除は対象地域を空にする／区域コードは気象庁コード表 12／経路に無い項目を作らない） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §7「実電文の形に合わせる」 |
 | リプレイ開始時の地震カードの厚み（一覧は**件数基準**で別途復元し、初期状態の 24 時間とは目的も遡り幅も分ける・再生中は「もっと見る」を出さない（押すとライブの最新履歴が混ざる）・履歴の取得が失敗しても再生は始める） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「地震カードの履歴は件数で遡る」 |
-| 実地震テストシナリオの時刻シフト・ID 再採番・利用規約制約 | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6 |
+| 実地震テストシナリオの時刻シフト・ID 再採番・利用規約制約（**電文から新しく時刻を読むようにしたらシフトの対象へ足すこと**＝フィールドを 1 つずつ書き並べる形なので、足し忘れても型検査もテストも通り、**その時刻だけが収録当時の絶対値のまま画面に出る**。エラーは出ず、隣のシフト済みの時刻と食い違って見えるだけ） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6 |
 | テスト時刻設定のバリアント差（standard は P2PQuake の日付クエリ、DMDSS は DMDATA アーカイブ＋当日ぶんの別経路／ただし EEW はどちらも取得元が異なり、standard では強震モニタ側の検知に頼る） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」 |
 | archive リプレイの重複排除（目録に載る XML 版／JSON 版のどちらを採用するか）・失敗の封じ込め範囲（アーカイブが全滅しても強震モニタの再生は止めない） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「テスト時刻設定」配下 |
 | アーカイブが無い日を埋める当日経路（**日付の基準が API ごとに違う**＝アーカイブの `date` は JST 日／`/v2/telegram`・`/v2/gd/eew` の `datetime` は UTC の半開区間・担当日の排他は `resolveLiveDates` の 1 箇所に集約・EEW だけ `/v2/gd/eew` を辿るのは電文一覧が EEW を保持しないため・**VXSE43 はライブを含むどの経路でも取り込まない**（対応する VXSE45 の警報報と同一内容の複製が遅れて届き、`eventId` で束ねる EEW を古い内容で上書きして区域塗りを削るため。報番号の系列も独立している）） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「当日ぶんの取得元」 |

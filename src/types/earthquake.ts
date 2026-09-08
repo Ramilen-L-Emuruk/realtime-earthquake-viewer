@@ -21,6 +21,12 @@ export interface Hypocenter {
    * 全角の「Ｍ」を含む（表示はそのまま出し、読み上げは `magnitudeConditionSpeech` で直す）。
    */
   magnitudeCondition?: string
+  /**
+   * マグニチュードの種別（`jmx_eb:Magnitude@type`）。→ {@link TsunamiSourceEarthquake.magnitudeType}
+   *
+   * P2PQuake 経路は相当する項目を配信しないため常に undefined。
+   */
+  magnitudeType?: string
 }
 
 /**
@@ -204,6 +210,11 @@ export interface TsunamiStation {
   highTideDateTime?: string
   arrivalTime?: string
   arrivalCondition?: string
+  /**
+   * 続報での位置づけ（`FirstHeight/Revise`）。「追加」または「更新」。
+   * 意味と扱いは {@link TsunamiObservation.firstHeightRevise} に同じ。
+   */
+  revise?: string
 }
 
 /**
@@ -261,11 +272,34 @@ export interface TsunamiEstimation {
   }
   /** 電文が伝える推定の状態。数値が無い理由（「推定中」）はここにしか残らない。 */
   condition?: TsunamiEstimationCondition
+  /**
+   * 最大波を推定した時刻（`MaxHeight/DateTime`）。「推定中」では出現しない。
+   * 意味は観測点側の {@link TsunamiObservation.maxHeightDateTime} と同じ。
+   *
+   * **読んで持つが、画面には出していない。** 推定の行が出しているのは到達予想時刻と
+   * 説明で、そこへ 3 つ目の時刻を並べると何の時刻か読み取れなくなる。観測点の行に
+   * 出しているのは、あちらが実測値でいつの観測かが値の意味を変えるため。
+   */
+  maxHeightDateTime?: string
+  /**
+   * 続報での位置づけ（`FirstHeight/Revise` / `MaxHeight/Revise`）。「追加」または「更新」。
+   * **読んで持つが、画面には出していない**（観測点側の同名フィールドと同じ扱い）。
+   */
+  firstHeightRevise?: string
+  maxHeightRevise?: string
 }
 
-export interface TsunamiSourceEarthquake {
+export interface TsunamiSourceEarthquake extends HypocenterAreaDetail {
   hypocenterName: string
   magnitude?: number
+  /**
+   * マグニチュードの種別（`jmx_eb:Magnitude@type`）。`Mj` は気象庁マグニチュード、
+   * `M` は気象庁以外の機関が決めた値（`source` と対で現れる）。
+   *
+   * **画面には出さない。** 気象庁自身も本文では「Ｍ７．６」としか書かないため、種別を
+   * 添えると発表より詳しい顔になる。電文が述べている事実として持つだけ。
+   */
+  magnitudeType?: string
   /**
    * 規模が数値で求まらないときに気象庁が添える説明（`jmx_eb:Magnitude@description`）。
    *
@@ -276,12 +310,15 @@ export interface TsunamiSourceEarthquake {
   magnitudeCondition?: string
   originTime?: string
   /**
-   * 震央補助表現（`NameFromMark`。「御前崎の北東４０ｋｍ付近」）。
+   * 地震発現時刻（`Earthquake/ArrivalTime`）。観測点が地震を検知した時刻で、国外の地震で
+   * 発現時刻が不明なときは発生時刻の値が入る（電文解説資料 Ⅱ.11 2-2）。
    *
-   * 日本近海で発生し津波警報・注意報を発表した地震にだけ付く（電文解説資料 Ⅱ.13 2-3-1-4）。
-   * **震央地名より具体的に場所が分かる** —— 「駿河湾」だけでは自分との位置関係が掴めない。
+   * **`originTime` と入れ替えないこと。** 地震情報側（`parseEarthquakeFromXml`）は
+   * こちらを優先して地震の時刻に充てているが、津波の `originTime` は
+   * `isTsunamiContinuation`（`utils/tsunami.ts`）が**識別子を持たない電文の同一性判定**に
+   * 使っている。中身を差し替えると、続報が別の津波として立つ。
    */
-  nameFromMark?: string
+  arrivalTime?: string
   /**
    * 震源を決定した機関の略称（`Source`。「ＰＴＷＣ」「ＵＳＧＳ」等）。
    *
@@ -313,6 +350,8 @@ export interface TsunamiArea {
   firstHeight?: {
     arrivalTime?: string
     condition: string
+    /** 続報での位置づけ（`FirstHeight/Revise`）。「追加」または「更新」。 */
+    revise?: string
   }
   maxHeight?: {
     description: string
@@ -416,6 +455,21 @@ export interface TsunamiObservation {
    * 読み上げが割り込みで鳴らなかった観測点を「更新」として扱う。
    */
   maxHeightRevise?: string
+  /**
+   * 第1波の続報での位置づけ（`FirstHeight/Revise`）。値と扱いは {@link maxHeightRevise} と
+   * 同じ軸で、そちらが最大波、こちらが第1波。
+   *
+   * **新規／更新の言い分け（読み上げ）には使わないこと。** 理由も同上。
+   */
+  firstHeightRevise?: string
+  /**
+   * 最大波を観測した時刻（`MaxHeight/DateTime`）。
+   *
+   * **波高の数値だけでは、それがいつの観測値かが分からない。** 続報で値が変わらないとき、
+   * 観測し直して同じだったのか前の値が据え置かれているのかを読み取れる唯一の手がかり。
+   * 「観測中」「微弱」ではこの要素ごと出現しない（電文解説資料 Ⅱ.12 1-2-2-2）。
+   */
+  maxHeightDateTime?: string
   // 観測点が属する津波予報区（districtCode）。forecasts[].code と一致させて area 行に紐づける。
   // VTSE52（沖合観測単独電文）は区域を持たないため undefined になる。
   districtCode?: string
@@ -446,6 +500,17 @@ export interface JMATsunami {
   headline?: string
   // 付加文（固定文）。避難行動の呼びかけなど JMA 公式の定型文。長文の解説（FreeFormComment）は含まない。
   warningComment?: string
+  /**
+   * 気象庁の自由付加文（`Comments/FreeFormComment`）の原文。DMDATA 経路でのみ得られる。
+   *
+   * 上の `warningComment` が等級ごとの定型文なのに対し、こちらは電文ごとに書き起こされる
+   * 本文（「［予想される津波の高さの解説］……」等）。**地震情報・長周期地震動観測情報では
+   * 読んで画面に出していたのに、津波だけ落ちていた。**
+   *
+   * 全角スペースで整形された表が入ることがあるため、**改行と空白をそのまま保持する**
+   * （前後の空行だけ落とす）。表示側も `whitespace-pre-wrap` で受けること。
+   */
+  freeText?: string
   // この津波を引き起こした地震（Earthquake 要素）。震源名・マグニチュード・発生時刻。
   /**
    * この津波を引き起こした地震。**電文は複数持ちうる**（`Earthquake` 要素が繰り返す）。
@@ -653,21 +718,37 @@ export interface LpgmPoint {
  * ために保持する（地震情報と突き合わせて訂正に気づく、長周期が先に届いた場合に出す、
  * といった使い道はここでは実装していない）。
  */
-export interface LpgmHypocenter {
+export interface LpgmHypocenter extends HypocenterAreaDetail {
   /** 震央地名（`Area/Name`） */
   name: string
+}
+
+/**
+ * 震源の位置要素（`Hypocenter/Area`）のうち、電文種別をまたいで同じ意味を持つもの。
+ *
+ * **1 つにまとめてあるのは、種別ごとに読む項目がずれるのを防ぐため。** 同じ `Area` を
+ * 地震情報・長周期地震動観測情報・津波の 3 経路が別々に読んでおり、津波だけ座標と
+ * 震央補助表現の材料が落ちていた（震央補助表現の文そのものは読んでいた）。
+ * 読み取りは `readHypocenterAreaDetail` の 1 箇所に集約してある。
+ */
+export interface HypocenterAreaDetail {
   /** 震央地名コード（`Area/Code`） */
   code?: string
   latitude?: number
   longitude?: number
-  /** 深さ（km）。読めないときは持たせない */
+  /** 深さ（km）。読めないときは持たせない。**`0` は「ごく浅い」という有効値** */
   depth?: number
   /**
-   * 震央補助表現（`Area/NameFromMark`。例:「長崎の東８０ｋｍ付近」）。
-   * 有名地名から離れた震源のときだけ電文に入る。
+   * 震央補助表現（`Area/NameFromMark`。例:「御前崎の北東４０ｋｍ付近」）。
+   *
+   * 日本近海で発生し、津波警報・注意報を発表した地震にだけ付く（電文解説資料 Ⅱ.13 2-3-1-4）。
+   * **震央地名より具体的に場所が分かる** ——「駿河湾」だけでは自分との位置関係が掴めない。
    */
   nameFromMark?: string
-  /** 震央補助表現の構成要素（`MarkCode` / `Direction` / `Distance`）。上の文の材料 */
+  /**
+   * 震央補助表現の構成要素（`MarkCode` / `Direction` / `Distance`）。上の文の材料で、
+   * 目印のコード・目印から見た震央の 16 方位・目印から震央までの距離（km。電文は 10km 刻み）。
+   */
   markCode?: string
   direction?: string
   distanceKm?: number
@@ -724,6 +805,13 @@ export interface JMALpgm {
   maxInt?: IntensityScale
   /** 地震の規模（`jmx_eb:Magnitude`）。数値で求まらないときは持たせない。画面には出していない */
   magnitude?: number
+  /**
+   * 規模が数値で求まらないときに気象庁が添える説明（`jmx_eb:Magnitude@description`）。
+   * 意味は {@link TsunamiSourceEarthquake.magnitudeCondition} と同じ（解説資料 Ⅱ.37 2-4）。
+   */
+  magnitudeCondition?: string
+  /** マグニチュードの種別（`@type`）。→ {@link TsunamiSourceEarthquake.magnitudeType} */
+  magnitudeType?: string
   /** 地震発現時刻（`Earthquake/ArrivalTime`）。発生時刻（{@link originTime}）と別物。画面には出していない */
   arrivalTime?: string
   /** 震源の要素。→ {@link LpgmHypocenter} */

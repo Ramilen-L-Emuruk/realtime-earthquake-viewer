@@ -29,6 +29,7 @@ import {
   observationBadges,
   observationHeightText,
   observationArrivalFallbackText,
+  observationMaxHeightTimeText,
 } from './tsunami'
 import type { JMATsunami, TsunamiArea, TsunamiObservation } from '../types/earthquake'
 
@@ -833,6 +834,31 @@ describe('observationBadges: 上昇中 / observationArrivalFallbackText', () => 
   it('安全弁: 第1波識別不能でも「到達確認」の扱いは変えない（到達そのものは確定している）', () => {
     // 気象庁の定義は「津波を観測したものの第1波の到達時刻が不明瞭」。到達は起きている
     expect(observationBadges(obs({ condition: { firstWaveUnidentifiable: true } }))).toEqual(['到達確認'])
+  })
+})
+
+// 最大波の観測時刻（`MaxHeight/DateTime`）。波高の数値だけでは、それがいつの観測値か
+// 分からない —— 続報で値が変わらないとき、観測し直して同じだったのか前の値が据え置かれて
+// いるのかを読み取れる唯一の手がかり。
+describe('observationMaxHeightTimeText: 最大波の観測時刻', () => {
+  const obs = (o: Partial<TsunamiObservation>): TsunamiObservation => ({ name: '銚子', ...o })
+
+  it('正: 語を冠して時刻を出す（同じ行に並ぶ第1波の到達時刻と紛れないように）', () => {
+    expect(observationMaxHeightTimeText(obs({
+      height: { value: 8.5, description: '8.5m' },
+      maxHeightDateTime: '2026-01-01T12:40:00+09:00',
+    }))).toBe('最大波 12:40')
+  })
+
+  it('対照: 時刻が無ければ何も返さない', () => {
+    expect(observationMaxHeightTimeText(obs({ height: { value: 8.5, description: '8.5m' } }))).toBe('')
+  })
+
+  it('安全弁: 波高を出していない行では返さない（値の無い観測点が何かを観測したように見える）', () => {
+    expect(observationMaxHeightTimeText(obs({
+      maxHeightDateTime: '2026-01-01T12:40:00+09:00',
+      condition: { maxHeightMissing: true },
+    }))).toBe('')
   })
 })
 

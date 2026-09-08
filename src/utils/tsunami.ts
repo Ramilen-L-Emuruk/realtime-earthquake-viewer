@@ -1,4 +1,5 @@
 import type { JMATsunami, TsunamiArea, TsunamiEstimation, TsunamiEstimationCondition, TsunamiGrade, TsunamiObservation, TsunamiObservationCondition } from '../types/earthquake'
+import { formatTime } from './formatters'
 import { log } from './logger'
 
 const GRADE_PRIORITY: Record<TsunamiGrade, number> = {
@@ -606,6 +607,23 @@ export function estimationHeightText(est: TsunamiEstimation): string {
 export function observationArrivalFallbackText(obs: TsunamiObservation): string {
   if (obs.arrivalTime) return ''
   return obs.condition?.firstWaveUnidentifiable ? '到達時刻不明' : ''
+}
+
+/**
+ * 最大波を観測した時刻（`MaxHeight/DateTime`）を、行の時刻欄に添える語。
+ *
+ * **波高の数値だけでは、それがいつの観測値かが分からない。** 続報で値が変わらないとき、
+ * 観測し直して同じだったのか前の値が据え置かれているのかは、この時刻でしか読み取れない。
+ *
+ * **第1波の到達時刻と紛れないよう「最大波」と冠する。** 同じ行に 2 つの時刻が並ぶため、
+ * 裸の時刻を足すとどちらがどちらか分からなくなる。
+ *
+ * 波高を出していない行では返さない —— 時刻だけが残ると、値の無い観測点に何かを観測した
+ * ように見える。
+ */
+export function observationMaxHeightTimeText(obs: TsunamiObservation): string {
+  if (!obs.maxHeightDateTime || !obs.height) return ''
+  return `最大波 ${formatTime(obs.maxHeightDateTime).slice(0, 5)}`
 }
 
 /**
