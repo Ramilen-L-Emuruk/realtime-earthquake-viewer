@@ -1418,6 +1418,50 @@ describe('津波の有効期限は報を跨いで引き継ぐ', () => {
     expect(h.current.tsunamis[0].validDateTime).toBe(EXPIRE_AT)
   })
 
+  // 電文の本文（`Body/Text`）も報を跨いで引き継ぐ。**気象庁は毎報には載せない** ——
+  // 実電文を数えると津波予報の VTSE41 の半数に入るだけで、続報の VTSE51/52 には 1 通も無い。
+  // 引き継がないと「いつ来ていつまで続くか」が最初の観測情報で消える（この等級では区域に
+  // 波高も到達時刻も付かないので、その文にしか無い）。
+  it('本文を持たない続報を受けてもカードは本文を保つ', () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+    const BODY = '若干の海面変動が予想される時刻は、早い沿岸で０２日１０時３０分頃です。'
+
+    act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), bodyText: BODY }) })
+    act(() => { h.current.injectEvent(forecast(WITHOUT_EXPIRE)) })
+    act(() => { vi.advanceTimersByTime(100) })
+
+    expect(h.current.tsunamis[0].id).toBe('noto-2')
+    expect(h.current.tsunamis[0].bodyText).toBe(BODY)
+  })
+
+  // 対照: 新しい報が本文を持てばそちらへ従う（前報で固定しない）
+  it('本文を持つ続報ではそちらへ差し替わる', () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+
+    act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), bodyText: '前の本文' }) })
+    act(() => { h.current.injectEvent({ ...forecast(WITHOUT_EXPIRE), bodyText: '新しい本文' }) })
+    act(() => { vi.advanceTimersByTime(100) })
+
+    expect(h.current.tsunamis[0].bodyText).toBe('新しい本文')
+  })
+
+  // 安全弁: 別の津波へ持ち込まない。引き継ぎは `isTsunamiContinuation`（`eventId` 一致）の
+  // 内側でしか働かないことを固定する —— 緩めると、無関係な津波の本文を出すことになる。
+  it('別イベントの津波には前報の本文を引き継がない', () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+
+    act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), bodyText: '能登の本文' }) })
+    act(() => {
+      h.current.injectEvent(forecast({ ...WITHOUT_EXPIRE, eventId: 'hyuganada-tsunami' }))
+    })
+    act(() => { vi.advanceTimersByTime(100) })
+
+    expect(h.current.tsunamis[0].bodyText).toBeUndefined()
+  })
+
   it('日時として読めない期限を持つ続報でも、カードには前報の読める期限が残る', () => {
     vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
     const h = setup()
@@ -1444,6 +1488,22 @@ describe('津波の有効期限は報を跨いで引き継ぐ', () => {
 
     act(() => { vi.advanceTimersByTime(2 * 60_000) })
     expect(h.current.tsunamis[0].cancelReason).toBe('expired')
+  })
+
+  // **ライブ受信では出るのにリロードすると消える、を防ぐ。** 履歴からの復元は最新の 1 報だけを
+  // 画面へ載せるため、続報の上書きと同じものを引き継がないと片方だけ落ちる。
+  it('履歴からの復元でも本文を引き継ぐ', async () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const BODY = '若干の海面変動が予想される時刻は、早い沿岸で０２日１０時３０分頃です。'
+    vi.mocked(fetchDmdataTsunamis).mockResolvedValue([
+      { ...forecast(WITH_EXPIRE), bodyText: BODY },
+      forecast(WITHOUT_EXPIRE),
+    ])
+    const h = setup()
+    await h.flush()
+
+    expect(h.current.tsunamis[0].id).toBe('noto-2')
+    expect(h.current.tsunamis[0].bodyText).toBe(BODY)
   })
 
   it('履歴からの復元で、期限を過ぎていれば最初から表示しない', async () => {

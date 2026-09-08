@@ -8,7 +8,7 @@ import type { QuakeRetraction } from '../utils/quakeMerge'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex, getAreaPrefIndexCache } from '../utils/stationCoords'
 import type { AreaPrefIndex } from '../utils/quakePoints'
 import { calcEEWCancelTime, eewSerial, eewEventKey } from '../utils/eew'
-import { mergeTsunamiObservations, isCancelForCurrentTsunami, isTsunamiContinuation, withInheritedValidDateTime, latestValidDateTime } from '../utils/tsunami'
+import { mergeTsunamiObservations, isCancelForCurrentTsunami, isTsunamiContinuation, withInheritedTsunamiFacts, latestValidDateTime } from '../utils/tsunami'
 import { log } from '../utils/logger'
 import { serverNow, serverDate } from '../utils/clock'
 
@@ -944,7 +944,14 @@ export function useEarthquakes(
             // `??` で書かずにその関数へ通すのは、**日時として読めない値を弾く箇所を 1 つに保つため**。
             // 読めない期限をカードへ入れると、以後の続報でも引き継がれ続け、比較はすべて偽に倒れる。
             const validDateTime = latestValidDateTime([current, tsunami])
-            return { ...prev, tsunamis: [{ ...tsunami, areas, observations, validDateTime }], lastUpdate: now }
+            // 電文の本文（`Body/Text`）も引き継ぐ。**気象庁は毎報には載せない** —— 実電文を
+            // 数えると津波予報の VTSE41 の半数に入るだけで、続報の VTSE51/52 には 1 通も無い。
+            // 引き継がないと、津波予報で「いつ来ていつまで続くか」を伝えた文が、最初の観測情報が
+            // 届いた瞬間に画面から消える（この等級では区域に波高も到達時刻も付かないので、
+            // その文にしか無い）。地震情報側が自由付加文を `??` で引き継ぐのと同じ扱い
+            // （`utils/quakeMerge.ts`）。新しい報が本文を持てばそちらへ従う。
+            const bodyText = tsunami.bodyText ?? current.bodyText
+            return { ...prev, tsunamis: [{ ...tsunami, areas, observations, validDateTime, bodyText }], lastUpdate: now }
           }
           // TSU-3: 別 eventId の tsunami で既存を上書きするケースを検知したら警告する。
           // 実装は 1 件スロットのまま（複数同時発表は稀なため型変更はスコープ外）だが、
@@ -1195,7 +1202,7 @@ export function useEarthquakes(
             .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
           // 画面へ載せるのは最新報 1 通だけ。その報が有効期限を持たなくても、同じ津波の過去報が
           // 伝えていれば引き継ぐ（引き継がないと下の失効予約が積まれず、期限切れの津波が消えない）。
-          const latestTsunami = allTsunami[0] && withInheritedValidDateTime(allTsunami[0], allTsunami)
+          const latestTsunami = allTsunami[0] && withInheritedTsunamiFacts(allTsunami[0], allTsunami)
           // 気象庁は予報のみになった津波に必ず期限を付ける（tsunami-spec.md §3）。それが引き継げて
           // いないなら、期限を伝えた報が取得件数の上限から押し出された疑いがある。放っておくと
           // 「消えない津波」に化けるが、画面には何の痕跡も出ないので記録だけは残す。
@@ -1350,7 +1357,7 @@ export function useEarthquakes(
           .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
         // DMDSS 側と同じ引き継ぎ。P2PQuake の 552 は有効期限を持たないため実際には何も変わらないが、
         // 経路ごとに扱いを違えない（片方だけ直すと、次に触る人がどちらが正なのか判断できない）。
-        const latestTsunami = allTsunami[0] && withInheritedValidDateTime(allTsunami[0], allTsunami)
+        const latestTsunami = allTsunami[0] && withInheritedTsunamiFacts(allTsunami[0], allTsunami)
         const nowP2p = serverDate()
         const tsunamis = latestTsunami
           && !latestTsunami.cancelled

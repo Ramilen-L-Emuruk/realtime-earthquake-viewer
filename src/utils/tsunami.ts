@@ -145,28 +145,45 @@ export function latestValidDateTime(reports: JMATsunami[]): string | undefined {
 }
 
 /**
- * 最新報に有効期限が無ければ、同一イベントの過去報から引き継いだものを返す。
+ * 最新報が持たない「報ではなく津波に付く事実」を、同一イベントの過去報から引き継ぐ。
  *
- * 履歴からの復元（初回ロード・リロード）は最新の 1 報だけを画面へ載せるため、その報が期限を
- * 持たないと失効の予約が積まれず、期限切れの津波が消えないまま残る。引き継ぐ理由は
- * `latestValidDateTime` に同じ。
+ * 履歴からの復元（初回ロード・リロード）は最新の 1 報だけを画面へ載せるため、その報が値を
+ * 持たないと画面から落ちる。**続報の上書き（`useEarthquakes`）と同じものをここでも引き継ぐこと**
+ * —— 片方だけに足すと、ライブ受信では出るのにリロードすると消える、という形になる。
+ *
+ * いま引き継ぐのは 2 つ。
+ *
+ * - **有効期限**（`validDateTime`）—— 気象庁は期限が決まった報で一度だけ載せ、以後の続報には
+ *   載せない。落とすと失効の予約が積まれず、期限切れの津波が消えないまま残る（`latestValidDateTime`）
+ * - **電文の本文**（`bodyText`）—— 同じく毎報には載らない。実電文では津波予報の VTSE41 の半数に
+ *   入るだけで、続報の VTSE51/52 には 1 通も無い。落とすと「いつ来ていつまで続くか」が消える
  *
  * 同一イベントの判定は `eventId`、`eventId` を持たない経路（P2PQuake）では `id` の一致で行う。
- * 別の津波の期限を引き継ぐと、発表中の津波を無関係な期限で消しうる。
+ * 別の津波の値を引き継ぐと、発表中の津波を無関係な期限で消したり、別の津波の本文を出したりする。
  *
  * @param latest 画面へ載せる最新報
  * @param reports 同じ取得結果に含まれる報（`latest` を含んでよい）
  */
-export function withInheritedValidDateTime(latest: JMATsunami, reports: JMATsunami[]): JMATsunami {
-  // 自分の期限が日時として読めるならそれを使う（判定は `latestValidDateTime` と同じ 1 箇所に置く）。
-  if (latestValidDateTime([latest])) return latest
+export function withInheritedTsunamiFacts(latest: JMATsunami, reports: JMATsunami[]): JMATsunami {
   const sameEvent = reports.filter(r => r !== latest
     && (latest.eventId ? r.eventId === latest.eventId : !r.eventId && r.id === latest.id))
+  // 本文は新しい報のものを優先し、無ければ同一イベントの過去報から最も新しいものを採る。
+  //
+  // **発表時刻を読めない報は候補から外す。** 並べ替えの比較が NaN になると順序が定まらず、
+  // 「最も新しいもの」を選んだつもりで時刻の読めない報を掴む。期限の側（`latestValidDateTime`）が
+  // 新旧を判定できない報を候補から外すのと同じ扱い。
+  const bodyText = latest.bodyText
+    ?? sameEvent
+      .filter(r => r.bodyText && Number.isFinite(new Date(r.time).getTime()))
+      .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())[0]?.bodyText
+  const withBody = bodyText === latest.bodyText ? latest : { ...latest, bodyText }
+  // 自分の期限が日時として読めるならそれを使う（判定は `latestValidDateTime` と同じ 1 箇所に置く）。
+  if (latestValidDateTime([withBody])) return withBody
   const inherited = latestValidDateTime(sameEvent)
-  if (inherited) return { ...latest, validDateTime: inherited }
+  if (inherited) return { ...withBody, validDateTime: inherited }
   // 読めない期限は落とす。残すと「期限を持つ津波」の顔をしたまま以後の比較がすべて偽へ倒れ、
   // 表示は続くのに失効の予約も積まれない。落とせば standard 版の 24 時間フェイルセーフが働く。
-  return latest.validDateTime ? { ...latest, validDateTime: undefined } : latest
+  return withBody.validDateTime ? { ...withBody, validDateTime: undefined } : withBody
 }
 
 /**
