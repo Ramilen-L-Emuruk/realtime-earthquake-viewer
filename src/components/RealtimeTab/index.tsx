@@ -14,6 +14,7 @@ import { kyoshinIndexToJma, kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_
 import { readableTextColor } from '../../utils/contrast'
 import { gateNotes, gateRows, gateShortfall } from '../../utils/detectionGates'
 import { DescriptionTip } from '../DescriptionTip'
+import { isEewWarningKindCode } from '../../utils/eewKind'
 
 // 凡例は地図と同じ気象庁の震度配色（getIntensityColor）を使う。scale=0 は震度0（灰色）。
 const SCALE_LEGEND: { label: string; scale: number }[] = [
@@ -318,9 +319,8 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
 
         {/* 対象地域（警報域と予報域を区別して表示） */}
         {prefAreas.length > 0 && (() => {
-          const isWarning = (k: string) => k === '10' || k === '11' || k === '19'
-          const warningPrefs = [...new Set(prefAreas.filter(a => isWarning(a.kindCode)).map(a => a.pref))]
-          const forecastPrefs = [...new Set(prefAreas.filter(a => !isWarning(a.kindCode)).map(a => a.pref))]
+          const warningPrefs = [...new Set(prefAreas.filter(a => isEewWarningKindCode(a.kindCode)).map(a => a.pref))]
+          const forecastPrefs = [...new Set(prefAreas.filter(a => !isEewWarningKindCode(a.kindCode)).map(a => a.pref))]
           const hasKindCode = prefAreas.some(a => a.kindCode !== '')
           if (!hasKindCode) {
             return (

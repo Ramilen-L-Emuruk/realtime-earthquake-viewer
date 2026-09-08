@@ -13,7 +13,7 @@ import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
 import { badgeHtml, escapeHtml } from './gl/popupHtml'
 
 // EEW 対象地域の予想最大震度を区域塗りで表示する MapLibre 版（Leaflet の eew-region-fill 相当）。
-// 警報域(isWarning: kindCode 10/11/19)は fillOpacity 0.55・枠 weight2 で強調、予報域は 0.3・weight1。
+// 警報域（種別コードで判定。→ `isEewWarningKindCode`）は fillOpacity 0.55・枠 weight2 で強調、予報域は 0.3・weight1。
 // 塗り色は予想震度色(getIntensityColor)。区域中心マーカーは持たない（Leaflet 版と同じ）。
 //
 // クリックで区域名・予想震度・警報種別に加え、その区域へのS波到達までの秒数を出す。

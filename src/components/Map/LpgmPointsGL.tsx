@@ -8,7 +8,7 @@ import { getIntensityLabel } from '../../utils/intensity'
 import type { LpgmMarker } from '../../hooks/useQuakeLayerData'
 import { addOrderedLayer } from './gl/layerOrder'
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
-import { badgeHtml, escapeHtml } from './gl/popupHtml'
+import { badgeHtml, escapeHtml, nonJmaBadgeHtml } from './gl/popupHtml'
 import { ensureLpgmIcons, lpgmIconId, LPGM_ICON_BASE_RADIUS } from './gl/lpgmIcons'
 
 // 長周期地震動観測点を階級ラベル付き四角バッジで描画する MapLibre 版。
@@ -43,6 +43,7 @@ function buildFC(markers: LpgmMarker[], iconScale: number): FeatureCollection<Po
       lgInt: m.lgInt,
       name: m.name,
       pref: m.pref,
+      nonJma: m.nonJma ?? false,
       // **周期帯の内訳は文字列にして渡す。** GeoJSON の properties は MapLibre を
       // 通ると配列やオブジェクトが素の形では戻らないため、読み出す側で復元する。
       int: m.int ?? -1,
@@ -110,9 +111,13 @@ function clickHtml(f: MapGeoJSONFeature): string {
   const pref = String(f.properties?.pref ?? '')
   const int = Number(f.properties?.int ?? -1)
   const sva = Number(f.properties?.sva ?? -1)
+  // 気象庁以外が運用する観測点。震度側の吹き出しと同じ扱い（→ `nonJmaBadgeHtml`）。
+  const nonJma = Boolean(f.properties?.nonJma)
   return (
     `<div style="min-width:170px">` +
-    `<div style="font-weight:700;font-size:13px">${escapeHtml(String(f.properties?.name ?? ''))}</div>` +
+    `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">` +
+      `<span style="font-weight:700;font-size:13px">${escapeHtml(String(f.properties?.name ?? ''))}</span>` +
+      (nonJma ? nonJmaBadgeHtml() : '') + `</div>` +
     (pref ? `<div style="margin-top:2px;font-size:11px;color:#94a3b8">${escapeHtml(pref)}</div>` : '') +
     `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:12px">` +
     `${badgeHtml(String(lgInt), getLpgmClassColor(lgInt))}` +
