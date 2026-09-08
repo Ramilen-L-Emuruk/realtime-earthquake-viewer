@@ -3,6 +3,10 @@
 このディレクトリには「現在参照される仕様書」のみを置く。実装は仕様書より速く動くため、
 **食い違いがある場合は実コードを正とする**（各仕様書の冒頭でも個別に宣言）。
 
+機能の仕様のほかに、**実装を点検・棚卸しするときの手引き**もここに置く（現在は電文の網羅性の
+点検のみ）。参照するのが「機能を触るとき」ではなく「点検を回すとき」という違いだけで、
+現在の実装を対象にしている点は同じため。
+
 過去の設計調査・PoC 記録・移行計画などの完了済みドキュメントは
 [`docs/archive/`](../archive/) に移動されている（現在は WebGL 移行関連のみ）。
 
@@ -26,6 +30,7 @@
 | [kyoshin-detection-spec.md](kyoshin-detection-spec.md) | 強震モニタ揺れ検知エンジン（詳細仕様） | `src/utils/kyoshinDetector.ts` |
 | [kyoshin-detection-v3-design.md](kyoshin-detection-v3-design.md) | 強震モニタ検知の設計判断・調査・改訂履歴 | 同上（経緯資料） |
 | [kyoshin-detection-design.md](kyoshin-detection-design.md) | 強震モニタ検知の旧設計書（歴史資料・V3 に置換済み） | 同上 |
+| [telegram-coverage-audit.md](telegram-coverage-audit.md) | 電文の網羅性の点検（測り方・読まないと決めたもの・読み落としの型） | `src/services/dmdataParser.ts`, `src/services/dmdataCoverage.probe.test.ts` |
 
 ## 推奨読了順（初めて触る開発者向け）
 
@@ -38,6 +43,8 @@
 5. **[audio-tts-spec.md](audio-tts-spec.md) / [settings-pwa-spec.md](settings-pwa-spec.md)** — 音・通知・設定 UI
 6. **[kyoshin-detection-spec.md](kyoshin-detection-spec.md)** — 強震モニタ検知エンジン（他機能と独立性が高いので後回しでよい）
 7. **[action-checklist-spec.md](action-checklist-spec.md)** — 行動チェックリスト（上の 3 機能の出力を受けて出し分けるだけなので、読む順の依存は薄い）
+
+[telegram-coverage-audit.md](telegram-coverage-audit.md) は読む順に含めていない。電文を読むコードを書くとき・「電文にある値が画面に出ていない」と疑ったときに開く手引きで、機能の仕様ではない。
 
 ## 仕様書の書き方（新規追加時）
 
