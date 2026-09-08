@@ -641,12 +641,27 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
     cancelled: false,
     issue: { source: 'テスト', time: nowIso, type: 'Focus' },
     warningComment: 'ただちに高台へ避難してください。\n津波は繰り返し襲ってきます。警報が解除されるまで安全な場所から離れないでください。',
+    // 自由付加文。等級ごとの定型文（上の `warningComment`）と違い、電文ごとに書き起こされる。
+    // 実電文と同じく見出しの角括弧と全角スペースの整形を含める（画面が改行と空白を保つことの確認）。
+    freeText: '［予想される津波の高さの解説］\n予想される津波が高いほど、より甚大な被害が生じます。\n　１０ｍ超　　木造家屋が全壊・流失し、人は津波による流れに巻き込まれます。\n　　１ｍ　　　海の中では人は流されます。',
     // M8 を超える地震では規模を速報できないため、気象庁は「Ｍ８を超える巨大地震」と書き、
     // 予想波高も数値ではなく「巨大」で発表する（下の岩手県）。**第一報で最も起きる形**なので
     // テストにも入れておく。2 件目は、短い間に起きた地震がまとめて 1 通で届く場合の形。
+    // 震源要素は実電文と同じ一式を入れる（座標・深さ・地震発現時刻・規模の種別）。
+    // 2 件目は気象庁以外の機関が決めた震源なので `type="M"`・`Source` が付き、震央補助表現には
+    // その材料（`MarkCode` / `Direction` / `Distance`）が伴う。
     sourceEarthquakes: [
-      { hypocenterName: '三陸沖', magnitudeCondition: 'Ｍ８を超える巨大地震', originTime: nowIso },
-      { hypocenterName: '岩手県沖', magnitude: 7.2, originTime: t(-3), nameFromMark: '宮古の東１２０ｋｍ付近', source: 'ＰＴＷＣ' },
+      {
+        hypocenterName: '三陸沖', magnitudeCondition: 'Ｍ８を超える巨大地震', magnitudeType: 'Mj',
+        originTime: nowIso, arrivalTime: nowIso,
+        code: '213', latitude: 38.1, longitude: 143.9, depth: 24,
+      },
+      {
+        hypocenterName: '岩手県沖', magnitude: 7.2, magnitudeType: 'M',
+        originTime: t(-3), arrivalTime: t(-3), source: 'ＰＴＷＣ',
+        code: '215', latitude: 39.6, longitude: 143.2, depth: 10,
+        nameFromMark: '宮古の東１２０ｋｍ付近', markCode: '203', direction: '東', distanceKm: 120,
+      },
     ],
     // name は地図の海岸線表示用に、津波予報区データ（tsunami-zones.json）に実在する区域名を使用する
     // 2011年東北地方太平洋沖地震を参考にした発令内容
@@ -714,10 +729,10 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
     // 気象庁は「重要 欠測」「微弱 欠測」のように複数を併記するため（電文解説資料 Ⅱ.12）、
     // 単独の状態しか置かないとカード・地図・読み上げの併記の扱いが一度も通らない。
     observations: [
-      { name: '宮古',   districtCode: '030', districtName: '岩手県',           height: { value: 8.5, description: '8.5m以上', over: true }, arrivalTime: nowIso, initial: '押し' },
+      { name: '宮古',   districtCode: '030', districtName: '岩手県',           height: { value: 8.5, description: '8.5m以上', over: true }, arrivalTime: nowIso, initial: '押し', maxHeightDateTime: t(4), firstHeightRevise: '追加' },
       // これまでの最大波を観測した後に観測が途切れた観測点（値と欠測が同時に来る形）。
       { name: '大船渡', districtCode: '030', districtName: '岩手県',           height: { value: 3.2, description: '3.2m以上', over: true }, arrivalTime: t(-5), initial: '押し', condition: { maxHeightMissing: true, important: true } },
-      { name: '石巻港', districtCode: '040', districtName: '宮城県',           height: { value: 7.2, description: '7.2m' }, arrivalTime: nowIso, initial: '押し' },
+      { name: '石巻港', districtCode: '040', districtName: '宮城県',           height: { value: 7.2, description: '7.2m' }, arrivalTime: nowIso, initial: '押し', maxHeightDateTime: t(6), maxHeightRevise: '更新', firstHeightRevise: '更新' },
       // 到達は確認できたが最大波が欠測（波高の数値が無い）。
       { name: '相馬',   districtCode: '050', districtName: '福島県',           arrivalTime: t(-2), initial: '押し', condition: { maxHeightMissing: true } },
       // 第1波も最大波も欠測（到達したかどうかも判っていない）。
@@ -729,7 +744,7 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
       { name: '釧路',   districtCode: '080', districtName: '北海道太平洋沿岸東部', arrivalTime: t(30), initial: '押し', condition: { weak: true } },
       // 沖合の潮位観測点。「重要」の基準が沿岸と違う（大津波警報だけでなく津波警報も含む）ため、
       // 出所の印（offshore）を付けてバッジの語が切り替わることを確かめられるようにする。
-      { name: '沖合40km', offshore: true, sensor: 'ＧＮＳＳ波浪計', height: { value: 3.0, description: '3.0m以上', over: true }, arrivalTime: nowIso, condition: { important: true } },
+      { name: '沖合40km', offshore: true, sensor: 'ＧＮＳＳ波浪計', height: { value: 3.0, description: '3.0m以上', over: true }, arrivalTime: nowIso, condition: { important: true }, maxHeightDateTime: t(2) },
       // 「観測中」のまま Revise が「更新」。大津波警報の区域に対応する沖合の観測点で、沿岸で
       // 推定される高さが 3m 超に届かないときの形で、**津波警報に相当する津波を観測している**
       // ことを気象庁が示す（電文解説資料 Ⅱ.13 1-1-2-2-2）。値が変わらないので、アプリの
@@ -749,6 +764,7 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
         arrivalCondition: '早いところでは既に津波到達と推定',
         maxHeight: { description: '5m', value: 5.0 },
         condition: { important: true },
+        maxHeightDateTime: t(8), firstHeightRevise: '追加', maxHeightRevise: '追加',
       },
       { name: '宮城県', code: '040', arrivalCondition: '早いところでは既に津波到達と推定', maxHeight: { description: '4m', value: 4.0 } },
       { name: '福島県', code: '050', arrivalCondition: '早いところでは既に津波到達と推定', condition: { estimating: true } },

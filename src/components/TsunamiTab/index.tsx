@@ -1,8 +1,8 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation } from '../../types/earthquake'
-import { formatDateTimeMin, formatMagnitudeCondition, formatTime } from '../../utils/formatters'
+import { formatDateTimeMin, formatDepth, formatMagnitudeCondition, formatTime, hasDepth } from '../../utils/formatters'
 import { quakeEventKey } from '../../utils/quakeMerge'
-import { groupAreasForCardDisplay, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, tsunamiAreaKey } from '../../utils/tsunami'
+import { groupAreasForCardDisplay, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, tsunamiAreaKey } from '../../utils/tsunami'
 import { TSUNAMI_MISSING_COLOR as MISSING_COLOR } from '../../utils/tsunamiStyle'
 import { mapChunksToRefs, planFollowScroll, type FollowRect, type SpeechFollowSession, type SpeechRef } from '../../utils/ttsFollow'
 import { getSpeechClock } from '../../utils/voicevox'
@@ -169,6 +169,11 @@ function SourceEarthquakeLine({ eq, prefix, link }: {
       {eq.magnitude !== undefined
         ? `　M${eq.magnitude}`
         : eq.magnitudeCondition && `　${formatMagnitudeCondition(eq.magnitudeCondition)}`}
+      {/* 深さ。**遠地地震による津波では、震源の深さがこの電文にしか無い**（対応する地震情報が
+          発表されないことがある）。`0` は「ごく浅い」という有効値なので `hasDepth` で弾く。
+          **値によらず「深さ」を前置する** —— 地震カード・地図・共有カードもそう出しており、
+          ここだけ省くとアプリの中で表記が割れる。 */}
+      {eq.depth !== undefined && hasDepth(eq.depth) && `　深さ ${formatDepth(eq.depth)}`}
       {eq.originTime && `　${formatTime(eq.originTime).slice(0, 5)}発生`}
       {link}
       {/* 震央補助表現（「御前崎の北東40km付近」）と震源決定機関（「ＰＴＷＣ」等）。
@@ -330,6 +335,9 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
                       {obs.arrivalTime
                         ? `${formatTime(obs.arrivalTime).slice(0, 5)}${obs.initial ? ` ${obs.initial}波` : ''}`
                         : observationArrivalFallbackText(obs)}
+                      {/* 最大波を観測した時刻。第1波の到達時刻と紛れないよう語を冠する
+                          （決め方は `observationMaxHeightTimeText`）。 */}
+                      {observationMaxHeightTimeText(obs) && `　${observationMaxHeightTimeText(obs)}`}
                       {/* 同名 station があれば満潮時刻をここに表示 */}
                       {(() => {
                         const matched = stations.find(s => s.name === obs.name)
@@ -398,19 +406,22 @@ function TsunamiObservationRow({ obs, onObservationClick, canFocusObs, registerS
             </span>
           ))}
         </div>
+        {/* 最大波の観測時刻は**到達時刻の有無に関わらず出す**（第1波を識別できなくても
+            最大波は観測できている電文がある）。区域に紐づく行と同じ述語を通す。 */}
         {obs.arrivalTime ? (
           <span className="block mt-1 text-secondary" style={{ fontSize: '0.8125rem' }}>
             到達: {formatTime(obs.arrivalTime).slice(0, 5)}{obs.initial ? `（${obs.initial}）` : ''}
+            {observationMaxHeightTimeText(obs) && `　${observationMaxHeightTimeText(obs)}`}
             {/* 特殊観測機器（「ＧＮＳＳ波浪計」「水圧計」）。沖合の観測点だけが持つ。
                 電文の語をそのまま出す —— 言い換えると、どちらの計器が測った値か分からなくなる。
                 **括弧で括る** —— 「到達: 」のラベルは時刻にしか掛かっておらず、素で並べると
                 地名や別の値と読める。 */}
             {obs.sensor && `　（${obs.sensor}）`}
           </span>
-        ) : (observationArrivalFallbackText(obs) || obs.sensor) && (
+        ) : (observationArrivalFallbackText(obs) || observationMaxHeightTimeText(obs) || obs.sensor) && (
           <span className="block mt-1 text-secondary" style={{ fontSize: '0.8125rem' }}>
-            {observationArrivalFallbackText(obs)}
-            {obs.sensor && `${observationArrivalFallbackText(obs) ? '　' : ''}（${obs.sensor}）`}
+            {[observationArrivalFallbackText(obs), observationMaxHeightTimeText(obs)].filter(Boolean).join('　')}
+            {obs.sensor && `${observationArrivalFallbackText(obs) || observationMaxHeightTimeText(obs) ? '　' : ''}（${obs.sensor}）`}
           </span>
         )}
       </div>
@@ -1054,6 +1065,16 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
               <div className="bg-card rounded-lg overflow-hidden" style={{ border: '1px solid #374151' }}>
                 <div className="text-secondary" style={{ fontSize: '0.75rem', lineHeight: '1.7', whiteSpace: 'pre-line', padding: '0.75rem 1rem' }}>
                   {t.warningComment}
+                </div>
+              </div>
+            )}
+            {/* 気象庁の自由付加文。等級ごとの定型文（warningComment）と違い電文ごとに
+                書き起こされ、続報での更新はここに現れる（「［予想される津波の高さの解説］……」等）。
+                全角スペースで整形された表が入るため `whitespace-pre-wrap` で改行と空白を保つ。 */}
+            {t.freeText && !t.cancelledAt && (
+              <div className="bg-card rounded-lg overflow-hidden" style={{ border: '1px solid #374151' }}>
+                <div className="text-secondary" style={{ fontSize: '0.75rem', lineHeight: '1.7', whiteSpace: 'pre-wrap', padding: '0.75rem 1rem' }}>
+                  {t.freeText}
                 </div>
               </div>
             )}
