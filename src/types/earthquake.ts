@@ -200,6 +200,13 @@ export interface JMAQuake {
    * P2PQuake 経路は配信しないため undefined。
    */
   freeText?: string
+  /**
+   * 見出し文（`Head/Headline/Text`）。気象庁が電文へ添えた一文の要約。
+   *
+   * **読んで持つが、画面には出していない。** 本文や既読の要素に無い事実は含まない
+   * （実電文で確かめた）。→ `dmdataParser.ts` の `readHeadlineText`
+   */
+  headline?: string
 }
 
 export type TsunamiGrade = 'MajorWarning' | 'Warning' | 'Watch' | 'Forecast' | 'Unknown'
@@ -501,6 +508,22 @@ export interface JMATsunami {
   // 付加文（固定文）。避難行動の呼びかけなど JMA 公式の定型文。長文の解説（FreeFormComment）は含まない。
   warningComment?: string
   /**
+   * 気象庁が電文に添えた本文（`Body/Text`）。**発表報でのみ入る。**
+   *
+   * 津波予報（若干の海面変動）では区域に波高も到達時刻も付かないため、
+   * **いつ来ていつまで続くかはこの文にしか無い**：
+   *
+   *     若干の海面変動が予想される時刻は、早い沿岸で０２日１０時３０分頃です。
+   *     　これらの沿岸では今後１日程度は若干の海面変動が継続する可能性が高いと考えられます。
+   *
+   * **`cancelText` と同じ要素だが別の中身。** 電文解説資料は「自由文形式で追加的に情報を
+   * 記載する。**例えば**情報形態が"取消"の場合に取消しの概要等を記載する」と定めており、
+   * 取消はあくまで例。かつては取消のときだけ拾っており、**例を定義として読んでいた**。
+   *
+   * 付加文 2 種（`warningComment` / `freeText`）とも別物で、同じ電文に 4 つとも入りうる。
+   */
+  bodyText?: string
+  /**
    * 気象庁の自由付加文（`Comments/FreeFormComment`）の原文。DMDATA 経路でのみ得られる。
    *
    * 上の `warningComment` が等級ごとの定型文なのに対し、こちらは電文ごとに書き起こされる
@@ -605,6 +628,10 @@ export interface EEWForecastChange {
 }
 
 export interface EEWAlert {
+  /**
+   * 見出し文（`Head/Headline/Text`）。→ {@link JMAQuake.headline}（扱いも同じ）
+   */
+  headline?: string
   /**
    * 取消しの概要（`Body/Text`）。取消電文でのみ入る。
    *
@@ -836,6 +863,10 @@ export interface JMALpgm {
    */
   uri?: string
   /**
+   * 見出し文（`Head/Headline/Text`）。→ {@link JMAQuake.headline}（扱いも同じ）
+   */
+  headline?: string
+  /**
    * 長周期地震動に関する観測情報の種類（`LgCategory`。値は "1"〜"4"。電文解説資料 Ⅱ.37 2-1-4）。
    *
    * 階級と震度の組み合わせの分類。**2 と 4 は「階級を観測した地域のうち、最大震度が4以下の
@@ -855,7 +886,48 @@ export type AppEvent = JMAQuake | JMATsunami | EEWAlert
 // 段階の判別は電文の Head/Title（情報名）に入る括弧内キーワードで行う。Head/InfoKind は
 // 段階に関わらず「南海トラフ地震に関連する情報」で固定されており判別に使えない
 // （実電文 14 通で確認。詳細は docs/spec/data-sources-spec.md）。
-export interface JMANankai {
+/**
+ * 巨大地震に関する情報（南海トラフ・後発地震）が共通して持つ要素。
+ *
+ * **3 つの型が別々に同じ要素を持つ形にしない。** 南海トラフ臨時情報（VYSE50）・
+ * 南海トラフ地震関連解説情報（VYSE51/52）・北海道・三陸沖後発地震注意情報（VYSE60）は
+ * 電文の構造が同じで、実際に「解説情報だけが要約を読んでいて、臨時情報と後発地震は
+ * 読んでいない」という非対称ができていた。
+ */
+export interface EarthquakeInfoMeta {
+  /**
+   * 見出し文（`Head/Headline/Text`）。本文（`body`）の要約で、気象庁が自分で書いたもの。
+   *
+   * **本文が長い**（1000 字を超えることがある）ため、帯では要約を先に出して本文を続ける。
+   * 本文に無い事実は含まない —— 実電文で確かめた。
+   */
+  summary?: string
+  /**
+   * 次回発表予定（`Body/NextAdvisory`）。
+   *
+   * 「次回の情報発表は、２１時頃を予定しています。なお、新たな変化を観測した場合には
+   * 随時発表します。」のような文。**次にいつ情報が出るかは、この要素にしか無い。**
+   * 続報を待つべきかどうかの判断に直結するので画面に出す。
+   */
+  nextAdvisory?: string
+  /**
+   * 参考情報（`Body/EarthquakeInfo/Appendix`）。情報の種類・発表条件・背景の解説。
+   *
+   * **電文ごとに変わらない固定文**で、長い。初めてこの情報を受け取る人には要るが、
+   * 毎報そのまま積むと本文が埋もれるため**折りたたんで出す**。
+   */
+  appendix?: string
+  /**
+   * 情報の種別（`Body/EarthquakeInfo/InfoKind`）と、その上位分類（同要素の `@type`）。
+   *
+   * **読んで持つが、画面には出していない。** アプリは電文種別で既に見分けており、
+   * 「南海トラフ地震臨時情報」のような名称は `headline`（`Head/Title`）が伝えている。
+   */
+  earthquakeInfoKind?: string
+  earthquakeInfoType?: string
+}
+
+export interface JMANankai extends EarthquakeInfoMeta {
   id: string
   time: string
   eventId: string
@@ -903,7 +975,7 @@ export interface JMANankai {
 // 臨時情報（JMANankai）とは別物で、段階を持たない。想定震源域の地震活動・地殻変動の状況を
 // 解説する電文で、臨時情報の発表期間中は VYSE51 が毎日、平常時は VYSE52 が毎月届く。
 // 臨時情報と同じスロットに入れると段階の表示を上書きしてしまうため、型ごと分けている。
-export interface JMANankaiCommentary {
+export interface JMANankaiCommentary extends EarthquakeInfoMeta {
   id: string
   time: string
   eventId: string
@@ -922,7 +994,6 @@ export interface JMANankaiCommentary {
   serialCode: string
   serialName: string // '臨時解説' | '定例解説'
   headline: string   // Head/Title 例: '南海トラフ地震関連解説情報（第１号）'
-  summary: string    // Head/Headline/Text の一文要約。バナーの見出しに使う
   body: string       // Body/EarthquakeInfo/Text の本文（1000 字を超えることがある）
   // 取消電文（InfoType=取消）。解説情報に「解除」の概念は無く実電文でも未発表だが、
   // 来たときに帯を消せるようにしておく（取消を無視すると古い帯を出し続けることになる）
@@ -932,7 +1003,7 @@ export interface JMANankaiCommentary {
 }
 
 // 北海道・三陸沖後発地震注意情報 (VYSE60)
-export interface JMAKohatsu {
+export interface JMAKohatsu extends EarthquakeInfoMeta {
   id: string
   time: string
   eventId: string

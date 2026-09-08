@@ -1717,14 +1717,14 @@ function commentaryXml(opts: {
     </Headline>
   </Head>
   <Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
-    <EarthquakeInfo>
+    <EarthquakeInfo type="南海トラフ地震に関連する情報">
       <InfoKind>南海トラフ地震関連解説情報</InfoKind>
       <InfoSerial codeType="地震関連情報番号コード">
         <Name>${opts.serialName}</Name>
         <Code>${opts.serialCode}</Code>
       </InfoSerial>
       <Text>${opts.body ?? '特段の変化は観測されていません。'}</Text>
-      <Appendix>情報発表条件の解説（表示・読み上げの対象外）</Appendix>
+      <Appendix>情報発表条件の解説（帯では畳んで出す）</Appendix>
     </EarthquakeInfo>
   </Body>
 </Report>`
@@ -2269,12 +2269,19 @@ const PARITY_TSUNAMI_XML = `<?xml version="1.0" encoding="UTF-8"?>
       </Area></Hypocenter>
       <jmx_eb:Magnitude type="Mj">8.5</jmx_eb:Magnitude>
     </Earthquake>
+    <Text>若干の海面変動が予想される時刻は、早い沿岸で０２日１０時３０分頃です。
+　これらの沿岸では今後１日程度は若干の海面変動が継続する可能性が高いと考えられます。</Text>
     <Comments>
       <FreeFormComment>［予想される津波の高さの解説］
 予想される津波が高いほど、より甚大な被害が生じます。</FreeFormComment>
     </Comments>
   </Body>
 </Report>`
+
+/** 上の電文から本文の行を取り除くための文字列。**電文を書き換えたらここも直すこと。** */
+const BODY_TEXT_LINE = `    <Text>若干の海面変動が予想される時刻は、早い沿岸で０２日１０時３０分頃です。
+　これらの沿岸では今後１日程度は若干の海面変動が継続する可能性が高いと考えられます。</Text>
+`
 
 describe('XML 経路が落としてはいけない項目（津波）', () => {
   const fromXml = () => parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!
@@ -2780,7 +2787,146 @@ describe('津波の取消・全解除・原因地震', () => {
   })
 })
 
+/** 次回発表予定の行。**電文を書き換えたらここも直すこと**（`.replace` は空振りしても黙る）。 */
+const NANKAI_NEXT_ADVISORY_LINE =
+  '    <NextAdvisory>今後は、「南海トラフ地震関連解説情報」で地殻活動の状況等を発表します。次回の情報発表は、２１時頃を予定しています。</NextAdvisory>\n'
+/** 参考情報の行。同上。 */
+const NANKAI_APPENDIX_LINE =
+  '      <Appendix>＊＊　（参考）　南海トラフ地震に関連する情報の種類　＊＊</Appendix>\n'
+
+const NANKAI_META_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/">
+  <Control>
+    <Title>南海トラフ地震臨時情報</Title>
+    <DateTime>2026-08-08T08:00:00Z</DateTime>
+    <Status>通常</Status>
+    <PublishingOffice>気象庁</PublishingOffice>
+  </Control>
+  <Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+    <Title>南海トラフ地震臨時情報（調査中）</Title>
+    <ReportDateTime>2026-08-08T17:00:00+09:00</ReportDateTime>
+    <EventID>20260808170000</EventID>
+    <InfoType>発表</InfoType>
+    <Serial>1</Serial>
+    <Headline>
+      <Text>８月８日１６時４３分頃に発生した地震と南海トラフ地震との関連性についての調査を開始しました。</Text>
+    </Headline>
+  </Head>
+  <Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
+    <EarthquakeInfo type="南海トラフ地震に関連する情報">
+      <InfoKind>南海トラフ地震臨時情報</InfoKind>
+      <InfoSerial><Name>調査中</Name><Code>111</Code></InfoSerial>
+      <Text>８月８日１６時４３分頃に日向灘を震源とする地震が発生しました。気象庁では評価検討会を開催します。</Text>
+      <Appendix>＊＊　（参考）　南海トラフ地震に関連する情報の種類　＊＊</Appendix>
+    </EarthquakeInfo>
+    <NextAdvisory>今後は、「南海トラフ地震関連解説情報」で地殻活動の状況等を発表します。次回の情報発表は、２１時頃を予定しています。</NextAdvisory>
+  </Body>
+</Report>`
+
+const KOHATSU_META_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/">
+  <Control>
+    <Title>北海道・三陸沖後発地震注意情報</Title>
+    <DateTime>2026-04-20T08:05:00Z</DateTime>
+    <Status>通常</Status>
+    <PublishingOffice>気象庁</PublishingOffice>
+  </Control>
+  <Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+    <Title>北海道・三陸沖後発地震注意情報</Title>
+    <ReportDateTime>2026-04-20T17:05:00+09:00</ReportDateTime>
+    <EventID>20260420170500</EventID>
+    <InfoType>発表</InfoType>
+    <Serial>1</Serial>
+    <Headline>
+      <Text>本日（２０日）１６時５２分に三陸沖を震源とする地震が発生しました。新たな大規模地震の発生可能性が平常時と比べて相対的に高まっていると考えられます。</Text>
+    </Headline>
+  </Head>
+  <Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
+    <EarthquakeInfo type="北海道・三陸沖後発地震注意情報">
+      <InfoKind>北海道・三陸沖後発地震注意情報</InfoKind>
+      <Text>本日（２０日）１６時５２分に、三陸沖を震源とするマグニチュード７．４の地震が発生しました。</Text>
+      <Appendix>＊＊　（参考）　北海道・三陸沖後発地震注意情報について　＊＊</Appendix>
+    </EarthquakeInfo>
+  </Body>
+</Report>`
+
+// 南海トラフ・後発地震は電文の構造が同じなのに経路ごとに読んでいて、
+// **解説情報だけが見出し文を読んでいる**という非対称ができていた。3 経路をまとめて確かめる。
+describe('巨大地震に関する情報の共通要素（南海トラフ・後発地震）', () => {
+  // 正: 臨時情報。見出し文（要約）・次回発表予定・参考情報・情報の種別
+  it('南海トラフ臨時情報の要約・次回発表予定・参考情報を読む', () => {
+    const n = parseNankaiFromXml(NANKAI_META_XML)!
+    expect(n.summary).toContain('調査を開始しました')
+    expect(n.nextAdvisory).toContain('次回の情報発表は')
+    expect(n.appendix).toContain('（参考）')
+    expect(n.earthquakeInfoKind).toBe('南海トラフ地震臨時情報')
+    expect(n.earthquakeInfoType).toBe('南海トラフ地震に関連する情報')
+  })
+
+  // 正: 後発地震注意情報。**同じ要素を同じ形で持つ**
+  it('後発地震注意情報も同じ要素を持つ', () => {
+    const k = parseVyse60FromXml(KOHATSU_META_XML)!
+    expect(k.summary).toContain('相対的に高まっている')
+    expect(k.appendix).toContain('（参考）')
+    expect(k.earthquakeInfoKind).toBe('北海道・三陸沖後発地震注意情報')
+    expect(k.earthquakeInfoType).toBe('北海道・三陸沖後発地震注意情報')
+  })
+
+  // 安全弁: 要約と本文を取り違えない。本文のほうが詳しく、要約はその結論だけ
+  it('要約と本文はそれぞれ別に持つ', () => {
+    const n = parseNankaiFromXml(NANKAI_META_XML)!
+    expect(n.body).toContain('評価検討会を開催します')
+    expect(n.summary).not.toContain('評価検討会を開催します')
+  })
+
+  // 正: 解説情報（VYSE51/52）も同じ読み手を通る。**この経路だけが元々 `summary` を読んでいて**、
+  // 読み方を `Head` 配下の子孫探索から `Headline` 直下へ変えている
+  it('解説情報も同じ読み手で要約と参考情報を読む', () => {
+    const c = parseNankaiCommentaryFromXml(commentaryXml({
+      title: '南海トラフ地震関連解説情報（第１号）', serialCode: '210', serialName: '臨時解説',
+    }))!
+    expect(c.summary).toContain('評価しました')
+    expect(c.earthquakeInfoKind).toBe('南海トラフ地震関連解説情報')
+    expect(c.earthquakeInfoType).toBe('南海トラフ地震に関連する情報')
+  })
+
+  // 対照: 要素が無い電文では持たせない（空文字を持つと、表示側が空の枠を出す）
+  it('要素が無ければ持たない', () => {
+    const xml = NANKAI_META_XML
+      .replace(NANKAI_NEXT_ADVISORY_LINE, '')
+      .replace(NANKAI_APPENDIX_LINE, '')
+    const n = parseNankaiFromXml(xml)!
+    expect(n.nextAdvisory).toBeUndefined()
+    expect(n.appendix).toBeUndefined()
+    // 要約は残っていること（消しすぎていない）
+    expect(n.summary).toContain('調査を開始しました')
+  })
+})
+
 describe('津波電文の付加文と波高のメタ情報', () => {
+  // 正: 電文の本文（`Body/Text`）を発表報でも読む。**解説資料が取消を「例」として
+  // 挙げているだけなのに、かつては取消のときしか拾っていなかった。** 津波予報では区域に
+  // 波高も到達時刻も付かないので、いつ来ていつまで続くかはここにしか無い
+  it('発表報の本文（Body/Text）を読む', () => {
+    const t = parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!
+    expect(t.bodyText).toContain('若干の海面変動が予想される時刻')
+    expect(t.cancelled).toBe(false)
+  })
+
+  // 安全弁: 付加文 2 種と混ざらない。同じ電文に 3 つとも入りうる
+  it('本文と付加文 2 種はそれぞれ別に持つ', () => {
+    const t = parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!
+    expect(t.bodyText).not.toContain('予想される津波の高さの解説')
+    expect(t.freeText).not.toContain('若干の海面変動が予想される時刻')
+    expect(t.bodyText).not.toBe(t.warningComment)
+  })
+
+  // 対照: 本文が無い電文では持たせない
+  it('本文が無ければ持たない', () => {
+    const xml = PARITY_TSUNAMI_XML.replace(BODY_TEXT_LINE, '')
+    expect(parseTsunamiFromXml('VTSE51', xml)!.bodyText).toBeUndefined()
+  })
+
   // 正: 自由付加文。地震情報・長周期では読んで画面に出していたのに、津波だけ落ちていた
   it('自由付加文を、等級の定型文とは別に読む', () => {
     const t = parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!
@@ -3354,7 +3500,7 @@ describe('parseEEWFromXml（VXSE45 の XML 経路）', () => {
   it('予報級の報を読む', () => {
     const e = parseEEWFromXml('VXSE45', EEW_XML)!
     expect(e.issue).toEqual({ eventId: '20260903223458', serial: '3', time: '2026-09-03T22:35:37+09:00' })
-    expect(e.earthquake.hypocenter).toEqual({ name: '福島県会津', latitude: 37.2, longitude: 139.3, depth: 10, magnitude: 3.5 })
+    expect(e.earthquake.hypocenter).toEqual({ name: '福島県会津', latitude: 37.2, longitude: 139.3, depth: 10, magnitude: 3.5, magnitudeType: 'Mj' })
     expect(e.forecastMaxScale).toBe(20)
     expect(e.severity).toBe('Forecast')
     expect(e.isFinal).toBe(true)
@@ -3436,7 +3582,8 @@ describe('XML 経路が落としてはいけない項目（EEW）', () => {
   // 正: 震源要素。予報円・地図・読み上げがすべてここを見る。
   it('震源要素（名前・緯度経度・深さ・規模）を持つ', () => {
     expect(parsed().earthquake.hypocenter).toEqual({
-      name: '福島県会津', latitude: 37.2, longitude: 139.3, depth: 10, magnitude: 3.5,
+      // 種別（`Mj`）も持つ。画面には出さないが、電文の事実として落とさない
+      name: '福島県会津', latitude: 37.2, longitude: 139.3, depth: 10, magnitude: 3.5, magnitudeType: 'Mj',
     })
   })
 
@@ -3601,15 +3748,20 @@ describe('これまで読んでいなかった要素', () => {
   })
 
   it('津波情報の取消の理由を読む', () => {
+    // **取消電文の `Body/Text` は 1 つ。** 発表報の本文と同じ要素で、中身が入れ替わる
+    // （足すのではなく差し替えないと、実電文には無い「2 つある」形になる）。
     const xml = PARITY_TSUNAMI_XML
       .replace('<InfoType>発表</InfoType>', '<InfoType>取消</InfoType>')
-      .replace('</Body>', '<Text>先ほどの津波警報は誤りでしたので取り消します。</Text></Body>')
+      .replace(BODY_TEXT_LINE, '    <Text>先ほどの津波警報は誤りでしたので取り消します。</Text>\n')
     const t = parseTsunamiFromXml('VTSE51', xml)!
     expect(t.cancelled).toBe(true)
     expect(t.cancelText).toBe('先ほどの津波警報は誤りでしたので取り消します。')
   })
 
-  // 対照: 通常報の `Body` 直下に Text は出ない。取消以外で拾わないこと
+  // 対照: 地震情報の通常報では取消の理由を持たせない。
+  // **「通常報に `Body/Text` は出ない」とは限らない** —— 津波では出ることが実電文で確かめられて
+  // おり（上の「発表報の本文（Body/Text）を読む」）、解説資料も取消を「例」として挙げているだけ。
+  // ここで確かめているのは「取消の理由として拾わないこと」であって、要素の不在ではない。
   it('通常報では取消の理由を持たせない', () => {
     expect(parseEarthquakeFromXml('VXSE53', VXSE53_XML)!.cancelText).toBeUndefined()
   })

@@ -460,10 +460,24 @@ export function createTestEEW(eventId?: string, serial = 1, baseTime?: Date): EE
   }
 }
 
+/**
+ * 南海トラフ関連の 3 種別が共通して持つ参考情報（`Body/EarthquakeInfo/Appendix`）。
+ *
+ * 制度の解説で、**電文ごとに変わらない固定文**。実電文はこの何倍も長く、帯では畳んで出す。
+ * 3 種別で同じ文が来るので、テストデータでも 1 つを共有する。
+ */
+const NANKAI_APPENDIX = '＊＊　（参考）　南海トラフ地震に関連する情報の種類　＊＊\n【南海トラフ地震臨時情報】\n情報発表条件：\n○南海トラフ沿いで異常な現象が観測され、その現象が南海トラフ沿いの大規模な地震と関連するかどうか調査を開始した場合、または調査を継続している場合\n○観測された異常な現象の調査結果を発表する場合'
+
 export function createTestNankai(kindName: '調査中' | '巨大地震注意' | '巨大地震警戒'): JMANankai {
   const now = serverDate().toISOString()
   const kindCodeMap: Record<string, string> = {
     '調査中': '111', '巨大地震注意': '130', '巨大地震警戒': '120',
+  }
+  // 見出し文（`Head/Headline/Text` 相当）。本文が長いので、帯では要約を先に出す。
+  const summaryMap: Record<string, string> = {
+    '調査中': '本日１６時４３分頃に発生した地震と南海トラフ地震との関連性についての調査を開始しました。南海トラフ地震で被害が想定される地域の方は、個々の状況に応じて、身の安全を守る行動を取ってください。',
+    '巨大地震注意': '本日１６時４３分頃に日向灘を震源とするマグニチュード７．１の地震が発生しました。南海トラフ地震の想定震源域では、大規模地震の発生可能性が平常時に比べて相対的に高まっていると考えられます。今後の政府や自治体などからの呼びかけ等に応じた防災対応をとってください。',
+    '巨大地震警戒': '本日１６時４３分頃に駿河湾を震源とするマグニチュード８．０の地震が発生しました。南海トラフ地震の想定震源域では、大規模地震の発生可能性が平常時に比べて相対的に高まっていると考えられます。今後の政府や自治体などからの呼びかけ等に応じた防災対応をとってください。',
   }
   const bodyMap: Record<string, string> = {
     '調査中': '南海トラフ沿いの大規模な地震発生の可能性について、現在気象庁が調査を行っています。この情報は、調査中の段階で発表するものです。今後の情報に注意してください。',
@@ -478,6 +492,12 @@ export function createTestNankai(kindName: '調査中' | '巨大地震注意' | 
     kindName,
     headline: `南海トラフ地震臨時情報（${kindName}）`,
     body: bodyMap[kindName] ?? '',
+    summary: summaryMap[kindName] ?? '',
+    // 次回発表予定（`Body/NextAdvisory` 相当）。**続報を待つべきかの判断がここにしか無い。**
+    nextAdvisory: '今後は、「南海トラフ地震関連解説情報」で地殻活動の状況等を発表します。次回の情報発表は、２１時頃を予定しています。\n　なお、新たな変化を観測した場合には随時発表します。',
+    appendix: NANKAI_APPENDIX,
+    earthquakeInfoKind: '南海トラフ地震臨時情報',
+    earthquakeInfoType: '南海トラフ地震に関連する情報',
     cancelled: false,
     reportDateTime: now,
   }
@@ -528,6 +548,14 @@ export function createTestNankaiCommentary(serialName: '臨時解説' | '定例�
     body: isAdHoc
       ? '想定震源域内の地震活動および地殻変動の観測状況について、現在のところ新たな変化は認められません。引き続き、政府や自治体などからの呼びかけ等に応じた防災対応をとってください。'
       : '現在のところ、南海トラフ沿いの大規模地震の発生の可能性が平常時と比べて相対的に高まったと考えられる特段の変化は観測されていません。',
+    // **次回発表予定は臨時解説だけが持つ。** 実電文の定例解説（VYSE52）8 通に `NextAdvisory` は
+    // 1 件も無い。持たせると、実電文では出ない欄をテストボタンが見せることになる。
+    ...(isAdHoc && {
+      nextAdvisory: '今後も、「南海トラフ地震関連解説情報」で地殻活動の状況等を発表します。次回の情報発表は、１２日１５時３０分頃を予定しています。\n　なお、新たな変化を観測した場合には随時発表します。',
+    }),
+    appendix: NANKAI_APPENDIX,
+    earthquakeInfoKind: '南海トラフ地震関連解説情報',
+    earthquakeInfoType: '南海トラフ地震に関連する情報',
     cancelled: false,
     reportDateTime: now,
     expireAt,
@@ -542,6 +570,10 @@ export function createTestKohatsu(): JMAKohatsu {
     time: now,
     eventId: `test-kohatsu-event-${Date.now()}`,
     headline: '北海道・三陸沖後発地震注意情報',
+    summary: '本日１６時５２分に三陸沖を震源とするモーメントマグニチュード（Ｍｗ）７．４の地震が発生しました。この地震の発生により、北海道の根室沖から東北地方の三陸沖にかけての巨大地震の想定震源域では、新たな大規模地震の発生可能性が平常時と比べて相対的に高まっていると考えられます。今後の政府や自治体などからの呼びかけ等に応じた防災対応をとってください。',
+    appendix: '＊＊　（参考）　北海道・三陸沖後発地震注意情報について　＊＊\n　日本海溝・千島海溝沿いの領域では、Ｍｗ７から９のさまざまな規模の地震が多数発生しており、過去の最大クラスの津波は約３百から４百年間隔で発生しています。１７世紀に発生した津波からの経過時間を考えると、当該地域では最大クラスの津波を伴う地震が切迫している状況にあるとされています。',
+    earthquakeInfoKind: '北海道・三陸沖後発地震注意情報',
+    earthquakeInfoType: '北海道・三陸沖後発地震注意情報',
     body: '三陸沖でマグニチュード7.4の地震が発生しました。この地震は、北海道・三陸沖後発地震注意情報の発表基準を満たしています。今後、大規模地震の発生可能性が平常時より高まっています。海岸付近や川沿いにいる方は、念のため高台へ移動するなど、防災対応の確認をしてください。',
     cancelled: false,
     reportDateTime: now,
@@ -573,6 +605,12 @@ export function createTestTsunamiForecast(withDmdssFields: boolean): JMATsunami 
       { grade: 'Forecast', immediate: false, name: '北海道太平洋沿岸中部' },
       { grade: 'Forecast', immediate: false, name: '北海道日本海沿岸南部' },
     ],
+    // **この電文の本文がいちばん効く場面。** 津波予報（若干の海面変動）では区域に波高も
+    // 到達時刻も付かない（上の `areas` を見れば分かる）ので、いつ来ていつまで続くかは
+    // ここにしか無い。DMDSS 経路（XML）でのみ届く。
+    bodyText: withDmdssFields
+      ? '若干の海面変動が予想される時刻は、早い沿岸で０８日１０時３０分頃です。\n　これらの沿岸では今後２、３時間程度は若干の海面変動が継続する可能性が高いと考えられます。'
+      : undefined,
   }
 }
 
@@ -641,6 +679,8 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
     cancelled: false,
     issue: { source: 'テスト', time: nowIso, type: 'Focus' },
     warningComment: 'ただちに高台へ避難してください。\n津波は繰り返し襲ってきます。警報が解除されるまで安全な場所から離れないでください。',
+    // 電文の本文（`Body/Text` 相当）。等級の定型文とも自由付加文とも別で、同じ電文に 3 つとも入る。
+    bodyText: '津波の第一波は、早い沿岸で０８日０３時３５分頃に到達すると予想されます。\n　これらの沿岸では今後１日程度は津波が継続する可能性が高いと考えられます。',
     // 自由付加文。等級ごとの定型文（上の `warningComment`）と違い、電文ごとに書き起こされる。
     // 実電文と同じく見出しの角括弧と全角スペースの整形を含める（画面が改行と空白を保つことの確認）。
     freeText: '［予想される津波の高さの解説］\n予想される津波が高いほど、より甚大な被害が生じます。\n　１０ｍ超　　木造家屋が全壊・流失し、人は津波による流れに巻き込まれます。\n　　１ｍ　　　海の中では人は流されます。',

@@ -20,7 +20,7 @@ import {
   compareObservedHeightDesc,
   overSuffixedHeight,
   latestValidDateTime,
-  withInheritedValidDateTime,
+  withInheritedTsunamiFacts,
   tsunamiAreaGradeChanges,
   selectUnspokenAreaGradeChanges,
   rememberAreaGrades,
@@ -547,40 +547,81 @@ describe('latestValidDateTime', () => {
   })
 })
 
-describe('withInheritedValidDateTime', () => {
+describe('withInheritedTsunamiFacts', () => {
   it('最新報が期限を持たなければ同一イベントの過去報から引き継ぐ', () => {
     const older = makeTsunami({ id: 'a', eventId: 'E1', time: '2024-01-02T10:00:00+09:00', validDateTime: '2024-01-02T17:00:00+09:00' })
     const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00' })
-    expect(withInheritedValidDateTime(latest, [latest, older]).validDateTime).toBe('2024-01-02T17:00:00+09:00')
+    expect(withInheritedTsunamiFacts(latest, [latest, older]).validDateTime).toBe('2024-01-02T17:00:00+09:00')
   })
 
   it('最新報が期限を持つならそれを使う', () => {
     const older = makeTsunami({ id: 'a', eventId: 'E1', time: '2024-01-02T10:00:00+09:00', validDateTime: '2024-01-02T17:00:00+09:00' })
     const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T13:00:00+09:00', validDateTime: '2024-01-03T09:00:00+09:00' })
-    expect(withInheritedValidDateTime(latest, [latest, older]).validDateTime).toBe('2024-01-03T09:00:00+09:00')
+    expect(withInheritedTsunamiFacts(latest, [latest, older]).validDateTime).toBe('2024-01-03T09:00:00+09:00')
   })
 
   it('別イベントの報からは引き継がない', () => {
     const other = makeTsunami({ id: 'x', eventId: 'E2', time: '2024-01-02T10:00:00+09:00', validDateTime: '2024-01-02T17:00:00+09:00' })
     const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00' })
-    expect(withInheritedValidDateTime(latest, [latest, other]).validDateTime).toBeUndefined()
+    expect(withInheritedTsunamiFacts(latest, [latest, other]).validDateTime).toBeUndefined()
   })
 
   it('日時として読めない期限は落とす（残すと以後の比較がすべて偽へ倒れる）', () => {
     const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00', validDateTime: '壊れた期限' })
-    expect(withInheritedValidDateTime(latest, [latest]).validDateTime).toBeUndefined()
+    expect(withInheritedTsunamiFacts(latest, [latest]).validDateTime).toBeUndefined()
   })
 
   it('自分の期限が読めなければ、同一イベントの過去報から引き継ぐ', () => {
     const older = makeTsunami({ id: 'a', eventId: 'E1', time: '2024-01-02T10:00:00+09:00', validDateTime: '2024-01-02T17:00:00+09:00' })
     const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00', validDateTime: '壊れた期限' })
-    expect(withInheritedValidDateTime(latest, [latest, older]).validDateTime).toBe('2024-01-02T17:00:00+09:00')
+    expect(withInheritedTsunamiFacts(latest, [latest, older]).validDateTime).toBe('2024-01-02T17:00:00+09:00')
   })
 
   it('eventId が無い経路（P2PQuake）では id が一致する報だけを見る', () => {
     const other = makeTsunami({ id: 'x', time: '2024-01-02T10:00:00+09:00', validDateTime: '2024-01-02T17:00:00+09:00' })
     const latest = makeTsunami({ id: 'b', time: '2024-01-02T10:03:00+09:00' })
-    expect(withInheritedValidDateTime(latest, [latest, other]).validDateTime).toBeUndefined()
+    expect(withInheritedTsunamiFacts(latest, [latest, other]).validDateTime).toBeUndefined()
+  })
+
+  // 電文の本文も同じ扱いで引き継ぐ（→ `JMATsunami.bodyText`）。期限と別に固定するのは、
+  // **選び方が違う**ため —— 期限は「日時として読める最新のもの」、本文は「本文を持つ最新の報」。
+  it('本文を持たない最新報では、同一イベントの過去報から引き継ぐ', () => {
+    const older = makeTsunami({ id: 'a', eventId: 'E1', time: '2024-01-02T10:00:00+09:00', bodyText: '前の本文' })
+    const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00' })
+    expect(withInheritedTsunamiFacts(latest, [latest, older]).bodyText).toBe('前の本文')
+  })
+
+  // 正: 本文を持つ過去報が複数あれば、発表時刻が最も新しいものを採る。
+  // **順序を当てにしない** —— 履歴 API は新しい順に並ぶとは限らない
+  it('本文を持つ過去報が複数あれば発表時刻が最も新しいものを採る', () => {
+    const oldest = makeTsunami({ id: 'a', eventId: 'E1', time: '2024-01-02T10:00:00+09:00', bodyText: '古い本文' })
+    const newer = makeTsunami({ id: 'c', eventId: 'E1', time: '2024-01-02T12:00:00+09:00', bodyText: '新しい本文' })
+    const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T13:00:00+09:00' })
+    // 履歴の並び順に依存しないことを見るため、時刻の順とは違う順で渡す
+    expect(withInheritedTsunamiFacts(latest, [oldest, latest, newer]).bodyText).toBe('新しい本文')
+  })
+
+  // 対照: 最新報が本文を持つならそれを使う（過去報で上書きしない）
+  it('最新報が本文を持つならそれを使う', () => {
+    const older = makeTsunami({ id: 'a', eventId: 'E1', time: '2024-01-02T10:00:00+09:00', bodyText: '前の本文' })
+    const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00', bodyText: '今の本文' })
+    expect(withInheritedTsunamiFacts(latest, [latest, older]).bodyText).toBe('今の本文')
+  })
+
+  // 安全弁: 別イベントの本文は引き継がない（無関係な津波の文を出さない）
+  it('別イベントの報からは本文を引き継がない', () => {
+    const other = makeTsunami({ id: 'x', eventId: 'E2', time: '2024-01-02T10:00:00+09:00', bodyText: '別の津波の本文' })
+    const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00' })
+    expect(withInheritedTsunamiFacts(latest, [latest, other]).bodyText).toBeUndefined()
+  })
+
+  // 安全弁: 発表時刻が読めない報が混ざっても、読める報の中から選べること。
+  // 並べ替えの比較が NaN になる要素を含んでも落ちない
+  it('発表時刻が読めない報が混ざっても、読める報から選ぶ', () => {
+    const broken = makeTsunami({ id: 'z', eventId: 'E1', time: '壊れた時刻', bodyText: '時刻の読めない報の本文' })
+    const good = makeTsunami({ id: 'a', eventId: 'E1', time: '2024-01-02T10:00:00+09:00', bodyText: '読める報の本文' })
+    const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00' })
+    expect(withInheritedTsunamiFacts(latest, [broken, good, latest]).bodyText).toBe('読める報の本文')
   })
 })
 

@@ -623,6 +623,59 @@ function readHypocenterAreaDetail(
 }
 
 /**
+ * 津波電文の本文（`Body` 直下の `Text`）。
+ *
+ * **発表報と取消報で中身が入れ替わるだけの同じ要素。** 発表報では「いつ来ていつまで続くか」、
+ * 取消報では取消しの理由が入る（電文解説資料 Ⅱ.11 3）。読み手を分けると、片方だけ扱いを
+ * 変えたときに静かにずれる。
+ */
+function readTsunamiBodyText(doc: Document): string | undefined {
+  const bodyEl = xmlQ(doc, 'Body')
+  return (bodyEl ? xmlText(xmlChild(bodyEl, 'Text')) : '') || undefined
+}
+
+/**
+ * 見出し文（`Head/Headline/Text`）。気象庁が電文へ添えた一文の要約。
+ *
+ * **`Headline` 直下の `Text` だけを狙う。** `Headline` は `Information`（見出しの構造化）を
+ * 入れ子に持ちうるので、全文連結にすると区域名まで混ざる。
+ *
+ * **どの種別でも、本文や既読の要素に無い事実は含まない**（実電文で確かめた。地震情報は
+ * 震源と時刻、長周期は階級、緊急地震速報は空、震源要素更新の文中の時刻は `ReportDateTime` と
+ * 同じ）。落とさないために読むだけで、画面に出すのは本文が長い南海トラフ・後発地震だけ。
+ */
+function readHeadlineText(doc: Document): string {
+  const headEl = xmlQ(doc, 'Head')
+  const headlineEl = headEl ? xmlChild(headEl, 'Headline') : null
+  return headlineEl ? xmlText(xmlChild(headlineEl, 'Text')) : ''
+}
+
+/**
+ * 巨大地震に関する情報（南海トラフ・後発地震）が共通して持つ要素を読む。
+ *
+ * **3 つの電文（VYSE50 / VYSE51・52 / VYSE60）で書き分けない。** 構造が同じなのに
+ * 経路ごとに読んでいたため、「解説情報だけが見出し文を読んでいて、臨時情報と後発地震は
+ * 読んでいない」という非対称ができていた。→ {@link EarthquakeInfoMeta}
+ */
+function readEarthquakeInfoMeta(doc: Document): import('../types/earthquake').EarthquakeInfoMeta {
+  const summary = readHeadlineText(doc)
+  const bodyEl = xmlQ(doc, 'Body')
+  const quakeInfoEl = bodyEl ? xmlQ(bodyEl, 'EarthquakeInfo') : null
+  // 次回発表予定は `Body` 直下（`EarthquakeInfo` の中ではない）。
+  const nextAdvisory = bodyEl ? xmlText(xmlChild(bodyEl, 'NextAdvisory')) : ''
+  const appendix = quakeInfoEl ? xmlText(xmlChild(quakeInfoEl, 'Appendix')) : ''
+  const infoKind = quakeInfoEl ? xmlText(xmlChild(quakeInfoEl, 'InfoKind')) : ''
+  const infoType = quakeInfoEl?.getAttribute('type')?.trim() ?? ''
+  return {
+    ...(summary && { summary }),
+    ...(nextAdvisory && { nextAdvisory }),
+    ...(appendix && { appendix }),
+    ...(infoKind && { earthquakeInfoKind: infoKind }),
+    ...(infoType && { earthquakeInfoType: infoType }),
+  }
+}
+
+/**
  * 波高の要素が名乗っている種別（`jmx_eb:TsunamiHeight@type`）を、読み手の文脈と突き合わせる。
  *
  * **予想か観測かは要素の位置（`Forecast` / `Observation` / `Estimation`）で判定している。**
@@ -740,6 +793,13 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
   const isCanceled = xmlText(xmlQ(doc, 'InfoType')) === '取消'
 
   const eqEl = xmlQ(doc, 'Earthquake')
+  const eewMagnitudeEl = eqEl ? xmlQ(eqEl, 'Magnitude') : null
+  // マグニチュードの種別（`Mj` / `M`）。地震情報・津波・長周期と同じく持つだけで画面には
+  // 出さない。**緊急地震速報だけ別のパーサーを通るため落ちていた。**
+  const eewMagnitudeType = eewMagnitudeEl?.getAttribute('type')?.trim() || undefined
+  // 見出し文。実電文では空だが、警報の報で入りうる（→ `readHeadlineText`）。
+  // 地震情報・長周期と同じく持つだけで画面には出さない。
+  const eewHeadline = readHeadlineText(doc)
   const hypocenterEl = eqEl ? xmlQ(eqEl, 'Hypocenter') : null
   const areaEl = eqEl ? xmlQ(hypocenterEl ?? eqEl, 'Area') : null
   const { lat, lng, depth } = areaEl
@@ -840,6 +900,7 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
     id: `dmdata-eew-${eventId}-${serial}`,
     time: reportTime,
     test: false,
+    ...(eewHeadline && { headline: eewHeadline }),
     ...(eewCancelText && { cancelText: eewCancelText }),
     earthquake: {
       originTime: xmlText(eqEl ? xmlChild(eqEl, 'OriginTime') : null),
@@ -853,7 +914,8 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
         latitude: isCanceled ? -200 : (Number.isFinite(lat) ? lat : -200),
         longitude: isCanceled ? -200 : (Number.isFinite(lng) ? lng : -200),
         depth,
-        magnitude: eqEl ? parseFloat(xmlText(xmlQ(eqEl, 'Magnitude'))) : NaN,
+        magnitude: eewMagnitudeEl ? parseFloat(xmlText(eewMagnitudeEl)) : NaN,
+        ...(eewMagnitudeType && { magnitudeType: eewMagnitudeType }),
       },
     },
     // 震源要素の精度・内陸判定・短縮用震央地名（`Hypocenter` 配下）。**取消電文は `Earthquake` を
@@ -888,6 +950,8 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   if (!doc) return null
 
   const quakeOperationStatus = parseOperationStatus(doc)
+  // 見出し文。**読んで持つだけで画面には出さない**（→ `readHeadlineText`）。
+  const quakeHeadline = readHeadlineText(doc)
   const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
   const eventId = xmlText(xmlQ(doc, 'EventID'))
   const infoType = xmlText(xmlQ(doc, 'InfoType'))
@@ -1153,6 +1217,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
       domesticTsunami: domestic,
     },
     ...(quakeOperationStatus && { operationStatus: quakeOperationStatus }),
+    ...(quakeHeadline && { headline: quakeHeadline }),
     points,
     ...(cities.length > 0 && { cities }),
     forecastText: forecastText || undefined,
@@ -1199,10 +1264,9 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
   const infoType = xmlText(xmlQ(doc, 'InfoType'))
   const source = parseIssueSourceFromXml(doc)
   const validDateTime = xmlText(xmlQ(doc, 'ValidDateTime')) || undefined
-  // Headline 配下には <Information> など区域名・コードの入れ子要素が続くことがあるため、
-  // xmlText(xmlQ(doc,'Headline')) のような全文連結ではなく <Text> だけを狙って取得する。
-  const headlineEl = xmlQ(doc, 'Headline')
-  const headline = (headlineEl ? xmlText(xmlQ(headlineEl, 'Text')) : '') || undefined
+  // 見出し文。**他の種別と同じ読み手を通す**（→ `readHeadlineText`）——
+  // 同じ事実を 2 通りの書き方で表すと、片方だけ静かにずれる。
+  const headline = readHeadlineText(doc) || undefined
   const commentsEl = xmlQ(doc, 'Comments')
   const warningCommentEl = commentsEl ? xmlQ(commentsEl, 'WarningComment') : null
   const warningComment = (warningCommentEl ? xmlText(xmlQ(warningCommentEl, 'Text')) : '') || undefined
@@ -1210,6 +1274,13 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
   // 等級ごとの定型文（`warningComment`）と違い、続報で実際に書き換わるのはこちら側。
   // `xmlText` が前後の空白だけを落とす（中の改行と整形は保つ）。
   const freeText = (commentsEl ? xmlText(xmlChild(commentsEl, 'FreeFormComment')) : '') || undefined
+  // 電文の本文（`Body` 直下の `Text`）。**発表報でも入る** —— 解説資料は取消を「例」として
+  // 挙げているだけなのに、かつては取消のときしか拾っていなかった。津波予報（若干の海面変動）
+  // では区域に波高も到達時刻も付かないので、いつ来ていつまで続くかはここにしか無い。
+  //
+  // **取消電文の取消しの概要も同じ要素。** 発表報と取消報で中身が入れ替わるだけなので、
+  // 読み取りは 1 箇所に置く（別々に書くと、片方だけ扱いを変えたときに静かにずれる）。
+  const tsunamiBodyText = readTsunamiBodyText(doc)
   // この津波を引き起こした地震。**電文は複数持ちうる**（短い間に起きた地震がまとめて
   // 1 つの津波情報になる）。1 件目だけを読むと残りの震源が画面から消える。
   const sourceEarthquakeList = xmlAll(doc, 'Earthquake').map(eqEl => {
@@ -1254,9 +1325,8 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
 
   // InfoType=取消: 誤って発表した電文そのものの取消（誤報取消）
   if (cancelled) {
-    // 取消しの概要（`Body/Text`）。地震情報側と同じ扱い（`Comments` は取消電文に出現しない）。
-    const cancelBodyEl = xmlQ(doc, 'Body')
-    const cancelText = cancelBodyEl ? xmlText(xmlChild(cancelBodyEl, 'Text')) : ''
+    // 取消しの概要は上で読んだ本文と同じ要素（`Body/Text`）。
+    const cancelText = tsunamiBodyText ?? ''
     return { kind: 'tsunami', id, eventId, time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: true, cancelReason: 'retracted', ...(cancelText && { cancelText }), issue: { source, time: reportDateTime, type: 'Focus' }, areas: [] }
   }
 
@@ -1282,7 +1352,7 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
     if (observations.length === 0) {
       return dropTelegram(TSUNAMI_LOG_PREFIX, 'Observation はありますが観測点を 1 件も読めません')
     }
-    return { kind: 'tsunami', id, eventId, time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: false, headline, warningComment, freeText, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas: [], observations, estimations }
+    return { kind: 'tsunami', id, eventId, time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: false, headline, warningComment, freeText, bodyText: tsunamiBodyText, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas: [], observations, estimations }
   }
 
   const allEls = forecastEl!.getElementsByTagName('*')
@@ -1444,7 +1514,7 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
   // Observation も含む場合（VTSE51①: Forecast + Observation 両方あり）
   const observations = observationEl ? parseTsunamiObservationsFromXml(observationEl, offshore) : undefined
 
-  return { kind: 'tsunami', id, eventId, time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: false, validDateTime, headline, warningComment, freeText, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas, observations: observations && observations.length > 0 ? observations : undefined, estimations }
+  return { kind: 'tsunami', id, eventId, time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: false, validDateTime, headline, warningComment, freeText, bodyText: tsunamiBodyText, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas, observations: observations && observations.length > 0 ? observations : undefined, estimations }
 }
 
 /**
@@ -1916,6 +1986,7 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   const lpgmVarText = lpgmVarEl ? xmlText(xmlChild(lpgmVarEl, 'Text')) : ''
   const lpgmFreeText = lpgmCommentsEl ? xmlText(xmlChild(lpgmCommentsEl, 'FreeFormComment')) : ''
   const lpgmUri = lpgmCommentsEl ? xmlText(xmlChild(lpgmCommentsEl, 'URI')) : ''
+  const lpgmHeadline = readHeadlineText(doc)
 
   return {
     ...(lpgmOperationStatus && { operationStatus: lpgmOperationStatus }),
@@ -1931,6 +2002,8 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
     ...(lpgmVarText && { varCommentText: lpgmVarText }),
     ...(lpgmFreeText && { freeFormText: lpgmFreeText }),
     ...(lpgmUri && { uri: lpgmUri }),
+    // 見出し文。地震情報と同じ扱い（持つだけで画面には出さない）。
+    ...(lpgmHeadline && { headline: lpgmHeadline }),
     ...(categoryValue && { category: categoryValue }),
   }
 }
@@ -2044,6 +2117,8 @@ export function parseNankaiFromXml(xml: string): JMANankai | null {
     id, time: reportDateTime, eventId,
     kindCode: stage.code, kindName: stage.name,
     headline, body: bodyText,
+    // 見出し文・次回発表予定・参考情報。解説情報（VYSE51/52）と同じ読み手を通す。
+    ...readEarthquakeInfoMeta(doc),
     // 調査終了で帯を引っ込める。**コードではなく名称で見る**——`InfoSerial` を読めず
     // `Head/Title` へ落ちた電文はコードを持たないため、コードで判定すると帯が残る。
     cancelled: stage.name === '調査終了', reportDateTime,
@@ -2138,9 +2213,6 @@ export function parseNankaiCommentaryFromXml(xml: string): JMANankaiCommentary |
   const eventId = xmlText(xmlQ(doc, 'EventID'))
   const serial  = xmlText(xmlQ(doc, 'Serial')) || '1'
 
-  // Head 内の Text は Headline/Text（一文要約）
-  const summary = headEl ? xmlText(xmlQ(headEl, 'Text')) : ''
-
   // 本文は EarthquakeInfo 直下の Text。Body 全体から最初の Text を拾うと、将来 Body の構造が
   // 変わったとき（EarthquakeInfo より前に別の節が入る等）に別の文を本文として掴む。
   // 実電文では今のところ Body 配下の Text は 1 つだけだが、「たまたま当たっている」状態に
@@ -2166,7 +2238,11 @@ export function parseNankaiCommentaryFromXml(xml: string): JMANankaiCommentary |
     id: `dmdata-nankai-commentary-${eventId}-${serial}`,
     time: reportDateTime, eventId,
     serialCode, serialName: serialName || '解説情報',
-    headline, summary, body: bodyText,
+    headline, body: bodyText,
+    // 見出し文（要約）・次回発表予定・参考情報。臨時情報・後発地震と同じ読み手を通す。
+    // **かつては `Head` 配下の最初の `Text` を拾っていた** —— たまたま当たっているだけで、
+    // `Head` の構造が変わると別の文を要約として掴む。
+    ...readEarthquakeInfoMeta(doc),
     cancelled, reportDateTime, expireAt,
   }
 }
@@ -2210,5 +2286,10 @@ export function parseVyse60FromXml(xml: string): JMAKohatsu | null {
   // 有効期限は発表時刻 + 7日
   const expireAt = new Date(new Date(reportDateTime).getTime() + 7 * 24 * 3600 * 1000).toISOString()
 
-  return { ...(kohatsuOperationStatus && { operationStatus: kohatsuOperationStatus }), id, time: reportDateTime, eventId, headline, body: bodyText, cancelled: false, reportDateTime, expireAt }
+  return {
+    ...(kohatsuOperationStatus && { operationStatus: kohatsuOperationStatus }),
+    id, time: reportDateTime, eventId, headline, body: bodyText,
+    ...readEarthquakeInfoMeta(doc),
+    cancelled: false, reportDateTime, expireAt,
+  }
 }

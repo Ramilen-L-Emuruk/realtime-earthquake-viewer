@@ -1061,6 +1061,16 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                 )}
               </div>
             )}
+            {/* 気象庁が電文に添えた本文（`Body/Text`）。**津波予報（若干の海面変動）では
+                区域に波高も到達時刻も付かないため、いつ来ていつまで続くかはここにしか無い。**
+                付加文 2 種より先に出す —— あちらは等級ごとの定型文と解説で、こちらがこの報の話。 */}
+            {t.bodyText && !t.cancelledAt && (
+              <div className="bg-card rounded-lg overflow-hidden" style={{ border: '1px solid #374151' }}>
+                <div className="text-white" style={{ fontSize: '0.8125rem', lineHeight: '1.7', whiteSpace: 'pre-wrap', padding: '0.75rem 1rem' }}>
+                  {t.bodyText}
+                </div>
+              </div>
+            )}
             {t.warningComment && !t.cancelledAt && (
               <div className="bg-card rounded-lg overflow-hidden" style={{ border: '1px solid #374151' }}>
                 <div className="text-secondary" style={{ fontSize: '0.75rem', lineHeight: '1.7', whiteSpace: 'pre-line', padding: '0.75rem 1rem' }}>
