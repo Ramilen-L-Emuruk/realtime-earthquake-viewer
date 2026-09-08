@@ -39,6 +39,11 @@ export interface IntensityMarker {
   isArea: boolean
   /** 観測点が属する一次細分区域名（座標テーブル由来）。未収録なら null。 */
   region: string | null
+  /**
+   * 気象庁以外が運用する観測点か（→ {@link import('../types/earthquake').EarthquakePoint.nonJma}）。
+   * 吹き出しにバッジで出す。
+   */
+  nonJma?: boolean
 }
 
 export interface RegionAggregate {
@@ -62,6 +67,11 @@ export interface LpgmMarker {
    * 効き方が違い、電文はその内訳を持っている（→ `LpgmPeriodBand`）。
    */
   int?: IntensityScale
+  /**
+   * 気象庁以外が運用する観測点か（→ {@link import('../types/earthquake').EarthquakePoint.nonJma}）。
+   * 吹き出しにバッジで出す。
+   */
+  nonJma?: boolean
   sva?: number
   periods?: LpgmPeriodBand[]
 }
@@ -166,6 +176,7 @@ export function useQuakeLayerData(
         addr: p.addr,
         isArea: p.isArea,
         region: p.isArea ? p.addr : lookupStationRegion(stationCoords, pref, p.addr),
+        ...(p.nonJma && { nonJma: true }),
       })
     })
     return markers.sort((a, b) => a.scale - b.scale)
@@ -314,6 +325,7 @@ export function useQuakeLayerData(
       if (!position) continue
       markers.push({
         position, lgInt: p.lgInt, name: p.name, pref,
+        ...(p.nonJma && { nonJma: true }),
         ...(p.int !== undefined && { int: p.int }),
         ...(p.sva !== undefined && { sva: p.sva }),
         ...(p.periods && { periods: p.periods }),

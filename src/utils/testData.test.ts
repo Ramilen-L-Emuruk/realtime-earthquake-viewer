@@ -110,6 +110,14 @@ describe('地震情報テストの points 形状', () => {
     expect(quake.issue.type).toBe('各地の震度情報')
   })
 
+  // 「気象庁以外の観測点」の印は DMDSS 版（DMDATA 経路）だけが持つ事実。
+  // **P2PQuake はこの区別を配信しない**ので、標準版のテストボタンで出すと
+  // 実電文には無いバッジが画面に出る。
+  it('気象庁以外の印は DMDSS 版だけが持つ', () => {
+    expect(createTestEarthquake(true).points.some((p) => p.nonJma)).toBe(true)
+    expect(createTestEarthquake(false).points.some((p) => p.nonJma)).toBe(false)
+  })
+
   it('都道府県ロールアップの震度は、その県の観測点の最大震度と一致する（震度不明は数えない）', () => {
     const expected = new Map<string, number>()
     for (const p of createTestEarthquake(false).points) {

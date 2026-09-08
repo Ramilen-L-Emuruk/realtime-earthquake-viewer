@@ -27,6 +27,15 @@ export interface Hypocenter {
    * P2PQuake 経路は相当する項目を配信しないため常に undefined。
    */
   magnitudeType?: string
+  /**
+   * 震央地名コード（`Area/Code`）と詳細震央地名コード（`Area/DetailedCode`）。
+   *
+   * **画面には出さない。** 震央地名は名前で出しており、コードは同名の震央地名を
+   * 見分けるためのもの。長周期・津波は既に読んでいたので扱いを揃える
+   * （→ {@link HypocenterAreaDetail.code}）。
+   */
+  code?: string
+  detailedCode?: string
 }
 
 /**
@@ -53,6 +62,28 @@ export interface EarthquakePoint {
    * 実際にはもっと強い可能性があることが伝わらない。
    */
   unreceived?: boolean
+  /**
+   * 気象庁以外が運用する観測点（電文では名前の末尾に `＊`）。この印についての単一情報源。
+   *
+   * 電文の固定付加文が「＊印は気象庁以外の震度観測点についての情報です。」と断っている
+   * （解説資料 Ⅱ.33 4-2、コード `0262`。長周期は Ⅱ.37 4-2 の `0263`）。**自治体だけではない**
+   * ので「自治体の観測点」と言い換えないこと。
+   *
+   * **どれだけの数が当てはまるかは書かない。** 割合は電文ごとに変わり、手元の標本から
+   * 出した数字はその標本の性質（どの地震か・どこまで揺れたか）を映しているだけで、
+   * 読む人が確かめる術がない。「少数の例外」として扱わないことだけ守れば足りる。
+   *
+   * 印そのものは名前から外す（座標表の鍵に入っていないため引き当てが外れる）。
+   * **外すだけで事実を捨てないよう**、ここへ移して画面ではバッジで出す。
+   */
+  nonJma?: boolean
+  /**
+   * 観測点コード（`IntensityStation/Code`）。区域・都道府県の点では持たない。
+   *
+   * **引き当ては名前で行っている**（座標表の鍵が名前のため）。読んで持つのは、名前が
+   * 読めなかったときの記録の手がかりと、将来の引き当ての材料。画面には出さない。
+   */
+  code?: string
 }
 
 export type IssueType =
@@ -113,6 +144,8 @@ export interface JMAQuakeCity {
    * 下限のように見せてしまう。
    */
   hasUnreceived?: boolean
+  /** 市町村コード（`City/Code`）。扱いは {@link EarthquakePoint.code} に同じ。 */
+  code?: string
 }
 
 export interface JMAQuake {
@@ -186,6 +219,14 @@ export interface JMAQuake {
    * P2PQuake 経路は付加文を配信しないため undefined。
    */
   forecastText?: string
+  /**
+   * 固定付加文（その他）（`VarComment/Text`）の原文。DMDATA 経路でのみ得られる。
+   *
+   * 長周期地震動の同じ枠（{@link JMALpgm.varCommentText}）と揃えた。観測点名の `＊` を
+   * 説明する定型文はここへ入らない（アプリは印をバッジに置き換えている。
+   * → `readVarCommentTextForDisplay`）。
+   */
+  varCommentText?: string
   /**
    * 気象庁の自由付加文（`Comments/FreeFormComment`）の原文。DMDATA 経路でのみ得られる。
    *
@@ -440,6 +481,12 @@ export interface TsunamiObservation {
    * 電文種別（`headType`）から立てる。
    */
   offshore?: boolean
+  /**
+   * 潮位観測点コード（`Station/Code`）。**予想区域の観測点（{@link TsunamiStation.code}）は
+   * 読んでいたのに、観測情報側は記録にしか使っていなかった。** 扱いを揃える。
+   * 引き当ては名前で行っているので画面には出さない。
+   */
+  code?: string
   /**
    * 特殊観測機器の名称（`Station/Sensor`）。「ＧＮＳＳ波浪計」「水圧計」（電文解説資料 Ⅱ.13 1-1-2-2）。
    *
@@ -698,6 +745,11 @@ export interface EEWAlert {
    * 代わりに出すための短い呼び方で、気象庁が電文に載せている。
    */
   reduceName?: string
+  /**
+   * 短縮用震央地名コード（`Area/ReduceCode`）。上の `reduceName` と対。
+   * **画面には出さない**（名前の側を出している）。
+   */
+  reduceCode?: string
   /** 最大予測値の変化（`Intensity/Forecast/Appendix`）。 */
   forecastChange?: EEWForecastChange
 }
@@ -735,6 +787,11 @@ export interface LpgmPoint {
   sva?: number
   /** 周期帯ごとの内訳。→ {@link LpgmPeriodBand} */
   periods?: LpgmPeriodBand[]
+  /**
+   * 気象庁以外が運用する観測点（長周期地震動観測点の側。電文では名前の末尾に `＊`）。
+   * 扱いは震度観測点と同じ —— 説明は {@link EarthquakePoint.nonJma} にまとめてある。
+   */
+  nonJma?: boolean
 }
 
 /**
@@ -761,6 +818,8 @@ export interface LpgmHypocenter extends HypocenterAreaDetail {
 export interface HypocenterAreaDetail {
   /** 震央地名コード（`Area/Code`） */
   code?: string
+  /** 詳細震央地名コード（`Area/DetailedCode`）。国外の地震で `DetailedName` と対で入る */
+  detailedCode?: string
   latitude?: number
   longitude?: number
   /** 深さ（km）。読めないときは持たせない。**`0` は「ごく浅い」という有効値** */

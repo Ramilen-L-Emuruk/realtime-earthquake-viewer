@@ -23,6 +23,7 @@ import type {
   TelegramOperationStatus,
 } from '../types/earthquake'
 import { isValidLpgmClass } from '../utils/lpgm'
+import { isEewForecastKindCode, isEewWarningKindCode } from '../utils/eewKind'
 import { parseTsunamiEstimationCondition, parseTsunamiForecastHeightImportant, parseTsunamiObservationCondition } from '../utils/tsunami'
 import { log } from '../utils/logger'
 import { arr, obj, str } from './parseHelpers'
@@ -103,7 +104,12 @@ function flushUnknownUnreceived(logPrefix: string): void {
 /** 上限を定めない予想震度を表す DMDATA の値。P2PQuake の `scaleTo: 99` と同じ意味。 */
 const DMDATA_INTENSITY_OVER = 'over'
 
-/** 区域が警報の対象であることを表す Kind 名（XML 経路で `body.isWarning` を復元するのに使う）。 */
+/**
+ * 区域が警報の対象であることを表す Kind 名。
+ *
+ * **判定の本筋は `Category/Kind/Code`**（→ `isEewWarningKindCode`）。この名前は、
+ * コード表に無い値が来たときに警報を取りこぼさないための控え。
+ */
 const EEW_WARNING_KIND_NAME = '緊急地震速報（警報）'
 
 /**
@@ -375,6 +381,61 @@ function resolveCorrectType(doc: Document): CorrectType {
   return codes.includes(CORRECT_HYPOCENTER_CODE) ? '震源を訂正' : '訂正'
 }
 
+/**
+ * 付加文の原文を読み、**コードはあるのに原文が無い**電文を記録する。
+ *
+ * 気象庁は付加文をコードと原文の対で送る。原文だけが欠けると、その注意書きが画面から
+ * 黙って消える（コードから文面を組み直す仕組みは持っていない）。地震情報の固定付加文には
+ * 同じ検査が入っていた（→ `extractForecastText`）ので、原文を画面に出している他の経路へも
+ * 揃える。
+ *
+ * **未知コードは記録しない。** これらの経路は原文をそのまま出しており、コードで分岐して
+ * いないため、知らないコードが来ても表示は壊れない。鳴らすと正常系が警告で埋まるだけになる
+ * （コードで分岐している地震情報の津波区分だけが、未知コードを記録する意味を持つ）。
+ *
+ * @param commentEl `WarningComment` / `ForecastComment` / `VarComment` の要素
+ * @param label 記録に出す付加文の呼び名
+ */
+function readCommentText(commentEl: Element | null, label: string, logPrefix: string): string {
+  if (!commentEl) return ''
+  const text = xmlText(xmlChild(commentEl, 'Text'))
+  if (text) return text
+  const codes = xmlAll(commentEl, 'Code').flatMap(el => xmlText(el).split(/\s+/)).filter(Boolean)
+  if (codes.length > 0) {
+    log.warn(`${logPrefix} ${label}のコード(${codes.join(' ')})はありますが原文がありません（画面から落ちます）`)
+  }
+  return ''
+}
+
+/**
+ * 観測点名の `＊` を説明する固定付加文（その他）のコード。
+ *
+ * | コード | 原文 |
+ * |---|---|
+ * | 0262 | ＊印は気象庁以外の震度観測点についての情報です。 |
+ * | 0263 | ＊印は気象庁以外の長周期地震動観測点についての情報です。 |
+ */
+const NON_JMA_MARK_NOTE_CODES = new Set(['0262', '0263'])
+
+/**
+ * 固定付加文（その他）（`VarComment/Text`）を、画面に出す前提で読む。
+ *
+ * **`＊` の説明文だけの付加文は落とす。** アプリは印を観測点名から外し、代わりに
+ * 「気象庁以外」のバッジで伝えている（→ `stripNonJmaMark` / `nonJmaBadgeHtml`）。
+ * 画面に無い記号の説明を出すと、読み手は在りもしない印を探すことになる。
+ *
+ * 落とすかどうかは**コードで決める**。原文の言い回しが変わっても判定は動かない。
+ * ほかのコードが併記されていれば原文をそのまま出す —— 説明文だけを文字列から切り出すと、
+ * 切り方が原文の書式に縛られる。
+ */
+function readVarCommentTextForDisplay(varCommentEl: Element | null, logPrefix: string): string {
+  const text = readCommentText(varCommentEl, '固定付加文（その他）', logPrefix)
+  if (!text || !varCommentEl) return text
+  const codes = xmlAll(varCommentEl, 'Code').flatMap(el => xmlText(el).split(/\s+/)).filter(Boolean)
+  if (codes.length > 0 && codes.every(c => NON_JMA_MARK_NOTE_CODES.has(c))) return ''
+  return text
+}
+
 function extractForecastText(rawText: string, codes: unknown[]): string {
   const text = normalizeForecastText(rawText)
   if (!text && codes.length > 0) {
@@ -604,11 +665,13 @@ function readHypocenterAreaDetail(
   }
   const code = xmlText(xmlChild(areaEl, 'Code'))
   const nameFromMark = xmlText(xmlChild(areaEl, 'NameFromMark'))
+  const detailedCode = xmlText(xmlChild(areaEl, 'DetailedCode'))
   const markCode = xmlText(xmlChild(areaEl, 'MarkCode'))
   const direction = xmlText(xmlChild(areaEl, 'Direction'))
   const distance = parseFloat(xmlText(xmlChild(areaEl, 'Distance')))
   return {
     ...(code && { code }),
+    ...(detailedCode && { detailedCode }),
     ...(Number.isFinite(lat) && { latitude: lat }),
     ...(Number.isFinite(lng) && { longitude: lng }),
     // **深さの `-1` は「読めなかった」の目印。** 有限だからと通すと、深さ 1km 未満と
@@ -620,6 +683,32 @@ function readHypocenterAreaDetail(
     ...(direction && { direction }),
     ...(Number.isFinite(distance) && { distanceKm: distance }),
   }
+}
+
+/**
+ * 名前を読めなかったものを記録に出すときの表示。**コードだけが手がかりになる**ので、
+ * 空欄にせずコードを添える（コードも無ければ、その旨を書く）。
+ */
+function codeOnlyLabel(code: string): string {
+  return code ? `（名称なし・コード ${code}）` : '（名称もコードも読めません）'
+}
+
+/**
+ * 観測点名の末尾に付く「気象庁以外の観測点」の印（`＊` U+FF0A）を外し、印の有無を返す。
+ *
+ * 気象庁は自局以外が運用する観測点の名前へこの印を付け、電文の固定付加文でも
+ * 「＊印は気象庁以外の震度観測点についての情報です。」（コード `0262`。長周期は `0263`）と
+ * 断っている（電文解説資料 Ⅱ.33 4-2 / Ⅱ.37 4-2）。**自治体だけではない**ので、
+ * 「自治体の観測点」と言い換えないこと。
+ *
+ * **外すのは引き当てのため。** 座標表（`station-coords.json`）の鍵に印は入っていない
+ * （4560 点すべて）。**印を外すだけで事実を捨てないこと** —— 誰が測った値かは利用者が
+ * 知ってよい事実なので、印を外した先で `nonJma` として持ち回る
+ * （→ {@link import('../types/earthquake').EarthquakePoint.nonJma}）。
+ */
+function stripNonJmaMark(rawName: string): { name: string; nonJma: boolean } {
+  const nonJma = rawName.endsWith('＊')
+  return { name: nonJma ? rawName.slice(0, -1) : rawName, nonJma }
 }
 
 /**
@@ -839,7 +928,9 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
   // 同じ誤った要素名で電文を組んでいたため、緑でも何も保証していなかった。
   const eewCommentsEl = xmlQ(doc, 'Comments')
   const eewWarningCommentEl = eewCommentsEl ? xmlQ(eewCommentsEl, 'WarningComment') : null
-  const warningComment = (eewWarningCommentEl ? xmlText(xmlQ(eewWarningCommentEl, 'Text')) : '') || undefined
+  // 原文を画面に出す他の経路（津波・地震情報・長周期）と同じ検査を通す。
+  // **ここだけ生で読んでいたため、コードはあるのに原文が無い電文で黙って空になっていた。**
+  const warningComment = readCommentText(eewWarningCommentEl, '固定付加文', DMDATA_LOG_PREFIX) || undefined
 
   const forecastEl = xmlQ(doc, 'Forecast')
   const intRange = (el: Element | null): { from: string; to: string } => ({
@@ -852,9 +943,10 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
     parseForecastLgInt(intRange(forecastEl ? xmlChild(forecastEl, 'ForecastLgInt') : null))
 
   const areas: EEWRegion[] = []
-  // 警報級かどうかは区域の Kind 名で判る（実電文 21 通で確かめた）。
+  // 警報級かどうかは区域の `Category/Kind/Code` で判る。
   // 区域を回るついでに拾う ―― 名前で引き直すと、同名の区域があるときに取り違える。
   let sawWarningKind = false
+  const unknownKindCodes = new Set<string>()
   for (const prefEl of forecastEl ? xmlAll(forecastEl, 'Pref') : []) {
     for (const a of xmlAll(prefEl, 'Area')) {
       const name = xmlText(xmlChild(a, 'Name'))
@@ -863,19 +955,36 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
       const { scale: scaleTo, orAbove } = parseForecastInt(fi)
       const { cls: lgVal, over: lgOver } = parseForecastLgInt(intRange(xmlChild(a, 'ForecastLgInt')))
       const kindEl = xmlQ(a, 'Kind')
-      if (xmlText(kindEl ? xmlChild(kindEl, 'Name') : null) === EEW_WARNING_KIND_NAME) sawWarningKind = true
+      const kindCode = xmlText(kindEl ? xmlChild(kindEl, 'Code') : null)
+      if (isEewWarningKindCode(kindCode)) sawWarningKind = true
+      else if (!isEewForecastKindCode(kindCode)) {
+        // コード表に無い値。**名前へ落として警報を取りこぼさない**（安全側）。
+        if (xmlText(kindEl ? xmlChild(kindEl, 'Name') : null) === EEW_WARNING_KIND_NAME) sawWarningKind = true
+        // **「載っていない」と「読めなかった」を分ける。** 区域が `Category/Kind` を
+        // 持たない電文は正常にあり（画面もそのとき警報／予報に分けずに出す）、
+        // 数えるとその形の電文すべてで警告が鳴って本当に未知のコードが埋もれる。
+        // **要素はあるのにコードが空**なら話が別で、そちらは記録する。
+        if (kindCode) unknownKindCodes.add(kindCode)
+        else if (kindEl) unknownKindCodes.add('（空）')
+      }
       areas.push({
         pref: '',
         name,
         scaleFrom: parseIntensityStr(fi.from),
         scaleTo,
         ...(orAbove && { scaleToOrAbove: true }),
-        kindCode: xmlText(kindEl ? xmlChild(kindEl, 'Code') : null),
+        kindCode,
         arrivalTime: xmlText(xmlChild(a, 'ArrivalTime')) || null,
         lgIntTo: lgVal,
         ...(lgOver && { lgIntToOver: true }),
       })
     }
+  }
+
+  if (unknownKindCodes.size > 0) {
+    // コード表に無い種別。**名前で警報かどうかは判定できている**ので表示は壊れないが、
+    // コード表が増えたことに気づけるよう残す。
+    log.warn(`${DMDATA_LOG_PREFIX} 緊急地震速報の種別コードを読めません（名前で判定しました）: ${[...unknownKindCodes].join(', ')}`)
   }
 
   // 取消しの概要（`Body/Text`）。地震情報・津波情報と同じ扱い（`Comments` は取消電文に出現しない）。
@@ -891,6 +1000,9 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
     log.warn(`${DMDATA_LOG_PREFIX} 緊急地震速報の内陸判定を読めません（無視します）: "${landOrSeaRaw}"`)
   }
   const reduceName = areaEl ? xmlText(xmlChild(areaEl, 'ReduceName')) : ''
+  // 震央地名コードと短縮用震央地名コード。名前の側は既に読んでいたので扱いを揃える。
+  const eewAreaCode = areaEl ? xmlText(xmlChild(areaEl, 'Code')) : ''
+  const eewReduceCode = areaEl ? xmlText(xmlChild(areaEl, 'ReduceCode')) : ''
   const operationStatus = parseOperationStatus(doc)
   const accuracy = parseEEWAccuracy(hypocenterEl)
   const forecastChange = isCanceled ? undefined : parseEEWForecastChange(doc)
@@ -916,6 +1028,7 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
         depth,
         magnitude: eewMagnitudeEl ? parseFloat(xmlText(eewMagnitudeEl)) : NaN,
         ...(eewMagnitudeType && { magnitudeType: eewMagnitudeType }),
+        ...(eewAreaCode && { code: eewAreaCode }),
       },
     },
     // 震源要素の精度・内陸判定・短縮用震央地名（`Hypocenter` 配下）。**取消電文は `Earthquake` を
@@ -924,6 +1037,7 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
     ...(accuracy && { accuracy }),
     ...(landOrSea && { landOrSea }),
     ...(reduceName && { reduceName }),
+    ...(eewReduceCode && { reduceCode: eewReduceCode }),
     // 最大予測値の変化（`Intensity/Forecast/Appendix`）。取消電文は予想を持たないので付かない。
     ...(forecastChange && { forecastChange }),
     severity: (headType === 'VXSE43' || sawWarningKind) ? 'Warning' : 'Forecast',
@@ -998,6 +1112,9 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   // 遠地地震は Area/DetailedName に詳細震央地名（例: "ベネズエラ沿岸"）が入る。なければ Area/Name にフォールバック。
   const hypName = (areaEl ? xmlText(xmlQ(areaEl, 'DetailedName')) : '')
     || (areaEl ? xmlText(xmlQ(areaEl, 'Name')) : '')
+  // 震央地名コード。**長周期・津波は読んでいたのに地震情報だけ落ちていた。**
+  const hypCode = areaEl ? xmlText(xmlChild(areaEl, 'Code')) : ''
+  const hypDetailedCode = areaEl ? xmlText(xmlChild(areaEl, 'DetailedCode')) : ''
   const { lat, lng, depth } = areaEl
     ? readHypocenterCoord(areaEl, headType)
     : { lat: NaN, lng: NaN, depth: -1 }
@@ -1081,13 +1198,20 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     // <Pref><Name>石川県</Name><Code>17</Code><MaxInt>5+</MaxInt> を確認）。
     // xmlChild で直下に限るのは、MaxInt を持たない電文で配下 Area の値を拾わないため。
     const prefName = xmlText(xmlChild(prefEl, 'Name'))
+    const prefCode = xmlText(xmlChild(prefEl, 'Code'))
     const prefRawInt = xmlText(xmlChild(prefEl, 'MaxInt'))
     const { scale: prefScale, unreceived: prefUnreceived } = readIntensity(prefRawInt || null)
     if (prefName && prefScale >= 0) {
-      points.push({ pref: prefName, addr: prefName, isArea: true, scale: prefScale as IntensityScale, ...(prefUnreceived && { unreceived: true }) })
+      points.push({
+        pref: prefName, addr: prefName, isArea: true, scale: prefScale as IntensityScale,
+        ...(prefUnreceived && { unreceived: true }),
+        ...(prefCode && { code: prefCode }),
+      })
       prefTally.readable()
     } else {
-      prefTally.unreadable(prefName, prefRawInt)
+      // **記録にコードを載せる。** 名前が読めない都道府県は名前で追えないので、
+      // コードだけが手がかりになる（区域・市町村・観測点も同じ）。
+      prefTally.unreadable(prefName || codeOnlyLabel(prefCode), prefRawInt)
     }
 
     // 市町村がどの区域に属するかは、電文の並び順（Area → その配下の City）で決まる。
@@ -1103,13 +1227,18 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
         // pref の有無で「都道府県の点」と「区域の点」を見分けるため（座標側は
         // useQuakeLayerData が区域名から都道府県を逆引きして引き当てる）。
         const areaName = xmlText(xmlChild(el, 'Name'))
+        const areaCode = xmlText(xmlChild(el, 'Code'))
         const areaRawInt = xmlText(xmlChild(el, 'MaxInt'))
         const { scale: areaScale, unreceived: areaUnreceived } = readIntensity(areaRawInt || null)
         if (areaName && areaScale >= 0) {
-          points.push({ pref: '', addr: areaName, isArea: true, scale: areaScale as IntensityScale, ...(areaUnreceived && { unreceived: true }) })
+          points.push({
+            pref: '', addr: areaName, isArea: true, scale: areaScale as IntensityScale,
+            ...(areaUnreceived && { unreceived: true }),
+            ...(areaCode && { code: areaCode }),
+          })
           areaTally.readable()
         } else {
-          areaTally.unreadable(areaName, areaRawInt)
+          areaTally.unreadable(areaName || codeOnlyLabel(areaCode), areaRawInt)
         }
         currentAreaName = areaName
         continue
@@ -1120,6 +1249,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
         // 解説資料 Ⅱ.33 2-1-3-3-3）。**`MaxInt` と併存しうる** —— 市町村の最大震度が
         // 基準未満でも、配下に未入電の観測点があればこの要素が出る。
         const cityName = xmlText(xmlChild(el, 'Name'))
+        const cityCode = xmlText(xmlChild(el, 'Code'))
         const cityRawInt = xmlText(xmlChild(el, 'MaxInt'))
         const cityCondition = xmlText(xmlChild(el, 'Condition'))
         const { scale: cityScale } = readIntensity(cityRawInt || null)
@@ -1135,18 +1265,19 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
             // **`MaxInt` の有無で意味が変わる。** 値があれば「観測できた震度＋配下に未入電あり」、
             // 無ければ「この市町村の値そのものが未入電」。畳むと、観測できた値が下限のように見える。
             ...(cityUnreceived && (cityScale >= 0 ? { hasUnreceived: true } : { unreceived: true })),
+            ...(cityCode && { code: cityCode }),
           })
           cityTally.readable()
         } else {
-          cityTally.unreadable(cityName, cityRawInt || cityCondition)
+          cityTally.unreadable(cityName || codeOnlyLabel(cityCode), cityRawInt || cityCondition)
         }
         continue
       }
 
       if (el.localName !== 'IntensityStation') continue
-      // JMA XML では地方公共団体の観測局名末尾に '＊'(U+FF0A) が付く。
-      // station-coords.json のキーには '＊' がないため除去して引き当てる。
-      const stName = xmlText(xmlChild(el, 'Name')).replace(/＊$/, '')
+      // 「気象庁以外の観測点」の印を外し、印の有無を持つ（→ `stripNonJmaMark`）。
+      const { name: stName, nonJma: stNonJma } = stripNonJmaMark(xmlText(xmlChild(el, 'Name')))
+      const stCode = xmlText(xmlChild(el, 'Code'))
       const intStr = xmlText(xmlChild(el, 'Int'))
       const { scale, unreceived } = readIntensity(intStr || null)
       if (stName && scale >= 0) {
@@ -1154,10 +1285,17 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
         // 以前は pref: prefName を付けていたため EarthquakeCard.prefGroups が
         // 「観測点値」を都道府県別最大震度と誤解し、区域単位の最大震度が観測点値に
         // 上書きされて低震度に見える不具合があった。
-        points.push({ pref: '', addr: stName, isArea: false, scale: scale as IntensityScale, ...(unreceived && { unreceived: true }) })
+        points.push({
+          pref: '', addr: stName, isArea: false, scale: scale as IntensityScale,
+          ...(unreceived && { unreceived: true }),
+          ...(stNonJma && { nonJma: true }),
+          ...(stCode && { code: stCode }),
+        })
         stationTally.readable()
       } else {
-        stationTally.unreadable(stName, intStr)
+        // **読めなかったときの記録にコードを載せる。** 名前が読めない観測点は名前で追えないので、
+        // コードだけが手がかりになる。
+        stationTally.unreadable(stName || codeOnlyLabel(stCode), intStr)
       }
     }
   }
@@ -1184,6 +1322,10 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     forecastCommentEl ? xmlText(xmlQ(forecastCommentEl, 'Text')) : '',
     forecastCodes,
   )
+  // 固定付加文（その他）（VarComment > Text）。**長周期は読んでいたのに地震情報だけ
+  // 落ちていた。** 実電文で現れるのは `＊` の説明（0262）だけなので、いまの電文では
+  // 空になる（→ `readVarCommentTextForDisplay`）。
+  const varCommentText = readVarCommentTextForDisplay(xmlQ(doc, 'VarComment'), DMDATA_LOG_PREFIX)
   // 自由付加文（FreeFormComment）。`xmlText` が前後の空白だけを落とす。
   const freeText = xmlText(xmlQ(doc, 'FreeFormComment'))
 
@@ -1212,6 +1354,8 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
         magnitude,
         ...(magnitudeCondition && { magnitudeCondition }),
         ...(magnitudeType && { magnitudeType }),
+        ...(hypCode && { code: hypCode }),
+        ...(hypDetailedCode && { detailedCode: hypDetailedCode }),
       },
       maxScale: maxScale >= 0 ? maxScale as IntensityScale : -1,
       domesticTsunami: domestic,
@@ -1221,6 +1365,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     points,
     ...(cities.length > 0 && { cities }),
     forecastText: forecastText || undefined,
+    varCommentText: varCommentText || undefined,
     freeText: freeText || undefined,
   }
 }
@@ -1269,7 +1414,7 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
   const headline = readHeadlineText(doc) || undefined
   const commentsEl = xmlQ(doc, 'Comments')
   const warningCommentEl = commentsEl ? xmlQ(commentsEl, 'WarningComment') : null
-  const warningComment = (warningCommentEl ? xmlText(xmlQ(warningCommentEl, 'Text')) : '') || undefined
+  const warningComment = readCommentText(warningCommentEl, '固定付加文', TSUNAMI_LOG_PREFIX) || undefined
   // 自由付加文。**地震情報・長周期では読んで出していたのに津波だけ落ちていた。**
   // 等級ごとの定型文（`warningComment`）と違い、続報で実際に書き換わるのはこちら側。
   // `xmlText` が前後の空白だけを落とす（中の改行と整形は保つ）。
@@ -1588,8 +1733,9 @@ function parseTsunamiObservationsFromXml(observationEl: Element, offshore: boole
     for (let i = 0; i < stationEls.length; i++) {
       const st = stationEls[i]
       const name = xmlText(xmlQ(st, 'Name'))
+      const obsCode = xmlText(xmlQ(st, 'Code'))
       if (!name) {
-        tally.unreadable(name, xmlText(xmlQ(st, 'Code')))
+        tally.unreadable(codeOnlyLabel(obsCode), obsCode)
         continue
       }
       tally.readable()
@@ -1633,6 +1779,7 @@ function parseTsunamiObservationsFromXml(observationEl: Element, offshore: boole
       const heightDesc = toHalfWidthHeightDesc(rawHeightDesc) || (!isNaN(heightVal) ? `${heightVal}m` : '')
       observations.push({
         name,
+        ...(obsCode && { code: obsCode }),
         height: !isNaN(heightVal) ? { value: heightVal, description: heightDesc, over } : undefined,
         // 欠測・微弱・観測中・重要はここでしか判らない（数値の有無では見分けられない）。
         // 併記されるため読み取りは `parseTsunamiObservationCondition` に任せる。
@@ -1835,6 +1982,7 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
     // DMD-6: Pref 配下には Area/Name（孫要素）も存在するため、xmlQ（子孫全体検索）は
     // 文書順で先に出た方を拾って誤検出しうる。Pref 直下の Name だけを取る xmlChild に置換。
     const prefName = xmlText(xmlChild(prefEl, 'Name'))
+    const prefCode = xmlText(xmlChild(prefEl, 'Code'))
     // 都道府県の最大値。**区域から計算し直さない** —— 気象庁が電文に書いている値を使う
     // （積み上げると、区域を 1 つ読み落としたときに静かにずれる）。
     // **採用の基準は区域（`regions`）と揃える** —— 階級 1 以上だけを積む。同じ関数の中で
@@ -1845,7 +1993,7 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
     const prefMaxInt = readIntensity(prefRawInt || null).scale
     if (prefRawInt) {
       if (prefMaxInt >= 0) lgIntensityTally.readable()
-      else lgIntensityTally.unreadable(prefName, prefRawInt)
+      else lgIntensityTally.unreadable(prefName || codeOnlyLabel(prefCode), prefRawInt)
     }
     if (isValidLpgmClass(prefMaxLgInt)) {
       prefs.push({
@@ -1874,7 +2022,7 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
       const areaMaxInt = readIntensity(areaRawInt || null).scale
       if (areaRawInt) {
         if (areaMaxInt >= 0) lgIntensityTally.readable()
-        else lgIntensityTally.unreadable(areaName, areaRawInt)
+        else lgIntensityTally.unreadable(areaName || codeOnlyLabel(areaCode), areaRawInt)
       }
       if (Number.isFinite(areaMaxLgInt)) {
         lgRegionTally.readable()
@@ -1885,7 +2033,7 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
           })
         }
       } else {
-        lgRegionTally.unreadable(areaName, areaRawLgInt)
+        lgRegionTally.unreadable(areaName || codeOnlyLabel(areaCode), areaRawLgInt)
       }
 
       const areaChildren = areaEl.getElementsByTagName('*')
@@ -1894,7 +2042,9 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
         const stEl  = areaChildren[i]
         // IntensityStation 直下には Name/Code/LgInt しかなく、これらと同名の子孫要素は
         // 存在しないため xmlQ（子孫検索）でも xmlChild と同じ結果になる（DMD-6 対象外）。
-        const stName = xmlText(xmlQ(stEl, 'Name'))
+        // **地震情報側と同じく印を外す。** 外していなかったため、印の付く観測点が
+        // 座標表に当たらず**地図から消えていた**（実電文で 11 点）。
+        const { name: stName, nonJma: stNonJma } = stripNonJmaMark(xmlText(xmlQ(stEl, 'Name')))
         const stCode = xmlText(xmlQ(stEl, 'Code'))
         const stRawLgInt = xmlText(xmlChild(stEl, 'LgInt'))
         const lgInt  = parseInt(stRawLgInt, 10)
@@ -1906,7 +2056,7 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
         const stInt = readIntensity(stRawInt || null).scale
         if (stRawInt) {
           if (stInt >= 0) lgIntensityTally.readable()
-          else lgIntensityTally.unreadable(stName, stRawInt)
+          else lgIntensityTally.unreadable(stName || codeOnlyLabel(stCode), stRawInt)
         }
         // 応答スペクトルは物理量なので負値は採らない（読めない値と同じ扱い）
         const stRawSva = xmlText(xmlChild(stEl, 'Sva'))
@@ -1917,13 +2067,14 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
           if (lgInt >= 1) {
             points.push({
               code: stCode, name: stName, pref: prefName, lgInt,
+              ...(stNonJma && { nonJma: true }),
               ...(stInt >= 0 && { int: stInt }),
               ...(Number.isFinite(stSva) && stSva >= 0 && { sva: stSva }),
               ...(periods.length > 0 && { periods }),
             })
           }
         } else {
-          lgStationTally.unreadable(stName, stRawLgInt)
+          lgStationTally.unreadable(stName || codeOnlyLabel(stCode), stRawLgInt)
         }
       }
     }
@@ -1981,9 +2132,9 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   // 電文自身が示している**ので、そこへ行ける導線を残す。
   const lpgmCommentsEl = xmlQ(doc, 'Comments')
   const lpgmForecastEl = lpgmCommentsEl ? xmlChild(lpgmCommentsEl, 'ForecastComment') : null
-  const lpgmForecastText = lpgmForecastEl ? xmlText(xmlChild(lpgmForecastEl, 'Text')) : ''
+  const lpgmForecastText = readCommentText(lpgmForecastEl, '固定付加文', DMDATA_LOG_PREFIX)
   const lpgmVarEl = lpgmCommentsEl ? xmlChild(lpgmCommentsEl, 'VarComment') : null
-  const lpgmVarText = lpgmVarEl ? xmlText(xmlChild(lpgmVarEl, 'Text')) : ''
+  const lpgmVarText = readVarCommentTextForDisplay(lpgmVarEl, DMDATA_LOG_PREFIX)
   const lpgmFreeText = lpgmCommentsEl ? xmlText(xmlChild(lpgmCommentsEl, 'FreeFormComment')) : ''
   const lpgmUri = lpgmCommentsEl ? xmlText(xmlChild(lpgmCommentsEl, 'URI')) : ''
   const lpgmHeadline = readHeadlineText(doc)

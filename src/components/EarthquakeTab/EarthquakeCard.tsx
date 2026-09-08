@@ -20,6 +20,8 @@ import type { JMAQuakeCity } from '../../types/earthquake'
 import { buildAreaPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, buildStationPrefIndex, lookupStationRegion, regionOrderRank, byValueDescThenRegion } from '../../utils/stationCoords'
 import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel } from '../../utils/quakePoints'
 import { useStationCoords } from '../../hooks/useStationCoords'
+import { NON_JMA_BADGE_LABEL, NON_JMA_BADGE_TITLE } from '../Map/gl/popupHtml'
+import { mergeUnreceivedPointNames, type UnreceivedPointName } from './unreceivedPointNames'
 
 /**
  * 市町村を区域ごとにまとめる。**区域が 1 つだけなら見出しを出さない**（区域名を 1 つ書いても
@@ -265,7 +267,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
    * 並びは読み上げと同じ気象庁の標準順 —— 電文が点を並べた順に画面を委ねない。
    */
   const unreceivedPoints = useMemo(() => {
-    const empty = { names: [] as string[], unit: '地点' }
+    const empty = { names: [] as UnreceivedPointName[], unit: '地点' }
     if (!isSelected) return empty
     const { prefOf, regionOfStation, stations, areas } = unreceivedIndexes
     if (stations.length === 0 && areas.length === 0) return empty
@@ -276,9 +278,9 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
     const ordered = [...stations, ...areas]
       .map((p, i) => ({ p, i, r: rank(p) }))
       .sort((a, b) => a.r - b.r || a.i - b.i)
-      .map(({ p }) => p.addr)
+      .map(({ p }) => p)
     return {
-      names: [...new Set(ordered)],
+      names: mergeUnreceivedPointNames(ordered),
       unit: unreceivedUnitLabel(stations.length > 0, areas.length > 0),
     }
   }, [isSelected, stationData, unreceivedIndexes])
@@ -560,6 +562,13 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
             {tsunamiInfo.text}
           </div>
 
+          {/* 固定付加文（その他）。長周期地震動の同じ枠と揃えて出す。 */}
+          {quake.varCommentText && (
+            <div className="w-full rounded-lg bg-panel px-3 py-2 text-xs leading-relaxed text-secondary whitespace-pre-wrap roomy:text-sm">
+              {quake.varCommentText}
+            </div>
+          )}
+
           {/* 気象庁の自由付加文。津波区分の定型文（forecastText）と違い電文ごとに書き起こされ、
               続報での更新はここに現れる（観測された津波の高さ・潮位変化の有無・次報の予定時刻など）。
               全角スペースで整形された表が入るため `whitespace-pre-wrap` で改行と空白を保つ。
@@ -636,7 +645,23 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                       気象庁は震度5弱以上と推定していますが、震度が届いていません（未入電）
                     </div>
                     <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[0.8125rem] roomy:text-[1rem] text-white">
-                      {unreceivedPoints.names.map(name => <span key={name}>{name}</span>)}
+                      {/* 気象庁以外が運用する観測点は、電文では名前の末尾に `＊` が付く。
+                          アプリは印を名前から外して引き当てに使うため、地図の吹き出しと
+                          同じバッジで伝える。 */}
+                      {unreceivedPoints.names.map(({ name, nonJma }) => (
+                        <span key={name} className="inline-flex items-center gap-1">
+                          {name}
+                          {nonJma && (
+                            <span
+                              className="rounded px-1 text-[0.625rem] font-semibold leading-4 whitespace-nowrap"
+                              style={{ color: '#cbd5e1', border: '1px solid #475569' }}
+                              title={NON_JMA_BADGE_TITLE}
+                            >
+                              {NON_JMA_BADGE_LABEL}
+                            </span>
+                          )}
+                        </span>
+                      ))}
                     </div>
                   </div>
                 )}

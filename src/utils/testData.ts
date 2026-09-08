@@ -198,6 +198,11 @@ export function createTestEarthquake(useDmdataShape: boolean): JMAQuake {
     // 選んだのは元から震度5弱の 2 地点。差し替えても最大震度（7）は動かないので、他の
     // 期待値に影響しない。石川県は最大が震度7の観測値なのに未入電の地点も含む形になり、
     // **「最大は観測できているが未入電もある」という最も起きやすい形**を画面で確かめられる。
+    // **「気象庁以外の観測点」の印も入っている**（`nonJma`）。電文では観測点名の末尾に
+    // `＊` が付く形で届き、アプリは印を名前から外してバッジで伝える。どの観測点がそれに
+    // 当たるかは実電文（DMDATA archive の各地の震度情報）の `＊` から採った ―― 気象庁が
+    // 配る `ObservingPointByOthers` コード表は**雨・雪の観測点**の表で、震度観測点を
+    // 含まない。
     points: useDmdataShape
       ? toDmdataPoints(notoHonshinPoints as EarthquakePoint[]).map(p =>
         !p.isArea && UNRECEIVED_TEST_STATIONS.has(p.addr)
@@ -208,9 +213,11 @@ export function createTestEarthquake(useDmdataShape: boolean): JMAQuake {
       // 1 電文に両方が混ざることはない（→ quake-spec.md §4）。`各地の震度情報` として送る以上、
       // 区域点は落とす。
       // 標準版でも同じ地点を未入電にする（P2PQuake は震度値 46 で同じ事実を配信する）。
+      // **「気象庁以外」の印は落とす。** P2PQuake はこの区別を配信しないので、
+      // 残すと標準版のテストボタンだけが実電文に無いバッジを出す。
       : (notoHonshinPoints as EarthquakePoint[])
         .filter((p) => !p.isArea)
-        .map(p => (UNRECEIVED_TEST_STATIONS.has(p.addr) ? { ...p, unreceived: true } : p)),
+        .map(({ nonJma: _nonJma, ...p }) => (UNRECEIVED_TEST_STATIONS.has(p.addr) ? { ...p, unreceived: true } : p)),
     // 市町村ごとの震度（電文の `Pref/Area/City`）。**DMDATA 経路でのみ配信される**ので
     // standard 版では持たせない（P2PQuake は市町村の粒度を配信しない）。
     // 能登本震の確定報から、震度が割れている区域（石川県能登）の市町村を採った。

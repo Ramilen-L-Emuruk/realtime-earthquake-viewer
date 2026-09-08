@@ -7,6 +7,7 @@ import { eewAreas, eewMaxScaleInfo } from '../utils/eew'
 import { isValidIntensityScale } from '../utils/intensity'
 import { isValidLpgmClass } from '../utils/lpgm'
 import { hasKnownEpicenter, normalizeEpicenterLng } from '../utils/geo'
+import { isEewWarningKindCode } from '../utils/eewKind'
 
 // EEW（緊急地震速報）の描画に必要な派生データ（対象地域の予想震度塗り／予想長周期地震動塗り／
 // 各 EEW の震源）を計算する共有フック。Leaflet 版 JapanMap 内の eewAreaFills /
@@ -93,7 +94,8 @@ export function useEewLayerData(
   // ここで mode ガードを掛けて data を [] に落とすと、非 kyoshin タブでは source が空のまま
   // 放置され、kyoshin タブへ切り替えた瞬間に初めて setData される＝非同期タイル化待ちの間
   // 塗りが一瞬空白になるフリッカーの原因になるため、mode に関わらず常時計算する。
-  // EEW 対象地域を予想最大震度(scaleTo)の色で塗る。kindCode 10/11/19 は強震動警戒域（警報）。
+  // EEW 対象地域を予想最大震度(scaleTo)の色で塗る。警報（強震動警戒域）かどうかは
+  // 種別コードで判る（→ `isEewWarningKindCode`）。
   const eewAreaFills = useMemo<EewAreaFill[]>(() => {
     if (eews.length === 0) return []
     const maxByName = new Map<string, number>()
@@ -130,7 +132,7 @@ export function useEewLayerData(
           // 確定震源の側で埋める（到達秒数を出せる根拠があるならそれを使う）。
           if (origin && !originByName.get(a.name)) originByName.set(a.name, origin)
         }
-        if (a.kindCode === '10' || a.kindCode === '11' || a.kindCode === '19') warningNames.add(a.name)
+        if (isEewWarningKindCode(a.kindCode)) warningNames.add(a.name)
       }
     }
     const list: EewAreaFill[] = []

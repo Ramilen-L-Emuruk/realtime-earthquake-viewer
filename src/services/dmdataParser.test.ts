@@ -209,9 +209,9 @@ describe('parseEarthquakeFromXml: 震度速報（VXSE51）', () => {
   it('points は都道府県ロールアップ点と一次細分区域を持ち、区域の pref は空にする', () => {
     const points = parseEarthquakeFromXml('VXSE51', VXSE51_XML)!.points
     expect(points).toEqual([
-      { pref: '岩手県', addr: '岩手県', isArea: true, scale: 40 },
-      { pref: '', addr: '岩手県沿岸北部', isArea: true, scale: 40 },
-      { pref: '', addr: '岩手県内陸北部', isArea: true, scale: 30 },
+      { pref: '岩手県', addr: '岩手県', isArea: true, scale: 40, code: '03' },
+      { pref: '', addr: '岩手県沿岸北部', isArea: true, scale: 40, code: '221' },
+      { pref: '', addr: '岩手県内陸北部', isArea: true, scale: 30, code: '211' },
     ])
   })
 })
@@ -267,7 +267,7 @@ describe('parseEarthquakeFromXml: 震源・震度に関する情報（VXSE53）'
     it('市町村を区域と結びつけて読む', () => {
       const q = parseEarthquakeFromXml('VXSE53', VXSE53_XML)!
       expect(q.cities).toEqual([
-        { name: '普代村', area: '岩手県沿岸北部', pref: '岩手県', scale: 30 },
+        { name: '普代村', area: '岩手県沿岸北部', pref: '岩手県', scale: 30, code: '03506' },
       ])
     })
 
@@ -319,7 +319,7 @@ describe('parseEarthquakeFromXml: 震源・震度に関する情報（VXSE53）'
     const points = parseEarthquakeFromXml('VXSE53', VXSE53_XML)!.points
     // 都道府県ロールアップ点（pref 付き）と取り違えないよう pref が空のものを探す
     const area = points.find(p => p.isArea && p.pref === '')!
-    expect(area).toEqual({ pref: '', addr: '岩手県沿岸北部', isArea: true, scale: 40 })
+    expect(area).toEqual({ pref: '', addr: '岩手県沿岸北部', isArea: true, scale: 40, code: '221' })
   })
 
   // 正: 「震度5弱以上と推定されるが観測値が入電していない」地点を落とさない。
@@ -436,7 +436,7 @@ describe('parseEarthquakeFromXml: 震源・震度に関する情報（VXSE53）'
     // 区域点と揃えて pref: '' に統一する。
     const points = parseEarthquakeFromXml('VXSE53', VXSE53_XML)!.points
     const station = points.find(p => !p.isArea)!
-    expect(station).toEqual({ pref: '', addr: '普代村銅屋', isArea: false, scale: 30 })
+    expect(station).toEqual({ pref: '', addr: '普代村銅屋', isArea: false, scale: 30, code: '3350631' })
   })
 
   it('震源を持つ電文では震源要素を読む', () => {
@@ -471,6 +471,44 @@ describe('parseEarthquakeFromXml: 震源・震度に関する情報（VXSE53）'
 //
 // ここが崩れたら、電文から取れていたはずの項目が落ちたということ。**画面には
 // 「情報が少し粗くなった」以上には現れない**ので、テストで固定しておくしかない。
+// 気象庁は自局以外が運用する観測点の名前へ `＊` を付ける。**印を外すのは引き当てのため**
+// （座標表の鍵に入っていない）で、外すだけで事実を捨てないよう印の有無を持つ。
+describe('気象庁以外の観測点の印（＊）', () => {
+  // 正: 印を名前から外し、事実は残す
+  it('印を名前から外し、気象庁以外であることを持つ', () => {
+    const xml = VXSE53_XML.replace('<Name>普代村銅屋</Name>', '<Name>普代村銅屋＊</Name>')
+    const points = parseEarthquakeFromXml('VXSE53', xml)!.points
+    const st = points.find(p => p.addr === '普代村銅屋')
+    expect(st).toBeDefined()
+    expect(st!.nonJma).toBe(true)
+    // 印は名前に残さない（座標表の鍵に入っていないため引き当てが外れる）
+    expect(points.some(p => p.addr.includes('＊'))).toBe(false)
+  })
+
+  // 対照: 気象庁の観測点には印を付けない（全部に付くと意味を失う）
+  it('気象庁の観測点には印を付けない', () => {
+    const st = parseEarthquakeFromXml('VXSE53', VXSE53_XML)!.points.find(p => p.addr === '普代村銅屋')
+    expect(st!.nonJma).toBeUndefined()
+  })
+
+  // 正: **長周期でも同じ扱い。** 外していなかったため、印の付く観測点が座標表に当たらず
+  // 地図から消えていた（実電文で 11 点）
+  it('長周期の観測点でも印を外し、事実を持つ', () => {
+    const xml = PARITY_LPGM_XML.replace('<Name>上越市中ノ俣</Name>', '<Name>上越市中ノ俣＊</Name>')
+    const pt = parseLpgmFromXml(xml)!.points!.find(p => p.name === '上越市中ノ俣')
+    expect(pt).toBeDefined()
+    expect(pt!.nonJma).toBe(true)
+  })
+
+  // 安全弁: 名前の途中にある「＊」は落とさない（末尾の印だけが対象）
+  it('末尾以外の ＊ は名前の一部として残す', () => {
+    const xml = VXSE53_XML.replace('<Name>普代村銅屋</Name>', '<Name>普代＊村銅屋</Name>')
+    const st = parseEarthquakeFromXml('VXSE53', xml)!.points.find(p => p.addr === '普代＊村銅屋')
+    expect(st).toBeDefined()
+    expect(st!.nonJma).toBeUndefined()
+  })
+})
+
 describe('XML 経路が落としてはいけない項目（地震）', () => {
   const fromXml = () => parseEarthquakeFromXml('VXSE53', VXSE53_XML)!
 
@@ -498,19 +536,19 @@ describe('XML 経路が落としてはいけない項目（地震）', () => {
   // （能登半島地震の震度速報で <Pref><Name>石川県</Name><Code>17</Code><MaxInt>5+</MaxInt> を確認）。
   // これが無いと EarthquakeCard は区域点からの逆引き集計に落ち、気象庁発表の代表値と粒度がずれる。
   it('都道府県ロールアップ点（pref 付き）を持つ', () => {
-    const expected = { pref: '岩手県', addr: '岩手県', isArea: true, scale: 40 }
+    const expected = { pref: '岩手県', addr: '岩手県', isArea: true, scale: 40, code: '03' }
     expect(fromXml().points).toContainEqual(expected)
   })
 
   it('区域点は pref を空にする', () => {
-    const expected = { pref: '', addr: '岩手県沿岸北部', isArea: true, scale: 40 }
+    const expected = { pref: '', addr: '岩手県沿岸北部', isArea: true, scale: 40, code: '221' }
     expect(fromXml().points).toContainEqual(expected)
   })
 
   // QUAKE-2: 観測点の pref を空にする規約。以前 XML 側だけ pref: prefName を付けていて、
   // EarthquakeCard が観測点値を都道府県別最大震度と誤解する不具合があった。
   it('観測点は pref を空にする（QUAKE-2）', () => {
-    const expected = { pref: '', addr: '普代村銅屋', isArea: false, scale: 30 }
+    const expected = { pref: '', addr: '普代村銅屋', isArea: false, scale: 30, code: '3350631' }
     expect(fromXml().points).toContainEqual(expected)
   })
 
@@ -3500,7 +3538,7 @@ describe('parseEEWFromXml（VXSE45 の XML 経路）', () => {
   it('予報級の報を読む', () => {
     const e = parseEEWFromXml('VXSE45', EEW_XML)!
     expect(e.issue).toEqual({ eventId: '20260903223458', serial: '3', time: '2026-09-03T22:35:37+09:00' })
-    expect(e.earthquake.hypocenter).toEqual({ name: '福島県会津', latitude: 37.2, longitude: 139.3, depth: 10, magnitude: 3.5, magnitudeType: 'Mj' })
+    expect(e.earthquake.hypocenter).toEqual({ name: '福島県会津', latitude: 37.2, longitude: 139.3, depth: 10, magnitude: 3.5, magnitudeType: 'Mj', code: '252' })
     expect(e.forecastMaxScale).toBe(20)
     expect(e.severity).toBe('Forecast')
     expect(e.isFinal).toBe(true)
@@ -3582,8 +3620,9 @@ describe('XML 経路が落としてはいけない項目（EEW）', () => {
   // 正: 震源要素。予報円・地図・読み上げがすべてここを見る。
   it('震源要素（名前・緯度経度・深さ・規模）を持つ', () => {
     expect(parsed().earthquake.hypocenter).toEqual({
-      // 種別（`Mj`）も持つ。画面には出さないが、電文の事実として落とさない
-      name: '福島県会津', latitude: 37.2, longitude: 139.3, depth: 10, magnitude: 3.5, magnitudeType: 'Mj',
+      // 種別（`Mj`）と震央地名コードも持つ。画面には出さないが、電文の事実として落とさない
+      name: '福島県会津', latitude: 37.2, longitude: 139.3, depth: 10, magnitude: 3.5,
+      magnitudeType: 'Mj', code: '252',
     })
   })
 
@@ -3657,6 +3696,166 @@ describe('地震情報の規模の説明（Magnitude@description）', () => {
   it('説明が無ければ持たせない', () => {
     const noDesc = withMagnitude('<jmx_eb:Magnitude type="M" condition="不明">NaN</jmx_eb:Magnitude>')
     expect(parseEarthquakeFromXml('VXSE53', noDesc)!.earthquake.hypocenter.magnitudeCondition).toBeUndefined()
+  })
+})
+
+// 固定付加文（その他）（`VarComment/Text`）。
+//
+// 実電文で現れるのは観測点名の `＊` を説明する定型文（地震情報 0262・長周期 0263）だけ。
+// アプリは印を名前から外して「気象庁以外」のバッジで伝えているので、印の説明だけを画面に
+// 出すと在りもしない記号を探させることになる。**落とすかどうかはコードで決める。**
+describe('固定付加文（その他）（VarComment）', () => {
+  const NON_JMA_NOTE = '＊印は気象庁以外の震度観測点についての情報です。'
+  const withVar = (codes: string, text: string) => VXSE53_XML.replace(
+    '</Body>',
+    `<Comments><VarComment codeType="固定付加文"><Text>${text}</Text><Code>${codes}</Code></VarComment></Comments></Body>`,
+  )
+
+  // 正: ＊印の説明でない付加文は原文をそのまま持つ（長周期と同じ扱い）。
+  it('＊印の説明でない付加文は原文を持つ', () => {
+    expect(parseEarthquakeFromXml('VXSE53', withVar('0256', '震源要素を訂正します。'))!.varCommentText)
+      .toBe('震源要素を訂正します。')
+  })
+
+  // 対照: ＊印の説明だけなら画面へ出さない。
+  it('＊印の説明だけの付加文は画面へ出さない', () => {
+    expect(parseEarthquakeFromXml('VXSE53', withVar('0262', NON_JMA_NOTE))!.varCommentText)
+      .toBeUndefined()
+  })
+
+  // 安全弁: 他のコードと併記されていれば原文を残す。**説明文だけを文字列から切り出さない**
+  // ——切り方が原文の書式に縛られる。
+  it('他のコードと併記されていれば原文を残す', () => {
+    const xml = withVar('0256 0262', `震源要素を訂正します。${NON_JMA_NOTE}`)
+    expect(parseEarthquakeFromXml('VXSE53', xml)!.varCommentText)
+      .toBe(`震源要素を訂正します。${NON_JMA_NOTE}`)
+  })
+
+  // 長周期でも同じ判定を通す（コードは 0263）。
+  it('長周期でも＊印の説明は画面へ出さない', () => {
+    const varBlock = [
+      '      <VarComment codeType="固定付加文">',
+      '        <Text>この地震について、緊急地震速報を発表しています。</Text>',
+      '        <Code>0241</Code>',
+      '      </VarComment>',
+    ].join('\n')
+    expect(PARITY_LPGM_XML).toContain(varBlock)
+    const xml = PARITY_LPGM_XML.replace(varBlock, [
+      '      <VarComment codeType="固定付加文">',
+      `        <Text>＊印は気象庁以外の長周期地震動観測点についての情報です。</Text>`,
+      '        <Code>0263</Code>',
+      '      </VarComment>',
+    ].join('\n'))
+    expect(parseLpgmFromXml(xml)!.varCommentText).toBeUndefined()
+  })
+})
+
+// 緊急地震速報の警報級判定は種別コード（`Category/Kind/Code`）で行う。
+// 名前（`Kind/Name`）は同じ事実を言葉で書いたもので、表記が変われば一致しなくなる。
+describe('緊急地震速報の種別コード', () => {
+  const WARN = '緊急地震速報（警報）'
+  const FORECAST = '緊急地震速報（予報）'
+
+  // 正: コードが警報なら、名前が警報を名乗っていなくても Warning。
+  it('コードが警報なら名前によらず Warning', () => {
+    const xml = eewXml({ pref: eewPref('<From>5+</From><To>5+</To>', '11', FORECAST) })
+    expect(parseEEWFromXml('VXSE45', xml)!.severity).toBe('Warning')
+  })
+
+  // 対照: コードが予報なら、名前が警報を名乗っていても Forecast。
+  it('コードが予報なら名前によらず Forecast', () => {
+    const xml = eewXml({ pref: eewPref('<From>5+</From><To>5+</To>', '09', WARN) })
+    expect(parseEEWFromXml('VXSE45', xml)!.severity).toBe('Forecast')
+  })
+
+  // 安全弁: コード表に無い値では名前へ落として警報を取りこぼさない（＋記録を残す）。
+  it('コード表に無い種別は名前へ落として記録する', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const xml = eewXml({ pref: eewPref('<From>5+</From><To>5+</To>', '99', WARN) })
+      expect(parseEEWFromXml('VXSE45', xml)!.severity).toBe('Warning')
+      expect(warn.mock.calls.some(c => String(c[0]).includes('種別コードを読めません'))).toBe(true)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 安全弁: 種別コードが載っていない区域は「未知のコード」に数えない。
+  // **`Category/Kind` を持たない電文は正常にある**（画面もそのとき警報／予報に分けない）。
+  // 数えるとその形の電文すべてで警告が鳴り、本当に未知のコードが埋もれる。
+  it('種別コードが載っていない区域では記録しない', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const xml = eewXml({
+        pref: '<Pref><Name>石川</Name><Code>9170</Code><Area>'
+          + '<Name>石川県能登</Name><Code>390</Code>'
+          + '<ForecastInt><From>5+</From><To>5+</To></ForecastInt>'
+          + '</Area></Pref>',
+      })
+      expect(xml).not.toContain('<Kind>')
+      const eew = parseEEWFromXml('VXSE45', xml)!
+      expect(eew.severity).toBe('Forecast')
+      expect(eew.areas?.[0]?.kindCode).toBe('')
+      expect(warn.mock.calls.some(c => String(c[0]).includes('種別コードを読めません'))).toBe(false)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 対照: 要素はあるのにコードが空なら、そちらは記録する（「載っていない」とは別）。
+  it('種別の要素はあるのにコードが空なら記録する', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const xml = eewXml({
+        pref: '<Pref><Name>石川</Name><Code>9170</Code><Area>'
+          + '<Name>石川県能登</Name><Code>390</Code>'
+          + '<Category><Kind><Name>緊急地震速報（予報）</Name><Code></Code></Kind></Category>'
+          + '<ForecastInt><From>5+</From><To>5+</To></ForecastInt>'
+          + '</Area></Pref>',
+      })
+      expect(parseEEWFromXml('VXSE45', xml)!.severity).toBe('Forecast')
+      expect(warn.mock.calls.some(c => String(c[0]).includes('種別コードを読めません'))).toBe(true)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 電文の値はそのまま持つ（地図の塗り分けと画面の県名の振り分けが同じコードを見る）。
+  it('kindCode は電文の値をそのまま持つ', () => {
+    const xml = eewXml({ pref: eewPref('<From>5+</From><To>5+</To>', '19', WARN) })
+    const eew = parseEEWFromXml('VXSE45', xml)
+    expect(eew?.areas?.[0]?.kindCode).toBe('19')
+  })
+})
+
+// 付加文は「コードと原文の対」で届く。**原文だけが欠けると、その注意書きが画面から黙って
+// 消える**（コードから文面を組み直す仕組みは持っていない）。原文を画面に出している経路は
+// すべて同じ検査を通す —— 緊急地震速報だけ生で読んでいて、この検査から漏れていた。
+describe('付加文のコードはあるのに原文が無い電文', () => {
+  const WITH_TEXT = eewXml({ warningComment: '強い揺れに警戒してください。' })
+  const NO_TEXT = WITH_TEXT.replace('<Text>強い揺れに警戒してください。</Text>', '')
+
+  it('緊急地震速報の固定付加文で記録する', () => {
+    expect(NO_TEXT).not.toBe(WITH_TEXT)
+    expect(NO_TEXT).toContain('<Code>0201</Code>')
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      expect(parseEEWFromXml('VXSE45', NO_TEXT)!.warningComment).toBeUndefined()
+      expect(warn.mock.calls.some(c => String(c[0]).includes('原文がありません'))).toBe(true)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 対照: 原文があれば鳴らない。
+  it('原文があれば記録しない', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      expect(parseEEWFromXml('VXSE45', WITH_TEXT)!.warningComment).toBe('強い揺れに警戒してください。')
+      expect(warn.mock.calls.some(c => String(c[0]).includes('原文がありません'))).toBe(false)
+    } finally {
+      warn.mockRestore()
+    }
   })
 })
 
