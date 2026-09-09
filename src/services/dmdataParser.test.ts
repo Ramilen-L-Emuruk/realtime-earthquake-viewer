@@ -437,7 +437,7 @@ describe('parseEarthquakeFromXml: 震源・震度に関する情報（VXSE53）'
     // 区域点と揃えて pref: '' に統一する。
     const points = parseEarthquakeFromXml('VXSE53', VXSE53_XML)!.points
     const station = points.find(p => !p.isArea)!
-    expect(station).toEqual({ pref: '', addr: '普代村銅屋', isArea: false, scale: 30, code: '3350631' })
+    expect(station).toEqual({ pref: '', addr: '普代村銅屋', isArea: false, scale: 30, code: '3350631', city: '普代村', area: '岩手県沿岸北部' })
   })
 
   it('震源を持つ電文では震源要素を読む', () => {
@@ -670,8 +670,50 @@ describe('XML 経路が落としてはいけない項目（地震）', () => {
   // QUAKE-2: 観測点の pref を空にする規約。以前 XML 側だけ pref: prefName を付けていて、
   // EarthquakeCard が観測点値を都道府県別最大震度と誤解する不具合があった。
   it('観測点は pref を空にする（QUAKE-2）', () => {
-    const expected = { pref: '', addr: '普代村銅屋', isArea: false, scale: 30, code: '3350631' }
+    const expected = { pref: '', addr: '普代村銅屋', isArea: false, scale: 30, code: '3350631', city: '普代村', area: '岩手県沿岸北部' }
     expect(fromXml().points).toContainEqual(expected)
+  })
+
+  // ---- 観測点が属する市町村 ----
+  //
+  // 電文は観測点を市町村の下に置くが、**座標表は観測点の所属市町村を持たない**
+  // （`station-coords.json` は緯度・経度・所属区域だけ）。読み取りの時点で拾わないと
+  // 後から復元できない（→ `EarthquakePoint.city`）。
+
+  // 正: 直前の `City` の名前が付く。
+  it('観測点に、属する市町村を持たせる', () => {
+    expect(fromXml().points.find(p => p.addr === '普代村銅屋')?.city).toBe('普代村')
+  })
+
+  // 対照: 市町村を持たない電文では入らない。震度速報は区域までしか持たない。
+  it('市町村を持たない電文では入らない', () => {
+    const pts = parseEarthquakeFromXml('VXSE51', VXSE51_XML)!.points
+    expect(pts.every(p => p.city === undefined)).toBe(true)
+  })
+
+  // 安全弁: **区域が変わったら市町村を持ち越さない。** 電文の並び（Area → City →
+  // IntensityStation）を覚えて紐付けているので、リセットを忘れると市町村を持たない区域の
+  // 観測点に、隣の区域の市町村名が付く。
+  it('区域が変わったら、前の区域の市町村を持ち越さない', () => {
+    // **差し込む先は震度の区域**。`</Area>` は震源（`Hypocenter/Area`）にも出るので、最初の
+    // 1 つを狙うとそちらへ入り、観測点が 1 件も読まれないまま
+    // 「`city` が `undefined`」だけが通る**空振りのテスト**になる（実際にそうなっていた）。
+    const ANCHOR = '          </Area>\n        </Pref>'
+    expect(VXSE53_XML).toContain(ANCHOR)
+    const xml = VXSE53_XML.replace(ANCHOR,
+      '          </Area>\n          <Area>\n            <Name>岩手県内陸北部</Name>\n            <Code>222</Code>\n            <MaxInt>2</MaxInt>\n'
+      + '            <IntensityStation>\n              <Name>盛岡市玉山</Name>\n              <Code>3320100</Code>\n              <Int>2</Int>\n            </IntensityStation>\n          </Area>\n        </Pref>')
+    const pts = parseEarthquakeFromXml('VXSE53', xml)!.points
+    // **読まれたことを先に確かめる。** これが無いと、以下の `?.` は点が無いときも通る。
+    expect(pts.map(p => p.addr)).toContain('盛岡市玉山')
+    expect(pts.find(p => p.addr === '盛岡市玉山')?.city).toBeUndefined()
+    // 対の確認: 市町村を持つ側は従来どおり付く。
+    expect(pts.find(p => p.addr === '普代村銅屋')?.city).toBe('普代村')
+    // **区域のほうは持ち越すのではなく、自分が入っている区域へ差し替わること。**
+    // 市町村と同じリセット漏れが起きると、こちらは `undefined` ではなく**隣の区域名**という
+    // もっともらしい値になるので、市町村側の確認だけでは気づけない。
+    expect(pts.find(p => p.addr === '盛岡市玉山')?.area).toBe('岩手県内陸北部')
+    expect(pts.find(p => p.addr === '普代村銅屋')?.area).toBe('岩手県沿岸北部')
   })
 
   // 安全弁: 都道府県点を足しても区域点・観測点の数は変わらない。

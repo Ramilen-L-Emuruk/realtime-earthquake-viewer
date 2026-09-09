@@ -314,6 +314,10 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
       ...result,
       earthquake: { ...result.earthquake, maxScale: existing.earthquake.maxScale },
       points: existing.points,
+      // 市町村ごとの震度も**点と同じ扱いで補う**。同じ電文（VXSE53）が運ぶ同じ事実で、
+      // 震源のみの続報が構造的に持たないもの。片方だけ戻すと、観測点は残るのに
+      // 市町村の段だけが消え、震度一覧が 4 段から 3 段へ静かに落ちる。
+      cities: existing.cities,
       // 自由付加文も同じ考え方で補う。震度を引き継ぐ経路で本文だけ落とすと、
       // 「津波注意報を発表中です」のような状況説明が後続の震源情報で静かに消える。
       freeText: result.freeText ?? existing.freeText,

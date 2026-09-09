@@ -1,4 +1,4 @@
-import { useMemo, useRef, useEffect } from 'react'
+import { useMemo, useRef, useEffect, useState } from 'react'
 import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint, IntensityScale } from '../../types/earthquake'
 import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor, lpgmCategoryNote } from '../../utils/lpgm'
 import {
@@ -15,34 +15,97 @@ import {
 } from '../../utils/formatters'
 import { getIntensityLabel, getIntensityLabelWithOrAbove, getIntensityColor, getIntensityBgColor, getDepthColor, getMagnitudeColor } from '../../utils/intensity'
 import { hasKnownEpicenter } from '../../utils/geo'
-import type { JMAQuakeCity } from '../../types/earthquake'
 
 import { buildAreaPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, buildStationPrefIndex, lookupStationRegion, regionOrderRank, byValueDescThenRegion } from '../../utils/stationCoords'
-import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel } from '../../utils/quakePoints'
+import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel, buildIntensityRows, makeAreaPrefResolver } from '../../utils/quakePoints'
 import { useStationCoords } from '../../hooks/useStationCoords'
 import { NON_JMA_BADGE_LABEL, NON_JMA_BADGE_TITLE } from '../Map/gl/popupHtml'
 import { mergeUnreceivedPointNames, type UnreceivedPointName } from './unreceivedPointNames'
 
 /**
- * 市町村を区域ごとにまとめる。**区域が 1 つだけなら見出しを出さない**（区域名を 1 つ書いても
- * 行の見出し＝都道府県名と合わせて情報が増えず、幅を食うだけ）。
+ * 震度一覧の 1 行。都道府県・一次細分区域・市町村・観測点の 4 段で共有する。
  *
- * 区域が複数またがるのは、行の見出しが都道府県名のとき。DMDATA の電文は `Pref/MaxInt` を
- * 必ず持ち、カードは県内が揃っていなくても都道府県 1 行にまとめるため、**この形が通常**になる。
+ * **段ごとに書き分けない。** 未入電の語（「5弱以上」「未入電あり」）と震度の色は 4 段とも
+ * 同じ規則で、書き分けると片方だけ直したときに静かにずれる。
  *
- * 並びは市町村の震度の降順を保つ（`citiesByRowName` で並べ替えた順）。区域の順は、その区域で
- * 最も高い震度の順 —— 強く揺れた区域を上に出す。
+ * **震度の色（`getIntensityColor`）は値だけで決め、段では変えない。** 段の区別に使うのは
+ * 字下げ・文字の大きさと、地名の文字色（県の行だけ白、下の 3 段はグレー）、それに震度側の
+ * 太字（県の行だけ）。
+ *
+ * **カード自体が `<button>` なので、開閉は `<div role="button">` で作る**（HTML はボタンの
+ * 入れ子を許さない。長周期のトグルと同じ作法）。開けない段には `role` も `tabIndex` も
+ * 与えない —— 押せない行がタブ移動で止まると邪魔になる。
  */
-export function groupCitiesByArea(cities: JMAQuakeCity[]): [string, JMAQuakeCity[]][] {
-  const areas = new Set(cities.map(c => c.area))
-  if (areas.size <= 1) return [['', cities]]
-  const m = new Map<string, JMAQuakeCity[]>()
-  for (const c of cities) {
-    const list = m.get(c.area)
-    if (list) list.push(c)
-    else m.set(c.area, [c])
-  }
-  return [...m].sort((a, b) => Math.max(...b[1].map(c => c.scale)) - Math.max(...a[1].map(c => c.scale)))
+function IntensityRow({ label, scale, unreceived, hasUnreceived, nonJma, depth, expandKey, expanded, onToggle }: {
+  label: string
+  scale: IntensityScale
+  unreceived: boolean
+  hasUnreceived?: boolean
+  nonJma?: boolean
+  /** 字下げの段（0＝都道府県）。 */
+  depth: 0 | 1 | 2 | 3
+  /** 開閉の鍵。`null` なら開けない行。 */
+  expandKey: string | null
+  expanded: ReadonlySet<string>
+  onToggle: (key: string) => void
+}) {
+  const isOpen = expandKey != null && expanded.has(expandKey)
+  // 字下げと文字の大きさで段を示す（地名の色・太さも下で段によって変える）。
+  // **震度の色は値だけで決める** —— 段の区別に流用すると、色が二通りの意味を持つ。
+  const pad = ['pl-2', 'pl-5', 'pl-8', 'pl-11'][depth]
+  const size = depth === 0
+    ? 'text-[0.9375rem] roomy:text-[1.125rem]'
+    : depth === 1 ? 'text-[0.875rem] roomy:text-[1rem]' : 'text-[0.8125rem] roomy:text-[0.9375rem]'
+  const interactive = expandKey != null
+  return (
+    <div
+      {...(interactive ? {
+        role: 'button' as const,
+        tabIndex: 0,
+        'aria-expanded': isOpen,
+        onClick: (e: React.MouseEvent) => { e.stopPropagation(); onToggle(expandKey) },
+        onKeyDown: (e: React.KeyboardEvent) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); onToggle(expandKey) }
+        },
+      } : {})}
+      className={`flex items-center justify-between ${pad} pr-2 py-0.5 ${depth === 0 ? 'roomy:py-1.5' : ''} ${size}${interactive ? ' cursor-pointer hover:bg-white/5' : ''}`}
+    >
+      <span
+        className={`flex-shrink-0 whitespace-nowrap${depth === 0 ? ' font-bold' : ''}`}
+        style={{ color: getIntensityColor(scale) }}
+      >
+        {/* 未入電は「5弱以上」。観測値と同じ顔で出すと、実際にはもっと強い可能性があることが
+            伝わらない。EEW の「上限を定めない予想震度」と同じ語を同じヘルパーで付ける。 */}
+        震度{getIntensityLabelWithOrAbove(scale, unreceived)}
+      </span>
+      <span style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}>
+        {label}
+        {/* 気象庁以外が運用する観測点。名前から `＊` を外してある分をここで伝える。 */}
+        {nonJma && (
+          <span className="ml-1.5 text-[0.6875rem] roomy:text-[0.8125rem]" style={{ color: '#9ca3af' }} title={NON_JMA_BADGE_TITLE}>
+            {NON_JMA_BADGE_LABEL}
+          </span>
+        )}
+        {/* **「あり」を付けて範囲の話にする。** 未入電は地点単位の事実なので、「〇〇県 未入電」
+            だと県が丸ごと未入電に読める。どの地点かは上のブロックが示す。語は気象庁のものを
+            そのまま使い、読み上げとも揃える。 */}
+        {hasUnreceived && (
+          <span
+            className="ml-1.5 text-[0.75rem] roomy:text-[0.875rem]"
+            style={{ color: '#9ca3af' }}
+            title="この範囲に、震度が届いていない観測点があります"
+          >
+            未入電あり
+          </span>
+        )}
+        {interactive && (
+          <span className="ml-1.5 text-[0.75rem] roomy:text-[0.875rem]" style={{ color: '#9ca3af' }}>
+            {isOpen ? '▾' : '▸'}
+          </span>
+        )}
+      </span>
+    </div>
+  )
 }
 
 /** issue.type に応じたバッジの Tailwind クラスを返す。 */
@@ -116,21 +179,49 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
   const stationData = useStationCoords()
 
   /**
+   * 開いている段。**既定はどこも畳んである。**
+   *
+   * 電文は県・一次細分区域・市町村・観測点の 4 段を持つ（→ docs/spec/quake-spec.md §8
+   * 「震度一覧は 4 段の入れ子」。観測点と市町村の紐付けは同 §5）。
+   * 平らに並べると能登本震で県 45 行に対し区域 119 行・観測点 2829 行になり、カード 1 枚で
+   * 画面が埋まる。見たいところだけ開く。
+   *
+   * **市町村の鍵は区域名と組にする** —— 同じ名前の市町村が別の区域にありうる。
+   * 地震ごとに独立した状態（このコンポーネントが地震 1 件につき 1 つ作られる）。
+   */
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
+  const toggle = (key: string) => setExpanded(prev => {
+    const next = new Set(prev)
+    if (next.has(key)) next.delete(key); else next.add(key)
+    return next
+  })
+
+  /**
    * 未入電の点を切り分けた結果と、名前の解決に使う索引。**バッジとブロックで共有する。**
    * 別々に解決すると、片方だけが名前を引けたときに「印は出るのに地点が出ない」
    * （またはその逆）という自己矛盾が起きる。
    *
-   * **観測点の所属を引けない場合、印を付ける行が決まらない。** DMDATA は観測点を `pref: ''` で
-   * 積むため、座標テーブルが未読み込みのあいだ（起動直後の数百 ms）や、電文の観測点が
-   * テーブルに無い場合は県も区域も引けない。そのときは印が出ないが、**ブロックには地点名が
-   * 出る**ので情報自体は失われない（→ docs/spec/quake-spec.md §4）。
+   * **区域は電文が言っているものを先に使う**（`EarthquakePoint.area`）。行の組み立て
+   * （`buildIntensityRows`）と同じ優先順位にしておかないと、座標テーブルを引けない観測点で
+   * **行には出るのに印だけ付かない**という食い違いになる。
+   *
+   * **それでも所属を引けない場合、印を付ける行が決まらない。** DMDATA は観測点を `pref: ''` で
+   * 積むため、区域を持たない経路（P2PQuake）で座標テーブルが未読み込みのあいだ（起動直後の
+   * 数百 ms）や、電文の観測点がテーブルに無い場合は県も区域も引けない。そのときは印が出ないが、
+   * **ブロックには地点名が出る**ので情報自体は失われない（→ docs/spec/quake-spec.md §4）。
    */
   const unreceivedIndexes = useMemo(() => {
     const stationPrefIndex = stationData ? buildStationPrefIndex(stationData) : null
     const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
+    // 区域 → 県は**行の組み立てと同じ引き方を共有する**（`makeAreaPrefResolver`）。手で
+    // 優先順位を揃えると、片方だけ直したときに黙ってずれる（実際にそれで、行は出るのに
+    // 印だけ付かない状態を作った）。
+    const prefOfArea = makeAreaPrefResolver(quake.cities ?? [], name => areaPrefIndex?.get(name) ?? null)
     const prefOf = (p: EarthquakePoint): string =>
-      p.pref || areaPrefIndex?.get(p.addr) || stationPrefIndex?.get(p.addr) || ''
+      p.pref || prefOfArea(p.addr) || stationPrefIndex?.get(p.addr)
+      || (p.area ? prefOfArea(p.area) ?? '' : '') || ''
     const regionOfStation = (p: EarthquakePoint): string | null => {
+      if (p.area) return p.area
       const pref = prefOf(p)
       return pref && stationData ? lookupStationRegion(stationData, pref, p.addr) : null
     }
@@ -139,100 +230,18 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
       prefOf(p),
     ])
     return { stationPrefIndex, areaPrefIndex, prefOf, regionOfStation, stations, areas }
-  }, [quake.points, stationData])
-
-  // 行の見出し → その下にぶら下げる市町村（電文の `Pref/Area/City`）。
-  //
-  // **行の見出しは都道府県名にも区域名にもなる**（県内で震度が割れているときだけ区域単位で
-  // 並ぶ。→ `prefGroups`）。**索引を片方だけで作ると、もう片方の形の電文で 1 件も出ない** ——
-  // 区域名だけで引いていて、県単位にまとまるテストデータで何も出なかった。両方の鍵で引く。
-  // DMDATA の XML 経路でのみ入り、P2PQuake 経路では空。
-  const citiesByRowName = useMemo(() => {
-    const m = new Map<string, JMAQuakeCity[]>()
-    const add = (key: string, c: JMAQuakeCity) => {
-      if (!key) return
-      const list = m.get(key)
-      if (list) list.push(c)
-      else m.set(key, [c])
-    }
-    for (const c of quake.cities ?? []) {
-      add(c.area, c)
-      // 区域名と県名が同じ電文（区域を 1 つしか持たない県）で二重に積まないようにする
-      if (c.pref !== c.area) add(c.pref, c)
-    }
-    // 震度の降順。同値は電文の順（気象庁の並び）を保つ ―― `sort` は安定なので入れ替わらない。
-    for (const list of m.values()) list.sort((a, b) => b.scale - a.scale)
-    return m
-  }, [quake.cities])
+  }, [quake.points, quake.cities, stationData])
 
   const prefGroups = useMemo(() => {
     if (!isSelected || !quake.points.length) return []
 
-    // 震度と一緒に「未入電か」を持ち回る。**名前だけで後から引かないこと** ——
-    // 同じ区域に観測値と未入電が混ざったとき、勝った観測値にまで印が付く。
-    // 同じ震度なら**観測値を採る**。並び順で結果が変わらないようにするため（電文は 1 つの
-    // 区域につき 1 点しか持たないので現状は起きないが、順序依存を残す理由も無い）。
-    type Entry = { scale: number; unreceived: boolean }
-    const higher = (a: Entry | undefined, b: Entry): Entry => {
-      if (!a) return b
-      if (a.scale !== b.scale) return a.scale > b.scale ? a : b
-      return a.unreceived ? b : a
-    }
-
-    // pref 設定済みの点（都道府県ロールアップ点）→ 都道府県別の最大震度とする
-    const prefMax = new Map<string, Entry>()
-    for (const p of quake.points) {
-      if (!p.pref) continue
-      prefMax.set(p.pref, higher(prefMax.get(p.pref), { scale: p.scale, unreceived: !!p.unreceived }))
-    }
-
-    // pref 未設定の一次細分区域点（JSON regions[] 由来）を実際の都道府県ごとにグルーピングし、
-    // 県内全区域が同じ震度で揃っていれば「〇〇県」1件にまとめる（TTS 読み上げと同じ判定）。
-    // 既に prefectures[] 側にデータがある都道府県は、行の重複を避けるため区域側を無視する。
-    const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
-    const prefAreaNames = stationData ? buildPrefAreaNamesIndex(stationData) : null
-    const areaByPref = new Map<string, Map<string, Entry>>()
-    for (const p of quake.points) {
-      if (p.pref || !p.isArea) continue
-      const pref = areaPrefIndex?.get(p.addr)
-      if (!pref || prefMax.has(pref)) continue
-      const set = areaByPref.get(pref) ?? new Map<string, Entry>()
-      set.set(p.addr, higher(set.get(p.addr), { scale: p.scale, unreceived: !!p.unreceived }))
-      areaByPref.set(pref, set)
-    }
-
-    const result = new Map<string, Entry>(prefMax)
-    for (const [pref, addrScales] of areaByPref) {
-      const fullSet = prefAreaNames?.get(pref)
-      const scales = new Set([...addrScales.values()].map(e => e.scale))
-      // **未入電を含む県はまとめない。** 階級は下限へ寄せてあるので、観測した5弱と
-      // 「5弱以上・未入電」は `scale` では区別できず、県内が「同じ震度」に見えてしまう。
-      // まとめると、印を全区域に広げれば観測値を未入電と偽り、落とせば**実際にはもっと
-      // 強いかもしれない区域があること**が消える。区域のまま並べれば、どちらも起きない。
-      const hasUnreceived = [...addrScales.values()].some(e => e.unreceived)
-      const isWholePref = fullSet != null && fullSet.size > 0
-        && addrScales.size === fullSet.size
-        && [...addrScales.keys()].every(n => fullSet.has(n))
-        && scales.size === 1
-        && !hasUnreceived
-      if (isWholePref) {
-        result.set(pref, { scale: [...scales][0], unreceived: false })
-      } else {
-        for (const [name, entry] of addrScales) result.set(name, entry)
-      }
-    }
-
-    // 震度の降順。**同じ震度どうしは気象庁の標準順（北から南）で並べる。**
-    // ここを震度だけで並べると、`sort` が安定なぶん Map の挿入順＝電文が点を並べた順が残る。
-    // 電文の並びは種別ごとに違う（例: 県ごとにまとまる／区域と観測点が別々にまとまる）ので、
-    // 電文の書式が変わるだけで画面の並びが黙って動く。読み上げと同じ索引で並べて断ち切る。
     // 「未入電あり」の印は、**その範囲に未入電の地点が 1 つでもあるか**で出す。行の最大が
     // 未入電かどうかでは判定しない —— 区域・県の最大震度は配下の最大なので、1 点でも観測値が
     // 届けばそちらが勝つ。最大だけを見ると「最大は観測できたが別の地点は未入電」という
     // **最も起きやすい形**で印が消える（→ docs/spec/quake-spec.md §4）。
     // **ブロックと同じ切り分け結果から作る**（`unreceivedIndexes`）。別々に解決すると、
     // 片方だけが名前を引けたときに「印は出るのに地点が出ない」（またはその逆）になる。
-    const { prefOf, regionOfStation, stations: unreceivedStations, areas: unreceivedAreaPoints } = unreceivedIndexes
+    const { stationPrefIndex, prefOf, regionOfStation, stations: unreceivedStations, areas: unreceivedAreaPoints } = unreceivedIndexes
     const unreceivedPrefs = new Set<string>()
     const unreceivedAreas = new Set<string>()
     for (const p of [...unreceivedStations, ...unreceivedAreaPoints]) {
@@ -246,17 +255,19 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
       }
     }
 
+    // 組み立ては `buildIntensityRows` に置いてある（電文の点だけを扱う純関数として試せるように）。
+    // ここでは座標テーブル由来の索引を渡すだけ。
+    const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
     const order = stationData ? buildRegionOrderIndex(stationData) : null
-    return Array.from(result.entries())
-      .map(([pref, { scale, unreceived }]) => ({
-        pref,
-        scale,
-        unreceived,
-        hasUnreceived: unreceivedPrefs.has(pref) || unreceivedAreas.has(pref),
-      }))
-      .filter(({ scale }) => scale >= 0)
-      .sort(byValueDescThenRegion(g => g.scale, g => g.pref, order))
-  }, [isSelected, quake.points, stationData, unreceivedIndexes])
+    return buildIntensityRows(quake.points, quake.cities ?? [], {
+      prefOfArea: name => areaPrefIndex?.get(name) ?? null,
+      prefOfStation: name => stationPrefIndex?.get(name) ?? null,
+      regionOfStation: (pref, addr) => (stationData ? lookupStationRegion(stationData, pref, addr) : null),
+      unreceivedPrefs,
+      unreceivedAreas,
+      rank: name => regionOrderRank(name, order),
+    })
+  }, [isSelected, quake.points, quake.cities, stationData, unreceivedIndexes])
 
   /**
    * 「震度を入手していない地点」。**未入電は観測点 1 つ 1 つに付く事実**なので、地点名で見せる
@@ -665,73 +676,82 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                     </div>
                   </div>
                 )}
-                {prefGroups.map(({ pref, scale, unreceived, hasUnreceived }, idx) => (
+                {prefGroups.map((prefRow, idx) => (
                   <div
-                    key={pref}
+                    key={prefRow.pref}
                     className="rounded"
                     style={{ backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent' }}
                   >
-                  <div className="flex items-center justify-between px-2 py-1 roomy:py-1.5">
-                    <span
-                      className="font-bold flex-shrink-0 whitespace-nowrap text-[0.9375rem] roomy:text-[1.125rem]"
-                      style={{ color: getIntensityColor(scale) }}
-                    >
-                      {/* 未入電は「5弱以上」。観測値と同じ顔で出すと、実際にはもっと強い
-                          可能性があることが伝わらない。EEW の「上限を定めない予想震度」と
-                          同じ語を同じヘルパーで付ける。 */}
-                      震度{getIntensityLabelWithOrAbove(scale, unreceived)}
-                    </span>
-                    <span className="text-white text-[0.9375rem] roomy:text-[1.125rem]">
-                      {pref}
-                      {/* **「あり」を付けて範囲の話にする。** 未入電は地点単位の事実なので、
-                          「〇〇県 未入電」だと県が丸ごと未入電に読める。どの地点かは上の
-                          ブロックが示す。語は気象庁のものをそのまま使い、読み上げとも揃える。 */}
-                      {hasUnreceived && (
-                        <span
-                          className="ml-1.5 text-[0.75rem] roomy:text-[0.875rem]"
-                          style={{ color: '#9ca3af' }}
-                          title="この範囲に、震度が届いていない観測点があります"
-                        >
-                          未入電あり
-                        </span>
-                      )}
-                    </span>
-                  </div>
-                  {/* その行の市町村（電文の `City`）。区域と観測点のあいだの粒度で、
-                      気象庁の発表単位のひとつ。**行が増えるので詳細表示にだけ出す。**
-                      行の見出しは区域名にも都道府県名にもなり、索引は両方の鍵を持つ
-                      （→ `citiesByRowName`）ので、どちらの形の行にもぶら下がる。 */}
-                  {(citiesByRowName.get(pref) ?? []).length > 0 && (
-                    <div className="flex flex-col gap-0.5 px-2 pb-1 text-[0.75rem] roomy:text-[0.875rem]">
-                      {/* **区域が複数にまたがるときは区域ごとに分ける。** DMDATA の電文は
-                          `Pref/MaxInt` を必ず持つため、上の行は事実上いつも都道府県単位になる
-                          （区域単位に割れるのは区域点しか持たない P2PQuake 経路）。区域の別を
-                          示さずに並べると、石川県の行に能登と加賀の市町村が区別なく混ざる。 */}
-                      {groupCitiesByArea(citiesByRowName.get(pref)!).map(([area, list]) => (
-                        <div key={area} className="flex flex-wrap gap-x-3 gap-y-0.5">
-                          {area && (
-                            <span className="flex-shrink-0" style={{ color: '#6b7280' }}>{area}</span>
-                          )}
-                          {list.map(c => (
-                            <span key={c.name} className="text-secondary">
-                              <span style={{ color: getIntensityColor(c.scale) }}>
-                                {getIntensityLabelWithOrAbove(c.scale, !!c.unreceived)}
-                              </span>
-                              <span className="ml-1 text-white">{c.name}</span>
-                              {/* 観測できた震度がありつつ配下に未入電の観測点もある形。
-                                  都道府県の行と同じ語にする（「4以上」と書くと観測できた値を
-                                  下限のように見せてしまう）。 */}
-                              {c.hasUnreceived && (
-                                <span className="ml-1" style={{ color: '#9ca3af' }} title="この市町村に、震度が届いていない観測点があります">
-                                  未入電あり
-                                </span>
-                              )}
-                            </span>
-                          ))}
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                    <IntensityRow
+                      label={prefRow.pref}
+                      scale={prefRow.scale}
+                      unreceived={prefRow.unreceived}
+                      hasUnreceived={prefRow.hasUnreceived}
+                      depth={0}
+                      expandKey={prefRow.regions.length > 0 ? `pref:${prefRow.pref}` : null}
+                      expanded={expanded}
+                      onToggle={toggle}
+                    />
+                    {expanded.has(`pref:${prefRow.pref}`) && prefRow.regions.map(region => (
+                      <div key={region.name}>
+                        <IntensityRow
+                          label={region.name}
+                          scale={region.scale}
+                          unreceived={region.unreceived}
+                          hasUnreceived={region.hasUnreceived}
+                          depth={1}
+                          expandKey={region.cities.length > 0 || region.stations.length > 0 ? `area:${region.name}` : null}
+                          expanded={expanded}
+                          onToggle={toggle}
+                        />
+                        {expanded.has(`area:${region.name}`) && (
+                          <>
+                            {region.cities.map(city => (
+                              <div key={city.name}>
+                                <IntensityRow
+                                  label={city.name}
+                                  scale={city.scale}
+                                  unreceived={city.unreceived}
+                                  hasUnreceived={city.hasUnreceived}
+                                  depth={2}
+                                  expandKey={city.stations.length > 0 ? `city:${region.name}/${city.name}` : null}
+                                  expanded={expanded}
+                                  onToggle={toggle}
+                                />
+                                {expanded.has(`city:${region.name}/${city.name}`) && city.stations.map(st => (
+                                  <IntensityRow
+                                    key={st.name}
+                                    label={st.name}
+                                    scale={st.scale}
+                                    unreceived={st.unreceived}
+                                    nonJma={st.nonJma}
+                                    depth={3}
+                                    expandKey={null}
+                                    expanded={expanded}
+                                    onToggle={toggle}
+                                  />
+                                ))}
+                              </div>
+                            ))}
+                            {/* 市町村に紐付かない観測点（P2PQuake 経路はすべてこちら）。
+                                → `IntensityRegionRow.stations` */}
+                            {region.stations.map(st => (
+                              <IntensityRow
+                                key={st.name}
+                                label={st.name}
+                                scale={st.scale}
+                                unreceived={st.unreceived}
+                                nonJma={st.nonJma}
+                                depth={2}
+                                expandKey={null}
+                                expanded={expanded}
+                                onToggle={toggle}
+                              />
+                            ))}
+                          </>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 ))}
               </div>

@@ -490,17 +490,17 @@ describe('EEW 発報テストの報の推移', () => {
     return list[0]
   }
 
-  it('続報は報番号と発表時刻だけを進め、震源時刻は初報のまま保つ', () => {
+  it('続報は報番号と発表時刻だけを進め、震源時刻は初報のまま保つ', async () => {
     const h = setup()
 
-    act(() => { h.current.simulateEEWForecast() })
+    await act(async () => { await h.current.simulateEEWForecast() })
     const first = onlyEEW(h)
     expect(first.issue?.serial).toBe('1')
     expect(first.isFinal).toBeFalsy()
 
     // 沈黙時間（10 秒）より短い間隔なら続報になる
     act(() => { vi.advanceTimersByTime(3_000) })
-    act(() => { h.current.simulateEEWForecast() })
+    await act(async () => { await h.current.simulateEEWForecast() })
     const second = onlyEEW(h)
 
     expect(second.issue?.serial).toBe('2')
@@ -516,10 +516,10 @@ describe('EEW 発報テストの報の推移', () => {
     expect(second.id).not.toBe(first.id)
   })
 
-  it('最終報も独立した 1 報として報番号を進める', () => {
+  it('最終報も独立した 1 報として報番号を進める', async () => {
     const h = setup()
 
-    act(() => { h.current.simulateEEWForecast() })
+    await act(async () => { await h.current.simulateEEWForecast() })
     const first = onlyEEW(h)
 
     // 再クリックが無いまま沈黙時間が過ぎると最終報が確定する
@@ -533,11 +533,11 @@ describe('EEW 発報テストの報の推移', () => {
 
   // activeEEWs は取消を受けても直前の確定状態を保つ（表示を空にしないための実装）ため、
   // 取消電文そのものの形は state からは見えない。onLiveEvent に届く生の電文で確かめる。
-  it('誤報取消も独立した 1 報として報番号を進め、対象地域を持たない', () => {
+  it('誤報取消も独立した 1 報として報番号を進め、対象地域を持たない', async () => {
     const events: AppEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
 
-    act(() => { h.current.simulateEEWRetraction() })
+    await act(async () => { await h.current.simulateEEWRetraction() })
     act(() => { vi.advanceTimersByTime(10_000) })
 
     const eews = events.filter((e): e is EEWAlert => e.kind === 'eew')
@@ -564,11 +564,11 @@ describe('EEW 発報テストの報の推移', () => {
 
   // 取消しの概要（電文の `Body/Text`）は XML を読む dmdataParser でしか作れない。
   // 津波の解除テストと同じ形で、バリアントの境目を正・対照の対で固定する。
-  it('DMDSS 版: 誤報取消は取消しの概要を持つ', () => {
+  it('DMDSS 版: 誤報取消は取消しの概要を持つ', async () => {
     const events: AppEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
 
-    act(() => { h.current.simulateEEWRetraction() })
+    await act(async () => { await h.current.simulateEEWRetraction() })
     act(() => { vi.advanceTimersByTime(10_000) })
 
     const cancel = events.filter((e): e is EEWAlert => e.kind === 'eew')[1]
@@ -578,12 +578,12 @@ describe('EEW 発報テストの報の推移', () => {
 
   // 対照: standard 版の P2PQuake には対応するフィールドが無い。テストボタンが実電文の形から
   // 外れると、実機では一度も起きない表示・読み上げが「起きる」ように見える
-  it('standard 版: 取消しの概要を持たない（P2PQuake には無い項目）', () => {
+  it('standard 版: 取消しの概要を持たない（P2PQuake には無い項目）', async () => {
     mockIsDmdss = false
     const events: AppEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
 
-    act(() => { h.current.simulateEEWRetraction() })
+    await act(async () => { await h.current.simulateEEWRetraction() })
     act(() => { vi.advanceTimersByTime(10_000) })
 
     const cancel = events.filter((e): e is EEWAlert => e.kind === 'eew')[1]
@@ -606,11 +606,28 @@ describe('津波テストの解除電文', () => {
     return [list[0], list[1]]
   }
 
-  it('DMDSS 版: 解除は区域を空にし、発表時刻を解除時点へ進める', () => {
+  /**
+   * 初回履歴の取り込みを先に流し切る。
+   *
+   * テストデータは動的 import で読むので、シミュレーション関数は Promise を返す。それを await
+   * すると**同じ待ちのあいだに初回履歴取得（`fetchDmdataTsunamis` 等）の解決も進む**ため、
+   * 順番しだいで履歴の `setState` が、いま流したテスト電文を上書きする。症状は
+   * **「`onLiveEvent` には 2 通とも届いているのにカードが空」** —— 電文の形を見る assertion は
+   * 通り、state を見る assertion だけが落ちるので、電文側だけ確かめていると気づけない。
+   *
+   * `setup()` の直後に空の act を 1 度回して初回取り込みを終わらせておけば、以後は競合しない。
+   */
+  async function flushInitialLoad() {
+    await act(async () => {})
+  }
+
+  it('DMDSS 版: 解除は区域を空にし、発表時刻を解除時点へ進める', async () => {
     const events: AppEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
 
-    act(() => { h.current.simulateTsunamiWatch() })
+    await flushInitialLoad()
+
+    await act(async () => { await h.current.simulateTsunamiWatch() })
     act(() => { vi.advanceTimersByTime(90_000) })
 
     const [first, cancel] = tsunamiPair(events)
@@ -633,9 +650,10 @@ describe('津波テストの解除電文', () => {
   // 取消電文だけが持つ項目は、表示中のカードを土台にする更新で**名指しで移さないと落ちる**。
   // パーサーも読み上げも通っているのに画面にだけ出ない、という形になり、型検査でも捕まらない
   // （オプショナルなので）。実際にブラウザ確認で見つかった。
-  it('DMDSS 版: 誤報取消の理由をカードへ引き継ぐ', () => {
+  it('DMDSS 版: 誤報取消の理由をカードへ引き継ぐ', async () => {
     const h = setup()
-    act(() => { h.current.simulateTsunamiRetraction() })
+    await flushInitialLoad()
+    await act(async () => { await h.current.simulateTsunamiRetraction() })
     act(() => { vi.advanceTimersByTime(90_000) })
 
     expect(h.current.tsunamis[0]?.cancelReason).toBe('retracted')
@@ -643,21 +661,24 @@ describe('津波テストの解除電文', () => {
   })
 
   // 対照: 解除（`lifted`）は取消電文ではないので理由を持たない。**無いものを作らない**
-  it('解除では取消の理由を持たない', () => {
+  it('解除では取消の理由を持たない', async () => {
     const h = setup()
-    act(() => { h.current.simulateTsunamiWatch() })
+    await flushInitialLoad()
+    await act(async () => { await h.current.simulateTsunamiWatch() })
     act(() => { vi.advanceTimersByTime(90_000) })
 
     expect(h.current.tsunamis[0]?.cancelReason).toBe('lifted')
     expect(h.current.tsunamis[0]?.cancelText).toBeUndefined()
   })
 
-  it('standard 版: 解除理由と eventId を持たない（P2PQuake では判別できない項目）', () => {
+  it('standard 版: 解除理由と eventId を持たない（P2PQuake では判別できない項目）', async () => {
     mockIsDmdss = false
     const events: AppEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
 
-    act(() => { h.current.simulateTsunamiRetraction() })
+    await flushInitialLoad()
+
+    await act(async () => { await h.current.simulateTsunamiRetraction() })
     act(() => { vi.advanceTimersByTime(90_000) })
 
     const [first, cancel] = tsunamiPair(events)

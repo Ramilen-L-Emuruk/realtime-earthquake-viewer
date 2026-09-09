@@ -1383,6 +1383,10 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     // `City` から親を辿ってもよいが、`getElementsByTagName` の平坦な走査と混ぜると
     // 区域を持たない電文（震度速報）で親が無い場合の扱いが分かれるため、直前の区域名を覚える。
     let currentAreaName = ''
+    // 観測点がどの市町村に属するかも同じく並び順で決まる（City → その配下の IntensityStation）。
+    // **区域が変わったら空に戻す** —— 戻さないと、市町村を持たない区域の観測点に隣の区域の
+    // 市町村名が付く。座標表は観測点の所属市町村を持たないので、ここで拾わないと後から引けない。
+    let currentCityName = ''
     const descendants = prefEl.getElementsByTagName('*')
     for (let i = 0; i < descendants.length; i++) {
       const el = descendants[i]
@@ -1409,6 +1413,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
           areaTally.unreadable(areaName || codeOnlyLabel(areaCode), areaRawInt)
         }
         currentAreaName = areaName
+        currentCityName = ''
         continue
       }
 
@@ -1443,6 +1448,9 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
         } else {
           cityTally.unreadable(cityName || codeOnlyLabel(cityCode), cityRawInt || cityCondition)
         }
+        // 震度を読めなかった市町村でも名前は覚える。配下の観測点は読めていることがあり、
+        // その所属を落とす理由が無い（名前も読めなければ空のまま）。
+        currentCityName = cityName
         continue
       }
 
@@ -1462,6 +1470,13 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
           ...(unreceived && { unreceived: true }),
           ...(stNonJma && { nonJma: true }),
           ...(stCode && { code: stCode }),
+          // 所属する市町村と一次細分区域（→ `EarthquakePoint.city` / `.area`）。
+          // **どちらも座標表からは引けない**ので、電文の並びで拾えるここでしか持てない。
+          // 区域まで持つのは、市町村名が全国で一意でないため（同名の市町村を取り違えない）
+          // ・市町村の震度が読めなかった観測点の置き場所を残すため・座標表が無くても
+          // 区域へ置けるようにするため。3 つの理由は型の注記にある。
+          ...(currentCityName && { city: currentCityName }),
+          ...(currentAreaName && { area: currentAreaName }),
         })
         stationTally.readable()
       } else {

@@ -1,4 +1,4 @@
-import type { EarthquakePoint, IntensityScale } from '../types/earthquake'
+import type { EarthquakePoint, IntensityScale, JMAQuakeCity } from '../types/earthquake'
 
 /**
  * 一次細分区域名 → 都道府県名 の逆引き索引（`buildAreaPrefIndex`）。
@@ -95,19 +95,49 @@ export function unreceivedUnitLabel(hasStations: boolean, hasAreas: boolean): st
   return hasStations ? '地点' : '地域'
 }
 
+/** 観測点の行（いちばん下の段）。 */
+export interface IntensityStationRow {
+  name: string
+  scale: IntensityScale
+  /** その観測点の震度が未入電 */
+  unreceived: boolean
+  /** 気象庁以外が運用する観測点（→ {@link EarthquakePoint.nonJma}） */
+  nonJma: boolean
+}
+
+/** 市町村の行（区域の行の下に並ぶ）。 */
+export interface IntensityCityRow {
+  name: string
+  scale: IntensityScale
+  /** この市町村そのものの震度が未入電（値が届いていない） */
+  unreceived: boolean
+  /** この範囲に未入電の地点がある（市町村の最大は観測できていることもある） */
+  hasUnreceived: boolean
+  stations: IntensityStationRow[]
+}
+
 /** 一次細分区域の行（都道府県の行の下に並ぶ）。 */
 export interface IntensityRegionRow {
   name: string
   scale: IntensityScale
-  /** この区域そのものの震度が未入電（値が届いていない） */
   unreceived: boolean
-  /** この範囲に未入電の地点がある（区域の最大は観測できていることもある） */
   hasUnreceived: boolean
+  cities: IntensityCityRow[]
+  /**
+   * 市町村に紐付かない観測点。
+   *
+   * **P2PQuake 経路ではこちらに全部入る** —— 観測点を市町村でまとめずに配信するため
+   * （→ {@link EarthquakePoint.city}）。市町村が読めなかった観測点もここへ落ちる。
+   */
+  stations: IntensityStationRow[]
 }
 
 /** 都道府県の行と、その下に畳んである一次細分区域。 */
-export interface IntensityPrefRow extends Omit<IntensityRegionRow, 'name'> {
+export interface IntensityPrefRow {
   pref: string
+  scale: IntensityScale
+  unreceived: boolean
+  hasUnreceived: boolean
   regions: IntensityRegionRow[]
 }
 
@@ -132,6 +162,30 @@ export interface IntensityRowDeps {
 }
 
 /**
+ * 一次細分区域 → 都道府県 を引く関数を作る。**まず電文自身に訊く。**
+ *
+ * `City` は所属する区域と都道府県の両方を名乗るので、区域がどの県のものかは電文だけで分かる
+ * （能登本震では 119 区域すべてをこれで引けた）。座標表からの逆引きは、読み込みが済むまでと
+ * 取得に失敗したときは何も返さない —— そちらだけに頼ると、その間は区域から下が画面に出ない。
+ *
+ * **行の組み立てと「未入電あり」の印で必ず同じものを使うこと。** 片方だけが電文を見る形にすると、
+ * 座標表を引けない状況で**区域の行は出るのに親の県に印が付かない**という食い違いになる。
+ * 手で優先順位を揃えるのではなく、この関数を共有して揃える。
+ *
+ * @param fallback 電文から引けなかったときの落とし先（座標表からの逆引き）
+ */
+export function makeAreaPrefResolver(
+  cities: readonly JMAQuakeCity[],
+  fallback: (areaName: string) => string | null,
+): (areaName: string) => string | null {
+  const fromTelegram = new Map<string, string>()
+  for (const c of cities) {
+    if (c.area && c.pref && !fromTelegram.has(c.area)) fromTelegram.set(c.area, c.pref)
+  }
+  return areaName => fromTelegram.get(areaName) ?? fallback(areaName)
+}
+
+/**
  * 震度一覧の行を組み立てる。**都道府県の行に、一次細分区域を畳んで持たせる。**
  *
  * **県の点があっても区域を捨てないこと。** 実電文は県の `MaxInt` を必ず持つ（実測 66/66）ので、
@@ -151,6 +205,7 @@ export interface IntensityRowDeps {
  */
 export function buildIntensityRows(
   points: readonly EarthquakePoint[],
+  cities: readonly JMAQuakeCity[],
   deps: IntensityRowDeps,
 ): IntensityPrefRow[] {
   type Entry = { scale: number; unreceived: boolean }
@@ -169,6 +224,8 @@ export function buildIntensityRows(
     prefMax.set(p.pref, higher(prefMax.get(p.pref), { scale: p.scale, unreceived: !!p.unreceived }))
   }
 
+  const prefOfArea = makeAreaPrefResolver(cities, deps.prefOfArea)
+
   const areaByPref = new Map<string, Map<string, Entry>>()
   const addArea = (pref: string, name: string, entry: Entry) => {
     const set = areaByPref.get(pref) ?? new Map<string, Entry>()
@@ -177,7 +234,7 @@ export function buildIntensityRows(
   }
   for (const p of points) {
     if (p.pref || !p.isArea) continue
-    const pref = deps.prefOfArea(p.addr)
+    const pref = prefOfArea(p.addr)
     if (!pref) continue
     addArea(pref, p.addr, { scale: p.scale, unreceived: !!p.unreceived })
   }
@@ -194,18 +251,114 @@ export function buildIntensityRows(
   const byScale = <T,>(scaleOf: (x: T) => number, nameOf: (x: T) => string) =>
     (a: T, b: T) => scaleOf(b) - scaleOf(a) || deps.rank(nameOf(a)) - deps.rank(nameOf(b))
 
+  // 観測点を市町村ごと・区域ごとに振り分ける。**市町村を持つのは DMDATA の経路だけ**
+  // （→ `EarthquakePoint.city`）。持たない観測点は区域へ直接ぶら下げる。
+  //
+  // **市町村の鍵は「区域＋市町村名」にする。** 市町村名は全国で一意ではない（府中市＝東京都・
+  // 広島県、伊達市＝北海道・福島県）。名前だけで束ねると、両方が載った電文で観測点が混ざり、
+  // **どちらの行にも他県の観測点が並ぶ**。区域は 1 つの県にしか属さないので、組にすれば足りる。
+  // 区切りは地名に現れない文字にする（'/' や空白は市町村名・区域名のどちらにも入りうるので、
+  // 別の組み合わせが同じ鍵になりうる）。**エスケープで書くこと** —— 生の制御文字を置くと
+  // 目に見えず、grep がこのファイルをバイナリとして扱う。
+  const CITY_KEY_SEP = '\u0000'
+  const cityKey = (area: string, city: string) => `${area}${CITY_KEY_SEP}${city}`
+  const stationsByCity = new Map<string, IntensityStationRow[]>()
+  const stationsByRegion = new Map<string, IntensityStationRow[]>()
+  const pushInto = (map: Map<string, IntensityStationRow[]>, key: string, row: IntensityStationRow) => {
+    const list = map.get(key)
+    if (list) list.push(row); else map.set(key, [row])
+  }
+  for (const p of points) {
+    if (p.isArea) continue
+    const row: IntensityStationRow = {
+      name: p.addr,
+      scale: p.scale,
+      unreceived: !!p.unreceived,
+      nonJma: !!p.nonJma,
+    }
+    // 区域は電文が置いたものをそのまま使う（DMDATA）。持たない経路（P2PQuake）は座標表から
+    // 逆引きする。**市町村へ入れるのは区域が分かったときだけ** —— 区域が無いと同名の市町村を
+    // 見分けられないうえ、市町村の行を作れなかったときの落とし先も無くなる。
+    const fromIndex = () => {
+      const pref = p.pref || deps.prefOfStation(p.addr) || ''
+      return (pref ? deps.regionOfStation(pref, p.addr) : null) ?? undefined
+    }
+    const region = p.area ?? fromIndex()
+    if (p.city && region) {
+      pushInto(stationsByCity, cityKey(region, p.city), row)
+      continue
+    }
+    if (!region) continue
+    pushInto(stationsByRegion, region, row)
+  }
+
+  // 市町村を区域ごとに振り分ける。電文が `City/Area` の所属を持っている（`JMAQuakeCity.area`）。
+  const citiesByRegion = new Map<string, IntensityCityRow[]>()
+  const claimedCityKeys = new Set<string>()
+  for (const c of cities) {
+    const key = cityKey(c.area, c.name)
+    claimedCityKeys.add(key)
+    const row: IntensityCityRow = {
+      name: c.name,
+      scale: c.scale,
+      unreceived: !!c.unreceived,
+      hasUnreceived: !!c.hasUnreceived,
+      stations: (stationsByCity.get(key) ?? []).sort(byScale(x => x.scale, x => x.name)),
+    }
+    const list = citiesByRegion.get(c.area)
+    if (list) list.push(row); else citiesByRegion.set(c.area, [row])
+  }
+
+  // **市町村の行を作れなかった観測点を捨てない。** 市町村の震度が読めなかった電文では
+  // `cities` にその市町村が入らない（パーサーは名前だけ覚えて観測点に付ける）。行き先が
+  // 無いままにすると、**読めていた観測点まで道連れで画面から消える**。区域は分かって
+  // いるので、その直下へ移す。
+  for (const [key, rows] of stationsByCity) {
+    if (claimedCityKeys.has(key)) continue
+    const region = key.slice(0, key.indexOf(CITY_KEY_SEP))
+    if (!region) continue
+    for (const row of rows) pushInto(stationsByRegion, region, row)
+  }
+
+  // **区域自身の震度が読めなくても、配下は出す。** 区域の行は電文の `Area/MaxInt` から
+  // 作るが、そこだけが読めない電文では配下の市町村・観測点が正常に読めていても行き先を
+  // 失う。**この形の脱落は記録にも残らない** —— 区域の読み取り失敗は「その電文の区域が
+  // 全滅したとき」しか記録しないため（部分脱落では黙る規約）。中身から震度を積み上げて
+  // 行を立てる。
+  const regionNames = new Map<string, Set<string>>()
+  const addRegionName = (pref: string, name: string) => {
+    const set = regionNames.get(pref) ?? new Set<string>()
+    set.add(name)
+    regionNames.set(pref, set)
+  }
+  for (const [pref, set] of areaByPref) for (const name of set.keys()) addRegionName(pref, name)
+  for (const name of [...citiesByRegion.keys(), ...stationsByRegion.keys()]) {
+    const pref = prefOfArea(name)
+    if (pref) addRegionName(pref, name)
+  }
+
   // **区域しか無い県も出す。** 電文が県の `MaxInt` を必ず持つのは実測での話で、資料が
   // 保証しているわけではない。区域だけが届いた県を落とすと、その県が画面から消える。
-  const prefNames = new Set<string>([...prefMax.keys(), ...areaByPref.keys()])
+  const prefNames = new Set<string>([...prefMax.keys(), ...regionNames.keys()])
   return Array.from(prefNames)
     .map(pref => {
-      const regions = Array.from(areaByPref.get(pref) ?? [])
-        .map(([name, { scale, unreceived }]) => ({
-          name,
-          scale: scale as IntensityScale,
-          unreceived,
-          hasUnreceived: deps.unreceivedAreas.has(name),
-        }))
+      const regions = Array.from(regionNames.get(pref) ?? [])
+        .map(name => {
+          const cityRows = (citiesByRegion.get(name) ?? []).sort(byScale(c => c.scale, c => c.name))
+          const stationRows = (stationsByRegion.get(name) ?? []).sort(byScale(x => x.scale, x => x.name))
+          // 電文が区域の値を持っていればそれが正。無ければ配下の最大で代用する。
+          const own = areaByPref.get(pref)?.get(name)
+            ?? [...cityRows, ...stationRows].reduce<Entry | undefined>(
+              (a, r) => higher(a, { scale: r.scale, unreceived: r.unreceived }), undefined)
+          return {
+            name,
+            scale: (own?.scale ?? -1) as IntensityScale,
+            unreceived: !!own?.unreceived,
+            hasUnreceived: deps.unreceivedAreas.has(name),
+            cities: cityRows,
+            stations: stationRows,
+          }
+        })
         .filter(r => r.scale >= 0)
         .sort(byScale(r => r.scale, r => r.name))
       // 県の点が無ければ配下の区域の最大を県の値にする。
