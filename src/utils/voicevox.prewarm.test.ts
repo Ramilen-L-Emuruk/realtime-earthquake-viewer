@@ -60,6 +60,12 @@ vi.mock('./ttsStationReadings', async (importOriginal) => ({
   getTtsStationReadingsCache: () => null,
 }))
 
+// 震央地名の句割りも同様に対象外（実物のままだと取得とタイムアウト待ちが走る）。
+vi.mock('./ttsEpicenterAccents', () => ({
+  loadTtsEpicenterAccents: async () => ({}),
+  getTtsEpicenterAccentsCache: () => null,
+}))
+
 // ---- fetch の代役 ----------------------------------------------------------
 const fetched: string[] = []
 let synthesisDelay = 0

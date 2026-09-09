@@ -1,6 +1,8 @@
 import { getAudioContext, getMasterInput } from './alertSound'
 import { findPhraseBreakMatch, getTtsPhraseBreakDictCache, isPlaceNameKey, loadTtsPhraseBreakDict } from './ttsPhraseBreakDict'
-import { getTtsStationReadingsCache, loadTtsStationReadings, mergeSpeechDicts } from './ttsStationReadings'
+import { getTtsStationReadingsCache, loadTtsStationReadings } from './ttsStationReadings'
+import { getTtsEpicenterAccentsCache, loadTtsEpicenterAccents } from './ttsEpicenterAccents'
+import { mergeSpeechDicts } from './ttsGeneratedDict'
 import { log, createLogThrottle } from './logger'
 
 /**
@@ -462,8 +464,9 @@ async function buildAccentPhrases(
 let mergedSpeechDict: {
   base: Record<string, string> | null
   stations: Record<string, string> | null
+  epicenters: Record<string, string> | null
   merged: Record<string, string> | null
-} = { base: null, stations: null, merged: null }
+} = { base: null, stations: null, epicenters: null, merged: null }
 
 /**
  * 句区切り辞書（手で書いたアクセント付き）と、震度観測点名の読み（気象庁のふりがなから生成）を
@@ -472,11 +475,14 @@ let mergedSpeechDict: {
 function speechDict(): Record<string, string> | null {
   const base = getTtsPhraseBreakDictCache()
   const stations = getTtsStationReadingsCache()
-  if (mergedSpeechDict.base === base && mergedSpeechDict.stations === stations) {
+  const epicenters = getTtsEpicenterAccentsCache()
+  if (mergedSpeechDict.base === base
+    && mergedSpeechDict.stations === stations
+    && mergedSpeechDict.epicenters === epicenters) {
     return mergedSpeechDict.merged
   }
-  const merged = mergeSpeechDicts(base, stations)
-  mergedSpeechDict = { base, stations, merged }
+  const merged = mergeSpeechDicts(base, stations, epicenters)
+  mergedSpeechDict = { base, stations, epicenters, merged }
   return merged
 }
 
@@ -491,6 +497,9 @@ async function loadSpeechDicts(onPhraseBreakError: (err: unknown) => void): Prom
     loadTtsPhraseBreakDict().catch(onPhraseBreakError),
     loadTtsStationReadings().catch((err) => {
       log.debug('[VoiceVox] 観測点の読みの取得に失敗（観測点名の誤読が残る）', err)
+    }),
+    loadTtsEpicenterAccents().catch((err) => {
+      log.debug('[VoiceVox] 震央地名の句割りの取得に失敗（長い震央地名の抑揚が崩れる）', err)
     }),
   ])
 }

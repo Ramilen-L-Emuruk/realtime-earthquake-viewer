@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { DATA_FETCH_TIMEOUT_MS } from './fetchJson'
-import { mergeSpeechDicts, STATION_READINGS_FETCH_TIMEOUT_MS } from './ttsStationReadings'
+import { GENERATED_DICT_FETCH_TIMEOUT_MS, mergeSpeechDicts } from './ttsGeneratedDict'
 // 対象モジュールはここで一度読む。テスト本体の中で初めて読むと、初回の解決・変換が
 // 1 件目の所要時間に丸ごと乗って時間切れになる（→ akamaiClock.test.ts 冒頭）。
 import './ttsStationReadings'
@@ -44,7 +44,7 @@ describe('loadTtsStationReadings', { timeout: 15_000 }, () => {
 
   it('読み上げ本体を待たせないよう、生成データ共通より短いタイムアウトを使う', () => {
     // 取れなくても観測点名の誤読が残るだけ。ここで長く待つと読み上げがその分遅れる。
-    expect(STATION_READINGS_FETCH_TIMEOUT_MS).toBeLessThan(DATA_FETCH_TIMEOUT_MS)
+    expect(GENERATED_DICT_FETCH_TIMEOUT_MS).toBeLessThan(DATA_FETCH_TIMEOUT_MS)
   })
 
   it('200 でも中身が空なら失敗として扱う', async () => {
@@ -94,6 +94,7 @@ describe('実データの部分一致の安全性', () => {
   const readings = readJson('public/data/tts-station-readings.json') as Record<string, string>
   const phraseBreak = readJson('public/data/tts-phrase-break-dict.json') as
     Record<string, string> & { _standalone?: string[]; _terms?: string[] }
+  const epicenters = readJson('public/data/tts-epicenter-accents.json') as Record<string, string>
   const names = Object.keys(readings).filter(key => !key.startsWith('_'))
   const stationCoords = readJson('public/data/station-coords.json') as {
     stations: Record<string, unknown>
@@ -108,24 +109,31 @@ describe('実データの部分一致の安全性', () => {
    * 実データの辞書を読み込ませたモジュールで、読み上げ文に対する一致を引く。
    *
    * `isStandaloneKey` はモジュール内のキャッシュだけを見るので、**実データで検査するには
-   * 両方の辞書を実際に読み込ませないといけない**（観測点名が単独語キーとして扱われるのは
+   * 3 つの辞書を実際に読み込ませないといけない**（生成辞書のキーが単独語キーとして扱われるのは
    * 読み込み済みのときだけ）。
    */
   async function loadedMatch(text: string) {
     vi.resetModules()
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => okResponse(
-      String(url).includes('tts-station-readings') ? readings : phraseBreak,
-    )))
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      const path = String(url)
+      if (path.includes('tts-station-readings')) return okResponse(readings)
+      if (path.includes('tts-epicenter-accents')) return okResponse(epicenters)
+      return okResponse(phraseBreak)
+    }))
     const stations = await import('./ttsStationReadings')
+    const epi = await import('./ttsEpicenterAccents')
     const dict = await import('./ttsPhraseBreakDict')
     await stations.loadTtsStationReadings()
+    await epi.loadTtsEpicenterAccents()
     const base = await dict.loadTtsPhraseBreakDict()
-    const merged = stations.mergeSpeechDicts(base, stations.getTtsStationReadingsCache())
+    const merged = mergeSpeechDicts(
+      base, stations.getTtsStationReadingsCache(), epi.getTtsEpicenterAccentsCache(),
+    )
     return dict.findPhraseBreakMatch(text, merged ?? {})
   }
 
-  // 辞書のキーは読み上げ文の中で部分一致する。**衝突しうる面は 3 つある** ——
-  // 区域名・都道府県名、観測点名どうし、そして手で書いた句区切り辞書のキー。
+  // 辞書のキーは読み上げ文の中で部分一致する。**衝突しうる面は 5 つある** —— 区域名・都道府県名、
+  // 観測点名どうし、津波観測点名・予報区名、震央地名、そして手で書いた句区切り辞書のキー。
   // どれか 1 つでも抜けると、正しく読めていた地名が語中で切られる（そのうえ間まで挟まる）。
   it('観測点名が一次細分区域名・都道府県名の内部に現れない', () => {
     const prefs = new Set(
