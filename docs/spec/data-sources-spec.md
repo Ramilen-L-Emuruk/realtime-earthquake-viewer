@@ -14,7 +14,7 @@
 さらに以下も外部・準外部データとして扱う（「オプショナル」は設定で表示を切り替えられるもの）:
 
 - 気象庁 予報区等 GIS データ（都道府県・一次細分区域の境界／津波予報区の海岸線）
-- 気象庁 震度観測点一覧表（震度観測点の座標＋所属区域のテーブル）
+- 気象庁 震度観測点一覧表（震度観測点の座標＋所属区域のテーブルと、読み上げ用の読み）
 - 気象庁 地震月報（カタログ編）震源データ／震源リスト（長期震源カタログ）
 - GEBCO 海底地形タイル（背景・オプショナル）
 - 産総研 活断層データベース（オプショナル）
@@ -727,6 +727,7 @@ Yahoo の `hypoInfo.items` を EEW 型に変換して P2PQuake と統合する�
 | `active-faults.json` | `scripts/build-active-faults.mjs` | 全国活断層線 |
 | `plate-boundaries.json` | `scripts/build-plate-boundaries.mjs` | プレート境界線（全球・52 プレート） |
 | `tts-phrase-break-dict.json` | 手動整備 | 読み上げ用の句区切り辞書 |
+| `tts-station-readings.json` | `scripts/build-station-readings.ts` | 震度観測点名の読み（誤読する点だけ・→ [`audio-tts-spec.md`](audio-tts-spec.md) §3） |
 | `test-scenarios/index.json` | 手動 or `capture-test-scenario.ts` | 実地震テストシナリオ一覧（本体は .gitignore） |
 | `hypocenter/*.json` | `scripts/build-hypocenter-catalog.ts` | 長期震源カタログ（統計解析用・→ 下記） |
 
@@ -734,8 +735,8 @@ Yahoo の `hypoInfo.items` を EEW 型に変換して P2PQuake と統合する�
 失敗は `console` に残し、次に要求されたときに取得し直す（自動リトライは持たない）。
 
 **失敗なのは通信だけではない。** 200 が返っても中身が空・想定外の形なら失敗として扱う（県境・
-一次細分区域・観測点座標・津波予報区の 4 つ。`prefectures.ts` / `subregions.ts` / `stationCoords.ts` /
-`tsunamiZones.ts`）。ビルドや配信が壊れて `{}` や `[]` が返ると、そのままでは「取得成功・0 件」として
+一次細分区域・観測点座標・津波予報区・観測点の読みの 5 つ。`prefectures.ts` / `subregions.ts` /
+`stationCoords.ts` / `tsunamiZones.ts` / `ttsStationReadings.ts`）。ビルドや配信が壊れて `{}` や `[]` が返ると、そのままでは「取得成功・0 件」として
 通ってしまう。何が画面から消えるか・代替表示があるかはデータごとに異なる
 （[`map-rendering-spec.md`](map-rendering-spec.md) §4・§5、[`quake-spec.md`](quake-spec.md) §7.2・§7.3、
 [`tsunami-spec.md`](tsunami-spec.md) §7 を参照）。
@@ -754,15 +755,16 @@ Yahoo の `hypoInfo.items` を EEW 型に変換して P2PQuake と統合する�
 揃うため、その間の表示はちらつきにしかならない）。何が取れなかったかの詳細は `console` 側に
 あり、画面には件数だけを出す。取り直しに成功すれば表示は消える。
 
-対象は**地図の見た目に関わるデータだけ**。読み上げの句区切り辞書・実地震テストシナリオ・長期震源カタログは
+対象は**地図の見た目に関わるデータだけ**。読み上げの句区切り辞書と観測点の読み・実地震テストシナリオ・長期震源カタログは
 地図に影響せず、それぞれ音声・設定タブ・統計表示の側に固有の表示があるため数えない
 （`fetchJsonWithTimeout` の `trackStatus: false`）。**`trackStatus: false` を新しく足すときはこの列挙も直すこと。**
 
 **タイムアウト**: 応答もエラーも返らない回線で待ち続けないよう、取得は 60 秒で打ち切って上記の
 失敗として扱う（`src/utils/fetchJson.ts`）。これらは初回表示時にまとめて要求されるため、1 本ずつ
 ではなく合計サイズ（gzip 後 約 1.7MB）を基準にした値で、低速回線での正常な取得を切らないことを
-優先している。読み上げの句区切り辞書だけは読み上げ本体が取得を待つため、これより大幅に短い専用の値を使う
-（[`audio-tts-spec.md`](audio-tts-spec.md) の「辞書（読み仮名の補正）」節）。
+優先している。読み上げが使う 2 つ（句区切り辞書と観測点の読み）だけは読み上げ本体が取得を待つため、
+これより大幅に短い専用の値を使う（いずれも 5 秒。
+[`audio-tts-spec.md`](audio-tts-spec.md) の「辞書（読み仮名の補正）」節）。
 
 ### 長期震源カタログ（`public/data/hypocenter/`）
 
@@ -1196,3 +1198,7 @@ EEW の予想震度は範囲（下限・上限）で配信され、**上限が�
   情報の種別で、**解説情報だけが要約を読んでいて臨時情報と後発地震は読んでいなかった**。
   次回発表予定は続報を待つべきかの判断がそこにしか無いため出し（南海トラフのみ）、参考情報は
   固定文で長いため折りたたんで出す。
+- 2026-09-10: 生成データに震度観測点名の読み（`tts-station-readings.json`）を足した（§6）。
+  上流は座標と同じ震度観測点一覧で、これまで捨てていたふりがなを使う。生成に音声合成エンジンが
+  要る唯一のデータで、「どの点を誤読するか」を実際に読ませて判定する（→
+  [`audio-tts-spec.md`](audio-tts-spec.md) §3「震度観測点名の読み」）。
