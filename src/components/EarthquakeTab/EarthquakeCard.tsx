@@ -1,4 +1,4 @@
-import { useMemo, useRef, useEffect } from 'react'
+import { useMemo, useRef, useEffect, useState } from 'react'
 import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint } from '../../types/earthquake'
 import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
 import {
@@ -12,7 +12,7 @@ import {
 } from '../../utils/formatters'
 import { getIntensityLabelWithOrAbove, getIntensityColor, getIntensityBgColor, getDepthColor, getMagnitudeColor } from '../../utils/intensity'
 import { buildAreaPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, buildStationPrefIndex, lookupStationRegion, regionOrderRank, byValueDescThenRegion } from '../../utils/stationCoords'
-import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel } from '../../utils/quakePoints'
+import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel, buildIntensityRows } from '../../utils/quakePoints'
 import { useStationCoords } from '../../hooks/useStationCoords'
 
 /** issue.type に応じたバッジの Tailwind クラスを返す。 */
@@ -81,6 +81,15 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
   const stationData = useStationCoords()
 
   /**
+   * 一次細分区域を開いている都道府県。
+   *
+   * **既定は畳んである。** 区域は県より細かく、能登本震では県 45 行に対し区域 119 行になる。
+   * 全部並べるとカード 1 枚で画面が埋まるので、見たい県だけ開く形にした。
+   * 地震ごとに独立した状態（このコンポーネントが地震 1 件につき 1 つ作られる）。
+   */
+  const [expandedPrefs, setExpandedPrefs] = useState<ReadonlySet<string>>(() => new Set())
+
+  /**
    * 未入電の点を切り分けた結果と、名前の解決に使う索引。**バッジとブロックで共有する。**
    * 別々に解決すると、片方だけが名前を引けたときに「印は出るのに地点が出ない」
    * （またはその逆）という自己矛盾が起きる。
@@ -113,67 +122,14 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
     // 同じ区域に観測値と未入電が混ざったとき、勝った観測値にまで印が付く。
     // 同じ震度なら**観測値を採る**。並び順で結果が変わらないようにするため（電文は 1 つの
     // 区域につき 1 点しか持たないので現状は起きないが、順序依存を残す理由も無い）。
-    type Entry = { scale: number; unreceived: boolean }
-    const higher = (a: Entry | undefined, b: Entry): Entry => {
-      if (!a) return b
-      if (a.scale !== b.scale) return a.scale > b.scale ? a : b
-      return a.unreceived ? b : a
-    }
+    // **未入電の切り分けはブロックと同じ結果を使う**（`unreceivedIndexes`）。別々に解決すると、
+    // 片方だけが名前を引けたときに「印は出るのに地点が出ない」（またはその逆）になる。
+    const { stationPrefIndex, prefOf, regionOfStation, stations: unreceivedStations, areas: unreceivedAreaPoints } = unreceivedIndexes
 
-    // pref 設定済みの点（都道府県ロールアップ点）→ 都道府県別の最大震度とする
-    const prefMax = new Map<string, Entry>()
-    for (const p of quake.points) {
-      if (!p.pref) continue
-      prefMax.set(p.pref, higher(prefMax.get(p.pref), { scale: p.scale, unreceived: !!p.unreceived }))
-    }
-
-    // pref 未設定の一次細分区域点（JSON regions[] 由来）を実際の都道府県ごとにグルーピングし、
-    // 県内全区域が同じ震度で揃っていれば「〇〇県」1件にまとめる（TTS 読み上げと同じ判定）。
-    // 既に prefectures[] 側にデータがある都道府県は、行の重複を避けるため区域側を無視する。
-    const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
-    const prefAreaNames = stationData ? buildPrefAreaNamesIndex(stationData) : null
-    const areaByPref = new Map<string, Map<string, Entry>>()
-    for (const p of quake.points) {
-      if (p.pref || !p.isArea) continue
-      const pref = areaPrefIndex?.get(p.addr)
-      if (!pref || prefMax.has(pref)) continue
-      const set = areaByPref.get(pref) ?? new Map<string, Entry>()
-      set.set(p.addr, higher(set.get(p.addr), { scale: p.scale, unreceived: !!p.unreceived }))
-      areaByPref.set(pref, set)
-    }
-
-    const result = new Map<string, Entry>(prefMax)
-    for (const [pref, addrScales] of areaByPref) {
-      const fullSet = prefAreaNames?.get(pref)
-      const scales = new Set([...addrScales.values()].map(e => e.scale))
-      // **未入電を含む県はまとめない。** 階級は下限へ寄せてあるので、観測した5弱と
-      // 「5弱以上・未入電」は `scale` では区別できず、県内が「同じ震度」に見えてしまう。
-      // まとめると、印を全区域に広げれば観測値を未入電と偽り、落とせば**実際にはもっと
-      // 強いかもしれない区域があること**が消える。区域のまま並べれば、どちらも起きない。
-      const hasUnreceived = [...addrScales.values()].some(e => e.unreceived)
-      const isWholePref = fullSet != null && fullSet.size > 0
-        && addrScales.size === fullSet.size
-        && [...addrScales.keys()].every(n => fullSet.has(n))
-        && scales.size === 1
-        && !hasUnreceived
-      if (isWholePref) {
-        result.set(pref, { scale: [...scales][0], unreceived: false })
-      } else {
-        for (const [name, entry] of addrScales) result.set(name, entry)
-      }
-    }
-
-    // 震度の降順。**同じ震度どうしは気象庁の標準順（北から南）で並べる。**
-    // ここを震度だけで並べると、`sort` が安定なぶん Map の挿入順＝電文が点を並べた順が残る。
-    // 電文の並びは種別ごとに違う（例: 県ごとにまとまる／区域と観測点が別々にまとまる）ので、
-    // 電文の書式が変わるだけで画面の並びが黙って動く。読み上げと同じ索引で並べて断ち切る。
     // 「未入電あり」の印は、**その範囲に未入電の地点が 1 つでもあるか**で出す。行の最大が
     // 未入電かどうかでは判定しない —— 区域・県の最大震度は配下の最大なので、1 点でも観測値が
     // 届けばそちらが勝つ。最大だけを見ると「最大は観測できたが別の地点は未入電」という
     // **最も起きやすい形**で印が消える（→ docs/spec/quake-spec.md §4）。
-    // **ブロックと同じ切り分け結果から作る**（`unreceivedIndexes`）。別々に解決すると、
-    // 片方だけが名前を引けたときに「印は出るのに地点が出ない」（またはその逆）になる。
-    const { prefOf, regionOfStation, stations: unreceivedStations, areas: unreceivedAreaPoints } = unreceivedIndexes
     const unreceivedPrefs = new Set<string>()
     const unreceivedAreas = new Set<string>()
     for (const p of [...unreceivedStations, ...unreceivedAreaPoints]) {
@@ -187,16 +143,18 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
       }
     }
 
+    // 組み立ては `buildIntensityRows` に置いてある（電文の点だけを扱う純関数として試せるように）。
+    // ここでは座標テーブル由来の索引を渡すだけ。
+    const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
     const order = stationData ? buildRegionOrderIndex(stationData) : null
-    return Array.from(result.entries())
-      .map(([pref, { scale, unreceived }]) => ({
-        pref,
-        scale,
-        unreceived,
-        hasUnreceived: unreceivedPrefs.has(pref) || unreceivedAreas.has(pref),
-      }))
-      .filter(({ scale }) => scale >= 0)
-      .sort(byValueDescThenRegion(g => g.scale, g => g.pref, order))
+    return buildIntensityRows(quake.points, {
+      prefOfArea: name => areaPrefIndex?.get(name) ?? null,
+      prefOfStation: name => stationPrefIndex?.get(name) ?? null,
+      regionOfStation: (pref, addr) => (stationData ? lookupStationRegion(stationData, pref, addr) : null),
+      unreceivedPrefs,
+      unreceivedAreas,
+      rank: name => regionOrderRank(name, order),
+    })
   }, [isSelected, quake.points, stationData, unreceivedIndexes])
 
   /**
@@ -484,38 +442,94 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                     </div>
                   </div>
                 )}
-                {prefGroups.map(({ pref, scale, unreceived, hasUnreceived }, idx) => (
-                  <div
-                    key={pref}
-                    className="flex items-center justify-between px-2 py-1 rounded roomy:py-1.5"
-                    style={{ backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent' }}
-                  >
-                    <span
-                      className="font-bold flex-shrink-0 whitespace-nowrap text-[0.9375rem] roomy:text-[1.125rem]"
-                      style={{ color: getIntensityColor(scale) }}
-                    >
-                      {/* 未入電は「5弱以上」。観測値と同じ顔で出すと、実際にはもっと強い
-                          可能性があることが伝わらない。EEW の「上限を定めない予想震度」と
-                          同じ語を同じヘルパーで付ける。 */}
-                      震度{getIntensityLabelWithOrAbove(scale, unreceived)}
-                    </span>
-                    <span className="text-white text-[0.9375rem] roomy:text-[1.125rem]">
-                      {pref}
-                      {/* **「あり」を付けて範囲の話にする。** 未入電は地点単位の事実なので、
-                          「〇〇県 未入電」だと県が丸ごと未入電に読める。どの地点かは上の
-                          ブロックが示す。語は気象庁のものをそのまま使い、読み上げとも揃える。 */}
-                      {hasUnreceived && (
+                {prefGroups.map(({ pref, scale, unreceived, hasUnreceived, regions }, idx) => {
+                  // **区域を持つ県だけ開ける。** 区域が 1 つしか無い県も開ける ―― 県名と
+                  // 区域名は別物（「石川県」と「石川県能登」）で、どの区域だったかは情報。
+                  const canExpand = regions.length > 0
+                  const expanded = canExpand && expandedPrefs.has(pref)
+                  const toggle = () => setExpandedPrefs(prev => {
+                    const next = new Set(prev)
+                    if (next.has(pref)) next.delete(pref); else next.add(pref)
+                    return next
+                  })
+                  return (
+                    <div key={pref}>
+                      {/* カード自体が <button> のため、ネスト禁止の HTML 仕様に合わせ
+                          <div role="button"> にする（長周期のトグルと同じ作法）。
+                          区域を持たない県は押せないので、role も tabIndex も与えない。 */}
+                      <div
+                        {...(canExpand ? {
+                          role: 'button' as const,
+                          tabIndex: 0,
+                          'aria-expanded': expanded,
+                          onClick: (e: React.MouseEvent) => { e.stopPropagation(); toggle() },
+                          onKeyDown: (e: React.KeyboardEvent) => {
+                            if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); toggle() }
+                          },
+                        } : {})}
+                        className={`flex items-center justify-between px-2 py-1 rounded roomy:py-1.5${canExpand ? ' cursor-pointer hover:bg-white/5' : ''}`}
+                        style={{ backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent' }}
+                      >
                         <span
-                          className="ml-1.5 text-[0.75rem] roomy:text-[0.875rem]"
-                          style={{ color: '#9ca3af' }}
-                          title="この範囲に、震度が届いていない観測点があります"
+                          className="font-bold flex-shrink-0 whitespace-nowrap text-[0.9375rem] roomy:text-[1.125rem]"
+                          style={{ color: getIntensityColor(scale) }}
                         >
-                          未入電あり
+                          {/* 未入電は「5弱以上」。観測値と同じ顔で出すと、実際にはもっと強い
+                              可能性があることが伝わらない。EEW の「上限を定めない予想震度」と
+                              同じ語を同じヘルパーで付ける。 */}
+                          震度{getIntensityLabelWithOrAbove(scale, unreceived)}
                         </span>
-                      )}
-                    </span>
-                  </div>
-                ))}
+                        <span className="text-white text-[0.9375rem] roomy:text-[1.125rem]">
+                          {pref}
+                          {/* **「あり」を付けて範囲の話にする。** 未入電は地点単位の事実なので、
+                              「〇〇県 未入電」だと県が丸ごと未入電に読める。どの地点かは上の
+                              ブロックが示す。語は気象庁のものをそのまま使い、読み上げとも揃える。 */}
+                          {hasUnreceived && (
+                            <span
+                              className="ml-1.5 text-[0.75rem] roomy:text-[0.875rem]"
+                              style={{ color: '#9ca3af' }}
+                              title="この範囲に、震度が届いていない観測点があります"
+                            >
+                              未入電あり
+                            </span>
+                          )}
+                          {canExpand && (
+                            <span className="ml-1.5 text-[0.75rem] roomy:text-[0.875rem]" style={{ color: '#9ca3af' }}>
+                              {expanded ? '▾' : '▸'}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      {/* 一次細分区域。**電文が持っている粒度で、読み上げと同じ単位。**
+                          既定で畳んであるのは行数のため（能登本震で県 45 行に対し区域 119 行）。 */}
+                      {expanded && regions.map(r => (
+                        <div
+                          key={r.name}
+                          className="flex items-center justify-between pl-6 pr-2 py-0.5 text-[0.8125rem] roomy:text-[1rem]"
+                        >
+                          <span
+                            className="font-bold flex-shrink-0 whitespace-nowrap"
+                            style={{ color: getIntensityColor(r.scale) }}
+                          >
+                            震度{getIntensityLabelWithOrAbove(r.scale, r.unreceived)}
+                          </span>
+                          <span style={{ color: '#d1d5db' }}>
+                            {r.name}
+                            {r.hasUnreceived && (
+                              <span
+                                className="ml-1.5 text-[0.6875rem] roomy:text-[0.8125rem]"
+                                style={{ color: '#9ca3af' }}
+                                title="この範囲に、震度が届いていない観測点があります"
+                              >
+                                未入電あり
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                })}
               </div>
             )
           })()}
