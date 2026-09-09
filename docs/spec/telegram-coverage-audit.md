@@ -33,19 +33,23 @@
 静的解析の結果は、いまは**実測との突き合わせ**にだけ使う（実測で通らなかった経路と、
 静的側の誤りを見分けるため）。
 
-集計スクリプトは [`scripts/telegram-audit/`](../../scripts/telegram-audit/) にある。
-**入力の 2 つはリポジトリに入っていない**ので、測る人が自分で用意する。
+スクリプトは [`scripts/telegram-audit/`](../../scripts/telegram-audit/) にある。
+**入力の 2 つはリポジトリに入っていない**ので、測る人が手元へ揃える。
 
-- **実電文のサンプル** —— 種別ごとに数通。DMDATA のアーカイブから取る（`npm run capture-scenario` と
-  同じ API キーを使う）。配信元の利用規約により**リポジトリへは入れられない**
+- **実電文のサンプル** —— `fetch-samples.mjs` が DMDATA のアーカイブから集める
+  （`npm run capture-scenario` と同じ API キーを使う）。配信元の利用規約により
+  **リポジトリへは入れられない**
 - **解説資料のテキスト** —— 気象庁が配る PDF をテキスト化し、`eq_manual.txt` の名前で置く。
-  資料の再配布にあたるため**リポジトリへは入れられない**
+  資料の再配布にあたるため**リポジトリへは入れられない**。ここだけは手作業になる
 
 置き場所は環境変数 `TELEGRAM_AUDIT_DIR` で渡す。実電文はその下の `telegram-cache/` に置くか、
 `TELEGRAM_CACHE` で別に指す。計測の生データ（`dynamic-coverage.json`）と突き合わせの出力
 （`triage-result.txt`）も同じディレクトリを使う。
 
 ```bash
+# 0. 実電文のサンプルを集める（初回だけ。API キーは DMDATA_API_KEY か .env.local から読む）
+TELEGRAM_AUDIT_DIR=<作業ディレクトリ> node scripts/telegram-audit/fetch-samples.mjs
+
 # 1. 実電文を本物のパーサーへ流し、読んだ要素・属性を記録する
 TELEGRAM_CACHE=<作業ディレクトリ>/telegram-cache \
   COVERAGE_OUT=<作業ディレクトリ>/dynamic-coverage.json \
@@ -66,12 +70,19 @@ node scripts/telegram-audit/header-survey.mjs <実電文のディレクトリ>
 
 | スクリプト | すること |
 |---|---|
+| `fetch-samples.mjs` | 実電文のサンプルを DMDATA のアーカイブから集める |
 | `triage.mjs` | 計測結果と資料を突き合わせ、種別ごとに未読を並べる |
 | `header-survey.mjs` | 実装を通さず、`Control` と `Head` の中身を種別ごとに並べる。判定を経由しないので `triage.mjs` とは独立に動く |
-| `coverage-core.mjs`・`read-model.mjs`・`handled.mjs` | `triage.mjs` が使う判定。**同じ判定を複数のスクリプトに持たせない**（片方だけ直すと数字が食い違い、どちらが正しいか分からなくなる） |
+| `coverage-core.mjs`・`read-model.mjs`・`handled.mjs` | `triage.mjs` が使う判定（置き場所の解決と対象種別は `fetch-samples.mjs` も借りる）。**同じ判定を複数のスクリプトに持たせない**（片方だけ直すと数字が食い違い、どちらが正しいか分からなくなる） |
 
 **リポジトリの根はスクリプト自身の位置から導いている。** 絶対パスを書くと、別の作業場に置いた
 古い実装を測ってしまう。
+
+**サンプルの集め方には判断が入っている**（`fetch-samples.mjs` に理由付きで書いてある）。
+種別ごとの上限で打ち切ること、**同じ事象の続報を採らない**こと（「最初の 8 通」だと 1 つの地震の
+連続報で埋まり、区域構成も付加文も似通う）、南海トラフの解説情報だけは号数まで鍵に含めること
+（`EventID` が固定のため事象で畳むと 1 通になる）、打ち切りは対象の種別だけで数えること
+（全種別で数えると対象外が先に埋まって収集が途中で止まる）。**通数を増やすより先にここを読むこと。**
 
 ## 3. 読まないと決めたもの
 
@@ -234,3 +245,5 @@ node scripts/telegram-audit/header-survey.mjs <実電文のディレクトリ>
   追加した
 - 2026-09-08: 集計スクリプトを `scripts/telegram-audit/` へ入れ、置き場所を環境変数で渡す形に
   した（§2）。入力（実電文・解説資料）は引き続きリポジトリの外
+- 2026-09-09: 実電文サンプルの収集を `fetch-samples.mjs` に入れ、§2 の手順へ組み込んだ。
+  集め方に焼き込んである判断（同じ事象の続報を採らない、ほか）も §2 に書き出した
