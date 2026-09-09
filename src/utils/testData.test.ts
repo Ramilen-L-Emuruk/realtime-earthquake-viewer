@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { isEewArrivedKindCode, isEewPlumKindCode } from './eewKind'
 import {
   createTestEarthquake,
   createTestEEW,
@@ -231,11 +232,32 @@ describe('テスト EEW の kindCode と予想震度の整合', () => {
     expect(eewAreas(forecast).some((a) => WARNING_CODES.has(a.kindCode))).toBe(false)
   })
 
-  // kindCode 11/19 は「主要動が既に到達（または到達予想なし）」。到達予想時刻とは両立しない。
-  it.each(cases)('%s: 既到達コードの区域は到達予想時刻を持たない', (_label, eew) => {
+  // 種別コードの下 1 桁が主要動の状況（コード表 12。→ `utils/eewKind.ts`）。
+  // 01/11 ＝既に到達と推定。**到達予測時刻とは排他**で、時刻の代わりに区域の `Condition` が出る
+  // （電文解説資料 Ⅱ.21 2-1-5-3-6・2-1-5-3-7）。読み取り後の値は `arrived`。
+  //
+  // **テストデータは DMDATA の形**（種別コードと `Condition` の両方を持つ）で作る。P2PQuake は
+  // 種別コードしか配信しないが、その経路で到達済みと判定できることは `isEewAreaArrived` の
+  // テスト（`eew.test.ts`）が担保する。
+  it.each(cases)('%s: 既到達コードの区域は到達予想時刻を持たず、到達済みの印を持つ', (_label, eew) => {
     for (const area of eewAreas(eew)) {
-      if (area.kindCode === '01' || area.kindCode === '11' || area.kindCode === '09' || area.kindCode === '19') {
+      if (isEewArrivedKindCode(area.kindCode)) {
         expect(area.arrivalTime).toBeNull()
+        expect(area.arrived).toBe(true)
+      }
+    }
+  })
+
+  // 09/19（PLUM 法）は**上と違って時刻を持つ**。ただし中身は到達の予測ではなく
+  // 「その震度を初めて予測した時刻」（同 2-1-5-3-6）で、**過去の時刻**が入る。
+  //
+  // かつてここは 09/19 も「時刻を持たない」と固定していたが、実電文と食い違っていた
+  // （`src/services/p2pquake.test.ts` の `REAL_EEW`＝2026-07-29 熊本は、震源が確定した報で
+  // 2 区域とも種別コード 19 かつ到達予測時刻を持つ）。画面は時刻を出さず語で伝える。
+  it.each(cases)('%s: PLUM 法の区域は到達済みにしない', (_label, eew) => {
+    for (const area of eewAreas(eew)) {
+      if (isEewPlumKindCode(area.kindCode)) {
+        expect(area.arrived).toBeUndefined()
       }
     }
   })

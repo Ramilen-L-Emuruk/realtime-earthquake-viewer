@@ -5,6 +5,7 @@ import { computeSWaveTravelTimeSec } from '../hooks/usePsWaveCalc'
 import { isValidIntensityScale } from './intensity'
 import { isValidLpgmClass } from './lpgm'
 import { hypoInfoItemToEEW, type YahooHypoInfoItem } from '../services/kyoshin'
+import { isEewArrivedKindCode } from './eewKind'
 
 // 司・翠川(1999)の距離減衰式を使ってEEW最終報後の自動解除秒数を計算する。
 // 有感半径（震度1以上が届く距離）を逆算し、1.5倍のバッファを乗せてS波到達時刻を求める。
@@ -147,6 +148,24 @@ export function eewEventKey(eew: EEWAlert): string {
 
 export function eewAreas(eew: EEWAlert): EEWRegion[] {
   return eew.areas ?? eew.regions ?? []
+}
+
+/**
+ * その区域で主要動が既に到達したと推測されているか。**この 1 か所で判定する。**
+ *
+ * 電文は同じ事実を 2 通りで伝えてくる。
+ *
+ * | 伝え方 | 出どころ | DMDATA | P2PQuake |
+ * |---|---|---|---|
+ * | 区域の `Condition`（「既に主要動到達と推測」） | 電文解説資料 Ⅱ.21 2-1-5-3-7 | 読む（→ `EEWRegion.arrived`） | 配信されない |
+ * | 種別コードの下 1 桁（01/11） | 気象庁コード表 12 | 読む | **読む** |
+ *
+ * **経路で分かれるのは前者だけ。** `arrived` だけを見ると、standard 版（P2PQuake）で到達済みの
+ * 区域が「時刻も印も持たない区域」に落ちて画面から黙って消える —— 到達予測時刻は到達済みの
+ * 区域には出ないため（同 2-1-5-3-6）。**種別コードは両経路が持つので、そちらへ倒せば揃う。**
+ */
+export function isEewAreaArrived(area: EEWRegion): boolean {
+  return area.arrived === true || isEewArrivedKindCode(area.kindCode)
 }
 
 /** 最大予想震度と、その上限が定まっていないか（「〜以上」）の対。 */

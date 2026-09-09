@@ -9,12 +9,12 @@ import { usePageVisible } from '../../hooks/usePageVisible'
 import { formatDateTime, formatTime } from '../../utils/formatters'
 import { getIntensityColor, getIntensityLabel, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
 import { getLpgmClassLabelWithApproxAbove, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
-import { eewAreas, eewMaxScaleInfo, eewMaxLpgmClassInfo, eewSerial, computeSingleEEWLevel, eewNoForecastReason, canPresentLpgmClass, eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, eewForecastChangeText, isEewHypocenterSettled } from '../../utils/eew'
+import { eewAreas, eewMaxScaleInfo, eewMaxLpgmClassInfo, eewSerial, computeSingleEEWLevel, eewNoForecastReason, canPresentLpgmClass, eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, eewForecastChangeText, isEewHypocenterSettled, isEewAreaArrived } from '../../utils/eew'
 import { kyoshinIndexToJma, kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
 import { readableTextColor } from '../../utils/contrast'
 import { gateNotes, gateRows, gateShortfall } from '../../utils/detectionGates'
 import { DescriptionTip } from '../DescriptionTip'
-import { isEewWarningKindCode } from '../../utils/eewKind'
+import { isEewWarningKindCode, isEewPlumKindCode } from '../../utils/eewKind'
 
 // 凡例は地図と同じ気象庁の震度配色（getIntensityColor）を使う。scale=0 は震度0（灰色）。
 const SCALE_LEGEND: { label: string; scale: number }[] = [
@@ -129,11 +129,44 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
   const hypocenterSettled = isEewHypocenterSettled(eew)
   const hasAccuracyText = !!(epicenterRankText || depthRankText || magnitudeRankText || magnitudePointsText || hypocenterSettled)
 
-  // 到達予想時刻が設定された地域を時刻順にソート
+  // 主要動の到達について何か言える地域。**同じ要素に 3 通りの意味が入る**ので、並べる前に
+  // 見分ける（電文解説資料 Ⅱ.21 2-1-5-3-6・2-1-5-3-7、気象庁コード表 12）。
+  //
+  // | 区域の状態 | 電文 | この欄の出し方 |
+  // |---|---|---|
+  // | まだ到達していない | `ArrivalTime`（到達予測時刻） | 時刻 |
+  // | 既に到達したと推測 | `Condition`（→ `EEWRegion.arrived`）。時刻は出ない | 「到達済みと推測」 |
+  // | PLUM 法で予測 | `ArrivalTime`（**震度を初めて予測した時刻**＝過去） | 時刻を出さない |
+  //
+  // **到達済みの地域を落とさない。** 時刻の有無だけで絞ると一覧から黙って消え、「到達した」のか
+  // 「予想から外れた」のかが利用者に判らない。
+  //
+  // **PLUM 法の時刻を「到達予想」として出さない。** 走時を計算しない手法なので、値は到達の予測
+  // ではなく予測を行った時刻。並べると、既に過ぎた時刻をこれから来るものとして読ませる。
+  // **到達済みかどうかは `isEewAreaArrived` で判定する。** 電文の `Condition` は DMDATA でしか
+  // 配信されないので、`arrived` だけを見ると standard 版（P2PQuake）で到達済みの地域が消える。
+  // 種別コードは両経路が持つ（→ `utils/eew.ts`）。
+  //
+  // **このファイルには `arrived` が 2 つある。** ここで扱う区域の `arrived` は電文が伝える
+  // 「既に主要動到達と推測」。下の S 波カウントダウンが持つ `SWaveArrival.arrived` は別物で、
+  // 利用者が登録した地点への走時計算から出す到達済みフラグ（`nearbyStations.ts`）。
+  const arrivalKindOf = (a: typeof areas[number]): 'arrived' | 'plum' | 'forecast' => {
+    if (isEewAreaArrived(a)) return 'arrived'
+    if (isEewPlumKindCode(a.kindCode)) return 'plum'
+    return 'forecast'
+  }
+  // 並びは時系列のとおり ―― 到達済み → PLUM 法（予測した時点で既に揺れている）→ 到達予測時刻順。
+  const ARRIVAL_KIND_ORDER = { arrived: 0, plum: 1, forecast: 2 } as const
   const areasWithArrival = areas
-    .filter(a => a.arrivalTime)
-    .sort((a, b) => a.arrivalTime!.localeCompare(b.arrivalTime!))
-    .slice(0, 6)
+    .filter(a => a.arrivalTime || isEewAreaArrived(a))
+    .sort((a, b) => {
+      const d = ARRIVAL_KIND_ORDER[arrivalKindOf(a)] - ARRIVAL_KIND_ORDER[arrivalKindOf(b)]
+      if (d !== 0) return d
+      // 同じ種類どうし。時刻を持たない組み合わせでは電文の順のまま並べる。
+      if (!a.arrivalTime || !b.arrivalTime) return 0
+      return a.arrivalTime.localeCompare(b.arrivalTime)
+    })
+  const shownArrival = areasWithArrival.slice(0, 6)
 
   return (
     <div
@@ -348,20 +381,49 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
           )
         })()}
 
-        {/* 到達予想時刻 */}
+        {/* 主要動の到達。到達済みの地域と、これから到達する地域の予測時刻を並べる。
+            **見出しに「予測」を残す。** 3 通りとも気象庁の予測・推測で、確定した事実ではない。
+            中立な見出しにすると、時刻の行だけが断り書きを持たないまま確定時刻の顔をする
+            （他の 2 通りは「推測」「不明」と語の中に断りがある）。
+            意味の違いは `DescriptionTip` でホバーへ逃がす —— 同じカードの「震源の決め方」と同じ流儀。 */}
         {areasWithArrival.length > 0 && (
           <div className="flex flex-col gap-0.5">
-            <span className="text-xs text-secondary">到達予想時刻</span>
-            {areasWithArrival.map((a, i) => (
+            <div className="text-xs text-secondary">
+              <DescriptionTip
+                label="主要動の到達（予測）"
+                description={[
+                  '気象庁が区域ごとに出す予測です。強い揺れが予想される区域だけが載ります。',
+                  '時刻＝主要動が届くと予測した時刻。区域ごとの差が数秒なので秒まで出しています。',
+                  '到達済みと推測＝予測した時刻を過ぎた区域。実際に揺れを観測したという意味ではありません。',
+                  '到達時刻は不明＝周辺の観測点で実際に観測された揺れから震度を予測している区域（気象庁のPLUM法）。震源からの伝わり方を計算しないため、到達時刻は出ません。',
+                ].join('\n')}
+              />
+            </div>
+            {shownArrival.map((a, i) => (
               <div key={i} className="flex items-center justify-between text-xs">
                 <span className="text-secondary truncate mr-2">{a.name}</span>
-                <span className="text-white font-mono flex-shrink-0">
-                  {formatTime(a.arrivalTime!).slice(0, 5)}
-                </span>
+                {arrivalKindOf(a) === 'arrived' ? (
+                  // 気象庁の語は「既に主要動到達と推測」。**断定しない** —— 到達したかどうかは
+                  // 予測時刻を過ぎたことからの推測で、観測した事実ではない。
+                  <span className="text-white flex-shrink-0">到達済みと推測</span>
+                ) : arrivalKindOf(a) === 'plum' ? (
+                  // PLUM 法は周辺の観測点で実際に観測された揺れから震度を出す手法で、走時を
+                  // 計算しない。**電文の時刻は到達の予測ではない**ので出さない。
+                  // **語は状態そのものを書く。** ここへ手法の名前を置くと、他の 2 通りが
+                  // 時間軸上の位置を伝えているのにここだけ伝えないことになる。
+                  // 手法（PLUM 法）の説明は見出しのホバーへ逃がしてある。
+                  <span className="text-white flex-shrink-0">到達時刻は不明</span>
+                ) : (
+                  // **秒まで出す。** 電文は秒の値まで持っており、区域ごとの差は数秒。
+                  // 時:分に丸めると、隣り合う区域の到達順が潰れる。
+                  <span className="text-white font-mono flex-shrink-0">
+                    {formatTime(a.arrivalTime!)}
+                  </span>
+                )}
               </div>
             ))}
-            {areas.filter(a => a.arrivalTime).length > 6 && (
-              <span className="text-xs text-secondary">他{areas.filter(a => a.arrivalTime).length - 6}地域</span>
+            {areasWithArrival.length > shownArrival.length && (
+              <span className="text-xs text-secondary">他{areasWithArrival.length - shownArrival.length}地域</span>
             )}
           </div>
         )}

@@ -23,7 +23,7 @@ import type {
   TelegramOperationStatus,
 } from '../types/earthquake'
 import { isValidLpgmClass } from '../utils/lpgm'
-import { isEewForecastKindCode, isEewWarningKindCode } from '../utils/eewKind'
+import { isEewForecastKindCode, isEewWarningKindCode, isEewArrivedKindCode } from '../utils/eewKind'
 import { parseTsunamiEstimationCondition, parseTsunamiForecastHeightImportant, parseTsunamiObservationCondition } from '../utils/tsunami'
 import { log } from '../utils/logger'
 import { arr, obj, str } from './parseHelpers'
@@ -111,6 +111,14 @@ const DMDATA_INTENSITY_OVER = 'over'
  * コード表に無い値が来たときに警報を取りこぼさないための控え。
  */
 const EEW_WARNING_KIND_NAME = '緊急地震速報（警報）'
+
+/**
+ * 区域について主要動が既に到達したと推測されることを表す `Area/Condition` の値。
+ *
+ * **資料が値域をこの 1 つに定めている**（電文解説資料 Ⅱ.21 2-1-5-3-7。「値：“既に主要動到達と
+ * 推測”」）。到達予測時刻（`ArrivalTime`）とは排他で、どちらか一方しか出ない。
+ */
+const EEW_AREA_ARRIVED_CONDITION = '既に主要動到達と推測'
 
 /**
  * EEW の予想震度の範囲（`{ from, to }`）を、階級 1 つと「以上」フラグに畳む。
@@ -707,15 +715,52 @@ function readHypocenterCoord(areaEl: Element, headType: string): { lat: number; 
 }
 
 /**
- * 震源の位置要素（`Hypocenter/Area`）から、電文種別をまたいで同じ意味を持つものを読む。
+ * 震源の位置要素（`Hypocenter/Area`）のうち、**座標を含まないもの**を読む。
  *
- * **経路ごとに書き分けない。** 同じ `Area` を長周期地震動観測情報と津波が別々に読んでいて、
- * 津波だけ座標と震央補助表現の材料（`MarkCode` / `Direction` / `Distance`）が落ちていた
- * ——震央補助表現の文そのものは読んでいたので、画面からは欠けに見えなかった。
- * 読む項目を足すときはここへ足せば両方へ同時に効く。
+ * **座標と分けてあるのは、読み方が種別で違うから。** 地震情報は VXSE61 が `Coordinate` を
+ * 2 つ持ち、度分の側を選び直す必要がある（→ `readHypocenterCoord`）。座標だけがその事情を
+ * 抱えていて、震央地名コードと震央補助表現の材料は全種別で同じに読める。
+ *
+ * **経路ごとに書き分けない。** 同じ `Area` を地震情報・長周期地震動観測情報・津波の 3 つが
+ * 読んでおり、足す項目を 1 つの経路にだけ書くと必ず他が遅れる（実績が 2 度ある。津波だけ
+ * 震央補助表現の材料が落ちていた件と、地震情報だけ震央補助表現そのものが落ちていた件）。
+ */
+function readHypocenterAreaLabels(
+  areaEl: Element,
+): Omit<import('../types/earthquake').HypocenterAreaDetail, 'latitude' | 'longitude' | 'depth'> {
+  const code = xmlText(xmlChild(areaEl, 'Code'))
+  const nameFromMark = xmlText(xmlChild(areaEl, 'NameFromMark'))
+  const detailedCode = xmlText(xmlChild(areaEl, 'DetailedCode'))
+  const markCode = xmlText(xmlChild(areaEl, 'MarkCode'))
+  const direction = xmlText(xmlChild(areaEl, 'Direction'))
+  const distance = parseFloat(xmlText(xmlChild(areaEl, 'Distance')))
+  return {
+    ...(code && { code }),
+    ...(detailedCode && { detailedCode }),
+    ...(nameFromMark && { nameFromMark }),
+    ...(markCode && { markCode }),
+    ...(direction && { direction }),
+    ...(Number.isFinite(distance) && { distanceKm: distance }),
+  }
+}
+
+/**
+ * 震源決定機関（`Hypocenter/Source`）。**`Area` の外**にあるので上の読み手には入らない。
+ *
+ * 遠地地震など、気象庁以外が決めた震源に入る（電文解説資料 Ⅱ.11/33/37 の各 1-3-2・2-3-2）。
+ * 地震情報・長周期・津波の 3 経路で共有する。
+ */
+function readHypocenterSource(hypoEl: Element | null): string {
+  return hypoEl ? xmlText(xmlChild(hypoEl, 'Source')) : ''
+}
+
+/**
+ * 震源の位置要素（`Hypocenter/Area`）から、電文種別をまたいで同じ意味を持つものを読む。
+ * 上の `readHypocenterAreaLabels` に座標を足したもの。
  *
  * **地震情報（`parseEarthquakeFromXml`）はここを通らない。** VXSE61 が `Coordinate` を
- * 2 つ持ち、度分の側を選び直す必要があるため（→ `readHypocenterCoord`）。
+ * 2 つ持ち、度分の側を選び直す必要があるため（→ `readHypocenterCoord`）。座標以外は
+ * 向こうも `readHypocenterAreaLabels` を通る。
  *
  * 座標が読めなかったときは、電文が自分で書いた文字表現（`@description`）を添えて記録する。
  * **数値が落ちたことは画面に出ない** ——「震源が判っていない」と「こちらが読めなかった」が
@@ -731,25 +776,14 @@ function readHypocenterAreaDetail(
     const desc = coordEl.getAttribute('description')?.trim() ?? ''
     log.warn(`${logPrefix} 震源座標を読めません: "${xmlText(coordEl)}"${desc ? `（電文の表現「${desc}」）` : ''}`)
   }
-  const code = xmlText(xmlChild(areaEl, 'Code'))
-  const nameFromMark = xmlText(xmlChild(areaEl, 'NameFromMark'))
-  const detailedCode = xmlText(xmlChild(areaEl, 'DetailedCode'))
-  const markCode = xmlText(xmlChild(areaEl, 'MarkCode'))
-  const direction = xmlText(xmlChild(areaEl, 'Direction'))
-  const distance = parseFloat(xmlText(xmlChild(areaEl, 'Distance')))
   return {
-    ...(code && { code }),
-    ...(detailedCode && { detailedCode }),
+    ...readHypocenterAreaLabels(areaEl),
     ...(Number.isFinite(lat) && { latitude: lat }),
     ...(Number.isFinite(lng) && { longitude: lng }),
     // **深さの `-1` は「読めなかった」の目印。** 有限だからと通すと、深さ 1km 未満と
     // 区別が付かない値が入る（`parseJmaCoord` は読めないとき -1 を返す）。
     // `0`（ごく浅い）は有効値なので落とさない。
     ...(depth >= 0 && { depth }),
-    ...(nameFromMark && { nameFromMark }),
-    ...(markCode && { markCode }),
-    ...(direction && { direction }),
-    ...(Number.isFinite(distance) && { distanceKm: distance }),
   }
 }
 
@@ -1038,6 +1072,9 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
   // 区域を回るついでに拾う ―― 名前で引き直すと、同名の区域があるときに取り違える。
   let sawWarningKind = false
   const unknownKindCodes = new Set<string>()
+  // 区域の到達状況（`Area/Condition`）で読めなかった値。**電文ごとに 1 行へまとめる** ——
+  // 区域は数十個あるので 1 件ずつ出すと他の記録が埋もれる。
+  const unknownArrivalConditions = new Set<string>()
   for (const prefEl of forecastEl ? xmlAll(forecastEl, 'Pref') : []) {
     for (const a of xmlAll(prefEl, 'Area')) {
       const name = xmlText(xmlChild(a, 'Name'))
@@ -1058,6 +1095,28 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
         if (kindCode) unknownKindCodes.add(kindCode)
         else if (kindEl) unknownKindCodes.add('（空）')
       }
+      // 主要動の到達状況。**電文は同じ事実を 2 通りで伝えてくる** —— 区域の `Condition`
+      //（「既に主要動到達と推測」。解説資料 Ⅱ.21 2-1-5-3-7）と、種別コードの下 1 桁
+      //（01/11。コード表 12。→ `isEewArrivedKindCode`）。
+      //
+      // **ここで 1 つの値へ畳む。** 画面が別々に判定すると、片方だけ直したときに静かにずれる。
+      // どちらかが立てば到達済みとして扱う ―― 片方しか無い電文が来ても取りこぼさないため。
+      //
+      // **片方しか無いことを異常として記録しない。** 資料が排他だと定めているのは `Condition` と
+      // `ArrivalTime` のあいだ（同 2-1-5-3-6）だけで、**コードと `Condition` が必ず同時に出るとは
+      // 書いていない**。手元の実電文で両方そろっている例は数えるほどしかなく、そこから
+      // 「常にそろう」と決めるのは標本が薄い。鳴らすようにすると、正常な電文でログが埋まって
+      // 本物の異常が沈む。
+      //
+      // 到達済みの区域では `ArrivalTime` が出ない（同 2-1-5-3-6）。時刻の側は電文どおり読み、
+      // 排他であることは型のコメント（`EEWRegion.arrived`）に置く。
+      const arrivalConditionRaw = xmlText(xmlChild(a, 'Condition'))
+      const arrivedByCondition = arrivalConditionRaw === EEW_AREA_ARRIVED_CONDITION
+      const arrived = arrivedByCondition || isEewArrivedKindCode(kindCode)
+      // 値域は資料が「既に主要動到達と推測」の 1 つに定めている。外れた値は捨てて記録する
+      // ——表示側が意味を決められないため（`LandOrSea` と同じ扱い）。**こちらは資料が
+      // 値域を定めているので、外れれば確かに異常。**
+      if (arrivalConditionRaw && !arrivedByCondition) unknownArrivalConditions.add(arrivalConditionRaw)
       areas.push({
         pref: '',
         name,
@@ -1066,6 +1125,7 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
         ...(orAbove && { scaleToOrAbove: true }),
         kindCode,
         arrivalTime: xmlText(xmlChild(a, 'ArrivalTime')) || null,
+        ...(arrived && { arrived: true }),
         lgIntTo: lgVal,
         ...(lgOver && { lgIntToOver: true }),
       })
@@ -1076,6 +1136,11 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
     // コード表に無い種別。**名前で警報かどうかは判定できている**ので表示は壊れないが、
     // コード表が増えたことに気づけるよう残す。
     log.warn(`${DMDATA_LOG_PREFIX} 緊急地震速報の種別コードを読めません（名前で判定しました）: ${[...unknownKindCodes].join(', ')}`)
+  }
+  if (unknownArrivalConditions.size > 0) {
+    // 資料が定めていない到達状況。**到達済みの区域が「時刻を持たない区域」に紛れる**ので、
+    // 値域が増えたことに気づけるよう残す。
+    log.warn(`${DMDATA_LOG_PREFIX} 緊急地震速報の区域の到達状況を読めません（無視します）: ${[...unknownArrivalConditions].join(', ')}`)
   }
 
   // 取消しの概要（`Body/Text`）。地震情報・津波情報と同じ扱い（`Comments` は取消電文に出現しない）。
@@ -1205,9 +1270,12 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   // 遠地地震は Area/DetailedName に詳細震央地名（例: "ベネズエラ沿岸"）が入る。なければ Area/Name にフォールバック。
   const hypName = (areaEl ? xmlText(xmlQ(areaEl, 'DetailedName')) : '')
     || (areaEl ? xmlText(xmlQ(areaEl, 'Name')) : '')
-  // 震央地名コード。**長周期・津波は読んでいたのに地震情報だけ落ちていた。**
-  const hypCode = areaEl ? xmlText(xmlChild(areaEl, 'Code')) : ''
-  const hypDetailedCode = areaEl ? xmlText(xmlChild(areaEl, 'DetailedCode')) : ''
+  // 震央地名コード・震央補助表現（`NameFromMark` とその材料）。**座標以外は津波・長周期と
+  // 同じ読み手を通す**（→ `readHypocenterAreaLabels`）。座標だけは VXSE61 が要素を 2 つ持つ
+  // 事情があるため下で別に読む。
+  const hypLabels = areaEl ? readHypocenterAreaLabels(areaEl) : {}
+  // 震源決定機関（`Hypocenter/Source`）。`Area` の外にあるので上の読み手には入らない。
+  const hypSource = readHypocenterSource(hypocenterEl)
   const { lat, lng, depth } = areaEl
     ? readHypocenterCoord(areaEl, headType)
     : { lat: NaN, lng: NaN, depth: -1 }
@@ -1294,10 +1362,14 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     const prefCode = xmlText(xmlChild(prefEl, 'Code'))
     const prefRawInt = xmlText(xmlChild(prefEl, 'MaxInt'))
     const { scale: prefScale, unreceived: prefUnreceived } = readIntensity(prefRawInt || null)
+    // 続報での変化（`Revise`）。気象庁が「追加」「上方修正」「下方修正」を直接伝えている
+    // （→ `EarthquakePoint.revise`）。**直下に限る** —— 配下の Area / City も同名要素を持つ。
+    const prefRevise = xmlText(xmlChild(prefEl, 'Revise'))
     if (prefName && prefScale >= 0) {
       points.push({
         pref: prefName, addr: prefName, isArea: true, scale: prefScale as IntensityScale,
         ...(prefUnreceived && { unreceived: true }),
+        ...(prefRevise && { revise: prefRevise }),
         ...(prefCode && { code: prefCode }),
       })
       prefTally.readable()
@@ -1323,10 +1395,13 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
         const areaCode = xmlText(xmlChild(el, 'Code'))
         const areaRawInt = xmlText(xmlChild(el, 'MaxInt'))
         const { scale: areaScale, unreceived: areaUnreceived } = readIntensity(areaRawInt || null)
+        // 続報での変化（`Revise`）。都道府県側と同じ扱い（解説資料 Ⅱ.33 2-1-3-3-2）。
+        const areaRevise = xmlText(xmlChild(el, 'Revise'))
         if (areaName && areaScale >= 0) {
           points.push({
             pref: '', addr: areaName, isArea: true, scale: areaScale as IntensityScale,
             ...(areaUnreceived && { unreceived: true }),
+            ...(areaRevise && { revise: areaRevise }),
             ...(areaCode && { code: areaCode }),
           })
           areaTally.readable()
@@ -1345,6 +1420,9 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
         const cityCode = xmlText(xmlChild(el, 'Code'))
         const cityRawInt = xmlText(xmlChild(el, 'MaxInt'))
         const cityCondition = xmlText(xmlChild(el, 'Condition'))
+        // 続報での変化（`Revise`）。都道府県・地域と同じ扱い（解説資料 Ⅱ.33 2-1-3-3-3-2）。
+        // **直下に限る** —— 上位の Pref / Area も同名要素を持つ。
+        const cityRevise = xmlText(xmlChild(el, 'Revise'))
         const { scale: cityScale } = readIntensity(cityRawInt || null)
         const cityUnreceived = cityCondition.includes(UNRECEIVED_INTENSITY)
         if (cityName && (cityScale >= 0 || cityUnreceived)) {
@@ -1359,6 +1437,7 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
             // 無ければ「この市町村の値そのものが未入電」。畳むと、観測できた値が下限のように見える。
             ...(cityUnreceived && (cityScale >= 0 ? { hasUnreceived: true } : { unreceived: true })),
             ...(cityCode && { code: cityCode }),
+            ...(cityRevise && { revise: cityRevise }),
           })
           cityTally.readable()
         } else {
@@ -1447,8 +1526,9 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
         magnitude,
         ...(magnitudeCondition && { magnitudeCondition }),
         ...(magnitudeType && { magnitudeType }),
-        ...(hypCode && { code: hypCode }),
-        ...(hypDetailedCode && { detailedCode: hypDetailedCode }),
+        // 震央地名コード・詳細震央地名コード・震央補助表現とその材料。
+        ...hypLabels,
+        ...(hypSource && { source: hypSource }),
       },
       maxScale: maxScale >= 0 ? maxScale as IntensityScale : -1,
       domesticTsunami: domestic,
@@ -1545,6 +1625,8 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
     const hypoAreaEl = hypoEl ? xmlQ(hypoEl, 'Area') : null
     const hypoName = (hypoAreaEl ? xmlText(xmlQ(hypoAreaEl, 'DetailedName')) : '')
       || (hypoEl ? xmlText(xmlQ(hypoEl, 'Name')) : '')
+    // 震源決定機関（`Hypocenter` 直下）。地震情報・長周期と同じ読み手を通す。
+    const tsunamiHypoSource = readHypocenterSource(hypoEl)
     const magnitudeEl = xmlQ(eqEl, 'Magnitude')
     const magnitude = magnitudeEl ? parseFloat(xmlText(magnitudeEl)) : NaN
     // 規模が数値で求まらないとき、気象庁は本文を空にして `condition="不明"` を立て、
@@ -1568,7 +1650,7 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
       // 同一性判定に使われている（→ `TsunamiSourceEarthquake.arrivalTime`）。
       ...(xmlText(xmlChild(eqEl, 'ArrivalTime')) && { arrivalTime: xmlText(xmlChild(eqEl, 'ArrivalTime')) }),
       ...(hypoAreaEl && readHypocenterAreaDetail(hypoAreaEl, TSUNAMI_LOG_PREFIX)),
-      ...(hypoEl && xmlText(xmlChild(hypoEl, 'Source')) && { source: xmlText(xmlChild(hypoEl, 'Source')) }),
+      ...(tsunamiHypoSource && { source: tsunamiHypoSource }),
     }
   // 震源名を読めなかったものは落とす（名前が無いと画面に出しようがない）。
   }).filter(eq => eq.hypocenterName)
@@ -2108,12 +2190,16 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
       if (prefMaxInt >= 0) lgIntensityTally.readable()
       else lgIntensityTally.unreadable(prefName || codeOnlyLabel(prefCode), prefRawInt)
     }
+    // 続報での変化（`Revise`）。地震情報と同じ扱い（→ `EarthquakePoint.revise`）。
+    // **直下に限る** —— 配下の Area も同名要素を持つ。
+    const prefLgRevise = xmlText(xmlChild(prefEl, 'Revise'))
     if (isValidLpgmClass(prefMaxLgInt)) {
       prefs.push({
         code: xmlText(xmlChild(prefEl, 'Code')),
         name: prefName,
         maxLgInt: prefMaxLgInt,
         ...(prefMaxInt >= 0 && { maxInt: prefMaxInt }),
+        ...(prefLgRevise && { revise: prefLgRevise }),
       })
     }
     const prefChildren = prefEl.getElementsByTagName('*')
@@ -2137,12 +2223,15 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
         if (areaMaxInt >= 0) lgIntensityTally.readable()
         else lgIntensityTally.unreadable(areaName || codeOnlyLabel(areaCode), areaRawInt)
       }
+      // 続報での変化（`Revise`）。都道府県側と同じ扱い（解説資料 Ⅱ.37 2-1-5-4-3）。
+      const areaLgRevise = xmlText(xmlChild(areaEl, 'Revise'))
       if (Number.isFinite(areaMaxLgInt)) {
         lgRegionTally.readable()
         if (areaMaxLgInt >= 1) {
           regions.push({
             code: areaCode, name: areaName, maxLgInt: areaMaxLgInt, pref: prefName,
             ...(areaMaxInt >= 0 && { maxInt: areaMaxInt }),
+            ...(areaLgRevise && { revise: areaLgRevise }),
           })
         }
       } else {
@@ -2225,10 +2314,20 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   const lpgmHypoAreaEl = lpgmHypoEl ? xmlQ(lpgmHypoEl, 'Area') : null
   let lpgmHypocenter: import('../types/earthquake').LpgmHypocenter | undefined
   if (lpgmHypoAreaEl) {
-    const name = xmlText(xmlChild(lpgmHypoAreaEl, 'Name'))
+    // **詳細震央地名を優先する**（地震情報・津波と同じ規則）。国外の地震では `Name` が
+    // 「中米」のように粗く、`DetailedName` に「メキシコ、チアパス州沿岸」が入る。
+    // 長周期だけ粗い名前を持っていた。
+    const name = xmlText(xmlChild(lpgmHypoAreaEl, 'DetailedName'))
+      || xmlText(xmlChild(lpgmHypoAreaEl, 'Name'))
     // 座標・震央地名コード・震央補助表現は津波側と同じ読み手を通す（→ `readHypocenterAreaDetail`）。
+    // 震源決定機関は `Area` の外にあるので別に読む（→ `readHypocenterSource`）。
     if (name) {
-      lpgmHypocenter = { name, ...readHypocenterAreaDetail(lpgmHypoAreaEl, DMDATA_LOG_PREFIX) }
+      const lpgmSource = readHypocenterSource(lpgmHypoEl)
+      lpgmHypocenter = {
+        name,
+        ...readHypocenterAreaDetail(lpgmHypoAreaEl, DMDATA_LOG_PREFIX),
+        ...(lpgmSource && { source: lpgmSource }),
+      }
     }
   }
   const lpgmMagnitudeEl = earthquakeEl ? xmlQ(earthquakeEl, 'Magnitude') : null

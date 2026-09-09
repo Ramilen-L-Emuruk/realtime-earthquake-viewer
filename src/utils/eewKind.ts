@@ -18,10 +18,38 @@
  */
 const EEW_WARNING_KIND_CODES = new Set(['10', '11', '19'])
 const EEW_FORECAST_KIND_CODES = new Set(['00', '01', '09'])
+// 上の表の 2 行目・3 行目。**下 1 桁が主要動の状況**で、予報／警報とは独立した軸。
+const EEW_ARRIVED_KIND_CODES = new Set(['01', '11'])
+const EEW_PLUM_KIND_CODES = new Set(['09', '19'])
 
 /** その区域が警報（強震動警戒域）の対象か。 */
 export function isEewWarningKindCode(code: string): boolean {
   return EEW_WARNING_KIND_CODES.has(code)
+}
+
+/**
+ * その区域で主要動が既に到達したと推定されているか（**種別コードから見た場合**）。
+ *
+ * **同じ事実を電文が 2 通りで伝えてくる。** このコードと、区域の `Condition`（「既に主要動
+ * 到達と推測」。電文解説資料 Ⅱ.21 2-1-5-3-7）。DMDATA の電文では両方が同時に出る。
+ *
+ * **画面はこの関数を直接呼ばず、`isEewAreaArrived`（`utils/eew.ts`）を通すこと。**
+ * 2 通りのどちらが来るかは経路で違う —— `Condition` を配信するのは DMDATA だけで、P2PQuake は
+ * このコードでしか伝えてこない。**どちらか一方だけを見ると、その経路で到達済みの区域を取りこぼす。**
+ */
+export function isEewArrivedKindCode(code: string): boolean {
+  return EEW_ARRIVED_KIND_CODES.has(code)
+}
+
+/**
+ * その区域が PLUM 法で予測されているか。
+ *
+ * **この区域の `ArrivalTime` は到達予測時刻ではない。** 資料 Ⅱ.21 2-1-5-3-6 は
+ * 「PLUM 法でその震度（階級震度）を初めて予測した時刻」と定めており、**過去の時刻**が入る。
+ * 到達予想として並べると、既に過ぎた時刻を「これから来る」と読ませることになる。
+ */
+export function isEewPlumKindCode(code: string): boolean {
+  return EEW_PLUM_KIND_CODES.has(code)
 }
 
 /**

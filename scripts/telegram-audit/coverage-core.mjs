@@ -190,10 +190,90 @@ export const CHAPTER_TYPE = {
   'Ⅰ': Object.keys(HANDLED),
 }
 
-/** @returns Map<`種別\t名前`, 和名> */
-export function scanManual() {
-  const lines = fs.readFileSync(path.join(WORK, 'eq_manual.txt'), 'utf8').split('\n')
-  const PILLAR = /(Ⅰ|Ⅱ\.\d+)－\d+/
+/**
+ * Ⅰ章の要素のうち、**この点検の対象種別（地震・津波の 13 種別）には現れないもの。**
+ *
+ * Ⅰ章は気象庁 XML 全体の共通部で、火山や気象の電文で使う要素も同じ章に載っている。
+ * `CHAPTER_TYPE` は Ⅰ章を 13 種別すべてへ機械的に撒くため、そのままでは**構造上出現し得ない
+ * 要素まで「未読」に数える**。数え上げの分母が膨らみ、本当に検討すべき要素が埋もれる。
+ *
+ * **除外してよいのは、資料が適用範囲を明示しているものだけ。** 出典（章・項番）を必ず添える
+ * —— 根拠の無い除外は「読み落としを見えなくする」方向に働き、点検そのものを壊す。
+ *
+ * 値は「その要素が現れる種別」。空配列なら 13 種別のどれにも現れない。
+ */
+export const CHAPTER_I_SCOPE = {
+  // 「噴火に関する火山観測報、噴火速報、推定噴煙流向報で用いる場合があり」（Ⅰ.（ⅱ）4）
+  // → 火山の電文専用。地震・津波の 13 種別には現れない。
+  TargetDTDubious: [],
+  // 「津波警報・注意報・予報の電文及び降灰予報の電文において情報の失効時刻を記載する」
+  // （Ⅰ.（ⅱ）5）→ 13 種別のうち VTSE41 だけ。**そこでは既に読んでいる。**
+  ValidDateTime: ['VTSE41'],
+}
+
+/**
+ * 見出し部（`Head/Headline/Information` 配下）に現れる要素の名前。
+ *
+ * **§3 で「読まないと決めた」場所。** 内容部（`Body`）の部分集合で、読むと同じ事実を
+ * 二重に持つことになる（→ 手引き §3・`quake-spec.md` §8）。決めてあるのに集計が知らず、
+ * 未読として数え続けていた。
+ *
+ * **同名の要素が内容部にもある**ことに注意（`Kind`・`Area`・`Name`・`Code`・`LastKind`・
+ * `Condition` は内容部で読んでいる）。ここで落とすのは Ⅰ章由来の分だけで、
+ * 内容部（Ⅱ章）由来の同名要素は落とさない —— 落とすと本物の未読が消える。
+ */
+export const HEADLINE_INFORMATION_ELEMENTS = new Set([
+  'Information', 'Areas', 'Item', 'Kind', 'Area', 'Name', 'Code', 'LastKind', 'Condition',
+])
+
+/**
+ * Ⅰ章（共通部）の要素 `name` が、この点検の対象種別のうちどれに現れるか。
+ *
+ * 既定は「13 種別すべて」。**絞るのは根拠があるものだけ**で、いまは 2 つ。
+ *
+ * 1. 資料が適用範囲を明示しているもの（`CHAPTER_I_SCOPE`）
+ * 2. 見出し部の要素（`HEADLINE_INFORMATION_ELEMENTS`）—— §3 で読まないと決めた場所
+ *
+ * **`CHAPTER_I_SCOPE` を先に見る。** `ValidDateTime` のように「資料が範囲を明示していて、
+ * かつ見出し部の名前とは無関係」なものを、名前の一致だけで消してしまわないため。
+ */
+function chapterIScopeOf(name) {
+  // **空配列も「絞り込みの結果」。** `[]` は truthy なので、キーの有無で分岐しないと
+  // 「その種別には現れない」と「表に載っていない」を書き分けられない。
+  if (Object.prototype.hasOwnProperty.call(CHAPTER_I_SCOPE, name)) return CHAPTER_I_SCOPE[name] ?? []
+  if (HEADLINE_INFORMATION_ELEMENTS.has(name)) return []
+  return CHAPTER_TYPE['Ⅰ']
+}
+
+/**
+ * ページの柱（`Ⅰ－1`・`Ⅱ.11－3`）。**行がどの章か**を決める唯一の手掛かり。
+ * 資料の表記が変わったらここだけを直す（→ `chapterOfLines`）。
+ */
+export const PILLAR = /(Ⅰ|Ⅱ\.\d+)－\d+/
+
+/**
+ * 要素の定義（`Kind【種類】`）。**項番まで取る**（`2-1-3-3-3-2．Revise【…】`）。
+ * 番号接頭辞は括弧を含みうる（`11-2(1)-1-1．Kind【…】`）。
+ *
+ * グループは 1=項番（省略されうる）・2=要素名・3=和名。
+ */
+export const DEF = /(?:^|\s)([\d\-()（）]+．)?([A-Za-z_][A-Za-z0-9_:]*)【([^】]*)】/g
+
+/** 解説資料のテキストを行ごとに読む。 */
+export function readManualLines() {
+  return fs.readFileSync(path.join(WORK, 'eq_manual.txt'), 'utf8').split('\n')
+}
+
+/**
+ * 行ごとの章を決める。**柱は本文の後ろに来る**ので、末尾から遡って割り当てる。
+ *
+ * **この規則を書き写さないこと。** かつて `where-defined.mjs` が同じロジックを持っており、
+ * 片方だけ直せば 2 つの点検ツールの章の割り当てが無言で食い違う形になっていた
+ *（→ 手引き §2「同じ判定を複数のスクリプトに持たせない」）。
+ *
+ * @returns 行番号 → 章（`Ⅰ` / `Ⅱ.33` 等。決まらない行は null）
+ */
+export function chapterOfLines(lines) {
   const chapterOf = new Array(lines.length).fill(null)
   let cur = null
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -201,8 +281,13 @@ export function scanManual() {
     if (m) cur = m[1]
     chapterOf[i] = cur
   }
-  // 番号接頭辞は括弧を含みうる（`11-2(1)-1-1．Kind【…】`）
-  const DEF = /(?:^|\s)(?:[\d\-()（）]+．)?([A-Za-z_][A-Za-z0-9_:]*)【([^】]*)】/g
+  return chapterOf
+}
+
+/** @returns Map<`種別\t名前`, 和名> */
+export function scanManual() {
+  const lines = readManualLines()
+  const chapterOf = chapterOfLines(lines)
   const out = new Map()
   lines.forEach((line, i) => {
     const ch = chapterOf[i]
@@ -210,12 +295,17 @@ export function scanManual() {
     DEF.lastIndex = 0
     let m
     while ((m = DEF.exec(line))) {
-      const name = m[1].replace(/^jmx_eb:/, '')
-      for (const t of CHAPTER_TYPE[ch]) {
+      const name = m[2].replace(/^jmx_eb:/, '')
+      // **Ⅰ章由来の分だけを絞り込む。** 内容部（Ⅱ章）由来の同名要素は落とさない ——
+      // `Kind`・`Area`・`LastKind`・`Condition` などは内容部で実際に読んでおり、
+      // 名前だけで落とすと本物の未読が消える。
+      const types = ch === 'Ⅰ' ? chapterIScopeOf(name) : CHAPTER_TYPE[ch]
+      for (const t of types) {
         const k = `${t}\t${name}`
         // **章も返す。** `Ⅰ`（共通部）の要素は 13 種別すべてへ機械的に撒かれるので、
         // その種別に本当に現れるかは資料からは決まらない。読み手が見分けられるようにする。
-        if (!out.has(k) || (!out.get(k).ja && m[2])) out.set(k, { ja: m[2], chapter: ch })
+        // 和名は `DEF` の 3 番目のグループ（1=項番・2=要素名・3=和名）。
+        if (!out.has(k) || (!out.get(k).ja && m[3])) out.set(k, { ja: m[3], chapter: ch })
       }
     }
   })

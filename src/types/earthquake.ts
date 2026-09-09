@@ -36,6 +36,25 @@ export interface Hypocenter {
    */
   code?: string
   detailedCode?: string
+  /**
+   * 震央補助表現（`Area/NameFromMark`）とその材料。意味は
+   * {@link HypocenterAreaDetail.nameFromMark} と同じで、**読み手も同じ**
+   * （`readHypocenterAreaLabels`）。長周期・津波は既に読んでいたので扱いを揃える。
+   *
+   * **読んで持つだけで、いまはどこからも使っていない。** 震央地名より具体的に場所を伝えられる
+   * ので出す価値はあるが、震央地名を置き換えるのか併記するのかは表示側の判断が要る。
+   */
+  nameFromMark?: string
+  markCode?: string
+  direction?: string
+  distanceKm?: number
+  /**
+   * 震源決定機関（`Hypocenter/Source`）。気象庁以外が決めた震源に入る（遠地地震など）。
+   * 津波側の {@link TsunamiSourceEarthquake.source} と同じもの。
+   *
+   * **読んで持つだけで、いまはどこからも使っていない。**
+   */
+  source?: string
 }
 
 /**
@@ -62,6 +81,22 @@ export interface EarthquakePoint {
    * 実際にはもっと強い可能性があることが伝わらない。
    */
   unreceived?: boolean
+  /**
+   * 続報でこの点がどう変わったか（電文の `Revise`）。値は `'追加'` / `'上方修正'` / `'下方修正'`。
+   *
+   * **気象庁が「初出か」「震度が動いたか」を電文で直接伝えている。** 解説資料 Ⅱ.33 の
+   * 2-1-3-2（都道府県）と 2-1-3-3-2（地域）—— 続報で新規に追加された場合は「追加」、
+   * 最大震度が更新された場合は「上方修正」「下方修正」を記載する、と定められている。
+   *
+   * **読んで持つだけで、いまはどこからも使っていない。** 読み上げは前報との突き合わせで
+   * 同じ判定を自前で出しており（`ttsText.ts` の差分ロジック。→ `CLAUDE.md`「続報は差分だけ
+   * 読む」）、そちらを電文の値へ置き換えるかは別の判断が要る。読み上げの差分判定は
+   * 単一情報源が何行も費やしている繊細な場所で、電文の網羅性点検の範囲を超えるため。
+   *
+   * **津波の `Revise`（`TsunamiObservation.firstHeightRevise` ほか）とは別物。**
+   * あちらは波高の更新で、こちらは震度。名前が同じなので取り違えないこと。
+   */
+  revise?: string
   /**
    * 気象庁以外が運用する観測点（電文では名前の末尾に `＊`）。この印についての単一情報源。
    *
@@ -146,6 +181,16 @@ export interface JMAQuakeCity {
   hasUnreceived?: boolean
   /** 市町村コード（`City/Code`）。扱いは {@link EarthquakePoint.code} に同じ。 */
   code?: string
+  /**
+   * 続報でこの市町村がどう変わったか（電文の `Revise`）。→ {@link EarthquakePoint.revise}
+   * （意味も扱いも同じ。**読んで持つだけで、いまはどこからも使っていない**）
+   *
+   * 解説資料 Ⅱ.33 は `Revise` を都道府県（2-1-3-2）・地域（2-1-3-3-2）・**市町村
+   * （2-1-3-3-3-2）**の 3 階層に定めている。点検の集計は要素名でまとめるため
+   * 「VXSE53 Revise」の 1 行にしか見えず、**市町村だけ読み落としても一覧からは分からない**
+   * （→ `scripts/telegram-audit/where-defined.mjs`）。
+   */
+  revise?: string
 }
 
 export interface JMAQuake {
@@ -650,7 +695,23 @@ export interface EEWRegion {
    */
   scaleToOrAbove?: boolean
   kindCode: string
+  /**
+   * 主要動の到達予測時刻（`Area/ArrivalTime`）。**到達済みの区域では出ない** ——
+   * その場合は代わりに `arrived` が立つ（次項）。
+   */
   arrivalTime: string | null
+  /**
+   * 区域の `Condition`（「既に主要動到達と推測」）を読んだ結果。
+   *
+   * **`arrivalTime` と排他。** 気象庁は到達予測時刻を過ぎた区域について、時刻を落として
+   * こちらを出す（電文解説資料 Ⅱ.21 2-1-5-3-6・2-1-5-3-7）。
+   *
+   * **判定にこのフィールドを直接使わないこと。`isEewAreaArrived`（`utils/eew.ts`）を通す。**
+   * 同じ事実を電文は 2 通りで伝えており、`Condition` を配信するのは DMDATA だけ。P2PQuake は
+   * 種別コード（01/11）の側でしか伝えてこないので、ここだけを見ると standard 版で到達済みの
+   * 区域が「時刻も印も持たない区域」に落ちて画面から消える。
+   */
+  arrived?: boolean
   lgIntTo?: LpgmClass  // 地域別予想長周期地震動階級。電文に含まれない場合は undefined
   /**
    * 上限を定めない予測（電文の `To="over"`）だったか。意味と扱いは `scaleToOrAbove` と同じで、
@@ -841,8 +902,16 @@ export interface LpgmPoint {
  * といった使い道はここでは実装していない）。
  */
 export interface LpgmHypocenter extends HypocenterAreaDetail {
-  /** 震央地名（`Area/Name`） */
+  /**
+   * 震央地名。**詳細震央地名（`Area/DetailedName`）を優先し、無ければ `Area/Name`**
+   * （地震情報・津波と同じ規則）。国外の地震では `Name` が「中米」のように粗い。
+   */
   name: string
+  /**
+   * 震源決定機関（`Hypocenter/Source`）。→ {@link TsunamiSourceEarthquake.source}
+   * （意味も扱いも同じ。**読んで持つだけで、いまはどこからも使っていない**）
+   */
+  source?: string
 }
 
 /**
@@ -890,6 +959,11 @@ export interface LpgmPref {
   name: string
   maxLgInt: number
   maxInt?: IntensityScale
+  /**
+   * 続報でこの都道府県がどう変わったか（電文の `Revise`）。→ {@link EarthquakePoint.revise}
+   * （意味も扱いも同じ。**読んで持つだけで、いまはどこからも使っていない**）
+   */
+  revise?: string
 }
 
 export interface LpgmRegion {
@@ -900,6 +974,11 @@ export interface LpgmRegion {
   pref?: string
   /** 区域内の最大震度（`Area/MaxInt`）。階級と並べると、揺れの高さと長さの差が出る */
   maxInt?: IntensityScale
+  /**
+   * 続報でこの区域がどう変わったか（電文の `Revise`）。→ {@link EarthquakePoint.revise}
+   * （意味も扱いも同じ。**読んで持つだけで、いまはどこからも使っていない**）
+   */
+  revise?: string
 }
 
 export interface JMALpgm {

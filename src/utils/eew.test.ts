@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, isEewHypocenterSettled, eewForecastChangeText, calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewMaxScale, eewMaxScaleInfo, isForecastScaleHigher, eewNoForecastReason, canPresentLpgmClass, eewSerial, selectEEWSoundType, eewPhase2ScaleStabilityMs, EEW_PHASE2_STABILITY_SMALL_MS, EEW_PHASE2_STABILITY_LARGE_MS, type HypoInfoPendingMissing } from './eew'
+import { eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, isEewHypocenterSettled, eewForecastChangeText, calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewMaxScale, eewMaxScaleInfo, isForecastScaleHigher, eewNoForecastReason, canPresentLpgmClass, eewSerial, selectEEWSoundType, eewPhase2ScaleStabilityMs, EEW_PHASE2_STABILITY_SMALL_MS, EEW_PHASE2_STABILITY_LARGE_MS, isEewAreaArrived, type HypoInfoPendingMissing } from './eew'
 import type { YahooHypoInfoItem } from '../services/kyoshin'
 import type { EEWAlert, EEWRegion, IntensityScale, LpgmClass } from '../types/earthquake'
 
@@ -831,3 +831,43 @@ describe('最大予測値の変化の一文', () => {
   })
 })
 
+
+// 区域で主要動が既に到達したかの判定。**電文は同じ事実を 2 通りで伝えてくる** ——
+// 区域の `Condition`（DMDATA だけが配信）と、種別コードの下 1 桁（両経路が持つ）。
+// 片方だけを見ると standard 版（P2PQuake）で到達済みの区域が画面から黙って消える。
+describe('isEewAreaArrived', () => {
+  const area = (o: Partial<EEWRegion>): EEWRegion => ({
+    pref: '', name: 'テスト区域', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: null, ...o,
+  })
+
+  // 正: 電文の `Condition` を読めた経路（DMDATA）。
+  it('Condition を読めていれば到達済み', () => {
+    expect(isEewAreaArrived(area({ arrived: true }))).toBe(true)
+  })
+
+  // 正: **`Condition` が無くても種別コードで判る。** これが無いと standard 版で穴が残る。
+  it('Condition が無くても種別コードが 01/11 なら到達済み', () => {
+    expect(isEewAreaArrived(area({ kindCode: '01' }))).toBe(true)
+    expect(isEewAreaArrived(area({ kindCode: '11' }))).toBe(true)
+  })
+
+  // 対照: 未到達を表すコード（00/10）では立たない。ここが立つと、まだ来ていない区域を
+  // 「到達済み」と表示することになる。
+  it('未到達のコードでは立たない', () => {
+    expect(isEewAreaArrived(area({ kindCode: '00' }))).toBe(false)
+    expect(isEewAreaArrived(area({ kindCode: '10' }))).toBe(false)
+  })
+
+  // 安全弁 1: PLUM 法（09/19）は到達済みではない。**時刻は持つが到達の予測ではない**ので、
+  // ここへ混ぜると「到達時刻は不明」と出すべき区域が「到達済み」に化ける。
+  it('PLUM 法のコードでは立たない', () => {
+    expect(isEewAreaArrived(area({ kindCode: '09', arrivalTime: '2026-01-01T12:00:00+09:00' }))).toBe(false)
+    expect(isEewAreaArrived(area({ kindCode: '19', arrivalTime: '2026-01-01T12:00:00+09:00' }))).toBe(false)
+  })
+
+  // 安全弁 2: コード表に無い値・空のコードでは立たない（安全側は「まだ来ていない」）。
+  it('コード表に無い値では立たない', () => {
+    expect(isEewAreaArrived(area({ kindCode: '' }))).toBe(false)
+    expect(isEewAreaArrived(area({ kindCode: '99' }))).toBe(false)
+  })
+})
