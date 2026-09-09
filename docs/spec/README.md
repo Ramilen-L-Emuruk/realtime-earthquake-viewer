@@ -11,6 +11,7 @@
 [`docs/archive/`](../archive/) に移動されている（現在は WebGL 移行関連のみ）。
 
 **まだ実装していない**機能の計画と可否判断は [`docs/implementation-plan.md`](../implementation-plan.md) にある。
+**いまあるものを直す作業**で、まだ着手していないものは [`docs/pending-work.md`](../pending-work.md) にある。
 このディレクトリが扱うのは実装済みの仕様だけ。
 
 ## 仕様書一覧
