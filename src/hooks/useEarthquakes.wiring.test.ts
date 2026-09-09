@@ -561,6 +561,35 @@ describe('EEW 発報テストの報の推移', () => {
     expect(cancel.isFinal).toBeFalsy()
     expect(h.current.activeEEWs.size).toBe(1)
   })
+
+  // 取消しの概要（電文の `Body/Text`）は XML を読む dmdataParser でしか作れない。
+  // 津波の解除テストと同じ形で、バリアントの境目を正・対照の対で固定する。
+  it('DMDSS 版: 誤報取消は取消しの概要を持つ', () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+
+    act(() => { h.current.simulateEEWRetraction() })
+    act(() => { vi.advanceTimersByTime(10_000) })
+
+    const cancel = events.filter((e): e is EEWAlert => e.kind === 'eew')[1]
+    expect(cancel.cancelled).toBe(true)
+    expect(cancel.cancelText).toBeTruthy()
+  })
+
+  // 対照: standard 版の P2PQuake には対応するフィールドが無い。テストボタンが実電文の形から
+  // 外れると、実機では一度も起きない表示・読み上げが「起きる」ように見える
+  it('standard 版: 取消しの概要を持たない（P2PQuake には無い項目）', () => {
+    mockIsDmdss = false
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+
+    act(() => { h.current.simulateEEWRetraction() })
+    act(() => { vi.advanceTimersByTime(10_000) })
+
+    const cancel = events.filter((e): e is EEWAlert => e.kind === 'eew')[1]
+    expect(cancel.cancelled).toBe(true)
+    expect(cancel.cancelText).toBeUndefined()
+  })
 })
 
 // 津波テストの解除電文。EEW の最終報と同じ「直前の電文を流用して据え置く」形になっていた。
@@ -599,6 +628,28 @@ describe('津波テストの解除電文', () => {
     // 成否に関わらず呼ばれるため、ここを見ないと「音は鳴るがカードは残る」状態を通してしまう。
     expect(h.current.tsunamis[0]?.cancelledAt).toBeInstanceOf(Date)
     expect(h.current.tsunamis[0]?.cancelReason).toBe('lifted')
+  })
+
+  // 取消電文だけが持つ項目は、表示中のカードを土台にする更新で**名指しで移さないと落ちる**。
+  // パーサーも読み上げも通っているのに画面にだけ出ない、という形になり、型検査でも捕まらない
+  // （オプショナルなので）。実際にブラウザ確認で見つかった。
+  it('DMDSS 版: 誤報取消の理由をカードへ引き継ぐ', () => {
+    const h = setup()
+    act(() => { h.current.simulateTsunamiRetraction() })
+    act(() => { vi.advanceTimersByTime(90_000) })
+
+    expect(h.current.tsunamis[0]?.cancelReason).toBe('retracted')
+    expect(h.current.tsunamis[0]?.cancelText).toBeTruthy()
+  })
+
+  // 対照: 解除（`lifted`）は取消電文ではないので理由を持たない。**無いものを作らない**
+  it('解除では取消の理由を持たない', () => {
+    const h = setup()
+    act(() => { h.current.simulateTsunamiWatch() })
+    act(() => { vi.advanceTimersByTime(90_000) })
+
+    expect(h.current.tsunamis[0]?.cancelReason).toBe('lifted')
+    expect(h.current.tsunamis[0]?.cancelText).toBeUndefined()
   })
 
   it('standard 版: 解除理由と eventId を持たない（P2PQuake では判別できない項目）', () => {
@@ -1068,6 +1119,35 @@ describe('EEW の続報は古い報で退行しない', () => {
     const eew = [...h.current.activeEEWs.values()][0]
     expect(eew?.cancelledAt).toBeInstanceOf(Date)
   })
+
+  // 取消電文だけが持つ項目は、**表示中の EEW を土台にする更新で名指しで移さないと落ちる**。
+  // 地震・津波側と対の回帰テスト（3 種別すべての状態更新に同じ落とし穴がある）。
+  // 描画側のテスト（`RealtimeTab/cancelReason.test.tsx`）は `EEWAlert` を直接渡すので
+  // ここを通らない。両方無いと「電文は持っているのに画面へ届かない」を捕まえられない。
+  it('取消の理由を表示中の EEW へ引き継ぐ', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(report('1', ['石川県能登'])) })
+    act(() => {
+      h.current.injectEvent({
+        ...report('2', []),
+        cancelled: true,
+        cancelText: 'システムの障害により誤った緊急地震速報を配信しました。',
+      })
+    })
+    const eew = [...h.current.activeEEWs.values()][0]
+    expect(eew?.cancelledAt).toBeInstanceOf(Date)
+    expect(eew?.cancelText).toBe('システムの障害により誤った緊急地震速報を配信しました。')
+  })
+
+  // 対照: 理由を持たない取消電文では作らない（無いものを埋めない）
+  it('理由を持たない取消では持たせない', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(report('1', ['石川県能登'])) })
+    act(() => { h.current.injectEvent({ ...report('2', []), cancelled: true }) })
+    const eew = [...h.current.activeEEWs.values()][0]
+    expect(eew?.cancelledAt).toBeInstanceOf(Date)
+    expect(eew?.cancelText).toBeUndefined()
+  })
 })
 
 // P2PQuake の補完経路（`enrichEEW`）。standard 版で Yahoo hypoInfo が先に検出した EEW へ
@@ -1163,6 +1243,37 @@ describe('DMDSS 版: 取消の後に届いた報', () => {
       domesticTsunami: '不明',
     },
     points: [],
+  })
+
+  // 取消電文だけが持つ項目は、**表示中のカードを土台にする更新で名指しで移さないと落ちる**。
+  // 津波側と対の回帰テスト。パーサーも読み上げも通り、オプショナルなので型検査も素通りするため、
+  // ここが無いと「画面にだけ出ない」状態を検出できない。
+  it('取消の理由をカードへ引き継ぐ', async () => {
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(震度速報('dmdata-quake-20260101160612-1', '2026-01-01T07:07:00+09:00')) })
+    act(() => {
+      h.current.injectEvent({
+        ...取消('dmdata-quake-20260101160612-2', '2026-01-01T07:10:00+09:00'),
+        cancelText: '先ほどの地震情報は誤りでしたので取り消します。',
+      })
+    })
+
+    expect(h.current.earthquakes[0]?.cancelledAt).toBeInstanceOf(Date)
+    expect(h.current.earthquakes[0]?.cancelText).toBe('先ほどの地震情報は誤りでしたので取り消します。')
+  })
+
+  // 対照: 理由を持たない取消電文では作らない（無いものを埋めない）
+  it('理由を持たない取消では持たせない', async () => {
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(震度速報('dmdata-quake-20260101160613-1', '2026-01-01T07:07:00+09:00')) })
+    act(() => { h.current.injectEvent(取消('dmdata-quake-20260101160613-2', '2026-01-01T07:10:00+09:00')) })
+
+    expect(h.current.earthquakes[0]?.cancelledAt).toBeInstanceOf(Date)
+    expect(h.current.earthquakes[0]?.cancelText).toBeUndefined()
   })
 
   it('取消より前に発表された報は、purge を過ぎて届いても採らない', async () => {
@@ -1307,6 +1418,93 @@ describe('津波の有効期限は報を跨いで引き継ぐ', () => {
     expect(h.current.tsunamis[0].validDateTime).toBe(EXPIRE_AT)
   })
 
+  // 電文の本文（`Body/Text`）も報を跨いで引き継ぐ。**気象庁は毎報には載せない** ——
+  // 実電文を数えると津波予報の VTSE41 の半数に入るだけで、続報の VTSE51/52 には 1 通も無い。
+  // 引き継がないと「いつ来ていつまで続くか」が最初の観測情報で消える（この等級では区域に
+  // 波高も到達時刻も付かないので、その文にしか無い）。
+  it('本文を持たない続報を受けてもカードは本文を保つ', () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+    const BODY = '若干の海面変動が予想される時刻は、早い沿岸で０２日１０時３０分頃です。'
+
+    act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), bodyText: BODY }) })
+    act(() => { h.current.injectEvent(forecast(WITHOUT_EXPIRE)) })
+    act(() => { vi.advanceTimersByTime(100) })
+
+    expect(h.current.tsunamis[0].id).toBe('noto-2')
+    expect(h.current.tsunamis[0].bodyText).toBe(BODY)
+  })
+
+  // 対照: 新しい報が本文を持てばそちらへ従う（前報で固定しない）
+  it('本文を持つ続報ではそちらへ差し替わる', () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+
+    act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), bodyText: '前の本文' }) })
+    act(() => { h.current.injectEvent({ ...forecast(WITHOUT_EXPIRE), bodyText: '新しい本文' }) })
+    act(() => { vi.advanceTimersByTime(100) })
+
+    expect(h.current.tsunamis[0].bodyText).toBe('新しい本文')
+  })
+
+  // 安全弁: 別の津波へ持ち込まない。引き継ぎは `isTsunamiContinuation`（`eventId` 一致）の
+  // 内側でしか働かないことを固定する —— 緩めると、無関係な津波の本文を出すことになる。
+  it('別イベントの津波には前報の本文を引き継がない', () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+
+    act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), bodyText: '能登の本文' }) })
+    act(() => {
+      h.current.injectEvent(forecast({ ...WITHOUT_EXPIRE, eventId: 'hyuganada-tsunami' }))
+    })
+    act(() => { vi.advanceTimersByTime(100) })
+
+    expect(h.current.tsunamis[0].bodyText).toBeUndefined()
+  })
+
+  // 観測状況を確定した時刻（`Head/TargetDateTime`）も `bodyText` と同じ `sameEvent` の内側で
+  // 引き継ぐ。**3 つのフィールドが同じ門を共有している**ので、片方だけ門を狭める変更が
+  // 入っても気づけるよう、それぞれに対を置く。
+  //
+  // 正: 観測時点を持たない続報（等級の発表）が挟まっても、前報の値が残る。入るのは観測情報
+  // （VTSE51/52）だけなので、落とすとカードの「観測 ◯◯ 時点」が出たり消えたりする。
+  it('観測時点を持たない続報が挟まっても前報の観測時点が残る', () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+
+    act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), observationDateTime: '2024-01-02T16:45:00+09:00' }) })
+    act(() => { h.current.injectEvent(forecast(WITHOUT_EXPIRE)) })
+    act(() => { vi.advanceTimersByTime(100) })
+
+    expect(h.current.tsunamis[0].observationDateTime).toBe('2024-01-02T16:45:00+09:00')
+  })
+
+  // 対照: 新しい観測時点を持つ続報が来たらそちらへ従う（古い値に居座らせない）。
+  it('新しい観測時点を持つ続報ではそちらへ従う', () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+
+    act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), observationDateTime: '2024-01-02T16:45:00+09:00' }) })
+    act(() => { h.current.injectEvent({ ...forecast(WITHOUT_EXPIRE), observationDateTime: '2024-01-02T16:48:00+09:00' }) })
+    act(() => { act(() => { vi.advanceTimersByTime(100) }) })
+
+    expect(h.current.tsunamis[0].observationDateTime).toBe('2024-01-02T16:48:00+09:00')
+  })
+
+  // 安全弁: 別の津波へ持ち込まない（`bodyText` と同じ門の内側であることを固定する）。
+  it('別イベントの津波には前報の観測時点を引き継がない', () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+
+    act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), observationDateTime: '2024-01-02T16:45:00+09:00' }) })
+    act(() => {
+      h.current.injectEvent(forecast({ ...WITHOUT_EXPIRE, eventId: 'hyuganada-tsunami' }))
+    })
+    act(() => { vi.advanceTimersByTime(100) })
+
+    expect(h.current.tsunamis[0].observationDateTime).toBeUndefined()
+  })
+
   it('日時として読めない期限を持つ続報でも、カードには前報の読める期限が残る', () => {
     vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
     const h = setup()
@@ -1333,6 +1531,22 @@ describe('津波の有効期限は報を跨いで引き継ぐ', () => {
 
     act(() => { vi.advanceTimersByTime(2 * 60_000) })
     expect(h.current.tsunamis[0].cancelReason).toBe('expired')
+  })
+
+  // **ライブ受信では出るのにリロードすると消える、を防ぐ。** 履歴からの復元は最新の 1 報だけを
+  // 画面へ載せるため、続報の上書きと同じものを引き継がないと片方だけ落ちる。
+  it('履歴からの復元でも本文を引き継ぐ', async () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const BODY = '若干の海面変動が予想される時刻は、早い沿岸で０２日１０時３０分頃です。'
+    vi.mocked(fetchDmdataTsunamis).mockResolvedValue([
+      { ...forecast(WITH_EXPIRE), bodyText: BODY },
+      forecast(WITHOUT_EXPIRE),
+    ])
+    const h = setup()
+    await h.flush()
+
+    expect(h.current.tsunamis[0].id).toBe('noto-2')
+    expect(h.current.tsunamis[0].bodyText).toBe(BODY)
   })
 
   it('履歴からの復元で、期限を過ぎていれば最初から表示しない', async () => {

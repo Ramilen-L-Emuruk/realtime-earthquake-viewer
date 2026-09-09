@@ -102,6 +102,7 @@ function makeEEW(over: {
   scaleTo?: IntensityScale
   scaleToOrAbove?: boolean
   lgIntTo?: LpgmClass
+  lgIntToOver?: boolean
   condition?: string
   noAreas?: boolean
   severity?: 'Forecast' | 'Warning'
@@ -119,6 +120,7 @@ function makeEEW(over: {
     kindCode: '10',
     arrivalTime: null,
     lgIntTo: over.lgIntTo,
+    ...(over.lgIntToOver && { lgIntToOver: true }),
   }]
   return {
     kind: 'eew',
@@ -475,6 +477,26 @@ describe('EEW 読み上げの文言と発話順序', () => {
     ])
   })
 
+  // 対照: 位置不明のセンチネル（-200）へ落ちた続報では「震源を更新」と言わない。
+  //
+  // **`Number.isFinite(-200)` は真なので、有限性だけを見ていると距離が無意味に大きく出て
+  // 「50km 超動いた」と誤判定する。** 位置が判らなくなっただけで震源が動いた保証は無いのに、
+  // 読み上げを頭から言い直すことになる。この状態は「震源要素不明」の電文を捨てずに通す
+  // ようにして初めて届くようになった（→ quake-spec.md §5）。
+  it('位置不明のセンチネルへ落ちた続報では「震源を更新」と言わない', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 50 }))
+    await flushMicrotasks()
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    // 震源名は変わるが、座標は「位置不明」。動いたかどうかは判定できない
+    handle(makeEEW({ serial: 2, scaleTo: 50, hypocenter: { name: '種子島近海', latitude: -200, longitude: -200 } }))
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushMicrotasks()
+
+    expect(spokenTexts().some(t => t.includes('震源を更新'))).toBe(false)
+  })
+
   // 震源の大幅更新でサイクルを捨てた**後**に、張り直したサイクルの確定を追い越して値が上がる。
   // ここが「捨てる経路」とガードが実際に噛み合う場面——新震源で確定した値の予約が発話の順番を
   // 待っている間に、さらに高い値が届く。
@@ -554,7 +576,7 @@ describe('EEW 読み上げの文言と発話順序', () => {
 
   // 安全弁: 震度の scale 値が同じでも orAbove（「〜以上」）が変わっていれば「据え置き」とは
   // 見なさず、震度も含めて読み直す。scale だけを見て判定すると、上限が定まらなくなった
-  // 変化（「震度4」→「震度4以上」）を据え置きと誤認し、階級部分だけの短句に落としてしまう。
+  // 変化（「震度4」→「震度4程度以上」）を据え置きと誤認し、階級部分だけの短句に落としてしまう。
   it('震度の scale は同じでも orAbove が変わっていれば、震度も含めて読み直す', async () => {
     const handle = setup()
     handle(makeEEW({ scaleTo: 40, lgIntTo: 2 }))
@@ -566,7 +588,43 @@ describe('EEW 読み上げの文言と発話順序', () => {
     handle(makeEEW({ serial: 2, scaleTo: 40, scaleToOrAbove: true, lgIntTo: 3 }))
     await vi.advanceTimersByTimeAsync(300)
     await flushMicrotasks()
-    expect(spokenTexts()).toEqual(['予想最大震度4以上。予想最大階級3。'])
+    expect(spokenTexts()).toEqual(['予想最大震度4程度以上。予想最大階級3。'])
+  })
+
+  // 安全弁: **階級側も同じ守りを持つ。** 階級の数値が同じでも「程度以上」が変わっていれば
+  // 「据え置き」と見なさず読み直す。数値だけを見て判定すると、上限が定まらなくなった変化
+  // （「階級2」→「階級2程度以上」）を据え置きと誤認し、**その変化が無音で消える**。
+  //
+  // 「程度以上」になる向きは「もっと強いかもしれない」＝安全側の変化なので落とせない。
+  // 震度側（1 つ上のテスト）と対称であることを、両方のテストで固定する。
+  it('階級の数値は同じでも「程度以上」が変わっていれば読み直す', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 40, lgIntTo: 2 }))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度4。予想最大階級2。'])
+    speakMock.mockClear()
+
+    // 震度は据え置き。階級も数値は 2 のままで「程度以上」だけが付く
+    handle(makeEEW({ serial: 2, scaleTo: 40, lgIntTo: 2, lgIntToOver: true }))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual(['予想最大階級2程度以上。'])
+  })
+
+  // 対照: 数値も「程度以上」も据え置きなら黙る（上の緩和が広がっていないこと）
+  it('階級が数値も「程度以上」も据え置きなら読み直さない', async () => {
+    const handle = setup()
+    handle(makeEEW({ scaleTo: 40, lgIntTo: 2, lgIntToOver: true }))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual(['緊急地震速報、日向灘で地震。', '予想最大震度4。予想最大階級2程度以上。'])
+    speakMock.mockClear()
+
+    handle(makeEEW({ serial: 2, scaleTo: 40, lgIntTo: 2, lgIntToOver: true }))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushMicrotasks()
+    expect(spokenTexts()).toEqual([])
   })
 
   // 震度・階級が同一続報で同時に新しい値へ変化すると、階級の安定待ち（300ms固定）の方が
@@ -656,7 +714,7 @@ describe('EEW 読み上げの文言と発話順序', () => {
     expect(spokenTexts()).toEqual(['予想最大階級4。'])
   })
 
-  // 「以上」は階級値に現れない。既読を階級だけで覚えていると、上限が定まらなくなった変化を
+  // 「程度以上」は階級値に現れない。既読を階級だけで覚えていると、上限が定まらなくなった変化を
   // 「据え置き」と見て黙ってしまう（判定は isForecastScaleHigher）。
   it('震度据え置きで上限が定まらなくなった続報も読む', async () => {
     const handle = setup()
@@ -668,7 +726,7 @@ describe('EEW 読み上げの文言と発話順序', () => {
     handle(makeEEW({ serial: 2, scaleTo: 40, scaleToOrAbove: true }))
     await vi.advanceTimersByTimeAsync(300)
     await flushMicrotasks()
-    expect(spokenTexts()).toEqual(['予想最大震度4以上。'])
+    expect(spokenTexts()).toEqual(['予想最大震度4程度以上。'])
   })
 
   it('逆に上限が確定しただけの続報では発話しない（引き下げと同じ扱い）', async () => {
@@ -684,7 +742,7 @@ describe('EEW 読み上げの文言と発話順序', () => {
     expect(spokenTexts()).toHaveLength(0)
   })
 
-  it('「以上」が据え置きの続報でも発話しない（安全弁）', async () => {
+  it('「程度以上」が据え置きの続報でも発話しない（安全弁）', async () => {
     const handle = setup()
     handle(makeEEW({ scaleTo: 40, scaleToOrAbove: true }))
     await vi.advanceTimersByTimeAsync(300)

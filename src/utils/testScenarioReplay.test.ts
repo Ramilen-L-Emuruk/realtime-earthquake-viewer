@@ -52,7 +52,7 @@ function makeTsunami(overrides: Partial<JMATsunami> = {}): JMATsunami {
     time: '2024-01-01T07:15:00Z',
     cancelled: false,
     validDateTime: '2024-01-01T09:15:00Z',
-    sourceEarthquakes: [{ hypocenterName: 'テスト震源', magnitude: 7.0, originTime: '2024-01-01T07:09:00Z' }],
+    sourceEarthquakes: [{ hypocenterName: 'テスト震源', magnitude: 7.0, originTime: '2024-01-01T07:09:00Z', arrivalTime: '2024-01-01T07:09:30Z' }],
     issue: { source: '気象庁', time: '2024-01-01T07:15:00Z', type: 'Focus' },
     areas: [
       {
@@ -64,7 +64,10 @@ function makeTsunami(overrides: Partial<JMATsunami> = {}): JMATsunami {
       },
     ],
     observations: [
-      { name: 'テスト観測点2', arrivalTime: '2024-01-01T07:42:00Z' },
+      { name: 'テスト観測点2', arrivalTime: '2024-01-01T07:42:00Z', height: { value: 1.2, description: '1.2m' }, maxHeightDateTime: '2024-01-01T07:50:00Z' },
+    ],
+    estimations: [
+      { name: 'テスト沿岸', arrivalTime: '2024-01-01T07:45:00Z', maxHeight: { description: '3m', value: 3 }, maxHeightDateTime: '2024-01-01T07:55:00Z' },
     ],
     ...overrides,
   }
@@ -309,6 +312,12 @@ describe('instantiateScenario', () => {
       expect(new Date(shifted.areas[0].stations![0].highTideDateTime!).getTime()).toBe(new Date(tsunami.areas[0].stations![0].highTideDateTime!).getTime() + originalDelta)
       expect(new Date(shifted.areas[0].stations![0].arrivalTime!).getTime()).toBe(new Date(tsunami.areas[0].stations![0].arrivalTime!).getTime() + originalDelta)
       expect(new Date(shifted.observations![0].arrivalTime!).getTime()).toBe(new Date(tsunami.observations![0].arrivalTime!).getTime() + originalDelta)
+      // **画面に出る時刻を 1 つでも漏らすと、隣に並ぶシフト済みの時刻と食い違ったまま黙って出る。**
+      // 最大波の観測時刻は観測点の行に、沿岸への推定の到達予想時刻は推定の行に出ている。
+      expect(new Date(shifted.observations![0].maxHeightDateTime!).getTime()).toBe(new Date(tsunami.observations![0].maxHeightDateTime!).getTime() + originalDelta)
+      expect(new Date(shifted.sourceEarthquakes![0].arrivalTime!).getTime()).toBe(new Date(tsunami.sourceEarthquakes![0].arrivalTime!).getTime() + originalDelta)
+      expect(new Date(shifted.estimations![0].arrivalTime!).getTime()).toBe(new Date(tsunami.estimations![0].arrivalTime!).getTime() + originalDelta)
+      expect(new Date(shifted.estimations![0].maxHeightDateTime!).getTime()).toBe(new Date(tsunami.estimations![0].maxHeightDateTime!).getTime() + originalDelta)
     })
 
     it('eventIdが再採番される', () => {

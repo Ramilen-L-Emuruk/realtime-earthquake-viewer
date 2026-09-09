@@ -8,11 +8,13 @@ import type { SWaveArrival } from '../../hooks/useSWaveCountdown'
 import { usePageVisible } from '../../hooks/usePageVisible'
 import { formatDateTime, formatTime } from '../../utils/formatters'
 import { getIntensityColor, getIntensityLabel, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
-import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
-import { eewAreas, eewMaxScaleInfo, eewMaxLpgmClass, eewSerial, computeSingleEEWLevel, eewNoForecastReason, canPresentLpgmClass } from '../../utils/eew'
+import { getLpgmClassLabelWithApproxAbove, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
+import { eewAreas, eewMaxScaleInfo, eewMaxLpgmClassInfo, eewSerial, computeSingleEEWLevel, eewNoForecastReason, canPresentLpgmClass, eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, eewForecastChangeText, isEewHypocenterSettled } from '../../utils/eew'
 import { kyoshinIndexToJma, kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
 import { readableTextColor } from '../../utils/contrast'
 import { gateNotes, gateRows, gateShortfall } from '../../utils/detectionGates'
+import { DescriptionTip } from '../DescriptionTip'
+import { isEewWarningKindCode } from '../../utils/eewKind'
 
 // 凡例は地図と同じ気象庁の震度配色（getIntensityColor）を使う。scale=0 は震度0（灰色）。
 const SCALE_LEGEND: { label: string; scale: number }[] = [
@@ -82,7 +84,7 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
   onDeactivateLpgm?: () => void
 }) {
   const { scale: maxScale, orAbove: maxScaleOrAbove } = eewMaxScaleInfo(eew)
-  const lpgmClass = eewMaxLpgmClass(eew)
+  const { cls: lpgmClass, over: lpgmClassOver } = eewMaxLpgmClassInfo(eew)
   const level = computeSingleEEWLevel(eew)
   const isWarning = level >= 1
   const isSpecial = level === 2
@@ -110,6 +112,23 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
   const magColor = getMagnitudeColor(hypocenter.magnitude)
   const depthColor = getDepthColor(hypocenter.depth)
 
+  // 予想が変わったこと（電文の `Appendix`）と震源要素の精度（`Accuracy`）。
+  // どちらも DMDATA の XML 経路でだけ入る（standard 版では常に空）。
+  const forecastChangeText = eewForecastChangeText(eew)
+  const epicenterRankText = eewEpicenterRankLabel(eew.accuracy?.epicenterRank)
+  // 深さの精度は震央と同じ表を引く（解説資料 Ⅱ.21 1-4-2-2）。**震央と同じ値のことが多い**ので、
+  // 同じなら 1 行にまとめる —— 同じ文字列を 2 行並べても情報は増えない。
+  //
+  // **まとめるかどうかは生のランク値で比べる。** 表示文字列で比べると、深さのランクが 0（不明）や
+  // 対応表に無い値のとき文字列が空になり、「同じ」と判定されてしまう。すると震央の精度が
+  // 「震源」（震央＋深さ）としてまとめて出て、**深さの精度が不明であることが消える**。
+  const depthRankText = eewEpicenterRankLabel(eew.accuracy?.depthRank)
+  const depthRankDiffers = eew.accuracy?.depthRank !== eew.accuracy?.epicenterRank
+  const magnitudeRankText = eewMagnitudeRankLabel(eew.accuracy?.magnitudeRank)
+  const magnitudePointsText = eewMagnitudePointsLabel(eew.accuracy?.magnitudePoints)
+  const hypocenterSettled = isEewHypocenterSettled(eew)
+  const hasAccuracyText = !!(epicenterRankText || depthRankText || magnitudeRankText || magnitudePointsText || hypocenterSettled)
+
   // 到達予想時刻が設定された地域を時刻順にソート
   const areasWithArrival = areas
     .filter(a => a.arrivalTime)
@@ -126,9 +145,22 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
       onClick={onDeactivateLpgm}
     >
       {eew.cancelledAt && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg">
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg px-4">
           <span className="font-black text-white" style={{ fontSize: '3rem', lineHeight: 1.1 }}>キャンセル</span>
           <span className="text-sm font-bold text-white/90 mt-1">この緊急地震速報は取り消されました</span>
+          {/* 気象庁が書いた取消しの概要（電文の `Body/Text`）。アプリが組み立てた文言ではないので
+              そのまま出す。地震情報のカードと同じ扱い（quake-spec.md §8）。 */}
+          {eew.cancelText && (
+            // カードは `overflow-hidden` で、オーバーレイは `absolute inset-0`。**本文が下地の
+            // 高さを超えると下が切れる**（読み上げは長文を画面へ委ねる設計なので、そこで切れると
+            // 理由がどこにも残らない）。この要素の中でスクロールできるようにしておく。
+            <span
+              className="mt-2 text-center text-white/80 overflow-y-auto"
+              style={{ fontSize: '0.75rem', lineHeight: 1.5, whiteSpace: 'pre-line', maxHeight: '40%' }}
+            >
+              {eew.cancelText}
+            </span>
+          )}
         </div>
       )}
       {/* 種別ヘッダー */}
@@ -141,6 +173,17 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
         }}
       >
         {headerLabel}
+        {/* 電文が自分で名乗っている運用種別（`Control/Status`）。**本物と見分けられるようにする** ——
+            設定「試験報・訓練報を受信する」を有効にすると、検証用にこれらもカード・音・地図へ
+            流している（`services/dmdata.ts`）ので、印が無いと画面では区別がつかない。 */}
+        {eew.operationStatus && (
+          <span
+            className="ml-2 px-1.5 py-0.5 rounded font-bold"
+            style={{ backgroundColor: '#1f2937', color: '#fcd34d', border: '1px solid #d97706' }}
+          >
+            {eew.operationStatus}報
+          </span>
+        )}
         {serial != null && (
           <span className="ml-2 font-normal opacity-75">
             #{serial}{eew.isFinal ? ' 最終報' : ''}
@@ -163,11 +206,14 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
             <span className="text-sm font-medium" style={{ color: getIntensityColor(maxScale) }}>
               予想最大震度
             </span>
-            {/* 上限が定まらない報（「震度4以上」等）は語を落とさず出す。値だけにすると
-                下限を断定した表示になる。「以上」は本体より小さく添えて桁数の膨らみを抑える。 */}
+            {/* 上限が定まらない報（「震度4程度以上」等）は語を落とさず出す。値だけにすると
+                下限を断定した表示になる。語は本体より小さく添えて桁数の膨らみを抑える。
+                **語は「程度以上」**（気象庁の表現。→ `getIntensityLabelWithApproxAbove`）。
+                ここだけ自前で組んでいるため、語を変えたときに取り残されやすい —— 実際に
+                タイトル・読み上げ・共有カードだけ直り、このバナーが「以上」のまま残った。 */}
             <span className="font-black leading-none text-[3rem] roomy:text-[4.5rem]" style={{ color: '#ffffff' }}>
               {getIntensityLabel(maxScale)}
-              {maxScaleOrAbove && <span className="font-bold text-[1.25rem] roomy:text-[1.75rem]">以上</span>}
+              {maxScaleOrAbove && <span className="font-bold text-[1.25rem] roomy:text-[1.75rem]">程度以上</span>}
             </span>
           </div>
         ) : (
@@ -198,7 +244,7 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
               推定長周期地震動
             </span>
             <span className="text-xl font-black roomy:text-2xl" style={{ color: '#ffffff' }}>
-              {getLpgmClassLabel(lpgmClass)}
+              {getLpgmClassLabelWithApproxAbove(lpgmClass, lpgmClassOver)}
             </span>
           </button>
         )}
@@ -217,7 +263,25 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
               （震源未確定）
             </span>
           )}
+          {/* 内陸か海域か（電文の `LandOrSea`）。海域なら津波を思い浮かべる手がかりになる。
+              仮定震源要素のときは地名自体が震源の推定位置ではないので添えない。 */}
+          {eew.landOrSea && !isAssumed && (
+            <span className="ml-1.5 font-medium text-[0.8125rem] roomy:text-[1rem]" style={{ color: '#9ca3af' }}>
+              （{eew.landOrSea}）
+            </span>
+          )}
         </div>
+
+        {/* 予想が変わったこと（電文の `Appendix`）。**気象庁が「変わった」と書いている報でだけ出す** ——
+            アプリが続報どうしを比べて推定した結果ではない。理由まで電文に入っている。 */}
+        {forecastChangeText && (
+          <div
+            className="w-full rounded-lg py-1 px-3 text-[0.8125rem] font-medium roomy:text-sm"
+            style={{ backgroundColor: 'rgba(42,42,42,0.8)', border: '1px solid #4b5563', color: '#d1d5db' }}
+          >
+            {forecastChangeText}
+          </div>
+        )}
 
         {/* マグニチュード・深さ（2カラムグリッド）：仮定震源要素のときは固定の仮定値のため非表示 */}
         {hypocenter.name && !isAssumed && (
@@ -255,9 +319,8 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
 
         {/* 対象地域（警報域と予報域を区別して表示） */}
         {prefAreas.length > 0 && (() => {
-          const isWarning = (k: string) => k === '10' || k === '11' || k === '19'
-          const warningPrefs = [...new Set(prefAreas.filter(a => isWarning(a.kindCode)).map(a => a.pref))]
-          const forecastPrefs = [...new Set(prefAreas.filter(a => !isWarning(a.kindCode)).map(a => a.pref))]
+          const warningPrefs = [...new Set(prefAreas.filter(a => isEewWarningKindCode(a.kindCode)).map(a => a.pref))]
+          const forecastPrefs = [...new Set(prefAreas.filter(a => !isEewWarningKindCode(a.kindCode)).map(a => a.pref))]
           const hasKindCode = prefAreas.some(a => a.kindCode !== '')
           if (!hasKindCode) {
             return (
@@ -299,6 +362,52 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
             ))}
             {areas.filter(a => a.arrivalTime).length > 6 && (
               <span className="text-xs text-secondary">他{areas.filter(a => a.arrivalTime).length - 6}地域</span>
+            )}
+          </div>
+        )}
+
+        {/* 震源要素の精度（電文の `Accuracy`）。**数字ではなく資料の語で出す** —— 「ランク4」と
+            書いても伝わらない。言い換えもしない（気象庁が「IPF法（5点以上）」と書いているものを
+            「精度が高い」と要約すると、こちらが評価を足したことになる）。
+            取消電文は `Earthquake` を持たないので自然に出ない。 */}
+        {hasAccuracyText && (
+          <div className="flex flex-col gap-0.5 text-xs text-secondary">
+            {/* **語は資料のまま出すが、説明は添える。** 「言い換えない」と「説明しない」は別。
+                IPF 法・P 相・EPOS は電文解説資料を読んだ人にしか通じないので、設定タブと同じ
+                `DescriptionTip` で事実の解説をホバーに逃がす（評価は足さない）。 */}
+            <DescriptionTip
+              label="震源の決め方"
+              description={[
+                '気象庁が震源とマグニチュードをどう決めたかを、電文に書かれている語のまま出しています。',
+                'IPF法＝観測点に届いたP波から震源を絞り込む手法（かっこ内は使った観測点の数）。',
+                'P相・全相＝マグニチュードの計算にP波だけを使ったか、後続の波も使ったか。',
+                'EPOS・防災科研システム＝震源を決めた計算機システムの名前。',
+              ].join('\n')}
+            />
+            {epicenterRankText && (
+              <div className="flex items-start gap-2">
+                <span className="flex-shrink-0">{depthRankDiffers ? '震央' : '震源'}</span>
+                <span className="text-white break-words">{epicenterRankText}</span>
+              </div>
+            )}
+            {depthRankText && depthRankDiffers && (
+              <div className="flex items-start gap-2">
+                <span className="flex-shrink-0">深さ</span>
+                <span className="text-white break-words">{depthRankText}</span>
+              </div>
+            )}
+            {(magnitudeRankText || magnitudePointsText) && (
+              <div className="flex items-start gap-2">
+                <span className="flex-shrink-0">Ｍ</span>
+                <span className="text-white break-words">
+                  {[magnitudeRankText, magnitudePointsText].filter(Boolean).join('・')}
+                </span>
+              </div>
+            )}
+            {/* **「最終報」とは書かない。** 資料は同じ注で「PLUM 法により予測震度が今後変化する
+                可能性はある」と断っている —— 震源が決まっても予想震度は動きうる。 */}
+            {hypocenterSettled && (
+              <span className="text-white">震源とＭはこれ以降変わりません</span>
             )}
           </div>
         )}

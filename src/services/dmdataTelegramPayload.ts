@@ -62,7 +62,7 @@ export function buildXmlPayload(headType: string, xml: string): ReplayPayload | 
     return event ? { kind: 'event', event } : null
   }
   if (TSUNAMI_TYPES.has(headType)) {
-    const event = parseTsunamiFromXml(xml)
+    const event = parseTsunamiFromXml(headType, xml)
     return event ? { kind: 'event', event } : null
   }
   if (LPGM_TYPES.has(headType)) {

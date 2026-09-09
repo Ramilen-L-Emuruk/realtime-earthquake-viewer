@@ -128,6 +128,32 @@ describe('isSameEarthquake', () => {
     const result = isSameEarthquake(region, 26.0, 127.7, 90_000, new Map([[eew.id, eew]]))
     expect(result).toBe(false)
   })
+
+  // 正: 位置不明のセンチネル（-200）を持つ EEW は、震源が判らないので判定に使わない。
+  //
+  // **`Number.isFinite(-200)` は真なので、有限性だけを見ていると「有効な EEW がある」と
+  // 数えてしまう。** そうなると距離判定には必ず外れるうえ、`if (anyEew) return false` に
+  // 掛かって**通常の距離フォールバックへ到達しないまま別地震と答える**。震源が最も判らない
+  // 地震で「別地点で揺れ検知」が誤発報する側へ倒れる。
+  //
+  // この状態は「震源要素不明」の電文を捨てずに通すようにして初めて届くようになった
+  // （→ quake-spec.md §5）。
+  it('位置不明のセンチネルを持つ EEW は判定に使わない（近傍は同一地震のまま）', () => {
+    const region = fakeRegion({ lat: 37.5, lng: 137.0, firstSeenAtMs: 0 })
+    const hypocenter: Hypocenter = { name: '茨城県沖', latitude: -200, longitude: -200, depth: -1, magnitude: 6.5 }
+    const eew = fakeEEW('eew-unknown-hypo', '2024-01-01T00:00:00.000Z', hypocenter)
+    // 能登のすぐ近く。EEW が無視されればフォールバックの距離判定で true になる
+    expect(isSameEarthquake(region, 38.0, 137.5, 1000, new Map([[eew.id, eew]]))).toBe(true)
+  })
+
+  // 対照: 遠い点は、その EEW があってもフォールバックどおり別地震のまま。
+  // 「無視する」が「常に同一地震にする」に化けていないことを見る。
+  it('位置不明のセンチネルを持つ EEW があっても、遠い点は別地震のまま', () => {
+    const region = fakeRegion({ lat: 37.5, lng: 137.0, firstSeenAtMs: 0 })
+    const hypocenter: Hypocenter = { name: '茨城県沖', latitude: -200, longitude: -200, depth: -1, magnitude: 6.5 }
+    const eew = fakeEEW('eew-unknown-hypo', '2024-01-01T00:00:00.000Z', hypocenter)
+    expect(isSameEarthquake(region, 26.0, 127.7, 1000, new Map([[eew.id, eew]]))).toBe(false)
+  })
 })
 
 describe('isRegionWithinAnyEew', () => {

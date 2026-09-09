@@ -71,6 +71,7 @@ function remapAppEvent(event: AppEvent, deltaMs: number, remapId: IdRemapper): A
         sourceEarthquakes: event.sourceEarthquakes?.map(eq => ({
           ...eq,
           originTime: shiftIsoOpt(eq.originTime, deltaMs),
+          arrivalTime: shiftIsoOpt(eq.arrivalTime, deltaMs),
         })),
         issue: { ...event.issue, time: shiftIso(event.issue.time, deltaMs) },
         areas: event.areas.map(a => ({
@@ -88,6 +89,15 @@ function remapAppEvent(event: AppEvent, deltaMs: number, remapId: IdRemapper): A
         observations: event.observations?.map(o => ({
           ...o,
           arrivalTime: shiftIsoOpt(o.arrivalTime, deltaMs),
+          maxHeightDateTime: shiftIsoOpt(o.maxHeightDateTime, deltaMs),
+        })),
+        // **沿岸への推定（VTSE52）もシフトの対象。** ここは元から丸ごと漏れていて、
+        // 到達予想時刻がカードに出ているのに収録当時の絶対時刻のまま残っていた。
+        // 隣に並ぶ観測点の時刻はシフト済みなので、突き合わせると食い違って見える。
+        estimations: event.estimations?.map(e => ({
+          ...e,
+          arrivalTime: shiftIsoOpt(e.arrivalTime, deltaMs),
+          maxHeightDateTime: shiftIsoOpt(e.maxHeightDateTime, deltaMs),
         })),
       }
     }
@@ -125,6 +135,10 @@ function remapPayload(payload: ReplayPayload, deltaMs: number, remapId: IdRemapp
           id: replaceEventIdInId(payload.data.id, payload.data.eventId, newEventId),
           time: shiftIso(payload.data.time, deltaMs),
           originTime: shiftIso(payload.data.originTime, deltaMs),
+          // 地震発現時刻。**いまは画面に出していないが、シフトはしておく** ——
+          // 出すようになったときに気づける形になっていない（型検査もテストも通り、
+          // その時刻だけが収録当時の絶対値のまま出る）。
+          arrivalTime: shiftIsoOpt(payload.data.arrivalTime, deltaMs),
         },
       }
     }

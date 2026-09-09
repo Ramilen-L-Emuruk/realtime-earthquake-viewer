@@ -1,12 +1,13 @@
 // earthquakeToText / lpgmToText（読み上げ文生成）のテスト。
 // 「〇時〇分」はローカルタイムゾーン依存のため、時刻の数値そのものではなく
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
-import { describe, it, expect } from 'vitest'
-import { nankaiToText, earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
+import { describe, it, expect, vi } from 'vitest'
+import { earthquakeCancelToText, tsunamiCancelToText, eewCancelToText, CANCEL_REASON_SPEAK_MAX_CHARS, nankaiToText, earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, tsunamiWarningLevelToText, selectWarningLevelToSpeak, WARNING_LEVEL_SPEAK_MAX_POINTS, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
 import { joinSegments, plain, type SpeechSegment } from './ttsFollow'
+import { log } from './logger'
 import { tsunamiAreaGradeChanges } from './tsunami'
 import { getStationCoordsCache } from './stationCoords'
-import { eewMaxScaleInfo, eewMaxLpgmClass } from './eew'
+import { eewMaxScaleInfo, eewMaxLpgmClassInfo } from './eew'
 import type { JMAQuake, JMALpgm, EarthquakePoint, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass, JMATsunami, TsunamiArea, TsunamiObservation, JMANankai } from '../types/earthquake'
 
 const TTS_OPTS: TtsRegionOptions = { intensityLevels: 0, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0 }
@@ -16,6 +17,7 @@ function makeQuake(over: {
   name?: string
   depth?: number
   magnitude?: number
+  magnitudeCondition?: string
   maxScale?: IntensityScale
   domesticTsunami?: DomesticTsunami
   forecastText?: string
@@ -33,6 +35,7 @@ function makeQuake(over: {
         longitude: -93.0,
         depth: over.depth ?? -1,
         magnitude: over.magnitude ?? 7.4,
+        ...(over.magnitudeCondition && { magnitudeCondition: over.magnitudeCondition }),
       },
       maxScale: over.maxScale ?? -1,
       domesticTsunami: over.domesticTsunami ?? 'なし',
@@ -143,9 +146,10 @@ describe('earthquakeToText: 顕著な地震の震源要素更新のお知らせ'
 describe('eewIntensityToText: 長周期地震動階級の読み上げ', () => {
   // 本番コード（useLiveEventHandler.ts）は安定待ちで確定した値を明示的に渡すため、
   // eewIntensityText は event から直接値を取り直さない。ここでは従来どおり event だけを
-  // 渡せるよう、eewMaxScaleInfo/eewMaxLpgmClass で都度計算してから渡すラッパーを使う。
+  // 渡せるよう、eewMaxScaleInfo/eewMaxLpgmClassInfo で都度計算してから渡すラッパーを使う。
   function eewIntensityToText(event: EEWAlert, announceUpgrade = false): string {
-    return eewIntensityText(eewMaxScaleInfo(event), eewMaxLpgmClass(event), event, announceUpgrade)
+    const lg = eewMaxLpgmClassInfo(event)
+    return eewIntensityText(eewMaxScaleInfo(event), lg.cls, event, announceUpgrade, lg.over)
   }
 
   function makeEEW(
@@ -233,13 +237,14 @@ describe('eewIntensityToText: 長周期地震動階級の読み上げ', () => {
   })
 
   // 上限が定まらない報（DMDATA の to='over' / P2PQuake の scaleTo=99）は下限側の階級を持つ。
-  // 語を落とすと「震度4以上」を「震度4」と断定した放送になる。
-  describe('eewIntensityToText: 「〜以上」の読み上げ', () => {
-    it('上限が定まらない予想は「以上」を付けて読む', () => {
+  // 語を落とすと「震度4程度以上」を「震度4」と断定した放送になる。
+  // **語は気象庁の表現に合わせてある**（→ `getIntensityLabelWithApproxAbove`）。
+  describe('eewIntensityToText: 「〜程度以上」の読み上げ', () => {
+    it('上限が定まらない予想は「程度以上」を付けて読む', () => {
       const eew = makeEEW(undefined, {
         areas: [{ pref: '石川県', name: '石川県能登', scaleFrom: 40, scaleTo: 40, scaleToOrAbove: true, kindCode: '09', arrivalTime: null }],
       })
-      expect(eewIntensityToText(eew)).toBe('予想最大震度4以上。')
+      expect(eewIntensityToText(eew)).toBe('予想最大震度4程度以上。')
     })
 
     it('上限が定まっている予想には付けない（境界の手前）', () => {
@@ -1723,5 +1728,178 @@ describe('nankaiToText: 取消と調査終了の言い分け', () => {
   it('安全弁: 段階の発表は取消の分岐に吸われない', () => {
     expect(nankaiToText(nankai({ kindName: '巨大地震警戒' }))).toContain('巨大地震警戒')
     expect(nankaiToText(nankai({ kindName: '調査中' }))).toContain('調査中')
+  })
+})
+
+// 規模が数値にならない電文（`jmx_eb:Magnitude@description`）。
+//
+// 数値が無いことだけを見て黙ると、**最大級の地震ほど音声から規模が消える**。
+// 「Ｍ８を超える巨大地震」は M8 を超えて速報できないことを表し、同じ地震の津波情報では
+// 予想波高が「巨大」「高い」になる場面に出る。
+describe('earthquakeToText: 数値にならない規模', () => {
+  // 正: 別の文で伝える。句へ差し込むと「巨大地震の地震が発生しました」と重なる。
+  it('「Ｍ８を超える巨大地震」を別の文で読む', () => {
+    const text = earthquakeToText(makeQuake({ magnitude: NaN, magnitudeCondition: 'Ｍ８を超える巨大地震' }), TTS_OPTS, true)
+    expect(text).toContain('地震が発生しました。マグニチュードは8を超える巨大地震とみられます。')
+    expect(text).not.toContain('巨大地震の地震')
+  })
+
+  // 正: 「Ｍ不明」も読む。値が無いことを伝えるのも情報。
+  it('「Ｍ不明」を読む', () => {
+    const text = earthquakeToText(makeQuake({ magnitude: NaN, magnitudeCondition: 'Ｍ不明' }), TTS_OPTS, true)
+    expect(text).toContain('マグニチュードは不明です。')
+  })
+
+  // 対照: 数値が読めるなら従来どおり句の中で読む（別の文は足さない）。
+  it('数値が読めれば従来どおり句の中で読む', () => {
+    const text = earthquakeToText(makeQuake({ magnitude: 7.4 }), TTS_OPTS, true)
+    expect(text).toContain('マグニチュード7.4の地震が発生しました。')
+    expect(text).not.toContain('マグニチュードは')
+  })
+
+  // 対照: 説明が無い規模不明では何も足さない（「NaN」「マイナス1.0」を読ませない）。
+  it('説明が無い規模不明では規模に触れない', () => {
+    const text = earthquakeToText(makeQuake({ magnitude: NaN }), TTS_OPTS, true)
+    expect(text).not.toContain('マグニチュード')
+  })
+
+  // 安全弁: 未知の説明でも黙らない。気象庁が語を増やしたときに規模が音声から消えないため。
+  it('未知の説明でも読む', () => {
+    const text = earthquakeToText(makeQuake({ magnitude: NaN, magnitudeCondition: 'Ｍ９を超える未曾有の地震' }), TTS_OPTS, true)
+    expect(text).toContain('マグニチュードは9を超える未曾有の地震です。')
+  })
+
+  // 正: 既読の記録は数値と説明を同じ鍵で持つ。段階的に確定していく続報
+  // （「Ｍ不明」→「Ｍ８を超える巨大地震」→ 実測値）で、変わったことを取りこぼさない。
+  it('説明が変わったら続報で読み直す', () => {
+    const first = makeQuake({ type: '震源・震度情報', magnitude: NaN, magnitudeCondition: 'Ｍ不明' })
+    const spoken = createQuakeSpokenState()
+    const segs = earthquakeToSegments(first, TTS_OPTS, true, spoken)
+    applySpokenRefs(spoken, segs.flatMap(seg => seg.refs))
+
+    const second = makeQuake({ type: '震源・震度情報', magnitude: NaN, magnitudeCondition: 'Ｍ８を超える巨大地震' })
+    const text = joinSegments(earthquakeToSegments(second, TTS_OPTS, false, spoken))
+    expect(text).toContain('マグニチュードは8を超える巨大地震とみられます。')
+  })
+
+  // 対照: 同じ説明の続報では読み直さない（続報のたびに同じことを言わない）。
+  it('説明が変わらなければ続報で読み直さない', () => {
+    const q = makeQuake({ type: '震源・震度情報', magnitude: NaN, magnitudeCondition: 'Ｍ８を超える巨大地震' })
+    const spoken = createQuakeSpokenState()
+    const segs = earthquakeToSegments(q, TTS_OPTS, true, spoken)
+    applySpokenRefs(spoken, segs.flatMap(seg => seg.refs))
+
+    const text = joinSegments(earthquakeToSegments(q, TTS_OPTS, false, spoken))
+    expect(text).not.toContain('巨大地震')
+  })
+})
+
+// 「観測中」のまま津波警報に相当する津波を観測している観測点の読み上げ。
+//
+// 波高の数値が無いため、波高更新の文にも到達確認の文にも乗らない。黙って落とすと、
+// 気象庁が「注意する必要がある」と名指しした事実が音声から消える。
+describe('tsunamiWarningLevelToText', () => {
+  const obs = (name: string, districtName?: string): TsunamiObservation => ({
+    name, offshore: true, condition: { observing: true }, maxHeightRevise: '更新',
+    ...(districtName && { districtName }),
+  })
+
+  // 正: 何を観測しているかを伝える。
+  it('津波警報に相当する津波を観測していると読む', () => {
+    expect(tsunamiWarningLevelToText([obs('宮城沖')]))
+      .toBe('宮城沖では、津波警報に相当する津波を観測しています。')
+  })
+
+  // 対照: 高さを補わない。電文が数値を出していないので、アプリが「1m 超」等と言ってはいけない。
+  it('高さを補わない', () => {
+    const text = tsunamiWarningLevelToText([obs('宮城沖')])
+    expect(text).not.toMatch(/メートル|[0-9]m/)
+  })
+
+  // 対照: 対象が無ければ空。空文字が「また、」で継がれると助詞だけの文になる。
+  it('対象が無ければ空にする', () => {
+    expect(tsunamiWarningLevelToText([])).toBe('')
+  })
+
+  // 安全弁: 件数上限を超えた分は数で伝える。黙って落とすと、読まれなかった観測点の存在が消える。
+  it('件数上限を超えた分は数で伝える', () => {
+    const many = Array.from({ length: 8 }, (_, i) => obs(`沖合${i + 1}`))
+    const text = tsunamiWarningLevelToText(many)
+    expect(text).toContain('ほか3地点')
+  })
+
+  // 安全弁: 既読の記録に載せるのは実際に読んだ分だけ（絞り込みは文の生成と共有する）。
+  it('既読にするのは読んだ分だけ', () => {
+    const many = Array.from({ length: 8 }, (_, i) => obs(`沖合${i + 1}`))
+    expect(selectWarningLevelToSpeak(many)).toHaveLength(WARNING_LEVEL_SPEAK_MAX_POINTS)
+  })
+})
+
+// 取消しの概要（電文の `Body/Text`）。アプリの定型文（「キャンセルされました」）は何が起きたかしか
+// 言っておらず、**なぜ取り消したのかは電文のこの本文にしか無い**。
+describe('取消の理由を読み上げる', () => {
+  // 正: 定型文の後ろに気象庁の本文を続ける
+  it('地震情報の取消に理由を足す', () => {
+    const text = earthquakeCancelToText('2026-01-01T12:00:00+09:00', '先ほどの地震情報は誤りでしたので取り消します。')
+    expect(text).toContain('キャンセルされました。')
+    expect(text).toContain('先ほどの地震情報は誤りでしたので取り消します。')
+  })
+
+  it('津波情報の取消に理由を足す', () => {
+    const text = tsunamiCancelToText('retracted', '先ほどの津波警報は誤りでしたので取り消します。')
+    expect(text).toContain('取り消されました。')
+    expect(text).toContain('先ほどの津波警報は誤りでしたので取り消します。')
+  })
+
+  // 対照: 理由が無ければ従来どおり（空文字を足して助詞だけの文にしない）
+  it('理由が無ければ従来どおり', () => {
+    // 時刻の書式はローカルタイムゾーン依存なので、末尾だけを見る
+    expect(earthquakeCancelToText('2026-01-01T12:00:00+09:00')).toMatch(/に発表された地震情報はキャンセルされました。$/)
+    expect(tsunamiCancelToText('lifted')).toBe('津波警報等は全て解除されました。')
+  })
+
+  // 安全弁: 句点で終わっていない本文には句点を足す（次の文と繋がって聞こえないため）
+  it('句点で終わらない本文には句点を足す', () => {
+    expect(tsunamiCancelToText('retracted', '装置の障害によるもの')).toContain('装置の障害によるもの。')
+  })
+
+  // 安全弁: 長い本文は読まない。読み上げが伸びると後続の電文が待ちの上限に達して割り込む
+  it('長すぎる本文は読まない（画面に委ねる）', () => {
+    const long = 'あ'.repeat(CANCEL_REASON_SPEAK_MAX_CHARS + 1)
+    expect(tsunamiCancelToText('retracted', long)).toBe('津波警報等は誤って発表されたため取り消されました。')
+  })
+})
+
+// 取消しの概要は地震・津波・EEW の 3 つで同じ構造。**扱いを揃えないと、同じ事象なのに
+// 種別によって理由が出たり出なかったりする。**
+describe('EEW の取消の理由を読み上げる', () => {
+  const cancelledEew = (cancelText?: string) => ({
+    kind: 'eew', id: 'e1', time: '2026-01-01T12:00:05+09:00', test: false, cancelled: true,
+    issue: { eventId: 'e', serial: '2', time: '2026-01-01T12:00:00+09:00' },
+    earthquake: { originTime: '2026-01-01T12:00:00+09:00', arrivalTime: '2026-01-01T12:00:00+09:00', hypocenter: { name: '日向灘', latitude: 32, longitude: 132, depth: 30, magnitude: 6.5 } },
+    ...(cancelText && { cancelText }),
+  } as unknown as EEWAlert)
+
+  it('理由を足す', () => {
+    const text = eewCancelToText(cancelledEew('先ほどの緊急地震速報は誤りでしたので取り消します。'))
+    expect(text).toContain('キャンセルされました。')
+    expect(text).toContain('先ほどの緊急地震速報は誤りでしたので取り消します。')
+  })
+
+  // 対照: 理由が無ければ従来どおり（空文字を足して助詞だけの文にしない）
+  it('理由が無ければ従来どおり', () => {
+    expect(eewCancelToText(cancelledEew())).toMatch(/緊急地震速報はキャンセルされました。$/)
+  })
+
+  // 安全弁: 上限を超えた本文は読まないが、**捨てたことを記録する**（画面には全文が出る）
+  it('長すぎる本文は読まず、記録を残す', () => {
+    const info = vi.spyOn(log, 'info').mockImplementation(() => {})
+    try {
+      const long = 'あ'.repeat(CANCEL_REASON_SPEAK_MAX_CHARS + 1)
+      expect(eewCancelToText(cancelledEew(long))).toMatch(/キャンセルされました。$/)
+      expect(info).toHaveBeenCalledWith(expect.stringContaining('取消しの概要が長いため'))
+    } finally {
+      info.mockRestore()
+    }
   })
 })

@@ -125,6 +125,34 @@ function makeMissingReport(
   } as unknown as JMATsunami
 }
 
+/**
+ * 「観測中」のまま津波警報に相当する津波を観測している沖合の観測点を持つ観測情報。
+ *
+ * 電文の `Condition`＝観測中・`Revise`＝更新の組み合わせ（→ `isWarningLevelWhileObserving`）。
+ * **数値は持たない** —— 気象庁がこの状態で高さを出さないため。
+ */
+function makeWarningLevelReport(
+  names: string[],
+  id = 'tsunami-warnlevel',
+  over: Partial<{ observing: boolean }> = {},
+): JMATsunami {
+  return {
+    kind: 'tsunami',
+    id,
+    eventId: EVENT_ID,
+    time: '2026-01-01T12:00:00Z',
+    cancelled: false,
+    issue: { source: 'JMA', time: '2026-01-01T12:00:00Z', type: 'Focus' },
+    areas: [],
+    observations: names.map(n => ({
+      name: n,
+      offshore: true,
+      condition: { observing: over.observing ?? true },
+      maxHeightRevise: '更新',
+    })),
+  } as unknown as JMATsunami
+}
+
 /** 画面が出している津波（区域はここが持つ。観測情報の続報は区域を持たずに届く）。 */
 function displayedTsunami(areas: { name: string; code: string; grade: string; height?: string }[]): JMATsunami {
   return {
@@ -594,6 +622,28 @@ describe('津波観測情報の読み上げ: リプレイ復元と欠測の記�
     await settle()
     expect(spokenTexts().join('')).toContain('輪島港で到達を確認しました。')
   })
+
+  // **記憶を 1 つ足したら埋める経路も全部見ること。** 欠測で一度踏んだ穴と同型で、
+  // 復元が埋め忘れると窓の手前から続いている状態が再生開始後にもう一度読まれる。
+  it('対照: 窓の手前から警報相当のままなら、その状態は読み直さない', async () => {
+    const d = setupFull()
+    d.restorePreWindowTracking([entry(makeWarningLevelReport(['宮城沖'], 'pre-1'))] as never)
+    d.handleLiveEvent(makeWarningLevelReport(['宮城沖'], 'live-1') as never)
+    await settle()
+    expect(spokenTexts().join('')).not.toContain('津波警報に相当する津波')
+  })
+
+  it('正: 窓の手前で状態が解けていれば、再生開始後の警報相当を読む', async () => {
+    const d = setupFull()
+    d.restorePreWindowTracking([
+      entry(makeWarningLevelReport(['宮城沖'], 'pre-1')),
+      // 数値が出て「観測中」から抜ける
+      entry(makeObsReport([{ name: '宮城沖', district: '石川県能登', code: '390', value: 1.5 }], [], 'pre-2')),
+    ] as never)
+    d.handleLiveEvent(makeWarningLevelReport(['宮城沖'], 'live-1') as never)
+    await settle()
+    expect(spokenTexts().join('')).toContain('津波警報に相当する津波を観測しています。')
+  })
 })
 
 // 欠測のまま「これまでの最大波」の値だけが上がる続報（断続的な欠測）。
@@ -668,5 +718,48 @@ describe('津波観測情報の読み上げ: 到達確認と欠測を行き来�
     handle(makeMissingReport([{ name: '輪島港' }], 'tsunami-missing-2') as never)
     await settle()
     expect(spokenTexts().slice(before).join('')).toContain('欠測となっています。')
+  })
+})
+
+// 「観測中」のまま津波警報に相当する津波を観測している観測点。
+//
+// **値が変わらないので、アプリの「値の変化で判定する」仕組みでは作れない状態。**
+// フックが専用の群として渡さないと、波高の文にも到達確認の文にも乗らず声にならない。
+describe('観測中のまま津波警報相当の観測点', () => {
+  it('正: 専用の文で読む', async () => {
+    const handle = setup()
+    handle(makeWarningLevelReport(['宮城沖']) as never)
+    await settle()
+    expect(spokenTexts().join('')).toContain('宮城沖では、津波警報に相当する津波を観測しています。')
+  })
+
+  it('対照: 同じ状態の続報では読み直さない', async () => {
+    const handle = setup()
+    handle(makeWarningLevelReport(['宮城沖']) as never)
+    await settle()
+    const before = spokenTexts().length
+    handle(makeWarningLevelReport(['宮城沖'], 'tsunami-warnlevel-2') as never)
+    await settle()
+    expect(spokenTexts().slice(before).join('')).not.toContain('津波警報に相当する津波')
+  })
+
+  it('対照: 到達確認としては読まない（二重に言わない）', async () => {
+    const handle = setup()
+    handle(makeWarningLevelReport(['宮城沖']) as never)
+    await settle()
+    expect(spokenTexts().join('')).not.toContain('宮城沖で到達を確認しました')
+  })
+
+  it('安全弁: 状態が解けたらまた読む（数値が出た後に戻った場合）', async () => {
+    const handle = setup()
+    handle(makeWarningLevelReport(['宮城沖']) as never)
+    await settle()
+    // 数値が出て「観測中」から抜ける
+    handle(makeObsReport([{ name: '宮城沖', district: '石川県能登', code: '390', value: 1.5 }], [], 'tsunami-obs-2') as never)
+    await settle()
+    const before = spokenTexts().length
+    handle(makeWarningLevelReport(['宮城沖'], 'tsunami-warnlevel-3') as never)
+    await settle()
+    expect(spokenTexts().slice(before).join('')).toContain('津波警報に相当する津波を観測しています。')
   })
 })
