@@ -461,8 +461,16 @@ export function createTestEEW(eventId?: string, serial = 1, baseTime?: Date): EE
       { pref: '宮城県', name: '宮城県中部', scaleFrom: 50, scaleTo: 55, kindCode: '10', arrivalTime: at(18000), lgIntTo: 3 },
       { pref: '岩手県', name: '岩手県沿岸南部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(22000), lgIntTo: 2 },
       { pref: '福島県', name: '福島県浜通り', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(25000), lgIntTo: 2 },
-      // kindCode 11 は「主要動が既に到達と予測」。到達予想時刻は持たない（未来時刻とは両立しない）
-      { pref: '茨城県', name: '茨城県北部', scaleFrom: 40, scaleTo: 45, kindCode: '11', arrivalTime: null, lgIntTo: 1 },
+      // **種別コードの下 1 桁が主要動の状況を表す**（コード表 12。→ `utils/eewKind.ts`）。
+      // 到達の欄はこれで表示が 3 通りに分かれるので、テストデータにも 3 種類とも入れておく
+      // —— 実機で確かめられるのはここに在る形だけ。
+      //
+      // 11 ＝ 警報・既に到達と推定。実電文は種別コードと `Condition` の両方で到達を伝えるので、
+      // 読み取り後の値（`arrived`）も立てる。到達予測時刻とは排他で、時刻は持たない。
+      { pref: '茨城県', name: '茨城県北部', scaleFrom: 40, scaleTo: 45, kindCode: '11', arrivalTime: null, arrived: true, lgIntTo: 1 },
+      // 19 ＝ 警報・PLUM 法。**時刻は持つが到達の予測ではない**（「震度を初めて予測した時刻」）
+      // ので過去の時刻が入る。画面は時刻を出さず「到達時刻は不明」と書く。
+      { pref: '千葉県', name: '千葉県北東部', scaleFrom: 40, scaleTo: 45, kindCode: '19', arrivalTime: at(-4000), lgIntTo: 1 },
     ],
   }
 }

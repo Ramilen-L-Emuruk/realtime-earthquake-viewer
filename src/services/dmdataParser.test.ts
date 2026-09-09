@@ -7,6 +7,7 @@ import { log } from '../utils/logger'
 import { hasKnownEpicenter } from '../utils/geo'
 import { hasMagnitude } from '../utils/formatters'
 import { isMaxScaleUnreceived } from '../utils/quakePoints'
+import { isEewPlumKindCode } from '../utils/eewKind'
 
 // 震度速報（VXSE51）。震源が未確定の段階で出るため Earthquake 要素を持たず、
 // 震度は Pref > Area（一次細分区域）までしか無い。
@@ -538,6 +539,127 @@ describe('XML 経路が落としてはいけない項目（地震）', () => {
   it('都道府県ロールアップ点（pref 付き）を持つ', () => {
     const expected = { pref: '岩手県', addr: '岩手県', isArea: true, scale: 40, code: '03' }
     expect(fromXml().points).toContainEqual(expected)
+  })
+
+  // ---- 続報での変化（Revise）----
+  //
+  // 気象庁が「この都道府県・地域は続報で新規に追加された（追加）」「最大震度が動いた
+  // （上方修正／下方修正）」を電文で直接伝えている（解説資料 Ⅱ.33 の 2-1-3-2・2-1-3-3-2）。
+  // **読んで持つだけで、いまはどこからも使っていない**（→ `EarthquakePoint.revise`）。
+  //
+  // 雛形は Revise を持たないので、都道府県と区域へ**別々の値**を入れて取り違えを検出する。
+  // Pref の配下に Area があり、どちらも同名要素を持ちうるため、直下に限る読み方でないと
+  // 県の点が区域の値を拾う。
+  const withRevise = () => {
+    const xml = VXSE53_XML
+      .replace('<Name>岩手県</Name>\n          <Code>03</Code>\n          <MaxInt>4</MaxInt>',
+        '<Name>岩手県</Name>\n          <Code>03</Code>\n          <MaxInt>4</MaxInt>\n          <Revise>上方修正</Revise>')
+      .replace('<Name>岩手県沿岸北部</Name>\n            <Code>221</Code>',
+        '<Name>岩手県沿岸北部</Name>\n            <Code>221</Code>\n            <Revise>追加</Revise>')
+    // .replace() は対象が無くても黙って素通りする。当たったことを機械的に確かめる。
+    expect(xml).toContain('<Revise>上方修正</Revise>')
+    expect(xml).toContain('<Revise>追加</Revise>')
+    return xml
+  }
+
+  // 正: 都道府県・区域それぞれが自分の Revise を持つ。
+  it('続報での変化（Revise）を都道府県と区域それぞれから読む', () => {
+    const pts = parseEarthquakeFromXml('VXSE53', withRevise())!.points
+    expect(pts.find(p => p.pref === '岩手県')?.revise).toBe('上方修正')
+    expect(pts.find(p => p.addr === '岩手県沿岸北部')?.revise).toBe('追加')
+  })
+
+  // 対照: Revise を持たない電文では入らない。空文字を入れると、使う側の `&&` を素通りする。
+  it('Revise が無ければ入らない', () => {
+    const pts = fromXml().points
+    expect(pts.find(p => p.pref === '岩手県')?.revise).toBeUndefined()
+    expect(pts.find(p => p.addr === '岩手県沿岸北部')?.revise).toBeUndefined()
+  })
+
+  // 安全弁: 都道府県の点が配下の区域の値を拾わない。`xmlChild`（直下）でなく子孫探索で
+  // 読むと、県の Revise が無い電文で区域の値が県に付く。
+  it('都道府県の点は配下の区域の Revise を拾わない', () => {
+    const xml = VXSE53_XML.replace(
+      '<Name>岩手県沿岸北部</Name>\n            <Code>221</Code>',
+      '<Name>岩手県沿岸北部</Name>\n            <Code>221</Code>\n            <Revise>追加</Revise>',
+    )
+    expect(xml).toContain('<Revise>追加</Revise>')
+    const pts = parseEarthquakeFromXml('VXSE53', xml)!.points
+    expect(pts.find(p => p.addr === '岩手県沿岸北部')?.revise).toBe('追加')
+    expect(pts.find(p => p.pref === '岩手県')?.revise).toBeUndefined()
+  })
+
+  // 正: 市町村にも `Revise` がある（解説資料 Ⅱ.33 2-1-3-3-3-2）。**点検の集計は要素名で
+  // まとめるため、市町村だけ読み落としても「VXSE53 Revise」の 1 行にしか見えない。**
+  // 都道府県・地域と別々の値を入れて、階層の取り違えを検出する。
+  it('続報での変化（Revise）を市町村からも読む', () => {
+    const xml = VXSE53_XML
+      .replace('<Name>岩手県</Name>\n          <Code>03</Code>\n          <MaxInt>4</MaxInt>',
+        '<Name>岩手県</Name>\n          <Code>03</Code>\n          <MaxInt>4</MaxInt>\n          <Revise>上方修正</Revise>')
+      .replace('<Name>普代村</Name>\n              <Code>03506</Code>',
+        '<Name>普代村</Name>\n              <Code>03506</Code>\n              <Revise>追加</Revise>')
+    // .replace() は対象が無くても黙って素通りする。当たったことを機械的に確かめる。
+    expect(xml).toContain('<Revise>上方修正</Revise>')
+    expect(xml).toContain('<Revise>追加</Revise>')
+    const quake = parseEarthquakeFromXml('VXSE53', xml)!
+    expect(quake.cities?.find(c => c.name === '普代村')?.revise).toBe('追加')
+    // 安全弁: 市町村の値が上位の都道府県・区域へ混ざらない（それぞれ自分の直下だけを見る）。
+    expect(quake.points.find(p => p.pref === '岩手県')?.revise).toBe('上方修正')
+    expect(quake.points.find(p => p.addr === '岩手県沿岸北部')?.revise).toBeUndefined()
+  })
+
+  // 対照: `Revise` を持たない電文では市町村にも入らない。
+  it('Revise が無ければ市町村にも入らない', () => {
+    expect(fromXml().cities?.find(c => c.name === '普代村')?.revise).toBeUndefined()
+  })
+
+  // ---- 震源の補助要素（震央補助表現・震源決定機関）----
+  //
+  // **長周期・津波では読んでいたのに地震情報だけ落ちていた** —— 座標の読み方が
+  // 種別で違うため（VXSE61 は `Coordinate` を 2 つ持つ）、地震情報だけ共通の読み手を
+  // 通していなかったのが原因。座標以外は `readHypocenterAreaLabels` へ寄せてある。
+
+  // 正: 震央補助表現とその材料（解説資料 Ⅱ.33 1-3-1-4）。
+  it('震央補助表現とその材料を読む', () => {
+    const xml = VXSE53_XML.replace(
+      '<Coordinate>+39.9+142.2-50000/</Coordinate>',
+      '<Coordinate>+39.9+142.2-50000/</Coordinate>\n          <NameFromMark>宮古の東６０ｋｍ付近</NameFromMark>'
+      + '\n          <MarkCode>412</MarkCode>\n          <Direction>東</Direction>\n          <Distance unit="km">60</Distance>',
+    )
+    expect(xml).toContain('<NameFromMark>')
+    const h = parseEarthquakeFromXml('VXSE53', xml)!.earthquake.hypocenter
+    expect(h.nameFromMark).toBe('宮古の東６０ｋｍ付近')
+    expect(h.markCode).toBe('412')
+    expect(h.direction).toBe('東')
+    expect(h.distanceKm).toBe(60)
+  })
+
+  // 正: 震源決定機関（解説資料 Ⅱ.33 1-3-2）。**`Area` の外**にあるので、震央地名まわりとは
+  // 別の読み手を通る（→ `readHypocenterSource`）。
+  it('震源決定機関を読む', () => {
+    const xml = VXSE53_XML.replace('</Hypocenter>', '  <Source>ＵＳＧＳ</Source>\n      </Hypocenter>')
+    expect(xml).toContain('<Source>')
+    expect(parseEarthquakeFromXml('VXSE53', xml)!.earthquake.hypocenter.source).toBe('ＵＳＧＳ')
+  })
+
+  // 対照: どちらも持たない電文では入らない。空文字を入れると、使う側の `&&` を素通りする。
+  it('震央補助表現・震源決定機関が無ければ入らない', () => {
+    const h = fromXml().earthquake.hypocenter
+    expect(h.nameFromMark).toBeUndefined()
+    expect(h.markCode).toBeUndefined()
+    expect(h.direction).toBeUndefined()
+    expect(h.distanceKm).toBeUndefined()
+    expect(h.source).toBeUndefined()
+  })
+
+  // 安全弁: 震源の補助要素を足しても座標の読み方は変わらない。**VXSE61 は `Coordinate` を
+  // 2 つ持ち、度分の側を選び直す**（→ `readHypocenterCoord`）。共通の読み手へ寄せた際に
+  // ここが素の `parseJmaCoord` へすり替わっていないことを確かめる。
+  it('震源の補助要素を共通化しても、度分の座標の選び直しは残る', () => {
+    const h = fromXml().earthquake.hypocenter
+    expect(h.latitude).toBeCloseTo(39.9, 5)
+    expect(h.longitude).toBeCloseTo(142.2, 5)
+    expect(h.depth).toBe(50)
   })
 
   it('区域点は pref を空にする', () => {
@@ -1085,12 +1207,16 @@ function eewXml(o: {
   ].join('\n')
 }
 
-/** 区域 1 件。`kindName` を「緊急地震速報（警報）」にすると警報級として読まれる。 */
-function eewPref(forecastInt: string, kindCode = '09', kindName = '緊急地震速報（予報）'): string {
+/**
+ * 区域 1 件。`kindName` を「緊急地震速報（警報）」にすると警報級として読まれる。
+ * `extra` は `Area` 直下へそのまま差し込む（`ArrivalTime` / `Condition` など）。
+ */
+function eewPref(forecastInt: string, kindCode = '09', kindName = '緊急地震速報（予報）', extra = ''): string {
   return '<Pref><Name>石川</Name><Code>9170</Code><Area>'
     + '<Name>石川県能登</Name><Code>390</Code>'
     + '<Category><Kind><Name>' + kindName + '</Name><Code>' + kindCode + '</Code></Kind></Category>'
     + '<ForecastInt>' + forecastInt + '</ForecastInt>'
+    + extra
     + '</Area></Pref>'
 }
 
@@ -1424,6 +1550,82 @@ describe('parseEEWFromXml: severity・cancel・LPGM', () => {
   })
 })
 
+// 区域ごとの主要動の到達状況。**電文は同じ事実を 2 通りで伝えてくる** —— 区域の `Condition`
+//（「既に主要動到達と推測」。解説資料 Ⅱ.21 2-1-5-3-7）と、種別コードの下 1 桁（01/11。コード表 12）。
+// 到達済みの区域では `ArrivalTime` が出ない（同 2-1-5-3-6）ので、読まないと「時刻を持たない
+// 区域」と同じ顔になり、画面の一覧から黙って消える。
+describe('緊急地震速報: 区域の主要動到達状況', () => {
+  // 種別コードは実電文の形に合わせる（00=予報・未到達／01=予報・到達済み／09=予報・PLUM 法）。
+  const areaOf = (extra: string, kindCode = '00') =>
+    parseEEWFromXml('VXSE45', eewXml({ pref: eewPref('<From>5-</From><To>5+</To>', kindCode, '緊急地震速報（予報）', extra) }))!.areas![0]
+
+  // 正: 資料どおり、到達済みの区域は種別コードと `Condition` の両方で到達を伝えてくる。
+  it('種別コードと Condition がそろった到達済みの区域を読む', () => {
+    const a = areaOf('<Condition>既に主要動到達と推測</Condition>', '01')
+    expect(a.arrived).toBe(true)
+    // 排他なので時刻は無い。**null と undefined を混ぜない**（型は `string | null`）。
+    expect(a.arrivalTime).toBeNull()
+  })
+
+  // 対照: 到達予測時刻だけの区域では立たない。ここが立つと、まだ来ていない区域を
+  // 「到達済み」と表示することになる。
+  it('到達予測時刻だけの区域では立たない', () => {
+    const a = areaOf('<ArrivalTime>2026-01-01T12:00:30+09:00</ArrivalTime>')
+    expect(a.arrived).toBeUndefined()
+    expect(a.arrivalTime).toBe('2026-01-01T12:00:30+09:00')
+  })
+
+  // 安全弁 1: **片方しか無くても取りこぼさない**（どちらかが立てば到達済み）。
+  //
+  // **片方しか無いことを異常として記録しない。** 資料が排他だと定めているのは `Condition` と
+  // `ArrivalTime` のあいだだけで、コードと `Condition` が必ず同時に出るとは書かれていない。
+  // 鳴らすようにすると正常な電文でログが埋まる。
+  it('片方しか無くても到達済みとして扱い、それを異常として記録しない', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      // 種別コードだけが到達済み。
+      expect(areaOf('', '01').arrived).toBe(true)
+      // `Condition` だけが到達済み（種別コードは未到達）。
+      expect(areaOf('<Condition>既に主要動到達と推測</Condition>', '00').arrived).toBe(true)
+      expect(warn.mock.calls.map(c => c.join(' ')).join(' ')).not.toContain('到達状況')
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 安全弁 2: 資料が定めていない `Condition` は捨てて記録する。表示側が意味を決められないため
+  //（`LandOrSea` と同じ扱い）。**黙って落とすと値域が増えたことに気づけない。**
+  it('資料に無い到達状況は捨てて記録する', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const a = areaOf('<Condition>未知の状況</Condition>')
+      expect(a.arrived).toBeUndefined()
+      expect(warn.mock.calls.map(c => c.join(' ')).join(' ')).toContain('未知の状況')
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // 安全弁 3: **`Condition` は `Earthquake` 直下にもある**（仮定震源要素。→ `EEWAlert.condition`）。
+  // 区域の値をそちらへ流し込まないこと ―― 混ざると「震源が仮定」と誤って表示する。
+  it('区域の Condition を仮定震源要素として読まない', () => {
+    const eew = parseEEWFromXml('VXSE45', eewXml({
+      pref: eewPref('<From>5-</From><To>5+</To>', '01', '緊急地震速報（予報）', '<Condition>既に主要動到達と推測</Condition>'),
+    }))!
+    expect(eew.areas![0].arrived).toBe(true)
+    expect(eew.earthquake.condition).toBe('')
+  })
+
+  // 対照: PLUM 法（09/19）の区域は到達済みではない。**時刻は持つが到達の予測ではない**
+  //（「震度を初めて予測した時刻」）ので、読み取りは電文どおりに持ち、意味の判断は表示側で行う。
+  it('PLUM 法の区域は到達済みにしない', () => {
+    const a = areaOf('<ArrivalTime>2026-01-01T12:00:05+09:00</ArrivalTime>', '09')
+    expect(a.arrived).toBeUndefined()
+    expect(a.arrivalTime).toBe('2026-01-01T12:00:05+09:00')
+    expect(isEewPlumKindCode(a.kindCode)).toBe(true)
+  })
+})
+
 const VXSE62_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <Report xmlns="http://xml.kishou.go.jp/jmaxml1/" xmlns:eb="http://xml.kishou.go.jp/jmaxml1/body/earthquake1/">
   <Control>
@@ -1473,6 +1675,27 @@ describe('parseLpgmFromXml: xmlChild が Area 直下の値を拾い、配下 Cit
     expect(lpgm.regions).toEqual([
       { code: '250', name: '東京都２３区', maxLgInt: 3, pref: '東京都' },
     ])
+  })
+
+  // 続報での変化（`Revise`）。地震情報と同じく、気象庁が「追加」「上方修正」「下方修正」を
+  // 直接伝えている（→ `EarthquakePoint.revise`）。**読んで持つだけで使ってはいない。**
+  // 都道府県と区域へ別々の値を入れ、直下に限る読み方であることを確かめる。
+  it('続報での変化（Revise）を都道府県と区域それぞれから読む', () => {
+    const xml = VXSE62_XML
+      // 雛形の Pref は MaxLgInt を持たず `prefs` に積まれないので、併せて足す
+      // （実電文の Pref は都道府県別の最大階級を持つ）。
+      .replace('<Name>東京都</Name>\n          <Code>13</Code>',
+        '<Name>東京都</Name>\n          <Code>13</Code>\n          <MaxLgInt>3</MaxLgInt>\n          <Revise>上方修正</Revise>')
+      .replace('<Name>東京都２３区</Name>\n            <Code>250</Code>',
+        '<Name>東京都２３区</Name>\n            <Code>250</Code>\n            <Revise>追加</Revise>')
+    // .replace() は対象が無くても黙って素通りする。当たったことを機械的に確かめる。
+    expect(xml).toContain('<Revise>上方修正</Revise>')
+    expect(xml).toContain('<Revise>追加</Revise>')
+    const lpgm = parseLpgmFromXml(xml)
+    if (!lpgm || lpgm.cancelled) throw new Error('expected 発表')
+    expect(lpgm.prefs?.[0].revise).toBe('上方修正')
+    // 安全弁: 区域が県の値を拾わない（直下に限らないと取り違える）。
+    expect(lpgm.regions?.[0].revise).toBe('追加')
   })
 
   it('取消電文は cancelled=true で返す', () => {
@@ -1873,6 +2096,35 @@ describe('長周期地震動: 震源の位置要素', () => {
     const lpgm = parseLpgmFromXml(huge)!
     expect(lpgm.magnitude).toBeUndefined()
     expect(lpgm.magnitudeCondition).toBe('Ｍ８を超える巨大地震')
+  })
+
+  // 正: 詳細震央地名を優先する（解説資料 Ⅱ.37 1-3-1-3）。**長周期だけ `Area/Name` しか
+  // 読んでおらず、国外の地震で粗い名前を持っていた**（地震情報・津波は既に優先していた）。
+  it('詳細震央地名があればそちらを震央地名にする', () => {
+    const xml = PARITY_LPGM_XML.replace(
+      '<Name>新潟県上越地方</Name>',
+      '<Name>中米</Name>\n          <DetailedName>メキシコ、チアパス州沿岸</DetailedName>',
+    )
+    expect(xml).toContain('<DetailedName>')
+    expect(parseLpgmFromXml(xml)!.hypocenter!.name).toBe('メキシコ、チアパス州沿岸')
+  })
+
+  // 対照: 詳細震央地名が無ければ `Area/Name` に戻る。
+  it('詳細震央地名が無ければ震央地名を使う', () => {
+    expect(parseLpgmFromXml(PARITY_LPGM_XML)!.hypocenter!.name).toBe('新潟県上越地方')
+  })
+
+  // 正: 震源決定機関（解説資料 Ⅱ.37 1-3-2）。**`Area` の外**にあるので震央地名まわりとは
+  // 別の読み手を通る（→ `readHypocenterSource`）。
+  it('震源決定機関を読む', () => {
+    const xml = PARITY_LPGM_XML.replace('</Hypocenter>', '  <Source>ＵＳＧＳ</Source>\n      </Hypocenter>')
+    expect(xml).toContain('<Source>')
+    expect(parseLpgmFromXml(xml)!.hypocenter!.source).toBe('ＵＳＧＳ')
+  })
+
+  // 対照: 震源決定機関が無ければ入らない。
+  it('震源決定機関が無ければ入らない', () => {
+    expect(parseLpgmFromXml(PARITY_LPGM_XML)!.hypocenter!.source).toBeUndefined()
   })
 })
 
@@ -3740,13 +3992,16 @@ describe('parseEEWFromXml（VXSE45 の XML 経路）', () => {
   })
 
   // 正: 区域の Kind が「緊急地震速報（警報）」なら警報級として扱う。
+  //
+  // `arrived` は雛形（実電文由来）が `Condition`＝「既に主要動到達と推測」を持つため立つ。
+  // **到達予測時刻と排他**なので `arrivalTime` は null（→「緊急地震速報: 区域の主要動到達状況」）。
   it('区域の Kind から警報級を判定し、区域を読む', () => {
     const xml = EEW_XML.replace('</Forecast>', `${EEW_WARNING_PREF}</Forecast>`)
     const e = parseEEWFromXml('VXSE45', xml)!
     expect(e.severity).toBe('Warning')
     expect(e.areas).toEqual([{
       pref: '', name: '神奈川県東部', scaleFrom: 45, scaleTo: 45,
-      kindCode: '11', arrivalTime: null, lgIntTo: 1,
+      kindCode: '11', arrivalTime: null, arrived: true, lgIntTo: 1,
     }])
   })
 
@@ -3831,13 +4086,14 @@ describe('XML 経路が落としてはいけない項目（EEW）', () => {
   })
 
   // 正: 警報級の区域。予想震度の区域塗りと読み上げに直結する。
+  // `arrived` については上の「区域の Kind から警報級を判定し、区域を読む」と同じ。
   it('警報級の区域を読む', () => {
     const xml = EEW_XML.replace('</Forecast>', `${EEW_WARNING_PREF}</Forecast>`)
     const e = parseEEWFromXml('VXSE45', xml)!
     expect(e.severity).toBe('Warning')
     expect(e.areas).toEqual([{
       pref: '', name: '神奈川県東部', scaleFrom: 45, scaleTo: 45,
-      kindCode: '11', arrivalTime: null, lgIntTo: 1,
+      kindCode: '11', arrivalTime: null, arrived: true, lgIntTo: 1,
     }])
   })
 
