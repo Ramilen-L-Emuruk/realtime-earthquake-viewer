@@ -8,6 +8,8 @@ import {
   createTestEEWForecast,
   createTestEEWWarning,
   createTestTsunami,
+  createTestTsunamiWarning,
+  createTestTsunamiWatch,
 } from './testData'
 import { eewAreas, eewMaxScale, eewNoForecastReason } from './eew'
 import { isObservationMissing } from './tsunami'
@@ -80,6 +82,37 @@ describe('テスト津波の観測点名', () => {
   })
 })
 
+// 情報名（`Head/Title`）と観測時点（`Head/TargetDateTime`）は **DMDATA の XML でしか来ない**。
+// P2PQuake の JSON はどちらも持たないので、standard 版のテストボタンでこれらが入ると
+// 「実運用では絶対に出ない表示」を実機で見せることになる（同じ形の穴が緊急地震速報の
+// テストデータに既にある。docs/pending-work.md「テストデータを実電文の形へ見直す」）。
+describe('テスト津波のヘッダ部（バリアント差）', () => {
+  // 正: DMDSS 版では入る。**入らなければ実機で確かめる手段が無い**ので、まずここを固定する。
+  it('DMDSS 版は情報名と観測時点を持つ', () => {
+    const t = createTestTsunami(true)
+    expect(t.infoName).toBe('大津波警報・津波警報・津波注意報')
+    expect(t.observationDateTime).toBeTruthy()
+    expect(createTestTsunamiWarning(true).infoName).toBe('津波警報・津波注意報')
+    expect(createTestTsunamiWatch(true).infoName).toBe('津波注意報')
+  })
+
+  // 対照: standard 版には入らない。
+  it('standard 版は情報名も観測時点も持たない', () => {
+    const t = createTestTsunami(false)
+    expect(t.infoName).toBeUndefined()
+    expect(t.observationDateTime).toBeUndefined()
+    expect(createTestTsunamiWarning(false).infoName).toBeUndefined()
+    expect(createTestTsunamiWatch(false).infoName).toBeUndefined()
+  })
+
+  // 安全弁: 観測時点は**発表時刻より前**であること。同じ分だと表示側が意図どおり出さない
+  // （「発表時刻と同じ分なら出さない」判定があるため、実機で見えないまま通ってしまう）。
+  it('観測時点は発表時刻より前になっている', () => {
+    const t = createTestTsunami(true)
+    expect(Date.parse(t.observationDateTime!)).toBeLessThan(Date.parse(t.time))
+  })
+})
+
 // 地震情報テストの points 形状。バリアントで実電文の形が違う（quake-spec.md §4 の識別規則）。
 // 元データは P2PQuake 形状（観測点に pref が入る）なので、DMDSS でそのまま流すと
 // 実電文では起こり得ない組み合わせになり、都道府県別表示の分岐がテストで一度も通らない。
@@ -110,6 +143,14 @@ describe('地震情報テストの points 形状', () => {
     expect(quake.issue.type).toBe('各地の震度情報')
   })
 
+  // 「気象庁以外の観測点」の印は DMDSS 版（DMDATA 経路）だけが持つ事実。
+  // **P2PQuake はこの区別を配信しない**ので、標準版のテストボタンで出すと
+  // 実電文には無いバッジが画面に出る。
+  it('気象庁以外の印は DMDSS 版だけが持つ', () => {
+    expect(createTestEarthquake(true).points.some((p) => p.nonJma)).toBe(true)
+    expect(createTestEarthquake(false).points.some((p) => p.nonJma)).toBe(false)
+  })
+
   it('都道府県ロールアップの震度は、その県の観測点の最大震度と一致する（震度不明は数えない）', () => {
     const expected = new Map<string, number>()
     for (const p of createTestEarthquake(false).points) {
@@ -123,6 +164,31 @@ describe('地震情報テストの points 形状', () => {
     const rollups = createTestEarthquake(true).points.filter((p) => p.isArea && p.pref !== '')
     expect(rollups.length).toBe(expected.size)
     for (const r of rollups) expect(r.scale).toBe(expected.get(r.pref))
+  })
+})
+
+// 上限を定めない予想（電文の `To="over"`）をテストボタンでも再現していること。
+//
+// **テストボタンはパーサーを通らない**（内部型を直接組み立てる）ので、ここに無いものは
+// 実機で一度も確かめられない。実際に「程度以上」の表示・読み上げを足したときテストデータが
+// 追随しておらず、画面で確認する手段が無かった。
+describe('テスト EEW の上限を定めない予想', () => {
+  it('初報は震度も長周期も「程度以上」で来る', () => {
+    const first = createTestEEW(undefined, 1)
+    expect(first.forecastMaxLpgmClassOver).toBe(true)
+    const strongest = eewAreas(first).find((a) => a.name === '宮城県北部')!
+    expect(strongest.scaleToOrAbove).toBe(true)
+    expect(strongest.lgIntToOver).toBe(true)
+  })
+
+  // 対照: 続報では確定し、値も上がる（言い直しと引き上げの経路を通す）
+  it('続報では確定した値になる', () => {
+    const next = createTestEEW(undefined, 2)
+    expect(next.forecastMaxLpgmClassOver).toBeUndefined()
+    expect(next.forecastMaxLpgmClass).toBe(4)
+    const strongest = eewAreas(next).find((a) => a.name === '宮城県北部')!
+    expect(strongest.scaleToOrAbove).toBeUndefined()
+    expect(strongest.lgIntTo).toBe(4)
   })
 })
 

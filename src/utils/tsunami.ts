@@ -1,4 +1,5 @@
-import type { JMATsunami, TsunamiArea, TsunamiGrade, TsunamiObservation, TsunamiObservationCondition } from '../types/earthquake'
+import type { JMATsunami, TsunamiArea, TsunamiEstimation, TsunamiEstimationCondition, TsunamiGrade, TsunamiObservation, TsunamiObservationCondition } from '../types/earthquake'
+import { formatTime } from './formatters'
 import { log } from './logger'
 
 const GRADE_PRIORITY: Record<TsunamiGrade, number> = {
@@ -144,28 +145,45 @@ export function latestValidDateTime(reports: JMATsunami[]): string | undefined {
 }
 
 /**
- * 最新報に有効期限が無ければ、同一イベントの過去報から引き継いだものを返す。
+ * 最新報が持たない「報ではなく津波に付く事実」を、同一イベントの過去報から引き継ぐ。
  *
- * 履歴からの復元（初回ロード・リロード）は最新の 1 報だけを画面へ載せるため、その報が期限を
- * 持たないと失効の予約が積まれず、期限切れの津波が消えないまま残る。引き継ぐ理由は
- * `latestValidDateTime` に同じ。
+ * 履歴からの復元（初回ロード・リロード）は最新の 1 報だけを画面へ載せるため、その報が値を
+ * 持たないと画面から落ちる。**続報の上書き（`useEarthquakes`）と同じものをここでも引き継ぐこと**
+ * —— 片方だけに足すと、ライブ受信では出るのにリロードすると消える、という形になる。
+ *
+ * いま引き継ぐのは 2 つ。
+ *
+ * - **有効期限**（`validDateTime`）—— 気象庁は期限が決まった報で一度だけ載せ、以後の続報には
+ *   載せない。落とすと失効の予約が積まれず、期限切れの津波が消えないまま残る（`latestValidDateTime`）
+ * - **電文の本文**（`bodyText`）—— 同じく毎報には載らない。実電文では津波予報の VTSE41 の半数に
+ *   入るだけで、続報の VTSE51/52 には 1 通も無い。落とすと「いつ来ていつまで続くか」が消える
  *
  * 同一イベントの判定は `eventId`、`eventId` を持たない経路（P2PQuake）では `id` の一致で行う。
- * 別の津波の期限を引き継ぐと、発表中の津波を無関係な期限で消しうる。
+ * 別の津波の値を引き継ぐと、発表中の津波を無関係な期限で消したり、別の津波の本文を出したりする。
  *
  * @param latest 画面へ載せる最新報
  * @param reports 同じ取得結果に含まれる報（`latest` を含んでよい）
  */
-export function withInheritedValidDateTime(latest: JMATsunami, reports: JMATsunami[]): JMATsunami {
-  // 自分の期限が日時として読めるならそれを使う（判定は `latestValidDateTime` と同じ 1 箇所に置く）。
-  if (latestValidDateTime([latest])) return latest
+export function withInheritedTsunamiFacts(latest: JMATsunami, reports: JMATsunami[]): JMATsunami {
   const sameEvent = reports.filter(r => r !== latest
     && (latest.eventId ? r.eventId === latest.eventId : !r.eventId && r.id === latest.id))
+  // 本文は新しい報のものを優先し、無ければ同一イベントの過去報から最も新しいものを採る。
+  //
+  // **発表時刻を読めない報は候補から外す。** 並べ替えの比較が NaN になると順序が定まらず、
+  // 「最も新しいもの」を選んだつもりで時刻の読めない報を掴む。期限の側（`latestValidDateTime`）が
+  // 新旧を判定できない報を候補から外すのと同じ扱い。
+  const bodyText = latest.bodyText
+    ?? sameEvent
+      .filter(r => r.bodyText && Number.isFinite(new Date(r.time).getTime()))
+      .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())[0]?.bodyText
+  const withBody = bodyText === latest.bodyText ? latest : { ...latest, bodyText }
+  // 自分の期限が日時として読めるならそれを使う（判定は `latestValidDateTime` と同じ 1 箇所に置く）。
+  if (latestValidDateTime([withBody])) return withBody
   const inherited = latestValidDateTime(sameEvent)
-  if (inherited) return { ...latest, validDateTime: inherited }
+  if (inherited) return { ...withBody, validDateTime: inherited }
   // 読めない期限は落とす。残すと「期限を持つ津波」の顔をしたまま以後の比較がすべて偽へ倒れ、
   // 表示は続くのに失効の予約も積まれない。落とせば standard 版の 24 時間フェイルセーフが働く。
-  return latest.validDateTime ? { ...latest, validDateTime: undefined } : latest
+  return withBody.validDateTime ? { ...withBody, validDateTime: undefined } : withBody
 }
 
 /**
@@ -375,16 +393,32 @@ const HEIGHT_CONDITIONS: Record<string, keyof TsunamiObservationCondition> = {
 }
 
 /**
+ * 沿岸への推定（`Estimation/Item/MaxHeight/Condition`）に現れる語と、写す先のフラグ。
+ *
+ * **観測点の表を流用しないこと。** 推定値なので語は「観測中」ではなく「推定中」で、
+ * 混ぜると電文に無い語を引き当てるうえ、未知語の記録も効かなくなる。
+ */
+const ESTIMATION_MAX_HEIGHT_CONDITIONS: Record<string, keyof TsunamiEstimationCondition> = {
+  '推定中': 'estimating',
+  '重要': 'important',
+}
+
+/** 区域の予想波高（`Forecast/Item/MaxHeight/Condition`）に現れる語と、写す先のフラグ。 */
+const FORECAST_MAX_HEIGHT_CONDITIONS: Record<string, 'forecastHeightImportant'> = {
+  '重要': 'forecastHeightImportant',
+}
+
+/**
  * 知らない語を記録した組（`欄名:語`）。観測情報は数分おきに再送され同じ語が何度も来るので、
  * 1 度だけ出す。地図に出せない観測点名の記録（`useTsunamiLayerData`）と同じ間引き方。
  */
 const reportedUnknownConditions = new Set<string>()
 
-function collectConditionFlags(
+function collectConditionFlags<K extends string>(
   raw: string | undefined,
-  table: Record<string, keyof TsunamiObservationCondition>,
+  table: Record<string, K>,
   field: string,
-  into: TsunamiObservationCondition,
+  into: Partial<Record<K, boolean>>,
 ): void {
   if (!raw) return
   // 併記の区切りは全角スペース（電文解説資料 Ⅱ.12）。半角・改行が混ざっても読めるよう広く割る。
@@ -400,7 +434,7 @@ function collectConditionFlags(
     const key = `${field}:${token}`
     if (reportedUnknownConditions.has(key)) continue
     reportedUnknownConditions.add(key)
-    log.warn(`[tsunami] 観測点の ${field} に未知の語があります（無視します）: ${token}`)
+    log.warn(`[tsunami] ${field} に未知の語があります（無視します）: ${token}`)
   }
 }
 
@@ -424,10 +458,34 @@ export function parseTsunamiObservationCondition(input: {
   heightCondition?: string
 }): TsunamiObservationCondition | undefined {
   const condition: TsunamiObservationCondition = {}
-  collectConditionFlags(input.firstHeight, FIRST_HEIGHT_CONDITIONS, 'FirstHeight/Condition', condition)
-  collectConditionFlags(input.maxHeight, MAX_HEIGHT_CONDITIONS, 'MaxHeight/Condition', condition)
-  collectConditionFlags(input.heightCondition, HEIGHT_CONDITIONS, 'TsunamiHeight@condition', condition)
+  collectConditionFlags(input.firstHeight, FIRST_HEIGHT_CONDITIONS, 'Observation/FirstHeight/Condition', condition)
+  collectConditionFlags(input.maxHeight, MAX_HEIGHT_CONDITIONS, 'Observation/MaxHeight/Condition', condition)
+  collectConditionFlags(input.heightCondition, HEIGHT_CONDITIONS, 'Observation/TsunamiHeight@condition', condition)
   return Object.keys(condition).length > 0 ? condition : undefined
+}
+
+/**
+ * 沿岸への推定の `MaxHeight/Condition` を {@link TsunamiEstimationCondition} へ写す。
+ *
+ * 観測点側と分けているのは語彙が違うため（「観測中」ではなく「推定中」）。併記の割り方と
+ * 未知語の記録は共通の {@link collectConditionFlags} が受け持つ。
+ */
+export function parseTsunamiEstimationCondition(maxHeight: string | undefined): TsunamiEstimationCondition | undefined {
+  const condition: TsunamiEstimationCondition = {}
+  collectConditionFlags(maxHeight, ESTIMATION_MAX_HEIGHT_CONDITIONS, 'Estimation/MaxHeight/Condition', condition)
+  return Object.keys(condition).length > 0 ? condition : undefined
+}
+
+/**
+ * 区域の予想波高の `MaxHeight/Condition` から「重要」を読む。
+ *
+ * 立つ語は「重要」1 つだけだが、未知語を記録する仕組みを観測・推定と揃えたいので
+ * 同じ経路を通す（電文が語を増やしたときに黙って捨てないため）。
+ */
+export function parseTsunamiForecastHeightImportant(maxHeight: string | undefined): boolean | undefined {
+  const flags: Partial<Record<'forecastHeightImportant', boolean>> = {}
+  collectConditionFlags(maxHeight, FORECAST_MAX_HEIGHT_CONDITIONS, 'Forecast/MaxHeight/Condition', flags)
+  return flags.forecastHeightImportant || undefined
 }
 
 /**
@@ -465,10 +523,94 @@ export function observationBadges(obs: TsunamiObservation): string[] {
   if (missing) badges.push('欠測')
   // 水位が上昇中なら、いま見えている波高が最大とは限らないことを伝える。
   if (obs.condition?.rising) badges.push('上昇中')
-  // 「重要」は大津波警報の基準を超えた値に気象庁が付ける印。語をそのまま出しても何が重要なのか
-  // 伝わらないので、意味の側を書く。
-  if (obs.condition?.important) badges.push('大津波警報の基準超')
+  // 「重要」は基準を超えた値に気象庁が付ける印。語をそのまま出しても何が重要なのか
+  // 伝わらないので、意味の側を書く。**基準は沿岸と沖合で違う**（→ importantBadgeText）。
+  if (obs.condition?.important) badges.push(importantBadgeText(!!obs.offshore))
+  // 数値が出ていなくても、電文が「津波警報に相当する津波を観測している」と言っている場合がある。
+  //
+  // **「〜の基準超」と同じ形にしない。** 上の 2 つは実測値が基準を超えた事実だが、こちらは
+  // 数値が出ていないまま気象庁が置いた信号で、意味の階層が違う。同じ行に並ぶので、形を揃えると
+  // 「弱いほうの基準だけ超えた」と読める。読み上げ（「津波警報に相当する津波を観測しています」）と
+  // 語を揃え、隣の波高欄の「観測中」と合わせて「相当する津波を観測中・数値は未確定」と読ませる。
+  if (isWarningLevelWhileObserving(obs)) badges.push('津波警報相当を観測')
   return badges
+}
+
+/**
+ * 「観測中」のまま、津波警報に相当する津波を観測しているか。
+ *
+ * **値の変化では捉えられない信号。** 気象庁は大津波警報の津波予報区に対応する沖合の観測点で、
+ * 沿岸で推定される高さが大津波警報の基準（3m 超）に届かないとき `Condition` を「観測中」に
+ * したまま数値を出さない。そのとき **`Revise` に「更新」と書くことで、津波警報に相当する
+ * 津波（1m 超）を観測していることを示す**（電文解説資料 Ⅱ.13 1-1-2-2-2。資料自身が
+ * 「注意する必要がある」と名指ししている）。
+ *
+ * 「観測中」の中身は変わりようがない（`DateTime` も高さも出ない）ので、この組み合わせは
+ * 気象庁が意図して置いたときにしか現れない。**アプリが値の変化から導くことは原理的にできない。**
+ *
+ * **沿岸の観測点（VTSE51）には当てない。** 同じ「観測中」でも、資料が注意を書いているのは
+ * 沖合の側だけ。仕組みとしては沿岸でも成り立ちそうに見えるが、電文が定めていないことを
+ * 先回りして読むと、気象庁が言っていない警告をアプリが作ることになる。
+ */
+export function isWarningLevelWhileObserving(obs: TsunamiObservation): boolean {
+  return !!obs.offshore && !!obs.condition?.observing && obs.maxHeightRevise === '更新'
+}
+
+/**
+ * 「重要」（`MaxHeight/Condition`）を利用者向けに言い換えた語。
+ *
+ * **基準が電文で違う。** 語をそのまま「重要」と出しても何が重要なのか伝わらないので意味を
+ * 書くが、そのとき電文ごとの基準を混ぜると、実際より軽い／重い印象を与える。
+ *
+ * | 出所 | 電文解説資料 | 基準 |
+ * |---|---|---|
+ * | 沿岸の潮位観測点（VTSE51） | Ⅱ.12 1-2-2-2 | 大津波警報のみ |
+ * | 沖合の潮位観測点（VTSE52） | Ⅱ.13 1-1-2-2-2 | 大津波警報・津波警報 |
+ * | 沿岸への推定（VTSE52） | Ⅱ.13 1-2-2-3 | 大津波警報・津波警報 |
+ *
+ * 区域の予想波高（`Forecast`）の「重要」は**意味そのものが違う**ため、ここではなく
+ * {@link forecastHeightImportantBadge} が受け持つ。
+ */
+export function importantBadgeText(offshore: boolean): string {
+  return offshore ? '大津波警報・津波警報の基準超' : '大津波警報の基準超'
+}
+
+/**
+ * 区域の予想波高に付く「重要」の語。
+ *
+ * 観測・推定の「重要」（実際に高い津波を観測・推定した）とは違い、**予想の書き換え**を指す
+ * —— 大津波警報の区域で予想波高が初めて数値になった、または上方修正された
+ * （電文解説資料 Ⅱ.11 1-1-2-4）。同じ語で出すと取り違えるので分けている。
+ */
+export function forecastHeightImportantBadge(): string {
+  // 「更新」では方向が伝わらない（この印は引き下げでは付かない）。かといって「引き上げ」だけでは、
+  // 「巨大」から「10m超」へ数値になっただけの報まで「高さが上がった」と言うことになる。
+  // 電文の定義（初めて数値で発表／上方修正）をそのまま書く。
+  return '予想の高さを数値で発表・引き上げ'
+}
+
+/**
+ * 沿岸への推定の行に出すバッジ（左から順に）。
+ *
+ * 観測点の {@link observationBadges} と分けているのは、推定には「欠測」「上昇中」が無く、
+ * 代わりに数値を出せない理由が「推定中」である点が違うため。
+ */
+export function estimationBadges(est: TsunamiEstimation): string[] {
+  const badges: string[] = []
+  if (est.condition?.important) badges.push(importantBadgeText(true))
+  return badges
+}
+
+/**
+ * 沿岸への推定の行の右端に出す波高。数値が無いときは、無い理由（電文の語）を出す。
+ *
+ * 「推定中」は**数値を出せるほど大きくない**ことを気象庁が明示した状態で、`DateTime` と
+ * `jmx_eb:TsunamiHeight` の代わりに現れる（電文解説資料 Ⅱ.13 1-2-2-3）。空欄にすると、
+ * 値が無いのが電文の判断なのか読み落としなのか画面から分からない。
+ */
+export function estimationHeightText(est: TsunamiEstimation): string {
+  if (est.maxHeight?.description) return est.maxHeight.description
+  return est.condition?.estimating ? '推定中' : ''
 }
 
 /**
@@ -482,6 +624,23 @@ export function observationBadges(obs: TsunamiObservation): string[] {
 export function observationArrivalFallbackText(obs: TsunamiObservation): string {
   if (obs.arrivalTime) return ''
   return obs.condition?.firstWaveUnidentifiable ? '到達時刻不明' : ''
+}
+
+/**
+ * 最大波を観測した時刻（`MaxHeight/DateTime`）を、行の時刻欄に添える語。
+ *
+ * **波高の数値だけでは、それがいつの観測値かが分からない。** 続報で値が変わらないとき、
+ * 観測し直して同じだったのか前の値が据え置かれているのかは、この時刻でしか読み取れない。
+ *
+ * **第1波の到達時刻と紛れないよう「最大波」と冠する。** 同じ行に 2 つの時刻が並ぶため、
+ * 裸の時刻を足すとどちらがどちらか分からなくなる。
+ *
+ * 波高を出していない行では返さない —— 時刻だけが残ると、値の無い観測点に何かを観測した
+ * ように見える。
+ */
+export function observationMaxHeightTimeText(obs: TsunamiObservation): string {
+  if (!obs.maxHeightDateTime || !obs.height) return ''
+  return `最大波 ${formatTime(obs.maxHeightDateTime).slice(0, 5)}`
 }
 
 /**

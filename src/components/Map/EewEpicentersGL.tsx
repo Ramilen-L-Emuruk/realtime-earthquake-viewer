@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { MapGeoJSONFeature } from 'maplibre-gl'
 import { useMapGL } from './mapGLContext'
 import type { EewEpicenter } from '../../hooks/useEewLayerData'
-import { getIntensityColor, getIntensityLabelWithOrAbove } from '../../utils/intensity'
+import { getIntensityColor, getIntensityLabelWithApproxAbove } from '../../utils/intensity'
 import { formatMagnitude, formatDepth } from '../../utils/formatters'
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
 import { addOrderedLayer } from './gl/layerOrder'
@@ -145,7 +145,7 @@ export function buildPopupHtml(ep: EewEpicenter): string {
   // 仮定震源要素の報は震源が確定していない。数値を鵜呑みにしないよう明示する
   // （×印を薄く描く判定と同じ isAssumed を使い、判定を二重に持たない）。
   const provisional = ep.isAssumed
-  const scaleLabel = getIntensityLabelWithOrAbove(ep.maxScale, ep.maxScaleOrAbove)
+  const scaleLabel = getIntensityLabelWithApproxAbove(ep.maxScale, ep.maxScaleOrAbove)
   return (
     `<div style="min-width:170px">` +
     `<div style="display:flex;align-items:baseline;gap:8px">` +

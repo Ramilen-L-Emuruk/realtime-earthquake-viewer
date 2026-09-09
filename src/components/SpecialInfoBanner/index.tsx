@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { JMANankai, JMANankaiCommentary, JMAKohatsu } from '../../types/earthquake'
+import type { EarthquakeInfoMeta, JMANankai, JMANankaiCommentary, JMAKohatsu, TelegramOperationStatus } from '../../types/earthquake'
 import { log } from '../../utils/logger'
 import { normalizeDmdataTelegramId } from '../../utils/dmdataId'
 
@@ -98,6 +98,61 @@ export function SpecialInfoBanner({ nankai, nankaiCommentary, kohatsu }: Props) 
   )
 }
 
+/**
+ * 南海トラフ・後発地震の帯を開いたときの中身。
+ *
+ * **3 つの帯（臨時情報・解説情報・後発地震注意情報）で同じものを同じ順に出す。**
+ * 別々に書いていたため「解説情報だけが要約を出していて、臨時情報と後発地震は出していない」
+ * という食い違いができていた。項目を足すときはここへ足せば 3 つとも揃う。
+ *
+ * 並びの理由:
+ * 1. **要約**（気象庁が書いた一文）—— 本文は 1000 字を超えることがあり、先に結論を置く
+ * 2. **本文**
+ * 3. **次の情報**（`NextAdvisory`）—— 続報を待つべきかの判断に直結する。**南海トラフだけが持つ**
+ *    （後発地震注意情報の電文はこの要素を持たない）。見出しに「今後」「発表」を使わないのは、
+ *    直後に来る電文の文が「今後は……発表します」で始まり、同じことを 2 回言って見えるため
+ * 4. **この種類の情報について**（`Appendix`）—— 制度の解説。**電文ごとに変わらない固定文**で
+ *    長いため畳んでおく。初めてこの情報を受け取る人には要るが、毎報そのまま積むと本文が埋もれる。
+ *    「この情報について」ではなく「この種類の」と冠するのは、**今回届いた発表の補足ではなく
+ *    制度そのものの説明**だと分かるようにするため
+ */
+function EarthquakeInfoDetail({ info, footer }: {
+  info: EarthquakeInfoMeta & { body: string }
+  footer: React.ReactNode
+}) {
+  const [appendixOpen, setAppendixOpen] = useState(false)
+  return (
+    <div className="px-3 pb-2">
+      {info.summary && (
+        <p className="text-white text-xs font-medium leading-relaxed whitespace-pre-wrap mb-1">{info.summary}</p>
+      )}
+      {info.body && (
+        <p className="text-white/90 text-xs leading-relaxed whitespace-pre-wrap mb-1">{info.body}</p>
+      )}
+      {info.nextAdvisory && (
+        <div className="mb-1 border-l-2 border-white/30 pl-2">
+          <p className="text-white/60 text-[0.6875rem] font-bold mb-0.5">次の情報</p>
+          <p className="text-white/90 text-xs leading-relaxed whitespace-pre-wrap">{info.nextAdvisory}</p>
+        </div>
+      )}
+      {info.appendix && (
+        <div className="mb-1">
+          <button
+            className="text-white/70 hover:text-white text-[0.6875rem] underline decoration-dotted underline-offset-2"
+            onClick={() => setAppendixOpen(v => !v)}
+          >
+            この種類の情報について{appendixOpen ? '（閉じる）' : '（開く）'}
+          </button>
+          {appendixOpen && (
+            <p className="text-white/80 text-[0.6875rem] leading-relaxed whitespace-pre-wrap mt-1">{info.appendix}</p>
+          )}
+        </div>
+      )}
+      {footer}
+    </div>
+  )
+}
+
 function ChevronIcon({ open }: { open: boolean }) {
   return (
     <svg
@@ -106,6 +161,29 @@ function ChevronIcon({ open }: { open: boolean }) {
     >
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
     </svg>
+  )
+}
+
+/**
+ * 電文が自分で名乗っている運用種別（`Control/Status`）の印。訓練・試験のときだけ出す。
+ *
+ * **バナーで出る種別ほど訓練報の割合が高い。** 実電文を数えたところ、後発地震注意情報は
+ * 訓練 5 / 通常 2、南海トラフ臨時情報は訓練 4 / 通常 4 だった（発表頻度が低いぶん、これまでに
+ * 配信されたものに占める訓練の割合が大きい）。印が無いと、訓練の「巨大地震注意」が本物と
+ * 同じ顔で出る。
+ *
+ * 本文にも「＊＊＊これは訓練です＊＊＊」と書かれることがあるが、**帯は畳まれていることが多い**
+ * ので、開かなくても分かるところに出す。
+ */
+function OperationStatusBadge({ status }: { status?: TelegramOperationStatus }) {
+  if (!status) return null
+  return (
+    <span
+      className="text-xs font-bold px-1.5 py-0.5 rounded flex-shrink-0"
+      style={{ backgroundColor: '#1f2937', color: '#fcd34d', border: '1px solid #d97706' }}
+    >
+      {status}報
+    </span>
   )
 }
 
@@ -124,19 +202,17 @@ function NankaiBanner({ nankai }: { nankai: JMANankai }) {
           <span className={`text-xs font-bold text-white px-1.5 py-0.5 rounded ${badge}`}>
             {nankai.kindName}
           </span>
+          <OperationStatusBadge status={nankai.operationStatus} />
           <span className="text-white text-sm font-bold leading-tight truncate">{nankai.headline}</span>
         </div>
         <ChevronIcon open={open} />
       </button>
       {open && (
-        <div className="px-3 pb-2">
-          {nankai.body && (
-            <p className="text-white/90 text-xs leading-relaxed whitespace-pre-wrap mb-1">{nankai.body}</p>
-          )}
+        <EarthquakeInfoDetail info={nankai} footer={
           <p className="text-white/60 text-xs">
             発表: {new Date(nankai.reportDateTime).toLocaleString('ja-JP')}
           </p>
-        </div>
+        } />
       )}
     </div>
   )
@@ -156,20 +232,18 @@ function KohatsuBanner({ kohatsu }: { kohatsu: JMAKohatsu }) {
           <span className="text-xs font-bold text-white px-1.5 py-0.5 rounded bg-blue-500 flex-shrink-0">
             後発地震注意
           </span>
+          <OperationStatusBadge status={kohatsu.operationStatus} />
           <span className="text-white text-sm font-bold leading-tight truncate">{kohatsu.headline}</span>
         </div>
         <ChevronIcon open={open} />
       </button>
       {open && (
-        <div className="px-3 pb-2">
-          {kohatsu.body && (
-            <p className="text-white/90 text-xs leading-relaxed whitespace-pre-wrap mb-1">{kohatsu.body}</p>
-          )}
+        <EarthquakeInfoDetail info={kohatsu} footer={
           <p className="text-white/60 text-xs">
             発表: {new Date(kohatsu.reportDateTime).toLocaleString('ja-JP')}
             {' · '}{formatExpire(kohatsu.expireAt)}
           </p>
-        </div>
+        } />
       )}
     </div>
   )
@@ -226,6 +300,7 @@ function CommentaryBanner({ commentary }: { commentary: JMANankaiCommentary }) {
             <span className="text-xs font-bold text-white px-1.5 py-0.5 rounded bg-teal-500 flex-shrink-0">
               {commentary.serialName}
             </span>
+            <OperationStatusBadge status={commentary.operationStatus} />
             <span className="text-white text-sm font-bold leading-tight truncate">{commentary.headline}</span>
           </div>
           <ChevronIcon open={open} />
@@ -239,17 +314,11 @@ function CommentaryBanner({ commentary }: { commentary: JMANankaiCommentary }) {
         </button>
       </div>
       {open && (
-        <div className="px-3 pb-2">
-          {commentary.summary && (
-            <p className="text-white text-xs font-medium leading-relaxed whitespace-pre-wrap mb-1">{commentary.summary}</p>
-          )}
-          {commentary.body && (
-            <p className="text-white/90 text-xs leading-relaxed whitespace-pre-wrap mb-1">{commentary.body}</p>
-          )}
+        <EarthquakeInfoDetail info={commentary} footer={
           <p className="text-white/60 text-xs">
             発表: {new Date(commentary.reportDateTime).toLocaleString('ja-JP')}
           </p>
-        </div>
+        } />
       )}
     </div>
   )

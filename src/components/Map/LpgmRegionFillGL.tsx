@@ -4,6 +4,7 @@ import type { GeoJSONSource, MapGeoJSONFeature } from 'maplibre-gl'
 import type { Feature, FeatureCollection, Point, Polygon } from 'geojson'
 import { useMapGL } from './mapGLContext'
 import { getLpgmClassColor, getLpgmClassLabel, getLpgmClassRadius } from '../../utils/lpgm'
+import { getIntensityLabel } from '../../utils/intensity'
 import type { LpgmRegionAggregate } from '../../hooks/useQuakeLayerData'
 import { ringToLngLat } from './gl/geojson'
 import { addOrderedLayer } from './gl/layerOrder'
@@ -63,6 +64,8 @@ function buildLabelFC(regions: LpgmRegionAggregate[], iconScale: number): Featur
       iconSizeRatio: ((getLpgmClassRadius(r.maxLgInt) + REGION_RADIUS_BONUS) * iconScale) / LPGM_ICON_BASE_RADIUS,
       lgInt: r.maxLgInt,
       name: r.name,
+      // 区域の最大震度。**階級だけだと「揺れは小さいのに高層階が大きく揺れた」形が読めない**
+      int: r.maxInt ?? -1,
       // 同じ階級のバッジを画面の手前から並べるために持たせる（gl/screenDepth.ts）。
       ...mercatorProps(r.label[1], r.label[0]),
     },
@@ -74,9 +77,12 @@ function buildLabelFC(regions: LpgmRegionAggregate[], iconScale: number): Featur
 function clickHtml(f: MapGeoJSONFeature): string {
   const lgInt = Number(f.properties?.lgInt ?? 0)
   const name = String(f.properties?.name ?? '')
+  const int = Number(f.properties?.int ?? -1)
   return (
     `<div class="text-sm"><div class="font-bold">${escapeHtml(name)}</div>` +
-    `<div class="text-xs" style="color:#94a3b8">長周期地震動 ${escapeHtml(getLpgmClassLabel(lgInt))}</div></div>`
+    `<div class="text-xs" style="color:#94a3b8">長周期地震動 ${escapeHtml(getLpgmClassLabel(lgInt))}` +
+    (int >= 0 ? `　震度 ${escapeHtml(getIntensityLabel(int))}` : '') +
+    `</div></div>`
   )
 }
 

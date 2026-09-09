@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewMaxScale, eewMaxScaleInfo, isForecastScaleHigher, eewNoForecastReason, canPresentLpgmClass, eewSerial, selectEEWSoundType, eewPhase2ScaleStabilityMs, EEW_PHASE2_STABILITY_SMALL_MS, EEW_PHASE2_STABILITY_LARGE_MS, type HypoInfoPendingMissing } from './eew'
+import { eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, isEewHypocenterSettled, eewForecastChangeText, calcArrivalSafetyMarginSec, calcEEWAutoCancelSec, calcEEWCancelTime, calcFeltRadiusKm, diffHypoInfoEvents, computeSingleEEWLevel, eewMaxLpgmClass, eewMaxScale, eewMaxScaleInfo, isForecastScaleHigher, eewNoForecastReason, canPresentLpgmClass, eewSerial, selectEEWSoundType, eewPhase2ScaleStabilityMs, EEW_PHASE2_STABILITY_SMALL_MS, EEW_PHASE2_STABILITY_LARGE_MS, type HypoInfoPendingMissing } from './eew'
 import type { YahooHypoInfoItem } from '../services/kyoshin'
 import type { EEWAlert, EEWRegion, IntensityScale, LpgmClass } from '../types/earthquake'
 
@@ -760,3 +760,74 @@ describe('eewPhase2ScaleStabilityMs: 震度の跳躍幅から安定待ち時間�
     expect(eewPhase2ScaleStabilityMs(70, 55)).toBe(EEW_PHASE2_STABILITY_LARGE_MS)
   })
 })
+
+// 震源要素の精度・最大予測値の変化の表示（電文解説資料 Ⅱ.21 1-4-2・2-1-4）。
+// **語は資料の原文から採り、言い換えない。** 「IPF法（5点以上）」を「精度が高い」と要約すると、
+// 資料と突き合わせられなくなるうえ、こちらが評価を足したことになる。
+describe('震源要素の精度の表示', () => {
+  it('ランクを資料の語で出す', () => {
+    expect(eewEpicenterRankLabel(1)).toBe('P波／S波レベル超え、IPF法（1点）、または仮定震源要素')
+    expect(eewEpicenterRankLabel(4)).toBe('IPF法（5点以上）')
+    expect(eewMagnitudeRankLabel(4)).toBe('P相／全相混在')
+    expect(eewMagnitudeRankLabel(8)).toBe('P波／S波レベル超え、または仮定震源要素')
+  })
+
+  // 対照: 0（不明）と未知の値では何も返さない。「不明」と書いても伝わらず、欄が埋まるだけ。
+  it('不明・未知・未設定では何も返さない', () => {
+    expect(eewEpicenterRankLabel(0)).toBe('')
+    expect(eewEpicenterRankLabel(99)).toBe('')
+    expect(eewEpicenterRankLabel(undefined)).toBe('')
+    expect(eewMagnitudeRankLabel(0)).toBe('')
+    expect(eewMagnitudeRankLabel(undefined)).toBe('')
+  })
+
+  // 正: 5 は「5点以上」。上限を「5点」と書くと、実際にはもっと多いかもしれないことが消える。
+  it('観測点数の 5 は「5点以上」', () => {
+    expect(eewMagnitudePointsLabel(3)).toBe('3点')
+    expect(eewMagnitudePointsLabel(5)).toBe('5点以上')
+    expect(eewMagnitudePointsLabel(0)).toBe('')
+    expect(eewMagnitudePointsLabel(undefined)).toBe('')
+  })
+
+  // 正・対照: rank2 の 9 だけが「これ以降変化しない」。rank の 9 では立たない。
+  it('震源が確定したかは rank2 の 9 だけで判定する', () => {
+    expect(isEewHypocenterSettled(makeEEW({ accuracy: { epicenterRank2: 9 } }))).toBe(true)
+    expect(isEewHypocenterSettled(makeEEW({ accuracy: { epicenterRank2: 4 } }))).toBe(false)
+    expect(isEewHypocenterSettled(makeEEW({ accuracy: { epicenterRank: 9 } }))).toBe(false)
+    expect(isEewHypocenterSettled(makeEEW())).toBe(false)
+  })
+})
+
+describe('最大予測値の変化の一文', () => {
+  it('上がった・下がったを理由つきで出す', () => {
+    expect(eewForecastChangeText(makeEEW({ forecastChange: { maxInt: 1, reason: 2 } })))
+      .toBe('予想が大きくなりました（震央の位置が変わったため）')
+    expect(eewForecastChangeText(makeEEW({ forecastChange: { maxInt: 2, reason: 9 } })))
+      .toBe('予想が小さくなりました（PLUM法による予測で変わったため）')
+  })
+
+  // 正: 長周期階級だけが動いた報でも出す（震度は据え置きでも予想は変わっている）。
+  it('長周期階級だけの変化でも出す', () => {
+    expect(eewForecastChangeText(makeEEW({ forecastChange: { maxInt: 0, maxLgInt: 1, reason: 1 } })))
+      .toBe('予想が大きくなりました（マグニチュードが変わったため）')
+  })
+
+  // 安全弁: 震度は上がり階級は下がった報では「変わりました」に倒す。
+  // **どちらか一方に決めると、立っていない側を無かったことにする。**
+  it('上下が同時に立つ報は「変わりました」に倒す', () => {
+    expect(eewForecastChangeText(makeEEW({ forecastChange: { maxInt: 1, maxLgInt: 2, reason: 3 } })))
+      .toBe('予想が変わりました（マグニチュードと震央の位置が変わったため）')
+  })
+
+  // 正: 理由が読めなければ括弧を出さない。
+  it('理由が無ければ括弧を出さない', () => {
+    expect(eewForecastChangeText(makeEEW({ forecastChange: { maxInt: 1 } }))).toBe('予想が大きくなりました')
+  })
+
+  // 対照: 変化なし（0）と要素が無い報では何も出さない。
+  it('変化なし・未設定では出さない', () => {
+    expect(eewForecastChangeText(makeEEW({ forecastChange: { maxInt: 0, maxLgInt: 0, reason: 0 } }))).toBe('')
+    expect(eewForecastChangeText(makeEEW())).toBe('')
+  })
+})
+

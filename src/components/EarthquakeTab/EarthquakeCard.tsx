@@ -1,19 +1,49 @@
 import { useMemo, useRef, useEffect } from 'react'
-import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint } from '../../types/earthquake'
-import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
+import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint, IntensityScale } from '../../types/earthquake'
+import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor, lpgmCategoryNote } from '../../utils/lpgm'
 import {
   formatQuakeTime,
   formatDepth,
-  formatMagnitude,
   formatDomesticTsunami,
   formatIssueType,
   formatCorrectType,
+  hasHypocenterFacts,
   hasMagnitude,
+  formatMagnitudeValue,
+  formatMagnitudeWithCondition,
+  formatCoordinate,
 } from '../../utils/formatters'
-import { getIntensityLabelWithOrAbove, getIntensityColor, getIntensityBgColor, getDepthColor, getMagnitudeColor } from '../../utils/intensity'
+import { getIntensityLabel, getIntensityLabelWithOrAbove, getIntensityColor, getIntensityBgColor, getDepthColor, getMagnitudeColor } from '../../utils/intensity'
+import { hasKnownEpicenter } from '../../utils/geo'
+import type { JMAQuakeCity } from '../../types/earthquake'
+
 import { buildAreaPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, buildStationPrefIndex, lookupStationRegion, regionOrderRank, byValueDescThenRegion } from '../../utils/stationCoords'
 import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel } from '../../utils/quakePoints'
 import { useStationCoords } from '../../hooks/useStationCoords'
+import { NON_JMA_BADGE_LABEL, NON_JMA_BADGE_TITLE } from '../Map/gl/popupHtml'
+import { mergeUnreceivedPointNames, type UnreceivedPointName } from './unreceivedPointNames'
+
+/**
+ * 市町村を区域ごとにまとめる。**区域が 1 つだけなら見出しを出さない**（区域名を 1 つ書いても
+ * 行の見出し＝都道府県名と合わせて情報が増えず、幅を食うだけ）。
+ *
+ * 区域が複数またがるのは、行の見出しが都道府県名のとき。DMDATA の電文は `Pref/MaxInt` を
+ * 必ず持ち、カードは県内が揃っていなくても都道府県 1 行にまとめるため、**この形が通常**になる。
+ *
+ * 並びは市町村の震度の降順を保つ（`citiesByRowName` で並べ替えた順）。区域の順は、その区域で
+ * 最も高い震度の順 —— 強く揺れた区域を上に出す。
+ */
+export function groupCitiesByArea(cities: JMAQuakeCity[]): [string, JMAQuakeCity[]][] {
+  const areas = new Set(cities.map(c => c.area))
+  if (areas.size <= 1) return [['', cities]]
+  const m = new Map<string, JMAQuakeCity[]>()
+  for (const c of cities) {
+    const list = m.get(c.area)
+    if (list) list.push(c)
+    else m.set(c.area, [c])
+  }
+  return [...m].sort((a, b) => Math.max(...b[1].map(c => c.scale)) - Math.max(...a[1].map(c => c.scale)))
+}
 
 /** issue.type に応じたバッジの Tailwind クラスを返す。 */
 function issueTypeBadgeClass(type: IssueType): string {
@@ -69,7 +99,12 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
   // 付けないと、実際にはもっと強い可能性があることが見出しから読み取れない。
   const maxScaleLabel = maxScale === -1 ? '?' : getIntensityLabelWithOrAbove(maxScale, isMaxScaleUnreceived(maxScale, quake.points))
   const tsunamiInfo = formatDomesticTsunami(domesticTsunami)
-  const hasLocation = hypocenter.latitude > -200 && hypocenter.longitude > -200
+  const hasLocation = hasKnownEpicenter(hypocenter.latitude, hypocenter.longitude)
+  // 規模・深さは位置と別に判定する（→ `hasHypocenterFacts`）
+  const hasFacts = hasHypocenterFacts(hypocenter)
+  // 長周期の「観測情報の種類」から出す一文（値 2・4 のときだけ。→ `lpgmCategoryNote`）。
+  // 条件と本文の両方で使うので一度だけ計算する。
+  const categoryNote = lpgmCategoryNote(lpgm?.category)
 
   const cardRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
@@ -105,6 +140,30 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
     ])
     return { stationPrefIndex, areaPrefIndex, prefOf, regionOfStation, stations, areas }
   }, [quake.points, stationData])
+
+  // 行の見出し → その下にぶら下げる市町村（電文の `Pref/Area/City`）。
+  //
+  // **行の見出しは都道府県名にも区域名にもなる**（県内で震度が割れているときだけ区域単位で
+  // 並ぶ。→ `prefGroups`）。**索引を片方だけで作ると、もう片方の形の電文で 1 件も出ない** ——
+  // 区域名だけで引いていて、県単位にまとまるテストデータで何も出なかった。両方の鍵で引く。
+  // DMDATA の XML 経路でのみ入り、P2PQuake 経路では空。
+  const citiesByRowName = useMemo(() => {
+    const m = new Map<string, JMAQuakeCity[]>()
+    const add = (key: string, c: JMAQuakeCity) => {
+      if (!key) return
+      const list = m.get(key)
+      if (list) list.push(c)
+      else m.set(key, [c])
+    }
+    for (const c of quake.cities ?? []) {
+      add(c.area, c)
+      // 区域名と県名が同じ電文（区域を 1 つしか持たない県）で二重に積まないようにする
+      if (c.pref !== c.area) add(c.pref, c)
+    }
+    // 震度の降順。同値は電文の順（気象庁の並び）を保つ ―― `sort` は安定なので入れ替わらない。
+    for (const list of m.values()) list.sort((a, b) => b.scale - a.scale)
+    return m
+  }, [quake.cities])
 
   const prefGroups = useMemo(() => {
     if (!isSelected || !quake.points.length) return []
@@ -208,7 +267,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
    * 並びは読み上げと同じ気象庁の標準順 —— 電文が点を並べた順に画面を委ねない。
    */
   const unreceivedPoints = useMemo(() => {
-    const empty = { names: [] as string[], unit: '地点' }
+    const empty = { names: [] as UnreceivedPointName[], unit: '地点' }
     if (!isSelected) return empty
     const { prefOf, regionOfStation, stations, areas } = unreceivedIndexes
     if (stations.length === 0 && areas.length === 0) return empty
@@ -219,9 +278,9 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
     const ordered = [...stations, ...areas]
       .map((p, i) => ({ p, i, r: rank(p) }))
       .sort((a, b) => a.r - b.r || a.i - b.i)
-      .map(({ p }) => p.addr)
+      .map(({ p }) => p)
     return {
-      names: [...new Set(ordered)],
+      names: mergeUnreceivedPointNames(ordered),
       unit: unreceivedUnitLabel(stations.length > 0, areas.length > 0),
     }
   }, [isSelected, stationData, unreceivedIndexes])
@@ -235,11 +294,23 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
     const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
     const prefAreaNames = stationData ? buildPrefAreaNamesIndex(stationData) : null
 
+    // 区域の最大震度。**階級と並べると「揺れは小さいのに高層階が大きく揺れた」形が出る**
+    // ——長周期地震動でいちばん伝えたい差がこれ。県へまとめた行では最も大きいものを採る。
+    const maxIntByName = new Map<string, IntensityScale>()
     const noPref: { name: string; maxLgInt: number }[] = []
     const byPref = new Map<string, Map<string, number>>()
     for (const r of regions) {
-      const pref = areaPrefIndex?.get(r.name)
+      // **電文が都道府県名を書いているならそれを使う。** 座標表からの逆引きは
+      // 電文に無かった頃の代理で、表に無い区域では引けずにまとめが崩れる。
+      const pref = r.pref || areaPrefIndex?.get(r.name)
+      const noteMaxInt = (key: string) => {
+        if (r.maxInt === undefined) return
+        const cur = maxIntByName.get(key)
+        if (cur === undefined || r.maxInt > cur) maxIntByName.set(key, r.maxInt)
+      }
+      noteMaxInt(r.name)
       if (!pref) { noPref.push({ name: r.name, maxLgInt: r.maxLgInt }); continue }
+      noteMaxInt(pref)
       const set = byPref.get(pref) ?? new Map<string, number>()
       const cur = set.get(r.name)
       if (cur == null || r.maxLgInt > cur) set.set(r.name, r.maxLgInt)
@@ -257,10 +328,20 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
       if (isWholePref) result.push({ name: pref, maxLgInt: [...classes][0] })
       else for (const [name, maxLgInt] of nameClasses) result.push({ name, maxLgInt })
     }
+    // 行の見出し（区域名または県名）に紐づく最大震度を添える。
+    //
+    // **県の行は電文が書いている値を優先する。** 区域から積み上げると、区域の震度を
+    // 1 つでも読み落としたとき静かに低く出る（パーサー側が `prefs` を用意しているのは
+    // そのため。→ `LpgmPref`）。電文に無い県だけ、区域からの積み上げへ落とす。
+    const prefMaxIntByName = new Map((lpgm?.prefs ?? []).map(p => [p.name, p.maxInt]))
+    const withMaxInt = result.map(g => ({
+      ...g,
+      maxInt: prefMaxIntByName.get(g.name) ?? maxIntByName.get(g.name),
+    }))
 
     // 階級の降順。同じ階級どうしは震度側と同じく気象庁の標準順で並べる（理由は上記）。
     const order = stationData ? buildRegionOrderIndex(stationData) : null
-    return result.sort(byValueDescThenRegion(g => g.maxLgInt, g => g.name, order))
+    return withMaxInt.sort(byValueDescThenRegion(g => g.maxLgInt, g => g.name, order))
   }, [isSelected, lpgm, stationData])
 
   if (isSelected) {
@@ -281,9 +362,22 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
         }}
       >
         {quake.cancelledAt && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg">
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10 rounded-lg px-4">
             <span className="font-black text-white" style={{ fontSize: '3rem', lineHeight: 1.1 }}>キャンセル</span>
             <span className="text-sm font-bold text-white/90 mt-1">この地震情報は取り消されました</span>
+            {/* 気象庁が書いた取消しの概要（電文の `Body/Text`）。アプリが組み立てた文言ではないので
+                そのまま出す。オーバーレイは 10 秒で消えるが、理由を捨てる理由にはならない。 */}
+            {quake.cancelText && (
+              // カードは `overflow-hidden` で、オーバーレイは `absolute inset-0`。**本文が下地の
+              // 高さを超えると下が切れる**（読み上げは長文を画面へ委ねる設計なので、そこで切れると
+              // 理由がどこにも残らない）。この要素の中でスクロールできるようにしておく。
+              <span
+                className="mt-2 text-center text-white/80 overflow-y-auto"
+                style={{ fontSize: '0.75rem', lineHeight: 1.5, whiteSpace: 'pre-line', maxHeight: '40%' }}
+              >
+                {quake.cancelText}
+              </span>
+            )}
           </div>
         )}
         {/* 種別ヘッダー */}
@@ -296,6 +390,13 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
           }}
         >
           {formatIssueType(issue.type)}
+          {/* 電文が自分で名乗っている運用種別（`Control/Status`）。訓練・試験のときだけ出す。
+              **本物と見分けられるようにする** —— 検証用に受信した試験報もカードへ流している。 */}
+          {quake.operationStatus && (
+            <span className="ml-2 px-1.5 py-0.5 rounded" style={{ backgroundColor: '#1f2937', color: '#fcd34d', border: '1px solid #d97706' }}>
+              {quake.operationStatus}報
+            </span>
+          )}
         </div>
 
         {/* 画面が狭い・低い環境（roomy 未満＝スマホ縦/横）では余白と文字を詰め、
@@ -348,6 +449,49 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
               </span>
             </div>
           )}
+          {/* 電文の「観測情報の種類」（`LgCategory`）が伝えているのは、階級を観測した地域の中に
+              震度が小さい地域があるかどうか。**分類番号は出さず意味だけ書く**（→ `lpgmCategoryNote`）。 */}
+          {lpgm && lpgm.maxClass >= 1 && categoryNote && (
+            <div className="text-secondary" style={{ fontSize: '0.75rem', lineHeight: 1.5 }}>
+              {categoryNote}
+            </div>
+          )}
+          {/* 付加文。固定（`ForecastComment/Text`。この地震について気象庁が添える定型文で、
+              実電文では緊急地震速報の発表の有無を伝えている）・その他の固定
+              （`VarComment/Text`）・自由（`FreeFormComment`。階級ごとの揺れの言い換え）の 3 種。
+              **自由付加文は改行と空白を保つ**（地震情報側と同じ扱い。全角スペースの表が入る）。 */}
+          {lpgm && lpgm.maxClass >= 1 && lpgm.forecastText && (
+            <div className="text-secondary" style={{ fontSize: '0.75rem', lineHeight: 1.5 }}>
+              {lpgm.forecastText}
+            </div>
+          )}
+          {lpgm && lpgm.maxClass >= 1 && lpgm.varCommentText && (
+            <div className="text-secondary" style={{ fontSize: '0.75rem', lineHeight: 1.5 }}>
+              {lpgm.varCommentText}
+            </div>
+          )}
+          {lpgm && lpgm.maxClass >= 1 && lpgm.freeFormText && (
+            <div
+              className="text-secondary"
+              style={{ fontSize: '0.75rem', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}
+            >
+              {lpgm.freeFormText}
+            </div>
+          )}
+          {/* 気象庁の詳細ページ（`Comments/URI`）。**アプリが出せないもの（波形・スペクトル）の
+              在りかを電文自身が示している**ので、そこへ行ける導線を残す。 */}
+          {lpgm && lpgm.maxClass >= 1 && lpgm.uri && (
+            <a
+              href={lpgm.uri}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="text-blue-400 underline w-fit"
+              style={{ fontSize: '0.75rem', lineHeight: 1.5 }}
+            >
+              気象庁の詳細ページ（波形・スペクトル）
+            </a>
+          )}
 
           {/* 日時 + 訂正情報 */}
           <div className="flex items-center gap-2 flex-wrap">
@@ -367,7 +511,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
           </div>
 
           {/* マグニチュード・深さ（2カラムグリッド） */}
-          {hasLocation && (
+          {hasFacts && (
             <div className="grid grid-cols-2 gap-2">
               <div
                 className="flex flex-col gap-0.5 rounded-lg p-2 roomy:gap-1 roomy:p-2.5"
@@ -379,9 +523,14 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                 <span className="text-xs font-medium tracking-wide" style={{ color: magColor }}>
                   マグニチュード
                 </span>
-                <span className="font-black leading-none text-[1.375rem] roomy:text-[1.75rem]" style={{ color: '#ffffff' }}>
-                  {/* 規模不明（-1／NaN）を toFixed に通すと "-1.0"／"NaN" と表示される。深さ側の formatDepth と揃える */}
-                  {hasMagnitude(hypocenter.magnitude) ? hypocenter.magnitude.toFixed(1) : '不明'}
+                {/* 規模不明（-1／NaN）を toFixed に通すと "-1.0"／"NaN" と表示される。深さ側の formatDepth と揃える。
+                    数値が無くても気象庁が説明を添えていればそれを出す（「Ｍ８を超える巨大地震」を
+                    「不明」で潰さない）。説明は数値より長いので、そのときだけ字を小さくする。 */}
+                <span
+                  className={`font-black leading-none ${hypocenter.magnitudeCondition && !hasMagnitude(hypocenter.magnitude) ? 'text-[0.9375rem] roomy:text-[1.125rem] leading-snug' : 'text-[1.375rem] roomy:text-[1.75rem]'}`}
+                  style={{ color: '#ffffff' }}
+                >
+                  {formatMagnitudeValue(hypocenter.magnitude, hypocenter.magnitudeCondition)}
                 </span>
               </div>
               <div
@@ -413,6 +562,13 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
             {tsunamiInfo.text}
           </div>
 
+          {/* 固定付加文（その他）。長周期地震動の同じ枠と揃えて出す。 */}
+          {quake.varCommentText && (
+            <div className="w-full rounded-lg bg-panel px-3 py-2 text-xs leading-relaxed text-secondary whitespace-pre-wrap roomy:text-sm">
+              {quake.varCommentText}
+            </div>
+          )}
+
           {/* 気象庁の自由付加文。津波区分の定型文（forecastText）と違い電文ごとに書き起こされ、
               続報での更新はここに現れる（観測された津波の高さ・潮位変化の有無・次報の予定時刻など）。
               全角スペースで整形された表が入るため `whitespace-pre-wrap` で改行と空白を保つ。
@@ -426,7 +582,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
           {/* 震源の緯度・経度 */}
           {hasLocation && (
             <div className="text-xs text-secondary roomy:text-sm">
-              北緯 {hypocenter.latitude.toFixed(1)}° 東経 {hypocenter.longitude.toFixed(1)}°
+              {formatCoordinate(hypocenter.latitude, hypocenter.longitude)}
             </div>
           )}
 
@@ -437,7 +593,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
             if (isLpgmActive && lpgmGroups.length > 0) {
               return (
                 <div className="flex flex-col gap-0.5 pt-1 border-t border-white/10">
-                  {lpgmGroups.map(({ name, maxLgInt }, idx) => (
+                  {lpgmGroups.map(({ name, maxLgInt, maxInt }, idx) => (
                     <div
                       key={name}
                       className="flex items-center justify-between px-2 py-1 rounded roomy:py-1.5"
@@ -449,7 +605,16 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                       >
                         長周期 {getLpgmClassLabel(maxLgInt)}
                       </span>
-                      <span className="text-white text-[0.9375rem] roomy:text-[1.125rem]">{name}</span>
+                      <span className="flex items-baseline gap-2 min-w-0">
+                        {/* **震度を並べる。** 階級だけだと「揺れは小さいのに高層階が
+                            大きく揺れた」形が読み取れない —— 長周期地震動で最も伝えたい差 */}
+                        {maxInt !== undefined && (
+                          <span className="text-[0.8125rem] text-gray-400 whitespace-nowrap roomy:text-[0.9375rem]">
+                            震度 {getIntensityLabel(maxInt)}
+                          </span>
+                        )}
+                        <span className="text-white text-[0.9375rem] roomy:text-[1.125rem]">{name}</span>
+                      </span>
                     </div>
                   ))}
                 </div>
@@ -480,16 +645,33 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                       気象庁は震度5弱以上と推定していますが、震度が届いていません（未入電）
                     </div>
                     <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[0.8125rem] roomy:text-[1rem] text-white">
-                      {unreceivedPoints.names.map(name => <span key={name}>{name}</span>)}
+                      {/* 気象庁以外が運用する観測点は、電文では名前の末尾に `＊` が付く。
+                          アプリは印を名前から外して引き当てに使うため、地図の吹き出しと
+                          同じバッジで伝える。 */}
+                      {unreceivedPoints.names.map(({ name, nonJma }) => (
+                        <span key={name} className="inline-flex items-center gap-1">
+                          {name}
+                          {nonJma && (
+                            <span
+                              className="rounded px-1 text-[0.625rem] font-semibold leading-4 whitespace-nowrap"
+                              style={{ color: '#cbd5e1', border: '1px solid #475569' }}
+                              title={NON_JMA_BADGE_TITLE}
+                            >
+                              {NON_JMA_BADGE_LABEL}
+                            </span>
+                          )}
+                        </span>
+                      ))}
                     </div>
                   </div>
                 )}
                 {prefGroups.map(({ pref, scale, unreceived, hasUnreceived }, idx) => (
                   <div
                     key={pref}
-                    className="flex items-center justify-between px-2 py-1 rounded roomy:py-1.5"
+                    className="rounded"
                     style={{ backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent' }}
                   >
+                  <div className="flex items-center justify-between px-2 py-1 roomy:py-1.5">
                     <span
                       className="font-bold flex-shrink-0 whitespace-nowrap text-[0.9375rem] roomy:text-[1.125rem]"
                       style={{ color: getIntensityColor(scale) }}
@@ -514,6 +696,42 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                         </span>
                       )}
                     </span>
+                  </div>
+                  {/* その行の市町村（電文の `City`）。区域と観測点のあいだの粒度で、
+                      気象庁の発表単位のひとつ。**行が増えるので詳細表示にだけ出す。**
+                      行の見出しは区域名にも都道府県名にもなり、索引は両方の鍵を持つ
+                      （→ `citiesByRowName`）ので、どちらの形の行にもぶら下がる。 */}
+                  {(citiesByRowName.get(pref) ?? []).length > 0 && (
+                    <div className="flex flex-col gap-0.5 px-2 pb-1 text-[0.75rem] roomy:text-[0.875rem]">
+                      {/* **区域が複数にまたがるときは区域ごとに分ける。** DMDATA の電文は
+                          `Pref/MaxInt` を必ず持つため、上の行は事実上いつも都道府県単位になる
+                          （区域単位に割れるのは区域点しか持たない P2PQuake 経路）。区域の別を
+                          示さずに並べると、石川県の行に能登と加賀の市町村が区別なく混ざる。 */}
+                      {groupCitiesByArea(citiesByRowName.get(pref)!).map(([area, list]) => (
+                        <div key={area} className="flex flex-wrap gap-x-3 gap-y-0.5">
+                          {area && (
+                            <span className="flex-shrink-0" style={{ color: '#6b7280' }}>{area}</span>
+                          )}
+                          {list.map(c => (
+                            <span key={c.name} className="text-secondary">
+                              <span style={{ color: getIntensityColor(c.scale) }}>
+                                {getIntensityLabelWithOrAbove(c.scale, !!c.unreceived)}
+                              </span>
+                              <span className="ml-1 text-white">{c.name}</span>
+                              {/* 観測できた震度がありつつ配下に未入電の観測点もある形。
+                                  都道府県の行と同じ語にする（「4以上」と書くと観測できた値を
+                                  下限のように見せてしまう）。 */}
+                              {c.hasUnreceived && (
+                                <span className="ml-1" style={{ color: '#9ca3af' }} title="この市町村に、震度が届いていない観測点があります">
+                                  未入電あり
+                                </span>
+                              )}
+                            </span>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   </div>
                 ))}
               </div>
@@ -591,6 +809,11 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
             <span className={`text-xs px-1.5 py-0.5 rounded min-w-0 truncate ${issueTypeBadgeClass(issue.type)}`}>
               {formatIssueType(issue.type)}
             </span>
+            {quake.operationStatus && (
+              <span className="text-xs px-1.5 py-0.5 rounded font-bold flex-shrink-0" style={{ backgroundColor: '#1f2937', color: '#fcd34d', border: '1px solid #d97706' }}>
+                {quake.operationStatus}報
+              </span>
+            )}
             {issue.correct !== 'なし' && (
               <span className="text-xs bg-yellow-900 text-yellow-300 px-1.5 py-0.5 rounded font-medium flex-shrink-0">
                 {formatCorrectType(issue.correct)}
@@ -600,7 +823,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
 
           {/* 深さ・マグニチュード */}
           <div className="flex items-center gap-2 text-base mb-1">
-            {hasLocation && (
+            {hasFacts && (
               <span className="flex items-center gap-1 text-secondary">
                 <span>深さ</span>
                 <span className="text-white font-medium">{formatDepth(hypocenter.depth)}</span>
@@ -608,7 +831,7 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
                   className="inline-block w-1.5 h-3.5 rounded-sm flex-shrink-0"
                   style={{ backgroundColor: getDepthColor(hypocenter.depth) }}
                 />
-                <span className="text-white font-medium">{formatMagnitude(hypocenter.magnitude)}</span>
+                <span className="text-white font-medium">{formatMagnitudeWithCondition(hypocenter.magnitude, hypocenter.magnitudeCondition)}</span>
                 <span
                   className="inline-block w-1.5 h-3.5 rounded-sm flex-shrink-0"
                   style={{ backgroundColor: getMagnitudeColor(hypocenter.magnitude) }}

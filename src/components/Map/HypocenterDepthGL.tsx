@@ -6,7 +6,7 @@ import { createDepthPointLayer, type DepthPointLayer } from './gl/depthPointLaye
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
 import { getIntensityColor, getIntensityLabel } from '../../utils/intensity'
 import { readableTextColor } from '../../utils/contrast'
-import { formatMagnitude, formatDepth } from '../../utils/formatters'
+import { formatMagnitudeWithCondition, formatDepth } from '../../utils/formatters'
 import { log } from '../../utils/logger'
 import { reportRenderFailure, clearRenderFailure } from '../../utils/renderHealth'
 import type { JMAQuake } from '../../types/earthquake'
@@ -62,7 +62,7 @@ function buildPopupHtml(quake: JMAQuake, prefIntensities: [string, number][]): s
   return (
     `<div class="text-sm" style="min-width:160px">` +
     `<div class="font-bold" style="margin-bottom:4px">${esc(hc.name)}</div>` +
-    `<div class="text-xs" style="color:#94a3b8">${esc(formatMagnitude(hc.magnitude))} / 深さ ${esc(formatDepth(hc.depth))}</div>` +
+    `<div class="text-xs" style="color:#94a3b8">${esc(formatMagnitudeWithCondition(hc.magnitude, hc.magnitudeCondition))} / 深さ ${esc(formatDepth(hc.depth))}</div>` +
     (rows ? `<div style="margin-top:8px;display:flex;flex-direction:column;gap:2px">${rows}</div>` : '') +
     `</div>`
   )
