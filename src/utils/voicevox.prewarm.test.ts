@@ -52,6 +52,14 @@ vi.mock('./ttsPhraseBreakDict', () => ({
   isPlaceNameKey: () => false,
 }))
 
+// 観測点の読みはこのテストの対象外。実物のままだと取得（と 5 秒のタイムアウト待ち）が走り、
+// 先行合成の打ち切りを観測するテストがその待ちで時間切れになる。
+vi.mock('./ttsStationReadings', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./ttsStationReadings')>(),
+  loadTtsStationReadings: async () => ({}),
+  getTtsStationReadingsCache: () => null,
+}))
+
 // ---- fetch の代役 ----------------------------------------------------------
 const fetched: string[] = []
 let synthesisDelay = 0
