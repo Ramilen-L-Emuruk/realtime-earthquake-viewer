@@ -14,27 +14,9 @@ import { serverNow, serverDate } from '../utils/clock'
 
 import { isDmdss } from '../utils/env'
 import { isValidDmdataApiKey, DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
-import {
-  createTestEarthquake,
-  createTestForeignQuake,
-  createTestForeignQuakeHuge,
-  createTestLpgm,
-  createTestEEW,
-  createTestEEWWarning,
-  createTestEEWForecast,
-  createTestEEWAssumed,
-  createTestEEWDeep,
-  createTestTsunami,
-  createTestTsunamiWarning,
-  createTestTsunamiWatch,
-  createTestTsunamiForecast,
-  createTestTsunamiRetraction,
-  createTestNankai,
-  createTestNankaiRetraction,
-  createTestNankaiCommentary,
-  createTestKohatsu,
-  TEST_AUTO_DISMISS_MS,
-} from '../utils/testData'
+// テストデータは押されてから読む（静的に取り込まない理由・失敗したときの扱い・先読みの
+// 段取りは `utils/testDataLoader.ts` にまとめてある）。
+import { loadTestData } from '../utils/testDataLoader'
 
 // 初回取得件数（設定の最大選択値に合わせる）。リプレイ開始時の履歴復元（useReplayController の
 // QUAKE_HISTORY_EVENTS）もこの値をそのまま目標にするため export している。片方だけ動かすと、
@@ -1517,7 +1499,8 @@ export function useEarthquakes(
     }
   }, [])
 
-  const simulateEarthquake = useCallback(() => {
+  const simulateEarthquake = useCallback(async () => {
+    const { createTestEarthquake, createTestLpgm } = await loadTestData()
     // points の形状・情報種別は経路で異なる（DMDATA は観測点が pref 空＋都道府県ロールアップ、
     // P2PQuake は観測点に pref が入る）。バリアントに合わせて実電文の形を再現する。
     const quake = createTestEarthquake(isDmdss)
@@ -1533,65 +1516,68 @@ export function useEarthquakes(
     }
   }, [handleEvent])
 
-  const simulateForeignQuake = useCallback(() => {
+  const simulateForeignQuake = useCallback(async () => {
+    const { createTestForeignQuake } = await loadTestData()
     // 付加文（気象庁の固定付加文・自由付加文の原文）は DMDATA 経由でのみ配信される。standard 版では
     // 実データで届かないため含めない（LPGM を isDmdss 限定にしているのと同じ理由）。
     handleEvent(createTestForeignQuake(isDmdss))
   }, [handleEvent])
 
-  const simulateForeignQuakeHuge = useCallback(() => {
+  const simulateForeignQuakeHuge = useCallback(async () => {
+    const { createTestForeignQuakeHuge } = await loadTestData()
     handleEvent(createTestForeignQuakeHuge(isDmdss))
   }, [handleEvent])
 
-  const simulateEEW = useCallback(
-    () => runSimulateEEW('special', createTestEEW, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent),
-    [handleEvent],
-  )
+  const simulateEEW = useCallback(async () => {
+    const { createTestEEW } = await loadTestData()
+    runSimulateEEW('special', createTestEEW, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
+  }, [handleEvent])
 
-  const simulateEEWWarning = useCallback(
-    () => runSimulateEEW('warning', createTestEEWWarning, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent),
-    [handleEvent],
-  )
+  const simulateEEWWarning = useCallback(async () => {
+    const { createTestEEWWarning } = await loadTestData()
+    runSimulateEEW('warning', createTestEEWWarning, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
+  }, [handleEvent])
 
-  const simulateEEWForecast = useCallback(
-    () => runSimulateEEW('forecast', createTestEEWForecast, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent),
-    [handleEvent],
-  )
+  const simulateEEWForecast = useCallback(async () => {
+    const { createTestEEWForecast } = await loadTestData()
+    runSimulateEEW('forecast', createTestEEWForecast, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
+  }, [handleEvent])
 
-  const simulateEEWAssumed = useCallback(
-    () => runSimulateEEW('assumed', createTestEEWAssumed, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent),
-    [handleEvent],
-  )
+  const simulateEEWAssumed = useCallback(async () => {
+    const { createTestEEWAssumed } = await loadTestData()
+    runSimulateEEW('assumed', createTestEEWAssumed, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
+  }, [handleEvent])
 
-  const simulateEEWDeep = useCallback(
-    () => runSimulateEEW('deep', createTestEEWDeep, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent),
-    [handleEvent],
-  )
+  const simulateEEWDeep = useCallback(async () => {
+    const { createTestEEWDeep } = await loadTestData()
+    runSimulateEEW('deep', createTestEEWDeep, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
+  }, [handleEvent])
 
-  const simulateEEWRetraction = useCallback(
-    () => runSimulateEEWRetraction(createTestEEWWarning, EEW_RETRACTION_CANCEL_MS, testEEWRetractionRef, handleEvent),
-    [handleEvent],
-  )
+  const simulateEEWRetraction = useCallback(async () => {
+    const { createTestEEWWarning } = await loadTestData()
+    runSimulateEEWRetraction(createTestEEWWarning, EEW_RETRACTION_CANCEL_MS, testEEWRetractionRef, handleEvent)
+  }, [handleEvent])
 
-  const simulateTsunami = useCallback(
-    () => runSimulateTsunami(() => createTestTsunami(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent),
-    [handleEvent],
-  )
+  const simulateTsunami = useCallback(async () => {
+    const { createTestTsunami, TEST_AUTO_DISMISS_MS } = await loadTestData()
+    runSimulateTsunami(() => createTestTsunami(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent)
+  }, [handleEvent])
 
-  const simulateTsunamiWarning = useCallback(
-    () => runSimulateTsunami(() => createTestTsunamiWarning(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent),
-    [handleEvent],
-  )
+  const simulateTsunamiWarning = useCallback(async () => {
+    const { createTestTsunamiWarning, TEST_AUTO_DISMISS_MS } = await loadTestData()
+    runSimulateTsunami(() => createTestTsunamiWarning(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent)
+  }, [handleEvent])
 
-  const simulateTsunamiWatch = useCallback(
-    () => runSimulateTsunami(() => createTestTsunamiWatch(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent),
-    [handleEvent],
-  )
+  const simulateTsunamiWatch = useCallback(async () => {
+    const { createTestTsunamiWatch, TEST_AUTO_DISMISS_MS } = await loadTestData()
+    runSimulateTsunami(() => createTestTsunamiWatch(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent)
+  }, [handleEvent])
 
   // 予報のみは DMDSS の実運用では ValidDateTime の期限切れで静かに消える（明示的な解除電文を
   // 伴わない）ため、DMDSS では runSimulateTsunami（明示的キャンセル）を使わず期限切れ経路に任せる。
   // standard 版（P2PQuake）は validDateTime を持たないため、実運用と同じく解除電文で消す。
-  const simulateTsunamiForecast = useCallback(() => {
+  const simulateTsunamiForecast = useCallback(async () => {
+    const { createTestTsunamiForecast, TEST_AUTO_DISMISS_MS } = await loadTestData()
     if (!isDmdss) {
       runSimulateTsunami(() => createTestTsunamiForecast(false), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent)
       return
@@ -1603,12 +1589,13 @@ export function useEarthquakes(
     handleEvent(createTestTsunamiForecast(true))
   }, [handleEvent])
 
-  const simulateTsunamiRetraction = useCallback(
-    () => runSimulateTsunami(() => createTestTsunamiRetraction(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent, 'retracted'),
-    [handleEvent],
-  )
+  const simulateTsunamiRetraction = useCallback(async () => {
+    const { createTestTsunamiRetraction, TEST_AUTO_DISMISS_MS } = await loadTestData()
+    runSimulateTsunami(() => createTestTsunamiRetraction(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent, 'retracted')
+  }, [handleEvent])
 
-  const simulateNankai = useCallback((kindName: '調査中' | '巨大地震注意' | '巨大地震警戒') => {
+  const simulateNankai = useCallback(async (kindName: '調査中' | '巨大地震注意' | '巨大地震警戒') => {
+    const { createTestNankai } = await loadTestData()
     // **受信と同じ関数を通す。** state を直書きすると、表示中の識別情報を覚える ref が進まず、
     // 直後に取消テストを走らせたときの照合が実運用と食い違う。
     const nankai = createTestNankai(kindName)
@@ -1625,7 +1612,8 @@ export function useEarthquakes(
    * 書き換えると、取消の照合（`eventId` の一致確認）を一度も通らないテストになる ―― 実運用で
    * 効く分岐を踏まないテストボタンは、あってもこの穴を見つけられない。
    */
-  const simulateNankaiRetraction = useCallback(() => {
+  const simulateNankaiRetraction = useCallback(async () => {
+    const { createTestNankai, createTestNankaiRetraction, TEST_AUTO_DISMISS_MS } = await loadTestData()
     if (testNankaiRetractionTimerRef.current !== undefined) {
       window.clearTimeout(testNankaiRetractionTimerRef.current)
     }
@@ -1638,14 +1626,16 @@ export function useEarthquakes(
     }, TEST_AUTO_DISMISS_MS)
   }, [])
 
-  const simulateNankaiCommentary = useCallback((serialName: '臨時解説' | '定例解説') => {
+  const simulateNankaiCommentary = useCallback(async (serialName: '臨時解説' | '定例解説') => {
+    const { createTestNankaiCommentary } = await loadTestData()
     const commentary = createTestNankaiCommentary(serialName)
     if (applyNankaiCommentary(commentary)) {
       onLiveEventRef.current?.({ kind: 'nankaiCommentary', data: commentary } as unknown as AppEvent)
     }
   }, [applyNankaiCommentary])
 
-  const simulateKohatsu = useCallback(() => {
+  const simulateKohatsu = useCallback(async () => {
+    const { createTestKohatsu } = await loadTestData()
     // 受信と同じ関数を通す（理由は `simulateNankai` に同じ）。期限タイマーもそちらが張る。
     const kohatsu = createTestKohatsu()
     if (applyKohatsu(kohatsu)) {

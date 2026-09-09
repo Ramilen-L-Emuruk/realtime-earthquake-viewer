@@ -1,6 +1,7 @@
-import type { JMAQuake, JMATsunami, EEWAlert, JMANankai, JMANankaiCommentary, JMAKohatsu, EarthquakePoint, IntensityScale, JMALpgm } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, EEWAlert, JMANankai, JMANankaiCommentary, JMAKohatsu, EarthquakePoint, JMALpgm, JMAQuakeCity } from '../types/earthquake'
 import { serverNow, serverDate } from './clock'
 import notoHonshinPoints from '../data/noto-honshin-2024-points.json'
+import notoHonshinQuake from '../data/noto-honshin-2024-quake.json'
 import notoHonshinLpgmJson from '../data/noto-honshin-2024-lpgm.json'
 
 /**
@@ -115,39 +116,16 @@ export function createTestForeignQuakeHuge(includeComments: boolean): JMAQuake {
 }
 
 /**
- * 観測点別震度を DMDATA（DMDSS）経路の points 形状へ変換する。
+ * 「5弱以上・未入電」に差し替える観測点。**standard 版でだけ使う。**
  *
- * 実運用の `dmdataParser` は JSON スキーマが観測点に親都道府県を持たないため、
- * 観測点・一次細分区域はいずれも `pref: ''` で積み、都道府県は `pref` に名前を入れた
- * ロールアップ点（`isArea: true`）として別に追加する。元データは P2PQuake 形状
- * （観測点自体に `pref` が入る）なので、そのまま DMDSS で流すと実電文では起こり得ない
- * 組み合わせ（`isArea: false` かつ `pref` 非空）になり、都道府県別表示の分岐が
- * テストでは一度も通らない。
- */
-/**
- * テストで「5弱以上・未入電」に差し替える観測点。
+ * DMDSS 版が使う実電文には未入電が 3 地点そのまま入っているので差し替えが要らない。
+ * standard 版が使う `noto-honshin-2024-points.json` は観測点だけを抜き出した古い資材で
+ * 未入電を含まないため、ここで作る（P2PQuake は震度値 46 で同じ事実を配信する）。
+ *
  * 元から震度5弱の地点を選ぶ（差し替えても最大震度が動かない）。
  */
 const UNRECEIVED_TEST_STATIONS = new Set(['輪島市舳倉島', '金沢市弥生'])
 
-function toDmdataPoints(points: EarthquakePoint[]): EarthquakePoint[] {
-  const converted: EarthquakePoint[] = []
-  const prefMax = new Map<string, IntensityScale>()
-  for (const p of points) {
-    // 都道府県ごとの最大震度を集計する（実電文の prefectures[] に相当）。
-    // 震度不明（-1）は数えない。実電文の prefectures[] も震度が取れない都道府県は項目自体を
-    // 載せないため、-1 のロールアップ点は実運用では現れない。
-    if (!p.isArea && p.pref && p.scale >= 0) {
-      const cur = prefMax.get(p.pref)
-      if (cur === undefined || p.scale > cur) prefMax.set(p.pref, p.scale)
-    }
-    converted.push({ ...p, pref: '' })
-  }
-  for (const [pref, scale] of prefMax) {
-    converted.push({ pref, addr: pref, isArea: true, scale })
-  }
-  return converted
-}
 
 /**
  * 地震情報のテストデータ（令和6年能登半島地震・本震）。
@@ -176,39 +154,32 @@ export function createTestEarthquake(useDmdataShape: boolean): JMAQuake {
       maxScale: 70,
       domesticTsunami: '警報等',
     },
-    // observed points: DMDATA archive確定報（VXSE53「震源・震度情報」16:24発表）に含まれる
-    // 観測点別震度（2782件）と一次細分区域別最大震度（119件、addr は public/data/subregions.json
-    // の区域名と一致）をすべてそのまま採用（src/data/noto-honshin-2024-points.json）。
-    // 都道府県ごとの代表点数件だけでは、ズームインした際にその都道府県の観測点が1つも表示
-    // されない・区域集約表示（ズームアウト時）で「観測点のある区域だけ塗られ隣接区域は
-    // 無色」という穴だらけの表示になる、という2つの不整合が生じるため、全観測点を反映する。
-    // 輪島市門前町走出（震度7）のみ例外的に手動追加: 本震直後は停電・通信障害で観測データが
-    // 未着で電文に反映されず、気象庁が2024/1/25の報道発表で「震度追加」として震度7
-    // （計測震度6.5）を確定させたもの（電文形式では取得不可、気象庁公式発表を典拠とする）。
-    // **2 地点を「震度5弱以上未入電」に差し替える。** 揺れが強い地域ほど観測点からの通信が
-    // 途絶え、気象庁は観測値の代わりに「震度５弱以上未入電」で発表する。実データは確定報
-    // ——通信が復旧した後の値——なのでこの形を含まないが、**発表直後に最も起きる形**なので
-    // 画面で確かめられるようにしておく。実際に能登本震では 3 地点が未入電で、通信復旧後の
-    // 1 月 25 日に「震度追加」として発表された（うち輪島市門前町走出が震度7）。
+    // 震度の点。**都道府県ごとの代表点だけでは足りない** —— 寄ったときにその県の観測点が
+    // 1 つも出ない、区域集約で「観測点のある区域だけ塗られ隣は無色」になる、という 2 つの
+    // 不整合が起きるので、電文の点をすべて反映する。
     //
-    // **差し替えるのは地点。** 未入電は観測点 1 つ 1 つに付く事実で、区域・県の `MaxInt` は
-    // 配下の最大として派生する（→ docs/spec/quake-spec.md §4）。県のロールアップ点だけを
-    // 未入電にすると実電文には無い形になり、地点名を読む経路も通らない。
+    // バリアントで出どころが違う。
     //
-    // 選んだのは元から震度5弱の 2 地点。差し替えても最大震度（7）は動かないので、他の
-    // 期待値に影響しない。石川県は最大が震度7の観測値なのに未入電の地点も含む形になり、
-    // **「最大は観測できているが未入電もある」という最も起きやすい形**を画面で確かめられる。
-    // **「気象庁以外の観測点」の印も入っている**（`nonJma`）。電文では観測点名の末尾に
-    // `＊` が付く形で届き、アプリは印を名前から外してバッジで伝える。どの観測点がそれに
-    // 当たるかは実電文（DMDATA archive の各地の震度情報）の `＊` から採った ―― 気象庁が
-    // 配る `ObservingPointByOthers` コード表は**雨・雪の観測点**の表で、震度観測点を
-    // 含まない。
+    // - **DMDSS 版**: 実電文をパーサーへ通したもの（`npm run build-test-quake`）。
+    //   点 2993・市町村 1343・うち観測点 2829 が市町村に紐付く
+    // - **standard 版**: 観測点だけを抜き出した古い資材（`noto-honshin-2024-points.json`）。
+    //   P2PQuake は観測点電文（DetailScale）と区域速報（ScalePrompt）を別々に送るので、
+    //   1 電文に両方が混ざることはない（→ quake-spec.md §4）
+    //
+    // **「気象庁以外の観測点」の印**（`nonJma`）も実電文どおり入る。電文では観測点名の末尾に
+    // `＊` が付いて届き、アプリは印を名前から外してバッジで伝える。気象庁が配る
+    // `ObservingPointByOthers` コード表は**雨・雪の観測点**の表で震度観測点を含まないので、
+    // 電文の `＊` だけが手がかり。
     points: useDmdataShape
-      ? toDmdataPoints(notoHonshinPoints as EarthquakePoint[]).map(p =>
-        !p.isArea && UNRECEIVED_TEST_STATIONS.has(p.addr)
-          ? { ...p, unreceived: true }
-          : p,
-      )
+      // **DMDSS 版は実電文をパーサーへ通したものを使う**（`npm run build-test-quake`）。
+      // 手で組み立てていた頃は観測点が市町村に紐付いておらず、カードの 4 段表示
+      // （県 → 区域 → 市町村 → 観測点）の 4 段目を実機で確かめられなかった。
+      //
+      // **未入電の差し替えは要らない。** 確定報（16:24 発表）が既に 3 地点を
+      // 「震度５弱以上未入電」で持っている（輪島市門前町走出・能登町柳田・能登町松波）。
+      // 手で書いていた頃は門前町走出を「震度7」として足していたが、それは後日の報道発表で
+      // 確定した値で、**発表直後に実際に見えていたのは未入電のほう**。
+      ? (notoHonshinQuake.points as EarthquakePoint[])
       // P2PQuake は観測点電文（DetailScale）と区域速報電文（ScalePrompt）を別々に送るため、
       // 1 電文に両方が混ざることはない（→ quake-spec.md §4）。`各地の震度情報` として送る以上、
       // 区域点は落とす。
@@ -220,27 +191,14 @@ export function createTestEarthquake(useDmdataShape: boolean): JMAQuake {
         .map(({ nonJma: _nonJma, ...p }) => (UNRECEIVED_TEST_STATIONS.has(p.addr) ? { ...p, unreceived: true } : p)),
     // 市町村ごとの震度（電文の `Pref/Area/City`）。**DMDATA 経路でのみ配信される**ので
     // standard 版では持たせない（P2PQuake は市町村の粒度を配信しない）。
-    // 能登本震の確定報から、震度が割れている区域（石川県能登）の市町村を採った。
     //
-    // **未入電は 2 つの形を両方入れる。** 解説資料 Ⅱ.33 2-1-3-3-3 は `Condition` が出る条件を
-    // 「配下に未入電の観測点があり、かつ市町村の最大震度が震度4以下（又は入電なし）」と
-    // 定めており、`MaxInt` の有無で意味が変わる：
-    //   値あり＋Condition … その市町村は震度4を観測、配下に未入電あり →「震度4」＋「未入電あり」
-    //   値なし＋Condition … 市町村の値そのものが入電なし             →「5弱以上」
-    // 片方だけだと、畳んで書いてしまう誤りを画面で捕まえられない。
-    ...(useDmdataShape && {
-      cities: [
-        { name: '輪島市', area: '石川県能登', pref: '石川県', scale: 70 as const },
-        { name: '志賀町', area: '石川県能登', pref: '石川県', scale: 70 as const },
-        { name: '穴水町', area: '石川県能登', pref: '石川県', scale: 60 as const },
-        { name: '珠洲市', area: '石川県能登', pref: '石川県', scale: 45 as const, unreceived: true },
-        { name: '能登町', area: '石川県能登', pref: '石川県', scale: 40 as const, hasUnreceived: true },
-        // **別の区域の市町村も入れる。** DMDATA の電文は `Pref/MaxInt` を必ず持つので
-        // カードの行は都道府県単位になり、区域の別を示さないと能登と加賀が混ざる。
-        { name: '金沢市', area: '石川県加賀', pref: '石川県', scale: 50 as const },
-        { name: '小松市', area: '石川県加賀', pref: '石川県', scale: 45 as const },
-      ],
-    }),
+    // **市町村の未入電（`City/Condition`）はここに入っていない。** 資料 Ⅱ.33 2-1-3-3-3 が
+    // 出る条件を「配下に未入電の観測点があり、**かつ市町村の最大震度が震度4以下（又は入電なし）**」
+    // と定めており、この報では未入電の 3 地点が属する市町村がいずれも震度6強・6弱で当たらない。
+    // 実電文を 3 日分（2024-01-01 能登本震 90 通・04-17 豊後水道 12 通・08-08 日向灘 13 通）
+    // 走査しても 1 通も見つからなかった。**手で作らない** —— 実際に起きていない形をテスト
+    // データに置くと、そちらへ合わせた実装が入りうる（→ docs/spec/quake-spec.md §5「市町村の震度」）。
+    ...(useDmdataShape && { cities: notoHonshinQuake.cities as JMAQuakeCity[] }),
   }
 }
 

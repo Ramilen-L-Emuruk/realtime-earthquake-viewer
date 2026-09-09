@@ -19,6 +19,7 @@ import { EarthquakeTab } from './components/EarthquakeTab'
 import { RealtimeTab } from './components/RealtimeTab'
 import { TsunamiTab } from './components/TsunamiTab'
 import { SettingsTab } from './components/SettingsTab'
+import { prefetchTestData } from './utils/testDataLoader'
 import { TelegramTab } from './components/TelegramTab'
 import { CatalogTab } from './components/CatalogTab'
 import { useHypocenterCatalog } from './hooks/useHypocenterCatalog'
@@ -540,6 +541,18 @@ export function App() {
     selectQuake(quakeKey, { explicit: true })
     setActiveTabByUser('earthquake')
   }, [selectQuake, setActiveTabByUser])
+  // テストボタンのデータ（`utils/testData.ts`）を、設定タブを開いた時点で読み始める。
+  //
+  // **押されてから読むと待ちが入る。** その待ちのあいだに初回履歴取得の応答が割り込むと、
+  // いま流したテスト電文が上書きされうる（履歴の取り込みは表示中のイベントを置き換える）。
+  //
+  // **設定タブ側の mount では駄目。** このアプリはタブを全部マウントしたまま表示だけ
+  // 切り替えるので、`SettingsTab` の `useEffect` は起動時に走ってしまい、分割した意味が
+  // 無くなる（実際にそうなっていて、初回表示で 864 KB の chunk を取りに行っていた）。
+  useEffect(() => {
+    if (activeTab === 'settings') prefetchTestData()
+  }, [activeTab])
+
   // SettingsTab の onTest オブジェクトはメモ化して同一参照を保つ（毎レンダー再生成すると
   // React.memo 化された SettingsTab が無駄に再レンダーされる）。
   // WARNING: 新規テストハンドラーを追加するときは、対応する simulate* 関数を必ず

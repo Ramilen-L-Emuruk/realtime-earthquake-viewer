@@ -583,6 +583,27 @@ describe('mergeQuakeInto — 通常電文どうし', () => {
     expect(merged.points.length).toBeGreaterThan(0)
   })
 
+  // 正: 市町村ごとの震度も点と同じ扱いで補う。片方だけ戻すと、観測点は残るのに市町村の段だけが
+  // 消え、震度一覧が 4 段から 3 段へ静かに落ちる（→ docs/spec/quake-spec.md §6.4・§8）。
+  it('震度欠落の後続電文でも市町村の震度は引き継ぐ', () => {
+    const cities = [{ name: '普代村', area: '岩手県沿岸北部', pref: '岩手県', scale: 30 as IntensityScale }]
+    const e = { ...makeQuake({ type: '震源・震度情報', maxScale: 50 }), cities }
+    const n = makeNoIntensity({ type: '震源・震度情報' })
+    const merged = mergeQuakeInto(e, n)
+    expect(merged.points.length).toBeGreaterThan(0)   // 対の確認: 点は従来どおり戻る
+    expect(merged.cities).toEqual(cities)
+  })
+
+  // 対照: 震度を持つ続報では、市町村も**その報に従う**（消えたのなら気象庁が取り下げた）。
+  // 補完は「その種別が構造的に持たない」場合だけで、値の増減には介入しない（§6.4 の②）。
+  it('震度を持つ続報では、市町村もその報の内容に従う', () => {
+    const cities = [{ name: '普代村', area: '岩手県沿岸北部', pref: '岩手県', scale: 30 as IntensityScale }]
+    const e = { ...makeQuake({ type: '震源・震度情報', maxScale: 50 }), cities }
+    const n = makeQuake({ type: '震源・震度情報', maxScale: 50 })  // 市町村を持たない続報
+    const merged = mergeQuakeInto(e, n)
+    expect(merged.cities).toBeUndefined()
+  })
+
   it('発表時刻が空の続報は据え置く（異常データを安全側＝据え置きに倒す）', () => {
     const e = makeQuake({ type: '震度速報', maxScale: 50, time: '2026-07-28T07:27:30Z' })
     const n = makeQuake({ type: '震度速報', maxScale: 60, time: '' })
