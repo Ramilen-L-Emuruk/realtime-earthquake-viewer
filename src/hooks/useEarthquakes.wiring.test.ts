@@ -1462,6 +1462,49 @@ describe('津波の有効期限は報を跨いで引き継ぐ', () => {
     expect(h.current.tsunamis[0].bodyText).toBeUndefined()
   })
 
+  // 観測状況を確定した時刻（`Head/TargetDateTime`）も `bodyText` と同じ `sameEvent` の内側で
+  // 引き継ぐ。**3 つのフィールドが同じ門を共有している**ので、片方だけ門を狭める変更が
+  // 入っても気づけるよう、それぞれに対を置く。
+  //
+  // 正: 観測時点を持たない続報（等級の発表）が挟まっても、前報の値が残る。入るのは観測情報
+  // （VTSE51/52）だけなので、落とすとカードの「観測 ◯◯ 時点」が出たり消えたりする。
+  it('観測時点を持たない続報が挟まっても前報の観測時点が残る', () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+
+    act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), observationDateTime: '2024-01-02T16:45:00+09:00' }) })
+    act(() => { h.current.injectEvent(forecast(WITHOUT_EXPIRE)) })
+    act(() => { vi.advanceTimersByTime(100) })
+
+    expect(h.current.tsunamis[0].observationDateTime).toBe('2024-01-02T16:45:00+09:00')
+  })
+
+  // 対照: 新しい観測時点を持つ続報が来たらそちらへ従う（古い値に居座らせない）。
+  it('新しい観測時点を持つ続報ではそちらへ従う', () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+
+    act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), observationDateTime: '2024-01-02T16:45:00+09:00' }) })
+    act(() => { h.current.injectEvent({ ...forecast(WITHOUT_EXPIRE), observationDateTime: '2024-01-02T16:48:00+09:00' }) })
+    act(() => { act(() => { vi.advanceTimersByTime(100) }) })
+
+    expect(h.current.tsunamis[0].observationDateTime).toBe('2024-01-02T16:48:00+09:00')
+  })
+
+  // 安全弁: 別の津波へ持ち込まない（`bodyText` と同じ門の内側であることを固定する）。
+  it('別イベントの津波には前報の観測時点を引き継がない', () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+
+    act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), observationDateTime: '2024-01-02T16:45:00+09:00' }) })
+    act(() => {
+      h.current.injectEvent(forecast({ ...WITHOUT_EXPIRE, eventId: 'hyuganada-tsunami' }))
+    })
+    act(() => { vi.advanceTimersByTime(100) })
+
+    expect(h.current.tsunamis[0].observationDateTime).toBeUndefined()
+  })
+
   it('日時として読めない期限を持つ続報でも、カードには前報の読める期限が残る', () => {
     vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
     const h = setup()

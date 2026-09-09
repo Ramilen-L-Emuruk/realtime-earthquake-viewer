@@ -8,6 +8,8 @@ import {
   createTestEEWForecast,
   createTestEEWWarning,
   createTestTsunami,
+  createTestTsunamiWarning,
+  createTestTsunamiWatch,
 } from './testData'
 import { eewAreas, eewMaxScale, eewNoForecastReason } from './eew'
 import { isObservationMissing } from './tsunami'
@@ -77,6 +79,37 @@ describe('テスト津波の観測点名', () => {
     const names = targets.map((o) => o.name)
     expect(names.length).toBeGreaterThan(0)
     expect(names.filter((name) => !obsCoordNames.has(name))).toEqual([])
+  })
+})
+
+// 情報名（`Head/Title`）と観測時点（`Head/TargetDateTime`）は **DMDATA の XML でしか来ない**。
+// P2PQuake の JSON はどちらも持たないので、standard 版のテストボタンでこれらが入ると
+// 「実運用では絶対に出ない表示」を実機で見せることになる（同じ形の穴が緊急地震速報の
+// テストデータに既にある。docs/pending-work.md「テストデータを実電文の形へ見直す」）。
+describe('テスト津波のヘッダ部（バリアント差）', () => {
+  // 正: DMDSS 版では入る。**入らなければ実機で確かめる手段が無い**ので、まずここを固定する。
+  it('DMDSS 版は情報名と観測時点を持つ', () => {
+    const t = createTestTsunami(true)
+    expect(t.infoName).toBe('大津波警報・津波警報・津波注意報')
+    expect(t.observationDateTime).toBeTruthy()
+    expect(createTestTsunamiWarning(true).infoName).toBe('津波警報・津波注意報')
+    expect(createTestTsunamiWatch(true).infoName).toBe('津波注意報')
+  })
+
+  // 対照: standard 版には入らない。
+  it('standard 版は情報名も観測時点も持たない', () => {
+    const t = createTestTsunami(false)
+    expect(t.infoName).toBeUndefined()
+    expect(t.observationDateTime).toBeUndefined()
+    expect(createTestTsunamiWarning(false).infoName).toBeUndefined()
+    expect(createTestTsunamiWatch(false).infoName).toBeUndefined()
+  })
+
+  // 安全弁: 観測時点は**発表時刻より前**であること。同じ分だと表示側が意図どおり出さない
+  // （「発表時刻と同じ分なら出さない」判定があるため、実機で見えないまま通ってしまう）。
+  it('観測時点は発表時刻より前になっている', () => {
+    const t = createTestTsunami(true)
+    expect(Date.parse(t.observationDateTime!)).toBeLessThan(Date.parse(t.time))
   })
 })
 

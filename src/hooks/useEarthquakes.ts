@@ -951,7 +951,17 @@ export function useEarthquakes(
             // その文にしか無い）。地震情報側が自由付加文を `??` で引き継ぐのと同じ扱い
             // （`utils/quakeMerge.ts`）。新しい報が本文を持てばそちらへ従う。
             const bodyText = tsunami.bodyText ?? current.bodyText
-            return { ...prev, tsunamis: [{ ...tsunami, areas, observations, validDateTime, bodyText }], lastUpdate: now }
+            // 観測状況を確定した時刻も引き継ぐ。**入るのは観測情報（VTSE51/52）だけ**なので、
+            // **引き継がないと**、間に等級の発表（VTSE41）が挟まった瞬間に消える。観測点そのものは
+            // `mergeTsunamiObservations` で残るため、時点だけ落とすと観測欄の「◯時◯分時点」が
+            // 出たり消えたりする。
+            //
+            // **引き継いだ結果、名乗り（`infoName`）と観測時点の出所が別の報になることがある。**
+            // `infoName` は `...tsunami` から来る（最新の報の値）が、観測時点は前報から残るため。
+            // 等級の発表が最後に来れば「大津波警報・津波警報・津波注意報」と名乗る報が、
+            // 前の観測情報の時点を持つ —— これは正常な状態。
+            const observationDateTime = tsunami.observationDateTime ?? current.observationDateTime
+            return { ...prev, tsunamis: [{ ...tsunami, areas, observations, validDateTime, bodyText, observationDateTime }], lastUpdate: now }
           }
           // TSU-3: 別 eventId の tsunami で既存を上書きするケースを検知したら警告する。
           // 実装は 1 件スロットのまま（複数同時発表は稀なため型変更はスコープ外）だが、
