@@ -30,7 +30,7 @@
 | [kyoshin-detection-spec.md](kyoshin-detection-spec.md) | 強震モニタ揺れ検知エンジン（詳細仕様） | `src/utils/kyoshinDetector.ts` |
 | [kyoshin-detection-v3-design.md](kyoshin-detection-v3-design.md) | 強震モニタ検知の設計判断・調査・改訂履歴 | 同上（経緯資料） |
 | [kyoshin-detection-design.md](kyoshin-detection-design.md) | 強震モニタ検知の旧設計書（歴史資料・V3 に置換済み） | 同上 |
-| [telegram-coverage-audit.md](telegram-coverage-audit.md) | 電文の網羅性の点検（測り方・読まないと決めたもの・読み落としの型） | `src/services/dmdataParser.ts`, `src/services/dmdataCoverage.probe.test.ts` |
+| [telegram-coverage-audit.md](telegram-coverage-audit.md) | 電文の網羅性の点検（測り方・読まないと決めたもの・読み落としの型・残っている段） | `src/services/dmdataParser.ts`, `src/services/dmdataCoverage.probe.test.ts`, `scripts/telegram-audit/` |
 
 ## 推奨読了順（初めて触る開発者向け）
 
