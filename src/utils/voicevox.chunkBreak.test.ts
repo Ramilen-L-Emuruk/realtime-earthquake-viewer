@@ -40,6 +40,12 @@ vi.mock('./ttsStationReadings', async (importOriginal) => ({
   getTtsStationReadingsCache: () => null,
 }))
 
+// 震央地名の句割りも同様に対象外（実物のままだと取得とタイムアウト待ちが走る）。
+vi.mock('./ttsEpicenterAccents', () => ({
+  loadTtsEpicenterAccents: async () => ({}),
+  getTtsEpicenterAccentsCache: () => null,
+}))
+
 const fakeCtx = {
   state: 'running' as AudioContextState,
   currentTime: 0,

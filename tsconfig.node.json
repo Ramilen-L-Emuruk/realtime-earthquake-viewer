@@ -40,6 +40,10 @@
     "scripts/stationReading.test.ts",
     "scripts/build-station-readings.ts",
     "scripts/stationReadings.test.ts",
+    "scripts/epicenterAccent.ts",
+    "scripts/epicenterAccent.test.ts",
+    "scripts/build-epicenter-accents.ts",
+    "scripts/epicenterAccents.test.ts",
     "src/types/fft-js.d.ts"
   ]
 }

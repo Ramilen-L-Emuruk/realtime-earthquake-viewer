@@ -1,5 +1,6 @@
 import { fetchJsonWithTimeout } from './fetchJson'
 import { getTtsStationReadingsCache } from './ttsStationReadings'
+import { getTtsEpicenterAccentsCache } from './ttsEpicenterAccents'
 
 const DATA_URL = `${import.meta.env.BASE_URL}data/tts-phrase-break-dict.json`
 
@@ -87,7 +88,7 @@ export function isPlaceNameKey(key: string): boolean {
  * 長い側は VOICEVOX が正しく読めることも多く、素の部分一致で拾うと正しい読みを語中で切ってしまうため、
  * 単独で現れたときだけ一致させる。
  *
- * **観測点名を一律で単独語キーにするのは、長い側が辞書に無い組があるため。** 生成辞書は誤読する点だけを
+ * **生成辞書のキーを一律で単独語キーにするのは、長い側が辞書に無い組があるため。** 生成辞書は誤読する点だけを
  * 収録するので、`宮古島市下地`（誤読・収録）と `宮古島市下地島空港`（正しく読める・未収録）のような組が
  * できる。素の部分一致だと短い側が拾われ、**正しく読めていた観測点名が語中で切られる**（さらに
  * `DICT_TRAILING_PAUSE` まで挟まる）。読み上げ文では観測点名が必ず全部形で現れ、後ろに来るのは
@@ -96,9 +97,11 @@ export function isPlaceNameKey(key: string): boolean {
  */
 export function isStandaloneKey(key: string): boolean {
   if (standaloneKeysCache.has(key)) return true
-  const stations = getTtsStationReadingsCache()
-  return stations != null && Object.prototype.hasOwnProperty.call(stations, key)
+  return has(getTtsStationReadingsCache(), key) || has(getTtsEpicenterAccentsCache(), key)
 }
+
+const has = (dict: Record<string, string> | null, key: string): boolean =>
+  dict != null && Object.prototype.hasOwnProperty.call(dict, key)
 
 /**
  * 単独語キーが「地名の一部でない位置」に現れる最初の位置を返す。無ければ -1。
