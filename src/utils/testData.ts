@@ -648,6 +648,10 @@ export function createTestTsunamiWatch(withDmdssFields: boolean): JMATsunami {
     eventId: withDmdssFields ? toEventIdTimestamp(nowDate) : undefined,
     time: now,
     cancelled: false,
+    // 電文が名乗る情報名（`Head/Title`）。**DMDSS 版でのみ来る**（P2PQuake の JSON には無い）。
+    // 値は実電文の形に合わせ、**その報が出している等級を並べる**（VTSE41 の実電文 8 通で
+    // 「津波注意報・津波予報」「大津波警報・津波警報・津波注意報」等が確認できる）。
+    infoName: withDmdssFields ? '津波注意報' : undefined,
     issue: { source: 'テスト', time: now, type: 'Focus' },
     areas: [
       { grade: 'Watch', immediate: false, name: '北海道太平洋沿岸東部', maxHeight: { description: '1m', value: 1.0 } },
@@ -665,6 +669,9 @@ export function createTestTsunamiWarning(withDmdssFields: boolean): JMATsunami {
     eventId: withDmdssFields ? toEventIdTimestamp(nowDate) : undefined,
     time: now,
     cancelled: false,
+    // 情報名は**その報が出している等級を並べる**（→ `createTestTsunamiWatch`）。
+    // この報は警報と注意報の両方を出しているので、実電文と同じく 2 つ並べる。
+    infoName: withDmdssFields ? '津波警報・津波注意報' : undefined,
     issue: { source: 'テスト', time: now, type: 'Focus' },
     areas: [
       { grade: 'Warning', immediate: true,  name: '青森県太平洋沿岸', maxHeight: { description: '3m', value: 3.0 } },
@@ -684,6 +691,18 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
     eventId: withDmdssFields ? toEventIdTimestamp(now) : undefined,
     time: nowIso,
     cancelled: false,
+    // 情報名は**その報が出している等級を並べる**（→ `createTestTsunamiWatch`）。
+    infoName: withDmdssFields ? '大津波警報・津波警報・津波注意報' : undefined,
+    // 観測状況を確定した時刻（`Head/TargetDateTime`）。観測情報（VTSE51/52）でのみ入り、
+    // **発表時刻よりさかのぼる**（実電文で VTSE52 は 60〜360 秒・VTSE51 は 0〜120 秒）。
+    // 2 分前を入れて「観測 ◯◯ 時点」の表示を確かめられるようにする（発表時刻と同じ分では
+    // 表示側が意図どおり出さない）。
+    //
+    // **これは「電文 1 通」ではなく「続報をマージした後のカードの状態」。** 等級の名乗り
+    // （VTSE41 由来）と観測時点（VTSE51/52 由来）が同居しているのはそのため —— `useEarthquakes`
+    // の続報処理は `infoName` を最新の報から取り、観測時点は `?? current` で前報から引き継ぐので、
+    // 等級の発表が最後に来た実運用でこの組み合わせになる。**電文としてあり得ない形ではない。**
+    observationDateTime: withDmdssFields ? t(-2) : undefined,
     issue: { source: 'テスト', time: nowIso, type: 'Focus' },
     warningComment: 'ただちに高台へ避難してください。\n津波は繰り返し襲ってきます。警報が解除されるまで安全な場所から離れないでください。',
     // 電文の本文（`Body/Text` 相当）。等級の定型文とも自由付加文とも別で、同じ電文に 3 つとも入る。

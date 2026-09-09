@@ -597,8 +597,35 @@ export interface JMATsunami {
     time: string
     type: 'Focus'
   }
+  /**
+   * 電文が名乗る情報名（`Head/Title`）。**その報が何を出しているか**を気象庁の言葉で表す。
+   *
+   * 実電文では VTSE41 が「大津波警報・津波警報・津波注意報」のように発表中の等級を並べ、
+   * VTSE51 は「津波観測に関する情報」と「各地の満潮時刻・津波到達予想時刻に関する情報」を
+   * 名乗り分ける。**種別コードだけでは、いま画面に出ているのがどちらか分からない。**
+   *
+   * **`Control/Title`（種別の固定名。津波では末尾に記号が付く「津波情報a」）とは別物。**
+   * 読み取りは `readInfoName`（`services/dmdataParser.ts`）に集約している。
+   */
+  infoName?: string
   areas: TsunamiArea[]
   observations?: TsunamiObservation[]
+  /**
+   * **観測状況を確定した時刻**（`Head/TargetDateTime`）。津波観測情報（VTSE51）と
+   * 沖合の津波観測に関する情報（VTSE52）でのみ入る。
+   *
+   * この要素は種別で意味が変わり（電文解説資料 Ⅰ.（ⅱ）3）、観測情報では「いつ時点の
+   * 観測状況か」を表す。**発表時刻とは別物**で、実電文 135 通では VTSE52 で 60〜360 秒、
+   * VTSE51 で 0〜120 秒さかのぼる。最大 6 分前の値を「いまの高さ」として見せると
+   * 誤解を招くため、観測欄に時点を添えて出す。
+   *
+   * 津波警報・注意報・予報（VTSE41）では読まない —— そちらは観測情報ではなく、
+   * 実電文でも `ReportDateTime` と一致していた（差 0 秒・8 通）。
+   *
+   * **個々の観測点が持つ時刻（`TsunamiObservation.arrivalTime`）とは別物。**
+   * あちらは第 1 波の到達時刻で、こちらは電文全体の基点。
+   */
+  observationDateTime?: string
   /**
    * 沖合の観測から導いた沿岸への推定（VTSE52 のみ）。
    *
@@ -679,6 +706,17 @@ export interface EEWAlert {
    * 見出し文（`Head/Headline/Text`）。→ {@link JMAQuake.headline}（扱いも同じ）
    */
   headline?: string
+  /**
+   * 電文が名乗る情報名（`Head/Title`）。→ {@link JMATsunami.infoName}（読み取りも扱いも同じ）
+   *
+   * **読んで持つだけで画面には出さない。** アプリが受信する VXSE45 では実電文 8 通すべてが
+   * 「緊急地震速報（地震動予報）」の 1 種類で、報ごとに変わらない。しかも画面の見出しは
+   * 電文の区分（`severity`）から「地震動予報」「緊急地震速報（警報）」を組み立てており
+   * （`docs/spec/eew-spec.md` §3）、並べると同じ語が二重に出る。
+   *
+   * **区分の判定にも使わない** —— そちらは電文のコードで読む。
+   */
+  infoName?: string
   /**
    * 取消しの概要（`Body/Text`）。取消電文でのみ入る。
    *
@@ -875,6 +913,13 @@ export interface JMALpgm {
    * 付けたり付けなかったりすると、試験報の印が電文の種類次第で出たり出なかったりする。
    */
   operationStatus?: TelegramOperationStatus
+  /**
+   * 電文が名乗る情報名（`Head/Title`）。読み取りは {@link JMATsunami.infoName} と同じ。
+   *
+   * **読んで持つだけで画面には出さない。** 実電文 8 通すべてが「長周期地震動に関する観測情報」の
+   * 1 種類で、報ごとに変わらない（津波と違い名乗り分けが無い）。出しても情報が増えない。
+   */
+  infoName?: string
   originTime: string  // TTS 読み上げテキスト用
   maxClass: number    // 1〜4
   cancelled: boolean

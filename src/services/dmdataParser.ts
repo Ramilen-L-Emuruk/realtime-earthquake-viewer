@@ -507,6 +507,74 @@ function xmlText(el: Element | null): string {
   return el?.textContent?.trim() ?? ''
 }
 
+const JST_OFFSET_MS = 9 * 3600_000
+
+/**
+ * 発表時刻を読む。`Head/ReportDateTime` が空なら `Control/DateTime` へ落ちる。
+ *
+ * **落ちた値はタイムゾーン表記を JST へ揃える。** 実電文 135 通では `Head/ReportDateTime` が
+ * 常に JST（`+09:00`）、`Control/DateTime` が常に UTC（`Z`）だった。揃えずに落ちると、
+ * その電文だけ `2026-08-23T13:47:32Z`、他は `2026-08-23T22:47:00+09:00` という形になる。
+ * 地震情報の続報判定（`utils/quakeMerge.ts` の `mergeQuakeInto`）は **`Date` を経由しない
+ * 文字列の辞書順**で新旧を比べるため、同じ時刻でも UTC 表記の側が必ず小さくなり、
+ * **その報は永久に「古い」と判定されて捨てられる。**
+ *
+ * 手元のサンプルでは `ReportDateTime` が常に埋まっていて受け皿は一度も通らなかったが、
+ * 通ったときに例外もログも出さずに壊れる形なので塞いでおく。
+ *
+ * **なお `Control/DateTime` は秒値まで有効で、`Head/ReportDateTime` はそれを分へ切り捨てた値**
+ * （実電文 135 通のうち 96 通で最大 55 秒ずれ、符号は常に負）。解説資料 Ⅰ.（ⅱ）8 は
+ * 「同一種別の情報における最新情報の検索にあたっては `Serial` ではなく `Control/DateTime` を
+ * 参照すること」と書いているが、**本実装は秒精度へ上げていない** —— 理由は
+ * `docs/spec/quake-spec.md` §6.4。
+ */
+function readReportDateTime(doc: Document): string {
+  const report = xmlText(xmlQ(doc, 'ReportDateTime'))
+  if (report) return report
+  const control = xmlText(xmlQ(doc, 'DateTime'))
+  if (!control) return ''
+  const ms = Date.parse(control)
+  // **読めない値をそのまま通さない。** 通すと以降の時刻比較がすべてこの値に引きずられる。
+  // 空にすれば `mergeQuakeInto` が「発表時刻が空の電文」として据え置く（安全側）。
+  //
+  // **時間帯を明示していない値も通さない。** `2026-08-08T18:02:00` のようにオフセットが無いと
+  // `Date.parse` は**実行環境のローカル時刻**として解釈する。このアプリは利用者のブラウザで
+  // 動くので、同じ電文が端末ごとに違う時刻になり、しかも「読めない」とも判定されない
+  // （`Number.isNaN` は素通りする）。実電文は常に `Z` 付きだが、静かにずれる形なので弾く。
+  if (Number.isNaN(ms) || !HAS_EXPLICIT_TIMEZONE.test(control)) {
+    log.warn(`${DMDATA_LOG_PREFIX} 発表時刻を日時として読めません（空として扱います）: "${control}"`)
+    return ''
+  }
+  return new Date(ms + JST_OFFSET_MS).toISOString().replace(/\.\d{3}Z$/, '+09:00')
+}
+
+/** ISO 8601 の日時が時間帯を明示しているか（末尾が `Z` か `±HH:MM` / `±HHMM`）。 */
+const HAS_EXPLICIT_TIMEZONE = /(?:Z|[+-]\d{2}:?\d{2})$/
+
+/**
+ * 観測状況を確定した時刻（`Head/TargetDateTime`）。**日時として読めない値は捨てる。**
+ *
+ * 表示側（`TsunamiTab`）は `formatTime` を通すが、あちらは `new Date(...)` の結果を確かめずに
+ * 時分を取り出すため、読めない値が届くと画面に `NaN:NaN` と出る —— 例外もログも出ない。
+ * しかも「発表時刻と同じ分なら出さない」判定は素通りする（壊れた文字列は有効な時刻と一致しない）。
+ *
+ * **`readReportDateTime` と同じ厳しさで見る。** 片方だけ検証すると、隣り合った 2 つの時刻で
+ * 守りの強さが食い違う。
+ */
+function readObservationDateTime(headEl: Element): string | undefined {
+  const raw = xmlText(xmlChild(headEl, 'TargetDateTime'))
+  if (!raw) return undefined
+  // **時間帯の明示まで確かめる**（`readReportDateTime` と同じガード）。`Date.parse` は
+  // オフセットの無い `2026-01-01T12:00:00` を**実行環境のローカル時刻**として解釈し、
+  // 有限値を返す —— つまり `Number.isFinite` だけでは素通りする。このアプリは利用者の
+  // ブラウザで動くので、同じ電文が端末ごとに違う時刻として画面に出る。
+  if (!Number.isFinite(Date.parse(raw)) || !HAS_EXPLICIT_TIMEZONE.test(raw)) {
+    log.warn(`${TSUNAMI_LOG_PREFIX} 観測状況を確定した時刻を日時として読めません（無視します）: "${raw}"`)
+    return undefined
+  }
+  return raw
+}
+
 // 度分表記（"+4012.6" = 北緯 40 度 12.6 分）を 10 進度へ直す。読めない値は NaN を返す。
 //
 // 小数第 4 位で丸めるのは、度分を 60 で割った端数を切るため（"40.2100" / "142.3033"）。
@@ -740,6 +808,28 @@ function readHeadlineText(doc: Document): string {
 }
 
 /**
+ * 電文が名乗る情報名（`Head/Title`）。
+ *
+ * **`Control/Title` とは別物。** あちらは種別の固定名で、津波では末尾に記号が付く
+ * （「津波情報a」）。こちらは**その報が何を出しているか**を表し、実電文では次のように動く。
+ *
+ * | 種別 | `Control/Title`（固定） | `Head/Title`（報ごとに変わる） |
+ * |---|---|---|
+ * | VTSE41 | 津波警報・注意報・予報a | 津波予報／大津波警報・津波警報・津波注意報 … |
+ * | VTSE51 | 津波情報a | 津波観測に関する情報／各地の満潮時刻・津波到達予想時刻に関する情報 |
+ * | VXSE53 | 震源・震度に関する情報 | 震源・震度情報／遠地地震に関する情報 |
+ *
+ * **`Head` 直下に限る。** `Control/Title` を取り違えないため（`parseIssueSourceFromXml` が
+ * `Control` 直下に限っているのと同じ理由）。
+ *
+ * 読み取りをここへ集約するのは、同じ要素を複数の経路が別々に読むと必ず片方が遅れるため。
+ */
+function readInfoName(doc: Document): string {
+  const headEl = xmlQ(doc, 'Head')
+  return headEl ? xmlText(xmlChild(headEl, 'Title')) : ''
+}
+
+/**
  * 巨大地震に関する情報（南海トラフ・後発地震）が共通して持つ要素を読む。
  *
  * **3 つの電文（VYSE50 / VYSE51・52 / VYSE60）で書き分けない。** 構造が同じなのに
@@ -889,6 +979,7 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
   // 見出し文。実電文では空だが、警報の報で入りうる（→ `readHeadlineText`）。
   // 地震情報・長周期と同じく持つだけで画面には出さない。
   const eewHeadline = readHeadlineText(doc)
+  const eewInfoName = readInfoName(doc)
   const hypocenterEl = eqEl ? xmlQ(eqEl, 'Hypocenter') : null
   const areaEl = eqEl ? xmlQ(hypocenterEl ?? eqEl, 'Area') : null
   const { lat, lng, depth } = areaEl
@@ -1013,6 +1104,7 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
     time: reportTime,
     test: false,
     ...(eewHeadline && { headline: eewHeadline }),
+    ...(eewInfoName && { infoName: eewInfoName }),
     ...(eewCancelText && { cancelText: eewCancelText }),
     earthquake: {
       originTime: xmlText(eqEl ? xmlChild(eqEl, 'OriginTime') : null),
@@ -1066,14 +1158,15 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
   const quakeOperationStatus = parseOperationStatus(doc)
   // 見出し文。**読んで持つだけで画面には出さない**（→ `readHeadlineText`）。
   const quakeHeadline = readHeadlineText(doc)
-  const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
+  const reportDateTime = readReportDateTime(doc)
   const eventId = xmlText(xmlQ(doc, 'EventID'))
   const infoType = xmlText(xmlQ(doc, 'InfoType'))
   const serial = xmlText(xmlQ(doc, 'Serial')) || '1'
-  // Head/Title を見る（Control/Title と区別するため Head 要素を先に取得する）。
+  // 電文が名乗る情報名（`Head/Title`）。**読み取りは `readInfoName` へ集約する** ——
+  // `Control/Title` と紛れる要素で、複数の経路が別々に読むと片方が遅れる。
   // 取消報でも同じ判定が要るため、取消の早期リターンより前で解決しておく。
-  const headInfoEl = xmlQ(doc, 'Head')
-  const issueType = resolveIssueType(headType, headInfoEl ? xmlText(xmlQ(headInfoEl, 'Title')) : '')
+  const quakeInfoName = readInfoName(doc)
+  const issueType = resolveIssueType(headType, quakeInfoName)
   const source = parseIssueSourceFromXml(doc)
 
   // 取消電文（InfoType === '取消'）: Earthquake 要素が存在しないため早期リターン
@@ -1400,7 +1493,7 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
   if (!doc) return null
 
   const tsunamiOperationStatus = parseOperationStatus(doc)
-  const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
+  const reportDateTime = readReportDateTime(doc)
   // 空文字は undefined に落とす。
   // 「同一イベントか」の判定はどこも falsy 判定で書かれているのに対し、キーの導出側が空文字を
   // 有効な識別子として扱うと、識別子を持たない電文どうしが同じ津波として束ねられる。
@@ -1409,9 +1502,25 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
   const infoType = xmlText(xmlQ(doc, 'InfoType'))
   const source = parseIssueSourceFromXml(doc)
   const validDateTime = xmlText(xmlQ(doc, 'ValidDateTime')) || undefined
+  // 観測状況を確定した時刻（`Head/TargetDateTime`）。**観測情報の 2 種別だけで読む。**
+  //
+  // この要素は種別で意味が変わる（電文解説資料 Ⅰ.（ⅱ）3）。津波警報・注意報・予報（VTSE41）は
+  // 観測情報ではないので対象外で、実電文でも `ReportDateTime` と一致していた（差 0 秒・8 通）。
+  // 観測情報では最大 6 分さかのぼる（VTSE52 で 60〜360 秒・VTSE51 で 0〜120 秒）。
+  //
+  // **`Head` 直下に限る。** 同名要素が他の位置に現れた電文で取り違えないため
+  // （`parseIssueSourceFromXml` が `Control` 直下に限っているのと同じ理由）。
+  const tsunamiHeadEl = xmlQ(doc, 'Head')
+  const observationDateTime = (headType === 'VTSE51' || headType === 'VTSE52') && tsunamiHeadEl
+    ? readObservationDateTime(tsunamiHeadEl)
+    : undefined
   // 見出し文。**他の種別と同じ読み手を通す**（→ `readHeadlineText`）——
   // 同じ事実を 2 通りの書き方で表すと、片方だけ静かにずれる。
   const headline = readHeadlineText(doc) || undefined
+  // 電文が名乗る情報名（`Head/Title`）。**続報では引き継がない** —— その報が何を出しているかを
+  // 表すもので、最新の報の名乗りをそのまま見せる（`useEarthquakes` の続報処理は新しい報を
+  // 基に組み立てるため、明示的な引き継ぎを書かない限り自動的にそうなる）。
+  const infoName = readInfoName(doc) || undefined
   const commentsEl = xmlQ(doc, 'Comments')
   const warningCommentEl = commentsEl ? xmlQ(commentsEl, 'WarningComment') : null
   const warningComment = readCommentText(warningCommentEl, '固定付加文', TSUNAMI_LOG_PREFIX) || undefined
@@ -1497,7 +1606,11 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
     if (observations.length === 0) {
       return dropTelegram(TSUNAMI_LOG_PREFIX, 'Observation はありますが観測点を 1 件も読めません')
     }
-    return { kind: 'tsunami', id, eventId, time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: false, headline, warningComment, freeText, bodyText: tsunamiBodyText, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas: [], observations, estimations }
+    // **`infoName` と `observationDateTime` をここにも載せる。** この分岐は VTSE52（沖合の津波
+    // 観測）と VTSE51 の観測のみ続報が通る主経路で、まさに観測時点が最も効く形。載せ忘れると
+    // 「観測 ◯◯ 時点」が肝心の電文で一度も出ない（続報のマージは `?? current` で前報へ倒れる
+    // ため、画面には古い時点が残るか、前報が無ければ何も出ない）。
+    return { kind: 'tsunami', id, eventId, time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: false, headline, infoName, warningComment, freeText, bodyText: tsunamiBodyText, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas: [], observations, observationDateTime, estimations }
   }
 
   const allEls = forecastEl!.getElementsByTagName('*')
@@ -1659,7 +1772,7 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
   // Observation も含む場合（VTSE51①: Forecast + Observation 両方あり）
   const observations = observationEl ? parseTsunamiObservationsFromXml(observationEl, offshore) : undefined
 
-  return { kind: 'tsunami', id, eventId, time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: false, validDateTime, headline, warningComment, freeText, bodyText: tsunamiBodyText, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas, observations: observations && observations.length > 0 ? observations : undefined, estimations }
+  return { kind: 'tsunami', id, eventId, time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: false, validDateTime, headline, infoName, warningComment, freeText, bodyText: tsunamiBodyText, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas, observations: observations && observations.length > 0 ? observations : undefined, observationDateTime, estimations }
 }
 
 /**
@@ -1932,7 +2045,7 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   // 種別によって付けたり付けなかったりすると、試験報の印が電文の種類次第で出たり出なかったりする。
   const lpgmOperationStatus = parseOperationStatus(doc)
 
-  const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
+  const reportDateTime = readReportDateTime(doc)
   const eventId        = xmlText(xmlQ(doc, 'EventID'))
   const serial         = xmlText(xmlQ(doc, 'Serial')) || '1'
   const infoType       = xmlText(xmlQ(doc, 'InfoType'))
@@ -2085,6 +2198,7 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   lgIntensityTally.warnIfNoneReadable(DMDATA_LOG_PREFIX)
   lgPeriodTally.warnIfNoneReadable(DMDATA_LOG_PREFIX)
   warnIfNoLpgmRegions(maxClass, regions.length, DMDATA_LOG_PREFIX)
+  const lpgmInfoName = readInfoName(doc)
 
   // 長周期地震動に関する観測情報の種類（Ⅱ.37 2-1-4）。値域は "1"〜"4"。
   // **読めない値は持たせない**（分類が無いことと、知らない分類が来たことを区別する必要はない
@@ -2141,6 +2255,7 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
 
   return {
     ...(lpgmOperationStatus && { operationStatus: lpgmOperationStatus }),
+    ...(lpgmInfoName && { infoName: lpgmInfoName }),
     id, eventId, time: reportDateTime, originTime, maxClass, cancelled: false, points, regions,
     ...(prefs.length > 0 && { prefs }),
     ...(obsMaxInt >= 0 && { maxInt: obsMaxInt }),
@@ -2219,7 +2334,7 @@ export function parseNankaiFromXml(xml: string): JMANankai | null {
   // 種別によって付けたり付けなかったりすると、試験報の印が電文の種類次第で出たり出なかったりする。
   const nankaiOperationStatus = parseOperationStatus(doc)
 
-  const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
+  const reportDateTime = readReportDateTime(doc)
   const eventId        = xmlText(xmlQ(doc, 'EventID'))
   const serial         = xmlText(xmlQ(doc, 'Serial')) || '1'
   const infoType       = xmlText(xmlQ(doc, 'InfoType'))
@@ -2354,7 +2469,7 @@ export function parseNankaiCommentaryFromXml(xml: string): JMANankaiCommentary |
   // 保険であり、相互排他は dmdataParser.test.ts で固定している。
   if (NANKAI_STAGE_KEYWORDS.some(k => headline.includes(k))) return null
 
-  const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
+  const reportDateTime = readReportDateTime(doc)
   // 期限（expireAt）の計算に使うため、日時として解釈できることをここで確かめる。
   // 不正な文字列のまま進むと new Date(...).toISOString() が RangeError を投げる。
   const reportMs = new Date(reportDateTime).getTime()
@@ -2406,7 +2521,7 @@ export function parseVyse60FromXml(xml: string): JMAKohatsu | null {
   // 種別によって付けたり付けなかったりすると、試験報の印が電文の種類次第で出たり出なかったりする。
   const kohatsuOperationStatus = parseOperationStatus(doc)
 
-  const reportDateTime = xmlText(xmlQ(doc, 'ReportDateTime')) || xmlText(xmlQ(doc, 'DateTime'))
+  const reportDateTime = readReportDateTime(doc)
   const eventId        = xmlText(xmlQ(doc, 'EventID'))
   const serial         = xmlText(xmlQ(doc, 'Serial')) || '1'
   const infoType       = xmlText(xmlQ(doc, 'InfoType'))
@@ -2434,8 +2549,16 @@ export function parseVyse60FromXml(xml: string): JMAKohatsu | null {
   const bodyText  = (commentEl ? xmlText(xmlQ(commentEl, 'Text')) : '')
     || (bodyEl ? xmlText(xmlQ(bodyEl, 'Text')) : '')
 
-  // 有効期限は発表時刻 + 7日
-  const expireAt = new Date(new Date(reportDateTime).getTime() + 7 * 24 * 3600 * 1000).toISOString()
+  // 有効期限は発表時刻 + 7日。
+  // **日時として解釈できることを先に確かめる**（南海トラフ関連解説情報と同じガード）。
+  // 不正な文字列のまま進むと `new Date(...).toISOString()` が RangeError を投げ、
+  // 電文 1 通が例外で落ちる。`readReportDateTime` は読めない値を空文字で返すので、
+  // ここは到達しうる経路。
+  const kohatsuReportMs = new Date(reportDateTime).getTime()
+  if (!Number.isFinite(kohatsuReportMs)) {
+    return dropTelegram(DMDATA_LOG_PREFIX, `後発地震注意情報の発表時刻を日時として読めません: "${reportDateTime}"`)
+  }
+  const expireAt = new Date(kohatsuReportMs + 7 * 24 * 3600 * 1000).toISOString()
 
   return {
     ...(kohatsuOperationStatus && { operationStatus: kohatsuOperationStatus }),

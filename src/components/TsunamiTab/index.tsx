@@ -906,6 +906,14 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
   const topStyle = getGradeStyle(topGrade)
   const cancelInfo = CANCEL_REASON_LABEL[active[0]?.cancelReason ?? 'lifted']
   const latestTime = active[0]?.time
+  // 観測状況を確定した時刻（`Head/TargetDateTime`）。**発表時刻と同じ分なら出さない** ——
+  // 同じ数字が 2 つ並ぶだけで、「観測値は発表より前の時点のもの」という肝心の意味が薄れる。
+  // 実電文では VTSE52 で 60〜360 秒・VTSE51 で 0〜120 秒さかのぼり、0 秒の報も普通にある。
+  const observationAsOfRaw = active[0]?.observationDateTime
+  const observationAsOf = observationAsOfRaw && latestTime
+    && formatTime(observationAsOfRaw).slice(0, 5) !== formatTime(latestTime).slice(0, 5)
+    ? formatTime(observationAsOfRaw).slice(0, 5)
+    : undefined
   // 1 件目を主に扱い、残りは下に併記する（電文は複数の地震を持ちうる）。
   const sourceEarthquakes = active[0]?.sourceEarthquakes ?? []
   const sourceEarthquake = sourceEarthquakes[0]
@@ -947,13 +955,31 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
               </div>
               {latestTime && (
                 <div className="text-right flex-shrink-0" style={{ fontSize: '0.6875rem', color: isCancelledDisplay ? '#6b7280' : topStyle.arrivalColor, opacity: 0.8 }}>
-                  {formatDateTimeMin(latestTime)} 更新
+                  <div>{formatDateTimeMin(latestTime)} 更新</div>
+                  {/* 観測状況を確定した時刻（電文の `Head/TargetDateTime`）。観測情報でのみ入り、
+                      実電文では最大 6 分さかのぼる。**下の波高がいつ時点のものか**を示す。
+
+                      **発表時刻と同じ分なら出さない。** 同じ数字が 2 つ並ぶだけで、
+                      「観測値が発表より前の時点のもの」という肝心の意味が薄れる。 */}
+                  {observationAsOf && (
+                    <div style={{ opacity: 0.85 }}>観測 {observationAsOf} 時点</div>
+                  )}
                 </div>
               )}
             </div>
             <div className="mt-1" style={{ fontSize: '0.6875rem', color: isCancelledDisplay ? '#6b7280' : topStyle.headerColor, opacity: 0.8 }}>
               {isCancelledDisplay ? cancelInfo.desc : topGrade === 'Forecast' ? '若干の海面変動があるかもしれません' : '海岸・河川から直ちに離れてください'}
             </div>
+            {/* 電文が名乗る情報名（`Head/Title`）。**上の等級表示とは別物** —— あちらはアプリが
+                区域の等級から組み立てた見出しで、こちらは気象庁がその報に付けた名前。
+                同じ VTSE51 が「津波観測に関する情報」と「各地の満潮時刻・津波到達予想時刻に
+                関する情報」を名乗り分けるので、**種別コードだけでは今どちらを見ているか分からない。**
+                行動指示より下に、目立たせずに置く。 */}
+            {active[0]?.infoName && (
+              <div className="mt-0.5" style={{ fontSize: '0.625rem', color: isCancelledDisplay ? '#6b7280' : topStyle.headerColor, opacity: 0.6 }}>
+                {active[0].infoName}
+              </div>
+            )}
             {/* 気象庁が書いた取消しの概要（電文の `Body/Text`）。アプリの定型文（上の `cancelInfo.desc`）
                 とは別で、なぜ取り消したのかはここにしか無い。 */}
             {isCancelledDisplay && active[0]?.cancelText && (

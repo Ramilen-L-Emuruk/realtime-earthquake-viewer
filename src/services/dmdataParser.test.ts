@@ -577,6 +577,63 @@ describe('XML 経路が落としてはいけない項目（地震）', () => {
       .replace('<PublishingOffice>気象庁</PublishingOffice>', '<PublishingOffice>大阪管区気象台</PublishingOffice>')
     expect(parseEarthquakeFromXml('VXSE53', xml)!.issue.source).toBe('大阪管区気象台')
   })
+
+  // ---- 発表時刻の受け皿（Head/ReportDateTime が空なら Control/DateTime へ落ちる）----
+  //
+  // 実電文 135 通では Head/ReportDateTime が常に JST（+09:00）、Control/DateTime が常に
+  // UTC（Z）だった。受け皿が表記を揃えずに落ちると、その報だけ `2026-08-08T18:02:00Z`、
+  // 他は `2026-08-09T03:02:00+09:00` という形になる。続報判定（utils/quakeMerge.ts の
+  // mergeQuakeInto）は **Date を経由しない文字列の辞書順**で新旧を比べるため、同じ時刻でも
+  // UTC 表記の側が必ず小さく、その報は永久に「古い」と判定されて捨てられる。
+  //
+  // 雛形の VXSE53_XML は Control/DateTime と ReportDateTime が同じ時刻の別表記になっている
+  // （18:02Z ＝ 翌 03:02+09:00）ので、2 つの経路が同じ文字列を返すことを直接確かめられる。
+
+  // 正: 受け皿へ落ちた値は JST 表記に揃う（UTC のまま出てこない）。
+  it('発表時刻が空なら Control/DateTime を JST 表記へ直して使う', () => {
+    const xml = VXSE53_XML.replace('<ReportDateTime>2026-08-09T03:02:00+09:00</ReportDateTime>', '')
+    // .replace() は対象が無くても黙って素通りする。当たったことを機械的に確かめる。
+    expect(xml).not.toBe(VXSE53_XML)
+    expect(parseEarthquakeFromXml('VXSE53', xml)!.time).toBe('2026-08-09T03:02:00+09:00')
+  })
+
+  // 対照: 発表時刻がある電文は受け皿を通らず、その値をそのまま使う（変換を掛けない）。
+  it('発表時刻があればそれをそのまま使う', () => {
+    expect(fromXml().time).toBe('2026-08-09T03:02:00+09:00')
+  })
+
+  // 安全弁: 受け皿を通った値と通常経路の値が**文字列として等しい**。辞書順で比べる続報判定が
+  // 同じ時刻を同じものとして扱えるのは、これが成り立つときだけ。**どちらの表記が変わっても
+  // ここで落ちる**ので、片方だけを直す変更を止められる。
+  it('受け皿を通っても通常経路と同じ文字列になる', () => {
+    const xml = VXSE53_XML.replace('<ReportDateTime>2026-08-09T03:02:00+09:00</ReportDateTime>', '')
+    expect(xml).not.toBe(VXSE53_XML)
+    expect(parseEarthquakeFromXml('VXSE53', xml)!.time).toBe(fromXml().time)
+  })
+
+  // 安全弁: 時間帯を明示していない値も空にする。**「読めない」では捕まらない類の壊れ方。**
+  // `2026-08-08T18:02:00` のようにオフセットが無いと `Date.parse` は実行環境のローカル時刻として
+  // 解釈するため、このアプリ（利用者のブラウザで動く）では端末ごとに違う時刻になる。
+  // `Number.isNaN` は素通りするので、表記そのものを確かめないと防げない。
+  it('Control/DateTime に時間帯が無ければ発表時刻を空にする', () => {
+    const xml = VXSE53_XML
+      .replace('<ReportDateTime>2026-08-09T03:02:00+09:00</ReportDateTime>', '')
+      .replace('<DateTime>2026-08-08T18:02:00Z</DateTime>', '<DateTime>2026-08-08T18:02:00</DateTime>')
+    expect(xml).not.toBe(VXSE53_XML)
+    expect(xml).toContain('<DateTime>2026-08-08T18:02:00</DateTime>')
+    expect(parseEarthquakeFromXml('VXSE53', xml)!.time).toBe('')
+  })
+
+  // 日時として読めない値は空にして据え置かせる。そのまま通すと以降の時刻比較がこの値に
+  // 引きずられる（mergeQuakeInto は time が空の電文を「古い」とみなして据え置く）。
+  it('Control/DateTime が日時として読めなければ発表時刻を空にする', () => {
+    const xml = VXSE53_XML
+      .replace('<ReportDateTime>2026-08-09T03:02:00+09:00</ReportDateTime>', '')
+      .replace('<DateTime>2026-08-08T18:02:00Z</DateTime>', '<DateTime>不明</DateTime>')
+    expect(xml).not.toBe(VXSE53_XML)
+    expect(xml).toContain('<DateTime>不明</DateTime>')
+    expect(parseEarthquakeFromXml('VXSE53', xml)!.time).toBe('')
+  })
   // 取消電文も eventId を持つ。同一性判定（sameQuakeEntry・coalesceByEventId）はどれも
   // id 文字列から 14 桁を抜く extractQuakeEventId を通るため、このフィールドの有無で挙動は
   // 変わらない。通常報と形を揃えておくのは、次にこのフィールドを使うコードが
@@ -2324,6 +2381,108 @@ const BODY_TEXT_LINE = `    <Text>若干の海面変動が予想される時刻�
 describe('XML 経路が落としてはいけない項目（津波）', () => {
   const fromXml = () => parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!
 
+  // ---- 電文が名乗る情報名（Head/Title）----
+  //
+  // 雛形は Control/Title が「津波情報a」、Head/Title が「津波情報」で**値が違う**ので、
+  // 取り違えをそのまま検出できる。実電文でも津波の Control/Title は末尾に記号が付く。
+
+  // 正: Head/Title を読む。
+  it('情報名を Head/Title から読む', () => {
+    expect(fromXml().infoName).toBe('津波情報')
+  })
+
+  // 対照: Control/Title を拾わない。**同名要素が 2 つある電文で、探索順に頼ると先に
+  // Control/Title へ当たる**（Control は Report の最初の子）。この 1 件が取り違えの唯一の砦。
+  it('情報名に Control/Title を拾わない', () => {
+    expect(fromXml().infoName).not.toBe('津波情報a')
+  })
+
+  // 安全弁: 要素を持たない電文では undefined。空文字を入れると、表示側の `&&` を素通りして
+  // 空の行がカードに出る。
+  it('Head/Title が無ければ情報名は入らない', () => {
+    const xml = PARITY_TSUNAMI_XML.replace('<Title>津波情報</Title>', '')
+    // .replace() は対象が無くても黙って素通りする。当たったことを機械的に確かめる。
+    expect(xml).not.toBe(PARITY_TSUNAMI_XML)
+    expect(xml).toContain('<Title>津波情報a</Title>')   // Control 側は残っていること
+    expect(parseTsunamiFromXml('VTSE51', xml)!.infoName).toBeUndefined()
+  })
+
+  // ---- 観測状況を確定した時刻（Head/TargetDateTime）----
+  //
+  // この要素は種別で意味が変わる（電文解説資料 Ⅰ.（ⅱ）3）。観測情報（VTSE51/VTSE52）では
+  // 「いつ時点の観測状況か」で、実電文 135 通では VTSE52 が 60〜360 秒・VTSE51 が 0〜120 秒
+  // 発表時刻からさかのぼる。津波警報・注意報・予報（VTSE41）は観測情報ではないので読まない
+  // （実電文でも ReportDateTime と一致していた・差 0 秒 8 通）。
+  const withTargetDateTime = () => {
+    const xml = PARITY_TSUNAMI_XML.replace(
+      '<ReportDateTime>2026-01-01T12:05:00+09:00</ReportDateTime>',
+      '<ReportDateTime>2026-01-01T12:05:00+09:00</ReportDateTime>\n    <TargetDateTime>2026-01-01T12:00:00+09:00</TargetDateTime>',
+    )
+    // .replace() は対象が無くても黙って素通りする。当たったことを機械的に確かめる。
+    expect(xml).not.toBe(PARITY_TSUNAMI_XML)
+    return xml
+  }
+
+  // 正: 観測情報では読む。
+  it('観測情報では Head/TargetDateTime を観測時点として読む', () => {
+    expect(parseTsunamiFromXml('VTSE51', withTargetDateTime())!.observationDateTime)
+      .toBe('2026-01-01T12:00:00+09:00')
+    expect(parseTsunamiFromXml('VTSE52', withTargetDateTime())!.observationDateTime)
+      .toBe('2026-01-01T12:00:00+09:00')
+  })
+
+  // 対照: 津波警報・注意報・予報では読まない。同じ電文を渡しても入らないことで、
+  // 「要素があるかどうか」ではなく「種別で分けている」ことを固定する。
+  it('津波警報・注意報・予報では観測時点を読まない', () => {
+    expect(parseTsunamiFromXml('VTSE41', withTargetDateTime())!.observationDateTime).toBeUndefined()
+  })
+
+  // 安全弁: 要素を持たない電文では undefined のまま。空文字を入れると、表示側の
+  // 「発表時刻と同じ分なら出さない」判定が空文字を時刻として扱おうとする。
+  it('Head/TargetDateTime が無ければ観測時点は入らない', () => {
+    expect(fromXml().observationDateTime).toBeUndefined()
+  })
+
+  // 安全弁: 日時として読めない値は捨てる。**通すと画面に `NaN:NaN` と出る** ——
+  // 表示側の `formatTime` は `new Date(...)` の結果を確かめずに時分を取り出し、
+  // 「発表時刻と同じ分なら出さない」判定も壊れた文字列では素通りする（有効な時刻と一致しない）。
+  // `readReportDateTime` と同じ厳しさで見ること。片方だけ検証すると、隣り合った 2 つの時刻で
+  // 守りの強さが食い違う。
+  it('観測時点が日時として読めなければ捨てる', () => {
+    const xml = PARITY_TSUNAMI_XML.replace(
+      '<ReportDateTime>2026-01-01T12:05:00+09:00</ReportDateTime>',
+      '<ReportDateTime>2026-01-01T12:05:00+09:00</ReportDateTime>\n    <TargetDateTime>壊れた時刻</TargetDateTime>',
+    )
+    expect(xml).not.toBe(PARITY_TSUNAMI_XML)
+    expect(parseTsunamiFromXml('VTSE51', xml)!.observationDateTime).toBeUndefined()
+  })
+
+  // 安全弁: 時間帯を明示していない値も捨てる。**「読めない」では捕まらない類の壊れ方**で、
+  // `Date.parse('2026-01-01T12:00:00')` は有限値を返す（実行環境のローカル時刻として解釈される）。
+  // 発表時刻側の「Control/DateTime に時間帯が無ければ発表時刻を空にする」と対になるテスト
+  // —— 片方だけ持つと、コメントと仕様書が主張する「同じ厳しさ」が実装で崩れても気づけない。
+  it('観測時点に時間帯が無ければ捨てる', () => {
+    const xml = PARITY_TSUNAMI_XML.replace(
+      '<ReportDateTime>2026-01-01T12:05:00+09:00</ReportDateTime>',
+      '<ReportDateTime>2026-01-01T12:05:00+09:00</ReportDateTime>\n    <TargetDateTime>2026-01-01T12:00:00</TargetDateTime>',
+    )
+    expect(xml).not.toBe(PARITY_TSUNAMI_XML)
+    // 前提の確認: この値は Date.parse では読めてしまう（だから表記そのものを見る必要がある）。
+    expect(Number.isFinite(Date.parse('2026-01-01T12:00:00'))).toBe(true)
+    expect(parseTsunamiFromXml('VTSE51', xml)!.observationDateTime).toBeUndefined()
+  })
+
+  // 安全弁: Head 直下に限る。同名要素が他の位置に現れた電文で取り違えない
+  // （`parseIssueSourceFromXml` が Control 直下に限っているのと同じ理由）。
+  it('Head の外にある同名要素は観測時点として拾わない', () => {
+    const xml = PARITY_TSUNAMI_XML.replace(
+      '<Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">',
+      '<Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">\n    <TargetDateTime>2026-01-01T11:00:00+09:00</TargetDateTime>',
+    )
+    expect(xml).not.toBe(PARITY_TSUNAMI_XML)
+    expect(parseTsunamiFromXml('VTSE51', xml)!.observationDateTime).toBeUndefined()
+  })
+
   it('等級・区域名・ただちに来襲の別を同じに読む', () => {
     for (const t of [fromXml()]) {
       expect(t.areas).toHaveLength(1)
@@ -3277,6 +3436,35 @@ describe('沖合の観測から導いた沿岸への推定（VTSE52）', () => {
       warn.mockRestore()
     }
   }
+  // ---- ヘッダ部が「観測のみ」の分岐でも入ること ----
+  //
+  // `parseTsunamiFromXml` は戻り値を 4 箇所で組み立てる。VTSE52 と VTSE51 の観測のみ続報は
+  // `Forecast` を持たないため**専用の早期 return を通る**（このフィクスチャがその実運用形）。
+  // 末尾の return だけに項目を足すと、**観測時点が最も効く経路で一度も出ない**まま通ってしまう
+  // ——しかも続報のマージは `?? current` で前報へ倒れるので、画面には古い時点が残るか、
+  // 前報が無ければ何も出ず、異常として現れない。
+
+  // 正: 情報名が入る。
+  it('観測のみの電文でも情報名を読む', () => {
+    expect(parseTsunamiFromXml('VTSE52', VTSE52_XML)!.infoName).toBe('沖合の津波観測に関する情報')
+  })
+
+  // 正: 観測時点が入る。フィクスチャは TargetDateTime を持たないので足して確かめる。
+  it('観測のみの電文でも観測時点を読む', () => {
+    const xml = VTSE52_XML.replace(
+      '<ReportDateTime>2026-01-01T12:30:00+09:00</ReportDateTime>',
+      '<ReportDateTime>2026-01-01T12:30:00+09:00</ReportDateTime><TargetDateTime>2026-01-01T12:24:00+09:00</TargetDateTime>',
+    )
+    // .replace() は対象が無くても黙って素通りする。当たったことを機械的に確かめる。
+    expect(xml).not.toBe(VTSE52_XML)
+    const t = parseTsunamiFromXml('VTSE52', xml)!
+    expect(t.observationDateTime).toBe('2026-01-01T12:24:00+09:00')
+    // 安全弁: この電文が本当に「観測のみ」の分岐を通っていること。区域を持つ経路で通ると、
+    // 上の 2 件が別の return を確かめてしまい、この分岐の穴を見逃す。
+    expect(t.areas).toHaveLength(0)
+    expect(t.observations?.length).toBeGreaterThan(0)
+  })
+
   // 正: 区域名・到達予想時刻・予想高さを読む
   it('推定の区域名・到達予想時刻・高さを読む', () => {
     const est = parseTsunamiFromXml('VTSE52', VTSE52_XML)!.estimations!
@@ -4155,5 +4343,51 @@ describe('電文の運用種別（Status）', () => {
     expect(parseNankaiFromXml(nankaiXml({ title: '南海トラフ地震臨時情報（調査中）' }))!.operationStatus).toBeUndefined()
     expect(parseNankaiCommentaryFromXml(commentaryXml({ title: '南海トラフ地震関連解説情報（定例）', serialName: '定例解説', serialCode: '200' }))!.operationStatus).toBeUndefined()
     expect(parseVyse60FromXml(VYSE60_XML)!.operationStatus).toBeUndefined()
+  })
+})
+
+// 情報名（`Head/Title`）は津波以外でも読む（緊急地震速報・長周期地震動観測情報）。
+// **画面には出さない**が、型に載っている以上ほかのコードが参照し始めうるので、読み取りの
+// 正しさは固定しておく。取り違えの相手は `Control/Title`（種別の固定名）で、実電文では
+// **同じ値のことが多い** —— 同じ値のフィクスチャで正のテストだけ書いても取り違えは検出できない。
+// Control 側を別の値に変えた対照テストと対にする。
+describe('情報名（Head/Title）: 緊急地震速報・長周期地震動', () => {
+  it('緊急地震速報の情報名を Head/Title から読む', () => {
+    expect(parseEEWFromXml('VXSE45', EEW_XML)!.infoName).toBe('緊急地震速報（地震動予報）')
+  })
+
+  // 対照: Control/Title を拾わない。**Control は Report の最初の子**なので、探索順に頼ると
+  // 先にそちらへ当たる。この 1 件が取り違えの唯一の砦。
+  it('緊急地震速報の情報名に Control/Title を拾わない', () => {
+    const xml = EEW_XML.replace(
+      '<Control><Title>緊急地震速報（地震動予報）</Title>',
+      '<Control><Title>緊急地震速報配信テスト</Title>',
+    )
+    // .replace() は対象が無くても黙って素通りする。当たったことを機械的に確かめる。
+    expect(xml).not.toBe(EEW_XML)
+    expect(parseEEWFromXml('VXSE45', xml)!.infoName).toBe('緊急地震速報（地震動予報）')
+  })
+
+  it('長周期地震動観測情報の情報名を読む', () => {
+    expect(parseLpgmFromXml(VXSE62_XML)!.infoName).toBe('長周期地震動に関する観測情報')
+  })
+})
+
+// 後発地震注意情報は発表時刻から有効期限（+7日）を組み立てる。**日時として読めない値のまま
+// 進むと `new Date(...).toISOString()` が RangeError を投げ、電文 1 通が例外で落ちる。**
+// `readReportDateTime` は読めない値を空文字で返すので、この経路は到達しうる。
+// 南海トラフ関連解説情報が先に同じガードを持っており、そちらと対にして固定する。
+describe('後発地震注意情報: 発表時刻が読めない電文', () => {
+  it('日時として読めない発表時刻の電文は例外を投げずに捨てる', () => {
+    // **`Control/DateTime` も壊す。** 片方だけだと `readReportDateTime` の受け皿が働いて
+    // 読める値になり、このガードへ到達しない（テストが素通りする）。
+    const xml = VYSE60_XML
+      .replace('<ReportDateTime>2026-01-01T12:00:00+09:00</ReportDateTime>', '<ReportDateTime></ReportDateTime>')
+      .replace('<DateTime>2026-01-01T03:00:00Z</DateTime>', '<DateTime>壊れた時刻</DateTime>')
+    expect(xml).not.toBe(VYSE60_XML)
+    expect(xml).toContain('<ReportDateTime></ReportDateTime>')
+    expect(xml).toContain('<DateTime>壊れた時刻</DateTime>')
+    expect(() => parseVyse60FromXml(xml)).not.toThrow()
+    expect(parseVyse60FromXml(xml)).toBeNull()
   })
 })
