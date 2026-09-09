@@ -1,5 +1,9 @@
 import { useState } from 'react'
-import type { EarthquakeInfoMeta, JMANankai, JMANankaiCommentary, JMAKohatsu, TelegramOperationStatus } from '../../types/earthquake'
+import type {
+  EarthquakeInfoMeta, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAQuakeNotice, JMAEarthquakeCount,
+  TelegramOperationStatus,
+} from '../../types/earthquake'
+import { EarthquakeCountDetail, earthquakeCountHeadline } from './EarthquakeCountDetail'
 import { log } from '../../utils/logger'
 import { normalizeDmdataTelegramId } from '../../utils/dmdataId'
 
@@ -7,12 +11,28 @@ interface Props {
   nankai: JMANankai | null
   nankaiCommentary: JMANankaiCommentary | null
   kohatsu: JMAKohatsu | null
+  quakeNotice: JMAQuakeNotice | null
+  earthquakeCount: JMAEarthquakeCount | null
 }
 
 // 閉じた解説情報の電文 id を覚えておくキー。解説情報には解除電文が無く、定例解説は平常時にも
 // 毎月届くため、読み終えた帯を手で閉じられるようにしている。リロードで復活しないよう永続化する。
 // 保持するのは 1 件だけでよい（表示するのは常に最新の 1 通のみ）。
 const COMMENTARY_DISMISSED_KEY = 'nankai-commentary-dismissed'
+
+// 閉じたお知らせ（VZSE40）の電文 id。解説情報と同じ理由で永続化する。取消電文は届くが、
+// 「入電停止は明日の 8 時から」のような予告は取り消されないまま期間が過ぎるため、
+// 読み終えたら手で閉じられるようにしている。
+const NOTICE_DISMISSED_KEY = 'quake-notice-dismissed'
+
+// 閉じた地震回数の情報（VXSE60）の電文 id。群発は日をまたいで続き、そのあいだ報が重なる。
+// 読み終えた帯を手で片付けられるようにしている。
+//
+// **覚えるのは報の id であって群発（`eventId`）ではない。** つまり閉じたあと続報が届けば
+// 帯は出直す。続報は回数が増えた**新しい事実**なので、そのつもり —— 群発ごとに閉じたままに
+// すると、1704 回が 3000 回になっても黙ることになる。公式サンプルの `NextAdvisory` が
+// 次の発表を約 6 時間後としており、出直す頻度もその程度。
+const COUNT_DISMISSED_KEY = 'earthquake-count-dismissed'
 
 function NankaiIcon() {
   return (
@@ -36,6 +56,27 @@ function CloseIcon() {
   return (
     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+    </svg>
+  )
+}
+
+// お知らせ（VZSE40）の印。拡声器。地震そのものではなく「運用のお知らせ」なので、
+// 他の 3 枚が使う警告・文書・情報のいずれとも重ならない形にする。
+function NoticeIcon() {
+  return (
+    <svg className="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+        d="M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z" />
+    </svg>
+  )
+}
+
+// 地震回数の印。棒グラフ（数を数えている情報であることを形で示す）。
+function CountIcon() {
+  return (
+    <svg className="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+        d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
     </svg>
   )
 }
@@ -75,8 +116,8 @@ function formatExpire(isoTime: string): string {
 //   （env() は要素の位置に関わらず値を返すため条件が要る）。
 const SAFE_BOTTOM = 'side:last:[padding-bottom:env(safe-area-inset-bottom,0px)]'
 
-export function SpecialInfoBanner({ nankai, nankaiCommentary, kohatsu }: Props) {
-  if (!nankai && !nankaiCommentary && !kohatsu) return null
+export function SpecialInfoBanner({ nankai, nankaiCommentary, kohatsu, quakeNotice, earthquakeCount }: Props) {
+  if (!nankai && !nankaiCommentary && !kohatsu && !quakeNotice && !earthquakeCount) return null
 
   return (
     // z-[99999]: 区域集約震度バッジ（QuakeRegionFillGL）は scale（JMA震度階級の数値コード、震度7=70）
@@ -93,6 +134,11 @@ export function SpecialInfoBanner({ nankai, nankaiCommentary, kohatsu }: Props) 
         {nankai && <NankaiBanner nankai={nankai} />}
         {nankaiCommentary && <CommentaryBanner commentary={nankaiCommentary} />}
         {kohatsu && <KohatsuBanner kohatsu={kohatsu} />}
+        {earthquakeCount && <EarthquakeCountBanner count={earthquakeCount} />}
+        {/* お知らせ（運用連絡）は最後。上の 4 枚は「いま起きている・起こりうる地震」の話で、
+            こちらは観測点の入電停止・配信試験といった裏方の連絡。同時に出たときに
+            事象の話を先に読ませる。 */}
+        {quakeNotice && <NoticeBanner notice={quakeNotice} />}
       </div>
     </div>
   )
@@ -319,6 +365,157 @@ function CommentaryBanner({ commentary }: { commentary: JMANankaiCommentary }) {
             発表: {new Date(commentary.reportDateTime).toLocaleString('ja-JP')}
           </p>
         } />
+      )}
+    </div>
+  )
+}
+
+// 地震・津波に関するお知らせ（VZSE40）の帯。
+//
+// 中身は観測点の入電停止・配信試験・訓練の予告といった**運用連絡**で、地震そのものの発表ではない。
+// そのため色は無彩色（slate）にして、他の 3 枚（黄／橙／赤＝段階の重さ・teal＝南海トラフの解説・
+// 青＝後発地震）のどれとも警戒度を取り違えられないようにしている。
+//
+// 本文は `Body/Text` の自由文ひとつきり。要約も次回発表予定も持たないので `EarthquakeInfoDetail`
+// は通さない。**改行と全角スペースをそのまま出す** —— 気象庁は「記」から始まる箇条書きを
+// 全角スペースの字下げで組んでおり、詰めると期間や連絡先の対応が崩れる。
+//
+// 有効期限（発表から 7 日）は出さない。解説情報と同じく帯を常駐させないための表示上の都合で、
+// 気象庁が定めた期限ではない。
+function NoticeBanner({ notice }: { notice: JMAQuakeNotice }) {
+  const [open, setOpen] = useState(false)
+  const [dismissedId, setDismissedId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(NOTICE_DISMISSED_KEY)
+    } catch (e) {
+      log.debug('[quakeNotice] お知らせの既読状態を読めません', e)
+      return null
+    }
+  })
+
+  // 突き合わせる前に書式を揃える（解説情報と同じ理由。→ CommentaryBanner）
+  if (dismissedId != null && normalizeDmdataTelegramId(dismissedId) === normalizeDmdataTelegramId(notice.id)) {
+    return null
+  }
+
+  const dismiss = () => {
+    try {
+      localStorage.setItem(NOTICE_DISMISSED_KEY, notice.id)
+    } catch (e) {
+      log.debug('[quakeNotice] お知らせの既読状態を保存できません', e)
+    }
+    setDismissedId(notice.id)
+  }
+
+  return (
+    <div className={`bg-slate-800/95 border-t-2 border-slate-400 ${SAFE_BOTTOM}`}>
+      {/* 展開トグルと閉じるボタンを横に並べる（button の入れ子は不正な HTML になるため） */}
+      <div className="w-full px-3 py-2 flex items-center gap-2">
+        <button
+          className="min-w-0 flex-1 flex items-center gap-2 text-left"
+          onClick={() => setOpen(v => !v)}
+        >
+          <NoticeIcon />
+          <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-bold text-white px-1.5 py-0.5 rounded bg-slate-500 flex-shrink-0">
+              お知らせ
+            </span>
+            <OperationStatusBadge status={notice.operationStatus} />
+            <span className="text-white text-sm font-bold leading-tight truncate">{notice.headline}</span>
+          </div>
+          <ChevronIcon open={open} />
+        </button>
+        <button
+          className="flex-shrink-0 p-1 text-white/70 hover:text-white"
+          onClick={dismiss}
+          aria-label="お知らせを閉じる"
+        >
+          <CloseIcon />
+        </button>
+      </div>
+      {open && (
+        <div className="px-3 pb-2">
+          {notice.body && (
+            <p className="text-white/90 text-xs leading-relaxed whitespace-pre-wrap mb-1">{notice.body}</p>
+          )}
+          <p className="text-white/60 text-xs">
+            発表: {new Date(notice.reportDateTime).toLocaleString('ja-JP')}
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// 地震回数に関する情報（VXSE60）の帯。
+//
+// **タブのカードではなく帯にしている。** 群発は日をまたいで続く「状況」で、地震カードのように
+// 1 件ずつ増える「出来事」ではない。しかも群発の最中は小さな地震で揺れ検知が繰り返し発火して
+// リアルタイムタブへ画面を持っていくので、地震情報タブへ置くと**いちばん見たいときに見えない**。
+// 帯は地図に重ねて出るのでどのタブからも読める。
+//
+// 色は青緑（cyan）。南海トラフの解説（teal）とは隣り合わないので紛れにくく、
+// 段階の重さを表す黄／橙／赤とも、運用連絡の無彩色とも別に見える。
+function EarthquakeCountBanner({ count }: { count: JMAEarthquakeCount }) {
+  const [open, setOpen] = useState(false)
+  const [dismissedId, setDismissedId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(COUNT_DISMISSED_KEY)
+    } catch (e) {
+      log.debug('[earthquakeCount] 既読状態を読めません', e)
+      return null
+    }
+  })
+
+  // 突き合わせる前に書式を揃える（解説情報と同じ理由。→ CommentaryBanner）
+  if (dismissedId != null && normalizeDmdataTelegramId(dismissedId) === normalizeDmdataTelegramId(count.id)) {
+    return null
+  }
+
+  const dismiss = () => {
+    try {
+      localStorage.setItem(COUNT_DISMISSED_KEY, count.id)
+    } catch (e) {
+      log.debug('[earthquakeCount] 既読状態を保存できません', e)
+    }
+    setDismissedId(count.id)
+  }
+
+  return (
+    <div className={`bg-cyan-900/95 border-t-2 border-cyan-400 ${SAFE_BOTTOM}`}>
+      {/* 展開トグルと閉じるボタンを横に並べる（button の入れ子は不正な HTML になるため） */}
+      <div className="w-full px-3 py-2 flex items-center gap-2">
+        <button
+          className="min-w-0 flex-1 flex items-center gap-2 text-left"
+          onClick={() => setOpen(v => !v)}
+        >
+          <CountIcon />
+          <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-bold text-white px-1.5 py-0.5 rounded bg-cyan-600 flex-shrink-0">
+              地震回数
+            </span>
+            <OperationStatusBadge status={count.operationStatus} />
+            {/* **電文の見出しではなく累積の数字を出す。** 電文の見出しは「地震回数に関する情報を
+                お知らせします。」で、畳んだままでは何も伝わらない */}
+            <span className="text-white text-sm font-bold leading-tight truncate">
+              {earthquakeCountHeadline(count)}
+            </span>
+          </div>
+          <ChevronIcon open={open} />
+        </button>
+        <button
+          className="flex-shrink-0 p-1 text-white/70 hover:text-white"
+          onClick={dismiss}
+          aria-label="地震回数を閉じる"
+        >
+          <CloseIcon />
+        </button>
+      </div>
+      {open && <EarthquakeCountDetail count={count} />}
+      {open && (
+        <p className="px-3 pb-2 text-white/60 text-xs">
+          発表: {new Date(count.reportDateTime).toLocaleString('ja-JP')}
+        </p>
       )}
     </div>
   )

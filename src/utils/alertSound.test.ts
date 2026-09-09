@@ -141,7 +141,7 @@ const ALL_TYPES = [
   'eew', 'eewUpdate', 'eewFinal', 'eewCancel', 'eewSpecial', 'eewForecast',
   'tsunami', 'tsunamiMajor', 'tsunamiWatch', 'tsunamiForecast', 'tsunamiUpdate', 'tsunamiCancel',
   'kyoshin', 'kyoshinCandidate',
-  'specialInfo', 'specialInfoCommentary',
+  'specialInfo', 'specialInfoCommentary', 'earthquakeCount',
 ] as const
 
 beforeEach(() => {
@@ -497,12 +497,13 @@ describe('通知音: 系統の割り当て', () => {
   // 系統は役割で分けてある。**どの音がどのプリミティブで作られるか**を声部数で固定する。
   // 数が変われば別の系統へ移ったということなので、意図した移動かどうかを立ち止まって考えられる。
 
-  it('純音（正弦＋第2倍音）を使うのは津波の更新・解除と南海トラフの 2 種', () => {
+  it('純音（正弦＋第2倍音）を使うのは津波の更新・解除と南海トラフの 2 種、それに地震回数', () => {
     const cases: Array<[Parameters<typeof sound.playAlertSound>[0], number]> = [
       ['tsunamiUpdate', 4],          // 2 音 × 2 本
       ['tsunamiCancel', 4],          // 2 音 × 2 本
       ['specialInfo', 6],            // 3 音 × 2 本
       ['specialInfoCommentary', 4],  // 2 音 × 2 本
+      ['earthquakeCount', 6],        // 3 音 × 2 本
     ]
     for (const [type, count] of cases) {
       ctx.reset()
@@ -615,7 +616,7 @@ describe('音量は「系統 × 深刻度」で決まる', () => {
     const families: Array<[string, Array<typeof ALL_TYPES[number]>]> = [
       ['ピアノ × 情報', ['earthquake', 'earthquakePrompt', 'earthquakeInfo']],
       ['ダークピアノ × 更新', ['eewUpdate', 'eewFinal', 'eewCancel']],
-      ['純音 × 更新', ['tsunamiUpdate', 'tsunamiCancel', 'specialInfoCommentary']],
+      ['純音 × 更新', ['tsunamiUpdate', 'tsunamiCancel', 'specialInfoCommentary', 'earthquakeCount']],
     ]
     for (const [, types] of families) {
       const values = types.map(loudestVoice)
@@ -768,7 +769,8 @@ describe('通知音のあとに声を出すまでの間', () => {
     // ピアノ・ダークピアノ・純音・マリンバ。尾が「終わりつつある音」として聞けるため、
     // 実測値（聞こえなくなる時刻）そのままで話し始める。
     for (const type of ['earthquake', 'earthquakePrompt', 'earthquakeInfo',
-      'eewCancel', 'tsunamiUpdate', 'tsunamiCancel', 'specialInfo', 'specialInfoCommentary'] as const) {
+      'eewCancel', 'tsunamiUpdate', 'tsunamiCancel', 'specialInfo', 'specialInfoCommentary',
+      'earthquakeCount'] as const) {
       expect(gapOf(type), type).toBe(0)
     }
   })

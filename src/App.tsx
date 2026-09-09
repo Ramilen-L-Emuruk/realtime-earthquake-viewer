@@ -304,7 +304,11 @@ export function App() {
   }, [setActiveTab])
 
   /**
-   * 特別情報（南海トラフ臨時情報・後発地震注意情報・関連解説情報）の受信でパネルを開く。
+   * 特別情報（南海トラフ臨時情報・後発地震注意情報・関連解説情報・地震回数に関する情報）の
+   * 受信でパネルを開く。
+   *
+   * **地震・津波に関するお知らせ（VZSE40）だけは呼ばない**（運用連絡なので、画面を組み替えて
+   * まで割り込ませない。→ docs/spec/architecture-spec.md §4）。
    *
    * これらは地図に重ねた帯（`SpecialInfoBanner`）で伝える情報で、パネル側に居場所がない。
    * パネルを畳んで地図だけを見ている状態でも気づけるよう、いったん通常の表示に戻す。
@@ -515,13 +519,14 @@ export function App() {
   const debouncedApiKey = useDebouncedValue(settings.dmdataApiKey, API_KEY_DEBOUNCE_MS)
 
   const {
-    earthquakes, tsunamis, activeEEWs, lpgmByEventId, nankai, nankaiCommentary, kohatsu, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
+    earthquakes, tsunamis, activeEEWs, lpgmByEventId, nankai, nankaiCommentary, kohatsu, quakeNotice, earthquakeCount, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
     telegramLog, clearTelegramLog,
     injectEvent, loadMoreEarthquakes,
     simulateEarthquake, simulateForeignQuake, simulateForeignQuakeHuge,
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
+    simulateQuakeNotice, simulateEarthquakeCount,
     resetState, loadReplayEvents, restoreQuakeHistory,
   } = useEarthquakes(handleLiveEvent, debouncedApiKey, settings.dmdataTestDelivery, replayTimeOffset)
   earthquakesRef.current = earthquakes
@@ -581,6 +586,8 @@ export function App() {
     nankaiCommentaryAdHoc:   () => simulateNankaiCommentary('臨時解説'),
     nankaiCommentaryRoutine: () => simulateNankaiCommentary('定例解説'),
     kohatsu:           simulateKohatsu,
+    quakeNotice:       simulateQuakeNotice,
+    earthquakeCount:   simulateEarthquakeCount,
     notification:      () => {
       if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
         alert('先に「通知を許可する」ボタンをクリックしてください。')
@@ -597,6 +604,7 @@ export function App() {
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
+    simulateQuakeNotice, simulateEarthquakeCount,
   ])
   // IconNav の onTabChange。手動選択は必ず即時反映し、以後 TAB_HOLD_MS の間は自動切替に
   // 奪わせない（EEW の新規発報・レベルアップ・誤報取消だけはこれより強い）。
@@ -1495,7 +1503,7 @@ export function App() {
               onRestore={actionChecklist.restore}
             />
           )}
-          <SpecialInfoBanner nankai={nankai} nankaiCommentary={nankaiCommentary} kohatsu={kohatsu} />
+          <SpecialInfoBanner nankai={nankai} nankaiCommentary={nankaiCommentary} kohatsu={kohatsu} quakeNotice={quakeNotice} earthquakeCount={earthquakeCount} />
         </div>
 
         {/* 地図とパネルの境界（縦積み時のみ）。ドラッグで高さ比率を変え、タップで折りたたむ。 */}

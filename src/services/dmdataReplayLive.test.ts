@@ -246,8 +246,9 @@ describe('fetchLiveReplayEntries', () => {
         { id: 'b', type: 'VXSE53', headTime: '2026-08-23T02:00:00Z', receivedTime: '2026-08-23T15:00:00.000Z', url: 'https://b/b' },
         // テスト電文
         { id: 'c', type: 'VXSE53', headTime: '2026-08-23T02:00:00Z', receivedTime: '2026-08-23T02:00:00.000Z', url: 'https://b/c', test: true },
-        // 対象外の種別
-        { id: 'd', type: 'VZSE40', headTime: '2026-08-23T02:00:00Z', receivedTime: '2026-08-23T02:00:00.000Z', url: 'https://b/d' },
+        // 対象外の種別（VXSE56。扱わないと決めた種別を使う ―― 扱う種別を増やすたびに
+        // このテストが「取りこぼし 1 件」で落ちるのを避けるため）
+        { id: 'd', type: 'VXSE56', headTime: '2026-08-23T02:00:00Z', receivedTime: '2026-08-23T02:00:00.000Z', url: 'https://b/d' },
       ],
       bodies: {},
     })

@@ -9,6 +9,9 @@ import type {
   JMANankai,
   JMANankaiCommentary,
   JMAKohatsu,
+  JMAQuakeNotice,
+  JMAEarthquakeCount,
+  JMAEarthquakeCountItem,
   EEWAccuracy,
   EEWAlert,
   EEWForecastChange,
@@ -2679,5 +2682,153 @@ export function parseVyse60FromXml(xml: string): JMAKohatsu | null {
     id, time: reportDateTime, eventId, headline, body: bodyText,
     ...readEarthquakeInfoMeta(doc),
     cancelled: false, reportDateTime, expireAt,
+  }
+}
+
+/**
+ * VZSE40（地震・津波に関するお知らせ）を {@link JMAQuakeNotice} にパースする。
+ *
+ * 構造は他の解説系より単純で、見出し（`Head/Headline/Text`）と自由文（`Body/Text`）だけ。
+ * 段階も等級も持たない。
+ *
+ * **見出しは `Head/Headline/Text` から採る。`Head/Title` ではない。** `Title` はどの報でも
+ * 「地震・津波に関するお知らせ」で固定なので、それを帯に出すと 43 通すべてが同じ文字列になり、
+ * 何のお知らせか分からない。中身を言い分けているのは `Headline` のほう
+ * （「和歌山県の自治体震度データ入電停止のお知らせ」等）。
+ *
+ * **本文の改行と全角スペースは保つ。** 記書き（「　　　記」や項番）の体裁で書かれていて、
+ * 詰めると読めなくなる。自由付加文と同じ扱い（→ docs/spec/quake-spec.md §3）。
+ */
+export function parseQuakeNoticeFromXml(xml: string): JMAQuakeNotice | null {
+  const doc = parseTelegramXml(xml, DMDATA_LOG_PREFIX)
+  if (!doc) return null
+  const operationStatus = parseOperationStatus(doc)
+
+  const reportDateTime = readReportDateTime(doc)
+  // 期限の計算に使うので、日時として解釈できることをここで確かめる（解説情報と同じ理由）。
+  const reportMs = new Date(reportDateTime).getTime()
+  if (!Number.isFinite(reportMs)) {
+    return dropTelegram(DMDATA_LOG_PREFIX, `地震・津波に関するお知らせの発表時刻を日時として読めません: "${reportDateTime}"`)
+  }
+  const eventId = xmlText(xmlQ(doc, 'EventID'))
+  // `Serial` は実電文でもサンプルでも空。id の一意性は eventId（発表時刻由来）が担う。
+  const serial = xmlText(xmlQ(doc, 'Serial')) || '1'
+
+  const headEl = xmlQ(doc, 'Head')
+  const headlineEl = headEl ? xmlQ(headEl, 'Headline') : null
+  const headline = headlineEl ? xmlText(xmlQ(headlineEl, 'Text')) : ''
+
+  // 本文は Body 直下の Text に限る（Body 配下の別の節にある Text を掴まないため。
+  // 解説情報の本文読み取りと同じ考え方）。
+  const bodyEl = xmlQ(doc, 'Body')
+  const body = bodyEl ? xmlText(xmlChild(bodyEl, 'Text')) : ''
+
+  // 取消は null にせず cancelled で返す（解析できなかった場合と区別するため）。
+  const cancelled = xmlText(xmlQ(doc, 'InfoType')) === '取消'
+
+  return {
+    ...(operationStatus && { operationStatus }),
+    id: `dmdata-quake-notice-${eventId}-${serial}`,
+    time: reportDateTime, eventId,
+    headline, body,
+    cancelled, reportDateTime,
+    expireAt: new Date(reportMs + 7 * 24 * 3600 * 1000).toISOString(),
+  }
+}
+
+/** {@link parseEarthquakeCountFromXml} が数える区間の集計。全滅したときだけ記録する。 */
+const COUNT_ITEM_LABEL = '地震回数の区間'
+
+/**
+ * VXSE60（地震回数に関する情報）を {@link JMAEarthquakeCount} にパースする。
+ *
+ * **実配信では観測できていない種別。** 読み取りは気象庁公式のサンプル電文
+ * （`jmaxml_20260723_Samples.zip` の `32-35_03_01_100514_VXSE60.xml`＝発表、
+ * `32-35_10_02_220510_VXSE60.xml`＝取消）に拠っている。実電文が届いたら形を確かめ直すこと。
+ *
+ * **区間は文書順を保つ。** サンプルでは「地震回数」→「１時間地震回数」×N →「累積地震回数」の
+ * 順に並び、最後の累積が全体像を表す。並べ替えると、どれが累積か画面から判らなくなる。
+ *
+ * **`type` は電文の語をそのまま持つ。** 3 種類しか確認できていないので、値の集合を決め打ちして
+ * 未知の区間を捨てると、増えたときに黙って落ちる。
+ */
+export function parseEarthquakeCountFromXml(xml: string): JMAEarthquakeCount | null {
+  const doc = parseTelegramXml(xml, DMDATA_LOG_PREFIX)
+  if (!doc) return null
+  const operationStatus = parseOperationStatus(doc)
+
+  const reportDateTime = readReportDateTime(doc)
+  // 期限（発表から 7 日）の計算に使うので、日時として解釈できることをここで確かめる
+  // （お知らせ・後発地震・南海トラフ関連解説情報と同じ扱い）。
+  const reportMs = new Date(reportDateTime).getTime()
+  if (!Number.isFinite(reportMs)) {
+    return dropTelegram(DMDATA_LOG_PREFIX, `地震回数に関する情報の発表時刻を日時として読めません: "${reportDateTime}"`)
+  }
+  const eventId = xmlText(xmlQ(doc, 'EventID'))
+  const serial = xmlText(xmlQ(doc, 'Serial')) || '1'
+
+  const headEl = xmlQ(doc, 'Head')
+  const headlineEl = headEl ? xmlQ(headEl, 'Headline') : null
+  const headline = headlineEl ? xmlText(xmlQ(headlineEl, 'Text')) : ''
+
+  const cancelled = xmlText(xmlQ(doc, 'InfoType')) === '取消'
+  const bodyEl = xmlQ(doc, 'Body')
+
+  // 取消電文は区間を持たず、Body 直下の Text に取消しの理由が入る（他種別と同じ形。
+  // → docs/spec/quake-spec.md §8「取消しの理由は電文にしかない」）。
+  if (cancelled) {
+    const cancelText = bodyEl ? xmlText(xmlChild(bodyEl, 'Text')) : ''
+    return {
+      ...(operationStatus && { operationStatus }),
+      id: `dmdata-quake-count-${eventId}-${serial}`,
+      time: reportDateTime, eventId, headline,
+      items: [], ...(cancelText && { cancelText }),
+      cancelled: true, reportDateTime,
+      expireAt: new Date(reportMs + 7 * 24 * 3600 * 1000).toISOString(),
+    }
+  }
+
+  const countEl = bodyEl ? xmlQ(bodyEl, 'EarthquakeCount') : null
+  // **元要素そのものが見えなくなった場合を別に拾う。** `ReadTally` は「要素はあるのに読めなかった」
+  // を数えるので、`EarthquakeCount` ごと消えると数える対象が 0 件になって素通りする
+  // （長周期の `warnIfNoLpgmRegions`・震度点の `warnIfNoIntensityPoints` と同じ盲点）。
+  // **この種別は実配信でほぼ観測できない**ので、痕跡が残らないと構造の変化に何年も気づけない。
+  // （取消は上で `return` 済みなので、ここに来る時点で必ず発表報）
+  if (!countEl) {
+    log.warn(`${DMDATA_LOG_PREFIX} VXSE60（地震回数に関する情報）に EarthquakeCount 要素が見つかりません`)
+  }
+  const items: JMAEarthquakeCountItem[] = []
+  const tally = createReadTally(COUNT_ITEM_LABEL)
+  for (const itemEl of countEl ? xmlAll(countEl, 'Item') : []) {
+    const type = itemEl.getAttribute('type') ?? ''
+    const startTime = xmlText(xmlQ(itemEl, 'StartTime'))
+    const endTime = xmlText(xmlQ(itemEl, 'EndTime'))
+    const numberText = xmlText(xmlQ(itemEl, 'Number'))
+    const feltText = xmlText(xmlQ(itemEl, 'FeltNumber'))
+    // 回数が数として読めない区間は採らない。
+    //
+    // **0 は有効な値**（有感 0 回はふつうに起きる）だが、**空文字と混ぜてはいけない** ――
+    // `Number('')` は `0` を返すので、`Number.isFinite` だけで見ていると要素の欠落が
+    // 「0 回」として通る。空欄と 0 回は画面でも読み上げでも同じ顔になり、
+    // 群発の最中に「地震は起きていない」と伝えかねない。
+    const number = numberText === '' ? NaN : Number(numberText)
+    const feltNumber = feltText === '' ? NaN : Number(feltText)
+    if (!type || !Number.isFinite(number) || !Number.isFinite(feltNumber)) {
+      tally.unreadable(type || '(種類なし)', numberText)
+      continue
+    }
+    items.push({ type, startTime, endTime, number, feltNumber })
+    tally.readable()
+  }
+  tally.warnIfNoneReadable(DMDATA_LOG_PREFIX)
+
+  return {
+    ...(operationStatus && { operationStatus }),
+    id: `dmdata-quake-count-${eventId}-${serial}`,
+    time: reportDateTime, eventId, headline, items,
+    ...(bodyEl && xmlText(xmlQ(bodyEl, 'NextAdvisory')) && { nextAdvisory: xmlText(xmlQ(bodyEl, 'NextAdvisory')) }),
+    ...(bodyEl && xmlText(xmlQ(bodyEl, 'FreeFormComment')) && { freeText: xmlText(xmlQ(bodyEl, 'FreeFormComment')) }),
+    cancelled: false, reportDateTime,
+    expireAt: new Date(reportMs + 7 * 24 * 3600 * 1000).toISOString(),
   }
 }

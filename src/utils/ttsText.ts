@@ -1,4 +1,4 @@
-import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, TsunamiArea, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
+import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAEarthquakeCount, JMALpgm, IntensityScale, TsunamiGrade, TsunamiArea, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
 import { eewNoForecastReason, canPresentLpgmClass, type EewMaxScaleInfo } from './eew'
 import { getIntensityLabel, getIntensityLabelWithApproxAbove } from './intensity'
 import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight, TSUNAMI_GRADE_SHORT_LABEL, type TsunamiAreaGradeChange } from './tsunami'
@@ -708,16 +708,20 @@ export function earthquakeCancelToText(time: string | null, cancelText?: string)
  * 起きたかしか言っておらず、なぜ取り消したのかは電文のこの本文にしか無い。
  *
  * **長い本文は読まない。** 取消しの概要は 1〜2 文が通例だが、他の自由文と同じく長文が入りうる。
- * 読み上げが伸びると後続の電文が待ちの上限に達して割り込むため、上限を超えたら画面に委ねる
- * （画面には全文が出る）。
+ * 読み上げが伸びると後続の電文が待ちの上限に達して割り込むため、上限を超えたら画面に委ねる。
+ *
+ * @param staysOnScreen 省いた本文が画面に残るか。地震・津波・EEW は取消のあともカードが残って
+ *   全文を出すので既定は `true`。**地震回数だけは取消で帯ごと消える**ので `false` を渡す ——
+ *   記録が「画面には全文が出ます」と言い続けると、読み上げも表示も失われた事実が残らない。
  */
-function cancelReasonSentence(cancelText: string | undefined): string {
+function cancelReasonSentence(cancelText: string | undefined, staysOnScreen = true): string {
   const text = cancelText?.replace(/\s+/g, ' ').trim()
   if (!text) return ''
   if (text.length > CANCEL_REASON_SPEAK_MAX_CHARS) {
     // **捨てたことを残す。** 気象庁が書いた理由を丸ごと落とすので、痕跡が無いと
-    // 「今日は長文だったから読まなかった」を後から確かめられない（画面には全文が出る）。
-    log.info(`[tts] 取消しの概要が長いため読み上げを省きました（${text.length}文字。画面には全文が出ます）`)
+    // 「今日は長文だったから読まなかった」を後から確かめられない。
+    const where = staysOnScreen ? '画面には全文が出ます' : '画面にも残りません'
+    log.info(`[tts] 取消しの概要が長いため読み上げを省きました（${text.length}文字。${where}）`)
     return ''
   }
   // 電文の本文は句点で終わることが多いが、終わっていなければ足す（次の文と繋がって聞こえないため）
@@ -1933,6 +1937,61 @@ export function nankaiCommentaryToText(event: JMANankaiCommentary): string {
   // 臨時解説の情報名には「（第１号）」のように号数が入る。読み手が経過を追えるので拾う
   const serial = event.headline.match(/（第(.+?)号）/)?.[1]
   return `南海トラフ地震関連解説情報${serial ? `、第${serial}号` : ''}。南海トラフ地震の想定震源域の状況について解説情報が発表されました。`
+}
+
+/**
+ * 地震回数に関する情報（VXSE60）の読み上げテキストを生成する。
+ *
+ * **読むのは総数と有感の数だけ。** 区間は 1 時間ごとに何本も並ぶので、全部読むと数字の羅列に
+ * なって総数が耳に残らない。経過の細かさは画面のカードに委ねる。
+ *
+ * **場所は言わない。** 電文が場所を構造化して持つのは震源要素のある種別だけで、この電文では
+ * 自由文（`freeText`）の中にしか出てこない。文から地名を抜くと、書き方が変わったときに
+ * 別の語を場所として読み上げる。
+ *
+ * **累積の区間を選ぶ。** 電文は「区間ごとの回数」と「初めからの累計」を同じ `Item` の並びで
+ * 送ってくるので、末尾を無条件に採ると 1 時間ぶんの数字を総数として読みかねない。判定は
+ * `type` の語で行い、見つからなければ**読み上げない**（部分の数字を全体として言わない）。
+ *
+ * @returns 読み上げ文。累積の区間が無ければ空文字（呼び出し側はタブ移動へ落とす）
+ */
+export function earthquakeCountToText(event: JMAEarthquakeCount): string {
+  if (event.cancelled) {
+    // 理由（電文の `Body/Text`）も読む。**地震・津波・EEW の取消と揃える** —— 片方だけ拾うと、
+    // 同じ「取り消した」でも種別によって理由が出たり出なかったりする。**この種別はカードが
+    // 消えるので、理由が届く先は読み上げだけ**（他の 3 種別は取消後もカードが残って全文を出す）。
+    // **`staysOnScreen: false`。** この種別は取消で帯ごと消えるので、長すぎて省いた理由は
+    // 読み上げにも画面にも残らない。他の 3 種別（カードが残る）と同じ記録にしない。
+    return '地震回数に関する情報は取り消されました。' + cancelReasonSentence(event.cancelText, false)
+  }
+  const total = event.items.find(it => it.type.includes('累積'))
+  if (!total) {
+    // **黙って読まないと、この電文が届いたことがどこにも残らない。** 「累積」を含む区間が
+    // 必ず 1 つあるという前提は公式サンプルから採ったもので、実配信では確かめられていない。
+    log.warn(`[tts] 地震回数に関する情報に累積の区間がありません（読み上げません）: ${event.items.map(i => i.type).join('・') || '区間なし'}`)
+    return ''
+  }
+  const felt = total.feltNumber > 0
+    ? `このうち、震度1以上を観測したのは${total.feltNumber}回です。`
+    : 'このうち、震度1以上を観測したものはありません。'
+  return `地震回数に関する情報。${formatCountSpanForSpeech(total.startTime, total.endTime)}に、地震が${total.number}回発生しています。${felt}`
+}
+
+/**
+ * 累積区間の期間を読み上げ用の句にする（「9日15時から10日12時まで」）。
+ *
+ * **日付から読む。** 群発の累積は前日以前にさかのぼることが多く（実サンプルは 21 時間）、
+ * 時刻だけだと今日のことなのかが判らない。分は読まない —— 区間の端は毎正時に揃っており、
+ * 「15時00分」と読ませても情報が増えない。
+ *
+ * 日時として読めない値では期間そのものを言わない（「Invalid Date」を音にしないため）。
+ */
+function formatCountSpanForSpeech(startTime: string, endTime: string): string {
+  const start = new Date(startTime)
+  const end = new Date(endTime)
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return 'これまで'
+  const md = (d: Date) => `${d.getDate()}日${d.getHours()}時`
+  return `${md(start)}から${md(end)}まで`
 }
 
 /** 北海道・三陸沖後発地震注意情報（VYSE60）の読み上げテキストを生成する。 */

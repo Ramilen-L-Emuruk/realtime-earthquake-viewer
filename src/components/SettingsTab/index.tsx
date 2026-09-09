@@ -42,6 +42,8 @@ export interface TestFunctions {
   nankaiCommentaryAdHoc?: () => void
   nankaiCommentaryRoutine?: () => void
   kohatsu?: () => void
+  quakeNotice?: () => void
+  earthquakeCount?: () => void
   notification: () => void
 }
 
@@ -1168,6 +1170,11 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             <TestButton color="teal" onClick={() => { unlockAudio(); playAlertSound('specialInfoCommentary') }}>▶ 試聴</TestButton>
           </Row>
         )}
+        {isDmdss && (
+          <Row label="地震回数に関する情報" description="純音の同音3連 C5（上の2つと違い音程を動かさない）">
+            <TestButton color="teal" onClick={() => { unlockAudio(); playAlertSound('earthquakeCount') }}>▶ 試聴</TestButton>
+          </Row>
+        )}
       </Section>
 
       <Section title="テスト機能">
@@ -1253,6 +1260,17 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         {isDmdss && onTest.kohatsu && (
           <Row label="北海道・三陸沖後発地震注意情報" description="バナー表示 + specialInfo 音">
             <TestButton color="blue" onClick={onTest.kohatsu}>後発地震テスト</TestButton>
+          </Row>
+        )}
+        {/* ── その他の地震情報 ── */}
+        {isDmdss && onTest.earthquakeCount && (
+          <Row label="地震回数に関する情報（バナー）" description="群発時の回数経過（21時間で1704回・うち有感1回）をバナー表示 + earthquakeCount 音・短い読み上げ（閉じるボタンあり・7日で自動消去）">
+            <TestButton color="teal" onClick={onTest.earthquakeCount}>地震回数テスト</TestButton>
+          </Row>
+        )}
+        {isDmdss && onTest.quakeNotice && (
+          <Row label="地震・津波に関するお知らせ" description="観測点の入電停止などの運用連絡。バナー表示のみ（音・読み上げなし・閉じるボタンあり・7日で自動消去）">
+            <TestButton color="blue" onClick={onTest.quakeNotice}>お知らせテスト</TestButton>
           </Row>
         )}
         {/* ── その他 ── */}

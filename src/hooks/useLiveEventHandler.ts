@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AppEvent, EEWAlert, Hypocenter, JMAQuake, JMATsunami, JMANankaiCommentary, TsunamiArea, TsunamiObservation, TsunamiGrade } from '../types/earthquake'
+import type { AppEvent, EEWAlert, Hypocenter, JMAQuake, JMATsunami, JMANankaiCommentary, JMAEarthquakeCount, TsunamiArea, TsunamiObservation, TsunamiGrade } from '../types/earthquake'
 import type { TabId } from '../components/IconNav'
 import type { AppSettings } from './useSettings'
 import type { AlertTitleApi } from './useAlertTitle'
@@ -18,7 +18,7 @@ import { showBrowserNotification } from '../utils/notifications'
 import { isWarningLevelWhileObserving, tsunamiMaxGrade, tsunamiAreaGradeChanges, selectUnspokenAreaGradeChanges, rememberAreaGrades, tsunamiAreaKey, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations, isObservationMissing } from '../utils/tsunami'
 import { playAlertSound, ttsDelayFor, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
-import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
+import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
 import { joinSegments, plain, hasFollowTarget, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
@@ -115,7 +115,7 @@ type SpeechPriority = typeof SPEECH_PRIORITY[keyof typeof SPEECH_PRIORITY]
 type SpeechTopic =
   | `quake:${string}`
   | `lpgm:${string}`
-  | 'tsunami' | 'tsunamiObs' | 'nankai' | 'kohatsu' | 'nankaiCommentary'
+  | 'tsunami' | 'tsunamiObs' | 'nankai' | 'kohatsu' | 'nankaiCommentary' | 'earthquakeCount'
 
 /**
  * **互いの読み上げを切らない主題**（相互譲り）。同格の別主題が鳴っている間は待ち、自分が鳴って
@@ -137,7 +137,10 @@ type SpeechTopic =
  * 正しい——待たせると、警報の引き上げが観測値の読み上げの後ろに回る。
  */
 const MUTUAL_YIELD_TOPICS: ReadonlySet<SpeechTopic> = new Set<SpeechTopic>([
-  'tsunami', 'tsunamiObs', 'nankai', 'kohatsu',
+  // 地震回数は地震情報と同格（`normal`）だが、伝える内容が重ならない —— あちらは震度1以上の
+  // 1 つの地震、こちらは震度2以下を含む群発の総数。載せないと、群発の最中に届いた回数の情報が
+  // 「各地の震度」（読み切りに 2 分近く）の読み上げを毎報切ることになる。
+  'tsunami', 'tsunamiObs', 'nankai', 'kohatsu', 'earthquakeCount',
 ])
 
 /**
@@ -2247,6 +2250,47 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
       // voicevox 有効/無効に関わらず追跡する（次回の isNewLpgm 判定に使用）
       seenLpgmEventIdsRef.current.add(lpgmEvent.eventId)
+      return
+    }
+
+    // 地震回数に関する情報（DMDSS版のみ）。
+    //
+    // **帯で出す**（特別情報バナー。並びは後発地震の下）。伝えるのは群発という続いている「状況」で、
+    // 地震カードのように 1 件ずつ増える「出来事」ではない。しかも群発の最中は小さな地震で
+    // 揺れ検知が繰り返し発火してリアルタイムタブへ画面を持っていくため、タブの中へ置くと
+    // いちばん見たいときに見えない。**そのためタブは動かさない**（帯はどのタブからも見える）。
+    //
+    // **ウィンドウタイトルは書き換えない。** 震度を伝える情報ではないので、震度を出している
+    // タイトルを上書きすると、いま何が起きているかの表示が後退する。
+    if ((event as unknown as { kind?: string }).kind === 'earthquakeCount') {
+      const count = (event as unknown as { data: JMAEarthquakeCount }).data
+      if (count.cancelled) {
+        // **取消は音を鳴らさず、取り消された事実だけを読む**（南海トラフの取消と同じ扱い）。
+        // 直前に「1704 回発生しています」と読んだ耳へ訂正を届けるため、黙って消さない。
+        // **主題は発表と共有する** —— 分けると到来順の枠に載らず、発表の予約が待っている
+        // 最中に取消が届いても取り下げられない（取り消された回数をそのあと読み上げる）。
+        // 帯が消えるので、パネルの展開も要らない。
+        if (settings.voicevoxEnabled) {
+          speakNonEEWDelayed(earthquakeCountToText(count), SPEECH_PRIORITY.normal, 0, 'earthquakeCount')
+        }
+        return
+      }
+      // 帯は地図に重なって出るため、パネルを畳んでいると気づきにくい。いったん開く
+      // （戻す判断は App 側。南海トラフ・後発地震と同じ扱い）。
+      expandPanelForSpecialInfo()
+      if (settings.soundEnabled) {
+        playAlertSound('earthquakeCount')
+      }
+      if (settings.voicevoxEnabled) {
+        // 帯で伝える情報なのでタブは動かさない（理由は上）。累積の区間が読めなければ
+        // `earthquakeCountToText` は空を返し、そのときは音と帯だけで伝える。
+        const countSpeech = earthquakeCountToText(count)
+        if (countSpeech) {
+          speakNonEEWDelayed(
+            countSpeech, SPEECH_PRIORITY.normal, ttsDelayFor('earthquakeCount'), 'earthquakeCount',
+          )
+        }
+      }
       return
     }
 

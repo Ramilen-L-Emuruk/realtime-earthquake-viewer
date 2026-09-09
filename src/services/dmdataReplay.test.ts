@@ -408,8 +408,10 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
 
   it('対象外の種別は警告を出さない（正常運転でログを埋めない）', async () => {
     const gz = await makeTarGz([
-      // VZSE40 等の対象外種別。本体ファイルが無くても警告は出ないこと
-      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('9999999z', 'VZSE40')]) },
+      // 対象外の種別（VXSE56＝南海トラフ地震に関連する情報。VYSE50 と同内容の複製なので
+      // 扱わないと決めている。→ docs/spec/data-sources-spec.md §2「扱う電文種別」）。
+      // 本体ファイルが無くても警告は出ないこと
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('9999999z', 'VXSE56')]) },
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 

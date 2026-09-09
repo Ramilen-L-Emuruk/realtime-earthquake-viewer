@@ -17,7 +17,7 @@
 // 差し替えるのは外部 I/O（WebSocket・REST・観測点座標）だけ。時計や純粋関数は本物を使う。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, cleanup, act } from '@testing-library/react'
-import type { AppEvent, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary } from '../types/earthquake'
+import type { AppEvent, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary, JMAQuakeNotice, JMAEarthquakeCount } from '../types/earthquake'
 import { serverDate, setReplayOffset } from '../utils/clock'
 import { DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
 
@@ -878,6 +878,213 @@ describe('南海トラフ関連解説情報の帯は期限で畳む', () => {
     })
     act(() => { vi.advanceTimersByTime(50) })
     expect(h.current.nankaiCommentary?.id).toBe('c-live')
+  })
+})
+
+describe('地震・津波に関するお知らせ（VZSE40）と地震回数（VXSE60）の結線', () => {
+  // どちらも**実配信では観測できていない種別**（電文一覧 13 か月で 0 通）。実機で偶然踏んで
+  // 気づくことが期待できないぶん、畳み方と取消の照合はここで固定しておく。
+
+  /** expireInMs 後に期限が切れるお知らせ。 */
+  function notice(id: string, expireInMs: number): JMAQuakeNotice {
+    const now = serverDate()
+    return {
+      id,
+      time: now.toISOString(),
+      eventId: `${id}-event`,
+      headline: '沖縄県の震度データ入電停止のお知らせ',
+      body: '本文',
+      cancelled: false,
+      reportDateTime: now.toISOString(),
+      expireAt: new Date(now.getTime() + expireInMs).toISOString(),
+    }
+  }
+
+  /** 区間を items 件持つ地震回数の報。`expireInMs` 後に期限が切れる。 */
+  function count(eventId: string, items: JMAEarthquakeCount['items'], expireInMs = 60_000): JMAEarthquakeCount {
+    const now = serverDate()
+    return {
+      id: `dmdata-quake-count-${eventId}-1`,
+      time: now.toISOString(),
+      eventId,
+      headline: '地震回数に関する情報をお知らせします。',
+      items,
+      cancelled: false,
+      reportDateTime: now.toISOString(),
+      expireAt: new Date(now.getTime() + expireInMs).toISOString(),
+    }
+  }
+
+  const item = (type: string, number: number, feltNumber: number): JMAEarthquakeCount['items'][number] => ({
+    type,
+    startTime: serverDate().toISOString(),
+    endTime: serverDate().toISOString(),
+    number,
+    feltNumber,
+  })
+
+  /** キュー経由で 1 件流す（`injectEvent` は AppEvent 専用なのでこちらを使う）。 */
+  function push(h: ReturnType<typeof setup>, payload: import('../types/replay').ReplayPayload) {
+    act(() => { h.current.loadReplayEvents([{ payload, replayTime: serverDate() }]) })
+    act(() => { vi.advanceTimersByTime(50) })
+  }
+
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  // 正: 帯を出し、7 日（ここでは短縮した期限）で畳む。
+  it('お知らせは期限で畳む', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'quakeNotice', data: notice('n-live', 5_000) })
+    expect(h.current.quakeNotice?.id).toBe('n-live')
+
+    act(() => { vi.advanceTimersByTime(5_001) })
+    expect(h.current.quakeNotice).toBeNull()
+  })
+
+  // 対照: 期限切れのお知らせは載せない（リプレイで過去の窓を再生したときに出ないこと）。
+  it('期限切れのお知らせは載せない', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'quakeNotice', data: notice('n-stale', -1_000) })
+    expect(h.current.quakeNotice).toBeNull()
+  })
+
+  // 正: 取消で帯を消す。**照合は `id`** ―― お知らせは 1 通ごとに `EventID` が変わるので、
+  // 表示中の報そのものを指せるのは id のほう。
+  it('取消電文で帯を消す', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'quakeNotice', data: notice('n-live', 60_000) })
+    expect(h.current.quakeNotice?.id).toBe('n-live')
+
+    push(h, { kind: 'quakeNotice', data: { ...notice('n-live', 60_000), cancelled: true } })
+    expect(h.current.quakeNotice).toBeNull()
+  })
+
+  // 安全弁: 別のお知らせに向けた取消で、いま出ている帯を消さない。
+  it('別のお知らせに向けた取消では帯を消さない', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'quakeNotice', data: notice('n-live', 60_000) })
+    push(h, { kind: 'quakeNotice', data: { ...notice('n-other', 60_000), cancelled: true } })
+    expect(h.current.quakeNotice?.id).toBe('n-live')
+  })
+
+  // 正: 地震回数も**期限で畳む**。気象庁はこの情報の終わりを宣言しない（群発が収まれば発表が
+  // 止まるだけ）ので、次報と取消だけを畳む契機にすると、収まったあとも帯が居座る。
+  //
+  // 対照として、期限がまだ来ていない報は残ることも見る（「いつでも消える」ではないこと）。
+  // （7 日ぶんの時間を進める形にはしない —— キューの巡回が 10ms 間隔で、6000 万回まわる。）
+  it('地震回数は期限で畳む', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1704, 1)], 5_000) })
+    expect(h.current.earthquakeCount?.items[0].number).toBe(1704)
+
+    act(() => { vi.advanceTimersByTime(4_000) })
+    expect(h.current.earthquakeCount?.items[0].number).toBe(1704)
+
+    act(() => { vi.advanceTimersByTime(1_001) })
+    expect(h.current.earthquakeCount).toBeNull()
+  })
+
+  // 対照: 期限切れの報は載せない（リプレイで過去の窓を再生したときに出ないこと）。
+  it('期限切れの地震回数は載せない', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1704, 1)], -1_000) })
+    expect(h.current.earthquakeCount).toBeNull()
+  })
+
+  // 正: 続報で置き換わる。
+  it('地震回数は続報で置き換わる', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1704, 1)]) })
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1810, 2)]) })
+    expect(h.current.earthquakeCount?.items[0].number).toBe(1810)
+  })
+
+  // 正: 取消でカードを消す。**照合は `eventId`** ―― 回数情報は同じ群発について報を重ねるので、
+  // 取消が指すのは「その群発について直前に出した報」になる。
+  it('地震回数は取消で帯を消す', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1704, 1)]) })
+    push(h, { kind: 'earthquakeCount', data: { ...count('20080824150500', []), cancelled: true } })
+    expect(h.current.earthquakeCount).toBeNull()
+  })
+
+  // 安全弁: 別の群発に向けた取消では消さない。
+  it('別の群発に向けた取消では帯を消さない', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1704, 1)]) })
+    push(h, { kind: 'earthquakeCount', data: { ...count('20260101000000', []), cancelled: true } })
+    expect(h.current.earthquakeCount?.eventId).toBe('20080824150500')
+  })
+
+  // 安全弁: 区間が 1 つも読めなかった報は帯にしない。中身が空の帯を出しても伝わる
+  // ものが無く、読み取りの失敗はパーサー側が記録している。
+  it('区間が空の報は帯にしない', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', []) })
+    expect(h.current.earthquakeCount).toBeNull()
+  })
+
+  // 安全弁: リセット（リプレイの開始・ライブ復帰）で両方とも消える。**時間軸が変わる**ので、
+  // 前の軸で出した帯を残すと、再生時刻と食い違ったものが画面に居座る。
+  it('リセットで両方の帯が消える', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'quakeNotice', data: notice('n-live', 60_000) })
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1704, 1)]) })
+    expect(h.current.quakeNotice).not.toBeNull()
+    expect(h.current.earthquakeCount).not.toBeNull()
+
+    act(() => { h.current.resetState() })
+    expect(h.current.quakeNotice).toBeNull()
+    expect(h.current.earthquakeCount).toBeNull()
+  })
+
+  // 安全弁: **種別をまたいで記憶を巻き込まない。** お知らせの取消処理が地震回数の識別子まで
+  // `null` にしていたことがある（別の種別の行が紛れ込んでいた）。こうなると、そのあと届いた
+  // 本物の取消が「別の群発への取消」と誤判定されて帯が消えず、しかもログには
+  // それらしい説明が出るので気づけない。
+  it('お知らせの取消は地震回数の記憶を巻き込まない', () => {
+    const h = setup()
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1704, 1)]) })
+    push(h, { kind: 'quakeNotice', data: notice('n-live', 60_000) })
+    push(h, { kind: 'quakeNotice', data: { ...notice('n-live', 60_000), cancelled: true } })
+    expect(h.current.quakeNotice).toBeNull()
+
+    // ここで地震回数の記憶が消えていると、この取消が効かない
+    push(h, { kind: 'earthquakeCount', data: { ...count('20080824150500', []), cancelled: true } })
+    expect(h.current.earthquakeCount).toBeNull()
+  })
+
+  // 安全弁: リセットは**表示中の識別情報の記憶も落とす**。落とし忘れると、リセット後に
+  // 届いた取消が「消えた帯」の id と照合され、次に出した帯を消せなくなる。
+  // **帯とカードの両方で見る** —— 記憶は種別ごとに別の ref なので、片方だけ落とす形になりやすい。
+  it('リセット後に同じお知らせ・同じ地震回数を出し直せる', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'quakeNotice', data: notice('n-live', 60_000) })
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1704, 1)]) })
+    act(() => { h.current.resetState() })
+
+    push(h, { kind: 'quakeNotice', data: notice('n-live', 60_000) })
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1704, 1)]) })
+    expect(h.current.quakeNotice?.id).toBe('n-live')
+    expect(h.current.earthquakeCount?.eventId).toBe('20080824150500')
+
+    push(h, { kind: 'quakeNotice', data: { ...notice('n-live', 60_000), cancelled: true } })
+    push(h, { kind: 'earthquakeCount', data: { ...count('20080824150500', []), cancelled: true } })
+    expect(h.current.quakeNotice).toBeNull()
+    expect(h.current.earthquakeCount).toBeNull()
   })
 })
 
