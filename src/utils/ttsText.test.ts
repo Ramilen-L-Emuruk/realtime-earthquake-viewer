@@ -2,13 +2,13 @@
 // 「〇時〇分」はローカルタイムゾーン依存のため、時刻の数値そのものではなく
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect, vi } from 'vitest'
-import { earthquakeCancelToText, tsunamiCancelToText, eewCancelToText, CANCEL_REASON_SPEAK_MAX_CHARS, nankaiToText, earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, tsunamiWarningLevelToText, selectWarningLevelToSpeak, WARNING_LEVEL_SPEAK_MAX_POINTS, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
+import { earthquakeCancelToText, tsunamiCancelToText, eewCancelToText, CANCEL_REASON_SPEAK_MAX_CHARS, nankaiToText, earthquakeCountToText, earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, tsunamiWarningLevelToText, selectWarningLevelToSpeak, WARNING_LEVEL_SPEAK_MAX_POINTS, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
 import { joinSegments, plain, type SpeechSegment } from './ttsFollow'
 import { log } from './logger'
 import { tsunamiAreaGradeChanges } from './tsunami'
 import { getStationCoordsCache } from './stationCoords'
 import { eewMaxScaleInfo, eewMaxLpgmClassInfo } from './eew'
-import type { JMAQuake, JMALpgm, EarthquakePoint, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass, JMATsunami, TsunamiArea, TsunamiObservation, JMANankai } from '../types/earthquake'
+import type { JMAQuake, JMALpgm, EarthquakePoint, IssueType, DomesticTsunami, IntensityScale, EEWAlert, LpgmClass, JMATsunami, TsunamiArea, TsunamiObservation, JMANankai, JMAEarthquakeCount } from '../types/earthquake'
 
 const TTS_OPTS: TtsRegionOptions = { intensityLevels: 0, maxRegions: 0, alwaysReadScale: -1, regionTolerance: 0 }
 
@@ -1901,5 +1901,97 @@ describe('EEW の取消の理由を読み上げる', () => {
     } finally {
       info.mockRestore()
     }
+  })
+})
+
+// ── 地震回数に関する情報（VXSE60）の読み上げ ─────────────────────
+//
+// **群発では地震カードが 1 枚も立たないことがある**（実サンプルは 21 時間で 1704 回・有感 1 回）。
+// この読み上げが、揺れが続いていることを伝える唯一の経路になる。
+describe('earthquakeCountToText', () => {
+  function makeCount(over: Partial<JMAEarthquakeCount> = {}): JMAEarthquakeCount {
+    return {
+      id: 'dmdata-quake-count-20080824150500-1',
+      time: '2008-08-26T12:00:00+09:00',
+      eventId: '20080824150500',
+      headline: '地震回数に関する情報をお知らせします。',
+      items: [
+        { type: '地震回数', startTime: '2008-08-24T15:00:00+09:00', endTime: '2008-08-25T09:00:00+09:00', number: 1587, feltNumber: 1 },
+        { type: '１時間地震回数', startTime: '2008-08-25T09:00:00+09:00', endTime: '2008-08-25T10:00:00+09:00', number: 35, feltNumber: 0 },
+        { type: '累積地震回数', startTime: '2008-08-24T15:00:00+09:00', endTime: '2008-08-25T12:00:00+09:00', number: 1704, feltNumber: 1 },
+      ],
+      cancelled: false,
+      reportDateTime: '2008-08-26T12:00:00+09:00',
+      expireAt: '2008-09-02T12:00:00+09:00',
+      ...over,
+    }
+  }
+
+  // 正: 累積の総数と有感の数を読む。**1 時間ごとの区間は読まない**（数字の羅列になって
+  // 総数が耳に残らない。経過の細かさは画面のカードに委ねる）。
+  it('累積の総数と有感の数を読む', () => {
+    const text = earthquakeCountToText(makeCount())
+    expect(text).toContain('地震が1704回発生しています')
+    expect(text).toContain('震度1以上を観測したのは1回です')
+    // 1 時間区間の 35 回は出さない
+    expect(text).not.toContain('35')
+  })
+
+  // 正: 有感 0 回は「ありません」と言い分ける。「0回です」だと数え漏れのようにも聞こえる。
+  it('有感 0 回は「ありません」と言う', () => {
+    const items = makeCount().items.map(i => i.type === '累積地震回数' ? { ...i, feltNumber: 0 } : i)
+    expect(earthquakeCountToText(makeCount({ items }))).toContain('震度1以上を観測したものはありません')
+  })
+
+  // 対照: **累積が無ければ読まない。** 末尾を無条件に採ると、1 時間ぶんの 35 回を
+  // 「これまでの総数」として読み上げる。呼び出し側は空文字をタブ移動へ落とす。
+  it('累積の区間が無ければ空を返す（部分の数字を総数として言わない）', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const items = makeCount().items.filter(i => i.type !== '累積地震回数')
+      expect(earthquakeCountToText(makeCount({ items }))).toBe('')
+      // **黙って読まないと、この電文が届いたことがどこにも残らない。** 「累積」が必ずあるという
+      // 前提は公式サンプルから採ったもので、実配信では確かめられていない
+      expect(warn.mock.calls.map(c => c.join(' ')).join('\n')).toContain('累積の区間がありません')
+    } finally { warn.mockRestore() }
+  })
+
+  // 正: 取消は取り消された事実を伝える。回数には触れない。
+  it('取消は取り消された事実を伝え、回数には触れない', () => {
+    const text = earthquakeCountToText(makeCount({ cancelled: true, items: [] }))
+    expect(text).toBe('地震回数に関する情報は取り消されました。')
+  })
+
+  // 正: **取消しの理由も読む。** 地震・津波・EEW の取消と揃える —— 片方だけ拾うと、同じ
+  // 「取り消した」でも種別によって理由が出たり出なかったりする。**この種別はカードが消えるので、
+  // 理由が届く先は読み上げだけ**（他の 3 種別は取消後もカードが残って全文を出す）。
+  it('取消しの理由も読む', () => {
+    const text = earthquakeCountToText(makeCount({
+      cancelled: true, items: [], cancelText: '先ほどの、地震回数に関する情報を取り消します。',
+    }))
+    expect(text).toContain('取り消されました。')
+    expect(text).toContain('先ほどの、地震回数に関する情報を取り消します。')
+  })
+
+  // 正: 期間は日から読む。群発の累積は前日以前へさかのぼることが多く、時刻だけだと
+  // 今日のことなのかが判らない。
+  it('期間は日から読む', () => {
+    expect(earthquakeCountToText(makeCount())).toMatch(/\d+日\d+時から\d+日\d+時まで/)
+  })
+
+  // 安全弁: 日時として読めない区間でも、回数そのものは読む。**期間だけ落として文は残す** ——
+  // 「Invalid Date」を音にせず、かつ群発が続いている事実は伝わる。
+  it('期間が読めなくても回数は読む', () => {
+    const items = makeCount().items.map(i => i.type === '累積地震回数' ? { ...i, startTime: 'とき' } : i)
+    const text = earthquakeCountToText(makeCount({ items }))
+    expect(text).toContain('これまでに、地震が1704回発生しています')
+    expect(text).not.toContain('Invalid')
+  })
+
+  // 対照: 場所は言わない。電文が場所を構造化して持たず、自由文からの抜き出しは書き方が
+  // 変われば別の語を場所として読み上げる。
+  it('自由文の地名を読み上げに混ぜない', () => {
+    const text = earthquakeCountToText(makeCount({ freeText: '　８月２４日１５時過ぎから伊豆半島東方沖で地震が発生しています。' }))
+    expect(text).not.toContain('伊豆半島東方沖')
   })
 })

@@ -4,7 +4,10 @@
 //   - DMDSS 版: DMDATA の日次アーカイブ（services/dmdataReplay.ts）
 //   - standard 版: P2PQuake の日付指定クエリ（services/p2pquakeReplay.ts）
 //   - 実地震テストシナリオ: 収録済み JSON（utils/testScenarioReplay.ts）
-import type { AppEvent, JMAQuake, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu } from './earthquake'
+import type {
+  AppEvent, JMAQuake, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu,
+  JMAQuakeNotice, JMAEarthquakeCount,
+} from './earthquake'
 
 export type ReplayPayload =
   | { kind: 'event'; event: AppEvent }
@@ -12,6 +15,8 @@ export type ReplayPayload =
   | { kind: 'nankai'; data: JMANankai }
   | { kind: 'nankaiCommentary'; data: JMANankaiCommentary }
   | { kind: 'kohatsu'; data: JMAKohatsu }
+  | { kind: 'quakeNotice'; data: JMAQuakeNotice }
+  | { kind: 'earthquakeCount'; data: JMAEarthquakeCount }
 
 export interface ReplayEntry {
   payload: ReplayPayload

@@ -1,4 +1,4 @@
-import type { JMAQuake, JMATsunami, EEWAlert, JMANankai, JMANankaiCommentary, JMAKohatsu, EarthquakePoint, JMALpgm, JMAQuakeCity } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, EEWAlert, JMANankai, JMANankaiCommentary, JMAKohatsu, EarthquakePoint, JMALpgm, JMAQuakeCity, JMAQuakeNotice, JMAEarthquakeCount } from '../types/earthquake'
 import { serverNow, serverDate } from './clock'
 import notoHonshinPoints from '../data/noto-honshin-2024-points.json'
 import notoHonshinQuake from '../data/noto-honshin-2024-quake.json'
@@ -551,6 +551,106 @@ export function createTestKohatsu(): JMAKohatsu {
     cancelled: false,
     reportDateTime: now,
     expireAt,
+  }
+}
+
+/**
+ * 気象庁の本文が使う全角数字へ直す。
+ *
+ * 電文の自由文は数字も全角で書かれる（「８月２４日１５時過ぎから」）。テストデータだけ半角にすると、
+ * 読み上げの読み仮名辞書や折り返しの見え方が実電文と変わってしまう。
+ */
+function toFullWidthDigits(n: number): string {
+  return String(n).replace(/[0-9]/g, d => String.fromCharCode(d.charCodeAt(0) + 0xfee0))
+}
+
+/**
+ * 地震・津波に関するお知らせ（VZSE40）のテストデータ。
+ *
+ * 気象庁公式のサンプル電文（`42_01_01_100514_VZSE40.xml`＝沖縄県の震度データ入電停止）を
+ * 元にしている。**記書きの体裁をそのまま持たせる** —— 本文は改行と全角スペースで
+ * 「記」「＊入電停止期間＊」を組んでおり、詰めた文字列を置くと帯の中で崩れて見える形を
+ * 実機で一度も確かめられない。
+ *
+ * 日付は実行時刻から起こす（入電停止は翌日、といった近い未来を指す情報のため）。
+ */
+export function createTestQuakeNotice(): JMAQuakeNotice {
+  const nowDate = serverDate()
+  const now = nowDate.toISOString()
+  const eventId = toEventIdTimestamp(nowDate)
+  const tomorrow = new Date(serverNow() + 24 * 3600 * 1000)
+  const md = `${toFullWidthDigits(tomorrow.getMonth() + 1)}月${toFullWidthDigits(tomorrow.getDate())}日`
+  return {
+    // 実電文と同じ形の id にする（`Serial` は空なのでパーサーが '1' へ倒す）
+    id: `dmdata-quake-notice-${eventId}-1`,
+    time: now,
+    eventId,
+    headline: '沖縄県の震度データ入電停止のお知らせ',
+    body: [
+      '　◆沖縄県の震度データ入電停止のお知らせ◆',
+      '',
+      '　沖縄県で沖縄県本庁舎の電力設備点検のため、下記期間停電となります。',
+      '　停電期間中は、震度を扱うシステムの運用を停止するため、当該自治体の',
+      '震度データは気象庁に入電せず、気象庁発表の地震情報に反映できないので',
+      'お知らせします。',
+      '',
+      '',
+      '　　　　　　　　　　　　　　　　記',
+      '',
+      '＊入電停止期間＊',
+      '',
+      `　　　　　　　　${md} 08:00 から 20:00`,
+      '',
+      '',
+      '　なお、沖縄県内69点の全震度観測点のうち入電しない自治体震度',
+      '観測点は、35点です。',
+    ].join('\n'),
+    cancelled: false,
+    reportDateTime: now,
+    // 7 日で畳む（帯を常駐させないための表示上の都合。気象庁が定めた期限ではない）
+    expireAt: new Date(serverNow() + 7 * 24 * 3600 * 1000).toISOString(),
+  }
+}
+
+/**
+ * 地震回数に関する情報（VXSE60）のテストデータ。
+ *
+ * 気象庁公式のサンプル電文（`32-35_03_01_100514_VXSE60.xml`＝2008 年の伊豆半島東方沖の群発）
+ * の区間構成と回数をそのまま使い、時刻だけ実行時刻から起こす。
+ *
+ * **回数の内訳を崩さない** —— 区間ごとの 1587 + 35 + 35 + 47 が累積の 1704 に一致する。
+ * 適当な数字を置くと、累積行が他の行の合計だと分かる形を実機で確かめられない。
+ */
+export function createTestEarthquakeCount(): JMAEarthquakeCount {
+  const nowMs = serverNow()
+  const hour = 3600 * 1000
+  const iso = (deltaHours: number) => new Date(nowMs + deltaHours * hour).toISOString()
+  const startDate = new Date(nowMs - 21 * hour)
+  // eventId は群発の始まりを指す（サンプルの EventID も最初の地震のころを指している）
+  const eventId = toEventIdTimestamp(startDate)
+  const nowIso = new Date(nowMs).toISOString()
+  const next = new Date(nowMs + 6 * hour)
+  return {
+    id: `dmdata-quake-count-${eventId}-1`,
+    time: nowIso,
+    eventId,
+    headline: '地震回数に関する情報をお知らせします。',
+    items: [
+      { type: '地震回数',       startTime: iso(-21), endTime: iso(-3), number: 1587, feltNumber: 1 },
+      { type: '１時間地震回数', startTime: iso(-3),  endTime: iso(-2), number: 35,   feltNumber: 0 },
+      { type: '１時間地震回数', startTime: iso(-2),  endTime: iso(-1), number: 35,   feltNumber: 0 },
+      { type: '１時間地震回数', startTime: iso(-1),  endTime: iso(0),  number: 47,   feltNumber: 0 },
+      { type: '累積地震回数',   startTime: iso(-21), endTime: iso(0),  number: 1704, feltNumber: 1 },
+    ],
+    nextAdvisory: `次の「地震回数に関する情報」は、${toFullWidthDigits(next.getDate())}日${toFullWidthDigits(next.getHours())}時００分頃に発表します。`,
+    freeText: `　${toFullWidthDigits(startDate.getMonth() + 1)}月${toFullWidthDigits(startDate.getDate())}日${toFullWidthDigits(startDate.getHours())}時過ぎから伊豆半島東方沖で地震が発生しています。この
+付近で発生した地震については、震度３以上の場合は「震源・震度情報」で
+発表しますが、震度２以下の場合は、「地震回数に関する情報」（本情報）
+で地震回数をまとめて発表します。`,
+    cancelled: false,
+    reportDateTime: nowIso,
+    // 7 日で畳む（帯を常駐させないための表示上の都合。気象庁が定めた期限ではない）
+    expireAt: new Date(nowMs + 7 * 24 * hour).toISOString(),
   }
 }
 

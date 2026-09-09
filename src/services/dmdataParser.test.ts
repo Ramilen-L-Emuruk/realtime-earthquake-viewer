@@ -2,7 +2,7 @@
 // parseEarthquakeFromXml（REST 履歴経路）のテスト。
 // DOMParser を使うためこのファイルだけ jsdom 環境で動かす（既定は node）。
 import { describe, it, expect, vi } from 'vitest'
-import { parseEarthquakeFromXml, parseEEWFromXml, parseTsunamiFromXml, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml } from './dmdataParser'
+import { parseEarthquakeFromXml, parseEEWFromXml, parseTsunamiFromXml, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml, parseQuakeNoticeFromXml, parseEarthquakeCountFromXml } from './dmdataParser'
 import { log } from '../utils/logger'
 import { hasKnownEpicenter } from '../utils/geo'
 import { hasMagnitude } from '../utils/formatters'
@@ -4567,6 +4567,98 @@ const VYSE60_XML = `<?xml version="1.0" encoding="UTF-8"?>
   </Body>
 </Report>`
 
+// 地震・津波に関するお知らせ（VZSE40）と地震回数に関する情報（VXSE60）。
+//
+// **どちらも実配信では観測できていない。** 電文一覧 13 か月（2191 通）とアーカイブ 7 日で 0 通。
+// フィクスチャは気象庁公式のサンプル電文（`jmaxml_20260723_Samples.zip`）から起こしている
+// （VZSE40 = `42_01_01_100514`、VXSE60 = `32-35_03_01_100514`）。**手で組み立てない** ――
+// 起きていない形を推測で書くと、そちらへ合わせた実装が入る。
+const VZSE40_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/">
+  <Control>
+    <Title>地震・津波に関するお知らせ</Title>
+    <DateTime>2009-11-06T07:00:00Z</DateTime>
+    <Status>通常</Status>
+    <EditorialOffice>気象庁本庁</EditorialOffice>
+    <PublishingOffice>気象庁</PublishingOffice>
+  </Control>
+  <Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+    <Title>地震・津波に関するお知らせ</Title>
+    <ReportDateTime>2009-11-06T16:00:00+09:00</ReportDateTime>
+    <TargetDateTime>2009-11-06T16:00:00+09:00</TargetDateTime>
+    <EventID>20091106160000</EventID>
+    <InfoType>発表</InfoType>
+    <Serial></Serial>
+    <InfoKind>地震・津波に関するお知らせ</InfoKind>
+    <InfoKindVersion>1.0_0</InfoKindVersion>
+    <Headline>
+      <Text>沖縄県の震度データ入電停止のお知らせ</Text>
+    </Headline>
+  </Head>
+  <Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
+    <Text>　◆沖縄県の震度データ入電停止のお知らせ◆
+
+　沖縄県で沖縄県本庁舎の電力設備点検のため、下記期間停電となります。
+
+　　　　　　　　　　　　　　　　記
+
+＊入電停止期間＊
+
+　　　　　　　　11月7日 08:00 から 20:00
+    </Text>
+  </Body>
+</Report>`
+
+const VXSE60_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/">
+  <Control>
+    <Title>地震回数に関する情報</Title>
+    <DateTime>2008-08-26T03:00:15Z</DateTime>
+    <Status>通常</Status>
+    <EditorialOffice>気象庁本庁</EditorialOffice>
+    <PublishingOffice>気象庁</PublishingOffice>
+  </Control>
+  <Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+    <Title>地震回数に関する情報</Title>
+    <ReportDateTime>2008-08-26T12:00:00+09:00</ReportDateTime>
+    <TargetDateTime>2008-08-26T12:00:00+09:00</TargetDateTime>
+    <EventID>20080824150500</EventID>
+    <InfoType>発表</InfoType>
+    <Serial>1</Serial>
+    <InfoKind>地震回数情報</InfoKind>
+    <InfoKindVersion>1.0_0</InfoKindVersion>
+    <Headline>
+      <Text>地震回数に関する情報をお知らせします。</Text>
+    </Headline>
+  </Head>
+  <Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
+    <EarthquakeCount>
+      <Item type="地震回数">
+        <StartTime>2008-08-24T15:00:00+09:00</StartTime>
+        <EndTime>2008-08-25T09:00:00+09:00</EndTime>
+        <Number>1587</Number>
+        <FeltNumber>1</FeltNumber>
+      </Item>
+      <Item type="１時間地震回数">
+        <StartTime>2008-08-25T09:00:00+09:00</StartTime>
+        <EndTime>2008-08-25T10:00:00+09:00</EndTime>
+        <Number>35</Number>
+        <FeltNumber>0</FeltNumber>
+      </Item>
+      <Item type="累積地震回数">
+        <StartTime>2008-08-24T15:00:00+09:00</StartTime>
+        <EndTime>2008-08-25T12:00:00+09:00</EndTime>
+        <Number>1704</Number>
+        <FeltNumber>1</FeltNumber>
+      </Item>
+    </EarthquakeCount>
+    <NextAdvisory>次の「地震回数に関する情報」は、２６日１８時００分頃に発表します。</NextAdvisory>
+    <Comments>
+      <FreeFormComment>　８月２４日１５時過ぎから伊豆半島東方沖で地震が発生しています。</FreeFormComment>
+    </Comments>
+  </Body>
+</Report>`
+
 // 電文の運用種別（`Control/Status`。電文解説資料 Ⅰ.3）。
 //
 // **`EEWAlert.test` とは別物。** あちらは「画面・音・地図へ流さない」抑制フラグで、検証用に
@@ -4618,6 +4710,8 @@ describe('電文の運用種別（Status）', () => {
     expect(parseNankaiFromXml(t(nankaiXml({ title: '南海トラフ地震臨時情報（調査中）' })))!.operationStatus).toBe('試験')
     expect(parseNankaiCommentaryFromXml(t(commentaryXml({ title: '南海トラフ地震関連解説情報（定例）', serialName: '定例解説', serialCode: '200' })))!.operationStatus).toBe('試験')
     expect(parseVyse60FromXml(t(VYSE60_XML))!.operationStatus).toBe('試験')
+    expect(parseQuakeNoticeFromXml(t(VZSE40_XML))!.operationStatus).toBe('試験')
+    expect(parseEarthquakeCountFromXml(t(VXSE60_XML))!.operationStatus).toBe('試験')
   })
 
   // **取消の分岐にも載っているか。** 長周期・南海トラフ・後発地震は取消で別の `return` を
@@ -4630,6 +4724,8 @@ describe('電文の運用種別（Status）', () => {
     expect(parseLpgmFromXml(t(PARITY_LPGM_XML))!.operationStatus).toBe('訓練')
     expect(parseNankaiFromXml(t(nankaiXml({ title: '南海トラフ地震臨時情報（調査中）' })))!.operationStatus).toBe('訓練')
     expect(parseVyse60FromXml(t(VYSE60_XML))!.operationStatus).toBe('訓練')
+    expect(parseQuakeNoticeFromXml(t(VZSE40_XML))!.operationStatus).toBe('訓練')
+    expect(parseEarthquakeCountFromXml(t(VXSE60_XML))!.operationStatus).toBe('訓練')
   })
 
   // 対照: 「通常」ではどの種別も持たせない。
@@ -4641,6 +4737,181 @@ describe('電文の運用種別（Status）', () => {
     expect(parseNankaiFromXml(nankaiXml({ title: '南海トラフ地震臨時情報（調査中）' }))!.operationStatus).toBeUndefined()
     expect(parseNankaiCommentaryFromXml(commentaryXml({ title: '南海トラフ地震関連解説情報（定例）', serialName: '定例解説', serialCode: '200' }))!.operationStatus).toBeUndefined()
     expect(parseVyse60FromXml(VYSE60_XML)!.operationStatus).toBeUndefined()
+    expect(parseQuakeNoticeFromXml(VZSE40_XML)!.operationStatus).toBeUndefined()
+    expect(parseEarthquakeCountFromXml(VXSE60_XML)!.operationStatus).toBeUndefined()
+  })
+})
+
+// ── 地震・津波に関するお知らせ（VZSE40）─────────────────────────
+describe('地震・津波に関するお知らせ（VZSE40）', () => {
+  // 正: 見出しと本文を読み、7 日の期限を立てる。
+  it('見出し・本文・期限を読む', () => {
+    const notice = parseQuakeNoticeFromXml(VZSE40_XML)!
+    expect(notice.headline).toBe('沖縄県の震度データ入電停止のお知らせ')
+    expect(notice.body).toContain('電力設備点検')
+    expect(notice.cancelled).toBe(false)
+    expect(notice.eventId).toBe('20091106160000')
+    // `Serial` は空で届く。id の一意性は eventId が担う
+    expect(notice.id).toBe('dmdata-quake-notice-20091106160000-1')
+    expect(new Date(notice.expireAt).getTime() - new Date(notice.reportDateTime).getTime())
+      .toBe(7 * 24 * 3600 * 1000)
+  })
+
+  // 正: **記書きの改行と全角スペースを保つ。** 詰めると期間や連絡先の対応が崩れ、帯の中で
+  // 意味を成さなくなる（自由付加文と同じ扱い）。
+  it('本文の改行と全角スペースを保つ', () => {
+    const body = parseQuakeNoticeFromXml(VZSE40_XML)!.body
+    expect(body).toContain('\n')
+    expect(body).toContain('\u3000\u3000\u3000\u3000記')
+  })
+
+  // 正: 見出しは `Head/Headline/Text` から採る。**`Head/Title` ではない** —— あちらは
+  // 「地震・津波に関するお知らせ」という種別名で、どのお知らせかが伝わらない。
+  it('見出しは Headline から採る（Title ではない）', () => {
+    expect(parseQuakeNoticeFromXml(VZSE40_XML)!.headline).not.toBe('地震・津波に関するお知らせ')
+  })
+
+  // 正: 取消は null にせず `cancelled` で返す（解析できなかった場合と区別するため）。
+  it('取消電文は cancelled で返す', () => {
+    const xml = VZSE40_XML.replace('<InfoType>発表</InfoType>', '<InfoType>取消</InfoType>')
+    const notice = parseQuakeNoticeFromXml(xml)!
+    expect(notice).not.toBeNull()
+    expect(notice.cancelled).toBe(true)
+  })
+
+  // 安全弁: 発表時刻が日時として読めなければ電文ごと捨てる。**期限の計算に使う** ので、
+  // 通すと `expireAt` が Invalid Date になり、帯を出すか消すかの判定がすべて偽へ倒れる。
+  it('発表時刻を日時として読めなければ捨てて記録する', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const xml = VZSE40_XML.replace('<ReportDateTime>2009-11-06T16:00:00+09:00</ReportDateTime>', '<ReportDateTime>とき</ReportDateTime>')
+      expect(xml).not.toBe(VZSE40_XML)
+      expect(parseQuakeNoticeFromXml(xml)).toBeNull()
+      expect(warn.mock.calls.map(c => c.join(' ')).join('\n')).toContain('地震・津波に関するお知らせの発表時刻')
+    } finally { warn.mockRestore() }
+  })
+})
+
+// ── 地震回数に関する情報（VXSE60）─────────────────────────────
+describe('地震回数に関する情報（VXSE60）', () => {
+  // 正: 区間・次回発表・自由文を読む。
+  it('区間・次回発表・自由文を読む', () => {
+    const count = parseEarthquakeCountFromXml(VXSE60_XML)!
+    expect(count.items).toHaveLength(3)
+    expect(count.items[0]).toEqual({
+      type: '地震回数',
+      startTime: '2008-08-24T15:00:00+09:00',
+      endTime: '2008-08-25T09:00:00+09:00',
+      number: 1587,
+      feltNumber: 1,
+    })
+    expect(count.nextAdvisory).toContain('２６日１８時００分頃')
+    expect(count.freeText).toContain('伊豆半島東方沖')
+    expect(count.eventId).toBe('20080824150500')
+    expect(count.cancelled).toBe(false)
+  })
+
+  // 正: **文書順を保つ。** サンプルは「地震回数」→「１時間地震回数」×N →「累積地震回数」の
+  // 順で、最後の累積が全体像を表す。並べ替えると、どれが累積か画面から判らなくなる。
+  it('区間は電文の並び順を保つ', () => {
+    expect(parseEarthquakeCountFromXml(VXSE60_XML)!.items.map(i => i.type))
+      .toEqual(['地震回数', '１時間地震回数', '累積地震回数'])
+  })
+
+  // 正: 有感 0 回は有効な値。**空欄と混ぜない** —— `Number('')` は 0 になるので、
+  // `Number.isFinite` ではなく truthy で見ていると欠落を 0 回として通してしまう。
+  it('有感 0 回を読み落とさない', () => {
+    expect(parseEarthquakeCountFromXml(VXSE60_XML)!.items[1].feltNumber).toBe(0)
+  })
+
+  // 正: 取消は区間を持たず、`Body/Text` に理由が入る（3 種別に共通の形）。
+  it('取消電文は理由を持ち、区間は空になる', () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://xml.kishou.go.jp/jmaxml1/">
+  <Control><Title>地震回数に関する情報</Title><DateTime>2022-05-10T03:00:00Z</DateTime><Status>通常</Status><EditorialOffice>気象庁本庁</EditorialOffice><PublishingOffice>気象庁</PublishingOffice></Control>
+  <Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">
+    <Title>地震回数に関する情報</Title>
+    <ReportDateTime>2022-05-10T12:00:00+09:00</ReportDateTime>
+    <EventID>20080824150500</EventID>
+    <InfoType>取消</InfoType>
+    <Serial>2</Serial>
+    <Headline><Text>地震回数に関する情報を取り消します。</Text></Headline>
+  </Head>
+  <Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">
+    <Text>先ほどの、地震回数に関する情報を取り消します。</Text>
+  </Body>
+</Report>`
+    const count = parseEarthquakeCountFromXml(xml)!
+    expect(count.cancelled).toBe(true)
+    expect(count.items).toEqual([])
+    expect(count.cancelText).toBe('先ほどの、地震回数に関する情報を取り消します。')
+  })
+
+  // 安全弁: 回数として読めない区間は捨て、**全滅したときだけ記録する**。
+  // 部分脱落で鳴らすのは他の集計と同じ方針（正常な電文でログを埋めない）。
+  it('回数を読めない区間は捨て、全滅したら記録する', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const xml = VXSE60_XML.split('<Number>').join('<Numbr>').split('</Number>').join('</Numbr>')
+      expect(xml).not.toBe(VXSE60_XML)
+      expect(parseEarthquakeCountFromXml(xml)!.items).toEqual([])
+      expect(warn.mock.calls.map(c => c.join(' ')).join('\n')).toContain('地震回数の区間')
+    } finally { warn.mockRestore() }
+  })
+
+  // 正: 7 日の期限を立てる。**気象庁が定めた期限ではなく、帯を常駐させないための表示上の都合**
+  // —— この情報に終わりの宣言は無く、群発が収まれば発表が止まるだけ。
+  it('発表から 7 日の期限を立てる', () => {
+    const count = parseEarthquakeCountFromXml(VXSE60_XML)!
+    expect(new Date(count.expireAt).getTime() - new Date(count.reportDateTime).getTime())
+      .toBe(7 * 24 * 3600 * 1000)
+  })
+
+  // 安全弁: 発表時刻が日時として読めなければ電文ごと捨てる（お知らせ・後発地震と同じ）。
+  // **期限の計算に使う**ので、通すと `expireAt` が Invalid Date になり、帯を出すか消すかの
+  // 判定がすべて偽へ倒れる。
+  it('発表時刻を日時として読めなければ捨てて記録する', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const xml = VXSE60_XML.replace('<ReportDateTime>2008-08-26T12:00:00+09:00</ReportDateTime>', '<ReportDateTime>とき</ReportDateTime>')
+      expect(xml).not.toBe(VXSE60_XML)
+      expect(parseEarthquakeCountFromXml(xml)).toBeNull()
+      expect(warn.mock.calls.map(c => c.join(' ')).join('\n')).toContain('地震回数に関する情報の発表時刻')
+    } finally { warn.mockRestore() }
+  })
+
+  // 安全弁: **`EarthquakeCount` 要素そのものが消えた場合**を別に拾う。区間の全滅検知は
+  // 「要素はあるのに読めなかった」を数えるので、親ごと消えると数える対象が 0 件になって素通りする
+  // （長周期・震度点にも同じ盲点があり、そちらは専用の関数で塞いである）。
+  it('EarthquakeCount 要素が見つからなければ記録する', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const xml = VXSE60_XML.split('EarthquakeCount').join('EarthquakeCounts')
+      expect(xml).not.toBe(VXSE60_XML)
+      expect(parseEarthquakeCountFromXml(xml)!.items).toEqual([])
+      expect(warn.mock.calls.map(c => c.join(' ')).join('\n')).toContain('EarthquakeCount 要素が見つかりません')
+    } finally { warn.mockRestore() }
+  })
+
+  // 対照: 取消電文は区間を持たないのが正常なので、そちらでは鳴らさない。
+  it('取消電文では EarthquakeCount が無くても記録しない', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const xml = VXSE60_XML.replace('<InfoType>発表</InfoType>', '<InfoType>取消</InfoType>')
+      expect(parseEarthquakeCountFromXml(xml)!.cancelled).toBe(true)
+      expect(warn.mock.calls.map(c => c.join(' ')).join('\n')).not.toContain('EarthquakeCount 要素が見つかりません')
+    } finally { warn.mockRestore() }
+  })
+
+  // 対照: 1 件でも読めていれば記録しない（部分脱落では黙る）。
+  it('一部だけ読めなければ記録しない', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    try {
+      const xml = VXSE60_XML.replace('<Number>1587</Number>', '<Number>いっぱい</Number>')
+      expect(xml).not.toBe(VXSE60_XML)
+      expect(parseEarthquakeCountFromXml(xml)!.items).toHaveLength(2)
+      expect(warn.mock.calls.map(c => c.join(' ')).join('\n')).not.toContain('地震回数の区間')
+    } finally { warn.mockRestore() }
   })
 })
 

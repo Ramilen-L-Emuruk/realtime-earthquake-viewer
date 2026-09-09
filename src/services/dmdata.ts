@@ -6,11 +6,11 @@
 // data.compression="gzip"）。クライアント側で「base64 デコード → gunzip」を行う必要がある。
 // `formatMode: 'raw'` で購読しているため、復号して得られるのは気象庁の XML そのもの。
 
-import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, EEWAlert, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
-import { parseEEWFromXml, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml } from './dmdataParser'
+import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAQuakeNotice, JMAEarthquakeCount, EEWAlert, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
+import { parseEEWFromXml, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml, parseQuakeNoticeFromXml, parseEarthquakeCountFromXml } from './dmdataParser'
 import { serverNow, serverDate } from '../utils/clock'
 import { gunzip } from '../utils/gzip'
-import { CLASSIFICATIONS, EEW_TYPES, NANKAI_TYPES, COMMENTARY_TYPES, KOHATSU_TYPES } from './dmdataTelegramPayload'
+import { CLASSIFICATIONS, EEW_TYPES, NANKAI_TYPES, COMMENTARY_TYPES, KOHATSU_TYPES, NOTICE_TYPES, QUAKE_COUNT_TYPES } from './dmdataTelegramPayload'
 import { log, createLogThrottle } from '../utils/logger'
 import { authHeader, dmdataApiKeyProblem, dmdataApiKeyMessage, DmdataApiKeyError } from '../utils/dmdataApiKey'
 
@@ -222,6 +222,8 @@ export type DmdataEvent =
   | { kind: 'nankai'; data: JMANankai }
   | { kind: 'nankaiCommentary'; data: JMANankaiCommentary }
   | { kind: 'kohatsu'; data: JMAKohatsu }
+  | { kind: 'quakeNotice'; data: JMAQuakeNotice }
+  | { kind: 'earthquakeCount'; data: JMAEarthquakeCount }
 
 export class DmdataWebSocket {
   private ws: WebSocket | null = null
@@ -492,6 +494,24 @@ export class DmdataWebSocket {
         if (this.debug) dlog('後発地震注意情報受信', { headType })
         this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'kohatsu'))
         this.onEvent?.({ kind: 'kohatsu', data: kohatsu })
+      } else {
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
+      }
+    } else if (NOTICE_TYPES.has(headType)) {
+      const notice = parseQuakeNoticeFromXml(xml)
+      if (notice) {
+        if (this.debug) dlog('地震・津波に関するお知らせ受信', { headType, headline: notice.headline })
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'quakeNotice'))
+        this.onEvent?.({ kind: 'quakeNotice', data: notice })
+      } else {
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
+      }
+    } else if (QUAKE_COUNT_TYPES.has(headType)) {
+      const count = parseEarthquakeCountFromXml(xml)
+      if (count) {
+        if (this.debug) dlog('地震回数に関する情報受信', { headType, items: count.items.length })
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'earthquakeCount'))
+        this.onEvent?.({ kind: 'earthquakeCount', data: count })
       } else {
         this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
       }

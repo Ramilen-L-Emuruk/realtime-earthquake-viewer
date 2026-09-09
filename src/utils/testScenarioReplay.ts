@@ -185,6 +185,43 @@ function remapPayload(payload: ReplayPayload, deltaMs: number, remapId: IdRemapp
         },
       }
     }
+    case 'quakeNotice': {
+      const newEventId = remapId(payload.data.eventId) ?? payload.data.eventId
+      return {
+        kind: 'quakeNotice',
+        data: {
+          ...payload.data,
+          eventId: newEventId,
+          id: replaceEventIdInId(payload.data.id, payload.data.eventId, newEventId),
+          time: shiftIso(payload.data.time, deltaMs),
+          reportDateTime: shiftIso(payload.data.reportDateTime, deltaMs),
+          expireAt: shiftIso(payload.data.expireAt, deltaMs),
+        },
+      }
+    }
+    case 'earthquakeCount': {
+      const newEventId = remapId(payload.data.eventId) ?? payload.data.eventId
+      return {
+        kind: 'earthquakeCount',
+        data: {
+          ...payload.data,
+          eventId: newEventId,
+          id: replaceEventIdInId(payload.data.id, payload.data.eventId, newEventId),
+          time: shiftIso(payload.data.time, deltaMs),
+          reportDateTime: shiftIso(payload.data.reportDateTime, deltaMs),
+          // 期限も一緒にずらす。ずらさないと収録時点の期限が「いま」より過去になり、
+          // 再生しても帯が一度も出ない
+          expireAt: shiftIso(payload.data.expireAt, deltaMs),
+          // **区間の時刻もずらす。** ここを忘れると、収録当時の絶対時刻のまま画面に出て、
+          // 隣の「発表時刻」だけが再生時刻へ動く食い違いになる（→ settings-pwa-spec.md §6）。
+          items: payload.data.items.map(it => ({
+            ...it,
+            startTime: shiftIso(it.startTime, deltaMs),
+            endTime: shiftIso(it.endTime, deltaMs),
+          })),
+        },
+      }
+    }
   }
 }
 

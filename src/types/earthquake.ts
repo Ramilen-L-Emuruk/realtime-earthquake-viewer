@@ -1238,6 +1238,106 @@ export interface JMAKohatsu extends EarthquakeInfoMeta {
 }
 
 /**
+ * 地震・津波に関するお知らせ（VZSE40）。
+ *
+ * **地震そのものの情報ではなく、観測や配信の都合を伝える運用連絡。** 実配信 13 か月 43 通の内訳は
+ * 半分が「〈県〉の自治体震度データ入電停止のお知らせ」——保守や停電で、その県の自治体震度観測点が
+ * 一定期間だけ気象庁に入らなくなるという予告で、**何点中何点が落ちるかまで本文に書いてある**。
+ * 残りは震度観測点パラメータの変更・電文配信試験の開始と終了・訓練の実施予告など。
+ *
+ * **画面の見え方が変わる理由を説明する情報**なので拾う。これを読まないと、観測点が減っていても
+ * 「アプリが壊れた」としか見えない。**訓練報・試験報がいつ流れるかを事前に知る唯一の経路**でもある
+ * （電文自身が「配信試験の開始と終了は本電文でお知らせします」と書いている。運用種別の印は
+ * → {@link TelegramOperationStatus}）。
+ *
+ * 構造は単純で、見出し（`Head/Headline/Text`）と自由文（`Body/Text`）だけ。段階も等級も持たない。
+ */
+export interface JMAQuakeNotice {
+  id: string
+  time: string
+  eventId: string
+  /**
+   * 電文の運用種別（`Control/Status`）。訓練・試験のときだけ入る。→ {@link TelegramOperationStatus}
+   *
+   * **全種別に付ける。** ヘッダ部の要素なので、どの電文にも同じ形で入る。
+   */
+  operationStatus?: TelegramOperationStatus
+  /** `Head/Headline/Text`。例: 「和歌山県の自治体震度データ入電停止のお知らせ」 */
+  headline: string
+  /** `Body/Text`。自由文。改行と全角スペースの整形を保つ（記書きの体裁が崩れる） */
+  body: string
+  /** 取消電文（`Head/InfoType` が「取消」）。帯を引っ込める */
+  cancelled: boolean
+  reportDateTime: string
+  /** reportDateTime + 7 日。帯を常駐させないための表示上の都合（気象庁が定めた期限ではない） */
+  expireAt: string
+}
+
+/** {@link JMAEarthquakeCount} の 1 区間。 */
+export interface JMAEarthquakeCountItem {
+  /**
+   * 区間の種類（`Item/@type`）。実サンプルで確認できるのは「地震回数」「１時間地震回数」
+   * 「累積地震回数」の 3 つ。**値を推測で増やさない** —— 読めない type はそのまま持ち、
+   * 画面はコードではなく電文の語を出す。
+   */
+  type: string
+  startTime: string
+  endTime: string
+  /** その区間の地震回数（有感・無感の合計） */
+  number: number
+  /** そのうち有感（震度1以上）の回数 */
+  feltNumber: number
+}
+
+/**
+ * 地震回数に関する情報（VXSE60）。
+ *
+ * 群発地震のように**地震が多発したとき**に、一定区間ごとの地震回数と有感回数を伝える。
+ * 気象庁の一般向けページでは独立項目ではなく「その他の情報」に含まれる扱い（同じ枠に
+ * 顕著な地震の震源要素更新＝VXSE61 も入る）。
+ *
+ * **この情報が埋める穴**: アプリが地震カードで出しているのは震度1以上を観測した地震だけ。
+ * 群発では震度2以下の小さな地震が大量に起きていて、その総数はどこにも出ていない。実サンプル
+ * （2008 年の伊豆半島東方沖）では 21 時間で 1704 回・うち有感 1 回。電文の自由文自身が
+ * 「震度３以上の場合は震源・震度情報で、震度２以下の場合は本情報で回数をまとめて発表します」
+ * と説明している。
+ *
+ * **実配信では観測できていない。** 電文一覧 13 か月とアーカイブ 7 日（能登本震とその余震・
+ * 日向灘 2 回・トカラ群発）で 0 通。型と読み取りは**気象庁公式のサンプル電文**
+ * （`jmaxml_20260723_Samples.zip` の `32-35_*_VXSE60.xml`）に拠っている。
+ */
+export interface JMAEarthquakeCount {
+  id: string
+  time: string
+  /** 群発の始まりを指す識別子。個々の地震カードの `eventId` とは対応しない */
+  eventId: string
+  /**
+   * 電文の運用種別（`Control/Status`）。訓練・試験のときだけ入る。→ {@link TelegramOperationStatus}
+   */
+  operationStatus?: TelegramOperationStatus
+  /** `Head/Headline/Text`。例: 「地震回数に関する情報をお知らせします。」 */
+  headline: string
+  /** 区間ごとの回数。電文に現れた順を保つ（累積が最後に来る） */
+  items: JMAEarthquakeCountItem[]
+  /** `Body/NextAdvisory`。次回発表の予定を伝える文 */
+  nextAdvisory?: string
+  /** `Body/Comments/FreeFormComment`。どこで何が起きているかの説明が入る */
+  freeText?: string
+  /** 取消電文（`Head/InfoType` が「取消」） */
+  cancelled: boolean
+  /** 取消しの理由（`Body/Text`）。取消電文だけが持つ */
+  cancelText?: string
+  reportDateTime: string
+  /**
+   * reportDateTime + 7 日。**帯を常駐させないための表示上の都合**（気象庁が定めた期限ではない）。
+   *
+   * 気象庁はこの情報の終わりを宣言しない —— 群発が収まれば発表が止まるだけ。畳む契機を
+   * 次報と取消だけにすると、収まったあとも帯が居座る。
+   */
+  expireAt: string
+}
+
+/**
  * データ受信の状態。
  *
  * `replay` は「テスト時刻設定（強震モニタ）で過去を再生しているため、ライブ受信を意図的に止めている」
@@ -1255,6 +1355,7 @@ export interface TelegramLogEntry {
   isTest: boolean
   status: 'parsed' | 'filtered' | 'error'
   kind?: 'eew' | 'quake' | 'tsunami' | 'lpgm' | 'nankai' | 'nankaiCommentary' | 'kohatsu'
+    | 'quakeNotice' | 'earthquakeCount'
   rawHead?: unknown
   rawBody: unknown
   errorMessage?: string
