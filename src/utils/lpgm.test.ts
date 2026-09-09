@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isValidLpgmClass, getLpgmClassLabel, getLpgmClassColor, getLpgmClassRadius } from './lpgm'
+import { isValidLpgmClass, getLpgmClassLabel, getLpgmClassColor, getLpgmClassRadius, lpgmCategoryNote, lpgmPeriodLabel } from './lpgm'
 import { LPGM_ICON_BASE_RADIUS } from '../components/Map/gl/lpgmIcons'
 
 describe('isValidLpgmClass', () => {
@@ -61,5 +61,45 @@ describe('getLpgmClassRadius', () => {
   it('区域バッジの最大半径が等倍でベース半径を超えない', () => {
     const maxRegionRadius = Math.max(...[1, 2, 3, 4].map(c => getLpgmClassRadius(c) + 8))
     expect(maxRegionRadius).toBeLessThanOrEqual(LPGM_ICON_BASE_RADIUS)
+  })
+})
+
+// 長周期地震動に関する観測情報の種類（電文の `LgCategory`）。
+// **分類番号そのものは利用者に出さない。** 値 2・4 が意味するのは「階級を観測した地域のうち
+// 最大震度が4以下の地域がある」＝揺れは強くないのに高層階が大きく揺れた地域がある、という状況。
+describe('長周期の観測情報の種類', () => {
+  // 正: 2・4 のときだけ意味を出す
+  it('2 と 4 では意味を出す', () => {
+    expect(lpgmCategoryNote(2)).toBe('震度が小さくても高層階が大きく揺れた地域があります')
+    expect(lpgmCategoryNote(4)).toBe('震度が小さくても高層階が大きく揺れた地域があります')
+  })
+
+  // 対照: 1・3 は階級を観測した地域がどこも震度5弱以上。震度の表示だけで状況が伝わるので何も足さない
+  it('1 と 3 では何も出さない', () => {
+    expect(lpgmCategoryNote(1)).toBe('')
+    expect(lpgmCategoryNote(3)).toBe('')
+  })
+
+  // 安全弁: 種類を持たない電文・値域の外では何も出さない（分類番号を画面に漏らさない）
+  it('無い値・値域の外では何も出さない', () => {
+    expect(lpgmCategoryNote(undefined)).toBe('')
+    expect(lpgmCategoryNote(0)).toBe('')
+    expect(lpgmCategoryNote(9)).toBe('')
+  })
+})
+
+describe('lpgmPeriodLabel', () => {
+  // 電文の `PeriodicBand` は 1〜7 で、気象庁は 1.5〜2.5 秒台を第 1 帯とし
+  // 1 秒刻みで 7.5〜8.5 秒台の第 7 帯まで置く（電文解説資料 Ⅱ.37）。
+  it('帯の番号を中心周期で書く（番号のままでは意味が伝わらない）', () => {
+    expect(lpgmPeriodLabel(1)).toBe('2秒')
+    expect(lpgmPeriodLabel(7)).toBe('8秒')
+  })
+
+  it('値域の外は「周期不明」に倒す（型検査が及ばない経路から来る）', () => {
+    expect(lpgmPeriodLabel(0)).toBe('周期不明')
+    expect(lpgmPeriodLabel(8)).toBe('周期不明')
+    expect(lpgmPeriodLabel(1.5)).toBe('周期不明')
+    expect(lpgmPeriodLabel(NaN)).toBe('周期不明')
   })
 })

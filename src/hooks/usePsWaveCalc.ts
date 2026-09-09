@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { EEWAlert } from '../types/earthquake'
 import type { PsWaveCircle } from '../services/kyoshin'
 import { serverNow } from '../utils/clock'
-import { EARTH_RADIUS_KM, hypocentralDistanceKm, surfaceDistanceKm } from '../utils/geo'
+import { EARTH_RADIUS_KM, hasKnownEpicenter, hypocentralDistanceKm, surfaceDistanceKm } from '../utils/geo'
 
 // 地殻速度モデル（日本の平均的な1D速度構造に基づく）
 const VP1 = 6.0   // 地殻 P波 [km/s]
@@ -108,7 +108,12 @@ function computeRadius(t: number, depth: number, v1: number, v2: number, cosIc: 
 export function computeEewCircle(eew: EEWAlert, now: number): PsWaveCircle | null {
   if (eew.cancelled || eew.cancelledAt) return null
   const { hypocenter } = eew.earthquake
-  if (!Number.isFinite(hypocenter.latitude) || !Number.isFinite(hypocenter.longitude)) return null
+  // **位置の判定は `hasKnownEpicenter` に通す。** 有限性だけでは足りない —— 位置不明は
+  // センチネル `-200` で表され、`Number.isFinite(-200)` は真なのですり抜ける。すり抜けた値は
+  // `PsWaveGL` の `map.project([lng, lat])` へ渡り、MapLibre が緯度の範囲外として例外を投げる
+  // （実測: 「Invalid LngLat latitude value: must be between -90 and 90」）。ErrorBoundary が
+  // 無いので画面ごと落ちる。
+  if (!hasKnownEpicenter(hypocenter.latitude, hypocenter.longitude)) return null
   // 仮定震源要素では円を描かない。震源・M・深さが固定の仮定値であることに加え、**気象庁は
   // PLUM 法による予測の報で主要動の到達予測時刻を出さない**（PLUM は震源を使わないため猶予時間を
   // 算出できず、受信端末向けのガイドラインも「まもなく到達」等の表現を推奨している）。予報円は

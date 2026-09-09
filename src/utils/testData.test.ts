@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { isEewArrivedKindCode, isEewPlumKindCode } from './eewKind'
 import {
   createTestEarthquake,
   createTestEEW,
@@ -8,6 +9,8 @@ import {
   createTestEEWForecast,
   createTestEEWWarning,
   createTestTsunami,
+  createTestTsunamiWarning,
+  createTestTsunamiWatch,
 } from './testData'
 import { eewAreas, eewMaxScale, eewNoForecastReason } from './eew'
 import { isObservationMissing } from './tsunami'
@@ -80,6 +83,37 @@ describe('テスト津波の観測点名', () => {
   })
 })
 
+// 情報名（`Head/Title`）と観測時点（`Head/TargetDateTime`）は **DMDATA の XML でしか来ない**。
+// P2PQuake の JSON はどちらも持たないので、standard 版のテストボタンでこれらが入ると
+// 「実運用では絶対に出ない表示」を実機で見せることになる（同じ形の穴が緊急地震速報の
+// テストデータに既にある。docs/pending-work.md「テストデータを実電文の形へ見直す」）。
+describe('テスト津波のヘッダ部（バリアント差）', () => {
+  // 正: DMDSS 版では入る。**入らなければ実機で確かめる手段が無い**ので、まずここを固定する。
+  it('DMDSS 版は情報名と観測時点を持つ', () => {
+    const t = createTestTsunami(true)
+    expect(t.infoName).toBe('大津波警報・津波警報・津波注意報')
+    expect(t.observationDateTime).toBeTruthy()
+    expect(createTestTsunamiWarning(true).infoName).toBe('津波警報・津波注意報')
+    expect(createTestTsunamiWatch(true).infoName).toBe('津波注意報')
+  })
+
+  // 対照: standard 版には入らない。
+  it('standard 版は情報名も観測時点も持たない', () => {
+    const t = createTestTsunami(false)
+    expect(t.infoName).toBeUndefined()
+    expect(t.observationDateTime).toBeUndefined()
+    expect(createTestTsunamiWarning(false).infoName).toBeUndefined()
+    expect(createTestTsunamiWatch(false).infoName).toBeUndefined()
+  })
+
+  // 安全弁: 観測時点は**発表時刻より前**であること。同じ分だと表示側が意図どおり出さない
+  // （「発表時刻と同じ分なら出さない」判定があるため、実機で見えないまま通ってしまう）。
+  it('観測時点は発表時刻より前になっている', () => {
+    const t = createTestTsunami(true)
+    expect(Date.parse(t.observationDateTime!)).toBeLessThan(Date.parse(t.time))
+  })
+})
+
 // 地震情報テストの points 形状。バリアントで実電文の形が違う（quake-spec.md §4 の識別規則）。
 // 元データは P2PQuake 形状（観測点に pref が入る）なので、DMDSS でそのまま流すと
 // 実電文では起こり得ない組み合わせになり、都道府県別表示の分岐がテストで一度も通らない。
@@ -110,6 +144,14 @@ describe('地震情報テストの points 形状', () => {
     expect(quake.issue.type).toBe('各地の震度情報')
   })
 
+  // 「気象庁以外の観測点」の印は DMDSS 版（DMDATA 経路）だけが持つ事実。
+  // **P2PQuake はこの区別を配信しない**ので、標準版のテストボタンで出すと
+  // 実電文には無いバッジが画面に出る。
+  it('気象庁以外の印は DMDSS 版だけが持つ', () => {
+    expect(createTestEarthquake(true).points.some((p) => p.nonJma)).toBe(true)
+    expect(createTestEarthquake(false).points.some((p) => p.nonJma)).toBe(false)
+  })
+
   it('都道府県ロールアップの震度は、その県の観測点の最大震度と一致する（震度不明は数えない）', () => {
     const expected = new Map<string, number>()
     for (const p of createTestEarthquake(false).points) {
@@ -123,6 +165,31 @@ describe('地震情報テストの points 形状', () => {
     const rollups = createTestEarthquake(true).points.filter((p) => p.isArea && p.pref !== '')
     expect(rollups.length).toBe(expected.size)
     for (const r of rollups) expect(r.scale).toBe(expected.get(r.pref))
+  })
+})
+
+// 上限を定めない予想（電文の `To="over"`）をテストボタンでも再現していること。
+//
+// **テストボタンはパーサーを通らない**（内部型を直接組み立てる）ので、ここに無いものは
+// 実機で一度も確かめられない。実際に「程度以上」の表示・読み上げを足したときテストデータが
+// 追随しておらず、画面で確認する手段が無かった。
+describe('テスト EEW の上限を定めない予想', () => {
+  it('初報は震度も長周期も「程度以上」で来る', () => {
+    const first = createTestEEW(undefined, 1)
+    expect(first.forecastMaxLpgmClassOver).toBe(true)
+    const strongest = eewAreas(first).find((a) => a.name === '宮城県北部')!
+    expect(strongest.scaleToOrAbove).toBe(true)
+    expect(strongest.lgIntToOver).toBe(true)
+  })
+
+  // 対照: 続報では確定し、値も上がる（言い直しと引き上げの経路を通す）
+  it('続報では確定した値になる', () => {
+    const next = createTestEEW(undefined, 2)
+    expect(next.forecastMaxLpgmClassOver).toBeUndefined()
+    expect(next.forecastMaxLpgmClass).toBe(4)
+    const strongest = eewAreas(next).find((a) => a.name === '宮城県北部')!
+    expect(strongest.scaleToOrAbove).toBeUndefined()
+    expect(strongest.lgIntTo).toBe(4)
   })
 })
 
@@ -165,11 +232,32 @@ describe('テスト EEW の kindCode と予想震度の整合', () => {
     expect(eewAreas(forecast).some((a) => WARNING_CODES.has(a.kindCode))).toBe(false)
   })
 
-  // kindCode 11/19 は「主要動が既に到達（または到達予想なし）」。到達予想時刻とは両立しない。
-  it.each(cases)('%s: 既到達コードの区域は到達予想時刻を持たない', (_label, eew) => {
+  // 種別コードの下 1 桁が主要動の状況（コード表 12。→ `utils/eewKind.ts`）。
+  // 01/11 ＝既に到達と推定。**到達予測時刻とは排他**で、時刻の代わりに区域の `Condition` が出る
+  // （電文解説資料 Ⅱ.21 2-1-5-3-6・2-1-5-3-7）。読み取り後の値は `arrived`。
+  //
+  // **テストデータは DMDATA の形**（種別コードと `Condition` の両方を持つ）で作る。P2PQuake は
+  // 種別コードしか配信しないが、その経路で到達済みと判定できることは `isEewAreaArrived` の
+  // テスト（`eew.test.ts`）が担保する。
+  it.each(cases)('%s: 既到達コードの区域は到達予想時刻を持たず、到達済みの印を持つ', (_label, eew) => {
     for (const area of eewAreas(eew)) {
-      if (area.kindCode === '01' || area.kindCode === '11' || area.kindCode === '09' || area.kindCode === '19') {
+      if (isEewArrivedKindCode(area.kindCode)) {
         expect(area.arrivalTime).toBeNull()
+        expect(area.arrived).toBe(true)
+      }
+    }
+  })
+
+  // 09/19（PLUM 法）は**上と違って時刻を持つ**。ただし中身は到達の予測ではなく
+  // 「その震度を初めて予測した時刻」（同 2-1-5-3-6）で、**過去の時刻**が入る。
+  //
+  // かつてここは 09/19 も「時刻を持たない」と固定していたが、実電文と食い違っていた
+  // （`src/services/p2pquake.test.ts` の `REAL_EEW`＝2026-07-29 熊本は、震源が確定した報で
+  // 2 区域とも種別コード 19 かつ到達予測時刻を持つ）。画面は時刻を出さず語で伝える。
+  it.each(cases)('%s: PLUM 法の区域は到達済みにしない', (_label, eew) => {
+    for (const area of eewAreas(eew)) {
+      if (isEewPlumKindCode(area.kindCode)) {
+        expect(area.arrived).toBeUndefined()
       }
     }
   })
