@@ -1,23 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AppEvent, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary, TsunamiArea, TsunamiObservation, TsunamiGrade } from '../types/earthquake'
+import type { AppEvent, EEWAlert, Hypocenter, JMAQuake, JMATsunami, JMANankaiCommentary, TsunamiArea, TsunamiObservation, TsunamiGrade } from '../types/earthquake'
 import type { TabId } from '../components/IconNav'
 import type { AppSettings } from './useSettings'
 import type { AlertTitleApi } from './useAlertTitle'
 import type { ReplayEntry } from '../types/replay'
-import { getIntensityLabelWithOrAbove } from '../utils/intensity'
+import { getIntensityLabelWithOrAbove, getIntensityLabelWithApproxAbove } from '../utils/intensity'
 import { isMaxScaleUnreceived } from '../utils/quakePoints'
-import { formatMagnitude, hasMagnitude } from '../utils/formatters'
+import { formatMagnitudeWithCondition } from '../utils/formatters'
 import {
-  eewMaxScaleInfo, isForecastScaleHigher, eewMaxLpgmClass, eewNoForecastReason, computeSingleEEWLevel, canPresentLpgmClass,
+  eewMaxScaleInfo, isForecastScaleHigher, isForecastLpgmHigher, eewNoForecastReason, computeSingleEEWLevel, canPresentLpgmClass,
   selectEEWSoundType, eewKindLabel, eewPhase2ScaleStabilityMs,
-  EEW_PHASE2_STABILITY_MAX_WAIT_MS, EEW_PHASE2_LPGM_STABILITY_MS, type EewMaxScaleInfo,
+  EEW_PHASE2_STABILITY_MAX_WAIT_MS, EEW_PHASE2_LPGM_STABILITY_MS, eewMaxLpgmClassInfo,
+  type EewMaxScaleInfo, type EewMaxLpgmClassInfo,
 } from '../utils/eew'
-import { haversineKm } from '../utils/geo'
+import { hasKnownEpicenter, haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
-import { tsunamiMaxGrade, tsunamiAreaGradeChanges, selectUnspokenAreaGradeChanges, rememberAreaGrades, tsunamiAreaKey, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations, isObservationMissing } from '../utils/tsunami'
+import { isWarningLevelWhileObserving, tsunamiMaxGrade, tsunamiAreaGradeChanges, selectUnspokenAreaGradeChanges, rememberAreaGrades, tsunamiAreaKey, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations, isObservationMissing } from '../utils/tsunami'
 import { playAlertSound, ttsDelayFor, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
-import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
+import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
 import { joinSegments, plain, hasFollowTarget, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
@@ -214,6 +215,18 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => { setTimeout(resolve, ms) })
 }
 
+/**
+ * 遠地地震のウィンドウタイトルに付ける規模の句（先頭の空白込み。出せなければ空文字）。
+ *
+ * 数値が無くても「Ｍ８を超える巨大地震」は出す。**遠地地震はタイトルが規模だけを伝える経路**で、
+ * ここで落とすと最大級の地震ほどタイトルが震央地名だけになる。
+ */
+function magnitudeTitlePart(hypocenter: Hypocenter): string {
+  const text = formatMagnitudeWithCondition(hypocenter.magnitude, hypocenter.magnitudeCondition)
+  // 「不明」はタイトルに出さない（震央地名だけのほうが短く読める）
+  return text === '不明' ? '' : ` ${text}`
+}
+
 // 待ちきれずに割り込むことを選んだときの警告。VOICEVOX が無応答だと読み上げごとに起こりうるため
 // 間引くが、優先度の高い読み上げを消す判断なので必ず残す（黙って消すと事後に追えない）。
 const warnSpeechWaitGiveUp = createLogThrottle(30000)
@@ -404,10 +417,14 @@ function forgetSpokenOnObservationStateChange(
   obs: readonly import('../types/earthquake').TsunamiObservation[],
   spokenNames: Set<string>,
   spokenMissing: Set<string>,
+  spokenWarningLevel: Set<string>,
 ): void {
   for (const o of obs) {
     if (isObservationMissing(o)) spokenNames.delete(o.name)
     else spokenMissing.delete(o.name)
+    // 「観測中のまま津波警報相当」から抜けたら忘れる。数値が出た観測点が後の報でまた
+    // その状態へ戻ることは起こりうるので、片道にしない（欠測と同じ考え方）。
+    if (!isWarningLevelWhileObserving(o)) spokenWarningLevel.delete(o.name)
   }
 }
 
@@ -569,7 +586,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // `isForecastScaleHigher`）。
   const spokenEEWScalesRef = useRef<Map<string, EewMaxScaleInfo>>(new Map())
   // 階級だけが上がる続報（震度据え置きで 2→3 等）は震度にもレベルにも現れないため専用に持つ。
-  const spokenEEWLpgmClassesRef = useRef<Map<string, number>>(new Map())
+  const spokenEEWLpgmClassesRef = useRef<Map<string, EewMaxLpgmClassInfo>>(new Map())
   /**
    * EEW 第 2 フェーズの安定待ち。震度・長周期階級を**独立に**追う（eventId 別）。
    *
@@ -591,7 +608,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     timer: ReturnType<typeof setTimeout>
   }
   interface EEWLpgmStabilityCycle {
-    lpgmClass: number
+    /**
+     * 待っている値。**「程度以上」も一緒に持つ**（`EewMaxLpgmClassInfo`）。
+     * 階級の数値だけで比べると、数値が同じで `over` だけ変わる続報を「据え置き」と誤判定し、
+     * **その変化が読み上げから無音で消える**（震度側は `orAbove` を比較に含めている）。
+     * 「階級3」→「階級3程度以上」は上限が定まらなくなった＝安全側の変化なので落とせない。
+     */
+    info: EewMaxLpgmClassInfo
     since: number
     timer: ReturnType<typeof setTimeout>
   }
@@ -607,7 +630,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
    * それ単体で急いで伝える理由が薄いため。
    */
   const eewConfirmedScaleRef = useRef<Map<string, EewMaxScaleInfo>>(new Map())
-  const eewConfirmedLpgmRef = useRef<Map<string, number>>(new Map())
+  const eewConfirmedLpgmRef = useRef<Map<string, EewMaxLpgmClassInfo>>(new Map())
   // 読み上げた区分（0=予報 / 1 以上=警報）。予想震度・階級が据え置きのまま severity だけ
   // 確定する続報があり、値だけを見ていると区分の変化が声に出ない。
   const spokenEEWLevelsRef = useRef<Map<string, 0 | 1 | 2>>(new Map())
@@ -648,6 +671,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // 欠測から復帰した観測点はここから落とす（同じ観測点が再び欠測になったとき、それは新しい
   // 事実として読む必要がある）。落とす場所は下の津波の分岐。
   const spokenObsMissingRef = useRef<Set<string>>(new Set())
+  /**
+   * 「観測中のまま津波警報に相当する津波を観測している」と読み上げ済みの観測点。
+   *
+   * 欠測（`spokenObsMissingRef`）と分ける。**同じ観測点が到達確認としては既読でも、この信号は
+   * 後の報で初めて立つ**ため、名前の既読を共有すると一度も声にならない。
+   */
+  const spokenObsWarningLevelRef = useRef<Set<string>>(new Set())
   // 区域ごとに、等級の変化として**最後に声にした等級**（区域キー → 等級）。
   //
   // 気象庁の `LastKind` は等級が動いた瞬間だけでなく、その後の続報にも同じ値が載り続ける。
@@ -1348,7 +1378,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           ? earthquakesRef.current.find(e => extractQuakeEventIdFromId(e.id) === cancelEventId)
           : undefined
         speakNonEEWDelayed(
-          earthquakeCancelToText(original?.time ?? null),
+          earthquakeCancelToText(original?.time ?? null, event.cancelText),
           SPEECH_PRIORITY.normal,
           ttsDelayFor('eewCancel'),
           `quake:${quakeEventKey(event as import('../types/earthquake').JMAQuake)}`,
@@ -1403,7 +1433,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 遠地地震は国内で震度を観測しない（maxScale は常に -1）。「最大震度不明」と出すと
         // 震度が判明していないだけに読めてしまうため、規模を出す別書式にする。
         title.setTitle(isForeignQuake
-          ? `遠地地震 ${hypocenter.name}${hasMagnitude(hypocenter.magnitude) ? ` ${formatMagnitude(hypocenter.magnitude)}` : ''}`
+          ? `遠地地震 ${hypocenter.name}${magnitudeTitlePart(hypocenter)}`
           // ウィンドウタイトルも断定形にしない（理由は App.tsx の通知と同じ）。
           : `地震情報 ${hypocenter.name} 最大震度${getIntensityLabelWithOrAbove(maxScale, isMaxScaleUnreceived(maxScale, event.points))}`)
       }
@@ -1478,7 +1508,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         if (settings.soundEnabled) playAlertSound('tsunamiCancel')
         if (settings.voicevoxEnabled) {
           speakNonEEWDelayed(
-            tsunamiCancelToText(event.cancelReason),
+            tsunamiCancelToText(event.cancelReason, event.cancelText),
             SPEECH_PRIORITY.high,
             ttsDelayFor('tsunamiCancel'),
             'tsunami',
@@ -1517,6 +1547,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         spokenObsHeightRef.current.clear()
         spokenObsNamesRef.current.clear()
         spokenObsMissingRef.current.clear()
+        spokenObsWarningLevelRef.current.clear()
         spokenAreaGradeRef.current.clear()
         window.clearTimeout(obsStatusClearTimerRef.current)
         setObsUpdateStatus(new Map())
@@ -1656,7 +1687,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           : currentLevel === 1 ? '緊急地震速報 警報' : eewKindLabel(0)
         showBrowserNotification(
           eewNotifyTitle,
-          `${event.earthquake.hypocenter.name}${scale > 0 ? ` 最大震度${getIntensityLabelWithOrAbove(scale, scaleOrAbove)}予想` : ''}`,
+          `${event.earthquake.hypocenter.name}${scale > 0 ? ` 最大震度${getIntensityLabelWithApproxAbove(scale, scaleOrAbove)}予想` : ''}`,
           `eew-${key}`,
           true,
         )
@@ -1669,7 +1700,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       const titleLevel = Array.from(activeEEWLevelsRef.current.values())
         .reduce<0 | 1 | 2>((m, l) => Math.max(m, l) as 0 | 1 | 2, 0)
       const eewTitle = `${eewKindLabel(titleLevel)} ${event.earthquake.hypocenter.name}` +
-        (scale > 0 ? ` 最大震度${getIntensityLabelWithOrAbove(scale, scaleOrAbove)}予想` : '') +
+        (scale > 0 ? ` 最大震度${getIntensityLabelWithApproxAbove(scale, scaleOrAbove)}予想` : '') +
         (newCount > 1 ? ` 他${newCount - 1}件` : '')
       title.setTitle(eewTitle)
       title.scheduleTitleRevert('eew')
@@ -1762,7 +1793,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               log.debug('[eew] より高い予想震度の確定を待つため phase2 を降りる', key)
               return null
             }
-            const confirmedLpgm = eewConfirmedLpgmRef.current.get(key) ?? 0
+            // 確定した階級と「程度以上」。既読の比較・表示に使う値は階級の数値だけで、
+            // 「程度以上」は語を添えるためだけに持つ。
+            const confirmedLpgmInfo = eewConfirmedLpgmRef.current.get(key)
+            const confirmedLpgm = confirmedLpgmInfo?.cls ?? 0
             // 区分は引き下げない。一度「警報」と伝えた EEW は、以後 severity が落ちても
             // 「伝え済み」として扱う（前置きを言い直さない。activeEEWLevelsRef の Math.max と同じ方針）。
             const spokenLevel = spokenEEWLevelsRef.current.get(key) ?? 0
@@ -1771,7 +1805,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // 読んだ後は、実際に発話した値より上がったものが一つも無ければ黙る（引き下げは追わない）。
             if (eewPhase2DoneRef.current.has(key)
               && !isForecastScaleHigher(confirmedScale, spokenEEWScalesRef.current.get(key))
-              && confirmedLpgm <= (spokenEEWLpgmClassesRef.current.get(key) ?? 0)
+              && !isForecastLpgmHigher(
+                { cls: confirmedLpgm, over: confirmedLpgmInfo?.over === true },
+                spokenEEWLpgmClassesRef.current.get(key),
+              )
               && level <= spokenLevel) return null
             // 「緊急地震速報に切り替わりました。」は、予報として発報されたものが警報へ
             // 上がったときだけ。初報から警報なら第 1 フェーズが「緊急地震速報、〇〇で地震。」と
@@ -1804,8 +1841,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               if (scaleUnchanged) return null
             }
             const text = scaleUnchanged
-              ? eewLpgmOnlyText(confirmedLpgm)
-              : eewIntensityText(confirmedScale, confirmedLpgm, latest, announceUpgrade)
+              ? eewLpgmOnlyText(confirmedLpgm, confirmedLpgmInfo?.over === true)
+              : eewIntensityText(confirmedScale, confirmedLpgm, latest, announceUpgrade, confirmedLpgmInfo?.over === true)
             if (!text) {
               // 想定外。eewIntensityText 経由なら eewScaleOnlyText が常に非空を返す
               // （noForecastText が全ケースをカバーするため）。scaleUnchanged 経由の
@@ -1820,7 +1857,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // **階級は「実際に声に含めた分」だけ記録する。** 上のガードに掛かった報（震度を
             // 伝えられないのに階級だけ確定した＝電文の異常）では `eewIntensityText` が階級句を
             // 落とすため、`confirmedLpgm` をそのまま入れると言っていない値が既読になる。
-            const spokenLpgm = canPresentLpgmClass(confirmedScale.scale, confirmedLpgm) ? confirmedLpgm : 0
+            const spokenLpgm: EewMaxLpgmClassInfo = canPresentLpgmClass(confirmedScale.scale, confirmedLpgm)
+              ? { cls: confirmedLpgm, over: confirmedLpgmInfo?.over === true }
+              : { cls: 0, over: false }
             spokenEEWScalesRef.current.set(key, confirmedScale)
             spokenEEWLpgmClassesRef.current.set(key, spokenLpgm)
             spokenEEWLevelsRef.current.set(key, level)
@@ -1848,7 +1887,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
                 if (!now) return true
                 const nowScale = eewConfirmedScaleRef.current.get(key)
                 if (!nowScale) return true
-                const nowLpgm = eewConfirmedLpgmRef.current.get(key) ?? 0
+                const nowLpgm = eewConfirmedLpgmRef.current.get(key)?.cls ?? 0
+                // 数値だけの比較で足りる（ここは「後から確定した値の方が低ければ取り下げる」判定）
                 return !isForecastScaleHigher(nowScale, confirmedScale)
                   && nowLpgm <= confirmedLpgm
                   && computeSingleEEWLevel(now) <= level
@@ -1904,9 +1944,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
          * 震度がまだ「変化中」なのに `enqueuePhase2` 側が「据え置き」と誤判定して階級だけの
          * 短句を読み、直後に震度の確定で全文をもう一度読む——という二重発話になる。
          */
-        const confirmLpgm = (lpgmClass: number) => {
+        const confirmLpgm = (info: EewMaxLpgmClassInfo) => {
           eewLpgmStabilityRef.current.delete(key)
-          eewConfirmedLpgmRef.current.set(key, lpgmClass)
+          eewConfirmedLpgmRef.current.set(key, info)
           if (eewConfirmedScaleRef.current.has(key) && !eewScaleStabilityRef.current.has(key)) enqueuePhase2()
         }
 
@@ -1952,26 +1992,29 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
          * 固定待ち時間より短い間隔で変化し続けた場合に永久に確定しなくなる（震度は必ず読まれるが、
          * 階級だけがその EEW で一度も読み上げられないまま終わる）。
          */
-        const updateLpgmStability = (lpgmClass: number) => {
+        const updateLpgmStability = (info: EewMaxLpgmClassInfo) => {
+          const same = (a: EewMaxLpgmClassInfo | undefined) => a != null && a.cls === info.cls && a.over === info.over
           const cycle = eewLpgmStabilityRef.current.get(key)
           if (cycle) {
-            if (cycle.lpgmClass === lpgmClass) return
-          } else if (eewConfirmedLpgmRef.current.get(key) === lpgmClass) {
+            if (same(cycle.info)) return
+          } else if (same(eewConfirmedLpgmRef.current.get(key))) {
             return
           }
           if (cycle) clearTimeout(cycle.timer)
           const since = cycle ? cycle.since : Date.now()
           const remainingMaxWaitMs = since + EEW_PHASE2_STABILITY_MAX_WAIT_MS - Date.now()
           const waitMs = Math.max(0, Math.min(EEW_PHASE2_LPGM_STABILITY_MS, remainingMaxWaitMs))
-          const timer = setTimeout(() => confirmLpgm(lpgmClass), waitMs)
-          eewLpgmStabilityRef.current.set(key, { lpgmClass, since, timer })
+          const timer = setTimeout(() => confirmLpgm(info), waitMs)
+          eewLpgmStabilityRef.current.set(key, { info, since, timer })
         }
 
         // 続報での震源地名変化+座標移動の検出（B-3: 名前変化かつ50km超移動で再発話）
         const hypo = event.earthquake.hypocenter
         const prevHypo = activeEEWAnnouncedHypocentersRef.current.get(key)
         const hypoNameChanged = !isNew && prevHypo !== undefined && hypo.name !== prevHypo.name
-        const hypoFarMoved = hypoNameChanged && Number.isFinite(hypo.latitude) && Number.isFinite(hypo.longitude)
+        // 位置の判定は `hasKnownEpicenter`。位置不明のセンチネル `-200` は有限なので
+        // `Number.isFinite` をすり抜け、距離が無意味に大きく出て「50km 超動いた」と誤判定する。
+        const hypoFarMoved = hypoNameChanged && hasKnownEpicenter(hypo.latitude, hypo.longitude)
           && haversineKm(hypo.latitude, hypo.longitude, prevHypo.lat, prevHypo.lng) > 50
         // 予報として**読み上げている最中に**警報へ上がった。読み切るのを待たず、警報として
         // 頭から言い直す（待つと区分の告知が実測 5.5 秒遅れる）。語の途中で切れても文の頭から
@@ -2081,8 +2124,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             () => followSpeechTab('realtime', isNew ? TAB_PRIORITY.eewUrgent : TAB_PRIORITY.eewUpdate),
             restateAsWarning,
           )
-          // 発話した震源情報を記録する
-          if (Number.isFinite(hypo.latitude) && Number.isFinite(hypo.longitude)) {
+          // 発話した震源情報を記録する。**位置不明のセンチネルは記録しない** —— 記録すると
+          // 次の続報で `-200` を相手に距離を測ることになる（上の `hypoFarMoved` と同じ理由）。
+          if (hasKnownEpicenter(hypo.latitude, hypo.longitude)) {
             activeEEWAnnouncedHypocentersRef.current.set(key, { name: hypo.name, lat: hypo.latitude, lng: hypo.longitude })
           }
         }
@@ -2110,7 +2154,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 震度がまだ未確定のため `confirmLpgm` が保留し、直後に震度が確定した瞬間に一緒に
         // 読まれる。逆（震度を先にセットする）だと、震度だけが単独で先に確定・発話され、
         // 数 ms 後に階級だけの再読み上げが続くという不自然な二重発話になる
-        updateLpgmStability(eewMaxLpgmClass(event))
+        updateLpgmStability(eewMaxLpgmClassInfo(event))
         if (severityUpgraded) {
           clearPhase2MaxTimer()
           confirmScale({ scale, orAbove: scaleOrAbove })
@@ -2364,6 +2408,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       let spokenObs: import('../types/earthquake').TsunamiObservation[] | null = null
       // 欠測として読み上げ文に含めた観測点。同じく発話を始める瞬間に既読へ移す。
       let spokenMissingObs: import('../types/earthquake').TsunamiObservation[] | null = null
+      let spokenWarningLevelObs: import('../types/earthquake').TsunamiObservation[] | null = null
       if (event.kind === 'quake' && !event.cancelled) {
         // **続報は変化したところだけを読む。** 基準は受信内容ではなく「声になった内容」で、
         // その更新は読み上げの完了時（下の `onSpokenRefs`）に行う。受信時に更新すると、
@@ -2420,12 +2465,36 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           if (!spokenObsMissingRef.current.has(o.name)) return true
           return hasObservedHeightRisen(o, spokenObsHeightRef.current)
         }
+        /**
+         * 「観測中のまま津波警報に相当する津波を観測している」と読む対象か。
+         *
+         * 名前で 1 度きり。**波高で読み直す仕組みは持たない**（この状態の観測点は定義上
+         * 数値を持たないため、比べるものが無い）。欠測のように「より深刻な値が後から来る」
+         * ことは起きない。
+         */
+        const isWarningLevelWorthSpeaking = (o: import('../types/earthquake').TsunamiObservation): boolean =>
+          isWarningLevelWhileObserving(o) && !spokenObsWarningLevelRef.current.has(o.name)
+        /**
+         * 「到達確認」として読む対象か。**3 つの経路（観測情報の続報・区域単位の等級変化・
+         * 全体の等級変化）で同じ述語を通すこと。** 同じ条件を書き写すと、条件が増えたときに
+         * 片方だけ直して黙って食い違う。
+         *
+         * 除くもの:
+         * - 波高がある … 波高更新の文が読む
+         * - 欠測 … 「到達を確認しました」は到達の断定なので当てられない
+         * - 観測中のまま津波警報相当 … 専用の文が「観測しています」と言うので二重になる
+         * - 既読
+         */
+        const isArrivalWorthSpeaking = (o: import('../types/earthquake').TsunamiObservation): boolean =>
+          !o.height && !isObservationMissing(o) && !isWarningLevelWhileObserving(o)
+          && !spokenObsNamesRef.current.has(o.name)
         // 観測状態の変わり目を記憶へ反映する（規則は `forgetSpokenOnObservationStateChange`）。
         // 障害の復旧と再発は同じ津波の最中にも起きうるので、両方向を落とす。
         forgetSpokenOnObservationStateChange(
           event.observations ?? [],
           spokenObsNamesRef.current,
           spokenObsMissingRef.current,
+          spokenObsWarningLevelRef.current,
         )
         if (tsunamiIsObservationUpdate) {
           // グレード不変: 観測点ごとに最大波高を追跡し、更新があった観測点のみ読み上げ。
@@ -2448,7 +2517,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // **欠測は外す**（`isObservationMissing`）――「到達を確認しました」は到達の断定なので、
           // 観測データが届いていない観測点に当ててはいけない。
           const newlyArrivedObs = obsInCardOrder
-            .filter(o => !o.height && !isObservationMissing(o) && !spokenObsNamesRef.current.has(o.name))
+            .filter(o => isArrivalWorthSpeaking(o))
           // 読み上げる欠測。**波高の有無で絞らない**（電文は欠測と同時に「これまでの最大波の
           // 高さ」を載せることがあり、その値も読み上げに乗せる）。
           const newlyMissingObs = obsInCardOrder.filter(o => isMissingWorthSpeaking(o))
@@ -2460,15 +2529,18 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             : []
           const arrivalSegments = tsunamiArrivalToSegments(newlyArrivedObs)
           const missingSegments = tsunamiMissingToSegments(newlyMissingObs)
+          // 数値が無いので他のどの文にも乗らない（→ `tsunamiWarningLevelToSegments`）。
+          const newlyWarningLevelObs = obsInCardOrder.filter(o => isWarningLevelWorthSpeaking(o))
+          const warningLevelSegments = tsunamiWarningLevelToSegments(newlyWarningLevelObs)
           // 波高の文・到達確認の文・欠測の文はそれぞれ別の話題。接続語なしで並べると切れ目が
           // 耳で分からない（どれも「地名で〜しています」の形になる。理由は `joinWithAlso`）。
           // **確定した事実を先に、観測できていないものを後に**置く。
           if (updateSegments.length > 0) {
             // 名乗り（「津波観測情報。」）は波高の文が自前で持つ（`tsunamiObservationUpdateToSegments`）。
-            ttsSegments = joinWithAlso(joinWithAlso(updateSegments, arrivalSegments), missingSegments)
+            ttsSegments = joinWithAlso(joinWithAlso(joinWithAlso(updateSegments, warningLevelSegments), arrivalSegments), missingSegments)
           } else {
             // 波高の文が無い電文では名乗りが誰も付けないので、ここで足す。
-            const rest = joinWithAlso(arrivalSegments, missingSegments)
+            const rest = joinWithAlso(joinWithAlso(warningLevelSegments, arrivalSegments), missingSegments)
             if (rest.length > 0) ttsSegments = [plain('津波観測情報。'), ...rest]
           }
           // **既読にするのは実際に読み上げた分だけ。** 更新点は件数上限で絞られるため、
@@ -2481,6 +2553,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // 欠測も件数上限で落ちる。**落ちた分を既読にしない**（絞り込みは読み上げ文の生成と
             // 同じ関数を使う。理由は `selectMissingToSpeak` の宣言箇所）。
             spokenMissingObs = selectMissingToSpeak(newlyMissingObs)
+            // 件数上限で落ちた分は既読にしない（欠測・到達確認と同じ規則）。
+            spokenWarningLevelObs = selectWarningLevelToSpeak(newlyWarningLevelObs)
           }
         } else if (tsunamiIsAreaGradeChange) {
           // 区域単位で等級が動いた報。**動いた区域だけを読む**（残っている区域はカードが示す）。
@@ -2490,16 +2564,24 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // 等級が動いた報と同じく、観測中（波高未確定）で新規に到達が確認された観測点も併せて読む
           const obsOnAreaChange = observationsInCardOrder(event)
           const newlyArrivedObsOnAreaChange = obsOnAreaChange
-            .filter(o => !o.height && !isObservationMissing(o) && !spokenObsNamesRef.current.has(o.name))
+            .filter(o => isArrivalWorthSpeaking(o))
           // 新たに欠測となった観測点も併せて読む（判定と理由は観測点更新の経路と同じ）。
           const newlyMissingObsOnAreaChange = obsOnAreaChange.filter(o => isMissingWorthSpeaking(o))
+          const newlyWarningLevelObsOnAreaChange = obsOnAreaChange.filter(o => isWarningLevelWorthSpeaking(o))
           ttsSegments = joinWithAlso(
-            [...ttsSegments, ...tsunamiArrivalToSegments(newlyArrivedObsOnAreaChange)],
+            [
+              ...ttsSegments,
+              ...joinWithAlso(
+                tsunamiWarningLevelToSegments(newlyWarningLevelObsOnAreaChange),
+                tsunamiArrivalToSegments(newlyArrivedObsOnAreaChange),
+              ),
+            ],
             tsunamiMissingToSegments(newlyMissingObsOnAreaChange),
           )
           // 等級の発表と同じ扱いで、既読にするのは到達確認と欠測だけ（実測値は読んでいない）
           spokenObs = selectArrivalsToSpeak(newlyArrivedObsOnAreaChange)
           spokenMissingObs = selectMissingToSpeak(newlyMissingObsOnAreaChange)
+          spokenWarningLevelObs = selectWarningLevelToSpeak(newlyWarningLevelObsOnAreaChange)
         } else {
           const isDowngrade = prevGrade !== null && GRADE_RANK[currentGrade as GradeKey] < GRADE_RANK[prevGrade as GradeKey]
           // **区域の並べ替えにはカードと同じ材料を渡す**（`tsunamiCardBasis`）。等級を切り替える報は
@@ -2512,9 +2594,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // （こちらもカードの並びに揃える。理由は観測点更新側と同じ）
           const obsOnGradeChange = observationsInCardOrder(event)
           const newlyArrivedObsOnGradeChange = obsOnGradeChange
-            .filter(o => !o.height && !isObservationMissing(o) && !spokenObsNamesRef.current.has(o.name))
+            .filter(o => isArrivalWorthSpeaking(o))
           // 新たに欠測となった観測点も併せて読む（判定と理由は観測点更新の経路と同じ）。
           const newlyMissingObsOnGradeChange = obsOnGradeChange.filter(o => isMissingWorthSpeaking(o))
+          const newlyWarningLevelObsOnGradeChange = obsOnGradeChange.filter(o => isWarningLevelWorthSpeaking(o))
           // **等級を語れない電文では到達確認を継がない。** 区域はあるのに等級が 1 つも取れない
           // （全区域が `Unknown`）電文もここへ来るが、引き下げ側は「津波警報等は全て解除されました」を
           // 返すため、継ぐと解除の直後に新たな到達を伝える矛盾した並びになる。**読まない分は既読にも
@@ -2530,7 +2613,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             ttsSegments,
             canTellGrade
               ? joinWithAlso(
-                tsunamiArrivalToSegments(newlyArrivedObsOnGradeChange),
+                joinWithAlso(
+                  tsunamiWarningLevelToSegments(newlyWarningLevelObsOnGradeChange),
+                  tsunamiArrivalToSegments(newlyArrivedObsOnGradeChange),
+                ),
                 tsunamiMissingToSegments(newlyMissingObsOnGradeChange),
               )
               : [],
@@ -2542,6 +2628,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           spokenObs = canTellGrade ? selectArrivalsToSpeak(newlyArrivedObsOnGradeChange) : []
           // 等級を語れない電文では欠測も読まないので、既読にもしない（到達確認と同じ扱い）。
           spokenMissingObs = canTellGrade ? selectMissingToSpeak(newlyMissingObsOnGradeChange) : []
+          spokenWarningLevelObs = canTellGrade ? selectWarningLevelToSpeak(newlyWarningLevelObsOnGradeChange) : []
         }
         if (ttsSegments) ttsText = joinSegments(ttsSegments)
       }
@@ -2562,6 +2649,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // クロージャで掴むため const に写す（`let` のままでは絞り込みが効かない）
         const obsToMark = spokenObs
         const missingToMark = spokenMissingObs
+        const warningLevelToMark = spokenWarningLevelObs
         // 区域の等級変化も**発話を始める瞬間**に既読へ移す（観測点と同じ理由。待たされた末に
         // 見送られた変化は既読にならず、次の報でもう一度読み上げ対象に入る）。
         //
@@ -2581,7 +2669,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           spokenState ? refs => applySpokenRefs(spokenState, refs) : undefined,
           // 読み上げた観測点を既読へ移すのは**声に出す瞬間**（宣言は `spokenObsHeightRef`）。
           // 待たされた末に見送られた分は既読にならず、次の電文でもう一度読み上げ対象に入る。
-          obsToMark || missingToMark || areasToMark
+          obsToMark || missingToMark || warningLevelToMark || areasToMark
             ? () => {
               if (obsToMark) rememberObservations(obsToMark, spokenObsNamesRef.current, spokenObsHeightRef.current)
               // 欠測は名前だけを覚える（波高の記憶＝`spokenObsHeightRef` は触らない。欠測と
@@ -2591,6 +2679,16 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
                 // 欠測の文は「これまでの最大波」を声にするので波高も進める（名前を入れない理由は
                 // `rememberObservationHeights` の宣言箇所）。
                 rememberObservationHeights(missingToMark, spokenObsHeightRef.current)
+              }
+              // 波高の記憶（`spokenObsHeightRef`）は触らない。この状態の観測点は数値を持たないので
+              // 進める値が無く、触ると復帰後の実測値が読まれなくなる。
+              if (warningLevelToMark) {
+                for (const o of warningLevelToMark) {
+                  spokenObsWarningLevelRef.current.add(o.name)
+                  // 到達確認としても既読にする。この文が「観測しています」と到達を含んで
+                  // 伝えているので、状態が解けたあとに「到達を確認しました」と言い直さない。
+                  spokenObsNamesRef.current.add(o.name)
+                }
               }
               if (areasToMark) rememberAreaGrades(areasToMark, spokenAreaGradeRef.current)
             }
@@ -2766,6 +2864,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     spokenObsHeightRef.current.clear()
     spokenObsNamesRef.current.clear()
     spokenObsMissingRef.current.clear()
+    spokenObsWarningLevelRef.current.clear()
     spokenAreaGradeRef.current.clear()
     seenLpgmEventIdsRef.current.clear()
     // 60秒 obs バッジ自動消去タイマーもリプレイ切替時に持ち越さない（アンマウント経路と対称）
@@ -2801,7 +2900,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           const restoredLevel = computeSingleEEWLevel(eew)
           activeEEWLevelsRef.current.set(key, restoredLevel)
           spokenEEWScalesRef.current.set(key, eewMaxScaleInfo(eew))
-          spokenEEWLpgmClassesRef.current.set(key, eewMaxLpgmClass(eew))
+          spokenEEWLpgmClassesRef.current.set(key, eewMaxLpgmClassInfo(eew))
           // 区分も復元する。落とすと注入後の最初の続報で「警報。」が付き直し、
           // 途中から再生を始めた地震がその場で警報化したように聞こえる。
           spokenEEWLevelsRef.current.set(key, restoredLevel)
@@ -2811,7 +2910,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           // 安定待ちの確定値も復元する。復元しないと注入後最初の続報の跳躍幅計算が
           // 「自分自身」を基準にしてしまい（跳躍0扱い）、実際より短い安定待ちになる。
           eewConfirmedScaleRef.current.set(key, eewMaxScaleInfo(eew))
-          eewConfirmedLpgmRef.current.set(key, eewMaxLpgmClass(eew))
+          eewConfirmedLpgmRef.current.set(key, eewMaxLpgmClassInfo(eew))
         } else if (ev.kind === 'tsunami') {
           const tsunami = ev as JMATsunami
           // **ライブ経路と同じ形で進めること**（電文は時系列順に渡ってくる）。片方だけずらすと、
@@ -2825,6 +2924,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             spokenObsHeightRef.current.clear()
             spokenObsNamesRef.current.clear()
             spokenObsMissingRef.current.clear()
+            spokenObsWarningLevelRef.current.clear()
             spokenAreaGradeRef.current.clear()
           } else {
             const grade = tsunamiMaxGrade(tsunami)
@@ -2846,9 +2946,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             // 欠測も「もう伝えた」側へ入れる（入れないと、注入後の最初の観測情報で T 時点までの
             // 欠測が全部読み直される）。**この復元は窓の手前の全報を順に舐める**（呼び出し側の
             // ループ）ので、状態の変わり目もライブ経路と同じ規則で落とす。
-            forgetSpokenOnObservationStateChange(observations, spokenObsNamesRef.current, spokenObsMissingRef.current)
+            forgetSpokenOnObservationStateChange(observations, spokenObsNamesRef.current, spokenObsMissingRef.current, spokenObsWarningLevelRef.current)
             for (const o of observations) {
               if (isObservationMissing(o)) spokenObsMissingRef.current.add(o.name)
+              // 「観測中のまま津波警報相当」も同じ扱い。**記憶を 1 つ足したら、埋める経路も
+              // 全部見ること** —— ここを忘れると、窓の手前から続いている状態が注入後の最初の
+              // 観測情報で読み直される（欠測で一度踏んだ穴と同型）。
+              if (isWarningLevelWhileObserving(o)) spokenObsWarningLevelRef.current.add(o.name)
             }
             // **区域の等級変化も同じく埋めること。** `LastKind` は変化した後の続報にも載り続けるため、
             // 埋め忘れると、注入後の最初の続報が T より前に起きた解除を「いま起きた」ものとして

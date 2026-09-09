@@ -23,6 +23,7 @@ import { useKyoshinImport } from '../../hooks/useKyoshinImport'
 export interface TestFunctions {
   earthquake: () => void
   foreignQuake: () => void
+  foreignQuakeHuge: () => void
   eew: () => void
   eewWarning: () => void
   eewForecast: () => void
@@ -1198,6 +1199,9 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         </Row>
         <Row label="遠地地震" description="メキシコ・チアパス州沿岸 M7.4 深さ不明（実データ）– earthquakeInfo 音 / 国内震度なし・日本への津波影響なし">
           <TestButton color="purple" onClick={onTest.foreignQuake}>遠地地震テスト</TestButton>
+        </Row>
+        <Row label="遠地地震（規模を速報できない報）" description="チリ中部沿岸 M8を超える巨大地震・深さ不明 – earthquakeInfo 音 / 規模が数値で出ない第一報。日本への津波の有無は調査中">
+          <TestButton color="purple" onClick={onTest.foreignQuakeHuge}>巨大地震テスト</TestButton>
         </Row>
         {/* ── 津波情報: 軽 → 重、取消は末尾 ── */}
         <Row label="津波予報（若干の海面変動）" description={`北海道沿岸 – tsunamiForecast 音 / 90秒後に${isDmdss ? '有効期間終了' : '解除（standard 版は有効期限を持たないため解除電文で消える）'}`}>

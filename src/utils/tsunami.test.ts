@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import {
+  isWarningLevelWhileObserving,
+  importantBadgeText,
+  forecastHeightImportantBadge,
+  estimationBadges,
+  estimationHeightText,
   tsunamiMaxGrade,
   tsunamiOverallGrade,
   isTsunamiNewFire,
@@ -15,7 +20,7 @@ import {
   compareObservedHeightDesc,
   overSuffixedHeight,
   latestValidDateTime,
-  withInheritedValidDateTime,
+  withInheritedTsunamiFacts,
   tsunamiAreaGradeChanges,
   selectUnspokenAreaGradeChanges,
   rememberAreaGrades,
@@ -24,6 +29,7 @@ import {
   observationBadges,
   observationHeightText,
   observationArrivalFallbackText,
+  observationMaxHeightTimeText,
 } from './tsunami'
 import type { JMATsunami, TsunamiArea, TsunamiObservation } from '../types/earthquake'
 
@@ -541,40 +547,81 @@ describe('latestValidDateTime', () => {
   })
 })
 
-describe('withInheritedValidDateTime', () => {
+describe('withInheritedTsunamiFacts', () => {
   it('最新報が期限を持たなければ同一イベントの過去報から引き継ぐ', () => {
     const older = makeTsunami({ id: 'a', eventId: 'E1', time: '2024-01-02T10:00:00+09:00', validDateTime: '2024-01-02T17:00:00+09:00' })
     const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00' })
-    expect(withInheritedValidDateTime(latest, [latest, older]).validDateTime).toBe('2024-01-02T17:00:00+09:00')
+    expect(withInheritedTsunamiFacts(latest, [latest, older]).validDateTime).toBe('2024-01-02T17:00:00+09:00')
   })
 
   it('最新報が期限を持つならそれを使う', () => {
     const older = makeTsunami({ id: 'a', eventId: 'E1', time: '2024-01-02T10:00:00+09:00', validDateTime: '2024-01-02T17:00:00+09:00' })
     const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T13:00:00+09:00', validDateTime: '2024-01-03T09:00:00+09:00' })
-    expect(withInheritedValidDateTime(latest, [latest, older]).validDateTime).toBe('2024-01-03T09:00:00+09:00')
+    expect(withInheritedTsunamiFacts(latest, [latest, older]).validDateTime).toBe('2024-01-03T09:00:00+09:00')
   })
 
   it('別イベントの報からは引き継がない', () => {
     const other = makeTsunami({ id: 'x', eventId: 'E2', time: '2024-01-02T10:00:00+09:00', validDateTime: '2024-01-02T17:00:00+09:00' })
     const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00' })
-    expect(withInheritedValidDateTime(latest, [latest, other]).validDateTime).toBeUndefined()
+    expect(withInheritedTsunamiFacts(latest, [latest, other]).validDateTime).toBeUndefined()
   })
 
   it('日時として読めない期限は落とす（残すと以後の比較がすべて偽へ倒れる）', () => {
     const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00', validDateTime: '壊れた期限' })
-    expect(withInheritedValidDateTime(latest, [latest]).validDateTime).toBeUndefined()
+    expect(withInheritedTsunamiFacts(latest, [latest]).validDateTime).toBeUndefined()
   })
 
   it('自分の期限が読めなければ、同一イベントの過去報から引き継ぐ', () => {
     const older = makeTsunami({ id: 'a', eventId: 'E1', time: '2024-01-02T10:00:00+09:00', validDateTime: '2024-01-02T17:00:00+09:00' })
     const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00', validDateTime: '壊れた期限' })
-    expect(withInheritedValidDateTime(latest, [latest, older]).validDateTime).toBe('2024-01-02T17:00:00+09:00')
+    expect(withInheritedTsunamiFacts(latest, [latest, older]).validDateTime).toBe('2024-01-02T17:00:00+09:00')
   })
 
   it('eventId が無い経路（P2PQuake）では id が一致する報だけを見る', () => {
     const other = makeTsunami({ id: 'x', time: '2024-01-02T10:00:00+09:00', validDateTime: '2024-01-02T17:00:00+09:00' })
     const latest = makeTsunami({ id: 'b', time: '2024-01-02T10:03:00+09:00' })
-    expect(withInheritedValidDateTime(latest, [latest, other]).validDateTime).toBeUndefined()
+    expect(withInheritedTsunamiFacts(latest, [latest, other]).validDateTime).toBeUndefined()
+  })
+
+  // 電文の本文も同じ扱いで引き継ぐ（→ `JMATsunami.bodyText`）。期限と別に固定するのは、
+  // **選び方が違う**ため —— 期限は「日時として読める最新のもの」、本文は「本文を持つ最新の報」。
+  it('本文を持たない最新報では、同一イベントの過去報から引き継ぐ', () => {
+    const older = makeTsunami({ id: 'a', eventId: 'E1', time: '2024-01-02T10:00:00+09:00', bodyText: '前の本文' })
+    const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00' })
+    expect(withInheritedTsunamiFacts(latest, [latest, older]).bodyText).toBe('前の本文')
+  })
+
+  // 正: 本文を持つ過去報が複数あれば、発表時刻が最も新しいものを採る。
+  // **順序を当てにしない** —— 履歴 API は新しい順に並ぶとは限らない
+  it('本文を持つ過去報が複数あれば発表時刻が最も新しいものを採る', () => {
+    const oldest = makeTsunami({ id: 'a', eventId: 'E1', time: '2024-01-02T10:00:00+09:00', bodyText: '古い本文' })
+    const newer = makeTsunami({ id: 'c', eventId: 'E1', time: '2024-01-02T12:00:00+09:00', bodyText: '新しい本文' })
+    const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T13:00:00+09:00' })
+    // 履歴の並び順に依存しないことを見るため、時刻の順とは違う順で渡す
+    expect(withInheritedTsunamiFacts(latest, [oldest, latest, newer]).bodyText).toBe('新しい本文')
+  })
+
+  // 対照: 最新報が本文を持つならそれを使う（過去報で上書きしない）
+  it('最新報が本文を持つならそれを使う', () => {
+    const older = makeTsunami({ id: 'a', eventId: 'E1', time: '2024-01-02T10:00:00+09:00', bodyText: '前の本文' })
+    const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00', bodyText: '今の本文' })
+    expect(withInheritedTsunamiFacts(latest, [latest, older]).bodyText).toBe('今の本文')
+  })
+
+  // 安全弁: 別イベントの本文は引き継がない（無関係な津波の文を出さない）
+  it('別イベントの報からは本文を引き継がない', () => {
+    const other = makeTsunami({ id: 'x', eventId: 'E2', time: '2024-01-02T10:00:00+09:00', bodyText: '別の津波の本文' })
+    const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00' })
+    expect(withInheritedTsunamiFacts(latest, [latest, other]).bodyText).toBeUndefined()
+  })
+
+  // 安全弁: 発表時刻が読めない報が混ざっても、読める報の中から選べること。
+  // 並べ替えの比較が NaN になる要素を含んでも落ちない
+  it('発表時刻が読めない報が混ざっても、読める報から選ぶ', () => {
+    const broken = makeTsunami({ id: 'z', eventId: 'E1', time: '壊れた時刻', bodyText: '時刻の読めない報の本文' })
+    const good = makeTsunami({ id: 'a', eventId: 'E1', time: '2024-01-02T10:00:00+09:00', bodyText: '読める報の本文' })
+    const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00' })
+    expect(withInheritedTsunamiFacts(latest, [broken, good, latest]).bodyText).toBe('読める報の本文')
   })
 })
 
@@ -828,5 +875,154 @@ describe('observationBadges: 上昇中 / observationArrivalFallbackText', () => 
   it('安全弁: 第1波識別不能でも「到達確認」の扱いは変えない（到達そのものは確定している）', () => {
     // 気象庁の定義は「津波を観測したものの第1波の到達時刻が不明瞭」。到達は起きている
     expect(observationBadges(obs({ condition: { firstWaveUnidentifiable: true } }))).toEqual(['到達確認'])
+  })
+})
+
+// 最大波の観測時刻（`MaxHeight/DateTime`）。波高の数値だけでは、それがいつの観測値か
+// 分からない —— 続報で値が変わらないとき、観測し直して同じだったのか前の値が据え置かれて
+// いるのかを読み取れる唯一の手がかり。
+describe('observationMaxHeightTimeText: 最大波の観測時刻', () => {
+  const obs = (o: Partial<TsunamiObservation>): TsunamiObservation => ({ name: '銚子', ...o })
+
+  it('正: 語を冠して時刻を出す（同じ行に並ぶ第1波の到達時刻と紛れないように）', () => {
+    expect(observationMaxHeightTimeText(obs({
+      height: { value: 8.5, description: '8.5m' },
+      maxHeightDateTime: '2026-01-01T12:40:00+09:00',
+    }))).toBe('最大波 12:40')
+  })
+
+  it('対照: 時刻が無ければ何も返さない', () => {
+    expect(observationMaxHeightTimeText(obs({ height: { value: 8.5, description: '8.5m' } }))).toBe('')
+  })
+
+  it('安全弁: 波高を出していない行では返さない（値の無い観測点が何かを観測したように見える）', () => {
+    expect(observationMaxHeightTimeText(obs({
+      maxHeightDateTime: '2026-01-01T12:40:00+09:00',
+      condition: { maxHeightMissing: true },
+    }))).toBe('')
+  })
+})
+
+// 「重要」（`MaxHeight/Condition`）の意味は電文で違う。語をそのまま出しても伝わらないので
+// 意味の側を書くが、そのとき基準を取り違えると実際より軽い／重い印象を与える。
+describe('「重要」の言い換えは出所ごとに分ける', () => {
+  // 正: 沖合の観測点・沿岸への推定は大津波警報と津波警報の両方が基準
+  // （電文解説資料 Ⅱ.13 1-1-2-2-2 / 1-2-2-3）。
+  it('沖合は大津波警報・津波警報の両方を挙げる', () => {
+    expect(importantBadgeText(true)).toBe('大津波警報・津波警報の基準超')
+  })
+
+  // 対照: 沿岸の潮位観測点は大津波警報のみが基準（Ⅱ.12 1-2-2-2）。広げると過大になる。
+  it('沿岸は大津波警報だけを挙げる', () => {
+    expect(importantBadgeText(false)).toBe('大津波警報の基準超')
+  })
+
+  // 安全弁: 区域の予想波高の「重要」は別の語にする。あちらは実際に観測・推定した高さではなく
+  // **予想の書き換え**を指すので（Ⅱ.11 1-1-2-4）、同じ語で出すと取り違える。
+  it('区域の予想波高の「重要」は別の語にする', () => {
+    expect(forecastHeightImportantBadge()).not.toBe(importantBadgeText(true))
+    expect(forecastHeightImportantBadge()).not.toBe(importantBadgeText(false))
+  })
+
+  // 対照: この印は引き下げでは付かない。方向が伝わらない語のままにしない
+  // （赤い色で出しているのに「下がったかもしれない更新」とも読めてしまう）。
+  it('区域の予想波高の語は方向を伝える', () => {
+    expect(forecastHeightImportantBadge()).toContain('引き上げ')
+  })
+
+  // 正: 沖合の観測点にはその基準でバッジが付く。
+  it('沖合の観測点のバッジに沖合の基準を使う', () => {
+    const obs: TsunamiObservation = { name: '岩手中部沖', offshore: true, condition: { important: true }, arrivalTime: '2026-01-01T12:20:00+09:00' }
+    expect(observationBadges(obs)).toContain('大津波警報・津波警報の基準超')
+  })
+
+  // 対照: 沿岸の観測点は従来どおり。
+  it('沿岸の観測点のバッジは従来のまま', () => {
+    const obs: TsunamiObservation = { name: '銚子', condition: { important: true }, arrivalTime: '2026-01-01T12:20:00+09:00' }
+    expect(observationBadges(obs)).toContain('大津波警報の基準超')
+  })
+})
+
+// 沿岸への推定は、数値を出せない状態（「推定中」）を電文が明示する。空欄にすると、値が無いのが
+// 気象庁の判断なのか読み落としなのか画面から分からない。
+describe('沿岸への推定の波高欄', () => {
+  // 正: 数値があればそれを出す。
+  it('数値があれば数値を出す', () => {
+    expect(estimationHeightText({ name: '岩手県', maxHeight: { description: '3m', value: 3 } })).toBe('3m')
+  })
+
+  // 正: 数値が無く「推定中」なら理由を出す。
+  it('推定中なら理由を出す', () => {
+    expect(estimationHeightText({ name: '福島県', condition: { estimating: true } })).toBe('推定中')
+  })
+
+  // 対照: どちらも無ければ空（沖合から遠く、推定そのものが出ない沿岸）。
+  it('数値も理由も無ければ空にする', () => {
+    expect(estimationHeightText({ name: '青森県' })).toBe('')
+  })
+
+  // 安全弁: バッジは「重要」のときだけ。「推定中」は波高欄の担当で、両方に出すと 1 行に 2 回並ぶ。
+  it('推定中はバッジにしない', () => {
+    expect(estimationBadges({ name: '福島県', condition: { estimating: true } })).toEqual([])
+    expect(estimationBadges({ name: '岩手県', condition: { important: true } })).toEqual(['大津波警報・津波警報の基準超'])
+  })
+})
+
+// 「観測中」のまま津波警報に相当する津波を観測している状態。
+//
+// 気象庁は大津波警報の区域に対応する沖合の観測点で、沿岸で推定される高さが大津波警報の基準
+// （3m 超）に届かないとき数値を出さず「観測中」とする。そのとき `Revise` に「更新」と書くことで
+// 津波警報相当（1m 超）を観測していることを示す（Ⅱ.13 1-1-2-2-2）。
+// **「観測中」の中身は変わりようがないので、値の変化からは導けない。**
+describe('観測中のまま津波警報相当', () => {
+  const offshoreObserving = (over: Partial<TsunamiObservation> = {}): TsunamiObservation => ({
+    name: '宮城沖', offshore: true, condition: { observing: true }, ...over,
+  })
+
+  // 正: 沖合・観測中・Revise=更新 の 3 つが揃ったとき。
+  it('沖合で観測中のまま更新なら立てる', () => {
+    expect(isWarningLevelWhileObserving(offshoreObserving({ maxHeightRevise: '更新' }))).toBe(true)
+  })
+
+  // 対照: 「追加」では立てない（新たに観測中になっただけ）。
+  it('追加では立てない', () => {
+    expect(isWarningLevelWhileObserving(offshoreObserving({ maxHeightRevise: '追加' }))).toBe(false)
+  })
+
+  // 対照: Revise が無ければ立てない。
+  it('Revise が無ければ立てない', () => {
+    expect(isWarningLevelWhileObserving(offshoreObserving())).toBe(false)
+  })
+
+  // 安全弁: 沿岸の観測点には当てない。仕組みとしては成り立ちそうに見えるが、資料が注意を
+  // 書いているのは沖合だけ。先回りすると気象庁が言っていない警告をアプリが作ることになる。
+  it('沿岸の観測点には当てない', () => {
+    expect(isWarningLevelWhileObserving({
+      name: '銚子', condition: { observing: true }, maxHeightRevise: '更新',
+    })).toBe(false)
+  })
+
+  // 安全弁: 「観測中」でなければ当てない（数値が出ている観測点の更新は普通の更新）。
+  it('観測中でなければ当てない', () => {
+    expect(isWarningLevelWhileObserving({
+      name: '宮城沖', offshore: true, maxHeightRevise: '更新',
+      height: { value: 1.2, description: '1.2m' },
+    })).toBe(false)
+  })
+
+  // 正: バッジに出る。既存の「重要」のバッジと併記できる。
+  it('バッジに出す', () => {
+    expect(observationBadges(offshoreObserving({ maxHeightRevise: '更新', arrivalTime: '2026-01-01T12:20:00+09:00' })))
+      .toContain('津波警報相当を観測')
+  })
+
+  // 安全弁: 「〜の基準超」と同じ形にしない。同じ行に並ぶので、形を揃えると
+  // 「実測値が弱いほうの基準だけ超えた」と読める（実際は数値が出ていない）
+  it('「基準超」の語形と混ぜない', () => {
+    const badge = observationBadges(offshoreObserving({ maxHeightRevise: '更新', arrivalTime: '2026-01-01T12:20:00+09:00' }))
+      .find(b => b.includes('津波警報'))!
+    expect(badge).not.toContain('基準超')
+    expect(badge).not.toBe(importantBadgeText(true))
+    expect(badge).not.toBe(importantBadgeText(false))
   })
 })

@@ -1,8 +1,8 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation } from '../../types/earthquake'
-import { formatDateTimeMin, formatTime } from '../../utils/formatters'
+import { formatDateTimeMin, formatDepth, formatMagnitudeCondition, formatTime, hasDepth } from '../../utils/formatters'
 import { quakeEventKey } from '../../utils/quakeMerge'
-import { groupAreasForCardDisplay, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, tsunamiAreaKey } from '../../utils/tsunami'
+import { groupAreasForCardDisplay, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, tsunamiAreaKey } from '../../utils/tsunami'
 import { TSUNAMI_MISSING_COLOR as MISSING_COLOR } from '../../utils/tsunamiStyle'
 import { mapChunksToRefs, planFollowScroll, type FollowRect, type SpeechFollowSession, type SpeechRef } from '../../utils/ttsFollow'
 import { getSpeechClock } from '../../utils/voicevox'
@@ -151,6 +151,43 @@ function TsunamiHeightHeader({ label, style }: { label: string; style: GradeStyl
 }
 
 /**
+ * 津波の原因地震を 1 行で出す。
+ *
+ * **1 件目と 2 件目以降で同じものを通すこと。** 電文は原因地震を複数持ちうる（短い間に起きた
+ * 地震がまとめて 1 通で発表される）ので、別々に書くと項目を足したとき片方に漏れる。
+ */
+function SourceEarthquakeLine({ eq, prefix, link }: {
+  eq: NonNullable<JMATsunami['sourceEarthquakes']>[number]
+  prefix: string
+  link: React.ReactNode
+}) {
+  return (
+    <div>
+      {prefix}{eq.hypocenterName}
+      {/* 規模が数値で無いときは気象庁が添えた説明を出す（「Ｍ８を超える巨大地震」）。
+          ここを空にすると、最大級の地震ほど震源名だけの薄い表示になる。 */}
+      {eq.magnitude !== undefined
+        ? `　M${eq.magnitude}`
+        : eq.magnitudeCondition && `　${formatMagnitudeCondition(eq.magnitudeCondition)}`}
+      {/* 深さ。**遠地地震による津波では、震源の深さがこの電文にしか無い**（対応する地震情報が
+          発表されないことがある）。`0` は「ごく浅い」という有効値なので `hasDepth` で弾く。
+          **値によらず「深さ」を前置する** —— 地震カード・地図・共有カードもそう出しており、
+          ここだけ省くとアプリの中で表記が割れる。 */}
+      {eq.depth !== undefined && hasDepth(eq.depth) && `　深さ ${formatDepth(eq.depth)}`}
+      {eq.originTime && `　${formatTime(eq.originTime).slice(0, 5)}発生`}
+      {link}
+      {/* 震央補助表現（「御前崎の北東40km付近」）と震源決定機関（「ＰＴＷＣ」等）。
+          前者は震央地名より具体的に場所が分かり、後者は誰が決めた値かを示す。
+          どちらも気象庁の語をそのまま出す。 */}
+      {eq.nameFromMark && <div>{eq.nameFromMark}</div>}
+      {/* この要素は**気象庁以外の機関が決めた震源を採用したときだけ**入る（Ⅱ.13 2-3-2）ので、
+          機関名だけでは含意（気象庁の決定ではない）が伝わらない。ラベルに書く。 */}
+      {eq.source && <div>震源決定: {eq.source}（気象庁以外）</div>}
+    </div>
+  )
+}
+
+/**
  * 区域の到達状況（`FirstHeight/Condition`）をバッジの文言へ写す。
  *
  * **3 つは意味が違う。** 「ただちに津波来襲と予測」はこれから来る予測、「津波到達中と推測」は
@@ -237,6 +274,14 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
               {gradeChange.label}から{gradeChange.raised ? '引き上げ' : '切り替え'}
             </span>
           )}
+          {/* 大津波警報の区域で、予想波高が初めて数値になった／上方修正された
+              （電文の `MaxHeight/Condition` = 重要）。観測・推定の「重要」とは意味が違うので
+              語を分けている（→ tsunami.ts の forecastHeightImportantBadge）。 */}
+          {area.forecastHeightImportant && (
+            <span className="block mt-1" style={{ fontSize: '0.8125rem', color: '#f87171' }}>
+              {forecastHeightImportantBadge()}
+            </span>
+          )}
         </div>
         {arrivalBadge && (
           <span className="flex-shrink-0 text-xs font-bold px-2 py-1 rounded border"
@@ -290,6 +335,9 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
                       {obs.arrivalTime
                         ? `${formatTime(obs.arrivalTime).slice(0, 5)}${obs.initial ? ` ${obs.initial}波` : ''}`
                         : observationArrivalFallbackText(obs)}
+                      {/* 最大波を観測した時刻。第1波の到達時刻と紛れないよう語を冠する
+                          （決め方は `observationMaxHeightTimeText`）。 */}
+                      {observationMaxHeightTimeText(obs) && `　${observationMaxHeightTimeText(obs)}`}
                       {/* 同名 station があれば満潮時刻をここに表示 */}
                       {(() => {
                         const matched = stations.find(s => s.name === obs.name)
@@ -358,13 +406,22 @@ function TsunamiObservationRow({ obs, onObservationClick, canFocusObs, registerS
             </span>
           ))}
         </div>
+        {/* 最大波の観測時刻は**到達時刻の有無に関わらず出す**（第1波を識別できなくても
+            最大波は観測できている電文がある）。区域に紐づく行と同じ述語を通す。 */}
         {obs.arrivalTime ? (
           <span className="block mt-1 text-secondary" style={{ fontSize: '0.8125rem' }}>
             到達: {formatTime(obs.arrivalTime).slice(0, 5)}{obs.initial ? `（${obs.initial}）` : ''}
+            {observationMaxHeightTimeText(obs) && `　${observationMaxHeightTimeText(obs)}`}
+            {/* 特殊観測機器（「ＧＮＳＳ波浪計」「水圧計」）。沖合の観測点だけが持つ。
+                電文の語をそのまま出す —— 言い換えると、どちらの計器が測った値か分からなくなる。
+                **括弧で括る** —— 「到達: 」のラベルは時刻にしか掛かっておらず、素で並べると
+                地名や別の値と読める。 */}
+            {obs.sensor && `　（${obs.sensor}）`}
           </span>
-        ) : observationArrivalFallbackText(obs) && (
+        ) : (observationArrivalFallbackText(obs) || observationMaxHeightTimeText(obs) || obs.sensor) && (
           <span className="block mt-1 text-secondary" style={{ fontSize: '0.8125rem' }}>
-            {observationArrivalFallbackText(obs)}
+            {[observationArrivalFallbackText(obs), observationMaxHeightTimeText(obs)].filter(Boolean).join('　')}
+            {obs.sensor && `${observationArrivalFallbackText(obs) || observationMaxHeightTimeText(obs) ? '　' : ''}（${obs.sensor}）`}
           </span>
         )}
       </div>
@@ -849,6 +906,14 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
   const topStyle = getGradeStyle(topGrade)
   const cancelInfo = CANCEL_REASON_LABEL[active[0]?.cancelReason ?? 'lifted']
   const latestTime = active[0]?.time
+  // 観測状況を確定した時刻（`Head/TargetDateTime`）。**発表時刻と同じ分なら出さない** ——
+  // 同じ数字が 2 つ並ぶだけで、「観測値は発表より前の時点のもの」という肝心の意味が薄れる。
+  // 実電文では VTSE52 で 60〜360 秒・VTSE51 で 0〜120 秒さかのぼり、0 秒の報も普通にある。
+  const observationAsOfRaw = active[0]?.observationDateTime
+  const observationAsOf = observationAsOfRaw && latestTime
+    && formatTime(observationAsOfRaw).slice(0, 5) !== formatTime(latestTime).slice(0, 5)
+    ? formatTime(observationAsOfRaw).slice(0, 5)
+    : undefined
   // 1 件目を主に扱い、残りは下に併記する（電文は複数の地震を持ちうる）。
   const sourceEarthquakes = active[0]?.sourceEarthquakes ?? []
   const sourceEarthquake = sourceEarthquakes[0]
@@ -875,38 +940,68 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
           <div className="px-3 py-2 roomy:px-4 roomy:py-3"
             style={{ background: isCancelledDisplay ? 'rgba(75,85,99,0.18)' : `${topStyle.cardBorder}18` }}>
             <div className="flex items-center justify-between gap-2">
-              <div className="font-bold" style={{ fontSize: '0.875rem', color: isCancelledDisplay ? '#9ca3af' : topStyle.headerColor }}>
+              <div className="font-bold flex items-center gap-2" style={{ fontSize: '0.875rem', color: isCancelledDisplay ? '#9ca3af' : topStyle.headerColor }}>
                 {isCancelledDisplay ? cancelInfo.title : `${GRADE_LABEL[topGrade]} 発令中`}
+                {/* 電文が自分で名乗っている運用種別（`Control/Status`）。訓練・試験のときだけ出す。
+                    印が無いと、訓練の大津波警報が本物と同じ顔で出る。 */}
+                {active[0]?.operationStatus && (
+                  <span
+                    className="px-1.5 py-0.5 rounded flex-shrink-0"
+                    style={{ fontSize: '0.6875rem', backgroundColor: '#1f2937', color: '#fcd34d', border: '1px solid #d97706' }}
+                  >
+                    {active[0].operationStatus}報
+                  </span>
+                )}
               </div>
               {latestTime && (
                 <div className="text-right flex-shrink-0" style={{ fontSize: '0.6875rem', color: isCancelledDisplay ? '#6b7280' : topStyle.arrivalColor, opacity: 0.8 }}>
-                  {formatDateTimeMin(latestTime)} 更新
+                  <div>{formatDateTimeMin(latestTime)} 更新</div>
+                  {/* 観測状況を確定した時刻（電文の `Head/TargetDateTime`）。観測情報でのみ入り、
+                      実電文では最大 6 分さかのぼる。**下の波高がいつ時点のものか**を示す。
+
+                      **発表時刻と同じ分なら出さない。** 同じ数字が 2 つ並ぶだけで、
+                      「観測値が発表より前の時点のもの」という肝心の意味が薄れる。 */}
+                  {observationAsOf && (
+                    <div style={{ opacity: 0.85 }}>観測 {observationAsOf} 時点</div>
+                  )}
                 </div>
               )}
             </div>
             <div className="mt-1" style={{ fontSize: '0.6875rem', color: isCancelledDisplay ? '#6b7280' : topStyle.headerColor, opacity: 0.8 }}>
               {isCancelledDisplay ? cancelInfo.desc : topGrade === 'Forecast' ? '若干の海面変動があるかもしれません' : '海岸・河川から直ちに離れてください'}
             </div>
+            {/* 電文が名乗る情報名（`Head/Title`）。**上の等級表示とは別物** —— あちらはアプリが
+                区域の等級から組み立てた見出しで、こちらは気象庁がその報に付けた名前。
+                同じ VTSE51 が「津波観測に関する情報」と「各地の満潮時刻・津波到達予想時刻に
+                関する情報」を名乗り分けるので、**種別コードだけでは今どちらを見ているか分からない。**
+                行動指示より下に、目立たせずに置く。 */}
+            {active[0]?.infoName && (
+              <div className="mt-0.5" style={{ fontSize: '0.625rem', color: isCancelledDisplay ? '#6b7280' : topStyle.headerColor, opacity: 0.6 }}>
+                {active[0].infoName}
+              </div>
+            )}
+            {/* 気象庁が書いた取消しの概要（電文の `Body/Text`）。アプリの定型文（上の `cancelInfo.desc`）
+                とは別で、なぜ取り消したのかはここにしか無い。 */}
+            {isCancelledDisplay && active[0]?.cancelText && (
+              <div className="mt-1" style={{ fontSize: '0.6875rem', color: '#9ca3af', lineHeight: 1.6, whiteSpace: 'pre-line' }}>
+                {active[0].cancelText}
+              </div>
+            )}
             {!isCancelledDisplay && sourceEarthquake && (
               <div className="mt-1.5 pt-1.5" style={{ fontSize: '0.6875rem', color: topStyle.arrivalColor, opacity: 0.9, borderTop: `1px solid ${topStyle.cardBorder}40` }}>
-                震源: {sourceEarthquake.hypocenterName}
-                {/* 規模が数値で無いときは気象庁が添えた説明を出す（「Ｍ８を超える巨大地震」）。
-                    ここを空にすると、最大級の地震ほど震源名だけの薄い表示になる。 */}
-                {sourceEarthquake.magnitude !== undefined
-                  ? `　M${sourceEarthquake.magnitude}`
-                  : sourceEarthquake.magnitudeCondition && `　${sourceEarthquake.magnitudeCondition}`}
-                {sourceEarthquake.originTime && `　${formatTime(sourceEarthquake.originTime).slice(0, 5)}発生`}
-                {linkedQuake && <span style={{ marginLeft: '0.375rem', fontSize: '0.625rem', opacity: 0.7 }}>▶ 地震情報</span>}
                 {/* 短い間に複数の地震が起きると、1 つの津波情報にまとめて発表される。
-                    2 件目以降を落とすと、どの地震による津波なのかが読み取れなくなる。 */}
-                {sourceEarthquakes.slice(1).map((eq, i) => (
-                  <div key={i}>
-                    {eq.hypocenterName}
-                    {eq.magnitude !== undefined
-                      ? `　M${eq.magnitude}`
-                      : eq.magnitudeCondition && `　${eq.magnitudeCondition}`}
-                    {eq.originTime && `　${formatTime(eq.originTime).slice(0, 5)}発生`}
-                  </div>
+                    2 件目以降を落とすと、どの地震による津波なのかが読み取れなくなる。
+                    **1 件目と 2 件目以降で別々に書かない** —— 項目を足したとき片方に漏れる
+                    （実際、震央補助表現と震源決定機関を 1 件目にだけ足して 2 件目で落としていた）。 */}
+                {sourceEarthquakes.map((eq, i) => (
+                  <SourceEarthquakeLine
+                    key={i}
+                    eq={eq}
+                    prefix={i === 0 ? '震源: ' : ''}
+                    link={i === 0 && linkedQuake
+                      ? <span style={{ marginLeft: '0.375rem', fontSize: '0.625rem', opacity: 0.7 }}>▶ 地震情報</span>
+                      : null}
+                  />
                 ))}
               </div>
             )}
@@ -964,23 +1059,58 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                       沿岸への推定（気象庁発表）
                     </div>
                     {t.estimations.map((est, i) => (
-                      <div key={i} className="flex items-center justify-between gap-2 px-4 py-1.5 border-b border-white/5 last:border-0">
-                        <span className="text-white text-[0.9375rem] truncate">{est.name}</span>
-                        <span className="flex-shrink-0 text-right" style={{ fontSize: '0.8125rem', color: '#93c5fd' }}>
-                          {est.maxHeight?.description && <span className="font-bold">{est.maxHeight.description}</span>}
-                          {est.arrivalTime && <span className="ml-2">{formatTime(est.arrivalTime).slice(0, 5)}到達予想</span>}
-                          {!est.arrivalTime && est.arrivalCondition && <span className="ml-2">{est.arrivalCondition}</span>}
-                        </span>
+                      <div key={i} className="px-4 py-1.5 border-b border-white/5 last:border-0">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="flex items-center gap-2 flex-wrap min-w-0">
+                            <span className="text-white text-[0.9375rem] truncate">{est.name}</span>
+                            {estimationBadges(est).map(label => (
+                              <span key={label} className="text-xs font-bold px-1.5 py-0.5 rounded"
+                                style={{ background: 'rgba(29,78,216,0.3)', color: '#93c5fd' }}>
+                                {label}
+                              </span>
+                            ))}
+                          </span>
+                          <span className="flex-shrink-0 text-right" style={{ fontSize: '0.8125rem', color: '#93c5fd' }}>
+                            {/* 数値が無ければ、無い理由（電文の「推定中」）を出す。 */}
+                            {estimationHeightText(est) && <span className="font-bold">{estimationHeightText(est)}</span>}
+                            {est.arrivalTime && <span className="ml-2">{formatTime(est.arrivalTime).slice(0, 5)}到達予想</span>}
+                          </span>
+                        </div>
+                        {/* 到達についての説明は時刻と併存する（電文解説資料 Ⅱ.13 1-2-2-2 の事例１）。
+                            時刻があるときに隠すと、時刻を出せる沿岸ほど注意喚起が落ちる。 */}
+                        {est.arrivalCondition && (
+                          <div className="mt-0.5" style={{ fontSize: '0.6875rem', color: '#9ca3af' }}>{est.arrivalCondition}</div>
+                        )}
                       </div>
                     ))}
                   </>
                 )}
               </div>
             )}
+            {/* 気象庁が電文に添えた本文（`Body/Text`）。**津波予報（若干の海面変動）では
+                区域に波高も到達時刻も付かないため、いつ来ていつまで続くかはここにしか無い。**
+                付加文 2 種より先に出す —— あちらは等級ごとの定型文と解説で、こちらがこの報の話。 */}
+            {t.bodyText && !t.cancelledAt && (
+              <div className="bg-card rounded-lg overflow-hidden" style={{ border: '1px solid #374151' }}>
+                <div className="text-white" style={{ fontSize: '0.8125rem', lineHeight: '1.7', whiteSpace: 'pre-wrap', padding: '0.75rem 1rem' }}>
+                  {t.bodyText}
+                </div>
+              </div>
+            )}
             {t.warningComment && !t.cancelledAt && (
               <div className="bg-card rounded-lg overflow-hidden" style={{ border: '1px solid #374151' }}>
                 <div className="text-secondary" style={{ fontSize: '0.75rem', lineHeight: '1.7', whiteSpace: 'pre-line', padding: '0.75rem 1rem' }}>
                   {t.warningComment}
+                </div>
+              </div>
+            )}
+            {/* 気象庁の自由付加文。等級ごとの定型文（warningComment）と違い電文ごとに
+                書き起こされ、続報での更新はここに現れる（「［予想される津波の高さの解説］……」等）。
+                全角スペースで整形された表が入るため `whitespace-pre-wrap` で改行と空白を保つ。 */}
+            {t.freeText && !t.cancelledAt && (
+              <div className="bg-card rounded-lg overflow-hidden" style={{ border: '1px solid #374151' }}>
+                <div className="text-secondary" style={{ fontSize: '0.75rem', lineHeight: '1.7', whiteSpace: 'pre-wrap', padding: '0.75rem 1rem' }}>
+                  {t.freeText}
                 </div>
               </div>
             )}

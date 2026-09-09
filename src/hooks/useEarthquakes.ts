@@ -8,7 +8,7 @@ import type { QuakeRetraction } from '../utils/quakeMerge'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex, getAreaPrefIndexCache } from '../utils/stationCoords'
 import type { AreaPrefIndex } from '../utils/quakePoints'
 import { calcEEWCancelTime, eewSerial, eewEventKey } from '../utils/eew'
-import { mergeTsunamiObservations, isCancelForCurrentTsunami, isTsunamiContinuation, withInheritedValidDateTime, latestValidDateTime } from '../utils/tsunami'
+import { mergeTsunamiObservations, isCancelForCurrentTsunami, isTsunamiContinuation, withInheritedTsunamiFacts, latestValidDateTime } from '../utils/tsunami'
 import { log } from '../utils/logger'
 import { serverNow, serverDate } from '../utils/clock'
 
@@ -17,6 +17,7 @@ import { isValidDmdataApiKey, DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dm
 import {
   createTestEarthquake,
   createTestForeignQuake,
+  createTestForeignQuakeHuge,
   createTestLpgm,
   createTestEEW,
   createTestEEWWarning,
@@ -242,6 +243,11 @@ function runSimulateTsunami(
       issue: { ...tsunami.issue, time: now },
       cancelled: true,
       cancelReason: isDmdss ? cancelReason : undefined,
+      // 取消しの概要（電文の `Body/Text`）。**誤報取消のときだけ気象庁が理由を書く**ので、
+      // 解除では持たせない。実電文の形に合わせないと、画面と読み上げでこの経路を通れない
+      ...(isDmdss && cancelReason === 'retracted'
+        ? { cancelText: 'システムの障害により誤った津波警報等を配信しました。' }
+        : {}),
       areas: [],
     })
     ref.current = null
@@ -305,6 +311,11 @@ function runSimulateEEWRetraction(
     handleEvent({
       ...report,
       cancelled: true,
+      // 取消しの概要（電文の `Body/Text`）。地震・津波と同じ構造なので同じ形で持たせる ——
+      // 実電文の形がテストボタンに無いと、EEW だけこの経路を実機で一度も通れない。
+      // **DMDSS 版限定**: この項目を作れるのは XML を読む dmdataParser だけで、
+      // P2PQuake 経路（standard 版）には対応するフィールドが無い。津波の解除テストと同じ扱い
+      ...(isDmdss ? { cancelText: 'システムの障害により誤った緊急地震速報を配信しました。' } : {}),
       areas: [],
       forecastMaxScale: undefined,
       forecastMaxLpgmClass: undefined,
@@ -820,7 +831,8 @@ export function useEarthquakes(
                   payload: { kind: 'purge-cancelled-quake', id: e.id },
                   silent: true,
                 })
-                return { ...e, cancelledAt: now }
+                // 津波側と同じく、取消電文だけが持つ項目は名指しで移す（土台は表示中のカード）。
+                return { ...e, cancelledAt: now, ...(quake.cancelText && { cancelText: quake.cancelText }) }
               }
               return e
             })
@@ -896,7 +908,19 @@ export function useEarthquakes(
                 payload: { kind: 'purge-cancelled-tsunami', id: prev.tsunamis[0].id },
                 silent: true,
               })
-              return { ...prev, tsunamis: [{ ...prev.tsunamis[0], cancelledAt: now, cancelReason: tsunami.cancelReason }], lastUpdate: now }
+              // **取消電文から引き継ぐのは 2 つ。** 表示中のカードを土台にするので、
+              // 取消電文だけが持つ項目は名指しで移さないと落ちる（`cancelText` は
+              // 気象庁が書いた取消しの理由で、他のどこにも無い）。
+              return {
+                ...prev,
+                tsunamis: [{
+                  ...prev.tsunamis[0],
+                  cancelledAt: now,
+                  cancelReason: tsunami.cancelReason,
+                  ...(tsunami.cancelText && { cancelText: tsunami.cancelText }),
+                }],
+                lastUpdate: now,
+              }
             }
             return { ...prev, tsunamis: [], lastUpdate: now }
           }
@@ -920,7 +944,24 @@ export function useEarthquakes(
             // `??` で書かずにその関数へ通すのは、**日時として読めない値を弾く箇所を 1 つに保つため**。
             // 読めない期限をカードへ入れると、以後の続報でも引き継がれ続け、比較はすべて偽に倒れる。
             const validDateTime = latestValidDateTime([current, tsunami])
-            return { ...prev, tsunamis: [{ ...tsunami, areas, observations, validDateTime }], lastUpdate: now }
+            // 電文の本文（`Body/Text`）も引き継ぐ。**気象庁は毎報には載せない** —— 実電文を
+            // 数えると津波予報の VTSE41 の半数に入るだけで、続報の VTSE51/52 には 1 通も無い。
+            // 引き継がないと、津波予報で「いつ来ていつまで続くか」を伝えた文が、最初の観測情報が
+            // 届いた瞬間に画面から消える（この等級では区域に波高も到達時刻も付かないので、
+            // その文にしか無い）。地震情報側が自由付加文を `??` で引き継ぐのと同じ扱い
+            // （`utils/quakeMerge.ts`）。新しい報が本文を持てばそちらへ従う。
+            const bodyText = tsunami.bodyText ?? current.bodyText
+            // 観測状況を確定した時刻も引き継ぐ。**入るのは観測情報（VTSE51/52）だけ**なので、
+            // **引き継がないと**、間に等級の発表（VTSE41）が挟まった瞬間に消える。観測点そのものは
+            // `mergeTsunamiObservations` で残るため、時点だけ落とすと観測欄の「◯時◯分時点」が
+            // 出たり消えたりする。
+            //
+            // **引き継いだ結果、名乗り（`infoName`）と観測時点の出所が別の報になることがある。**
+            // `infoName` は `...tsunami` から来る（最新の報の値）が、観測時点は前報から残るため。
+            // 等級の発表が最後に来れば「大津波警報・津波警報・津波注意報」と名乗る報が、
+            // 前の観測情報の時点を持つ —— これは正常な状態。
+            const observationDateTime = tsunami.observationDateTime ?? current.observationDateTime
+            return { ...prev, tsunamis: [{ ...tsunami, areas, observations, validDateTime, bodyText, observationDateTime }], lastUpdate: now }
           }
           // TSU-3: 別 eventId の tsunami で既存を上書きするケースを検知したら警告する。
           // 実装は 1 件スロットのまま（複数同時発表は稀なため型変更はスコープ外）だが、
@@ -956,7 +997,8 @@ export function useEarthquakes(
               silent: true,
             })
             const next = new Map(prev.activeEEWs)
-            next.set(key, { ...existing, cancelledAt: now })
+            // 地震・津波と同じく、取消電文だけが持つ項目は名指しで移す（土台は表示中の EEW）。
+            next.set(key, { ...existing, cancelledAt: now, ...(eew.cancelText && { cancelText: eew.cancelText }) })
             return { ...prev, activeEEWs: next, lastUpdate: now }
           }
           // 続報の上書きだが severity は upgrade only にする（Yahoo hypoInfo 続報が
@@ -1170,7 +1212,7 @@ export function useEarthquakes(
             .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
           // 画面へ載せるのは最新報 1 通だけ。その報が有効期限を持たなくても、同じ津波の過去報が
           // 伝えていれば引き継ぐ（引き継がないと下の失効予約が積まれず、期限切れの津波が消えない）。
-          const latestTsunami = allTsunami[0] && withInheritedValidDateTime(allTsunami[0], allTsunami)
+          const latestTsunami = allTsunami[0] && withInheritedTsunamiFacts(allTsunami[0], allTsunami)
           // 気象庁は予報のみになった津波に必ず期限を付ける（tsunami-spec.md §3）。それが引き継げて
           // いないなら、期限を伝えた報が取得件数の上限から押し出された疑いがある。放っておくと
           // 「消えない津波」に化けるが、画面には何の痕跡も出ないので記録だけは残す。
@@ -1325,7 +1367,7 @@ export function useEarthquakes(
           .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
         // DMDSS 側と同じ引き継ぎ。P2PQuake の 552 は有効期限を持たないため実際には何も変わらないが、
         // 経路ごとに扱いを違えない（片方だけ直すと、次に触る人がどちらが正なのか判断できない）。
-        const latestTsunami = allTsunami[0] && withInheritedValidDateTime(allTsunami[0], allTsunami)
+        const latestTsunami = allTsunami[0] && withInheritedTsunamiFacts(allTsunami[0], allTsunami)
         const nowP2p = serverDate()
         const tsunamis = latestTsunami
           && !latestTsunami.cancelled
@@ -1495,6 +1537,10 @@ export function useEarthquakes(
     // 付加文（気象庁の固定付加文・自由付加文の原文）は DMDATA 経由でのみ配信される。standard 版では
     // 実データで届かないため含めない（LPGM を isDmdss 限定にしているのと同じ理由）。
     handleEvent(createTestForeignQuake(isDmdss))
+  }, [handleEvent])
+
+  const simulateForeignQuakeHuge = useCallback(() => {
+    handleEvent(createTestForeignQuakeHuge(isDmdss))
   }, [handleEvent])
 
   const simulateEEW = useCallback(
@@ -1680,6 +1726,7 @@ export function useEarthquakes(
     clearTelegramLog,
     simulateEarthquake,
     simulateForeignQuake,
+    simulateForeignQuakeHuge,
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
