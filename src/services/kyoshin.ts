@@ -184,7 +184,12 @@ export function hypoInfoItemToEEW(item: YahooHypoInfoItem): EEWAlert {
     earthquake: {
       originTime: item.originTime,
       arrivalTime: '',
-      condition: '以上',
+      // 震源要素の補足情報（電文の `Condition`）。**値域は「仮定震源要素」の 1 つだけ**で、
+      // 該当しなければ要素ごと出ない（電文解説資料 Ⅱ.21 1-2。実電文 26 通でも `''` か
+      // 「仮定震源要素」の 2 つしか現れない）。Yahoo の hypoInfo はこの区別を運ばないので、
+      // **判らないことを空で表す。** かつて `'以上'` を入れていたが、電文に存在しない値で、
+      // 何を意味するのかも辿れなかった（判定は `=== '仮定震源要素'` しか見ていない）。
+      condition: '',
       hypocenter: {
         name: item.regionName,
         latitude: parseCoord(item.latitude),

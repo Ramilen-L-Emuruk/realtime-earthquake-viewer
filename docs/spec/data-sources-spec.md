@@ -768,8 +768,8 @@ Yahoo は未登録秒には 403 を返す（登録遅延約 1.5 秒）。この 
 Yahoo の `hypoInfo.items` を EEW 型に変換して P2PQuake と統合する。**この経路は標準版のみ**
 （DMDSS 版は DMDATA の EEW 電文を主系とし、Yahoo 由来の EEW は使わない。詳細は
 [`eew-spec.md`](eew-spec.md) §3）。
-`condition` に相当するフィールドが無いため常に `'以上'` を返す（single-point PLUM 検知の判別不能・
-既知の限界。**PLUM 法** の詳細は [`eew-spec.md`](eew-spec.md) §5 参照）。severity は震度からの
+`condition` に相当するフィールドが無いため**常に空**を返す（single-point PLUM 検知の判別不能・
+既知の限界。空にしている理由と **PLUM 法** の詳細は [`eew-spec.md`](eew-spec.md) §5 参照）。severity は震度からの
 ヒューリスティック推定（`scaleNum >= 45 ? 'Warning' : 'Forecast'`）。
 
 ## 5. クロック同期（`src/utils/clock.ts`）
@@ -1300,3 +1300,6 @@ EEW の予想震度は範囲（下限・上限）で配信され、**上限が�
   512KiB 超は分割配信され（分割報符号 `RRA`〜`RRX`）、結合してから BUFR を解く。
   読み取り・表示・音・読み上げの詳細は [quake-spec.md](quake-spec.md) §8「推計震度分布図」、
   描き方は [map-rendering-spec.md](map-rendering-spec.md) §19
+- 2026-09-10: Yahoo hypoInfo 由来の EEW の `condition` を `'以上'` から**空**へ直した（§4）。
+  電文の値域に存在しない値で、判定（`=== '仮定震源要素'`）には掛からないため挙動は変わらないが、
+  何を意味するのか辿れないまま内部型に残っていた
