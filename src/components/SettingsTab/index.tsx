@@ -44,6 +44,7 @@ export interface TestFunctions {
   kohatsu?: () => void
   quakeNotice?: () => void
   earthquakeCount?: () => void
+  estimatedIntensity?: () => void
   notification: () => void
 }
 
@@ -1263,6 +1264,11 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
           </Row>
         )}
         {/* ── その他の地震情報 ── */}
+        {isDmdss && onTest.estimatedIntensity && (
+          <Row label="推計震度分布図" description="気象庁が推計した震度の広がり。地図とカードのボタンが公式の表示へ替わる + 地震情報と同じ音・短い読み上げ。テストでは地震情報の3秒後に流す（実際の発表は地震から数分後）">
+            <TestButton color="teal" onClick={onTest.estimatedIntensity}>推計震度分布図テスト</TestButton>
+          </Row>
+        )}
         {isDmdss && onTest.earthquakeCount && (
           <Row label="地震回数に関する情報（バナー）" description="群発時の回数経過（21時間で1704回・うち有感1回）をバナー表示 + earthquakeCount 音・短い読み上げ（閉じるボタンあり・7日で自動消去）">
             <TestButton color="teal" onClick={onTest.earthquakeCount}>地震回数テスト</TestButton>

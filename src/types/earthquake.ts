@@ -1337,6 +1337,87 @@ export interface JMAEarthquakeCount {
   expireAt: string
 }
 
+/** {@link JMAEstimatedIntensity} の凡例 1 行。電文の先頭が自分で名乗ってくる。 */
+export interface JMAEstimatedIntensityGrade {
+  /** 階級震度の整数部（4〜7） */
+  scale: number
+  /** 弱・強の別。`'none' | 'weak' | 'strong'` */
+  modifier: 'none' | 'weak' | 'strong'
+  /** この階級に対応する計測震度の下限（**0.1 単位の整数**。35 なら計測震度 3.5） */
+  lower: number
+  /** 同・上限（44 なら 4.4） */
+  upper: number
+}
+
+/**
+ * 推計震度分布図作図用データ（IXAC41）。
+ *
+ * 観測した震度と地盤増幅度から、震度計の無い場所の震度も推計した**面的な分布**。
+ * 250m メッシュ（世界測地系）で、推計震度4以上の範囲を示す。最大震度5弱以上を観測した地震に
+ * ついて、地震発生から概ね 15 分後に発表される。
+ *
+ * **アプリが自前で描いている震度の面（`QuakeIntensitySurfaceGL`）の公式版**にあたる。あちらは
+ * 観測点の値を逆距離加重で補間しただけだが、こちらは地盤増幅度と緊急地震速報の震度予測技術まで
+ * 織り込んだ気象庁の推計。
+ *
+ * **この電文だけ BUFR（二進形式）で届く。** DMDATA は他の種別と違って JSON 変換版を配らない。
+ * 512KiB を超えると分割配信され、受け側で結合してから読む（→ `bufrTelegramAssembly.ts`）。
+ *
+ * **セルは列指向の型付き配列で持つ。** 実電文の最大は 364,993 セル（2026-04-20 の M7.5）で、
+ * 1 セル 1 オブジェクトにすると桁違いに重くなる。震源カタログの点群（`map-rendering-spec.md`
+ * §16）が同じ持ち方をしている。
+ */
+export interface JMAEstimatedIntensity {
+  id: string
+  /** 発表時刻（電文ヘッダの時刻・ISO） */
+  time: string
+  /**
+   * 地震発現時刻（ISO・分まで）。**この電文は `eventId` を持たない**ので、地震カードとの
+   * 結び付けはこの時刻で行う。
+   *
+   * **発生時刻（`OriginTime`）ではなく発現時刻（`ArrivalTime`）。** 資料の表記は
+   * 「年月日（地震時刻、ＵＴＣ）」でどちらとも書かれていないが、**両者が 1 分ずれた実電文
+   * 2 例（2026-04-20・2026-06-26）で照合したところ、いずれも `ArrivalTime` と一致した。**
+   * これは {@link JMAQuake.earthquake}`.time` が採っているのと同じ時刻なので、
+   * 地震カードとは分単位でそのまま突き合わせられる（→ `matchEstimatedIntensity`）。
+   */
+  arrivalTime: string
+  /**
+   * 震源。**緯度経度は度・深さは km の実数**（電文は 0.01 度単位の整数で持つが、
+   * 読み取りの時点で度へ直してある）。
+   */
+  hypocenter: { lat: number; lon: number; depthKm: number }
+  /** マグニチュード。読めないときは `NaN`（→ `magnitudeCondition`） */
+  magnitude: number
+  /**
+   * 数値にならない規模の説明。電文は全ビット 0 を「Ｍ不明」、全ビット 1 を
+   * 「Ｍ８を超える巨大地震」と定めている（別紙4 ※1）。**地震情報・津波の
+   * `magnitudeCondition` と同じ役割**なので、表示は同じ述語（`formatters.ts`）を通す。
+   */
+  magnitudeCondition?: string
+  /** 震央地名番号（気象庁コード表 6）。名前は持たない */
+  areaCode: number
+  /** 電文の種類（0=通常）。0 以外は訓練等。実配信 13 か月では 0 しか観測できていない */
+  telegramKind: number
+  /** 階級震度と計測震度の対応表。**電文が持っている凡例をそのまま使う**（自前の階級表を当てない） */
+  grades: JMAEstimatedIntensityGrade[]
+  /** セル数。下の 3 本の配列はこの長さぶんだけ有効（確保長はこれ以上になりうる） */
+  count: number
+  /** セル南西端の緯度 */
+  lat: Float32Array
+  /** セル南西端の経度 */
+  lon: Float32Array
+  /** そのセルの計測震度（**0.1 単位の整数**。42 なら計測震度 4.2） */
+  si: Uint8Array
+  /**
+   * 塗りがある範囲（セルの外接矩形）。**カメラの寄り先に使う。**
+   *
+   * 復号のときに 1 度だけ求める —— 36 万セルを描画のたびに走査し直さないため。
+   * `north`/`east` はセルの北東端まで含む（南西端の最大値にセル 1 つ分を足したもの）。
+   */
+  bounds: { south: number; north: number; west: number; east: number }
+}
+
 /**
  * データ受信の状態。
  *
@@ -1355,7 +1436,7 @@ export interface TelegramLogEntry {
   isTest: boolean
   status: 'parsed' | 'filtered' | 'error'
   kind?: 'eew' | 'quake' | 'tsunami' | 'lpgm' | 'nankai' | 'nankaiCommentary' | 'kohatsu'
-    | 'quakeNotice' | 'earthquakeCount'
+    | 'quakeNotice' | 'earthquakeCount' | 'estimatedIntensity'
   rawHead?: unknown
   rawBody: unknown
   errorMessage?: string

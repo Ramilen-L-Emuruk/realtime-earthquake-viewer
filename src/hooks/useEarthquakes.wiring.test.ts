@@ -17,7 +17,7 @@
 // 差し替えるのは外部 I/O（WebSocket・REST・観測点座標）だけ。時計や純粋関数は本物を使う。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, cleanup, act } from '@testing-library/react'
-import type { AppEvent, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary, JMAQuakeNotice, JMAEarthquakeCount } from '../types/earthquake'
+import type { AppEvent, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity } from '../types/earthquake'
 import { serverDate, setReplayOffset } from '../utils/clock'
 import { DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
 
@@ -1085,6 +1085,97 @@ describe('地震・津波に関するお知らせ（VZSE40）と地震回数（V
     push(h, { kind: 'earthquakeCount', data: { ...count('20080824150500', []), cancelled: true } })
     expect(h.current.quakeNotice).toBeNull()
     expect(h.current.earthquakeCount).toBeNull()
+  })
+})
+
+// 推計震度分布図（IXAC41）の結線。
+//
+// 判定そのものは純関数へ切り出してテストしてある（`utils/estimatedIntensity.test.ts`）。
+// **ここで見るのは包み側** —— 反映しないと決めた報で `onLiveEvent` まで止まること。
+// 止め損ねると、画面の分布は据え置きのまま**音と読み上げだけが鳴り、分布モードが勝手に開く**。
+// 判定が正しくても包み側で漏れるので、純関数のテストでは捕まらない。
+describe('推計震度分布図（IXAC41）の結線', () => {
+  function ei(arrivalTime: string, time: string, count: number): JMAEstimatedIntensity {
+    return {
+      id: `ix-${time}`, time, arrivalTime,
+      hypocenter: { lat: 32.6, lon: 130.7, depthKm: 10 },
+      magnitude: 4.2, areaCode: 741, telegramKind: 0,
+      grades: [{ scale: 4, modifier: 'none', lower: 35, upper: 44 }],
+      count,
+      lat: new Float32Array([32.6]), lon: new Float32Array([130.7]), si: new Uint8Array([42]),
+      bounds: { south: 32.6, north: 32.61, west: 130.7, east: 130.71 },
+    }
+  }
+  const KUMA = ei('2026-07-28T07:27:00.000Z', '2026-07-28T07:32:00+09:00', 1693)
+  const LATER = ei('2026-07-28T07:31:00.000Z', '2026-07-28T07:36:00+09:00', 812)
+
+  // `kind` を文字列として比べるのは、`AppEvent` が地震・津波・EEW の 3 つしか型で持たず、
+  // それ以外の種別（長周期・南海トラフ・地震回数・これ）は送出側で型を潰して渡しているため
+  // （`useEarthquakes.ts` の `as unknown as AppEvent`。6 種別で同じ形）。
+  function push(h: ReturnType<typeof setup>, data: JMAEstimatedIntensity) {
+    act(() => { h.current.loadReplayEvents([{ payload: { kind: 'estimatedIntensity', data }, replayTime: serverDate() }]) })
+    act(() => { vi.advanceTimersByTime(50) })
+  }
+
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  // 正: 届いた分布を反映し、音と読み上げの経路へも流す。
+  it('届いた分布を反映して鳴らす経路へ流す', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+    push(h, KUMA)
+    expect(h.current.estimatedIntensity?.arrivalTime).toBe(KUMA.arrivalTime)
+    expect(events.filter(e => (e.kind as string) === 'estimatedIntensity')).toHaveLength(1)
+  })
+
+  // 正: 別の地震の新しい分布へは入れ替える（アプリが持つのは最新の 1 通だけ）。
+  it('別の地震の新しい分布へ入れ替える', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+    push(h, KUMA)
+    push(h, LATER)
+    expect(h.current.estimatedIntensity?.arrivalTime).toBe(LATER.arrivalTime)
+    expect(events.filter(e => (e.kind as string) === 'estimatedIntensity')).toHaveLength(2)
+  })
+
+  // 対照: **発表が古い報では退行しない。別の地震のものでも採らない。**
+  // 到着順は発表順と一致しない（分割の結合が遅れる・当日経路とライブが前後する）ので、
+  // 震度5弱以上が短時間に続く場面で、遅れて届いた古い分布が新しい分布を押しのけうる。
+  it('発表が古い報では退行しない', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+    push(h, LATER)
+    push(h, KUMA)
+    expect(h.current.estimatedIntensity?.arrivalTime).toBe(LATER.arrivalTime)
+    expect(events.filter(e => (e.kind as string) === 'estimatedIntensity')).toHaveLength(1)
+  })
+
+  // 安全弁: **反映しない報では鳴らす経路へも流さない。** 内容が同じ重複配信は実電文で
+  // 観測している。流すと画面は変わらないのに音と読み上げだけが二度鳴る。
+  it('内容が同じ重複配信では鳴らす経路へ流さない', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+    push(h, KUMA)
+    push(h, { ...KUMA })
+    expect(events.filter(e => (e.kind as string) === 'estimatedIntensity')).toHaveLength(1)
+  })
+
+  // 安全弁: リセットで記憶も落とす。落とし忘れると、再生し直した同じ分布が
+  // 「重複配信」と判定されて二度と出なくなる。
+  it('リセット後に同じ分布を出し直せる', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, KUMA)
+    act(() => { h.current.resetState() })
+    expect(h.current.estimatedIntensity).toBeNull()
+
+    push(h, KUMA)
+    expect(h.current.estimatedIntensity?.arrivalTime).toBe(KUMA.arrivalTime)
   })
 })
 

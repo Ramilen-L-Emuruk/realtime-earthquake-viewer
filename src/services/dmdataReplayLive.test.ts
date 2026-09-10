@@ -8,6 +8,7 @@
 //   - **担当日の排他**: アーカイブが持つ日を当日経路が二重に取らないこと
 //   - **版の選択**: 同じ電文が XML 版と JSON 版で一覧に載るため、種別ごとに片方だけ拾うこと
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { buildSampleTelegram } from '../test-utils/bufrBuild'
 import {
   enumerateJstDates, resolveLiveDates, toJstDateStr,
   fetchLiveReplayEntries, fetchLiveQuakeTelegrams, clearLiveReplayCache,
@@ -22,13 +23,15 @@ interface MockTelegram {
   receivedTime: string
   url: string
   test?: boolean
+  /** 分割配信された二進電文の 2 報目以降だけが持つ（`RRA`〜`RRX`）。 */
+  designation?: string | null
 }
 
 function listItem(t: MockTelegram) {
   return {
     id: t.id,
     ...(t.originalId ? { originalId: t.originalId } : {}),
-    head: { type: t.type, time: t.headTime, test: t.test ?? false },
+    head: { type: t.type, time: t.headTime, test: t.test ?? false, designation: t.designation },
     receivedTime: t.receivedTime,
     url: t.url,
   }
@@ -81,11 +84,14 @@ const VYSE60_XML = `<?xml version="1.0" encoding="UTF-8"?>
  * @param opts.list  電文一覧が返す件（XML 版・JSON 版の両方が載る）
  * @param opts.eew   gd/eew のイベントと、その全報の電文
  * @param opts.bodies URL → 本体
+ * @param opts.binaries URL → 二進の本体（IXAC41）。**テキストの入れ物と分ける** ——
+ *   同じ経路へ混ぜると、実装が `text()` で取っていても気づけない
  */
 function mockLive(opts: {
   list?: MockTelegram[]
   eew?: Array<{ eventId: string; dateTime: string; originTime?: string; telegrams: MockTelegram[] }>
   bodies?: Record<string, string | 'error'>
+  binaries?: Record<string, Uint8Array>
   /** 引けなくする一覧。2 本を個別に落とせないと「1 本だけ失敗」を再現できない。 */
   listError?: Array<'telegram' | 'eew'>
 }) {
@@ -115,6 +121,8 @@ function mockLive(opts: {
       if (!ev) return { ok: false, status: 404 } as unknown as Response
       return ok({ status: 'ok', items: ev.telegrams.map((t, i) => ({ serial: i + 1, telegrams: [listItem(t)] })) })
     }
+    const bin = opts.binaries?.[input]
+    if (bin) return { ok: true, arrayBuffer: async () => bin.buffer.slice(bin.byteOffset, bin.byteOffset + bin.byteLength) } as unknown as Response
     const body = opts.bodies?.[input]
     if (body === undefined || body === 'error') return { ok: false, status: 500 } as unknown as Response
     return { ok: true, text: async () => body } as unknown as Response
@@ -219,6 +227,120 @@ describe('fetchLiveReplayEntries', () => {
     expect(result.entries[0].payload.kind).toBe('event')
     // 再生時刻は受信時刻（ミリ秒精度）
     expect(result.entries[0].replayTime.toISOString()).toBe('2026-08-23T02:00:01.500Z')
+  })
+
+  // ── 二進電文（IXAC41 推計震度分布図） ──
+  //
+  // アーカイブ経路と違い、こちらは**電文 1 通につき 1 リクエスト**で本体を引く。
+  // テキストと取り方を分けているのはこの経路にしか無い分岐なので、ここで固定する。
+
+  // 正: 本体を bytes で引いて分布として積む。
+  // **`text()` で取っていればここで落ちる** —— モックが二進の本体を `arrayBuffer` でしか
+  // 返さないうえ、文字列へ写した BUFR は読み取れない。
+  it('二進電文は bytes で引いて取り込む', async () => {
+    const { fn } = mockLive({
+      list: [{ id: 'ix1', type: 'IXAC41', headTime: '2026-08-23T02:05:00Z', receivedTime: '2026-08-23T02:05:02.250Z', url: 'https://b/ix1' }],
+      binaries: { 'https://b/ix1': buildSampleTelegram() },
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS)
+
+    expect(result.skipped).toBe(0)
+    expect(result.entries).toHaveLength(1)
+    expect(result.entries[0].payload.kind).toBe('estimatedIntensity')
+    expect(result.entries[0].replayTime.toISOString()).toBe('2026-08-23T02:05:02.250Z')
+  })
+
+  // 正: 分割された 2 通が 1 つの分布に戻る。一覧では別々のエントリで、
+  // **並行して引く**（同時取得数 8）ので到着順は保証されない。
+  it('分割された二進電文を結合して 1 通にする', async () => {
+    const bin = buildSampleTelegram()
+    const cut = 32
+    const { fn } = mockLive({
+      list: [
+        { id: 'ix2', type: 'IXAC41', headTime: '2026-08-23T02:05:00Z', receivedTime: '2026-08-23T02:05:02.000Z', url: 'https://b/ix2', designation: null },
+        { id: 'ix3', type: 'IXAC41', headTime: '2026-08-23T02:05:00Z', receivedTime: '2026-08-23T02:05:03.000Z', url: 'https://b/ix3', designation: 'RRA' },
+      ],
+      binaries: { 'https://b/ix2': bin.slice(0, cut), 'https://b/ix3': bin.slice(cut) },
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS)
+
+    expect(result.skipped).toBe(0)
+    expect(result.entries).toHaveLength(1)
+    expect(result.entries[0].payload.kind).toBe('estimatedIntensity')
+  })
+
+  // 安全弁: **揃わなかった断片を取りこぼしに数える。** この入れ物は取得 1 回きりで
+  // 使い捨てるので、数えなければ残った断片は黙って消える。
+  it('断片が揃わなければ取りこぼしに数える', async () => {
+    const bin = buildSampleTelegram()
+    const { fn } = mockLive({
+      list: [{ id: 'ix4', type: 'IXAC41', headTime: '2026-08-23T02:05:00Z', receivedTime: '2026-08-23T02:05:02.000Z', url: 'https://b/ix4', designation: null }],
+      binaries: { 'https://b/ix4': bin.slice(0, 32) },   // 続きが一覧に無い
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS)
+
+    expect(result.entries).toHaveLength(0)
+    expect(result.skipped).toBe(1)
+  })
+
+  // 安全弁: **1 通の障害を 2 件に数えない。** 断片の取得が落ちたとき、その電文は二度と
+  // 揃わないので `pendingKeys` でも数えられる。取りこぼしの件数は「何通読めなかったか」を
+  // 伝える値で、多い側へずれても嘘になる。
+  it('断片の取得に失敗しても取りこぼしを二重に数えない', async () => {
+    const bin = buildSampleTelegram()
+    const { fn } = mockLive({
+      list: [
+        { id: 'ix6', type: 'IXAC41', headTime: '2026-08-23T02:05:00Z', receivedTime: '2026-08-23T02:05:02.000Z', url: 'https://b/ix6', designation: null },
+        { id: 'ix7', type: 'IXAC41', headTime: '2026-08-23T02:05:00Z', receivedTime: '2026-08-23T02:05:03.000Z', url: 'https://b/ix7-missing', designation: 'RRA' },
+      ],
+      binaries: { 'https://b/ix6': bin.slice(0, 32) },   // RRA 側は用意しない＝取得が落ちる
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS)
+
+    expect(result.entries).toHaveLength(0)
+    expect(result.skipped).toBe(1)
+  })
+
+  // 安全弁: **断片が 2 つとも落ちても 1 件。** 分割は最大 24 断片あり、通信の不調では
+  // 複数が同時に落ちる。断片ごとに数えると 1 通の障害が断片の数だけ膨らむ。
+  it('断片が 2 つとも落ちても取りこぼしは 1 件', async () => {
+    const { fn } = mockLive({
+      list: [
+        { id: 'ix8', type: 'IXAC41', headTime: '2026-08-23T02:05:00Z', receivedTime: '2026-08-23T02:05:02.000Z', url: 'https://b/ix8-missing', designation: null },
+        { id: 'ix9', type: 'IXAC41', headTime: '2026-08-23T02:05:00Z', receivedTime: '2026-08-23T02:05:03.000Z', url: 'https://b/ix9-missing', designation: 'RRA' },
+      ],
+      binaries: {},   // どちらの本体も用意しない
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS)
+
+    expect(result.entries).toHaveLength(0)
+    expect(result.skipped).toBe(1)
+  })
+
+  // 対照: 別々の電文なら別々に数える（まとめすぎていないこと）。
+  it('別の電文の断片が落ちたらそれぞれ数える', async () => {
+    const { fn } = mockLive({
+      list: [
+        { id: 'ixA', type: 'IXAC41', headTime: '2026-08-23T02:05:00Z', receivedTime: '2026-08-23T02:05:02.000Z', url: 'https://b/ixA-missing', designation: null },
+        { id: 'ixB', type: 'IXAC41', headTime: '2026-08-23T02:20:00Z', receivedTime: '2026-08-23T02:20:02.000Z', url: 'https://b/ixB-missing', designation: null },
+      ],
+      binaries: {},
+    })
+    globalThis.fetch = fn as unknown as typeof fetch
+
+    const result = await fetchLiveReplayEntries('key', FROM, TO, DAYS)
+
+    expect(result.skipped).toBe(2)
   })
 
   it('南海トラフ系も XML 版だけを取り込む', async () => {

@@ -2,7 +2,8 @@
 // 「〇時〇分」はローカルタイムゾーン依存のため、時刻の数値そのものではなく
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect, vi } from 'vitest'
-import { earthquakeCancelToText, tsunamiCancelToText, eewCancelToText, CANCEL_REASON_SPEAK_MAX_CHARS, nankaiToText, earthquakeCountToText, earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, tsunamiWarningLevelToText, selectWarningLevelToSpeak, WARNING_LEVEL_SPEAK_MAX_POINTS, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
+import { earthquakeCancelToText, tsunamiCancelToText, eewCancelToText, CANCEL_REASON_SPEAK_MAX_CHARS, nankaiToText, earthquakeCountToText,
+  estimatedIntensityToText, earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, tsunamiWarningLevelToText, selectWarningLevelToSpeak, WARNING_LEVEL_SPEAK_MAX_POINTS, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
 import { joinSegments, plain, type SpeechSegment } from './ttsFollow'
 import { log } from './logger'
 import { tsunamiAreaGradeChanges } from './tsunami'
@@ -1993,5 +1994,26 @@ describe('earthquakeCountToText', () => {
   it('自由文の地名を読み上げに混ぜない', () => {
     const text = earthquakeCountToText(makeCount({ freeText: '　８月２４日１５時過ぎから伊豆半島東方沖で地震が発生しています。' }))
     expect(text).not.toContain('伊豆半島東方沖')
+  })
+})
+
+// 推計震度分布図（IXAC41）の読み上げ文。**守りたいのは名前の決定**であって語感ではない。
+describe('estimatedIntensityToText', () => {
+  // 正: 気象庁の呼称をそのまま名乗る。これ自体が名乗りとして働くので前置きは付けない。
+  it('気象庁の呼称で受信を伝える', () => {
+    expect(estimatedIntensityToText()).toBe('気象庁の推計震度分布図を受信しました。')
+  })
+
+  // 安全弁: 気象庁が使っていない名前を作らない。「推計震度分布情報」という情報名は存在せず、
+  // 資料名は「推計震度分布図作図用データ」・図の名は「推計震度分布図」。
+  it('気象庁が使っていない名前を名乗らない', () => {
+    expect(estimatedIntensityToText()).not.toContain('推計震度分布情報')
+    expect(estimatedIntensityToText()).toContain('推計震度分布図')
+  })
+
+  // 安全弁: 推計の最大震度を言わない。気象庁が「1階級程度異なることがある」と断っており、
+  // 発表した最大震度と食い違う「最大震度」が耳に 2 つ入ることになる。
+  it('震度の値を言わない', () => {
+    expect(estimatedIntensityToText()).not.toMatch(/震度[0-9１-７]|震度５弱|最大震度/)
   })
 })

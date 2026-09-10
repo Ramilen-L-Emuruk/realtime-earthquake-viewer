@@ -1,8 +1,10 @@
-import type { JMAQuake, JMATsunami, EEWAlert, JMANankai, JMANankaiCommentary, JMAKohatsu, EarthquakePoint, JMALpgm, JMAQuakeCity, JMAQuakeNotice, JMAEarthquakeCount } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, EEWAlert, JMANankai, JMANankaiCommentary, JMAKohatsu, EarthquakePoint, JMALpgm, JMAQuakeCity, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, JMAEstimatedIntensityGrade } from '../types/earthquake'
 import { serverNow, serverDate } from './clock'
 import notoHonshinPoints from '../data/noto-honshin-2024-points.json'
 import notoHonshinQuake from '../data/noto-honshin-2024-quake.json'
 import notoHonshinLpgmJson from '../data/noto-honshin-2024-lpgm.json'
+import testEstimatedIntensityJson from '../data/test-estimated-intensity.json'
+import { CELL_LAT_DEG, CELL_LON_DEG } from './bufrEstimatedIntensity'
 
 /**
  * JSON の import は数値を `number` へ広げるため、震度・階級の値であることを型で言い直す。
@@ -901,5 +903,81 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
       { name: '宮城県', code: '040', arrivalCondition: '早いところでは既に津波到達と推定', maxHeight: { description: '4m', value: 4.0 } },
       { name: '福島県', code: '050', arrivalCondition: '早いところでは既に津波到達と推定', condition: { estimating: true } },
     ],
+  }
+}
+
+/**
+ * 推計震度分布図（IXAC41）のテスト。**地震情報と対で返す。**
+ *
+ * この電文は識別子を持たず、地震カードとの結び付けは発現時刻で行う（→ `utils/estimatedIntensity.ts`）。
+ * 分布だけを流しても引き当てる相手のカードが無く、ボタンが出ない。**同じ地震の VXSE53 と
+ * 一緒に**返して、実運用と同じ形（地震情報が先に出ていて、あとから分布が届く）を再現する。
+ *
+ * 中身は 2026-07-28 10:03 UTC の熊本県熊本地方 M4.2（最大震度5弱）の実電文を、本物の
+ * パーサーと BUFR 復号器へ通して作ったもの（`npm run build-test-estimated-intensity`）。
+ * **手では作れない** —— BUFR は二進で、セルは 1,693 個ある。
+ *
+ * セルの座標は**格子の整数添字**で持っている（緯度 1/480 度・経度 1/320 度にきっちり乗る）。
+ * 小数で書くと桁が無駄なうえ、読み戻しで丸めが乗る。
+ */
+export function createTestEstimatedIntensity(): { quake: JMAQuake; estimated: JMAEstimatedIntensity } {
+  const nowDate = serverDate()
+  const now = nowDate.toISOString()
+  const eventId = toEventIdTimestamp(nowDate)
+  const src = testEstimatedIntensityJson as unknown as {
+    quake: Omit<JMAQuake, 'id' | 'eventId' | 'time'>
+    estimated: {
+      hypocenter: { lat: number; lon: number; depthKm: number }
+      magnitude: number | null
+      magnitudeCondition?: string
+      areaCode: number
+      telegramKind: number
+      grades: JMAEstimatedIntensityGrade[]
+      latIdx: number[]; lonIdx: number[]; si: number[]
+    }
+  }
+
+  const quake: JMAQuake = {
+    ...src.quake,
+    id: `dmdata-quake-${eventId}-1`,
+    eventId,
+    time: now,
+    issue: { ...src.quake.issue, time: now },
+    earthquake: { ...src.quake.earthquake, time: now },
+  }
+
+  const e = src.estimated
+  const n = e.si.length
+  const lat = new Float32Array(n)
+  const lon = new Float32Array(n)
+  const si = new Uint8Array(n)
+  let south = 90, north = -90, west = 180, east = -180
+  for (let i = 0; i < n; i++) {
+    const la = e.latIdx[i] / (1 / CELL_LAT_DEG)
+    const lo = e.lonIdx[i] / (1 / CELL_LON_DEG)
+    lat[i] = la; lon[i] = lo; si[i] = e.si[i]
+    if (la < south) south = la
+    if (la > north) north = la
+    if (lo < west) west = lo
+    if (lo > east) east = lo
+  }
+
+  return {
+    quake,
+    estimated: {
+      id: `test-ixac41-${eventId}`,
+      time: now,
+      // **地震カードと同じ発現時刻にする。** ここがずれると引き当てが外れ、ボタンが
+      // 「このアプリの推定」のまま変わらない（テストとして無意味になる）。
+      arrivalTime: now,
+      hypocenter: e.hypocenter,
+      magnitude: e.magnitude ?? NaN,
+      ...(e.magnitudeCondition && { magnitudeCondition: e.magnitudeCondition }),
+      areaCode: e.areaCode,
+      telegramKind: e.telegramKind,
+      grades: e.grades,
+      count: n, lat, lon, si,
+      bounds: { south, north: north + CELL_LAT_DEG, west, east: east + CELL_LON_DEG },
+    },
   }
 }

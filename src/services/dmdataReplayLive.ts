@@ -21,7 +21,10 @@ import { log } from '../utils/logger'
 import { authHeader } from '../utils/dmdataApiKey'
 import type { JMAQuake } from '../types/earthquake'
 import type { ReplayEntry } from '../types/replay'
-import { HANDLED_TYPES, QUAKE_TYPES, buildXmlPayload } from './dmdataTelegramPayload'
+import {
+  HANDLED_TYPES, QUAKE_TYPES, buildXmlPayload, isBinaryTelegramType, buildBinaryPayload,
+} from './dmdataTelegramPayload'
+import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
 
 const API_BASE = 'https://api.dmdata.jp/v2'
 /** 電文本体の配信元。一覧が返す `url` と同じ形を id から組むのに使う。 */
@@ -53,7 +56,11 @@ interface TelegramListItem {
   id: string
   /** JSON 版のときだけ入り、元の XML 版電文の id を指す。 */
   originalId?: string
-  head: { type: string; time: string; test: boolean }
+  /**
+   * `designation` は分割配信された二進電文の 2 報目以降にだけ入る（`RRA`〜`RRX`）。
+   * 実データで確認済み（→ `bufrTelegramAssembly.ts`）。
+   */
+  head: { type: string; time: string; test: boolean; designation?: string | null }
   /** ミリ秒精度の受信時刻。アーカイブ経路がファイル名から取っている値と同じもの。 */
   receivedTime: string
   url: string
@@ -186,6 +193,24 @@ function fetchBody(url: string, apiKey: string): Promise<string> {
   // ネットワークが復旧しても再取得されない（アーカイブのキャッシュと同じ理由）。
   // この catch はキャッシュ掃除専用で、エラー自体は返した promise 経由で呼び出し元へ伝わる。
   promise.catch(() => bodyCache.delete(url))
+  return promise
+}
+
+/**
+ * 二進電文の本体をバイト列で取る。**`res.text()` を通さない** —— 不正なバイトが U+FFFD へ
+ * 潰れて元へ戻せなくなる。キャッシュはテキスト側と分ける（同じ URL を両方で引くことは無い）。
+ */
+const binaryBodyCache = new Map<string, Promise<Uint8Array>>()
+function fetchBinaryBody(url: string, apiKey: string): Promise<Uint8Array> {
+  const cached = binaryBodyCache.get(url)
+  if (cached) return cached
+  const promise = (async () => {
+    const res = await fetch(url, { headers: { Authorization: authHeader(apiKey) } })
+    if (!res.ok) throw new Error(`Telegram body fetch failed: ${res.status}`)
+    return new Uint8Array(await res.arrayBuffer())
+  })()
+  binaryBodyCache.set(url, promise)
+  promise.catch(() => binaryBodyCache.delete(url))
   return promise
 }
 
@@ -405,9 +430,30 @@ export async function fetchLiveReplayEntries(
   }
 
   const entries: ReplayEntry[] = []
+  // 分割された二進電文の結合待ち。**この取得 1 回きりの入れ物**なので、ライブの断片とは混ざらない。
+  const bufrFragments = new BufrFragmentStore()
+  /** 本体の取得が落ちて、既に取りこぼしとして数えた二進電文の識別名。 */
+  const countedBinaryKeys = new Set<string>()
   await mapWithLimit(targets, BODY_CONCURRENCY, async (item) => {
     const headType = item.head.type
     try {
+      // 二進電文（IXAC41）はテキストへ落とさず、分割の結合を経てから読む。
+      if (isBinaryTelegramType(headType)) {
+        const bytes = await fetchBinaryBody(item.url, apiKey)
+        const joined = bufrFragments.add(
+          fragmentKey(headType, 'RJTD', item.head.time), item.head.designation, bytes, Date.now(),
+        )
+        // まだ揃っていない断片。**取りこぼしには数えない**（残りは同じ一覧の別エントリにある）。
+        if (!joined) return
+        const binPayload = buildBinaryPayload(headType, joined, item.id, item.head.time)
+        if (!binPayload) {
+          log.warn(`[replay] 二進電文の読み取りに失敗しスキップ id=${item.id} type=${headType}`)
+          skipped++
+          return
+        }
+        entries.push({ payload: binPayload, replayTime: new Date(item.receivedTime) })
+        return
+      }
       const payload = buildXmlPayload(headType, await fetchBody(item.url, apiKey))
       if (!payload) {
         log.warn(`[replay] 電文のパースに失敗しスキップ id=${item.id} type=${headType}`)
@@ -420,9 +466,29 @@ export async function fetchLiveReplayEntries(
     } catch (e) {
       // 1 通の失敗（取得エラー・JSON 破損・パーサ内の例外）で全体を落とさない。
       log.error(`[replay] 電文の取り込みに失敗しスキップ id=${item.id} type=${headType}`, e)
+      // **二進電文は電文ごとに 1 度だけ数える。** 分割は最大 24 断片あり、通信の不調では
+      // 複数が同時に落ちる。断片ごとに数えると 1 通の障害が断片の数だけ膨らむ。
+      //
+      // 覚えておくのは、下の `pendingKeys` でもう一度数えないため。**その場で入れ物から
+      // 捨てるのでは足りない** —— 本体は同時に 8 通まで並行して取るので、この断片が落ちた
+      // 時点では相方がまだ入れ物に届いていないことがある（捨てても、そのあと入る）。
+      if (isBinaryTelegramType(headType)) {
+        const key = fragmentKey(headType, 'RJTD', item.head.time)
+        if (countedBinaryKeys.has(key)) return
+        countedBinaryKeys.add(key)
+      }
       skipped++
     }
   })
+
+  // **揃わなかった二進電文の断片を取りこぼしとして数える。** ここで見ないと誰も見ない ——
+  // この入れ物は取得 1 回きりで使い捨てるので、残った断片は黙って消える。
+  for (const key of bufrFragments.pendingKeys) {
+    // 取得そのものが落ちて既に数えた電文は、ここでは数えない（上の注記）。
+    if (countedBinaryKeys.has(key)) continue
+    log.warn(`[replay] 二進電文の断片が揃いませんでした（分布は出ません）key=${key}`)
+    skipped++
+  }
 
   const failedSources = [...listFailures, ...eew.failedSources]
   log.info(`[replay] アーカイブ未生成の日を当日経路で補完 日=${dayLabel} 電文=${entries.length} 取りこぼし=${skipped} 読めなかった取得元=${failedSources.length}`)

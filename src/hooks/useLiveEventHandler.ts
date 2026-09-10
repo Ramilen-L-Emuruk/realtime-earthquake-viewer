@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AppEvent, EEWAlert, Hypocenter, JMAQuake, JMATsunami, JMANankaiCommentary, JMAEarthquakeCount, TsunamiArea, TsunamiObservation, TsunamiGrade } from '../types/earthquake'
+import type { AppEvent, EEWAlert, Hypocenter, JMAQuake, JMATsunami, JMANankaiCommentary, JMAEarthquakeCount, JMAEstimatedIntensity, TsunamiArea, TsunamiObservation, TsunamiGrade } from '../types/earthquake'
 import type { TabId } from '../components/IconNav'
 import type { AppSettings } from './useSettings'
 import type { AlertTitleApi } from './useAlertTitle'
@@ -18,7 +18,7 @@ import { showBrowserNotification } from '../utils/notifications'
 import { isWarningLevelWhileObserving, tsunamiMaxGrade, tsunamiAreaGradeChanges, selectUnspokenAreaGradeChanges, rememberAreaGrades, tsunamiAreaKey, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations, isObservationMissing } from '../utils/tsunami'
 import { playAlertSound, ttsDelayFor, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
-import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
+import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, estimatedIntensityToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
 import { joinSegments, plain, hasFollowTarget, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
@@ -116,6 +116,7 @@ type SpeechTopic =
   | `quake:${string}`
   | `lpgm:${string}`
   | 'tsunami' | 'tsunamiObs' | 'nankai' | 'kohatsu' | 'nankaiCommentary' | 'earthquakeCount'
+  | 'estimatedIntensity'
 
 /**
  * **互いの読み上げを切らない主題**（相互譲り）。同格の別主題が鳴っている間は待ち、自分が鳴って
@@ -140,7 +141,10 @@ const MUTUAL_YIELD_TOPICS: ReadonlySet<SpeechTopic> = new Set<SpeechTopic>([
   // 地震回数は地震情報と同格（`normal`）だが、伝える内容が重ならない —— あちらは震度1以上の
   // 1 つの地震、こちらは震度2以下を含む群発の総数。載せないと、群発の最中に届いた回数の情報が
   // 「各地の震度」（読み切りに 2 分近く）の読み上げを毎報切ることになる。
-  'tsunami', 'tsunamiObs', 'nankai', 'kohatsu', 'earthquakeCount',
+  // 推計震度分布図も同じ理由。地震発生から数分後に届くので「各地の震度」の続報と
+  // かち合いやすく、載せないとそちらを切る。伝える内容も重ならない —— あちらは観測した震度、
+  // こちらは**その描き方が公式のものへ替わった**という別の事実。
+  'tsunami', 'tsunamiObs', 'nankai', 'kohatsu', 'earthquakeCount', 'estimatedIntensity',
 ])
 
 /**
@@ -539,6 +543,14 @@ export interface LiveEventHandlerDeps {
    * パネルを畳んで地図だけを見ている状態でも気づけるように開く。元の状態へ戻す判断は App 側。
    */
   expandPanelForSpecialInfo: () => void
+  /**
+   * 気象庁の推計震度分布図が届いたことを知らせる（地図の分布モードを開く）。
+   *
+   * **`onLiveEvent` の経路から呼ぶ。** 状態を見る `useEffect` にすると、リプレイの初期状態の
+   * 復元（`silent`）でも開いてしまう ―― あれは「いま届いた」ではなく「その時刻に出ていた」の
+   * 再現なので、画面を切り替える理由が無い。
+   */
+  openEstimatedIntensity: (arrivalTime: string, lat: number, lon: number) => void
   revertToDefaultTab: () => void
   selectQuake: (id: string | null) => void
   setActiveLpgmEventId: (id: string | null) => void
@@ -549,7 +561,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabRealtimeForKyoshin, setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate,
     setActiveTabRealtimeUrgent, followSpeechTab, preSpeechTab, speechFollow, expandPanelForSpecialInfo,
-    revertToDefaultTab, selectQuake, setActiveLpgmEventId,
+    revertToDefaultTab, selectQuake, setActiveLpgmEventId, openEstimatedIntensity,
   } = deps
 
   // 「新規地震」として注目を移した報のキー（`eventKey:issue.type`）。
@@ -2253,6 +2265,30 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       return
     }
 
+    // 推計震度分布図（DMDSS版のみ）。
+    //
+    // 地震から数分後に届く。**地震そのものの事実は既に地震情報で伝え終えている**ので、
+    // ここが足すのは「震度の広がりが、気象庁の推計として出そろった」ことだけ。
+    // 下の地震回数と違い**タブは動かす** —— 見せる先が地図の面で、そこへ行かないと何も見えない。
+    // ただし要求として出すので、EEW・揺れ検知・利用者の操作には譲る。
+    if ((event as unknown as { kind?: string }).kind === 'estimatedIntensity') {
+      const ei = (event as unknown as { data: JMAEstimatedIntensity }).data
+      // **地図の分布モードを開く。** 地震発生から数分後に届くもので、そのころ利用者は
+      // 別のものを見ている。合図なしに画面だけ替わるのがいちばん困るので、音と声も添える。
+      openEstimatedIntensity(ei.arrivalTime, ei.hypocenter.lat, ei.hypocenter.lon)
+      if (settings.soundEnabled) {
+        // **新しい音を作らない。** これは新しい危険ではなく、既に読み上げた地震の
+        // **震度の描き方が公式のものへ替わった**という報せ。地震情報と同じ音で足りる。
+        playAlertSound('earthquakeInfo')
+      }
+      if (settings.voicevoxEnabled) {
+        speakNonEEWDelayed(
+          estimatedIntensityToText(), SPEECH_PRIORITY.normal,
+          ttsDelayFor('earthquakeInfo'), 'estimatedIntensity',
+        )
+      }
+      return
+    }
     // 地震回数に関する情報（DMDSS版のみ）。
     //
     // **帯で出す**（特別情報バナー。並びは後発地震の下）。伝えるのは群発という続いている「状況」で、
