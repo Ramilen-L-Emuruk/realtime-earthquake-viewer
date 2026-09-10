@@ -88,7 +88,6 @@ npm run preview
 
 完了済み PoC・移行記録は [`docs/archive/`](docs/archive/) にまとめています。
 これから追加する機能の計画と採否の判断は [`docs/implementation-plan.md`](docs/implementation-plan.md) にまとめています。
-まだ着手していない、既存の作りを直す作業は [`docs/pending-work.md`](docs/pending-work.md) にまとめています。
 
 ## 注意事項
 

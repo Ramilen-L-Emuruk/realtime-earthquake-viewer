@@ -1996,13 +1996,16 @@ describe('南海トラフ臨時情報の取消の適用先', () => {
 })
 
 // テストボタンが張る「待ち」を、リセットとアンマウントで確実に落とすこと。
+// 落とす先は `clearTestSimulationTimers` の 1 箇所に集約してある。
 //
-// **これはキューを通らない経路。** 津波の続報テスト（区域ごとの等級変化）は
-// `handleEvent` を直接呼ぶので、`eventQueueRef.current.clear()` では止まらない。
-// 待ちを ref で追えていないと、45 秒後にリセット済みの画面へ津波カードが 1 枚だけ復活する
-// —— しかも例外もログも出ない。
+// **多くがキューを通らない経路。** 津波と EEW のテストは `handleEvent` を直接呼ぶので、
+// `eventQueueRef.current.clear()` では止まらない。待ちを ref で追えていないと、
+// リセット済みの画面へ電文が 1 通だけ単独で届く —— **例外もログも出ない。**
 //
-// 地震回数の取消テストも同じ形の待ちを持つ（そちらはキュー経由だが、
+// 症状は待ちの種類で重さが違う。津波の解除は画面に出ないぶん音と読み上げだけが鳴るが、
+// **EEW の最終報はカードごと生える。**
+//
+// 地震回数・南海トラフの取消テストも同じ形の待ちを持つ（そちらはキュー経由だが、
 // **待ちそのものは同じように取り残されうる**）。
 describe('テストボタンの待ちの後始末', () => {
   beforeEach(() => { vi.useFakeTimers() })
@@ -2068,5 +2071,174 @@ describe('テストボタンの待ちの後始末', () => {
     // 2 回目の待ちは正しく明ける
     act(() => { vi.advanceTimersByTime(30_000) })
     expect(h.current.tsunamis[0]?.areas.some(a => a.lastGrade)).toBe(true)
+  })
+
+  /** 生の電文から種別で絞る（state に出ない解除・取消はこちらでしか見えない）。 */
+  function kindsOf(events: AppEvent[], kind: AppEvent['kind']): AppEvent[] {
+    return events.filter(e => e.kind === kind)
+  }
+
+  // 正: リセットを挟まなければ、EEW の最終報は沈黙時間（10 秒）の後に届く。
+  it('EEW テストは最終報を届ける', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+
+    await act(async () => { await h.current.simulateEEWForecast() })
+    act(() => { vi.advanceTimersByTime(10_000) })
+
+    const eews = kindsOf(events, 'eew') as EEWAlert[]
+    expect(eews.length).toBe(2)
+    expect(eews[1].isFinal).toBe(true)
+  })
+
+  // 対照: リセットを挟めば最終報は届かない。
+  // **ここが落ちると、消したはずの画面に EEW がカードごと 1 枚生える。**
+  it('リセット後は EEW の最終報が届かない', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+
+    await act(async () => { await h.current.simulateEEWForecast() })
+    expect(h.current.activeEEWs.size).toBe(1)
+
+    act(() => { h.current.resetState() })
+    expect(h.current.activeEEWs.size).toBe(0)
+
+    events.length = 0
+    act(() => { vi.advanceTimersByTime(120_000) })
+    expect(kindsOf(events, 'eew')).toEqual([])
+    expect(h.current.activeEEWs.size).toBe(0)
+  })
+
+  // 対照: EEW 誤報取消の待ちも同じ。**取消は音・通知・読み上げを伴う**ので、
+  // 取り残すとリセット後に「誤報でした」とだけ鳴る。
+  it('リセット後は EEW の誤報取消が届かない', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+
+    await act(async () => { await h.current.simulateEEWRetraction() })
+    expect(h.current.activeEEWs.size).toBe(1)
+
+    act(() => { h.current.resetState() })
+    events.length = 0
+    act(() => { vi.advanceTimersByTime(120_000) })
+
+    expect(kindsOf(events, 'eew')).toEqual([])
+  })
+
+  // 対照: 津波テストの自動解除も同じ。**解除は画面を変えないので state では見えない** ——
+  // 音と読み上げは表示中の津波の有無を判定せずに走る（→ docs/spec/tsunami-spec.md §5）ため、
+  // 生の電文で見る。
+  it('リセット後は津波の自動解除が届かない', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+
+    await act(async () => { await h.current.simulateTsunamiWatch() })
+    expect(h.current.tsunamis.length).toBeGreaterThan(0)
+
+    act(() => { h.current.resetState() })
+    expect(h.current.tsunamis).toEqual([])
+
+    events.length = 0
+    act(() => { vi.advanceTimersByTime(120_000) })
+    expect(kindsOf(events, 'tsunami')).toEqual([])
+  })
+
+  // 安全弁: 南海トラフ臨時情報の取消。**この ref は元から配線済み**で今回直した穴ではないが、
+  // 6 つのうちこれだけ固定が無いと、次に `clearTestSimulationTimers` を書き換えたとき
+  // 1 つだけ検知が効かなくなる。上の 3 つ（対照）とは性質が違う。
+  it('リセット後は南海トラフ臨時情報の取消が届かない', async () => {
+    const h = setup()
+    await h.flush()
+
+    await act(async () => { await h.current.simulateNankaiRetraction() })
+    act(() => { vi.advanceTimersByTime(50) })
+    expect(h.current.nankai).not.toBeNull()
+
+    act(() => { h.current.resetState() })
+    expect(h.current.nankai).toBeNull()
+
+    act(() => { vi.advanceTimersByTime(120_000) })
+    expect(h.current.nankai).toBeNull()
+  })
+
+  // 安全弁: 落とすのは待ちだけでなく**種別ごとの記憶（報番号・eventId）も**。
+  // 記憶を残したまま待ちだけ落とすと、リセット後の 1 通目が #2 として届き、
+  // 前の時間軸の eventId を引きずる。
+  it('リセット後に押し直すと EEW は初報から始まる', async () => {
+    const h = setup()
+    await h.flush()
+
+    await act(async () => { await h.current.simulateEEWForecast() })
+    const first = [...h.current.activeEEWs.values()][0]
+    expect(first.issue?.serial).toBe('1')
+
+    act(() => { vi.advanceTimersByTime(3_000) })
+    await act(async () => { await h.current.simulateEEWForecast() })
+    expect([...h.current.activeEEWs.values()][0].issue?.serial).toBe('2')
+
+    act(() => { h.current.resetState() })
+    await act(async () => { await h.current.simulateEEWForecast() })
+    const restarted = [...h.current.activeEEWs.values()][0]
+    expect(restarted.issue?.serial).toBe('1')
+    expect(restarted.issue?.eventId).not.toBe(first.issue?.eventId)
+  })
+
+  // 正: 3 つ目の形（`setTimeout` を張らず、キューへ発火時刻つきで積む）も待ちとして働くこと。
+  // 推計震度分布図テストは地震情報を先に出し、`TEST_ESTIMATED_INTENSITY_DELAY_MS` 後に分布を流す。
+  it('推計震度分布図テストは地震情報の後から分布を届ける', async () => {
+    const h = setup()
+    await h.flush()
+
+    await act(async () => { await h.current.simulateEstimatedIntensity() })
+    expect(h.current.estimatedIntensity).toBeNull()
+
+    act(() => { vi.advanceTimersByTime(5_000) })
+    expect(h.current.estimatedIntensity).not.toBeNull()
+  })
+
+  // 対照: この形は `clearTestSimulationTimers` の対象では**ない**。落とすのはキューのほうで、
+  // `eventQueueRef.current.clear()` が効く。**仕様書の表（settings-pwa-spec.md §7）が
+  // 「キューを空にすれば足りる」と主張している 3 つ目の形の裏付け** —— ここを固定しておかないと、
+  // `resetState` がキューを空にする位置がずれたときに黙って通る。
+  it('リセット後は推計震度分布図が届かない', async () => {
+    const h = setup()
+    await h.flush()
+
+    await act(async () => { await h.current.simulateEstimatedIntensity() })
+    act(() => { h.current.resetState() })
+
+    act(() => { vi.advanceTimersByTime(10_000) })
+    expect(h.current.estimatedIntensity).toBeNull()
+  })
+
+  // 安全弁: アンマウントでも落ちること。**リセットだけ配線して cleanup を忘れる**のが
+  // いちばん起きやすい取りこぼしで、そちらは画面を閉じた後に setState が走る形になる。
+  //
+  // **6 種すべてを起こしてから閉じる。** 一部だけだと、cleanup の `useEffect` の依存配列や
+  // 呼び出しを壊す回帰（古いクロージャを握る・一部の ref だけ呼ばなくなる）を、
+  // 起こさなかった待ちについて検出できない。上の対照は `resetState` 側しか通らない。
+  it('アンマウント後は待ちが発火しても電文が流れない', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+
+    // 待ちを持つテストを全種類起こす（津波の 2 つは同じ `testTsunamiRef` を共有するため、
+    // 後から押したほうが前の自動解除を畳む。それでも待ちは 1 本残る）
+    await act(async () => { await h.current.simulateEEWForecast() })
+    await act(async () => { await h.current.simulateEEWRetraction() })
+    await act(async () => { await h.current.simulateTsunamiWatch() })
+    await act(async () => { await h.current.simulateTsunamiGradeChange() })
+    await act(async () => { await h.current.simulateNankaiRetraction() })
+    await act(async () => { await h.current.simulateEarthquakeCountRetraction() })
+
+    events.length = 0
+    cleanup()
+    act(() => { vi.advanceTimersByTime(120_000) })
+
+    expect(events).toEqual([])
   })
 })
