@@ -372,6 +372,11 @@ export function createTestEEWDeep(eventId?: string, serial = 1, baseTime?: Date)
     },
     severity: 'Forecast',
     cancelled: false,
+    // 震源要素の精度（`Hypocenter/Accuracy`）。**警報のテストとは別のランクを入れる** ——
+    // あちらは IPF 法（3 点／4 点）で、EPOS の語がどのテストボタンにも出ない状態だった。
+    // 「そこに無い形は一度も画面に出ない」ので、括弧書き（〔観測網外〕）を確かめる手段が無くなる。
+    // 海域の地震なので rank 7（EPOS（海域〔観測網外〕））が実電文の形としても素直。
+    accuracy: { epicenterRank: 7, epicenterRank2: 4, depthRank: 7, magnitudeRank: 6, magnitudePoints: 5 },
     issue: { eventId: eid, serial: String(serial), time: report },
     // 深発地震では地域別の震度予想が発表されない
     areas: [],

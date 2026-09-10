@@ -148,6 +148,26 @@ export function formatCoordinate(latitude: number, longitude: number, digits = 1
   return `${ns} ${Math.abs(latitude).toFixed(digits)}° ${ew} ${Math.abs(longitude).toFixed(digits)}°`
 }
 
+/**
+ * 「津波警報等」に添える説明。**気象庁自身が固定付加文の中で同じ補い方をしている**
+ * （「津波警報等（大津波警報・津波警報あるいは津波注意報）を発表中です。」）。
+ *
+ * 語だけでは何がどこまで含まれるのか分からないため、バッジの `title` として添える。
+ */
+export const TSUNAMI_WARNING_GROUP_TITLE = '大津波警報・津波警報あるいは津波注意報のいずれかが発表されています'
+
+/**
+ * 国内への津波の影響区分を、画面に出す語と色にする。
+ *
+ * **「警報等」を「津波警報」と書かないこと。** この区分は電文でも P2PQuake でも
+ * **大津波警報・津波警報・津波注意報をひとまとめにした値**で（DMDATA は固定付加文 0211、
+ * P2PQuake は `MajorWarning` と `Warning` の両方をここへ寄せる）、等級までは伝えていない。
+ * 「津波警報」と書くと、**大津波警報の地震で事実より一段軽く見える**。
+ * 気象庁の語（「津波警報等」）に合わせ、読み上げ（`domesticTsunamiText`）とも揃える。
+ *
+ * 等級そのものを知りたい場合は津波情報のカードを見ることになる。ここは地震カードなので、
+ * その地震に津波の発表があるかどうかまでを伝える欄。
+ */
 export function formatDomesticTsunami(type: DomesticTsunami): { text: string; color: string } {
   const map: Record<DomesticTsunami, { text: string; color: string }> = {
     'なし': { text: '津波の心配なし', color: '#22c55e' },
@@ -156,7 +176,7 @@ export function formatDomesticTsunami(type: DomesticTsunami): { text: string; co
     '海面変動の可能性': { text: '津波発生のおそれあり', color: '#f59e0b' },
     '若干の海面変動': { text: '若干の海面変動', color: '#f59e0b' },
     '注意報': { text: '津波注意報', color: '#f97316' },
-    '警報等': { text: '津波警報', color: '#ef4444' },
+    '警報等': { text: '津波警報等', color: '#ef4444' },
   }
   return map[type] ?? { text: '不明', color: '#94a3b8' }
 }
