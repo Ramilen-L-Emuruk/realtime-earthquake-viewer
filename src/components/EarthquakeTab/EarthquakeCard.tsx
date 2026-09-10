@@ -6,6 +6,7 @@ import {
   formatQuakeTime,
   formatDepth,
   formatDomesticTsunami,
+  TSUNAMI_WARNING_GROUP_TITLE,
   formatIssueType,
   formatCorrectType,
   hasHypocenterFacts,
@@ -577,9 +578,10 @@ export function EarthquakeCard({
             </div>
           )}
 
-          {/* 国内津波情報 */}
+          {/* 国内津波情報。「津波警報等」だけは語に何が含まれるか説明を添える（→ `formatDomesticTsunami`）。 */}
           <div
             className="w-full rounded-lg py-1 px-3 text-center font-bold text-sm roomy:py-2 roomy:text-base"
+            title={domesticTsunami === '警報等' ? TSUNAMI_WARNING_GROUP_TITLE : undefined}
             style={{
               backgroundColor: `${tsunamiInfo.color}22`,
               border: `1px solid ${tsunamiInfo.color}`,
@@ -914,8 +916,13 @@ export function EarthquakeCard({
             )}
           </div>
 
-          {/* 津波情報（常に最終行） */}
-          <div className="text-base font-medium" style={{ color: tsunamiInfo.color }}>
+          {/* 津波情報（常に最終行）。説明は選択時のカードと同じものを付ける
+              —— **一覧のほうが先に目に入る**ので、こちらだけ説明が無いと順序が逆になる。 */}
+          <div
+            className="text-base font-medium"
+            title={domesticTsunami === '警報等' ? TSUNAMI_WARNING_GROUP_TITLE : undefined}
+            style={{ color: tsunamiInfo.color }}
+          >
             {tsunamiInfo.text}
           </div>
         </div>

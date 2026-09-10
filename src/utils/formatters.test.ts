@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatCoordinate, formatDepth, formatMagnitude, formatMagnitudeCondition, formatMagnitudeValue, formatMagnitudeWithCondition, formatFileStamp, hasHypocenterFacts } from './formatters'
+import { formatCoordinate, formatDepth, formatDomesticTsunami, formatMagnitude, formatMagnitudeCondition, formatMagnitudeValue, formatMagnitudeWithCondition, formatFileStamp, hasHypocenterFacts } from './formatters'
 import type { Hypocenter } from '../types/earthquake'
 import { withTz } from '../test-utils/withTz'
 import { getMagnitudeColor, getDepthColor } from './intensity'
@@ -231,5 +231,32 @@ describe('hasHypocenterFacts', () => {
   it('規模だけ・深さだけのどちらでも真になる（AND ではない）', () => {
     expect(hasHypocenterFacts(hypo({ magnitude: 5.1, depth: -1 }))).toBe(true)
     expect(hasHypocenterFacts(hypo({ magnitude: NaN, depth: 50 }))).toBe(true)
+  })
+})
+
+// 国内への津波の影響区分を出す語。
+//
+// **「警報等」は等級をひとまとめにした値**で、大津波警報・津波警報・津波注意報のどれかが
+// 出ていることしか言っていない（DMDATA は固定付加文 0211、P2PQuake は `MajorWarning` と
+// `Warning` の両方をここへ寄せる）。「津波警報」と書くと、**大津波警報の地震で事実より
+// 一段軽く見える**。短くしたくなる欄だが、ここは縮めてはいけない。
+describe('国内津波情報の語', () => {
+  // 正: 気象庁の語（固定付加文と同じ「津波警報等」）を使う。読み上げとも揃う。
+  it('警報等はまとめた語で出す', () => {
+    expect(formatDomesticTsunami('警報等').text).toBe('津波警報等')
+  })
+
+  // 対照: 注意報だけの区分は等級が確定しているので、まとめた語にしない。
+  it('注意報はまとめた語にしない', () => {
+    expect(formatDomesticTsunami('注意報').text).toBe('津波注意報')
+  })
+
+  // 安全弁: **まとめた語を他の区分へ広げていない。** 「等」を付けてよいのは等級が確定して
+  // いない「警報等」だけで、確定している区分に付けると今度は**実際より重く**見える
+  // （「津波の心配なし等」では何を言っているのか分からない）。
+  it('等級が確定している区分に「等」を足していない', () => {
+    for (const t of ['なし', '注意報', '若干の海面変動', '調査中', '不明'] as const) {
+      expect(formatDomesticTsunami(t).text, t).not.toContain('等')
+    }
   })
 })

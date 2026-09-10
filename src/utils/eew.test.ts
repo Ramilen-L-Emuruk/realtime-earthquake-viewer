@@ -772,6 +772,23 @@ describe('震源要素の精度の表示', () => {
     expect(eewMagnitudeRankLabel(8)).toBe('P波／S波レベル超え、または仮定震源要素')
   })
 
+  // 正: **EPOS の括弧書きを落とさない。** 資料は「EPOS（海域〔観測網外〕）」
+  // 「EPOS（内陸〔観測網内〕）」と書いており、この括弧が**観測網の外か内か**を言っている。
+  // 「海域」「内陸」だけに縮めると、何と対比しているのか画面から読めなくなる。
+  it('EPOS は観測網の内外まで出す', () => {
+    expect(eewEpicenterRankLabel(7)).toBe('EPOS（海域〔観測網外〕）')
+    expect(eewEpicenterRankLabel(8)).toBe('EPOS（内陸〔観測網内〕）')
+  })
+
+  // 安全弁: 括弧書きを戻したのは EPOS の 2 つだけ。**他のランクへ波及していないこと。**
+  // 資料は 1〜4 に〔 〕を持たせておらず、足すとこちらが原文に無いものを書いたことになる。
+  it('EPOS 以外のランクに〔 〕を足していない', () => {
+    for (const rank of [1, 2, 3, 4, 5, 6]) {
+      expect(eewEpicenterRankLabel(rank), `rank ${rank}`).not.toContain('〔')
+    }
+    expect(eewMagnitudeRankLabel(6)).toBe('EPOS')   // Ｍ側の EPOS には括弧書きが無い
+  })
+
   // 対照: 0（不明）と未知の値では何も返さない。「不明」と書いても伝わらず、欄が埋まるだけ。
   it('不明・未知・未設定では何も返さない', () => {
     expect(eewEpicenterRankLabel(0)).toBe('')
