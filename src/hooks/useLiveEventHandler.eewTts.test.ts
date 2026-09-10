@@ -174,6 +174,7 @@ function setup() {
     revertToDefaultTab: vi.fn(),
     selectQuake: vi.fn(),
     setActiveLpgmEventId: vi.fn(),
+    openEstimatedIntensity: vi.fn(),
   }))
   return result.current.handleLiveEvent
 }

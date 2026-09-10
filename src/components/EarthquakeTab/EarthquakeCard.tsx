@@ -1,6 +1,7 @@
 import { useMemo, useRef, useEffect, useState } from 'react'
-import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint, IntensityScale } from '../../types/earthquake'
+import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint, IntensityScale, JMAEstimatedIntensity } from '../../types/earthquake'
 import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor, lpgmCategoryNote } from '../../utils/lpgm'
+import { estimatedIntensityFor, estimatedIntensityAvailability } from '../../utils/estimatedIntensity'
 import {
   formatQuakeTime,
   formatDepth,
@@ -153,9 +154,17 @@ interface Props {
   lpgm?: JMALpgm
   activeLpgmEventId?: string | null
   onToggleLpgm?: (eventId: string) => void
+  /** アプリが持っている最新の推計震度分布図。この地震のものかはここで引き当てる。 */
+  estimatedIntensity?: JMAEstimatedIntensity | null
+  /** この地震の震度分布モードを開いているか。 */
+  distributionActive?: boolean
+  onToggleDistribution?: () => void
 }
 
-export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, activeLpgmEventId, onToggleLpgm }: Props) {
+export function EarthquakeCard({
+  quake, isLatest, isSelected, onSelect, lpgm, activeLpgmEventId, onToggleLpgm,
+  estimatedIntensity = null, distributionActive = false, onToggleDistribution,
+}: Props) {
   const { earthquake, issue } = quake
   const { hypocenter, maxScale, domesticTsunami } = earthquake
   // 電文全体の最大震度が「5弱以上・未入電」だったとき、見出しにも「以上」を付ける。
@@ -168,6 +177,13 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
   // 長周期の「観測情報の種類」から出す一文（値 2・4 のときだけ。→ `lpgmCategoryNote`）。
   // 条件と本文の両方で使うので一度だけ計算する。
   const categoryNote = lpgmCategoryNote(lpgm?.category)
+  // 震度分布ボタン。**引き当てはここで行う** —— この電文は識別子を持たないので、
+  // 発現時刻で突き合わせる（→ `estimatedIntensityFor`）。
+  const matchedEstimated = estimatedIntensityFor(quake, estimatedIntensity)
+  const distributionState = estimatedIntensityAvailability(quake, matchedEstimated)
+  // **描けるものが何も無いならボタンを出さない。** 公式が無く、観測点も 1 つも無い電文
+  //（震度速報など区域しか持たないもの）では、押しても空の画面になるだけ。
+  const canDrawDistribution = !!matchedEstimated || quake.points.some(p => !p.isArea)
 
   const cardRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
@@ -594,6 +610,44 @@ export function EarthquakeCard({ quake, isLatest, isSelected, onSelect, lpgm, ac
           {hasLocation && (
             <div className="text-xs text-secondary roomy:text-sm">
               {formatCoordinate(hypocenter.latitude, hypocenter.longitude)}
+            </div>
+          )}
+
+          {/* 震度分布（クリックで地図の表示モードをトグル）。カード自体が <button> のため
+              入れ子を許さない（長周期のトグルと同じ作法）。
+              **どちらの分布を見ているかをボタンに書く。** 気象庁の推計とアプリ自身の推定は
+              見た目が似ているので、書かないと利用者が区別できない。 */}
+          {canDrawDistribution && (
+            <div
+              role="button"
+              tabIndex={0}
+              aria-pressed={distributionActive}
+              onClick={(e) => { e.stopPropagation(); onToggleDistribution?.() }}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onToggleDistribution?.() } }}
+              title={distributionState === 'official'
+                ? '気象庁が地盤の揺れやすさまで考慮して推計した震度の分布'
+                : '観測点の震度をこのアプリが補間した目安。気象庁の推計とは精度が違う'}
+              className={`w-full rounded-lg py-1 px-3 flex items-center justify-between gap-2 border transition-colors cursor-pointer hover:opacity-80 roomy:py-2 roomy:px-4 ${
+                distributionActive
+                  ? 'bg-blue-900/40 border-blue-500 outline outline-2 outline-offset-2 outline-blue-500'
+                  : 'bg-panel border-border'
+              }`}
+            >
+              <span className="text-xs font-medium text-white roomy:text-sm">震度分布</span>
+              {/* **「推計」と「推定」だけでは分かれない。** どちらも日常語ではほぼ同義で、
+                  精度の差（気象庁は地盤の揺れやすさまで織り込む／こちらは観測点を補間しただけ）が
+                  読み取れない。**片方に「簡易」を入れて、語の重さで差を付ける。** */}
+              <span className={`text-xs roomy:text-sm ${distributionState === 'official' ? 'text-blue-300 font-bold' : 'text-secondary'}`}>
+                {distributionState === 'official' ? '気象庁の推計' : 'このアプリの簡易推定'}
+              </span>
+            </div>
+          )}
+          {canDrawDistribution && distributionState === 'awaiting' && (
+            <div className="text-secondary" style={{ fontSize: '0.75rem', lineHeight: 1.5 }}>
+              {/* **「待っています」だけで終えない。** 気象庁は「強い揺れの拡がりが足りないときは
+                  発表されないことがある」と断っている。言い切ると、来ないまま待たされた利用者が
+                  アプリの不具合だと思う。 */}
+              気象庁の推計を待っています（発表されないこともあります）
             </div>
           )}
 

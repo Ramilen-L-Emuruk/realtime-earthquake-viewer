@@ -56,6 +56,7 @@ import { isMaxScaleUnreceived } from './utils/quakePoints'
 import { formatMagnitudeWithCondition, formatDateTimeLocal } from './utils/formatters'
 import { computeEEWLevel, eewMaxLpgmClass } from './utils/eew'
 import { quakeEventKey } from './utils/quakeMerge'
+import { estimatedIntensityFor, matchEstimatedIntensityArrival } from './utils/estimatedIntensity'
 import { tsunamiOverallGrade } from './utils/tsunami'
 import { playCountdownBeep, unlockAudio, setSoundVolume } from './utils/alertSound'
 import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
@@ -137,6 +138,13 @@ export function App() {
   const [quakeSelectionTick, setQuakeSelectionTick] = useState(0)
   const [focusedObsName, setFocusedObsName] = useState<{ name: string; ts: number } | null>(null)
   const [activeLpgmEventId, setActiveLpgmEventId] = useState<string | null>(null)
+  /**
+   * 震度分布モードを開いている地震（`eventKey`）。null なら閉じている。
+   *
+   * **地震ごとに持つ。** 単なる真偽値にすると、別のカードを選んだときにモードだけが居残り、
+   * 選んだ覚えのない地震の分布が出る。
+   */
+  const [distributionQuakeKey, setDistributionQuakeKey] = useState<string | null>(null)
   const [activeLpgmSource, setActiveLpgmSource] = useState<'earthquake' | 'eew' | null>(null)
   // 地震カード切替時は LPGM 表示をリセットする。子タブ（React.memo 化済み）へ props として
   // 渡すため useCallback で参照を安定化する（毎レンダー再生成すると memo が破られる）。
@@ -168,6 +176,9 @@ export function App() {
       setActiveLpgmSource(next ? 'eew' : null)
       return next
     })
+  }, [])
+  const toggleDistribution = useCallback((eventKey: string) => {
+    setDistributionQuakeKey(prev => (prev === eventKey ? null : eventKey))
   }, [])
   const deactivateLpgm = useCallback(() => {
     setActiveLpgmEventId(null)
@@ -390,6 +401,30 @@ export function App() {
     requestAutoTab(tab, tab === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake, source, false)
   }, [requestAutoTab, settings.voicevoxEnabled])
 
+  /**
+   * 気象庁の推計震度分布図が届いたときに、その地震の分布モードを開く。
+   *
+   * **タブ移動は既存の仕組みへ要求として出す**（`setActiveTabNonRealtime`）。直接
+   * `setActiveTab` を叩くと、EEW・揺れ検知・利用者の操作より優先されてしまい、
+   * 地震から数分後に画面を横取りすることになる（→ audio-tts-spec.md §6 の優先順位）。
+   *
+   * 引き当ては受信側と同じ述語（`matchEstimatedIntensity`）。**該当するカードが無ければ何もしない**
+   * ——別の地震の分布モードを勝手に開くよりは、開かないほうがましでしてよ。
+   */
+  const openEstimatedIntensity = useCallback((arrivalTime: string, lat: number, lon: number) => {
+    const target = earthquakesRef.current.find(
+      q => !q.cancelledAt && matchEstimatedIntensityArrival(q, arrivalTime, lat, lon),
+    )
+    if (!target) return
+    // **カードの選択も合わせる。** 地図が出すのは選択中の地震（`mapQuake`）で、分布モードも
+    // 公式の面もそこから引く。鍵を書き替えるだけだと、利用者が別の地震カードを見ている間に
+    // 届いたとき**カードのボタンは押された状態なのに地図には何も出ない**——エラーもログも
+    // 出ないので、手掛かりが何も残らない。長周期の自動表示も同じ 2 つを対にしている。
+    selectQuake(quakeEventKey(target))
+    setDistributionQuakeKey(quakeEventKey(target))
+    setActiveTabNonRealtime('earthquake')
+  }, [selectQuake, setActiveTabNonRealtime])
+
   // EEW の受信による realtime タブ移動。
   //
   // **読み上げ系（`'speech'`）として出す。** EEW は必ず読み上げを持つ情報で、この要求は
@@ -506,7 +541,7 @@ export function App() {
     setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate, setActiveTabRealtimeUrgent,
     setActiveTabRealtimeForKyoshin: () => requestTabForKyoshin('realtime'),
     followSpeechTab, preSpeechTab, speechFollow, expandPanelForSpecialInfo,
-    revertToDefaultTab, selectQuake, setActiveLpgmEventId,
+    revertToDefaultTab, selectQuake, setActiveLpgmEventId, openEstimatedIntensity,
   })
   resetTsunamiScrollRef.current = resetTsunamiScrollToTop
 
@@ -519,14 +554,14 @@ export function App() {
   const debouncedApiKey = useDebouncedValue(settings.dmdataApiKey, API_KEY_DEBOUNCE_MS)
 
   const {
-    earthquakes, tsunamis, activeEEWs, lpgmByEventId, nankai, nankaiCommentary, kohatsu, quakeNotice, earthquakeCount, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
+    earthquakes, tsunamis, activeEEWs, lpgmByEventId, nankai, nankaiCommentary, kohatsu, quakeNotice, earthquakeCount, estimatedIntensity, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
     telegramLog, clearTelegramLog,
     injectEvent, loadMoreEarthquakes,
     simulateEarthquake, simulateForeignQuake, simulateForeignQuakeHuge,
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
-    simulateQuakeNotice, simulateEarthquakeCount,
+    simulateQuakeNotice, simulateEarthquakeCount, simulateEstimatedIntensity,
     resetState, loadReplayEvents, restoreQuakeHistory,
   } = useEarthquakes(handleLiveEvent, debouncedApiKey, settings.dmdataTestDelivery, replayTimeOffset)
   earthquakesRef.current = earthquakes
@@ -588,6 +623,7 @@ export function App() {
     kohatsu:           simulateKohatsu,
     quakeNotice:       simulateQuakeNotice,
     earthquakeCount:   simulateEarthquakeCount,
+    estimatedIntensity: simulateEstimatedIntensity,
     notification:      () => {
       if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
         alert('先に「通知を許可する」ボタンをクリックしてください。')
@@ -604,7 +640,7 @@ export function App() {
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
-    simulateQuakeNotice, simulateEarthquakeCount,
+    simulateQuakeNotice, simulateEarthquakeCount, simulateEstimatedIntensity,
   ])
   // IconNav の onTabChange。手動選択は必ず即時反映し、以後 TAB_HOLD_MS の間は自動切替に
   // 奪わせない（EEW の新規発報・レベルアップ・誤報取消だけはこれより強い）。
@@ -1385,6 +1421,11 @@ export function App() {
   })
 
   const mapQuake = mapTab === 'earthquake' ? selectedQuake : latest
+  // 地図に出す推計震度分布図。**地図が出している地震のものだけ**を渡す（引き当ては
+  // 発現時刻。→ `estimatedIntensityFor`）。別の地震のものを渡すと、まるで違う場所の
+  // 分布が「気象庁の推計」として重なる。
+  const mapEstimatedIntensity = estimatedIntensityFor(mapQuake, estimatedIntensity)
+  const mapDistributionMode = !!mapQuake && distributionQuakeKey === quakeEventKey(mapQuake)
   // 共有カード（表示中の地図を 1 枚の画像にする）。撮影は地図そのものを操作するため実体が要る
   // ——地図の生成時に受け取って持つ。地図へ重ねる UI は App が配置する決まりなので、
   // それを起こすボタンもここに置く。
@@ -1438,6 +1479,8 @@ export function App() {
             tsunamis={tsunamis}
             observations={latestTsunamiObservations}
             lpgm={activeLpgm ?? undefined}
+            distributionMode={mapDistributionMode}
+            estimatedIntensity={mapEstimatedIntensity}
             iconScale={settings.mapIconScale}
             recording={settings.recordingMode}
             hypocenterDepthScale={settings.hypocenterDepthScale}
@@ -1538,6 +1581,9 @@ export function App() {
               lpgmByEventId={lpgmByEventId}
               activeLpgmEventId={activeLpgmEventId}
               onToggleLpgm={toggleLpgmFromEarthquake}
+              estimatedIntensity={estimatedIntensity}
+              distributionQuakeKey={distributionQuakeKey}
+              onToggleDistribution={toggleDistribution}
             />
           </div>
           <div className={`${TAB_SCROLLER_CLASS}${activeTab !== 'realtime' ? ' invisible pointer-events-none' : ''}`}>

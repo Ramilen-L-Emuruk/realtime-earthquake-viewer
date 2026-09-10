@@ -225,7 +225,7 @@ function setup(over: { voicevoxEnabled?: boolean } = {}) {
     defaultTabRef: { current: 'earthquake' },
     setActiveTabRealtimeForKyoshin: vi.fn(),
     revertToDefaultTab: vi.fn(),
-    selectQuake: vi.fn(), setActiveLpgmEventId: vi.fn(),
+    selectQuake: vi.fn(), setActiveLpgmEventId: vi.fn(), openEstimatedIntensity: vi.fn(),
     ...spies,
   }))
   return {

@@ -199,6 +199,21 @@ function remapPayload(payload: ReplayPayload, deltaMs: number, remapId: IdRemapp
         },
       }
     }
+    case 'estimatedIntensity': {
+      // **`eventId` を持たない電文。** BUFR には識別子が入っておらず、地震カードとの
+      // 結び付けは**地震発現時刻**で行う（→ `matchEstimatedIntensity`）。だから `remapId` は
+      // 通さず、時刻だけをずらす。**ずらし忘れると引き当てが外れてボタンが出なくなる**
+      // ——地震カード側の `earthquake.time` はずれているので、突き合わせが成立しない。
+      // セルの座標は時刻に依らないのでそのまま。
+      return {
+        kind: 'estimatedIntensity',
+        data: {
+          ...payload.data,
+          time: shiftIso(payload.data.time, deltaMs),
+          arrivalTime: shiftIso(payload.data.arrivalTime, deltaMs),
+        },
+      }
+    }
     case 'earthquakeCount': {
       const newEventId = remapId(payload.data.eventId) ?? payload.data.eventId
       return {

@@ -9,6 +9,7 @@ import { fetchDmdataReplayEvents, fetchDmdataQuakeHistory, clearReplayCache, fil
 import type { JMATsunami } from '../types/earthquake'
 import type { ReplayEntry } from '../types/replay'
 import { DmdataApiKeyError } from '../utils/dmdataApiKey'
+import { buildSampleTelegram } from '../test-utils/bufrBuild'
 
 // 電文の読み取りが XML に一本化されたため DOMParser が要る。**環境ごと jsdom へ移さない**
 // ——このファイルの tar 生成は Blob.stream() と CompressionStream を使っており、jsdom の Blob は
@@ -30,10 +31,14 @@ function makeTarHeader(name: string, size: number): Uint8Array {
   return h
 }
 
-function makeTar(files: Array<{ name: string; content: string }>): Uint8Array {
+// 中身はバイト列でも渡せる。**二進電文（IXAC41）は文字列に写せない** ——
+// UTF-8 として読めないバイトが U+FFFD へ潰れ、戻せなくなる。
+type TarFile = { name: string; content: string | Uint8Array }
+
+function makeTar(files: TarFile[]): Uint8Array {
   const blocks: Uint8Array[] = []
   for (const f of files) {
-    const body = enc.encode(f.content)
+    const body = typeof f.content === 'string' ? enc.encode(f.content) : f.content
     blocks.push(makeTarHeader(f.name, body.length))
     const padded = new Uint8Array(Math.ceil(body.length / HEADER) * HEADER)
     padded.set(body)
@@ -47,7 +52,7 @@ function makeTar(files: Array<{ name: string; content: string }>): Uint8Array {
   return out
 }
 
-async function makeTarGz(files: Array<{ name: string; content: string }>): Promise<Uint8Array> {
+async function makeTarGz(files: TarFile[]): Promise<Uint8Array> {
   const stream = new Blob([makeTar(files) as BlobPart])
     .stream()
     .pipeThrough(new CompressionStream('gzip'))
@@ -81,8 +86,10 @@ function quakeBody(hypocenterName: string): string {
 }
 
 /** manifest 1 件分。ファイル名は id の先頭 7 文字を含む必要がある。 */
-function manifestEntry(id: string, type = 'VXSE53', time = '2026-08-10T12:05:00+09:00') {
-  return { id, classification: 'telegram.earthquake', head: { type, time, test: false } }
+function manifestEntry(
+  id: string, type = 'VXSE53', time = '2026-08-10T12:05:00+09:00', designation?: string | null,
+) {
+  return { id, classification: 'telegram.earthquake', head: { type, time, test: false, designation } }
 }
 
 const FROM = new Date('2026-08-10T00:00:00+09:00')
@@ -161,6 +168,144 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     expect(result.entries).toHaveLength(1)
     expect(result.skipped).toBe(3)
     expect(result.failedArchiveUrls).toHaveLength(0)
+  })
+
+  // ── 二進電文（IXAC41 推計震度分布図） ──
+  //
+  // アーカイブの中では `.bin` で入り、512KiB を超えると**目録の複数エントリに分かれる**。
+  // 分割の結合はライブ経路と同じ入れ物を使うが、**呼び出し方はここにしか無い**。
+
+  const BIN_TIME = '2026-08-10T12:06:00+09:00'
+
+  // 正: `.bin` を読み取って分布として積む。
+  // **これは「二進を文字列へ通していないか」の検査でもある。** `TextDecoder` を通すと
+  // BUFR のバイトが U+FFFD へ潰れて読めなくなるので、読めた時点で素通しが保証される。
+  it('二進電文を取り込む', async () => {
+    const bin = buildSampleTelegram()
+    const gz = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('bin0001', 'IXAC41', BIN_TIME)]) },
+      { name: 'bin0001_20260810120600000_0.bin', content: bin },
+    ])
+    globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
+
+    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO)
+    expect(skipped).toBe(0)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].payload.kind).toBe('estimatedIntensity')
+  })
+
+  // 正: 分割された 2 通が 1 つの分布に戻る。**目録では別々のエントリ**なので、
+  // 結合しなければ「先頭だけ読めて末尾が化ける」ではなく、どちらも読めずに消える。
+  it('分割された二進電文を結合して 1 通にする', async () => {
+    const bin = buildSampleTelegram()
+    const cut = 32
+    const gz = await makeTarGz([
+      {
+        name: 'telegrams.json',
+        content: JSON.stringify([
+          manifestEntry('bin0002', 'IXAC41', BIN_TIME, null),
+          manifestEntry('bin0003', 'IXAC41', BIN_TIME, 'RRA'),
+        ]),
+      },
+      { name: 'bin0002_20260810120600000_0.bin', content: bin.slice(0, cut) },
+      { name: 'bin0003_20260810120600100_0.bin', content: bin.slice(cut) },
+    ])
+    globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
+
+    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO)
+    expect(skipped).toBe(0)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].payload.kind).toBe('estimatedIntensity')
+  })
+
+  // 安全弁: **揃わなかった断片を取りこぼしに数える。** 数えないと、他の電文は全部
+  // 読めているのにその地震だけ分布が出ない状態が、手掛かりなしで起きる。
+  it('断片が揃わなければ取りこぼしに数える', async () => {
+    const bin = buildSampleTelegram()
+    const gz = await makeTarGz([
+      {
+        name: 'telegrams.json',
+        content: JSON.stringify([manifestEntry('bin0004', 'IXAC41', BIN_TIME, null)]),
+      },
+      { name: 'bin0004_20260810120600000_0.bin', content: bin.slice(0, 32) },   // 続きが無い
+    ])
+    globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
+
+    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO)
+    expect(entries).toHaveLength(0)
+    expect(skipped).toBe(1)
+    expect(warns.join(' ')).toContain('断片が揃いませんでした')
+  })
+
+  // 安全弁: 本体が入っていなければ取りこぼしに数える（XML 側と同じ扱い）。
+  it('二進電文の本体が無ければ取りこぼしに数える', async () => {
+    const gz = await makeTarGz([
+      { name: 'telegrams.json', content: JSON.stringify([manifestEntry('bin0005', 'IXAC41', BIN_TIME)]) },
+    ])
+    globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
+
+    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO)
+    expect(entries).toHaveLength(0)
+    expect(skipped).toBe(1)
+    expect(warns.join(' ')).toContain('二進電文の本体が見つからず')
+  })
+
+  // 安全弁: **1 通の障害を 2 件に数えない。** 断片の本体が入っていなければその電文は
+  // 二度と揃わないので `pendingKeys` でも数えられる。取りこぼしの件数は「何通読めなかったか」を
+  // 伝える値で、多い側へずれても嘘になる。
+  it('断片の本体が欠けても取りこぼしを二重に数えない', async () => {
+    const bin = buildSampleTelegram()
+    const gz = await makeTarGz([
+      {
+        name: 'telegrams.json',
+        content: JSON.stringify([
+          manifestEntry('bin0006', 'IXAC41', BIN_TIME, null),
+          manifestEntry('bin0007', 'IXAC41', BIN_TIME, 'RRA'),
+        ]),
+      },
+      { name: 'bin0006_20260810120600000_0.bin', content: bin.slice(0, 32) },   // RRA の本体が無い
+    ])
+    globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
+
+    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO)
+    expect(entries).toHaveLength(0)
+    expect(skipped).toBe(1)
+  })
+
+  // 安全弁: **断片が 2 つとも欠けても 1 件。** アーカイブの部分破損では複数が同時に欠ける。
+  it('断片が 2 つとも欠けても取りこぼしは 1 件', async () => {
+    const gz = await makeTarGz([
+      {
+        name: 'telegrams.json',
+        content: JSON.stringify([
+          manifestEntry('bin0008', 'IXAC41', BIN_TIME, null),
+          manifestEntry('bin0009', 'IXAC41', BIN_TIME, 'RRA'),
+        ]),
+      },
+      // どちらの本体も入っていない
+    ])
+    globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
+
+    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO)
+    expect(entries).toHaveLength(0)
+    expect(skipped).toBe(1)
+  })
+
+  // 対照: 別々の電文なら別々に数える（まとめすぎていないこと）。
+  it('別の電文の本体が欠けたらそれぞれ数える', async () => {
+    const gz = await makeTarGz([
+      {
+        name: 'telegrams.json',
+        content: JSON.stringify([
+          manifestEntry('bin0010', 'IXAC41', BIN_TIME, null),
+          manifestEntry('bin0011', 'IXAC41', '2026-08-10T12:20:00+09:00', null),
+        ]),
+      },
+    ])
+    globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
+
+    const { skipped } = await fetchDmdataReplayEvents('key', FROM, TO)
+    expect(skipped).toBe(2)
   })
 
   it('一部のアーカイブが失敗した件数を戻り値で返す', async () => {

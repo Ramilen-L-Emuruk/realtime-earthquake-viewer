@@ -17,6 +17,7 @@ import { PlateBoundariesGL } from './PlateBoundariesGL'
 import { DayNightGL } from './DayNightGL'
 import { QuakeIntensityPointsGL } from './QuakeIntensityPointsGL'
 import { QuakeIntensitySurfaceGL } from './QuakeIntensitySurfaceGL'
+import { QuakeEstimatedIntensityGL } from './QuakeEstimatedIntensityGL'
 import { QuakeRegionFillGL } from './QuakeRegionFillGL'
 import { QuakeHeatmapGL } from './QuakeHeatmapGL'
 import { HypocenterDepthGL } from './HypocenterDepthGL'
@@ -80,6 +81,8 @@ export function JapanMapGL({
   mode,
   quake,
   lpgm,
+  distributionMode = false,
+  estimatedIntensity = null,
   tsunamis = [],
   observations = [],
   obsUpdateStatus,
@@ -171,7 +174,23 @@ export function JapanMapGL({
     lpgmRegionAggregates,
     quakeFitPositions,
     quakeSignature,
-  } = useQuakeLayerData(mode, quake, { zoom, aggregateMaxZoom }, lpgm)
+  } = useQuakeLayerData(mode, quake, { zoom, aggregateMaxZoom }, lpgm, distributionMode, estimatedIntensity)
+  // 気象庁の推計震度分布図を出しているか。**引き当ては呼び出し側の担当**で、ここへ来る時点で
+  // 「いま地図が出している地震のもの」に絞られている（→ `estimatedIntensityFor`）。
+  //
+  // **分布モードとは無関係に、届いていれば必ずこちらを出す。** 分布モードが受け持つのは
+  // 「引いた画でも区域塗りへ戻さない」ことだけ。ここをモードで括ると、モードを閉じた通常の
+  // 地図で**公式が届いているのに自前の推定が出続ける**——利用者には見分けが付かないまま、
+  // 劣るほうを見せることになる。
+  const estimatedIntensityActive = !!estimatedIntensity
+  //
+  // **分布（面）を出すか。** 通常はズームで決まる（引いた画は区域塗り＝発表値、寄ると面＝推定）が、
+  // 震度分布モードのときは引いた画でも面を出す —— このモードは「引いた画で分布の拡がりを見る」
+  // ためのもので、ズーム連動のままだといちばん見せたい画角で区域塗りへ戻ってしまう。
+  //
+  // **観測点ドットはここに乗せない。** ドットは従来どおりズームだけで決まる（`!aggregateByRegion`）。
+  // 引いた画でドットを重ねると、粒が面を埋め尽くして分布の形が読めなくなる（実際そうなった）。
+  const showDistribution = mode === 'quake' && !lpgmActive && (!aggregateByRegion || distributionMode)
   // 津波の派生データ（海岸線＋観測棒＋到達確認マーカー＋欠測マーカー）。発報中は全モードで海岸線を
   // 描くため常時計算する。
   const { tsunamiLines, observationBars, arrivalMarkers, missingMarkers, tsunamiFitPositions, tsunamiSignature } = useTsunamiLayerData(
@@ -468,12 +487,19 @@ export function JapanMapGL({
           <QuakeRegionFillGL
             regionAggregates={regionAggregates}
             iconScale={iconScale}
-            visible={mode === 'quake' && aggregateByRegion && !lpgmActive}
+            visible={mode === 'quake' && aggregateByRegion && !lpgmActive && !distributionMode}
           />
-          {/* 観測点表示のときだけ、その背景に震度の面を敷く（区域塗りとは排他）。 */}
+          {/* 観測点表示のときだけ、その背景に震度の面を敷く（区域塗りとは排他）。
+              **気象庁の推計震度分布図が出ているときも敷かない** —— 同じ画面に推定を 2 つ置くと、
+              どちらを見ているのか混ざる。切り替わったことはカードのボタンが伝える。 */}
           <QuakeIntensitySurfaceGL
             markers={stationMarkers}
-            visible={mode === 'quake' && !aggregateByRegion && !lpgmActive}
+            visible={showDistribution && !estimatedIntensityActive}
+          />
+          {/* 気象庁の推計震度分布図（IXAC41）。自前の面の置き換えとして出す。 */}
+          <QuakeEstimatedIntensityGL
+            data={estimatedIntensity}
+            visible={showDistribution && estimatedIntensityActive}
           />
           <QuakeIntensityPointsGL
             markers={stationMarkers}

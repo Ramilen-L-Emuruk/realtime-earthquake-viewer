@@ -8,7 +8,11 @@ import { authHeader } from '../utils/dmdataApiKey'
 import { extractQuakeEventIdFromId } from '../utils/quakeMerge'
 import { latestValidDateTime } from '../utils/tsunami'
 import type { ReplayEntry, ReplayFetchResult, QuakeHistoryResult } from '../types/replay'
-import { HANDLED_TYPES, QUAKE_TYPES, buildXmlPayload, CLASSIFICATIONS } from './dmdataTelegramPayload'
+import {
+  HANDLED_TYPES, QUAKE_TYPES, buildXmlPayload, CLASSIFICATIONS,
+  isBinaryTelegramType, buildBinaryPayload,
+} from './dmdataTelegramPayload'
+import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
 import {
   clearLiveReplayCache, fetchLiveQuakeTelegrams, fetchLiveReplayEntries, resolveLiveDates,
 } from './dmdataReplayLive'
@@ -50,7 +54,11 @@ interface ManifestEntry {
   id: string
   originalId?: string
   classification: string
-  head: { type: string; time: string; test: boolean }
+  /**
+   * `designation` は分割配信された二進電文の 2 報目以降にだけ入る（`RRA`〜`RRX`）。
+   * 実アーカイブで確認済み（2026-07-28 の IXAC41 が 1 報目 null・2 報目 "RRA"）。
+   */
+  head: { type: string; time: string; test: boolean; designation?: string | null }
 }
 
 // 日次アーカイブのキャッシュ（URL → ファイル名マップ）
@@ -134,6 +142,12 @@ export async function fetchDmdataReplayEvents(
 
   const dec = new TextDecoder()
   const entries: ReplayEntry[] = []
+  // 分割された二進電文の結合待ち。**アーカイブをまたいで共有する** —— 断片は同じ日の同じ
+  // アーカイブに入るのが普通だが、日付の境目で分かれても拾えるようにしておく。
+  // この取得 1 回きりの入れ物なので、ライブの断片とは混ざらない。
+  const bufrFragments = new BufrFragmentStore()
+  /** 本体が見つからず、既に取りこぼしとして数えた二進電文の識別名。 */
+  const countedBinaryKeys = new Set<string>()
 
   // 取り込めなかった電文の総数。1 通ごとの詳細は log.warn / log.error に出るが、
   // 「取りこぼしがあったか」だけは最後にまとめて 1 行で分かるようにする。
@@ -218,6 +232,41 @@ export async function fetchDmdataReplayEvents(
           // **採るのは XML 版**（originalId 無し）。JSON 版を落とすのは同一電文の二重取り込みを
           // 防ぐ正常な重複排除で、実データでは manifest の約半数がこれに該当するため警告は出さない。
           if (entry.originalId) continue
+
+          // 二進電文（IXAC41）は `.bin` で入り、512KiB を超えると複数エントリに分かれる。
+          // **`dec.decode` を通してはいけない** —— 不正なバイトが U+FFFD へ潰れて戻せない。
+          if (isBinaryTelegramType(headType)) {
+            const binName = [...files.keys()].find((n) => n.endsWith('.bin') && n.includes(idPrefix))
+            const binBytes = binName ? files.get(binName) : undefined
+            if (!binBytes) {
+              log.warn(`[replay] 二進電文の本体が見つからずスキップ id=${entry.id} type=${headType}`)
+              // **電文ごとに 1 度だけ数える。** 分割は最大 24 断片あり、アーカイブの部分破損では
+              // 複数が同時に欠ける。断片ごとに数えると 1 通の障害が断片の数だけ膨らむ。
+              // 覚えておくのは、下の `pendingKeys` でもう一度数えないため。
+              const key = fragmentKey(headType, 'RJTD', entry.head.time)
+              if (!countedBinaryKeys.has(key)) {
+                countedBinaryKeys.add(key)
+                skippedCount++
+              }
+              continue
+            }
+            const joined = bufrFragments.add(
+              fragmentKey(headType, 'RJTD', entry.head.time), entry.head.designation, binBytes, Date.now(),
+            )
+            // まだ揃っていない断片。**取りこぼしには数えない** —— 残りの断片は同じ
+            // アーカイブの後続エントリに入っており、揃った時点で 1 通として積まれる。
+            if (!joined) continue
+            const binPayload = buildBinaryPayload(headType, joined, entry.id, entry.head.time)
+            if (binPayload) {
+              const replayTime = (binName ? parseMsFromFileName(binName) : null) ?? entryTime
+              entries.push({ payload: binPayload, replayTime })
+            } else {
+              log.warn(`[replay] 二進電文の読み取りに失敗しスキップ id=${entry.id} type=${headType}`)
+              skippedCount++
+            }
+            continue
+          }
+
           const xmlFileName = [...files.keys()].find(
             (n) => n.endsWith('.xml') && n.includes(idPrefix),
           )
@@ -250,6 +299,16 @@ export async function fetchDmdataReplayEvents(
       }
     }),
   )
+
+  // **揃わなかった二進電文の断片を取りこぼしとして数える。** ここで見ないと誰も見ない ——
+  // この入れ物は取得 1 回きりで使い捨てるので、残った断片は黙って消える。
+  // 症状は「他の電文は全部読めているのに、その地震だけ分布が出ない」で、手掛かりが何も残らない。
+  for (const key of bufrFragments.pendingKeys) {
+    // 本体が見つからず既に数えた電文は、ここでは数えない（上の注記）。
+    if (countedBinaryKeys.has(key)) continue
+    log.warn(`[replay] 二進電文の断片が揃いませんでした（分布は出ません）key=${key}`)
+    skippedCount++
+  }
 
   // 全アーカイブが読めなかった場合だけは例外にする。認証エラー・権限不足・ネットワーク全断など、
   // 個別の破損ではなく共通の原因であることがほとんどで、これを握り潰すと UI には
