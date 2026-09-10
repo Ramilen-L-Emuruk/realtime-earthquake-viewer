@@ -5,6 +5,13 @@ import type { JMAEarthquakeCount, JMAEarthquakeCountItem } from '../../types/ear
  *
  * 他の帯は本文が自由文ひとつきりなので `EarthquakeInfoDetail` にまとめてあるが、こちらは
  * **区間ごとの回数を表で出す**ため別に持つ。
+ *
+ * **取消しの理由（`cancelText`）は描かない。** `applyEarthquakeCount` は取消が自分の群発に
+ * 一致すれば帯ごと消し、一致しなければ表示中の帯をそのまま残す —— どちらの道でも取消の報が
+ * ここへ渡ることはない。理由が届く先は読み上げだけ（`ttsText.ts` の `earthquakeCountToText`）で、
+ * お知らせ（VZSE40）も同じ構造（→ `docs/spec/data-sources-spec.md` §2）。
+ * 防御のつもりで分岐を置くと、次に触る人へ「取消も描ける」という誤った保証を与える
+ * （下の `earthquakeCountHeadline` と同じ理由）。
  */
 const fmt = new Intl.DateTimeFormat('ja-JP', {
   month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
@@ -67,9 +74,6 @@ export function earthquakeCountHeadline(count: JMAEarthquakeCount): string {
 export function EarthquakeCountDetail({ count }: { count: JMAEarthquakeCount }) {
   return (
     <div className="px-3 pb-2">
-      {count.cancelText && (
-        <p className="text-white/90 text-xs leading-relaxed whitespace-pre-wrap mb-2">{count.cancelText}</p>
-      )}
       {count.freeText && (
         <p className="text-white/90 text-xs leading-relaxed whitespace-pre-wrap mb-2">{count.freeText}</p>
       )}

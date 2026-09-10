@@ -409,6 +409,51 @@ export function useEarthquakes(
   const testNankaiRetractionTimerRef = useRef<number | undefined>(undefined)
   const testEarthquakeCountRetractionTimerRef = useRef<number | undefined>(undefined)
   const testTsunamiGradeChangeTimerRef = useRef<number | undefined>(undefined)
+
+  /**
+   * テストボタンが張った「待ち」をすべて落とす。**アンマウントと `resetState` の両方から呼ぶ。**
+   *
+   * **1 箇所にまとめてあるのは、配線を落としやすいから。** 待ちには 2 系統あり、
+   * 南海トラフ・地震回数の取消テストはイベントキューへ積むが、**津波と EEW のテストは
+   * `handleEvent` を直接呼ぶ** —— `eventQueueRef.current.clear()` では止まらない。
+   * 追い忘れると、画面を閉じた後やリプレイへ切り替えた後に、消えたはずの電文が 1 通だけ
+   * 単独で届く。**例外もログも出ない。**
+   *
+   * 落とすのは「これから発火する待ち」だけで、画面に出ているものの扱いには触れない
+   * （そちらは `resetState` の他の行が決めている）。
+   *
+   * **待ちを持つ ref を増やしたら、ここへ足すこと。**
+   */
+  const clearTestSimulationTimers = useCallback(() => {
+    // 津波テスト 5 種が共有する自動解除（TEST_AUTO_DISMISS_MS）。
+    if (testTsunamiRef.current) {
+      window.clearTimeout(testTsunamiRef.current.cancelTimer)
+      testTsunamiRef.current = null
+    }
+    // EEW 発報テスト 5 種の最終報（EEW_FINAL_SILENCE_MS）。**種別ごとに独立して張られる**ので
+    // Map を走査する。1 つでも残ると、リセット後の画面へ EEW がまるごと 1 通生える。
+    for (const entry of testEEWTimersRef.current.values()) {
+      window.clearTimeout(entry.finalizeTimer)
+    }
+    testEEWTimersRef.current.clear()
+    // EEW 誤報取消テストの取消（EEW_RETRACTION_CANCEL_MS）。
+    if (testEEWRetractionRef.current) {
+      window.clearTimeout(testEEWRetractionRef.current.cancelTimer)
+      testEEWRetractionRef.current = null
+    }
+    if (testNankaiRetractionTimerRef.current !== undefined) {
+      window.clearTimeout(testNankaiRetractionTimerRef.current)
+      testNankaiRetractionTimerRef.current = undefined
+    }
+    if (testEarthquakeCountRetractionTimerRef.current !== undefined) {
+      window.clearTimeout(testEarthquakeCountRetractionTimerRef.current)
+      testEarthquakeCountRetractionTimerRef.current = undefined
+    }
+    if (testTsunamiGradeChangeTimerRef.current !== undefined) {
+      window.clearTimeout(testTsunamiGradeChangeTimerRef.current)
+      testTsunamiGradeChangeTimerRef.current = undefined
+    }
+  }, [])
   // 帯に出している南海トラフ臨時情報・後発地震注意情報の識別情報（無ければ null）。取消の照合に使う。
   //
   // **`stateRef` では判定できない。** あれはレンダー時にしか進まないが、キューのディスパッチャは
@@ -1308,21 +1353,13 @@ export function useEarthquakes(
       if (earthquakeCountExpireTimerRef.current !== undefined) {
         window.clearTimeout(earthquakeCountExpireTimerRef.current)
       }
-      // 取消テストの待ちも落とす。残すと、キューを空にした後で取消をひとつ差し込む。
-      if (testNankaiRetractionTimerRef.current !== undefined) {
-        window.clearTimeout(testNankaiRetractionTimerRef.current)
-      }
-      if (testEarthquakeCountRetractionTimerRef.current !== undefined) {
-        window.clearTimeout(testEarthquakeCountRetractionTimerRef.current)
-      }
-      // 津波の続報テストの待ちも同じ。**こちらはキューを通らず `handleEvent` を直接呼ぶ**ので、
-      // キューを空にするだけでは止まらない。
-      if (testTsunamiGradeChangeTimerRef.current !== undefined) {
-        window.clearTimeout(testTsunamiGradeChangeTimerRef.current)
-      }
+      // テストボタンが張った待ちも全部落とす（→ `clearTestSimulationTimers`）。
+      // **キューを空にするだけでは足りない** —— 津波と EEW のテストはキューを通らず
+      // `handleEvent` を直接呼ぶ。
+      clearTestSimulationTimers()
       eventQueueRef.current.clear()
     }
-  }, [])
+  }, [clearTestSimulationTimers])
 
   useEffect(() => {
     let cancelled = false
@@ -2001,18 +2038,7 @@ export function useEarthquakes(
     shownQuakeNoticeIdRef.current = null
     shownEarthquakeCountEventIdRef.current = null
     shownEstimatedIntensityRef.current = null
-    if (testNankaiRetractionTimerRef.current !== undefined) {
-      window.clearTimeout(testNankaiRetractionTimerRef.current)
-      testNankaiRetractionTimerRef.current = undefined
-    }
-    if (testEarthquakeCountRetractionTimerRef.current !== undefined) {
-      window.clearTimeout(testEarthquakeCountRetractionTimerRef.current)
-      testEarthquakeCountRetractionTimerRef.current = undefined
-    }
-    if (testTsunamiGradeChangeTimerRef.current !== undefined) {
-      window.clearTimeout(testTsunamiGradeChangeTimerRef.current)
-      testTsunamiGradeChangeTimerRef.current = undefined
-    }
+    clearTestSimulationTimers()
     setState(prev => ({
       ...prev,
       earthquakes: [],
@@ -2052,7 +2078,7 @@ export function useEarthquakes(
       window.clearTimeout(earthquakeCountExpireTimerRef.current)
       earthquakeCountExpireTimerRef.current = undefined
     }
-  }, [])
+  }, [clearTestSimulationTimers])
 
   /**
    * リプレイ開始時に、指定時刻より前の地震カードを一覧へ流し込む（音・読み上げは経由しない）。
