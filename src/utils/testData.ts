@@ -1,4 +1,4 @@
-import type { JMAQuake, JMATsunami, EEWAlert, JMANankai, JMANankaiCommentary, JMAKohatsu, EarthquakePoint, JMALpgm, JMAQuakeCity, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, JMAEstimatedIntensityGrade } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, EEWAlert, JMANankai, JMANankaiCommentary, JMAKohatsu, EarthquakePoint, JMALpgm, JMAQuakeCity, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, JMAEstimatedIntensityGrade, EEWRegion, TsunamiArea, TsunamiGrade, TelegramOperationStatus } from '../types/earthquake'
 import { serverNow, serverDate } from './clock'
 import notoHonshinPoints from '../data/noto-honshin-2024-points.json'
 import notoHonshinQuake from '../data/noto-honshin-2024-quake.json'
@@ -83,8 +83,12 @@ export function createTestForeignQuake(includeComments: boolean): JMAQuake {
  * 震央地名・付加文の組み合わせは気象庁の電文解説資料の事例に拠る（詳細震央地名
  * 「チリ中部沿岸」、固定付加文 `0229`＋`0221`＋`0228`）。同じ場面で津波側は
  * 予想波高が「巨大」になるため、大津波警報テストと合わせて確かめられる。
+ *
+ * @param withDmdssFields DMDSS 版（DMDATA XML 経路）のとき true。付加文と規模の説明
+ *   （`magnitudeCondition`）を含めるか。どちらも P2PQuake は配信しないため、standard 版では
+ *   実データで起こり得ない表示・読み上げが出ないように落とす。
  */
-export function createTestForeignQuakeHuge(includeComments: boolean): JMAQuake {
+export function createTestForeignQuakeHuge(withDmdssFields: boolean): JMAQuake {
   const nowDate = serverDate()
   const now = nowDate.toISOString()
   const eventId = toEventIdTimestamp(nowDate)
@@ -104,14 +108,17 @@ export function createTestForeignQuakeHuge(includeComments: boolean): JMAQuake {
         depth: -1,
         // 数値は入らない。説明だけが「規模不明」と「M8 超」を分ける
         magnitude: NaN,
-        magnitudeCondition: 'Ｍ８を超える巨大地震',
+        // **この説明は DMDATA 経路にしかない。** P2PQuake は規模を数値でしか配信せず、
+        // 「Ｍ８を超える巨大地震」と「Ｍ不明」を分ける手立てを持たない。standard 版では
+        // 落として、実データどおり「Ｍ不明」と出る形にする（表示・読み上げの経路自体は通る）。
+        ...(withDmdssFields ? { magnitudeCondition: 'Ｍ８を超える巨大地震' } : {}),
       },
       maxScale: -1,
       // 0229（日本への津波の有無については現在調査中です）由来
       domesticTsunami: '調査中',
     },
     points: [],
-    forecastText: includeComments
+    forecastText: withDmdssFields
       ? '日本への津波の有無については現在調査中です。太平洋の広域に津波発生の可能性があります。一般的に、この規模の地震が海域の浅い領域で発生すると、津波が発生することがあります。'
       : undefined,
   }
@@ -135,7 +142,7 @@ const UNRECEIVED_TEST_STATIONS = new Set(['輪島市舳倉島', '金沢市弥生
  * @param useDmdataShape DMDSS 版のとき true。points 形状と情報種別を DMDATA 経路のものに
  *   合わせる（standard 版は P2PQuake 形状のまま）。
  */
-export function createTestEarthquake(useDmdataShape: boolean): JMAQuake {
+export function createTestEarthquake(useDmdataShape: boolean, operationStatus?: TelegramOperationStatus): JMAQuake {
   const nowDate = serverDate()
   const now = nowDate.toISOString()
   const eventId = toEventIdTimestamp(nowDate)
@@ -143,6 +150,9 @@ export function createTestEarthquake(useDmdataShape: boolean): JMAQuake {
     kind: 'quake',
     id: `dmdata-quake-${eventId}-1`,
     time: now,
+    // 電文の運用種別（`Control/Status`）。訓練・試験のときだけ入り、通常の報には現れない。
+    // **DMDATA 経路だけが運ぶ**（P2PQuake はヘッダを配信しない）ので standard 版では渡さない。
+    ...(operationStatus ? { operationStatus } : {}),
     // 同じ内容（震源＋各地の震度）に付く情報種別はバリアントで異なる。
     // DMDATA は VXSE53 の「震源・震度情報」、P2PQuake は DetailScale の「各地の震度情報」。
     issue: { source: 'テスト', time: now, type: useDmdataShape ? '震源・震度情報' : '各地の震度情報', correct: 'なし' },
@@ -225,6 +235,86 @@ export function createTestLpgm(eventId: string): JMALpgm {
     // （揺れは強くないのに高層階が大きく揺れた地域がある）。値 1・3 では何も出さないので、
     // 意味を出す側の経路を実機で通せるよう 4 を入れている
     category: 4,
+    // 気象庁以外が運用する観測点の印。実電文の長周期地震動観測情報にも現れるが、
+    // 元にした能登本震の報には 1 点も入っていなかった（198 点すべて気象庁）。**そこに無い形は
+    // 一度も画面に出ない**ので、1 点だけ立てて地図の吹き出しのバッジ（`LpgmPointsGL`）を
+    // 実機で確かめられるようにする。
+    //
+    // **この観測点が実際に気象庁以外なのではない。** 読み取り後の形としては正しく
+    // （パーサーは名前の「＊」を外してこの印を立てる）、表示経路を通すためだけに立てている。
+    points: (notoHonshinLpgm.points ?? []).map((p, i) => i === 0 ? { ...p, nonJma: true } : p),
+  }
+}
+
+/**
+ * standard 版（P2PQuake 経路）の津波の区域から、配信されない欄を落とす。
+ *
+ * P2PQuake の `parseTsunamiAreas` が作るのは `grade` / `immediate` / `name` /
+ * `firstHeight`（`arrivalTime` と `condition`）/ `maxHeight`（`description` と `value`）だけ。
+ * **区域コード・観測点の一覧・予想波高の「重要」・前回の等級は運ばれない。**
+ *
+ * **落とす側ではなく残す側を書く。** 型に DMDATA 由来の欄が増えたとき、落とす側を列挙する
+ * 書き方だとそのまま素通りして standard 版へ漏れる —— 型検査は通り、この関数も何も言わない。
+ * 残す側を書けば、増えた欄は既定で落ちる（安全側）。
+ */
+function toP2pTsunamiArea(area: TsunamiArea): TsunamiArea {
+  return {
+    grade: area.grade,
+    immediate: area.immediate,
+    name: area.name,
+    // **入れ子の中も欄ごとに選ぶ。** オブジェクトごと複製すると、`firstHeight.revise`
+    // （続報での位置づけ。P2PQuake は配信しない）のような欄が中に紛れて素通りする。
+    ...(area.firstHeight ? {
+      firstHeight: {
+        condition: area.firstHeight.condition,
+        ...(area.firstHeight.arrivalTime ? { arrivalTime: area.firstHeight.arrivalTime } : {}),
+      },
+    } : {}),
+    ...(area.maxHeight ? {
+      maxHeight: {
+        description: area.maxHeight.description,
+        ...(area.maxHeight.value !== undefined ? { value: area.maxHeight.value } : {}),
+      },
+    } : {}),
+  }
+}
+
+/**
+ * standard 版（P2PQuake 経路）で届く区域の都道府県名。
+ *
+ * **P2PQuake は県名を付けずに配信する。** 実データの `areas[].pref` は「茨城」「千葉」で、
+ * DMDATA 経路（`enrichEEWPref` が区域名から逆引きして補う）の「茨城県」とは別の形になる。
+ * この値は EEW カードの「対象」欄へそのまま出るので、揃えないと standard 版だけ画面が変わる。
+ *
+ * 落とすのは「都府県」だけで、「北海道」の「道」は残す —— 実データで確認できているのは
+ * 上記 2 例だけで、北海道の区域を含む報が標本に無い。**推測で削らない。**
+ *
+ * この判断は `testData.test.ts` が直接固定している（フィクスチャに北海道の区域が無く、
+ * ファクトリ越しでは確かめられないため export している）。
+ */
+export function toP2pPref(pref: string): string {
+  return pref.replace(/[都府県]$/, '')
+}
+
+/**
+ * standard 版の区域から、P2PQuake が配信しない欄を落とす。
+ *
+ * P2PQuake の `parseEEWRegions` が作るのは `pref` / `name` / `scaleFrom` / `scaleTo` /
+ * `scaleToOrAbove` / `kindCode` / `arrivalTime` だけ。**長周期地震動階級（`lgIntTo`）は
+ * 配信されず**、主要動の到達（`arrived`）も `Condition` を運ばないので立たない
+ * （到達は種別コードの下 1 桁から `isEewAreaArrived` が判定する）。
+ *
+ * **落とす側ではなく残す側を書く**（理由は `toP2pTsunamiArea` に同じ）。
+ */
+function toP2pArea(area: EEWRegion): EEWRegion {
+  return {
+    pref: toP2pPref(area.pref),
+    name: area.name,
+    scaleFrom: area.scaleFrom,
+    scaleTo: area.scaleTo,
+    kindCode: area.kindCode,
+    arrivalTime: area.arrivalTime,
+    ...(area.scaleToOrAbove ? { scaleToOrAbove: area.scaleToOrAbove } : {}),
   }
 }
 
@@ -234,9 +324,14 @@ export function createTestLpgm(eventId: string): JMALpgm {
 // 警報は予想震度5弱（scaleTo 45）以上の区域に発表されるため、震度4以下の区域には
 // 予報側のコードを使う（`isWarning` 判定は 10/11/19 のみを警報として扱う）。
 //
+// @param withDmdssFields DMDSS 版（DMDATA XML 経路）のとき true。
+//   **standard 版の EEW は 2 つの経路の合成**で、Yahoo 強震モニタの hypoInfo が土台になり、
+//   P2PQuake code=556 が区域と震源要素だけを後から注ぎ足す（`useEarthquakes.ts` の
+//   `enrichEEW`）。そのため震源要素の精度・内陸/海域・短縮名・固定付加文・最大予測値の変化・
+//   長周期地震動階級は**どちらの経路も運ばない**。false を渡すとそれらを持たない形になる。
 // @param baseTime 震源時刻の基準。同一イベントの続報・最終報では初報の値を渡して固定する
 //   （実運用の続報は originTime を変えない）。発表時刻（time / issue.time）は常に呼び出し時点。
-export function createTestEEWWarning(eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
+export function createTestEEWWarning(withDmdssFields: boolean, eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
   const origin = baseTime ?? serverDate()
   const report = serverDate().toISOString()
   const eid = eventId ?? `test-warn-${Date.now()}`
@@ -249,41 +344,49 @@ export function createTestEEWWarning(eventId?: string, serial = 1, baseTime?: Da
     earthquake: {
       originTime: origin.toISOString(),
       arrivalTime: new Date(origin.getTime() + 20000).toISOString(),
-      condition: '以上',
+      // 震源要素の補足情報（電文の `Condition`）。**値域は「仮定震源要素」の 1 つだけ**で、
+      // 該当しなければ要素ごと出ない（電文解説資料 Ⅱ.21 1-2）。仮定震源要素でない報は空。
+      condition: '',
       hypocenter: { name: '日向灘', latitude: 32.0, longitude: 132.0, depth: 30, magnitude: 6.5 },
     },
     severity: 'Warning',
     cancelled: false,
-    forecastMaxLpgmClass: 3,
-    // 気象庁の固定付加文。EEW にも付く（`Comments/Warning/Text`）
-    warningComment: '強い揺れに警戒してください。',
-    // 震央が内陸か海域か（`Hypocenter/Area/LandOrSea`）。実電文 405 通中 404 通に入る
-    landOrSea: '海域',
-    // 短縮用震央地名（`ReduceName`）。「日向灘」は元から短いので実電文でも同じ文字列になる
-    reduceName: '日向灘',
-    // 震源要素の精度（`Hypocenter/Accuracy`）。実電文の事例３（IPF法 3点／4点・P相/全相混在・3点）
-    // に合わせる。**画面に語が出る組み合わせを選ぶ** —— 0（不明）だけを入れると欄が空のままで、
-    // 表示できているかを実機で確かめられない
-    accuracy: { epicenterRank: 3, epicenterRank2: 3, depthRank: 3, magnitudeRank: 4, magnitudePoints: 3 },
-    // 続報で最大予測値が上がる形（`Intensity/Forecast/Appendix`）。初報は変化なし、
-    // 2 報目以降は「震央の位置が変わったため大きくなった」を出す
-    forecastChange: serial <= 1
-      ? { maxInt: 0, maxLgInt: 0, reason: 0 }
-      : { maxInt: 1, maxLgInt: 0, reason: 2 },
+    // 電文全体の最大予測震度。区域があるときの表示は区域を優先するが（`utils/eew.ts` の
+    // `eewMaxScale`）、**実電文はどちらの経路もこの欄を持つ** —— DMDATA は `Intensity/
+    // Forecast/MaxInt`、standard 版は Yahoo hypoInfo の `calcintensity` がここへ入る。
+    forecastMaxScale: 50,
+    ...(withDmdssFields ? {
+      forecastMaxLpgmClass: 3 as const,
+      // 気象庁の固定付加文。EEW にも付く（`Comments/Warning/Text`）
+      warningComment: '強い揺れに警戒してください。',
+      // 震央が内陸か海域か（`Hypocenter/Area/LandOrSea`）。実電文 405 通中 404 通に入る
+      landOrSea: '海域',
+      // 短縮用震央地名（`ReduceName`）。「日向灘」は元から短いので実電文でも同じ文字列になる
+      reduceName: '日向灘',
+      // 震源要素の精度（`Hypocenter/Accuracy`）。実電文の事例３（IPF法 3点／4点・P相/全相混在・3点）
+      // に合わせる。**画面に語が出る組み合わせを選ぶ** —— 0（不明）だけを入れると欄が空のままで、
+      // 表示できているかを実機で確かめられない
+      accuracy: { epicenterRank: 3, epicenterRank2: 3, depthRank: 3, magnitudeRank: 4, magnitudePoints: 3 },
+      // 続報で最大予測値が上がる形（`Intensity/Forecast/Appendix`）。初報は変化なし、
+      // 2 報目以降は「震央の位置が変わったため大きくなった」を出す
+      forecastChange: serial <= 1
+        ? { maxInt: 0, maxLgInt: 0, reason: 0 }
+        : { maxInt: 1, maxLgInt: 0, reason: 2 },
+    } : {}),
     issue: { eventId: eid, serial: String(serial), time: report },
-    areas: [
+    areas: ([
       { pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null, lgIntTo: 3 },
       { pref: '宮崎県', name: '宮崎県南部平野部', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: null, lgIntTo: 2 },
       // 予想震度4（5弱未満）は警報の対象外。同一電文内の予報域として送る
       { pref: '大分県', name: '大分県南部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: null, lgIntTo: 1 },
-    ],
+    ] as const).map(a => withDmdssFields ? { ...a } : toP2pArea({ ...a })),
   }
 }
 
 // 予報（警報未満）の EEW。区域は予想震度4 とする: 実運用の電文に区域が載る条件は
 // 「最大予測震度4以上または最大予測長周期地震動階級3以上」であり、震度3以下の区域は
 // そもそも電文に現れない（eew-information スキーマ）。
-export function createTestEEWForecast(eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
+export function createTestEEWForecast(withDmdssFields: boolean, eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
   const origin = baseTime ?? serverDate()
   const report = serverDate().toISOString()
   const eid = eventId ?? `test-forecast-${Date.now()}`
@@ -295,16 +398,17 @@ export function createTestEEWForecast(eventId?: string, serial = 1, baseTime?: D
     earthquake: {
       originTime: origin.toISOString(),
       arrivalTime: new Date(origin.getTime() + 20000).toISOString(),
-      condition: '以上',
+      condition: '',
       hypocenter: { name: '宮城県沖', latitude: 38.3, longitude: 141.8, depth: 60, magnitude: 4.5 },
     },
     severity: 'Forecast',
     cancelled: false,
+    forecastMaxScale: 40,
     issue: { eventId: eid, serial: String(serial), time: report },
-    areas: [
+    areas: ([
       { pref: '宮城県', name: '宮城県北部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: null },
       { pref: '宮城県', name: '宮城県中部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: null },
-    ],
+    ] as const).map(a => withDmdssFields ? { ...a } : toP2pArea({ ...a })),
   }
 }
 
@@ -319,7 +423,7 @@ export function createTestEEWForecast(eventId?: string, serial = 1, baseTime?: D
 // 経路（useLiveEventHandler の hypoFarMoved）に入り、確かめたい格上げの言い方が出てこない。
 // 気象庁が仮定震源要素に入れる固定値（深さ 10km・M1.0）から確定値（深さ 30km・M6.5）へ
 // 更新する形にしてある。
-export function createTestEEWAssumed(eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
+export function createTestEEWAssumed(withDmdssFields: boolean, eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
   const origin = baseTime ?? serverDate()
   const report = serverDate().toISOString()
   const eid = eventId ?? `test-assumed-${Date.now()}`
@@ -332,7 +436,7 @@ export function createTestEEWAssumed(eventId?: string, serial = 1, baseTime?: Da
     earthquake: {
       originTime: origin.toISOString(),
       arrivalTime: new Date(origin.getTime() + 20000).toISOString(),
-      condition: isAssumed ? '仮定震源要素' : '以上',
+      condition: isAssumed ? '仮定震源要素' : '',
       // 仮定震源要素では震源要素そのものが固定の仮定値（気象庁は観測点直下・深さ 10km・M1.0 を入れる）。
       // カード・地図側もこれを見て M・深さを隠す（docs/spec/eew-spec.md §5）
       hypocenter: isAssumed
@@ -341,11 +445,14 @@ export function createTestEEWAssumed(eventId?: string, serial = 1, baseTime?: Da
     },
     severity: isAssumed ? 'Forecast' : 'Warning',
     cancelled: false,
+    // **初報は最大予測震度も持たない。** 観測点 1 点による震度予測では気象庁が発表しないため、
+    // 電文にこの欄そのものが現れない（区域が空なのと同じ理由）。続報で震源が確定して初めて付く。
+    ...(isAssumed ? {} : { forecastMaxScale: 50 as const }),
     issue: { eventId: eid, serial: String(serial), time: report },
     // 初報に区域は載らない。続報で震源が確定して初めて地域別予想が付く
-    areas: isAssumed ? [] : [
+    areas: isAssumed ? [] : ([
       { pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null },
-    ],
+    ] as const).map(a => withDmdssFields ? { ...a } : toP2pArea({ ...a })),
   }
 }
 
@@ -354,7 +461,7 @@ export function createTestEEWAssumed(eventId?: string, serial = 1, baseTime?: Da
 //
 // **severity は続報も含めて予報級に固定する。** 気象庁は深さ 150km を超える地震に緊急地震速報
 // （警報）を発表しないため、警報級の深発 EEW は実電文として存在しない。
-export function createTestEEWDeep(eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
+export function createTestEEWDeep(withDmdssFields: boolean, eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
   const origin = baseTime ?? serverDate()
   const report = serverDate().toISOString()
   const eid = eventId ?? `test-deep-${Date.now()}`
@@ -366,7 +473,7 @@ export function createTestEEWDeep(eventId?: string, serial = 1, baseTime?: Date)
     earthquake: {
       originTime: origin.toISOString(),
       arrivalTime: new Date(origin.getTime() + 60000).toISOString(),
-      condition: '以上',
+      condition: '',
       // 2015/05/30 小笠原諸島西方沖（深さ 682km）を参考にした深発地震のパラメータ
       hypocenter: { name: '小笠原諸島西方沖', latitude: 27.9, longitude: 140.5, depth: 450, magnitude: 6.5 },
     },
@@ -376,14 +483,16 @@ export function createTestEEWDeep(eventId?: string, serial = 1, baseTime?: Date)
     // あちらは IPF 法（3 点／4 点）で、EPOS の語がどのテストボタンにも出ない状態だった。
     // 「そこに無い形は一度も画面に出ない」ので、括弧書き（〔観測網外〕）を確かめる手段が無くなる。
     // 海域の地震なので rank 7（EPOS（海域〔観測網外〕））が実電文の形としても素直。
-    accuracy: { epicenterRank: 7, epicenterRank2: 4, depthRank: 7, magnitudeRank: 6, magnitudePoints: 5 },
+    ...(withDmdssFields
+      ? { accuracy: { epicenterRank: 7, epicenterRank2: 4, depthRank: 7, magnitudeRank: 6, magnitudePoints: 5 } }
+      : {}),
     issue: { eventId: eid, serial: String(serial), time: report },
     // 深発地震では地域別の震度予想が発表されない
     areas: [],
   }
 }
 
-export function createTestEEW(eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
+export function createTestEEW(withDmdssFields: boolean, eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
   const origin = baseTime ?? serverDate()
   const report = serverDate().toISOString()
   const eid = eventId ?? `test-${Date.now()}`
@@ -397,7 +506,7 @@ export function createTestEEW(eventId?: string, serial = 1, baseTime?: Date): EE
     earthquake: {
       originTime: origin.toISOString(),
       arrivalTime: at(20000),
-      condition: '以上',
+      condition: '',
       // 2011年東北地方太平洋沖地震を参考にしたパラメータ（EEW初報はM7.2前後だった）
       hypocenter: { name: '三陸沖', latitude: 38.1, longitude: 142.9, depth: 24, magnitude: 7.2 },
     },
@@ -409,12 +518,30 @@ export function createTestEEW(eventId?: string, serial = 1, baseTime?: Date): EE
     //
     // ボタンを 1 回押すと「程度以上」、もう 1 回押すと確定した値へ上がる。**この遷移まで再現する**
     // —— 上限が定まったことの言い直し（読み上げ）と、値の引き上げに追随する画面が確かめられる。
-    ...(isFirstReport
-      ? { forecastMaxLpgmClass: 3 as const, forecastMaxLpgmClassOver: true }
-      : { forecastMaxLpgmClass: 4 as const }),
+    //
+    // 電文全体の最大予測震度も同じ遷移をする（`Intensity/Forecast/MaxInt` の `To="over"`）。
+    // **区域が無い報ではこれだけが予想震度になる** —— standard 版の初報がまさにその形で、
+    // 「震度6強程度以上」を区域なしで伝える経路はここでしか通らない（`utils/eew.ts` の
+    // `eewMaxScale` は区域があればそちらを優先するため）。
+    forecastMaxScale: 60,
+    // **上限が定まらないことを伝えられるのは DMDATA だけ。** P2PQuake は電文全体の最大予測震度を
+    // 配信せず（区域ごとの `scaleTo: 99` は運ぶ）、Yahoo hypoInfo の `calcintensity` にも
+    // 「程度以上」に当たる表現が無い。standard 版で立てると、実運用では出ない「6強程度以上」が
+    // 区域なしの報に出る。
+    ...(withDmdssFields && isFirstReport ? { forecastMaxScaleOrAbove: true } : {}),
+    // 長周期地震動階級は DMDATA だけが配信する（P2PQuake も Yahoo hypoInfo も運ばない）。
+    ...(withDmdssFields
+      ? (isFirstReport
+        ? { forecastMaxLpgmClass: 3 as const, forecastMaxLpgmClassOver: true }
+        : { forecastMaxLpgmClass: 4 as const })
+      : {}),
     issue: { eventId: eid, serial: String(serial), time: report },
     // 実データに合わせ areas を使用（参照は utils/eew.ts の eewAreas() で吸収）
-    areas: [
+    //
+    // **standard 版の初報は区域を持たない。** Yahoo 強震モニタの hypoInfo が先に届き、
+    // 区域は P2PQuake code=556 が後から注ぎ足す（`useEarthquakes.ts` の `enrichEEW`）ため、
+    // 実運用でもこの順で画面に出る。ボタンを 2 回押すと注入後の形へ進む。
+    areas: (!withDmdssFields && isFirstReport) ? [] : ([
       {
         pref: '宮城県', name: '宮城県北部', scaleFrom: 55, scaleTo: 60, kindCode: '10',
         arrivalTime: at(15000),
@@ -436,7 +563,7 @@ export function createTestEEW(eventId?: string, serial = 1, baseTime?: Date): EE
       // 19 ＝ 警報・PLUM 法。**時刻は持つが到達の予測ではない**（「震度を初めて予測した時刻」）
       // ので過去の時刻が入る。画面は時刻を出さず「到達時刻は不明」と書く。
       { pref: '千葉県', name: '千葉県北東部', scaleFrom: 40, scaleTo: 45, kindCode: '19', arrivalTime: at(-4000), lgIntTo: 1 },
-    ],
+    ] as const).map(a => withDmdssFields ? { ...a } : toP2pArea({ ...a })),
   }
 }
 
@@ -661,6 +788,34 @@ export function createTestEarthquakeCount(): JMAEarthquakeCount {
   }
 }
 
+/**
+ * 地震回数に関する情報の取消。
+ *
+ * **取消電文は回数の表を持たない。** 気象庁公式のサンプル（`32-35_10_02_220510_VXSE60.xml`）は
+ * 見出しと本文だけで、`Item` も次回発表予定も自由文も無い。同じ形にする —— 発表報を使い回して
+ * `cancelled` だけ立てると、実電文に存在しない「回数の表を持つ取消」ができる。
+ *
+ * **理由（`Body/Text`）が届く先は読み上げだけ。** この種別は取消で帯ごと消えるため
+ * （`applyEarthquakeCount`）、地震・津波・EEW のようにカードへ残せない。読み上げでしか
+ * 確かめられないので、テストボタンが無いと理由の文が一度も声にならない。
+ *
+ * @param base 取り消す対象の発表報（`eventId` で照合するので同じ群発のものを渡す）
+ */
+export function createTestEarthquakeCountRetraction(base: JMAEarthquakeCount): JMAEarthquakeCount {
+  const now = new Date(serverNow()).toISOString()
+  return {
+    id: `${base.id}-cancel`,
+    time: now,
+    eventId: base.eventId,
+    headline: '地震回数に関する情報を取り消します。',
+    items: [],
+    cancelled: true,
+    cancelText: '先ほどの、地震回数に関する情報を取り消します。',
+    reportDateTime: now,
+    expireAt: base.expireAt,
+  }
+}
+
 // 津波テストデータのバリアント差。DMDSS（DMDATA）経路の電文だけが持つ項目を切り替える。
 //   - eventId: DMDATA は常に14桁タイムスタンプを持つ。P2PQuake の 552 は持たない
 //   - validDateTime: 同上（P2PQuake には有効期限の概念が無い）
@@ -695,6 +850,65 @@ export function createTestTsunamiForecast(withDmdssFields: boolean): JMATsunami 
 }
 
 // 誤報取消（InfoType=取消 相当）のテスト。警報・注意報混在の発表後、90秒後に電文全体が取り消される。
+/**
+ * 大津波警報の続報で、**区域ごとに等級が動く**報（一部解除・一部引き上げ）。
+ *
+ * 気象庁は一部解除でも区域を電文から消さず、「大津波警報 → 津波警報」のような降格として
+ * 載せる。**全体の最上位等級だけを見ていると変化が見えない** —— 他の区域に警報が残る限り
+ * `tsunamiMaxGrade` は動かないため、区域が持つ前回の等級（`LastKind`）でしか分からない
+ * （→ docs/spec/tsunami-spec.md §10「区域単位で等級が動いた報」）。
+ *
+ * 4 通りとも入れる。**降格だけだと引き上げ側の表示（`isTsunamiGradeRaised`）が一度も通らない。**
+ *   岩手県・福島県 … 大津波警報 → 津波警報（降格）
+ *   青森県太平洋沿岸 … 津波警報 → 津波注意報（降格）
+ *   茨城県 … 津波警報 → 大津波警報（引き上げ）
+ *   北海道太平洋沿岸東部 … 津波注意報 → 津波予報（若干の海面変動。最も軽い降格）
+ * 宮城県だけは据え置き —— 動いた区域にだけ印が付くことを確かめるための対照。
+ *
+ * **`Unknown` の区域は作らない。** 解除相当のコード（50/60/00）が付いた区域は
+ * `parseTsunamiFromXml` が `continue` で捨てるため、内部型の `areas` に残ることがない
+ * （`grade: 'Unknown'` は「読めなかった」を表す内部値で、電文の等級ではない）。
+ * 完全に解除された区域は**一覧から消える**のが実運用の形。
+ *
+ * **DMDATA 経路のみ。** `lastGrade` は P2PQuake が配信しないので、standard 版で押しても
+ * 印は出ない（ボタン自体を DMDSS 版に限っている）。
+ *
+ * @param base 続報の元になる発表報（`eventId` と観測点を引き継ぐ）
+ */
+export function createTestTsunamiGradeChange(base: JMATsunami): JMATsunami {
+  const now = new Date(serverNow()).toISOString()
+  // 区域名 → 続報での等級と予想波高。**波高も等級に合わせて下げる** ―― 降格したのに
+  // 「10m以上」が残ると、カードの中で等級と高さが食い違う。
+  const next: Record<string, { grade: TsunamiGrade; description?: string; value?: number }> = {
+    '岩手県': { grade: 'Warning', description: '3m', value: 3.0 },
+    '福島県': { grade: 'Warning', description: '3m', value: 3.0 },
+    '青森県太平洋沿岸': { grade: 'Watch', description: '1m', value: 1.0 },
+    '茨城県': { grade: 'MajorWarning', description: '5m', value: 5.0 },
+    // 津波予報の区域は予想波高を持たない（実電文でも `MaxHeight` が付かない）
+    '北海道太平洋沿岸東部': { grade: 'Forecast' },
+  }
+  return {
+    ...base,
+    id: `${base.id}-2`,
+    time: now,
+    issue: { ...base.issue, time: now },
+    areas: base.areas.map(a => {
+      const n = next[a.name]
+      if (!n) return a
+      return {
+        ...a,
+        grade: n.grade,
+        lastGrade: a.grade,
+        // 「ただちに来襲」は大津波警報・津波警報の区域に付く印。降格したら落とす
+        immediate: n.grade === 'MajorWarning' || n.grade === 'Warning' ? a.immediate : false,
+        ...(n.description
+          ? { maxHeight: { description: n.description, value: n.value } }
+          : { maxHeight: undefined }),
+      }
+    }),
+  }
+}
+
 export function createTestTsunamiRetraction(withDmdssFields: boolean): JMATsunami {
   const nowDate = serverDate()
   const now = nowDate.toISOString()
@@ -777,6 +991,13 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
     // 等級の発表が最後に来た実運用でこの組み合わせになる。**電文としてあり得ない形ではない。**
     observationDateTime: withDmdssFields ? t(-2) : undefined,
     issue: { source: 'テスト', time: nowIso, type: 'Focus' },
+    // ── ここから下は DMDATA XML 経路にしかない ──
+    //
+    // P2PQuake の `parseTsunami` が作るのは `kind` / `id` / `time` / `cancelled` / `issue` /
+    // `areas` だけで、区域の中身も `grade` / `immediate` / `name` / `firstHeight` /
+    // `maxHeight` に限られる。**観測点も沖合推定も原因地震も本文も付加文も配信されない。**
+    // standard 版で押したときにそれらが画面へ出ると、実機では決して起きない絵になる。
+    ...(withDmdssFields ? {
     warningComment: 'ただちに高台へ避難してください。\n津波は繰り返し襲ってきます。警報が解除されるまで安全な場所から離れないでください。',
     // 電文の本文（`Body/Text` 相当）。等級の定型文とも自由付加文とも別で、同じ電文に 3 つとも入る。
     bodyText: '津波の第一波は、早い沿岸で０８日０３時３５分頃に到達すると予想されます。\n　これらの沿岸では今後１日程度は津波が継続する可能性が高いと考えられます。',
@@ -802,10 +1023,11 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
         nameFromMark: '宮古の東１２０ｋｍ付近', markCode: '203', direction: '東', distanceKm: 120,
       },
     ],
+    } : {}),
     // name は地図の海岸線表示用に、津波予報区データ（tsunami-zones.json）に実在する区域名を使用する
     // 2011年東北地方太平洋沖地震を参考にした発令内容
     // code は津波予報区コード（テスト用の仮値）。observations の districtCode と一致させて紐づけを確認する
-    areas: [
+    areas: ([
       {
         // 数値にならない予想波高。`value` を持たないのが電文どおりの形
         grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030',
@@ -863,7 +1085,8 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
           { name: '釧路', code: '0081', arrivalTime: t(30), highTideDateTime: t(90) },
         ],
       },
-    ],
+    ] as TsunamiArea[]).map(a => withDmdssFields ? a : toP2pTsunamiArea(a)),
+    ...(withDmdssFields ? {
     // 観測状態（`condition`）は電文の `Condition` に現れる組み合わせを一通り含める。
     // 気象庁は「重要 欠測」「微弱 欠測」のように複数を併記するため（電文解説資料 Ⅱ.12）、
     // 単独の状態しか置かないとカード・地図・読み上げの併記の扱いが一度も通らない。
@@ -879,6 +1102,11 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
       // 水位が上昇中の観測点。波高の数値が消えないことの確認を兼ねる。
       { name: '大洗',   districtCode: '070', districtName: '茨城県',           height: { value: 2.1, description: '2.1m' }, arrivalTime: t(20), initial: '押し', condition: { rising: true } },
       { name: '八戸港', districtCode: '060', districtName: '青森県太平洋沿岸', height: { value: 1.8, description: '1.8m' }, arrivalTime: nowIso, initial: '引き' },
+      // 第1波の到達時刻が読み取れなかった観測点（`FirstHeight/Condition` = 第１波識別不能）。
+      // **欠測とは別物** —— 津波は観測できていて到達も確定しており、時刻だけが出せない。
+      // 時刻の欄に「到達時刻不明」と理由が出る（`utils/tsunami.ts` の
+      // `observationArrivalFallbackText`）。到達確認の扱いは欠測と違って抑制しない。
+      { name: '久慈港', districtCode: '030', districtName: '岩手県', height: { value: 4.4, description: '4.4m' }, initial: '押し', maxHeightDateTime: t(3), condition: { firstWaveUnidentifiable: true } },
       // 津波注意報の区域で、これまでの最大波がごく小さい（数値を発表しない）。
       { name: '釧路',   districtCode: '080', districtName: '北海道太平洋沿岸東部', arrivalTime: t(30), initial: '押し', condition: { weak: true } },
       // 沖合の潮位観測点。「重要」の基準が沿岸と違う（大津波警報だけでなく津波警報も含む）ため、
@@ -908,6 +1136,7 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
       { name: '宮城県', code: '040', arrivalCondition: '早いところでは既に津波到達と推定', maxHeight: { description: '4m', value: 4.0 } },
       { name: '福島県', code: '050', arrivalCondition: '早いところでは既に津波到達と推定', condition: { estimating: true } },
     ],
+    } : {}),
   }
 }
 

@@ -310,8 +310,12 @@ function runSimulateEEWRetraction(
       // P2PQuake 経路（standard 版）には対応するフィールドが無い。津波の解除テストと同じ扱い
       ...(isDmdss ? { cancelText: 'システムの障害により誤った緊急地震速報を配信しました。' } : {}),
       areas: [],
+      // **「程度以上」の印も値と一緒に落とす。** 印だけ残ると、値が無いのに上限が定まって
+      // いないことになり、表示・読み上げが語を補う条件（→ eew-spec.md §4）と食い違う。
       forecastMaxScale: undefined,
+      forecastMaxScaleOrAbove: undefined,
       forecastMaxLpgmClass: undefined,
+      forecastMaxLpgmClassOver: undefined,
       earthquake: {
         ...report.earthquake,
         hypocenter: { ...report.earthquake.hypocenter, latitude: 0, longitude: 0 },
@@ -403,6 +407,8 @@ export function useEarthquakes(
   const testTsunamiRef = useRef<{ cancelTimer: number; tsunami: JMATsunami } | null>(null)
   // 南海トラフ臨時情報の取消テストで、発表から取消までを待つタイマー
   const testNankaiRetractionTimerRef = useRef<number | undefined>(undefined)
+  const testEarthquakeCountRetractionTimerRef = useRef<number | undefined>(undefined)
+  const testTsunamiGradeChangeTimerRef = useRef<number | undefined>(undefined)
   // 帯に出している南海トラフ臨時情報・後発地震注意情報の識別情報（無ければ null）。取消の照合に使う。
   //
   // **`stateRef` では判定できない。** あれはレンダー時にしか進まないが、キューのディスパッチャは
@@ -1306,6 +1312,14 @@ export function useEarthquakes(
       if (testNankaiRetractionTimerRef.current !== undefined) {
         window.clearTimeout(testNankaiRetractionTimerRef.current)
       }
+      if (testEarthquakeCountRetractionTimerRef.current !== undefined) {
+        window.clearTimeout(testEarthquakeCountRetractionTimerRef.current)
+      }
+      // 津波の続報テストの待ちも同じ。**こちらはキューを通らず `handleEvent` を直接呼ぶ**ので、
+      // キューを空にするだけでは止まらない。
+      if (testTsunamiGradeChangeTimerRef.current !== undefined) {
+        window.clearTimeout(testTsunamiGradeChangeTimerRef.current)
+      }
       eventQueueRef.current.clear()
     }
   }, [])
@@ -1733,6 +1747,52 @@ export function useEarthquakes(
   }, [handleEvent])
 
   /**
+   * 津波の続報で区域ごとに等級が動くテスト（一部解除・一部引き上げ）。
+   *
+   * 発表 → `TEST_AUTO_DISMISS_MS` の半分で続報 → 満了で解除、と 3 段で進む。**続報を挟むのが
+   * 要点** —— 「〇〇から切り替え」の印は前報との比較（`areaGradeChangedKeys`）で立つので、
+   * 1 通だけ流しても出ない。全体の最上位等級は大津波警報のまま動かないため、区域単位の
+   * 変化を見る経路（→ docs/spec/tsunami-spec.md §10）はここでしか通らない。
+   *
+   * **DMDSS 版のみ。** 前回の等級（`LastKind`）は P2PQuake が配信しない。
+   */
+  const simulateTsunamiGradeChange = useCallback(async () => {
+    const { createTestTsunami, createTestTsunamiGradeChange, TEST_AUTO_DISMISS_MS } = await loadTestData()
+    const base = createTestTsunami(isDmdss)
+    if (testTsunamiGradeChangeTimerRef.current !== undefined) {
+      window.clearTimeout(testTsunamiGradeChangeTimerRef.current)
+    }
+    runSimulateTsunami(() => base, TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent)
+    // 解除の待ちは `runSimulateTsunami` が張っている。続報はその手前へ差し込む。
+    //
+    // **待ちは ref で追う。** アンマウントとリセット（リプレイの開始・停止）で落とせるようにする
+    // —— 追えないと、画面を消した後や再生へ切り替えた後に 45 秒前の続報だけが単独で届き、
+    // 消えたはずの津波カードが復活する。しかもこの経路は `handleEvent` を直接呼ぶので、
+    // キューを空にしても止まらない。
+    testTsunamiGradeChangeTimerRef.current = window.setTimeout(() => {
+      testTsunamiGradeChangeTimerRef.current = undefined
+      // 解除が先に走った後は流さない（ボタンを押し直したときに古い続報が紛れ込む）
+      if (testTsunamiRef.current?.tsunami.id !== base.id) return
+      handleEvent(createTestTsunamiGradeChange(base))
+    }, TEST_AUTO_DISMISS_MS / 2)
+  }, [handleEvent])
+
+  /**
+   * 訓練報のテスト。
+   *
+   * 気象庁は訓練・試験の電文をヘッダ（`Control/Status`）でだけ区別し、中身は本物と同じ形で
+   * 流す。アプリは**あえて画面へ通し**（`test: false`）、代わりに「訓練報」の印を出して
+   * 見分けられるようにしている（→ docs/spec/quake-spec.md §5「電文の運用種別」）。
+   *
+   * **その印を出す手段がこれしかない。** 実配信の訓練報は事前に予告されて流れるもので、
+   * こちらの都合では受け取れない。印が出るかどうかを実機で確かめられる唯一の入口になる。
+   */
+  const simulateTrainingQuake = useCallback(async () => {
+    const { createTestEarthquake } = await loadTestData()
+    handleEvent(createTestEarthquake(isDmdss, '訓練'))
+  }, [handleEvent])
+
+  /**
    * 推計震度分布図のテスト。**地震情報を先に出し、少し置いてから分布を流す。**
    *
    * 実運用では地震から数分後に届くもので、そのころ地震カードは既に画面にある。
@@ -1763,34 +1823,37 @@ export function useEarthquakes(
     handleEvent(createTestForeignQuakeHuge(isDmdss))
   }, [handleEvent])
 
+  // EEW のテストデータもバリアントを渡す。**standard 版で押せるボタンが DMDATA 経路にしか
+  // 無い項目を画面へ出さないため** —— 震源要素の精度・内陸/海域・短縮名・固定付加文・
+  // 最大予測値の変化・長周期地震動階級は、P2PQuake も Yahoo hypoInfo も配信しない。
   const simulateEEW = useCallback(async () => {
     const { createTestEEW } = await loadTestData()
-    runSimulateEEW('special', createTestEEW, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
+    runSimulateEEW('special', (e, s, b) => createTestEEW(isDmdss, e, s, b), EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
   }, [handleEvent])
 
   const simulateEEWWarning = useCallback(async () => {
     const { createTestEEWWarning } = await loadTestData()
-    runSimulateEEW('warning', createTestEEWWarning, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
+    runSimulateEEW('warning', (e, s, b) => createTestEEWWarning(isDmdss, e, s, b), EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
   }, [handleEvent])
 
   const simulateEEWForecast = useCallback(async () => {
     const { createTestEEWForecast } = await loadTestData()
-    runSimulateEEW('forecast', createTestEEWForecast, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
+    runSimulateEEW('forecast', (e, s, b) => createTestEEWForecast(isDmdss, e, s, b), EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
   }, [handleEvent])
 
   const simulateEEWAssumed = useCallback(async () => {
     const { createTestEEWAssumed } = await loadTestData()
-    runSimulateEEW('assumed', createTestEEWAssumed, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
+    runSimulateEEW('assumed', (e, s, b) => createTestEEWAssumed(isDmdss, e, s, b), EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
   }, [handleEvent])
 
   const simulateEEWDeep = useCallback(async () => {
     const { createTestEEWDeep } = await loadTestData()
-    runSimulateEEW('deep', createTestEEWDeep, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
+    runSimulateEEW('deep', (e, s, b) => createTestEEWDeep(isDmdss, e, s, b), EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
   }, [handleEvent])
 
   const simulateEEWRetraction = useCallback(async () => {
     const { createTestEEWWarning } = await loadTestData()
-    runSimulateEEWRetraction(createTestEEWWarning, EEW_RETRACTION_CANCEL_MS, testEEWRetractionRef, handleEvent)
+    runSimulateEEWRetraction((e, s, b) => createTestEEWWarning(isDmdss, e, s, b), EEW_RETRACTION_CANCEL_MS, testEEWRetractionRef, handleEvent)
   }, [handleEvent])
 
   const simulateTsunami = useCallback(async () => {
@@ -1899,6 +1962,29 @@ export function useEarthquakes(
     }
   }, [applyEarthquakeCount])
 
+  /**
+   * 地震回数に関する情報の取消テスト。発表を出し、`TEST_AUTO_DISMISS_MS` 後に**同じ `eventId` の
+   * 取消**を流す（照合は `eventId`。`applyEarthquakeCount`）。
+   *
+   * **取消の理由が届く先はこの種別だけ読み上げしかない** —— 帯ごと消えるのでカードに残せない。
+   * ボタンが無いと、その文が一度も声にならないまま気づけない。
+   *
+   * 受信と同じ経路（イベントキュー）へ積む理由は `simulateNankaiRetraction` に同じ。
+   */
+  const simulateEarthquakeCountRetraction = useCallback(async () => {
+    const { createTestEarthquakeCount, createTestEarthquakeCountRetraction, TEST_AUTO_DISMISS_MS } = await loadTestData()
+    if (testEarthquakeCountRetractionTimerRef.current !== undefined) {
+      window.clearTimeout(testEarthquakeCountRetractionTimerRef.current)
+    }
+    const count = createTestEarthquakeCount()
+    const retraction = createTestEarthquakeCountRetraction(count)
+    eventQueueRef.current.push({ eventTime: serverDate(), payload: { kind: 'earthquakeCount', data: count } })
+    testEarthquakeCountRetractionTimerRef.current = window.setTimeout(() => {
+      testEarthquakeCountRetractionTimerRef.current = undefined
+      eventQueueRef.current.push({ eventTime: serverDate(), payload: { kind: 'earthquakeCount', data: retraction } })
+    }, TEST_AUTO_DISMISS_MS)
+  }, [])
+
   const resetState = useCallback(() => {
     // 台帳もここで空にする。掃除の `useEffect` に任せると、リセットから次のコミットまでの間に
     // 同じ eventId の報が届いたとき、消えたはずの報番号と比べて誤って捨てうる。
@@ -1918,6 +2004,14 @@ export function useEarthquakes(
     if (testNankaiRetractionTimerRef.current !== undefined) {
       window.clearTimeout(testNankaiRetractionTimerRef.current)
       testNankaiRetractionTimerRef.current = undefined
+    }
+    if (testEarthquakeCountRetractionTimerRef.current !== undefined) {
+      window.clearTimeout(testEarthquakeCountRetractionTimerRef.current)
+      testEarthquakeCountRetractionTimerRef.current = undefined
+    }
+    if (testTsunamiGradeChangeTimerRef.current !== undefined) {
+      window.clearTimeout(testTsunamiGradeChangeTimerRef.current)
+      testTsunamiGradeChangeTimerRef.current = undefined
     }
     setState(prev => ({
       ...prev,
@@ -1991,7 +2085,8 @@ export function useEarthquakes(
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
-    simulateQuakeNotice, simulateEarthquakeCount, simulateEstimatedIntensity,
+    simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
+    simulateTrainingQuake, simulateTsunamiGradeChange,
     resetState,
     loadReplayEvents,
     restoreQuakeHistory,

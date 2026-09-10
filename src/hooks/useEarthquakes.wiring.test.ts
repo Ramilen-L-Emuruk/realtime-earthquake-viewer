@@ -1994,3 +1994,79 @@ describe('南海トラフ臨時情報の取消の適用先', () => {
     expect(events.length).toBe(before + 1)
   })
 })
+
+// テストボタンが張る「待ち」を、リセットとアンマウントで確実に落とすこと。
+//
+// **これはキューを通らない経路。** 津波の続報テスト（区域ごとの等級変化）は
+// `handleEvent` を直接呼ぶので、`eventQueueRef.current.clear()` では止まらない。
+// 待ちを ref で追えていないと、45 秒後にリセット済みの画面へ津波カードが 1 枚だけ復活する
+// —— しかも例外もログも出ない。
+//
+// 地震回数の取消テストも同じ形の待ちを持つ（そちらはキュー経由だが、
+// **待ちそのものは同じように取り残されうる**）。
+describe('テストボタンの待ちの後始末', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  // 正: 押しっぱなしにすれば続報は届く（待ちが機能していることの確認）。
+  it('津波の等級変化テストは続報を届ける', async () => {
+    const h = setup()
+    await h.flush()
+    await act(async () => { await h.current.simulateTsunamiGradeChange() })
+    expect(h.current.tsunamis[0]?.areas.some(a => a.lastGrade)).toBe(false)
+
+    // TEST_AUTO_DISMISS_MS(90s) の半分で続報が入る
+    act(() => { vi.advanceTimersByTime(46_000) })
+    expect(h.current.tsunamis[0]?.areas.some(a => a.lastGrade)).toBe(true)
+  })
+
+  // 対照: リセットを挟めば、その後に待ちが明けても何も起きない。
+  // **ここが落ちると、消したはずの津波が 45 秒後に単独で復活する。**
+  it('リセット後は津波の続報が届かない', async () => {
+    const h = setup()
+    await h.flush()
+    await act(async () => { await h.current.simulateTsunamiGradeChange() })
+    expect(h.current.tsunamis.length).toBeGreaterThan(0)
+
+    act(() => { h.current.resetState() })
+    expect(h.current.tsunamis).toEqual([])
+
+    act(() => { vi.advanceTimersByTime(120_000) })
+    expect(h.current.tsunamis).toEqual([])
+  })
+
+  // 対照: 地震回数の取消テストも同じ。
+  it('リセット後は地震回数の取消が届かない', async () => {
+    const h = setup()
+    await h.flush()
+    await act(async () => { await h.current.simulateEarthquakeCountRetraction() })
+    act(() => { vi.advanceTimersByTime(50) })
+    expect(h.current.earthquakeCount).not.toBeNull()
+
+    act(() => { h.current.resetState() })
+    expect(h.current.earthquakeCount).toBeNull()
+
+    // 取消が遅れて届いても、リセット後の画面には何も起こさない
+    act(() => { vi.advanceTimersByTime(120_000) })
+    expect(h.current.earthquakeCount).toBeNull()
+  })
+
+  // 安全弁: 押し直したときに前の待ちを引きずらない。**前の待ちが生きていると、
+  // 2 回目の発表に対して 1 回目の続報が割り込む**（報番号も内容も噛み合わない）。
+  it('押し直すと前の待ちは落ちる', async () => {
+    const h = setup()
+    await h.flush()
+    await act(async () => { await h.current.simulateTsunamiGradeChange() })
+    act(() => { vi.advanceTimersByTime(30_000) })
+    // 30 秒目で押し直す（1 回目の続報はまだ来ていない）
+    await act(async () => { await h.current.simulateTsunamiGradeChange() })
+
+    // 1 回目の待ちが生きていれば、ここで続報が入ってしまう（押し直しから 16 秒しか経っていない）
+    act(() => { vi.advanceTimersByTime(16_000) })
+    expect(h.current.tsunamis[0]?.areas.some(a => a.lastGrade)).toBe(false)
+
+    // 2 回目の待ちは正しく明ける
+    act(() => { vi.advanceTimersByTime(30_000) })
+    expect(h.current.tsunamis[0]?.areas.some(a => a.lastGrade)).toBe(true)
+  })
+})
