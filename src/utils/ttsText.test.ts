@@ -1895,18 +1895,82 @@ describe('tsunamiWarningLevelToText', () => {
 
 // 取消しの概要（電文の `Body/Text`）。アプリの定型文（「キャンセルされました」）は何が起きたかしか
 // 言っておらず、**なぜ取り消したのかは電文のこの本文にしか無い**。
+//
+// **ただし実電文の本文は取消の宣言だけで、理由を含まない。** 定型文が同じ事実を先に述べるので、
+// 続けて読むと同じことを 2 度言う。そのため宣言だけの形は落とす（→ `CANCEL_DECLARATION` で形を
+// 捉え、`CANCEL_DECLARATION_SUBJECTS` で主語を照合する）。
 describe('取消の理由を読み上げる', () => {
-  // 正: 定型文の後ろに気象庁の本文を続ける
-  it('地震情報の取消に理由を足す', () => {
-    const text = earthquakeCancelToText('2026-01-01T12:00:00+09:00', '先ほどの地震情報は誤りでしたので取り消します。')
-    expect(text).toContain('キャンセルされました。')
-    expect(text).toContain('先ほどの地震情報は誤りでしたので取り消します。')
+  // 正: 実電文で観測できた本文（4 通り）と電文解説資料の記載例は、どれも読み上げない。
+  // 定型文だけが残る
+  it.each([
+    ['先ほどの、緊急地震速報（予報）を取り消します。'],
+    ['先ほどの、緊急地震速報（地震動予報）を取り消します。'],
+    ['先ほどの、震度速報を取り消します。'],
+    ['先ほどの、震源・震度情報を取り消します。'],
+    // 電文解説資料の記載例だけ「は取り消します」の形
+    ['先ほどの、緊急地震速報（予報）は取り消します。'],
+    // 読点を持たない形（実電文には無いが、同じ宣言）
+    ['先ほどの震度速報を取り消します。'],
+  ])('宣言だけの本文は読まない: %s', (cancelText) => {
+    expect(tsunamiCancelToText('retracted', cancelText)).toBe('津波警報等は誤って発表されたため取り消されました。')
   })
 
-  it('津波情報の取消に理由を足す', () => {
-    const text = tsunamiCancelToText('retracted', '先ほどの津波警報は誤りでしたので取り消します。')
-    expect(text).toContain('取り消されました。')
-    expect(text).toContain('先ほどの津波警報は誤りでしたので取り消します。')
+  // 正: 省いたことを記録する（取消は実電文で年に数通しか出ないため、毎回記録しても
+  // 他の記録を埋めない）
+  it('宣言だけで省いたことを記録する', () => {
+    const info = vi.spyOn(log, 'info').mockImplementation(() => {})
+    try {
+      tsunamiCancelToText('retracted', '先ほどの、震度速報を取り消します。')
+      expect(info).toHaveBeenCalledWith(expect.stringContaining('取消の宣言だけの本文なので'))
+    } finally { info.mockRestore() }
+  })
+
+  // 対照: 理由が入っていれば読む。**読むこと自体はやめていない** —— 電文解説資料はこの要素を
+  // 「取消の概要や理由等の文章」と定めており、理由を書く場所として設計されている
+  it.each([
+    // 「先ほどの」で始まらない
+    ['システム障害のため取り消します。'],
+    // 読点が挟まる
+    ['先ほどの緊急地震速報は、観測データの誤りにより取り消します。'],
+  ])('理由が入っていれば読む: %s', (cancelText) => {
+    expect(tsunamiCancelToText('retracted', cancelText)).toContain(cancelText)
+  })
+
+  // 安全弁: **宣言の形でも、主語が既知の情報名でなければ読む。** 形だけで落とすと、読点を
+  // 挟まずに理由を織り込んだ本文まで無音で捨てる。**落とし損ね（二度述べに戻る）より、
+  // 誤って落とす（気象庁が書いた理由を失う）ほうが重い**ので、読む側へ倒す
+  it.each([
+    ['先ほどの、装置の誤作動による誤報を取り消します。'],
+    ['先ほどの、通信障害により発表した緊急地震速報を取り消します。'],
+    ['先ほどの、観測データの誤りのため震度速報を取り消します。'],
+  ])('宣言の形でも主語が情報名でなければ読む: %s', (cancelText) => {
+    expect(tsunamiCancelToText('retracted', cancelText)).toContain(cancelText)
+  })
+
+  // 安全弁: そのとき記録を残す。**これが「落とし損ね」の検知点** —— 実電文に無い情報名で
+  // 宣言が来たら、この記録を見て主語の集合へ足すかを判断する
+  it('宣言の形だが主語が未知のときは記録を残して読む', () => {
+    const info = vi.spyOn(log, 'info').mockImplementation(() => {})
+    try {
+      // 津波の取消は 2012-12 以降の全アーカイブで標本が無く、主語の集合に入れていない
+      const text = tsunamiCancelToText('retracted', '先ほどの、津波警報・注意報・予報を取り消します。')
+      expect(text).toContain('先ほどの、津波警報・注意報・予報を取り消します。')
+      expect(info).toHaveBeenCalledWith(expect.stringContaining('既知の情報名でないため読み上げます'))
+    } finally { info.mockRestore() }
+  })
+
+  it('地震情報の取消に理由を足す', () => {
+    const text = earthquakeCancelToText('2026-01-01T12:00:00+09:00', 'システム障害のため取り消します。')
+    expect(text).toContain('キャンセルされました。')
+    expect(text).toContain('システム障害のため取り消します。')
+  })
+
+  // 正: **4 経路すべてが同じ述語を通ることを経路ごとに固定する。** 共通関数なので機能は
+  // 担保されているが、呼び出し元に分岐が入ったときにこの経路だけ回帰しても気づけない
+  it('地震情報の取消でも宣言だけの本文は読まない', () => {
+    // 2024-01-01 の実電文（DMDATA・NII の両方に入っている 1 通）
+    const text = earthquakeCancelToText('2026-01-01T12:00:00+09:00', '先ほどの、震度速報を取り消します。')
+    expect(text).toMatch(/に発表された地震情報はキャンセルされました。$/)
   })
 
   // 対照: 理由が無ければ従来どおり（空文字を足して助詞だけの文にしない）
@@ -1939,9 +2003,18 @@ describe('EEW の取消の理由を読み上げる', () => {
   } as unknown as EEWAlert)
 
   it('理由を足す', () => {
-    const text = eewCancelToText(cancelledEew('先ほどの緊急地震速報は誤りでしたので取り消します。'))
+    const text = eewCancelToText(cancelledEew('システム障害のため取り消します。'))
     expect(text).toContain('キャンセルされました。')
-    expect(text).toContain('先ほどの緊急地震速報は誤りでしたので取り消します。')
+    expect(text).toContain('システム障害のため取り消します。')
+  })
+
+  // 正: **EEW は取消の実電文が存在する唯一の種別**（DMDATA アーカイブ 2018-01〜2026-09 で 51 通）。
+  // 本文は 2 通りで、どちらも取消の宣言だけなので読まない
+  it.each([
+    ['先ほどの、緊急地震速報（予報）を取り消します。'],
+    ['先ほどの、緊急地震速報（地震動予報）を取り消します。'],
+  ])('実電文の本文は読まない: %s', (cancelText) => {
+    expect(eewCancelToText(cancelledEew(cancelText))).toMatch(/緊急地震速報はキャンセルされました。$/)
   })
 
   // 対照: 理由が無ければ従来どおり（空文字を足して助詞だけの文にしない）
@@ -2025,10 +2098,18 @@ describe('earthquakeCountToText', () => {
   // 理由が届く先は読み上げだけ**（他の 3 種別は取消後もカードが残って全文を出す）。
   it('取消しの理由も読む', () => {
     const text = earthquakeCountToText(makeCount({
-      cancelled: true, items: [], cancelText: '先ほどの、地震回数に関する情報を取り消します。',
+      cancelled: true, items: [], cancelText: 'システム障害のため取り消します。',
     }))
     expect(text).toContain('取り消されました。')
-    expect(text).toContain('先ほどの、地震回数に関する情報を取り消します。')
+    expect(text).toContain('システム障害のため取り消します。')
+  })
+
+  // 正: 宣言だけの本文は読まない（他の 3 種別と揃える）。公式サンプル電文の本文がこの形
+  it('宣言だけの本文は読まない（他の種別と揃える）', () => {
+    const text = earthquakeCountToText(makeCount({
+      cancelled: true, items: [], cancelText: '先ほどの、地震回数に関する情報を取り消します。',
+    }))
+    expect(text).toBe('地震回数に関する情報は取り消されました。')
   })
 
   // 正: 期間は日から読む。群発の累積は前日以前へさかのぼることが多く、時刻だけだと
