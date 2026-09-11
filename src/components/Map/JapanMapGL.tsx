@@ -190,6 +190,11 @@ export function JapanMapGL({
   //
   // **観測点ドットはここに乗せない。** ドットは従来どおりズームだけで決まる（`!aggregateByRegion`）。
   // 引いた画でドットを重ねると、粒が面を埋め尽くして分布の形が読めなくなる（実際そうなった）。
+  //
+  // **`!lpgmActive` は防御として残す。** 呼び出し側（App の `quakeOverlay`）が長周期と分布を
+  // 排他にしているので通常は両方が真にならないが、`lpgm` と `distributionMode` は独立した props
+  // なので、ここだけでは呼び出し側の約束を確かめられない。外すと、両方渡されたときに階級の塗りと
+  // 震度の面が重なる。
   const showDistribution = mode === 'quake' && !lpgmActive && (!aggregateByRegion || distributionMode)
   // 津波の派生データ（海岸線＋観測棒＋到達確認マーカー＋欠測マーカー）。発報中は全モードで海岸線を
   // 描くため常時計算する。
