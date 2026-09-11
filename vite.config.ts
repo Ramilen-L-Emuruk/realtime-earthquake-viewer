@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { perfReportPlugin } from './scripts/perf/vite-plugin-perf-report'
 import { shouldInjectDevApiKey } from './scripts/dev-api-key-gate'
+import { isInsideClaudeDir } from './scripts/dev-watch-ignore'
 
 const variant = process.env.VITE_VARIANT ?? 'standard'
 const isDmdss = variant === 'dmdss'
@@ -37,6 +38,20 @@ const APP_STRINGS = {
 
 const strings = isDmdss ? APP_STRINGS.dmdss : APP_STRINGS.standard
 
+// dev サーバーの監視対象から外す `.claude/` の絶対パス。
+//
+// ここに置かれるのはワークツリー（別ブランチの作業コピー）・エージェントやスキルの定義・
+// スクリーンショット・ログ等で、いま動かしている dev サーバーが読み込むものは無い（ワークツリーの中にも
+// `src/` はあるが、それはそのワークツリーで起動した別の dev サーバーが扱う）。外さないと、並行して動く
+// 別セッションがワークツリー内のファイルを触るたびに、こちらのブラウザがページ全体をリロードする
+// （index.html の変更で page reload、tsconfig.json の変更ではキャッシュ破棄を伴う full-reload）。
+// 設定タブ「テスト時刻設定」のリプレイは実時間で進むため、途中でリロードされると窓の最初から
+// やり直しになる。
+//
+// 判定の中身（glob で書けない理由・パス区切りの吸収・ディレクトリ自身を含める理由）は
+// `isInsideClaudeDir` 側のコメントにある。
+const CLAUDE_DIR = fileURLToPath(new URL('./.claude/', import.meta.url))
+
 /**
  * dev サーバー限定で `.env.local` の DMDATA_API_KEY を import.meta.env へ注入する。
  * DMDSS 版の検証のたびに設定タブへ API キーを貼り直す手間を省くための措置。
@@ -59,6 +74,12 @@ function devApiKeyDefine(configEnv: ConfigEnv): Record<string, string> {
 
 export default defineConfig(configEnv => ({
   base,
+  server: {
+    // 監視から .claude/ 配下を外す（理由は CLAUDE_DIR の説明）。
+    // ここで渡した値は vite の既定（node_modules・.git・test-results・cacheDir・outDir）を
+    // 置き換えるのではなく加算される（vite 6 の resolveChokidarOptions）ため、既定値は書かない。
+    watch: { ignored: [(p: string) => isInsideClaudeDir(CLAUDE_DIR, p)] },
+  },
   build: {
     outDir: isDmdss ? 'dist-dmdss' : 'dist',
   },
