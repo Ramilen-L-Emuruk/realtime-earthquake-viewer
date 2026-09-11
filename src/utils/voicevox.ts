@@ -1,5 +1,8 @@
 import { getAudioContext, getMasterInput } from './alertSound'
 import { findPhraseBreakMatch, getTtsPhraseBreakDictCache, isPlaceNameKey, loadTtsPhraseBreakDict } from './ttsPhraseBreakDict'
+import { getTtsStationReadingsCache, loadTtsStationReadings } from './ttsStationReadings'
+import { getTtsEpicenterAccentsCache, loadTtsEpicenterAccents } from './ttsEpicenterAccents'
+import { mergeSpeechDicts } from './ttsGeneratedDict'
 import { log, createLogThrottle } from './logger'
 
 /**
@@ -454,6 +457,54 @@ async function buildAccentPhrases(
 }
 
 /**
+ * 読み上げに使う辞書の合成結果。両方のキャッシュの参照が変わるまで使い回す。
+ * {@link findPhraseBreakMatch} は呼ばれるたびに全キーを走査し、しかもチャンクの断片ごとに
+ * 再帰するので、毎回作り直すと 2600 キーぶんのオブジェクト生成が読み上げのたびに乗る。
+ */
+let mergedSpeechDict: {
+  base: Record<string, string> | null
+  stations: Record<string, string> | null
+  epicenters: Record<string, string> | null
+  merged: Record<string, string> | null
+} = { base: null, stations: null, epicenters: null, merged: null }
+
+/**
+ * 句区切り辞書（手で書いたアクセント付き）と、震度観測点名の読み（気象庁のふりがなから生成）を
+ * 合わせた辞書を返す。どちらも未取得なら null。合わせ方は {@link mergeSpeechDicts}。
+ */
+function speechDict(): Record<string, string> | null {
+  const base = getTtsPhraseBreakDictCache()
+  const stations = getTtsStationReadingsCache()
+  const epicenters = getTtsEpicenterAccentsCache()
+  if (mergedSpeechDict.base === base
+    && mergedSpeechDict.stations === stations
+    && mergedSpeechDict.epicenters === epicenters) {
+    return mergedSpeechDict.merged
+  }
+  const merged = mergeSpeechDicts(base, stations, epicenters)
+  mergedSpeechDict = { base, stations, epicenters, merged }
+  return merged
+}
+
+/**
+ * 読み上げに使う辞書を読み込む。**観測点の読みが取れなくても句区切りは効かせる**（逆も同じ）。
+ *
+ * @param onPhraseBreakError 句区切り辞書の取得に失敗したときの記録。呼び出し元ごとに
+ *   ログの重みが違う（起動時の 1 回きりか、読み上げのたびに繰り返されうるか）ため外から渡す。
+ */
+async function loadSpeechDicts(onPhraseBreakError: (err: unknown) => void): Promise<void> {
+  await Promise.all([
+    loadTtsPhraseBreakDict().catch(onPhraseBreakError),
+    loadTtsStationReadings().catch((err) => {
+      log.debug('[VoiceVox] 観測点の読みの取得に失敗（観測点名の誤読が残る）', err)
+    }),
+    loadTtsEpicenterAccents().catch((err) => {
+      log.debug('[VoiceVox] 震央地名の句割りの取得に失敗（長い震央地名の抑揚が崩れる）', err)
+    }),
+  ])
+}
+
+/**
  * 1チャンクを audio_query → synthesis して AudioBuffer を返す。失敗時は null。
  *
  * @param hasNextChunk 後続のチャンクがあるか。真のとき、末尾の句読点に間を持たせる
@@ -477,8 +528,8 @@ async function synthesizeChunk(
 
     const query = await queryRes.json() as Record<string, unknown>
 
-    // 句区切り辞書にマッチする地名を含む場合は、accent_phrases を句区切り指定通りに組み直す
-    const phraseBreakDict = getTtsPhraseBreakDictCache()
+    // 辞書にマッチする地名（区域名・観測点名）を含む場合は、accent_phrases を指定通りに組み直す
+    const phraseBreakDict = speechDict()
     if (phraseBreakDict && findPhraseBreakMatch(chunk, phraseBreakDict)) {
       const built = await buildAccentPhrases(baseUrl, chunk, speakerId, phraseBreakDict, signal)
       // 結合したままだと繋ぎ目の直前（多くは助詞）が文末扱いになるため、長さと音高を引き直す。
@@ -566,8 +617,8 @@ export function prewarmVoicevox(baseUrl: string, text: string, speakerId: number
 
   const ctrl = new AbortController()
   const first = (async () => {
-    // 辞書は句区切りにしか使わないので、取れなくても合成は続ける（本再生と同じ扱い）
-    await loadTtsPhraseBreakDict().catch(() => { /* 区切りなしで合成する */ })
+    // 辞書は句区切りと読みにしか使わないので、取れなくても合成は続ける（本再生と同じ扱い）
+    await loadSpeechDicts(() => { /* 区切りなしで合成する */ })
     return synthesizeChunk(baseUrl, chunks[0], speakerId, ctx, ctrl.signal, chunks.length > 1)
   })()
   const entry: PrewarmedSpeech = {
@@ -899,7 +950,7 @@ export async function speakWithVoicevox(
   // 待つのはセッションを確立した後にすること。先に待つと、辞書が未取得の間に重なった複数の
   // 読み上げが同じ取得完了を待ち合わせ、解決後に後着が先着のセッションを追い越して先着が
   // 1 音も鳴らずに消える。ここで待てば、待機中に来た読み上げが即座に旧セッションを無効化できる。
-  await loadTtsPhraseBreakDict().catch((err) => {
+  await loadSpeechDicts((err) => {
     log.debug('[VoiceVox] 句区切り辞書の取得に失敗（区切りなしで読み上げ）', err)
   })
   if (currentSessionId !== sessionId) return  // 辞書待ちの間に割り込まれた

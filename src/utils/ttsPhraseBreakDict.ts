@@ -1,4 +1,6 @@
 import { fetchJsonWithTimeout } from './fetchJson'
+import { getTtsStationReadingsCache } from './ttsStationReadings'
+import { getTtsEpicenterAccentsCache } from './ttsEpicenterAccents'
 
 const DATA_URL = `${import.meta.env.BASE_URL}data/tts-phrase-break-dict.json`
 
@@ -79,15 +81,27 @@ export function isPlaceNameKey(key: string): boolean {
 }
 
 /**
- * 辞書キーが「単独語キー」（_standalone に列挙されたもの）かどうかを返す。
+ * 辞書キーが「単独語キー」かどうかを返す。`_standalone` に列挙されたものと、
+ * **震度観測点名の読み（生成辞書）のキー全部**が該当する。
  *
  * 短いキーはより長い地名の一部にもなる（「佐渡」は「佐渡市小木」「新潟県佐渡」にも含まれる）。
  * 長い側は VOICEVOX が正しく読めることも多く、素の部分一致で拾うと正しい読みを語中で切ってしまうため、
  * 単独で現れたときだけ一致させる。
+ *
+ * **生成辞書のキーを一律で単独語キーにするのは、長い側が辞書に無い組があるため。** 生成辞書は誤読する点だけを
+ * 収録するので、`宮古島市下地`（誤読・収録）と `宮古島市下地島空港`（正しく読める・未収録）のような組が
+ * できる。素の部分一致だと短い側が拾われ、**正しく読めていた観測点名が語中で切られる**（さらに
+ * `DICT_TRAILING_PAUSE` まで挟まる）。読み上げ文では観測点名が必ず全部形で現れ、後ろに来るのは
+ * 読点か「では」なので、境界判定を掛けても本来の一致は失わない
+ * （→ `docs/spec/audio-tts-spec.md` §3「震度観測点名の読み」）。
  */
 export function isStandaloneKey(key: string): boolean {
-  return standaloneKeysCache.has(key)
+  if (standaloneKeysCache.has(key)) return true
+  return has(getTtsStationReadingsCache(), key) || has(getTtsEpicenterAccentsCache(), key)
 }
+
+const has = (dict: Record<string, string> | null, key: string): boolean =>
+  dict != null && Object.prototype.hasOwnProperty.call(dict, key)
 
 /**
  * 単独語キーが「地名の一部でない位置」に現れる最初の位置を返す。無ければ -1。
@@ -97,6 +111,10 @@ export function isStandaloneKey(key: string): boolean {
  * 分割して再帰するため、**分割後の先頭では「直前の文字」が失われる**。これが問題になるのは
  * 「別の辞書キー＋区切り文字なしで単独語キー」という並びのときだけで、読み上げ文は地名を必ず
  * 読点で繋いでいる（ttsText.ts）ため現状は起きない。単独語キーを増やすときはここを見直すこと。
+ *
+ * **2026-09-10 に単独語キーの母数が 3 件から 2400 件超へ増えた**（観測点名を一律で扱うようにした
+ * ため。→ {@link isStandaloneKey}）。上の根拠は「読み上げ文が地名を読点で繋ぐこと」なので母数が
+ * 増えても変わらないが、地名を繋ぐ文の作り方を変えるときはここが効く範囲も併せて見ること。
  */
 function indexOfStandalone(text: string, key: string): number {
   for (let from = 0; from <= text.length - key.length; ) {

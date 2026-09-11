@@ -47,6 +47,20 @@ vi.mock('./ttsPhraseBreakDict', () => {
   }
 })
 
+// 観測点の読みはこのテストの対象外。実物のままだと取得（と 5 秒のタイムアウト待ち）が走る。
+// `mergeSpeechDicts` は純関数なので実物を使う。
+vi.mock('./ttsStationReadings', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./ttsStationReadings')>(),
+  loadTtsStationReadings: async () => ({}),
+  getTtsStationReadingsCache: () => null,
+}))
+
+// 震央地名の句割りも同様に対象外（実物のままだと取得とタイムアウト待ちが走る）。
+vi.mock('./ttsEpicenterAccents', () => ({
+  loadTtsEpicenterAccents: async () => ({}),
+  getTtsEpicenterAccentsCache: () => null,
+}))
+
 const fakeCtx = {
   state: 'running' as AudioContextState,
   currentTime: 0,
