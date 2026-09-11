@@ -124,6 +124,7 @@ function setup() {
     setTimeOffset: vi.fn((value: number | null) => { order.push('setTimeOffset'); timeOffset = value }),
     resetState: vi.fn(() => { order.push('resetState') }),
     resetTracking: vi.fn(() => { order.push('resetTracking') }),
+    resetLocalState: vi.fn(() => { order.push('resetLocalState') }),
     restorePreWindowTracking: vi.fn((_entries: ReplayEntry[]) => { order.push('restorePreWindowTracking') }),
     loadReplayEvents: vi.fn((_entries: ReplayEntry[]) => { order.push('loadReplayEvents') }),
   }
@@ -276,7 +277,7 @@ describe('useReplayController の start', () => {
     await h.flush(started)
 
     expect(h.order).toEqual([
-      'resetState', 'resetTracking', 'clearReplayCache', 'setTimeOffset',
+      'resetState', 'resetTracking', 'resetLocalState', 'clearReplayCache', 'setTimeOffset',
       // 履歴は本編・初期状態と並行に走らせる（待たせないため先に投げるだけで、
       // 反映＝restoreQuakeHistory は取得が返ってから）
       'fetchQuakeHistory',
@@ -290,6 +291,19 @@ describe('useReplayController の start', () => {
 })
 
 describe('useReplayController の停止・再開', () => {
+  // 停止も開始と同じ 3 つを落とす。**開始側だけを固定すると、片方だけ変更されて
+  // 非対称になっても気づけない**（リプレイを止めたのに選択中の地震と追加表示が残る、
+  // という形で症状が出る）。
+  it('停止でも 3 つのリセットを同じ並びで呼ぶ', () => {
+    const h = setup()
+    h.start(quietTarget())
+    h.order.length = 0
+    h.stop()
+    expect(h.order.slice(0, 4)).toEqual([
+      'setTimeOffset', 'resetState', 'resetTracking', 'resetLocalState',
+    ])
+  })
+
   it('停止したあとに古い取得が完了しても、電文を積まない', async () => {
     const h = setup()
     const started = h.start(quietTarget())

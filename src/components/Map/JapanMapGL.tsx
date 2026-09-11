@@ -117,6 +117,8 @@ export function JapanMapGL({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const [map, setMap] = useState<maplibregl.Map | null>(null)
+  // 地図そのものを作れなかった。地図の代わりに、その旨を出すために持つ。
+  const [mapUnavailable, setMapUnavailable] = useState(false)
   // 地図の生成 effect は依存配列が空（地図は 1 度だけ作る）。コールバックを直接読むと、
   // 親が別の関数を渡してきたときに古い参照を掴んだままになるため ref 越しに呼ぶ。
   const onMapReadyRef = useRef(onMapReady)
@@ -190,6 +192,11 @@ export function JapanMapGL({
   //
   // **観測点ドットはここに乗せない。** ドットは従来どおりズームだけで決まる（`!aggregateByRegion`）。
   // 引いた画でドットを重ねると、粒が面を埋め尽くして分布の形が読めなくなる（実際そうなった）。
+  //
+  // **`!lpgmActive` は防御として残す。** 呼び出し側（App の `quakeOverlay`）が長周期と分布を
+  // 排他にしているので通常は両方が真にならないが、`lpgm` と `distributionMode` は独立した props
+  // なので、ここだけでは呼び出し側の約束を確かめられない。外すと、両方渡されたときに階級の塗りと
+  // 震度の面が重なる。
   const showDistribution = mode === 'quake' && !lpgmActive && (!aggregateByRegion || distributionMode)
   // 津波の派生データ（海岸線＋観測棒＋到達確認マーカー＋欠測マーカー）。発報中は全モードで海岸線を
   // 描くため常時計算する。
@@ -282,57 +289,77 @@ export function JapanMapGL({
 
   useEffect(() => {
     if (!containerRef.current) return
-    const m = new maplibregl.Map({
-      container: containerRef.current,
-      center: JAPAN_CENTER,
-      zoom: INITIAL_ZOOM,
-      attributionControl: false,
-      // 地図の傾き（pitch）と回転（bearing）はユーザー操作から使える。地下の震源分布を立体で
-      // 見せるため。標準ジェスチャがそのまま担うので、操作系のオプションは何も塞がない。
+    // **地図を作れないと、ここで投げる。** MapLibre 6.7.0 からの挙動で、それ以前は誰も
+    // 聞いていない `error` イベントを発火して「描けない Map」を返していた。このアプリに
+    // ErrorBoundary は無いので、捕まえないと地図どころか画面全体が消える（地震情報も通知も
+    // 設定も出せなくなる）。地図だけ諦めて、残りは動かす。
+    let m: maplibregl.Map
+    try {
+      m = new maplibregl.Map({
+        container: containerRef.current,
+        center: JAPAN_CENTER,
+        zoom: INITIAL_ZOOM,
+        attributionControl: false,
+        // 地図の傾き（pitch）と回転（bearing）はユーザー操作から使える。地下の震源分布を立体で
+        // 見せるため。標準ジェスチャがそのまま担うので、操作系のオプションは何も塞がない。
+        //
+        // **maxPitch の 60 は MapLibre の既定値。その先は霧（sky / fog）を前提とした領域で、
+        // このアプリは霧を設定していない。** 上げる前に必ず docs/spec/map-rendering-spec.md §6
+        // 「地図の傾きと回転」を読むこと——水平線の位置は fov の引き算では求まらず、MapLibre 内部の
+        // getMercatorHorizon が決める。根拠となる式・霧の設計・実測値は仕様書側に集約してある
+        // （2 箇所に書くと、MapLibre のバージョンが上がったとき片方が取り残される）。
+        maxPitch: 60,
+        // CJK ラベルはビルド時に事前生成した SDF グリフ PBF（public/fonts/<stack>/<range>.pbf）を
+        // 使う。localIdeographFontFamily:false で漢字を実行時 TinySDF 生成に回さず、必ずサーバー
+        // グリフを取りに行かせる（区域名初出＝自動ズームと重なる最悪局面の生成スパイクを恒久的に消す。
+        // 移行計画 §8・scripts/build-glyphs.mjs）。
+        localIdeographFontFamily: false,
+        // symbol レイヤーの出入りに付く配置フェードを切る。効果は**地図上の symbol レイヤーすべて**に
+        // 及び、レイヤー単位に絞れない。これは paint プロパティのトランジション（各レイヤーで
+        // `-transition: {duration:0}` として個別に切っているもの）とは**別系統**で、地図全体にしか
+        // 設定できない（詳細と対象レイヤーの内訳は docs/spec/map-rendering-spec.md §8「symbol の
+        // 配置フェード」。対象をここに列挙はしない——2 箇所に並べると片方だけ古くなる）。
+        //
+        // 0 にする理由は 2 つある。
+        // 1. この地図では不透明度が既に意味を持っている。欠測ホールド中の点を 0.35 倍で描いて
+        //    「そこに点はあるが今は値が無い」と伝えているため（utils/kyoshinMissingHold.ts）、
+        //    出現アニメーションで 0→1 を通すと、その途中が「欠測中の点」と見分けられなくなる。
+        // 2. 既定の 300ms を残すと、同じ「新しい検知点が出る」出来事が 2 通りの見え方に割れる。
+        //    MapLibre は直前の配置に対応付けられたシンボルの不透明度を引き継ぎ、対応付かない
+        //    シンボルだけ 0 から立ち上げる。さらにタイル再読み込み直後の配置ではフェードを免除する
+        //    （内部の skipFade）。能登本震のリプレイで実測すると免除は配置 1,583 件中 131 件（8%）
+        //    しか起きず、残りは 0 から立ち上がっていた。どちらに転ぶかは秒単位のタイミング次第。
+        //
+        // 上の pitch/rotation と同じく、欠けても型チェックも単体テストも通ってしまう（この
+        // コードベースに Map を実際に構築するテストは無い）。消したことに気づけるのは手動の
+        // ブラウザ確認だけになる。
+        fadeDuration: 0,
+        style: {
+          version: 8,
+          // 地球を球として描く。傾けて見るのが常態になった以上、平面のままだと引いたときに
+          // 端が伸びて見える。**寄ると MapLibre が自動で Mercator へ切り替える**ので、
+          // 日本を細かく見る場面では従来と同じ描画になる（切り替えの実測と、カスタムレイヤーが
+          // 両方の投影に追随する仕組みは docs/spec/map-rendering-spec.md §6「地図の投影」）。
+          projection: { type: 'globe' },
+          glyphs: `${import.meta.env.BASE_URL}fonts/{fontstack}/{range}.pbf`,
+          sources: {},
+          layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#0a0c10' } }],
+        },
+      })
+    } catch (error) {
+      // **理由を問わず握る。型で選り分けない。** MapLibre は WebGL2 の文脈を作れないとき
+      // `GPUInitializationError` を投げるが、**「WebGL2 が使えない」がその型で届くとは限らない**
+      // ——`getContext` 自体が投げる端末（キャンバスの指紋採取を防ぐ拡張・機能を削った組み込み
+      // ブラウザ）では素の例外がそのまま上がってくる。型で絞ると、いちばん救いたい端末を
+      // 取りこぼしうる。握り損ねればこのアプリは画面ごと消えるので、ここは広く受ける。
       //
-      // **maxPitch の 60 は MapLibre の既定値。その先は霧（sky / fog）を前提とした領域で、
-      // このアプリは霧を設定していない。** 上げる前に必ず docs/spec/map-rendering-spec.md §6
-      // 「地図の傾きと回転」を読むこと——水平線の位置は fov の引き算では求まらず、MapLibre 内部の
-      // getMercatorHorizon が決める。根拠となる式・霧の設計・実測値は仕様書側に集約してある
-      // （2 箇所に書くと、MapLibre のバージョンが上がったとき片方が取り残される）。
-      maxPitch: 60,
-      // CJK ラベルはビルド時に事前生成した SDF グリフ PBF（public/fonts/<stack>/<range>.pbf）を
-      // 使う。localIdeographFontFamily:false で漢字を実行時 TinySDF 生成に回さず、必ずサーバー
-      // グリフを取りに行かせる（区域名初出＝自動ズームと重なる最悪局面の生成スパイクを恒久的に消す。
-      // 移行計画 §8・scripts/build-glyphs.mjs）。
-      localIdeographFontFamily: false,
-      // symbol レイヤーの出入りに付く配置フェードを切る。効果は**地図上の symbol レイヤーすべて**に
-      // 及び、レイヤー単位に絞れない。これは paint プロパティのトランジション（各レイヤーで
-      // `-transition: {duration:0}` として個別に切っているもの）とは**別系統**で、地図全体にしか
-      // 設定できない（詳細と対象レイヤーの内訳は docs/spec/map-rendering-spec.md §8「symbol の
-      // 配置フェード」。対象をここに列挙はしない——2 箇所に並べると片方だけ古くなる）。
-      //
-      // 0 にする理由は 2 つある。
-      // 1. この地図では不透明度が既に意味を持っている。欠測ホールド中の点を 0.35 倍で描いて
-      //    「そこに点はあるが今は値が無い」と伝えているため（utils/kyoshinMissingHold.ts）、
-      //    出現アニメーションで 0→1 を通すと、その途中が「欠測中の点」と見分けられなくなる。
-      // 2. 既定の 300ms を残すと、同じ「新しい検知点が出る」出来事が 2 通りの見え方に割れる。
-      //    MapLibre は直前の配置に対応付けられたシンボルの不透明度を引き継ぎ、対応付かない
-      //    シンボルだけ 0 から立ち上げる。さらにタイル再読み込み直後の配置ではフェードを免除する
-      //    （内部の skipFade）。能登本震のリプレイで実測すると免除は配置 1,583 件中 131 件（8%）
-      //    しか起きず、残りは 0 から立ち上がっていた。どちらに転ぶかは秒単位のタイミング次第。
-      //
-      // 上の pitch/rotation と同じく、欠けても型チェックも単体テストも通ってしまう（この
-      // コードベースに Map を実際に構築するテストは無い）。消したことに気づけるのは手動の
-      // ブラウザ確認だけになる。
-      fadeDuration: 0,
-      style: {
-        version: 8,
-        // 地球を球として描く。傾けて見るのが常態になった以上、平面のままだと引いたときに
-        // 端が伸びて見える。**寄ると MapLibre が自動で Mercator へ切り替える**ので、
-        // 日本を細かく見る場面では従来と同じ描画になる（切り替えの実測と、カスタムレイヤーが
-        // 両方の投影に追随する仕組みは docs/spec/map-rendering-spec.md §6「地図の投影」）。
-        projection: { type: 'globe' },
-        glyphs: `${import.meta.env.BASE_URL}fonts/{fontstack}/{range}.pbf`,
-        sources: {},
-        layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#0a0c10' } }],
-      },
-    })
+      // **代わりに、画面では原因を断定しない。** オプション値の不整合（`minZoom > maxZoom` 等）も
+      // 同じコンストラクタから投げられ、それを「WebGL が無い」と言い切れば嘘になる。実際の
+      // 例外はログへ残す。設定ミスなら端末を選ばず地図が出ないので、検証で必ず気づく。
+      log.error('[JapanMapGL] 地図を初期化できませんでした', { error })
+      setMapUnavailable(true)
+      return
+    }
     mapRef.current = m
     // カメラが動くたびに走る「地形めり込み補正」を、地形を使っていないこの地図では省く
     // （gl/skipNoopCameraUpdate.ts。省略してよいかは実際に本物と突き合わせて確かめる）。
@@ -460,6 +487,21 @@ export function JapanMapGL({
   // （container 直下に absolute inset-0 を掛けると position を上書きされ高さ0に潰れる）。
   return (
     <div className="absolute inset-0">
+      {/* 地図を作れなかったときだけ、その場所に理由を出す。黒い矩形のまま黙っていると、
+          読み込み中なのか壊れているのか利用者に区別が付かない。 */}
+      {mapUnavailable && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#0a0c10] p-6 text-center">
+          <div className="max-w-md">
+            <p className="text-base font-bold text-slate-200">地図を表示できません</p>
+            {/* 日本語の本文は途中で改行しない。JSX の改行は空白 1 個として描かれ、
+                括弧の手前に不自然な空きができる。 */}
+            <p className="mt-2 text-sm text-slate-400">
+              お使いの環境が地図の描画に対応していない可能性があります（WebGL2 非対応・ハードウェアアクセラレーション無効など）
+            </p>
+            <p className="mt-2 text-sm text-slate-400">地図以外の機能はこのまま利用できます。</p>
+          </div>
+        </div>
+      )}
       <div ref={containerRef} className="h-full w-full">
         <MapGLContext.Provider value={map}>
           {/* 後続フェーズのレイヤーコンポーネントはここに置く（map を Context で購読） */}

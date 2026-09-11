@@ -2029,6 +2029,9 @@ export function useEarthquakes(
       quakeNotice: null,
       earthquakeCount: null,
       estimatedIntensity: null,
+      // 「最終更新」も落とす。残すと、リプレイ開始直後（まだ 1 件も処理していない間）に
+      // 地図の更新時刻へ**リプレイ前のライブ受信時刻**が出たままになる。
+      lastUpdate: null,
       // 「もっと見る」を畳む。カードを空にしても hasMore を残すと、リプレイ中にボタンが出たまま
       // になり、押すと `loadMoreEarthquakes` が**ライブの最新履歴**を取りに行って、再生時刻より
       // 未来の地震がカードに並ぶ。ライブへ戻る側は履歴の取得完了時に立て直すので落としてよい。
