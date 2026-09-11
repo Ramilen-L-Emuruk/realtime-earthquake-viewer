@@ -16,7 +16,7 @@ import {
   GEBCO_OVERVIEW_MAX_ZOOM,
   GEBCO_SOURCE_MAX_ZOOM,
   GEBCO_TILE_SIZE,
-  prefetchBathymetryTiles,
+  startBathymetryPrefetch,
 } from '../../utils/gebcoPrefetch'
 
 // 行政区域ベースマップ（MapLibre 版・Leaflet の BaseMap 相当）。ダーク背景の上に
@@ -127,10 +127,11 @@ export function BaseMapGL({ showBathymetry }: Props) {
       visible: showBathymetry,
       minZoom: GEBCO_HIRES_MIN_ZOOM,
     })
-    // 沖縄〜択捉相当の範囲を、アイドル時に低ズーム優先でバックグラウンド先読み。
-    // 初期表示（fitJapan）の通信と競合しないよう遅延なく開始してよい
-    // （requestIdleCallback 経由でメインスレッドの空きを待つため即座には走らない）。
-    prefetchBathymetryTiles(prefetchAbort.signal)
+    // 日本の枠を高解像度まで、その外は世界全体を低ズームだけ、アイドル時にバックグラウンド先読み
+    // （範囲の決め方は gebcoPrefetch.ts）。初期表示（fitJapan）の通信と競合しないよう遅延なく
+    // 開始してよい（requestIdleCallback 経由でメインスレッドの空きを待つため即座には走らない）。
+    // 以後はタイルの有効期限に合わせて温め直すので、abort するまで動き続ける。
+    startBathymetryPrefetch(prefetchAbort.signal)
 
     // 陸地塗り・境界線は生成データ（遅延読込）の到着後に追加する。
     Promise.allSettled([loadPrefectures(), loadSubRegions()]).then(([prefRes, subRes]) => {
