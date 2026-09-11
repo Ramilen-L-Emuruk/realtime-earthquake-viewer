@@ -198,6 +198,33 @@ export function withInheritedTsunamiFacts(latest: JMATsunami, reports: JMATsunam
 }
 
 /**
+ * 避難行動の文が前報のまま取り残される形を記録する。
+ *
+ * バナーの行動指示の行は固定付加文（VTSE41）の 1 行目を出す（→ `evacuationActionLine`）。
+ * 固定付加文は主題の鍵ごとに上書きするので、**等級を動かす報がその付加文を持たないと、
+ * 前の等級に向けた避難の呼びかけが画面のいちばん目立つ位置に残り続ける。**
+ *
+ * アーカイブにある VTSE41 全 91 通（2024-01-01 以降）では 1 通も無かった形。**走査したのは
+ * VTSE41 型の電文だけ**なので、他の種別が等級を動かす経路はこの数え上げに含まれていない
+ * （判定自体は種別を問わないので、そちらで起きても記録は出る）。画面には何の痕跡も
+ * 出ないため、記録だけは残す。
+ */
+function warnIfActionLineGoesStale(current: JMATsunami, next: JMATsunami): void {
+  const ACTION_LINE_KEY = 'VTSE41'
+  if (next.areas.length === 0) return
+  if (next.warningComments?.some(c => c.key === ACTION_LINE_KEY)) return
+  if (!current.warningComments?.some(c => c.key === ACTION_LINE_KEY)) return
+  // 区域の鍵は `mergeTsunamiAreas` と同じ取り方にする（別々に決めると照合が静かにずれる）。
+  const before = new Map(current.areas.map(a => [a.code || a.name, a.grade]))
+  const moved = next.areas.some(a => {
+    const was = before.get(a.code || a.name)
+    return was !== undefined && was !== a.grade
+  })
+  if (!moved) return
+  log.warn(`[tsunami] 等級が動いた報に避難行動の付加文がありません（前報の文がバナーに残ります）: id=${next.id}`)
+}
+
+/**
  * 続報 1 通を取り込む。**引き継ぎの規則はここが唯一の置き場所**で、ライブ受信
  * （`useEarthquakes` の tsunami ケース）も履歴からの復元（{@link withInheritedTsunamiFacts}）も
  * この関数を通る。
@@ -223,6 +250,7 @@ export function withInheritedTsunamiFacts(latest: JMATsunami, reports: JMATsunam
  * @param next 新しく届いた報
  */
 export function mergeTsunamiReports(current: JMATsunami, next: JMATsunami): JMATsunami {
+  warnIfActionLineGoesStale(current, next)
   return {
     ...next,
     // 区域が空の報（観測のみの続報）は等級を伝えていないので、前報の区域をそのまま残す。
@@ -814,6 +842,28 @@ export const WARNING_COMMENT_ORDER: readonly string[] = [
   'VTSE51|津波観測に関する情報',
   'VTSE52',
 ]
+
+/**
+ * 避難行動の付加文（津波警報等が運ぶ定型文）から、行動指示の 1 行を採る。
+ *
+ * バナーはこれまでアプリが書いた短い文（「海岸・河川から直ちに離れてください」）を出していた。
+ * **気象庁の文があるならそちらを出す**（→ CLAUDE.md「利用者へ出す語を気象庁の表現と揃える」）。
+ *
+ * **採るのは 1 行目が文として完結しているときだけ。** 実電文では報によって 1 行目の形が違い、
+ * 「ただちに避難してください。」で始まる報と、「＜津波警報＞」のような小見出しで始まる報がある。
+ * 小見出しをそのまま行動指示の位置に出すと、何をすべきか伝わらない。採れないときは呼び出し側が
+ * アプリの文へ戻す。
+ *
+ * **どちらの形になるかを等級から当てにいかないこと。** 2024-01-01 能登半島地震では、最高等級が
+ * 同じ津波警報の報でも 16:12 は「ただちに避難してください。」・20:30 は「＜津波警報＞」で始まった。
+ * 2026-04-20 三陸沖（最高等級は津波警報）も前者の形。**等級と形は対応していない**ので、
+ * 行そのものを見る。
+ */
+export function evacuationActionLine(comments?: TsunamiWarningComment[]): string | undefined {
+  const text = comments?.find(c => c.key === 'VTSE41')?.text
+  const first = text?.split('\n')[0]?.trim()
+  return first && first.endsWith('。') ? first : undefined
+}
 
 function sortWarningComments(comments: TsunamiWarningComment[]): TsunamiWarningComment[] {
   const rank = (c: TsunamiWarningComment) => {
