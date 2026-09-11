@@ -538,29 +538,50 @@ describe('spokenChunkIndices', () => {
   ]
 
   it('最後まで鳴ったら全チャンクを数える', () => {
-    expect(spokenChunkIndices(scheduled, 4, 14)).toEqual([0, 1, 2, 3])
+    expect(spokenChunkIndices(scheduled, 4, 14, true)).toEqual([0, 1, 2, 3])
   })
 
   it('途中で切られたら、鳴り始めた最後のチャンクは数えない', () => {
     // 12.5 秒時点で割り込まれた: 0〜2 が鳴り始めていたが、2 は言い終えたか判らない
-    expect(spokenChunkIndices(scheduled, 4, 12.5)).toEqual([0, 1])
+    expect(spokenChunkIndices(scheduled, 4, 12.5, true)).toEqual([0, 1])
   })
 
   it('予約が全チャンクに届いていても、鳴っていなければ数えない', () => {
     // 合成が再生を追い越して 4 件すべて予約済み。しかし音は 1 つ目の途中
-    expect(spokenChunkIndices(scheduled, 4, 10.5)).toEqual([])
+    expect(spokenChunkIndices(scheduled, 4, 10.5, true)).toEqual([])
   })
 
   it('再生時計が無い（合成が全滅・VOICEVOX 未起動）ときは何も数えない', () => {
-    expect(spokenChunkIndices(scheduled, 4, null)).toEqual([])
+    expect(spokenChunkIndices(scheduled, 4, null, true)).toEqual([])
   })
 
   it('予約が 1 件も無ければ空', () => {
-    expect(spokenChunkIndices([], 0, 100)).toEqual([])
+    expect(spokenChunkIndices([], 0, 100, true)).toEqual([])
   })
 
   it('合成に失敗して添字が飛んでいても、鳴った分だけ数える', () => {
     const withGap = [{ index: 0, startAt: 10 }, { index: 2, startAt: 11 }, { index: 3, startAt: 12 }]
-    expect(spokenChunkIndices(withGap, 4, 13)).toEqual([0, 2, 3])
+    expect(spokenChunkIndices(withGap, 4, 13, true)).toEqual([0, 2, 3])
+  })
+
+  // 読み上げの途中で見る経路（次の電文が届いた瞬間。→ useLiveEventHandler の `flushSpoken`）
+  describe('読み上げの途中で見るとき（finished=false）', () => {
+    it('正: 鳴り終えた分だけを数える', () => {
+      // 12.5 秒時点。0〜2 が鳴り始めており、2 はまだ鳴っている最中
+      expect(spokenChunkIndices(scheduled, 4, 12.5, false)).toEqual([0, 1])
+    })
+
+    it('安全弁: 最終チャンクが鳴り始めていても完走とみなさない', () => {
+      // 13.5 秒時点で最終チャンク（index 3）が鳴り始めている。完了後ならここは完走扱いだが、
+      // 途中で見ているので鳴り終えたとは言えない。**完走扱いすると、そこへ割り込みが入った
+      // ときに声にならなかった内容が既読として残る**
+      expect(spokenChunkIndices(scheduled, 4, 13.5, false)).toEqual([0, 1, 2])
+      // 対照: 同じ時計でも完了後なら全チャンクを数える
+      expect(spokenChunkIndices(scheduled, 4, 13.5, true)).toEqual([0, 1, 2, 3])
+    })
+
+    it('対照: 1 つも鳴っていなければ空（完了時と同じ）', () => {
+      expect(spokenChunkIndices(scheduled, 4, 10.5, false)).toEqual([])
+    })
   })
 })

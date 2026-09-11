@@ -75,18 +75,30 @@ async function settle() {
 }
 
 /**
- * 読み上げの進行を再現して終わらせる。
+ * 読み上げの進行を再現する。**終わらせない**（読み上げ中に次の電文が届く形を作るため）。
  *
  * @param index 何番目の読み上げか
  * @param soundedChunks 音が鳴り始めたチャンク数（予約は全チャンク通ったものとして通知する）
  */
-async function playSpeech(index: number, soundedChunks: number) {
+async function advanceSpeech(index: number, soundedChunks: number) {
   const s = speeches[index]
   if (!s) throw new Error(`読み上げ ${index} が無い`)
   // 合成は再生より先へ進むため、予約は全チャンク届く
   s.chunks.forEach((_, i) => s.onChunk?.(i, CHUNK_START_BASE + i, s.chunks))
   // 鳴り始めたところまで時計を進める
   clock = CHUNK_START_BASE + soundedChunks - 1 + 0.1
+  await flush()
+}
+
+/**
+ * 読み上げの進行を再現して終わらせる。
+ *
+ * @param index 何番目の読み上げか
+ * @param soundedChunks 音が鳴り始めたチャンク数（予約は全チャンク通ったものとして通知する）
+ */
+async function playSpeech(index: number, soundedChunks: number) {
+  await advanceSpeech(index, soundedChunks)
+  const s = speeches[index]
   if (!s.done) { s.done = true; s.finish() }
   await flush()
 }
@@ -101,16 +113,21 @@ function area(pref: string, addr: string, scale: number): EarthquakePoint {
 // キーが変わりうる（統合済みカードを引けたときだけ安定する）。ここで測りたいのは種別を跨いだ
 // 共有なので、キーが安定する経路を使う。
 // 震源座標は 0 にして震源距離での並べ替えを通さず、列挙順を points の順に固定する。
-function makeQuake(points: EarthquakePoint[], over: { type?: IssueType; maxScale?: number; magnitude?: number; serial?: number } = {}): JMAQuake {
+function makeQuake(
+  points: EarthquakePoint[],
+  // `eventId` / `name` を変えると**別の地震**になる（既読は `quakeEventKey` ごとに分かれる）
+  over: { type?: IssueType; maxScale?: number; magnitude?: number; serial?: number; eventId?: string; name?: string } = {},
+): JMAQuake {
   const maxScale = (over.maxScale ?? 40) as IntensityScale
+  const at = over.eventId === undefined ? '2026-01-01T12:00:00Z' : '2026-01-01T13:00:00Z'
   return {
     kind: 'quake',
-    id: `dmdata-quake-20260101210000-${over.serial ?? 1}`,
-    time: '2026-01-01T12:00:00Z',
-    issue: { source: 'JMA', time: '2026-01-01T12:00:00Z', type: over.type ?? '震度速報', correct: 'なし' },
+    id: `dmdata-quake-${over.eventId ?? '20260101210000'}-${over.serial ?? 1}`,
+    time: at,
+    issue: { source: 'JMA', time: at, type: over.type ?? '震度速報', correct: 'なし' },
     earthquake: {
-      time: '2026-01-01T12:00:00Z',
-      hypocenter: { name: '石川県能登地方', latitude: 0, longitude: 0, depth: 10, magnitude: over.magnitude ?? 5.2 },
+      time: at,
+      hypocenter: { name: over.name ?? '石川県能登地方', latitude: 0, longitude: 0, depth: 10, magnitude: over.magnitude ?? 5.2 },
       maxScale,
       domesticTsunami: 'なし',
     },
@@ -206,6 +223,81 @@ describe('地震情報の続報: 既読は声になった分だけ進む', () =>
     await settle()
     // 石川県加賀・富山県東部はまだ一度も声にしていない＝初出の群（「新たに」が付き「最大」は冠さない）
     expect(spokenTexts()[1]).toBe('震度速報が更新されました。新たに震度4を石川県加賀、富山県東部で観測しました。')
+  })
+
+  // ここから 3 件は読み上げの**最中**に次の報が届く形（2026-09-11）。既読の記録は読み上げの
+  // 完了時にしか進まないのに差分は受信時に同期で組まれるため、読み切る前に次が届くと
+  // 「まだ何も声になっていない」古い状態を基準にし、**先頭から読み直していた**。
+  it('正: 読み上げ中に次の報が届いても、そこまで鳴った分は既読になる', async () => {
+    const handle = setup()
+    handle(makeQuake(threeAreas))
+    await settle()
+    expect(speeches[0].chunks).toHaveLength(4)
+    // 3 チャンク目まで鳴り始めた。**まだ読み終えていない**
+    await advanceSpeech(0, 3)
+
+    handle(makeQuake(threeAreas))
+    await settle()
+    // 能登は声になっているので読み直さない（修正前はここが全文だった）
+    expect(spokenTexts()[1]).toBe('震度速報が更新されました。新たに震度4を石川県加賀、富山県東部で観測しました。')
+  })
+
+  it('対照: 読み上げ中でも 1 チャンクも鳴っていなければ全文を読み直す', async () => {
+    const handle = setup()
+    handle(makeQuake(threeAreas))
+    await settle()
+    // 予約は全チャンク通ったが、音はまだ 1 つも鳴っていない
+    await advanceSpeech(0, 0)
+
+    handle(makeQuake(threeAreas))
+    await settle()
+    expect(spokenTexts()[1]).toBe('震度速報が更新されました。最大震度4を石川県能登、石川県加賀、富山県東部で観測しました。')
+  })
+
+  // `flushSpoken` は主題で絞らず、進行中の読み上げが何であっても呼ぶ。**記録は地震ごとに
+  // 分かれている**（`quakeSpokenStateFor` が eventKey ごとに別オブジェクトを返す）ので混ざらない、
+  // というのが設計の前提。群発で顕在化する形なので固定しておく。
+  //
+  // **このテストは flush を外しても落ちない。** 割り込みが入れば前の読み上げの `finally` が
+  // 走って記録されるため、混ざらないこと自体は変更前から成り立っている。守っているのは
+  // 「flush を足したことで記録の分離が緩んでいないか」で、変更が効くことを見る「正」の
+  // テスト（上の 3 件）とは役割が違う。
+  it('安全弁: 別の地震が割り込んでも、既読は地震ごとに独立して進む', async () => {
+    const handle = setup()
+    // 地震 A を 3 チャンク目まで鳴らす（能登までが既読になる）
+    handle(makeQuake(threeAreas))
+    await settle()
+    await advanceSpeech(0, 3)
+
+    // 別の地震 B が割り込む。ここで A に対して flushSpoken が走る
+    handle(makeQuake([area('富山県', '富山県西部', 30)], { eventId: '20260101220000', name: '富山県西部' }))
+    await settle()
+    await playSpeech(1, speeches[1].chunks.length)
+
+    // 地震 A の続報。B の割り込みで A の記録が壊れていなければ、能登は読み直さない
+    handle(makeQuake(threeAreas))
+    await settle()
+    const text = spokenTexts()[2]
+    expect(text).not.toContain('石川県能登')
+    expect(text).toContain('石川県加賀')
+
+    // 地震 B の続報。A の記録に引きずられず、B は据え置きとして扱われる
+    handle(makeQuake([area('富山県', '富山県西部', 30)], { eventId: '20260101220000', name: '富山県西部', serial: 2 }))
+    await settle()
+    expect(spokenTexts()[3]).not.toContain('富山県西部')
+  })
+
+  it('安全弁: 読み上げ中の見直しでは、最終チャンクが鳴り始めていても完走とみなさない', async () => {
+    const handle = setup()
+    handle(makeQuake(threeAreas))
+    await settle()
+    // 最終チャンク（富山県東部）が鳴り始めた。完了後ならここは完走扱いだが、途中なので
+    // 言い終えたとは言えない。**完走扱いにすると、割り込まれた分が既読として残る**
+    await advanceSpeech(0, 4)
+
+    handle(makeQuake(threeAreas))
+    await settle()
+    expect(spokenTexts()[1]).toBe('震度速報が更新されました。新たに震度4を富山県東部で観測しました。')
   })
 
   it('安全弁: 1 チャンクも鳴らなければ、続報は全文を読み直す', async () => {
