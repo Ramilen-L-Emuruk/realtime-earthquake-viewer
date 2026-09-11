@@ -1,4 +1,4 @@
-// DMDATA/P2PQuakeアーカイブが存在しない期間（DMDATA運用開始=2020年4月より前等）向けの、
+// DMDATA/P2PQuakeアーカイブが存在しない期間（DMDATAアーカイブの最古=2020-11-18より前等）向けの、
 // アプリに同梱したローカル履歴アーカイブからの読み出し。App.tsx の fetchReplayEvents は
 // findCoveringArchiveSync で対象範囲がここに収録されているか先に確認し、見つかれば
 // DMDATA/P2PQuakeへ問い合わせる代わりにここから返す（ReplayFetchResult の形は共通）。
