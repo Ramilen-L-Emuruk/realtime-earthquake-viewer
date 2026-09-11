@@ -102,7 +102,7 @@ function setup(displayed: JMATsunami[] = [], over: Partial<AppSettings> = {}) {
     setActiveTabRealtimeOnUpdate: vi.fn(),
     setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(() => true),
     expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
-    selectQuake: vi.fn(), setActiveLpgmEventId: vi.fn(), openEstimatedIntensity: vi.fn(),
+    selectQuake: vi.fn(), openLpgmFromQuake: vi.fn(), openEstimatedIntensity: vi.fn(),
   }))
   // `focusedDistrict`（受信時スクロールの送り先）も見るため、フックの戻り値ごと返す。
   // `result.current` を毎回引き直すこと ―― 分割代入で控えると再レンダー前の値に固定される。
