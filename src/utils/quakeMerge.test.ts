@@ -12,6 +12,7 @@ import {
   sortQuakes,
   isRetractedQuakeReport as isRetractedQuakeReportWithIndex,
   quakeRetractionOf,
+  quakeKeyForLpgmEventId,
 } from './quakeMerge'
 import type { JMAQuake, IssueType, IntensityScale, EarthquakePoint, DomesticTsunami, CorrectType } from '../types/earthquake'
 
@@ -1363,5 +1364,33 @@ describe('区域の重なり判定: 区域名が県名と同じ奈良県', () =>
   // 安全弁: 索引を渡しても、同じ区域なら同一イベントのまま。引き離す方向へ過剰に倒さない。
   it('索引を渡しても、同じ奈良県どうしは同一イベントのまま', () => {
     expect(sameQuakeEntry(naraOnly(), naraOnly(), AREA_PREF_INDEX)).toBe(true)
+  })
+})
+
+// 長周期地震動の表示は電文の `eventId` で持つのに、選択はカードの `eventKey`。**鍵の体系が
+// 違う**ので引き当てが要る。同じ述語を長周期電文の自動表示（`useLiveEventHandler`）と
+// カードのバッジ（`App`）の 2 箇所で使うため、ここで固定する。
+describe('quakeKeyForLpgmEventId', () => {
+  // 正: DMDATA の電文 id から eventId を取り出して引き当てる
+  it('同じ eventId を持つカードの選択鍵を返す', () => {
+    const target = makeQuake({ eventId: '20260728162718' })
+    const other = makeQuake({ eventId: '20260728170000' })
+    expect(quakeKeyForLpgmEventId([other, target], '20260728162718')).toBe(quakeEventKey(target))
+  })
+
+  // 対照: 引き当てられなければ null（選択を動かさない側へ倒す）
+  it('該当するカードが無ければ null', () => {
+    expect(quakeKeyForLpgmEventId([makeQuake({ eventId: '20260728162718' })], '20260101160010')).toBeNull()
+  })
+
+  it('カードが 1 枚も無ければ null', () => {
+    expect(quakeKeyForLpgmEventId([], '20260728162718')).toBeNull()
+  })
+
+  // 安全弁: 統合済みカードは `eventKey` を持つので、そちらを返す（電文 id から導いた値ではない）。
+  // 続報でレコード id が変わっても選択が同じカードに留まるのはこの鍵のため。
+  it('統合済みカードでは、そのカードが持つ eventKey を返す', () => {
+    const merged = { ...makeQuake({ eventId: '20260728162718' }), eventKey: 'merged-key' } as JMAQuake
+    expect(quakeKeyForLpgmEventId([merged], '20260728162718')).toBe('merged-key')
   })
 })

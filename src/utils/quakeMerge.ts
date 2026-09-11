@@ -57,6 +57,21 @@ function initialQuakeKey(q: JMAQuake): string {
   return extractQuakeEventId(q) ?? `p2p:${q.earthquake.time}#${q.id}`
 }
 
+/**
+ * 長周期地震動の `eventId` から、対応する地震カードの選択鍵（`eventKey`）を引く。
+ * 引き当てられなければ null。
+ *
+ * **鍵の体系が違うので直接は渡せない。** 長周期の表示は電文の `eventId` で持つのに対し、
+ * 選択はカードの `eventKey`（DMDATA は `eventId` 由来だが P2PQuake は発生時刻＋レコード id）。
+ *
+ * **長周期電文の自動表示とカードのバッジで同じ述語を使う。** 別々に書くと、片方だけ条件を
+ * 変えたときに静かにずれる（どちらも「その長周期はどの地震のものか」という同じ問いに答える）。
+ */
+export function quakeKeyForLpgmEventId(quakes: readonly JMAQuake[], eventId: string): string | null {
+  const card = quakes.find(q => extractQuakeEventIdFromId(q.id) === eventId)
+  return card ? quakeEventKey(card) : null
+}
+
 // 同一イベントのまま震源名が変わりうる電文か。
 // - 訂正報（infoType=訂正／P2PQuake の `correct`）: 震源そのものを訂正する
 // - 顕著な地震の震源要素更新（VXSE61 / P2PQuake の DestinationAmended）: 震源要素を差し替える

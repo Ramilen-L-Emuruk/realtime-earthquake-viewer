@@ -22,7 +22,7 @@ import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, ear
 import { joinSegments, plain, hasFollowTarget, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
-import { extractQuakeEventIdFromId, quakeEventKey, sameQuakeEntry } from '../utils/quakeMerge'
+import { extractQuakeEventIdFromId, quakeEventKey, quakeKeyForLpgmEventId, sameQuakeEntry } from '../utils/quakeMerge'
 import { getAreaPrefIndexCache } from '../utils/stationCoords'
 
 // EEW 読み上げ第 2 フェーズ（予想値）のタイミング。
@@ -553,7 +553,14 @@ export interface LiveEventHandlerDeps {
   openEstimatedIntensity: (arrivalTime: string, lat: number, lon: number) => void
   revertToDefaultTab: () => void
   selectQuake: (id: string | null) => void
-  setActiveLpgmEventId: (id: string | null) => void
+  /**
+   * 長周期地震動観測情報が届いたことを知らせる（地図とカードの階級表示を開く）。
+   *
+   * **開く／閉じるを両方兼ねさせない。** 追加表示は震度分布モードと排他で、閉じる判断は
+   * 選択中の地震が別の地震へ移ったかどうかに紐づく（→ App 側の `quakeOverlay`）。
+   * ここから閉じられるようにすると、その規則が 2 か所に分かれる。
+   */
+  openLpgmFromQuake: (eventId: string) => void
 }
 
 export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
@@ -561,7 +568,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabRealtimeForKyoshin, setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate,
     setActiveTabRealtimeUrgent, followSpeechTab, preSpeechTab, speechFollow, expandPanelForSpecialInfo,
-    revertToDefaultTab, selectQuake, setActiveLpgmEventId, openEstimatedIntensity,
+    revertToDefaultTab, selectQuake, openLpgmFromQuake, openEstimatedIntensity,
   } = deps
 
   // 「新規地震」として注目を移した報のキー（`eventKey:issue.type`）。
@@ -2286,9 +2293,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
       if (!lpgmEvent.cancelled) {
         // 紐づく地震カードを選択し、自動的に LPGM 表示をオンにする
-        const matchedQuake = earthquakesRef.current.find(q => extractQuakeEventIdFromId(q.id) === lpgmEvent.eventId)
-        if (matchedQuake) selectQuake(quakeEventKey(matchedQuake))
-        setActiveLpgmEventId(lpgmEvent.eventId)
+        // （引き当ての述語はカードのバッジと共有する。→ `quakeKeyForLpgmEventId`）
+        const matchedKey = quakeKeyForLpgmEventId(earthquakesRef.current, lpgmEvent.eventId)
+        if (matchedKey) selectQuake(matchedKey)
+        openLpgmFromQuake(lpgmEvent.eventId)
       }
       if (settings.soundEnabled) {
         playAlertSound('earthquake')
@@ -3009,9 +3017,19 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     spokenObsWarningLevelRef.current.clear()
     spokenAreaGradeRef.current.clear()
     seenLpgmEventIdsRef.current.clear()
+    // 津波の取消・解除・失効を「もう伝えた」記憶も落とす。**残すと、同じ `eventId` の取消を
+    // リプレイで流したときに音・読み上げ・タブ移動のすべてが黙る**（`alreadySpoken` が真に
+    // なる経路）。しかも 200 件溜まるまで自己クリアされないので、実質そのセッション中ずっと
+    // 効き続ける。他の既読系と揃える。
+    spokenTsunamiCancelEventIdsRef.current.clear()
     // 60秒 obs バッジ自動消去タイマーもリプレイ切替時に持ち越さない（アンマウント経路と対称）
     window.clearTimeout(obsStatusClearTimerRef.current)
     obsStatusClearTimerRef.current = 0
+    // タイマーを止めるだけだと「60 秒で必ず消える」保証が外れ、次の津波電文が来るまで古い
+    // バッジと寄せ先が無期限に居座る（表示対象が消えているので画面では気づけない）。中身も落とす。
+    setObsUpdateStatus(new Map())
+    setAreaGradeChangedKeys(new Set())
+    setFocusedDistrict(null)
     // 間を置いてからの読み上げの予約も捨てる。残すと、リプレイを始めた直後に切り替え前の
     // 電文が読まれる（状態はリセット済みなので待ち合わせにも掛からず、そのまま割り込む）。
     cancelPendingSpeech()

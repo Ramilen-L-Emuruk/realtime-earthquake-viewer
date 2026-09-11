@@ -55,8 +55,12 @@ import { getIntensityLabelWithOrAbove } from './utils/intensity'
 import { isMaxScaleUnreceived } from './utils/quakePoints'
 import { formatMagnitudeWithCondition, formatDateTimeLocal } from './utils/formatters'
 import { computeEEWLevel, eewMaxLpgmClass } from './utils/eew'
-import { quakeEventKey } from './utils/quakeMerge'
+import { quakeEventKey, quakeKeyForLpgmEventId } from './utils/quakeMerge'
 import { estimatedIntensityFor, matchEstimatedIntensityArrival } from './utils/estimatedIntensity'
+import {
+  type QuakeOverlay, toggleLpgmOverlay, toggleDistributionOverlay,
+  closeLpgmOverlay, closeEewLpgmOverlay, shouldCloseOverlayOnSelection,
+} from './utils/quakeOverlay'
 import { tsunamiOverallGrade } from './utils/tsunami'
 import { playCountdownBeep, unlockAudio, setSoundVolume } from './utils/alertSound'
 import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
@@ -134,22 +138,39 @@ export function App() {
     setActiveTabState(tab)
   }, [])
   const [selectedQuakeId, setSelectedQuakeId] = useState<string | null>(null)
+  /**
+   * 直前に選択していた地震（`selectedQuakeId` と同じ鍵）。**`selectQuake` が「別の地震へ移ったか」を
+   * 見るためだけに持つ。**
+   *
+   * state を `selectQuake` の依存へ入れると関数の参照が毎レンダー変わり、子タブ（`React.memo`）の
+   * memo が破れる。そのため前値はここから読む。
+   *
+   * **選択を変える経路は `selectQuake` に限ること。** `setSelectedQuakeId` を直に呼ぶとこの ref が
+   * 取り残され、次の呼び出しで「変わっていない」と誤判定して追加表示（下記 `quakeOverlay`）が居残る。
+   */
+  const selectedQuakeIdRef = useRef<string | null>(null)
   // 地震カードのユーザー明示選択カウンタ。QuakeFitGL が「明示選択」と「電文更新起点の自動追従」を
   // 区別するために使う（明示選択中はユーザー操作中フラグを無視して強制フィット・
   // CameraFollowsGL.tsx QuakeFitGL 参照）。
   const [quakeSelectionTick, setQuakeSelectionTick] = useState(0)
   const [focusedObsName, setFocusedObsName] = useState<{ name: string; ts: number } | null>(null)
-  const [activeLpgmEventId, setActiveLpgmEventId] = useState<string | null>(null)
   /**
-   * 震度分布モードを開いている地震（`eventKey`）。null なら閉じている。
+   * 地震カードに紐づく追加表示（長周期地震動階級／震度分布モード）。null なら何も重ねない。
+   * **選択中の地震のものとは限らない**（EEW カードから開いた長周期・引き当てる地震カードが
+   * 無い長周期。詳細は `quakeOverlay.ts`）。
    *
-   * **地震ごとに持つ。** 単なる真偽値にすると、別のカードを選んだときにモードだけが居残り、
-   * 選んだ覚えのない地震の分布が出る。
+   * **同時に 1 つだけなので 1 つの state で持つ。** 排他の理由・鍵の取り方・遷移は
+   * [`utils/quakeOverlay.ts`](utils/quakeOverlay.ts)。**前の状態を見て決める遷移（トグル・
+   * 条件付きで閉じる）は必ずそこの関数を通すこと** —— 同じ判定を呼び出し側へ散らすと、
+   * 一方だけ直したときに排他が崩れる。開くだけ・全部閉じるだけの経路はここで組み立てる。
    */
-  const [distributionQuakeKey, setDistributionQuakeKey] = useState<string | null>(null)
-  const [activeLpgmSource, setActiveLpgmSource] = useState<'earthquake' | 'eew' | null>(null)
-  // 地震カード切替時は LPGM 表示をリセットする。子タブ（React.memo 化済み）へ props として
-  // 渡すため useCallback で参照を安定化する（毎レンダー再生成すると memo が破られる）。
+  const [quakeOverlay, setQuakeOverlay] = useState<QuakeOverlay | null>(null)
+  // 参照側（子コンポーネントの props・地図へ渡す値）は従来の 3 つの形で読む。排他は型が担保する。
+  const activeLpgmEventId = quakeOverlay?.kind === 'lpgm' ? quakeOverlay.eventId : null
+  const activeLpgmSource = quakeOverlay?.kind === 'lpgm' ? quakeOverlay.source : null
+  const distributionQuakeKey = quakeOverlay?.kind === 'distribution' ? quakeOverlay.eventKey : null
+  // 子タブ（React.memo 化済み）へ props として渡すため useCallback で参照を安定化する
+  // （毎レンダー再生成すると memo が破られる）。
   //
   // opts.explicit は「ユーザーがカード（や津波→地震リンク）を直接クリックした」ことを示す。
   // 電文受信ハンドラ（useLiveEventHandler）からも新規・続報のたびに selectQuake を呼んで
@@ -158,33 +179,59 @@ export function App() {
   // explicit=true の呼び出しだけが quakeSelectionTick を進め、QuakeFitGL が isUserInteracting
   // を無視して強制フィットする（CameraFollowsGL.tsx の QuakeFitGL 参照）。
   const selectQuake = useCallback((id: string | null, opts?: { explicit?: boolean }) => {
+    // **追加表示を閉じるのは、別の地震へ移るときだけ**（判定と理由は `shouldCloseOverlayOnSelection`）。
+    const closeOverlay = shouldCloseOverlayOnSelection(selectedQuakeIdRef.current, id)
+    selectedQuakeIdRef.current = id
     setSelectedQuakeId(id)
-    setActiveLpgmEventId(null)
-    setActiveLpgmSource(null)
+    if (closeOverlay) setQuakeOverlay(null)
     if (opts?.explicit) setQuakeSelectionTick(t => t + 1)
   }, [])
-  // 地震情報タブ / EEW（リアルタイム）タブそれぞれで LPGM 表示をトグルするハンドラー。
+  // 地震情報タブ / EEW（リアルタイム）タブそれぞれで長周期の表示をトグルするハンドラー。
   // 同じ eventId を再度渡すと非表示化、それ以外の eventId なら表示中の source を切り替える。
+  // 震度分布モードを開いていれば、それは閉じる（同時に 1 つだけ）。
+  const toggleLpgm = useCallback((eventId: string, source: 'earthquake' | 'eew') => {
+    setQuakeOverlay(prev => toggleLpgmOverlay(prev, eventId, source))
+  }, [])
+  /**
+   * 地震カードの長周期バッジ。**押したカードを選択の実体へ合わせてからトグルする。**
+   *
+   * カードが「選択中」に見えていても `selectedQuakeId` は null のことがある —— null のときは
+   * 取消でない最新のカードへフォールバックして選択扱いで開くため（→ `selectedQuake` の導出）。
+   * 実体が null のまま表示を開くと、**その地震の続報が届いた瞬間に `selectQuake` が
+   * 「別の地震へ移った」と判定して閉じる**（起動直後・リプレイ開始直後・取消で選択が解かれた
+   * 後がこれに当たる）。
+   *
+   * 鍵の体系が違うので、電文の `eventId` からカードを引いて `eventKey` へ直す
+   * （長周期電文の自動表示と同じ述語）。**カメラは寄せない** —— `explicit` を渡さないので
+   * `quakeSelectionTick` は進まない。ボタンは表示を切り替える操作で、画角を動かす合図ではない。
+   */
   const toggleLpgmFromEarthquake = useCallback((eventId: string) => {
-    setActiveLpgmEventId(prev => {
-      const next = prev === eventId ? null : eventId
-      setActiveLpgmSource(next ? 'earthquake' : null)
-      return next
-    })
-  }, [])
+    const key = quakeKeyForLpgmEventId(earthquakesRef.current, eventId)
+    if (key) selectQuake(key)
+    toggleLpgm(eventId, 'earthquake')
+  }, [toggleLpgm, selectQuake])
   const toggleLpgmFromEew = useCallback((eventId: string) => {
-    setActiveLpgmEventId(prev => {
-      const next = prev === eventId ? null : eventId
-      setActiveLpgmSource(next ? 'eew' : null)
-      return next
-    })
+    toggleLpgm(eventId, 'eew')
+  }, [toggleLpgm])
+  /**
+   * 長周期地震動観測情報の受信で階級の表示を開く（`useLiveEventHandler` から呼ぶ）。
+   *
+   * **`source` は `'earthquake'`。** 地震情報側の表示であって EEW カードから開いたものとは
+   * 自動解除の条件が違う（EEW 由来は EEW が消えたら閉じる）。
+   */
+  const openLpgmFromQuake = useCallback((eventId: string) => {
+    setQuakeOverlay({ kind: 'lpgm', eventId, source: 'earthquake' })
   }, [])
+  // 震度分布ボタン。こちらは鍵が `eventKey` なのでそのまま渡せる
+  // （選択の実体を合わせる理由は `toggleLpgmFromEarthquake`）。
   const toggleDistribution = useCallback((eventKey: string) => {
-    setDistributionQuakeKey(prev => (prev === eventKey ? null : eventKey))
-  }, [])
+    selectQuake(eventKey)
+    setQuakeOverlay(prev => toggleDistributionOverlay(prev, eventKey))
+  }, [selectQuake])
+  // EEW カードから長周期の表示を閉じる。**分布は触らない** —— 排他なので開いていないが、
+  // この操作の意味は「長周期を閉じる」であって追加表示すべてではない。
   const deactivateLpgm = useCallback(() => {
-    setActiveLpgmEventId(null)
-    setActiveLpgmSource(null)
+    setQuakeOverlay(closeLpgmOverlay)
   }, [])
   // 津波タブで観測点名をクリックしたときにフォーカス対象として通知する。
   const focusTsunamiObs = useCallback((name: string) => {
@@ -423,7 +470,7 @@ export function App() {
     // 届いたとき**カードのボタンは押された状態なのに地図には何も出ない**——エラーもログも
     // 出ないので、手掛かりが何も残らない。長周期の自動表示も同じ 2 つを対にしている。
     selectQuake(quakeEventKey(target))
-    setDistributionQuakeKey(quakeEventKey(target))
+    setQuakeOverlay({ kind: 'distribution', eventKey: quakeEventKey(target) })
     setActiveTabNonRealtime('earthquake')
   }, [selectQuake, setActiveTabNonRealtime])
 
@@ -543,7 +590,7 @@ export function App() {
     setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate, setActiveTabRealtimeUrgent,
     setActiveTabRealtimeForKyoshin: () => requestTabForKyoshin('realtime'),
     followSpeechTab, preSpeechTab, speechFollow, expandPanelForSpecialInfo,
-    revertToDefaultTab, selectQuake, setActiveLpgmEventId, openEstimatedIntensity,
+    revertToDefaultTab, selectQuake, openLpgmFromQuake, openEstimatedIntensity,
   })
   resetTsunamiScrollRef.current = resetTsunamiScrollToTop
 
@@ -783,14 +830,16 @@ export function App() {
   // 地図に表示中の LPGM（バッジクリックでトグル）
   const activeLpgm = activeLpgmEventId ? (lpgmByEventId.get(activeLpgmEventId) ?? null) : null
 
-  // 選択中の地震カードがキャンセル状態になったら即座に選択解除する
+  // 選択中の地震カードがキャンセル状態になったら即座に選択解除する。
+  // **`selectQuake` を通す** —— 直に state を書くと前値の ref（`selectedQuakeIdRef`）が
+  // 取り残され、追加表示（`quakeOverlay`）も取消されたカードのまま居残る。
   useEffect(() => {
     if (!selectedQuakeId) return
     const selected = filteredEarthquakes.find(q => quakeEventKey(q) === selectedQuakeId)
     if (selected?.cancelledAt) {
-      setSelectedQuakeId(null)
+      selectQuake(null)
     }
-  }, [filteredEarthquakes, selectedQuakeId])
+  }, [filteredEarthquakes, selectedQuakeId, selectQuake])
 
   // cancelledAt（10秒表示中）の EEW は地図・挙動系から除外する
   const activeEEWsNoCancelled = useMemo(
@@ -826,8 +875,9 @@ export function App() {
     if (!activeLpgmEventId || activeLpgmSource !== 'eew') return
     const eew = activeEEWsNoCancelled.get(activeLpgmEventId)
     if (!eew || eewMaxLpgmClass(eew) < 1) {
-      setActiveLpgmEventId(null)
-      setActiveLpgmSource(null)
+      // 落とすのは EEW 由来の長周期だけ（この effect が走るあいだに別の追加表示へ
+      // 切り替わっていたら、そちらは触らない）。
+      setQuakeOverlay(closeEewLpgmOverlay)
     }
   }, [activeEEWs, activeLpgmEventId, activeLpgmSource])
 
@@ -1239,6 +1289,36 @@ export function App() {
     },
     [settings.dmdataApiKey, settings.dmdataTestDelivery, historicalArchives],
   )
+  /**
+   * 行動チェックリストのリセット。**宣言が `useReplayController` より後になる**ため、
+   * `resetTsunamiScrollRef` と同じ作法で ref 経由に渡す（実体の代入は下方・呼ばれるのは
+   * 常にレンダー後なのでタイミング上問題ない）。
+   */
+  const resetActionChecklistRef = useRef<() => void>(() => {})
+  /**
+   * リプレイの開始・停止で落とす画面側の一時状態。
+   *
+   * **時間軸に紐づくものだけを落とす。** 利用者の意思で決まったもの（パネルの折りたたみ・
+   * 震源カタログの絞り込み・タブ・行動チェックリストの抑止記録）は残す。判断の一覧と
+   * 落とさない理由は [`docs/spec/settings-pwa-spec.md`](../docs/spec/settings-pwa-spec.md) §6。
+   */
+  const resetLocalState = useCallback(() => {
+    // 選択中の地震（`selectedQuakeIdRef` も揃う）。落とさないと、同じ地震が再び届いた瞬間に
+    // 選択が復活する（`selectedQuake` の引き当ては鍵だけを見るため）。
+    selectQuake(null)
+    // **追加表示は無条件に落とす。** `selectQuake(null)` が閉じるのは選択の実体が非 null
+    // だったときだけで、EEW カードから開いた長周期は選択を通らない（実体が null のまま開いて
+    // いることがある）。そちらは EEW が消えた副作用で別の effect が閉じるが、1 テンポ遅れる
+    // うえ「ここを見ればリセットが完結している」と読めなくなる。
+    setQuakeOverlay(null)
+    // 特別情報でパネルを開いたときの「元の状態」。持ち越すと、次にバナーが消えたときに
+    // 切り替え前の状態へ戻す。
+    setSpecialInfoPanelHold(null)
+    // ブラウザ通知の重複抑止。残すと、同じ地震を再生したときに 2 回目の通知が出ない。
+    lastNotifiedIdRef.current = null
+    resetActionChecklistRef.current()
+  }, [selectQuake])
+
   const replay = useReplayController({
     fetchEvents: fetchReplayEvents,
     fetchQuakeHistory: fetchReplayQuakeHistory,
@@ -1248,6 +1328,7 @@ export function App() {
     setTimeOffset: setReplayTimeOffset,
     resetState,
     resetTracking,
+    resetLocalState,
     restorePreWindowTracking,
     loadReplayEvents,
   })
@@ -1393,6 +1474,8 @@ export function App() {
     eews: eewListForChecklist,
     latestQuake: earthquakes[0],
   })
+  // 宣言が useReplayController より後になるため ref 経由で渡す（上記 resetLocalState 参照）。
+  resetActionChecklistRef.current = actionChecklist.resetForReplay
 
   const prevEtaRef = useRef<number | null>(null)
   useEffect(() => {

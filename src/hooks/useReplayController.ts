@@ -68,6 +68,14 @@ export interface ReplayControllerDeps {
   timeOffset: number | null
   /** 表示中の地震・津波・EEW をすべて捨てる。 */
   resetState: () => void
+  /**
+   * 画面側が持つ一時状態（選択中の地震・追加表示・通知の重複抑止・行動チェックリスト）を落とす。
+   *
+   * **`resetState` / `resetTracking` では落ちない。** あちらが持つのは受信したデータと
+   * 読み上げの既読で、画面の状態は App のローカル state にあるため。落とす対象と残す理由は
+   * `docs/spec/settings-pwa-spec.md` §6「リプレイの開始・停止で落とすもの」。
+   */
+  resetLocalState: () => void
   /** 音・通知の重複判定に使う追跡 ref を初期化する。 */
   resetTracking: () => void
   /** pre-window の電文から T 時点の追跡 ref を復元する。 */
@@ -211,6 +219,7 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
 
     d.resetState()
     d.resetTracking()
+    d.resetLocalState()
     d.clearCache()
     d.setTimeOffset(offset)
     prefetchEndRef.current = toTime
@@ -315,6 +324,7 @@ export function useReplayController(deps: ReplayControllerDeps): ReplayControlle
     prefetchEndRef.current = null
     d.resetState()
     d.resetTracking()
+    d.resetLocalState()
     d.clearCache()
     setFetchError(null)
     setHistoryError(null)
