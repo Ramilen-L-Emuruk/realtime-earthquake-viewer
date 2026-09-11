@@ -1864,13 +1864,13 @@ describe('tsunamiWarningLevelToText', () => {
 
   // 正: 何を観測しているかを伝える。
   it('津波警報に相当する津波を観測していると読む', () => {
-    expect(tsunamiWarningLevelToText([obs('宮城沖')]))
-      .toBe('宮城沖では、津波警報に相当する津波を観測しています。')
+    expect(tsunamiWarningLevelToText([obs('岩手宮古沖')]))
+      .toBe('岩手宮古沖では、津波警報に相当する津波を観測しています。')
   })
 
   // 対照: 高さを補わない。電文が数値を出していないので、アプリが「1m 超」等と言ってはいけない。
   it('高さを補わない', () => {
-    const text = tsunamiWarningLevelToText([obs('宮城沖')])
+    const text = tsunamiWarningLevelToText([obs('岩手宮古沖')])
     expect(text).not.toMatch(/メートル|[0-9]m/)
   })
 

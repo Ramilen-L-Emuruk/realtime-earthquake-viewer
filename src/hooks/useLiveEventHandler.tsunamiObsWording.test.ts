@@ -71,7 +71,9 @@ const EVENT_ID = 'evt-1'
  * 実電文と同じく既報の観測点も載せ続ける。
  */
 function makeObsReport(
-  points: { name: string; district: string; code: string; value?: number }[],
+  // 沖合の潮位観測点は津波予報区に所属しないため、電文の Area は常に空になる
+  // （解説資料 Ⅱ.13 1-1-2-1）。その形を作れるよう `district` / `code` は省略できる。
+  points: { name: string; district?: string; code?: string; value?: number; offshore?: boolean }[],
   areas: { name: string; code: string; grade: string }[] = [],
   id = 'tsunami-obs',
 ): JMATsunami {
@@ -87,6 +89,7 @@ function makeObsReport(
       name: p.name,
       districtCode: p.code,
       districtName: p.district,
+      ...(p.offshore && { offshore: true }),
       height: p.value === undefined ? undefined : { value: p.value, description: `${p.value}m` },
     })),
   } as unknown as JMATsunami
@@ -627,8 +630,8 @@ describe('津波観測情報の読み上げ: リプレイ復元と欠測の記�
   // 復元が埋め忘れると窓の手前から続いている状態が再生開始後にもう一度読まれる。
   it('対照: 窓の手前から警報相当のままなら、その状態は読み直さない', async () => {
     const d = setupFull()
-    d.restorePreWindowTracking([entry(makeWarningLevelReport(['宮城沖'], 'pre-1'))] as never)
-    d.handleLiveEvent(makeWarningLevelReport(['宮城沖'], 'live-1') as never)
+    d.restorePreWindowTracking([entry(makeWarningLevelReport(['岩手宮古沖'], 'pre-1'))] as never)
+    d.handleLiveEvent(makeWarningLevelReport(['岩手宮古沖'], 'live-1') as never)
     await settle()
     expect(spokenTexts().join('')).not.toContain('津波警報に相当する津波')
   })
@@ -636,11 +639,11 @@ describe('津波観測情報の読み上げ: リプレイ復元と欠測の記�
   it('正: 窓の手前で状態が解けていれば、再生開始後の警報相当を読む', async () => {
     const d = setupFull()
     d.restorePreWindowTracking([
-      entry(makeWarningLevelReport(['宮城沖'], 'pre-1')),
+      entry(makeWarningLevelReport(['岩手宮古沖'], 'pre-1')),
       // 数値が出て「観測中」から抜ける
-      entry(makeObsReport([{ name: '宮城沖', district: '石川県能登', code: '390', value: 1.5 }], [], 'pre-2')),
+      entry(makeObsReport([{ name: '岩手宮古沖', offshore: true, value: 1.5 }], [], 'pre-2')),
     ] as never)
-    d.handleLiveEvent(makeWarningLevelReport(['宮城沖'], 'live-1') as never)
+    d.handleLiveEvent(makeWarningLevelReport(['岩手宮古沖'], 'live-1') as never)
     await settle()
     expect(spokenTexts().join('')).toContain('津波警報に相当する津波を観測しています。')
   })
@@ -728,37 +731,37 @@ describe('津波観測情報の読み上げ: 到達確認と欠測を行き来�
 describe('観測中のまま津波警報相当の観測点', () => {
   it('正: 専用の文で読む', async () => {
     const handle = setup()
-    handle(makeWarningLevelReport(['宮城沖']) as never)
+    handle(makeWarningLevelReport(['岩手宮古沖']) as never)
     await settle()
-    expect(spokenTexts().join('')).toContain('宮城沖では、津波警報に相当する津波を観測しています。')
+    expect(spokenTexts().join('')).toContain('岩手宮古沖では、津波警報に相当する津波を観測しています。')
   })
 
   it('対照: 同じ状態の続報では読み直さない', async () => {
     const handle = setup()
-    handle(makeWarningLevelReport(['宮城沖']) as never)
+    handle(makeWarningLevelReport(['岩手宮古沖']) as never)
     await settle()
     const before = spokenTexts().length
-    handle(makeWarningLevelReport(['宮城沖'], 'tsunami-warnlevel-2') as never)
+    handle(makeWarningLevelReport(['岩手宮古沖'], 'tsunami-warnlevel-2') as never)
     await settle()
     expect(spokenTexts().slice(before).join('')).not.toContain('津波警報に相当する津波')
   })
 
   it('対照: 到達確認としては読まない（二重に言わない）', async () => {
     const handle = setup()
-    handle(makeWarningLevelReport(['宮城沖']) as never)
+    handle(makeWarningLevelReport(['岩手宮古沖']) as never)
     await settle()
-    expect(spokenTexts().join('')).not.toContain('宮城沖で到達を確認しました')
+    expect(spokenTexts().join('')).not.toContain('岩手宮古沖で到達を確認しました')
   })
 
   it('安全弁: 状態が解けたらまた読む（数値が出た後に戻った場合）', async () => {
     const handle = setup()
-    handle(makeWarningLevelReport(['宮城沖']) as never)
+    handle(makeWarningLevelReport(['岩手宮古沖']) as never)
     await settle()
     // 数値が出て「観測中」から抜ける
-    handle(makeObsReport([{ name: '宮城沖', district: '石川県能登', code: '390', value: 1.5 }], [], 'tsunami-obs-2') as never)
+    handle(makeObsReport([{ name: '岩手宮古沖', offshore: true, value: 1.5 }], [], 'tsunami-obs-2') as never)
     await settle()
     const before = spokenTexts().length
-    handle(makeWarningLevelReport(['宮城沖'], 'tsunami-warnlevel-3') as never)
+    handle(makeWarningLevelReport(['岩手宮古沖'], 'tsunami-warnlevel-3') as never)
     await settle()
     expect(spokenTexts().slice(before).join('')).toContain('津波警報に相当する津波を観測しています。')
   })

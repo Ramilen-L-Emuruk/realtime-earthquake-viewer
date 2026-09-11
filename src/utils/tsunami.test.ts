@@ -1079,7 +1079,7 @@ describe('「重要」の言い換えは出所ごとに分ける', () => {
 
   // 正: 沖合の観測点にはその基準でバッジが付く。
   it('沖合の観測点のバッジに沖合の基準を使う', () => {
-    const obs: TsunamiObservation = { name: '岩手中部沖', offshore: true, condition: { important: true }, arrivalTime: '2026-01-01T12:20:00+09:00' }
+    const obs: TsunamiObservation = { name: '岩手釜石沖', offshore: true, condition: { important: true }, arrivalTime: '2026-01-01T12:20:00+09:00' }
     expect(observationBadges(obs)).toContain('大津波警報・津波警報の基準超')
   })
 
@@ -1123,7 +1123,7 @@ describe('沿岸への推定の波高欄', () => {
 // **「観測中」の中身は変わりようがないので、値の変化からは導けない。**
 describe('観測中のまま津波警報相当', () => {
   const offshoreObserving = (over: Partial<TsunamiObservation> = {}): TsunamiObservation => ({
-    name: '宮城沖', offshore: true, condition: { observing: true }, ...over,
+    name: '岩手宮古沖', offshore: true, condition: { observing: true }, ...over,
   })
 
   // 正: 沖合・観測中・Revise=更新 の 3 つが揃ったとき。
@@ -1152,7 +1152,7 @@ describe('観測中のまま津波警報相当', () => {
   // 安全弁: 「観測中」でなければ当てない（数値が出ている観測点の更新は普通の更新）。
   it('観測中でなければ当てない', () => {
     expect(isWarningLevelWhileObserving({
-      name: '宮城沖', offshore: true, maxHeightRevise: '更新',
+      name: '岩手宮古沖', offshore: true, maxHeightRevise: '更新',
       height: { value: 1.2, description: '1.2m' },
     })).toBe(false)
   })
