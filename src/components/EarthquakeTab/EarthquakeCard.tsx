@@ -1,6 +1,6 @@
 import { useMemo, useRef, useEffect, useState } from 'react'
 import type { JMAQuake, JMALpgm, IssueType, EarthquakePoint, IntensityScale, JMAEstimatedIntensity } from '../../types/earthquake'
-import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor, lpgmCategoryNote } from '../../utils/lpgm'
+import { getLpgmClassLabel, getLpgmClassColor, getLpgmClassBgColor, lpgmCategoryNote, buildLpgmRows } from '../../utils/lpgm'
 import { estimatedIntensityFor, estimatedIntensityAvailability } from '../../utils/estimatedIntensity'
 import {
   formatQuakeTime,
@@ -18,7 +18,7 @@ import {
 import { getIntensityLabel, getIntensityLabelWithOrAbove, getIntensityColor, getIntensityBgColor, getDepthColor, getMagnitudeColor } from '../../utils/intensity'
 import { hasKnownEpicenter } from '../../utils/geo'
 
-import { buildAreaPrefIndex, buildPrefAreaNamesIndex, buildRegionOrderIndex, buildStationPrefIndex, lookupStationRegion, regionOrderRank, byValueDescThenRegion } from '../../utils/stationCoords'
+import { buildAreaPrefIndex, buildRegionOrderIndex, buildStationPrefIndex, lookupStationRegion, regionOrderRank } from '../../utils/stationCoords'
 import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel, buildIntensityRows, makeAreaPrefResolver } from '../../utils/quakePoints'
 import { useStationCoords } from '../../hooks/useStationCoords'
 import { NON_JMA_BADGE_LABEL, NON_JMA_BADGE_TITLE } from '../Map/gl/popupHtml'
@@ -105,6 +105,79 @@ function IntensityRow({ label, scale, unreceived, hasUnreceived, nonJma, depth, 
             {isOpen ? '▾' : '▸'}
           </span>
         )}
+      </span>
+    </div>
+  )
+}
+
+/**
+ * 長周期地震動の 1 行。都道府県・一次細分区域・観測点の 3 段で共有する
+ * （電文が持つ段数。震度一覧の 4 段から市町村を除いた形）。
+ *
+ * **見た目の規約は `IntensityRow` と揃える。** 段の区別に使うのは字下げ・文字の大きさと、
+ * 地名の文字色（県の行だけ白、下の 2 段はグレー）、それに階級側の太字（県の行だけ）。
+ * **階級の色（`getLpgmClassColor`）は値だけで決め、段では変えない** —— 段の区別に流用すると、
+ * 色が二通りの意味を持つ。並べる震度も値によらずグレーで、こちらは階級の補足として置いている。
+ */
+function LpgmRow({ label, lgInt, int, nonJma, depth, expandKey, expanded, onToggle }: {
+  label: string
+  lgInt: number
+  /** その範囲の最大震度。階級と並べると「揺れは小さいのに高層階が大きく揺れた」形が出る */
+  int?: IntensityScale
+  nonJma?: boolean
+  /** 字下げの段（0＝都道府県）。 */
+  depth: 0 | 1 | 2
+  /** 開閉の鍵。`null` なら開けない行。 */
+  expandKey: string | null
+  expanded: ReadonlySet<string>
+  onToggle: (key: string) => void
+}) {
+  const isOpen = expandKey != null && expanded.has(expandKey)
+  const pad = ['pl-2', 'pl-5', 'pl-8'][depth]
+  const size = depth === 0
+    ? 'text-[0.9375rem] roomy:text-[1.125rem]'
+    : depth === 1 ? 'text-[0.875rem] roomy:text-[1rem]' : 'text-[0.8125rem] roomy:text-[0.9375rem]'
+  const interactive = expandKey != null
+  return (
+    <div
+      {...(interactive ? {
+        role: 'button' as const,
+        tabIndex: 0,
+        'aria-expanded': isOpen,
+        onClick: (e: React.MouseEvent) => { e.stopPropagation(); onToggle(expandKey) },
+        onKeyDown: (e: React.KeyboardEvent) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); onToggle(expandKey) }
+        },
+      } : {})}
+      className={`flex items-center justify-between ${pad} pr-2 py-0.5 ${depth === 0 ? 'roomy:py-1.5' : ''} ${size}${interactive ? ' cursor-pointer hover:bg-white/5' : ''}`}
+    >
+      <span
+        className={`flex-shrink-0 whitespace-nowrap${depth === 0 ? ' font-bold' : ''}`}
+        style={{ color: getLpgmClassColor(lgInt) }}
+      >
+        長周期 {getLpgmClassLabel(lgInt)}
+      </span>
+      <span className="flex items-baseline gap-2 min-w-0">
+        {int !== undefined && (
+          <span className="text-[0.8125rem] text-gray-400 whitespace-nowrap roomy:text-[0.9375rem]">
+            震度 {getIntensityLabel(int)}
+          </span>
+        )}
+        <span style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}>
+          {label}
+          {/* 気象庁以外が運用する観測点。名前から `＊` を外してある分をここで伝える
+              （震度一覧・地図の吹き出しと同じバッジ）。 */}
+          {nonJma && (
+            <span className="ml-1.5 text-[0.6875rem] roomy:text-[0.8125rem]" style={{ color: '#9ca3af' }} title={NON_JMA_BADGE_TITLE}>
+              {NON_JMA_BADGE_LABEL}
+            </span>
+          )}
+          {interactive && (
+            <span className="ml-1.5 text-[0.75rem] roomy:text-[0.875rem]" style={{ color: '#9ca3af' }}>
+              {isOpen ? '▾' : '▸'}
+            </span>
+          )}
+        </span>
       </span>
     </div>
   )
@@ -313,63 +386,21 @@ export function EarthquakeCard({
     }
   }, [isSelected, stationData, unreceivedIndexes])
 
-  // 長周期地震動の区域も、地震の震度と同じ考え方で県内全区域が同じ階級で揃っていれば
-  // 「〇〇県」1件にまとめる（TTS の buildLpgmRegionText と同じ判定）。
+  // 長周期地震動も震度一覧と同じく入れ子にする（電文が持つのは県 → 区域 → 観測点の 3 段で、
+  // 市町村の段が無いぶん震度の 4 段より 1 つ浅い）。組み立ては `buildLpgmRows` に置いてあり、
+  // ここでは座標表由来の索引を渡すだけ。
   const lpgmGroups = useMemo(() => {
-    const regions = lpgm?.regions?.filter(r => r.maxLgInt >= 1)
-    if (!isSelected || !regions || regions.length === 0) return []
-
+    // **どのデータがあれば行が出るかは `buildLpgmRows` に決めさせる。** ここで「区域があるか」
+    // 「観測点があるか」と条件を並べ直すと、向こうが受け皿を足したときに静かにずれる
+    // （区域が全滅して県の値だけが残る電文が、ここで弾かれていた）。空なら空配列が返り、
+    // 描画側の `lpgmGroups.length > 0` で落ちる。
+    if (!isSelected || !lpgm) return []
     const areaPrefIndex = stationData ? buildAreaPrefIndex(stationData) : null
-    const prefAreaNames = stationData ? buildPrefAreaNamesIndex(stationData) : null
-
-    // 区域の最大震度。**階級と並べると「揺れは小さいのに高層階が大きく揺れた」形が出る**
-    // ——長周期地震動でいちばん伝えたい差がこれ。県へまとめた行では最も大きいものを採る。
-    const maxIntByName = new Map<string, IntensityScale>()
-    const noPref: { name: string; maxLgInt: number }[] = []
-    const byPref = new Map<string, Map<string, number>>()
-    for (const r of regions) {
-      // **電文が都道府県名を書いているならそれを使う。** 座標表からの逆引きは
-      // 電文に無かった頃の代理で、表に無い区域では引けずにまとめが崩れる。
-      const pref = r.pref || areaPrefIndex?.get(r.name)
-      const noteMaxInt = (key: string) => {
-        if (r.maxInt === undefined) return
-        const cur = maxIntByName.get(key)
-        if (cur === undefined || r.maxInt > cur) maxIntByName.set(key, r.maxInt)
-      }
-      noteMaxInt(r.name)
-      if (!pref) { noPref.push({ name: r.name, maxLgInt: r.maxLgInt }); continue }
-      noteMaxInt(pref)
-      const set = byPref.get(pref) ?? new Map<string, number>()
-      const cur = set.get(r.name)
-      if (cur == null || r.maxLgInt > cur) set.set(r.name, r.maxLgInt)
-      byPref.set(pref, set)
-    }
-
-    const result: { name: string; maxLgInt: number }[] = [...noPref]
-    for (const [pref, nameClasses] of byPref) {
-      const fullSet = prefAreaNames?.get(pref)
-      const classes = new Set(nameClasses.values())
-      const isWholePref = fullSet != null && fullSet.size > 0
-        && nameClasses.size === fullSet.size
-        && [...nameClasses.keys()].every(n => fullSet.has(n))
-        && classes.size === 1
-      if (isWholePref) result.push({ name: pref, maxLgInt: [...classes][0] })
-      else for (const [name, maxLgInt] of nameClasses) result.push({ name, maxLgInt })
-    }
-    // 行の見出し（区域名または県名）に紐づく最大震度を添える。
-    //
-    // **県の行は電文が書いている値を優先する。** 区域から積み上げると、区域の震度を
-    // 1 つでも読み落としたとき静かに低く出る（パーサー側が `prefs` を用意しているのは
-    // そのため。→ `LpgmPref`）。電文に無い県だけ、区域からの積み上げへ落とす。
-    const prefMaxIntByName = new Map((lpgm?.prefs ?? []).map(p => [p.name, p.maxInt]))
-    const withMaxInt = result.map(g => ({
-      ...g,
-      maxInt: prefMaxIntByName.get(g.name) ?? maxIntByName.get(g.name),
-    }))
-
-    // 階級の降順。同じ階級どうしは震度側と同じく気象庁の標準順で並べる（理由は上記）。
     const order = stationData ? buildRegionOrderIndex(stationData) : null
-    return withMaxInt.sort(byValueDescThenRegion(g => g.maxLgInt, g => g.name, order))
+    return buildLpgmRows(lpgm.regions ?? [], lpgm.points ?? [], lpgm.prefs ?? [], {
+      prefOfArea: name => areaPrefIndex?.get(name) ?? null,
+      rank: name => regionOrderRank(name, order),
+    })
   }, [isSelected, lpgm, stationData])
 
   if (isSelected) {
@@ -660,30 +691,72 @@ export function EarthquakeCard({
             if (isLpgmActive && lpgmGroups.length > 0) {
               return (
                 <div className="flex flex-col gap-0.5 pt-1 border-t border-white/10">
-                  {lpgmGroups.map(({ name, maxLgInt, maxInt }, idx) => (
+                  {/* 最上段は都道府県か、都道府県を引けなかった区域（→ `LpgmPrefRow.kind`）。
+                      **鍵に段の種別を入れる** —— 区域名と県名は一致しうる（実データの「奈良県」）。 */}
+                  {lpgmGroups.map((prefRow, idx) => {
+                    const topKey = `lpgm:${prefRow.kind}:${prefRow.name}`
+                    return (
                     <div
-                      key={name}
-                      className="flex items-center justify-between px-2 py-1 rounded roomy:py-1.5"
+                      key={topKey}
+                      className="rounded"
                       style={{ backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent' }}
                     >
-                      <span
-                        className="font-bold flex-shrink-0 whitespace-nowrap text-[0.9375rem] roomy:text-[1.125rem]"
-                        style={{ color: getLpgmClassColor(maxLgInt) }}
-                      >
-                        長周期 {getLpgmClassLabel(maxLgInt)}
-                      </span>
-                      <span className="flex items-baseline gap-2 min-w-0">
-                        {/* **震度を並べる。** 階級だけだと「揺れは小さいのに高層階が
-                            大きく揺れた」形が読み取れない —— 長周期地震動で最も伝えたい差 */}
-                        {maxInt !== undefined && (
-                          <span className="text-[0.8125rem] text-gray-400 whitespace-nowrap roomy:text-[0.9375rem]">
-                            震度 {getIntensityLabel(maxInt)}
-                          </span>
-                        )}
-                        <span className="text-white text-[0.9375rem] roomy:text-[1.125rem]">{name}</span>
-                      </span>
+                      <LpgmRow
+                        label={prefRow.name}
+                        lgInt={prefRow.maxLgInt}
+                        int={prefRow.maxInt}
+                        depth={0}
+                        expandKey={prefRow.areas.length > 0 || prefRow.stations.length > 0 ? topKey : null}
+                        expanded={expanded}
+                        onToggle={toggle}
+                      />
+                      {expanded.has(topKey) && (
+                        <>
+                          {prefRow.areas.map(area => (
+                            <div key={area.name}>
+                              <LpgmRow
+                                label={area.name}
+                                lgInt={area.maxLgInt}
+                                int={area.maxInt}
+                                depth={1}
+                                expandKey={area.stations.length > 0 ? `lpgm:area:${area.name}` : null}
+                                expanded={expanded}
+                                onToggle={toggle}
+                              />
+                              {expanded.has(`lpgm:area:${area.name}`) && area.stations.map(st => (
+                                <LpgmRow
+                                  key={st.name}
+                                  label={st.name}
+                                  lgInt={st.lgInt}
+                                  int={st.int}
+                                  nonJma={st.nonJma}
+                                  depth={2}
+                                  expandKey={null}
+                                  expanded={expanded}
+                                  onToggle={toggle}
+                                />
+                              ))}
+                            </div>
+                          ))}
+                          {/* 区域が分からない観測点（→ `LpgmPrefRow.stations`）。 */}
+                          {prefRow.stations.map(st => (
+                            <LpgmRow
+                              key={st.name}
+                              label={st.name}
+                              lgInt={st.lgInt}
+                              int={st.int}
+                              nonJma={st.nonJma}
+                              depth={1}
+                              expandKey={null}
+                              expanded={expanded}
+                              onToggle={toggle}
+                            />
+                          ))}
+                        </>
+                      )}
                     </div>
-                  ))}
+                    )
+                  })}
                 </div>
               )
             }

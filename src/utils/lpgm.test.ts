@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { isValidLpgmClass, getLpgmClassLabel, getLpgmClassColor, getLpgmClassRadius, lpgmCategoryNote, lpgmPeriodLabel } from './lpgm'
+import { isValidLpgmClass, getLpgmClassLabel, getLpgmClassColor, getLpgmClassRadius, lpgmCategoryNote, lpgmPeriodLabel, buildLpgmRows, type LpgmRowDeps } from './lpgm'
+import type { LpgmPoint, LpgmRegion } from '../types/earthquake'
 import { LPGM_ICON_BASE_RADIUS } from '../components/Map/gl/lpgmIcons'
 
 describe('isValidLpgmClass', () => {
@@ -101,5 +102,148 @@ describe('lpgmPeriodLabel', () => {
     expect(lpgmPeriodLabel(8)).toBe('周期不明')
     expect(lpgmPeriodLabel(1.5)).toBe('周期不明')
     expect(lpgmPeriodLabel(NaN)).toBe('周期不明')
+  })
+})
+
+describe('buildLpgmRows', () => {
+  // 座標表からの逆引きは「電文が県を書いていない区域」の代理なので、既定では引けない状態で試す。
+  const deps: LpgmRowDeps = { prefOfArea: () => null, rank: () => 0 }
+  const region = (name: string, maxLgInt: number, extra: Partial<LpgmRegion> = {}): LpgmRegion =>
+    ({ code: '', name, maxLgInt, ...extra })
+  const station = (name: string, lgInt: number, extra: Partial<LpgmPoint> = {}): LpgmPoint =>
+    ({ code: '', name, pref: '', lgInt, ...extra })
+
+  // 正: 県内の階級がばらついていても県 1 行にまとめる。以前は「全区域が揃って同一階級」の
+  // ときだけまとめており、実電文ではほとんどの県が個別区域として平らに並んでいた。
+  it('正: 県内の階級がばらついていても県 1 行にまとめ、配下へ区域を入れる', () => {
+    const rows = buildLpgmRows(
+      [region('石川県能登', 4, { pref: '石川県' }), region('石川県加賀', 3, { pref: '石川県' })],
+      [], [], deps,
+    )
+    expect(rows).toHaveLength(1)
+    expect(rows[0].name).toBe('石川県')
+    expect(rows[0].areas.map(a => a.name)).toEqual(['石川県能登', '石川県加賀'])
+  })
+
+  // 対照: 県を引けない区域は最上段に残す（区域名のまま並び、開いても県は現れない）。
+  // **種別を持たせる** —— 区域名と県名は一致しうるので、画面の鍵を名前だけで作れない。
+  it('対照: 都道府県を引けない区域は最上段の葉のまま残す', () => {
+    expect(buildLpgmRows([region('どこかの区域', 2)], [], [], deps)).toEqual([
+      { kind: 'area', name: 'どこかの区域', maxLgInt: 2, areas: [], stations: [] },
+    ])
+  })
+
+  // 安全弁: 配下が 1 つも立たなくても、電文が県の階級を書いていれば行にする。
+  // 区域の階級がどれも読めず観測点も無い電文で、気象庁が報告している県が消えないこと
+  // （震度側の `buildIntensityRows` も都道府県ロールアップ点をループ対象に含めている）。
+  it('安全弁: 区域も観測点も無くても、電文が県の階級を書いていれば行にする', () => {
+    const rows = buildLpgmRows([], [], [{ code: '17', name: '石川県', maxLgInt: 4, maxInt: 70 }], deps)
+    expect(rows).toEqual([
+      { kind: 'pref', name: '石川県', maxLgInt: 4, maxInt: 70, areas: [], stations: [] },
+    ])
+  })
+
+  it('電文が県を書いていない区域は座標表から逆引きする', () => {
+    const rows = buildLpgmRows([region('石川県能登', 4)], [], [], {
+      prefOfArea: n => (n === '石川県能登' ? '石川県' : null),
+      rank: () => 0,
+    })
+    expect(rows[0].name).toBe('石川県')
+  })
+
+  it('観測点は電文の区域名（Area/Name）で区域の下へ入れる', () => {
+    const rows = buildLpgmRows(
+      [region('石川県能登', 4, { pref: '石川県' })],
+      [station('七尾市本府中町', 4, { pref: '石川県', area: '石川県能登', int: 55 })],
+      [], deps,
+    )
+    expect(rows[0].areas[0].stations).toEqual([{ name: '七尾市本府中町', lgInt: 4, int: 55 }])
+  })
+
+  it('区域が分からない観測点は県の直下へ置く', () => {
+    const rows = buildLpgmRows(
+      [region('石川県能登', 4, { pref: '石川県' })],
+      [station('七尾市本府中町', 4, { pref: '石川県' })],
+      [], deps,
+    )
+    expect(rows[0].areas[0].stations).toEqual([])
+    expect(rows[0].stations.map(s => s.name)).toEqual(['七尾市本府中町'])
+  })
+
+  it('県も区域も分からない観測点は置き場が無いので落とす', () => {
+    const rows = buildLpgmRows([region('石川県能登', 4, { pref: '石川県' })], [station('どこか', 4)], [], deps)
+    expect(rows[0].stations).toEqual([])
+    expect(rows[0].areas[0].stations).toEqual([])
+  })
+
+  // 安全弁: 県・区域の値は電文が書いているものを優先し、配下から積み上げ直さない。
+  // 積み上げに寄せると、区域や観測点を 1 つ読み落としたときに静かに低く出る。
+  it('安全弁: 県の階級・震度は電文（prefs）を優先し、配下から積み上げない', () => {
+    const rows = buildLpgmRows(
+      [region('石川県能登', 4, { pref: '石川県', maxInt: 70 })],
+      [],
+      [{ code: '17', name: '石川県', maxLgInt: 3, maxInt: 50 }],
+      deps,
+    )
+    expect(rows[0].maxLgInt).toBe(3)
+    expect(rows[0].maxInt).toBe(50)
+  })
+
+  it('電文が県の値を持たなければ配下から積み上げる', () => {
+    const rows = buildLpgmRows(
+      [
+        region('石川県能登', 4, { pref: '石川県', maxInt: 70 }),
+        region('石川県加賀', 3, { pref: '石川県', maxInt: 50 }),
+      ],
+      [], [], deps,
+    )
+    expect(rows[0].maxLgInt).toBe(4)
+    expect(rows[0].maxInt).toBe(70)
+  })
+
+  // 区域の読み取り失敗は「その電文の区域が全滅したとき」しか記録されないので、
+  // 配下から立てないと市町村を持たない長周期でも観測点ごと画面から消える。
+  it('区域自身の階級が読めなくても、観測点があれば区域の行を立てる', () => {
+    const rows = buildLpgmRows(
+      [],
+      [station('七尾市本府中町', 4, { pref: '石川県', area: '石川県能登', int: 55 })],
+      [], deps,
+    )
+    expect(rows[0].name).toBe('石川県')
+    expect(rows[0].areas[0]).toMatchObject({ name: '石川県能登', maxLgInt: 4, maxInt: 55 })
+  })
+
+  it('階級を観測していない区域・観測点は行にしない', () => {
+    const rows = buildLpgmRows(
+      [region('石川県能登', 0, { pref: '石川県' })],
+      [station('七尾市本府中町', 0, { pref: '石川県', area: '石川県能登' })],
+      [], deps,
+    )
+    expect(rows).toEqual([])
+  })
+
+  it('並びは階級の降順、同じ階級どうしは気象庁の標準順', () => {
+    const ranks: Record<string, number> = { 青森県: 1, 岩手県: 2, 青森県津軽北部: 1, 岩手県内陸南部: 2 }
+    const rows = buildLpgmRows(
+      [
+        region('岩手県内陸南部', 2, { pref: '岩手県' }),
+        region('青森県津軽北部', 2, { pref: '青森県' }),
+        region('石川県能登', 4, { pref: '石川県' }),
+      ],
+      [], [], { prefOfArea: () => null, rank: n => ranks[n] ?? 99 },
+    )
+    expect(rows.map(r => r.name)).toEqual(['石川県', '青森県', '岩手県'])
+  })
+
+  it('観測点の並びも階級の降順', () => {
+    const rows = buildLpgmRows(
+      [region('石川県能登', 4, { pref: '石川県' })],
+      [
+        station('弱いほう', 2, { pref: '石川県', area: '石川県能登' }),
+        station('強いほう', 4, { pref: '石川県', area: '石川県能登' }),
+      ],
+      [], deps,
+    )
+    expect(rows[0].areas[0].stations.map(s => s.name)).toEqual(['強いほう', '弱いほう'])
   })
 })
