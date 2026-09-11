@@ -1337,7 +1337,9 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
       <Section title="テスト時刻設定">
         <div className="px-4 py-2 bg-blue-900/30 border-b border-blue-700/40">
           <p className="text-blue-300 text-xs">
-            指定した日時の地震情報・津波を再生します（{isDmdss ? '2020年4月' : '2015年'}以降）。
+            {isDmdss
+              ? '指定した日時の地震情報・津波・緊急地震速報を再生します（2020年11月18日以降。緊急地震速報だけは2022年7月20日以降）。'
+              : '指定した日時の地震情報・津波を再生します（地震情報は2015年1月10日以降、津波は2016年11月22日以降）。'}
             リアルタイム震度は直近の期間と、下記の地震でのみ再生できます。
           </p>
         </div>
