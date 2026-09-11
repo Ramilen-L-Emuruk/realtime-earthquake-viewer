@@ -2,6 +2,7 @@
 // parseEarthquakeFromXml（REST 履歴経路）のテスト。
 // DOMParser を使うためこのファイルだけ jsdom 環境で動かす（既定は node）。
 import { describe, it, expect, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { parseEarthquakeFromXml, parseEEWFromXml, parseTsunamiFromXml, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml, parseQuakeNoticeFromXml, parseEarthquakeCountFromXml } from './dmdataParser'
 import { log } from '../utils/logger'
 import { hasKnownEpicenter } from '../utils/geo'
@@ -2619,7 +2620,7 @@ const PARITY_TSUNAMI_XML = `<?xml version="1.0" encoding="UTF-8"?>
     <Tsunami>
       <Forecast>
         <Item>
-          <Area><Name>関東</Name><Code>350</Code></Area>
+          <Area><Name>千葉県九十九里・外房</Name><Code>310</Code></Area>
           <Category>
             <Kind><Name>大津波警報：発表</Name><Code>52</Code></Kind>
           </Category>
@@ -2631,7 +2632,7 @@ const PARITY_TSUNAMI_XML = `<?xml version="1.0" encoding="UTF-8"?>
           <MaxHeight>
             <jmx_eb:TsunamiHeight type="津波の高さ" unit="m" description="１０ｍ超">10</jmx_eb:TsunamiHeight>
           </MaxHeight>
-          <Station><Name>銚子</Name><Code>35001</Code>
+          <Station><Name>銚子</Name><Code>31001</Code>
             <HighTideDateTime>2026-01-01T15:00:00+09:00</HighTideDateTime>
             <FirstHeight>
               <ArrivalTime>2026-01-01T12:25:00+09:00</ArrivalTime>
@@ -2642,8 +2643,8 @@ const PARITY_TSUNAMI_XML = `<?xml version="1.0" encoding="UTF-8"?>
       </Forecast>
       <Observation>
         <Item>
-          <Area><Name>関東</Name><Code>350</Code></Area>
-          <Station><Name>銚子</Name><Code>35001</Code>
+          <Area><Name>千葉県九十九里・外房</Name><Code>310</Code></Area>
+          <Station><Name>銚子</Name><Code>31001</Code>
             <FirstHeight>
               <ArrivalTime>2026-01-01T12:20:00+09:00</ArrivalTime>
               <Initial>押し</Initial>
@@ -2661,13 +2662,13 @@ const PARITY_TSUNAMI_XML = `<?xml version="1.0" encoding="UTF-8"?>
       <OriginTime>2026-01-01T12:00:00+09:00</OriginTime>
       <ArrivalTime>2026-01-01T12:01:00+09:00</ArrivalTime>
       <Hypocenter><Area>
-        <Name>房総半島沖</Name>
-        <Code>289</Code>
+        <Name>千葉県南東沖</Name>
+        <Code>309</Code>
         <jmx_eb:Coordinate description="北緯３４．９度　東経１４１．３度　深さ　３０ｋｍ">+34.9+141.3-30000/</jmx_eb:Coordinate>
-        <NameFromMark>勝浦の東６０ｋｍ付近</NameFromMark>
-        <MarkCode type="震央補助">305</MarkCode>
+        <NameFromMark>館山の東１３０ｋｍ付近</NameFromMark>
+        <MarkCode type="震央補助">301</MarkCode>
         <Direction>東</Direction>
-        <Distance unit="km">60</Distance>
+        <Distance unit="km">130</Distance>
       </Area></Hypocenter>
       <jmx_eb:Magnitude type="Mj">8.5</jmx_eb:Magnitude>
     </Earthquake>
@@ -2794,7 +2795,7 @@ describe('XML 経路が落としてはいけない項目（津波）', () => {
     for (const t of [fromXml()]) {
       expect(t.areas).toHaveLength(1)
       expect(t.areas[0].grade).toBe('MajorWarning')
-      expect(t.areas[0].name).toBe('関東')
+      expect(t.areas[0].name).toBe('千葉県九十九里・外房')
       expect(t.areas[0].immediate).toBe(true)
     }
   })
@@ -2802,7 +2803,7 @@ describe('XML 経路が落としてはいけない項目（津波）', () => {
   it('eventId と原因地震を同じに読む', () => {
     for (const t of [fromXml()]) {
       expect(t.eventId).toBe('20260101120000')
-      expect(t.sourceEarthquakes?.[0].hypocenterName).toBe('房総半島沖')
+      expect(t.sourceEarthquakes?.[0].hypocenterName).toBe('千葉県南東沖')
       expect(t.sourceEarthquakes?.[0].magnitude).toBe(8.5)
     }
   })
@@ -3198,7 +3199,7 @@ describe('津波の取消・全解除・原因地震', () => {
     const xml = PARITY_TSUNAMI_XML.replace('</Earthquake>', '</Earthquake>' + second)
     const eqs = parseTsunamiFromXml('VTSE51', xml)!.sourceEarthquakes!
     expect(eqs).toHaveLength(2)
-    expect(eqs.map(e => e.hypocenterName)).toEqual(['房総半島沖', '三陸沖'])
+    expect(eqs.map(e => e.hypocenterName)).toEqual(['千葉県南東沖', '三陸沖'])
   })
 
   // 安全弁: 名前を読めない地震は落とす（画面に出しようがない）。**残りは残す** ——
@@ -3214,11 +3215,11 @@ describe('津波の取消・全解除・原因地震', () => {
     const xml = PARITY_TSUNAMI_XML.replace('</Earthquake>', '</Earthquake>' + broken)
     const eqs = parseTsunamiFromXml('VTSE51', xml)!.sourceEarthquakes!
     expect(eqs).toHaveLength(1)
-    expect(eqs[0].hypocenterName).toBe('房総半島沖')
+    expect(eqs[0].hypocenterName).toBe('千葉県南東沖')
   })
 
   it('震源名が無ければ原因地震を持たない', () => {
-    const xml = PARITY_TSUNAMI_XML.replace('<Name>房総半島沖</Name>', '')
+    const xml = PARITY_TSUNAMI_XML.replace('<Name>千葉県南東沖</Name>', '')
     expect(parseTsunamiFromXml('VTSE51', xml)!.sourceEarthquakes).toBeUndefined()
   })
 
@@ -3230,11 +3231,11 @@ describe('津波の取消・全解除・原因地震', () => {
     expect(eq.latitude).toBe(34.9)
     expect(eq.longitude).toBe(141.3)
     expect(eq.depth).toBe(30)
-    expect(eq.code).toBe('289')
-    expect(eq.nameFromMark).toBe('勝浦の東６０ｋｍ付近')
-    expect(eq.markCode).toBe('305')
+    expect(eq.code).toBe('309')
+    expect(eq.nameFromMark).toBe('館山の東１３０ｋｍ付近')
+    expect(eq.markCode).toBe('301')
     expect(eq.direction).toBe('東')
-    expect(eq.distanceKm).toBe(60)
+    expect(eq.distanceKm).toBe(130)
   })
 
   // 対照: 深さを持たない電文（`+34.9+141.3/`。解説資料の「震源の深さが不明の場合」）では
@@ -3523,10 +3524,10 @@ describe('津波電文の付加文と波高のメタ情報', () => {
   it('第1波の Revise を、観測点と予想区域の両方で読む', () => {
     const t = parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!
     expect(t.observations!.find(o => o.name === '銚子')!.firstHeightRevise).toBe('追加')
-    expect(t.areas.find(a => a.name === '関東')!.firstHeight!.revise).toBe('追加')
+    expect(t.areas.find(a => a.name === '千葉県九十九里・外房')!.firstHeight!.revise).toBe('追加')
     // **予想区域の中の潮位観測点も同じ要素を持つ。** 区域側だけ読むと、同じ電文の
     // 同じ意味の要素で扱いが割れる
-    expect(t.areas.find(a => a.name === '関東')!.stations!.find(s => s.name === '銚子')!.revise).toBe('更新')
+    expect(t.areas.find(a => a.name === '千葉県九十九里・外房')!.stations!.find(s => s.name === '銚子')!.revise).toBe('更新')
   })
 
   // 正: 最大波を観測した時刻。波高の数値だけでは、それがいつの値かが分からない
@@ -3598,9 +3599,9 @@ const VTSE51_MISSING_XML = `<?xml version="1.0" encoding="UTF-8"?>
     <Tsunami>
       <Observation>
         <Item>
-          <Area><Name>岩手県</Name><Code>030</Code></Area>
+          <Area><Name>岩手県</Name><Code>210</Code></Area>
           <Station>
-            <Name>宮古</Name><Code>0031</Code>
+            <Name>宮古</Name><Code>21001</Code>
             <FirstHeight><ArrivalTime>2026-09-03T09:58:00+09:00</ArrivalTime><Initial>押し</Initial></FirstHeight>
             <MaxHeight>
               <DateTime>2026-09-03T09:59:00+09:00</DateTime>
@@ -3609,17 +3610,17 @@ const VTSE51_MISSING_XML = `<?xml version="1.0" encoding="UTF-8"?>
             </MaxHeight>
           </Station>
           <Station>
-            <Name>大船渡</Name><Code>0033</Code>
+            <Name>大船渡</Name><Code>21002</Code>
             <FirstHeight><Condition>欠測</Condition></FirstHeight>
             <MaxHeight><Condition>欠測</Condition></MaxHeight>
           </Station>
           <Station>
-            <Name>釜石</Name><Code>0032</Code>
+            <Name>釜石</Name><Code>21003</Code>
             <FirstHeight><ArrivalTime>2026-09-03T09:57:00+09:00</ArrivalTime><Initial>押し</Initial></FirstHeight>
             <MaxHeight><Condition>観測中　欠測</Condition></MaxHeight>
           </Station>
           <Station>
-            <Name>久慈</Name><Code>0034</Code>
+            <Name>久慈港</Name><Code>21020</Code>
             <FirstHeight><ArrivalTime>2026-09-03T09:56:00+09:00</ArrivalTime><Initial>押し</Initial></FirstHeight>
             <MaxHeight><Condition>観測中</Condition></MaxHeight>
           </Station>
@@ -3663,7 +3664,7 @@ describe('潮位観測点の観測状態（Condition）', () => {
 
   it('対照: 「観測中」だけの観測点は欠測を立てない（従来の到達確認の経路）', () => {
     const t = parseTsunamiFromXml('VTSE51', VTSE51_MISSING_XML)
-    const kuji = byName(t, '久慈')
+    const kuji = byName(t, '久慈港')
     expect(kuji.condition).toEqual({ observing: true })
     expect(kuji.height).toBeUndefined()
   })
@@ -3733,8 +3734,11 @@ const VTSE52_XML = [
   '<Body xmlns="http://xml.kishou.go.jp/jmaxml1/body/seismology1/">',
   '<Tsunami>',
   '<Observation>',
-  '<Item><Area><Name>三陸沖北部</Name><Code>901</Code></Area>',
-  '<Station><Name>岩手中部沖</Name><Code>21401</Code><Sensor>ＧＮＳＳ波浪計</Sensor>',
+  // 沖合の潮位観測点は津波予報区に所属していないため、この要素は常に空になる
+  // （解説資料 Ⅱ.13 1-1-2-1）。実サンプル電文 4 通もすべて空。
+  '<Item><Area><Name></Name><Code></Code></Area>',
+  // 名前とコードは解説資料 Ⅱ.13 1-1-2-2 の事例１（ＧＮＳＳ波浪計）をそのまま採った。
+  '<Station><Name>岩手釜石沖</Name><Code>21090</Code><Sensor>ＧＮＳＳ波浪計</Sensor>',
   // 型は沿岸（VTSE51）と同じ「これまでの最大波の高さ」。**沖合だけ短い語を使うということはない**
   // ——解説資料 Ⅱ.13 1-1-2-2-2 と実電文の両方で確かめた（かつてここは手書きの短い語で、
   // 実電文に無い形だった）。
@@ -3742,11 +3746,12 @@ const VTSE52_XML = [
   '</Station>',
   // 「観測中」のまま Revise が「更新」。中身は変わりようがないので、気象庁が意図して
   // 置いた信号にしかならない ―― 津波警報に相当する津波を観測している（Ⅱ.13 1-1-2-2-2）
-  '<Station><Name>宮城沖</Name><Code>21402</Code>',
+  '<Station><Name>岩手宮古沖</Name><Code>21091</Code>',
   '<MaxHeight><Condition>観測中</Condition><Revise>更新</Revise></MaxHeight>',
   '</Station></Item>',
   '</Observation>',
   '<Estimation>',
+  // ここの Area は津波予報区ではなく沿岸地域（解説資料 Ⅱ.13 1-2-1）。コードもそちらから採る。
   // 事例１: 到達時刻と説明が併存する。加えて基準を超えた合図（重要）が付く形
   '<Item><Area><Name>岩手県</Name><Code>210</Code></Area>',
   '<FirstHeight><ArrivalTime>2026-01-01T12:50:00+09:00</ArrivalTime><Condition>早いところでは既に津波到達と推定</Condition></FirstHeight>',
@@ -3757,7 +3762,7 @@ const VTSE52_XML = [
   '<FirstHeight><Condition>早いところでは既に津波到達と推定</Condition></FirstHeight>',
   '</Item>',
   // 事例２（MaxHeight）: 予想される高さに比べ十分小さく、数値を発表していない
-  '<Item><Area><Name>福島県</Name><Code>230</Code></Area>',
+  '<Item><Area><Name>福島県</Name><Code>250</Code></Area>',
   '<FirstHeight><Condition>早いところでは既に津波到達と推定</Condition></FirstHeight>',
   '<MaxHeight><Condition>推定中</Condition></MaxHeight>',
   '</Item>',
@@ -3915,7 +3920,7 @@ describe('沖合の観測から導いた沿岸への推定（VTSE52）', () => {
   // 対照: 沖合の実測は観測点として読む（推定と混ざらない）
   it('沖合の実測は観測点として読み、推定と混ぜない', () => {
     const t = parseTsunamiFromXml('VTSE52', VTSE52_XML)!
-    expect(t.observations!.map(o => o.name)).toEqual(['岩手中部沖', '宮城沖'])
+    expect(t.observations!.map(o => o.name)).toEqual(['岩手釜石沖', '岩手宮古沖'])
     expect(t.estimations!.map(e => e.name)).toEqual(['岩手県', '宮城県', '福島県'])
   })
 
@@ -4476,13 +4481,13 @@ describe('最大波の Revise', () => {
   // 正: Revise を読む。
   it('Revise を読む', () => {
     const obs = parseTsunamiFromXml('VTSE52', VTSE52_XML)!.observations!
-    expect(obs.find(o => o.name === '宮城沖')!.maxHeightRevise).toBe('更新')
+    expect(obs.find(o => o.name === '岩手宮古沖')!.maxHeightRevise).toBe('更新')
   })
 
   // 対照: Revise を持たない観測点には付けない（空文字を持たせない）。
   it('Revise が無ければ持たせない', () => {
     const obs = parseTsunamiFromXml('VTSE52', VTSE52_XML)!.observations!
-    expect(obs.find(o => o.name === '岩手中部沖')!.maxHeightRevise).toBeUndefined()
+    expect(obs.find(o => o.name === '岩手釜石沖')!.maxHeightRevise).toBeUndefined()
   })
 
   // 安全弁: 「追加」もそのまま読む。意味を持たせるのは述語側の仕事で、
@@ -4490,7 +4495,7 @@ describe('最大波の Revise', () => {
   it('「追加」もそのまま読む', () => {
     const xml = VTSE52_XML.replace('<Revise>更新</Revise>', '<Revise>追加</Revise>')
     const obs = parseTsunamiFromXml('VTSE52', xml)!.observations!
-    expect(obs.find(o => o.name === '宮城沖')!.maxHeightRevise).toBe('追加')
+    expect(obs.find(o => o.name === '岩手宮古沖')!.maxHeightRevise).toBe('追加')
   })
 })
 
@@ -4500,7 +4505,7 @@ describe('これまで読んでいなかった要素', () => {
   // 正: 沖合観測点の特殊観測機器（Ⅱ.13 1-1-2-2）。波浪計と水圧計では測っているものが違う
   it('沖合観測点の Sensor を読む', () => {
     const obs = parseTsunamiFromXml('VTSE52', VTSE52_XML)!.observations!
-    expect(obs.find(o => o.name === '岩手中部沖')!.sensor).toBe('ＧＮＳＳ波浪計')
+    expect(obs.find(o => o.name === '岩手釜石沖')!.sensor).toBe('ＧＮＳＳ波浪計')
   })
 
   // 対照: Sensor を持たない観測点には付けない（沿岸の観測点は持たない）
@@ -4540,7 +4545,7 @@ describe('これまで読んでいなかった要素', () => {
   // 正: 津波の原因地震の詳細震央地名。**地震情報側は読んでいたのに津波側だけ落ちていた**
   it('津波の原因地震は詳細震央地名を優先する', () => {
     const xml = PARITY_TSUNAMI_XML.replace(
-      '<Name>房総半島沖</Name>',
+      '<Name>千葉県南東沖</Name>',
       '<Name>中米</Name><DetailedName>メキシコ、チアパス州沿岸</DetailedName>',
     )
     expect(parseTsunamiFromXml('VTSE51', xml)!.sourceEarthquakes![0].hypocenterName).toBe('メキシコ、チアパス州沿岸')
@@ -4548,14 +4553,14 @@ describe('これまで読んでいなかった要素', () => {
 
   // 対照: 詳細震央地名が無ければ震央地名へ落ちる
   it('詳細震央地名が無ければ震央地名を使う', () => {
-    expect(parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!.sourceEarthquakes![0].hypocenterName).toBe('房総半島沖')
+    expect(parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!.sourceEarthquakes![0].hypocenterName).toBe('千葉県南東沖')
   })
 
   // 正: 震央補助表現と震源決定機関（Ⅱ.13 2-3-1-4 / 2-3-2）
   it('震央補助表現と震源決定機関を読む', () => {
     const xml = PARITY_TSUNAMI_XML.replace('</Area></Hypocenter>', '</Area><Source>ＰＴＷＣ</Source></Hypocenter>')
     const eq = parseTsunamiFromXml('VTSE51', xml)!.sourceEarthquakes![0]
-    expect(eq.nameFromMark).toBe('勝浦の東６０ｋｍ付近')
+    expect(eq.nameFromMark).toBe('館山の東１３０ｋｍ付近')
     expect(eq.source).toBe('ＰＴＷＣ')
   })
 
@@ -4563,10 +4568,10 @@ describe('これまで読んでいなかった要素', () => {
   // `MarkCode` / `Direction` / `Distance` と一組で出る**ので、まとめて外した形で確かめる
   it('震央補助表現・震源決定機関が無ければ持たせない', () => {
     const xml = PARITY_TSUNAMI_XML
-      .replace('<NameFromMark>勝浦の東６０ｋｍ付近</NameFromMark>', '')
-      .replace('<MarkCode type="震央補助">305</MarkCode>', '')
+      .replace('<NameFromMark>館山の東１３０ｋｍ付近</NameFromMark>', '')
+      .replace('<MarkCode type="震央補助">301</MarkCode>', '')
       .replace('<Direction>東</Direction>', '')
-      .replace('<Distance unit="km">60</Distance>', '')
+      .replace('<Distance unit="km">130</Distance>', '')
     const eq = parseTsunamiFromXml('VTSE51', xml)!.sourceEarthquakes![0]
     expect(eq.nameFromMark).toBeUndefined()
     expect(eq.markCode).toBeUndefined()
@@ -5045,4 +5050,82 @@ describe('後発地震注意情報: 発表時刻が読めない電文', () => {
     expect(() => parseVyse60FromXml(xml)).not.toThrow()
     expect(parseVyse60FromXml(xml)).toBeNull()
   })
+})
+
+// 津波フィクスチャの観測点名・区域名が実在すること。
+//
+// かつて VTSE52 のフィクスチャは実在しない観測点（「岩手中部沖」「宮城沖」）と、
+// VTSE52 では出てこない津波予報区（「三陸沖北部」）を使っていた。**架空の名前は
+// 「実在する名前の体系」を調べる人を誤らせる** —— 実際に「読み仮名辞書の列挙元である
+// 気象庁の個別コード表に漏れがあるのでは」という誤った疑いを生み、架空だと判るまで手間が
+// 掛かった。同じ形の検査が `utils/testData.test.ts` にあり、こちらはそれをパーサーの
+// フィクスチャへ広げたもの。
+//
+// 正とするのは個別コード表から作った生成物 2 つ。コード表そのものは取得に通信が要る。
+//
+// **見ていないものが 2 つある。取り違えると「検証済み」と誤解する。**
+//   - **名前とコードの対応**。生成物がコードを持たないため、コードの誤りはここでは捕まらない。
+//     この差分の時点では 4 フィクスチャすべてコードも個別コード表（シート 31・34・35）と
+//     一致させたが、**その照合は機械的に繰り返されない**。
+//   - **震源要素（震央地名・震央補助表現）**。一覧の生成物がリポジトリに無い
+//     （`tts-epicenter-accents.json` は句割りが要る長い名前だけで、全件ではない）。
+//     `PARITY_TSUNAMI_XML` の「千葉県南東沖」（309）と「館山」（301）は個別コード表の
+//     シート 41・44 と手で突き合わせた値だが、**その照合は機械的に繰り返されない**。
+describe('津波フィクスチャの観測点名・区域名が実在すること', () => {
+  // パスはプロジェクトルートからの相対。**`new URL(..., import.meta.url)` は使えない** ——
+  // このファイルは jsdom 環境で動き、そこでの `URL` は Node の `fs` が受け取れない別実装。
+  const readJson = (relPath: string): Record<string, unknown> =>
+    JSON.parse(readFileSync(relPath, 'utf8'))
+  const obsCoordNames = new Set(Object.keys(readJson('public/data/tsunami-obs-coords.json')))
+  const zoneNames = new Set(Object.keys(readJson('public/data/tsunami-zones.json')))
+
+  // 名前が現れる 5 経路。**観測点名と区域名で突き合わせる表が違う。**
+  // `沿岸への推定` の区域は津波予報区ではなく沿岸地域（解説資料 Ⅱ.13 1-2-1）だが、
+  // どちらの名前も tsunami-zones.json に載っている。
+  const STATION_PATHS = ['予想区域の観測点', '観測情報の観測点'] as const
+  const AREA_PATHS = ['予想区域', '観測点が名乗る区域', '沿岸への推定'] as const
+
+  type Tsunami = NonNullable<ReturnType<typeof parseTsunamiFromXml>>
+  // **キーの並びがそのまま下の期待値の並びになる。** 並べ替えたら期待値も直すこと。
+  const namesByPath = (t: Tsunami): Record<string, string[]> => ({
+    予想区域: t.areas.map(a => a.name),
+    予想区域の観測点: t.areas.flatMap(a => (a.stations ?? []).map(st => st.name)),
+    観測情報の観測点: (t.observations ?? []).map(o => o.name),
+    観測点が名乗る区域: (t.observations ?? []).map(o => o.districtName).filter((n): n is string => !!n),
+    沿岸への推定: (t.estimations ?? []).map(e => e.name),
+  })
+
+  // **どの経路が値を持つかまで固定する。** 合算が非空かだけを見ると、抽出を 1 経路
+  // 丸ごと落としても他の経路の名前が残って通ってしまう（実測: `PARITY_TSUNAMI_XML` は
+  // 観測情報と予想区域の両方に「銚子」を置いているため、片方を消しても 5 件全部が
+  // 通ったままだった）。**津波のフィクスチャを足したらここにも追記すること。**
+  const fixtures = [
+    ['PARITY_TSUNAMI_XML', 'VTSE51', PARITY_TSUNAMI_XML,
+      ['予想区域', '予想区域の観測点', '観測情報の観測点', '観測点が名乗る区域']],
+    ['VTSE41_PARTIAL_LIFT_XML', 'VTSE41', VTSE41_PARTIAL_LIFT_XML,
+      ['予想区域']],
+    ['VTSE51_MISSING_XML', 'VTSE51', VTSE51_MISSING_XML,
+      ['観測情報の観測点', '観測点が名乗る区域']],
+    // 沖合の観測点は津波予報区に属さないので（解説資料 Ⅱ.13 1-1-2-1）`観測点が名乗る区域` は空。
+    ['VTSE52_XML', 'VTSE52', VTSE52_XML,
+      ['観測情報の観測点', '沿岸への推定']],
+  ] as const
+
+  it('生成データが読めている（前提の確認）', () => {
+    expect(obsCoordNames.size).toBeGreaterThan(0)
+    expect(zoneNames.size).toBeGreaterThan(0)
+  })
+
+  for (const [label, headType, xml, expectedPaths] of fixtures) {
+    it(`${label} の観測点名と区域名がすべて実在する`, () => {
+      const byPath = namesByPath(parseTsunamiFromXml(headType, xml)!)
+      expect(Object.keys(byPath).filter(path => byPath[path].length > 0)).toEqual(expectedPaths)
+      for (const path of STATION_PATHS) {
+        expect(byPath[path].filter(n => !obsCoordNames.has(n))).toEqual([])
+      }
+      for (const path of AREA_PATHS) {
+        expect(byPath[path].filter(n => !zoneNames.has(n))).toEqual([])
+      }
+    })
+  }
 })
