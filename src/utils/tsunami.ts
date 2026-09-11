@@ -1,4 +1,4 @@
-import type { JMATsunami, TsunamiArea, TsunamiEstimation, TsunamiEstimationCondition, TsunamiGrade, TsunamiObservation, TsunamiObservationCondition } from '../types/earthquake'
+import type { JMATsunami, TsunamiArea, TsunamiEstimation, TsunamiEstimationCondition, TsunamiGrade, TsunamiObservation, TsunamiObservationCondition, TsunamiWarningComment } from '../types/earthquake'
 import { formatTime } from './formatters'
 import { log } from './logger'
 
@@ -145,18 +145,16 @@ export function latestValidDateTime(reports: JMATsunami[]): string | undefined {
 }
 
 /**
- * 最新報が持たない「報ではなく津波に付く事実」を、同一イベントの過去報から引き継ぐ。
+ * 履歴からの復元（初回ロード・リロード）で、同一イベントの過去報を取り込み直す。
  *
- * 履歴からの復元（初回ロード・リロード）は最新の 1 報だけを画面へ載せるため、その報が値を
- * 持たないと画面から落ちる。**続報の上書き（`useEarthquakes`）と同じものをここでも引き継ぐこと**
- * —— 片方だけに足すと、ライブ受信では出るのにリロードすると消える、という形になる。
+ * 復元は最新の 1 報だけを画面へ載せるため、その報が持たない値は画面から落ちる。ここでは
+ * **ライブ受信が続報のたびに行っているのと同じことを、古い報から順にやり直す**
+ * （{@link mergeTsunamiReports} を畳む）。
  *
- * いま引き継ぐのは 2 つ。
- *
- * - **有効期限**（`validDateTime`）—— 気象庁は期限が決まった報で一度だけ載せ、以後の続報には
- *   載せない。落とすと失効の予約が積まれず、期限切れの津波が消えないまま残る（`latestValidDateTime`）
- * - **電文の本文**（`bodyText`）—— 同じく毎報には載らない。実電文では津波予報の VTSE41 の半数に
- *   入るだけで、続報の VTSE51/52 には 1 通も無い。落とすと「いつ来ていつまで続くか」が消える
+ * **引き継ぐ項目の一覧はここに置かない。** 表を 2 箇所に持つと、片方だけに項目が足されて
+ * 「ライブ受信では出るのにリロードすると消える」形の欠落が生まれる —— 実際、かつては両方が
+ * 規則を各自で書いており、説明文で戒めるだけだったため、レビュー 3 巡で別々の項目が 3 回漏れた。
+ * 何をどう引き継ぐかは {@link mergeTsunamiReports} を見ること。
  *
  * 同一イベントの判定は `eventId`、`eventId` を持たない経路（P2PQuake）では `id` の一致で行う。
  * 別の津波の値を引き継ぐと、発表中の津波を無関係な期限で消したり、別の津波の本文を出したりする。
@@ -167,23 +165,78 @@ export function latestValidDateTime(reports: JMATsunami[]): string | undefined {
 export function withInheritedTsunamiFacts(latest: JMATsunami, reports: JMATsunami[]): JMATsunami {
   const sameEvent = reports.filter(r => r !== latest
     && (latest.eventId ? r.eventId === latest.eventId : !r.eventId && r.id === latest.id))
-  // 本文は新しい報のものを優先し、無ければ同一イベントの過去報から最も新しいものを採る。
-  //
   // **発表時刻を読めない報は候補から外す。** 並べ替えの比較が NaN になると順序が定まらず、
   // 「最も新しいもの」を選んだつもりで時刻の読めない報を掴む。期限の側（`latestValidDateTime`）が
   // 新旧を判定できない報を候補から外すのと同じ扱い。
-  const bodyText = latest.bodyText
-    ?? sameEvent
-      .filter(r => r.bodyText && Number.isFinite(new Date(r.time).getTime()))
-      .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())[0]?.bodyText
-  const withBody = bodyText === latest.bodyText ? latest : { ...latest, bodyText }
-  // 自分の期限が日時として読めるならそれを使う（判定は `latestValidDateTime` と同じ 1 箇所に置く）。
-  if (latestValidDateTime([withBody])) return withBody
-  const inherited = latestValidDateTime(sameEvent)
-  if (inherited) return { ...withBody, validDateTime: inherited }
+  const older = sameEvent
+    .filter(r => Number.isFinite(new Date(r.time).getTime()))
+    .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime())
+
+  // **ライブ受信が続報のたびに行っているのと同じことを、古い報から順にやり直す。**
+  // 規則を書き写さずに `mergeTsunamiReports` を畳むので、引き継ぐ項目が増えても
+  // ここを直す必要が無い。
+  //
+  // 取消・解除の報には継がない。値が空なのは**その報の内容**であって、運ばないからではない
+  // （継ぐと解除されたはずの区域が復活する）。
+  let merged = latest
+  if (!latest.cancelled && older.length > 0) {
+    let acc: JMATsunami | undefined
+    for (const r of older) {
+      if (r.cancelled) continue
+      acc = acc ? mergeTsunamiReports(acc, r) : r
+    }
+    if (acc) merged = mergeTsunamiReports(acc, latest)
+  }
+
+  // **期限の引き継ぎ自体は畳み込みの中で済んでいる**（`mergeTsunamiReports` が
+  // `latestValidDateTime([current, next])` を段ごとに計算する）。ここに残すのは最後の検分だけ。
+  //
   // 読めない期限は落とす。残すと「期限を持つ津波」の顔をしたまま以後の比較がすべて偽へ倒れ、
   // 表示は続くのに失効の予約も積まれない。落とせば standard 版の 24 時間フェイルセーフが働く。
-  return withBody.validDateTime ? { ...withBody, validDateTime: undefined } : withBody
+  if (latestValidDateTime([merged])) return merged
+  return merged.validDateTime ? { ...merged, validDateTime: undefined } : merged
+}
+
+/**
+ * 続報 1 通を取り込む。**引き継ぎの規則はここが唯一の置き場所**で、ライブ受信
+ * （`useEarthquakes` の tsunami ケース）も履歴からの復元（{@link withInheritedTsunamiFacts}）も
+ * この関数を通る。
+ *
+ * **規則を 2 箇所に書いてはいけない。** かつては両方が同じ引き継ぎを各自で書いており、
+ * 説明文で「同じものをここでも引き継ぐこと」と戒めるだけだった。結果、項目を足すたびに
+ * 片方へ入れ忘れ、**ライブ受信では出るのにリロードすると消える**という形の欠落が
+ * 繰り返し見つかった（2026-09-11 のレビューで 3 巡にわたり別々の項目が漏れていた）。
+ *
+ * | 項目 | 引き継ぎ方 |
+ * |---|---|
+ * | 区域（`areas`）と区域の潮位観測点 | 顔ぶれと等級は新報が正。観測点だけ種別に応じて継ぐ（{@link mergeTsunamiAreas}）。区域を伝えていない報では前報の区域をそのまま残す |
+ * | 観測点（`observations`） | 観測点ごとに upsert（{@link mergeTsunamiObservations}）。沿岸と沖合は別の集合なので、片方だけの報で上書きしない |
+ * | 固定付加文（`warningComments`） | 主題ごとに束ねる（{@link mergeTsunamiWarningComments}） |
+ * | 有効期限（`validDateTime`） | 発表時刻が新しく、日時として読めるもの（{@link latestValidDateTime}） |
+ * | 本文・観測時点・自由付加文・沿岸への推定 | 新報が持たなければ前報 |
+ * | それ以外 | 新報の値（名乗り `infoName` もここ。その報が何を出しているかの表示なので引き継がない） |
+ *
+ * **新しく引き継ぐ項目を足すときは、この表とここだけを直す。** リプレイの初期状態
+ * （`dmdataReplay.ts`）は最新 1 報へ畳まず全報を順に流す作りなので、触らなくてよい。
+ *
+ * @param current いま表示している津波（＝これまでの報を取り込んだ結果）
+ * @param next 新しく届いた報
+ */
+export function mergeTsunamiReports(current: JMATsunami, next: JMATsunami): JMATsunami {
+  return {
+    ...next,
+    // 区域が空の報（観測のみの続報）は等級を伝えていないので、前報の区域をそのまま残す。
+    areas: next.areas.length > 0
+      ? mergeTsunamiAreas(current.areas, next.areas, next.carriesForecastStations)
+      : current.areas,
+    observations: mergeTsunamiObservations(current.observations, next.observations),
+    warningComments: mergeTsunamiWarningComments(current.warningComments, next.warningComments),
+    validDateTime: latestValidDateTime([current, next]),
+    bodyText: next.bodyText ?? current.bodyText,
+    observationDateTime: next.observationDateTime ?? current.observationDateTime,
+    freeText: next.freeText ?? current.freeText,
+    estimations: next.estimations ?? current.estimations,
+  }
 }
 
 /**
@@ -680,6 +733,95 @@ export function mergeTsunamiObservations(
   for (const o of prev) merged.set(key(o), o)
   for (const o of next) merged.set(key(o), o)
   return Array.from(merged.values())
+}
+
+/**
+ * 続報の区域一覧をマージする。**区域の顔ぶれと等級は新報が正**で、前報から継ぐのは
+ * 区域ごとの潮位観測点（`stations` ＝満潮時刻・津波到達予想時刻）だけ。
+ *
+ * **区域そのものをキー単位で upsert してはいけない。** 実電文では津波警報等（VTSE41）も
+ * 津波情報（VTSE51）も区域一覧を毎回全量で載せており、一部解除は「区域が電文から消える」形で
+ * 届く。upsert すると、その消えた区域が前報から復活して解除済みの等級を出し続ける。
+ *
+ * 一方 `stations` を運ぶのは VTSE51 だけで、VTSE41 は区域一覧だけを持って観測点を載せない。
+ * 新報の区域をそのまま採ると、警報が届いた瞬間に満潮時刻が画面から消える（24 秒後の次の
+ * 満潮情報まで欠ける）。そこで区域コード・区域名で前報を引き当てて継ぐ。
+ *
+ * **継ぐかどうかは電文種別で決める。中身では決められない。** 「新報の区域に観測点が無い」には
+ * 「運ばない種別だから無い」（VTSE41 → 継ぐ）と「運ぶ種別なのに気象庁が出さなくなった」
+ * （VTSE51 → 継がない）の 2 通りがあり、区域や観測点を見ても区別できない。後者は等級が
+ * 津波予報まで下がったときに実際に起きる（実電文で確認）ので、一律に継ぐと解除間際の画面に
+ * 古い到達予想時刻が残る。判定材料は `JMATsunami.carriesForecastStations`。
+ *
+ * @param nextCarriesStations 新報が観測点を運ぶ種別か（`JMATsunami.carriesForecastStations`）。
+ *   種別を判定できない経路（P2PQuake）は undefined で、安全側＝継ぐ。
+ */
+export function mergeTsunamiAreas(
+  prev: TsunamiArea[] | undefined,
+  next: TsunamiArea[],
+  nextCarriesStations: boolean | undefined,
+): TsunamiArea[] {
+  if (nextCarriesStations) return next
+  if (!prev || prev.length === 0) return next
+
+  // `??` ではなく `||` にするのは、空文字のコードで別の区域どうしが同じ鍵へ落ちるのを避けるため。
+  const key = (a: TsunamiArea) => a.code || a.name
+  const prevByKey = new Map<string, TsunamiArea>()
+  for (const a of prev) prevByKey.set(key(a), a)
+
+  return next.map(area => {
+    if (area.stations && area.stations.length > 0) return area
+    const carried = prevByKey.get(key(area))?.stations
+    return carried && carried.length > 0 ? { ...area, stations: carried } : area
+  })
+}
+
+/**
+ * 固定付加文を主題ごとに束ねる。同じ鍵が来たら置き換え、別の鍵なら足す
+ * （`mergeTsunamiObservations` と同じ作り）。
+ *
+ * **1 つの枠を報どうしで奪い合わせてはいけない。** 電文種別ごとに別の話をしているので、
+ * 上書きすると最後に届いた報の注記しか残らない —— 実電文では津波警報の避難呼びかけが
+ * 1 分後の満潮時刻の報で消えていた。鍵の作り方は {@link TsunamiWarningComment.key}。
+ *
+ * 並びは {@link WARNING_COMMENT_ORDER} の主題順。表に無い鍵は末尾へ、初めて現れた順で並ぶ
+ * （気象庁が情報名を増やしても落ちない）。
+ */
+export function mergeTsunamiWarningComments(
+  prev: TsunamiWarningComment[] | undefined,
+  next: TsunamiWarningComment[] | undefined,
+): TsunamiWarningComment[] | undefined {
+  if (!next || next.length === 0) return prev
+  if (!prev || prev.length === 0) return sortWarningComments(next)
+
+  const merged = new Map<string, TsunamiWarningComment>()
+  for (const c of prev) merged.set(c.key, c)
+  for (const c of next) merged.set(c.key, c)
+  return sortWarningComments(Array.from(merged.values()))
+}
+
+/**
+ * 固定付加文の表示順。**鍵そのものは電文から導く**ので、この表に無い鍵が来ても落ちない
+ * （末尾に、初めて現れた順で並ぶ）。
+ *
+ * 等級に対する行動の呼びかけを先頭に置くのは、いちばん重い内容だから。途中から受信を始めた
+ * ときでも（アーカイブ再生・アプリの起動が遅れた場合）順序が変わらないよう、到着順ではなく
+ * この表で決める。
+ */
+export const WARNING_COMMENT_ORDER: readonly string[] = [
+  'VTSE41',
+  'VTSE51|各地の満潮時刻・津波到達予想時刻に関する情報',
+  'VTSE51|津波観測に関する情報',
+  'VTSE52',
+]
+
+function sortWarningComments(comments: TsunamiWarningComment[]): TsunamiWarningComment[] {
+  const rank = (c: TsunamiWarningComment) => {
+    const i = WARNING_COMMENT_ORDER.indexOf(c.key)
+    return i < 0 ? WARNING_COMMENT_ORDER.length : i
+  }
+  // 安定ソートなので、表に無い鍵どうしは元の並び（＝初めて現れた順）を保つ。
+  return [...comments].sort((a, b) => rank(a) - rank(b))
 }
 
 // ============================================================

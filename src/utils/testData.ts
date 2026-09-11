@@ -873,7 +873,14 @@ export function createTestTsunamiForecast(withDmdssFields: boolean): JMATsunami 
  * **DMDATA 経路のみ。** `lastGrade` は P2PQuake が配信しないので、standard 版で押しても
  * 印は出ない（ボタン自体を DMDSS 版に限っている）。
  *
- * @param base 続報の元になる発表報（`eventId` と観測点を引き継ぐ）
+ * **この報は津波警報等（VTSE41）の形にする。** 区域単位の等級変化を運ぶのはこの種別で、
+ * 実電文では**潮位観測点（満潮時刻・到達予想時刻）を 1 件も載せず**、固定付加文も等級の
+ * 呼びかけ 1 件だけを持つ。前の報の形をそのまま流用すると、続報のマージ
+ * （`mergeTsunamiAreas` / `mergeTsunamiWarningComments`）が一度も通らず、**引き継ぎが効いて
+ * いるかを実機で確かめられない** ―― 満潮時刻が残るか・避難の呼びかけが満潮の注記に
+ * 差し替わらないかは、この形の続報を流して初めて画面に出る。
+ *
+ * @param base 続報の元になる発表報（`eventId` を引き継ぐ。観測点と満潮時刻はマージが継ぐ）
  */
 export function createTestTsunamiGradeChange(base: JMATsunami): JMATsunami {
   const now = new Date(serverNow()).toISOString()
@@ -892,11 +899,21 @@ export function createTestTsunamiGradeChange(base: JMATsunami): JMATsunami {
     id: `${base.id}-2`,
     time: now,
     issue: { ...base.issue, time: now },
+    // 津波警報等は潮位観測点を運ばない種別。続報のマージが前報から継ぐ
+    carriesForecastStations: false,
+    // 観測・沖合の情報もこの種別には入らない。前報から継がれることを画面で確かめる
+    observations: undefined,
+    observationDateTime: undefined,
+    estimations: undefined,
+    // 固定付加文は等級の呼びかけだけ。満潮・観測・沖合の注記は前報のものが残る
+    warningComments: [{ key: 'VTSE41', text: '津波警報が発表されている沿岸では、警報が解除されるまで安全な場所から離れないでください。' }],
     areas: base.areas.map(a => {
       const n = next[a.name]
-      if (!n) return a
+      // 等級が動かない区域も、この種別では観測点を持たない（マージが前報から継ぐ）
+      const withoutStations = { ...a, stations: undefined }
+      if (!n) return withoutStations
       return {
-        ...a,
+        ...withoutStations,
         grade: n.grade,
         lastGrade: a.grade,
         // 「ただちに来襲」は大津波警報・津波警報の区域に付く印。降格したら落とす
@@ -998,10 +1015,22 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
     // `maxHeight` に限られる。**観測点も沖合推定も原因地震も本文も付加文も配信されない。**
     // standard 版で押したときにそれらが画面へ出ると、実機では決して起きない絵になる。
     ...(withDmdssFields ? {
-    warningComment: 'ただちに高台へ避難してください。\n津波は繰り返し襲ってきます。警報が解除されるまで安全な場所から離れないでください。',
+    // 固定付加文。**種別ごとに別の話をするので 4 件そろう** —— このカードは等級の発表
+    // （VTSE41）・満潮時刻（VTSE51）・沿岸の観測（VTSE51）・沖合の観測（VTSE52）をマージした
+    // 後の状態なので、実運用でもこの 4 つが並ぶ。1 件だけ入れると、主題ごとに束ねる仕組みが
+    // 効いているかを実機で確かめられない。鍵の作り方は `TsunamiWarningComment.key`。
+    //
+    // 下の 3 件は実電文の原文（2026-04-20 三陸沖の連続報）。等級の呼びかけだけは、このカードの
+    // 最大等級（大津波警報）に対応する原文を手元の実電文から採れないため従来の文面を残してある。
+    warningComments: [
+      { key: 'VTSE41', text: 'ただちに高台へ避難してください。\n津波は繰り返し襲ってきます。警報が解除されるまで安全な場所から離れないでください。' },
+      { key: 'VTSE51|各地の満潮時刻・津波到達予想時刻に関する情報', text: '津波と満潮が重なると、津波はより高くなりますので一層厳重な警戒が必要です。' },
+      { key: 'VTSE51|津波観測に関する情報', text: '津波による潮位変化が観測されてから最大波が観測されるまでに数時間以上かかることがあります。\n　\n場所によっては、観測した津波の高さよりさらに大きな津波が到達しているおそれがあります。\n　\n今後、津波の高さは更に高くなることも考えられます。' },
+      { key: 'VTSE52', text: '沖合での観測値であり、沿岸では津波はさらに高くなります。' },
+    ],
     // 電文の本文（`Body/Text` 相当）。等級の定型文とも自由付加文とも別で、同じ電文に 3 つとも入る。
     bodyText: '津波の第一波は、早い沿岸で０８日０３時３５分頃に到達すると予想されます。\n　これらの沿岸では今後１日程度は津波が継続する可能性が高いと考えられます。',
-    // 自由付加文。等級ごとの定型文（上の `warningComment`）と違い、電文ごとに書き起こされる。
+    // 自由付加文。種別ごとの定型文（上の `warningComments`）と違い、電文ごとに書き起こされる。
     // 実電文と同じく見出しの角括弧と全角スペースの整形を含める（画面が改行と空白を保つことの確認）。
     freeText: '［予想される津波の高さの解説］\n予想される津波が高いほど、より甚大な被害が生じます。\n　１０ｍ超　　木造家屋が全壊・流失し、人は津波による流れに巻き込まれます。\n　　１ｍ　　　海の中では人は流されます。',
     // M8 を超える地震では規模を速報できないため、気象庁は「Ｍ８を超える巨大地震」と書き、

@@ -9,7 +9,7 @@ import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex, getAreaPr
 import type { AreaPrefIndex } from '../utils/quakePoints'
 import { calcEEWCancelTime, eewSerial, eewEventKey } from '../utils/eew'
 import { decideEstimatedIntensityUpdate } from '../utils/estimatedIntensity'
-import { mergeTsunamiObservations, isCancelForCurrentTsunami, isTsunamiContinuation, withInheritedTsunamiFacts, latestValidDateTime } from '../utils/tsunami'
+import { mergeTsunamiReports, isCancelForCurrentTsunami, isTsunamiContinuation, withInheritedTsunamiFacts } from '../utils/tsunami'
 import { log } from '../utils/logger'
 import { serverNow, serverDate } from '../utils/clock'
 
@@ -1148,33 +1148,11 @@ export function useEarthquakes(
           // `tsunamiCardOrderBasis` と同じ述語を使うため。宣言箇所に理由）。
           const sameEvent = isTsunamiContinuation(current, tsunami)
           if (sameEvent) {
-            const areas = tsunami.areas.length > 0 ? tsunami.areas : current.areas
-            const observations = mergeTsunamiObservations(current.observations, tsunami.observations)
-            // 有効期限は報ではなく津波に付く事実なので、期限を持たない続報では前報の値を残す
-            // （気象庁は期限が決まった報で一度だけ伝える。詳細は utils/tsunami の
-            // `latestValidDateTime`）。期限を持つ報が来たらそちらへ従う（延長・短縮）。
-            //
-            // `??` で書かずにその関数へ通すのは、**日時として読めない値を弾く箇所を 1 つに保つため**。
-            // 読めない期限をカードへ入れると、以後の続報でも引き継がれ続け、比較はすべて偽に倒れる。
-            const validDateTime = latestValidDateTime([current, tsunami])
-            // 電文の本文（`Body/Text`）も引き継ぐ。**気象庁は毎報には載せない** —— 実電文を
-            // 数えると津波予報の VTSE41 の半数に入るだけで、続報の VTSE51/52 には 1 通も無い。
-            // 引き継がないと、津波予報で「いつ来ていつまで続くか」を伝えた文が、最初の観測情報が
-            // 届いた瞬間に画面から消える（この等級では区域に波高も到達時刻も付かないので、
-            // その文にしか無い）。地震情報側が自由付加文を `??` で引き継ぐのと同じ扱い
-            // （`utils/quakeMerge.ts`）。新しい報が本文を持てばそちらへ従う。
-            const bodyText = tsunami.bodyText ?? current.bodyText
-            // 観測状況を確定した時刻も引き継ぐ。**入るのは観測情報（VTSE51/52）だけ**なので、
-            // **引き継がないと**、間に等級の発表（VTSE41）が挟まった瞬間に消える。観測点そのものは
-            // `mergeTsunamiObservations` で残るため、時点だけ落とすと観測欄の「◯時◯分時点」が
-            // 出たり消えたりする。
-            //
-            // **引き継いだ結果、名乗り（`infoName`）と観測時点の出所が別の報になることがある。**
-            // `infoName` は `...tsunami` から来る（最新の報の値）が、観測時点は前報から残るため。
-            // 等級の発表が最後に来れば「大津波警報・津波警報・津波注意報」と名乗る報が、
-            // 前の観測情報の時点を持つ —— これは正常な状態。
-            const observationDateTime = tsunami.observationDateTime ?? current.observationDateTime
-            return { ...prev, tsunamis: [{ ...tsunami, areas, observations, validDateTime, bodyText, observationDateTime }], lastUpdate: now }
+            // **引き継ぎの規則は `mergeTsunamiReports` の 1 箇所に置く。** ここへ書き写すと、
+            // 履歴からの復元（`withInheritedTsunamiFacts`）との間で片方だけに項目が足され、
+            // 「ライブ受信では出るのにリロードすると消える」形の欠落が生まれる（実際に
+            // 繰り返し起きた）。何をどう引き継ぐかはあちらの表を見ること。
+            return { ...prev, tsunamis: [mergeTsunamiReports(current, tsunami)], lastUpdate: now }
           }
           // TSU-3: 別 eventId の tsunami で既存を上書きするケースを検知したら警告する。
           // 実装は 1 件スロットのまま（複数同時発表は稀なため型変更はスコープ外）だが、
