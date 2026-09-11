@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { convertEvent } from './p2pquake'
 import type { EEWAlert, JMAQuake, JMATsunami } from '../types/earthquake'
 import { log } from '../utils/logger'
+import { isEewAreaArrived } from '../utils/eew'
 
 // 正常系のフィクスチャは 2026-08-16 に api.p2pquake.net/v2/history から取得した実レスポンス
 // （points は 1 件に間引き）。値域の根拠は公式 OpenAPI 仕様:
@@ -152,6 +153,31 @@ describe('convertEvent', () => {
     it('hypocenter.reduceName は内部型に無いので落とす', () => {
       const e = convert(REAL_EEW) as EEWAlert
       expect((e.earthquake.hypocenter as unknown as Record<string, unknown>).reduceName).toBeUndefined()
+    })
+
+    // 主要動が既に到達したかの判定は、この経路では**種別コードだけが頼り**。
+    // 気象庁は同じ事実を区域の `Condition`（「既に主要動到達と推測」）でも伝えるが、
+    // P2PQuake はそれを配信しないので `arrived` は付かない（→ `EEWRegion.arrived`）。
+    //
+    // **`isEewAreaArrived` を通せば揃う。** ここが崩れると、standard 版でだけ到達済みの区域が
+    // 「時刻も印も持たない区域」に落ちて画面から黙って消える。
+    it('到達済みの区域は、Condition が無くても種別コードから判定できる', () => {
+      const raw = {
+        ...REAL_EEW,
+        areas: [
+          // 01 ＝予報・既に到達と推定。到達予測時刻とは排他なので時刻は持たない。
+          { ...REAL_EEW.areas[0], kindCode: '01', arrivalTime: null },
+          // 19 ＝警報・PLUM 法。時刻は持つが到達の予測ではない（到達済みにもしない）。
+          { ...REAL_EEW.areas[1] },
+        ],
+      }
+      const areas = (convert(raw) as EEWAlert).areas!
+      // 電文の `Condition` を配信しない経路なので、読み取り後も印は付かない。
+      expect(areas[0].arrived).toBeUndefined()
+      expect(areas[1].arrived).toBeUndefined()
+      // それでも判定は揃う。
+      expect(isEewAreaArrived(areas[0])).toBe(true)
+      expect(isEewAreaArrived(areas[1])).toBe(false)
     })
   })
 

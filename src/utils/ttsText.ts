@@ -1,6 +1,6 @@
-import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMALpgm, IntensityScale, TsunamiGrade, TsunamiArea, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
+import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAEarthquakeCount, JMALpgm, IntensityScale, TsunamiGrade, TsunamiArea, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
 import { eewNoForecastReason, canPresentLpgmClass, type EewMaxScaleInfo } from './eew'
-import { getIntensityLabel, getIntensityLabelWithOrAbove } from './intensity'
+import { getIntensityLabel, getIntensityLabelWithApproxAbove } from './intensity'
 import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight, TSUNAMI_GRADE_SHORT_LABEL, type TsunamiAreaGradeChange } from './tsunami'
 import { joinSegments, plain, type SpeechSegment, type SpeechRef, type QuakeFact } from './ttsFollow'
 import { getSubRegionsCache } from './subregions'
@@ -9,6 +9,7 @@ import { getStationCoordsCache, getAreaPrefIndexCache, buildStationPrefIndex, bu
 import { isAreaPoint, isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel } from './quakePoints'
 import { hasMagnitude, hasDepth } from './formatters'
 import { createLogThrottle, log } from './logger'
+import { hasKnownEpicenter } from './geo'
 
 const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch', 'Forecast']
 
@@ -270,7 +271,7 @@ function selectRegionNames(
   // 持たない電文で入る。p2pquake.ts / dmdataParser.ts 参照）。どちらも距離の基準にはできない。
   // -200 を弾かないと、地球上に存在しない点からの距離で地域を選ぶことになる。
   const hasEpicenter = hypocenter != null
-    && hypocenter.latitude > -200 && hypocenter.longitude > -200
+    && hasKnownEpicenter(hypocenter.latitude, hypocenter.longitude)
     && (hypocenter.latitude !== 0 || hypocenter.longitude !== 0)
   let picked = hasEpicenter
     ? [...names].sort((a, b) => {
@@ -561,6 +562,51 @@ function magnitudePhrase(mag: number): string {
 }
 
 /**
+ * 規模が数値にならないときの説明（`jmx_eb:Magnitude@description`）を読む文。
+ *
+ * **「Ｍ不明」と「Ｍ８を超える巨大地震」は別物**で、後者は M8 を超えて速報できないことを表す
+ * （電文解説資料 Ⅱ.32/33/36）。数値が無いことだけを見て黙ると、最大級の地震ほど音声から
+ * 規模が消える。
+ *
+ * **別の文にする。** 「マグニチュード〜の地震が発生しました」の句へ差し込むと
+ * 「8を超える巨大地震の地震が発生しました」と重なる。
+ */
+const MAGNITUDE_CONDITION_SENTENCE: Record<string, string> = {
+  'Ｍ不明': 'マグニチュードは不明です。',
+  'Ｍ８を超える巨大地震': 'マグニチュードは8を超える巨大地震とみられます。',
+}
+
+/** 未知の説明を記録した値。同じ地震の続報で何度も来るので 1 度だけ出す。 */
+const reportedUnknownMagnitudeConditions = new Set<string>()
+
+function magnitudeConditionSentence(hypocenter: Hypocenter): string {
+  const desc = hypocenter.magnitudeCondition
+  if (!desc || hasMagnitude(hypocenter.magnitude)) return ''
+  const known = MAGNITUDE_CONDITION_SENTENCE[desc]
+  if (known) return known
+  // 気象庁が語を増やしたときに黙らない。全角の「Ｍ」と全角数字だけを直して読む
+  // （見出しの「マグニチュードは」と重ならないよう先頭の「Ｍ」は落とす）。
+  if (!reportedUnknownMagnitudeConditions.has(desc)) {
+    reportedUnknownMagnitudeConditions.add(desc)
+    log.warn(`[tts] 規模の説明に未知の表記があります（そのまま読みます）: ${desc}`)
+  }
+  const body = desc.replace(/^[ＭM]/, '').replace(/[０-９．]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+  return `マグニチュードは${body}です。`
+}
+
+/**
+ * 既読の記録に載せる規模の値。
+ *
+ * **数値と説明を同じ鍵で持つ。** 別々にすると、「Ｍ不明」→「Ｍ８を超える巨大地震」→ 実測値、と
+ * 段階的に確定していく続報で、変わったことを検出できない箇所が出る。
+ */
+function magnitudeFactValue(hypocenter: Hypocenter): string {
+  return hasMagnitude(hypocenter.magnitude)
+    ? magnitudeText(hypocenter.magnitude)
+    : (hypocenter.magnitudeCondition ?? '')
+}
+
+/**
  * 「〇〇を震源とする」の深さ部分を返す（Destination/ScaleAndDestination 系）。
  * 表示側 formatDepth と判定を揃える（負値 = 不明 / 0 = ごく浅い）。負値では空文字を返す。
  * 深さ不明の電文は遠地地震で頻出し（`depth: {value: null, condition: "不明"}`）、
@@ -634,9 +680,12 @@ function formatDayTime(isoTime: string): string {
 /** VXSE43/45 EEW キャンセル（誤報取消）の読み上げテキストを生成する。 */
 export function eewCancelToText(event: EEWAlert): string {
   const time = event.issue?.time ? formatTime(event.issue.time) : null
-  return time
+  const head = time
     ? `${time}に発表された緊急地震速報はキャンセルされました。`
     : '緊急地震速報はキャンセルされました。'
+  // 地震情報・津波情報と同じ扱い（→ `cancelReasonSentence`）。3 つの電文で揃えないと、
+  // 同じ事象なのに種別によって理由が出たり出なかったりする
+  return head + cancelReasonSentence(event.cancelText)
 }
 
 /**
@@ -644,11 +693,49 @@ export function eewCancelToText(event: EEWAlert): string {
  * time は取消電文自体の発表時刻ではなく、同一 eventId で最後に受信した地震情報の発表時刻を渡すこと
  * （呼び出し側 useLiveEventHandler.ts で解決する）。
  */
-export function earthquakeCancelToText(time: string | null): string {
+export function earthquakeCancelToText(time: string | null, cancelText?: string): string {
   const formatted = time ? formatTime(time) : null
-  if (formatted) return `${formatted}に発表された地震情報はキャンセルされました。`
-  return '地震情報はキャンセルされました。'
+  const head = formatted
+    ? `${formatted}に発表された地震情報はキャンセルされました。`
+    : '地震情報はキャンセルされました。'
+  return head + cancelReasonSentence(cancelText)
 }
+
+/**
+ * 取消しの概要（電文の `Body/Text`）を読み上げへ足す句。無ければ空。
+ *
+ * **気象庁が書いた理由をそのまま読む。** アプリの定型文（「キャンセルされました」）は何が
+ * 起きたかしか言っておらず、なぜ取り消したのかは電文のこの本文にしか無い。
+ *
+ * **長い本文は読まない。** 取消しの概要は 1〜2 文が通例だが、他の自由文と同じく長文が入りうる。
+ * 読み上げが伸びると後続の電文が待ちの上限に達して割り込むため、上限を超えたら画面に委ねる。
+ *
+ * @param staysOnScreen 省いた本文が画面に残るか。地震・津波・EEW は取消のあともカードが残って
+ *   全文を出すので既定は `true`。**地震回数だけは取消で帯ごと消える**ので `false` を渡す ——
+ *   記録が「画面には全文が出ます」と言い続けると、読み上げも表示も失われた事実が残らない。
+ */
+function cancelReasonSentence(cancelText: string | undefined, staysOnScreen = true): string {
+  const text = cancelText?.replace(/\s+/g, ' ').trim()
+  if (!text) return ''
+  if (text.length > CANCEL_REASON_SPEAK_MAX_CHARS) {
+    // **捨てたことを残す。** 気象庁が書いた理由を丸ごと落とすので、痕跡が無いと
+    // 「今日は長文だったから読まなかった」を後から確かめられない。
+    const where = staysOnScreen ? '画面には全文が出ます' : '画面にも残りません'
+    log.info(`[tts] 取消しの概要が長いため読み上げを省きました（${text.length}文字。${where}）`)
+    return ''
+  }
+  // 電文の本文は句点で終わることが多いが、終わっていなければ足す（次の文と繋がって聞こえないため）
+  return /[。．]$/.test(text) ? text : `${text}。`
+}
+
+/**
+ * 取消しの概要を読み上げる上限（文字数）。
+ *
+ * 実電文の取消しの概要は 1〜2 文（例「先ほどの地震情報は誤りでしたので取り消します。」）。
+ * 超える本文は画面に委ねる —— 読み上げが伸びると、後続の電文が待ちの上限
+ * （`HIGHER_PRIORITY_SPEECH_MAX_WAIT_MS`）に達して割り込む。
+ */
+export const CANCEL_REASON_SPEAK_MAX_CHARS = 120
 
 /**
  * EEW 第1フェーズ（新規発報の即時、または続報での震源更新時）の読み上げテキストを生成する。
@@ -724,7 +811,7 @@ function noForecastText(event: EEWAlert): string {
  */
 export function eewScaleOnlyText(scaleInfo: EewMaxScaleInfo, event: EEWAlert): string {
   if (scaleInfo.scale > 0) {
-    return `予想最大震度${getIntensityLabelWithOrAbove(scaleInfo.scale, scaleInfo.orAbove)}。`
+    return `予想最大震度${getIntensityLabelWithApproxAbove(scaleInfo.scale, scaleInfo.orAbove)}。`
   }
   return noForecastText(event)
 }
@@ -734,9 +821,11 @@ export function eewScaleOnlyText(scaleInfo: EewMaxScaleInfo, event: EEWAlert): s
  * （句ごと省く。音声には地図の色フォールバックのような逃げ場が無く、不正値がそのまま
  * 声に出るのを避けるため）。
  */
-export function eewLpgmOnlyText(lpgmClass: number): string {
-  return lpgmClass > 0 ? `予想最大階級${lpgmClass}。` : ''
+export function eewLpgmOnlyText(lpgmClass: number, over = false): string {
+  // 「程度以上」は気象庁の表現（→ `getLpgmClassLabelWithApproxAbove` のコメント）。
+  return lpgmClass > 0 ? `予想最大階級${lpgmClass}${over ? '程度以上' : ''}。` : ''
 }
+
 
 /**
  * EEW 第2フェーズ（予想値）の読み上げテキストを、震度・階級それぞれの部分から組み立てる。
@@ -771,6 +860,11 @@ export function eewLpgmOnlyText(lpgmClass: number): string {
  */
 export function eewIntensityText(
   scaleInfo: EewMaxScaleInfo, lpgmClass: number, event: EEWAlert, announceUpgrade = false,
+  /**
+   * 階級が「程度以上」だったか。**`event` から引き直さない** —— 渡される `lpgmClass` は
+   * 安定待ちを経た確定値で、現在の報の値と食い違いうる。引き直すと別の値に語を貼り付ける。
+   */
+  lpgmOver = false,
 ): string {
   const prefix = announceUpgrade ? '緊急地震速報に切り替わりました。' : ''
   // 上限が定まらない報（仮定震源要素の初報など）は「震度4以上」と読む。値だけ読むと
@@ -779,7 +873,9 @@ export function eewIntensityText(
   // **震度を伝えられないときは階級も読まない**（判定は `canPresentLpgmClass`。カード表示・
   // 第 2 フェーズの言い直しと同じ述語を共有する。理由はそちらのコメント）。
   const scaleText = eewScaleOnlyText(scaleInfo, event)
-  const lpgmText = canPresentLpgmClass(scaleInfo.scale, lpgmClass) ? eewLpgmOnlyText(lpgmClass) : ''
+  const lpgmText = canPresentLpgmClass(scaleInfo.scale, lpgmClass)
+    ? eewLpgmOnlyText(lpgmClass, lpgmOver)
+    : ''
   return prefix + scaleText + lpgmText
 }
 
@@ -815,10 +911,16 @@ function quakeOccurrenceSegments(hypocenter: Hypocenter): SpeechSegment[] {
     }
     segments.push(plain('を震源とする'))
   }
-  if (tellable.has('magnitude')) {
-    segments.push({ text: magnitudePhrase(hypocenter.magnitude), refs: [{ kind: 'quakeFact', fact: 'magnitude', value: magnitudeText(hypocenter.magnitude) }] })
+  const magRef: SpeechRef[] = [{ kind: 'quakeFact', fact: 'magnitude', value: magnitudeFactValue(hypocenter) }]
+  const numeric = magnitudePhrase(hypocenter.magnitude)
+  if (tellable.has('magnitude') && numeric) {
+    segments.push({ text: numeric, refs: magRef })
   }
   segments.push(plain('地震が発生しました。'))
+  // 数値にならない規模は、句へ差し込まず別の文で伝える（→ magnitudeConditionSentence）。
+  if (tellable.has('magnitude') && !numeric) {
+    segments.push({ text: magnitudeConditionSentence(hypocenter), refs: magRef })
+  }
   return segments
 }
 
@@ -855,7 +957,8 @@ function tellableHypocenterFacts(hypocenter: Hypocenter): Set<QuakeFact> {
     facts.add('hypocenterName')
     if (depthSourcePhrase(hypocenter.depth)) facts.add('depth')
   }
-  if (magnitudePhrase(hypocenter.magnitude)) facts.add('magnitude')
+  // 数値が読めなくても、気象庁が説明を添えていれば規模は語れる（「Ｍ８を超える巨大地震」）。
+  if (magnitudePhrase(hypocenter.magnitude) || magnitudeConditionSentence(hypocenter)) facts.add('magnitude')
   return facts
 }
 
@@ -911,9 +1014,14 @@ function changedFactSegments(event: JMAQuake, spoken: QuakeSpokenState): SpeechS
   if (changed('hypocenterName', hypocenter.name)) {
     segments.push({ text: `震源は${hypocenter.name}に更新されました。`, refs: [{ kind: 'quakeFact', fact: 'hypocenterName', value: hypocenter.name }] })
   }
-  if (changed('magnitude', magnitudeText(hypocenter.magnitude))) {
-    const value = magnitudeText(hypocenter.magnitude)
-    segments.push({ text: `マグニチュードは${value}に更新されました。`, refs: [{ kind: 'quakeFact', fact: 'magnitude', value }] })
+  if (changed('magnitude', magnitudeFactValue(hypocenter))) {
+    const value = magnitudeFactValue(hypocenter)
+    // 数値にならない規模は「〜に更新されました」の形へ入れられない（「8を超える巨大地震に
+    // 更新されました」）。そのときは初報と同じ文で言い直す。
+    const text = hasMagnitude(hypocenter.magnitude)
+      ? `マグニチュードは${magnitudeText(hypocenter.magnitude)}に更新されました。`
+      : magnitudeConditionSentence(hypocenter)
+    segments.push({ text, refs: [{ kind: 'quakeFact', fact: 'magnitude', value }] })
   }
   if (changed('depth', String(hypocenter.depth))) {
     segments.push({ text: `震源の深さは${depthUpdateValue(hypocenter.depth)}に更新されました。`, refs: [{ kind: 'quakeFact', fact: 'depth', value: String(hypocenter.depth) }] })
@@ -994,10 +1102,15 @@ export function earthquakeToSegments(
       amended.push({ text: `マグニチュード${value}`, refs: [{ kind: 'quakeFact', fact: 'magnitude', value }] })
     }
     const head = plain(`顕著な地震の震源要素更新のお知らせ。${time}頃発生した${hypocenter.name}の地震について、`)
+    // 数値にならない規模は「〜に更新されました」の並びへ入れられないので、別の文で後に足す。
+    const magCondition = magnitudeConditionSentence(hypocenter)
+    const conditionSegments: SpeechSegment[] = magCondition
+      ? [{ text: magCondition, refs: [{ kind: 'quakeFact', fact: 'magnitude', value: magnitudeFactValue(hypocenter) }] }]
+      : []
     // 深さ・規模とも不明なら要素を並べられないため、更新があった事実だけを伝える。
     return amended.length > 0
-      ? [head, ...amended, plain('に更新されました。')]
-      : [head, plain('震源要素が更新されました。')]
+      ? [head, ...amended, plain('に更新されました。'), ...conditionSegments]
+      : [head, plain('震源要素が更新されました。'), ...conditionSegments]
   }
 
   if (type === '遠地地震') {
@@ -1414,10 +1527,14 @@ export function tsunamiAreaGradeChangeToText(changes: readonly TsunamiAreaGradeC
 }
 
 /** VTSE41/51/52 津波警報等 全解除の読み上げテキストを cancelReason ごとに生成する。 */
-export function tsunamiCancelToText(cancelReason: JMATsunami['cancelReason']): string {
-  if (cancelReason === 'retracted') return '津波警報等は誤って発表されたため取り消されました。'
-  if (cancelReason === 'expired') return '津波予報の有効期間が終了しました。'
-  return '津波警報等は全て解除されました。'
+export function tsunamiCancelToText(cancelReason: JMATsunami['cancelReason'], cancelText?: string): string {
+  const head = cancelReason === 'retracted'
+    ? '津波警報等は誤って発表されたため取り消されました。'
+    : cancelReason === 'expired'
+      ? '津波予報の有効期間が終了しました。'
+      : '津波警報等は全て解除されました。'
+  // 取消しの概要は取消電文にしか入らない。解除・失効では電文に無いので空のまま
+  return head + cancelReasonSentence(cancelText)
 }
 
 /** 観測点を districtName（津波予報区）ごとにまとめる。区域名を持たない観測は単独の項目にする。 */
@@ -1728,6 +1845,60 @@ export function tsunamiMissingToText(obs: TsunamiObservation[], maxPoints = MISS
   return joinSegments(tsunamiMissingToSegments(obs, maxPoints))
 }
 
+/**
+ * 「観測中」のまま津波警報に相当する津波を観測している観測点を読む上限。
+ *
+ * 沖合の観測点は数が限られるうえ、この状態になるのは大津波警報の発表中だけ。欠測と同じ
+ * 件数に揃えてある（読み上げが長くなりすぎない範囲で、落ちた分は件数で伝える）。
+ */
+export const WARNING_LEVEL_SPEAK_MAX_POINTS = 5
+
+/**
+ * 読み上げる観測点の絞り込み。
+ *
+ * **既読の記録と文の生成で同じものを通すこと。** 別々に切ると、上限で読まなかった観測点まで
+ * 既読になり、次の報でも読まれない（到達確認・欠測でも同じ規則）。
+ */
+export function selectWarningLevelToSpeak(
+  obs: readonly TsunamiObservation[],
+  maxPoints = WARNING_LEVEL_SPEAK_MAX_POINTS,
+): TsunamiObservation[] {
+  return obs.slice(0, maxPoints)
+}
+
+/**
+ * 「観測中」のまま津波警報に相当する津波を観測している観測点の読み上げ。
+ *
+ * 気象庁が `Revise` に置いた信号（→ `tsunami.ts` の `isWarningLevelWhileObserving`）を伝える。
+ * **波高の数値が無いため、他のどの文にも乗らない** —— 波高更新の文は数値を読み、到達確認の文は
+ * 「到達を確認しました」で到達だけを述べる。この状態を黙って落とすと、資料が「注意する必要が
+ * ある」と名指しした事実が音声から消える。
+ *
+ * **高さは言わない。** 電文が数値を出していないので、アプリが「1m 超」などと補ってはいけない。
+ * 伝えるのは気象庁が言ったことだけ ―― 警報に相当する津波を観測している、という事実。
+ *
+ * **読む順は渡された並びのまま**（呼び出し側がカードの並びで渡す。欠測・到達確認と同じ）。
+ */
+export function tsunamiWarningLevelToSegments(
+  obs: TsunamiObservation[],
+  maxPoints = WARNING_LEVEL_SPEAK_MAX_POINTS,
+): SpeechSegment[] {
+  if (obs.length === 0) return []
+  const shown = selectWarningLevelToSpeak(obs, maxPoints)
+  return [
+    ...observationDetailSegments(shown, () => ''),
+    plain('では、津波警報に相当する津波を観測しています。'),
+    ...omittedPointsSentence(obs.length, shown.length, '津波警報に相当する津波を観測しています', 'も'),
+  ]
+}
+
+export function tsunamiWarningLevelToText(
+  obs: TsunamiObservation[],
+  maxPoints = WARNING_LEVEL_SPEAK_MAX_POINTS,
+): string {
+  return joinSegments(tsunamiWarningLevelToSegments(obs, maxPoints))
+}
+
 /** 南海トラフ地震臨時情報（VYSE50/51/52）の読み上げテキストを生成する。 */
 export function nankaiToText(event: JMANankai): string {
   // **取消と調査終了を混ぜない。** 取消は「その電文を撤回する」だけで、地震の発生可能性に
@@ -1766,6 +1937,61 @@ export function nankaiCommentaryToText(event: JMANankaiCommentary): string {
   // 臨時解説の情報名には「（第１号）」のように号数が入る。読み手が経過を追えるので拾う
   const serial = event.headline.match(/（第(.+?)号）/)?.[1]
   return `南海トラフ地震関連解説情報${serial ? `、第${serial}号` : ''}。南海トラフ地震の想定震源域の状況について解説情報が発表されました。`
+}
+
+/**
+ * 地震回数に関する情報（VXSE60）の読み上げテキストを生成する。
+ *
+ * **読むのは総数と有感の数だけ。** 区間は 1 時間ごとに何本も並ぶので、全部読むと数字の羅列に
+ * なって総数が耳に残らない。経過の細かさは画面のカードに委ねる。
+ *
+ * **場所は言わない。** 電文が場所を構造化して持つのは震源要素のある種別だけで、この電文では
+ * 自由文（`freeText`）の中にしか出てこない。文から地名を抜くと、書き方が変わったときに
+ * 別の語を場所として読み上げる。
+ *
+ * **累積の区間を選ぶ。** 電文は「区間ごとの回数」と「初めからの累計」を同じ `Item` の並びで
+ * 送ってくるので、末尾を無条件に採ると 1 時間ぶんの数字を総数として読みかねない。判定は
+ * `type` の語で行い、見つからなければ**読み上げない**（部分の数字を全体として言わない）。
+ *
+ * @returns 読み上げ文。累積の区間が無ければ空文字（呼び出し側はタブ移動へ落とす）
+ */
+export function earthquakeCountToText(event: JMAEarthquakeCount): string {
+  if (event.cancelled) {
+    // 理由（電文の `Body/Text`）も読む。**地震・津波・EEW の取消と揃える** —— 片方だけ拾うと、
+    // 同じ「取り消した」でも種別によって理由が出たり出なかったりする。**この種別はカードが
+    // 消えるので、理由が届く先は読み上げだけ**（他の 3 種別は取消後もカードが残って全文を出す）。
+    // **`staysOnScreen: false`。** この種別は取消で帯ごと消えるので、長すぎて省いた理由は
+    // 読み上げにも画面にも残らない。他の 3 種別（カードが残る）と同じ記録にしない。
+    return '地震回数に関する情報は取り消されました。' + cancelReasonSentence(event.cancelText, false)
+  }
+  const total = event.items.find(it => it.type.includes('累積'))
+  if (!total) {
+    // **黙って読まないと、この電文が届いたことがどこにも残らない。** 「累積」を含む区間が
+    // 必ず 1 つあるという前提は公式サンプルから採ったもので、実配信では確かめられていない。
+    log.warn(`[tts] 地震回数に関する情報に累積の区間がありません（読み上げません）: ${event.items.map(i => i.type).join('・') || '区間なし'}`)
+    return ''
+  }
+  const felt = total.feltNumber > 0
+    ? `このうち、震度1以上を観測したのは${total.feltNumber}回です。`
+    : 'このうち、震度1以上を観測したものはありません。'
+  return `地震回数に関する情報。${formatCountSpanForSpeech(total.startTime, total.endTime)}に、地震が${total.number}回発生しています。${felt}`
+}
+
+/**
+ * 累積区間の期間を読み上げ用の句にする（「9日15時から10日12時まで」）。
+ *
+ * **日付から読む。** 群発の累積は前日以前にさかのぼることが多く（実サンプルは 21 時間）、
+ * 時刻だけだと今日のことなのかが判らない。分は読まない —— 区間の端は毎正時に揃っており、
+ * 「15時00分」と読ませても情報が増えない。
+ *
+ * 日時として読めない値では期間そのものを言わない（「Invalid Date」を音にしないため）。
+ */
+function formatCountSpanForSpeech(startTime: string, endTime: string): string {
+  const start = new Date(startTime)
+  const end = new Date(endTime)
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return 'これまで'
+  const md = (d: Date) => `${d.getDate()}日${d.getHours()}時`
+  return `${md(start)}から${md(end)}まで`
 }
 
 /** 北海道・三陸沖後発地震注意情報（VYSE60）の読み上げテキストを生成する。 */
@@ -1880,3 +2106,30 @@ export function lpgmToText(lpgm: JMALpgm, opts: TtsRegionOptions, isNew: boolean
 }
 
 export { tsunamiMaxGrade }
+
+/**
+ * 推計震度分布図（IXAC41）の読み上げ文。
+ *
+ * **一文だけ。名乗りは文の中に入れる。** 地震情報（「地震情報。◯時◯分ごろ、…」）や
+ * 南海トラフ（「南海トラフ地震関連解説情報。…が発表されました。」）は「〈名乗り〉。〈本文〉。」の
+ * 二文だが、あちらは名乗りのあとに続く中身が長い。こちらは伝えることが 1 つしかないので、
+ * 名乗りを分けると同じ語を二度言うことになる。
+ *
+ * **「推計震度分布図」は気象庁の呼称そのもの**なので、これ自体が名乗りとして働く。
+ * 「推計震度分布情報」という名前は使わない —— 気象庁がその名前を使っていない
+ * （資料名は「推計震度分布図作図用データ」、図の名は「推計震度分布図」）。電文の名称に
+ * 合わせる決まりに従う（→ docs/spec/eew-spec.md §3「電文の名称と表示・読み上げ」）。
+ *
+ * 地震そのものの事実（震源・規模・各地の震度）は既に地震情報で読み上げていて、この電文が
+ * 足すのは「その震度の広がりが、気象庁の推計として出そろった」ことだけ。地震発生から
+ * 数分後に届くので、長い文は続報の読み上げを塞ぐ。
+ *
+ * **推計の最大震度は言わない。** 気象庁が「推計された震度の値は、場合によっては1階級程度
+ * 異なることがあります」と断っており、観測して発表した最大震度と食い違いうる。声で並べると
+ * どちらが発表値か区別できないまま、2 つの「最大震度」が耳に入ることになる。
+ *
+ * **場所も言わない。** 電文が持つのは震央地名の**番号**だけで、名前はアプリの側に無い。
+ */
+export function estimatedIntensityToText(): string {
+  return '気象庁の推計震度分布図を受信しました。'
+}

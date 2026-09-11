@@ -17,7 +17,7 @@
 // 差し替えるのは外部 I/O（WebSocket・REST・観測点座標）だけ。時計や純粋関数は本物を使う。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, cleanup, act } from '@testing-library/react'
-import type { AppEvent, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary } from '../types/earthquake'
+import type { AppEvent, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity } from '../types/earthquake'
 import { serverDate, setReplayOffset } from '../utils/clock'
 import { DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
 
@@ -490,17 +490,17 @@ describe('EEW 発報テストの報の推移', () => {
     return list[0]
   }
 
-  it('続報は報番号と発表時刻だけを進め、震源時刻は初報のまま保つ', () => {
+  it('続報は報番号と発表時刻だけを進め、震源時刻は初報のまま保つ', async () => {
     const h = setup()
 
-    act(() => { h.current.simulateEEWForecast() })
+    await act(async () => { await h.current.simulateEEWForecast() })
     const first = onlyEEW(h)
     expect(first.issue?.serial).toBe('1')
     expect(first.isFinal).toBeFalsy()
 
     // 沈黙時間（10 秒）より短い間隔なら続報になる
     act(() => { vi.advanceTimersByTime(3_000) })
-    act(() => { h.current.simulateEEWForecast() })
+    await act(async () => { await h.current.simulateEEWForecast() })
     const second = onlyEEW(h)
 
     expect(second.issue?.serial).toBe('2')
@@ -516,10 +516,10 @@ describe('EEW 発報テストの報の推移', () => {
     expect(second.id).not.toBe(first.id)
   })
 
-  it('最終報も独立した 1 報として報番号を進める', () => {
+  it('最終報も独立した 1 報として報番号を進める', async () => {
     const h = setup()
 
-    act(() => { h.current.simulateEEWForecast() })
+    await act(async () => { await h.current.simulateEEWForecast() })
     const first = onlyEEW(h)
 
     // 再クリックが無いまま沈黙時間が過ぎると最終報が確定する
@@ -533,11 +533,11 @@ describe('EEW 発報テストの報の推移', () => {
 
   // activeEEWs は取消を受けても直前の確定状態を保つ（表示を空にしないための実装）ため、
   // 取消電文そのものの形は state からは見えない。onLiveEvent に届く生の電文で確かめる。
-  it('誤報取消も独立した 1 報として報番号を進め、対象地域を持たない', () => {
+  it('誤報取消も独立した 1 報として報番号を進め、対象地域を持たない', async () => {
     const events: AppEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
 
-    act(() => { h.current.simulateEEWRetraction() })
+    await act(async () => { await h.current.simulateEEWRetraction() })
     act(() => { vi.advanceTimersByTime(10_000) })
 
     const eews = events.filter((e): e is EEWAlert => e.kind === 'eew')
@@ -561,6 +561,35 @@ describe('EEW 発報テストの報の推移', () => {
     expect(cancel.isFinal).toBeFalsy()
     expect(h.current.activeEEWs.size).toBe(1)
   })
+
+  // 取消しの概要（電文の `Body/Text`）は XML を読む dmdataParser でしか作れない。
+  // 津波の解除テストと同じ形で、バリアントの境目を正・対照の対で固定する。
+  it('DMDSS 版: 誤報取消は取消しの概要を持つ', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+
+    await act(async () => { await h.current.simulateEEWRetraction() })
+    act(() => { vi.advanceTimersByTime(10_000) })
+
+    const cancel = events.filter((e): e is EEWAlert => e.kind === 'eew')[1]
+    expect(cancel.cancelled).toBe(true)
+    expect(cancel.cancelText).toBeTruthy()
+  })
+
+  // 対照: standard 版の P2PQuake には対応するフィールドが無い。テストボタンが実電文の形から
+  // 外れると、実機では一度も起きない表示・読み上げが「起きる」ように見える
+  it('standard 版: 取消しの概要を持たない（P2PQuake には無い項目）', async () => {
+    mockIsDmdss = false
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+
+    await act(async () => { await h.current.simulateEEWRetraction() })
+    act(() => { vi.advanceTimersByTime(10_000) })
+
+    const cancel = events.filter((e): e is EEWAlert => e.kind === 'eew')[1]
+    expect(cancel.cancelled).toBe(true)
+    expect(cancel.cancelText).toBeUndefined()
+  })
 })
 
 // 津波テストの解除電文。EEW の最終報と同じ「直前の電文を流用して据え置く」形になっていた。
@@ -577,11 +606,28 @@ describe('津波テストの解除電文', () => {
     return [list[0], list[1]]
   }
 
-  it('DMDSS 版: 解除は区域を空にし、発表時刻を解除時点へ進める', () => {
+  /**
+   * 初回履歴の取り込みを先に流し切る。
+   *
+   * テストデータは動的 import で読むので、シミュレーション関数は Promise を返す。それを await
+   * すると**同じ待ちのあいだに初回履歴取得（`fetchDmdataTsunamis` 等）の解決も進む**ため、
+   * 順番しだいで履歴の `setState` が、いま流したテスト電文を上書きする。症状は
+   * **「`onLiveEvent` には 2 通とも届いているのにカードが空」** —— 電文の形を見る assertion は
+   * 通り、state を見る assertion だけが落ちるので、電文側だけ確かめていると気づけない。
+   *
+   * `setup()` の直後に空の act を 1 度回して初回取り込みを終わらせておけば、以後は競合しない。
+   */
+  async function flushInitialLoad() {
+    await act(async () => {})
+  }
+
+  it('DMDSS 版: 解除は区域を空にし、発表時刻を解除時点へ進める', async () => {
     const events: AppEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
 
-    act(() => { h.current.simulateTsunamiWatch() })
+    await flushInitialLoad()
+
+    await act(async () => { await h.current.simulateTsunamiWatch() })
     act(() => { vi.advanceTimersByTime(90_000) })
 
     const [first, cancel] = tsunamiPair(events)
@@ -601,12 +647,38 @@ describe('津波テストの解除電文', () => {
     expect(h.current.tsunamis[0]?.cancelReason).toBe('lifted')
   })
 
-  it('standard 版: 解除理由と eventId を持たない（P2PQuake では判別できない項目）', () => {
+  // 取消電文だけが持つ項目は、表示中のカードを土台にする更新で**名指しで移さないと落ちる**。
+  // パーサーも読み上げも通っているのに画面にだけ出ない、という形になり、型検査でも捕まらない
+  // （オプショナルなので）。実際にブラウザ確認で見つかった。
+  it('DMDSS 版: 誤報取消の理由をカードへ引き継ぐ', async () => {
+    const h = setup()
+    await flushInitialLoad()
+    await act(async () => { await h.current.simulateTsunamiRetraction() })
+    act(() => { vi.advanceTimersByTime(90_000) })
+
+    expect(h.current.tsunamis[0]?.cancelReason).toBe('retracted')
+    expect(h.current.tsunamis[0]?.cancelText).toBeTruthy()
+  })
+
+  // 対照: 解除（`lifted`）は取消電文ではないので理由を持たない。**無いものを作らない**
+  it('解除では取消の理由を持たない', async () => {
+    const h = setup()
+    await flushInitialLoad()
+    await act(async () => { await h.current.simulateTsunamiWatch() })
+    act(() => { vi.advanceTimersByTime(90_000) })
+
+    expect(h.current.tsunamis[0]?.cancelReason).toBe('lifted')
+    expect(h.current.tsunamis[0]?.cancelText).toBeUndefined()
+  })
+
+  it('standard 版: 解除理由と eventId を持たない（P2PQuake では判別できない項目）', async () => {
     mockIsDmdss = false
     const events: AppEvent[] = []
     const h = setup({ onLiveEvent: (e) => { events.push(e) } })
 
-    act(() => { h.current.simulateTsunamiRetraction() })
+    await flushInitialLoad()
+
+    await act(async () => { await h.current.simulateTsunamiRetraction() })
     act(() => { vi.advanceTimersByTime(90_000) })
 
     const [first, cancel] = tsunamiPair(events)
@@ -806,6 +878,304 @@ describe('南海トラフ関連解説情報の帯は期限で畳む', () => {
     })
     act(() => { vi.advanceTimersByTime(50) })
     expect(h.current.nankaiCommentary?.id).toBe('c-live')
+  })
+})
+
+describe('地震・津波に関するお知らせ（VZSE40）と地震回数（VXSE60）の結線', () => {
+  // どちらも**実配信では観測できていない種別**（電文一覧 13 か月で 0 通）。実機で偶然踏んで
+  // 気づくことが期待できないぶん、畳み方と取消の照合はここで固定しておく。
+
+  /** expireInMs 後に期限が切れるお知らせ。 */
+  function notice(id: string, expireInMs: number): JMAQuakeNotice {
+    const now = serverDate()
+    return {
+      id,
+      time: now.toISOString(),
+      eventId: `${id}-event`,
+      headline: '沖縄県の震度データ入電停止のお知らせ',
+      body: '本文',
+      cancelled: false,
+      reportDateTime: now.toISOString(),
+      expireAt: new Date(now.getTime() + expireInMs).toISOString(),
+    }
+  }
+
+  /** 区間を items 件持つ地震回数の報。`expireInMs` 後に期限が切れる。 */
+  function count(eventId: string, items: JMAEarthquakeCount['items'], expireInMs = 60_000): JMAEarthquakeCount {
+    const now = serverDate()
+    return {
+      id: `dmdata-quake-count-${eventId}-1`,
+      time: now.toISOString(),
+      eventId,
+      headline: '地震回数に関する情報をお知らせします。',
+      items,
+      cancelled: false,
+      reportDateTime: now.toISOString(),
+      expireAt: new Date(now.getTime() + expireInMs).toISOString(),
+    }
+  }
+
+  const item = (type: string, number: number, feltNumber: number): JMAEarthquakeCount['items'][number] => ({
+    type,
+    startTime: serverDate().toISOString(),
+    endTime: serverDate().toISOString(),
+    number,
+    feltNumber,
+  })
+
+  /** キュー経由で 1 件流す（`injectEvent` は AppEvent 専用なのでこちらを使う）。 */
+  function push(h: ReturnType<typeof setup>, payload: import('../types/replay').ReplayPayload) {
+    act(() => { h.current.loadReplayEvents([{ payload, replayTime: serverDate() }]) })
+    act(() => { vi.advanceTimersByTime(50) })
+  }
+
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  // 正: 帯を出し、7 日（ここでは短縮した期限）で畳む。
+  it('お知らせは期限で畳む', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'quakeNotice', data: notice('n-live', 5_000) })
+    expect(h.current.quakeNotice?.id).toBe('n-live')
+
+    act(() => { vi.advanceTimersByTime(5_001) })
+    expect(h.current.quakeNotice).toBeNull()
+  })
+
+  // 対照: 期限切れのお知らせは載せない（リプレイで過去の窓を再生したときに出ないこと）。
+  it('期限切れのお知らせは載せない', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'quakeNotice', data: notice('n-stale', -1_000) })
+    expect(h.current.quakeNotice).toBeNull()
+  })
+
+  // 正: 取消で帯を消す。**照合は `id`** ―― お知らせは 1 通ごとに `EventID` が変わるので、
+  // 表示中の報そのものを指せるのは id のほう。
+  it('取消電文で帯を消す', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'quakeNotice', data: notice('n-live', 60_000) })
+    expect(h.current.quakeNotice?.id).toBe('n-live')
+
+    push(h, { kind: 'quakeNotice', data: { ...notice('n-live', 60_000), cancelled: true } })
+    expect(h.current.quakeNotice).toBeNull()
+  })
+
+  // 安全弁: 別のお知らせに向けた取消で、いま出ている帯を消さない。
+  it('別のお知らせに向けた取消では帯を消さない', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'quakeNotice', data: notice('n-live', 60_000) })
+    push(h, { kind: 'quakeNotice', data: { ...notice('n-other', 60_000), cancelled: true } })
+    expect(h.current.quakeNotice?.id).toBe('n-live')
+  })
+
+  // 正: 地震回数も**期限で畳む**。気象庁はこの情報の終わりを宣言しない（群発が収まれば発表が
+  // 止まるだけ）ので、次報と取消だけを畳む契機にすると、収まったあとも帯が居座る。
+  //
+  // 対照として、期限がまだ来ていない報は残ることも見る（「いつでも消える」ではないこと）。
+  // （7 日ぶんの時間を進める形にはしない —— キューの巡回が 10ms 間隔で、6000 万回まわる。）
+  it('地震回数は期限で畳む', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1704, 1)], 5_000) })
+    expect(h.current.earthquakeCount?.items[0].number).toBe(1704)
+
+    act(() => { vi.advanceTimersByTime(4_000) })
+    expect(h.current.earthquakeCount?.items[0].number).toBe(1704)
+
+    act(() => { vi.advanceTimersByTime(1_001) })
+    expect(h.current.earthquakeCount).toBeNull()
+  })
+
+  // 対照: 期限切れの報は載せない（リプレイで過去の窓を再生したときに出ないこと）。
+  it('期限切れの地震回数は載せない', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1704, 1)], -1_000) })
+    expect(h.current.earthquakeCount).toBeNull()
+  })
+
+  // 正: 続報で置き換わる。
+  it('地震回数は続報で置き換わる', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1704, 1)]) })
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1810, 2)]) })
+    expect(h.current.earthquakeCount?.items[0].number).toBe(1810)
+  })
+
+  // 正: 取消でカードを消す。**照合は `eventId`** ―― 回数情報は同じ群発について報を重ねるので、
+  // 取消が指すのは「その群発について直前に出した報」になる。
+  it('地震回数は取消で帯を消す', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1704, 1)]) })
+    push(h, { kind: 'earthquakeCount', data: { ...count('20080824150500', []), cancelled: true } })
+    expect(h.current.earthquakeCount).toBeNull()
+  })
+
+  // 安全弁: 別の群発に向けた取消では消さない。
+  it('別の群発に向けた取消では帯を消さない', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1704, 1)]) })
+    push(h, { kind: 'earthquakeCount', data: { ...count('20260101000000', []), cancelled: true } })
+    expect(h.current.earthquakeCount?.eventId).toBe('20080824150500')
+  })
+
+  // 安全弁: 区間が 1 つも読めなかった報は帯にしない。中身が空の帯を出しても伝わる
+  // ものが無く、読み取りの失敗はパーサー側が記録している。
+  it('区間が空の報は帯にしない', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', []) })
+    expect(h.current.earthquakeCount).toBeNull()
+  })
+
+  // 安全弁: リセット（リプレイの開始・ライブ復帰）で両方とも消える。**時間軸が変わる**ので、
+  // 前の軸で出した帯を残すと、再生時刻と食い違ったものが画面に居座る。
+  it('リセットで両方の帯が消える', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'quakeNotice', data: notice('n-live', 60_000) })
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1704, 1)]) })
+    expect(h.current.quakeNotice).not.toBeNull()
+    expect(h.current.earthquakeCount).not.toBeNull()
+
+    act(() => { h.current.resetState() })
+    expect(h.current.quakeNotice).toBeNull()
+    expect(h.current.earthquakeCount).toBeNull()
+  })
+
+  // 安全弁: **種別をまたいで記憶を巻き込まない。** お知らせの取消処理が地震回数の識別子まで
+  // `null` にしていたことがある（別の種別の行が紛れ込んでいた）。こうなると、そのあと届いた
+  // 本物の取消が「別の群発への取消」と誤判定されて帯が消えず、しかもログには
+  // それらしい説明が出るので気づけない。
+  it('お知らせの取消は地震回数の記憶を巻き込まない', () => {
+    const h = setup()
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1704, 1)]) })
+    push(h, { kind: 'quakeNotice', data: notice('n-live', 60_000) })
+    push(h, { kind: 'quakeNotice', data: { ...notice('n-live', 60_000), cancelled: true } })
+    expect(h.current.quakeNotice).toBeNull()
+
+    // ここで地震回数の記憶が消えていると、この取消が効かない
+    push(h, { kind: 'earthquakeCount', data: { ...count('20080824150500', []), cancelled: true } })
+    expect(h.current.earthquakeCount).toBeNull()
+  })
+
+  // 安全弁: リセットは**表示中の識別情報の記憶も落とす**。落とし忘れると、リセット後に
+  // 届いた取消が「消えた帯」の id と照合され、次に出した帯を消せなくなる。
+  // **帯とカードの両方で見る** —— 記憶は種別ごとに別の ref なので、片方だけ落とす形になりやすい。
+  it('リセット後に同じお知らせ・同じ地震回数を出し直せる', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, { kind: 'quakeNotice', data: notice('n-live', 60_000) })
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1704, 1)]) })
+    act(() => { h.current.resetState() })
+
+    push(h, { kind: 'quakeNotice', data: notice('n-live', 60_000) })
+    push(h, { kind: 'earthquakeCount', data: count('20080824150500', [item('累積地震回数', 1704, 1)]) })
+    expect(h.current.quakeNotice?.id).toBe('n-live')
+    expect(h.current.earthquakeCount?.eventId).toBe('20080824150500')
+
+    push(h, { kind: 'quakeNotice', data: { ...notice('n-live', 60_000), cancelled: true } })
+    push(h, { kind: 'earthquakeCount', data: { ...count('20080824150500', []), cancelled: true } })
+    expect(h.current.quakeNotice).toBeNull()
+    expect(h.current.earthquakeCount).toBeNull()
+  })
+})
+
+// 推計震度分布図（IXAC41）の結線。
+//
+// 判定そのものは純関数へ切り出してテストしてある（`utils/estimatedIntensity.test.ts`）。
+// **ここで見るのは包み側** —— 反映しないと決めた報で `onLiveEvent` まで止まること。
+// 止め損ねると、画面の分布は据え置きのまま**音と読み上げだけが鳴り、分布モードが勝手に開く**。
+// 判定が正しくても包み側で漏れるので、純関数のテストでは捕まらない。
+describe('推計震度分布図（IXAC41）の結線', () => {
+  function ei(arrivalTime: string, time: string, count: number): JMAEstimatedIntensity {
+    return {
+      id: `ix-${time}`, time, arrivalTime,
+      hypocenter: { lat: 32.6, lon: 130.7, depthKm: 10 },
+      magnitude: 4.2, areaCode: 741, telegramKind: 0,
+      grades: [{ scale: 4, modifier: 'none', lower: 35, upper: 44 }],
+      count,
+      lat: new Float32Array([32.6]), lon: new Float32Array([130.7]), si: new Uint8Array([42]),
+      bounds: { south: 32.6, north: 32.61, west: 130.7, east: 130.71 },
+    }
+  }
+  const KUMA = ei('2026-07-28T07:27:00.000Z', '2026-07-28T07:32:00+09:00', 1693)
+  const LATER = ei('2026-07-28T07:31:00.000Z', '2026-07-28T07:36:00+09:00', 812)
+
+  // `kind` を文字列として比べるのは、`AppEvent` が地震・津波・EEW の 3 つしか型で持たず、
+  // それ以外の種別（長周期・南海トラフ・地震回数・これ）は送出側で型を潰して渡しているため
+  // （`useEarthquakes.ts` の `as unknown as AppEvent`。6 種別で同じ形）。
+  function push(h: ReturnType<typeof setup>, data: JMAEstimatedIntensity) {
+    act(() => { h.current.loadReplayEvents([{ payload: { kind: 'estimatedIntensity', data }, replayTime: serverDate() }]) })
+    act(() => { vi.advanceTimersByTime(50) })
+  }
+
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  // 正: 届いた分布を反映し、音と読み上げの経路へも流す。
+  it('届いた分布を反映して鳴らす経路へ流す', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+    push(h, KUMA)
+    expect(h.current.estimatedIntensity?.arrivalTime).toBe(KUMA.arrivalTime)
+    expect(events.filter(e => (e.kind as string) === 'estimatedIntensity')).toHaveLength(1)
+  })
+
+  // 正: 別の地震の新しい分布へは入れ替える（アプリが持つのは最新の 1 通だけ）。
+  it('別の地震の新しい分布へ入れ替える', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+    push(h, KUMA)
+    push(h, LATER)
+    expect(h.current.estimatedIntensity?.arrivalTime).toBe(LATER.arrivalTime)
+    expect(events.filter(e => (e.kind as string) === 'estimatedIntensity')).toHaveLength(2)
+  })
+
+  // 対照: **発表が古い報では退行しない。別の地震のものでも採らない。**
+  // 到着順は発表順と一致しない（分割の結合が遅れる・当日経路とライブが前後する）ので、
+  // 震度5弱以上が短時間に続く場面で、遅れて届いた古い分布が新しい分布を押しのけうる。
+  it('発表が古い報では退行しない', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+    push(h, LATER)
+    push(h, KUMA)
+    expect(h.current.estimatedIntensity?.arrivalTime).toBe(LATER.arrivalTime)
+    expect(events.filter(e => (e.kind as string) === 'estimatedIntensity')).toHaveLength(1)
+  })
+
+  // 安全弁: **反映しない報では鳴らす経路へも流さない。** 内容が同じ重複配信は実電文で
+  // 観測している。流すと画面は変わらないのに音と読み上げだけが二度鳴る。
+  it('内容が同じ重複配信では鳴らす経路へ流さない', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+    push(h, KUMA)
+    push(h, { ...KUMA })
+    expect(events.filter(e => (e.kind as string) === 'estimatedIntensity')).toHaveLength(1)
+  })
+
+  // 安全弁: リセットで記憶も落とす。落とし忘れると、再生し直した同じ分布が
+  // 「重複配信」と判定されて二度と出なくなる。
+  it('リセット後に同じ分布を出し直せる', async () => {
+    const h = setup()
+    await h.flush()
+    push(h, KUMA)
+    act(() => { h.current.resetState() })
+    expect(h.current.estimatedIntensity).toBeNull()
+
+    push(h, KUMA)
+    expect(h.current.estimatedIntensity?.arrivalTime).toBe(KUMA.arrivalTime)
   })
 })
 
@@ -1068,6 +1438,35 @@ describe('EEW の続報は古い報で退行しない', () => {
     const eew = [...h.current.activeEEWs.values()][0]
     expect(eew?.cancelledAt).toBeInstanceOf(Date)
   })
+
+  // 取消電文だけが持つ項目は、**表示中の EEW を土台にする更新で名指しで移さないと落ちる**。
+  // 地震・津波側と対の回帰テスト（3 種別すべての状態更新に同じ落とし穴がある）。
+  // 描画側のテスト（`RealtimeTab/cancelReason.test.tsx`）は `EEWAlert` を直接渡すので
+  // ここを通らない。両方無いと「電文は持っているのに画面へ届かない」を捕まえられない。
+  it('取消の理由を表示中の EEW へ引き継ぐ', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(report('1', ['石川県能登'])) })
+    act(() => {
+      h.current.injectEvent({
+        ...report('2', []),
+        cancelled: true,
+        cancelText: 'システムの障害により誤った緊急地震速報を配信しました。',
+      })
+    })
+    const eew = [...h.current.activeEEWs.values()][0]
+    expect(eew?.cancelledAt).toBeInstanceOf(Date)
+    expect(eew?.cancelText).toBe('システムの障害により誤った緊急地震速報を配信しました。')
+  })
+
+  // 対照: 理由を持たない取消電文では作らない（無いものを埋めない）
+  it('理由を持たない取消では持たせない', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(report('1', ['石川県能登'])) })
+    act(() => { h.current.injectEvent({ ...report('2', []), cancelled: true }) })
+    const eew = [...h.current.activeEEWs.values()][0]
+    expect(eew?.cancelledAt).toBeInstanceOf(Date)
+    expect(eew?.cancelText).toBeUndefined()
+  })
 })
 
 // P2PQuake の補完経路（`enrichEEW`）。standard 版で Yahoo hypoInfo が先に検出した EEW へ
@@ -1163,6 +1562,37 @@ describe('DMDSS 版: 取消の後に届いた報', () => {
       domesticTsunami: '不明',
     },
     points: [],
+  })
+
+  // 取消電文だけが持つ項目は、**表示中のカードを土台にする更新で名指しで移さないと落ちる**。
+  // 津波側と対の回帰テスト。パーサーも読み上げも通り、オプショナルなので型検査も素通りするため、
+  // ここが無いと「画面にだけ出ない」状態を検出できない。
+  it('取消の理由をカードへ引き継ぐ', async () => {
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(震度速報('dmdata-quake-20260101160612-1', '2026-01-01T07:07:00+09:00')) })
+    act(() => {
+      h.current.injectEvent({
+        ...取消('dmdata-quake-20260101160612-2', '2026-01-01T07:10:00+09:00'),
+        cancelText: '先ほどの地震情報は誤りでしたので取り消します。',
+      })
+    })
+
+    expect(h.current.earthquakes[0]?.cancelledAt).toBeInstanceOf(Date)
+    expect(h.current.earthquakes[0]?.cancelText).toBe('先ほどの地震情報は誤りでしたので取り消します。')
+  })
+
+  // 対照: 理由を持たない取消電文では作らない（無いものを埋めない）
+  it('理由を持たない取消では持たせない', async () => {
+    const h = setup()
+    await h.flush()
+
+    act(() => { h.current.injectEvent(震度速報('dmdata-quake-20260101160613-1', '2026-01-01T07:07:00+09:00')) })
+    act(() => { h.current.injectEvent(取消('dmdata-quake-20260101160613-2', '2026-01-01T07:10:00+09:00')) })
+
+    expect(h.current.earthquakes[0]?.cancelledAt).toBeInstanceOf(Date)
+    expect(h.current.earthquakes[0]?.cancelText).toBeUndefined()
   })
 
   it('取消より前に発表された報は、purge を過ぎて届いても採らない', async () => {
@@ -1307,6 +1737,93 @@ describe('津波の有効期限は報を跨いで引き継ぐ', () => {
     expect(h.current.tsunamis[0].validDateTime).toBe(EXPIRE_AT)
   })
 
+  // 電文の本文（`Body/Text`）も報を跨いで引き継ぐ。**気象庁は毎報には載せない** ——
+  // 実電文を数えると津波予報の VTSE41 の半数に入るだけで、続報の VTSE51/52 には 1 通も無い。
+  // 引き継がないと「いつ来ていつまで続くか」が最初の観測情報で消える（この等級では区域に
+  // 波高も到達時刻も付かないので、その文にしか無い）。
+  it('本文を持たない続報を受けてもカードは本文を保つ', () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+    const BODY = '若干の海面変動が予想される時刻は、早い沿岸で０２日１０時３０分頃です。'
+
+    act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), bodyText: BODY }) })
+    act(() => { h.current.injectEvent(forecast(WITHOUT_EXPIRE)) })
+    act(() => { vi.advanceTimersByTime(100) })
+
+    expect(h.current.tsunamis[0].id).toBe('noto-2')
+    expect(h.current.tsunamis[0].bodyText).toBe(BODY)
+  })
+
+  // 対照: 新しい報が本文を持てばそちらへ従う（前報で固定しない）
+  it('本文を持つ続報ではそちらへ差し替わる', () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+
+    act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), bodyText: '前の本文' }) })
+    act(() => { h.current.injectEvent({ ...forecast(WITHOUT_EXPIRE), bodyText: '新しい本文' }) })
+    act(() => { vi.advanceTimersByTime(100) })
+
+    expect(h.current.tsunamis[0].bodyText).toBe('新しい本文')
+  })
+
+  // 安全弁: 別の津波へ持ち込まない。引き継ぎは `isTsunamiContinuation`（`eventId` 一致）の
+  // 内側でしか働かないことを固定する —— 緩めると、無関係な津波の本文を出すことになる。
+  it('別イベントの津波には前報の本文を引き継がない', () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+
+    act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), bodyText: '能登の本文' }) })
+    act(() => {
+      h.current.injectEvent(forecast({ ...WITHOUT_EXPIRE, eventId: 'hyuganada-tsunami' }))
+    })
+    act(() => { vi.advanceTimersByTime(100) })
+
+    expect(h.current.tsunamis[0].bodyText).toBeUndefined()
+  })
+
+  // 観測状況を確定した時刻（`Head/TargetDateTime`）も `bodyText` と同じ `sameEvent` の内側で
+  // 引き継ぐ。**3 つのフィールドが同じ門を共有している**ので、片方だけ門を狭める変更が
+  // 入っても気づけるよう、それぞれに対を置く。
+  //
+  // 正: 観測時点を持たない続報（等級の発表）が挟まっても、前報の値が残る。入るのは観測情報
+  // （VTSE51/52）だけなので、落とすとカードの「観測 ◯◯ 時点」が出たり消えたりする。
+  it('観測時点を持たない続報が挟まっても前報の観測時点が残る', () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+
+    act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), observationDateTime: '2024-01-02T16:45:00+09:00' }) })
+    act(() => { h.current.injectEvent(forecast(WITHOUT_EXPIRE)) })
+    act(() => { vi.advanceTimersByTime(100) })
+
+    expect(h.current.tsunamis[0].observationDateTime).toBe('2024-01-02T16:45:00+09:00')
+  })
+
+  // 対照: 新しい観測時点を持つ続報が来たらそちらへ従う（古い値に居座らせない）。
+  it('新しい観測時点を持つ続報ではそちらへ従う', () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+
+    act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), observationDateTime: '2024-01-02T16:45:00+09:00' }) })
+    act(() => { h.current.injectEvent({ ...forecast(WITHOUT_EXPIRE), observationDateTime: '2024-01-02T16:48:00+09:00' }) })
+    act(() => { act(() => { vi.advanceTimersByTime(100) }) })
+
+    expect(h.current.tsunamis[0].observationDateTime).toBe('2024-01-02T16:48:00+09:00')
+  })
+
+  // 安全弁: 別の津波へ持ち込まない（`bodyText` と同じ門の内側であることを固定する）。
+  it('別イベントの津波には前報の観測時点を引き継がない', () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const h = setup()
+
+    act(() => { h.current.injectEvent({ ...forecast(WITH_EXPIRE), observationDateTime: '2024-01-02T16:45:00+09:00' }) })
+    act(() => {
+      h.current.injectEvent(forecast({ ...WITHOUT_EXPIRE, eventId: 'hyuganada-tsunami' }))
+    })
+    act(() => { vi.advanceTimersByTime(100) })
+
+    expect(h.current.tsunamis[0].observationDateTime).toBeUndefined()
+  })
+
   it('日時として読めない期限を持つ続報でも、カードには前報の読める期限が残る', () => {
     vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
     const h = setup()
@@ -1333,6 +1850,22 @@ describe('津波の有効期限は報を跨いで引き継ぐ', () => {
 
     act(() => { vi.advanceTimersByTime(2 * 60_000) })
     expect(h.current.tsunamis[0].cancelReason).toBe('expired')
+  })
+
+  // **ライブ受信では出るのにリロードすると消える、を防ぐ。** 履歴からの復元は最新の 1 報だけを
+  // 画面へ載せるため、続報の上書きと同じものを引き継がないと片方だけ落ちる。
+  it('履歴からの復元でも本文を引き継ぐ', async () => {
+    vi.setSystemTime(new Date('2024-01-02T16:50:00+09:00'))
+    const BODY = '若干の海面変動が予想される時刻は、早い沿岸で０２日１０時３０分頃です。'
+    vi.mocked(fetchDmdataTsunamis).mockResolvedValue([
+      { ...forecast(WITH_EXPIRE), bodyText: BODY },
+      forecast(WITHOUT_EXPIRE),
+    ])
+    const h = setup()
+    await h.flush()
+
+    expect(h.current.tsunamis[0].id).toBe('noto-2')
+    expect(h.current.tsunamis[0].bodyText).toBe(BODY)
   })
 
   it('履歴からの復元で、期限を過ぎていれば最初から表示しない', async () => {
@@ -1459,5 +1992,253 @@ describe('南海トラフ臨時情報の取消の適用先', () => {
     const before = events.length
     act(() => { sockets[0].onEvent?.(nankai('evt-Y', { cancelled: true, kindCode: '', kindName: '調査終了' })) })
     expect(events.length).toBe(before + 1)
+  })
+})
+
+// テストボタンが張る「待ち」を、リセットとアンマウントで確実に落とすこと。
+// 落とす先は `clearTestSimulationTimers` の 1 箇所に集約してある。
+//
+// **多くがキューを通らない経路。** 津波と EEW のテストは `handleEvent` を直接呼ぶので、
+// `eventQueueRef.current.clear()` では止まらない。待ちを ref で追えていないと、
+// リセット済みの画面へ電文が 1 通だけ単独で届く —— **例外もログも出ない。**
+//
+// 症状は待ちの種類で重さが違う。津波の解除は画面に出ないぶん音と読み上げだけが鳴るが、
+// **EEW の最終報はカードごと生える。**
+//
+// 地震回数・南海トラフの取消テストも同じ形の待ちを持つ（そちらはキュー経由だが、
+// **待ちそのものは同じように取り残されうる**）。
+describe('テストボタンの待ちの後始末', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  // 正: 押しっぱなしにすれば続報は届く（待ちが機能していることの確認）。
+  it('津波の等級変化テストは続報を届ける', async () => {
+    const h = setup()
+    await h.flush()
+    await act(async () => { await h.current.simulateTsunamiGradeChange() })
+    expect(h.current.tsunamis[0]?.areas.some(a => a.lastGrade)).toBe(false)
+
+    // TEST_AUTO_DISMISS_MS(90s) の半分で続報が入る
+    act(() => { vi.advanceTimersByTime(46_000) })
+    expect(h.current.tsunamis[0]?.areas.some(a => a.lastGrade)).toBe(true)
+  })
+
+  // 対照: リセットを挟めば、その後に待ちが明けても何も起きない。
+  // **ここが落ちると、消したはずの津波が 45 秒後に単独で復活する。**
+  it('リセット後は津波の続報が届かない', async () => {
+    const h = setup()
+    await h.flush()
+    await act(async () => { await h.current.simulateTsunamiGradeChange() })
+    expect(h.current.tsunamis.length).toBeGreaterThan(0)
+
+    act(() => { h.current.resetState() })
+    expect(h.current.tsunamis).toEqual([])
+
+    act(() => { vi.advanceTimersByTime(120_000) })
+    expect(h.current.tsunamis).toEqual([])
+  })
+
+  // 対照: 地震回数の取消テストも同じ。
+  it('リセット後は地震回数の取消が届かない', async () => {
+    const h = setup()
+    await h.flush()
+    await act(async () => { await h.current.simulateEarthquakeCountRetraction() })
+    act(() => { vi.advanceTimersByTime(50) })
+    expect(h.current.earthquakeCount).not.toBeNull()
+
+    act(() => { h.current.resetState() })
+    expect(h.current.earthquakeCount).toBeNull()
+
+    // 取消が遅れて届いても、リセット後の画面には何も起こさない
+    act(() => { vi.advanceTimersByTime(120_000) })
+    expect(h.current.earthquakeCount).toBeNull()
+  })
+
+  // 安全弁: 押し直したときに前の待ちを引きずらない。**前の待ちが生きていると、
+  // 2 回目の発表に対して 1 回目の続報が割り込む**（報番号も内容も噛み合わない）。
+  it('押し直すと前の待ちは落ちる', async () => {
+    const h = setup()
+    await h.flush()
+    await act(async () => { await h.current.simulateTsunamiGradeChange() })
+    act(() => { vi.advanceTimersByTime(30_000) })
+    // 30 秒目で押し直す（1 回目の続報はまだ来ていない）
+    await act(async () => { await h.current.simulateTsunamiGradeChange() })
+
+    // 1 回目の待ちが生きていれば、ここで続報が入ってしまう（押し直しから 16 秒しか経っていない）
+    act(() => { vi.advanceTimersByTime(16_000) })
+    expect(h.current.tsunamis[0]?.areas.some(a => a.lastGrade)).toBe(false)
+
+    // 2 回目の待ちは正しく明ける
+    act(() => { vi.advanceTimersByTime(30_000) })
+    expect(h.current.tsunamis[0]?.areas.some(a => a.lastGrade)).toBe(true)
+  })
+
+  /** 生の電文から種別で絞る（state に出ない解除・取消はこちらでしか見えない）。 */
+  function kindsOf(events: AppEvent[], kind: AppEvent['kind']): AppEvent[] {
+    return events.filter(e => e.kind === kind)
+  }
+
+  // 正: リセットを挟まなければ、EEW の最終報は沈黙時間（10 秒）の後に届く。
+  it('EEW テストは最終報を届ける', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+
+    await act(async () => { await h.current.simulateEEWForecast() })
+    act(() => { vi.advanceTimersByTime(10_000) })
+
+    const eews = kindsOf(events, 'eew') as EEWAlert[]
+    expect(eews.length).toBe(2)
+    expect(eews[1].isFinal).toBe(true)
+  })
+
+  // 対照: リセットを挟めば最終報は届かない。
+  // **ここが落ちると、消したはずの画面に EEW がカードごと 1 枚生える。**
+  it('リセット後は EEW の最終報が届かない', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+
+    await act(async () => { await h.current.simulateEEWForecast() })
+    expect(h.current.activeEEWs.size).toBe(1)
+
+    act(() => { h.current.resetState() })
+    expect(h.current.activeEEWs.size).toBe(0)
+
+    events.length = 0
+    act(() => { vi.advanceTimersByTime(120_000) })
+    expect(kindsOf(events, 'eew')).toEqual([])
+    expect(h.current.activeEEWs.size).toBe(0)
+  })
+
+  // 対照: EEW 誤報取消の待ちも同じ。**取消は音・通知・読み上げを伴う**ので、
+  // 取り残すとリセット後に「誤報でした」とだけ鳴る。
+  it('リセット後は EEW の誤報取消が届かない', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+
+    await act(async () => { await h.current.simulateEEWRetraction() })
+    expect(h.current.activeEEWs.size).toBe(1)
+
+    act(() => { h.current.resetState() })
+    events.length = 0
+    act(() => { vi.advanceTimersByTime(120_000) })
+
+    expect(kindsOf(events, 'eew')).toEqual([])
+  })
+
+  // 対照: 津波テストの自動解除も同じ。**解除は画面を変えないので state では見えない** ——
+  // 音と読み上げは表示中の津波の有無を判定せずに走る（→ docs/spec/tsunami-spec.md §5）ため、
+  // 生の電文で見る。
+  it('リセット後は津波の自動解除が届かない', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+
+    await act(async () => { await h.current.simulateTsunamiWatch() })
+    expect(h.current.tsunamis.length).toBeGreaterThan(0)
+
+    act(() => { h.current.resetState() })
+    expect(h.current.tsunamis).toEqual([])
+
+    events.length = 0
+    act(() => { vi.advanceTimersByTime(120_000) })
+    expect(kindsOf(events, 'tsunami')).toEqual([])
+  })
+
+  // 安全弁: 南海トラフ臨時情報の取消。**この ref は元から配線済み**で今回直した穴ではないが、
+  // 6 つのうちこれだけ固定が無いと、次に `clearTestSimulationTimers` を書き換えたとき
+  // 1 つだけ検知が効かなくなる。上の 3 つ（対照）とは性質が違う。
+  it('リセット後は南海トラフ臨時情報の取消が届かない', async () => {
+    const h = setup()
+    await h.flush()
+
+    await act(async () => { await h.current.simulateNankaiRetraction() })
+    act(() => { vi.advanceTimersByTime(50) })
+    expect(h.current.nankai).not.toBeNull()
+
+    act(() => { h.current.resetState() })
+    expect(h.current.nankai).toBeNull()
+
+    act(() => { vi.advanceTimersByTime(120_000) })
+    expect(h.current.nankai).toBeNull()
+  })
+
+  // 安全弁: 落とすのは待ちだけでなく**種別ごとの記憶（報番号・eventId）も**。
+  // 記憶を残したまま待ちだけ落とすと、リセット後の 1 通目が #2 として届き、
+  // 前の時間軸の eventId を引きずる。
+  it('リセット後に押し直すと EEW は初報から始まる', async () => {
+    const h = setup()
+    await h.flush()
+
+    await act(async () => { await h.current.simulateEEWForecast() })
+    const first = [...h.current.activeEEWs.values()][0]
+    expect(first.issue?.serial).toBe('1')
+
+    act(() => { vi.advanceTimersByTime(3_000) })
+    await act(async () => { await h.current.simulateEEWForecast() })
+    expect([...h.current.activeEEWs.values()][0].issue?.serial).toBe('2')
+
+    act(() => { h.current.resetState() })
+    await act(async () => { await h.current.simulateEEWForecast() })
+    const restarted = [...h.current.activeEEWs.values()][0]
+    expect(restarted.issue?.serial).toBe('1')
+    expect(restarted.issue?.eventId).not.toBe(first.issue?.eventId)
+  })
+
+  // 正: 3 つ目の形（`setTimeout` を張らず、キューへ発火時刻つきで積む）も待ちとして働くこと。
+  // 推計震度分布図テストは地震情報を先に出し、`TEST_ESTIMATED_INTENSITY_DELAY_MS` 後に分布を流す。
+  it('推計震度分布図テストは地震情報の後から分布を届ける', async () => {
+    const h = setup()
+    await h.flush()
+
+    await act(async () => { await h.current.simulateEstimatedIntensity() })
+    expect(h.current.estimatedIntensity).toBeNull()
+
+    act(() => { vi.advanceTimersByTime(5_000) })
+    expect(h.current.estimatedIntensity).not.toBeNull()
+  })
+
+  // 対照: この形は `clearTestSimulationTimers` の対象では**ない**。落とすのはキューのほうで、
+  // `eventQueueRef.current.clear()` が効く。**仕様書の表（settings-pwa-spec.md §7）が
+  // 「キューを空にすれば足りる」と主張している 3 つ目の形の裏付け** —— ここを固定しておかないと、
+  // `resetState` がキューを空にする位置がずれたときに黙って通る。
+  it('リセット後は推計震度分布図が届かない', async () => {
+    const h = setup()
+    await h.flush()
+
+    await act(async () => { await h.current.simulateEstimatedIntensity() })
+    act(() => { h.current.resetState() })
+
+    act(() => { vi.advanceTimersByTime(10_000) })
+    expect(h.current.estimatedIntensity).toBeNull()
+  })
+
+  // 安全弁: アンマウントでも落ちること。**リセットだけ配線して cleanup を忘れる**のが
+  // いちばん起きやすい取りこぼしで、そちらは画面を閉じた後に setState が走る形になる。
+  //
+  // **6 種すべてを起こしてから閉じる。** 一部だけだと、cleanup の `useEffect` の依存配列や
+  // 呼び出しを壊す回帰（古いクロージャを握る・一部の ref だけ呼ばなくなる）を、
+  // 起こさなかった待ちについて検出できない。上の対照は `resetState` 側しか通らない。
+  it('アンマウント後は待ちが発火しても電文が流れない', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+
+    // 待ちを持つテストを全種類起こす（津波の 2 つは同じ `testTsunamiRef` を共有するため、
+    // 後から押したほうが前の自動解除を畳む。それでも待ちは 1 本残る）
+    await act(async () => { await h.current.simulateEEWForecast() })
+    await act(async () => { await h.current.simulateEEWRetraction() })
+    await act(async () => { await h.current.simulateTsunamiWatch() })
+    await act(async () => { await h.current.simulateTsunamiGradeChange() })
+    await act(async () => { await h.current.simulateNankaiRetraction() })
+    await act(async () => { await h.current.simulateEarthquakeCountRetraction() })
+
+    events.length = 0
+    cleanup()
+    act(() => { vi.advanceTimersByTime(120_000) })
+
+    expect(events).toEqual([])
   })
 })

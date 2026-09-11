@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useLazyRef } from './useLazyRef'
-import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataNankaiCommentary, fetchDmdataKohatsu } from '../services/dmdata'
 import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey, coalesceByEventId, findExistingQuakeCard, isRetractedQuakeReport, quakeRetractionOf } from '../utils/quakeMerge'
@@ -8,32 +8,16 @@ import type { QuakeRetraction } from '../utils/quakeMerge'
 import { loadStationCoords, onStationCoordsLoaded, buildAreaPrefIndex, getAreaPrefIndexCache } from '../utils/stationCoords'
 import type { AreaPrefIndex } from '../utils/quakePoints'
 import { calcEEWCancelTime, eewSerial, eewEventKey } from '../utils/eew'
-import { mergeTsunamiObservations, isCancelForCurrentTsunami, isTsunamiContinuation, withInheritedValidDateTime, latestValidDateTime } from '../utils/tsunami'
+import { decideEstimatedIntensityUpdate } from '../utils/estimatedIntensity'
+import { mergeTsunamiObservations, isCancelForCurrentTsunami, isTsunamiContinuation, withInheritedTsunamiFacts, latestValidDateTime } from '../utils/tsunami'
 import { log } from '../utils/logger'
 import { serverNow, serverDate } from '../utils/clock'
 
 import { isDmdss } from '../utils/env'
 import { isValidDmdataApiKey, DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
-import {
-  createTestEarthquake,
-  createTestForeignQuake,
-  createTestLpgm,
-  createTestEEW,
-  createTestEEWWarning,
-  createTestEEWForecast,
-  createTestEEWAssumed,
-  createTestEEWDeep,
-  createTestTsunami,
-  createTestTsunamiWarning,
-  createTestTsunamiWatch,
-  createTestTsunamiForecast,
-  createTestTsunamiRetraction,
-  createTestNankai,
-  createTestNankaiRetraction,
-  createTestNankaiCommentary,
-  createTestKohatsu,
-  TEST_AUTO_DISMISS_MS,
-} from '../utils/testData'
+// テストデータは押されてから読む（静的に取り込まない理由・失敗したときの扱い・先読みの
+// 段取りは `utils/testDataLoader.ts` にまとめてある）。
+import { loadTestData } from '../utils/testDataLoader'
 
 // 初回取得件数（設定の最大選択値に合わせる）。リプレイ開始時の履歴復元（useReplayController の
 // QUAKE_HISTORY_EVENTS）もこの値をそのまま目標にするため export している。片方だけ動かすと、
@@ -66,6 +50,13 @@ function findQuakeCancelTarget(
 ): JMAQuake | undefined {
   return cards.find(card => isQuakeCancelTarget(card, cancel, areaPrefIndex))
 }
+/**
+ * 推計震度分布図テストで、地震情報を出してから分布を流すまでの間。
+ *
+ * 実運用の数分をそのまま待たせても意味が無いので詰めるが、**0 にはしない** ——
+ * 地震カードが一覧に載る前に分布が届くと、自動で開く側が引き当てる相手を見つけられない。
+ */
+const TEST_ESTIMATED_INTENSITY_DELAY_MS = 3000
 const EEW_FINAL_SILENCE_MS = 10000 // EEW発報テスト（特別警報・警報・予報）: この間隔クリックが無ければ最終報として確定する
 const EEW_RETRACTION_CANCEL_MS = 10000 // EEW誤報取消テスト: 発報からこの秒数後に取消電文を送る
 
@@ -75,6 +66,9 @@ type QueuePayload =
   | { kind: 'nankai'; data: JMANankai }
   | { kind: 'nankaiCommentary'; data: JMANankaiCommentary }
   | { kind: 'kohatsu'; data: JMAKohatsu }
+  | { kind: 'quakeNotice'; data: JMAQuakeNotice }
+  | { kind: 'earthquakeCount'; data: JMAEarthquakeCount }
+  | { kind: 'estimatedIntensity'; data: JMAEstimatedIntensity }
   | { kind: 'purge-cancelled-quake'; id: string }
   | { kind: 'purge-cancelled-eew'; key: string }
   | { kind: 'purge-cancelled-tsunami'; id: string }
@@ -242,6 +236,11 @@ function runSimulateTsunami(
       issue: { ...tsunami.issue, time: now },
       cancelled: true,
       cancelReason: isDmdss ? cancelReason : undefined,
+      // 取消しの概要（電文の `Body/Text`）。**誤報取消のときだけ気象庁が理由を書く**ので、
+      // 解除では持たせない。実電文の形に合わせないと、画面と読み上げでこの経路を通れない
+      ...(isDmdss && cancelReason === 'retracted'
+        ? { cancelText: 'システムの障害により誤った津波警報等を配信しました。' }
+        : {}),
       areas: [],
     })
     ref.current = null
@@ -305,9 +304,18 @@ function runSimulateEEWRetraction(
     handleEvent({
       ...report,
       cancelled: true,
+      // 取消しの概要（電文の `Body/Text`）。地震・津波と同じ構造なので同じ形で持たせる ——
+      // 実電文の形がテストボタンに無いと、EEW だけこの経路を実機で一度も通れない。
+      // **DMDSS 版限定**: この項目を作れるのは XML を読む dmdataParser だけで、
+      // P2PQuake 経路（standard 版）には対応するフィールドが無い。津波の解除テストと同じ扱い
+      ...(isDmdss ? { cancelText: 'システムの障害により誤った緊急地震速報を配信しました。' } : {}),
       areas: [],
+      // **「程度以上」の印も値と一緒に落とす。** 印だけ残ると、値が無いのに上限が定まって
+      // いないことになり、表示・読み上げが語を補う条件（→ eew-spec.md §4）と食い違う。
       forecastMaxScale: undefined,
+      forecastMaxScaleOrAbove: undefined,
       forecastMaxLpgmClass: undefined,
+      forecastMaxLpgmClassOver: undefined,
       earthquake: {
         ...report.earthquake,
         hypocenter: { ...report.earthquake.hypocenter, latitude: 0, longitude: 0 },
@@ -326,6 +334,17 @@ export interface EarthquakeState {
   nankai: JMANankai | null
   nankaiCommentary: JMANankaiCommentary | null
   kohatsu: JMAKohatsu | null
+  /** 地震・津波に関するお知らせ（VZSE40）。最新の 1 通だけ持つ */
+  quakeNotice: JMAQuakeNotice | null
+  /** 地震回数に関する情報（VXSE60）。最新の 1 通だけ持つ */
+  earthquakeCount: JMAEarthquakeCount | null
+  /**
+   * 推計震度分布図（IXAC41）。最新の 1 通だけ持つ。
+   *
+   * 最大 36 万セル・3MB あるので**複数は持たない**。震度5弱以上の地震にしか発表されないため、
+   * 新しいものが来た＝より新しい大きな地震か、同じ地震の続報のどちらか。
+   */
+  estimatedIntensity: JMAEstimatedIntensity | null
   connectionStatus: ConnectionStatus
   lastUpdate: Date | null
   isLoading: boolean
@@ -349,6 +368,9 @@ export function useEarthquakes(
     nankai: null,
     nankaiCommentary: null,
     kohatsu: null,
+    quakeNotice: null,
+    earthquakeCount: null,
+    estimatedIntensity: null,
     connectionStatus: (isDmdss && !isValidDmdataApiKey(dmdataApiKey)) ? 'disconnected' : 'connecting',
     lastUpdate: null,
     isLoading: !(isDmdss && !isValidDmdataApiKey(dmdataApiKey)),
@@ -385,6 +407,53 @@ export function useEarthquakes(
   const testTsunamiRef = useRef<{ cancelTimer: number; tsunami: JMATsunami } | null>(null)
   // 南海トラフ臨時情報の取消テストで、発表から取消までを待つタイマー
   const testNankaiRetractionTimerRef = useRef<number | undefined>(undefined)
+  const testEarthquakeCountRetractionTimerRef = useRef<number | undefined>(undefined)
+  const testTsunamiGradeChangeTimerRef = useRef<number | undefined>(undefined)
+
+  /**
+   * テストボタンが張った「待ち」をすべて落とす。**アンマウントと `resetState` の両方から呼ぶ。**
+   *
+   * **1 箇所にまとめてあるのは、配線を落としやすいから。** 待ちには 2 系統あり、
+   * 南海トラフ・地震回数の取消テストはイベントキューへ積むが、**津波と EEW のテストは
+   * `handleEvent` を直接呼ぶ** —— `eventQueueRef.current.clear()` では止まらない。
+   * 追い忘れると、画面を閉じた後やリプレイへ切り替えた後に、消えたはずの電文が 1 通だけ
+   * 単独で届く。**例外もログも出ない。**
+   *
+   * 落とすのは「これから発火する待ち」だけで、画面に出ているものの扱いには触れない
+   * （そちらは `resetState` の他の行が決めている）。
+   *
+   * **待ちを持つ ref を増やしたら、ここへ足すこと。**
+   */
+  const clearTestSimulationTimers = useCallback(() => {
+    // 津波テスト 5 種が共有する自動解除（TEST_AUTO_DISMISS_MS）。
+    if (testTsunamiRef.current) {
+      window.clearTimeout(testTsunamiRef.current.cancelTimer)
+      testTsunamiRef.current = null
+    }
+    // EEW 発報テスト 5 種の最終報（EEW_FINAL_SILENCE_MS）。**種別ごとに独立して張られる**ので
+    // Map を走査する。1 つでも残ると、リセット後の画面へ EEW がまるごと 1 通生える。
+    for (const entry of testEEWTimersRef.current.values()) {
+      window.clearTimeout(entry.finalizeTimer)
+    }
+    testEEWTimersRef.current.clear()
+    // EEW 誤報取消テストの取消（EEW_RETRACTION_CANCEL_MS）。
+    if (testEEWRetractionRef.current) {
+      window.clearTimeout(testEEWRetractionRef.current.cancelTimer)
+      testEEWRetractionRef.current = null
+    }
+    if (testNankaiRetractionTimerRef.current !== undefined) {
+      window.clearTimeout(testNankaiRetractionTimerRef.current)
+      testNankaiRetractionTimerRef.current = undefined
+    }
+    if (testEarthquakeCountRetractionTimerRef.current !== undefined) {
+      window.clearTimeout(testEarthquakeCountRetractionTimerRef.current)
+      testEarthquakeCountRetractionTimerRef.current = undefined
+    }
+    if (testTsunamiGradeChangeTimerRef.current !== undefined) {
+      window.clearTimeout(testTsunamiGradeChangeTimerRef.current)
+      testTsunamiGradeChangeTimerRef.current = undefined
+    }
+  }, [])
   // 帯に出している南海トラフ臨時情報・後発地震注意情報の識別情報（無ければ null）。取消の照合に使う。
   //
   // **`stateRef` では判定できない。** あれはレンダー時にしか進まないが、キューのディスパッチャは
@@ -394,6 +463,10 @@ export function useEarthquakes(
   const shownKohatsuEventIdRef = useRef<string | null>(null)
   // 解説情報だけは `id`（識別情報と号数の組）で持つ。理由は `applyNankaiCommentary` の照合箇所。
   const shownCommentaryIdRef = useRef<string | null>(null)
+  const shownQuakeNoticeIdRef = useRef<string | null>(null)
+  // 表示中の地震回数の群発識別子。**取消が自分宛かを同期的に判定する**ために持つ
+  // （`setState` の中で照合すると、読み上げを起こすかどうかをその場で返せない）。
+  const shownEarthquakeCountEventIdRef = useRef<string | null>(null)
   // 現在の state を WS コールバック内から参照するための ref
   const stateRef = useRef(state)
   stateRef.current = state
@@ -416,11 +489,16 @@ export function useEarthquakes(
   // 消えては用を成さない。履歴経路（`mergeQuakeHistory`）はカードごと消すので、そちらの取消も
   // ここに集めて両経路で共有する。
   const quakeRetractionsRef = useRef<QuakeRetraction[]>([])
+  // いま出している推計震度分布図の見分け（IXAC41）。**巨大な本体は持たない** ——
+  // 判定に要るのは地震発現時刻・発表時刻・セル数の 3 つだけで、本体は最大 3MB ある。
+  const shownEstimatedIntensityRef = useRef<{ arrivalTime: string; time: string; count: number } | null>(null)
   // 後発地震注意情報（VYSE60）の7日間有効期限タイマー
   const kohatsuExpireTimerRef = useRef<number | undefined>(undefined)
   // 南海トラフ地震関連解説情報（VYSE51/52）の7日間有効期限タイマー。
   // 解説情報には解除電文が無く、定例解説は平常時にも毎月届く。期限で畳まないと帯が常駐する。
   const nankaiCommentaryExpireTimerRef = useRef<number | undefined>(undefined)
+  const quakeNoticeExpireTimerRef = useRef<number | undefined>(undefined)
+  const earthquakeCountExpireTimerRef = useRef<number | undefined>(undefined)
   // イベントキュー: ディスパッチャーが 10ms ごとに、発火時刻の来たものを先頭から処理する。
   // リプレイ時は eventTime と再生時刻を比較して発火制御する（並びと取り出しの規約は `EventQueue`）。
   const eventQueueRef = useLazyRef<EventQueue>(createEventQueue)
@@ -653,6 +731,152 @@ export function useEarthquakes(
   }, [])
 
   /**
+   * 地震・津波に関するお知らせ（VZSE40）を反映する。
+   *
+   * 帯の扱いは南海トラフ関連解説情報とほぼ同じ（最新の 1 通・7 日で畳む・取消で消す）。
+   * **7 日は表示上の都合**で、気象庁が期限を定めているわけではない（後発地震注意情報の 7 日とは違う）。
+   *
+   * 戻り値は「帯を出したか」。**呼び出し側は現状これを見ていない**（このお知らせは音も読み上げも
+   * 起こさないため、分岐する先が無い）。それでも bool を返すのは、隣の `applyNankaiCommentary`
+   * ・`applyKohatsu` と形を揃えておくため —— 揃えておかないと、後から「反映できたか」で
+   * 分岐したくなったときに、この関数だけ内部を書き換える必要が出る。
+   */
+  const applyQuakeNotice = useCallback((notice: JMAQuakeNotice): boolean => {
+    if (notice.cancelled) {
+      if (quakeNoticeExpireTimerRef.current !== undefined) {
+        window.clearTimeout(quakeNoticeExpireTimerRef.current)
+        quakeNoticeExpireTimerRef.current = undefined
+      }
+      // 消す前に id を照合する（待っている間に新しいお知らせへ入れ替わっていたら、そちらを消さない）。
+      //
+      // **取消は元のお知らせの `EventID` を引き継ぐ。** 気象庁公式のサンプル
+      // （`42_03_01_220402_VZSE40.xml`）は発表時刻が 2022-04-02 06:58 なのに `EventID` は
+      // `20220402050100`（＝05:01）で、自分の発表時刻ではなく**取り消す対象の発表時刻**を
+      // 指している（発表側のサンプルでは `EventID` ＝自分の発表時刻）。`Serial` は両方とも空なので、
+      // 発表と取消で `id` が一致する。**実配信の取消は未観測**なので、届いたら形を確かめること。
+      const shown = shownQuakeNoticeIdRef.current
+      if (shown !== notice.id) {
+        log.info(`[quakeNotice] 別のお知らせへの取消のため帯を残します received=${notice.id} shown=${shown}`)
+        return false
+      }
+      shownQuakeNoticeIdRef.current = null
+      setState(prev => ({ ...prev, quakeNotice: null }))
+      // **取消しの理由は出さない**（パーサーは `body` に読んでいる）。この帯は音も読み上げも
+      // 持たず、取消では帯ごと消えるので、理由を届ける先が 1 つも無い。中身が運用連絡なので、
+      // 消すためだけに帯を出し直すほどのものでもない。**「まだ決めていない」ではなく決めた結果**
+      // （→ docs/spec/data-sources-spec.md §2「扱う電文種別」）。
+      return false
+    }
+
+    const remainMs = new Date(notice.expireAt).getTime() - getTimeRef.current().getTime()
+    // 「日時が壊れている」と「正当に期限切れ」を同じ無言の false に潰さない（解説情報と同じ）。
+    if (!Number.isFinite(remainMs)) {
+      log.warn('[data] 地震・津波に関するお知らせの期限を計算できません', notice.expireAt)
+      return false
+    }
+    if (remainMs <= 0) return false
+
+    if (quakeNoticeExpireTimerRef.current !== undefined) {
+      window.clearTimeout(quakeNoticeExpireTimerRef.current)
+    }
+    shownQuakeNoticeIdRef.current = notice.id
+    setState(prev => ({ ...prev, quakeNotice: notice }))
+    quakeNoticeExpireTimerRef.current = window.setTimeout(() => {
+      quakeNoticeExpireTimerRef.current = undefined
+      if (shownQuakeNoticeIdRef.current === notice.id) shownQuakeNoticeIdRef.current = null
+      setState(prev => (prev.quakeNotice?.id === notice.id ? { ...prev, quakeNotice: null } : prev))
+    }, remainMs)
+    return true
+  }, [])
+
+  /**
+   * 地震回数に関する情報（VXSE60）を反映する。
+   *
+   * 帯の扱いは南海トラフ関連解説情報・お知らせと同じ（最新の 1 通・7 日で畳む・取消で消す）。
+   * **7 日は表示上の都合**で、気象庁が期限を定めているわけではない —— この情報に終わりの宣言は
+   * 無く、群発が収まれば発表が止まるだけ。畳む契機を次報と取消だけにすると、収まったあとも
+   * 帯が居座る。
+   *
+   * **区間が 1 つも読めなかった報は反映しない。** 中身が空の帯を出しても伝わるものが無く、
+   * 読み取りの失敗はパーサー側が記録している。
+   */
+  const applyEarthquakeCount = useCallback((count: JMAEarthquakeCount): boolean => {
+    if (count.cancelled) {
+      // 取消は id ではなく eventId で照合する。回数情報は同じ群発について報を重ねるので、
+      // 取消が指すのは「その群発について直前に出した報」＝いま出している報になる。
+      if (shownEarthquakeCountEventIdRef.current !== count.eventId) {
+        log.info(`[earthquakeCount] 別の群発への取消のため帯を残します received=${count.eventId} shown=${shownEarthquakeCountEventIdRef.current}`)
+        return false
+      }
+      if (earthquakeCountExpireTimerRef.current !== undefined) {
+        window.clearTimeout(earthquakeCountExpireTimerRef.current)
+        earthquakeCountExpireTimerRef.current = undefined
+      }
+      shownEarthquakeCountEventIdRef.current = null
+      setState(prev => ({ ...prev, earthquakeCount: null }))
+      // **true を返す。** 読み上げ側が「取り消された」ことを伝えるため。false にすると
+      // 取消がどこへも流れず、直前に読み上げた回数が訂正されないまま残る。
+      return true
+    }
+    if (count.items.length === 0) return false
+
+    const remainMs = new Date(count.expireAt).getTime() - getTimeRef.current().getTime()
+    // 「日時が壊れている」と「正当に期限切れ」を同じ無言の false に潰さない（解説情報と同じ）。
+    if (!Number.isFinite(remainMs)) {
+      log.warn('[data] 地震回数に関する情報の期限を計算できません', count.expireAt)
+      return false
+    }
+    if (remainMs <= 0) return false
+
+    if (earthquakeCountExpireTimerRef.current !== undefined) {
+      window.clearTimeout(earthquakeCountExpireTimerRef.current)
+    }
+    shownEarthquakeCountEventIdRef.current = count.eventId
+    setState(prev => ({ ...prev, earthquakeCount: count }))
+    earthquakeCountExpireTimerRef.current = window.setTimeout(() => {
+      earthquakeCountExpireTimerRef.current = undefined
+      if (shownEarthquakeCountEventIdRef.current === count.eventId) shownEarthquakeCountEventIdRef.current = null
+      setState(prev => (prev.earthquakeCount?.id === count.id ? { ...prev, earthquakeCount: null } : prev))
+    }, remainMs)
+    return true
+  }, [])
+
+  /**
+   * 推計震度分布図（IXAC41）を反映する。
+   *
+   * **古い報で退行させない。** 同じ地震について続報が出る（実電文で M7.4 → M7.5 の 6 分後、
+   * セル数も変わった）うえ、DMDATA は内容が同一の重複配信もする。到着順が入れ替わったときに
+   * 古い分布へ戻ると、画面が理由もなく前の姿へ巻き戻る。判定は**発表時刻の比較**で行う
+   * ——この電文は `eventId` を持たないので報番号の台帳が作れない。
+   *
+   * **別の地震の分布は無条件に置き換える。** 発表されるのは震度5弱以上の地震だけなので、
+   * 新しい地震の分布が届いたということは、そちらを見せるべき状況になっている。
+   *
+   * @returns 反映したら true
+   */
+  const applyEstimatedIntensity = useCallback((data: JMAEstimatedIntensity): boolean => {
+    // **判定は ref で同期に行う。** `setState` の更新関数の中で判定すると、React が
+    // 開発時に更新関数を二度呼ぶため副作用が二重になり、しかも呼び出し元へ結果を返せない
+    // （更新が後回しになりうる）。地震回数の帯が同じ理由で ref を持っている。
+    // 判定は純関数へ切り出してある（`decideEstimatedIntensityUpdate`）。理由の言い分けと
+    // 「別の地震でも古い発表は採らない」規則をテストで固定したいため。
+    const cur = shownEstimatedIntensityRef.current
+    const verdict = decideEstimatedIntensityUpdate(cur, data)
+    if (verdict.reason === 'stale') {
+      log.info(`[ixac41] 発表が古い報なので反映しません received=${data.time}/${data.arrivalTime} shown=${cur?.time}/${cur?.arrivalTime}`)
+      return false
+    }
+    if (!verdict.apply) return false
+    if (verdict.reason === 'switched') {
+      // 別の地震の分布へ入れ替えた。**画面だけ見てもどちらの地震のものかは判らない**ので残す。
+      log.info(`[ixac41] 別の地震の分布へ入れ替えます received=${data.arrivalTime} shown=${cur?.arrivalTime}`)
+    }
+    shownEstimatedIntensityRef.current = { arrivalTime: data.arrivalTime, time: data.time, count: data.count }
+    setState(prev => ({ ...prev, estimatedIntensity: data }))
+    return true
+  }, [])
+
+  /**
    * 取消を見た事実を台帳へ積む。件数に上限を置き、古いものから落とす。
    *
    * 上限を置くのは、長時間つないだままの端末で無制限に伸びるのを避けるため。**判定は毎回全件を
@@ -820,7 +1044,8 @@ export function useEarthquakes(
                   payload: { kind: 'purge-cancelled-quake', id: e.id },
                   silent: true,
                 })
-                return { ...e, cancelledAt: now }
+                // 津波側と同じく、取消電文だけが持つ項目は名指しで移す（土台は表示中のカード）。
+                return { ...e, cancelledAt: now, ...(quake.cancelText && { cancelText: quake.cancelText }) }
               }
               return e
             })
@@ -896,7 +1121,19 @@ export function useEarthquakes(
                 payload: { kind: 'purge-cancelled-tsunami', id: prev.tsunamis[0].id },
                 silent: true,
               })
-              return { ...prev, tsunamis: [{ ...prev.tsunamis[0], cancelledAt: now, cancelReason: tsunami.cancelReason }], lastUpdate: now }
+              // **取消電文から引き継ぐのは 2 つ。** 表示中のカードを土台にするので、
+              // 取消電文だけが持つ項目は名指しで移さないと落ちる（`cancelText` は
+              // 気象庁が書いた取消しの理由で、他のどこにも無い）。
+              return {
+                ...prev,
+                tsunamis: [{
+                  ...prev.tsunamis[0],
+                  cancelledAt: now,
+                  cancelReason: tsunami.cancelReason,
+                  ...(tsunami.cancelText && { cancelText: tsunami.cancelText }),
+                }],
+                lastUpdate: now,
+              }
             }
             return { ...prev, tsunamis: [], lastUpdate: now }
           }
@@ -920,7 +1157,24 @@ export function useEarthquakes(
             // `??` で書かずにその関数へ通すのは、**日時として読めない値を弾く箇所を 1 つに保つため**。
             // 読めない期限をカードへ入れると、以後の続報でも引き継がれ続け、比較はすべて偽に倒れる。
             const validDateTime = latestValidDateTime([current, tsunami])
-            return { ...prev, tsunamis: [{ ...tsunami, areas, observations, validDateTime }], lastUpdate: now }
+            // 電文の本文（`Body/Text`）も引き継ぐ。**気象庁は毎報には載せない** —— 実電文を
+            // 数えると津波予報の VTSE41 の半数に入るだけで、続報の VTSE51/52 には 1 通も無い。
+            // 引き継がないと、津波予報で「いつ来ていつまで続くか」を伝えた文が、最初の観測情報が
+            // 届いた瞬間に画面から消える（この等級では区域に波高も到達時刻も付かないので、
+            // その文にしか無い）。地震情報側が自由付加文を `??` で引き継ぐのと同じ扱い
+            // （`utils/quakeMerge.ts`）。新しい報が本文を持てばそちらへ従う。
+            const bodyText = tsunami.bodyText ?? current.bodyText
+            // 観測状況を確定した時刻も引き継ぐ。**入るのは観測情報（VTSE51/52）だけ**なので、
+            // **引き継がないと**、間に等級の発表（VTSE41）が挟まった瞬間に消える。観測点そのものは
+            // `mergeTsunamiObservations` で残るため、時点だけ落とすと観測欄の「◯時◯分時点」が
+            // 出たり消えたりする。
+            //
+            // **引き継いだ結果、名乗り（`infoName`）と観測時点の出所が別の報になることがある。**
+            // `infoName` は `...tsunami` から来る（最新の報の値）が、観測時点は前報から残るため。
+            // 等級の発表が最後に来れば「大津波警報・津波警報・津波注意報」と名乗る報が、
+            // 前の観測情報の時点を持つ —— これは正常な状態。
+            const observationDateTime = tsunami.observationDateTime ?? current.observationDateTime
+            return { ...prev, tsunamis: [{ ...tsunami, areas, observations, validDateTime, bodyText, observationDateTime }], lastUpdate: now }
           }
           // TSU-3: 別 eventId の tsunami で既存を上書きするケースを検知したら警告する。
           // 実装は 1 件スロットのまま（複数同時発表は稀なため型変更はスコープ外）だが、
@@ -956,7 +1210,8 @@ export function useEarthquakes(
               silent: true,
             })
             const next = new Map(prev.activeEEWs)
-            next.set(key, { ...existing, cancelledAt: now })
+            // 地震・津波と同じく、取消電文だけが持つ項目は名指しで移す（土台は表示中の EEW）。
+            next.set(key, { ...existing, cancelledAt: now, ...(eew.cancelText && { cancelText: eew.cancelText }) })
             return { ...prev, activeEEWs: next, lastUpdate: now }
           }
           // 続報の上書きだが severity は upgrade only にする（Yahoo hypoInfo 続報が
@@ -1057,6 +1312,23 @@ export function useEarthquakes(
           const kohatsu = payload.data
           const applied = applyKohatsu(kohatsu)
           if (applied && !silent) onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as AppEvent)
+        } else if (payload.kind === 'quakeNotice') {
+          // **通知は出さない。** 運用連絡なので音も読み上げも起こさない（→ docs/spec/data-sources-spec.md
+          // §2「扱う電文種別」）。帯に出すだけなので `onLiveEvent` へは流さない。
+          applyQuakeNotice(payload.data)
+        } else if (payload.kind === 'earthquakeCount') {
+          const count = payload.data
+          if (applyEarthquakeCount(count) && !silent) {
+            onLiveEventRef.current?.({ kind: 'earthquakeCount', data: count } as unknown as AppEvent)
+          }
+        } else if (payload.kind === 'estimatedIntensity') {
+          const ei = payload.data
+          // **`onLiveEvent` へ流す。** 音・読み上げ・地図の分布モードを開く処理がその先にある。
+          // 反映できなかったとき（古い報・重複配信）は流さない —— 画面が変わっていないのに
+          // 音だけ鳴る。
+          if (applyEstimatedIntensity(ei) && !silent) {
+            onLiveEventRef.current?.({ kind: 'estimatedIntensity', data: ei } as unknown as AppEvent)
+          }
         }
         isSilentRef.current = false
       }
@@ -1065,8 +1337,8 @@ export function useEarthquakes(
   }, [handleEvent])
 
   // アンマウント時にタイマーとキューをクリア。
-  // 7日タイマーは 2 つある（後発地震・南海トラフ関連解説情報）。片方だけをクリアすると、
-  // 残った側が最大7日後にアンマウント済みのクロージャの setState を呼ぶ。
+  // 7日タイマーは 4 つある（後発地震・南海トラフ関連解説情報・地震津波に関するお知らせ・地震回数）。
+  // **1 つでも落とし忘れると**、残った側が最大7日後にアンマウント済みのクロージャの setState を呼ぶ。
   useEffect(() => {
     return () => {
       if (kohatsuExpireTimerRef.current !== undefined) {
@@ -1075,13 +1347,19 @@ export function useEarthquakes(
       if (nankaiCommentaryExpireTimerRef.current !== undefined) {
         window.clearTimeout(nankaiCommentaryExpireTimerRef.current)
       }
-      // 取消テストの待ちも落とす。残すと、キューを空にした後で取消をひとつ差し込む。
-      if (testNankaiRetractionTimerRef.current !== undefined) {
-        window.clearTimeout(testNankaiRetractionTimerRef.current)
+      if (quakeNoticeExpireTimerRef.current !== undefined) {
+        window.clearTimeout(quakeNoticeExpireTimerRef.current)
       }
+      if (earthquakeCountExpireTimerRef.current !== undefined) {
+        window.clearTimeout(earthquakeCountExpireTimerRef.current)
+      }
+      // テストボタンが張った待ちも全部落とす（→ `clearTestSimulationTimers`）。
+      // **キューを空にするだけでは足りない** —— 津波と EEW のテストはキューを通らず
+      // `handleEvent` を直接呼ぶ。
+      clearTestSimulationTimers()
       eventQueueRef.current.clear()
     }
-  }, [])
+  }, [clearTestSimulationTimers])
 
   useEffect(() => {
     let cancelled = false
@@ -1170,7 +1448,7 @@ export function useEarthquakes(
             .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
           // 画面へ載せるのは最新報 1 通だけ。その報が有効期限を持たなくても、同じ津波の過去報が
           // 伝えていれば引き継ぐ（引き継がないと下の失効予約が積まれず、期限切れの津波が消えない）。
-          const latestTsunami = allTsunami[0] && withInheritedValidDateTime(allTsunami[0], allTsunami)
+          const latestTsunami = allTsunami[0] && withInheritedTsunamiFacts(allTsunami[0], allTsunami)
           // 気象庁は予報のみになった津波に必ず期限を付ける（tsunami-spec.md §3）。それが引き継げて
           // いないなら、期限を伝えた報が取得件数の上限から押し出された疑いがある。放っておくと
           // 「消えない津波」に化けるが、画面には何の痕跡も出ないので記録だけは残す。
@@ -1286,6 +1564,19 @@ export function useEarthquakes(
           if (applyKohatsu(kohatsu)) {
             onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as AppEvent)
           }
+        } else if (ev.kind === 'quakeNotice') {
+          // 運用連絡なので音も読み上げも起こさない（帯に出すだけ）。
+          applyQuakeNotice(ev.data)
+        } else if (ev.kind === 'earthquakeCount') {
+          const count = ev.data
+          if (applyEarthquakeCount(count)) {
+            onLiveEventRef.current?.({ kind: 'earthquakeCount', data: count } as unknown as AppEvent)
+          }
+        } else if (ev.kind === 'estimatedIntensity') {
+          const ei = ev.data
+          if (applyEstimatedIntensity(ei)) {
+            onLiveEventRef.current?.({ kind: 'estimatedIntensity', data: ei } as unknown as AppEvent)
+          }
         } else {
           const data = ev.data
           const enriched = data.kind === 'eew' ? enrichEEWPref(data as EEWAlert, areaPrefIndex) : data
@@ -1325,7 +1616,7 @@ export function useEarthquakes(
           .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
         // DMDSS 側と同じ引き継ぎ。P2PQuake の 552 は有効期限を持たないため実際には何も変わらないが、
         // 経路ごとに扱いを違えない（片方だけ直すと、次に触る人がどちらが正なのか判断できない）。
-        const latestTsunami = allTsunami[0] && withInheritedValidDateTime(allTsunami[0], allTsunami)
+        const latestTsunami = allTsunami[0] && withInheritedTsunamiFacts(allTsunami[0], allTsunami)
         const nowP2p = serverDate()
         const tsunamis = latestTsunami
           && !latestTsunami.cancelled
@@ -1475,7 +1766,8 @@ export function useEarthquakes(
     }
   }, [])
 
-  const simulateEarthquake = useCallback(() => {
+  const simulateEarthquake = useCallback(async () => {
+    const { createTestEarthquake, createTestLpgm } = await loadTestData()
     // points の形状・情報種別は経路で異なる（DMDATA は観測点が pref 空＋都道府県ロールアップ、
     // P2PQuake は観測点に pref が入る）。バリアントに合わせて実電文の形を再現する。
     const quake = createTestEarthquake(isDmdss)
@@ -1491,61 +1783,136 @@ export function useEarthquakes(
     }
   }, [handleEvent])
 
-  const simulateForeignQuake = useCallback(() => {
+  /**
+   * 津波の続報で区域ごとに等級が動くテスト（一部解除・一部引き上げ）。
+   *
+   * 発表 → `TEST_AUTO_DISMISS_MS` の半分で続報 → 満了で解除、と 3 段で進む。**続報を挟むのが
+   * 要点** —— 「〇〇から切り替え」の印は前報との比較（`areaGradeChangedKeys`）で立つので、
+   * 1 通だけ流しても出ない。全体の最上位等級は大津波警報のまま動かないため、区域単位の
+   * 変化を見る経路（→ docs/spec/tsunami-spec.md §10）はここでしか通らない。
+   *
+   * **DMDSS 版のみ。** 前回の等級（`LastKind`）は P2PQuake が配信しない。
+   */
+  const simulateTsunamiGradeChange = useCallback(async () => {
+    const { createTestTsunami, createTestTsunamiGradeChange, TEST_AUTO_DISMISS_MS } = await loadTestData()
+    const base = createTestTsunami(isDmdss)
+    if (testTsunamiGradeChangeTimerRef.current !== undefined) {
+      window.clearTimeout(testTsunamiGradeChangeTimerRef.current)
+    }
+    runSimulateTsunami(() => base, TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent)
+    // 解除の待ちは `runSimulateTsunami` が張っている。続報はその手前へ差し込む。
+    //
+    // **待ちは ref で追う。** アンマウントとリセット（リプレイの開始・停止）で落とせるようにする
+    // —— 追えないと、画面を消した後や再生へ切り替えた後に 45 秒前の続報だけが単独で届き、
+    // 消えたはずの津波カードが復活する。しかもこの経路は `handleEvent` を直接呼ぶので、
+    // キューを空にしても止まらない。
+    testTsunamiGradeChangeTimerRef.current = window.setTimeout(() => {
+      testTsunamiGradeChangeTimerRef.current = undefined
+      // 解除が先に走った後は流さない（ボタンを押し直したときに古い続報が紛れ込む）
+      if (testTsunamiRef.current?.tsunami.id !== base.id) return
+      handleEvent(createTestTsunamiGradeChange(base))
+    }, TEST_AUTO_DISMISS_MS / 2)
+  }, [handleEvent])
+
+  /**
+   * 訓練報のテスト。
+   *
+   * 気象庁は訓練・試験の電文をヘッダ（`Control/Status`）でだけ区別し、中身は本物と同じ形で
+   * 流す。アプリは**あえて画面へ通し**（`test: false`）、代わりに「訓練報」の印を出して
+   * 見分けられるようにしている（→ docs/spec/quake-spec.md §5「電文の運用種別」）。
+   *
+   * **その印を出す手段がこれしかない。** 実配信の訓練報は事前に予告されて流れるもので、
+   * こちらの都合では受け取れない。印が出るかどうかを実機で確かめられる唯一の入口になる。
+   */
+  const simulateTrainingQuake = useCallback(async () => {
+    const { createTestEarthquake } = await loadTestData()
+    handleEvent(createTestEarthquake(isDmdss, '訓練'))
+  }, [handleEvent])
+
+  /**
+   * 推計震度分布図のテスト。**地震情報を先に出し、少し置いてから分布を流す。**
+   *
+   * 実運用では地震から数分後に届くもので、そのころ地震カードは既に画面にある。
+   * 同時に流すと、分布モードを開く側がカードを見つけられない（引き当ては発現時刻だが、
+   * 探す先の一覧にまだ載っていない）。**受信と同じ経路（イベントキュー）へ積む**ので、
+   * 取り違え防止の分岐も自動オープンも実運用と同じところを踏む。
+   */
+  const simulateEstimatedIntensity = useCallback(async () => {
+    const { createTestEstimatedIntensity } = await loadTestData()
+    const { quake, estimated } = createTestEstimatedIntensity()
+    const now = serverDate()
+    eventQueueRef.current.push({ eventTime: now, payload: { kind: 'event', event: quake } })
+    eventQueueRef.current.push({
+      eventTime: new Date(now.getTime() + TEST_ESTIMATED_INTENSITY_DELAY_MS),
+      payload: { kind: 'estimatedIntensity', data: estimated },
+    })
+  }, [])
+
+  const simulateForeignQuake = useCallback(async () => {
+    const { createTestForeignQuake } = await loadTestData()
     // 付加文（気象庁の固定付加文・自由付加文の原文）は DMDATA 経由でのみ配信される。standard 版では
     // 実データで届かないため含めない（LPGM を isDmdss 限定にしているのと同じ理由）。
     handleEvent(createTestForeignQuake(isDmdss))
   }, [handleEvent])
 
-  const simulateEEW = useCallback(
-    () => runSimulateEEW('special', createTestEEW, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent),
-    [handleEvent],
-  )
+  const simulateForeignQuakeHuge = useCallback(async () => {
+    const { createTestForeignQuakeHuge } = await loadTestData()
+    handleEvent(createTestForeignQuakeHuge(isDmdss))
+  }, [handleEvent])
 
-  const simulateEEWWarning = useCallback(
-    () => runSimulateEEW('warning', createTestEEWWarning, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent),
-    [handleEvent],
-  )
+  // EEW のテストデータもバリアントを渡す。**standard 版で押せるボタンが DMDATA 経路にしか
+  // 無い項目を画面へ出さないため** —— 震源要素の精度・内陸/海域・短縮名・固定付加文・
+  // 最大予測値の変化・長周期地震動階級は、P2PQuake も Yahoo hypoInfo も配信しない。
+  const simulateEEW = useCallback(async () => {
+    const { createTestEEW } = await loadTestData()
+    runSimulateEEW('special', (e, s, b) => createTestEEW(isDmdss, e, s, b), EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
+  }, [handleEvent])
 
-  const simulateEEWForecast = useCallback(
-    () => runSimulateEEW('forecast', createTestEEWForecast, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent),
-    [handleEvent],
-  )
+  const simulateEEWWarning = useCallback(async () => {
+    const { createTestEEWWarning } = await loadTestData()
+    runSimulateEEW('warning', (e, s, b) => createTestEEWWarning(isDmdss, e, s, b), EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
+  }, [handleEvent])
 
-  const simulateEEWAssumed = useCallback(
-    () => runSimulateEEW('assumed', createTestEEWAssumed, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent),
-    [handleEvent],
-  )
+  const simulateEEWForecast = useCallback(async () => {
+    const { createTestEEWForecast } = await loadTestData()
+    runSimulateEEW('forecast', (e, s, b) => createTestEEWForecast(isDmdss, e, s, b), EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
+  }, [handleEvent])
 
-  const simulateEEWDeep = useCallback(
-    () => runSimulateEEW('deep', createTestEEWDeep, EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent),
-    [handleEvent],
-  )
+  const simulateEEWAssumed = useCallback(async () => {
+    const { createTestEEWAssumed } = await loadTestData()
+    runSimulateEEW('assumed', (e, s, b) => createTestEEWAssumed(isDmdss, e, s, b), EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
+  }, [handleEvent])
 
-  const simulateEEWRetraction = useCallback(
-    () => runSimulateEEWRetraction(createTestEEWWarning, EEW_RETRACTION_CANCEL_MS, testEEWRetractionRef, handleEvent),
-    [handleEvent],
-  )
+  const simulateEEWDeep = useCallback(async () => {
+    const { createTestEEWDeep } = await loadTestData()
+    runSimulateEEW('deep', (e, s, b) => createTestEEWDeep(isDmdss, e, s, b), EEW_FINAL_SILENCE_MS, testEEWTimersRef.current, handleEvent)
+  }, [handleEvent])
 
-  const simulateTsunami = useCallback(
-    () => runSimulateTsunami(() => createTestTsunami(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent),
-    [handleEvent],
-  )
+  const simulateEEWRetraction = useCallback(async () => {
+    const { createTestEEWWarning } = await loadTestData()
+    runSimulateEEWRetraction((e, s, b) => createTestEEWWarning(isDmdss, e, s, b), EEW_RETRACTION_CANCEL_MS, testEEWRetractionRef, handleEvent)
+  }, [handleEvent])
 
-  const simulateTsunamiWarning = useCallback(
-    () => runSimulateTsunami(() => createTestTsunamiWarning(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent),
-    [handleEvent],
-  )
+  const simulateTsunami = useCallback(async () => {
+    const { createTestTsunami, TEST_AUTO_DISMISS_MS } = await loadTestData()
+    runSimulateTsunami(() => createTestTsunami(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent)
+  }, [handleEvent])
 
-  const simulateTsunamiWatch = useCallback(
-    () => runSimulateTsunami(() => createTestTsunamiWatch(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent),
-    [handleEvent],
-  )
+  const simulateTsunamiWarning = useCallback(async () => {
+    const { createTestTsunamiWarning, TEST_AUTO_DISMISS_MS } = await loadTestData()
+    runSimulateTsunami(() => createTestTsunamiWarning(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent)
+  }, [handleEvent])
+
+  const simulateTsunamiWatch = useCallback(async () => {
+    const { createTestTsunamiWatch, TEST_AUTO_DISMISS_MS } = await loadTestData()
+    runSimulateTsunami(() => createTestTsunamiWatch(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent)
+  }, [handleEvent])
 
   // 予報のみは DMDSS の実運用では ValidDateTime の期限切れで静かに消える（明示的な解除電文を
   // 伴わない）ため、DMDSS では runSimulateTsunami（明示的キャンセル）を使わず期限切れ経路に任せる。
   // standard 版（P2PQuake）は validDateTime を持たないため、実運用と同じく解除電文で消す。
-  const simulateTsunamiForecast = useCallback(() => {
+  const simulateTsunamiForecast = useCallback(async () => {
+    const { createTestTsunamiForecast, TEST_AUTO_DISMISS_MS } = await loadTestData()
     if (!isDmdss) {
       runSimulateTsunami(() => createTestTsunamiForecast(false), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent)
       return
@@ -1557,12 +1924,13 @@ export function useEarthquakes(
     handleEvent(createTestTsunamiForecast(true))
   }, [handleEvent])
 
-  const simulateTsunamiRetraction = useCallback(
-    () => runSimulateTsunami(() => createTestTsunamiRetraction(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent, 'retracted'),
-    [handleEvent],
-  )
+  const simulateTsunamiRetraction = useCallback(async () => {
+    const { createTestTsunamiRetraction, TEST_AUTO_DISMISS_MS } = await loadTestData()
+    runSimulateTsunami(() => createTestTsunamiRetraction(isDmdss), TEST_AUTO_DISMISS_MS, testTsunamiRef, handleEvent, 'retracted')
+  }, [handleEvent])
 
-  const simulateNankai = useCallback((kindName: '調査中' | '巨大地震注意' | '巨大地震警戒') => {
+  const simulateNankai = useCallback(async (kindName: '調査中' | '巨大地震注意' | '巨大地震警戒') => {
+    const { createTestNankai } = await loadTestData()
     // **受信と同じ関数を通す。** state を直書きすると、表示中の識別情報を覚える ref が進まず、
     // 直後に取消テストを走らせたときの照合が実運用と食い違う。
     const nankai = createTestNankai(kindName)
@@ -1579,7 +1947,8 @@ export function useEarthquakes(
    * 書き換えると、取消の照合（`eventId` の一致確認）を一度も通らないテストになる ―― 実運用で
    * 効く分岐を踏まないテストボタンは、あってもこの穴を見つけられない。
    */
-  const simulateNankaiRetraction = useCallback(() => {
+  const simulateNankaiRetraction = useCallback(async () => {
+    const { createTestNankai, createTestNankaiRetraction, TEST_AUTO_DISMISS_MS } = await loadTestData()
     if (testNankaiRetractionTimerRef.current !== undefined) {
       window.clearTimeout(testNankaiRetractionTimerRef.current)
     }
@@ -1592,20 +1961,66 @@ export function useEarthquakes(
     }, TEST_AUTO_DISMISS_MS)
   }, [])
 
-  const simulateNankaiCommentary = useCallback((serialName: '臨時解説' | '定例解説') => {
+  const simulateNankaiCommentary = useCallback(async (serialName: '臨時解説' | '定例解説') => {
+    const { createTestNankaiCommentary } = await loadTestData()
     const commentary = createTestNankaiCommentary(serialName)
     if (applyNankaiCommentary(commentary)) {
       onLiveEventRef.current?.({ kind: 'nankaiCommentary', data: commentary } as unknown as AppEvent)
     }
   }, [applyNankaiCommentary])
 
-  const simulateKohatsu = useCallback(() => {
+  const simulateKohatsu = useCallback(async () => {
+    const { createTestKohatsu } = await loadTestData()
     // 受信と同じ関数を通す（理由は `simulateNankai` に同じ）。期限タイマーもそちらが張る。
     const kohatsu = createTestKohatsu()
     if (applyKohatsu(kohatsu)) {
       onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as AppEvent)
     }
   }, [applyKohatsu])
+
+  const simulateQuakeNotice = useCallback(async () => {
+    const { createTestQuakeNotice } = await loadTestData()
+    // 受信と同じ関数を通す（理由は `simulateNankai` に同じ）。期限タイマーもそちらが張る。
+    const notice = createTestQuakeNotice()
+    applyQuakeNotice(notice)
+  }, [applyQuakeNotice])
+
+  /**
+   * 地震回数に関する情報のテスト。
+   *
+   * **`onLiveEvent` へも流す。** 帯だけの VZSE40 と違い、こちらは通知音と読み上げを起こす
+   * （群発の総数は他のどの経路でも伝わらない）。実運用の分岐と同じところを踏ませる。
+   */
+  const simulateEarthquakeCount = useCallback(async () => {
+    const { createTestEarthquakeCount } = await loadTestData()
+    const count = createTestEarthquakeCount()
+    if (applyEarthquakeCount(count)) {
+      onLiveEventRef.current?.({ kind: 'earthquakeCount', data: count } as unknown as AppEvent)
+    }
+  }, [applyEarthquakeCount])
+
+  /**
+   * 地震回数に関する情報の取消テスト。発表を出し、`TEST_AUTO_DISMISS_MS` 後に**同じ `eventId` の
+   * 取消**を流す（照合は `eventId`。`applyEarthquakeCount`）。
+   *
+   * **取消の理由が届く先はこの種別だけ読み上げしかない** —— 帯ごと消えるのでカードに残せない。
+   * ボタンが無いと、その文が一度も声にならないまま気づけない。
+   *
+   * 受信と同じ経路（イベントキュー）へ積む理由は `simulateNankaiRetraction` に同じ。
+   */
+  const simulateEarthquakeCountRetraction = useCallback(async () => {
+    const { createTestEarthquakeCount, createTestEarthquakeCountRetraction, TEST_AUTO_DISMISS_MS } = await loadTestData()
+    if (testEarthquakeCountRetractionTimerRef.current !== undefined) {
+      window.clearTimeout(testEarthquakeCountRetractionTimerRef.current)
+    }
+    const count = createTestEarthquakeCount()
+    const retraction = createTestEarthquakeCountRetraction(count)
+    eventQueueRef.current.push({ eventTime: serverDate(), payload: { kind: 'earthquakeCount', data: count } })
+    testEarthquakeCountRetractionTimerRef.current = window.setTimeout(() => {
+      testEarthquakeCountRetractionTimerRef.current = undefined
+      eventQueueRef.current.push({ eventTime: serverDate(), payload: { kind: 'earthquakeCount', data: retraction } })
+    }, TEST_AUTO_DISMISS_MS)
+  }, [])
 
   const resetState = useCallback(() => {
     // 台帳もここで空にする。掃除の `useEffect` に任せると、リセットから次のコミットまでの間に
@@ -1620,10 +2035,10 @@ export function useEarthquakes(
     shownNankaiEventIdRef.current = null
     shownKohatsuEventIdRef.current = null
     shownCommentaryIdRef.current = null
-    if (testNankaiRetractionTimerRef.current !== undefined) {
-      window.clearTimeout(testNankaiRetractionTimerRef.current)
-      testNankaiRetractionTimerRef.current = undefined
-    }
+    shownQuakeNoticeIdRef.current = null
+    shownEarthquakeCountEventIdRef.current = null
+    shownEstimatedIntensityRef.current = null
+    clearTestSimulationTimers()
     setState(prev => ({
       ...prev,
       earthquakes: [],
@@ -1633,6 +2048,9 @@ export function useEarthquakes(
       nankai: null,
       nankaiCommentary: null,
       kohatsu: null,
+      quakeNotice: null,
+      earthquakeCount: null,
+      estimatedIntensity: null,
       // 「もっと見る」を畳む。カードを空にしても hasMore を残すと、リプレイ中にボタンが出たまま
       // になり、押すと `loadMoreEarthquakes` が**ライブの最新履歴**を取りに行って、再生時刻より
       // 未来の地震がカードに並ぶ。ライブへ戻る側は履歴の取得完了時に立て直すので落としてよい。
@@ -1651,7 +2069,16 @@ export function useEarthquakes(
       window.clearTimeout(nankaiCommentaryExpireTimerRef.current)
       nankaiCommentaryExpireTimerRef.current = undefined
     }
-  }, [])
+    // 地震・津波に関するお知らせ（VZSE40）・地震回数（VXSE60）の7日タイマーも同じ
+    if (quakeNoticeExpireTimerRef.current !== undefined) {
+      window.clearTimeout(quakeNoticeExpireTimerRef.current)
+      quakeNoticeExpireTimerRef.current = undefined
+    }
+    if (earthquakeCountExpireTimerRef.current !== undefined) {
+      window.clearTimeout(earthquakeCountExpireTimerRef.current)
+      earthquakeCountExpireTimerRef.current = undefined
+    }
+  }, [clearTestSimulationTimers])
 
   /**
    * リプレイ開始時に、指定時刻より前の地震カードを一覧へ流し込む（音・読み上げは経由しない）。
@@ -1680,9 +2107,12 @@ export function useEarthquakes(
     clearTelegramLog,
     simulateEarthquake,
     simulateForeignQuake,
+    simulateForeignQuakeHuge,
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
+    simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
+    simulateTrainingQuake, simulateTsunamiGradeChange,
     resetState,
     loadReplayEvents,
     restoreQuakeHistory,

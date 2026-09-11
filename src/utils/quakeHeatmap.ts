@@ -1,5 +1,6 @@
 import type { JMAQuake } from '../types/earthquake'
 import { extractQuakeEventIdFromId } from './quakeMerge'
+import { hasKnownEpicenter } from './geo'
 
 export interface HeatPoint {
   lat: number
@@ -27,10 +28,14 @@ export function quakeIdentityKey(q: Pick<JMAQuake, 'id' | 'earthquake'>): string
   return dmdataEventId ?? `${q.earthquake.time}|${q.earthquake.hypocenter.name}`
 }
 
-// 震源が未確定（震度速報段階など）のプレースホルダー座標を判定する。
-export function hasValidHypocenter(lat: number, lng: number): boolean {
-  return lat > -200 && lng > -200
-}
+/**
+ * 震源が未確定（震度速報段階など）のプレースホルダー座標を判定する。
+ *
+ * **実体は `geo.ts` の `hasKnownEpicenter`。** 同じ判定を別実装で持つと、値域の扱いが
+ * 片方だけ変わったときに黙ってずれる（この判定は地図・カード・読み上げ・ヒートマップに
+ * またがっている）。名前だけこのモジュールの語彙で残してある。
+ */
+export const hasValidHypocenter = hasKnownEpicenter
 
 // マグニチュードをヒートマップの重みに変換する。
 // 震度は震源からの距離に左右され月単位の集計には向かないため、地震そのものの規模を表す

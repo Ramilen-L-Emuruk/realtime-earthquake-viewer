@@ -214,7 +214,7 @@ function setup() {
     setActiveTabRealtimeForKyoshin: vi.fn(), setActiveTabNonRealtime: vi.fn(),
     setActiveTabRealtimeOnUpdate: vi.fn(),
     setActiveTabRealtimeUrgent: vi.fn(), followSpeechTab: vi.fn(), preSpeechTab: vi.fn(() => true), expandPanelForSpecialInfo: vi.fn(), revertToDefaultTab: vi.fn(),
-    selectQuake: vi.fn(), setActiveLpgmEventId: vi.fn(),
+    selectQuake: vi.fn(), setActiveLpgmEventId: vi.fn(), openEstimatedIntensity: vi.fn(),
   }))
   return result.current.handleLiveEvent
 }
@@ -779,6 +779,61 @@ describe('内容が重ならない同格どうしは互いに待つ', () => {
     await flush()
     expect(spokenTexts()).toHaveLength(2)
     expect(spokenTexts()[1]).toContain('津波観測情報')
+  })
+
+  // 推計震度分布図も同じ層に置いている。**地震から数分後に届く**ので「各地の震度」の続報と
+  // かち合いやすく、載せないとそちらを切る（実測では第一報が 4〜7 分後、続報が 9〜16 分後）。
+  //
+  // 内容も重ならない —— あちらは観測した震度を地域ごとに読み、こちらは「分布図を受信した」と
+  // だけ言う。どちらも読みたい側なので、互いに待たせる。
+  function makeEstimatedIntensity() {
+    return {
+      kind: 'estimatedIntensity',
+      data: {
+        id: 'ix-1', time: '2026-01-01T12:05:00+09:00', arrivalTime: '2026-01-01T03:00:00.000Z',
+        hypocenter: { lat: 35, lon: 139, depthKm: 10 },
+        magnitude: 6.0, areaCode: 100, telegramKind: 0,
+        grades: [{ scale: 4, modifier: 'none', lower: 35, upper: 44 }],
+        count: 1, lat: new Float32Array([35]), lon: new Float32Array([139]), si: new Uint8Array([42]),
+        bounds: { south: 35, north: 35.1, west: 139, east: 139.1 },
+      },
+    } as never
+  }
+
+  // 正: 地震情報を読んでいる最中に届いても切らない。
+  it('地震情報の読み上げ中に推計震度分布図が届いても、地震情報を切らない', async () => {
+    const handle = setup()
+    handle(makeQuake())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+
+    handle(makeEstimatedIntensity())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)   // 分布図は待つ
+
+    finishSpeech(0)
+    await flush()
+    expect(spokenTexts()).toHaveLength(2)
+    expect(spokenTexts()[1]).toContain('推計震度分布図')
+  })
+
+  // 対照: 逆向きも同じ。分布図を読んでいる最中の地震情報も待つ。
+  // **片方向だけ載せても効かない** —— 待つかどうかは両者が対象かで決まる。
+  it('推計震度分布図の読み上げ中に地震情報が届いても、分布図を切らない', async () => {
+    const handle = setup()
+    handle(makeEstimatedIntensity())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)
+    expect(spokenTexts()[0]).toContain('推計震度分布図')
+
+    handle(makeQuake())
+    await settle()
+    expect(spokenTexts()).toHaveLength(1)   // 地震情報も待つ
+
+    finishSpeech(0)
+    await flush()
+    expect(spokenTexts()).toHaveLength(2)
+    expect(spokenTexts()[1]).toContain('震度速報')
   })
 
   it('津波の観測情報の読み上げ中に地震情報が届いても、観測情報を切らない', async () => {

@@ -9,7 +9,7 @@ import type { LatLng } from '../../utils/stationCoords'
 import { haversineKm } from '../../utils/geo'
 import { addOrderedLayer } from './gl/layerOrder'
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
-import { badgeHtml, escapeHtml } from './gl/popupHtml'
+import { badgeHtml, escapeHtml, nonJmaBadgeHtml } from './gl/popupHtml'
 import { ensureIntensityIcons, intensityIconId, INTENSITY_ICON_BASE_RADIUS } from './gl/intensityIcons'
 
 // 地震情報タブの各観測点の震度を丸バッジ（震度ラベル付き）で描画する MapLibre 版。
@@ -55,6 +55,7 @@ function buildFC(
         pref: m.pref,
         region: m.region ?? '',
         isArea: m.isArea,
+        nonJma: m.nonJma ?? false,
         // 震源が無い電文では距離を出さない（-1 を「不明」の番兵として扱う）。
         distanceKm: epicenter
           ? Math.round(haversineKm(epicenter[0], epicenter[1], m.position[0], m.position[1]))
@@ -89,6 +90,11 @@ function clickHtml(f: MapGeoJSONFeature): string {
   const isArea = Boolean(f.properties?.isArea)
   const distanceKm = Number(f.properties?.distanceKm ?? -1)
 
+  // 気象庁以外が運用する観測点（電文では名前の末尾に ＊）。**誰が測った値かは利用者が
+  // 知ってよい事実**なので、印の代わりにバッジで出す（→ `EarthquakePoint.nonJma`）。
+  // **「自治体」と言い換えない** —— 防災科研なども含む。
+  const nonJma = Boolean(f.properties?.nonJma)
+
   // 観測点は「都道府県 / 所属一次細分区域」、区域代表点は区分そのものを添える。
   const sub = isArea
     ? [pref, '一次細分区域（代表点）'].filter(Boolean).join(' / ')
@@ -105,7 +111,9 @@ function clickHtml(f: MapGeoJSONFeature): string {
 
   return (
     `<div style="min-width:150px">` +
-    `<div style="font-weight:700;font-size:13px">${escapeHtml(titleOf(f))}</div>` +
+    `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">` +
+      `<span style="font-weight:700;font-size:13px">${escapeHtml(titleOf(f))}</span>` +
+      (nonJma ? nonJmaBadgeHtml() : '') + `</div>` +
     (sub ? `<div style="margin-top:2px;font-size:11px;color:#94a3b8">${escapeHtml(sub)}</div>` : '') +
     rows +
     `</div>`

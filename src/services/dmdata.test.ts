@@ -13,7 +13,9 @@ import {
   fetchDmdataKohatsu,
   DmdataWebSocket,
   decodeTelegramText,
+  needsBodyDecode,
 } from './dmdata'
+import { isBinaryTelegramType } from './dmdataTelegramPayload'
 import { DmdataApiKeyError, DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
 import { log } from '../utils/logger'
 import { serverNow } from '../utils/clock'
@@ -602,5 +604,47 @@ describe('decodeTelegramText', () => {
   // 安全弁: 解けない圧縮形式（zip 等）は null。ブラウザの DecompressionStream が扱えない。
   it('対応していない圧縮形式は null', async () => {
     expect(await decodeTelegramText({ body: 'AAAA', encoding: 'base64', compression: 'zip' })).toBeNull()
+  })
+})
+
+// 本文を復号する種別の絞り込み。**扱わない電文のためだけに base64 デコード → gunzip →
+// 文字列化が走っていた**のを止めた（2026-09-10）。効き目より **絞りすぎていないこと** の
+// ほうが大事な変更なので、安全弁を厚めに置く。
+describe('needsBodyDecode', () => {
+  // 正: 購読の網に掛かるが扱わない種別は復号しない。分類 telegram.earthquake には
+  // アプリが読まない種別がいくつも流れており、以前はその全部を base64 デコード →
+  // gunzip → 文字列化してから捨てていた。
+  it('扱わない種別の本文は復号しない', () => {
+    expect(needsBodyDecode('VXSE56')).toBe(false)
+    expect(needsBodyDecode('WEPA60')).toBe(false)
+    expect(needsBodyDecode('VZSE50')).toBe(false)
+  })
+
+  // 対照: IXAC41（推計震度分布図）は**扱うようになったので本文が要る**。ただし通るのは
+  // 二進の経路で、`TextDecoder` は通さない（`decodeTelegramBytes` → `BufrFragmentStore`）。
+  // 文字列へ落とすと不正なバイトが U+FFFD へ潰れて元へ戻せなくなる。
+  it('二進電文は本文が要る（ただし文字列にはしない）', () => {
+    expect(needsBodyDecode('IXAC41')).toBe(true)
+    expect(isBinaryTelegramType('IXAC41')).toBe(true)
+    // XML の種別を二進の経路へ流さないこと
+    expect(isBinaryTelegramType('VXSE53')).toBe(false)
+  })
+
+  // 対照: パーサーへ渡す種別はこれまでどおり復号する。ここが偽になると電文が 1 通も読めなくなる。
+  it('扱う種別の本文は復号する', () => {
+    for (const t of ['VXSE45', 'VXSE51', 'VXSE52', 'VXSE53', 'VXSE61', 'VXSE62',
+      'VTSE41', 'VTSE51', 'VTSE52', 'VYSE50', 'VYSE51', 'VYSE52', 'VYSE60',
+      'VZSE40', 'VXSE60']) {
+      expect(needsBodyDecode(t), t).toBe(true)
+    }
+  })
+
+  // 安全弁: パーサーへ渡さないが `handleMessage` の分岐が扱う 3 種を巻き込んでいないこと。
+  // **とくに VXSE43** —— 購読していない電文が届いたことを知らせる警告を上げる唯一の経路で、
+  // 「扱う種別だけ復号する」と素朴に書くとここが黙る。配信分類の変わり目に気づけなくなる。
+  it('パーサーへ渡さないが分岐が扱う種別は巻き込まない', () => {
+    expect(needsBodyDecode('VXSE42')).toBe(true)   // 配信テスト（疎通確認として記録する）
+    expect(needsBodyDecode('VXSE43')).toBe(true)   // 購読外。届いたら警告＋電文ログ
+    expect(needsBodyDecode('VXSE44')).toBe(true)   // 廃止予定の旧 EEW。電文ログへ残す
   })
 })

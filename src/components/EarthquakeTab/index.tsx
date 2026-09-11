@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import type { JMAQuake, JMALpgm } from '../../types/earthquake'
+import type { JMAQuake, JMALpgm, JMAEstimatedIntensity } from '../../types/earthquake'
 import { EarthquakeCard } from './EarthquakeCard'
 import { extractQuakeEventId, quakeEventKey } from '../../utils/quakeMerge'
 
@@ -15,12 +15,17 @@ interface Props {
   lpgmByEventId: ReadonlyMap<string, JMALpgm>
   activeLpgmEventId: string | null
   onToggleLpgm: (eventId: string) => void
+  /** アプリが持っている最新の推計震度分布図（IXAC41）。どのカードのものかはカード側で引き当てる。 */
+  estimatedIntensity: JMAEstimatedIntensity | null
+  /** 震度分布モードを開いている地震の `eventKey`。 */
+  distributionQuakeKey: string | null
+  onToggleDistribution: (eventKey: string) => void
 }
 
 // 地震情報タブの右パネル。地震カードの一覧を表示し、クリックで地図表示対象を選択する。
 // 地図そのものは App が常時表示する。
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
-export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, lpgmByEventId, activeLpgmEventId, onToggleLpgm }: Props) {
+export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selectedId, onSelect, isLoading, isLoadingMore, hasMore, onLoadMore, error, lpgmByEventId, activeLpgmEventId, onToggleLpgm, estimatedIntensity, distributionQuakeKey, onToggleDistribution }: Props) {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -67,6 +72,9 @@ export const EarthquakeTab = memo(function EarthquakeTab({ earthquakes, selected
           lpgm={lpgmByEventId.get(extractQuakeEventId(quake) ?? '')}
           activeLpgmEventId={activeLpgmEventId}
           onToggleLpgm={onToggleLpgm}
+          estimatedIntensity={estimatedIntensity}
+          distributionActive={quakeEventKey(quake) === distributionQuakeKey}
+          onToggleDistribution={() => onToggleDistribution(quakeEventKey(quake))}
         />
       ))}
       {hasMore && (

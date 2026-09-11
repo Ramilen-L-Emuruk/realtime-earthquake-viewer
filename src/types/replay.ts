@@ -4,7 +4,10 @@
 //   - DMDSS 版: DMDATA の日次アーカイブ（services/dmdataReplay.ts）
 //   - standard 版: P2PQuake の日付指定クエリ（services/p2pquakeReplay.ts）
 //   - 実地震テストシナリオ: 収録済み JSON（utils/testScenarioReplay.ts）
-import type { AppEvent, JMAQuake, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu } from './earthquake'
+import type {
+  AppEvent, JMAQuake, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu,
+  JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity,
+} from './earthquake'
 
 export type ReplayPayload =
   | { kind: 'event'; event: AppEvent }
@@ -12,6 +15,10 @@ export type ReplayPayload =
   | { kind: 'nankai'; data: JMANankai }
   | { kind: 'nankaiCommentary'; data: JMANankaiCommentary }
   | { kind: 'kohatsu'; data: JMAKohatsu }
+  | { kind: 'quakeNotice'; data: JMAQuakeNotice }
+  | { kind: 'earthquakeCount'; data: JMAEarthquakeCount }
+  /** 推計震度分布図（IXAC41）。**唯一の二進電文**で、分割配信されるため結合してから読む */
+  | { kind: 'estimatedIntensity'; data: JMAEstimatedIntensity }
 
 export interface ReplayEntry {
   payload: ReplayPayload
