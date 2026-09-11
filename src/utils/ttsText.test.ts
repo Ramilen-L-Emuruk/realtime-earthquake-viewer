@@ -1097,6 +1097,41 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
     expect((text.match(/ほか2地域/g) ?? []).length).toBe(2)
   })
 
+  it('対照: 上限に達しなければ省略されず、全区域が名前で既読になる', () => {
+    const state = createQuakeSpokenState()
+    const names = ['宮城県北部', '宮城県南部', '宮城県中部']
+    const first = earthquakeToSegments(
+      quakeOf(names.map(n => area('宮城県', n, 40)), 40), OPTS, true, state)
+    expect(joinSegments(first)).not.toContain('ほか')
+    markSpoken(state, first)
+
+    const second = earthquakeToSegments(
+      quakeOf(names.map(n => area('宮城県', n, 40)), 40), OPTS, false, state)
+    for (const n of names) expect(joinSegments(second)).not.toContain(n)
+  })
+
+  // 既読にしたことで名前が永久に読まれなくなるわけではない。上がれば読む
+  it('安全弁: 件数だけ伝えた区域も震度が上がれば読み直す（「新たに」は付けない）', () => {
+    const state = createQuakeSpokenState()
+    const opts = { ...OPTS, maxRegions: 1, regionTolerance: 0 }
+    // 初報: 2 区域とも震度3。上限 1 なので「宮城県北部、ほか1地域」
+    const first = earthquakeToSegments(quakeOf([
+      area('宮城県', '宮城県北部', 30),
+      area('宮城県', '宮城県南部', 30),
+    ], 30), opts, true, state)
+    expect(joinSegments(first)).toContain('ほか1地域')
+    markSpoken(state, first)
+
+    // 続報: 件数でしか伝えていない宮城県南部が 3→4。初めて挙げる区域ではないので「新たに」は付かない
+    const second = earthquakeToSegments(quakeOf([
+      area('宮城県', '宮城県北部', 30),
+      area('宮城県', '宮城県南部', 40),
+    ], 40), opts, false, state)
+    const text = joinSegments(second)
+    expect(text).toContain('宮城県南部')
+    expect(text).not.toContain('新たに')
+  })
+
   it('正: 震度が上がった区域は読み直す', () => {
     const state = createQuakeSpokenState()
     markSpoken(state, earthquakeToSegments(quakeOf([area('石川県', '石川県能登', 60)], 60), OPTS, true, state))
@@ -1239,6 +1274,23 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
     expect(text).toContain('ほか2地域では、震度5弱以上と推定されますが、未入電です。')
   })
 
+  // 正: 未入電の文も観測値の文と同じく、件数で伝えた区域を既読にする。
+  // **両者は `selectRegionNames` を共有しているが、片方だけ改修されたときに気づけるよう対で固定する。**
+  it('未入電の「ほかN地域」に切られた区域も既読になり、次報で読み直さない', () => {
+    const state = createQuakeSpokenState()
+    const opts = { ...OPTS, maxRegions: 1 }
+    const first = earthquakeToSegments(quakeOf(UNRECEIVED_3, 45), opts, true, state)
+    expect(joinSegments(first)).toContain('ほか2地域')
+    markSpoken(state, first)
+
+    // 件数でしか伝えていない 2 区域も記録に載る
+    expect(state.regions.size).toBe(UNRECEIVED_3.length)
+
+    // 続報: 3 区域とも未入電のまま。据え置きなので読まない
+    const second = earthquakeToSegments(quakeOf(UNRECEIVED_3, 45), opts, false, state)
+    expect(joinSegments(second)).not.toContain('未入電です')
+  })
+
   // 正: 地点で読むときの省略は「ほかN地点」（区域の「ほかN地域」と単位を言い分ける）
   it('未入電の地点が上限を超えたら「ほかN地点」で省略を伝える', () => {
     const state = createQuakeSpokenState()
@@ -1268,17 +1320,22 @@ describe('earthquakeToSegments: 続報は差分だけ読む', () => {
     expect(joinSegments(second)).not.toContain('宮城県北部')
   })
 
-  it('安全弁: 「ほかN地域」に切られた区域には参照が付かない（既読にならない）', () => {
+  // **2026-09-11 に反転。** 以前は「切られた区域には参照が付かない（既読にならない）」ことを
+  // 固定していた（名前が声になっていないため）。しかしその結果、次の報で「新たに」付きで
+  // 読み直され、前報で件数としては伝えているのに**地域が増えたように聞こえていた**。
+  // 件数として伝えた以上は既読にする（→ audio-tts-spec.md §4）。
+  it('正: 「ほかN地域」に切られた区域にも参照が付く（件数として伝えたので既読）', () => {
     const state = createQuakeSpokenState()
     const points = [area('宮城県', '宮城県北部', 40), area('福島県', '福島県中通り', 40)]
     const first = earthquakeToSegments(quakeOf(points, 40), { ...OPTS, maxRegions: 1 }, true, state)
     expect(joinSegments(first)).toBe('震度速報。最大震度4を宮城県北部、ほか1地域で観測しました。')
     markSpoken(state, first)
-    expect(state.regions.has('福島県中通り')).toBe(false)
-    // 切られた区域は次の報で読まれる
+    expect(state.regions.has('福島県中通り')).toBe(true)
+    // 据え置きなら次の報では読まない（名乗りだけが残る）
     const second = earthquakeToSegments(quakeOf(points, 40), { ...OPTS, maxRegions: 1 }, false, state)
-    // 初出の群なので「新たに」が付き、「最大」は冠さない（初出の群には冠しない規則）
-    expect(joinSegments(second)).toBe('震度速報が更新されました。新たに震度4を福島県中通りで観測しました。')
+    const text = joinSegments(second)
+    expect(text).not.toContain('新たに')
+    expect(text).not.toContain('福島県中通り')
   })
 
   it('「最大」を冠せるのは最大震度に一致する階級だけ', () => {

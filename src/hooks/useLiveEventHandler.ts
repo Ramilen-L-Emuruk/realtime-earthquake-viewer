@@ -720,7 +720,17 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const eewSpeechPendingRef = useRef(0)
   // 読み上げ中の非 EEW の優先度・主題とその完了。優先度の低い読み上げがこれを見て待つ。
   // **主題も持つこと。** 同格どうしが互いを切ってよいかは主題で決まる（`MUTUAL_YIELD_TOPICS`）。
-  const activeNonEewSpeechRef = useRef<{ priority: SpeechPriority; topic: SpeechTopic; done: Promise<void> } | null>(null)
+  const activeNonEewSpeechRef = useRef<{
+    priority: SpeechPriority
+    topic: SpeechTopic
+    done: Promise<void>
+    /**
+     * **そこまでに声になった分**を記録へ移す（実体は `speakNonEEW` の `flushSpokenRefs`）。
+     * 次の電文の差分を組む前に呼ぶ ―― 呼ばないと、前の報を読み切る前に届いた続報が
+     * 「まだ何も声になっていない」状態を基準に差分を組み、先頭から読み直す。
+     */
+    flushSpoken: () => void
+  } | null>(null)
   // 間を置いてからの読み上げの予約（`scheduleSpeech`）。アンマウント・リプレイ切替で取り消す。
   const pendingSpeechRef = useRef<Set<{ id: number; onCancel?: () => void }>>(new Set())
   // 非 EEW の読み上げに振る到来順の連番と、主題ごとの「最後に予約された連番」。
@@ -1129,33 +1139,55 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           scheduledChunks.push({ index, startAt })
         }
       }
+      /**
+       * **その時点までに声になった分**を記録へ移す。
+       *
+       * 呼ばれるのは 2 か所。読み上げの完了時（`finally`）と、**次の電文を受け取った瞬間**
+       * （`flushSpoken` 経由）。後者があるのは、続報の差分が受信時に同期で組まれるため ――
+       * 前の報を読み切る前に次が届くと既読がまだ進んでおらず、声にした内容を先頭から
+       * 読み直すことになる（→ docs/spec/audio-tts-spec.md §4「既読になるのは「声になった分」だけ」）。
+       *
+       * **二度呼んでも害は無い。** `applySpokenRefs` は区域を前進のときだけ書き換え、事実は
+       * 最後の値で上書きする。
+       */
+      const flushSpokenRefs = (finished: boolean) => {
+        if (!onSpokenRefs || !chunkRefs) return
+        const spoken = spokenChunkIndices(scheduledChunks, chunkCount, getSpeechClock(), finished)
+        const refs = spoken.flatMap(i => chunkRefs?.[i] ?? [])
+        // 1 チャンクも鳴らなかった（合成の全滅・鳴り出す前の割り込み）ときは記録しない。
+        // 記録してしまうと、声になっていない内容が続報で省かれる。
+        if (refs.length > 0) {
+          onSpokenRefs(refs)
+          return
+        }
+        if (spoken.length > 0) {
+          // 音は鳴ったのに参照が 1 つも引けなかった。**症状は「うるさいまま」**（差分が
+          // 効かず常に全文）で、黙って劣化する側の失敗なので、鳴らなかった場合と区別して残す。
+          // 原因は断片列とチャンクの食い違い（`mapChunksToRefs` が警告を出しているはず）。
+          //
+          // **途中の見直しでも出す。** 完了時にも同じ判定を通るので同じ読み上げで重複しうるが、
+          // 黙らせると、続報が連打される状況（群発）で検出の機会がまとめて失われる ――
+          // 本来 5 回出るはずの警告が 1 回になり、ログの間引きに紛れて「起きていた」ことに
+          // 気づけなくなる。**沈黙させてよいのは下の正常系だけ。**
+          log.warn(`[tts] 声にはなったが読み上げ済みの参照を引けなかった (${spoken.length} チャンク)`)
+          return
+        }
+        // **こちらは完了時だけ。** 途中の見直しでの「まだ鳴っていない」は正常で、電文が届く
+        // たびに出すと診断の役に立たない。
+        if (finished) log.debug('[tts] 声になったチャンクが無いため読み上げ済みの記録を更新しない')
+      }
       // 第 5 引数（鳴らす直前の見直し）は非 EEW では使わない。予想震度のように数秒で
       // 書き換わる値を持たないため、読み始めた文面を最後まで読んでよい。
       const done = speakWithVoicevox(
         settings.voicevoxUrl, text, settings.voicevoxSpeakerId, settings.soundVolume, undefined, prewarmed,
         followToken === undefined && !onSpokenRefs ? undefined : notifyChunk,
       )
-      activeNonEewSpeechRef.current = { priority, topic, done }
+      activeNonEewSpeechRef.current = { priority, topic, done, flushSpoken: () => flushSpokenRefs(false) }
       try {
         await done
       } finally {
         if (followToken !== undefined) speechFollow?.end(followToken)
-        if (onSpokenRefs && chunkRefs) {
-          const spoken = spokenChunkIndices(scheduledChunks, chunkCount, getSpeechClock())
-          const refs = spoken.flatMap(i => chunkRefs?.[i] ?? [])
-          // 1 チャンクも鳴らなかった（合成の全滅・鳴り出す前の割り込み）ときは記録しない。
-          // 記録してしまうと、声になっていない内容が続報で省かれる。
-          if (refs.length > 0) {
-            onSpokenRefs(refs)
-          } else if (spoken.length > 0) {
-            // 音は鳴ったのに参照が 1 つも引けなかった。**症状は「うるさいまま」**（差分が
-            // 効かず常に全文）で、黙って劣化する側の失敗なので、鳴らなかった場合と区別して残す。
-            // 原因は断片列とチャンクの食い違い（`mapChunksToRefs` が警告を出しているはず）。
-            log.warn(`[tts] 声にはなったが読み上げ済みの参照を引けなかった (${spoken.length} チャンク)`)
-          } else {
-            log.debug('[tts] 声になったチャンクが無いため読み上げ済みの記録を更新しない')
-          }
-        }
+        flushSpokenRefs(true)
         // 自分より後に始まった読み上げに置き換わっている場合は触らない（消すと待ち側が
         // 「誰も読んでいない」と誤認し、進行中の読み上げに割り込む）
         if (activeNonEewSpeechRef.current?.done === done) activeNonEewSpeechRef.current = null
@@ -1386,6 +1418,12 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       title.clearTitleTimer('earthquake')
       title.applyPriority()
       if (settings.voicevoxEnabled) {
+        // **この経路は `flushSpoken()` を呼ばない。** 続報の差分と違い、取消の読み上げは
+        // 区域の既読を参照しないため（`earthquakeCancelToText` は断片も `onSpokenRefs` も持たない）。
+        // 進行中の読み上げを取消が実際に切ったなら、切られた側の `finally` が完了時のフラッシュで
+        // 正しく記録する。「差分を組む直前に確定させる」という決まりの対象外
+        // （→ docs/spec/audio-tts-spec.md §4「既読になるのは「声になった分」だけ」）。
+        //
         // 取消電文の issue.time は取消電文自体の発表時刻であり、取り消された元の地震情報の発表時刻ではない。
         // 読み上げには同一 eventId で最後に受信した地震情報（既存カード）の time を使う。
         const cancelEventId = extractQuakeEventIdFromId(event.id)
@@ -2493,6 +2531,16 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // **続報は変化したところだけを読む。** 基準は受信内容ではなく「声になった内容」で、
         // その更新は読み上げの完了時（下の `onSpokenRefs`）に行う。受信時に更新すると、
         // 割り込みで鳴らなかった地域が既読になり、二度と読まれない。
+        //
+        // **ただし差分を組む前に、進行中の読み上げの「ここまで鳴った分」を確定させる。**
+        // 記録は完了時にしか進まないのに差分はここで同期に組まれるため、前の報を読み切る前に
+        // 次が届くと「まだ何も声になっていない」古い状態を基準にしてしまい、**声にした内容を
+        // 先頭から読み直す**。鳴っている最中のチャンクは
+        // `spokenChunkIndices` が落とすので、途中で確定させても声にならなかった分は残らない。
+        //
+        // 主題では絞らない。別の地震・別の種別の読み上げでも、その記録を進めるのは正しい
+        // （記録は主題ごとに分かれている）。津波など `onSpokenRefs` を渡さない経路では何もしない。
+        activeNonEewSpeechRef.current?.flushSpoken()
         quakeSpokenState = quakeSpokenStateFor(spokenQuakeStatesRef.current, quakeSpeechTopic)
         // **その地震で最初の確定情報だけは地域を通しで読む。** 速報を細切れに聞いた耳へ、
         // 確定した観測を 1 度だけまとめて示すため（理由は `earthquakeToSegments` の引数）。
