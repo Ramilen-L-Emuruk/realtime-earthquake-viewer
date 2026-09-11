@@ -22,10 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -50,10 +50,14 @@ jobs:
           cp -r dist-dmdss/. dist/dmdss/
 
       - name: Setup Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
+      # **`public/` にドットファイルを置かないこと。** upload-pages-artifact は v4 以降、
+      # 隠しファイルを既定で成果物から除外する。置いても CI は成功したまま、配信からだけ
+      # 静かに落ちる。どうしても必要なら `include-hidden-files: true` を足す —— 既定のままに
+      # しているのは、`.env` の類が `public/` へ紛れ込んだときに公開しないため。
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: dist
 
@@ -66,4 +70,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
