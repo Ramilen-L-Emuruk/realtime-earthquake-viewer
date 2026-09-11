@@ -149,7 +149,10 @@ export function useActionChecklist(params: {
   kyoshinStalled: boolean
   eews: readonly EEWAlert[]
   latestQuake: JMAQuake | undefined
-}): { state: ChecklistState | null; collapsed: boolean; dismiss: () => void; restore: () => void } {
+}): {
+  state: ChecklistState | null; collapsed: boolean; dismiss: () => void; restore: () => void
+  resetForReplay: () => void
+} {
   const { minScale, home, stationCoords, kyoshinSites, detectedPoints, kyoshinStalled, eews, latestQuake } = params
 
   const [state, setState] = useState<ChecklistState | null>(null)
@@ -338,5 +341,28 @@ export function useActionChecklist(params: {
   // 成立しないので畳まれることはなく、記録は「もう一度閉じたときの震度の基準」として残る。
   const restore = useCallback(() => setCollapsed(false), [])
 
-  return { state, collapsed, dismiss, restore }
+  /**
+   * リプレイの開始・停止で落とす。**時間軸に紐づくものだけ。**
+   *
+   * - 表示中の帯（`state`）—— 入力（地震・EEW・揺れ）が空になっても消える経路が無いため、
+   *   落とさないと切替前の地震の帯が新しい時間軸の画面に残る
+   * - `doneKeysRef`（寿命が尽きて消した識別子）—— 残すと、同じ地震を再生しても二度と出ない
+   * - `kyoshinAnchorRef`（強震モニタ由来の揺れの識別子）
+   *
+   * **抑止の記録（`SuppressRecord`）は落とさない。** 利用者が閉じた意思で、永続化してある
+   * （リプレイへ入った途端に開き直すのは閉じた意思を無視することになる）。期限は壁時計で
+   * 管理しており、再生時計とは意図的に切り離してある（早送りで即座に失効させないため）。
+   *
+   * **畳んだ状態は記録から引き直す。** `false` へ倒すと「いま畳んでいる」が偽になり、
+   * 記録が残っているのに次の揺れが開いて出る（畳んだままにする条件の 1 つが「いま畳んでいる」
+   * ため）。**リロード直後と同じ形**にするのが筋で、初期値と同じ式で決める。
+   */
+  const resetForReplay = useCallback(() => {
+    doneKeysRef.current = []
+    kyoshinAnchorRef.current = null
+    setState(null)
+    setCollapsed(suppressRef.current !== null)
+  }, [])
+
+  return { state, collapsed, dismiss, restore, resetForReplay }
 }
