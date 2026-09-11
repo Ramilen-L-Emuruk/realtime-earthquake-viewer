@@ -1,14 +1,15 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation } from '../../types/earthquake'
+import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation, TsunamiWarningComment } from '../../types/earthquake'
 import { formatDateTimeMin, formatDepth, formatMagnitudeCondition, formatTime, hasDepth } from '../../utils/formatters'
 import { quakeEventKey } from '../../utils/quakeMerge'
-import { groupAreasForCardDisplay, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, tsunamiAreaKey } from '../../utils/tsunami'
+import { groupAreasForCardDisplay, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, tsunamiAreaKey, evacuationActionLine } from '../../utils/tsunami'
 import { TSUNAMI_MISSING_COLOR as MISSING_COLOR } from '../../utils/tsunamiStyle'
 import { mapChunksToRefs, planFollowScroll, type FollowRect, type SpeechFollowSession, type SpeechRef } from '../../utils/ttsFollow'
 import { getSpeechClock } from '../../utils/voicevox'
 import { INTERACTION_HOLD_SEC } from '../Map/gl/camera'
 import { log } from '../../utils/logger'
 import { useTsunamiObsCoords } from '../../hooks/useTsunamiObsCoords'
+import { commentsOverlayMaxHeight, canShowCommentsOverlay } from './overlayHeight'
 
 export interface FocusedDistrict {
   // 今回の受信で変更（新規/更新）があった区域すべて。対象区域が特定できない受信では空配列
@@ -488,6 +489,39 @@ function getTopGrade(tsunamis: JMATsunami[]): TsunamiGrade {
 }
 
 // React.memo 化の理由と props 参照安定性の要件は docs/spec/architecture-spec.md 参照。
+/**
+ * 気象庁が書いた文の中身（行動指示の行をタップしたときに開く部分）。
+ *
+ * **小見出しは付けない。** 読めば何の話か分かる文ばかりで、名前を足すとかえって読む量が増える。
+ * 区切り線だけで分ける。並びは電文の本文 → 固定付加文（主題順・`WARNING_COMMENT_ORDER`）→
+ * 自由付加文。
+ */
+function TsunamiCommentBody({ bodyText, comments, freeText, borderColor, textColor }: { bodyText?: string; comments?: TsunamiWarningComment[]; freeText?: string; borderColor: string; textColor: string }) {
+  const blocks: { key: string; text: string; pre: boolean }[] = [
+    // 電文の本文。**バナーには出していない**ので、ここが唯一の出しどころ。
+    ...(bodyText ? [{ key: '__body', text: bodyText, pre: true }] : []),
+    ...(comments ?? []).map(c => ({ key: c.key, text: c.text, pre: false })),
+    // 自由付加文。全角スペースで整形された表が入るため改行と空白をそのまま保つ。
+    ...(freeText ? [{ key: '__free', text: freeText, pre: true }] : []),
+  ]
+  if (blocks.length === 0) return null
+  return (
+    <div>
+      {/* 先頭だけ区切り線を出さない。**`first:` の指定では消せない** —— インラインの
+          `borderTop` が常に勝つので、先頭かどうかをここで見て出し分ける。 */}
+      {blocks.map((b, i) => (
+        <div key={b.key}
+          className={i === 0 ? '' : 'pt-2 mt-2'}
+          style={i === 0 ? undefined : { borderTop: `1px solid ${borderColor}` }}>
+          <div style={{ fontSize: '0.6875rem', color: textColor, opacity: 0.95, lineHeight: 1.6, whiteSpace: b.pre ? 'pre-wrap' : 'pre-line' }}>
+            {b.text}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEarthquakeLink, onObservationClick, focusedDistrict, obsUpdateStatus, areaGradeChangedKeys, speechSession, isVisible, speechFollowEnabled, autoShowTick }: Props) {
   // 行をクリックできるかは「地図がその観測点へ寄れるか」で決める。
   //
@@ -498,6 +532,44 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
   const canFocusObs = useCallback((name: string) => !!obsCoords?.[name], [obsCoords])
   // cancelledAt がある = 10秒表示中なので active に含める
   const active = tsunamis.filter(t => !t.cancelled || t.cancelledAt)
+
+  // バナーの本文と、そこから開く付加文。
+  //
+  // **フックは早期 return より前に置く。** 下の「津波情報はありません」で return しており、
+  // 後ろに置くと津波が出た瞬間にフックの数が変わって React が描画ごと落とす（実際に踏んだ）。
+  const isCancelledDisplay = active.every(t => !!t.cancelledAt)
+  // 見るのは `active[0]` だけ。**状態は常に 0〜1 件スロット**で、同時発表は最新の 1 通で
+  // 置き換わる（`useEarthquakes.ts` の TSU-3）。ここを配列で回しても 2 件目は来ない。
+  const bannerBodyText = active[0]?.bodyText
+  const bannerComments = active[0]?.warningComments
+  const bannerFreeText = active[0]?.freeText
+  // 行動指示の行に出す文。気象庁の避難行動の付加文が採れればそれを使う（→ `evacuationActionLine`）。
+  const bannerActionLine = evacuationActionLine(bannerComments)
+  // 開くものが 1 つも無ければ、その行はタップの入口にしない（押せる見た目だけ与えない）。
+  // 取消し・解除の表示中も中身を出さないので、そこでも入口にしない。
+  const hasCommentsToShow = (bannerComments?.length ?? 0) > 0 || !!bannerBodyText || !!bannerFreeText
+  const [commentsOpen, setCommentsOpen] = useState(false)
+  // **開いたまま等級が動いたら閉じる。** 付加文の面は下の区域一覧を覆うので、開けっ放しだと
+  // 発表・引き上げ・一部解除が届いても利用者の目に入らない。
+  //
+  // **ただし報ごとには閉じない。** 満潮時刻や観測の続報は数分おきに届き（2026-04-20 の実電文で
+  // 41 通）、そのたびに閉じると読んでいる途中で毎回消える。鍵は津波の識別子と「区域ごとの等級」の
+  // 組にして、等級が動いた報だけが閉じる契機になるようにする。
+  //
+  // `id` へ落ちるのは識別子を持たない電文のときだけ。その電文は続報として束ねられない
+  // （`isTsunamiContinuation`）ので前報の中身も引き継がず、鍵が報ごとに変わっても
+  // 「等級が動いたときだけ閉じる」との食い違いにはならない。
+  const commentsKey = `${active[0]?.eventId ?? active[0]?.id ?? ''}|`
+    + (active[0]?.areas ?? []).map(a => `${a.code ?? a.name}:${a.grade}`).join(',')
+  // **前回値は state で持つ。ref をレンダー中に書き換えない。** React は描いた結果を捨てて
+  // 描き直すことがあり、捨てられたレンダーでも ref の書き換えだけは残る。次のレンダーでは
+  // 「鍵は変わっていない」と見えて閉じそこねる —— 実機で等級が動いても開いたままになった。
+  // state なら捨てられたレンダーの更新も一緒に捨てられるので、この取りこぼしが起きない。
+  const [prevCommentsKey, setPrevCommentsKey] = useState(commentsKey)
+  if (prevCommentsKey !== commentsKey) {
+    setPrevCommentsKey(commentsKey)
+    if (commentsOpen) setCommentsOpen(false)
+  }
 
   // sticky バナーの実高さを測り、自動スクロール先の scroll-margin-top に反映する
   // （バナーは発令中/解除・地震カードリンクの有無で行数が変わり高さが可変のため固定値では合わない）
@@ -517,12 +589,43 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
     })
     observer.observe(el)
     bannerObserverRef.current = observer
+    // **初期値も同期で入れる**（パネル側と形を揃える）。監視のコールバックだけに任せると、
+    // 「津波情報なし」から切り替わった直後の数フレームはバナーが 0 のままで、下の上限が
+    // 実際より大きく出る。
+    setBannerHeight(el.getBoundingClientRect().height)
   }, [])
 
   // 今回変更された区域の行DOM（area.code ?? area.name をキーに登録・登録解除される）
   const changedRowElsRef = useRef<Map<string, HTMLDivElement>>(new Map())
   const topRowElRef = useRef<HTMLDivElement | null>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
+  const containerRef = useRef<HTMLDivElement | null>(null)
+
+  // 重ねた付加文の高さの上限。**パネルの実寸から引く** —— 画面の高さ（`vh`）で切ると、
+  // 上下分割でパネルが画面の一部しか占めていないときに下へはみ出す（実測値は
+  // docs/spec/tsunami-spec.md §9）。バナーの下に置くので、残りがそのまま上限。
+  //
+  // **callback ref で測る。`useEffect` + `[]` では張り直されない。** 津波が無い間は下の
+  // 「津波情報はありません」で早期 return しており、この要素自体が存在しない。効果は
+  // 空振りして終わり、津波が届いても依存が変わらないので二度と走らない —— 結果、高さが 0 の
+  // ままで上限が付かず、開いた付加文がパネルの外まで伸びる（実際にそうなった）。
+  const [panelHeight, setPanelHeight] = useState(0)
+  const panelObserverRef = useRef<ResizeObserver | null>(null)
+  const setContainerRef = useCallback((el: HTMLDivElement | null) => {
+    containerRef.current = el
+    panelObserverRef.current?.disconnect()
+    panelObserverRef.current = null
+    if (!el) return
+    const observer = new ResizeObserver(() => setPanelHeight(el.clientHeight))
+    observer.observe(el)
+    panelObserverRef.current = observer
+    setPanelHeight(el.clientHeight)
+  }, [])
+  // 面の高さの上限と、そもそも開かせてよいかの判断（→ `overlayHeight.ts`）。
+  // **寸法の判断はコンポーネントの外に置く** —— ここに書くとテストで押さえられない。
+  const commentsMaxHeight = commentsOverlayMaxHeight(panelHeight, bannerHeight)
+  // **出す場所が無いときも入口にしない。** パネルを縮めるとバナーだけで埋まり、面は
+  // 高さ 0 になる。開くと矢印が ▶→▼ に変わるだけで中身は 1 行も見えず、理由も出ない。
+  const canOpenComments = hasCommentsToShow && !isCancelledDisplay && canShowCommentsOverlay(commentsMaxHeight)
 
   const registerRow = useCallback((area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => {
     const key = area.code ?? area.name ?? ''
@@ -901,7 +1004,6 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
     )
   }
 
-  const isCancelledDisplay = active.every(t => !!t.cancelledAt)
   const topGrade = getTopGrade(active)
   const topStyle = getGradeStyle(topGrade)
   const cancelInfo = CANCEL_REASON_LABEL[active[0]?.cancelReason ?? 'lifted']
@@ -918,6 +1020,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
   const sourceEarthquakes = active[0]?.sourceEarthquakes ?? []
   const sourceEarthquake = sourceEarthquakes[0]
 
+
   // 津波の原因地震に対応する地震カードを eventId で照合する
   const tsunamiEventId = active[0]?.eventId
   const linkedQuake = (tsunamiEventId && earthquakes)
@@ -927,9 +1030,9 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
   // h-full を持つ下記の要素自身がスクロール領域になるため、横スクロールの抑止は
   // App.tsx の TAB_SCROLLER_CLASS ではなくここで行う（祖先の指定は子に効かない）。
   return (
-    <div ref={containerRef} className="h-full overflow-y-auto overflow-x-hidden overscroll-x-none">
+    <div ref={setContainerRef} className="h-full overflow-y-auto overflow-x-hidden overscroll-x-none">
       {/* 発令中 / 解除バナー（sticky で常時表示）。対応する地震カードがある場合のみクリック可能。 */}
-      <div ref={bannerRef} className="sticky top-0 z-10 px-3 pt-3">
+      <div ref={bannerRef} className="sticky top-0 z-10 px-3 pt-3 relative">
         <div
           role={linkedQuake ? 'button' : undefined}
           tabIndex={linkedQuake ? 0 : undefined}
@@ -967,8 +1070,35 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                 </div>
               )}
             </div>
-            <div className="mt-1" style={{ fontSize: '0.6875rem', color: isCancelledDisplay ? '#6b7280' : topStyle.headerColor, opacity: 0.8 }}>
-              {isCancelledDisplay ? cancelInfo.desc : topGrade === 'Forecast' ? '若干の海面変動があるかもしれません' : '海岸・河川から直ちに離れてください'}
+            {/* 行動指示の行。**気象庁の避難行動の付加文があればそれを出す**（無ければアプリの文）。
+                ここはこれまでアプリが書いた文だけを出していたが、公式の文があるならそちらが正しい
+                （→ CLAUDE.md「利用者へ出す語を気象庁の表現と揃える」）。採れる条件は
+                `evacuationActionLine`。
+
+                **この行が付加文への入口を兼ねる。** バナーは sticky なので、行を足すとその分だけ
+                区域一覧の居場所が減る —— バナーは既にパネルの半分以上を使っている（実測値は
+                docs/spec/tsunami-spec.md §9）。だから増やさず、既にある行に役目を持たせる。
+
+                **操作要素が入れ子になる**（外側のバナーも地震カードへ移動できる）。支援技術には
+                正しく伝わらないが、外へ出すと上の行数の問題に戻る。既知の限界として仕様書 §9 に
+                記してある。地震カードの震度一覧も同じ制約を抱えている。 */}
+            <div
+              className={`mt-1 flex items-start gap-1.5${canOpenComments ? ' cursor-pointer' : ''}`}
+              role={canOpenComments ? 'button' : undefined}
+              tabIndex={canOpenComments ? 0 : undefined}
+              aria-expanded={canOpenComments ? commentsOpen : undefined}
+              // **バナー自身のクリック（地震カードへの移動）へ伝播させない。**
+              onClick={canOpenComments ? e => { e.stopPropagation(); setCommentsOpen(o => !o) } : undefined}
+              onKeyDown={canOpenComments ? e => {
+                if (e.key !== 'Enter' && e.key !== ' ') return
+                e.preventDefault(); e.stopPropagation(); setCommentsOpen(o => !o)
+              } : undefined}
+              style={{ fontSize: '0.6875rem', color: isCancelledDisplay ? '#6b7280' : topStyle.headerColor, opacity: 0.8 }}>
+              <span className="flex-1">
+                {isCancelledDisplay ? cancelInfo.desc
+                  : bannerActionLine ?? (topGrade === 'Forecast' ? '若干の海面変動があるかもしれません' : '海岸・河川から直ちに離れてください')}
+              </span>
+              {canOpenComments && <span className="flex-shrink-0" style={{ fontSize: '0.625rem', opacity: 0.8 }}>{commentsOpen ? '▼' : '▶'}</span>}
             </div>
             {/* 電文が名乗る情報名（`Head/Title`）。**上の等級表示とは別物** —— あちらはアプリが
                 区域の等級から組み立てた見出しで、こちらは気象庁がその報に付けた名前。
@@ -1007,6 +1137,33 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
             )}
           </div>
         </div>
+        {/* 開いた付加文。**バナーの下へ重ねる（流し込まない）。**
+            流し込むとバナーが伸びて、後ろの区域一覧が押し下がる —— 読むつもりで開いただけで
+            見ていた場所が動いてしまう。重ねればバナーの高さは変わらず、後ろは動かない。
+            パネルからはみ出さないよう高さに上限を置き、超えた分はこの中でスクロールさせる。 */}
+        {/* 出す条件は入口と同じ述語にする。別々にすると、中身が空になったときに
+            枠だけ残り、しかも入口が死んでいて閉じられない形ができる。 */}
+        {commentsOpen && canOpenComments && (
+          <div
+            className="absolute left-3 right-3 z-20 rounded-b-lg overflow-y-auto overscroll-contain px-3 pb-3 pt-1.5 roomy:px-4"
+            style={{
+              top: '100%',
+              marginTop: '-0.5rem',
+              background: isCancelledDisplay ? '#1a1a1a' : topStyle.headerBg,
+              border: `2px solid ${topStyle.cardBorder}`,
+              borderTop: 'none',
+              maxHeight: commentsMaxHeight,
+              boxShadow: '0 8px 16px rgba(0,0,0,0.45)',
+            }}>
+            <TsunamiCommentBody
+              bodyText={bannerBodyText}
+              comments={bannerComments}
+              freeText={bannerFreeText}
+              borderColor={`${topStyle.cardBorder}40`}
+              textColor={topStyle.headerColor}
+            />
+          </div>
+        )}
       </div>
 
       <div className="p-2 flex flex-col gap-2 roomy:p-3 roomy:gap-3">
@@ -1085,39 +1242,6 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                     ))}
                   </>
                 )}
-              </div>
-            )}
-            {/* 気象庁が電文に添えた本文（`Body/Text`）。**津波予報（若干の海面変動）では
-                区域に波高も到達時刻も付かないため、いつ来ていつまで続くかはここにしか無い。**
-                付加文 2 種より先に出す —— あちらは電文種別ごとの定型文と解説で、こちらがこの報の話。 */}
-            {t.bodyText && !t.cancelledAt && (
-              <div className="bg-card rounded-lg overflow-hidden" style={{ border: '1px solid #374151' }}>
-                <div className="text-white" style={{ fontSize: '0.8125rem', lineHeight: '1.7', whiteSpace: 'pre-wrap', padding: '0.75rem 1rem' }}>
-                  {t.bodyText}
-                </div>
-              </div>
-            )}
-            {/* 固定付加文。**電文種別ごとに別の話**（避難行動／満潮／沿岸の観測／沖合の観測）
-                なので、1 つに畳まず主題ごとに区切って並べる。並び順は `WARNING_COMMENT_ORDER`
-                が決めており、いちばん重い等級の呼びかけが先頭に来る。 */}
-            {t.warningComments && t.warningComments.length > 0 && !t.cancelledAt && (
-              <div className="bg-card rounded-lg overflow-hidden" style={{ border: '1px solid #374151' }}>
-                {t.warningComments.map(c => (
-                  <div key={c.key} className="text-secondary border-t border-white/10 first:border-t-0"
-                    style={{ fontSize: '0.75rem', lineHeight: '1.7', whiteSpace: 'pre-line', padding: '0.75rem 1rem' }}>
-                    {c.text}
-                  </div>
-                ))}
-              </div>
-            )}
-            {/* 気象庁の自由付加文。種別ごとの定型文（warningComments）と違い電文ごとに
-                書き起こされ、続報での更新はここに現れる（「［予想される津波の高さの解説］……」等）。
-                全角スペースで整形された表が入るため `whitespace-pre-wrap` で改行と空白を保つ。 */}
-            {t.freeText && !t.cancelledAt && (
-              <div className="bg-card rounded-lg overflow-hidden" style={{ border: '1px solid #374151' }}>
-                <div className="text-secondary" style={{ fontSize: '0.75rem', lineHeight: '1.7', whiteSpace: 'pre-wrap', padding: '0.75rem 1rem' }}>
-                  {t.freeText}
-                </div>
               </div>
             )}
           </div>
