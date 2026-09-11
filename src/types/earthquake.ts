@@ -904,6 +904,15 @@ export interface LpgmPoint {
   code: string      // 観測点コード（例: "0122401"）
   name: string      // 観測点名（例: "新千歳空港"）
   pref: string      // 都道府県名（電文の Pref/Name から補う）
+  /**
+   * その観測点が属する一次細分区域名（電文の `Area/Name` から補う）。
+   *
+   * **電文の入れ子からしか拾えない。** 座標表が観測点について持つのは緯度・経度と所属区域で、
+   * 長周期地震動観測点はそこに載っているとは限らない（→ {@link EarthquakePoint.area} と同じ事情）。
+   * ここを落とすと、カードの震度一覧に相当する「県 → 区域 → 観測点」の入れ子で観測点の
+   * 行き先が決まらない。
+   */
+  area?: string
   lgInt: number     // 長周期地震動階級 1〜4
   /**
    * その観測点の震度（`IntensityStation/Int`）。
