@@ -51,9 +51,15 @@ function updateMarkerEl(el: HTMLDivElement, marker: TsunamiArrivalMarker, iconSc
     `box-shadow:0 0 3px rgba(0,0,0,0.7);opacity:${ARRIVAL_OPACITY}"></div>`
 }
 
-function buildMarkerEl(marker: TsunamiArrivalMarker, iconScale: number): HTMLDivElement {
+export function buildArrivalMarkerEl(marker: TsunamiArrivalMarker, iconScale: number): HTMLDivElement {
   const el = document.createElement('div')
-  el.style.cssText = 'position:relative'
+  // **`position` を書かないこと。** MapLibre は `.maplibregl-marker` クラスの CSS で
+  // `position: absolute` を与えており、インライン宣言は詳細度でそれに勝ってしまう。マーカーは
+  // 1 つの親に並べて追加されるので、通常フローへ戻ると **DOM の並び順に要素の高さぶんずつ
+  // 下（画面の南）へ積み上がる** —— 2 番目が 9px、14 番目が 117px という具合に。ずれは
+  // ピクセルで固定なので、引いた画ほど地図の上では大きく見える（zoom 4 で 117px ≒ 450km）。
+  // 内側の丸が使う `inset: 0` は、この要素自身が `absolute` であれば基準になる。
+  // 詳細と、`opacity` が逆向きの振る舞いをすることは `docs/spec/map-rendering-spec.md` §10。
   updateMarkerEl(el, marker, iconScale)
   return el
 }
@@ -86,7 +92,7 @@ export function TsunamiArrivalMarkersGL({ markers, iconScale }: Props) {
         existing.popup.setHTML(tooltipHtml(m)).setOffset(popupOffset(iconScale))
         continue
       }
-      const el = buildMarkerEl(m, iconScale)
+      const el = buildArrivalMarkerEl(m, iconScale)
       const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
         .setLngLat([m.lng, m.lat])
         .addTo(map)
