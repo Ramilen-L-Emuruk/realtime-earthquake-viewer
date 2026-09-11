@@ -328,6 +328,23 @@ export interface JMAQuake {
 
 export type TsunamiGrade = 'MajorWarning' | 'Warning' | 'Watch' | 'Forecast' | 'Unknown'
 
+/**
+ * 固定付加文（`Comments/WarningComment`）1 件。→ {@link JMATsunami.warningComments}
+ */
+export interface TsunamiWarningComment {
+  /**
+   * 同じ主題の付加文を束ねる鍵。**電文から導く**（表示はしない）。値は電文種別で、
+   * 津波情報（VTSE51）だけは情報名（`Head/Title`）も含める —— この種別だけが
+   * 満潮時刻と津波観測を名乗り分けるため（→ {@link JMATsunami.infoName}）。
+   *
+   * 他の種別で情報名を含めない理由と、束ね方の全体像は
+   * docs/spec/tsunami-spec.md §5「固定付加文は主題ごとに束ねる」。
+   */
+  key: string
+  /** 気象庁が電文に書いた原文。 */
+  text: string
+}
+
 export interface TsunamiStation {
   name: string
   code: string
@@ -628,8 +645,28 @@ export interface JMATsunami {
   cancelText?: string
   cancelledAt?: Date
   headline?: string
-  // 付加文（固定文）。避難行動の呼びかけなど JMA 公式の定型文。長文の解説（FreeFormComment）は含まない。
-  warningComment?: string
+  /**
+   * 固定付加文（`Comments/WarningComment`）。避難行動の呼びかけなど気象庁の定型文で、
+   * 長文の解説（`FreeFormComment` → {@link freeText}）は含まない。
+   *
+   * **配列なのは、電文種別ごとに別の話をするため**（避難行動／満潮／沿岸の観測／沖合の観測）。
+   * パーサーはその報の 1 件だけを入れ、続報のマージ（`mergeTsunamiWarningComments`）が主題ごとに
+   * 束ねる（{@link TsunamiWarningComment.key}）。詳細は
+   * docs/spec/tsunami-spec.md §5「固定付加文は主題ごとに束ねる」。
+   */
+  warningComments?: TsunamiWarningComment[]
+  /**
+   * この報が区域ごとの潮位観測点（{@link TsunamiArea.stations} ＝満潮時刻・津波到達予想時刻）を
+   * 運ぶ種別か。津波情報（VTSE51）だけが真。
+   *
+   * **「区域に観測点が無い」が「運ばない種別だから」なのか「気象庁が出さなくなった」なのかを
+   * 分ける唯一の材料。** 中身からは見分けられないので電文種別から立てる
+   * （`TsunamiObservation.offshore` と同じやり方）。使い方と根拠は
+   * docs/spec/tsunami-spec.md §5「区域の潮位観測点」。
+   *
+   * P2PQuake 経路は観測点を配信しないため undefined。
+   */
+  carriesForecastStations?: boolean
   /**
    * 気象庁が電文に添えた本文（`Body/Text`）。**発表報でのみ入る。**
    *
@@ -643,13 +680,13 @@ export interface JMATsunami {
    * 記載する。**例えば**情報形態が"取消"の場合に取消しの概要等を記載する」と定めており、
    * 取消はあくまで例。かつては取消のときだけ拾っており、**例を定義として読んでいた**。
    *
-   * 付加文 2 種（`warningComment` / `freeText`）とも別物で、同じ電文に 4 つとも入りうる。
+   * 付加文 2 種（`warningComments` / `freeText`）とも別物で、同じ電文に 4 つとも入りうる。
    */
   bodyText?: string
   /**
    * 気象庁の自由付加文（`Comments/FreeFormComment`）の原文。DMDATA 経路でのみ得られる。
    *
-   * 上の `warningComment` が等級ごとの定型文なのに対し、こちらは電文ごとに書き起こされる
+   * 上の `warningComments` が種別ごとの定型文なのに対し、こちらは電文ごとに書き起こされる
    * 本文（「［予想される津波の高さの解説］……」等）。**地震情報・長周期地震動観測情報では
    * 読んで画面に出していたのに、津波だけ落ちていた。**
    *

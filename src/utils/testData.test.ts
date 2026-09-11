@@ -332,7 +332,7 @@ describe('テスト津波のバリアント差（P2PQuake 経路に無い項目�
     expect(t.sourceEarthquakes).toBeUndefined()
     expect(t.bodyText).toBeUndefined()
     expect(t.freeText).toBeUndefined()
-    expect(t.warningComment).toBeUndefined()
+    expect(t.warningComments).toBeUndefined()
     for (const a of t.areas) {
       expect(a.code).toBeUndefined()
       expect(a.stations).toBeUndefined()
@@ -349,7 +349,7 @@ describe('テスト津波のバリアント差（P2PQuake 経路に無い項目�
     expect(t.sourceEarthquakes?.length).toBeGreaterThan(0)
     expect(t.bodyText).toBeTruthy()
     expect(t.freeText).toBeTruthy()
-    expect(t.warningComment).toBeTruthy()
+    expect(t.warningComments?.length).toBeGreaterThan(0)
     expect(t.areas.some(a => a.code)).toBe(true)
     expect(t.areas.some(a => (a.stations?.length ?? 0) > 0)).toBe(true)
     expect(t.areas.some(a => a.forecastHeightImportant)).toBe(true)
@@ -577,5 +577,27 @@ describe('津波の続報で区域ごとに等級が動く報', () => {
     expect(next.eventId).toBe(base.eventId)
     expect(next.id).not.toBe(base.id)
     expect(new Date(next.time).getTime()).toBeGreaterThanOrEqual(new Date(base.time).getTime())
+  })
+
+  // 正: 津波警報等（VTSE41）の形になっていること。**この形でないと続報のマージが一度も通らず、
+  // 引き継ぎが効いているかを実機で確かめられない**（テストボタンは実機確認の唯一の入口）。
+  it('津波警報等の形をしている（観測点も観測情報も持たない）', () => {
+    const next = createTestTsunamiGradeChange(createTestTsunami(true))
+    expect(next.carriesForecastStations).toBe(false)
+    expect(next.areas.every(a => a.stations === undefined)).toBe(true)
+    expect(next.observations).toBeUndefined()
+    expect(next.observationDateTime).toBeUndefined()
+    expect(next.estimations).toBeUndefined()
+    // 固定付加文は等級の呼びかけ 1 件だけ（満潮・観測・沖合の注記は前報から継がれる）
+    expect(next.warningComments!.map(c => c.key)).toEqual(['VTSE41'])
+  })
+
+  // 対照: 元の報の側はそれらを持っていること。**両方が空だと、継いでいるのか
+  // もともと無いのかが画面から見分けられない。**
+  it('元の報は観測点・観測情報・4 主題の付加文を持つ', () => {
+    const base = createTestTsunami(true)
+    expect(base.areas.some(a => (a.stations?.length ?? 0) > 0)).toBe(true)
+    expect(base.observations?.length).toBeGreaterThan(0)
+    expect(base.warningComments!.length).toBe(4)
   })
 })
