@@ -1186,7 +1186,7 @@ export function App() {
   // キー入力に連動して自動で走ることがないため、遅らせる必要がない
   //（むしろ押した瞬間の最新値を使いたい）。
   // 設定タブの「テスト時刻設定」に出す、収録済みローカル履歴アーカイブの一覧。
-  // DMDATA/P2PQuakeのアーカイブが存在しない期間（DMDATA運用開始=2020年4月より前等）を
+  // DMDATA/P2PQuakeのアーカイブが存在しない期間（DMDATAアーカイブの最古=2020-11-18より前等）を
   // 再現するための同梱データで、対象時刻がこの中の期間に該当すれば下記 fetchReplayEvents が
   // 通常のアーカイブ取得の代わりにこちらを使う（localArchiveReplay.ts 参照）。
   const { archives: historicalArchives, isLoading: historicalArchivesLoading } = useHistoricalArchiveIndex()
