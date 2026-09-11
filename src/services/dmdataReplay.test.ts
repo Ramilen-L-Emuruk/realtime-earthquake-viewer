@@ -92,6 +92,16 @@ function manifestEntry(
   return { id, classification: 'telegram.earthquake', head: { type, time, test: false, designation } }
 }
 
+/**
+ * 試験・訓練報の目録エントリ。
+ *
+ * **アーカイブの索引は訓練報に `head.test = true` を立てる。** 電文の中身の運用種別
+ * （`Control/Status` ＝「訓練」）とは別の印で、実配信で確かめてある（2026-07-23 の訓練報）。
+ */
+function manifestTestEntry(id: string, type = 'VXSE53', time = '2026-08-10T12:06:00+09:00') {
+  return { id, classification: 'telegram.earthquake', head: { type, time, test: true, designation: null } }
+}
+
 const FROM = new Date('2026-08-10T00:00:00+09:00')
 const TO = new Date('2026-08-11T00:00:00+09:00')
 
@@ -140,9 +150,75 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false)
     expect(entries).toHaveLength(1)
     expect(entries[0].payload.kind).toBe('event')
+  })
+
+  // 設定「試験報を受信（検証用）」は**ライブだけでなく再生にも効く**。設定の文面は経路を
+  // 限っていないのに片方だけに効かせると、名前から読み取れない食い違いになる。
+  // 訓練報は年に数回しか流れないため、再生で拾えないと実電文で確かめる手段が事実上無くなる。
+  describe('試験・訓練報の取り込み', () => {
+    async function archiveWithBoth() {
+      return makeTarGz([
+        {
+          name: 'telegrams.json',
+          content: JSON.stringify([manifestEntry('1234567abc'), manifestTestEntry('7654321def')]),
+        },
+        { name: '1234567abc_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
+        { name: '7654321def_20260810120600000_0.xml', content: quakeBody('日本海中部') },
+      ])
+    }
+
+    // 対照: 既定では捨てる。無条件に通すと平常時の再生が訓練版の報で混ざる。
+    // **防いでいるのは扱う種別の訓練版**（VXSE45・VXSE51〜53 等）で、配信テストの VXSE42 は
+    // この判定より後段の `HANDLED_TYPES` で落ちる（→ dmdataTelegramPayload.ts）。
+    it('既定では試験報を取り込まない', async () => {
+      globalThis.fetch = mockArchives([{ url: 'https://x/a', gz: await archiveWithBoth() }]) as unknown as typeof fetch
+      const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
+      expect(entries).toHaveLength(1)
+      // 落としたのは「対象外」であって取りこぼしではない
+      expect(skipped).toBe(0)
+    })
+
+    // 正: 設定を入れれば通る。**ここが落ちると、訓練報は実電文では一生画面に出ない。**
+    it('設定を入れると試験報も取り込む', async () => {
+      globalThis.fetch = mockArchives([{ url: 'https://x/a', gz: await archiveWithBoth() }]) as unknown as typeof fetch
+      const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, true)
+      expect(entries).toHaveLength(2)
+    })
+
+    // 正: 履歴（再生開始より前の地震カード）も同じ扱いにする。**別のコードパス**（QUAKE_TYPES
+    // 限定・窓の判定が違う）なので、本編のテストでは写し間違いを検出できない。
+    it('設定を入れると履歴にも試験報が入る', async () => {
+      const gz = await makeTarGz([
+        {
+          name: 'telegrams.json',
+          content: JSON.stringify([manifestEntry('1234567abc'), manifestTestEntry('7654321def')]),
+        },
+        { name: '1234567abc_20260810120500000_0.xml', content: quakeBody('岩手県沖') },
+        { name: '7654321def_20260810120600000_0.xml', content: quakeBody('日本海中部') },
+      ])
+      globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
+      const withTest = await fetchDmdataQuakeHistory('key', TO, 10, 7, true)
+      const without = await fetchDmdataQuakeHistory('key', TO, 10, 7, false)
+      expect(withTest.quakes.length).toBe(without.quakes.length + 1)
+    })
+
+    // 安全弁: 緩めるのは `head.test` の判定だけ。対象外の種別まで通してはいけない。
+    it('設定を入れても対象外の種別は取り込まない', async () => {
+      const gz = await makeTarGz([
+        {
+          name: 'telegrams.json',
+          // VXSE56 は「扱わないと決めた種別」（→ data-sources-spec.md §2）
+          content: JSON.stringify([manifestTestEntry('7654321def', 'VXSE56')]),
+        },
+        { name: '7654321def_20260810120600000_0.xml', content: quakeBody('日本海中部') },
+      ])
+      globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
+      const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, true)
+      expect(entries).toHaveLength(0)
+    })
   })
 
   // 取りこぼしは UI へ出すため、件数を戻り値でも返す（ログだけだと
@@ -163,7 +239,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const result = await fetchDmdataReplayEvents('key', FROM, TO)
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(result.entries).toHaveLength(1)
     expect(result.skipped).toBe(3)
@@ -188,7 +264,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO)
+    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
     expect(skipped).toBe(0)
     expect(entries).toHaveLength(1)
     expect(entries[0].payload.kind).toBe('estimatedIntensity')
@@ -212,7 +288,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO)
+    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
     expect(skipped).toBe(0)
     expect(entries).toHaveLength(1)
     expect(entries[0].payload.kind).toBe('estimatedIntensity')
@@ -231,7 +307,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO)
+    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
     expect(entries).toHaveLength(0)
     expect(skipped).toBe(1)
     expect(warns.join(' ')).toContain('断片が揃いませんでした')
@@ -244,7 +320,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO)
+    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
     expect(entries).toHaveLength(0)
     expect(skipped).toBe(1)
     expect(warns.join(' ')).toContain('二進電文の本体が見つからず')
@@ -267,7 +343,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO)
+    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
     expect(entries).toHaveLength(0)
     expect(skipped).toBe(1)
   })
@@ -286,7 +362,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO)
+    const { entries, skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
     expect(entries).toHaveLength(0)
     expect(skipped).toBe(1)
   })
@@ -304,7 +380,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { skipped } = await fetchDmdataReplayEvents('key', FROM, TO)
+    const { skipped } = await fetchDmdataReplayEvents('key', FROM, TO, false)
     expect(skipped).toBe(2)
   })
 
@@ -318,7 +394,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       { url: 'https://x/good', gz: good },
     ]) as unknown as typeof fetch
 
-    const result = await fetchDmdataReplayEvents('key', FROM, TO)
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(result.entries).toHaveLength(1)
     expect(result.failedArchiveUrls).toHaveLength(1)
@@ -339,7 +415,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       { url: 'https://x/good', gz: good },
     ]) as unknown as typeof fetch
 
-    const result = await fetchDmdataReplayEvents('key', FROM, TO)
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(result.entries).toHaveLength(1)
     expect(result.failedArchiveUrls).toEqual(['https://x/nomanifest'])
@@ -356,7 +432,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       { url: 'https://x/good', gz: good },
     ]) as unknown as typeof fetch
 
-    const result = await fetchDmdataReplayEvents('key', FROM, TO)
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(result.entries).toHaveLength(1)
     expect(result.failedArchiveUrls).toEqual(['https://x/brokenmanifest'])
@@ -369,7 +445,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       { url: 'https://x/b', gz: noManifest },
     ]) as unknown as typeof fetch
 
-    await expect(fetchDmdataReplayEvents('key', FROM, TO)).rejects.toThrow(/すべてを読み取れませんでした/)
+    await expect(fetchDmdataReplayEvents('key', FROM, TO, false)).rejects.toThrow(/すべてを読み取れませんでした/)
   })
 
   /**
@@ -404,7 +480,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchivesWithLive([{ date: '2026-08-09', url: 'https://x/d09', gz }], 'error') as unknown as typeof fetch
 
-    const result = await fetchDmdataReplayEvents('key', FROM, TO)
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(result.entries).toHaveLength(1)
     // 読めなかった日は取得元の識別子として数える（無言で消すと「静かな時間帯」と区別が付かない）
@@ -417,7 +493,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('取得元が当日経路だけで、それが読めなければ例外にする', async () => {
     globalThis.fetch = mockArchivesWithLive([], 'error') as unknown as typeof fetch
 
-    await expect(fetchDmdataReplayEvents('key', FROM, TO)).rejects.toThrow(/すべてを読み取れませんでした/)
+    await expect(fetchDmdataReplayEvents('key', FROM, TO, false)).rejects.toThrow(/すべてを読み取れませんでした/)
   })
 
   it('読めなかったアーカイブは URL で返す（呼び出し元が重複を除けるように）', async () => {
@@ -430,7 +506,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       { url: 'https://x/good', gz: good },
     ]) as unknown as typeof fetch
 
-    const result = await fetchDmdataReplayEvents('key', FROM, TO)
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     // 本編と初期状態が同じアーカイブを読んでも、呼び出し元は URL で重複を除ける
     expect(result.failedArchiveUrls).toEqual(['https://x/broken'])
@@ -443,7 +519,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const result = await fetchDmdataReplayEvents('key', FROM, TO)
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(result.entries).toHaveLength(1)
     expect(result.skipped).toBe(0)
@@ -458,7 +534,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     // 壊れていない側は取り込めている
     expect(entries).toHaveLength(1)
@@ -480,7 +556,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       { url: 'https://x/good', gz: good },
     ]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(entries).toHaveLength(1)
     expect(warns.join('\n')).toMatch(/telegrams\.json/)
@@ -497,7 +573,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       { url: 'https://x/good', gz: good },
     ]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(entries).toHaveLength(1)
     expect(errors.join('\n')).toMatch(/telegrams\.json/)
@@ -510,7 +586,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(entries).toHaveLength(0)
     expect(warns.join('\n')).toMatch(/本体が見つからず/)
@@ -523,7 +599,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(entries).toHaveLength(0)
     expect(warns.join('\n')).toMatch(/head\.time/)
@@ -544,7 +620,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const result = await fetchDmdataReplayEvents('key', FROM, TO)
+    const result = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(result.entries).toHaveLength(1)
     expect(result.skipped).toBe(1)
@@ -560,7 +636,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(entries).toHaveLength(0)
     expect(warns.join('\n')).not.toMatch(/本体が見つからず/)
@@ -586,7 +662,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     // 二重に取り込まれない
     expect(entries).toHaveLength(1)
@@ -598,7 +674,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
   it('アーカイブ取得が全滅した場合は例外として伝播する（無言で 0 件にしない）', async () => {
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz: 'error' }]) as unknown as typeof fetch
 
-    await expect(fetchDmdataReplayEvents('key', FROM, TO)).rejects.toThrow(/Archive fetch failed/)
+    await expect(fetchDmdataReplayEvents('key', FROM, TO, false)).rejects.toThrow(/Archive fetch failed/)
   })
 
   // ここが今回の要。1 つのアーカイブの破損で、他のアーカイブから読めた電文まで
@@ -613,7 +689,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       { url: 'https://x/good', gz: good },
     ]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(entries).toHaveLength(1)
     expect(errors.join('\n')).toMatch(/アーカイブの取得・展開に失敗/)
@@ -643,7 +719,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       { url: 'https://x/good', gz: good },
     ]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(entries).toHaveLength(1)
     expect(errors.join('\n')).toMatch(/アーカイブの取得・展開に失敗/)
@@ -667,7 +743,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    await fetchDmdataReplayEvents('key', FROM, TO)
+    await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(warns.join('\n')).not.toMatch(/本体が見つからず/)
   })
@@ -685,7 +761,7 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
     ])
     globalThis.fetch = mockArchives([{ url: 'https://x/a', gz }]) as unknown as typeof fetch
 
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false)
 
     expect(entries).toHaveLength(1)
     expect(warns.join('\n')).toMatch(/head を持たない/)
@@ -710,9 +786,9 @@ describe('fetchDmdataReplayEvents の耐障害性', () => {
       return { ok: true, arrayBuffer: async () => good as unknown as ArrayBuffer } as unknown as Response
     }) as unknown as typeof fetch
 
-    await expect(fetchDmdataReplayEvents('key', FROM, TO)).rejects.toThrow()
+    await expect(fetchDmdataReplayEvents('key', FROM, TO, false)).rejects.toThrow()
     // clearReplayCache を挟まずに再試行しても、失敗はキャッシュされていないので回復する
-    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO)
+    const { entries } = await fetchDmdataReplayEvents('key', FROM, TO, false)
     expect(entries).toHaveLength(1)
   })
 })
@@ -732,7 +808,7 @@ describe('APIキーが不正なとき', () => {
     const fetchSpy = vi.fn(async () => { throw new Error('通信してはいけない') })
     globalThis.fetch = fetchSpy as unknown as typeof fetch
 
-    await expect(fetchDmdataReplayEvents('abc123あ', FROM, TO)).rejects.toThrow(DmdataApiKeyError)
+    await expect(fetchDmdataReplayEvents('abc123あ', FROM, TO, false)).rejects.toThrow(DmdataApiKeyError)
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 })
@@ -823,7 +899,7 @@ describe('fetchDmdataQuakeHistory', () => {
     ])
     globalThis.fetch = mockHistoryArchives([{ date: '2026-08-10', url: 'https://x/d10', gz }]) as unknown as typeof fetch
 
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7)
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
 
     expect(result.quakes).toHaveLength(1)
     expect(result.quakes[0].id).toContain('20260810090000')
@@ -844,7 +920,7 @@ describe('fetchDmdataQuakeHistory', () => {
       { date: '2026-08-10', url: 'https://x/d10', gz: newer },
     ]) as unknown as typeof fetch
 
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 2, 7)
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 2, 7, false)
 
     // 新しい日だけで 2 件に達するので、古い日の電文は入らない
     expect(result.quakes).toHaveLength(2)
@@ -865,7 +941,7 @@ describe('fetchDmdataQuakeHistory', () => {
       { date: '2026-08-09', url: 'https://x/d09', gz: older },
     ]) as unknown as typeof fetch
 
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 2, 7)
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 2, 7, false)
 
     // 当日は続報 2 通＝イベント 1 件。目標 2 件に届かないので前日も読む
     expect(result.quakes).toHaveLength(3)
@@ -880,7 +956,7 @@ describe('fetchDmdataQuakeHistory', () => {
       { date: '2026-08-09', url: 'https://x/d09', gz: good },
     ]) as unknown as typeof fetch
 
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7)
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
 
     expect(result.quakes).toHaveLength(1)
     expect(result.failedArchiveUrls).toEqual(['https://x/d10'])
@@ -894,7 +970,7 @@ describe('fetchDmdataQuakeHistory', () => {
       { date: '2026-08-09', url: 'https://x/d09', gz: 'error' },
     ], 'error') as unknown as typeof fetch
 
-    await expect(fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7))
+    await expect(fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false))
       .rejects.toThrow(/すべてを読み取れませんでした/)
   })
 
@@ -908,7 +984,7 @@ describe('fetchDmdataQuakeHistory', () => {
       { date: '2026-08-09', url: 'https://x/d09', gz: good },
     ], 'error') as unknown as typeof fetch
 
-    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7)
+    const result = await fetchDmdataQuakeHistory('key', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false)
 
     expect(result.quakes).toHaveLength(1)
     // 読めなかった日は取得元の識別子として数える（無言で消すと「静かな期間」と区別が付かない）
@@ -921,7 +997,7 @@ describe('fetchDmdataQuakeHistory', () => {
     const fetchSpy = vi.fn(async () => { throw new Error('通信してはいけない') })
     globalThis.fetch = fetchSpy as unknown as typeof fetch
 
-    await expect(fetchDmdataQuakeHistory('abc123あ', new Date('2026-08-10T12:00:00+09:00'), 50, 7))
+    await expect(fetchDmdataQuakeHistory('abc123あ', new Date('2026-08-10T12:00:00+09:00'), 50, 7, false))
       .rejects.toThrow(DmdataApiKeyError)
     expect(fetchSpy).not.toHaveBeenCalled()
   })

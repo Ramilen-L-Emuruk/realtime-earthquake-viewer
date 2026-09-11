@@ -1193,10 +1193,14 @@ export function App() {
         ))
       }
       return isDmdss
-        ? fetchDmdataReplayEvents(settings.dmdataApiKey, from, to)
+        // 「試験報を受信（検証用）」はライブだけでなく再生にも効かせる。**設定の文面は
+        // 経路を限っていない**のに、ここへ渡さないと「ライブでは届くが再生では届かない」
+        // という、名前から読み取れない食い違いになる。訓練報は年に数回しか流れないので、
+        // 再生で拾えないと実電文で確かめる手段が事実上テストボタンだけになる。
+        ? fetchDmdataReplayEvents(settings.dmdataApiKey, from, to, settings.dmdataTestDelivery)
         : fetchP2PReplayEvents(from, to)
     },
-    [settings.dmdataApiKey, historicalArchives],
+    [settings.dmdataApiKey, settings.dmdataTestDelivery, historicalArchives],
   )
   const clearReplayCacheForVariant = useCallback(
     () => { if (isDmdss) clearReplayCache(); else clearP2PReplayCache() },
@@ -1216,10 +1220,12 @@ export function App() {
       const covering = findCoveringArchiveSync(historicalArchives, new Date(before.getTime() - REPLAY_PRE_WINDOW_MS), before)
       if (covering) return fetchLocalArchiveQuakeHistory(covering, before, targetEvents)
       return isDmdss
-        ? fetchDmdataQuakeHistory(settings.dmdataApiKey, before, targetEvents, maxDays)
+        // 履歴（再生開始より前の地震カード）も本編と同じ扱いにする。片方だけ通すと
+        // 「再生には訓練報が出るのにカードの一覧には無い」形でずれる。
+        ? fetchDmdataQuakeHistory(settings.dmdataApiKey, before, targetEvents, maxDays, settings.dmdataTestDelivery)
         : fetchP2PQuakeHistory(before, targetEvents)
     },
-    [settings.dmdataApiKey, historicalArchives],
+    [settings.dmdataApiKey, settings.dmdataTestDelivery, historicalArchives],
   )
   const replay = useReplayController({
     fetchEvents: fetchReplayEvents,

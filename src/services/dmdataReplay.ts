@@ -128,6 +128,7 @@ export async function fetchDmdataReplayEvents(
   apiKey: string,
   fromTime: Date,
   toTime: Date,
+  includeTest: boolean,
 ): Promise<ReplayFetchResult> {
   // アーカイブは JST 日付で索引されているため、UTC 日付との差を吸収するため
   // 開始日を -1 日、終了日を +1 日して確実に対象アーカイブを含める
@@ -201,7 +202,10 @@ export async function fetchDmdataReplayEvents(
           skippedCount++
           continue
         }
-        if (entry.head.test) continue
+        // 試験・訓練報は既定で捨てる（理由は dmdataReplayLive.ts の classifyTelegram に同じ）。
+        // **アーカイブの索引は訓練報に test=true を立てる。** 電文の中身の運用種別
+        // （`Control/Status`）とは別の印で、こちらを見ないと訓練報だけが静かに落ちる。
+        if (!includeTest && entry.head.test) continue
 
         // 時刻が読めない電文をそのまま通すと replayTime が Invalid Date になり、
         // 再生キューの並べ替え・発火判定が静かに破綻する。ここで弾く。
@@ -324,7 +328,7 @@ export async function fetchDmdataReplayEvents(
   const liveDates = resolveLiveDates(fromTime, toTime, items.map(i => i.date))
   if (liveDates.length > 0) {
     try {
-      const live = await fetchLiveReplayEntries(apiKey, fromTime, toTime, liveDates)
+      const live = await fetchLiveReplayEntries(apiKey, fromTime, toTime, liveDates, includeTest)
       entries.push(...live.entries)
       skippedCount += live.skipped
       failedArchiveUrls.push(...live.failedSources)
@@ -566,6 +570,7 @@ export async function fetchDmdataQuakeHistory(
   before: Date,
   targetEvents: number,
   maxDays: number,
+  includeTest: boolean,
 ): Promise<QuakeHistoryResult> {
   // アーカイブは JST 日付で索引されているため、UTC 日付との差を吸収するよう終端を +1 日する
   // （`fetchDmdataReplayEvents` と同じ理由）。
@@ -611,7 +616,7 @@ export async function fetchDmdataQuakeHistory(
       // 同じ扱い）。ここで例外にすると、当日の一覧 API が一度こけただけで過去数日ぶんの
       // カードごと消える。
       try {
-        const live = await fetchLiveQuakeTelegrams(apiKey, source.date, before)
+        const live = await fetchLiveQuakeTelegrams(apiKey, source.date, before, includeTest)
         for (const quake of live.quakes) {
           quakes.push(quake)
           eventIds.add(extractQuakeEventIdFromId(quake.id) ?? quake.id)
@@ -643,7 +648,7 @@ export async function fetchDmdataQuakeHistory(
     }
 
     for (const entry of manifest) {
-      if (!entry?.head || entry.head.test) continue
+      if (!entry?.head || (!includeTest && entry.head.test)) continue
       if (!QUAKE_TYPES.has(entry.head.type)) continue
       // XML 版と JSON 版の 2 エントリで載るうち、XML 版（originalId 無し）だけを拾う
       // （`fetchDmdataReplayEvents` と同じ重複排除。正常動作なので警告は出さない）。
