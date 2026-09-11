@@ -219,7 +219,7 @@ VXSE43（警報）と旧形式の VXSE44（予報）を扱わない理由は [`d
 
 ### 固定付加文（`Comments/WarningComment/Text`）
 
-避難行動の呼びかけなどの定型文。津波の同名フィールドと同じ形で `warningComment` として持ち、
+避難行動の呼びかけなどの定型文。`warningComment` として持ち、
 **画面にだけ出す**。
 
 **コードはあるのに原文が無い電文は記録する**（`readCommentText`。→ [`quake-spec.md`](quake-spec.md)

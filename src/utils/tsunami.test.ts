@@ -30,6 +30,9 @@ import {
   observationHeightText,
   observationArrivalFallbackText,
   observationMaxHeightTimeText,
+  mergeTsunamiAreas,
+  mergeTsunamiWarningComments,
+  WARNING_COMMENT_ORDER,
 } from './tsunami'
 import type { JMATsunami, TsunamiArea, TsunamiObservation } from '../types/earthquake'
 
@@ -623,6 +626,147 @@ describe('withInheritedTsunamiFacts', () => {
     const latest = makeTsunami({ id: 'b', eventId: 'E1', time: '2024-01-02T10:03:00+09:00' })
     expect(withInheritedTsunamiFacts(latest, [broken, good, latest]).bodyText).toBe('読める報の本文')
   })
+
+  // ここから下は、ライブ受信で引き継いでいるものを**リロード時にも**引き継げているかの検査。
+  // ライブ側にだけ足してこちらへ足し忘れると、「受信中は出るのにリロードすると消える」という
+  // 形になる（2026-09-11 に実際にそうなった）。
+  //
+  // 実電文（2026-04-20 三陸沖）の並びを縮めた形:
+  //   16:55 VTSE41 津波警報等  区域あり・観測点なし・避難の呼びかけ・自由付加文
+  //   16:56 VTSE51 満潮時刻    同じ区域・観測点あり・満潮の注記
+
+  /** 津波警報等（VTSE41）。区域は運ぶが潮位観測点は運ばない。 */
+  const restoreWarning = (over: Partial<JMATsunami> = {}) => makeTsunami({
+    id: 'w', eventId: 'E1', time: '2026-04-20T16:55:38+09:00',
+    carriesForecastStations: false,
+    warningComments: [{ key: 'VTSE41', text: 'ただちに避難してください。' }],
+    freeText: '［予想される津波の高さの解説］',
+    areas: [makeArea({ name: '岩手県', code: '210', grade: 'Warning' })],
+    ...over,
+  })
+
+  /** 満潮時刻の報（VTSE51）。同じ区域に潮位観測点を足して載せる。 */
+  const restoreHighTide = (over: Partial<JMATsunami> = {}) => makeTsunami({
+    id: 'h', eventId: 'E1', time: '2026-04-20T16:56:17+09:00',
+    carriesForecastStations: true,
+    observationDateTime: '2026-04-20T16:56:00+09:00',
+    warningComments: [{ key: 'VTSE51|各地の満潮時刻・津波到達予想時刻に関する情報', text: '津波と満潮が重なると、' }],
+    areas: [makeArea({
+      name: '岩手県', code: '210', grade: 'Warning',
+      stations: [{ name: '宮古', code: '2101', highTideDateTime: '2026-04-20T18:19:00+09:00' }],
+    })],
+    ...over,
+  })
+
+  // 正: 最新報が満潮時刻の報なら、その前の津波警報等から避難の呼びかけと自由付加文を継ぐ。
+  it('最新報が満潮時刻の報でも避難の呼びかけと自由付加文が残る', () => {
+    const latest = restoreHighTide()
+    const merged = withInheritedTsunamiFacts(latest, [restoreWarning(), latest])
+    expect(merged.warningComments!.map(c => c.key))
+      .toEqual(['VTSE41', 'VTSE51|各地の満潮時刻・津波到達予想時刻に関する情報'])
+    expect(merged.freeText).toBe('［予想される津波の高さの解説］')
+  })
+
+  // 正: 最新報が津波警報等なら、その前の満潮時刻の報から潮位観測点を継ぐ。
+  it('最新報が津波警報等でも満潮時刻が残る', () => {
+    const latest = restoreWarning({ id: 'w2', time: '2026-04-20T17:08:19+09:00' })
+    const merged = withInheritedTsunamiFacts(latest, [restoreWarning(), restoreHighTide(), latest])
+    expect(merged.areas[0].stations?.[0].highTideDateTime).toBe('2026-04-20T18:19:00+09:00')
+    // 観測時点も同じ理由で継ぐ（観測情報にしか入らない）
+    expect(merged.observationDateTime).toBe('2026-04-20T16:56:00+09:00')
+  })
+
+  // 対照: 最新報が潮位観測点を運ぶ種別なら継がない。気象庁が発表をやめた合図なので、
+  // 継ぐと解除間際の画面に古い到達予想時刻が残る（ライブ側と同じ判断）。
+  it('最新報が津波情報で観測点を載せていなければ継がない', () => {
+    const latest = restoreHighTide({
+      id: 'h2', time: '2026-04-20T17:45:00+09:00',
+      areas: [makeArea({ name: '岩手県', code: '210', grade: 'Forecast' })],
+    })
+    const merged = withInheritedTsunamiFacts(latest, [restoreHighTide(), latest])
+    expect(merged.areas[0].stations).toBeUndefined()
+  })
+
+  // 安全弁: 別イベントの報からは何も継がない。
+  it('別イベントの報からは継がない', () => {
+    const other = restoreHighTide({ id: 'x', eventId: 'E2' })
+    const latest = restoreWarning({ id: 'w2', time: '2026-04-20T17:08:19+09:00' })
+    const merged = withInheritedTsunamiFacts(latest, [other, latest])
+    expect(merged.areas[0].stations).toBeUndefined()
+    expect(merged.warningComments!.map(c => c.key)).toEqual(['VTSE41'])
+  })
+
+  // 安全弁: **観測点を運ぶ種別の報が「載せなかった」判断を飛び越えない。**
+  // 「最後に観測点を載せた報」から 1 回だけ継ぐ形にすると、その判断より古い報の観測点を
+  // 復活させてしまう。ライブ受信と同じく古い報から畳むことで防ぐ。
+  it('観測点を載せなくなった津波情報を飛び越えて古い値を復活させない', () => {
+    const stopped = restoreHighTide({
+      id: 'h2', time: '2026-04-20T17:45:00+09:00',
+      areas: [makeArea({ name: '岩手県', code: '210', grade: 'Forecast' })],
+    })
+    // その後に届いた津波警報等（観測点を運ばない種別）。直前の津波情報が観測点を落としている
+    // ので、継ぐ相手はもう無い。
+    const latest = restoreWarning({ id: 'w4', time: '2026-04-20T17:50:00+09:00' })
+    const merged = withInheritedTsunamiFacts(latest, [restoreHighTide(), stopped, latest])
+    expect(merged.areas[0].stations).toBeUndefined()
+  })
+
+  // 正: 最新報が区域を伝えていない観測のみの続報（沖合の観測など）でも、等級と区域が残る。
+  // 観測情報は 1 分に何通も届くので、**この報が最後に届いた状態でリロードするのは普通に起きる**。
+  it('最新報が観測のみの続報でも等級と区域が残る', () => {
+    const offshore = makeTsunami({
+      id: 'o', eventId: 'E1', time: '2026-04-20T17:16:31+09:00',
+      areas: [],
+      observations: [{ name: '釜石沖', offshore: true, height: { value: 1.2, description: '1.2m' } }],
+    })
+    const merged = withInheritedTsunamiFacts(offshore, [restoreWarning(), restoreHighTide(), offshore])
+    expect(merged.areas.map(a => a.name)).toEqual(['岩手県'])
+    expect(merged.areas[0].grade).toBe('Warning')
+    // 満潮時刻も残る（区域ごと継いでいるので当然だが、対で確かめる）
+    expect(merged.areas[0].stations?.[0].highTideDateTime).toBe('2026-04-20T18:19:00+09:00')
+  })
+
+  // 正: 沿岸と沖合は**別の観測点集合**（実電文で沿岸 19 点・沖合 9 点・重複 0）。最新報だけを
+  // 採ると、最後に届いたのが沿岸観測なら沖合の点が丸ごと消える。
+  it('沿岸と沖合の観測点が両方残る', () => {
+    const offshoreReport = makeTsunami({
+      id: 'o', eventId: 'E1', time: '2026-04-20T17:16:31+09:00', areas: [],
+      observations: [{ name: '岩手宮古沖', offshore: true, height: { value: 1.2, description: '1.2m' } }],
+      estimations: [{ name: '岩手県', arrivalTime: '2026-04-20T17:30:00+09:00' }],
+    })
+    const coastal = makeTsunami({
+      id: 'c1', eventId: 'E1', time: '2026-04-20T17:25:00+09:00', areas: [],
+      observations: [{ name: '宮古', height: { value: 0.8, description: '0.8m' } }],
+    })
+    const merged = withInheritedTsunamiFacts(coastal, [restoreHighTide(), offshoreReport, coastal])
+    // 並びは見ない（この関数の担当ではない。カード順は `sortObservationsForCardDisplay`）
+    expect(new Set(merged.observations?.map(o => o.name))).toEqual(new Set(['宮古', '岩手宮古沖']))
+    // 沿岸への推定も残る（沖合の実測が残るのに、そこから導いた推定だけ消えるのは食い違い）
+    expect(merged.estimations?.map(e => e.name)).toEqual(['岩手県'])
+  })
+
+  // 対照: 解除・取消の報には継がない。区域が空なのは**その報の内容**であって、
+  // 運ばないからではない。継ぐと解除されたはずの区域が復活する。
+  it('解除の報には区域を継がない', () => {
+    const lifted = makeTsunami({
+      id: 'c', eventId: 'E1', time: '2026-04-20T18:00:00+09:00',
+      cancelled: true, cancelReason: 'lifted', areas: [],
+    })
+    expect(withInheritedTsunamiFacts(lifted, [restoreWarning(), restoreHighTide(), lifted]).areas).toEqual([])
+  })
+
+  // 安全弁: 等級が下がって固定付加文が書き換わったら、古い呼びかけを残さない
+  // （同じ主題の枠は置き換わる）。
+  it('等級が下がった呼びかけは古いものを残さない', () => {
+    const lowered = restoreWarning({
+      id: 'w3', time: '2026-04-20T17:45:00+09:00',
+      warningComments: [{ key: 'VTSE41', text: '＜津波注意報＞海の中や海岸付近は危険です。' }],
+    })
+    const merged = withInheritedTsunamiFacts(lowered, [restoreWarning(), lowered])
+    const grade = merged.warningComments!.filter(c => c.key === 'VTSE41')
+    expect(grade).toHaveLength(1)
+    expect(grade[0].text).toContain('津波注意報')
+  })
 })
 
 // 2024 年能登半島地震 01/02 02:30 の「津波注意報を一部解除しました」に相当する形。
@@ -1024,5 +1168,115 @@ describe('観測中のまま津波警報相当', () => {
     expect(badge).not.toContain('基準超')
     expect(badge).not.toBe(importantBadgeText(true))
     expect(badge).not.toBe(importantBadgeText(false))
+  })
+})
+
+// ============================================================
+// 続報のマージ（区域の観測点・固定付加文）
+//
+// 実電文（2026-04-20 三陸沖・`eventId=20260420165303`・41 通）で確かめた形を固定する。
+//   - 津波警報等（VTSE41）は区域一覧を全量で載せるが、区域の中に `Station` を 1 件も持たない
+//   - 津波情報（VTSE51）は同じ区域一覧に加えて `Station`（満潮時刻・到達予想時刻）を載せる
+//   - 等級が津波予報まで下がると、VTSE51 も `Station` を載せなくなる
+// ============================================================
+
+describe('mergeTsunamiAreas', () => {
+  const withStations = (name: string, code: string) => makeArea({
+    name, code, stations: [{ name: `${name}港`, code: `${code}1`, highTideDateTime: '2026-04-20T18:30:00+09:00' }],
+  })
+
+  // 正: 観測点を運ばない種別（津波警報等）では、前報の満潮時刻を継ぐ。
+  // これを落とすと、警報が届いた瞬間に満潮時刻が画面から消える（実運用では次の満潮情報まで 24 秒）。
+  it('観測点を運ばない種別では前報の観測点を継ぐ', () => {
+    const prev = [withStations('岩手県', '210')]
+    const next = [makeArea({ name: '岩手県', code: '210', grade: 'Warning' })]
+    const merged = mergeTsunamiAreas(prev, next, false)
+    expect(merged[0].stations?.[0].highTideDateTime).toBe('2026-04-20T18:30:00+09:00')
+    // 等級は新報が正。継ぐのは観測点だけ。
+    expect(merged[0].grade).toBe('Warning')
+  })
+
+  // 対照: 観測点を運ぶ種別（津波情報）で観測点が消えたなら、気象庁が発表をやめたということ。
+  // 継ぐと、解除間際の画面に古い到達予想時刻が残り続ける。
+  it('観測点を運ぶ種別で空になったら継がない', () => {
+    const prev = [withStations('岩手県', '210')]
+    const next = [makeArea({ name: '岩手県', code: '210', grade: 'Forecast' })]
+    expect(mergeTsunamiAreas(prev, next, true)[0].stations).toBeUndefined()
+  })
+
+  // 安全弁: 区域そのものを前報から復活させない。気象庁は一部解除を「区域が電文から消える」形で
+  // 出すので、キー単位の upsert にすると解除済みの等級を出し続ける。
+  it('前報にしかない区域を復活させない', () => {
+    const prev = [withStations('岩手県', '210'), withStations('宮城県', '220')]
+    const next = [makeArea({ name: '岩手県', code: '210' })]
+    expect(mergeTsunamiAreas(prev, next, false).map(a => a.name)).toEqual(['岩手県'])
+  })
+
+  // 安全弁: 新報が観測点を持つなら、そちらが勝つ（前報で上書きしない）。
+  it('新報の観測点を前報で上書きしない', () => {
+    const prev = [withStations('岩手県', '210')]
+    const next = [makeArea({
+      name: '岩手県', code: '210',
+      stations: [{ name: '宮古', code: '2101', highTideDateTime: '2026-04-20T19:00:00+09:00' }],
+    })]
+    expect(mergeTsunamiAreas(prev, next, true)[0].stations?.[0].name).toBe('宮古')
+    expect(mergeTsunamiAreas(prev, next, false)[0].stations?.[0].name).toBe('宮古')
+  })
+
+  // 種別を判定できない経路（P2PQuake）は安全側＝継ぐ。あちらは観測点を配信しないので実害は無いが、
+  // 判定できないことを「継がない」に倒すと、種別が増えたときに黙って落ちる。
+  it('種別が分からなければ継ぐ', () => {
+    const prev = [withStations('岩手県', '210')]
+    const next = [makeArea({ name: '岩手県', code: '210' })]
+    expect(mergeTsunamiAreas(prev, next, undefined)[0].stations?.length).toBe(1)
+  })
+
+  // 区域コードが無い経路（P2PQuake）でも名前で引き当てられること。
+  it('コードが無ければ区域名で引き当てる', () => {
+    const prev = [makeArea({ name: '岩手県', code: undefined, stations: [{ name: '宮古', code: '2101' }] })]
+    const next = [makeArea({ name: '岩手県', code: undefined })]
+    expect(mergeTsunamiAreas(prev, next, false)[0].stations?.length).toBe(1)
+  })
+})
+
+describe('mergeTsunamiWarningComments', () => {
+  const grade = { key: 'VTSE41', text: 'ただちに避難してください。' }
+  const highTide = { key: 'VTSE51|各地の満潮時刻・津波到達予想時刻に関する情報', text: '津波と満潮が重なると、' }
+  const observation = { key: 'VTSE51|津波観測に関する情報', text: '津波による潮位変化が観測されてから' }
+  const offshore = { key: 'VTSE52', text: '沖合での観測値であり、' }
+
+  // 正: 主題が違えば足す。上書きしていた頃は、避難の呼びかけが 1 分後の満潮時刻の報で消えていた。
+  it('主題が違えば足す', () => {
+    const merged = mergeTsunamiWarningComments([grade], [highTide])!
+    expect(merged.map(c => c.key)).toEqual([grade.key, highTide.key])
+  })
+
+  // 対照: 同じ主題なら置き換える。等級が下がれば呼びかけも書き換わるので、
+  // 足していくと解除済みの等級の呼びかけが残る。
+  it('同じ主題なら置き換える', () => {
+    const lowered = { key: 'VTSE41', text: '＜津波注意報＞海の中や海岸付近は危険です。' }
+    const merged = mergeTsunamiWarningComments([grade, highTide], [lowered])!
+    expect(merged).toHaveLength(2)
+    expect(merged.find(c => c.key === 'VTSE41')!.text).toBe(lowered.text)
+  })
+
+  // 安全弁: 並びは到着順ではなく主題順。途中から受信を始めても等級の呼びかけが先頭に来る。
+  it('到着順によらず主題の順で並べる', () => {
+    const merged = mergeTsunamiWarningComments([observation, offshore], [highTide, grade])!
+    expect(merged.map(c => c.key)).toEqual([grade.key, highTide.key, observation.key, offshore.key])
+  })
+
+  // 安全弁: 表に無い鍵でも落とさない（気象庁が情報名を増やしても消えない）。末尾へ回す。
+  it('表に無い鍵は末尾へ回して落とさない', () => {
+    const unknown = { key: 'VTSE51|新しい情報名', text: '未知の注記' }
+    const merged = mergeTsunamiWarningComments([unknown], [grade])!
+    expect(merged.map(c => c.key)).toEqual([grade.key, unknown.key])
+    expect(WARNING_COMMENT_ORDER).not.toContain(unknown.key)
+  })
+
+  // 新報が持たなければ前報をそのまま返す（`mergeTsunamiObservations` と同じ扱い）。
+  it('新報が持たなければ前報を残す', () => {
+    expect(mergeTsunamiWarningComments([grade], undefined)).toEqual([grade])
+    expect(mergeTsunamiWarningComments(undefined, undefined)).toBeUndefined()
   })
 })

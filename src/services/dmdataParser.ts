@@ -1580,11 +1580,39 @@ function toHalfWidthHeightDesc(s: string): string {
 }
 
 /**
+ * 固定付加文の主題を表す鍵を作る。→ {@link import('../types/earthquake').TsunamiWarningComment.key}
+ *
+ * 値は電文種別。**津波情報（VTSE51）だけは情報名も含める** —— 気象庁はこの種別で
+ * 「各地の満潮時刻・津波到達予想時刻に関する情報」と「津波観測に関する情報」を名乗り分けており、
+ * 付加文の中身も別物だから。他の種別で情報名を含めないのは、津波警報等（VTSE41）の情報名が
+ * 等級とともに変わるため（「津波警報・津波注意報・津波予報」→「津波注意報・津波予報」→
+ * 「津波予報」と実電文で 3 回変わった）。含めると、解除済みの等級の避難呼びかけが別の鍵として
+ * 画面に残る。
+ */
+function tsunamiWarningCommentKey(headType: string, infoName: string | undefined): string {
+  if (headType !== 'VTSE51') return headType
+  if (!infoName) {
+    // 情報名が読めないと満潮時刻の報と観測情報の報が同じ鍵へ落ち、続報のマージで片方が消える。
+    // **消えたことは画面にもログにも出ない**ので、読めなかった事実をここで残す。
+    log.warn(`${TSUNAMI_LOG_PREFIX} 情報名を読めないため固定付加文の主題を分けられません（満潮時刻と観測情報が同じ鍵になります）`)
+    return 'VTSE51'
+  }
+  return `VTSE51|${infoName}`
+}
+
+/**
  * 津波電文（VTSE41 / VTSE51 / VTSE52）を読む。
  *
- * `headType` を受け取るのは**沖合と沿岸を見分けるため**。VTSE52「沖合の津波観測に関する情報」の
- * 観測点は沿岸と「重要」の基準が違い（→ `tsunami.ts` の `importantBadgeText`）、電文の中身からは
- * 区域名が空であることでしか区別できない —— それは副作用であって根拠ではないので、種別で判定する。
+ * `headType` は**電文の中身からは決められない 3 つの判定**に使う。いずれも中身に現れる差は
+ * 副作用であって根拠ではないので、種別から立てる。
+ *
+ * 1. **沖合と沿岸の区別**。VTSE52「沖合の津波観測に関する情報」の観測点は沿岸と「重要」の基準が
+ *    違う（→ `tsunami.ts` の `importantBadgeText`）が、電文の中身では区域名が空であることでしか
+ *    区別できない
+ * 2. **区域ごとの潮位観測点を運ぶ種別か**（`carriesForecastStations`）。「区域に観測点が無い」が
+ *    「運ばない種別だから」なのか「気象庁が出さなくなった」なのかを分ける
+ *    （→ `tsunami.ts` の `mergeTsunamiAreas`）
+ * 3. **固定付加文の主題の鍵**（→ `tsunamiWarningCommentKey`）
  */
 export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami | null {
   const doc = parseTelegramXml(xml, TSUNAMI_LOG_PREFIX)
@@ -1621,9 +1649,18 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
   const infoName = readInfoName(doc) || undefined
   const commentsEl = xmlQ(doc, 'Comments')
   const warningCommentEl = commentsEl ? xmlQ(commentsEl, 'WarningComment') : null
-  const warningComment = readCommentText(warningCommentEl, '固定付加文', TSUNAMI_LOG_PREFIX) || undefined
+  const warningCommentText = readCommentText(warningCommentEl, '固定付加文', TSUNAMI_LOG_PREFIX) || undefined
+  // 固定付加文は**電文種別ごとに別の話をする**（避難行動／満潮／観測値／沖合）。1 つの枠を
+  // 報どうしで奪い合わせると最後に届いた注記しか残らないため、主題を表す鍵を添えて配列で渡し、
+  // 続報のマージ（`mergeTsunamiWarningComments`）が束ねる。鍵の作り方は
+  // `TsunamiWarningComment.key`（津波情報だけ情報名まで含める）。
+  const warningComments = warningCommentText
+    ? [{ key: tsunamiWarningCommentKey(headType, infoName), text: warningCommentText }]
+    : undefined
+  // 区域ごとの潮位観測点を運ぶ種別か。→ `JMATsunami.carriesForecastStations`
+  const carriesForecastStations = headType === 'VTSE51'
   // 自由付加文。**地震情報・長周期では読んで出していたのに津波だけ落ちていた。**
-  // 等級ごとの定型文（`warningComment`）と違い、続報で実際に書き換わるのはこちら側。
+  // 種別ごとの定型文（`warningComments`）と違い、続報で実際に書き換わるのはこちら側。
   // `xmlText` が前後の空白だけを落とす（中の改行と整形は保つ）。
   const freeText = (commentsEl ? xmlText(xmlChild(commentsEl, 'FreeFormComment')) : '') || undefined
   // 電文の本文（`Body` 直下の `Text`）。**発表報でも入る** —— 解説資料は取消を「例」として
@@ -1710,7 +1747,7 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
     // 観測）と VTSE51 の観測のみ続報が通る主経路で、まさに観測時点が最も効く形。載せ忘れると
     // 「観測 ◯◯ 時点」が肝心の電文で一度も出ない（続報のマージは `?? current` で前報へ倒れる
     // ため、画面には古い時点が残るか、前報が無ければ何も出ない）。
-    return { kind: 'tsunami', id, eventId, time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: false, headline, infoName, warningComment, freeText, bodyText: tsunamiBodyText, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas: [], observations, observationDateTime, estimations }
+    return { kind: 'tsunami', id, eventId, time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: false, headline, infoName, warningComments, carriesForecastStations, freeText, bodyText: tsunamiBodyText, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas: [], observations, observationDateTime, estimations }
   }
 
   const allEls = forecastEl!.getElementsByTagName('*')
@@ -1872,7 +1909,7 @@ export function parseTsunamiFromXml(headType: string, xml: string): JMATsunami |
   // Observation も含む場合（VTSE51①: Forecast + Observation 両方あり）
   const observations = observationEl ? parseTsunamiObservationsFromXml(observationEl, offshore) : undefined
 
-  return { kind: 'tsunami', id, eventId, time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: false, validDateTime, headline, infoName, warningComment, freeText, bodyText: tsunamiBodyText, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas, observations: observations && observations.length > 0 ? observations : undefined, observationDateTime, estimations }
+  return { kind: 'tsunami', id, eventId, time: reportDateTime, ...(tsunamiOperationStatus && { operationStatus: tsunamiOperationStatus }), cancelled: false, validDateTime, headline, infoName, warningComments, carriesForecastStations, freeText, bodyText: tsunamiBodyText, sourceEarthquakes, issue: { source, time: reportDateTime, type: 'Focus' }, areas, observations: observations && observations.length > 0 ? observations : undefined, observationDateTime, estimations }
 }
 
 /**

@@ -8,6 +8,7 @@ import { hasKnownEpicenter } from '../utils/geo'
 import { hasMagnitude } from '../utils/formatters'
 import { isMaxScaleUnreceived } from '../utils/quakePoints'
 import { isEewPlumKindCode } from '../utils/eewKind'
+import { WARNING_COMMENT_ORDER } from '../utils/tsunami'
 
 // 震度速報（VXSE51）。震源が未確定の段階で出るため Earthquake 要素を持たず、
 // 震度は Pref > Area（一次細分区域）までしか無い。
@@ -3421,13 +3422,86 @@ describe('津波電文の付加文と波高のメタ情報', () => {
     const t = parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!
     expect(t.bodyText).not.toContain('予想される津波の高さの解説')
     expect(t.freeText).not.toContain('若干の海面変動が予想される時刻')
-    expect(t.bodyText).not.toBe(t.warningComment)
+    expect(t.bodyText).not.toBe(t.warningComments?.[0]?.text)
   })
 
   // 対照: 本文が無い電文では持たせない
   it('本文が無ければ持たない', () => {
     const xml = PARITY_TSUNAMI_XML.replace(BODY_TEXT_LINE, '')
     expect(parseTsunamiFromXml('VTSE51', xml)!.bodyText).toBeUndefined()
+  })
+
+  // ---- 固定付加文の主題の鍵 ----
+  //
+  // 固定付加文は電文種別ごとに別の話をする（避難行動／満潮／沿岸の観測／沖合の観測）。
+  // 1 つの枠を奪い合わせないよう主題の鍵を添えるが、**鍵の作り方を間違えても画面には
+  // 出ないので気づけない**（束ね方が変わるだけで、どの文も「それらしく」表示される）。
+
+  /** 雛形に固定付加文を差し込む。雛形そのものは `WarningComment` を持たない。 */
+  const withWarningComment = (text: string) => PARITY_TSUNAMI_XML.replace(
+    '      <FreeFormComment>',
+    `      <WarningComment codeType="固定付加文"><Text>${text}</Text><Code>0122</Code></WarningComment>
+      <FreeFormComment>`,
+  )
+
+  // 正: 津波情報（VTSE51）は情報名まで鍵に含める。気象庁がこの種別だけ「満潮時刻」と
+  // 「津波観測」を名乗り分けており、付加文の中身も別物だから。
+  it('津波情報の鍵には情報名を含める', () => {
+    const t = parseTsunamiFromXml('VTSE51', withWarningComment('津波と満潮が重なると、'))!
+    expect(t.warningComments).toEqual([{ key: 'VTSE51|津波情報', text: '津波と満潮が重なると、' }])
+  })
+
+  // 対照: 他の種別は情報名を含めない。津波警報等の情報名は等級とともに変わる
+  // （実電文で「津波警報・津波注意報・津波予報」→「津波注意報・津波予報」→「津波予報」）ので、
+  // 含めると解除済みの等級の避難呼びかけが別の鍵として画面に残る。
+  it('津波警報等・沖合観測の鍵は種別だけ', () => {
+    const xml = withWarningComment('ただちに避難してください。')
+    expect(parseTsunamiFromXml('VTSE41', xml)!.warningComments![0].key).toBe('VTSE41')
+    expect(parseTsunamiFromXml('VTSE52', xml)!.warningComments![0].key).toBe('VTSE52')
+  })
+
+  // 安全弁: 付加文が無ければ持たせない。空の配列を入れると、表示側の長さ判定を素通りして
+  // 空の枠がカードに出る。
+  it('固定付加文が無ければ持たない', () => {
+    expect(parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!.warningComments).toBeUndefined()
+  })
+
+  // 安全弁: **並び順の表に書いた鍵が、実電文の名乗りから実際に作られること。**
+  // `WARNING_COMMENT_ORDER` は情報名を文字列で直書きしているので、1 文字でも違えば並び替えが
+  // 黙って効かなくなる（表示は消えないので画面では気づけない）。実電文の名乗りをパーサーへ
+  // 通して突き合わせる —— 推測で書いた文字列がテストの緑を素通りしないように。
+  //
+  // 名乗りは 2026-04-20 三陸沖の実電文（`Head/Title`）から採った。
+  it.each([
+    ['VTSE41', '津波警報・津波注意報・津波予報', 'VTSE41'],
+    ['VTSE51', '各地の満潮時刻・津波到達予想時刻に関する情報', 'VTSE51|各地の満潮時刻・津波到達予想時刻に関する情報'],
+    ['VTSE51', '津波観測に関する情報', 'VTSE51|津波観測に関する情報'],
+    ['VTSE52', '沖合の津波観測に関する情報', 'VTSE52'],
+  ])('実電文の名乗り（%s / %s）から並び順の表にある鍵が作られる', (headType, title, expected) => {
+    const xml = withWarningComment('注意の文').replace('<Title>津波情報</Title>', `<Title>${title}</Title>`)
+    expect(xml).toContain(`<Title>${title}</Title>`)   // 置換が当たったことを確かめる
+    expect(parseTsunamiFromXml(headType, xml)!.warningComments![0].key).toBe(expected)
+    expect(WARNING_COMMENT_ORDER).toContain(expected)
+  })
+
+  // 対照: 情報名を読めない電文では満潮と観測が同じ鍵へ落ちるので、記録を残す
+  // （消えたことは画面にもログにも出ないため）。
+  it('情報名を読めない津波情報は記録を残す', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    const xml = withWarningComment('注意の文').replace('<Title>津波情報</Title>', '')
+    expect(parseTsunamiFromXml('VTSE51', xml)!.warningComments![0].key).toBe('VTSE51')
+    expect(warn.mock.calls.some(c => String(c[0]).includes('情報名を読めない'))).toBe(true)
+    warn.mockRestore()
+  })
+
+  // ---- 観測点を運ぶ種別か ----
+  //
+  // 「区域に観測点が無い」を「運ばない種別だから」と「気象庁が出さなくなった」に分ける唯一の
+  // 材料（→ `mergeTsunamiAreas`）。取り違えると、満潮時刻が消えるか、古い到達予想時刻が残る。
+  it('観測点を運ぶのは津波情報だけ', () => {
+    expect(parseTsunamiFromXml('VTSE51', PARITY_TSUNAMI_XML)!.carriesForecastStations).toBe(true)
+    expect(parseTsunamiFromXml('VTSE41', PARITY_TSUNAMI_XML)!.carriesForecastStations).toBe(false)
+    expect(parseTsunamiFromXml('VTSE52', PARITY_TSUNAMI_XML)!.carriesForecastStations).toBe(false)
   })
 
   // 正: 自由付加文。地震情報・長周期では読んで画面に出していたのに、津波だけ落ちていた

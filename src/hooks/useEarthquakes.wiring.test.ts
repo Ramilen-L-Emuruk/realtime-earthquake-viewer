@@ -20,6 +20,17 @@ import { renderHook, cleanup, act } from '@testing-library/react'
 import type { AppEvent, EEWAlert, JMAQuake, JMATsunami, JMANankaiCommentary, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity } from '../types/earthquake'
 import { serverDate, setReplayOffset } from '../utils/clock'
 import { DMDATA_API_KEY_INVALID_MESSAGE } from '../utils/dmdataApiKey'
+// **テストボタンのデータをここで先に読む。** 値は使わないが、これが無いと
+// `simulate*` を最初に呼ぶテストが「このファイルで初回のモジュール解決・変換」を
+// テスト本体の中で行うことになる —— 実データ 3 つで 824 KB あり、全ファイル並列実行では
+// 他ワーカーとの順番待ちで数秒に伸びて、既定の 5 秒に届かない。トップレベルへ置けば
+// 待ちはファイル読み込み時へ移り `testTimeout` の対象から外れる
+// （同じ手当ての先例は `services/akamaiClock.test.ts` 冒頭）。
+//
+// **アプリの分割には影響しない。** 分割を作っているのは `utils/testDataLoader.ts` の
+// `import()` で、テストファイルは本番ビルドの依存グラフに入らない
+// （`utils/testData.test.ts` も同じく静的に取り込んでいる）。
+import '../utils/testData'
 
 // isDmdss はモジュールスコープの定数。テストごとに切り替えるため getter で公開する。
 let mockIsDmdss = true
@@ -2240,5 +2251,153 @@ describe('テストボタンの待ちの後始末', () => {
     act(() => { vi.advanceTimersByTime(120_000) })
 
     expect(events).toEqual([])
+  })
+})
+
+// 津波の続報で、新報が運ばない情報を前報から引き継ぐこと。
+//
+// **画面を見ても気づけない。** 症状は「数十秒だけ満潮時刻が消える」「避難の呼びかけが別の
+// 注記に差し替わる」で、どちらも例外もログも出ず、次の報で元に戻ることさえある。
+//
+// 並びは実電文（2026-04-20 三陸沖・`eventId=20260420165303`）のとおり:
+//   16:55 VTSE41 津波警報等   区域 13・観測点なし・固定付加文は避難行動
+//   16:56 VTSE51 満潮時刻     同じ区域 13・観測点あり・固定付加文は満潮の注記
+//   17:08 VTSE41 津波警報等   区域が 17 へ増える・観測点なし・固定付加文は避難行動
+describe('津波の続報マージ（前報から引き継ぐもの）', () => {
+  const EVENT_ID = '20260420165303'
+  const AREA_NAMES = ['北海道太平洋沿岸中部', '岩手県']
+
+  /** 津波警報等（VTSE41）。区域一覧を全量で載せるが、区域の中に観測点を持たない。 */
+  function warningTelegram(serial: number, areaNames: string[]): JMATsunami {
+    const iso = new Date(Date.UTC(2026, 3, 20, 7, 55 + serial)).toISOString()
+    return {
+      kind: 'tsunami',
+      id: `dmdata-tsunami-${EVENT_ID}-w${serial}`,
+      eventId: EVENT_ID,
+      time: iso,
+      cancelled: false,
+      carriesForecastStations: false,
+      infoName: '津波警報・津波注意報・津波予報',
+      warningComments: [{ key: 'VTSE41', text: 'ただちに避難してください。' }],
+      freeText: '［予想される津波の高さの解説］',
+      issue: { source: '気象庁', time: iso, type: 'Focus' },
+      areas: areaNames.map(name => ({ grade: 'Warning' as const, immediate: false, name })),
+    }
+  }
+
+  /** 満潮時刻・津波到達予想時刻（VTSE51）。同じ区域一覧に観測点を足して載せる。 */
+  function highTideTelegram(serial: number, areaNames: string[]): JMATsunami {
+    const iso = new Date(Date.UTC(2026, 3, 20, 7, 56 + serial)).toISOString()
+    return {
+      kind: 'tsunami',
+      id: `dmdata-tsunami-${EVENT_ID}-h${serial}`,
+      eventId: EVENT_ID,
+      time: iso,
+      cancelled: false,
+      carriesForecastStations: true,
+      infoName: '各地の満潮時刻・津波到達予想時刻に関する情報',
+      warningComments: [{
+        key: 'VTSE51|各地の満潮時刻・津波到達予想時刻に関する情報',
+        text: '津波と満潮が重なると、津波はより高くなりますので一層厳重な警戒が必要です。',
+      }],
+      issue: { source: '気象庁', time: iso, type: 'Focus' },
+      areas: areaNames.map(name => ({
+        grade: 'Warning' as const,
+        immediate: false,
+        name,
+        stations: [{ name: `${name}の観測点`, code: `${name}1`, highTideDateTime: '2026-04-20T18:30:00+09:00' }],
+      })),
+    }
+  }
+
+  const stationsOf = (h: ReturnType<typeof setup>, areaName: string) =>
+    h.current.tsunamis[0].areas.find(a => a.name === areaName)?.stations
+
+  // このファイルの他の describe と揃えて偽タイマーで回す。本物のタイマーで回すと、フックの
+  // キュー配信（10ms 間隔）が実時間で動き続け、全ファイル並列のときだけ効いてくる負荷になる。
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => {
+    vi.useRealTimers()
+    setReplayOffset(null)
+  })
+
+  // 正: 観測点を運ばない津波警報等が届いても、満潮時刻が残る。
+  it('津波警報等が届いても満潮時刻が消えない', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(warningTelegram(0, AREA_NAMES)) })
+    act(() => { h.current.injectEvent(highTideTelegram(0, AREA_NAMES)) })
+    expect(stationsOf(h, '岩手県')?.[0].highTideDateTime).toBe('2026-04-20T18:30:00+09:00')
+
+    // 区域が増える続報（実電文では 13 → 17）。増えた区域には引き当てる前報が無い。
+    act(() => { h.current.injectEvent(warningTelegram(1, [...AREA_NAMES, '宮城県'])) })
+    expect(h.current.tsunamis[0].areas.map(a => a.name)).toEqual([...AREA_NAMES, '宮城県'])
+    expect(stationsOf(h, '岩手県')?.[0].highTideDateTime).toBe('2026-04-20T18:30:00+09:00')
+    expect(stationsOf(h, '宮城県')).toBeUndefined()
+  })
+
+  // 対照: 観測点を運ぶ種別が観測点を載せなくなったら落とす（気象庁が発表をやめた合図）。
+  // 実電文では等級が津波予報まで下がった時点でこの形になる。
+  it('津波情報が観測点を載せなくなったら落とす', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(highTideTelegram(0, AREA_NAMES)) })
+    const empty = highTideTelegram(1, AREA_NAMES)
+    empty.areas = empty.areas.map(a => ({ ...a, stations: undefined }))
+    act(() => { h.current.injectEvent(empty) })
+    expect(stationsOf(h, '岩手県')).toBeUndefined()
+  })
+
+  // 安全弁: 一部解除で区域が減ったら、減ったまま。前報から復活させない。
+  it('電文から消えた区域を前報から復活させない', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(highTideTelegram(0, AREA_NAMES)) })
+    act(() => { h.current.injectEvent(warningTelegram(1, ['岩手県'])) })
+    expect(h.current.tsunamis[0].areas.map(a => a.name)).toEqual(['岩手県'])
+  })
+
+  // 正: 固定付加文は主題ごとに束ねる。避難の呼びかけが満潮の注記に差し替わらない。
+  it('避難の呼びかけが満潮時刻の報で消えない', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(warningTelegram(0, AREA_NAMES)) })
+    act(() => { h.current.injectEvent(highTideTelegram(0, AREA_NAMES)) })
+    const texts = h.current.tsunamis[0].warningComments!.map(c => c.text)
+    expect(texts[0]).toContain('ただちに避難してください')
+    expect(texts[1]).toContain('津波と満潮が重なると')
+  })
+
+  // 正: 自由付加文も引き継ぐ。入るのは津波警報等だけなので、引き継がないと最初の続報で消える。
+  it('自由付加文が続報で消えない', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(warningTelegram(0, AREA_NAMES)) })
+    act(() => { h.current.injectEvent(highTideTelegram(0, AREA_NAMES)) })
+    expect(h.current.tsunamis[0].freeText).toContain('予想される津波の高さの解説')
+  })
+
+  // 正: 沿岸への推定も引き継ぐ。**入るのは沖合の津波観測（VTSE52）だけ**で、実電文では最後の
+  // VTSE52 のあとに津波情報が 20 通以上続く。引き継がないと次の報で推定が消える。
+  it('沿岸への推定が次の報で消えない', () => {
+    const h = setup()
+    const offshoreReport: JMATsunami = {
+      ...highTideTelegram(0, AREA_NAMES),
+      id: `dmdata-tsunami-${EVENT_ID}-o1`,
+      carriesForecastStations: false,
+      infoName: '沖合の津波観測に関する情報',
+      areas: [],
+      estimations: [{ name: '岩手県', arrivalTime: '2026-04-20T17:30:00+09:00' }],
+    }
+    act(() => { h.current.injectEvent(warningTelegram(0, AREA_NAMES)) })
+    act(() => { h.current.injectEvent(offshoreReport) })
+    expect(h.current.tsunamis[0].estimations?.length).toBe(1)
+    // 沖合の推定を持たない報が届いても残る
+    act(() => { h.current.injectEvent(highTideTelegram(1, AREA_NAMES)) })
+    expect(h.current.tsunamis[0].estimations?.map(e => e.name)).toEqual(['岩手県'])
+  })
+
+  // 安全弁: 名乗り（`infoName`）は引き継がない。その報が何を出しているかを表すもので、
+  // 引き継ぐと満潮時刻の報を見ているのに「津波警報・津波注意報・津波予報」と名乗る。
+  it('名乗りは最新の報のものを出す', () => {
+    const h = setup()
+    act(() => { h.current.injectEvent(warningTelegram(0, AREA_NAMES)) })
+    act(() => { h.current.injectEvent(highTideTelegram(0, AREA_NAMES)) })
+    expect(h.current.tsunamis[0].infoName).toBe('各地の満潮時刻・津波到達予想時刻に関する情報')
   })
 })
