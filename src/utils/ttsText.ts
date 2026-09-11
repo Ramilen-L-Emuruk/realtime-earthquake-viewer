@@ -266,7 +266,7 @@ function selectRegionNames(
   opts: TtsRegionOptions,
   hypocenter: { latitude: number; longitude: number } | undefined,
   regionOrder: RegionOrderIndex | null,
-): { names: string[]; omittedCount: number } {
+): { names: string[]; omittedNames: string[] } {
   // 震源位置が使えるか。0 は座標未設定、-200 は「位置不明」センチネル（震度速報のように震源を
   // 持たない電文で入る。p2pquake.ts / dmdataParser.ts 参照）。どちらも距離の基準にはできない。
   // -200 を弾かないと、地球上に存在しない点からの距離で地域を選ぶことになる。
@@ -284,13 +284,17 @@ function selectRegionNames(
              - distSq(hypocenter!.latitude, hypocenter!.longitude, cb[0], cb[1])
       })
     : sortByRegionOrder(names, regionOrder)
-  let omittedCount = 0
+  // **件数だけでなく省略した名前も返す。** 呼び出し側が「ほか○地域」の断片へ参照を付け、
+  // 声になったら既読へ移すため。件数しか返していなかった頃は、省略された区域が次報で
+  // 「新たに」付きで読み直され、**地域が増えたように聞こえていた**（前報で件数としては
+  // 伝えているのに）。
+  let omittedNames: string[] = []
   if (opts.maxRegions > 0 && picked.length > opts.maxRegions + opts.regionTolerance) {
-    omittedCount = picked.length - opts.maxRegions
+    omittedNames = picked.slice(opts.maxRegions)
     picked = picked.slice(0, opts.maxRegions)
   }
   // 安定ソートなので、震源が無い経路（既に地理順）ではここは何も動かさない。
-  return { names: sortByRegionOrder(picked, regionOrder), omittedCount }
+  return { names: sortByRegionOrder(picked, regionOrder), omittedNames }
 }
 
 /**
@@ -373,14 +377,20 @@ function unreceivedRegionSegments(
     .filter(name => !spoken || isUnreceivedUnspoken(spoken, name))
   // **選抜と上限は観測値の文と同じ規則に乗せる**（`selectRegionNames`）。独自に切ると、
   // 「無制限」の設定で 1 件しか読まれない・省いた件数を伝えない、といったずれが片側にだけ出る。
-  const { names, omittedCount } = selectRegionNames(unspoken, opts, hypocenter, regionOrder)
+  const { names, omittedNames } = selectRegionNames(unspoken, opts, hypocenter, regionOrder)
   if (names.length === 0) return []
   const segments: SpeechSegment[] = []
   names.forEach((name, i) => {
     if (i > 0) segments.push(plain('、'))
     segments.push({ text: name, refs: [{ kind: 'quakeRegion', name, scale: 45, unreceived: true }] })
   })
-  if (omittedCount > 0) segments.push(plain(`、ほか${omittedCount}${unit}`))
+  // 名前を読まなかった分も、この断片が声になれば既読にする（→ `selectRegionNames`）。
+  if (omittedNames.length > 0) {
+    segments.push({
+      text: `、ほか${omittedNames.length}${unit}`,
+      refs: omittedNames.map(name => ({ kind: 'quakeRegion' as const, name, scale: 45, unreceived: true })),
+    })
+  }
   // **推定の理由まで言う。** 「5弱以上と推定されます」だけだと、なぜ推定なのかが伝わらない。
   // 語は気象庁の「未入電」をそのまま使い、画面のバッジ（「未入電あり」）とも揃える ——
   // 聞いた語で画面を探せるように。
@@ -468,7 +478,7 @@ function buildRegionSegments(
       // 選抜・上限・並べ替えは未入電の文と共有する（→ `selectRegionNames`）。
       const picked = selectRegionNames(names, opts, hypocenter, regionOrder)
       names = picked.names
-      const omittedCount = picked.omittedCount
+      const omittedNames = picked.omittedNames
       names.forEach(n => mentioned.add(n))
       // 「最大」を冠せるのは、その階級がこの電文の最大震度に一致するときだけ。
       // **句の並び順で決めてはいけない**——差分では最大震度の区域が据え置きで落ちることがあり、
@@ -483,7 +493,13 @@ function buildRegionSegments(
         // 断片の境界がずれて引き当てが鈍る。
         segments.push({ text: name, refs: [{ kind: 'quakeRegion', name, scale }] })
       })
-      if (omittedCount > 0) segments.push(plain(`、ほか${omittedCount}地域`))
+      // 名前を読まなかった分も、この断片が声になれば既読にする（→ `selectRegionNames`）。
+      if (omittedNames.length > 0) {
+        segments.push({
+          text: `、ほか${omittedNames.length}地域`,
+          refs: omittedNames.map(name => ({ kind: 'quakeRegion' as const, name, scale })),
+        })
+      }
       parts.push(segments)
     }
     return parts

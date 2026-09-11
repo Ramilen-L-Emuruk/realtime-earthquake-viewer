@@ -174,12 +174,16 @@ export function mapChunksToRefs(
  *
  * @param scheduled 予約の通知（`ChunkScheduledListener`）で受け取った添字と開始時刻
  * @param chunkCount チャンクの総数。最後まで鳴ったかの判定に使う
- * @param clock 読み上げが終わった時点の再生時計（`getSpeechClock`）。null なら何も鳴っていない
+ * @param clock 見た時点の再生時計（`getSpeechClock`）。null なら何も鳴っていない
+ * @param finished 読み上げが終わった後に呼んでいるか。**既定値を置かない** ―― 省略できると、
+ *   途中で呼ぶ経路が「完走した」と誤って伝えてしまい、鳴り終えていない最終チャンクを
+ *   既読にする。渡し忘れは型検査で止める
  */
 export function spokenChunkIndices(
   scheduled: readonly { index: number; startAt: number }[],
   chunkCount: number,
   clock: number | null,
+  finished: boolean,
 ): number[] {
   // 時計が無い＝AudioContext が作られていない（合成が全滅した・VOICEVOX 未起動）。
   if (clock === null) return []
@@ -188,7 +192,11 @@ export function spokenChunkIndices(
   const last = Math.max(...started)
   // 最後のチャンクが鳴り始めていれば完走とみなす（読み上げの完了は最終チャンクの再生終了で
   // 解決するため）。それ以外は、鳴り始めた最後の 1 つを落とす。
-  if (last === chunkCount - 1) return started
+  //
+  // **途中で見るとき（`finished` が false）はこの近道を通さない。** 最終チャンクが鳴り始めた
+  // 直後に見ると「完走した」と扱ってしまい、そこへ割り込みが入れば声にならなかった内容が
+  // 既読として残る ―― この関数が元々避けている事故そのもの。
+  if (finished && last === chunkCount - 1) return started
   return started.filter(i => i !== last)
 }
 
