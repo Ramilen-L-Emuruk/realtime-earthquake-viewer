@@ -553,7 +553,14 @@ export interface LiveEventHandlerDeps {
   openEstimatedIntensity: (arrivalTime: string, lat: number, lon: number) => void
   revertToDefaultTab: () => void
   selectQuake: (id: string | null) => void
-  setActiveLpgmEventId: (id: string | null) => void
+  /**
+   * 長周期地震動観測情報が届いたことを知らせる（地図とカードの階級表示を開く）。
+   *
+   * **開く／閉じるを両方兼ねさせない。** 追加表示は震度分布モードと排他で、閉じる判断は
+   * 選択中の地震が別の地震へ移ったかどうかに紐づく（→ App 側の `quakeOverlay`）。
+   * ここから閉じられるようにすると、その規則が 2 か所に分かれる。
+   */
+  openLpgmFromQuake: (eventId: string) => void
 }
 
 export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
@@ -561,7 +568,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabRealtimeForKyoshin, setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate,
     setActiveTabRealtimeUrgent, followSpeechTab, preSpeechTab, speechFollow, expandPanelForSpecialInfo,
-    revertToDefaultTab, selectQuake, setActiveLpgmEventId, openEstimatedIntensity,
+    revertToDefaultTab, selectQuake, openLpgmFromQuake, openEstimatedIntensity,
   } = deps
 
   // 「新規地震」として注目を移した報のキー（`eventKey:issue.type`）。
@@ -2288,7 +2295,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         // 紐づく地震カードを選択し、自動的に LPGM 表示をオンにする
         const matchedQuake = earthquakesRef.current.find(q => extractQuakeEventIdFromId(q.id) === lpgmEvent.eventId)
         if (matchedQuake) selectQuake(quakeEventKey(matchedQuake))
-        setActiveLpgmEventId(lpgmEvent.eventId)
+        openLpgmFromQuake(lpgmEvent.eventId)
       }
       if (settings.soundEnabled) {
         playAlertSound('earthquake')
