@@ -266,6 +266,7 @@ done
   - **起動したサーバーは覚えておく。** 種別（dev / preview）・実ポート・**どのワークツリーで起動したか**を控える。再利用する規約が成り立つのはこれが分かっている間だけで、同じセッションで複数のワークツリーやバリアントを立てると、どれがどれか分からなくなる（実例: リリース時に dev をワークツリーの 5173・preview をメインの 4173 で同時に動かした）。段・フェーズに分かれる作業では `TaskCreate` の `metadata` へも書いておく（→ 下記「作業の記憶と切り出し」）。**ただしタスクリストがセッションの再起動に耐えるかは未確認**なので、それだけに頼らない
   - 停止するときは**ポートから PID を引いて PID 指定で止める**（`netstat -ano` で PID を取り、PowerShell の `Stop-Process -Id <PID>`）。`TaskStop` では node の子プロセスが残り、ワークツリーの削除が `Permission denied` になる
   - **DMDSS 版の dev サーバーでは DMDATA の APIキーが自動で入る**。リポジトリ直下の `.env.local` に `DMDATA_API_KEY` があれば、設定タブへ貼り直さずに接続できる（条件・例外・`.env.local` の引き継ぎは [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「dev サーバーでの API キー自動投入」）。`--host` を付けた起動では意図的に投入しない（dev サーバーは認証を持たないため）。
+  - **`.claude/` 配下は dev サーバーの監視対象から外してある**（`scripts/dev-watch-ignore.ts` の `isInsideClaudeDir`）。効くのは**メインリポジトリ直下で起動したとき**で、並行して動く別セッションがワークツリー（`.claude/worktrees/`）のファイルを触ってもこちらのページがリロードされない。**この除外を glob（`**/.claude/**`）で書き直さないこと** —— 今度はワークツリー内で起動したときに HMR が丸ごと死ぬ（理由はそのファイルのコメント）。
 - `__APP_VERSION__` はビルド時に `vite.config.ts` の `define` が `package.json` の `version` から注入する定数のため、dev サーバーは `package.json` の `version` を変更したあと**再起動しないと新しい値を反映しない**（HMR では拾えない）。
 - **本番ビルド確認（大きめの変更時は必須）**: `npm run build` でビルドが通ることを確認するだけでなく、**`npm run preview`（本番ビルドのサブパス配信）を起動し Playwright MCP でブラウザ確認まで行う**。
   - preview URL: standard は `http://localhost:4173/realtime-earthquake-viewer/`／DMDSS は `npm run build:dmdss` → `npm run preview:dmdss`。
