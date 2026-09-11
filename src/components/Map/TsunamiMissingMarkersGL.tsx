@@ -49,9 +49,11 @@ function updateMarkerEl(el: HTMLDivElement, marker: TsunamiMissingMarker, iconSc
     `</div>`
 }
 
-function buildMarkerEl(marker: TsunamiMissingMarker, iconScale: number): HTMLDivElement {
+export function buildMissingMarkerEl(marker: TsunamiMissingMarker, iconScale: number): HTMLDivElement {
   const el = document.createElement('div')
-  el.style.cssText = 'position:relative'
+  // **`position` を書かないこと**（理由は `TsunamiArrivalMarkersGL.tsx` の同じ箇所）。
+  // インラインで指定すると MapLibre の `position: absolute` を上書きし、マーカーが
+  // DOM の並び順に下へ積み上がる。
   updateMarkerEl(el, marker, iconScale)
   return el
 }
@@ -84,7 +86,7 @@ export function TsunamiMissingMarkersGL({ markers, iconScale }: Props) {
         existing.popup.setHTML(tooltipHtml(m)).setOffset(popupOffset(iconScale))
         continue
       }
-      const el = buildMarkerEl(m, iconScale)
+      const el = buildMissingMarkerEl(m, iconScale)
       const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
         .setLngLat([m.lng, m.lat])
         .addTo(map)
