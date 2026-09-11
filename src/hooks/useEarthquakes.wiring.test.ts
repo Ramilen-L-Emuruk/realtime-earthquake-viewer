@@ -88,6 +88,24 @@ const { fetchHistory, fetchJmaQuake } = await import('../services/p2pquake')
 
 const { useEarthquakes } = await import('./useEarthquakes')
 
+// テストボタンのデータ（`utils/testData.ts`）をここで読んでおく。**テスト本体の中で初めて
+// 読ませない**ためで、値としては使わない。
+//
+// 実装はこれを `loadTestData()` の動的 import で読む（押されるまで読まない作り。理由は
+// `utils/testDataLoader.ts`）。そのため最初に `simulate*` を呼ぶテストが、`testData.ts` が
+// 抱える JSON 4 本（計 889 KB）の解決・変換を丸ごと自分の所要時間として負う。実測では
+// このファイル単体の実行で 118ms、全ファイル並列実行だと他ワーカーとの順番待ちが乗って
+// 907ms まで伸び、混雑した回は既定の 5 秒を超えて時間切れになった（同じファイルの他の
+// テストはどれも 3ms 前後）。**1 件目が時間切れになると、以降 95 件が `h.current` を
+// null として掴んで連鎖的に落ちる**ので、症状は「このファイルだけ全滅」に見える。
+//
+// トップレベルで一度読めば、待ちはファイル読み込み時へ移って `testTimeout` の対象から
+// 外れる（→ CLAUDE.md「検証」節）。
+//
+// 引き換えに、読み込みに失敗したときはこのファイルが丸ごと落ちる（前は `simulate*` を使う
+// テストだけが落ちた）。読むのは生成済みの JSON なので失敗の目は薄いと見て、単純さを採る。
+await import('../utils/testData')
+
 beforeEach(() => {
   sockets.length = 0
   mockIsDmdss = true
