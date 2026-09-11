@@ -401,3 +401,45 @@ describe('検知エンジンが詰まっている間', () => {
     expect(result.current.state?.key).not.toBe(first)
   })
 })
+
+describe('リプレイの開始・停止で落とすもの', () => {
+  // 正: 表示中の帯は消える。入力（地震・EEW・揺れ）が空になっても消える経路が他に無いため、
+  // 落とさないと切替前の地震の帯が新しい時間軸の画面に残る
+  it('表示中の帯は消える', () => {
+    const { result } = setup(quake('ev1', 70))
+    expect(result.current.state).not.toBe(null)
+    act(() => result.current.resetForReplay())
+    expect(result.current.state).toBe(null)
+    expect(result.current.collapsed).toBe(false)
+  })
+
+  // 正: 「寿命が尽きて消した識別子」も落ちる。残すと同じ地震を再生しても二度と出ない
+  it('寿命で消した地震は、リセット後なら再び出る', () => {
+    const { result, rerender } = setup(quake('ev1', 70))
+    act(() => result.current.dismiss())
+    // 期限まで揺れが届かず消える（= doneKeys に積まれる）
+    act(() => { vi.advanceTimersByTime(SUPPRESS_MS + 1) })
+    expect(result.current.state).toBe(null)
+    // 同じ地震をもう一度渡しても出し直さない
+    act(() => rerender({ q: undefined, e: NO_EEWS }))
+    act(() => rerender({ q: quake('ev1', 70), e: NO_EEWS }))
+    expect(result.current.state).toBe(null)
+    // リセットを挟めば出る
+    act(() => result.current.resetForReplay())
+    act(() => rerender({ q: undefined, e: NO_EEWS }))
+    act(() => rerender({ q: quake('ev1', 70), e: NO_EEWS }))
+    expect(result.current.state?.scale).toBe(70)
+  })
+
+  // 安全弁: 抑止の記録（利用者が閉じた意思・永続化されている）は落とさない。
+  // リプレイへ入った途端に開き直すのは、閉じた意思を無視することになる
+  it('閉じた記録は残る（次の揺れは畳んだ状態から）', () => {
+    const { result, rerender } = setup(quake('ev1', 70))
+    act(() => result.current.dismiss())
+    act(() => result.current.resetForReplay())
+    // 記録が残っているので、同程度以下の揺れは畳んだまま出る
+    act(() => rerender({ q: quake('ev2', 70), e: NO_EEWS }))
+    expect(result.current.state?.scale).toBe(70)
+    expect(result.current.collapsed).toBe(true)
+  })
+})
