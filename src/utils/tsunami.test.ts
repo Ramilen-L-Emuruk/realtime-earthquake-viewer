@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   isWarningLevelWhileObserving,
   importantBadgeText,
@@ -31,10 +31,13 @@ import {
   observationArrivalFallbackText,
   observationMaxHeightTimeText,
   mergeTsunamiAreas,
+  evacuationActionLine,
   mergeTsunamiWarningComments,
+  mergeTsunamiReports,
   WARNING_COMMENT_ORDER,
 } from './tsunami'
 import type { JMATsunami, TsunamiArea, TsunamiObservation } from '../types/earthquake'
+import { log } from './logger'
 
 function makeArea(overrides: Partial<TsunamiArea> = {}): TsunamiArea {
   return {
@@ -1278,5 +1281,88 @@ describe('mergeTsunamiWarningComments', () => {
   it('新報が持たなければ前報を残す', () => {
     expect(mergeTsunamiWarningComments([grade], undefined)).toEqual([grade])
     expect(mergeTsunamiWarningComments(undefined, undefined)).toBeUndefined()
+  })
+})
+
+// 行動指示の行に出す文。**実電文（2024-01-01 能登半島地震の VTSE41）で 1 行目の形が報によって
+// 変わることを確かめてある** —— 16:12 の報は「ただちに避難してください。」で始まり、20:30 の報は
+// 「＜津波警報＞」という小見出しで始まる。**どちらも最高等級は津波警報**で、形は等級から
+// 予測できない（→ `evacuationActionLine`）。
+
+// バナーの行動指示の行は固定付加文（VTSE41）の 1 行目を出す。固定付加文は主題の鍵ごとに
+// 上書きするので、等級を動かす報がその付加文を持たないと、前の等級に向けた避難の呼びかけが
+// いちばん目立つ位置に残り続ける（→ docs/spec/tsunami-spec.md §9）。画面には痕跡が出ない
+// ので、記録だけは残す。
+describe('等級が動いた報に避難行動の付加文が無いとき', () => {
+  afterEach(() => { vi.restoreAllMocks() })
+
+  const withComment = (text: string) => [{ key: 'VTSE41', text }]
+  const current = makeTsunami({
+    areas: [makeArea({ code: '100', grade: 'MajorWarning' })],
+    warningComments: withComment('ただちに避難してください。'),
+  })
+
+  // 正: 等級が下がったのに付加文が無い。前報の「ただちに避難してください。」が残る。
+  it('記録を残す', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    mergeTsunamiReports(current, makeTsunami({ areas: [makeArea({ code: '100', grade: 'Warning' })] }))
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0][0]).toContain('避難行動の付加文がありません')
+  })
+
+  // 対照: 等級が動いていなければ、前報の文がそのまま正しい。満潮時刻の続報はこちら。
+  it('等級が動いていなければ記録しない', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    mergeTsunamiReports(current, makeTsunami({ areas: [makeArea({ code: '100', grade: 'MajorWarning' })] }))
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  // 安全弁: 新報が付加文を持っていれば行は入れ替わる。等級が動いても記録しない。
+  it('新報が付加文を持っていれば記録しない', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    mergeTsunamiReports(current, makeTsunami({
+      areas: [makeArea({ code: '100', grade: 'Warning' })],
+      warningComments: withComment('高い津波が襲います。'),
+    }))
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  // 安全弁: 区域を伝えない報（観測のみの続報）は等級を語っていない。数えない。
+  it('区域を伝えない報では記録しない', () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {})
+    mergeTsunamiReports(current, makeTsunami({ areas: [] }))
+    expect(warn).not.toHaveBeenCalled()
+  })
+})
+
+describe('evacuationActionLine', () => {
+  const warn = (text: string) => [{ key: 'VTSE41', text }]
+
+  // 正: 1 行目が文として完結していれば、それを採る。
+  it('1 行目が文なら採る', () => {
+    const text = 'ただちに避難してください。' + '\n' + '　' + '\n' + '＜大津波警報＞' + '\n' + '大きな津波が襲い甚大な被害が発生します。'
+    expect(evacuationActionLine(warn(text))).toBe('ただちに避難してください。')
+  })
+
+  // 対照: 1 行目が小見出しなら採らない。**そのまま出すと何をすべきか伝わらない**ので、
+  // 呼び出し側がアプリの文へ戻す。
+  it('1 行目が小見出しなら採らない', () => {
+    const text = '＜津波警報＞' + '\n' + '津波による被害が発生します。'
+    expect(evacuationActionLine(warn(text))).toBeUndefined()
+  })
+
+  // 安全弁: 津波警報等（VTSE41）以外の付加文からは採らない。満潮や観測値の注記を
+  // 行動指示の位置に出すと、すべきことと読み方の注意が入れ替わる。
+  it('津波警報等以外の付加文からは採らない', () => {
+    expect(evacuationActionLine([
+      { key: 'VTSE51|各地の満潮時刻・津波到達予想時刻に関する情報', text: '津波と満潮が重なると、津波はより高くなりますので一層厳重な警戒が必要です。' },
+      { key: 'VTSE52', text: '沖合での観測値であり、沿岸では津波はさらに高くなります。' },
+    ])).toBeUndefined()
+  })
+
+  // 付加文が無い経路（P2PQuake）では採れない。呼び出し側がアプリの文へ戻る。
+  it('付加文が無ければ採らない', () => {
+    expect(evacuationActionLine(undefined)).toBeUndefined()
+    expect(evacuationActionLine([])).toBeUndefined()
   })
 })
