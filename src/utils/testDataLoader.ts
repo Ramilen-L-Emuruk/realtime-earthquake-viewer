@@ -3,9 +3,10 @@
  *
  * ## なぜ静的に取り込まないのか
  *
- * `testData.ts` が抱える能登本震の実データ 3 つ（`src/data/noto-honshin-2024-*.json`）は
- * 合わせて 824 KB ある。静的に取り込むと**テストボタンを一度も押さない利用者にも初回表示で
- * 届く**うえ、2026-09-09 にはメインバンドルが Service Worker のプリキャッシュ上限
+ * `testData.ts` が抱える実データ 4 本（`src/data/noto-honshin-2024-*.json` の 3 つと
+ * `src/data/test-estimated-intensity.json`）は合わせて 889 KB ある。静的に取り込むと
+ * **テストボタンを一度も押さない利用者にも初回表示で届く**うえ、2026-09-09 にはメインバンドルが
+ * Service Worker のプリキャッシュ上限
  * （`vite.config.ts` の `maximumFileSizeToCacheInBytes`＝2 MiB）を超えて本番ビルドが落ちた。
  *
  * **静的 import を 1 つでも戻すと分割は無言で解ける** —— 同じモジュールを静的に参照する箇所が
