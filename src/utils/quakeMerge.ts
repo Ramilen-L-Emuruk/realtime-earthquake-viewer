@@ -229,6 +229,14 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
       // 固定付加文（`forecastText`）は実電文では VXSE61 に付かないため触らない
       // （コードで保証しているわけではない。付くようになったら同じ扱いが要る）。
       freeText: incoming.freeText ?? existing.freeText,
+      // 固定付加文（その他）も同じ側を採る。**震源要素更新は訂正の説明をここへ載せる**
+      // （コード 0256「震源要素を訂正します。」）ので、`...existing` の土台のままだと
+      // その報だけが持つ文が捨てられる。
+      varCommentText: incoming.varCommentText ?? existing.varCommentText,
+      // 見出し文も自由付加文と同じ「その報だけが持つ文」なので同じ側を採る。
+      // **いまは画面に出していないが、扱いを揃えておく** —— 出すようになったとき、
+      // この経路だけ古い見出しが残る形になる。
+      headline: incoming.headline ?? existing.headline,
     }
   }
 
@@ -306,9 +314,19 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
       ...result,
       earthquake: { ...result.earthquake, maxScale: existing.earthquake.maxScale },
       points: existing.points,
+      // 市町村ごとの震度も**点と同じ扱いで補う**。同じ電文（VXSE53）が運ぶ同じ事実で、
+      // 震源のみの続報が構造的に持たないもの。片方だけ戻すと、観測点は残るのに
+      // 市町村の段だけが消え、震度一覧が 4 段から 3 段へ静かに落ちる。
+      cities: existing.cities,
       // 自由付加文も同じ考え方で補う。震度を引き継ぐ経路で本文だけ落とすと、
       // 「津波注意報を発表中です」のような状況説明が後続の震源情報で静かに消える。
       freeText: result.freeText ?? existing.freeText,
+      // 固定付加文（その他）も同じ考え方で補う。
+      varCommentText: result.varCommentText ?? existing.varCommentText,
+      // 見出し文も自由付加文と同じ「その報だけが持つ文」なので同じ側を採る。
+      // **いまは画面に出していないが、扱いを揃えておく** —— 出すようになったとき、
+      // この経路だけ古い見出しが残る形になる。
+      headline: result.headline ?? existing.headline,
     }
   }
 
@@ -374,6 +392,11 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
           : result.earthquake.domesticTsunami,
       },
       forecastText: existing.forecastText ?? result.forecastText,
+      // 固定付加文（その他）も既存を残す。**震度速報はこれを持たない**（実電文の付加文は
+      // 津波区分のコード 0217 だけ）ので、incoming を採ると前の報が伝えた注記が消える。
+      // 自由付加文と扱いが分かれるのはここ ―― あちらは「その報が書き起こした本文」で、
+      // 報が変われば書き直される。こちらは報が繰り返さないだけで取り消されてはいない。
+      varCommentText: existing.varCommentText ?? result.varCommentText,
     }
   }
 
@@ -389,6 +412,12 @@ export function mergeQuakeInto(existing: JMAQuake | undefined, incoming: JMAQuak
       // 明示しないと VXSE61 が伝える精査後の Mw が**震度が確定した瞬間に消える**。
       // VXSE61 が先に立ったカードへ後から震度電文が届く経路は実運用で起きる（§8 QUAKE-4）。
       freeText: existing.freeText ?? result.freeText,
+      // 固定付加文（その他）も新しい側（＝ここでは震源要素更新）を残す。
+      varCommentText: existing.varCommentText ?? result.varCommentText,
+      // 見出し文も自由付加文と同じ「その報だけが持つ文」なので同じ側を採る。
+      // **いまは画面に出していないが、扱いを揃えておく** —— 出すようになったとき、
+      // この経路だけ古い見出しが残る形になる。
+      headline: existing.headline ?? result.headline,
     }
   }
 

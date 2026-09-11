@@ -103,3 +103,49 @@ describe('区域集約が数える「区域の点」', () => {
     ).toEqual([['奈良県', 40]])
   })
 })
+
+// 震度分布モードのカメラの寄り直し。
+//
+// **寄り先は「塗りがある範囲」の 2 点**（外接矩形の南西・北東）。カメラは `quakeSignature` が
+// 変わったときだけ寄り直すが、シグネチャは寄り先の**本数しか見ない**。同じ地震のまま
+// モードを切り替えると、たまたま点の数が同じ（区域 1 つ＝2 点）になったとき値が変わらず、
+// **カメラが分布の位置へ寄らないまま据え置かれる**——エラーもログも出ない。
+describe('震度分布モードのシグネチャ', () => {
+  const EI = {
+    id: 'ix1', time: '2026-07-28T16:32:00+09:00', arrivalTime: '2026-07-28T07:27:00.000Z',
+    hypocenter: { lat: 32.6, lon: 130.7, depthKm: 10 },
+    magnitude: 4.2, areaCode: 741, telegramKind: 0,
+    grades: [{ scale: 4, modifier: 'none' as const, lower: 35, upper: 44 }],
+    count: 1, lat: new Float32Array([32.6]), lon: new Float32Array([130.7]), si: new Uint8Array([42]),
+    bounds: { south: 32.6, north: 32.7, west: 130.7, east: 130.8 },
+  }
+  const POINTS: EarthquakePoint[] = [{ addr: '奈良県', pref: '奈良県', isArea: true, scale: 40 }]
+
+  function render(distributionMode: boolean) {
+    const { result } = renderHook(() =>
+      useQuakeLayerData('quake', makeQuake(POINTS), VIEW, null, distributionMode, EI))
+    return result.current
+  }
+
+  // 正: 分布モードでは塗りがある範囲（外接矩形の 2 点）へ寄せる。
+  it('分布モードでは塗りがある範囲へ寄せる', () => {
+    expect(render(true).quakeFitPositions).toEqual([[32.6, 130.7], [32.7, 130.8]])
+  })
+
+  // 対照: モードを切ればいつもの寄り先（観測点・区域・震源）へ戻る。
+  it('モードを切れば塗りの範囲へは寄せない', () => {
+    expect(render(false).quakeFitPositions).not.toEqual([[32.6, 130.7], [32.7, 130.8]])
+  })
+
+  // 安全弁: **シグネチャがモードそのものを持つこと。**
+  // 寄り先の本数だけで組むと、本数がたまたま一致した地震（分布モードは常に 2 点）で
+  // 値が変わらず、上の 2 つが両方通っていてもカメラは動かない。本数を揃えた地震を
+  // 作り分けても網羅にならないので、**モードの別が値に入っていること**を直接見る。
+  it('シグネチャにモードの別が入っている', () => {
+    const off = render(false), on = render(true)
+    expect(on.quakeSignature).not.toBe(off.quakeSignature)
+    // 本数の項を取り除いても差が残る＝差の出どころが本数ではない
+    const dropCount = (sig: string) => sig.slice(0, sig.lastIndexOf(':'))
+    expect(dropCount(on.quakeSignature)).not.toBe(dropCount(off.quakeSignature))
+  })
+})

@@ -8,7 +8,10 @@
 import {
   parseEEWFromXml, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml,
   parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml,
+  parseQuakeNoticeFromXml, parseEarthquakeCountFromXml,
 } from './dmdataParser'
+import { decodeEstimatedIntensity } from '../utils/bufrEstimatedIntensity'
+import { log } from '../utils/logger'
 import type { ReplayPayload } from '../types/replay'
 
 // DMDATA の購読分類。ライブ（WebSocket）とリプレイ（アーカイブ要求）で共有する。
@@ -32,6 +35,22 @@ export const LPGM_TYPES = new Set(['VXSE62'])
 export const NANKAI_TYPES = new Set(['VYSE50'])
 export const COMMENTARY_TYPES = new Set(['VYSE51', 'VYSE52'])
 export const KOHATSU_TYPES = new Set(['VYSE60'])
+// VZSE40=地震・津波に関するお知らせ（観測点の入電停止・配信試験・訓練の予告などの運用連絡）。
+// VXSE60=地震回数に関する情報（群発時の回数経過）。どちらも `telegram.earthquake` に含まれ、
+// 追加の契約は要らない。**扱っていない種別を洗い出した経緯と、扱わないと決めたもの
+// （IXAC41・WEPA60・VXSE56）の理由は docs/spec/data-sources-spec.md §2「扱う電文種別」。**
+export const NOTICE_TYPES = new Set(['VZSE40'])
+export const QUAKE_COUNT_TYPES = new Set(['VXSE60'])
+// IXAC41=推計震度分布図作図用データ。**このアプリで唯一の二進電文（BUFR）**で、
+// XML でも JSON でも届かない。512KiB を超えると分割配信されるため、読む前に結合が要る
+// （→ `bufrTelegramAssembly.ts`）。経路ごとに本文の取り方が違うので、
+// **`buildXmlPayload` ではなく `buildBinaryPayload` を通す。**
+export const ESTIMATED_INTENSITY_TYPES = new Set(['IXAC41'])
+
+/** その種別が二進で届くか。取得元ごとに本文の取り方（テキストか bytes か）を分けるのに使う。 */
+export function isBinaryTelegramType(headType: string): boolean {
+  return ESTIMATED_INTENSITY_TYPES.has(headType)
+}
 
 // リプレイが取り込む電文種別の全体。取得元の目録には対象外の種別も多数含まれるため、
 // まずこれで絞ってから欠落を警告する（絞る前に警告すると、正常動作でログが埋まって
@@ -39,6 +58,7 @@ export const KOHATSU_TYPES = new Set(['VYSE60'])
 export const HANDLED_TYPES = new Set([
   ...QUAKE_TYPES, ...TSUNAMI_TYPES, ...EEW_TYPES, ...LPGM_TYPES,
   ...NANKAI_TYPES, ...COMMENTARY_TYPES, ...KOHATSU_TYPES,
+  ...NOTICE_TYPES, ...QUAKE_COUNT_TYPES, ...ESTIMATED_INTENSITY_TYPES,
 ])
 
 /**
@@ -62,7 +82,7 @@ export function buildXmlPayload(headType: string, xml: string): ReplayPayload | 
     return event ? { kind: 'event', event } : null
   }
   if (TSUNAMI_TYPES.has(headType)) {
-    const event = parseTsunamiFromXml(xml)
+    const event = parseTsunamiFromXml(headType, xml)
     return event ? { kind: 'event', event } : null
   }
   if (LPGM_TYPES.has(headType)) {
@@ -80,6 +100,46 @@ export function buildXmlPayload(headType: string, xml: string): ReplayPayload | 
   if (KOHATSU_TYPES.has(headType)) {
     const kohatsu = parseVyse60FromXml(xml)
     return kohatsu ? { kind: 'kohatsu', data: kohatsu } : null
+  }
+  if (NOTICE_TYPES.has(headType)) {
+    const notice = parseQuakeNoticeFromXml(xml)
+    return notice ? { kind: 'quakeNotice', data: notice } : null
+  }
+  if (QUAKE_COUNT_TYPES.has(headType)) {
+    const count = parseEarthquakeCountFromXml(xml)
+    return count ? { kind: 'earthquakeCount', data: count } : null
+  }
+  if (isBinaryTelegramType(headType)) {
+    // **二進電文がここへ来たら、その経路がバイナリの受け口を持っていない。** `HANDLED_TYPES`
+    // には入っているので手前の絞り込みは通り抜け、`xml` には壊れた文字列が入っている。
+    // 黙って null を返すと「対象外だった」のと見分けが付かないので記録する。
+    log.warn(`[dmdata] ${headType} は二進電文です。XML の経路へ流れています（buildBinaryPayload を通すこと）`)
+    return null
+  }
+  return null
+}
+
+/**
+ * 二進電文（BUFR）の本文からペイロードを組み立てる。
+ *
+ * **結合済みのバイト列を渡すこと。** 分割の結合は取得元ごとに事情が違う（ライブは到来順、
+ * アーカイブは tar の中、当日経路は一覧の並び）ため、この関数の外——`BufrFragmentStore`——が
+ * 受け持つ。
+ *
+ * @param headType 電文種別
+ * @param bytes 結合済みの本文
+ * @param id 電文 id
+ * @param time 発表時刻
+ */
+export function buildBinaryPayload(
+  headType: string,
+  bytes: Uint8Array,
+  id: string,
+  time: string,
+): ReplayPayload | null {
+  if (ESTIMATED_INTENSITY_TYPES.has(headType)) {
+    const data = decodeEstimatedIntensity(bytes, id, time)
+    return data ? { kind: 'estimatedIntensity', data } : null
   }
   return null
 }

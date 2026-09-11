@@ -1,5 +1,5 @@
 import type * as maplibregl from 'maplibre-gl'
-import type { JMAQuake, JMATsunami, TsunamiObservation, EEWAlert, JMALpgm } from '../../types/earthquake'
+import type { JMAQuake, JMATsunami, TsunamiObservation, EEWAlert, JMALpgm, JMAEstimatedIntensity } from '../../types/earthquake'
 import type { SiteCoords, PsWaveCircle } from '../../services/kyoshin'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { HeatPoint } from '../../utils/quakeHeatmap'
@@ -47,6 +47,16 @@ export interface JapanMapProps {
   tsunamis: JMATsunami[]
   observations?: TsunamiObservation[]
   lpgm?: JMALpgm
+  /**
+   * 震度分布モード（地震カードの「震度分布」ボタン）。ズームに関わらず面を出す。
+   * 区域塗り（発表値）ではなく推定の面を見るモードなので、区域集約を止める。
+   */
+  distributionMode?: boolean
+  /**
+   * 気象庁の推計震度分布図（IXAC41）。**表示中の地震のものだけ**を渡すこと
+   * （引き当ては `estimatedIntensityFor`）。渡すと自前の面の代わりにこちらを敷く。
+   */
+  estimatedIntensity?: JMAEstimatedIntensity | null
   iconScale?: number
   /**
    * 録画モード（設定値）。画面の内容は変えず、**録画中に要らない再計算を控える**ためだけに使う。

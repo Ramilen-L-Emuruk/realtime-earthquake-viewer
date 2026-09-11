@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import type { JMAQuake, JMALpgm } from '../types/earthquake'
+import type { JMAQuake, JMALpgm, IntensityScale, LpgmPeriodBand, JMAEstimatedIntensity } from '../types/earthquake'
 import { useStationCoords } from './useStationCoords'
 import { useSubRegions } from './useSubRegions'
 import {
@@ -9,7 +9,7 @@ import {
   buildStationPrefIndex,
   type LatLng,
 } from '../utils/stationCoords'
-import { pointInRings, normalizeEpicenterLng } from '../utils/geo'
+import { pointInRings, normalizeEpicenterLng, hasKnownEpicenter } from '../utils/geo'
 import { ringsBounds, type SubRegion } from '../utils/subregions'
 import { extractQuakeEventId } from '../utils/quakeMerge'
 import { japanWideCornersLatLng } from '../components/Map/gl/bounds'
@@ -39,6 +39,11 @@ export interface IntensityMarker {
   isArea: boolean
   /** 観測点が属する一次細分区域名（座標テーブル由来）。未収録なら null。 */
   region: string | null
+  /**
+   * 気象庁以外が運用する観測点か（→ {@link import('../types/earthquake').EarthquakePoint.nonJma}）。
+   * 吹き出しにバッジで出す。
+   */
+  nonJma?: boolean
 }
 
 export interface RegionAggregate {
@@ -55,6 +60,20 @@ export interface LpgmMarker {
   name: string
   /** 都道府県名。電文に無ければ座標テーブルの索引から補完する。 */
   pref: string
+  /**
+   * その観測点の震度・絶対速度応答スペクトル・周期帯ごとの内訳（クリック時の吹き出し用）。
+   *
+   * **階級だけでは「どの高さの建物が揺れたか」が出せない。** 長周期地震動は周期帯ごとに
+   * 効き方が違い、電文はその内訳を持っている（→ `LpgmPeriodBand`）。
+   */
+  int?: IntensityScale
+  /**
+   * 気象庁以外が運用する観測点か（→ {@link import('../types/earthquake').EarthquakePoint.nonJma}）。
+   * 吹き出しにバッジで出す。
+   */
+  nonJma?: boolean
+  sva?: number
+  periods?: LpgmPeriodBand[]
 }
 
 export interface LpgmRegionAggregate {
@@ -62,6 +81,14 @@ export interface LpgmRegionAggregate {
   maxLgInt: number
   rings: LatLng[][]
   label: LatLng
+  /**
+   * 区域内の最大震度（電文の `Area/MaxInt`）。
+   *
+   * **同じ事実が経路によって出たり出なかったりしないようにする。** 階級と震度の差は
+   * 長周期地震動で最も伝えたいところで、カードにも観測点の吹き出しにも出している。
+   * ここだけ落とすと、寄り引きしただけで情報が消える。
+   */
+  maxInt?: IntensityScale
 }
 
 /**
@@ -119,6 +146,18 @@ export function useQuakeLayerData(
   quake: JMAQuake | null | undefined,
   view: QuakeAggregateView,
   lpgm?: JMALpgm | null,
+  /**
+   * 震度分布モード（地震カードの「震度分布」ボタン）。**区域集約をやめて面を出す。**
+   *
+   * このモードの目的は「引いた画でも分布を見せる」こと。ズーム連動のままだと、
+   * いちばん見せたい広い画角で区域塗りへ戻ってしまう。
+   */
+  distributionMode = false,
+  /**
+   * 気象庁の推計震度分布図。**表示中の地震のものだけ**を渡すこと。
+   * 分布モードのときのカメラの寄り先（塗りがある範囲）に使う。
+   */
+  estimatedIntensity: JMAEstimatedIntensity | null = null,
 ): QuakeLayerData {
   const { zoom, aggregateMaxZoom } = view
   const stationCoords = useStationCoords()
@@ -149,6 +188,7 @@ export function useQuakeLayerData(
         addr: p.addr,
         isArea: p.isArea,
         region: p.isArea ? p.addr : lookupStationRegion(stationCoords, pref, p.addr),
+        ...(p.nonJma && { nonJma: true }),
       })
     })
     return markers.sort((a, b) => a.scale - b.scale)
@@ -260,11 +300,8 @@ export function useQuakeLayerData(
     return list.sort((a, b) => a.scale - b.scale)
   }, [subregionIndex, regionMaxByName])
 
-  const hasEpicenter = !!(
-    quake &&
-    quake.earthquake.hypocenter.latitude > -200 &&
-    quake.earthquake.hypocenter.longitude > -200
-  )
+  const hasEpicenter = !!quake
+    && hasKnownEpicenter(quake.earthquake.hypocenter.latitude, quake.earthquake.hypocenter.longitude)
 
   const epicenter = useMemo<LatLng | null>(() => {
     if (!hasEpicenter || !quake) return null
@@ -298,7 +335,13 @@ export function useQuakeLayerData(
       const pref = p.pref || stationPrefIndex.get(p.name) || ''
       const position = lookupPointCoords(stationCoords, pref, p.name, false)
       if (!position) continue
-      markers.push({ position, lgInt: p.lgInt, name: p.name, pref })
+      markers.push({
+        position, lgInt: p.lgInt, name: p.name, pref,
+        ...(p.nonJma && { nonJma: true }),
+        ...(p.int !== undefined && { int: p.int }),
+        ...(p.sva !== undefined && { sva: p.sva }),
+        ...(p.periods && { periods: p.periods }),
+      })
     }
     return markers.sort((a, b) => a.lgInt - b.lgInt)
   }, [lpgmActive, lpgm, stationCoords, stationPrefIndex])
@@ -307,9 +350,13 @@ export function useQuakeLayerData(
   const lpgmRegionAggregates = useMemo<LpgmRegionAggregate[]>(() => {
     if (!lpgmActive || !lpgm?.regions?.length || !subregions) return []
     const maxByName = new Map(lpgm.regions.map((r) => [r.name, r.maxLgInt]))
+    const maxIntByName = new Map(lpgm.regions.map((r) => [r.name, r.maxInt]))
     return subregions
       .filter((sr) => (maxByName.get(sr.name) ?? 0) >= 1)
-      .map((sr) => ({ name: sr.name, maxLgInt: maxByName.get(sr.name)!, rings: sr.rings, label: sr.label }))
+      .map((sr) => ({
+        name: sr.name, maxLgInt: maxByName.get(sr.name)!, rings: sr.rings, label: sr.label,
+        ...(maxIntByName.get(sr.name) !== undefined && { maxInt: maxIntByName.get(sr.name) }),
+      }))
       .sort((a, b) => a.maxLgInt - b.maxLgInt)
   }, [lpgmActive, lpgm, subregions])
 
@@ -322,6 +369,13 @@ export function useQuakeLayerData(
   // selectedQuakeId を変えない）ため、選択中の quake と表示中の LPGM が別の地震のことがある。
   // quake 側のデータでフィットすると無関係な地震の位置にカメラが留まったままになる。
   const quakeFitPositions = useMemo<LatLng[]>(() => {
+    // 震度分布モードで気象庁の推計が出ているときは、**塗りがある範囲**へ寄せる。
+    // 区域ポリゴンで寄せると、分布が届いていない区域まで枠に含めてしまい、
+    // 見せたい面が画の隅へ追いやられる。範囲は復号のときに求めてある（走査し直さない）。
+    if (distributionMode && estimatedIntensity) {
+      const b = estimatedIntensity.bounds
+      return [[b.south, b.west], [b.north, b.east]]
+    }
     if (lpgmActive) {
       const positions: LatLng[] = []
       if (lpgm?.regions?.length && subregionIndex.length > 0) {
@@ -359,11 +413,14 @@ export function useQuakeLayerData(
       positions.push(...japanWideCornersLatLng())
     }
     return positions
-  }, [lpgmActive, lpgm, lpgmMarkers, regionMaxByName, subregionIndex, intensityMarkers, epicenter, hasEpicenter, quake])
+  }, [distributionMode, estimatedIntensity, lpgmActive, lpgm, lpgmMarkers, regionMaxByName, subregionIndex, intensityMarkers, epicenter, hasEpicenter, quake])
 
   // LPGM 表示の切替（同じ quake のまま lpgmActive だけが変わる、あるいは別イベントの LPGM に
   // 切り替わる）でも再フィットが発火するよう、lpgm の eventId を signature に含める。
-  const quakeSignature = `${quake?.id ?? ''}:${lpgmActive ? (lpgm?.eventId ?? '') : ''}:${quakeFitPositions.length}`
+  // **震度分布モードの別も入れる。** 寄り先は座標の配列で渡すが、シグネチャは長さしか見ない。
+  // モードを切り替えた前後でたまたま同じ本数（分布モードは常に 2 点）になると、
+  // 同じ地震のままでは値が変わらず、カメラが寄り直さない。
+  const quakeSignature = `${quake?.id ?? ''}:${lpgmActive ? (lpgm?.eventId ?? '') : ''}:${distributionMode ? 'D' : ''}:${quakeFitPositions.length}`
 
   return {
     intensityMarkers,

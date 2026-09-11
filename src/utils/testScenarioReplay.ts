@@ -71,6 +71,7 @@ function remapAppEvent(event: AppEvent, deltaMs: number, remapId: IdRemapper): A
         sourceEarthquakes: event.sourceEarthquakes?.map(eq => ({
           ...eq,
           originTime: shiftIsoOpt(eq.originTime, deltaMs),
+          arrivalTime: shiftIsoOpt(eq.arrivalTime, deltaMs),
         })),
         issue: { ...event.issue, time: shiftIso(event.issue.time, deltaMs) },
         areas: event.areas.map(a => ({
@@ -88,6 +89,15 @@ function remapAppEvent(event: AppEvent, deltaMs: number, remapId: IdRemapper): A
         observations: event.observations?.map(o => ({
           ...o,
           arrivalTime: shiftIsoOpt(o.arrivalTime, deltaMs),
+          maxHeightDateTime: shiftIsoOpt(o.maxHeightDateTime, deltaMs),
+        })),
+        // **沿岸への推定（VTSE52）もシフトの対象。** ここは元から丸ごと漏れていて、
+        // 到達予想時刻がカードに出ているのに収録当時の絶対時刻のまま残っていた。
+        // 隣に並ぶ観測点の時刻はシフト済みなので、突き合わせると食い違って見える。
+        estimations: event.estimations?.map(e => ({
+          ...e,
+          arrivalTime: shiftIsoOpt(e.arrivalTime, deltaMs),
+          maxHeightDateTime: shiftIsoOpt(e.maxHeightDateTime, deltaMs),
         })),
       }
     }
@@ -125,6 +135,10 @@ function remapPayload(payload: ReplayPayload, deltaMs: number, remapId: IdRemapp
           id: replaceEventIdInId(payload.data.id, payload.data.eventId, newEventId),
           time: shiftIso(payload.data.time, deltaMs),
           originTime: shiftIso(payload.data.originTime, deltaMs),
+          // 地震発現時刻。**いまは画面に出していないが、シフトはしておく** ——
+          // 出すようになったときに気づける形になっていない（型検査もテストも通り、
+          // その時刻だけが収録当時の絶対値のまま出る）。
+          arrivalTime: shiftIsoOpt(payload.data.arrivalTime, deltaMs),
         },
       }
     }
@@ -168,6 +182,58 @@ function remapPayload(payload: ReplayPayload, deltaMs: number, remapId: IdRemapp
           time: shiftIso(payload.data.time, deltaMs),
           reportDateTime: shiftIso(payload.data.reportDateTime, deltaMs),
           expireAt: shiftIso(payload.data.expireAt, deltaMs),
+        },
+      }
+    }
+    case 'quakeNotice': {
+      const newEventId = remapId(payload.data.eventId) ?? payload.data.eventId
+      return {
+        kind: 'quakeNotice',
+        data: {
+          ...payload.data,
+          eventId: newEventId,
+          id: replaceEventIdInId(payload.data.id, payload.data.eventId, newEventId),
+          time: shiftIso(payload.data.time, deltaMs),
+          reportDateTime: shiftIso(payload.data.reportDateTime, deltaMs),
+          expireAt: shiftIso(payload.data.expireAt, deltaMs),
+        },
+      }
+    }
+    case 'estimatedIntensity': {
+      // **`eventId` を持たない電文。** BUFR には識別子が入っておらず、地震カードとの
+      // 結び付けは**地震発現時刻**で行う（→ `matchEstimatedIntensity`）。だから `remapId` は
+      // 通さず、時刻だけをずらす。**ずらし忘れると引き当てが外れてボタンが出なくなる**
+      // ——地震カード側の `earthquake.time` はずれているので、突き合わせが成立しない。
+      // セルの座標は時刻に依らないのでそのまま。
+      return {
+        kind: 'estimatedIntensity',
+        data: {
+          ...payload.data,
+          time: shiftIso(payload.data.time, deltaMs),
+          arrivalTime: shiftIso(payload.data.arrivalTime, deltaMs),
+        },
+      }
+    }
+    case 'earthquakeCount': {
+      const newEventId = remapId(payload.data.eventId) ?? payload.data.eventId
+      return {
+        kind: 'earthquakeCount',
+        data: {
+          ...payload.data,
+          eventId: newEventId,
+          id: replaceEventIdInId(payload.data.id, payload.data.eventId, newEventId),
+          time: shiftIso(payload.data.time, deltaMs),
+          reportDateTime: shiftIso(payload.data.reportDateTime, deltaMs),
+          // 期限も一緒にずらす。ずらさないと収録時点の期限が「いま」より過去になり、
+          // 再生しても帯が一度も出ない
+          expireAt: shiftIso(payload.data.expireAt, deltaMs),
+          // **区間の時刻もずらす。** ここを忘れると、収録当時の絶対時刻のまま画面に出て、
+          // 隣の「発表時刻」だけが再生時刻へ動く食い違いになる（→ settings-pwa-spec.md §6）。
+          items: payload.data.items.map(it => ({
+            ...it,
+            startTime: shiftIso(it.startTime, deltaMs),
+            endTime: shiftIso(it.endTime, deltaMs),
+          })),
         },
       }
     }

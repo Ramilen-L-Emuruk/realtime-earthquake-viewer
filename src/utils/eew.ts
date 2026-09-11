@@ -5,6 +5,7 @@ import { computeSWaveTravelTimeSec } from '../hooks/usePsWaveCalc'
 import { isValidIntensityScale } from './intensity'
 import { isValidLpgmClass } from './lpgm'
 import { hypoInfoItemToEEW, type YahooHypoInfoItem } from '../services/kyoshin'
+import { isEewArrivedKindCode } from './eewKind'
 
 // 司・翠川(1999)の距離減衰式を使ってEEW最終報後の自動解除秒数を計算する。
 // 有感半径（震度1以上が届く距離）を逆算し、1.5倍のバッファを乗せてS波到達時刻を求める。
@@ -149,6 +150,24 @@ export function eewAreas(eew: EEWAlert): EEWRegion[] {
   return eew.areas ?? eew.regions ?? []
 }
 
+/**
+ * その区域で主要動が既に到達したと推測されているか。**この 1 か所で判定する。**
+ *
+ * 電文は同じ事実を 2 通りで伝えてくる。
+ *
+ * | 伝え方 | 出どころ | DMDATA | P2PQuake |
+ * |---|---|---|---|
+ * | 区域の `Condition`（「既に主要動到達と推測」） | 電文解説資料 Ⅱ.21 2-1-5-3-7 | 読む（→ `EEWRegion.arrived`） | 配信されない |
+ * | 種別コードの下 1 桁（01/11） | 気象庁コード表 12 | 読む | **読む** |
+ *
+ * **経路で分かれるのは前者だけ。** `arrived` だけを見ると、standard 版（P2PQuake）で到達済みの
+ * 区域が「時刻も印も持たない区域」に落ちて画面から黙って消える —— 到達予測時刻は到達済みの
+ * 区域には出ないため（同 2-1-5-3-6）。**種別コードは両経路が持つので、そちらへ倒せば揃う。**
+ */
+export function isEewAreaArrived(area: EEWRegion): boolean {
+  return area.arrived === true || isEewArrivedKindCode(area.kindCode)
+}
+
 /** 最大予想震度と、その上限が定まっていないか（「〜以上」）の対。 */
 export interface EewMaxScaleInfo {
   /** 階級値。震度が取れないときは 0（`eewMaxScale` と同じ） */
@@ -219,6 +238,21 @@ export function isForecastScaleHigher(latest: EewMaxScaleInfo, spoken: EewMaxSca
   return latest.orAbove && !spoken.orAbove
 }
 
+/**
+ * 確定した階級が、既に声にした階級より上がったか。**`isForecastScaleHigher` と同じ形。**
+ *
+ * 数値が同じでも「程度以上」が付いたなら上がったものとして扱う —— 上限が定まらなくなった＝
+ * もっと強いかもしれない、という安全側の変化だから。**数値だけで比べると、この変化が
+ * 読み上げから無音で消える**（実際にそうなっていた）。逆向き（程度以上 → 確定）は追わない。
+ */
+export function isForecastLpgmHigher(
+  latest: EewMaxLpgmClassInfo, spoken: EewMaxLpgmClassInfo | undefined,
+): boolean {
+  if (!spoken) return latest.cls > 0
+  if (latest.cls !== spoken.cls) return latest.cls > spoken.cls
+  return latest.over && !spoken.over
+}
+
 /** 対象地域の最大予想長周期地震動階級（1〜4）。データが無ければ0。
  * eewMaxScale と同じ考え方で areas の地域別 lgIntTo を優先し、**`condition` では値を捨てない**
  * （理由は `eewMaxScaleInfo` のコメントと同じ。2024 能登 1/1〜1/3 の実データでは仮定震源要素 72 報の
@@ -228,13 +262,43 @@ export function isForecastScaleHigher(latest: EewMaxScaleInfo, spoken: EewMaxSca
  * （DMDATA=DMDSS版のみ取得可能。標準版は震度のみでレベル判定される）。
  */
 export function eewMaxLpgmClass(eew: EEWAlert): number {
-  const areasMax = eewAreas(eew).reduce(
-    (max, r) => (r.lgIntTo != null && isValidLpgmClass(r.lgIntTo) ? Math.max(max, r.lgIntTo) : max),
-    0,
-  )
-  if (areasMax > 0) return areasMax
+  return eewMaxLpgmClassInfo(eew).cls
+}
+
+/** {@link eewMaxLpgmClassInfo} の戻り値。 */
+export interface EewMaxLpgmClassInfo {
+  /** 最大予想長周期地震動階級（1〜4）。取れないときは 0 */
+  cls: number
+  /**
+   * その値が上限を定めない予測（電文の `To="over"`）だったか。
+   * **表示・読み上げで「程度以上」を補うのに要る**（→ `getLpgmClassLabelWithApproxAbove`）。
+   * 震度側の `EewMaxScaleInfo.orAbove` と同じ扱いで、語だけが違う。
+   */
+  over: boolean
+}
+
+/**
+ * 最大予想長周期地震動階級と、それが「程度以上」だったか。
+ *
+ * 選び方は `eewMaxScaleInfo` と揃える —— 地域別を優先し、**同じ階級で「程度以上」の区域が
+ * 1 つでもあれば「程度以上」を立てる**（上限が定まらない区域を、定まった区域に紛れさせない）。
+ */
+export function eewMaxLpgmClassInfo(eew: EEWAlert): EewMaxLpgmClassInfo {
+  let areasMax = 0
+  let areasOver = false
+  for (const r of eewAreas(eew)) {
+    if (r.lgIntTo == null || !isValidLpgmClass(r.lgIntTo)) continue
+    if (r.lgIntTo > areasMax) {
+      areasMax = r.lgIntTo
+      areasOver = r.lgIntToOver === true
+    } else if (r.lgIntTo === areasMax && r.lgIntToOver) {
+      areasOver = true
+    }
+  }
+  if (areasMax > 0) return { cls: areasMax, over: areasOver }
   const forecast = eew.forecastMaxLpgmClass
-  return forecast != null && isValidLpgmClass(forecast) ? forecast : 0
+  const cls = forecast != null && isValidLpgmClass(forecast) ? forecast : 0
+  return { cls, over: cls > 0 && eew.forecastMaxLpgmClassOver === true }
 }
 
 /**
@@ -484,3 +548,97 @@ export function diffHypoInfoEvents(
 
   return { events, pendingMissing }
 }
+
+// ============================================================================
+// 震源要素の精度・最大予測値の変化（電文解説資料 Ⅱ.21 1-4-2・2-1-4）
+//
+// **語は解説資料の原文から採る。** ランクの数字を画面に出しても何も伝わらないので意味へ直すが、
+// 言い換えはしない ―― 気象庁が「IPF 法（5 点以上）」と書いているものを「精度が高い」と
+// 要約すると、資料と突き合わせられなくなるうえ、こちらが評価を足したことになる。
+// ============================================================================
+
+/** 震央位置・深さの精度ランク（`Epicenter@rank` / `Depth@rank`）。解説資料 Ⅱ.21 1-4-2-1。 */
+const EPICENTER_RANK_LABEL: Readonly<Record<number, string>> = {
+  1: 'P波／S波レベル超え、IPF法（1点）、または仮定震源要素',
+  2: 'IPF法（2点）',
+  3: 'IPF法（3点／4点）',
+  4: 'IPF法（5点以上）',
+  5: '防災科研システム（4点以下、または精度情報なし）',
+  6: '防災科研システム（5点以上）',
+  // **「海域」「内陸」だけにしないこと。** 解説資料は「EPOS（海域〔観測網外〕）」
+  // 「EPOS（内陸〔観測網内〕）」と書いており、括弧書きが**観測網の外か内か**を言っている。
+  // 落とすと、その区別が画面から消える（「海域」だけでは何と対比しているのか分からない）。
+  7: 'EPOS（海域〔観測網外〕）',
+  8: 'EPOS（内陸〔観測網内〕）',
+}
+
+/** マグニチュードの精度ランク（`MagnitudeCalculation@rank`）。解説資料 Ⅱ.21 1-4-2-3。 */
+const MAGNITUDE_RANK_LABEL: Readonly<Record<number, string>> = {
+  2: '防災科研システム',
+  3: '全点P相',
+  4: 'P相／全相混在',
+  5: '全点全相',
+  6: 'EPOS',
+  8: 'P波／S波レベル超え、または仮定震源要素',
+}
+
+/**
+ * 精度ランクの意味。**0（不明）と未知の値では何も返さない** ―― 「不明」と書いても
+ * 利用者には伝わらず、欄が埋まるだけになる。
+ */
+export function eewEpicenterRankLabel(rank: number | undefined): string {
+  return rank === undefined ? '' : (EPICENTER_RANK_LABEL[rank] ?? '')
+}
+
+export function eewMagnitudeRankLabel(rank: number | undefined): string {
+  return rank === undefined ? '' : (MAGNITUDE_RANK_LABEL[rank] ?? '')
+}
+
+/**
+ * マグニチュード計算に使った観測点数の表示。**5 は「5点以上」**（解説資料 Ⅱ.21 1-4-2-4）。
+ * 上限を「5点」と書くと、実際にはもっと多いかもしれないことが消える。
+ */
+export function eewMagnitudePointsLabel(points: number | undefined): string {
+  if (points === undefined || points <= 0) return ''
+  return points >= 5 ? '5点以上' : `${points}点`
+}
+
+/**
+ * **震源とマグニチュードがこれ以降変化しないか**（`Epicenter@rank2` が 9）。
+ *
+ * 解説資料 Ⅱ.21 1-4-2-1 が「推定震源とマグニチュードはこれ以降変化しない」と定めている値。
+ * ただし**同じ注に「PLUM 法により予測震度が今後変化する可能性はある」とも書いてある**ので、
+ * 「最終報」とは言わないこと ―― 震源が確定しても予想震度は動きうる。
+ */
+export function isEewHypocenterSettled(eew: EEWAlert): boolean {
+  return eew.accuracy?.epicenterRank2 === 9
+}
+
+/** 最大予測値の変化の理由（`MaxIntChangeReason`）。解説資料 Ⅱ.21 2-1-4-3。 */
+const FORECAST_CHANGE_REASON_LABEL: Readonly<Record<number, string>> = {
+  1: 'マグニチュードが変わったため',
+  2: '震央の位置が変わったため',
+  3: 'マグニチュードと震央の位置が変わったため',
+  4: '震源の深さが変わったため',
+  9: 'PLUM法による予測で変わったため',
+}
+
+/**
+ * 最大予測値が変わったことを伝える一文。変化が無い（0）・読めない報では空を返す。
+ *
+ * **「1.0 以上」は計測震度の差**で、画面に出している震度階級の差とは別物（解説資料 Ⅱ.21 2-1-4-1）。
+ * 「階級が 1 つ上がった」と読み替えないこと。
+ */
+export function eewForecastChangeText(eew: EEWAlert): string {
+  const c = eew.forecastChange
+  if (!c) return ''
+  const increased = c.maxInt === 1 || c.maxLgInt === 1
+  const decreased = c.maxInt === 2 || c.maxLgInt === 2
+  if (!increased && !decreased) return ''
+  // 上下が同時に立つ報（震度は上がり階級は下がった等）は「変わりました」に倒す。
+  // どちらか一方に決めると、立っていない側を無かったことにする。
+  const direction = increased && decreased ? '変わりました' : increased ? '大きくなりました' : '小さくなりました'
+  const reasonText = c.reason !== undefined ? FORECAST_CHANGE_REASON_LABEL[c.reason] : undefined
+  return reasonText ? `予想が${direction}（${reasonText}）` : `予想が${direction}`
+}
+

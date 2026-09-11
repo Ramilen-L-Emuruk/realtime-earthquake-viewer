@@ -11,7 +11,7 @@ export type AlertSoundType =
   | 'eew' | 'eewUpdate' | 'eewFinal' | 'eewCancel' | 'eewSpecial' | 'eewForecast'
   | 'tsunami' | 'tsunamiMajor' | 'tsunamiWatch' | 'tsunamiForecast' | 'tsunamiUpdate' | 'tsunamiCancel'
   | 'kyoshin' | 'kyoshinCandidate'
-  | 'specialInfo' | 'specialInfoCommentary'
+  | 'specialInfo' | 'specialInfoCommentary' | 'earthquakeCount'
 
 let audioCtx: AudioContext | null = null
 
@@ -676,6 +676,17 @@ const PLAYERS: Record<AlertSoundType, SoundPlayer> = {
     ding(ctx, 587.3, base + 0.00, 0.90, g)
     ding(ctx, 440.0, base + 0.20, 1.10, g)
   },
+
+  // 地震回数に関する情報: 純音の同音 3 連 C5（等間隔で刻む）。全体で約 1 秒。
+  // **上の 2 つと音程の動きで分ける。** specialInfo は上昇（A4→D5）、specialInfoCommentary は
+  // 下降（D5→A4）、こちらは動かさない。群発の経過は「上がった／下がった」ではなく
+  // 「また数えた」という報せなので、向きを持たせず等間隔に刻む。
+  earthquakeCount: (ctx, base) => {
+    const g = BASE_GAIN.ding * SEVERITY.update
+    ding(ctx, 523.3, base + 0.00, 0.30, g)
+    ding(ctx, 523.3, base + 0.14, 0.30, g)
+    ding(ctx, 523.3, base + 0.28, 0.70, g)
+  },
 }
 
 // ─── 通知音を鳴らしてから声を出すまでの間 ─────────────────────────
@@ -716,6 +727,7 @@ export const SOUND_AUDIBLE_END_MS: Record<AlertSoundType, number> = {
   kyoshinCandidate:       120,
   specialInfo:            920,
   specialInfoCommentary:  700,
+  earthquakeCount:        580,
 }
 
 /**

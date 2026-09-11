@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { EEWAlert } from '../types/earthquake'
 import { eewMaxScale, eewMaxScaleInfo, eewKindLabel, computeSingleEEWLevel } from '../utils/eew'
-import { getIntensityLabelWithOrAbove } from '../utils/intensity'
+import { getIntensityLabelWithApproxAbove } from '../utils/intensity'
 
 // ウィンドウタイトル（情報タイトル）管理フック。
 //
@@ -28,7 +28,7 @@ export function computeEEWTitle(eews: ReadonlyMap<string, EEWAlert>): string {
   const maxLevel = Array.from(eews.values())
     .reduce<0 | 1 | 2>((m, e) => Math.max(m, computeSingleEEWLevel(e)) as 0 | 1 | 2, 0)
   return `${eewKindLabel(maxLevel)} ${primary.earthquake.hypocenter.name}` +
-    (scale > 0 ? ` 最大震度${getIntensityLabelWithOrAbove(scale, orAbove)}予想` : '') +
+    (scale > 0 ? ` 最大震度${getIntensityLabelWithApproxAbove(scale, orAbove)}予想` : '') +
     (eews.size > 1 ? ` 他${eews.size - 1}件` : '')
 }
 

@@ -41,3 +41,35 @@ export function badgeHtml(label: string, color: string): string {
     `white-space:nowrap;background:${color}">${escapeHtml(label)}</span>`
   )
 }
+
+/**
+ * 「気象庁以外が運用する観測点」のバッジに書く語。
+ *
+ * 地図の吹き出しと地震カードの両方で使う。**同じ事実を別の語で書かない** —— 片方だけ
+ * 直すと、利用者には別のことを言っているように見える。
+ */
+export const NON_JMA_BADGE_LABEL = '気象庁以外'
+
+/** 上のバッジに添える説明。**語だけでは何と対比しているのか分からない。** */
+export const NON_JMA_BADGE_TITLE = '気象庁以外の機関が運用する観測点です'
+
+/**
+ * 「気象庁以外が運用する観測点」のバッジ。
+ *
+ * 電文は観測点名の末尾に `＊` を付け、固定付加文で「＊印は気象庁以外の震度観測点についての
+ * 情報です。」と断っている（→ `EarthquakePoint.nonJma`）。アプリは印を名前から外して
+ * 引き当てに使うため、**事実はこのバッジで伝える**。
+ *
+ * **震度・階級のバッジと見た目を分ける。** あちらは値の重さを色で表すもので、こちらは
+ * 出所の注記。色を持たせると重さの一種に見える。
+ *
+ * **「自治体」と言い換えないこと** —— 気象庁以外には防災科研なども含まれる。
+ */
+export function nonJmaBadgeHtml(): string {
+  return (
+    `<span style="display:inline-block;padding:0 5px;font-weight:600;border-radius:3px;` +
+    `color:#cbd5e1;font-size:10px;line-height:16px;white-space:nowrap;` +
+    `border:1px solid #475569;background:transparent" `+
+    `title="${NON_JMA_BADGE_TITLE}">${NON_JMA_BADGE_LABEL}</span>`
+  )
+}

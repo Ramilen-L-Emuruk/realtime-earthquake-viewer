@@ -30,6 +30,21 @@ export function getLpgmClassLabel(cls: number): string {
   return isValidLpgmClass(cls) ? `階級${cls}` : '階級不明'
 }
 
+/**
+ * 階級ラベルに「程度以上」を補う（`over` のとき）。**EEW の予測階級専用。**
+ *
+ * **語は気象庁の表現に合わせる。** 電文解説資料（Ⅱ.21 2-1-3-2）は `To` の値域を
+ * 「4 ：長周期地震動階級 4　over:～程度以上　不明：不明時」と定め、事例も
+ * 「最大予測長周期地震動階級が階級 3 **程度以上**の場合」と書いている。
+ * 震度側の予想も同じ言い方（→ `getIntensityLabelWithApproxAbove`）。
+ *
+ * 「階級不明」に語を足しても意味を成さないので、その場合は付けない。
+ */
+export function getLpgmClassLabelWithApproxAbove(cls: number, over: boolean): string {
+  const label = getLpgmClassLabel(cls)
+  return over && isValidLpgmClass(cls) ? `${label}程度以上` : label
+}
+
 export function getLpgmClassColor(cls: number): string {
   return LPGM_COLORS[cls] ?? '#9ca3af'
 }
@@ -49,4 +64,38 @@ export function getLpgmClassRadius(cls: number): number {
 
 export function getLpgmClassBgColor(cls: number): string {
   return LPGM_BG_COLORS[cls] ?? 'transparent'
+}
+
+/**
+ * 長周期地震動に関する観測情報の種類（`LgCategory`）から、利用者へ伝える一文を作る。
+ *
+ * **分類番号そのものは出さない。**「種類2」と書いても何も伝わらない。値 2・4 が意味するのは
+ * 「長周期地震動階級を観測した地域のうち、最大震度が4以下の地域がある」＝**揺れそのものは
+ * 強くないのに、高層階が大きく揺れた地域がある**という状況で、高い建物にいる人にはこれが効く。
+ * 1・3 は階級を観測した地域がどこも震度5弱以上なので、震度の表示だけで状況が伝わる。
+ *
+ * **文は「地域があります」で受ける。** 電文が主張しているのは「そういう地域が存在する」ことで、
+ * 震度が小さかった地域すべてがそうだったとは言っていない。
+ *
+ * 値ごとの定義表と、この受け方にした理由の全文は
+ * `docs/spec/quake-spec.md` §8「長周期地震動の「観測情報の種類」は意味を出す」。
+ *
+ * @returns 伝えることがなければ空文字
+ */
+export function lpgmCategoryNote(category: number | undefined): string {
+  if (category !== 2 && category !== 4) return ''
+  return '震度が小さくても高層階が大きく揺れた地域があります'
+}
+
+
+/**
+ * 周期帯の番号（電文の `PeriodicBand`。1〜7）を中心周期の表示に直す。
+ *
+ * 気象庁は 1.5〜2.5 秒台を第 1 帯とし、以降 1 秒刻みで 7.5〜8.5 秒台の第 7 帯まで置く
+ * （電文解説資料 Ⅱ.37）。**番号をそのまま出しても意味が伝わらない**ので中心周期で書く。
+ * 周期が長い帯ほど高い建物が大きく揺れる。
+ */
+export function lpgmPeriodLabel(band: number): string {
+  if (!Number.isInteger(band) || band < 1 || band > 7) return '周期不明'
+  return `${band + 1}秒`
 }

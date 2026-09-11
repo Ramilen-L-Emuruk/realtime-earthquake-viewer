@@ -23,6 +23,7 @@ import { useKyoshinImport } from '../../hooks/useKyoshinImport'
 export interface TestFunctions {
   earthquake: () => void
   foreignQuake: () => void
+  foreignQuakeHuge: () => void
   eew: () => void
   eewWarning: () => void
   eewForecast: () => void
@@ -41,6 +42,12 @@ export interface TestFunctions {
   nankaiCommentaryAdHoc?: () => void
   nankaiCommentaryRoutine?: () => void
   kohatsu?: () => void
+  quakeNotice?: () => void
+  earthquakeCount?: () => void
+  earthquakeCountRetraction?: () => void
+  trainingQuake?: () => void
+  tsunamiGradeChange?: () => void
+  estimatedIntensity?: () => void
   notification: () => void
 }
 
@@ -1167,6 +1174,11 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
             <TestButton color="teal" onClick={() => { unlockAudio(); playAlertSound('specialInfoCommentary') }}>▶ 試聴</TestButton>
           </Row>
         )}
+        {isDmdss && (
+          <Row label="地震回数に関する情報" description="純音の同音3連 C5（上の2つと違い音程を動かさない）">
+            <TestButton color="teal" onClick={() => { unlockAudio(); playAlertSound('earthquakeCount') }}>▶ 試聴</TestButton>
+          </Row>
+        )}
       </Section>
 
       <Section title="テスト機能">
@@ -1199,6 +1211,14 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         <Row label="遠地地震" description="メキシコ・チアパス州沿岸 M7.4 深さ不明（実データ）– earthquakeInfo 音 / 国内震度なし・日本への津波影響なし">
           <TestButton color="purple" onClick={onTest.foreignQuake}>遠地地震テスト</TestButton>
         </Row>
+        <Row label="遠地地震（規模を速報できない報）" description="チリ中部沿岸 M8を超える巨大地震・深さ不明 – earthquakeInfo 音 / 規模が数値で出ない第一報。日本への津波の有無は調査中">
+          <TestButton color="purple" onClick={onTest.foreignQuakeHuge}>巨大地震テスト</TestButton>
+        </Row>
+        {isDmdss && onTest.trainingQuake && (
+          <Row label="訓練報" description="中身は地震テストと同じで、電文ヘッダの運用種別（訓練）だけが違う。本物と同じく画面・音・読み上げへ流し、カードに「訓練報」の印を出す">
+            <TestButton color="yellow" onClick={onTest.trainingQuake}>訓練報テスト</TestButton>
+          </Row>
+        )}
         {/* ── 津波情報: 軽 → 重、取消は末尾 ── */}
         <Row label="津波予報（若干の海面変動）" description={`北海道沿岸 – tsunamiForecast 音 / 90秒後に${isDmdss ? '有効期間終了' : '解除（standard 版は有効期限を持たないため解除電文で消える）'}`}>
           <TestButton color="blue" onClick={onTest.tsunamiForecast}>予報テスト</TestButton>
@@ -1212,6 +1232,11 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         <Row label="津波警報（大津波警報）" description="岩手・宮城・福島等 – tsunamiMajor 音 / 90秒後に解除">
           <TestButton color="purple" onClick={onTest.tsunami}>大警報テスト</TestButton>
         </Row>
+        {isDmdss && onTest.tsunamiGradeChange && (
+          <Row label="津波警報（区域ごとに等級が動く続報）" description="大津波警報 → 45秒後に続報（岩手・福島は津波警報へ降格／青森は注意報へ／茨城は大津波警報へ引き上げ／北海道は津波予報へ）→ 90秒後に全解除。**続報で区域が消えることはない** —— 完全に解除された区域は電文から落ちるため、テストデータでも作っていない。全体の最上位等級は動かないので、区域の「〇〇から切り替え」「〇〇から引き上げ」でしか変化が分からない">
+            <TestButton color="orange" onClick={onTest.tsunamiGradeChange}>区域の等級変化テスト</TestButton>
+          </Row>
+        )}
         <Row label="津波警報（誤報取消）" description={`青森・北海道等 – tsunami 音 / 90秒後に${isDmdss ? '誤報として取消' : '解除（standard 版は取消と解除を区別できないため「解除」表示）'}`}>
           <TestButton color="red" onClick={onTest.tsunamiRetraction}>誤報取消テスト</TestButton>
         </Row>
@@ -1249,6 +1274,27 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         {isDmdss && onTest.kohatsu && (
           <Row label="北海道・三陸沖後発地震注意情報" description="バナー表示 + specialInfo 音">
             <TestButton color="blue" onClick={onTest.kohatsu}>後発地震テスト</TestButton>
+          </Row>
+        )}
+        {/* ── その他の地震情報 ── */}
+        {isDmdss && onTest.estimatedIntensity && (
+          <Row label="推計震度分布図" description="気象庁が推計した震度の広がり。地図とカードのボタンが公式の表示へ替わる + 地震情報と同じ音・短い読み上げ。テストでは地震情報の3秒後に流す（実際の発表は地震から数分後）">
+            <TestButton color="teal" onClick={onTest.estimatedIntensity}>推計震度分布図テスト</TestButton>
+          </Row>
+        )}
+        {isDmdss && onTest.earthquakeCount && (
+          <Row label="地震回数に関する情報（バナー）" description="群発時の回数経過（21時間で1704回・うち有感1回）をバナー表示 + earthquakeCount 音・短い読み上げ（閉じるボタンあり・7日で自動消去）">
+            <TestButton color="teal" onClick={onTest.earthquakeCount}>地震回数テスト</TestButton>
+          </Row>
+        )}
+        {isDmdss && onTest.earthquakeCountRetraction && (
+          <Row label="地震回数に関する情報（取消）" description="発表 → 90秒後に取消。取消では帯ごと消えるため、理由の文が届く先は読み上げだけ（実電文どおり回数の表は持たない）">
+            <TestButton color="teal" onClick={onTest.earthquakeCountRetraction}>地震回数 取消テスト</TestButton>
+          </Row>
+        )}
+        {isDmdss && onTest.quakeNotice && (
+          <Row label="地震・津波に関するお知らせ" description="観測点の入電停止などの運用連絡。バナー表示のみ（音・読み上げなし・閉じるボタンあり・7日で自動消去）">
+            <TestButton color="blue" onClick={onTest.quakeNotice}>お知らせテスト</TestButton>
           </Row>
         )}
         {/* ── その他 ── */}

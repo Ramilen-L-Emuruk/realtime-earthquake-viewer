@@ -471,6 +471,47 @@ describe('mergeQuakeInto — VXSE61（顕著地震）', () => {
     const n = makeNoIntensity({ type: '顕著な地震の震源要素更新のお知らせ' })
     expect(mergeQuakeInto(e, n).freeText).toBe('既存の付加文。')
   })
+
+  // 固定付加文（その他）（`VarComment/Text`）。震源要素更新は訂正の説明をここへ載せる
+  // （コード 0256「震源要素を訂正します。」）ので、自由付加文と同じ扱いで引き継ぐ。
+  it('顕著地震が固定付加文（その他）を持てば更新する', () => {
+    const e: JMAQuake = { ...makeQuake(), varCommentText: '更新前の注記。' }
+    const n: JMAQuake = {
+      ...makeNoIntensity({ type: '顕著な地震の震源要素更新のお知らせ' }),
+      varCommentText: '震源要素を訂正します。',
+    }
+    expect(mergeQuakeInto(e, n).varCommentText).toBe('震源要素を訂正します。')
+  })
+
+  // 対照: 持たない報では既存を残す。
+  it('顕著地震が固定付加文（その他）を持たなければ既存を保持する', () => {
+    const e: JMAQuake = { ...makeQuake(), varCommentText: '既存の注記。' }
+    const n = makeNoIntensity({ type: '顕著な地震の震源要素更新のお知らせ' })
+    expect(mergeQuakeInto(e, n).varCommentText).toBe('既存の注記。')
+  })
+
+  it('震度欠落の後続電文でも既存の固定付加文（その他）を保持する', () => {
+    const e: JMAQuake = { ...makeQuake({ type: '震度速報' }), varCommentText: '既存の注記。' }
+    expect(mergeQuakeInto(e, makeNoIntensity({ type: '震源情報' })).varCommentText).toBe('既存の注記。')
+  })
+
+  // 震度速報が続報として届く経路。**震度速報は固定付加文（その他）を持たない**ので、
+  // incoming を採ると前の報が伝えた注記が消える（津波区分・固定付加文と同じ扱い）。
+  it('震度速報の続報でも既存の固定付加文（その他）が残る', () => {
+    const e: JMAQuake = { ...makeQuake(), varCommentText: '震源要素を訂正します。' }
+    const n = makeQuake({ type: '震度速報', id: 'dmdata-quake-20260728162718-2' })
+    expect(mergeQuakeInto(e, n).varCommentText).toBe('震源要素を訂正します。')
+  })
+
+  // 対照: 既存が持たなければ、震度速報側の値をそのまま使う（握り潰さない）。
+  it('既存が固定付加文（その他）を持たなければ震度速報側を採る', () => {
+    const e = makeQuake()
+    const n: JMAQuake = {
+      ...makeQuake({ type: '震度速報', id: 'dmdata-quake-20260728162718-2' }),
+      varCommentText: '新しい注記。',
+    }
+    expect(mergeQuakeInto(e, n).varCommentText).toBe('新しい注記。')
+  })
 })
 
 describe('mergeQuakeInto — 顕著地震カードが先にある場合（本バグの核心）', () => {
@@ -540,6 +581,27 @@ describe('mergeQuakeInto — 通常電文どうし', () => {
     expect(merged.issue.type).toBe('震源・震度情報')  // 種別は新しい方
     expect(merged.earthquake.maxScale).toBe(50)        // 震度は補完
     expect(merged.points.length).toBeGreaterThan(0)
+  })
+
+  // 正: 市町村ごとの震度も点と同じ扱いで補う。片方だけ戻すと、観測点は残るのに市町村の段だけが
+  // 消え、震度一覧が 4 段から 3 段へ静かに落ちる（→ docs/spec/quake-spec.md §6.4・§8）。
+  it('震度欠落の後続電文でも市町村の震度は引き継ぐ', () => {
+    const cities = [{ name: '普代村', area: '岩手県沿岸北部', pref: '岩手県', scale: 30 as IntensityScale }]
+    const e = { ...makeQuake({ type: '震源・震度情報', maxScale: 50 }), cities }
+    const n = makeNoIntensity({ type: '震源・震度情報' })
+    const merged = mergeQuakeInto(e, n)
+    expect(merged.points.length).toBeGreaterThan(0)   // 対の確認: 点は従来どおり戻る
+    expect(merged.cities).toEqual(cities)
+  })
+
+  // 対照: 震度を持つ続報では、市町村も**その報に従う**（消えたのなら気象庁が取り下げた）。
+  // 補完は「その種別が構造的に持たない」場合だけで、値の増減には介入しない（§6.4 の②）。
+  it('震度を持つ続報では、市町村もその報の内容に従う', () => {
+    const cities = [{ name: '普代村', area: '岩手県沿岸北部', pref: '岩手県', scale: 30 as IntensityScale }]
+    const e = { ...makeQuake({ type: '震源・震度情報', maxScale: 50 }), cities }
+    const n = makeQuake({ type: '震源・震度情報', maxScale: 50 })  // 市町村を持たない続報
+    const merged = mergeQuakeInto(e, n)
+    expect(merged.cities).toBeUndefined()
   })
 
   it('発表時刻が空の続報は据え置く（異常データを安全側＝据え置きに倒す）', () => {

@@ -6,11 +6,15 @@
 // data.compression="gzip"）。クライアント側で「base64 デコード → gunzip」を行う必要がある。
 // `formatMode: 'raw'` で購読しているため、復号して得られるのは気象庁の XML そのもの。
 
-import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, EEWAlert, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
-import { parseEEWFromXml, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml } from './dmdataParser'
+import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, EEWAlert, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
+import { parseEEWFromXml, parseEarthquakeFromXml, parseTsunamiFromXml, parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml, parseQuakeNoticeFromXml, parseEarthquakeCountFromXml } from './dmdataParser'
 import { serverNow, serverDate } from '../utils/clock'
 import { gunzip } from '../utils/gzip'
-import { CLASSIFICATIONS, EEW_TYPES, NANKAI_TYPES, COMMENTARY_TYPES, KOHATSU_TYPES } from './dmdataTelegramPayload'
+import {
+  CLASSIFICATIONS, EEW_TYPES, NANKAI_TYPES, COMMENTARY_TYPES, KOHATSU_TYPES, NOTICE_TYPES,
+  QUAKE_COUNT_TYPES, HANDLED_TYPES, isBinaryTelegramType, buildBinaryPayload,
+} from './dmdataTelegramPayload'
+import { BufrFragmentStore, fragmentKey } from './bufrTelegramAssembly'
 import { log, createLogThrottle } from '../utils/logger'
 import { authHeader, dmdataApiKeyProblem, dmdataApiKeyMessage, DmdataApiKeyError } from '../utils/dmdataApiKey'
 
@@ -20,6 +24,24 @@ const API_BASE = 'https://api.dmdata.jp/v2'
 // VXSE43 の受信は本来起きない。起きるとすれば配信分類の変わり目だが、連続発報で溢れると
 // 他の警告が見えなくなるため間引く（`createLogThrottle` の使い方は utils/logger.ts）。
 const warnUnsubscribedEew = createLogThrottle(60_000)
+// パーサーへは渡さないが、`handleMessage` の分岐が扱う種別。**本文の復号を種別で絞るときの
+// 例外一覧**で、ここから漏らすとその分岐ごと届かなくなる。復号を種別で絞るのは `handleMessage`。
+//   VXSE42 … 配信テスト。本文は見ないが、疎通確認として記録する
+//   VXSE43 … 購読外。届いたら配信分類の変わり目を疑う警告を上げ、本文を電文ログへ残す
+//   VXSE44 … 廃止予定の旧 EEW。想定内なので警告は上げず、本文を電文ログへ残す
+const DISPATCHED_WITHOUT_PARSER = new Set(['VXSE42', 'VXSE43', 'VXSE44'])
+
+/**
+ * その種別の本文を復号する必要があるか。**テストから直接呼べるよう export している**
+ * （`handleMessage` は private で、WebSocket 経由でしか到達できない）。
+ *
+ * 偽を返した電文は base64 デコードも gunzip も行わずに捨てる。購読している分類
+ * `telegram.earthquake` には**アプリが扱わない大きなバイナリ電文が含まれる** ——
+ * IXAC41（推計震度分布図作図用データ）は 1 通が最大 644KB で、震度5弱以上の地震のたびに届く。
+ */
+export function needsBodyDecode(headType: string): boolean {
+  return HANDLED_TYPES.has(headType) || DISPATCHED_WITHOUT_PARSER.has(headType)
+}
 
 const RECONNECT_BASE_MS = 3000
 const RECONNECT_MAX_MS = 30000
@@ -127,7 +149,7 @@ function warnUndecodableBody(kind: string, detail: string, msg: Record<string, u
  * data メッセージの body を復号する本体。**テストから直接呼べるよう export している**
  * （WebSocket 経由でしか到達できないと、失敗の分岐を 1 つも検証できない）。
  */
-export async function decodeTelegramText(msg: Record<string, unknown>): Promise<string | null> {
+async function decodeBody(msg: Record<string, unknown>): Promise<Uint8Array | null> {
   const raw = msg.body
   if (typeof raw !== 'string') {
     // `typeof null` は 'object' を返すため、そのまま流すと「文字列ではありません: object」という
@@ -139,25 +161,24 @@ export async function decodeTelegramText(msg: Record<string, unknown>): Promise<
   const encoding = typeof msg.encoding === 'string' ? msg.encoding : 'utf-8'
   const compression = typeof msg.compression === 'string' ? msg.compression : null
 
-  let text: string
   try {
     if (encoding === 'base64') {
       const bytes = base64ToBytes(raw)
-      if (compression === 'gzip') {
-        text = new TextDecoder().decode(await gunzip(bytes))
-      } else if (compression === null) {
-        text = new TextDecoder().decode(bytes)
-      } else {
-        // zip 等は DecompressionStream 非対応のため未サポート
-        return warnUndecodableBody('compression', `未対応の圧縮形式: ${compression}`, msg)
-      }
-    } else {
-      // encoding="utf-8" 等は生テキスト
-      text = raw
+      if (compression === 'gzip') return await gunzip(bytes)
+      if (compression === null) return bytes
+      // zip 等は DecompressionStream 非対応のため未サポート
+      return warnUndecodableBody('compression', `未対応の圧縮形式: ${compression}`, msg)
     }
+    // encoding="utf-8" 等は生テキスト
+    return new TextEncoder().encode(raw)
   } catch (e) {
     return warnUndecodableBody('decode', `復号で例外が出ました: ${String(e)}`, msg)
   }
+}
+
+export async function decodeTelegramText(msg: Record<string, unknown>): Promise<string | null> {
+  const bytes = await decodeBody(msg)
+  if (bytes === null) return null
 
   // `formatMode: 'raw'` で購読しているので `format` は xml のはず。違えば配信形態が変わった印なので
   // 記録する。**ただし本文は返す** —— ここまで来た時点で復号は成功しており、値が変わった
@@ -167,7 +188,25 @@ export async function decodeTelegramText(msg: Record<string, unknown>): Promise<
   if (format !== 'xml') {
     warnUndecodableBody('format', `XML 以外の format: ${format ?? '(無し)'}`, msg, '電文の format が想定と違います')
   }
-  return text
+  return new TextDecoder().decode(bytes)
+}
+
+/**
+ * 二進電文（IXAC41）の本文をバイト列で取り出す。**テキストへ落とさない。**
+ *
+ * `TextDecoder` を通すと不正なバイト列が U+FFFD へ置き換わり、**元のバイトへ戻せなくなる**。
+ * 最大 644KB の BUFR で、そのうえ分割されて届くので、文字列を経由してはいけない。
+ */
+export async function decodeTelegramBytes(msg: Record<string, unknown>): Promise<Uint8Array | null> {
+  const bytes = await decodeBody(msg)
+  if (bytes === null) return null
+  // 二進の種別なので `format` は binary のはず。違えば配信形態が変わった印。
+  // テキスト側と同じく**本文は返す**（判別は種別で済んでおり、`format` の綴りに賭けない）。
+  const format = typeof msg.format === 'string' ? msg.format : null
+  if (format !== 'binary') {
+    warnUndecodableBody('format', `binary 以外の format: ${format ?? '(無し)'}`, msg, '二進電文の format が想定と違います')
+  }
+  return bytes
 }
 
 async function tryFetchTicket(
@@ -222,6 +261,9 @@ export type DmdataEvent =
   | { kind: 'nankai'; data: JMANankai }
   | { kind: 'nankaiCommentary'; data: JMANankaiCommentary }
   | { kind: 'kohatsu'; data: JMAKohatsu }
+  | { kind: 'quakeNotice'; data: JMAQuakeNotice }
+  | { kind: 'earthquakeCount'; data: JMAEarthquakeCount }
+  | { kind: 'estimatedIntensity'; data: JMAEstimatedIntensity }
 
 export class DmdataWebSocket {
   private ws: WebSocket | null = null
@@ -234,6 +276,11 @@ export class DmdataWebSocket {
   private pingWatchdogTimer: ReturnType<typeof setInterval> | null = null
   // start 受信後の安定判定タイマー。STABLE_CONNECTION_MS 継続で reconnectAttempt をリセットする。
   private stableConnectionTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * 分割配信された二進電文の結合待ち。**接続ごとに持つ** —— 再接続を挟むと断片の連なりが
+   * 切れるので、持ち越しても揃わない。
+   */
+  private readonly bufrFragments = new BufrFragmentStore()
 
   onEvent: ((ev: DmdataEvent) => void) | null = null
   onStatusChange: ((s: ConnectionStatus) => void) | null = null
@@ -378,6 +425,53 @@ export class DmdataWebSocket {
     }
   }
 
+  /**
+   * 二進電文（IXAC41）を受ける。**テキストへ落とさず、分割の結合を経てから読む。**
+   *
+   * 断片は 1 通ずつ届き、揃うまでは何も起きない。揃わないまま終わった断片は
+   * `BufrFragmentStore` の時限が捨てる。
+   */
+  private async handleBinaryTelegram(
+    headType: string,
+    head: Record<string, unknown> | undefined,
+    msg: Record<string, unknown>,
+    isTest: boolean,
+  ): Promise<void> {
+    const bytes = await decodeTelegramBytes(msg)
+    if (bytes === null) {
+      // 理由と間引きは `decodeTelegramBytes` が持つ（テキスト側と同じ）。
+      this.onRawMessage?.(this.makeLogEntry(headType, head, null, isTest, 'error', undefined, 'body decode failed'))
+      return
+    }
+    const author = typeof head?.author === 'string' ? head.author : ''
+    const time = typeof head?.time === 'string' ? head.time : ''
+    const designation = typeof head?.designation === 'string' ? head.designation : null
+    const joined = this.bufrFragments.add(fragmentKey(headType, author, time), designation, bytes, Date.now())
+    if (joined === null) {
+      // まだ揃っていない断片。**本文は電文ログへ入れない** —— 1 断片が最大 512KB あり、
+      // ログは直近ぶんを保持するので、生の本文を積むと数 MB が居座る。
+      this.onRawMessage?.(this.makeLogEntry(
+        headType, head, `（BUFR の断片 ${bytes.length} バイト・結合待ち）`, isTest, 'filtered',
+      ))
+      return
+    }
+    const id = typeof msg.id === 'string' ? msg.id : ''
+    const payload = buildBinaryPayload(headType, joined, id, time)
+    if (payload?.kind !== 'estimatedIntensity') {
+      // 読めなかった理由は復号側が記録している（→ `bufrEstimatedIntensity.ts`）。
+      this.onRawMessage?.(this.makeLogEntry(
+        headType, head, `（BUFR ${joined.length} バイト）`, isTest, 'error', undefined, 'bufr decode failed',
+      ))
+      return
+    }
+    if (this.debug) dlog('推計震度分布図を受信', { bytes: joined.length, cells: payload.data.count })
+    this.onRawMessage?.(this.makeLogEntry(
+      headType, head, `（BUFR ${joined.length} バイト・${payload.data.count} セル）`,
+      isTest, 'parsed', 'estimatedIntensity',
+    ))
+    this.onEvent?.({ kind: 'estimatedIntensity', data: payload.data })
+  }
+
   private makeLogEntry(
     headType: string,
     rawHead: unknown,
@@ -413,6 +507,11 @@ export class DmdataWebSocket {
     }
     if (msg.type === 'ping') {
       this.ws?.send(JSON.stringify({ type: 'pong', pingId: msg.pingId }))
+      // **結合待ちの掃除をここに乗せる。** `add()` の中だけで掃除すると、IXAC41 は 13 か月で
+      // 28 通しか来ないので「次の分割電文が届くまで時限が働かない」——数週間後に、事象から
+      // 遠く離れた時刻の警告が出ることになる。ping は 15〜30 秒ごとに来るので、
+      // 新しいタイマーを増やさずに済む。
+      this.bufrFragments.sweep(Date.now())
       if (this.debug) dlog('ping → pong')
       return
     }
@@ -445,6 +544,27 @@ export class DmdataWebSocket {
       return
     }
     if (!headType) return
+
+    // **本文を使う種別だけ復号する。** ここで絞らずに復号すると、扱わない電文のためだけに
+    // base64 デコード → gunzip → 文字列化まで走る。購読している分類 `telegram.earthquake` には
+    // IXAC41（推計震度分布図作図用データ）が含まれており、これは 1 通が最大 644KB の
+    // バイナリ（BUFR）。**震度5弱以上の地震という、いちばん忙しい瞬間に**、捨てるためだけの
+    // 復号が走っていた（そのうえ本文が XML でないので `format` の警告にも落ちていた）。
+    //
+    // **落としてよいのは、下の分岐が一切触れない種別だけ。** パーサーへ渡す `HANDLED_TYPES` の
+    // ほかに、本文を電文ログへ残したり警告を上げたりする種別が 3 つある（`DISPATCHED_WITHOUT_PARSER`）。
+    // ここを `HANDLED_TYPES` だけで絞ると、**購読していない VXSE43 が届いたことを知らせる警告まで
+    // 黙る** —— 配信分類の変わり目に気づく唯一の経路なので、節約のために消してはならない。
+    if (!needsBodyDecode(headType)) {
+      if (this.debug) dlog('対象外の電文種別（本文は復号しない）', { headType, format: msg.format })
+      return
+    }
+
+    // 二進電文（IXAC41）はテキストへ落とさず、分割の結合を経てから読む。
+    if (isBinaryTelegramType(headType)) {
+      await this.handleBinaryTelegram(headType, head, msg, isTest)
+      return
+    }
 
     // body は base64 + gzip の XML 本文（formatMode:'raw'）。復号してテキストにする。
     const xml = await decodeTelegramText(msg)
@@ -495,6 +615,24 @@ export class DmdataWebSocket {
       } else {
         this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
       }
+    } else if (NOTICE_TYPES.has(headType)) {
+      const notice = parseQuakeNoticeFromXml(xml)
+      if (notice) {
+        if (this.debug) dlog('地震・津波に関するお知らせ受信', { headType, headline: notice.headline })
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'quakeNotice'))
+        this.onEvent?.({ kind: 'quakeNotice', data: notice })
+      } else {
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
+      }
+    } else if (QUAKE_COUNT_TYPES.has(headType)) {
+      const count = parseEarthquakeCountFromXml(xml)
+      if (count) {
+        if (this.debug) dlog('地震回数に関する情報受信', { headType, items: count.items.length })
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'earthquakeCount'))
+        this.onEvent?.({ kind: 'earthquakeCount', data: count })
+      } else {
+        this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
+      }
     } else if (EEW_TYPES.has(headType)) {
       const eew = parseEEWFromXml(headType, xml)
       if (!eew) {
@@ -516,7 +654,7 @@ export class DmdataWebSocket {
         this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
       }
     } else if (headType === 'VTSE41' || headType === 'VTSE51' || headType === 'VTSE52') {
-      const tsunami = parseTsunamiFromXml(xml)
+      const tsunami = parseTsunamiFromXml(headType, xml)
       if (this.debug) dlog('津波情報', { headType, parsed: !!tsunami })
       if (tsunami) {
         this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'parsed', 'tsunami'))
@@ -544,7 +682,9 @@ export class DmdataWebSocket {
       // 異常ではないので warn を上げず、電文ログにだけ残す。
       this.onRawMessage?.(this.makeLogEntry(headType, head, xml, isTest, 'filtered'))
     } else if (this.debug) {
-      dlog('対象外の電文種別', { headType })
+      // 対象外の種別は復号の手前で落ちるので、ここへ来るのは
+      // 「`HANDLED_TYPES` に入れたのに、この分岐を足し忘れた」ときだけ。
+      dlog('分岐の無い電文種別（HANDLED_TYPES への追加漏れ）', { headType })
     }
   }
 
@@ -562,6 +702,8 @@ export class DmdataWebSocket {
 
   disconnect() {
     this.stopped = true
+    // 結合待ちの断片を捨てる。切断を挟むと連なりが切れるので、抱えていても揃わない。
+    this.bufrFragments.clear()
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
@@ -606,7 +748,7 @@ async function fetchOneTelegram(
     return parseEarthquakeFromXml(headType, xml)
   }
   if (headType === 'VTSE41' || headType === 'VTSE51' || headType === 'VTSE52') {
-    return parseTsunamiFromXml(xml)
+    return parseTsunamiFromXml(headType, xml)
   }
   if (headType === 'VXSE62') {
     return parseLpgmFromXml(xml)

@@ -68,6 +68,24 @@ export function resolveQuakeHeadType(typeLabel: string): string {
 }
 
 /**
+ * 津波情報の種別ラベルから電文種別を決める。パーサーは沖合（VTSE52）と沿岸（VTSE51）で
+ * 観測点の扱いを変えるため、まとめて渡すわけにはいかない。
+ *
+ * **判定順は具体的なものを先に置く**（地震情報側と同じ理由）。「津波情報」を先に見るのは、
+ * VTSE51 が解除等で「警報」の語を含むラベルを名乗りうるため —— 逆順にすると、そういう報が
+ * VTSE41 として記録される。
+ *
+ * 沖合と沿岸の別さえ合っていれば現在のパーサーは同じに扱うが、`headType` に依存する分岐が
+ * 増えたときに黙って固着しないよう、いまのうちに正しい順にしておく。
+ */
+export function resolveTsunamiHeadType(typeLabel: string): string {
+  if (typeLabel.includes('沖合')) return 'VTSE52'
+  if (typeLabel.includes('津波情報')) return 'VTSE51'
+  if (typeLabel.includes('警報') || typeLabel.includes('注意報') || typeLabel.includes('予報')) return 'VTSE41'
+  throw new Error(`津波情報の種別ラベルを解釈できません: "${typeLabel}"`)
+}
+
+/**
  * 震央地名（完全一致）または観測地域名（前方一致）でこの地震活動に関連するかを判定する。
  * 震度速報（VXSE51）は震源が未確定の段階で発表されるため震央地名を持たず
  * （parseEarthquakeFromXmlの仕様どおり、hypocenter.nameは常に空文字になる）、
@@ -124,7 +142,7 @@ export interface QuakeTsunamiOptions {
   areaPrefixes: string[]
   /** jsdomポリフィル設定後に動的importした dmdataParser.ts の関数をそのまま渡す。 */
   parseEarthquakeFromXml: (headType: string, xml: string) => JMAQuake | null
-  parseTsunamiFromXml: (xml: string) => JMATsunami | null
+  parseTsunamiFromXml: (headType: string, xml: string) => JMATsunami | null
 }
 
 export async function buildQuakeAndTsunamiSection(opts: QuakeTsunamiOptions): Promise<HistoricalArchiveEntry[]> {
@@ -164,7 +182,7 @@ export async function buildQuakeAndTsunamiSection(opts: QuakeTsunamiOptions): Pr
       await sleep(120) // 小規模なアカデミックサーバーへの配慮
 
       if (item.typeLabel.includes(TSUNAMI_CANDIDATE_KEYWORD)) {
-        const tsunami = parseTsunamiFromXml(xml)
+        const tsunami = parseTsunamiFromXml(resolveTsunamiHeadType(item.typeLabel), xml)
         if (!tsunami) {
           skippedParseFailed++
           continue

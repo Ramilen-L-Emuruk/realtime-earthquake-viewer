@@ -19,6 +19,7 @@ import { EarthquakeTab } from './components/EarthquakeTab'
 import { RealtimeTab } from './components/RealtimeTab'
 import { TsunamiTab } from './components/TsunamiTab'
 import { SettingsTab } from './components/SettingsTab'
+import { prefetchTestData } from './utils/testDataLoader'
 import { TelegramTab } from './components/TelegramTab'
 import { CatalogTab } from './components/CatalogTab'
 import { useHypocenterCatalog } from './hooks/useHypocenterCatalog'
@@ -52,9 +53,10 @@ import { useQuakeHeatmap } from './hooks/useQuakeHeatmap'
 import { useDebouncedValue } from './hooks/useDebouncedValue'
 import { getIntensityLabelWithOrAbove } from './utils/intensity'
 import { isMaxScaleUnreceived } from './utils/quakePoints'
-import { formatMagnitude, formatDateTimeLocal } from './utils/formatters'
+import { formatMagnitudeWithCondition, formatDateTimeLocal } from './utils/formatters'
 import { computeEEWLevel, eewMaxLpgmClass } from './utils/eew'
 import { quakeEventKey } from './utils/quakeMerge'
+import { estimatedIntensityFor, matchEstimatedIntensityArrival } from './utils/estimatedIntensity'
 import { tsunamiOverallGrade } from './utils/tsunami'
 import { playCountdownBeep, unlockAudio, setSoundVolume } from './utils/alertSound'
 import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
@@ -136,6 +138,13 @@ export function App() {
   const [quakeSelectionTick, setQuakeSelectionTick] = useState(0)
   const [focusedObsName, setFocusedObsName] = useState<{ name: string; ts: number } | null>(null)
   const [activeLpgmEventId, setActiveLpgmEventId] = useState<string | null>(null)
+  /**
+   * 震度分布モードを開いている地震（`eventKey`）。null なら閉じている。
+   *
+   * **地震ごとに持つ。** 単なる真偽値にすると、別のカードを選んだときにモードだけが居残り、
+   * 選んだ覚えのない地震の分布が出る。
+   */
+  const [distributionQuakeKey, setDistributionQuakeKey] = useState<string | null>(null)
   const [activeLpgmSource, setActiveLpgmSource] = useState<'earthquake' | 'eew' | null>(null)
   // 地震カード切替時は LPGM 表示をリセットする。子タブ（React.memo 化済み）へ props として
   // 渡すため useCallback で参照を安定化する（毎レンダー再生成すると memo が破られる）。
@@ -167,6 +176,9 @@ export function App() {
       setActiveLpgmSource(next ? 'eew' : null)
       return next
     })
+  }, [])
+  const toggleDistribution = useCallback((eventKey: string) => {
+    setDistributionQuakeKey(prev => (prev === eventKey ? null : eventKey))
   }, [])
   const deactivateLpgm = useCallback(() => {
     setActiveLpgmEventId(null)
@@ -303,7 +315,11 @@ export function App() {
   }, [setActiveTab])
 
   /**
-   * 特別情報（南海トラフ臨時情報・後発地震注意情報・関連解説情報）の受信でパネルを開く。
+   * 特別情報（南海トラフ臨時情報・後発地震注意情報・関連解説情報・地震回数に関する情報）の
+   * 受信でパネルを開く。
+   *
+   * **地震・津波に関するお知らせ（VZSE40）だけは呼ばない**（運用連絡なので、画面を組み替えて
+   * まで割り込ませない。→ docs/spec/architecture-spec.md §4）。
    *
    * これらは地図に重ねた帯（`SpecialInfoBanner`）で伝える情報で、パネル側に居場所がない。
    * パネルを畳んで地図だけを見ている状態でも気づけるよう、いったん通常の表示に戻す。
@@ -384,6 +400,30 @@ export function App() {
     const source = resolveNonRealtimeTabSource(settings.voicevoxEnabled)
     requestAutoTab(tab, tab === 'tsunami' ? TAB_PRIORITY.tsunami : TAB_PRIORITY.quake, source, false)
   }, [requestAutoTab, settings.voicevoxEnabled])
+
+  /**
+   * 気象庁の推計震度分布図が届いたときに、その地震の分布モードを開く。
+   *
+   * **タブ移動は既存の仕組みへ要求として出す**（`setActiveTabNonRealtime`）。直接
+   * `setActiveTab` を叩くと、EEW・揺れ検知・利用者の操作より優先されてしまい、
+   * 地震から数分後に画面を横取りすることになる（→ audio-tts-spec.md §6 の優先順位）。
+   *
+   * 引き当ては受信側と同じ述語（`matchEstimatedIntensity`）。**該当するカードが無ければ何もしない**
+   * ——別の地震の分布モードを勝手に開くよりは、開かないほうがましでしてよ。
+   */
+  const openEstimatedIntensity = useCallback((arrivalTime: string, lat: number, lon: number) => {
+    const target = earthquakesRef.current.find(
+      q => !q.cancelledAt && matchEstimatedIntensityArrival(q, arrivalTime, lat, lon),
+    )
+    if (!target) return
+    // **カードの選択も合わせる。** 地図が出すのは選択中の地震（`mapQuake`）で、分布モードも
+    // 公式の面もそこから引く。鍵を書き替えるだけだと、利用者が別の地震カードを見ている間に
+    // 届いたとき**カードのボタンは押された状態なのに地図には何も出ない**——エラーもログも
+    // 出ないので、手掛かりが何も残らない。長周期の自動表示も同じ 2 つを対にしている。
+    selectQuake(quakeEventKey(target))
+    setDistributionQuakeKey(quakeEventKey(target))
+    setActiveTabNonRealtime('earthquake')
+  }, [selectQuake, setActiveTabNonRealtime])
 
   // EEW の受信による realtime タブ移動。
   //
@@ -501,7 +541,7 @@ export function App() {
     setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate, setActiveTabRealtimeUrgent,
     setActiveTabRealtimeForKyoshin: () => requestTabForKyoshin('realtime'),
     followSpeechTab, preSpeechTab, speechFollow, expandPanelForSpecialInfo,
-    revertToDefaultTab, selectQuake, setActiveLpgmEventId,
+    revertToDefaultTab, selectQuake, setActiveLpgmEventId, openEstimatedIntensity,
   })
   resetTsunamiScrollRef.current = resetTsunamiScrollToTop
 
@@ -514,13 +554,15 @@ export function App() {
   const debouncedApiKey = useDebouncedValue(settings.dmdataApiKey, API_KEY_DEBOUNCE_MS)
 
   const {
-    earthquakes, tsunamis, activeEEWs, lpgmByEventId, nankai, nankaiCommentary, kohatsu, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
+    earthquakes, tsunamis, activeEEWs, lpgmByEventId, nankai, nankaiCommentary, kohatsu, quakeNotice, earthquakeCount, estimatedIntensity, connectionStatus, lastUpdate, isLoading, isLoadingMore, hasMore, error,
     telegramLog, clearTelegramLog,
     injectEvent, loadMoreEarthquakes,
-    simulateEarthquake, simulateForeignQuake,
+    simulateEarthquake, simulateForeignQuake, simulateForeignQuakeHuge,
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
+    simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
+    simulateTrainingQuake, simulateTsunamiGradeChange,
     resetState, loadReplayEvents, restoreQuakeHistory,
   } = useEarthquakes(handleLiveEvent, debouncedApiKey, settings.dmdataTestDelivery, replayTimeOffset)
   earthquakesRef.current = earthquakes
@@ -540,6 +582,18 @@ export function App() {
     selectQuake(quakeKey, { explicit: true })
     setActiveTabByUser('earthquake')
   }, [selectQuake, setActiveTabByUser])
+  // テストボタンのデータ（`utils/testData.ts`）を、設定タブを開いた時点で読み始める。
+  //
+  // **押されてから読むと待ちが入る。** その待ちのあいだに初回履歴取得の応答が割り込むと、
+  // いま流したテスト電文が上書きされうる（履歴の取り込みは表示中のイベントを置き換える）。
+  //
+  // **設定タブ側の mount では駄目。** このアプリはタブを全部マウントしたまま表示だけ
+  // 切り替えるので、`SettingsTab` の `useEffect` は起動時に走ってしまい、分割した意味が
+  // 無くなる（実際にそうなっていて、初回表示で 864 KB の chunk を取りに行っていた）。
+  useEffect(() => {
+    if (activeTab === 'settings') prefetchTestData()
+  }, [activeTab])
+
   // SettingsTab の onTest オブジェクトはメモ化して同一参照を保つ（毎レンダー再生成すると
   // React.memo 化された SettingsTab が無駄に再レンダーされる）。
   // WARNING: 新規テストハンドラーを追加するときは、対応する simulate* 関数を必ず
@@ -549,6 +603,7 @@ export function App() {
   const testHandlers = useMemo(() => ({
     earthquake:        simulateEarthquake,
     foreignQuake:      simulateForeignQuake,
+    foreignQuakeHuge:  simulateForeignQuakeHuge,
     eew:               simulateEEW,
     eewWarning:        simulateEEWWarning,
     eewForecast:       simulateEEWForecast,
@@ -567,6 +622,12 @@ export function App() {
     nankaiCommentaryAdHoc:   () => simulateNankaiCommentary('臨時解説'),
     nankaiCommentaryRoutine: () => simulateNankaiCommentary('定例解説'),
     kohatsu:           simulateKohatsu,
+    quakeNotice:       simulateQuakeNotice,
+    earthquakeCount:   simulateEarthquakeCount,
+    earthquakeCountRetraction: simulateEarthquakeCountRetraction,
+    trainingQuake:     simulateTrainingQuake,
+    tsunamiGradeChange: simulateTsunamiGradeChange,
+    estimatedIntensity: simulateEstimatedIntensity,
     notification:      () => {
       if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
         alert('先に「通知を許可する」ボタンをクリックしてください。')
@@ -579,10 +640,12 @@ export function App() {
       })
     },
   }), [
-    simulateEarthquake, simulateForeignQuake,
+    simulateEarthquake, simulateForeignQuake, simulateForeignQuakeHuge,
     simulateEEW, simulateEEWWarning, simulateEEWForecast, simulateEEWAssumed, simulateEEWDeep, simulateEEWRetraction,
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
+    simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
+    simulateTrainingQuake, simulateTsunamiGradeChange,
   ])
   // IconNav の onTabChange。手動選択は必ず即時反映し、以後 TAB_HOLD_MS の間は自動切替に
   // 奪わせない（EEW の新規発報・レベルアップ・誤報取消だけはこれより強い）。
@@ -777,7 +840,7 @@ export function App() {
       isMaxScaleUnreceived(latestQuake.earthquake.maxScale, latestQuake.points),
     )
     new Notification('地震情報', {
-      body: `${latestQuake.earthquake.hypocenter.name} 最大震度${scale} ${formatMagnitude(latestQuake.earthquake.hypocenter.magnitude)}`,
+      body: `${latestQuake.earthquake.hypocenter.name} 最大震度${scale} ${formatMagnitudeWithCondition(latestQuake.earthquake.hypocenter.magnitude, latestQuake.earthquake.hypocenter.magnitudeCondition)}`,
       icon: `${import.meta.env.BASE_URL}icons/icon.svg`,
       tag: latestQuake.id,
     })
@@ -1130,10 +1193,14 @@ export function App() {
         ))
       }
       return isDmdss
-        ? fetchDmdataReplayEvents(settings.dmdataApiKey, from, to)
+        // 「試験報を受信（検証用）」はライブだけでなく再生にも効かせる。**設定の文面は
+        // 経路を限っていない**のに、ここへ渡さないと「ライブでは届くが再生では届かない」
+        // という、名前から読み取れない食い違いになる。訓練報は年に数回しか流れないので、
+        // 再生で拾えないと実電文で確かめる手段が事実上テストボタンだけになる。
+        ? fetchDmdataReplayEvents(settings.dmdataApiKey, from, to, settings.dmdataTestDelivery)
         : fetchP2PReplayEvents(from, to)
     },
-    [settings.dmdataApiKey, historicalArchives],
+    [settings.dmdataApiKey, settings.dmdataTestDelivery, historicalArchives],
   )
   const clearReplayCacheForVariant = useCallback(
     () => { if (isDmdss) clearReplayCache(); else clearP2PReplayCache() },
@@ -1153,10 +1220,12 @@ export function App() {
       const covering = findCoveringArchiveSync(historicalArchives, new Date(before.getTime() - REPLAY_PRE_WINDOW_MS), before)
       if (covering) return fetchLocalArchiveQuakeHistory(covering, before, targetEvents)
       return isDmdss
-        ? fetchDmdataQuakeHistory(settings.dmdataApiKey, before, targetEvents, maxDays)
+        // 履歴（再生開始より前の地震カード）も本編と同じ扱いにする。片方だけ通すと
+        // 「再生には訓練報が出るのにカードの一覧には無い」形でずれる。
+        ? fetchDmdataQuakeHistory(settings.dmdataApiKey, before, targetEvents, maxDays, settings.dmdataTestDelivery)
         : fetchP2PQuakeHistory(before, targetEvents)
     },
-    [settings.dmdataApiKey, historicalArchives],
+    [settings.dmdataApiKey, settings.dmdataTestDelivery, historicalArchives],
   )
   const replay = useReplayController({
     fetchEvents: fetchReplayEvents,
@@ -1363,6 +1432,11 @@ export function App() {
   })
 
   const mapQuake = mapTab === 'earthquake' ? selectedQuake : latest
+  // 地図に出す推計震度分布図。**地図が出している地震のものだけ**を渡す（引き当ては
+  // 発現時刻。→ `estimatedIntensityFor`）。別の地震のものを渡すと、まるで違う場所の
+  // 分布が「気象庁の推計」として重なる。
+  const mapEstimatedIntensity = estimatedIntensityFor(mapQuake, estimatedIntensity)
+  const mapDistributionMode = !!mapQuake && distributionQuakeKey === quakeEventKey(mapQuake)
   // 共有カード（表示中の地図を 1 枚の画像にする）。撮影は地図そのものを操作するため実体が要る
   // ——地図の生成時に受け取って持つ。地図へ重ねる UI は App が配置する決まりなので、
   // それを起こすボタンもここに置く。
@@ -1416,6 +1490,8 @@ export function App() {
             tsunamis={tsunamis}
             observations={latestTsunamiObservations}
             lpgm={activeLpgm ?? undefined}
+            distributionMode={mapDistributionMode}
+            estimatedIntensity={mapEstimatedIntensity}
             iconScale={settings.mapIconScale}
             recording={settings.recordingMode}
             hypocenterDepthScale={settings.hypocenterDepthScale}
@@ -1481,7 +1557,7 @@ export function App() {
               onRestore={actionChecklist.restore}
             />
           )}
-          <SpecialInfoBanner nankai={nankai} nankaiCommentary={nankaiCommentary} kohatsu={kohatsu} />
+          <SpecialInfoBanner nankai={nankai} nankaiCommentary={nankaiCommentary} kohatsu={kohatsu} quakeNotice={quakeNotice} earthquakeCount={earthquakeCount} />
         </div>
 
         {/* 地図とパネルの境界（縦積み時のみ）。ドラッグで高さ比率を変え、タップで折りたたむ。 */}
@@ -1516,6 +1592,9 @@ export function App() {
               lpgmByEventId={lpgmByEventId}
               activeLpgmEventId={activeLpgmEventId}
               onToggleLpgm={toggleLpgmFromEarthquake}
+              estimatedIntensity={estimatedIntensity}
+              distributionQuakeKey={distributionQuakeKey}
+              onToggleDistribution={toggleDistribution}
             />
           </div>
           <div className={`${TAB_SCROLLER_CLASS}${activeTab !== 'realtime' ? ' invisible pointer-events-none' : ''}`}>
