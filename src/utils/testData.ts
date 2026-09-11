@@ -1,4 +1,4 @@
-import type { JMAQuake, JMATsunami, EEWAlert, JMANankai, JMANankaiCommentary, JMAKohatsu, EarthquakePoint, JMALpgm, JMAQuakeCity, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, JMAEstimatedIntensityGrade, EEWRegion, TsunamiArea, TsunamiGrade, TelegramOperationStatus } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, EEWAlert, EEWForecastChange, JMANankai, JMANankaiCommentary, JMAKohatsu, EarthquakePoint, JMALpgm, JMAQuakeCity, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, JMAEstimatedIntensityGrade, EEWRegion, TsunamiArea, TsunamiGrade, TelegramOperationStatus } from '../types/earthquake'
 import { serverNow, serverDate } from './clock'
 import notoHonshinPoints from '../data/noto-honshin-2024-points.json'
 import notoHonshinQuake from '../data/noto-honshin-2024-quake.json'
@@ -335,6 +335,10 @@ export function createTestEEWWarning(withDmdssFields: boolean, eventId?: string,
   const origin = baseTime ?? serverDate()
   const report = serverDate().toISOString()
   const eid = eventId ?? `test-warn-${Date.now()}`
+  const forecastChange: EEWForecastChange | undefined =
+    serial <= 1 ? undefined
+    : serial === 2 ? { maxInt: 1, maxLgInt: 0, reason: 2 }
+    : { maxInt: 0, maxLgInt: 0, reason: 0 }
   return {
     kind: 'eew',
     // 実運用の id は eventId と報番号で構成される（dmdataParser: `dmdata-eew-${eventId}-${serial}`）
@@ -367,11 +371,14 @@ export function createTestEEWWarning(withDmdssFields: boolean, eventId?: string,
       // に合わせる。**画面に語が出る組み合わせを選ぶ** —— 0（不明）だけを入れると欄が空のままで、
       // 表示できているかを実機で確かめられない
       accuracy: { epicenterRank: 3, epicenterRank2: 3, depthRank: 3, magnitudeRank: 4, magnitudePoints: 3 },
-      // 続報で最大予測値が上がる形（`Intensity/Forecast/Appendix`）。初報は変化なし、
-      // 2 報目以降は「震央の位置が変わったため大きくなった」を出す
-      forecastChange: serial <= 1
-        ? { maxInt: 0, maxLgInt: 0, reason: 0 }
-        : { maxInt: 1, maxLgInt: 0, reason: 2 },
+      // 最大予測値の変化（`Intensity/Forecast/Appendix`）。**実電文の形に合わせる** ――
+      // 第 1 報は要素ごと無く、変化を言うのは 1 通だけで、次の報は値を 0 に戻してくる
+      // （2026-06-01〜09-06 の実電文 334 イベントで確認。→ eew-spec.md §3「最大予測値の変化」）。
+      //
+      // **毎報「大きくなった」を立ててはいけない。** 帯が出続けるため、表示の寿命
+      // （→ `RealtimeTab` の `useHeldForecastChange`）を実機で確かめられなくなる。
+      // ボタンを 3 回押せば #3 で値が 0 に戻り、そこから 10 秒残って消えるところまで見られる。
+      ...(forecastChange && { forecastChange }),
     } : {}),
     issue: { eventId: eid, serial: String(serial), time: report },
     areas: ([
