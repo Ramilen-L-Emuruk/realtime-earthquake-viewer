@@ -1042,9 +1042,30 @@ MapLibre 側が「直すところは無い」を返す条件と同じもので�
 
 ## 10. maplibregl.Marker の注意点
 
+**要素へ `position` を書かない。** MapLibre は `.maplibregl-marker` クラスの CSS で
+`position: absolute` を与えている。インライン宣言はクラスより詳細度で勝つので、**書き方によらず
+（`cssText` でも `style.position` への代入でも）そちらが通ってしまう**。マーカーは 1 つの親へ
+並べて追加されるため、通常フローへ戻った要素は **DOM の並び順に、要素の高さぶんずつ下（画面の南）へ
+積み上がる**。ずれはピクセルで固定なので、**引いた画ほど地図の上では大きく見える** ——
+寄れば正しく見え、引くと南へ流れていくという形で出る。
+
+> 2026-09-11: 津波の到達確認マーカーと欠測マーカーが `position: relative` を指定しており、
+> 実測で 2 番目の点が 9px・14 番目が 117px 南へずれていた（`metersPerPixel(4)` で換算すると
+> zoom 4・北緯 38 度で 117px ≒ 450km。**256px タイル規約で計算すると倍近くに出る**ので、
+> 換算には必ず `viewSpan.ts` を使うこと）。観測棒は `position` を書いていなかったため無事で、
+> **丸い印だけがずれる**という非対称が起きていた。内側の要素が使う `inset: 0` は、根の要素が
+> `absolute` であれば基準になる（`relative` を足す必要は無い）。
+> 回帰は `TsunamiArrivalMarkersGL` / `TsunamiMissingMarkersGL` の要素を作って
+> `style.position` が空であることで固定してある（`tsunamiMarkerElement.test.ts`）。
+
 `maplibregl.Marker` の不透明度は **`element.style.opacity` ではなく Marker のオプション**
 （`opacity` / `opacityWhenCovered`）で渡す。Marker は「地形に隠れたとき薄くする」機能があり、
 これが element の style.opacity を自前で上書きするため、cssText 経由の設定は無視される。
+
+> **上の `position` とは逆向きの現象なので、混ぜないこと。** `opacity` は Marker が後から
+> `element.style.opacity` を書き込むため**インラインで書いても消される**（後勝ち）。`position` は
+> 外部のクラスに対してインライン宣言が**常に勝つ**（詳細度）。片方の経験からもう片方を推し量ると
+> 逆の結論になる。
 
 `opacityWhenCovered` を省くと地形有効時に既定 0.2 が効くため、隠蔽時も同じ濃さにしたいなら同値を渡す。
 
@@ -2388,3 +2409,6 @@ canvas source を raster として貼るところ、Mercator 空間で等間隔�
   描かれていなかった。**繰り返すようにしたことで「前の巡が終わらないと次が始まらない」形が恒久停止の
   種になる** —— `fetch` に時間切れが無いので、吊られた 1 本があるとその巡は永久に終わらない。完了を
   待たず打ち切り、進行位置だけ次の巡へ引き継ぐ形にした
+- 2026-09-11: `maplibregl.Marker` の要素へ `position` を書かないことを明記した（§10）。
+  津波の到達確認・欠測マーカーが `position: relative` を指定していて、DOM の並び順に
+  下へ積み上がっていた。ずれはピクセルで固定なので、引いた画ほど地図の上では大きく見える
