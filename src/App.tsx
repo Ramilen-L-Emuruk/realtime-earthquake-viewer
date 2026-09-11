@@ -60,6 +60,8 @@ import { estimatedIntensityFor, matchEstimatedIntensityArrival } from './utils/e
 import { tsunamiOverallGrade } from './utils/tsunami'
 import { playCountdownBeep, unlockAudio, setSoundVolume } from './utils/alertSound'
 import { loadTtsPhraseBreakDict } from './utils/ttsPhraseBreakDict'
+import { loadTtsStationReadings } from './utils/ttsStationReadings'
+import { loadTtsEpicenterAccents } from './utils/ttsEpicenterAccents'
 import { warmFixedPhrases, isValidVoicevoxUrl, VOICEVOX_URL_DEBOUNCE_MS } from './utils/voicevox'
 import { EEW_LEAD_PHRASES } from './utils/ttsText'
 import type { EEWAlert, JMAQuake, JMATsunami } from './types/earthquake'
@@ -696,14 +698,24 @@ export function App() {
     setSoundVolume(settings.soundVolume)
   }, [settings.soundVolume])
 
-  // TTS 読み辞書をアプリ起動時に事前ロードする（VOICEVOX 有効・無効に関わらず）。
-  // ここで揃えておけば読み上げ時に待たされない。失敗しても読み上げは句区切りなしで成立するが、
-  // 「なぜ句区切りが効かないのか」を後から追えるようログは残す。
+  // TTS の読み辞書をアプリ起動時に事前ロードする（VOICEVOX 有効・無効に関わらず）。
+  // 手で書いた句区切り辞書と、生成物 2 つ（震度観測点名の読み・震央地名の句割り）。
+  // ここで揃えておけば読み上げ時に待たされない。失敗しても読み上げは成立する（句区切りが
+  // 効かない／観測点名が誤読される／長い震央地名の抑揚が崩れる）が、
+  // 「なぜそうなっているのか」を後から追えるようログは残す。
+  //
+  // **片方の失敗で他方を落とさない。** 別のファイルで、欠けたときに失われるものも違う。
   useEffect(() => {
+    // 起動時に 1 回だけなので、他の生成データローダと同じ warn で残す
+    // （読み上げ時の再試行は繰り返されうるため voicevox.ts 側は debug）。
     loadTtsPhraseBreakDict().catch((err) => {
-      // 起動時に 1 回だけなので、他の生成データローダと同じ warn で残す
-      // （読み上げ時の再試行は繰り返されうるため voicevox.ts 側は debug）。
       log.warn('[data] tts-phrase-break-dict 事前ロード失敗（読み上げの句区切りが効かない）', err)
+    })
+    loadTtsStationReadings().catch((err) => {
+      log.warn('[data] tts-station-readings 事前ロード失敗（観測点名が誤読される）', err)
+    })
+    loadTtsEpicenterAccents().catch((err) => {
+      log.warn('[data] tts-epicenter-accents 事前ロード失敗（長い震央地名の抑揚が崩れる）', err)
     })
   }, [])
 
