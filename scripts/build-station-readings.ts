@@ -23,7 +23,7 @@
 //   https://gist.github.com/iku55/79005d1896631ad6117bbe327b8162c1
 
 import { mkdir, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { hasUnreadableFurigana, isMisreading, stripReadingTail, toKanaEntry } from './stationReading'
 
@@ -278,7 +278,17 @@ async function main(): Promise<void> {
   console.log(`Wrote ${OUT_FILE} (収録 ${misread.size} / 全 ${names.length} 点・${rate}%)`)
 }
 
-main().catch((err) => {
-  console.error(err instanceof Error ? err.message : err)
-  process.exit(1)
-})
+/**
+ * **直接実行されたときだけ走らせる。**
+ *
+ * `scripts/stationReadings.test.ts` が `SOURCE_URL` を読むために import しており、
+ * 読み込みだけで `main()` が動くと `npm test` が音声合成エンジンへ繋ぎに行く。
+ * 理由と落ち方の詳細は `build-epicenter-accents.ts` の同じ門にある
+ * —— **生成スクリプトをテストから import するなら必ずこの形にすること。**
+ */
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error(err instanceof Error ? err.message : err)
+    process.exit(1)
+  })
+}

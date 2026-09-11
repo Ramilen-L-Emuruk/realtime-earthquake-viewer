@@ -21,7 +21,7 @@
 //   https://github.com/0Quake/JMA_Region
 
 import { mkdir, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isMisreading, stripReadingTail } from './stationReading'
 import { splitEpicenter, toAccentEntry } from './epicenterAccent'
@@ -292,7 +292,22 @@ async function main(): Promise<void> {
   console.log(`Wrote ${OUT_FILE} (収録 ${entries.size} / 全 ${names.length} 件)`)
 }
 
-main().catch((err) => {
-  console.error(err instanceof Error ? err.message : err)
-  process.exit(1)
-})
+/**
+ * **直接実行されたときだけ走らせる。**
+ *
+ * このファイルは `scripts/epicenterAccents.test.ts` が `SOURCE_URL` を読むために import して
+ * おり、**読み込みだけで `main()` が動くと `npm test` が音声合成エンジンへ繋ぎに行く**。
+ * エンジンがある環境（生成した本人の端末）では生成物を黙って書き換え、無い環境（CI）では
+ * `process.exit(1)` まで届いて、**テストが全件通っていてもテスト実行そのものが失敗する**。
+ *
+ * **落ち方が一定しないので気づきにくい。** 拒否が実行の終わりに間に合うかどうかで、
+ * `process.exit unexpectedly called with "1"` になったり、ワーカーのハング
+ * （`Timeout terminating forks worker`）で済んで exit 0 になったりする。2026-09-11 に
+ * 連続する 2 回の CI で両方を観測した（前者だけがデプロイを止めた）。
+ */
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error(err instanceof Error ? err.message : err)
+    process.exit(1)
+  })
+}
