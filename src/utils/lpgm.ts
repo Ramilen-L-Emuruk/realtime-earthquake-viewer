@@ -1,5 +1,5 @@
-// 長周期地震動階級のラベル・配色ユーティリティ（JMA公式色）
-import type { LpgmClass } from '../types/earthquake'
+// 長周期地震動階級のラベル・配色ユーティリティ（JMA公式色）と、カードの行の組み立て
+import type { IntensityScale, LpgmClass, LpgmPoint, LpgmPref, LpgmRegion } from '../types/earthquake'
 const LPGM_COLORS: Record<number, string> = {
   1: '#c8c800',
   2: '#ff9600',
@@ -98,4 +98,171 @@ export function lpgmCategoryNote(category: number | undefined): string {
 export function lpgmPeriodLabel(band: number): string {
   if (!Number.isInteger(band) || band < 1 || band > 7) return '周期不明'
   return `${band + 1}秒`
+}
+
+/** 長周期地震動の観測点の行（`buildLpgmRows` の 3 段目）。 */
+export interface LpgmStationRow {
+  name: string
+  lgInt: number
+  int?: IntensityScale
+  nonJma?: boolean
+}
+
+/** 長周期地震動の一次細分区域の行（`buildLpgmRows` の 2 段目）。 */
+export interface LpgmAreaRow {
+  name: string
+  maxLgInt: number
+  maxInt?: IntensityScale
+  stations: LpgmStationRow[]
+}
+
+/**
+ * 長周期地震動の都道府県の行（`buildLpgmRows` の 1 段目）。
+ *
+ * 都道府県を引けなかった一次細分区域もこの形で返る（`areas` が空・`stations` にその区域の
+ * 観測点が入る）。行を立てる場所が県しか無いため、区域名のまま最上段へ置いている。
+ */
+export interface LpgmPrefRow {
+  /**
+   * 最上段が都道府県か、都道府県を引けなかった一次細分区域か。
+   *
+   * **名前だけで区別しない。** 区域名と都道府県名が一致すると、画面の側で開閉の鍵と
+   * React の key が衝突する（実データでは「奈良県」が県名と区域名の両方にある）。
+   */
+  kind: 'pref' | 'area'
+  name: string
+  maxLgInt: number
+  maxInt?: IntensityScale
+  areas: LpgmAreaRow[]
+  /**
+   * この行の直下に置く観測点。**`kind` で意味が変わる** —— 県の行（`'pref'`）では
+   * 「区域が分からない観測点」、区域の行（`'area'`）ではその区域自身の観測点。
+   */
+  stations: LpgmStationRow[]
+}
+
+export interface LpgmRowDeps {
+  /** 一次細分区域名 → 都道府県名（座標表からの逆引き）。電文が県を書いていれば使われない */
+  prefOfArea: (name: string) => string | null
+  /** 気象庁の標準順（北から南）の順位。索引が無いときは 0 を返してよい */
+  rank: (name: string) => number
+}
+
+const maxIntensityOf = (values: readonly (IntensityScale | undefined)[]): IntensityScale | undefined => {
+  let max: IntensityScale | undefined
+  for (const v of values) if (v !== undefined && (max === undefined || v > max)) max = v
+  return max
+}
+
+/**
+ * 長周期地震動の観測結果を「都道府県 → 一次細分区域 → 観測点」の 3 段に組む。
+ *
+ * 電文（VXSE62）が持つ入れ子と同じ段数で、震度一覧の 4 段（`buildIntensityRows`）から
+ * 市町村を除いた形にあたる。**座標表へ直接依存させない** —— 名前の解決と並べ替えを注入し、
+ * 電文の値だけを扱う純関数として試せるようにする。
+ *
+ * - **県・区域の値は電文が書いているものを優先する。** 配下から積み上げると、区域や観測点を
+ *   1 つ読み落としたときに静かに低く出る（気象庁は `Pref/MaxLgInt`・`Area/MaxLgInt` を必ず書く）。
+ *   電文に無いときだけ積み上げへ落とす —— **区域自身の値が読めなくても配下は出す**ため
+ * - **区域が分からない観測点は県の直下へ置く。** 区域名は電文の入れ子からしか拾えないので、
+ *   古い形のデータでは空になりうる（→ `LpgmPoint.area`）。県も分からなければ置き場が無い
+ * - 並びは階級の降順、同じ階級どうしは気象庁の標準順（震度一覧と同じ規則）
+ *
+ * **一次細分区域名が全国で一意であることに依存する**（区域を名前だけで束ねる）。市町村名は
+ * 一意でないため震度側は「区域＋市町村名」で名前空間を切っているが、区域名の重複は現行の
+ * 区域データ 192 件で 0 件。読み上げも同じ前提を採っている（audio-tts-spec.md「地域名の粒度」）。
+ */
+export function buildLpgmRows(
+  regions: readonly LpgmRegion[],
+  points: readonly LpgmPoint[],
+  prefs: readonly LpgmPref[],
+  deps: LpgmRowDeps,
+): LpgmPrefRow[] {
+  type AreaEntry = {
+    name: string
+    /** 電文の `Area/MaxLgInt`。読めなかった区域では undefined のまま配下から積み上げる */
+    telegramLgInt?: number
+    telegramInt?: IntensityScale
+    pref: string | null
+    stations: LpgmStationRow[]
+  }
+  const areas = new Map<string, AreaEntry>()
+  const areaOf = (name: string, pref: string | null): AreaEntry => {
+    const cur = areas.get(name)
+    if (cur) {
+      if (!cur.pref && pref) cur.pref = pref
+      return cur
+    }
+    const created: AreaEntry = { name, pref, stations: [] }
+    areas.set(name, created)
+    return created
+  }
+
+  for (const r of regions) {
+    if (!(r.maxLgInt >= 1)) continue
+    // **電文が都道府県名を書いているならそれを使う。** 座標表からの逆引きは電文に無かった
+    // 頃の代理で、表に載っていない区域では引けずにまとめが崩れる。
+    const entry = areaOf(r.name, r.pref || deps.prefOfArea(r.name))
+    // 同じ区域が 2 度現れる電文は無いが、現れたら深刻な側を採る（並び順で結果を変えない）。
+    if (entry.telegramLgInt === undefined || r.maxLgInt > entry.telegramLgInt) entry.telegramLgInt = r.maxLgInt
+    if (r.maxInt !== undefined && (entry.telegramInt === undefined || r.maxInt > entry.telegramInt)) entry.telegramInt = r.maxInt
+  }
+
+  const looseStations = new Map<string, LpgmStationRow[]>()
+  for (const p of points) {
+    if (!(p.lgInt >= 1)) continue
+    const row: LpgmStationRow = {
+      name: p.name,
+      lgInt: p.lgInt,
+      ...(p.int !== undefined && { int: p.int }),
+      ...(p.nonJma && { nonJma: true }),
+    }
+    if (p.area) {
+      areaOf(p.area, p.pref || deps.prefOfArea(p.area)).stations.push(row)
+      continue
+    }
+    if (!p.pref) continue
+    const list = looseStations.get(p.pref)
+    if (list) list.push(row); else looseStations.set(p.pref, [row])
+  }
+
+  const byValueDesc = <T,>(value: (x: T) => number, name: (x: T) => string) =>
+    (a: T, b: T) => value(b) - value(a) || deps.rank(name(a)) - deps.rank(name(b))
+  const sortStations = (rows: LpgmStationRow[]) => rows.sort(byValueDesc(s => s.lgInt, s => s.name))
+
+  const areaRowsByPref = new Map<string, LpgmAreaRow[]>()
+  const orphanAreaRows: LpgmPrefRow[] = []
+  for (const entry of areas.values()) {
+    const stations = sortStations(entry.stations)
+    const maxLgInt = entry.telegramLgInt ?? Math.max(0, ...stations.map(s => s.lgInt))
+    if (maxLgInt < 1) continue
+    const maxInt = entry.telegramInt ?? maxIntensityOf(stations.map(s => s.int))
+    const row: LpgmAreaRow = { name: entry.name, maxLgInt, ...(maxInt !== undefined && { maxInt }), stations }
+    if (!entry.pref) {
+      orphanAreaRows.push({ kind: 'area', ...row, areas: [] })
+      continue
+    }
+    const list = areaRowsByPref.get(entry.pref)
+    if (list) list.push(row); else areaRowsByPref.set(entry.pref, [row])
+  }
+
+  const prefLgInt = new Map(prefs.filter(p => p.maxLgInt >= 1).map(p => [p.name, p.maxLgInt]))
+  const prefInt = new Map(prefs.flatMap(p => (p.maxInt === undefined ? [] : [[p.name, p.maxInt] as const])))
+
+  const rows: LpgmPrefRow[] = [...orphanAreaRows]
+  // **電文が県の階級を書いていれば、配下が 1 つも立たなくても行にする。** 区域の階級が
+  // どれも読めず観測点も無い電文では、県の値だけが残る。落とすと、気象庁が階級を報告して
+  // いる県がカードから消える（震度側の `buildIntensityRows` も、都道府県ロールアップ点の
+  // キーをループの対象へ入れている）。
+  for (const pref of new Set([...areaRowsByPref.keys(), ...looseStations.keys(), ...prefLgInt.keys()])) {
+    const areaList = (areaRowsByPref.get(pref) ?? []).sort(byValueDesc(a => a.maxLgInt, a => a.name))
+    const loose = sortStations(looseStations.get(pref) ?? [])
+    const maxLgInt = prefLgInt.get(pref)
+      ?? Math.max(0, ...areaList.map(a => a.maxLgInt), ...loose.map(s => s.lgInt))
+    if (maxLgInt < 1) continue
+    const maxInt = prefInt.get(pref)
+      ?? maxIntensityOf([...areaList.map(a => a.maxInt), ...loose.map(s => s.int)])
+    rows.push({ kind: 'pref', name: pref, maxLgInt, ...(maxInt !== undefined && { maxInt }), areas: areaList, stations: loose })
+  }
+  return rows.sort(byValueDesc(r => r.maxLgInt, r => r.name))
 }

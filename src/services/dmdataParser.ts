@@ -2286,7 +2286,9 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
           lgStationTally.readable()
           if (lgInt >= 1) {
             points.push({
-              code: stCode, name: stName, pref: prefName, lgInt,
+              // **区域は電文の入れ子からしか拾えない**（→ `LpgmPoint.area`）。
+              // ここで拾わないと、カードの「県 → 区域 → 観測点」で行き先が決まらない。
+              code: stCode, name: stName, pref: prefName, ...(areaName && { area: areaName }), lgInt,
               ...(stNonJma && { nonJma: true }),
               ...(stInt >= 0 && { int: stInt }),
               ...(Number.isFinite(stSva) && stSva >= 0 && { sva: stSva }),
