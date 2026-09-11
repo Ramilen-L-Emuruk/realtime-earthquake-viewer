@@ -922,13 +922,14 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | symbol レイヤーの出入りが即時であること（`fadeDuration: 0`。paint トランジションとは別系統で、地図全体にしか設定できない）と、対象レイヤーの列挙。**symbol レイヤーを新設・削除したら列挙を見直す** | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §8「symbol の配置フェード」 |
 | 地震活動ヒートマップの色ランプ・拡散半径・不透明度の決め方（対数配置・高ズームは地理的距離に追従・寄るほど薄く） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §14 |
 | バッジの文字色（塗り色から白/黒を自動選択・気象庁配色は変更不可）と地図バッジの半径テーブル・アイコン倍率とぼやけの関係 | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §15 |
+| 地図を作れなかったときに画面全体を落とさないこと（`new maplibregl.Map()` は WebGL2 の文脈を作れないと**同期的に投げる**。**このアプリに ErrorBoundary は無い**ので、握らないと地震情報も通知も設定も消える／**例外の型で選り分けない**＝`GPUInitializationError` に絞ると `getContext` 自体が投げる端末を取りこぼし、いちばん救いたい相手で白画面のままになる／**代わりに画面では原因を断定しない**＝オプション値の不整合も同じ場所から投げられ、「WebGL が無い」と言い切れば嘘になる。実際の例外はログへ残す／覆うのは地図領域だけ） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §12 |
 
 ### 地図: カメラ・投影・表示閾値
 
 | 項目 | 単一情報源となる仕様書 |
 |---|---|
 | 表示閾値の単位の使い分け（対象がどれだけ画に収まるかは**視野の実距離**／文字と点の混み具合は**ズーム値**／タイルは**タイル z**）・ズーム値の基準（MapLibre 512px タイル vs Leaflet 256px タイル）・寄り上限に揃える閾値群 | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §4・§6 |
-| カメラ更新の空振り省略（`gl/skipNoopCameraUpdate.ts`）。**MapLibre を上げたら `Camera.applyUpdatedTransform` と `_elevateCameraIfInsideTerrain` の実装差分を目で確かめる**（照合できるのは transform の観測できる状態だけで、それ以外への副作用が足された場合は自己確認をすり抜ける）／条件は呼び出しごとに見る・**確認は起動直後だけでなく一定間隔で続ける**（依存指定が `^6.0.0` でマイナー更新が自動的に入る）／照合に回転行列を入れない（地図を回すまで作られず、確認が永久に始まらない）／効いているかは画面に出ないので `window.__cameraUpdateSkip()` で読む | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §9「カメラ更新の空振りを省く」・§11 |
+| カメラ更新の空振り省略（`gl/skipNoopCameraUpdate.ts`）。**MapLibre を上げたら `Camera.applyUpdatedTransform` と `_elevateCameraIfInsideTerrain` の実装差分を目で確かめる**（照合できるのは transform の観測できる状態だけで、それ以外への副作用が足された場合は自己確認をすり抜ける）／条件は呼び出しごとに見る・**確認は起動直後だけでなく一定間隔で続ける**（依存指定が `^6.9.0` でマイナー更新が自動的に入る）／照合に回転行列を入れない（地図を回すまで作られず、確認が永久に始まらない）／効いているかは画面に出ないので `window.__cameraUpdateSkip()` で読む | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §9「カメラ更新の空振りを省く」・§11 |
 | EEW 予想の区域塗りとカメラ追従対象の一致（`useEewLayerData` の `eewFitPositions` と `JapanMapGL` の塗り分けが、同じ「予想長周期を優先する」判定を使っていること） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6 |
 | 揺れフォーカス（揺れが強まった点・別地点へ一時的に寄る）の発火条件と寄り先（**寄るのは最大震度を記録した観測点でメンバー重心ではない**・音と同じ判定で要求を出す・likely では寄せない・担当は EEW の有無で入れ替わる（発報中は EEW 追従の側が寄せ、連番は共有して排他に消費する）・新規 EEW の発報から 10 秒（第一報の引き直し抑制 3 秒とは別の値）とユーザー操作中と古い要求は見送る・見送っても連番は消費する（担当しない側は消費しない）・戻す経路は成長フォローに任せる・消費済み連番は常時マウント側で覚える） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6 |
 | EEW 追従の引き上限（**上限は円の半径にかける**。矩形の辺を枠で切り詰めると箱の中心が震源から外れる・検知点と区域塗りには上限をかけない・値を上げるときは地方名ラベルの閾値と併せて見る） | [`docs/spec/map-rendering-spec.md`](docs/spec/map-rendering-spec.md) §6 |
