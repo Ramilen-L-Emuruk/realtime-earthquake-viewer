@@ -89,7 +89,7 @@ Basic 認証（`Authorization: Basic base64(apiKey:)`）。API キーはユー�
 
 **電文の形式**: `formatMode: 'raw'` で購読する。届くのは気象庁の XML そのもので、DMDATA の
 JSON 変換版は使わない ―― 変換は「利用頻度の高いデータ」に絞った独自スキーマで無損失を謳っておらず、
-実際に津波の注意文（`warningComment`）と予想波高の「未満」が落ちていた。読み取りが 1 本になれば
+実際に津波の注意文（固定付加文。`warningComments`）と予想波高の「未満」が落ちていた。読み取りが 1 本になれば
 穴も 1 つで済む。
 
 **電文本体の展開**: WebSocket の `body` は base64 + gzip で配信される。ブラウザネイティブの
