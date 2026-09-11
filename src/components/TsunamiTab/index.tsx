@@ -1089,7 +1089,7 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
             )}
             {/* 気象庁が電文に添えた本文（`Body/Text`）。**津波予報（若干の海面変動）では
                 区域に波高も到達時刻も付かないため、いつ来ていつまで続くかはここにしか無い。**
-                付加文 2 種より先に出す —— あちらは等級ごとの定型文と解説で、こちらがこの報の話。 */}
+                付加文 2 種より先に出す —— あちらは電文種別ごとの定型文と解説で、こちらがこの報の話。 */}
             {t.bodyText && !t.cancelledAt && (
               <div className="bg-card rounded-lg overflow-hidden" style={{ border: '1px solid #374151' }}>
                 <div className="text-white" style={{ fontSize: '0.8125rem', lineHeight: '1.7', whiteSpace: 'pre-wrap', padding: '0.75rem 1rem' }}>
@@ -1097,14 +1097,20 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                 </div>
               </div>
             )}
-            {t.warningComment && !t.cancelledAt && (
+            {/* 固定付加文。**電文種別ごとに別の話**（避難行動／満潮／沿岸の観測／沖合の観測）
+                なので、1 つに畳まず主題ごとに区切って並べる。並び順は `WARNING_COMMENT_ORDER`
+                が決めており、いちばん重い等級の呼びかけが先頭に来る。 */}
+            {t.warningComments && t.warningComments.length > 0 && !t.cancelledAt && (
               <div className="bg-card rounded-lg overflow-hidden" style={{ border: '1px solid #374151' }}>
-                <div className="text-secondary" style={{ fontSize: '0.75rem', lineHeight: '1.7', whiteSpace: 'pre-line', padding: '0.75rem 1rem' }}>
-                  {t.warningComment}
-                </div>
+                {t.warningComments.map(c => (
+                  <div key={c.key} className="text-secondary border-t border-white/10 first:border-t-0"
+                    style={{ fontSize: '0.75rem', lineHeight: '1.7', whiteSpace: 'pre-line', padding: '0.75rem 1rem' }}>
+                    {c.text}
+                  </div>
+                ))}
               </div>
             )}
-            {/* 気象庁の自由付加文。等級ごとの定型文（warningComment）と違い電文ごとに
+            {/* 気象庁の自由付加文。種別ごとの定型文（warningComments）と違い電文ごとに
                 書き起こされ、続報での更新はここに現れる（「［予想される津波の高さの解説］……」等）。
                 全角スペースで整形された表が入るため `whitespace-pre-wrap` で改行と空白を保つ。 */}
             {t.freeText && !t.cancelledAt && (
