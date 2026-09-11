@@ -806,7 +806,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const [areaGradeChangedKeys, setAreaGradeChangedKeys] = useState<Set<string>>(() => new Set())
   // 津波イベント受信時にスクロールでフォーカスする予報区（今回の受信で変更があった区域全部＋その中の最高波高区域）。
   // 対象区域が特定できない受信（区域のみの発表・実質変化なしの続報・解除）は top: null（一番上へ戻す）で表す。
-  const [focusedDistrict, setFocusedDistrict] = useState<{ districts: { code?: string; name?: string }[]; top: { code?: string; name?: string } | null; ts: number } | null>(null)
+  // 形の意味は受け取る側（`FocusedDistrict`）に書いてある。`resetToTop` に既定値を置かないのは、
+  // 「寄せ先が無い」と「先頭へ戻せ」を受信の種類ごとに決めるため（足し忘れを型検査で捕まえる）。
+  const [focusedDistrict, setFocusedDistrict] = useState<{ districts: { code?: string; name?: string }[]; top: { code?: string; name?: string } | null; resetToTop: boolean; ts: number } | null>(null)
 
   /**
    * EEW の読み上げをチェーンの末尾に繋ぐ。`speak` が null を返した場合は何も発話しない
@@ -1605,7 +1607,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         window.clearTimeout(obsStatusClearTimerRef.current)
         setObsUpdateStatus(new Map())
         setAreaGradeChangedKeys(new Set())
-        setFocusedDistrict({ districts: [], top: null, ts: Date.now() })
+        // 解除はカードの中身が消えるので前の位置に意味が無い。先頭へ戻す。
+        setFocusedDistrict({ districts: [], top: null, resetToTop: true, ts: Date.now() })
       } else {
         // 捨てた事実を残す。黙って通すと「解除を受けたのにバッジが消えない」を追えない。
         log.info('[tsunami] 表示中の津波と一致しない解除のため、観測点の記憶は落とさない')
@@ -2881,6 +2884,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             top: topObs
               ? { code: topObs.districtCode, name: topObs.districtName }
               : pickTopFromCardOrder(newlyShownObs552, tsunamiCardBasis.areas, tsunamiCardBasis.observations),
+            // **寄せ先が空でも先頭へ戻さない。** 沖合の観測点は津波予報区を持たないので、
+            // 新しい観測点があっても `uniqueDistricts` は空を返す。戻すと、その観測点を
+            // 読んでいる最中に画面だけ先頭へ飛ぶ。
+            resetToTop: false,
             ts: Date.now(),
           })
         } else if (tsunamiAreaChanges.length > 0) {
@@ -2892,11 +2899,15 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             districts: changedAreas.map(a => ({ code: a.code, name: a.name })),
             // 並びは読み上げと同じ（重い遷移が先）。その先頭を上端に置く
             top: { code: changedAreas[0].code, name: changedAreas[0].name },
+            resetToTop: false,
             ts: Date.now(),
           })
         } else {
-          // スクロール先となる変化が無い電文（再送・実質変化なし）は一番上へ戻す
-          setFocusedDistrict({ districts: [], top: null, ts: Date.now() })
+          // 寄せ先となる変化が無い電文。**先頭へ戻さない** —— 各地の満潮時刻・津波到達予想時刻に
+          // 関する情報がここへ来る（観測点を載せず等級も変えないため全部の条件を落ちる）。
+          // 戻していたころは、直前の報が変更区域へ寄せた位置を 24 秒後に捨てていた。
+          // 再送（中身が前報と同じ）も同じ扱いでよい —— 位置を変える理由が無い。
+          setFocusedDistrict({ districts: [], top: null, resetToTop: false, ts: Date.now() })
         }
         for (const o of updatedObs552) newStatusEntries.push([o.name, prevMap552.has(o.name) ? 'updated' : 'new'])
         for (const o of newlyShownObs552) newStatusEntries.push([o.name, 'new'])
@@ -2911,11 +2922,14 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
             top: topObs
               ? { code: topObs.districtCode, name: topObs.districtName }
               : pickTopFromCardOrder(newlyShownObs552b, tsunamiCardBasis.areas, tsunamiCardBasis.observations),
+            resetToTop: false,
             ts: Date.now(),
           })
         } else {
-          // 観測データが無い発表（区域・グレードのみの電文）は一番上へ戻す
-          setFocusedDistrict({ districts: [], top: null, ts: Date.now() })
+          // 観測データが無い発表（区域・等級のみの電文）。**ここは先頭へ戻す** —— この枝に来るのは
+          // 新規発報と等級が変わった報だけ（上の `if` が等級不変の続報を引き受けている）で、
+          // どちらもカードの構成が入れ替わるため前の位置に意味が無い。
+          setFocusedDistrict({ districts: [], top: null, resetToTop: true, ts: Date.now() })
         }
         for (const o of obsWithHeight552) newStatusEntries.push([o.name, 'new'])
         for (const o of newlyShownObs552b) newStatusEntries.push([o.name, 'new'])
@@ -3097,7 +3111,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // 津波イベントを経由しないタブ復帰（アイドル復帰・EEW全解除・揺れ検知終了）で
   // 津波タブに切り替わったときに、スクロール位置を一番上へ戻すために公開する。
   const resetTsunamiScrollToTop = useCallback(() => {
-    setFocusedDistrict({ districts: [], top: null, ts: Date.now() })
+    setFocusedDistrict({ districts: [], top: null, resetToTop: true, ts: Date.now() })
   }, [])
 
   return { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, areaGradeChangedKeys, focusedDistrict, resetTsunamiScrollToTop }
