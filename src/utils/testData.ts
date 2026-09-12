@@ -361,7 +361,7 @@ export function createTestEEWWarning(withDmdssFields: boolean, eventId?: string,
     forecastMaxScale: 50,
     ...(withDmdssFields ? {
       forecastMaxLpgmClass: 3 as const,
-      // 気象庁の固定付加文。EEW にも付く（`Comments/Warning/Text`）
+      // 気象庁の固定付加文（`Comments/WarningComment/Text`）。警報級の報には必ず入る
       warningComment: '強い揺れに警戒してください。',
       // 震央が内陸か海域か（`Hypocenter/Area/LandOrSea`）。実電文 405 通中 404 通に入る
       landOrSea: '海域',
@@ -455,6 +455,10 @@ export function createTestEEWAssumed(withDmdssFields: boolean, eventId?: string,
     // **初報は最大予測震度も持たない。** 観測点 1 点による震度予測では気象庁が発表しないため、
     // 電文にこの欄そのものが現れない（区域が空なのと同じ理由）。続報で震源が確定して初めて付く。
     ...(isAssumed ? {} : { forecastMaxScale: 50 as const }),
+    // 固定付加文は警報級の報にだけ入る（実電文で予報級 7,615 通は 0 件。→ eew-spec.md §3
+    // 「固定付加文」）。このボタンは初報＝予報級・続報＝警報級へ上がる形なので、
+    // **格上げで初めて付加文が現れる**ところまで再現する。
+    ...(withDmdssFields && !isAssumed ? { warningComment: '強い揺れに警戒してください。' } : {}),
     issue: { eventId: eid, serial: String(serial), time: report },
     // 初報に区域は載らない。続報で震源が確定して初めて地域別予想が付く
     areas: isAssumed ? [] : ([
@@ -542,6 +546,10 @@ export function createTestEEW(withDmdssFields: boolean, eventId?: string, serial
         ? { forecastMaxLpgmClass: 3 as const, forecastMaxLpgmClassOver: true }
         : { forecastMaxLpgmClass: 4 as const })
       : {}),
+    // 気象庁の固定付加文。**警報級の報には必ず入る**（実電文の警報級 380 通すべて。→ eew-spec.md §3
+    // 「固定付加文」）ので、報番号によらず持たせる。この報は特別警報まで上がるため、
+    // 警報級の色（特別警報の配色）での見え方をここでしか確かめられない。
+    ...(withDmdssFields ? { warningComment: '強い揺れに警戒してください。' } : {}),
     issue: { eventId: eid, serial: String(serial), time: report },
     // 実データに合わせ areas を使用（参照は utils/eew.ts の eewAreas() で吸収）
     //

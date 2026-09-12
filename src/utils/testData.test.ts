@@ -290,6 +290,19 @@ describe('予想震度が付かないテスト EEW', () => {
     expect(eewMaxScale(second)).toBe(50)
   })
 
+  // 固定付加文は警報級の報にしか入らない（実電文で予報級 7,615 通は 0 件。
+  // → docs/spec/eew-spec.md §3「固定付加文」）。このボタンは予報級 → 警報級へ上がる形なので、
+  // **格上げで初めて付加文が現れる**ところまで再現していること。
+  it('単独点処理は予報級の初報に付加文を持たず、警報へ上がった続報で持つ', () => {
+    expect(createTestEEWAssumed(true, 'evt', 1, base).warningComment).toBeUndefined()
+    expect(createTestEEWAssumed(true, 'evt', 2, base).warningComment).toBeTruthy()
+  })
+
+  // standard 版（P2PQuake / Yahoo hypoInfo）は固定付加文を配信しないので、警報級でも持たない。
+  it('standard 版では警報へ上がっても付加文を持たない', () => {
+    expect(createTestEEWAssumed(false, 'evt', 2, base).warningComment).toBeUndefined()
+  })
+
   // 名前が変わって 50km 超動くと「震源を更新、〇〇で地震。」の経路に入り、確かめたい格上げの
   // 伝え方（「緊急地震速報に切り替わりました。」／警報としての言い直し）がどちらも出てこなくなる。
   // 震源更新は区分に触れず、割り込みもしないため（audio-tts-spec.md §6「予報から警報へ上がったとき」）。
