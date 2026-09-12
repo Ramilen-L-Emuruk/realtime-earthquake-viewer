@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { isEewArrivedKindCode, isEewPlumKindCode } from './eewKind'
 import {
@@ -13,11 +13,15 @@ import {
   createTestForeignQuakeHuge,
   createTestLpgm,
   createTestTsunami,
+  createTestTsunamiForecast,
   createTestTsunamiGradeChange,
   createTestTsunamiWarning,
   createTestTsunamiWatch,
+  createTestUnreceivedQuake,
+  toEventIdTimestamp,
   toP2pPref,
 } from './testData'
+import { extractQuakeEventId } from './quakeMerge'
 import { eewAreas, eewMaxScale, eewNoForecastReason } from './eew'
 import { isObservationMissing } from './tsunami'
 
@@ -181,6 +185,15 @@ describe('地震情報テストの points 形状', () => {
     expect(createTestEarthquake(false).points.some((p) => p.nonJma)).toBe(false)
   })
 
+  // 電文の `EventID` も DMDATA だけが配信する（→ 型定義の `JMAQuake.eventId`）。
+  // **`id` に埋め込むだけでは足りない** —— `TsunamiTab` の原因地震リンクはフィールドを直接見る。
+  it('識別子のフィールドは DMDSS 版だけが持ち、id に埋め込んだ値と一致する', () => {
+    const dmdss = createTestEarthquake(true)
+    expect(dmdss.eventId).toBe(extractQuakeEventId(dmdss))
+    expect(dmdss.eventId).toMatch(/^\d{14}$/)
+    expect(createTestEarthquake(false).eventId).toBeUndefined()
+  })
+
   it('都道府県ロールアップの震度は、その県の観測点の最大震度と一致する（震度不明は数えない）', () => {
     const expected = new Map<string, number>()
     for (const p of createTestEarthquake(false).points) {
@@ -194,6 +207,129 @@ describe('地震情報テストの points 形状', () => {
     const rollups = createTestEarthquake(true).points.filter((p) => p.isArea && p.pref !== '')
     expect(rollups.length).toBe(expected.size)
     for (const r of rollups) expect(r.scale).toBe(expected.get(r.pref))
+  })
+})
+
+// 市町村の未入電（`City/Condition`）を実機で出すためのテストデータ（→ quake-spec.md §5「市町村の震度」）。
+//
+// **「地震テスト」では出ない形**なので、そちらとの対照も併せて固定する。片方だけを書くと、
+// 元データを差し替えたときに「どちらにも無い」状態が黙って通る。
+describe('未入電テスト（日向灘 2022-01-22）', () => {
+  it('市町村の未入電を 2 通りとも持つ', () => {
+    const cities = createTestUnreceivedQuake().cities ?? []
+    // 震度を観測できたうえで配下に未入電がある
+    expect(cities.filter((c) => c.hasUnreceived).length).toBeGreaterThan(0)
+    // 市町村の値そのものが未入電
+    expect(cities.filter((c) => c.unreceived).length).toBeGreaterThan(0)
+  })
+
+  it('「地震テスト」（能登本震）には市町村の未入電が無い', () => {
+    const cities = createTestEarthquake(true).cities ?? []
+    expect(cities.some((c) => c.hasUnreceived || c.unreceived)).toBe(false)
+  })
+
+  // 2 つを 1 つのフラグへ畳むと、観測できた震度が下限のように見える（→ quake-spec.md §5）。
+  it('値そのものが未入電の市町村は下限の5弱へ寄せ、観測できた市町村と混ざらない', () => {
+    for (const c of createTestUnreceivedQuake().cities ?? []) {
+      if (c.unreceived) {
+        expect(c.scale).toBe(45)
+        expect(c.hasUnreceived).toBeUndefined()
+      }
+      if (c.hasUnreceived) expect(c.unreceived).toBeUndefined()
+    }
+  })
+
+  it('観測点の未入電も持ち、市町村へ紐付いている（震度一覧の 4 段目が出る）', () => {
+    const points = createTestUnreceivedQuake().points
+    const unreceived = points.filter((p) => p.unreceived)
+    expect(unreceived.length).toBeGreaterThan(0)
+    expect(points.some((p) => !p.isArea && p.city)).toBe(true)
+  })
+
+  // 識別子は 2 通りで読まれる —— 長周期地震動の紐付けは `id` から抜き（`extractQuakeEventId`）、
+  // `TsunamiTab` の原因地震リンクは `eventId` フィールドを直接見る。**片方だけでは足りない。**
+  it('id からも eventId フィールドからも識別子が取れ、両者が一致する', () => {
+    const quake = createTestUnreceivedQuake()
+    expect(extractQuakeEventId(quake)).toMatch(/^\d{14}$/)
+    expect(quake.eventId).toBe(extractQuakeEventId(quake))
+  })
+})
+
+// 津波電文の識別子は**原因地震のもの**で、津波電文はその地震のあとに発表される
+// （→ tsunami-spec.md §4）。押した時刻から作ると、実電文には無い並び（地震と津波警報が
+// 同じ瞬間・地震より前に第一波が到達）になり、**同じ秒に押した地震テストと識別子が一致する**。
+// 一致すると `TsunamiTab` の原因地震リンクが無関係な地震カードを指す。
+describe('津波テストの識別子は原因地震の発現時刻から作る', () => {
+  beforeEach(() => { vi.useFakeTimers({ now: new Date('2026-09-12T12:34:56Z').getTime() }) })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('識別子が原因地震の発現時刻と一致する（発表時刻ではない）', () => {
+    const tsunami = createTestTsunami(true)
+    const origin = tsunami.sourceEarthquakes?.[0]?.arrivalTime
+    expect(origin).toBeTruthy()
+    expect(tsunami.eventId).toBe(toEventIdTimestamp(new Date(origin!)))
+    // 発表時刻そのものからは作らない（この 2 つが同じなら上の一致は偶然）
+    expect(tsunami.eventId).not.toBe(toEventIdTimestamp(new Date(tsunami.time)))
+  })
+
+  // 本命の回帰。同じ瞬間に作っても、別々の事象なので識別子は分かれる。
+  it('同じ瞬間に作った地震テストと識別子が衝突しない', () => {
+    expect(createTestTsunami(true).eventId).not.toBe(createTestEarthquake(true).eventId)
+    expect(createTestTsunami(true).eventId).not.toBe(createTestUnreceivedQuake().eventId)
+    for (const make of [createTestTsunamiWarning, createTestTsunamiWatch, createTestTsunamiForecast]) {
+      expect(make(true).eventId).not.toBe(createTestEarthquake(true).eventId)
+    }
+  })
+
+  // 実測（`observations`）は「観測状況を確定した時刻」（`Head/TargetDateTime`）までの観測を
+  // まとめたもの。**その時刻より後の実測はありえない** —— 最大波の観測時刻が発表より後だと、
+  // まだ来ていない波を観測したことになる。
+  it('観測点の実測は観測状況を確定した時刻より後にならない', () => {
+    const tsunami = createTestTsunami(true)
+    const settled = Date.parse(tsunami.observationDateTime!)
+    expect(settled).toBeLessThan(Date.parse(tsunami.time))
+    for (const o of tsunami.observations ?? []) {
+      if (o.arrivalTime) expect(Date.parse(o.arrivalTime)).toBeLessThanOrEqual(settled)
+      if (o.maxHeightDateTime) expect(Date.parse(o.maxHeightDateTime)).toBeLessThanOrEqual(settled)
+    }
+  })
+
+  // 沿岸への推定（VTSE52 の `Estimation`）は沖合の観測から沿岸を推定したもので、**実測ではない**。
+  // 推定した沿岸にはこれから到達するので、到達予想は発表より後になる。
+  it('沿岸への推定の到達予想は発表より後', () => {
+    const tsunami = createTestTsunami(true)
+    const times = (tsunami.estimations ?? [])
+      .map((e) => e.arrivalTime)
+      .filter((v): v is string => !!v)
+    expect(times.length).toBeGreaterThan(0)
+    for (const v of times) expect(Date.parse(v)).toBeGreaterThan(Date.parse(tsunami.time))
+  })
+
+  // 対照: 実測が無い地点の到達予想は**未来のまま**。ここまで過去へ寄せると、
+  // 「これから津波が来る地点」の表示を実機で確かめられなくなる。
+  it('実測が無い地点の到達予想は発表より後に残っている', () => {
+    const tsunami = createTestTsunami(true)
+    const measured = new Set((tsunami.observations ?? []).map((o) => o.name))
+    const future = (tsunami.areas ?? []).flatMap((a) => a.stations ?? [])
+      .filter((st) => !measured.has(st.name) && st.arrivalTime)
+      .filter((st) => Date.parse(st.arrivalTime!) > Date.parse(tsunami.time))
+    expect(future.length).toBeGreaterThan(0)
+  })
+
+  // 安全弁: 原因地震は第一波の到達より前。ここが逆転すると「地震より前に津波が来た」形になる。
+  it('原因地震は区域の第一波到達より前に起きている', () => {
+    const tsunami = createTestTsunami(true)
+    const origin = new Date(tsunami.sourceEarthquakes![0].arrivalTime!).getTime()
+    const arrivals = (tsunami.areas ?? [])
+      .map((a) => a.firstHeight?.arrivalTime)
+      .filter((v): v is string => !!v)
+      .map((v) => new Date(v).getTime())
+    expect(arrivals.length).toBeGreaterThan(0)
+    for (const at of arrivals) expect(origin).toBeLessThan(at)
+    // 原因地震が複数あるときは、どれも到達より前
+    for (const eq of tsunami.sourceEarthquakes ?? []) {
+      expect(new Date(eq.arrivalTime!).getTime()).toBeLessThan(Math.min(...arrivals))
+    }
   })
 })
 
