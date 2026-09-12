@@ -126,7 +126,7 @@ function makeTsunamiObs(
     observations: points.map(p => ({
       name: p.name,
       height: { value: p.value, description: `${p.value}m` },
-      districtCode: '390', districtName: '石川県能登',
+      districtCode: '360', districtName: '石川県能登',
     })),
   } as unknown as JMATsunami
 }
@@ -145,7 +145,7 @@ function makeTsunamiArrival(over: { id?: string; name?: string } = {}): JMATsuna
     areas: [],
     observations: [{
       name: over.name ?? '輪島港',
-      districtCode: '390', districtName: '石川県能登',
+      districtCode: '360', districtName: '石川県能登',
     }],
   } as unknown as JMATsunami
 }
@@ -1065,7 +1065,7 @@ describe('読み上げた観測点の既読', () => {
       observations: [{
         name: '輪島港',
         height: { value: 0.3, description: '0.3m' },
-        districtCode: '390', districtName: '石川県能登',
+        districtCode: '360', districtName: '石川県能登',
       }],
     } as unknown as JMATsunami
     handle(withObs)
