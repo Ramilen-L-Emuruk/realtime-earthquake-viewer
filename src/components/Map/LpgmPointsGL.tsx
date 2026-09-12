@@ -8,7 +8,8 @@ import { getIntensityLabel } from '../../utils/intensity'
 import type { LpgmMarker } from '../../hooks/useQuakeLayerData'
 import { addOrderedLayer } from './gl/layerOrder'
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
-import { badgeHtml, escapeHtml, nonJmaBadgeHtml } from './gl/popupHtml'
+import { badgeHtml, escapeHtml } from './gl/popupHtml'
+import { NON_JMA_MARK_TITLE, withNonJmaMark } from '../../utils/formatters'
 import { ensureLpgmIcons, lpgmIconId, LPGM_ICON_BASE_RADIUS } from './gl/lpgmIcons'
 
 // 長周期地震動観測点を階級ラベル付き四角バッジで描画する MapLibre 版。
@@ -57,12 +58,22 @@ function buildFC(markers: LpgmMarker[], iconScale: number): FeatureCollection<Po
   return { type: 'FeatureCollection', features }
 }
 
+/**
+ * ポップアップの見出し（表示名）。
+ *
+ * **気象庁以外が運用する観測点には `＊` を付ける**（→ `withNonJmaMark`）。ホバーと
+ * クリックの両方がこれを通るので、同じ観測点が場所によって違う名前で出ることはない。
+ */
+export function lpgmPointPopupTitle(f: MapGeoJSONFeature): string {
+  return withNonJmaMark(String(f.properties?.name ?? ''), Boolean(f.properties?.nonJma))
+}
+
 function hoverHtml(f: MapGeoJSONFeature): string {
   const lgInt = Number(f.properties?.lgInt ?? 0)
   return (
     `<div style="display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap">` +
     `${badgeHtml(String(lgInt), getLpgmClassColor(lgInt))}` +
-    `<span style="font-weight:600">${escapeHtml(String(f.properties?.name ?? ''))}</span></div>`
+    `<span style="font-weight:600">${escapeHtml(lpgmPointPopupTitle(f))}</span></div>`
   )
 }
 
@@ -111,13 +122,13 @@ function clickHtml(f: MapGeoJSONFeature): string {
   const pref = String(f.properties?.pref ?? '')
   const int = Number(f.properties?.int ?? -1)
   const sva = Number(f.properties?.sva ?? -1)
-  // 気象庁以外が運用する観測点。震度側の吹き出しと同じ扱い（→ `nonJmaBadgeHtml`）。
+  // 気象庁以外が運用する観測点。震度側の吹き出しと同じ扱い（→ `withNonJmaMark`）。
   const nonJma = Boolean(f.properties?.nonJma)
   return (
     `<div style="min-width:170px">` +
-    `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">` +
-      `<span style="font-weight:700;font-size:13px">${escapeHtml(String(f.properties?.name ?? ''))}</span>` +
-      (nonJma ? nonJmaBadgeHtml() : '') + `</div>` +
+    `<div style="font-weight:700;font-size:13px"` +
+      (nonJma ? ` title="${escapeHtml(NON_JMA_MARK_TITLE)}"` : '') +
+      `>${escapeHtml(lpgmPointPopupTitle(f))}</div>` +
     (pref ? `<div style="margin-top:2px;font-size:11px;color:#94a3b8">${escapeHtml(pref)}</div>` : '') +
     `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:12px">` +
     `${badgeHtml(String(lgInt), getLpgmClassColor(lgInt))}` +
