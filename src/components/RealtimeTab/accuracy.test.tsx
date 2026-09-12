@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// EEW カードの「震源の決め方」（電文の `Hypocenter/Accuracy`）。
+// EEW カードの「精度情報」（電文の `Hypocenter/Accuracy`）。
 //
 // **震央と深さをまとめるかどうかは、生のランク値で比べる。** 表示文字列で比べると、
 // 深さのランクが 0（不明）や対応表に無い値のとき文字列が空になり「同じ」と判定され、
@@ -37,17 +37,17 @@ const renderTab = (eew: EEWAlert) =>
   )
 
 /**
- * 「震源の決め方」のブロックだけを取り出す。
+ * 「精度情報」のブロックだけを取り出す。
  *
  * **カード全体を対象に文字を探さないこと。** 「深さ」はマグニチュードと並ぶ震源の深さの欄にも
  * あり、素で探すとそちらを拾って常に真になる（この取り違えで最初のテストが落ちた）。
  */
 function accuracyBlock(): HTMLElement | null {
-  const label = screen.queryByText('震源の決め方')
+  const label = screen.queryByText('精度情報')
   return label ? label.closest('div.flex.flex-col') as HTMLElement : null
 }
 
-describe('EEW カードの「震源の決め方」', () => {
+describe('EEW カードの「精度情報」', () => {
   // 正: 震央と深さが同じランクなら 1 行にまとめ、見出しは「震源」。
   it('震央と深さが同じなら 1 行にまとめる', () => {
     renderTab(makeEEW({ epicenterRank: 4, depthRank: 4, magnitudeRank: 4, magnitudePoints: 5 }))
@@ -82,7 +82,7 @@ describe('EEW カードの「震源の決め方」', () => {
   // 対照: 精度をまったく持たない電文では欄ごと出ない。
   it('精度が無ければ欄ごと出ない', () => {
     renderTab(makeEEW())
-    expect(screen.queryByText('震源の決め方')).toBeNull()
+    expect(screen.queryByText('精度情報')).toBeNull()
     expect(accuracyBlock()).toBeNull()
   })
 
