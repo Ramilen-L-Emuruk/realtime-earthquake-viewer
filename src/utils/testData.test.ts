@@ -12,13 +12,16 @@ import {
   createTestEEWWarning,
   createTestForeignQuakeHuge,
   createTestLpgm,
+  createTestQuakeAmendment,
   createTestTsunami,
   createTestTsunamiGradeChange,
   createTestTsunamiWarning,
   createTestTsunamiWatch,
   toP2pPref,
 } from './testData'
+import notoHonshinQuake from '../data/noto-honshin-2024-quake.json'
 import { eewAreas, eewMaxScale, eewNoForecastReason } from './eew'
+import { extractQuakeEventIdFromId } from './quakeMerge'
 import { isObservationMissing } from './tsunami'
 
 // テストデータが「名前で」外部データと突き合わせている箇所を固定する。
@@ -174,11 +177,89 @@ describe('地震情報テストの points 形状', () => {
   })
 
   // 「気象庁以外の観測点」の印は DMDSS 版（DMDATA 経路）だけが持つ事実。
-  // **P2PQuake はこの区別を配信しない**ので、標準版のテストボタンで出すと
-  // 実電文には無いバッジが画面に出る。
+  // **P2PQuake はこの区別を配信しない**ので、標準版のテストボタンで残すと
+  // 表示側（`withNonJmaMark`）が実電文には無い `＊` を観測点名へ付ける。
   it('気象庁以外の印は DMDSS 版だけが持つ', () => {
     expect(createTestEarthquake(true).points.some((p) => p.nonJma)).toBe(true)
     expect(createTestEarthquake(false).points.some((p) => p.nonJma)).toBe(false)
+  })
+
+  // 固定付加文（その他）。`＊` の説明はカードに枠付きで出るが、渡さないと実機で一度も出ない。
+  // 正・対照・安全弁の 3 種で固定する（→ CLAUDE.md「検証」）。
+  it('固定付加文（その他）は DMDSS 版だけが `＊` の説明を持つ', () => {
+    expect(createTestEarthquake(true).varCommentText).toContain('＊印は気象庁以外の震度観測点')
+    expect(createTestEarthquake(false).varCommentText).toBeUndefined()
+  })
+
+  // 元にした実電文（報番号 2）は「震源要素を訂正します。」（コード 0256）も持っている。
+  // **落とさないこと** —— 気象庁はこの一文を `InfoType` が「訂正」の報ではなく発表報に付けており、
+  // `issue.correct` は `'なし'` のまま（実電文の形。→ testData.ts の `NOTO_HONSHIN_VAR_COMMENT_TEXT`）。
+  it('固定付加文（その他）は実電文どおり 2 文とも持つ（訂正の印は付かない）', () => {
+    const quake = createTestEarthquake(true)
+    expect(quake.varCommentText).toContain('震源要素を訂正します。')
+    expect(quake.issue.correct).toBe('なし')
+  })
+
+  // 安全弁: 元データが 2 文とも持っていることまで確かめないと、上のテストは
+  // 「たまたま同じ一文を別の場所で足していた」場合も通ってしまう。
+  it('元データは 2 文とも持っている', () => {
+    expect(notoHonshinQuake.varCommentText).toContain('震源要素を訂正します。')
+    expect(notoHonshinQuake.varCommentText).toContain('＊印は気象庁以外の震度観測点')
+  })
+
+  // 訂正報テスト。**「訂正」の印が出る形を作れる唯一の入口**なので、印・訂正の中身・
+  // 同じカードへ届くことの 3 つを固定する（→ docs/spec/settings-pwa-spec.md §7）。
+  describe('訂正報テスト', () => {
+    // 正: 訂正報は印を持ち、DMDSS 版では気象庁の一文も並ぶ。
+    it('訂正報は「震源を訂正」の印を持ち、初報は持たない', () => {
+      const { initial, amended } = createTestQuakeAmendment(true)
+      expect(amended.issue.correct).toBe('震源を訂正')
+      expect(initial.issue.correct).toBe('なし')
+    })
+
+    // 対照: 初報には訂正の一文が無い（訂正はまだ起きていない）。印と原文が並ぶのは訂正報だけ。
+    it('訂正の一文が入るのは訂正報だけ', () => {
+      const { initial, amended } = createTestQuakeAmendment(true)
+      expect(amended.varCommentText).toContain('震源要素を訂正します。')
+      expect(initial.varCommentText).not.toContain('震源要素を訂正します。')
+      // 安全弁: `＊` の説明は両方に入る（落とす対象を取り違えていないこと）
+      expect(initial.varCommentText).toContain('＊印は気象庁以外の震度観測点')
+    })
+
+    // 正: 何が訂正されたのかが値として見えること。値は実電文（能登本震の報番号 1 と 2）に合わせる。
+    it('規模が訂正される（M7.4 → M7.6）', () => {
+      const { initial, amended } = createTestQuakeAmendment(true)
+      expect(initial.earthquake.hypocenter.magnitude).toBe(7.4)
+      expect(amended.earthquake.hypocenter.magnitude).toBe(7.6)
+    })
+
+    // 安全弁: 同じ地震として扱われること。`eventId` が変わると別カードが立ち、
+    // 「訂正された」ように見えない（印だけが 2 枚目のカードに付く）。
+    it('2 通が同じ地震を指し、震源時刻は動かない', () => {
+      const { initial, amended } = createTestQuakeAmendment(true)
+      expect(extractQuakeEventIdFromId(amended.id)).toBe(extractQuakeEventIdFromId(initial.id))
+      expect(extractQuakeEventIdFromId(initial.id)).not.toBeNull()
+      expect(amended.earthquake.time).toBe(initial.earthquake.time)
+    })
+
+    // 安全弁: 報番号と発表時刻は進める（→ §7「実電文の形に合わせる」）。
+    // 進めないと、続報の据え置き判定（`mergeQuakeInto`）が訂正報を古い報として捨てる。
+    it('報番号と発表時刻は進む', () => {
+      const { initial, amended } = createTestQuakeAmendment(true)
+      expect(initial.id.endsWith('-1')).toBe(true)
+      expect(amended.id.endsWith('-2')).toBe(true)
+      expect(amended.time > initial.time).toBe(true)
+      expect(amended.issue.time).toBe(amended.time)
+    })
+
+    // standard 版は付加文を配信しないが、訂正の印そのものは P2PQuake も配信する
+    // （`DestinationOnly`）。印だけが出る形を確かめられること。
+    it('standard 版は印だけを持ち、付加文は持たない', () => {
+      const { initial, amended } = createTestQuakeAmendment(false)
+      expect(amended.issue.correct).toBe('震源を訂正')
+      expect(amended.varCommentText).toBeUndefined()
+      expect(initial.varCommentText).toBeUndefined()
+    })
   })
 
   it('都道府県ロールアップの震度は、その県の観測点の最大震度と一致する（震度不明は数えない）', () => {
