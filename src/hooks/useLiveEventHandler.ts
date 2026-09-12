@@ -15,7 +15,7 @@ import {
 } from '../utils/eew'
 import { hasKnownEpicenter, haversineKm } from '../utils/geo'
 import { showBrowserNotification } from '../utils/notifications'
-import { isWarningLevelWhileObserving, tsunamiMaxGrade, tsunamiAreaGradeChanges, selectUnspokenAreaGradeChanges, rememberAreaGrades, tsunamiAreaKey, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations, isObservationMissing } from '../utils/tsunami'
+import { GRADE_PRIORITY, isWarningLevelWhileObserving, tsunamiMaxGrade, tsunamiAreaGradeChanges, selectUnspokenAreaGradeChanges, rememberAreaGrades, tsunamiAreaKey, isTsunamiNewFire, isTsunamiGradeUpgrade, isTsunamiObservationOnly, isCancelForCurrentTsunami, isTsunamiContinuation, matchesArea, sortAreasAcrossGradesForCardDisplay, sortObservationsForCardDisplay, mergeTsunamiObservations, isObservationMissing } from '../utils/tsunami'
 import { playAlertSound, ttsDelayFor, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
 import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, estimatedIntensityToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
@@ -657,7 +657,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   // 確定する続報があり、値だけを見ていると区分の変化が声に出ない。
   const spokenEEWLevelsRef = useRef<Map<string, 0 | 1 | 2>>(new Map())
   // 直前に読み上げた津波グレード（引き下げ検出・重複読み上げ抑制に使用）
-  const lastTsunamiGradeRef = useRef<'MajorWarning' | 'Warning' | 'Watch' | 'Forecast' | null>(null)
+  const lastTsunamiGradeRef = useRef<Exclude<TsunamiGrade, 'Unknown'> | null>(null)
   // 直前に受信した津波（解除がこの津波に向けたものかの照合に使う。`isCancelForCurrentTsunami`）。
   //
   // **App が持つ表示中の津波（`tsunamisRef`）ではなく、自分が受信したものを見ること。**
@@ -2474,15 +2474,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     if (event.kind === 'tsunami') {
       if (!event.cancelled) {
         const grade = tsunamiMaxGrade(event)
-        const GRADE_RANK_SOUND = { MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0 } as const
-        type GradeSoundKey = keyof typeof GRADE_RANK_SOUND
         const prevGradeForSound = lastTsunamiGradeRef.current
         // 等級を伝えていない電文は比較から外す（理由は `isTsunamiObservationOnly`）。
         // 観測値だけが載っているので「更新」の扱いにする。
         const obsOnly = isTsunamiObservationOnly(event)
         const gradeUnchanged = obsOnly
-          || (prevGradeForSound !== null && GRADE_RANK_SOUND[grade as GradeSoundKey] === GRADE_RANK_SOUND[prevGradeForSound as GradeSoundKey])
-        const isDowngradeSound = !obsOnly && prevGradeForSound !== null && GRADE_RANK_SOUND[grade as GradeSoundKey] < GRADE_RANK_SOUND[prevGradeForSound as GradeSoundKey]
+          || (prevGradeForSound !== null && GRADE_PRIORITY[grade] === GRADE_PRIORITY[prevGradeForSound])
+        const isDowngradeSound = !obsOnly && prevGradeForSound !== null && GRADE_PRIORITY[grade] < GRADE_PRIORITY[prevGradeForSound]
         // 読み上げの優先度・主題もこの判定に従う（宣言箇所に理由）。**引き下げは入らない**——
         // `isDowngradeSound` は `gradeUnchanged` と排他なので（等級が動いていない報と、下がった報）、
         // ここで除く必要はない。引き下げは等級が動いた報として新規・格上げと同じ重さで扱う
@@ -2583,8 +2581,6 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           return sortObservationsForCardDisplay(tsunamiCardBasis.observations, tsunamiCardBasis.areas)
             .filter(o => ownSet.has(o))
         }
-        const GRADE_RANK = { MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0 } as const
-        type GradeKey = keyof typeof GRADE_RANK
         const currentGrade = tsunamiMaxGrade(event)
         const prevGrade = lastTsunamiGradeRef.current
 
@@ -2722,7 +2718,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           spokenMissingObs = selectMissingToSpeak(newlyMissingObsOnAreaChange)
           spokenWarningLevelObs = selectWarningLevelToSpeak(newlyWarningLevelObsOnAreaChange)
         } else {
-          const isDowngrade = prevGrade !== null && GRADE_RANK[currentGrade as GradeKey] < GRADE_RANK[prevGrade as GradeKey]
+          const isDowngrade = prevGrade !== null && GRADE_PRIORITY[currentGrade] < GRADE_PRIORITY[prevGrade]
           // **区域の並べ替えにはカードと同じ材料を渡す**（`tsunamiCardBasis`）。等級を切り替える報は
           // 観測点をほとんど載せないため、電文の分だけで並べると読み上げが電文順（気象庁の地理順）に
           // 戻り、実測波高の順に並んでいるカードの上を追従スクロールが往復する。
@@ -2854,15 +2850,13 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       if (grade !== 'Unknown') lastTsunamiGradeRef.current = grade
 
       // obsUpdateStatus・focusedDistrict の更新（lastMaxObsHeightRef 更新前に判定する）
-      const GRADE_RANK_552 = { MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0 } as const
-      type GradeKey552 = keyof typeof GRADE_RANK_552
       const prevMap552 = lastMaxObsHeightRef.current
       const newStatusEntries: [string, 'new' | 'updated'][] = []
 
       // 等級を伝えていない電文（区域が空）も観測点更新として扱う。読み上げ側と同じ判定に
       // 揃えること。片方だけずらすと「読み上げはするのに画面が動かない」が生まれる。
       if (isTsunamiObservationOnly(event)
-        || (prevGrade552 !== null && GRADE_RANK_552[grade as GradeKey552] === GRADE_RANK_552[prevGrade552 as GradeKey552])) {
+        || (prevGrade552 !== null && GRADE_PRIORITY[grade] === GRADE_PRIORITY[prevGrade552])) {
         const updatedObs552 = (event.observations ?? []).filter(o => {
           if (!o.height) return false
           const prev = prevMap552.get(o.name)

@@ -81,18 +81,25 @@ export function stepMissingHold(
   sitesKey: string | null,
 ): HeldIndices {
   const passThrough = (): HeldIndices => ({ indices: [...indices], stale: indices.map(() => false) })
-  // データ時刻が読めないフレームでは保持期間を計れない。保持も更新もせず素通しする。
-  if (!Number.isFinite(dataTimeMs)) return passThrough()
-
-  // 保持値を捨てる条件。観測点集合が変わったとき（位置対応が変わるため、別の場所の震度を
-  // 描いてしまう）と、データ時刻が巻き戻ったとき（ライブ⇄リプレイの切替）。同一時刻の再処理は
-  // 巻き戻しに数えない——同じフレームが二度渡ってきただけで保持を捨てると、その瞬間だけ
-  // 保持中の点が消えて、防ごうとしている明滅そのものを作ってしまう。
-  if (sitesKey !== state.sitesKey || indices.length !== state.held.length || dataTimeMs < state.lastMs) {
+  const clearHold = (): void => {
     state.held = new Array<number>(indices.length).fill(NO_HELD_VALUE)
     state.heldAtMs = new Array<number>(indices.length).fill(-Infinity)
     state.sitesKey = sitesKey
   }
+
+  // **位置の対応が壊れたことは、データ時刻を見なくても判る。** 観測点集合が変わったとき
+  // （別の場所の震度を描いてしまう）と、件数が変わったとき。**時刻のガードより前に置く** ——
+  // 供給を作り直したとき（リプレイの時間軸の切替）は「件数 0・データ時刻なし」の形で届くので、
+  // 後ろに置くと素通しして、旧い時間軸の保持値が新しい軸の最初のフレームで蘇る。
+  if (sitesKey !== state.sitesKey || indices.length !== state.held.length) clearHold()
+
+  // データ時刻が読めないフレームでは保持期間を計れない。保持も更新もせず素通しする。
+  if (!Number.isFinite(dataTimeMs)) return passThrough()
+
+  // データ時刻が巻き戻ったとき（ライブ⇄リプレイの切替）も捨てる。同一時刻の再処理は巻き戻しに
+  // 数えない——同じフレームが二度渡ってきただけで保持を捨てると、その瞬間だけ保持中の点が
+  // 消えて、防ごうとしている明滅そのものを作ってしまう。
+  if (dataTimeMs < state.lastMs) clearHold()
   state.lastMs = dataTimeMs
 
   const out = new Array<number>(indices.length)
