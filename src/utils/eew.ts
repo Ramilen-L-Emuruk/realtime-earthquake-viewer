@@ -628,6 +628,10 @@ const FORECAST_CHANGE_REASON_LABEL: Readonly<Record<number, string>> = {
  *
  * **「1.0 以上」は計測震度の差**で、画面に出している震度階級の差とは別物（解説資料 Ⅱ.21 2-1-4-1）。
  * 「階級が 1 つ上がった」と読み替えないこと。
+ *
+ * **これは報ごとの判定で、表示の寿命は持たない。** 電文は変化を 1 通しか言わず、次の報は値を
+ * 0 に戻してくる。この戻り値をそのまま描くと帯は 1 秒で消えるので、出し続ける長さは呼び出し側が
+ * 持つ（→ `RealtimeTab` の `useHeldForecastChange`）。
  */
 export function eewForecastChangeText(eew: EEWAlert): string {
   const c = eew.forecastChange

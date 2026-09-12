@@ -135,13 +135,30 @@ describe('実データの部分一致の安全性', () => {
   // 辞書のキーは読み上げ文の中で部分一致する。**衝突しうる面は 5 つある** —— 区域名・都道府県名、
   // 観測点名どうし、津波観測点名・予報区名、震央地名、そして手で書いた句区切り辞書のキー。
   // どれか 1 つでも抜けると、正しく読めていた地名が語中で切られる（そのうえ間まで挟まる）。
-  it('観測点名が一次細分区域名・都道府県名の内部に現れない', () => {
+  it('一次細分区域名・都道府県名の内部に現れても、区域名の側が選ばれる', async () => {
+    // **以前はこの面が 0 件であることを要求していた。** 2026-09-12 に潮位観測点名を辞書へ
+    // 入れたことで 3 件生じた（`宮古` ⊂ `沖縄県宮古島`・`久米島` ⊂ `沖縄県久米島`・
+    // `西表島` ⊂ `沖縄県西表島`）ので、他の面と同じ実検証へ移した。守りは二重で、
+    // 長い側も句区切り辞書のキーなので最長一致で勝ち、観測点名は単独語キーなので
+    // 直前の文字（`県`）でも弾かれる。
     const prefs = new Set(
       Object.keys(stationCoords.stations).map(key => key.slice(0, key.indexOf('|'))),
     )
+    const dictKeys = new Set([
+      ...names,
+      ...Object.keys(phraseBreak).filter(key => !key.startsWith('_')),
+      ...Object.keys(epicenters),
+    ])
     const haystack = [...stationCoords.regionNames, ...prefs]
-    const contained = names.filter(name => haystack.some(area => area.includes(name)))
-    expect(contained).toEqual([])
+    const risky = names.flatMap(name => haystack
+      .filter(area => area !== name && area.includes(name))
+      .map(area => ({ name, area })))
+    expect(risky.length).toBeGreaterThan(0)  // 検査対象が無くなっていたら気づけるように
+    for (const { name, area } of risky) {
+      const match = await loadedMatch(`${area}では、震度5弱以上と推定されますが、未入電です。`)
+      // 区域名の側が辞書にあればそれが選ばれ、無ければ何も選ばれない（エンジンの素の読みに任せる）。
+      expect(match?.key, `${name} ⊂ ${area}`).toBe(dictKeys.has(area) ? area : undefined)
+    }
   })
 
   it('別の観測点名の内部に現れても、長い側が選ばれる（辞書に無い側でも）', async () => {
