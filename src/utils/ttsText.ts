@@ -1624,7 +1624,12 @@ export function tsunamiToSegments(
       ...lowerGradeSentence(event.areas, topGrade, observations),
     ]
   }
-  // 波高がまだ付いていない（続報で後から付く）場合は、区域名を直接挙げる
+  // 波高がまだ付いていない（続報で後から付く）場合は、区域名を直接挙げる。
+  //
+  // **等級名が 2 回出るが、これは頭の名乗りを残すための代償**（→ docs/spec/tts-sentence-inventory.md
+  // §4-10・§5）。「〈区域〉に発表されました」は区域が述語の前に来るので、頭の `${gradeLabel}。` を
+  // 外すと**等級が判るまで区域名を全部聞くことになる**（予報区が多いほど遅れる）。上の波高あり経路が
+  // 等級と行動を先に言い切っているのと同じ理由で、重複のほうを受け入れる。
   return [
     plain(`${gradeLabel}。`),
     ...areaNameSegments(orderAreasForSpeech(rawTopAreas, observations)),
