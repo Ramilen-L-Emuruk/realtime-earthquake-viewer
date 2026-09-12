@@ -49,6 +49,7 @@ export interface TestFunctions {
   earthquakeCountRetraction?: () => void
   trainingQuake?: () => void
   quakeAmendment: () => void
+  unreceivedQuake?: () => void
   tsunamiGradeChange?: () => void
   estimatedIntensity?: () => void
   notification: () => void
@@ -1226,6 +1227,11 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         <Row label="地震情報" description="令和6年能登半島地震・本震 M7.6 最大震度7（実データ）をリストと地図に追加">
           <TestButton color="red" onClick={onTest.earthquake}>地震テスト</TestButton>
         </Row>
+        {isDmdss && onTest.unreceivedQuake && (
+          <Row label="地震情報（震度を入手していない地点が多い報）" description="日向灘 M6.4 最大震度5強（実データ）– 震度を入手していない地点が 60。震度一覧では、その地点を含む市町村・区域・県の行に「未入電あり」の印が付く。市町村の値そのものが届いていない 18 市町村は「5弱以上」と出る">
+            <TestButton color="orange" onClick={onTest.unreceivedQuake}>未入電テスト</TestButton>
+          </Row>
+        )}
         <Row label="遠地地震" description="メキシコ・チアパス州沿岸 M7.4 深さ不明（実データ）– earthquakeInfo 音 / 国内震度なし・日本への津波影響なし">
           <TestButton color="purple" onClick={onTest.foreignQuake}>遠地地震テスト</TestButton>
         </Row>

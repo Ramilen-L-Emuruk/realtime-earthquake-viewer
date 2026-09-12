@@ -67,8 +67,11 @@ function parseIntensityStr(s: string | undefined | null): IntensityScale {
  * （実際にそうなっていた）。
  *
  * 気象庁の電文解説資料（地震火山関連）によれば、この語が入るのは `IntensityStation/Int` の
- * ほかに `City/Condition` と見出し部（`Information/Item/Kind/Name`）がある。**どちらも読まない**
- * —— 同じ市町村の観測点に必ず `Int=震度５弱以上未入電` が並ぶため、同じ事実を二重に持つだけ。
+ * ほかに `City/Condition` と見出し部（`Information/Item/Kind/Name`）がある。
+ *
+ * - **`City/Condition` は読む**（下記 `City` の分岐）。同じ市町村の観測点にも未入電が並ぶが、
+ *   市町村の行の意味は `MaxInt` の有無で 2 通りに分かれ、観測点からは復元できない
+ * - **見出し部は読まない** —— 未入電の市町村を列挙するだけで、`City/Condition` と同じ事実になる
  */
 const UNRECEIVED_INTENSITY = '震度５弱以上未入電'
 
