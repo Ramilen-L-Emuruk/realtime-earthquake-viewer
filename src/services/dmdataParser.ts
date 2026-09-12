@@ -1937,10 +1937,13 @@ function parseTsunamiEstimationsFromXml(estimationEl: Element): import('../types
     // **推定は観測から導くが、電文は予想側と同じ「津波の高さ」と名乗る**（実電文で確認）。
     checkTsunamiHeightType(heightEl, '津波の高さ', '沿岸への推定', name)
     const heightVal = heightEl ? parseFloat(xmlText(heightEl)) : NaN
-    // 予想側と同じ順で組む（表示文字列 → 数値から組む → 数値にならない表記）。
+    // 予想側・観測側と同じ 2 段で組む（表示文字列 → 数値から組む）。
+    // **`condition` をフォールバックに足さないこと。** 固定値「不明」なので、定性的表現の
+    // ない津波注意報・予報（解説資料いわく `@description` が空属性になる）でそこへ落ちると、
+    // 波高として「不明」と表示・読み上げすることになる。予想側は同じ形を直しており
+    // （→ tsunami-spec.md §9「数値にならない予想波高」）、推定側だけ 3 段で残っていた。
     const heightDesc = toHalfWidthHeightDesc(heightEl?.getAttribute('description') ?? '')
       || (!isNaN(heightVal) ? `${heightVal}m` : '')
-      || (heightEl?.getAttribute('condition') ?? '')
     // 数値が無い理由（「推定中」）と、基準を超えた合図（「重要」）。
     // **`MaxHeight/Condition` は `DateTime` と `jmx_eb:TsunamiHeight` の代わりに出る**ので
     // （電文解説資料 Ⅱ.13 1-2-2-3）、ここを読まないと「推定中」の沿岸は波高欄が空のままになる。
@@ -2088,14 +2091,16 @@ function isKnownCancelCode(code: string): boolean {
  * 発表中の区域が残っているのに、一部の区域だけが解除コード（00/50/60）で `areas` から
  * 落ちた場合に記録を残す。
  *
- * 2024 年能登半島地震（`eventId=20240101161010`）の津波電文を確かめた範囲では、解除された区域も
- * **予報への降格**として電文に残り、この形は現れなかった（01/01〜01/02 の VTSE41 7 通と 01/02 の
- * VTSE51 11 通で、現れた `Kind/Code` は 51・53・62・71・72 だけ）。再確認するには DMDATA archive
- * API（`/v2/archive` の `telegram.earthquake` 分類）から 2024-01-01・2024-01-02 の tar を展開し、
- * VTSE41/51 の `forecasts[].kind.code` を数える。もし気象庁がこの表現を使った場合、落ちた区域は
- * `lastGrade` を持てないため「区域単位で等級が動いた報」として検出できず、カードから
- * 説明もなく消える（→ docs/spec/tsunami-spec.md §10）。画面には何も出ないので、
- * 追う手がかりをここに残す。
+ * **この形は実電文にある。** 落ちた区域は `lastGrade` を持てないため「区域単位で等級が動いた報」
+ * として検出できず、カードから説明もなく消える。通常運用の実例は 2025-12-09T06:20 の VTSE41 で、
+ * `青森県日本海沿岸` が `Kind/Code=60`（津波注意報解除）・`LastKind/Code=62`（津波注意報）として
+ * 届いた。同じ報の他の 7 区域は 62 → 72 の降格として残るので読み上げ自体は起きるが、解除された
+ * 区域だけがどこにも現れない（件数・走査範囲・数え直す手順は
+ * → docs/spec/tsunami-spec.md §10「区域の顔ぶれが報ごとに変わること」）。
+ *
+ * かつてここには「実電文では現れない」と書いてあった。根拠は 2024 年能登半島地震
+ * （`eventId=20240101161010`）1 事象ぶんの `Kind/Code` で、**1 事象では足りない**。
+ * **画面には何も出ないので、追う手がかりはこの警告だけ。**
  */
 function warnPartialDrop(droppedNames: string[], logPrefix: string): void {
   if (droppedNames.length === 0) return

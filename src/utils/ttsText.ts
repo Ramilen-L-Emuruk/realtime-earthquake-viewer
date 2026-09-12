@@ -1,7 +1,7 @@
 import type { EEWAlert, JMAQuake, JMATsunami, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAEarthquakeCount, JMALpgm, IntensityScale, TsunamiGrade, TsunamiArea, EarthquakePoint, DomesticTsunami, TsunamiObservation, Hypocenter } from '../types/earthquake'
 import { eewNoForecastReason, canPresentLpgmClass, type EewMaxScaleInfo } from './eew'
 import { getIntensityLabel, getIntensityLabelWithApproxAbove } from './intensity'
-import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight, TSUNAMI_GRADE_SHORT_LABEL, type TsunamiAreaGradeChange } from './tsunami'
+import { tsunamiMaxGrade, groupAreasForCardDisplay, sortAreasForCardDisplay, hasForecastHeight, compareObservedHeightDesc, overSuffixedHeight, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, type TsunamiAreaGradeChange } from './tsunami'
 import { joinSegments, plain, type SpeechSegment, type SpeechRef, type QuakeFact } from './ttsFollow'
 import { getSubRegionsCache } from './subregions'
 import { getPrefecturesCache } from './prefectures'
@@ -11,7 +11,17 @@ import { hasMagnitude, hasDepth } from './formatters'
 import { createLogThrottle, log } from './logger'
 import { hasKnownEpicenter } from './geo'
 
-const GRADE_ORDER: TsunamiGrade[] = ['MajorWarning', 'Warning', 'Watch', 'Forecast']
+/**
+ * 等級を読む順（重い等級が先）。**カードが等級カードを積む順と同じ並びを使う**
+ * （`GRADES_IN_CARD_ORDER`）。手書きで写すと、等級を増やしたときに片方だけ漏れる。
+ *
+ * **`'Unknown'` だけは外す。** 等級の呼び名（`TSUNAMI_GRADE_SHORT_LABEL`）が `'Unknown'` では
+ * 空文字なので、含めると「〇〇に切り替えられました。」「また、次の地域に〇〇が発表されています。」の
+ * 〇〇が消え、主語を欠いた文になる。区域はあるのに等級が 1 つも取れない電文は実際に届き
+ * （`useLiveEventHandler` の引き下げ経路）、そこでは**この並びから `topGrade` が見つからないこと**を
+ * 「津波警報等は全て解除されました」へ落ちる条件として使っている。
+ */
+const GRADE_ORDER: TsunamiGrade[] = GRADES_IN_CARD_ORDER.filter(g => g !== 'Unknown')
 
 function tsunamiGradeLabel(grade: TsunamiGrade): string {
   // 呼び名はカードの「等級が移り変わった」行と共有する（`TSUNAMI_GRADE_SHORT_LABEL`）

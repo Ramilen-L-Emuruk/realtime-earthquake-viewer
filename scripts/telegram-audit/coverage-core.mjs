@@ -102,7 +102,17 @@ export function judge(src, name, proximity = PROXIMITY) {
 export function isRead(src, name) { return judge(src, name).read }
 
 // ---- 入力①: 実電文 ----
-// rec = { count, withChildren, emptyText, texts:Set, children:Set, parents:Set, attrs: Map<名前, {count, values:Set}> }
+// rec = { count, withChildren, emptyText, texts:Set, children:Set, parents:Set, chains:Set,
+//         paths: Map<根からの経路, { count, attrs: Map<属性名, {count, values:Set}> }> }
+//
+// **属性は経路ごとに数える。要素名でまとめない。** 同じ名前が別の枝にも出る電文では値が
+// 合算され、**枝ごとに値域が違う属性**を見分けられなくなる（実例: `jmx_eb:TsunamiHeight`
+// の `@condition` は予想側では固定値「不明」だが、観測側では「上昇中」を取る。合算すると、
+// 観測側の標本が無いだけで「値は 1 種類」に見える）。
+//
+// **経路ごとの要素の出現回数も持つ。** 属性が「その経路に必ず付くか」はこの 2 つの比でしか
+// 出せない。付かないことがある属性は、値が固定でも**出現そのものが情報**を運んでいる
+// （`jmx_eb:Magnitude@condition` は規模が不明のときだけ出る）。
 //
 // **子と親は「直接の」ものだけを数える。** 内側のタグを全部拾うと子孫が全部「子」になり、
 // `CodeDefine/Type` のような「親で意味が決まる名前」を判定できない（Type の親が
@@ -126,7 +136,7 @@ export function scanTelegrams() {
       const rec = bag.get(name) ?? {
         count: 0, withChildren: 0, emptyText: 0,
         texts: new Set(), children: new Set(), parents: new Set(),
-        chains: new Set(), attrs: new Map(),
+        chains: new Set(), paths: new Map(),
       }
       rec.count++
       const parent = stack[stack.length - 1]
@@ -136,14 +146,20 @@ export function scanTelegrams() {
       // の親 `VarComment` が `Pref/Code` の祖先として扱われ、別の枝の `xmlAll` を
       // 「この Code を読んでいる」と誤認した）。経路で持てば枝ごとに切り分けられる。
       rec.chains.add(stack.map(s => s.name).join('/'))
+      // 経路は計測台（`dmdataCoverage.probe.test.ts` の `pathOf`）と同じ形にする。
+      // 揃っていないと突き合わせ側が鍵で引けず、**全部が未読に見える**。
+      const full = stack.length ? `${stack.map(s => s.name).join('/')}/${name}` : name
+      const pr = rec.paths.get(full) ?? { count: 0, attrs: new Map() }
+      pr.count++
       for (const a of (m[3] ?? '').matchAll(/([\w.:-]+)\s*=\s*"([^"]*)"/g)) {
         if (a[1] === 'xmlns' || a[1].startsWith('xmlns:')) continue
         const an = a[1].replace(/^[\w]+:/, '')
-        const ar = rec.attrs.get(an) ?? { count: 0, values: new Set() }
+        const ar = pr.attrs.get(an) ?? { count: 0, values: new Set() }
         ar.count++
         if (ar.values.size < 12) ar.values.add(a[2])
-        rec.attrs.set(an, ar)
+        pr.attrs.set(an, ar)
       }
+      rec.paths.set(full, pr)
       bag.set(name, rec)
       if (m[4] === '/') { rec.emptyText++; continue }
       // 本文の有無は閉じタグまでの中身で見る（子要素の記録はスタック側が担う）
@@ -243,6 +259,100 @@ function chapterIScopeOf(name) {
   if (Object.prototype.hasOwnProperty.call(CHAPTER_I_SCOPE, name)) return CHAPTER_I_SCOPE[name] ?? []
   if (HEADLINE_INFORMATION_ELEMENTS.has(name)) return []
   return CHAPTER_TYPE['Ⅰ']
+}
+
+/**
+ * 手引き §3「読まないと決めたもの」の登録簿。**実測で未読と出たものを作業対象から外す。**
+ *
+ * **この仕組みは無かった。** `CHAPTER_I_SCOPE`・`HEADLINE_INFORMATION_ELEMENTS` は
+ * `scanManual()` の中でしか使われず、効くのは**資料にしか現れないもの**の数え上げだけ。
+ * 実測で未読と出た側（要素・属性のどちらも）は §3 の決定を一切参照しておらず、
+ * 決めてあるものを数え続けていた（本物の未読がその中に埋もれる）。
+ *
+ * 経路は要素（`Report/...`）でも属性（`Report/...@名前`）でも受ける。**要素と属性で
+ * 別々の表を持たないこと** —— `Head/Headline/Information` のように配下ごと読まないと
+ * 決めた枝は、要素も属性も同じ理由で外れる。
+ *
+ * `kind` は 2 つに分ける。**混ぜないこと** —— 「読まないと決めた」と「条件付きで読んでいる
+ * （正常な電文では通らない）」は別の状態で、後者は資料が改訂されても決定が変わらない。
+ *
+ * | kind | 意味 |
+ * |---|---|
+ * | `decided` | 読まないと決めた。資料が改訂されたら見直す対象 |
+ * | `conditional` | 読んではいるが、異常時・特定の値のときだけ通る門の中にある |
+ *
+ * **除外してよいのは根拠があるものだけ。** 出典（`source`）を必ず添える —— 根拠の無い除外は
+ * 「読み落としを見えなくする」方向に働き、点検そのものを壊す。**除外した分は出力に残す**
+ * （黙って消さない。それが `triage.mjs` の「決めてあるもの」節）。
+ *
+ * 照合は `path`（計測台が出す根からの経路と完全一致）か `contains`（経路の部分一致）。
+ * `types` を書いた場合はその種別だけ。**上から順に見て最初に当たったものを採る**ので、
+ * 種別を絞った項目は絞らない同名の項目より前に置く。
+ */
+export const DECIDED_PATHS = [
+  {
+    kind: 'decided', contains: 'Head/Headline/Information',
+    why: '見出しの構造化。内容部の部分集合で、読むと同じ事実を二重に持つ',
+    source: '手引き §3 / quake-spec.md §8「見出し文」',
+  },
+  {
+    // **要素も属性も同じ 1 項目で外す。** `@xpath` だけを書くと、本文を持つ `CodeDefine/Type`
+    // が要素として未読に残る（§3 は要素・属性を分けて決めていない）。
+    kind: 'decided', contains: 'CodeDefine/Type',
+    why: '電文が自分のコード体系を説明する欄。どの位置の Code が何のコードかは実装が持っている',
+    source: '手引き §3 / tsunami-spec.md §4',
+  },
+  {
+    // **津波の経路だけを名指しする。** `Kind/Name` は緊急地震速報でも使う（コード表に無い
+    // 値のときだけ名前を見る）ので、名前で一律に外すと本物の未読が消える。
+    kind: 'decided', path: 'Report/Body/Tsunami/Forecast/Item/Category/Kind/Name',
+    why: '同じ事実を `Kind/Code` で読んでおり、名前は表示にも判定にも使わない',
+    source: '手引き §3 / tsunami-spec.md §4',
+  },
+  {
+    kind: 'decided', path: 'Report/Body/Tsunami/Forecast/Item/Category/LastKind/Name',
+    why: '同上（前回の等級も `LastKind/Code` で読む）',
+    source: '手引き §3 / tsunami-spec.md §4',
+  },
+  {
+    kind: 'decided', path: 'Report/Body/Earthquake/Magnitude@condition',
+    why: '固定値「不明」で、出現は本文 "NaN" と同時。資料が両方を同時に定めているので同じ事実の別表現にすぎず、「Ｍ不明」と「Ｍ８を超える巨大地震」の別は @description でしか付かない',
+    source: '手引き §3 / quake-spec.md §8（規模が数値にならない電文の説明）',
+  },
+  {
+    kind: 'decided', path: 'Report/Body/Earthquake/Magnitude@description', types: ['VXSE45'],
+    why: '緊急地震速報では読まない。資料 Ⅱ.21 1-5 は不明のときの値を「M不明」しか定めておらず、アプリが出す「不明」と変わらない（「Ｍ８を超える巨大地震」を定めた一文は地震情報・津波の章にしか無い）',
+    source: '手引き §3',
+  },
+  {
+    kind: 'decided', path: 'Report/Body/Tsunami/Forecast/Item/MaxHeight/TsunamiHeight@condition',
+    why: '固定値「不明」。定性的表現がない津波注意報・予報では @description が空属性になるため、表示文字列のフォールバックに使うと波高として「不明」と出る',
+    source: '手引き §3 / tsunami-spec.md §9「数値にならない予想波高」',
+  },
+  {
+    kind: 'decided', path: 'Report/Body/Tsunami/Estimation/Item/MaxHeight/TsunamiHeight@condition',
+    why: '同上（沿岸への推定も予想側・観測側と同じ 2 段で組む）',
+    source: '手引き §3 / tsunami-spec.md §9「数値にならない予想波高」',
+  },
+  {
+    kind: 'conditional', path: 'Report/Body/Earthquake/Hypocenter/Area/Coordinate@description',
+    why: '座標を読めなかったときの記録にだけ使う',
+    source: '手引き §3',
+  },
+  {
+    kind: 'conditional', path: 'Report/Body/Earthquake/Magnitude@description',
+    why: '規模が数値として読めない電文でだけ通る（`isNaN` の門の中）',
+    source: 'quake-spec.md §8（規模が数値にならない電文の説明）',
+  },
+]
+
+/** @returns 当たった項目、または null */
+export function decidedPathOf(path, type) {
+  for (const d of DECIDED_PATHS) {
+    if (d.types && !d.types.includes(type)) continue
+    if (d.path ? d.path === path : path.includes(d.contains)) return d
+  }
+  return null
 }
 
 /**
