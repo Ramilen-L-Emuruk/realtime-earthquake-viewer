@@ -3,8 +3,7 @@ import type { JMATsunami, TsunamiGrade, TsunamiObservation } from '../types/eart
 import type { LatLng } from '../utils/tsunamiZones'
 import { useTsunamiZones } from './useTsunamiZones'
 import { useTsunamiObsCoords } from './useTsunamiObsCoords'
-import { TSUNAMI_RANK } from '../utils/tsunamiStyle'
-import { isObservationMissing } from '../utils/tsunami'
+import { GRADE_PRIORITY, isObservationMissing } from '../utils/tsunami'
 import { log } from '../utils/logger'
 
 // 津波モードの描画に必要な派生データ（海岸線＋観測棒）を計算する共有フック。
@@ -96,7 +95,7 @@ export function useTsunamiLayerData(
       .forEach((t) => {
         t.areas.forEach((a) => {
           const current = grades.get(a.name)
-          if (!current || TSUNAMI_RANK[a.grade] > TSUNAMI_RANK[current]) grades.set(a.name, a.grade)
+          if (!current || GRADE_PRIORITY[a.grade] > GRADE_PRIORITY[current]) grades.set(a.name, a.grade)
         })
       })
     const lines: TsunamiLine[] = []
@@ -105,7 +104,7 @@ export function useTsunamiLayerData(
       if (segments) lines.push({ name, grade, segments })
     })
     // 弱い等級を先（下）、強い等級を後（前面）に。
-    return lines.sort((a, b) => TSUNAMI_RANK[a.grade] - TSUNAMI_RANK[b.grade])
+    return lines.sort((a, b) => GRADE_PRIORITY[a.grade] - GRADE_PRIORITY[b.grade])
   }, [tsunamis, tsunamiZones])
 
   const observationBars = useMemo<TsunamiObsBar[]>(() => {
