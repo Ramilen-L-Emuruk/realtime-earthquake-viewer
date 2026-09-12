@@ -13,8 +13,8 @@
 // AudioContext は偽物に差し替える。fake timers の時間軸に `currentTime` を合わせ、再生の終わりも
 // タイマーで起こすことで、本物の音声グラフと同じ順序で 'ended' が届く。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { speakWithVoicevox, warmFixedPhrases, splitIntoChunks, __resetFixedPhrasesForTest } from './voicevox'
-import { eewAlertToText, EEW_LEAD_PHRASES } from './ttsText'
+import { speakWithVoicevox, speakSequentially, warmFixedPhrases, splitIntoChunks, __resetFixedPhrasesForTest } from './voicevox'
+import { eewAlertToText, EEW_LEAD_PHRASES, voicevoxPreviewTexts } from './ttsText'
 import type { EEWAlert } from '../types/earthquake'
 
 // 句区切り辞書は使わない（この検証の対象外。読みの補正が挟まると合成回数が増えて筋が追いにくい）
@@ -305,6 +305,104 @@ describe('切り出し語の作り置き', () => {
       expect(splitIntoChunks(EEW_TEXT).length).toBeGreaterThan(1)
       expect(tailPause(synthBodies[synthBodies.length - 1])).toBeNull()
     })
+  })
+
+  // 複数の文を順に鳴らす（`speakSequentially`）。設定タブの VOICEVOX 試聴が使う。
+  //
+  // **1 つの文字列へ繋げるのとは鳴り方が違う。** 繋げると文の境目がチャンクの途中になり、
+  // 末尾の句読点に間（`CHUNK_BREAK_PAUSE`）が入る。実運用の緊急地震速報は第 1 フェーズと
+  // 第 2 フェーズを別々の読み上げとして鳴らすので、試聴でも分けないと実運用には無い無音が
+  // 「〇〇で地震。」の後ろに挟まる。
+  //
+  // 3 点を対にしている:
+  //   正   … 分けて渡すと 1 文目の末尾に間が入らない
+  //   対照 … 同じ内容を繋げて渡すと、同じ位置に間が入る
+  //   安全弁… 鳴らしている間に別の読み上げが始まったら、続きを鳴らさない
+  describe('複数の文を順に鳴らす', () => {
+    const withPauseSlot = () => [{ moras: [], accent: 1, pause_mora: null }]
+    const tailPause = (body: string) => {
+      const phrases = (JSON.parse(body) as { accent_phrases: { pause_mora: unknown }[] }).accent_phrases
+      return phrases[phrases.length - 1].pause_mora
+    }
+    // 実物を使う。手書きすると、試聴文の分け方が変わったときにここだけ古い形で残る。
+    const TEXTS = voicevoxPreviewTexts()
+    /** 1 文目が割れるチャンク数。この最後のチャンクが「〇〇で地震。」にあたる。 */
+    const firstChunks = splitIntoChunks(TEXTS[0]).length
+
+    /**
+     * 始めた読み上げを最後まで進めてから抜ける。**列を途中で残さないこと** ——
+     * 2 文目は 1 文目の再生完了を待つので、残すと次のテストの時間送りでそこから鳴り出し、
+     * 無関係なテストの合成回数・音源数が狂う（実際に既存テストを 1 件巻き込んだ）。
+     */
+    const drain = async (p: Promise<void>) => { await advance(5000); await p }
+
+    it('分けて渡すと 1 文目の末尾に間が入らない（正）', async () => {
+      // 2 チャンク以上に割れていること自体を前提にする（割れ方が変わったら気づけるように）
+      expect(TEXTS.length).toBe(2)
+      expect(firstChunks).toBeGreaterThan(1)
+
+      accentPhrasesFixture = withPauseSlot()
+      synthDelaysMs = [0, 0, 0, 0]
+      const seq = speakSequentially('http://vv', TEXTS, 1, 1)
+      await advance(50)
+
+      expect(synthBodies.length).toBe(firstChunks)   // 2 文目はまだ（1 文目の再生を待つ）
+      expect(tailPause(synthBodies[firstChunks - 1])).toBeNull()
+
+      // **割り込みが無ければ最後まで読み切ること**も見る。ここを見ないと過剰抑制に気づけない
+      // —— 下の安全弁は「2 文目が鳴らない」ことを確かめるので、何かの拍子に**常に**降りる
+      // ようになっても通り続ける（むしろ正しく動いているように見える）。
+      await drain(seq)
+      expect(synthBodies.length).toBe(firstChunks + splitIntoChunks(TEXTS[1]).length)
+    })
+
+    it('繋げて渡すと同じ位置に間が入る（対照）', async () => {
+      accentPhrasesFixture = withPauseSlot()
+      synthDelaysMs = [0, 0, 0, 0]
+      const p = speakWithVoicevox('http://vv', TEXTS.join(''), 1, 1)
+      await advance(50)
+
+      expect(tailPause(synthBodies[firstChunks - 1])).not.toBeNull()
+
+      await drain(p)
+    })
+
+    // 安全弁: 前の文が止められたら降りる。判定を外すと、止められたことに気づかないまま次の文を
+    // 鳴らし、**今度はこちらが相手を止める**。相手は同じ列とは限らない —— 緊急地震速報の
+    // 読み上げは `speakWithVoicevox` を直接呼ぶので、警報の声をこの列の続きが上書きしうる。
+    /** 合成に回ったテキストを記録する（どの文が実際に読まれたかを見るため）。 */
+    const recordQueriedTexts = () => {
+      const queried: string[] = []
+      vi.stubGlobal('fetch', (url: string, init?: { body?: string }) => {
+        const s = String(url)
+        if (s.includes('/synthesis')) {
+          synthBodies.push(init?.body ?? '')
+          return Promise.resolve({ ok: true, arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)) })
+        }
+        queried.push(decodeURIComponent(s.split('text=')[1]?.split('&')[0] ?? ''))
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ accent_phrases: accentPhrasesFixture }) })
+      })
+      return queried
+    }
+
+    it('鳴らしている間に別の読み上げが始まったら、続きを鳴らさない（安全弁）', async () => {
+      const queried = recordQueriedTexts()
+
+      const seq = speakSequentially('http://vv', TEXTS, 1, 1)
+      await advance(50)   // 1 文目を鳴らしている最中
+
+      // この列を通らない読み上げ（実運用の緊急地震速報がこの形で呼ぶ）が割り込む
+      const other = speakWithVoicevox('http://vv', '緊急地震速報、能登半島沖で地震。', 1, 1)
+      await drain(other)
+      await seq
+
+      expect(queried).not.toContain(TEXTS[1])
+    })
+
+    // **連打（試聴ボタンの 2 度押し）はここでは固定していない。** 判定が守る相手は同じなのだが、
+    // この環境では判定を外しても止め合いが再現しない（止められた側が合成のループに留まり、
+    // 次の文へ進まない）。**落ちないと分かっているテストは、守っているように見えて何も守らない。**
+    // 実機では確認済みで、確かめ方は `speakSequentially` のコメントに書いてある。
   })
 
   it('作り置きが当たれば、合成を待たずに 1 音目を鳴らす', async () => {

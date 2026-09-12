@@ -3,7 +3,7 @@
 // 「日から読む／時分だけ読む」という書式の違いを正規表現で検証する。
 import { describe, it, expect, vi } from 'vitest'
 import { earthquakeCancelToText, tsunamiCancelToText, eewCancelToText, CANCEL_REASON_SPEAK_MAX_CHARS, nankaiToText, earthquakeCountToText,
-  estimatedIntensityToText, earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewIntensityText, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, tsunamiWarningLevelToText, selectWarningLevelToSpeak, WARNING_LEVEL_SPEAK_MAX_POINTS, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
+  estimatedIntensityToText, earthquakeToText, earthquakeToSegments, createQuakeSpokenState, applySpokenRefs, eewAlertToText, eewIntensityText, voicevoxPreviewTexts, lpgmToText, tsunamiToText, tsunamiDowngradeToText, tsunamiArrivalToText, tsunamiMissingToText, tsunamiObservationUpdateToText, tsunamiAreaGradeChangeToText, tsunamiWarningLevelToText, selectWarningLevelToSpeak, WARNING_LEVEL_SPEAK_MAX_POINTS, joinWithAlso, type TtsRegionOptions, type QuakeSpokenState } from './ttsText'
 import { joinSegments, plain, type SpeechSegment } from './ttsFollow'
 import { log } from './logger'
 import { tsunamiAreaGradeChanges } from './tsunami'
@@ -2175,5 +2175,43 @@ describe('estimatedIntensityToText', () => {
   // 発表した最大震度と食い違う「最大震度」が耳に 2 つ入ることになる。
   it('震度の値を言わない', () => {
     expect(estimatedIntensityToText()).not.toMatch(/震度[0-9１-７]|震度５弱|最大震度/)
+  })
+})
+
+// 設定タブの VOICEVOX 試聴（`voicevoxPreviewText`）。
+//
+// **実運用の緊急地震速報と同じ関数から組み続けていること**を固定する。文字列を直接書く形へ
+// 戻すと、緊急地震速報の文型を変えたときに試聴だけ古い形で残り、試聴で聞いた鳴り方と実際の
+// 鳴り方が食い違う（実際にそうなっていた。地震情報の文型を借りた文を読ませており、
+// 緊急地震速報はその形を一度も作らない）。
+//
+// 3 点を対にしている:
+//   正   … 1 つ目が第 1 フェーズ（`eewAlertToText`）と同じ文
+//   対照 … 地震情報の文型は含まない
+//   安全弁… 発話を 2 つに分けたまま保つ（繋ぐと実運用に無い間が入る）
+describe('設定タブの試聴文', () => {
+  // 試聴文が想定している緊急地震速報。震源名と予想震度は実装側と対で決めているので、
+  // 変えるときは両方を直す（片方だけ変えればここが落ちる）。
+  const EXPECTED_PREVIEW_EEW = { earthquake: { hypocenter: { name: '三陸沖' } } } as unknown as EEWAlert
+  const PREVIEW_SCALE: IntensityScale = 60
+
+  it('1 つ目は第 1 フェーズと同じ文', () => {
+    expect(voicevoxPreviewTexts()[0]).toBe(eewAlertToText(EXPECTED_PREVIEW_EEW, 'warning'))
+  })
+
+  // 「〇〇を震源とするマグニチュード〇の地震が発生しました。」は地震情報の言い方
+  // （`quakeOccurrenceSegments`）で、緊急地震速報はこの形を作らない。
+  it('地震情報の文型は使わない', () => {
+    expect(voicevoxPreviewTexts().join('')).not.toContain('を震源とする')
+  })
+
+  // 安全弁: 1 つへ繋ぐと「三陸沖で地震。」がチャンクの途中になり、実運用には無い
+  // 110ms の無音が末尾の句点に付く（`utils/voicevox.ts` の `CHUNK_BREAK_PAUSE`）。
+  it('発話を 2 つに分けて返す', () => {
+    const texts = voicevoxPreviewTexts()
+    expect(texts).toHaveLength(2)
+    const phase2 = eewIntensityText({ scale: PREVIEW_SCALE, orAbove: false }, 0, EXPECTED_PREVIEW_EEW)
+    expect(phase2).toBe('予想最大震度6強。')
+    expect(texts[1]).toBe(phase2)
   })
 })
