@@ -135,6 +135,39 @@ export function createTestForeignQuakeHuge(withDmdssFields: boolean): JMAQuake {
  */
 const UNRECEIVED_TEST_STATIONS = new Set(['輪島市舳倉島', '金沢市弥生'])
 
+/** 震源要素の訂正を伝える固定付加文（コード 0256）の原文。 */
+const HYPOCENTER_AMEND_NOTE = '震源要素を訂正します。'
+
+/**
+ * 地震情報テストの固定付加文（その他）（`VarComment/Text`）。**DMDSS 版でだけ渡す。**
+ *
+ * 元にした実電文（能登本震 16:24 発表の VXSE53）は 2 文を持つが、**「震源要素を訂正します。」
+ * （コード 0256）だけは落とす** —— このテストデータは訂正報ではなく確定報の形
+ * （`issue.correct: 'なし'`）で組んでいるので、残すと訂正していない報が訂正を名乗る。
+ *
+ * 残る一文が `＊`（気象庁以外が運用する観測点）の説明で、**震度を伝える電文のほぼ全てに入る**
+ * （→ docs/spec/quake-spec.md §8「固定付加文（その他）（`VarComment/Text`）はそのまま出す」）。
+ *
+ * **採る側ではなく落とす側を書くのは、気象庁が文を足したときに素通しさせるため。** 採る文を
+ * 書き並べると、新しい付加文が届いてもテストボタンだけ古い形のまま残り、実機で一度も出ない。
+ *
+ * **型が `string` でも `?? ''` を外さないこと。** 元データは `npm run build-test-quake` の
+ * 生成物で、`VarComment` を持たない報を選べば**キーごと消える**（パーサーが `undefined` を返し
+ * `JSON.stringify` が落とす）。型はその形を知らないので、素で `.split` を呼ぶと
+ * **モジュールの読み込みそのものが `TypeError` で落ちる** —— このファイルはテストボタン全体の
+ * 入口（`testDataLoader.ts` が丸ごと動的 import する）なので、地震テストに限らず EEW も津波も
+ * 押せなくなる。テスト側で巻き添えになるのは、このファイルを読む `testData.test.ts` と
+ * `useEarthquakes.wiring.test.ts` の 2 本（他のファイルは隔離して走るので `npm test` 自体は
+ * 最後まで回り、この 2 本を失敗として報告して終わる）。
+ *
+ * 欠落そのものは `testData.test.ts` の固定付加文まわり 3 件が明示的な失敗として知らせる
+ * （うち「元データは訂正の一文を持っている」が、落とす対象が実在することまで見ている）。
+ */
+const NOTO_HONSHIN_VAR_COMMENT_TEXT = (notoHonshinQuake.varCommentText ?? '')
+  .split('\n')
+  .filter((line) => line !== HYPOCENTER_AMEND_NOTE)
+  .join('\n')
+
 
 /**
  * 地震情報のテストデータ（令和6年能登半島地震・本震）。
@@ -179,7 +212,8 @@ export function createTestEarthquake(useDmdataShape: boolean, operationStatus?: 
     //   1 電文に両方が混ざることはない（→ quake-spec.md §4）
     //
     // **「気象庁以外の観測点」の印**（`nonJma`）も実電文どおり入る。電文では観測点名の末尾に
-    // `＊` が付いて届き、アプリは印を名前から外してバッジで伝える。気象庁が配る
+    // `＊` が付いて届き、アプリは引き当てのために名前から外して持ち、表示するときに戻す
+    // （→ `withNonJmaMark`）。気象庁が配る
     // `ObservingPointByOthers` コード表は**雨・雪の観測点**の表で震度観測点を含まないので、
     // 電文の `＊` だけが手がかり。
     points: useDmdataShape
@@ -197,7 +231,7 @@ export function createTestEarthquake(useDmdataShape: boolean, operationStatus?: 
       // 区域点は落とす。
       // 標準版でも同じ地点を未入電にする（P2PQuake は震度値 46 で同じ事実を配信する）。
       // **「気象庁以外」の印は落とす。** P2PQuake はこの区別を配信しないので、
-      // 残すと標準版のテストボタンだけが実電文に無いバッジを出す。
+      // 残すと標準版のテストボタンだけが実電文に無い `＊` を観測点名へ付ける。
       : (notoHonshinPoints as EarthquakePoint[])
         .filter((p) => !p.isArea)
         .map(({ nonJma: _nonJma, ...p }) => (UNRECEIVED_TEST_STATIONS.has(p.addr) ? { ...p, unreceived: true } : p)),
@@ -211,6 +245,11 @@ export function createTestEarthquake(useDmdataShape: boolean, operationStatus?: 
     // 走査しても 1 通も見つからなかった。**手で作らない** —— 実際に起きていない形をテスト
     // データに置くと、そちらへ合わせた実装が入りうる（→ docs/spec/quake-spec.md §5「市町村の震度」）。
     ...(useDmdataShape && { cities: notoHonshinQuake.cities as JMAQuakeCity[] }),
+    // 固定付加文（その他）。**DMDATA 経路だけが運ぶ**ので standard 版では渡さない
+    // （P2PQuake は付加文を配信しない）。中身の決め方は `NOTO_HONSHIN_VAR_COMMENT_TEXT`。
+    ...(useDmdataShape && NOTO_HONSHIN_VAR_COMMENT_TEXT
+      ? { varCommentText: NOTO_HONSHIN_VAR_COMMENT_TEXT }
+      : {}),
   }
 }
 
@@ -237,11 +276,12 @@ export function createTestLpgm(eventId: string): JMALpgm {
     category: 4,
     // 気象庁以外が運用する観測点の印。実電文の長周期地震動観測情報にも現れるが、
     // 元にした能登本震の報には 1 点も入っていなかった（198 点すべて気象庁）。**そこに無い形は
-    // 一度も画面に出ない**ので、1 点だけ立てて地図の吹き出しのバッジ（`LpgmPointsGL`）を
-    // 実機で確かめられるようにする。
+    // 一度も画面に出ない**ので、1 点だけ立てて印（`＊`）が名前へ戻る経路 —— 地図の吹き出し
+    // （`LpgmPointsGL`）とカードの長周期地震動の観測点の行 —— を実機で確かめられるようにする。
     //
     // **この観測点が実際に気象庁以外なのではない。** 読み取り後の形としては正しく
-    // （パーサーは名前の「＊」を外してこの印を立てる）、表示経路を通すためだけに立てている。
+    // （パーサーは名前の `＊` を外してこの印を立て、表示側が `withNonJmaMark` で戻す）、
+    // 表示経路を通すためだけに立てている。
     points: (notoHonshinLpgm.points ?? []).map((p, i) => i === 0 ? { ...p, nonJma: true } : p),
   }
 }

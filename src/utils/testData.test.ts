@@ -18,6 +18,7 @@ import {
   createTestTsunamiWatch,
   toP2pPref,
 } from './testData'
+import notoHonshinQuake from '../data/noto-honshin-2024-quake.json'
 import { eewAreas, eewMaxScale, eewNoForecastReason } from './eew'
 import { isObservationMissing } from './tsunami'
 
@@ -174,11 +175,32 @@ describe('地震情報テストの points 形状', () => {
   })
 
   // 「気象庁以外の観測点」の印は DMDSS 版（DMDATA 経路）だけが持つ事実。
-  // **P2PQuake はこの区別を配信しない**ので、標準版のテストボタンで出すと
-  // 実電文には無いバッジが画面に出る。
+  // **P2PQuake はこの区別を配信しない**ので、標準版のテストボタンで残すと
+  // 表示側（`withNonJmaMark`）が実電文には無い `＊` を観測点名へ付ける。
   it('気象庁以外の印は DMDSS 版だけが持つ', () => {
     expect(createTestEarthquake(true).points.some((p) => p.nonJma)).toBe(true)
     expect(createTestEarthquake(false).points.some((p) => p.nonJma)).toBe(false)
+  })
+
+  // 固定付加文（その他）。`＊` の説明はカードに枠付きで出るが、渡さないと実機で一度も出ない。
+  // 正・対照・安全弁の 3 種で固定する（→ CLAUDE.md「検証」）。
+  it('固定付加文（その他）は DMDSS 版だけが `＊` の説明を持つ', () => {
+    expect(createTestEarthquake(true).varCommentText).toContain('＊印は気象庁以外の震度観測点')
+    expect(createTestEarthquake(false).varCommentText).toBeUndefined()
+  })
+
+  // 安全弁: 訂正報ではなく確定報の形で組んでいるので、訂正を名乗る一文は載せない。
+  it('固定付加文（その他）に訂正の一文を混ぜない', () => {
+    const quake = createTestEarthquake(true)
+    expect(quake.issue.correct).toBe('なし')
+    expect(quake.varCommentText).not.toContain('震源要素を訂正します。')
+  })
+
+  // 安全弁: 落とす側を書いている以上、**落とす相手が元データに居ること**まで確かめないと
+  // 上のテストは空振りで通る（フィルタが何も削らなくても「含まない」は成立する）。
+  it('元データは訂正の一文を持っている（落とす対象が実在する）', () => {
+    expect(notoHonshinQuake.varCommentText).toContain('震源要素を訂正します。')
+    expect(notoHonshinQuake.varCommentText).toContain('＊印は気象庁以外の震度観測点')
   })
 
   it('都道府県ロールアップの震度は、その県の観測点の最大震度と一致する（震度不明は数えない）', () => {
