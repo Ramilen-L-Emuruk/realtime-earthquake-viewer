@@ -519,7 +519,7 @@ export interface KyoshinAlertsDeps {
   onShakeFocus: (point: { lat: number; lng: number }) => void
 }
 
-export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
+export function useKyoshinAlerts(deps: KyoshinAlertsDeps): { resetForReplay: () => void } {
   const {
     confirmed, candidate, candidateMaxIndex, confirmedShocks, dataTime, stalled, settings, title,
     activeEEWsRef, defaultTabRef, setActiveTab, revertToDefaultTab, onShakeFocus,
@@ -749,4 +749,23 @@ export function useKyoshinAlerts(deps: KyoshinAlertsDeps) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- dataTime を毎フレーム駆動キーにし他は最新クロージャを参照
   }, [dataTime])
+
+  /**
+   * リプレイの開始・停止で落とす。**時間軸に紐づくものだけ。**
+   *
+   * 落とすのは別地点発報のエピソード状態（地域の座標・発報済み・EEW 吸収済みの印）。時刻の
+   * 巻き戻りでも `stepAlertRegions` が切り替えるが、**それは時刻が後退したときだけ**で、
+   * 前へ飛ばした切替では発火しない。3 秒（`REGION_PRUNE_MS`）で地域が刈られるため実害が出る
+   * 窓は狭いものの、旧い時間軸の「発報済み」が残れば新しい軸で鳴るべき別地点発報が黙って
+   * 抑え込まれる。
+   *
+   * **他の記憶はここで触らない。** 検知が途絶した理由（`lostWhileStalledRef` /
+   * `shocksBeforeStallRef`）と音量の山（`maxSoundLevelRef` / `postPeakMinLevelRef`）は、
+   * 時間軸が変われば確定検知がいったん消えるので、そのときの経路で揃う。
+   */
+  const resetForReplay = useCallback(() => {
+    regionStateRef.current = createAlertRegionState()
+  }, [])
+
+  return { resetForReplay }
 }

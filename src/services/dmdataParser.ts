@@ -29,6 +29,7 @@ import { isValidLpgmClass } from '../utils/lpgm'
 import { isEewForecastKindCode, isEewWarningKindCode, isEewArrivedKindCode } from '../utils/eewKind'
 import { parseTsunamiEstimationCondition, parseTsunamiForecastHeightImportant, parseTsunamiObservationCondition } from '../utils/tsunami'
 import { log } from '../utils/logger'
+import { NON_JMA_MARK } from '../utils/formatters'
 import { arr, obj, str } from './parseHelpers'
 
 // EEW: "1","2","3","4","5-","5+","6-","6+","7","不明" 等
@@ -418,35 +419,6 @@ function readCommentText(commentEl: Element | null, label: string, logPrefix: st
   return ''
 }
 
-/**
- * 観測点名の `＊` を説明する固定付加文（その他）のコード。
- *
- * | コード | 原文 |
- * |---|---|
- * | 0262 | ＊印は気象庁以外の震度観測点についての情報です。 |
- * | 0263 | ＊印は気象庁以外の長周期地震動観測点についての情報です。 |
- */
-const NON_JMA_MARK_NOTE_CODES = new Set(['0262', '0263'])
-
-/**
- * 固定付加文（その他）（`VarComment/Text`）を、画面に出す前提で読む。
- *
- * **`＊` の説明文だけの付加文は落とす。** アプリは印を観測点名から外し、代わりに
- * 「気象庁以外」のバッジで伝えている（→ `stripNonJmaMark` / `nonJmaBadgeHtml`）。
- * 画面に無い記号の説明を出すと、読み手は在りもしない印を探すことになる。
- *
- * 落とすかどうかは**コードで決める**。原文の言い回しが変わっても判定は動かない。
- * ほかのコードが併記されていれば原文をそのまま出す —— 説明文だけを文字列から切り出すと、
- * 切り方が原文の書式に縛られる。
- */
-function readVarCommentTextForDisplay(varCommentEl: Element | null, logPrefix: string): string {
-  const text = readCommentText(varCommentEl, '固定付加文（その他）', logPrefix)
-  if (!text || !varCommentEl) return text
-  const codes = xmlAll(varCommentEl, 'Code').flatMap(el => xmlText(el).split(/\s+/)).filter(Boolean)
-  if (codes.length > 0 && codes.every(c => NON_JMA_MARK_NOTE_CODES.has(c))) return ''
-  return text
-}
-
 function extractForecastText(rawText: string, codes: unknown[]): string {
   const text = normalizeForecastText(rawText)
   if (!text && codes.length > 0) {
@@ -807,13 +779,19 @@ function codeOnlyLabel(code: string): string {
  * 「自治体の観測点」と言い換えないこと。
  *
  * **外すのは引き当てのため。** 座標表（`station-coords.json`）の鍵に印は入っていない
- * （4560 点すべて）。**印を外すだけで事実を捨てないこと** —— 誰が測った値かは利用者が
- * 知ってよい事実なので、印を外した先で `nonJma` として持ち回る
- * （→ {@link import('../types/earthquake').EarthquakePoint.nonJma}）。
+ * （4560 点すべて）。座標のほかにも印の無い名前を鍵にしている先がいくつもあり、
+ * **その一覧はここへ写さない**（単一情報源は
+ * {@link import('../types/earthquake').EarthquakePoint.nonJma} が指す仕様書の表）。
+ *
+ * **印を外すだけで事実を捨てないこと** —— 誰が測った値かは利用者が知ってよい事実なので、
+ * 印を外した先で `nonJma` として持ち回り、**表示するときに名前へ戻す**
+ * （→ `withNonJmaMark`。{@link import('../types/earthquake').EarthquakePoint.nonJma}）。
  */
 function stripNonJmaMark(rawName: string): { name: string; nonJma: boolean } {
-  const nonJma = rawName.endsWith('＊')
-  return { name: nonJma ? rawName.slice(0, -1) : rawName, nonJma }
+  // **印の文字は付け直す側と同じものを使う**（`NON_JMA_MARK`）。ここへ直書きすると、
+  // 片方だけ変えたときに剥がせない名前ができ、座標表の鍵に当たらず地図から静かに消える。
+  const nonJma = rawName.endsWith(NON_JMA_MARK)
+  return { name: nonJma ? rawName.slice(0, -NON_JMA_MARK.length) : rawName, nonJma }
 }
 
 /**
@@ -1512,10 +1490,10 @@ export function parseEarthquakeFromXml(headType: string, xml: string): JMAQuake 
     forecastCommentEl ? xmlText(xmlQ(forecastCommentEl, 'Text')) : '',
     forecastCodes,
   )
-  // 固定付加文（その他）（VarComment > Text）。**長周期は読んでいたのに地震情報だけ
-  // 落ちていた。** 実電文で現れるのは `＊` の説明（0262）だけなので、いまの電文では
-  // 空になる（→ `readVarCommentTextForDisplay`）。
-  const varCommentText = readVarCommentTextForDisplay(xmlQ(doc, 'VarComment'), DMDATA_LOG_PREFIX)
+  // 固定付加文（その他）（VarComment > Text）。実電文で現れるのは観測点名に付く `＊` の
+  // 説明（コード 0262）で、**震度を伝える電文のほぼ全てに入る**。アプリは印を名前へ戻して
+  // 出しているので、その説明もそのまま出す（→ `stripNonJmaMark` / `withNonJmaMark`）。
+  const varCommentText = readCommentText(xmlQ(doc, 'VarComment'), '固定付加文（その他）', DMDATA_LOG_PREFIX)
   // 自由付加文（FreeFormComment）。`xmlText` が前後の空白だけを落とす。
   const freeText = xmlText(xmlQ(doc, 'FreeFormComment'))
 
@@ -2409,7 +2387,7 @@ export function parseLpgmFromXml(xml: string): JMALpgm | null {
   const lpgmForecastEl = lpgmCommentsEl ? xmlChild(lpgmCommentsEl, 'ForecastComment') : null
   const lpgmForecastText = readCommentText(lpgmForecastEl, '固定付加文', DMDATA_LOG_PREFIX)
   const lpgmVarEl = lpgmCommentsEl ? xmlChild(lpgmCommentsEl, 'VarComment') : null
-  const lpgmVarText = readVarCommentTextForDisplay(lpgmVarEl, DMDATA_LOG_PREFIX)
+  const lpgmVarText = readCommentText(lpgmVarEl, '固定付加文（その他）', DMDATA_LOG_PREFIX)
   const lpgmFreeText = lpgmCommentsEl ? xmlText(xmlChild(lpgmCommentsEl, 'FreeFormComment')) : ''
   const lpgmUri = lpgmCommentsEl ? xmlText(xmlChild(lpgmCommentsEl, 'URI')) : ''
   const lpgmHeadline = readHeadlineText(doc)

@@ -373,3 +373,92 @@ describe('useKyoshinDetectorV2: 観測点数と震度の件数が食い違うと
     expect(result.current.dataTime).toBe('')
   })
 })
+
+// 供給の作り直し（リプレイの時間軸の切替・ローカルアーカイブの出入り）は、`useKyoshinRealtime` が
+// 震度とデータ時刻を空にする形で届く。**その空を受けても結果が凍結する**のが元の作りだった
+// （`if (!dataTime || indices.length === 0 || sites.length === 0) return` で抜けるため `setResult` が
+// 呼ばれない）。旧い時間軸の検知が新しい軸の画面・音・行動チェックリストへ流れ続ける。
+describe('useKyoshinDetectorV2: 供給が作り直されたら結果を空にする', () => {
+  const sites: SiteCoords = [[35.0, 139.0], [35.1, 139.1], [35.2, 139.2]]
+  const indices = [12, 12, 12]
+  const startMs = Date.UTC(2026, 0, 1, 0, 0, 0)
+
+  beforeEach(() => {
+    localStorage.clear()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  /** フレームを何回か進めてから、供給の作り直し（空の震度・空のデータ時刻）を渡せるフック。 */
+  function drive(frames = 3) {
+    const view = renderHook(
+      ({ t, v }: { t: string; v: number[] }) =>
+        useKyoshinDetectorV2(sites, v, t, 'cfg', 'cfg', true, false),
+      { initialProps: { t: new Date(startMs).toISOString(), v: indices } },
+    )
+    for (let i = 1; i < frames; i++) {
+      view.rerender({ t: new Date(startMs + i * 1000).toISOString(), v: indices })
+    }
+    return view
+  }
+
+  it('データ時刻が空になったら検知結果・床を空にする', () => {
+    const { result, rerender } = drive()
+    expect(result.current.dataTime).not.toBe('')
+    expect(result.current.floors.length).toBeGreaterThan(0)
+
+    rerender({ t: '', v: [] })
+    expect(result.current.detections).toEqual([])
+    expect(result.current.recentOnsetKeys.size).toBe(0)
+    expect(result.current.dataTime).toBe('')
+    expect(result.current.floors).toEqual([])
+    expect(result.current.floorsSites).toEqual([])
+  })
+
+  it('stalled は立てない（上流の異常ではなく、こちらから作り直したため）', () => {
+    // stalled は「結果を出せなくなった」ことを伝える語で、下流の振る舞いが変わる。行動
+    // チェックリストは表示中の帯を地震情報へ差し替えるのをやめ（useActionChecklist）、
+    // 発報側は次の検知を「同じ揺れの再開」と見なして検知音とブラウザ通知を省く
+    // （useKyoshinAlerts）。どちらも時間軸の切替では起きてほしくない。
+    const { result, rerender } = drive()
+    rerender({ t: '', v: [] })
+    expect(result.current.stalled).toBe(false)
+  })
+
+  it('学習資産は捨てない（次のフレームで床が戻る）', () => {
+    const { result, rerender } = drive()
+    const floorBefore = result.current.floors[1]
+    expect(floorBefore).not.toBe(0)
+
+    rerender({ t: '', v: [] })
+    expect(result.current.floors).toEqual([])
+
+    // 新しい時間軸の最初のフレーム。床を学び直すのではなく、持っていた値がそのまま出ること
+    rerender({ t: new Date(startMs + 60_000).toISOString(), v: indices })
+    expect(result.current.floors[1]).toBe(floorBefore)
+  })
+
+  it('まだ 1 フレームも来ていない間は何もしない（初回マウントと区別する）', () => {
+    const spy = vi.spyOn(detector, 'step')
+    const { result, rerender } = renderHook(
+      ({ t, v }: { t: string; v: number[] }) =>
+        useKyoshinDetectorV2(sites, v, t, 'cfg', 'cfg', true, false),
+      { initialProps: { t: '', v: [] as number[] } },
+    )
+    rerender({ t: '', v: [] })
+    expect(result.current.detections).toEqual([])
+    expect(result.current.stalled).toBe(false)
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('データ時刻が進んでいる間は空にしない', () => {
+    const { result, rerender } = drive()
+    rerender({ t: new Date(startMs + 5000).toISOString(), v: indices })
+    expect(result.current.dataTime).not.toBe('')
+    expect(result.current.floors.length).toBeGreaterThan(0)
+  })
+})
