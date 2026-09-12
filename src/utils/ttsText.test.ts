@@ -2157,24 +2157,52 @@ describe('earthquakeCountToText', () => {
   })
 })
 
-// 推計震度分布図（IXAC41）の読み上げ文。**守りたいのは名前の決定**であって語感ではない。
+// 推計震度分布図（IXAC41）の読み上げ文。**守りたいのは名前の決定と、初報・続報の言い分け**。
 describe('estimatedIntensityToText', () => {
-  // 正: 気象庁の呼称をそのまま名乗る。これ自体が名乗りとして働くので前置きは付けない。
-  it('気象庁の呼称で受信を伝える', () => {
-    expect(estimatedIntensityToText()).toBe('気象庁の推計震度分布図を受信しました。')
+  const ARRIVAL = '2026-01-01T15:04:00+09:00'
+
+  // 正: 気象庁の呼称をそのまま名乗り、どの地震のものかを時刻で言う。
+  it('初報は発現時刻を添えて受信を伝える', () => {
+    expect(estimatedIntensityToText(ARRIVAL, true))
+      .toBe('15時4分頃発生した地震について、気象庁の推計震度分布図を受信しました。')
+  })
+
+  // 正: 同じ地震の続報は「更新されました」。言い分けないと同じ報が二度読まれたように聞こえる。
+  it('続報は更新として伝える', () => {
+    expect(estimatedIntensityToText(ARRIVAL, false))
+      .toBe('15時4分頃発生した地震について、気象庁の推計震度分布図が更新されました。')
+  })
+
+  // 対照: 時刻は電文の発現時刻から組む。地震情報が読む時刻（`formatTime`）と同じ形なので、
+  // 別の地震の分布へ入れ替わったときに耳で区別できる。
+  it('発現時刻が違えば読み上げの時刻も変わる', () => {
+    expect(estimatedIntensityToText('2026-01-01T09:07:00+09:00', true)).toContain('9時7分頃')
+    expect(estimatedIntensityToText(ARRIVAL, true)).toContain('15時4分頃')
   })
 
   // 安全弁: 気象庁が使っていない名前を作らない。「推計震度分布情報」という情報名は存在せず、
   // 資料名は「推計震度分布図作図用データ」・図の名は「推計震度分布図」。
   it('気象庁が使っていない名前を名乗らない', () => {
-    expect(estimatedIntensityToText()).not.toContain('推計震度分布情報')
-    expect(estimatedIntensityToText()).toContain('推計震度分布図')
+    for (const isNew of [true, false]) {
+      expect(estimatedIntensityToText(ARRIVAL, isNew)).not.toContain('推計震度分布情報')
+      expect(estimatedIntensityToText(ARRIVAL, isNew)).toContain('推計震度分布図')
+    }
   })
 
   // 安全弁: 推計の最大震度を言わない。気象庁が「1階級程度異なることがある」と断っており、
   // 発表した最大震度と食い違う「最大震度」が耳に 2 つ入ることになる。
   it('震度の値を言わない', () => {
-    expect(estimatedIntensityToText()).not.toMatch(/震度[0-9１-７]|震度５弱|最大震度/)
+    for (const isNew of [true, false]) {
+      expect(estimatedIntensityToText(ARRIVAL, isNew)).not.toMatch(/震度[0-9１-７]|震度５弱|最大震度/)
+    }
+  })
+
+  // 安全弁: 名乗りを分ける前置き（「震度分布情報。」など）を足さない。気象庁が使っていない
+  // 情報名になるうえ、「推計震度分布図」という呼称自体が名乗りとして働いている。
+  it('名乗りを分ける前置きを付けない', () => {
+    for (const isNew of [true, false]) {
+      expect(estimatedIntensityToText(ARRIVAL, isNew)).not.toMatch(/^[^、]*。/)
+    }
   })
 })
 

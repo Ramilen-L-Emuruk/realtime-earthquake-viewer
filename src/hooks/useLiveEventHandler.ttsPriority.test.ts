@@ -789,6 +789,10 @@ describe('内容が重ならない同格どうしは互いに待つ', () => {
   function makeEstimatedIntensity() {
     return {
       kind: 'estimatedIntensity',
+      // **印を必ず付ける。** 実運用では `useEarthquakes` が付けて渡す
+      // （→ `isNewEstimatedIntensity`）。手で組み立てるテストで落とすと、実装が印を
+      // 読まなくなっても気づけない。
+      isNew: true,
       data: {
         id: 'ix-1', time: '2026-01-01T12:05:00+09:00', arrivalTime: '2026-01-01T03:00:00.000Z',
         hypocenter: { lat: 35, lon: 139, depthKm: 10 },

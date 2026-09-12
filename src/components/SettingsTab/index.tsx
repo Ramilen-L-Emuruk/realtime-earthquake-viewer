@@ -1305,7 +1305,7 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         )}
         {/* ── その他の地震情報 ── */}
         {isDmdss && onTest.estimatedIntensity && (
-          <Row label="推計震度分布図" description="気象庁が推計した震度の広がり。地図とカードのボタンが公式の表示へ替わる + 地震情報と同じ音・短い読み上げ。テストでは地震情報の3秒後に流す（実際の発表は地震から数分後）">
+          <Row label="推計震度分布図" description="気象庁が推計した震度の広がり。地図とカードのボタンが公式の表示へ替わる + 地震情報と同じ音・短い読み上げ。テストでは地震情報の3秒後に初報、さらに16秒後に続報を流し、読み上げが「受信しました」から「更新されました」へ変わる（実際の発表は地震から数分後、続報はその6分後）">
             <TestButton color="teal" onClick={onTest.estimatedIntensity}>推計震度分布図テスト</TestButton>
           </Row>
         )}
