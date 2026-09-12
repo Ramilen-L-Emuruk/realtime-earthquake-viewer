@@ -135,7 +135,7 @@ export function buildSiToScale(grades: readonly JMAEstimatedIntensityGrade[]): U
   return table
 }
 
-/** いま画面に出している分布の見分け。**本体（最大 3MB）は持たない。** */
+/** いま画面に出している分布の見分け。**本体（3MB 規模）は持たない。** */
 export interface ShownEstimatedIntensity {
   arrivalTime: string
   /** 発表時刻 */

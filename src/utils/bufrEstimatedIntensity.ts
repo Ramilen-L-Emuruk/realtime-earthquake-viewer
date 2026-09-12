@@ -224,7 +224,8 @@ export function decodeEstimatedIntensity(
   // ── メッシュ ──
   const meshCount = r.read(16)                                     // 0-31-002 2 次メッシュの数
   // 上限の見積もり。1 セルは最短 13 ビット（1/2 3 + 1/4 3 + 計測震度 7）なので、
-  // 第4節の長さから確保長を決めれば足りる。**足りないと静かに切れる**ので余裕を持たせる。
+  // 第4節の長さから確保長を決めれば足りる。**足りないと分布を丸ごと捨てる**（下の
+  // `n >= capacity` で打ち切る）ので余裕を持たせる。
   const capacity = Math.ceil((s4len * 8) / 13) + 16
   const latArr = new Float32Array(capacity)
   const lonArr = new Float32Array(capacity)
