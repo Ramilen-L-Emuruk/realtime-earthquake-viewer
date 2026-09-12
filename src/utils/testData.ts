@@ -1058,33 +1058,37 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
       {
         hypocenterName: '三陸沖', magnitudeCondition: 'Ｍ８を超える巨大地震', magnitudeType: 'Mj',
         originTime: nowIso, arrivalTime: nowIso,
-        code: '213', latitude: 38.1, longitude: 143.9, depth: 24,
+        code: '288', latitude: 38.1, longitude: 143.9, depth: 24,
       },
       {
         hypocenterName: '岩手県沖', magnitude: 7.2, magnitudeType: 'M',
         originTime: t(-3), arrivalTime: t(-3), source: 'ＰＴＷＣ',
-        code: '215', latitude: 39.6, longitude: 143.2, depth: 10,
-        nameFromMark: '宮古の東１２０ｋｍ付近', markCode: '203', direction: '東', distanceKm: 120,
+        code: '286', latitude: 39.6, longitude: 143.2, depth: 10,
+        nameFromMark: '宮古の東１２０ｋｍ付近', markCode: '201', direction: '東', distanceKm: 120,
       },
     ],
     } : {}),
     // name は地図の海岸線表示用に、津波予報区データ（tsunami-zones.json）に実在する区域名を使用する
     // 2011年東北地方太平洋沖地震を参考にした発令内容
-    // code は津波予報区コード（テスト用の仮値）。observations の districtCode と一致させて紐づけを確認する
+    // code は津波予報区コード。名前とコードの対応は気象庁の個別コード表
+    // （技術資料の jmaxml_*_Code.zip・シート 31 = AreaTsunami）から採る。observations の
+    // districtCode と一致させて紐づけを確認する。区域の中の観測点コードは同 zip の
+    // シート 35 = PointTsunami。**一次細分区域（震度）のコードと混ぜないこと** ——
+    // 「石川県能登」は一次細分区域では 390、津波予報区では 360 で、番号がまったく別物
     areas: ([
       {
         // 数値にならない予想波高。`value` を持たないのが電文どおりの形
-        grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030',
+        grade: 'MajorWarning', immediate: true, name: '岩手県', code: '210',
         maxHeight: { description: '巨大' },
         firstHeight: { arrivalTime: t(-6), condition: 'ただちに津波来襲と予測' },
         stations: [
-          { name: '宮古',   code: '0031', arrivalTime: t(-6), highTideDateTime: t(60) },
-          { name: '釜石',   code: '0032', arrivalTime: t(-4), highTideDateTime: t(62) },
-          { name: '大船渡', code: '0033', arrivalTime: t(-5), highTideDateTime: t(58) },
+          { name: '宮古',   code: '21001', arrivalTime: t(-6), highTideDateTime: t(60) },
+          { name: '釜石',   code: '21003', arrivalTime: t(-4), highTideDateTime: t(62) },
+          { name: '大船渡', code: '21002', arrivalTime: t(-5), highTideDateTime: t(58) },
         ],
       },
       {
-        grade: 'MajorWarning', immediate: true, name: '宮城県', code: '040',
+        grade: 'MajorWarning', immediate: true, name: '宮城県', code: '220',
         maxHeight: { description: '10m以上', value: 10.0 },
         // 大津波警報の区域で予想波高が初めて数値になった／上方修正された合図（電文の
         // `MaxHeight/Condition` = 重要）。観測・推定の「重要」とは意味が違う
@@ -1092,41 +1096,41 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
         // 到達状況は 3 つある。時刻を出せない段階ではこちらが入る
         firstHeight: { condition: '津波到達中と推測' },
         stations: [
-          { name: '石巻港', code: '0041', arrivalTime: t(-4), highTideDateTime: t(55) },
-          { name: '仙台港', code: '0042', arrivalTime: t(-3), highTideDateTime: t(57) },
-          { name: '気仙沼', code: '0043', arrivalTime: t(-5), highTideDateTime: t(56) },
+          { name: '石巻港', code: '22022', arrivalTime: t(-4), highTideDateTime: t(55) },
+          { name: '仙台港', code: '22021', arrivalTime: t(-3), highTideDateTime: t(57) },
+          { name: '石巻市鮎川', code: '22002', arrivalTime: t(-5), highTideDateTime: t(56) },
         ],
       },
       {
-        grade: 'MajorWarning', immediate: true, name: '福島県', code: '050',
+        grade: 'MajorWarning', immediate: true, name: '福島県', code: '250',
         maxHeight: { description: '6m', value: 6.0 },
         firstHeight: { condition: '第１波の到達を確認' },
         stations: [
-          { name: '小名浜', code: '0051', arrivalTime: t(-2), highTideDateTime: t(65) },
+          { name: 'いわき市小名浜', code: '25002', arrivalTime: t(-2), highTideDateTime: t(65) },
         ],
       },
       {
-        grade: 'Warning', immediate: false, name: '青森県太平洋沿岸', code: '060',
+        grade: 'Warning', immediate: false, name: '青森県太平洋沿岸', code: '201',
         maxHeight: { description: '3m', value: 3.0 },
         firstHeight: { arrivalTime: t(10), condition: '' },
         stations: [
-          { name: '八戸',       code: '0061', arrivalTime: t(10), highTideDateTime: t(70) },
-          { name: 'むつ関根浜', code: '0062', arrivalTime: t(15), highTideDateTime: t(72) },
+          { name: '八戸港',       code: '20121', arrivalTime: t(10), highTideDateTime: t(70) },
+          { name: 'むつ市関根浜', code: '20102', arrivalTime: t(15), highTideDateTime: t(72) },
         ],
       },
       {
-        grade: 'Warning', immediate: false, name: '茨城県', code: '070',
+        grade: 'Warning', immediate: false, name: '茨城県', code: '300',
         maxHeight: { description: '3m', value: 3.0 },
         firstHeight: { arrivalTime: t(20), condition: '' },
         stations: [
-          { name: '大洗', code: '0071', arrivalTime: t(20), highTideDateTime: t(80) },
+          { name: '大洗', code: '30001', arrivalTime: t(20), highTideDateTime: t(80) },
         ],
       },
       {
-        grade: 'Watch', immediate: false, name: '北海道太平洋沿岸東部', code: '080',
+        grade: 'Watch', immediate: false, name: '北海道太平洋沿岸東部', code: '100',
         maxHeight: { description: '1m', value: 1.0 },
         stations: [
-          { name: '釧路', code: '0081', arrivalTime: t(30), highTideDateTime: t(90) },
+          { name: '釧路', code: '10001', arrivalTime: t(30), highTideDateTime: t(90) },
         ],
       },
     ] as TsunamiArea[]).map(a => withDmdssFields ? a : toP2pTsunamiArea(a)),
@@ -1135,24 +1139,24 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
     // 気象庁は「重要 欠測」「微弱 欠測」のように複数を併記するため（電文解説資料 Ⅱ.12）、
     // 単独の状態しか置かないとカード・地図・読み上げの併記の扱いが一度も通らない。
     observations: [
-      { name: '宮古',   districtCode: '030', districtName: '岩手県',           height: { value: 8.5, description: '8.5m以上', over: true }, arrivalTime: nowIso, initial: '押し', maxHeightDateTime: t(4), firstHeightRevise: '追加' },
+      { name: '宮古',   districtCode: '210', districtName: '岩手県',           height: { value: 8.5, description: '8.5m以上', over: true }, arrivalTime: nowIso, initial: '押し', maxHeightDateTime: t(4), firstHeightRevise: '追加' },
       // これまでの最大波を観測した後に観測が途切れた観測点（値と欠測が同時に来る形）。
-      { name: '大船渡', districtCode: '030', districtName: '岩手県',           height: { value: 3.2, description: '3.2m以上', over: true }, arrivalTime: t(-5), initial: '押し', condition: { maxHeightMissing: true, important: true } },
-      { name: '石巻港', districtCode: '040', districtName: '宮城県',           height: { value: 7.2, description: '7.2m' }, arrivalTime: nowIso, initial: '押し', maxHeightDateTime: t(6), maxHeightRevise: '更新', firstHeightRevise: '更新' },
+      { name: '大船渡', districtCode: '210', districtName: '岩手県',           height: { value: 3.2, description: '3.2m以上', over: true }, arrivalTime: t(-5), initial: '押し', condition: { maxHeightMissing: true, important: true } },
+      { name: '石巻港', districtCode: '220', districtName: '宮城県',           height: { value: 7.2, description: '7.2m' }, arrivalTime: nowIso, initial: '押し', maxHeightDateTime: t(6), maxHeightRevise: '更新', firstHeightRevise: '更新' },
       // 到達は確認できたが最大波が欠測（波高の数値が無い）。
-      { name: '相馬',   districtCode: '050', districtName: '福島県',           arrivalTime: t(-2), initial: '押し', condition: { maxHeightMissing: true } },
+      { name: '相馬',   districtCode: '250', districtName: '福島県',           arrivalTime: t(-2), initial: '押し', condition: { maxHeightMissing: true } },
       // 第1波も最大波も欠測（到達したかどうかも判っていない）。
-      { name: 'いわき市小名浜', districtCode: '050', districtName: '福島県',   condition: { firstHeightMissing: true, maxHeightMissing: true } },
+      { name: 'いわき市小名浜', districtCode: '250', districtName: '福島県',   condition: { firstHeightMissing: true, maxHeightMissing: true } },
       // 水位が上昇中の観測点。波高の数値が消えないことの確認を兼ねる。
-      { name: '大洗',   districtCode: '070', districtName: '茨城県',           height: { value: 2.1, description: '2.1m' }, arrivalTime: t(20), initial: '押し', condition: { rising: true } },
-      { name: '八戸港', districtCode: '060', districtName: '青森県太平洋沿岸', height: { value: 1.8, description: '1.8m' }, arrivalTime: nowIso, initial: '引き' },
+      { name: '大洗',   districtCode: '300', districtName: '茨城県',           height: { value: 2.1, description: '2.1m' }, arrivalTime: t(20), initial: '押し', condition: { rising: true } },
+      { name: '八戸港', districtCode: '201', districtName: '青森県太平洋沿岸', height: { value: 1.8, description: '1.8m' }, arrivalTime: nowIso, initial: '引き' },
       // 第1波の到達時刻が読み取れなかった観測点（`FirstHeight/Condition` = 第１波識別不能）。
       // **欠測とは別物** —— 津波は観測できていて到達も確定しており、時刻だけが出せない。
       // 時刻の欄に「到達時刻不明」と理由が出る（`utils/tsunami.ts` の
       // `observationArrivalFallbackText`）。到達確認の扱いは欠測と違って抑制しない。
-      { name: '久慈港', districtCode: '030', districtName: '岩手県', height: { value: 4.4, description: '4.4m' }, initial: '押し', maxHeightDateTime: t(3), condition: { firstWaveUnidentifiable: true } },
+      { name: '久慈港', districtCode: '210', districtName: '岩手県', height: { value: 4.4, description: '4.4m' }, initial: '押し', maxHeightDateTime: t(3), condition: { firstWaveUnidentifiable: true } },
       // 津波注意報の区域で、これまでの最大波がごく小さい（数値を発表しない）。
-      { name: '釧路',   districtCode: '080', districtName: '北海道太平洋沿岸東部', arrivalTime: t(30), initial: '押し', condition: { weak: true } },
+      { name: '釧路',   districtCode: '100', districtName: '北海道太平洋沿岸東部', arrivalTime: t(30), initial: '押し', condition: { weak: true } },
       // 沖合の潮位観測点。「重要」の基準が沿岸と違う（大津波警報だけでなく津波警報も含む）ため、
       // 出所の印（offshore）を付けてバッジの語が切り替わることを確かめられるようにする。
       { name: '沖合40km', offshore: true, sensor: 'ＧＮＳＳ波浪計', height: { value: 3.0, description: '3.0m以上', over: true }, arrivalTime: nowIso, condition: { important: true }, maxHeightDateTime: t(2) },
@@ -1171,14 +1175,14 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
     //   福島県 … 予想される高さに比べ十分小さく、数値を発表しない（推定中）
     estimations: [
       {
-        name: '岩手県', code: '030', arrivalTime: t(8),
+        name: '岩手県', code: '210', arrivalTime: t(8),
         arrivalCondition: '早いところでは既に津波到達と推定',
         maxHeight: { description: '5m', value: 5.0 },
         condition: { important: true },
         maxHeightDateTime: t(8), firstHeightRevise: '追加', maxHeightRevise: '追加',
       },
-      { name: '宮城県', code: '040', arrivalCondition: '早いところでは既に津波到達と推定', maxHeight: { description: '4m', value: 4.0 } },
-      { name: '福島県', code: '050', arrivalCondition: '早いところでは既に津波到達と推定', condition: { estimating: true } },
+      { name: '宮城県', code: '220', arrivalCondition: '早いところでは既に津波到達と推定', maxHeight: { description: '4m', value: 4.0 } },
+      { name: '福島県', code: '250', arrivalCondition: '早いところでは既に津波到達と推定', condition: { estimating: true } },
     ],
     } : {}),
   }

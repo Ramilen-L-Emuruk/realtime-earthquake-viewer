@@ -138,7 +138,7 @@ function makeTsunamiArrivalOnly(over: { id?: string } = {}): JMATsunami {
     cancelled: false,
     issue: { source: 'JMA', time: '2026-01-01T12:10:00Z', type: 'Focus' },
     areas: [],
-    observations: [{ name: '輪島港', districtCode: '390', districtName: '石川県能登' }],
+    observations: [{ name: '輪島港', districtCode: '360', districtName: '石川県能登' }],
   } as unknown as JMATsunami
 }
 

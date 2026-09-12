@@ -106,8 +106,8 @@ function makeCancelReport(id: string): JMATsunami {
 }
 
 const AREAS_WARNING = [
-  { name: '岩手県', code: '221', grade: 'Warning' },
-  { name: '宮城県', code: '222', grade: 'Watch' },
+  { name: '岩手県', code: '210', grade: 'Warning' },
+  { name: '宮城県', code: '220', grade: 'Watch' },
 ]
 
 function setup(displayed: JMATsunami[] = []) {
@@ -185,8 +185,8 @@ describe('寄せ先が無い受信で先頭へ戻すかどうか', () => {
     displayed[0] = makeGradeReport(AREAS_WARNING, 't1')
 
     const downgraded = [
-      { name: '岩手県', code: '221', grade: 'Watch' },
-      { name: '宮城県', code: '222', grade: 'Watch' },
+      { name: '岩手県', code: '210', grade: 'Watch' },
+      { name: '宮城県', code: '220', grade: 'Watch' },
     ]
     act(() => { h.current.handleLiveEvent(makeGradeReport(downgraded, 't2') as never) })
 
@@ -217,13 +217,13 @@ describe('寄せ先が無い受信で先頭へ戻すかどうか', () => {
       ...makeHighTideReport(AREAS_WARNING, 't2'),
       infoName: '津波観測に関する情報',
       observations: [{
-        name: '宮古', districtCode: '221', districtName: '岩手県',
+        name: '宮古', districtCode: '210', districtName: '岩手県',
         height: { value: 0.4, description: '0.4m' },
       }],
     } as unknown as JMATsunami
     act(() => { h.current.handleLiveEvent(obs as never) })
 
-    expect(h.current.focusedDistrict?.districts).toEqual([{ code: '221', name: '岩手県' }])
+    expect(h.current.focusedDistrict?.districts).toEqual([{ code: '210', name: '岩手県' }])
     expect(h.current.focusedDistrict?.resetToTop).toBe(false)
   })
 })

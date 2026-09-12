@@ -61,6 +61,9 @@ describe('テスト EEW の予想区域名', () => {
 })
 
 // 座標を持たせていない既知の観測点。地図に棒を出すことを意図していないものだけを挙げる。
+// **下の 2 つの検査が共有する。** 観測情報（`observations`）と予想区域の中（`areas[].stations`）の
+// どちらへ架空値を足す場合もここへ書く。片方だけが例外を持つ形にすると、足した側で理由の分からない
+// 失敗が出る。
 //
 // `沖合40km` は、予報区に紐づかない観測が「沖合観測」カードへフォールバックする経路
 // （導入コミット 1baefde）を確かめるための架空の観測点。実在の沖合観測点（「岩手宮古沖」等）は
@@ -84,6 +87,26 @@ describe('テスト津波の観測点名', () => {
       (o) => (o.height || isObservationMissing(o)) && !KNOWN_COORDLESS_OBSERVATIONS.has(o.name),
     )
     const names = targets.map((o) => o.name)
+    expect(names.length).toBeGreaterThan(0)
+    expect(names.filter((name) => !obsCoordNames.has(name))).toEqual([])
+  })
+
+  // **予想区域の中の観測点も実在する名前にする。** こちらは満潮時刻・津波到達予想時刻を出す行。
+  // 観測情報の側だけを見ていたため、ここに実在しない名前（「気仙沼」「小名浜」「八戸」
+  // 「むつ関根浜」）が長く残っていた。
+  //
+  // **理由は「電文に現れる名前を再現する」こと自体**で、座標表を引く機能があるからではない。
+  // この行が押せるのは観測情報の側に同名のエントリがあってマージされたときだけで（→
+  // docs/spec/tsunami-spec.md §9「観測点の行をクリックしたときの寄り先」）、一致しない行は
+  // 予測だけを出す非クリック行になる。それでも座標表と突き合わせるのは、**実在しない名前を
+  // 機械的に弾ける物差しがこれしか無い**ため（コードは座標表が持たないので照合できない）。
+  //
+  // **DMDSS 版だけを見るのは、standard 版がこの欄を持たないから**（`toP2pTsunamiArea` が
+  // `stations` を引き継がない）。観測情報の側の「バリアントに依存しない」とは理由が違う。
+  it('予想区域の観測点の名前がすべて実在する（座標を持たせていない既知の例外を除く）', () => {
+    const names = (createTestTsunami(true).areas ?? [])
+      .flatMap((a) => (a.stations ?? []).map((st) => st.name))
+      .filter((name) => !KNOWN_COORDLESS_OBSERVATIONS.has(name))
     expect(names.length).toBeGreaterThan(0)
     expect(names.filter((name) => !obsCoordNames.has(name))).toEqual([])
   })

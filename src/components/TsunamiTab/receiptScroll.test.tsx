@@ -23,7 +23,7 @@ const TSUNAMI = {
   time: '2026-04-20T08:00:00Z',
   cancelled: false,
   issue: { source: 'JMA', time: '2026-04-20T08:00:00Z', type: 'Focus' },
-  areas: [{ name: '岩手県', code: '221', grade: 'Warning', immediate: false }],
+  areas: [{ name: '岩手県', code: '210', grade: 'Warning', immediate: false }],
   observations: [],
 } as unknown as JMATsunami
 
