@@ -1,3 +1,5 @@
+import type { TabId } from '../components/IconNav'
+
 /**
  * 自動タブ切替の優先度。**読み上げの優先順位（`docs/spec/audio-tts-spec.md` §6）と同じ並び**に
  * してある。声だけ優先度を持たせても画面を奪われると、EEW を読み上げている最中に別のタブが
@@ -273,4 +275,35 @@ export function shouldFollowNow(
  */
 export function idleRevertPriority(hasActiveEew: boolean): TabPriority {
   return hasActiveEew ? TAB_PRIORITY.eewUpdate : TAB_PRIORITY.kyoshin
+}
+
+/**
+ * 津波タブへ移るとき、カードのスクロールを先頭へ戻すかどうか。
+ *
+ * **他のタブから自動で連れてきたときだけ戻す。** 一度スクロールしたあと別のタブへ移り、続報や
+ * 既定の状態への復帰で連れ戻されると、前に見ていた途中の位置から始まってしまうため。
+ * 除外する条件が 2 つある。
+ *
+ * - **手動選択**（`manual`）: 自分で開いたのだから読んでいた場所を保つ
+ * - **既に津波タブを表示している場合**: 移動の要求は「値が変わらない切替」でも通る（読み上げの
+ *   追従は電文ごとに `followSpeechTab('tsunami', ...)` を通すし、津波優先の設定では既定タブが
+ *   津波になるのでアイドル復帰も繰り返し通る）。タブが変わらないのに先頭へ戻すと、
+ *   **開いたまま読み進めている最中に画面が飛ぶ**
+ *
+ * **既定の状態への復帰（アイドル復帰・EEW 全解除・揺れ検知終了・揺れの可能性の失効）も
+ * この判定に通すこと。** 別経路を用意しない —— かつて `revertToDefaultTab` が独自に先頭復帰を
+ * 要求しており、2 つ目の除外が掛からないまま残っていた。津波優先の既定タブで津波カードを
+ * 読んでいる間、無操作 30 秒ごとに位置が捨てられていた（`tsunami-spec.md` §9）。
+ *
+ * **この判定が true でも、手で動かした直後（30 秒）は先頭へ戻らない。** 実際に動かすのは
+ * `TsunamiTab` の `autoShowTick` で、そちらが手操作の保持を尊重するため。復帰系もこの経路へ
+ * 寄せた結果、**復帰も保持を尊重するようになった**（独自経路だったころは保持を見ていなかった）。
+ * 触った位置を残す方を採る判断で、`autoShowTick` 側の既定と揃えてある。
+ *
+ * @param tab 移動先のタブ
+ * @param priority その移動の優先度
+ * @param currentTab 移動する前に表示していたタブ
+ */
+export function shouldResetTsunamiScroll(tab: TabId, priority: TabPriority, currentTab: TabId): boolean {
+  return tab === 'tsunami' && priority !== TAB_PRIORITY.manual && currentTab !== tab
 }

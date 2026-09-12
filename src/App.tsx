@@ -5,7 +5,7 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import {
   TAB_PRIORITY, TAB_HOLD_MS, shouldAcceptAutoTab, shouldFollowNow, idleRevertPriority,
   shouldRetakeAfterPreSpeech,
-  resolveNonRealtimeTabSource,
+  resolveNonRealtimeTabSource, shouldResetTsunamiScroll,
   type TabHold, type TabPriority, type TabHoldSource, type TabFollowMark,
 } from './utils/tabPriority'
 import { PanelResizeHandle } from './components/PanelResizeHandle'
@@ -349,15 +349,11 @@ export function App() {
     // 無くなるため。追跡を捨てないのは、捨てると畳んだ状態へ戻す機会が二度と来ないため
     // （実際に「畳んで地図を見ている最中に特別情報 → 揺れ検知で自動移動」の順で踏むと、
     // 以後ユーザー操作でもアイドル復帰でも畳めなくなっていた）。
-    // **他のタブから自動で連れてきたときだけ、津波カードを先頭から見せる。** 一度スクロール
-    // したあと別のタブへ移り、続報や復帰で連れ戻されると、前に見ていた途中の位置から始まって
-    // しまうため。除外する条件が 2 つある。
-    //
-    // - 手動選択（`manual`）: 自分で開いたのだから読んでいた場所を保つ
-    // - **既に津波タブを表示している場合**: この関数は「値が変わらない切替」でも呼ばれる
-    //   （読み上げの追従は電文ごとに `followSpeechTab('tsunami', ...)` を通す）。タブが
-    //   変わらないのに先頭へ戻すと、**開いたまま読み進めている最中に続報が来るたび画面が飛ぶ**
-    if (tab === 'tsunami' && priority !== TAB_PRIORITY.manual && activeTabRef.current !== tab) {
+    // **他のタブから自動で連れてきたときだけ、津波カードを先頭から見せる。**
+    // 判定は `shouldResetTsunamiScroll` に集約してある（除外する 2 条件の理由もそちら）。
+    // **津波カードの先頭復帰はここが唯一の経路。** 復帰系の呼び出しも `forceTab` からここを
+    // 通るので、別に要求を出す口を作らないこと。
+    if (shouldResetTsunamiScroll(tab, priority, activeTabRef.current)) {
       setTsunamiAutoShowTick(t => t + 1)
     }
     setActiveTab(tab)
@@ -552,18 +548,14 @@ export function App() {
     requestAutoTab(tab, priority, 'speech', false)
   ), [requestAutoTab])
 
-  // useLiveEventHandler が返す resetTsunamiScrollToTop を revertToDefaultTab から呼べるようにする ref。
-  // revertToDefaultTab はフック呼び出しより前に定義されるため、defaultTabRef と同様に
-  // ref 経由で後から実体を代入する（呼び出されるのは常にレンダー後のためタイミング上問題ない）。
-  const resetTsunamiScrollRef = useRef<() => void>(() => {})
-
   // デフォルトタブへ復帰する。デフォルトタブが realtime の場合は
   // 抑制タイマーをセットせずそのまま移動する（realtime への強制移動を
   // 抑制する意味がないため）。
-  // 津波イベントを経由しない復帰で津波タブに切り替わる場合は、変更区域の強調も落とす
-  // （そのまま残すと、いつのものか分からない強調が付いたカードを見せることになる）。
-  // **スクロールを先頭へ戻すのは `requestAutoTab` の `tsunamiAutoShowTick` が担う。**
-  // こちらは読み上げが有効なとき受信時スクロールごと見送られるため、それだけには頼れない。
+  //
+  // **津波カードのスクロールをここから動かさない。** 先頭へ戻すかどうかは `forceTab` の先
+  // （`requestAutoTab` の `tsunamiAutoShowTick`）が `shouldResetTsunamiScroll` で決める。
+  // かつてここから別に要求を出していたが、**タブが変わっていなくても戻す**形だったため、
+  // 津波優先の既定タブで津波カードを読んでいる間、無操作 30 秒ごとに位置が捨てられていた。
   const revertToDefaultTab = () => {
     const tab = defaultTabRef.current
     // 既定の状態へ戻す操作なので必ず動かす（理由は forceTab）。呼び出し元は EEW 発報中・
@@ -573,7 +565,6 @@ export function App() {
     // 追従は優先度比較だけで通る）。それでも渡すのは、復帰という理由に駆動源を一致させておくため。
     // 将来ここが 1 以外の重みを使うようになったとき、渡し忘れに気づく手立てが無くなる。
     forceTab(tab, TAB_PRIORITY.quake, 'idleRevert')
-    if (tab === 'tsunami') resetTsunamiScrollRef.current()
   }
 
   // 読み上げの進行を津波カードへ伝える（追従スクロール）。
@@ -586,14 +577,13 @@ export function App() {
   const speechFollow = useMemo(() => createSpeechFollowController(setSpeechFollowSession), [])
 
   // ライブイベント受信処理（通知音・タイトル・タブ切替・読み上げ・ブラウザ通知）
-  const { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, areaGradeChangedKeys, focusedDistrict, resetTsunamiScrollToTop } = useLiveEventHandler({
+  const { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, areaGradeChangedKeys, focusedDistrict } = useLiveEventHandler({
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate, setActiveTabRealtimeUrgent,
     setActiveTabRealtimeForKyoshin: () => requestTabForKyoshin('realtime'),
     followSpeechTab, preSpeechTab, speechFollow, expandPanelForSpecialInfo,
     revertToDefaultTab, selectQuake, openLpgmFromQuake, openEstimatedIntensity,
   })
-  resetTsunamiScrollRef.current = resetTsunamiScrollToTop
 
   const [replayTimeOffset, setReplayTimeOffset] = useState<number | null>(null)
 
@@ -1292,7 +1282,7 @@ export function App() {
   )
   /**
    * 行動チェックリストのリセット。**宣言が `useReplayController` より後になる**ため、
-   * `resetTsunamiScrollRef` と同じ作法で ref 経由に渡す（実体の代入は下方・呼ばれるのは
+   * `defaultTabRef` と同じ作法で ref 経由に渡す（実体の代入は下方・呼ばれるのは
    * 常にレンダー後なのでタイミング上問題ない）。
    */
   const resetActionChecklistRef = useRef<() => void>(() => {})

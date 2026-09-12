@@ -3120,11 +3120,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     }
   }, [])
 
-  // 津波イベントを経由しないタブ復帰（アイドル復帰・EEW全解除・揺れ検知終了）で
-  // 津波タブに切り替わったときに、スクロール位置を一番上へ戻すために公開する。
-  const resetTsunamiScrollToTop = useCallback(() => {
-    setFocusedDistrict({ districts: [], top: null, resetToTop: true, ts: Date.now() })
-  }, [])
-
-  return { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, areaGradeChangedKeys, focusedDistrict, resetTsunamiScrollToTop }
+  // **タブ復帰で津波カードを先頭へ戻す口はここに置かない。** 先頭復帰は `App.tsx` の
+  // `requestAutoTab` が `shouldResetTsunamiScroll` で決める 1 経路だけにしてある。
+  // ここから別に要求を出していた頃は、タブが変わっていない復帰でも位置を捨てていた。
+  return { handleLiveEvent, resetTracking, restorePreWindowTracking, obsUpdateStatus, areaGradeChangedKeys, focusedDistrict }
 }
