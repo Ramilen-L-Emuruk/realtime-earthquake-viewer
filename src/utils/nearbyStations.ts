@@ -9,9 +9,21 @@
 // 数十秒に及ぶ恒久的な停止は保持期間を過ぎて値が消えるが、そのときは半径内の別の点が拾う。
 //
 // 【2 つの観測点集合】強震モニタ（Yahoo・約 1725 点・座標のみの配列）と気象庁の震度観測点
-// （`station-coords.json`・約 4372 件・"県|観測点名" のキー）は**別物**。前者は観測点キーで
+// （`station-coords.json`・"県|観測点名" のキー）は**別物**。前者は観測点キーで
 // 検知エンジンの出力と突き合わせ、後者は電文の観測点名と突き合わせる。用途ごとに関数を分けている
 // のはこのため。
+//
+// 【現行の一覧に無い観測点も数える】震度観測点の走査は `stationEntries` を通す（現行＋現行の
+// 一覧に無いもの）。座標を引く側（`lookupPointCoords`）が両方を見るので、ここだけ現行に絞ると
+// **地図には観測点が出るのに、自宅の近くを数える側からは存在しないことになる**。過去の電文を
+// 再生したときに、廃止済みの観測点が記録した震度が行動チェックリストから黙って抜け落ちる。
+//
+// 半径の集合へ入れると、原理的には「近くに観測点が無い」が「ある」へ化えうる（自宅が廃止済みの
+// 観測点からは 30km 以内、現行の観測点からはすべて 30km 超、という配置）。**起きる位置を数えた**
+// ——「現行の一覧に無い」122 点それぞれの周囲 30km を 1km 刻みで走査したところ（約 34 万点）、
+// 化ける位置は 40 点弱で、**そのすべてが海上**だった（陸地判定は `prefectures.json`）。
+// **件数は格子の置き方で数点動く**ので、意味があるのは「陸地が 0 だった」ほうだけ。
+// 標本による確認なので「起きない」とは言えないが、自宅として登録しうる場所では見つからなかった。
 //
 // 【全件版が要る理由】半径内の集合だけでは「近所が電文に載っていない」の意味が決まらない。
 // 「載るほど揺れていない」のか「電文の粒度がこちらの索引と噛み合っていない」のかで、出すべきか
@@ -21,7 +33,7 @@
 import { haversineKm } from './geo'
 import { computeSiteKeys } from './kyoshinDetector'
 import type { SiteCoords } from '../services/kyoshin'
-import type { StationCoordsData } from './stationCoords'
+import { stationEntries, type StationCoordsData } from './stationCoords'
 
 /**
  * 自宅の周りとみなす半径 (km)。
@@ -84,7 +96,7 @@ export function nearbyStationNames(
   radiusKm: number = NEARBY_RADIUS_KM,
 ): Set<string> {
   const names = new Set<string>()
-  for (const [key, entry] of Object.entries(data.stations)) {
+  for (const [key, entry] of stationEntries(data)) {
     if (!entry) continue
     if (haversineKm(home.lat, home.lng, entry[0], entry[1]) > radiusKm) continue
     const name = stationNameOf(key)
@@ -106,7 +118,7 @@ function stationNameOf(key: string): string {
  */
 export function allStationNames(data: StationCoordsData): Set<string> {
   const names = new Set<string>()
-  for (const key of Object.keys(data.stations)) {
+  for (const [key] of stationEntries(data)) {
     const name = stationNameOf(key)
     if (name) names.add(name)
   }
@@ -133,7 +145,7 @@ export function nearbyRegionNames(
   const names = data.regionNames
   const found = new Set<string>()
   if (!names) return found
-  for (const entry of Object.values(data.stations)) {
+  for (const [, entry] of stationEntries(data)) {
     if (!entry) continue
     const regionIdx = entry[2]
     if (regionIdx == null) continue

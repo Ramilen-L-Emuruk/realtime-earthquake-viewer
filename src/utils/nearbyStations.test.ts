@@ -121,3 +121,40 @@ describe('NEARBY_RADIUS_KM', () => {
     expect(NEARBY_RADIUS_KM).toBe(30)
   })
 })
+
+// 座標を引く側（`lookupPointCoords`）は現行の一覧に無い観測点も見る。ここだけ現行に絞ると、
+// 地図には観測点が出るのに自宅の近くを数える側からは存在しないことになり、過去の電文を
+// 再生したとき廃止済みの観測点が記録した震度が行動チェックリストから黙って抜ける。
+describe('現行の一覧に無い観測点（unlisted）', () => {
+  // 東京駅から 約6km（半径内）と 約60km（半径外）に 1 点ずつ置く。
+  const WITH_UNLISTED: StationCoordsData = {
+    ...DATA,
+    unlisted: {
+      '東京都|旧新宿観測点': [35.690, 139.700, 0],
+      '埼玉県|旧熊谷観測点': [36.147, 139.389, 2],
+    },
+  }
+
+  // 正: 半径内なら現行と同じように数える。
+  it('半径内の観測点は現行と同じように数える', () => {
+    expect(nearbyStationNames(WITH_UNLISTED, HOME)).toContain('旧新宿観測点')
+    expect(allStationNames(WITH_UNLISTED)).toContain('旧新宿観測点')
+  })
+
+  // 対照: 半径の判定は現行と同じ物差しで行う。落とし先だからといって緩めない。
+  it('半径外の観測点は半径の集合に入らない（全件版には入る）', () => {
+    expect(nearbyStationNames(WITH_UNLISTED, HOME)).not.toContain('旧熊谷観測点')
+    expect(allStationNames(WITH_UNLISTED)).toContain('旧熊谷観測点')
+  })
+
+  // 安全弁: 持たない旧形式でも、現行の分だけで従来どおり動く。
+  it('unlisted を持たない旧形式でも現行の分は数える', () => {
+    expect(nearbyStationNames(DATA, HOME)).toContain('新宿区西新宿')
+    expect(allStationNames(DATA)).not.toContain('旧新宿観測点')
+  })
+
+  it('半径内の区域も現行と同じように拾う', () => {
+    expect(nearbyRegionNames(WITH_UNLISTED, HOME)).toContain('東京都23区')
+    expect(nearbyRegionNames(WITH_UNLISTED, HOME)).not.toContain('埼玉県北部')
+  })
+})
