@@ -21,6 +21,10 @@ export const GRADE_PRIORITY: Record<TsunamiGrade, number> = {
  *
  * カード・読み上げの双方がこの並びに従う。`GRADE_PRIORITY` の降順そのものなので、等級を
  * 増やしたときに片方だけ漏れることがない。
+ *
+ * **`'Unknown'` の扱いだけは両者で違う。** カードはそのまま使い、読み上げ（`ttsText` の
+ * `GRADE_ORDER`）は取り除いてから使う —— 等級の呼び名が空文字なので、読むと主語を欠いた文になる
+ * （理由は向こうのコメント）。並びそのものは共有したままなので、等級を増やしたときの漏れは起きない。
  */
 export const GRADES_IN_CARD_ORDER: TsunamiGrade[] =
   (Object.keys(GRADE_PRIORITY) as TsunamiGrade[]).sort((a, b) => GRADE_PRIORITY[b] - GRADE_PRIORITY[a])

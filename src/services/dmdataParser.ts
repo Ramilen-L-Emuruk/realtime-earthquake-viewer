@@ -1937,10 +1937,13 @@ function parseTsunamiEstimationsFromXml(estimationEl: Element): import('../types
     // **推定は観測から導くが、電文は予想側と同じ「津波の高さ」と名乗る**（実電文で確認）。
     checkTsunamiHeightType(heightEl, '津波の高さ', '沿岸への推定', name)
     const heightVal = heightEl ? parseFloat(xmlText(heightEl)) : NaN
-    // 予想側と同じ順で組む（表示文字列 → 数値から組む → 数値にならない表記）。
+    // 予想側・観測側と同じ 2 段で組む（表示文字列 → 数値から組む）。
+    // **`condition` をフォールバックに足さないこと。** 固定値「不明」なので、定性的表現の
+    // ない津波注意報・予報（解説資料いわく `@description` が空属性になる）でそこへ落ちると、
+    // 波高として「不明」と表示・読み上げすることになる。予想側は同じ形を直しており
+    // （→ tsunami-spec.md §9「数値にならない予想波高」）、推定側だけ 3 段で残っていた。
     const heightDesc = toHalfWidthHeightDesc(heightEl?.getAttribute('description') ?? '')
       || (!isNaN(heightVal) ? `${heightVal}m` : '')
-      || (heightEl?.getAttribute('condition') ?? '')
     // 数値が無い理由（「推定中」）と、基準を超えた合図（「重要」）。
     // **`MaxHeight/Condition` は `DateTime` と `jmx_eb:TsunamiHeight` の代わりに出る**ので
     // （電文解説資料 Ⅱ.13 1-2-2-3）、ここを読まないと「推定中」の沿岸は波高欄が空のままになる。
