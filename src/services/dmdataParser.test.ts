@@ -3961,7 +3961,7 @@ describe('沖合の観測から導いた沿岸への推定（VTSE52）', () => {
       '<MaxHeight><jmx_eb:TsunamiHeight type="これまでの最大波の高さ" unit="m" condition="上昇中" description="１．２ｍ">1.2</jmx_eb:TsunamiHeight></MaxHeight>',
     )
     const obs = parseTsunamiFromXml('VTSE52', xml)!.observations!
-    expect(obs[0].name).toBe('岩手中部沖')
+    expect(obs[0].name).toBe('岩手釜石沖')
     expect(obs[0].condition?.rising).toBe(true)
   })
 
