@@ -114,3 +114,35 @@ describe('renderHealth', () => {
     expect(getRenderHealth().broken).toEqual(['新しい名前'])
   })
 })
+
+describe('レイヤーを外したときの後始末', () => {
+  // 安全弁: **ガードが足した記録も、レイヤーの ID で消せること。**
+  // `Map/gl/guardRender.ts` は受け止めた例外を `<id>:uncaught` という別の鍵で記録する
+  //（レイヤー自身の申告と取り消し合わないため）。鍵が違うぶん本人は消せず、外れた後は
+  // `render()` も呼ばれないのでガードの側にも機会が無い。ここで一緒に消さないと、
+  // 画面から消えた描画物の名前が永久に居座る。
+  it('レイヤーの ID で消すと、そこへ付けられた記録もまとめて消える', () => {
+    reportRenderFailure('pswave', '予報円', 'draw')
+    reportRenderFailure('pswave:uncaught', '予報円', 'draw')
+    clearRenderFailure('pswave', 'draw')
+    expect(getRenderHealth().broken).toEqual([])
+  })
+
+  // 対照: **名前が似ているだけの別レイヤーを巻き込まないこと。** 区切りまで見ずに前方一致で
+  // 消すと、`hypocenter-depth` の後始末が `hypocenter-depth-2` を道連れにする。
+  it('ID が前方一致するだけの別レイヤーは巻き込まない', () => {
+    reportRenderFailure('hypocenter-depth', '地震の震源', 'draw')
+    reportRenderFailure('hypocenter-depth-2', 'もう一つの震源', 'draw')
+    clearRenderFailure('hypocenter-depth', 'draw')
+    expect(getRenderHealth().broken).toEqual(['もう一つの震源'])
+  })
+
+  // 対照: 種別が違うものは残すこと（描けないのを消したからといって、掴めないほうまで消さない）。
+  it('種別が違う記録は残る', () => {
+    reportRenderFailure('a:uncaught', '震源カタログ', 'draw')
+    reportRenderFailure('a', '震源カタログ', 'interact')
+    clearRenderFailure('a', 'draw')
+    expect(getRenderHealth().broken).toEqual([])
+    expect(getRenderHealth().uninteractive).toEqual(['震源カタログ'])
+  })
+})
