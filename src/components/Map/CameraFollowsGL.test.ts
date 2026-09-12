@@ -723,7 +723,7 @@ describe('EEW の初期フレーミング', () => {
   it('震源の位置が判らない EEW を寄り先にしない', () => {
     // Arrange: 標準版（Yahoo 強震モニタ）は座標の文字列が空だと NaN になる。NaN はどの比較でも
     // false になるため、否定形（`lat <= -200`）の判定では弾けず、そのまま寄り先として渡ると
-    // MapLibre が例外を投げる（このアプリに ErrorBoundary は無い）。
+    // MapLibre が例外を投げる（描画ループの中で起きるので ErrorBoundary は届かない）。
     const map = createFakeMap({ fitZoom: 5 })
     const noCoords = {
       id: 'eew-nan-report-1',

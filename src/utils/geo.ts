@@ -94,8 +94,10 @@ export function bearingDeg(lat1: number, lng1: number, lat2: number, lng2: numbe
  *
  * `NaN` はどの比較演算でも false になるため、`lat > -200` と書けば弾けるが、否定形の
  * `lat <= -200` では**素通りする**。素通りした `NaN` を地図の寄り先に渡すと、MapLibre の `LngLat` が
- * `isNaN` で例外を投げる（ライブラリのコンストラクタが直接そうしている）。このアプリに
- * ErrorBoundary は無いので画面ごと落ちる。判定はこの関数に寄せること。
+ * `isNaN` で例外を投げる（ライブラリのコンストラクタが直接そうしている）。投げるのは MapLibre の
+ * **描画ループ（rAF）の中なので、React の ErrorBoundary は原理的にそこへ届かない**
+ * （`components/ErrorBoundary.tsx` の冒頭）。`gl/guardRender.ts` が被害をそのレイヤー 1 枚へ
+ * 閉じ込めるが、**予報円が描かれないこと自体は防げない。** 判定はこの関数に寄せること。
  */
 export function hasKnownEpicenter(lat: number, lng: number): boolean {
   return Number.isFinite(lat) && Number.isFinite(lng) && lat > -200 && lng > -200

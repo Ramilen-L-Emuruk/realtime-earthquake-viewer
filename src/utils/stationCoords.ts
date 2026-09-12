@@ -66,7 +66,9 @@ export function loadStationCoords(): Promise<StationCoordsData> {
       // 検知されないまま進む。取得側の `validate` に渡すのは、ここで投げれば地図の
       // 「データの一部を取得できませんでした」にも計上されるため（`.then()` では計上されない）。
       // areas も必須。欠けたまま通すと buildAreaPrefIndex・lookupPointCoords が
-      // Object.keys(undefined) で TypeError を投げ、レンダー中の例外になる（ErrorBoundary は無い）。
+      // Object.keys(undefined) で TypeError を投げ、レンダー中の例外になる。ErrorBoundary が
+      // 受け止めはするが、例外の起きた範囲（地図なりタブなり）が丸ごとフォールバック表示へ
+      // 差し替わるだけで中身は見られない。**ここで弾くほうが安い。**
       // `stations` と `areas` は同じ厳しさで見る。`typeof` を落とすと、文字列が入っていたときに
       // `Object.keys('abc')` が `['0','1','2']` を返して非空チェックをすり抜ける。
       validate: (raw) => {
