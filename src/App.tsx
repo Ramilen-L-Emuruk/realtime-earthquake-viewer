@@ -1296,6 +1296,8 @@ export function App() {
    * 常にレンダー後なのでタイミング上問題ない）。
    */
   const resetActionChecklistRef = useRef<() => void>(() => {})
+  /** 別地点発報のエピソード状態のリセット。上と同じ理由で ref 経由に渡す。 */
+  const resetKyoshinAlertsRef = useRef<() => void>(() => {})
   /**
    * リプレイの開始・停止で落とす画面側の一時状態。
    *
@@ -1318,6 +1320,10 @@ export function App() {
     // ブラウザ通知の重複抑止。残すと、同じ地震を再生したときに 2 回目の通知が出ない。
     lastNotifiedIdRef.current = null
     resetActionChecklistRef.current()
+    // 別地点発報のエピソード状態。旧い時間軸の「発報済み」が残ると、新しい軸で鳴るべき
+    // 別地点発報が黙って抑え込まれる（時刻の巻き戻りでは自動で切り替わるが、前へ飛ばした
+    // 切替では発火しない）。
+    resetKyoshinAlertsRef.current()
   }, [selectQuake])
 
   const replay = useReplayController({
@@ -1507,7 +1513,7 @@ export function App() {
   }, [])
 
   // 揺れ検知の開始/終了・レベル変化に応じたタブ切替・タイトル・通知音・ブラウザ通知
-  useKyoshinAlerts({
+  const kyoshinAlerts = useKyoshinAlerts({
     confirmed: kyoshinView.confirmed,
     candidate: kyoshinView.candidate,
     candidateMaxIndex: kyoshinView.candidateMaxIndex,
@@ -1526,6 +1532,8 @@ export function App() {
     revertToDefaultTab,
     onShakeFocus: handleShakeFocus,
   })
+  // 宣言が useReplayController より後になるため ref 経由で渡す（上記 resetLocalState 参照）。
+  resetKyoshinAlertsRef.current = kyoshinAlerts.resetForReplay
 
   const mapQuake = mapTab === 'earthquake' ? selectedQuake : latest
   // 地図に出す推計震度分布図。**地図が出している地震のものだけ**を渡す（引き当ては

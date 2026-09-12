@@ -588,15 +588,15 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
 
   // 同じ予想波高（10m以上）で 1 グループになる 3 区域。電文順は岩手→宮城→福島
   const sameHeightAreas: TsunamiArea[] = [
-    { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '１０ｍ以上', value: 10 } },
-    { grade: 'MajorWarning', immediate: true, name: '宮城県', code: '040', maxHeight: { description: '１０ｍ以上', value: 10 } },
-    { grade: 'MajorWarning', immediate: true, name: '福島県', code: '050', maxHeight: { description: '１０ｍ以上', value: 10 } },
+    { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '210', maxHeight: { description: '１０ｍ以上', value: 10 } },
+    { grade: 'MajorWarning', immediate: true, name: '宮城県', code: '220', maxHeight: { description: '１０ｍ以上', value: 10 } },
+    { grade: 'MajorWarning', immediate: true, name: '福島県', code: '250', maxHeight: { description: '１０ｍ以上', value: 10 } },
   ]
 
   // 正: 電文順で 2 番目の区域に実測が入ったら、読み上げでも先頭に繰り上がる
   it('実測が入った区域を先に読む', () => {
     const text = tsunamiToText(makeTsunamiWithObs(sameHeightAreas, [
-      { name: '石巻港', districtCode: '040', districtName: '宮城県', height: { value: 7.2, description: '7.2m' } },
+      { name: '石巻港', districtCode: '220', districtName: '宮城県', height: { value: 7.2, description: '7.2m' } },
     ]))
     expect(text).toContain('宮城県、岩手県、福島県で10メートル以上が予想されています。')
   })
@@ -610,8 +610,8 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   // 正: 実測が複数あれば波高の降順に読む
   it('実測が複数あれば波高の大きい区域から読む', () => {
     const text = tsunamiToText(makeTsunamiWithObs(sameHeightAreas, [
-      { name: '小名浜', districtCode: '050', districtName: '福島県', height: { value: 3.1, description: '3.1m' } },
-      { name: '石巻港', districtCode: '040', districtName: '宮城県', height: { value: 7.2, description: '7.2m' } },
+      { name: 'いわき市小名浜', districtCode: '250', districtName: '福島県', height: { value: 3.1, description: '3.1m' } },
+      { name: '石巻港', districtCode: '220', districtName: '宮城県', height: { value: 7.2, description: '7.2m' } },
     ]))
     expect(text).toContain('宮城県、福島県、岩手県で10メートル以上が予想されています。')
   })
@@ -623,14 +623,14 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   describe('等級を切り替える報', () => {
     // 切替後の等級は注意報。3 区域とも予想波高は同じなので、並びは実測波高だけで決まる
     const watchAreas: TsunamiArea[] = [
-      { grade: 'Watch', immediate: false, name: '岩手県', code: '030', maxHeight: { description: '１ｍ', value: 1 } },
-      { grade: 'Watch', immediate: false, name: '宮城県', code: '040', maxHeight: { description: '１ｍ', value: 1 } },
-      { grade: 'Watch', immediate: false, name: '福島県', code: '050', maxHeight: { description: '１ｍ', value: 1 } },
+      { grade: 'Watch', immediate: false, name: '岩手県', code: '210', maxHeight: { description: '１ｍ', value: 1 } },
+      { grade: 'Watch', immediate: false, name: '宮城県', code: '220', maxHeight: { description: '１ｍ', value: 1 } },
+      { grade: 'Watch', immediate: false, name: '福島県', code: '250', maxHeight: { description: '１ｍ', value: 1 } },
     ]
     // カードが持っている観測点（前の報までに積んだもの）。宮城 > 福島 の順に深刻
     const cardObservations: TsunamiObservation[] = [
-      { name: '石巻港', districtCode: '040', districtName: '宮城県', height: { value: 7.2, description: '7.2m' } },
-      { name: '小名浜', districtCode: '050', districtName: '福島県', height: { value: 3.1, description: '3.1m' } },
+      { name: '石巻港', districtCode: '220', districtName: '宮城県', height: { value: 7.2, description: '7.2m' } },
+      { name: 'いわき市小名浜', districtCode: '250', districtName: '福島県', height: { value: 3.1, description: '3.1m' } },
     ]
 
     // 正: カードが持つ観測点を渡せば、観測点を載せていない報でもカード順で読む
@@ -663,10 +663,10 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   // 安全弁: 並べ替えは波高グループの中だけ。グループの順序（電文順）は動かさない
   it('予想波高が違う区域は繰り上がらない', () => {
     const text = tsunamiToText(makeTsunamiWithObs([
-      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '１０ｍ以上', value: 10 } },
-      { grade: 'MajorWarning', immediate: true, name: '宮城県', code: '040', maxHeight: { description: '６ｍ', value: 6 } },
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '210', maxHeight: { description: '１０ｍ以上', value: 10 } },
+      { grade: 'MajorWarning', immediate: true, name: '宮城県', code: '220', maxHeight: { description: '６ｍ', value: 6 } },
     ], [
-      { name: '石巻港', districtCode: '040', districtName: '宮城県', height: { value: 5.5, description: '5.5m' } },
+      { name: '石巻港', districtCode: '220', districtName: '宮城県', height: { value: 5.5, description: '5.5m' } },
     ]))
     expect(text).toContain('岩手県で10メートル以上、宮城県で6メートルが予想されています。')
   })
@@ -679,9 +679,9 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   // 対象にし、読んでいる区域が画面外に残る。
   it('間に別の波高が挟まる区域は、まとめずに分けて読む', () => {
     const text = tsunamiToText(makeTsunamiWithObs([
-      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '３ｍ', value: 3 } },
-      { grade: 'MajorWarning', immediate: true, name: '宮城県', code: '040', maxHeight: { description: '６ｍ', value: 6 } },
-      { grade: 'MajorWarning', immediate: true, name: '福島県', code: '050', maxHeight: { description: '３ｍ', value: 3 } },
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '210', maxHeight: { description: '３ｍ', value: 3 } },
+      { grade: 'MajorWarning', immediate: true, name: '宮城県', code: '220', maxHeight: { description: '６ｍ', value: 6 } },
+      { grade: 'MajorWarning', immediate: true, name: '福島県', code: '250', maxHeight: { description: '３ｍ', value: 3 } },
     ], []))
     // 「岩手県、福島県で3メートル、宮城県で6メートル」とまとめない
     expect(text).toContain('岩手県で3メートル、宮城県で6メートル、福島県で3メートルが予想されています。')
@@ -690,9 +690,9 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   // 対照: 隣り合う同じ波高はこれまでどおり 1 つの句にまとめる
   it('隣り合う同じ波高の区域はまとめて読む', () => {
     const text = tsunamiToText(makeTsunamiWithObs([
-      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '１０ｍ以上', value: 10 } },
-      { grade: 'MajorWarning', immediate: true, name: '宮城県', code: '040', maxHeight: { description: '１０ｍ以上', value: 10 } },
-      { grade: 'MajorWarning', immediate: true, name: '福島県', code: '050', maxHeight: { description: '６ｍ', value: 6 } },
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '210', maxHeight: { description: '１０ｍ以上', value: 10 } },
+      { grade: 'MajorWarning', immediate: true, name: '宮城県', code: '220', maxHeight: { description: '１０ｍ以上', value: 10 } },
+      { grade: 'MajorWarning', immediate: true, name: '福島県', code: '250', maxHeight: { description: '６ｍ', value: 6 } },
     ], []))
     expect(text).toContain('岩手県、宮城県で10メートル以上、福島県で6メートルが予想されています。')
   })
@@ -701,9 +701,9 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   // 読まないと、注意報の区域にいる人へ高さが伝わらない。
   it('下位等級の波高も読む', () => {
     const text = tsunamiToText(makeTsunamiWithObs([
-      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '１０ｍ以上', value: 10 } },
-      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '060', maxHeight: { description: '３ｍ', value: 3 } },
-      { grade: 'Watch', immediate: false, name: '北海道太平洋沿岸東部', code: '080', maxHeight: { description: '１ｍ', value: 1 } },
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '210', maxHeight: { description: '１０ｍ以上', value: 10 } },
+      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '201', maxHeight: { description: '３ｍ', value: 3 } },
+      { grade: 'Watch', immediate: false, name: '北海道太平洋沿岸東部', code: '100', maxHeight: { description: '１ｍ', value: 1 } },
     ], []))
     expect(text).toContain('また、次の地域に津波警報が発表されています。青森県太平洋沿岸で3メートルが予想されています。')
     expect(text).toContain('また、次の地域に津波注意報が発表されています。北海道太平洋沿岸東部で1メートルが予想されています。')
@@ -716,8 +716,8 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   // 一度出した箇所を追わない仕掛けを併せて戻す必要がある（`TsunamiTab` のコメント参照）。
   it('区域名を 2 回読まない', () => {
     const text = tsunamiToText(makeTsunamiWithObs([
-      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '１０ｍ以上', value: 10 } },
-      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '060', maxHeight: { description: '３ｍ', value: 3 } },
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '210', maxHeight: { description: '１０ｍ以上', value: 10 } },
+      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '201', maxHeight: { description: '３ｍ', value: 3 } },
     ], []))
     expect(text.match(/岩手県/g)?.length).toBe(1)
     expect(text.match(/青森県太平洋沿岸/g)?.length).toBe(1)
@@ -727,8 +727,8 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   // 分かれているので読み上げの句がカードを跨ぎ、追従がその間の行を含んだ範囲を対象にする。
   it('等級をまたいで波高を 1 文にまとめない', () => {
     const text = tsunamiToText(makeTsunamiWithObs([
-      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '１０ｍ以上', value: 10 } },
-      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '060', maxHeight: { description: '３ｍ', value: 3 } },
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '210', maxHeight: { description: '１０ｍ以上', value: 10 } },
+      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '201', maxHeight: { description: '３ｍ', value: 3 } },
     ], []))
     expect(text).toContain('岩手県で10メートル以上が予想されています。')
     expect(text).not.toContain('岩手県で10メートル以上、青森県太平洋沿岸で3メートル')
@@ -739,10 +739,10 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   // maxHeight ごと落ちるほか、警報が先に出て波高が後続報で付くこともある）。
   it('波高が付いていない区域は別の文で挙げる', () => {
     const text = tsunamiToText(makeTsunamiWithObs([
-      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '１０ｍ以上', value: 10 } },
-      { grade: 'MajorWarning', immediate: true, name: '宮城県', code: '040' },
-      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '060', maxHeight: { description: '３ｍ', value: 3 } },
-      { grade: 'Warning', immediate: true, name: '茨城県', code: '070' },
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '210', maxHeight: { description: '１０ｍ以上', value: 10 } },
+      { grade: 'MajorWarning', immediate: true, name: '宮城県', code: '220' },
+      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '201', maxHeight: { description: '３ｍ', value: 3 } },
+      { grade: 'Warning', immediate: true, name: '茨城県', code: '300' },
     ], []))
     expect(text).toContain('岩手県で10メートル以上が予想されています。宮城県にも大津波警報が発表されています。')
     expect(text).toContain('青森県太平洋沿岸で3メートルが予想されています。茨城県にも津波警報が発表されています。')
@@ -754,8 +754,8 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   // カードは波高なしとして扱うのに読み上げは波高ありとして扱い、**どちらの文にも出ない**。
   it('波高の説明が空文字の区域も落とさない', () => {
     const text = tsunamiToText(makeTsunamiWithObs([
-      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '１０ｍ以上', value: 10 } },
-      { grade: 'MajorWarning', immediate: true, name: '宮城県', code: '040', maxHeight: { description: '', value: 0 } },
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '210', maxHeight: { description: '１０ｍ以上', value: 10 } },
+      { grade: 'MajorWarning', immediate: true, name: '宮城県', code: '220', maxHeight: { description: '', value: 0 } },
     ], []))
     expect(text).toContain('宮城県にも大津波警報が発表されています。')
     // 空文字を波高として読まないこと（「宮城県でが予想されています」にならない）
@@ -766,8 +766,8 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   // （「次の地域に」と言ったのに挙げる先が無い、という文にしない）
   it('波高がまったく無ければ区域名を直接挙げる', () => {
     const text = tsunamiToText(makeTsunamiWithObs([
-      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '060' },
-      { grade: 'Watch', immediate: false, name: '北海道太平洋沿岸東部', code: '080' },
+      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '201' },
+      { grade: 'Watch', immediate: false, name: '北海道太平洋沿岸東部', code: '100' },
     ], []))
     expect(text).toContain('青森県太平洋沿岸に津波警報が発表されました。')
     expect(text).toContain('また、北海道太平洋沿岸東部に津波注意報が発表されています。')
@@ -778,8 +778,8 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   // 「岩手県で巨大が予想されています」と崩れるので語を補う（活用が違うので表記ごとに持つ）。
   it('数値で表せない波高は語を補って読む', () => {
     const text = tsunamiToText(makeTsunamiWithObs([
-      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '巨大', value: undefined as unknown as number } },
-      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '060', maxHeight: { description: '高い', value: undefined as unknown as number } },
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '210', maxHeight: { description: '巨大', value: undefined as unknown as number } },
+      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '201', maxHeight: { description: '高い', value: undefined as unknown as number } },
     ], []))
     expect(text).toContain('岩手県で巨大な津波が予想されています。')
     expect(text).toContain('青森県太平洋沿岸で高い津波が予想されています。')
@@ -788,9 +788,9 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   // 下位等級はそれぞれ「また、」で始める（文の切れ目が耳で分かるように）
   it('下位等級はどれも「また、」で始める', () => {
     const text = tsunamiToText(makeTsunamiWithObs([
-      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '１０ｍ以上', value: 10 } },
-      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '060', maxHeight: { description: '３ｍ', value: 3 } },
-      { grade: 'Watch', immediate: false, name: '北海道太平洋沿岸東部', code: '080', maxHeight: { description: '１ｍ', value: 1 } },
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '210', maxHeight: { description: '１０ｍ以上', value: 10 } },
+      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '201', maxHeight: { description: '３ｍ', value: 3 } },
+      { grade: 'Watch', immediate: false, name: '北海道太平洋沿岸東部', code: '100', maxHeight: { description: '１ｍ', value: 1 } },
     ], []))
     expect(text.match(/また、/g)?.length).toBe(2)
   })
@@ -799,12 +799,12 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   // JSON は半角）、片方だけ変換すると素通りした側が「えむ」と読まれる。
   it('半角の m も全角の ｍ も「メートル」と読む', () => {
     const halfWidth = tsunamiToText(makeTsunamiWithObs([
-      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '10m以上', value: 10 } },
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '210', maxHeight: { description: '10m以上', value: 10 } },
     ], []))
     expect(halfWidth).toContain('岩手県で10メートル以上が予想されています。')
 
     const fullWidth = tsunamiToText(makeTsunamiWithObs([
-      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '０．５ｍ', value: 0.5 } },
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '210', maxHeight: { description: '０．５ｍ', value: 0.5 } },
     ], []))
     expect(fullWidth).toContain('岩手県で0.5メートルが予想されています。')
   })
@@ -812,7 +812,7 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   // 安全弁: 数字の直後だけを置き換える。cm のように数字と m の間に別の英字が挟まる表記を壊さない
   it('数字に直接続かない m は読み替えない', () => {
     const text = tsunamiObservationUpdateToText(
-      [{ name: '宮古', districtCode: '030', districtName: '岩手県', height: { value: 1.2, description: '1.2m' } }],
+      [{ name: '宮古', districtCode: '210', districtName: '岩手県', height: { value: 1.2, description: '1.2m' } }],
       '50cm程度の潮位変化を観測しています。',
     )
     expect(text).toContain('50cm程度の潮位変化を観測しています。')
@@ -820,7 +820,7 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
 
   it('観測点の波高も同じ規則で読む', () => {
     const text = tsunamiObservationUpdateToText([
-      { name: '宮古', districtCode: '030', districtName: '岩手県', height: { value: 8.5, description: '8.5m以上', over: true } },
+      { name: '宮古', districtCode: '210', districtName: '岩手県', height: { value: 8.5, description: '8.5m以上', over: true } },
     ])
     expect(text).toContain('宮古で8.5メートル以上')
   })
@@ -828,9 +828,9 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   // 正: maxPoints で打ち切る選抜が「○m以上」を確定値の下に置かない（音は落ちたら気づけない）
   it('「以上」の観測点は maxPoints の打ち切りで落とさない', () => {
     const obs: TsunamiObservation[] = [
-      { name: '大船渡', districtCode: '030', districtName: '岩手県', height: { value: 3.0, description: '3.0m' } },
-      { name: '釜石', districtCode: '030', districtName: '岩手県', height: { value: 2.8, description: '2.8m' } },
-      { name: '宮古', districtCode: '030', districtName: '岩手県', height: { value: 1.5, description: '1.5m以上', over: true } },
+      { name: '大船渡', districtCode: '210', districtName: '岩手県', height: { value: 3.0, description: '3.0m' } },
+      { name: '釜石', districtCode: '210', districtName: '岩手県', height: { value: 2.8, description: '2.8m' } },
+      { name: '宮古', districtCode: '210', districtName: '岩手県', height: { value: 1.5, description: '1.5m以上', over: true } },
     ]
     const text = tsunamiObservationUpdateToText(obs, undefined, 1)
     expect(text).toContain('宮古で1.5メートル以上')
@@ -840,9 +840,9 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   // 正: 上限で外した地点数を言う（黙って捨てない）。「以上」が複数あって上限を超える場面が本番
   it('maxPoints で外した地点数を読み上げる', () => {
     const obs: TsunamiObservation[] = [
-      { name: '宮古', districtCode: '030', districtName: '岩手県', height: { value: 8.5, description: '8.5m以上', over: true } },
-      { name: '釜石', districtCode: '030', districtName: '岩手県', height: { value: 5.0, description: '5.0m以上', over: true } },
-      { name: '大船渡', districtCode: '030', districtName: '岩手県', height: { value: 3.0, description: '3.0m' } },
+      { name: '宮古', districtCode: '210', districtName: '岩手県', height: { value: 8.5, description: '8.5m以上', over: true } },
+      { name: '釜石', districtCode: '210', districtName: '岩手県', height: { value: 5.0, description: '5.0m以上', over: true } },
+      { name: '大船渡', districtCode: '210', districtName: '岩手県', height: { value: 3.0, description: '3.0m' } },
     ]
     // 述語（「〜を観測しました」／「〜に更新されました」）に貼り付けず独立した一文にする
     expect(tsunamiObservationUpdateToText(obs, undefined, 1)).toContain('ほか2地点でも観測しています。')
@@ -851,7 +851,7 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   // 対照: 上限に掛からなければ余計な句を足さない
   it('上限に掛からなければ地点数の句を足さない', () => {
     const obs: TsunamiObservation[] = [
-      { name: '宮古', districtCode: '030', districtName: '岩手県', height: { value: 8.5, description: '8.5m以上', over: true } },
+      { name: '宮古', districtCode: '210', districtName: '岩手県', height: { value: 8.5, description: '8.5m以上', over: true } },
     ]
     expect(tsunamiObservationUpdateToText(obs, undefined, 5)).not.toContain('ほか')
   })
@@ -859,8 +859,8 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   // 対照: 「以上」が無ければ従来どおり値の大きい観測点が選ばれる
   it('「以上」が無ければ値の大きい観測点を選ぶ', () => {
     const obs: TsunamiObservation[] = [
-      { name: '釜石', districtCode: '030', districtName: '岩手県', height: { value: 2.8, description: '2.8m' } },
-      { name: '大船渡', districtCode: '030', districtName: '岩手県', height: { value: 3.0, description: '3.0m' } },
+      { name: '釜石', districtCode: '210', districtName: '岩手県', height: { value: 2.8, description: '2.8m' } },
+      { name: '大船渡', districtCode: '210', districtName: '岩手県', height: { value: 3.0, description: '3.0m' } },
     ]
     const text = tsunamiObservationUpdateToText(obs, undefined, 1)
     expect(text).toContain('大船渡で3.0メートル')
@@ -871,7 +871,7 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   // 文中の語を壊す。大文字の M を対象にしないのはマグニチュード（「M7.6」）と衝突するため。
   it('文章に含まれるマグニチュード表記は壊さない', () => {
     const text = tsunamiObservationUpdateToText(
-      [{ name: '宮古', districtCode: '030', districtName: '岩手県', height: { value: 1.2, description: '1.2m' } }],
+      [{ name: '宮古', districtCode: '210', districtName: '岩手県', height: { value: 1.2, description: '1.2m' } }],
       'M7.6の地震による津波を観測しています。',
     )
     expect(text).toContain('M7.6の地震による津波を観測しています。')
@@ -881,11 +881,11 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
   // 安全弁: 下位等級の列挙にも同じ並び順が効く（別カードだが同じ規則で並ぶ）
   it('下位等級の区域列挙も実測の順に読む', () => {
     const text = tsunamiToText(makeTsunamiWithObs([
-      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '030', maxHeight: { description: '１０ｍ以上', value: 10 } },
-      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '060', maxHeight: { description: '３ｍ', value: 3 } },
-      { grade: 'Warning', immediate: true, name: '茨城県', code: '070', maxHeight: { description: '３ｍ', value: 3 } },
+      { grade: 'MajorWarning', immediate: true, name: '岩手県', code: '210', maxHeight: { description: '１０ｍ以上', value: 10 } },
+      { grade: 'Warning', immediate: true, name: '青森県太平洋沿岸', code: '201', maxHeight: { description: '３ｍ', value: 3 } },
+      { grade: 'Warning', immediate: true, name: '茨城県', code: '300', maxHeight: { description: '３ｍ', value: 3 } },
     ], [
-      { name: '大洗', districtCode: '070', districtName: '茨城県', height: { value: 1.9, description: '1.9m' } },
+      { name: '大洗', districtCode: '300', districtName: '茨城県', height: { value: 1.9, description: '1.9m' } },
     ]))
     expect(text).toContain('茨城県、青森県太平洋沿岸で3メートルが予想されています。')
   })
@@ -895,8 +895,8 @@ describe('津波の読み上げ: 区域の並び順はカードに揃える', ()
 // 新旧の境界は**前に声にした波高があるかどうか**だけで、名前を聞いたことがあるかでは判定しない
 // （→ docs/spec/audio-tts-spec.md §4「新規と更新を言い分ける」）。
 describe('津波観測情報の読み上げ: 新規と更新の言い分け', () => {
-  const OFUNATO: TsunamiObservation = { name: '大船渡', districtCode: '030', districtName: '岩手県', height: { value: 3.0, description: '3.0m' } }
-  const MIYAKO: TsunamiObservation = { name: '宮古', districtCode: '030', districtName: '岩手県', height: { value: 1.2, description: '1.2m' } }
+  const OFUNATO: TsunamiObservation = { name: '大船渡', districtCode: '210', districtName: '岩手県', height: { value: 3.0, description: '3.0m' } }
+  const MIYAKO: TsunamiObservation = { name: '宮古', districtCode: '210', districtName: '岩手県', height: { value: 1.2, description: '1.2m' } }
 
   // 正: 前に声にした波高が無い観測点は「新たに」を冠する
   it('前値の無い観測点は「新たに」を付けて読む', () => {
@@ -944,7 +944,7 @@ describe('津波観測情報の読み上げ: 新規と更新の言い分け', ()
   // 安全弁: 並び順を入力に委ねても、**どれを読むかの選抜は深刻な順**のまま。
   // 上限に掛かるとき、渡された並びの先頭から切ってはいけない（「以上」の地点が落ちる）
   it('選抜は深刻な順のまま（並びの先頭から切らない）', () => {
-    const overLimit: TsunamiObservation = { name: '釜石', districtCode: '030', districtName: '岩手県', height: { value: 1.5, description: '1.5m以上', over: true } }
+    const overLimit: TsunamiObservation = { name: '釜石', districtCode: '210', districtName: '岩手県', height: { value: 1.5, description: '1.5m以上', over: true } }
     // 渡す並びでは宮古が先頭だが、深刻なのは「1.5m以上」の釜石
     const text = tsunamiObservationUpdateToText([MIYAKO, overLimit], undefined, 1)
     expect(text).toContain('釜石で1.5メートル以上')
@@ -957,7 +957,7 @@ describe('津波観測情報の読み上げ: 新規と更新の言い分け', ()
     const obs: TsunamiObservation[] = [
       OFUNATO,
       MIYAKO,
-      { name: '釜石', districtCode: '030', districtName: '岩手県', height: { value: 2.8, description: '2.8m' } },
+      { name: '釜石', districtCode: '210', districtName: '岩手県', height: { value: 2.8, description: '2.8m' } },
     ]
     // 上限 2 件。深刻な順は 大船渡(3.0) → 釜石(2.8) → 宮古(1.2) なので宮古が落ちる
     const text = tsunamiObservationUpdateToText(obs, undefined, 2, new Set(['釜石']))
@@ -1864,13 +1864,13 @@ describe('tsunamiWarningLevelToText', () => {
 
   // 正: 何を観測しているかを伝える。
   it('津波警報に相当する津波を観測していると読む', () => {
-    expect(tsunamiWarningLevelToText([obs('宮城沖')]))
-      .toBe('宮城沖では、津波警報に相当する津波を観測しています。')
+    expect(tsunamiWarningLevelToText([obs('岩手宮古沖')]))
+      .toBe('岩手宮古沖では、津波警報に相当する津波を観測しています。')
   })
 
   // 対照: 高さを補わない。電文が数値を出していないので、アプリが「1m 超」等と言ってはいけない。
   it('高さを補わない', () => {
-    const text = tsunamiWarningLevelToText([obs('宮城沖')])
+    const text = tsunamiWarningLevelToText([obs('岩手宮古沖')])
     expect(text).not.toMatch(/メートル|[0-9]m/)
   })
 

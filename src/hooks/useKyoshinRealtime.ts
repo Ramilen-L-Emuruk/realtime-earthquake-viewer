@@ -51,6 +51,14 @@ const LOG_THROTTLE_MS = 60_000
  */
 const LOCAL_ARCHIVE_QUEUE_MAX_SIZE = 7200
 
+/**
+ * 供給を作り直したときに返す空の震度列。
+ *
+ * 参照を固定するのは、落とす処理が二度走っても React がそこで打ち切れるようにするため
+ * （毎回新しい `[]` を作ると、同じ空でも参照が変わって再レンダーが 1 回増える）。
+ */
+const EMPTY_INDICES: number[] = []
+
 interface UseKyoshinRealtimeOptions {
   /** EEW の新規発報・更新・解除を検知したときに呼ばれるコールバック。 */
   onEEWEvent?: (eew: EEWAlert) => void
@@ -99,6 +107,43 @@ export function useKyoshinRealtime(
   // timeOffset・localArchiveId は deps に含めてエフェクトを再起動させるため、ref ではなく直接使う
   const timeOffset = options?.timeOffset ?? null
   const localArchiveId = options?.localArchiveId ?? null
+
+  // 時間軸が変わったら、いま持っている値は新しい軸に属さない。落としてから次のフレームを待つ。
+  //
+  // **落とすのはレンダー中。エフェクトまで待たない。** 待つと、その 1 コミットのあいだ旧い時間軸の
+  // 震度が下流へ流れる。リプレイの開始・停止は地震・EEW を空にするのと同じバッチで走るので、
+  // その隙に動いた判定が「近くで揺れている」と読み、行動チェックリストの帯を新しい時間軸の画面へ
+  // 出す（実測では帯が出たあと、上書きする地震が届くまで消えなかった）。
+  //
+  // **見るのは `timeOffset` の変化だけ。`localArchiveId` の切替は含めない。** 下のエフェクトは
+  // どちらでも供給を作り直すが、**供給元が替わることと時間軸が変わることは別**。ローカル履歴
+  // アーカイブの収録範囲を再生中に跨ぐと `localArchiveId` だけが変わり、再生時刻はそのまま続く。
+  // そこで落とすと、**同じ地震の揺れの最中に検知が一度消える** —— 画面は既定タブへ戻り、次の
+  // フレームで検知が戻ったときに検知音とブラウザ通知が鳴り直す（`useKyoshinAlerts` は検知が
+  // 消えた理由を問わず、戻ってきたものを新しい揺れとして扱う）。時間軸が同じなら残っている値も
+  // 同じ軸のものなので、落とす理由がない。
+  //
+  // **落とすのは `indices` / `dataTime` / `indicesSiteConfigId` と `error` だけ。** 観測点座標
+  // （`sites` / `sitesSiteConfigId`）は据え置く —— 取り直しは下の `applyFrame` が
+  // 「フレームの `sitesKey` が `currentSitesKeyRef` と違うか」でしか起こさず、その ref は
+  // エフェクトの再起動では戻らない。座標まで空にすると、新しい時間軸が同じ観測点集合だったとき
+  // （版はまれにしか変わらないので通常こうなる）取り直しが走らず、座標が空のまま復帰しなくなる。
+  // 下流は `sitesSiteConfigId === indicesSiteConfigId` のゲートを通しているので、識別子を
+  // null にすれば座標を残したままでも空へ倒れる。
+  //
+  // `error`（更新停止）も同じコミットで落とす。下のエフェクトでも `false` に戻すが、そちらは
+  // 1 コミット遅れるため、その間だけ「更新時刻なし」と「更新が止まっています」が同時に出る。
+  //
+  // 前回値は state で持つ（ref をレンダー中に書き換えない）。React が捨てたレンダーでも ref の
+  // 書き換えだけは残り、描き直したときに「変わっていない」と見えて落としそこねる。
+  const [prevTimeOffset, setPrevTimeOffset] = useState(timeOffset)
+  if (prevTimeOffset !== timeOffset) {
+    setPrevTimeOffset(timeOffset)
+    setIndices(EMPTY_INDICES)
+    setDataTime('')
+    setIndicesSiteConfigId(null)
+    setError(false)
+  }
 
   useEffect(() => {
     if (!enabled) return

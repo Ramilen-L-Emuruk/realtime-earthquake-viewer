@@ -61,6 +61,9 @@ describe('テスト EEW の予想区域名', () => {
 })
 
 // 座標を持たせていない既知の観測点。地図に棒を出すことを意図していないものだけを挙げる。
+// **下の 2 つの検査が共有する。** 観測情報（`observations`）と予想区域の中（`areas[].stations`）の
+// どちらへ架空値を足す場合もここへ書く。片方だけが例外を持つ形にすると、足した側で理由の分からない
+// 失敗が出る。
 //
 // `沖合40km` は、予報区に紐づかない観測が「沖合観測」カードへフォールバックする経路
 // （導入コミット 1baefde）を確かめるための架空の観測点。実在の沖合観測点（「岩手宮古沖」等）は
@@ -84,6 +87,26 @@ describe('テスト津波の観測点名', () => {
       (o) => (o.height || isObservationMissing(o)) && !KNOWN_COORDLESS_OBSERVATIONS.has(o.name),
     )
     const names = targets.map((o) => o.name)
+    expect(names.length).toBeGreaterThan(0)
+    expect(names.filter((name) => !obsCoordNames.has(name))).toEqual([])
+  })
+
+  // **予想区域の中の観測点も実在する名前にする。** こちらは満潮時刻・津波到達予想時刻を出す行。
+  // 観測情報の側だけを見ていたため、ここに実在しない名前（「気仙沼」「小名浜」「八戸」
+  // 「むつ関根浜」）が長く残っていた。
+  //
+  // **理由は「電文に現れる名前を再現する」こと自体**で、座標表を引く機能があるからではない。
+  // この行が押せるのは観測情報の側に同名のエントリがあってマージされたときだけで（→
+  // docs/spec/tsunami-spec.md §9「観測点の行をクリックしたときの寄り先」）、一致しない行は
+  // 予測だけを出す非クリック行になる。それでも座標表と突き合わせるのは、**実在しない名前を
+  // 機械的に弾ける物差しがこれしか無い**ため（コードは座標表が持たないので照合できない）。
+  //
+  // **DMDSS 版だけを見るのは、standard 版がこの欄を持たないから**（`toP2pTsunamiArea` が
+  // `stations` を引き継がない）。観測情報の側の「バリアントに依存しない」とは理由が違う。
+  it('予想区域の観測点の名前がすべて実在する（座標を持たせていない既知の例外を除く）', () => {
+    const names = (createTestTsunami(true).areas ?? [])
+      .flatMap((a) => (a.stations ?? []).map((st) => st.name))
+      .filter((name) => !KNOWN_COORDLESS_OBSERVATIONS.has(name))
     expect(names.length).toBeGreaterThan(0)
     expect(names.filter((name) => !obsCoordNames.has(name))).toEqual([])
   })
@@ -224,12 +247,29 @@ describe('テスト EEW の kindCode と予想震度の整合', () => {
     }
   })
 
-  // 実運用の電文に区域が載る条件は「最大予測震度4以上または最大予測長周期地震動階級3以上」
-  // （eew-information スキーマ）。震度3以下の区域はそもそも電文に現れない。
-  it.each(cases)('%s: 区域は予想震度4以上（電文に載る条件）', (_label, eew) => {
-    for (const area of eewAreas(eew)) {
-      expect(area.scaleTo).toBeGreaterThanOrEqual(40)
-    }
+  // **区域に載る予測震度に下限は無い**（→ docs/spec/eew-spec.md §4）。下限が無いこと自体は
+  // テストデータでは守れないので、代わりに次の 2 つを固定する。
+  //
+  // 正: 弱い区域を実機で確かめられる状態を保つ。これが無いと、区域を「震度 4 以上だけ」に
+  // 戻したときに気づけない（区域一覧・区域塗り・到達の欄の見え方はテストボタンにしか入口が無い）。
+  it.each([
+    ['createTestEEW（特別警報・三陸沖）', createTestEEW(true)],
+    ['createTestEEWWarning（警報・日向灘）', createTestEEWWarning(true)],
+  ] as const)('%s: 震度 4 未満の区域を持つ', (_label, eew) => {
+    expect(eewAreas(eew).some((a) => a.scaleTo < 40)).toBe(true)
+  })
+
+  // 対照: 区域の列挙が始まる境目のほうは緩めていない。実電文では、区域を持たない 3,772 通は
+  // 電文全体の予想の下限が震度 1〜3 で、区域を持つ 765 通は震度 4 以上だった（例外 1 通は §4）。
+  //
+  // **区域を持たない報はここだけで足す。** 共有の `cases` へ混ぜると、区域を回す他のテストが
+  // その報に対して 0 周で素通りし、検証していない件数だけが増える。
+  it.each([
+    ...cases,
+    ['createTestEEWAssumed（単独点処理の初報・日向灘）', createTestEEWAssumed(true, undefined, 1)],
+  ] as const)('%s: 区域を持つなら電文全体の予想も震度 4 以上', (_label, eew) => {
+    if (eewAreas(eew).length === 0) return
+    expect(eew.forecastMaxScale).toBeGreaterThanOrEqual(40)
   })
 
   it('予報の電文は警報コードの区域を含まない', () => {
@@ -288,6 +328,19 @@ describe('予想震度が付かないテスト EEW', () => {
     expect(second.earthquake.condition).not.toBe('仮定震源要素')
     expect(second.severity).toBe('Warning')
     expect(eewMaxScale(second)).toBe(50)
+  })
+
+  // 固定付加文は警報級の報にしか入らない（実電文で予報級 7,615 通は 0 件。
+  // → docs/spec/eew-spec.md §3「固定付加文」）。このボタンは予報級 → 警報級へ上がる形なので、
+  // **格上げで初めて付加文が現れる**ところまで再現していること。
+  it('単独点処理は予報級の初報に付加文を持たず、警報へ上がった続報で持つ', () => {
+    expect(createTestEEWAssumed(true, 'evt', 1, base).warningComment).toBeUndefined()
+    expect(createTestEEWAssumed(true, 'evt', 2, base).warningComment).toBeTruthy()
+  })
+
+  // standard 版（P2PQuake / Yahoo hypoInfo）は固定付加文を配信しないので、警報級でも持たない。
+  it('standard 版では警報へ上がっても付加文を持たない', () => {
+    expect(createTestEEWAssumed(false, 'evt', 2, base).warningComment).toBeUndefined()
   })
 
   // 名前が変わって 50km 超動くと「震源を更新、〇〇で地震。」の経路に入り、確かめたい格上げの

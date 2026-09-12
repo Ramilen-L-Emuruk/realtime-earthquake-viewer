@@ -47,15 +47,15 @@ function renderedOrder(tsunami: JMATsunami, names: string[]): string[] {
 describe('津波カードの観測点の並び', () => {
   // 等級（重い順）・区域（実測の深刻な順）・区域内（電文順）・沖合（最後）を 1 つの電文で通す
   const areas = [
-    area('青森県太平洋沿岸', '060', 'Watch', '1m'),
-    area('岩手県', '030', 'Warning', '3m'),
-    area('宮城県', '040', 'Warning', '3m'),
+    area('青森県太平洋沿岸', '201', 'Watch', '1m'),
+    area('岩手県', '210', 'Warning', '3m'),
+    area('宮城県', '220', 'Warning', '3m'),
   ]
   const observations = [
-    obs('八戸', '青森県太平洋沿岸', '060', 0.4),
-    obs('宮古', '岩手県', '030', 1.2),
-    obs('大船渡', '岩手県', '030', 3.0),
-    obs('鮎川', '宮城県', '040', 2.4),
+    obs('八戸港', '青森県太平洋沿岸', '201', 0.4),
+    obs('宮古', '岩手県', '210', 1.2),
+    obs('大船渡', '岩手県', '210', 3.0),
+    obs('石巻市鮎川', '宮城県', '220', 2.4),
     obs('沖合ブイ', '沖合', '999', 0.2),
   ]
   const tsunami: JMATsunami = {
@@ -77,7 +77,7 @@ describe('津波カードの観測点の並び', () => {
   // 電文順ではないことをここで押さえる（等級・区域の並べ替えが効いていることの確認）。
   it('並びは電文順ではない（等級と区域の並べ替えが効いている）', () => {
     const expected = sortObservationsForCardDisplay(observations, areas).map(o => o.name)
-    expect(expected).toEqual(['宮古', '大船渡', '鮎川', '八戸', '沖合ブイ'])
+    expect(expected).toEqual(['宮古', '大船渡', '石巻市鮎川', '八戸港', '沖合ブイ'])
     expect(expected).not.toEqual(observations.map(o => o.name))
   })
 })
