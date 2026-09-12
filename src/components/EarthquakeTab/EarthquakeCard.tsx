@@ -25,6 +25,14 @@ import { NON_JMA_BADGE_LABEL, NON_JMA_BADGE_TITLE } from '../Map/gl/popupHtml'
 import { mergeUnreceivedPointNames, type UnreceivedPointName } from './unreceivedPointNames'
 
 /**
+ * 長周期地震動に添える気象庁からの補足（付加文 3 種＋詳細ページ）の開閉キー。
+ *
+ * 震度一覧・長周期一覧の行と**同じ `expanded` を共有する**ので、鍵の名前空間を分けておく
+ * （行の側は `pref:` / `area:` / `city:` / `lpgm:pref:` / `lpgm:area:` を使う）。
+ */
+const LPGM_NOTES_KEY = 'lpgm:notes'
+
+/**
  * 震度一覧の 1 行。都道府県・一次細分区域・市町村・観測点の 4 段で共有する。
  *
  * **段ごとに書き分けない。** 未入電の語（「5弱以上」「未入電あり」）と震度の色は 4 段とも
@@ -251,6 +259,14 @@ export function EarthquakeCard({
   // 長周期の「観測情報の種類」から出す一文（値 2・4 のときだけ。→ `lpgmCategoryNote`）。
   // 条件と本文の両方で使うので一度だけ計算する。
   const categoryNote = lpgmCategoryNote(lpgm?.category)
+  /**
+   * 気象庁が長周期地震動に添えた補足（付加文 3 種＋詳細ページ）を 1 つでも持つか。
+   *
+   * **1 つも無ければ見出しを出さない。** 開いても何も出ないのに押せる見た目だけ与えると、
+   * 何が起きないのか利用者に分からない（津波の付加文と同じ考え方
+   * → docs/spec/tsunami-spec.md §9「気象庁が書いた文は、行動指示の行から開く」）。
+   */
+  const hasLpgmNotes = !!lpgm && !!(lpgm.forecastText || lpgm.varCommentText || lpgm.freeFormText || lpgm.uri)
   // 震度分布ボタン。**引き当てはここで行う** —— この電文は識別子を持たないので、
   // 発現時刻で突き合わせる（→ `estimatedIntensityFor`）。
   const matchedEstimated = estimatedIntensityFor(quake, estimatedIntensity)
@@ -285,6 +301,7 @@ export function EarthquakeCard({
     if (next.has(key)) next.delete(key); else next.add(key)
     return next
   })
+  const lpgmNotesOpen = expanded.has(LPGM_NOTES_KEY)
 
   /**
    * 未入電の点を切り分けた結果と、名前の解決に使う索引。**バッジとブロックで共有する。**
@@ -509,27 +526,58 @@ export function EarthquakeCard({
             </div>
           )}
           {/* 電文の「観測情報の種類」（`LgCategory`）が伝えているのは、階級を観測した地域の中に
-              震度が小さい地域があるかどうか。**分類番号は出さず意味だけ書く**（→ `lpgmCategoryNote`）。 */}
+              震度が小さい地域があるかどうか。**分類番号は出さず意味だけ書く**（→ `lpgmCategoryNote`）。
+              **この一文だけは畳まない。** 1 行しかないうえ、その地震でしか言えない事実で、
+              下の折りたたみに入れても縮む量はほとんど変わらない。 */}
           {lpgm && lpgm.maxClass >= 1 && categoryNote && (
             <div className="text-secondary" style={{ fontSize: '0.75rem', lineHeight: 1.5 }}>
               {categoryNote}
             </div>
           )}
-          {/* 付加文。固定（`ForecastComment/Text`。この地震について気象庁が添える定型文で、
-              実電文では緊急地震速報の発表の有無を伝えている）・その他の固定
-              （`VarComment/Text`）・自由（`FreeFormComment`。階級ごとの揺れの言い換え）の 3 種。
-              **自由付加文は改行と空白を保つ**（地震情報側と同じ扱い。全角スペースの表が入る）。 */}
-          {lpgm && lpgm.maxClass >= 1 && lpgm.forecastText && (
+          {/* 気象庁からの補足は畳んで置く。中身は付加文 3 種 —— 固定（`ForecastComment/Text`。
+              この地震について気象庁が添える定型文で、実電文では緊急地震速報の発表の有無を
+              伝えている）・その他の固定（`VarComment/Text`）・自由（`FreeFormComment`。階級ごとの
+              揺れの言い換え）—— と、気象庁の詳細ページ（`Comments/URI`）への導線。
+
+              **開いたままだと主要な情報が画面の外へ出る。** この位置は震央地名・規模より**上**で、
+              上下分割では開いたままだとどちらも初期表示に入らない。**押し下げ量の実測値は
+              docs/spec/quake-spec.md §8「気象庁からの補足は畳んで置く」が単一情報源**
+              （同じ値を 2 箇所に書くとずれる。**実測値の置き場所の作法**が津波の付加文と同じで、
+              畳むか重ねるかという見せ方のほうは別 —— 理由は同節）。
+
+              **「解説」の語を使わない。** 南海トラフ地震関連解説情報のバナーと同じ画面に並ぶため、
+              語幹が被ると別の情報だと読み取れない。
+
+              開閉は `<div role="button">` で作る（カード自体が `<button>` なので入れ子にできない。
+              震度一覧の行と同じ作法）。 */}
+          {lpgm && lpgm.maxClass >= 1 && hasLpgmNotes && (
+            <div
+              role="button"
+              tabIndex={0}
+              aria-expanded={lpgmNotesOpen}
+              onClick={(e) => { e.stopPropagation(); toggle(LPGM_NOTES_KEY) }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); toggle(LPGM_NOTES_KEY) }
+              }}
+              className="text-secondary w-fit cursor-pointer hover:text-white transition-colors"
+              style={{ fontSize: '0.75rem', lineHeight: 1.5 }}
+            >
+              気象庁からの補足
+              <span className="ml-1.5" style={{ color: '#9ca3af' }}>{lpgmNotesOpen ? '▾' : '▸'}</span>
+            </div>
+          )}
+          {/* **自由付加文は改行と空白を保つ**（地震情報側と同じ扱い。全角スペースの表が入る）。 */}
+          {lpgm && lpgm.maxClass >= 1 && lpgmNotesOpen && lpgm.forecastText && (
             <div className="text-secondary" style={{ fontSize: '0.75rem', lineHeight: 1.5 }}>
               {lpgm.forecastText}
             </div>
           )}
-          {lpgm && lpgm.maxClass >= 1 && lpgm.varCommentText && (
+          {lpgm && lpgm.maxClass >= 1 && lpgmNotesOpen && lpgm.varCommentText && (
             <div className="text-secondary" style={{ fontSize: '0.75rem', lineHeight: 1.5 }}>
               {lpgm.varCommentText}
             </div>
           )}
-          {lpgm && lpgm.maxClass >= 1 && lpgm.freeFormText && (
+          {lpgm && lpgm.maxClass >= 1 && lpgmNotesOpen && lpgm.freeFormText && (
             <div
               className="text-secondary"
               style={{ fontSize: '0.75rem', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}
@@ -537,9 +585,10 @@ export function EarthquakeCard({
               {lpgm.freeFormText}
             </div>
           )}
-          {/* 気象庁の詳細ページ（`Comments/URI`）。**アプリが出せないもの（波形・スペクトル）の
-              在りかを電文自身が示している**ので、そこへ行ける導線を残す。 */}
-          {lpgm && lpgm.maxClass >= 1 && lpgm.uri && (
+          {/* **アプリが出せないもの（波形・スペクトル）の在りかを電文自身が示している**ので、
+              そこへ行ける導線を残す。自由付加文も同じ URL を文中で案内しているため、
+              畳む単位はこの 4 つで 1 つにまとめている。 */}
+          {lpgm && lpgm.maxClass >= 1 && lpgmNotesOpen && lpgm.uri && (
             <a
               href={lpgm.uri}
               target="_blank"

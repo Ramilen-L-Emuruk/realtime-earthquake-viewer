@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback, type CSSProperties } from 'react'
 import type { MapHandle } from './components/Map/mapTypes'
-import { IconNav, type TabId } from './components/IconNav'
+import { IconNav, TAB_LABELS, type TabId } from './components/IconNav'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import {
   TAB_PRIORITY, TAB_HOLD_MS, shouldAcceptAutoTab, shouldFollowNow, idleRevertPriority,
   shouldRetakeAfterPreSpeech,
@@ -1578,43 +1579,50 @@ export function App() {
       >
         {/* 常時表示の地図エリア（タブに応じて内容を切替） */}
         <div className="relative flex-1 min-h-0">
-          <MapView
-            mode={mapMode}
-            catalogCloud={catalogCloud}
-            quake={mapQuake}
-            tsunamis={tsunamis}
-            observations={latestTsunamiObservations}
-            lpgm={activeLpgm ?? undefined}
-            distributionMode={mapDistributionMode}
-            estimatedIntensity={mapEstimatedIntensity}
-            iconScale={settings.mapIconScale}
-            recording={settings.recordingMode}
-            hypocenterDepthScale={settings.hypocenterDepthScale}
-            showBathymetry={settings.showBathymetry}
-            showActiveFaults={settings.showActiveFaults}
-            activeFaultOpacity={settings.activeFaultOpacity}
-            heatPoints={quakeHeatPoints}
-            showPlateBoundaries={settings.showPlateBoundaries}
-            showDayNight={settings.showDayNight}
-            dayNightOpacity={settings.dayNightOpacity}
-            kyoshinSites={kyoshinSitesGated}
-            kyoshinIndices={kyoshinHeld.indices}
-            kyoshinStale={kyoshinHeld.stale}
-            kyoshinSubIndices={kyoshinSubIndices}
-            kyoshinPsWave={psWave}
-            eews={eewsForMap}
-            detectedPoints={kyoshinView.detectedPoints}
-            detectedMarkerPoints={kyoshinView.detectedMarkerPoints}
-            candidatePoints={kyoshinView.candidatePoints}
-            unconfirmedPoints={kyoshinView.unconfirmedPoints}
-            candidateId={kyoshinView.candidateId}
-            shakeFocus={shakeFocus}
-            eewLpgmEventId={activeLpgmSource === 'eew' ? activeLpgmEventId : null}
-            focusObsName={focusedObsName}
-            obsUpdateStatus={obsUpdateStatus}
-            quakeSelectionTick={quakeSelectionTick}
-            onMapReady={setMapHandle}
-          />
+          {/* **包むのは地図だけ。** ここで受け止めれば App の state は生きたままなので、地図が
+              落ちてもカード・ブラウザ通知・読み上げは動き続ける。同じ親にいる左上の情報ブロック・
+              行動チェックリスト・特別情報バナーは境界の外に残す——中へ入れると地図と一緒に消える。
+              **MapLibre のカスタムレイヤーが描画ループ（rAF）で投げた例外はここへ届かない**。
+              そちらは各レイヤーの render() を包んで utils/renderHealth.ts へ報告する側の担当。 */}
+          <ErrorBoundary variant="region" label="地図">
+            <MapView
+              mode={mapMode}
+              catalogCloud={catalogCloud}
+              quake={mapQuake}
+              tsunamis={tsunamis}
+              observations={latestTsunamiObservations}
+              lpgm={activeLpgm ?? undefined}
+              distributionMode={mapDistributionMode}
+              estimatedIntensity={mapEstimatedIntensity}
+              iconScale={settings.mapIconScale}
+              recording={settings.recordingMode}
+              hypocenterDepthScale={settings.hypocenterDepthScale}
+              showBathymetry={settings.showBathymetry}
+              showActiveFaults={settings.showActiveFaults}
+              activeFaultOpacity={settings.activeFaultOpacity}
+              heatPoints={quakeHeatPoints}
+              showPlateBoundaries={settings.showPlateBoundaries}
+              showDayNight={settings.showDayNight}
+              dayNightOpacity={settings.dayNightOpacity}
+              kyoshinSites={kyoshinSitesGated}
+              kyoshinIndices={kyoshinHeld.indices}
+              kyoshinStale={kyoshinHeld.stale}
+              kyoshinSubIndices={kyoshinSubIndices}
+              kyoshinPsWave={psWave}
+              eews={eewsForMap}
+              detectedPoints={kyoshinView.detectedPoints}
+              detectedMarkerPoints={kyoshinView.detectedMarkerPoints}
+              candidatePoints={kyoshinView.candidatePoints}
+              unconfirmedPoints={kyoshinView.unconfirmedPoints}
+              candidateId={kyoshinView.candidateId}
+              shakeFocus={shakeFocus}
+              eewLpgmEventId={activeLpgmSource === 'eew' ? activeLpgmEventId : null}
+              focusObsName={focusedObsName}
+              obsUpdateStatus={obsUpdateStatus}
+              quakeSelectionTick={quakeSelectionTick}
+              onMapReady={setMapHandle}
+            />
+          </ErrorBoundary>
           {/* 地図左上に重ねる情報の置き場。上から更新時刻・生成データの取得状況・地図描画の不調。
               z-[99999]: 区域集約震度バッジ（QuakeRegionFillGL）は el.style.zIndex = scale*1000 で、
               scale は JMA 震度階級の数値コード（震度7 = 70）まであるため最大 70000 まで積む。
@@ -1675,93 +1683,108 @@ export function App() {
           panelCollapsed ? 'side:w-0 side:border-l-0' : 'side:w-panel sideNarrow:w-panel-narrow side:border-l'
         }`}>
           <div className={`${TAB_SCROLLER_CLASS}${activeTab !== 'earthquake' ? ' invisible pointer-events-none' : ''}`}>
-            <EarthquakeTab
-              earthquakes={filteredEarthquakes}
-              selectedId={selectedQuake ? quakeEventKey(selectedQuake) : null}
-              onSelect={selectQuakeFromCard}
-              isLoading={isLoading}
-              isLoadingMore={isLoadingMore}
-              hasMore={hasMore}
-              onLoadMore={loadMoreEarthquakes}
-              error={error}
-              lpgmByEventId={lpgmByEventId}
-              activeLpgmEventId={activeLpgmEventId}
-              onToggleLpgm={toggleLpgmFromEarthquake}
-              estimatedIntensity={estimatedIntensity}
-              distributionQuakeKey={distributionQuakeKey}
-              onToggleDistribution={toggleDistribution}
-            />
+            {/* **タブごとに境界を置く。** 6 タブは常時マウントで `invisible` を付け外ししている
+                だけなので、1 つのタブが投げた例外は境界が無ければ App ごと巻き込む。ここで
+                受け止めれば、落ちたタブ以外はそのまま見られる。 */}
+            <ErrorBoundary variant="region" label={TAB_LABELS.earthquake}>
+              <EarthquakeTab
+                earthquakes={filteredEarthquakes}
+                selectedId={selectedQuake ? quakeEventKey(selectedQuake) : null}
+                onSelect={selectQuakeFromCard}
+                isLoading={isLoading}
+                isLoadingMore={isLoadingMore}
+                hasMore={hasMore}
+                onLoadMore={loadMoreEarthquakes}
+                error={error}
+                lpgmByEventId={lpgmByEventId}
+                activeLpgmEventId={activeLpgmEventId}
+                onToggleLpgm={toggleLpgmFromEarthquake}
+                estimatedIntensity={estimatedIntensity}
+                distributionQuakeKey={distributionQuakeKey}
+                onToggleDistribution={toggleDistribution}
+              />
+            </ErrorBoundary>
           </div>
           <div className={`${TAB_SCROLLER_CLASS}${activeTab !== 'realtime' ? ' invisible pointer-events-none' : ''}`}>
-            <RealtimeTab
-              eews={eewsForPanel}
-              kyoshinV2Detections={kyoshinV2.detections}
-              kyoshinDetectedPoints={kyoshinDetectedPoints}
-              swaveArrival={swaveArrival}
-              visible={activeTab === 'realtime' && !panelCollapsed}
-              activeLpgmEventId={activeLpgmEventId}
-              onToggleLpgm={toggleLpgmFromEew}
-              onDeactivateLpgm={deactivateLpgm}
-            />
+            <ErrorBoundary variant="region" label={TAB_LABELS.realtime}>
+              <RealtimeTab
+                eews={eewsForPanel}
+                kyoshinV2Detections={kyoshinV2.detections}
+                kyoshinDetectedPoints={kyoshinDetectedPoints}
+                swaveArrival={swaveArrival}
+                visible={activeTab === 'realtime' && !panelCollapsed}
+                activeLpgmEventId={activeLpgmEventId}
+                onToggleLpgm={toggleLpgmFromEew}
+                onDeactivateLpgm={deactivateLpgm}
+              />
+            </ErrorBoundary>
           </div>
           <div className={`${TAB_SCROLLER_CLASS}${activeTab !== 'tsunami' ? ' invisible pointer-events-none' : ''}`}>
-            <TsunamiTab
-              tsunamis={tsunamis}
-              earthquakes={filteredEarthquakes}
-              onEarthquakeLink={linkTsunamiToEarthquake}
-              onObservationClick={focusTsunamiObs}
-              focusedDistrict={focusedDistrict}
-              obsUpdateStatus={obsUpdateStatus}
-            areaGradeChangedKeys={areaGradeChangedKeys}
-              speechSession={speechFollowSession}
-              /* 読み上げ追従の可否。タブは invisible で隠すだけなので**非表示でもスクロールは
-                 効いてしまう**（戻ってきたら知らない位置にいる）。折りたたみ時はさらに幅か
-                 高さが 0 になり、視野の高さが取れない。 */
-              isVisible={activeTab === 'tsunami' && !panelCollapsed}
-              /* 読み上げが有効なら受信時スクロールを止め、追従に任せる（逆向きの動きを消す） */
-              speechFollowEnabled={settings.voicevoxEnabled}
-              /* 自動で見せたときは先頭から見せる（手動選択では位置を保つ） */
-              autoShowTick={tsunamiAutoShowTick}
-            />
+            <ErrorBoundary variant="region" label={TAB_LABELS.tsunami}>
+              <TsunamiTab
+                tsunamis={tsunamis}
+                earthquakes={filteredEarthquakes}
+                onEarthquakeLink={linkTsunamiToEarthquake}
+                onObservationClick={focusTsunamiObs}
+                focusedDistrict={focusedDistrict}
+                obsUpdateStatus={obsUpdateStatus}
+              areaGradeChangedKeys={areaGradeChangedKeys}
+                speechSession={speechFollowSession}
+                /* 読み上げ追従の可否。タブは invisible で隠すだけなので**非表示でもスクロールは
+                   効いてしまう**（戻ってきたら知らない位置にいる）。折りたたみ時はさらに幅か
+                   高さが 0 になり、視野の高さが取れない。 */
+                isVisible={activeTab === 'tsunami' && !panelCollapsed}
+                /* 読み上げが有効なら受信時スクロールを止め、追従に任せる（逆向きの動きを消す） */
+                speechFollowEnabled={settings.voicevoxEnabled}
+                /* 自動で見せたときは先頭から見せる（手動選択では位置を保つ） */
+                autoShowTick={tsunamiAutoShowTick}
+              />
+            </ErrorBoundary>
           </div>
           <div className={`${TAB_SCROLLER_CLASS}${activeTab !== 'catalog' ? ' invisible pointer-events-none' : ''}`}>
-            <CatalogTab
-              index={catalog.index}
-              filter={catalogFilter}
-              onFilterChange={handleCatalogFilterChange}
-              view={catalogView}
-              onViewChange={setCatalogView}
-              pointCount={catalogCloud?.columns.count ?? 0}
-              loading={catalog.loading}
-              /* 絞り込みを変えた直後は件数が追いついていない（デバウンスした側で作るため）。
-                 参照が同じなら落ち着いている（`useDebouncedValue` は同じ値なら同じ参照を返す）。 */
-              pending={catalogFilter !== settledFilter || catalogView !== settledView}
-              error={catalog.error}
-              missingYears={catalog.missingYears}
-              requestedYears={catalog.requestedYears}
-              onRetry={catalog.retry}
-            />
+            <ErrorBoundary variant="region" label={TAB_LABELS.catalog}>
+              <CatalogTab
+                index={catalog.index}
+                filter={catalogFilter}
+                onFilterChange={handleCatalogFilterChange}
+                view={catalogView}
+                onViewChange={setCatalogView}
+                pointCount={catalogCloud?.columns.count ?? 0}
+                loading={catalog.loading}
+                /* 絞り込みを変えた直後は件数が追いついていない（デバウンスした側で作るため）。
+                   参照が同じなら落ち着いている（`useDebouncedValue` は同じ値なら同じ参照を返す）。 */
+                pending={catalogFilter !== settledFilter || catalogView !== settledView}
+                error={catalog.error}
+                missingYears={catalog.missingYears}
+                requestedYears={catalog.requestedYears}
+                onRetry={catalog.retry}
+              />
+            </ErrorBoundary>
           </div>
           <div className={`${TAB_SCROLLER_CLASS}${activeTab !== 'telegrams' ? ' invisible pointer-events-none' : ''}`}>
-            <TelegramTab telegramLog={telegramLog} onClear={clearTelegramLog} />
+            <ErrorBoundary variant="region" label={TAB_LABELS.telegrams}>
+              <TelegramTab telegramLog={telegramLog} onClear={clearTelegramLog} />
+            </ErrorBoundary>
           </div>
           <div className={`${TAB_SCROLLER_CLASS}${activeTab !== 'settings' ? ' invisible pointer-events-none' : ''}`}>
-            <SettingsTab
-              settings={settings}
-              onUpdate={updateSetting}
-              dmdataConnectionStatus={connectionStatus}
-              onTest={testHandlers}
-              kyoshinTimeOffset={replayTimeOffset}
-              kyoshinInputDateTime={kyoshinInputDateTime}
-              onSetKyoshinInputDateTime={setKyoshinInputDateTime}
-              replayIsFetching={replay.isFetching}
-              replayError={replay.error}
-              onStartReplay={replay.start}
-              onStopReplay={replay.stop}
-              historicalArchives={historicalArchives}
-              historicalArchivesLoading={historicalArchivesLoading}
-              scenarioTest={scenarioTest}
-            />
+            <ErrorBoundary variant="region" label={TAB_LABELS.settings}>
+              <SettingsTab
+                settings={settings}
+                onUpdate={updateSetting}
+                dmdataConnectionStatus={connectionStatus}
+                onTest={testHandlers}
+                kyoshinTimeOffset={replayTimeOffset}
+                kyoshinInputDateTime={kyoshinInputDateTime}
+                onSetKyoshinInputDateTime={setKyoshinInputDateTime}
+                replayIsFetching={replay.isFetching}
+                replayError={replay.error}
+                onStartReplay={replay.start}
+                onStopReplay={replay.stop}
+                historicalArchives={historicalArchives}
+                historicalArchivesLoading={historicalArchivesLoading}
+                scenarioTest={scenarioTest}
+              />
+            </ErrorBoundary>
           </div>
         </div>
 

@@ -70,6 +70,14 @@ const ITEMS: { id: TabId; label: string }[] = [
   { id: 'telegrams', label: '電文ログ' },
 ]
 
+/**
+ * タブの表示名。ナビのボタン名と、**そのタブが落ちたときの表示**（`ErrorBoundary` の `label`）で
+ * 共有する。2 箇所に書くと、タブの名前を変えたとき片方だけ古くなる。
+ */
+export const TAB_LABELS: Record<TabId, string> = Object.fromEntries(
+  ITEMS.map((i) => [i.id, i.label]),
+) as Record<TabId, string>
+
 const TSUNAMI_BADGE_COLOR: Record<string, string> = {
   MajorWarning: 'bg-purple-500',
   Warning:      'bg-red-500',

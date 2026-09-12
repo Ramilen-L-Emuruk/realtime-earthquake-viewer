@@ -9,6 +9,8 @@ import { EARTH_RADIUS_KM } from '../../utils/geo'
 import { ringVertex } from './gl/psWaveRing'
 import { addOrderedLayer } from './gl/layerOrder'
 import { log } from '../../utils/logger'
+import { guardRender } from './gl/guardRender'
+import { clearRenderFailure } from '../../utils/renderHealth'
 
 // 緊急地震速報の予報円（S波=塗りつぶし＋後端フェード / P波=破線外周）を描画する MapLibre 版。
 //
@@ -27,6 +29,8 @@ import { log } from '../../utils/logger'
 const TRAILING_EDGE_FADE_RATIO = 0.2
 const TRAILING_EDGE_FADE_MIN_KM = 15
 const LYR = 'pswave'
+/** 描画の不調を知らせるときの表示名（`utils/renderHealth.ts`）。 */
+const LABEL = '緊急地震速報の予報円'
 
 // 単位円グリッドの分割数。
 // 角度方向は円の滑らかさ、半径方向は測地変換の非線形性（頂点間は線形補間される）を吸収する。
@@ -253,7 +257,7 @@ ${VERT_BODY}`,
         gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW)
         gl.bindVertexArray(null)
       },
-      render(gl2, args) {
+      render: guardRender(LYR, LABEL, (gl2, args) => {
         const gl = gl2 as WebGL2RenderingContext
         if (!vao) return
         const circles = psWaveRef.current
@@ -307,9 +311,12 @@ ${VERT_BODY}`,
 
         gl.bindVertexArray(null)
         gl.disable(gl.BLEND)
-      },
+      }),
       onRemove(_m, gl2) {
         const gl = gl2 as WebGL2RenderingContext
+        // **画面から外れたら不調の記録も消す**（docs/spec/map-rendering-spec.md §16）。
+        // `gl/guardRender.ts` が受け止めた例外の記録も、この 1 行でまとめて消える。
+        clearRenderFailure(LYR, 'draw')
         cache.dispose(gl)
         if (vbo) gl.deleteBuffer(vbo)
         if (ibo) gl.deleteBuffer(ibo)
