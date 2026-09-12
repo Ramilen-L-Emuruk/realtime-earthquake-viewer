@@ -743,12 +743,18 @@ function formatDayTime(isoTime: string): string {
   return `${new Date(isoTime).getDate()}日${formatTime(isoTime)}`
 }
 
-/** VXSE43/45 EEW キャンセル（誤報取消）の読み上げテキストを生成する。 */
+/**
+ * VXSE43/45 EEW の誤報取消の読み上げテキストを生成する。
+ *
+ * **述語は「取り消されました」。** 気象庁が使う語は「取消」で（→ CLAUDE.md「利用者へ出す語を
+ * 気象庁の表現と揃える」）、カードのオーバーレイも「この緊急地震速報は取り消されました」と
+ * 書いている。津波・南海トラフ臨時情報・地震回数の取消も同じ述語。
+ */
 export function eewCancelToText(event: EEWAlert): string {
   const time = event.issue?.time ? formatTime(event.issue.time) : null
   const head = time
-    ? `${time}に発表された緊急地震速報はキャンセルされました。`
-    : '緊急地震速報はキャンセルされました。'
+    ? `${time}に発表された緊急地震速報は取り消されました。`
+    : '緊急地震速報は取り消されました。'
   // 地震情報・津波情報と同じ扱い（→ `cancelReasonSentence`）。3 つの電文で揃えないと、
   // 同じ事象なのに種別によって理由が出たり出なかったりする
   return head + cancelReasonSentence(event.cancelText)
@@ -761,9 +767,10 @@ export function eewCancelToText(event: EEWAlert): string {
  */
 export function earthquakeCancelToText(time: string | null, cancelText?: string): string {
   const formatted = time ? formatTime(time) : null
+  // 述語は「取り消されました」で全種別そろえる（→ `eewCancelToText`）。
   const head = formatted
-    ? `${formatted}に発表された地震情報はキャンセルされました。`
-    : '地震情報はキャンセルされました。'
+    ? `${formatted}に発表された地震情報は取り消されました。`
+    : '地震情報は取り消されました。'
   return head + cancelReasonSentence(cancelText)
 }
 
@@ -771,7 +778,7 @@ export function earthquakeCancelToText(time: string | null, cancelText?: string)
  * 取消しの概要（電文の `Body/Text`）を読み上げへ足す句。無ければ空。
  * → docs/spec/audio-tts-spec.md §4「取消は「取り消された事実」だけを伝える」
  *
- * **気象庁が書いた理由をそのまま読む。** アプリの定型文（「キャンセルされました」）は何が
+ * **気象庁が書いた理由をそのまま読む。** アプリの定型文（「取り消されました」）は何が
  * 起きたかしか言っておらず、なぜ取り消したのかは電文のこの本文にしか無い。
  *
  * **ただし取消の宣言だけの本文は読まない**（→ `CANCEL_DECLARATION_SUBJECTS`）。定型文が同じ事実を
@@ -2293,7 +2300,8 @@ function buildLpgmRegionText(lpgm: JMALpgm, opts: TtsRegionOptions): string {
 /** VXSE62 長周期地震動情報の読み上げテキストを生成する。isNew=false のとき更新報として冒頭に通知する。 */
 export function lpgmToText(lpgm: JMALpgm, opts: TtsRegionOptions, isNew: boolean): string {
   if (lpgm.cancelled) {
-    return '長周期地震動情報はキャンセルされました。'
+    // 述語は「取り消されました」で全種別そろえる（→ `eewCancelToText`）。
+    return '長周期地震動情報は取り消されました。'
   }
   const time = formatTime(lpgm.originTime)
   const prefix = isNew ? '長周期地震動情報。' : '長周期地震動情報が更新されました。'
