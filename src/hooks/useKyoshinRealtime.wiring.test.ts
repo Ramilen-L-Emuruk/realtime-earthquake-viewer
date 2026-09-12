@@ -12,6 +12,7 @@
 //
 // React を動かすため、このファイルだけ jsdom 環境で実行する（既定の node は変えない）。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { useEffect } from 'react'
 import { renderHook, act, cleanup } from '@testing-library/react'
 import { useKyoshinRealtime } from './useKyoshinRealtime'
 import {
@@ -383,6 +384,143 @@ describe('useKyoshinRealtime の結線', () => {
     rerender({ offset: -3600_000 })
     expect(live.stop).toHaveBeenCalledTimes(1)
     expect(archive.source.start).toHaveBeenCalledTimes(1)
+  })
+
+  describe('供給を作り直したら、旧い時間軸の値を持ち越さない', () => {
+    /**
+     * 下流の effect が見たデータ時刻を並べる。
+     *
+     * **「落としたか」ではなく「いつ落としたか」を見るための仕掛け。** effect まで待って落とすと、
+     * その 1 コミットのあいだ旧い時間軸の値が下流へ流れる。リプレイの開始・停止は地震・EEW の
+     * クリアと同じバッチで走るので、その隙に動いた判定が「揺れている」と読む（#71 の行動
+     * チェックリスト）。レンダー中に落とせば、旧い値を載せたコミットがそもそも生まれない。
+     *
+     * deps に毎レンダー変わる値を混ぜているのは、**deps の他の要素が変わって走る effect** を
+     * 模すため。実際に #71 を踏んだのは、この形の effect（地震と EEW の消滅で再実行され、
+     * 据え置かれた強震モニタの値を読んだ）だった。
+     */
+    function renderWithDownstream(initialOffset: number | null) {
+      const seen: string[] = []
+      const seenError: boolean[] = []
+      let tick = 0
+      const view = renderHook(
+        ({ offset }: { offset: number | null }) => {
+          const r = useKyoshinRealtime(true, { timeOffset: offset })
+          const everyRender = ++tick
+          useEffect(() => {
+            seen.push(r.dataTime)
+            seenError.push(r.error)
+          }, [r.dataTime, r.error, everyRender])
+          return r
+        },
+        { initialProps: { offset: initialOffset } },
+      )
+      return { ...view, seen, seenError }
+    }
+
+    it('時刻オフセットが変わったら、震度・データ時刻・観測点集合の識別子をその場で落とす', async () => {
+      const live = createFakeSource()
+      const archive = createFakeSource()
+      liveMock.mockReturnValue(live.source)
+      archiveMock.mockReturnValue(archive.source)
+
+      const { result, rerender, seen } = renderWithDownstream(null)
+      const frame = frameAt(NOW - 1000, { indices: [7, 7], sitesKey: 'cfg-a' })
+      await act(async () => { live.emit(frame) })
+      expect(result.current.dataTime).toBe(frame.dataTime)
+
+      seen.length = 0
+      rerender({ offset: -3600_000 })
+
+      expect(result.current.indices).toEqual([])
+      expect(result.current.dataTime).toBe('')
+      expect(result.current.indicesSiteConfigId).toBeNull()
+      // 旧い時間軸のデータ時刻を載せたコミットが 1 つも生まれていないこと
+      expect(seen).toEqual([''])
+    })
+
+    it('観測点座標は落とさない（落とすと空のまま復帰しなくなる）', async () => {
+      // 観測点リストの取り直しは「フレームの sitesKey が現在のものと違うか」でしか起きない。
+      // その基準（currentSitesKeyRef）はエフェクトの再起動では戻らないので、座標だけを空に
+      // すると、新しい時間軸が同じ観測点集合（通常こうなる）のとき取り直しが走らず、
+      // 座標が永久に空のままになる。
+      const live = createFakeSource()
+      const archive = createFakeSource()
+      liveMock.mockReturnValue(live.source)
+      archiveMock.mockReturnValue(archive.source)
+
+      const { result, rerender } = renderWithDownstream(null)
+      await act(async () => { live.emit(frameAt(NOW - 1000, { sitesKey: 'cfg-a' })) })
+      expect(result.current.sites).toEqual(TOKYO)
+
+      rerender({ offset: -3600_000 })
+      expect(result.current.sites).toEqual(TOKYO)
+      expect(result.current.sitesSiteConfigId).toBe('cfg-a')
+
+      // 新しい時間軸の最初のフレーム（同じ観測点集合）で、震度が普通に戻ること
+      await act(async () => { archive.emit(frameAt(NOW - 2000, { indices: [3], sitesKey: 'cfg-a' })) })
+      expect(result.current.indices).toEqual([3])
+      expect(result.current.indicesSiteConfigId).toBe('cfg-a')
+      expect(result.current.sites).toEqual(TOKYO)
+    })
+
+    it('供給を作り直さない再レンダーでは落とさない', async () => {
+      const live = createFakeSource()
+      liveMock.mockReturnValue(live.source)
+
+      const { result, rerender, seen } = renderWithDownstream(null)
+      const frame = frameAt(NOW - 1000, { indices: [7], sitesKey: 'cfg-a' })
+      await act(async () => { live.emit(frame) })
+
+      seen.length = 0
+      rerender({ offset: null })
+      expect(result.current.indices).toEqual([7])
+      expect(result.current.dataTime).toBe(frame.dataTime)
+      expect(seen).toEqual([frame.dataTime])
+    })
+
+    it('ローカルアーカイブの切替では落とさない（供給元が替わるだけで時間軸は続いている）', async () => {
+      // 収録範囲を再生中に跨ぐと `localArchiveId` だけが変わる。供給は作り直されるが再生時刻は
+      // そのまま続くので、いま持っている値は新しい軸のものでもある。ここで落とすと、**同じ地震の
+      // 揺れの最中に検知が一度消える** —— 画面が既定タブへ戻り、次のフレームで検知が戻ったときに
+      // 検知音とブラウザ通知が鳴り直す（`useKyoshinAlerts` は検知が消えた理由を問わない）。
+      const local = createFakeSource()
+      const archive = createFakeSource()
+      localArchiveMock.mockReturnValue(local.source)
+      archiveMock.mockReturnValue(archive.source)
+
+      const { result, rerender } = renderHook(
+        ({ id }: { id: string | null }) => useKyoshinRealtime(true, { timeOffset: -3600_000, localArchiveId: id }),
+        { initialProps: { id: '2018-iburi' as string | null } },
+      )
+      const frame = frameAt(NOW - 1000, { indices: [7], sitesKey: 'cfg-a' })
+      await act(async () => { local.emit(frame) })
+      expect(result.current.indices).toEqual([7])
+
+      rerender({ id: null })
+      expect(result.current.indices).toEqual([7])
+      expect(result.current.dataTime).toBe(frame.dataTime)
+    })
+
+    it('更新停止の表示も同じコミットで落とす', async () => {
+      // エフェクト側でも `false` に戻すが、そちらは 1 コミット遅れる。その 1 コミットのあいだ
+      // 「更新時刻なし」と「更新が止まっています」が同時に出る。**`error` が最後に false へ
+      // なったことを見るだけでは、この非対称を捕まえられない**（エフェクトに任せても最後は
+      // false になる）ので、下流が見たコミットの列で確かめる。
+      const live = createFakeSource()
+      const archive = createFakeSource()
+      liveMock.mockReturnValue(live.source)
+      archiveMock.mockReturnValue(archive.source)
+
+      const { result, rerender, seenError } = renderWithDownstream(null)
+      await act(async () => { live.emit(frameAt(NOW - 1000, { sitesKey: 'cfg-a' })) })
+      await act(async () => { live.setStalled(true) })
+      expect(result.current.error).toBe(true)
+
+      seenError.length = 0
+      rerender({ offset: -3600_000 })
+      expect(seenError).toEqual([false])
+    })
   })
 
   it('アンマウントで供給元を止める', () => {
