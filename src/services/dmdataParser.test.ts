@@ -4319,8 +4319,8 @@ describe('地震情報の規模の説明（Magnitude@description）', () => {
 // 固定付加文（その他）（`VarComment/Text`）。
 //
 // 実電文で現れるのは観測点名の `＊` を説明する定型文（地震情報 0262・長周期 0263）だけ。
-// アプリは印を名前から外して「気象庁以外」のバッジで伝えているので、印の説明だけを画面に
-// 出すと在りもしない記号を探させることになる。**落とすかどうかはコードで決める。**
+// アプリは印を表示するときに名前へ戻しているので（→ `withNonJmaMark`）、**この説明も
+// そのまま画面へ出す** —— 記号だけでは何と対比しているのか分からない。
 describe('固定付加文（その他）（VarComment）', () => {
   const NON_JMA_NOTE = '＊印は気象庁以外の震度観測点についての情報です。'
   const withVar = (codes: string, text: string) => VXSE53_XML.replace(
@@ -4334,22 +4334,34 @@ describe('固定付加文（その他）（VarComment）', () => {
       .toBe('震源要素を訂正します。')
   })
 
-  // 対照: ＊印の説明だけなら画面へ出さない。
-  it('＊印の説明だけの付加文は画面へ出さない', () => {
+  // 正: ＊印の説明も原文をそのまま持つ。**実電文でいちばん多い形がこれ** —— 震度を伝える
+  // 電文のほぼ全てに入る。落としていた頃は、画面に出る印の意味がどこにも出なかった。
+  it('＊印の説明も原文を持つ', () => {
     expect(parseEarthquakeFromXml('VXSE53', withVar('0262', NON_JMA_NOTE))!.varCommentText)
-      .toBeUndefined()
+      .toBe(NON_JMA_NOTE)
   })
 
-  // 安全弁: 他のコードと併記されていれば原文を残す。**説明文だけを文字列から切り出さない**
-  // ——切り方が原文の書式に縛られる。
+  // 安全弁: コードはあるのに原文が無い電文は、従来どおり空のまま記録へ回す
+  // （→ `readCommentText`）。抑制を外したことで、この検査まで消えてはいない。
+  it('原文が無ければ空のまま', () => {
+    const xml = VXSE53_XML.replace(
+      '</Body>',
+      '<Comments><VarComment codeType="固定付加文"><Code>0262</Code></VarComment></Comments></Body>',
+    )
+    expect(parseEarthquakeFromXml('VXSE53', xml)!.varCommentText).toBeUndefined()
+  })
+
+  // 安全弁: 他のコードと併記されていても原文をそのまま残す。**説明文だけを文字列から
+  // 切り出さない** ——切り方が原文の書式に縛られる。
   it('他のコードと併記されていれば原文を残す', () => {
     const xml = withVar('0256 0262', `震源要素を訂正します。${NON_JMA_NOTE}`)
     expect(parseEarthquakeFromXml('VXSE53', xml)!.varCommentText)
       .toBe(`震源要素を訂正します。${NON_JMA_NOTE}`)
   })
 
-  // 長周期でも同じ判定を通す（コードは 0263）。
-  it('長周期でも＊印の説明は画面へ出さない', () => {
+  // 長周期でも同じ扱いを通す（コードは 0263）。
+  it('長周期でも＊印の説明を画面へ出す', () => {
+    const NON_JMA_LPGM_NOTE = '＊印は気象庁以外の長周期地震動観測点についての情報です。'
     const varBlock = [
       '      <VarComment codeType="固定付加文">',
       '        <Text>この地震について、緊急地震速報を発表しています。</Text>',
@@ -4359,11 +4371,11 @@ describe('固定付加文（その他）（VarComment）', () => {
     expect(PARITY_LPGM_XML).toContain(varBlock)
     const xml = PARITY_LPGM_XML.replace(varBlock, [
       '      <VarComment codeType="固定付加文">',
-      `        <Text>＊印は気象庁以外の長周期地震動観測点についての情報です。</Text>`,
+      `        <Text>${NON_JMA_LPGM_NOTE}</Text>`,
       '        <Code>0263</Code>',
       '      </VarComment>',
     ].join('\n'))
-    expect(parseLpgmFromXml(xml)!.varCommentText).toBeUndefined()
+    expect(parseLpgmFromXml(xml)!.varCommentText).toBe(NON_JMA_LPGM_NOTE)
   })
 })
 
