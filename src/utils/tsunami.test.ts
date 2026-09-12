@@ -238,25 +238,25 @@ describe('matchesArea', () => {
 
   it('双方に code があれば code で照合する（名前が違っても一致する）', () => {
     expect(matchesArea(
-      obs({ districtCode: '040', districtName: '別名' }),
-      makeArea({ code: '040', name: '宮城県' }),
+      obs({ districtCode: '220', districtName: '別名' }),
+      makeArea({ code: '220', name: '宮城県' }),
     )).toBe(true)
   })
 
   it('code が一致しなければ名前が同じでも一致しない', () => {
     expect(matchesArea(
-      obs({ districtCode: '040', districtName: '宮城県' }),
-      makeArea({ code: '050', name: '宮城県' }),
+      obs({ districtCode: '220', districtName: '宮城県' }),
+      makeArea({ code: '250', name: '宮城県' }),
     )).toBe(false)
   })
 
   it('片方に code が無ければ名前で照合する', () => {
     expect(matchesArea(
       obs({ districtName: '宮城県' }),
-      makeArea({ code: '040', name: '宮城県' }),
+      makeArea({ code: '220', name: '宮城県' }),
     )).toBe(true)
     expect(matchesArea(
-      obs({ districtCode: '040', districtName: '宮城県' }),
+      obs({ districtCode: '220', districtName: '宮城県' }),
       makeArea({ code: undefined, name: '宮城県' }),
     )).toBe(true)
   })
@@ -274,65 +274,65 @@ describe('groupAreasForCardDisplay / sortAreasForCardDisplay', () => {
 
   it('予想波高が連続して一致する区域だけをまとめる（離れた同じ波高は別グループ）', () => {
     const groups = groupAreasForCardDisplay([
-      area('岩手県', '030', '3m'),
-      area('宮城県', '040', '6m'),
-      area('福島県', '050', '3m'),
+      area('岩手県', '210', '3m'),
+      area('宮城県', '220', '6m'),
+      area('福島県', '250', '3m'),
     ], [])
     expect(groups.map(g => [g.heightLabel, g.areas.map(a => a.name)]))
       .toEqual([['3m', ['岩手県']], ['6m', ['宮城県']], ['3m', ['福島県']]])
   })
 
   it('観測が無ければ電文順を維持する', () => {
-    const areas = [area('岩手県', '030', '3m'), area('宮城県', '040', '3m')]
+    const areas = [area('岩手県', '210', '3m'), area('宮城県', '220', '3m')]
     expect(sortAreasForCardDisplay(areas, []).map(a => a.name)).toEqual(['岩手県', '宮城県'])
   })
 
   it('グループ内は実測波高の降順に並べ、実測が無い区域は後ろへ回す', () => {
-    const areas = [area('岩手県', '030', '3m'), area('宮城県', '040', '3m'), area('福島県', '050', '3m')]
-    const sorted = sortAreasForCardDisplay(areas, [height('福島県', '050', 1.2), height('宮城県', '040', 2.4)])
+    const areas = [area('岩手県', '210', '3m'), area('宮城県', '220', '3m'), area('福島県', '250', '3m')]
+    const sorted = sortAreasForCardDisplay(areas, [height('福島県', '250', 1.2), height('宮城県', '220', 2.4)])
     expect(sorted.map(a => a.name)).toEqual(['宮城県', '福島県', '岩手県'])
   })
 
   it('実測が同値なら「以上」を優先し、それも同じなら電文順を保つ', () => {
-    const areas = [area('岩手県', '030', '3m'), area('宮城県', '040', '3m')]
+    const areas = [area('岩手県', '210', '3m'), area('宮城県', '220', '3m')]
     expect(sortAreasForCardDisplay(areas, [
-      height('岩手県', '030', 2.0),
-      height('宮城県', '040', 2.0, true),
+      height('岩手県', '210', 2.0),
+      height('宮城県', '220', 2.0, true),
     ]).map(a => a.name)).toEqual(['宮城県', '岩手県'])
     expect(sortAreasForCardDisplay(areas, [
-      height('岩手県', '030', 2.0),
-      height('宮城県', '040', 2.0),
+      height('岩手県', '210', 2.0),
+      height('宮城県', '220', 2.0),
     ]).map(a => a.name)).toEqual(['岩手県', '宮城県'])
   })
 
   // 正: 「以上」は真の波高の下限しか示さない（上限が無い）ため、値が下でも確定値より上に置く
   it('「以上」は値が確定値より低くても上に並ぶ', () => {
-    const areas = [area('岩手県', '030', '3m'), area('宮城県', '040', '3m')]
+    const areas = [area('岩手県', '210', '3m'), area('宮城県', '220', '3m')]
     expect(sortAreasForCardDisplay(areas, [
-      height('岩手県', '030', 9.0),
-      height('宮城県', '040', 8.5, true),
+      height('岩手県', '210', 9.0),
+      height('宮城県', '220', 8.5, true),
     ]).map(a => a.name)).toEqual(['宮城県', '岩手県'])
   })
 
   // 対照: 「以上」を優先するのは確定値との比較だけ。「以上」どうしは値の大小で並ぶ
   it('「以上」どうしは値の降順に並ぶ', () => {
-    const areas = [area('岩手県', '030', '3m'), area('宮城県', '040', '3m')]
+    const areas = [area('岩手県', '210', '3m'), area('宮城県', '220', '3m')]
     expect(sortAreasForCardDisplay(areas, [
-      height('岩手県', '030', 1.5, true),
-      height('宮城県', '040', 8.5, true),
+      height('岩手県', '210', 1.5, true),
+      height('宮城県', '220', 8.5, true),
     ]).map(a => a.name)).toEqual(['宮城県', '岩手県'])
   })
 
   // 安全弁: 「以上」優先が「実測が無い区域を後ろへ回す」という上位の規則を追い越さない
   it('「以上」があっても実測の無い区域は後ろのまま', () => {
-    const areas = [area('岩手県', '030', '3m'), area('宮城県', '040', '3m')]
+    const areas = [area('岩手県', '210', '3m'), area('宮城県', '220', '3m')]
     expect(sortAreasForCardDisplay(areas, [
-      height('宮城県', '040', 1.5, true),
+      height('宮城県', '220', 1.5, true),
     ]).map(a => a.name)).toEqual(['宮城県', '岩手県'])
   })
 
   it('波高を持たない区域は独立したグループになる', () => {
-    const groups = groupAreasForCardDisplay([area('岩手県', '030'), area('宮城県', '040')], [])
+    const groups = groupAreasForCardDisplay([area('岩手県', '210'), area('宮城県', '220')], [])
     expect(groups.map(g => g.heightLabel)).toEqual([null, null])
   })
 })
@@ -380,7 +380,7 @@ describe('sortAreasAcrossGradesForCardDisplay', () => {
 
   // 正: 予想波高が同じでも、重い等級の区域が先に来る
   it('重い等級の区域を先に置く', () => {
-    const areas = [area('北海道太平洋沿岸東部', '080', 'Watch', '1m'), area('岩手県', '030', 'Warning', '1m')]
+    const areas = [area('北海道太平洋沿岸東部', '100', 'Watch', '1m'), area('岩手県', '210', 'Warning', '1m')]
     expect(sortAreasAcrossGradesForCardDisplay(areas, []).map(a => a.name))
       .toEqual(['岩手県', '北海道太平洋沿岸東部'])
   })
@@ -388,7 +388,7 @@ describe('sortAreasAcrossGradesForCardDisplay', () => {
   // 対照: 等級を分けない `sortAreasForCardDisplay` は波高で束ねるため、この並びにならない。
   // 等級混じりの一覧をそちらへ渡すと、注意報の区域が警報より上に出る
   it('等級を分けない並べ替えとは結果が違う', () => {
-    const areas = [area('北海道太平洋沿岸東部', '080', 'Watch', '1m'), area('岩手県', '030', 'Warning', '1m')]
+    const areas = [area('北海道太平洋沿岸東部', '100', 'Watch', '1m'), area('岩手県', '210', 'Warning', '1m')]
     expect(sortAreasForCardDisplay(areas, []).map(a => a.name))
       .toEqual(['北海道太平洋沿岸東部', '岩手県'])
   })
@@ -397,11 +397,11 @@ describe('sortAreasAcrossGradesForCardDisplay', () => {
   // 区域どうしの並べ替えを止めてしまっていないこと
   it('同じ等級の中は実測波高の深刻な順を保つ', () => {
     const areas = [
-      area('岩手県', '030', 'Warning', '3m'),
-      area('宮城県', '040', 'Warning', '3m'),
-      area('北海道太平洋沿岸東部', '080', 'Watch', '1m'),
+      area('岩手県', '210', 'Warning', '3m'),
+      area('宮城県', '220', 'Warning', '3m'),
+      area('北海道太平洋沿岸東部', '100', 'Watch', '1m'),
     ]
-    expect(sortAreasAcrossGradesForCardDisplay(areas, [height('宮城県', '040', 2.4)]).map(a => a.name))
+    expect(sortAreasAcrossGradesForCardDisplay(areas, [height('宮城県', '220', 2.4)]).map(a => a.name))
       .toEqual(['宮城県', '岩手県', '北海道太平洋沿岸東部'])
   })
 
@@ -429,34 +429,34 @@ describe('sortObservationsForCardDisplay', () => {
     ({ name, districtCode: code, districtName, height: value === undefined ? undefined : { value, description: `${value}m` } })
 
   it('等級カードの順に並べる（重い等級が先）', () => {
-    const areas = [area('青森県太平洋沿岸', '060', 'Watch'), area('岩手県', '030', 'MajorWarning')]
-    const items = [obs('八戸', '青森県太平洋沿岸', '060', 0.4), obs('宮古', '岩手県', '030', 1.2)]
-    expect(sortObservationsForCardDisplay(items, areas).map(o => o.name)).toEqual(['宮古', '八戸'])
+    const areas = [area('青森県太平洋沿岸', '201', 'Watch'), area('岩手県', '210', 'MajorWarning')]
+    const items = [obs('八戸港', '青森県太平洋沿岸', '201', 0.4), obs('宮古', '岩手県', '210', 1.2)]
+    expect(sortObservationsForCardDisplay(items, areas).map(o => o.name)).toEqual(['宮古', '八戸港'])
   })
 
   // 区域の並べ替え（実測の深刻な順）がそのまま観測点の順にも効く
   it('同じ等級では区域の表示順に従う', () => {
-    const areas = [area('岩手県', '030', 'Warning', '3m'), area('宮城県', '040', 'Warning', '3m')]
-    const items = [obs('宮古', '岩手県', '030', 1.2), obs('鮎川', '宮城県', '040', 2.4)]
-    // 実測が深刻な宮城県の区域が上に来るので、観測点も鮎川が先
-    expect(sortObservationsForCardDisplay(items, areas).map(o => o.name)).toEqual(['鮎川', '宮古'])
+    const areas = [area('岩手県', '210', 'Warning', '3m'), area('宮城県', '220', 'Warning', '3m')]
+    const items = [obs('宮古', '岩手県', '210', 1.2), obs('石巻市鮎川', '宮城県', '220', 2.4)]
+    // 実測が深刻な宮城県の区域が上に来るので、観測点も石巻市鮎川が先
+    expect(sortObservationsForCardDisplay(items, areas).map(o => o.name)).toEqual(['石巻市鮎川', '宮古'])
   })
 
   it('同じ区域の中は電文の並びを保つ', () => {
-    const areas = [area('岩手県', '030', 'Warning')]
-    const items = [obs('宮古', '岩手県', '030', 1.2), obs('大船渡', '岩手県', '030', 3.0)]
+    const areas = [area('岩手県', '210', 'Warning')]
+    const items = [obs('宮古', '岩手県', '210', 1.2), obs('大船渡', '岩手県', '210', 3.0)]
     expect(sortObservationsForCardDisplay(items, areas).map(o => o.name)).toEqual(['宮古', '大船渡'])
   })
 
   // 安全弁: 区域に紐づかない観測点はカードでも最後（「沖合観測」）。落としてはいけない
   it('区域に紐づかない観測点は最後に置き、取り落とさない', () => {
-    const areas = [area('岩手県', '030', 'Warning')]
-    const items = [obs('沖合A', '沖合', '999', 0.5), obs('宮古', '岩手県', '030', 1.2)]
+    const areas = [area('岩手県', '210', 'Warning')]
+    const items = [obs('沖合A', '沖合', '999', 0.5), obs('宮古', '岩手県', '210', 1.2)]
     expect(sortObservationsForCardDisplay(items, areas).map(o => o.name)).toEqual(['宮古', '沖合A'])
   })
 
   it('区域が空でも全件を 電文順で返す', () => {
-    const items = [obs('宮古', '岩手県', '030', 1.2), obs('大船渡', '岩手県', '030', 3.0)]
+    const items = [obs('宮古', '岩手県', '210', 1.2), obs('大船渡', '岩手県', '210', 3.0)]
     expect(sortObservationsForCardDisplay(items, []).map(o => o.name)).toEqual(['宮古', '大船渡'])
   })
 
@@ -656,7 +656,7 @@ describe('withInheritedTsunamiFacts', () => {
     warningComments: [{ key: 'VTSE51|各地の満潮時刻・津波到達予想時刻に関する情報', text: '津波と満潮が重なると、' }],
     areas: [makeArea({
       name: '岩手県', code: '210', grade: 'Warning',
-      stations: [{ name: '宮古', code: '2101', highTideDateTime: '2026-04-20T18:19:00+09:00' }],
+      stations: [{ name: '宮古', code: '21001', highTideDateTime: '2026-04-20T18:19:00+09:00' }],
     })],
     ...over,
   })
@@ -1220,7 +1220,7 @@ describe('mergeTsunamiAreas', () => {
     const prev = [withStations('岩手県', '210')]
     const next = [makeArea({
       name: '岩手県', code: '210',
-      stations: [{ name: '宮古', code: '2101', highTideDateTime: '2026-04-20T19:00:00+09:00' }],
+      stations: [{ name: '宮古', code: '21001', highTideDateTime: '2026-04-20T19:00:00+09:00' }],
     })]
     expect(mergeTsunamiAreas(prev, next, true)[0].stations?.[0].name).toBe('宮古')
     expect(mergeTsunamiAreas(prev, next, false)[0].stations?.[0].name).toBe('宮古')
@@ -1236,7 +1236,7 @@ describe('mergeTsunamiAreas', () => {
 
   // 区域コードが無い経路（P2PQuake）でも名前で引き当てられること。
   it('コードが無ければ区域名で引き当てる', () => {
-    const prev = [makeArea({ name: '岩手県', code: undefined, stations: [{ name: '宮古', code: '2101' }] })]
+    const prev = [makeArea({ name: '岩手県', code: undefined, stations: [{ name: '宮古', code: '21001' }] })]
     const next = [makeArea({ name: '岩手県', code: undefined })]
     expect(mergeTsunamiAreas(prev, next, false)[0].stations?.length).toBe(1)
   })

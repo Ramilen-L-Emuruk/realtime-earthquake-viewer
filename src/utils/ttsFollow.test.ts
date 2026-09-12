@@ -33,11 +33,11 @@ describe('mapChunksToRefs', () => {
     // 「岩手県、」は 4 文字なので MIN_CHUNK により次と結合され、1 チャンクに 2 区域入る
     const segments = [
       plain('大津波警報。'),
-      seg('岩手県', area('岩手県', '030')),
+      seg('岩手県', area('岩手県', '210')),
       plain('、'),
-      seg('宮城県', area('宮城県', '040')),
+      seg('宮城県', area('宮城県', '220')),
       plain('、'),
-      seg('福島県', area('福島県', '050')),
+      seg('福島県', area('福島県', '250')),
       plain('に大津波警報が発表されました。'),
     ]
     const chunks = splitIntoChunks(joinSegments(segments))
@@ -51,13 +51,13 @@ describe('mapChunksToRefs', () => {
 
   it('同じ区域が 2 回読まれる文（列挙 → 予想最大波高）で、どちらのチャンクでも引ける', () => {
     const segments = [
-      seg('岩手県', area('岩手県', '030')),
+      seg('岩手県', area('岩手県', '210')),
       plain('、'),
-      seg('宮城県', area('宮城県', '040')),
+      seg('宮城県', area('宮城県', '220')),
       plain('に大津波警報が発表されました。予想最大波高は、'),
-      seg('岩手県', area('岩手県', '030')),
+      seg('岩手県', area('岩手県', '210')),
       plain('、'),
-      seg('宮城県', area('宮城県', '040')),
+      seg('宮城県', area('宮城県', '220')),
       plain('で10メートル以上です。'),
     ]
     const names = refNames(segments)
@@ -69,7 +69,7 @@ describe('mapChunksToRefs', () => {
   it('区域と観測点が同じチャンクに入ったら観測点だけを返す', () => {
     const segments = [
       plain('津波観測情報。'),
-      seg('岩手県', area('岩手県', '030')),
+      seg('岩手県', area('岩手県', '210')),
       plain('、'),
       seg('宮古', station('宮古')),
       plain('で1.2メートル、'),
@@ -89,7 +89,7 @@ describe('mapChunksToRefs', () => {
 
   it('対象を持たないチャンクは空配列を返す', () => {
     const segments = [
-      seg('岩手県', area('岩手県', '030')),
+      seg('岩手県', area('岩手県', '210')),
       plain('に大津波警報が発表されました。ただちに高台へ避難してください。'),
     ]
     const names = refNames(segments)
@@ -99,7 +99,7 @@ describe('mapChunksToRefs', () => {
   it('戻り値の長さはチャンク数と一致する', () => {
     const segments = [
       plain('大津波警報。'),
-      seg('岩手県', area('岩手県', '030')),
+      seg('岩手県', area('岩手県', '210')),
       plain('に大津波警報が発表されました。ただちに高台へ避難してください。'),
     ]
     const chunks = splitIntoChunks(joinSegments(segments))
@@ -108,7 +108,7 @@ describe('mapChunksToRefs', () => {
 
   it('code が違えば同名でも別の対象として扱い、code が無ければ名前で照合する', () => {
     const segments = [
-      seg('宮城県', area('宮城県', '040')),
+      seg('宮城県', area('宮城県', '220')),
       plain('、'),
       seg('宮城県', area('宮城県', '041')),
       plain('に大津波警報が発表されました。'),
@@ -125,7 +125,7 @@ describe('mapChunksToRefs', () => {
   it('等級と区域が同じチャンクに入ったら区域だけを返す', () => {
     const segments = [
       { text: '津波警報。', refs: [{ kind: 'grade', grade: 'Warning' } as SpeechRef] },
-      seg('青森県太平洋沿岸', area('青森県太平洋沿岸', '060')),
+      seg('青森県太平洋沿岸', area('青森県太平洋沿岸', '201')),
       plain('に津波警報が発表されました。'),
     ]
     const chunks = splitIntoChunks(joinSegments(segments))
@@ -141,7 +141,7 @@ describe('mapChunksToRefs', () => {
     const segments = [
       plain('また、'),
       { text: '次の地域に津波注意報が発表されています。', refs: [{ kind: 'grade', grade: 'Watch' } as SpeechRef] },
-      seg('北海道太平洋沿岸東部', area('北海道太平洋沿岸東部', '080')),
+      seg('北海道太平洋沿岸東部', area('北海道太平洋沿岸東部', '100')),
       plain('で1メートルが予想されています。'),
     ]
     const names = refNames(segments)
@@ -150,7 +150,7 @@ describe('mapChunksToRefs', () => {
   })
 
   it('全文に無いチャンクを渡されても取り違えずに空を返す', () => {
-    const segments = [seg('岩手県', area('岩手県', '030')), plain('に大津波警報。')]
+    const segments = [seg('岩手県', area('岩手県', '210')), plain('に大津波警報。')]
     expect(mapChunksToRefs(segments, ['まったく別の文。'])).toEqual([[]])
   })
 })

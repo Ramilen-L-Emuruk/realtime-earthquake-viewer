@@ -97,7 +97,7 @@ function makeObsReport(
 
 /** 波高未確定（観測中）の観測点だけを持つ観測情報。到達確認として読まれる。 */
 function makeArrivalReport(names: string[], id = 'tsunami-arr'): JMATsunami {
-  return makeObsReport(names.map(n => ({ name: n, district: '石川県能登', code: '390' })), [], id)
+  return makeObsReport(names.map(n => ({ name: n, district: '石川県能登', code: '360' })), [], id)
 }
 
 /**
@@ -120,7 +120,7 @@ function makeMissingReport(
     areas: [],
     observations: points.map(p => ({
       name: p.name,
-      districtCode: '390',
+      districtCode: '360',
       districtName: '石川県能登',
       height: p.value === undefined ? undefined : { value: p.value, description: `${p.value}m` },
       condition: { maxHeightMissing: true, firstHeightMissing: p.firstHeightMissing },
@@ -239,14 +239,14 @@ describe('津波観測情報の読み上げ: 新旧の言い分けと並び', ()
   // 正: 初報は全件が初出。続報で値が上がった観測点だけが「更新」になる
   it('初報は「新たに」、続報で上がった観測点は「更新されました」', async () => {
     const handle = setup()
-    handle(makeObsReport([{ name: '輪島港', district: '石川県能登', code: '390', value: 0.3 }]) as never)
+    handle(makeObsReport([{ name: '輪島港', district: '石川県能登', code: '360', value: 0.3 }]) as never)
     await settle()
     expect(spokenTexts()[0]).toContain('新たに石川県能登、輪島港で0.3メートルを観測しました。')
 
     // 同じ観測点の波高が上がり、別の観測点が新たに加わる（実電文は既報も載せ続ける）
     handle(makeObsReport([
-      { name: '輪島港', district: '石川県能登', code: '390', value: 1.2 },
-      { name: '珠洲市長橋', district: '石川県能登', code: '390', value: 0.5 },
+      { name: '輪島港', district: '石川県能登', code: '360', value: 1.2 },
+      { name: '珠洲市長橋', district: '石川県能登', code: '360', value: 0.5 },
     ], [], 'tsunami-obs-2') as never)
     await settle()
     // 深刻なのは更新された輪島港なので、更新の文が先に来て「また、」で新規が続く
@@ -259,9 +259,9 @@ describe('津波観測情報の読み上げ: 新旧の言い分けと並び', ()
   it('声にならなかった観測点は次の報でも「新たに」で読む', async () => {
     const handle = setup()
     // 通知音の遅延中に次の報が来ると、前の報は声にならないまま置き換わる
-    handle(makeObsReport([{ name: '輪島港', district: '石川県能登', code: '390', value: 0.3 }]) as never)
+    handle(makeObsReport([{ name: '輪島港', district: '石川県能登', code: '360', value: 0.3 }]) as never)
     handle(makeObsReport([
-      { name: '輪島港', district: '石川県能登', code: '390', value: 0.3 },
+      { name: '輪島港', district: '石川県能登', code: '360', value: 0.3 },
     ], [], 'tsunami-obs-2') as never)
     await settle()
     expect(spokenTexts()).toHaveLength(1)
@@ -296,18 +296,18 @@ describe('津波観測情報の読み上げ: 新旧の言い分けと並び', ()
   // 電文の `areas` だけを見ていると並べ替えが何もしない
   it('観測点はカードの並びで読む（電文順ではない）', async () => {
     const handle = setup([displayedTsunami([
-      { name: '青森県太平洋沿岸', code: '060', grade: 'Watch' },
-      { name: '石川県能登', code: '390', grade: 'Warning' },
+      { name: '青森県太平洋沿岸', code: '201', grade: 'Watch' },
+      { name: '石川県能登', code: '360', grade: 'Warning' },
     ])])
     handle(makeObsReport([
       // 電文順では注意報の区域が先
-      { name: '八戸', district: '青森県太平洋沿岸', code: '060', value: 0.4 },
-      { name: '輪島港', district: '石川県能登', code: '390', value: 1.2 },
+      { name: '八戸港', district: '青森県太平洋沿岸', code: '201', value: 0.4 },
+      { name: '輪島港', district: '石川県能登', code: '360', value: 1.2 },
     ]) as never)
     await settle()
     const text = spokenTexts()[0]
     expect(text).toContain('輪島港')
-    expect(text.indexOf('輪島港')).toBeLessThan(text.indexOf('八戸'))
+    expect(text.indexOf('輪島港')).toBeLessThan(text.indexOf('八戸港'))
   })
 
   // 安全弁: 区域の順位付けには**画面が持つ観測点の全体**を使う。今回の電文が運んだ分だけで
@@ -318,23 +318,23 @@ describe('津波観測情報の読み上げ: 新旧の言い分けと並び', ()
     // グループ内を実測の深刻な順に並べるため。波高が無い区域は 1 件ずつ別グループになり、
     // 実測での並べ替えが働かない（実際の警報の区域は波高を持つ）
     const displayed = displayedTsunami([
-      { name: '青森県太平洋沿岸', code: '060', grade: 'Warning', height: '3m' },
-      { name: '石川県能登', code: '390', grade: 'Warning', height: '3m' },
+      { name: '青森県太平洋沿岸', code: '201', grade: 'Warning', height: '3m' },
+      { name: '石川県能登', code: '360', grade: 'Warning', height: '3m' },
     ])
     ;(displayed as unknown as { observations: unknown }).observations = [
-      { name: '八戸', districtCode: '060', districtName: '青森県太平洋沿岸', height: { value: 0.4, description: '0.4m' } },
-      { name: '輪島港', districtCode: '390', districtName: '石川県能登', height: { value: 3.0, description: '3.0m' } },
+      { name: '八戸港', districtCode: '201', districtName: '青森県太平洋沿岸', height: { value: 0.4, description: '0.4m' } },
+      { name: '輪島港', districtCode: '360', districtName: '石川県能登', height: { value: 3.0, description: '3.0m' } },
     ]
     const handle = setup([displayed])
     // 続報は青森の更新と石川の新規観測点だけを載せる（輪島港の 3.0m は再送されない）
     handle(makeObsReport([
-      { name: '八戸', district: '青森県太平洋沿岸', code: '060', value: 0.5 },
-      { name: '珠洲市長橋', district: '石川県能登', code: '390', value: 0.2 },
+      { name: '八戸港', district: '青森県太平洋沿岸', code: '201', value: 0.5 },
+      { name: '珠洲市長橋', district: '石川県能登', code: '360', value: 0.2 },
     ]) as never)
     await settle()
     const text = spokenTexts().join('')
     // カードは石川県能登（最大 3.0m）を上に置く。読み上げもその順に従う
-    expect(text.indexOf('珠洲市長橋')).toBeLessThan(text.indexOf('八戸'))
+    expect(text.indexOf('珠洲市長橋')).toBeLessThan(text.indexOf('八戸港'))
   })
 
   // 対照: 画面が津波を出していない（区域を引けない）場合は電文順のまま読む。
@@ -342,12 +342,12 @@ describe('津波観測情報の読み上げ: 新旧の言い分けと並び', ()
   it('区域を引けなければ電文順のまま読む', async () => {
     const handle = setup()
     handle(makeObsReport([
-      { name: '八戸', district: '青森県太平洋沿岸', code: '060', value: 0.4 },
-      { name: '輪島港', district: '石川県能登', code: '390', value: 1.2 },
+      { name: '八戸港', district: '青森県太平洋沿岸', code: '201', value: 0.4 },
+      { name: '輪島港', district: '石川県能登', code: '360', value: 1.2 },
     ]) as never)
     await settle()
     const text = spokenTexts()[0]
-    expect(text.indexOf('八戸')).toBeLessThan(text.indexOf('輪島港'))
+    expect(text.indexOf('八戸港')).toBeLessThan(text.indexOf('輪島港'))
   })
 })
 
@@ -371,8 +371,8 @@ describe('津波の読み上げ: 話題が変わるところを「また、」�
   it('等級の発表の後に到達確認が続くときも「また、」で継ぐ', async () => {
     const handle = setup()
     handle(makeObsReport(
-      [{ name: '輪島港', district: '石川県能登', code: '390' }],
-      [{ name: '石川県能登', code: '390', grade: 'MajorWarning' }],
+      [{ name: '輪島港', district: '石川県能登', code: '360' }],
+      [{ name: '石川県能登', code: '360', grade: 'MajorWarning' }],
     ) as never)
     await settle()
     const text = spokenTexts()[0]
@@ -384,13 +384,13 @@ describe('津波の読み上げ: 話題が変わるところを「また、」�
   // 前者は新規と更新の境目、後者は波高と到達確認の境目で、示している切れ目が違う
   it('上がった区域・初出・到達確認が同居したら「また、」は 2 回', async () => {
     const handle = setup()
-    handle(makeObsReport([{ name: '輪島港', district: '石川県能登', code: '390', value: 0.3 }]) as never)
+    handle(makeObsReport([{ name: '輪島港', district: '石川県能登', code: '360', value: 0.3 }]) as never)
     await settle()
 
     handle(makeObsReport([
-      { name: '輪島港', district: '石川県能登', code: '390', value: 1.2 },
-      { name: '珠洲市長橋', district: '石川県能登', code: '390', value: 0.5 },
-      { name: '七尾港', district: '石川県能登', code: '390' },
+      { name: '輪島港', district: '石川県能登', code: '360', value: 1.2 },
+      { name: '珠洲市長橋', district: '石川県能登', code: '360', value: 0.5 },
+      { name: '七尾港', district: '石川県能登', code: '360' },
     ], [], 'tsunami-obs-2') as never)
     await settle()
     const text = spokenTexts()[1]
@@ -408,13 +408,13 @@ describe('津波の読み上げ: 話題が変わるところを「また、」�
   it('等級を語れない電文では到達確認を継がない', async () => {
     const handle = setup()
     // 先に等級を発表して、次の報が「引き下げ」と判定される状態を作る
-    handle(makeObsReport([], [{ name: '石川県能登', code: '390', grade: 'MajorWarning' }]) as never)
+    handle(makeObsReport([], [{ name: '石川県能登', code: '360', grade: 'MajorWarning' }]) as never)
     await settle()
 
     const before = spokenTexts().length
     handle(makeObsReport(
-      [{ name: '七尾港', district: '石川県能登', code: '390' }],
-      [{ name: '石川県能登', code: '390', grade: 'Unknown' }],
+      [{ name: '七尾港', district: '石川県能登', code: '360' }],
+      [{ name: '石川県能登', code: '360', grade: 'Unknown' }],
       'tsunami-unknown',
     ) as never)
     await settle()
@@ -427,11 +427,11 @@ describe('津波の読み上げ: 話題が変わるところを「また、」�
   // 安全弁: 上で読まなかった到達確認を既読にしない。続く観測情報の続報で読まれること
   it('継がなかった到達確認は既読にせず、次の観測情報で読む', async () => {
     const handle = setup()
-    handle(makeObsReport([], [{ name: '石川県能登', code: '390', grade: 'MajorWarning' }]) as never)
+    handle(makeObsReport([], [{ name: '石川県能登', code: '360', grade: 'MajorWarning' }]) as never)
     await settle()
     handle(makeObsReport(
-      [{ name: '七尾港', district: '石川県能登', code: '390' }],
-      [{ name: '石川県能登', code: '390', grade: 'Unknown' }],
+      [{ name: '七尾港', district: '石川県能登', code: '360' }],
+      [{ name: '石川県能登', code: '360', grade: 'Unknown' }],
       'tsunami-unknown',
     ) as never)
     await settle()
@@ -455,13 +455,13 @@ describe('津波の読み上げ: 話題が変わるところを「また、」�
   // （`tsunamiObservationUpdateToSegments`）と二重にならないこと
   it('到達確認が無ければ「また、」は群分けのぶんだけ', async () => {
     const handle = setup()
-    handle(makeObsReport([{ name: '輪島港', district: '石川県能登', code: '390', value: 0.3 }]) as never)
+    handle(makeObsReport([{ name: '輪島港', district: '石川県能登', code: '360', value: 0.3 }]) as never)
     await settle()
     expect(spokenTexts()[0]).not.toContain('また、')
 
     handle(makeObsReport([
-      { name: '輪島港', district: '石川県能登', code: '390', value: 1.2 },
-      { name: '珠洲市長橋', district: '石川県能登', code: '390', value: 0.5 },
+      { name: '輪島港', district: '石川県能登', code: '360', value: 1.2 },
+      { name: '珠洲市長橋', district: '石川県能登', code: '360', value: 0.5 },
     ], [], 'tsunami-obs-2') as never)
     await settle()
     // 群分けの「また、新たに」だけ。到達確認のぶんは足されない
@@ -566,7 +566,7 @@ describe('津波観測情報の読み上げ: 欠測と波高更新の切り分�
 
   it('対照: 欠測でない観測点は従来どおり「新たに…を観測しました」', async () => {
     const handle = setup()
-    handle(makeObsReport([{ name: '輪島港', district: '石川県能登', code: '390', value: 1.2 }]) as never)
+    handle(makeObsReport([{ name: '輪島港', district: '石川県能登', code: '360', value: 1.2 }]) as never)
     await settle()
     expect(spokenTexts()[0]).toContain('新たに石川県能登、輪島港で1.2メートルを観測しました。')
   })
@@ -574,9 +574,9 @@ describe('津波観測情報の読み上げ: 欠測と波高更新の切り分�
   it('安全弁: 欠測の観測点と普通の観測点が混ざっても、それぞれ 1 度だけ読む', async () => {
     const handle = setup()
     handle({
-      ...makeObsReport([{ name: '珠洲市長橋', district: '石川県能登', code: '390', value: 0.5 }]),
+      ...makeObsReport([{ name: '珠洲市長橋', district: '石川県能登', code: '360', value: 0.5 }]),
       observations: [
-        ...makeObsReport([{ name: '珠洲市長橋', district: '石川県能登', code: '390', value: 0.5 }]).observations!,
+        ...makeObsReport([{ name: '珠洲市長橋', district: '石川県能登', code: '360', value: 0.5 }]).observations!,
         ...makeMissingReport([{ name: '輪島港', value: 1.2 }]).observations!,
       ],
     } as never)

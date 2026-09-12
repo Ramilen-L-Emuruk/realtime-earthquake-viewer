@@ -122,9 +122,9 @@ afterEach(() => {
 
 // 切替後の 3 区域。予想波高が同じなので、並びは実測波高だけで決まる
 const watchAreas = [
-  area('岩手県', '030', 'Watch', '１ｍ'),
-  area('宮城県', '040', 'Watch', '１ｍ'),
-  area('福島県', '050', 'Watch', '１ｍ'),
+  area('岩手県', '210', 'Watch', '１ｍ'),
+  area('宮城県', '220', 'Watch', '１ｍ'),
+  area('福島県', '250', 'Watch', '１ｍ'),
 ]
 
 /** 画面が出している津波（前報までに観測点を積んでいる）。宮城 > 福島 の順に深刻。 */
@@ -132,11 +132,11 @@ const displayedWithObservations = makeTsunami({
   id: 'tsunami-prev',
   eventId: 'E1',
   areas: [
-    area('岩手県', '030', 'Warning', '３ｍ'),
-    area('宮城県', '040', 'Warning', '３ｍ'),
-    area('福島県', '050', 'Warning', '３ｍ'),
+    area('岩手県', '210', 'Warning', '３ｍ'),
+    area('宮城県', '220', 'Warning', '３ｍ'),
+    area('福島県', '250', 'Warning', '３ｍ'),
   ],
-  observations: [obs('石巻港', '宮城県', '040', 7.2), obs('小名浜', '福島県', '050', 3.1)],
+  observations: [obs('石巻港', '宮城県', '220', 7.2), obs('いわき市小名浜', '福島県', '250', 3.1)],
 })
 
 /** 等級を切り替える報。観測点は載せない（実電文と同じ） */
@@ -201,9 +201,9 @@ const partialLift = makeTsunami({
   id: 'tsunami-lift',
   eventId: 'E1',
   areas: [
-    withLastGrade(area('岩手県', '030', 'Watch', '１ｍ'), 'Watch'),
-    withLastGrade(area('宮城県', '040', 'Forecast', '１ｍ'), 'Watch'),
-    withLastGrade(area('福島県', '050', 'Forecast', '１ｍ'), 'Watch'),
+    withLastGrade(area('岩手県', '210', 'Watch', '１ｍ'), 'Watch'),
+    withLastGrade(area('宮城県', '220', 'Forecast', '１ｍ'), 'Watch'),
+    withLastGrade(area('福島県', '250', 'Forecast', '１ｍ'), 'Watch'),
   ],
 })
 
@@ -230,8 +230,8 @@ describe('区域単位で等級が動いた報: 組の中の区域もカード�
   // 正: 前報が積んだ観測点で並ぶ（福島 5.0m > 宮城 1.0m なので、電文順の宮城→福島が逆転する）
   it('動いた区域はカードの並びで読み、その先頭へ寄せる', async () => {
     const result = await feedPartialLift(watchAnnounce([
-      obs('石巻港', '宮城県', '040', 1.0),
-      obs('小名浜', '福島県', '050', 5.0),
+      obs('石巻港', '宮城県', '220', 1.0),
+      obs('いわき市小名浜', '福島県', '250', 5.0),
     ]))
     expect(speeches[1]?.text).toBe('福島県、宮城県の津波注意報が津波予報に切り替えられました。')
     expect(result.current.focusedDistrict?.top?.name).toBe('福島県')
@@ -251,7 +251,7 @@ describe('区域単位で等級が動いた報: 組の中の区域もカード�
       id: 'tsunami-other',
       eventId: 'E2',
       areas: watchAreas,
-      observations: [obs('石巻港', '宮城県', '040', 1.0), obs('小名浜', '福島県', '050', 5.0)],
+      observations: [obs('石巻港', '宮城県', '220', 1.0), obs('いわき市小名浜', '福島県', '250', 5.0)],
     })
     await feedPartialLift(watchAnnounce(), otherEvent)
     expect(speeches[1]?.text).toBe('宮城県、福島県の津波注意報が津波予報に切り替えられました。')
