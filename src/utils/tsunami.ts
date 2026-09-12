@@ -2,7 +2,17 @@ import type { JMATsunami, TsunamiArea, TsunamiEstimation, TsunamiEstimationCondi
 import { formatTime } from './formatters'
 import { log } from './logger'
 
-const GRADE_PRIORITY: Record<TsunamiGrade, number> = {
+/**
+ * 等級の重さ。値が大きいほど深刻。
+ *
+ * **等級の上下を比べるときは、必ずこの表を通すこと。** 同じ並びを呼び出し側で書き写すと、
+ * `Record<TsunamiGrade, number>` の型検査が効かなくなり、等級を増やしたときのキーの
+ * 取りこぼしが素通りする（`as const` で書き写した表を引くと `undefined` が返るが、
+ * 数値との比較は例外を出さずに偽へ倒れるため、画面にも記録にも痕跡が残らない）。
+ *
+ * 引き上げの判定だけは `isTsunamiGradeRaised` に用意してある。
+ */
+export const GRADE_PRIORITY: Record<TsunamiGrade, number> = {
   MajorWarning: 4, Warning: 3, Watch: 2, Forecast: 1, Unknown: 0,
 }
 
@@ -394,9 +404,12 @@ export const TSUNAMI_GRADE_SHORT_LABEL: Record<TsunamiGrade, string> = {
 /**
  * 等級が `from` から `to` へ上がったか（引き上げ）。下がった場合と、動いていない場合は false。
  *
- * **等級の重さの比較はこの関数に閉じる。** 読み上げの動詞（「引き上げられました」/
+ * **引き上げの判定はこの関数に閉じる。** 読み上げの動詞（「引き上げられました」/
  * 「切り替えられました」）・組の並び順・カードの表示がいずれもこの向きで決まるので、
  * 呼び出し側でそれぞれ比べ直すと、等級を増やしたときに片方だけ漏れる。
+ *
+ * 引き下げ・据え置きの判定はこの関数では表せないため `GRADE_PRIORITY` を直に引く
+ * （表そのものが単一情報源で、書き写さない限り漏れは生じない）。
  */
 export function isTsunamiGradeRaised(from: TsunamiGrade, to: TsunamiGrade): boolean {
   return GRADE_PRIORITY[to] > GRADE_PRIORITY[from]
