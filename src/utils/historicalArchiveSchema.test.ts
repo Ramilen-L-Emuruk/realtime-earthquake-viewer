@@ -118,8 +118,8 @@ describe('validateHistoricalArchiveFile', () => {
   })
 
   // CRITICAL対策: event/data の中身（震度値・警報区分）の値域も検証する。
-  // このアプリに ErrorBoundary が無いため、中間値・未知の区分がそのまま state に乗ると
-  // カード・バッジの表示が壊れる（このファイルは capture-test-scenario.ts のような機械生成
+  // 中間値・未知の区分がそのまま state に乗るとカード・バッジの表示が壊れる（ErrorBoundary は
+  // 受け止めるが、その範囲が丸ごとフォールバック表示へ差し替わるだけで中身は見られない）（このファイルは capture-test-scenario.ts のような機械生成
   // ではなく手作業で書き起こすため、typo が混入しやすい）。
   describe('AppEvent の値域検証', () => {
     it('quake: maxScale が IntensityScale に無い値（中間値）なら skip', () => {

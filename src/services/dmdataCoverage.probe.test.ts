@@ -18,6 +18,8 @@
 import { describe, it, expect } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 import {
   parseEEWFromXml, parseEarthquakeFromXml, parseTsunamiFromXml,
   parseLpgmFromXml, parseNankaiFromXml, parseNankaiCommentaryFromXml, parseVyse60FromXml,
@@ -25,6 +27,27 @@ import {
 
 const CACHE = process.env.TELEGRAM_CACHE ?? ''
 const OUT = process.env.COVERAGE_OUT ?? ''
+
+/**
+ * 計測した相手（パーサー）の内容。**生データに来歴を焼き込む。**
+ *
+ * この計測は失敗すると生データを書かない（書き出しはループ完走後）。突き合わせ側は
+ * ファイルがあれば読んでしまうので、**前回成功したときの古い計測をそのまま使い、
+ * 実装を変えたのに「問題なし」と報告する**経路ができる。突き合わせ側がそれを見分けるために
+ * 中身のハッシュを添える（→ `scripts/telegram-audit/triage.mjs` の新しさの確認）。
+ *
+ * **改行を揃えてからハッシュを取る。** 作業ツリーの改行は環境で LF と CRLF が入れ替わるので、
+ * 生バイトで取ると中身が同じでもハッシュが変わり、要らない再計測を促す。
+ *
+ * **揃え方は `scripts/telegram-audit/triage.mjs` 側と同じにすること**（片方だけ変えると
+ * 永久に食い違う）。共有モジュールにできないのは、こちらが TypeScript の型検査の対象で
+ * `allowJs` を持たないため —— `.mjs` を取り込めない。
+ */
+const PARSER_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'dmdataParser.ts')
+
+function parserSha(source: string): string {
+  return crypto.createHash('sha256').update(source.replace(/\r\n/g, '\n')).digest('hex').slice(0, 16)
+}
 
 const RUN: Record<string, (headType: string, xml: string) => unknown> = {
   VTSE41: (h, x) => parseTsunamiFromXml(h, x),
@@ -80,18 +103,25 @@ function instrument(readPaths: Set<string>, readAttrs: Set<string>) {
 describe('電文と実装の突き合わせ（動的計測）', () => {
   // 環境変数を渡したときだけ動く。**常に通るだけのテストにしない** —— 何も確かめて
   // いないものが緑で並ぶと、テストの一覧が信用できなくなる。
-  it.skipIf(!CACHE || !OUT)('実電文を流して、値を取り出した要素・属性を記録する', () => {
+  // **時間切れの上限を延ばす。** 既定の 5 秒はここでは足りない —— 実電文をすべて DOM へ
+  // 起こし、本物のパーサーへ 1 通ずつ流すので、**所要時間は集めた標本の数に比例する**
+  // （種別ごと 8 通・計 135 通で 5 秒前後。境界に張り付くため、通るか落ちるかが実行ごとに
+  // 変わっていた）。落ちると生データが書かれたかどうかも判然としなくなる。
+  // 標本を増やすときはここも一緒に見ること。
+  it.skipIf(!CACHE || !OUT)('実電文を流して、値を取り出した要素・属性を記録する', { timeout: 120_000 }, () => {
     const readPaths = new Set<string>()
     const readAttrs = new Set<string>()
     const allPaths = new Set<string>()
     const allAttrs = new Set<string>()
     const perType: Record<string, { read: string[]; all: string[]; readAttrs: string[]; allAttrs: string[] }> = {}
+    let files = 0   // 実際に流した電文の通数（来歴に添える）
 
     for (const f of fs.readdirSync(CACHE)) {
       if (!f.endsWith('.xml')) continue
       const type = f.split('_')[0]
       const run = RUN[type]
       if (!run) continue
+      files++
       const xml = fs.readFileSync(path.join(CACHE, f), 'utf8')
 
       // その電文が持つ要素・属性を先に数える（比較の分母）
@@ -134,7 +164,15 @@ describe('電文と実装の突き合わせ（動的計測）', () => {
       readAttrs: [...new Set(r.readAttrs)].sort(),
       allAttrs: [...new Set(r.allAttrs)].sort(),
     }]))
-    fs.writeFileSync(OUT, JSON.stringify(result, null, 1), 'utf8')
+    // 来歴は電文種別と同じ入れ物へ入れる。**種別名と衝突しない鍵にする**
+    // （突き合わせ側は `Object.keys(HANDLED)` で回すので、余分な鍵は読み飛ばされる）。
+    const meta = {
+      measuredAt: new Date().toISOString(),
+      telegrams: files,
+      types: Object.keys(perType).length,
+      parserSha: parserSha(fs.readFileSync(PARSER_PATH, 'utf8')),
+    }
+    fs.writeFileSync(OUT, JSON.stringify({ __meta: meta, ...result }, null, 1), 'utf8')
     expect(Object.keys(result).length).toBeGreaterThan(0)
   })
 })
