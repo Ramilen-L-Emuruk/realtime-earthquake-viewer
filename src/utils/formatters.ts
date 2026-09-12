@@ -235,3 +235,29 @@ export function formatFileStamp(ms: number): string {
   const off = -d.getTimezoneOffset()
   return `${date}_${time}${off < 0 ? '-' : '+'}${p(off / 60)}${p(Math.abs(off) % 60)}`
 }
+
+/**
+ * 気象庁以外が運用する観測点に付く印（全角アスタリスク U+FF0A）。
+ *
+ * 電文は観測点名の末尾にこの印を付け、固定付加文で「＊印は気象庁以外の震度観測点に
+ * ついての情報です。」と断る（コード `0262`。長周期地震動観測情報は `0263`）。
+ */
+export const NON_JMA_MARK = '＊'
+
+/** 印に添える説明。**記号だけでは何と対比しているのか分からない。** */
+export const NON_JMA_MARK_TITLE = '気象庁以外の機関が運用する観測点です'
+
+/**
+ * 観測点名へ「気象庁以外が運用する観測点」の印を付ける。
+ *
+ * **印は表示するときにだけ付ける。** 電文の読み取りでは印を外して持ち（→ `stripNonJmaMark`）、
+ * 座標表をはじめ**印の無い名前を鍵にしている経路がいくつもある**。名前そのものへ戻すと
+ * そのすべてに印を外す処理が要り、1 つ漏らすだけで地図から点が落ちたり読み上げが記号を
+ * 読んだりする。**経路の一覧は単一情報源に置いてある**
+ * （→ {@link import('../types/earthquake').EarthquakePoint.nonJma}）。
+ *
+ * **「自治体」と言い換えないこと** —— 気象庁以外には防災科研なども含まれる。
+ */
+export function withNonJmaMark(name: string, nonJma: boolean | undefined): string {
+  return nonJma ? `${name}${NON_JMA_MARK}` : name
+}

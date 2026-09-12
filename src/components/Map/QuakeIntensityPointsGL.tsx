@@ -9,7 +9,8 @@ import type { LatLng } from '../../utils/stationCoords'
 import { haversineKm } from '../../utils/geo'
 import { addOrderedLayer } from './gl/layerOrder'
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
-import { badgeHtml, escapeHtml, nonJmaBadgeHtml } from './gl/popupHtml'
+import { badgeHtml, escapeHtml } from './gl/popupHtml'
+import { NON_JMA_MARK_TITLE, withNonJmaMark } from '../../utils/formatters'
 import { ensureIntensityIcons, intensityIconId, INTENSITY_ICON_BASE_RADIUS } from './gl/intensityIcons'
 
 // 地震情報タブの各観測点の震度を丸バッジ（震度ラベル付き）で描画する MapLibre 版。
@@ -69,9 +70,16 @@ function buildFC(
   return { type: 'FeatureCollection', features }
 }
 
-/** ポップアップの見出し。電文の addr は観測点名、isArea の地点では一次細分区域名が入っている。 */
-function titleOf(f: MapGeoJSONFeature): string {
-  return String(f.properties?.addr ?? '')
+/**
+ * ポップアップの見出し（表示名）。電文の addr は観測点名、isArea の地点では
+ * 一次細分区域名が入っている。
+ *
+ * **気象庁以外が運用する観測点には `＊` を付ける。** 電文が名前の末尾へ置く印を、
+ * 読み取りの側では外して持っているため（→ `withNonJmaMark`）。ホバーとクリックの
+ * 両方がこれを通るので、同じ観測点が場所によって違う名前で出ることはない。
+ */
+export function quakePointPopupTitle(f: MapGeoJSONFeature): string {
+  return withNonJmaMark(String(f.properties?.addr ?? ''), Boolean(f.properties?.nonJma))
 }
 
 function hoverHtml(f: MapGeoJSONFeature): string {
@@ -79,7 +87,7 @@ function hoverHtml(f: MapGeoJSONFeature): string {
   return (
     `<div style="display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap">` +
     `${badgeHtml(getIntensityLabel(scale), getIntensityColor(scale))}` +
-    `<span style="font-weight:600">${escapeHtml(titleOf(f))}</span></div>`
+    `<span style="font-weight:600">${escapeHtml(quakePointPopupTitle(f))}</span></div>`
   )
 }
 
@@ -90,9 +98,9 @@ function clickHtml(f: MapGeoJSONFeature): string {
   const isArea = Boolean(f.properties?.isArea)
   const distanceKm = Number(f.properties?.distanceKm ?? -1)
 
-  // 気象庁以外が運用する観測点（電文では名前の末尾に ＊）。**誰が測った値かは利用者が
-  // 知ってよい事実**なので、印の代わりにバッジで出す（→ `EarthquakePoint.nonJma`）。
-  // **「自治体」と言い換えない** —— 防災科研なども含む。
+  // 気象庁以外が運用する観測点（電文では名前の末尾に ＊）。印そのものは
+  // `quakePointPopupTitle` が名前へ戻すので、ここで見るのは説明を添えるためだけ
+  // —— 記号だけでは何と対比しているのか分からない。
   const nonJma = Boolean(f.properties?.nonJma)
 
   // 観測点は「都道府県 / 所属一次細分区域」、区域代表点は区分そのものを添える。
@@ -111,9 +119,9 @@ function clickHtml(f: MapGeoJSONFeature): string {
 
   return (
     `<div style="min-width:150px">` +
-    `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">` +
-      `<span style="font-weight:700;font-size:13px">${escapeHtml(titleOf(f))}</span>` +
-      (nonJma ? nonJmaBadgeHtml() : '') + `</div>` +
+    `<div style="font-weight:700;font-size:13px"` +
+      (nonJma ? ` title="${escapeHtml(NON_JMA_MARK_TITLE)}"` : '') +
+      `>${escapeHtml(quakePointPopupTitle(f))}</div>` +
     (sub ? `<div style="margin-top:2px;font-size:11px;color:#94a3b8">${escapeHtml(sub)}</div>` : '') +
     rows +
     `</div>`

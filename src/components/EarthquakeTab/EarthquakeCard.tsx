@@ -14,6 +14,8 @@ import {
   formatMagnitudeValue,
   formatMagnitudeWithCondition,
   formatCoordinate,
+  NON_JMA_MARK_TITLE,
+  withNonJmaMark,
 } from '../../utils/formatters'
 import { getIntensityLabel, getIntensityLabelWithOrAbove, getIntensityColor, getIntensityBgColor, getDepthColor, getMagnitudeColor } from '../../utils/intensity'
 import { hasKnownEpicenter } from '../../utils/geo'
@@ -21,7 +23,6 @@ import { hasKnownEpicenter } from '../../utils/geo'
 import { buildAreaPrefIndex, buildRegionOrderIndex, buildStationPrefIndex, lookupStationRegion, regionOrderRank } from '../../utils/stationCoords'
 import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel, buildIntensityRows, makeAreaPrefResolver } from '../../utils/quakePoints'
 import { useStationCoords } from '../../hooks/useStationCoords'
-import { NON_JMA_BADGE_LABEL, NON_JMA_BADGE_TITLE } from '../Map/gl/popupHtml'
 import { mergeUnreceivedPointNames, type UnreceivedPointName } from './unreceivedPointNames'
 
 /**
@@ -89,13 +90,10 @@ function IntensityRow({ label, scale, unreceived, hasUnreceived, nonJma, depth, 
         震度{getIntensityLabelWithOrAbove(scale, unreceived)}
       </span>
       <span style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}>
-        {label}
-        {/* 気象庁以外が運用する観測点。名前から `＊` を外してある分をここで伝える。 */}
-        {nonJma && (
-          <span className="ml-1.5 text-[0.6875rem] roomy:text-[0.8125rem]" style={{ color: '#9ca3af' }} title={NON_JMA_BADGE_TITLE}>
-            {NON_JMA_BADGE_LABEL}
-          </span>
-        )}
+        {/* 気象庁以外が運用する観測点には電文どおり `＊` を付ける。読み取りの側では
+            引き当てのために外してあるので、戻すのは表示のここ（→ `withNonJmaMark`）。
+            記号だけでは何と対比しているのか分からないので説明を添える。 */}
+        <span title={nonJma ? NON_JMA_MARK_TITLE : undefined}>{withNonJmaMark(label, nonJma)}</span>
         {/* **「あり」を付けて範囲の話にする。** 未入電は地点単位の事実なので、「〇〇県 未入電」
             だと県が丸ごと未入電に読める。どの地点かは上のブロックが示す。語は気象庁のものを
             そのまま使い、読み上げとも揃える。 */}
@@ -172,14 +170,9 @@ function LpgmRow({ label, lgInt, int, nonJma, depth, expandKey, expanded, onTogg
           </span>
         )}
         <span style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}>
-          {label}
-          {/* 気象庁以外が運用する観測点。名前から `＊` を外してある分をここで伝える
-              （震度一覧・地図の吹き出しと同じバッジ）。 */}
-          {nonJma && (
-            <span className="ml-1.5 text-[0.6875rem] roomy:text-[0.8125rem]" style={{ color: '#9ca3af' }} title={NON_JMA_BADGE_TITLE}>
-              {NON_JMA_BADGE_LABEL}
-            </span>
-          )}
+          {/* 気象庁以外が運用する観測点の印。震度一覧・地図の吹き出しと同じ扱い
+              （→ `withNonJmaMark`）。 */}
+          <span title={nonJma ? NON_JMA_MARK_TITLE : undefined}>{withNonJmaMark(label, nonJma)}</span>
           {interactive && (
             <span className="ml-1.5 text-[0.75rem] roomy:text-[0.875rem]" style={{ color: '#9ca3af' }}>
               {isOpen ? '▾' : '▸'}
@@ -825,21 +818,11 @@ export function EarthquakeCard({
                       気象庁は震度5弱以上と推定していますが、震度が届いていません（未入電）
                     </div>
                     <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[0.8125rem] roomy:text-[1rem] text-white">
-                      {/* 気象庁以外が運用する観測点は、電文では名前の末尾に `＊` が付く。
-                          アプリは印を名前から外して引き当てに使うため、地図の吹き出しと
-                          同じバッジで伝える。 */}
+                      {/* 気象庁以外が運用する観測点には電文どおり `＊` を付ける。震度一覧・
+                          地図の吹き出しと同じ扱い（→ `withNonJmaMark`）。 */}
                       {unreceivedPoints.names.map(({ name, nonJma }) => (
-                        <span key={name} className="inline-flex items-center gap-1">
-                          {name}
-                          {nonJma && (
-                            <span
-                              className="rounded px-1 text-[0.625rem] font-semibold leading-4 whitespace-nowrap"
-                              style={{ color: '#cbd5e1', border: '1px solid #475569' }}
-                              title={NON_JMA_BADGE_TITLE}
-                            >
-                              {NON_JMA_BADGE_LABEL}
-                            </span>
-                          )}
+                        <span key={name} title={nonJma ? NON_JMA_MARK_TITLE : undefined}>
+                          {withNonJmaMark(name, nonJma)}
                         </span>
                       ))}
                     </div>
