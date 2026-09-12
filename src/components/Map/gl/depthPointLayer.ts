@@ -2,6 +2,7 @@ import type { CustomLayerInterface, Map as MapLibreMap } from 'maplibre-gl'
 import { log } from '../../../utils/logger'
 import { reportRenderFailure, clearRenderFailure } from '../../../utils/renderHealth'
 import { applyProjectionUniforms, createProjectionProgramCache } from './projectionProgram'
+import { guardRender } from './guardRender'
 
 // 深さを持つ点を地下へ描く MapLibre カスタムレイヤー。
 //
@@ -830,7 +831,7 @@ export function createDepthPointLayer(id: string, map: MapLibreMap, label: strin
       dirty = true
     },
 
-    render(gl2, args) {
+    render: guardRender(id, label, (gl2, args) => {
       // **GL の状態を触る前に抜ける。** プログラムやバッファを束ねた後で抜けると、
       // その状態が次のレイヤーへ漏れる。
       if (!visible) {
@@ -970,7 +971,7 @@ export function createDepthPointLayer(id: string, map: MapLibreMap, label: strin
       wantX = -1
       wantY = -1
       wantForClick = false
-    },
+    }),
 
     onRemove(_m, gl2) {
       const gl = gl2 as WebGL2RenderingContext

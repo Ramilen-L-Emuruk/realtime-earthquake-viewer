@@ -111,8 +111,9 @@ export function computeEewCircle(eew: EEWAlert, now: number): PsWaveCircle | nul
   // **位置の判定は `hasKnownEpicenter` に通す。** 有限性だけでは足りない —— 位置不明は
   // センチネル `-200` で表され、`Number.isFinite(-200)` は真なのですり抜ける。すり抜けた値は
   // `PsWaveGL` の `map.project([lng, lat])` へ渡り、MapLibre が緯度の範囲外として例外を投げる
-  // （実測: 「Invalid LngLat latitude value: must be between -90 and 90」）。ErrorBoundary が
-  // 無いので画面ごと落ちる。
+  // （実測: 「Invalid LngLat latitude value: must be between -90 and 90」）。**投げるのは MapLibre の
+  // 描画ループ（rAF）の中なので ErrorBoundary は届かない。** `gl/guardRender.ts` が予報円 1 枚に
+  // 被害を閉じ込めるが、円が出ないこと自体は防げない。
   if (!hasKnownEpicenter(hypocenter.latitude, hypocenter.longitude)) return null
   // 仮定震源要素では円を描かない。震源・M・深さが固定の仮定値であることに加え、**気象庁は
   // PLUM 法による予測の報で主要動の到達予測時刻を出さない**（PLUM は震源を使わないため猶予時間を

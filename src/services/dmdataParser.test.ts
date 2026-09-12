@@ -3920,6 +3920,51 @@ describe('沖合の観測から導いた沿岸への推定（VTSE52）', () => {
     expect(warnings.filter(w => w.includes('Estimation/MaxHeight/Condition') && w.includes('未知の状態'))).toHaveLength(1)
   })
 
+  // 推定の波高の表示文字列を `condition` から作らないこと。
+  //
+  // `jmx_eb:TsunamiHeight@condition` は固定値「不明」で、解説資料は「定性的表現がない
+  // 津波注意報や津波予報の場合は、@description は空属性となる」と定めている。そこへ
+  // フォールバックすると**波高として「不明」と表示・読み上げする**。予想側・観測側は
+  // 2 段（description → 数値）で組んでおり、推定側だけ 3 段になっていた。
+  // 差し替えが当たったことを機械的に確かめる（`.replace()` は対象が無くても素通りする）。
+  const swap = (from: string, to: string): string => {
+    const xml = VTSE52_XML.replace(from, to)
+    expect(xml).not.toBe(VTSE52_XML)
+    return xml
+  }
+  const FUKUSHIMA_MAX = '<MaxHeight><Condition>推定中</Condition></MaxHeight>'
+
+  // 正: 定性的表現が無い（description が空属性）なら波高を持たせない。
+  it('推定の波高が数値も語も無ければ持たせない（condition へ落とさない）', () => {
+    const xml = swap(FUKUSHIMA_MAX, '<MaxHeight><jmx_eb:TsunamiHeight type="津波の高さ"'
+      + ' unit="m" condition="不明" description="">NaN</jmx_eb:TsunamiHeight></MaxHeight>')
+    const est = parseTsunamiFromXml('VTSE52', xml)!.estimations!
+    expect(est[2].name).toBe('福島県')
+    expect(est[2].maxHeight).toBeUndefined()
+  })
+
+  // 対照: 定性的表現がある（「巨大」）なら従来どおり description から採る。
+  // `condition="不明"` が併存していても、採るのは description の側。
+  it('推定の波高は数値にならない語を description から採る', () => {
+    const xml = swap(FUKUSHIMA_MAX, '<MaxHeight><jmx_eb:TsunamiHeight type="津波の高さ"'
+      + ' unit="m" condition="不明" description="巨大">NaN</jmx_eb:TsunamiHeight></MaxHeight>')
+    const est = parseTsunamiFromXml('VTSE52', xml)!.estimations!
+    expect(est[2].maxHeight).toEqual({ description: '巨大' })
+  })
+
+  // 安全弁: 観測点側の `@condition` は読み続ける。あちらは固定値ではなく「上昇中」が入り
+  // （解説資料 Ⅱ.13 1-1-2-2-2）、水位が上がり続けている合図としてバッジに出る。
+  // 推定側から外したついでに観測側まで止めると、その表示が黙って消える。
+  it('観測点の「上昇中」は読み続ける', () => {
+    const xml = swap(
+      '<MaxHeight><jmx_eb:TsunamiHeight type="これまでの最大波の高さ" unit="m" description="１．２ｍ">1.2</jmx_eb:TsunamiHeight></MaxHeight>',
+      '<MaxHeight><jmx_eb:TsunamiHeight type="これまでの最大波の高さ" unit="m" condition="上昇中" description="１．２ｍ">1.2</jmx_eb:TsunamiHeight></MaxHeight>',
+    )
+    const obs = parseTsunamiFromXml('VTSE52', xml)!.observations!
+    expect(obs[0].name).toBe('岩手中部沖')
+    expect(obs[0].condition?.rising).toBe(true)
+  })
+
   // 正: 沖合の観測点には出所の印を付ける。「重要」の基準が沿岸と違うため、
   // これが無いとバッジが沿岸の基準（大津波警報のみ）で出てしまう。
   it('沖合の観測点に offshore を立てる', () => {

@@ -1,6 +1,6 @@
 import type { ReplayPayload } from './replay'
 
-// 気象庁アーカイブに存在しない期間（DMDATA運用開始=2020年4月より前等）を再現するための
+// 気象庁アーカイブに存在しない期間（DMDATAアーカイブの最古=2020-11-18より前等）を再現するための
 // ローカル収録データ。テスト時刻設定（App.tsx の fetchReplayEvents）が対象時刻をカバーする
 // パックを見つけたら、DMDATA/P2PQuakeアーカイブの代わりにこちらから読む。
 export interface HistoricalArchiveMeta {
