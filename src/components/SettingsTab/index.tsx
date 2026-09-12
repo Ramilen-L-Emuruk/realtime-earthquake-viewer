@@ -46,6 +46,7 @@ export interface TestFunctions {
   earthquakeCount?: () => void
   earthquakeCountRetraction?: () => void
   trainingQuake?: () => void
+  quakeAmendment: () => void
   tsunamiGradeChange?: () => void
   estimatedIntensity?: () => void
   notification: () => void
@@ -1213,6 +1214,9 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
         </Row>
         <Row label="遠地地震（規模を速報できない報）" description="チリ中部沿岸 M8を超える巨大地震・深さ不明 – earthquakeInfo 音 / 規模が数値で出ない第一報。日本への津波の有無は調査中">
           <TestButton color="purple" onClick={onTest.foreignQuakeHuge}>巨大地震テスト</TestButton>
+        </Row>
+        <Row label="訂正報" description="地震情報を出し、3秒後に規模を訂正した報を流す（M7.4 → M7.6。2024年能登半島地震の実電文どおり）。同じカードが更新され、「震源を訂正」の印が付く。DMDSS 版では気象庁の「震源要素を訂正します。」の一文も並ぶ">
+          <TestButton color="yellow" onClick={onTest.quakeAmendment}>訂正報テスト</TestButton>
         </Row>
         {isDmdss && onTest.trainingQuake && (
           <Row label="訓練報" description="中身は地震テストと同じで、電文ヘッダの運用種別（訓練）だけが違う。本物と同じく画面・音・読み上げへ流し、カードに「訓練報」の印を出す">

@@ -1,5 +1,7 @@
 import type { JMAQuake, JMATsunami, EEWAlert, EEWForecastChange, JMANankai, JMANankaiCommentary, JMAKohatsu, EarthquakePoint, JMALpgm, JMAQuakeCity, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, JMAEstimatedIntensityGrade, EEWRegion, TsunamiArea, TsunamiGrade, TelegramOperationStatus } from '../types/earthquake'
 import { serverNow, serverDate } from './clock'
+import { extractQuakeEventIdFromId } from './quakeMerge'
+import { log } from './logger'
 import notoHonshinPoints from '../data/noto-honshin-2024-points.json'
 import notoHonshinQuake from '../data/noto-honshin-2024-quake.json'
 import notoHonshinLpgmJson from '../data/noto-honshin-2024-lpgm.json'
@@ -135,38 +137,51 @@ export function createTestForeignQuakeHuge(withDmdssFields: boolean): JMAQuake {
  */
 const UNRECEIVED_TEST_STATIONS = new Set(['輪島市舳倉島', '金沢市弥生'])
 
-/** 震源要素の訂正を伝える固定付加文（コード 0256）の原文。 */
+/** 震源要素を訂正したことを伝える固定付加文（コード 0256）の原文。 */
 const HYPOCENTER_AMEND_NOTE = '震源要素を訂正します。'
 
 /**
  * 地震情報テストの固定付加文（その他）（`VarComment/Text`）。**DMDSS 版でだけ渡す。**
  *
- * 元にした実電文（能登本震 16:24 発表の VXSE53）は 2 文を持つが、**「震源要素を訂正します。」
- * （コード 0256）だけは落とす** —— このテストデータは訂正報ではなく確定報の形
- * （`issue.correct: 'なし'`）で組んでいるので、残すと訂正していない報が訂正を名乗る。
+ * 元にした実電文（能登本震 16:24 発表の VXSE53・報番号 2）が持つ 2 文を**そのまま渡す**。
  *
- * 残る一文が `＊`（気象庁以外が運用する観測点）の説明で、**震度を伝える電文のほぼ全てに入る**
- * （→ docs/spec/quake-spec.md §8「固定付加文（その他）（`VarComment/Text`）はそのまま出す」）。
+ * - 「震源要素を訂正します。」（コード 0256）—— 前の報から規模が変わったことを伝える。
+ *   実電文では報番号 1（16:16 発表）が M7.4 で、この報が M7.6
+ * - 「＊印は気象庁以外の震度観測点についての情報です。」（コード 0262）—— **震度を伝える電文の
+ *   ほぼ全てに入る**（→ docs/spec/quake-spec.md §8「固定付加文（その他）…はそのまま出す」）
+ *
+ * **0256 が入っていても訂正報ではない。** 気象庁は震源要素の訂正を、`Head/InfoType` が「訂正」の
+ * 報ではなく**報番号 2 の発表報＋この付加文**で伝えており、`issue.correct` は `'なし'` のまま。
+ * DMDATA アーカイブの全期間（2020-11-18〜2026-09-12・地震と津波で 20,657 通）を走査すると、
+ * 0256 を持つのは 28 通ですべて `InfoType=発表`・`Serial=2` だった（`InfoType=訂正` の地震情報は
+ * 1 通も無い）。訂正報そのものの形は `createTestQuakeAmendment` が作る。
+ *
+ * **型が `string` でも `?? ''` を外さないこと。** 元データは `npm run build-test-quake` の
+ * 生成物で、`VarComment` を持たない報を選べば**キーごと消える**（パーサーが `undefined` を返し
+ * `JSON.stringify` が落とす）。空文字へ倒しておけば、`createTestEarthquake` の条件式が
+ * `varCommentText: undefined` を渡さずに済む。欠落そのものは `testData.test.ts` の
+ * 固定付加文まわりが明示的な失敗として知らせる。
+ */
+const NOTO_HONSHIN_VAR_COMMENT_TEXT = notoHonshinQuake.varCommentText ?? ''
+
+/**
+ * 訂正報テストの**初報**が持つ固定付加文（その他）を組む。訂正の一文（0256）だけを落とす。
+ *
+ * 実電文でも報番号 1（16:16 発表・M7.4）はこの一文を持たない —— 訂正はまだ起きていないため。
+ * 初報から付けてしまうと、訂正前の報が訂正を名乗ることになる。
  *
  * **採る側ではなく落とす側を書くのは、気象庁が文を足したときに素通しさせるため。** 採る文を
  * 書き並べると、新しい付加文が届いてもテストボタンだけ古い形のまま残り、実機で一度も出ない。
  *
- * **型が `string` でも `?? ''` を外さないこと。** 元データは `npm run build-test-quake` の
- * 生成物で、`VarComment` を持たない報を選べば**キーごと消える**（パーサーが `undefined` を返し
- * `JSON.stringify` が落とす）。型はその形を知らないので、素で `.split` を呼ぶと
- * **モジュールの読み込みそのものが `TypeError` で落ちる** —— このファイルはテストボタン全体の
- * 入口（`testDataLoader.ts` が丸ごと動的 import する）なので、地震テストに限らず EEW も津波も
- * 押せなくなる。テスト側で巻き添えになるのは、このファイルを読む `testData.test.ts` と
- * `useEarthquakes.wiring.test.ts` の 2 本（他のファイルは隔離して走るので `npm test` 自体は
- * 最後まで回り、この 2 本を失敗として報告して終わる）。
- *
- * 欠落そのものは `testData.test.ts` の固定付加文まわり 3 件が明示的な失敗として知らせる
- * （うち「元データは訂正の一文を持っている」が、落とす対象が実在することまで見ている）。
+ * **引数で受け取るのは、訂正報の側と同じ値から組むため。** 定数から組むと、`createTestEarthquake`
+ * が渡す中身が変わったときに初報だけ古い形で残る。
  */
-const NOTO_HONSHIN_VAR_COMMENT_TEXT = (notoHonshinQuake.varCommentText ?? '')
-  .split('\n')
-  .filter((line) => line !== HYPOCENTER_AMEND_NOTE)
-  .join('\n')
+function varCommentTextBeforeAmend(text: string | undefined): string {
+  return (text ?? '')
+    .split('\n')
+    .filter((line) => line !== HYPOCENTER_AMEND_NOTE)
+    .join('\n')
+}
 
 
 /**
@@ -251,6 +266,82 @@ export function createTestEarthquake(useDmdataShape: boolean, operationStatus?: 
       ? { varCommentText: NOTO_HONSHIN_VAR_COMMENT_TEXT }
       : {}),
   }
+}
+
+/** 訂正報テストで初報が名乗る規模。実電文の報番号 1（能登本震 16:16 発表）の値。 */
+const AMENDMENT_BEFORE_MAGNITUDE = 7.4
+
+/**
+ * 訂正報テストで初報を流してから訂正報を流すまでの間隔。
+ *
+ * **変えたら設定タブの説明文（「3秒後に規模を訂正した報を流す」）も直すこと。** あちらから
+ * この定数を参照させることはできない —— テストデータは押されてから読む作りで、設定タブが
+ * 静的に取り込むとその分割が解ける（→ docs/spec/settings-pwa-spec.md §7「テストデータは
+ * 押されてから読む」）。
+ */
+export const TEST_AMENDMENT_DELAY_MS = 3000
+
+/**
+ * 訂正報のテストデータ。**初報と、それを訂正する報の 2 通**を返す。
+ *
+ * 訂正報（`Head/InfoType` が「訂正」の報）は、カードに「訂正」の印を出し、DMDSS 版では
+ * 何を訂正したかを固定付加文の原文と並べて見せる（→ docs/spec/quake-spec.md §6.2・§8）。
+ * **その見え方を実機で確かめられる入口がここしかない。**
+ *
+ * **訂正報は実配信の標本を持たない。** DMDATA アーカイブの全期間（2020-11-18〜2026-09-12・
+ * 地震と津波で 20,657 通）にも、気象庁公式のサンプル電文（地震・津波関連 184 件）にも
+ * `InfoType` が「訂正」の地震情報は 1 通も無い。気象庁が実際に震源要素の訂正を伝えるときは、
+ * 訂正報ではなく**報番号 2 の発表報＋固定付加文 0256**（→ `NOTO_HONSHIN_VAR_COMMENT_TEXT`）。
+ * そのためこのデータは**アプリが読み取れる形から組んだ仮のもの**で、リプレイでも再現できない。
+ *
+ * **訂正の中身だけは実電文どおり。** 能登本震の報番号 1（16:16 発表）は M7.4、報番号 2
+ * （16:24 発表）が M7.6 で、規模が訂正されている。初報と訂正報の差をこれに合わせた。
+ *
+ * 報ごとに進めるもの・進めないものは §7「実電文の形に合わせる」に従う —— 報番号（`id` の末尾）と
+ * 発表時刻は進め、**震源時刻（`earthquake.time`）と識別情報（`eventId`）は動かさない**。
+ * 動かすと 2 通目が別の地震として立ち、訂正が同じカードへ届かない。
+ */
+export function createTestQuakeAmendment(useDmdataShape: boolean): { initial: JMAQuake; amended: JMAQuake } {
+  const base = createTestEarthquake(useDmdataShape)
+  const eventId = extractQuakeEventIdFromId(base.id)
+  // **`createTestEarthquake` が 14 桁の識別情報を持つ `id` を作る限り null にならない。**
+  // それでも黙って落とさないのは、この分岐が「報番号を進めない」という形の劣化にしか
+  // 現れないため —— カードは 1 枚に統合されたままなので、画面を見ても気づけない。
+  if (!eventId) log.error('[test] 地震テストの id から識別情報を読めなかった（訂正報の報番号を進められない）', { id: base.id })
+  const initial: JMAQuake = {
+    // **`points` と `cities` は初報・訂正報で同じ配列を共有する**（元データそのものを指す）。
+    // 下流はこれらを読むだけで、並べ替えも絞り込みも新しい配列を作って返す。
+    // 破壊的に扱う処理を足すなら、ここで浅いコピーを取ること。
+    ...base,
+    earthquake: {
+      ...base.earthquake,
+      hypocenter: { ...base.earthquake.hypocenter, magnitude: AMENDMENT_BEFORE_MAGNITUDE },
+    },
+    // 初報は訂正の一文を持たない（→ `varCommentTextBeforeAmend`）。
+    // **`base` が付加文を持つときは、落とした結果が空でも必ず上書きする。** 空なら渡さない形に
+    // すると、元データが訂正の一文しか持たなくなった日に `base` の値がそのまま残り、
+    // 初報が訂正を名乗る（画面には空文字の枠は出ないので、上書きして困ることはない）。
+    ...(base.varCommentText === undefined
+      ? {}
+      : { varCommentText: varCommentTextBeforeAmend(base.varCommentText) }),
+  }
+  const amendedTime = new Date(new Date(base.time).getTime() + TEST_AMENDMENT_DELAY_MS).toISOString()
+  const amended: JMAQuake = {
+    ...base,
+    // 報番号を進める。**`eventId` は初報と同じものを使う** —— ここが変わると別カードになる。
+    ...(eventId ? { id: `dmdata-quake-${eventId}-2` } : {}),
+    time: amendedTime,
+    issue: {
+      ...base.issue,
+      time: amendedTime,
+      // 何を訂正したかは固定付加文のコードから読む。DMDATA 経路が返しうるのは
+      // 「震源を訂正」（0256 あり）か「訂正」（コードを読めない）の 2 つだけで、
+      // P2PQuake が持つ 5 値とは揃わない（→ docs/spec/quake-spec.md §6.2）。
+      // standard 版でも同じ値にする —— P2PQuake は `DestinationOnly` として同じ事実を配信する。
+      correct: '震源を訂正',
+    },
+  }
+  return { initial, amended }
 }
 
 // 本震と同一 eventId（14桁タイムスタンプ）を持つ長周期地震動観測情報（VXSE62, 2024/1/1
