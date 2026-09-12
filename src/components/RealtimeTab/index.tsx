@@ -1,6 +1,6 @@
 // リアルタイムタブの右パネル。地図エリアは JapanMap が強震モニタ（観測点）と
 // 予報円を描画し、ここでは EEW 情報カード・強震モニタ検知(V2)カード・震度スケール凡例・注記を表示する。
-import { memo, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import type { EEWAlert } from '../../types/earthquake'
 import type { DetectionEvent, Confidence } from '../../utils/kyoshinDetector'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
@@ -77,6 +77,69 @@ function NoForecastBanner({ eew }: { eew: EEWAlert }) {
   )
 }
 
+/**
+ * 「予想が変わった」の帯を最低どれだけ出し続けるか。
+ *
+ * **決めているのは「変化が続いている間、帯が途切れないこと」。** 実電文（2026-06-01〜09-06・
+ * 334 イベント）では、変化を立てた報から次の変化までが**別の文言へ差し替わる場合で最大 9 秒**・
+ * **同じ文言の再発で最大 4 秒**だった。10 秒あればどちらも覆う。
+ *
+ * **次の報が来るまでの間隔（最大 10 秒）はこの値の根拠にならない。** 変化なしの報では帯を
+ * 消さないので、報が何秒後に来るかは関係がない。
+ *
+ * 上限の側は、EEW のカード自体が最終報から 60 秒以上出ていることに対して十分短いこと
+ * ―― 変化が止まったあと、帯だけが居座らない。
+ *
+ * **これは実時計で測る。** 画面に出ている時間は利用者が読むのに要る時間なので、リプレイの
+ * 再生時計（`useEarthquakes` が電文の失効に使っているもの）には乗せていない。再生に倍速を
+ * 入れるなら、ここを見直すかどうかを判断すること。
+ */
+export const EEW_FORECAST_CHANGE_HOLD_MS = 10_000
+
+/**
+ * 気象庁が「予想が変わった」と書いてきた帯（電文の `Appendix`）を、最低
+ * {@link EEW_FORECAST_CHANGE_HOLD_MS} は出し続ける。
+ *
+ * **電文はそれを 1 通しか言わない。** 実電文（2026-06-01〜09-06・334 イベント）では、変化を
+ * 立てた 55 通の次の報までの間隔が中央 1 秒で、**次の報は値を 0 に戻す**（第 1 報を除く
+ * ほぼ全通が `Appendix` を持ち、変化が無いときは 0 を載せてくる）。報の状態をそのまま描くと
+ * 帯は 1 秒で消え、実質誰も読めない。
+ *
+ * **保持の判定は `Appendix` の有無ではなく「変化を伝える値か」で行う**
+ * （`eewForecastChangeText` が非空を返すか）。オブジェクトの有無で見ると、変化なしの続報を
+ * 「新しい値」として採ってしまい、保持が効かない。
+ *
+ * **新しい変化が来たら差し替えて計時し直す。** 保持は「変化なしの報で消さない」ためのもので、
+ * 気象庁が言い直したものを抑えるためではない（実測では 55 通のうち 33 通が 10 秒以内に別の
+ * 文言へ差し替わる）。
+ *
+ * **計時を張り直す契機は報番号。文言の変化では足りず、`eew` の参照でも見てはいけない。**
+ * 同じ文言が離れた報で再び立つ形が実在する（55 通中 5 通）ので文言だけでは 2 度目を拾えない。
+ * 一方で `eew` の参照は「新しい報が届いた」ことの**代理値にすぎない** ―― `useEarthquakes` は
+ * 報の到着以外でも EEW を作り直す（standard 版の区域・震源要素の注ぎ足し、取消の適用）。
+ */
+function useHeldForecastChange(eew: EEWAlert): string {
+  const text = eewForecastChangeText(eew)
+  const serial = eewSerial(eew)
+  const [held, setHeld] = useState(text)
+  const timerRef = useRef(0)
+  useEffect(() => {
+    // 変化を伝えていない報では何もしない ―― 消さずに据え置くのがこのフックの本体。
+    if (!text) return
+    setHeld(text)
+    window.clearTimeout(timerRef.current)
+    timerRef.current = window.setTimeout(() => setHeld(''), EEW_FORECAST_CHANGE_HOLD_MS)
+  }, [text, serial])
+  useEffect(() => () => window.clearTimeout(timerRef.current), [])
+  // 取消の報では出さない。取り下げた予想について「大きくなりました」と並べても意味がない。
+  //
+  // **隠しているのはこの判定そのもの。** 取消電文は `Appendix` を持たないが、状態更新は
+  // 取消を `{ ...表示中の EEW, cancelledAt }` の形で当てるため（`useEarthquakes` の eew ケース）、
+  // **直前の報の `forecastChange` がそのまま残る**。`text` が空になることを当てにして
+  // この判定を外すと、取り下げた予想の帯が復活する。
+  return eew.cancelledAt ? '' : held
+}
+
 function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
   eew: EEWAlert
   activeLpgmEventId?: string | null
@@ -114,7 +177,8 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
 
   // 予想が変わったこと（電文の `Appendix`）と震源要素の精度（`Accuracy`）。
   // どちらも DMDATA の XML 経路でだけ入る（standard 版では常に空）。
-  const forecastChangeText = eewForecastChangeText(eew)
+  // 前者は**その報にしか入らない**ので、表示の寿命はフックが持つ（理由はその宣言箇所）。
+  const forecastChangeText = useHeldForecastChange(eew)
   const epicenterRankText = eewEpicenterRankLabel(eew.accuracy?.epicenterRank)
   // 深さの精度は震央と同じ表を引く（解説資料 Ⅱ.21 1-4-2-2）。**震央と同じ値のことが多い**ので、
   // 同じなら 1 行にまとめる —— 同じ文字列を 2 行並べても情報は増えない。
@@ -305,8 +369,9 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
           )}
         </div>
 
-        {/* 予想が変わったこと（電文の `Appendix`）。**気象庁が「変わった」と書いている報でだけ出す** ——
-            アプリが続報どうしを比べて推定した結果ではない。理由まで電文に入っている。 */}
+        {/* 予想が変わったこと（電文の `Appendix`）。**気象庁が「変わった」と書いてきた事実だけを出す**
+            —— アプリが続報どうしを比べて推定した結果ではない。理由まで電文に入っている。
+            **出し続ける長さは報の状態と切り離してある**（→ `useHeldForecastChange`）。 */}
         {forecastChangeText && (
           <div
             className="w-full rounded-lg py-1 px-3 text-[0.8125rem] font-medium roomy:text-sm"
