@@ -4,6 +4,7 @@ import { extractQuakeEventIdFromId } from './quakeMerge'
 import { log } from './logger'
 import notoHonshinPoints from '../data/noto-honshin-2024-points.json'
 import notoHonshinQuake from '../data/noto-honshin-2024-quake.json'
+import hyuganadaQuakeJson from '../data/hyuganada-2022-quake.json'
 import notoHonshinLpgmJson from '../data/noto-honshin-2024-lpgm.json'
 import testEstimatedIntensityJson from '../data/test-estimated-intensity.json'
 import { CELL_LAT_DEG, CELL_LON_DEG } from './bufrEstimatedIntensity'
@@ -18,13 +19,24 @@ const notoHonshinLpgm = notoHonshinLpgmJson as unknown as Omit<
   JMALpgm, 'id' | 'eventId' | 'time' | 'cancelled'
 >
 
+/**
+ * 未入電テスト（日向灘 2022-01-22）のデータ。上と同じく実電文をパーサーへ通したもの。
+ *
+ * `createTestEarthquake` が能登本震のデータから点と市町村だけを取り出しているのと違い、
+ * こちらは**電文が運ぶものをまるごと使う**（見出し文・付加文も含む）。報ごとに変わるもの
+ * （識別子・発表時刻）だけをファクトリ側で作る。
+ */
+const hyuganadaQuake = hyuganadaQuakeJson as unknown as Omit<
+  JMAQuake, 'kind' | 'id' | 'eventId' | 'time' | 'issue'
+>
+
 // テスト発報（EEW・津波）の自動解除までの時間。実発報の解除ロジックとは無関係の、テスト表示専用の固定値。
 export const TEST_AUTO_DISMISS_MS = 90000
 
 // eventId は DMDATA 電文が共有する14桁タイムスタンプ（YYYYMMDDHHmmss）形式。
 // quake.id を `dmdata-quake-{eventId}-1` にすることで extractQuakeEventId が拾えるようにし、
 // createTestLpgm が同じ eventId の長周期地震動データを lpgmByEventId に正しく紐づけられるようにする。
-function toEventIdTimestamp(d: Date): string {
+export function toEventIdTimestamp(d: Date): string {
   const pad = (n: number, len = 2) => String(n).padStart(len, '0')
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
 }
@@ -197,6 +209,10 @@ export function createTestEarthquake(useDmdataShape: boolean, operationStatus?: 
   return {
     kind: 'quake',
     id: `dmdata-quake-${eventId}-1`,
+    // **識別子のフィールドは DMDSS 版だけが持つ。** 電文の `EventID` は DMDATA が配信するもので、
+    // P2PQuake は配信しない（型定義の `JMAQuake.eventId`）。standard 版にも持たせると、
+    // そのバリアントの実電文には無い形になる。
+    ...(useDmdataShape && { eventId }),
     time: now,
     // 電文の運用種別（`Control/Status`）。訓練・試験のときだけ入り、通常の報には現れない。
     // **DMDATA 経路だけが運ぶ**（P2PQuake はヘッダを配信しない）ので standard 版では渡さない。
@@ -253,12 +269,11 @@ export function createTestEarthquake(useDmdataShape: boolean, operationStatus?: 
     // 市町村ごとの震度（電文の `Pref/Area/City`）。**DMDATA 経路でのみ配信される**ので
     // standard 版では持たせない（P2PQuake は市町村の粒度を配信しない）。
     //
-    // **市町村の未入電（`City/Condition`）はここに入っていない。** 資料 Ⅱ.33 2-1-3-3-3 が
+    // **市町村の未入電（`City/Condition`）はこの報には入っていない。** 資料 Ⅱ.33 2-1-3-3-3 が
     // 出る条件を「配下に未入電の観測点があり、**かつ市町村の最大震度が震度4以下（又は入電なし）**」
     // と定めており、この報では未入電の 3 地点が属する市町村がいずれも震度6強・6弱で当たらない。
-    // 実電文を 3 日分（2024-01-01 能登本震 90 通・04-17 豊後水道 12 通・08-08 日向灘 13 通）
-    // 走査しても 1 通も見つからなかった。**手で作らない** —— 実際に起きていない形をテスト
-    // データに置くと、そちらへ合わせた実装が入りうる（→ docs/spec/quake-spec.md §5「市町村の震度」）。
+    // その形は `createTestUnreceivedQuake`（日向灘 2022-01-22）で確かめる
+    // （→ docs/spec/quake-spec.md §5「市町村の震度」）。
     ...(useDmdataShape && { cities: notoHonshinQuake.cities as JMAQuakeCity[] }),
     // 固定付加文（その他）。**DMDATA 経路だけが運ぶ**ので standard 版では渡さない
     // （P2PQuake は付加文を配信しない）。中身の決め方は `NOTO_HONSHIN_VAR_COMMENT_TEXT`。
@@ -342,6 +357,39 @@ export function createTestQuakeAmendment(useDmdataShape: boolean): { initial: JM
     },
   }
   return { initial, amended }
+}
+
+/**
+ * 市町村の未入電を含む地震情報のテストデータ（2022-01-22 01:08 日向灘 M6.4 最大震度5強・第 2 報）。
+ *
+ * **`createTestEarthquake` では出ない形を出すためのもの。** 市町村の未入電（`City/Condition`）は
+ * 2 通りに分かれ（→ docs/spec/quake-spec.md §5「市町村の震度」）、この報は両方を持つ。
+ *
+ * - **震度を観測できたうえで配下に未入電がある**（`hasUnreceived`）… 21 市町村
+ * - **市町村の値そのものが未入電**（`unreceived`。下限の5弱へ寄せる）… 18 市町村
+ *
+ * 観測点の未入電も 60 地点あり、7 県 18 区域にまたがる。「震度を入手していない地点」の
+ * ブロックが実運用でいちばん伸びる形でもある（能登本震は 3 地点）。
+ *
+ * **DMDSS 版のみ。** 市町村の粒度は DMDATA 経路でしか配信されない。
+ */
+export function createTestUnreceivedQuake(): JMAQuake {
+  const nowDate = serverDate()
+  const now = nowDate.toISOString()
+  const eventId = toEventIdTimestamp(nowDate)
+  return {
+    ...hyuganadaQuake,
+    kind: 'quake',
+    id: `dmdata-quake-${eventId}-1`,
+    // **`id` に埋め込むだけでなく、フィールドとしても持たせる。** `TsunamiTab` の原因地震リンクは
+    // `id` から抜く経路（`extractQuakeEventId`）ではなく、このフィールドを直接見る（→ 型定義）。
+    eventId,
+    time: now,
+    issue: { source: 'テスト', time: now, type: '震源・震度情報', correct: 'なし' },
+    // 震源要素は実電文のまま。発生時刻だけ「いま」へ寄せる（カードの並びと自動タブ切替が
+    // 実運用と同じところを踏むようにするため）。
+    earthquake: { ...hyuganadaQuake.earthquake, time: now },
+  }
 }
 
 // 本震と同一 eventId（14桁タイムスタンプ）を持つ長周期地震動観測情報（VXSE62, 2024/1/1
@@ -971,6 +1019,28 @@ export function createTestEarthquakeCountRetraction(base: JMAEarthquakeCount): J
   }
 }
 
+/**
+ * 津波テストの原因地震が起きてから、その津波電文を発表するまでの間（分）。
+ *
+ * **区域と観測点の到達時刻より前に置くこと。** `createTestTsunami` は第一波の到達を発表の
+ * 6 分前まで、最大波の観測時点を 2 分前に置いている。原因地震をそれより後にすると、
+ * **地震より前に津波が到達した**という実電文には無い並びになる。
+ */
+const TSUNAMI_ORIGIN_MIN_BEFORE = 10
+
+/**
+ * 津波テストの原因地震が発現した時刻。
+ *
+ * **津波電文の識別子（`EventID`）は原因地震のもの**で、津波電文はその地震の**あとに**
+ * 発表される（→ tsunami-spec.md §4）。押した時刻をそのまま識別子にすると、
+ * 「地震と津波警報が同じ瞬間」という形になるうえ、**同じ秒に押した地震テストと識別子が
+ * 一致する** —— 実電文の識別子は事象ごとに一意なので、別々の地震が同じ値を持つことはない。
+ * 一致すると、津波バナーの原因地震リンクが無関係な地震カードを指す。
+ */
+function tsunamiOriginDate(now: Date): Date {
+  return new Date(now.getTime() - TSUNAMI_ORIGIN_MIN_BEFORE * 60000)
+}
+
 // 津波テストデータのバリアント差。DMDSS（DMDATA）経路の電文だけが持つ項目を切り替える。
 //   - eventId: DMDATA は常に14桁タイムスタンプを持つ。P2PQuake の 552 は持たない
 //   - validDateTime: 同上（P2PQuake には有効期限の概念が無い）
@@ -983,7 +1053,7 @@ export function createTestTsunamiForecast(withDmdssFields: boolean): JMATsunami 
   return {
     kind: 'tsunami',
     id: `test-tsunami-forecast-${Date.now()}`,
-    eventId: withDmdssFields ? toEventIdTimestamp(now) : undefined,
+    eventId: withDmdssFields ? toEventIdTimestamp(tsunamiOriginDate(now)) : undefined,
     time: nowIso,
     cancelled: false,
     // 予報は DMDSS の実運用でも明示的な解除電文を伴わず ValidDateTime の期限切れで消えるため、
@@ -1092,7 +1162,7 @@ export function createTestTsunamiRetraction(withDmdssFields: boolean): JMATsunam
   return {
     kind: 'tsunami',
     id: `test-tsunami-retraction-${Date.now()}`,
-    eventId: withDmdssFields ? toEventIdTimestamp(nowDate) : undefined,
+    eventId: withDmdssFields ? toEventIdTimestamp(tsunamiOriginDate(nowDate)) : undefined,
     time: now,
     cancelled: false,
     issue: { source: 'テスト', time: now, type: 'Focus' },
@@ -1109,7 +1179,7 @@ export function createTestTsunamiWatch(withDmdssFields: boolean): JMATsunami {
   return {
     kind: 'tsunami',
     id: `test-tsunami-watch-${Date.now()}`,
-    eventId: withDmdssFields ? toEventIdTimestamp(nowDate) : undefined,
+    eventId: withDmdssFields ? toEventIdTimestamp(tsunamiOriginDate(nowDate)) : undefined,
     time: now,
     cancelled: false,
     // 電文が名乗る情報名（`Head/Title`）。**DMDSS 版でのみ来る**（P2PQuake の JSON には無い）。
@@ -1130,7 +1200,7 @@ export function createTestTsunamiWarning(withDmdssFields: boolean): JMATsunami {
   return {
     kind: 'tsunami',
     id: `test-tsunami-warning-${Date.now()}`,
-    eventId: withDmdssFields ? toEventIdTimestamp(nowDate) : undefined,
+    eventId: withDmdssFields ? toEventIdTimestamp(tsunamiOriginDate(nowDate)) : undefined,
     time: now,
     cancelled: false,
     // 情報名は**その報が出している等級を並べる**（→ `createTestTsunamiWatch`）。
@@ -1149,10 +1219,11 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
   const now = serverDate()
   const nowIso = now.toISOString()
   const t = (offsetMin: number) => new Date(now.getTime() + offsetMin * 60000).toISOString()
+  const originIso = tsunamiOriginDate(now).toISOString()
   return {
     kind: 'tsunami',
     id: `test-tsunami-${Date.now()}`,
-    eventId: withDmdssFields ? toEventIdTimestamp(now) : undefined,
+    eventId: withDmdssFields ? toEventIdTimestamp(tsunamiOriginDate(now)) : undefined,
     time: nowIso,
     cancelled: false,
     // 情報名は**その報が出している等級を並べる**（→ `createTestTsunamiWatch`）。
@@ -1204,13 +1275,16 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
     // その材料（`MarkCode` / `Direction` / `Distance`）が伴う。
     sourceEarthquakes: [
       {
+        // **識別子（`eventId`）はこの地震の発現時刻から作る。** 電文の `EventID` は原因地震の
+        // もので、津波電文はそのあとに発表される（→ `tsunamiOriginDate`）。
         hypocenterName: '三陸沖', magnitudeCondition: 'Ｍ８を超える巨大地震', magnitudeType: 'Mj',
-        originTime: nowIso, arrivalTime: nowIso,
+        originTime: originIso, arrivalTime: originIso,
         code: '288', latitude: 38.1, longitude: 143.9, depth: 24,
       },
       {
+        // 2 件目も第一波の到達（6 分前）より前に置く。
         hypocenterName: '岩手県沖', magnitude: 7.2, magnitudeType: 'M',
-        originTime: t(-3), arrivalTime: t(-3), source: 'ＰＴＷＣ',
+        originTime: t(-9), arrivalTime: t(-9), source: 'ＰＴＷＣ',
         code: '286', latitude: 39.6, longitude: 143.2, depth: 10,
         nameFromMark: '宮古の東１２０ｋｍ付近', markCode: '201', direction: '東', distanceKm: 120,
       },
@@ -1287,32 +1361,32 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
     // 気象庁は「重要 欠測」「微弱 欠測」のように複数を併記するため（電文解説資料 Ⅱ.12）、
     // 単独の状態しか置かないとカード・地図・読み上げの併記の扱いが一度も通らない。
     observations: [
-      { name: '宮古',   districtCode: '210', districtName: '岩手県',           height: { value: 8.5, description: '8.5m以上', over: true }, arrivalTime: nowIso, initial: '押し', maxHeightDateTime: t(4), firstHeightRevise: '追加' },
+      { name: '宮古',   districtCode: '210', districtName: '岩手県',           height: { value: 8.5, description: '8.5m以上', over: true }, arrivalTime: t(-6), initial: '押し', maxHeightDateTime: t(-3), firstHeightRevise: '追加' },
       // これまでの最大波を観測した後に観測が途切れた観測点（値と欠測が同時に来る形）。
       { name: '大船渡', districtCode: '210', districtName: '岩手県',           height: { value: 3.2, description: '3.2m以上', over: true }, arrivalTime: t(-5), initial: '押し', condition: { maxHeightMissing: true, important: true } },
-      { name: '石巻港', districtCode: '220', districtName: '宮城県',           height: { value: 7.2, description: '7.2m' }, arrivalTime: nowIso, initial: '押し', maxHeightDateTime: t(6), maxHeightRevise: '更新', firstHeightRevise: '更新' },
+      { name: '石巻港', districtCode: '220', districtName: '宮城県',           height: { value: 7.2, description: '7.2m' }, arrivalTime: t(-4), initial: '押し', maxHeightDateTime: t(-2), maxHeightRevise: '更新', firstHeightRevise: '更新' },
       // 到達は確認できたが最大波が欠測（波高の数値が無い）。
       { name: '相馬',   districtCode: '250', districtName: '福島県',           arrivalTime: t(-2), initial: '押し', condition: { maxHeightMissing: true } },
       // 第1波も最大波も欠測（到達したかどうかも判っていない）。
       { name: 'いわき市小名浜', districtCode: '250', districtName: '福島県',   condition: { firstHeightMissing: true, maxHeightMissing: true } },
       // 水位が上昇中の観測点。波高の数値が消えないことの確認を兼ねる。
-      { name: '大洗',   districtCode: '300', districtName: '茨城県',           height: { value: 2.1, description: '2.1m' }, arrivalTime: t(20), initial: '押し', condition: { rising: true } },
-      { name: '八戸港', districtCode: '201', districtName: '青森県太平洋沿岸', height: { value: 1.8, description: '1.8m' }, arrivalTime: nowIso, initial: '引き' },
+      { name: '大洗',   districtCode: '300', districtName: '茨城県',           height: { value: 2.1, description: '2.1m' }, arrivalTime: t(-2), initial: '押し', condition: { rising: true } },
+      { name: '八戸港', districtCode: '201', districtName: '青森県太平洋沿岸', height: { value: 1.8, description: '1.8m' }, arrivalTime: t(-3), initial: '引き' },
       // 第1波の到達時刻が読み取れなかった観測点（`FirstHeight/Condition` = 第１波識別不能）。
       // **欠測とは別物** —— 津波は観測できていて到達も確定しており、時刻だけが出せない。
       // 時刻の欄に「到達時刻不明」と理由が出る（`utils/tsunami.ts` の
       // `observationArrivalFallbackText`）。到達確認の扱いは欠測と違って抑制しない。
-      { name: '久慈港', districtCode: '210', districtName: '岩手県', height: { value: 4.4, description: '4.4m' }, initial: '押し', maxHeightDateTime: t(3), condition: { firstWaveUnidentifiable: true } },
+      { name: '久慈港', districtCode: '210', districtName: '岩手県', height: { value: 4.4, description: '4.4m' }, initial: '押し', maxHeightDateTime: t(-2), condition: { firstWaveUnidentifiable: true } },
       // 津波注意報の区域で、これまでの最大波がごく小さい（数値を発表しない）。
-      { name: '釧路',   districtCode: '100', districtName: '北海道太平洋沿岸東部', arrivalTime: t(30), initial: '押し', condition: { weak: true } },
+      { name: '釧路',   districtCode: '100', districtName: '北海道太平洋沿岸東部', arrivalTime: t(-2), initial: '押し', condition: { weak: true } },
       // 沖合の潮位観測点。「重要」の基準が沿岸と違う（大津波警報だけでなく津波警報も含む）ため、
       // 出所の印（offshore）を付けてバッジの語が切り替わることを確かめられるようにする。
-      { name: '沖合40km', offshore: true, sensor: 'ＧＮＳＳ波浪計', height: { value: 3.0, description: '3.0m以上', over: true }, arrivalTime: nowIso, condition: { important: true }, maxHeightDateTime: t(2) },
+      { name: '沖合40km', offshore: true, sensor: 'ＧＮＳＳ波浪計', height: { value: 3.0, description: '3.0m以上', over: true }, arrivalTime: t(-3), condition: { important: true }, maxHeightDateTime: t(-2) },
       // 「観測中」のまま Revise が「更新」。大津波警報の区域に対応する沖合の観測点で、沿岸で
       // 推定される高さが 3m 超に届かないときの形で、**津波警報に相当する津波を観測している**
       // ことを気象庁が示す（電文解説資料 Ⅱ.13 1-1-2-2-2）。値が変わらないので、アプリの
       // 「値の変化で判定する」仕組みでは作れない状態 —— テストボタンに無いと実機で一度も見られない。
-      { name: '沖合80km', offshore: true, sensor: '水圧計', arrivalTime: t(-1), condition: { observing: true }, maxHeightRevise: '更新' },
+      { name: '沖合80km', offshore: true, sensor: '水圧計', arrivalTime: t(-2), condition: { observing: true }, maxHeightRevise: '更新' },
     ],
     // 沖合の観測から導いた沿岸への推定（電文の `Estimation`）。沖合の観測点は沿岸より先に
     // 津波を捉えるため、**まだ到達していない沿岸**の到達予想と高さが入る。
