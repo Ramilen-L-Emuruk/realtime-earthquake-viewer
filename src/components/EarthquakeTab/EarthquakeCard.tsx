@@ -564,10 +564,16 @@ export function EarthquakeCard({
             )}
           </div>
 
-          {/* 震源地 */}
+          {/* 震源地。**緯度・経度はこの直下に置く** —— どちらも「どこで起きたか」を言う欄で、
+              あいだに規模・津波・付加文を挟むと、震央地名を読んだあとに座標を探すことになる。 */}
           <div className="font-bold text-white leading-tight text-[1.375rem] roomy:text-[1.875rem]">
             {hasLocation ? hypocenter.name : '震源調査中'}
           </div>
+          {hasLocation && (
+            <div className="text-xs text-secondary roomy:text-sm">
+              {formatCoordinate(hypocenter.latitude, hypocenter.longitude)}
+            </div>
+          )}
 
           {/* マグニチュード・深さ（2カラムグリッド） */}
           {hasFacts && (
@@ -639,13 +645,6 @@ export function EarthquakeCard({
             </div>
           )}
 
-          {/* 震源の緯度・経度 */}
-          {hasLocation && (
-            <div className="text-xs text-secondary roomy:text-sm">
-              {formatCoordinate(hypocenter.latitude, hypocenter.longitude)}
-            </div>
-          )}
-
           {/* 震度分布（クリックで地図の表示モードをトグル）。カード自体が <button> のため
               入れ子を許さない（長周期のトグルと同じ作法）。
               **どちらの分布を見ているかをボタンに書く。** 気象庁の推計とアプリ自身の推定は
@@ -673,14 +672,6 @@ export function EarthquakeCard({
               <span className={`text-xs roomy:text-sm ${distributionState === 'official' ? 'text-blue-300 font-bold' : 'text-secondary'}`}>
                 {distributionState === 'official' ? '気象庁の推計' : 'このアプリの簡易推定'}
               </span>
-            </div>
-          )}
-          {canDrawDistribution && distributionState === 'awaiting' && (
-            <div className="text-secondary" style={{ fontSize: '0.75rem', lineHeight: 1.5 }}>
-              {/* **「待っています」だけで終えない。** 気象庁は「強い揺れの拡がりが足りないときは
-                  発表されないことがある」と断っている。言い切ると、来ないまま待たされた利用者が
-                  アプリの不具合だと思う。 */}
-              気象庁の推計を待っています（発表されないこともあります）
             </div>
           )}
 
