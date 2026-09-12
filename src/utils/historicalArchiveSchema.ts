@@ -7,9 +7,9 @@ import { isValidIntensityScale } from './intensity'
 //
 // このファイルの内容は `capture-test-scenario.ts` のように実電文から機械生成されるのではなく、
 // 気象庁公表資料を典拠に手作業で書き起こしている（`docs/spec/settings-pwa-spec.md` §6 参照）。
-// typo が混入しやすい経路であり、かつこのアプリには React の ErrorBoundary が無いため、
-// 判別子（kind）の存在だけでなく、震度値・警報区分など描画に直結するフィールドの値域まで
-// ここで弾く。中間値（`25` 等）や未知の区分がそのまま state に乗ると、既存の実地震シナリオ
+// typo が混入しやすい経路。**ErrorBoundary はあるが、それが受け止めるのは「その範囲を表示できない」
+// という結果でしかない。** 壊れた値を画面まで通さないほうが安いので、判別子（kind）の存在だけでなく、
+// 震度値・警報区分など描画に直結するフィールドの値域までここで弾く。中間値（`25` 等）や未知の区分がそのまま state に乗ると、既存の実地震シナリオ
 // （`testScenarioSchema.ts`・`eew-spec.md` §4）と同じ理由でカードやバッジの表示が壊れる。
 
 function isRecord(v: unknown): v is Record<string, unknown> {

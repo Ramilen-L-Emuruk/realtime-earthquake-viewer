@@ -1,6 +1,8 @@
 import * as maplibregl from 'maplibre-gl'
 import { applyProjectionUniforms, createProjectionProgramCache } from './projectionProgram'
 import { SHINDO0_COLOR } from '../../../utils/kyoshinIntensity'
+import { guardRender } from './guardRender'
+import { clearRenderFailure } from '../../../utils/renderHealth'
 
 // 強震モニタの震度0以下（index 1〜6）を描く MapLibre カスタムレイヤーの GL 実装。
 // Leaflet の KyoshinSubThreshold は「同レベルのドット同士が重なっても濃くならない」非加算合成
@@ -22,6 +24,9 @@ export const MAX_SUB_IDX = 6
 const BASE_RADIUS = 2.5
 // index バッファは Uint16Array のため 65,535 点が上限（強震モニタは約1,725点で十分収まる）。
 const MAX_UINT16_POINTS = 65535
+// レイヤー ID と、描画の不調を知らせるときの表示名（`utils/renderHealth.ts`）。
+const LYR = 'kyoshin-subthreshold'
+const LABEL = '弱い揺れの観測点'
 
 // index 0→0、index 6→0.35 の指数カーブ（Leaflet 版 subThresholdOpacity と一致）。
 export function subThresholdOpacity(idx: number): number {
@@ -182,7 +187,7 @@ ${POINT_VS_BODY}`,
   }
 
   const layer: maplibregl.CustomLayerInterface = {
-    id: 'kyoshin-subthreshold',
+    id: LYR,
     type: 'custom',
     onAdd(map: maplibregl.Map, gl: WebGL2RenderingContext) {
       mapRef = map
@@ -209,7 +214,7 @@ ${POINT_VS_BODY}`,
       fbo = gl.createFramebuffer()!
       tex = gl.createTexture()!
     },
-    render(gl: WebGL2RenderingContext, args: maplibregl.CustomRenderMethodInput) {
+    render: guardRender(LYR, LABEL, (gl: WebGL2RenderingContext, args: maplibregl.CustomRenderMethodInput) => {
       if (!visible) return
       // **GL の状態を触る前に取ること。** 下のリサイズ処理は自前の FBO を bind したまま進み、
       // 本描画先へ戻すのは関数末尾の復元処理。その手前で抜けると、以後 MapLibre が発行する描画が
@@ -295,8 +300,11 @@ ${POINT_VS_BODY}`,
       gl.disable(gl.BLEND)
       gl.disableVertexAttribArray(aPos)
       gl.disableVertexAttribArray(aQuad)
-    },
+    }),
     onRemove(_map: maplibregl.Map, gl: WebGL2RenderingContext) {
+      // **画面から外れたら不調の記録も消す**（docs/spec/map-rendering-spec.md §16）。
+      // `guardRender.ts` が受け止めた例外の記録も、この 1 行でまとめて消える。
+      clearRenderFailure(LYR, 'draw')
       pointCache.dispose(gl)
       gl.deleteProgram(quadProg)
       gl.deleteFramebuffer(fbo)
