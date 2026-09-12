@@ -1223,6 +1223,20 @@ MapLibre v6 の `_contextRestored` は `setStyle(..., {diff:false})` を呼ん�
 モバイル常駐 PWA で GPU リソース回収時（バックグラウンド長時間放置後の復帰・端末リソース逼迫）に
 発生しうる。
 
+## 12.5 カスタムレイヤーの描画例外
+
+`render()` の中で投げられた例外は `gl/guardRender.ts` が受け止め、§16「描けているかを画面に出す」の
+仕組みへ流す。React の ErrorBoundary はここへ届かない（守備範囲の切り分けは
+[architecture-spec.md](architecture-spec.md) §4.6）。包まずに投げさせると、MapLibre はレイヤーごとに
+例外を捕まえないため**そのフレームの地図が丸ごと止まる**（後ろのレイヤーまで描かれない）。
+
+**MapLibre を上げたら `drawCustom` を目で確かめること。** 例外を握って再スローしないぶん、MapLibre から
+見れば `render()` は正常に戻ったことになり、直後の `context.setDirty()` と `bindFramebuffer.set(null)` が
+必ず走って GL の状態が元へ戻る（6.9.0 で確認。この経路が変われば、レイヤーが途中で抜けたときの
+後始末も変わる）。`guardRender` 側の状態復元はこれと重なっているが、**矩形の切り抜き
+（`SCISSOR_TEST`）だけは MapLibre が追跡していない**ため自前で解く。依存指定は `^6.0.0` で
+マイナー更新が自動的に入るため、§9「カメラ更新の空振りを省く」と同じ理由で実装差分の確認が要る。
+
 ## 13. 関連実装ファイル
 
 - `src/components/Map/JapanMapGL.tsx` — 地図の中枢（初期化・スタイル・全レイヤー配線）
@@ -2412,3 +2426,7 @@ canvas source を raster として貼るところ、Mercator 空間で等間隔�
 - 2026-09-11: `maplibregl.Marker` の要素へ `position` を書かないことを明記した（§10）。
   津波の到達確認・欠測マーカーが `position: relative` を指定していて、DOM の並び順に
   下へ積み上がっていた。ずれはピクセルで固定なので、引いた画ほど地図の上では大きく見える
+- 2026-09-12: カスタムレイヤーの `render()` を `gl/guardRender.ts` で包み、描画中の例外を §16 の
+  「描けているかを画面に出す」仕組みへ流すようにした（§12.5）。React の ErrorBoundary は描画ループへ
+  届かないため、ここだけは別の受け皿が要る。MapLibre 側の後始末に重なる部分があることと、
+  そこが版で変わりうることも併せて書いた

@@ -116,7 +116,8 @@ describe('computeEewCircle', () => {
   // **`Number.isFinite(-200)` は真なので、有限性だけを見ていると素通りする。** 素通りした値は
   // `PsWaveGL` の `map.project([lng, lat])` へ渡り、MapLibre が緯度の範囲外として例外を投げる
   // （ブラウザで実測: 「Invalid LngLat latitude value: must be between -90 and 90」）。
-  // ErrorBoundary が無いので画面ごと落ちる。
+  // **例外は MapLibre の描画ループ（rAF）の中で起きるので ErrorBoundary は届かない。**
+  // `gl/guardRender.ts` が予報円 1 枚に被害を閉じ込めるが、円が出ないこと自体は防げない。
   //
   // この状態は「震源要素不明」の電文を捨てずに通すようにして初めて届くようになった
   // （→ quake-spec.md §5）。取消電文も -200 を持つが、こちらは手前の早期 return で止まる。

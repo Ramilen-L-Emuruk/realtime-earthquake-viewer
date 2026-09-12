@@ -57,7 +57,11 @@ function publish(): void {
   const broken: string[] = []
   const uninteractive: string[] = []
   for (const { label, kind } of failures.values()) {
-    (kind === 'draw' ? broken : uninteractive).push(label)
+    const target = kind === 'draw' ? broken : uninteractive
+    // **同じ名前は 1 度だけ。** 1 つの描画物が別々の理由で 2 件報告することがある
+    //（レイヤー自身が気づいた不調と、`gl/guardRender.ts` が受け止めた例外は鍵を分けてある）。
+    // 利用者に同じ名前を 2 つ並べても伝わる情報は増えない。
+    if (!target.includes(label)) target.push(label)
   }
   const same =
     snapshot.broken.length === broken.length &&
@@ -88,9 +92,24 @@ export function reportRenderFailure(id: string, label: string, kind: RenderFailu
 /**
  * 不調の記録を消す。**直った場合と、そのレイヤーが画面から外れた場合の両方で呼ぶ。**
  * 外れたときに消さないと、二度と出てこない描画物の名前が居座る。
+ *
+ * **そのレイヤーに付けられた記録をまとめて消す。** `Map/gl/guardRender.ts` は受け止めた例外を
+ * `<id>:uncaught` という別の鍵で記録する（レイヤー自身の申告と取り消し合わないようにするため）。
+ * 鍵が違うぶん、**レイヤーを外すときに本人が消せない**——`render()` はもう呼ばれないので、
+ * ガードの側にも消す機会が無い。ここでまとめて消すことで、レイヤーは自分の ID だけ知っていれば
+ * 後始末を終えられる。
  */
 export function clearRenderFailure(id: string, kind: RenderFailureKind): void {
-  if (!failures.delete(keyOf(id, kind))) return
+  const self = keyOf(id, kind)
+  // 区切りまで含めて見る。`hypocenter-depth` の後始末で `hypocenter-depth-2` を巻き込まない。
+  const prefix = `${self}:`
+  let changed = false
+  for (const key of [...failures.keys()]) {
+    if (key !== self && !key.startsWith(prefix)) continue
+    failures.delete(key)
+    changed = true
+  }
+  if (!changed) return
   publish()
 }
 
