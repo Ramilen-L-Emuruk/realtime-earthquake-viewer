@@ -1811,6 +1811,49 @@ describe('nankaiToText: 取消と調査終了の言い分け', () => {
   })
 })
 
+// 取消の述語は種別をまたいで「取り消されました」でそろえる。
+//
+// **気象庁が使う語は「取消」**（→ CLAUDE.md「利用者へ出す語を気象庁の表現と揃える」）。
+// 2026-09-13 まで、緊急地震速報・地震情報・長周期地震動だけが「キャンセルされました」で、
+// 津波・南海トラフ臨時情報・地震回数の「取り消されました」と割れていた。**同じ事象を 2 通りの
+// 述語で言うと、種別ごとに別のことが起きたように聞こえる。**
+describe('取消の述語は種別をまたいでそろえる', () => {
+  const eew = {
+    kind: 'eew', id: 'e1', time: '2026-01-01T12:00:05+09:00', test: false, cancelled: true,
+    issue: { eventId: 'e', serial: '2', time: '2026-01-01T12:00:00+09:00' },
+    earthquake: { originTime: '2026-01-01T12:00:00+09:00', arrivalTime: '2026-01-01T12:00:00+09:00', hypocenter: { name: '日向灘', latitude: 32, longitude: 132, depth: 30, magnitude: 6.5 } },
+  } as unknown as EEWAlert
+  const lpgm = {
+    id: 'l1', eventId: '20260101120000', time: '2026-01-01T12:03:00+09:00',
+    originTime: '2026-01-01T12:00:00+09:00', maxClass: 3 as LpgmClass, cancelled: true, regions: [],
+  } as JMALpgm
+
+  const texts: [string, string][] = [
+    ['緊急地震速報', eewCancelToText(eew)],
+    ['地震情報', earthquakeCancelToText('2026-01-01T12:00:00+09:00')],
+    ['長周期地震動情報', lpgmToText(lpgm, TTS_OPTS, true)],
+    ['津波', tsunamiCancelToText('retracted')],
+  ]
+
+  // 正: どの種別も「取り消されました」で終える。
+  it.each(texts)('%s の取消は「取り消されました」と読む', (_label, text) => {
+    expect(text).toContain('取り消されました')
+  })
+
+  // 安全弁: 「キャンセル」を復活させない。**画面のオーバーレイも「この地震情報は取り消されました」と
+  // 書いている**ので、読み上げだけ戻すと画面と声が食い違う。
+  it.each(texts)('%s の取消で「キャンセル」と読まない', (_label, text) => {
+    expect(text).not.toContain('キャンセル')
+  })
+
+  // 対照: 津波の**解除・失効**は取消とは別の事象なので、述語も別のまま。
+  // この describe だけを見て `tsunamiCancelToText` を一括で書き換えると、ここが落ちる。
+  it('津波の解除・失効は取消と別の述語のまま', () => {
+    expect(tsunamiCancelToText('lifted')).toBe('津波警報等は全て解除されました。')
+    expect(tsunamiCancelToText('expired')).toContain('終了しました')
+  })
+})
+
 // 規模が数値にならない電文（`jmx_eb:Magnitude@description`）。
 //
 // 数値が無いことだけを見て黙ると、**最大級の地震ほど音声から規模が消える**。
@@ -1959,7 +2002,7 @@ describe('tsunamiWarningLevelToText', () => {
   })
 })
 
-// 取消しの概要（電文の `Body/Text`）。アプリの定型文（「キャンセルされました」）は何が起きたかしか
+// 取消しの概要（電文の `Body/Text`）。アプリの定型文（「取り消されました」）は何が起きたかしか
 // 言っておらず、**なぜ取り消したのかは電文のこの本文にしか無い**。
 //
 // **ただし実電文の本文は取消の宣言だけで、理由を含まない。** 定型文が同じ事実を先に述べるので、
@@ -2027,7 +2070,7 @@ describe('取消の理由を読み上げる', () => {
 
   it('地震情報の取消に理由を足す', () => {
     const text = earthquakeCancelToText('2026-01-01T12:00:00+09:00', 'システム障害のため取り消します。')
-    expect(text).toContain('キャンセルされました。')
+    expect(text).toContain('取り消されました。')
     expect(text).toContain('システム障害のため取り消します。')
   })
 
@@ -2036,13 +2079,13 @@ describe('取消の理由を読み上げる', () => {
   it('地震情報の取消でも宣言だけの本文は読まない', () => {
     // 2024-01-01 の実電文（DMDATA・NII の両方に入っている 1 通）
     const text = earthquakeCancelToText('2026-01-01T12:00:00+09:00', '先ほどの、震度速報を取り消します。')
-    expect(text).toMatch(/に発表された地震情報はキャンセルされました。$/)
+    expect(text).toMatch(/に発表された地震情報は取り消されました。$/)
   })
 
   // 対照: 理由が無ければ従来どおり（空文字を足して助詞だけの文にしない）
   it('理由が無ければ従来どおり', () => {
     // 時刻の書式はローカルタイムゾーン依存なので、末尾だけを見る
-    expect(earthquakeCancelToText('2026-01-01T12:00:00+09:00')).toMatch(/に発表された地震情報はキャンセルされました。$/)
+    expect(earthquakeCancelToText('2026-01-01T12:00:00+09:00')).toMatch(/に発表された地震情報は取り消されました。$/)
     expect(tsunamiCancelToText('lifted')).toBe('津波警報等は全て解除されました。')
   })
 
@@ -2070,7 +2113,7 @@ describe('EEW の取消の理由を読み上げる', () => {
 
   it('理由を足す', () => {
     const text = eewCancelToText(cancelledEew('システム障害のため取り消します。'))
-    expect(text).toContain('キャンセルされました。')
+    expect(text).toContain('取り消されました。')
     expect(text).toContain('システム障害のため取り消します。')
   })
 
@@ -2080,12 +2123,12 @@ describe('EEW の取消の理由を読み上げる', () => {
     ['先ほどの、緊急地震速報（予報）を取り消します。'],
     ['先ほどの、緊急地震速報（地震動予報）を取り消します。'],
   ])('実電文の本文は読まない: %s', (cancelText) => {
-    expect(eewCancelToText(cancelledEew(cancelText))).toMatch(/緊急地震速報はキャンセルされました。$/)
+    expect(eewCancelToText(cancelledEew(cancelText))).toMatch(/緊急地震速報は取り消されました。$/)
   })
 
   // 対照: 理由が無ければ従来どおり（空文字を足して助詞だけの文にしない）
   it('理由が無ければ従来どおり', () => {
-    expect(eewCancelToText(cancelledEew())).toMatch(/緊急地震速報はキャンセルされました。$/)
+    expect(eewCancelToText(cancelledEew())).toMatch(/緊急地震速報は取り消されました。$/)
   })
 
   // 安全弁: 上限を超えた本文は読まないが、**捨てたことを記録する**（画面には全文が出る）
@@ -2093,7 +2136,7 @@ describe('EEW の取消の理由を読み上げる', () => {
     const info = vi.spyOn(log, 'info').mockImplementation(() => {})
     try {
       const long = 'あ'.repeat(CANCEL_REASON_SPEAK_MAX_CHARS + 1)
-      expect(eewCancelToText(cancelledEew(long))).toMatch(/キャンセルされました。$/)
+      expect(eewCancelToText(cancelledEew(long))).toMatch(/取り消されました。$/)
       expect(info).toHaveBeenCalledWith(expect.stringContaining('取消しの概要が長いため'))
     } finally {
       info.mockRestore()
