@@ -346,6 +346,40 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
           </button>
         )}
 
+        {/* 気象庁の固定付加文（避難行動の呼びかけ）。**予想値のバナー群の直後に置く** ——
+            電文が言う唯一の行動指示なので、カードの末尾では区域一覧の下に埋もれる。
+            震度バナーと長周期バナーは対になっているので、その間には割り込ませない。
+
+            **実電文では警報級の報にしか入らない。** 購読分類 `eew.forecast` のアーカイブ
+            全 7,995 通（2026-05-01〜09-11）で、付加文があったのは警報級の 380 通だけ。
+            予報級 7,615 通には 1 件も無い（文言もコード `0201`「強い揺れに警戒してください。」
+            1 種類）。警告色で出しても予報級のカードが騒がしくならないのはこのため。
+            色は区分に追随させる（予報級に別の付加文が入ったときに赤で断定しない）。
+
+            **読み上げには載せない** —— EEW の読み上げは秒を争うため、定型文を挟むと
+            震度・地域が遅れる。取消電文では出さない（そのときの本文は付加文ではなく取消の理由）。
+
+            **取消かどうかは `cancelledAt` で見る。** `cancelled` は受け取った電文そのものが
+            取消報かを表すフラグで、**画面が持つ EEW には伝わらない** —— 状態更新は取消を
+            `{ ...表示中の EEW, cancelledAt }` の形で当てるため（`useEarthquakes` の eew ケース）、
+            `cancelled` は取消前の値（`false`）のまま残る。`!eew.cancelled` と書いていた版が
+            あったが、あれは常に真で、実際に隠していたのは取消オーバーレイだった
+            （`useHeldForecastChange` が同じ理由で `cancelledAt` を見ている）。 */}
+        {eew.warningComment && !eew.cancelledAt && (
+          <div
+            className="w-full rounded-lg py-1.5 px-3 font-bold text-[0.9375rem] roomy:text-[1.0625rem]"
+            style={{
+              backgroundColor: `${headerBorder}26`,
+              border: `2px solid ${headerBorder}`,
+              color: '#ffffff',
+              lineHeight: 1.5,
+              whiteSpace: 'pre-line',
+            }}
+          >
+            {eew.warningComment}
+          </div>
+        )}
+
         {/* 発生時刻 */}
         <div className="text-secondary text-[0.9375rem] roomy:text-[1.125rem]">
           {formatDateTime(eew.earthquake.originTime)}ごろ
@@ -450,7 +484,7 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
             **見出しに「予測」を残す。** 3 通りとも気象庁の予測・推測で、確定した事実ではない。
             中立な見出しにすると、時刻の行だけが断り書きを持たないまま確定時刻の顔をする
             （他の 2 通りは「推測」「不明」と語の中に断りがある）。
-            意味の違いは `DescriptionTip` でホバーへ逃がす —— 同じカードの「震源の決め方」と同じ流儀。 */}
+            意味の違いは `DescriptionTip` でホバーへ逃がす —— 同じカードの「精度情報」と同じ流儀。 */}
         {areasWithArrival.length > 0 && (
           <div className="flex flex-col gap-0.5">
             <div className="text-xs text-secondary">
@@ -502,8 +536,12 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
             {/* **語は資料のまま出すが、説明は添える。** 「言い換えない」と「説明しない」は別。
                 IPF 法・P 相・EPOS は電文解説資料を読んだ人にしか通じないので、設定タブと同じ
                 `DescriptionTip` で事実の解説をホバーに逃がす（評価は足さない）。 */}
+            {/* **見出しも資料の語をそのまま使う。** 電文解説資料 Ⅱ.21 1-4-2 はこの要素群を
+                「精度情報」と呼んでいる（下位も「震央位置の精度値」「深さの精度値」
+                「マグニチュードの精度値」）。単独では何の精度か読み取りにくいので、
+                説明はホバーで補う。 */}
             <DescriptionTip
-              label="震源の決め方"
+              label="精度情報"
               description={[
                 '気象庁が震源とマグニチュードをどう決めたかを、電文に書かれている語のまま出しています。',
                 'IPF法＝観測点に届いたP波から震源を絞り込む手法（かっこ内は使った観測点の数）。',
@@ -540,15 +578,6 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
             {hypocenterSettled && (
               <span className="text-white">震源とＭはこれ以降変わりません</span>
             )}
-          </div>
-        )}
-
-        {/* 気象庁の固定付加文（避難行動の呼びかけ等）。**読み上げには載せない** ——
-            EEW の読み上げは秒を争うため、定型文を挟むと震度・地域が遅れる。
-            取消電文では出さない（そのときの本文は付加文ではなく取消の理由）。 */}
-        {eew.warningComment && !eew.cancelled && (
-          <div className="text-secondary text-xs" style={{ lineHeight: '1.7', whiteSpace: 'pre-line' }}>
-            {eew.warningComment}
           </div>
         )}
       </div>
