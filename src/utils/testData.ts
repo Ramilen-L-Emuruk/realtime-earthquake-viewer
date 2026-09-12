@@ -386,13 +386,18 @@ export function createTestEEWWarning(withDmdssFields: boolean, eventId?: string,
       { pref: '宮崎県', name: '宮崎県南部平野部', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: null, lgIntTo: 2 },
       // 予想震度4（5弱未満）は警報の対象外。同一電文内の予報域として送る
       { pref: '大分県', name: '大分県南部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: null, lgIntTo: 1 },
+      // **区域に載る予測震度に下限は無い**（→ docs/spec/eew-spec.md §4）。警報の区域と震度 3 の
+      // 区域は同じ電文に同居するので、ここに無いと弱い区域が並んだときの見え方（区域一覧・
+      // 区域塗りの濃さ）を実機で一度も確かめられない。
+      { pref: '熊本県', name: '熊本県熊本', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: null, lgIntTo: 1 },
     ] as const).map(a => withDmdssFields ? { ...a } : toP2pArea({ ...a })),
   }
 }
 
-// 予報（警報未満）の EEW。区域は予想震度4 とする: 実運用の電文に区域が載る条件は
-// 「最大予測震度4以上または最大予測長周期地震動階級3以上」であり、震度3以下の区域は
-// そもそも電文に現れない（eew-information スキーマ）。
+// 予報（警報未満）の EEW。**電文全体の予想が震度 4 以上になって初めて区域の列挙が始まる**ので、
+// 電文全体を震度 4 とし、区域もその値から組む（→ docs/spec/eew-spec.md §4）。
+// **区域そのものに下限は無い**が、警報級のテスト（`createTestEEWWarning` / `createTestEEW`）で
+// 震度 3 の区域を持たせてあるため、こちらは境目ちょうどの形を受け持つ。
 export function createTestEEWForecast(withDmdssFields: boolean, eventId?: string, serial = 1, baseTime?: Date): EEWAlert {
   const origin = baseTime ?? serverDate()
   const report = serverDate().toISOString()
@@ -570,6 +575,10 @@ export function createTestEEW(withDmdssFields: boolean, eventId?: string, serial
       // 19 ＝ 警報・PLUM 法。**時刻は持つが到達の予測ではない**（「震度を初めて予測した時刻」）
       // ので過去の時刻が入る。画面は時刻を出さず「到達時刻は不明」と書く。
       { pref: '千葉県', name: '千葉県北東部', scaleFrom: 40, scaleTo: 45, kindCode: '19', arrivalTime: at(-4000), lgIntTo: 1 },
+      // **区域に載る予測震度に下限は無い**（→ docs/spec/eew-spec.md §4）。震度 3 の区域も同じ
+      // 電文に載り、到達予測時刻も持つ。震源から遠いぶん時刻は後ろに来るので、到達の欄
+      // （上位 6 件まで）からは外れて「他1地域」になる —— その形もここでしか実機で確かめられない。
+      { pref: '東京都', name: '東京都２３区', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(60000), lgIntTo: 1 },
     ] as const).map(a => withDmdssFields ? { ...a } : toP2pArea({ ...a })),
   }
 }
