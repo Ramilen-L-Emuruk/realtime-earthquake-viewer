@@ -14,6 +14,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
+import { playAlertSound } from '../utils/alertSound'
 import { TAB_PRIORITY } from '../utils/tabPriority'
 import type { AppSettings } from './useSettings'
 import type { JMAQuake, JMATsunami, IssueType, EEWAlert } from '../types/earthquake'
@@ -193,7 +194,7 @@ function makeEEW(over: { serial?: string } = {}): EEWAlert {
   } as unknown as EEWAlert
 }
 
-function setup(over: { voicevoxEnabled?: boolean } = {}) {
+function setup(over: { voicevoxEnabled?: boolean; soundEnabled?: boolean } = {}) {
   const spies = {
     followSpeechTab: vi.fn(),
     preSpeechTab: vi.fn(() => true),
@@ -204,7 +205,7 @@ function setup(over: { voicevoxEnabled?: boolean } = {}) {
   }
   const settings = {
     voicevoxEnabled: over.voicevoxEnabled ?? true, voicevoxUrl: 'http://x', voicevoxSpeakerId: 1,
-    soundEnabled: false, soundVolume: 1, notifyMinScale: -1,
+    soundEnabled: over.soundEnabled ?? false, soundVolume: 1, notifyMinScale: -1,
     notifyEEW: false, notifyTsunami: false, notifyDetection: false,
     ttsIntensityLevels: [], ttsMaxRegions: 0, ttsAlwaysReadScale: 0, ttsRegionTolerance: 0,
     minDisplayScale: -1,
@@ -244,6 +245,7 @@ beforeEach(() => {
   speakMock.mockClear()
   prewarmMock.mockClear()
   prewarmAbort.mockClear()
+  vi.mocked(playAlertSound).mockClear()
 })
 
 afterEach(() => {
@@ -567,5 +569,42 @@ describe('読み上げとタブ切替の同調', () => {
     expect(spies.setActiveTabNonRealtime).not.toHaveBeenCalled()
     await settle()
     expect(spies.followSpeechTab).toHaveBeenCalledWith('tsunami', TAB_PRIORITY.tsunami, { alreadyShown: true })
+  })
+})
+
+// 津波の取消・解除・失効は「もう伝えた `eventId`」を覚えて二重に鳴らさない。その記憶が
+// リプレイの開始で落ちていなかったため、**同じ `eventId` の取消をリプレイで流すと音・
+// 読み上げ・タブ移動のすべてが黙っていた**（200 件溜まるまで自己クリアされないので、
+// 実質そのセッション中ずっと効き続ける）。
+//
+// **検査は通知音の種別で行う。** タブ移動の回数では経路を判別できない —— `resetTracking` は
+// 区域の等級の既読（`spokenAreaGradeRef`）も落とすので、同じ取消でそちらの経路からも
+// tsunami タブが要求され、取消が伝わったのかどうかが区別できない（最初にタブ移動で書いた
+// ところ、修正を外しても落ちないテストになっていた）。`tsunamiCancel` の音は取消の経路だけで鳴る。
+describe('リプレイの開始で、津波の取消を「もう伝えた」記憶も落とす', () => {
+  const cancelSounds = () =>
+    vi.mocked(playAlertSound).mock.calls.filter(c => c[0] === 'tsunamiCancel').length
+
+  // 対照: 同じ取消が続けて届いても 2 回目は鳴らない（重複鳴りの防止。これは維持する）
+  it('同じ取消が続けて届いても 2 回目は鳴らない', () => {
+    const { handle, tsunamisRef } = setup({ voicevoxEnabled: false, soundEnabled: true })
+    handle(makeTsunami())
+    tsunamisRef.current = [makeTsunami()]
+    handle(makeTsunamiCancelEvent())
+    expect(cancelSounds()).toBe(1)
+    handle(makeTsunamiCancelEvent())
+    expect(cancelSounds()).toBe(1)
+  })
+
+  // 正: リセットを挟めば同じ取消でも鳴る（時間軸が変わったので「もう伝えた」は通用しない）
+  it('リプレイの開始を挟めば、同じ取消でもう一度鳴る', () => {
+    const { handle, resetTracking, tsunamisRef } = setup({ voicevoxEnabled: false, soundEnabled: true })
+    handle(makeTsunami())
+    tsunamisRef.current = [makeTsunami()]
+    handle(makeTsunamiCancelEvent())
+    expect(cancelSounds()).toBe(1)
+    resetTracking()
+    handle(makeTsunamiCancelEvent())
+    expect(cancelSounds()).toBe(2)
   })
 })

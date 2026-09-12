@@ -601,3 +601,30 @@ describe('津波の続報で区域ごとに等級が動く報', () => {
     expect(base.warningComments!.length).toBe(4)
   })
 })
+
+describe('テスト EEW の最大予測値の変化は実電文の形をしている', () => {
+  // 電文は変化を 1 通しか言わない。第 1 報は `Appendix` を持たず、変化を立てた次の報は
+  // 値を 0 に戻してくる（2026-06-01〜09-06 の実電文 334 イベントで確認）。
+  //
+  // **毎報「大きくなった」を立てる形に戻すと、テストボタンで帯が出続ける。** 表示の寿命
+  // （`RealtimeTab` の `useHeldForecastChange`）はそこでしか実機確認できないので、
+  // 出続ける形にすると「保持が効いているのか、電文が毎報言っているだけなのか」を
+  // 画面から見分けられなくなる。
+  const changeOf = (serial: number) => createTestEEWWarning(true, 'e', serial).forecastChange
+
+  // 正: 2 報目で変化を立てる。
+  it('2 報目で「大きくなった」を立てる', () => {
+    expect(changeOf(2)).toEqual({ maxInt: 1, maxLgInt: 0, reason: 2 })
+  })
+
+  // 対照: 3 報目以降は値が 0 に戻る。**毎報立てる形に戻したらここが落ちる。**
+  it('3 報目以降は変化なしへ戻る', () => {
+    expect(changeOf(3)).toEqual({ maxInt: 0, maxLgInt: 0, reason: 0 })
+    expect(changeOf(9)).toEqual({ maxInt: 0, maxLgInt: 0, reason: 0 })
+  })
+
+  // 安全弁: 第 1 報は要素ごと持たない（実電文では `Appendix` が出現しない）。
+  it('第 1 報は変化の要素ごと持たない', () => {
+    expect(changeOf(1)).toBeUndefined()
+  })
+})
