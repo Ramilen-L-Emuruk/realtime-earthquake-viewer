@@ -588,7 +588,7 @@ function magnitudePhrase(mag: number): string {
 }
 
 /**
- * 規模が数値にならないときの説明（`jmx_eb:Magnitude@description`）を読む文。
+ * 規模が数値にならないときの説明（`jmx_eb:Magnitude@description`）の**述部**。
  *
  * **「Ｍ不明」と「Ｍ８を超える巨大地震」は別物**で、後者は M8 を超えて速報できないことを表す
  * （電文解説資料 Ⅱ.32/33/36）。数値が無いことだけを見て黙ると、最大級の地震ほど音声から
@@ -596,28 +596,58 @@ function magnitudePhrase(mag: number): string {
  *
  * **別の文にする。** 「マグニチュード〜の地震が発生しました」の句へ差し込むと
  * 「8を超える巨大地震の地震が発生しました」と重なる。
+ *
+ * **主題部（「マグニチュードは」）を含めない。** 初報と続報で主題部が変わるため
+ * （→ {@link magnitudeConditionSentence} / {@link magnitudeConditionAmendSentence}）。
+ * 表へ主題部まで書くと、続報側が文の頭を差し替えられず、値が変わったことを言えなくなる。
  */
-const MAGNITUDE_CONDITION_SENTENCE: Record<string, string> = {
-  'Ｍ不明': 'マグニチュードは不明です。',
-  'Ｍ８を超える巨大地震': 'マグニチュードは8を超える巨大地震とみられます。',
+const MAGNITUDE_CONDITION_PREDICATE: Record<string, string> = {
+  'Ｍ不明': '不明です。',
+  'Ｍ８を超える巨大地震': '8を超える巨大地震とみられます。',
 }
 
 /** 未知の説明を記録した値。同じ地震の続報で何度も来るので 1 度だけ出す。 */
 const reportedUnknownMagnitudeConditions = new Set<string>()
 
-function magnitudeConditionSentence(hypocenter: Hypocenter): string {
+/** 上の述部を引く。規模が数値なら（＝説明を読む必要が無ければ）空文字。 */
+function magnitudeConditionPredicate(hypocenter: Hypocenter): string {
   const desc = hypocenter.magnitudeCondition
   if (!desc || hasMagnitude(hypocenter.magnitude)) return ''
-  const known = MAGNITUDE_CONDITION_SENTENCE[desc]
+  const known = MAGNITUDE_CONDITION_PREDICATE[desc]
   if (known) return known
   // 気象庁が語を増やしたときに黙らない。全角の「Ｍ」と全角数字だけを直して読む
-  // （見出しの「マグニチュードは」と重ならないよう先頭の「Ｍ」は落とす）。
+  // （前に置く主題部の「マグニチュード」と重ならないよう先頭の「Ｍ」は落とす）。
   if (!reportedUnknownMagnitudeConditions.has(desc)) {
     reportedUnknownMagnitudeConditions.add(desc)
     log.warn(`[tts] 規模の説明に未知の表記があります（そのまま読みます）: ${desc}`)
   }
   const body = desc.replace(/^[ＭM]/, '').replace(/[０-９．]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
-  return `マグニチュードは${body}です。`
+  return `${body}です。`
+}
+
+/** 初報で読む形。「マグニチュードは8を超える巨大地震とみられます。」 */
+function magnitudeConditionSentence(hypocenter: Hypocenter): string {
+  const predicate = magnitudeConditionPredicate(hypocenter)
+  return predicate ? `マグニチュードは${predicate}` : ''
+}
+
+/**
+ * 続報で**値が変わったとき**に読む形。「マグニチュードが更新されました。8を超える巨大地震とみられます。」
+ *
+ * **数値の規模（「マグニチュードは7.1に更新されました。」）と同じく、更新されたことを言う。**
+ * 初報と同じ文へ落とすと、**最大級の地震でだけ「変わった」が声にならない** ——
+ * 「Ｍ不明」から「Ｍ８を超える巨大地震」へ確定する続報がまさにその場面。
+ *
+ * **「〜に更新されました」の枠へ値を入れない。** マグニチュード（数値）を地震（出来事）へ
+ * 更新することになり、「マグニチュードは8を超える巨大地震に更新されました。」と破綻する。
+ * そこで**主題部だけを差し替え**、値は初報と同じ述部で言う。
+ *
+ * **主題部で「マグニチュード」を言うので、述部は主題を持たない**（そのための
+ * {@link MAGNITUDE_CONDITION_PREDICATE} の切り分け）。
+ */
+function magnitudeConditionAmendSentence(hypocenter: Hypocenter): string {
+  const predicate = magnitudeConditionPredicate(hypocenter)
+  return predicate ? `マグニチュードが更新されました。${predicate}` : ''
 }
 
 /**
@@ -1177,11 +1207,12 @@ function changedFactSegments(event: JMAQuake, spoken: QuakeSpokenState): SpeechS
   }
   if (changed('magnitude', magnitudeFactValue(hypocenter))) {
     const value = magnitudeFactValue(hypocenter)
-    // 数値にならない規模は「〜に更新されました」の形へ入れられない（「8を超える巨大地震に
-    // 更新されました」）。そのときは初報と同じ文で言い直す。
+    // 数値にならない規模は「〜に更新されました」の枠へ入れられない（「8を超える巨大地震に
+    // 更新されました」と破綻する）。**それでも更新されたことは言う** —— 主題部だけを
+    // 差し替えた形を使う（→ `magnitudeConditionAmendSentence`）。
     const text = hasMagnitude(hypocenter.magnitude)
       ? `マグニチュードは${magnitudeText(hypocenter.magnitude)}に更新されました。`
-      : magnitudeConditionSentence(hypocenter)
+      : magnitudeConditionAmendSentence(hypocenter)
     segments.push({ text, refs: [{ kind: 'quakeFact', fact: 'magnitude', value }] })
   }
   if (changed('depth', String(hypocenter.depth))) {
@@ -1267,6 +1298,9 @@ export function earthquakeToSegments(
     }
     const head = plain(`顕著な地震の震源要素更新のお知らせ。${time}頃発生した${hypocenter.name}の地震について、`)
     // 数値にならない規模は「〜に更新されました」の並びへ入れられないので、別の文で後に足す。
+    // **ここは初報の形（「マグニチュードは〜」）のまま。** この電文は名乗りと直前の文が既に
+    // 「更新」を言っているので、`magnitudeConditionAmendSentence` を使うと 1 回の発話で
+    // 「更新」が 3 度重なる（続報の差分では前に「更新」を言う文が無いので、あちらは要る）。
     const magCondition = magnitudeConditionSentence(hypocenter)
     const conditionSegments: SpeechSegment[] = magCondition
       ? [{ text: magCondition, refs: [{ kind: 'quakeFact', fact: 'magnitude', value: magnitudeFactValue(hypocenter) }] }]

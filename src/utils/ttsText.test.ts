@@ -1851,7 +1851,11 @@ describe('earthquakeToText: 数値にならない規模', () => {
 
   // 正: 既読の記録は数値と説明を同じ鍵で持つ。段階的に確定していく続報
   // （「Ｍ不明」→「Ｍ８を超える巨大地震」→ 実測値）で、変わったことを取りこぼさない。
-  it('説明が変わったら続報で読み直す', () => {
+  //
+  // **2026-09-13 に期待値を覆した。** 以前は初報と同じ「マグニチュードは8を超える巨大地震と
+  // みられます。」を期待していたが、それだと**数値の規模（「〜に更新されました」）とだけ
+  // 言い方が食い違い、最大級の地震でのみ「変わった」が声にならない**。
+  it('説明が変わったら続報で「更新されました」と読み直す', () => {
     const first = makeQuake({ type: '震源・震度情報', magnitude: NaN, magnitudeCondition: 'Ｍ不明' })
     const spoken = createQuakeSpokenState()
     const segs = earthquakeToSegments(first, TTS_OPTS, true, spoken)
@@ -1859,7 +1863,47 @@ describe('earthquakeToText: 数値にならない規模', () => {
 
     const second = makeQuake({ type: '震源・震度情報', magnitude: NaN, magnitudeCondition: 'Ｍ８を超える巨大地震' })
     const text = joinSegments(earthquakeToSegments(second, TTS_OPTS, false, spoken))
+    expect(text).toContain('マグニチュードが更新されました。8を超える巨大地震とみられます。')
+  })
+
+  // 正: 「Ｍ不明」へ変わる続報も同じ形で読む。表に頼らず主題部だけを差し替えているので、
+  // 述部が何であっても更新は声になる。
+  it('「Ｍ不明」へ変わる続報も更新として読む', () => {
+    const first = makeQuake({ type: '震源・震度情報', magnitude: 7.4 })
+    const spoken = createQuakeSpokenState()
+    applySpokenRefs(spoken, earthquakeToSegments(first, TTS_OPTS, true, spoken).flatMap(seg => seg.refs))
+
+    const second = makeQuake({ type: '震源・震度情報', magnitude: NaN, magnitudeCondition: 'Ｍ不明' })
+    const text = joinSegments(earthquakeToSegments(second, TTS_OPTS, false, spoken))
+    expect(text).toContain('マグニチュードが更新されました。不明です。')
+  })
+
+  // 対照: 初報では「更新」と言わない。主題部の差し替えが続報だけに効いていること。
+  it('初報では更新と言わない', () => {
+    const text = earthquakeToText(makeQuake({ magnitude: NaN, magnitudeCondition: 'Ｍ８を超える巨大地震' }), TTS_OPTS, true)
     expect(text).toContain('マグニチュードは8を超える巨大地震とみられます。')
+    expect(text).not.toContain('マグニチュードが更新されました。')
+  })
+
+  // 安全弁: 「〜に更新されました」の枠へ値を入れない。マグニチュード（数値）を地震（出来事）へ
+  // 更新することになり、文として破綻する。**この形が復活していないこと**を見る。
+  it('「巨大地震に更新されました」という形を作らない', () => {
+    const first = makeQuake({ type: '震源・震度情報', magnitude: NaN, magnitudeCondition: 'Ｍ不明' })
+    const spoken = createQuakeSpokenState()
+    applySpokenRefs(spoken, earthquakeToSegments(first, TTS_OPTS, true, spoken).flatMap(seg => seg.refs))
+
+    const second = makeQuake({ type: '震源・震度情報', magnitude: NaN, magnitudeCondition: 'Ｍ８を超える巨大地震' })
+    const text = joinSegments(earthquakeToSegments(second, TTS_OPTS, false, spoken))
+    expect(text).not.toContain('巨大地震に更新されました')
+  })
+
+  // 安全弁: 震源要素更新（VXSE61）では「更新」を重ねない。この電文は名乗りと直前の文が
+  // 既に「更新」を言っているので、続報の形を持ち込むと 1 回の発話で「更新」が 3 度重なる。
+  it('震源要素更新では規模の説明に「更新」を重ねない', () => {
+    const q = makeQuake({ type: '顕著な地震の震源要素更新のお知らせ', magnitude: NaN, magnitudeCondition: 'Ｍ８を超える巨大地震' })
+    const text = earthquakeToText(q, TTS_OPTS, true)
+    expect(text).toContain('マグニチュードは8を超える巨大地震とみられます。')
+    expect(text).not.toContain('マグニチュードが更新されました。')
   })
 
   // 対照: 同じ説明の続報では読み直さない（続報のたびに同じことを言わない）。
