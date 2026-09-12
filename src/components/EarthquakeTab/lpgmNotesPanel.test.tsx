@@ -30,10 +30,9 @@ const FORECAST_TEXT = 'この地震について、緊急地震速報を発表し
 const FREE_FORM_HEAD = '各長周期地震動階級に対する簡易な現象表現'
 const URI = 'https://www.data.jma.go.jp/eew/data/ltpgm/event.php?eventId=20240101161010'
 const URI_LABEL = '気象庁の詳細ページ（波形・スペクトル）'
-// 固定付加文（その他）だけは**実電文の標本を持っていない。** 長周期に付く `VarComment` は
-// `＊` 印の説明（0263）が主で、それはコード指定で落としている（→ `readVarCommentTextForDisplay`）。
-// **ここで確かめるのは表示の経路であって文面ではない**ので、地震情報側の実電文にある
-// 「震源要素を訂正します。」（0256）を借りる。
+// 固定付加文（その他）。**ここで確かめるのは表示の経路であって文面ではない**ので、
+// 地震情報側の実電文にある「震源要素を訂正します。」（0256）を借りる。長周期に付く
+// `VarComment` の実電文は `＊` 印の説明（0263）が主。
 const VAR_COMMENT_TEXT = '震源要素を訂正します。'
 
 const QUAKE: JMAQuake = {
@@ -144,8 +143,8 @@ describe('長周期地震動の「気象庁からの補足」の折りたたみ'
   //
   // **4 項目を 1 つずつ確かめる。** まとめて渡すテストだけでは、`hasLpgmNotes` の OR から
   // どれか 1 項目を落とす退行を捕まえられない（残り 3 つで見出しが出てしまう）。
-  // とくに `varCommentText` は**実データでもテストボタンでも常に空**（`＊` 印の説明を
-  // コード指定で落としているため）で、ここで足さないとその行は一度も評価されない。
+  // **テストボタンのデータは `varCommentText` を持たない**ので、ここで足さないとその行は
+  // 一度も評価されない（実電文では `＊` 印の説明（0263）が常時入る）。
   it.each([
     ['固定付加文', { forecastText: FORECAST_TEXT }, FORECAST_TEXT],
     ['固定付加文（その他）', { varCommentText: VAR_COMMENT_TEXT }, VAR_COMMENT_TEXT],
