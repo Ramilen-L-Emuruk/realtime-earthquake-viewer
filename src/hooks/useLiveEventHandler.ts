@@ -2321,7 +2321,21 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 下の地震回数と違い**タブは動かす** —— 見せる先が地図の面で、そこへ行かないと何も見えない。
     // ただし要求として出すので、EEW・揺れ検知・利用者の操作には譲る。
     if ((event as unknown as { kind?: string }).kind === 'estimatedIntensity') {
-      const ei = (event as unknown as { data: JMAEstimatedIntensity }).data
+      // **初報か続報かは `useEarthquakes` が決めて渡してくる**（`isNewEstimatedIntensity`）。
+      // ここで見た `arrivalTime` を覚えて数え直すと、「同じ地震の続報」と「別の地震へ入れ替え」の
+      // 区別を 2 か所で持つことになる。
+      const { data: ei, isNew } = event as unknown as { data: JMAEstimatedIntensity; isNew: boolean }
+      // **分割代入では既定値を与えない。** 与えると下の `typeof` の判定が常に偽になり、印の
+      // 欠落を検知できなくなる。この電文は `as unknown as AppEvent` で型検査をすり抜けて渡るので、
+      // 新しい流し込み口が印を付け忘れても静かに通る ——画面にも記録にも出ない食い違いなので、
+      // 欠落を記録したうえで読み上げの直前（`isNew !== false`）で初めて倒す。
+      //
+      // **倒す向きは初報側。** 初報を「更新されました」と読むと、聞き手は前に同じ分布を
+      // 聞き逃したと思う（実際には届いていない）。逆向きの誤りは「同じ報が二度読まれた」と
+      // 聞こえるだけで、事実としては嘘になっていない。
+      if (typeof isNew !== 'boolean') {
+        log.warn(`[tts] 推計震度分布図に初報・続報の印がありません（初報として読みます）: ${ei.arrivalTime}`)
+      }
       // **地図の分布モードを開く。** 地震発生から数分後に届くもので、そのころ利用者は
       // 別のものを見ている。合図なしに画面だけ替わるのがいちばん困るので、音と声も添える。
       openEstimatedIntensity(ei.arrivalTime, ei.hypocenter.lat, ei.hypocenter.lon)
@@ -2332,7 +2346,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       }
       if (settings.voicevoxEnabled) {
         speakNonEEWDelayed(
-          estimatedIntensityToText(), SPEECH_PRIORITY.normal,
+          estimatedIntensityToText(ei.arrivalTime, isNew !== false), SPEECH_PRIORITY.normal,
           ttsDelayFor('earthquakeInfo'), 'estimatedIntensity',
         )
       }

@@ -2229,6 +2229,38 @@ describe('テストボタンの待ちの後始末', () => {
     expect(h.current.estimatedIntensity).not.toBeNull()
   })
 
+  // 正: 続報まで流し、**初報と続報で「初めて受信したか」の印が入れ替わる**こと。
+  // 読み上げが「受信しました」／「更新されました」を言い分ける唯一の材料で、印が
+  // 付かないまま渡ると続報が初報と同じ文で読まれる（画面にも記録にも出ない食い違い）。
+  it('推計震度分布図テストは続報まで流し、続報には更新の印が付く', async () => {
+    const events: AppEvent[] = []
+    const h = setup({ onLiveEvent: (e) => { events.push(e) } })
+    await h.flush()
+
+    await act(async () => { await h.current.simulateEstimatedIntensity() })
+    // 続報は初報の 16 秒後（`TEST_ESTIMATED_INTENSITY_FOLLOW_UP_DELAY_MS`）。初報の読み上げが
+    // 鳴り終わるまで空けてあるので、10 秒では届かない。
+    act(() => { vi.advanceTimersByTime(30_000) })
+
+    const distributions = events.filter(
+      (e): e is AppEvent & { isNew: boolean } =>
+        (e as unknown as { kind?: string }).kind === 'estimatedIntensity',
+    )
+    expect(distributions.map(e => e.isNew)).toEqual([true, false])
+  })
+
+  // 対照: **続報は同じ地震のものであること。** 発現時刻を進めてしまうと「別の地震へ入れ替え」
+  // 扱いになり、反映はされるのに読み上げは初報と同じ文へ戻る（上のテストだけでは、印が
+  // `[true, true]` になった理由が発現時刻のずれなのか写像のせいなのか分からない）。
+  it('推計震度分布図テストの続報は同じ地震の発現時刻を保つ', async () => {
+    const { createTestEstimatedIntensity } = await import('../utils/testData')
+    const { quake, estimated, followUp } = createTestEstimatedIntensity()
+    expect(followUp.arrivalTime).toBe(estimated.arrivalTime)
+    expect(followUp.arrivalTime).toBe(quake.earthquake.time)
+    // 発表時刻だけが進む（反映の判定はここしか見ない）
+    expect(followUp.time > estimated.time).toBe(true)
+  })
+
   // 正: 訂正報テストも同じ形（キューへ 2 通積む）で、**同じカードが更新される**こと。
   // 枚数まで見るのは、`eventId` を取り違えると 2 枚に割れるため —— そうなると「訂正された」
   // ようには見えず、印だけが別のカードに付く。実機でも 1 枚のまま更新されることを確かめている。
