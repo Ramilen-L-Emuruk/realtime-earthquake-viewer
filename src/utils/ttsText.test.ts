@@ -142,6 +142,28 @@ describe('earthquakeToText: 顕著な地震の震源要素更新のお知らせ'
     const text = earthquakeToText(makeQuake({ type, name: '石川県能登地方', depth: 16, magnitude: 7.6 }), TTS_OPTS, true)
     expect(text).toContain('震源の深さ16キロメートル、マグニチュード7.6に更新されました。')
   })
+
+  // 「ごく浅い」だけは数値を持たないため、述語「に更新されました」へ直接つなげる名詞句にできない。
+  // 後ろに規模が続くかどうかで語形が変わる（→ docs/spec/tts-sentence-inventory.md §4-1）。
+  // 3 件で正・対照・安全弁を対にする（CLAUDE.md「検証」節）。
+  it('【正】ごく浅い・規模なしでも文が壊れない', () => {
+    const text = earthquakeToText(makeQuake({ type, name: '石川県能登地方', depth: 0, magnitude: -1 }), TTS_OPTS, true)
+    expect(text).toContain('震源の深さはごく浅い場所に更新されました。')
+    // 連用中止形が述語へ直結した壊れた文になっていないこと
+    expect(text).not.toContain('ごく浅くに更新されました')
+  })
+
+  it('【対照】ごく浅い・規模ありでは連用中止形のまま（境界の手前では効かない）', () => {
+    const text = earthquakeToText(makeQuake({ type, name: '石川県能登地方', depth: 0, magnitude: 7.6 }), TTS_OPTS, true)
+    expect(text).toContain('震源の深さはごく浅く、マグニチュード7.6に更新されました。')
+  })
+
+  it('【安全弁】数値の深さは規模の有無によらず語形が変わらない', () => {
+    const withMag = earthquakeToText(makeQuake({ type, name: '石川県能登地方', depth: 120, magnitude: 7.6 }), TTS_OPTS, true)
+    expect(withMag).toContain('震源の深さ120キロメートル、マグニチュード7.6に更新されました。')
+    const noMag = earthquakeToText(makeQuake({ type, name: '石川県能登地方', depth: 120, magnitude: -1 }), TTS_OPTS, true)
+    expect(noMag).toContain('震源の深さ120キロメートルに更新されました。')
+  })
 })
 
 describe('eewIntensityToText: 長周期地震動階級の読み上げ', () => {

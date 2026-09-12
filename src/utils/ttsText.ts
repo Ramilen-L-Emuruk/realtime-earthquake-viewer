@@ -643,10 +643,20 @@ function depthSourcePhrase(depth: number): string {
   return depth === 0 ? 'ごく浅い場所' : `深さ${depth}キロメートル`
 }
 
-/** 「震源の深さ〇〇」の〇〇部分を返す（顕著な地震の震源要素更新のお知らせ 系）。深さ不明では空文字。 */
-function depthAmendPhrase(depth: number): string {
+/**
+ * 「〜に更新されました。」の並びへ入れる深さの句（顕著な地震の震源要素更新のお知らせ 系）。
+ * **「震源の深さ」を含めて返す。** 深さ不明では空文字。
+ *
+ * **ごく浅い（深さ 0）だけ語形が 2 通りになる。** 数値の深さは「震源の深さ120キロメートル」という
+ * 名詞句なので述語「に更新されました」へそのまま繋がるが、ごく浅いは数値を持たず名詞句にできない。
+ * 後ろに規模が続くなら連用中止形（「震源の深さはごく浅く、マグニチュード〜」）で繋ぎ、続かないなら
+ * {@link depthUpdateValue} と同じ「ごく浅い場所」を使って自分で述語へ繋ぐ。ここを連用中止形のまま
+ * 言い切ると「震源の深さはごく浅くに更新されました。」という壊れた文になる。
+ */
+function depthAmendPhrase(depth: number, hasFollowing: boolean): string {
   if (!hasDepth(depth)) return ''
-  return depth === 0 ? '震源の深さはごく浅く' : `震源の深さ${depth}キロメートル`
+  if (depth !== 0) return `震源の深さ${depth}キロメートル`
+  return hasFollowing ? '震源の深さはごく浅く' : `震源の深さは${depthUpdateValue(depth)}`
 }
 
 function intensityText(scale: IntensityScale | number): string {
@@ -1194,9 +1204,12 @@ export function earthquakeToSegments(
     // **差分を取らない。** 「更新されたこと」自体が電文の主旨なので、値が既に声になっていても
     // 省かない。ただし読んだ値は記録する（記録しないと、後続の続報が同じ値を「更新」と言い直す）。
     const amended: SpeechSegment[] = []
-    const depth = depthAmendPhrase(hypocenter.depth)
+    // **深さの語形は後ろに規模が続くかどうかで変わる**（理由は depthAmendPhrase）。順に組み立てる前に
+    // 規模が並ぶかを決めておく。
+    const magnitudeFollows = hasMagnitude(hypocenter.magnitude)
+    const depth = depthAmendPhrase(hypocenter.depth, magnitudeFollows)
     if (depth) amended.push({ text: depth, refs: [{ kind: 'quakeFact', fact: 'depth', value: String(hypocenter.depth) }] })
-    if (hasMagnitude(hypocenter.magnitude)) {
+    if (magnitudeFollows) {
       const value = magnitudeText(hypocenter.magnitude)
       if (amended.length > 0) amended.push(plain('、'))
       amended.push({ text: `マグニチュード${value}`, refs: [{ kind: 'quakeFact', fact: 'magnitude', value }] })
