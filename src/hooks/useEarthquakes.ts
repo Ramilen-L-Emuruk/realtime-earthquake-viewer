@@ -1816,6 +1816,26 @@ export function useEarthquakes(
   }, [handleEvent])
 
   /**
+   * 訂正報のテスト。**初報を先に出し、少し置いてから訂正報を流す。**
+   *
+   * 訂正報は前の報を直すもので、単独では届かない。1 通だけ流すと「訂正」の印は出せても
+   * **何が訂正されたのかが画面に出ない**ので、規模が変わる前後を続けて流す
+   * （初報 M7.4 → 訂正報 M7.6。実電文の値は → `createTestQuakeAmendment`）。
+   *
+   * **受信と同じ経路（イベントキュー）へ積む**ので、同一性の判定も続報のマージも実運用と
+   * 同じところを踏む。待ちをキューに持たせているため、リセット（リプレイの開始・停止）で
+   * 一緒に落ちる —— `handleEvent` を直接呼ぶ津波・EEW のテストと違い、`clearTestSimulationTimers`
+   * へ足す必要は無い（→ docs/spec/settings-pwa-spec.md §7「待ちはリセットとアンマウントで落とす」）。
+   */
+  const simulateQuakeAmendment = useCallback(async () => {
+    const { createTestQuakeAmendment } = await loadTestData()
+    const { initial, amended } = createTestQuakeAmendment(isDmdss)
+    // 放出の時刻は電文の発表時刻そのものを使う（間隔の決め方はテストデータ側に閉じる）。
+    eventQueueRef.current.push({ eventTime: new Date(initial.time), payload: { kind: 'event', event: initial } })
+    eventQueueRef.current.push({ eventTime: new Date(amended.time), payload: { kind: 'event', event: amended } })
+  }, [])
+
+  /**
    * 推計震度分布図のテスト。**地震情報を先に出し、少し置いてから分布を流す。**
    *
    * 実運用では地震から数分後に届くもので、そのころ地震カードは既に画面にある。
@@ -2101,7 +2121,7 @@ export function useEarthquakes(
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
-    simulateTrainingQuake, simulateTsunamiGradeChange,
+    simulateTrainingQuake, simulateTsunamiGradeChange, simulateQuakeAmendment,
     resetState,
     loadReplayEvents,
     restoreQuakeHistory,

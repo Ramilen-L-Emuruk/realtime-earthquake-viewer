@@ -2229,6 +2229,43 @@ describe('テストボタンの待ちの後始末', () => {
     expect(h.current.estimatedIntensity).not.toBeNull()
   })
 
+  // 正: 訂正報テストも同じ形（キューへ 2 通積む）で、**同じカードが更新される**こと。
+  // 枚数まで見るのは、`eventId` を取り違えると 2 枚に割れるため —— そうなると「訂正された」
+  // ようには見えず、印だけが別のカードに付く。実機でも 1 枚のまま更新されることを確かめている。
+  it('訂正報テストは初報の後から訂正報を届け、同じカードを更新する', async () => {
+    const h = setup()
+    await h.flush()
+
+    await act(async () => { await h.current.simulateQuakeAmendment() })
+    // キューのディスパッチャは 10ms 周期なので、積んだ直後はまだ届いていない。
+    act(() => { vi.advanceTimersByTime(100) })
+    expect(h.current.earthquakes.length).toBe(1)
+    expect(h.current.earthquakes[0].issue.correct).toBe('なし')
+    expect(h.current.earthquakes[0].earthquake.hypocenter.magnitude).toBe(7.4)
+
+    act(() => { vi.advanceTimersByTime(5_000) })
+    expect(h.current.earthquakes.length).toBe(1)
+    expect(h.current.earthquakes[0].issue.correct).toBe('震源を訂正')
+    expect(h.current.earthquakes[0].earthquake.hypocenter.magnitude).toBe(7.6)
+  })
+
+  // 対照: 訂正報テストもリセットで 2 通目が落ちること。**推計震度分布図の対照と別に要る** ——
+  // 同じ仕組みに乗っているが、種別ごとに分岐する変更が入ったとき、片方だけ通り続けても
+  // 気づけない（こちらは「消したはずの画面へ 3 秒後に訂正報が 1 通届く」形で現れる）。
+  it('リセット後は訂正報が届かない', async () => {
+    const h = setup()
+    await h.flush()
+
+    await act(async () => { await h.current.simulateQuakeAmendment() })
+    act(() => { vi.advanceTimersByTime(100) })
+    expect(h.current.earthquakes[0].issue.correct).toBe('なし')
+
+    act(() => { h.current.resetState() })
+    act(() => { vi.advanceTimersByTime(10_000) })
+    // 初報ごと消えている（訂正報だけが後から生えることもない）
+    expect(h.current.earthquakes.filter(q => q.issue.correct !== 'なし')).toEqual([])
+  })
+
   // 対照: この形は `clearTestSimulationTimers` の対象では**ない**。落とすのはキューのほうで、
   // `eventQueueRef.current.clear()` が効く。**仕様書の表（settings-pwa-spec.md §7）が
   // 「キューを空にすれば足りる」と主張している 3 つ目の形の裏付け** —— ここを固定しておかないと、
