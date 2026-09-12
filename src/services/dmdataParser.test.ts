@@ -40,12 +40,12 @@ const VXSE51_XML = `<?xml version="1.0" encoding="UTF-8"?>
           <MaxInt>4</MaxInt>
           <Area>
             <Name>岩手県沿岸北部</Name>
-            <Code>221</Code>
+            <Code>210</Code>
             <MaxInt>4</MaxInt>
           </Area>
           <Area>
             <Name>岩手県内陸北部</Name>
-            <Code>211</Code>
+            <Code>212</Code>
             <MaxInt>3</MaxInt>
           </Area>
         </Pref>
@@ -94,15 +94,21 @@ const VXSE53_XML = `<?xml version="1.0" encoding="UTF-8"?>
           <MaxInt>4</MaxInt>
           <Area>
             <Name>岩手県沿岸北部</Name>
-            <Code>221</Code>
+            <Code>210</Code>
             <MaxInt>4</MaxInt>
+            <!-- 名前とコードは気象庁の個別コード表（jmaxml_*_Code.zip・シート 24 =
+                 AreaForecastLocalE / AreaInformationCity / 震度観測点）の現行値。
+                 **src/data/noto-honshin-2024-quake.json とは食い違う** —— あちらは
+                 2024-01 の実電文で 普代村銅屋 = 0348531、現行表は 0348532。
+                 気象庁以外が運用する観測点のコードは入れ替わることがあり、同じ突き合わせで
+                 69 件が変わり 58 件が現行表から消えていた。**どちらもその時点では正しい。** -->
             <City>
               <Name>普代村</Name>
-              <Code>03506</Code>
+              <Code>0348500</Code>
               <MaxInt>3</MaxInt>
               <IntensityStation>
                 <Name>普代村銅屋</Name>
-                <Code>3350631</Code>
+                <Code>0348532</Code>
                 <Int>3</Int>
               </IntensityStation>
             </City>
@@ -213,8 +219,8 @@ describe('parseEarthquakeFromXml: 震度速報（VXSE51）', () => {
     const points = parseEarthquakeFromXml('VXSE51', VXSE51_XML)!.points
     expect(points).toEqual([
       { pref: '岩手県', addr: '岩手県', isArea: true, scale: 40, code: '03' },
-      { pref: '', addr: '岩手県沿岸北部', isArea: true, scale: 40, code: '221' },
-      { pref: '', addr: '岩手県内陸北部', isArea: true, scale: 30, code: '211' },
+      { pref: '', addr: '岩手県沿岸北部', isArea: true, scale: 40, code: '210' },
+      { pref: '', addr: '岩手県内陸北部', isArea: true, scale: 30, code: '212' },
     ])
   })
 })
@@ -270,7 +276,7 @@ describe('parseEarthquakeFromXml: 震源・震度に関する情報（VXSE53）'
     it('市町村を区域と結びつけて読む', () => {
       const q = parseEarthquakeFromXml('VXSE53', VXSE53_XML)!
       expect(q.cities).toEqual([
-        { name: '普代村', area: '岩手県沿岸北部', pref: '岩手県', scale: 30, code: '03506' },
+        { name: '普代村', area: '岩手県沿岸北部', pref: '岩手県', scale: 30, code: '0348500' },
       ])
     })
 
@@ -290,8 +296,8 @@ describe('parseEarthquakeFromXml: 震源・震度に関する情報（VXSE53）'
     it('震度と併存する Condition は「未入電あり」として持つ', () => {
       // `Condition` を差し込む位置は要素の並びに依らない（読み取りは名前で引く）。
       const xml = VXSE53_XML.replace(
-        '<Code>03506</Code>',
-        '<Code>03506</Code><Condition>震度５弱以上未入電</Condition>')
+        '<Code>0348500</Code>',
+        '<Code>0348500</Code><Condition>震度５弱以上未入電</Condition>')
       const city = parseEarthquakeFromXml('VXSE53', xml)!.cities![0]
       expect(city.scale).toBe(30)
       expect(city.hasUnreceived).toBe(true)
@@ -303,7 +309,7 @@ describe('parseEarthquakeFromXml: 震源・震度に関する情報（VXSE53）'
     it('震度が無い Condition は市町村自体の未入電として持つ', () => {
       // 市町村の `MaxInt` だけを落とす（同じ値が他の階層にもあるため、コードで位置を特定する）。
       const xml = VXSE53_XML.replace(
-        /(<Code>03506<\/Code>)\s*<MaxInt>3<\/MaxInt>/,
+        /(<Code>0348500<\/Code>)\s*<MaxInt>3<\/MaxInt>/,
         '$1<Condition>震度５弱以上未入電</Condition>')
       expect(xml).not.toBe(VXSE53_XML)
       const city = parseEarthquakeFromXml('VXSE53', xml)!.cities![0]
@@ -322,7 +328,7 @@ describe('parseEarthquakeFromXml: 震源・震度に関する情報（VXSE53）'
     const points = parseEarthquakeFromXml('VXSE53', VXSE53_XML)!.points
     // 都道府県ロールアップ点（pref 付き）と取り違えないよう pref が空のものを探す
     const area = points.find(p => p.isArea && p.pref === '')!
-    expect(area).toEqual({ pref: '', addr: '岩手県沿岸北部', isArea: true, scale: 40, code: '221' })
+    expect(area).toEqual({ pref: '', addr: '岩手県沿岸北部', isArea: true, scale: 40, code: '210' })
   })
 
   // 正: 「震度5弱以上と推定されるが観測値が入電していない」地点を落とさない。
@@ -439,7 +445,7 @@ describe('parseEarthquakeFromXml: 震源・震度に関する情報（VXSE53）'
     // 区域点と揃えて pref: '' に統一する。
     const points = parseEarthquakeFromXml('VXSE53', VXSE53_XML)!.points
     const station = points.find(p => !p.isArea)!
-    expect(station).toEqual({ pref: '', addr: '普代村銅屋', isArea: false, scale: 30, code: '3350631', city: '普代村', area: '岩手県沿岸北部' })
+    expect(station).toEqual({ pref: '', addr: '普代村銅屋', isArea: false, scale: 30, code: '0348532', city: '普代村', area: '岩手県沿岸北部' })
   })
 
   it('震源を持つ電文では震源要素を読む', () => {
@@ -556,8 +562,8 @@ describe('XML 経路が落としてはいけない項目（地震）', () => {
     const xml = VXSE53_XML
       .replace('<Name>岩手県</Name>\n          <Code>03</Code>\n          <MaxInt>4</MaxInt>',
         '<Name>岩手県</Name>\n          <Code>03</Code>\n          <MaxInt>4</MaxInt>\n          <Revise>上方修正</Revise>')
-      .replace('<Name>岩手県沿岸北部</Name>\n            <Code>221</Code>',
-        '<Name>岩手県沿岸北部</Name>\n            <Code>221</Code>\n            <Revise>追加</Revise>')
+      .replace('<Name>岩手県沿岸北部</Name>\n            <Code>210</Code>',
+        '<Name>岩手県沿岸北部</Name>\n            <Code>210</Code>\n            <Revise>追加</Revise>')
     // .replace() は対象が無くても黙って素通りする。当たったことを機械的に確かめる。
     expect(xml).toContain('<Revise>上方修正</Revise>')
     expect(xml).toContain('<Revise>追加</Revise>')
@@ -582,8 +588,8 @@ describe('XML 経路が落としてはいけない項目（地震）', () => {
   // 読むと、県の Revise が無い電文で区域の値が県に付く。
   it('都道府県の点は配下の区域の Revise を拾わない', () => {
     const xml = VXSE53_XML.replace(
-      '<Name>岩手県沿岸北部</Name>\n            <Code>221</Code>',
-      '<Name>岩手県沿岸北部</Name>\n            <Code>221</Code>\n            <Revise>追加</Revise>',
+      '<Name>岩手県沿岸北部</Name>\n            <Code>210</Code>',
+      '<Name>岩手県沿岸北部</Name>\n            <Code>210</Code>\n            <Revise>追加</Revise>',
     )
     expect(xml).toContain('<Revise>追加</Revise>')
     const pts = parseEarthquakeFromXml('VXSE53', xml)!.points
@@ -598,8 +604,8 @@ describe('XML 経路が落としてはいけない項目（地震）', () => {
     const xml = VXSE53_XML
       .replace('<Name>岩手県</Name>\n          <Code>03</Code>\n          <MaxInt>4</MaxInt>',
         '<Name>岩手県</Name>\n          <Code>03</Code>\n          <MaxInt>4</MaxInt>\n          <Revise>上方修正</Revise>')
-      .replace('<Name>普代村</Name>\n              <Code>03506</Code>',
-        '<Name>普代村</Name>\n              <Code>03506</Code>\n              <Revise>追加</Revise>')
+      .replace('<Name>普代村</Name>\n              <Code>0348500</Code>',
+        '<Name>普代村</Name>\n              <Code>0348500</Code>\n              <Revise>追加</Revise>')
     // .replace() は対象が無くても黙って素通りする。当たったことを機械的に確かめる。
     expect(xml).toContain('<Revise>上方修正</Revise>')
     expect(xml).toContain('<Revise>追加</Revise>')
@@ -665,14 +671,14 @@ describe('XML 経路が落としてはいけない項目（地震）', () => {
   })
 
   it('区域点は pref を空にする', () => {
-    const expected = { pref: '', addr: '岩手県沿岸北部', isArea: true, scale: 40, code: '221' }
+    const expected = { pref: '', addr: '岩手県沿岸北部', isArea: true, scale: 40, code: '210' }
     expect(fromXml().points).toContainEqual(expected)
   })
 
   // QUAKE-2: 観測点の pref を空にする規約。以前 XML 側だけ pref: prefName を付けていて、
   // EarthquakeCard が観測点値を都道府県別最大震度と誤解する不具合があった。
   it('観測点は pref を空にする（QUAKE-2）', () => {
-    const expected = { pref: '', addr: '普代村銅屋', isArea: false, scale: 30, code: '3350631', city: '普代村', area: '岩手県沿岸北部' }
+    const expected = { pref: '', addr: '普代村銅屋', isArea: false, scale: 30, code: '0348532', city: '普代村', area: '岩手県沿岸北部' }
     expect(fromXml().points).toContainEqual(expected)
   })
 
@@ -1058,10 +1064,10 @@ describe('震度点を積めなかったときの記録', () => {
     // 直前の Code で位置を特定して差し替える
     const breakPrefMaxInt = (xml: string) =>
       xml.replace('<Code>03</Code>\n          <MaxInt>4</MaxInt>', '<Code>03</Code>\n          <MaxInt>不明</MaxInt>')
-    const breakArea221 = (xml: string) =>
-      xml.replace('<Code>221</Code>\n            <MaxInt>4</MaxInt>', '<Code>221</Code>\n            <MaxInt>不明</MaxInt>')
-    const breakArea211 = (xml: string) =>
-      xml.replace('<Code>211</Code>\n            <MaxInt>3</MaxInt>', '<Code>211</Code>\n            <MaxInt>不明</MaxInt>')
+    const breakArea210 = (xml: string) =>
+      xml.replace('<Code>210</Code>\n            <MaxInt>4</MaxInt>', '<Code>210</Code>\n            <MaxInt>不明</MaxInt>')
+    const breakArea212 = (xml: string) =>
+      xml.replace('<Code>212</Code>\n            <MaxInt>3</MaxInt>', '<Code>212</Code>\n            <MaxInt>不明</MaxInt>')
 
     it('都道府県が全滅すると読めなかった値つきで記録する', () => {
       const warnings = captureWarnings(() => {
@@ -1074,7 +1080,7 @@ describe('震度点を積めなかったときの記録', () => {
 
     it('区域が全滅すると記録する', () => {
       const warnings = captureWarnings(() => {
-        parseEarthquakeFromXml('VXSE51', breakArea211(breakArea221(VXSE51_XML)))
+        parseEarthquakeFromXml('VXSE51', breakArea212(breakArea210(VXSE51_XML)))
       })
       expect(matching(warnings, REGION)).toHaveLength(1)
       expect(matching(warnings, PREF)).toHaveLength(0)
@@ -1102,16 +1108,24 @@ describe('震度点を積めなかったときの記録', () => {
 
     it('一部だけ読めない区域では鳴らない', () => {
       const warnings = captureWarnings(() => {
-        parseEarthquakeFromXml('VXSE51', breakArea211(VXSE51_XML))
+        parseEarthquakeFromXml('VXSE51', breakArea212(VXSE51_XML))
       })
       expect(matching(warnings, REGION)).toHaveLength(0)
     })
 
     it('一部だけ読めない観測点では鳴らない', () => {
+      // **2 点目は別の市町村として足す。** 普代村の震度観測点は普代村銅屋の 1 点だけなので、
+      // 同じ City の中に 2 点目を置くと実電文に無い形になる（1 市町村 1 点は珍しくない）。
+      // 市町村と観測点が同じ 0348400 なのはコード表どおり（代表となる観測点は市町村と同じ番号）。
       const twoStations = VXSE53_XML.replace('</IntensityStation>', `</IntensityStation>
+            </City>
+            <City>
+              <Name>田野畑村</Name>
+              <Code>0348400</Code>
+              <MaxInt>3</MaxInt>
               <IntensityStation>
-                <Name>普代村第二</Name>
-                <Code>3350632</Code>
+                <Name>田野畑村田野畑</Name>
+                <Code>0348400</Code>
                 <Int>不明</Int>
               </IntensityStation>`)
       const warnings = captureWarnings(() => { parseEarthquakeFromXml('VXSE53', twoStations) })
@@ -1697,11 +1711,11 @@ const VXSE62_XML = `<?xml version="1.0" encoding="UTF-8"?>
           <Code>13</Code>
           <Area>
             <Name>東京都２３区</Name>
-            <Code>250</Code>
+            <Code>350</Code>
             <MaxLgInt>3</MaxLgInt>
             <City>
-              <Name>千代田区</Name>
-              <Code>13101</Code>
+              <Name>東京千代田区</Name>
+              <Code>1310100</Code>
               <MaxLgInt>2</MaxLgInt>
             </City>
           </Area>
@@ -1717,7 +1731,7 @@ describe('parseLpgmFromXml: xmlChild が Area 直下の値を拾い、配下 Cit
     if (!lpgm) throw new Error('parseLpgmFromXml returned null unexpectedly')
     if (lpgm.cancelled) throw new Error('expected発表 but got取消')
     expect(lpgm.regions).toEqual([
-      { code: '250', name: '東京都２３区', maxLgInt: 3, pref: '東京都' },
+      { code: '350', name: '東京都２３区', maxLgInt: 3, pref: '東京都' },
     ])
   })
 
@@ -1730,8 +1744,8 @@ describe('parseLpgmFromXml: xmlChild が Area 直下の値を拾い、配下 Cit
       // （実電文の Pref は都道府県別の最大階級を持つ）。
       .replace('<Name>東京都</Name>\n          <Code>13</Code>',
         '<Name>東京都</Name>\n          <Code>13</Code>\n          <MaxLgInt>3</MaxLgInt>\n          <Revise>上方修正</Revise>')
-      .replace('<Name>東京都２３区</Name>\n            <Code>250</Code>',
-        '<Name>東京都２３区</Name>\n            <Code>250</Code>\n            <Revise>追加</Revise>')
+      .replace('<Name>東京都２３区</Name>\n            <Code>350</Code>',
+        '<Name>東京都２３区</Name>\n            <Code>350</Code>\n            <Revise>追加</Revise>')
     // .replace() は対象が無くても黙って素通りする。当たったことを機械的に確かめる。
     expect(xml).toContain('<Revise>上方修正</Revise>')
     expect(xml).toContain('<Revise>追加</Revise>')
@@ -1786,12 +1800,12 @@ const PARITY_LPGM_XML = `<?xml version="1.0" encoding="UTF-8"?>
       <Hypocenter>
         <Area>
           <Name>新潟県上越地方</Name>
-          <Code>371</Code>
+          <Code>370</Code>
           <jmx_eb:Coordinate description="北緯３７．１度　東経１３８．２度　深さ　２０ｋｍ">+37.1+138.2-20000/</jmx_eb:Coordinate>
-          <NameFromMark>高田の南西１０ｋｍ付近</NameFromMark>
-          <MarkCode type="震央補助">705</MarkCode>
+          <NameFromMark>新潟の南西１２０ｋｍ付近</NameFromMark>
+          <MarkCode type="震央補助">307</MarkCode>
           <Direction>南西</Direction>
-          <Distance unit="km">10</Distance>
+          <Distance unit="km">120</Distance>
         </Area>
       </Hypocenter>
       <jmx_eb:Magnitude type="Mj" description="Ｍ５．２">5.2</jmx_eb:Magnitude>
@@ -1946,14 +1960,14 @@ describe('XML 経路が落としてはいけない項目（長周期地震動）
   it('震源の要素（座標・震央補助表現）を読む', () => {
     expect(fromXml().hypocenter).toEqual({
       name: '新潟県上越地方',
-      code: '371',
+      code: '370',
       latitude: 37.1,
       longitude: 138.2,
       depth: 20,
-      nameFromMark: '高田の南西１０ｋｍ付近',
-      markCode: '705',
+      nameFromMark: '新潟の南西１２０ｋｍ付近',
+      markCode: '307',
       direction: '南西',
-      distanceKm: 10,
+      distanceKm: 120,
     })
   })
 
@@ -2111,14 +2125,14 @@ describe('長周期地震動: 震源の位置要素', () => {
   it('座標・深さ・震央補助表現の材料を読む', () => {
     const h = parseLpgmFromXml(PARITY_LPGM_XML)!.hypocenter!
     expect(h.name).toBe('新潟県上越地方')
-    expect(h.code).toBe('371')
+    expect(h.code).toBe('370')
     expect(h.latitude).toBe(37.1)
     expect(h.longitude).toBe(138.2)
     expect(h.depth).toBe(20)
-    expect(h.nameFromMark).toBe('高田の南西１０ｋｍ付近')
-    expect(h.markCode).toBe('705')
+    expect(h.nameFromMark).toBe('新潟の南西１２０ｋｍ付近')
+    expect(h.markCode).toBe('307')
     expect(h.direction).toBe('南西')
-    expect(h.distanceKm).toBe(10)
+    expect(h.distanceKm).toBe(120)
   })
 
   // 対照: `0` は「ごく浅い」という有効値。深さ不明と同じ扱いに落とさない
