@@ -1816,6 +1816,21 @@ export function useEarthquakes(
   }, [handleEvent])
 
   /**
+   * 市町村の未入電を含む地震情報のテスト（日向灘 2022-01-22）。
+   *
+   * 「地震テスト」（能登本震）では**市町村の未入電が 1 件も出ない** —— 発表条件が
+   * 「配下に未入電の観測点があり、かつ市町村の最大震度が震度4以下（又は入電なし）」で、
+   * 能登本震の未入電 3 地点が属する市町村はいずれも震度6強・6弱のため当たらない
+   * （→ docs/spec/quake-spec.md §5「市町村の震度」）。
+   *
+   * **DMDSS 版のみ。** 市町村の粒度は DMDATA 経路でしか配信されない。
+   */
+  const simulateUnreceivedQuake = useCallback(async () => {
+    const { createTestUnreceivedQuake } = await loadTestData()
+    handleEvent(createTestUnreceivedQuake())
+  }, [handleEvent])
+
+  /**
    * 推計震度分布図のテスト。**地震情報を先に出し、少し置いてから分布を流す。**
    *
    * 実運用では地震から数分後に届くもので、そのころ地震カードは既に画面にある。
@@ -2101,7 +2116,7 @@ export function useEarthquakes(
     simulateTsunami, simulateTsunamiWarning, simulateTsunamiWatch, simulateTsunamiForecast, simulateTsunamiRetraction,
     simulateNankai, simulateNankaiRetraction, simulateNankaiCommentary, simulateKohatsu,
     simulateQuakeNotice, simulateEarthquakeCount, simulateEarthquakeCountRetraction, simulateEstimatedIntensity,
-    simulateTrainingQuake, simulateTsunamiGradeChange,
+    simulateTrainingQuake, simulateUnreceivedQuake, simulateTsunamiGradeChange,
     resetState,
     loadReplayEvents,
     restoreQuakeHistory,

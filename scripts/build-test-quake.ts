@@ -1,5 +1,5 @@
 /**
- * テストボタン用の地震情報データ（`src/data/noto-honshin-2024-quake.json`）を、
+ * テストボタン用の地震情報データ（`src/data/*-quake.json`）を、
  * **実電文をパーサーへ通して**作り直す。長周期の `build-test-lpgm.ts` と同じ考え方。
  *
  * ## なぜ実電文から作るのか
@@ -14,15 +14,27 @@
  * ## 使い方
  *
  * ```
- * npm run build-test-quake -- --event=20240101161010
+ * npm run build-test-quake              # 地震テスト（能登半島地震の本震）
+ * npm run build-test-quake-unreceived   # 未入電テスト（日向灘 2022-01-22）
  * ```
  *
  * **要 DMDATA.JP API キー**（リポジトリ直下の `.env.local` の `DMDATA_API_KEY`。
- * ワークツリーへは引き継がれないのでコピーすること）。`--event` は電文の `EventID`
- * （14 桁）。既定は能登半島地震の本震。
+ * ワークツリーへは引き継がれないのでコピーすること）。
  *
  * 同じ `EventID` の電文が複数あるときは**観測点がいちばん多いもの**を採る —— 続報で
  * 観測点が積み上がるため、確定報がもっとも厚い。
+ *
+ * ## 引数
+ *
+ * | 引数 | 意味 |
+ * |---|---|
+ * | `--event=<EventID>` | 電文の `EventID`（14 桁）。既定は能登半島地震の本震 |
+ * | `--out=<パス>` | 書き込み先。リポジトリ直下からの相対パスで、**`src/data` 直下に限る** |
+ * | `--require-city-unreceived` | 市町村の未入電（`City/Condition`）を持つ電文であることを要求する |
+ *
+ * **データごとの引数は `package.json` の script に焼く。** 手で打つ形にしておくと、
+ * `--require-city-unreceived` のような検査の指定を落としたまま実行できてしまい、
+ * 上流の電文が差し替わって未入電が消えたときに 0 件のデータが黙って書き出される。
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -30,11 +42,29 @@ import zlib from 'node:zlib'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const OUT = path.join(ROOT, 'src/data/noto-honshin-2024-quake.json')
 
 function arg(name: string, fallback: string): string {
   const hit = process.argv.find(a => a.startsWith(`--${name}=`))
   return hit ? hit.slice(name.length + 3) : fallback
+}
+
+function flag(name: string): boolean {
+  return process.argv.includes(`--${name}`)
+}
+
+/**
+ * `--out` の値を解決する。**書き込み先は `src/data` の直下に限る。**
+ *
+ * 打ち間違い（`../` を含む値・別の場所の絶対パス）でリポジトリの他の場所を上書きしないための
+ * 歯止め。生成物の置き場所はここ 1 つしかないので、外を許す理由が無い。
+ */
+function resolveOut(value: string): string {
+  const dataDir = path.join(ROOT, 'src/data')
+  const out = path.resolve(ROOT, value)
+  if (path.dirname(out) !== dataDir) {
+    throw new Error(`--out は src/data 直下を指してください（渡された値: ${value}）`)
+  }
+  return out
 }
 
 function readApiKey(): string {
@@ -61,6 +91,8 @@ function* tarEntries(buf: Buffer): Generator<{ name: string; body: Buffer }> {
 
 async function main() {
   const eventId = arg('event', '20240101161010')
+  const out = resolveOut(arg('out', 'src/data/noto-honshin-2024-quake.json'))
+  const requireCityUnreceived = flag('require-city-unreceived')
   const day = arg('date', `${eventId.slice(0, 4)}-${eventId.slice(4, 6)}-${eventId.slice(6, 8)}`)
   const auth = { Authorization: 'Basic ' + Buffer.from(readApiKey() + ':').toString('base64') }
 
@@ -104,11 +136,23 @@ async function main() {
   const withCity = (rest.points ?? []).filter(p => !p.isArea && p.city).length
   if (withCity === 0) throw new Error(`${picked.name}: 市町村に紐付いた観測点が 1 件もありません`)
 
-  fs.writeFileSync(OUT, JSON.stringify(rest), 'utf8')
+  // 市町村の未入電は 2 通りに分かれる（→ quake-spec.md §5「市町村の震度」）。
+  // `hasUnreceived` は「震度を観測できたうえで配下に未入電がある」、`unreceived` は
+  // 「市町村の値そのものが未入電」。実機で確かめたいのは両方なので別々に数える。
+  const cityHasUnreceived = (rest.cities ?? []).filter(c => c.hasUnreceived).length
+  const cityUnreceived = (rest.cities ?? []).filter(c => c.unreceived).length
+  if (requireCityUnreceived && cityHasUnreceived + cityUnreceived === 0) {
+    throw new Error(`${picked.name}: 市町村の未入電（City/Condition）が 1 件もありません`)
+  }
+
+  fs.writeFileSync(out, JSON.stringify(rest), 'utf8')
   console.log(
     `${picked.name} から作りました: 点 ${rest.points?.length ?? 0}`
-    + `（うち市町村に紐付いた観測点 ${withCity}）・市町村 ${rest.cities?.length ?? 0}`
-    + `・最大震度 ${rest.earthquake?.maxScale}`,
+    + `（うち市町村に紐付いた観測点 ${withCity}・未入電の観測点 ${(rest.points ?? []).filter(p => p.unreceived).length}）`
+    + `・市町村 ${rest.cities?.length ?? 0}`
+    + `（未入電あり ${cityHasUnreceived}・値そのものが未入電 ${cityUnreceived}）`
+    + `・最大震度 ${rest.earthquake?.maxScale}`
+    + ` → ${path.relative(ROOT, out)}`,
   )
 }
 
