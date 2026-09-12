@@ -760,11 +760,11 @@ export function createTestEEW(withDmdssFields: boolean, eventId?: string, serial
       // 読み取り後の値（`arrived`）も立てる。到達予測時刻とは排他で、時刻は持たない。
       { pref: '茨城県', name: '茨城県北部', scaleFrom: 40, scaleTo: 45, kindCode: '11', arrivalTime: null, arrived: true, lgIntTo: 1 },
       // 19 ＝ 警報・PLUM 法。**時刻は持つが到達の予測ではない**（「震度を初めて予測した時刻」）
-      // ので過去の時刻が入る。画面は時刻を出さず「到達時刻は不明」と書く。
+      // ので過去の時刻が入る。画面は残り秒数を出さず「時刻不明」と書き、並びの末尾へ回す。
       { pref: '千葉県', name: '千葉県北東部', scaleFrom: 40, scaleTo: 45, kindCode: '19', arrivalTime: at(-4000), lgIntTo: 1 },
       // **区域に載る予測震度に下限は無い**（→ docs/spec/eew-spec.md §4）。震度 3 の区域も同じ
-      // 電文に載り、到達予測時刻も持つ。震源から遠いぶん時刻は後ろに来るので、到達の欄
-      // （上位 6 件まで）からは外れて「他1地域」になる —— その形もここでしか実機で確かめられない。
+      // 電文に載り、到達予測時刻も持つ。震源から遠いぶん残り秒数は最も大きく、到達の欄では
+      // 未到達の群の末尾に並ぶ —— 弱い区域が強い区域より後ろへ回る形もここでしか実機で確かめられない。
       { pref: '東京都', name: '東京都２３区', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(60000), lgIntTo: 1 },
     ] as const).map(a => withDmdssFields ? { ...a } : toP2pArea({ ...a })),
   }
