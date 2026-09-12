@@ -26,7 +26,7 @@ import notoHonshinQuake from '../data/noto-honshin-2024-quake.json'
 import { extractQuakeEventId } from './quakeMerge'
 import { eewAreas, eewMaxScale, eewNoForecastReason } from './eew'
 import { extractQuakeEventIdFromId } from './quakeMerge'
-import { isObservationMissing } from './tsunami'
+import { isObservationMissing, matchesArea } from './tsunami'
 
 // テストデータが「名前で」外部データと突き合わせている箇所を固定する。
 //
@@ -412,6 +412,107 @@ describe('津波テストの識別子は原因地震の発現時刻から作る'
       expect(new Date(eq.arrivalTime!).getTime()).toBeLessThan(Math.min(...arrivals))
     }
   })
+})
+
+// 区域の到達状況（`firstHeight`）と実測の組み合わせは、実配信では 4 つの形しか取らない
+// （→ docs/spec/tsunami-spec.md §9「区域の到達状況」）。そこから外れたテストデータは、
+// **実運用では決して起きない絵**を見ながら表示を確かめることになる。
+//
+// 以前は「ただちに津波来襲と予測」の区域が到達予想を過去に持ち、しかもその区域に波高の実測が
+// あった。どちらも実配信の標本（全期間 634 通・区域延べ 19,906）で 0 件の形。
+describe('津波テストの区域は実配信の形に従う', () => {
+  beforeEach(() => { vi.useFakeTimers({ now: new Date('2026-09-12T12:34:56Z').getTime() }) })
+  afterEach(() => { vi.useRealTimers() })
+
+  /** 到達済みを表す 2 値。どちらも到達予想時刻を持たない。 */
+  const ARRIVED = ['津波到達中と推測', '第１波の到達を確認']
+
+  it('「ただちに津波来襲と予測」の区域は未来の到達予想を持つ', () => {
+    const tsunami = createTestTsunami(true)
+    const areas = (tsunami.areas ?? []).filter((a) => a.firstHeight?.condition === 'ただちに津波来襲と予測')
+    expect(areas.length).toBeGreaterThan(0)
+    for (const a of areas) {
+      expect(a.firstHeight?.arrivalTime, a.name).toBeTruthy()
+      expect(Date.parse(a.firstHeight!.arrivalTime!)).toBeGreaterThan(Date.parse(tsunami.time))
+    }
+  })
+
+  // 対照: 到達済みの 2 値では時刻が消える。予想する対象がもう無いため
+  it('到達済みの区域は到達予想時刻を持たない', () => {
+    const tsunami = createTestTsunami(true)
+    const areas = (tsunami.areas ?? []).filter((a) => ARRIVED.includes(a.firstHeight?.condition ?? ''))
+    expect(areas.length).toBeGreaterThan(0)
+    for (const a of areas) expect(a.firstHeight?.arrivalTime, a.name).toBeFalsy()
+  })
+
+  // **津波予報の区域にも実測は届く。** `FirstHeight` を持たないのは「到達を語らない」だけで、
+  // 観測していないという意味ではない。ここを「実測があれば必ず第１波の到達を確認」と書くと、
+  // 実配信で 1 割強を占める組み合わせを弾く実装を後から呼び込む
+  it('波高の実測がある区域は、津波予報か「第１波の到達を確認」のどちらか', () => {
+    const tsunami = createTestTsunami(true)
+    const measured = (tsunami.areas ?? []).filter((a) =>
+      (tsunami.observations ?? []).some((o) => o.height?.description && matchesArea(o, a)))
+    expect(measured.length).toBeGreaterThan(0)
+    // 両方の形がテストデータに載っていること自体を先に固定する
+    expect(measured.some((a) => a.grade === 'Forecast')).toBe(true)
+    expect(measured.some((a) => a.grade !== 'Forecast')).toBe(true)
+    for (const a of measured) {
+      if (a.grade === 'Forecast') expect(a.firstHeight, a.name).toBeUndefined()
+      else expect(a.firstHeight?.condition, a.name).toBe('第１波の到達を確認')
+    }
+  })
+
+  // 本命の回帰。バッジは実測がある区域では出ない（`TsunamiAreaRow` の `badgeSuppressed`）ので、
+  // 実測を持たない区域が無いと **3 値が 1 つも画面に出ない**。実際にその状態だった
+  it('到達状況の 3 値それぞれに、実測を持たない区域がある', () => {
+    const tsunami = createTestTsunami(true)
+    for (const condition of ['ただちに津波来襲と予測', ...ARRIVED]) {
+      const withBadge = (tsunami.areas ?? []).filter((a) => a.firstHeight?.condition === condition
+        && !(tsunami.observations ?? []).some((o) => matchesArea(o, a)))
+      expect(withBadge.length, condition).toBeGreaterThan(0)
+    }
+  })
+
+  // 安全弁: `FirstHeight` を持たないのは津波予報（若干の海面変動）と解除だけ。注意報以上は
+  // 必ず持つ。standard 版でも落ちないことを併せて見る
+  it('注意報以上の区域は到達状況を必ず持つ', () => {
+    for (const withDmdssFields of [true, false]) {
+      const areas = createTestTsunami(withDmdssFields).areas ?? []
+      const graded = areas.filter((a) => a.grade !== 'Forecast')
+      expect(graded.length).toBeGreaterThan(0)
+      for (const a of graded) {
+        expect(a.firstHeight, `${a.name}(${withDmdssFields ? 'DMDSS' : 'standard'})`).toBeTruthy()
+      }
+      // 予想波高は等級を問わず付く（津波予報の区域も持つ）
+      for (const a of areas) {
+        expect(a.maxHeight, `${a.name}(${withDmdssFields ? 'DMDSS' : 'standard'})`).toBeTruthy()
+      }
+    }
+  })
+
+  // 安全弁: 地点の到達予想も未来しか無く、波高か到達時刻が届いた地点からは消える
+  // （満潮時刻だけが残る）。**欠測の地点は電文では残ることがあるが、カードが同名の観測点を
+  // 優先して予報の行を出さないため、テストデータにも持たせていない**（実機に届かない）
+  it('地点の到達予想は未来で、値が届いた地点は持たない', () => {
+    const tsunami = createTestTsunami(true)
+    const received = new Set((tsunami.observations ?? [])
+      .filter((o) => o.height?.description || o.arrivalTime)
+      .map((o) => o.name))
+    const stations = (tsunami.areas ?? []).flatMap((a) => a.stations ?? [])
+    expect(stations.length).toBeGreaterThan(0)
+    let future = 0
+    for (const st of stations) {
+      if (received.has(st.name)) {
+        expect(st.arrivalTime, st.name).toBeFalsy()
+        continue
+      }
+      if (!st.arrivalTime) continue
+      expect(Date.parse(st.arrivalTime), st.name).toBeGreaterThan(Date.parse(tsunami.time))
+      future++
+    }
+    expect(future).toBeGreaterThan(0)
+  })
+
 })
 
 // 上限を定めない予想（電文の `To="over"`）をテストボタンでも再現していること。
