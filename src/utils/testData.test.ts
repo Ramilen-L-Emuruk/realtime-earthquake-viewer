@@ -224,12 +224,29 @@ describe('テスト EEW の kindCode と予想震度の整合', () => {
     }
   })
 
-  // 実運用の電文に区域が載る条件は「最大予測震度4以上または最大予測長周期地震動階級3以上」
-  // （eew-information スキーマ）。震度3以下の区域はそもそも電文に現れない。
-  it.each(cases)('%s: 区域は予想震度4以上（電文に載る条件）', (_label, eew) => {
-    for (const area of eewAreas(eew)) {
-      expect(area.scaleTo).toBeGreaterThanOrEqual(40)
-    }
+  // **区域に載る予測震度に下限は無い**（→ docs/spec/eew-spec.md §4）。下限が無いこと自体は
+  // テストデータでは守れないので、代わりに次の 2 つを固定する。
+  //
+  // 正: 弱い区域を実機で確かめられる状態を保つ。これが無いと、区域を「震度 4 以上だけ」に
+  // 戻したときに気づけない（区域一覧・区域塗り・到達の欄の見え方はテストボタンにしか入口が無い）。
+  it.each([
+    ['createTestEEW（特別警報・三陸沖）', createTestEEW(true)],
+    ['createTestEEWWarning（警報・日向灘）', createTestEEWWarning(true)],
+  ] as const)('%s: 震度 4 未満の区域を持つ', (_label, eew) => {
+    expect(eewAreas(eew).some((a) => a.scaleTo < 40)).toBe(true)
+  })
+
+  // 対照: 区域の列挙が始まる境目のほうは緩めていない。実電文では、区域を持たない 3,772 通は
+  // 電文全体の予想の下限が震度 1〜3 で、区域を持つ 765 通は震度 4 以上だった（例外 1 通は §4）。
+  //
+  // **区域を持たない報はここだけで足す。** 共有の `cases` へ混ぜると、区域を回す他のテストが
+  // その報に対して 0 周で素通りし、検証していない件数だけが増える。
+  it.each([
+    ...cases,
+    ['createTestEEWAssumed（単独点処理の初報・日向灘）', createTestEEWAssumed(true, undefined, 1)],
+  ] as const)('%s: 区域を持つなら電文全体の予想も震度 4 以上', (_label, eew) => {
+    if (eewAreas(eew).length === 0) return
+    expect(eew.forecastMaxScale).toBeGreaterThanOrEqual(40)
   })
 
   it('予報の電文は警報コードの区域を含まない', () => {
