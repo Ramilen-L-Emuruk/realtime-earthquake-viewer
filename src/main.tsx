@@ -6,13 +6,20 @@ import { createRoot } from 'react-dom/client'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import './index.css'
 import { App } from './App'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { log } from './utils/logger'
 import { installFrameProfiler } from './utils/frameProfiler'
+import { installGlobalErrorLog } from './utils/globalErrorLog'
 
 // コマ落ちの診断（`window.__frameProfiler`）を使えるようにする。**呼び口を用意するだけで、
 // `start()` を呼ぶまで何も記録しない**（utils/frameProfiler.ts の `arm`）。このアプリは地震の
 // ときに開かれるので、診断のための仕事を常時載せない。
 installFrameProfiler()
+
+// React の外——イベントハンドラ・`setTimeout`・Promise・`requestAnimationFrame` の中——で
+// 投げられた例外を、アプリ時計のタイムスタンプ付きで記録に残す。ErrorBoundary はそこへ届かない。
+// **画面には何も出さない**（理由は utils/globalErrorLog.ts の冒頭）。
+installGlobalErrorLog()
 
 // autoUpdate モードで新 SW がコントローラーになったら sw-updated イベントを発火する。
 // 初回インストール時（controller が null → SW）は除外し、更新時のみ通知する。
@@ -55,8 +62,16 @@ if ('serviceWorker' in navigator) {
 const rootEl = document.getElementById('root')
 if (!rootEl) throw new Error('Root element not found')
 
+// 最後の受け皿。**`App` 自身のレンダー例外はここでしか拾えない** —— `App` は 1700 行超の単一
+// コンポーネントで、メモ化していない裸の計算式を本体に多数持つ。その中で投げられた例外は、React が
+// 子の照合に入る前に `App()` の呼び出しそのものの中で起きるため、`App` の内側へ境界を置いても届かない。
+//
+// ここまで落ちると `App` の state は失われ、副作用の後始末で WebSocket も切れる。地図・各タブには
+// 別に境界を置いてあり（`App.tsx`）、そちらで受け止められるものはここまで来ない。
 createRoot(rootEl).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary variant="root">
+      <App />
+    </ErrorBoundary>
   </StrictMode>,
 )
