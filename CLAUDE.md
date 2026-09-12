@@ -975,6 +975,7 @@ main を書き換える唯一の手続き。**具体的な手順は [`/release` 
 | 画面サイズ別レイアウトの分岐条件（`side` / `sideNarrow` / `roomy`）・パネル比率・折りたたみ | [`docs/spec/architecture-spec.md`](docs/spec/architecture-spec.md) §4「画面サイズ別のレイアウト」 |
 | 録画モード（`recordingMode`）で止めてよいもの（**画面に出る内容は変えない**・いまの対象は地名ラベルの重なり判定の再評価契機と揺れ検知の診断ログの保存・**保存しなかったことを `console` へ出す**（永続はしないので「後から追える」とは書かない。理由の説明を担うのは設定欄の文面）・止めるのは保存だけで前後の切り出しは通す（止めると解いた直後の検知で前側が欠ける）） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §2「主な項目の補足」 |
 | dev サーバーでの APIキー自動投入の条件（dev・DMDSS 版・`--host` なし・未入力のときだけ／注入値は localStorage に保存しない／値を渡す側と受け取る側で条件を重ねる） | [`docs/spec/settings-pwa-spec.md`](docs/spec/settings-pwa-spec.md) §6「dev サーバーでの API キー自動投入」 |
+| 例外の受け止め方（**3 層**＝根・地図・各タブ／**`App` 自身のレンダー例外は根でしか拾えない**＝内側へ境界を置いても、例外は React が子の照合へ入る前に `App()` の中で起きる／**地図で包むのは `MapView` だけ**＝同じ親にいる左上の情報ブロック・行動チェックリスト・特別情報バナー・共有カードボタンを中へ入れると地図と一緒に消える／**自動リロードはしない**＝進行中の EEW は起動時の履歴取得に含まれず消える／**読み上げは止めない**／**繰り返し落ちたら再表示ボタンを引っ込める**＝押しても直らないボタンは無いより悪い／**守備範囲は 3 つに分かれる**＝`components/ErrorBoundary.tsx` はレンダーとライフサイクル、`Map/gl/guardRender.ts` は MapLibre の描画ループ（境界が原理的に届かない）、`utils/globalErrorLog.ts` はそれ以外で**記録だけ**（ブラウザ拡張や外部要因でも発火するため画面に出さない）／**入力を確かめるガードは境界ができても外さない**＝描画ループの中へ境界は届かず、境界が受け止めるのは「その範囲を表示できない」結果でしかない） | [`docs/spec/architecture-spec.md`](docs/spec/architecture-spec.md) §4.6 |
 
 ### 行動チェックリスト
 
