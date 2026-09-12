@@ -6,7 +6,9 @@ import type { ConnectionStatus } from '../../types/earthquake'
 import { getIntensityLabel, getIntensityColor, INTENSITY_LABELS } from '../../utils/intensity'
 import { readableTextColor } from '../../utils/contrast'
 import { playAlertSound, playCountdownBeep, playKyoshinUpdateSound, unlockAudio } from '../../utils/alertSound'
-import { checkVoicevoxAvailable, fetchVoicevoxSpeakers, isValidVoicevoxUrl, speakWithVoicevox, VOICEVOX_URL_DEBOUNCE_MS, type VoicevoxSpeaker } from '../../utils/voicevox'
+import { checkVoicevoxAvailable, fetchVoicevoxSpeakers, isValidVoicevoxUrl, speakSequentially, VOICEVOX_URL_DEBOUNCE_MS, type VoicevoxSpeaker } from '../../utils/voicevox'
+import { voicevoxPreviewTexts } from '../../utils/ttsText'
+import { log } from '../../utils/logger'
 import { serverDate, getServerClockOffsetMs } from '../../utils/clock'
 import type { UseTestScenariosResult } from '../../hooks/useTestScenarios'
 import type { ScenarioCategory } from '../../types/testScenario'
@@ -420,6 +422,18 @@ const SCENARIO_CATEGORY_COLOR: Record<ScenarioCategory, ButtonColor> = {
   tsunami: 'purple',
   lpgm: 'blue',
   foreign: 'green',
+}
+
+/**
+ * VOICEVOX の試聴。**発話ごとに分けて渡す**（1 つの文字列へ繋げない。理由は
+ * `voicevoxPreviewTexts` と `speakSequentially` のコメント）。
+ *
+ * 読み上げ文の組み立てもこの中で行う。呼び出し側の引数として評価すると、組み立てが投げた例外は
+ * `speakSequentially` が Promise を返す前に起きるため `catch` に入らず、押しても無音のまま
+ * 画面には何も出ない。
+ */
+async function speakVoicevoxPreview(baseUrl: string, speakerId: number, volume: number): Promise<void> {
+  await speakSequentially(baseUrl, voicevoxPreviewTexts(), speakerId, volume)
 }
 
 // 震度別の色付き小ボタン（通知音テスト用）
@@ -962,9 +976,12 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
                       選べる話者と鳴らす相手が食い違わないよう揃える。生の値を使うと、URL を書き換えている
                       最中（接続状態が「確認中...」の間）に押したとき、入力途中の未検証の宛先へ投げて
                       黙って無音に終わる。 */}
+                  {/* 読ませる文は `voicevoxPreviewTexts` が実運用と同じ関数から組む。ここに
+                      文字列を書くと、緊急地震速報の文型を変えたとき試聴だけ古い形で残る。 */}
                   <TestButton color="blue" onClick={() => {
                     unlockAudio()
-                    speakWithVoicevox(debouncedVoicevoxUrl, '緊急地震速報。三陸沖を震源とするマグニチュード7.2の地震が発生しました。予想最大震度6強。', settings.voicevoxSpeakerId, settings.soundVolume).catch(() => {})
+                    speakVoicevoxPreview(debouncedVoicevoxUrl, settings.voicevoxSpeakerId, settings.soundVolume)
+                      .catch(err => log.warn('[settings] 試聴の読み上げに失敗', err))
                   }}>▶ 試聴</TestButton>
                 </Row>
               </>

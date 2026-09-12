@@ -979,6 +979,57 @@ export function eewIntensityText(
   return prefix + scaleText + lpgmText
 }
 
+/**
+ * 試聴文を組むための緊急地震速報。**画面にも音にも流れない**——`voicevoxPreviewTexts` が
+ * 読み上げ文を作るためだけに使う。
+ *
+ * 読み上げ文が見るのは震源名と、予想震度が付いていないときの理由（`eewNoForecastReason`）だけ。
+ * それ以外は型を満たすために置いた値で、**座標・深さ・規模は声にならない**（`test` も同じで、
+ * 流す経路に載っていないため抑制の意味を持たない）。**読み上げ文の側が新しいフィールドを
+ * 読むようになったら、ここの値が声にしてよいものかを見直すこと。**
+ */
+const PREVIEW_EEW: EEWAlert = {
+  kind: 'eew',
+  id: 'voicevox-preview',
+  time: '',
+  test: true,
+  earthquake: {
+    originTime: '',
+    arrivalTime: '',
+    condition: '',
+    hypocenter: { name: '三陸沖', latitude: 38.5, longitude: 143.0, depth: 10, magnitude: 7.2 },
+  },
+  severity: 'Warning',
+  cancelled: false,
+}
+
+/** 試聴で読ませる予想震度（6強）。語の組み立てを実運用と共有するため階級値で持つ。 */
+const PREVIEW_EEW_SCALE: EewMaxScaleInfo = { scale: 60, orAbove: false }
+
+/**
+ * 設定タブの「試聴」で読ませる文。緊急地震速報（警報）を想定して
+ * 「緊急地震速報、三陸沖で地震。」「予想最大震度6強。」を返す。
+ *
+ * **文字列を直接書かず、実運用と同じ関数から組む。** 直接書くと緊急地震速報の文型を変えたときに
+ * 試聴だけ古い形で残り、試聴で聞いた鳴り方と実際の鳴り方が食い違う。実際にそうなっていた——
+ * 地震情報の文型を借りた「三陸沖を震源とするマグニチュード7.2の地震が発生しました。」を
+ * 読ませており、緊急地震速報はその形を一度も作らない。
+ *
+ * **発話ごとに分けて返す。繋げて 1 つにしない。** 実運用は第 1 フェーズ（切り出しと震源）と
+ * 第 2 フェーズ（予想値）を別々に鳴らすため、「〇〇で地震。」はそこでは最後のチャンクになり、
+ * 末尾の句点に間が付かない。繋げて 1 回で渡すと途中のチャンクへ変わり、**実運用には無い
+ * 110ms の無音が挟まる**（`utils/voicevox.ts` の `CHUNK_BREAK_PAUSE`）。
+ *
+ * **ただし発話の間隔までは再現しない。** 実運用の第 2 フェーズは続報を待つ安定待ちを経てから
+ * 声になるもので（§6）、待ち時間は電文の到着間隔で決まる。試聴は前の発話が終わり次第続ける。
+ */
+export function voicevoxPreviewTexts(): readonly string[] {
+  return [
+    eewAlertToText(PREVIEW_EEW, 'warning'),
+    eewIntensityText(PREVIEW_EEW_SCALE, 0, PREVIEW_EEW),
+  ]
+}
+
 function domesticTsunamiText(t: DomesticTsunami): string {
   switch (t) {
     case 'なし':           return 'この地震による津波の心配はありません。'
