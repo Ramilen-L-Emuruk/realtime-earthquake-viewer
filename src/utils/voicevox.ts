@@ -1161,3 +1161,38 @@ export async function speakWithVoicevox(
   }
   await completionPromise
 }
+
+/**
+ * 複数の文を**別々の読み上げとして順に鳴らす**。前の文が鳴り終わってから次を始める。
+ *
+ * **1 つの文字列へ繋げて {@link speakWithVoicevox} へ渡すのとは鳴り方が違う。** 繋げると文の
+ * 境目がチャンクの途中になり、末尾の句読点に {@link CHUNK_BREAK_PAUSE} の間が入る。別々に
+ * 渡せばそれぞれの末尾が「最後のチャンク」になり、間は入らない。
+ *
+ * **前の文が誰かに止められていたら、そこで降りる。** {@link speakWithVoicevox} は呼ばれる
+ * たびに既存の再生を止め、止められた側は例外ではなく正常終了で返る。気づかずに次の文を
+ * 鳴らすと、**今度はこちらが相手を止める**。相手は同じ列とは限らない —— 緊急地震速報の
+ * 読み上げは {@link speakWithVoicevox} を直接呼ぶので（`useLiveEventHandler`）、警報の声を
+ * この列の続きが上書きしうる。
+ *
+ * 見るのは**自分が始めた再生がまだ最新か**（`currentSessionId`）。「この関数の何回目の
+ * 呼び出しか」で見ると、この関数を通らない読み上げに割り込まれても気づけない。
+ *
+ * **試聴の連打（同じ列どうしの止め合い）は単体テストで固定できていない。** 守る仕組みは
+ * 同じだが、合成と再生を偽物に差し替えた `voicevox.test.ts` の環境では、判定を外しても
+ * 止め合いが再現しない（止められた側が合成のループに留まって次の文へ進まない）。実機で
+ * 確かめたときは、判定が無い版で試聴を 1 文目の後半で 2 度押すと**2 度目の「〇〇で地震。」が
+ * `ERR_ABORTED` で消え**、代わりに 1 度目の続きが鳴った。判定を入れた版では 2 度目が最後まで
+ * 鳴る。**連打まわりを触るときは実機で同じ確かめ方をすること。**
+ */
+export async function speakSequentially(
+  baseUrl: string, texts: readonly string[], speakerId: number, volume: number,
+): Promise<void> {
+  for (const text of texts) {
+    const playing = speakWithVoicevox(baseUrl, text, speakerId, volume)
+    // セッションの採番は `speakWithVoicevox` の同期部分で済む。**await より前に読むこと。**
+    const mine = currentSessionId
+    await playing
+    if (currentSessionId !== mine) return
+  }
+}
