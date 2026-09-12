@@ -221,9 +221,37 @@ export function useKyoshinDetectorV2(
   hasActiveNonAssumedEEWRef.current = hasActiveNonAssumedEEW
   const [result, setResult] = useState<KyoshinDetectorV2Result>(EMPTY)
 
+  // 供給が作り直されたら結果を空にする。データ時刻が空になるのは `useKyoshinRealtime` が供給を
+  // 作り直したとき（リプレイの時間軸の切替・ローカルアーカイブの出入り）だけで、そのとき旧い
+  // 時間軸の検知は新しい軸に属さない。
+  //
+  // **下の effect に任せられない。** あちらは `!dataTime` で抜けるので `setResult` が呼ばれず、
+  // 結果は前のフレームの値で凍結する。凍結した検知は音・自動タブ切替・地図・検知カード・行動
+  // チェックリストへそのまま流れ続ける。
+  //
+  // **`stalled` は立てない。** あれは「上流の異常で結果を出せなくなった」ことを伝える語で、
+  // 受け取る側の振る舞いが変わる —— 行動チェックリストは表示中の帯を地震情報へ差し替えるのを
+  // やめ、発報側は次の検知を「同じ揺れの再開」と見なして検知音とブラウザ通知を省く。
+  // こちらから作り直した場合にそれをやると、直したい症状がそのまま残る。
+  //
+  // 見るのは「供給されているか」の真偽で、データ時刻そのものではない。値で比べると毎秒
+  // 変わるため、再レンダーが毎フレーム 1 回増える。前回値を state で持つのは、React が捨てた
+  // レンダーの書き換えを一緒に捨てさせるため（ref だと捨てられたレンダーの分だけが残る）。
+  const supplied = dataTime !== ''
+  const [wasSupplied, setWasSupplied] = useState(supplied)
+  if (wasSupplied !== supplied) {
+    setWasSupplied(supplied)
+    if (!supplied) setResult(EMPTY)
+  }
+
   useEffect(() => {
     if (!enabled) return
-    if (!dataTime || indices.length === 0 || sites.length === 0) return
+    if (!dataTime || indices.length === 0 || sites.length === 0) {
+      // 供給が作り直されたなら、連続失敗の数え直しも兼ねる（この後に届くのは別の時間軸の
+      // フレームで、それまでの失敗の続きではない）。
+      if (!dataTime) stalledFramesRef.current = 0
+      return
+    }
     const dataTimeMs = new Date(dataTime).getTime()
     if (!Number.isFinite(dataTimeMs)) return
 

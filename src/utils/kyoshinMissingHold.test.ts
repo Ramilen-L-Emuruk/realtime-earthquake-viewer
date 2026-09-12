@@ -103,6 +103,20 @@ describe('stepMissingHold: 保持値を捨てる条件', () => {
     expect(after.indices).toEqual([18])
     expect(after.stale).toEqual([true])
   })
+
+  it('データ時刻が読めなくても、観測点数が変われば保持値を捨てる', () => {
+    // 供給を作り直したとき（リプレイの時間軸の切替）は「件数 0・データ時刻なし」の形で届く。
+    // 位置の対応が壊れたことは時刻を見なくても判るので、時刻のガードより前に捨てる。素通しに
+    // すると、旧い時間軸の保持値が新しい軸の最初のフレームで復活する。
+    const st = createMissingHoldState()
+    stepMissingHold(st, [18, 18], T0, CFG)
+    const cleared = stepMissingHold(st, [], Number.NaN, CFG)
+    expect(cleared.indices).toEqual([])
+    // 新しい時間軸の最初のフレーム。旧い軸の 18 が保持値として蘇らないこと
+    const after = stepMissingHold(st, [MISSING, MISSING], T0 + 1000, CFG)
+    expect(after.indices).toEqual([MISSING, MISSING])
+    expect(after.stale).toEqual([false, false])
+  })
 })
 
 describe('stepMissingHold: 同じフレームの再処理', () => {
