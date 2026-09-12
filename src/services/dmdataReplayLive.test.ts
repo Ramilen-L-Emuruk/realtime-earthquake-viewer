@@ -54,7 +54,7 @@ function quakeBody(eventId: string, reportTime: string): string {
 
 function eewBody(eventId: string, serial: string, reportTime: string, isWarning = false): string {
   const pref = isWarning
-    ? `<Pref><Name>茨城</Name><Code>9130</Code><Area><Name>茨城県南部</Name><Code>310</Code>
+    ? `<Pref><Name>茨城</Name><Code>9080</Code><Area><Name>茨城県南部</Name><Code>301</Code>
 <Category><Kind><Name>緊急地震速報（警報）</Name><Code>11</Code></Kind></Category>
 <ForecastInt><From>5+</From><To>5+</To></ForecastInt></Area></Pref>`
     : ''

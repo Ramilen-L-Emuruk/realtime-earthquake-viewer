@@ -41,7 +41,7 @@ export interface IntensityMarker {
   region: string | null
   /**
    * 気象庁以外が運用する観測点か（→ {@link import('../types/earthquake').EarthquakePoint.nonJma}）。
-   * 吹き出しにバッジで出す。
+   * 吹き出しでは名前の末尾へ印（＊）として戻す（→ `withNonJmaMark`）。
    */
   nonJma?: boolean
 }
@@ -69,7 +69,7 @@ export interface LpgmMarker {
   int?: IntensityScale
   /**
    * 気象庁以外が運用する観測点か（→ {@link import('../types/earthquake').EarthquakePoint.nonJma}）。
-   * 吹き出しにバッジで出す。
+   * 吹き出しでは名前の末尾へ印（＊）として戻す（→ `withNonJmaMark`）。
    */
   nonJma?: boolean
   sva?: number

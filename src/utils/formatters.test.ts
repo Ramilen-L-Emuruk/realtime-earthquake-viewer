@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatCoordinate, formatDepth, formatDomesticTsunami, formatMagnitude, formatMagnitudeCondition, formatMagnitudeValue, formatMagnitudeWithCondition, formatFileStamp, hasHypocenterFacts } from './formatters'
+import { formatCoordinate, formatDepth, formatDomesticTsunami, formatMagnitude, formatMagnitudeCondition, formatMagnitudeValue, formatMagnitudeWithCondition, formatFileStamp, hasHypocenterFacts, withNonJmaMark, NON_JMA_MARK } from './formatters'
 import type { Hypocenter } from '../types/earthquake'
 import { withTz } from '../test-utils/withTz'
 import { getMagnitudeColor, getDepthColor } from './intensity'
@@ -258,5 +258,32 @@ describe('国内津波情報の語', () => {
     for (const t of ['なし', '注意報', '若干の海面変動', '調査中', '不明'] as const) {
       expect(formatDomesticTsunami(t).text, t).not.toContain('等')
     }
+  })
+})
+
+// 気象庁以外が運用する観測点の印（※ ではなく全角アスタリスク ＊）。
+//
+// **電文の読み取りでは外し、表示するときに戻す。** 座標表をはじめ、印の無い名前を鍵にして
+// いる先がいくつもあるため（一覧は `docs/spec/quake-spec.md` §8「気象庁以外が運用する観測点」）。
+describe('気象庁以外が運用する観測点の印', () => {
+  // 正: 印の付く観測点には末尾へ ＊ を足す。
+  it('気象庁以外の観測点には印を付ける', () => {
+    expect(withNonJmaMark('普代村銅屋', true)).toBe('普代村銅屋＊')
+  })
+
+  // 対照: 気象庁の観測点には何も足さない。
+  it('気象庁の観測点には印を付けない', () => {
+    expect(withNonJmaMark('輪島市門前町', false)).toBe('輪島市門前町')
+  })
+
+  // 安全弁: 印の有無を持たない点（P2PQuake 経路は配信しない）でも名前を壊さない。
+  it('印の有無が未定義なら名前をそのまま返す', () => {
+    expect(withNonJmaMark('輪島市門前町', undefined)).toBe('輪島市門前町')
+  })
+
+  // 安全弁: **電文が使う文字と同じものを足している。** 見た目の似た ※（U+203B）や
+  // 半角の * に取り違えると、電文の付加文が説明している記号と画面の記号が食い違う。
+  it('電文と同じ全角アスタリスク（U+FF0A）を使う', () => {
+    expect(NON_JMA_MARK).toBe(String.fromCharCode(0xFF0A))
   })
 })

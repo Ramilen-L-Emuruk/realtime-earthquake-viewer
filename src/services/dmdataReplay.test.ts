@@ -1023,7 +1023,7 @@ describe('filterPreWindowEvents の津波', () => {
       issue: { source: '気象庁', time, type: 'Focus' },
       areas: opts.cancelled
         ? []
-        : [{ grade: 'Forecast', immediate: false, name: '石川県能登', code: '392' }],
+        : [{ grade: 'Forecast', immediate: false, name: '石川県能登', code: '360' }],
     }
     return { replayTime: new Date(time), payload: { kind: 'event', event: tsunami } }
   }
