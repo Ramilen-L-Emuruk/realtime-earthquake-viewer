@@ -5,8 +5,10 @@ import { fireEvent } from '@testing-library/react'
  *
  * **行の DOM の形を前提にしている。** 行は直下に span を 2 つだけ持ち、1 つ目が
  * 「震度（階級）と、その値についての印」、2 つ目が「地名・`＊`・開閉の記号」。地名は
- * 2 つ目の先頭の子要素で、そこを完全一致で見る（→ `EarthquakeCard` の `IntensityRow` /
- * `LpgmRow`。並べ方の規約は docs/spec/quake-spec.md §8「地名は右端で揃える」）。
+ * 2 つ目の先頭の子要素（右端を揃えるための枠）に入っており、その `textContent` を完全一致で
+ * 見る（→ `EarthquakeCard` の `IntensityRow` / `LpgmRow`。並べ方の規約は
+ * docs/spec/quake-spec.md §8「地名は右端で揃える」）。**枠の中はさらに 1 段深い** ——
+ * 上位段では地名そのものが寄せの当たり判定になるため、そこだけを包む span がある。
  *
  * **`getByText('〇〇＊')` では引けない。** 地名と `＊` は右端を揃えるために別の要素へ
  * 分けてあり、Testing Library の既定の照合は直下のテキストノードしか繋がない。

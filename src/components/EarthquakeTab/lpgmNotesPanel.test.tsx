@@ -88,7 +88,7 @@ const renderTab = (lpgm: JMALpgm) => render(
     onToggleDistribution={() => {}}
     unreceivedQuakeKey={null}
     onToggleUnreceived={() => {}}
-    onPointFocus={() => {}}
+    onFocusMap={() => {}}
   />
 )
 

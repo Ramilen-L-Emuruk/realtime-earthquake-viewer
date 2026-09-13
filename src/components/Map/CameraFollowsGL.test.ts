@@ -4,7 +4,7 @@ import { createElement as h } from 'react'
 import { render, cleanup, act } from '@testing-library/react'
 import type * as maplibregl from 'maplibre-gl'
 import { MapGLContext } from './mapGLContext'
-import { FitToCandidateGL, FitToDetectionGL, FitToEEWGL, TsunamiFitGL, FocusObsGL, FocusPointGL } from './CameraFollowsGL'
+import { FitToCandidateGL, FitToDetectionGL, FitToEEWGL, TsunamiFitGL, FocusObsGL, FocusTargetGL } from './CameraFollowsGL'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { LatLng } from '../../utils/stationCoords'
 import type { EEWAlert } from '../../types/earthquake'
@@ -1119,6 +1119,7 @@ interface TsunamiProps {
   arrivals?: typeof ARRIVALS
   missing?: typeof ARRIVALS
   focus?: { name: string; ts: number } | null
+  focusTarget?: { positions: LatLng[]; ts: number } | null
 }
 
 function tsunamiHarness(map: maplibregl.Map, props: TsunamiProps = {}) {
@@ -1133,6 +1134,7 @@ function tsunamiHarness(map: maplibregl.Map, props: TsunamiProps = {}) {
       arrivalMarkers: props.arrivals ?? [],
       missingMarkers: props.missing ?? [],
       focusObsName: props.focus ?? null,
+      focusTarget: props.focusTarget ?? null,
     }),
   )
 }
@@ -1391,6 +1393,45 @@ describe('津波モードの帰還（観測点 → 俯瞰）', () => {
     // Assert: まだ帰らない（実測の行をクリックしたときと同じ扱い）。
     expect(fitTargets(map).length).toBe(before)
   })
+
+  // 区域名のクリック（`FocusTargetGL` が寄せる）でも猶予を数え直す。カメラを動かしたのに
+  // 猶予が延びないと、直前のフィットが張った残り時間だけでユーザーが選んだ表示が巻き戻る。
+  it('区域名のクリックでも猶予を数え直す', () => {
+    const map = createFakeMap()
+    const view = render(tsunamiHarness(map, { arrivals: ARRIVALS }))
+    const before = fitTargets(map).length
+
+    act(() => { vi.advanceTimersByTime(20_000) })
+    view.rerender(tsunamiHarness(map, {
+      arrivals: ARRIVALS,
+      focusTarget: { positions: [[38.0, 141.0], [39.0, 142.0]], ts: 1 },
+    }))
+    act(() => { vi.advanceTimersByTime(20_000) })
+
+    expect(fitTargets(map).length).toBe(before)
+  })
+
+  // 安全弁: 同じクリック（同じ `ts`）で何度も数え直さない。電文のたびに再レンダーされるので、
+  // 消費を記録しないと猶予が延び続けて俯瞰へ二度と帰らなくなる。
+  it('同じ寄せ要求で再レンダーされても猶予は延びない', () => {
+    const map = createFakeMap()
+    const target = { positions: [[38.0, 141.0], [39.0, 142.0]] as LatLng[], ts: 1 }
+    const view = render(tsunamiHarness(map, { arrivals: ARRIVALS, focusTarget: target }))
+    const before = fitTargets(map).length
+
+    // 同じ要求のまま描き直しながら猶予ぶん進める。
+    act(() => { vi.advanceTimersByTime(20_000) })
+    view.rerender(tsunamiHarness(map, { arrivals: ARRIVALS, focusTarget: { ...target } }))
+    act(() => { vi.advanceTimersByTime(INTERACTION_HOLD_SEC * 1000) })
+
+    // 猶予は延びていないので俯瞰へ帰っている。
+    expect(fitTargets(map).length).toBeGreaterThan(before)
+  })
+
+  // **「津波モードでないときは猶予を張らない」の対照テストは置いていない。**
+  // 津波モード以外では帰還そのものが起きないので、猶予を張ったかどうかを外から観測できない
+  // （モードを戻すと入室フィットが走り、猶予の満了と区別が付かない）。要求の消費だけは
+  // モードに関わらず行う —— その理由は実装側のコメントに書いてある。
 })
 
 // ── 観測行クリックによるフォーカス（FocusObsGL） ────────────────────────────────
@@ -2012,15 +2053,15 @@ describe('揺れフォーカスの担当の受け渡し', () => {
   })
 })
 
-// ── 一覧の行クリックによる地点フォーカス（FocusPointGL） ──────────────────────────
+// ── 一覧の行クリックによる地点フォーカス（FocusTargetGL） ──────────────────────────
 // 地震カードの観測点の行から座標で渡される経路。津波（FocusObsGL）との違いは、寄り先を
 // 名前ではなく座標で受け取ること。**鍵は座標ではなく `ts`** で、同じ行を続けて押しても効く。
 
-function pointFocusHarness(map: maplibregl.Map, focus: { position: LatLng; ts: number } | null) {
+function pointFocusHarness(map: maplibregl.Map, focus: { positions: LatLng[]; ts: number } | null) {
   return h(
     MapGLContext.Provider,
     { value: map },
-    h(FocusPointGL, { focusPoint: focus }),
+    h(FocusTargetGL, { focusTarget: focus }),
   )
 }
 
@@ -2028,11 +2069,11 @@ describe('一覧の行クリックによる地点フォーカス', () => {
   it('同じ地点を続けて押しても、押すたびに寄せる（鍵は ts）', () => {
     // Arrange: ある観測点の行を押した。
     const map = createFakeMap()
-    const view = render(pointFocusHarness(map, { position: [34.0, 131.0], ts: 1 }))
+    const view = render(pointFocusHarness(map, { positions: [[34.0, 131.0]], ts: 1 }))
     expect(flyCenters(map)).toEqual([[131.0, 34.0]])
 
     // Act: 地図を手で動かしたあと、同じ行をもう一度押す（座標は同じで ts だけ進む）。
-    view.rerender(pointFocusHarness(map, { position: [34.0, 131.0], ts: 2 }))
+    view.rerender(pointFocusHarness(map, { positions: [[34.0, 131.0]], ts: 2 }))
 
     // Assert: 2 度目も寄せる。座標で判定していると「変化なし」になって動かない。
     expect(flyCenters(map)).toEqual([[131.0, 34.0], [131.0, 34.0]])
@@ -2041,10 +2082,10 @@ describe('一覧の行クリックによる地点フォーカス', () => {
   it('クリック 1 回につき 1 度だけ寄せる（再レンダーでは寄せ直さない）', () => {
     // Arrange: 押した直後。
     const map = createFakeMap()
-    const view = render(pointFocusHarness(map, { position: [34.0, 131.0], ts: 1 }))
+    const view = render(pointFocusHarness(map, { positions: [[34.0, 131.0]], ts: 1 }))
 
     // Act: 続報などで同じ props のまま描き直される。
-    view.rerender(pointFocusHarness(map, { position: [34.0, 131.0], ts: 1 }))
+    view.rerender(pointFocusHarness(map, { positions: [[34.0, 131.0]], ts: 1 }))
 
     // Assert: 寄せ直さない（電文が届くたびに古いクリック先へ引き戻さない）。
     expect(flyCenters(map)).toHaveLength(1)

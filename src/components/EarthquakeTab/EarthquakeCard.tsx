@@ -22,8 +22,11 @@ import { getIntensityLabel, getIntensityLabelWithOrAbove, getIntensityColor, get
 import { hasKnownEpicenter } from '../../utils/geo'
 
 import { buildAreaPrefIndex, buildRegionOrderIndex, buildStationPrefIndex, lookupPointCoords, lookupStationRegion, regionOrderRank, type LatLng } from '../../utils/stationCoords'
-import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel, buildIntensityRows, makeAreaPrefResolver, cityKey } from '../../utils/quakePoints'
+import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel, buildIntensityRows, makeAreaPrefResolver, cityKey, type IntensityStationRow } from '../../utils/quakePoints'
 import { useStationCoords } from '../../hooks/useStationCoords'
+import { useSubRegions } from '../../hooks/useSubRegions'
+import { usePrefectures } from '../../hooks/usePrefectures'
+import { ringsBoundsIndex, EMPTY_BOUNDS_INDEX, type RingsBounds } from '../../utils/subregions'
 import { groupUnreceivedPointNames, type UnreceivedPointGroup } from './unreceivedPointNames'
 
 /**
@@ -33,6 +36,7 @@ import { groupUnreceivedPointNames, type UnreceivedPointGroup } from './unreceiv
  * （行の側は `pref:` / `area:` / `city:` / `lpgm:pref:` / `lpgm:area:` を使う）。
  */
 const LPGM_NOTES_KEY = 'lpgm:notes'
+
 
 /**
  * 震度一覧の 1 行。都道府県・一次細分区域・市町村・観測点の 4 段で共有する。
@@ -48,7 +52,7 @@ const LPGM_NOTES_KEY = 'lpgm:notes'
  * 入れ子を許さない。長周期のトグルと同じ作法）。開けない段には `role` も `tabIndex` も
  * 与えない —— 押せない行がタブ移動で止まると邪魔になる。
  */
-function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived, nonJma, depth, expandKey, expanded, onToggle, onActivate }: {
+function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived, nonJma, depth, expandKey, expanded, onToggle, onFocus }: {
   label: string
   scale: IntensityScale
   /** その行の震度が未入電の値から来ている（ラベルへ「以上」を足す）。 */
@@ -73,15 +77,15 @@ function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived
   expanded: ReadonlySet<string>
   onToggle: (key: string) => void
   /**
-   * 開閉を持たない行（＝配下を持たない観測点の行）を押したときの動作。地図をその地点へ寄せる。
+   * その行が指す場所へ地図を寄せる。**置き場所は行が開閉を持つかで変わる。**
    *
-   * **開閉（`expandKey`）とは同居させない。** 1 回のクリックが 2 つの意味を持ち、どちらを
-   * 優先しても片方が押せなくなる。いま渡しているのは末端の観測点の行だけで、そこは
-   * `expandKey` が `null` になる。**上位の段（県・区域・市町村）へ寄せを広げるときは、
-   * 行全体ではなく行の中に別の当たり判定を置くこと**（下の `activate` が開閉を先に採るので、
-   * ここへ渡しても黙って効かない）。
+   * - 開閉を持たない行（観測点）→ **行全体**が寄せになる
+   * - 開閉を持つ行（県・区域・市町村）→ **地名の部分だけ**（行全体は開閉が取る）
+   *
+   * 1 回のクリックに 2 つの意味を持たせられないので当たり判定を分けている。どちらの段でも
+   * 「地名を押せば寄る」は成り立つ（→ docs/spec/quake-spec.md §8）。
    */
-  onActivate?: () => void
+  onFocus?: () => void
 }) {
   const canExpand = expandKey != null
   const isOpen = canExpand && expanded.has(expandKey)
@@ -91,9 +95,11 @@ function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived
   const size = depth === 0
     ? 'text-[0.9375rem] roomy:text-[1.125rem]'
     : depth === 1 ? 'text-[0.875rem] roomy:text-[1rem]' : 'text-[0.8125rem] roomy:text-[0.9375rem]'
-  // 行の主アクション。**開閉があればそちらが取る**（`onActivate` の注記を参照）。
+  // 行の主アクション。**開閉があればそちらが取る**（`onFocus` の注記を参照）。
   // `stopPropagation` は、カード自体の `<button>`（選択のトグル）へ伝わらせないため。
-  const activate = canExpand ? () => onToggle(expandKey) : onActivate
+  const activate = canExpand ? () => onToggle(expandKey) : onFocus
+  // 開閉を持つ行では、寄せを地名の部分へ移す（行全体は開閉が取っているため）。
+  const labelFocus = canExpand ? onFocus : undefined
   return (
     <div
       {...(activate ? {
@@ -158,7 +164,23 @@ function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived
               引き当てのために外してあるので、戻すのは表示のここ。記号だけでは何と対比して
               いるのか分からないので説明を添える。**枠の幅は行の文字の大きさに連動させる**
               （`em`）—— 段ごとに文字が小さくなるため。 */}
-          <span title={nonJma ? NON_JMA_MARK_TITLE : undefined}>{label}</span>
+          {/* 開閉を持つ行では、ここだけが寄せの当たり判定になる（`labelFocus`）。
+              **行に要素を足さない**のが選んだ理由 —— 行には既に震度・未入電の印・地名・`＊`・
+              開閉の記号が並んでおり、狭い画面では地名が折り返している。 */}
+          <span
+            title={nonJma ? NON_JMA_MARK_TITLE : undefined}
+            {...(labelFocus ? {
+              role: 'button' as const,
+              tabIndex: 0,
+              onClick: (e: React.MouseEvent) => { e.stopPropagation(); labelFocus() },
+              onKeyDown: (e: React.KeyboardEvent) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); labelFocus() }
+              },
+              className: 'cursor-pointer hover:underline',
+            } : {})}
+          >
+            {label}
+          </span>
         </span>
         <span
           className="flex-shrink-0 w-[1em] text-center"
@@ -187,7 +209,7 @@ function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived
  * **階級の色（`getLpgmClassColor`）は値だけで決め、段では変えない** —— 段の区別に流用すると、
  * 色が二通りの意味を持つ。並べる震度も値によらずグレーで、こちらは階級の補足として置いている。
  */
-function LpgmRow({ label, lgInt, int, nonJma, depth, expandKey, expanded, onToggle }: {
+function LpgmRow({ label, lgInt, int, nonJma, depth, expandKey, expanded, onToggle, onFocus }: {
   label: string
   lgInt: number
   /** その範囲の最大震度。階級と並べると「揺れは小さいのに高層階が大きく揺れた」形が出る */
@@ -199,25 +221,34 @@ function LpgmRow({ label, lgInt, int, nonJma, depth, expandKey, expanded, onTogg
   expandKey: string | null
   expanded: ReadonlySet<string>
   onToggle: (key: string) => void
+  /**
+   * 開閉を持たない行（＝観測点の行）を押したときの動作。地図をその地点へ寄せる。
+   * 扱いは `IntensityRow` の同名 props と同じ（開閉があればそちらが取る）。
+   */
+  onFocus?: () => void
 }) {
-  const isOpen = expandKey != null && expanded.has(expandKey)
+  const canExpand = expandKey != null
+  const isOpen = canExpand && expanded.has(expandKey)
   const pad = ['pl-2', 'pl-5', 'pl-8'][depth]
   const size = depth === 0
     ? 'text-[0.9375rem] roomy:text-[1.125rem]'
     : depth === 1 ? 'text-[0.875rem] roomy:text-[1rem]' : 'text-[0.8125rem] roomy:text-[0.9375rem]'
-  const interactive = expandKey != null
+  // 行の主アクション。開閉があればそちらが取る（`IntensityRow` と同じ）。
+  const activate = canExpand ? () => onToggle(expandKey) : onFocus
+  // 開閉を持つ行（県・区域）では、寄せを地名の部分へ移す。
+  const labelFocus = canExpand ? onFocus : undefined
   return (
     <div
-      {...(interactive ? {
+      {...(activate ? {
         role: 'button' as const,
         tabIndex: 0,
-        'aria-expanded': isOpen,
-        onClick: (e: React.MouseEvent) => { e.stopPropagation(); onToggle(expandKey) },
+        ...(canExpand ? { 'aria-expanded': isOpen } : {}),
+        onClick: (e: React.MouseEvent) => { e.stopPropagation(); activate() },
         onKeyDown: (e: React.KeyboardEvent) => {
-          if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); onToggle(expandKey) }
+          if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); activate() }
         },
       } : {})}
-      className={`flex items-center ${pad} pr-2 py-0.5 ${depth === 0 ? 'roomy:py-1.5' : ''} ${size}${interactive ? ' cursor-pointer hover:bg-white/5' : ''}`}
+      className={`flex items-center ${pad} pr-2 py-0.5 ${depth === 0 ? 'roomy:py-1.5' : ''} ${size}${activate ? ' cursor-pointer hover:bg-white/5' : ''}`}
     >
       {/* 階級と、その範囲の最大震度を左に置く。**震度一覧と同じ並べ方**（値についての情報は
           左、地名は右で揃える）。地名の側へ置くと、付いている行だけ地名が左へ押される。 */}
@@ -237,7 +268,20 @@ function LpgmRow({ label, lgInt, int, nonJma, depth, expandKey, expanded, onTogg
       <span className="flex items-center justify-end min-w-0 flex-1">
         <span className="min-w-0 text-right" style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}>
           {/* 気象庁以外が運用する観測点の印。震度一覧・地図の吹き出しと同じ扱い。 */}
-          <span title={nonJma ? NON_JMA_MARK_TITLE : undefined}>{label}</span>
+          <span
+            title={nonJma ? NON_JMA_MARK_TITLE : undefined}
+            {...(labelFocus ? {
+              role: 'button' as const,
+              tabIndex: 0,
+              onClick: (e: React.MouseEvent) => { e.stopPropagation(); labelFocus() },
+              onKeyDown: (e: React.KeyboardEvent) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); labelFocus() }
+              },
+              className: 'cursor-pointer hover:underline',
+            } : {})}
+          >
+            {label}
+          </span>
         </span>
         <span
           className="flex-shrink-0 w-[1em] text-center"
@@ -250,7 +294,7 @@ function LpgmRow({ label, lgInt, int, nonJma, depth, expandKey, expanded, onTogg
           className="ml-1.5 flex-shrink-0 w-[1em] text-center text-[0.75rem] roomy:text-[0.875rem]"
           style={{ color: '#9ca3af' }}
         >
-          {interactive ? (isOpen ? '▾' : '▸') : ''}
+          {canExpand ? (isOpen ? '▾' : '▸') : ''}
         </span>
       </span>
     </div>
@@ -310,14 +354,14 @@ interface Props {
   /** この地震の未入電の一覧を開いているか。 */
   unreceivedActive?: boolean
   onToggleUnreceived?: () => void
-  /** 観測点の行をクリックしたときに、その地点へ地図を寄せる。 */
-  onPointFocus?: (position: LatLng) => void
+  /** 一覧の行をクリックしたときに、その場所へ地図を寄せる（1 点でも範囲でも）。 */
+  onFocusMap?: (positions: LatLng[]) => void
 }
 
 export function EarthquakeCard({
   quake, isLatest, isSelected, onSelect, lpgm, activeLpgmEventId, onToggleLpgm,
   estimatedIntensity = null, distributionActive = false, onToggleDistribution,
-  unreceivedActive = false, onToggleUnreceived, onPointFocus,
+  unreceivedActive = false, onToggleUnreceived, onFocusMap,
 }: Props) {
   const { earthquake, issue } = quake
   const { hypocenter, maxScale, domesticTsunami } = earthquake
@@ -355,6 +399,10 @@ export function EarthquakeCard({
   }, [isSelected])
 
   const stationData = useStationCoords()
+  // 県・区域の行から地図へ寄せるための境界。**どちらも地図が既に読んでいるデータ**で、
+  // ローダーがキャッシュを返すので通信は増えない（→ `usePrefectures`）。
+  const prefectures = usePrefectures()
+  const { data: subRegions } = useSubRegions()
 
   /**
    * 開いている段。**既定はどこも畳んである。**
@@ -412,25 +460,74 @@ export function EarthquakeCard({
   }, [quake.points, quake.cities, stationData])
 
   /**
-   * 観測点の行を押したときに地図へ渡す寄り先。**押せるかどうかもこれで決める。**
+   * 一覧の行を押したときに地図へ渡す寄り先。**押せるかどうかもこれで決める。**
    *
    * 判定と寄り先を別々に解決すると、片方だけ引けたときに「押せるのに動かない」（またはその逆）に
    * なる。津波の観測点の行が同じ規律で書かれている（→ docs/spec/tsunami-spec.md §9
-   * 「観測点の行をクリックしたときの寄り先」）。
+   * 「観測点の行・区域名をクリックしたときの寄り先」）。
    *
-   * **県名は行の親から採り、引けなければ観測点名から逆引きする。** 行の県は電文の `City` 由来の
+   * **県名は行の親から採り、引けなければ名前から逆引きする。** 行の県は電文の `City` 由来の
    * ことがあり（`makeAreaPrefResolver`）、座標テーブルのキーと必ず揃うとは限らない。地図側
    * （`useQuakeLayerData` の `intensityMarkers`）は逆引きで引いているので、両方を試せば
    * 地図に点が立っている観測点は引ける。
    *
+   * **観測点と区域は座標表の別の表に入っている**ので、どちらを引くかは呼び出し側が渡す
+   * （`lookupPointCoords` の `isArea`）。震度一覧の行は観測点しか渡さないが、未入電の一覧には
+   * 区域の行も並ぶ（→ `unreceivedPoints`）。
+   *
    * **`＊`（気象庁以外が運用する観測点）は外さなくてよい。** 電文の読み取りで既に外れており
    * （`stripNonJmaMark`）、`EarthquakePoint.addr` は印の無い名前。戻しているのは表示のときだけ。
    */
-  const focusStationHandler = (pref: string, name: string): (() => void) | undefined => {
-    if (!onPointFocus || !stationData) return undefined
-    const position = lookupPointCoords(stationData, pref, name, false)
-      ?? lookupPointCoords(stationData, unreceivedIndexes.stationPrefIndex?.get(name) ?? '', name, false)
-    return position ? () => onPointFocus(position) : undefined
+  /**
+   * 県・区域の外接矩形。**カードごとに作り直さない** —— 索引は入力の参照をキーにキャッシュされる
+   * （`namedRingsBoundsIndex` / `subRegionBoundsIndex`）。境界は県 47 件・区域 192 件で
+   * 合わせて 24 万点あり、カードの一覧は仮想化していないので、ここで走査すると**畳んだカードも
+   * 含めて全枚数ぶん**繰り返すことになる。
+   */
+  const prefBounds = prefectures
+    ? ringsBoundsIndex(prefectures, () => Object.entries(prefectures).map(([name, shape]) => [name, shape.rings] as const))
+    : EMPTY_BOUNDS_INDEX
+  const areaBounds = subRegions
+    ? ringsBoundsIndex(subRegions, () => subRegions.map((r) => [r.name, r.rings] as const))
+    : EMPTY_BOUNDS_INDEX
+
+  const coordsOf = (pref: string, name: string, isArea = false): LatLng | null => {
+    if (!stationData) return null
+    const index = isArea ? unreceivedIndexes.areaPrefIndex : unreceivedIndexes.stationPrefIndex
+    return lookupPointCoords(stationData, pref, name, isArea)
+      ?? lookupPointCoords(stationData, index?.get(name) ?? '', name, isArea)
+  }
+
+  const focusHandlerFor = (pref: string, name: string, isArea = false): (() => void) | undefined => {
+    if (!onFocusMap) return undefined
+    const position = coordsOf(pref, name, isArea)
+    return position ? () => onFocusMap([position]) : undefined
+  }
+
+  /**
+   * 範囲の行（県・区域・市町村）の寄り先。
+   *
+   * **外接矩形の 2 点だけを渡す。** `fitToPositions` は受け取った点の外接矩形へ寄せるので、
+   * 境界の全頂点を渡す必要が無い（区域 1 つで数百点になる）。
+   */
+  const focusBoundsHandler = (bounds: RingsBounds | null): (() => void) | undefined => {
+    if (!onFocusMap || !bounds) return undefined
+    const corners: LatLng[] = [[bounds.minLat, bounds.minLng], [bounds.maxLat, bounds.maxLng]]
+    return () => onFocusMap(corners)
+  }
+
+  /**
+   * 市町村の行の寄り先。**境界データが無いので配下の観測点の範囲で代用する。**
+   *
+   * 県・区域と違って市町村の境界は生成データに無く（`prefectures.json` / `subregions.json` の
+   * どちらも持たない）、電文からも作れない。観測点を 1 つも引けない市町村は押せないままにする。
+   */
+  const focusCityHandler = (pref: string, stations: readonly IntensityStationRow[]): (() => void) | undefined => {
+    if (!onFocusMap) return undefined
+    const positions = stations
+      .map((st) => coordsOf(pref, st.name))
+      .filter((p): p is LatLng => p !== null)
+    return positions.length > 0 ? () => onFocusMap(positions) : undefined
   }
 
   const prefGroups = useMemo(() => {
@@ -501,7 +598,7 @@ export function EarthquakeCard({
     const ordered = [...stations, ...areas]
       .map((p, i) => ({ p, i, r: rank(p) }))
       .sort((a, b) => a.r - b.r || a.i - b.i)
-      .map(({ p }) => ({ addr: p.addr, nonJma: p.nonJma, pref: prefOf(p) }))
+      .map(({ p }) => ({ addr: p.addr, nonJma: p.nonJma, isArea: p.isArea, pref: prefOf(p) }))
     const groups = groupUnreceivedPointNames(ordered)
     return {
       groups,
@@ -886,6 +983,7 @@ export function EarthquakeCard({
                         expandKey={prefRow.areas.length > 0 || prefRow.stations.length > 0 ? topKey : null}
                         expanded={expanded}
                         onToggle={toggle}
+                        onFocus={focusBoundsHandler(prefBounds.get(prefRow.name) ?? null)}
                       />
                       {expanded.has(topKey) && (
                         <>
@@ -899,6 +997,7 @@ export function EarthquakeCard({
                                 expandKey={area.stations.length > 0 ? `lpgm:area:${area.name}` : null}
                                 expanded={expanded}
                                 onToggle={toggle}
+                                onFocus={focusBoundsHandler(areaBounds.get(area.name) ?? null)}
                               />
                               {expanded.has(`lpgm:area:${area.name}`) && area.stations.map(st => (
                                 <LpgmRow
@@ -911,6 +1010,7 @@ export function EarthquakeCard({
                                   expandKey={null}
                                   expanded={expanded}
                                   onToggle={toggle}
+                                  onFocus={focusHandlerFor(prefRow.name, st.name)}
                                 />
                               ))}
                             </div>
@@ -927,6 +1027,7 @@ export function EarthquakeCard({
                               expandKey={null}
                               expanded={expanded}
                               onToggle={toggle}
+                              onFocus={focusHandlerFor(prefRow.name, st.name)}
                             />
                           ))}
                         </>
@@ -968,11 +1069,31 @@ export function EarthquakeCard({
                       <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[0.8125rem] roomy:text-[1rem] text-white">
                         {/* 気象庁以外が運用する観測点には電文どおり `＊` を付ける。震度一覧・
                             地図の吹き出しと同じ扱い（→ `withNonJmaMark`）。 */}
-                        {group.names.map(({ name, nonJma }) => (
-                          <span key={name} title={nonJma ? NON_JMA_MARK_TITLE : undefined}>
-                            {withNonJmaMark(name, nonJma)}
-                          </span>
-                        ))}
+                        {/* 地名を押すと地図がその地点（区域なら代表点）へ寄る。震度一覧の
+                            観測点の行と同じ引き当てで、寄り先を作れる名前だけが押せる
+                            （→ `focusHandlerFor`・docs/spec/quake-spec.md §8）。
+                            **`＊` まで含めて 1 つの当たり判定にする** —— 印は名前の一部で、
+                            そこだけ押せないと境目が利用者に分からない。 */}
+                        {group.names.map(({ name, nonJma, isArea }) => {
+                          const focus = focusHandlerFor(group.pref, name, isArea)
+                          return (
+                            <span
+                              key={name}
+                              title={nonJma ? NON_JMA_MARK_TITLE : undefined}
+                              {...(focus ? {
+                                role: 'button' as const,
+                                tabIndex: 0,
+                                onClick: (e: React.MouseEvent) => { e.stopPropagation(); focus() },
+                                onKeyDown: (e: React.KeyboardEvent) => {
+                                  if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); focus() }
+                                },
+                                className: 'cursor-pointer hover:underline',
+                              } : {})}
+                            >
+                              {withNonJmaMark(name, nonJma)}
+                            </span>
+                          )
+                        })}
                       </div>
                     </div>
                   ))}
@@ -999,6 +1120,7 @@ export function EarthquakeCard({
                       expandKey={prefRow.regions.length > 0 ? `pref:${prefRow.pref}` : null}
                       expanded={expanded}
                       onToggle={toggle}
+                      onFocus={focusBoundsHandler(prefBounds.get(prefRow.pref) ?? null)}
                     />
                     {expanded.has(`pref:${prefRow.pref}`) && prefRow.regions.map(region => (
                       <div key={region.name}>
@@ -1011,6 +1133,7 @@ export function EarthquakeCard({
                           expandKey={region.cities.length > 0 || region.stations.length > 0 ? `area:${region.name}` : null}
                           expanded={expanded}
                           onToggle={toggle}
+                          onFocus={focusBoundsHandler(areaBounds.get(region.name) ?? null)}
                         />
                         {expanded.has(`area:${region.name}`) && (
                           <>
@@ -1026,6 +1149,7 @@ export function EarthquakeCard({
                                   expandKey={city.stations.length > 0 ? `city:${region.name}/${city.name}` : null}
                                   expanded={expanded}
                                   onToggle={toggle}
+                                  onFocus={focusCityHandler(prefRow.pref, city.stations)}
                                 />
                                 {expanded.has(`city:${region.name}/${city.name}`) && city.stations.map(st => (
                                   <IntensityRow
@@ -1039,7 +1163,7 @@ export function EarthquakeCard({
                                     expandKey={null}
                                     expanded={expanded}
                                     onToggle={toggle}
-                                    onActivate={focusStationHandler(prefRow.pref, st.name)}
+                                    onFocus={focusHandlerFor(prefRow.pref, st.name)}
                                   />
                                 ))}
                               </div>
@@ -1058,7 +1182,7 @@ export function EarthquakeCard({
                                 expandKey={null}
                                 expanded={expanded}
                                 onToggle={toggle}
-                                onActivate={focusStationHandler(prefRow.pref, st.name)}
+                                onFocus={focusHandlerFor(prefRow.pref, st.name)}
                               />
                             ))}
                           </>

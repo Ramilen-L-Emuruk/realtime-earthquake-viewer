@@ -56,7 +56,7 @@ const renderTab = (quake: JMAQuake, selected: boolean) => render(
     onToggleDistribution={() => {}}
     unreceivedQuakeKey={null}
     onToggleUnreceived={() => {}}
-    onPointFocus={() => {}}
+    onFocusMap={() => {}}
   />
 )
 

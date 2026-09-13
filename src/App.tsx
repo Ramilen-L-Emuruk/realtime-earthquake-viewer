@@ -10,7 +10,7 @@ import {
 } from './utils/tabPriority'
 import { PanelResizeHandle } from './components/PanelResizeHandle'
 import { MapView, type MapMode } from './components/Map/MapView'
-import type { ShakeFocus, MapFocusPoint } from './components/Map/mapTypes'
+import type { ShakeFocus, MapFocusTarget } from './components/Map/mapTypes'
 import type { LatLng } from './utils/stationCoords'
 import { MapUpdateTime } from './components/MapUpdateTime'
 import { MapDataStatus } from './components/MapDataStatus'
@@ -159,12 +159,16 @@ export function App() {
   const [quakeSelectionTick, setQuakeSelectionTick] = useState(0)
   const [focusedObsName, setFocusedObsName] = useState<{ name: string; ts: number } | null>(null)
   /**
-   * 地震カードの観測点の行をクリックしたときの寄り先。
+   * カードの一覧の行をクリックしたときの寄り先（地震カードの観測点・県・区域・市町村と、
+   * 津波カードの区域名）。
    *
    * **津波の `focusedObsName` とは別に持つ。** あちらは名前で地図側が引く仕組みで、震度観測点と
    * 潮位観測点は名前が衝突しうるため、同じ入れ物に混ぜると互いの点集合から引いてしまう。
+   *
+   * こちらは座標で渡すので、地震カードと津波カードのどちらから来ても同じ入れ物で扱える
+   * （同時に 2 つの寄せ要求は立たない —— 押せるのは表示中のタブの一覧だけ）。
    */
-  const [focusedQuakePoint, setFocusedQuakePoint] = useState<MapFocusPoint | null>(null)
+  const [focusedMapTarget, setFocusedMapTarget] = useState<MapFocusTarget | null>(null)
   /**
    * 地震カードに紐づく追加表示（長周期地震動階級／震度分布モード）。null なら何も重ねない。
    * **選択中の地震のものとは限らない**（EEW カードから開いた長周期・引き当てる地震カードが
@@ -254,10 +258,11 @@ export function App() {
   const focusTsunamiObs = useCallback((name: string) => {
     setFocusedObsName({ name, ts: Date.now() })
   }, [])
-  // 地震カードの観測点の行をクリックしたときに、その地点を地図の寄り先として通知する。
+  // カードの一覧の行をクリックしたときに、その場所を地図の寄り先として通知する。
   // 座標の解決はカード側が行う（押せるかどうかの判定と同じ引き当てを使うため）。
-  const focusQuakePoint = useCallback((position: LatLng) => {
-    setFocusedQuakePoint({ position, ts: Date.now() })
+  // 1 点なら flyTo、複数点ならその外接矩形へ寄る（→ `FocusTargetGL`）。
+  const focusMapTarget = useCallback((positions: LatLng[]) => {
+    setFocusedMapTarget({ positions, ts: Date.now() })
   }, [])
   // EEW 発報中（cancelledAt 除外済み）・揺れ検知フラグ・地震情報リスト・デフォルトタブを
   // タイマーコールバック内やフック間で参照するための ref。
@@ -1713,7 +1718,7 @@ export function App() {
               shakeFocus={shakeFocus}
               eewLpgmEventId={activeLpgmSource === 'eew' ? activeLpgmEventId : null}
               focusObsName={focusedObsName}
-              focusPoint={focusedQuakePoint}
+              focusTarget={focusedMapTarget}
               obsUpdateStatus={obsUpdateStatus}
               quakeSelectionTick={quakeSelectionTick}
               onMapReady={setMapHandle}
@@ -1800,7 +1805,7 @@ export function App() {
                 onToggleDistribution={toggleDistribution}
                 unreceivedQuakeKey={unreceivedQuakeKey}
                 onToggleUnreceived={toggleUnreceived}
-                onPointFocus={focusQuakePoint}
+                onFocusMap={focusMapTarget}
               />
             </ErrorBoundary>
           </div>
@@ -1825,6 +1830,7 @@ export function App() {
                 earthquakes={filteredEarthquakes}
                 onEarthquakeLink={linkTsunamiToEarthquake}
                 onObservationClick={focusTsunamiObs}
+                onFocusMap={focusMapTarget}
                 focusedDistrict={focusedDistrict}
                 obsUpdateStatus={obsUpdateStatus}
               areaGradeChangedKeys={areaGradeChangedKeys}

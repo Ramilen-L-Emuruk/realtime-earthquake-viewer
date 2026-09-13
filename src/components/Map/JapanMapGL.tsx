@@ -41,7 +41,7 @@ import {
   FitToEEWGL,
   TsunamiFitGL,
   FocusObsGL,
-  FocusPointGL,
+  FocusTargetGL,
 } from './CameraFollowsGL'
 import { JAPAN_CENTER, fitJapan, fitMaxZoom, REFERENCE_FIT_MAX_ZOOM } from './gl/camera'
 import { useActiveFaults } from '../../hooks/useActiveFaults'
@@ -93,7 +93,7 @@ export function JapanMapGL({
   eewLpgmEventId = null,
   kyoshinPsWave = [],
   focusObsName = null,
-  focusPoint = null,
+  focusTarget = null,
   heatPoints,
   showBathymetry = true,
   kyoshinSites = [],
@@ -744,11 +744,12 @@ export function JapanMapGL({
             arrivalMarkers={arrivalMarkers}
             missingMarkers={missingMarkers}
             focusObsName={focusObsName}
+            focusTarget={focusTarget}
           />
           <FocusObsGL focusObsName={focusObsName} observationBars={focusablePoints} />
           {/* 一覧の行クリックで渡された地点へ寄せる（いまの呼び出し元は地震カードの観測点の行）。
               モード切替をまたいで「処理済みの ts」を保つため常時マウントする。 */}
-          <FocusPointGL focusPoint={focusPoint} />
+          <FocusTargetGL focusTarget={focusTarget} />
         </MapGLContext.Provider>
       </div>
     </div>
