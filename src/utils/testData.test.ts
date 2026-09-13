@@ -24,7 +24,7 @@ import {
 } from './testData'
 import notoHonshinQuake from '../data/noto-honshin-2024-quake.json'
 import { extractQuakeEventId } from './quakeMerge'
-import { eewAreas, eewMaxScale, eewNoForecastReason } from './eew'
+import { eewAreas, eewMaxScale, eewNoForecastReason, isEewAreaArrived } from './eew'
 import { extractQuakeEventIdFromId } from './quakeMerge'
 import { isObservationMissing, matchesArea } from './tsunami'
 
@@ -648,6 +648,83 @@ describe('テスト EEW の kindCode と予想震度の整合', () => {
         expect(area.arrived).toBeUndefined()
       }
     }
+  })
+
+  // 震源時刻を固定した版。時刻の前後（未来か過去か）を確かめるには基準が要る。
+  const BASE = new Date('2026-01-01T12:00:00Z')
+  const basedCases = [
+    ['createTestEEW（特別警報・三陸沖）', createTestEEW(true, 'evt', 1, BASE)],
+    ['createTestEEWWarning（警報・日向灘）', createTestEEWWarning(true, 'evt', 1, BASE)],
+    ['createTestEEWForecast（予報・宮城県沖）', createTestEEWForecast(true, 'evt', 1, BASE)],
+    ['createTestEEWAssumed（単独点処理の続報・日向灘）', createTestEEWAssumed(true, 'evt', 2, BASE)],
+  ] as const
+
+  // 正: 未到達コード（00/10）の区域は**必ず**到達予測時刻を持ち、その値は震源時刻より後。
+  //
+  // **実電文にこの形しかない。** 走査した 753 区域のうち、時刻も `Condition` も持たない区域は
+  // 1 件も無かった（内訳は `testData.ts` の種別コードの説明）。
+  //
+  // かつてこの 3 ボタンはその「無い形」で、区域の全件が時刻も印も持っていなかった。すると
+  // 「主要動の到達（予測）」の欄は表示条件（時刻があるか到達済みか）を満たさず、ボタンから
+  // 1 度も画面に出てこない（→ CLAUDE.md「テストボタンは実機確認の唯一の入口」）。
+  it.each(basedCases)('%s: 未到達コードの区域は震源時刻より後の到達予測時刻を持つ', (_label, eew) => {
+    const targets = eewAreas(eew).filter(
+      (a) => !isEewArrivedKindCode(a.kindCode) && !isEewPlumKindCode(a.kindCode),
+    )
+    expect(targets.length).toBeGreaterThan(0)
+    for (const area of targets) {
+      expect(area.arrivalTime).not.toBeNull()
+      expect(Date.parse(area.arrivalTime!)).toBeGreaterThan(BASE.getTime())
+    }
+  })
+
+  // 対照: PLUM 法（09/19）の時刻は**震源時刻より前**。到達の予測ではなく「その震度を初めて
+  // 予測した時刻」なので、未来に置くと欄が「これから来る」ものとして読ませてしまう。
+  //
+  // **全ケースに掛ける不変条件**なので、PLUM 区域を持たないケースでは 0 周で通る。
+  // 「持っているはずのものが消えた」ことは次のテストが受け持つ ―― こちらだけだと、
+  // PLUM 区域を全部消しても 4 ケースとも通ってしまう。
+  it.each(basedCases)('%s: PLUM 法の区域の時刻は震源時刻より前', (_label, eew) => {
+    for (const area of eewAreas(eew)) {
+      if (!isEewPlumKindCode(area.kindCode)) continue
+      expect(area.arrivalTime).not.toBeNull()
+      expect(Date.parse(area.arrivalTime!)).toBeLessThan(BASE.getTime())
+    }
+  })
+
+  // 安全弁: PLUM 区域を受け持つボタンは、それを**1 件以上**持ち続ける。
+  // 実電文では区域 753 件のうち 78 件（約 1 割）がこの形で、画面では「時刻不明」として
+  // 並びの末尾に回る。消すとその見え方を実機で確かめる入口が無くなる。
+  it.each([
+    ['createTestEEW（特別警報・三陸沖）', createTestEEW(true, 'evt', 1, BASE)],
+    ['createTestEEWWarning（警報・日向灘）', createTestEEWWarning(true, 'evt', 1, BASE)],
+  ] as const)('%s: PLUM 法の区域を持つ', (_label, eew) => {
+    expect(eewAreas(eew).filter((a) => isEewPlumKindCode(a.kindCode)).length).toBeGreaterThan(0)
+  })
+
+  // 安全弁: 区域を持つテスト EEW は「主要動の到達（予測）」の欄に出る区域を必ず持つ。
+  // **判定は `RealtimeTab` の絞り込みと同じ述語**（時刻があるか到達済みか）で書く ——
+  // 上の 2 つを満たしても、区域そのものが消えれば欄は出ない。
+  it.each(basedCases)('%s: 到達の欄に出る区域を持つ', (_label, eew) => {
+    expect(eewAreas(eew).filter((a) => a.arrivalTime || isEewAreaArrived(a)).length).toBeGreaterThan(0)
+  })
+
+  // 3 通り（到達済み・未到達・PLUM 法）が 1 枚のカードに揃うのは特別警報テストの受け持ち。
+  // **1 通りだけでは並び（到達済み → 未到達 → PLUM）を実機で確かめられない。**
+  it('特別警報テストは到達の 3 通りをすべて持つ', () => {
+    const areas = eewAreas(createTestEEW(true, 'evt', 1, BASE))
+    expect(areas.some((a) => isEewArrivedKindCode(a.kindCode))).toBe(true)
+    expect(areas.some((a) => isEewPlumKindCode(a.kindCode))).toBe(true)
+    expect(areas.some((a) => !isEewArrivedKindCode(a.kindCode) && !isEewPlumKindCode(a.kindCode))).toBe(true)
+  })
+
+  // 件数。実電文では最大予想震度が高い報ほど区域が多い（件数の実測は `testData.ts` の
+  // 種別コードの説明）。到達の欄は件数が増えて初めて列に折り返すため、**強い地震のテストが
+  // 少ないままだとその見え方に入口が無い**。下限だけを固定するのは、実電文の中央値そのものを
+  // 書くと走査をやり直すたびにテストを直すことになるため。
+  it('強い地震のテストは区域を実電文なみの件数だけ持つ', () => {
+    expect(eewAreas(createTestEEW(true, 'evt', 1, BASE)).length).toBeGreaterThanOrEqual(20)
+    expect(eewAreas(createTestEEWWarning(true, 'evt', 1, BASE)).length).toBeGreaterThanOrEqual(20)
   })
 })
 

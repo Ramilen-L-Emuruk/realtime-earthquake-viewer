@@ -503,6 +503,27 @@ function toP2pArea(area: EEWRegion): EEWRegion {
 // 警報は予想震度5弱（scaleTo 45）以上の区域に発表されるため、震度4以下の区域には
 // 予報側のコードを使う（`isWarning` 判定は 10/11/19 のみを警報として扱う）。
 //
+// **種別コードの下 1 桁と `arrivalTime` は必ず噛み合わせる**（→ docs/spec/eew-spec.md §4
+// 「到達予測時刻は種別によって意味が変わる」）。実電文にこの 3 通りしか無いためで、
+// 外れた形を置くと「主要動の到達（予測）」の欄がテストボタンから出てこない。
+//   00 / 10（未到達）   … 未来の `arrivalTime` を持つ。`arrived` は立てない
+//   01 / 11（到達済み） … `arrivalTime` は `null`・`arrived: true`（時刻とは排他）
+//   09 / 19（PLUM 法）  … 過去の `arrivalTime` を持つ（到達の予測ではなく「その震度を
+//                          初めて予測した時刻」なので、画面は「時刻不明」と出す）
+//
+// **以下の数字は 1 つの走査から採っている**（このファイルの他の箇所はここを参照する）。
+// 対象は DMDATA アーカイブの `eew.forecast`・2026-08-02〜09-12 の 42 日分で、
+// そこに入っていた VXSE45 785 通・区域を持つ 95 通・区域 753 件。
+//   - 区域の内訳は未到達 317 件・到達済み 358 件・PLUM 法 78 件で、**3 通りのどれかに
+//     必ず当てはまった**。未到達と PLUM は全件が `ArrivalTime` を持ち、到達済みは全件が
+//     時刻を持たず `Condition` を持っていた。**時刻も `Condition` も無い区域は 1 件も無い。**
+//   - 区域の件数は電文全体の最大予想震度で変わる。震度4 の報 70 通が中央 3 件（最大 8 件）、
+//     震度5弱 21 通が中央 24 件、震度5強 2 通が 35 件。**震度6弱以上の報は 1 通も無かった。**
+//   - 震源距離 ÷（到達予測時刻 − 震源時刻）の中央は 4.4km/s（距離帯ごとに 4.2〜5.2km/s）。
+//
+// 到達までの秒数はこの見かけ速度で震源距離から作る。距離順に並べれば到達の欄が時間順になり、
+// 震源に近い弱い区域が強い区域より先に来る形（欄の並びの肝）もそのまま再現される。
+//
 // @param withDmdssFields DMDSS 版（DMDATA XML 経路）のとき true。
 //   **standard 版の EEW は 2 つの経路の合成**で、Yahoo 強震モニタの hypoInfo が土台になり、
 //   P2PQuake code=556 が区域と震源要素だけを後から注ぎ足す（`useEarthquakes.ts` の
@@ -514,6 +535,7 @@ export function createTestEEWWarning(withDmdssFields: boolean, eventId?: string,
   const origin = baseTime ?? serverDate()
   const report = serverDate().toISOString()
   const eid = eventId ?? `test-warn-${Date.now()}`
+  const at = (offsetMs: number) => new Date(origin.getTime() + offsetMs).toISOString()
   const forecastChange: EEWForecastChange | undefined =
     serial <= 1 ? undefined
     : serial === 2 ? { maxInt: 1, maxLgInt: 0, reason: 2 }
@@ -560,15 +582,51 @@ export function createTestEEWWarning(withDmdssFields: boolean, eventId?: string,
       ...(forecastChange && { forecastChange }),
     } : {}),
     issue: { eventId: eid, serial: String(serial), time: report },
+    // **区域はこの報の形（未到達ばかり）を受け持つ。** 到達済みの区域は震源から中央 98km の
+    // ところに出る（上記の走査。p10 36km 〜 p90 183km）が、日向灘の震源から最寄りの陸域は
+    // 66km で、押した時点＝震源時刻というテストの建て付けではまだどこにも届いていない。
+    // **3 通りが混じった形は特別警報テスト（`createTestEEW`）が受け持つ。**
+    //
+    // **件数 24 は震度5弱の報の中央値**（上記の走査）。この電文の最大予想震度は 5 強だが、
+    // そちらの標本は 2 通しかないので、厚いほうの値を採っている。**数件しか持たせないと
+    // 実運用では起こらない少なさになる**うえ、到達の欄は件数が増えて初めて列に折り返すため、
+    // その見え方も実機で確かめられない。
+    //
+    // 秒数は震源距離 ÷ 4.4km/s（上記）。距離順に並べてあるので到達の欄の並びとも一致する。
     areas: ([
-      { pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null, lgIntTo: 3 },
-      { pref: '宮崎県', name: '宮崎県南部平野部', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: null, lgIntTo: 2 },
+      // 予想震度5弱以上の区域が警報域（種別コード 10）。押した直後から 20 秒以内で、
+      // 残り秒数が赤くなる（`ARRIVAL_SOON_SEC`）のはこの 2 件
+      { pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(15_000), lgIntTo: 3 },
+      { pref: '宮崎県', name: '宮崎県南部平野部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(17_000), lgIntTo: 3 },
+      { pref: '宮崎県', name: '宮崎県北部山沿い', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: at(21_000), lgIntTo: 2 },
+      { pref: '宮崎県', name: '宮崎県南部山沿い', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: at(22_000), lgIntTo: 2 },
       // 予想震度4（5弱未満）は警報の対象外。同一電文内の予報域として送る
-      { pref: '大分県', name: '大分県南部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: null, lgIntTo: 1 },
-      // **区域に載る予測震度に下限は無い**（→ docs/spec/eew-spec.md §4）。警報の区域と震度 3 の
+      { pref: '大分県', name: '大分県南部', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: at(26_000), lgIntTo: 2 },
+      { pref: '熊本県', name: '熊本県球磨', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(26_000), lgIntTo: 1 },
+      { pref: '鹿児島県', name: '鹿児島県大隅', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(29_000), lgIntTo: 1 },
+      { pref: '熊本県', name: '熊本県阿蘇', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(31_000), lgIntTo: 1 },
+      { pref: '大分県', name: '大分県中部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(33_000), lgIntTo: 1 },
+      { pref: '鹿児島県', name: '鹿児島県薩摩', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(34_000), lgIntTo: 1 },
+      { pref: '熊本県', name: '熊本県熊本', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(35_000), lgIntTo: 1 },
+      { pref: '大分県', name: '大分県西部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(35_000) },
+      // PLUM 法（種別コード 09）。**時刻は持つが到達の予測ではない**ので過去の時刻が入り、
+      // 欄では「時刻不明」として末尾へ回る。実電文でも区域の 1 割ほどがこの形
+      { pref: '高知県', name: '高知県西部', scaleFrom: 30, scaleTo: 40, kindCode: '09', arrivalTime: at(-3_000) },
+      { pref: '愛媛県', name: '愛媛県南予', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(36_000) },
+      // **区域に載る予測震度に下限は無い**（→ docs/spec/eew-spec.md §4）。警報の区域と震度 3 以下の
       // 区域は同じ電文に同居するので、ここに無いと弱い区域が並んだときの見え方（区域一覧・
       // 区域塗りの濃さ）を実機で一度も確かめられない。
-      { pref: '熊本県', name: '熊本県熊本', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: null, lgIntTo: 1 },
+      { pref: '熊本県', name: '熊本県天草・芦北', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(39_000) },
+      { pref: '大分県', name: '大分県北部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(42_000) },
+      { pref: '長崎県', name: '長崎県島原半島', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(42_000) },
+      { pref: '福岡県', name: '福岡県筑後', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(44_000) },
+      { pref: '鹿児島県', name: '鹿児島県種子島', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(45_000) },
+      { pref: '愛媛県', name: '愛媛県中予', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(48_000) },
+      { pref: '鹿児島県', name: '鹿児島県甑島', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(48_000) },
+      { pref: '佐賀県', name: '佐賀県南部', scaleFrom: 30, scaleTo: 30, kindCode: '09', arrivalTime: at(-5_000) },
+      // 予想震度2 の区域。実電文にもある（→ docs/spec/eew-spec.md §4 の階級別の表）
+      { pref: '福岡県', name: '福岡県筑豊', scaleFrom: 20, scaleTo: 20, kindCode: '00', arrivalTime: at(50_000) },
+      { pref: '長崎県', name: '長崎県南西部', scaleFrom: 20, scaleTo: 20, kindCode: '00', arrivalTime: at(51_000) },
     ] as const).map(a => withDmdssFields ? { ...a } : toP2pArea({ ...a })),
   }
 }
@@ -581,6 +639,7 @@ export function createTestEEWForecast(withDmdssFields: boolean, eventId?: string
   const origin = baseTime ?? serverDate()
   const report = serverDate().toISOString()
   const eid = eventId ?? `test-forecast-${Date.now()}`
+  const at = (offsetMs: number) => new Date(origin.getTime() + offsetMs).toISOString()
   return {
     kind: 'eew',
     id: `test-eew-forecast-${eid}-${serial}`,
@@ -596,9 +655,13 @@ export function createTestEEWForecast(withDmdssFields: boolean, eventId?: string
     cancelled: false,
     forecastMaxScale: 40,
     issue: { eventId: eid, serial: String(serial), time: report },
+    // **件数 3 はこの規模の報の中央値**（上記の走査。最大予想震度が震度4 の報 70 通）。
+    // 強い地震のテストと違い、ここは少ない側の見え方を受け持つ。
+    // 秒数は震源距離（深さ 60km 込み）÷ 4.4km/s（上記）。
     areas: ([
-      { pref: '宮城県', name: '宮城県北部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: null },
-      { pref: '宮城県', name: '宮城県中部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: null },
+      { pref: '宮城県', name: '宮城県中部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(20_000) },
+      { pref: '宮城県', name: '宮城県北部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(21_000) },
+      { pref: '宮城県', name: '宮城県南部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(26_000) },
     ] as const).map(a => withDmdssFields ? { ...a } : toP2pArea({ ...a })),
   }
 }
@@ -618,6 +681,7 @@ export function createTestEEWAssumed(withDmdssFields: boolean, eventId?: string,
   const origin = baseTime ?? serverDate()
   const report = serverDate().toISOString()
   const eid = eventId ?? `test-assumed-${Date.now()}`
+  const at = (offsetMs: number) => new Date(origin.getTime() + offsetMs).toISOString()
   const isAssumed = serial === 1
   return {
     kind: 'eew',
@@ -645,8 +709,9 @@ export function createTestEEWAssumed(withDmdssFields: boolean, eventId?: string,
     ...(withDmdssFields && !isAssumed ? { warningComment: '強い揺れに警戒してください。' } : {}),
     issue: { eventId: eid, serial: String(serial), time: report },
     // 初報に区域は載らない。続報で震源が確定して初めて地域別予想が付く
+    // （秒数は震源距離 66km ÷ 4.4km/s。→ 上記の kindCode の説明）
     areas: isAssumed ? [] : ([
-      { pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: null },
+      { pref: '宮崎県', name: '宮崎県北部平野部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(15_000) },
     ] as const).map(a => withDmdssFields ? { ...a } : toP2pArea({ ...a })),
   }
 }
@@ -740,32 +805,66 @@ export function createTestEEW(withDmdssFields: boolean, eventId?: string, serial
     // **standard 版の初報は区域を持たない。** Yahoo 強震モニタの hypoInfo が先に届き、
     // 区域は P2PQuake code=556 が後から注ぎ足す（`useEarthquakes.ts` の `enrichEEW`）ため、
     // 実運用でもこの順で画面に出る。ボタンを 2 回押すと注入後の形へ進む。
+    // **種別コードの下 1 桁が主要動の状況を表す**（コード表 12。→ `utils/eewKind.ts`）。
+    // 到達の欄はこれで表示が 3 通りに分かれるので、**このボタンが 3 種類とも受け持つ**
+    // —— 実機で確かめられるのはここに在る形だけ。
+    //
+    // **件数 34 は、観測できた中でいちばん多い報と同じ規模**（上記の走査で震度5強の報が 35 件。
+    // この電文は震度6強だが、**震度6弱以上の報は 1 通も走査に掛からなかった**ので、そこから
+    // 直に採ることはできない）。震源に近い順に 34 区域を採ってある。到達の欄は件数が増えて
+    // 初めて列に折り返すので（CSS `columns`）、少ないままだとその見え方と高さの圧迫を実機で
+    // 確かめられない。並びは震源距離の順で、秒数は距離 ÷ 4.4km/s（上記）。
     areas: (!withDmdssFields && isFirstReport) ? [] : ([
+      // 11 ＝ 警報・既に到達と推定。実電文は種別コードと `Condition` の両方で到達を伝えるので、
+      // 読み取り後の値（`arrived`）も立てる。**到達予測時刻とは排他で、時刻は持たない。**
+      // 震源にいちばん近い 2 区域に置いてある（実電文の到達済み区域は震源距離の中央が 98km）。
+      { pref: '岩手県', name: '岩手県沿岸南部', scaleFrom: 50, scaleTo: 55, kindCode: '11', arrivalTime: null, arrived: true, lgIntTo: 3 },
+      { pref: '宮城県', name: '宮城県中部', scaleFrom: 55, scaleTo: 60, kindCode: '11', arrivalTime: null, arrived: true, lgIntTo: 4 },
       {
         pref: '宮城県', name: '宮城県北部', scaleFrom: 55, scaleTo: 60, kindCode: '10',
-        arrivalTime: at(15000),
+        arrivalTime: at(38_000),
         // 震度は上限を定めず（「震度6強程度以上」）、長周期は初報で 1 段低い階級から始まる。
         ...(isFirstReport
           ? { scaleToOrAbove: true, lgIntTo: 3 as const, lgIntToOver: true }
           : { lgIntTo: 4 as const }),
       },
-      { pref: '宮城県', name: '宮城県中部', scaleFrom: 50, scaleTo: 55, kindCode: '10', arrivalTime: at(18000), lgIntTo: 3 },
-      { pref: '岩手県', name: '岩手県沿岸南部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(22000), lgIntTo: 2 },
-      { pref: '福島県', name: '福島県浜通り', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(25000), lgIntTo: 2 },
-      // **種別コードの下 1 桁が主要動の状況を表す**（コード表 12。→ `utils/eewKind.ts`）。
-      // 到達の欄はこれで表示が 3 通りに分かれるので、テストデータにも 3 種類とも入れておく
-      // —— 実機で確かめられるのはここに在る形だけ。
-      //
-      // 11 ＝ 警報・既に到達と推定。実電文は種別コードと `Condition` の両方で到達を伝えるので、
-      // 読み取り後の値（`arrived`）も立てる。到達予測時刻とは排他で、時刻は持たない。
-      { pref: '茨城県', name: '茨城県北部', scaleFrom: 40, scaleTo: 45, kindCode: '11', arrivalTime: null, arrived: true, lgIntTo: 1 },
+      { pref: '宮城県', name: '宮城県南部', scaleFrom: 50, scaleTo: 55, kindCode: '10', arrivalTime: at(43_000), lgIntTo: 3 },
+      { pref: '福島県', name: '福島県浜通り', scaleFrom: 50, scaleTo: 55, kindCode: '10', arrivalTime: at(44_000), lgIntTo: 3 },
+      { pref: '岩手県', name: '岩手県内陸南部', scaleFrom: 50, scaleTo: 55, kindCode: '10', arrivalTime: at(44_000), lgIntTo: 3 },
+      { pref: '岩手県', name: '岩手県沿岸北部', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(50_000), lgIntTo: 2 },
+      { pref: '山形県', name: '山形県村山', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(53_000), lgIntTo: 2 },
+      { pref: '福島県', name: '福島県中通り', scaleFrom: 45, scaleTo: 50, kindCode: '10', arrivalTime: at(53_000), lgIntTo: 2 },
+      { pref: '山形県', name: '山形県最上', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: at(55_000), lgIntTo: 1 },
+      { pref: '秋田県', name: '秋田県内陸南部', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: at(57_000), lgIntTo: 1 },
+      { pref: '山形県', name: '山形県置賜', scaleFrom: 40, scaleTo: 45, kindCode: '10', arrivalTime: at(57_000), lgIntTo: 1 },
       // 19 ＝ 警報・PLUM 法。**時刻は持つが到達の予測ではない**（「震度を初めて予測した時刻」）
       // ので過去の時刻が入る。画面は残り秒数を出さず「時刻不明」と書き、並びの末尾へ回す。
-      { pref: '千葉県', name: '千葉県北東部', scaleFrom: 40, scaleTo: 45, kindCode: '19', arrivalTime: at(-4000), lgIntTo: 1 },
+      { pref: '岩手県', name: '岩手県内陸北部', scaleFrom: 40, scaleTo: 45, kindCode: '19', arrivalTime: at(-4_000), lgIntTo: 1 },
+      { pref: '山形県', name: '山形県庄内', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(63_000), lgIntTo: 1 },
+      { pref: '茨城県', name: '茨城県北部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(64_000), lgIntTo: 1 },
+      { pref: '秋田県', name: '秋田県沿岸南部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(65_000) },
+      { pref: '福島県', name: '福島県会津', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(65_000) },
+      { pref: '栃木県', name: '栃木県北部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(70_000) },
+      { pref: '秋田県', name: '秋田県内陸北部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(71_000) },
+      // 09 ＝ 予報・PLUM 法。警報側（19）と同じ扱いで、こちらは予想震度5弱未満の区域に付く
+      { pref: '青森県', name: '青森県三八上北', scaleFrom: 30, scaleTo: 40, kindCode: '09', arrivalTime: at(-6_000) },
+      { pref: '新潟県', name: '新潟県下越', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(73_000) },
+      { pref: '栃木県', name: '栃木県南部', scaleFrom: 30, scaleTo: 40, kindCode: '00', arrivalTime: at(73_000) },
       // **区域に載る予測震度に下限は無い**（→ docs/spec/eew-spec.md §4）。震度 3 の区域も同じ
       // 電文に載り、到達予測時刻も持つ。震源から遠いぶん残り秒数は最も大きく、到達の欄では
       // 未到達の群の末尾に並ぶ —— 弱い区域が強い区域より後ろへ回る形もここでしか実機で確かめられない。
-      { pref: '東京都', name: '東京都２３区', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(60000), lgIntTo: 1 },
+      { pref: '秋田県', name: '秋田県沿岸北部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(75_000) },
+      { pref: '茨城県', name: '茨城県南部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(75_000) },
+      { pref: '千葉県', name: '千葉県北東部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(79_000) },
+      { pref: '青森県', name: '青森県津軽南部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(81_000) },
+      { pref: '千葉県', name: '千葉県北西部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(82_000) },
+      { pref: '新潟県', name: '新潟県中越', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(84_000) },
+      { pref: '青森県', name: '青森県津軽北部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(85_000) },
+      { pref: '埼玉県', name: '埼玉県北部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(87_000) },
+      { pref: '埼玉県', name: '埼玉県南部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(87_000) },
+      { pref: '群馬県', name: '群馬県北部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(88_000) },
+      { pref: '群馬県', name: '群馬県南部', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(88_000) },
+      { pref: '東京都', name: '東京都２３区', scaleFrom: 30, scaleTo: 30, kindCode: '00', arrivalTime: at(88_000) },
     ] as const).map(a => withDmdssFields ? { ...a } : toP2pArea({ ...a })),
   }
 }
