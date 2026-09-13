@@ -4,12 +4,14 @@ import { useMapGL } from './mapGLContext'
 import { addOrderedLayer } from './gl/layerOrder'
 import { createDepthPointLayer, type DepthPointLayer } from './gl/depthPointLayer'
 import { registerPopupSource, type PopupHandle } from './gl/popupRegistry'
-import { getIntensityColor, getIntensityLabel } from '../../utils/intensity'
+import { getIntensityColor, getIntensityLabelWithOrAbove } from '../../utils/intensity'
 import { readableTextColor } from '../../utils/contrast'
 import { formatMagnitudeWithCondition, formatDepth } from '../../utils/formatters'
 import { log } from '../../utils/logger'
 import { reportRenderFailure, clearRenderFailure } from '../../utils/renderHealth'
 import type { JMAQuake } from '../../types/earthquake'
+import type { PrefIntensity } from '../../hooks/useQuakeLayerData'
+import { UNRECEIVED_COLOR } from './gl/intensityIcons'
 import type { LatLng } from '../../utils/stationCoords'
 
 // 地震モードの震源（× 印）を、**深さを持つ点**として地下へ描く。
@@ -37,25 +39,41 @@ interface Props {
   quake: JMAQuake
   /** 震源の位置（[緯度, 経度]）。 */
   epicenter: LatLng
-  prefIntensities: [string, number][]
+  prefIntensities: PrefIntensity[]
   iconScale: number
   /** 深さ方向の誇張率。1 が実スケール。 */
   exaggeration: number
 }
 
-function buildPopupHtml(quake: JMAQuake, prefIntensities: [string, number][]): string {
+/**
+ * 震源の吹き出し。震源要素と、都道府県別の最大震度（上位 6 件）を出す。
+ *
+ * export はテスト向け（実行時はこのファイルの中からしか呼ばない）。**「未入電あり」の印が
+ * 出るかは画面でしか分からない** —— 深さ方向に描く点なので、クリックで開くのが難しい。
+ */
+export function buildPopupHtml(quake: JMAQuake, prefIntensities: PrefIntensity[]): string {
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   const hc = quake.earthquake.hypocenter
   const rows = prefIntensities
     .slice(0, 6)
-    .map(([pref, scale]) => {
-      const color = getIntensityColor(scale)
-      const label = getIntensityLabel(scale)
+    .map(({ pref, scale, unreceived, hasUnreceived }) => {
+      // 観測値が 1 件も無い県は、震度階級色を借りずに無彩色で出し、語も断定形にしない
+      // （→ docs/spec/quake-spec.md §4）。地図の未入電の印と同じ色・同じ語。
+      const color = unreceived ? UNRECEIVED_COLOR : getIntensityColor(scale)
+      const label = getIntensityLabelWithOrAbove(scale, unreceived)
+      // **観測できた県にも「未入電あり」を出す。** 値そのものは確かでも、その県にはもっと強い
+      // 地点があるかもしれない。カードの行と同じ語・同じ条件にする（聞いた語・見た語で探せる）。
+      // 値が推定の県（`unreceived`）には重ねない —— 「5弱以上」が既にそれを言っている。
+      const mark = hasUnreceived
+        ? `<span style="font-size:10px;font-weight:700;color:${UNRECEIVED_COLOR}">未入電あり</span>`
+        : ''
       return (
         `<div style="display:flex;align-items:center;gap:8px;font-size:12px">` +
-        `<span style="display:inline-block;width:20px;text-align:center;font-weight:700;border-radius:3px;` +
+        // 「5弱以上」は 1 文字分の幅に収まらないので、最小幅＋左右の余白にする
+        // （観測値の 1 文字ラベルの見え方は従来どおり）。
+        `<span style="display:inline-block;min-width:20px;padding:0 3px;text-align:center;font-weight:700;border-radius:3px;` +
         `color:${readableTextColor(color)};font-size:10px;background:${color}">${esc(label)}</span>` +
-        `<span style="color:#cbd5e1">${esc(pref)}</span></div>`
+        `<span style="color:#cbd5e1">${esc(pref)}</span>${mark}</div>`
       )
     })
     .join('')

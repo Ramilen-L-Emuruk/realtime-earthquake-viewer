@@ -19,7 +19,7 @@ import { GRADE_PRIORITY, TSUNAMI_GRADE_LIFTED, isWarningLevelWhileObserving, tsu
 import { playAlertSound, ttsDelayFor, type AlertSoundType } from '../utils/alertSound'
 import { speakWithVoicevox, prewarmVoicevox, getSpeechClock, stopSpeech, type PrewarmedSpeech, type ShouldStillPlay } from '../utils/voicevox'
 import { eewAlertToText, eewIntensityText, eewLpgmOnlyText, eewCancelToText, earthquakeToSegments, earthquakeCancelToText, tsunamiToSegments, tsunamiDowngradeToSegments, tsunamiAreaGradeChangeToSegments, tsunamiCancelToText, tsunamiObservationUpdateToSegments, selectObservationUpdatesToSpeak, tsunamiArrivalToSegments, selectArrivalsToSpeak, tsunamiMissingToSegments, selectMissingToSpeak, tsunamiWarningLevelToSegments, selectWarningLevelToSpeak, joinWithAlso, nankaiToText, nankaiCommentaryToText, kohatsuToText, earthquakeCountToText, estimatedIntensityToText, lpgmToText, createQuakeSpokenState, applySpokenRefs, type TtsRegionOptions, type QuakeSpokenState } from '../utils/ttsText'
-import { joinSegments, plain, hasFollowTarget, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
+import { joinSegments, plain, hasFollowTarget, hasUnreceivedFollowTarget, mapChunksToRefs, spokenChunkIndices, type SpeechFollowApi, type SpeechSegment, type SpeechRef } from '../utils/ttsFollow'
 import { log, createLogThrottle } from '../utils/logger'
 import { TAB_PRIORITY, type TabPriority } from '../utils/tabPriority'
 import { extractQuakeEventIdFromId, quakeEventKey, quakeKeyForLpgmEventId, sameQuakeEntry } from '../utils/quakeMerge'
@@ -537,6 +537,16 @@ export interface LiveEventHandlerDeps {
    */
   speechFollow?: SpeechFollowApi
   /**
+   * 読み上げの進行を画面へ伝える（未入電モードの自動開閉）。
+   *
+   * **津波の `speechFollow` とは別の枠**にする。あちらの門（`hasFollowTarget`）は津波カードの
+   * 行を引ける参照だけを通す作りで、地震情報の参照を混ぜると津波カードが動く。仕組み自体は
+   * 同じもの（`createSpeechFollowController`）を 2 本立てて使い分ける。
+   *
+   * 渡すのは**地震情報の読み上げだけ**。
+   */
+  unreceivedFollow?: SpeechFollowApi
+  /**
    * 特別情報（南海トラフ臨時情報・後発地震注意情報・関連解説情報）の受信でパネルを開く。
    *
    * これらは地図に重ねた帯で伝える情報で、パネル側に居場所がない（切り替えるタブが無い）。
@@ -567,7 +577,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
   const {
     settings, title, earthquakesRef, tsunamisRef, kyoshinDetectedRef, defaultTabRef,
     setActiveTabRealtimeForKyoshin, setActiveTabNonRealtime, setActiveTabRealtimeOnUpdate,
-    setActiveTabRealtimeUrgent, followSpeechTab, preSpeechTab, speechFollow, expandPanelForSpecialInfo,
+    setActiveTabRealtimeUrgent, followSpeechTab, preSpeechTab, speechFollow, unreceivedFollow, expandPanelForSpecialInfo,
     revertToDefaultTab, selectQuake, openLpgmFromQuake, openEstimatedIntensity,
   } = deps
 
@@ -1091,6 +1101,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
      * （`releaseLatestSchedule` の注記）。
      */
     onSilentGiveUp?: () => void,
+    /**
+     * この読み上げが何について語っているか（地震なら `quakeEventKey`）。未入電モードの
+     * 自動開閉が対象の取り違えを避けるのに使う（→ `SpeechFollowSession.subject`）。
+     */
+    subject?: string,
   ) => {
     void (async () => {
       /**
@@ -1134,6 +1149,11 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // **追従を始めるかは参照の種類で決める。** `refs` が空でないことで判定すると、
       // 地震情報の読み上げ（区域と震源要素の参照を持つ）が津波カードの追従を起こす。
       const followToken = hasFollowTarget(segments) ? speechFollow?.begin(segments!) : undefined
+      // 未入電の自動開閉も同じ位置で始める（「これから声に出す」瞬間）。**門が別**なのは、
+      // 津波カードを動かす参照と、未入電トグルを開く参照が別物のため（→ `ttsFollow.ts`）。
+      const unreceivedToken = hasUnreceivedFollowTarget(segments)
+        ? unreceivedFollow?.begin(segments!, subject)
+        : undefined
       // 予約の通知を溜めておき、読み上げが終わってから「実際に鳴った範囲」を割り出す
       // （`spokenChunkIndices`）。合成は再生より先へ進むため、予約が通っただけでは鳴った
       // ことにならない。
@@ -1142,6 +1162,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       let chunkCount = 0
       const notifyChunk = (index: number, startAt: number, chunks: readonly string[]) => {
         if (followToken !== undefined) speechFollow?.schedule(followToken, index, startAt, chunks)
+        if (unreceivedToken !== undefined) unreceivedFollow?.schedule(unreceivedToken, index, startAt, chunks)
         if (onSpokenRefs && segments) {
           chunkRefs ??= mapChunksToRefs(segments, chunks)
           chunkCount = chunks.length
@@ -1196,6 +1217,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
         await done
       } finally {
         if (followToken !== undefined) speechFollow?.end(followToken)
+        // 読み上げが終わった（割り込まれて途中で終わった場合も含む）。未入電モードを開いて
+        // いれば、ここで閉じる側が元へ戻す。
+        if (unreceivedToken !== undefined) unreceivedFollow?.end(unreceivedToken)
         flushSpokenRefs(true)
         // 自分より後に始まった読み上げに置き換わっている場合は触らない（消すと待ち側が
         // 「誰も読んでいない」と誤認し、進行中の読み上げに割り込む）
@@ -1275,6 +1299,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
      * 待たされて見送られた場合は呼ばれないので、「鳴らなかったものを既読にしない」が保てる。
      */
     onSpeakStart?: () => void,
+    /** この読み上げが何について語っているか（`speakNonEEW` へそのまま渡す）。 */
+    subject?: string,
   ) => {
     // 予約した時点で、自分より重い読み上げが走っていたか。**発話の番でもう一度取って比べる**
     // （下の「追い越し」の判定）。
@@ -1358,6 +1384,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
           onSpokenRefs,
           // 黙って見送るときも枠から降りる（降りないと前の予約を巻き込む。理由は引数の注記）
           () => releaseLatestSchedule(seq, topic),
+          subject,
         )
       },
       () => {
@@ -1375,6 +1402,10 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 地震情報の読み上げの主題（イベント単位）。UI ブロックで決めて TTS ブロックで使う。
     // 取消は TTS ブロックを通らない（音の種別が決まらず早期 return する）ので、自分の分岐で組み立てる。
     let quakeSpeechTopic: SpeechTopic = 'quake:unknown'
+    // 読み上げの主題そのもの（`quakeSpeechTopic` から `quake:` を剥がしたもの）。未入電モードの
+    // 自動開閉が「読んでいる地震」と「画面が出している地震」を突き合わせるのに使う（→ `SpeechFollowSession.subject`）。
+    // **主題の文字列を分解して取り出さない** —— 組み立てと取り出しが別々に育つと、片方だけ書式が変わったときに黙って一致しなくなる。
+    let quakeSubjectKey: string | null = null
     // 津波が新規発報か grade 格上げか（UI ブロックで立て、TTS ブロックで消費する）。
     // **観測点更新（grade 不変の続報）ではタブを動かさない**ための判定に使う。
     // 続報のたびに画面を持って行くと、EEW を見ている最中に何度も津波タブへ引っ張られる
@@ -1471,6 +1502,7 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
       // 選択と読み上げの主題は同じキーで揃える（どちらも「どの地震か」を指すもの）。
       const incomingEventKey = quakeEventKey(existingCard ?? incomingQuake)
       quakeSpeechTopic = `quake:${incomingEventKey}`
+      quakeSubjectKey = incomingEventKey
       selectQuake(incomingEventKey)
       const { hypocenter, maxScale } = event.earthquake
       const isForeignQuake = event.issue.type === '遠地地震'
@@ -2864,6 +2896,9 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
               if (areasToMark) rememberAreaGrades(areasToMark, spokenAreaGradeRef.current)
             }
             : undefined,
+          // **どの地震について語っているか。** 未入電モードの自動開閉が、順番待ちのあいだに
+          // 選択が別の地震へ移っていないかを突き合わせるのに使う（津波では持たない）。
+          event.kind !== 'tsunami' ? quakeSubjectKey ?? undefined : undefined,
         )
       } else if (event.kind === 'tsunami' && tsunamiIsNewOrUpgraded) {
         // 読み上げ文が組めなかった津波の新規発報・格上げ（保険。理由は宣言箇所）
@@ -3067,7 +3102,8 @@ export function useLiveEventHandler(deps: LiveEventHandlerDeps) {
     // 残すと、切り替え前の読み上げの進行に合わせて新しく表示されたカードを動かし続ける
     // （区域名や観測点名が新旧で重なれば、実在する別の行を掴む）。
     speechFollow?.reset()
-  }, [cancelPendingSpeech, speechFollow])
+    unreceivedFollow?.reset()
+  }, [cancelPendingSpeech, speechFollow, unreceivedFollow])
 
   // pre-window イベントから T 時点の追跡 ref を復元する（サイレント注入後の正確な音判定に必要）
   const restorePreWindowTracking = useCallback((preFiltered: ReplayEntry[]) => {

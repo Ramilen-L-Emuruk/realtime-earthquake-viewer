@@ -14,6 +14,7 @@ import {
   formatMagnitudeValue,
   formatMagnitudeWithCondition,
   formatCoordinate,
+  NON_JMA_MARK,
   NON_JMA_MARK_TITLE,
   withNonJmaMark,
 } from '../../utils/formatters'
@@ -21,9 +22,9 @@ import { getIntensityLabel, getIntensityLabelWithOrAbove, getIntensityColor, get
 import { hasKnownEpicenter } from '../../utils/geo'
 
 import { buildAreaPrefIndex, buildRegionOrderIndex, buildStationPrefIndex, lookupStationRegion, regionOrderRank } from '../../utils/stationCoords'
-import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel, buildIntensityRows, makeAreaPrefResolver } from '../../utils/quakePoints'
+import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel, buildIntensityRows, makeAreaPrefResolver, cityKey } from '../../utils/quakePoints'
 import { useStationCoords } from '../../hooks/useStationCoords'
-import { mergeUnreceivedPointNames, type UnreceivedPointName } from './unreceivedPointNames'
+import { groupUnreceivedPointNames, type UnreceivedPointGroup } from './unreceivedPointNames'
 
 /**
  * 長周期地震動に添える気象庁からの補足（付加文 3 種＋詳細ページ）の開閉キー。
@@ -47,10 +48,22 @@ const LPGM_NOTES_KEY = 'lpgm:notes'
  * 入れ子を許さない。長周期のトグルと同じ作法）。開けない段には `role` も `tabIndex` も
  * 与えない —— 押せない行がタブ移動で止まると邪魔になる。
  */
-function IntensityRow({ label, scale, unreceived, hasUnreceived, nonJma, depth, expandKey, expanded, onToggle }: {
+function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived, nonJma, depth, expandKey, expanded, onToggle }: {
   label: string
   scale: IntensityScale
+  /** その行の震度が未入電の値から来ている（ラベルへ「以上」を足す）。 */
   unreceived: boolean
+  /**
+   * 「未入電」の印を出すか。**`unreceived` とは分ける。**
+   *
+   * 県・区域の行の値は、電文が区域の `MaxInt` を持たないときに**配下から積み上げる**
+   * （標準版は区域のロールアップ点を持たないので常にこの経路）。積み上げは震度の大小で
+   * 決まるため、**観測できた震度3 と未入電（下限 45）が混在すると未入電が勝つ**。その行を
+   * 「未入電」と断定すると、届いている観測値を無かったことにする。**電文が直にその行について
+   * 言っている場合だけ**に出す —— 観測点の行と、値を持たない市町村。範囲の行は下の
+   * `hasUnreceived` が「未入電あり」を担う。
+   */
+  unreceivedIsOwn?: boolean
   hasUnreceived?: boolean
   nonJma?: boolean
   /** 字下げの段（0＝都道府県）。 */
@@ -79,38 +92,73 @@ function IntensityRow({ label, scale, unreceived, hasUnreceived, nonJma, depth, 
           if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); onToggle(expandKey) }
         },
       } : {})}
-      className={`flex items-center justify-between ${pad} pr-2 py-0.5 ${depth === 0 ? 'roomy:py-1.5' : ''} ${size}${interactive ? ' cursor-pointer hover:bg-white/5' : ''}`}
+      className={`flex items-center ${pad} pr-2 py-0.5 ${depth === 0 ? 'roomy:py-1.5' : ''} ${size}${interactive ? ' cursor-pointer hover:bg-white/5' : ''}`}
     >
-      <span
-        className={`flex-shrink-0 whitespace-nowrap${depth === 0 ? ' font-bold' : ''}`}
-        style={{ color: getIntensityColor(scale) }}
-      >
-        {/* 未入電は「5弱以上」。観測値と同じ顔で出すと、実際にはもっと強い可能性があることが
-            伝わらない。EEW の「上限を定めない予想震度」と同じ語を同じヘルパーで付ける。 */}
-        震度{getIntensityLabelWithOrAbove(scale, unreceived)}
-      </span>
-      <span style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}>
-        {/* 気象庁以外が運用する観測点には電文どおり `＊` を付ける。読み取りの側では
-            引き当てのために外してあるので、戻すのは表示のここ（→ `withNonJmaMark`）。
-            記号だけでは何と対比しているのか分からないので説明を添える。 */}
-        <span title={nonJma ? NON_JMA_MARK_TITLE : undefined}>{withNonJmaMark(label, nonJma)}</span>
-        {/* **「あり」を付けて範囲の話にする。** 未入電は地点単位の事実なので、「〇〇県 未入電」
-            だと県が丸ごと未入電に読める。どの地点かは上のブロックが示す。語は気象庁のものを
-            そのまま使い、読み上げとも揃える。 */}
-        {hasUnreceived && (
+      {/* 震度と、その値についての印（未入電）を左に置く。**印を地名の側へ置かない** ——
+          置くと右端を揃えるためにいちばん長い「未入電あり」ぶんの枠を全行で空けることになり、
+          狭い画面では印を持たない行まで地名が折り返す（実測: 幅 320px で 47 行中 7 行）。
+          震度の隣なら、なぜ「以上」なのかをその値の真横で言うことにもなる。 */}
+      <span className={`flex items-center flex-shrink-0 gap-1.5 whitespace-nowrap${depth === 0 ? ' font-bold' : ''}`}>
+        <span style={{ color: getIntensityColor(scale) }}>
+          {/* 未入電は「5弱以上」。観測値と同じ顔で出すと、実際にはもっと強い可能性があることが
+              伝わらない。EEW の「上限を定めない予想震度」と同じ語を同じヘルパーで付ける。 */}
+          震度{getIntensityLabelWithOrAbove(scale, unreceived)}
+        </span>
+        {/* **その行自身が未入電か、配下にあるだけかを書き分ける。**
+            - 「未入電」＝この行の震度そのものが届いていない（観測点の行と、値を持たない市町村）
+            - 「未入電あり」＝この範囲に未入電の地点があるが、行の値は観測できている
+
+            **「あり」の有無が意味を分ける。** 未入電は地点単位の事実なので、配下にあるだけの
+            県へ「〇〇県 未入電」と書くと県が丸ごと未入電に読める。逆に、行自身が未入電なのに
+            何も書かないと、**事実を持っている行が黙って、範囲の行だけが喋る**ことになる
+            （「震度5弱以上」の語だけでは、なぜ「以上」なのかが読み取れない）。
+
+            **両方は出さない。** 行自身が未入電なら、配下に未入電があることは言わずとも含む。
+            語は気象庁のものをそのまま使い、読み上げとも揃える。 */}
+        {(unreceivedIsOwn || hasUnreceived) && (
           <span
-            className="ml-1.5 text-[0.75rem] roomy:text-[0.875rem]"
+            className="text-[0.75rem] font-normal roomy:text-[0.875rem]"
             style={{ color: '#9ca3af' }}
-            title="この範囲に、震度が届いていない観測点があります"
+            title={unreceivedIsOwn
+              ? '気象庁は震度5弱以上と推定していますが、震度が届いていません（未入電）'
+              : 'この範囲に、震度が届いていない地点があります'}
           >
-            未入電あり
+            {unreceivedIsOwn ? '未入電' : '未入電あり'}
           </span>
         )}
-        {interactive && (
-          <span className="ml-1.5 text-[0.75rem] roomy:text-[0.875rem]" style={{ color: '#9ca3af' }}>
-            {isOpen ? '▾' : '▸'}
-          </span>
-        )}
+      </span>
+      {/* 地名は伸びる枠に入れて右端で揃え、`＊` と開閉の記号はそれぞれ固定幅の枠へ出す。
+          同じ流れに並べると、付いている行だけ地名が左へ押されて右端が揃わない（実測で 69px）。
+          **`＊` と地名のあいだは詰める** —— 電文が名前の末尾へ置く印なので、離すと別のものに
+          見える。枠を分けているのは右端を揃えるためで、見た目は続いているのが正しい。
+
+          **行の両端揃え（`justify-between`）は使わない。** この枠が `flex-1` で残り幅を
+          占めるので空きが生まれず、効かないクラスが意図だけ残ることになる。右端へ寄せるのは
+          この枠の中の `justify-end`。 */}
+      <span className="flex items-center justify-end min-w-0 flex-1">
+        {/* `text-right` は**折り返した 2 行目以降のため**。1 行に収まるあいだは上の
+            `justify-end` が寄せるので効かないが、長い観測点名（実データで最長 12 文字）が
+            折り返したとき、これが無いと 2 行目だけ左へ流れる。 */}
+        <span className="min-w-0 text-right" style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}>
+          {/* 気象庁以外が運用する観測点には電文どおり `＊` を付ける。読み取りの側では
+              引き当てのために外してあるので、戻すのは表示のここ。記号だけでは何と対比して
+              いるのか分からないので説明を添える。**枠の幅は行の文字の大きさに連動させる**
+              （`em`）—— 段ごとに文字が小さくなるため。 */}
+          <span title={nonJma ? NON_JMA_MARK_TITLE : undefined}>{label}</span>
+        </span>
+        <span
+          className="flex-shrink-0 w-[1em] text-center"
+          style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}
+          title={nonJma ? NON_JMA_MARK_TITLE : undefined}
+        >
+          {nonJma ? NON_JMA_MARK : ''}
+        </span>
+        <span
+          className="ml-1.5 flex-shrink-0 w-[1em] text-center text-[0.75rem] roomy:text-[0.875rem]"
+          style={{ color: '#9ca3af' }}
+        >
+          {interactive ? (isOpen ? '▾' : '▸') : ''}
+        </span>
       </span>
     </div>
   )
@@ -155,29 +203,40 @@ function LpgmRow({ label, lgInt, int, nonJma, depth, expandKey, expanded, onTogg
           if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); onToggle(expandKey) }
         },
       } : {})}
-      className={`flex items-center justify-between ${pad} pr-2 py-0.5 ${depth === 0 ? 'roomy:py-1.5' : ''} ${size}${interactive ? ' cursor-pointer hover:bg-white/5' : ''}`}
+      className={`flex items-center ${pad} pr-2 py-0.5 ${depth === 0 ? 'roomy:py-1.5' : ''} ${size}${interactive ? ' cursor-pointer hover:bg-white/5' : ''}`}
     >
-      <span
-        className={`flex-shrink-0 whitespace-nowrap${depth === 0 ? ' font-bold' : ''}`}
-        style={{ color: getLpgmClassColor(lgInt) }}
-      >
-        長周期 {getLpgmClassLabel(lgInt)}
-      </span>
-      <span className="flex items-baseline gap-2 min-w-0">
+      {/* 階級と、その範囲の最大震度を左に置く。**震度一覧と同じ並べ方**（値についての情報は
+          左、地名は右で揃える）。地名の側へ置くと、付いている行だけ地名が左へ押される。 */}
+      <span className={`flex items-baseline flex-shrink-0 gap-1.5 whitespace-nowrap${depth === 0 ? ' font-bold' : ''}`}>
+        <span style={{ color: getLpgmClassColor(lgInt) }}>
+          長周期 {getLpgmClassLabel(lgInt)}
+        </span>
         {int !== undefined && (
-          <span className="text-[0.8125rem] text-gray-400 whitespace-nowrap roomy:text-[0.9375rem]">
+          <span className="text-[0.8125rem] font-normal text-gray-400 roomy:text-[0.9375rem]">
             震度 {getIntensityLabel(int)}
           </span>
         )}
-        <span style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}>
-          {/* 気象庁以外が運用する観測点の印。震度一覧・地図の吹き出しと同じ扱い
-              （→ `withNonJmaMark`）。 */}
-          <span title={nonJma ? NON_JMA_MARK_TITLE : undefined}>{withNonJmaMark(label, nonJma)}</span>
-          {interactive && (
-            <span className="ml-1.5 text-[0.75rem] roomy:text-[0.875rem]" style={{ color: '#9ca3af' }}>
-              {isOpen ? '▾' : '▸'}
-            </span>
-          )}
+      </span>
+      {/* 地名は伸びる枠に入れて右端で揃え、`＊` と開閉の記号は固定幅の枠へ出す
+          （→ `IntensityRow`。`justify-between` を使わない理由と `text-right` の役目も
+          そちらに書いてある）。 */}
+      <span className="flex items-center justify-end min-w-0 flex-1">
+        <span className="min-w-0 text-right" style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}>
+          {/* 気象庁以外が運用する観測点の印。震度一覧・地図の吹き出しと同じ扱い。 */}
+          <span title={nonJma ? NON_JMA_MARK_TITLE : undefined}>{label}</span>
+        </span>
+        <span
+          className="flex-shrink-0 w-[1em] text-center"
+          style={{ color: depth === 0 ? '#ffffff' : '#d1d5db' }}
+          title={nonJma ? NON_JMA_MARK_TITLE : undefined}
+        >
+          {nonJma ? NON_JMA_MARK : ''}
+        </span>
+        <span
+          className="ml-1.5 flex-shrink-0 w-[1em] text-center text-[0.75rem] roomy:text-[0.875rem]"
+          style={{ color: '#9ca3af' }}
+        >
+          {interactive ? (isOpen ? '▾' : '▸') : ''}
         </span>
       </span>
     </div>
@@ -234,11 +293,15 @@ interface Props {
   /** この地震の震度分布モードを開いているか。 */
   distributionActive?: boolean
   onToggleDistribution?: () => void
+  /** この地震の未入電の一覧を開いているか。 */
+  unreceivedActive?: boolean
+  onToggleUnreceived?: () => void
 }
 
 export function EarthquakeCard({
   quake, isLatest, isSelected, onSelect, lpgm, activeLpgmEventId, onToggleLpgm,
   estimatedIntensity = null, distributionActive = false, onToggleDistribution,
+  unreceivedActive = false, onToggleUnreceived,
 }: Props) {
   const { earthquake, issue } = quake
   const { hypocenter, maxScale, domesticTsunami } = earthquake
@@ -344,6 +407,7 @@ export function EarthquakeCard({
     const { stationPrefIndex, prefOf, regionOfStation, stations: unreceivedStations, areas: unreceivedAreaPoints } = unreceivedIndexes
     const unreceivedPrefs = new Set<string>()
     const unreceivedAreas = new Set<string>()
+    const unreceivedCities = new Set<string>()
     for (const p of [...unreceivedStations, ...unreceivedAreaPoints]) {
       const pref = prefOf(p)
       if (pref) unreceivedPrefs.add(pref)
@@ -351,7 +415,14 @@ export function EarthquakeCard({
       if (p.isArea) { if (!p.pref) unreceivedAreas.add(p.addr) }
       else {
         const region = regionOfStation(p)
-        if (region) unreceivedAreas.add(region)
+        if (region) {
+          unreceivedAreas.add(region)
+          // **市町村にも同じ条件で印を付ける。** 電文の `City/Condition` は市町村の最大が
+          // 震度4以下のときしか出ないので、それだけに頼ると**強く揺れた市町村ほど印が消える**
+          // （能登本震では 1343 市町村すべてで `Condition` が付いていない）。鍵の作り方は
+          // 行の組み立てと共有する（`cityKey`）。
+          if (p.city) unreceivedCities.add(cityKey(region, p.city))
+        }
       }
     }
 
@@ -365,6 +436,7 @@ export function EarthquakeCard({
       regionOfStation: (pref, addr) => (stationData ? lookupStationRegion(stationData, pref, addr) : null),
       unreceivedPrefs,
       unreceivedAreas,
+      unreceivedCities,
       rank: name => regionOrderRank(name, order),
     })
   }, [isSelected, quake.points, quake.cities, stationData, unreceivedIndexes])
@@ -378,7 +450,9 @@ export function EarthquakeCard({
    * 並びは読み上げと同じ気象庁の標準順 —— 電文が点を並べた順に画面を委ねない。
    */
   const unreceivedPoints = useMemo(() => {
-    const empty = { names: [] as UnreceivedPointName[], unit: '地点' }
+    const empty = { groups: [] as UnreceivedPointGroup[], count: 0, unit: '地点' }
+    // ボタンも一覧も展開表示（`isSelected`）の中にしか無い。畳んだカードで組んでも使い道が無く、
+    // 一覧に並ぶカードの数だけ並べ替えが走る。
     if (!isSelected) return empty
     const { prefOf, regionOfStation, stations, areas } = unreceivedIndexes
     if (stations.length === 0 && areas.length === 0) return empty
@@ -389,9 +463,11 @@ export function EarthquakeCard({
     const ordered = [...stations, ...areas]
       .map((p, i) => ({ p, i, r: rank(p) }))
       .sort((a, b) => a.r - b.r || a.i - b.i)
-      .map(({ p }) => p)
+      .map(({ p }) => ({ addr: p.addr, nonJma: p.nonJma, pref: prefOf(p) }))
+    const groups = groupUnreceivedPointNames(ordered)
     return {
-      names: mergeUnreceivedPointNames(ordered),
+      groups,
+      count: groups.reduce((n, g) => n + g.names.length, 0),
       unit: unreceivedUnitLabel(stations.length > 0, areas.length > 0),
     }
   }, [isSelected, stationData, unreceivedIndexes])
@@ -717,6 +793,34 @@ export function EarthquakeCard({
             </div>
           )}
 
+          {/* 震度を入手していない地点（クリックで一覧を差し替え、地図に印を出す）。
+              **再掲だったブロックをこのボタンへ畳んである。** 未入電の観測点は震度一覧の入れ子の
+              中にも入っており、県・区域の「未入電あり」バッジがそこへ辿る導線になっている。
+              実測で 60 件のとき上下分割でパネル可視高の 142% を占めていたので、件数だけ常に見せて
+              地点名は開いたときに出す。 */}
+          {unreceivedPoints.count > 0 && (
+            <div
+              role="button"
+              tabIndex={0}
+              aria-pressed={unreceivedActive}
+              onClick={(e) => { e.stopPropagation(); onToggleUnreceived?.() }}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onToggleUnreceived?.() } }}
+              title="気象庁が震度5弱以上と推定しているのに、震度が届いていない地点。押すと一覧と地図に出る"
+              className={`w-full rounded-lg py-1 px-3 flex items-center justify-between gap-2 border transition-colors cursor-pointer hover:opacity-80 roomy:py-2 roomy:px-4 ${
+                unreceivedActive
+                  ? 'bg-gray-500/25 border-gray-400 outline outline-2 outline-offset-2 outline-gray-400'
+                  : 'bg-panel border-border'
+              }`}
+            >
+              <span className="text-xs font-medium text-white roomy:text-sm">
+                震度を入手していない{unreceivedPoints.unit}
+              </span>
+              <span className="text-xs font-bold roomy:text-sm" style={{ color: '#d1d5db' }}>
+                {unreceivedPoints.count}{unreceivedPoints.unit}
+              </span>
+            </div>
+          )}
+
           {/* 各地の震度 / 長周期地震動階級（LPGM トグルオン時は階級表示に切り替え） */}
           {(() => {
             const isLpgmActive = lpgm && activeLpgmEventId === lpgm.eventId
@@ -794,40 +898,52 @@ export function EarthquakeCard({
               )
             }
 
-            if (prefGroups.length === 0 && unreceivedPoints.names.length === 0) return null
+            // 未入電の一覧（トグルオン時は震度一覧と差し替える）。
+            //
+            // **4 段の入れ子にしない。** 全部が同じ「5弱以上」なので段を作っても分かれる情報が
+            // 無く、60 件のときに段を開いて回る手間だけが残る。平らに並べ、どこの話かは県の
+            // 見出しが示す（→ `groupUnreceivedPointNames`）。
+            if (unreceivedActive && unreceivedPoints.count > 0) {
+              return (
+                <div className="flex flex-col gap-1 pt-1 border-t border-white/10">
+                  {/* **推定したのは気象庁**であることを書く。このアプリは強震モニタ由来の
+                      値にも「推定」を使っており（リアルタイムタブ）、主語が無いと
+                      「アプリが推定した値」と取り違えられる。 */}
+                  <div className="text-[0.6875rem] roomy:text-[0.8125rem]" style={{ color: '#9ca3af' }}>
+                    気象庁は震度5弱以上と推定していますが、震度が届いていません（未入電）
+                  </div>
+                  {unreceivedPoints.groups.map((group, idx) => (
+                    <div
+                      key={group.pref || `unknown-pref-${idx}`}
+                      className="rounded px-2 py-1"
+                      style={{ backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.03)' : 'transparent' }}
+                    >
+                      {/* 県を引けなかった点は見出しを出さずに並べる（名前は出す）。所属が
+                          分からないことは、地点名を落とす理由にならない。 */}
+                      {group.pref && (
+                        <div className="text-[0.75rem] roomy:text-[0.875rem] font-bold text-white">
+                          {group.pref}
+                        </div>
+                      )}
+                      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[0.8125rem] roomy:text-[1rem] text-white">
+                        {/* 気象庁以外が運用する観測点には電文どおり `＊` を付ける。震度一覧・
+                            地図の吹き出しと同じ扱い（→ `withNonJmaMark`）。 */}
+                        {group.names.map(({ name, nonJma }) => (
+                          <span key={name} title={nonJma ? NON_JMA_MARK_TITLE : undefined}>
+                            {withNonJmaMark(name, nonJma)}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )
+            }
+
+            if (prefGroups.length === 0) return null
 
             return (
               <div className="flex flex-col gap-0.5 pt-1 border-t border-white/10">
-                {/* **地点の話は地点として見せる。** 震度一覧の上に置くのは、最も強く揺れた
-                    かもしれない場所が分からないことが、最大震度の次に重要だから。 */}
-                {unreceivedPoints.names.length > 0 && (
-                  <div
-                    className="mb-1 px-2 py-1.5 rounded"
-                    style={{ backgroundColor: 'rgba(156,163,175,0.12)', border: '1px solid rgba(156,163,175,0.35)' }}
-                  >
-                    {/* **単位は中身に合わせる。** 地点を持たない電文（震度速報は区域しか
-                        持たない）では区域名が並ぶので、見出しが「地点」のままだと粒度を
-                        誤解させる。読み上げの「ほかN地点／ほかN地域」と同じ判定で切り替える。 */}
-                    <div className="text-[0.75rem] roomy:text-[0.875rem] font-bold" style={{ color: '#d1d5db' }}>
-                      震度を入手していない{unreceivedPoints.unit}
-                    </div>
-                    {/* **推定したのは気象庁**であることを書く。このアプリは強震モニタ由来の
-                        値にも「推定」を使っており（リアルタイムタブ）、主語が無いと
-                        「アプリが推定した値」と取り違えられる。 */}
-                    <div className="text-[0.6875rem] roomy:text-[0.8125rem] mb-1" style={{ color: '#9ca3af' }}>
-                      気象庁は震度5弱以上と推定していますが、震度が届いていません（未入電）
-                    </div>
-                    <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[0.8125rem] roomy:text-[1rem] text-white">
-                      {/* 気象庁以外が運用する観測点には電文どおり `＊` を付ける。震度一覧・
-                          地図の吹き出しと同じ扱い（→ `withNonJmaMark`）。 */}
-                      {unreceivedPoints.names.map(({ name, nonJma }) => (
-                        <span key={name} title={nonJma ? NON_JMA_MARK_TITLE : undefined}>
-                          {withNonJmaMark(name, nonJma)}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
                 {prefGroups.map((prefRow, idx) => (
                   <div
                     key={prefRow.pref}
@@ -864,6 +980,7 @@ export function EarthquakeCard({
                                   label={city.name}
                                   scale={city.scale}
                                   unreceived={city.unreceived}
+                                  unreceivedIsOwn={city.unreceived}
                                   hasUnreceived={city.hasUnreceived}
                                   depth={2}
                                   expandKey={city.stations.length > 0 ? `city:${region.name}/${city.name}` : null}
@@ -876,6 +993,7 @@ export function EarthquakeCard({
                                     label={st.name}
                                     scale={st.scale}
                                     unreceived={st.unreceived}
+                                    unreceivedIsOwn={st.unreceived}
                                     nonJma={st.nonJma}
                                     depth={3}
                                     expandKey={null}
@@ -893,6 +1011,7 @@ export function EarthquakeCard({
                                 label={st.name}
                                 scale={st.scale}
                                 unreceived={st.unreceived}
+                                unreceivedIsOwn={st.unreceived}
                                 nonJma={st.nonJma}
                                 depth={2}
                                 expandKey={null}
