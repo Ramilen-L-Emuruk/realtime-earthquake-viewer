@@ -275,8 +275,11 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
   const observedNames = new Set(observations.map(o => o.name))
   // 区域内に1件でも実測値があれば到達のバッジは不要（実測行で代替できる）。
   //
-  // `immediate` も見るのは P2PQuake 経路のため —— あちらは条件の文言を配信せず、
-  // 「ただちに来襲」を真偽値だけで伝える。DMDATA 経路は文言から引く。
+  // **`immediate` は文言が読めないときの補い。** P2PQuake も 3 値の文言をそのまま配信するが、
+  // `firstHeight` を持たない古いデータでは真偽値しか残らない。**「ただちに津波来襲と予測」と
+  // 1 対 1 ではなく**、実データでは「津波到達中と推測」の区域でも真になる（第１波の到達を
+  // 確認では偽）ので、文言が読めるならそちらを優先する
+  // （→ [`tsunami-spec.md`](../../../docs/spec/tsunami-spec.md) §9「区域の到達状況」）。
   const arrivalBadge = badgeSuppressed
     ? undefined
     : (arrivalBadgeLabel ?? (area.immediate ? ARRIVAL_CONDITION_BADGE['ただちに津波来襲と予測'] : undefined))
