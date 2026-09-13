@@ -986,7 +986,23 @@ export function parseEEWFromXml(headType: string, xml: string): EEWAlert | null 
 
   const eventId = xmlText(xmlQ(doc, 'EventID'))
   const serial = xmlText(xmlQ(doc, 'Serial')) || '1'
-  const reportTime = xmlText(xmlQ(doc, 'ReportDateTime'))
+  // **他の XML パーサーと同じ経路で読む。** かつてここだけ素読みで、`Control/DateTime` への
+  // 受け皿も、読めない値・時間帯を明示しない値を空にする検証も持っていなかった。
+  //
+  // 緊急地震速報では `Head/ReportDateTime` と `Control/DateTime` が**秒まで一致する**。
+  // 地震情報は `ReportDateTime` が分へ丸められて最大 55 秒ずれるが、こちらにその丸めは
+  // 無いので、受け皿へ落ちても指す瞬間は変わらない。
+  //
+  // **受け皿が実運用で働くことは期待していない。** `Head/ReportDateTime` の欠落は 1 通も
+  // 観測できていない。それでも揃えるのは、欠けた電文が来たときに**例外もログも出さずに**
+  // 発表時刻が空になり、自動解除の時刻計算（`utils/eew.ts` の `calcEEWCancelTime`）が
+  // Invalid Date へ落ちるため。
+  //
+  // 上の 2 つは DMDATA アーカイブの `eew.forecast` と `eew.warning`（2022-07-20〜2026-09-12・
+  // XML 80,725 通。2026-09-13 に数えた値）を走査した実測。差の分布は 0 秒のみ、
+  // `ReportDateTime` の欠落は 0 通だった。**目録は後から縮むので、別の日に数えた値とは
+  // 範囲が同じでも数が食い違いうる**（→ `docs/spec/quake-spec.md` §6.2）。
+  const reportTime = readReportDateTime(doc)
   const isCanceled = xmlText(xmlQ(doc, 'InfoType')) === '取消'
 
   const eqEl = xmlQ(doc, 'Earthquake')
