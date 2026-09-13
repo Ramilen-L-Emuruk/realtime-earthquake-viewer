@@ -329,6 +329,33 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
               : updateStatus === 'updated'
                 ? '3px solid #fbbf24'
                 : `1px solid ${style.cardBorder}38`
+            const matched = stations.find(s => s.name === obs.name)
+            // 実測の到達時刻が出せていない行に、予報側が持っている到達予想を添える。
+            //
+            // **欠測で絞らない。** 実配信でこの値が残るのは欠測の地点だけだが（到達そのものを
+            // 観測できていないので、気象庁に予想を取り下げる理由が無い）、観測状態の名前で条件を
+            // 書くと、別の状態で届いたときに黙って落とす。見たいのは「実測の到達時刻が出せて
+            // いない」ことそのもの。
+            //
+            // **語は区域の行（`arrivalText`）と揃える。** 実測は「05:12 押し波」の形で出るため、
+            // 語を冠さないと予報の値が観測できた時刻に見える。
+            const forecastArrivalText = !obs.arrivalTime && matched?.arrivalTime
+              ? `到達予想 ${formatTime(matched.arrivalTime).slice(0, 5)}`
+              : ''
+            // この欄は空になりうる要素が並ぶ。**区切りを前置きする書き方にしない** —— 先頭が
+            // 空のとき字下げだけが残る（到達予想を足す前から、欠測の行の満潮時刻がそうなっていた）。
+            const timeTexts = [
+              obs.arrivalTime
+                ? `${formatTime(obs.arrivalTime).slice(0, 5)}${obs.initial ? ` ${obs.initial}波` : ''}`
+                : observationArrivalFallbackText(obs),
+              // 第1波についての話が続くので、実測の到達時刻と同じ位置に置く。
+              forecastArrivalText,
+              // 最大波を観測した時刻。第1波の到達時刻と紛れないよう語を冠する
+              // （決め方は `observationMaxHeightTimeText`）。
+              observationMaxHeightTimeText(obs),
+              // 同名 station があれば満潮時刻をここに表示
+              matched?.highTideDateTime ? `満潮 ${formatTime(matched.highTideDateTime).slice(0, 5)}` : '',
+            ].filter(Boolean)
             return (
               <div
                 key={i}
@@ -358,19 +385,11 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
                         </span>
                       ))}
                     </div>
-                    <div className="mt-1" style={{ fontSize: '0.6875rem', color: '#9ca3af' }}>
-                      {obs.arrivalTime
-                        ? `${formatTime(obs.arrivalTime).slice(0, 5)}${obs.initial ? ` ${obs.initial}波` : ''}`
-                        : observationArrivalFallbackText(obs)}
-                      {/* 最大波を観測した時刻。第1波の到達時刻と紛れないよう語を冠する
-                          （決め方は `observationMaxHeightTimeText`）。 */}
-                      {observationMaxHeightTimeText(obs) && `　${observationMaxHeightTimeText(obs)}`}
-                      {/* 同名 station があれば満潮時刻をここに表示 */}
-                      {(() => {
-                        const matched = stations.find(s => s.name === obs.name)
-                        return matched?.highTideDateTime ? `　満潮 ${formatTime(matched.highTideDateTime).slice(0, 5)}` : null
-                      })()}
-                    </div>
+                    {timeTexts.length > 0 && (
+                      <div className="mt-1" style={{ fontSize: '0.6875rem', color: '#9ca3af' }}>
+                        {timeTexts.join('　')}
+                      </div>
+                    )}
                   </div>
                   {obs.height ? (
                     <span className="font-bold flex-shrink-0" style={{ fontSize: '1.25rem', color: style.heightColor }}>{observationHeightText(obs)}</span>
@@ -382,18 +401,29 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
             )
           })}
           {/* 実測値なし観測点（station のみ） */}
-          {stations.filter(s => !observedNames.has(s.name)).map((st, i) => (
-            <div key={i} className="px-3 py-2 rounded" style={{ border: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.03)' }}>
-              <div className="flex items-baseline gap-2 flex-wrap">
-                <span className="font-semibold" style={{ fontSize: '0.8125rem', color: '#d1d5db' }}>{st.name}</span>
-                <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: 'rgba(255,255,255,0.08)', color: '#9ca3af' }}>予測</span>
+          {stations.filter(s => !observedNames.has(s.name)).map((st, i) => {
+            // **語は実測の行・区域の行と揃える。** 同じ `TsunamiStation.arrivalTime` を、実測の
+            // エントリが有るか無いかだけで「到達予想」「到達」と呼び分けると、上下に並んだとき
+            // 片方が確定した事実に見える。バッジ（「予測」）があっても、時刻の語が違えば別の
+            // 性質の値として読まれる。
+            const timeTexts = [
+              st.arrivalTime ? `到達予想 ${formatTime(st.arrivalTime).slice(0, 5)}` : '',
+              st.highTideDateTime ? `満潮 ${formatTime(st.highTideDateTime).slice(0, 5)}` : '',
+            ].filter(Boolean)
+            return (
+              <div key={i} className="px-3 py-2 rounded" style={{ border: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.03)' }}>
+                <div className="flex items-baseline gap-2 flex-wrap">
+                  <span className="font-semibold" style={{ fontSize: '0.8125rem', color: '#d1d5db' }}>{st.name}</span>
+                  <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: 'rgba(255,255,255,0.08)', color: '#9ca3af' }}>予測</span>
+                </div>
+                {timeTexts.length > 0 && (
+                  <div className="mt-1" style={{ fontSize: '0.6875rem', color: '#9ca3af' }}>
+                    {timeTexts.join('　')}
+                  </div>
+                )}
               </div>
-              <div className="mt-1" style={{ fontSize: '0.6875rem', color: '#9ca3af' }}>
-                {st.arrivalTime && `到達 ${formatTime(st.arrivalTime).slice(0, 5)}`}
-                {st.highTideDateTime && `　満潮 ${formatTime(st.highTideDateTime).slice(0, 5)}`}
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>

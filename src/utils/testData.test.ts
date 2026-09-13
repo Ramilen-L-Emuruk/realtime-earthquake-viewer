@@ -397,6 +397,18 @@ describe('津波テストの識別子は原因地震の発現時刻から作る'
     expect(future.length).toBeGreaterThan(0)
   })
 
+  // 欠測の地点（実測の到達時刻を出せていない）にも、予報側の到達予想が残っていること。
+  // その値は観測点の行に「到達予想 ○○」として出る（→ tsunami-spec.md §9）。実配信でこの形が
+  // 出るのは欠測の地点だけなので、テストデータから落とすと実機で一度も確かめられない。
+  it('欠測の地点にも予報側の到達予想が残っている', () => {
+    const tsunami = createTestTsunami(true)
+    const stations = (tsunami.areas ?? []).flatMap((a) => a.stations ?? [])
+    const withForecast = (tsunami.observations ?? [])
+      .filter((o) => !o.arrivalTime && isObservationMissing(o))
+      .filter((o) => stations.some((st) => st.name === o.name && st.arrivalTime))
+    expect(withForecast.length).toBeGreaterThan(0)
+  })
+
   // 安全弁: 原因地震は第一波の到達より前。ここが逆転すると「地震より前に津波が来た」形になる。
   it('原因地震は区域の第一波到達より前に起きている', () => {
     const tsunami = createTestTsunami(true)
