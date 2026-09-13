@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation, TsunamiWarningComment } from '../../types/earthquake'
-import { formatDateTimeMin, formatDepth, formatMagnitudeCondition, formatTime, hasDepth } from '../../utils/formatters'
+import { formatDateTimeMin, formatDepth, formatMagnitudeCondition, formatTimeMin, hasDepth } from '../../utils/formatters'
 import { quakeEventKey } from '../../utils/quakeMerge'
 import { groupAreasForCardDisplay, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, tsunamiAreaKey, evacuationActionLine } from '../../utils/tsunami'
 import { TSUNAMI_MISSING_COLOR as MISSING_COLOR } from '../../utils/tsunamiStyle'
@@ -181,6 +181,9 @@ function SourceEarthquakeLine({ eq, prefix, link }: {
   prefix: string
   link: React.ReactNode
 }) {
+  // 日時として読めなければ句ごと落とす（→ `formatters.ts` の `readDateTime`）。震源名・規模・
+  // 深さが並ぶ行の付随情報なので、「発生」だけが残るより出さないほうがよい。
+  const originHm = eq.originTime ? formatTimeMin(eq.originTime) : null
   return (
     <div>
       {prefix}{eq.hypocenterName}
@@ -194,7 +197,7 @@ function SourceEarthquakeLine({ eq, prefix, link }: {
           **値によらず「深さ」を前置する** —— 地震カード・地図・共有カードもそう出しており、
           ここだけ省くとアプリの中で表記が割れる。 */}
       {eq.depth !== undefined && hasDepth(eq.depth) && `　深さ ${formatDepth(eq.depth)}`}
-      {eq.originTime && `　${formatTime(eq.originTime).slice(0, 5)}発生`}
+      {originHm && `　${originHm}発生`}
       {link}
       {/* 震央補助表現（「御前崎の北東40km付近」）と震源決定機関（「ＰＴＷＣ」等）。
           前者は震央地名より具体的に場所が分かり、後者は誰が決めた値かを示す。
@@ -248,8 +251,12 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
   const arrivalBadgeLabel = !badgeSuppressed && area.firstHeight?.condition
     ? ARRIVAL_CONDITION_BADGE[area.firstHeight.condition]
     : undefined
-  const arrivalText = area.firstHeight?.arrivalTime
-    ? `到達予想 ${formatTime(area.firstHeight.arrivalTime).slice(0, 5)}`
+  // 時刻が日時として読めないときは、時刻そのものが無い電文と同じ扱いにする（バッジか、
+  // バッジが出ない区域では電文の到達状況の語へ戻す）。「到達予想 」とラベルだけ残すより、
+  // 気象庁が書いた語のほうが利用者に届く。
+  const areaArrivalHm = area.firstHeight?.arrivalTime ? formatTimeMin(area.firstHeight.arrivalTime) : null
+  const arrivalText = areaArrivalHm
+    ? `到達予想 ${areaArrivalHm}`
     : (arrivalBadgeLabel ? null : (area.firstHeight?.condition ?? null))
 
   // 直近の受信で等級が動いた区域に、その移り変わりを 1 行で示す。
@@ -352,16 +359,22 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
                       ))}
                     </div>
                     <div className="mt-1" style={{ fontSize: '0.6875rem', color: '#9ca3af' }}>
-                      {obs.arrivalTime
-                        ? `${formatTime(obs.arrivalTime).slice(0, 5)}${obs.initial ? ` ${obs.initial}波` : ''}`
-                        : observationArrivalFallbackText(obs)}
+                      {/* 時刻が日時として読めないときは、時刻が無い電文と同じ落とし先へ回す
+                          （「第１波識別不能」なら「到達時刻不明」、そうでなければ何も出さない）。 */}
+                      {(() => {
+                        const hm = obs.arrivalTime ? formatTimeMin(obs.arrivalTime) : null
+                        return hm
+                          ? `${hm}${obs.initial ? ` ${obs.initial}波` : ''}`
+                          : observationArrivalFallbackText(obs)
+                      })()}
                       {/* 最大波を観測した時刻。第1波の到達時刻と紛れないよう語を冠する
                           （決め方は `observationMaxHeightTimeText`）。 */}
                       {observationMaxHeightTimeText(obs) && `　${observationMaxHeightTimeText(obs)}`}
                       {/* 同名 station があれば満潮時刻をここに表示 */}
                       {(() => {
                         const matched = stations.find(s => s.name === obs.name)
-                        return matched?.highTideDateTime ? `　満潮 ${formatTime(matched.highTideDateTime).slice(0, 5)}` : null
+                        const hm = matched?.highTideDateTime ? formatTimeMin(matched.highTideDateTime) : null
+                        return hm ? `　満潮 ${hm}` : null
                       })()}
                     </div>
                   </div>
@@ -375,18 +388,23 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
             )
           })}
           {/* 実測値なし観測点（station のみ） */}
-          {stations.filter(s => !observedNames.has(s.name)).map((st, i) => (
+          {stations.filter(s => !observedNames.has(s.name)).map((st, i) => {
+            // 日時として読めない時刻はラベルごと落とす（「到達 」だけが残ると値があるように見える）。
+            const arrivalHm = st.arrivalTime ? formatTimeMin(st.arrivalTime) : null
+            const highTideHm = st.highTideDateTime ? formatTimeMin(st.highTideDateTime) : null
+            return (
             <div key={i} className="px-3 py-2 rounded" style={{ border: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.03)' }}>
               <div className="flex items-baseline gap-2 flex-wrap">
                 <span className="font-semibold" style={{ fontSize: '0.8125rem', color: '#d1d5db' }}>{st.name}</span>
                 <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: 'rgba(255,255,255,0.08)', color: '#9ca3af' }}>予測</span>
               </div>
               <div className="mt-1" style={{ fontSize: '0.6875rem', color: '#9ca3af' }}>
-                {st.arrivalTime && `到達 ${formatTime(st.arrivalTime).slice(0, 5)}`}
-                {st.highTideDateTime && `　満潮 ${formatTime(st.highTideDateTime).slice(0, 5)}`}
+                {arrivalHm && `到達 ${arrivalHm}`}
+                {highTideHm && `　満潮 ${highTideHm}`}
               </div>
             </div>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>
@@ -395,6 +413,8 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
 
 function TsunamiObservationRow({ obs, onObservationClick, canFocusObs, registerSpeechRow }: { obs: TsunamiObservation; onObservationClick?: (name: string) => void; canFocusObs: (name: string) => boolean; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void }) {
   const clickable = !!onObservationClick && canFocusObs(obs.name)
+  // 日時として読めない到達時刻は、時刻が無い電文と同じ落とし先（下の fallback 群）へ回す。
+  const arrivalHm = obs.arrivalTime ? formatTimeMin(obs.arrivalTime) : null
   return (
     <div
       /* 追従スクロールの引き当て用。この行は区域に紐づかない観測点（沖合）で、読み上げは
@@ -428,9 +448,9 @@ function TsunamiObservationRow({ obs, onObservationClick, canFocusObs, registerS
         </div>
         {/* 最大波の観測時刻は**到達時刻の有無に関わらず出す**（第1波を識別できなくても
             最大波は観測できている電文がある）。区域に紐づく行と同じ述語を通す。 */}
-        {obs.arrivalTime ? (
+        {arrivalHm ? (
           <span className="block mt-1 text-secondary" style={{ fontSize: '0.8125rem' }}>
-            到達: {formatTime(obs.arrivalTime).slice(0, 5)}{obs.initial ? `（${obs.initial}）` : ''}
+            到達: {arrivalHm}{obs.initial ? `（${obs.initial}）` : ''}
             {observationMaxHeightTimeText(obs) && `　${observationMaxHeightTimeText(obs)}`}
             {/* 特殊観測機器（「ＧＮＳＳ波浪計」「水圧計」）。沖合の観測点だけが持つ。
                 電文の語をそのまま出す —— 言い換えると、どちらの計器が測った値か分からなくなる。
@@ -1041,11 +1061,14 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
   // 観測状況を確定した時刻（`Head/TargetDateTime`）。**発表時刻と同じ分なら出さない** ——
   // 同じ数字が 2 つ並ぶだけで、「観測値は発表より前の時点のもの」という肝心の意味が薄れる。
   // 実電文では VTSE52 で 60〜360 秒・VTSE51 で 0〜120 秒さかのぼり、0 秒の報も普通にある。
+  //
+  // **発表時刻が日時として読めないときは、比べずに出す。** そのときは発表時刻の欄（下の
+  // 「◯◯ 更新」）自体が出ないため、同じ数字が 2 つ並ぶ心配がない。
   const observationAsOfRaw = active[0]?.observationDateTime
-  const observationAsOf = observationAsOfRaw && latestTime
-    && formatTime(observationAsOfRaw).slice(0, 5) !== formatTime(latestTime).slice(0, 5)
-    ? formatTime(observationAsOfRaw).slice(0, 5)
-    : undefined
+  const observationAsOfHm = observationAsOfRaw ? formatTimeMin(observationAsOfRaw) : undefined
+  const latestHm = latestTime ? formatTimeMin(latestTime) : undefined
+  const observationAsOf = observationAsOfHm && observationAsOfHm !== latestHm ? observationAsOfHm : undefined
+  const latestUpdatedText = latestTime ? formatDateTimeMin(latestTime) : null
   // 1 件目を主に扱い、残りは下に併記する（電文は複数の地震を持ちうる）。
   const sourceEarthquakes = active[0]?.sourceEarthquakes ?? []
   const sourceEarthquake = sourceEarthquakes[0]
@@ -1086,9 +1109,11 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                   </span>
                 )}
               </div>
-              {latestTime && (
+              {(latestUpdatedText || observationAsOf) && (
                 <div className="text-right flex-shrink-0" style={{ fontSize: '0.6875rem', color: isCancelledDisplay ? '#6b7280' : topStyle.arrivalColor, opacity: 0.8 }}>
-                  <div>{formatDateTimeMin(latestTime)} 更新</div>
+                  {/* 発表時刻が日時として読めなければこの行だけ落とす。観測時点の行は残す —— 2 つは
+                      別の事実で、片方が読めないことをもう片方を隠す理由にしない。 */}
+                  {latestUpdatedText && <div>{latestUpdatedText} 更新</div>}
                   {/* 観測状況を確定した時刻（電文の `Head/TargetDateTime`）。観測情報でのみ入り、
                       実電文では最大 6 分さかのぼる。**下の波高がいつ時点のものか**を示す。
 
@@ -1260,7 +1285,13 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                           <span className="flex-shrink-0 text-right" style={{ fontSize: '0.8125rem', color: '#93c5fd' }}>
                             {/* 数値が無ければ、無い理由（電文の「推定中」）を出す。 */}
                             {estimationHeightText(est) && <span className="font-bold">{estimationHeightText(est)}</span>}
-                            {est.arrivalTime && <span className="ml-2">{formatTime(est.arrivalTime).slice(0, 5)}到達予想</span>}
+                            {/* 日時として読めない時刻は句ごと落とす（「到達予想」だけが残ると、
+                                いつ来るのかを述べているように見える）。到達についての説明は
+                                すぐ下に別の行として出るので、情報が全部消えるわけではない。 */}
+                            {(() => {
+                              const hm = est.arrivalTime ? formatTimeMin(est.arrivalTime) : null
+                              return hm ? <span className="ml-2">{hm}到達予想</span> : null
+                            })()}
                           </span>
                         </div>
                         {/* 到達についての説明は時刻と併存する（電文解説資料 Ⅱ.13 1-2-2-2 の事例１）。

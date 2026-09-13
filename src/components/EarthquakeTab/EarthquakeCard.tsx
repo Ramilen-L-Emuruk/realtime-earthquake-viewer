@@ -594,10 +594,12 @@ export function EarthquakeCard({
             </a>
           )}
 
-          {/* 日時 + 訂正情報 */}
+          {/* 日時 + 訂正情報。**日時として読めないときは語を出す**（→ `formatters.ts` の
+              `readDateTime`）。ここはカードの主題（いつ起きた地震か）で、空欄にすると
+              隣の種別バッジだけが残り、時刻を読み落としたのか電文に無いのか分からない。 */}
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-secondary text-base roomy:text-xl">
-              {formatQuakeTime(earthquake.time)}
+              {formatQuakeTime(earthquake.time) ?? '発生時刻不明'}
             </span>
             {issue.correct !== 'なし' && (
               <span className="text-xs bg-yellow-900 text-yellow-300 px-1.5 py-0.5 rounded font-medium flex-shrink-0">
@@ -977,7 +979,8 @@ export function EarthquakeCard({
               2 つでも折り返す。詰め切って情報を欠けさせるより、カードが 1 行分高くなる方を
               選んでいる（震度バッジは寸法固定なので正方形は崩れない）。 */}
           <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-            <span className="text-base text-secondary flex-shrink-0">{formatQuakeTime(earthquake.time)}</span>
+            {/* 畳んだ表示。開いた表示（上）と同じ語を出す。 */}
+            <span className="text-base text-secondary flex-shrink-0">{formatQuakeTime(earthquake.time) ?? '発生時刻不明'}</span>
             <span className={`text-xs px-1.5 py-0.5 rounded min-w-0 truncate ${issueTypeBadgeClass(issue.type)}`}>
               {formatIssueType(issue.type)}
             </span>

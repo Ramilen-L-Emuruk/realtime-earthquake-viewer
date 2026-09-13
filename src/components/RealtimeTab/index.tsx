@@ -154,6 +154,7 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
   const areas = eewAreas(eew)
   const serial = eewSerial(eew)
   const { hypocenter } = eew.earthquake
+  const originTimeText = formatDateTime(eew.earthquake.originTime)
   // 震源要素が推定できず、PLUM 法による震度予測だけが有効な状態。震源・規模・深さは固定の仮定値
   // （観測点直下 10km・M1.0）なので、数値は伏せ、地名には未確定である旨を添える。
   const isAssumed = eew.earthquake.condition === '仮定震源要素'
@@ -380,10 +381,13 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
           </div>
         )}
 
-        {/* 発生時刻 */}
-        <div className="text-secondary text-[0.9375rem] roomy:text-[1.125rem]">
-          {formatDateTime(eew.earthquake.originTime)}ごろ
-        </div>
+        {/* 発生時刻。日時として読めなければ欄ごと出さない（「ごろ」だけが残ると、
+            時刻を読み落としたのか電文が出していないのか分からない）。 */}
+        {originTimeText && (
+          <div className="text-secondary text-[0.9375rem] roomy:text-[1.125rem]">
+            {originTimeText}ごろ
+          </div>
+        )}
 
         {/* 震源名。仮定震源要素のときの地名は「最初に揺れを捉えた観測点の所在地」であって
             震源の推定位置ではないため、断定して見えないよう注記を添える（M・深さを伏せるのと同じ理由）。 */}
@@ -498,7 +502,10 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
                 ].join('\n')}
               />
             </div>
-            {shownArrival.map((a, i) => (
+            {shownArrival.map((a, i) => {
+              // **秒まで出す**ので分丸めの `formatTimeMin` は使わない（下記）。
+              const arrivalText = a.arrivalTime ? formatTime(a.arrivalTime) : null
+              return (
               <div key={i} className="flex items-center justify-between text-xs">
                 <span className="text-secondary truncate mr-2">{a.name}</span>
                 {arrivalKindOf(a) === 'arrived' ? (
@@ -512,15 +519,21 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
                   // 時間軸上の位置を伝えているのにここだけ伝えないことになる。
                   // 手法（PLUM 法）の説明は見出しのホバーへ逃がしてある。
                   <span className="text-white flex-shrink-0">到達時刻は不明</span>
-                ) : (
+                ) : arrivalText ? (
                   // **秒まで出す。** 電文は秒の値まで持っており、区域ごとの差は数秒。
                   // 時:分に丸めると、隣り合う区域の到達順が潰れる。
                   <span className="text-white font-mono flex-shrink-0">
-                    {formatTime(a.arrivalTime!)}
+                    {arrivalText}
                   </span>
+                ) : (
+                  // 時刻が日時として読めなかった区域。**理由は PLUM 法と違うが、利用者にとっての
+                  // 事実（この区域の到達時刻は出せない）は同じ**なので語を揃える。ここを空欄に
+                  // すると、区域名だけが並んで値を読み落としたように見える。
+                  <span className="text-white flex-shrink-0">到達時刻は不明</span>
                 )}
               </div>
-            ))}
+              )
+            })}
             {areasWithArrival.length > shownArrival.length && (
               <span className="text-xs text-secondary">他{areasWithArrival.length - shownArrival.length}地域</span>
             )}
