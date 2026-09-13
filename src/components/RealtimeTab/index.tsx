@@ -380,7 +380,11 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
           </div>
         )}
 
-        {/* 発生時刻 */}
+        {/* 地震発生時刻（`Earthquake/OriginTime`）。**緊急地震速報はここだけ発現時刻へ揃えていない。**
+            地震情報・津波・長周期は発現時刻（`ArrivalTime`）を出すようにしてあるが、緊急地震速報は
+            両方の時刻が秒値まで有効で他の種別と性質が違い、**ずれの実態を測っていない**。
+            意図的に据え置いているのであって、ずれないと確かめたわけではない
+            （→ `docs/spec/eew-spec.md` §3「地震の時刻は発生時刻を出す」）。 */}
         <div className="text-secondary text-[0.9375rem] roomy:text-[1.125rem]">
           {formatDateTime(eew.earthquake.originTime)}ごろ
         </div>
