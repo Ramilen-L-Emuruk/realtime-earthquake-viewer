@@ -61,6 +61,7 @@ let serial = 0
 function makeReport(
   areas: AreaSpec[],
   observations: { name: string; district: string; code: string; value?: number }[] = [],
+  cancelledAreas: AreaSpec[] = [],
 ): JMATsunami {
   serial += 1
   return {
@@ -71,6 +72,9 @@ function makeReport(
     cancelled: false,
     issue: { source: 'JMA', time: '2026-01-01T12:00:00Z', type: 'Focus' },
     areas: areas.map(a => ({ ...a, immediate: false } as TsunamiArea)),
+    ...(cancelledAreas.length > 0
+      ? { cancelledAreas: cancelledAreas.map(a => ({ ...a, immediate: false } as TsunamiArea)) }
+      : {}),
     observations: observations.map(o => ({
       name: o.name,
       districtCode: o.code,
@@ -189,6 +193,79 @@ describe('区域単位で等級が動いた報の読み上げ', () => {
     expect(spokenTexts()[1]).not.toContain('の津波注意報が津波予報に')
   })
 
+  // 解除された区域は `areas` に居ないので、専用の文が無いと画面にも音にも現れない
+  // （→ docs/spec/tsunami-spec.md §10「区域の顔ぶれが報ごとに変わること」）
+  it('正: 最上位等級が動かない報で、解除された区域を読み上げる', async () => {
+    const { handle } = setup()
+    handle(makeReport(WATCH_ALL))
+    await settle()
+    handle(makeReport(
+      [{ name: '石川県能登', code: '360', grade: 'Watch', lastGrade: 'Watch' }],
+      [],
+      [{ name: '青森県日本海沿岸', code: '200', grade: 'Unknown', lastGrade: 'Watch' }],
+    ))
+    await settle()
+    expect(spokenTexts()[1]).toBe('青森県日本海沿岸の津波注意報が解除されました。')
+  })
+
+  // 実電文の 2025-12-09T06:20（見出し「津波注意報を解除しました。」）がこの形。
+  // 7 区域が注意報 → 予報へ落ち、1 区域だけが解除された。**全体の等級も同時に動くので
+  // 専用の枝には来ない** ―― 降格の文に足さないと、解除された区域が無言で消える
+  it('正: 最上位等級も下がる報では、降格の文に続けて解除を読む', async () => {
+    const { handle } = setup()
+    handle(makeReport(WATCH_ALL))
+    await settle()
+    handle(makeReport(
+      WATCH_ALL.map(a => ({ ...a, grade: 'Forecast' as TsunamiGrade, lastGrade: 'Watch' as TsunamiGrade })),
+      [],
+      [{ name: '青森県日本海沿岸', code: '200', grade: 'Unknown', lastGrade: 'Watch' }],
+    ))
+    await settle()
+    expect(spokenTexts()[1]).toContain('津波予報に切り替えられました')
+    expect(spokenTexts()[1]).toContain('青森県日本海沿岸の津波注意報が解除されました。')
+  })
+
+  // 解除コードの区域は続報にも同じ形で載り続ける（実電文で確認）。既読にしないと毎報読み直す
+  it('対照: 同じ解除を載せ続ける続報では読み直さない', async () => {
+    const { handle } = setup()
+    handle(makeReport(WATCH_ALL))
+    await settle()
+    const lift = () => makeReport(
+      [{ name: '石川県能登', code: '360', grade: 'Watch', lastGrade: 'Watch' }],
+      [],
+      [{ name: '青森県日本海沿岸', code: '200', grade: 'Unknown', lastGrade: 'Watch' }],
+    )
+    handle(lift())
+    await settle()
+    handle(lift())
+    await settle()
+    expect(spokenTexts()).toHaveLength(2)
+  })
+
+  // 等級を語れない電文（全区域が `Unknown`）では降格の文が「全て解除されました」へ倒れる。
+  // そこへ解除の文を継ぐと矛盾するので読まない。**読まない分は既読にもしない**
+  it('安全弁: 等級を語れない報では解除を読まず、既読にもしない', async () => {
+    const { handle } = setup()
+    handle(makeReport(WATCH_ALL))
+    await settle()
+    const lifted: AreaSpec[] = [{ name: '青森県日本海沿岸', code: '200', grade: 'Unknown', lastGrade: 'Watch' }]
+    handle(makeReport(
+      [{ name: '石川県能登', code: '360', grade: 'Unknown', lastGrade: 'Watch' }],
+      [],
+      lifted,
+    ))
+    await settle()
+    expect(spokenTexts()[1]).not.toContain('青森県日本海沿岸')
+    // 次に等級を語れる報が来たら、そこで初めて読む
+    handle(makeReport(
+      [{ name: '石川県能登', code: '360', grade: 'Watch', lastGrade: 'Watch' }],
+      [],
+      lifted,
+    ))
+    await settle()
+    expect(spokenTexts()[2]).toBe('青森県日本海沿岸の津波注意報が解除されました。')
+  })
+
   // 実電文の第一報は全区域が `LastKind=00`（津波なし）で届く。**この報を区域ごとの専用文へ
   // 流してはいけない** ―― 発表そのものなので、従来の発表文が全区域を等級ごとに読む。
   it('安全弁: 新規発表の第一報（全区域が「前回は津波なし」）は従来の発表文で読む', async () => {
@@ -251,6 +328,28 @@ describe('区域単位で等級が動いた報の読み上げ', () => {
 
     setActiveTabNonRealtime.mockClear()
     handle(makeReport(PARTIAL_LIFT))
+    await settle()
+    expect(setActiveTabNonRealtime).not.toHaveBeenCalled()
+  })
+
+  // 解除だけが動いた報も同じ扱い。声が出ない端末では、カードの「解除」の枠が唯一の伝達手段になる
+  it('読み上げが無効な端末: 解除だけの報でも津波タブを要求し、続報では要求しない', async () => {
+    const { handle, setActiveTabNonRealtime } = setup(false)
+    handle(makeReport(WATCH_ALL))
+    await settle()
+    setActiveTabNonRealtime.mockClear()
+
+    const lift = () => makeReport(
+      [{ name: '石川県能登', code: '360', grade: 'Watch', lastGrade: 'Watch' }],
+      [],
+      [{ name: '青森県日本海沿岸', code: '200', grade: 'Unknown', lastGrade: 'Watch' }],
+    )
+    handle(lift())
+    await settle()
+    expect(setActiveTabNonRealtime).toHaveBeenCalledWith('tsunami')
+
+    setActiveTabNonRealtime.mockClear()
+    handle(lift())
     await settle()
     expect(setActiveTabNonRealtime).not.toHaveBeenCalled()
   })

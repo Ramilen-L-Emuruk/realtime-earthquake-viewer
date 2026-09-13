@@ -146,6 +146,29 @@ export interface IntensityPrefRow {
  * このファイルは電文の点だけを扱う純粋なユーティリティで、資材の読み込み事情
  * （起動直後は索引が無い）を持ち込むと呼び出し側ごとに分岐が増える。
  */
+/**
+ * 市町村を指す鍵の区切り文字。
+ *
+ * 地名に現れない文字にする（'/' や空白は市町村名・区域名のどちらにも入りうるので、別の
+ * 組み合わせが同じ鍵になりうる）。**エスケープで書くこと** —— 生の制御文字を置くと目に見えず、
+ * grep がこのファイルをバイナリとして扱う。
+ */
+export const CITY_KEY_SEP = '\u0000'
+
+/**
+ * 市町村を指す鍵（区域名と市町村名の組）。
+ *
+ * **市町村名だけでは一意にならない**（府中市＝東京都・広島県、伊達市＝北海道・福島県）。
+ * 名前だけで束ねると、両方が載った電文で観測点が混ざり、**どちらの行にも他県の観測点が並ぶ**。
+ * 区域は 1 つの県にしか属さないので、組にすれば足りる。
+ *
+ * **外から「未入電あり」の集合を渡すときも、この関数で鍵を作ること。** 別々に組み立てると、
+ * 区切り文字を変えたときに片方だけがずれ、印が黙って消える。
+ */
+export function cityKey(area: string, city: string): string {
+  return `${area}${CITY_KEY_SEP}${city}`
+}
+
 export interface IntensityRowDeps {
   /** 一次細分区域名 → 都道府県名 */
   prefOfArea: (areaName: string) => string | null
@@ -157,6 +180,15 @@ export interface IntensityRowDeps {
   unreceivedPrefs: ReadonlySet<string>
   /** 未入電の地点を含む一次細分区域 */
   unreceivedAreas: ReadonlySet<string>
+  /**
+   * 未入電の地点を含む市町村（鍵は {@link cityKey}）。
+   *
+   * **電文の `City/Condition` だけに頼れない。** あれは市町村の最大が震度4以下（又は入電なし）
+   * のときしか出ない（→ [`quake-spec.md`](../../docs/spec/quake-spec.md) §5「市町村の震度」）ので、
+   * **強く揺れた市町村ほど付かない** —— 通信が途絶えて未入電を抱えやすいのはまさにそちら。
+   * 県・区域と同じく、配下の観測点から集めたものを渡す。
+   */
+  unreceivedCities: ReadonlySet<string>
   /** 気象庁の標準順の順位（小さいほど先）。同じ震度どうしの並びに使う */
   rank: (name: string) => number
 }
@@ -253,15 +285,7 @@ export function buildIntensityRows(
 
   // 観測点を市町村ごと・区域ごとに振り分ける。**市町村を持つのは DMDATA の経路だけ**
   // （→ `EarthquakePoint.city`）。持たない観測点は区域へ直接ぶら下げる。
-  //
-  // **市町村の鍵は「区域＋市町村名」にする。** 市町村名は全国で一意ではない（府中市＝東京都・
-  // 広島県、伊達市＝北海道・福島県）。名前だけで束ねると、両方が載った電文で観測点が混ざり、
-  // **どちらの行にも他県の観測点が並ぶ**。区域は 1 つの県にしか属さないので、組にすれば足りる。
-  // 区切りは地名に現れない文字にする（'/' や空白は市町村名・区域名のどちらにも入りうるので、
-  // 別の組み合わせが同じ鍵になりうる）。**エスケープで書くこと** —— 生の制御文字を置くと
-  // 目に見えず、grep がこのファイルをバイナリとして扱う。
-  const CITY_KEY_SEP = '\u0000'
-  const cityKey = (area: string, city: string) => `${area}${CITY_KEY_SEP}${city}`
+  // 市町村の束ね方は {@link cityKey}（区域＋市町村名）。
   const stationsByCity = new Map<string, IntensityStationRow[]>()
   const stationsByRegion = new Map<string, IntensityStationRow[]>()
   const pushInto = (map: Map<string, IntensityStationRow[]>, key: string, row: IntensityStationRow) => {
@@ -302,7 +326,10 @@ export function buildIntensityRows(
       name: c.name,
       scale: c.scale,
       unreceived: !!c.unreceived,
-      hasUnreceived: !!c.hasUnreceived,
+      // 電文が言っている分と、配下の観測点から集めた分の**両方**を見る。前者は配下から復元
+      // できないことがあり（その市町村の観測点を 1 つも読めていない形）、後者は電文が黙って
+      // いる場合を埋める。
+      hasUnreceived: !!c.hasUnreceived || deps.unreceivedCities.has(key),
       stations: (stationsByCity.get(key) ?? []).sort(byScale(x => x.scale, x => x.name)),
     }
     const list = citiesByRegion.get(c.area)

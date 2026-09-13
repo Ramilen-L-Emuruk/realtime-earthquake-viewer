@@ -54,6 +54,8 @@ const renderTab = (quake: JMAQuake, selected: boolean) => render(
     estimatedIntensity={null}
     distributionQuakeKey={null}
     onToggleDistribution={() => {}}
+    unreceivedQuakeKey={null}
+    onToggleUnreceived={() => {}}
   />
 )
 

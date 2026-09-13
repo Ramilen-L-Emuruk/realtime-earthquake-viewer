@@ -135,7 +135,7 @@ export function buildSiToScale(grades: readonly JMAEstimatedIntensityGrade[]): U
   return table
 }
 
-/** いま画面に出している分布の見分け。**本体（最大 3MB）は持たない。** */
+/** いま画面に出している分布の見分け。**本体（3MB 規模）は持たない。** */
 export interface ShownEstimatedIntensity {
   arrivalTime: string
   /** 発表時刻 */
@@ -155,6 +155,20 @@ export type EstimatedIntensityUpdate =
   | { apply: false; reason: 'stale' }
   /** 反映しない（内容が同じ重複配信。正常なので記録しない） */
   | { apply: false; reason: 'duplicate' }
+
+/** 反映した（`apply: true`）ときの理由。反映しなかった理由（`stale` / `duplicate`）を含まない。 */
+export type AppliedEstimatedIntensityReason = Extract<EstimatedIntensityUpdate, { apply: true }>['reason']
+
+/**
+ * その分布を「初めて受信した」ものとして読むか。読み上げの言い分けに使う。
+ *
+ * **更新扱いにするのは `newer`（同じ地震の続報）だけ。** `switched` は表示している分布が
+ * 別の地震のものへ替わったので、聞き手にとっては初めて届いた分布にあたる —— そこで
+ * 「更新されました」と言うと、直前まで読んでいた地震の分布が差し替わったように聞こえる。
+ */
+export function isNewEstimatedIntensity(reason: AppliedEstimatedIntensityReason): boolean {
+  return reason !== 'newer'
+}
 
 /**
  * 届いた分布を反映するかどうか。**フックから切り出してある**（判定だけを固定したいため）。

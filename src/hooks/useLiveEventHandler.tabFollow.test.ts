@@ -346,7 +346,7 @@ describe('読み上げとタブ切替の同調', () => {
     // 震源（第 1 フェーズ）は読まれない。取消の読み上げだけが残る
     const spoken = speeches.map(s => s.text).join('')
     expect(spoken).not.toContain('能登半島沖で地震')
-    expect(spoken).toContain('キャンセルされました')
+    expect(spoken).toContain('取り消されました')
   })
 
   it('EEW を読み上げている間に届いた地震情報は、読み終わるまで earthquake を取らない', async () => {

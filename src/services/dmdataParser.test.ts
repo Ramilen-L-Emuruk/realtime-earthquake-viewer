@@ -1234,7 +1234,11 @@ function eewXml(o: {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<Report xmlns="http://xml.kishou.go.jp/jmaxml1/" xmlns:jmx="http://xml.kishou.go.jp/jmaxml1/">',
-    '<Control><Title>緊急地震速報（地震動予報）</Title><Status>通常</Status><EditorialOffice>気象庁</EditorialOffice></Control>',
+    // `Control/DateTime` は実電文どおり UTC 表記で、`ReportDateTime` と同じ瞬間を指す
+    // （03:00:10Z ＝ 12:00:10+09:00）。緊急地震速報はこの 2 つが**秒まで一致する**
+    // ——地震情報のように `ReportDateTime` へ分の丸めが掛からない（走査した範囲と実測値は
+    // `parseEEWFromXml` のコメント。→ `docs/spec/quake-spec.md` §6.3）。
+    '<Control><Title>緊急地震速報（地震動予報）</Title><DateTime>2026-01-01T03:00:10Z</DateTime><Status>通常</Status><EditorialOffice>気象庁</EditorialOffice></Control>',
     '<Head xmlns="http://xml.kishou.go.jp/jmaxml1/informationBasis1/">',
     '<Title>緊急地震速報（地震動予報）</Title>',
     '<ReportDateTime>2026-01-01T12:00:10+09:00</ReportDateTime>',
@@ -3124,20 +3128,48 @@ describe('津波 XML: 区域を読めなかったときに解除へ化けない�
     expect(warnings.filter(w => w.includes('名前を読めませんでした'))).toHaveLength(1)
   })
 
-  // 有効な区域が残ったまま一部だけ解除コードで落ちる形。**気象庁は一部解除でも区域を電文から
-  // 消さず等級の降格として載せる**ため実電文では稀だが、コード自身がこれを
-  // 「区域単位の等級変化として検出できない」既知のリスクとして名指ししている
-  // （→ docs/spec/tsunami-spec.md §10）。この関数は判定を何度も書き換えているので、
-  // 隣接する経路が黙って壊れないよう記録が出ることだけ固定しておく
-  it('一部だけ解除コードで落ちたら記録する（残りは通常の津波として成立）', () => {
+  // 有効な区域が残ったまま一部だけ解除される形。実電文にある（2025-12-09T06:20 の VTSE41）。
+  // 解除された区域は `areas` に居ないので、`cancelledAreas` で持ち回らないと画面にも音にも
+  // 現れない（→ docs/spec/tsunami-spec.md §10）
+  it('正: 一部だけ解除された区域は cancelledAreas で持ち回る（残りは通常の津波として成立）', () => {
     const partialLift = VTSE41_PARTIAL_LIFT_XML
       .replace('<Kind><Name>津波注意報</Name><Code>62</Code></Kind>', '<Kind><Name>津波注意報解除</Name><Code>60</Code></Kind>')
     const warnings = captureWarnings(() => {
       const t = parseTsunamiFromXml('VTSE51', partialLift)!
       expect(t.cancelled).toBe(false)
+      // 対照: 解除されていない区域は従来どおり `areas` に残る
       expect(t.areas).toHaveLength(2)
+      expect(t.areas.map(a => a.name)).not.toContain('石川県能登')
+      expect(t.cancelledAreas).toHaveLength(1)
+      expect(t.cancelledAreas![0]).toMatchObject({
+        name: '石川県能登', code: '360', grade: 'Unknown', lastGrade: 'Watch',
+      })
+      // 解除された区域は電文が波高も到達時刻も持たない
+      expect(t.cancelledAreas![0].maxHeight).toBeUndefined()
+      expect(t.cancelledAreas![0].stations).toBeUndefined()
     })
-    expect(warnings.filter(w => w.includes('解除コードで落ちた区域があります'))).toHaveLength(1)
+    // 前回の等級が読めているので記録は出ない（出るのは下の「読めなかった」ときだけ）
+    expect(warnings.filter(w => w.includes('前回の等級を読めませんでした'))).toHaveLength(0)
+  })
+
+  // 安全弁: 解除されたことは分かっても「何から解除されたか」を読めない区域は文にできない。
+  // 画面にも音にも出ないので、追う手がかりを記録に残す
+  it('安全弁: 前回の等級を読めない解除は記録する', () => {
+    const partialLift = VTSE41_PARTIAL_LIFT_XML
+      .replace('<Kind><Name>津波注意報</Name><Code>62</Code></Kind>', '<Kind><Name>津波注意報解除</Name><Code>60</Code></Kind>')
+      .replace('<LastKind><Name>津波注意報</Name><Code>62</Code></LastKind>', '<LastKind><Name>不明</Name><Code>99</Code></LastKind>')
+    const warnings = captureWarnings(() => {
+      const t = parseTsunamiFromXml('VTSE51', partialLift)!
+      expect(t.cancelledAreas).toHaveLength(1)
+      expect(t.cancelledAreas![0].lastGrade).toBeUndefined()
+    })
+    expect(warnings.filter(w => w.includes('前回の等級を読めませんでした'))).toHaveLength(1)
+  })
+
+  // 安全弁: 解除された区域が 1 つも無ければフィールドごと持たせない
+  it('安全弁: 解除された区域が無ければ cancelledAreas を持たない', () => {
+    const t = parseTsunamiFromXml('VTSE51', VTSE41_PARTIAL_LIFT_XML)!
+    expect(t.cancelledAreas).toBeUndefined()
   })
 
   // 安全弁: 一部の区域だけ名前が読めない場合は、読めた区域で通常どおり成立させる。
@@ -3175,6 +3207,9 @@ describe('津波の取消・全解除・原因地震', () => {
     const t = parseTsunamiFromXml('VTSE51', xml)!
     expect(t.areas).toEqual([])
     expect(t.cancelReason).toBe('lifted')
+    // 全解除の報は `cancelledAreas` を持たない（→ `JMATsunami.cancelledAreas`）。守っているのは
+    // この早期 return の位置だけなので、返却の組み立てを共通化するとき黙って壊れうる
+    expect(t.cancelledAreas).toBeUndefined()
   })
 
   // 対照: 震源名が無ければ原因地震を名乗らない（空文字の見出しを作らない）。
@@ -4237,6 +4272,86 @@ describe('parseEEWFromXml（VXSE45 の XML 経路）', () => {
     expect(e.earthquake.hypocenter.longitude).toBe(-200)
     expect(e.areas).toEqual([])
     expect(e.forecastMaxScale).toBeUndefined()
+  })
+})
+
+// ---- 発表時刻の受け皿（Head/ReportDateTime が空なら Control/DateTime へ落ちる）----
+//
+// **緊急地震速報も他の XML パーサーと同じ `readReportDateTime` を通す。** ここだけ素読み
+// だったため、受け皿（UTC → JST の表記揃え）も検証（読めない値・時間帯を明示しない値を
+// 空にする）も持っていなかった。地震情報側の同名のテスト（→「発表時刻が空なら〜」）と
+// 対になる。
+//
+// 緊急地震速報では 2 つの時刻が**秒まで一致する**（走査した範囲と実測値は `parseEEWFromXml`
+// のコメント）。地震情報は `ReportDateTime` が分へ丸められて最大 55 秒ずれるが、こちらに
+// その丸めは無い。雛形も実電文どおり同じ瞬間の別表記（13:35:37Z ＝ 22:35:37+09:00）なので、
+// 2 つの経路が同じ文字列を返すことを直接確かめられる。
+describe('緊急地震速報: 発表時刻の受け皿', () => {
+  const withoutReportDateTime = (): string => {
+    const xml = EEW_XML.replace('<ReportDateTime>2026-09-03T22:35:37+09:00</ReportDateTime>', '')
+    // .replace() は対象が無くても黙って素通りする。当たったことを機械的に確かめる。
+    expect(xml).not.toBe(EEW_XML)
+    return xml
+  }
+
+  // 正: 受け皿へ落ちた値は JST 表記に揃う（UTC のまま出てこない）。
+  it('発表時刻が空なら Control/DateTime を JST 表記へ直して使う', () => {
+    const e = parseEEWFromXml('VXSE45', withoutReportDateTime())!
+    expect(e.time).toBe('2026-09-03T22:35:37+09:00')
+    // `time` と `issue.time` は同じ値から作る。片方だけ直すと、自動解除の時刻計算
+    // （`calcEEWCancelTime`）と誤報取消の読み上げ（`eewCancelToText`）で別の時刻になる。
+    expect(e.issue!.time).toBe(e.time)
+  })
+
+  // 対照: 発表時刻がある電文は受け皿を通らず、その値をそのまま使う（変換を掛けない）。
+  it('発表時刻があればそれをそのまま使う', () => {
+    expect(parseEEWFromXml('VXSE45', EEW_XML)!.time).toBe('2026-09-03T22:35:37+09:00')
+  })
+
+  // 安全弁: 受け皿を通った値と通常経路の値が**文字列として等しい**。どちらの表記が変わっても
+  // ここで落ちるので、片方だけを直す変更を止められる。
+  it('受け皿を通っても通常経路と同じ文字列になる', () => {
+    expect(parseEEWFromXml('VXSE45', withoutReportDateTime())!.time)
+      .toBe(parseEEWFromXml('VXSE45', EEW_XML)!.time)
+  })
+
+  // 対照: 受け皿は `Head/ReportDateTime` が読めるときには使わない。壊れた
+  // `Control/DateTime` に引きずられて発表時刻が消えたり、UTC 表記へ化けたりしない。
+  it('Control/DateTime が壊れていても発表時刻があればそちらを使う', () => {
+    const xml = EEW_XML.replace('<DateTime>2026-09-03T13:35:37Z</DateTime>', '<DateTime>不明</DateTime>')
+    expect(xml).not.toBe(EEW_XML)
+    expect(parseEEWFromXml('VXSE45', xml)!.time).toBe('2026-09-03T22:35:37+09:00')
+  })
+
+  // ---- ここから下の 2 件が守るもの ----
+  //
+  // **`parseEEWFromXml` が `readReportDateTime` を通ること自体は、上の「発表時刻が空なら〜」と
+  // 「受け皿を通っても〜」の 2 件が守る。** 素読み（`xmlText(xmlQ(doc, 'ReportDateTime'))`）へ
+  // 戻すとその 2 件が落ちる。
+  //
+  // 下の 2 件は**戻しても落ちない** —— `ReportDateTime` を落とした時点で素読みも空を返すので、
+  // `Control/DateTime` の中身が何であれ結果が変わらない。守っているのは別のこと＝
+  // **`readReportDateTime` の検証（時間帯の明示・日時として読めるか）が緊急地震速報の経路でも
+  // 効いていること**で、将来この検証が緩められたり、EEW だけ独自の受け皿を書いたりすれば落ちる。
+
+  // 安全弁: 時間帯を明示していない値は空にする。**「読めない」では捕まらない類の壊れ方。**
+  // オフセットが無いと `Date.parse` は実行環境のローカル時刻として解釈し、有限値を返す
+  // （`Number.isNaN` は素通りする）。このアプリは利用者のブラウザで動くので、同じ電文が
+  // 端末ごとに違う時刻になる。
+  it('Control/DateTime に時間帯が無ければ発表時刻を空にする', () => {
+    const xml = withoutReportDateTime()
+      .replace('<DateTime>2026-09-03T13:35:37Z</DateTime>', '<DateTime>2026-09-03T13:35:37</DateTime>')
+    expect(xml).toContain('<DateTime>2026-09-03T13:35:37</DateTime>')
+    expect(parseEEWFromXml('VXSE45', xml)!.time).toBe('')
+  })
+
+  // 安全弁: 日時として読めない値も空にする。そのまま通すと以降の時刻比較がこの値に
+  // 引きずられる（自動解除の時刻が Invalid Date になり、解除の予約が働かなくなる）。
+  it('Control/DateTime が日時として読めなければ発表時刻を空にする', () => {
+    const xml = withoutReportDateTime()
+      .replace('<DateTime>2026-09-03T13:35:37Z</DateTime>', '<DateTime>不明</DateTime>')
+    expect(xml).toContain('<DateTime>不明</DateTime>')
+    expect(parseEEWFromXml('VXSE45', xml)!.time).toBe('')
   })
 })
 
@@ -5334,6 +5449,8 @@ describe('日時として読めない電文の時刻（津波以外の経路）'
     })
 
     // **安全弁: 発表時刻は捨てない。** 空にしたときの影響を確かめていないため、記録だけ残す。
+    // `readReportDateTime` は `Head/ReportDateTime` が在れば素通しする（検証が掛かるのは
+    // `Control/DateTime` への受け皿だけ）。これは全 9 種別に共通の扱い。
     it('発表時刻は読めなくても捨てない', () => {
       const xml = replaceOnce(EEW_XML, '<ReportDateTime>2026-09-03T22:35:37+09:00</ReportDateTime>', '<ReportDateTime>壊れた値</ReportDateTime>')
       expect(parseEEWFromXml('VXSE45', xml)!.time).toBe('壊れた値')

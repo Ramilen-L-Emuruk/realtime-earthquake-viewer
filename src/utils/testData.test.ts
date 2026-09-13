@@ -26,7 +26,7 @@ import notoHonshinQuake from '../data/noto-honshin-2024-quake.json'
 import { extractQuakeEventId } from './quakeMerge'
 import { eewAreas, eewMaxScale, eewNoForecastReason } from './eew'
 import { extractQuakeEventIdFromId } from './quakeMerge'
-import { isObservationMissing } from './tsunami'
+import { isObservationMissing, matchesArea } from './tsunami'
 
 // テストデータが「名前で」外部データと突き合わせている箇所を固定する。
 //
@@ -239,7 +239,7 @@ describe('地震情報テストの points 形状', () => {
 
     // 安全弁: 同じ地震として扱われること。`eventId` が変わると別カードが立ち、
     // 「訂正された」ように見えない（印だけが 2 枚目のカードに付く）。
-    it('2 通が同じ地震を指し、震源時刻は動かない', () => {
+    it('2 通が同じ地震を指し、地震の時刻は動かない', () => {
       const { initial, amended } = createTestQuakeAmendment(true)
       expect(extractQuakeEventIdFromId(amended.id)).toBe(extractQuakeEventIdFromId(initial.id))
       expect(extractQuakeEventIdFromId(initial.id)).not.toBeNull()
@@ -397,6 +397,18 @@ describe('津波テストの識別子は原因地震の発現時刻から作る'
     expect(future.length).toBeGreaterThan(0)
   })
 
+  // 欠測の地点（実測の到達時刻を出せていない）にも、予報側の到達予想が残っていること。
+  // その値は観測点の行に「到達予想 ○○」として出る（→ tsunami-spec.md §9）。実配信でこの形が
+  // 出るのは欠測の地点だけなので、テストデータから落とすと実機で一度も確かめられない。
+  it('欠測の地点にも予報側の到達予想が残っている', () => {
+    const tsunami = createTestTsunami(true)
+    const stations = (tsunami.areas ?? []).flatMap((a) => a.stations ?? [])
+    const withForecast = (tsunami.observations ?? [])
+      .filter((o) => !o.arrivalTime && isObservationMissing(o))
+      .filter((o) => stations.some((st) => st.name === o.name && st.arrivalTime))
+    expect(withForecast.length).toBeGreaterThan(0)
+  })
+
   // 安全弁: 原因地震は第一波の到達より前。ここが逆転すると「地震より前に津波が来た」形になる。
   it('原因地震は区域の第一波到達より前に起きている', () => {
     const tsunami = createTestTsunami(true)
@@ -412,6 +424,119 @@ describe('津波テストの識別子は原因地震の発現時刻から作る'
       expect(new Date(eq.arrivalTime!).getTime()).toBeLessThan(Math.min(...arrivals))
     }
   })
+})
+
+// 区域の到達状況（`firstHeight`）と実測の組み合わせは、実配信では 4 つの形しか取らない
+// （→ docs/spec/tsunami-spec.md §9「区域の到達状況」）。そこから外れたテストデータは、
+// **実運用では決して起きない絵**を見ながら表示を確かめることになる。
+//
+// 以前は「ただちに津波来襲と予測」の区域が到達予想を過去に持ち、しかもその区域に波高の実測が
+// あった。どちらも実配信の標本（全期間 634 通・区域延べ 19,906）で 0 件の形。
+describe('津波テストの区域は実配信の形に従う', () => {
+  beforeEach(() => { vi.useFakeTimers({ now: new Date('2026-09-12T12:34:56Z').getTime() }) })
+  afterEach(() => { vi.useRealTimers() })
+
+  /** 到達済みを表す 2 値。どちらも到達予想時刻を持たない。 */
+  const ARRIVED = ['津波到達中と推測', '第１波の到達を確認']
+
+  it('「ただちに津波来襲と予測」の区域は未来の到達予想を持つ', () => {
+    const tsunami = createTestTsunami(true)
+    const areas = (tsunami.areas ?? []).filter((a) => a.firstHeight?.condition === 'ただちに津波来襲と予測')
+    expect(areas.length).toBeGreaterThan(0)
+    for (const a of areas) {
+      expect(a.firstHeight?.arrivalTime, a.name).toBeTruthy()
+      expect(Date.parse(a.firstHeight!.arrivalTime!)).toBeGreaterThan(Date.parse(tsunami.time))
+    }
+  })
+
+  // 対照: 到達済みの 2 値では時刻が消える。予想する対象がもう無いため
+  it('到達済みの区域は到達予想時刻を持たない', () => {
+    const tsunami = createTestTsunami(true)
+    const areas = (tsunami.areas ?? []).filter((a) => ARRIVED.includes(a.firstHeight?.condition ?? ''))
+    expect(areas.length).toBeGreaterThan(0)
+    for (const a of areas) expect(a.firstHeight?.arrivalTime, a.name).toBeFalsy()
+  })
+
+  // **津波予報の区域にも実測は届く。** `FirstHeight` を持たないのは「到達を語らない」だけで、
+  // 観測していないという意味ではない。ここを「実測があれば必ず第１波の到達を確認」と書くと、
+  // 実配信で 1 割強を占める組み合わせを弾く実装を後から呼び込む
+  it('波高の実測がある区域は、津波予報か「第１波の到達を確認」のどちらか', () => {
+    const tsunami = createTestTsunami(true)
+    const measured = (tsunami.areas ?? []).filter((a) =>
+      (tsunami.observations ?? []).some((o) => o.height?.description && matchesArea(o, a)))
+    expect(measured.length).toBeGreaterThan(0)
+    // 両方の形がテストデータに載っていること自体を先に固定する
+    expect(measured.some((a) => a.grade === 'Forecast')).toBe(true)
+    expect(measured.some((a) => a.grade !== 'Forecast')).toBe(true)
+    for (const a of measured) {
+      if (a.grade === 'Forecast') expect(a.firstHeight, a.name).toBeUndefined()
+      else expect(a.firstHeight?.condition, a.name).toBe('第１波の到達を確認')
+    }
+  })
+
+  // 本命の回帰。バッジは実測がある区域では出ない（`TsunamiAreaRow` の `badgeSuppressed`）ので、
+  // 実測を持たない区域が無いと **3 値が 1 つも画面に出ない**。実際にその状態だった
+  it('到達状況の 3 値それぞれに、実測を持たない区域がある', () => {
+    const tsunami = createTestTsunami(true)
+    for (const condition of ['ただちに津波来襲と予測', ...ARRIVED]) {
+      const withBadge = (tsunami.areas ?? []).filter((a) => a.firstHeight?.condition === condition
+        && !(tsunami.observations ?? []).some((o) => matchesArea(o, a)))
+      expect(withBadge.length, condition).toBeGreaterThan(0)
+    }
+  })
+
+  // 安全弁: `FirstHeight` を持たないのは津波予報（若干の海面変動）と解除だけ。注意報以上は
+  // 必ず持つ。standard 版でも落ちないことを併せて見る
+  it('注意報以上の区域は到達状況を必ず持つ', () => {
+    for (const withDmdssFields of [true, false]) {
+      const areas = createTestTsunami(withDmdssFields).areas ?? []
+      const graded = areas.filter((a) => a.grade !== 'Forecast')
+      expect(graded.length).toBeGreaterThan(0)
+      for (const a of graded) {
+        expect(a.firstHeight, `${a.name}(${withDmdssFields ? 'DMDSS' : 'standard'})`).toBeTruthy()
+      }
+      // 予想波高は等級を問わず付く（津波予報の区域も持つ）
+      for (const a of areas) {
+        expect(a.maxHeight, `${a.name}(${withDmdssFields ? 'DMDSS' : 'standard'})`).toBeTruthy()
+      }
+    }
+  })
+
+  // 安全弁: 地点の到達予想は、波高か到達時刻が届いた地点からは消える（満潮時刻だけが残る）。
+  // **残る地点のうち、まだ何も届いていない地点は未来・欠測の地点は過去。** 後者は予想した
+  // 時刻を過ぎても到達を観測できていない形で、気象庁には予想を取り下げる理由が無い。
+  // カードはこの値を観測点の行へ「到達予想」として添えるので実機にも届く
+  // （→ docs/spec/tsunami-spec.md §9「実測の到達時刻が無い行に添える到達予想」）。
+  it('地点の到達予想は、値が届いた地点からは消え、欠測の地点だけ過去に残る', () => {
+    const tsunami = createTestTsunami(true)
+    const received = new Set((tsunami.observations ?? [])
+      .filter((o) => o.height?.description || o.arrivalTime)
+      .map((o) => o.name))
+    const missing = new Set((tsunami.observations ?? [])
+      .filter((o) => isObservationMissing(o))
+      .map((o) => o.name))
+    const stations = (tsunami.areas ?? []).flatMap((a) => a.stations ?? [])
+    expect(stations.length).toBeGreaterThan(0)
+    let future = 0
+    let missingPast = 0
+    for (const st of stations) {
+      if (received.has(st.name)) {
+        expect(st.arrivalTime, st.name).toBeFalsy()
+        continue
+      }
+      if (!st.arrivalTime) continue
+      if (missing.has(st.name)) {
+        expect(Date.parse(st.arrivalTime), st.name).toBeLessThan(Date.parse(tsunami.time))
+        missingPast++
+        continue
+      }
+      expect(Date.parse(st.arrivalTime), st.name).toBeGreaterThan(Date.parse(tsunami.time))
+      future++
+    }
+    expect(future).toBeGreaterThan(0)
+    expect(missingPast).toBeGreaterThan(0)
+  })
+
 })
 
 // 上限を定めない予想（電文の `To="over"`）をテストボタンでも再現していること。
@@ -820,6 +945,27 @@ describe('津波の続報で区域ごとに等級が動く報', () => {
     expect(by('青森県太平洋沿岸')).toMatchObject({ grade: 'Watch', lastGrade: 'Warning' })
     expect(by('茨城県')).toMatchObject({ grade: 'MajorWarning', lastGrade: 'Warning' })
     expect(by('北海道太平洋沿岸東部')).toMatchObject({ grade: 'Forecast', lastGrade: 'Watch' })
+  })
+
+  // 正: 解除された区域は `areas` から外れて `cancelledAreas` へ移る。**実機で解除の読み上げと
+  // カードの「解除」の枠を確かめられる唯一の入口**（→ docs/spec/tsunami-spec.md §10）。
+  it('解除された区域は cancelledAreas へ移り、areas からは消える', () => {
+    const next = createTestTsunamiGradeChange(createTestTsunami(true))
+    expect(next.areas.map(a => a.name)).not.toContain('青森県日本海沿岸')
+    expect(next.cancelledAreas).toHaveLength(1)
+    expect(next.cancelledAreas![0]).toMatchObject({
+      name: '青森県日本海沿岸', code: '200', grade: 'Unknown', lastGrade: 'Watch',
+    })
+    // 実電文の解除された区域は `Area` と `Category` しか持たない
+    expect(next.cancelledAreas![0].maxHeight).toBeUndefined()
+    expect(next.cancelledAreas![0].stations).toBeUndefined()
+  })
+
+  // 対照: 発表報の時点では通常の区域として出ている（解除の前後が実機で見える）。
+  it('発表報では解除される区域も通常の区域として出ている', () => {
+    const base = createTestTsunami(true)
+    expect(base.cancelledAreas).toBeUndefined()
+    expect(base.areas.find(a => a.name === '青森県日本海沿岸')).toMatchObject({ grade: 'Watch' })
   })
 
   // 対照: 動いていない区域には印を付けない（付けると全区域に「切り替え」が出る）。

@@ -48,7 +48,47 @@ describe('loadStationCoords', { timeout: 15_000 }, () => {
 
     await expect(loadStationCoords()).resolves.toBeTruthy()
     expect(getStationCoordsCache()).not.toBeNull()
-    expect(warn.mock.calls.filter(call => call.some(arg => String(arg).includes('旧形式'))).length).toBe(1)
+    // **主題で数える。** 「旧形式」で数えると、同じ語を使う別の警告（現行の一覧に無い観測点が
+    // 無い形）が足された瞬間に、この検査が何を見ているのか分からなくなる。
+    expect(warn.mock.calls.filter(call => call.some(arg => String(arg).includes('区域の一覧が無い'))).length).toBe(1)
+
+    warn.mockRestore()
+  })
+
+  // 現行の一覧に無い観測点を持たない配信（更新前のデータを掴んでいる間）も、黙って劣化させない。
+  // **区域の一覧と対称に扱う** —— 警告が無いと、過去の電文を再生したときに当時あって今は無い
+  // 観測点が地図から消えても、画面にもコンソールにも理由が残らない。
+  it('現行の一覧に無い観測点を持たない旧形式でも失敗させず、警告だけ出す', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn(async () => okResponse({
+      stations: { '石川県|輪島市鳳至町': [37.39, 136.9, 0] },
+      areas: { '石川県|石川県能登': [37.3, 136.9] },
+      regionNames: ['石川県能登'],
+    })))
+    const { loadStationCoords, getStationCoordsCache } = await freshModule()
+
+    await expect(loadStationCoords()).resolves.toBeTruthy()
+    expect(getStationCoordsCache()).not.toBeNull()
+    const hit = (s: string) => warn.mock.calls.filter(call => call.some(arg => String(arg).includes(s))).length
+    expect(hit('現行の一覧に無い観測点を持たない')).toBe(1)
+    // 区域の一覧は持っているので、そちらの警告は出ない（2 つの警告が連動していないこと）。
+    expect(hit('区域の一覧が無い')).toBe(0)
+
+    warn.mockRestore()
+  })
+
+  it('現行の一覧に無い観測点を持っていれば警告しない', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn(async () => okResponse({
+      stations: { '石川県|輪島市鳳至町': [37.39, 136.9, 0] },
+      unlisted: { '大阪府|豊中市役所': [34.78, 135.47, 0] },
+      areas: { '石川県|石川県能登': [37.3, 136.9] },
+      regionNames: ['石川県能登'],
+    })))
+    const { loadStationCoords } = await freshModule()
+
+    await expect(loadStationCoords()).resolves.toBeTruthy()
+    expect(warn.mock.calls.filter(call => call.some(arg => String(arg).includes('現行の一覧に無い観測点を持たない'))).length).toBe(0)
 
     warn.mockRestore()
   })
@@ -410,5 +450,113 @@ describe('byValueDescThenRegion', () => {
       south,
       north,
     ])
+  })
+})
+
+// 観測点の統廃合は毎年続くので、過去の電文を再生すると当時あって今は無い観測点が混ざる。
+// `unlisted` はその落とし先（→ `scripts/build-station-coords.mjs`）。
+describe('現行の一覧に無い観測点（unlisted）', () => {
+  const DATA: StationCoordsData = {
+    stations: { '石川県|輪島市鳳至町': [37.39, 136.9, 0] },
+    unlisted: {
+      '大阪府|豊中市役所': [34.78, 135.47, 1],
+      // 現行と同じ観測点名を別の県に置く。実データには無い形だが、上流が入れ替わっても
+      // 現行が勝つことを固定しておく。
+      '富山県|輪島市鳳至町': [36.7, 137.2, 1],
+    },
+    areas: { '石川県|石川県能登': [37.3, 136.9] },
+    regionNames: ['石川県能登', '大阪府北部'],
+  }
+
+  // 正: 現行に無い観測点でも、座標・区域・都道府県が引ける。ここが引けないと、
+  // 過去の電文を再生したときその観測点が地図から丸ごと消える。
+  it('現行に無い観測点でも座標・区域・都道府県を引ける', async () => {
+    const { lookupPointCoords, lookupStationRegion, buildStationPrefIndex } = await freshModule()
+    expect(lookupPointCoords(DATA, '大阪府', '豊中市役所', false)).toEqual([34.78, 135.47])
+    expect(lookupStationRegion(DATA, '大阪府', '豊中市役所')).toBe('大阪府北部')
+    expect(buildStationPrefIndex(DATA).get('豊中市役所')).toBe('大阪府')
+  })
+
+  // 対照: どちらにも無い名前は従来どおり引けない。落とし先を足したことで、
+  // 存在しない観測点にまで座標が付くようになってはいけない。
+  it('どちらにも無い観測点は引けないまま', async () => {
+    const { lookupPointCoords, lookupStationRegion, buildStationPrefIndex } = await freshModule()
+    expect(lookupPointCoords(DATA, '東京都', '実在しない観測点', false)).toBeNull()
+    expect(lookupStationRegion(DATA, '東京都', '実在しない観測点')).toBeNull()
+    expect(buildStationPrefIndex(DATA).get('実在しない観測点')).toBeUndefined()
+  })
+
+  // 安全弁: 同じ名前が両方にあれば現行が勝つ。負けると、いま動いている観測点の座標が
+  // 過去の値へ置き換わる（しかも画面には有効な座標として出るので気づけない）。
+  it('同じ観測点名が両方にあれば現行を採る', async () => {
+    const { lookupPointCoords, buildStationPrefIndex } = await freshModule()
+    expect(buildStationPrefIndex(DATA).get('輪島市鳳至町')).toBe('石川県')
+    expect(lookupPointCoords(DATA, '石川県', '輪島市鳳至町', false)).toEqual([37.39, 136.9])
+  })
+
+  // 安全弁: 区域の代表点は現行の観測点だけで作る。混ぜると代表点が動き、震度速報の描画・
+  // カメラの寄り先・読み上げの距離選抜がまとめてずれる。
+  //
+  // **件数の一致では見ない。** `areas` と `regionNames` の件数が同じなのは、現行の一覧に無い
+  // 観測点がたまたま全部現行の区域に収まっているからで、不変条件ではない。代わりに
+  // 「区域の代表点が現行の観測点だけから作られているか」を直接見る。
+  it('区域の代表点は現行の観測点だけから作る', async () => {
+    const data = JSON.parse(readFileSync('public/data/station-coords.json', 'utf8')) as StationCoordsData
+    const names = data.regionNames ?? []
+    const fromListed = new Set<string>()
+    for (const [key, entry] of Object.entries(data.stations)) {
+      const region = entry[2] != null ? names[entry[2]] : null
+      if (region) fromListed.add(`${key.slice(0, key.indexOf('|'))}|${region}`)
+    }
+    expect([...Object.keys(data.areas)].filter(key => !fromListed.has(key))).toEqual([])
+  })
+
+  // 安全弁: 現行の一覧に無い観測点が、現行のどの観測点も属さない区域を持ち込まないこと。
+  // 持ち込むと、その区域は `areas`（＝区域塗りのポリゴンを引く鍵）に無いまま
+  // `lookupStationRegion` だけが名前を返すようになり、**寄った画には点が出るのに
+  // 引いた画の区域塗りからは黙って外れる**。実データが崩れたらここで止めて人が見る。
+  it('現行の一覧に無い観測点は、新しい区域名を持ち込まない', async () => {
+    const data = JSON.parse(readFileSync('public/data/station-coords.json', 'utf8')) as StationCoordsData
+    const listedRegions = new Set(Object.values(data.stations).map(e => e[2]).filter(i => i != null))
+    const introduced = Object.entries(data.unlisted ?? {})
+      .filter(([, e]) => e[2] != null && !listedRegions.has(e[2]))
+      .map(([key, e]) => `${key}（${(data.regionNames ?? [])[e[2] as number]}）`)
+    expect(introduced).toEqual([])
+  })
+
+  // `unlisted` を持たない旧形式（配信更新の直後に PWA が古いデータを掴んでいる間）でも
+  // 例外にせず、従来どおりの範囲で引けること。
+  it('unlisted を持たない旧形式でも引ける', async () => {
+    const { lookupPointCoords, buildStationPrefIndex } = await freshModule()
+    const old: StationCoordsData = { stations: DATA.stations, areas: DATA.areas, regionNames: DATA.regionNames }
+    expect(lookupPointCoords(old, '石川県', '輪島市鳳至町', false)).toEqual([37.39, 136.9])
+    expect(lookupPointCoords(old, '大阪府', '豊中市役所', false)).toBeNull()
+    expect(buildStationPrefIndex(old).get('豊中市役所')).toBeUndefined()
+  })
+
+  it('実データでは現行と重ならず、全件が区域を持つ', async () => {
+    const { lookupStationRegion } = await import('./stationCoords')
+    const data = JSON.parse(readFileSync('public/data/station-coords.json', 'utf8')) as StationCoordsData
+    const unlisted = data.unlisted ?? {}
+    const keys = Object.keys(unlisted)
+    expect(keys.length).toBeGreaterThan(0)
+
+    // 生成側も重複を禁じている（重なれば生成が止まる）。両側で見るのは、
+    // 生成を通さずに手で書き足された場合にここで気づけるようにするため。
+    expect(keys.filter(key => key in data.stations)).toEqual([])
+
+    // 観測点名の逆引き（`buildStationPrefIndex` は初出優先）が正しい県を返す前提。
+    // 現行と名前が衝突すると、その名前は現行の県でしか引けなくなる。
+    const currentNames = new Set(Object.keys(data.stations).map(key => key.slice(key.indexOf('|') + 1)))
+    expect(keys.map(key => key.slice(key.indexOf('|') + 1)).filter(name => currentNames.has(name))).toEqual([])
+
+    // 区域を欠くと、その観測点だけ読み上げの粒度が都道府県へ落ちる（現行と同じ規律）。
+    // **上流に区域を持たない観測点が混ざったらここで落ちる。** 実装の不具合ではなく
+    // 取得元の形が変わった印なので、落ちたら値ではなく上流を見ること。
+    const unresolved = keys.filter(key => {
+      const sep = key.indexOf('|')
+      return lookupStationRegion(data, key.slice(0, sep), key.slice(sep + 1)) == null
+    })
+    expect(unresolved).toEqual([])
   })
 })

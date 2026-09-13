@@ -238,7 +238,7 @@ function parseQuakePoints(v: unknown, context: string): EarthquakePoint[] {
 
 function parseQuake(raw: Record<string, unknown>): JMAQuake | null {
   const id = str(raw.id)
-  // id と発生時刻は同一性キー（quakeIdentityKey）の材料。どちらかが欠けると別々の地震が
+  // id と地震の時刻（`earthquake.time`）は同一性キー（quakeIdentityKey）の材料。どちらかが欠けると別々の地震が
   // 同じキーに潰れ、統合・選択・通知がまとめて狂う。ここだけは電文ごと捨てる。
   // API 仕様上いずれも必須フィールドなので、欠けていれば本当に壊れた電文。
   if (!id) {
@@ -249,8 +249,8 @@ function parseQuake(raw: Record<string, unknown>): JMAQuake | null {
   const earthquake = obj(raw.earthquake)
   const time = readTime(raw.time, context, 'time')
   // earthquake.time は同一性キーに加えてカードの表示時刻・一覧のソートキーにもなる
-  const originTime = readTime(earthquake.time, context, 'earthquake.time')
-  if (time === null || originTime === null) return null
+  const earthquakeTime = readTime(earthquake.time, context, 'earthquake.time')
+  if (time === null || earthquakeTime === null) return null
 
   const issue = obj(raw.issue)
   const rawIssueType = str(issue.type)
@@ -277,7 +277,7 @@ function parseQuake(raw: Record<string, unknown>): JMAQuake | null {
       correct: correct ?? 'なし',
     },
     earthquake: {
-      time: originTime,
+      time: earthquakeTime,
       hypocenter: parseHypocenter(earthquake.hypocenter, context),
       maxScale: toIntensityScale(earthquake.maxScale, context, 'earthquake.maxScale'),
       domesticTsunami: domesticTsunami ?? '不明',
@@ -554,7 +554,7 @@ export async function fetchJmaQuakeHistory(days: number): Promise<JMAQuake[]> {
   }
   // 同一地震でも「震度速報→震源情報→震源・震度情報→各地の震度情報」と複数の issue が
   // 別レコードとして history に載るため重複排除する（id は issue ごとに異なりキーにならない）。
-  // ヒートマップ側と同じ quakeIdentityKey を使う。発生時刻だけをキーにすると、
+  // ヒートマップ側と同じ quakeIdentityKey を使う。地震の時刻だけをキーにすると、
   // 同じ分に起きた別の地震が 1 件に潰れる。
   const seenKeys = new Set<string>()
   const deduped = collected.filter(q => {

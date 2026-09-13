@@ -6,8 +6,8 @@ import type { DetectionEvent, Confidence } from '../../utils/kyoshinDetector'
 import type { DetectedPoint } from '../../utils/kyoshinDetectionView'
 import type { SWaveArrival } from '../../hooks/useSWaveCountdown'
 import { usePageVisible } from '../../hooks/usePageVisible'
-import { formatDateTime, formatTime } from '../../utils/formatters'
-import { getIntensityColor, getIntensityLabel, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
+import { formatDateTime } from '../../utils/formatters'
+import { getIntensityColor, getIntensityLabel, getIntensityLabelWithApproxAbove, getIntensityBgColor, getMagnitudeColor, getDepthColor } from '../../utils/intensity'
 import { getLpgmClassLabelWithApproxAbove, getLpgmClassColor, getLpgmClassBgColor } from '../../utils/lpgm'
 import { eewAreas, eewMaxScaleInfo, eewMaxLpgmClassInfo, eewSerial, computeSingleEEWLevel, eewNoForecastReason, canPresentLpgmClass, eewEpicenterRankLabel, eewMagnitudeRankLabel, eewMagnitudePointsLabel, eewForecastChangeText, isEewHypocenterSettled, isEewAreaArrived } from '../../utils/eew'
 import { kyoshinIndexToJma, kyoshinIndexToLabel, kyoshinIntensityColor, SHINDO0_COLOR } from '../../utils/kyoshinIntensity'
@@ -15,6 +15,8 @@ import { readableTextColor } from '../../utils/contrast'
 import { gateNotes, gateRows, gateShortfall } from '../../utils/detectionGates'
 import { DescriptionTip } from '../DescriptionTip'
 import { isEewWarningKindCode, isEewPlumKindCode } from '../../utils/eewKind'
+import { serverNow } from '../../utils/clock'
+import { log } from '../../utils/logger'
 
 // 凡例は地図と同じ気象庁の震度配色（getIntensityColor）を使う。scale=0 は震度0（灰色）。
 const SCALE_LEGEND: { label: string; scale: number }[] = [
@@ -97,6 +99,39 @@ function NoForecastBanner({ eew }: { eew: EEWAlert }) {
 export const EEW_FORECAST_CHANGE_HOLD_MS = 10_000
 
 /**
+ * 到達予測の一覧で、残り秒数を差し迫ったものとして色分けする境目。
+ *
+ * **実電文の分布から決めた。** 未到達の区域 4,004 件で、発表から到達までは中央値 17 秒・
+ * p90 44 秒（2025-01-02〜2026-09-11 の VXSE45 9,871 通を走査）。20 秒で切ると、強調される
+ * 区域は 1 報あたり中央値 6 件・最大 18 件に収まる。境目を広げるほど一覧の大半が赤くなり、
+ * 「差し迫っている」の意味が薄れる。
+ */
+const ARRIVAL_SOON_SEC = 20
+
+/**
+ * 到達予測の一覧を折り返す、列の最小幅と列数の上限（CSS の `columns` へ渡す）。
+ *
+ * **列数を画面幅で分岐させず、ブラウザに決めさせる。** パネルの実寸は左右分割で約 359px・
+ * 上下分割ではビューポート幅ぶん（実測 873px）と倍以上違ううえ、UI 倍率（`uiScale`）でも動く。
+ * `columns: <最小幅> <上限>` なら入るだけ列が作られ、狭い端末では自然に 1 列へ落ちる。
+ *
+ * 最小幅は行の中身から決めた —— 震度バッジ（`ARRIVAL_BADGE_WIDTH`）＋区域名 7 文字＋残り秒数。
+ * **rem で持つ**ので UI 倍率を上げれば列の幅も一緒に伸びる（px 固定だと、文字だけ大きくなって
+ * 区域名が切れる）。上限を置くのは、広い画面で 5 列・6 列になると 1 行の対応を目で追えなくなるため。
+ */
+const ARRIVAL_COLUMN_MIN_WIDTH = '10.5rem'
+const ARRIVAL_COLUMN_MAX_COUNT = 3
+/**
+ * 震度バッジの**最小**幅。「5弱」「5強」が入る値で、全行そろえて縦に並べるために置く。
+ *
+ * **固定幅にしない。** 上限が定まらない予想には「程度以上」が付き（→ `getIntensityLabelWithApproxAbove`）、
+ * 「6強程度以上」は 6 文字になる。固定幅だと折り返して 2 行になり、その行だけ高さが崩れる
+ * （テストボタンの EEW 初報がこの形を持つ）。**語は縮められない** —— 気象庁の表現をそのまま使う
+ * 決まりなので（→ docs/spec/eew-spec.md §4）、伸びる側で受ける。
+ */
+const ARRIVAL_BADGE_MIN_WIDTH = '1.75rem'
+
+/**
  * 気象庁が「予想が変わった」と書いてきた帯（電文の `Appendix`）を、最低
  * {@link EEW_FORECAST_CHANGE_HOLD_MS} は出し続ける。
  *
@@ -140,8 +175,61 @@ function useHeldForecastChange(eew: EEWAlert): string {
   return eew.cancelledAt ? '' : held
 }
 
-function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
+/**
+ * 1 秒ごとに現在時刻を進める。到達予測の一覧が出す残り秒数のために使う。
+ *
+ * **`active` が false の間はタイマーを持たない。** 条件は 2 つ。
+ *
+ * - 到達予測の欄が出るのは区域を持つ報だけ（実電文では VXSE45 の 85.2% が区域 0 件 ——
+ *   9,871 通中 8,410 通）。常に回すと、その欄を出していない EEW カードまで毎秒再描画される
+ * - **画面に出ていない間も止める。** タブは全部マウントしたままなので、別のタブを見ている間も
+ *   回り続ける。同じファイルの検知カードが `visible && pageVisible` で同じ扱いをしている
+ *
+ * **止めている間に進んだぶんは、再開した瞬間に合わせる**（`setNow` を先に 1 回呼ぶ）。これが
+ * 無いと、タブへ戻った直後の 1 秒だけ古い残り秒数が出る —— ブラウザは非可視タブの
+ * `setInterval` を数十秒まで間引くので、ずれは 1 秒では済まない。
+ *
+ * **時刻は `serverNow()` から採る。** 壁時計を使うと、端末の時計がずれている場合と
+ * リプレイ中（再生時計は `serverNow` にだけ反映される）に残り秒数が実際と食い違う。
+ */
+function useSecondTick(active: boolean): number {
+  const [now, setNow] = useState(() => serverNow())
+  useEffect(() => {
+    if (!active) return
+    setNow(serverNow())
+    const id = window.setInterval(() => setNow(serverNow()), 1000)
+    return () => window.clearInterval(id)
+  }, [active])
+  return now
+}
+
+/**
+ * 区域の到達予測時刻から残り秒数を出す。**読めない時刻は `null` を返す。**
+ *
+ * `EEWRegion.arrivalTime` は XML 経路では読めることを確かめてある（`dmdataParser.ts` の
+ * `readTelegramDateTime`）が、**そこを通らない経路がある**（テストデータ・履歴アーカイブ）。
+ * 素朴に引き算すると `NaN` になり、
+ * **`NaN > 0` が偽なので「まもなく」へ落ちる** —— 壊れた値が「もうすぐ来る」という
+ * 確度の高い表示に化ける。旧実装（絶対時刻をそのまま出す）は `NaN:NaN:NaN` と出て
+ * 異常だと判った。**読めないものは読めないと出す。**
+ *
+ * **記録はここでしない。** この関数はレンダーのたび（毎秒の再描画を含む）に区域の数だけ
+ * 呼ばれるので、ここへログを置くと壊れた区域 1 つで 1 秒ごとに記録が出続ける。
+ * 記録は `EEWCard` 側で**報ごとに 1 行へまとめる**（→ docs/spec/data-sources-spec.md §2）。
+ */
+function arrivalEtaSec(arrivalTime: string, nowMs: number): number | null {
+  const ms = new Date(arrivalTime).getTime()
+  return Number.isFinite(ms) ? Math.round((ms - nowMs) / 1000) : null
+}
+
+function EEWCard({ eew, visible, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
   eew: EEWAlert
+  /**
+   * このカードが利用者の目に入っているか（リアルタイムタブが選ばれていて、パネルが畳まれておらず、
+   * ブラウザのタブも表に出ている）。**用途は到達予測の残り秒数を進めるタイマーの開閉だけ。**
+   * 検知カードが受け取るものと同じ合成（→ `KyoshinDetectionSummary`）。
+   */
+  visible: boolean
   activeLpgmEventId?: string | null
   onToggleLpgm?: (eventId: string) => void
   onDeactivateLpgm?: () => void
@@ -199,9 +287,9 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
   //
   // | 区域の状態 | 電文 | この欄の出し方 |
   // |---|---|---|
-  // | まだ到達していない | `ArrivalTime`（到達予測時刻） | 時刻 |
-  // | 既に到達したと推測 | `Condition`（→ `EEWRegion.arrived`）。時刻は出ない | 「到達済みと推測」 |
-  // | PLUM 法で予測 | `ArrivalTime`（**震度を初めて予測した時刻**＝過去） | 時刻を出さない |
+  // | まだ到達していない | `ArrivalTime`（到達予測時刻） | 残り秒数（「42秒」。0 以下は「まもなく」） |
+  // | 既に到達したと推測 | `Condition`（→ `EEWRegion.arrived`）。時刻は出ない | 「到達済み」 |
+  // | PLUM 法で予測 | `ArrivalTime`（**震度を初めて予測した時刻**＝過去） | 「時刻不明」 |
   //
   // **到達済みの地域を落とさない。** 時刻の有無だけで絞ると一覧から黙って消え、「到達した」のか
   // 「予想から外れた」のかが利用者に判らない。
@@ -220,8 +308,12 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
     if (isEewPlumKindCode(a.kindCode)) return 'plum'
     return 'forecast'
   }
-  // 並びは時系列のとおり ―― 到達済み → PLUM 法（予測した時点で既に揺れている）→ 到達予測時刻順。
-  const ARRIVAL_KIND_ORDER = { arrived: 0, plum: 1, forecast: 2 } as const
+  // 並びは時間の順 ―― 到達済み → 未到達（到達の早い順）→ 到達時刻が判らないもの。
+  //
+  // **PLUM 法を末尾へ置く。** 以前は到達済みの次に置いていたが、この区域が持つ時刻は到達の
+  // 予測ではない（→ `isEewPlumKindCode`）ので時間の軸に乗らない。乗らないものを途中へ挟むと、
+  // 前後の行だけが時間順という読めない並びになる。実電文では 1 報あたり中央値 0 件・最大 15 件。
+  const ARRIVAL_KIND_ORDER = { arrived: 0, forecast: 1, plum: 2 } as const
   const areasWithArrival = areas
     .filter(a => a.arrivalTime || isEewAreaArrived(a))
     .sort((a, b) => {
@@ -231,7 +323,26 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
       if (!a.arrivalTime || !b.arrivalTime) return 0
       return a.arrivalTime.localeCompare(b.arrivalTime)
     })
-  const shownArrival = areasWithArrival.slice(0, 6)
+  // 見出しの右肩に出す内訳。**PLUM 法の区域は「未到達」に数える** —— 気象庁は到達したと推測した
+  // 区域に `Condition` を出すので、それが無い区域は到達済みとして扱えない（→ `isEewAreaArrived`）。
+  // 行の右端には別途「時刻不明」と出るので、内訳と行のあいだで食い違いは起きない。
+  const arrivedCount = areasWithArrival.filter(a => arrivalKindOf(a) === 'arrived').length
+  // 残り秒数を 1 秒ごとに数え直す。欄を出していないカードと、画面に出ていない間はタイマーを持たない。
+  const nowMs = useSecondTick(areasWithArrival.length > 0 && visible)
+  // 日時として読めなかった到達予測時刻。**報ごとに 1 行へまとめて記録する** ——
+  // 区域は数十個あり、しかも毎秒描き直すので、1 件ずつ出すと他の記録が埋もれる。
+  // 鍵に値そのものを使うのは、同じ内容で描き直しただけのときに二重で記録しないため。
+  const brokenArrivals = areasWithArrival
+    .filter(a => arrivalKindOf(a) === 'forecast' && a.arrivalTime && !Number.isFinite(new Date(a.arrivalTime).getTime()))
+    .map(a => `${a.name}="${a.arrivalTime}"`)
+  const brokenArrivalsKey = brokenArrivals.join('|')
+  useEffect(() => {
+    if (!brokenArrivalsKey) return
+    const sample = brokenArrivals.slice(0, 3).join(' / ')
+    log.warn(`[eew] 区域の到達予測時刻を日時として読めません（${brokenArrivals.length} 件・残り秒数の代わりに「不明」と出します）: ${sample}`)
+    // `brokenArrivals` は毎レンダー作り直される配列なので依存に入れない（鍵の文字列で足りる）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brokenArrivalsKey])
 
   return (
     <div
@@ -381,8 +492,14 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
           </div>
         )}
 
-        {/* 発生時刻。日時として読めなければ欄ごと出さない（「ごろ」だけが残ると、
-            時刻を読み落としたのか電文が出していないのか分からない）。 */}
+        {/* 地震発生時刻（`Earthquake/OriginTime`）。**緊急地震速報はここだけ発現時刻へ揃えていない。**
+            地震情報・津波・長周期は発現時刻（`ArrivalTime`）を出すようにしてあるが、緊急地震速報は
+            両方の時刻が秒値まで有効で他の種別と性質が違い、**ずれの実態を測っていない**。
+            意図的に据え置いているのであって、ずれないと確かめたわけではない
+            （→ `docs/spec/eew-spec.md` §3「地震の時刻は発生時刻を出す」）。
+
+            日時として読めなければ欄ごと出さない（「ごろ」だけが残ると、時刻を
+            読み落としたのか電文が出していないのか分からない）。 */}
         {originTimeText && (
           <div className="text-secondary text-[0.9375rem] roomy:text-[1.125rem]">
             {originTimeText}ごろ
@@ -484,59 +601,122 @@ function EEWCard({ eew, activeLpgmEventId, onToggleLpgm, onDeactivateLpgm }: {
           )
         })()}
 
-        {/* 主要動の到達。到達済みの地域と、これから到達する地域の予測時刻を並べる。
+        {/* 主要動の到達。**電文が載せた区域を全部出す。**
+            以前は先頭 6 件だけを出して残りを「他 N 地域」の数字へ落としていたが、実電文を
+            走査すると（2025-01-02〜2026-09-11・VXSE45 9,871 通）、区域を持つ報 1,461 通のうち
+            27.7% が 6 件を超え、最大 56 件。**最大予想震度が 6 弱以上の報では 97% が溢れていた**。
+            しかも並びが種別順（到達済みが先頭）だったため、**未到達の区域を持つ報の 24.9% で
+            それが 1 件も見えていなかった**（6 弱以上に限れば 65%）。件数で切るのをやめ、
+            並びを時間順に直した。
+
             **見出しに「予測」を残す。** 3 通りとも気象庁の予測・推測で、確定した事実ではない。
-            中立な見出しにすると、時刻の行だけが断り書きを持たないまま確定時刻の顔をする
+            中立な見出しにすると、秒数の行だけが断り書きを持たないまま確定値の顔をする
             （他の 2 通りは「推測」「不明」と語の中に断りがある）。
             意味の違いは `DescriptionTip` でホバーへ逃がす —— 同じカードの「精度情報」と同じ流儀。 */}
         {areasWithArrival.length > 0 && (
           <div className="flex flex-col gap-0.5">
-            <div className="text-xs text-secondary">
+            <div className="flex items-baseline justify-between gap-2 text-xs text-secondary">
               <DescriptionTip
                 label="主要動の到達（予測）"
                 description={[
                   '気象庁が区域ごとに出す予測です。強い揺れが予想される区域だけが載ります。',
-                  '時刻＝主要動が届くと予測した時刻。区域ごとの差が数秒なので秒まで出しています。',
-                  '到達済みと推測＝予測した時刻を過ぎた区域。実際に揺れを観測したという意味ではありません。',
-                  '到達時刻は不明＝周辺の観測点で実際に観測された揺れから震度を予測している区域（気象庁のPLUM法）。震源からの伝わり方を計算しないため、到達時刻は出ません。',
+                  '左の数字＝その区域の予想最大震度。',
+                  '秒数＝主要動が届くまでの残り時間。気象庁の到達予測時刻から計算しています。',
+                  '到達済み＝気象庁が「既に主要動到達と推測」と伝えてきた区域。実際に揺れを観測したという意味ではありません。',
+                  '未到達＝主要動がまだ届いていないと推測される区域。到達時刻を出せない区域（下記）も含みます。',
+                  '時刻不明＝周辺の観測点で実際に観測された揺れから震度を予測している区域（気象庁のPLUM法）。震源からの伝わり方を計算しないため、到達時刻は出ません。',
                 ].join('\n')}
               />
+              {/* 内訳。**「未到達」は気象庁コード表 12 の語幹**（→ docs/spec/eew-spec.md §4）。
+                  後ろに語を足さないのは、コード表の写しが手元で「未到達と予測／予想／推測」に
+                  割れていて一次資料で確定できていないため。 */}
+              <span className="flex-shrink-0 tabular-nums">
+                到達済み {arrivedCount} ／ 未到達 {areasWithArrival.length - arrivedCount}
+              </span>
             </div>
-            {shownArrival.map((a, i) => {
-              // **秒まで出す**ので分丸めの `formatTimeMin` は使わない（下記）。
-              const arrivalText = a.arrivalTime ? formatTime(a.arrivalTime) : null
-              return (
-              <div key={i} className="flex items-center justify-between text-xs">
-                <span className="text-secondary truncate mr-2">{a.name}</span>
-                {arrivalKindOf(a) === 'arrived' ? (
-                  // 気象庁の語は「既に主要動到達と推測」。**断定しない** —— 到達したかどうかは
-                  // 予測時刻を過ぎたことからの推測で、観測した事実ではない。
-                  <span className="text-white flex-shrink-0">到達済みと推測</span>
-                ) : arrivalKindOf(a) === 'plum' ? (
-                  // PLUM 法は周辺の観測点で実際に観測された揺れから震度を出す手法で、走時を
-                  // 計算しない。**電文の時刻は到達の予測ではない**ので出さない。
-                  // **語は状態そのものを書く。** ここへ手法の名前を置くと、他の 2 通りが
-                  // 時間軸上の位置を伝えているのにここだけ伝えないことになる。
-                  // 手法（PLUM 法）の説明は見出しのホバーへ逃がしてある。
-                  <span className="text-white flex-shrink-0">到達時刻は不明</span>
-                ) : arrivalText ? (
-                  // **秒まで出す。** 電文は秒の値まで持っており、区域ごとの差は数秒。
-                  // 時:分に丸めると、隣り合う区域の到達順が潰れる。
-                  <span className="text-white font-mono flex-shrink-0">
-                    {arrivalText}
-                  </span>
-                ) : (
-                  // 時刻が日時として読めなかった区域。**理由は PLUM 法と違うが、利用者にとっての
-                  // 事実（この区域の到達時刻は出せない）は同じ**なので語を揃える。ここを空欄に
-                  // すると、区域名だけが並んで値を読み落としたように見える。
-                  <span className="text-white flex-shrink-0">到達時刻は不明</span>
-                )}
-              </div>
-              )
-            })}
-            {areasWithArrival.length > shownArrival.length && (
-              <span className="text-xs text-secondary">他{areasWithArrival.length - shownArrival.length}地域</span>
-            )}
+            {/* 列で折り返す。**行を縦に揃えたまま高さを縮める唯一の手** —— 1 列のままだと
+                56 件で 1,000px を超え、パネルの可視高（上下分割で実測 434px）に到底入らない。
+                読み順は段組みの既定どおり「左列を上から下、次に右列」。時間順に読むならこれが素直。 */}
+            <div
+              style={{
+                columns: `${ARRIVAL_COLUMN_MIN_WIDTH} ${ARRIVAL_COLUMN_MAX_COUNT}`,
+                columnGap: '0.75rem',
+              }}
+            >
+              {areasWithArrival.map((a, i) => {
+                const kind = arrivalKindOf(a)
+                // 残り秒数。**到達予測時刻を持つ区域だけ**が対象で、PLUM 法の時刻は使わない
+                // （値は到達の予測ではなく、その震度を初めて予測した時刻 ＝ 過去）。
+                // 読めない時刻は `null` が返り、下で「不明」と出す（→ `arrivalEtaSec`）。
+                const etaSec = kind === 'forecast' && a.arrivalTime
+                  ? arrivalEtaSec(a.arrivalTime, nowMs)
+                  : null
+                // **震度スケール外の値でも区域を落とさない。** `eewMaxScaleInfo` は最大値を
+                // 求める関数なので `isValidIntensityScale` で弾くが、この欄は「電文が載せた区域を
+                // 全部出す」のが役目で、弾くと区域そのものが画面から消える（到達の情報まで失う）。
+                // 両関数がフォールバック（色 `#666666`・語「不明」）を持つので、
+                // 壊れた値はバッジが「不明」になる形で画面に出る。
+                const scaleColor = getIntensityColor(a.scaleTo)
+                return (
+                  // **行を分断させない。** 段組みは既定で要素を列の境目で割るので、
+                  // 震度バッジと区域名が別の列へ離れる。
+                  <div key={i} className="flex items-center gap-1.5 text-xs" style={{ breakInside: 'avoid' }}>
+                    {/* 震度バッジ。色は地図・震度一覧と同じ気象庁配色（`getIntensityColor`）で、
+                        文字色は背景から選ぶ（`readableTextColor`）。上限が定まらない予想は
+                        「程度以上」の語を補う（→ `getIntensityLabelWithApproxAbove`）。 */}
+                    <span
+                      className="flex-shrink-0 rounded text-center leading-4 whitespace-nowrap"
+                      style={{
+                        minWidth: ARRIVAL_BADGE_MIN_WIDTH,
+                        padding: '0 0.125rem',
+                        fontSize: '0.625rem',
+                        background: scaleColor,
+                        color: readableTextColor(scaleColor),
+                      }}
+                    >
+                      {getIntensityLabelWithApproxAbove(a.scaleTo, a.scaleToOrAbove === true)}
+                    </span>
+                    <span className={`flex-1 truncate ${kind === 'arrived' ? 'text-secondary' : 'text-white'}`}>
+                      {a.name}
+                    </span>
+                    {kind === 'arrived' ? (
+                      // 気象庁の語は「既に主要動到達と推測」。**断定しない** —— 到達したかどうかは
+                      // 気象庁の推測であって、観測した事実ではない。
+                      <span className="text-secondary flex-shrink-0">到達済み</span>
+                    ) : kind === 'plum' ? (
+                      // PLUM 法は周辺の観測点で実際に観測された揺れから震度を出す手法で、走時を
+                      // 計算しない。**電文の時刻は到達の予測ではない**ので出さない。
+                      // **語は状態そのものを書く。** ここへ手法の名前を置くと、他の 2 通りが
+                      // 時間軸上の位置を伝えているのにここだけ伝えないことになる。
+                      // 手法（PLUM 法）の説明は見出しのホバーへ逃がしてある。
+                      //
+                      // **4 文字に収める。** 右端の語は「到達済み」「まもなく」「NN秒」と 4 文字以内で、
+                      // ここだけ「到達時刻は不明」（7 文字）にすると 2 列では区域名の幅を食って名前が
+                      // 切れる（実測: パネル幅 359px の左右分割で「秋田県沿岸北部」が「秋田県…」になった）。
+                      // 列の最小幅を広げる手もあるが、2 列を保てなくなり 56 件で 896px へ伸びる。
+                      // 何の時刻かは見出し（「主要動の到達（予測）」）が与えている。
+                      <span className="text-secondary flex-shrink-0">時刻不明</span>
+                    ) : (
+                      // **残り秒数で出す。** 以前は電文の時刻をそのまま（16:53:47）出していたが、
+                      // 揺れが来るまで何秒かを読み手に引き算させることになる。同じカードの
+                      // S 波カウントダウンが「あと N 秒」で出しているので、尺度もそちらへ揃う。
+                      //
+                      // **0 以下は「まもなく」。** 予測時刻を過ぎても気象庁が `Condition` を
+                      // 出すまでは到達済みにならないので、負の秒数が数秒続く。
+                      //
+                      // **時刻を読めなかった区域を「まもなく」に混ぜない**（`etaSec` が `null`）。
+                      // 差し迫っていることと、値が壊れていることは別の事実。
+                      <span
+                        className="font-mono flex-shrink-0 tabular-nums"
+                        style={{ color: etaSec !== null && etaSec <= ARRIVAL_SOON_SEC ? '#fca5a5' : '#ffffff' }}
+                      >
+                        {etaSec === null ? '不明' : etaSec > 0 ? `${etaSec}秒` : 'まもなく'}
+                      </span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
           </div>
         )}
 
@@ -927,6 +1107,7 @@ export const RealtimeTab = memo(function RealtimeTab({ eews, kyoshinV2Detections
           <EEWCard
             key={eew.issue?.eventId ?? eew.id}
             eew={eew}
+            visible={visible && pageVisible}
             activeLpgmEventId={activeLpgmEventId}
             onToggleLpgm={onToggleLpgm}
             onDeactivateLpgm={onDeactivateLpgm}

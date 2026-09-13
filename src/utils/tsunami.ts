@@ -1,4 +1,4 @@
-import type { JMATsunami, TsunamiArea, TsunamiEstimation, TsunamiEstimationCondition, TsunamiGrade, TsunamiObservation, TsunamiObservationCondition, TsunamiWarningComment } from '../types/earthquake'
+import type { JMATsunami, TsunamiArea, TsunamiEstimation, TsunamiEstimationCondition, TsunamiGrade, TsunamiObservation, TsunamiObservationCondition, TsunamiSourceEarthquake, TsunamiWarningComment } from '../types/earthquake'
 import { formatTimeMin } from './formatters'
 import { log } from './logger'
 
@@ -239,6 +239,38 @@ function warnIfActionLineGoesStale(current: JMATsunami, next: JMATsunami): void 
 }
 
 /**
+ * 前報で解除を伝えていた区域が、区域を伝える続報に載らなくなったことを記録する。
+ *
+ * **「解除」の表示が消えるのはこの瞬間だけ。** 寿命を電文に預ける設計（{@link mergeTsunamiReports}
+ * の表）は、「気象庁は解除した区域を続報にも載せ続ける」という観測に乗っている。**確かめられたのは
+ * 1 事象だけ**で、2025-12-09T06:20 の VTSE41 と 06:22 の VTSE51（その事象の最終報）がどちらも同じ
+ * 形を載せていた、というもの（→ docs/spec/tsunami-spec.md §10「区域の顔ぶれが報ごとに変わること」）。
+ *
+ * 気象庁が途中で載せるのをやめる形があるなら、解除の表示は説明もなく消える。画面にも音にも
+ * 痕跡が出ないので、起きたことをここに残して実運用で確かめられるようにする。
+ *
+ * **異常だとは書かない。** 電文が載せなくなったら消すのは設計どおりの動きで、確かめたいのは
+ * 「その形が実在するか」だけ。
+ *
+ * **原因も断定しない。** 消える理由は 2 つある —— 続報がその区域を載せなくなった場合と、載っては
+ * いるが前回の等級を読めなくなった場合（後者はパーサー側の `warnUndescribableCancel` が別に記録
+ * する）。見分けはこの関数の仕事ではないので、起きた事実だけを書く。
+ *
+ * **履歴からの復元では、過去に起きた分がそのたびに出る**（`withInheritedTsunamiFacts` が過去報を
+ * 畳み直すため）。`warnIfActionLineGoesStale` と同じ性質で、間引いてはいない —— まだ実電文で
+ * 観測されていない形なので、まず出ることを優先する。
+ */
+function warnIfCancelStopsEchoing(current: JMATsunami, next: JMATsunami): void {
+  if (next.areas.length === 0) return
+  const before = describableCancelledAreas(current)
+  if (before.length === 0) return
+  const after = new Set(describableCancelledAreas(next).map(tsunamiAreaKey))
+  const dropped = before.filter(a => !after.has(tsunamiAreaKey(a)))
+  if (dropped.length === 0) return
+  log.warn(`[tsunami] 前報で解除を伝えていた区域が、区域を伝える続報では解除として読めなくなりました（「解除」の表示はここで消えます）: ${dropped.map(a => a.name).join('・')}`)
+}
+
+/**
  * 続報 1 通を取り込む。**引き継ぎの規則はここが唯一の置き場所**で、ライブ受信
  * （`useEarthquakes` の tsunami ケース）も履歴からの復元（{@link withInheritedTsunamiFacts}）も
  * この関数を通る。
@@ -251,6 +283,7 @@ function warnIfActionLineGoesStale(current: JMATsunami, next: JMATsunami): void 
  * | 項目 | 引き継ぎ方 |
  * |---|---|
  * | 区域（`areas`）と区域の潮位観測点 | 顔ぶれと等級は新報が正。観測点だけ種別に応じて継ぐ（{@link mergeTsunamiAreas}）。区域を伝えていない報では前報の区域をそのまま残す |
+ * | 解除された区域（`cancelledAreas`） | `areas` と同じ規則。区域を伝えている報が来たら新報が正で、区域を伝えていない報では前報を残す |
  * | 観測点（`observations`） | 観測点ごとに upsert（{@link mergeTsunamiObservations}）。沿岸と沖合は別の集合なので、片方だけの報で上書きしない |
  * | 固定付加文（`warningComments`） | 主題ごとに束ねる（{@link mergeTsunamiWarningComments}） |
  * | 有効期限（`validDateTime`） | 発表時刻が新しく、日時として読めるもの（{@link latestValidDateTime}） |
@@ -265,12 +298,18 @@ function warnIfActionLineGoesStale(current: JMATsunami, next: JMATsunami): void 
  */
 export function mergeTsunamiReports(current: JMATsunami, next: JMATsunami): JMATsunami {
   warnIfActionLineGoesStale(current, next)
+  warnIfCancelStopsEchoing(current, next)
   return {
     ...next,
     // 区域が空の報（観測のみの続報）は等級を伝えていないので、前報の区域をそのまま残す。
     areas: next.areas.length > 0
       ? mergeTsunamiAreas(current.areas, next.areas, next.carriesForecastStations)
       : current.areas,
+    // 解除された区域も同じ分かれ目で決める。**区域を伝えている報が来たら、その報が載せなく
+    // なった解除は消す** —— 気象庁が言い続けている間だけ出す形にしておけば、寿命をアプリ側で
+    // 決めずに済む（実電文では解除の次の報にも同じ区域が載り続ける）。区域を伝えていない報で
+    // 消してしまうと、一部解除の直後に観測情報が 1 通届いただけで「解除」の枠が消える。
+    cancelledAreas: next.areas.length > 0 ? next.cancelledAreas : current.cancelledAreas,
     observations: mergeTsunamiObservations(current.observations, next.observations),
     warningComments: mergeTsunamiWarningComments(current.warningComments, next.warningComments),
     validDateTime: latestValidDateTime([current, next]),
@@ -314,6 +353,35 @@ export function isTsunamiNewFire(next: JMATsunami, current: JMATsunami | undefin
 }
 
 /**
+ * 津波電文の原因地震について、**画面に出す時刻**を選ぶ。
+ *
+ * **発現時刻（`arrivalTime`）を先に採る。** 地震情報側（`parseEarthquakeFromXml`）も
+ * 同じ規則で地震の時刻を決めており、揃えないと**同じ地震が経路によって別の時刻で出る**
+ * （実電文では 1 分ずれる）。
+ *
+ * **どちらを出すかは気象庁自身の文が決めている** —— 津波電文は本文で
+ * 「２０日１６時５３分に発生した三陸沖を震源とする地震の…」と**発現時刻**で述べる
+ * （2026-04-20 の VTSE41。発生は 16:52）。つまり気象庁の言う「◯時◯分に発生した地震」は
+ * 発現時刻を指しており、カードのラベル「発生」と値がここで初めて噛み合う。
+ * **実電文で測った数字と、この規則を 3 箇所が個別に実装していることは
+ * `docs/spec/tsunami-spec.md` §4 が正**（ここへ写すと、測り直したとき片方が古いまま残る）。
+ *
+ * **`originTime` の中身は入れ替えないこと。** {@link isTsunamiNewFire} が、電文の識別子が
+ * 両側そろっていないときにこの値へ落ちて同一性を判定している。ここでするのは
+ * 「持っている 2 つのうちどちらを出すか」の選択だけで、持っている値は変えない。
+ *
+ * @returns 発現時刻。無ければ発生時刻。どちらも無ければ undefined
+ */
+export function sourceEarthquakeTime(eq: TsunamiSourceEarthquake): string | undefined {
+  // **空文字は「無い」として扱う（`??` ではなく `||`）。**
+  // いまのパーサーは空文字を持たせないので（`...(値 && { arrivalTime })` のガードで落とす）、
+  // 現状この違いは表に出ない。**それでも `||` にしておく** —— 型は `string | undefined` で
+  // 空文字を許すため、別の入力源（永続化からの復元など）が足されたときに `??` だと空文字を
+  // 採ってしまい、時刻の無い「　発生」だけが行に残る。例外もログも出ない形で崩れる。
+  return eq.arrivalTime || eq.originTime || undefined
+}
+
+/**
  * 新報が `current` から grade 格上げに当たるかを判定する。
  * `MajorWarning > Warning > Watch > Forecast > Unknown` の順で比較。
  * `current` 無し／取消済みの場合は false（新規発報として扱うので isTsunamiNewFire 側で拾う）。
@@ -326,12 +394,24 @@ export function isTsunamiGradeUpgrade(next: JMATsunami, current: JMATsunami | un
   return GRADE_PRIORITY[nextGrade] > GRADE_PRIORITY[currentGrade]
 }
 
+/**
+ * 遷移先が「解除」であることを表す値（`JMATsunami.cancelledAreas` の区域）。
+ *
+ * **`TsunamiGrade` の `'Unknown'` で表さないこと。** あちらは `areas` の中では「等級を読めな
+ * かった」を意味しており（P2PQuake が知らない等級名を配信したとき）、解除とは別の事実。同じ値に
+ * 兼ねさせると、読めなかった区域が「解除されました」と読み上げられる。
+ *
+ * `TsunamiGrade` に無い値なので、`Record<TsunamiGrade, …>` の表を引いている箇所は
+ * **扱いを足すまで型検査が通らない**。
+ */
+export const TSUNAMI_GRADE_LIFTED = 'Lifted'
+
 /** 1 つの報の中で、区域の等級が「どこから、どこへ」動いたかの組。 */
 export interface TsunamiAreaGradeChange {
   /** 前回この区域に発表されていた等級（`TsunamiArea.lastGrade`） */
   from: TsunamiGrade
-  /** 今回この区域に発表されている等級 */
-  to: TsunamiGrade
+  /** 今回この区域に発表されている等級。解除された区域は {@link TSUNAMI_GRADE_LIFTED} */
+  to: TsunamiGrade | typeof TSUNAMI_GRADE_LIFTED
   /** この遷移をした区域。カードの表示順に並ぶ */
   areas: TsunamiArea[]
   /**
@@ -354,8 +434,14 @@ export interface TsunamiAreaGradeChange {
  * 並びは**引き上げの組を先、引き下げの組を後**に置き、それぞれの中は遷移先の等級が重い順。
  * 聞き手が取るべき行動が重くなる側を先に伝えるため。
  *
+ * **解除された区域（{@link JMATsunami.cancelledAreas}）もここで拾う。** 気象庁はすべての区域を
+ * 降格として載せるわけではなく、その津波予報区でもう何も発表しないときは解除コードを付ける。
+ * 2025-12-09T06:20 の VTSE41 では 7 区域が「注意報 → 予報」の降格、1 区域（青森県日本海沿岸）が
+ * 解除だった。遷移先は {@link TSUNAMI_GRADE_LIFTED} になる。
+ *
  * `lastGrade` を持たない区域（P2PQuake 経路・`LastKind` の無い電文）は判定できないので数えない。
- * 遷移先が `Unknown` の組も返さない（等級の名前が付かず、文にも表示にもできない）。
+ * `areas` の中の `Unknown`（等級を読めなかった区域）も返さない —— 解除とは別の事実で、
+ * どちらの向きにも文を作れない。
  *
  * @param tsunami 判定する報
  * @param observations 区域の並べ替えに使う観測情報。既定はこの報が持つもの
@@ -365,29 +451,62 @@ export function tsunamiAreaGradeChanges(
   observations: readonly TsunamiObservation[] = tsunami.observations ?? [],
 ): TsunamiAreaGradeChange[] {
   const byTransition = new Map<string, TsunamiAreaGradeChange>()
-  for (const area of tsunami.areas) {
+  const add = (area: TsunamiArea, to: TsunamiGrade | typeof TSUNAMI_GRADE_LIFTED) => {
     const from = area.lastGrade
-    if (from === undefined || from === area.grade) continue
-    if (area.grade === 'Unknown') continue
-    const key = `${from}>${area.grade}`
+    if (from === undefined || from === to) return
+    const key = `${from}>${to}`
     const found = byTransition.get(key)
     if (found) found.areas.push(area)
+    // 解除は「等級が無くなった」形なので引き上げにはならない（`GRADE_PRIORITY` を引けないので
+    // `isTsunamiGradeRaised` も通せない）。
     else byTransition.set(key, {
       from,
-      to: area.grade,
+      to,
       areas: [area],
-      raised: isTsunamiGradeRaised(from, area.grade),
+      raised: to !== TSUNAMI_GRADE_LIFTED && isTsunamiGradeRaised(from, to),
     })
   }
+  for (const area of tsunami.areas) {
+    if (area.grade === 'Unknown') continue
+    add(area, area.grade)
+  }
+  // **`cancelledAreas` を直に舐めないこと。** 前回も津波なし（`lastGrade` が `'Unknown'`）の
+  // 区域は何も起きていないのに「津波なしから解除」という組になる。絞り込みは
+  // `describableCancelledAreas` に集約し、カードと同じものを見る。
+  for (const area of describableCancelledAreas(tsunami)) add(area, TSUNAMI_GRADE_LIFTED)
   const changes = [...byTransition.values()]
   for (const change of changes) {
     change.areas = sortAreasForCardDisplay(change.areas, [...observations])
   }
   return changes.sort((a, b) => {
     if (a.raised !== b.raised) return a.raised ? -1 : 1
-    if (GRADE_PRIORITY[a.to] !== GRADE_PRIORITY[b.to]) return GRADE_PRIORITY[b.to] - GRADE_PRIORITY[a.to]
+    if (transitionRank(a.to) !== transitionRank(b.to)) return transitionRank(b.to) - transitionRank(a.to)
     return GRADE_PRIORITY[b.from] - GRADE_PRIORITY[a.from]
   })
+}
+
+/**
+ * 遷移先の重さ。並べ替えのためだけに使う。
+ *
+ * 解除は `Unknown`（0）より下に置く —— 引き下げの組の中で最も軽い遷移先であり、カードでも
+ * 等級カードの後ろに置くため。**`GRADE_PRIORITY` へ値を足さないこと**（あちらは発表中の等級を
+ * 比べる表で、解除は等級ではない）。
+ */
+function transitionRank(to: TsunamiGrade | typeof TSUNAMI_GRADE_LIFTED): number {
+  return to === TSUNAMI_GRADE_LIFTED ? -1 : GRADE_PRIORITY[to]
+}
+
+/**
+ * 解除された区域のうち、**何から解除されたかを言えるもの**だけを返す。
+ *
+ * 読み上げ（`tsunamiAreaGradeChanges` 経由）とカードの「解除」の枠が同じ述語を使うこと。
+ * 別々に絞ると、声は伝えるのに画面に出ない（またはその逆）形でずれる。
+ *
+ * 落ちるのは 2 つ。**前回も津波なし**（`lastGrade` が `'Unknown'`。何も起きていない）と、
+ * **前回の等級を読めなかった**もの（`undefined`。パーサーが記録を残す）。
+ */
+export function describableCancelledAreas(tsunami: JMATsunami): TsunamiArea[] {
+  return (tsunami.cancelledAreas ?? []).filter(a => a.lastGrade !== undefined && a.lastGrade !== 'Unknown')
 }
 
 /**

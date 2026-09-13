@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 
 import type { JMAQuake, JMATsunami, TsunamiArea, TsunamiObservation, TsunamiWarningComment } from '../../types/earthquake'
 import { formatDateTimeMin, formatDepth, formatMagnitudeCondition, formatTimeMin, hasDepth } from '../../utils/formatters'
 import { quakeEventKey } from '../../utils/quakeMerge'
-import { groupAreasForCardDisplay, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, tsunamiAreaKey, evacuationActionLine } from '../../utils/tsunami'
+import { groupAreasForCardDisplay, tsunamiAreaGradeChanges, TSUNAMI_GRADE_LIFTED, matchesArea, observationBadges, observationHeightText, observationArrivalFallbackText, observationMaxHeightTimeText, estimationBadges, estimationHeightText, forecastHeightImportantBadge, GRADES_IN_CARD_ORDER, TSUNAMI_GRADE_SHORT_LABEL, isTsunamiGradeRaised, sourceEarthquakeTime, tsunamiAreaKey, evacuationActionLine } from '../../utils/tsunami'
 import { TSUNAMI_MISSING_COLOR as MISSING_COLOR } from '../../utils/tsunamiStyle'
 import { mapChunksToRefs, planFollowScroll, type FollowRect, type SpeechFollowSession, type SpeechRef } from '../../utils/ttsFollow'
 import { getSpeechClock } from '../../utils/voicevox'
@@ -181,9 +181,10 @@ function SourceEarthquakeLine({ eq, prefix, link }: {
   prefix: string
   link: React.ReactNode
 }) {
+  const quakeTime = sourceEarthquakeTime(eq)
   // 日時として読めなければ句ごと落とす（→ `formatters.ts` の `readDateTime`）。震源名・規模・
   // 深さが並ぶ行の付随情報なので、「発生」だけが残るより出さないほうがよい。
-  const originHm = eq.originTime ? formatTimeMin(eq.originTime) : null
+  const quakeHm = quakeTime ? formatTimeMin(quakeTime) : null
   return (
     <div>
       {prefix}{eq.hypocenterName}
@@ -197,7 +198,10 @@ function SourceEarthquakeLine({ eq, prefix, link }: {
           **値によらず「深さ」を前置する** —— 地震カード・地図・共有カードもそう出しており、
           ここだけ省くとアプリの中で表記が割れる。 */}
       {eq.depth !== undefined && hasDepth(eq.depth) && `　深さ ${formatDepth(eq.depth)}`}
-      {originHm && `　${originHm}発生`}
+      {/* 地震の時刻は `sourceEarthquakeTime` を通す（**発現時刻を先に採る**）。発生時刻を出すと、
+          同じ地震が地震カードと津波カードで 1 分違って見える。理由と実電文で測った数字は
+          `docs/spec/tsunami-spec.md` §4 が正。 */}
+      {quakeHm && `　${quakeHm}発生`}
       {link}
       {/* 震央補助表現（「御前崎の北東40km付近」）と震源決定機関（「ＰＴＷＣ」等）。
           前者は震央地名より具体的に場所が分かり、後者は誰が決めた値かを示す。
@@ -278,8 +282,11 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
   const observedNames = new Set(observations.map(o => o.name))
   // 区域内に1件でも実測値があれば到達のバッジは不要（実測行で代替できる）。
   //
-  // `immediate` も見るのは P2PQuake 経路のため —— あちらは条件の文言を配信せず、
-  // 「ただちに来襲」を真偽値だけで伝える。DMDATA 経路は文言から引く。
+  // **`immediate` は文言が読めないときの補い。** P2PQuake も 3 値の文言をそのまま配信するが、
+  // `firstHeight` を持たない古いデータでは真偽値しか残らない。**「ただちに津波来襲と予測」と
+  // 1 対 1 ではなく**、実データでは「津波到達中と推測」の区域でも真になる（第１波の到達を
+  // 確認では偽）ので、文言が読めるならそちらを優先する
+  // （→ [`tsunami-spec.md`](../../../docs/spec/tsunami-spec.md) §9「区域の到達状況」）。
   const arrivalBadge = badgeSuppressed
     ? undefined
     : (arrivalBadgeLabel ?? (area.immediate ? ARRIVAL_CONDITION_BADGE['ただちに津波来襲と予測'] : undefined))
@@ -329,6 +336,38 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
               : updateStatus === 'updated'
                 ? '3px solid #fbbf24'
                 : `1px solid ${style.cardBorder}38`
+            const matched = stations.find(s => s.name === obs.name)
+            // 実測の到達時刻が出せていない行に、予報側が持っている到達予想を添える。
+            //
+            // **欠測で絞らない。** 実配信でこの値が残るのは欠測の地点だけだが（到達そのものを
+            // 観測できていないので、気象庁に予想を取り下げる理由が無い）、観測状態の名前で条件を
+            // 書くと、別の状態で届いたときに黙って落とす。見たいのは「実測の到達時刻が出せて
+            // いない」ことそのもの。
+            //
+            // **語は区域の行（`arrivalText`）と揃える。** 実測は「05:12 押し波」の形で出るため、
+            // 語を冠さないと予報の値が観測できた時刻に見える。
+            // **判定は整形の結果で行う。** 値があっても日時として読めなければ実測の到達時刻は
+            // 出せないので、上の「実測の到達時刻が出せていない」に含まれる。
+            const obsArrivalHm = obs.arrivalTime ? formatTimeMin(obs.arrivalTime) : null
+            const forecastArrivalHm = !obsArrivalHm && matched?.arrivalTime
+              ? formatTimeMin(matched.arrivalTime)
+              : null
+            const forecastArrivalText = forecastArrivalHm ? `到達予想 ${forecastArrivalHm}` : ''
+            const matchedHighTideHm = matched?.highTideDateTime ? formatTimeMin(matched.highTideDateTime) : null
+            // この欄は空になりうる要素が並ぶ。**区切りを前置きする書き方にしない** —— 先頭が
+            // 空のとき字下げだけが残る（到達予想を足す前から、欠測の行の満潮時刻がそうなっていた）。
+            const timeTexts = [
+              obsArrivalHm
+                ? `${obsArrivalHm}${obs.initial ? ` ${obs.initial}波` : ''}`
+                : observationArrivalFallbackText(obs),
+              // 第1波についての話が続くので、実測の到達時刻と同じ位置に置く。
+              forecastArrivalText,
+              // 最大波を観測した時刻。第1波の到達時刻と紛れないよう語を冠する
+              // （決め方は `observationMaxHeightTimeText`）。
+              observationMaxHeightTimeText(obs),
+              // 同名 station があれば満潮時刻をここに表示
+              matchedHighTideHm ? `満潮 ${matchedHighTideHm}` : '',
+            ].filter(Boolean)
             return (
               <div
                 key={i}
@@ -358,25 +397,11 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
                         </span>
                       ))}
                     </div>
-                    <div className="mt-1" style={{ fontSize: '0.6875rem', color: '#9ca3af' }}>
-                      {/* 時刻が日時として読めないときは、時刻が無い電文と同じ落とし先へ回す
-                          （「第１波識別不能」なら「到達時刻不明」、そうでなければ何も出さない）。 */}
-                      {(() => {
-                        const hm = obs.arrivalTime ? formatTimeMin(obs.arrivalTime) : null
-                        return hm
-                          ? `${hm}${obs.initial ? ` ${obs.initial}波` : ''}`
-                          : observationArrivalFallbackText(obs)
-                      })()}
-                      {/* 最大波を観測した時刻。第1波の到達時刻と紛れないよう語を冠する
-                          （決め方は `observationMaxHeightTimeText`）。 */}
-                      {observationMaxHeightTimeText(obs) && `　${observationMaxHeightTimeText(obs)}`}
-                      {/* 同名 station があれば満潮時刻をここに表示 */}
-                      {(() => {
-                        const matched = stations.find(s => s.name === obs.name)
-                        const hm = matched?.highTideDateTime ? formatTimeMin(matched.highTideDateTime) : null
-                        return hm ? `　満潮 ${hm}` : null
-                      })()}
-                    </div>
+                    {timeTexts.length > 0 && (
+                      <div className="mt-1" style={{ fontSize: '0.6875rem', color: '#9ca3af' }}>
+                        {timeTexts.join('　')}
+                      </div>
+                    )}
                   </div>
                   {obs.height ? (
                     <span className="font-bold flex-shrink-0" style={{ fontSize: '1.25rem', color: style.heightColor }}>{observationHeightText(obs)}</span>
@@ -389,20 +414,29 @@ function TsunamiAreaRow({ area, observations, style, onObservationClick, canFocu
           })}
           {/* 実測値なし観測点（station のみ） */}
           {stations.filter(s => !observedNames.has(s.name)).map((st, i) => {
-            // 日時として読めない時刻はラベルごと落とす（「到達 」だけが残ると値があるように見える）。
-            const arrivalHm = st.arrivalTime ? formatTimeMin(st.arrivalTime) : null
-            const highTideHm = st.highTideDateTime ? formatTimeMin(st.highTideDateTime) : null
+            // **語は実測の行・区域の行と揃える。** 同じ `TsunamiStation.arrivalTime` を、実測の
+            // エントリが有るか無いかだけで「到達予想」「到達」と呼び分けると、上下に並んだとき
+            // 片方が確定した事実に見える。バッジ（「予測」）があっても、時刻の語が違えば別の
+            // 性質の値として読まれる。
+            // 日時として読めない時刻はラベルごと落とす（「到達予想 」だけが残ると値があるように見える）。
+            const stArrivalHm = st.arrivalTime ? formatTimeMin(st.arrivalTime) : null
+            const stHighTideHm = st.highTideDateTime ? formatTimeMin(st.highTideDateTime) : null
+            const timeTexts = [
+              stArrivalHm ? `到達予想 ${stArrivalHm}` : '',
+              stHighTideHm ? `満潮 ${stHighTideHm}` : '',
+            ].filter(Boolean)
             return (
-            <div key={i} className="px-3 py-2 rounded" style={{ border: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.03)' }}>
-              <div className="flex items-baseline gap-2 flex-wrap">
-                <span className="font-semibold" style={{ fontSize: '0.8125rem', color: '#d1d5db' }}>{st.name}</span>
-                <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: 'rgba(255,255,255,0.08)', color: '#9ca3af' }}>予測</span>
+              <div key={i} className="px-3 py-2 rounded" style={{ border: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.03)' }}>
+                <div className="flex items-baseline gap-2 flex-wrap">
+                  <span className="font-semibold" style={{ fontSize: '0.8125rem', color: '#d1d5db' }}>{st.name}</span>
+                  <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: 'rgba(255,255,255,0.08)', color: '#9ca3af' }}>予測</span>
+                </div>
+                {timeTexts.length > 0 && (
+                  <div className="mt-1" style={{ fontSize: '0.6875rem', color: '#9ca3af' }}>
+                    {timeTexts.join('　')}
+                  </div>
+                )}
               </div>
-              <div className="mt-1" style={{ fontSize: '0.6875rem', color: '#9ca3af' }}>
-                {arrivalHm && `到達 ${arrivalHm}`}
-                {highTideHm && `　満潮 ${highTideHm}`}
-              </div>
-            </div>
             )
           })}
         </div>
@@ -516,6 +550,80 @@ function TsunamiGradeCard({ grade, areas, observations, onObservationClick, canF
           ))}
         </div>
       ))}
+    </div>
+  )
+}
+
+/**
+ * この報で解除された区域を並べる枠。等級カードの後ろに置く。
+ *
+ * **等級カードを流用しないこと。** 解除された区域は電文が `Area` と `Category` しか持たず、
+ * 波高・到達時刻・潮位観測点のいずれも無い。等級カードの行（`TsunamiAreaRow`）はそれらを
+ * 描く前提で組んであるので、通しても空欄が並ぶだけになる。
+ *
+ * **前回の等級は無条件に出す。** 等級カードの「〇〇から切り替え」は直近の受信で動いた区域だけに
+ * 付く（`areaGradeChangedKeys`。`lastGrade` が続報にも載り続けるため）が、こちらは枠そのものが
+ * 「この報で解除された区域」を意味するので、印を絞る理由が無い。
+ */
+function TsunamiCancelledCard({ areas, focusedDistrict, registerRow, registerSpeechRow, registerSpeechAnchor }: { areas: TsunamiArea[]; focusedDistrict?: FocusedDistrict | null; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void; registerSpeechAnchor?: (keys: string[], el: HTMLElement | null) => void }) {
+  if (areas.length === 0) return null
+  // 無彩色。解除は「もう出ていない」という報せなので、等級の色を借りない。
+  const style = getGradeStyle('Unknown')
+  // **カード自体は追従の引き当て先にしない。** 等級カードが `grade:` の鍵を持つのは、読み上げが
+  // 「〇〇警報。」と等級を告げる箇所を指すため。解除の読み上げは区域名しか指さないので、
+  // ここに鍵を置いても誰も引かない。
+  return (
+    <div className="bg-card rounded-lg overflow-hidden"
+      style={{ border: `2px solid ${style.cardBorder}`, boxShadow: `0 0 0 1px ${style.cardBorder}40` }}>
+      <div ref={el => {
+        for (const area of areas) {
+          registerSpeechAnchor?.(speechRowKeys({ kind: 'area', code: area.code, name: area.name }), el)
+        }
+      }}
+        className="w-full py-1.5 px-4 text-center text-xs font-bold tracking-widest"
+        style={{ backgroundColor: style.headerBg, color: style.headerColor, borderBottom: `1px solid ${style.headerBorder}` }}>
+        解除
+      </div>
+      {areas.map((area, i) => (
+        <TsunamiCancelledRow
+          key={i}
+          area={area}
+          style={style}
+          isChanged={focusedDistrict?.districts.some(d => districtMatchesArea(d, area)) ?? false}
+          isTop={focusedDistrict?.top != null && districtMatchesArea(focusedDistrict.top, area)}
+          registerRow={registerRow}
+          registerSpeechRow={registerSpeechRow}
+        />
+      ))}
+    </div>
+  )
+}
+
+/**
+ * 解除カードの行。読み上げの追従と受信時スクロールの寄せ先になるため、等級カードの行と同じ
+ * 2 つの登録（`registerRow` / `registerSpeechRow`）を通す。
+ */
+function TsunamiCancelledRow({ area, style, isChanged, isTop, registerRow, registerSpeechRow }: { area: TsunamiArea; style: GradeStyle; isChanged: boolean; isTop: boolean; registerRow?: (area: TsunamiArea, isChanged: boolean, isTop: boolean, el: HTMLDivElement | null) => void; registerSpeechRow?: (keys: string[], el: HTMLElement | null) => void }) {
+  const setRowRef = useCallback((el: HTMLDivElement | null) => {
+    registerRow?.(area, isChanged, isTop, el)
+    registerSpeechRow?.(speechRowKeys({ kind: 'area', code: area.code, name: area.name }), el)
+  }, [registerRow, registerSpeechRow, area, isChanged, isTop])
+  return (
+    <div ref={setRowRef} className="border-b border-white/5 last:border-0">
+      <div className="flex items-center gap-2 px-3 py-2 roomy:gap-3 roomy:px-4 roomy:py-3">
+        <div className="flex-1 min-w-0">
+          <span className="text-white font-semibold block text-[1.0625rem] roomy:text-[1.25rem]" style={{ lineHeight: '1.2' }}>
+            {area.name}
+          </span>
+          {/* 等級の呼び名は読み上げと共有する（`TSUNAMI_GRADE_SHORT_LABEL`）。
+              `lastGrade` の有無は `describableCancelledAreas` が保証している。 */}
+          {area.lastGrade && (
+            <span className="block mt-1" style={{ fontSize: '0.8125rem', color: style.arrivalColor }}>
+              {TSUNAMI_GRADE_SHORT_LABEL[area.lastGrade]}を解除
+            </span>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
@@ -1249,6 +1357,22 @@ export const TsunamiTab = memo(function TsunamiTab({ tsunamis, earthquakes, onEa
                 areaGradeChangedKeys={areaGradeChangedKeys}
               />
             ))}
+            {/* この報で解除された区域。等級カードの後ろ＝いちばん軽い遷移先として置く
+                （読み上げも引き下げの組の最後に読む）。
+
+                **並びは読み上げが作る組をそのまま使う。** ここで `describableCancelledAreas` を
+                独自に並べ替えると、**前回の等級が違う区域が同時に解除された報**で声と画面が
+                食い違う —— 読み上げは `(遷移元, 遷移先)` の組ごとに分けて遷移元の重い順に読むが、
+                こちらは全部を 1 つのリストとして扱うので電文順のまま残る。追従スクロールが
+                解除カードの中を往復することになり、この機能が直そうとしたのと同じ症状になる。 */}
+            <TsunamiCancelledCard
+              areas={tsunamiAreaGradeChanges(t, observations)
+                .filter(c => c.to === TSUNAMI_GRADE_LIFTED).flatMap(c => c.areas)}
+              focusedDistrict={focusedDistrict}
+              registerRow={registerRow}
+              registerSpeechRow={registerSpeechRow}
+              registerSpeechAnchor={registerSpeechAnchor}
+            />
             {(unmatched.length > 0 || (t.estimations?.length ?? 0) > 0) && (
               <div className="bg-card rounded-lg overflow-hidden"
                 style={{ border: '2px solid #1d4ed8', boxShadow: '0 0 0 1px rgba(29,78,216,0.25)' }}>
