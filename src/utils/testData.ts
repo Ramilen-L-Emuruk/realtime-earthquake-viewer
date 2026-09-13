@@ -1302,67 +1302,128 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
     // name は地図の海岸線表示用に、津波予報区データ（tsunami-zones.json）に実在する区域名を使用する
     // 2011年東北地方太平洋沖地震を参考にした発令内容
     // code は津波予報区コード。名前とコードの対応は気象庁の個別コード表
-    // （技術資料の jmaxml_*_Code.zip・シート 31 = AreaTsunami）から採る。observations の
+    // （技術資料の jmaxml_*_Code.zip・シート 31 = AreaTsunami）から採る。**下の 11 区域は
+    // すべて実配信の電文に現れた組み合わせ**（千葉県内房 311・相模湾・三浦半島 330・静岡県 380・
+    // 北海道太平洋沿岸西部 102 を含む）。observations の
     // districtCode と一致させて紐づけを確認する。区域の中の観測点コードは同 zip の
     // シート 35 = PointTsunami。**一次細分区域（震度）のコードと混ぜないこと** ——
     // 「石川県能登」は一次細分区域では 390、津波予報区では 360 で、番号がまったく別物
+    //
+    // **区域の到達状況（`firstHeight`）は実配信の形に合わせる。** 形は 4 つしかなく、実測との
+    // 組み合わせにも決まりがある（→ [`tsunami-spec.md`](../../docs/spec/tsunami-spec.md)
+    // §9「区域の到達状況」）。ここでは 4 形すべてを 1 枚のカードに並べる。
+    //
+    // **実測がある区域では到達状況バッジが出ない**（`TsunamiAreaRow` の `badgeSuppressed`。
+    // 観測点の行が事実を語るため）。以前は 6 区域すべてに実測があり、**バッジが 1 つも画面に
+    // 出なかった** —— 3 値を実機で確かめる手段が無かった。下の 4 区域（千葉県九十九里・外房／
+    // 千葉県内房／相模湾・三浦半島／静岡県）は実測を持たせず、そのために置いている。
+    //
+    // 並びは震源（三陸沖）から遠ざかる順で、到達の段階もその順に進む。
     areas: ([
+      // ── 実測が届いた区域。到達済みなので「第１波の到達を確認」で、到達予想時刻は持たない ──
       {
         // 数値にならない予想波高。`value` を持たないのが電文どおりの形
-        grade: 'MajorWarning', immediate: true, name: '岩手県', code: '210',
+        grade: 'MajorWarning', immediate: false, name: '岩手県', code: '210',
         maxHeight: { description: '巨大' },
-        firstHeight: { arrivalTime: t(-6), condition: 'ただちに津波来襲と予測' },
+        firstHeight: { condition: '第１波の到達を確認' },
         stations: [
-          { name: '宮古',   code: '21001', arrivalTime: t(-6), highTideDateTime: t(60) },
-          { name: '釜石',   code: '21003', arrivalTime: t(-4), highTideDateTime: t(62) },
-          { name: '大船渡', code: '21002', arrivalTime: t(-5), highTideDateTime: t(58) },
+          // **実測が届いた地点は到達予想を持たない**（満潮時刻だけが残る）。まだ届いていない
+          // 地点（釜石）は到達予想を持ち、その値は**必ず未来**。
+          { name: '宮古',   code: '21001', highTideDateTime: t(60) },
+          { name: '釜石',   code: '21003', arrivalTime: t(8), highTideDateTime: t(62) },
+          { name: '大船渡', code: '21002', highTideDateTime: t(58) },
         ],
       },
       {
-        grade: 'MajorWarning', immediate: true, name: '宮城県', code: '220',
+        grade: 'MajorWarning', immediate: false, name: '宮城県', code: '220',
         maxHeight: { description: '10m以上', value: 10.0 },
         // 大津波警報の区域で予想波高が初めて数値になった／上方修正された合図（電文の
         // `MaxHeight/Condition` = 重要）。観測・推定の「重要」とは意味が違う
         forecastHeightImportant: true,
-        // 到達状況は 3 つある。時刻を出せない段階ではこちらが入る
-        firstHeight: { condition: '津波到達中と推測' },
+        firstHeight: { condition: '第１波の到達を確認' },
         stations: [
-          { name: '石巻港', code: '22022', arrivalTime: t(-4), highTideDateTime: t(55) },
-          { name: '仙台港', code: '22021', arrivalTime: t(-3), highTideDateTime: t(57) },
-          { name: '石巻市鮎川', code: '22002', arrivalTime: t(-5), highTideDateTime: t(56) },
+          { name: '石巻港', code: '22022', highTideDateTime: t(55) },
+          { name: '仙台港', code: '22021', arrivalTime: t(14), highTideDateTime: t(57) },
+          { name: '石巻市鮎川', code: '22002', arrivalTime: t(10), highTideDateTime: t(56) },
         ],
       },
       {
-        grade: 'MajorWarning', immediate: true, name: '福島県', code: '250',
+        grade: 'MajorWarning', immediate: false, name: '福島県', code: '250',
         maxHeight: { description: '6m', value: 6.0 },
         firstHeight: { condition: '第１波の到達を確認' },
         stations: [
-          { name: 'いわき市小名浜', code: '25002', arrivalTime: t(-2), highTideDateTime: t(65) },
+          // **欠測の地点にも到達予想は持たせない。** 電文では残ることがあるが（→
+          // [`tsunami-spec.md`](../../docs/spec/tsunami-spec.md) §9「区域の到達状況」）、
+          // カードは同じ名前の観測点があると予報の行を出さないので**画面に届かない**。
+          // 実機で確かめられない値をテストデータへ置いても、形が増えるだけで何も確認できない
+          { name: 'いわき市小名浜', code: '25002', highTideDateTime: t(65) },
         ],
       },
       {
         grade: 'Warning', immediate: false, name: '青森県太平洋沿岸', code: '201',
         maxHeight: { description: '3m', value: 3.0 },
-        firstHeight: { arrivalTime: t(10), condition: '' },
+        firstHeight: { condition: '第１波の到達を確認' },
         stations: [
-          { name: '八戸港',       code: '20121', arrivalTime: t(10), highTideDateTime: t(70) },
+          { name: '八戸港',       code: '20121', highTideDateTime: t(70) },
           { name: 'むつ市関根浜', code: '20102', arrivalTime: t(15), highTideDateTime: t(72) },
         ],
       },
       {
         grade: 'Warning', immediate: false, name: '茨城県', code: '300',
         maxHeight: { description: '3m', value: 3.0 },
-        firstHeight: { arrivalTime: t(20), condition: '' },
+        firstHeight: { condition: '第１波の到達を確認' },
         stations: [
-          { name: '大洗', code: '30001', arrivalTime: t(20), highTideDateTime: t(80) },
+          { name: '大洗', code: '30001', highTideDateTime: t(80) },
         ],
       },
       {
         grade: 'Watch', immediate: false, name: '北海道太平洋沿岸東部', code: '100',
         maxHeight: { description: '1m', value: 1.0 },
+        // **津波注意報以上は `firstHeight` を必ず持つ。** 要素ごと無いのは津波予報
+        // （若干の海面変動）と解除だけ
+        firstHeight: { condition: '第１波の到達を確認' },
         stations: [
-          { name: '釧路', code: '10001', arrivalTime: t(30), highTideDateTime: t(90) },
+          { name: '釧路', code: '10001', highTideDateTime: t(90) },
         ],
+      },
+      // ── 実測がまだ届いていない区域。到達状況バッジはここでしか出ない ──
+      //
+      // **`stations` を持たせない。** 区域の中の地点（満潮時刻・地点ごとの到達予想）を運ぶのは
+      // 津波情報（VTSE51）で、津波警報等（VTSE41）は区域一覧しか運ばない（→ §5「続報で前報から
+      // 引き継ぐもの」）。新しく等級が出たばかりで、まだ津波情報に載っていない区域の形にあたる。
+      {
+        // バッジ「第1波到達」。到達を確認した区域でも、その区域の潮位観測点の実測が
+        // まだ届いていないことがある
+        grade: 'Warning', immediate: false, name: '千葉県九十九里・外房', code: '310',
+        maxHeight: { description: '3m', value: 3.0 },
+        firstHeight: { condition: '第１波の到達を確認' },
+      },
+      {
+        // バッジ「到達中」。もう来ているが第1波を捉えられていない段階で、到達予想時刻は消える
+        grade: 'Warning', immediate: true, name: '千葉県内房', code: '311',
+        maxHeight: { description: '3m', value: 3.0 },
+        firstHeight: { condition: '津波到達中と推測' },
+      },
+      {
+        // バッジ「まもなく到達」。**到達状況のうちこれだけが到達予想時刻と併存し、その値は
+        // 必ず未来**（実配信では発表の 2〜10 分後）
+        grade: 'Watch', immediate: true, name: '相模湾・三浦半島', code: '330',
+        maxHeight: { description: '1m', value: 1.0 },
+        firstHeight: { arrivalTime: t(5), condition: 'ただちに津波来襲と予測' },
+      },
+      {
+        // 到達予想時刻だけの形（バッジなし）。これから来る区域のふつうの姿
+        grade: 'Watch', immediate: false, name: '静岡県', code: '380',
+        maxHeight: { description: '1m', value: 1.0 },
+        firstHeight: { arrivalTime: t(40), condition: '' },
+      },
+      {
+        // **津波予報の区域にも実測は届く。** `FirstHeight` を持たないのは「到達を語らない」
+        // だけで、観測していないという意味ではない —— 実配信でも波高の実測がある区域の
+        // 1 割強がこの形（→ [`tsunami-spec.md`](../../docs/spec/tsunami-spec.md) §9
+        // 「実測との関係」）。等級が下がっても観測は続くため、警報の発表中にこの組み合わせが混じる
+        grade: 'Forecast', immediate: false, name: '北海道太平洋沿岸西部', code: '102',
+        maxHeight: { description: '0.2m未満', value: 0.2 },
       },
     ] as TsunamiArea[]).map(a => withDmdssFields ? a : toP2pTsunamiArea(a)),
     ...(withDmdssFields ? {
@@ -1388,6 +1449,8 @@ export function createTestTsunami(withDmdssFields: boolean): JMATsunami {
       { name: '久慈港', districtCode: '210', districtName: '岩手県', height: { value: 4.4, description: '4.4m' }, initial: '押し', maxHeightDateTime: t(-2), condition: { firstWaveUnidentifiable: true } },
       // 津波注意報の区域で、これまでの最大波がごく小さい（数値を発表しない）。
       { name: '釧路',   districtCode: '100', districtName: '北海道太平洋沿岸東部', arrivalTime: t(-2), initial: '押し', condition: { weak: true } },
+      // 津波予報まで下がった区域の実測。等級が下がっても観測は続く（区域の側は上の `areas` を見る）。
+      { name: '室蘭港', districtCode: '102', districtName: '北海道太平洋沿岸西部', height: { value: 0.1, description: '0.1m' }, arrivalTime: t(-4), initial: '押し', maxHeightDateTime: t(-3) },
       // 沖合の潮位観測点。「重要」の基準が沿岸と違う（大津波警報だけでなく津波警報も含む）ため、
       // 出所の印（offshore）を付けてバッジの語が切り替わることを確かめられるようにする。
       { name: '沖合40km', offshore: true, sensor: 'ＧＮＳＳ波浪計', height: { value: 3.0, description: '3.0m以上', over: true }, arrivalTime: t(-3), condition: { important: true }, maxHeightDateTime: t(-2) },
