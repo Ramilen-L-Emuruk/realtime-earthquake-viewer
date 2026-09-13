@@ -401,6 +401,34 @@ describe('lpgmToText: 階級ごとの地域列挙', () => {
     const text = lpgmToText(makeLpgm(), TTS_OPTS, true)
     expect(text).toContain('長周期地震動階級3を東京都23区で観測しました。')
   })
+
+  // 地震の時刻は**発現時刻を先に採る**（地震情報・津波カードと同じ規則）。揃えないと、
+  // 同じ地震を地震情報が「◯時◯分ころ」と読んだ直後に、長周期が 1 分違う時刻を読む。
+  // 実電文では地震情報と長周期が揃った 68 地震のうち 9 件がこの形だった
+  // （→ `docs/spec/tsunami-spec.md` §4）。
+
+  // 正: 発現時刻があればそれを読む
+  it('発現時刻があればそれを読む', () => {
+    const text = lpgmToText({ ...makeLpgm(), arrivalTime: '2026-08-17T23:10:00+09:00' }, TTS_OPTS, true)
+    expect(text).toContain('23時10分頃発生した地震で')
+    expect(text).not.toContain('23時9分頃')
+  })
+
+  // 対照: `arrivalTime` は任意フィールドなので、無ければ発生時刻へ落ちる
+  it('発現時刻が無ければ発生時刻を読む', () => {
+    const text = lpgmToText(makeLpgm(), TTS_OPTS, true)
+    expect(text).toContain('23時9分頃発生した地震で')
+  })
+
+  // 安全弁: 地域を 1 つも作れない電文でも同じ規則で時刻を選ぶ。
+  // 文型が分かれているので、片方だけ直すと地域の有無で時刻がずれる
+  it('地域を列挙しない文でも発現時刻を読む', () => {
+    const text = lpgmToText(
+      { ...makeLpgm(), regions: undefined, arrivalTime: '2026-08-17T23:10:00+09:00' },
+      TTS_OPTS, true,
+    )
+    expect(text).toBe('長周期地震動情報。23時10分頃発生した地震で、長周期地震動階級3を観測しました。')
+  })
 })
 
 // 「必ず読み上げる震度」(alwaysReadScale) と「地域数の許容超過」(regionTolerance) の検証。

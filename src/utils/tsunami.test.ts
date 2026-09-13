@@ -8,6 +8,7 @@ import {
   tsunamiMaxGrade,
   tsunamiOverallGrade,
   isTsunamiNewFire,
+  sourceEarthquakeTime,
   isTsunamiGradeUpgrade,
   isCancelForCurrentTsunami,
   isTsunamiContinuation,
@@ -142,6 +143,53 @@ describe('isTsunamiNewFire', () => {
   it('eventId も originTime も無い場合は false（保守的に続報扱い）', () => {
     const current = makeTsunami({})
     const next = makeTsunami({})
+    expect(isTsunamiNewFire(next, current)).toBe(false)
+  })
+})
+
+// カードに出す地震の時刻は**発現時刻を先に採る**（地震情報側と揃えるため）。
+// 実電文の全期間走査では発生時刻と発現時刻が 11.2% の電文でずれ、気象庁は利用者向けの文へ
+// 一貫して発現時刻を書いている（→ `docs/spec/tsunami-spec.md` §4）。
+describe('sourceEarthquakeTime', () => {
+  // 正: 両方あれば発現時刻。実電文の三陸沖 M7.4（2026-04-20）と同じ形
+  it('発現時刻があればそれを返す', () => {
+    expect(sourceEarthquakeTime({
+      hypocenterName: '三陸沖',
+      originTime: '2026-04-20T16:52:00+09:00',
+      arrivalTime: '2026-04-20T16:53:00+09:00',
+    })).toBe('2026-04-20T16:53:00+09:00')
+  })
+
+  // 対照: `arrivalTime` は任意フィールド（電文に無ければパーサーが持たせない）。
+  // 落ちる先が無いと、時刻を持つ電文なのに行から時刻が消える
+  it('発現時刻が無ければ発生時刻へ落ちる', () => {
+    expect(sourceEarthquakeTime({
+      hypocenterName: '三陸沖',
+      originTime: '2026-04-20T16:52:00+09:00',
+    })).toBe('2026-04-20T16:52:00+09:00')
+  })
+
+  // 対照: 空文字は「無い」と同じ扱い。`??` で書くと空文字を採ってしまい、
+  // 時刻の無い「　発生」だけが行に残る
+  it('発現時刻が空文字なら発生時刻へ落ちる', () => {
+    expect(sourceEarthquakeTime({
+      hypocenterName: '三陸沖',
+      originTime: '2026-04-20T16:52:00+09:00',
+      arrivalTime: '',
+    })).toBe('2026-04-20T16:52:00+09:00')
+  })
+
+  it('どちらも無ければ undefined', () => {
+    expect(sourceEarthquakeTime({ hypocenterName: '三陸沖' })).toBeUndefined()
+    expect(sourceEarthquakeTime({ hypocenterName: '三陸沖', originTime: '', arrivalTime: '' })).toBeUndefined()
+  })
+
+  // 安全弁: **表示を発現時刻へ変えても、同一性判定は発生時刻のまま。**
+  // `isTsunamiNewFire` は識別子の無い電文でここへ落ちるので、うっかり発現時刻へ
+  // 差し替えると、発現時刻だけが動いた続報が別の津波として立ちタブを奪う。
+  it('発現時刻が違っても発生時刻が同じなら続報のまま', () => {
+    const current = makeTsunami({ sourceEarthquakes: [{ hypocenterName: 'A', originTime: '2026-01-01T00:00:00Z', arrivalTime: '2026-01-01T00:00:00Z' }] })
+    const next = makeTsunami({ sourceEarthquakes: [{ hypocenterName: 'A', originTime: '2026-01-01T00:00:00Z', arrivalTime: '2026-01-01T00:01:00Z' }] })
     expect(isTsunamiNewFire(next, current)).toBe(false)
   })
 })

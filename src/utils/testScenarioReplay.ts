@@ -68,6 +68,9 @@ function remapAppEvent(event: AppEvent, deltaMs: number, remapId: IdRemapper): A
         eventId: newEventId,
         time: shiftIso(event.time, deltaMs),
         validDateTime: shiftIsoOpt(event.validDateTime, deltaMs),
+        // 原因地震の時刻は 2 つとも動かす。**カードが出すのは発現時刻**（`sourceEarthquakeTime`）で、
+        // 発生時刻は識別子を持たない電文の同一性判定（`isTsunamiNewFire`）が見る。
+        // 片方でも止めると、画面の時刻か続報の判定のどちらかが収録当時の絶対値のまま残る。
         sourceEarthquakes: event.sourceEarthquakes?.map(eq => ({
           ...eq,
           originTime: shiftIsoOpt(eq.originTime, deltaMs),
@@ -135,9 +138,9 @@ function remapPayload(payload: ReplayPayload, deltaMs: number, remapId: IdRemapp
           id: replaceEventIdInId(payload.data.id, payload.data.eventId, newEventId),
           time: shiftIso(payload.data.time, deltaMs),
           originTime: shiftIso(payload.data.originTime, deltaMs),
-          // 地震発現時刻。**いまは画面に出していないが、シフトはしておく** ——
-          // 出すようになったときに気づける形になっていない（型検査もテストも通り、
-          // その時刻だけが収録当時の絶対値のまま出る）。
+          // 地震発現時刻。**読み上げが「◯時◯分頃発生した地震で」としてこの値を読む**
+          // （`ttsText.ts` の `lpgmToText`）。シフトを外すと、画面の時刻はずれていないのに
+          // **音声だけが収録当時の絶対時刻を読む**。型検査もテストも通るので気づけない。
           arrivalTime: shiftIsoOpt(payload.data.arrivalTime, deltaMs),
         },
       }
