@@ -1,4 +1,4 @@
-import type { JMATsunami, TsunamiArea, TsunamiEstimation, TsunamiEstimationCondition, TsunamiGrade, TsunamiObservation, TsunamiObservationCondition, TsunamiWarningComment } from '../types/earthquake'
+import type { JMATsunami, TsunamiArea, TsunamiEstimation, TsunamiEstimationCondition, TsunamiGrade, TsunamiObservation, TsunamiObservationCondition, TsunamiSourceEarthquake, TsunamiWarningComment } from '../types/earthquake'
 import { formatTime } from './formatters'
 import { log } from './logger'
 
@@ -311,6 +311,35 @@ export function isTsunamiNewFire(next: JMATsunami, current: JMATsunami | undefin
   const nextOrigin = next.sourceEarthquakes?.[0]?.originTime
   if (currentOrigin && nextOrigin) return currentOrigin !== nextOrigin
   return false
+}
+
+/**
+ * 津波電文の原因地震について、**画面に出す時刻**を選ぶ。
+ *
+ * **発現時刻（`arrivalTime`）を先に採る。** 地震情報側（`parseEarthquakeFromXml`）も
+ * 同じ規則で地震の時刻を決めており、揃えないと**同じ地震が経路によって別の時刻で出る**
+ * （実電文では 1 分ずれる）。
+ *
+ * **どちらを出すかは気象庁自身の文が決めている** —— 津波電文は本文で
+ * 「２０日１６時５３分に発生した三陸沖を震源とする地震の…」と**発現時刻**で述べる
+ * （2026-04-20 の VTSE41。発生は 16:52）。つまり気象庁の言う「◯時◯分に発生した地震」は
+ * 発現時刻を指しており、カードのラベル「発生」と値がここで初めて噛み合う。
+ * **実電文で測った数字と、この規則を 3 箇所が個別に実装していることは
+ * `docs/spec/tsunami-spec.md` §4 が正**（ここへ写すと、測り直したとき片方が古いまま残る）。
+ *
+ * **`originTime` の中身は入れ替えないこと。** {@link isTsunamiNewFire} が、電文の識別子が
+ * 両側そろっていないときにこの値へ落ちて同一性を判定している。ここでするのは
+ * 「持っている 2 つのうちどちらを出すか」の選択だけで、持っている値は変えない。
+ *
+ * @returns 発現時刻。無ければ発生時刻。どちらも無ければ undefined
+ */
+export function sourceEarthquakeTime(eq: TsunamiSourceEarthquake): string | undefined {
+  // **空文字は「無い」として扱う（`??` ではなく `||`）。**
+  // いまのパーサーは空文字を持たせないので（`...(値 && { arrivalTime })` のガードで落とす）、
+  // 現状この違いは表に出ない。**それでも `||` にしておく** —— 型は `string | undefined` で
+  // 空文字を許すため、別の入力源（永続化からの復元など）が足されたときに `??` だと空文字を
+  // 採ってしまい、時刻の無い「　発生」だけが行に残る。例外もログも出ない形で崩れる。
+  return eq.arrivalTime || eq.originTime || undefined
 }
 
 /**
