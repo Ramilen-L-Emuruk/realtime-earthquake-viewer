@@ -21,6 +21,7 @@ let globalVolume = 1.0
 /** 通知音の全体音量を設定する（0.0 = 無音、1.0 = 最大）。 */
 export function setSoundVolume(v: number): void {
   globalVolume = Math.min(1, Math.max(0, v))
+  syncKeepAlive()
 }
 
 function getCtx(): AudioContext | null {
@@ -55,6 +56,141 @@ export function unlockAudio(): void {
   } catch (err) {
     log.error(`[sound] マスターチェーンの事前生成に失敗: ${String(err)}`)
   }
+  syncKeepAlive()
+}
+
+// ─── キープアライブ ─────────────────────────────────────────────
+//
+// 通知音の再生間隔が長く空くタブレット常時起動運用で、`AudioContext.state` が
+// `"running"` のままでも実際に音が聞こえ始めるまで数秒の遅延が生じる実機不具合の
+// 対策。OS/ドライバのオーディオ出力経路が省電力で止まっており、Web Audio API の
+// 状態機械（JS からはここまでしか見えない）より下の層で起きているとみられる。
+//
+// ごく低振幅・低周波の音を鳴らし続けてハードウェア側を常時起こしておく。
+
+// soundEnabled・voicevoxEnabled のいずれかを反映した「鳴らしたいか」の希望値。
+// setKeepAliveEnabled() で App 側から設定する（既定 false — 実際に鳴らすものが
+// 無いうちは作らない。設定タブの useEffect が起動直後に反映するため、実運用で
+// unlockAudio() が呼ばれる頃には確実に最新値になっている）。
+let keepAliveWanted = false
+let keepAliveSource: AudioBufferSourceNode | null = null
+// 稼働中の音源が紐づく ctx。getMasterInput() の _masterCtx と同じ理由（将来
+// getCtx() が作り直す実装になったとき、古い ctx のノードを掴んだままにしない）。
+let keepAliveCtx: AudioContext | null = null
+
+/**
+ * 通知音（`soundEnabled`）・読み上げ（`voicevoxEnabled`）のどちらかが有効なときだけ
+ * キープアライブを鳴らす。両方無効なら実際に鳴らすものが無く、キープアライブを
+ * 続ける意味も無い。設定タブの変更を反映する useEffect から呼ぶ。
+ */
+export function setKeepAliveEnabled(enabled: boolean): void {
+  keepAliveWanted = enabled
+  syncKeepAlive()
+}
+
+// 独立した監視タイマーの周期。通知音・読み上げの発報経路が呼ぶ syncKeepAlive() だけに
+// 立て直しを任せると、**キープアライブが対策したい場面そのもの**（長い沈黙の後の最初の
+// 1 発）で間に合わない。発報の瞬間に立て直しても、その 1 発はキープアライブが無かった
+// ときと同じハードウェア起床遅延を負ってしまうため。周期は精度を要求しないので長め
+const KEEP_ALIVE_WATCHDOG_MS = 30_000
+
+let keepAliveWatchdogStarted = false
+
+/**
+ * 「鳴らしたいか」（`keepAliveWanted` と `globalVolume`）と実際の再生状態を一致させる。
+ * `setSoundVolume(0)` = 無音という既存の契約を守るため、音量 0 のときは鳴らさない
+ * （鳴らすものが無ければハードウェアを起こしておく意味も無い）。
+ *
+ * `audioCtx` がまだ無ければ何もしない。`unlockAudio()` 等 ctx に触れるたびに
+ * 呼ばれるので、そのとき改めて判定される。
+ *
+ * 実際に鳴っている音源が音声割り込み等で静かに停止した場合の立て直しも兼ねる。
+ * 通知音・読み上げが実際に鳴るたびに（`playAlertSound` 等・`voicevox.ts` の
+ * `speakWithVoicevox` から）ここを通ることに加えて、独立した低頻度の監視タイマーでも
+ * 立て直す（`ensureKeepAliveWatchdog()`）。発報経路だけに頼ると、立て直しが間に合うのは
+ * 「次の」発報からで、検知の引き金になった発報自体（＝守りたい場面）は救えないため。
+ */
+export function syncKeepAlive(): void {
+  const ctx = audioCtx
+  if (!ctx) return
+  ensureKeepAliveWatchdog()
+  if (keepAliveWanted && globalVolume > 0) {
+    startKeepAlive(ctx)
+  } else {
+    stopKeepAlive()
+  }
+}
+
+function ensureKeepAliveWatchdog(): void {
+  if (keepAliveWatchdogStarted || typeof window === 'undefined') return
+  keepAliveWatchdogStarted = true
+  setInterval(() => { syncKeepAlive() }, KEEP_ALIVE_WATCHDOG_MS)
+}
+
+function startKeepAlive(ctx: AudioContext): void {
+  if (keepAliveSource && keepAliveCtx === ctx) return // 既に稼働中
+  try {
+    const seconds = 1
+    const buf = ctx.createBuffer(1, ctx.sampleRate * seconds, ctx.sampleRate)
+    const data = buf.getChannelData(0)
+    const freq = 20 // 可聴域の下限付近。聞こえにくくしつつ実体のある信号にする
+    const amp = 0.01 // 約 -40dB。無音ではないが十分に小さい振幅
+    // createBuffer() のサンプルは既定で全て 0（デジタル無音）のため、明示的に
+    // 非ゼロの波形を書き込まないと、ゲインをどう設定しても実体の無い音になり
+    // 効果が無い（実機検証で最初に踏んだ罠）
+    for (let i = 0; i < data.length; i++) {
+      data[i] = Math.sin((2 * Math.PI * freq * i) / ctx.sampleRate) * amp
+    }
+    const src = ctx.createBufferSource()
+    src.buffer = buf
+    src.loop = true
+    // 音量設定・マスターチェーンの影響を受けたくないので destination へ直接つなぐ
+    src.connect(ctx.destination)
+    // 割り込み等でノードが静かに停止したときに備え、参照を捨てて次の syncKeepAlive()
+    // 呼び出しで再生成できるようにする
+    src.onended = () => {
+      if (keepAliveSource === src) {
+        keepAliveSource = null
+        keepAliveCtx = null
+      }
+    }
+    src.start()
+    keepAliveSource = src
+    keepAliveCtx = ctx
+  } catch (err) {
+    // 失敗しても通知音そのものは鳴らせるので、通知音の生成は止めない。ただし
+    // 黙って諦めると「実機で数秒待たされる」症状の原因調査が振り出しに戻るため記録する
+    keepAliveSource = null
+    keepAliveCtx = null
+    log.warn(`[sound] キープアライブの開始に失敗: ${String(err)}`)
+  }
+}
+
+function stopKeepAlive(): void {
+  if (!keepAliveSource) return
+  try {
+    keepAliveSource.onended = null
+    keepAliveSource.stop()
+  } catch (err) {
+    // 止めたい意図は「参照を捨てる」ことで達成済みなので、例外があっても後続は止めない。
+    // ただし window.__audioKeepAlive() で「動いていない」ことは分かっても理由までは
+    // 追えないため、diagnostic 用に記録だけは残す
+    log.debug(`[sound] キープアライブの停止時に例外（無視可）: ${String(err)}`)
+  }
+  keepAliveSource = null
+  keepAliveCtx = null
+}
+
+// 実機でしか再現しない不具合への対策のため、対策自体が生きているかを外から確認できる
+// 窓口を持たせる（`window.__cameraUpdateSkip` 等、既存の診断アクセサと同じ流儀）。
+// 対策していたはずが何年も前から死んでいた、という事態に気づけるようにするため
+if (typeof window !== 'undefined') {
+  ;(window as unknown as Record<string, unknown>).__audioKeepAlive = () => ({
+    wanted: keepAliveWanted,
+    running: keepAliveSource !== null,
+    volume: globalVolume,
+    ctxState: audioCtx?.state ?? null,
+  })
 }
 
 /** VOICEVOX 等の外部モジュールが AudioContext を共有するための getter。 */
@@ -76,6 +212,8 @@ let _masterCtx: AudioContext | null = null
 /**
  * 全ての音源が最終的に流れ込む master 入力ノード。VOICEVOX 読み上げも含めて
  * このモジュール外の音源もここへ接続することで、合成音圧の暴走を防ぐ。
+ * **キープアライブだけは経由しない**（`ctx.destination` へ直結。理由は
+ * `startKeepAlive()` のコメントを参照）。
  */
 export function getMasterInput(ctx: AudioContext): AudioNode {
   if (_master && _masterCtx === ctx) return _master
@@ -874,6 +1012,9 @@ export function playAlertSound(type: AlertSoundType): void {
     ctx.resume().catch(err =>
       log.warn(`[sound] playAlertSound(${type}) 中の AudioContext 再開に失敗: ${String(err)}`))
   }
+  // 実際に音が鳴る経路を通るたびにキープアライブの生死を確かめる。専用の監視タイマーを
+  // 持たない代わりに、ここを立て直しの機会にする（詳細は syncKeepAlive() のコメント）
+  syncKeepAlive()
   playGuarded(`playAlertSound(${type})`, () => PLAYERS[type](ctx, ctx.currentTime + 0.02))
 }
 
@@ -903,6 +1044,7 @@ export function playCountdownBeep(second: number): void {
     ctx.resume().catch(err =>
       log.warn(`[sound] playCountdownBeep(${second}) 中の AudioContext 再開に失敗: ${String(err)}`))
   }
+  syncKeepAlive()
 
   const t0 = ctx.currentTime + 0.02
   const gateHzMap: Record<number, number> = { 5: 8, 4: 10, 3: 13, 2: 16, 1: 20 }
@@ -1008,6 +1150,7 @@ export function playKyoshinUpdateSound(maxIndex: number, gainScale = 1): void {
     ctx.resume().catch(err =>
       log.warn(`[sound] playKyoshinUpdateSound(${maxIndex}) 中の AudioContext 再開に失敗: ${String(err)}`))
   }
+  syncKeepAlive()
   const base = ctx.currentTime + 0.02
   // **再生に関わる計算はガードの内側に置くこと。** 外に出すと、そこで出た例外は
   // `[sound] ... の再生に失敗` に残らず、Error Boundary を持たないこのアプリでは

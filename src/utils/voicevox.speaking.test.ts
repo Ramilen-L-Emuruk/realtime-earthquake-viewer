@@ -33,6 +33,7 @@ let fakeCtx = makeFakeCtx()
 vi.mock('./alertSound', () => ({
   getAudioContext: () => fakeCtx,
   getMasterInput: () => ({ connect: vi.fn() }),
+  syncKeepAlive: () => {},
 }))
 
 // 読み仮名の辞書はこのテストの対象外。実物のままだと取得とタイムアウト待ちが走る。
