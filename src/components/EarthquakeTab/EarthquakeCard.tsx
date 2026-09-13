@@ -21,7 +21,7 @@ import {
 import { getIntensityLabel, getIntensityLabelWithOrAbove, getIntensityColor, getIntensityBgColor, getDepthColor, getMagnitudeColor } from '../../utils/intensity'
 import { hasKnownEpicenter } from '../../utils/geo'
 
-import { buildAreaPrefIndex, buildRegionOrderIndex, buildStationPrefIndex, lookupStationRegion, regionOrderRank } from '../../utils/stationCoords'
+import { buildAreaPrefIndex, buildRegionOrderIndex, buildStationPrefIndex, lookupPointCoords, lookupStationRegion, regionOrderRank, type LatLng } from '../../utils/stationCoords'
 import { isMaxScaleUnreceived, partitionUnreceivedPoints, unreceivedUnitLabel, buildIntensityRows, makeAreaPrefResolver, cityKey } from '../../utils/quakePoints'
 import { useStationCoords } from '../../hooks/useStationCoords'
 import { groupUnreceivedPointNames, type UnreceivedPointGroup } from './unreceivedPointNames'
@@ -48,7 +48,7 @@ const LPGM_NOTES_KEY = 'lpgm:notes'
  * 入れ子を許さない。長周期のトグルと同じ作法）。開けない段には `role` も `tabIndex` も
  * 与えない —— 押せない行がタブ移動で止まると邪魔になる。
  */
-function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived, nonJma, depth, expandKey, expanded, onToggle }: {
+function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived, nonJma, depth, expandKey, expanded, onToggle, onActivate }: {
   label: string
   scale: IntensityScale
   /** その行の震度が未入電の値から来ている（ラベルへ「以上」を足す）。 */
@@ -72,27 +72,41 @@ function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived
   expandKey: string | null
   expanded: ReadonlySet<string>
   onToggle: (key: string) => void
+  /**
+   * 開閉を持たない行（＝配下を持たない観測点の行）を押したときの動作。地図をその地点へ寄せる。
+   *
+   * **開閉（`expandKey`）とは同居させない。** 1 回のクリックが 2 つの意味を持ち、どちらを
+   * 優先しても片方が押せなくなる。いま渡しているのは末端の観測点の行だけで、そこは
+   * `expandKey` が `null` になる。**上位の段（県・区域・市町村）へ寄せを広げるときは、
+   * 行全体ではなく行の中に別の当たり判定を置くこと**（下の `activate` が開閉を先に採るので、
+   * ここへ渡しても黙って効かない）。
+   */
+  onActivate?: () => void
 }) {
-  const isOpen = expandKey != null && expanded.has(expandKey)
+  const canExpand = expandKey != null
+  const isOpen = canExpand && expanded.has(expandKey)
   // 字下げと文字の大きさで段を示す（地名の色・太さも下で段によって変える）。
   // **震度の色は値だけで決める** —— 段の区別に流用すると、色が二通りの意味を持つ。
   const pad = ['pl-2', 'pl-5', 'pl-8', 'pl-11'][depth]
   const size = depth === 0
     ? 'text-[0.9375rem] roomy:text-[1.125rem]'
     : depth === 1 ? 'text-[0.875rem] roomy:text-[1rem]' : 'text-[0.8125rem] roomy:text-[0.9375rem]'
-  const interactive = expandKey != null
+  // 行の主アクション。**開閉があればそちらが取る**（`onActivate` の注記を参照）。
+  // `stopPropagation` は、カード自体の `<button>`（選択のトグル）へ伝わらせないため。
+  const activate = canExpand ? () => onToggle(expandKey) : onActivate
   return (
     <div
-      {...(interactive ? {
+      {...(activate ? {
         role: 'button' as const,
         tabIndex: 0,
-        'aria-expanded': isOpen,
-        onClick: (e: React.MouseEvent) => { e.stopPropagation(); onToggle(expandKey) },
+        // 開けない行に `aria-expanded` を付けない —— 開閉できる行だと読み上げさせてしまう。
+        ...(canExpand ? { 'aria-expanded': isOpen } : {}),
+        onClick: (e: React.MouseEvent) => { e.stopPropagation(); activate() },
         onKeyDown: (e: React.KeyboardEvent) => {
-          if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); onToggle(expandKey) }
+          if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); activate() }
         },
       } : {})}
-      className={`flex items-center ${pad} pr-2 py-0.5 ${depth === 0 ? 'roomy:py-1.5' : ''} ${size}${interactive ? ' cursor-pointer hover:bg-white/5' : ''}`}
+      className={`flex items-center ${pad} pr-2 py-0.5 ${depth === 0 ? 'roomy:py-1.5' : ''} ${size}${activate ? ' cursor-pointer hover:bg-white/5' : ''}`}
     >
       {/* 震度と、その値についての印（未入電）を左に置く。**印を地名の側へ置かない** ——
           置くと右端を揃えるためにいちばん長い「未入電あり」ぶんの枠を全行で空けることになり、
@@ -157,7 +171,7 @@ function IntensityRow({ label, scale, unreceived, unreceivedIsOwn, hasUnreceived
           className="ml-1.5 flex-shrink-0 w-[1em] text-center text-[0.75rem] roomy:text-[0.875rem]"
           style={{ color: '#9ca3af' }}
         >
-          {interactive ? (isOpen ? '▾' : '▸') : ''}
+          {canExpand ? (isOpen ? '▾' : '▸') : ''}
         </span>
       </span>
     </div>
@@ -296,12 +310,14 @@ interface Props {
   /** この地震の未入電の一覧を開いているか。 */
   unreceivedActive?: boolean
   onToggleUnreceived?: () => void
+  /** 観測点の行をクリックしたときに、その地点へ地図を寄せる。 */
+  onPointFocus?: (position: LatLng) => void
 }
 
 export function EarthquakeCard({
   quake, isLatest, isSelected, onSelect, lpgm, activeLpgmEventId, onToggleLpgm,
   estimatedIntensity = null, distributionActive = false, onToggleDistribution,
-  unreceivedActive = false, onToggleUnreceived,
+  unreceivedActive = false, onToggleUnreceived, onPointFocus,
 }: Props) {
   const { earthquake, issue } = quake
   const { hypocenter, maxScale, domesticTsunami } = earthquake
@@ -394,6 +410,28 @@ export function EarthquakeCard({
     ])
     return { stationPrefIndex, areaPrefIndex, prefOf, regionOfStation, stations, areas }
   }, [quake.points, quake.cities, stationData])
+
+  /**
+   * 観測点の行を押したときに地図へ渡す寄り先。**押せるかどうかもこれで決める。**
+   *
+   * 判定と寄り先を別々に解決すると、片方だけ引けたときに「押せるのに動かない」（またはその逆）に
+   * なる。津波の観測点の行が同じ規律で書かれている（→ docs/spec/tsunami-spec.md §9
+   * 「観測点の行をクリックしたときの寄り先」）。
+   *
+   * **県名は行の親から採り、引けなければ観測点名から逆引きする。** 行の県は電文の `City` 由来の
+   * ことがあり（`makeAreaPrefResolver`）、座標テーブルのキーと必ず揃うとは限らない。地図側
+   * （`useQuakeLayerData` の `intensityMarkers`）は逆引きで引いているので、両方を試せば
+   * 地図に点が立っている観測点は引ける。
+   *
+   * **`＊`（気象庁以外が運用する観測点）は外さなくてよい。** 電文の読み取りで既に外れており
+   * （`stripNonJmaMark`）、`EarthquakePoint.addr` は印の無い名前。戻しているのは表示のときだけ。
+   */
+  const focusStationHandler = (pref: string, name: string): (() => void) | undefined => {
+    if (!onPointFocus || !stationData) return undefined
+    const position = lookupPointCoords(stationData, pref, name, false)
+      ?? lookupPointCoords(stationData, unreceivedIndexes.stationPrefIndex?.get(name) ?? '', name, false)
+    return position ? () => onPointFocus(position) : undefined
+  }
 
   const prefGroups = useMemo(() => {
     if (!isSelected || !quake.points.length) return []
@@ -1001,6 +1039,7 @@ export function EarthquakeCard({
                                     expandKey={null}
                                     expanded={expanded}
                                     onToggle={toggle}
+                                    onActivate={focusStationHandler(prefRow.pref, st.name)}
                                   />
                                 ))}
                               </div>
@@ -1019,6 +1058,7 @@ export function EarthquakeCard({
                                 expandKey={null}
                                 expanded={expanded}
                                 onToggle={toggle}
+                                onActivate={focusStationHandler(prefRow.pref, st.name)}
                               />
                             ))}
                           </>
