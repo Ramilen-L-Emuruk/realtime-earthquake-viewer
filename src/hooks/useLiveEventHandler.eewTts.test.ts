@@ -25,7 +25,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
 import { splitIntoChunks } from '../utils/voicevox'
-import type { AppSettings } from './useSettings'
+import { DEFAULTS, type AppSettings } from './useSettings'
 import type { EEWAlert, EEWRegion, IntensityScale, LpgmClass, JMAQuake, JMATsunami } from '../types/earthquake'
 
 // 「鳴っている最中」を再現するための保留。`holdNextSpeech()` で次の 1 回だけ保留にする。
@@ -140,8 +140,12 @@ function makeEEW(over: {
   } as EEWAlert
 }
 
-function setup() {
-  const settings = {
+/**
+ * @param over 設定の上書き。読み上げの詳しさの設定を切り替えるテストで使う。
+ *   **既定は「設定を入れる前の挙動」**（`DEFAULTS`）なので、渡さなければ従来どおり。
+ */
+function setup(over: Partial<AppSettings> = {}) {
+  const settings = { ...DEFAULTS,
     voicevoxEnabled: true,
     voicevoxUrl: 'http://localhost:50021',
     voicevoxSpeakerId: 1,
@@ -149,6 +153,7 @@ function setup() {
     soundVolume: 1,
     notifyMinScale: -1,
     notifyEEW: false,
+    ...over,
   } as unknown as AppSettings
 
   const title = {
@@ -192,6 +197,30 @@ afterEach(() => {
 })
 
 describe('EEW 読み上げの文言と発話順序', () => {
+  // 緊急地震速報の予想最大長周期地震動階級を読むかの設定（`ttsReadEewLpgmClass`）。
+  // **純関数（`eewIntensityText`）のテストとは別に要る** —— 設定が効くかどうかは
+  // `useLiveEventHandler` が渡すオプションと、既読（`spokenEEWLpgmClassesRef`）の更新条件で決まる。
+  describe('長周期地震動階級を読むかの設定（配線）', () => {
+    // 対照: 既定は従来どおり階級も読む。
+    it('既定では震度に続けて階級も読む', async () => {
+      const handle = setup()
+      handle(makeEEW({ scaleTo: 50, lgIntTo: 3 }))
+      await vi.advanceTimersByTimeAsync(2000)
+      await flushMicrotasks()
+      expect(spokenTexts()).toContain('予想最大震度5強。予想最大階級3。')
+    })
+
+    // 正: 切ると階級の句だけが落ちる。
+    it('切ると階級の句を落とす', async () => {
+      const handle = setup({ ttsReadEewLpgmClass: false })
+      handle(makeEEW({ scaleTo: 50, lgIntTo: 3 }))
+      await vi.advanceTimersByTimeAsync(2000)
+      await flushMicrotasks()
+      expect(spokenTexts()).toContain('予想最大震度5強。')
+      expect(spokenTexts().some(t => t.includes('階級'))).toBe(false)
+    })
+  })
+
   it('初報に予想震度があれば、安定待ち（300ms）の後に読む', async () => {
     const handle = setup()
     handle(makeEEW({ scaleTo: 50 }))

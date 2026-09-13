@@ -1,5 +1,5 @@
 import { memo, useState, useCallback, useEffect, useRef } from 'react'
-import type { AppSettings } from '../../hooks/useSettings'
+import type { AppSettings, TtsUnreceivedDetail } from '../../hooks/useSettings'
 import { DAY_NIGHT_OPACITY_MIN, DAY_NIGHT_OPACITY_MAX } from '../../hooks/useSettings'
 import { Toggle } from '../Toggle'
 import type { ConnectionStatus } from '../../types/earthquake'
@@ -988,51 +988,6 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
                 </Row>
               </>
             )}
-            <Row label="読み上げ震度階数" description="最大震度に加えて何階級下まで地域名を読み上げるか（0 = 最大震度のみ）">
-              <select
-                value={settings.ttsIntensityLevels}
-                onChange={e => onUpdate('ttsIntensityLevels', Number(e.target.value))}
-                className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
-              >
-                {[0, 1, 2, 3, 4].map(n => (
-                  <option key={n} value={n}>{n === 0 ? '最大震度のみ' : `最大＋${n}階級`}</option>
-                ))}
-              </select>
-            </Row>
-            <Row label="必ず読み上げる震度" description="階数の設定を超えても、この震度以上の階級は地域名を読み上げます（長周期地震動には適用されません）">
-              <div className="flex items-center gap-2">
-                <IntensityBadge scale={settings.ttsAlwaysReadScale} />
-                <ScaleSelect
-                  value={settings.ttsAlwaysReadScale}
-                  onChange={v => onUpdate('ttsAlwaysReadScale', v)}
-                  noneLabel="階数の設定どおり"
-                />
-              </div>
-            </Row>
-            <Row label="読み上げ最大地域数" description="1階級あたりに読み上げる地域名の上限（0 = 無制限）">
-              <select
-                value={settings.ttsMaxRegions}
-                onChange={e => onUpdate('ttsMaxRegions', Number(e.target.value))}
-                className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
-              >
-                {[0, 3, 5, 10, 15, 20].map(n => (
-                  <option key={n} value={n}>{n === 0 ? '無制限' : `${n}地域`}</option>
-                ))}
-              </select>
-            </Row>
-            {settings.ttsMaxRegions > 0 && (
-              <Row label="地域数の許容超過" description="上限をこの数まで超えるだけなら「ほかN地域」とせず全地域を読み上げます">
-                <select
-                  value={settings.ttsRegionTolerance}
-                  onChange={e => onUpdate('ttsRegionTolerance', Number(e.target.value))}
-                  className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
-                >
-                  {[0, 1, 2, 3, 5].map(n => (
-                    <option key={n} value={n}>{n === 0 ? '許容しない' : `+${n}地域まで`}</option>
-                  ))}
-                </select>
-              </Row>
-            )}
           </>
         )}
         {/* 解説情報は平常時でも毎月1回は必ず届くため、音と読み上げを個別に切れるようにしている。
@@ -1100,6 +1055,105 @@ export const SettingsTab = memo(function SettingsTab({ settings, onUpdate, onTes
           <NotificationPermissionButton />
         </Row>
       </Section>
+
+      {/* 読み上げの詳しさ。VOICEVOX を有効にしたときだけ出す（無効な端末では何も効かないため）。
+          並びは「地域の列挙 → 1 件ごとの詳しさ → 気象庁が書いた文」。中の順序は
+          通知設定・テスト機能と同じカテゴリ順（地震情報 → 津波情報 → 緊急地震速報）。 */}
+      {settings.voicevoxEnabled && (
+        <Section title="読み上げ設定">
+          <Row label="読み上げ震度階数" description="最大震度に加えて何階級下まで地域名を読み上げるか（0 = 最大震度のみ）">
+            <select
+              value={settings.ttsIntensityLevels}
+              onChange={e => onUpdate('ttsIntensityLevels', Number(e.target.value))}
+              className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+            >
+              {[0, 1, 2, 3, 4].map(n => (
+                <option key={n} value={n}>{n === 0 ? '最大震度のみ' : `最大＋${n}階級`}</option>
+              ))}
+            </select>
+          </Row>
+          <Row label="必ず読み上げる震度" description="階数の設定を超えても、この震度以上の階級は地域名を読み上げます（長周期地震動には適用されません）">
+            <div className="flex items-center gap-2">
+              <IntensityBadge scale={settings.ttsAlwaysReadScale} />
+              <ScaleSelect
+                value={settings.ttsAlwaysReadScale}
+                onChange={v => onUpdate('ttsAlwaysReadScale', v)}
+                noneLabel="階数の設定どおり"
+              />
+            </div>
+          </Row>
+          <Row label="読み上げ最大地域数" description="1階級あたりに読み上げる地域名の上限（0 = 無制限）">
+            <select
+              value={settings.ttsMaxRegions}
+              onChange={e => onUpdate('ttsMaxRegions', Number(e.target.value))}
+              className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+            >
+              {[0, 3, 5, 10, 15, 20].map(n => (
+                <option key={n} value={n}>{n === 0 ? '無制限' : `${n}地域`}</option>
+              ))}
+            </select>
+          </Row>
+          {settings.ttsMaxRegions > 0 && (
+            <Row label="地域数の許容超過" description="上限をこの数まで超えるだけなら「ほかN地域」とせず全地域を読み上げます">
+              <select
+                value={settings.ttsRegionTolerance}
+                onChange={e => onUpdate('ttsRegionTolerance', Number(e.target.value))}
+                className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+              >
+                {[0, 1, 2, 3, 5].map(n => (
+                  <option key={n} value={n}>{n === 0 ? '許容しない' : `+${n}地域まで`}</option>
+                ))}
+              </select>
+            </Row>
+          )}
+          <Row label="震源の深さ・規模" description="「石川県能登地方、深さ10キロメートルを震源とするマグニチュード5.2の地震が発生しました」のように読み上げます。切ると震源の地名だけを読みます">
+            <Toggle
+              checked={settings.ttsReadHypocenterDetail}
+              onChange={v => onUpdate('ttsReadHypocenterDetail', v)}
+            />
+          </Row>
+          <Row label="震度を入手していない地点" description="震度5弱以上と推定されるのに観測値が届いていない地点の読み方。「区域名」は地点名の代わりに地域名でまとめます（例: 石川県能登では、一部の地点で…）。「地名を読まない」でも、件数と「震度5弱以上と推定されるが未入電」であることは読み上げます">
+            <select
+              value={settings.ttsUnreceivedDetail}
+              onChange={e => onUpdate('ttsUnreceivedDetail', e.target.value as TtsUnreceivedDetail)}
+              className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+            >
+              <option value="stations">地点名</option>
+              <option value="areas">区域名</option>
+              <option value="none">地名を読まない</option>
+            </select>
+          </Row>
+          <Row label="津波観測点の読み上げ件数" description="津波の観測情報で読み上げる観測点の数。波高の更新・津波警報相当の観測・到達確認・欠測でそれぞれこの件数まで読み、残りは「ほかN地点」と件数で伝えます">
+            <select
+              value={settings.ttsMaxObservationPoints}
+              onChange={e => onUpdate('ttsMaxObservationPoints', Number(e.target.value))}
+              className="bg-input border border-border rounded px-2 py-1 text-xs text-white"
+            >
+              {[1, 3, 5, 10, 15, 20].map(n => (
+                <option key={n} value={n}>{n}地点</option>
+              ))}
+            </select>
+          </Row>
+          <Row label="緊急地震速報の長周期地震動階級" description="予想震度に続けて「予想最大階級3」のように読み上げます。長周期地震動観測情報そのものには影響しません">
+            <Toggle
+              checked={settings.ttsReadEewLpgmClass}
+              onChange={v => onUpdate('ttsReadEewLpgmClass', v)}
+            />
+          </Row>
+          <Row label="気象庁が書いた文" description="電文に添えられた本文・付加文（南海トラフ地震臨時情報の本文など）を読み上げます。震度や津波の読み上げが終わってから読むため、電文が続いている間は読み上げられないことがあります">
+            <Toggle
+              checked={settings.ttsReadTelegramText}
+              onChange={v => onUpdate('ttsReadTelegramText', v)}
+            />
+          </Row>
+          <Row label="緊急地震速報の警戒文" description="「強い揺れに警戒してください」などの定型文を読み上げます。緊急地震速報は秒を争うため、既定では画面にだけ表示します">
+            <Toggle
+              checked={settings.ttsReadEewWarningComment}
+              onChange={v => onUpdate('ttsReadEewWarningComment', v)}
+            />
+          </Row>
+        </Section>
+      )}
 
       <Section title="通知音テスト">
         <div className="px-4 py-2 bg-blue-900/30 border-b border-blue-700/40">

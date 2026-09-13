@@ -18,7 +18,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useLiveEventHandler } from './useLiveEventHandler'
-import type { AppSettings } from './useSettings'
+import { DEFAULTS, type AppSettings } from './useSettings'
 import type { JMAQuake, JMATsunami, IssueType, EEWAlert, ExtraLiveEvent } from '../types/earthquake'
 
 /**
@@ -192,7 +192,7 @@ function makeEEW(over: { noAreas?: boolean; condition?: string; serial?: number 
 }
 
 function setup() {
-  const settings = {
+  const settings = { ...DEFAULTS,
     voicevoxEnabled: true, voicevoxUrl: 'http://x', voicevoxSpeakerId: 1,
     soundEnabled: false, soundVolume: 1, notifyMinScale: -1,
     notifyEEW: false, notifyTsunami: false, notifyDetection: false,
