@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useLazyRef } from './useLazyRef'
-import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
+import type { JMAQuake, JMATsunami, JMALpgm, JMANankai, JMANankaiCommentary, JMAKohatsu, JMAQuakeNotice, JMAEarthquakeCount, JMAEstimatedIntensity, EEWAlert, IntensityScale, EarthquakePoint, AppEvent, LiveEvent, ConnectionStatus, TelegramLogEntry } from '../types/earthquake'
 import { fetchHistory, fetchJmaQuake, P2PQuakeWebSocket } from '../services/p2pquake'
 import { DmdataWebSocket, fetchDmdataEarthquakes, fetchDmdataTsunamis, fetchDmdataLpgms, fetchDmdataNankai, fetchDmdataNankaiCommentary, fetchDmdataKohatsu } from '../services/dmdata'
 import { mergeQuakeInto, mergeQuakeHistory, sameQuakeEntry, sortQuakes, extractQuakeEventId, quakeEventKey, coalesceByEventId, findExistingQuakeCard, isRetractedQuakeReport, quakeRetractionOf } from '../utils/quakeMerge'
@@ -373,7 +373,7 @@ export interface EarthquakeState {
 }
 
 export function useEarthquakes(
-  onLiveEvent?: (event: AppEvent) => void,
+  onLiveEvent?: (event: LiveEvent) => void,
   dmdataApiKey = '',
   dmdataTestDelivery = false,
   replayTimeOffset: number | null = null,
@@ -1287,18 +1287,18 @@ export function useEarthquakes(
             return { ...prev, lpgmByEventId: next }
           })
           if (!silent && !lpgm.cancelled && lpgm.maxClass >= 1) {
-            onLiveEventRef.current?.({ kind: 'lpgm', data: lpgm } as unknown as AppEvent)
+            onLiveEventRef.current?.({ kind: 'lpgm', data: lpgm })
           }
         } else if (payload.kind === 'nankai') {
           const nankai = payload.data
           // 反映しなかった取消では音も読み上げも起こさない（判定は `applyNankai`）。
           const applied = applyNankai(nankai)
-          if (applied && !silent) onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as AppEvent)
+          if (applied && !silent) onLiveEventRef.current?.({ kind: 'nankai', data: nankai })
         } else if (payload.kind === 'nankaiCommentary') {
           const commentary = payload.data
           // 期限切れなら反映も通知もしない（画面に出ないものを読み上げても意味がない）
           if (applyNankaiCommentary(commentary) && !silent) {
-            onLiveEventRef.current?.({ kind: 'nankaiCommentary', data: commentary } as unknown as AppEvent)
+            onLiveEventRef.current?.({ kind: 'nankaiCommentary', data: commentary })
           }
         } else if (payload.kind === 'purge-cancelled-quake') {
           const { id } = payload
@@ -1326,7 +1326,7 @@ export function useEarthquakes(
         } else if (payload.kind === 'kohatsu') {
           const kohatsu = payload.data
           const applied = applyKohatsu(kohatsu)
-          if (applied && !silent) onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as AppEvent)
+          if (applied && !silent) onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu })
         } else if (payload.kind === 'quakeNotice') {
           // **通知は出さない。** 運用連絡なので音も読み上げも起こさない（→ docs/spec/data-sources-spec.md
           // §2「扱う電文種別」）。帯に出すだけなので `onLiveEvent` へは流さない。
@@ -1334,7 +1334,7 @@ export function useEarthquakes(
         } else if (payload.kind === 'earthquakeCount') {
           const count = payload.data
           if (applyEarthquakeCount(count) && !silent) {
-            onLiveEventRef.current?.({ kind: 'earthquakeCount', data: count } as unknown as AppEvent)
+            onLiveEventRef.current?.({ kind: 'earthquakeCount', data: count })
           }
         } else if (payload.kind === 'estimatedIntensity') {
           const ei = payload.data
@@ -1343,7 +1343,7 @@ export function useEarthquakes(
           // 音だけ鳴る。
           const applied = applyEstimatedIntensity(ei)
           if (applied && !silent) {
-            onLiveEventRef.current?.({ kind: 'estimatedIntensity', data: ei, isNew: isNewEstimatedIntensity(applied) } as unknown as AppEvent)
+            onLiveEventRef.current?.({ kind: 'estimatedIntensity', data: ei, isNew: isNewEstimatedIntensity(applied) })
           }
         }
         isSilentRef.current = false
@@ -1562,23 +1562,23 @@ export function useEarthquakes(
             return { ...prev, lpgmByEventId: next }
           })
           if (!lpgm.cancelled && lpgm.maxClass >= 1) {
-            onLiveEventRef.current?.({ kind: 'lpgm', data: lpgm } as unknown as AppEvent)
+            onLiveEventRef.current?.({ kind: 'lpgm', data: lpgm })
           }
         } else if (ev.kind === 'nankai') {
           const nankai = ev.data
           // キュー経路と同じ関数を通す（規則を 2 箇所に書かない。理由は `applyNankai`）。
           if (applyNankai(nankai)) {
-            onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as AppEvent)
+            onLiveEventRef.current?.({ kind: 'nankai', data: nankai })
           }
         } else if (ev.kind === 'nankaiCommentary') {
           const commentary = ev.data
           if (applyNankaiCommentary(commentary)) {
-            onLiveEventRef.current?.({ kind: 'nankaiCommentary', data: commentary } as unknown as AppEvent)
+            onLiveEventRef.current?.({ kind: 'nankaiCommentary', data: commentary })
           }
         } else if (ev.kind === 'kohatsu') {
           const kohatsu = ev.data
           if (applyKohatsu(kohatsu)) {
-            onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as AppEvent)
+            onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu })
           }
         } else if (ev.kind === 'quakeNotice') {
           // 運用連絡なので音も読み上げも起こさない（帯に出すだけ）。
@@ -1586,13 +1586,13 @@ export function useEarthquakes(
         } else if (ev.kind === 'earthquakeCount') {
           const count = ev.data
           if (applyEarthquakeCount(count)) {
-            onLiveEventRef.current?.({ kind: 'earthquakeCount', data: count } as unknown as AppEvent)
+            onLiveEventRef.current?.({ kind: 'earthquakeCount', data: count })
           }
         } else if (ev.kind === 'estimatedIntensity') {
           const ei = ev.data
           const applied = applyEstimatedIntensity(ei)
           if (applied) {
-            onLiveEventRef.current?.({ kind: 'estimatedIntensity', data: ei, isNew: isNewEstimatedIntensity(applied) } as unknown as AppEvent)
+            onLiveEventRef.current?.({ kind: 'estimatedIntensity', data: ei, isNew: isNewEstimatedIntensity(applied) })
           }
         } else {
           const data = ev.data
@@ -1796,7 +1796,7 @@ export function useEarthquakes(
     if (eventId && isDmdss) {
       const lpgm = createTestLpgm(eventId)
       setState(prev => ({ ...prev, lpgmByEventId: new Map(prev.lpgmByEventId).set(eventId, lpgm) }))
-      onLiveEventRef.current?.({ kind: 'lpgm', data: lpgm } as unknown as AppEvent)
+      onLiveEventRef.current?.({ kind: 'lpgm', data: lpgm })
     }
   }, [handleEvent])
 
@@ -1994,7 +1994,7 @@ export function useEarthquakes(
     // 直後に取消テストを走らせたときの照合が実運用と食い違う。
     const nankai = createTestNankai(kindName)
     if (applyNankai(nankai)) {
-      onLiveEventRef.current?.({ kind: 'nankai', data: nankai } as unknown as AppEvent)
+      onLiveEventRef.current?.({ kind: 'nankai', data: nankai })
     }
   }, [applyNankai])
 
@@ -2024,7 +2024,7 @@ export function useEarthquakes(
     const { createTestNankaiCommentary } = await loadTestData()
     const commentary = createTestNankaiCommentary(serialName)
     if (applyNankaiCommentary(commentary)) {
-      onLiveEventRef.current?.({ kind: 'nankaiCommentary', data: commentary } as unknown as AppEvent)
+      onLiveEventRef.current?.({ kind: 'nankaiCommentary', data: commentary })
     }
   }, [applyNankaiCommentary])
 
@@ -2033,7 +2033,7 @@ export function useEarthquakes(
     // 受信と同じ関数を通す（理由は `simulateNankai` に同じ）。期限タイマーもそちらが張る。
     const kohatsu = createTestKohatsu()
     if (applyKohatsu(kohatsu)) {
-      onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu } as unknown as AppEvent)
+      onLiveEventRef.current?.({ kind: 'kohatsu', data: kohatsu })
     }
   }, [applyKohatsu])
 
@@ -2054,7 +2054,7 @@ export function useEarthquakes(
     const { createTestEarthquakeCount } = await loadTestData()
     const count = createTestEarthquakeCount()
     if (applyEarthquakeCount(count)) {
-      onLiveEventRef.current?.({ kind: 'earthquakeCount', data: count } as unknown as AppEvent)
+      onLiveEventRef.current?.({ kind: 'earthquakeCount', data: count })
     }
   }, [applyEarthquakeCount])
 
