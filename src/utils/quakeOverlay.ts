@@ -1,8 +1,8 @@
 /**
- * 地震カードに紐づく追加表示（長周期地震動階級／震度分布モード）の状態と遷移。
+ * 地震カードに紐づく追加表示（長周期地震動階級／震度分布モード／未入電）の状態と遷移。
  *
- * **同時に 1 つだけ。** どちらも「この地震について今これを見たい」という一時的な表示切替で、
- * 地図は両方を出せない（`JapanMapGL` の `showDistribution` が長周期を勝たせる）。独立した
+ * **同時に 1 つだけ。** どれも「この地震について今これを見たい」という一時的な表示切替で、
+ * 地図は全部を出せない（`JapanMapGL` の `showDistribution` が長周期を勝たせる）。独立した
  * 状態に分けると、カードのボタンは両方とも押された見た目になるのに地図には長周期しか出ない、
  * という食い違いが起きる。**排他は型で表し、遷移はここへ集約する。**
  *
@@ -16,6 +16,7 @@
  * - `lpgm` — 長周期地震動階級。`eventId` は電文の識別子で、`source` は開いた場所
  *   （地震カード／EEW カード）。後者は EEW が消えたときの自動解除に使う
  * - `distribution` — 震度分布モード。`eventKey` は地震カードの鍵
+ * - `unreceived` — 震度が届いていない地点。`eventKey` は地震カードの鍵
  *
  * **鍵の体系が違うので 1 つには畳めない。** 長周期は電文の `eventId`、分布は地震カードの
  * `eventKey`（DMDATA は `eventId` 由来だが P2PQuake は発生時刻＋震源名）で地震を指す。
@@ -23,6 +24,7 @@
 export type QuakeOverlay =
   | { kind: 'lpgm'; eventId: string; source: 'earthquake' | 'eew' }
   | { kind: 'distribution'; eventKey: string }
+  | { kind: 'unreceived'; eventKey: string }
 
 /**
  * 長周期の表示をトグルした結果を返す。
@@ -52,6 +54,35 @@ export function toggleDistributionOverlay(
 ): QuakeOverlay | null {
   if (prev?.kind === 'distribution' && prev.eventKey === eventKey) return null
   return { kind: 'distribution', eventKey }
+}
+
+/**
+ * 未入電の表示をトグルした結果を返す。
+ *
+ * 同じ地震の未入電を開いていれば閉じ、それ以外なら開く（他の追加表示を開いていれば、それは閉じる）。
+ *
+ * **開いている間、地図は未入電の印だけを出す**（判定は `JapanMapGL`）。震度の表現を残すと、
+ * 件数が多いとき（実電文で最大 60 点）印が塗りの上に散って「どこが届いていないのか」が読めない。
+ */
+export function toggleUnreceivedOverlay(
+  prev: QuakeOverlay | null,
+  eventKey: string,
+): QuakeOverlay | null {
+  if (prev?.kind === 'unreceived' && prev.eventKey === eventKey) return null
+  return { kind: 'unreceived', eventKey }
+}
+
+/**
+ * 未入電の表示だけを閉じた結果を返す（その地震の未入電が 1 件も無くなったとき）。
+ *
+ * **開いたまま閉じられなくなる形があるため要る。** カードのボタンは件数で出しているので、
+ * 続報で観測点が入電して 0 件になると消える。一方この状態は選択が別の地震へ移るまで残り、
+ * 地図は未入電モードの間だけ震度の表現を引っ込めるので、**震源の印だけの画面で固定される**。
+ *
+ * **長周期・震度分布は触らない。** 閉じる理由が「未入電が無くなった」ことなので、他には当たらない。
+ */
+export function closeUnreceivedOverlay(prev: QuakeOverlay | null): QuakeOverlay | null {
+  return prev?.kind === 'unreceived' ? null : prev
 }
 
 /**

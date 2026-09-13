@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import type { JMAQuake, JMALpgm, IntensityScale, LpgmPeriodBand, JMAEstimatedIntensity } from '../types/earthquake'
 import { useStationCoords } from './useStationCoords'
 import { useSubRegions } from './useSubRegions'
@@ -13,6 +13,7 @@ import { pointInRings, normalizeEpicenterLng, hasKnownEpicenter } from '../utils
 import { ringsBounds, type SubRegion } from '../utils/subregions'
 import { extractQuakeEventId } from '../utils/quakeMerge'
 import { japanWideCornersLatLng } from '../components/Map/gl/bounds'
+import { log } from '../utils/logger'
 
 // 地震モードの描画に必要な派生データ（観測点ごとの震度点／一次細分区域集約／震源）を
 // 一箇所で計算する共有フック。Leaflet 版 JapanMap 内の同名 memo 群と同じ導出を行う
@@ -44,6 +45,25 @@ export interface IntensityMarker {
    * 吹き出しでは名前の末尾へ印（＊）として戻す（→ `withNonJmaMark`）。
    */
   nonJma?: boolean
+  /**
+   * 震度が届いていない観測点か（「震度５弱以上未入電」→
+   * {@link import('../types/earthquake').EarthquakePoint.unreceived}）。
+   *
+   * **震度と一緒に持ち回すこと。** 名前だけで後から引くと、同じ区域に観測値と未入電が混ざった
+   * とき観測値にまで印が付く（カード側に同じ規律がある → docs/spec/quake-spec.md §4）。
+   */
+  unreceived?: boolean
+}
+
+/** 震源ポップアップに出す都道府県別の最大震度。 */
+export interface PrefIntensity {
+  pref: string
+  scale: number
+  /**
+   * その県の値が未入電だけから来ている（観測値が 1 件も無い）。
+   * 表示側は断定形にせず「5弱以上」の語を補う（→ docs/spec/quake-spec.md §4）。
+   */
+  unreceived: boolean
 }
 
 export interface RegionAggregate {
@@ -114,8 +134,13 @@ export interface QuakeLayerData {
    * ドット描画には使わない（→ stationMarkers）。カメラフィットのフォールバック用。
    */
   intensityMarkers: IntensityMarker[]
-  /** 観測点だけの震度点（震度の弱い順＝強い震度を前面に描画する想定）。 */
+  /** 観測値がある観測点だけの震度点（震度の弱い順＝強い震度を前面に描画する想定）。 */
   stationMarkers: IntensityMarker[]
+  /**
+   * 震度が届いていない観測点（「震度５弱以上未入電」）。
+   * 観測値とは別のレイヤーで無彩色の印として描き、塗り・面・集約には混ぜない。
+   */
+  unreceivedMarkers: IntensityMarker[]
   /**
    * true のとき一次細分区域へ集約して塗る（zoom <= aggregateMaxZoom）。
    * 区域データ（subregions.json）の取得に失敗したときは、集約しても塗るポリゴンが無いため false。
@@ -128,7 +153,7 @@ export interface QuakeLayerData {
   /** 震源座標（[lat, lng]・経度は地図中心基準で正規化済み）。無効時は null。 */
   epicenter: LatLng | null
   /** 震源ポップアップ用の都道府県別最大震度（震度の降順）。 */
-  prefIntensities: [string, number][]
+  prefIntensities: PrefIntensity[]
   /** 長周期地震動（LPGM）電文が進行中か（進行中は quake 震度表示を置き換える）。 */
   lpgmActive: boolean
   /** LPGM 観測点マーカー（階級の弱い順）。 */
@@ -158,6 +183,13 @@ export function useQuakeLayerData(
    * 分布モードのときのカメラの寄り先（塗りがある範囲）に使う。
    */
   estimatedIntensity: JMAEstimatedIntensity | null = null,
+  /**
+   * 未入電モード（地震カードの「震度を入手していない地点」ボタン）。
+   *
+   * **未入電だけを見るモード。** 地図からは震度の表現（区域塗り・観測点のドット・推定の面）を
+   * 引っ込め、カメラも未入電の地点だけへ寄せる（判定は `JapanMapGL` と `quakeFitPositions`）。
+   */
+  unreceivedMode = false,
 ): QuakeLayerData {
   const { zoom, aggregateMaxZoom } = view
   const stationCoords = useStationCoords()
@@ -189,6 +221,7 @@ export function useQuakeLayerData(
         isArea: p.isArea,
         region: p.isArea ? p.addr : lookupStationRegion(stationCoords, pref, p.addr),
         ...(p.nonJma && { nonJma: true }),
+        ...(p.unreceived && { unreceived: true }),
       })
     })
     return markers.sort((a, b) => a.scale - b.scale)
@@ -196,10 +229,55 @@ export function useQuakeLayerData(
 
   // 区域の代表点（isArea:true）は区域内観測点の重心であって観測値の位置ではないため、
   // ドット描画からは除く。区域の震度は区域塗り（regionAggregates）が表現する。
+  //
+  // **未入電の観測点も除く。** ここから先（丸バッジ・区域集約・推定の面）はすべて「観測できた
+  // 震度」を扱う経路で、未入電は下限の 45（5弱）へ寄せてあるだけの推定値。混ぜると、気象庁が
+  // 震度4 と発表している区域を 5弱 で塗るところまで行く（→ docs/spec/quake-spec.md §4）。
+  // 未入電の地点は unreceivedMarkers が別に受け持つ。
   const stationMarkers = useMemo(
-    () => intensityMarkers.filter((m) => !m.isArea),
+    () => intensityMarkers.filter((m) => !m.isArea && !m.unreceived),
     [intensityMarkers],
   )
+
+  /**
+   * 震度が届いていない観測点（「震度５弱以上未入電」）。
+   *
+   * 観測値の丸バッジとは別のレイヤーで、無彩色の印として描く（QuakeUnreceivedPointsGL）。
+   * 区域塗り・推定の面・都道府県別最大震度のどこにも混ぜない —— 値は「5弱以上」という下限で
+   * あって観測値ではないため。
+   */
+  const unreceivedMarkers = useMemo(
+    () => intensityMarkers.filter((m) => !m.isArea && m.unreceived),
+    [intensityMarkers],
+  )
+
+  /**
+   * 座標表を引けず地図に置けなかった未入電の地点。
+   *
+   * **未入電の地点は、この印が地図上の唯一の表現。** 観測値の点なら 1 つ落ちても区域塗りや
+   * 隣の点が残るが、未入電は区域塗りにも都道府県別最大震度にも混ぜないので、座標を引けないと
+   * 地図のどこにも痕跡が残らない。カードの一覧は電文から直接組む（座標表に依らない）ので、
+   * **地図とカードで「その地点があるか」の認識がずれる**。黙って落とさず 1 度だけ記録する
+   * （津波の観測点と同じ扱い。useTsunamiLayerData の missingCoordNames）。
+   *
+   * 引けなくなる経路は 2 つ —— 廃止・改称された観測点（過去の電文を再生したとき）と、
+   * 新設されて座標表を作り直していないとき（scripts/build-station-coords.mjs）。
+   */
+  const missingUnreceivedNames = useMemo<string[]>(() => {
+    if (mode !== 'quake' || !quake || !stationCoords) return []
+    const placed = new Set(unreceivedMarkers.map((m) => m.addr))
+    return [...new Set(
+      quake.points.filter((p) => p.unreceived && !p.isArea && p.addr && !placed.has(p.addr))
+        .map((p) => p.addr),
+    )]
+  }, [mode, quake, stationCoords, unreceivedMarkers])
+  const reportedMissingRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    const fresh = missingUnreceivedNames.filter((n) => !reportedMissingRef.current.has(n))
+    if (fresh.length === 0) return
+    for (const n of fresh) reportedMissingRef.current.add(n)
+    log.warn('[quake] 座標表に無い観測点は未入電の印を地図に出せません（カードの一覧には出ます）', { names: fresh })
+  }, [missingUnreceivedNames])
 
   const lpgmActive = !!(lpgm && !lpgm.cancelled)
 
@@ -221,9 +299,13 @@ export function useQuakeLayerData(
   // （座標が無ければ観測点ドットも描けないので、集約をやめても表示できるものが増えない）。
   // この場合に地図へ何が残るかは電文次第——区域を持つ電文なら区域塗りは出る（区域塗りは電文の
   // 区域名で引くため座標テーブルに依存しない）。詳細は docs/spec/quake-spec.md §7.3。
+  // **数えるのは観測値と未入電の合計。** この条件が言いたいのは「寄っても増える情報が無い」で、
+  // 未入電の印も寄って初めて出るもの。観測値だけで数えると、観測点が全滅して未入電しか無い
+  // 電文で集約が維持され、区域塗りも（未入電を混ぜないので）空のまま地図から震度が消える。
   const aggregateByRegion =
     mode === 'quake' && !!quake && !subregionsFailed &&
-    (zoom <= aggregateMaxZoom || (!lpgmActive && stationMarkers.length === 0))
+    (zoom <= aggregateMaxZoom
+      || (!lpgmActive && stationMarkers.length === 0 && unreceivedMarkers.length === 0))
 
   // 一次細分区域に bbox を付与（点内包判定の前段フィルタ用・フィット対象の矩形）。
   // 境界を持たない区域は点内包判定も区域塗りもできないため索引から外す（生成データが正常なら発生しない）。
@@ -279,8 +361,10 @@ export function useQuakeLayerData(
     // **quakePoints.ts の `isAreaPoint` をここへ持ち込まないこと。** あちらは座標テーブルの
     // 索引で名前の衝突を裁くため、テーブルが未読み込みだと奈良県——区域名が県名と同じ唯一の
     // 県——を落とす。区域塗りは索引に依らず電文の区域名だけで出せる（→ 同§7.3）ので弱めない。
+    // **未入電の点は数えない**（パス1 は stationMarkers が既に除いている）。区域の代表点が
+    // 未入電で届くことは実電文では観測できていないが、混ぜれば観測点と同じ形で塗りを押し上げる。
     for (const p of quake.points) {
-      if (!p.isArea) continue
+      if (!p.isArea || p.unreceived) continue
       bump(p.addr, p.scale)
     }
     return maxByName
@@ -316,15 +400,31 @@ export function useQuakeLayerData(
   // QUAKE-2 で XML 経路の観測点も pref: '' に統一されたため、pref が空のケースを
   // 区域名→都道府県逆引き（areaPrefIndex）・観測点名→都道府県逆引き（stationPrefIndex）で
   // 復元する。intensityMarkers（L114-128）と同じフォールバックロジックを揃える。
-  const prefIntensities = useMemo<[string, number][]>(() => {
+  //
+  // **観測できた震度と未入電を混ぜない。** 混ぜると、カードが「震度4 愛媛県 未入電あり」と
+  // 出しているのに震源の吹き出しだけが「愛媛県 5弱」と言う（→ docs/spec/quake-spec.md §4）。
+  //
+  // **ただし観測値が 1 件も無い県は未入電で救済する。** 観測点が全滅した県は電文に観測値を
+  // 持たないので、除外するだけだとこの一覧から県ごと消える。カードは配下から積み上げて
+  // 「5弱以上・未入電」の行を出す（`buildIntensityRows`）ので、落とすと画面の中で食い違う。
+  // **順位は観測値を先に置く** —— 同じ階級なら観測できた県のほうが確かな事実。
+  const prefIntensities = useMemo<PrefIntensity[]>(() => {
     if (!quake) return []
-    const maxByPref = quake.points.reduce<Record<string, number>>((acc, p) => {
+    const observed = new Map<string, number>()
+    const unreceivedOnly = new Map<string, number>()
+    for (const p of quake.points) {
       const pref = p.pref || (p.isArea ? areaPrefIndex.get(p.addr) : stationPrefIndex.get(p.addr))
-      if (!pref) return acc
-      if (!acc[pref] || p.scale > acc[pref]) acc[pref] = p.scale
-      return acc
-    }, {})
-    return Object.entries(maxByPref).sort((a, b) => b[1] - a[1])
+      if (!pref) continue
+      const into = p.unreceived ? unreceivedOnly : observed
+      const cur = into.get(pref)
+      if (cur == null || p.scale > cur) into.set(pref, p.scale)
+    }
+    const rows: PrefIntensity[] = [...observed].map(([pref, scale]) => ({ pref, scale, unreceived: false }))
+    for (const [pref, scale] of unreceivedOnly) {
+      if (observed.has(pref)) continue
+      rows.push({ pref, scale, unreceived: true })
+    }
+    return rows.sort((a, b) => b.scale - a.scale || Number(a.unreceived) - Number(b.unreceived))
   }, [quake, areaPrefIndex, stationPrefIndex])
 
   // LPGM 観測点マーカー（Leaflet 版 lpgmMarkers と同一導出）。
@@ -376,6 +476,13 @@ export function useQuakeLayerData(
       const b = estimatedIntensity.bounds
       return [[b.south, b.west], [b.north, b.east]]
     }
+    // 未入電モードは**未入電の地点だけ**へ寄せる。震源も観測点も混ぜない —— 見たいのは
+    // 「震度が届いていない場所がどこか」で、他を含めると画が広がってそこが小さくなる。
+    // 1 点も置けなかったとき（座標表を引けない）は通常の寄り先へ落とす。空を返すと
+    // カメラが動かないままになり、モードへ入ったこと自体が画面に出ない。
+    if (unreceivedMode && unreceivedMarkers.length > 0) {
+      return unreceivedMarkers.map((m) => m.position)
+    }
     if (lpgmActive) {
       const positions: LatLng[] = []
       if (lpgm?.regions?.length && subregionIndex.length > 0) {
@@ -413,18 +520,19 @@ export function useQuakeLayerData(
       positions.push(...japanWideCornersLatLng())
     }
     return positions
-  }, [distributionMode, estimatedIntensity, lpgmActive, lpgm, lpgmMarkers, regionMaxByName, subregionIndex, intensityMarkers, epicenter, hasEpicenter, quake])
+  }, [distributionMode, estimatedIntensity, unreceivedMode, unreceivedMarkers, lpgmActive, lpgm, lpgmMarkers, regionMaxByName, subregionIndex, intensityMarkers, epicenter, hasEpicenter, quake])
 
   // LPGM 表示の切替（同じ quake のまま lpgmActive だけが変わる、あるいは別イベントの LPGM に
   // 切り替わる）でも再フィットが発火するよう、lpgm の eventId を signature に含める。
   // **震度分布モードの別も入れる。** 寄り先は座標の配列で渡すが、シグネチャは長さしか見ない。
   // モードを切り替えた前後でたまたま同じ本数（分布モードは常に 2 点）になると、
   // 同じ地震のままでは値が変わらず、カメラが寄り直さない。
-  const quakeSignature = `${quake?.id ?? ''}:${lpgmActive ? (lpgm?.eventId ?? '') : ''}:${distributionMode ? 'D' : ''}:${quakeFitPositions.length}`
+  const quakeSignature = `${quake?.id ?? ''}:${lpgmActive ? (lpgm?.eventId ?? '') : ''}:${distributionMode ? 'D' : ''}${unreceivedMode ? 'U' : ''}:${quakeFitPositions.length}`
 
   return {
     intensityMarkers,
     stationMarkers,
+    unreceivedMarkers,
     aggregateByRegion,
     regionAggregates,
     hasEpicenter,
