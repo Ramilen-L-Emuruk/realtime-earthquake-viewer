@@ -18,10 +18,47 @@ export type StationEntry = [number, number] | [number, number, number]
 export interface StationCoordsData {
   /** "都道府県|観測点名" -> [lat, lon, regionIdx?]（isArea: false の地点用） */
   stations: Record<string, StationEntry>
+  /**
+   * 現行の一覧に無い観測点。`stations` と同じ形で、引けなかったときの落とし先。
+   *
+   * **観測点の統廃合は毎年続く。** 過去の電文を再生すると、当時あって今は無い観測点が
+   * 混ざる（実測で 2021 年の電文は 2.8%・2016 年のアーカイブは 4.6〜6.0%）。ここが無いと
+   * それらは地図から丸ごと消え、**その地震で最も強く揺れた観測点が欠けることもある**。
+   *
+   * 中身は「廃止された観測点」だけではない。生成時に固定しているリビジョンより後に
+   * 一覧へ加わった観測点もここへ入る。座標を引く側から見れば両者を区別する理由が無いので、
+   * 「現行の一覧に無い」という一点でまとめてある（→ `scripts/build-station-coords.mjs`）。
+   *
+   * **`areas`（区域の代表点）には混ぜていない。** 代表点は観測点座標の平均なので、
+   * 混ぜると値が動く。旧データには無いため optional。
+   */
+  unlisted?: Record<string, StationEntry>
   /** "都道府県|細分区域名" -> [lat, lon]（isArea: true の地点用） */
   areas: Record<string, LatLng>
-  /** 一次細分区域名の一覧（stations の 3 要素目が指す先）。旧データには無いため optional。 */
+  /** 一次細分区域名の一覧（stations / unlisted の 3 要素目が指す先）。旧データには無いため optional。 */
   regionNames?: string[]
+}
+
+/**
+ * 観測点 1 件を引く。現行の一覧を先に見て、無ければ現行の一覧に無い観測点へ落とす。
+ *
+ * **現行を先に見る順序を崩さないこと。** 同じ名前が両方にあることは生成側で禁じているが
+ * （重複があれば生成が止まる）、古いデータを掴んでいるときに現行が負けると、
+ * いま動いている観測点の座標が過去の値へ置き換わる。
+ */
+function stationEntry(data: StationCoordsData, key: string): StationEntry | undefined {
+  return data.stations[key] ?? data.unlisted?.[key]
+}
+
+/**
+ * 現行と現行の一覧に無いものを合わせた全観測点。**現行が先**（`stationEntry` と同じ順序）。
+ *
+ * **観測点を走査する側は必ずこれを通すこと。** `data.stations` だけを直接舐めると、
+ * 座標を引ける観測点と走査で見つかる観測点が食い違う —— 地図には出るのに、
+ * 自宅の近くを数える側からは存在しないことになる（→ `utils/nearbyStations.ts`）。
+ */
+export function stationEntries(data: StationCoordsData): [string, StationEntry][] {
+  return [...Object.entries(data.stations), ...Object.entries(data.unlisted ?? {})]
 }
 
 const DATA_URL = `${import.meta.env.BASE_URL}data/station-coords.json`
@@ -85,6 +122,12 @@ export function loadStationCoords(): Promise<StationCoordsData> {
         // 配信を更新した直後、PWA が古いデータをキャッシュしたまま新しいバンドルを動かすと起きうる。
         if (!data.regionNames?.length) {
           log.warn('[stationCoords] 区域の一覧が無い（旧形式の station-coords.json）。読み上げの地域名は都道府県粒度になる')
+        }
+        // 現行の一覧に無い観測点も同じ配信・同じキャッシュに乗るので、`regionNames` と同じ形で
+        // 古いデータを掴みうる。**黙って劣化させない** —— 欠けると、過去の電文を再生したときに
+        // 当時あって今は無い観測点が地図から消えるが、画面にもコンソールにも痕跡が残らない。
+        if (!data.unlisted || Object.keys(data.unlisted).length === 0) {
+          log.warn('[stationCoords] 現行の一覧に無い観測点を持たない（旧形式の station-coords.json）。過去の電文を再生すると、当時あって今は無い観測点が地図に出ない')
         }
         cache = data
         for (const fn of waiters) fn(data)
@@ -261,7 +304,10 @@ export function getAreaPrefIndexCache(): Map<string, string> | null {
 
 export function buildStationPrefIndex(data: StationCoordsData): Map<string, string> {
   const index = new Map<string, string>()
-  for (const key of Object.keys(data.stations)) {
+  // 初出優先。`stationEntries` が現行を先に返すので、同名が両方にあれば現行が勝つ。
+  // 現行の一覧に無い観測点も入れるのは、座標を引くのに都道府県名が要るため
+  // （DMDATA は観測点を `pref` 空で積むので、ここで引けないと座標まで辿り着けない）。
+  for (const [key] of stationEntries(data)) {
     const sep = key.indexOf('|')
     if (sep < 0) continue
     const pref = key.slice(0, sep)
@@ -283,7 +329,7 @@ export function lookupPointCoords(
 ): LatLng | null {
   const key = `${pref}|${addr}`
   if (isArea) return data.areas[key] ?? null
-  const entry = data.stations[key]
+  const entry = stationEntry(data, key)
   return entry ? [entry[0], entry[1]] : null
 }
 
@@ -300,7 +346,7 @@ export function lookupStationRegion(
   pref: string,
   addr: string,
 ): string | null {
-  const regionIdx = data.stations[`${pref}|${addr}`]?.[2]
+  const regionIdx = stationEntry(data, `${pref}|${addr}`)?.[2]
   if (regionIdx == null) return null
   return data.regionNames?.[regionIdx] ?? null
 }
