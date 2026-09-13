@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import {
   type QuakeOverlay, toggleLpgmOverlay, toggleDistributionOverlay, toggleUnreceivedOverlay,
-  closeLpgmOverlay, closeEewLpgmOverlay, closeUnreceivedOverlay, shouldCloseOverlayOnSelection,
+  closeLpgmOverlay, closeEewLpgmOverlay, closeUnreceivedOverlay, closeUnreceivedOverlayFor,
+  decideUnreceivedSpeechOpen, shouldCloseOverlayOnSelection,
 } from './quakeOverlay'
+import type { TabId } from '../components/IconNav'
 
 const lpgm = (eventId: string, source: 'earthquake' | 'eew' = 'earthquake'): QuakeOverlay =>
   ({ kind: 'lpgm', eventId, source })
@@ -150,5 +152,63 @@ describe('追加表示を閉じるのは別の地震へ移るときだけ', () =
 
   it('どちらも選択が無いなら閉じない', () => {
     expect(shouldCloseOverlayOnSelection(null, null)).toBe(false)
+  })
+})
+
+describe('読み上げが開いた未入電を閉じるのは、開いたときと同じ地震のときだけ', () => {
+  it('正: 同じ鍵なら閉じる', () => {
+    expect(closeUnreceivedOverlayFor(unreceived('A'), 'A')).toBeNull()
+  })
+
+  it('対照: 別の地震の未入電が開いていたら触らない', () => {
+    // 開けてから閉じるまでの間に選択が移ると、そこにあるのは利用者が開き直した別の表示。
+    const other = unreceived('B')
+    expect(closeUnreceivedOverlayFor(other, 'A')).toBe(other)
+  })
+
+  it('安全弁: 未入電以外の追加表示には当たらない', () => {
+    const dist = distribution('A')
+    expect(closeUnreceivedOverlayFor(dist, 'A')).toBe(dist)
+    const lp = lpgm('A')
+    expect(closeUnreceivedOverlayFor(lp, 'A')).toBe(lp)
+  })
+})
+
+describe('読み上げに合わせて未入電モードを開いてよいか', () => {
+  const base = {
+    activeTab: 'earthquake' as TabId,
+    overlay: null as QuakeOverlay | null,
+    subject: 'A' as string | undefined,
+    selectedKey: 'A' as string | null,
+    hasUnreceivedPoints: true,
+  }
+
+  it('正: 地震タブで、読んでいる地震が画面に出ていて、未入電の地点があれば開く', () => {
+    expect(decideUnreceivedSpeechOpen(base)).toBe('opened')
+  })
+
+  it('対照: 地震タブを見ていなければ開かない（見送りであって食い違いではない）', () => {
+    expect(decideUnreceivedSpeechOpen({ ...base, activeTab: 'tsunami' })).toBe('declined')
+  })
+
+  it('安全弁: 手で開かれている別の追加表示は奪わない', () => {
+    // 3 つは排他なので、ここで開くと震度分布・長周期が閉じる。しかも閉じる番は元へ戻さない。
+    expect(decideUnreceivedSpeechOpen({ ...base, overlay: distribution('A') })).toBe('declined')
+    expect(decideUnreceivedSpeechOpen({ ...base, overlay: lpgm('A') })).toBe('declined')
+  })
+
+  it('安全弁: 読んでいる地震と画面の地震が違えば開かない（食い違いとして記録する）', () => {
+    // 読み上げの順番待ちのあいだに別の地震が届くと、選択だけが先に移る。
+    expect(decideUnreceivedSpeechOpen({ ...base, selectedKey: 'B' })).toBe('mismatch')
+    expect(decideUnreceivedSpeechOpen({ ...base, selectedKey: null })).toBe('mismatch')
+    expect(decideUnreceivedSpeechOpen({ ...base, subject: undefined })).toBe('mismatch')
+  })
+
+  it('安全弁: その地震に未入電の地点が無ければ開かない（食い違いとして記録する）', () => {
+    expect(decideUnreceivedSpeechOpen({ ...base, hasUnreceivedPoints: false })).toBe('mismatch')
+  })
+
+  it('既に未入電が開いているときも奪わない（手で開かれた可能性がある）', () => {
+    expect(decideUnreceivedSpeechOpen({ ...base, overlay: unreceived('A') })).toBe('declined')
   })
 })

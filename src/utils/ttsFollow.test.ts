@@ -11,6 +11,8 @@ import {
   plain,
   planFollowScroll,
   hasFollowTarget,
+  hasUnreceivedFollowTarget,
+  unreceivedChunkRange,
   spokenChunkIndices,
   type SpeechFollowSession,
   type SpeechRef,
@@ -460,6 +462,21 @@ describe('createSpeechFollowController', () => {
     expect(changes).toEqual([expect.objectContaining({ token }), null])
   })
 
+  it('主題（何について語っているか）をセッションへ載せる', () => {
+    // 追従する側が「いま選ばれている地震」で代用しないために要る（→ `SpeechFollowSession.subject`）。
+    const seen: (SpeechFollowSession | null)[] = []
+    const c = createSpeechFollowController(s => seen.push(s))
+    c.begin([plain('地震情報。')], 'quake:evt-1')
+    expect(seen[0]?.subject).toBe('quake:evt-1')
+  })
+
+  it('主題を渡さない読み上げ（津波）では持たない', () => {
+    const seen: (SpeechFollowSession | null)[] = []
+    const c = createSpeechFollowController(s => seen.push(s))
+    c.begin([plain('大津波警報。')])
+    expect(seen[0]?.subject).toBeUndefined()
+  })
+
   it('古い世代の予約は捨てる', () => {
     const { c } = setup()
     const first = c.begin([plain('ひとつめ。')])
@@ -525,6 +542,58 @@ describe('hasFollowTarget', () => {
   it('断片が無い・参照が無いときも false', () => {
     expect(hasFollowTarget(undefined)).toBe(false)
     expect(hasFollowTarget([plain('津波警報を解除しました。')])).toBe(false)
+  })
+})
+
+describe('hasUnreceivedFollowTarget', () => {
+  const unreceived = (name: string): SpeechRef => ({ kind: 'quakeRegion', name, scale: 45, unreceived: true })
+  const observed = (name: string, scale: number): SpeechRef => ({ kind: 'quakeRegion', name, scale })
+
+  it('未入電の印が立った参照を含めば true', () => {
+    expect(hasUnreceivedFollowTarget([plain('では、'), seg('西条市丹原町鞍瀬', unreceived('西条市丹原町鞍瀬'))])).toBe(true)
+  })
+
+  it('観測値の区域だけなら false（観測値の文では開く相手が無い）', () => {
+    expect(hasUnreceivedFollowTarget([seg('大分県中部', observed('大分県中部', 55))])).toBe(false)
+    expect(hasUnreceivedFollowTarget(undefined)).toBe(false)
+    expect(hasUnreceivedFollowTarget([plain('地震情報。')])).toBe(false)
+  })
+
+  it('津波カードの追従（hasFollowTarget）は未入電では起きない', () => {
+    // 門を 1 つにまとめると、地震情報の読み上げが津波カードを動かす。別の述語のままにする。
+    expect(hasFollowTarget([seg('西条市丹原町鞍瀬', unreceived('西条市丹原町鞍瀬'))])).toBe(false)
+  })
+})
+
+describe('unreceivedChunkRange', () => {
+  const unreceived = (name: string): SpeechRef => ({ kind: 'quakeRegion', name, scale: 45, unreceived: true })
+  const observed = (name: string, scale: number): SpeechRef => ({ kind: 'quakeRegion', name, scale })
+
+  it('未入電を含むチャンクの最初と最後を返す', () => {
+    const refsPerChunk: SpeechRef[][] = [
+      [observed('大分県中部', 55)],
+      [],
+      [unreceived('西条市丹原町鞍瀬')],
+      [unreceived('伊予市双海町')],
+      [],
+    ]
+    expect(unreceivedChunkRange(refsPerChunk)).toEqual({ first: 2, last: 3 })
+  })
+
+  it('未入電が 1 つも無ければ null', () => {
+    expect(unreceivedChunkRange([[observed('大分県中部', 55)], []])).toBeNull()
+  })
+
+  it('末尾に未入電でないチャンクが続いても、last はそこまで伸びない', () => {
+    // 「未入電は文の最後に置かれる」ことを前提に「最後のチャンクまで」と決め打ちすると、
+    // 文の並びを変えたときに黙ってずれる。範囲は実データから求める。
+    const refsPerChunk: SpeechRef[][] = [
+      [unreceived('西条市丹原町鞍瀬')],
+      [],
+      [observed('大分県中部', 55)],
+      [],
+    ]
+    expect(unreceivedChunkRange(refsPerChunk)).toEqual({ first: 0, last: 0 })
   })
 })
 
