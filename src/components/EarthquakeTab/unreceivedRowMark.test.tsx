@@ -11,6 +11,7 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import { EarthquakeTab } from './index'
 import { quakeEventKey } from '../../utils/quakeMerge'
 import type { JMAQuake, EarthquakePoint, JMAQuakeCity } from '../../types/earthquake'
+import { findIntensityRow, intensityRowText } from '../../test-utils/intensityRow'
 
 afterEach(cleanup)
 
@@ -81,21 +82,10 @@ function openRows(...labels: string[]) {
 /** 県 → 区域 → 市町村と開いて観測点の行まで降りる。 */
 const openDownToStations = () => openRows(PREF, AREA, CITY)
 
-/**
- * その名前の行の文字列（印まで含む）。
- *
- * **地名は完全一致で引く。** 部分一致だと「大分県」が「大分県中部」の行にも当たる。
- */
-function rowText(name: string): string {
-  // 行は「震度の span」と「地名などの span」の 2 つだけを直下に持つ。地名はその 2 つ目の
-  // 直下の先頭 span なので、そこを完全一致で見る（入れ子の親まで拾わないようにする）。
-  const row = [...document.querySelectorAll('div')].find(el =>
-    el.children.length === 2
-    && el.children[0].tagName === 'SPAN'
-    && el.children[1].tagName === 'SPAN'
-    && el.children[1].children[0]?.textContent === name)
-  return row?.textContent?.trim() ?? ''
-}
+// 行の引き方は 2 つのテストファイルで共有する（→ `test-utils/intensityRow`）。
+// **地名は完全一致で引く** —— 部分一致だと「大分県」が「大分県中部」の行にも当たる。
+const rowEl = findIntensityRow
+const rowText = intensityRowText
 
 const MIXED: EarthquakePoint[] = [
   { pref: PREF, addr: PREF, isArea: true, scale: 40 },
@@ -149,6 +139,34 @@ describe('震度一覧の未入電の印', () => {
       expect(text, name).toContain('未入電あり')
       expect(text.replace('未入電あり', ''), name).not.toContain('未入電')
     }
+  })
+
+  // 安全弁: 印は**震度の側**へ置く。地名の側へ戻さない。
+  //
+  // 地名の右端を行ごとに揃えるための配置。地名と同じ流れに置くと、揃えるためにいちばん長い
+  // 「未入電あり」ぶん（5 文字・約 3.75rem）の枠を全行で空けることになり、狭い画面では
+  // **印を持たない行まで地名が折り返す**（実測: 幅 320px で 47 行中 7 行）。
+  it('印は震度の側に置き、地名の枠へ入れない', () => {
+    renderTab(makeQuake(MIXED))
+    const row = rowEl(PREF)
+    expect(row, '県の行が見つからない').toBeTruthy()
+    expect(row!.children[0].textContent).toContain('未入電あり')
+    expect(row!.children[1].textContent).not.toContain('未入電')
+  })
+
+  // 安全弁: `＊` は地名と別の枠に出す（同じ理由。地名の右端が 1 文字ぶんずれるのを防ぐ）。
+  it('＊ は地名と別の枠に出す', () => {
+    renderTab(makeQuake([
+      { pref: PREF, addr: PREF, isArea: true, scale: 40 },
+      { pref: '', addr: AREA, isArea: true, scale: 40 },
+      station({ nonJma: true }),
+    ]))
+    openDownToStations()
+    const row = rowEl(OBSERVED_STATION)
+    expect(row, '観測点の行が見つからない').toBeTruthy()
+    // 地名の枠は名前だけ。行全体では名前の直後に ＊ が続く。
+    expect(row!.children[1].children[0].textContent).toBe(OBSERVED_STATION)
+    expect(row!.textContent).toContain(`${OBSERVED_STATION}＊`)
   })
 
   // 安全弁: 両方が立つ行でも印は 1 つだけ（「未入電 未入電あり」と重ねない）。
