@@ -14,7 +14,7 @@ import { badgeHtml, escapeHtml } from './gl/popupHtml'
 // 区域塗り（quake-region-fill）より背面（MAP_LAYER_ORDER の quake-heat スロット）に置き、
 // 震度色塗り・震源マーカーの視認性と競合させない。weight は各点の重み（0〜1 前提）。
 //
-// クリック／ホバーで個々の地震（震源名・M・深さ・発生時刻）を出す。ただし **heatmap レイヤーは
+// クリック／ホバーで個々の地震（震源名・M・深さ・地震の時刻）を出す。ただし **heatmap レイヤーは
 // queryRenderedFeatures にヒットしない**（密度を描くだけで個別 feature を返さない仕様）ため、
 // 同じ点を透明な circle レイヤーで重ねて当たり判定を作る。
 

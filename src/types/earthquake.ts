@@ -705,7 +705,7 @@ export interface JMATsunami {
    * （前後の空行だけ落とす）。表示側も `whitespace-pre-wrap` で受けること。
    */
   freeText?: string
-  // この津波を引き起こした地震（Earthquake 要素）。震源名・マグニチュード・発生時刻。
+  // この津波を引き起こした地震（Earthquake 要素）。震源名・マグニチュード・発生時刻・発現時刻。
   /**
    * この津波を引き起こした地震。**電文は複数持ちうる**（`Earthquake` 要素が繰り返す）。
    *

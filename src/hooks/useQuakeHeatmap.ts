@@ -13,7 +13,7 @@ const HEATMAP_DAYS = 30
 // キャッシュ取得後にライブ受信した地震は earthquakes とのマージで別途反映するため、
 // このキャッシュ自体はやや古くても実害は小さい。
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000
-// 保存形式に震源名・深さ・発生時刻を足したため、旧形式と混ざらないようキーを変える（v2）。
+// 保存形式に震源名・深さ・地震の時刻を足したため、旧形式と混ざらないようキーを変える（v2）。
 const CACHE_KEY = isDmdss ? 'quake-heatmap-cache-dmdss-v2' : 'quake-heatmap-cache-v2'
 // 旧形式のキャッシュは二度と読まないので、見かけたら掃除する。
 const LEGACY_CACHE_KEYS = ['quake-heatmap-cache', 'quake-heatmap-cache-dmdss']
